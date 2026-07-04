@@ -69,6 +69,9 @@ Example: `"**Agent:** {role} (claude-pipeline)"` → `"**Agent:** validator (cla
 
 **Rendering recipe** (every subagent uses this):
 ```bash
+# Template lookup: configured dir first, then the installed copy under .claude/pipeline/
+TMPL="<TMPL_DIR>/<template>.md"
+[ -f "$TMPL" ] || TMPL=".claude/pipeline/templates/comments/<template>.md"
 COMMENT_BODY="$(
   HEADER="<HEADER>" ISSUE="#<N>" PR="<PR_or_empty>" \
   VERDICT="<VERDICT>" SUMMARY="<one-line>" DETAILS="<bullet list>" \
@@ -80,7 +83,7 @@ try:
     print(t.safe_substitute(os.environ).strip())
 except Exception:
     print(os.environ.get('HEADER','') + '\n\n' + os.environ.get('VERDICT','') + ' — ' + os.environ.get('SUMMARY',''))
-" "<TMPL_DIR>/<template>.md" 2>/dev/null
+" "$TMPL" 2>/dev/null
 )"
 bash scripts/pipeline-vcs.sh comment-issue <N> "$COMMENT_BODY"   # issue comments
 bash scripts/pipeline-vcs.sh comment-pr <PR> "$COMMENT_BODY"     # PR comments

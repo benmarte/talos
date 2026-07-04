@@ -1,5 +1,5 @@
 🧵 Talos — ${BOARD}
 
-**Issue:** ${REF_TITLE}
+**Issue:** ${REF_LINK}
 
 Dispatched to the roster. Agent updates on this issue and its PR appear in this thread.

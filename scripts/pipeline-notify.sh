@@ -110,6 +110,26 @@ else
   PR_REF="$REF_DISP"
 fi
 
+# Issue/PR URLs so messages can link back to GitHub. Override with PIPELINE_REPO_URL.
+REPO_URL="${PIPELINE_REPO_URL:-}"
+[ -z "$REPO_URL" ] && REPO_URL="$(gh repo view --json url -q .url 2>/dev/null || true)"
+ISSUE_URL=""
+[ -n "$REPO_URL" ] && [ -n "$_num" ] && ISSUE_URL="$REPO_URL/issues/$_num"
+PR_URL=""
+[ -n "$REPO_URL" ] && [ -n "$PR" ] && PR_URL="$REPO_URL/pull/$PR"
+
+# Linked variants for templates: [#42: Title](url). Plain text when no URL.
+REF_LINK="$REF_TITLE"
+[ -n "$ISSUE_URL" ] && REF_LINK="[$REF_TITLE]($ISSUE_URL)"
+PR_LINK="$PR_REF"
+[ -n "$PR_URL" ] && PR_LINK="[$PR_REF]($PR_URL)"
+
+# URL the whole message should point at: PR for PR events, issue otherwise.
+case "$EVENT" in
+  pr-opened|merged) PRIMARY_URL="${PR_URL:-$ISSUE_URL}" ;;
+  *)                PRIMARY_URL="${ISSUE_URL:-$PR_URL}" ;;
+esac
+
 # ── Build message text ────────────────────────────────────────────────────────
 case "$EVENT" in
   merged)       ICON="✅" ;;
@@ -119,7 +139,7 @@ case "$EVENT" in
   *)            ICON="ℹ️"  ;;
 esac
 
-TEXT="$ICON [talos] $EVENT $REF — $MSG"
+TEXT="$ICON [talos] $EVENT $REF — $MSG${PRIMARY_URL:+ ($PRIMARY_URL)}"
 
 # ── Template rendering ────────────────────────────────────────────────────────
 TMPL_DIR_CFG="$(cfg notifications.templates_dir "templates/notifications")"
@@ -135,6 +155,8 @@ if [ -n "$TMPL_DIR_CFG" ]; then
     RENDERED="$(ICON="$ICON" REF="$REF" MSG="$MSG" EVENT="$EVENT" \
       ROLE="$ROLE" TITLE="$TITLE" REF_TITLE="$REF_TITLE" \
       PR="$PR" PR_TITLE="$PR_TITLE" PR_REF="$PR_REF" BOARD="$BOARD" \
+      ISSUE_URL="$ISSUE_URL" PR_URL="$PR_URL" \
+      REF_LINK="$REF_LINK" PR_LINK="$PR_LINK" \
       python3 -c "
 import os, string, sys
 try:
@@ -279,7 +301,7 @@ PY
 
 _discord_payload() {  # $1=anchor msg id (may be empty) $2=mode: bot|webhook
   NTITLE="$NTITLE" NBODY="$NBODY" NCTX="$NCONTEXT" NCOLOR_INT="$NCOLOR_INT" \
-  NANCHOR="$1" NMODE="$2" python3 - <<'PY'
+  NURL="$PRIMARY_URL" NANCHOR="$1" NMODE="$2" python3 - <<'PY'
 import json, os, re
 title = re.sub(r'[*_`]', '', os.environ['NTITLE']).strip()
 # Discord bold is **…**; templates use Slack-style single *…* — upconvert.
@@ -292,6 +314,8 @@ p = {
         "footer": {"text": os.environ['NCTX'][:2048]},
     }],
 }
+if os.environ.get('NURL'):
+    p["embeds"][0]["url"] = os.environ['NURL']
 if os.environ['NMODE'] == 'bot' and os.environ['NANCHOR']:
     p["message_reference"] = {"message_id": os.environ['NANCHOR'], "fail_if_not_exists": False}
 print(json.dumps(p))

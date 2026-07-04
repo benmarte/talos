@@ -7,6 +7,7 @@
 # What it installs:
 #   <target>/.claude/pipeline/scripts/   — pipeline-config, pipeline-status, pipeline-notify, bootstrap-labels
 #   <target>/.claude/pipeline/skills/    — orchestrator skill (SKILL.md)
+#   <target>/.claude/pipeline/templates/ — notification + comment templates (rich messages)
 #   <target>/.claude/agents/             — subagent definitions (validator, pm, developer, qa, reviewer, security, docs)
 #
 # It does NOT overwrite files that already exist unless --force is passed.
@@ -52,6 +53,17 @@ done
 echo ""
 echo "Orchestrator skill:"
 install_file "$SRC/skills/pipeline/SKILL.md" "$TARGET/.claude/pipeline/skills/pipeline/SKILL.md"
+
+# Templates — pipeline-notify.sh falls back to <script-dir>/../templates/notifications,
+# i.e. .claude/pipeline/templates/. Without these, notifications degrade to plain text.
+echo ""
+echo "Templates:"
+for dir in notifications comments; do
+  for tmpl in "$SRC/templates/$dir"/*.md; do
+    [ -f "$tmpl" ] || continue
+    install_file "$tmpl" "$TARGET/.claude/pipeline/templates/$dir/$(basename "$tmpl")"
+  done
+done
 
 # Subagent definitions
 echo ""
