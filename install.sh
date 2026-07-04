@@ -43,7 +43,7 @@ echo ""
 
 # Scripts
 echo "Scripts:"
-for script in pipeline-config.sh pipeline-status.sh pipeline-notify.sh bootstrap-labels.sh; do
+for script in pipeline-config.sh pipeline-status.sh pipeline-notify.sh pipeline-vcs.sh bootstrap-labels.sh; do
   install_file "$SRC/scripts/$script" "$TARGET/.claude/pipeline/scripts/$script"
   chmod +x "$TARGET/.claude/pipeline/scripts/$script"
 done

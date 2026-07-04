@@ -73,6 +73,43 @@ if [ -f "$HERMES_ENV" ]; then
   [ -z "${DISCORD_BOT_TOKEN:-}" ] && DISCORD_BOT_TOKEN="$(grep -m1 '^DISCORD_BOT_TOKEN=' "$HERMES_ENV" | cut -d= -f2-)"
 fi
 
+# ── Enrich context for Daedalus-style templates (best-effort; empty on failure) ─
+# Role label — mirrors daedalus core/notify_templates._ROLE_LABELS.
+case "$EVENT" in
+  validator)          ROLE="validator" ;;
+  pm)                 ROLE="project-manager" ;;
+  developer)          ROLE="developer" ;;
+  qa)                 ROLE="qa" ;;
+  reviewer)           ROLE="reviewer" ;;
+  security)           ROLE="security-analyst" ;;
+  docs|documentation) ROLE="documentation" ;;
+  orchestrator)       ROLE="orchestrator" ;;
+  *)                  ROLE="$EVENT" ;;
+esac
+
+# Board name (owner-repo). Override with PIPELINE_BOARD.
+BOARD="${PIPELINE_BOARD:-}"
+[ -z "$BOARD" ] && BOARD="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null | tr '/' '-')"
+[ -z "$BOARD" ] && BOARD="$(basename "$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null)"
+
+# Issue number + title. Prefer caller-supplied PIPELINE_ISSUE_TITLE; else fetch.
+_num="$(printf '%s' "${REF:-$THREAD_KEY}" | tr -cd '0-9')"
+TITLE="${PIPELINE_ISSUE_TITLE:-}"
+[ -z "$TITLE" ] && [ -n "$_num" ] && TITLE="$(gh issue view "$_num" --json title -q .title 2>/dev/null || true)"
+REF_DISP="${REF:-#$_num}"
+if [ -n "$TITLE" ]; then REF_TITLE="$REF_DISP: $TITLE"; else REF_TITLE="$REF_DISP"; fi
+
+# PR number + title. Prefer PIPELINE_PR/PIPELINE_PR_TITLE; else parse MSG, then fetch.
+PR="${PIPELINE_PR:-}"
+[ -z "$PR" ] && PR="$(printf '%s' "$MSG" | grep -oE '(pull/|PR #?)[0-9]+' | grep -oE '[0-9]+' | head -1)"
+PR_TITLE="${PIPELINE_PR_TITLE:-}"
+[ -z "$PR_TITLE" ] && [ -n "$PR" ] && PR_TITLE="$(gh pr view "$PR" --json title -q .title 2>/dev/null || true)"
+if [ -n "$PR" ]; then
+  if [ -n "$PR_TITLE" ]; then PR_REF="PR #$PR: $PR_TITLE"; else PR_REF="PR #$PR"; fi
+else
+  PR_REF="$REF_DISP"
+fi
+
 # ── Build message text ────────────────────────────────────────────────────────
 case "$EVENT" in
   merged)       ICON="✅" ;;
@@ -82,7 +119,7 @@ case "$EVENT" in
   *)            ICON="ℹ️"  ;;
 esac
 
-TEXT="$ICON [claude-pipeline] $EVENT $REF — $MSG"
+TEXT="$ICON [talos] $EVENT $REF — $MSG"
 
 # ── Template rendering ────────────────────────────────────────────────────────
 TMPL_DIR_CFG="$(cfg notifications.templates_dir "templates/notifications")"
@@ -96,6 +133,8 @@ if [ -n "$TMPL_DIR_CFG" ]; then
   esac
   if [ -f "$TMPL_FILE" ]; then
     RENDERED="$(ICON="$ICON" REF="$REF" MSG="$MSG" EVENT="$EVENT" \
+      ROLE="$ROLE" TITLE="$TITLE" REF_TITLE="$REF_TITLE" \
+      PR="$PR" PR_TITLE="$PR_TITLE" PR_REF="$PR_REF" BOARD="$BOARD" \
       python3 -c "
 import os, string, sys
 try:
@@ -211,13 +250,21 @@ _slack_payload() {  # $1=thread_ts (may be empty) $2=mode: bot|webhook
   NTITLE="$NTITLE" NBODY="$NBODY" NCTX="$NCONTEXT" NCOLOR="$NCOLOR" \
   NCHANNEL="$SLACK_CHANNEL" NTHREAD="$1" NMODE="$2" python3 - <<'PY'
 import json, os, re
-title = re.sub(r'[*_`]', '', os.environ['NTITLE']).strip()
+raw_title = os.environ['NTITLE']
+title = re.sub(r'[*_`]', '', raw_title).strip()   # plain text for notification/fallback
 body  = os.environ['NBODY']
+# Daedalus-style: one cohesive markdown message, NOT a heavy Slack header block.
+full = raw_title
+if body and body.strip() and body.strip() != raw_title.strip():
+    full = raw_title + "\n\n" + body
+# Slack mrkdwn uses *single* asterisks for bold and <url|text> links.
+# Templates author in daedalus/CommonMark style (**bold**, [text](url)); convert.
+full = re.sub(r'\*\*([^*\n]+)\*\*', r'*\1*', full)          # **bold** -> *bold*
+full = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<\2|\1>', full)  # [text](url) -> <url|text>
 p = {
     "text": title,
     "blocks": [
-        {"type": "header",  "text": {"type": "plain_text", "text": title[:150], "emoji": True}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": body[:2900]}},
+        {"type": "section", "text": {"type": "mrkdwn", "text": full[:3000]}},
         {"type": "context", "elements": [{"type": "mrkdwn", "text": os.environ['NCTX']}]},
     ],
     "attachments": [{"color": os.environ['NCOLOR'], "fallback": title}],

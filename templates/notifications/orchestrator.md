@@ -1,2 +1,3 @@
-🤖 *Orchestrator* — ${REF}
+🤖 Talos — ${REF_TITLE}
+
 ${MSG}
