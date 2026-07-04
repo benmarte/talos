@@ -1,0 +1,159 @@
+# .claude-pipeline.yaml
+# Per-project configuration for claude-pipeline.
+# Copy to your repo root as .claude-pipeline.yaml and edit for your project.
+#
+# Config file lookup order used by pipeline scripts:
+#   1. $PIPELINE_CONFIG env var (absolute path)
+#   2. ./.claude-pipeline.yaml  (recommended name)
+#   3. ./pipeline.yaml
+
+# Optional: GitHub owner/repo. Auto-detected from `git remote get-url origin` if omitted.
+# repo: myorg/myrepo
+
+# The branch all PRs target (integration branch). Developer subagents branch off this.
+# Never assume "main" — many repos use "dev", "develop", or "trunk".
+base_branch: dev
+
+# ── VCS provider ─────────────────────────────────────────────────────────────
+# Selects which version-control backend pipeline-vcs.sh targets.
+# Options: github | gitlab | azure | file
+#
+#   github  — Uses the `gh` CLI. Battle-tested. Requires `gh auth login`.
+#   gitlab  — Uses the `glab` CLI. Best-effort; PR approval flow differs.
+#             Requires `glab auth login`.
+#   azure   — Uses the `az` CLI + azure-devops extension.
+#             Requires `az login` and `az extension add --name azure-devops`.
+#             Labels map to ADO Tags; diff-pr is not supported.
+#   file    — No VCS. Work items are `- [ ] Task <!-- id: N -->` checkboxes in
+#             a local markdown file. Developer commits to a branch; QA/reviewer/
+#             security/docs stages are skipped. Useful for local sessions or when
+#             there is no remote repo yet (chat mode bootstraps this automatically).
+#
+# Which providers are production-ready:
+#   github ✓  (used in CI, thoroughly tested)
+#   gitlab ~  (implemented, best-effort — glab quirks may surface)
+#   azure  ~  (implemented, best-effort — az CLI version sensitivity)
+#   file   ✓  (used for chat mode and local sessions)
+vcs:
+  provider: github             # github | gitlab | azure | file
+
+  # repo: myorg/myrepo         # override auto-detect; required for azure if
+                                # `git remote get-url origin` is unavailable
+
+  # ── Azure DevOps only ────────────────────────────────────────────────────
+  # azure:
+  #   org_url: https://dev.azure.com/myorg
+  #   project: MyProject
+
+  # ── File mode only ───────────────────────────────────────────────────────
+  # file:
+  #   source:
+  #     path: plan.md           # path to your markdown checklist (default: plan.md)
+  #                             # Items must be `- [ ] Title` (unchecked = open work)
+
+# Production / release branch (used for release notes and CHANGELOG headers).
+release_branch: main
+
+# ── GitHub Project board ──────────────────────────────────────────────────────
+# Set enabled: false to skip board updates entirely (label-only mode).
+board:
+  enabled: true
+  project_number: 1            # Run `gh project list --owner OWNER` to find yours
+  owner: myorg                 # GitHub org or user that owns the project board
+  status_field: Status         # Exact name of the single-select status field
+  statuses:
+    # Display names must match exactly what appears in the GitHub Project UI.
+    ready: "Ready"
+    in_progress: "In progress"
+    in_review: "In review"
+    done: "Done"
+    blocked: "Blocked"
+
+# ── Verify commands ───────────────────────────────────────────────────────────
+# Every code subagent must pass ALL of these before opening a PR.
+# Use your repo's actual test, lint, and typecheck commands.
+verify:
+  - python -m pytest tests/ -x -q
+  # - npm test
+  # - make lint
+  # - npx tsc --noEmit
+  # - cargo test
+
+# ── Merge settings ────────────────────────────────────────────────────────────
+merge:
+  method: squash               # squash | merge | rebase
+  required_checks:             # CI check names that must be green before merging
+    - test                     # Must match the check name in GitHub Actions / CI
+  delete_branch: true          # Delete feature branch after a successful merge
+
+# ── Issue selection ───────────────────────────────────────────────────────────
+issues:
+  label_filter: "pipeline:ready"   # Label that queues an issue for the pipeline
+  skip_labels:                     # Issues with any of these labels are skipped
+    - "pipeline:blocked"
+    - "wontfix"
+  max_parallel: 1                  # Max issues processed concurrently (start with 1)
+
+# ── Role toggles ─────────────────────────────────────────────────────────────
+# developer is always active. Disable roles you don't need to reduce cost.
+roles:
+  validator: true      # Phase-1 gate — confirms issue is real and in-scope
+  pm: true             # Writes the implementation spec before developer starts
+  qa: true             # Verifies the PR satisfies acceptance criteria
+  reviewer: true       # Code-quality review (correctness, maintainability)
+  security: true       # Security review (injection, authz, secrets, SSRF)
+  docs: true           # Updates README/docs/CHANGELOG; terminal stage
+
+# ── Stage comments ───────────────────────────────────────────────────────────
+# Each role subagent posts a GitHub comment at its handoff point (Daedalus parity).
+# {role} in the header is replaced with the subagent role name at runtime.
+# Comment body is rendered from templates/comments/<stage>.md using ${PLACEHOLDER}
+# substitution. Set templates_dir to "" to use inline text without templates.
+comments:
+  enabled: true
+  header: "**Agent:** {role} (claude-pipeline)"
+  templates_dir: "templates/comments"    # relative to repo root
+
+# ── Notifications ─────────────────────────────────────────────────────────────
+# Priority: incoming webhook env vars > bot tokens from ~/.hermes/.env > silent.
+# Slack:   set SLACK_WEBHOOK_URL or use SLACK_BOT_TOKEN from ~/.hermes/.env
+# Discord: set DISCORD_WEBHOOK_URL or use DISCORD_BOT_TOKEN from ~/.hermes/.env
+# Teams:   set TEAMS_WEBHOOK_URL (webhook-only)
+#
+# Notification message text is rendered from templates/notifications/$EVENT.md
+# when the template file exists. Falls back to the built-in one-liner when absent.
+# Set templates_dir to "" to always use the built-in format.
+notifications:
+  slack_channel: ""          # Slack channel ID; overridden by PIPELINE_SLACK_CHANNEL
+  discord_channel: ""        # Discord channel ID; overridden by PIPELINE_DISCORD_CHANNEL
+  templates_dir: "templates/notifications"  # relative to repo root; "" disables templates
+  threading: true            # Thread all events per issue (bot-token mode only;
+                             # silently skipped in webhook mode)
+  #
+  # events: LEAVE THIS COMMENTED OUT to fire all events (recommended).
+  #
+  # WARNING — if you enable the events filter you MUST include the role events
+  # (validator/developer/qa/reviewer/security/docs/orchestrator) or the
+  # conversation stream is silently killed. Lifecycle-only lists like
+  # [pr-opened, merged, blocked, issue-closed] drop all role events with zero
+  # feedback — the Slack/Discord thread goes silent after the first message.
+  #
+  # Full list you should copy when enabling:
+  #   - validator
+  #   - developer
+  #   - qa
+  #   - reviewer
+  #   - security
+  #   - docs
+  #   - orchestrator
+  #   - pr-opened
+  #   - merged
+  #   - blocked
+  #   - issue-closed
+  #   - info
+  #
+  # events:
+
+# ── Safety limits ─────────────────────────────────────────────────────────────
+limits:
+  max_fix_attempts: 3        # Developer re-tries before escalating to pipeline:blocked

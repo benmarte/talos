@@ -1,0 +1,11 @@
+{
+  "name": "talos",
+  "description": "Autonomous issue-to-PR pipeline orchestrated by a Claude Code session. Validator, developer (worktree-isolated), QA, reviewer, security, and docs subagents drive GitHub issues through to merged PRs.",
+  "version": "0.1.0",
+  "skills": [
+    "skills/pipeline",
+    "skills/pipeline-setup"
+  ],
+  "scripts": "scripts/",
+  "homepage": "https://github.com/benmarte/talos"
+}
