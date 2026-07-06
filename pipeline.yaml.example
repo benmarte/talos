@@ -154,6 +154,19 @@ notifications:
   #
   # events:
 
+# ── Agent runner (non-Claude-Code harnesses only) ─────────────────────────────
+# Claude Code spawns native subagents and ignores this section. Harnesses
+# without subagents (Codex CLI, headless runners) execute role stages through
+# scripts/pipeline-agent.sh, which uses:
+# agents:
+#   runner: codex            # claude (default) | codex | gemini | custom
+#   # runner_args:           # extra CLI args for the claude/codex/gemini runner
+#   #   - --full-auto
+#   # runner_cmd: "my-agent-cli"  # runner: custom — prompt arrives on stdin.
+#   #                             # Must be an AGENTIC CLI (executes shell/edits
+#   #                             # files); use one backed by a local model
+#   #                             # (e.g. Ollama) for fully local pipelines.
+
 # ── Safety limits ─────────────────────────────────────────────────────────────
 limits:
   max_fix_attempts: 3        # Developer re-tries before escalating to pipeline:blocked

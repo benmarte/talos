@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# codex CLI stub for talos tests. Logs "argv<US>...<US>" plus the prompt to
+# $RUNNER_LOG so tests can assert both the flags and the assembled prompt.
+{
+  printf 'CODEX ARGS:'; for a in "$@"; do printf ' [%s]' "$a"; done; printf '\n'
+} >> "${RUNNER_LOG:-/dev/null}"
+echo "codex-stub-ok"

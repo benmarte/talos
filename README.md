@@ -373,6 +373,44 @@ Pass `--dry-run` as the first argument to print the underlying CLI command witho
 
 ---
 
+## Other harnesses: Codex CLI, Gemini CLI, local models
+
+Claude Code is the first-class harness (native subagents, worktree isolation),
+but the pipeline itself is plain bash + markdown — any **agentic** CLI can
+orchestrate it. Install with:
+
+```bash
+bash install.sh /path/to/your/repo --harness codex
+```
+
+This adds a marker-fenced Talos section to your repo's `AGENTS.md` telling the
+harness to follow the playbook and run role stages through the adapter:
+
+```bash
+bash .claude/pipeline/scripts/pipeline-agent.sh <role> - <<'PROMPT'
+<stage prompt>
+PROMPT
+```
+
+The adapter merges `.claude/agents/<role>.md` (frontmatter stripped) with the
+stage prompt and executes it via the runner configured in
+`.claude-pipeline.yaml`:
+
+```yaml
+agents:
+  runner: codex        # claude (default) | codex | gemini | custom
+  # runner_cmd: "my-agent-cli"   # custom: prompt arrives on stdin
+```
+
+**Local models:** the `custom` runner accepts any command, so a local-model
+pipeline works by pointing `runner_cmd` at an agentic CLI backed by Ollama or
+similar. The hard requirement is *agentic*, not *cloud*: whatever runs a stage
+must be able to execute shell commands and edit files — a bare chat endpoint
+can generate text but cannot open a PR. Expect stage quality to track model
+capability; the validator/QA gates exist precisely to catch weak stage output.
+
+---
+
 ## Tests
 
 Every script has an offline regression suite, plus an end-to-end simulation

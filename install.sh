@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # install.sh — copy claude-pipeline scripts and skills into a target repo.
 #
-# Usage: bash install.sh [target-repo-path]
+# Usage: bash install.sh [target-repo-path] [--force] [--harness claude|codex]
 #   target-repo-path defaults to the current directory.
+#   --harness codex additionally writes a Talos section into <target>/AGENTS.md
+#   so Codex CLI (and other AGENTS.md-reading harnesses) can orchestrate the
+#   pipeline, running role stages via scripts/pipeline-agent.sh.
 #
 # What it installs:
 #   <target>/.claude/pipeline/scripts/   — pipeline-config, pipeline-status, pipeline-notify, bootstrap-labels
@@ -15,12 +18,28 @@
 set -euo pipefail
 
 SRC="$(cd "$(dirname "$0")" && pwd)"
-TARGET="${1:-$(pwd)}"
+TARGET=""
 FORCE=false
+HARNESS="claude"
 
+expect_harness=false
 for arg in "$@"; do
-  [ "$arg" = "--force" ] && FORCE=true
+  if [ "$expect_harness" = "true" ]; then
+    HARNESS="$arg"; expect_harness=false; continue
+  fi
+  case "$arg" in
+    --force)     FORCE=true ;;
+    --harness)   expect_harness=true ;;
+    --harness=*) HARNESS="${arg#*=}" ;;
+    *)           [ -z "$TARGET" ] && TARGET="$arg" ;;
+  esac
 done
+[ -z "$TARGET" ] && TARGET="$(pwd)"
+
+case "$HARNESS" in
+  claude|codex) ;;
+  *) echo "error: unknown --harness '$HARNESS'. Valid: claude | codex" >&2; exit 1 ;;
+esac
 
 # Ensure target looks like a repo
 if [ ! -d "$TARGET" ]; then
@@ -44,7 +63,7 @@ echo ""
 
 # Scripts
 echo "Scripts:"
-for script in pipeline-config.sh pipeline-status.sh pipeline-notify.sh pipeline-vcs.sh bootstrap-labels.sh; do
+for script in pipeline-config.sh pipeline-status.sh pipeline-notify.sh pipeline-vcs.sh pipeline-agent.sh bootstrap-labels.sh; do
   install_file "$SRC/scripts/$script" "$TARGET/.claude/pipeline/scripts/$script"
   chmod +x "$TARGET/.claude/pipeline/scripts/$script"
 done
@@ -74,6 +93,40 @@ for agent in validator pm developer qa reviewer security docs; do
     install_file "$src_agent" "$TARGET/.claude/agents/$agent.md"
   fi
 done
+
+# Codex / AGENTS.md harness: add a marker-fenced Talos section so the harness
+# knows the pipeline exists and how to run stages without native subagents.
+if [ "$HARNESS" = "codex" ]; then
+  echo ""
+  echo "Codex harness (AGENTS.md):"
+  AGENTS_MD="$TARGET/AGENTS.md"
+  if [ -f "$AGENTS_MD" ] && grep -q "<!-- talos:begin -->" "$AGENTS_MD"; then
+    echo "  skip (talos section already present): $AGENTS_MD"
+  else
+    cat >> "$AGENTS_MD" <<'AGENTSEOF'
+
+<!-- talos:begin -->
+## Talos pipeline
+
+This repo has the Talos issue→PR pipeline installed under `.claude/pipeline/`.
+When asked to run the pipeline, act as the orchestrator: follow the playbook in
+`.claude/pipeline/skills/pipeline/SKILL.md` exactly.
+
+This harness has no native subagents. Wherever the playbook says "spawn a
+subagent with this prompt", instead run the stage headlessly:
+
+    bash .claude/pipeline/scripts/pipeline-agent.sh <role> - <<'PROMPT'
+    <the stage prompt from the playbook>
+    PROMPT
+
+Role definitions live in `.claude/agents/*.md`. Set the runner in
+`.claude-pipeline.yaml` (`agents.runner: codex`). All VCS operations go through
+`.claude/pipeline/scripts/pipeline-vcs.sh` — never call `gh` directly.
+<!-- talos:end -->
+AGENTSEOF
+    echo "  installed: talos section in $AGENTS_MD"
+  fi
+fi
 
 # Offer to copy config example
 echo ""

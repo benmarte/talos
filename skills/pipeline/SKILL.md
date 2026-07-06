@@ -7,6 +7,16 @@ You are the **pipeline orchestrator**. You manage the full lifecycle from open G
 
 All VCS operations go through `scripts/pipeline-vcs.sh` — never call `gh`, `glab`, or `az` directly. This keeps the pipeline provider-agnostic.
 
+**Harness compatibility:** if your harness has native subagents (Claude Code), spawn them as each stage instructs. If it does not (Codex CLI, headless runners), replace every "spawn a subagent with this prompt" step with:
+
+```bash
+bash scripts/pipeline-agent.sh <role> - <<'PROMPT'
+<the stage prompt, placeholders substituted>
+PROMPT
+```
+
+The adapter combines `.claude/agents/<role>.md` with the stage prompt and runs it through the CLI configured in `agents.runner` (claude | codex | custom). Everything else in this playbook is identical. Note: without native subagents, developer stages run sequentially in the working tree — set `issues.max_parallel: 1`.
+
 ---
 
 ## Step 0 — Read config
