@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# gh stub for talos tests. Logs every invocation to $GH_LOG and returns
+# canned responses for the query shapes the pipeline scripts use.
+# Override values with: STUB_REPO (owner/name), STUB_ISSUE_TITLE, STUB_PR_TITLE.
+
+[ -n "${GH_LOG:-}" ] && printf '%s\n' "$*" >> "$GH_LOG"
+
+REPO="${STUB_REPO:-acme/widget}"
+OWNER="${REPO%%/*}"
+
+args="$*"
+case "$args" in
+  "repo view --json nameWithOwner -q .nameWithOwner"*)
+    printf '%s\n' "$REPO" ;;
+  "repo view --json url -q .url"*)
+    printf 'https://github.com/%s\n' "$REPO" ;;
+  "repo view --json owner -q .owner.login"*)
+    printf '%s\n' "$OWNER" ;;
+  "repo view --json defaultBranchRef"*)
+    printf 'main\n' ;;
+  "issue view "*"--json title -q .title"*)
+    printf '%s\n' "${STUB_ISSUE_TITLE:-Fix login crash}" ;;
+  "pr view "*"--json title -q .title"*)
+    printf '%s\n' "${STUB_PR_TITLE:-fix: guard null session}" ;;
+  "issue view "*)
+    printf '{"title":"%s","body":"stub body","labels":[],"comments":[]}\n' \
+      "${STUB_ISSUE_TITLE:-Fix login crash}" ;;
+  "project list"*)
+    printf '{"projects":[{"number":7,"id":"PROJ_ID_7"}]}\n' ;;
+  "project field-list"*)
+    printf '{"fields":[{"name":"Status","id":"FIELD_ID_S","options":[{"name":"In progress","id":"OPT_INPROG"},{"name":"Done","id":"OPT_DONE"}]}]}\n' ;;
+  "project item-list"*)
+    printf '{"items":[{"id":"ITEM_42","content":{"number":42}}]}\n' ;;
+  "project item-add"*)
+    printf '{"id":"ITEM_NEW"}\n' ;;
+  *)
+    # label create/edit, comments, pr edits, merges, item-edit: succeed silently
+    ;;
+esac
+exit 0

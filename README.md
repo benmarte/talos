@@ -373,6 +373,23 @@ Pass `--dry-run` as the first argument to print the underlying CLI command witho
 
 ---
 
+## Tests
+
+Every script has an offline regression suite, plus an end-to-end simulation
+that installs Talos into a scratch repo and drives one issue through the full
+label → validator → PR → QA → merge → close lifecycle against stubbed
+`gh`/`curl` (no network, no credentials, nothing posted anywhere):
+
+```bash
+bash tests/run-tests.sh            # everything
+bash tests/run-tests.sh notify     # only files matching "notify"
+```
+
+CI runs the suite on Ubuntu and macOS for every push and PR
+(`.github/workflows/tests.yml`).
+
+---
+
 ## Credits
 
 claude-pipeline is a distillation of [Daedalus](https://github.com/benmarte/daedalus) — a full-featured Hermes plugin with a 9-agent roster, kanban board, dashboard, and per-project config. If you need multi-project management, a dashboard UI, or a long-running daemon, use Daedalus. If you want a drop-in, zero-infrastructure pipeline driven from a Claude Code session — supporting GitHub (battle-tested), GitLab, Azure DevOps, and a local file mode — this is it.

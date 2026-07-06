@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# curl stub for talos tests. Logs "URL<tab>PAYLOAD" to $CURL_LOG.
+# Response: pops the first line of $CURL_QUEUE if non-empty, otherwise a
+# platform default (Slack ok+ts / Discord message id) keyed off the URL.
+
+payload=""
+url=""
+prev=""
+for arg in "$@"; do
+  [ "$prev" = "-d" ] && payload="$arg"
+  prev="$arg"
+done
+# URL = last argument
+for arg in "$@"; do url="$arg"; done
+
+[ -n "${CURL_LOG:-}" ] && printf '%s\t%s\n' "$url" "$payload" >> "$CURL_LOG"
+
+if [ -n "${CURL_QUEUE:-}" ] && [ -s "$CURL_QUEUE" ]; then
+  head -1 "$CURL_QUEUE"
+  tail -n +2 "$CURL_QUEUE" > "$CURL_QUEUE.tmp" && mv "$CURL_QUEUE.tmp" "$CURL_QUEUE"
+  exit 0
+fi
+
+case "$url" in
+  *slack.com*)   printf '{"ok":true,"ts":"1111.2222"}\n' ;;
+  *discord.com*) printf '{"id":"900000000000000001"}\n' ;;
+  *)             printf '{}\n' ;;
+esac
+exit 0
