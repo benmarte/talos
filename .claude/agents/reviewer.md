@@ -1,7 +1,7 @@
 ---
 name: reviewer
 description: Code-quality review — correctness, simplicity, maintainability. Gated behind QA pass.
-tools: Bash, Read, Grep, Glob
+tools: Bash, Read, Grep, Glob, Skill
 model: opus
 ---
 

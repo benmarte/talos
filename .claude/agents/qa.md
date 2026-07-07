@@ -1,7 +1,7 @@
 ---
 name: qa
 description: Verifies the PR actually satisfies the acceptance criteria — runs tests and exercises the change end-to-end.
-tools: Bash, Read, Grep, Glob
+tools: Bash, Read, Grep, Glob, Skill
 model: opus
 ---
 

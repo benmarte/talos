@@ -1,7 +1,7 @@
 ---
 name: security
 description: Security review of the PR diff — injection, authz, secrets, unsafe deserialization, SSRF. Gated behind QA pass.
-tools: Bash, Read, Grep, Glob
+tools: Bash, Read, Grep, Glob, Skill
 model: opus
 ---
 

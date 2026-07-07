@@ -253,6 +253,47 @@ catch bad stage output, but nothing gates the orchestrator itself.
    `bash .claude/pipeline/scripts/pipeline-status.sh --dry-run <n> "In progress"`
    style commands manually.
 
+## Customizing agent profiles
+
+The role profiles installed at `.claude/agents/*.md` are yours to edit — each
+is a markdown file with YAML frontmatter (Claude Code metadata) and the role's
+instructions as the body. `install.sh` never overwrites existing files unless
+you pass `--force`, so local customizations survive re-installs (and `--force`
+wipes them — keep customized profiles in your repo's git history).
+
+**Adding skills to a profile (Claude Code):** two supported mechanisms:
+
+```yaml
+---
+name: reviewer
+tools: Bash, Read, Grep, Glob, Skill   # "Skill" lets the agent INVOKE skills at runtime
+skills:                                 # preloads full skill content at startup
+  - code-review
+---
+```
+
+- `skills:` — preloads the listed skills' full content into the agent's
+  context at startup. Best when the role should *always* apply the skill.
+  Skills are referenced by name and must exist in `~/.claude/skills/`,
+  `.claude/skills/` (project), or an enabled plugin.
+- `Skill` in `tools:` — lets the agent invoke any available skill on demand.
+  Best for "use X if available" guidance. Note: when a profile sets a
+  restrictive `tools:` list, the agent can only invoke skills if `Skill` is
+  in that list — Talos ships QA/reviewer/security with it included, since
+  their instructions reference the built-in `verify`/`code-review`/
+  `security-review` skills.
+
+Other useful frontmatter fields: `model` (per-role model override),
+`disallowedTools`, `maxTurns`, `memory`. See the
+[Claude Code sub-agents docs](https://code.claude.com/docs/en/sub-agents) for
+the full list.
+
+**On other harnesses (Codex / Gemini / custom):** frontmatter — including
+`skills:` — is Claude Code metadata and is stripped by `pipeline-agent.sh`.
+Only the profile **body** reaches the runner. To customize a role there,
+write the instructions (or paste the relevant skill content) directly into
+the body — it flows into every stage prompt on every harness.
+
 ## Troubleshooting
 
 - **Notifications are plain one-liners, not rich cards** — templates missing.
