@@ -95,8 +95,9 @@ cd your-repo
 # Claude Code plugin install is not yet GA — copy manually for now (see install.sh)
 
 # Option B: manual copy
-cp -r path/to/claude-pipeline/scripts/ .claude/pipeline/scripts/
-cp -r path/to/claude-pipeline/skills/  .claude/pipeline/skills/
+cp -r path/to/claude-pipeline/scripts/   .claude/pipeline/scripts/
+cp -r path/to/claude-pipeline/skills/    .claude/pipeline/skills/
+cp -r path/to/claude-pipeline/templates/ .claude/pipeline/templates/   # required for rich messages
 cp -r path/to/claude-pipeline/.claude/agents/ .claude/agents/
 ```
 
@@ -221,7 +222,20 @@ Edit these files to customise the comment format for your team. The subagent fal
 
 ### Notification templates
 
-Notification messages are rendered as Slack Block Kit (header + section + colored attachment) or Discord embeds (title/description/color/footer). The first line of the rendered template becomes the title; the rest becomes the body. Templates use `${PLACEHOLDER}` substitution with variables `${ICON}`, `${REF}`, `${MSG}`, `${EVENT}`.
+Notification messages are rendered as Slack Block Kit (header + section + colored attachment) or Discord embeds (title/description/color/footer). The first line of the rendered template becomes the title; the rest becomes the body. Templates use `${PLACEHOLDER}` substitution with these variables:
+
+| Variable | Value |
+|----------|-------|
+| `${ICON}` / `${EVENT}` / `${MSG}` | event icon, event name, message text |
+| `${REF}` | issue ref as passed (e.g. `#42`) |
+| `${ROLE}` | role label (validator / project-manager / developer / …) |
+| `${TITLE}` / `${REF_TITLE}` | issue title / `#42: title` |
+| `${PR}` / `${PR_TITLE}` / `${PR_REF}` | PR number / title / `PR #9: title` |
+| `${ISSUE_URL}` / `${PR_URL}` | GitHub URLs (empty if undetectable) |
+| `${REF_LINK}` / `${PR_LINK}` | markdown links `[#42: title](url)` — Slack/Discord render them clickable; fall back to plain text when no URL |
+| `${BOARD}` | board name (owner-repo) |
+
+Keep the first template line free of markdown links — Discord embed titles don't render them (the embed title is made clickable via the embed `url` instead). Put `${REF_LINK}`/`${PR_LINK}` in the body.
 
 **Role event templates** (one per agent — make up the conversation stream):
 
@@ -261,6 +275,8 @@ Scripts respect these env vars, which take priority over the config file:
 | `PIPELINE_SLACK_CHANNEL` | `notifications.slack_channel` |
 | `PIPELINE_DISCORD_CHANNEL` | `notifications.discord_channel` |
 | `PIPELINE_THREAD_STATE` | path to thread anchor state file (default: `~/.claude-pipeline/threads.json`) |
+| `PIPELINE_REPO_URL` | repo URL used to build issue/PR links (default: detected via `gh repo view`) |
+| `PIPELINE_ISSUE_TITLE` / `PIPELINE_PR` / `PIPELINE_PR_TITLE` | issue/PR context for templates (skips the `gh` lookups) |
 | `PIPELINE_NOTIFY_DEBUG` | set to `1` to print payloads without posting (safe for testing) |
 
 ### Per-issue notification threading
@@ -403,11 +419,45 @@ agents:
 ```
 
 **Local models:** the `custom` runner accepts any command, so a local-model
-pipeline works by pointing `runner_cmd` at an agentic CLI backed by Ollama or
-similar. The hard requirement is *agentic*, not *cloud*: whatever runs a stage
-must be able to execute shell commands and edit files — a bare chat endpoint
-can generate text but cannot open a PR. Expect stage quality to track model
-capability; the validator/QA gates exist precisely to catch weak stage output.
+pipeline works by pointing `runner_cmd` at an agentic CLI backed by Ollama,
+llama.cpp, or similar. The hard requirement is *agentic*, not *cloud*: whatever
+runs a stage must be able to execute shell commands and edit files — a bare
+chat endpoint can generate text but cannot open a PR. Expect stage quality to
+track model capability; the validator/QA gates exist precisely to catch weak
+stage output.
+
+Example — llama.cpp serving an OpenAI-compatible endpoint:
+
+```bash
+# --jinja enables tool/function calling — agentic CLIs need it
+llama-server -m qwen2.5-coder-32b-instruct-q4_k_m.gguf --port 8080 -c 32768 --jinja
+```
+
+Then drive stages through any OpenAI-compatible agentic CLI, e.g. Aider:
+
+```yaml
+agents:
+  runner: custom
+  runner_cmd: >-
+    OPENAI_API_BASE=http://localhost:8080/v1 OPENAI_API_KEY=local
+    aider --model openai/local --yes-always --no-auto-commits --message "$(cat)"
+```
+
+Or configure Codex CLI with a local provider profile
+(`~/.codex/config.toml` → `[model_providers.llamacpp]`
+`base_url = "http://localhost:8080/v1"`) and use the named runner:
+
+```yaml
+agents:
+  runner: codex
+  runner_args:
+    - --profile
+    - local
+```
+
+Pick a model that supports function calling (Qwen coder-class or similar) —
+models without it will chat about the task instead of executing it. For a
+fully offline pipeline, combine a local runner with `vcs.provider: file`.
 
 ---
 
