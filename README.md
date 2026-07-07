@@ -6,7 +6,9 @@ An autonomous issue→PR pipeline driven by a **Claude Code orchestrator session
 
 GitHub Issues (or a local markdown checklist in file mode) serve as the state machine. GitHub Projects optionally tracks board status. Everything else runs in your terminal.
 
-> **Historical note**: an earlier design used GitHub Actions (`anthropics/claude-code-action`) as the event-driven driver. That variant lives in `.github/workflows/pipeline.yml` and `.claude/commands/pipeline-tick.md` for reference, but the primary, production-tested model is the orchestrator session described here.
+> 📖 **New here? Start with the [User Guide](docs/user-guide.md)** — per-harness setup (Claude Code, Codex CLI, Gemini CLI, local models via llama.cpp), prerequisites, environment variables, feature matrix, and troubleshooting. This README is the architecture and configuration reference.
+
+> **Historical note**: an earlier design used GitHub Actions (`anthropics/claude-code-action`) as the event-driven driver. That variant lives in `examples/github-actions/` and `.claude/commands/pipeline-tick.md` for reference, but the primary, production-tested model is the orchestrator session described here.
 
 ---
 
