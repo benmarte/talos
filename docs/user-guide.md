@@ -292,7 +292,56 @@ the full list.
 `skills:` — is Claude Code metadata and is stripped by `pipeline-agent.sh`.
 Only the profile **body** reaches the runner. To customize a role there,
 write the instructions (or paste the relevant skill content) directly into
-the body — it flows into every stage prompt on every harness.
+the body — it flows into every stage prompt on every harness. Skill packs
+published for multiple agent tools can also be installed cross-harness with
+[`npx skills add <owner>/<repo>`](https://github.com/vercel-labs/skills).
+
+### Worked example: Addy Osmani's agent-skills pack
+
+Wiring [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills)
+into the Talos roles:
+
+```
+# 1. Install the pack (in a Claude Code session)
+/plugin marketplace add addyosmani/agent-skills
+/plugin install agent-skills@addy-agent-skills
+```
+
+2. Reference the fitting skill from each role profile:
+
+| Talos profile | agent-skills skill |
+|---------------|--------------------|
+| `reviewer.md` | `code-review-and-quality` |
+| `qa.md` | `test-driven-development` |
+| `security.md` | `security-and-hardening` |
+| `pm.md` | `spec-driven-development`, `planning-and-task-breakdown` |
+| `developer.md` | `incremental-implementation` |
+| `docs.md` | `documentation-and-adrs` |
+
+Two wiring styles — pick per role:
+
+```yaml
+# a) Preload (always applied). Plain skill names; if a listed skill is
+#    missing/disabled Claude Code skips it with a debug-log warning.
+---
+name: reviewer
+tools: Bash, Read, Grep, Glob, Skill
+skills:
+  - code-review-and-quality
+---
+```
+
+```markdown
+b) On-demand: keep `Skill` in tools: and reference the namespaced skill in
+   the profile body, e.g. append to reviewer.md:
+
+   Before posting your verdict, run the `agent-skills:code-review-and-quality`
+   skill and apply its five-axis review process.
+```
+
+Preload guarantees the skill shapes every run (at the cost of context);
+on-demand keeps stages lean and degrades gracefully on machines without the
+pack installed.
 
 ## Troubleshooting
 
