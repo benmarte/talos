@@ -132,6 +132,15 @@ a silent no-op and the pipeline still runs.
 The first-class harness — native parallel subagents, worktree isolation for
 the developer role.
 
+**Step 0 (alternative): install as a Claude Code plugin**
+
+In a Claude Code session run:
+```
+/plugin marketplace add benmarte/talos
+/plugin install talos@talos
+```
+This installs the `/pipeline` and `/pipeline-setup` skills directly. Per-repo `scripts/` and `templates/` still come from `install.sh` (step 1 below) — the two are complementary.
+
 ```bash
 # 1. Install into your repo
 git clone https://github.com/benmarte/talos

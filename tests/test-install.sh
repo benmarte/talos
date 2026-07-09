@@ -52,4 +52,18 @@ else
   pass "missing target dir exits non-zero"
 fi
 
+# Marketplace manifest exists in Talos source root and is valid JSON with plugins[0].name == "talos"
+assert_file_exists "$TALOS_ROOT/.claude-plugin/marketplace.json" \
+  ".claude-plugin/marketplace.json exists in source repo"
+if python3 -c "
+import json, sys
+with open('$TALOS_ROOT/.claude-plugin/marketplace.json') as f:
+    data = json.load(f)
+assert data['plugins'][0]['name'] == 'talos', 'plugins[0].name must be talos'
+" 2>/dev/null; then
+  pass "marketplace.json is valid JSON with plugins[0].name == talos"
+else
+  fail "marketplace.json is valid JSON with plugins[0].name == talos"
+fi
+
 finish
