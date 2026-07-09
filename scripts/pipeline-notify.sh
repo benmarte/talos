@@ -49,10 +49,29 @@ MSG="${3:-}"
 THREAD_KEY="${4:-$REF}"
 
 # ── Load repo .env if present ─────────────────────────────────────────────────
+# NOTE: REPO_ROOT keeps its current meaning (script-relative install dir)
+# because line 152 uses it for the bundled template fallback path.
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-REPO_ENV="$REPO_ROOT/.env"
-# shellcheck disable=SC1090
-[ -f "$REPO_ENV" ] && . "$REPO_ENV"
+ENV_ROOT="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)"
+[ -z "$ENV_ROOT" ] && ENV_ROOT="$PWD"
+REPO_ENV="$ENV_ROOT/.env"
+# Load repo .env with dotenv precedence: exported env vars win over .env values.
+# Bash 3.2-compatible — no namerefs, no associative arrays.
+if [ -f "$REPO_ENV" ]; then
+  while IFS= read -r _line || [ -n "$_line" ]; do
+    case "$_line" in
+      ""|"#"*) continue ;;  # skip blanks and comments
+    esac
+    _key="${_line%%=*}"
+    # Only set if the variable is currently unset
+    if [ -z "${!_key+x}" ]; then
+      # shellcheck disable=SC2163
+      export "$_line"
+    fi
+  done < "$REPO_ENV"
+  unset _line _key
+fi
+unset REPO_ENV ENV_ROOT
 
 # ── Event filter (from config) ────────────────────────────────────────────────
 CONFIGURED_EVENTS="$(cfg notifications.events "")"
