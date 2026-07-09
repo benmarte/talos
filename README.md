@@ -98,8 +98,10 @@ az devops configure --defaults organization=https://dev.azure.com/MYORG project=
 
 ```bash
 # Option A: install as a Claude Code plugin (recommended)
-cd your-repo
-# Claude Code plugin install is not yet GA — copy manually for now (see install.sh)
+# In a Claude Code session, run:
+/plugin marketplace add benmarte/talos
+/plugin install talos@talos
+# Note: the plugin provides /pipeline and /pipeline-setup skills; per-repo scripts/ and templates/ still come from install.sh (Option B) — the two are complementary.
 
 # Option B: manual copy
 cp -r path/to/talos/scripts/   .claude/talos/scripts/

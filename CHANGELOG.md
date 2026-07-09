@@ -4,6 +4,10 @@
 
 ### Added
 
+#### Issue #2 — Plugin marketplace manifest + doc fix
+
+Added `.claude-plugin/marketplace.json` so the Claude Code plugin marketplace flow works end-to-end (`/plugin marketplace add benmarte/talos` + `/plugin install talos@talos`). Updated README Quickstart Option A and `docs/user-guide.md` Setup: Claude Code section to document the plugin path as the recommended install with a caveat that per-repo scripts/templates still come from `install.sh`.
+
 #### Story #6 — `github-api` provider: token-only GitHub mode
 
 New `vcs.provider: github-api` adapter implements all 18 VCS verbs via

@@ -1,0 +1,13 @@
+{
+  "name": "talos",
+  "owner": {
+    "name": "benmarte"
+  },
+  "plugins": [
+    {
+      "name": "talos",
+      "source": "./",
+      "description": "Autonomous issue-to-PR pipeline orchestrated by a Claude Code session. Validator, developer (worktree-isolated), QA, reviewer, security, and docs subagents drive GitHub issues through to merged PRs."
+    }
+  ]
+}
