@@ -174,17 +174,23 @@ Board calls (`pipeline-status.sh`) are **skipped in file mode**. The file's chec
 
 ## Step 1 — Reconcile in-flight work (VCS mode only)
 
-Before starting new work, check what is already running:
+A previous session may have died mid-issue. Before starting new work, heal state:
+
 ```bash
 bash scripts/pipeline-vcs.sh list-prs
 bash scripts/pipeline-vcs.sh list-issues
 ```
 
-For each open PR that belongs to the pipeline (head branch matches `fix/issue-*` or `feat/issue-*`):
-- If the PR has all approval labels, it is ready to merge — add it to the merge queue.
-- If it lacks some approvals, resume at the blocking stage.
+1. **Adopt orphaned PRs.** For each open issue labeled `pipeline:dev` or `pipeline:review` that has no obvious in-flight PR, run `bash scripts/pipeline-vcs.sh find-pr <N>`:
+   - Open PR found → adopt it: do NOT re-dispatch the developer; resume from the first missing approval label (QA if `qa:pass` absent, etc.).
+   - No PR → the developer stage never finished; re-dispatch it (counts toward `max_fix_attempts`).
+2. **Heal merged-but-open issues.** For each open `pipeline:*` issue, `bash scripts/pipeline-vcs.sh find-pr <N> merged` — if a merged PR closes it, run the post-merge steps from Step 4 (comment, close, board → Done, notify) instead of doing any work.
+3. **Resume in-flight PRs.** For each open pipeline PR (head branch `fix/issue-*` or `feat/issue-*`): all approval labels present → merge queue; otherwise resume at the blocking stage.
+4. **Sweep orphaned worktrees.** `git worktree list` — remove (`git worktree remove --force`) any `fix/issue-*` worktree whose issue is closed or not in this run's queue.
+5. **Report stale blocked work.** List issues labeled `pipeline:blocked` and include them in the Step 1 summary notification so humans see what's waiting on them:
+   `bash scripts/pipeline-notify.sh info "backlog" "K blocked issues awaiting human action: #a, #b" backlog` (only when K > 0).
 
-Log a one-line summary: "N issues queued, M PRs in-flight, K ready to merge."
+Log a one-line summary: "N issues queued, M PRs in-flight (A adopted), K ready to merge, B blocked."
 
 ---
 
@@ -198,7 +204,9 @@ bash scripts/pipeline-vcs.sh list-issues
 For VCS mode: filter for issues with `pipeline:ready` label, excluding any with skip labels.
 For file mode: return unchecked items from `list-issues` (IDs are assigned on first call).
 
-Sort by ID ascending (oldest first). Take at most `max_parallel` issues.
+Sort by priority label first — `p0` before `p1` before `p2` before unlabeled
+(case-insensitive) — then by ID ascending (oldest first) within each tier.
+Take at most `max_parallel` issues.
 
 ---
 
@@ -509,9 +517,25 @@ A PR is ready when ALL of:
 - `security:approved` present (if roles.security = true)
 - `docs:done` present (if roles.docs = true)
 
+**`skip-qa` bypass:** if the PR or its issue carries the `skip-qa` label (a
+human applied it — docs-only change or emergency hotfix), the four approval
+labels above are waived. CI and the forbidden-files check are NEVER waived.
+
+**Forbidden-files gate:** `bash scripts/pipeline-vcs.sh check-pr-files <PR_NUMBER>`
+If it exits non-zero the PR touches secret-like files (`merge.forbidden_files`
+patterns; defaults cover `.env`, `*.pem`, `*.key`, …). Do NOT merge: add
+`pipeline:blocked` to the PR, post the check output as a PR comment, send a
+`blocked` notification, and move on. Only a human may clear this.
+
 Check CI: `bash scripts/pipeline-vcs.sh pr-checks <PR_NUMBER>`
 
-If failing: post a comment listing failing checks, do NOT merge. Not blocked — just waiting.
+If failing: CI may be flaky — retry it, bounded to 2 re-runs per head SHA:
+1. Count existing `<!-- talos:ci-rerun <HEAD_SHA> -->` marker comments on the PR.
+2. If fewer than 2: `bash scripts/pipeline-vcs.sh rerun-ci <PR_NUMBER>`, then post
+   a PR comment containing the marker `<!-- talos:ci-rerun <HEAD_SHA> -->` and a
+   one-line note. Re-check on the next pass.
+3. If 2 re-runs already happened for this SHA: post a comment listing the failing
+   checks, do NOT merge. Not blocked — just waiting for a human or a new commit.
 
 If green, merge: `bash scripts/pipeline-vcs.sh merge-pr <PR_NUMBER>`
 
@@ -556,3 +580,4 @@ After processing all issues, print a summary table:
 11. Board update failures are warnings — the pipeline continues.
 12. After `max_fix_attempts` developer failures on one issue: set `pipeline:blocked`, notify, move on.
 13. In file mode: skip board calls, skip QA/reviewer/security/docs, developer commits to branch directly.
+14. Never merge a PR that fails `check-pr-files` — secret-like files require a human; `skip-qa` does not waive this gate (nor CI).

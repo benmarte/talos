@@ -49,7 +49,20 @@ bash "$VCS" approve-pr 9 "LGTM" >/dev/null 2>&1
 bash "$VCS" label-pr 9 --add review:approved --add security:approved --add docs:done >/dev/null 2>&1
 bash "$NOTIFY" qa "#$N" "PASS: criteria verified" "$N" >/dev/null 2>&1
 
-# ── Stage 4: merge + close ───────────────────────────────────────────────────
+# ── Stage 4: merge gates, then merge + close ─────────────────────────────────
+# Reconciliation verb: a fresh session must be able to find the PR for #42
+adopt="$(bash "$VCS" find-pr "$N")"
+assert_contains "$adopt" '"headRefName": "fix/issue-42-guard"' \
+  "e2e: find-pr locates the in-flight PR for adoption"
+
+# Forbidden-files gate passes for a clean PR, blocks a secret-touching one
+bash "$VCS" check-pr-files 9 >/dev/null 2>&1 \
+  && pass "e2e: forbidden-files gate passes clean PR" \
+  || fail "e2e: forbidden-files gate passes clean PR"
+STUB_PR_FILES=".env" bash "$VCS" check-pr-files 9 >/dev/null 2>&1 \
+  && fail "e2e: forbidden-files gate blocks .env" \
+  || pass "e2e: forbidden-files gate blocks .env"
+
 bash "$VCS" merge-pr 9 >/dev/null 2>&1
 bash "$VCS" close-issue "$N" "resolved by PR #9" >/dev/null 2>&1
 bash "$STATUS" "$N" "Done" >/dev/null 2>&1

@@ -23,6 +23,12 @@
 #   pr-checks <n>                             Show CI check status
 #   merge-pr <n>                              Merge the PR
 #   comment-pr <n> <body>                     Post comment on PR <n>
+#   find-pr <issue-n> [state]                 Find PRs for an issue (branch has
+#                                             issue-<n> or title/body has #<n>).
+#                                             state: open (default) | merged | all
+#   check-pr-files <n>                        Exit 1 if the PR touches any
+#                                             merge.forbidden_files pattern
+#   rerun-ci <n>                              Re-run failed CI for the PR head SHA
 #
 # Config keys (from .claude-pipeline.yaml via pipeline-config.sh):
 #   vcs.provider          github | gitlab | azure | file   (default: github)
@@ -201,6 +207,79 @@ _github() {
       local n="$1" body="$2"
       _run gh issue comment "$n" --body "$body" ${REPO:+--repo "$REPO"}
       ;;
+    find-pr)
+      local n="$1" state="${2:-open}"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] gh pr list --state $state ... | filter issue-$n / #$n"
+        return 0
+      fi
+      gh pr list --state "$state" --limit 100 \
+        --json number,state,title,headRefName,body ${REPO:+--repo "$REPO"} 2>/dev/null \
+        | python3 -c "
+import json, sys
+n = sys.argv[1]
+try: prs = json.load(sys.stdin)
+except Exception: prs = []
+for pr in prs:
+    hay = pr.get('title','') + ' ' + pr.get('body','')
+    if f'issue-{n}' in pr.get('headRefName','') or f'#{n}' in hay:
+        print(json.dumps({k: pr.get(k) for k in ('number','state','title','headRefName')}))
+" "$n"
+      ;;
+    check-pr-files)
+      local n="$1"
+      local patterns
+      patterns="$(cfg merge.forbidden_files "")"
+      [ -z "$patterns" ] && patterns='.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.secrets
+secrets.*'
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] gh pr view $n --json files | match against forbidden patterns"
+        return 0
+      fi
+      gh pr view "$n" --json files -q '.files[].path' ${REPO:+--repo "$REPO"} 2>/dev/null \
+        | PATTERNS="$patterns" python3 -c "
+import fnmatch, os, sys
+patterns = [p.strip() for p in os.environ['PATTERNS'].splitlines() if p.strip()]
+bad = []
+for path in (l.strip() for l in sys.stdin if l.strip()):
+    base = os.path.basename(path)
+    if any(fnmatch.fnmatch(base, p) or fnmatch.fnmatch(path, p) for p in patterns):
+        bad.append(path)
+if bad:
+    print('FORBIDDEN FILES in PR — human review required before merge:')
+    for p in bad: print(f'  {p}')
+    sys.exit(1)
+print('no forbidden files')
+"
+      ;;
+    rerun-ci)
+      local n="$1"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] gh run rerun --failed <runs for PR #$n head SHA>"
+        return 0
+      fi
+      local sha
+      sha="$(gh pr view "$n" --json headRefOid -q .headRefOid ${REPO:+--repo "$REPO"} 2>/dev/null)"
+      [ -z "$sha" ] && { echo "pipeline-vcs: could not resolve head SHA for PR #$n" >&2; exit 1; }
+      gh run list --commit "$sha" --json databaseId,conclusion ${REPO:+--repo "$REPO"} 2>/dev/null \
+        | python3 -c "
+import json, sys
+try: runs = json.load(sys.stdin)
+except Exception: runs = []
+for r in runs:
+    if r.get('conclusion') in ('failure', 'timed_out', 'cancelled'):
+        print(r['databaseId'])
+" | while IFS= read -r run_id; do
+          [ -n "$run_id" ] && _run gh run rerun "$run_id" --failed ${REPO:+--repo "$REPO"}
+        done
+      echo "rerun-ci: re-ran failed runs for PR #$n ($sha)"
+      ;;
     *) echo "pipeline-vcs: unknown verb: $verb" >&2; exit 1 ;;
   esac
 }
@@ -293,6 +372,12 @@ _gitlab() {
     comment-pr)
       local n="$1" body="$2"
       _run glab mr note "$n" --message "$body" $RARG
+      ;;
+    find-pr|check-pr-files|rerun-ci)
+      # Best-effort providers: not implemented — fail open with a warning so
+      # the orchestrator falls back to its manual instructions.
+      echo "pipeline-vcs: $verb not implemented for gitlab — verify manually" >&2
+      return 0
       ;;
     *) echo "pipeline-vcs: unknown verb: $verb" >&2; exit 1 ;;
   esac
@@ -423,6 +508,10 @@ PYEOF
       local n="$1" body="$2"
       _run az repos pr comment add --id "$n" --comment "$body" $ORG_ARG
       ;;
+    find-pr|check-pr-files|rerun-ci)
+      echo "pipeline-vcs: $verb not implemented for azure — verify manually" >&2
+      return 0
+      ;;
     *) echo "pipeline-vcs: unknown verb: $verb" >&2; exit 1 ;;
   esac
 }
@@ -456,7 +545,7 @@ _file() {
       echo "file mode: no PR to merge — orchestrator should close-issue directly after verifying the branch" >&2
       return 0
       ;;
-    diff-pr|pr-checks|list-prs|view-pr)
+    diff-pr|pr-checks|list-prs|view-pr|find-pr|check-pr-files|rerun-ci)
       echo "file mode: $verb not applicable in file mode" >&2
       return 0
       ;;

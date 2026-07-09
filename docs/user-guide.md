@@ -46,7 +46,15 @@ progress as issue/PR comments and threaded Slack/Discord messages along the way.
 - **GitHub Projects v2 board** — optional automatic Status column updates.
 - **Safety limits** — `max_fix_attempts` before an issue is marked
   `pipeline:blocked` for human attention; human-only gates for destructive
-  actions.
+  actions; **forbidden-files gate** blocks merging PRs that touch secret-like
+  paths (`.env`, `*.pem`, …; `merge.forbidden_files`).
+- **Session recovery** — on startup the orchestrator adopts PRs left by an
+  interrupted session, heals merged-but-open issues, sweeps orphaned
+  worktrees, and reports stale blocked work.
+- **Backlog controls** — `p0`/`p1`/`p2` priority labels order dispatch;
+  `skip-qa` (human-applied) bypasses review gates for docs-only/emergency
+  changes (CI and forbidden-files still enforced); flaky CI is retried up to
+  2× per head SHA before waiting on a human.
 - **Offline test suite** — 140+ assertions, zero credentials needed, CI on
   Ubuntu + macOS.
 

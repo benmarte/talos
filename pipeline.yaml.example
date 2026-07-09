@@ -85,6 +85,15 @@ merge:
   required_checks:             # CI check names that must be green before merging
     - test                     # Must match the check name in GitHub Actions / CI
   delete_branch: true          # Delete feature branch after a successful merge
+  # forbidden_files:           # PR paths matching these glob patterns block the
+  #   - ".env"                 # merge for human review (defaults shown; basename
+  #   - ".env.*"               # and full path are both matched)
+  #   - "*.pem"
+  #   - "*.key"
+  #   - "*.p12"
+  #   - "*.pfx"
+  #   - "*.secrets"
+  #   - "secrets.*"
 
 # ── Issue selection ───────────────────────────────────────────────────────────
 issues:
@@ -93,6 +102,8 @@ issues:
     - "pipeline:blocked"
     - "wontfix"
   max_parallel: 1                  # Max issues processed concurrently (start with 1)
+  # Priority: issues labeled p0 are dispatched before p1, before p2, before
+  # unlabeled. Apply the labels by hand; bootstrap-labels.sh creates them.
 
 # ── Role toggles ─────────────────────────────────────────────────────────────
 # developer is always active. Disable roles you don't need to reduce cost.

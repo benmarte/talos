@@ -42,6 +42,39 @@ else
   pass "unknown verb exits non-zero"
 fi
 
+# ── find-pr: locate PRs belonging to an issue ─────────────────────────────────
+out="$(bash "$VCS" find-pr 42)"
+assert_contains "$out" '"number": 9' "find-pr matches branch fix/issue-42"
+out="$(bash "$VCS" find-pr 7)"
+assert_eq "" "$out" "find-pr returns nothing for unrelated issue"
+
+# ── check-pr-files: forbidden-files gate ──────────────────────────────────────
+out="$(bash "$VCS" check-pr-files 9)"; rc=$?
+assert_eq "0" "$rc" "clean PR passes forbidden-files check"
+assert_contains "$out" "no forbidden files" "clean PR reported clean"
+
+out="$(STUB_PR_FILES=$'src/app.js\ndeploy/prod.pem\n.env.production' bash "$VCS" check-pr-files 9)"; rc=$?
+assert_eq "1" "$rc" "PR touching secrets exits 1 (default patterns)"
+assert_contains "$out" "deploy/prod.pem" "violating path listed (*.pem)"
+assert_contains "$out" ".env.production" "violating path listed (.env.*)"
+assert_not_contains "$out" "src/app.js" "clean path not listed"
+
+cat > .claude-pipeline.json <<'EOF'
+{"merge": {"forbidden_files": ["*.tfstate"]}}
+EOF
+out="$(STUB_PR_FILES=$'infra/prod.tfstate\n.env' bash "$VCS" check-pr-files 9)"; rc=$?
+assert_eq "1" "$rc" "custom forbidden_files config enforced"
+assert_contains "$out" "infra/prod.tfstate" "custom pattern matched"
+assert_not_contains "$out" ".env" "custom config replaces defaults"
+rm .claude-pipeline.json
+
+# ── rerun-ci: re-runs only failed runs for the head SHA ───────────────────────
+: > "$GH_LOG"
+bash "$VCS" rerun-ci 9 >/dev/null 2>&1
+log="$(cat "$GH_LOG")"
+assert_contains "$log" "run rerun 111 --failed" "failed run re-run"
+assert_not_contains "$log" "run rerun 112" "successful run left alone"
+
 # ── File-mode adapter: real markdown checklist manipulation ──────────────────
 cat > .claude-pipeline.json <<'EOF'
 {"vcs": {"provider": "file", "file": {"source": {"path": "plan.md"}}}}
@@ -71,5 +104,8 @@ assert_contains "$(cat plan.md)" "resolved: merged branch fix/login" "file: reso
 
 out="$(bash "$VCS" create-pr branch t body 2>&1)"; rc=$?
 assert_eq "0" "$rc" "file: create-pr is a safe no-op"
+
+out="$(bash "$VCS" check-pr-files 1 2>&1)"; rc=$?
+assert_eq "0" "$rc" "file: check-pr-files is a safe no-op"
 
 finish

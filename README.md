@@ -386,6 +386,9 @@ The pipeline deliberately preserves three gates that only a human should act on:
 | `pr-checks` | `<pr-number>` | List CI check statuses |
 | `merge-pr` | `<pr-number>` | Merge a PR (uses `merge.method` from config) |
 | `comment-pr` | `<pr-number> <body>` | Post a PR review comment |
+| `find-pr` | `<issue-number> [open\|merged\|all]` | Find PRs belonging to an issue (session-recovery adoption) |
+| `check-pr-files` | `<pr-number>` | Exit 1 if the PR touches `merge.forbidden_files` patterns |
+| `rerun-ci` | `<pr-number>` | Re-run failed CI runs for the PR head SHA (flaky-CI retry) |
 
 Pass `--dry-run` as the first argument to print the underlying CLI command without executing it.
 

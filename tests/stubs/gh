@@ -22,6 +22,21 @@ case "$args" in
     printf '%s\n' "${STUB_ISSUE_TITLE:-Fix login crash}" ;;
   "pr view "*"--json title -q .title"*)
     printf '%s\n' "${STUB_PR_TITLE:-fix: guard null session}" ;;
+  "pr view "*"--json headRefOid"*)
+    printf 'abc123sha\n' ;;
+  "pr view "*"--json files"*)
+    # One path per line (script passes -q '.files[].path')
+    printf '%s\n' "${STUB_PR_FILES:-src/auth.js
+tests/auth.test.js}" ;;
+  "pr list --state "*)
+    # NB: JSON braces can't live inside ${VAR:-default} — } ends the expansion
+    if [ -n "${STUB_PR_LIST:-}" ]; then
+      printf '%s\n' "$STUB_PR_LIST"
+    else
+      printf '[{"number":9,"state":"OPEN","title":"fix: guard null session","headRefName":"fix/issue-42-guard","body":"Closes #42"}]\n'
+    fi ;;
+  "run list --commit "*)
+    printf '[{"databaseId":111,"conclusion":"failure"},{"databaseId":112,"conclusion":"success"}]\n' ;;
   "issue view "*)
     printf '{"title":"%s","body":"stub body","labels":[],"comments":[]}\n' \
       "${STUB_ISSUE_TITLE:-Fix login crash}" ;;
