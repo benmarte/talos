@@ -7,17 +7,17 @@ make_sandbox
 out="$(bash "$TALOS_ROOT/install.sh" "$SANDBOX")"
 
 for s in pipeline-config.sh pipeline-status.sh pipeline-notify.sh pipeline-vcs.sh bootstrap-labels.sh; do
-  assert_file_exists ".claude/pipeline/scripts/$s" "installs $s"
+  assert_file_exists ".claude/talos/scripts/$s" "installs $s"
 done
-[ -x ".claude/pipeline/scripts/pipeline-notify.sh" ] \
+[ -x ".claude/talos/scripts/pipeline-notify.sh" ] \
   && pass "scripts are executable" || fail "scripts are executable"
 
-assert_file_exists ".claude/pipeline/skills/pipeline/SKILL.md" "installs orchestrator skill"
+assert_file_exists ".claude/talos/skills/pipeline/SKILL.md" "installs orchestrator skill"
 
 # Templates must ship — without them notifications degrade to plain text
 # (regression guard for the bug fixed in e7de0d5).
-n_notif="$(ls .claude/pipeline/templates/notifications/*.md 2>/dev/null | wc -l | tr -d ' ')"
-n_cmt="$(ls .claude/pipeline/templates/comments/*.md 2>/dev/null | wc -l | tr -d ' ')"
+n_notif="$(ls .claude/talos/templates/notifications/*.md 2>/dev/null | wc -l | tr -d ' ')"
+n_cmt="$(ls .claude/talos/templates/comments/*.md 2>/dev/null | wc -l | tr -d ' ')"
 src_notif="$(ls "$TALOS_ROOT"/templates/notifications/*.md | wc -l | tr -d ' ')"
 src_cmt="$(ls "$TALOS_ROOT"/templates/comments/*.md | wc -l | tr -d ' ')"
 assert_eq "$src_notif" "$n_notif" "all notification templates installed ($src_notif)"
@@ -28,16 +28,22 @@ for agent in validator pm developer qa reviewer security docs; do
 done
 
 # Second run without --force must not overwrite
-echo "LOCAL EDIT" >> .claude/pipeline/scripts/pipeline-notify.sh
+echo "LOCAL EDIT" >> .claude/talos/scripts/pipeline-notify.sh
 out2="$(bash "$TALOS_ROOT/install.sh" "$SANDBOX")"
 assert_contains "$out2" "skip (exists)" "re-install without --force skips existing files"
-assert_contains "$(tail -1 .claude/pipeline/scripts/pipeline-notify.sh)" "LOCAL EDIT" \
+assert_contains "$(tail -1 .claude/talos/scripts/pipeline-notify.sh)" "LOCAL EDIT" \
   "local edit preserved without --force"
 
 # --force overwrites
 bash "$TALOS_ROOT/install.sh" "$SANDBOX" --force >/dev/null
-assert_not_contains "$(tail -1 .claude/pipeline/scripts/pipeline-notify.sh)" "LOCAL EDIT" \
+assert_not_contains "$(tail -1 .claude/talos/scripts/pipeline-notify.sh)" "LOCAL EDIT" \
   "--force overwrites local edit"
+
+# Legacy .claude/pipeline layout triggers a migration note (files untouched)
+mkdir -p .claude/pipeline/scripts && echo "old" > .claude/pipeline/scripts/keep.sh
+out3="$(bash "$TALOS_ROOT/install.sh" "$SANDBOX" --force)"
+assert_contains "$out3" "legacy install detected" "legacy .claude/pipeline triggers migration note"
+assert_file_exists ".claude/pipeline/scripts/keep.sh" "legacy dir is never deleted automatically"
 
 # Missing target errors
 if bash "$TALOS_ROOT/install.sh" "$SANDBOX/does-not-exist" >/dev/null 2>&1; then

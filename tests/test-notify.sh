@@ -8,7 +8,7 @@ make_sandbox
 use_stubs
 install_talos
 
-NOTIFY=".claude/pipeline/scripts/pipeline-notify.sh"
+NOTIFY=".claude/talos/scripts/pipeline-notify.sh"
 run_notify() {  # all args forwarded; debug mode, slack bot creds
   PIPELINE_NOTIFY_DEBUG=1 SLACK_BOT_TOKEN=xoxb-test PIPELINE_SLACK_CHANNEL=C0TEST \
     bash "$NOTIFY" "$@" 2>&1

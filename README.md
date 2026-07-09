@@ -97,9 +97,9 @@ cd your-repo
 # Claude Code plugin install is not yet GA — copy manually for now (see install.sh)
 
 # Option B: manual copy
-cp -r path/to/claude-pipeline/scripts/   .claude/pipeline/scripts/
-cp -r path/to/claude-pipeline/skills/    .claude/pipeline/skills/
-cp -r path/to/claude-pipeline/templates/ .claude/pipeline/templates/   # required for rich messages
+cp -r path/to/claude-pipeline/scripts/   .claude/talos/scripts/
+cp -r path/to/claude-pipeline/skills/    .claude/talos/skills/
+cp -r path/to/claude-pipeline/templates/ .claude/talos/templates/   # required for rich messages
 cp -r path/to/claude-pipeline/.claude/agents/ .claude/agents/
 ```
 
@@ -127,7 +127,7 @@ verify:
 ### 3. Bootstrap labels (GitHub / GitLab / Azure only)
 
 ```bash
-bash .claude/pipeline/scripts/bootstrap-labels.sh
+bash .claude/talos/scripts/bootstrap-labels.sh
 ```
 
 This creates the `pipeline:*`, `qa:pass`, `review:approved`, `security:approved`, and `docs:done` labels in your repo (idempotent). Skip this step for file mode — checkboxes replace labels.
@@ -408,7 +408,7 @@ This adds a marker-fenced Talos section to your repo's `AGENTS.md` telling the
 harness to follow the playbook and run role stages through the adapter:
 
 ```bash
-bash .claude/pipeline/scripts/pipeline-agent.sh <role> - <<'PROMPT'
+bash .claude/talos/scripts/pipeline-agent.sh <role> - <<'PROMPT'
 <stage prompt>
 PROMPT
 ```

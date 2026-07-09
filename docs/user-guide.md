@@ -103,7 +103,7 @@ Per feature (optional):
 | `GH_TOKEN` | alternative to `gh auth login` (CI-friendly) |
 
 Where to put them: your shell env, or a `.env` file next to the pipeline
-install — `<repo>/.claude/pipeline/.env` for installed repos. Bot tokens are
+install — `<repo>/.claude/talos/.env` for installed repos. Bot tokens are
 also picked up from `~/.hermes/.env` if you run Daedalus/Hermes.
 
 **Overrides** (optional; take priority over `.claude-pipeline.yaml`):
@@ -137,14 +137,14 @@ cd /path/to/your-repo
 # in a Claude Code session:  /pipeline-setup
 
 # 3. Bootstrap the label state machine (GitHub/GitLab/Azure only)
-bash .claude/pipeline/scripts/bootstrap-labels.sh
+bash .claude/talos/scripts/bootstrap-labels.sh
 
 # 4. Queue work and run
 gh issue edit 42 --add-label pipeline:ready
 # in a Claude Code session:  /pipeline
 ```
 
-What gets installed: `.claude/pipeline/{scripts,skills,templates}/` and
+What gets installed: `.claude/talos/{scripts,skills,templates}/` and
 `.claude/agents/*.md` (the role profiles). Nothing outside `.claude/` except
 an optional `.claude-pipeline.yaml` you create.
 
@@ -172,7 +172,7 @@ agents:
 
 ```bash
 # 3. Bootstrap labels, queue an issue (same as Claude Code), then:
-codex "Run the Talos pipeline: follow .claude/pipeline/skills/pipeline/SKILL.md"
+codex "Run the Talos pipeline: follow .claude/talos/skills/pipeline/SKILL.md"
 ```
 
 Set `issues.max_parallel: 1` — without native subagents, stages run
@@ -194,7 +194,7 @@ be pointed at `AGENTS.md` via its `contextFileName` setting, or copy the
 fenced section into `GEMINI.md`). Then:
 
 ```bash
-gemini "Run the Talos pipeline: follow .claude/pipeline/skills/pipeline/SKILL.md"
+gemini "Run the Talos pipeline: follow .claude/talos/skills/pipeline/SKILL.md"
 ```
 
 ## Setup: local models (llama.cpp, Ollama)
@@ -258,7 +258,7 @@ catch bad stage output, but nothing gates the orchestrator itself.
    explaining what a human must do.
 4. Watch progress: issue/PR comments from each role, one Slack/Discord thread
    per issue, board column updates — or run
-   `bash .claude/pipeline/scripts/pipeline-status.sh --dry-run <n> "In progress"`
+   `bash .claude/talos/scripts/pipeline-status.sh --dry-run <n> "In progress"`
    style commands manually.
 
 ## Customizing agent profiles
@@ -361,13 +361,13 @@ pack installed.
   full list from `pipeline.yaml.example`.
 - **No threading** — webhooks can't thread; use a bot token + channel ID.
 - **Test what would be sent**: `PIPELINE_NOTIFY_DEBUG=1 bash
-  .claude/pipeline/scripts/pipeline-notify.sh validator "#1" "test" 1`.
+  .claude/talos/scripts/pipeline-notify.sh validator "#1" "test" 1`.
 - **YAML config ignored** — PyYAML not installed. `pip install pyyaml`, or
   rename your config to `.claude-pipeline.json` and use JSON.
 - **Board updates fail** — `gh auth refresh -s project` (Projects v2 needs the
   `project` scope); verify `board.project_number` and `board.owner`.
 - **Preview any VCS action** without executing:
-  `bash .claude/pipeline/scripts/pipeline-vcs.sh --dry-run <verb> ...`.
+  `bash .claude/talos/scripts/pipeline-vcs.sh --dry-run <verb> ...`.
 
 ## FAQ
 

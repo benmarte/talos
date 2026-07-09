@@ -10,9 +10,9 @@ make_sandbox
 use_stubs
 install_talos
 
-VCS=".claude/pipeline/scripts/pipeline-vcs.sh"
-NOTIFY=".claude/pipeline/scripts/pipeline-notify.sh"
-STATUS=".claude/pipeline/scripts/pipeline-status.sh"
+VCS=".claude/talos/scripts/pipeline-vcs.sh"
+NOTIFY=".claude/talos/scripts/pipeline-notify.sh"
+STATUS=".claude/talos/scripts/pipeline-status.sh"
 export PIPELINE_THREAD_STATE="$SANDBOX/threads.json"
 export SLACK_BOT_TOKEN=xoxb-test PIPELINE_SLACK_CHANNEL=C0TEST
 export STUB_ISSUE_TITLE="Fix login crash" STUB_PR_TITLE="fix: guard null session"
@@ -25,7 +25,7 @@ EOF
 N=42
 
 # ── Stage 0: bootstrap + dispatch ────────────────────────────────────────────
-bash .claude/pipeline/scripts/bootstrap-labels.sh acme/widget >/dev/null
+bash .claude/talos/scripts/bootstrap-labels.sh acme/widget >/dev/null
 bash "$NOTIFY" dispatched "#$N" "kickoff" "$N" >/dev/null 2>&1
 
 # ── Stage 1: validator confirms ──────────────────────────────────────────────

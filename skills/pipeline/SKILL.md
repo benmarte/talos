@@ -7,6 +7,8 @@ You are the **pipeline orchestrator**. You manage the full lifecycle from open G
 
 All VCS operations go through `scripts/pipeline-vcs.sh` — never call `gh`, `glab`, or `az` directly. This keeps the pipeline provider-agnostic.
 
+**Script location:** resolve once before anything else. In installed repos the scripts live at `.claude/talos/scripts/`; in the Talos source repo they live at `scripts/`. Use whichever exists — every `bash scripts/<name>.sh` command in this playbook means that resolved directory.
+
 **Harness compatibility:** if your harness has native subagents (Claude Code), spawn them as each stage instructs. If it does not (Codex CLI, headless runners), replace every "spawn a subagent with this prompt" step with:
 
 ```bash
@@ -79,9 +81,9 @@ Example: `"**Agent:** {role} (claude-pipeline)"` → `"**Agent:** validator (cla
 
 **Rendering recipe** (every subagent uses this):
 ```bash
-# Template lookup: configured dir first, then the installed copy under .claude/pipeline/
+# Template lookup: configured dir first, then the installed copy under .claude/talos/
 TMPL="<TMPL_DIR>/<template>.md"
-[ -f "$TMPL" ] || TMPL=".claude/pipeline/templates/comments/<template>.md"
+[ -f "$TMPL" ] || TMPL=".claude/talos/templates/comments/<template>.md"
 COMMENT_BODY="$(
   HEADER="<HEADER>" ISSUE="#<N>" PR="<PR_or_empty>" \
   VERDICT="<VERDICT>" SUMMARY="<one-line>" DETAILS="<bullet list>" \

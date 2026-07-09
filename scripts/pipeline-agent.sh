@@ -48,7 +48,7 @@ fi
 
 # ── Locate the role definition ────────────────────────────────────────────────
 # Installed layout: <repo>/.claude/agents/<role>.md with this script at
-# <repo>/.claude/pipeline/scripts/. Source-repo layout: <talos>/.claude/agents/.
+# <repo>/.claude/talos/scripts/. Source-repo layout: <talos>/.claude/agents/.
 ROLE_FILE=""
 for candidate in \
   "$PWD/.claude/agents/$ROLE.md" \

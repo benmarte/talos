@@ -7,7 +7,7 @@ make_sandbox
 use_stubs
 install_talos
 
-AGENT=".claude/pipeline/scripts/pipeline-agent.sh"
+AGENT=".claude/talos/scripts/pipeline-agent.sh"
 export RUNNER_LOG="$SANDBOX/runner.log"
 
 # ── Default runner is claude, with global-config isolation ───────────────────
@@ -90,7 +90,7 @@ out="$(bash "$AGENT" 2>&1)"; rc=$?
 assert_eq "2" "$rc" "missing args exits 2"
 
 # ── install.sh --harness codex ────────────────────────────────────────────────
-assert_file_exists ".claude/pipeline/scripts/pipeline-agent.sh" \
+assert_file_exists ".claude/talos/scripts/pipeline-agent.sh" \
   "pipeline-agent.sh installed by default"
 
 out="$(bash "$TALOS_ROOT/install.sh" "$SANDBOX" --harness codex)"

@@ -8,9 +8,9 @@
 #   pipeline, running role stages via scripts/pipeline-agent.sh.
 #
 # What it installs:
-#   <target>/.claude/pipeline/scripts/   — pipeline-config, pipeline-status, pipeline-notify, bootstrap-labels
-#   <target>/.claude/pipeline/skills/    — orchestrator skill (SKILL.md)
-#   <target>/.claude/pipeline/templates/ — notification + comment templates (rich messages)
+#   <target>/.claude/talos/scripts/   — pipeline-config, pipeline-status, pipeline-notify, bootstrap-labels
+#   <target>/.claude/talos/skills/    — orchestrator skill (SKILL.md)
+#   <target>/.claude/talos/templates/ — notification + comment templates (rich messages)
 #   <target>/.claude/agents/             — subagent definitions (validator, pm, developer, qa, reviewer, security, docs)
 #
 # It does NOT overwrite files that already exist unless --force is passed.
@@ -47,6 +47,14 @@ if [ ! -d "$TARGET" ]; then
   exit 1
 fi
 
+# Legacy layout: Talos used to install into .claude/pipeline/
+if [ -d "$TARGET/.claude/pipeline" ]; then
+  echo "NOTE: legacy install detected at $TARGET/.claude/pipeline — Talos now lives in .claude/talos/."
+  echo "      Move any customized templates or .env out of the old directory, then remove it:"
+  echo "        rm -rf $TARGET/.claude/pipeline"
+  echo ""
+fi
+
 install_file() {
   local src="$1" dest="$2"
   if [ -f "$dest" ] && [ "$FORCE" = "false" ]; then
@@ -64,23 +72,23 @@ echo ""
 # Scripts
 echo "Scripts:"
 for script in pipeline-config.sh pipeline-status.sh pipeline-notify.sh pipeline-vcs.sh pipeline-agent.sh bootstrap-labels.sh; do
-  install_file "$SRC/scripts/$script" "$TARGET/.claude/pipeline/scripts/$script"
-  chmod +x "$TARGET/.claude/pipeline/scripts/$script"
+  install_file "$SRC/scripts/$script" "$TARGET/.claude/talos/scripts/$script"
+  chmod +x "$TARGET/.claude/talos/scripts/$script"
 done
 
 # Skill
 echo ""
 echo "Orchestrator skill:"
-install_file "$SRC/skills/pipeline/SKILL.md" "$TARGET/.claude/pipeline/skills/pipeline/SKILL.md"
+install_file "$SRC/skills/pipeline/SKILL.md" "$TARGET/.claude/talos/skills/pipeline/SKILL.md"
 
 # Templates — pipeline-notify.sh falls back to <script-dir>/../templates/notifications,
-# i.e. .claude/pipeline/templates/. Without these, notifications degrade to plain text.
+# i.e. .claude/talos/templates/. Without these, notifications degrade to plain text.
 echo ""
 echo "Templates:"
 for dir in notifications comments; do
   for tmpl in "$SRC/templates/$dir"/*.md; do
     [ -f "$tmpl" ] || continue
-    install_file "$tmpl" "$TARGET/.claude/pipeline/templates/$dir/$(basename "$tmpl")"
+    install_file "$tmpl" "$TARGET/.claude/talos/templates/$dir/$(basename "$tmpl")"
   done
 done
 
@@ -108,20 +116,20 @@ if [ "$HARNESS" = "codex" ]; then
 <!-- talos:begin -->
 ## Talos pipeline
 
-This repo has the Talos issue→PR pipeline installed under `.claude/pipeline/`.
+This repo has the Talos issue→PR pipeline installed under `.claude/talos/`.
 When asked to run the pipeline, act as the orchestrator: follow the playbook in
-`.claude/pipeline/skills/pipeline/SKILL.md` exactly.
+`.claude/talos/skills/pipeline/SKILL.md` exactly.
 
 This harness has no native subagents. Wherever the playbook says "spawn a
 subagent with this prompt", instead run the stage headlessly:
 
-    bash .claude/pipeline/scripts/pipeline-agent.sh <role> - <<'PROMPT'
+    bash .claude/talos/scripts/pipeline-agent.sh <role> - <<'PROMPT'
     <the stage prompt from the playbook>
     PROMPT
 
 Role definitions live in `.claude/agents/*.md`. Set the runner in
 `.claude-pipeline.yaml` (`agents.runner: codex`). All VCS operations go through
-`.claude/pipeline/scripts/pipeline-vcs.sh` — never call `gh` directly.
+`.claude/talos/scripts/pipeline-vcs.sh` — never call `gh` directly.
 <!-- talos:end -->
 AGENTSEOF
     echo "  installed: talos section in $AGENTS_MD"
@@ -141,6 +149,6 @@ fi
 echo ""
 echo "Done. Next steps:"
 echo "  1. Edit $TARGET/.claude-pipeline.yaml for your project"
-echo "  2. Run: bash $TARGET/.claude/pipeline/scripts/bootstrap-labels.sh"
+echo "  2. Run: bash $TARGET/.claude/talos/scripts/bootstrap-labels.sh"
 echo "  3. Add 'pipeline:ready' to a GitHub issue"
 echo "  4. Open a Claude Code session in $TARGET and run: /pipeline"
