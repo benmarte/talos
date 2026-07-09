@@ -75,6 +75,21 @@ log="$(cat "$GH_LOG")"
 assert_contains "$log" "run rerun 111 --failed" "failed run re-run"
 assert_not_contains "$log" "run rerun 112" "successful run left alone"
 
+# ── Dry-run variants of the new verbs never hit gh ────────────────────────────
+: > "$GH_LOG"
+out="$(bash "$VCS" --dry-run find-pr 42; bash "$VCS" --dry-run check-pr-files 9; bash "$VCS" --dry-run rerun-ci 9)"
+assert_contains "$out" "[dry-run]" "new verbs support --dry-run"
+assert_not_contains "$(grep -v "repo view" "$GH_LOG")" "pr " "dry-run makes no pr/run gh calls"
+
+# ── GitLab adapter: new verbs fail open with a warning ───────────────────────
+cat > .claude-pipeline.json <<'EOF'
+{"vcs": {"provider": "gitlab"}}
+EOF
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "0" "$rc" "gitlab: check-pr-files fails open (exit 0)"
+assert_contains "$out" "not implemented for gitlab" "gitlab: fail-open warns the orchestrator"
+rm .claude-pipeline.json
+
 # ── File-mode adapter: real markdown checklist manipulation ──────────────────
 cat > .claude-pipeline.json <<'EOF'
 {"vcs": {"provider": "file", "file": {"source": {"path": "plan.md"}}}}

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# glab CLI stub for talos tests — exists so pipeline-vcs.sh's gitlab adapter
+# gets past its `command -v glab` check and verb routing can be tested.
+[ -n "${GH_LOG:-}" ] && printf 'GLAB %s\n' "$*" >> "$GH_LOG"
+exit 0
