@@ -213,6 +213,20 @@ printf '%s\n' \
 out="$(bash "$VCS" find-pr 42)"
 assert_contains "$out" '"state": "OPEN"'         "find-pr open: state normalized to OPEN"
 
+# ── 429 rate-limit: logs reset epoch and exits 1 ─────────────────────────────
+export GITHUB_TOKEN="$TEST_TOKEN"
+: > "$CURL_LOG"
+# A bare 3-digit number in CURL_QUEUE is treated as an HTTP status override.
+printf '429\n' > "$CURL_QUEUE"
+export CURL_RATE_LIMIT_RESET=1999999999
+
+err="$(bash "$VCS" list-issues 2>&1 >/dev/null)"; rc=$?
+assert_eq "1" "$rc"                                          "429: exits 1"
+assert_contains "$err" "rate-limited"                        "429: stderr mentions rate-limited"
+assert_contains "$err" "1999999999"                          "429: stderr includes reset epoch"
+
+unset CURL_RATE_LIMIT_RESET
+
 # ── missing token → clear error ───────────────────────────────────────────────
 unset GITHUB_TOKEN GH_TOKEN
 : > "$CURL_QUEUE"
