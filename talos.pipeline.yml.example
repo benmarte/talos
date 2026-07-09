@@ -174,7 +174,7 @@ notifications:
 # without subagents (Codex CLI, headless runners) execute role stages through
 # scripts/pipeline-agent.sh, which uses:
 # agents:
-#   runner: codex            # claude (default) | codex | gemini | custom
+#   runner: codex            # claude (default) | codex | gemini | antigravity | custom
 #   # runner_args:           # extra CLI args for the claude/codex/gemini runner
 #   #   - --full-auto
 #   # runner_cmd: "my-agent-cli"  # runner: custom — prompt arrives on stdin.

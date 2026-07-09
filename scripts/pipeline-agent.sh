@@ -2,8 +2,9 @@
 # pipeline-agent.sh — run one pipeline role stage through a headless LLM CLI.
 #
 # Claude Code sessions spawn native subagents and never need this script.
-# Harnesses without native subagents (Codex CLI, Gemini CLI, any headless
-# runner) use it wherever the orchestrator playbook says "spawn a subagent".
+# Harnesses without native subagents (Codex CLI, Gemini CLI, Antigravity CLI,
+# any headless runner) use it wherever the orchestrator playbook says "spawn a
+# subagent".
 #
 # Usage: pipeline-agent.sh <role> <task-prompt>
 #        pipeline-agent.sh <role> -          # read task prompt from stdin
@@ -13,18 +14,20 @@
 # + a separator + the task prompt.
 #
 # Config keys (talos.pipeline.yml via pipeline-config.sh):
-#   agents.runner       claude (default) | codex | gemini | custom
-#   agents.runner_args  list of extra CLI args appended to claude/codex/gemini
+#   agents.runner       claude (default) | codex | gemini | antigravity | custom
+#   agents.runner_args  list of extra CLI args appended to claude/codex/gemini/agy
 #   agents.runner_cmd   full shell command for runner=custom;
 #                       receives the prompt on stdin
 #
 # Runner invocations:
-#   claude  claude -p --setting-sources project [args] <prompt>
-#           (--setting-sources project keeps user-global CLAUDE.md
-#            instructions out of pipeline workers)
-#   codex   codex exec [args] <prompt>
-#   gemini  gemini [args] -p <prompt>
-#   custom  printf '%s' <prompt> | sh -c "$runner_cmd"
+#   claude       claude -p --setting-sources project [args] <prompt>
+#                (--setting-sources project keeps user-global CLAUDE.md
+#                 instructions out of pipeline workers)
+#   codex        codex exec [args] <prompt>
+#   gemini       gemini [args] -p <prompt>
+#   antigravity  agy [args] -p <prompt>
+#                # invocation per Antigravity CLI docs (2026-03)
+#   custom       printf '%s' <prompt> | sh -c "$runner_cmd"
 #
 # The runner must be an AGENTIC CLI (able to execute shell commands and edit
 # files) — a bare model endpoint can generate text but cannot run a stage.
@@ -92,6 +95,10 @@ case "$RUNNER" in
   gemini)
     exec gemini ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} -p "$PROMPT"
     ;;
+  antigravity)
+    # invocation per Antigravity CLI docs (2026-03)
+    exec agy ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} -p "$PROMPT"
+    ;;
   custom)
     RUNNER_CMD="$(cfg agents.runner_cmd "")"
     if [ -z "$RUNNER_CMD" ]; then
@@ -101,7 +108,7 @@ case "$RUNNER" in
     printf '%s' "$PROMPT" | sh -c "$RUNNER_CMD"
     ;;
   *)
-    echo "pipeline-agent: unknown agents.runner '$RUNNER'. Valid: claude | codex | custom" >&2
+    echo "pipeline-agent: unknown agents.runner '$RUNNER'. Valid: claude | codex | gemini | antigravity | custom" >&2
     exit 1
     ;;
 esac

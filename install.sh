@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # install.sh — copy Talos scripts and skills into a target repo.
 #
-# Usage: bash install.sh [target-repo-path] [--force] [--harness claude|codex]
+# Usage: bash install.sh [target-repo-path] [--force] [--harness claude|codex|antigravity]
 #   target-repo-path defaults to the current directory.
-#   --harness codex additionally writes a Talos section into <target>/AGENTS.md
-#   so Codex CLI (and other AGENTS.md-reading harnesses) can orchestrate the
-#   pipeline, running role stages via scripts/pipeline-agent.sh.
+#   --harness codex or --harness antigravity additionally writes a Talos section
+#   into <target>/AGENTS.md so the harness can orchestrate the pipeline, running
+#   role stages via scripts/pipeline-agent.sh. Antigravity reads AGENTS.md
+#   natively since v1.20.3; no separate config file is needed.
 #
 # What it installs:
 #   <target>/.claude/talos/scripts/   — pipeline-config, pipeline-status, pipeline-notify, bootstrap-labels
@@ -37,8 +38,8 @@ done
 [ -z "$TARGET" ] && TARGET="$(pwd)"
 
 case "$HARNESS" in
-  claude|codex) ;;
-  *) echo "error: unknown --harness '$HARNESS'. Valid: claude | codex" >&2; exit 1 ;;
+  claude|codex|antigravity) ;;
+  *) echo "error: unknown --harness '$HARNESS'. Valid: claude | codex | antigravity" >&2; exit 1 ;;
 esac
 
 # Ensure target looks like a repo
@@ -102,11 +103,13 @@ for agent in validator pm developer qa reviewer security docs planner; do
   fi
 done
 
-# Codex / AGENTS.md harness: add a marker-fenced Talos section so the harness
-# knows the pipeline exists and how to run stages without native subagents.
-if [ "$HARNESS" = "codex" ]; then
+# Codex / Antigravity / AGENTS.md harness: add a marker-fenced Talos section so
+# the harness knows the pipeline exists and how to run stages without native
+# subagents. Antigravity reads AGENTS.md natively since v1.20.3 — the same
+# section written for Codex works for Antigravity without modification.
+if [ "$HARNESS" = "codex" ] || [ "$HARNESS" = "antigravity" ]; then
   echo ""
-  echo "Codex harness (AGENTS.md):"
+  echo "$HARNESS harness (AGENTS.md):"
   AGENTS_MD="$TARGET/AGENTS.md"
   if [ -f "$AGENTS_MD" ] && grep -q "<!-- talos:begin -->" "$AGENTS_MD"; then
     echo "  skip (talos section already present): $AGENTS_MD"
@@ -133,6 +136,9 @@ Role definitions live in `.claude/agents/*.md`. Set the runner in
 <!-- talos:end -->
 AGENTSEOF
     echo "  installed: talos section in $AGENTS_MD"
+    if [ "$HARNESS" = "antigravity" ]; then
+      echo "  NOTE: Antigravity reads AGENTS.md natively (v1.20.3+); no separate config file needed."
+    fi
   fi
 fi
 
