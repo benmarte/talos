@@ -31,7 +31,9 @@
 #   rerun-ci <n>                              Re-run failed CI for the PR head SHA
 #
 # Config keys (from talos.pipeline.yml via pipeline-config.sh):
-#   vcs.provider          github | gitlab | azure | file   (default: github)
+#   vcs.provider          github | github-api | gitlab | azure | file   (default: github)
+#   vcs.token_env         env-var name for the GitHub token (github-api only;
+#                         default: GITHUB_TOKEN then GH_TOKEN)
 #   vcs.repo              owner/repo  (auto-detected if omitted)
 #   vcs.azure.org_url     e.g. https://dev.azure.com/myorg
 #   vcs.azure.project     Azure DevOps project name
@@ -48,7 +50,9 @@
 #   Webhook-safe no-ops (create-pr / merge-pr in file mode) → exit 0 + message.
 #
 # Provider notes:
-#   github  — battle-tested; requires `gh` CLI authenticated.
+#   github      — battle-tested; requires `gh` CLI authenticated.
+#   github-api  — token-only; no `gh` needed; set GITHUB_TOKEN or GH_TOKEN.
+#                 Projects v2 board updates also use the token (pipeline-status.sh).
 #   gitlab  — best-effort; requires `glab` CLI authenticated.
 #   azure   — best-effort; requires `az` CLI + azure-devops extension:
 #               az extension add --name azure-devops
@@ -87,12 +91,18 @@ AZURE_ORG="$(cfg vcs.azure.org_url "")"
 AZURE_PROJECT="$(cfg vcs.azure.project "")"
 FILE_PATH="$(cfg vcs.file.source.path "plan.md")"
 
-# Auto-detect repo for github/gitlab if not set
+# Auto-detect repo for github/gitlab if not set.
+# github-api uses only git remote (no gh call) to avoid CLI dependency.
 if [ -z "$REPO" ] && [ "$PROVIDER" != "file" ]; then
-  REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null \
-    || git remote get-url origin 2>/dev/null \
-    | sed 's|.*github.com[:/]||; s|.*gitlab.com[:/]||; s|\.git$||' \
-    || echo "")"
+  if [ "$PROVIDER" = "github-api" ]; then
+    REPO="$(git remote get-url origin 2>/dev/null \
+      | sed 's|.*github\.com[:/]||; s|\.git$||' || echo "")"
+  else
+    REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null \
+      || git remote get-url origin 2>/dev/null \
+      | sed 's|.*github.com[:/]||; s|.*gitlab.com[:/]||; s|\.git$||' \
+      || echo "")"
+  fi
 fi
 
 # ── Dry-run wrapper ───────────────────────────────────────────────────────────
@@ -281,6 +291,486 @@ for r in runs:
       echo "rerun-ci: re-ran failed runs for PR #$n ($sha)"
       ;;
     *) echo "pipeline-vcs: unknown verb: $verb" >&2; exit 1 ;;
+  esac
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GITHUB API ADAPTER  (token-only — no gh CLI required)
+#   Prerequisites:
+#     Set GITHUB_TOKEN or GH_TOKEN in your environment.
+#     Optional: vcs.token_env config key names a custom env var to read.
+#   Repo: vcs.repo config, else parsed from git remote get-url origin.
+#   Pagination: single request with per_page=100; warns on truncation.
+#   Output: normalises REST field names to match the gh adapter shape so
+#     orchestrator prompts consume it unchanged (headRefName, etc.).
+#   Token security: NEVER logged to stdout, stderr, or CURL_LOG (only
+#     "Authorization: Bearer" prefix appears in stub logs).
+# ─────────────────────────────────────────────────────────────────────────────
+_github_api() {
+  # ── Token resolution ────────────────────────────────────────────────────────
+  local _TOKEN_ENV
+  _TOKEN_ENV="$(cfg vcs.token_env "")"
+  local _TOKEN=""
+  if [ -n "$_TOKEN_ENV" ]; then
+    _TOKEN="${!_TOKEN_ENV:-}"
+  fi
+  if [ -z "$_TOKEN" ]; then
+    _TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+  fi
+  if [ -z "$_TOKEN" ]; then
+    echo "github-api: GITHUB_TOKEN or GH_TOKEN required" >&2
+    exit 1
+  fi
+
+  # ── Repo resolution (no gh call) ────────────────────────────────────────────
+  local _REPO="$REPO"
+  if [ -z "$_REPO" ]; then
+    _REPO="$(git remote get-url origin 2>/dev/null \
+      | sed 's|.*github\.com[:/]||; s|\.git$||')"
+  fi
+  local _OWNER="${_REPO%%/*}"
+  local _NAME="${_REPO#*/}"
+  local _API="https://api.github.com/repos/$_OWNER/$_NAME"
+
+  local _VERB="$1"; shift
+
+  # ── HTTP request helper (never logs token) ──────────────────────────────────
+  # Usage: _ga_req <METHOD> <URL> [extra curl args...]
+  # Outputs response body; exits 1 on non-2xx.
+  _ga_req() {
+    local _m="$1" _u="$2"; shift 2
+    local _full _status _body
+    _full="$(curl -sS -w "\n%{http_code}" \
+      -X "$_m" \
+      -H "Authorization: Bearer $_TOKEN" \
+      -H "Accept: application/vnd.github+json" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      "$@" "$_u")"
+    _status="$(printf '%s' "$_full" | tail -1)"
+    _body="$(printf '%s' "$_full" | sed '$d')"
+    if [ "${_status:-0}" -ge 300 ] 2>/dev/null; then
+      if [ "$_status" = "429" ]; then
+        printf 'github-api: HTTP 429 on %s (rate-limited)\n' "$_VERB" >&2
+      else
+        printf 'github-api: HTTP %s on %s\n' "$_status" "$_VERB" >&2
+      fi
+      exit 1
+    fi
+    printf '%s' "$_body"
+  }
+
+  # ── Diff request (different Accept header) ──────────────────────────────────
+  _ga_diff_req() {
+    local _u="$1"
+    local _full _status _body
+    _full="$(curl -sS -w "\n%{http_code}" \
+      -H "Authorization: Bearer $_TOKEN" \
+      -H "Accept: application/vnd.github.v3.diff" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      "$_u")"
+    _status="$(printf '%s' "$_full" | tail -1)"
+    _body="$(printf '%s' "$_full" | sed '$d')"
+    if [ "${_status:-0}" -ge 300 ] 2>/dev/null; then
+      printf 'github-api: HTTP %s on diff-pr\n' "$_status" >&2
+      exit 1
+    fi
+    printf '%s' "$_body"
+  }
+
+  # ── Verb dispatch ───────────────────────────────────────────────────────────
+  case "$_VERB" in
+
+    list-issues)
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: GET $_API/issues?state=open&per_page=100"
+        return 0
+      fi
+      local _raw
+      _raw="$(_ga_req GET "$_API/issues?state=open&per_page=100")"
+      printf '%s' "$_raw" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+if len(data) == 100:
+    print('NOTE: github-api: results truncated at 100 items', file=sys.stderr)
+result = [{'number': i['number'], 'title': i.get('title',''),
+           'body': i.get('body','') or '',
+           'labels': [{'name': l['name']} for l in i.get('labels',[])]}
+          for i in data]
+print(json.dumps(result, indent=2))
+"
+      ;;
+
+    view-issue)
+      local _n="$1"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: GET $_API/issues/$_n"
+        return 0
+      fi
+      local _issue _comments
+      _issue="$(_ga_req GET "$_API/issues/$_n")"
+      _comments="$(_ga_req GET "$_API/issues/$_n/comments?per_page=100")"
+      printf '%s' "$_issue" | COMMENTS="$_comments" python3 -c "
+import json, sys, os
+data = json.load(sys.stdin)
+try:
+    comments = json.loads(os.environ.get('COMMENTS','[]'))
+except Exception:
+    comments = []
+result = {
+    'title': data.get('title',''),
+    'body': data.get('body','') or '',
+    'labels': [{'name': l['name']} for l in data.get('labels',[])],
+    'comments': [{'body': c.get('body','')} for c in comments]
+}
+print(json.dumps(result, indent=2))
+"
+      ;;
+
+    comment-issue)
+      local _n="$1" _body="$2"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: POST $_API/issues/$_n/comments"
+        return 0
+      fi
+      local _payload
+      _payload="$(python3 -c "import json,sys; print(json.dumps({'body':sys.argv[1]}))" "$_body")"
+      _ga_req POST "$_API/issues/$_n/comments" \
+        -H "Content-Type: application/json" -d "$_payload" >/dev/null
+      echo "Commented on issue #$_n"
+      ;;
+
+    close-issue)
+      local _n="$1" _body="${2:-resolved}"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: POST $_API/issues/$_n/comments, then PATCH state=closed"
+        return 0
+      fi
+      local _cpayload _spayload
+      _cpayload="$(python3 -c "import json,sys; print(json.dumps({'body':sys.argv[1]}))" "$_body")"
+      _ga_req POST "$_API/issues/$_n/comments" \
+        -H "Content-Type: application/json" -d "$_cpayload" >/dev/null
+      _spayload='{"state":"closed"}'
+      _ga_req PATCH "$_API/issues/$_n" \
+        -H "Content-Type: application/json" -d "$_spayload" >/dev/null
+      echo "Closed issue #$_n"
+      ;;
+
+    label-issue)
+      local _n="$1"; shift
+      _parse_label_args "$@"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: GET $_API/issues/$_n/labels, PUT updated list"
+        return 0
+      fi
+      local _cur_labels
+      _cur_labels="$(_ga_req GET "$_API/issues/$_n/labels")"
+      local _new_payload
+      _new_payload="$(printf '%s' "$_cur_labels" | \
+        ADD_LABELS="$ADD_LABELS" REMOVE_LABELS="$REMOVE_LABELS" python3 -c "
+import json, sys, os
+labels = [l['name'] for l in json.load(sys.stdin)]
+add = os.environ.get('ADD_LABELS','').split()
+rem = os.environ.get('REMOVE_LABELS','').split()
+for l in add:
+    if l not in labels:
+        labels.append(l)
+labels = [l for l in labels if l not in rem]
+print(json.dumps({'labels': labels}))
+")"
+      _ga_req PUT "$_API/issues/$_n/labels" \
+        -H "Content-Type: application/json" -d "$_new_payload" >/dev/null
+      echo "Labels updated on issue #$_n"
+      ;;
+
+    create-pr)
+      local _branch="$1" _title="$2" _body_file="$3"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: POST $_API/pulls (head=$_branch)"
+        return 0
+      fi
+      [ -z "$BASE_BRANCH" ] && BASE_BRANCH="main"
+      local _body_content
+      _body_content="$(cat "$_body_file")"
+      local _pr_payload
+      _pr_payload="$(BASE="$BASE_BRANCH" HEAD="$_branch" TITLE="$_title" \
+        BODY="$_body_content" python3 -c "
+import json, os
+print(json.dumps({
+    'title': os.environ['TITLE'],
+    'head':  os.environ['HEAD'],
+    'base':  os.environ['BASE'],
+    'body':  os.environ['BODY'],
+}))
+")"
+      local _pr_resp
+      _pr_resp="$(_ga_req POST "$_API/pulls" \
+        -H "Content-Type: application/json" -d "$_pr_payload")"
+      printf '%s' "$_pr_resp" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print(d.get('html_url', d.get('url', '')))
+"
+      ;;
+
+    view-pr)
+      local _n="$1"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: GET $_API/pulls/$_n"
+        return 0
+      fi
+      local _pr
+      _pr="$(_ga_req GET "$_API/pulls/$_n")"
+      printf '%s' "$_pr" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+result = {
+    'number': d.get('number'),
+    'title':  d.get('title',''),
+    'headRefName': d.get('head',{}).get('ref',''),
+    'labels': [{'name': l['name']} for l in d.get('labels',[])],
+    'url':    d.get('html_url',''),
+}
+print(json.dumps(result, indent=2))
+"
+      ;;
+
+    list-prs)
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: GET $_API/pulls?state=open&per_page=100"
+        return 0
+      fi
+      local _raw
+      _raw="$(_ga_req GET "$_API/pulls?state=open&per_page=100")"
+      printf '%s' "$_raw" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+if len(data) == 100:
+    print('NOTE: github-api: results truncated at 100 items', file=sys.stderr)
+result = [{'number': i['number'], 'title': i.get('title',''),
+           'headRefName': i.get('head',{}).get('ref',''),
+           'labels': [{'name': l['name']} for l in i.get('labels',[])]}
+          for i in data]
+print(json.dumps(result, indent=2))
+"
+      ;;
+
+    diff-pr)
+      local _n="$1"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: GET $_API/pulls/$_n (Accept: vnd.github.v3.diff)"
+        return 0
+      fi
+      _ga_diff_req "$_API/pulls/$_n"
+      ;;
+
+    checkout-pr)
+      local _n="$1"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: GET head.ref for PR #$_n, then git fetch + checkout"
+        return 0
+      fi
+      local _pr_data _branch
+      _pr_data="$(_ga_req GET "$_API/pulls/$_n")"
+      _branch="$(printf '%s' "$_pr_data" | python3 -c "
+import json, sys
+print(json.load(sys.stdin).get('head',{}).get('ref',''))
+")"
+      [ -z "$_branch" ] && { echo "github-api: could not resolve head ref for PR #$_n" >&2; exit 1; }
+      git fetch origin "refs/pull/$_n/head:$_branch"
+      git checkout "$_branch"
+      ;;
+
+    approve-pr)
+      local _n="$1" _rbody="${2:-approved}"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: POST $_API/pulls/$_n/reviews (APPROVE)"
+        return 0
+      fi
+      local _rev_payload
+      _rev_payload="$(python3 -c "import json,sys; print(json.dumps({'body':sys.argv[1],'event':'APPROVE'}))" "$_rbody")"
+      _ga_req POST "$_API/pulls/$_n/reviews" \
+        -H "Content-Type: application/json" -d "$_rev_payload" >/dev/null
+      echo "Approved PR #$_n"
+      ;;
+
+    label-pr)
+      # PRs share label API with issues on GitHub
+      local _n="$1"; shift
+      _parse_label_args "$@"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: GET $_API/issues/$_n/labels, PUT updated list (PR)"
+        return 0
+      fi
+      local _cur_labels
+      _cur_labels="$(_ga_req GET "$_API/issues/$_n/labels")"
+      local _new_payload
+      _new_payload="$(printf '%s' "$_cur_labels" | \
+        ADD_LABELS="$ADD_LABELS" REMOVE_LABELS="$REMOVE_LABELS" python3 -c "
+import json, sys, os
+labels = [l['name'] for l in json.load(sys.stdin)]
+add = os.environ.get('ADD_LABELS','').split()
+rem = os.environ.get('REMOVE_LABELS','').split()
+for l in add:
+    if l not in labels:
+        labels.append(l)
+labels = [l for l in labels if l not in rem]
+print(json.dumps({'labels': labels}))
+")"
+      _ga_req PUT "$_API/issues/$_n/labels" \
+        -H "Content-Type: application/json" -d "$_new_payload" >/dev/null
+      echo "Labels updated on PR #$_n"
+      ;;
+
+    pr-checks)
+      local _n="$1"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: GET $_API/commits/<sha>/check-runs for PR #$_n"
+        return 0
+      fi
+      local _pr_data _sha
+      _pr_data="$(_ga_req GET "$_API/pulls/$_n")"
+      _sha="$(printf '%s' "$_pr_data" | python3 -c "
+import json, sys
+print(json.load(sys.stdin).get('head',{}).get('sha',''))
+")"
+      [ -z "$_sha" ] && { echo "github-api: could not resolve head SHA for PR #$_n" >&2; exit 1; }
+      _ga_req GET "$_API/commits/$_sha/check-runs"
+      ;;
+
+    merge-pr)
+      local _n="$1"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: PUT $_API/pulls/$_n/merge (method=$MERGE_METHOD)"
+        return 0
+      fi
+      local _mm
+      case "$MERGE_METHOD" in
+        squash) _mm="squash" ;; rebase) _mm="rebase" ;; *) _mm="merge" ;;
+      esac
+      local _merge_payload
+      _merge_payload="$(python3 -c "import json,sys; print(json.dumps({'merge_method':sys.argv[1],'delete_branch':True}))" "$_mm")"
+      _ga_req PUT "$_API/pulls/$_n/merge" \
+        -H "Content-Type: application/json" -d "$_merge_payload" >/dev/null
+      echo "Merged PR #$_n"
+      ;;
+
+    comment-pr)
+      # PRs share the issues comment API on GitHub
+      local _n="$1" _body="$2"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: POST $_API/issues/$_n/comments (PR comment)"
+        return 0
+      fi
+      local _payload
+      _payload="$(python3 -c "import json,sys; print(json.dumps({'body':sys.argv[1]}))" "$_body")"
+      _ga_req POST "$_API/issues/$_n/comments" \
+        -H "Content-Type: application/json" -d "$_payload" >/dev/null
+      echo "Commented on PR #$_n"
+      ;;
+
+    find-pr)
+      local _n="$1" _state="${2:-open}"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: GET $_API/pulls?state=$_state&per_page=100 | filter issue-$_n / #$_n"
+        return 0
+      fi
+      local _raw
+      _raw="$(_ga_req GET "$_API/pulls?state=$_state&per_page=100")"
+      printf '%s' "$_raw" | python3 -c "
+import json, sys
+n = sys.argv[1]
+try: prs = json.load(sys.stdin)
+except Exception: prs = []
+for pr in prs:
+    hay = pr.get('title','') + ' ' + (pr.get('body','') or '')
+    ref = pr.get('head',{}).get('ref','')
+    if f'issue-{n}' in ref or f'#{n}' in hay:
+        print(json.dumps({'number': pr.get('number'),
+                          'state':  pr.get('state',''),
+                          'title':  pr.get('title',''),
+                          'headRefName': ref}))
+" "$_n"
+      ;;
+
+    check-pr-files)
+      local _n="$1"
+      local _patterns
+      _patterns="$(cfg merge.forbidden_files "")"
+      [ -z "$_patterns" ] && _patterns='.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.secrets
+secrets.*'
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: GET $_API/pulls/$_n/files | match against forbidden patterns"
+        return 0
+      fi
+      local _files_raw
+      _files_raw="$(_ga_req GET "$_API/pulls/$_n/files")"
+      printf '%s' "$_files_raw" | PATTERNS="$_patterns" python3 -c "
+import fnmatch, os, sys, json
+patterns = [p.strip() for p in os.environ['PATTERNS'].splitlines() if p.strip()]
+bad = []
+try:
+    files = json.load(sys.stdin)
+except Exception:
+    files = []
+for f in files:
+    path = f.get('filename','')
+    base = os.path.basename(path)
+    if any(fnmatch.fnmatch(base, p) or fnmatch.fnmatch(path, p) for p in patterns):
+        bad.append(path)
+if bad:
+    print('FORBIDDEN FILES in PR — human review required before merge:')
+    for p in bad: print(f'  {p}')
+    sys.exit(1)
+print('no forbidden files')
+"
+      ;;
+
+    rerun-ci)
+      local _n="$1"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: GET PR head SHA, list runs, POST rerun-failed-jobs for failed runs"
+        return 0
+      fi
+      local _pr_data _sha
+      _pr_data="$(_ga_req GET "$_API/pulls/$_n")"
+      _sha="$(printf '%s' "$_pr_data" | python3 -c "
+import json, sys
+print(json.load(sys.stdin).get('head',{}).get('sha',''))
+")"
+      [ -z "$_sha" ] && { echo "github-api: could not resolve head SHA for PR #$_n" >&2; exit 1; }
+      local _runs_raw
+      _runs_raw="$(_ga_req GET "$_API/actions/runs?head_sha=$_sha")"
+      local _failed_ids
+      _failed_ids="$(printf '%s' "$_runs_raw" | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    runs = d.get('workflow_runs', d) if isinstance(d, dict) else d
+    for r in runs:
+        if r.get('conclusion') in ('failure','timed_out','cancelled'):
+            print(r['id'])
+except Exception:
+    pass
+")"
+      if [ -z "$_failed_ids" ]; then
+        echo "rerun-ci: no failed runs found for PR #$_n ($sha)"
+        return 0
+      fi
+      while IFS= read -r _run_id; do
+        [ -n "$_run_id" ] && \
+          _ga_req POST "$_API/actions/runs/$_run_id/rerun-failed-jobs" \
+            -H "Content-Type: application/json" -d '{}' >/dev/null
+      done <<< "$_failed_ids"
+      echo "rerun-ci: re-ran failed runs for PR #$_n ($sha)"
+      ;;
+
+    *) echo "pipeline-vcs: unknown verb: $_VERB" >&2; exit 1 ;;
   esac
 }
 
@@ -736,12 +1226,13 @@ PYEOF
 
 # ── Main dispatch ─────────────────────────────────────────────────────────────
 case "$PROVIDER" in
-  github) _github "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
-  gitlab) _gitlab "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
-  azure)  _azure  "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
-  file)   _file   "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
+  github)     _github     "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
+  github-api) _github_api "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
+  gitlab)     _gitlab     "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
+  azure)      _azure      "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
+  file)       _file       "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
   *)
-    echo "pipeline-vcs: unknown provider '$PROVIDER'. Valid: github | gitlab | azure | file" >&2
+    echo "pipeline-vcs: unknown provider '$PROVIDER'. Valid: github | github-api | gitlab | azure | file" >&2
     exit 1
     ;;
 esac

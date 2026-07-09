@@ -54,6 +54,7 @@ All VCS operations are delegated to `scripts/pipeline-vcs.sh`, which wraps each 
 | Provider | `vcs.provider` | CLI required | Status | Notes |
 |----------|---------------|--------------|--------|-------|
 | GitHub | `github` | `gh` | **Battle-tested** | Full support. Requires `gh auth login`. |
+| GitHub (token-only) | `github-api` | none | **Supported** | All 18 verbs via `curl` + `GITHUB_TOKEN`. No `gh` CLI needed — ideal for CI/containers. Set `GITHUB_TOKEN` or `GH_TOKEN`. Projects v2 board updates also use the token. |
 | GitLab | `gitlab` | `glab` | **Best-effort** | Implemented; `glab` version quirks may surface. Requires `glab auth login`. |
 | Azure DevOps | `azure` | `az` + azure-devops extension | **Best-effort** | Labels map to ADO Tags; `diff-pr` not supported. Requires `az login` and `az extension add --name azure-devops`. |
 | File / chat | `file` | none | **Supported** | Work items are `- [ ] Task` checkboxes in a local markdown file. No PRs; developer commits to a branch; QA/review/security/docs stages skipped. |
@@ -71,8 +72,12 @@ All VCS operations are delegated to `scripts/pipeline-vcs.sh`, which wraps each 
 ### Provider prerequisites summary
 
 ```bash
-# GitHub (default)
+# GitHub (default — requires gh CLI)
 gh auth login
+
+# GitHub API (token-only — no gh CLI required)
+export GITHUB_TOKEN="ghp_your_token_here"
+# talos.pipeline.yml: vcs.provider: github-api
 
 # GitLab
 glab auth login

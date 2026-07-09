@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Added
+
+#### Story #6 — `github-api` provider: token-only GitHub mode
+
+New `vcs.provider: github-api` adapter implements all 18 VCS verbs via
+`curl + GITHUB_TOKEN` (REST for issues/PRs/labels/merge; GraphQL for Projects
+v2 board) so Talos runs in CI containers with no `gh` CLI dependency. Token
+is sourced from `GITHUB_TOKEN` or `GH_TOKEN` (or a custom env var named by
+`vcs.token_env`) and is never logged. `pipeline-status.sh` falls back to the
+token-based GraphQL path automatically when `gh` is absent.
+`pipeline-notify.sh` uses the token to resolve issue/PR titles and repo URL
+when `gh` is unavailable. Covered by 47 new assertions in
+`tests/test-github-api.sh` using the curl stub (no network).
+
 ### Breaking Changes
 
 #### Story #3 / Issue #5 — `pipeline-notify.sh` .env path change

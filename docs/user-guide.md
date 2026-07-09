@@ -74,9 +74,12 @@ Per VCS provider (pick one):
 | Provider | Tool | Auth |
 |----------|------|------|
 | `github` (default) | [`gh`](https://cli.github.com) | `gh auth login` (or `GH_TOKEN` env var) |
+| `github-api` | none | `GITHUB_TOKEN` or `GH_TOKEN` env var — no `gh` CLI needed |
 | `gitlab` | [`glab`](https://gitlab.com/gitlab-org/cli) | `glab auth login` |
 | `azure` | `az` + azure-devops extension | `az login`; `az extension add --name azure-devops` |
 | `file` | none | fully offline |
+
+The `github-api` provider is the recommended choice for **CI/CD environments or minimal containers** where installing `gh` is impractical. Set `GITHUB_TOKEN` (or `GH_TOKEN`) and add `vcs.provider: github-api` to your `talos.pipeline.yml`.
 
 Per feature (optional):
 
@@ -100,7 +103,8 @@ Per feature (optional):
 | `DISCORD_WEBHOOK_URL` | Discord via webhook (no threading) |
 | `DISCORD_BOT_TOKEN` | Discord via bot (threading works) |
 | `TEAMS_WEBHOOK_URL` | Teams via incoming webhook |
-| `GH_TOKEN` | alternative to `gh auth login` (CI-friendly) |
+| `GITHUB_TOKEN` | GitHub API token for `github-api` provider (Personal Access Token or Actions token) |
+| `GH_TOKEN` | Alternative to `GITHUB_TOKEN`; also accepted by `gh` CLI (`github` provider) |
 
 Where to put them: your shell env (exported variables always win), or a `.env`
 file at the **repo root** (`<repo>/.env`). Bot tokens are also picked up from
