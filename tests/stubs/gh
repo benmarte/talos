@@ -37,6 +37,8 @@ tests/auth.test.js}" ;;
     fi ;;
   "run list --commit "*)
     printf '[{"databaseId":111,"conclusion":"failure"},{"databaseId":112,"conclusion":"success"}]\n' ;;
+  "issue create "*)
+    printf 'https://github.com/%s/issues/%s\n' "$REPO" "${STUB_NEW_ISSUE_NUMBER:-42}" ;;
   "issue view "*)
     printf '{"title":"%s","body":"stub body","labels":[],"comments":[]}\n' \
       "${STUB_ISSUE_TITLE:-Fix login crash}" ;;

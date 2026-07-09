@@ -114,6 +114,10 @@ roles:
   reviewer: true       # Code-quality review (correctness, maintainability)
   security: true       # Security review (injection, authz, secrets, SSRF)
   docs: true           # Updates README/docs/CHANGELOG; terminal stage
+  planner: false       # Epic decomposition — detects epics (epic label, ≥4 checklist
+                       # items, or body ≥2000 chars) and breaks them into dependency-
+                       # ordered sub-issues via create-issue. Off by default; enable
+                       # only when you regularly work with large, multi-task epics.
 
 # ── Stage comments ───────────────────────────────────────────────────────────
 # Each role subagent posts a GitHub comment at its handoff point (Daedalus parity).

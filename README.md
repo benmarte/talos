@@ -34,6 +34,7 @@ GitHub Issues (or a local markdown checklist in file mode) serve as the state ma
 ```
 issue: pipeline:ready
   └─ validator ──→ pipeline:confirmed
+       ├─ planner (optional) ──→ sub-issues created (epic) OR pass-through (non-epic)
        └─ pm ─────→ pipeline:dev
             └─ developer (worktree) ──→ PR: pipeline:review
                  ├─ qa ─────────────→ qa:pass
@@ -202,6 +203,7 @@ All keys live in `talos.pipeline.yml` at your repo root. Every key is optional a
 | `roles.reviewer` | `true` | Code-quality review |
 | `roles.security` | `true` | Security review |
 | `roles.docs` | `true` | Updates docs/CHANGELOG; terminal stage |
+| `roles.planner` | `false` | Epic decomposition (optional, off by default) — detects epics (via `epic` label, ≥ 4 checklist items, or body ≥ 2000 chars) and creates dependency-ordered sub-issues; independent sub-issues enter the queue immediately, dependent sub-issues are unblocked automatically as predecessors close |
 | `comments.enabled` | `true` | Post a stage comment at each handoff (Daedalus parity) |
 | `comments.header` | `**Agent:** {role} (talos)` | Header prepended to every stage comment; `{role}` is replaced at runtime |
 | `comments.templates_dir` | `templates/comments` | Path (relative to repo root) containing comment templates |
@@ -378,6 +380,7 @@ The pipeline deliberately preserves three gates that only a human should act on:
 
 | Verb | Arguments | Description |
 |------|-----------|-------------|
+| `create-issue` | `<title> <body-file> [--label label]` | Create a new issue; `--label` may be repeated (used by planner to create sub-issues) |
 | `list-issues` | | List open issues / unchecked plan items |
 | `view-issue` | `<id>` | Show issue body and metadata |
 | `comment-issue` | `<id> <body>` | Post a comment on an issue |

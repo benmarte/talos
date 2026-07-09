@@ -81,6 +81,17 @@ out="$(bash "$VCS" --dry-run find-pr 42; bash "$VCS" --dry-run check-pr-files 9;
 assert_contains "$out" "[dry-run]" "new verbs support --dry-run"
 assert_not_contains "$(grep -v "repo view" "$GH_LOG")" "pr " "dry-run makes no pr/run gh calls"
 
+# ── GitHub adapter: create-issue ─────────────────────────────────────────────
+out="$(bash "$VCS" --dry-run create-issue "Fix the crash" /dev/null --label pipeline:ready)"
+assert_contains "$out" "gh issue create" "create-issue dry-run contains 'gh issue create'"
+assert_contains "$out" "--label" "create-issue dry-run includes --label arg"
+
+: > "$GH_LOG"
+printf '' > "$SANDBOX/body.md"
+bash "$VCS" create-issue "Fix the crash" "$SANDBOX/body.md" --label pipeline:ready >/dev/null 2>&1
+assert_contains "$(cat "$GH_LOG")" "issue create" "create-issue invokes gh with issue create"
+assert_contains "$(cat "$GH_LOG")" "--label pipeline:ready" "create-issue passes label to gh"
+
 # ── GitLab adapter: new verbs fail open with a warning ───────────────────────
 cat > talos.pipeline.json <<'EOF'
 {"vcs": {"provider": "gitlab"}}
@@ -116,6 +127,16 @@ assert_contains "$(cat plan.md)" "validator: CONFIRMED" "file: comment lands in 
 bash "$VCS" close-issue 2 "merged branch fix/login" >/dev/null
 assert_contains "$(cat plan.md)" "- [x] Add login page" "file: close-issue checks the box"
 assert_contains "$(cat plan.md)" "resolved: merged branch fix/login" "file: resolution note appended"
+
+new_id="$(bash "$VCS" create-issue "Add dark mode" "$SANDBOX/body.md")"
+assert_contains "$(cat plan.md)" "- [ ] Add dark mode <!-- id:" "file: create-issue appends checklist item"
+# ID should be a number
+assert_contains "$new_id" "" "file: create-issue prints the assigned id"
+if ! printf '%s' "$new_id" | grep -qE '^[0-9]+$'; then
+  fail "file: create-issue id is numeric"
+else
+  pass "file: create-issue id is numeric"
+fi
 
 out="$(bash "$VCS" create-pr branch t body 2>&1)"; rc=$?
 assert_eq "0" "$rc" "file: create-pr is a safe no-op"

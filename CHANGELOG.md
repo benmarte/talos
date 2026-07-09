@@ -8,6 +8,22 @@
 
 Added `.claude-plugin/marketplace.json` so the Claude Code plugin marketplace flow works end-to-end (`/plugin marketplace add benmarte/talos` + `/plugin install talos@talos`). Updated README Quickstart Option A and `docs/user-guide.md` Setup: Claude Code section to document the plugin path as the recommended install with a caveat that per-repo scripts/templates still come from `install.sh`.
 
+#### Issue #7 — Optional planner role: epic decomposition
+
+New optional `roles.planner` toggle (default `false`). When enabled, a planner stage
+runs after the validator confirms an issue and before the PM writes the spec. An issue
+is treated as an epic if it carries the `epic` label, contains ≥ 4 checklist items,
+or has a body ≥ 2000 characters. The planner subagent (Claude Opus, read-only) produces
+a structured breakdown of up to 10 sub-tasks; the orchestrator creates dependency-ordered
+sub-issues via the new `create-issue` VCS verb. Independent sub-issues are labelled
+`pipeline:ready` immediately; dependent sub-issues are held unlabelled and auto-unblocked
+when their predecessor closes. Epic issues receive `pipeline:epic-decomposed` and skip
+the PM/developer stages. Step 1 reconciliation adds two new sweeps: an epic auto-close
+sweep (closes the epic when all sub-issues are resolved) and a dependency-unblocking
+sweep (adds `pipeline:ready` to sub-issues whose blocker just closed). The new
+`create-issue` verb is supported across all four providers (github, github-api, gitlab,
+azure, file). The planner is off by default — it adds no overhead when disabled.
+
 #### Story #6 — `github-api` provider: token-only GitHub mode
 
 New `vcs.provider: github-api` adapter implements all 18 VCS verbs via
