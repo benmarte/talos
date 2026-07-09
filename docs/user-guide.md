@@ -18,11 +18,12 @@ progress as issue/PR comments and threaded Slack/Discord messages along the way.
 4. [Setup: Claude Code](#setup-claude-code) (recommended)
 5. [Setup: Codex CLI](#setup-codex-cli)
 6. [Setup: Gemini CLI](#setup-gemini-cli)
-7. [Setup: local models (llama.cpp, Ollama)](#setup-local-models-llamacpp-ollama)
-8. [Harness feature matrix](#harness-feature-matrix)
-9. [Running the pipeline](#running-the-pipeline)
-10. [Troubleshooting](#troubleshooting)
-11. [FAQ](#faq)
+7. [Setup: Google Antigravity](#setup-google-antigravity)
+8. [Setup: local models (llama.cpp, Ollama)](#setup-local-models-llamacpp-ollama)
+9. [Harness feature matrix](#harness-feature-matrix)
+10. [Running the pipeline](#running-the-pipeline)
+11. [Troubleshooting](#troubleshooting)
+12. [FAQ](#faq)
 
 ---
 
@@ -217,6 +218,43 @@ fenced section into `GEMINI.md`). Then:
 gemini "Run the Talos pipeline: follow .claude/talos/skills/pipeline/SKILL.md"
 ```
 
+## Setup: Google Antigravity
+
+Same model as Codex and Gemini: Antigravity orchestrates by following the
+playbook; role stages run through the adapter.
+
+**Orchestrator:** `talos install --harness antigravity` writes a marker-fenced
+Talos section into your repo's `AGENTS.md`. Antigravity reads `AGENTS.md`
+natively since v1.20.3 — no separate config file is needed. Note: if both
+`GEMINI.md` and `AGENTS.md` exist in your project, `GEMINI.md` takes
+precedence in Antigravity's context loading.
+
+```bash
+# 1. Install with the antigravity harness flag
+bash talos/install.sh /path/to/your-repo --harness antigravity
+```
+
+**Runner config:** set `agents.runner: antigravity` in `talos.pipeline.yml`
+so that role stages are dispatched via `agy -p "<prompt>"` (Antigravity CLI
+headless mode):
+
+```yaml
+# talos.pipeline.yml
+agents:
+  runner: antigravity   # stages run via: agy -p "<prompt>"
+  # runner_args: []     # optional extra CLI args
+```
+
+**Bootstrap and run:**
+
+```bash
+# 2. Bootstrap labels, queue an issue (same as Claude Code), then:
+agy "Run the Talos pipeline: follow .claude/talos/skills/pipeline/SKILL.md"
+```
+
+Set `issues.max_parallel: 1` — without native subagents, stages run
+sequentially in the working tree.
+
 ## Setup: local models (llama.cpp, Ollama)
 
 Talos never calls a model API itself — it needs an **agentic CLI** (one that
@@ -254,16 +292,17 @@ catch bad stage output, but nothing gates the orchestrator itself.
 
 ## Harness feature matrix
 
-| Feature | Claude Code | Codex CLI | Gemini CLI | Custom/local |
-|---------|:-----------:|:---------:|:----------:|:------------:|
-| Full pipeline (all roles/gates) | ✅ | ✅ | ✅ | ✅ |
-| Parallel issues (`max_parallel > 1`) | ✅ | ❌ sequential | ❌ sequential | ❌ sequential |
-| Developer worktree isolation | ✅ | ❌ working tree | ❌ working tree | ❌ working tree |
-| Interactive setup wizard (`/pipeline-setup`) | ✅ | manual config | manual config | manual config |
-| Optional review/verify skill enrichment | ✅ | ❌ | ❌ | ❌ |
-| Notifications / comments / board / file mode | ✅ | ✅ | ✅ | ✅ |
+| Feature | Claude Code | Codex CLI | Gemini CLI | Antigravity | Custom/local |
+|---------|:-----------:|:---------:|:----------:|:-----------:|:------------:|
+| Full pipeline (all roles/gates) | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Parallel issues (`max_parallel > 1`) | ✅ | ❌ sequential | ❌ sequential | ❌ sequential | ❌ sequential |
+| Developer worktree isolation | ✅ | ❌ working tree | ❌ working tree | ❌ working tree | ❌ working tree |
+| Interactive setup wizard (`/pipeline-setup`) | ✅ | manual config | manual config | manual config | manual config |
+| Optional review/verify skill enrichment | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Notifications / comments / board / file mode | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Native AGENTS.md orchestration | via CLAUDE.md | ✅ | via GEMINI.md | ✅ (v1.20.3+) | N/A |
 
-(The bottom row is harness-independent — plain bash.)
+(The notifications / comments / board / file mode row is harness-independent — plain bash.)
 
 ## Running the pipeline
 

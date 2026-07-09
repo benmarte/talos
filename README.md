@@ -404,7 +404,7 @@ Pass `--dry-run` as the first argument to print the underlying CLI command witho
 
 ---
 
-## Other harnesses: Codex CLI, Gemini CLI, local models
+## Other harnesses: Codex CLI, Gemini CLI, Antigravity, local models
 
 Claude Code is the first-class harness (native subagents, worktree isolation),
 but the pipeline itself is plain bash + markdown — any **agentic** CLI can
@@ -429,9 +429,14 @@ stage prompt and executes it via the runner configured in
 
 ```yaml
 agents:
-  runner: codex        # claude (default) | codex | gemini | custom
+  runner: codex        # claude (default) | codex | gemini | antigravity | custom
   # runner_cmd: "my-agent-cli"   # custom: prompt arrives on stdin
 ```
+
+**Google Antigravity:** `--harness antigravity` writes the same `AGENTS.md`
+section (Antigravity reads `AGENTS.md` natively since v1.20.3; `GEMINI.md`
+takes precedence when both exist). Set `agents.runner: antigravity` in
+`talos.pipeline.yml` to route role stages through `agy -p`.
 
 **Local models:** the `custom` runner accepts any command, so a local-model
 pipeline works by pointing `runner_cmd` at an agentic CLI backed by Ollama,

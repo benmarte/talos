@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# agy CLI stub for talos tests. Same logging contract as the gemini stub.
+{
+  printf 'AGY ARGS:'; for a in "$@"; do printf ' [%s]' "$a"; done; printf '\n'
+} >> "${RUNNER_LOG:-/dev/null}"
+echo "agy-stub-ok"
