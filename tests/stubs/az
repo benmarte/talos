@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# az CLI stub for talos tests — logs every invocation and returns canned
+# responses for the query shapes the _azure adapter uses.
+[ -n "${GH_LOG:-}" ] && printf 'AZ %s\n' "$*" >> "$GH_LOG"
+
+args="$*"
+
+# When AZ_STUB_NO_EXT=1, extension list returns nothing (simulate missing extension)
+if [ "${AZ_STUB_NO_EXT:-0}" = "1" ]; then
+  case "$args" in
+    "extension list "*)
+      exit 0 ;;  # empty output — grep for azure-devops will fail
+  esac
+fi
+
+case "$args" in
+  "extension list "*)
+    # Return a line containing azure-devops so the extension check passes
+    printf 'azure-devops\t1.0.0\t/path/to/ext\n' ;;
+  "boards work-item show "*"-o tsv")
+    # Canned current tags for label-issue test
+    printf 'bug; ui\n' ;;
+  "boards work-item show "*)
+    printf '{"id":5,"fields":{"System.Title":"Fix login crash","System.Tags":"bug; ui"}}\n' ;;
+  "boards work-item create "*)
+    printf '{"id":1}\n' ;;
+  "boards work-item update "*)
+    printf '{"id":1}\n' ;;
+  "repos pr update "*)
+    printf '{"pullRequestId":7,"status":"completed"}\n' ;;
+  "repos pr create "*)
+    printf '{"pullRequestId":7,"status":"active"}\n' ;;
+  "repos pr show "*)
+    printf '{"pullRequestId":7,"status":"active"}\n' ;;
+  "boards work-item comment add "*)
+    printf '{"id":1,"text":"stub comment"}\n' ;;
+  *)
+    printf '{}\n' ;;
+esac
+exit 0
