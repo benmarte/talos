@@ -138,7 +138,7 @@ Create a GitHub Project with a single-select **Status** field containing: Ready,
 
 ### 5. Optional: notifications
 
-Set one or more of these in your environment or in a `.env` file at the repo root:
+Set one or more of these in your environment (exported variables always win) or in a `.env` file at the repo root (`<repo>/.env`):
 
 ```
 SLACK_WEBHOOK_URL=https://hooks.slack.com/...
