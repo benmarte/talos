@@ -1,0 +1,41 @@
+# Talos dogfood config — Talos running its own backlog.
+# Guardrails for self-modification: verify runs the full offline suite, CI
+# checks are required before merge, one issue at a time.
+
+base_branch: main
+
+vcs:
+  provider: github
+
+board:
+  enabled: false
+
+issues:
+  label_filter: "pipeline:ready"
+  skip_labels:
+    - "pipeline:blocked"
+    - "wontfix"
+  max_parallel: 1
+
+roles:
+  validator: true
+  pm: true
+  qa: true
+  reviewer: true
+  security: true
+  docs: true
+
+# Every PR must keep the whole suite green before QA signs off…
+verify:
+  - "bash tests/run-tests.sh"
+
+# …and CI must confirm it on both platforms before merge.
+merge:
+  method: squash
+  required_checks:
+    - "test (ubuntu-latest)"
+    - "test (macos-latest)"
+  delete_branch: true
+
+limits:
+  max_fix_attempts: 3
