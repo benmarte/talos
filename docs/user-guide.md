@@ -32,6 +32,12 @@ progress as issue/PR comments and threaded Slack/Discord messages along the way.
   security, docs, and orchestrator roles, each with its own agent definition
   and quality gate. Label state machine (`pipeline:ready` → … → merged) tracks
   progress on the issue itself.
+- **Optional planner role** (off by default) — detects epic issues (via `epic`
+  label, ≥ 4 checklist items, or body ≥ 2000 chars) and decomposes them into
+  dependency-ordered sub-issues via `create-issue`. Independent sub-issues are
+  labelled `pipeline:ready` immediately; dependent sub-issues are unlabelled and
+  auto-unblocked when their predecessor closes. Enable with
+  `roles.planner: true` in `talos.pipeline.yml`.
 - **Provider-agnostic VCS** — GitHub (battle-tested), GitLab, Azure DevOps, or
   **file mode** (a local `plan.md` checklist; no VCS, no network — works fully
   offline).
@@ -274,6 +280,20 @@ catch bad stage output, but nothing gates the orchestrator itself.
    per issue, board column updates — or run
    `bash .claude/talos/scripts/pipeline-status.sh --dry-run <n> "In progress"`
    style commands manually.
+
+**Working with epics:** when `roles.planner: true` is set in `talos.pipeline.yml`,
+the pipeline detects large issues as epics (any issue carrying the `epic` label,
+containing ≥ 4 checklist items, or whose body is ≥ 2000 characters) and automatically
+decomposes them before the PM and developer stages run. The planner subagent produces
+a breakdown of up to 10 sub-tasks; the orchestrator creates a GitHub issue for each
+one, linking it back to the parent epic with a `Part of #<N>` reference. Independent
+sub-issues receive `pipeline:ready` immediately so they enter the queue on the current
+or next run. Sub-issues that depend on another sub-issue are held back until their
+predecessor closes, at which point the orchestrator's Step 1 reconciliation sweep
+automatically adds `pipeline:ready`. The epic itself is labelled
+`pipeline:epic-decomposed` and is closed automatically once every sub-issue is
+resolved. The planner role is off by default — it adds API calls and is most useful
+when you regularly work with multi-task epics.
 
 ## Customizing agent profiles
 
