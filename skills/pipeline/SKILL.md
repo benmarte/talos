@@ -433,7 +433,7 @@ Workflow:
        `bash scripts/pipeline-vcs.sh comment-issue <N> "$COMMENT_BODY"`
 12. On failure: `label-issue --add pipeline:blocked`, post blocked.md with exact error.
 
-Final message (2-3 lines): PR URL + what was implemented + verify outcome. Never fabricate a PR number.
+Final message (2-3 lines): PR URL + what was implemented + verify outcome. Never fabricate a PR number. Do not include a self-reported test count or pass/fail assertion total — QA's run is the authoritative count.
 ```
 
 After developer returns:
@@ -506,11 +506,14 @@ Comments enabled: <COMMENTS_ENABLED>
 
 Read diff: `bash scripts/pipeline-vcs.sh diff-pr <PR_NUMBER>`
 Focus: correctness bugs first, simplification second. No speculative comments.
+IMPORTANT: never run `git checkout`, `git switch`, or `git pull` in your working directory — you are not worktree-isolated; read the diff only.
 
 Approve:
   1. `bash scripts/pipeline-vcs.sh approve-pr <PR_NUMBER> "<summary>"`
-  2. `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --add review:approved`
-  3. Render review-signoff.md on the PR:
+     Note: `gh pr review --approve` may fail with "cannot approve your own pull request" in single-account setups — this is expected and ignorable; the `review:approved` label is the gate.
+  2. `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --add review:approved --remove pipeline:blocked`
+  3. `bash scripts/pipeline-vcs.sh label-issue <N> --remove pipeline:blocked`
+  4. Render review-signoff.md on the PR:
      VERDICT="APPROVED" SUMMARY="<summary>" DETAILS="<2-5 bullets: areas checked>"
      `bash scripts/pipeline-vcs.sh comment-pr <PR_NUMBER> "$COMMENT_BODY"`
 
@@ -535,10 +538,12 @@ Comments enabled: <COMMENTS_ENABLED>
 Read diff: `bash scripts/pipeline-vcs.sh diff-pr <PR_NUMBER>`
 Check: injection, authz, secrets, deserialization, path traversal, SSRF, new deps.
 Report only findings tied to specific changed lines.
+IMPORTANT: never run `git checkout`, `git switch`, or `git pull` in your working directory — you are not worktree-isolated; read the diff only.
 
 Clear:
-  1. `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --add security:approved`
-  2. Render security-signoff.md on the PR:
+  1. `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --add security:approved --remove pipeline:blocked`
+  2. `bash scripts/pipeline-vcs.sh label-issue <N> --remove pipeline:blocked`
+  3. Render security-signoff.md on the PR:
      VERDICT="CLEAR" SUMMARY="<checked>" DETAILS="<2-5 bullets: areas reviewed>"
      `bash scripts/pipeline-vcs.sh comment-pr <PR_NUMBER> "$COMMENT_BODY"`
 
@@ -622,6 +627,8 @@ If failing: CI may be flaky — retry it, bounded to 2 re-runs per head SHA:
 3. If 2 re-runs already happened for this SHA: post a comment listing the failing
    checks, do NOT merge. Not blocked — just waiting for a human or a new commit.
 
+**CHANGELOG serialization guard:** Before merging, check whether the PR's base branch is behind `origin/main` AND another pipeline PR has merged since this branch was cut. If so, run `git fetch origin && git merge origin/main` in the developer's worktree branch first, then re-push. On CHANGELOG conflicts, keep BOTH entries (newest first). (Changelog fragment directories are out of scope for v1 — the inline-merge rule above is sufficient for this repo size.)
+
 If green, merge: `bash scripts/pipeline-vcs.sh merge-pr <PR_NUMBER>`
 
 Compute header: `HEADER="${COMMENTS_HEADER_TPL//\{role\}/orchestrator}"`
@@ -666,3 +673,4 @@ After processing all issues, print a summary table:
 12. After `max_fix_attempts` developer failures on one issue: set `pipeline:blocked`, notify, move on.
 13. In file mode: skip board calls, skip QA/reviewer/security/docs, developer commits to branch directly.
 14. Never merge a PR that fails `check-pr-files` — secret-like files require a human; `skip-qa` does not waive this gate (nor CI).
+15. Non-worktree subagents (reviewer, security, docs) must read the PR diff via `diff-pr` only; they must never run `git checkout`, `git switch`, or `git pull` in the orchestrator's working directory. Worktree-isolated stages (developer, QA) are exempt.

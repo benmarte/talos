@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **Self-run hardening (#16):** SKILL.md rule + reviewer/security prompts prohibit `git checkout` in shared repo; re-approval paths clear `pipeline:blocked`; CHANGELOG serialization guard in Step 4; developer stage drops self-reported test counts; same-account `gh pr review --approve` failure documented as ignorable; `github-api` provider logs `X-RateLimit-Reset` on HTTP 429.
+
 ## [0.2.0] - 2026-07-09
 
 ### Breaking Changes

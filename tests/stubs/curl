@@ -10,15 +10,20 @@
 #     New tests can grep/assert_contains "$CURL_LOG" "Authorization: Bearer".
 #   - Appends "200" as a final output line when -w is passed so callers using
 #     `curl -w "\n%{http_code}"` can parse HTTP status from the last line.
+#   - When -D <file> is passed, writes a minimal HTTP response header block
+#     including X-RateLimit-Reset: ${CURL_RATE_LIMIT_RESET:-0} to that file.
+#     Default CURL_RATE_LIMIT_RESET=0 keeps existing tests unbroken.
 
 payload=""
 url=""
 prev=""
 has_w=false
 auth_field=""
+hdr_file=""
 for arg in "$@"; do
   [ "$prev" = "-d" ] && payload="$arg"
   [ "$prev" = "-w" ] && has_w=true
+  [ "$prev" = "-D" ] && hdr_file="$arg"
   if [ "$prev" = "-H" ]; then
     case "$arg" in
       "Authorization: Bearer "*) auth_field="Authorization: Bearer" ;;
@@ -32,9 +37,21 @@ for arg in "$@"; do url="$arg"; done
 # Log: one line per call — URL TAB payload TAB auth-field
 [ -n "${CURL_LOG:-}" ] && printf '%s\t%s\t%s\n' "$url" "$payload" "$auth_field" >> "$CURL_LOG"
 
+# HTTP status to emit when -w was requested (default 200).
+# If a CURL_QUEUE entry is a bare 3-digit number it is treated as a status
+# override (empty body); all other queue entries are response bodies.
+http_status=200
+resp=""
 if [ -n "${CURL_QUEUE:-}" ] && [ -s "$CURL_QUEUE" ]; then
-  resp="$(head -1 "$CURL_QUEUE")"
+  raw="$(head -1 "$CURL_QUEUE")"
   tail -n +2 "$CURL_QUEUE" > "$CURL_QUEUE.tmp" && mv "$CURL_QUEUE.tmp" "$CURL_QUEUE"
+  case "$raw" in
+    [0-9][0-9][0-9])
+      http_status="$raw"
+      resp="" ;;
+    *)
+      resp="$raw" ;;
+  esac
 else
   case "$url" in
     *slack.com*)   resp='{"ok":true,"ts":"1111.2222"}' ;;
@@ -43,7 +60,13 @@ else
   esac
 fi
 
-printf '%s\n' "$resp"
+# Write minimal response headers when -D <file> was requested
+if [ -n "$hdr_file" ]; then
+  printf 'HTTP/1.1 %s\r\nX-RateLimit-Reset: %s\r\n\r\n' \
+    "$http_status" "${CURL_RATE_LIMIT_RESET:-0}" > "$hdr_file"
+fi
+
+[ -n "$resp" ] && printf '%s\n' "$resp"
 # Append HTTP status code on its own line when -w was requested
-[ "$has_w" = "true" ] && printf '200\n'
+[ "$has_w" = "true" ] && printf '%s\n' "$http_status"
 exit 0
