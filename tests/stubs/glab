@@ -1,5 +1,25 @@
 #!/usr/bin/env bash
-# glab CLI stub for talos tests — exists so pipeline-vcs.sh's gitlab adapter
-# gets past its `command -v glab` check and verb routing can be tested.
+# glab CLI stub for talos tests — logs every invocation and returns canned
+# responses for the query shapes the pipeline scripts use.
 [ -n "${GH_LOG:-}" ] && printf 'GLAB %s\n' "$*" >> "$GH_LOG"
+
+args="$*"
+case "$args" in
+  "mr create "*)
+    printf 'https://gitlab.com/acme/widget/-/merge_requests/7\n' ;;
+  "repo view --format="*"default_branch"*)
+    printf 'main\n' ;;
+  "issue view "*)
+    printf '{"title":"Fix login crash","description":"stub body","labels":[]}\n' ;;
+  "issue list "*)
+    printf '[{"iid":5,"title":"Fix login crash","state":"opened"}]\n' ;;
+  "mr list "*)
+    printf '[{"iid":7,"title":"fix: guard","state":"opened","sourceBranch":"fix/issue-42-guard"}]\n' ;;
+  "mr view "*)
+    printf '{"iid":7,"title":"fix: guard","state":"opened"}\n' ;;
+  *)
+    # issue note, issue close, issue update, mr approve, mr note, mr merge, etc.
+    # succeed silently
+    ;;
+esac
 exit 0
