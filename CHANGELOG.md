@@ -21,3 +21,7 @@ repos. This was accidental and surprising.
 **Migration:** move any credentials from `.claude/talos/.env` (or
 `.claude/pipeline/.env`) to your repository root `.env`. If you relied on
 sourcing overwriting exported vars, export them explicitly instead.
+
+### Enhancements
+
+- **`/pipeline-setup` wizard** now prompts for agent harness (claude/codex/gemini/custom) and emits `forbidden_files` defaults in the generated `talos.pipeline.yml` template (#4).
