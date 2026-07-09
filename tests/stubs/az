@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # az CLI stub for talos tests — logs every invocation and returns canned
 # responses for the query shapes the _azure adapter uses.
-[ -n "${GH_LOG:-}" ] && printf 'AZ %s\n' "$*" >> "$GH_LOG"
+# Log each argument in brackets so argv boundaries are visible in assertions.
+if [ -n "${GH_LOG:-}" ]; then
+  printf 'AZ ARGS:' >> "$GH_LOG"
+  for _a in "$@"; do printf ' [%s]' "$_a" >> "$GH_LOG"; done
+  printf '\n' >> "$GH_LOG"
+fi
 
 args="$*"
 

@@ -1041,7 +1041,7 @@ for t in add_s.split(): tags.add(t)
 for t in rem_s.split(): tags.discard(t)
 new_tags = '; '.join(sorted(tags))
 cmd = ['az', 'boards', 'work-item', 'update', '--id', n, '--tags', new_tags] + \
-      ([org_arg] if org_arg else [])
+      (org_arg.split() if org_arg else [])  # split into ['--org', '<url>'] so az receives two argv elements
 if dry_run:
     print(f'[dry-run] {" ".join(cmd)}')
 else:
