@@ -63,10 +63,16 @@ if [ -f "$REPO_ENV" ]; then
       ""|"#"*) continue ;;  # skip blanks and comments
     esac
     _key="${_line%%=*}"
+    _val="${_line#*=}"
+    # Strip a single pair of matching surrounding quotes (double or single)
+    case "$_val" in
+      '"'*'"') _val="${_val#'"'}"; _val="${_val%'"'}" ;;
+      "'"*"'") _val="${_val#"'"}"; _val="${_val%"'"}" ;;
+    esac
     # Only set if the variable is currently unset
     if [ -z "${!_key+x}" ]; then
       # shellcheck disable=SC2163
-      export "$_line"
+      export "$_key=$_val"
     fi
   done < "$REPO_ENV"
   unset _line _key

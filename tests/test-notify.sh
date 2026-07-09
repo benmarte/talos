@@ -102,4 +102,14 @@ rm -f "$SANDBOX/.env"
 out="$(PIPELINE_NOTIFY_DEBUG=1 bash "$NOTIFY" info "#1" "no dotenv" 1 2>&1)"; rc=$?
 assert_eq "0" "$rc" "no .env anywhere exits 0"
 
+# ── .env loading: quoted values are stripped ──────────────────────────────────
+# Double-quoted channel value must be stored without the surrounding quotes.
+printf 'SLACK_BOT_TOKEN=xoxb-test\nPIPELINE_SLACK_CHANNEL="C_QUOTED"\n' > "$SANDBOX/.env"
+out="$(PIPELINE_NOTIFY_DEBUG=1 bash "$NOTIFY" info "#1" "quote strip test" 1 2>&1)"
+assert_contains "$out" '"channel": "C_QUOTED"' \
+  "double-quoted .env value stripped — channel stored without quotes"
+assert_not_contains "$out" 'C_QUOTED\"' \
+  "no literal quote chars inside channel value"
+rm -f "$SANDBOX/.env"
+
 finish
