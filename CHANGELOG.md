@@ -24,7 +24,7 @@
 ### Fixed
 
 - Grant `Skill` tool access to `qa`, `reviewer`, and `security` role profiles — these roles were previously missing the tool permission. (9404d43)
-- Dry-run variants and GitLab fail-open test coverage for all hardening verbs. (3dfb88a)
+- Dry-run variants and GitLab fail-open test coverage for all hardening verbs. (38b2d3a)
 
 ### Changed
 
