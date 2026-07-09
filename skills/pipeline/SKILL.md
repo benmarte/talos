@@ -196,6 +196,10 @@ bash scripts/pipeline-vcs.sh list-issues
    - List all open issues and scan their bodies for `Part of #<E>` references.
    - If every such issue is now closed (none found open with `Part of #<E>`), call:
      `bash scripts/pipeline-vcs.sh close-issue <E> "All sub-issues resolved."`
+7. **Dependency unblocking sweep (when `ROLE_PLANNER = true`).** For every open issue that has a `Depends on: #<DEP>` line in its body but does NOT yet carry `pipeline:ready`:
+   - Check whether issue `#<DEP>` is now closed.
+   - If closed: `bash scripts/pipeline-vcs.sh label-issue <SUB> --add pipeline:ready`
+     so the sub-issue enters the queue on the next pipeline pass.
 
 Log a one-line summary: "N issues queued, M PRs in-flight (A adopted), K ready to merge, B blocked."
 
@@ -312,20 +316,25 @@ After the planner returns (its output begins with `PLAN:`):
      <Context from planner>
 
      Part of #<N>
-     [Depends on: #<prev-sub-issue-number>  ← only if planner listed a dependency]
+     [Depends on: #<PREV-SUB-ISSUE-NUMBER>  ← only if planner listed a dependency]
      ```
    - Write the body to a temp file: `printf '%s' "<body>" > /tmp/sub-issue-<i>.md`
-   - Create the sub-issue:
+   - **Independent sub-task** (no `Depends on:` in planner output) — label `pipeline:ready`
+     so it enters the queue immediately:
      ```bash
      bash scripts/pipeline-vcs.sh create-issue "<sub-task title>" /tmp/sub-issue-<i>.md \
        --label pipeline:ready
      ```
-     Capture the returned issue number/URL as `SUB_N`.
-   - If this sub-task had a `Depends on:` line in the planner output, the sub-issue
-     body already carries the text reference. Sub-issues with dependencies do **not**
-     get `pipeline:ready` — omit the label for dependent sub-issues so they stay out
-     of the queue until the dependency closes.
-   - Record the mapping: planner index → real issue number.
+   - **Dependent sub-task** (planner listed `Depends on: <j>`) — do NOT add `pipeline:ready`;
+     it stays unlabeled and out of the queue until Step 1 unblocks it:
+     ```bash
+     bash scripts/pipeline-vcs.sh create-issue "<sub-task title>" /tmp/sub-issue-<i>.md
+     ```
+     The body already carries the `Depends on: #<PREV>` line so Step 1 reconciliation can
+     detect when the blocker closes and add `pipeline:ready` at that point.
+   - Capture the returned issue number/URL as `SUB_N`. Record the mapping:
+     planner index → real issue number (used to fill in the `Depends on:` body line for
+     the next sub-task if it depends on this one).
 
 2. Label the epic:
    ```bash
