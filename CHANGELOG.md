@@ -7,7 +7,6 @@
 ### Breaking Changes
 
 - **Install layout moved to `.claude/talos/`** (was `.claude/pipeline/`). Re-run `install.sh` or move your directory manually. (8654d69)
-- **Config renamed to `talos.pipeline.yml`** — no Talos file names carry "claude". Rename `claude.pipeline.yml` → `talos.pipeline.yml` in your repo root. (f99eb97)
 - **`pipeline-notify.sh` now loads `.env` from repo root only** (`<repo-root>/.env` via `git rev-parse --show-toplevel`). Move any credentials from `.claude/talos/.env` (or `.claude/pipeline/.env`) to your repository root `.env`. Dotenv precedence: exported env vars always win over `.env` values. (1e27cbb)
 
 ### Added
@@ -28,6 +27,7 @@
 
 ### Changed
 
+- **Config renamed to `talos.pipeline.yml`** — legacy `.claude-pipeline.yaml`/`pipeline.yaml` are still honored; `talos.pipeline.yml` wins when both exist. No migration required for v0.1.0 configs. (f99eb97)
 - **`/pipeline-setup` wizard** now prompts for agent harness (claude/codex/gemini/custom), emits `forbidden_files` defaults, and covers control labels in the generated `talos.pipeline.yml` template. (593f040)
 - **Docs**: user guide expanded with per-harness setup, prerequisites, env vars, feature matrix, llama.cpp local-model recipe, and a worked example wiring `addyosmani/agent-skills` into role profiles. (40bc1c8, 88700d2, 21e5dd6)
 
