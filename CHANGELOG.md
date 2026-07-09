@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- fix(azure): split org_arg into separate argv elements in label-issue subprocess call (#20)
+
 - feat: Antigravity named runner (agy -p) and --harness antigravity install support (#21)
 
 - **Provider coverage tests (#17):** regression suite now exercises every verb in the gitlab and azure adapters and all three Teams notification paths (debug, real AdaptiveCard post, silent no-op) via new `tests/test-providers.sh` + extended `tests/stubs/glab` + new `tests/stubs/az`.

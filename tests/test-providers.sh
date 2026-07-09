@@ -105,6 +105,22 @@ log="$(cat "$GH_LOG")"
 assert_contains "$log" "AZ boards work-item update" "azure label-issue remove calls work-item update"
 assert_contains "$log" "--tags bug" "azure label-issue remove drops removed tag"
 
+# label-issue with org_url: org_arg must be split into two argv elements (not one)
+# so az receives '--org' and 'https://dev.azure.com/testorg' as separate arguments.
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "azure", "azure": {"org_url": "https://dev.azure.com/testorg"}}}
+EOF
+: > "$GH_LOG"
+rc=0
+bash "$VCS" label-issue 5 --add "backend" >/dev/null 2>&1 || rc=$?
+log="$(cat "$GH_LOG")"
+assert_eq "0" "$rc" "azure label-issue with org_url exits 0"
+assert_contains "$log" "--org https://dev.azure.com/testorg" "azure label-issue splits org_arg into separate argv elements"
+# Restore config without org_url for remaining tests
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "azure"}}
+EOF
+
 # merge-pr → az repos pr update --status completed
 : > "$GH_LOG"
 bash "$VCS" merge-pr 7 >/dev/null 2>&1
