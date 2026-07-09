@@ -45,7 +45,7 @@ assert_not_contains "$retry_payload" "thread_ts" "recovery repost is a fresh roo
 
 # ── threading disabled via config ────────────────────────────────────────────
 rm -f "$PIPELINE_THREAD_STATE"; : > "$CURL_LOG"
-cat > .claude-pipeline.json <<'EOF'
+cat > talos.pipeline.json <<'EOF'
 {"notifications": {"threading": false}}
 EOF
 live_notify dispatched "#50" "kickoff" 50 >/dev/null
@@ -55,7 +55,7 @@ assert_not_contains "$(tail -1 "$CURL_LOG" | cut -f2)" "thread_ts" \
 [ -f "$PIPELINE_THREAD_STATE" ] \
   && fail "threading=false writes no state file" \
   || pass "threading=false writes no state file"
-rm .claude-pipeline.json
+rm talos.pipeline.json
 
 # ── Corrupt state file never crashes ─────────────────────────────────────────
 echo "{ corrupt" > "$PIPELINE_THREAD_STATE"

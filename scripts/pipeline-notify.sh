@@ -16,7 +16,7 @@
 #        (set in env or in <repo>/.env)
 #   2. Config file channels + bot tokens from ~/.hermes/.env:
 #        SLACK_BOT_TOKEN / DISCORD_BOT_TOKEN posting to configured channels.
-#        Channels from .claude-pipeline.yaml notifications.slack_channel /
+#        Channels from talos.pipeline.yml notifications.slack_channel /
 #        notifications.discord_channel, overrideable via env vars
 #        PIPELINE_SLACK_CHANNEL / PIPELINE_DISCORD_CHANNEL.
 #
@@ -24,7 +24,7 @@
 #   When notifications.threading = true (default) and a bot token is in use,
 #   all events sharing the same thread_key post as replies to the first message
 #   (Slack thread_ts / Discord message_reference). Anchors are persisted in
-#   ${PIPELINE_THREAD_STATE:-$HOME/.claude-pipeline/threads.json}.
+#   ${PIPELINE_THREAD_STATE:-$HOME/.talos/threads.json}.
 #   Webhook mode CANNOT thread — Slack incoming webhooks have no thread_ts
 #   and Discord webhooks do not support message_reference. Threading is
 #   silently skipped in webhook mode.
@@ -145,7 +145,7 @@ TEXT="$ICON [talos] $EVENT $REF — $MSG${PRIMARY_URL:+ ($PRIMARY_URL)}"
 TMPL_DIR_CFG="$(cfg notifications.templates_dir "templates/notifications")"
 if [ -n "$TMPL_DIR_CFG" ]; then
   # Absolute path: use as-is. Relative: caller's cwd first, then the
-  # claude-pipeline repo's bundled templates as fallback.
+  # Talos repo's bundled templates as fallback.
   case "$TMPL_DIR_CFG" in
     /*) TMPL_FILE="$TMPL_DIR_CFG/$EVENT.md" ;;
     *)  TMPL_FILE="$PWD/$TMPL_DIR_CFG/$EVENT.md"
@@ -177,7 +177,7 @@ PAYLOAD_TEXT="$(json_escape "$TEXT")"
 
 # ── Threading setup ───────────────────────────────────────────────────────────
 THREADING_ENABLED="$(cfg notifications.threading "true")"
-STATE_FILE="${PIPELINE_THREAD_STATE:-$HOME/.claude-pipeline/threads.json}"
+STATE_FILE="${PIPELINE_THREAD_STATE:-$HOME/.talos/threads.json}"
 
 # Repo slug: namespaces thread anchors so multiple repos don't collide.
 REPO_SLUG="$(git -C "$PWD" remote get-url origin 2>/dev/null \

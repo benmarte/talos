@@ -12,7 +12,7 @@
 # its YAML frontmatter stripped — the frontmatter is Claude Code metadata)
 # + a separator + the task prompt.
 #
-# Config keys (.claude-pipeline.yaml via pipeline-config.sh):
+# Config keys (talos.pipeline.yml via pipeline-config.sh):
 #   agents.runner       claude (default) | codex | gemini | custom
 #   agents.runner_args  list of extra CLI args appended to claude/codex/gemini
 #   agents.runner_cmd   full shell command for runner=custom;

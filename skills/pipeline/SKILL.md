@@ -25,7 +25,7 @@ The adapter combines `.claude/agents/<role>.md` with the stage prompt and runs i
 
 Find the project config file in this order:
 1. `$PIPELINE_CONFIG` env var (absolute path)
-2. `./.claude-pipeline.yaml`
+2. `./talos.pipeline.yml`
 3. `./pipeline.yaml`
 
 Read each value with: `bash scripts/pipeline-config.sh <key> <default>`
@@ -55,7 +55,7 @@ Store these for the run:
 - `limits.max_fix_attempts`: 3
 - `verify`: [] (no verify commands)
 - `comments.enabled`: true
-- `comments.header`: `**Agent:** {role} (claude-pipeline)`
+- `comments.header`: `**Agent:** {role} (talos)`
 - `comments.templates_dir`: `templates/comments`
 - `notifications.threading`: true
 
@@ -77,7 +77,7 @@ Every subagent MUST post a findings comment at its handoff point when `comments.
 | orchestrator | Issue (merge/close summary) |
 
 **Header format:** Read `comments.header` from config. Replace `{role}` with the subagent's role name.
-Example: `"**Agent:** {role} (claude-pipeline)"` → `"**Agent:** validator (claude-pipeline)"`
+Example: `"**Agent:** {role} (talos)"` → `"**Agent:** validator (talos)"`
 
 **Rendering recipe** (every subagent uses this):
 ```bash
@@ -146,7 +146,7 @@ If the user describes work conversationally (e.g., "fix the login bug, add dark 
 1. Extract the individual tasks from the conversation.
 2. Write `plan.md` in the current directory with one `- [ ] Task` item per task.
 3. Set config to use file mode:
-   - Create or update `.claude-pipeline.yaml` with `vcs: {provider: file, file: {source: {path: plan.md}}}`.
+   - Create or update `talos.pipeline.yml` with `vcs: {provider: file, file: {source: {path: plan.md}}}`.
 4. Proceed with the File Mode pipeline on those items.
 
 ---

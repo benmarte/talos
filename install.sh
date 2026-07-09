@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install.sh — copy claude-pipeline scripts and skills into a target repo.
+# install.sh — copy Talos scripts and skills into a target repo.
 #
 # Usage: bash install.sh [target-repo-path] [--force] [--harness claude|codex]
 #   target-repo-path defaults to the current directory.
@@ -66,7 +66,7 @@ install_file() {
   echo "  installed: $dest"
 }
 
-echo "Installing claude-pipeline into: $TARGET"
+echo "Installing Talos into: $TARGET"
 echo ""
 
 # Scripts
@@ -128,7 +128,7 @@ subagent with this prompt", instead run the stage headlessly:
     PROMPT
 
 Role definitions live in `.claude/agents/*.md`. Set the runner in
-`.claude-pipeline.yaml` (`agents.runner: codex`). All VCS operations go through
+`talos.pipeline.yml` (`agents.runner: codex`). All VCS operations go through
 `.claude/talos/scripts/pipeline-vcs.sh` — never call `gh` directly.
 <!-- talos:end -->
 AGENTSEOF
@@ -138,17 +138,17 @@ fi
 
 # Offer to copy config example
 echo ""
-if [ ! -f "$TARGET/.claude-pipeline.yaml" ]; then
+if [ ! -f "$TARGET/talos.pipeline.yml" ]; then
   echo "Config template:"
-  echo "  Copy pipeline.yaml.example to .claude-pipeline.yaml and edit it:"
-  echo "    cp $SRC/pipeline.yaml.example $TARGET/.claude-pipeline.yaml"
+  echo "  Copy talos.pipeline.yml.example to talos.pipeline.yml and edit it:"
+  echo "    cp $SRC/talos.pipeline.yml.example $TARGET/talos.pipeline.yml"
 else
-  echo "Config: .claude-pipeline.yaml already exists — not overwriting."
+  echo "Config: talos.pipeline.yml already exists — not overwriting."
 fi
 
 echo ""
 echo "Done. Next steps:"
-echo "  1. Edit $TARGET/.claude-pipeline.yaml for your project"
+echo "  1. Edit $TARGET/talos.pipeline.yml for your project"
 echo "  2. Run: bash $TARGET/.claude/talos/scripts/bootstrap-labels.sh"
 echo "  3. Add 'pipeline:ready' to a GitHub issue"
 echo "  4. Open a Claude Code session in $TARGET and run: /pipeline"

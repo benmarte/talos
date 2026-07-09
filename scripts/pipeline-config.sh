@@ -8,14 +8,14 @@
 #
 # Config file lookup order:
 #   1. $PIPELINE_CONFIG env var (absolute path to config file)
-#   2. ./.claude-pipeline.yaml
-#   3. ./pipeline.yaml
+#   2. ./talos.pipeline.yml (.yaml / .json variants)
+#   3. Legacy names: ./.claude-pipeline.yaml, ./pipeline.yaml (+ .json variants)
 #   4. No config found — returns the default (or empty string)
 #
 # YAML parsing:
 #   Uses PyYAML (python3 -c "import yaml") if importable.
 #   Falls back to JSON parsing for .json config files (rename yours to
-#   .claude-pipeline.json or pipeline.json).
+#   talos.pipeline.json or pipeline.json).
 #   Never crashes — missing keys, absent files, or parse errors all return
 #   the default silently.
 #
@@ -29,7 +29,9 @@ DEFAULT="${2:-}"
 # ── Locate config file ────────────────────────────────────────────────────────
 CFG="${PIPELINE_CONFIG:-}"
 if [ -z "$CFG" ]; then
-  for candidate in ".claude-pipeline.yaml" "pipeline.yaml" \
+  # talos.* names win; .claude-pipeline.* / pipeline.* honored as legacy
+  for candidate in "talos.pipeline.yml" "talos.pipeline.yaml" "talos.pipeline.json" \
+                   ".claude-pipeline.yaml" "pipeline.yaml" \
                    ".claude-pipeline.json" "pipeline.json"; do
     if [ -f "$candidate" ]; then
       CFG="$candidate"

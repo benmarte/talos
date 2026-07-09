@@ -58,14 +58,14 @@ out="$(PIPELINE_REPO_URL="https://github.com/other/repo" PIPELINE_ISSUE_TITLE="T
 assert_contains "$out" "https://github.com/other/repo/issues/5" "PIPELINE_REPO_URL override respected"
 
 # ── Event filter from config ─────────────────────────────────────────────────
-cat > .claude-pipeline.json <<'EOF'
+cat > talos.pipeline.json <<'EOF'
 {"notifications": {"events": ["merged", "blocked"]}}
 EOF
 out="$(PIPELINE_ISSUE_TITLE="T" run_notify validator "#42" "should be filtered" 42)"
 assert_eq "" "$out" "event not in notifications.events is dropped"
 out="$(PIPELINE_ISSUE_TITLE="T" run_notify merged "#42" "should pass" 42)"
 assert_contains "$out" "SLACK" "allowed event passes the filter"
-rm .claude-pipeline.json
+rm talos.pipeline.json
 
 # ── No credentials at all → silent no-op, exit 0 ─────────────────────────────
 out="$(PIPELINE_NOTIFY_DEBUG=1 bash "$NOTIFY" validator "#42" "m" 42 2>&1)"; rc=$?

@@ -17,12 +17,12 @@ assert_contains "$out" "--remove-label 'pipeline:ready'" "label-issue --remove m
 out="$(bash "$VCS" --dry-run merge-pr 9)"
 assert_contains "$out" "gh pr merge 9 --squash --delete-branch" "merge-pr defaults to squash"
 
-cat > .claude-pipeline.json <<'EOF'
+cat > talos.pipeline.json <<'EOF'
 {"merge": {"method": "rebase"}}
 EOF
 out="$(bash "$VCS" --dry-run merge-pr 9)"
 assert_contains "$out" "--rebase" "merge.method config changes merge flag"
-rm .claude-pipeline.json
+rm talos.pipeline.json
 
 out="$(bash "$VCS" --dry-run comment-pr 9 "review done")"
 assert_contains "$out" "gh issue comment 9" "comment-pr uses issue comment API"
@@ -59,14 +59,14 @@ assert_contains "$out" "deploy/prod.pem" "violating path listed (*.pem)"
 assert_contains "$out" ".env.production" "violating path listed (.env.*)"
 assert_not_contains "$out" "src/app.js" "clean path not listed"
 
-cat > .claude-pipeline.json <<'EOF'
+cat > talos.pipeline.json <<'EOF'
 {"merge": {"forbidden_files": ["*.tfstate"]}}
 EOF
 out="$(STUB_PR_FILES=$'infra/prod.tfstate\n.env' bash "$VCS" check-pr-files 9)"; rc=$?
 assert_eq "1" "$rc" "custom forbidden_files config enforced"
 assert_contains "$out" "infra/prod.tfstate" "custom pattern matched"
 assert_not_contains "$out" ".env" "custom config replaces defaults"
-rm .claude-pipeline.json
+rm talos.pipeline.json
 
 # ── rerun-ci: re-runs only failed runs for the head SHA ───────────────────────
 : > "$GH_LOG"
@@ -82,16 +82,16 @@ assert_contains "$out" "[dry-run]" "new verbs support --dry-run"
 assert_not_contains "$(grep -v "repo view" "$GH_LOG")" "pr " "dry-run makes no pr/run gh calls"
 
 # ── GitLab adapter: new verbs fail open with a warning ───────────────────────
-cat > .claude-pipeline.json <<'EOF'
+cat > talos.pipeline.json <<'EOF'
 {"vcs": {"provider": "gitlab"}}
 EOF
 out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
 assert_eq "0" "$rc" "gitlab: check-pr-files fails open (exit 0)"
 assert_contains "$out" "not implemented for gitlab" "gitlab: fail-open warns the orchestrator"
-rm .claude-pipeline.json
+rm talos.pipeline.json
 
 # ── File-mode adapter: real markdown checklist manipulation ──────────────────
-cat > .claude-pipeline.json <<'EOF'
+cat > talos.pipeline.json <<'EOF'
 {"vcs": {"provider": "file", "file": {"source": {"path": "plan.md"}}}}
 EOF
 cat > plan.md <<'EOF'

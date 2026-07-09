@@ -14,9 +14,9 @@ GitHub Issues (or a local markdown checklist in file mode) serve as the state ma
 
 ## How it maps to Daedalus
 
-[Daedalus](https://github.com/benmarte/daedalus) is the full-featured Hermes plugin this is distilled from. claude-pipeline takes the same ideas and runs them on pure Claude Code.
+[Daedalus](https://github.com/benmarte/daedalus) is the full-featured Hermes plugin this is distilled from. Talos takes the same ideas and runs them on pure Claude Code.
 
-| Daedalus | claude-pipeline |
+| Daedalus | Talos |
 |----------|-----------------|
 | 9 role SOULs + Hermes kanban | `.claude/agents/*.md` subagents + GitHub labels |
 | Dispatcher cron | You run `/pipeline` in a Claude Code session |
@@ -25,7 +25,7 @@ GitHub Issues (or a local markdown checklist in file mode) serve as the state ma
 | Validator gate | `pipeline:ready` → validator must emit CONFIRMED |
 | QA-gates-review | `qa:pass` required before reviewer/security/docs |
 | Auto-merge | Orchestrator merges when CI + all stage labels are green |
-| Dashboard / per-project config | `.claude-pipeline.yaml` per repo |
+| Dashboard / per-project config | `talos.pipeline.yml` per repo |
 
 ---
 
@@ -97,23 +97,23 @@ cd your-repo
 # Claude Code plugin install is not yet GA — copy manually for now (see install.sh)
 
 # Option B: manual copy
-cp -r path/to/claude-pipeline/scripts/   .claude/talos/scripts/
-cp -r path/to/claude-pipeline/skills/    .claude/talos/skills/
-cp -r path/to/claude-pipeline/templates/ .claude/talos/templates/   # required for rich messages
-cp -r path/to/claude-pipeline/.claude/agents/ .claude/agents/
+cp -r path/to/talos/scripts/   .claude/talos/scripts/
+cp -r path/to/talos/skills/    .claude/talos/skills/
+cp -r path/to/talos/templates/ .claude/talos/templates/   # required for rich messages
+cp -r path/to/talos/.claude/agents/ .claude/agents/
 ```
 
 Or run the included installer:
 
 ```bash
-bash path/to/claude-pipeline/install.sh /path/to/your-repo
+bash path/to/talos/install.sh /path/to/your-repo
 ```
 
 ### 2. Configure
 
 ```bash
-cp path/to/claude-pipeline/pipeline.yaml.example .claude-pipeline.yaml
-# Edit .claude-pipeline.yaml for your project
+cp path/to/talos/talos.pipeline.yml.example talos.pipeline.yml
+# Edit talos.pipeline.yml for your project
 ```
 
 Minimum viable config (board and notifications optional):
@@ -166,7 +166,7 @@ Then open a Claude Code session in your repo and run:
 
 ## Config reference
 
-All keys live in `.claude-pipeline.yaml` at your repo root. Every key is optional and falls back to a sensible default.
+All keys live in `talos.pipeline.yml` at your repo root. Every key is optional and falls back to a sensible default.
 
 | Key | Default | Description |
 |-----|---------|-------------|
@@ -196,7 +196,7 @@ All keys live in `.claude-pipeline.yaml` at your repo root. Every key is optiona
 | `roles.security` | `true` | Security review |
 | `roles.docs` | `true` | Updates docs/CHANGELOG; terminal stage |
 | `comments.enabled` | `true` | Post a stage comment at each handoff (Daedalus parity) |
-| `comments.header` | `**Agent:** {role} (claude-pipeline)` | Header prepended to every stage comment; `{role}` is replaced at runtime |
+| `comments.header` | `**Agent:** {role} (talos)` | Header prepended to every stage comment; `{role}` is replaced at runtime |
 | `comments.templates_dir` | `templates/comments` | Path (relative to repo root) containing comment templates |
 | `notifications.slack_channel` | `""` | Slack channel ID fallback |
 | `notifications.discord_channel` | `""` | Discord channel ID fallback |
@@ -261,7 +261,7 @@ Keep the first template line free of markdown links — Discord embed titles don
 | `issue-closed.md` | `issue-closed` | Issue closed after merge |
 | `info.md` | `info` | Generic informational events |
 
-**Events-filter warning:** `notifications.events` defaults to unset (all events fire). If you set a list, any event not in it is **silently dropped** — no error, no log line. A lifecycle-only list like `[pr-opened, merged, blocked, issue-closed]` kills the entire conversation stream. When you need a filter, copy the full list from `pipeline.yaml.example` and remove only what you don't want.
+**Events-filter warning:** `notifications.events` defaults to unset (all events fire). If you set a list, any event not in it is **silently dropped** — no error, no log line. A lifecycle-only list like `[pr-opened, merged, blocked, issue-closed]` kills the entire conversation stream. When you need a filter, copy the full list from `talos.pipeline.yml.example` and remove only what you don't want.
 
 ### Environment variable overrides
 
@@ -276,7 +276,7 @@ Scripts respect these env vars, which take priority over the config file:
 | `PIPELINE_REPO` | detected repo (owner/name) |
 | `PIPELINE_SLACK_CHANNEL` | `notifications.slack_channel` |
 | `PIPELINE_DISCORD_CHANNEL` | `notifications.discord_channel` |
-| `PIPELINE_THREAD_STATE` | path to thread anchor state file (default: `~/.claude-pipeline/threads.json`) |
+| `PIPELINE_THREAD_STATE` | path to thread anchor state file (default: `~/.talos/threads.json`) |
 | `PIPELINE_REPO_URL` | repo URL used to build issue/PR links (default: detected via `gh repo view`) |
 | `PIPELINE_ISSUE_TITLE` / `PIPELINE_PR` / `PIPELINE_PR_TITLE` | issue/PR context for templates (skips the `gh` lookups) |
 | `PIPELINE_NOTIFY_DEBUG` | set to `1` to print payloads without posting (safe for testing) |
@@ -325,7 +325,7 @@ After each subagent completes, the orchestrator relays that agent's findings sum
 | `blocked` | Any stage blocks the issue |
 | `issue-closed` | Issue closed after merge |
 
-Thread anchors are stored in `~/.claude-pipeline/threads.json` keyed by `<repo-slug>:<issue-number>`. If the anchor message is deleted, the script detects the stale anchor, clears it, and posts a fresh root thread automatically.
+Thread anchors are stored in `~/.talos/threads.json` keyed by `<repo-slug>:<issue-number>`. If the anchor message is deleted, the script detects the stale anchor, clears it, and posts a fresh root thread automatically.
 
 **Webhook mode limitation**: Slack incoming webhooks and Discord webhooks do not expose thread IDs at post time, so threading is silently skipped in webhook mode. Use bot tokens if threading is important.
 
@@ -334,7 +334,7 @@ Thread anchors are stored in `~/.claude-pipeline/threads.json` keyed by `<repo-s
 ## How a run works end-to-end
 
 1. You run `/pipeline` in a Claude Code session.
-2. The orchestrator reads `.claude-pipeline.yaml` and reconciles any in-flight PRs from a previous run.
+2. The orchestrator reads `talos.pipeline.yml` and reconciles any in-flight PRs from a previous run.
 3. It lists issues with `pipeline:ready` (up to `max_parallel`).
 4. For each issue:
    - **Validator** reads the issue and codebase. CONFIRMED advances; anything else sets `pipeline:blocked`.
@@ -415,7 +415,7 @@ PROMPT
 
 The adapter merges `.claude/agents/<role>.md` (frontmatter stripped) with the
 stage prompt and executes it via the runner configured in
-`.claude-pipeline.yaml`:
+`talos.pipeline.yml`:
 
 ```yaml
 agents:
@@ -485,4 +485,4 @@ CI runs the suite on Ubuntu and macOS for every push and PR
 
 ## Credits
 
-claude-pipeline is a distillation of [Daedalus](https://github.com/benmarte/daedalus) — a full-featured Hermes plugin with a 9-agent roster, kanban board, dashboard, and per-project config. If you need multi-project management, a dashboard UI, or a long-running daemon, use Daedalus. If you want a drop-in, zero-infrastructure pipeline driven from a Claude Code session — supporting GitHub (battle-tested), GitLab, Azure DevOps, and a local file mode — this is it.
+Talos is a distillation of [Daedalus](https://github.com/benmarte/daedalus) — a full-featured Hermes plugin with a 9-agent roster, kanban board, dashboard, and per-project config. If you need multi-project management, a dashboard UI, or a long-running daemon, use Daedalus. If you want a drop-in, zero-infrastructure pipeline driven from a Claude Code session — supporting GitHub (battle-tested), GitLab, Azure DevOps, and a local file mode — this is it.

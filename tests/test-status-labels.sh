@@ -12,19 +12,19 @@ STATUS="$TALOS_ROOT/scripts/pipeline-status.sh"
 out="$(bash "$STATUS" 2>&1)"; rc=$?
 assert_eq "2" "$rc" "missing args exits 2"
 
-cat > .claude-pipeline.json <<'EOF'
+cat > talos.pipeline.json <<'EOF'
 {"board": {"enabled": false}}
 EOF
 out="$(bash "$STATUS" 42 "Done" 2>&1)"; rc=$?
 assert_eq "0" "$rc" "board disabled exits 0"
 assert_contains "$out" "board disabled" "board disabled is announced"
-rm .claude-pipeline.json
+rm talos.pipeline.json
 
 out="$(bash "$STATUS" 42 "Done" 2>&1)"; rc=$?
 assert_eq "0" "$rc" "no project_number configured exits 0 (skip)"
 
 # Full resolution path through the stub: project → field → option → item
-cat > .claude-pipeline.json <<'EOF'
+cat > talos.pipeline.json <<'EOF'
 {"board": {"enabled": true, "project_number": 7, "owner": "acme"}}
 EOF
 out="$(bash "$STATUS" 42 "In progress" 2>&1)"; rc=$?

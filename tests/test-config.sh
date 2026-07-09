@@ -7,7 +7,7 @@ make_sandbox
 CFG_SH="$TALOS_ROOT/scripts/pipeline-config.sh"
 
 # JSON config works without PyYAML, so it is the baseline format for tests.
-cat > .claude-pipeline.json <<'EOF'
+cat > talos.pipeline.json <<'EOF'
 {
   "merge": {"method": "rebase"},
   "board": {"enabled": true, "project_number": 7},
@@ -35,17 +35,17 @@ assert_eq "merge" "$(PIPELINE_CONFIG="$SANDBOX/elsewhere/other.json" bash "$CFG_
   "PIPELINE_CONFIG env var overrides local config"
 
 # No config anywhere → default
-rm .claude-pipeline.json
+rm talos.pipeline.json
 assert_eq "squash" "$(bash "$CFG_SH" merge.method squash)" "no config file returns default"
 
 # Corrupt config never crashes
-echo "{ not json" > .claude-pipeline.json
+echo "{ not json" > talos.pipeline.json
 assert_eq "safe" "$(bash "$CFG_SH" merge.method safe)" "corrupt config returns default"
-rm .claude-pipeline.json
+rm talos.pipeline.json
 
 # YAML path (only when PyYAML is available — matches script behaviour)
 if python3 -c "import yaml" 2>/dev/null; then
-  cat > .claude-pipeline.yaml <<'EOF'
+  cat > talos.pipeline.yml <<'EOF'
 merge:
   method: rebase
 verify:
@@ -54,8 +54,20 @@ verify:
 EOF
   assert_eq "rebase" "$(bash "$CFG_SH" merge.method squash)" "yaml nested key"
   assert_eq "$(printf 'npm test\nnpm run lint')" "$(bash "$CFG_SH" verify "")" "yaml list"
+  rm talos.pipeline.yml
 else
   echo "  skip: PyYAML not installed — yaml cases skipped"
 fi
+
+# Legacy config names still honored; talos.* wins when both exist
+cat > .claude-pipeline.json <<'EOF'
+{"merge": {"method": "merge"}}
+EOF
+assert_eq "merge" "$(bash "$CFG_SH" merge.method squash)" "legacy .claude-pipeline.json still read"
+cat > talos.pipeline.json <<'EOF'
+{"merge": {"method": "rebase"}}
+EOF
+assert_eq "rebase" "$(bash "$CFG_SH" merge.method squash)" "talos.pipeline.json wins over legacy"
+rm .claude-pipeline.json talos.pipeline.json
 
 finish

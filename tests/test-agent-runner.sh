@@ -22,7 +22,7 @@ assert_contains "$log" "Issue #7 is assigned to you." "task prompt appended"
 assert_not_contains "$log" "model: opus" "YAML frontmatter stripped from role file"
 
 # ── Codex runner via config ──────────────────────────────────────────────────
-cat > .claude-pipeline.json <<'EOF'
+cat > talos.pipeline.json <<'EOF'
 {"agents": {"runner": "codex", "runner_args": ["--full-auto"]}}
 EOF
 : > "$RUNNER_LOG"
@@ -43,7 +43,7 @@ assert_contains "$(cat "$RUNNER_LOG")" "Verify PR #9 against the acceptance crit
   "stdin prompt reaches the runner"
 
 # ── Gemini runner via config ─────────────────────────────────────────────────
-cat > .claude-pipeline.json <<'EOF'
+cat > talos.pipeline.json <<'EOF'
 {"agents": {"runner": "gemini"}}
 EOF
 : > "$RUNNER_LOG"
@@ -52,7 +52,7 @@ assert_eq "gemini-stub-ok" "$out" "agents.runner=gemini uses gemini CLI"
 assert_contains "$(cat "$RUNNER_LOG")" "GEMINI ARGS: [-p]" "gemini invoked with -p prompt"
 
 # ── Custom runner: prompt on stdin ───────────────────────────────────────────
-cat > .claude-pipeline.json <<'EOF'
+cat > talos.pipeline.json <<'EOF'
 {"agents": {"runner": "custom", "runner_cmd": "wc -l | tr -d ' '"}}
 EOF
 out="$(bash "$AGENT" validator "line one")"
@@ -60,7 +60,7 @@ out="$(bash "$AGENT" validator "line one")"
   && pass "custom runner receives full prompt on stdin" \
   || fail "custom runner receives full prompt on stdin" "got: $out"
 
-cat > .claude-pipeline.json <<'EOF'
+cat > talos.pipeline.json <<'EOF'
 {"agents": {"runner": "custom"}}
 EOF
 if bash "$AGENT" validator "x" >/dev/null 2>&1; then
@@ -70,7 +70,7 @@ else
 fi
 
 # ── Error paths ───────────────────────────────────────────────────────────────
-cat > .claude-pipeline.json <<'EOF'
+cat > talos.pipeline.json <<'EOF'
 {"agents": {"runner": "no-such-runner"}}
 EOF
 if bash "$AGENT" validator "x" >/dev/null 2>&1; then
@@ -78,7 +78,7 @@ if bash "$AGENT" validator "x" >/dev/null 2>&1; then
 else
   pass "unknown runner exits non-zero"
 fi
-rm .claude-pipeline.json
+rm talos.pipeline.json
 
 if bash "$AGENT" no-such-role "x" >/dev/null 2>&1; then
   fail "missing role definition exits non-zero"

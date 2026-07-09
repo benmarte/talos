@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pipeline-vcs.sh — VCS provider adapter for claude-pipeline.
+# pipeline-vcs.sh — VCS provider adapter for Talos.
 #
 # Provides a uniform verb interface over GitHub, GitLab, Azure DevOps, or a
 # local markdown file (plan.md) so orchestrator and subagent prompts never
@@ -30,7 +30,7 @@
 #                                             merge.forbidden_files pattern
 #   rerun-ci <n>                              Re-run failed CI for the PR head SHA
 #
-# Config keys (from .claude-pipeline.yaml via pipeline-config.sh):
+# Config keys (from talos.pipeline.yml via pipeline-config.sh):
 #   vcs.provider          github | gitlab | azure | file   (default: github)
 #   vcs.repo              owner/repo  (auto-detected if omitted)
 #   vcs.azure.org_url     e.g. https://dev.azure.com/myorg
@@ -388,7 +388,7 @@ _gitlab() {
 #   Prerequisites:
 #     az extension add --name azure-devops
 #     az devops configure --defaults organization=<org_url> project=<project>
-#   Or set vcs.azure.org_url + vcs.azure.project in .claude-pipeline.yaml
+#   Or set vcs.azure.org_url + vcs.azure.project in talos.pipeline.yml
 # ─────────────────────────────────────────────────────────────────────────────
 _azure() {
   if ! command -v az >/dev/null 2>&1; then

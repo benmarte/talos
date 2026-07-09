@@ -1,10 +1,10 @@
-# .claude-pipeline.yaml
-# Per-project configuration for claude-pipeline.
-# Copy to your repo root as .claude-pipeline.yaml and edit for your project.
+# talos.pipeline.yml
+# Per-project configuration for Talos.
+# Copy to your repo root as talos.pipeline.yml and edit for your project.
 #
 # Config file lookup order used by pipeline scripts:
 #   1. $PIPELINE_CONFIG env var (absolute path)
-#   2. ./.claude-pipeline.yaml  (recommended name)
+#   2. ./talos.pipeline.yml  (recommended name)
 #   3. ./pipeline.yaml
 
 # Optional: GitHub owner/repo. Auto-detected from `git remote get-url origin` if omitted.
@@ -122,7 +122,7 @@ roles:
 # substitution. Set templates_dir to "" to use inline text without templates.
 comments:
   enabled: true
-  header: "**Agent:** {role} (claude-pipeline)"
+  header: "**Agent:** {role} (talos)"
   templates_dir: "templates/comments"    # relative to repo root
 
 # ── Notifications ─────────────────────────────────────────────────────────────

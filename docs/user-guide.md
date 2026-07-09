@@ -66,7 +66,7 @@ Core (all setups):
 |------|-----------|-------|
 | `bash` | everything | macOS/Linux; Windows via WSL or Git Bash |
 | `git` | everything | |
-| `python3` | config parsing, notify payloads | stdlib only; PyYAML optional — without it use a JSON config (`.claude-pipeline.json`) |
+| `python3` | config parsing, notify payloads | stdlib only; PyYAML optional — without it use a JSON config (`talos.pipeline.json`) |
 | `curl` | notifications | skip if you don't use notifications |
 
 Per VCS provider (pick one):
@@ -106,7 +106,7 @@ Where to put them: your shell env, or a `.env` file next to the pipeline
 install — `<repo>/.claude/talos/.env` for installed repos. Bot tokens are
 also picked up from `~/.hermes/.env` if you run Daedalus/Hermes.
 
-**Overrides** (optional; take priority over `.claude-pipeline.yaml`):
+**Overrides** (optional; take priority over `talos.pipeline.yml`):
 
 | Variable | Overrides |
 |----------|-----------|
@@ -116,7 +116,7 @@ also picked up from `~/.hermes/.env` if you run Daedalus/Hermes.
 | `PIPELINE_REPO` | detected `owner/repo` |
 | `PIPELINE_REPO_URL` | repo URL used for issue/PR links |
 | `PIPELINE_ISSUE_TITLE` / `PIPELINE_PR` / `PIPELINE_PR_TITLE` | notification context (skips `gh` lookups) |
-| `PIPELINE_THREAD_STATE` | thread anchor file (default `~/.claude-pipeline/threads.json`) |
+| `PIPELINE_THREAD_STATE` | thread anchor file (default `~/.talos/threads.json`) |
 | `PIPELINE_NOTIFY_DEBUG` | `1` = print payloads instead of posting |
 
 Nothing is strictly *required*: with no credentials at all, notifications are
@@ -132,7 +132,7 @@ the developer role.
 git clone https://github.com/benmarte/talos
 bash talos/install.sh /path/to/your-repo
 
-# 2. Configure (interactive — or copy pipeline.yaml.example manually)
+# 2. Configure (interactive — or copy talos.pipeline.yml.example manually)
 cd /path/to/your-repo
 # in a Claude Code session:  /pipeline-setup
 
@@ -146,7 +146,7 @@ gh issue edit 42 --add-label pipeline:ready
 
 What gets installed: `.claude/talos/{scripts,skills,templates}/` and
 `.claude/agents/*.md` (the role profiles). Nothing outside `.claude/` except
-an optional `.claude-pipeline.yaml` you create.
+an optional `talos.pipeline.yml` you create.
 
 ## Setup: Codex CLI
 
@@ -164,7 +164,7 @@ stage via the adapter. Existing `AGENTS.md` content is preserved; re-installs
 don't duplicate the section.
 
 ```yaml
-# 2. .claude-pipeline.yaml — route role stages through codex
+# 2. talos.pipeline.yml — route role stages through codex
 agents:
   runner: codex
   # runner_args: [--full-auto]
@@ -184,7 +184,7 @@ Same model as Codex: Gemini orchestrates by following the playbook, stages run
 through the adapter.
 
 ```yaml
-# .claude-pipeline.yaml
+# talos.pipeline.yml
 agents:
   runner: gemini        # stages run via: gemini -p "<prompt>"
 ```
@@ -212,7 +212,7 @@ llama-server -m qwen2.5-coder-32b-instruct-q4_k_m.gguf --port 8080 -c 32768 --ji
 ```
 
 ```yaml
-# .claude-pipeline.yaml — e.g. Aider against the local endpoint
+# talos.pipeline.yml — e.g. Aider against the local endpoint
 agents:
   runner: custom
   runner_cmd: >-
@@ -358,12 +358,12 @@ pack installed.
   `templates/`; manual copies often omit them).
 - **Slack/Discord thread goes silent after the first message** — you set
   `notifications.events` without the role events. Leave it unset, or copy the
-  full list from `pipeline.yaml.example`.
+  full list from `talos.pipeline.yml.example`.
 - **No threading** — webhooks can't thread; use a bot token + channel ID.
 - **Test what would be sent**: `PIPELINE_NOTIFY_DEBUG=1 bash
   .claude/talos/scripts/pipeline-notify.sh validator "#1" "test" 1`.
 - **YAML config ignored** — PyYAML not installed. `pip install pyyaml`, or
-  rename your config to `.claude-pipeline.json` and use JSON.
+  rename your config to `talos.pipeline.json` and use JSON.
 - **Board updates fail** — `gh auth refresh -s project` (Projects v2 needs the
   `project` scope); verify `board.project_number` and `board.owner`.
 - **Preview any VCS action** without executing:
@@ -388,6 +388,6 @@ notifications, the Slack/Discord/Teams HTTP APIs.
 `anthropics/claude-code-action`), but it's unmaintained reference material —
 the supported path is a local orchestrator session.
 
-**Is my repo modified?** Only `.claude/` (plus `.claude-pipeline.yaml` and,
+**Is my repo modified?** Only `.claude/` (plus `talos.pipeline.yml` and,
 for the codex harness, a fenced section in `AGENTS.md`). All state lives in
-labels, comments, and `~/.claude-pipeline/threads.json`.
+labels, comments, and `~/.talos/threads.json`.

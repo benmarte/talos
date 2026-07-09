@@ -18,7 +18,7 @@ export SLACK_BOT_TOKEN=xoxb-test PIPELINE_SLACK_CHANNEL=C0TEST
 export STUB_ISSUE_TITLE="Fix login crash" STUB_PR_TITLE="fix: guard null session"
 export PIPELINE_ISSUE_TITLE="$STUB_ISSUE_TITLE"
 
-cat > .claude-pipeline.json <<'EOF'
+cat > talos.pipeline.json <<'EOF'
 {"board": {"enabled": true, "project_number": 7, "owner": "acme"}}
 EOF
 
