@@ -354,7 +354,7 @@ Harness:      <claude (native subagents) | codex | gemini | custom>
 Control labels (created by bootstrap-labels.sh in Step 8):
   p0        — dispatched first (highest priority)
   p1        — high priority
-  p2        — low priority (dispatched last; unlabeled issues fall between p1 and p2)
+  p2        — low priority (dispatched after p1; unlabeled issues are dispatched last, after p2)
   skip-qa   — bypasses the QA, reviewer, security, and docs gates for this issue
               (CI checks and forbidden-files protection are ALWAYS enforced)
 
