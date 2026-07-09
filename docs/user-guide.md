@@ -369,8 +369,14 @@ pack installed.
   .claude/talos/scripts/pipeline-notify.sh validator "#1" "test" 1`.
 - **YAML config ignored** — PyYAML not installed. `pip install pyyaml`, or
   rename your config to `talos.pipeline.json` and use JSON.
-- **Board updates fail** — `gh auth refresh -s project` (Projects v2 needs the
-  `project` scope); verify `board.project_number` and `board.owner`.
+- **Board updates fail** — Two paths depending on your provider:
+  - **`github` provider:** `gh auth refresh -s project` (Projects v2 needs the
+    `project` scope); verify `board.project_number` and `board.owner`.
+  - **`github-api` provider (no `gh` CLI):** board updates use the same
+    `GITHUB_TOKEN` / `GH_TOKEN` via GraphQL. Because `gh` is absent, the owner
+    cannot be auto-detected — you must set `board.owner` explicitly in
+    `talos.pipeline.yml` (or `PIPELINE_BOARD_OWNER` env var); without it the
+    board step is silently skipped.
 - **Preview any VCS action** without executing:
   `bash .claude/talos/scripts/pipeline-vcs.sh --dry-run <verb> ...`.
 
