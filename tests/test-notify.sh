@@ -72,4 +72,44 @@ out="$(PIPELINE_NOTIFY_DEBUG=1 bash "$NOTIFY" validator "#42" "m" 42 2>&1)"; rc=
 assert_eq "0" "$rc" "no credentials exits 0"
 assert_eq "" "$out" "no credentials produces no output"
 
+# ── .env loading: root-env-loaded ────────────────────────────────────────────
+# Write a repo-root .env with a Slack bot token and channel; run notify from a
+# nested subdir to prove git rev-parse resolves to the repo root.
+printf 'SLACK_BOT_TOKEN=xoxb-from-dotenv\nPIPELINE_SLACK_CHANNEL=C_FROM_DOTENV\n' > "$SANDBOX/.env"
+mkdir -p "$SANDBOX/subdir"
+out="$(cd "$SANDBOX/subdir" && PIPELINE_NOTIFY_DEBUG=1 bash "$SANDBOX/$NOTIFY" \
+  info "#1" "dotenv test" 1 2>&1)"
+assert_contains "$out" "SLACK" \
+  "root .env loaded from nested subdir (bot token picked up)"
+# Cleanup .env before next tests
+rm -f "$SANDBOX/.env"
+
+# ── .env loading: env-var-precedence ─────────────────────────────────────────
+# Export PIPELINE_SLACK_CHANNEL=C_ENV and put C_FILE in the root .env;
+# the exported value must win.
+printf 'SLACK_BOT_TOKEN=xoxb-test\nPIPELINE_SLACK_CHANNEL=C_FILE\n' > "$SANDBOX/.env"
+out="$(PIPELINE_NOTIFY_DEBUG=1 SLACK_BOT_TOKEN=xoxb-test PIPELINE_SLACK_CHANNEL=C_ENV \
+  bash "$NOTIFY" info "#1" "precedence test" 1 2>&1)"
+assert_contains "$out" '"channel": "C_ENV"' \
+  "exported PIPELINE_SLACK_CHANNEL beats .env value"
+assert_not_contains "$out" '"channel": "C_FILE"' \
+  ".env channel value is not used when env var is already set"
+# Cleanup .env
+rm -f "$SANDBOX/.env"
+
+# ── .env loading: absence safety ─────────────────────────────────────────────
+# No .env anywhere — should exit 0 with no crash or error output on stderr.
+out="$(PIPELINE_NOTIFY_DEBUG=1 bash "$NOTIFY" info "#1" "no dotenv" 1 2>&1)"; rc=$?
+assert_eq "0" "$rc" "no .env anywhere exits 0"
+
+# ── .env loading: quoted values are stripped ──────────────────────────────────
+# Double-quoted channel value must be stored without the surrounding quotes.
+printf 'SLACK_BOT_TOKEN=xoxb-test\nPIPELINE_SLACK_CHANNEL="C_QUOTED"\n' > "$SANDBOX/.env"
+out="$(PIPELINE_NOTIFY_DEBUG=1 bash "$NOTIFY" info "#1" "quote strip test" 1 2>&1)"
+assert_contains "$out" '"channel": "C_QUOTED"' \
+  "double-quoted .env value stripped — channel stored without quotes"
+assert_not_contains "$out" 'C_QUOTED\"' \
+  "no literal quote chars inside channel value"
+rm -f "$SANDBOX/.env"
+
 finish

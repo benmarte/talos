@@ -102,9 +102,10 @@ Per feature (optional):
 | `TEAMS_WEBHOOK_URL` | Teams via incoming webhook |
 | `GH_TOKEN` | alternative to `gh auth login` (CI-friendly) |
 
-Where to put them: your shell env, or a `.env` file next to the pipeline
-install — `<repo>/.claude/talos/.env` for installed repos. Bot tokens are
-also picked up from `~/.hermes/.env` if you run Daedalus/Hermes.
+Where to put them: your shell env (exported variables always win), or a `.env`
+file at the **repo root** (`<repo>/.env`). Bot tokens are also picked up from
+`~/.hermes/.env` if you run Daedalus/Hermes. Note: the old `.claude/talos/.env`
+path is no longer read — move any credentials to the repo root.
 
 **Overrides** (optional; take priority over `talos.pipeline.yml`):
 
