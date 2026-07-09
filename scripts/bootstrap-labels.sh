@@ -21,6 +21,8 @@ labels=(
   "review:approved|c2e0c6|Code review approved"
   "security:approved|c2e0c6|Security review clear"
   "docs:done|c2e0c6|Documentation updated"
+  "epic|e4e669|Epic — planner decomposes into sub-issues"
+  "pipeline:epic-decomposed|c5def5|Epic split into sub-issues — never routed to developer"
 )
 
 for entry in "${labels[@]}"; do

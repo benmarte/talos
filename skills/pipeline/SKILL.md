@@ -36,7 +36,8 @@ Store these for the run:
 - BOARD_ENABLED, PROJECT_NUMBER, BOARD_OWNER
 - MAX_PARALLEL, MAX_FIX_ATTEMPTS, LABEL_FILTER, SKIP_LABELS
 - VERIFY_COMMANDS (newline-separated list from `verify`)
-- Each role toggle: ROLE_VALIDATOR, ROLE_PM, ROLE_QA, ROLE_REVIEWER, ROLE_SECURITY, ROLE_DOCS
+- Each role toggle: ROLE_VALIDATOR, ROLE_PM, ROLE_QA, ROLE_REVIEWER, ROLE_SECURITY, ROLE_DOCS (all default true)
+- ROLE_PLANNER (`roles.planner`, default `false`) — off by default; zero behavior change when absent or false
 - COMMENTS_ENABLED, COMMENTS_HEADER_TPL, COMMENTS_TMPL_DIR
 - FILE_SOURCE_PATH (`vcs.file.source.path`, for file mode)
 
@@ -191,6 +192,10 @@ bash scripts/pipeline-vcs.sh list-issues
 4. **Sweep orphaned worktrees.** `git worktree list` — remove (`git worktree remove --force`) any `fix/issue-*` worktree whose issue is closed or not in this run's queue.
 5. **Report stale blocked work.** List issues labeled `pipeline:blocked` and include them in the Step 1 summary notification so humans see what's waiting on them:
    `bash scripts/pipeline-notify.sh info "backlog" "K blocked issues awaiting human action: #a, #b" backlog` (only when K > 0).
+6. **Epic auto-close sweep (when `ROLE_PLANNER = true`).** Find all open issues carrying `pipeline:epic-decomposed`. For each epic `#E`:
+   - List all open issues and scan their bodies for `Part of #<E>` references.
+   - If every such issue is now closed (none found open with `Part of #<E>`), call:
+     `bash scripts/pipeline-vcs.sh close-issue <E> "All sub-issues resolved."`
 
 Log a one-line summary: "N issues queued, M PRs in-flight (A adopted), K ready to merge, B blocked."
 
@@ -209,6 +214,8 @@ For file mode: return unchecked items from `list-issues` (IDs are assigned on fi
 Sort by priority label first — `p0` before `p1` before `p2` before unlabeled
 (case-insensitive) — then by ID ascending (oldest first) within each tier.
 Take at most `max_parallel` issues.
+
+**Dependency gating (when `ROLE_PLANNER = true`).** After building the label-filtered queue, scan each issue body for `Depends on: #<N>` lines. For each such reference, call `bash scripts/pipeline-vcs.sh view-issue <N>` and check whether issue `#N` is still open. Skip any queued issue where at least one referenced dependency is still open. This check is skipped entirely when `ROLE_PLANNER = false`.
 
 ---
 
@@ -267,6 +274,73 @@ After validator returns:
   2. Relay findings: `bash scripts/pipeline-notify.sh validator "#<N>" "<outcome + what's missing>" <N>`
   3. Lifecycle event: `bash scripts/pipeline-notify.sh blocked "#<N>" "Validator: <outcome>" <N>`
   4. Move to next issue.
+
+### 3a-bis. Planner (if `roles.planner = true`)
+
+Only run if `ROLE_PLANNER = true` and the issue has `pipeline:confirmed`.
+
+**Epic detection** — the issue is an epic if ANY of:
+- The issue has the `epic` label
+- The issue body contains ≥ 4 `- [ ]` checklist items
+- The issue body is ≥ 2000 characters long
+
+If **not an epic**: pass the issue through unchanged to Stage 3b (PM). No action taken.
+
+If **epic detected**:
+
+Spawn a planner subagent with this prompt (substitute <PLACEHOLDERS> before spawning):
+
+```
+You are the Planner. Issue #<N> is an epic that needs decomposition.
+
+Base branch: <BASE_BRANCH>
+VCS provider: <VCS_PROVIDER>
+
+Epic title: <TITLE>
+Epic body:
+<BODY>
+
+Read the issue and any relevant source files, then produce a structured plan of
+≤10 sub-tasks. See your agent profile for the exact output format required.
+```
+
+After the planner returns (its output begins with `PLAN:`):
+
+1. Parse the plan. For each sub-task (numbered 1..K):
+   - Build the sub-issue body:
+     ```
+     <Context from planner>
+
+     Part of #<N>
+     [Depends on: #<prev-sub-issue-number>  ← only if planner listed a dependency]
+     ```
+   - Write the body to a temp file: `printf '%s' "<body>" > /tmp/sub-issue-<i>.md`
+   - Create the sub-issue:
+     ```bash
+     bash scripts/pipeline-vcs.sh create-issue "<sub-task title>" /tmp/sub-issue-<i>.md \
+       --label pipeline:ready
+     ```
+     Capture the returned issue number/URL as `SUB_N`.
+   - If this sub-task had a `Depends on:` line in the planner output, the sub-issue
+     body already carries the text reference. Sub-issues with dependencies do **not**
+     get `pipeline:ready` — omit the label for dependent sub-issues so they stay out
+     of the queue until the dependency closes.
+   - Record the mapping: planner index → real issue number.
+
+2. Label the epic:
+   ```bash
+   bash scripts/pipeline-vcs.sh label-issue <N> \
+     --add pipeline:epic-decomposed --remove pipeline:confirmed
+   ```
+
+3. The epic issue is now done for this run — skip Stages 3b (PM) and 3c (Developer).
+   Add a comment on the epic summarising the sub-issues created:
+   ```bash
+   bash scripts/pipeline-vcs.sh comment-issue <N> \
+     "**Planner:** decomposed into sub-issues: <list of #SUB_N>"
+   ```
+
+4. Relay: `bash scripts/pipeline-notify.sh info "#<N>" "epic decomposed into K sub-issues" <N>`
 
 ### 3b. PM spec (if `roles.pm = true`)
 

@@ -168,6 +168,18 @@ _github() {
       if [ "$DRY_RUN" = "true" ]; then echo "[dry-run] $cmd"; return 0; fi
       eval "$cmd"
       ;;
+    create-issue)
+      local title="$1" body_file="$2"; shift 2
+      local label_args=()
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --label) label_args+=("--label" "$2"); shift 2 ;;
+          *) shift ;;
+        esac
+      done
+      _run gh issue create --title "$title" --body-file "$body_file" \
+        "${label_args[@]+"${label_args[@]}"}" ${REPO:+--repo "$REPO"}
+      ;;
     create-pr)
       local branch="$1" title="$2" body_file="$3"
       [ -z "$BASE_BRANCH" ] && BASE_BRANCH="$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null)"
@@ -480,6 +492,51 @@ print(json.dumps({'labels': labels}))
       _ga_req PUT "$_API/issues/$_n/labels" \
         -H "Content-Type: application/json" -d "$_new_payload" >/dev/null
       echo "Labels updated on issue #$_n"
+      ;;
+
+    create-issue)
+      local _ci_title="$1" _ci_body_file="$2"; shift 2
+      local _ci_labels=()
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --label) _ci_labels+=("$2"); shift 2 ;;
+          *) shift ;;
+        esac
+      done
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: POST $_API/issues (title=$_ci_title)"
+        return 0
+      fi
+      local _ci_body_content
+      _ci_body_content="$(cat "$_ci_body_file")"
+      local _ci_labels_json
+      if [ ${#_ci_labels[@]} -gt 0 ]; then
+        _ci_labels_json="$(python3 -c "import json,sys; print(json.dumps(sys.argv[1:]))" "${_ci_labels[@]}")"
+      else
+        _ci_labels_json="[]"
+      fi
+      local _ci_payload
+      _ci_payload="$(CI_TITLE="$_ci_title" CI_BODY="$_ci_body_content" CI_LABELS="$_ci_labels_json" python3 -c "
+import json, os
+print(json.dumps({
+    'title':  os.environ['CI_TITLE'],
+    'body':   os.environ['CI_BODY'],
+    'labels': json.loads(os.environ['CI_LABELS']),
+}))
+")"
+      local _ci_resp
+      _ci_resp="$(_ga_req POST "$_API/issues" \
+        -H "Content-Type: application/json" -d "$_ci_payload")"
+      printf '%s' "$_ci_resp" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+url = d.get('html_url', d.get('url', ''))
+n = d.get('number', '')
+if url:
+    print(url)
+else:
+    print(n)
+"
       ;;
 
     create-pr)
@@ -837,6 +894,19 @@ _gitlab() {
       if [ "$DRY_RUN" = "true" ]; then echo "[dry-run] $cmd"; return 0; fi
       eval "$cmd"
       ;;
+    create-issue)
+      local title="$1" body_file="$2"; shift 2
+      local label_args=()
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --label) label_args+=("--label" "$2"); shift 2 ;;
+          *) shift ;;
+        esac
+      done
+      _run glab issue create --title "$title" \
+        --description "$(cat "$body_file")" \
+        "${label_args[@]+"${label_args[@]}"}" $RARG
+      ;;
     create-pr)
       local branch="$1" title="$2" body_file="$3"
       [ -z "$BASE_BRANCH" ] && BASE_BRANCH="$(glab repo view --format='%{default_branch}' 2>/dev/null || echo main)"
@@ -967,6 +1037,10 @@ else:
     subprocess.run(cmd, check=True)
 PYEOF
       ;;
+    create-issue)
+      echo "pipeline-vcs: create-issue is not implemented for azure — use the Azure DevOps web UI or 'az boards work-item create' manually" >&2
+      exit 1
+      ;;
     create-pr)
       local branch="$1" title="$2" body_file="$3"
       [ -z "$BASE_BRANCH" ] && BASE_BRANCH="main"
@@ -1073,6 +1147,36 @@ _file() {
       # Labels are not tracked in file mode — pipeline state is the checkbox
       echo "file mode: label tracking not applicable (pipeline state = checkbox)" >&2
       return 0
+      ;;
+    create-issue)
+      local ci_title="$1"
+      # --label args are ignored in file mode (state = checkbox)
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] file: would append '- [ ] ${ci_title}' to ${FILE_PATH}"
+        return 0
+      fi
+      touch "$FILE_PATH"
+      FILE_PATH="$FILE_PATH" python3 - "$ci_title" <<'PYEOF'
+import sys, re, os
+
+title = sys.argv[1]
+plan_path = os.environ['FILE_PATH']
+
+try:
+    with open(plan_path) as f:
+        content = f.read()
+except FileNotFoundError:
+    content = ''
+
+ids = [int(m.group(1)) for m in re.finditer(r'<!-- id: (\d+) -->', content)]
+new_id = (max(ids) if ids else 0) + 1
+
+line = f'\n- [ ] {title} <!-- id: {new_id} -->\n'
+with open(plan_path, 'a') as f:
+    f.write(line)
+
+print(new_id)
+PYEOF
       ;;
     *)
       # Delegate to Python for all file-mutation verbs

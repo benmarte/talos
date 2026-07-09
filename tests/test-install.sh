@@ -23,7 +23,7 @@ src_cmt="$(ls "$TALOS_ROOT"/templates/comments/*.md | wc -l | tr -d ' ')"
 assert_eq "$src_notif" "$n_notif" "all notification templates installed ($src_notif)"
 assert_eq "$src_cmt"   "$n_cmt"   "all comment templates installed ($src_cmt)"
 
-for agent in validator pm developer qa reviewer security docs; do
+for agent in validator pm developer qa reviewer security docs planner; do
   assert_file_exists ".claude/agents/$agent.md" "installs $agent agent"
 done
 

@@ -82,6 +82,23 @@ assert_contains "$log" "fix/issue-3-login"       "create-pr: branch in payload"
 assert_not_contains "$log" "$TEST_TOKEN"         "create-pr: token not in log"
 assert_not_contains "$out" "$TEST_TOKEN"         "create-pr: token not in output"
 
+# ── create-issue ──────────────────────────────────────────────────────────────
+: > "$CURL_LOG"
+printf '%s\n' \
+  '{"number":55,"title":"feat: planner role","html_url":"https://github.com/acme/widget/issues/55","body":""}' \
+  > "$CURL_QUEUE"
+
+echo "Sub-issue body content." > sub-issue.txt
+out="$(bash "$VCS" create-issue "feat: planner role" sub-issue.txt --label pipeline:ready)"
+assert_contains "$out" "https://github.com/acme/widget/issues/55" "create-issue: returns issue URL"
+log="$(cat "$CURL_LOG")"
+assert_contains "$log" "api.github.com"            "create-issue: called GitHub API"
+assert_contains "$log" "/issues"                   "create-issue: hit issues endpoint"
+assert_contains "$log" "Authorization: Bearer"     "create-issue: auth header sent"
+assert_contains "$log" "pipeline:ready"            "create-issue: label in payload"
+assert_not_contains "$log" "$TEST_TOKEN"           "create-issue: token not in log"
+assert_not_contains "$out" "$TEST_TOKEN"           "create-issue: token not in output"
+
 # ── merge-pr ──────────────────────────────────────────────────────────────────
 : > "$CURL_LOG"
 printf '%s\n' \
@@ -213,6 +230,7 @@ export GITHUB_TOKEN="$TEST_TOKEN"  # restore for remaining tests
 dry_out="$(bash "$VCS" --dry-run list-issues; \
            bash "$VCS" --dry-run comment-issue 3 "body"; \
            bash "$VCS" --dry-run label-issue 3 --add foo; \
+           bash "$VCS" --dry-run create-issue "title" /dev/null --label pipeline:ready; \
            bash "$VCS" --dry-run create-pr branch title /dev/null; \
            bash "$VCS" --dry-run merge-pr 9; \
            bash "$VCS" --dry-run find-pr 42; \

@@ -95,7 +95,7 @@ done
 # Subagent definitions
 echo ""
 echo "Subagents:"
-for agent in validator pm developer qa reviewer security docs; do
+for agent in validator pm developer qa reviewer security docs planner; do
   src_agent="$SRC/.claude/agents/$agent.md"
   if [ -f "$src_agent" ]; then
     install_file "$src_agent" "$TARGET/.claude/agents/$agent.md"
