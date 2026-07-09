@@ -1,61 +1,46 @@
 # Changelog
 
-## Unreleased
+## [Unreleased]
 
-### Added
-
-#### Issue #2 — Plugin marketplace manifest + doc fix
-
-Added `.claude-plugin/marketplace.json` so the Claude Code plugin marketplace flow works end-to-end (`/plugin marketplace add benmarte/talos` + `/plugin install talos@talos`). Updated README Quickstart Option A and `docs/user-guide.md` Setup: Claude Code section to document the plugin path as the recommended install with a caveat that per-repo scripts/templates still come from `install.sh`.
-
-#### Issue #7 — Optional planner role: epic decomposition
-
-New optional `roles.planner` toggle (default `false`). When enabled, a planner stage
-runs after the validator confirms an issue and before the PM writes the spec. An issue
-is treated as an epic if it carries the `epic` label, contains ≥ 4 checklist items,
-or has a body ≥ 2000 characters. The planner subagent (Claude Opus, read-only) produces
-a structured breakdown of up to 10 sub-tasks; the orchestrator creates dependency-ordered
-sub-issues via the new `create-issue` VCS verb. Independent sub-issues are labelled
-`pipeline:ready` immediately; dependent sub-issues are held unlabelled and auto-unblocked
-when their predecessor closes. Epic issues receive `pipeline:epic-decomposed` and skip
-the PM/developer stages. Step 1 reconciliation adds two new sweeps: an epic auto-close
-sweep (closes the epic when all sub-issues are resolved) and a dependency-unblocking
-sweep (adds `pipeline:ready` to sub-issues whose blocker just closed). The new
-`create-issue` verb is supported across all four providers (github, github-api, gitlab,
-azure, file). The planner is off by default — it adds no overhead when disabled.
-
-#### Story #6 — `github-api` provider: token-only GitHub mode
-
-New `vcs.provider: github-api` adapter implements all 18 VCS verbs via
-`curl + GITHUB_TOKEN` (REST for issues/PRs/labels/merge; GraphQL for Projects
-v2 board) so Talos runs in CI containers with no `gh` CLI dependency. Token
-is sourced from `GITHUB_TOKEN` or `GH_TOKEN` (or a custom env var named by
-`vcs.token_env`) and is never logged. `pipeline-status.sh` falls back to the
-token-based GraphQL path automatically when `gh` is absent.
-`pipeline-notify.sh` uses the token to resolve issue/PR titles and repo URL
-when `gh` is unavailable. Covered by 47 new assertions in
-`tests/test-github-api.sh` using the curl stub (no network).
+## [0.2.0] - 2026-07-09
 
 ### Breaking Changes
 
-#### Story #3 / Issue #5 — `pipeline-notify.sh` .env path change
+- **Install layout moved to `.claude/talos/`** (was `.claude/pipeline/`). Re-run `install.sh` or move your directory manually. (8654d69)
+- **`pipeline-notify.sh` now loads `.env` from repo root only** (`<repo-root>/.env` via `git rev-parse --show-toplevel`). Move any credentials from `.claude/talos/.env` (or `.claude/pipeline/.env`) to your repository root `.env`. Dotenv precedence: exported env vars always win over `.env` values. (1e27cbb)
 
-`pipeline-notify.sh` previously sourced `.env` from a script-relative path that
-resolved to `.claude/talos/.env` (or `.claude/pipeline/.env`) in installed
-repos. This was accidental and surprising.
+### Added
 
-**New behaviour (>= v0.2.0):**
+- **Multi-harness support**: Codex CLI, Gemini CLI, and custom/local runners configurable in `pipeline-agent.sh` — Talos is no longer Claude-only. (9fa4c61)
+- **Optional planner role**: new `roles.planner` toggle (default `false`). When enabled, a planner stage decomposes epics into dependency-ordered sub-issues before the PM/developer stages. Epics are detected by label, checklist count (>= 4), or body length (>= 2000 chars). (3e1a0a7)
+- **Offline regression suite + e2e pipeline simulation** with stubbed `gh`/`curl` — full test coverage with no network dependency. (903527a)
+- **Linked rich notifications**: messages now link to their GitHub issue/PR; notification templates are shipped automatically by `install.sh`. (e7de0d5)
+- **Daedalus-style Talos-branded notifications** with install and label fixes. (848fcf5)
+- **`github-api` provider**: token-only GitHub mode — all 18 VCS verbs via `curl + GITHUB_TOKEN` (REST + GraphQL for Projects v2). No `gh` CLI dependency required. (39e80d2)
+- **Plugin marketplace manifest** (`.claude-plugin/marketplace.json`) — enables `/plugin marketplace add benmarte/talos` install flow. (7e66974)
+- **Session-hardening batch**: recovery/reconciliation, find-pr, forbidden-files gate, priority handling, skip-qa flag, and CI retry support. (8a0fee4)
 
-- The pipeline loads exactly one `.env` file: `<repo-root>/.env`, resolved via
-  `git rev-parse --show-toplevel` (falls back to `$PWD` outside a git repo).
-- **Dotenv precedence**: exported environment variables always win over `.env`
-  values — only currently-unset variables are assigned from the file.
-- `~/.hermes/.env` bot-token convenience fallback is unchanged.
+### Fixed
 
-**Migration:** move any credentials from `.claude/talos/.env` (or
-`.claude/pipeline/.env`) to your repository root `.env`. If you relied on
-sourcing overwriting exported vars, export them explicitly instead.
+- Grant `Skill` tool access to `qa`, `reviewer`, and `security` role profiles — these roles were previously missing the tool permission. (9404d43)
+- Dry-run variants and GitLab fail-open test coverage for all hardening verbs. (38b2d3a)
 
-### Enhancements
+### Changed
 
-- **`/pipeline-setup` wizard** now prompts for agent harness (claude/codex/gemini/custom) and emits `forbidden_files` defaults in the generated `talos.pipeline.yml` template (#4).
+- **Config renamed to `talos.pipeline.yml`** — legacy `.claude-pipeline.yaml`/`pipeline.yaml` are still honored; `talos.pipeline.yml` wins when both exist. No migration required for v0.1.0 configs. (f99eb97)
+- **`/pipeline-setup` wizard** now prompts for agent harness (claude/codex/gemini/custom), emits `forbidden_files` defaults, and covers control labels in the generated `talos.pipeline.yml` template. (593f040)
+- **Docs**: user guide expanded with per-harness setup, prerequisites, env vars, feature matrix, llama.cpp local-model recipe, and a worked example wiring `addyosmani/agent-skills` into role profiles. (40bc1c8, 88700d2, 21e5dd6)
+
+## [0.1.0] - 2026-07-04
+
+Initial release — autonomous issue-to-PR pipeline orchestrated by Claude Code.
+
+### Added
+
+- Orchestrator (`pipeline-orchestrator.sh`) driving validator -> PM -> developer -> QA -> reviewer -> security -> docs stages via labelled GitHub issues.
+- Worktree-isolated developer subagent with per-issue git worktrees.
+- VCS abstraction (`pipeline-vcs.sh`) with `github`, `gitlab`, `azure`, and `file` providers.
+- Notification system (`pipeline-notify.sh`) with Hermes/ntfy/Slack adapters.
+- Pipeline status dashboard (`pipeline-status.sh`).
+- Setup wizard (`/pipeline-setup` skill).
+- Claude Code plugin manifest (`.claude-plugin/plugin.json`) for marketplace install.
