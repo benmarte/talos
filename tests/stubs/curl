@@ -1,29 +1,49 @@
 #!/usr/bin/env bash
-# curl stub for talos tests. Logs "URL<tab>PAYLOAD" to $CURL_LOG.
+# curl stub for talos tests. Logs "URL<tab>PAYLOAD[<tab>AUTH]" to $CURL_LOG.
 # Response: pops the first line of $CURL_QUEUE if non-empty, otherwise a
 # platform default (Slack ok+ts / Discord message id) keyed off the URL.
+#
+# Extensions for github-api tests (backward-compatible):
+#   - When an Authorization: Bearer header is present, appends
+#     "Authorization: Bearer" as a third tab-separated field on the same log
+#     line. Existing tests use cut -f2 (payload) so the third field is ignored.
+#     New tests can grep/assert_contains "$CURL_LOG" "Authorization: Bearer".
+#   - Appends "200" as a final output line when -w is passed so callers using
+#     `curl -w "\n%{http_code}"` can parse HTTP status from the last line.
 
 payload=""
 url=""
 prev=""
+has_w=false
+auth_field=""
 for arg in "$@"; do
   [ "$prev" = "-d" ] && payload="$arg"
+  [ "$prev" = "-w" ] && has_w=true
+  if [ "$prev" = "-H" ]; then
+    case "$arg" in
+      "Authorization: Bearer "*) auth_field="Authorization: Bearer" ;;
+    esac
+  fi
   prev="$arg"
 done
 # URL = last argument
 for arg in "$@"; do url="$arg"; done
 
-[ -n "${CURL_LOG:-}" ] && printf '%s\t%s\n' "$url" "$payload" >> "$CURL_LOG"
+# Log: one line per call — URL TAB payload TAB auth-field
+[ -n "${CURL_LOG:-}" ] && printf '%s\t%s\t%s\n' "$url" "$payload" "$auth_field" >> "$CURL_LOG"
 
 if [ -n "${CURL_QUEUE:-}" ] && [ -s "$CURL_QUEUE" ]; then
-  head -1 "$CURL_QUEUE"
+  resp="$(head -1 "$CURL_QUEUE")"
   tail -n +2 "$CURL_QUEUE" > "$CURL_QUEUE.tmp" && mv "$CURL_QUEUE.tmp" "$CURL_QUEUE"
-  exit 0
+else
+  case "$url" in
+    *slack.com*)   resp='{"ok":true,"ts":"1111.2222"}' ;;
+    *discord.com*) resp='{"id":"900000000000000001"}' ;;
+    *)             resp='{}' ;;
+  esac
 fi
 
-case "$url" in
-  *slack.com*)   printf '{"ok":true,"ts":"1111.2222"}\n' ;;
-  *discord.com*) printf '{"id":"900000000000000001"}\n' ;;
-  *)             printf '{}\n' ;;
-esac
+printf '%s\n' "$resp"
+# Append HTTP status code on its own line when -w was requested
+[ "$has_w" = "true" ] && printf '200\n'
 exit 0

@@ -74,9 +74,12 @@ Per VCS provider (pick one):
 | Provider | Tool | Auth |
 |----------|------|------|
 | `github` (default) | [`gh`](https://cli.github.com) | `gh auth login` (or `GH_TOKEN` env var) |
+| `github-api` | none | `GITHUB_TOKEN` or `GH_TOKEN` env var — no `gh` CLI needed |
 | `gitlab` | [`glab`](https://gitlab.com/gitlab-org/cli) | `glab auth login` |
 | `azure` | `az` + azure-devops extension | `az login`; `az extension add --name azure-devops` |
 | `file` | none | fully offline |
+
+The `github-api` provider is the recommended choice for **CI/CD environments or minimal containers** where installing `gh` is impractical. Set `GITHUB_TOKEN` (or `GH_TOKEN`) and add `vcs.provider: github-api` to your `talos.pipeline.yml`.
 
 Per feature (optional):
 
@@ -100,7 +103,8 @@ Per feature (optional):
 | `DISCORD_WEBHOOK_URL` | Discord via webhook (no threading) |
 | `DISCORD_BOT_TOKEN` | Discord via bot (threading works) |
 | `TEAMS_WEBHOOK_URL` | Teams via incoming webhook |
-| `GH_TOKEN` | alternative to `gh auth login` (CI-friendly) |
+| `GITHUB_TOKEN` | GitHub API token for `github-api` provider (Personal Access Token or Actions token) |
+| `GH_TOKEN` | Alternative to `GITHUB_TOKEN`; also accepted by `gh` CLI (`github` provider) |
 
 Where to put them: your shell env (exported variables always win), or a `.env`
 file at the **repo root** (`<repo>/.env`). Bot tokens are also picked up from
@@ -365,8 +369,14 @@ pack installed.
   .claude/talos/scripts/pipeline-notify.sh validator "#1" "test" 1`.
 - **YAML config ignored** — PyYAML not installed. `pip install pyyaml`, or
   rename your config to `talos.pipeline.json` and use JSON.
-- **Board updates fail** — `gh auth refresh -s project` (Projects v2 needs the
-  `project` scope); verify `board.project_number` and `board.owner`.
+- **Board updates fail** — Two paths depending on your provider:
+  - **`github` provider:** `gh auth refresh -s project` (Projects v2 needs the
+    `project` scope); verify `board.project_number` and `board.owner`.
+  - **`github-api` provider (no `gh` CLI):** board updates use the same
+    `GITHUB_TOKEN` / `GH_TOKEN` via GraphQL. Because `gh` is absent, the owner
+    cannot be auto-detected — you must set `board.owner` explicitly in
+    `talos.pipeline.yml` (or `PIPELINE_BOARD_OWNER` env var); without it the
+    board step is silently skipped.
 - **Preview any VCS action** without executing:
   `bash .claude/talos/scripts/pipeline-vcs.sh --dry-run <verb> ...`.
 

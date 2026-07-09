@@ -98,6 +98,39 @@ if [ -f "$HERMES_ENV" ]; then
   [ -z "${DISCORD_BOT_TOKEN:-}" ] && DISCORD_BOT_TOKEN="$(grep -m1 '^DISCORD_BOT_TOKEN=' "$HERMES_ENV" | cut -d= -f2-)"
 fi
 
+# ── API fallback for gh metadata lookups ──────────────────────────────────────
+# When gh is absent and a GitHub token is available, fetch issue/PR titles and
+# repo URL via REST. When both are absent, leaves variables empty (graceful).
+_API_TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+_api_lookup_gh_metadata() {
+  # $1=type (issue|pr|repo), $2=number (for issue/pr), $3=repo (owner/name)
+  local _type="$1" _num="${2:-}" _repo="${3:-}"
+  [ -z "$_API_TOKEN" ] && return
+  [ -z "$_repo" ] && return
+  local _url
+  case "$_type" in
+    issue) _url="https://api.github.com/repos/$_repo/issues/$_num" ;;
+    pr)    _url="https://api.github.com/repos/$_repo/pulls/$_num" ;;
+    repo)  _url="https://api.github.com/repos/$_repo" ;;
+    *)     return ;;
+  esac
+  curl -sS -m 5 \
+    -H "Authorization: Bearer $_API_TOKEN" \
+    -H "Accept: application/vnd.github+json" \
+    "$_url" 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    t = '$_type'
+    if t == 'repo':
+        print(d.get('html_url',''))
+    else:
+        print(d.get('title',''))
+except Exception:
+    pass
+" 2>/dev/null || true
+}
+
 # ── Enrich context for Daedalus-style templates (best-effort; empty on failure) ─
 # Role label — mirrors daedalus core/notify_templates._ROLE_LABELS.
 case "$EVENT" in
@@ -112,6 +145,13 @@ case "$EVENT" in
   *)                  ROLE="$EVENT" ;;
 esac
 
+# Detect repo slug for API fallback (owner/name without .git)
+_NOTIFY_REPO="${PIPELINE_REPO:-}"
+if [ -z "$_NOTIFY_REPO" ]; then
+  _NOTIFY_REPO="$(git -C "$PWD" remote get-url origin 2>/dev/null \
+    | sed 's|.*github\.com[:/]||; s|\.git$||' || true)"
+fi
+
 # Board name (owner-repo). Override with PIPELINE_BOARD.
 BOARD="${PIPELINE_BOARD:-}"
 [ -z "$BOARD" ] && BOARD="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null | tr '/' '-')"
@@ -120,7 +160,13 @@ BOARD="${PIPELINE_BOARD:-}"
 # Issue number + title. Prefer caller-supplied PIPELINE_ISSUE_TITLE; else fetch.
 _num="$(printf '%s' "${REF:-$THREAD_KEY}" | tr -cd '0-9')"
 TITLE="${PIPELINE_ISSUE_TITLE:-}"
-[ -z "$TITLE" ] && [ -n "$_num" ] && TITLE="$(gh issue view "$_num" --json title -q .title 2>/dev/null || true)"
+if [ -z "$TITLE" ] && [ -n "$_num" ]; then
+  if command -v gh >/dev/null 2>&1; then
+    TITLE="$(gh issue view "$_num" --json title -q .title 2>/dev/null || true)"
+  elif [ -n "$_API_TOKEN" ] && [ -n "$_NOTIFY_REPO" ]; then
+    TITLE="$(_api_lookup_gh_metadata issue "$_num" "$_NOTIFY_REPO")"
+  fi
+fi
 REF_DISP="${REF:-#$_num}"
 if [ -n "$TITLE" ]; then REF_TITLE="$REF_DISP: $TITLE"; else REF_TITLE="$REF_DISP"; fi
 
@@ -128,7 +174,13 @@ if [ -n "$TITLE" ]; then REF_TITLE="$REF_DISP: $TITLE"; else REF_TITLE="$REF_DIS
 PR="${PIPELINE_PR:-}"
 [ -z "$PR" ] && PR="$(printf '%s' "$MSG" | grep -oE '(pull/|PR #?)[0-9]+' | grep -oE '[0-9]+' | head -1)"
 PR_TITLE="${PIPELINE_PR_TITLE:-}"
-[ -z "$PR_TITLE" ] && [ -n "$PR" ] && PR_TITLE="$(gh pr view "$PR" --json title -q .title 2>/dev/null || true)"
+if [ -z "$PR_TITLE" ] && [ -n "$PR" ]; then
+  if command -v gh >/dev/null 2>&1; then
+    PR_TITLE="$(gh pr view "$PR" --json title -q .title 2>/dev/null || true)"
+  elif [ -n "$_API_TOKEN" ] && [ -n "$_NOTIFY_REPO" ]; then
+    PR_TITLE="$(_api_lookup_gh_metadata pr "$PR" "$_NOTIFY_REPO")"
+  fi
+fi
 if [ -n "$PR" ]; then
   if [ -n "$PR_TITLE" ]; then PR_REF="PR #$PR: $PR_TITLE"; else PR_REF="PR #$PR"; fi
 else
@@ -137,7 +189,13 @@ fi
 
 # Issue/PR URLs so messages can link back to GitHub. Override with PIPELINE_REPO_URL.
 REPO_URL="${PIPELINE_REPO_URL:-}"
-[ -z "$REPO_URL" ] && REPO_URL="$(gh repo view --json url -q .url 2>/dev/null || true)"
+if [ -z "$REPO_URL" ]; then
+  if command -v gh >/dev/null 2>&1; then
+    REPO_URL="$(gh repo view --json url -q .url 2>/dev/null || true)"
+  elif [ -n "$_API_TOKEN" ] && [ -n "$_NOTIFY_REPO" ]; then
+    REPO_URL="$(_api_lookup_gh_metadata repo "" "$_NOTIFY_REPO")"
+  fi
+fi
 ISSUE_URL=""
 [ -n "$REPO_URL" ] && [ -n "$_num" ] && ISSUE_URL="$REPO_URL/issues/$_num"
 PR_URL=""
