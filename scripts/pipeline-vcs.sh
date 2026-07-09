@@ -351,8 +351,10 @@ _github_api() {
   # Outputs response body; exits 1 on non-2xx.
   _ga_req() {
     local _m="$1" _u="$2"; shift 2
-    local _full _status _body
+    local _full _status _body _hdr_file
+    _hdr_file="$(mktemp)"
     _full="$(curl -sS -w "\n%{http_code}" \
+      -D "$_hdr_file" \
       -X "$_m" \
       -H "Authorization: Bearer $_TOKEN" \
       -H "Accept: application/vnd.github+json" \
@@ -362,12 +364,21 @@ _github_api() {
     _body="$(printf '%s' "$_full" | sed '$d')"
     if [ "${_status:-0}" -ge 300 ] 2>/dev/null; then
       if [ "$_status" = "429" ]; then
-        printf 'github-api: HTTP 429 on %s (rate-limited)\n' "$_VERB" >&2
+        local _reset
+        _reset="$(grep -i '^x-ratelimit-reset:' "$_hdr_file" 2>/dev/null \
+          | sed 's/[^0-9]*//g' | tr -d '[:space:]')"
+        if [ -n "$_reset" ]; then
+          printf 'github-api: rate-limited; reset at %s\n' "$_reset" >&2
+        else
+          printf 'github-api: HTTP 429 on %s (rate-limited)\n' "$_VERB" >&2
+        fi
       else
         printf 'github-api: HTTP %s on %s\n' "$_status" "$_VERB" >&2
       fi
+      rm -f "$_hdr_file"
       exit 1
     fi
+    rm -f "$_hdr_file"
     printf '%s' "$_body"
   }
 
