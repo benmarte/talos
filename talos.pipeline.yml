@@ -8,7 +8,9 @@ vcs:
   provider: github
 
 board:
-  enabled: false
+  enabled: true
+  project_number: 4
+  owner: benmarte
 
 issues:
   label_filter: "pipeline:ready"
