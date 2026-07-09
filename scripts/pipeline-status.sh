@@ -121,13 +121,13 @@ except Exception:
   # 2. Resolve field ID and option ID
   local _field_data _field_id _opt_id
   _field_data="$(_gql "{\"query\":\"query{node(id:\\\"$_proj_id\\\"){...on ProjectV2{fields(first:50){nodes{...on ProjectV2SingleSelectField{id name options{id name}}}}}}}\"}" \
-    | python3 -c "
+    | SFIELD="$_sfield" SSTATUS="$_status" python3 -c "
 import json, sys, os
 try:
     d = json.load(sys.stdin)
     nodes = d['data']['node']['fields']['nodes']
-    sfield = '$_sfield'
-    sstatus = '$_status'
+    sfield = os.environ['SFIELD']
+    sstatus = os.environ['SSTATUS']
     for f in nodes:
         if f and f.get('name') == sfield:
             fid = f.get('id','')

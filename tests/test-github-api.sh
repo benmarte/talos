@@ -155,13 +155,46 @@ printf '%s\n' \
   '{}' \
   > "$CURL_QUEUE"
 
-out="$(bash "$VCS" rerun-ci 9 2>&1)"
+out="$(bash "$VCS" rerun-ci 9 2>&1)"; rc=$?
+assert_eq "0" "$rc"                              "rerun-ci: exits 0 on success"
+assert_contains "$out" "rerun-ci: re-ran failed runs for PR #9" "rerun-ci: prints success line"
 log="$(cat "$CURL_LOG")"
 assert_contains "$log" "/actions/runs/111/rerun-failed-jobs" "rerun-ci: failed run restarted"
 assert_not_contains "$log" "/actions/runs/112/rerun-failed-jobs" "rerun-ci: successful run skipped"
 assert_contains "$log" "Authorization: Bearer"   "rerun-ci: auth header sent"
 assert_not_contains "$log" "$TEST_TOKEN"         "rerun-ci: token not in log"
 assert_not_contains "$out" "$TEST_TOKEN"         "rerun-ci: token not in output"
+
+# ── rerun-ci: no failed runs returns exit 0 with informational message ─────────
+: > "$CURL_LOG"
+printf '%s\n' \
+  '{"number":9,"head":{"sha":"abc123sha","ref":"fix/issue-42-guard"},"title":"fix: guard"}' \
+  '{"total_count":1,"workflow_runs":[{"id":112,"conclusion":"success","name":"CI"}]}' \
+  > "$CURL_QUEUE"
+
+out="$(bash "$VCS" rerun-ci 9 2>&1)"; rc=$?
+assert_eq "0" "$rc"                              "rerun-ci: no failures exits 0"
+assert_contains "$out" "no failed runs"          "rerun-ci: no failures prints informational message"
+
+# ── find-pr merged: maps state=merged to state=closed + merged_at filter ─────
+: > "$CURL_LOG"
+printf '%s\n' \
+  '[{"number":9,"title":"fix: guard null session","head":{"ref":"fix/issue-42-guard"},"body":"Closes #42","labels":[],"state":"closed","merged_at":"2026-07-09T10:00:00Z"},{"number":10,"title":"fix: other","head":{"ref":"fix/issue-42-other"},"body":"also #42","labels":[],"state":"closed","merged_at":null}]' \
+  > "$CURL_QUEUE"
+
+out="$(bash "$VCS" find-pr 42 merged)"
+assert_contains "$out" '"number": 9'             "find-pr merged: matches merged PR"
+assert_contains "$out" '"state": "MERGED"'       "find-pr merged: state normalized to MERGED"
+assert_not_contains "$out" '"number": 10'        "find-pr merged: closed-not-merged excluded"
+
+# ── find-pr open: state field is OPEN ─────────────────────────────────────────
+: > "$CURL_LOG"
+printf '%s\n' \
+  '[{"number":9,"title":"fix: guard null session","head":{"ref":"fix/issue-42-guard"},"body":"Closes #42","labels":[],"state":"open","merged_at":null}]' \
+  > "$CURL_QUEUE"
+
+out="$(bash "$VCS" find-pr 42)"
+assert_contains "$out" '"state": "OPEN"'         "find-pr open: state normalized to OPEN"
 
 # ── missing token → clear error ───────────────────────────────────────────────
 unset GITHUB_TOKEN GH_TOKEN

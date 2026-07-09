@@ -671,24 +671,46 @@ print(json.load(sys.stdin).get('head',{}).get('sha',''))
     find-pr)
       local _n="$1" _state="${2:-open}"
       if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: GET $_API/pulls?state=$_state&per_page=100 | filter issue-$_n / #$_n"
+        echo "[dry-run] github-api: GET $_API/pulls?state=<mapped>&per_page=100 | filter issue-$_n / #$_n"
         return 0
       fi
+      # GitHub REST only accepts state=open|closed|all.
+      # "merged" PRs are closed with merged_at set; "all" covers both open and closed.
+      local _api_state
+      case "$_state" in
+        merged) _api_state="closed" ;;
+        open)   _api_state="open" ;;
+        all)    _api_state="all" ;;
+        *)      _api_state="$_state" ;;
+      esac
       local _raw
-      _raw="$(_ga_req GET "$_API/pulls?state=$_state&per_page=100")"
-      printf '%s' "$_raw" | python3 -c "
-import json, sys
+      _raw="$(_ga_req GET "$_API/pulls?state=$_api_state&per_page=100")"
+      printf '%s' "$_raw" | STATE_FILTER="$_state" python3 -c "
+import json, sys, os
 n = sys.argv[1]
+state_filter = os.environ.get('STATE_FILTER','open')
 try: prs = json.load(sys.stdin)
 except Exception: prs = []
 for pr in prs:
     hay = pr.get('title','') + ' ' + (pr.get('body','') or '')
     ref = pr.get('head',{}).get('ref','')
-    if f'issue-{n}' in ref or f'#{n}' in hay:
-        print(json.dumps({'number': pr.get('number'),
-                          'state':  pr.get('state',''),
-                          'title':  pr.get('title',''),
-                          'headRefName': ref}))
+    if not (f'issue-{n}' in ref or f'#{n}' in hay):
+        continue
+    # For merged filter: only PRs with merged_at set
+    if state_filter == 'merged' and not pr.get('merged_at'):
+        continue
+    # Normalise state to gh-compatible values: OPEN, CLOSED, MERGED
+    raw_state = pr.get('state','').upper()
+    if pr.get('merged_at'):
+        out_state = 'MERGED'
+    elif raw_state == 'OPEN':
+        out_state = 'OPEN'
+    else:
+        out_state = 'CLOSED'
+    print(json.dumps({'number': pr.get('number'),
+                      'state':  out_state,
+                      'title':  pr.get('title',''),
+                      'headRefName': ref}))
 " "$_n"
       ;;
 
@@ -709,7 +731,7 @@ secrets.*'
         return 0
       fi
       local _files_raw
-      _files_raw="$(_ga_req GET "$_API/pulls/$_n/files")"
+      _files_raw="$(_ga_req GET "$_API/pulls/$_n/files?per_page=100")"
       printf '%s' "$_files_raw" | PATTERNS="$_patterns" python3 -c "
 import fnmatch, os, sys, json
 patterns = [p.strip() for p in os.environ['PATTERNS'].splitlines() if p.strip()]
@@ -759,7 +781,7 @@ except Exception:
     pass
 ")"
       if [ -z "$_failed_ids" ]; then
-        echo "rerun-ci: no failed runs found for PR #$_n ($sha)"
+        echo "rerun-ci: no failed runs found for PR #$_n ($_sha)"
         return 0
       fi
       while IFS= read -r _run_id; do
@@ -767,7 +789,7 @@ except Exception:
           _ga_req POST "$_API/actions/runs/$_run_id/rerun-failed-jobs" \
             -H "Content-Type: application/json" -d '{}' >/dev/null
       done <<< "$_failed_ids"
-      echo "rerun-ci: re-ran failed runs for PR #$_n ($sha)"
+      echo "rerun-ci: re-ran failed runs for PR #$_n ($_sha)"
       ;;
 
     *) echo "pipeline-vcs: unknown verb: $_VERB" >&2; exit 1 ;;
