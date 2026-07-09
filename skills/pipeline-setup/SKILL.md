@@ -141,6 +141,29 @@ If none/no config: omit the `events:` key entirely (all events fire; disabling h
 
 ---
 
+## Step 6b — Ask: agent harness
+
+> "Which agent harness will run the pipeline?
+> - **claude** (default) — Claude Code spawns native subagents; no extra config needed
+> - **codex** — Codex CLI executes each role stage via scripts/pipeline-agent.sh
+> - **gemini** — Gemini CLI executes each role stage via scripts/pipeline-agent.sh
+> - **custom** — a custom agentic CLI; you'll be asked for the command
+>
+> [default: **claude**]"
+
+Wait for the answer.
+
+If the user answers **claude** (or presses Enter): record harness = `claude`. No `agents:` block will be written.
+
+If the user answers **codex** or **gemini**: record harness = that value.
+
+If the user answers **custom**:
+> "What command should the pipeline call? The prompt will arrive on stdin.
+> (Example: `my-agent-cli --model local`)"
+Wait for the `runner_cmd` value.
+
+---
+
 ## Step 7 — Write talos.pipeline.yml
 
 Based on the collected answers, write `talos.pipeline.yml` in the current directory using this template (fill in the collected values, comment out sections not configured):
@@ -176,6 +199,27 @@ merge:
   method: squash
   required_checks: []
   delete_branch: true
+  # forbidden_files:           # PR paths matching these glob patterns block the
+  #   - ".env"                 # merge for human review (defaults shown; basename
+  #   - ".env.*"               # and full path are both matched)
+  #   - "*.pem"
+  #   - "*.key"
+  #   - "*.p12"
+  #   - "*.pfx"
+  #   - "*.secrets"
+  #   - "secrets.*"
+<IF_EXTRA_FORBIDDEN_PATTERNS>
+  forbidden_files:
+    - ".env"
+    - ".env.*"
+    - "*.pem"
+    - "*.key"
+    - "*.p12"
+    - "*.pfx"
+    - "*.secrets"
+    - "secrets.*"
+<EXTRA_FORBIDDEN_PATTERNS — one per line, indented>
+</IF_EXTRA_FORBIDDEN_PATTERNS>
 
 # ── Issue selection ───────────────────────────────────────────────────────────
 issues:
@@ -218,7 +262,35 @@ notifications:
 # ── Limits ────────────────────────────────────────────────────────────────────
 limits:
   max_fix_attempts: 3
+
+<IF_NON_CLAUDE_HARNESS>
+# ── Agent runner (non-Claude-Code harnesses only) ─────────────────────────────
+# Claude Code spawns native subagents and ignores this section. Harnesses
+# without subagents (Codex CLI, headless runners) execute role stages through
+# scripts/pipeline-agent.sh, which uses:
+agents:
+  runner: <HARNESS>            # claude (default) | codex | gemini | custom
+  # runner_args:               # extra CLI args for the claude/codex/gemini runner
+  #   - --full-auto
+<IF_CUSTOM_HARNESS>
+  runner_cmd: "<RUNNER_CMD>"   # runner: custom — prompt arrives on stdin.
+                               # Must be an AGENTIC CLI (executes shell/edits
+                               # files); use one backed by a local model
+                               # (e.g. Ollama) for fully local pipelines.
+</IF_CUSTOM_HARNESS>
+</IF_NON_CLAUDE_HARNESS>
 ```
+
+When writing the file:
+- If harness = `claude`: omit the `agents:` block entirely (Claude Code spawns native subagents and ignores it).
+- If harness = `codex` or `gemini`: write the active `agents:` block with the chosen `runner` value; omit `runner_cmd`.
+- If harness = `custom`: write the active `agents:` block with `runner: custom` and `runner_cmd: "<value the user provided>"`.
+
+Also ask before writing:
+> "The merge gate blocks PRs that touch sensitive file patterns (.env, *.pem, *.key, …). Would you like to add any extra patterns beyond the defaults?"
+
+If yes: write an active `forbidden_files:` list (defaults + the user's extras) in place of the commented-out block.
+If no: leave the defaults commented out as shown in the template.
 
 Tell the user: "Written `talos.pipeline.yml`. Here's a summary of what's configured: ..."
 
@@ -277,11 +349,20 @@ Verify:       <commands or "none">
 Roles:        validator pm developer qa reviewer security docs
 Board:        <enabled/disabled>
 Notifications: <configured platforms or "none">
+Harness:      <claude (native subagents) | codex | gemini | custom>
+
+Control labels (created by bootstrap-labels.sh in Step 8):
+  p0        — dispatched first (highest priority)
+  p1        — high priority
+  p2        — low priority (dispatched last; unlabeled issues fall between p1 and p2)
+  skip-qa   — bypasses the QA, reviewer, security, and docs gates for this issue
+              (CI checks and forbidden-files protection are ALWAYS enforced)
 
 Next steps:
   1. Add the 'pipeline:ready' label to a GitHub issue (or a '- [ ] task' in plan.md for file mode)
   2. Run /pipeline to process the backlog
   3. For GitHub Projects, make sure the Status field has: Ready, In progress, In review, Done, Blocked
+  4. Use p0/p1/p2 labels to control dispatch order; use skip-qa to fast-track low-risk issues
 ```
 
 ---
