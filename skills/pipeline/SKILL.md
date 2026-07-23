@@ -35,6 +35,7 @@ Store these for the run:
 - VCS_PROVIDER (`vcs.provider`, default: `github`)
 - BOARD_ENABLED, PROJECT_NUMBER, BOARD_OWNER
 - MAX_PARALLEL, MAX_FIX_ATTEMPTS, LABEL_FILTER, SKIP_LABELS
+- MERGE_AUTO (`merge.auto`, default `true`) — when `false`, Step 4 stops at `pipeline:approved` and hands the merge to a human
 - VERIFY_COMMANDS (newline-separated list from `verify`)
 - Each role toggle: ROLE_VALIDATOR, ROLE_PM, ROLE_QA, ROLE_REVIEWER, ROLE_SECURITY, ROLE_DOCS (all default true)
 - ROLE_PLANNER (`roles.planner`, default `false`) — off by default; zero behavior change when absent or false
@@ -49,6 +50,7 @@ Store these for the run:
 - `base_branch`: `git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|.*/||'` or `main`
 - `board.enabled`: false
 - `roles.*`: all true
+- `merge.auto`: true
 - `merge.method`: squash
 - `merge.required_checks`: []
 - `issues.label_filter`: pipeline:ready
@@ -188,7 +190,7 @@ bash scripts/pipeline-vcs.sh list-issues
    - Open PR found → adopt it: do NOT re-dispatch the developer; resume from the first missing approval label (QA if `qa:pass` absent, etc.).
    - No PR → the developer stage never finished; re-dispatch it (counts toward `max_fix_attempts`).
 2. **Heal merged-but-open issues.** For each open `pipeline:*` issue, `bash scripts/pipeline-vcs.sh find-pr <N> merged` — if a merged PR closes it, run the post-merge steps from Step 4 (comment, close, board → Done, notify) instead of doing any work.
-3. **Resume in-flight PRs.** For each open pipeline PR (head branch `fix/issue-*` or `feat/issue-*`): all approval labels present → merge queue; otherwise resume at the blocking stage.
+3. **Resume in-flight PRs.** For each open pipeline PR (head branch `fix/issue-*` or `feat/issue-*`): all approval labels present → merge queue (when `merge.auto: false`, a PR already labeled `pipeline:approved` is waiting for a human — leave it alone); otherwise resume at the blocking stage.
 4. **Sweep orphaned worktrees.** `git worktree list` — remove (`git worktree remove --force`) any `fix/issue-*` worktree whose issue is closed or not in this run's queue.
 5. **Report stale blocked work.** List issues labeled `pipeline:blocked` and include them in the Step 1 summary notification so humans see what's waiting on them:
    `bash scripts/pipeline-notify.sh info "backlog" "K blocked issues awaiting human action: #a, #b" backlog` (only when K > 0).
@@ -639,7 +641,23 @@ If failing: CI may be flaky — retry it, bounded to 2 re-runs per head SHA:
 
 **CHANGELOG serialization guard:** Before merging, check whether the PR's base branch is behind `origin/main` AND another pipeline PR has merged since this branch was cut. If so, run `git fetch origin && git merge origin/main` in the developer's worktree branch first, then re-push. On CHANGELOG conflicts, keep BOTH entries (newest first). (Changelog fragment directories are out of scope for v1 — the inline-merge rule above is sufficient for this repo size.)
 
-If green, merge: `bash scripts/pipeline-vcs.sh merge-pr <PR_NUMBER>`
+**Human-merge mode (`MERGE_AUTO = false`):** every gate above still applies —
+approval labels, `skip-qa` rules, forbidden-files, CI. When everything is green,
+do NOT call `merge-pr`. Instead hand off to a human:
+
+1. If the PR already carries `pipeline:approved`, the hand-off happened on a
+   previous pass — skip it silently (it is waiting for a human, not blocked).
+2. `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --add pipeline:approved`
+3. Compute header: `HEADER="${COMMENTS_HEADER_TPL//\{role\}/orchestrator}"`
+   Render approved.md and post it on the PR:
+   VERDICT="APPROVED" SUMMARY="all stages passed — ready for human merge"
+   `bash scripts/pipeline-vcs.sh comment-pr <PR_NUMBER> "$COMMENT_BODY"`
+4. Relay: `bash scripts/pipeline-notify.sh orchestrator "#<N>" "all stages passed — PR #<PR_NUMBER> ready for human merge" <N>`
+5. STOP. Do NOT close the issue and do NOT run the post-merge steps — the issue
+   closes when the human merges (the "heal merged-but-open issues" sweep in
+   Step 0 completes the post-merge bookkeeping on a later run).
+
+Otherwise (`MERGE_AUTO = true`), if green, merge: `bash scripts/pipeline-vcs.sh merge-pr <PR_NUMBER>`
 
 Compute header: `HEADER="${COMMENTS_HEADER_TPL//\{role\}/orchestrator}"`
 
