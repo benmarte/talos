@@ -81,6 +81,13 @@ verify:
 
 # ── Merge settings ────────────────────────────────────────────────────────────
 merge:
+  auto: true                   # true  = orchestrator merges once all gates pass
+                               # false = human-merge mode: run every stage and gate
+                               #         (approvals, forbidden files, CI), then label
+                               #         the PR pipeline:approved, comment "ready for
+                               #         human merge", and stop. Use for integration
+                               #         branches whose protection requires a human
+                               #         review the pipeline can't self-provide.
   method: squash               # squash | merge | rebase
   required_checks:             # CI check names that must be green before merging
     - test                     # Must match the check name in GitHub Actions / CI

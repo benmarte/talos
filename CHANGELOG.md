@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- feat(merge): `merge.auto` toggle (default `true`) — when `false`, the orchestrator runs every stage and gate but stops at `pipeline:approved` with a "ready for human merge" comment instead of merging; the issue closes via the reconciliation sweep after the human merges (#24)
+
 - fix(azure): split org_arg into separate argv elements in label-issue subprocess call (#20)
 
 - feat: Antigravity named runner (agy -p) and --harness antigravity install support (#21)
