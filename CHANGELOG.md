@@ -2,17 +2,19 @@
 
 ## [Unreleased]
 
-- fix(developer): mandate test types — the developer stage now requires unit/component tests, a failing-first regression test on bug fixes, and an e2e test for user-facing changes when the repo has an e2e harness (Playwright/Cypress detection); the PR body must list test types added or skipped-with-reason (#25)
+## [0.3.0] - 2026-07-23
 
-- feat(merge): `merge.auto` toggle (default `true`) — when `false`, the orchestrator runs every stage and gate but stops at `pipeline:approved` with a "ready for human merge" comment instead of merging; the issue closes via the reconciliation sweep after the human merges (#24)
+### Added
 
-- fix(azure): split org_arg into separate argv elements in label-issue subprocess call (#20)
+- **`merge.auto` toggle (human-merge mode)** — default `true`; when `false` the orchestrator runs every stage and gate (approval labels, `skip-qa` rules, forbidden files, CI) but stops at `pipeline:approved` with a "ready for human merge" PR comment instead of merging. The issue stays open and closes via the reconciliation sweep after the human merges. New `templates/comments/approved.md` template; documented in `talos.pipeline.yml.example` and the user guide. (9ddeba6)
+- **Antigravity harness support** — named runner (`agy -p`) and `--harness antigravity` install support. (a460990)
+- **Provider coverage tests** — regression suite now exercises every verb in the gitlab and azure adapters and all three Teams notification paths (debug, real AdaptiveCard post, silent no-op) via new `tests/test-providers.sh` + extended `tests/stubs/glab` + new `tests/stubs/az`. (3ec23f3)
 
-- feat: Antigravity named runner (agy -p) and --harness antigravity install support (#21)
+### Fixed
 
-- **Provider coverage tests (#17):** regression suite now exercises every verb in the gitlab and azure adapters and all three Teams notification paths (debug, real AdaptiveCard post, silent no-op) via new `tests/test-providers.sh` + extended `tests/stubs/glab` + new `tests/stubs/az`.
-
-- **Self-run hardening (#16):** SKILL.md rule + reviewer/security prompts prohibit `git checkout` in shared repo; re-approval paths clear `pipeline:blocked`; CHANGELOG serialization guard in Step 4; developer stage drops self-reported test counts; same-account `gh pr review --approve` failure documented as ignorable; `github-api` provider logs `X-RateLimit-Reset` on HTTP 429.
+- **Developer test-type mandate** — the developer stage now requires unit/component tests, a failing-first regression test on bug fixes, and an e2e test for user-facing changes when the repo has an e2e harness (`playwright.config.*` / `cypress.config.*` / `tests/e2e/` / `test:e2e` detection); the PR body must list test types added or skipped-with-reason. (11e4321)
+- **Azure**: split org_arg into separate argv elements in the label-issue subprocess call so `az` receives `--org` and the URL as distinct arguments. (76d8041)
+- **Self-run hardening** — SKILL.md rule + reviewer/security prompts prohibit `git checkout` in shared repo; re-approval paths clear `pipeline:blocked`; CHANGELOG serialization guard in Step 4; developer stage drops self-reported test counts; same-account `gh pr review --approve` failure documented as ignorable; `github-api` provider logs `X-RateLimit-Reset` on HTTP 429. (a315600)
 
 ## [0.2.0] - 2026-07-09
 
