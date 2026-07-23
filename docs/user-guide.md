@@ -55,6 +55,9 @@ progress as issue/PR comments and threaded Slack/Discord messages along the way.
   `pipeline:blocked` for human attention; human-only gates for destructive
   actions; **forbidden-files gate** blocks merging PRs that touch secret-like
   paths (`.env`, `*.pem`, …; `merge.forbidden_files`).
+- **Human-merge mode** — `merge.auto: false` runs every stage and gate but
+  stops at `pipeline:approved` and hands the final merge to a human (for
+  protected integration branches).
 - **Session recovery** — on startup the orchestrator adopts PRs left by an
   interrupted session, heals merged-but-open issues, sweeps orphaned
   worktrees, and reports stale blocked work.
@@ -319,6 +322,15 @@ catch bad stage output, but nothing gates the orchestrator itself.
    per issue, board column updates — or run
    `bash .claude/talos/scripts/pipeline-status.sh --dry-run <n> "In progress"`
    style commands manually.
+
+**Human-merge mode:** set `merge.auto: false` in `talos.pipeline.yml` to run the
+full pipeline but leave the final merge to a human. Every gate still applies —
+approval labels, forbidden-files check, green CI — but instead of merging, the
+orchestrator labels the PR `pipeline:approved`, posts a "ready for human merge"
+comment, sends the orchestrator notification, and stops. The issue stays open
+and is closed by the reconciliation sweep after you merge. Use this on
+integration branches whose protection requires a human review the pipeline
+can't self-provide (single-account setups). Default is `merge.auto: true`.
 
 **Working with epics:** when `roles.planner: true` is set in `talos.pipeline.yml`,
 the pipeline detects large issues as epics (any issue carrying the `epic` label,
