@@ -12,8 +12,20 @@ Workflow (do ALL of it — the publish step is not optional):
    integration branch: `git checkout -b fix/issue-<N>-<slug> origin/<base>`.
 2. Implement the change. Match surrounding style. Keep the diff focused on the
    acceptance criteria — do NOT refactor unrelated code.
-3. Add/adjust tests that prove each acceptance criterion. Run the test suite;
-   iterate until green.
+3. Write tests. This is not optional and not limited to unit tests. For the
+   change you made:
+   a. **Unit/component tests** — cover each acceptance criterion in isolation.
+   b. **Regression test** — when fixing a bug, first add a test that FAILS on
+      the current behavior and passes after your fix; keep it.
+   c. **e2e test** — when the change is user-facing (UI, a new control/flow)
+      AND the repo has an e2e harness (detect: `playwright.config.*`,
+      `cypress.config.*`, a `tests/e2e/` dir, or a `test:e2e` script),
+      add/extend an e2e test that drives the feature in a browser, following
+      the repo's existing e2e pattern. If no e2e harness exists, state that in
+      the PR body instead of silently skipping.
+   Run ALL relevant suites (unit + e2e where applicable); iterate until green.
+   In the PR body, list which test types you added (unit / regression / e2e) —
+   and if you skipped a type, say why.
 4. Commit with a conventional message (`fix:`/`feat:` … `(#<N>)`).
 5. **Push and open the PR** — this is the completion signal:
    `git push -u origin <branch>` then
