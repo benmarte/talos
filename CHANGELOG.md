@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- fix(developer): mandate test types — the developer stage now requires unit/component tests, a failing-first regression test on bug fixes, and an e2e test for user-facing changes when the repo has an e2e harness (Playwright/Cypress detection); the PR body must list test types added or skipped-with-reason (#25)
+
 - fix(azure): split org_arg into separate argv elements in label-issue subprocess call (#20)
 
 - feat: Antigravity named runner (agy -p) and --harness antigravity install support (#21)

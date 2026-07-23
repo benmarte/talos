@@ -416,12 +416,22 @@ Workflow:
 1. Read spec: `bash scripts/pipeline-vcs.sh view-issue <N>`
 2. `git checkout -b fix/issue-<N>-<slug> origin/<BASE_BRANCH>`
 3. Implement. Match surrounding code style. Stay focused on acceptance criteria.
-4. Add/adjust tests for each acceptance criterion.
-5. Run verify commands. Iterate until all pass.
+4. Write tests — not optional, and not limited to unit tests:
+   a. **Unit/component tests** — cover each acceptance criterion in isolation.
+   b. **Regression test** — when fixing a bug, first add a test that FAILS on
+      the current behavior and passes after your fix; keep it.
+   c. **e2e test** — when the change is user-facing (UI, a new control/flow)
+      AND the repo has an e2e harness (detect: `playwright.config.*`,
+      `cypress.config.*`, a `tests/e2e/` dir, or a `test:e2e` script),
+      add/extend an e2e test that drives the feature in a browser, following
+      the repo's existing e2e pattern. If no e2e harness exists, state that
+      in the PR body instead of silently skipping.
+5. Run verify commands AND all relevant test suites (unit + e2e where
+   applicable). Iterate until all pass.
 6. `git commit -m "fix: <description> (#<N>)"`
 7. `git push -u origin fix/issue-<N>-<slug>`
 8. Write PR body to a temp file (multi-line OK):
-   `printf '%s' "<spec summary>\n\nCloses #<N>" > /tmp/pr-body-<N>.md`
+   `printf '%s' "<spec summary>\n\nTest types: <unit / regression / e2e — list what you added; for any type skipped, say why>\n\nCloses #<N>" > /tmp/pr-body-<N>.md`
 9. Open PR: `bash scripts/pipeline-vcs.sh create-pr fix/issue-<N>-<slug> "<title>" /tmp/pr-body-<N>.md`
    Use "Part of #<N>" instead of "Closes" for all but the last PR on multi-PR issues.
 10. Confirm PR exists: `bash scripts/pipeline-vcs.sh view-pr fix/issue-<N>-<slug>`
