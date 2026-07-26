@@ -52,14 +52,16 @@ make_sandbox() {
   git remote add origin git@github.com:acme/widget.git
 }
 
-# use_stubs — put the gh/curl stubs first on PATH and reset their logs.
-# Sets GH_LOG and CURL_LOG (files the stubs append every invocation to).
+# use_stubs — put the gh/curl/nak stubs first on PATH and reset their logs.
+# Sets GH_LOG, CURL_LOG, and NAK_LOG (files the stubs append every invocation to).
 use_stubs() {
   export PATH="$STUBS_DIR:$PATH"
   export GH_LOG="$SANDBOX/gh.log"
   export CURL_LOG="$SANDBOX/curl.log"
   export CURL_QUEUE="$SANDBOX/curl.queue"   # optional: one canned response per line
-  : > "$GH_LOG"; : > "$CURL_LOG"; : > "$CURL_QUEUE"
+  export NAK_LOG="$SANDBOX/nak.log"
+  export NAK_QUEUE="$SANDBOX/nak.queue"     # optional: "fail" or canned event JSON per line
+  : > "$GH_LOG"; : > "$CURL_LOG"; : > "$CURL_QUEUE"; : > "$NAK_LOG"; : > "$NAK_QUEUE"
 }
 
 # install_talos — run install.sh into the sandbox quietly.

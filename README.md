@@ -156,6 +156,15 @@ TEAMS_WEBHOOK_URL=https://...
 
 Alternatively, set `notifications.slack_channel` / `notifications.discord_channel` in your config and put `SLACK_BOT_TOKEN` / `DISCORD_BOT_TOKEN` in `~/.hermes/.env` (Hermes platform credential store — optional convenience, not required).
 
+For [Buzz](https://github.com/block/buzz) (self-hosted Nostr/NIP-29 workspace — no webhooks), install the [`nak`](https://github.com/fiatjaf/nak) CLI (`brew install nak`), set `notifications.buzz_channel` to the channel UUID, and provide the relay + bot key (env, repo `.env`, or `~/.hermes/.env`):
+
+```
+BUZZ_RELAY_URL=ws://your-relay:3000
+BUZZ_BOT_PRIVATE_KEY=<bot nsec or hex secret>
+```
+
+Talos publishes a signed `kind:9` event tagged with the channel; on a closed or allowlisted relay, add the bot's pubkey as a member/allowlist entry first (see buzz's `NOSTR.md`).
+
 ### 6. Queue work
 
 **VCS mode** (GitHub / GitLab / Azure): add the `pipeline:ready` label to any issue.
@@ -209,6 +218,7 @@ All keys live in `talos.pipeline.yml` at your repo root. Every key is optional a
 | `comments.templates_dir` | `templates/comments` | Path (relative to repo root) containing comment templates |
 | `notifications.slack_channel` | `""` | Slack channel ID fallback |
 | `notifications.discord_channel` | `""` | Discord channel ID fallback |
+| `notifications.buzz_channel` | `""` | Buzz channel UUID (Nostr `h` tag target) |
 | `notifications.templates_dir` | `templates/notifications` | Path to notification message templates; `""` disables templates |
 | `notifications.threading` | `true` | Thread all events per issue in one Slack/Discord thread (bot-token mode only) |
 | `notifications.events` | all (unset) | Events filter. **Leave unset** — when set, any unlisted event is silently dropped, including all role events that make up the conversation stream. See warning below. |
@@ -285,6 +295,7 @@ Scripts respect these env vars, which take priority over the config file:
 | `PIPELINE_REPO` | detected repo (owner/name) |
 | `PIPELINE_SLACK_CHANNEL` | `notifications.slack_channel` |
 | `PIPELINE_DISCORD_CHANNEL` | `notifications.discord_channel` |
+| `PIPELINE_BUZZ_CHANNEL` | `notifications.buzz_channel` |
 | `PIPELINE_THREAD_STATE` | path to thread anchor state file (default: `~/.talos/threads.json`) |
 | `PIPELINE_REPO_URL` | repo URL used to build issue/PR links (default: detected via `gh repo view`) |
 | `PIPELINE_ISSUE_TITLE` / `PIPELINE_PR` / `PIPELINE_PR_TITLE` | issue/PR context for templates (skips the `gh` lookups) |
@@ -292,7 +303,7 @@ Scripts respect these env vars, which take priority over the config file:
 
 ### Per-issue notification threading
 
-When `notifications.threading: true` (the default) and a Slack or Discord **bot token** is in use, all events for the same issue land in a single thread rather than flooding the channel as separate top-level messages.
+When `notifications.threading: true` (the default) and a Slack or Discord **bot token** is in use, all events for the same issue land in a single thread rather than flooding the channel as separate top-level messages. Buzz is always key-based, so it always threads when enabled — follow-ups publish as NIP-10 replies (`["e", <root-id>, "", "reply"]`) to the issue's root event.
 
 The orchestrator passes the issue number as the 4th argument to `pipeline-notify.sh` so that all role events and lifecycle events reply to the same root message:
 

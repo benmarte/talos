@@ -46,8 +46,9 @@ progress as issue/PR comments and threaded Slack/Discord messages along the way.
   or any agentic CLI (Codex, Gemini, custom/local) via the
   `pipeline-agent.sh` adapter.
 - **Rich notifications** — Slack (Block Kit), Discord (embeds), Teams
-  (Adaptive Cards). Per-issue threading (bot-token mode), customizable
-  markdown templates, clickable issue/PR links.
+  (Adaptive Cards), Buzz (Nostr kind:9 via `nak`). Per-issue threading
+  (bot-token mode; NIP-10 replies on Buzz), customizable markdown templates,
+  clickable issue/PR links.
 - **Stage comments on GitHub** — every role posts its verdict/findings on the
   issue or PR, so the audit trail lives where the code lives.
 - **GitHub Projects v2 board** — optional automatic Status column updates.
@@ -78,6 +79,7 @@ Core (all setups):
 | `git` | everything | |
 | `python3` | config parsing, notify payloads | stdlib only; PyYAML optional — without it use a JSON config (`talos.pipeline.json`) |
 | `curl` | notifications | skip if you don't use notifications |
+| `nak` | Buzz notifications only | `brew install nak`; signs/publishes Nostr events — skip unless you use Buzz |
 
 Per VCS provider (pick one):
 
@@ -113,6 +115,8 @@ Per feature (optional):
 | `DISCORD_WEBHOOK_URL` | Discord via webhook (no threading) |
 | `DISCORD_BOT_TOKEN` | Discord via bot (threading works) |
 | `TEAMS_WEBHOOK_URL` | Teams via incoming webhook |
+| `BUZZ_RELAY_URL` | Buzz relay websocket URL, e.g. `ws://localhost:3000` ([block/buzz](https://github.com/block/buzz); needs `BUZZ_BOT_PRIVATE_KEY` + `notifications.buzz_channel`) |
+| `BUZZ_BOT_PRIVATE_KEY` | Nostr key (nsec or hex) the Buzz bot signs kind:9 events with (threading via NIP-10 replies) |
 | `GITHUB_TOKEN` | GitHub API token for `github-api` provider (Personal Access Token or Actions token) |
 | `GH_TOKEN` | Alternative to `GITHUB_TOKEN`; also accepted by `gh` CLI (`github` provider) |
 
@@ -126,7 +130,7 @@ path is no longer read — move any credentials to the repo root.
 | Variable | Overrides |
 |----------|-----------|
 | `PIPELINE_CONFIG` | path to the config file |
-| `PIPELINE_SLACK_CHANNEL` / `PIPELINE_DISCORD_CHANNEL` | notification channels |
+| `PIPELINE_SLACK_CHANNEL` / `PIPELINE_DISCORD_CHANNEL` / `PIPELINE_BUZZ_CHANNEL` | notification channels |
 | `PIPELINE_PROJECT_NUMBER` / `PIPELINE_BOARD_OWNER` / `PIPELINE_STATUS_FIELD` | board settings |
 | `PIPELINE_REPO` | detected `owner/repo` |
 | `PIPELINE_REPO_URL` | repo URL used for issue/PR links |

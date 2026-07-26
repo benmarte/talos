@@ -141,6 +141,10 @@ comments:
 # Slack:   set SLACK_WEBHOOK_URL or use SLACK_BOT_TOKEN from ~/.hermes/.env
 # Discord: set DISCORD_WEBHOOK_URL or use DISCORD_BOT_TOKEN from ~/.hermes/.env
 # Teams:   set TEAMS_WEBHOOK_URL (webhook-only)
+# Buzz:    set BUZZ_RELAY_URL + BUZZ_BOT_PRIVATE_KEY (env, repo .env, or
+#          ~/.hermes/.env) and buzz_channel below. Buzz (github.com/block/buzz)
+#          is a Nostr relay — delivery publishes a signed kind:9 event via the
+#          `nak` CLI (brew install nak); skipped with a warning if nak is absent.
 #
 # Notification message text is rendered from templates/notifications/$EVENT.md
 # when the template file exists. Falls back to the built-in one-liner when absent.
@@ -148,6 +152,7 @@ comments:
 notifications:
   slack_channel: ""          # Slack channel ID; overridden by PIPELINE_SLACK_CHANNEL
   discord_channel: ""        # Discord channel ID; overridden by PIPELINE_DISCORD_CHANNEL
+  buzz_channel: ""           # Buzz channel UUID; overridden by PIPELINE_BUZZ_CHANNEL
   templates_dir: "templates/notifications"  # relative to repo root; "" disables templates
   threading: true            # Thread all events per issue (bot-token mode only;
                              # silently skipped in webhook mode)

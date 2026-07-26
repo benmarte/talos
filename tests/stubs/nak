@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# nak stub for talos tests. Logs the full argv (newlines flattened to spaces,
+# one line per invocation) to $NAK_LOG.
+# Response: pops the first line of $NAK_QUEUE if non-empty — the literal word
+# "fail" exits 1 with no output (publish failure); any other line is printed
+# as the canned event JSON. Default: a fixed success event id.
+
+if [ -n "${NAK_LOG:-}" ]; then
+  printf '%s' "$*" | tr '\n' ' ' >> "$NAK_LOG"
+  printf '\n' >> "$NAK_LOG"
+fi
+
+if [ -n "${NAK_QUEUE:-}" ] && [ -s "$NAK_QUEUE" ]; then
+  raw="$(head -1 "$NAK_QUEUE")"
+  tail -n +2 "$NAK_QUEUE" > "$NAK_QUEUE.tmp" && mv "$NAK_QUEUE.tmp" "$NAK_QUEUE"
+  [ "$raw" = "fail" ] && exit 1
+  printf '%s\n' "$raw"
+  exit 0
+fi
+
+printf '{"id":"aaaa000000000000000000000000000000000000000000000000000000000001","kind":9}\n'
+exit 0
