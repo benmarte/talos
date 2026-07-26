@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Buzz notification sink** — `pipeline-notify.sh` can now post pipeline events to a [Buzz](https://github.com/block/buzz) (Nostr/NIP-29) channel by publishing signed `kind:9` events via the `nak` CLI (`--auth` answers NIP-42). Configure `notifications.buzz_channel` (or `PIPELINE_BUZZ_CHANNEL`) plus `BUZZ_RELAY_URL` / `BUZZ_BOT_PRIVATE_KEY` (env, repo `.env`, or `~/.hermes/.env`). Per-issue threading via NIP-10 reply tags with stale-anchor recovery; graceful skip with a warning when `nak` is missing. New `tests/stubs/nak` + `tests/test-notify-buzz.sh` regression suite.
+
 ## [0.3.0] - 2026-07-23
 
 ### Added

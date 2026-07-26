@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pipeline-notify.sh — post a pipeline event to Slack, Discord, and/or Teams.
+# pipeline-notify.sh — post a pipeline event to Slack, Discord, Teams, and/or Buzz.
 #
 # Usage: pipeline-notify.sh <event> <ref> <message> [thread_key]
 #   event       pr-opened | merged | blocked | issue-closed | info
@@ -20,7 +20,17 @@
 #        notifications.discord_channel, overrideable via env vars
 #        PIPELINE_SLACK_CHANNEL / PIPELINE_DISCORD_CHANNEL.
 #
-# Threading (bot-token mode only):
+# Buzz (https://github.com/block/buzz — Nostr/NIP-29 relay, no webhooks):
+#   Publishes a signed kind:9 event tagged ["h", <channel-uuid>] via the `nak`
+#   CLI (brew install nak), which also answers the relay's NIP-42 AUTH.
+#   Requires all three of: BUZZ_RELAY_URL (ws[s]://…), BUZZ_BOT_PRIVATE_KEY
+#   (hex or nsec; env, repo .env, or ~/.hermes/.env), and a channel UUID from
+#   notifications.buzz_channel / PIPELINE_BUZZ_CHANNEL. Threading uses NIP-10
+#   reply tags ["e", <root-id>, "", "reply"] with the anchor persisted as
+#   buzz_event_id. If buzz is configured but nak is missing, buzz is skipped
+#   with a warning; the pipeline never breaks.
+#
+# Threading (bot-token mode only; Buzz always threads — it is key-based):
 #   When notifications.threading = true (default) and a bot token is in use,
 #   all events sharing the same thread_key post as replies to the first message
 #   (Slack thread_ts / Discord message_reference). Anchors are persisted in
@@ -90,12 +100,15 @@ fi
 # ── Channel config with env var overrides ─────────────────────────────────────
 SLACK_CHANNEL="${PIPELINE_SLACK_CHANNEL:-$(cfg notifications.slack_channel "")}"
 DISCORD_CHANNEL="${PIPELINE_DISCORD_CHANNEL:-$(cfg notifications.discord_channel "")}"
+BUZZ_CHANNEL="${PIPELINE_BUZZ_CHANNEL:-$(cfg notifications.buzz_channel "")}"
 
 # ── Bot tokens from Hermes env (optional convenience) ─────────────────────────
 HERMES_ENV="$HOME/.hermes/.env"
 if [ -f "$HERMES_ENV" ]; then
   [ -z "${SLACK_BOT_TOKEN:-}" ]   && SLACK_BOT_TOKEN="$(grep -m1 '^SLACK_BOT_TOKEN='   "$HERMES_ENV" | cut -d= -f2-)"
   [ -z "${DISCORD_BOT_TOKEN:-}" ] && DISCORD_BOT_TOKEN="$(grep -m1 '^DISCORD_BOT_TOKEN=' "$HERMES_ENV" | cut -d= -f2-)"
+  [ -z "${BUZZ_RELAY_URL:-}" ]        && BUZZ_RELAY_URL="$(grep -m1 '^BUZZ_RELAY_URL='        "$HERMES_ENV" | cut -d= -f2-)"
+  [ -z "${BUZZ_BOT_PRIVATE_KEY:-}" ]  && BUZZ_BOT_PRIVATE_KEY="$(grep -m1 '^BUZZ_BOT_PRIVATE_KEY=' "$HERMES_ENV" | cut -d= -f2-)"
 fi
 
 # ── API fallback for gh metadata lookups ──────────────────────────────────────
@@ -516,6 +529,58 @@ if [ -n "${TEAMS_WEBHOOK_URL:-}" ]; then
         }
       }]
     }" teams >/dev/null 2>&1 || echo "pipeline-notify: teams webhook delivery failed" >&2
+  fi
+fi
+
+# ── Buzz (Nostr kind:9 via nak — key-based, threads via NIP-10 replies) ──────
+if [ -n "${BUZZ_RELAY_URL:-}" ] && [ -n "${BUZZ_BOT_PRIVATE_KEY:-}" ] && [ -n "$BUZZ_CHANNEL" ]; then
+  BUZZ_ANCHOR=""
+  if [ "$THREADING_ENABLED" = "true" ]; then
+    BUZZ_ANCHOR="$(_thread_state get buzz_event_id)"
+  fi
+
+  _buzz_publish() {  # $1=anchor event id (may be empty); prints nak stdout
+    if [ -n "$1" ]; then
+      nak event --auth --sec "$BUZZ_BOT_PRIVATE_KEY" -k 9 -c "$TEXT" \
+        -t "h=$BUZZ_CHANNEL" -t "e=$1;;reply" "$BUZZ_RELAY_URL" 2>/dev/null
+    else
+      nak event --auth --sec "$BUZZ_BOT_PRIVATE_KEY" -k 9 -c "$TEXT" \
+        -t "h=$BUZZ_CHANNEL" "$BUZZ_RELAY_URL" 2>/dev/null
+    fi
+  }
+
+  _buzz_event_id() {  # $1=nak stdout — event JSON on the first line
+    _extract_json_field "$(printf '%s' "$1" | head -1)" id
+  }
+
+  if [ "${PIPELINE_NOTIFY_DEBUG:-}" = "1" ]; then
+    echo "[pipeline-notify DEBUG] BUZZ state_key=$STATE_KEY"
+    echo "[pipeline-notify DEBUG] BUZZ thread_anchor=${BUZZ_ANCHOR:-(none — root post)}"
+    echo "[pipeline-notify DEBUG] BUZZ relay=$BUZZ_RELAY_URL channel=$BUZZ_CHANNEL kind=9 text=$TEXT"
+  elif ! command -v nak >/dev/null 2>&1; then
+    echo "pipeline-notify: buzz configured but 'nak' CLI not found — skipping (brew install nak)" >&2
+  else
+    if resp="$(_buzz_publish "$BUZZ_ANCHOR")"; then
+      # Store the root event id as the thread anchor for the first post
+      if [ "$THREADING_ENABLED" = "true" ] && [ -z "$BUZZ_ANCHOR" ]; then
+        NEW_ID="$(_buzz_event_id "$resp")"
+        [ -n "$NEW_ID" ] && _thread_state set buzz_event_id "$NEW_ID"
+      fi
+    elif [ -n "$BUZZ_ANCHOR" ]; then
+      # Reply rejected (Buzz rejects replies to unknown parents) — clear the
+      # stale anchor and repost as a fresh root, mirroring Slack recovery.
+      _thread_state clear buzz_event_id
+      if resp2="$(_buzz_publish "")"; then
+        if [ "$THREADING_ENABLED" = "true" ]; then
+          NEW_ID="$(_buzz_event_id "$resp2")"
+          [ -n "$NEW_ID" ] && _thread_state set buzz_event_id "$NEW_ID"
+        fi
+      else
+        echo "pipeline-notify: buzz retry (stale anchor recovery) failed" >&2
+      fi
+    else
+      echo "pipeline-notify: buzz publish failed" >&2
+    fi
   fi
 fi
 

@@ -67,6 +67,23 @@ out="$(PIPELINE_ISSUE_TITLE="T" run_notify merged "#42" "should pass" 42)"
 assert_contains "$out" "SLACK" "allowed event passes the filter"
 rm talos.pipeline.json
 
+# ── Buzz debug payload: rendered template, relay + channel ───────────────────
+out="$(PIPELINE_NOTIFY_DEBUG=1 BUZZ_RELAY_URL=ws://localhost:3000 \
+  BUZZ_BOT_PRIVATE_KEY=deadbeef PIPELINE_BUZZ_CHANNEL=chan-uuid-1 \
+  PIPELINE_ISSUE_TITLE="Fix login crash" bash "$NOTIFY" validator "#42" "Confirmed." 42 2>&1)"
+assert_contains "$out" "BUZZ relay=ws://localhost:3000 channel=chan-uuid-1 kind=9" \
+  "buzz debug carries relay, channel, and kind"
+assert_contains "$out" "New comment by validator agent on #42: Fix login crash" \
+  "buzz text is the rendered template"
+assert_contains "$out" "[#42: Fix login crash](https://github.com/acme/widget/issues/42)" \
+  "buzz keeps CommonMark links unconverted"
+
+# ── Buzz partial config (no private key) → silent skip ───────────────────────
+out="$(PIPELINE_NOTIFY_DEBUG=1 BUZZ_RELAY_URL=ws://localhost:3000 \
+  PIPELINE_BUZZ_CHANNEL=chan-uuid-1 bash "$NOTIFY" validator "#42" "m" 42 2>&1)"; rc=$?
+assert_eq "0" "$rc" "buzz partial config exits 0"
+assert_not_contains "$out" "BUZZ" "buzz without private key produces no buzz output"
+
 # ── No credentials at all → silent no-op, exit 0 ─────────────────────────────
 out="$(PIPELINE_NOTIFY_DEBUG=1 bash "$NOTIFY" validator "#42" "m" 42 2>&1)"; rc=$?
 assert_eq "0" "$rc" "no credentials exits 0"
