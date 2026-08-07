@@ -72,6 +72,57 @@ for agent in validator pm developer qa reviewer security docs planner; do
   assert_file_exists "$PLUGIN_ROOT/agents/$agent.md" "plugin ships $agent role at agents/"
 done
 
+# Every role must be able to invoke skills (#37). Five of the eight had no Skill
+# tool, so an installed skill pack — agent-skills, or Claude Code's own
+# code-review/security-review — was unreachable from those stages no matter what
+# the profile said. The dependency was never the problem; the tool grant was.
+for agent in validator pm developer qa reviewer security docs planner; do
+  tools_line="$(grep -E '^tools:' "$PLUGIN_ROOT/agents/$agent.md" || true)"
+  case "$tools_line" in
+    *Skill*) pass "$agent can invoke skills" ;;
+    *)       fail "$agent can invoke skills" "tools: $tools_line" ;;
+  esac
+done
+
+# ...and every skill reference must stay optional. A hard requirement would
+# break the non-Claude harnesses Talos advertises, where skill packs do not
+# exist at all. Any profile naming a skill must guard it on availability.
+for agent in validator pm developer qa reviewer security docs planner; do
+  body="$(cat "$PLUGIN_ROOT/agents/$agent.md")"
+  case "$body" in
+    *skill*)
+      # Accept any availability guard: "if available", "if present",
+      # "skill is available", "if one is available", ...
+      case "$body" in
+        *available*|*"if present"*) pass "$agent keeps skill use optional" ;;
+        *) fail "$agent keeps skill use optional" "names a skill with no availability guard" ;;
+      esac ;;
+    *) pass "$agent keeps skill use optional" ;;
+  esac
+done
+
+# No role may name a specific third-party PLUGIN — skills are referenced by bare
+# name so any provider can satisfy them, including Claude Code's built-ins.
+if grep -rln "agent-skills" "$PLUGIN_ROOT/agents/" >/dev/null 2>&1; then
+  fail "roles name skills generically, not a specific plugin"
+else
+  pass "roles name skills generically, not a specific plugin"
+fi
+
+# And the manifest must declare no hard plugin dependency. `dependencies` is a
+# real field that auto-enables what it names; using it for a Claude Code skill
+# pack would misrepresent Talos on the Codex/Gemini/Antigravity harnesses it
+# advertises, where that pack cannot exist.
+if python3 -c "
+import json,sys
+d=json.load(open('$TALOS_ROOT/.claude-plugin/plugin.json'))
+sys.exit(0 if not d.get('dependencies') else 1)
+" 2>/dev/null; then
+  pass "manifest declares no hard plugin dependency"
+else
+  fail "manifest declares no hard plugin dependency"
+fi
+
 # ── 2. Scripts resolve from the plugin root ──────────────────────────────────
 # This is the resolution the SKILL.md instructs the orchestrator to perform.
 resolved=""
