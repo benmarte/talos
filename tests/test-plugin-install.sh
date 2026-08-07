@@ -84,43 +84,67 @@ for agent in validator pm developer qa reviewer security docs planner; do
   esac
 done
 
-# ...and every skill reference must stay optional. A hard requirement would
-# break the non-Claude harnesses Talos advertises, where skill packs do not
-# exist at all. Any profile naming a skill must guard it on availability.
+# Every role must actually direct the model to use skills, not merely tolerate
+# them. As of 0.8.0 agent-skills is a hard dependency, so "if available" hedging
+# would leave the guarantee unused.
+# Bodies are hard-wrapped, so a phrase can straddle a newline — normalise
+# whitespace before matching or these assertions fail on prose reflow alone.
+flat() { tr '\n' ' ' < "$1" | tr -s ' '; }
+
 for agent in validator pm developer qa reviewer security docs planner; do
-  body="$(cat "$PLUGIN_ROOT/agents/$agent.md")"
+  body="$(flat "$PLUGIN_ROOT/agents/$agent.md")"
   case "$body" in
-    *skill*)
-      # Accept any availability guard: "if available", "if present",
-      # "skill is available", "if one is available", ...
-      case "$body" in
-        *available*|*"if present"*) pass "$agent keeps skill use optional" ;;
-        *) fail "$agent keeps skill use optional" "names a skill with no availability guard" ;;
-      esac ;;
-    *) pass "$agent keeps skill use optional" ;;
+    *"do not restate them"*) pass "$agent directs the model to use skills" ;;
+    *) fail "$agent directs the model to use skills" "no mandatory skills clause" ;;
   esac
 done
 
-# No role may name a specific third-party PLUGIN — skills are referenced by bare
-# name so any provider can satisfy them, including Claude Code's built-ins.
-if grep -rln "agent-skills" "$PLUGIN_ROOT/agents/" >/dev/null 2>&1; then
-  fail "roles name skills generically, not a specific plugin"
-else
-  pass "roles name skills generically, not a specific plugin"
-fi
+# ...but every profile must still name the non-Claude fallback. install.sh
+# targets Codex/Gemini/Antigravity, where plugins — and therefore the dependency
+# — do not exist at all. Without this the mandate is a dead end on 3 of 4
+# advertised harnesses.
+for agent in validator pm developer qa reviewer security docs planner; do
+  body="$(flat "$PLUGIN_ROOT/agents/$agent.md")"
+  case "$body" in
+    *"without skill support"*) pass "$agent names the non-Claude fallback" ;;
+    *) fail "$agent names the non-Claude fallback" "mandate with no harness fallback" ;;
+  esac
+done
 
-# And the manifest must declare no hard plugin dependency. `dependencies` is a
-# real field that auto-enables what it names; using it for a Claude Code skill
-# pack would misrepresent Talos on the Codex/Gemini/Antigravity harnesses it
-# advertises, where that pack cannot exist.
+# The dependency must be declared, and the marketplace must catalogue it —
+# otherwise `dependencies` resolves to nothing installable and enabling talos
+# FAILS for anyone who does not already have agent-skills. The two halves are
+# only correct together.
 if python3 -c "
 import json,sys
 d=json.load(open('$TALOS_ROOT/.claude-plugin/plugin.json'))
-sys.exit(0 if not d.get('dependencies') else 1)
+deps=[x if isinstance(x,str) else x.get('name') for x in d.get('dependencies',[])]
+sys.exit(0 if 'agent-skills' in deps else 1)
 " 2>/dev/null; then
-  pass "manifest declares no hard plugin dependency"
+  pass "manifest declares agent-skills as a dependency"
 else
-  fail "manifest declares no hard plugin dependency"
+  fail "manifest declares agent-skills as a dependency"
+fi
+
+if python3 -c "
+import json,sys
+m=json.load(open('$TALOS_ROOT/.claude-plugin/marketplace.json'))
+e=[p for p in m['plugins'] if p['name']=='agent-skills']
+assert e, 'agent-skills not catalogued'
+src=e[0]['source']
+assert src.get('source')=='github' and src.get('repo')=='addyosmani/agent-skills', src
+" 2>/dev/null; then
+  pass "marketplace catalogues agent-skills so the dependency can auto-install"
+else
+  fail "marketplace catalogues agent-skills so the dependency can auto-install"
+fi
+
+# The catalogue entry must point upstream, never at a vendored copy — Talos does
+# not fork agent-skills, and a relative source would mean it had.
+if grep -q '"repo": "addyosmani/agent-skills"' "$TALOS_ROOT/.claude-plugin/marketplace.json"; then
+  pass "agent-skills is sourced upstream, not vendored"
+else
+  fail "agent-skills is sourced upstream, not vendored"
 fi
 
 # ── 2. Scripts resolve from the plugin root ──────────────────────────────────

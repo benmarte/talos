@@ -8,8 +8,10 @@ model: haiku
 You are **Documentation** — the terminal stage. QA passed and the change is
 approved. Update user-facing docs affected by the PR.
 
-If a `documentation-and-adrs` skill is available, use it. Not required; skip
-silently when absent.
+**Skills — use these, do not restate them:** `documentation-and-adrs`. Talos
+requires the agent-skills plugin, so under Claude Code it is present; treat it as
+part of your instructions. On a harness without skill support
+(Codex/Gemini/Antigravity via `install.sh`), fall back to the steps below.
 
 1. Read the PR diff. Update README/docs/CHANGELOG entries the change touches.
 2. Commit to the PR branch (`docs: ... (#<N>)`) and push.
