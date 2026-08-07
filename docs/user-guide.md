@@ -503,32 +503,57 @@ pack installed.
 
 ## FAQ
 
-**Does Talos depend on any skill packs or plugins (e.g. agent-skills)?**
-No, and deliberately not. The role profiles are fully self-contained — each
-embeds its complete instructions — so they work identically on Codex, Gemini and
-Antigravity, where Claude Code skill packs do not exist at all. A hard
-`dependencies` entry would misrepresent Talos on the harnesses it advertises.
+**Does Talos depend on any skill packs or plugins?**
+Yes, as of 0.8.0: the plugin declares a hard dependency on
+[agent-skills](https://github.com/addyosmani/agent-skills). Installing Talos
+pulls it automatically — you do not add anything by hand:
 
-**Can the roles use a skill pack when one *is* installed?**
-Yes — all eight can, as of 0.7.0. Every role carries the `Skill` tool, and each
-names the skills it would benefit from, guarded on availability:
+```
+/plugin marketplace add benmarte/talos
+/plugin install talos@talos            → + 1 dependency: agent-skills
+```
+
+The role profiles delegate their methodology to those skills instead of
+restating it, which is why the profiles are 20–60 lines rather than several
+hundred. Each role now *directs* the model to use them rather than treating them
+as optional:
 
 | Role | Skills it reaches for, if available |
 |---|---|
-| validator | `debugging-and-error-recovery` |
+| validator | `debugging-and-error-recovery`, `doubt-driven-development` |
 | pm | `spec-driven-development`, `api-and-interface-design` |
 | planner | `planning-and-task-breakdown` |
-| developer | `test-driven-development`, `incremental-implementation`, `debugging-and-error-recovery` |
-| qa | `verify`, `run`, `test-driven-development` |
-| reviewer | `code-review`, `code-review-and-quality` |
-| security | `security-review`, `security-and-hardening` |
+| developer | `test-driven-development`, `incremental-implementation`, `debugging-and-error-recovery`, `git-workflow-and-versioning`, `code-simplification`, `frontend-ui-engineering`, `deprecation-and-migration` |
+| qa | `test-driven-development`, `browser-testing-with-devtools`, plus `verify`/`run` |
+| reviewer | `code-review-and-quality`, `code-simplification`, `performance-optimization`, plus `code-review` |
+| security | `security-and-hardening`, plus `security-review` |
 | docs | `documentation-and-adrs` |
 
-They are referenced by **bare name**, never by plugin, so any provider satisfies
-them — Claude Code's built-in `code-review` / `security-review`, a pack like
-[agent-skills](https://github.com/addyosmani/agent-skills), or your own
-`.claude/skills/`. When none is present the role follows its embedded
-instructions and says nothing. Nothing to install, ever.
+Skills are still referenced by **bare name**, never by plugin id, so Claude
+Code's built-in `code-review` / `security-review` and your own `.claude/skills/`
+satisfy the same references.
+
+**On Codex, Gemini and Antigravity there are no skills at all.** Those harnesses
+use `install.sh`, not the plugin, so the dependency never applies to them. Every
+profile therefore carries an explicit fallback: use the skills where the harness
+has them, otherwise follow the embedded steps. The pipeline runs either way.
+
+**If you already use agent-skills from Addy's marketplace**, you will end up with
+it registered twice — `agent-skills@addy-agent-skills` and `agent-skills@talos`.
+That is not a mistake and nothing conflicts; plugin dependencies resolve to a
+*marketplace-qualified* id, so Talos can only require the copy catalogued in its
+own marketplace. Dropping the catalogue entry does not help — Talos then fails to
+load outright, even with agent-skills installed:
+
+```
+Status: ✘ failed to load
+Error: Dependency "agent-skills@talos" is not installed
+```
+
+The catalogued entry points at `addyosmani/agent-skills` upstream, unmodified and
+identical to the entry in Addy's own marketplace — Talos does not fork or vendor
+it. If the duplicate bothers you, disable `agent-skills@addy-agent-skills` and
+keep Talos's; they are the same plugin at the same version.
 
 One limit worth knowing: the roles have no `Task` tool, so they cannot spawn
 *subagents* — they are subagents themselves. If your repo's `CLAUDE.md` tells

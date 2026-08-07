@@ -9,6 +9,14 @@
       "name": "talos",
       "source": "./",
       "description": "Autonomous issue-to-PR pipeline orchestrated by a Claude Code session. Validator, developer (worktree-isolated), QA, reviewer, security, and docs subagents drive GitHub issues through to merged PRs."
+    },
+    {
+      "name": "agent-skills",
+      "source": {
+        "source": "github",
+        "repo": "addyosmani/agent-skills"
+      },
+      "description": "Engineering methodology skills (spec, planning, TDD, review, security, docs). Required by talos — its role profiles delegate their methodology to these skills rather than restating it. Catalogued here only so the dependency resolves and auto-installs; upstream is addyosmani/agent-skills (MIT), unmodified."
     }
   ]
 }

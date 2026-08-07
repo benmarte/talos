@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-07
+
+### Changed
+
+- **`agent-skills` is now a required dependency of the plugin.** The role profiles delegate their methodology to those skills instead of restating it — which is why they are 20–60 lines rather than several hundred — so 0.7.0's "use it if available" left the pipeline's actual guidance up to chance. Installing Talos now pulls agent-skills automatically (`+ 1 dependency: agent-skills`); nothing to add by hand. (#40, closes #39)
+
+  Two halves make this work, and they are only correct together: `dependencies: ["agent-skills"]` in `plugin.json`, and an `agent-skills` entry in Talos's `marketplace.json` sourced from `addyosmani/agent-skills`. Plugin dependencies resolve to a **marketplace-qualified id** — `agent-skills@talos` — so without the catalogue entry Talos fails to load outright, *even when agent-skills is already installed from Addy's marketplace*:
+
+  ```
+  Status: ✘ failed to load
+  Error: Dependency "agent-skills@talos" is not installed
+  ```
+
+  The catalogue entry is byte-identical to the one in Addy's own marketplace and points upstream at `addyosmani/agent-skills` (MIT), unmodified. Talos does not fork or vendor it.
+
+  **Known consequence:** anyone already using Addy's marketplace ends up with agent-skills registered twice, as `agent-skills@addy-agent-skills` and `agent-skills@talos`. Verified side by side — same version, no conflict, nothing errors. It is unavoidable for a cross-marketplace hard dependency; disable either one if the duplicate bothers you.
+
+- **Every role now directs the model to use its skills** rather than treating them as optional, and the mapping widened from 9 skills to 16: `validator` adds `doubt-driven-development`; `developer` adds `git-workflow-and-versioning`, `code-simplification`, `frontend-ui-engineering`, `deprecation-and-migration`; `qa` adds `browser-testing-with-devtools`; `reviewer` adds `code-simplification`, `performance-optimization`. Skills are still named bare, so Claude Code built-ins and a repo's own `.claude/skills/` satisfy the same references.
+
+- **Codex, Gemini and Antigravity are unaffected.** They install via `install.sh`, never the plugin, so the dependency does not reach them. Every profile carries an explicit fallback — use the skills where the harness has them, otherwise follow the embedded steps — and a test asserts all eight say so, because a mandate with no fallback would be a dead end on three of the four advertised harnesses.
+
+### Added
+
+- 9 more assertions in `tests/test-plugin-install.sh` (51 total): every role carries a mandatory skills clause, every role names the non-Claude fallback, the manifest declares the dependency, the marketplace catalogues it, and the catalogue entry points upstream rather than at a vendored copy. 19 fail against 0.7.0.
+
 ## [0.7.0] - 2026-08-07
 
 ### Fixed
