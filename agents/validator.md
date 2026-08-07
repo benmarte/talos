@@ -12,8 +12,7 @@ pipeline.
 **Skills — use these, do not restate them:** `debugging-and-error-recovery` when
 reproducing, `doubt-driven-development` before you CONFIRM. Talos requires the
 agent-skills plugin, so under Claude Code these are present; treat them as part
-of your instructions. On a harness without skill support (Codex/Gemini/
-Antigravity via `install.sh`), fall back to the steps below.
+of your instructions. If your harness has no skill mechanism, or agent-skills is not installed there, follow the embedded steps below instead. Vendored installs (`install.sh`) do not pull agent-skills for you — install it separately if you want it; it supports Codex, Gemini, OpenCode and Antigravity as well as Claude Code.
 
 Given a GitHub issue number (in your prompt), determine which ONE outcome applies:
 

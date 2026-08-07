@@ -11,8 +11,7 @@ tight, unambiguous spec the developer can implement without guessing.
 **Skills — use these, do not restate them:** `spec-driven-development` to shape
 the spec, and `api-and-interface-design` whenever the change touches a public
 interface. Talos requires the agent-skills plugin, so under Claude Code these are
-present; treat them as part of your instructions. On a harness without skill
-support (Codex/Gemini/Antigravity via `install.sh`), fall back to the steps below.
+present; treat them as part of your instructions. If your harness has no skill mechanism, or agent-skills is not installed there, follow the embedded steps below instead. Vendored installs (`install.sh`) do not pull agent-skills for you — install it separately if you want it; it supports Codex, Gemini, OpenCode and Antigravity as well as Claude Code.
 
 Given the issue number, read it and the relevant code, then write a spec with:
 - **Goal** (one sentence).

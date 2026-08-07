@@ -533,10 +533,13 @@ Skills are still referenced by **bare name**, never by plugin id, so Claude
 Code's built-in `code-review` / `security-review` and your own `.claude/skills/`
 satisfy the same references.
 
-**On Codex, Gemini and Antigravity there are no skills at all.** Those harnesses
-use `install.sh`, not the plugin, so the dependency never applies to them. Every
-profile therefore carries an explicit fallback: use the skills where the harness
-has them, otherwise follow the embedded steps. The pipeline runs either way.
+**Vendored installs do not pull agent-skills.** The dependency belongs to the
+plugin; `install.sh` copies files and installs nothing. agent-skills is not
+Claude-Code-only — it ships `.gemini/`, `.opencode/`, `.codex-plugin/` and an
+`AGENTS.md` covering Antigravity — so install it separately on those harnesses to
+get the full behaviour. Every profile carries a fallback either way: use the
+skills where they are present, otherwise follow the embedded steps. The pipeline
+runs regardless.
 
 **If you already use agent-skills from Addy's marketplace**, you will end up with
 it registered twice — `agent-skills@addy-agent-skills` and `agent-skills@talos`.

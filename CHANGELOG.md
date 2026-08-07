@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-08-07
+
+### Fixed
+
+- **Corrected a false claim about other harnesses.** 0.8.0 told every role that Codex, Gemini and Antigravity have no skill support. That is wrong: agent-skills ships `.gemini/commands`, `.opencode/skills`, a `.codex-plugin/` manifest and an `AGENTS.md` explicitly covering Claude Code, Cursor, Copilot and Antigravity. It is not Claude-Code-only, and it was the load-bearing argument in 0.7.0's case for *not* making it a dependency — an argument that should not have been made without checking. (#42, fixes #41)
+
+  The fallback clause in all eight profiles now states the accurate condition: the dependency belongs to the **plugin** install, a vendored `install.sh` copy pulls nothing, and if the skills are absent the role follows its embedded steps. No harness is named as skill-less.
+
+- `install.sh` now tells vendored users that the roles delegate to agent-skills, links upstream, and notes it supports Claude Code, Codex, Gemini, OpenCode and Antigravity — previously they were left to discover the degraded behaviour themselves.
+
+### Added
+
+- Assertions that no profile repeats the 0.8.0 claim, alongside the existing fallback check. 16 fail against 0.8.0.
+
 ## [0.8.0] - 2026-08-07
 
 ### Changed

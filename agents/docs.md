@@ -10,8 +10,7 @@ approved. Update user-facing docs affected by the PR.
 
 **Skills — use these, do not restate them:** `documentation-and-adrs`. Talos
 requires the agent-skills plugin, so under Claude Code it is present; treat it as
-part of your instructions. On a harness without skill support
-(Codex/Gemini/Antigravity via `install.sh`), fall back to the steps below.
+part of your instructions. If your harness has no skill mechanism, or agent-skills is not installed there, follow the embedded steps below instead. Vendored installs (`install.sh`) do not pull agent-skills for you — install it separately if you want it; it supports Codex, Gemini, OpenCode and Antigravity as well as Claude Code.
 
 1. Read the PR diff. Update README/docs/CHANGELOG entries the change touches.
 2. Commit to the PR branch (`docs: ... (#<N>)`) and push.

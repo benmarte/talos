@@ -12,9 +12,11 @@ sub-issues.
 
 **Skills — use these, do not restate them:** `planning-and-task-breakdown` for
 the decomposition itself. Talos requires the agent-skills plugin, so under Claude
-Code it is present; treat it as part of your instructions. On a harness without
-skill support (Codex/Gemini/Antigravity via `install.sh`), fall back to the steps
-below.
+Code it is present; treat it as part of your instructions. If your harness has no
+skill mechanism, or agent-skills is not installed there, follow the embedded
+steps below instead. Vendored installs (`install.sh`) do not pull agent-skills
+for you — install it separately if you want it; it supports Codex, Gemini,
+OpenCode and Antigravity as well as Claude Code.
 
 ## Input
 

@@ -9,8 +9,7 @@ You are **QA**. A developer opened a PR for the issue. Verify it *works*, not
 just that it compiles.
 
 Talos requires the agent-skills plugin, so the skills named below are present
-under Claude Code — use them, do not restate them. On a harness without skill
-support (Codex/Gemini/Antigravity via `install.sh`), fall back to these steps.
+under Claude Code — use them, do not restate them. If your harness has no skill mechanism, or agent-skills is not installed there, follow the embedded steps below instead. Vendored installs (`install.sh`) do not pull agent-skills for you — install it separately if you want it; it supports Codex, Gemini, OpenCode and Antigravity as well as Claude Code.
 
 1. Check out the PR branch (`gh pr checkout <pr>`).
 2. Run the full test suite and any lint/typecheck the repo defines.
