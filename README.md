@@ -98,24 +98,28 @@ az devops configure --defaults organization=https://dev.azure.com/MYORG project=
 ### 1. Copy files into your repo
 
 ```bash
-# Option A: install as a Claude Code plugin (recommended)
-# In a Claude Code session, run:
-/plugin marketplace add benmarte/talos
-/plugin install talos@talos
-# Note: the plugin provides /pipeline and /pipeline-setup skills; per-repo scripts/ and templates/ still come from install.sh (Option B) — the two are complementary.
+# Option A: run the installer (recommended) — registers /pipeline in this repo
+bash path/to/talos/install.sh /path/to/your-repo
 
 # Option B: manual copy
 cp -r path/to/talos/scripts/   .claude/talos/scripts/
-cp -r path/to/talos/skills/    .claude/talos/skills/
+cp -r path/to/talos/skills/pipeline/ .claude/skills/pipeline/   # MUST be .claude/skills/ — see below
 cp -r path/to/talos/templates/ .claude/talos/templates/   # required for rich messages
 cp -r path/to/talos/.claude/agents/ .claude/agents/
+
+# Option C: install as a Claude Code plugin, once per machine
+# In a Claude Code session, run:
+/plugin marketplace add benmarte/talos
+/plugin install talos@talos
+# The plugin adds /pipeline-setup and makes /pipeline available in repos where
+# install.sh has not run. It is not required — install.sh registers /pipeline
+# on its own — but per-repo scripts/ and templates/ only ever come from install.sh.
 ```
 
-Or run the included installer:
-
-```bash
-bash path/to/talos/install.sh /path/to/your-repo
-```
+> **Why `.claude/skills/`?** Claude Code discovers skills at `<repo>/.claude/skills/<name>/SKILL.md`
+> and `~/.claude/skills/<name>/SKILL.md`. It does not recurse, so a skill under
+> `.claude/talos/skills/` — where Talos wrote it before 0.5.0 — registers no command at all.
+> Re-run `install.sh` to migrate an older install; it relocates the file for you.
 
 ### 2. Configure
 

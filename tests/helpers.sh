@@ -38,6 +38,10 @@ assert_file_exists() {  # $1=path $2=label
   if [ -f "$1" ]; then pass "$2"; else fail "$2" "file not found: $1"; fi
 }
 
+assert_file_absent() {  # $1=path $2=label
+  if [ -e "$1" ]; then fail "$2" "file should not exist: $1"; else pass "$2"; fi
+}
+
 assert_exit_code() {  # $1=expected $2=actual $3=label
   assert_eq "$1" "$2" "$3"
 }
