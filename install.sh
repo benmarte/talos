@@ -152,9 +152,39 @@ else
   echo "Config: talos.pipeline.yml already exists — not overwriting."
 fi
 
+# ── Is the /pipeline command actually available? ──────────────────────────────
+# install.sh delivers the per-repo half (scripts, templates, agents) and writes
+# the orchestrator skill to .claude/talos/skills/. Claude Code only scans
+# .claude/skills/, so that copy does NOT register a command — /pipeline comes
+# from the marketplace plugin. Telling the user to run /pipeline without saying
+# so is how issue #31 happened: the unresolvable command fuzzy-matched to an
+# unrelated plugin's skill and silently ran the wrong thing.
+#
+# Honour CLAUDE_CONFIG_DIR — non-default profiles are common, and that is
+# exactly the case that hit in #31.
+CLAUDE_CFG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
+PLUGIN_READY=false
+if [ -f "$CLAUDE_CFG" ] && grep -q '"talos' "$CLAUDE_CFG" 2>/dev/null; then
+  PLUGIN_READY=true
+fi
+
 echo ""
 echo "Done. Next steps:"
 echo "  1. Edit $TARGET/talos.pipeline.yml for your project"
 echo "  2. Run: bash $TARGET/.claude/talos/scripts/bootstrap-labels.sh"
 echo "  3. Add 'pipeline:ready' to a GitHub issue"
-echo "  4. Open a Claude Code session in $TARGET and run: /pipeline"
+if [ "$PLUGIN_READY" = "true" ]; then
+  echo "  4. Open a Claude Code session in $TARGET and run: /pipeline"
+else
+  echo "  4. Install the plugin so /pipeline exists — ONCE PER MACHINE, not per repo."
+  echo "     install.sh delivers scripts/templates/agents; the COMMAND comes from the plugin:"
+  echo ""
+  echo "       /plugin marketplace add benmarte/talos"
+  echo ""
+  echo "     then enable talos@talos and restart the session."
+  echo "  5. Open a Claude Code session in $TARGET and run: /pipeline"
+  echo ""
+  echo "  NOTE: no talos plugin entry found in $CLAUDE_CFG."
+  echo "        Without it /pipeline does not exist, and Claude Code may silently"
+  echo "        fuzzy-match it to an unrelated skill instead of erroring (#31)."
+fi
