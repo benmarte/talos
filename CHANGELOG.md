@@ -2,9 +2,17 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-07
+
 ### Added
 
-- **Buzz notification sink** — `pipeline-notify.sh` can now post pipeline events to a [Buzz](https://github.com/block/buzz) (Nostr/NIP-29) channel by publishing signed `kind:9` events via the `nak` CLI (`--auth` answers NIP-42). Configure `notifications.buzz_channel` (or `PIPELINE_BUZZ_CHANNEL`) plus `BUZZ_RELAY_URL` / `BUZZ_BOT_PRIVATE_KEY` (env, repo `.env`, or `~/.hermes/.env`). Per-issue threading via NIP-10 reply tags with stale-anchor recovery; graceful skip with a warning when `nak` is missing. New `tests/stubs/nak` + `tests/test-notify-buzz.sh` regression suite.
+- **Buzz notification sink** — `pipeline-notify.sh` can now post pipeline events to a [Buzz](https://github.com/block/buzz) (Nostr/NIP-29) channel by publishing signed `kind:9` events via the `nak` CLI (`--auth` answers NIP-42). Configure `notifications.buzz_channel` (or `PIPELINE_BUZZ_CHANNEL`) plus `BUZZ_RELAY_URL` / `BUZZ_BOT_PRIVATE_KEY` (env, repo `.env`, or `~/.hermes/.env`). Per-issue threading via NIP-10 reply tags with stale-anchor recovery; graceful skip with a warning when `nak` is missing. New `tests/stubs/nak` + `tests/test-notify-buzz.sh` regression suite. (0c321db)
+
+### Fixed
+
+- **PM stage now relays a notification** — PM was the only enabled role that sent nothing, so the channel thread read `validator → [silence] → developer`. Since PM is typically the longest-running stage, a long spec was indistinguishable from a dead pipeline. `pipeline-notify.sh` already mapped `pm → project-manager`; missing were the template, the relay instruction, and `pm` in the Rule 2 role vocabulary. The original rationale is preserved — the relay is a *pointer* to the spec comment (goal line, acceptance-criteria count, branch name), never a fabricated pass/fail, because PM emits a document rather than a verdict. New `templates/notifications/pm.md` + `tests/test-notify-pm.sh` (7 assertions, incl. that a `pm` event threads under the issue's existing anchor instead of starting a second root). (#30, fixes #29)
+
+- **`install.sh` no longer promises a command it does not register** — it ended with "run: `/pipeline`", but writes the orchestrator skill to `.claude/talos/skills/`, which Claude Code does not scan; the command comes from the marketplace plugin. The failure was silent rather than loud: an unresolvable `/pipeline` gets fuzzy-matched to the nearest registered skill containing the word, so users landed in an unrelated plugin's wizard with no error. The installer now detects whether a talos entry exists in the resolved Claude config and prints either the plain instruction or the marketplace command plus an explicit "once per machine, not per repo" note and the path it checked. Honours `CLAUDE_CONFIG_DIR` — non-default profiles are exactly the case that triggered the report. (#32, fixes #31)
 
 ## [0.3.0] - 2026-07-23
 
