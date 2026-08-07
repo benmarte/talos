@@ -3,6 +3,7 @@
   "owner": {
     "name": "benmarte"
   },
+  "description": "Talos — an autonomous issue-to-PR pipeline for Claude Code, driven by an orchestrator session rather than CI.",
   "plugins": [
     {
       "name": "talos",

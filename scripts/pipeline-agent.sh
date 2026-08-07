@@ -50,17 +50,33 @@ fi
 [ "$TASK" = "-" ] && TASK="$(cat)"
 
 # ── Locate the role definition ────────────────────────────────────────────────
-# Installed layout: <repo>/.claude/agents/<role>.md with this script at
-# <repo>/.claude/talos/scripts/. Source-repo layout: <talos>/.claude/agents/.
+# Priority order, matching what the orchestrator playbook does for native
+# subagents so both harnesses pick the same profile:
+#   1. Repo override     — <repo>/.claude/agents/<role>.md. Always wins, so a
+#                          project can replace one role without forking Talos.
+#                          This is also the vendored-install layout, where the
+#                          repo copy IS the install.
+#   2. Plugin cache      — $CLAUDE_PLUGIN_ROOT/agents/, set when Talos was
+#                          installed from the marketplace.
+#   3. Plugin, no env    — this script at <plugin>/scripts/, agents at
+#                          <plugin>/agents/. Covers harnesses that run the
+#                          script without exporting CLAUDE_PLUGIN_ROOT, and the
+#                          Talos source repo, which shares this layout.
+#   4. Legacy layouts    — pre-0.6.0, before the agents moved to the plugin
+#                          root. Kept so an old checkout still runs.
 ROLE_FILE=""
 for candidate in \
   "$PWD/.claude/agents/$ROLE.md" \
+  "${CLAUDE_PLUGIN_ROOT:+$CLAUDE_PLUGIN_ROOT/agents/$ROLE.md}" \
+  "$SCRIPT_DIR/../agents/$ROLE.md" \
   "$SCRIPT_DIR/../../agents/$ROLE.md" \
   "$SCRIPT_DIR/../.claude/agents/$ROLE.md"; do
+  [ -n "$candidate" ] || continue
   if [ -f "$candidate" ]; then ROLE_FILE="$candidate"; break; fi
 done
 if [ -z "$ROLE_FILE" ]; then
-  echo "pipeline-agent: role definition not found: $ROLE (looked in .claude/agents/)" >&2
+  echo "pipeline-agent: role definition not found: $ROLE" >&2
+  echo "  looked in: \$CLAUDE_PLUGIN_ROOT/agents/, $SCRIPT_DIR/../agents/, $PWD/.claude/agents/" >&2
   exit 1
 fi
 

@@ -5,6 +5,16 @@ description: Interactive onboarding for Talos. Detects the repo, asks a few ques
 
 You are the **pipeline setup wizard**. Walk the user through configuring Talos for this repo. Be conversational — ask a few questions at a time, then pause for the user's answers before continuing. Do not ask all questions in a wall of text.
 
+**Script location:** resolve once before anything else, and reuse the answer — every `bash scripts/<name>.sh` below means the directory you resolve here:
+
+```bash
+for d in "${CLAUDE_PLUGIN_ROOT:+$CLAUDE_PLUGIN_ROOT/scripts}" .claude/talos/scripts scripts; do
+  [ -n "$d" ] && [ -f "$d/pipeline-config.sh" ] && { echo "$d"; break; }
+done
+```
+
+Marketplace install, vendored install, or Talos source repo, in that order. If it prints nothing, Talos is not installed — tell the user and stop.
+
 ---
 
 ## Step 0 — Detect existing config

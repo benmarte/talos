@@ -116,11 +116,17 @@ done
 # Subagent definitions
 echo ""
 echo "Subagents:"
+# Role definitions moved to the plugin root in 0.6.0 (agents/), which is where
+# Claude Code loads plugin-shipped agents from; .claude/agents/ in the source
+# repo is now a symlink to it. Prefer the real directory, fall back to the old
+# path so an older checkout still installs.
 for agent in validator pm developer qa reviewer security docs planner; do
-  src_agent="$SRC/.claude/agents/$agent.md"
-  if [ -f "$src_agent" ]; then
-    install_file "$src_agent" "$TARGET/.claude/agents/$agent.md"
-  fi
+  for src_agent in "$SRC/agents/$agent.md" "$SRC/.claude/agents/$agent.md"; do
+    if [ -f "$src_agent" ]; then
+      install_file "$src_agent" "$TARGET/.claude/agents/$agent.md"
+      break
+    fi
+  done
 done
 
 # Codex / Antigravity / AGENTS.md harness: add a marker-fenced Talos section so

@@ -7,7 +7,25 @@ You are the **pipeline orchestrator**. You manage the full lifecycle from open G
 
 All VCS operations go through `scripts/pipeline-vcs.sh` — never call `gh`, `glab`, or `az` directly. This keeps the pipeline provider-agnostic.
 
-**Script location:** resolve once before anything else. In installed repos the scripts live at `.claude/talos/scripts/`; in the Talos source repo they live at `scripts/`. Use whichever exists — every `bash scripts/<name>.sh` command in this playbook means that resolved directory.
+**Script location:** resolve once before anything else, and reuse the answer — every `bash scripts/<name>.sh` command in this playbook means the directory you resolve here. Run this and use what it prints:
+
+```bash
+for d in "${CLAUDE_PLUGIN_ROOT:+$CLAUDE_PLUGIN_ROOT/scripts}" .claude/talos/scripts scripts; do
+  [ -n "$d" ] && [ -f "$d/pipeline-vcs.sh" ] && { echo "$d"; break; }
+done
+```
+
+The three cases, in priority order: installed from the marketplace (`$CLAUDE_PLUGIN_ROOT/scripts`, where the plugin cache holds them), vendored into the repo by `install.sh` (`.claude/talos/scripts`), or running inside the Talos source repo (`scripts`). If it prints nothing, stop and tell the user Talos is not installed — do not improvise with `gh` directly.
+
+Note that the plugin case wins when both are present. A repo can have a stale vendored copy from an older `install.sh`; the plugin is the one that matches the skill you are reading now.
+
+**Subagent names:** resolve the prefix once, then apply it everywhere this playbook names a role.
+
+- If the repo has its own `.claude/agents/<role>.md`, spawn the bare name (`validator`) — a repo-level profile always wins, so a project can override any single role without forking Talos.
+- Otherwise, if `$CLAUDE_PLUGIN_ROOT` is set, the plugin's agents are namespaced: spawn `talos:validator`, `talos:developer`, and so on.
+- Otherwise spawn the bare name.
+
+Check per role, not once for all eight — a repo may override only `developer` and take the other seven from the plugin.
 
 **Harness compatibility:** if your harness has native subagents (Claude Code), spawn them as each stage instructs. If it does not (Codex CLI, headless runners), replace every "spawn a subagent with this prompt" step with:
 
@@ -17,7 +35,7 @@ bash scripts/pipeline-agent.sh <role> - <<'PROMPT'
 PROMPT
 ```
 
-The adapter combines `.claude/agents/<role>.md` with the stage prompt and runs it through the CLI configured in `agents.runner` (claude | codex | custom). Everything else in this playbook is identical. Note: without native subagents, developer stages run sequentially in the working tree — set `issues.max_parallel: 1`.
+The adapter finds the role definition itself (plugin root, then `.claude/agents/`), combines it with the stage prompt, and runs it through the CLI configured in `agents.runner` (claude | codex | custom). Everything else in this playbook is identical. Note: without native subagents, developer stages run sequentially in the working tree — set `issues.max_parallel: 1`.
 
 ---
 
