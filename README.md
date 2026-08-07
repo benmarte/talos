@@ -12,6 +12,10 @@ GitHub Issues (or a local markdown checklist in file mode) serve as the state ma
 
 ---
 
+> **Talos installs [agent-skills](https://github.com/addyosmani/agent-skills) for you.** The role profiles delegate their methodology to those skills rather than restating it, so it is a hard requirement — but never a manual step. The plugin declares it as a dependency (`+ 1 dependency: agent-skills`); `install.sh` fetches it into `.claude/skills/` (skip with `--no-agent-skills`). Upstream, MIT, unmodified.
+
+---
+
 ## How it maps to Daedalus
 
 [Daedalus](https://github.com/benmarte/daedalus) is the full-featured Hermes plugin this is distilled from. Talos takes the same ideas and runs them on pure Claude Code.
@@ -106,7 +110,7 @@ az devops configure --defaults organization=https://dev.azure.com/MYORG project=
 
 Restart the session, then run `/pipeline-setup` in any repo to write `talos.pipeline.yml` and bootstrap labels. The plugin carries the skills, all eight role agents, the scripts and the templates; the repo carries nothing but its config.
 
-Talos requires [agent-skills](https://github.com/addyosmani/agent-skills) and installs it for you — the install prints `+ 1 dependency: agent-skills`. The role profiles delegate their methodology to those skills rather than restating it. If you already use Addy's marketplace you will see agent-skills registered twice; that is expected and harmless, see the [user guide](docs/user-guide.md) for why.
+agent-skills comes with it automatically (`+ 1 dependency: agent-skills`). If you already use Addy's marketplace you will see agent-skills registered twice; that is expected and harmless, see the [user guide](docs/user-guide.md) for why.
 
 **Option B — vendor into the repo with `install.sh`.** Use this when the pipeline must be driven by a harness that cannot load a Claude Code plugin (Codex CLI, Gemini CLI, Antigravity), or when you want the pipeline pinned in-tree and reviewed alongside your code.
 

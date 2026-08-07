@@ -24,6 +24,8 @@ SRC="$(cd "$(dirname "$0")" && pwd)"
 TARGET=""
 FORCE=false
 HARNESS="claude"
+WITH_SKILLS=true
+AGENT_SKILLS_REPO="${TALOS_AGENT_SKILLS_REPO:-https://github.com/addyosmani/agent-skills}"
 
 expect_harness=false
 for arg in "$@"; do
@@ -31,10 +33,11 @@ for arg in "$@"; do
     HARNESS="$arg"; expect_harness=false; continue
   fi
   case "$arg" in
-    --force)     FORCE=true ;;
-    --harness)   expect_harness=true ;;
-    --harness=*) HARNESS="${arg#*=}" ;;
-    *)           [ -z "$TARGET" ] && TARGET="$arg" ;;
+    --force)            FORCE=true ;;
+    --no-agent-skills)  WITH_SKILLS=false ;;
+    --harness)          expect_harness=true ;;
+    --harness=*)        HARNESS="${arg#*=}" ;;
+    *)                  [ -z "$TARGET" ] && TARGET="$arg" ;;
   esac
 done
 [ -z "$TARGET" ] && TARGET="$(pwd)"
@@ -129,6 +132,64 @@ for agent in validator pm developer qa reviewer security docs planner; do
   done
 done
 
+# ── agent-skills ─────────────────────────────────────────────────────────────
+# The role profiles delegate their methodology to these skills instead of
+# restating it, so a vendored install without them runs every stage from a
+# paragraph rather than a rubric. The PLUGIN gets them via a declared dependency;
+# install.sh has to fetch them itself.
+#
+# Only skills/ is vendored. The roles invoke skills, never agents — they have no
+# Task tool — so agent-skills' own agents would be dead weight in the target repo.
+#
+# Never fatal: a failure here degrades the install, it does not break it.
+if [ "$WITH_SKILLS" = "true" ]; then
+  echo ""
+  echo "agent-skills (required by the role profiles — Talos installs it for you):"
+  if ! command -v git >/dev/null 2>&1; then
+    echo "  SKIPPED: git not found. Install agent-skills manually:"
+    echo "    $AGENT_SKILLS_REPO"
+  else
+    as_tmp="$(mktemp -d)"
+    if git clone --depth 1 --quiet "$AGENT_SKILLS_REPO" "$as_tmp/agent-skills" 2>/dev/null \
+       && [ -d "$as_tmp/agent-skills/skills" ]; then
+      as_n=0
+      for skill_dir in "$as_tmp/agent-skills/skills"/*/; do
+        [ -f "$skill_dir/SKILL.md" ] || continue
+        name="$(basename "$skill_dir")"
+        dest="$TARGET/.claude/skills/$name/SKILL.md"
+        if [ -f "$dest" ] && [ "$FORCE" = "false" ]; then
+          echo "  skip (exists): $dest"
+        else
+          mkdir -p "$(dirname "$dest")"
+          cp "$skill_dir/SKILL.md" "$dest"
+          as_n=$((as_n + 1))
+        fi
+      done
+      # Ship the licence alongside the copy — this is third-party MIT content.
+      for lic in LICENSE LICENSE.md; do
+        if [ -f "$as_tmp/agent-skills/$lic" ]; then
+          mkdir -p "$TARGET/.claude/skills"
+          cp "$as_tmp/agent-skills/$lic" "$TARGET/.claude/skills/AGENT-SKILLS-LICENSE"
+          break
+        fi
+      done
+      echo "  installed: $as_n skill(s) into $TARGET/.claude/skills/"
+      echo "  source:    $AGENT_SKILLS_REPO (MIT, unmodified)"
+      echo "  skip with: --no-agent-skills"
+    else
+      echo "  SKIPPED: could not fetch $AGENT_SKILLS_REPO (offline?)."
+      echo "           The pipeline still runs; roles fall back to their embedded"
+      echo "           instructions. Re-run this installer when you have network."
+    fi
+    rm -rf "$as_tmp"
+  fi
+else
+  echo ""
+  echo "agent-skills: skipped (--no-agent-skills)."
+  echo "  The role profiles delegate their methodology to these skills; without"
+  echo "  them each stage falls back to its embedded instructions."
+fi
+
 # Codex / Antigravity / AGENTS.md harness: add a marker-fenced Talos section so
 # the harness knows the pipeline exists and how to run stages without native
 # subagents. Antigravity reads AGENTS.md natively since v1.20.3 — the same
@@ -194,13 +255,6 @@ echo "  1. Edit $TARGET/talos.pipeline.yml for your project"
 echo "  2. Run: bash $TARGET/.claude/talos/scripts/bootstrap-labels.sh"
 echo "  3. Add 'pipeline:ready' to a GitHub issue"
 echo "  4. Open a Claude Code session in $TARGET and run: /pipeline"
-echo ""
-echo "  NOTE: the role profiles delegate their methodology to agent-skills. The"
-echo "        PLUGIN install pulls that in automatically; this vendored install"
-echo "        does not. Install it separately to get the full behaviour:"
-echo "          https://github.com/addyosmani/agent-skills"
-echo "        It supports Claude Code, Codex, Gemini, OpenCode and Antigravity."
-echo "        Without it the roles fall back to their embedded instructions."
 echo ""
 echo "  NOTE: skills are discovered when a session starts. If you already had a"
 echo "        session open in $TARGET, restart it — otherwise /pipeline is still"
