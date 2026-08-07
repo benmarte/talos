@@ -122,11 +122,12 @@ Two rules apply for every stage, in this order:
 bash scripts/pipeline-notify.sh <role> "#<N>" "<2-3 line findings summary>" <N>
 ```
 
-The `<role>` argument is the exact role name (validator / developer / qa / reviewer / security / docs / orchestrator). `pipeline-notify.sh` uses `templates/notifications/<role>.md` to render the message; if that template exists it controls the format, otherwise the summary is posted verbatim. This relay call is separate from lifecycle events (pr-opened, merged, blocked, issue-closed) — both are sent when applicable.
+The `<role>` argument is the exact role name (validator / pm / developer / qa / reviewer / security / docs / orchestrator). `pipeline-notify.sh` uses `templates/notifications/<role>.md` to render the message; if that template exists it controls the format, otherwise the summary is posted verbatim. This relay call is separate from lifecycle events (pr-opened, merged, blocked, issue-closed) — both are sent when applicable.
 
 **Example thread for issue #42:**
 ```
 validator  → "CONFIRMED: login crash is reproducible on Safari 17, root cause in auth.js:88"
+pm         → "stop parseToken() dereferencing a null claim — 3 acceptance criteria, branch fix/issue-42-parsetoken-null"
 developer  → "PR #31 opened — fixed null deref in parseToken(), all tests pass"
 pr-opened  → [lifecycle: PR #31 opened]
 qa         → "PASS: 3 criteria verified, regression test added"
@@ -389,7 +390,16 @@ Note: The PM spec IS the handoff artifact — no separate Agent header comment n
 Final message: one-line goal + branch name.
 ```
 
-PM does not have a per-role notification template. After PM returns, no role-event notify is sent — the PM spec comment on the issue is the signal. Continue to developer.
+Relay: `bash scripts/pipeline-notify.sh pm "#<N>" "<goal line> — <K> acceptance criteria, branch <branch-name>" <N>`
+
+The PM spec comment on the issue remains the handoff artifact; this relay is a
+pointer to it, not a summary of it. Keep the message to the goal line, the
+acceptance-criteria count, and the branch name — PM produces a document, not a
+verdict, so do not editorialise it into a pass/fail. Without this relay the
+thread shows `validator → [silence] → developer`, and a long spec is
+indistinguishable from a dead pipeline.
+
+Continue to developer.
 
 ### 3c. Developer (isolation:worktree — always runs)
 
