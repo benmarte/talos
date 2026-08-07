@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-07
+
+### Fixed
+
+- **The marketplace plugin now works at all.** 0.5.0 fixed the vendored install; the plugin path had never been functional. Four independent breaks (#36, fixes #35):
+
+  1. **The plugin shipped none of the role agents.** Talos kept them in `.claude/agents/`; Claude Code loads plugin-shipped agents from `agents/` **at the plugin root**, and the manifest carried no `agents` override. A marketplace install therefore provided `/pipeline` and zero of the eight subagents it spawns. Role definitions moved to `agents/`, with `.claude/agents` left as a symlink so the Talos repo can still dogfood itself.
+  2. **The scripts were unreachable.** `SKILL.md` resolved only `.claude/talos/scripts/` and `scripts/`; under a plugin install the repo has neither, since the scripts live in `~/.claude/plugins/cache/`. Both skills now resolve `$CLAUDE_PLUGIN_ROOT/scripts` → `.claude/talos/scripts` → `scripts`, and `pipeline-agent.sh` resolves role files the same way.
+  3. **`"scripts": "scripts/"` was a no-op.** Not a recognized manifest field — Claude Code ignores unrecognized top-level fields. It read like it wired the scripts up, which is plausibly why break 2 went unnoticed. Removed.
+  4. **The manifest failed schema validation.** `claude plugin validate` reported `plugins[0] plugin.json → skills: Invalid input`. The `skills` field names *directories to scan* for `<name>/SKILL.md`, not individual skill directories, and `skills/` is the default scan path regardless. Removed, along with adding the `author` and marketplace `description` the validator warned about. The shipped manifests now validate clean, and `tests/test-install.sh` asserts it.
+
+  Two things already worked and are now covered by tests so they stay working: `pipeline-notify.sh` derives its template directory from the script's own location, so templates resolve to `<plugin>/templates/`; and `pipeline-config.sh` resolves `talos.pipeline.yml` from the cwd, so a plugin install reads the *user's* config rather than inheriting Talos's own.
+
+### Added
+
+- **Per-repo role overrides.** A repo-level `.claude/agents/<role>.md` now takes precedence over the plugin's `talos:<role>`, per role — override `developer` and keep the other seven from the plugin, without forking Talos. The orchestrator playbook and `pipeline-agent.sh` resolve in the same order so Claude and Codex pick the same profile.
+- `tests/test-plugin-install.sh` — 24 assertions modelling a real marketplace layout: a plugin cache directory holding the Talos tree, and a target repo containing nothing but `talos.pipeline.yml`. Covers agent shipping, script resolution with and without `$CLAUDE_PLUGIN_ROOT`, role override precedence, loud failure on an unknown role, template resolution, and config staying per-repo. 13 of them fail against 0.5.0.
+
+### Changed
+
+- README and user guide lead with the plugin install; `install.sh` is documented as the path for harnesses that cannot load a Claude Code plugin (Codex, Gemini, Antigravity) or for pinning the pipeline in-tree. Both paths remain supported and can coexist — the plugin wins where both are present, since it is the copy that matches the skill being run.
+- Agent-profile customization guidance now distinguishes the two installs: vendored profiles are yours to edit, plugin profiles live in a cache that `/plugin update` replaces wholesale and must be overridden per-repo instead.
+
 ## [0.5.0] - 2026-08-07
 
 ### Changed

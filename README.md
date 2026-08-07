@@ -95,31 +95,43 @@ az devops configure --defaults organization=https://dev.azure.com/MYORG project=
 
 ## Quickstart
 
-### 1. Copy files into your repo
+### 1. Install
+
+**Option A — Claude Code plugin (recommended).** Once per machine; every repo then only needs a config file.
+
+```
+/plugin marketplace add benmarte/talos
+/plugin install talos@talos
+```
+
+Restart the session, then run `/pipeline-setup` in any repo to write `talos.pipeline.yml` and bootstrap labels. The plugin carries the skills, all eight role agents, the scripts and the templates; the repo carries nothing but its config.
+
+**Option B — vendor into the repo with `install.sh`.** Use this when the pipeline must be driven by a harness that cannot load a Claude Code plugin (Codex CLI, Gemini CLI, Antigravity), or when you want the pipeline pinned in-tree and reviewed alongside your code.
 
 ```bash
-# Option A: run the installer (recommended) — registers /pipeline in this repo
 bash path/to/talos/install.sh /path/to/your-repo
+# add --harness codex or --harness antigravity to also write the AGENTS.md section
+```
 
-# Option B: manual copy
+**Option C — manual copy.** Equivalent to Option B, by hand.
+
+```bash
 cp -r path/to/talos/scripts/   .claude/talos/scripts/
 cp -r path/to/talos/skills/pipeline/ .claude/skills/pipeline/   # MUST be .claude/skills/ — see below
 cp -r path/to/talos/templates/ .claude/talos/templates/   # required for rich messages
-cp -r path/to/talos/.claude/agents/ .claude/agents/
-
-# Option C: install as a Claude Code plugin, once per machine
-# In a Claude Code session, run:
-/plugin marketplace add benmarte/talos
-/plugin install talos@talos
-# The plugin adds /pipeline-setup and makes /pipeline available in repos where
-# install.sh has not run. It is not required — install.sh registers /pipeline
-# on its own — but per-repo scripts/ and templates/ only ever come from install.sh.
+cp -r path/to/talos/agents/    .claude/agents/
 ```
+
+The two paths coexist. Talos resolves its scripts in this order — plugin root (`$CLAUDE_PLUGIN_ROOT/scripts`), vendored (`.claude/talos/scripts`), source repo (`scripts`) — so if a repo has both, the plugin wins, which is what you want: it is the copy that matches the skill being run.
 
 > **Why `.claude/skills/`?** Claude Code discovers skills at `<repo>/.claude/skills/<name>/SKILL.md`
 > and `~/.claude/skills/<name>/SKILL.md`. It does not recurse, so a skill under
 > `.claude/talos/skills/` — where Talos wrote it before 0.5.0 — registers no command at all.
 > Re-run `install.sh` to migrate an older install; it relocates the file for you.
+>
+> The same rule governs agents: plugin-shipped role definitions must sit in `agents/`
+> at the plugin root, which is where they moved in 0.6.0. Before that they lived in
+> `.claude/agents/` and the plugin shipped none of them.
 
 ### 2. Configure
 

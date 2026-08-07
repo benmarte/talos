@@ -90,6 +90,20 @@ else
   fail "marketplace.json is valid JSON with plugins[0].name == talos"
 fi
 
+# The shipped manifests must pass the real schema check. 0.5.0's plugin.json
+# listed individual skill dirs in `skills` — that field names directories to
+# SCAN for <name>/SKILL.md, so the manifest failed validation as published.
+# This file does not use_stubs, so `claude` here is the real CLI.
+if command -v claude >/dev/null 2>&1; then
+  val_out="$(cd "$TALOS_ROOT" && claude plugin validate . 2>&1)"
+  assert_contains "$val_out" "Validation passed" \
+    "claude plugin validate passes on the shipped manifests"
+  assert_not_contains "$val_out" "Invalid input" \
+    "no schema errors in the shipped manifests"
+else
+  echo "  -- skipped: claude CLI not on PATH (manifest validation)"
+fi
+
 # ── /pipeline availability guidance (#33, supersedes #31) ────────────────────
 # install.sh now registers the command itself, so the guidance must NOT depend on
 # whether the marketplace plugin happens to be installed. #31's fuzzy-match trap

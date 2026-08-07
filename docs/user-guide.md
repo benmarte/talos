@@ -146,14 +146,29 @@ a silent no-op and the pipeline still runs.
 The first-class harness — native parallel subagents, worktree isolation for
 the developer role.
 
-**Step 0 (alternative): install as a Claude Code plugin**
+**Recommended: install as a Claude Code plugin.** Once per machine:
 
-In a Claude Code session run:
 ```
 /plugin marketplace add benmarte/talos
 /plugin install talos@talos
 ```
-This installs the `/pipeline` and `/pipeline-setup` skills directly. Per-repo `scripts/` and `templates/` still come from `install.sh` (step 1 below) — the two are complementary.
+
+Restart the session, then in any repo:
+
+```bash
+# in a Claude Code session:  /pipeline-setup     — writes talos.pipeline.yml, bootstraps labels
+gh issue edit 42 --add-label pipeline:ready
+# in a Claude Code session:  /pipeline
+```
+
+The plugin carries the skills, the eight role agents, the scripts and the
+templates. The repo gets one file: `talos.pipeline.yml`. Nothing is vendored,
+and upgrading is `/plugin update talos@talos` rather than a re-install per repo.
+
+**Alternative: vendor into the repo.** Use this when the pipeline is driven by a
+harness that cannot load a Claude Code plugin (Codex, Gemini, Antigravity — see
+the sections below), or when you want the pipeline pinned in-tree and reviewed
+alongside your code.
 
 ```bash
 # 1. Install into your repo
@@ -172,9 +187,14 @@ gh issue edit 42 --add-label pipeline:ready
 # in a Claude Code session:  /pipeline
 ```
 
-What gets installed: `.claude/talos/{scripts,skills,templates}/` and
-`.claude/agents/*.md` (the role profiles). Nothing outside `.claude/` except
-an optional `talos.pipeline.yml` you create.
+What gets installed: `.claude/talos/{scripts,templates}/`,
+`.claude/skills/pipeline/SKILL.md` (the command), and `.claude/agents/*.md`
+(the role profiles). Nothing outside `.claude/` except an optional
+`talos.pipeline.yml` you create.
+
+Both paths can coexist. Scripts resolve plugin root → vendored → source repo, so
+where both are present the plugin wins — it is the copy that matches the skill
+being run.
 
 ## Setup: Codex CLI
 
@@ -352,11 +372,28 @@ when you regularly work with multi-task epics.
 
 ## Customizing agent profiles
 
-The role profiles installed at `.claude/agents/*.md` are yours to edit — each
-is a markdown file with YAML frontmatter (Claude Code metadata) and the role's
-instructions as the body. `install.sh` never overwrites existing files unless
-you pass `--force`, so local customizations survive re-installs (and `--force`
-wipes them — keep customized profiles in your repo's git history).
+Each role profile is a markdown file with YAML frontmatter (Claude Code
+metadata) and the role's instructions as the body. Where they live — and
+whether you should edit them in place — depends on how Talos was installed.
+
+**Vendored install.** The profiles land at `.claude/agents/*.md` and are yours
+to edit. `install.sh` never overwrites existing files unless you pass `--force`,
+so local customizations survive re-installs (and `--force` wipes them — keep
+customized profiles in your repo's git history).
+
+**Plugin install.** The profiles ship inside the plugin at `agents/*.md` and are
+copied into `~/.claude/plugins/cache/`, which is replaced wholesale on every
+`/plugin update` — edits there are silently lost. Do not edit them in place.
+
+To customize a role, add your own `.claude/agents/<role>.md` to the repo. The
+orchestrator checks for a repo-level profile before falling back to the plugin's
+namespaced `talos:<role>`, so your file wins for that role while the other seven
+keep coming from the plugin. Override only what you need, and it stays
+version-controlled with the code it reviews.
+
+`pipeline-agent.sh` (the non-Claude harness adapter) resolves in the same order,
+so Codex and Claude pick the same profile: `<repo>/.claude/agents/` first, then
+`$CLAUDE_PLUGIN_ROOT/agents/`, then the plugin's own layout.
 
 **Adding skills to a profile (Claude Code):** two supported mechanisms:
 
