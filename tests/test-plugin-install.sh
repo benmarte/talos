@@ -28,14 +28,37 @@ mkdir -p "$REPO"
 cd "$REPO"
 git init -q
 git remote add origin git@github.com:acme/widget.git
-cat > talos.pipeline.yml <<'EOF'
+# Config format: pipeline-config.sh parses YAML with PyYAML and falls back to
+# json.load for everything else, so on a runner without PyYAML every YAML read
+# silently returns the default. test-config.sh handles that by skipping its yaml
+# cases; here the config is incidental — what is under test is WHERE it resolves
+# from — so write the .json variant instead and keep full coverage on both
+# platforms. Both names are in pipeline-config.sh's candidate list.
+if python3 -c "import yaml" 2>/dev/null; then
+  CFG_NAME="talos.pipeline.yml"
+  cat > "$CFG_NAME" <<'EOF'
 repo: acme/widget
 base_branch: dev
 vcs:
   provider: github
 notifications:
   templates_dir: "templates/notifications"
+agents:
+  runner: custom
+  runner_cmd: "cat"
 EOF
+else
+  CFG_NAME="talos.pipeline.json"
+  cat > "$CFG_NAME" <<'EOF'
+{
+  "repo": "acme/widget",
+  "base_branch": "dev",
+  "vcs": { "provider": "github" },
+  "notifications": { "templates_dir": "templates/notifications" },
+  "agents": { "runner": "custom", "runner_cmd": "cat" }
+}
+EOF
+fi
 
 assert_file_absent "$REPO/.claude/talos" "target repo has no vendored install"
 assert_file_absent "$REPO/.claude/agents" "target repo has no repo-level agents"
@@ -58,13 +81,9 @@ done
 assert_eq "$PLUGIN_ROOT/scripts" "$resolved" "script resolution lands on the plugin root"
 
 # ── 3. pipeline-agent.sh finds the role via CLAUDE_PLUGIN_ROOT ───────────────
-# Runs with a custom runner that just echoes the composed prompt, so we can
-# assert the role body was actually loaded rather than silently skipped.
-cat >> talos.pipeline.yml <<'EOF'
-agents:
-  runner: custom
-  runner_cmd: "cat"
-EOF
+# The config sets runner: custom / runner_cmd: cat, so the composed prompt comes
+# back on stdout and we can assert the role body was actually loaded rather than
+# silently skipped.
 out_agent="$(CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
   bash "$PLUGIN_ROOT/scripts/pipeline-agent.sh" validator "TASK: check issue 42" 2>&1)"
 assert_contains "$out_agent" "TASK: check issue 42" "pipeline-agent composes the task prompt"
