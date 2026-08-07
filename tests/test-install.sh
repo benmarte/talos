@@ -66,4 +66,39 @@ else
   fail "marketplace.json is valid JSON with plugins[0].name == talos"
 fi
 
+# ── /pipeline availability guidance (#31) ────────────────────────────────────
+# install.sh delivers the per-repo half only; the COMMAND comes from the
+# marketplace plugin. Telling the user to run /pipeline unconditionally is how
+# #31 happened — the unresolvable command fuzzy-matched to an unrelated skill
+# and silently ran the wrong thing instead of erroring.
+
+# Plugin NOT installed -> must warn and give the marketplace command
+fake_cfg_dir="$SANDBOX/cfg-without"
+mkdir -p "$fake_cfg_dir"
+echo '{"enabledPlugins":{"sentry@claude-plugins-official":true}}' > "$fake_cfg_dir/settings.json"
+out_without="$(CLAUDE_CONFIG_DIR="$fake_cfg_dir" bash "$TALOS_ROOT/install.sh" "$PWD" --force 2>&1)"
+assert_contains "$out_without" "/plugin marketplace add benmarte/talos" \
+  "no plugin installed: prints the marketplace command"
+assert_contains "$out_without" "ONCE PER MACHINE" \
+  "no plugin installed: clarifies the plugin is machine-scoped, not per-repo"
+assert_contains "$out_without" "no talos plugin entry found" \
+  "no plugin installed: names the config file it checked"
+
+# Plugin installed -> plain instruction, no warning noise
+fake_cfg_with="$SANDBOX/cfg-with"
+mkdir -p "$fake_cfg_with"
+echo '{"enabledPlugins":{"talos@talos":true}}' > "$fake_cfg_with/settings.json"
+out_with="$(CLAUDE_CONFIG_DIR="$fake_cfg_with" bash "$TALOS_ROOT/install.sh" "$PWD" --force 2>&1)"
+assert_contains "$out_with" "run: /pipeline" \
+  "plugin installed: still tells the user to run /pipeline"
+assert_not_contains "$out_with" "no talos plugin entry found" \
+  "plugin installed: suppresses the warning"
+assert_not_contains "$out_with" "/plugin marketplace add" \
+  "plugin installed: no redundant marketplace instruction"
+
+# CLAUDE_CONFIG_DIR must be honoured — a non-default profile is the #31 case.
+# ~/.claude may legitimately have talos while the ACTIVE profile does not.
+assert_contains "$out_without" "$fake_cfg_dir/settings.json" \
+  "checks CLAUDE_CONFIG_DIR, not just ~/.claude"
+
 finish
