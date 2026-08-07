@@ -99,15 +99,23 @@ for agent in validator pm developer qa reviewer security docs planner; do
   esac
 done
 
-# ...but every profile must still name the non-Claude fallback. install.sh
-# targets Codex/Gemini/Antigravity, where plugins — and therefore the dependency
-# — do not exist at all. Without this the mandate is a dead end on 3 of 4
-# advertised harnesses.
+# ...but every profile must still carry a fallback. The dependency only applies
+# to the PLUGIN install; a vendored install.sh copy does not pull agent-skills,
+# so the skills may genuinely be absent and the mandate needs an exit.
+#
+# The fallback must NOT claim other harnesses lack skills. agent-skills ships
+# .gemini/, .opencode/, .codex-plugin/ and an AGENTS.md naming Antigravity — it
+# is not Claude-Code-only, and 0.8.0's wording said otherwise (#41).
 for agent in validator pm developer qa reviewer security docs planner; do
   body="$(flat "$PLUGIN_ROOT/agents/$agent.md")"
   case "$body" in
-    *"without skill support"*) pass "$agent names the non-Claude fallback" ;;
-    *) fail "$agent names the non-Claude fallback" "mandate with no harness fallback" ;;
+    *"no skill mechanism"*) pass "$agent carries a skills fallback" ;;
+    *) fail "$agent carries a skills fallback" "mandate with no fallback" ;;
+  esac
+  case "$body" in
+    *"without skill support (Codex"*)
+      fail "$agent does not claim other harnesses lack skills" "repeats the 0.8.0 error" ;;
+    *) pass "$agent does not claim other harnesses lack skills" ;;
   esac
 done
 

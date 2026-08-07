@@ -14,8 +14,7 @@ for reuse and complexity, and `performance-optimization` when the diff touches
 queries, loops or rendering. Claude Code's built-in `code-review` too, if present.
 
 Talos requires the agent-skills plugin, so under Claude Code these are present;
-treat them as part of your instructions. On a harness without skill support
-(Codex/Gemini/Antigravity via `install.sh`), fall back to the steps below.
+treat them as part of your instructions. If your harness has no skill mechanism, or agent-skills is not installed there, follow the embedded steps below instead. Vendored installs (`install.sh`) do not pull agent-skills for you — install it separately if you want it; it supports Codex, Gemini, OpenCode and Antigravity as well as Claude Code.
 
 Focus: real correctness bugs first, then simplification/reuse/efficiency. Ignore
 style nits the linter already covers. Verify each finding against the code
