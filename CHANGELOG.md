@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-07
+
+### Fixed
+
+- **All eight roles can now use skills.** Only `qa`, `reviewer` and `security` carried the `Skill` tool; `validator`, `pm`, `developer`, `docs` and `planner` did not. Any installed skill pack was therefore unreachable from five of the eight stages *no matter what the profile said* — including Claude Code's own `code-review` / `security-review`. The blocker was never a missing dependency; it was the tool grant. (#38, fixes #37)
+
+### Added
+
+- **Every role now names the skills it would benefit from**, guarded on availability: `validator` → `debugging-and-error-recovery`; `pm` → `spec-driven-development`, `api-and-interface-design`; `planner` → `planning-and-task-breakdown`; `developer` → `test-driven-development`, `incremental-implementation`, `debugging-and-error-recovery`; `qa` → adds `test-driven-development` to the existing `verify`/`run`; `reviewer` → adds `code-review-and-quality`; `security` → adds `security-and-hardening`; `docs` → `documentation-and-adrs`.
+
+  Skills are referenced by **bare name, never by plugin**, so any provider satisfies them — a Claude Code built-in, a pack such as [agent-skills](https://github.com/addyosmani/agent-skills), or the repo's own `.claude/skills/`. Absent one, the role follows its embedded instructions silently.
+
+- `developer` now states explicitly that it cannot spawn subagents, and should do the work itself where a repo's `CLAUDE.md`/`AGENTS.md` instructs delegating to a named agent. Talos roles *are* subagents and have no `Task` tool, so such a mandate would otherwise degrade silently.
+
+- 18 new assertions in `tests/test-plugin-install.sh` (42 total): every role can invoke skills, every skill reference carries an availability guard, no role names a specific third-party plugin, and the manifest declares no `dependencies`. The five tool-grant assertions fail against 0.6.0.
+
+### Changed
+
+- The user guide's dependency FAQ is rewritten: still no dependency, and now explicit about *why* — a hard `dependencies` entry (a real manifest field that auto-enables what it names) would misrepresent Talos on the Codex, Gemini and Antigravity harnesses it advertises, where Claude Code skill packs cannot exist. Adds the per-role skill table and documents the `Task` limitation.
+
 ## [0.6.0] - 2026-08-07
 
 ### Fixed

@@ -504,12 +504,36 @@ pack installed.
 ## FAQ
 
 **Does Talos depend on any skill packs or plugins (e.g. agent-skills)?**
-No. The role profiles in `.claude/agents/*.md` are fully self-contained — each
-embeds its complete instructions. Three profiles (QA, reviewer, security)
-mention Claude Code's built-in `verify` / `code-review` / `security-review`
-skills as *optional* enrichment ("if available"); on any other harness, or a
-Claude Code install without them, the roles simply follow their embedded
-instructions. Nothing to install.
+No, and deliberately not. The role profiles are fully self-contained — each
+embeds its complete instructions — so they work identically on Codex, Gemini and
+Antigravity, where Claude Code skill packs do not exist at all. A hard
+`dependencies` entry would misrepresent Talos on the harnesses it advertises.
+
+**Can the roles use a skill pack when one *is* installed?**
+Yes — all eight can, as of 0.7.0. Every role carries the `Skill` tool, and each
+names the skills it would benefit from, guarded on availability:
+
+| Role | Skills it reaches for, if available |
+|---|---|
+| validator | `debugging-and-error-recovery` |
+| pm | `spec-driven-development`, `api-and-interface-design` |
+| planner | `planning-and-task-breakdown` |
+| developer | `test-driven-development`, `incremental-implementation`, `debugging-and-error-recovery` |
+| qa | `verify`, `run`, `test-driven-development` |
+| reviewer | `code-review`, `code-review-and-quality` |
+| security | `security-review`, `security-and-hardening` |
+| docs | `documentation-and-adrs` |
+
+They are referenced by **bare name**, never by plugin, so any provider satisfies
+them — Claude Code's built-in `code-review` / `security-review`, a pack like
+[agent-skills](https://github.com/addyosmani/agent-skills), or your own
+`.claude/skills/`. When none is present the role follows its embedded
+instructions and says nothing. Nothing to install, ever.
+
+One limit worth knowing: the roles have no `Task` tool, so they cannot spawn
+*subagents* — they are subagents themselves. If your repo's `CLAUDE.md` tells
+agents to delegate to a named reviewer or test-engineer agent, a Talos stage
+does that work itself instead. Skills are reachable; agents are not.
 
 **Does it call LLM APIs directly?** No — the harness supplies the model.
 Talos's own scripts only call your VCS CLI (`gh`/`glab`/`az`) and, for

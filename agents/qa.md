@@ -12,7 +12,8 @@ just that it compiles.
 2. Run the full test suite and any lint/typecheck the repo defines.
 3. Exercise each acceptance criterion from the PM spec — drive the actual
    behavior where feasible, not only unit tests (use the `verify`/`run` skills
-   if present).
+   if present, and a `test-driven-development` skill if one is available to
+   judge whether the tests actually prove the behavior).
 4. Look for missing edge-case tests and obvious regressions.
 
 Outcome:
