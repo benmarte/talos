@@ -12,7 +12,11 @@ done
 [ -x ".claude/talos/scripts/pipeline-notify.sh" ] \
   && pass "scripts are executable" || fail "scripts are executable"
 
-assert_file_exists ".claude/talos/skills/pipeline/SKILL.md" "installs orchestrator skill"
+# The skill must land where Claude Code actually scans. Writing it to
+# .claude/talos/skills/ registered nothing, so /pipeline did not exist (#33).
+assert_file_exists ".claude/skills/pipeline/SKILL.md" "installs orchestrator skill to .claude/skills/"
+assert_file_absent ".claude/talos/skills/pipeline/SKILL.md" \
+  "does not write the skill to the unscanned nested path"
 
 # Templates must ship — without them notifications degrade to plain text
 # (regression guard for the bug fixed in e7de0d5).
@@ -45,6 +49,26 @@ out3="$(bash "$TALOS_ROOT/install.sh" "$SANDBOX" --force)"
 assert_contains "$out3" "legacy install detected" "legacy .claude/pipeline triggers migration note"
 assert_file_exists ".claude/pipeline/scripts/keep.sh" "legacy dir is never deleted automatically"
 
+# Pre-0.5.0 installs have the skill at .claude/talos/skills/. Upgrading must clear
+# it — a stale playbook there is still reachable via the AGENTS.md pointer that
+# older installs wrote, so leaving it means non-Claude harnesses keep reading it.
+mkdir -p .claude/talos/skills/pipeline
+echo "STALE PLAYBOOK" > .claude/talos/skills/pipeline/SKILL.md
+out4="$(bash "$TALOS_ROOT/install.sh" "$SANDBOX" --force)"
+assert_contains "$out4" "migrated: removed stale" "pre-0.5.0 skill location triggers a migration note"
+assert_file_absent ".claude/talos/skills/pipeline/SKILL.md" "stale nested skill is removed on upgrade"
+assert_file_absent ".claude/talos/skills" "emptied nested skills dir is pruned"
+
+# ...but only the file Talos wrote. A sibling the user put there must survive,
+# and its parent dirs with it.
+mkdir -p .claude/talos/skills/pipeline
+echo "STALE PLAYBOOK" > .claude/talos/skills/pipeline/SKILL.md
+echo "mine" > .claude/talos/skills/custom-notes.md
+bash "$TALOS_ROOT/install.sh" "$SANDBOX" --force >/dev/null
+assert_file_absent ".claude/talos/skills/pipeline/SKILL.md" "stale skill still removed alongside user files"
+assert_file_exists ".claude/talos/skills/custom-notes.md" "unrelated user files in the old dir are preserved"
+rm -rf .claude/talos/skills
+
 # Missing target errors
 if bash "$TALOS_ROOT/install.sh" "$SANDBOX/does-not-exist" >/dev/null 2>&1; then
   fail "missing target dir exits non-zero"
@@ -66,39 +90,34 @@ else
   fail "marketplace.json is valid JSON with plugins[0].name == talos"
 fi
 
-# ── /pipeline availability guidance (#31) ────────────────────────────────────
-# install.sh delivers the per-repo half only; the COMMAND comes from the
-# marketplace plugin. Telling the user to run /pipeline unconditionally is how
-# #31 happened — the unresolvable command fuzzy-matched to an unrelated skill
-# and silently ran the wrong thing instead of erroring.
+# ── /pipeline availability guidance (#33, supersedes #31) ────────────────────
+# install.sh now registers the command itself, so the guidance must NOT depend on
+# whether the marketplace plugin happens to be installed. #31's fuzzy-match trap
+# survives in exactly one form — a session that was already open when install.sh
+# ran has a stale skill list — so restarting is the instruction that must appear.
 
-# Plugin NOT installed -> must warn and give the marketplace command
+# No plugin anywhere: /pipeline still works, and nothing may claim otherwise.
 fake_cfg_dir="$SANDBOX/cfg-without"
 mkdir -p "$fake_cfg_dir"
 echo '{"enabledPlugins":{"sentry@claude-plugins-official":true}}' > "$fake_cfg_dir/settings.json"
 out_without="$(CLAUDE_CONFIG_DIR="$fake_cfg_dir" bash "$TALOS_ROOT/install.sh" "$PWD" --force 2>&1)"
-assert_contains "$out_without" "/plugin marketplace add benmarte/talos" \
-  "no plugin installed: prints the marketplace command"
-assert_contains "$out_without" "ONCE PER MACHINE" \
-  "no plugin installed: clarifies the plugin is machine-scoped, not per-repo"
-assert_contains "$out_without" "no talos plugin entry found" \
-  "no plugin installed: names the config file it checked"
+assert_contains "$out_without" "run: /pipeline" \
+  "no plugin installed: still tells the user to run /pipeline"
+assert_not_contains "$out_without" "/plugin marketplace add" \
+  "no plugin installed: does not demand the marketplace for /pipeline"
+assert_contains "$out_without" "restart it" \
+  "no plugin installed: tells the user to restart an already-open session"
+assert_contains "$out_without" ".claude/skills/pipeline/SKILL.md" \
+  "names the path the command was registered at"
 
-# Plugin installed -> plain instruction, no warning noise
+# Plugin installed: identical guidance — the plugin is no longer load-bearing.
 fake_cfg_with="$SANDBOX/cfg-with"
 mkdir -p "$fake_cfg_with"
 echo '{"enabledPlugins":{"talos@talos":true}}' > "$fake_cfg_with/settings.json"
 out_with="$(CLAUDE_CONFIG_DIR="$fake_cfg_with" bash "$TALOS_ROOT/install.sh" "$PWD" --force 2>&1)"
 assert_contains "$out_with" "run: /pipeline" \
-  "plugin installed: still tells the user to run /pipeline"
+  "plugin installed: tells the user to run /pipeline"
 assert_not_contains "$out_with" "no talos plugin entry found" \
-  "plugin installed: suppresses the warning"
-assert_not_contains "$out_with" "/plugin marketplace add" \
-  "plugin installed: no redundant marketplace instruction"
-
-# CLAUDE_CONFIG_DIR must be honoured — a non-default profile is the #31 case.
-# ~/.claude may legitimately have talos while the ACTIVE profile does not.
-assert_contains "$out_without" "$fake_cfg_dir/settings.json" \
-  "checks CLAUDE_CONFIG_DIR, not just ~/.claude"
+  "plugin installed: no stale plugin warning"
 
 finish

@@ -10,7 +10,9 @@
 #
 # What it installs:
 #   <target>/.claude/talos/scripts/   — pipeline-config, pipeline-status, pipeline-notify, bootstrap-labels
-#   <target>/.claude/talos/skills/    — orchestrator skill (SKILL.md)
+#   <target>/.claude/skills/pipeline/ — orchestrator skill (SKILL.md); this path is what
+#                                       registers /pipeline, because Claude Code only
+#                                       scans .claude/skills/ — not nested directories
 #   <target>/.claude/talos/templates/ — notification + comment templates (rich messages)
 #   <target>/.claude/agents/             — subagent definitions (validator, pm, developer, qa, reviewer, security, docs)
 #
@@ -77,10 +79,28 @@ for script in pipeline-config.sh pipeline-status.sh pipeline-notify.sh pipeline-
   chmod +x "$TARGET/.claude/talos/scripts/$script"
 done
 
-# Skill
+# Skill — MUST land in .claude/skills/. Claude Code discovers skills at
+# <repo>/.claude/skills/<name>/SKILL.md and ~/.claude/skills/<name>/SKILL.md only;
+# it does not recurse. Talos used to write this to .claude/talos/skills/, where
+# nothing scanned it, so /pipeline silently did not exist in any installed repo
+# (#33). The skill body resolves scripts by probing for .claude/talos/scripts/ vs
+# scripts/, so it works the same from either location.
 echo ""
 echo "Orchestrator skill:"
-install_file "$SRC/skills/pipeline/SKILL.md" "$TARGET/.claude/talos/skills/pipeline/SKILL.md"
+install_file "$SRC/skills/pipeline/SKILL.md" "$TARGET/.claude/skills/pipeline/SKILL.md"
+
+# Relocate the pre-0.5.0 copy. Leaving it behind is not harmless: the AGENTS.md
+# block and the docs used to point at that path, so a stale playbook would still
+# be followed by non-Claude harnesses long after an upgrade. Only the file Talos
+# itself wrote is removed; anything else you keep there survives, as do the
+# parent dirs if they still hold something (rmdir refuses non-empty).
+STALE_SKILL="$TARGET/.claude/talos/skills/pipeline/SKILL.md"
+if [ -f "$STALE_SKILL" ]; then
+  rm -f "$STALE_SKILL"
+  rmdir "$TARGET/.claude/talos/skills/pipeline" 2>/dev/null || true
+  rmdir "$TARGET/.claude/talos/skills" 2>/dev/null || true
+  echo "  migrated: removed stale $STALE_SKILL (skill now lives in .claude/skills/)"
+fi
 
 # Templates — pipeline-notify.sh falls back to <script-dir>/../templates/notifications,
 # i.e. .claude/talos/templates/. Without these, notifications degrade to plain text.
@@ -121,7 +141,7 @@ if [ "$HARNESS" = "codex" ] || [ "$HARNESS" = "antigravity" ]; then
 
 This repo has the Talos issue→PR pipeline installed under `.claude/talos/`.
 When asked to run the pipeline, act as the orchestrator: follow the playbook in
-`.claude/talos/skills/pipeline/SKILL.md` exactly.
+`.claude/skills/pipeline/SKILL.md` exactly.
 
 This harness has no native subagents. Wherever the playbook says "spawn a
 subagent with this prompt", instead run the stage headlessly:
@@ -152,39 +172,24 @@ else
   echo "Config: talos.pipeline.yml already exists — not overwriting."
 fi
 
-# ── Is the /pipeline command actually available? ──────────────────────────────
-# install.sh delivers the per-repo half (scripts, templates, agents) and writes
-# the orchestrator skill to .claude/talos/skills/. Claude Code only scans
-# .claude/skills/, so that copy does NOT register a command — /pipeline comes
-# from the marketplace plugin. Telling the user to run /pipeline without saying
-# so is how issue #31 happened: the unresolvable command fuzzy-matched to an
-# unrelated plugin's skill and silently ran the wrong thing.
+# ── /pipeline availability ────────────────────────────────────────────────────
+# As of 0.5.0 install.sh registers the command itself by writing the skill to
+# .claude/skills/pipeline/, so /pipeline exists in this repo with no plugin and
+# no marketplace. The plugin remains useful for /pipeline-setup and for having
+# the orchestrator available in repos where install.sh has not run, but it is no
+# longer load-bearing.
 #
-# Honour CLAUDE_CONFIG_DIR — non-default profiles are common, and that is
-# exactly the case that hit in #31.
-CLAUDE_CFG="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
-PLUGIN_READY=false
-if [ -f "$CLAUDE_CFG" ] && grep -q '"talos' "$CLAUDE_CFG" 2>/dev/null; then
-  PLUGIN_READY=true
-fi
-
+# Skills are enumerated at session start, so a session already open in $TARGET
+# will not see the new skill until it restarts. That is now the only remaining
+# way to type /pipeline and have it resolve to something else (#31) — call it out.
 echo ""
 echo "Done. Next steps:"
 echo "  1. Edit $TARGET/talos.pipeline.yml for your project"
 echo "  2. Run: bash $TARGET/.claude/talos/scripts/bootstrap-labels.sh"
 echo "  3. Add 'pipeline:ready' to a GitHub issue"
-if [ "$PLUGIN_READY" = "true" ]; then
-  echo "  4. Open a Claude Code session in $TARGET and run: /pipeline"
-else
-  echo "  4. Install the plugin so /pipeline exists — ONCE PER MACHINE, not per repo."
-  echo "     install.sh delivers scripts/templates/agents; the COMMAND comes from the plugin:"
-  echo ""
-  echo "       /plugin marketplace add benmarte/talos"
-  echo ""
-  echo "     then enable talos@talos and restart the session."
-  echo "  5. Open a Claude Code session in $TARGET and run: /pipeline"
-  echo ""
-  echo "  NOTE: no talos plugin entry found in $CLAUDE_CFG."
-  echo "        Without it /pipeline does not exist, and Claude Code may silently"
-  echo "        fuzzy-match it to an unrelated skill instead of erroring (#31)."
-fi
+echo "  4. Open a Claude Code session in $TARGET and run: /pipeline"
+echo ""
+echo "  NOTE: skills are discovered when a session starts. If you already had a"
+echo "        session open in $TARGET, restart it — otherwise /pipeline is still"
+echo "        unresolved there and may fuzzy-match an unrelated skill (#31)."
+echo "        Registered at: $TARGET/.claude/skills/pipeline/SKILL.md"

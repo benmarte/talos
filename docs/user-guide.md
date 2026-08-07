@@ -200,7 +200,7 @@ agents:
 
 ```bash
 # 3. Bootstrap labels, queue an issue (same as Claude Code), then:
-codex "Run the Talos pipeline: follow .claude/talos/skills/pipeline/SKILL.md"
+codex "Run the Talos pipeline: follow .claude/skills/pipeline/SKILL.md"
 ```
 
 Set `issues.max_parallel: 1` — without native subagents, stages run
@@ -222,7 +222,7 @@ be pointed at `AGENTS.md` via its `contextFileName` setting, or copy the
 fenced section into `GEMINI.md`). Then:
 
 ```bash
-gemini "Run the Talos pipeline: follow .claude/talos/skills/pipeline/SKILL.md"
+gemini "Run the Talos pipeline: follow .claude/skills/pipeline/SKILL.md"
 ```
 
 ## Setup: Google Antigravity
@@ -256,7 +256,7 @@ agents:
 
 ```bash
 # 2. Bootstrap labels, queue an issue (same as Claude Code), then:
-agy "Run the Talos pipeline: follow .claude/talos/skills/pipeline/SKILL.md"
+agy "Run the Talos pipeline: follow .claude/skills/pipeline/SKILL.md"
 ```
 
 Set `issues.max_parallel: 1` — without native subagents, stages run

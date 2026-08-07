@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-07
+
+### Changed
+
+- **`install.sh` now registers `/pipeline` itself** — the orchestrator skill installs to `<target>/.claude/skills/pipeline/SKILL.md` instead of `<target>/.claude/talos/skills/pipeline/SKILL.md`. Claude Code discovers skills at `<repo>/.claude/skills/<name>/SKILL.md` and `~/.claude/skills/<name>/SKILL.md` and does **not** recurse, so every install before this one shipped a skill that nothing scanned: a repo could have correct scripts, templates, all eight agents, a valid config, bootstrapped labels and an issue at `pipeline:ready`, and still have no `/pipeline` command. `docs/user-guide.md` already documented the right locations; the installer disagreed with the docs. The skill body probes for `.claude/talos/scripts/` vs `scripts/` to find its scripts, so relocating it changes nothing about how it runs. (#34, fixes #33)
+
+  **Upgrading:** re-run `install.sh` against your repo. It relocates the file and deletes the stale `.claude/talos/skills/pipeline/SKILL.md`, which is not merely tidiness — the AGENTS.md block written for the codex/antigravity harnesses pointed at that path, so a stale playbook there stays live for non-Claude runners after an upgrade. Only the file Talos wrote is removed; unrelated files you kept in that directory survive, and so do their parent dirs. Then **restart any Claude Code session already open in the repo** — skills are enumerated at startup.
+
+- **The marketplace plugin is no longer load-bearing for `/pipeline`** — it remains useful for `/pipeline-setup` and for repos where `install.sh` has not run. #32's plugin-detection messaging is removed along with its `CLAUDE_CONFIG_DIR` probe: it existed to explain why a correct install had no command, and that premise is gone. The one surviving form of #31 — a session open *before* the install, holding a stale skill list, where `/pipeline` can still fuzzy-match an unrelated skill — is now the explicit closing note of the installer, along with the path the skill was registered at. README gains an Option A (installer), demotes the plugin to Option C, and states the discovery rule inline. (#34)
+
+### Added
+
+- `assert_file_absent` test helper. `tests/test-install.sh` grows to 37 assertions covering the new location, the absence of the old one, the upgrade migration, preservation of unrelated user files in the old directory, and plugin-independent guidance in both config states. Nine of them fail against 0.4.0's `install.sh`. (#34)
+
 ## [0.4.0] - 2026-08-07
 
 ### Added
