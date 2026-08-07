@@ -90,6 +90,50 @@ else
   fail "marketplace.json is valid JSON with plugins[0].name == talos"
 fi
 
+# ── agent-skills vendoring (#43) ─────────────────────────────────────────────
+# The plugin gets agent-skills via a declared dependency; install.sh has to
+# fetch it. Tested against a local fixture repo rather than the network, so the
+# suite stays hermetic — git clone accepts a filesystem path.
+as_fix="$SANDBOX/fixture-agent-skills"
+mkdir -p "$as_fix/skills/test-driven-development" "$as_fix/skills/code-review-and-quality"
+printf -- '---\nname: test-driven-development\n---\nfixture\n' \
+  > "$as_fix/skills/test-driven-development/SKILL.md"
+printf -- '---\nname: code-review-and-quality\n---\nfixture\n' \
+  > "$as_fix/skills/code-review-and-quality/SKILL.md"
+printf 'MIT fixture licence\n' > "$as_fix/LICENSE"
+(cd "$as_fix" && git init -q && git add -A && git -c user.email=t@t -c user.name=t commit -qm init)
+
+as_target="$SANDBOX/as-target"
+mkdir -p "$as_target"
+as_out="$(TALOS_AGENT_SKILLS_REPO="$as_fix" bash "$TALOS_ROOT/install.sh" "$as_target" 2>&1)"
+assert_file_exists "$as_target/.claude/skills/test-driven-development/SKILL.md" \
+  "install.sh vendors agent-skills skills"
+assert_file_exists "$as_target/.claude/skills/code-review-and-quality/SKILL.md" \
+  "install.sh vendors every skill in the pack"
+assert_file_exists "$as_target/.claude/skills/AGENT-SKILLS-LICENSE" \
+  "third-party licence ships alongside the copy"
+assert_contains "$as_out" "Talos installs it for you" \
+  "installer tells the user it is installing agent-skills"
+
+# Opt-out must work, and must say what the user gives up.
+as_target2="$SANDBOX/as-target-optout"
+mkdir -p "$as_target2"
+as_out2="$(TALOS_AGENT_SKILLS_REPO="$as_fix" bash "$TALOS_ROOT/install.sh" "$as_target2" --no-agent-skills 2>&1)"
+assert_file_absent "$as_target2/.claude/skills/test-driven-development" \
+  "--no-agent-skills skips the vendoring"
+assert_contains "$as_out2" "embedded instructions" \
+  "--no-agent-skills explains the degraded behaviour"
+assert_file_exists "$as_target2/.claude/skills/pipeline/SKILL.md" \
+  "--no-agent-skills still installs Talos itself"
+
+# An unreachable source must degrade, never abort — the pipeline runs without it.
+as_target3="$SANDBOX/as-target-offline"
+mkdir -p "$as_target3"
+as_out3="$(TALOS_AGENT_SKILLS_REPO="$SANDBOX/does-not-exist" bash "$TALOS_ROOT/install.sh" "$as_target3" 2>&1)"
+assert_contains "$as_out3" "SKIPPED: could not fetch" "unreachable pack is reported"
+assert_file_exists "$as_target3/.claude/skills/pipeline/SKILL.md" \
+  "unreachable pack does not abort the install"
+
 # The shipped manifests must pass the real schema check. 0.5.0's plugin.json
 # listed individual skill dirs in `skills` — that field names directories to
 # SCAN for <name>/SKILL.md, so the manifest failed validation as published.

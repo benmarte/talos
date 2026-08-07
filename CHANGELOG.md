@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-07
+
+### Added
+
+- **`install.sh` now installs agent-skills too.** Since 0.8.0 the pack has been a hard requirement — the role profiles delegate their methodology to it rather than restating it — but only the *plugin* got it automatically. The vendored path printed a note and left the user to it, so the same product behaved differently depending on how you installed it, and the vendored install degraded silently if you skipped the note. It is now fetched into `<target>/.claude/skills/` by default; `--no-agent-skills` opts out and says what you give up. (#44, fixes #43)
+
+  Only `skills/` is vendored — the roles invoke skills, never agents (they have no `Task` tool), so agent-skills' own agents would be dead weight in the target repo. `LICENSE` ships alongside as `AGENT-SKILLS-LICENSE`, since this is third-party MIT content landing in a user's repo, copied unmodified from upstream.
+
+  Never fatal: no `git`, or an unreachable source, degrades the install with a clear message rather than aborting. The pipeline still runs; roles fall back to their embedded instructions. `TALOS_AGENT_SKILLS_REPO` overrides the source.
+
+- **`tests/test-skill-names.sh`** — asserts every skill named in `agents/*.md` actually exists in agent-skills. Nothing else caught a typo'd or renamed skill: the role simply never invokes it and quietly falls back, with no error anywhere. This is the only test that needs the network, and it skips rather than fails when offline. All 15 current references verified.
+
+- 11 assertions in `tests/test-install.sh` covering the vendoring, the licence, the opt-out, and graceful degradation on an unreachable source — run against a local fixture repo so the suite stays hermetic.
+
+### Changed
+
+- README gains a single note that Talos installs agent-skills for you, rather than a requirements section — the point is that it is never a manual step.
+
 ## [0.8.1] - 2026-08-07
 
 ### Fixed
