@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-11
+
+### Fixed
+
+- **`comment-issue` / `comment-pr` silently discarded the body when given `--body-file`.** The provider branches took `"$2"` as the body verbatim, so `comment-issue 42 --body-file verdict.md` ran `gh issue comment 42 --body "--body-file"` — a comment whose entire content was the literal flag, the real text dropped, **and exit 0**. Nothing failed and nothing warned. Three subagent verdicts were lost in a single pipeline run (two validators and one QA), and they were only caught because two later agents read the issue and found the verdicts missing.
+
+  The trap is in the verb list itself: `comment-issue <n> <body>` sits four lines from `create-pr <branch> <title> <body-file>`. One takes inline text, its sibling takes a path — so an agent composing a multi-KB markdown verdict reaches for `--body-file` by analogy, with this script's own siblings and with `gh`. Treating that as agent error misses the point; the interface invited it.
+
+  Wanting a file is legitimate rather than lazy, which is why the fix accepts it instead of only rejecting it: long markdown is hostile as a shell argument (backticks, `$`, quotes, newlines), and a body containing raw URLs can be refused outright by a permission rule, leaving a file as the only route.
+
+### Added
+
+- **`comment-issue <n> --body-file <path>` and `comment-pr <n> --body-file <path>`** now work, alongside an explicit `--body <text>` form. Normalisation happens before provider dispatch, so github, github-api, gitlab, azure and file mode all inherit it. The verb list documents both spellings.
+
+- **A body that is still a bare flag is refused with exit 1** and a usage message naming both accepted forms, rather than being posted. An unreadable `--body-file` path also exits 1 and names the path. A body that merely *starts* with a single dash — a markdown bullet — is still a body, and is asserted as such.
+
+- 13 assertions in `tests/test-vcs.sh` covering both spellings, both refusals, the leading-dash case, and a regression check that non-comment verbs keep their own flag handling.
+
 ## [0.10.0] - 2026-08-11
 
 Azure DevOps goes from **best-effort to a first-class provider**. The adapter was
