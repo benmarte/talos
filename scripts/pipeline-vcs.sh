@@ -1002,8 +1002,13 @@ _azure() {
   local verb="$1"; shift
   case "$verb" in
     list-issues)
-      _run az boards work-item list $ORG_ARG $PROJ_ARG \
-        --query "[?state!='Closed']" --output json "$@"
+      # ADO has no `az boards work-item list`. Discover work items with a WIQL
+      # query instead. The GitHub adapter's "open issues only" maps to ADO's
+      # non-terminal states — which are Done/Removed/Closed, not just Closed —
+      # so exclude all three.
+      _run az boards query $ORG_ARG $PROJ_ARG \
+        --wiql "SELECT [System.Id], [System.Title], [System.State], [System.Tags] FROM WorkItems WHERE [System.State] NOT IN ('Closed', 'Done', 'Removed') ORDER BY [System.ChangedDate] DESC" \
+        --output json
       ;;
     view-issue)
       _run az boards work-item show --id "$1" $ORG_ARG --output json
@@ -1055,10 +1060,14 @@ PYEOF
     create-pr)
       local branch="$1" title="$2" body_file="$3"
       [ -z "$BASE_BRANCH" ] && BASE_BRANCH="main"
+      # `az repos pr create` requires --repository. REPO comes from vcs.repo
+      # (or git-remote auto-detect); pass it only when set so az emits its own
+      # clear error rather than us fabricating a repo name.
+      local repo_arg=""; [ -n "$REPO" ] && repo_arg="--repository $REPO"
       _run az repos pr create \
         --source-branch "$branch" --target-branch "$BASE_BRANCH" \
         --title "$title" --description "$(cat "$body_file")" \
-        $ORG_ARG $PROJ_ARG --output json
+        $ORG_ARG $PROJ_ARG $repo_arg --output json
       ;;
     view-pr)
       _run az repos pr show --id "$1" $ORG_ARG --output json

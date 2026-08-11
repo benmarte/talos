@@ -27,6 +27,9 @@ case "$args" in
     printf 'bug; ui\n' ;;
   "boards work-item show "*)
     printf '{"id":5,"fields":{"System.Title":"Fix login crash","System.Tags":"bug; ui"}}\n' ;;
+  "boards query "*)
+    # Canned WIQL result set for list-issues
+    printf '[{"id":5,"fields":{"System.Title":"Fix login crash","System.State":"New","System.Tags":"pipeline:ready"}}]\n' ;;
   "boards work-item create "*)
     printf '{"id":1}\n' ;;
   "boards work-item update "*)

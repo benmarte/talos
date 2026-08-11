@@ -88,6 +88,14 @@ log="$(cat "$GH_LOG")"
 assert_contains "$log" "[boards] [work-item] [show]" "azure view-issue invokes work-item show"
 assert_contains "$log" "[--id] [5]" "azure view-issue passes correct id"
 
+# list-issues → az boards query --wiql (there is no `az boards work-item list`)
+: > "$GH_LOG"
+bash "$VCS" list-issues >/dev/null 2>&1
+log="$(cat "$GH_LOG")"
+assert_contains "$log" "[boards] [query]" "azure list-issues invokes az boards query"
+assert_contains "$log" "[--wiql]" "azure list-issues passes a WIQL query"
+assert_not_contains "$log" "[work-item] [list]" "azure list-issues does not call nonexistent work-item list"
+
 # label-issue tag-merge: stub returns "bug; ui"; add "backend"
 # → Python merges and calls az boards work-item update with sorted tags
 : > "$GH_LOG"
@@ -131,6 +139,22 @@ bash "$VCS" merge-pr 7 >/dev/null 2>&1
 log="$(cat "$GH_LOG")"
 assert_contains "$log" "[repos] [pr] [update]" "azure merge-pr invokes repos pr update"
 assert_contains "$log" "[--status] [completed]" "azure merge-pr sets status to completed"
+
+# create-pr → az repos pr create must pass --repository (az requires it)
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "azure", "repo": "myrepo"}}
+EOF
+printf 'pr body' > body.txt
+: > "$GH_LOG"
+bash "$VCS" create-pr "feature/x" "PR title" body.txt >/dev/null 2>&1
+log="$(cat "$GH_LOG")"
+assert_contains "$log" "[repos] [pr] [create]" "azure create-pr invokes repos pr create"
+assert_contains "$log" "[--repository] [myrepo]" "azure create-pr passes --repository (required by az)"
+assert_contains "$log" "[--source-branch] [feature/x]" "azure create-pr passes source branch"
+# Restore config without repo for remaining tests
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "azure"}}
+EOF
 
 # missing-extension error path: AZ_STUB_NO_EXT=1 → exit 1 with clear message
 err="$(AZ_STUB_NO_EXT=1 bash "$VCS" comment-issue 5 "hi" 2>&1)"; rc=$?
