@@ -27,6 +27,9 @@ case "$args" in
     printf 'bug; ui\n' ;;
   "boards work-item show "*)
     printf '{"id":5,"fields":{"System.Title":"Fix login crash","System.Tags":"bug; ui"}}\n' ;;
+  "boards query "*)
+    # Canned WIQL result set for list-issues
+    printf '[{"id":5,"fields":{"System.Title":"Fix login crash","System.State":"New","System.Tags":"pipeline:ready"}}]\n' ;;
   "boards work-item create "*)
     printf '{"id":1}\n' ;;
   "boards work-item update "*)
@@ -39,6 +42,17 @@ case "$args" in
     printf '{"pullRequestId":7,"status":"active"}\n' ;;
   "boards work-item comment add "*)
     printf '{"id":1,"text":"stub comment"}\n' ;;
+  "rest "*)
+    # label-issue uses `az rest` for the json-patch tag update. Echo the
+    # --body @file contents into the log so tests can assert the computed tags.
+    if [ -n "${GH_LOG:-}" ]; then
+      for _a in "$@"; do
+        case "$_a" in
+          @*) [ -f "${_a#@}" ] && { printf 'AZ BODY: '; cat "${_a#@}"; printf '\n'; } >> "$GH_LOG" ;;
+        esac
+      done
+    fi
+    printf '{"id":5,"fields":{"System.Tags":"stub"}}\n' ;;
   *)
     printf '{}\n' ;;
 esac

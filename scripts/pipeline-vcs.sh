@@ -1002,8 +1002,13 @@ _azure() {
   local verb="$1"; shift
   case "$verb" in
     list-issues)
-      _run az boards work-item list $ORG_ARG $PROJ_ARG \
-        --query "[?state!='Closed']" --output json "$@"
+      # ADO has no `az boards work-item list`. Discover work items with a WIQL
+      # query instead. The GitHub adapter's "open issues only" maps to ADO's
+      # non-terminal states — which are Done/Removed/Closed, not just Closed —
+      # so exclude all three.
+      _run az boards query $ORG_ARG $PROJ_ARG \
+        --wiql "SELECT [System.Id], [System.Title], [System.State], [System.Tags] FROM WorkItems WHERE [System.State] NOT IN ('Closed', 'Done', 'Removed') ORDER BY [System.ChangedDate] DESC" \
+        --output json
       ;;
     view-issue)
       _run az boards work-item show --id "$1" $ORG_ARG --output json
@@ -1023,29 +1028,57 @@ _azure() {
       fi
       ;;
     label-issue)
-      # Azure uses tags, not labels. Manage as semicolon-separated tags.
+      # Azure uses tags, not labels. Manage the whole System.Tags string.
+      # `az boards work-item update` has no --tags flag, and its
+      # `--fields System.Tags=...` path APPENDS (it issues a json-patch "add",
+      # which ADO merges for tags) — so it can never REMOVE a tag. The only
+      # reliable way to set the exact tag set is a json-patch "replace" via the
+      # REST API. `az devops invoke` mishandles json-patch bodies, so use
+      # `az rest`, which needs an absolute org URL (az devops defaults don't
+      # apply to it).
       local n="$1"; shift
       _parse_label_args "$@"
+      local base_org="$AZURE_ORG"
+      if [ -z "$base_org" ]; then
+        base_org="$(az devops configure --list 2>/dev/null \
+          | awk -F'= *' '/^organization/{print $2}' | tr -d '[:space:]')"
+      fi
+      if [ -z "$base_org" ]; then
+        echo "pipeline-vcs: azure label-issue needs an org URL — set vcs.azure.org_url or run 'az devops configure --defaults organization=<url>'" >&2
+        exit 1
+      fi
       # Fetch current tags
       local current_tags
       current_tags="$(az boards work-item show --id "$n" $ORG_ARG \
         --query fields.\"System.Tags\" -o tsv 2>/dev/null || echo "")"
       python3 - "$n" "$current_tags" "$ADD_LABELS" "$REMOVE_LABELS" \
-        "$DRY_RUN" "$ORG_ARG" <<'PYEOF'
-import subprocess, sys
+        "$DRY_RUN" "$base_org" <<'PYEOF'
+import json, os, subprocess, sys, tempfile
 n, cur, add_s, rem_s = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 dry_run = sys.argv[5] == 'true'
-org_arg = sys.argv[6]
+base_org = sys.argv[6].rstrip('/')
 tags = {t.strip() for t in cur.split(';') if t.strip()}
 for t in add_s.split(): tags.add(t)
 for t in rem_s.split(): tags.discard(t)
 new_tags = '; '.join(sorted(tags))
-cmd = ['az', 'boards', 'work-item', 'update', '--id', n, '--tags', new_tags] + \
-      (org_arg.split() if org_arg else [])  # split into ['--org', '<url>'] so az receives two argv elements
+url = f'{base_org}/_apis/wit/workitems/{n}?api-version=7.1'
+ADO_RESOURCE = '499b84ac-1321-427f-aa17-267ca6975798'  # Azure DevOps AAD app id
+# "replace" needs the field to exist; use "add" when the item has no tags yet.
+op = 'replace' if cur.strip() else 'add'
+patch = [{'op': op, 'path': '/fields/System.Tags', 'value': new_tags}]
 if dry_run:
-    print(f'[dry-run] {" ".join(cmd)}')
-else:
-    subprocess.run(cmd, check=True)
+    print(f'[dry-run] az rest --method patch --url {url} --body {json.dumps(patch)}')
+    sys.exit(0)
+with tempfile.NamedTemporaryFile('w', suffix='.json', delete=False) as f:
+    json.dump(patch, f)
+    body_path = f.name
+try:
+    subprocess.run(['az', 'rest', '--method', 'patch', '--url', url,
+                    '--resource', ADO_RESOURCE,
+                    '--headers', 'Content-Type=application/json-patch+json',
+                    '--body', f'@{body_path}'], check=True)
+finally:
+    os.unlink(body_path)
 PYEOF
       ;;
     create-issue)
@@ -1055,10 +1088,14 @@ PYEOF
     create-pr)
       local branch="$1" title="$2" body_file="$3"
       [ -z "$BASE_BRANCH" ] && BASE_BRANCH="main"
+      # `az repos pr create` requires --repository. REPO comes from vcs.repo
+      # (or git-remote auto-detect); pass it only when set so az emits its own
+      # clear error rather than us fabricating a repo name.
+      local repo_arg=""; [ -n "$REPO" ] && repo_arg="--repository $REPO"
       _run az repos pr create \
         --source-branch "$branch" --target-branch "$BASE_BRANCH" \
         --title "$title" --description "$(cat "$body_file")" \
-        $ORG_ARG $PROJ_ARG --output json
+        $ORG_ARG $PROJ_ARG $repo_arg --output json
       ;;
     view-pr)
       _run az repos pr show --id "$1" $ORG_ARG --output json

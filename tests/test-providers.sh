@@ -88,38 +88,44 @@ log="$(cat "$GH_LOG")"
 assert_contains "$log" "[boards] [work-item] [show]" "azure view-issue invokes work-item show"
 assert_contains "$log" "[--id] [5]" "azure view-issue passes correct id"
 
-# label-issue tag-merge: stub returns "bug; ui"; add "backend"
-# → Python merges and calls az boards work-item update with sorted tags
+# list-issues → az boards query --wiql (there is no `az boards work-item list`)
 : > "$GH_LOG"
-bash "$VCS" label-issue 5 --add "backend" >/dev/null 2>&1
+bash "$VCS" list-issues >/dev/null 2>&1
 log="$(cat "$GH_LOG")"
-assert_contains "$log" "[boards] [work-item] [update]" "azure label-issue calls work-item update"
-assert_contains "$log" "backend" "azure label-issue adds new tag"
-assert_contains "$log" "bug" "azure label-issue preserves existing tag: bug"
-assert_contains "$log" "ui" "azure label-issue preserves existing tag: ui"
+assert_contains "$log" "[boards] [query]" "azure list-issues invokes az boards query"
+assert_contains "$log" "[--wiql]" "azure list-issues passes a WIQL query"
+assert_not_contains "$log" "[work-item] [list]" "azure list-issues does not call nonexistent work-item list"
 
-# label-issue remove: stub returns "bug; ui"; remove "ui" → only "bug" remains
-: > "$GH_LOG"
-bash "$VCS" label-issue 5 --remove "ui" >/dev/null 2>&1
-log="$(cat "$GH_LOG")"
-assert_contains "$log" "[boards] [work-item] [update]" "azure label-issue remove calls work-item update"
-assert_contains "$log" "[--tags] [bug]" "azure label-issue remove drops removed tag"
-
-# label-issue with org_url: org_arg must be split into two argv elements (not one)
-# so az receives '--org' and 'https://dev.azure.com/testorg' as separate arguments.
+# label-issue needs an org URL (az rest is absolute); set it for these tests.
 cat > talos.pipeline.json <<'EOF'
 {"vcs": {"provider": "azure", "azure": {"org_url": "https://dev.azure.com/testorg"}}}
 EOF
+
+# label-issue tag-merge: stub returns "bug; ui"; add "backend"
+# → Python merges the set and PATCHes System.Tags via `az rest` (json-patch).
 : > "$GH_LOG"
-rc=0
-bash "$VCS" label-issue 5 --add "backend" >/dev/null 2>&1 || rc=$?
+bash "$VCS" label-issue 5 --add "backend" >/dev/null 2>&1
 log="$(cat "$GH_LOG")"
-assert_eq "0" "$rc" "azure label-issue with org_url exits 0"
-# Extract only the subprocess 'update' line — the shell 'show' call also word-splits correctly,
-# so we must assert against the update line specifically to guard the Python argv fix.
-update_line="$(printf '%s' "$log" | grep '\[work-item\] \[update\]')"
-assert_contains "$update_line" "[--org] [https://dev.azure.com/testorg]" "azure label-issue splits org_arg into separate argv elements in subprocess"
-assert_not_contains "$update_line" "[--org https://dev.azure.com/testorg]" "azure label-issue does not pass org_arg as one concatenated element"
+assert_contains "$log" "[rest] [--method] [patch]" "azure label-issue PATCHes via az rest"
+assert_contains "$log" "workitems/5" "azure label-issue targets the correct work item URL"
+assert_contains "$log" "https://dev.azure.com/testorg" "azure label-issue uses the configured org URL"
+assert_contains "$log" "application/json-patch+json" "azure label-issue sends a json-patch media type"
+# Body (echoed by the stub) carries the merged tag set:
+assert_contains "$log" "backend" "azure label-issue adds new tag"
+assert_contains "$log" "bug" "azure label-issue preserves existing tag: bug"
+assert_contains "$log" "ui" "azure label-issue preserves existing tag: ui"
+assert_contains "$log" "System.Tags" "azure label-issue patches the System.Tags field"
+
+# label-issue remove: stub returns "bug; ui"; remove "ui" → only "bug" remains.
+# This is the case the old --tags/--fields path could not do (append-only).
+: > "$GH_LOG"
+bash "$VCS" label-issue 5 --remove "ui" >/dev/null 2>&1
+log="$(cat "$GH_LOG")"
+body_line="$(printf '%s' "$log" | grep '^AZ BODY:')"
+assert_contains "$body_line" "bug" "azure label-issue remove keeps the surviving tag"
+assert_not_contains "$body_line" "ui" "azure label-issue remove actually drops the removed tag"
+assert_contains "$log" "[--method] [patch]" "azure label-issue remove issues a PATCH"
+
 # Restore config without org_url for remaining tests
 cat > talos.pipeline.json <<'EOF'
 {"vcs": {"provider": "azure"}}
@@ -131,6 +137,22 @@ bash "$VCS" merge-pr 7 >/dev/null 2>&1
 log="$(cat "$GH_LOG")"
 assert_contains "$log" "[repos] [pr] [update]" "azure merge-pr invokes repos pr update"
 assert_contains "$log" "[--status] [completed]" "azure merge-pr sets status to completed"
+
+# create-pr → az repos pr create must pass --repository (az requires it)
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "azure", "repo": "myrepo"}}
+EOF
+printf 'pr body' > body.txt
+: > "$GH_LOG"
+bash "$VCS" create-pr "feature/x" "PR title" body.txt >/dev/null 2>&1
+log="$(cat "$GH_LOG")"
+assert_contains "$log" "[repos] [pr] [create]" "azure create-pr invokes repos pr create"
+assert_contains "$log" "[--repository] [myrepo]" "azure create-pr passes --repository (required by az)"
+assert_contains "$log" "[--source-branch] [feature/x]" "azure create-pr passes source branch"
+# Restore config without repo for remaining tests
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "azure"}}
+EOF
 
 # missing-extension error path: AZ_STUB_NO_EXT=1 → exit 1 with clear message
 err="$(AZ_STUB_NO_EXT=1 bash "$VCS" comment-issue 5 "hi" 2>&1)"; rc=$?
