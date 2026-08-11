@@ -35,6 +35,50 @@ bash "$VCS" comment-issue 5 "findings body" >/dev/null 2>&1
 assert_contains "$(cat "$GH_LOG")" "issue comment 5 --body findings body" \
   "comment-issue invokes gh with the body"
 
+# ── Comment body: --body-file support, and no silent flag-as-body ─────────────
+# Regression: passing `--body-file <path>` used to make "$2" the body verbatim,
+# so the posted comment was the literal string "--body-file" and exit was 0.
+
+printf 'verdict from a file' > body.md
+
+out="$(bash "$VCS" --dry-run comment-issue 7 --body-file body.md)"
+assert_contains "$out" "--body verdict from a file" \
+  "comment-issue --body-file reads the file into the body"
+assert_not_contains "$out" "body.md" \
+  "comment-issue --body-file does not pass the path through as the body"
+
+out="$(bash "$VCS" --dry-run comment-pr 8 --body-file body.md)"
+assert_contains "$out" "--body verdict from a file" \
+  "comment-pr --body-file reads the file into the body"
+
+out="$(bash "$VCS" --dry-run comment-issue 7 --body "inline via flag")"
+assert_contains "$out" "--body inline via flag" \
+  "comment-issue --body accepts an explicit flag form too"
+
+# A bare flag must never reach gh as the body.
+out="$(bash "$VCS" --dry-run comment-issue 7 --body-file 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "comment-issue refuses a flag-shaped body"
+assert_contains "$out" "looks like a flag" "the refusal explains itself"
+assert_not_contains "$out" "gh issue comment" "no gh call is constructed"
+
+out="$(bash "$VCS" --dry-run comment-pr 8 --body-file 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "comment-pr refuses a flag-shaped body"
+
+# An unreadable path fails loudly rather than posting the path.
+out="$(bash "$VCS" --dry-run comment-issue 7 --body-file no-such-file.md 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "comment-issue --body-file exits 1 on an unreadable path"
+assert_contains "$out" "cannot read" "the unreadable path is named"
+
+# A body that legitimately starts with a dash is still a body, not a flag.
+out="$(bash "$VCS" --dry-run comment-issue 7 "- bullet one")"
+assert_contains "$out" "--body - bullet one" "a leading single dash is not treated as a flag"
+
+# Verbs that are not comment verbs keep their own flag handling.
+out="$(bash "$VCS" --dry-run label-issue 7 --add pipeline:ready)"
+assert_contains "$out" "--add-label 'pipeline:ready'" "label-issue flags are untouched"
+
+rm -f body.md
+
 # Unknown verb fails loudly
 if bash "$VCS" no-such-verb 1 >/dev/null 2>&1; then
   fail "unknown verb exits non-zero"

@@ -11,6 +11,7 @@
 #   list-issues                               List open issues / work items
 #   view-issue <n>                            View issue details
 #   comment-issue <n> <body>                  Post comment on issue <n>
+#                 <n> --body-file <path>      ...or read the body from a file
 #   close-issue <n> <body>                    Close issue with a comment
 #   label-issue <n> [--add <l>] [--remove <l>]  Add/remove labels
 #   create-pr <branch> <title> <body-file>    Open a pull / merge request
@@ -23,6 +24,7 @@
 #   pr-checks <n>                             Show CI check status
 #   merge-pr <n>                              Merge the PR
 #   comment-pr <n> <body>                     Post comment on PR <n>
+#              <n> --body-file <path>         ...or read the body from a file
 #   find-pr <issue-n> [state]                 Find PRs for an issue (branch has
 #                                             issue-<n> or title/body has #<n>).
 #                                             state: open (default) | merged | all
@@ -1518,6 +1520,51 @@ PYEOF
       ;;
   esac
 }
+
+# ── Comment-body normalisation ────────────────────────────────────────────────
+# `comment-issue` / `comment-pr` take the body POSITIONALLY, but four lines above
+# in the verb list `create-issue` / `create-pr` take a body *file*. That
+# inconsistency is a trap: an agent composing a multi-KB markdown verdict
+# reaches for `--body-file` by analogy — with this script's own siblings, and
+# with `gh` — and the provider branches took "$2" as the body verbatim. The
+# result was `gh issue comment N --body "--body-file"`: a comment whose entire
+# content is the literal flag, the real verdict discarded, and exit 0.
+#
+# Silent, so it survives until someone audits comment content. Three verdicts
+# were lost in a single pipeline run before it was noticed. Wanting a file is
+# also legitimate rather than lazy — long markdown is hostile as a shell
+# argument, and a body containing raw URLs can be refused outright by a
+# permission rule, leaving a file as the only route.
+#
+# So accept both spellings, and refuse a body that is still a bare flag instead
+# of posting it. Applied before dispatch, so every provider inherits it.
+case "$VERB" in
+  comment-issue|comment-pr)
+    if [ "${#ARGS[@]}" -ge 3 ]; then
+      case "${ARGS[1]}" in
+        --body-file)
+          if [ -r "${ARGS[2]}" ]; then
+            ARGS=("${ARGS[0]}" "$(cat "${ARGS[2]}")")
+          else
+            echo "pipeline-vcs: $VERB --body-file: cannot read '${ARGS[2]}'" >&2
+            exit 1
+          fi
+          ;;
+        --body)
+          ARGS=("${ARGS[0]}" "${ARGS[2]}")
+          ;;
+      esac
+    fi
+    case "${ARGS[1]-}" in
+      --*)
+        echo "pipeline-vcs: $VERB: body looks like a flag ('${ARGS[1]}'), not comment text." >&2
+        echo "              Usage: $VERB <number> <body>            # body is POSITIONAL" >&2
+        echo "              or:    $VERB <number> --body-file <path>" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+esac
 
 # ── Main dispatch ─────────────────────────────────────────────────────────────
 case "$PROVIDER" in
