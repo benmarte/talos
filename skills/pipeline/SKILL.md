@@ -340,16 +340,21 @@ After the planner returns (its output begins with `PLAN:`):
      [Depends on: #<PREV-SUB-ISSUE-NUMBER>  ← only if planner listed a dependency]
      ```
    - Write the body to a temp file: `printf '%s' "<body>" > /tmp/sub-issue-<i>.md`
+   - Every sub-issue also carries `--label epic:<N>` (the epic's own number) so a human
+     can filter the board to the whole epic and review its sub-tasks as a group. (The
+     `Part of #<N>` body line above is what the epic auto-close sweep keys on; the tag is
+     for human grouping/filtering.)
    - **Independent sub-task** (no `Depends on:` in planner output) — label `pipeline:ready`
      so it enters the queue immediately:
      ```bash
      bash scripts/pipeline-vcs.sh create-issue "<sub-task title>" /tmp/sub-issue-<i>.md \
-       --label pipeline:ready
+       --label pipeline:ready --label epic:<N>
      ```
    - **Dependent sub-task** (planner listed `Depends on: <j>`) — do NOT add `pipeline:ready`;
-     it stays unlabeled and out of the queue until Step 1 unblocks it:
+     it stays out of the queue until Step 1 unblocks it, but is still tagged to the epic:
      ```bash
-     bash scripts/pipeline-vcs.sh create-issue "<sub-task title>" /tmp/sub-issue-<i>.md
+     bash scripts/pipeline-vcs.sh create-issue "<sub-task title>" /tmp/sub-issue-<i>.md \
+       --label epic:<N>
      ```
      The body already carries the `Depends on: #<PREV>` line so Step 1 reconciliation can
      detect when the blocker closes and add `pipeline:ready` at that point.

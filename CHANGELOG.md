@@ -16,6 +16,8 @@
 
 - **PR comment threads are deliberately left as markdown.** Azure PR threads *do* render markdown, so `comment-pr` is not converted — only the two work-item HTML fields are. The `comment-issue` dry-run now echoes the real (converted) body instead of a `<body>` placeholder, so the conversion is visible and testable.
 
+- **Planner tags every sub-issue `epic:<N>`.** When an epic is decomposed, each created sub-issue now carries an `epic:<epic-number>` label (independent *and* dependent), so a human can filter the board to one epic and review its sub-tasks as a group. The existing `Part of #<N>` body line still drives the epic auto-close sweep; the tag is purely for human grouping/filtering.
+
 ## [0.11.0] - 2026-08-11
 
 ### Fixed
