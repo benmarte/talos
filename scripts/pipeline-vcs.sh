@@ -983,6 +983,47 @@ _gitlab() {
 #     az devops configure --defaults organization=<org_url> project=<project>
 #   Or set vcs.azure.org_url + vcs.azure.project in talos.pipeline.yml
 # ─────────────────────────────────────────────────────────────────────────────
+# Post a comment to an Azure DevOps work item. `az boards work-item comment add`
+# does not exist in the azure-devops extension, so use the REST comments endpoint
+# via `az rest` (needs an absolute org URL + project name).
+_azure_post_comment() {
+  local n="$1" body="$2"
+  local base_org="$AZURE_ORG" proj="$AZURE_PROJECT"
+  [ -z "$base_org" ] && base_org="$(az devops configure --list 2>/dev/null | awk -F'= *' '/^organization/{print $2}' | tr -d '[:space:]')"
+  [ -z "$proj" ]     && proj="$(az devops configure --list 2>/dev/null | awk -F'= *' '/^project/{print $2}' | tr -d '[:space:]')"
+  if [ -z "$base_org" ] || [ -z "$proj" ]; then
+    echo "pipeline-vcs: azure comment needs an org URL + project — set vcs.azure.org_url and vcs.azure.project" >&2
+    return 1
+  fi
+  base_org="${base_org%/}"
+  local url="$base_org/$proj/_apis/wit/workItems/$n/comments?api-version=7.1-preview.3"
+  if [ "$DRY_RUN" = "true" ]; then
+    echo "[dry-run] az rest --method post --url $url --body {\"text\":<body>}"
+    return 0
+  fi
+  local tmp; tmp="$(mktemp)"
+  python3 -c 'import json,sys; open(sys.argv[1],"w").write(json.dumps({"text": sys.argv[2]}))' "$tmp" "$body"
+  az rest --method post --url "$url" \
+    --resource "499b84ac-1321-427f-aa17-267ca6975798" \
+    --headers "Content-Type=application/json" --body "@$tmp" >/dev/null
+  local rc=$?
+  rm -f "$tmp"
+  return $rc
+}
+
+# Echo the ADO Git REST base URL ({org}/{project}/_apis/git/repositories/{repo}).
+# Returns non-zero if org/project/repo can't be resolved. Used by the PR verbs
+# that az has no command for (labels, comment threads) — reached via `az rest`.
+_azure_git_base() {
+  local base_org="$AZURE_ORG" proj="$AZURE_PROJECT" repo="$REPO"
+  [ -z "$base_org" ] && base_org="$(az devops configure --list 2>/dev/null | awk -F'= *' '/^organization/{print $2}' | tr -d '[:space:]')"
+  [ -z "$proj" ]     && proj="$(az devops configure --list 2>/dev/null | awk -F'= *' '/^project/{print $2}' | tr -d '[:space:]')"
+  [ -z "$repo" ] && return 1
+  [ -z "$base_org" ] || [ -z "$proj" ] && return 1
+  echo "${base_org%/}/$proj/_apis/git/repositories/$repo"
+}
+ADO_RESOURCE="499b84ac-1321-427f-aa17-267ca6975798"  # Azure DevOps AAD app id (az rest --resource)
+
 _azure() {
   if ! command -v az >/dev/null 2>&1; then
     echo "pipeline-vcs: 'az' (Azure CLI) not found. Install from https://aka.ms/installazurecli" >&2
@@ -1014,16 +1055,14 @@ _azure() {
       _run az boards work-item show --id "$1" $ORG_ARG --output json
       ;;
     comment-issue)
-      local n="$1" body="$2"
-      _run az boards work-item comment add --id "$n" --text "$body" $ORG_ARG
+      _azure_post_comment "$1" "$2"
       ;;
     close-issue)
       local n="$1" body="$2"
+      _azure_post_comment "$n" "$body"
       if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] az boards work-item comment add --id $n --text <body> $ORG_ARG"
         echo "[dry-run] az boards work-item update --id $n --state Done $ORG_ARG"
       else
-        az boards work-item comment add --id "$n" --text "$body" $ORG_ARG
         az boards work-item update --id "$n" --state Done $ORG_ARG
       fi
       ;;
@@ -1082,8 +1121,33 @@ finally:
 PYEOF
       ;;
     create-issue)
-      echo "pipeline-vcs: create-issue is not implemented for azure — use the Azure DevOps web UI or 'az boards work-item create' manually" >&2
-      exit 1
+      # Signature mirrors github: create-issue <title> <body-file> [--label L]...
+      # Labels map to ADO Tags. Work-item type + area path come from config so new
+      # items land on the right board (vcs.azure.work_item_type / vcs.azure.area_path).
+      local title="$1" body_file="$2"; shift 2
+      local ci_tags=""
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --label) ci_tags="${ci_tags:+$ci_tags; }$2"; shift 2 ;;
+          *) shift ;;
+        esac
+      done
+      local wtype ci_area ci_desc
+      wtype="$(cfg vcs.azure.work_item_type 'Product Backlog Item')"
+      ci_area="$(cfg vcs.azure.area_path '')"
+      ci_desc=""; [ -f "$body_file" ] && ci_desc="$(cat "$body_file")"
+      local ci_args=(boards work-item create --title "$title" --type "$wtype")
+      [ -n "$AZURE_ORG" ]     && ci_args+=(--org "$AZURE_ORG")
+      [ -n "$AZURE_PROJECT" ] && ci_args+=(--project "$AZURE_PROJECT")
+      [ -n "$ci_area" ]       && ci_args+=(--area "$ci_area")
+      [ -n "$ci_desc" ]       && ci_args+=(--description "$ci_desc")
+      [ -n "$ci_tags" ]       && ci_args+=(--fields "System.Tags=$ci_tags")
+      ci_args+=(--output json)
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] az ${ci_args[*]}"
+      else
+        az "${ci_args[@]}"
+      fi
       ;;
     create-pr)
       local branch="$1" title="$2" body_file="$3"
@@ -1104,32 +1168,81 @@ PYEOF
       _run az repos pr list --status active $ORG_ARG $PROJ_ARG --output json
       ;;
     diff-pr)
-      echo "pipeline-vcs: diff-pr not supported by 'az' CLI; use az repos pr show --id $1" >&2
-      exit 1
+      # az has no PR-diff command. Fetch both refs and diff them — this reads the
+      # change without touching the working tree, so reviewer/security stay safe.
+      local n="$1" src tgt
+      src="$(az repos pr show --id "$n" $ORG_ARG --query sourceRefName -o tsv 2>/dev/null | sed 's|refs/heads/||')"
+      tgt="$(az repos pr show --id "$n" $ORG_ARG --query targetRefName -o tsv 2>/dev/null | sed 's|refs/heads/||')"
+      [ -z "$tgt" ] && tgt="${BASE_BRANCH:-main}"
+      if [ -z "$src" ]; then echo "pipeline-vcs: could not resolve PR #$n source branch" >&2; return 1; fi
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] git fetch origin $tgt $src && git diff origin/$tgt...origin/$src"; return 0
+      fi
+      git fetch -q origin "$tgt" "$src" 2>/dev/null
+      git diff "origin/$tgt...origin/$src"
       ;;
     checkout-pr)
-      # az CLI does not support checkout; use git fetch + checkout
-      local pr_id="$1"
-      local source_branch
-      source_branch="$(az repos pr show --id "$pr_id" $ORG_ARG \
-        --query sourceRefName -o tsv 2>/dev/null | sed 's|refs/heads/||')"
-      _run git fetch origin "$source_branch"
-      _run git checkout "$source_branch"
+      # Detached checkout of the fetched head — a named `git checkout <branch>`
+      # fails with "already checked out" while the developer worktree still holds
+      # the branch. Detaching sidesteps that and lets QA run in its own worktree.
+      local n="$1" src
+      src="$(az repos pr show --id "$n" $ORG_ARG --query sourceRefName -o tsv 2>/dev/null | sed 's|refs/heads/||')"
+      if [ -z "$src" ]; then echo "pipeline-vcs: could not resolve PR #$n source branch" >&2; return 1; fi
+      _run git fetch origin "$src"
+      _run git checkout --detach FETCH_HEAD
       ;;
     approve-pr)
       local n="$1" body="${2:-}"
       if [ "$DRY_RUN" = "true" ]; then
         echo "[dry-run] az repos pr set-vote --id $n --vote approve $ORG_ARG"
-        [ -n "$body" ] && echo "[dry-run] az repos pr comment add --id $n --comment <body> $ORG_ARG"
+        [ -n "$body" ] && echo "[dry-run] (comment via PR thread REST)"
       else
-        az repos pr set-vote --id "$n" --vote approve $ORG_ARG
-        [ -n "$body" ] && az repos pr comment add --id "$n" --comment "$body" $ORG_ARG
+        # set-vote may fail with "cannot approve your own pull request" in
+        # single-account setups — expected and ignorable; the review:approved
+        # label is the gate. Post the body as a PR thread (az has no comment cmd).
+        az repos pr set-vote --id "$n" --vote approve $ORG_ARG 2>/dev/null || true
+        if [ -n "$body" ]; then
+          local gitbase; if gitbase="$(_azure_git_base)"; then
+            local tf; tf="$(mktemp)"
+            python3 -c 'import json,sys;open(sys.argv[1],"w").write(json.dumps({"comments":[{"parentCommentId":0,"content":sys.argv[2],"commentType":1}],"status":1}))' "$tf" "$body"
+            az rest --method post --url "$gitbase/pullRequests/$n/threads?api-version=7.1-preview.1" \
+              --resource "$ADO_RESOURCE" --headers "Content-Type=application/json" --body "@$tf" >/dev/null 2>&1 || true
+            rm -f "$tf"
+          fi
+        fi
       fi
       ;;
     label-pr)
-      # Azure PRs don't have labels/tags in the same sense; map to work item links
-      echo "pipeline-vcs: label-pr not applicable for Azure DevOps (no PR labels)" >&2
-      return 0
+      # ADO PRs DO support labels via the REST API (az has no command for it).
+      local n="$1"; shift
+      _parse_label_args "$@"
+      local gitbase; gitbase="$(_azure_git_base)" || { echo "pipeline-vcs: azure label-pr needs org/project/repo (vcs.azure.org_url, vcs.azure.project, vcs.repo)" >&2; return 0; }
+      local l tf
+      for l in $ADD_LABELS; do
+        if [ "$DRY_RUN" = "true" ]; then echo "[dry-run] az rest POST $gitbase/pullRequests/$n/labels {\"name\":\"$l\"}"; continue; fi
+        tf="$(mktemp)"; python3 -c 'import json,sys;open(sys.argv[1],"w").write(json.dumps({"name":sys.argv[2]}))' "$tf" "$l"
+        az rest --method post --url "$gitbase/pullRequests/$n/labels?api-version=7.1-preview.1" \
+          --resource "$ADO_RESOURCE" --headers "Content-Type=application/json" --body "@$tf" >/dev/null 2>&1 \
+          || echo "pipeline-vcs: label-pr add '$l' failed on PR #$n" >&2
+        rm -f "$tf"
+      done
+      # ADO rejects ':' in a URL path, and every Talos label has one, so DELETE
+      # by label id (not name). Resolve names→ids from one GET.
+      if [ -n "$REMOVE_LABELS" ]; then
+        if [ "$DRY_RUN" = "true" ]; then
+          for l in $REMOVE_LABELS; do echo "[dry-run] az rest DELETE (resolve id for '$l') $gitbase/pullRequests/$n/labels/<id>"; done
+        else
+          local labels_json; labels_json="$(az rest --method get \
+            --url "$gitbase/pullRequests/$n/labels?api-version=7.1-preview.1" \
+            --resource "$ADO_RESOURCE" 2>/dev/null)"
+          for l in $REMOVE_LABELS; do
+            local lid; lid="$(printf '%s' "$labels_json" | python3 -c "import sys,json;d=json.load(sys.stdin);print(next((x['id'] for x in d.get('value',[]) if x.get('name')==sys.argv[1]),''))" "$l" 2>/dev/null)"
+            [ -z "$lid" ] && continue
+            az rest --method delete --url "$gitbase/pullRequests/$n/labels/$lid?api-version=7.1-preview.1" \
+              --resource "$ADO_RESOURCE" >/dev/null 2>&1 || true
+          done
+        fi
+      fi
       ;;
     pr-checks)
       _run az repos pr show --id "$1" $ORG_ARG \
@@ -1139,8 +1252,16 @@ PYEOF
       _run az repos pr update --id "$1" --status completed $ORG_ARG --output json
       ;;
     comment-pr)
+      # az has no PR-comment command; post a thread via REST.
       local n="$1" body="$2"
-      _run az repos pr comment add --id "$n" --comment "$body" $ORG_ARG
+      local gitbase; gitbase="$(_azure_git_base)" || { echo "pipeline-vcs: azure comment-pr needs org/project/repo" >&2; return 0; }
+      local url="$gitbase/pullRequests/$n/threads?api-version=7.1-preview.1"
+      if [ "$DRY_RUN" = "true" ]; then echo "[dry-run] az rest POST $url {\"comments\":[{\"content\":<body>}]}"; return 0; fi
+      local tf; tf="$(mktemp)"
+      python3 -c 'import json,sys;open(sys.argv[1],"w").write(json.dumps({"comments":[{"parentCommentId":0,"content":sys.argv[2],"commentType":1}],"status":1}))' "$tf" "$body"
+      az rest --method post --url "$url" --resource "$ADO_RESOURCE" \
+        --headers "Content-Type=application/json" --body "@$tf" >/dev/null
+      local rc=$?; rm -f "$tf"; return $rc
       ;;
     find-pr|check-pr-files|rerun-ci)
       echo "pipeline-vcs: $verb not implemented for azure — verify manually" >&2

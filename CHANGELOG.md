@@ -2,6 +2,66 @@
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-11
+
+Azure DevOps goes from **best-effort to a first-class provider**. The adapter was
+exercised end-to-end against a live `dev.azure.com` org and every verb the
+pipeline actually calls now works, plus GitHub-Projects-style board tracking.
+`az`-CLI gaps are worked around with `az rest` against the ADO REST API.
+
+### Fixed (Azure adapter — every one was a hard failure on a real org)
+
+- **`list-issues` called `az boards work-item list`, which does not exist** — the
+  pipeline's primary work-item discovery verb errored out. Now uses a WIQL query
+  via `az boards query`, excluding ADO's terminal states (Done/Removed/Closed,
+  not just Closed). (#45)
+- **`create-pr` omitted `--repository`**, which `az repos pr create` requires — a
+  live PR create failed. Now passes it. (#45)
+- **`label-issue` used a nonexistent `--tags` flag.** Its `--fields System.Tags=`
+  alternative *appends* (ADO merges tags on a json-patch "add"), so it could add
+  but never remove. Rewritten to PATCH `System.Tags` with a json-patch "replace"
+  via `az rest`. (#45)
+- **`comment-issue` used `az boards work-item comment add`, which does not exist.**
+  Now posts to the work-item comments REST endpoint via `az rest`.
+- **`approve-pr` used `az repos pr comment add`, which does not exist.** Its
+  optional comment now posts as a PR thread; the self-approve vote failure stays
+  ignorable (the `review:approved` label is the gate).
+
+### Added (Azure adapter — parity with the GitHub provider)
+
+- **`create-issue` now opens a work item on ADO** (`az boards work-item create`),
+  of the configured type in the configured area path, with `--label`s mapped to
+  Tags. Previously it errored "not implemented — use the web UI". New config:
+  `vcs.azure.work_item_type` (default `Product Backlog Item`) and
+  `vcs.azure.area_path` (so pipeline-created items land on the right board).
+- **Board status tracking on ADO.** `pipeline-status.sh` gained an Azure branch:
+  a work item's **State** drives its Kanban column (ADO has no separate
+  GitHub-Projects status field), so the pipeline moves the card as it progresses.
+  Mapping is configurable via `board.azure_states.{ready,in_progress,in_review,done,blocked}`
+  with Scrum defaults (New / Committed / Committed / Done / unchanged).
+- **`label-pr` on ADO** (PR labels via `az rest`; `az` has no command for it).
+  Remove resolves the label name to its id first — ADO rejects `:` in a URL path,
+  and every pipeline label contains one.
+- **`comment-pr` on ADO** posts a PR comment thread via `az rest`.
+- **`diff-pr` on ADO** — resolves the PR's source/target refs and runs
+  `git diff origin/<target>...origin/<source>`, reading the change without
+  touching the working tree (safe for the non-worktree reviewer/security stages).
+  Previously unsupported.
+- **`checkout-pr` on ADO** now detaches (`git checkout --detach FETCH_HEAD`)
+  instead of checking out the branch by name, which failed with "already checked
+  out" while the developer worktree still held the branch.
+- **`tests/test-providers.sh`** grew coverage for all of the above (create-issue,
+  the az-rest comment/label paths, diff-pr, checkout-pr, and the status→State
+  mapping), and the `az` stub honors `-o tsv` ref queries.
+
+### Notes
+
+- **Merges on ADO are human-gated by design.** A repo whose `main` has branch
+  policies (minimum reviewers, build validation) cannot be auto-merged by an
+  agent; run with `merge.auto: false` and let a human complete the PR. The
+  pipeline still runs every stage and labels the PR `pipeline:approved`.
+- **Still not implemented on ADO:** `find-pr`, `check-pr-files`, `rerun-ci`.
+
 ## [0.9.0] - 2026-08-07
 
 ### Added

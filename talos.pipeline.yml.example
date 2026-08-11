@@ -44,6 +44,15 @@ vcs:
   # azure:
   #   org_url: https://dev.azure.com/myorg
   #   project: MyProject
+  #   # create-issue makes work items of this type, in this area path, so
+  #   # pipeline-created items land on the right team board. Type is
+  #   # process-specific (Scrum → "Product Backlog Item"; Agile → "User Story").
+  #   work_item_type: "Product Backlog Item"
+  #   area_path: "MyProject\\My Team"     # omit to use the project root area
+  #
+  # NOTE (Azure): if `main` has branch policies (min reviewers / build
+  # validation), no agent can auto-merge — set merge.auto: false below.
+  # find-pr / check-pr-files / rerun-ci are not implemented for ADO.
 
   # ── File mode only ───────────────────────────────────────────────────────
   # file:
@@ -54,10 +63,12 @@ vcs:
 # Production / release branch (used for release notes and CHANGELOG headers).
 release_branch: main
 
-# ── GitHub Project board ──────────────────────────────────────────────────────
+# ── Board ─────────────────────────────────────────────────────────────────────
 # Set enabled: false to skip board updates entirely (label-only mode).
 board:
   enabled: true
+
+  # ── GitHub Projects (provider: github) ────────────────────────────────────
   project_number: 1            # Run `gh project list --owner OWNER` to find yours
   owner: myorg                 # GitHub org or user that owns the project board
   status_field: Status         # Exact name of the single-select status field
@@ -68,6 +79,17 @@ board:
     in_review: "In review"
     done: "Done"
     blocked: "Blocked"
+
+  # ── Azure DevOps (provider: azure) ────────────────────────────────────────
+  # ADO has no separate status field — a work item's State drives its Kanban
+  # column. Map the pipeline's status names to ADO states (process-specific;
+  # Scrum defaults shown). Leave a value empty to keep the state unchanged.
+  # azure_states:
+  #   ready: "New"
+  #   in_progress: "Committed"
+  #   in_review: "Committed"
+  #   done: "Done"
+  #   blocked: ""              # Scrum has no Blocked state
 
 # ── Verify commands ───────────────────────────────────────────────────────────
 # Every code subagent must pass ALL of these before opening a PR.
