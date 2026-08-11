@@ -381,7 +381,7 @@ Thread anchors are stored in `~/.talos/threads.json` keyed by `<repo-slug>:<issu
 4. For each issue:
    - **Validator** reads the issue and codebase. CONFIRMED advances; anything else sets `pipeline:blocked`.
    - **PM** turns the confirmed issue into a spec comment (goal, acceptance criteria, branch name, out-of-scope).
-   - **Developer** spawns in an isolated git worktree. It implements, runs your `verify` commands, and opens a PR. The worktree is discarded after the PR is pushed.
+   - **Developer** spawns in an isolated git worktree. It implements, runs your `verify` commands, and opens a PR. The worktree is removed (branch and all) right after the PR merges, via `pipeline-worktree.sh remove`; a startup sweep reclaims any orphaned worktree as a backstop.
    - **QA** checks out the PR branch and verifies each acceptance criterion.
    - **Reviewer + Security + Docs** run in parallel after QA passes.
 5. Once all stage labels are on the PR and required CI checks are green, the orchestrator squash-merges, closes the issue, sets the board status to Done, and sends a notification.
