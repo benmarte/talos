@@ -145,17 +145,20 @@ except Exception:
 " 2>/dev/null || echo "open")"
 assert_eq "open" "$dep_blocked" "gating: dep issue #99 is open → dependent issue would be skipped"
 
-# ── (f) Azure adapter create-issue is a fail-loud stub ────────────────────────
+# ── (f) Azure adapter create-issue opens a work item ─────────────────────────
+# (create-issue is implemented for azure as of 0.10.0 — it was a fail-loud stub before)
 cat > talos.pipeline.json <<'EOF'
-{"vcs": {"provider": "azure"}}
+{"vcs": {"provider": "azure", "repo": "r", "azure": {"org_url": "https://dev.azure.com/o", "project": "p", "work_item_type": "Product Backlog Item", "area_path": "TeamArea"}}}
 EOF
-err="$(bash "$VCS" create-issue "New issue" /dev/null 2>&1)"; rc=$?
-# azure adapter checks for 'az' CLI first; either way it should not silently succeed
-if [ "$rc" -ne 0 ]; then
-  pass "azure: create-issue exits non-zero (fail-loud)"
+out="$(bash "$VCS" --dry-run create-issue "New issue" /dev/null --label pipeline:ready 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q "boards work-item create"; then
+  pass "azure: create-issue invokes az boards work-item create"
 else
-  fail "azure: create-issue exits non-zero (fail-loud)"
+  fail "azure: create-issue invokes az boards work-item create" "got: $out"
 fi
+printf '%s' "$out" | grep -q "System.Tags=pipeline:ready" \
+  && pass "azure: create-issue maps --label to a tag" \
+  || fail "azure: create-issue maps --label to a tag" "got: $out"
 rm talos.pipeline.json
 
 finish

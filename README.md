@@ -61,7 +61,7 @@ All VCS operations are delegated to `scripts/pipeline-vcs.sh`, which wraps each 
 | GitHub | `github` | `gh` | **Battle-tested** | Full support. Requires `gh auth login`. |
 | GitHub (token-only) | `github-api` | none | **Supported** | All 18 verbs via `curl` + `GITHUB_TOKEN`. No `gh` CLI needed — ideal for CI/containers. Set `GITHUB_TOKEN` or `GH_TOKEN`. Projects v2 board updates also use the token. |
 | GitLab | `gitlab` | `glab` | **Best-effort** | Implemented; `glab` version quirks may surface. Requires `glab auth login`. |
-| Azure DevOps | `azure` | `az` + azure-devops extension | **Best-effort** | Labels map to ADO Tags; `diff-pr` not supported. Requires `az login` and `az extension add --name azure-devops`. |
+| Azure DevOps | `azure` | `az` + azure-devops extension | **Supported** | Full issue/board/PR flow — work items, Tags, board State, and PR labels/comments/diff (via `az rest` where `az` has no command). Merges are human-gated when `main` has branch policies. `find-pr`/`check-pr-files`/`rerun-ci` not implemented. Requires `az login` + `az extension add --name azure-devops`. |
 | File / chat | `file` | none | **Supported** | Work items are `- [ ] Task` checkboxes in a local markdown file. No PRs; developer commits to a branch; QA/review/security/docs stages skipped. |
 
 ### File mode and chat mode
@@ -215,12 +215,15 @@ All keys live in `talos.pipeline.yml` at your repo root. Every key is optional a
 | `vcs.repo` | auto-detect | `owner/repo` override (required when git remote unavailable) |
 | `vcs.azure.org_url` | — | Azure DevOps org URL (`https://dev.azure.com/MYORG`) |
 | `vcs.azure.project` | — | Azure DevOps project name |
+| `vcs.azure.work_item_type` | `Product Backlog Item` | Type for `create-issue` (Azure) |
+| `vcs.azure.area_path` | project root | Area path new work items land in (Azure) |
 | `vcs.file.source.path` | `plan.md` | Markdown checklist file for file mode |
-| `board.enabled` | `false` | Enable GitHub Project board updates |
-| `board.project_number` | — | Your project board number |
+| `board.enabled` | `false` | Enable board updates (GitHub Projects / Azure State) |
+| `board.project_number` | — | Your project board number (GitHub) |
 | `board.owner` | repo owner | GitHub org/user owning the board |
-| `board.status_field` | `Status` | Single-select field name |
-| `board.statuses.*` | see example | Display names for each status option |
+| `board.status_field` | `Status` | Single-select field name (GitHub) |
+| `board.statuses.*` | see example | Display names for each status option (GitHub) |
+| `board.azure_states.*` | Scrum defaults | Pipeline status → ADO work-item State (Azure) |
 | `verify` | `[]` | Shell commands every code subagent must pass |
 | `merge.method` | `squash` | `squash`, `merge`, or `rebase` |
 | `merge.required_checks` | `[]` | CI check names required before merge |
@@ -422,7 +425,7 @@ The pipeline deliberately preserves three gates that only a human should act on:
 | `create-pr` | `<branch> <title> <body-file>` | Open a PR targeting base_branch |
 | `view-pr` | `<branch>` | Show PR number, URL, status |
 | `list-prs` | | List open PRs |
-| `diff-pr` | `<pr-number>` | Show PR diff (not supported on Azure) |
+| `diff-pr` | `<pr-number>` | Show PR diff (Azure: via `git diff` between refs) |
 | `checkout-pr` | `<pr-number>` | Check out a PR branch locally |
 | `approve-pr` | `<pr-number> [summary]` | Approve a PR |
 | `label-pr` | `<pr-number> --add label [--remove label]` | Add/remove PR labels |

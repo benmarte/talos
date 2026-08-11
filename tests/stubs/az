@@ -39,7 +39,12 @@ case "$args" in
   "repos pr create "*)
     printf '{"pullRequestId":7,"status":"active"}\n' ;;
   "repos pr show "*)
-    printf '{"pullRequestId":7,"status":"active"}\n' ;;
+    # diff-pr / checkout-pr query specific refs with -o tsv; honor that.
+    case "$args" in
+      *sourceRefName*tsv*) printf 'refs/heads/fix/issue-5-x\n' ;;
+      *targetRefName*tsv*) printf 'refs/heads/main\n' ;;
+      *) printf '{"pullRequestId":7,"status":"active"}\n' ;;
+    esac ;;
   "boards work-item comment add "*)
     printf '{"id":1,"text":"stub comment"}\n' ;;
   "rest "*)

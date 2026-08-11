@@ -228,6 +228,39 @@ if [ "$BOARD_ENABLED" = "false" ]; then
   exit 0
 fi
 
+# ── Azure DevOps: the Kanban column follows the work item State ───────────────
+# ADO has no separate board "status field" like GitHub Projects — a work item's
+# System.State drives its board column. Map the pipeline's status name to an ADO
+# state. States are process-specific (Scrum defaults shown); override any of them
+# via board.azure_states.{ready,in_progress,in_review,done,blocked} in the config.
+PROVIDER="$(cfg vcs.provider "github")"
+if [ "$PROVIDER" = "azure" ]; then
+  case "$(printf '%s' "$STATUS" | tr '[:upper:]' '[:lower:]')" in
+    ready|"to do")   AZ_STATE="$(cfg board.azure_states.ready "New")" ;;
+    "in progress")   AZ_STATE="$(cfg board.azure_states.in_progress "Committed")" ;;
+    "in review")     AZ_STATE="$(cfg board.azure_states.in_review "Committed")" ;;
+    done)            AZ_STATE="$(cfg board.azure_states.done "Done")" ;;
+    blocked)         AZ_STATE="$(cfg board.azure_states.blocked "")" ;;
+    *)               AZ_STATE="" ;;
+  esac
+  if [ -z "$AZ_STATE" ]; then
+    echo "#$ISSUE → $STATUS (no ADO state mapping; leaving work-item state unchanged)" >&2
+    exit 0
+  fi
+  AZ_ORG="$(cfg vcs.azure.org_url "")"
+  if [ "$DRY_RUN" = "true" ]; then
+    echo "[dry-run] az boards work-item update --id $ISSUE --state $AZ_STATE${AZ_ORG:+ --org $AZ_ORG}"
+    echo "#$ISSUE → $STATUS (ADO state: $AZ_STATE, dry-run)"
+    exit 0
+  fi
+  if az boards work-item update --id "$ISSUE" --state "$AZ_STATE" ${AZ_ORG:+--org "$AZ_ORG"} -o none 2>/dev/null; then
+    echo "#$ISSUE → $STATUS (ADO state: $AZ_STATE)"
+  else
+    echo "pipeline-status: could not set #$ISSUE to state '$AZ_STATE' (invalid for this work item type?)" >&2
+  fi
+  exit 0
+fi
+
 # ── Read config with env var overrides ───────────────────────────────────────
 PROJECT_NUM="${PIPELINE_PROJECT_NUMBER:-$(cfg board.project_number "")}"
 if [ -z "$PROJECT_NUM" ]; then

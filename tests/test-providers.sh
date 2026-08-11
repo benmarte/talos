@@ -71,15 +71,17 @@ assert_contains "$log" "--message LGTM" "gitlab approve-pr note includes the bod
 echo "  [azure]"
 
 cat > talos.pipeline.json <<'EOF'
-{"vcs": {"provider": "azure"}}
+{"vcs": {"provider": "azure", "repo": "myrepo", "azure": {"org_url": "https://dev.azure.com/testorg", "project": "myproj"}}}
 EOF
 
-# comment-issue → az boards work-item comment add
+# comment-issue → az rest POST to the work-item comments endpoint
+# (`az boards work-item comment add` does not exist in the azure-devops extension)
 : > "$GH_LOG"
 bash "$VCS" comment-issue 5 "azure comment" >/dev/null 2>&1
 log="$(cat "$GH_LOG")"
-assert_contains "$log" "[boards] [work-item] [comment] [add]" "azure comment-issue invokes work-item comment add"
-assert_contains "$log" "[--text] [azure comment]" "azure comment-issue passes body as --text"
+assert_contains "$log" "[rest] [--method] [post]" "azure comment-issue posts via az rest"
+assert_contains "$log" "workItems/5/comments" "azure comment-issue targets the work-item comments endpoint"
+assert_contains "$log" "azure comment" "azure comment-issue includes the body text"
 
 # view-issue → az boards work-item show
 : > "$GH_LOG"
@@ -158,6 +160,44 @@ EOF
 err="$(AZ_STUB_NO_EXT=1 bash "$VCS" comment-issue 5 "hi" 2>&1)"; rc=$?
 assert_eq "1" "$rc" "azure adapter exits 1 when azure-devops extension is missing"
 assert_contains "$err" "azure-devops extension missing" "azure adapter reports missing extension clearly"
+
+# ── Azure: create-issue opens a work item (GitHub-Projects parity) ────────────
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "azure", "repo": "myrepo", "azure": {"org_url": "https://dev.azure.com/testorg", "project": "myproj", "work_item_type": "Product Backlog Item", "area_path": "TeamAreaPath"}}}
+EOF
+printf 'issue body' > "$SANDBOX/ci.txt"
+out="$(bash "$VCS" --dry-run create-issue "New work item" "$SANDBOX/ci.txt" --label pipeline:ready 2>&1)"
+assert_contains "$out" "boards work-item create" "azure create-issue invokes az boards work-item create"
+assert_contains "$out" "--type Product Backlog Item" "azure create-issue uses the configured work-item type"
+assert_contains "$out" "TeamAreaPath" "azure create-issue targets the configured area path"
+assert_contains "$out" "System.Tags=pipeline:ready" "azure create-issue maps --label to a tag"
+
+# ── Azure: PR-review verbs (label-pr / comment-pr / diff-pr / checkout-pr) ─────
+out="$(bash "$VCS" --dry-run label-pr 7 --add qa:pass --remove pipeline:review 2>&1)"
+assert_contains "$out" "pullRequests/7/labels" "azure label-pr targets the PR labels endpoint"
+assert_contains "$out" "qa:pass" "azure label-pr add includes the label name"
+assert_contains "$out" "resolve id" "azure label-pr remove resolves label id (ADO rejects ':' in URL path)"
+
+out="$(bash "$VCS" --dry-run comment-pr 7 "looks good" 2>&1)"
+assert_contains "$out" "pullRequests/7/threads" "azure comment-pr posts a PR comment thread"
+
+out="$(bash "$VCS" --dry-run diff-pr 7 2>&1)"
+assert_contains "$out" "git diff origin/main...origin/fix/issue-5-x" "azure diff-pr diffs source vs target via git (no checkout)"
+
+out="$(bash "$VCS" --dry-run checkout-pr 7 2>&1)"
+assert_contains "$out" "git checkout --detach FETCH_HEAD" "azure checkout-pr detaches to avoid worktree branch conflict"
+
+# ── Azure: board status maps pipeline status → work-item State ────────────────
+STATUS="$TALOS_ROOT/scripts/pipeline-status.sh"
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "azure", "azure": {"org_url": "https://dev.azure.com/testorg"}}, "board": {"enabled": true}}
+EOF
+out="$(bash "$STATUS" --dry-run 5 "In progress" 2>&1)"
+assert_contains "$out" "work-item update --id 5 --state Committed" "azure board status maps 'In progress' → Committed"
+out="$(bash "$STATUS" --dry-run 5 "Done" 2>&1)"
+assert_contains "$out" "--state Done" "azure board status maps 'Done' → Done"
+out="$(bash "$STATUS" --dry-run 5 "Blocked" 2>&1)"
+assert_contains "$out" "unchanged" "azure board status leaves state unchanged for Blocked (no default mapping)"
 
 # ── Teams notifications ───────────────────────────────────────────────────────
 echo "  [teams]"
