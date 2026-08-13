@@ -172,6 +172,28 @@ assert_contains "$out" "--type Product Backlog Item" "azure create-issue uses th
 assert_contains "$out" "TeamAreaPath" "azure create-issue targets the configured area path"
 assert_contains "$out" "System.Tags=pipeline:ready" "azure create-issue maps --label to a tag"
 
+# ── Azure: markdown body → HTML (ADO Description/comment fields render HTML) ────
+# GitHub-flavored markdown (e.g. planner sub-issues) must be converted or it
+# shows raw '#'/'**'/'- [ ]' text on the board.
+printf '# Heading\n\nSome **bold** and `code`.\n\n- [ ] T1 do a thing\n- [x] T2 done\n\n| ID | Task |\n| --- | --- |\n| T1 | seed |\n' > "$SANDBOX/md.txt"
+out="$(bash "$VCS" --dry-run create-issue "MD" "$SANDBOX/md.txt" --label pipeline:ready 2>&1)"
+assert_contains "$out" "<h1>Heading</h1>" "azure create-issue converts markdown headings to HTML"
+assert_contains "$out" "<strong>bold</strong>" "azure create-issue converts bold to HTML"
+assert_contains "$out" "<code>code</code>" "azure create-issue converts inline code to HTML"
+assert_contains "$out" "<table" "azure create-issue converts GFM tables to HTML"
+assert_contains "$out" "☐ T1" "azure create-issue renders unchecked task boxes"
+assert_contains "$out" "☑ T2" "azure create-issue renders checked task boxes"
+
+# Already-HTML bodies pass through untouched (not double-escaped).
+printf '<h1>Already HTML</h1>\n<p>keep</p>' > "$SANDBOX/html.txt"
+out="$(bash "$VCS" --dry-run create-issue "H" "$SANDBOX/html.txt" 2>&1)"
+assert_contains "$out" "<h1>Already HTML</h1>" "azure create-issue passes through existing HTML"
+case "$out" in *"&lt;h1"*) fail "HTML body was double-escaped" ;; *) pass "azure create-issue does not double-escape HTML" ;; esac
+
+# Work-item comments are HTML fields too → markdown converted (PR threads are not).
+out="$(bash "$VCS" --dry-run comment-issue 5 "**Agent:** validator — CONFIRMED" 2>&1)"
+assert_contains "$out" "<strong>Agent:</strong>" "azure comment-issue converts markdown to HTML"
+
 # ── Azure: PR-review verbs (label-pr / comment-pr / diff-pr / checkout-pr) ─────
 out="$(bash "$VCS" --dry-run label-pr 7 --add qa:pass --remove pipeline:review 2>&1)"
 assert_contains "$out" "pullRequests/7/labels" "azure label-pr targets the PR labels endpoint"

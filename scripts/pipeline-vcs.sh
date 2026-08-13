@@ -990,6 +990,8 @@ _gitlab() {
 # via `az rest` (needs an absolute org URL + project name).
 _azure_post_comment() {
   local n="$1" body="$2"
+  # Work-item comments render HTML (unlike PR threads) — convert markdown bodies.
+  body="$(_md_to_html "$body")"
   local base_org="$AZURE_ORG" proj="$AZURE_PROJECT"
   [ -z "$base_org" ] && base_org="$(az devops configure --list 2>/dev/null | awk -F'= *' '/^organization/{print $2}' | tr -d '[:space:]')"
   [ -z "$proj" ]     && proj="$(az devops configure --list 2>/dev/null | awk -F'= *' '/^project/{print $2}' | tr -d '[:space:]')"
@@ -1000,7 +1002,7 @@ _azure_post_comment() {
   base_org="${base_org%/}"
   local url="$base_org/$proj/_apis/wit/workItems/$n/comments?api-version=7.1-preview.3"
   if [ "$DRY_RUN" = "true" ]; then
-    echo "[dry-run] az rest --method post --url $url --body {\"text\":<body>}"
+    echo "[dry-run] az rest --method post --url $url --body {\"text\":$body}"
     return 0
   fi
   local tmp; tmp="$(mktemp)"
@@ -1025,6 +1027,99 @@ _azure_git_base() {
   echo "${base_org%/}/$proj/_apis/git/repositories/$repo"
 }
 ADO_RESOURCE="499b84ac-1321-427f-aa17-267ca6975798"  # Azure DevOps AAD app id (az rest --resource)
+
+# Convert a markdown string to HTML for Azure DevOps HTML-rendered fields.
+# ADO work-item Description and work-item comments render HTML, NOT markdown, so
+# GitHub-flavored markdown bodies (e.g. planner-generated sub-issues) would
+# otherwise show raw '#', '**', '- [ ]' text. PR comment threads DO render
+# markdown, so this is applied only to work-item Description + comments, never PR
+# threads. Passes the body through unchanged when it already looks like HTML.
+# Prefers pandoc, then the python `markdown` lib, then a self-contained fallback
+# (python3 is already a hard dependency of this adapter).
+_md_to_html() {
+  local md="$1"
+  [ -z "$md" ] && { printf ''; return 0; }
+  # Already HTML? (first non-space char is '<') — pass through untouched.
+  case "$(printf '%s' "$md" | sed -e 's/^[[:space:]]*//')" in
+    '<'*) printf '%s' "$md"; return 0 ;;
+  esac
+  if command -v pandoc >/dev/null 2>&1; then
+    printf '%s' "$md" | pandoc -f gfm -t html 2>/dev/null && return 0
+  fi
+  python3 - "$md" <<'PYEOF'
+import sys, html, re
+src = sys.argv[1]
+try:
+    import markdown  # best fidelity when the lib is installed
+    sys.stdout.write(markdown.markdown(src, extensions=['tables', 'fenced_code', 'sane_lists']))
+    sys.exit(0)
+except Exception:
+    pass
+
+def inline(text):
+    text = html.escape(text, quote=False)
+    codes = []
+    def stash(m):
+        codes.append(m.group(1)); return "\x00%d\x00" % (len(codes) - 1)
+    text = re.sub(r'`([^`]+)`', stash, text)
+    text = re.sub(r'\[([^\]]+)\]\(([^)\s]+)\)', r'<a href="\2">\1</a>', text)
+    text = re.sub(r'\*\*([^*]+)\*\*', r'<strong>\1</strong>', text)
+    text = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', r'<em>\1</em>', text)
+    text = re.sub(r'(?<!\w)_([^_]+)_(?!\w)', r'<em>\1</em>', text)
+    text = re.sub(r'\x00(\d+)\x00', lambda m: "<code>%s</code>" % codes[int(m.group(1))], text)
+    return text
+
+def cells(s):
+    s = re.sub(r'^\|', '', s.strip()); s = re.sub(r'\|$', '', s)
+    return [c.strip() for c in s.split('|')]
+
+def is_sep(s):
+    return bool(re.match(r'^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)+\|?\s*$', s))
+
+lines = src.replace('\r\n', '\n').split('\n')
+out = []; i = 0; n = len(lines)
+while i < n:
+    line = lines[i]
+    if re.match(r'^\s*```', line):
+        i += 1; buf = []
+        while i < n and not re.match(r'^\s*```\s*$', lines[i]):
+            buf.append(html.escape(lines[i], quote=False)); i += 1
+        i += 1
+        out.append('<pre><code>' + '\n'.join(buf) + '</code></pre>'); continue
+    m = re.match(r'^(#{1,6})\s+(.*)$', line)
+    if m:
+        lv = len(m.group(1))
+        out.append('<h%d>%s</h%d>' % (lv, inline(m.group(2).strip()), lv)); i += 1; continue
+    if '|' in line and i + 1 < n and is_sep(lines[i + 1]):
+        header = cells(line); i += 2; rows = []
+        while i < n and '|' in lines[i] and lines[i].strip():
+            rows.append(cells(lines[i])); i += 1
+        t = ['<table border="1" cellpadding="6" cellspacing="0">']
+        t.append('<tr>' + ''.join('<th>%s</th>' % inline(c) for c in header) + '</tr>')
+        for r in rows:
+            t.append('<tr>' + ''.join('<td>%s</td>' % inline(c) for c in r) + '</tr>')
+        t.append('</table>'); out.append('\n'.join(t)); continue
+    if re.match(r'^\s*[-*+]\s+', line):
+        items = []
+        while i < n and re.match(r'^\s*[-*+]\s+', lines[i]):
+            it = re.sub(r'^\s*[-*+]\s+', '', lines[i])
+            it = re.sub(r'^\[( |x|X)\]\s*', lambda mm: '☐ ' if mm.group(1) == ' ' else '☑ ', it)
+            items.append('<li>%s</li>' % inline(it)); i += 1
+        out.append('<ul>' + ''.join(items) + '</ul>'); continue
+    if re.match(r'^\s*\d+\.\s+', line):
+        items = []
+        while i < n and re.match(r'^\s*\d+\.\s+', lines[i]):
+            it = re.sub(r'^\s*\d+\.\s+', '', lines[i]); items.append('<li>%s</li>' % inline(it)); i += 1
+        out.append('<ol>' + ''.join(items) + '</ol>'); continue
+    if line.strip() == '':
+        i += 1; continue
+    buf = [line]; i += 1
+    while i < n and lines[i].strip() != '' and not re.match(r'^\s*(#{1,6}\s|```|[-*+]\s|\d+\.\s)', lines[i]):
+        buf.append(lines[i]); i += 1
+    out.append('<p>' + inline(' '.join(b.strip() for b in buf)) + '</p>')
+sys.stdout.write('\n'.join(out))
+PYEOF
+}
 
 _azure() {
   if ! command -v az >/dev/null 2>&1; then
@@ -1138,6 +1233,9 @@ PYEOF
       wtype="$(cfg vcs.azure.work_item_type 'Product Backlog Item')"
       ci_area="$(cfg vcs.azure.area_path '')"
       ci_desc=""; [ -f "$body_file" ] && ci_desc="$(cat "$body_file")"
+      # ADO's Description is an HTML field — convert the markdown body so it
+      # renders instead of showing raw '#'/'**'/'- [ ]' text.
+      [ -n "$ci_desc" ] && ci_desc="$(_md_to_html "$ci_desc")"
       local ci_args=(boards work-item create --title "$title" --type "$wtype")
       [ -n "$AZURE_ORG" ]     && ci_args+=(--org "$AZURE_ORG")
       [ -n "$AZURE_PROJECT" ] && ci_args+=(--project "$AZURE_PROJECT")

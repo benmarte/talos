@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-08-13
+
+### Fixed
+
+- **Azure DevOps work items showed raw markdown as jibberish.** The `azure` adapter piped GitHub-flavored markdown bodies straight into a work item's `System.Description` — but that field (and work-item comments) render **HTML**, not markdown. So `# Heading`, `**bold**`, `- [ ]`, and pipe tables displayed as literal source on the board. This hit the planner hardest: every sub-issue it creates goes through `create-issue`, so an epic decomposition produced a board full of unreadable items.
+
+  The mismatch is provider-specific and easy to miss because everything else in the pipeline is GitHub-first, where issue bodies *are* markdown and the host renders them. Azure was behaving correctly; the adapter was feeding the wrong format.
+
+### Added
+
+- **`_md_to_html` conversion in the azure adapter**, applied to `create-issue` descriptions and work-item comments (`comment-issue` / `close-issue`). It prefers `pandoc`, then the python `markdown` library, then a self-contained python3 converter (python3 is already a hard dependency of this adapter) covering headings, bold/italic, inline + fenced code, links, ordered/unordered lists, GFM checkboxes (☐/☑), and pipe tables. Bodies that already look like HTML pass through untouched, so it is safe to double-apply.
+
+- **PR comment threads are deliberately left as markdown.** Azure PR threads *do* render markdown, so `comment-pr` is not converted — only the two work-item HTML fields are. The `comment-issue` dry-run now echoes the real (converted) body instead of a `<body>` placeholder, so the conversion is visible and testable.
+
+- **Planner tags every sub-issue `epic:<N>`.** When an epic is decomposed, each created sub-issue now carries an `epic:<epic-number>` label (independent *and* dependent), so a human can filter the board to one epic and review its sub-tasks as a group. The existing `Part of #<N>` body line still drives the epic auto-close sweep; the tag is purely for human grouping/filtering.
+
 ## [0.11.0] - 2026-08-11
 
 ### Fixed
