@@ -54,6 +54,15 @@ make_sandbox() {
   cd "$SANDBOX"
   git init -q
   git remote add origin git@github.com:acme/widget.git
+  # Hermetic HOME. pipeline-notify.sh scrapes ~/.hermes/.env for bot
+  # credentials, so on a developer machine with Slack/Discord/Buzz configured
+  # the real values bleed into the sandbox and invert credential-absence
+  # assertions ("without private key produces no buzz output" starts finding a
+  # key). Kept as a subdirectory so HOME is never the repo root itself, and
+  # seeded with a gitconfig so suites that commit still resolve an identity.
+  mkdir -p "$SANDBOX/.home"
+  export HOME="$SANDBOX/.home"
+  printf '[user]\n\tname = talos-test\n\temail = test@talos.invalid\n' > "$HOME/.gitconfig"
 }
 
 # use_stubs — put the gh/curl/nak stubs first on PATH and reset their logs.

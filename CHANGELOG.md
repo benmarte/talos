@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Buzz sink reported success for events the relay rejected.** `_buzz_publish` ran `nak` with `2>/dev/null` and branched on the exit code — but `nak` exits **0 even when the relay refuses the event**, and still prints the locally-signed JSON on stdout (it signs before publishing). So neither the exit code nor stdout distinguished delivered from dropped: a rejected post was recorded as sent and its id persisted as a thread anchor, leaving `~/.talos/threads.json` pointing at an event that was never stored.
+
+  The failure is invisible in exactly the situation you most need it: a bot key that is unadmitted, revoked, or removed from a private channel produces a clean run and a silent channel. Found while configuring a fresh bot against a live relay — the sink "worked" through the entire setup while nothing had ever been delivered. The relay's verdict is only on stderr, so it is now captured and matched (`auth error` / `failed:` / `CLOSED:`), the reason is echoed, and a rejection no longer writes an anchor. Delivery still degrades softly: the script exits 0 regardless.
+
+- **Tests were not hermetic and read the developer's real `~/.hermes/.env`.** `pipeline-notify.sh` scrapes that file for bot credentials, so on a machine with Buzz configured the suite picked up a real relay URL and bot key — inverting credential-absence assertions ("buzz without private key produces no buzz output" started finding a key) and making results depend on whose laptop ran them. `make_sandbox` now exports a sandbox-local `HOME`, seeded with a gitconfig so suites that commit still resolve an identity.
+
+### Added
+
+- **`notifications.buzz_relay` config key.** The relay URL is a hostname, not a secret, and identifies a deployment exactly the way `buzz_channel` does — but it was readable only from the environment, grouped in with the bot tokens, with no `cfg` lookup and no `PIPELINE_*` override. A repo therefore could not describe its own Buzz setup: a clone got the channel from the committed config and no relay, which (before the fix above) then failed silently. Precedence is env > repo/hermes `.env` > config, and `PIPELINE_BUZZ_RELAY` overrides. The bot **key** stays env-only — it is a full Nostr signing identity and must never enter a git-tracked file.
+
+- **Buzz messages carry the context trailer.** Slack renders `$NCONTEXT` as a context block and Discord as an embed footer; Buzz sent bare template text, losing the `repo · role · #ref` provenance line. It is now appended as an italic CommonMark trailer, which `kind:9` renders. Colour has no `kind:9` equivalent and is still Slack/Discord only.
+
 ## [0.12.0] - 2026-08-13
 
 ### Fixed

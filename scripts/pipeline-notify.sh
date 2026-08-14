@@ -111,6 +111,13 @@ if [ -f "$HERMES_ENV" ]; then
   [ -z "${BUZZ_BOT_PRIVATE_KEY:-}" ]  && BUZZ_BOT_PRIVATE_KEY="$(grep -m1 '^BUZZ_BOT_PRIVATE_KEY=' "$HERMES_ENV" | cut -d= -f2-)"
 fi
 
+# The Buzz relay URL is NOT a secret — it is a hostname, and it identifies a
+# deployment the same way buzz_channel does. Unlike the bot key (a full Nostr
+# signing identity, which must never enter a git-tracked file) it belongs in
+# the committed config, so a clone can describe its Buzz setup completely.
+# Precedence: exported env > repo/hermes .env > config file.
+[ -z "${BUZZ_RELAY_URL:-}" ] && BUZZ_RELAY_URL="${PIPELINE_BUZZ_RELAY:-$(cfg notifications.buzz_relay "")}"
+
 # ── API fallback for gh metadata lookups ──────────────────────────────────────
 # When gh is absent and a GitHub token is available, fetch issue/PR titles and
 # repo URL via REST. When both are absent, leaves variables empty (graceful).
@@ -539,14 +546,42 @@ if [ -n "${BUZZ_RELAY_URL:-}" ] && [ -n "${BUZZ_BOT_PRIVATE_KEY:-}" ] && [ -n "$
     BUZZ_ANCHOR="$(_thread_state get buzz_event_id)"
   fi
 
-  _buzz_publish() {  # $1=anchor event id (may be empty); prints nak stdout
+  # Slack renders $NCONTEXT as a context block and Discord as an embed footer;
+  # kind:9 has no structured equivalent, so append it as an italic trailer to
+  # keep the "repo · role · #ref" provenance line Buzz would otherwise lose.
+  # Content is plain text rendered as CommonMark — no per-platform conversion.
+  BUZZ_TEXT="$TEXT"
+  [ -n "${NCONTEXT:-}" ] && BUZZ_TEXT="$TEXT
+
+_${NCONTEXT}_"
+
+  # nak exits 0 even when the relay REJECTS the event, and prints the
+  # locally-signed JSON to stdout regardless (it signs before publishing). So
+  # neither the exit code nor stdout distinguishes success from failure — an id
+  # parsed from that stdout can be an event the relay never stored, which then
+  # gets persisted as a thread anchor and makes a dead sink look healthy.
+  # The relay's actual verdict is only on stderr, so capture and inspect it.
+  _buzz_publish() {  # $1=anchor event id (may be empty); prints nak stdout, non-zero on rejection
+    _buzz_err="$(mktemp)"
     if [ -n "$1" ]; then
-      nak event --auth --sec "$BUZZ_BOT_PRIVATE_KEY" -k 9 -c "$TEXT" \
-        -t "h=$BUZZ_CHANNEL" -t "e=$1;;reply" "$BUZZ_RELAY_URL" 2>/dev/null
+      _buzz_out="$(nak event --auth --sec "$BUZZ_BOT_PRIVATE_KEY" -k 9 -c "$BUZZ_TEXT" \
+        -t "h=$BUZZ_CHANNEL" -t "e=$1;;reply" "$BUZZ_RELAY_URL" 2>"$_buzz_err")"
     else
-      nak event --auth --sec "$BUZZ_BOT_PRIVATE_KEY" -k 9 -c "$TEXT" \
-        -t "h=$BUZZ_CHANNEL" "$BUZZ_RELAY_URL" 2>/dev/null
+      _buzz_out="$(nak event --auth --sec "$BUZZ_BOT_PRIVATE_KEY" -k 9 -c "$BUZZ_TEXT" \
+        -t "h=$BUZZ_CHANNEL" "$BUZZ_RELAY_URL" 2>"$_buzz_err")"
     fi
+    _buzz_rc=$?
+    _buzz_msg="$(cat "$_buzz_err" 2>/dev/null)"
+    rm -f "$_buzz_err"
+    # Failure markers, verified against a rejected publish: an unadmitted key
+    # yields "auth error: msg: restricted: not a relay member. failed: msg:
+    # auth-required: not authenticated" with rc=0. Success prints only
+    # "connecting… ok." / "publishing… success.", neither of which matches.
+    if [ "$_buzz_rc" -ne 0 ] || printf '%s' "$_buzz_msg" | grep -qE 'auth error|failed:|CLOSED:'; then
+      [ -n "$_buzz_msg" ] && printf 'pipeline-notify: buzz relay rejected publish: %s\n' "$_buzz_msg" >&2
+      return 1
+    fi
+    printf '%s' "$_buzz_out"
   }
 
   _buzz_event_id() {  # $1=nak stdout — event JSON on the first line
@@ -556,7 +591,7 @@ if [ -n "${BUZZ_RELAY_URL:-}" ] && [ -n "${BUZZ_BOT_PRIVATE_KEY:-}" ] && [ -n "$
   if [ "${PIPELINE_NOTIFY_DEBUG:-}" = "1" ]; then
     echo "[pipeline-notify DEBUG] BUZZ state_key=$STATE_KEY"
     echo "[pipeline-notify DEBUG] BUZZ thread_anchor=${BUZZ_ANCHOR:-(none — root post)}"
-    echo "[pipeline-notify DEBUG] BUZZ relay=$BUZZ_RELAY_URL channel=$BUZZ_CHANNEL kind=9 text=$TEXT"
+    echo "[pipeline-notify DEBUG] BUZZ relay=$BUZZ_RELAY_URL channel=$BUZZ_CHANNEL kind=9 text=$BUZZ_TEXT"
   elif ! command -v nak >/dev/null 2>&1; then
     echo "pipeline-notify: buzz configured but 'nak' CLI not found — skipping (brew install nak)" >&2
   else

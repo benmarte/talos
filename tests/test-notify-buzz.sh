@@ -71,4 +71,55 @@ out="$(PATH="/usr/bin:/bin" BUZZ_RELAY_URL=ws://localhost:3000 \
 assert_eq "0" "$rc" "missing nak exits 0"
 assert_contains "$out" "'nak' CLI not found" "missing nak warns on stderr"
 
+# ── Relay REJECTION (nak exits 0) must not be read as success ───────────────
+# The bug this guards: nak returns 0 and prints the locally-signed event even
+# when the relay refuses it, so branching on $? or scraping stdout records a
+# phantom success and persists an anchor for an event that was never stored.
+rm -f "$PIPELINE_THREAD_STATE"; : > "$NAK_LOG"
+printf 'reject\n' > "$NAK_QUEUE"
+out="$(live_notify dispatched "#60" "rejected post" 60)"
+assert_contains "$out" "buzz relay rejected publish" "relay rejection surfaces on stderr"
+assert_contains "$out" "not a relay member" "rejection message includes the relay's reason"
+[ -f "$PIPELINE_THREAD_STATE" ] \
+  && fail "rejected publish persists no thread anchor" \
+  || pass "rejected publish persists no thread anchor"
+
+# A rejection is still a soft failure — never break the pipeline.
+printf 'reject\n' > "$NAK_QUEUE"
+live_notify dispatched "#61" "rejected post" 61 >/dev/null 2>&1; rc=$?
+assert_eq "0" "$rc" "rejected publish still exits 0"
+
+# ── A rejected REPLY drives stale-anchor recovery, same as an exit-1 fail ────
+rm -f "$PIPELINE_THREAD_STATE"; : > "$NAK_LOG"; : > "$NAK_QUEUE"
+live_notify dispatched "#62" "root" 62 >/dev/null            # anchor established
+RECOVER_ID="cccc000000000000000000000000000000000000000000000000000000000003"
+printf '%s\n%s\n' "reject" "{\"id\":\"$RECOVER_ID\",\"kind\":9}" > "$NAK_QUEUE"
+live_notify qa "#62" "qa passed" 62 >/dev/null
+state="$(cat "$PIPELINE_THREAD_STATE")"
+assert_contains "$state" "\"buzz_event_id\": \"$RECOVER_ID\"" "rejected reply triggers recovery repost"
+assert_not_contains "$(tail -1 "$NAK_LOG")" ";;reply" "recovery repost after rejection is a fresh root"
+
+# ── Relay URL resolves from the config file, not just env ───────────────────
+rm -f "$PIPELINE_THREAD_STATE"; : > "$NAK_LOG"; : > "$NAK_QUEUE"
+cat > talos.pipeline.json <<'EOF'
+{"notifications": {"buzz_relay": "ws://config-relay:3000", "buzz_channel": "chan-from-config"}}
+EOF
+BUZZ_BOT_PRIVATE_KEY=deadbeef PIPELINE_ISSUE_TITLE="T" \
+  bash "$NOTIFY" dispatched "#70" "from config" 70 >/dev/null 2>&1
+cfg_call="$(tail -1 "$NAK_LOG")"
+assert_contains "$cfg_call" "ws://config-relay:3000" "relay URL read from notifications.buzz_relay"
+assert_contains "$cfg_call" "h=chan-from-config" "channel read from config alongside it"
+
+# Exported env still wins over the config value.
+: > "$NAK_LOG"
+BUZZ_RELAY_URL=ws://env-relay:3000 BUZZ_BOT_PRIVATE_KEY=deadbeef PIPELINE_ISSUE_TITLE="T" \
+  bash "$NOTIFY" dispatched "#71" "env override" 71 >/dev/null 2>&1
+assert_contains "$(tail -1 "$NAK_LOG")" "ws://env-relay:3000" "env BUZZ_RELAY_URL overrides config"
+rm talos.pipeline.json
+
+# ── Context trailer gives Buzz the provenance line Slack/Discord get ─────────
+rm -f "$PIPELINE_THREAD_STATE"; : > "$NAK_LOG"; : > "$NAK_QUEUE"
+live_notify dispatched "#80" "footer check" 80 >/dev/null
+assert_contains "$(tail -1 "$NAK_LOG")" "_acme-widget" "buzz text carries the italic context trailer"
+
 finish
