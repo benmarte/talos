@@ -18,7 +18,10 @@ run_notify() {  # all args forwarded; debug mode, slack bot creds
 out="$(PIPELINE_ISSUE_TITLE="Fix login crash" run_notify validator "#42" "Confirmed on main." 42)"
 assert_contains "$out" "New comment by validator agent on #42: Fix login crash" \
   "validator template renders title with role + issue title"
-assert_contains "$out" "<https://github.com/acme/widget/issues/42|#42: Fix login crash>" \
+# The link moved from the body's trailing "🔗 …" line into the Block Kit
+# `fields` section, so the label is the bare ref rather than the full title —
+# but it must still be a clickable Slack-syntax link, which is the point here.
+assert_contains "$out" "<https://github.com/acme/widget/issues/42|Issue #42>" \
   "slack payload carries clickable issue link"
 assert_contains "$out" "Confirmed on main." "message body included"
 
@@ -26,7 +29,7 @@ assert_contains "$out" "Confirmed on main." "message body included"
 out="$(PIPELINE_ISSUE_TITLE="Fix login crash" PIPELINE_PR=9 PIPELINE_PR_TITLE="fix: guard" \
   run_notify pr-opened "#42" "PR opened" 42)"
 assert_contains "$out" "PR #9: fix: guard" "pr-opened template shows PR ref"
-assert_contains "$out" "<https://github.com/acme/widget/pull/9|PR #9: fix: guard>" \
+assert_contains "$out" "<https://github.com/acme/widget/pull/9|PR #9>" \
   "pr-opened links to the PR, not the issue"
 
 # ── PR number parsed from message when not passed via env ───────────────────
@@ -36,7 +39,7 @@ assert_contains "$out" "/pull/13" "PR number parsed out of the message text"
 # ── Discord payload: markdown link in body + clickable embed url ────────────
 out="$(PIPELINE_NOTIFY_DEBUG=1 DISCORD_BOT_TOKEN=t PIPELINE_DISCORD_CHANNEL=123 \
   PIPELINE_ISSUE_TITLE="Fix login crash" bash "$NOTIFY" validator "#42" "Confirmed." 42 2>&1)"
-assert_contains "$out" '[#42: Fix login crash](https://github.com/acme/widget/issues/42)' \
+assert_contains "$out" '[Issue #42](https://github.com/acme/widget/issues/42)' \
   "discord description carries markdown issue link"
 assert_contains "$out" '"url": "https://github.com/acme/widget/issues/42"' \
   "discord embed title is clickable (embed url set)"
@@ -79,7 +82,7 @@ assert_contains "$out" "New comment by validator agent on #42: Fix login crash" 
 # metadata table (which is why the label is now the bare issue ref rather than
 # the full title), but it must still be emitted as unconverted CommonMark —
 # Buzz renders GFM, so there is no per-platform link syntax to translate to.
-assert_contains "$out" "[#42](https://github.com/acme/widget/issues/42)" \
+assert_contains "$out" "[Issue #42](https://github.com/acme/widget/issues/42)" \
   "buzz keeps CommonMark links unconverted"
 
 # ── Buzz partial config (no private key) → silent skip ───────────────────────
@@ -132,5 +135,32 @@ assert_contains "$out" '"channel": "C_QUOTED"' \
 assert_not_contains "$out" 'C_QUOTED\"' \
   "no literal quote chars inside channel value"
 rm -f "$SANDBOX/.env"
+
+# ── One shared monospace grid across every platform ──────────────────────────
+# Slack mrkdwn has no table syntax, so a pipe table would post as literal pipes.
+# A fixed-width block is the only construct that renders as the same aligned
+# grid on all four sinks, so the SAME text must appear in each payload — this
+# asserts the shared string, unlike the per-platform link syntax below it.
+# Uses its own variable: `out` is reused by assertions above.
+shared_out="$(PIPELINE_NOTIFY_DEBUG=1 SLACK_BOT_TOKEN=t PIPELINE_SLACK_CHANNEL=C1 \
+  DISCORD_BOT_TOKEN=t PIPELINE_DISCORD_CHANNEL=123 \
+  BUZZ_RELAY_URL=ws://localhost:3000 BUZZ_BOT_PRIVATE_KEY=deadbeef \
+  PIPELINE_BUZZ_CHANNEL=chan-1 TEAMS_WEBHOOK_URL=https://teams.invalid/hook \
+  PIPELINE_ISSUE_TITLE="Fix login crash" \
+  PIPELINE_PR=9 PIPELINE_PR_TITLE="fix: guard" \
+  bash "$NOTIFY" pr-opened "#42" "PR opened" 42 2>&1)"
+# One grid row per sink: Slack, Discord, Buzz and Teams each embed the same text.
+assert_eq "4" "$(printf '%s' "$shared_out" | grep -c 'Stage    pr-opened')" \
+  "every platform embeds the identical monospace grid"
+assert_contains "$shared_out" 'Repo     acme/widget' \
+  "grid repo row uses owner/name, not the state-key slug"
+assert_contains "$shared_out" 'Comment  PR opened' "grid leads with the comment"
+assert_contains "$shared_out" '"fontType": "Monospace"' \
+  "teams uses a Monospace TextBlock (adaptive cards cannot render code fences)"
+# Links live outside the grid — no platform makes a URL clickable in a code block.
+assert_contains "$shared_out" '<https://github.com/acme/widget/pull/9|PR #9>' \
+  "slack link row uses slack link syntax"
+assert_contains "$shared_out" '[PR #9](https://github.com/acme/widget/pull/9)' \
+  "discord/buzz/teams link rows use markdown link syntax"
 
 finish

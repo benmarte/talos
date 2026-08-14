@@ -132,22 +132,35 @@ card="$(buzz_card pr-opened "#80" "body text" 80)"
 printf '%s' "$card" | grep -q '^### ' \
   && pass "title line rendered as a GFM heading" \
   || fail "title line rendered as a GFM heading"
-assert_contains "$card" "|---|---|" "metadata table emitted"
-assert_contains "$card" "| **Repo** | acme/widget |" "repo row uses owner/name, not the state-key slug"
-assert_contains "$card" "| **Stage** | pr-opened |" "stage row carries the event"
-assert_contains "$card" "| **Issue** | [#80]" "issue row links the issue"
+assert_contains "$card" "Stage    pr-opened" "monospace grid emitted"
+assert_contains "$card" "Repo     acme/widget" "repo row uses owner/name, not the state-key slug"
+assert_contains "$card" "Comment  body text" "grid leads with the comment"
+assert_contains "$card" "[Issue #80](" "link row appended below the grid"
 
-# The table carries the links, so the template's trailing "🔗 …" line — which
+# Links must stay OUT of the fenced block — no client makes a URL clickable
+# inside a code fence, so a link there would render as dead text.
+printf '%s' "$card" | awk '/^```$/{f=!f; next} f' | grep -q 'http' \
+  && fail "no links inside the code fence" \
+  || pass "no links inside the code fence"
+
+# The link row carries the links, so the template's trailing "🔗 …" line — which
 # repeats the title already in the heading — must not survive into the card.
 printf '%s' "$card" | grep -q '^🔗 ' \
-  && fail "template link line dropped once the table carries it" \
-  || pass "template link line dropped once the table carries it"
+  && fail "template link line dropped once the link row carries it" \
+  || pass "template link line dropped once the link row carries it"
 
-# An issue-only event has no PR: the row must be omitted, not rendered empty.
+# An issue-only event has no PR: the row must be omitted, not rendered blank.
 card_issue="$(buzz_card validator "#81" "confirmed" 81)"
-assert_contains "$card_issue" "| **Issue** |" "issue-only event still gets an issue row"
-printf '%s' "$card_issue" | grep -q '| \*\*PR\*\* |' \
+assert_contains "$card_issue" "Issue    #81" "issue-only event still gets an issue row"
+printf '%s' "$card_issue" | grep -qE '^PR +#' \
   && fail "PR row omitted entirely when there is no PR" \
   || pass "PR row omitted entirely when there is no PR"
+
+# A long comment wraps onto continuation lines aligned under the value column
+# rather than being truncated — agent verdicts carry the actual finding.
+long="$(buzz_card validator "#82" "$(printf 'x%.0s' $(seq 1 140))" 82)"
+printf '%s' "$long" | grep -qE '^ +x+$' \
+  && pass "long comment wraps instead of truncating" \
+  || fail "long comment wraps instead of truncating"
 
 finish

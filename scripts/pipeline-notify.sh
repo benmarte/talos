@@ -371,13 +371,88 @@ case "$EVENT" in
 esac
 NCONTEXT="${REPO_SLUG} · ${EVENT}${REF:+ · $REF}"
 
+# ── Shared metadata fields ───────────────────────────────────────────────────
+# One platform-neutral field set, rendered natively by each sink: a GFM table
+# on Buzz, Block Kit `fields` on Slack, embed `fields` on Discord, an Adaptive
+# Card FactSet on Teams. Emitting the same markdown table everywhere would not
+# work — Slack mrkdwn has no table syntax and would print literal pipes.
+#
+# Rows carry an optional url so each renderer can apply its own link syntax
+# (<url|text> on Slack, [text](url) elsewhere). Fields with no value are
+# dropped here rather than in each renderer, so issue-only events (validator,
+# pm, docs — most of the pipeline's traffic) never show an empty PR cell.
+NFIELDS="$(
+  NF_PR="${PR:-}" NF_PR_URL="${PR_URL:-}" NF_NUM="${_num:-}" \
+  NF_ISSUE_URL="${ISSUE_URL:-}" NF_EVENT="${EVENT:-}" \
+  NF_REPO="${_NOTIFY_REPO:-${REPO_SLUG:-}}" python3 - <<'PY'
+import json, os
+e = os.environ
+f = []
+if e['NF_PR']:
+    f.append({"label": "PR", "text": "#" + e['NF_PR'], "url": e['NF_PR_URL']})
+if e['NF_NUM']:
+    f.append({"label": "Issue", "text": "#" + e['NF_NUM'], "url": e['NF_ISSUE_URL']})
+if e['NF_EVENT']:
+    f.append({"label": "Stage", "text": e['NF_EVENT'], "url": ""})
+if e['NF_REPO']:
+    f.append({"label": "Repo", "text": e['NF_REPO'], "url": ""})
+print(json.dumps(f))
+PY
+)"
+
+# Two body variants, because only the card carries the metadata.
+#
+# NBODY keeps the template's trailing "🔗 …" line and is used for thread
+# REPLIES, where that link is the only one in the message. NBODY_CARD drops it
+# and is used for ROOT posts, where it would merely repeat the PR/issue link
+# already in the fields. Each template spells the line exactly "🔗 ${PR_LINK}"
+# or "🔗 ${REF_LINK}", so matching the prefix is a defined rule, not a guess.
+NBODY_CARD="$(printf '%s\n' "$NBODY" | grep -v '^🔗 ' | sed '/./,$!d')"
+[ -z "$NBODY_CARD" ] && NBODY_CARD="$NTITLE"
+
+# ── Shared monospace grid ────────────────────────────────────────────────────
+# One pre-aligned plain-text grid, reused verbatim by every sink. Slack mrkdwn
+# has no table syntax — a pipe table posts as literal pipes — so a fixed-width
+# block inside a code fence (a Monospace TextBlock on Teams) is the only
+# construct that renders as the same aligned grid on all four platforms.
+#
+# The comment is wrapped onto continuation lines aligned under the value column
+# rather than truncated: agent verdicts carry the actual finding, and a card
+# that silently drops half of one is worse than a slightly tall card. Links are
+# NOT put in here — no platform makes a URL clickable inside a code block — so
+# each sink appends its own link line underneath in its own syntax.
+NGRID="$(NFIELDS="$NFIELDS" NBODY_CARD="$NBODY_CARD" python3 - <<'PY'
+import json, os, re, textwrap
+rows = []
+comment = re.sub(r'\s*\n+\s*', ' ', os.environ.get('NBODY_CARD', '')).strip()
+if comment:
+    rows.append(("Comment", comment))
+for f in json.loads(os.environ.get('NFIELDS') or '[]'):
+    rows.append((f["label"], f["text"]))
+if rows:
+    w = max(len(l) for l, _ in rows)
+    out = []
+    for label, val in rows:
+        chunks = textwrap.wrap(val, 58) or [""]
+        out.append("{}  {}".format(label.ljust(w), chunks[0]))
+        out.extend(" " * (w + 2) + c for c in chunks[1:])
+    print("\n".join(out))
+PY
+)"
+
 _slack_payload() {  # $1=thread_ts (may be empty) $2=mode: bot|webhook
-  NTITLE="$NTITLE" NBODY="$NBODY" NCTX="$NCONTEXT" NCOLOR="$NCOLOR" \
+  NTITLE="$NTITLE" NBODY="$NBODY" NBODY_CARD="$NBODY_CARD" NCTX="$NCONTEXT" NCOLOR="$NCOLOR" \
+  NFIELDS="$NFIELDS" NGRID="$NGRID" \
   NCHANNEL="$SLACK_CHANNEL" NTHREAD="$1" NMODE="$2" python3 - <<'PY'
 import json, os, re
 raw_title = os.environ['NTITLE']
 title = re.sub(r'[*_`]', '', raw_title).strip()   # plain text for notification/fallback
-body  = os.environ['NBODY']
+# A post with no thread anchor is the first message for this issue — the root —
+# and carries the full metadata card. Replies stay light so a thread does not
+# repeat the same PR/Issue/Repo block on every stage. Recovery reposts pass an
+# empty anchor and are correctly treated as new roots.
+is_root = not os.environ['NTHREAD']
+body  = os.environ['NBODY_CARD'] if is_root else os.environ['NBODY']
 # Daedalus-style: one cohesive markdown message, NOT a heavy Slack header block.
 full = raw_title
 if body and body.strip() and body.strip() != raw_title.strip():
@@ -386,12 +461,25 @@ if body and body.strip() and body.strip() != raw_title.strip():
 # Templates author in daedalus/CommonMark style (**bold**, [text](url)); convert.
 full = re.sub(r'\*\*([^*\n]+)\*\*', r'*\1*', full)          # **bold** -> *bold*
 full = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<\2|\1>', full)  # [text](url) -> <url|text>
+# Root: title, the shared monospace grid (which already carries the comment),
+# then a clickable link row — URLs are inert inside a code block, so they live
+# underneath it. Replies keep the plain title+body rendering.
+grid = os.environ.get('NGRID', '')
+if is_root and grid:
+    parts = [raw_title, "```\n" + grid + "\n```"]
+    links = [
+        "<{}|{} {}>".format(f["url"], f["label"], f["text"])
+        for f in json.loads(os.environ.get('NFIELDS') or '[]') if f.get("url")
+    ]
+    if links:
+        parts.append(" · ".join(links))
+    full = "\n".join(parts)
+    full = re.sub(r'\*\*([^*\n]+)\*\*', r'*\1*', full)
+blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": full[:3000]}}]
+blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": os.environ['NCTX']}]})
 p = {
     "text": title,
-    "blocks": [
-        {"type": "section", "text": {"type": "mrkdwn", "text": full[:3000]}},
-        {"type": "context", "elements": [{"type": "mrkdwn", "text": os.environ['NCTX']}]},
-    ],
+    "blocks": blocks,
     "attachments": [{"color": os.environ['NCOLOR'], "fallback": title}],
 }
 if os.environ['NMODE'] == 'bot':
@@ -403,12 +491,16 @@ PY
 }
 
 _discord_payload() {  # $1=anchor msg id (may be empty) $2=mode: bot|webhook
-  NTITLE="$NTITLE" NBODY="$NBODY" NCTX="$NCONTEXT" NCOLOR_INT="$NCOLOR_INT" \
+  NTITLE="$NTITLE" NBODY="$NBODY" NBODY_CARD="$NBODY_CARD" NCTX="$NCONTEXT" NCOLOR_INT="$NCOLOR_INT" \
+  NFIELDS="$NFIELDS" NGRID="$NGRID" \
   NURL="$PRIMARY_URL" NANCHOR="$1" NMODE="$2" python3 - <<'PY'
 import json, os, re
 title = re.sub(r'[*_`]', '', os.environ['NTITLE']).strip()
+# No anchor => first message for this issue => full metadata card; replies light.
+is_root = not os.environ['NANCHOR']
+_raw_body = os.environ['NBODY_CARD'] if is_root else os.environ['NBODY']
 # Discord bold is **…**; templates use Slack-style single *…* — upconvert.
-body = re.sub(r'(?<!\*)\*([^*\n]+)\*(?!\*)', r'**\1**', os.environ['NBODY'])
+body = re.sub(r'(?<!\*)\*([^*\n]+)\*(?!\*)', r'**\1**', _raw_body)
 p = {
     "embeds": [{
         "title": title[:256],
@@ -417,6 +509,20 @@ p = {
         "footer": {"text": os.environ['NCTX'][:2048]},
     }],
 }
+# Root: the same monospace grid every other sink shows, with a clickable link
+# row beneath it (URLs are inert inside a code block). Embed fields are
+# deliberately unused — they would render a second, differently-shaped copy of
+# the metadata already in the grid.
+_grid = os.environ.get('NGRID', '')
+if is_root and _grid:
+    _links = " · ".join(
+        "[{} {}]({})".format(f["label"], f["text"], f["url"])
+        for f in json.loads(os.environ.get('NFIELDS') or '[]') if f.get("url")
+    )
+    _desc = "```\n" + _grid + "\n```"
+    if _links:
+        _desc += "\n" + _links
+    p["embeds"][0]["description"] = _desc[:3900]
 if os.environ.get('NURL'):
     p["embeds"][0]["url"] = os.environ['NURL']
 if os.environ['NMODE'] == 'bot' and os.environ['NANCHOR']:
@@ -490,30 +596,65 @@ if [ -n "${DISCORD_WEBHOOK_URL:-}" ]; then
       || echo "pipeline-notify: discord webhook delivery failed" >&2
   fi
 elif [ -n "${DISCORD_BOT_TOKEN:-}" ] && [ -n "$DISCORD_CHANNEL" ]; then
-  # Bot-token mode — threading via message_reference
+  # Bot-token mode — real threads, matching Slack and Buzz.
+  #
+  # message_reference (the previous approach) is an inline REPLY, not a thread:
+  # every stage stays in the main channel with a small "replying to" header, so
+  # a busy pipeline still floods the channel. A real thread collapses the whole
+  # issue into one expandable entry. Two steps: post the root to the channel,
+  # then POST …/messages/{id}/threads to start a thread anchored to it; later
+  # events post straight into that thread channel.
+  DISCORD_THREAD=""
   DISCORD_ANCHOR=""
   if [ "$THREADING_ENABLED" = "true" ]; then
+    DISCORD_THREAD="$(_thread_state get discord_thread_id)"
     DISCORD_ANCHOR="$(_thread_state get discord_msg_id)"
   fi
 
-  # fail_if_not_exists:false (in the builder) means Discord silently falls back
-  # to a top-level message if the referenced anchor was deleted.
-  DISCORD_PAYLOAD="$(_discord_payload "$DISCORD_ANCHOR" bot)"
+  # A message posted into a thread channel needs no message_reference — passing
+  # the anchor would render a redundant reply header inside the thread. The
+  # anchor is still passed when no thread exists, so the inline-reply fallback
+  # below keeps working on servers where the bot cannot create threads.
+  if [ -n "$DISCORD_THREAD" ]; then
+    DISCORD_TARGET="$DISCORD_THREAD"
+    DISCORD_PAYLOAD="$(_discord_payload "$DISCORD_ANCHOR" bot_in_thread)"
+  else
+    DISCORD_TARGET="$DISCORD_CHANNEL"
+    DISCORD_PAYLOAD="$(_discord_payload "$DISCORD_ANCHOR" bot)"
+  fi
 
   if [ "${PIPELINE_NOTIFY_DEBUG:-}" = "1" ]; then
     echo "[pipeline-notify DEBUG] DISCORD (bot) state_key=$STATE_KEY"
-    echo "[pipeline-notify DEBUG] DISCORD thread_anchor=${DISCORD_ANCHOR:-(none — root post)}"
+    echo "[pipeline-notify DEBUG] DISCORD thread=${DISCORD_THREAD:-(none — will create from root)}"
     echo "[pipeline-notify DEBUG] DISCORD payload=$DISCORD_PAYLOAD"
   else
-    resp="$(post "https://discord.com/api/v10/channels/$DISCORD_CHANNEL/messages" \
+    resp="$(post "https://discord.com/api/v10/channels/$DISCORD_TARGET/messages" \
       "$DISCORD_PAYLOAD" discord "Authorization: Bot $DISCORD_BOT_TOKEN" 2>/dev/null)"
 
     case "$resp" in
       *'"id"'*)
-        # Store message id as anchor for the first (root) post
-        if [ "$THREADING_ENABLED" = "true" ] && [ -z "$DISCORD_ANCHOR" ]; then
+        # Root post only: both anchors empty. Retrying thread creation on every
+        # later event would fire a failing API call per stage on a server where
+        # the bot lacks CREATE_PUBLIC_THREADS — the fallback must settle, not
+        # keep probing.
+        if [ "$THREADING_ENABLED" = "true" ] && [ -z "$DISCORD_THREAD" ] && [ -z "$DISCORD_ANCHOR" ]; then
           NEW_ID="$(_extract_json_field "$resp" id)"
-          [ -n "$NEW_ID" ] && _thread_state set discord_msg_id "$NEW_ID"
+          if [ -n "$NEW_ID" ]; then
+            _thread_state set discord_msg_id "$NEW_ID"
+            # Start the thread from the root message. Thread names are capped at
+            # 100 chars by Discord and rejected outright if longer.
+            _dc_name="$(printf '%s' "${REF:-$EVENT}${NTITLE:+ — $NTITLE}" | tr '\n' ' ' | cut -c1-95)"
+            _dc_body="$(NAME="$_dc_name" python3 -c 'import json,os; print(json.dumps({"name": os.environ["NAME"], "auto_archive_duration": 1440}))')"
+            tresp="$(post "https://discord.com/api/v10/channels/$DISCORD_CHANNEL/messages/$NEW_ID/threads" \
+              "$_dc_body" discord "Authorization: Bot $DISCORD_BOT_TOKEN" 2>/dev/null)"
+            case "$tresp" in
+              *'"id"'*) _thread_state set discord_thread_id "$(_extract_json_field "$tresp" id)" ;;
+              # Missing CREATE_PUBLIC_THREADS is the common cause. Warn once and
+              # leave discord_thread_id unset: later events fall back to inline
+              # replies off discord_msg_id rather than losing the notification.
+              *) echo "pipeline-notify: discord thread creation failed, falling back to inline replies: $(printf '%s' "$tresp" | head -c 200)" >&2 ;;
+            esac
+          fi
         fi
         ;;
       *) echo "pipeline-notify: discord api delivery failed: $(printf '%s' "$resp" | head -c 200)" >&2 ;;
@@ -523,19 +664,47 @@ fi
 
 # ── Teams (webhook only — no threading) ──────────────────────────────────────
 if [ -n "${TEAMS_WEBHOOK_URL:-}" ]; then
+  # Built with python3 rather than shell interpolation so the FactSet — the
+  # Adaptive Card equivalent of the Buzz table and Slack/Discord fields — is
+  # assembled as real JSON. Facts render as an aligned label/value grid.
+  # Built unconditionally so debug mode can print the real payload rather than
+  # a text approximation; Teams cannot thread, so every post is a root card.
+  TEAMS_PAYLOAD="$(NTITLE="$NTITLE" NGRID="$NGRID" NCTX="$NCONTEXT" NFIELDS="$NFIELDS" python3 - <<'PY'
+import json, os
+# Same card as every other sink: title, monospace grid, link row, context.
+# Adaptive Cards do not render markdown code fences, so the grid goes in a
+# TextBlock with fontType Monospace — the Teams equivalent of a fenced block.
+# (No literal fence characters in this comment: this heredoc sits inside a
+# $( … ), where bash scans for the closing paren and an odd number of
+# backticks silently breaks the parse of the whole file.)
+body = [{"type": "TextBlock", "wrap": True, "weight": "Bolder", "size": "Medium",
+         "text": os.environ['NTITLE']}]
+grid = os.environ.get('NGRID', '')
+if grid:
+    body.append({"type": "TextBlock", "wrap": True, "fontType": "Monospace",
+                 "text": grid})
+links = " · ".join(
+    "[{} {}]({})".format(f["label"], f["text"], f["url"])
+    for f in json.loads(os.environ.get('NFIELDS') or '[]') if f.get("url")
+)
+if links:
+    body.append({"type": "TextBlock", "wrap": True, "text": links})
+body.append({"type": "TextBlock", "wrap": True, "isSubtle": True,
+             "spacing": "Small", "text": os.environ['NCTX']})
+print(json.dumps({
+    "type": "message",
+    "attachments": [{
+        "contentType": "application/vnd.microsoft.card.adaptive",
+        "content": {"type": "AdaptiveCard", "version": "1.4", "body": body},
+    }],
+}))
+PY
+)"
   if [ "${PIPELINE_NOTIFY_DEBUG:-}" = "1" ]; then
-    echo "[pipeline-notify DEBUG] TEAMS (webhook, no threading): $TEXT"
+    echo "[pipeline-notify DEBUG] TEAMS payload=$TEAMS_PAYLOAD"
   else
-    post "$TEAMS_WEBHOOK_URL" "{
-      \"type\": \"message\",
-      \"attachments\": [{
-        \"contentType\": \"application/vnd.microsoft.card.adaptive\",
-        \"content\": {
-          \"type\": \"AdaptiveCard\", \"version\": \"1.4\",
-          \"body\": [{\"type\": \"TextBlock\", \"wrap\": true, \"text\": $PAYLOAD_TEXT}]
-        }
-      }]
-    }" teams >/dev/null 2>&1 || echo "pipeline-notify: teams webhook delivery failed" >&2
+    post "$TEAMS_WEBHOOK_URL" "$TEAMS_PAYLOAD" teams >/dev/null 2>&1 \
+      || echo "pipeline-notify: teams webhook delivery failed" >&2
   fi
 fi
 
@@ -559,31 +728,34 @@ if [ -n "${BUZZ_RELAY_URL:-}" ] && [ -n "${BUZZ_BOT_PRIVATE_KEY:-}" ] && [ -n "$
   # empty cells for issue-only events, which have no PR. Severity stays in the
   # per-event emoji the templates already carry: GFM has no colour, and
   # spelling out BLOCKED would only duplicate 🚫.
-  _buzz_row() {  # $1=label $2=cell — skipped entirely when the cell is empty
-    [ -n "$2" ] && printf '| **%s** | %s |\n' "$1" "$2"
-  }
-  _buzz_pr_cell=""
-  if [ -n "${PR:-}" ]; then
-    if [ -n "${PR_URL:-}" ]; then _buzz_pr_cell="[#$PR]($PR_URL)"; else _buzz_pr_cell="#$PR"; fi
+  # Root posts get the full card; replies stay light so a thread does not repeat
+  # the same PR/Issue/Repo block under every stage. The anchor is the signal:
+  # absent => this is the first message for the issue.
+  if [ -z "$BUZZ_ANCHOR" ]; then
+    # Buzz could render a real GFM table, but it deliberately shows the same
+    # monospace grid as everywhere else — the point is one identical card across
+    # all four platforms, and Slack/Discord/Teams cannot do tables at all.
+    _buzz_links="$(NFIELDS="$NFIELDS" python3 - <<'PY'
+import json, os
+print(" · ".join(
+    "[{} {}]({})".format(f["label"], f["text"], f["url"])
+    for f in json.loads(os.environ.get('NFIELDS') or '[]') if f.get("url")
+))
+PY
+)"
+    # The fence lives in a variable: a literal ``` inside $( … ) is parsed as
+    # legacy backtick command substitution and breaks the file.
+    _fence='```'
+    BUZZ_TEXT="$(
+      printf '### %s\n' "$NTITLE"
+      [ -n "$NGRID" ] && printf '\n%s\n%s\n%s\n' "$_fence" "$NGRID" "$_fence"
+      [ -n "$_buzz_links" ] && printf '\n%s\n' "$_buzz_links"
+    )"
+  else
+    # Light reply: the rendered template as-is, keeping its "🔗 …" line, which
+    # is the only link a reply carries.
+    BUZZ_TEXT="$TEXT"
   fi
-  _buzz_issue_cell=""
-  if [ -n "${_num:-}" ]; then
-    if [ -n "${ISSUE_URL:-}" ]; then _buzz_issue_cell="[#$_num]($ISSUE_URL)"; else _buzz_issue_cell="#$_num"; fi
-  fi
-  _buzz_table="$(
-    _buzz_row "PR"    "$_buzz_pr_cell"
-    _buzz_row "Issue" "$_buzz_issue_cell"
-    _buzz_row "Stage" "${EVENT:-}"
-    # _NOTIFY_REPO, not REPO_SLUG: the latter is the sanitised thread-state key
-    # in owner-name form, which reads as a mistyped repo in a user-facing table.
-    _buzz_row "Repo"  "${_NOTIFY_REPO:-${REPO_SLUG:-}}"
-  )"
-  BUZZ_TEXT="$(
-    printf '### %s\n' "$NTITLE"
-    _buzz_body="$(printf '%s\n' "$NBODY" | grep -v '^🔗 ' | sed '/./,$!d')"
-    [ -n "$_buzz_body" ] && printf '\n%s\n' "$_buzz_body"
-    [ -n "$_buzz_table" ] && printf '\n| | |\n|---|---|\n%s\n' "$_buzz_table"
-  )"
 
   # nak exits 0 even when the relay REJECTS the event, and prints the
   # locally-signed JSON to stdout regardless (it signs before publishing). So
