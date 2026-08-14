@@ -546,14 +546,26 @@ if [ -n "${BUZZ_RELAY_URL:-}" ] && [ -n "${BUZZ_BOT_PRIVATE_KEY:-}" ] && [ -n "$
     BUZZ_ANCHOR="$(_thread_state get buzz_event_id)"
   fi
 
-  # Slack renders $NCONTEXT as a context block and Discord as an embed footer;
-  # kind:9 has no structured equivalent, so append it as an italic trailer to
-  # keep the "repo · role · #ref" provenance line Buzz would otherwise lose.
-  # Content is plain text rendered as CommonMark — no per-platform conversion.
-  BUZZ_TEXT="$TEXT"
-  [ -n "${NCONTEXT:-}" ] && BUZZ_TEXT="$TEXT
-
-_${NCONTEXT}_"
+  # Buzz renders GitHub-Flavored Markdown (remark-gfm + remark-breaks), which is
+  # strictly more expressive than Slack's mrkdwn — so the sink builds a card
+  # rather than posting bare text.
+  #
+  # The whole message is wrapped in a blockquote: kind:9 has no equivalent of
+  # Slack's coloured attachment rail, and a blockquote's left bar is the closest
+  # visual analogue — it groups the notification as one unit and separates it
+  # from human chat in the channel. Blank lines become a bare ">" so the quote
+  # stays contiguous instead of splitting into several cards. The first line
+  # (the template's emoji title) is promoted to a heading; $NCONTEXT becomes the
+  # italic footer Slack renders as a context block and Discord as an embed
+  # footer. Severity stays encoded in the per-event emoji the templates already
+  # carry — GFM has no colour, and a word like BLOCKED would duplicate 🚫.
+  BUZZ_TEXT="$(
+    {
+      printf '%s\n' "$TEXT"
+      [ -n "${NCONTEXT:-}" ] && printf '\n_%s_\n' "$NCONTEXT"
+    } | awk 'NR==1 && $0 != "" { print "> ### " $0; next }
+             { if ($0 == "") print ">"; else print "> " $0 }'
+  )"
 
   # nak exits 0 even when the relay REJECTS the event, and prints the
   # locally-signed JSON to stdout regardless (it signs before publishing). So

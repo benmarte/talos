@@ -117,9 +117,31 @@ BUZZ_RELAY_URL=ws://env-relay:3000 BUZZ_BOT_PRIVATE_KEY=deadbeef PIPELINE_ISSUE_
 assert_contains "$(tail -1 "$NAK_LOG")" "ws://env-relay:3000" "env BUZZ_RELAY_URL overrides config"
 rm talos.pipeline.json
 
-# ── Context trailer gives Buzz the provenance line Slack/Discord get ─────────
+# ── GFM card: blockquote wrapper, heading title, italic context footer ───────
+# Buzz renders remark-gfm, so the sink builds a card rather than bare text. The
+# blockquote stands in for Slack's coloured attachment rail; blank lines must
+# stay quoted (">") or the client splits one notification into several cards.
 rm -f "$PIPELINE_THREAD_STATE"; : > "$NAK_LOG"; : > "$NAK_QUEUE"
 live_notify dispatched "#80" "footer check" 80 >/dev/null
-assert_contains "$(tail -1 "$NAK_LOG")" "_acme-widget" "buzz text carries the italic context trailer"
+card="$(tail -1 "$NAK_LOG")"
+assert_contains "$card" "> ### " "title line promoted to a heading inside the quote"
+assert_contains "$card" "_acme-widget" "buzz card carries the italic context footer"
+
+# Inspect the real argv rather than the space-flattened log, so blank-line
+# handling is actually observable.
+: > "$NAK_LOG"
+raw_text="$(BUZZ_RELAY_URL=ws://localhost:3000 BUZZ_BOT_PRIVATE_KEY=deadbeef \
+  PIPELINE_BUZZ_CHANNEL=chan-uuid-1 PIPELINE_ISSUE_TITLE="Fix login crash" \
+  PIPELINE_NOTIFY_DEBUG=1 bash "$NOTIFY" dispatched "#81" "body text" 81 2>&1 \
+  | sed -n '/BUZZ relay/,$p')"
+printf '%s' "$raw_text" | grep -qE '^\s*$' \
+  && fail "no unquoted blank line splits the card" \
+  || pass "no unquoted blank line splits the card"
+printf '%s' "$raw_text" | grep -q '^>$' \
+  && pass "blank lines kept inside the blockquote as bare >" \
+  || fail "blank lines kept inside the blockquote as bare >"
+printf '%s' "$raw_text" | grep -qE '^> _acme-widget[^_]*_$' \
+  && pass "context footer sits inside the card, not after it" \
+  || fail "context footer sits inside the card, not after it"
 
 finish
