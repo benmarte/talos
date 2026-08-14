@@ -75,7 +75,11 @@ assert_contains "$out" "BUZZ relay=ws://localhost:3000 channel=chan-uuid-1 kind=
   "buzz debug carries relay, channel, and kind"
 assert_contains "$out" "New comment by validator agent on #42: Fix login crash" \
   "buzz text is the rendered template"
-assert_contains "$out" "[#42: Fix login crash](https://github.com/acme/widget/issues/42)" \
+# The link moved from the template's trailing "🔗 …" line into the card's
+# metadata table (which is why the label is now the bare issue ref rather than
+# the full title), but it must still be emitted as unconverted CommonMark —
+# Buzz renders GFM, so there is no per-platform link syntax to translate to.
+assert_contains "$out" "[#42](https://github.com/acme/widget/issues/42)" \
   "buzz keeps CommonMark links unconverted"
 
 # ── Buzz partial config (no private key) → silent skip ───────────────────────

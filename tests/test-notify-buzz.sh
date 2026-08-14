@@ -117,31 +117,37 @@ BUZZ_RELAY_URL=ws://env-relay:3000 BUZZ_BOT_PRIVATE_KEY=deadbeef PIPELINE_ISSUE_
 assert_contains "$(tail -1 "$NAK_LOG")" "ws://env-relay:3000" "env BUZZ_RELAY_URL overrides config"
 rm talos.pipeline.json
 
-# ── GFM card: blockquote wrapper, heading title, italic context footer ───────
-# Buzz renders remark-gfm, so the sink builds a card rather than bare text. The
-# blockquote stands in for Slack's coloured attachment rail; blank lines must
-# stay quoted (">") or the client splits one notification into several cards.
-rm -f "$PIPELINE_THREAD_STATE"; : > "$NAK_LOG"; : > "$NAK_QUEUE"
-live_notify dispatched "#80" "footer check" 80 >/dev/null
-card="$(tail -1 "$NAK_LOG")"
-assert_contains "$card" "> ### " "title line promoted to a heading inside the quote"
-assert_contains "$card" "_acme-widget" "buzz card carries the italic context footer"
-
-# Inspect the real argv rather than the space-flattened log, so blank-line
-# handling is actually observable.
-: > "$NAK_LOG"
-raw_text="$(BUZZ_RELAY_URL=ws://localhost:3000 BUZZ_BOT_PRIVATE_KEY=deadbeef \
+# ── GFM card: heading + body + metadata table ────────────────────────────────
+# Buzz renders remark-gfm, so the sink emits headings and a table — neither of
+# which Slack's mrkdwn supports. Inspect the real argv via debug mode rather
+# than the space-flattened log, so line structure is actually observable.
+buzz_card() {  # $@ = notify args; prints the rendered kind:9 body
+  BUZZ_RELAY_URL=ws://localhost:3000 BUZZ_BOT_PRIVATE_KEY=deadbeef \
   PIPELINE_BUZZ_CHANNEL=chan-uuid-1 PIPELINE_ISSUE_TITLE="Fix login crash" \
-  PIPELINE_NOTIFY_DEBUG=1 bash "$NOTIFY" dispatched "#81" "body text" 81 2>&1 \
-  | sed -n '/BUZZ relay/,$p')"
-printf '%s' "$raw_text" | grep -qE '^\s*$' \
-  && fail "no unquoted blank line splits the card" \
-  || pass "no unquoted blank line splits the card"
-printf '%s' "$raw_text" | grep -q '^>$' \
-  && pass "blank lines kept inside the blockquote as bare >" \
-  || fail "blank lines kept inside the blockquote as bare >"
-printf '%s' "$raw_text" | grep -qE '^> _acme-widget[^_]*_$' \
-  && pass "context footer sits inside the card, not after it" \
-  || fail "context footer sits inside the card, not after it"
+  PIPELINE_NOTIFY_DEBUG=1 bash "$NOTIFY" "$@" 2>&1 \
+    | sed -n '/BUZZ relay/,$p' | sed 's/.*kind=9 text=//'
+}
+
+card="$(buzz_card pr-opened "#80" "body text" 80)"
+printf '%s' "$card" | grep -q '^### ' \
+  && pass "title line rendered as a GFM heading" \
+  || fail "title line rendered as a GFM heading"
+assert_contains "$card" "|---|---|" "metadata table emitted"
+assert_contains "$card" "| **Repo** | acme/widget |" "repo row uses owner/name, not the state-key slug"
+assert_contains "$card" "| **Stage** | pr-opened |" "stage row carries the event"
+assert_contains "$card" "| **Issue** | [#80]" "issue row links the issue"
+
+# The table carries the links, so the template's trailing "🔗 …" line — which
+# repeats the title already in the heading — must not survive into the card.
+printf '%s' "$card" | grep -q '^🔗 ' \
+  && fail "template link line dropped once the table carries it" \
+  || pass "template link line dropped once the table carries it"
+
+# An issue-only event has no PR: the row must be omitted, not rendered empty.
+card_issue="$(buzz_card validator "#81" "confirmed" 81)"
+assert_contains "$card_issue" "| **Issue** |" "issue-only event still gets an issue row"
+printf '%s' "$card_issue" | grep -q '| \*\*PR\*\* |' \
+  && fail "PR row omitted entirely when there is no PR" \
+  || pass "PR row omitted entirely when there is no PR"
 
 finish

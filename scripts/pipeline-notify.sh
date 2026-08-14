@@ -546,25 +546,43 @@ if [ -n "${BUZZ_RELAY_URL:-}" ] && [ -n "${BUZZ_BOT_PRIVATE_KEY:-}" ] && [ -n "$
     BUZZ_ANCHOR="$(_thread_state get buzz_event_id)"
   fi
 
-  # Buzz renders GitHub-Flavored Markdown (remark-gfm + remark-breaks), which is
-  # strictly more expressive than Slack's mrkdwn — so the sink builds a card
-  # rather than posting bare text.
+  # Buzz renders GitHub-Flavored Markdown (remark-gfm + remark-breaks), so it
+  # supports headings and tables — neither of which Slack's mrkdwn can do. The
+  # sink builds a card: heading, body, then a metadata table carrying the links.
   #
-  # The whole message is wrapped in a blockquote: kind:9 has no equivalent of
-  # Slack's coloured attachment rail, and a blockquote's left bar is the closest
-  # visual analogue — it groups the notification as one unit and separates it
-  # from human chat in the channel. Blank lines become a bare ">" so the quote
-  # stays contiguous instead of splitting into several cards. The first line
-  # (the template's emoji title) is promoted to a heading; $NCONTEXT becomes the
-  # italic footer Slack renders as a context block and Discord as an embed
-  # footer. Severity stays encoded in the per-event emoji the templates already
-  # carry — GFM has no colour, and a word like BLOCKED would duplicate 🚫.
+  # The table replaces the template's trailing "🔗 …" line, which would
+  # otherwise repeat the PR/issue title already shown in the heading. Every
+  # template spells that line exactly "🔗 ${PR_LINK}" or "🔗 ${REF_LINK}", so
+  # dropping lines with that prefix is well-defined rather than a guess.
+  #
+  # Rows are emitted only when they have a value — a fixed row set would render
+  # empty cells for issue-only events, which have no PR. Severity stays in the
+  # per-event emoji the templates already carry: GFM has no colour, and
+  # spelling out BLOCKED would only duplicate 🚫.
+  _buzz_row() {  # $1=label $2=cell — skipped entirely when the cell is empty
+    [ -n "$2" ] && printf '| **%s** | %s |\n' "$1" "$2"
+  }
+  _buzz_pr_cell=""
+  if [ -n "${PR:-}" ]; then
+    if [ -n "${PR_URL:-}" ]; then _buzz_pr_cell="[#$PR]($PR_URL)"; else _buzz_pr_cell="#$PR"; fi
+  fi
+  _buzz_issue_cell=""
+  if [ -n "${_num:-}" ]; then
+    if [ -n "${ISSUE_URL:-}" ]; then _buzz_issue_cell="[#$_num]($ISSUE_URL)"; else _buzz_issue_cell="#$_num"; fi
+  fi
+  _buzz_table="$(
+    _buzz_row "PR"    "$_buzz_pr_cell"
+    _buzz_row "Issue" "$_buzz_issue_cell"
+    _buzz_row "Stage" "${EVENT:-}"
+    # _NOTIFY_REPO, not REPO_SLUG: the latter is the sanitised thread-state key
+    # in owner-name form, which reads as a mistyped repo in a user-facing table.
+    _buzz_row "Repo"  "${_NOTIFY_REPO:-${REPO_SLUG:-}}"
+  )"
   BUZZ_TEXT="$(
-    {
-      printf '%s\n' "$TEXT"
-      [ -n "${NCONTEXT:-}" ] && printf '\n_%s_\n' "$NCONTEXT"
-    } | awk 'NR==1 && $0 != "" { print "> ### " $0; next }
-             { if ($0 == "") print ">"; else print "> " $0 }'
+    printf '### %s\n' "$NTITLE"
+    _buzz_body="$(printf '%s\n' "$NBODY" | grep -v '^🔗 ' | sed '/./,$!d')"
+    [ -n "$_buzz_body" ] && printf '\n%s\n' "$_buzz_body"
+    [ -n "$_buzz_table" ] && printf '\n| | |\n|---|---|\n%s\n' "$_buzz_table"
   )"
 
   # nak exits 0 even when the relay REJECTS the event, and prints the
