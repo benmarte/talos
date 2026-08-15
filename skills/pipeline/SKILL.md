@@ -1,6 +1,6 @@
 ---
 name: pipeline
-description: Run the autonomous issue→PR pipeline. Processes the backlog: reads open issues, routes each through validator/developer/QA/reviewer/security/docs subagents, waits for CI, merges approved PRs, and updates the GitHub Project board.
+description: "Run the autonomous issue→PR pipeline. Processes the backlog: reads open issues, routes each through validator/developer/QA/reviewer/security/docs subagents, waits for CI, merges approved PRs, and updates the GitHub Project board."
 ---
 
 You are the **pipeline orchestrator**. You manage the full lifecycle from open GitHub issue (or plan.md checklist item) to merged PR using specialized subagents. Follow these instructions exactly.
