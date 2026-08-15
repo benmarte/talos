@@ -66,7 +66,7 @@ All VCS operations are delegated to `scripts/pipeline-vcs.sh`, which wraps each 
 
 ### File mode and chat mode
 
-**File mode** (`vcs.provider: file`) treats a local markdown file (`plan.md` by default) as both the board and the issue tracker. Each `- [ ] Task` line is one work item. The pipeline marks items checked when complete; no remote VCS calls are made.
+**File mode** (`vcs.provider: file`) treats a local markdown file (`plan.md` by default) as both the board and the issue tracker. Each `- [ ] Task` line is one work item. The pipeline marks items checked when complete; no remote VCS calls are made. It is the zero-infrastructure path: **no VCS system needed at all** — no remote, no `gh`/`glab`/`az`, no auth, fully offline. Ideal for local sessions and local-LLM harnesses like pi.
 
 **Chat mode** is how you start a pipeline with no pre-existing issues or plan file. Describe your tasks conversationally to the orchestrator (e.g., "fix the login bug, add dark mode, update the README") and it will:
 1. Extract tasks from the conversation.
@@ -440,34 +440,47 @@ Pass `--dry-run` as the first argument to print the underlying CLI command witho
 
 ---
 
-## Other harnesses: Codex CLI, Gemini CLI, Antigravity, local models
+## Other harnesses: pi, Codex CLI, Gemini CLI, Antigravity, local models
 
 Claude Code is the first-class harness (native subagents, worktree isolation),
 but the pipeline itself is plain bash + markdown — any **agentic** CLI can
-orchestrate it. Install with:
-
-```bash
-bash install.sh /path/to/your/repo --harness codex
-```
-
-This adds a marker-fenced Talos section to your repo's `AGENTS.md` telling the
-harness to follow the playbook and run role stages through the adapter:
-
-```bash
-bash .claude/talos/scripts/pipeline-agent.sh <role> - <<'PROMPT'
-<stage prompt>
-PROMPT
-```
-
-The adapter merges `.claude/agents/<role>.md` (frontmatter stripped) with the
-stage prompt and executes it via the runner configured in
-`talos.pipeline.yml`:
+orchestrate it. The execution mode is chosen by `agents.subagents` and
+`agents.runner` in `talos.pipeline.yml`:
 
 ```yaml
 agents:
-  runner: codex        # claude (default) | codex | gemini | antigravity | custom
-  # runner_cmd: "my-agent-cli"   # custom: prompt arrives on stdin
+  runner: codex        # claude (default) | pi | codex | gemini | antigravity | custom
+  subagents: auto      # auto | true | false   (auto = true for claude, else false)
 ```
+
+- **`runner: claude`** (subagents: true) — native parallel subagents.
+- **`runner: pi`** (subagents: false) — **inline one-agent-per-turn**: the pi
+  session acts as each stage role itself (validator → pm → developer → qa →
+  review/security/docs → merge), one role per turn. No subagents, no
+  `pipeline-agent.sh`, no subprocesses. Works on any provider backing pi
+  (Claude account via `/login` or `ANTHROPIC_API_KEY`, or a local model). For
+  a fully offline pipeline, combine pi with `vcs.provider: file` — `plan.md`
+  is the board, no remote/VCS/auth needed.
+- **Any other runner** (subagents: false) — headless per-stage via
+  `pipeline-agent.sh`, e.g. `bash install.sh /path/to/your/repo --harness codex`
+  to add a marker-fenced Talos section to `AGENTS.md` telling the harness to
+  follow the playbook and run role stages through the adapter:
+
+  ```bash
+  bash .claude/talos/scripts/pipeline-agent.sh <role> - <<'PROMPT'
+  <stage prompt>
+  PROMPT
+  ```
+
+  The adapter merges `.claude/agents/<role>.md` (frontmatter stripped) with the
+  stage prompt and executes it via the runner configured in `talos.pipeline.yml`
+  (`codex` → `codex exec`, `pi` → `pi -p`, `custom` → `runner_cmd` on stdin).
+
+**pi:** register the `pipeline` skill with pi (e.g. `skills` in `~/.pi/settings.json`
+pointing at this repo's `skills/`), set `agents.subagents: false` and
+`agents.runner: pi`, then tell pi to run the talos pipeline. The playbook's
+Harness-compatibility section handles the inline mode. No `install.sh --harness pi`
+needed — pi reads the canonical skill directly.
 
 **Google Antigravity:** `--harness antigravity` writes the same `AGENTS.md`
 section (Antigravity reads `AGENTS.md` natively since v1.20.3; `GEMINI.md`

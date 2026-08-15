@@ -14,8 +14,8 @@
 # + a separator + the task prompt.
 #
 # Config keys (talos.pipeline.yml via pipeline-config.sh):
-#   agents.runner       claude (default) | codex | gemini | antigravity | custom
-#   agents.runner_args  list of extra CLI args appended to claude/codex/gemini/agy
+#   agents.runner       claude (default) | pi | codex | gemini | antigravity | custom
+#   agents.runner_args  list of extra CLI args appended to claude/pi/codex/gemini/agy
 #   agents.runner_cmd   full shell command for runner=custom;
 #                       receives the prompt on stdin
 #
@@ -23,11 +23,17 @@
 #   claude       claude -p --setting-sources project [args] <prompt>
 #                (--setting-sources project keeps user-global CLAUDE.md
 #                 instructions out of pipeline workers)
+#   pi           pi -p [args] <prompt>     # pi print mode, one-shot headless stage
 #   codex        codex exec [args] <prompt>
 #   gemini       gemini [args] -p <prompt>
 #   antigravity  agy [args] -p <prompt>
 #                # invocation per Antigravity CLI docs (2026-03)
 #   custom       printf '%s' <prompt> | sh -c "$runner_cmd"
+#
+# NOTE: the pi orchestrator playbook uses INLINE mode (agents.subagents: false,
+# agents.runner: pi) and does NOT call this script — pi acts as each stage role
+# itself, one role per turn. This pi case only covers running a single stage
+# headlessly when explicitly requested.
 #
 # The runner must be an AGENTIC CLI (able to execute shell commands and edit
 # files) — a bare model endpoint can generate text but cannot run a stage.
@@ -115,6 +121,11 @@ case "$RUNNER" in
     # invocation per Antigravity CLI docs (2026-03)
     exec agy ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} -p "$PROMPT"
     ;;
+  pi)
+    # pi print mode — one-shot headless stage (inline mode is the pi default;
+    # this case exists for callers that want a single headless stage).
+    exec pi -p ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} "$PROMPT"
+    ;;
   custom)
     RUNNER_CMD="$(cfg agents.runner_cmd "")"
     if [ -z "$RUNNER_CMD" ]; then
@@ -124,7 +135,7 @@ case "$RUNNER" in
     printf '%s' "$PROMPT" | sh -c "$RUNNER_CMD"
     ;;
   *)
-    echo "pipeline-agent: unknown agents.runner '$RUNNER'. Valid: claude | codex | gemini | antigravity | custom" >&2
+    echo "pipeline-agent: unknown agents.runner '$RUNNER'. Valid: claude | pi | codex | gemini | antigravity | custom" >&2
     exit 1
     ;;
 esac

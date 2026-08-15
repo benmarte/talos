@@ -203,13 +203,29 @@ notifications:
   #
   # events:
 
-# ── Agent runner (non-Claude-Code harnesses only) ─────────────────────────────
-# Claude Code spawns native subagents and ignores this section. Harnesses
-# without subagents (Codex CLI, headless runners) execute role stages through
-# scripts/pipeline-agent.sh, which uses:
+# ── Agent runner / subagents ───────────────────────────────────────────────────
+# How role stages execute depends on the harness:
+#   agents.subagents: auto | true | false   (default auto)
+#     true   = native parallel subagents (Claude Code only)
+#     false  = run stages without subagents
+#     auto   = true when agents.runner is claude, else false
+#
+#   agents.runner selects the harness (claude | pi | codex | gemini | antigravity | custom):
+#     claude      → native subagents (subagents: true)
+#     pi          → INLINE one-agent-per-turn: the pi session acts as each stage
+#                   role itself, one role per turn (subagents: false). No
+#                   pipeline-agent.sh, no subprocesses. Works on any provider
+#                   backing pi (Claude account, local LLM).
+#     codex/gemini/antigravity/custom → headless per-stage via pipeline-agent.sh
+#                   (subagents: false).
+#
+# Claude Code spawns native subagents and ignores this section except that it
+# still honours agents.subagents. Harnesses without subagents execute role
+# stages as above.
 # agents:
-#   runner: codex            # claude (default) | codex | gemini | antigravity | custom
-#   # runner_args:           # extra CLI args for the claude/codex/gemini runner
+#   runner: pi                 # claude (default) | pi | codex | gemini | antigravity | custom
+#   subagents: auto            # auto | true | false
+#   # runner_args:             # extra CLI args for the claude/pi/codex/gemini runner
 #   #   - --full-auto
 #   # runner_cmd: "my-agent-cli"  # runner: custom — prompt arrives on stdin.
 #   #                             # Must be an AGENTIC CLI (executes shell/edits

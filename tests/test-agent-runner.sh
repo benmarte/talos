@@ -62,6 +62,18 @@ log="$(cat "$RUNNER_LOG")"
 assert_contains "$log" "AGY ARGS: [-p]" "antigravity invoked with -p prompt"
 assert_contains "$log" "Review PR #9 with antigravity." "antigravity runner receives task prompt"
 
+# ── pi runner via config ─────────────────────────────────────────────────────
+cat > talos.pipeline.json <<'EOF'
+{"agents": {"runner": "pi", "runner_args": ["--no-skills"]}}
+EOF
+: > "$RUNNER_LOG"
+out="$(bash "$AGENT" validator "Validate issue #7.")"
+assert_eq "pi-stub-ok" "$out" "agents.runner=pi uses pi CLI"
+log="$(cat "$RUNNER_LOG")"
+assert_contains "$log" "PI ARGS: [-p] [--no-skills]" "pi invoked with -p prompt + runner_args"
+assert_contains "$log" "Validate issue #7." "pi runner receives task prompt"
+rm talos.pipeline.json
+
 # ── Custom runner: prompt on stdin ───────────────────────────────────────────
 cat > talos.pipeline.json <<'EOF'
 {"agents": {"runner": "custom", "runner_cmd": "wc -l | tr -d ' '"}}

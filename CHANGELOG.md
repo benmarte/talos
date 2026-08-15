@@ -12,6 +12,23 @@
 
 ### Added
 
+- **pi harness support — inline one-agent-per-turn mode.** Talos now runs on
+  **pi** (a minimal single-agent coding harness) without subagents and without
+  `pipeline-agent.sh`. New config `agents.subagents` (`auto` | `true` | `false`)
+  selects the execution mode: `true` = native parallel subagents (Claude Code),
+  `false` + `agents.runner: pi` = the pi session acts as each stage role itself
+  (validator → pm → developer → qa → reviewer/security/docs → merge), one role
+  per turn, waterfall handoff. `auto` = true when the runner is `claude`, else
+  false. The canonical `pipeline` skill's Harness-compatibility section now
+  spells out the inline rule (read the role profile body, act inline, post the
+  handoff, relay, continue) so pi can follow it directly. Everything else —
+  VCS, notifications, boards, skills, agent profiles — was already
+  harness-agnostic plain bash/markdown.
+
+- **`agents.runner: pi` case in `pipeline-agent.sh`.** Runs a single stage
+  headlessly via `pi -p <prompt>` (print mode) when explicitly requested; the
+  pi inline mode is the default for pi and does not call the adapter.
+
 - **`notifications.buzz_relay` config key.** The relay URL is a hostname, not a secret, and identifies a deployment exactly the way `buzz_channel` does — but it was readable only from the environment, grouped in with the bot tokens, with no `cfg` lookup and no `PIPELINE_*` override. A repo therefore could not describe its own Buzz setup: a clone got the channel from the committed config and no relay, which (before the fix above) then failed silently. Precedence is env > repo/hermes `.env` > config, and `PIPELINE_BUZZ_RELAY` overrides. The bot **key** stays env-only — it is a full Nostr signing identity and must never enter a git-tracked file.
 
 - **Buzz messages carry the context trailer.** Slack renders `$NCONTEXT` as a context block and Discord as an embed footer; Buzz sent bare template text, losing the `repo · role · #ref` provenance line. It is now appended as an italic CommonMark trailer, which `kind:9` renders. Colour has no `kind:9` equivalent and is still Slack/Discord only.

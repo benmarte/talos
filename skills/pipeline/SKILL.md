@@ -27,15 +27,24 @@ Note that the plugin case wins when both are present. A repo can have a stale ve
 
 Check per role, not once for all eight — a repo may override only `developer` and take the other seven from the plugin.
 
-**Harness compatibility:** if your harness has native subagents (Claude Code), spawn them as each stage instructs. If it does not (Codex CLI, headless runners), replace every "spawn a subagent with this prompt" step with:
+**Harness compatibility** — driven by config `agents.subagents` (`auto` | `true` | `false`) and `agents.runner` (`claude` | `pi` | `codex` | `gemini` | `antigravity` | `custom`). `auto` = `true` when the runner is `claude`, otherwise `false`; if `agents.subagents` is unset, behave as `auto`.
 
-```bash
-bash scripts/pipeline-agent.sh <role> - <<'PROMPT'
-<the stage prompt, placeholders substituted>
-PROMPT
-```
+- **`subagents: true`** (native subagents, e.g. Claude Code) — spawn them as each stage instructs.
+- **`subagents: false` + `runner: pi`** — **inline mode**: you (the orchestrator) act as each stage role yourself, one role per turn. pi has no subagents and does NOT use `pipeline-agent.sh`. For every stage the playbook says "spawn a subagent with this prompt":
+  1. Read the role profile `AGENTS_DIR/<role>.md` (resolve via the subagent-name rules above; fall back to `scripts/../agents/<role>.md`). Strip the YAML frontmatter — it is Claude Code metadata. Use only the body.
+  2. Adopt the role: treat the role body + the stage prompt as your current instructions and carry them out **inline with your tools** (read/write/edit/bash). Do everything the role would do.
+  3. Perform the post-stage orchestrator actions the playbook lists (board status via `pipeline-status.sh`, findings relay + lifecycle notify via `pipeline-notify.sh`), then continue directly to the next stage. The role's "final message (2-3 lines)" is your own summary to relay.
+  4. Handoff artifact is still posted (stage comment + labels per role instructions) — read the prior stage's comment before starting the next (e.g. the developer reads the PM spec).
+  5. Worktree note: pi runs in the orchestrator's checkout. If the working tree is clean, the developer creates its branch inline (`git checkout -b fix/issue-<N>-<slug> origin/<BASE>`); if dirty, tell the user before the developer stage. Works on any provider backing pi (Claude account, local LLM).
+- **`subagents: false` + any other runner** (codex / gemini / antigravity / custom) — replace every "spawn a subagent with this prompt" step with:
 
-The adapter finds the role definition itself (plugin root, then `.claude/agents/`), combines it with the stage prompt, and runs it through the CLI configured in `agents.runner` (claude | codex | custom). Everything else in this playbook is identical. Note: without native subagents, developer stages run sequentially in the working tree — set `issues.max_parallel: 1`.
+  ```bash
+  bash scripts/pipeline-agent.sh <role> - <<'PROMPT'
+  <the stage prompt, placeholders substituted>
+  PROMPT
+  ```
+
+  The adapter finds the role definition itself (plugin root, then `.claude/agents/`), combines it with the stage prompt, and runs it through the CLI configured in `agents.runner`. Everything else in this playbook is identical. Note: without native subagents, developer stages run sequentially in the working tree — set `issues.max_parallel: 1`.
 
 ---
 
@@ -58,6 +67,7 @@ Store these for the run:
 - Each role toggle: ROLE_VALIDATOR, ROLE_PM, ROLE_QA, ROLE_REVIEWER, ROLE_SECURITY, ROLE_DOCS (all default true)
 - ROLE_PLANNER (`roles.planner`, default `false`) — off by default; zero behavior change when absent or false
 - COMMENTS_ENABLED, COMMENTS_HEADER_TPL, COMMENTS_TMPL_DIR
+- AGENTS_RUNNER (`agents.runner`, default `claude`), AGENTS_SUBAGENTS (`agents.subagents`, default `auto`) — select the harness execution mode (see Harness compatibility)
 - FILE_SOURCE_PATH (`vcs.file.source.path`, for file mode)
 
 **File mode vs VCS mode:**

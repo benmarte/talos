@@ -16,11 +16,12 @@ progress as issue/PR comments and threaded Slack/Discord messages along the way.
 2. [Prerequisites](#prerequisites)
 3. [Environment variables](#environment-variables)
 4. [Setup: Claude Code](#setup-claude-code) (recommended)
-5. [Setup: Codex CLI](#setup-codex-cli)
-6. [Setup: Gemini CLI](#setup-gemini-cli)
-7. [Setup: Google Antigravity](#setup-google-antigravity)
-8. [Setup: local models (llama.cpp, Ollama)](#setup-local-models-llamacpp-ollama)
-9. [Harness feature matrix](#harness-feature-matrix)
+5. [Setup: pi](#setup-pi)
+6. [Setup: Codex CLI](#setup-codex-cli)
+7. [Setup: Gemini CLI](#setup-gemini-cli)
+8. [Setup: Google Antigravity](#setup-google-antigravity)
+9. [Setup: local models (llama.cpp, Ollama)](#setup-local-models-llamacpp-ollama)
+10. [Harness feature matrix](#harness-feature-matrix)
 10. [Running the pipeline](#running-the-pipeline)
 11. [Troubleshooting](#troubleshooting)
 12. [FAQ](#faq)
@@ -196,6 +197,53 @@ Both paths can coexist. Scripts resolve plugin root → vendored → source repo
 where both are present the plugin wins — it is the copy that matches the skill
 being run.
 
+## Setup: pi
+
+pi is a minimal single-agent coding harness. It has no native subagents, so it
+runs the pipeline **inline, one agent per turn**: the pi session acts as each
+stage role itself (validator → pm → developer → qa → reviewer/security/docs →
+merge), waterfall handoff. No `pipeline-agent.sh`, no subprocesses. Works on
+any provider backing pi — a Claude account (`/login` → Claude Pro/Max, or
+`ANTHROPIC_API_KEY`) or a local model (llama.cpp / Ollama via `/login llama.cpp`).
+
+**Fully offline:** pair pi with `vcs.provider: file` for a zero-infrastructure
+pipeline — no remote, no `gh`/`glab`/`az`, no auth, no network. `plan.md`
+(a local markdown checklist) is both the board and the issue tracker; each
+`- [ ] Task` line is one work item. This is the ideal setup for running talos
+on a local LLM.
+
+```bash
+# 1. Install Talos into the repo
+bash talos/install.sh /path/to/your-repo
+
+# 2. Config — inline pi mode
+# talos.pipeline.yml:
+agents:
+  runner: pi
+  subagents: false      # or auto — pi has no subagents so auto resolves to false
+
+# 3. Queue work and run the pipeline in a pi session
+#    Add 'pipeline:ready' to a GitHub issue (or '- [ ]' to plan.md in file mode),
+#    then in the repo start pi and say: run the talos pipeline
+```
+
+Register the `pipeline` skill so pi loads it — add this repo's `skills/` (and
+`agent-skills`) to pi's skill locations, e.g. in `~/.pi/settings.json`:
+
+```json
+{
+  "skills": [
+    "~/.claude/skills",
+    "~/path/to/talos/skills"
+  ]
+}
+```
+
+The canonical playbook's Harness-compatibility section selects inline mode from
+`agents.subagents: false` / `agents.runner: pi`. The role profiles'
+frontmatter (`model:`, `tools:`, `skills:`) is Claude Code metadata — pi reads
+only the body, using its own `read/write/edit/bash` tools.
+
 ## Setup: Codex CLI
 
 Codex has no native subagents, so role stages run headlessly through
@@ -319,15 +367,15 @@ catch bad stage output, but nothing gates the orchestrator itself.
 
 ## Harness feature matrix
 
-| Feature | Claude Code | Codex CLI | Gemini CLI | Antigravity | Custom/local |
-|---------|:-----------:|:---------:|:----------:|:-----------:|:------------:|
-| Full pipeline (all roles/gates) | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Parallel issues (`max_parallel > 1`) | ✅ | ❌ sequential | ❌ sequential | ❌ sequential | ❌ sequential |
-| Developer worktree isolation | ✅ | ❌ working tree | ❌ working tree | ❌ working tree | ❌ working tree |
-| Interactive setup wizard (`/pipeline-setup`) | ✅ | manual config | manual config | manual config | manual config |
-| Optional review/verify skill enrichment | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Notifications / comments / board / file mode | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Native AGENTS.md orchestration | via CLAUDE.md | ✅ | via GEMINI.md | ✅ (v1.20.3+) | N/A |
+| Feature | Claude Code | pi | Codex CLI | Gemini CLI | Antigravity | Custom/local |
+|---------|:-----------:|:--:|:---------:|:----------:|:-----------:|:------------:|
+| Full pipeline (all roles/gates) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Parallel issues (`max_parallel > 1`) | ✅ | ❌ sequential | ❌ sequential | ❌ sequential | ❌ sequential | ❌ sequential |
+| Developer worktree isolation | ✅ | ❌ working tree | ❌ working tree | ❌ working tree | ❌ working tree | ❌ working tree |
+| Interactive setup wizard (`/pipeline-setup`) | ✅ | manual config | manual config | manual config | manual config | manual config |
+| Optional review/verify skill enrichment | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Notifications / comments / board / file mode | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Native AGENTS.md orchestration | via CLAUDE.md | skill | ✅ | via GEMINI.md | ✅ (v1.20.3+) | N/A |
 
 (The notifications / comments / board / file mode row is harness-independent — plain bash.)
 
