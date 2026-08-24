@@ -250,7 +250,8 @@ All keys live in `talos.pipeline.yml` at your repo root. Every key is optional a
 | `notifications.templates_dir` | `templates/notifications` | Path to notification message templates; `""` disables templates |
 | `notifications.threading` | `true` | Thread all events per issue in one Slack/Discord thread (bot-token mode only) |
 | `notifications.events` | all (unset) | Events filter. **Leave unset** — when set, any unlisted event is silently dropped, including all role events that make up the conversation stream. See warning below. |
-| `limits.max_fix_attempts` | `3` | Developer retries before escalating |
+| `limits.max_fix_attempts` | `3` | Max **consecutive** failures of the **same blocking stage** before `pipeline:blocked` is set. Resets to 1 when a different stage blocks next. **Behaviour change from v0.13:** this key previously counted every developer dispatch; it now counts consecutive same-stage failures only. Operators with existing configs should audit: a value of `3` previously allowed 3 total dispatches; it now allows 2 re-dispatches for the same stage (the third recording exits non-zero and blocks). |
+| `limits.max_total_dispatches` | `8` | Absolute ceiling on total developer dispatches per issue, across all stage changes. **Never resets** — not even when the blocking stage changes. Prevents a QA→reviewer→QA ping-pong from exploiting per-stage resets to run indefinitely. When the total reaches this value, `record-attempt` exits non-zero regardless of which stage is blocking. |
 
 ### Comment templates
 
@@ -441,6 +442,28 @@ The pipeline deliberately preserves three gates that only a human should act on:
 | `rerun-ci` | `<pr-number>` | Re-run failed CI runs for the PR head SHA (flaky-CI retry) |
 | `pr-head` | `<pr-number>` | Print the current head SHA for a PR. Fail-closed: exits 1 when the SHA cannot be resolved. Used by approval roles to stamp the SHA they approved. |
 | `check-approval-sha` | `<pr-number>` | Exit 1 if any approval label (`qa:pass`, `review:approved`, `security:approved`, `docs:done`) was earned against a non-current head SHA whose delta is not fully covered by `merge.approval_waiver_paths`. Fail-closed: unresolvable head SHA, missing marker, invalid waiver config, or `git diff` failure all exit non-zero. |
+| `record-attempt` | `<issue-n> <stage>` | Record one re-dispatch attempt for the given blocking stage on the issue. Reads prior state, computes the new per-stage count and running total, posts a `<!-- talos:attempt -->` marker comment on the issue, verifies the write landed, and prints `stage=<s> count=<k> total=<t>` on stdout. Exits non-zero when either ceiling (`max_fix_attempts` or `max_total_dispatches`) would be reached by this attempt — callers must check the exit code before re-dispatching the developer. Fail-closed: a corrupt or unparseable marker exits non-zero rather than silently resetting to zero. |
+| `read-attempt` | `<issue-n>` | Print the current attempt state (`stage=<s> count=<k> total=<t>`) from the most-recent attempt marker on the issue. Prints `stage= count=0 total=0` when no marker exists (a new issue). Always exits 0 unless the marker is corrupt (in which case it exits 1, fail-closed). Read-only; does not post a new comment. |
+| `check-attempt` | `<issue-n>` | Exit 1 (with reason on stderr) when either ceiling is already reached for the issue. Exit 0 otherwise. Does **not** record a new attempt — use `record-attempt` for that. Fail-closed: propagates a corrupt-marker exit 1 from `read-attempt`. |
+
+**Attempt-counting model.** Attempt state is stored as a `<!-- talos:attempt stage=<s> count=<k> total=<t> -->` HTML comment posted by `record-attempt` on the issue (not in orchestrator memory). Because the state lives on GitHub, it survives a crashed or restarted orchestrator session — the next session reads the same counts from the issue. Two ceilings apply:
+
+- **Per-stage ceiling** (`limits.max_fix_attempts`, default 3): counts consecutive failures of the **same** blocking stage. The count resets to 1 the first time a **different** stage blocks. With the default of 3, the developer can be re-dispatched twice for the same stage; the third recording exits non-zero and blocks.
+- **Total ceiling** (`limits.max_total_dispatches`, default 8): counts every re-dispatch across all stages, and never resets. With the default of 8, the developer can be re-dispatched seven times in total before the eighth recording blocks. This ceiling exists to stop a QA→reviewer→QA ping-pong from exploiting per-stage resets to run indefinitely.
+
+Both ceilings use `>=` comparison: they trigger when the count **reaches** the configured value, not only when it exceeds it.
+
+**Fail-closed and recovery.** The reader uses a two-stage detector: a loose pattern finds any comment that looks like a `talos:attempt` marker, and a strict pattern validates it. If a comment matches the loose pattern but fails strict validation (unknown stage name, non-numeric field, `total < count`, missing field, etc.), all three verbs exit 1 rather than silently treating the issue as having zero attempts. This prevents a corrupted marker from inadvertently granting an infinite retry budget.
+
+If an issue becomes blocked with a corrupt marker, the recovery procedure is:
+
+1. Go to the GitHub issue.
+2. Find the comment containing the `<!-- talos:attempt ... -->` marker (search for `talos:attempt` in the comment thread).
+3. Delete that comment using the GitHub UI (three-dot menu → Delete).
+4. `read-attempt` will then fall back to the next most-recent valid marker, or report zero attempts if none exists.
+5. Remove `pipeline:blocked`, re-add `pipeline:ready` to re-enter the pipeline.
+
+Do not edit the marker comment — partial edits may leave it in an ambiguous state. Delete and let the pipeline rewrite it.
 
 **Approval-SHA model.** Each approval role stamps `<!-- talos:approval sha=<HEAD_SHA> role=<role> -->` in its verdict comment when posting a pass. At Step 4, `check-approval-sha` compares every present approval label's stamped SHA against the current PR head. If a stamped SHA is older than the current head, the tool runs `git diff <approval-sha>..<current-head>` and checks whether every changed file is covered by `merge.approval_waiver_paths`. If any non-waivable file changed (or the diff cannot be computed), the gate blocks the merge, strips the stale labels, and the orchestrator re-dispatches the affected stages. A human sees a PR comment listing which labels were stale and why; the fix is to re-run the affected stage (e.g. ask QA to re-approve after a source-code push).
 
