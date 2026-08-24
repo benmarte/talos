@@ -281,6 +281,23 @@ secrets.*'
       # for `.env.local`, `.env.production`, etc.
       local allow
       allow="$(cfg merge.forbidden_files_allow "")"
+      # Validate allow entries: reject catch-all patterns that match every file.
+      # A pattern consisting solely of wildcard characters (*  ?) would bypass the
+      # entire secret-protection gate.  Fail closed — bad config must block, not pass.
+      if [ -n "$allow" ]; then
+        echo "$allow" | while IFS= read -r _entry; do
+          _entry="${_entry#"${_entry%%[![:space:]]*}"}"  # ltrim
+          _entry="${_entry%"${_entry##*[![:space:]]}"}"  # rtrim
+          [ -z "$_entry" ] && continue
+          # Strip all wildcard chars; if nothing remains it is a catch-all.
+          _stripped="${_entry//\*/}"
+          _stripped="${_stripped//\?/}"
+          if [ -z "$_stripped" ]; then
+            echo "pipeline-vcs: ERROR: merge.forbidden_files_allow entry '$_entry' is a catch-all wildcard and would disable secret protection — rejected" >&2
+            exit 1
+          fi
+        done || exit 1
+      fi
       gh pr view "$n" --json files -q '.files[].path' ${REPO:+--repo "$REPO"} 2>/dev/null \
         | PATTERNS="$patterns" ALLOW="$allow" python3 -c "
 import fnmatch, os, sys

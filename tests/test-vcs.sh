@@ -131,6 +131,43 @@ assert_eq "0" "$rc" "allow-list before deny: allowed file is not blocked even wh
 assert_contains "$out" "no forbidden files" "allow-list before deny: clean result reported"
 rm talos.pipeline.json
 
+# ── forbidden_files_allow: catch-all wildcard validation ──────────────────────
+# A bare '*' must be rejected with exit non-zero and an error naming the entry.
+cat > talos.pipeline.json <<'EOF'
+{"merge": {"forbidden_files_allow": ["*"]}}
+EOF
+out="$(STUB_PR_FILES=$'.env.production' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "allow-list catch-all '*': exits 1 (config rejected)"
+assert_contains "$out" "*" "allow-list catch-all '*': offending entry named in error"
+rm talos.pipeline.json
+
+# A bare '**' must also be rejected.
+cat > talos.pipeline.json <<'EOF'
+{"merge": {"forbidden_files_allow": ["**"]}}
+EOF
+out="$(STUB_PR_FILES=$'.env.production' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "allow-list catch-all '**': exits 1 (config rejected)"
+assert_contains "$out" "**" "allow-list catch-all '**': offending entry named in error"
+rm talos.pipeline.json
+
+# A narrow, legitimate entry ('.env.example') still works and exempts only that file.
+cat > talos.pipeline.json <<'EOF'
+{"merge": {"forbidden_files_allow": [".env.example"]}}
+EOF
+out="$(STUB_PR_FILES=$'.env.example\n.env.production' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "allow-list narrow entry: still blocks non-allowed .env.production"
+assert_not_contains "$out" ".env.example" "allow-list narrow entry: .env.example is exempt"
+assert_contains "$out" ".env.production" "allow-list narrow entry: .env.production is blocked"
+rm talos.pipeline.json
+
+# A genuine secret is still blocked when a narrow allow entry is present.
+cat > talos.pipeline.json <<'EOF'
+{"merge": {"forbidden_files_allow": [".env.example"]}}
+EOF
+out="$(STUB_PR_FILES=$'.env.example\n.env.production' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "allow-list narrow: genuine secret .env.production still blocked"
+rm talos.pipeline.json
+
 # ── list-prs passes --base and includes baseRefName ──────────────────────────
 # With BASE_BRANCH set via config, --dry-run must show --base and baseRefName.
 cat > talos.pipeline.json <<'EOF'

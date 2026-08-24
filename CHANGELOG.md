@@ -14,6 +14,10 @@
 
 - **`merge.forbidden_files_allow` config key.** An explicit allow-list checked **before** the deny patterns in `check-pr-files`. Glob-matched against filename and full path. Solves the case where a deny pattern (e.g. `.env.*`) over-matches a committed template (`.env.example`) that cannot simply be renamed. See README for usage.
 
+### Security
+
+- **Catch-all wildcard rejection in `merge.forbidden_files_allow`.** Allow-list entries consisting solely of wildcard characters (`*`, `**`, `?`, or any combination thereof) are now rejected at load time with exit non-zero and a message naming the offending entry. A single `*` or `**` entry previously caused `fnmatch` to return true for every filename, silently disabling the entire secret-protection gate. The gate now fails closed on invalid config rather than passing everything through.
+
 ## [0.13.0] - 2026-08-15
 
 ### Fixed
