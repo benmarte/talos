@@ -334,13 +334,16 @@ _github() {
       gh pr list --state "$state" --limit 100 \
         --json number,state,title,headRefName,body ${REPO:+--repo "$REPO"} 2>/dev/null \
         | python3 -c "
-import json, sys
+import json, re, sys
 n = sys.argv[1]
 try: prs = json.load(sys.stdin)
 except Exception: prs = []
 for pr in prs:
+    ref = pr.get('headRefName','')
     hay = pr.get('title','') + ' ' + pr.get('body','')
-    if f'issue-{n}' in pr.get('headRefName','') or f'#{n}' in hay:
+    branch_match = bool(re.search(r'(?:^|/)issue-' + re.escape(n) + r'(?:-|$)', ref))
+    body_match   = bool(re.search(r'#' + re.escape(n) + r'(?!\d)', hay))
+    if branch_match or body_match:
         print(json.dumps({k: pr.get(k) for k in ('number','state','title','headRefName')}))
 " "$n"
       ;;
@@ -518,7 +521,7 @@ n = sys.argv[1]
 kw = r'(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)'
 # Reference forms: #N  repo#N  owner/repo#N
 # The # is always required; only the leading owner/repo prefix is optional.
-ref = r'(?:[A-Za-z0-9_./-]+)?#' + re.escape(n)
+ref = r'(?:[A-Za-z0-9_./-]+)?#' + re.escape(n) + r'(?!\d)'
 pattern = kw + r'\s+' + ref
 if re.search(pattern, body, re.IGNORECASE):
     print('yes')
@@ -545,7 +548,7 @@ else:
       # Find open siblings (any PR referencing #N in branch/title/body, excluding this PR).
       local sibling_result
       sibling_result="$(printf '%s' "$siblings_json" | python3 -c "
-import json, sys
+import json, re, sys
 n    = sys.argv[1]
 self = sys.argv[2]
 try: prs = json.load(sys.stdin)
@@ -554,8 +557,11 @@ siblings = []
 for pr in prs:
     if str(pr.get('number','')) == self:
         continue
-    hay = pr.get('title','') + ' ' + pr.get('body','') + ' ' + pr.get('headRefName','')
-    if f'issue-{n}' in pr.get('headRefName','') or f'#{n}' in hay:
+    ref = pr.get('headRefName','')
+    hay = pr.get('title','') + ' ' + pr.get('body','')
+    branch_match = bool(re.search(r'(?:^|/)issue-' + re.escape(n) + r'(?:-|$)', ref))
+    body_match   = bool(re.search(r'#' + re.escape(n) + r'(?!\d)', hay))
+    if branch_match or body_match:
         siblings.append(str(pr.get('number','')))
 if siblings:
     print('blocked:' + ','.join(siblings))
@@ -1112,7 +1118,7 @@ print(json.dumps(result, indent=2))
       _issue="$(_ga_req GET "$_API/issues/$_n")"
       _comments="$(_ga_req GET "$_API/issues/$_n/comments?per_page=100")"
       printf '%s' "$_issue" | COMMENTS="$_comments" python3 -c "
-import json, sys, os
+import json, re, sys, os
 data = json.load(sys.stdin)
 try:
     comments = json.loads(os.environ.get('COMMENTS','[]'))
@@ -1490,7 +1496,7 @@ print(d.get('html_url', ''))
       local _raw
       _raw="$(_ga_req GET "$_API/pulls?state=$_api_state&per_page=100")"
       printf '%s' "$_raw" | STATE_FILTER="$_state" python3 -c "
-import json, sys, os
+import json, re, sys, os
 n = sys.argv[1]
 state_filter = os.environ.get('STATE_FILTER','open')
 try: prs = json.load(sys.stdin)
@@ -1498,7 +1504,7 @@ except Exception: prs = []
 for pr in prs:
     hay = pr.get('title','') + ' ' + (pr.get('body','') or '')
     ref = pr.get('head',{}).get('ref','')
-    if not (f'issue-{n}' in ref or f'#{n}' in hay):
+    if not (re.search(r'(?:^|/)issue-' + re.escape(n) + r'(?:-|$)', ref) or re.search(r'#' + re.escape(n) + r'(?!\d)', hay)):
         continue
     # For merged filter: only PRs with merged_at set
     if state_filter == 'merged' and not pr.get('merged_at'):

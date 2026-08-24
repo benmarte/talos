@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **`pipeline-vcs.sh`: anchored issue-number matching in `check-closing-keyword`, sibling lookup, and `find-pr` (all providers).**
+  The closing-keyword regex now appends `(?!\d)` so `Closes #571` no longer falsely matches issue 57.
+  The sibling lookup and both `find-pr` implementations (github and github-api providers) replaced
+  substring `in` checks with anchored regex — branch names use `(?:^|/)issue-N(?:-|$)` and body
+  text uses `#N(?!\d)` — so `fix/issue-571-x` is never treated as a sibling of issue 57, and
+  `#71` in a body is not returned by `find-pr 7`.
+  Includes 17 new regression tests in `test-closing-keyword.sh` covering the exact QA-failed case
+  (`Closes #571` must not match issue 57) and the symmetric false-negative (`Closes #57` must still
+  block when a sibling is open).
+
 ### Added
 
 - **Closing-keyword gate: `check-closing-keyword <pr> <N>` in `pipeline-vcs.sh` (GitHub provider).**

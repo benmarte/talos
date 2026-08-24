@@ -166,4 +166,84 @@ assert_exit_code 0 "$rc" "file mode: check-closing-keyword is a no-op exit 0"
 assert_contains "$out" "not applicable in file mode" "file mode: informative message"
 rm talos.pipeline.json plan.md
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# ISSUE-NUMBER COLLISION TESTS (fix for #57 — anchored matching)
+# Each test is constructed so it will RED if the guard is removed.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── Closing-keyword regex: #571 must NOT match issue 57 ───────────────────────
+# QA-failed case: a PR body saying "Closes #571" must exit 0 when no open PR for
+# issue 57 exists except the current PR (so no siblings).
+out="$(STUB_PR_BODY="Closes #571" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix: unrelated","headRefName":"fix/issue-571-foo","body":"Closes #571"}]' \
+  bash "$VCS" check-closing-keyword 9 57 2>&1)"; rc=$?
+assert_exit_code 0 "$rc" "collision: Closes #571 does NOT match issue 57 (must exit 0)"
+assert_not_contains "$out" "blocked" "collision: Closes #571 no blocked message for issue 57"
+
+# ── Closing-keyword regex: #57 still DOES match issue 57 ─────────────────────
+out="$(STUB_PR_BODY="Closes #57" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix: part","headRefName":"fix/issue-57-slug","body":"Closes #57"},{"number":8,"state":"OPEN","title":"fix: sibling","headRefName":"fix/issue-57-other","body":"Part of #57"}]' \
+  bash "$VCS" check-closing-keyword 9 57 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "collision: Closes #57 DOES match issue 57 with open sibling (must exit 1)"
+
+# ── Closing-keyword: #7 does not match issue 5 ───────────────────────────────
+out="$(STUB_PR_BODY="Closes #7" STUB_PR_NUMBER=3 \
+  STUB_PR_LIST='[{"number":3,"state":"OPEN","title":"t","headRefName":"fix/issue-7-foo","body":"Closes #7"}]' \
+  bash "$VCS" check-closing-keyword 3 5 2>&1)"; rc=$?
+assert_exit_code 0 "$rc" "collision: Closes #7 does NOT match issue 5 (must exit 0)"
+
+# ── Closing-keyword: #5 matches issue 5, #57 does not match issue 5 ──────────
+out="$(STUB_PR_BODY="Closes #57" STUB_PR_NUMBER=3 \
+  STUB_PR_LIST='[{"number":3,"state":"OPEN","title":"t","headRefName":"fix/issue-57-bar","body":"Closes #57"}]' \
+  bash "$VCS" check-closing-keyword 3 5 2>&1)"; rc=$?
+assert_exit_code 0 "$rc" "collision: Closes #57 does NOT match issue 5 (must exit 0)"
+
+# ── Sibling check: fix/issue-571-x is NOT a sibling of issue 57 ──────────────
+# PR 9 says "Closes #57"; PR 8 is on branch fix/issue-571-foo — NOT a sibling.
+out="$(STUB_PR_BODY="Closes #57" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix: final","headRefName":"fix/issue-57-final","body":"Closes #57"},{"number":8,"state":"OPEN","title":"fix: other","headRefName":"fix/issue-571-foo","body":"Other work"}]' \
+  bash "$VCS" check-closing-keyword 9 57 2>&1)"; rc=$?
+assert_exit_code 0 "$rc" "sibling-collision: fix/issue-571-foo is NOT a sibling of issue 57 (must exit 0)"
+assert_not_contains "$out" "blocked" "sibling-collision: no blocked message for issue-571 branch"
+
+# ── Sibling check: fix/issue-57-x IS a sibling of issue 57 ──────────────────
+out="$(STUB_PR_BODY="Closes #57" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix: final","headRefName":"fix/issue-57-final","body":"Closes #57"},{"number":8,"state":"OPEN","title":"fix: part","headRefName":"fix/issue-57-part1","body":"Part of #57"}]' \
+  bash "$VCS" check-closing-keyword 9 57 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "sibling-collision: fix/issue-57-part1 IS a sibling of issue 57 (must exit 1)"
+assert_contains "$out" "#8" "sibling-collision: sibling PR #8 named in diagnostic"
+
+# ── find-pr: fix/issue-571-x is NOT returned by find-pr 57 ──────────────────
+# Regression guard: find-pr 57 must not return a PR on branch fix/issue-571-x
+out="$(STUB_PR_LIST='[{"number":10,"state":"OPEN","title":"fix: 571","headRefName":"fix/issue-571-foo","body":"Some work"}]' \
+  bash "$VCS" find-pr 57 2>&1)"; rc=$?
+assert_exit_code 0 "$rc" "find-pr: exits 0 when fix/issue-571 branch present for find-pr 57"
+assert_not_contains "$out" "571" "find-pr 57: fix/issue-571-foo branch must NOT be returned"
+assert_not_contains "$out" "fix/issue-571-foo" "find-pr 57: PR #10 (issue-571) must not appear"
+
+# ── find-pr: fix/issue-57-x IS returned by find-pr 57 ───────────────────────
+out="$(STUB_PR_LIST='[{"number":11,"state":"OPEN","title":"fix: 57","headRefName":"fix/issue-57-slug","body":"Closes #57"}]' \
+  bash "$VCS" find-pr 57 2>&1)"
+assert_contains "$out" "fix/issue-57-slug" "find-pr 57: fix/issue-57-slug IS returned"
+
+# ── find-pr: fix/issue-71-x is NOT returned by find-pr 7 ────────────────────
+out="$(STUB_PR_LIST='[{"number":12,"state":"OPEN","title":"fix: 71","headRefName":"fix/issue-71-foo","body":"Work on 71"}]' \
+  bash "$VCS" find-pr 7 2>&1)"
+assert_not_contains "$out" "\"number\":12" "find-pr 7: fix/issue-71-foo must NOT be returned"
+
+# ── find-pr: fix/issue-7-x IS returned by find-pr 7 ─────────────────────────
+out="$(STUB_PR_LIST='[{"number":13,"state":"OPEN","title":"fix: 7","headRefName":"fix/issue-7-slug","body":"Closes #7"}]' \
+  bash "$VCS" find-pr 7 2>&1)"
+assert_contains "$out" "fix/issue-7-slug" "find-pr 7: fix/issue-7-slug IS returned"
+
+# ── find-pr body matching: #71 in body NOT returned by find-pr 7 ─────────────
+out="$(STUB_PR_LIST='[{"number":14,"state":"OPEN","title":"fix: seventy-one","headRefName":"feature/xyz","body":"Closes #71"}]' \
+  bash "$VCS" find-pr 7 2>&1)"
+assert_not_contains "$out" "\"number\":14" "find-pr 7: PR with body #71 must NOT be returned"
+
+# ── find-pr body matching: #7 in body IS returned by find-pr 7 ───────────────
+out="$(STUB_PR_LIST='[{"number":15,"state":"OPEN","title":"fix: seven","headRefName":"feature/abc","body":"Closes #7"}]' \
+  bash "$VCS" find-pr 7 2>&1)"
+assert_contains "$out" "fix: seven" "find-pr 7: PR with body #7 IS returned"
+
 finish
