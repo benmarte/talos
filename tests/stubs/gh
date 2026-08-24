@@ -26,6 +26,13 @@ case "$args" in
     printf '%s\n' "${STUB_ISSUE_TITLE:-Fix login crash}" ;;
   "pr view "*"--json title -q .title"*)
     printf '%s\n' "${STUB_PR_TITLE:-fix: guard null session}" ;;
+  "pr view "*"--json number,body"*)
+    # Used by check-closing-keyword: return PR number and body.
+    # Override STUB_PR_NUMBER, STUB_PR_BODY.
+    # NOTE: must come BEFORE broader patterns — bash case matches first.
+    _pn="${STUB_PR_NUMBER:-9}"
+    _pb="${STUB_PR_BODY:-Closes #42}"
+    printf '{"number":%s,"body":"%s"}\n' "$_pn" "$_pb" ;;
   "pr view "*"--json headRefOid,labels,comments"*)
     # Used by check-approval-sha: return a combined PR object.
     # Override STUB_PR_HEAD_SHA, STUB_PR_LABELS_JSON, STUB_PR_COMMENTS_JSON.

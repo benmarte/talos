@@ -4,6 +4,21 @@
 
 ### Added
 
+- **Closing-keyword gate: `check-closing-keyword <pr> <N>` in `pipeline-vcs.sh` (GitHub provider).**
+  Blocks a PR from merging when its body carries a closing keyword (`Closes/Fixes/Resolves #N`,
+  case-insensitive, all standard verb forms) while other PRs referencing the same issue are still
+  OPEN — closing the tracker at that point would orphan in-flight sibling work.
+  Implements Rule 6 enforcement: when the legitimate final PR of a multi-PR issue is ready to
+  merge, all prior siblings are already merged (not open), so the gate passes cleanly.
+  Fails open (exit 0) if PR body or sibling list cannot be fetched; emits a
+  `talos:closing-keyword-unverified pr=<N> issue=<N> reason=<literal>` marker on stdout so
+  callers can detect the degraded run without parsing logs.
+  No-op / exit 0 stub under gitlab, azure, and file providers.
+  `view-pr` (GitHub provider) now includes `body` in its `--json` fields.
+  SKILL.md Step 4 and Rule 6 updated to document the gate.
+  Known limitation: a lone PR that overclaims its deliverables (no sibling PRs at all) cannot
+  be detected — that requires a ledger, and nothing ticks one in VCS mode today.
+
 - **Per-stage consecutive attempt counting with durable state (`record-attempt`, `read-attempt`, `check-attempt` in `pipeline-vcs.sh`).**
   Replaces the flat developer-dispatch counter (which lived only in orchestrator memory) with a durable HTML-marker comment on the issue:
   `<!-- talos:attempt stage=<blocking_stage> count=<k> total=<t> -->`.

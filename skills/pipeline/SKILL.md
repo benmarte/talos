@@ -729,6 +729,21 @@ patterns; defaults cover `.env`, `*.pem`, `*.key`, …). Do NOT merge: add
 `pipeline:blocked` to the PR, post the check output as a PR comment, send a
 `blocked` notification, and move on. Only a human may clear this.
 
+**Closing-keyword gate (VCS mode only):** `bash scripts/pipeline-vcs.sh check-closing-keyword <PR_NUMBER> <N>`
+If it exits non-zero, the PR body carries a closing keyword (`Closes/Fixes/Resolves #N`)
+while other PRs referencing the same issue are still OPEN — merging would close the
+tracker and orphan in-flight sibling work. Do NOT merge: add `pipeline:blocked` to the PR,
+post the diagnostic (from stderr) as a PR comment, send a `blocked` notification, and move
+on. Only a human may clear this after resolving the sibling situation.
+
+If the gate exits 0 but prints a `talos:closing-keyword-unverified` line on stdout, PR body
+or sibling data could not be fetched — the gate failed open. Log the line and continue; the
+existing CI and approval gates still apply.
+
+Note: this gate does NOT catch a lone PR that overclaims its deliverables (e.g., 4 of 7
+items with `Closes #N` and no siblings). Detecting that requires a ledger; nothing in the
+pipeline ticks one in VCS mode today.
+
 Check CI: `bash scripts/pipeline-vcs.sh pr-checks <PR_NUMBER>`
 
 If failing: CI may be flaky — retry it, bounded to 2 re-runs per head SHA:
@@ -795,6 +810,8 @@ After processing all issues, print a summary table:
 4. Never use `main` as the base branch unless `base_branch` config explicitly says `main`.
 5. Worktree subagents must edit files at THEIR OWN worktree path, not the orchestrator's checkout.
 6. Multi-PR issues: all PRs except the last say "Part of #N"; the last says "Closes #N".
+   The pipeline enforces this — a `Closes #N` PR is blocked at merge time if any other PRs
+   for that issue are still open.
 7. Never guess a PR number — always read it from `pipeline-vcs.sh view-pr <branch>`.
 8. Stage comments are mandatory when `comments.enabled = true`; fall back to inline text if template missing.
 9. Role-event notifications are mandatory after each subagent (conversation stream protocol). PM is exempt.
