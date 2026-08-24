@@ -4,6 +4,16 @@
 
 ### Added
 
+- **Per-stage consecutive attempt counting with durable state (`record-attempt`, `read-attempt`, `check-attempt` in `pipeline-vcs.sh`).**
+  Replaces the flat developer-dispatch counter (which lived only in orchestrator memory) with a durable HTML-marker comment on the issue:
+  `<!-- talos:attempt stage=<blocking_stage> count=<k> total=<t> -->`.
+  `record-attempt <issue-n> <stage>` reads prior state, computes the new per-stage count (resets when the blocking stage changes) and running total (never resets), posts the marker comment, verifies the write landed, and exits non-zero when either ceiling is reached.
+  `read-attempt <issue-n>` prints the current state (or `stage= count=0 total=0` when no marker exists).
+  `check-attempt <issue-n>` exits non-zero when either ceiling is already reached (read-only).
+  New config key `limits.max_total_dispatches` (default: 8) provides the absolute per-issue ceiling; existing `limits.max_fix_attempts` (default: 3) now counts consecutive per-stage failures only.
+  SKILL.md updated to call `record-attempt` at every QA/reviewer/security re-dispatch instead of counting in prose.
+  Fail-closed: a corrupted or unparseable marker exits non-zero rather than silently resetting to zero.
+
 - **Closed-target guard on `comment-issue` and `comment-pr` in `pipeline-vcs.sh`.**
   Both verbs now check the target's state before posting: a closed issue or a
   closed-unmerged PR causes a non-zero exit with the state printed to stderr.

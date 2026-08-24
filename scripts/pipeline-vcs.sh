@@ -36,6 +36,21 @@
 #                                             against a non-current head SHA (stale
 #                                             approvals); respects
 #                                             merge.approval_waiver_paths config
+#   record-attempt <issue-n> <stage>          Record one attempt for the given blocking
+#                                             stage on the issue. Reads prior state,
+#                                             computes new per-stage count and running
+#                                             total, posts a <!-- talos:attempt --> marker
+#                                             comment, and prints "stage=<s> count=<k>
+#                                             total=<t>" on stdout. Exits non-zero when
+#                                             either ceiling would be exceeded.
+#   read-attempt <issue-n>                    Print stage/count/total from the most
+#                                             recent attempt marker on the issue.
+#                                             Exits 0 (prints "stage= count=0 total=0")
+#                                             when no marker exists yet.
+#   check-attempt <issue-n>                   Exit 1 (and print reason) when EITHER
+#                                             ceiling is already reached for the issue;
+#                                             exit 0 otherwise. Does NOT record a new
+#                                             attempt — use record-attempt for that.
 #
 # Config keys (from talos.pipeline.yml via pipeline-config.sh):
 #   vcs.provider          github | github-api | gitlab | azure | file   (default: github)
@@ -47,6 +62,10 @@
 #   vcs.file.source.path  path to plan.md  (default: plan.md)
 #   base_branch           PR target branch
 #   merge.method          squash | merge | rebase   (default: squash)
+#   limits.max_fix_attempts     max consecutive per-stage failures before
+#                               pipeline:blocked (default: 3)
+#   limits.max_total_dispatches absolute ceiling on total developer dispatches
+#                               per issue — never resets (default: 8)
 #
 # --dry-run: print the underlying CLI command instead of running it.
 #            For file mode: describe the edit without applying it.
@@ -451,6 +470,209 @@ for r in runs:
       [ -z "$sha" ] && { echo "pipeline-vcs: pr-head: could not resolve head SHA for PR #$n" >&2; exit 1; }
       printf '%s\n' "$sha"
       ;;
+
+    # ── Attempt counting ─────────────────────────────────────────────────────
+    # Shared Python helper embedded here; called by record-attempt, read-attempt,
+    # check-attempt. Follows the same fail-closed pattern as check-approval-sha.
+
+    read-attempt)
+      # read-attempt <issue-n>
+      # Print "stage=<s> count=<k> total=<t>" from the most-recent attempt
+      # marker on the issue. Prints "stage= count=0 total=0" when no marker
+      # exists (new issue). Exits 0 always (read-only query).
+      local n="${1:-}"
+      [ -z "$n" ] && { echo "pipeline-vcs: read-attempt: missing issue number" >&2; exit 1; }
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] read-attempt $n: fetch issue comments and extract last talos:attempt marker"
+        return 0
+      fi
+      local issue_data
+      issue_data="$(gh issue view "$n" --json comments ${REPO:+--repo "$REPO"} 2>/dev/null)"
+      if [ -z "$issue_data" ]; then
+        echo "pipeline-vcs: read-attempt: could not fetch issue #$n data" >&2
+        exit 1
+      fi
+      printf '%s' "$issue_data" | python3 -c "
+import json, re, sys
+
+# Stage-1 permissive detector: matches any HTML comment that looks like it
+# could be a talos:attempt marker.  Used to distinguish 'no marker present'
+# (safe) from 'marker present but unparseable' (corrupt → fail-closed).
+LOOSE_RE = re.compile(r'<!--\s*talos:attempt\b[^>]*-->')
+
+# Stage-2 strict extractor: only matches a syntactically valid marker.
+MARKER_RE = re.compile(
+    r'<!--\s*talos:attempt\s+stage=(\S+)\s+count=(\d+)\s+total=(\d+)\s*-->$',
+    re.MULTILINE
+)
+KNOWN_STAGES = {
+    'developer', 'qa', 'reviewer', 'security', 'docs',
+    'validator', 'pm', 'orchestrator', 'planner',
+}
+
+try:
+    data = json.load(sys.stdin)
+except Exception as exc:
+    print(f'pipeline-vcs: read-attempt: could not parse issue data: {exc}', file=sys.stderr)
+    sys.exit(1)
+
+comments = [c.get('body', '') for c in data.get('comments', [])]
+
+# GitHub returns comments oldest-first; search newest-first for the last marker.
+found = None
+for body in reversed(comments):
+    # Require the marker to appear as the last non-whitespace line of the comment
+    # body (same guard as talos:approval), so a quoted/fenced occurrence cannot win.
+    stripped = body.rstrip()
+    last_line = stripped.rsplit('\n', 1)[-1].strip()
+
+    # Stage 1: does this line look at all like a talos:attempt marker?
+    if not LOOSE_RE.search(last_line):
+        continue  # not a marker line — skip to next comment
+
+    # Stage 2: the line IS marker-like; it must parse exactly or it is corrupt.
+    # Corrupt markers NEVER fall through to zero — that would grant infinite retries.
+    m = MARKER_RE.match(last_line)
+    if not m:
+        print(
+            f'pipeline-vcs: read-attempt: corrupt marker (does not parse): '
+            f'{last_line!r} — fail-closed',
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    stage, count_str, total_str = m.group(1), m.group(2), m.group(3)
+    # Semantic validation: stage must be known, values non-negative, count <= total.
+    if stage not in KNOWN_STAGES:
+        print(f'pipeline-vcs: read-attempt: unrecognised stage \"{stage}\" in marker — fail-closed', file=sys.stderr)
+        sys.exit(1)
+    count_val = int(count_str)
+    total_val = int(total_str)
+    if count_val < 0 or total_val < 0:
+        print('pipeline-vcs: read-attempt: negative value in marker — fail-closed', file=sys.stderr)
+        sys.exit(1)
+    if total_val < count_val:
+        print('pipeline-vcs: read-attempt: total < count in marker — fail-closed', file=sys.stderr)
+        sys.exit(1)
+    found = (stage, count_val, total_val)
+    break
+
+if found:
+    stage, count_val, total_val = found
+    print(f'stage={stage} count={count_val} total={total_val}')
+else:
+    # No marker detected at all — treat as zero attempts (deliberate, not accidental).
+    print('stage= count=0 total=0')
+sys.exit(0)
+"
+      ;;
+
+    check-attempt)
+      # check-attempt <issue-n>
+      # Exit 1 (with reason) when EITHER ceiling is already reached for the
+      # issue.  Does NOT record a new attempt — callers do that with
+      # record-attempt.  Reads limits.max_fix_attempts and
+      # limits.max_total_dispatches from config.
+      local n="${1:-}"
+      [ -z "$n" ] && { echo "pipeline-vcs: check-attempt: missing issue number" >&2; exit 1; }
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] check-attempt $n: compare current attempt state against configured ceilings"
+        return 0
+      fi
+      local max_stage max_total
+      max_stage="$(cfg limits.max_fix_attempts 3)"
+      max_total="$(cfg limits.max_total_dispatches 8)"
+      local state
+      state="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" read-attempt "$n" ${REPO:+--repo "$REPO"} 2>&1)"
+      local rc=$?
+      if [ $rc -ne 0 ]; then
+        echo "pipeline-vcs: check-attempt: read-attempt failed: $state" >&2
+        exit 1
+      fi
+      # Parse the state line
+      local cur_stage cur_count cur_total
+      cur_stage="$(printf '%s' "$state" | sed 's/stage=\([^ ]*\).*/\1/')"
+      cur_count="$(printf '%s' "$state" | sed 's/.*count=\([0-9]*\).*/\1/')"
+      cur_total="$(printf '%s' "$state" | sed 's/.*total=\([0-9]*\).*/\1/')"
+      # Check total ceiling first
+      if [ "$cur_total" -ge "$max_total" ]; then
+        echo "pipeline-vcs: check-attempt: BLOCKED — total dispatches ($cur_total) >= max_total_dispatches ($max_total)" >&2
+        exit 1
+      fi
+      # Check per-stage ceiling
+      if [ -n "$cur_stage" ] && [ "$cur_count" -ge "$max_stage" ]; then
+        echo "pipeline-vcs: check-attempt: BLOCKED — $cur_stage consecutive attempts ($cur_count) >= max_fix_attempts ($max_stage)" >&2
+        exit 1
+      fi
+      echo "pipeline-vcs: check-attempt: ok (stage=$cur_stage count=$cur_count total=$cur_total; max_stage=$max_stage max_total=$max_total)"
+      exit 0
+      ;;
+
+    record-attempt)
+      # record-attempt <issue-n> <blocking-stage>
+      # Read prior state, compute new per-stage count and total, post the
+      # marker comment, and print "stage=<s> count=<k> total=<t>".
+      # Exits non-zero when EITHER ceiling is exceeded AFTER recording.
+      local n="${1:-}" stage="${2:-}"
+      [ -z "$n" ]     && { echo "pipeline-vcs: record-attempt: missing issue number" >&2; exit 1; }
+      [ -z "$stage" ] && { echo "pipeline-vcs: record-attempt: missing stage argument" >&2; exit 1; }
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] record-attempt $n $stage: read prior state, post <!-- talos:attempt stage=$stage ... --> marker"
+        return 0
+      fi
+      local max_stage max_total
+      max_stage="$(cfg limits.max_fix_attempts 3)"
+      max_total="$(cfg limits.max_total_dispatches 8)"
+      # Read current state (fail-closed on parse error)
+      local state
+      state="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" read-attempt "$n" ${REPO:+--repo "$REPO"} 2>&1)"
+      local rc=$?
+      if [ $rc -ne 0 ]; then
+        echo "pipeline-vcs: record-attempt: read-attempt failed: $state" >&2
+        exit 1
+      fi
+      local prev_stage prev_count prev_total
+      prev_stage="$(printf '%s' "$state" | sed 's/stage=\([^ ]*\).*/\1/')"
+      prev_count="$(printf '%s' "$state" | sed 's/.*count=\([0-9]*\).*/\1/')"
+      prev_total="$(printf '%s' "$state" | sed 's/.*total=\([0-9]*\).*/\1/')"
+      # Compute new counts
+      local new_count new_total
+      new_total=$(( prev_total + 1 ))
+      if [ "$prev_stage" = "$stage" ]; then
+        # Same stage: increment consecutive count
+        new_count=$(( prev_count + 1 ))
+      else
+        # Different stage: reset per-stage count to 1
+        new_count=1
+      fi
+      # Build marker body (marker MUST be the last line of the comment)
+      local marker_body
+      marker_body="$(printf 'Talos attempt record — stage=%s count=%d total=%d\n<!-- talos:attempt stage=%s count=%d total=%d -->' \
+        "$stage" "$new_count" "$new_total" \
+        "$stage" "$new_count" "$new_total")"
+      # Post the comment and verify the write landed
+      local comment_url
+      comment_url="$(gh issue comment "$n" --body "$marker_body" ${REPO:+--repo "$REPO"} 2>/dev/null)"
+      if [ -z "$comment_url" ]; then
+        echo "pipeline-vcs: record-attempt: failed to post attempt marker for issue #$n" >&2
+        exit 1
+      fi
+      echo "pipeline-vcs: record-attempt: marker posted at $comment_url" >&2
+      printf 'stage=%s count=%d total=%d\n' "$stage" "$new_count" "$new_total"
+      # Exit non-zero if EITHER ceiling is now reached
+      local blocked=false
+      if [ "$new_total" -ge "$max_total" ]; then
+        echo "pipeline-vcs: record-attempt: BLOCKED — total dispatches ($new_total) >= max_total_dispatches ($max_total)" >&2
+        blocked=true
+      fi
+      if [ "$new_count" -ge "$max_stage" ]; then
+        echo "pipeline-vcs: record-attempt: BLOCKED — $stage consecutive attempts ($new_count) >= max_fix_attempts ($max_stage)" >&2
+        blocked=true
+      fi
+      [ "$blocked" = "true" ] && exit 1
+      exit 0
+      ;;
+
     check-approval-sha)
       # check-approval-sha <n>
       # Verify that every approval label present on the PR was earned against
