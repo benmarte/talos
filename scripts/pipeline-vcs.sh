@@ -349,9 +349,10 @@ for pr in prs:
       ;;
     check-pr-files)
       local n="$1"
-      local patterns
-      patterns="$(cfg merge.forbidden_files "")"
-      [ -z "$patterns" ] && patterns='.env
+      # Built-in defaults — always active unless merge.forbidden_files_replace: true.
+      # #61 fix: setting merge.forbidden_files now UNIONs with these defaults rather
+      # than replacing them wholesale, closing the silent neutering attack surface.
+      local _BUILTIN_DEFAULTS='.env
 .env.*
 *.pem
 *.key
@@ -359,10 +360,37 @@ for pr in prs:
 *.pfx
 *.secrets
 secrets.*'
+      local patterns _defaults_active
+      local _configured _replace
+      _configured="$(cfg merge.forbidden_files "")"
+      _replace="$(cfg merge.forbidden_files_replace "")"
+      if [ -n "$_configured" ] && [ "$_replace" = "true" ]; then
+        # Explicit opt-out: operator acknowledged they want replacement behaviour.
+        echo "pipeline-vcs: WARNING: merge.forbidden_files_replace=true — built-in secret-protection defaults are SUPPRESSED; only configured patterns are active" >&2
+        patterns="$_configured"
+        _defaults_active="replaced"
+      elif [ -n "$_configured" ]; then
+        # Default (union): configured patterns are ADDED to the built-in defaults.
+        patterns="$_BUILTIN_DEFAULTS
+$_configured"
+        _defaults_active="in-force"
+      else
+        patterns="$_BUILTIN_DEFAULTS"
+        _defaults_active="in-force"
+      fi
       if [ "$DRY_RUN" = "true" ]; then
         echo "[dry-run] gh pr view $n --json files | match against forbidden patterns"
         return 0
       fi
+      # Transparency markers — always emitted on stdout so every run record is
+      # auditable.  Values are fixed literals or integers — never interpolated from
+      # config text (guards against marker-injection via a crafted config value).
+      local _pat_count
+      _pat_count="$(printf '%s\n' "$patterns" | grep -c '[^[:space:]]')" || _pat_count=0
+      printf '%s' "$_pat_count" | grep -qE '^[0-9]+$' || _pat_count=0
+      printf 'talos:forbidden-files-active patterns=%d defaults=%s\n' "$_pat_count" "$_defaults_active"
+      [ "$_defaults_active" = "replaced" ] && \
+        printf 'talos:forbidden-files-defaults-replaced patterns=%d\n' "$_pat_count"
       # merge.forbidden_files_allow — explicit exclusions, checked BEFORE the deny
       # patterns. Added 2026-08-22: the default `.env.*` correctly guards real dotenv
       # files but over-matches a committed `.env.example` template, which is the file
@@ -409,6 +437,13 @@ for pat in patterns:
     canaries.append('sub/dir/' + lit)
     canaries.append('config/' + lit)
 
+# #64 fix: when canary generation yields an empty set (all-literal deny list),
+# fall back to built-in canaries so the validator is never vacuous.
+# An empty canary set must NEVER mean every allow entry is permitted.
+if not canaries:
+    canaries = ['x.env', 'sub/dir/x.env', 'config/x.env',
+                'x.pem', 'sub/dir/x.pem', 'config/x.pem']
+
 errors = []
 for entry in allow:
     for canary in canaries:
@@ -426,10 +461,12 @@ if errors:
 " || exit 1  # Fail closed: validation error or unexpected exception must block, not pass
       fi
       gh pr view "$n" --json files -q '.files[].path' ${REPO:+--repo "$REPO"} 2>/dev/null \
-        | PATTERNS="$patterns" ALLOW="$allow" python3 -c "
+        | PATTERNS="$patterns" ALLOW="$allow" PAT_COUNT="$_pat_count" DEFAULTS_ACTIVE="$_defaults_active" python3 -c "
 import fnmatch, os, sys
 patterns = [p.strip() for p in os.environ['PATTERNS'].splitlines() if p.strip()]
 allow = [a.strip() for a in os.environ.get('ALLOW','').splitlines() if a.strip()]
+pat_count = os.environ.get('PAT_COUNT', '0')
+defaults_active = os.environ.get('DEFAULTS_ACTIVE', 'in-force')
 bad = []
 for path in (l.strip() for l in sys.stdin if l.strip()):
     base = os.path.basename(path)
@@ -441,7 +478,7 @@ if bad:
     print('FORBIDDEN FILES in PR — human review required before merge:')
     for p in bad: print(f'  {p}')
     sys.exit(1)
-print('no forbidden files')
+print(f'no forbidden files [{pat_count} patterns: defaults={defaults_active}]')
 "
       ;;
     rerun-ci)
@@ -808,8 +845,8 @@ sys.exit(0)
       # since the approval SHA are covered by the configured waiver list
       # (merge.approval_waiver_paths; default: *.md docs/** CHANGELOG.md).
       # Hard-coded non-waivable: scripts/**, tests/**, talos.pipeline.yml,
-      # pipeline.yaml — these are enforced AFTER the config waiver so the config
-      # can never widen a waiver to cover them.
+      # pipeline.yaml — these are enforced FIRST (before the config waiver) so
+      # the config waiver can never be widened to cover them.
       # Fail-closed: unresolvable head SHA, missing marker, or git diff failure
       # all exit non-zero.
       local n="$1"
@@ -1526,9 +1563,9 @@ for pr in prs:
 
     check-pr-files)
       local _n="$1"
-      local _patterns
-      _patterns="$(cfg merge.forbidden_files "")"
-      [ -z "$_patterns" ] && _patterns='.env
+      # Built-in defaults — always active unless merge.forbidden_files_replace: true.
+      # #61 fix: union semantics match the github provider; both providers are identical.
+      local _BUILTIN_DEFAULTS='.env
 .env.*
 *.pem
 *.key
@@ -1536,15 +1573,87 @@ for pr in prs:
 *.pfx
 *.secrets
 secrets.*'
+      local _patterns _defaults_active
+      local _ga_configured _ga_replace
+      _ga_configured="$(cfg merge.forbidden_files "")"
+      _ga_replace="$(cfg merge.forbidden_files_replace "")"
+      if [ -n "$_ga_configured" ] && [ "$_ga_replace" = "true" ]; then
+        echo "pipeline-vcs: WARNING: merge.forbidden_files_replace=true — built-in secret-protection defaults are SUPPRESSED; only configured patterns are active" >&2
+        _patterns="$_ga_configured"
+        _defaults_active="replaced"
+      elif [ -n "$_ga_configured" ]; then
+        _patterns="$_BUILTIN_DEFAULTS
+$_ga_configured"
+        _defaults_active="in-force"
+      else
+        _patterns="$_BUILTIN_DEFAULTS"
+        _defaults_active="in-force"
+      fi
       if [ "$DRY_RUN" = "true" ]; then
         echo "[dry-run] github-api: GET $_API/pulls/$_n/files | match against forbidden patterns"
         return 0
       fi
+      # Transparency markers — identical to github provider.
+      local _ga_pat_count
+      _ga_pat_count="$(printf '%s\n' "$_patterns" | grep -c '[^[:space:]]')" || _ga_pat_count=0
+      printf '%s' "$_ga_pat_count" | grep -qE '^[0-9]+$' || _ga_pat_count=0
+      printf 'talos:forbidden-files-active patterns=%d defaults=%s\n' "$_ga_pat_count" "$_defaults_active"
+      [ "$_defaults_active" = "replaced" ] && \
+        printf 'talos:forbidden-files-defaults-replaced patterns=%d\n' "$_ga_pat_count"
+      # merge.forbidden_files_allow — allow-list validation (identical to github provider).
+      local _ga_allow
+      _ga_allow="$(cfg merge.forbidden_files_allow "")"
+      if [ -n "$_ga_allow" ]; then
+        PATTERNS="$_patterns" ALLOW="$_ga_allow" python3 -c "
+import fnmatch, os, re, sys
+
+patterns = [p.strip() for p in os.environ['PATTERNS'].splitlines() if p.strip()]
+allow    = [a.strip() for a in os.environ.get('ALLOW','').splitlines() if a.strip()]
+
+def pat_to_literal(pat):
+    s = re.sub(r'\\[[^\\]]*\\]', 'x', pat)
+    return s.replace('*', 'x').replace('?', 'x')
+
+canaries = []
+for pat in patterns:
+    if not re.search(r'[*?\[\]]', pat):
+        continue
+    lit = pat_to_literal(pat)
+    if not lit:
+        continue
+    canaries.append(lit)
+    canaries.append('sub/dir/' + lit)
+    canaries.append('config/' + lit)
+
+# #64 fix: fall back to built-in canaries when deny list is all-literal.
+if not canaries:
+    canaries = ['x.env', 'sub/dir/x.env', 'config/x.env',
+                'x.pem', 'sub/dir/x.pem', 'config/x.pem']
+
+errors = []
+for entry in allow:
+    for canary in canaries:
+        base = os.path.basename(canary)
+        if fnmatch.fnmatch(base, entry) or fnmatch.fnmatch(canary, entry):
+            errors.append(
+                'pipeline-vcs: ERROR: merge.forbidden_files_allow entry \'' + entry +
+                '\' would exempt \'' + canary + '\' — rejected'
+            )
+            break
+if errors:
+    for e in errors:
+        print(e, file=sys.stderr)
+    sys.exit(1)
+" || exit 1
+      fi
       local _files_raw
       _files_raw="$(_ga_req GET "$_API/pulls/$_n/files?per_page=100")"
-      printf '%s' "$_files_raw" | PATTERNS="$_patterns" python3 -c "
+      printf '%s' "$_files_raw" | PATTERNS="$_patterns" ALLOW="$_ga_allow" PAT_COUNT="$_ga_pat_count" DEFAULTS_ACTIVE="$_defaults_active" python3 -c "
 import fnmatch, os, sys, json
 patterns = [p.strip() for p in os.environ['PATTERNS'].splitlines() if p.strip()]
+allow = [a.strip() for a in os.environ.get('ALLOW','').splitlines() if a.strip()]
+pat_count = os.environ.get('PAT_COUNT', '0')
+defaults_active = os.environ.get('DEFAULTS_ACTIVE', 'in-force')
 bad = []
 try:
     files = json.load(sys.stdin)
@@ -1553,13 +1662,15 @@ except Exception:
 for f in files:
     path = f.get('filename','')
     base = os.path.basename(path)
+    if any(fnmatch.fnmatch(base, a) or fnmatch.fnmatch(path, a) for a in allow):
+        continue
     if any(fnmatch.fnmatch(base, p) or fnmatch.fnmatch(path, p) for p in patterns):
         bad.append(path)
 if bad:
     print('FORBIDDEN FILES in PR — human review required before merge:')
     for p in bad: print(f'  {p}')
     sys.exit(1)
-print('no forbidden files')
+print(f'no forbidden files [{pat_count} patterns: defaults={defaults_active}]')
 "
       ;;
 

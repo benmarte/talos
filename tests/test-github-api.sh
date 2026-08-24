@@ -153,6 +153,33 @@ assert_contains "$out" "deploy/prod.pem"         "check-pr-files: pem file liste
 assert_contains "$out" ".env.production"         "check-pr-files: env file listed"
 assert_not_contains "$out" "src/auth.js"         "check-pr-files: clean file not listed"
 
+# ── github-api: check-pr-files — compound-chain regression (#61+#64) ──────────
+# Same 4-step bypass as test-vcs.sh — must block under github-api provider too.
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "github-api", "repo": "acme/widget"}, "merge": {"forbidden_files": [".env","id_rsa","credentials.json"], "forbidden_files_allow": ["*"]}}
+EOF
+: > "$CURL_LOG"
+printf '%s\n' \
+  '[{"filename":".env","status":"added"},{"filename":"id_rsa","status":"added"}]' \
+  > "$CURL_QUEUE"
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "github-api compound-chain: exits non-zero (bypass closed)"
+assert_contains "$out" "*" "github-api compound-chain: offending allow-entry '*' named"
+# Restore original config
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "github-api", "repo": "acme/widget"}}
+EOF
+
+# ── github-api: check-pr-files — transparency markers ─────────────────────────
+: > "$CURL_LOG"
+printf '%s\n' \
+  '[{"filename":"src/auth.js","status":"modified"}]' \
+  > "$CURL_QUEUE"
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "0" "$rc" "github-api transparency: clean PR exits 0"
+assert_contains "$out" "talos:forbidden-files-active patterns=" "github-api transparency: active-patterns marker present"
+assert_contains "$out" "no forbidden files" "github-api transparency: clean result reported"
+
 # ── approve-pr ────────────────────────────────────────────────────────────────
 : > "$CURL_LOG"
 printf '%s\n' \

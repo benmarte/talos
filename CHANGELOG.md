@@ -4,6 +4,22 @@
 
 ### Fixed
 
+- **`pipeline-vcs.sh`: `check-pr-files` union semantics and canary fallback close compound gate bypass (#61, #64).**
+  `merge.forbidden_files` now **unions** with the built-in defaults (`.env`, `.env.*`, `*.pem`, `*.key`,
+  `*.p12`, `*.pfx`, `*.secrets`, `secrets.*`) rather than replacing them wholesale.  Operators who
+  genuinely need to narrow the list can set `merge.forbidden_files_replace: true`, which restores the
+  old replacement behaviour and emits a stderr warning plus a `talos:forbidden-files-defaults-replaced`
+  stdout marker on every run so the suppressed state is auditable.  A `talos:forbidden-files-active`
+  marker is always emitted with the active pattern count and whether defaults are in force, so a
+  neutered gate no longer looks identical to a real pass (#61).
+  The allow-list canary generator now falls back to built-in canaries (`x.env`, `x.pem`, and
+  subdirectory variants) when the deny list contains no wildcard patterns, so `merge.forbidden_files_allow: ['*']`
+  is rejected even under an all-literal deny list rather than silently passing (#64).
+  Both fixes are applied identically in the `github` and `github-api` providers; the `github-api`
+  provider now also performs allow-list validation (it previously had none).
+  The comment above the non-waivable path check in `check-approval-sha` is corrected to describe
+  the real control flow (hard-coded paths are checked FIRST, then the config waiver).
+
 - **`pipeline-vcs.sh`: anchored issue-number matching in `check-closing-keyword`, sibling lookup, and `find-pr` (all providers).**
   The closing-keyword regex now appends `(?!\d)` so `Closes #571` no longer falsely matches issue 57.
   The sibling lookup and both `find-pr` implementations (github and github-api providers) replaced

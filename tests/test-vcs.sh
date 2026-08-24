@@ -109,7 +109,8 @@ EOF
 out="$(STUB_PR_FILES=$'infra/prod.tfstate\n.env' bash "$VCS" check-pr-files 9)"; rc=$?
 assert_eq "1" "$rc" "custom forbidden_files config enforced"
 assert_contains "$out" "infra/prod.tfstate" "custom pattern matched"
-assert_not_contains "$out" ".env" "custom config replaces defaults"
+# #61 fix: union semantics — defaults remain active when custom patterns are set
+assert_contains "$out" ".env" "union: defaults still active alongside custom patterns"
 rm talos.pipeline.json
 
 # ── forbidden_files_allow: allow-list checked before deny patterns ─────────────
@@ -172,6 +173,68 @@ assert_eq "1" "$rc" "allow-list legitimate entry: accepted; real secrets still b
 assert_not_contains "$out" ".env.example" "allow-list legitimate entry: .env.example is exempt"
 assert_contains "$out" ".env.production" "allow-list legitimate entry: .env.production is blocked"
 assert_contains "$out" "server.pem" "allow-list legitimate entry: server.pem (*.pem) is still blocked"
+rm talos.pipeline.json
+
+# ── #61/#64 compound-chain regression: the complete 4-step bypass must now BLOCK ──
+# Reproduction of the exact exploit:
+#   1. merge.forbidden_files: all-literal list  -> #61: used to replace defaults wholesale
+#   2. all-literal deny list                    -> #64: canary generator emitted nothing
+#   3. merge.forbidden_files_allow: ['*']       -> no canaries -> allowed (WRONG)
+#   4. .env, id_rsa, credentials.json           -> exempted, gate exits 0 (WRONG)
+# After fix: union keeps defaults (which have wildcards), canaries are generated,
+# allow:'*' is REJECTED, and check-pr-files exits non-zero.
+cat > talos.pipeline.json <<'EOF'
+{"merge": {"forbidden_files": [".env","id_rsa","credentials.json"], "forbidden_files_allow": ["*"]}}
+EOF
+out="$(STUB_PR_FILES=$'.env\nid_rsa\ncredentials.json\ndeploy/id_rsa' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "compound-chain: check-pr-files exits non-zero (bypass closed)"
+assert_contains "$out" "*" "compound-chain: offending allow-entry '*' named in error"
+rm talos.pipeline.json
+
+# ── #61: transparency markers emitted on every run ────────────────────────────
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "0" "$rc" "transparency: clean PR still exits 0"
+assert_contains "$out" "talos:forbidden-files-active patterns=" "transparency: active-patterns marker present"
+assert_contains "$out" "defaults=in-force" "transparency: defaults in-force on default config"
+
+# ── #61: merge.forbidden_files_replace: true restores old behaviour + emits warning ──
+cat > talos.pipeline.json <<'EOF'
+{"merge": {"forbidden_files": ["*.tfstate"], "forbidden_files_replace": true}}
+EOF
+out="$(STUB_PR_FILES=$'infra/prod.tfstate\n.env' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "replace=true: tfstate still blocked"
+assert_contains "$out" "infra/prod.tfstate" "replace=true: custom pattern enforced"
+assert_not_contains "$out" ".env" "replace=true: defaults suppressed as requested"
+# Must emit both the stderr warning and the stdout marker
+assert_contains "$out" "SUPPRESSED" "replace=true: stderr warning about suppressed defaults"
+assert_contains "$out" "talos:forbidden-files-defaults-replaced" "replace=true: stdout marker emitted"
+rm talos.pipeline.json
+
+# ── #64: empty canary set falls back to built-ins; allow:['*'] still rejected ──
+# Scenario: replace=true with all-literal deny list -> canary generator would emit
+# nothing without the fallback.  Built-in canaries must catch allow:'*'.
+cat > talos.pipeline.json <<'EOF'
+{"merge": {"forbidden_files": [".env","id_rsa","credentials.json"], "forbidden_files_replace": true, "forbidden_files_allow": ["*"]}}
+EOF
+out="$(STUB_PR_FILES=$'.env' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "canary-fallback: allow='*' rejected under all-literal replace list"
+assert_contains "$out" "*" "canary-fallback: offending entry named"
+rm talos.pipeline.json
+
+# ── #61: no forbidden files still exits 0 (gate does not over-correct) ────────
+out="$(bash "$VCS" check-pr-files 9)"; rc=$?
+assert_eq "0" "$rc" "exit-zero proof: clean PR exits 0 after fix"
+assert_contains "$out" "no forbidden files" "exit-zero proof: clean result reported"
+
+# ── #61: .env.example allow entry still works under union semantics ────────────
+cat > talos.pipeline.json <<'EOF'
+{"merge": {"forbidden_files": ["*.tfstate"], "forbidden_files_allow": [".env.example"]}}
+EOF
+out="$(STUB_PR_FILES=$'.env.example\ninfra/prod.tfstate\n.env.production' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "union+allow: real secrets still blocked"
+assert_not_contains "$out" ".env.example" "union+allow: .env.example remains exempt"
+assert_contains "$out" "infra/prod.tfstate" "union+allow: custom pattern blocked"
+assert_contains "$out" ".env.production" "union+allow: default .env.* still blocks"
 rm talos.pipeline.json
 
 # ── list-prs passes --base and includes baseRefName ──────────────────────────
