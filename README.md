@@ -254,6 +254,36 @@ All keys live in `talos.pipeline.yml` at your repo root. Every key is optional a
 | `limits.max_fix_attempts` | `3` | Max **consecutive** failures of the **same blocking stage** before `pipeline:blocked` is set. Resets to 1 when a different stage blocks next. **Behaviour change from v0.13:** this key previously counted every developer dispatch; it now counts consecutive same-stage failures only. Operators with existing configs should audit: a value of `3` previously allowed 3 total dispatches; it now allows 2 re-dispatches for the same stage (the third recording exits non-zero and blocks). |
 | `limits.max_total_dispatches` | `8` | Absolute ceiling on total developer dispatches per issue, across all stage changes. **Never resets** — not even when the blocking stage changes. Prevents a QA→reviewer→QA ping-pong from exploiting per-stage resets to run indefinitely. When the total reaches this value, `record-attempt` exits non-zero regardless of which stage is blocking. |
 
+### Forbidden-files gate: stdout markers
+
+`check-pr-files` emits the following markers on **every** run so the gate state is always auditable in the pipeline record:
+
+| Marker | When emitted | Fields |
+|--------|-------------|--------|
+| `talos:forbidden-files-active patterns=N defaults=STATE` | Always (every run) | `N` = number of active deny patterns; `STATE` = `in-force` (built-in defaults are active) or `replaced` (defaults suppressed by `merge.forbidden_files_replace: true`) |
+| `talos:forbidden-files-defaults-replaced patterns=N` | Only when `merge.forbidden_files_replace: true` | Signals that built-in secret-protection patterns are suppressed — a weakened gate. |
+
+`defaults=replaced` in the `talos:forbidden-files-active` marker means the operator opted out of the built-in defaults. Treat this as an audit flag: a PR that passes `check-pr-files` with `defaults=replaced` was checked against a reduced deny list. The clean-path message also records this state: `no forbidden files [N patterns: defaults=replaced]`.
+
+The `talos:forbidden-files-defaults-replaced` marker is also emitted as a stderr warning to make suppression visible in agent logs regardless of stdout capture.
+
+### `github-api` provider: allow-list validation now enforced (behaviour change)
+
+Prior to this release the `github-api` provider ignored `merge.forbidden_files_allow` entirely — it performed no allow-list validation. As of v0.14 the `github-api` provider performs the same allow-list canary validation as the `github` provider. **If you are using the `github-api` provider with `merge.forbidden_files_allow` set, an overly-broad allow entry (such as `*`) that previously passed silently will now be rejected at validation time and will block the merge.**
+
+### Upgrade note: `merge.forbidden_files` union semantics (v0.14+)
+
+**If you have `merge.forbidden_files` set in your `talos.pipeline.yml` before upgrading to v0.14+, your configuration now means something different.**
+
+Previously, setting `merge.forbidden_files` replaced the built-in defaults entirely — only your configured patterns were active. From v0.14 onward, your configured patterns are **added to** the built-in defaults (union semantics). The built-in patterns (`.env`, `.env.*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.secrets`, `secrets.*`) are always active alongside your patterns.
+
+**What to do:**
+
+- **If you intended to add extra patterns on top of the defaults** (the common case): no action required. Your config now works as you most likely intended.
+- **If you intentionally narrowed the deny list** (removed some built-in patterns to allow those file types): add `merge.forbidden_files_replace: true` to restore the old replacement behaviour. Review the security warning in the `merge.forbidden_files_replace` table row above before doing so — replacement suppresses all built-in secret-protection patterns and should be treated as a deliberate security trade-off.
+
+Note: SSH private key filenames (`id_rsa`, `id_ecdsa`, `id_ed25519`) are **not** covered by the built-in defaults even after this change — they have no file extension so no default pattern matches them. Issue #63 tracks adding SSH key patterns to the defaults. Until then, operators who need SSH keys blocked must add patterns such as `*id_rsa*` to `merge.forbidden_files` explicitly.
+
 ### Comment templates
 
 Stage comments use `string.Template`-style `${PLACEHOLDER}` substitution. Templates live in `templates/comments/`:
