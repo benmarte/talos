@@ -4,6 +4,23 @@
 
 ### Added
 
+- **Closed-target guard on `comment-issue` and `comment-pr` in `pipeline-vcs.sh`.**
+  Both verbs now check the target's state before posting: a closed issue or a
+  closed-unmerged PR causes a non-zero exit with the state printed to stderr.
+  Use `--allow-closed` to opt in (required for the post-merge orchestrator summary,
+  where GitHub auto-closes the issue via `Closes #N` before the comment runs).
+  Merged PRs are always allowed — post-merge annotation is legitimate.
+  If the state check itself fails (transient network error), both verbs proceed
+  and print `warning: could not determine state` to stderr plus a machine-readable
+  `talos:comment-state-unverified target=<issue|pr>#<N> reason=<short>` line on
+  stdout so callers can detect the degraded run without parsing logs.
+
+- **Comment URL returned by `comment-issue` and `comment-pr`.**  Both verbs now
+  print the `html_url` of the posted comment to stdout (GitHub provider: via
+  `gh issue comment --json url -q .url`; github-api provider: extracted from the
+  POST response `html_url` field).  Callers can capture the URL for relay messages
+  and audit trails without re-fetching.
+
 - **`check-approval-sha` subcommand in `pipeline-vcs.sh`.** Verifies that every
   approval label present on a PR (`qa:pass`, `review:approved`, `security:approved`,
   `docs:done`) was earned against the current head SHA.  Each approval role now

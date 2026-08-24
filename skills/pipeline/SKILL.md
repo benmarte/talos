@@ -128,8 +128,11 @@ except Exception:
     print(os.environ.get('HEADER','') + '\n\n' + os.environ.get('VERDICT','') + ' — ' + os.environ.get('SUMMARY',''))
 " "$TMPL" 2>/dev/null
 )"
-bash scripts/pipeline-vcs.sh comment-issue <N> "$COMMENT_BODY"   # issue comments
-bash scripts/pipeline-vcs.sh comment-pr <PR> "$COMMENT_BODY"     # PR comments
+COMMENT_URL="$(bash scripts/pipeline-vcs.sh comment-issue <N> "$COMMENT_BODY")"   # issue comments
+COMMENT_URL="$(bash scripts/pipeline-vcs.sh comment-pr <PR> "$COMMENT_BODY")"     # PR comments
+# COMMENT_URL is the html_url of the posted comment — use it in relay messages for
+# linkability; no re-fetch required.  If the state check was indeterminate, a second
+# line "talos:comment-state-unverified target=…" is also printed — capture and relay it.
 ```
 
 The findings comment carries: a verdict line + 2–5 detail bullets. It is non-optional when `comments.enabled = true`. Fall back to inline text only if the template file is missing.
@@ -218,7 +221,7 @@ bash scripts/pipeline-vcs.sh list-issues
 1. **Adopt orphaned PRs.** For each open issue labeled `pipeline:dev` or `pipeline:review` that has no obvious in-flight PR, run `bash scripts/pipeline-vcs.sh find-pr <N>`:
    - Open PR found → adopt it: do NOT re-dispatch the developer; resume from the first missing approval label (QA if `qa:pass` absent, etc.).
    - No PR → the developer stage never finished; re-dispatch it (counts toward `max_fix_attempts`).
-2. **Heal merged-but-open issues.** For each open `pipeline:*` issue, `bash scripts/pipeline-vcs.sh find-pr <N> merged` — if a merged PR closes it, run the post-merge steps from Step 4 (comment, close, board → Done, notify) instead of doing any work.
+2. **Heal merged-but-open issues.** For each open `pipeline:*` issue, `bash scripts/pipeline-vcs.sh find-pr <N> merged` — if a merged PR closes it, run the post-merge steps from Step 4 (comment, close, board → Done, notify) instead of doing any work. Pass `--allow-closed` to `comment-issue` in the post-merge steps here, since GitHub may have already auto-closed the issue at merge time via `Closes #N`.
 3. **Resume in-flight PRs.** For each open pipeline PR (head branch `fix/issue-*` or `feat/issue-*`): all approval labels present → merge queue (when `merge.auto: false`, a PR already labeled `pipeline:approved` is waiting for a human — leave it alone); otherwise resume at the blocking stage.
 4. **Sweep orphaned worktrees.** `bash scripts/pipeline-worktree.sh sweep <space-separated ids of every issue in this run's queue>` — removes any `fix/issue-*`/`feat/issue-*` worktree whose issue is not in the queue (a backstop for runs that ended before the Step 4 post-merge removal). Pass no ids to reclaim all of them.
 5. **Report stale blocked work.** List issues labeled `pipeline:blocked` and include them in the Step 1 summary notification so humans see what's waiting on them:
@@ -735,7 +738,9 @@ Compute header: `HEADER="${COMMENTS_HEADER_TPL//\{role\}/orchestrator}"`
 
 After merging:
 1. Render issue-closed.md on the ISSUE: VERDICT="CLOSED" SUMMARY="all stages passed"
-   `bash scripts/pipeline-vcs.sh comment-issue <N> "$COMMENT_BODY"`
+   `bash scripts/pipeline-vcs.sh comment-issue <N> "$COMMENT_BODY" --allow-closed`
+   (GitHub auto-closes the issue via the PR's `Closes #N` keyword at merge time, roughly
+   20 seconds before this step runs — `--allow-closed` is required here.)
 2. `bash scripts/pipeline-vcs.sh close-issue <N> "closed by PR #<PR_NUMBER>"`
 3. `bash scripts/pipeline-status.sh <N> "Done"`
 4. **Remove the developer worktree.** `bash scripts/pipeline-worktree.sh remove <N>` — deletes the `fix/issue-<N>-*` worktree and its now-merged local branch so worktrees don't accumulate on disk. Idempotent: a no-op if the worktree is already gone. Do this on every merge, including when healing a merged-but-open issue in Step 0.

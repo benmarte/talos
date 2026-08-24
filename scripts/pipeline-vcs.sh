@@ -73,11 +73,13 @@ cfg() { "$SCRIPT_DIR/pipeline-config.sh" "$@"; }
 
 # ── Arg parsing ───────────────────────────────────────────────────────────────
 DRY_RUN=false
+ALLOW_CLOSED=false
 VERB=""
 ARGS=()
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=true ;;
+    --allow-closed) ALLOW_CLOSED=true ;;
     *)
       [ -z "$VERB" ] && VERB="$arg" || ARGS+=("$arg")
       ;;
@@ -154,7 +156,35 @@ _github() {
       ;;
     comment-issue)
       local n="$1" body="$2"
-      _run gh issue comment "$n" --body "$body" ${REPO:+--repo "$REPO"}
+      if [ "$DRY_RUN" = "true" ]; then
+        if [ "$ALLOW_CLOSED" = "true" ]; then
+          echo "[dry-run] gh issue comment $n --body $body (--allow-closed; URL on stdout)"
+        else
+          echo "[dry-run] gh issue view $n --json state -q .state; gh issue comment $n --body $body (URL on stdout)"
+        fi
+        return 0
+      fi
+      local _ci_state_unverified=false
+      if [ "$ALLOW_CLOSED" != "true" ]; then
+        local _ci_state
+        if _ci_state="$(gh issue view "$n" --json state -q .state ${REPO:+--repo "$REPO"} 2>/dev/null)"; then
+          case "$_ci_state" in
+            CLOSED|closed)
+              echo "pipeline-vcs: comment-issue: issue #$n is ${_ci_state} (use --allow-closed to override)" >&2
+              exit 1
+              ;;
+          esac
+        else
+          echo "pipeline-vcs: warning: could not determine state of issue #$n — proceeding" >&2
+          _ci_state_unverified=true
+        fi
+      fi
+      local _ci_url
+      _ci_url="$(gh issue comment "$n" --body "$body" ${REPO:+--repo "$REPO"})"
+      echo "$_ci_url"
+      if [ "$_ci_state_unverified" = "true" ]; then
+        echo "talos:comment-state-unverified target=issue#$n reason=state-check-failed"
+      fi
       ;;
     close-issue)
       local n="$1" body="$2"
@@ -241,7 +271,35 @@ _github() {
     comment-pr)
       # PRs are issues for commenting purposes on GitHub
       local n="$1" body="$2"
-      _run gh issue comment "$n" --body "$body" ${REPO:+--repo "$REPO"}
+      if [ "$DRY_RUN" = "true" ]; then
+        if [ "$ALLOW_CLOSED" = "true" ]; then
+          echo "[dry-run] gh issue comment $n --body $body (--allow-closed; URL on stdout)"
+        else
+          echo "[dry-run] gh pr view $n --json state -q .state; gh issue comment $n --body $body (URL on stdout)"
+        fi
+        return 0
+      fi
+      local _cp_state_unverified=false
+      if [ "$ALLOW_CLOSED" != "true" ]; then
+        local _cp_state
+        if _cp_state="$(gh pr view "$n" --json state -q .state ${REPO:+--repo "$REPO"} 2>/dev/null)"; then
+          case "$_cp_state" in
+            CLOSED|closed)
+              echo "pipeline-vcs: comment-pr: PR #$n is CLOSED (not merged) — use --allow-closed to override" >&2
+              exit 1
+              ;;
+          esac
+        else
+          echo "pipeline-vcs: warning: could not determine state of PR #$n — proceeding" >&2
+          _cp_state_unverified=true
+        fi
+      fi
+      local _cp_url
+      _cp_url="$(gh issue comment "$n" --body "$body" ${REPO:+--repo "$REPO"})"
+      echo "$_cp_url"
+      if [ "$_cp_state_unverified" = "true" ]; then
+        echo "talos:comment-state-unverified target=pr#$n reason=state-check-failed"
+      fi
       ;;
     find-pr)
       local n="$1" state="${2:-open}"
@@ -729,14 +787,40 @@ print(json.dumps(result, indent=2))
     comment-issue)
       local _n="$1" _body="$2"
       if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: POST $_API/issues/$_n/comments"
+        echo "[dry-run] github-api: GET $_API/issues/$_n (state check); POST $_API/issues/$_n/comments"
         return 0
+      fi
+      local _gaci_state_unverified=false
+      if [ "$ALLOW_CLOSED" != "true" ]; then
+        local _gaci_state_raw _gaci_state
+        if _gaci_state_raw="$(_ga_req GET "$_API/issues/$_n" 2>/dev/null)"; then
+          _gaci_state="$(printf '%s' "$_gaci_state_raw" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print(d.get('state', ''))
+" 2>/dev/null)"
+          if [ "$_gaci_state" = "closed" ]; then
+            echo "pipeline-vcs: comment-issue: issue #$_n is closed (use --allow-closed to override)" >&2
+            exit 1
+          fi
+        else
+          echo "pipeline-vcs: warning: could not determine state of issue #$_n — proceeding" >&2
+          _gaci_state_unverified=true
+        fi
       fi
       local _payload
       _payload="$(python3 -c "import json,sys; print(json.dumps({'body':sys.argv[1]}))" "$_body")"
-      _ga_req POST "$_API/issues/$_n/comments" \
-        -H "Content-Type: application/json" -d "$_payload" >/dev/null
-      echo "Commented on issue #$_n"
+      local _gaci_resp
+      _gaci_resp="$(_ga_req POST "$_API/issues/$_n/comments" \
+        -H "Content-Type: application/json" -d "$_payload")"
+      printf '%s' "$_gaci_resp" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print(d.get('html_url', ''))
+"
+      if [ "$_gaci_state_unverified" = "true" ]; then
+        echo "talos:comment-state-unverified target=issue#$_n reason=state-check-failed"
+      fi
       ;;
 
     close-issue)
@@ -1003,14 +1087,45 @@ print(json.load(sys.stdin).get('head',{}).get('sha',''))
       # PRs share the issues comment API on GitHub
       local _n="$1" _body="$2"
       if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: POST $_API/issues/$_n/comments (PR comment)"
+        echo "[dry-run] github-api: GET $_API/pulls/$_n (state check); POST $_API/issues/$_n/comments (PR comment)"
         return 0
+      fi
+      local _gacp_state_unverified=false
+      if [ "$ALLOW_CLOSED" != "true" ]; then
+        local _gacp_state_raw _gacp_state _gacp_merged_at
+        if _gacp_state_raw="$(_ga_req GET "$_API/pulls/$_n" 2>/dev/null)"; then
+          _gacp_state="$(printf '%s' "$_gacp_state_raw" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print(d.get('state', ''))
+" 2>/dev/null)"
+          _gacp_merged_at="$(printf '%s' "$_gacp_state_raw" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print(d.get('merged_at') or '')
+" 2>/dev/null)"
+          if [ "$_gacp_state" = "closed" ] && [ -z "$_gacp_merged_at" ]; then
+            echo "pipeline-vcs: comment-pr: PR #$_n is closed (not merged) — use --allow-closed to override" >&2
+            exit 1
+          fi
+        else
+          echo "pipeline-vcs: warning: could not determine state of PR #$_n — proceeding" >&2
+          _gacp_state_unverified=true
+        fi
       fi
       local _payload
       _payload="$(python3 -c "import json,sys; print(json.dumps({'body':sys.argv[1]}))" "$_body")"
-      _ga_req POST "$_API/issues/$_n/comments" \
-        -H "Content-Type: application/json" -d "$_payload" >/dev/null
-      echo "Commented on PR #$_n"
+      local _gacp_resp
+      _gacp_resp="$(_ga_req POST "$_API/issues/$_n/comments" \
+        -H "Content-Type: application/json" -d "$_payload")"
+      printf '%s' "$_gacp_resp" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print(d.get('html_url', ''))
+"
+      if [ "$_gacp_state_unverified" = "true" ]; then
+        echo "talos:comment-state-unverified target=pr#$_n reason=state-check-failed"
+      fi
       ;;
 
     find-pr)
