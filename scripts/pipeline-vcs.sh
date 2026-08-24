@@ -31,6 +31,11 @@
 #   check-pr-files <n>                        Exit 1 if the PR touches any
 #                                             merge.forbidden_files pattern
 #   rerun-ci <n>                              Re-run failed CI for the PR head SHA
+#   pr-head <n>                               Print the current head SHA for a PR
+#   check-approval-sha <n>                    Exit 1 if any approval label was earned
+#                                             against a non-current head SHA (stale
+#                                             approvals); respects
+#                                             merge.approval_waiver_paths config
 #
 # Config keys (from talos.pipeline.yml via pipeline-config.sh):
 #   vcs.provider          github | github-api | gitlab | azure | file   (default: github)
@@ -375,6 +380,204 @@ for r in runs:
           [ -n "$run_id" ] && _run gh run rerun "$run_id" --failed ${REPO:+--repo "$REPO"}
         done
       echo "rerun-ci: re-ran failed runs for PR #$n ($sha)"
+      ;;
+    pr-head)
+      # pr-head <n> — print the current head SHA for a PR (fail-closed: exits 1 if unresolvable)
+      local n="$1"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] gh pr view $n --json headRefOid -q .headRefOid"
+        return 0
+      fi
+      local sha
+      sha="$(gh pr view "$n" --json headRefOid -q .headRefOid ${REPO:+--repo "$REPO"} 2>/dev/null)"
+      [ -z "$sha" ] && { echo "pipeline-vcs: pr-head: could not resolve head SHA for PR #$n" >&2; exit 1; }
+      printf '%s\n' "$sha"
+      ;;
+    check-approval-sha)
+      # check-approval-sha <n>
+      # Verify that every approval label present on the PR was earned against
+      # the current head SHA.  If a SHA differs, check whether all changed files
+      # since the approval SHA are covered by the configured waiver list
+      # (merge.approval_waiver_paths; default: *.md docs/** CHANGELOG.md).
+      # Hard-coded non-waivable: scripts/**, tests/**, talos.pipeline.yml,
+      # pipeline.yaml — these are enforced AFTER the config waiver so the config
+      # can never widen a waiver to cover them.
+      # Fail-closed: unresolvable head SHA, missing marker, or git diff failure
+      # all exit non-zero.
+      local n="$1"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] check-approval-sha $n: verify all approval labels match current head SHA"
+        return 0
+      fi
+      local pr_data
+      pr_data="$(gh pr view "$n" --json headRefOid,labels,comments ${REPO:+--repo "$REPO"} 2>/dev/null)"
+      if [ -z "$pr_data" ]; then
+        echo "pipeline-vcs: check-approval-sha: could not fetch PR #$n data" >&2
+        exit 1
+      fi
+      local waiver_paths
+      waiver_paths="$(cfg merge.approval_waiver_paths "")"
+      local repo_root
+      repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
+      printf '%s' "$pr_data" \
+        | WAIVER_PATHS="$waiver_paths" REPO_ROOT="${repo_root:-}" python3 -c "
+import fnmatch, json, os, re, subprocess, sys
+
+APPROVAL_LABELS = {
+    'qa:pass':           'qa',
+    'review:approved':   'reviewer',
+    'security:approved': 'security',
+    'docs:done':         'docs',
+}
+
+# Hard-coded non-waivable: applied AFTER the config waiver check.
+# The config can NEVER widen a waiver to cover these paths.
+HARDCODED_NONWAIVABLE_PREFIXES = ('scripts/', 'tests/')
+HARDCODED_NONWAIVABLE_EXACT    = ('talos.pipeline.yml', 'pipeline.yaml')
+
+# Default waiver paths — used when the config key is absent or unparseable.
+DEFAULT_WAIVER = ['*.md', 'docs/**', 'CHANGELOG.md']
+
+# Validation canaries: if a waiver entry matches any of these it is too broad
+# (catch-all or covers non-waivable territory) and must be rejected.
+# Generated to catch both basename-level and full-path-level matches.
+VALIDATION_CANARIES = [
+    'scripts/core.sh',      'scripts/pipeline-vcs.sh',
+    'sub/dir/scripts/x.sh',
+    'tests/test-vcs.sh',    'tests/run-tests.sh',
+    'sub/dir/tests/y.sh',
+    'talos.pipeline.yml',   'pipeline.yaml',
+    'src/arbitrary.js',     'lib/main.py', 'cmd/server.go',
+    'sub/dir/arbitrary.js',
+]
+
+def is_hardcoded_nonwaivable(path):
+    for prefix in HARDCODED_NONWAIVABLE_PREFIXES:
+        if path == prefix.rstrip('/') or path.startswith(prefix):
+            return True
+    return path in HARDCODED_NONWAIVABLE_EXACT
+
+def path_matches(path, patterns):
+    base = os.path.basename(path)
+    return any(fnmatch.fnmatch(base, p) or fnmatch.fnmatch(path, p) for p in patterns)
+
+def validate_waiver_entries(entries):
+    errors = []
+    for entry in entries:
+        for canary in VALIDATION_CANARIES:
+            base = os.path.basename(canary)
+            if fnmatch.fnmatch(base, entry) or fnmatch.fnmatch(canary, entry):
+                errors.append(
+                    \"pipeline-vcs: ERROR: merge.approval_waiver_paths entry '\" + entry +
+                    \"' would waive '\" + canary +
+                    \"' — rejected (catch-all or covers non-waivable paths)\"
+                )
+                break
+    return errors
+
+# Resolve waiver paths from config (safe degradation: parse error → defaults)
+raw_waiver = os.environ.get('WAIVER_PATHS', '').strip()
+if raw_waiver:
+    try:
+        parsed = json.loads(raw_waiver)
+        if not isinstance(parsed, list):
+            raise ValueError('not a list')
+        waiver_entries = [str(e).strip() for e in parsed if str(e).strip()]
+    except Exception:
+        # Newline-delimited fallback (YAML scalar block)
+        waiver_entries = [e.strip() for e in raw_waiver.splitlines() if e.strip()]
+else:
+    waiver_entries = DEFAULT_WAIVER
+
+# Validate waiver config entries — fail closed on bad config
+errors = validate_waiver_entries(waiver_entries)
+if errors:
+    for e in errors:
+        print(e, file=sys.stderr)
+    sys.exit(1)
+
+# Parse PR data
+try:
+    data = json.load(sys.stdin)
+except Exception as exc:
+    print(f'pipeline-vcs: check-approval-sha: could not parse PR data: {exc}', file=sys.stderr)
+    sys.exit(1)
+
+head_sha = data.get('headRefOid', '').strip()
+if not head_sha:
+    print('pipeline-vcs: check-approval-sha: could not resolve head SHA', file=sys.stderr)
+    sys.exit(1)
+
+label_names = {lb['name'] for lb in data.get('labels', [])}
+comments    = [c.get('body', '') for c in data.get('comments', [])]
+
+# Which approval labels are present?
+present = {label: role for label, role in APPROVAL_LABELS.items() if label in label_names}
+
+if not present:
+    print('check-approval-sha: no approval labels present')
+    sys.exit(0)
+
+MARKER_RE = re.compile(r'<!--\s*talos:approval\s+sha=([0-9a-f]+)\s+role=(\S+?)\s*-->')
+
+stale = []
+for label, role in present.items():
+    # Find the most recent marker for this role (search comments newest-first)
+    found_sha = None
+    for body in reversed(comments):
+        for m in MARKER_RE.finditer(body):
+            if m.group(2) == role:
+                found_sha = m.group(1)
+                break
+        if found_sha:
+            break
+
+    if not found_sha:
+        # Fail-closed: missing marker means the approval predates SHA stamping —
+        # treat it as stale rather than assuming it is safe.
+        print(f'pipeline-vcs: check-approval-sha: {label} has no SHA marker — treating as stale', file=sys.stderr)
+        stale.append((label, role, 'no SHA marker in PR comments'))
+        continue
+
+    if found_sha == head_sha:
+        continue  # Approval is current
+
+    # SHA mismatch — check whether the delta is fully waivable
+    repo_root = os.environ.get('REPO_ROOT', '').strip() or None
+    try:
+        result = subprocess.run(
+            ['git', 'diff', '--name-only', f'{found_sha}..{head_sha}'],
+            capture_output=True, text=True,
+            cwd=repo_root, timeout=30
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or 'non-zero exit')
+        changed = [f.strip() for f in result.stdout.splitlines() if f.strip()]
+    except Exception as exc:
+        # git diff failure → treat delta as non-waivable (fail-closed)
+        print(f'pipeline-vcs: check-approval-sha: git diff failed: {exc}', file=sys.stderr)
+        stale.append((label, role, f'git diff failed: {exc}'))
+        continue
+
+    # First check hard-coded non-waivable paths (structurally enforced — config cannot override)
+    blocked = [p for p in changed if is_hardcoded_nonwaivable(p)]
+    if not blocked:
+        # Then check config waiver list for remaining paths
+        blocked = [p for p in changed if not path_matches(p, waiver_entries)]
+
+    if blocked:
+        stale.append((label, role,
+            f'non-waivable files changed since {found_sha}: ' + ', '.join(blocked[:5])))
+    # else every changed file is waivable — approval stands
+
+if stale:
+    for label, role, reason in stale:
+        print(f'pipeline-vcs: check-approval-sha: STALE {label} ({role}): {reason}', file=sys.stderr)
+    sys.exit(1)
+
+print('check-approval-sha: all approval labels are current')
+sys.exit(0)
+"
       ;;
     *) echo "pipeline-vcs: unknown verb: $verb" >&2; exit 1 ;;
   esac

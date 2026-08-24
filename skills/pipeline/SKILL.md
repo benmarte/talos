@@ -524,7 +524,10 @@ Comments enabled: <COMMENTS_ENABLED>
 
 Pass:
   1. `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --add qa:pass`
-  2. Render and post qa-verdict.md on the PR:
+  2. Obtain the current head SHA: `HEAD_SHA=$(bash scripts/pipeline-vcs.sh pr-head <PR_NUMBER>)`
+  3. Render and post qa-verdict.md on the PR.  The rendered comment body MUST end
+     with the HTML marker on its own line:
+     `<!-- talos:approval sha=<HEAD_SHA> role=qa -->`
      VERDICT="PASS" SUMMARY="<what verified>" DETAILS="<2-5 bullets: each criterion checked + result>"
      `bash scripts/pipeline-vcs.sh comment-pr <PR_NUMBER> "$COMMENT_BODY"`
 
@@ -568,7 +571,10 @@ Approve:
      Note: `gh pr review --approve` may fail with "cannot approve your own pull request" in single-account setups — this is expected and ignorable; the `review:approved` label is the gate.
   2. `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --add review:approved --remove pipeline:blocked`
   3. `bash scripts/pipeline-vcs.sh label-issue <N> --remove pipeline:blocked`
-  4. Render review-signoff.md on the PR:
+  4. Obtain the current head SHA: `HEAD_SHA=$(bash scripts/pipeline-vcs.sh pr-head <PR_NUMBER>)`
+  5. Render review-signoff.md on the PR.  The rendered comment body MUST end
+     with the HTML marker on its own line:
+     `<!-- talos:approval sha=<HEAD_SHA> role=reviewer -->`
      VERDICT="APPROVED" SUMMARY="<summary>" DETAILS="<2-5 bullets: areas checked>"
      `bash scripts/pipeline-vcs.sh comment-pr <PR_NUMBER> "$COMMENT_BODY"`
 
@@ -598,7 +604,10 @@ IMPORTANT: never run `git checkout`, `git switch`, or `git pull` in your working
 Clear:
   1. `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --add security:approved --remove pipeline:blocked`
   2. `bash scripts/pipeline-vcs.sh label-issue <N> --remove pipeline:blocked`
-  3. Render security-signoff.md on the PR:
+  3. Obtain the current head SHA: `HEAD_SHA=$(bash scripts/pipeline-vcs.sh pr-head <PR_NUMBER>)`
+  4. Render security-signoff.md on the PR.  The rendered comment body MUST end
+     with the HTML marker on its own line:
+     `<!-- talos:approval sha=<HEAD_SHA> role=security -->`
      VERDICT="CLEAR" SUMMARY="<checked>" DETAILS="<2-5 bullets: areas reviewed>"
      `bash scripts/pipeline-vcs.sh comment-pr <PR_NUMBER> "$COMMENT_BODY"`
 
@@ -627,7 +636,11 @@ Comments enabled: <COMMENTS_ENABLED>
 2. Update README, docs, CHANGELOG for the change.
 3. Commit to PR branch: `git commit -m "docs: update for #<N>"` and push.
 4. `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --add docs:done`
-5. Render docs-posted.md on the ISSUE:
+5. Obtain the current head SHA: `HEAD_SHA=$(bash scripts/pipeline-vcs.sh pr-head <PR_NUMBER>)`
+6. Post an approval comment on the PR containing the HTML marker on its own line:
+   `<!-- talos:approval sha=<HEAD_SHA> role=docs -->`
+   `bash scripts/pipeline-vcs.sh comment-pr <PR_NUMBER> "<!-- talos:approval sha=$HEAD_SHA role=docs -->"`
+7. Render docs-posted.md on the ISSUE:
    VERDICT="POSTED" SUMMARY="<what updated>" DETAILS="<2-5 bullets: files changed>"
    `bash scripts/pipeline-vcs.sh comment-issue <N> "$COMMENT_BODY"`
 
@@ -665,6 +678,22 @@ A PR is ready when ALL of:
 **`skip-qa` bypass:** if the PR or its issue carries the `skip-qa` label (a
 human applied it — docs-only change or emergency hotfix), the four approval
 labels above are waived. CI and the forbidden-files check are NEVER waived.
+
+**Approval-SHA gate:** `bash scripts/pipeline-vcs.sh check-approval-sha <PR_NUMBER>`
+If `check-approval-sha` exits non-zero for ANY reason, do NOT merge.  A non-zero
+exit means at least one approval label is stale (earned against an older head SHA
+whose delta is not fully covered by `merge.approval_waiver_paths`).  When it
+exits non-zero:
+1. Strip all stale approval labels from the PR.
+2. Post a PR comment listing which approvals were stale and why (the helper
+   prints each reason to stderr; capture and post it).
+3. Re-dispatch the affected approval stages (QA, reviewer, security, docs as
+   indicated by the stale labels).
+
+`merge.approval_waiver_paths` (default: `["*.md", "docs/**", "CHANGELOG.md"]`)
+— glob patterns for files that, when they are the only changes since an approval,
+do not invalidate that approval.  Hard-coded non-waivable regardless of config:
+paths under `scripts/`, paths under `tests/`, `talos.pipeline.yml`, `pipeline.yaml`.
 
 **Forbidden-files gate:** `bash scripts/pipeline-vcs.sh check-pr-files <PR_NUMBER>`
 If it exits non-zero the PR touches secret-like files (`merge.forbidden_files`
