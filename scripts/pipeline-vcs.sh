@@ -30,6 +30,11 @@
 #                                             state: open (default) | merged | all
 #   check-pr-files <n>                        Exit 1 if the PR touches any
 #                                             merge.forbidden_files pattern
+#   check-closing-keyword <n|branch> <issue>  Exit 1 if the PR body has a closing
+#                                             keyword for <issue> while other PRs
+#                                             for that issue are still open.
+#                                             Fail-open: exits 0 + stdout marker
+#                                             if data cannot be fetched.
 #   rerun-ci <n>                              Re-run failed CI for the PR head SHA
 #   pr-head <n>                               Print the current head SHA for a PR
 #   check-approval-sha <n>                    Exit 1 if any approval label was earned
@@ -243,7 +248,7 @@ _github() {
         --title "$title" --body-file "$body_file" ${REPO:+--repo "$REPO"}
       ;;
     view-pr)
-      _run gh pr view "$1" --json number,title,headRefName,labels,url \
+      _run gh pr view "$1" --json number,title,headRefName,labels,url,body \
         ${REPO:+--repo "$REPO"}
       ;;
     list-prs)
@@ -329,13 +334,16 @@ _github() {
       gh pr list --state "$state" --limit 100 \
         --json number,state,title,headRefName,body ${REPO:+--repo "$REPO"} 2>/dev/null \
         | python3 -c "
-import json, sys
+import json, re, sys
 n = sys.argv[1]
 try: prs = json.load(sys.stdin)
 except Exception: prs = []
 for pr in prs:
+    ref = pr.get('headRefName','')
     hay = pr.get('title','') + ' ' + pr.get('body','')
-    if f'issue-{n}' in pr.get('headRefName','') or f'#{n}' in hay:
+    branch_match = bool(re.search(r'(?:^|/)issue-' + re.escape(n) + r'(?:-|$)', ref))
+    body_match   = bool(re.search(r'#' + re.escape(n) + r'(?!\d)', hay))
+    if branch_match or body_match:
         print(json.dumps({k: pr.get(k) for k in ('number','state','title','headRefName')}))
 " "$n"
       ;;
@@ -457,6 +465,126 @@ for r in runs:
           [ -n "$run_id" ] && _run gh run rerun "$run_id" --failed ${REPO:+--repo "$REPO"}
         done
       echo "rerun-ci: re-ran failed runs for PR #$n ($sha)"
+      ;;
+    check-closing-keyword)
+      # check-closing-keyword <pr_branch_or_number> <issue_N>
+      # Exit 0 when safe to merge; exit 1 when the PR body contains a closing
+      # keyword for <issue_N> AND other PRs referencing that issue are still
+      # OPEN (closing the tracker would orphan in-flight sibling work).
+      #
+      # Rule 6: the final PR in a multi-PR issue says "Closes #N".  By the time
+      # that PR is ready to merge, all siblings are merged — no open siblings
+      # exist, so the gate passes.  Only blocks when a sibling is still open.
+      #
+      # Known limitation: a lone PR that overclaims its deliverables cannot be
+      # detected by this gate.  That requires a ledger; nothing ticks one in
+      # VCS mode today.
+      #
+      # FAIL-OPEN: if the PR body or sibling list cannot be fetched, emit a
+      # machine-readable marker on stdout and exit 0.  The reason field is a
+      # fixed literal — never interpolated from an API response — so a remote
+      # error string cannot inject extra output lines.
+      local pr_ref="${1:-}" issue_n="${2:-}"
+      [ -z "$pr_ref" ]  && { echo "pipeline-vcs: check-closing-keyword: missing PR ref"     >&2; exit 1; }
+      [ -z "$issue_n" ] && { echo "pipeline-vcs: check-closing-keyword: missing issue number" >&2; exit 1; }
+
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] check-closing-keyword $pr_ref $issue_n: fetch PR body, look for closing keyword, then find-pr $issue_n open"
+        return 0
+      fi
+
+      # Fetch the PR to get its number and body.
+      local pr_json
+      pr_json="$(gh pr view "$pr_ref" --json number,body ${REPO:+--repo "$REPO"} 2>/dev/null)"
+      if [ -z "$pr_json" ]; then
+        echo "pipeline-vcs: check-closing-keyword: could not fetch PR '$pr_ref' — skipping check" >&2
+        echo "talos:closing-keyword-unverified pr=$pr_ref issue=$issue_n reason=pr-fetch-failed"
+        return 0
+      fi
+
+      # Extract PR number and body via Python (safe JSON parse).
+      local pr_number pr_body
+      pr_number="$(printf '%s' "$pr_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('number',''))")"
+      pr_body="$(printf '%s' "$pr_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('body',''))")"
+
+      # Check for a closing keyword for #<issue_n> in the PR body.
+      # Patterns (case-insensitive):
+      #   close/closes/closed/fix/fixes/fixed/resolve/resolves/resolved
+      #   followed by optional whitespace and then:
+      #     #N  |  repo#N  |  owner/repo#N
+      local has_closing
+      has_closing="$(printf '%s' "$pr_body" | python3 -c "
+import re, sys
+body = sys.stdin.read()
+n = sys.argv[1]
+# Closing keywords (case-insensitive)
+kw = r'(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)'
+# Reference forms: #N  repo#N  owner/repo#N
+# The # is always required; only the leading owner/repo prefix is optional.
+ref = r'(?:[A-Za-z0-9_./-]+)?#' + re.escape(n) + r'(?!\d)'
+pattern = kw + r'\s+' + ref
+if re.search(pattern, body, re.IGNORECASE):
+    print('yes')
+else:
+    print('no')
+" "$issue_n" 2>/dev/null)"
+
+      # No closing keyword → nothing to check.
+      if [ "$has_closing" != "yes" ]; then
+        return 0
+      fi
+
+      # Closing keyword found.  Fetch open PRs for this issue and filter out
+      # the current PR by number.
+      local siblings_json
+      siblings_json="$(gh pr list --state open --limit 100 \
+        --json number,state,title,headRefName,body ${REPO:+--repo "$REPO"} 2>/dev/null)"
+      if [ -z "$siblings_json" ]; then
+        echo "pipeline-vcs: check-closing-keyword: could not fetch open PR list — skipping sibling check" >&2
+        echo "talos:closing-keyword-unverified pr=${pr_number:-$pr_ref} issue=$issue_n reason=sibling-fetch-failed"
+        return 0
+      fi
+
+      # Find open siblings (any PR referencing #N in branch/title/body, excluding this PR).
+      local sibling_result
+      sibling_result="$(printf '%s' "$siblings_json" | python3 -c "
+import json, re, sys
+n    = sys.argv[1]
+self = sys.argv[2]
+try: prs = json.load(sys.stdin)
+except Exception: prs = []
+siblings = []
+for pr in prs:
+    if str(pr.get('number','')) == self:
+        continue
+    ref = pr.get('headRefName','')
+    hay = pr.get('title','') + ' ' + pr.get('body','')
+    branch_match = bool(re.search(r'(?:^|/)issue-' + re.escape(n) + r'(?:-|$)', ref))
+    body_match   = bool(re.search(r'#' + re.escape(n) + r'(?!\d)', hay))
+    if branch_match or body_match:
+        siblings.append(str(pr.get('number','')))
+if siblings:
+    print('blocked:' + ','.join(siblings))
+else:
+    print('ok')
+" "$issue_n" "${pr_number:-}" 2>/dev/null)"
+
+      case "$sibling_result" in
+        ok)
+          return 0
+          ;;
+        blocked:*)
+          local sibling_list="${sibling_result#blocked:}"
+          echo "pipeline-vcs: check-closing-keyword: PR #${pr_number:-$pr_ref} carries 'Closes #${issue_n}' but open sibling PR(s) still reference the same issue: #${sibling_list/,/ #} — merge the siblings first, or change this PR body to 'Part of #${issue_n}'" >&2
+          exit 1
+          ;;
+        *)
+          # Unexpected output from python3 — fail open.
+          echo "pipeline-vcs: check-closing-keyword: unexpected sibling-check output — skipping" >&2
+          echo "talos:closing-keyword-unverified pr=${pr_number:-$pr_ref} issue=$issue_n reason=sibling-check-failed"
+          return 0
+          ;;
+      esac
       ;;
     pr-head)
       # pr-head <n> — print the current head SHA for a PR (fail-closed: exits 1 if unresolvable)
@@ -990,7 +1118,7 @@ print(json.dumps(result, indent=2))
       _issue="$(_ga_req GET "$_API/issues/$_n")"
       _comments="$(_ga_req GET "$_API/issues/$_n/comments?per_page=100")"
       printf '%s' "$_issue" | COMMENTS="$_comments" python3 -c "
-import json, sys, os
+import json, re, sys, os
 data = json.load(sys.stdin)
 try:
     comments = json.loads(os.environ.get('COMMENTS','[]'))
@@ -1368,7 +1496,7 @@ print(d.get('html_url', ''))
       local _raw
       _raw="$(_ga_req GET "$_API/pulls?state=$_api_state&per_page=100")"
       printf '%s' "$_raw" | STATE_FILTER="$_state" python3 -c "
-import json, sys, os
+import json, re, sys, os
 n = sys.argv[1]
 state_filter = os.environ.get('STATE_FILTER','open')
 try: prs = json.load(sys.stdin)
@@ -1376,7 +1504,7 @@ except Exception: prs = []
 for pr in prs:
     hay = pr.get('title','') + ' ' + (pr.get('body','') or '')
     ref = pr.get('head',{}).get('ref','')
-    if not (f'issue-{n}' in ref or f'#{n}' in hay):
+    if not (re.search(r'(?:^|/)issue-' + re.escape(n) + r'(?:-|$)', ref) or re.search(r'#' + re.escape(n) + r'(?!\d)', hay)):
         continue
     # For merged filter: only PRs with merged_at set
     if state_filter == 'merged' and not pr.get('merged_at'):
@@ -1580,7 +1708,7 @@ _gitlab() {
       local n="$1" body="$2"
       _run glab mr note "$n" --message "$body" $RARG
       ;;
-    find-pr|check-pr-files|rerun-ci)
+    find-pr|check-pr-files|rerun-ci|check-closing-keyword)
       # Best-effort providers: not implemented — fail open with a warning so
       # the orchestrator falls back to its manual instructions.
       echo "pipeline-vcs: $verb not implemented for gitlab — verify manually" >&2
@@ -1975,7 +2103,7 @@ PYEOF
         --headers "Content-Type=application/json" --body "@$tf" >/dev/null
       local rc=$?; rm -f "$tf"; return $rc
       ;;
-    find-pr|check-pr-files|rerun-ci)
+    find-pr|check-pr-files|rerun-ci|check-closing-keyword)
       echo "pipeline-vcs: $verb not implemented for azure — verify manually" >&2
       return 0
       ;;
@@ -2012,7 +2140,7 @@ _file() {
       echo "file mode: no PR to merge — orchestrator should close-issue directly after verifying the branch" >&2
       return 0
       ;;
-    diff-pr|pr-checks|list-prs|view-pr|find-pr|check-pr-files|rerun-ci)
+    diff-pr|pr-checks|list-prs|view-pr|find-pr|check-pr-files|rerun-ci|check-closing-keyword)
       echo "file mode: $verb not applicable in file mode" >&2
       return 0
       ;;
