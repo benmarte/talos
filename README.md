@@ -229,7 +229,7 @@ All keys live in `talos.pipeline.yml` at your repo root. Every key is optional a
 | `merge.required_checks` | `[]` | CI check names required before merge |
 | `merge.delete_branch` | `true` | Delete feature branch after merge |
 | `merge.forbidden_files` | see defaults | Glob patterns (matched against filename and full path) for files that must not appear in a PR. Defaults: `*.pem`, `*.key`, `*.p12`, `*.pfx`, `.env.*`, `*id_rsa*`, `*id_ecdsa*`, `secrets.*`. Setting this key **replaces** the defaults entirely. |
-| `merge.forbidden_files_allow` | `[]` | Explicit exemptions for `merge.forbidden_files`. Globs matched against filename and full path, checked **before** deny patterns. Use this when a deny pattern over-matches a committed template (e.g. allow `.env.example` while keeping `.env.production` blocked). Example: `[".env.example"]`. |
+| `merge.forbidden_files_allow` | `[]` | Explicit exemptions for `merge.forbidden_files`. Globs matched against filename and full path, checked **before** deny patterns. Use this when a deny pattern over-matches a committed template (e.g. allow `.env.example` while keeping `.env.production` blocked). Example: `[".env.example"]`. **Security note:** each entry punches a hole in the secret-protection gate — if a real secret file matches an allow entry it will not be blocked. Keep the allow list minimal and specific. |
 | `issues.label_filter` | `pipeline:ready` | Label that queues issues |
 | `issues.skip_labels` | `[pipeline:blocked, wontfix]` | Issues with these are skipped |
 | `issues.max_parallel` | `1` | Max issues in-flight at once |
@@ -327,6 +327,7 @@ Scripts respect these env vars, which take priority over the config file:
 | `PIPELINE_REPO_URL` | repo URL used to build issue/PR links (default: detected via `gh repo view`) |
 | `PIPELINE_ISSUE_TITLE` / `PIPELINE_PR` / `PIPELINE_PR_TITLE` | issue/PR context for templates (skips the `gh` lookups) |
 | `PIPELINE_NOTIFY_DEBUG` | set to `1` to print payloads without posting (safe for testing) |
+| `TALOS_SWEEP_ALL_LANES` | set to `1` to allow `pipeline-worktree.sh sweep` to run across all lanes when multiple `.talos-lane-home` markers exist in the repo. Without this, sweep exits safely when more than one lane home is detected (multi-lane interlock). `remove <N>` is always unaffected by this variable. |
 
 ### Per-issue notification threading
 
@@ -549,6 +550,8 @@ touch /path/to/lane-home/.talos-lane-home   # mark once; never commit it
 The file is untracked and never propagates to worktrees created from a branch, so per-issue developer worktrees remain removable by their own lane's sweep. When more than one `.talos-lane-home` marker exists across a repo's worktrees, `sweep` skips entirely and exits 0 (safe no-op) unless `TALOS_SWEEP_ALL_LANES=1` is set. The per-issue `remove <N>` verb is always unaffected by the interlock.
 
 **When do you need this?** Only when you have multiple lanes sharing one remote. A single-lane repo (the common case) has zero `.talos-lane-home` files and sweep behaves exactly as before.
+
+> **Marking is all-or-nothing.** The interlock fires only when **more than one** `.talos-lane-home` marker exists across the repo's worktrees. A single marker provides no protection — if you mark one lane home and leave the others unmarked, the threshold is never reached and sweep runs unrestricted. If you mark any lane home, mark them all.
 
 ---
 
