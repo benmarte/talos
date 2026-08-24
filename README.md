@@ -423,7 +423,7 @@ The pipeline deliberately preserves three gates that only a human should act on:
 | `create-issue` | `<title> <body-file> [--label label]` | Create a new issue; `--label` may be repeated (used by planner to create sub-issues) |
 | `list-issues` | | List open issues / unchecked plan items |
 | `view-issue` | `<id>` | Show issue body and metadata |
-| `comment-issue` | `<id> <body>` | Post a comment on an issue |
+| `comment-issue` | `<id> <body> [--allow-closed]` | Post a comment on an issue. **Exits 1 if the issue is closed** unless `--allow-closed` is passed (required when GitHub auto-closes via `Closes #N` at merge). Prints the comment `html_url` to stdout on success. On an indeterminate state lookup (network error), posts (exit 0) and emits `talos:comment-state-unverified target=issue#<N> reason=<short>` on stdout. |
 | `close-issue` | `<id> [reason]` | Close an issue |
 | `label-issue` | `<id> --add label [--remove label]` | Add/remove labels (or tags for Azure) |
 | `create-pr` | `<branch> <title> <body-file>` | Open a PR targeting base_branch |
@@ -435,7 +435,7 @@ The pipeline deliberately preserves three gates that only a human should act on:
 | `label-pr` | `<pr-number> --add label [--remove label]` | Add/remove PR labels |
 | `pr-checks` | `<pr-number>` | List CI check statuses |
 | `merge-pr` | `<pr-number>` | Merge a PR (uses `merge.method` from config) |
-| `comment-pr` | `<pr-number> <body>` | Post a PR review comment |
+| `comment-pr` | `<pr-number> <body> [--allow-closed]` | Post a comment on a PR. **Exits 1 if the PR is closed without being merged** unless `--allow-closed` is passed. Merged PRs are always commentable without the flag. Prints the comment `html_url` to stdout on success. On an indeterminate state lookup, posts (exit 0) and emits `talos:comment-state-unverified target=pr#<N> reason=<short>` on stdout. |
 | `find-pr` | `<issue-number> [open\|merged\|all]` | Find PRs belonging to an issue (session-recovery adoption) |
 | `check-pr-files` | `<pr-number>` | Exit 1 if the PR touches `merge.forbidden_files` patterns |
 | `rerun-ci` | `<pr-number>` | Re-run failed CI runs for the PR head SHA (flaky-CI retry) |
@@ -444,7 +444,13 @@ The pipeline deliberately preserves three gates that only a human should act on:
 
 **Approval-SHA model.** Each approval role stamps `<!-- talos:approval sha=<HEAD_SHA> role=<role> -->` in its verdict comment when posting a pass. At Step 4, `check-approval-sha` compares every present approval label's stamped SHA against the current PR head. If a stamped SHA is older than the current head, the tool runs `git diff <approval-sha>..<current-head>` and checks whether every changed file is covered by `merge.approval_waiver_paths`. If any non-waivable file changed (or the diff cannot be computed), the gate blocks the merge, strips the stale labels, and the orchestrator re-dispatches the affected stages. A human sees a PR comment listing which labels were stale and why; the fix is to re-run the affected stage (e.g. ask QA to re-approve after a source-code push).
 
-Pass `--dry-run` as the first argument to print the underlying CLI command without executing it.
+Pass `--dry-run` as the first argument to print the underlying CLI command without executing it. Pass `--allow-closed` to bypass the closed-target guard on `comment-issue` and `comment-pr`.
+
+**Closed-target guard.** `comment-issue` and `comment-pr` refuse to post on a closed issue or a closed-unmerged PR (exit 1) by default. A comment filed on a closed issue is silently lost in the GitHub UI — no notification is sent to anyone watching the issue, so findings filed this way disappear without trace (see issue #55). The one legitimate exception is the post-merge orchestrator summary, where GitHub auto-closes the issue via `Closes #N` before the comment step runs; pass `--allow-closed` there. Merged PRs are always commentable without the flag.
+
+**Comment URL on stdout (behaviour change).** Both `comment-issue` and `comment-pr` print the `html_url` of the created comment to stdout on success (e.g. `https://github.com/owner/repo/issues/42#issuecomment-123`). Capture it for relay messages or audit trails — no re-fetch required. **Callers that previously captured output from these verbs will now receive a URL instead of empty output.**
+
+**`talos:comment-state-unverified` marker.** When the state-check API call fails (transient network error, insufficient token scope), both verbs post the comment anyway (exit 0) and emit `talos:comment-state-unverified target=<issue|pr>#<N> reason=<short>` on stdout after the URL line. Operators who see this marker in logs should verify manually that the target was open at post time; no action is required if the pipeline is otherwise healthy.
 
 ---
 
