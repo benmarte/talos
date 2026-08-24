@@ -112,6 +112,78 @@ assert_contains "$out" "infra/prod.tfstate" "custom pattern matched"
 assert_not_contains "$out" ".env" "custom config replaces defaults"
 rm talos.pipeline.json
 
+# ── forbidden_files_allow: allow-list checked before deny patterns ─────────────
+# .env.example matches the default .env.* deny pattern, but should be exempt.
+cat > talos.pipeline.json <<'EOF'
+{"merge": {"forbidden_files_allow": [".env.example"]}}
+EOF
+out="$(STUB_PR_FILES=$'.env.example\n.env.production' bash "$VCS" check-pr-files 9)"; rc=$?
+assert_eq "1" "$rc" "allow-list: still blocks the non-allowed .env.production"
+assert_not_contains "$out" ".env.example" "allow-list: .env.example is not reported as forbidden"
+assert_contains "$out" ".env.production" "allow-list: .env.production is still blocked"
+
+# A file in BOTH allow and deny is permitted (allow wins because it is checked first).
+cat > talos.pipeline.json <<'EOF'
+{"merge": {"forbidden_files_allow": [".env.example"], "forbidden_files": [".env.*", ".env.example"]}}
+EOF
+out="$(STUB_PR_FILES=$'.env.example' bash "$VCS" check-pr-files 9)"; rc=$?
+assert_eq "0" "$rc" "allow-list before deny: allowed file is not blocked even when it appears in deny list"
+assert_contains "$out" "no forbidden files" "allow-list before deny: clean result reported"
+rm talos.pipeline.json
+
+# ── forbidden_files_allow: semantic validation — full bypass matrix ────────────
+# Each dangerous pattern is rejected at config time; the offending entry must be
+# named in the error.  Every test below can fail independently: removing the
+# validator (the python3 block guarded by || exit 1) turns them all RED.
+
+_assert_allow_rejected() {
+  # $1=entry $2=desc
+  printf '{"merge": {"forbidden_files_allow": ["%s"]}}\n' "$1" > talos.pipeline.json
+  _out="$(STUB_PR_FILES=$'.env.production' bash "$VCS" check-pr-files 9 2>&1)"; _rc=$?
+  assert_eq "1" "$_rc" "allow-list $2: exits 1 (config rejected)"
+  assert_contains "$_out" "$1" "allow-list $2: offending entry named in error"
+  rm talos.pipeline.json
+}
+
+_assert_allow_rejected '*'        "catch-all '*'"
+_assert_allow_rejected '**'       "catch-all '**'"
+_assert_allow_rejected '*/*'      "path-wildcard '*/*'"
+_assert_allow_rejected '**/*'     "path-wildcard '**/*'"
+_assert_allow_rejected '[a-z]*'   "bracket-expression '[a-z]*'"
+
+# *[!x]* contains shell-special chars so we use a JSON file directly.
+cat > talos.pipeline.json <<'EOF'
+{"merge": {"forbidden_files_allow": ["*[!x]*"]}}
+EOF
+out="$(STUB_PR_FILES=$'.env.production' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "allow-list bracket-expression '*[!x]*': exits 1 (config rejected)"
+assert_contains "$out" "[!x]" "allow-list bracket-expression '*[!x]*': offending entry named in error"
+rm talos.pipeline.json
+
+# config/* — directory wildcard that bypasses via the full-path check.
+_assert_allow_rejected 'config/*' "directory-wildcard 'config/*'"
+
+# .env.example must be accepted AND must NOT exempt real secrets.
+cat > talos.pipeline.json <<'EOF'
+{"merge": {"forbidden_files_allow": [".env.example"]}}
+EOF
+out="$(STUB_PR_FILES=$'.env.example\n.env.production\nconfig/.env.production\nserver.pem' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "allow-list legitimate entry: accepted; real secrets still blocked"
+assert_not_contains "$out" ".env.example" "allow-list legitimate entry: .env.example is exempt"
+assert_contains "$out" ".env.production" "allow-list legitimate entry: .env.production is blocked"
+assert_contains "$out" "server.pem" "allow-list legitimate entry: server.pem (*.pem) is still blocked"
+rm talos.pipeline.json
+
+# ── list-prs passes --base and includes baseRefName ──────────────────────────
+# With BASE_BRANCH set via config, --dry-run must show --base and baseRefName.
+cat > talos.pipeline.json <<'EOF'
+{"base_branch": "main"}
+EOF
+out="$(bash "$VCS" --dry-run list-prs)"
+assert_contains "$out" "--base" "list-prs passes --base flag when base_branch is configured"
+assert_contains "$out" "baseRefName" "list-prs includes baseRefName in the --json field list"
+rm talos.pipeline.json
+
 # ── rerun-ci: re-runs only failed runs for the head SHA ───────────────────────
 : > "$GH_LOG"
 bash "$VCS" rerun-ci 9 >/dev/null 2>&1
