@@ -41,6 +41,7 @@ assert_not_contains "$out" "$TEST_TOKEN"         "list-issues: token not in outp
 # ── comment-issue ─────────────────────────────────────────────────────────────
 : > "$CURL_LOG"
 printf '%s\n' \
+  '{"state":"open","title":"issue 3"}' \
   '{"id":100,"body":"Test comment","html_url":"https://github.com/acme/widget/issues/3#issuecomment-100"}' \
   > "$CURL_QUEUE"
 
@@ -51,6 +52,7 @@ assert_contains "$log" "Authorization: Bearer"    "comment-issue: auth header se
 assert_contains "$log" "validator: CONFIRMED"     "comment-issue: body in payload"
 assert_not_contains "$log" "$TEST_TOKEN"          "comment-issue: token not in log"
 assert_not_contains "$out" "$TEST_TOKEN"          "comment-issue: token not in output"
+assert_contains "$out" "issuecomment-100"         "comment-issue: returns html_url on stdout"
 
 # ── label-issue (multi-step: GET current labels + PUT updated list) ───────────
 : > "$CURL_LOG"
