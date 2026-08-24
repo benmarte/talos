@@ -38,6 +38,16 @@ merge:
     - "test (ubuntu-latest)"
     - "test (macos-latest)"
   delete_branch: true
+  # approval_waiver_paths — glob patterns for files whose presence in a
+  # post-approval delta does NOT invalidate existing approvals (docs-only rule).
+  # HARD-CODED non-waivable (always blocked regardless of this list):
+  #   scripts/**   tests/**   talos.pipeline.yml   pipeline.yaml
+  # These are enforced structurally and cannot be overridden by config.
+  # Default used when this key is absent: ["*.md", "docs/**", "CHANGELOG.md"]
+  approval_waiver_paths:
+    - "*.md"
+    - "docs/**"
+    - "CHANGELOG.md"
 
 limits:
   max_fix_attempts: 3

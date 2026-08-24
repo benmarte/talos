@@ -22,8 +22,17 @@ case "$args" in
     printf '%s\n' "${STUB_ISSUE_TITLE:-Fix login crash}" ;;
   "pr view "*"--json title -q .title"*)
     printf '%s\n' "${STUB_PR_TITLE:-fix: guard null session}" ;;
+  "pr view "*"--json headRefOid,labels,comments"*)
+    # Used by check-approval-sha: return a combined PR object.
+    # Override STUB_PR_HEAD_SHA, STUB_PR_LABELS_JSON, STUB_PR_COMMENTS_JSON.
+    # NOTE: must come BEFORE the plain headRefOid pattern — bash case matches first.
+    _sha="${STUB_PR_HEAD_SHA:-abc123sha}"
+    _labels="${STUB_PR_LABELS_JSON:-[]}"
+    _comments="${STUB_PR_COMMENTS_JSON:-[]}"
+    printf '{"headRefOid":"%s","labels":%s,"comments":%s}\n' \
+      "$_sha" "$_labels" "$_comments" ;;
   "pr view "*"--json headRefOid"*)
-    printf 'abc123sha\n' ;;
+    printf '%s\n' "${STUB_PR_HEAD_SHA:-abc123sha}" ;;
   "pr view "*"--json files"*)
     # One path per line (script passes -q '.files[].path')
     printf '%s\n' "${STUB_PR_FILES:-src/auth.js

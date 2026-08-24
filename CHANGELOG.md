@@ -4,6 +4,36 @@
 
 ### Added
 
+- **`check-approval-sha` subcommand in `pipeline-vcs.sh`.** Verifies that every
+  approval label present on a PR (`qa:pass`, `review:approved`, `security:approved`,
+  `docs:done`) was earned against the current head SHA.  Each approval role now
+  embeds an HTML marker `<!-- talos:approval sha=<HEAD_SHA> role=<role> -->` in
+  its PR comment when posting a pass/approval verdict.  At Step 4, the orchestrator
+  calls `check-approval-sha <PR>` before merging; a non-zero exit (stale label)
+  triggers label stripping and re-dispatch of the affected stages.
+
+- **`pr-head` subcommand in `pipeline-vcs.sh`.** Prints the current head SHA for
+  a PR.  Used by approval roles to stamp the SHA they approved at comment time.
+
+- **`merge.approval_waiver_paths` config key.** List of glob patterns
+  (default `["*.md", "docs/**", "CHANGELOG.md"]`) for files that, when they are
+  the only changes in the delta between an approval SHA and the current head, do
+  not invalidate the approval.  Hard-coded non-waivable paths — `scripts/**`,
+  `tests/**`, `talos.pipeline.yml`, `pipeline.yaml` — are enforced structurally
+  after the config waiver and cannot be overridden by configuration.
+
+### Security
+
+- **SHA-scoped approval gate closes the stale-label attack surface.** Prior to
+  this change a force-push after an approval left the label in place; the merge
+  gate checked only label presence, not which commit the label was earned against.
+  `check-approval-sha` is fail-closed: an unresolvable head SHA, a missing marker,
+  or a `git diff` failure all exit non-zero and block the merge.  Waiver config
+  entries that are too broad (catch-all or covering non-waivable paths) are
+  rejected at validation time using the same canary approach as `check-pr-files`.
+
+
+
 - **`_is_lane_home` guard in `pipeline-worktree.sh`.** `remove <N>` and `sweep` now refuse to delete a worktree that contains a `.talos-lane-home` marker file. The file is placed by the operator in every long-lived lane home (never committed); it never propagates to disposable per-issue worktrees. Prevents a sweep run from one lane from deleting another lane's working directory.
 
 - **`_is_self` guard in `pipeline-worktree.sh`.** `remove <N>` and `sweep` now refuse to delete the checkout they are running from. In inline harnesses (`agents.runner: pi`) the developer stage works directly in the orchestrator's own checkout, which can match the per-issue branch pattern; removing it would destroy the running session. In subagent mode the guard is a no-op.
