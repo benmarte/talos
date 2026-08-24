@@ -281,22 +281,59 @@ secrets.*'
       # for `.env.local`, `.env.production`, etc.
       local allow
       allow="$(cfg merge.forbidden_files_allow "")"
-      # Validate allow entries: reject catch-all patterns that match every file.
-      # A pattern consisting solely of wildcard characters (*  ?) would bypass the
-      # entire secret-protection gate.  Fail closed — bad config must block, not pass.
+      # Semantic allow-list validation: reject any entry that would exempt a canary path
+      # derived from the active deny patterns.  Character-stripping is whack-a-mole —
+      # entries like *[!x]* or [a-z]* bypass a strip-* check; matching canaries with the
+      # SAME fnmatch rule the gate uses is the only complete fix.  Fail closed: any
+      # validation error or unexpected exception must exit non-zero.
       if [ -n "$allow" ]; then
-        echo "$allow" | while IFS= read -r _entry; do
-          _entry="${_entry#"${_entry%%[![:space:]]*}"}"  # ltrim
-          _entry="${_entry%"${_entry##*[![:space:]]}"}"  # rtrim
-          [ -z "$_entry" ] && continue
-          # Strip all wildcard chars; if nothing remains it is a catch-all.
-          _stripped="${_entry//\*/}"
-          _stripped="${_stripped//\?/}"
-          if [ -z "$_stripped" ]; then
-            echo "pipeline-vcs: ERROR: merge.forbidden_files_allow entry '$_entry' is a catch-all wildcard and would disable secret protection — rejected" >&2
-            exit 1
-          fi
-        done || exit 1
+        PATTERNS="$patterns" ALLOW="$allow" python3 -c "
+import fnmatch, os, re, sys
+
+patterns = [p.strip() for p in os.environ['PATTERNS'].splitlines() if p.strip()]
+allow    = [a.strip() for a in os.environ.get('ALLOW','').splitlines() if a.strip()]
+
+def pat_to_literal(pat):
+    # Replace bracket expressions ([abc], [!abc]) then remaining glob chars with 'x'
+    # so the result is a plain filename that the deny pattern was written to match.
+    s = re.sub(r'\\[[^\\]]*\\]', 'x', pat)
+    return s.replace('*', 'x').replace('?', 'x')
+
+# Build canary paths from the active deny patterns so the check stays correct if
+# defaults change.  Three forms per pattern:
+#   root      — bare filename         catches bare globs like * and [a-z]*
+#   nested    — sub/dir/<name>        catches */* and **/*
+#   prefixed  — config/<name>         catches config/* (path check, not basename)
+# Only generate canaries from wildcard deny patterns.  A literal deny pattern
+# (no glob chars) represents one specific file; an exact allow entry overriding
+# it is an explicit user decision, not a wildcard bypass.  Wildcards in a deny
+# pattern guard many files at once — those need the semantic check.
+canaries = []
+for pat in patterns:
+    if not re.search(r'[*?\[\]]', pat):
+        continue  # literal deny pattern — exact allow-entry override is legitimate
+    lit = pat_to_literal(pat)
+    if not lit:
+        continue
+    canaries.append(lit)
+    canaries.append('sub/dir/' + lit)
+    canaries.append('config/' + lit)
+
+errors = []
+for entry in allow:
+    for canary in canaries:
+        base = os.path.basename(canary)
+        if fnmatch.fnmatch(base, entry) or fnmatch.fnmatch(canary, entry):
+            errors.append(
+                'pipeline-vcs: ERROR: merge.forbidden_files_allow entry \'' + entry +
+                '\' would exempt \'' + canary + '\' — rejected'
+            )
+            break  # one error per entry is sufficient
+if errors:
+    for e in errors:
+        print(e, file=sys.stderr)
+    sys.exit(1)
+" || exit 1  # Fail closed: validation error or unexpected exception must block, not pass
       fi
       gh pr view "$n" --json files -q '.files[].path' ${REPO:+--repo "$REPO"} 2>/dev/null \
         | PATTERNS="$patterns" ALLOW="$allow" python3 -c "

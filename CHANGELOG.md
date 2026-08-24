@@ -16,7 +16,7 @@
 
 ### Security
 
-- **Catch-all wildcard rejection in `merge.forbidden_files_allow`.** Allow-list entries consisting solely of wildcard characters (`*`, `**`, `?`, or any combination thereof) are now rejected at load time with exit non-zero and a message naming the offending entry. A single `*` or `**` entry previously caused `fnmatch` to return true for every filename, silently disabling the entire secret-protection gate. The gate now fails closed on invalid config rather than passing everything through.
+- **Semantic canary validation in `merge.forbidden_files_allow`.** Allow-list entries are now validated by testing them against canary paths derived from the active deny patterns using the same `fnmatch` rule the gate uses (basename AND full path). An entry is rejected if it would exempt any canary. This replaces the previous character-stripping approach, which caught `*` and `**` but was bypassed by `*/*`, `**/*`, `*[!x]*`, `[a-z]*`, and `config/*`. The validator generates three canary forms per deny pattern (root, nested `sub/dir/<name>`, and prefixed `config/<name>`) so it catches both basename-level and path-level bypasses. The gate fails closed on any invalid entry, naming the entry and the canary it would have exempted.
 
 ## [0.13.0] - 2026-08-15
 

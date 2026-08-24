@@ -131,41 +131,47 @@ assert_eq "0" "$rc" "allow-list before deny: allowed file is not blocked even wh
 assert_contains "$out" "no forbidden files" "allow-list before deny: clean result reported"
 rm talos.pipeline.json
 
-# ── forbidden_files_allow: catch-all wildcard validation ──────────────────────
-# A bare '*' must be rejected with exit non-zero and an error naming the entry.
+# ── forbidden_files_allow: semantic validation — full bypass matrix ────────────
+# Each dangerous pattern is rejected at config time; the offending entry must be
+# named in the error.  Every test below can fail independently: removing the
+# validator (the python3 block guarded by || exit 1) turns them all RED.
+
+_assert_allow_rejected() {
+  # $1=entry $2=desc
+  printf '{"merge": {"forbidden_files_allow": ["%s"]}}\n' "$1" > talos.pipeline.json
+  _out="$(STUB_PR_FILES=$'.env.production' bash "$VCS" check-pr-files 9 2>&1)"; _rc=$?
+  assert_eq "1" "$_rc" "allow-list $2: exits 1 (config rejected)"
+  assert_contains "$_out" "$1" "allow-list $2: offending entry named in error"
+  rm talos.pipeline.json
+}
+
+_assert_allow_rejected '*'        "catch-all '*'"
+_assert_allow_rejected '**'       "catch-all '**'"
+_assert_allow_rejected '*/*'      "path-wildcard '*/*'"
+_assert_allow_rejected '**/*'     "path-wildcard '**/*'"
+_assert_allow_rejected '[a-z]*'   "bracket-expression '[a-z]*'"
+
+# *[!x]* contains shell-special chars so we use a JSON file directly.
 cat > talos.pipeline.json <<'EOF'
-{"merge": {"forbidden_files_allow": ["*"]}}
+{"merge": {"forbidden_files_allow": ["*[!x]*"]}}
 EOF
 out="$(STUB_PR_FILES=$'.env.production' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
-assert_eq "1" "$rc" "allow-list catch-all '*': exits 1 (config rejected)"
-assert_contains "$out" "*" "allow-list catch-all '*': offending entry named in error"
+assert_eq "1" "$rc" "allow-list bracket-expression '*[!x]*': exits 1 (config rejected)"
+assert_contains "$out" "[!x]" "allow-list bracket-expression '*[!x]*': offending entry named in error"
 rm talos.pipeline.json
 
-# A bare '**' must also be rejected.
-cat > talos.pipeline.json <<'EOF'
-{"merge": {"forbidden_files_allow": ["**"]}}
-EOF
-out="$(STUB_PR_FILES=$'.env.production' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
-assert_eq "1" "$rc" "allow-list catch-all '**': exits 1 (config rejected)"
-assert_contains "$out" "**" "allow-list catch-all '**': offending entry named in error"
-rm talos.pipeline.json
+# config/* — directory wildcard that bypasses via the full-path check.
+_assert_allow_rejected 'config/*' "directory-wildcard 'config/*'"
 
-# A narrow, legitimate entry ('.env.example') still works and exempts only that file.
+# .env.example must be accepted AND must NOT exempt real secrets.
 cat > talos.pipeline.json <<'EOF'
 {"merge": {"forbidden_files_allow": [".env.example"]}}
 EOF
-out="$(STUB_PR_FILES=$'.env.example\n.env.production' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
-assert_eq "1" "$rc" "allow-list narrow entry: still blocks non-allowed .env.production"
-assert_not_contains "$out" ".env.example" "allow-list narrow entry: .env.example is exempt"
-assert_contains "$out" ".env.production" "allow-list narrow entry: .env.production is blocked"
-rm talos.pipeline.json
-
-# A genuine secret is still blocked when a narrow allow entry is present.
-cat > talos.pipeline.json <<'EOF'
-{"merge": {"forbidden_files_allow": [".env.example"]}}
-EOF
-out="$(STUB_PR_FILES=$'.env.example\n.env.production' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
-assert_eq "1" "$rc" "allow-list narrow: genuine secret .env.production still blocked"
+out="$(STUB_PR_FILES=$'.env.example\n.env.production\nconfig/.env.production\nserver.pem' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "allow-list legitimate entry: accepted; real secrets still blocked"
+assert_not_contains "$out" ".env.example" "allow-list legitimate entry: .env.example is exempt"
+assert_contains "$out" ".env.production" "allow-list legitimate entry: .env.production is blocked"
+assert_contains "$out" "server.pem" "allow-list legitimate entry: server.pem (*.pem) is still blocked"
 rm talos.pipeline.json
 
 # ── list-prs passes --base and includes baseRefName ──────────────────────────
