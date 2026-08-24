@@ -161,6 +161,75 @@ corrupt_order='[{"body":"Talos attempt record\n<!-- talos:attempt stage=qa count
 rc_co="$(read_attempt_rc "$corrupt_order")"
 assert_exit_code 1 "$rc_co" "corrupted marker (total < count): fails closed"
 
+# count=abc — non-numeric count; LOOSE_RE finds it, STRICT_RE cannot parse → fail-closed
+corrupt_abc='[{"body":"Talos attempt record\n<!-- talos:attempt stage=qa count=abc total=1 -->"}]'
+rc_abc="$(read_attempt_rc "$corrupt_abc")"
+err_abc="$(read_attempt_err "$corrupt_abc")"
+assert_exit_code 1 "$rc_abc" "corrupt marker (count=abc): read-attempt exits 1 (fail-closed)"
+assert_contains "$err_abc" "fail-closed" "corrupt marker (count=abc): fail-closed in stderr"
+
+# count=-1 — negative count; not matched by \d+ → fail-closed
+corrupt_neg='[{"body":"Talos attempt record\n<!-- talos:attempt stage=qa count=-1 total=1 -->"}]'
+rc_neg="$(read_attempt_rc "$corrupt_neg")"
+err_neg="$(read_attempt_err "$corrupt_neg")"
+assert_exit_code 1 "$rc_neg" "corrupt marker (count=-1): read-attempt exits 1 (fail-closed)"
+assert_contains "$err_neg" "fail-closed" "corrupt marker (count=-1): fail-closed in stderr"
+
+# count= (empty) — empty count field → fail-closed
+corrupt_empty_count='[{"body":"Talos attempt record\n<!-- talos:attempt stage=qa count= total=1 -->"}]'
+rc_ec="$(read_attempt_rc "$corrupt_empty_count")"
+err_ec="$(read_attempt_err "$corrupt_empty_count")"
+assert_exit_code 1 "$rc_ec" "corrupt marker (count=empty): read-attempt exits 1 (fail-closed)"
+assert_contains "$err_ec" "fail-closed" "corrupt marker (count=empty): fail-closed in stderr"
+
+# total missing — no total= field at all → fail-closed
+corrupt_no_total='[{"body":"Talos attempt record\n<!-- talos:attempt stage=qa count=1 -->"}]'
+rc_nt="$(read_attempt_rc "$corrupt_no_total")"
+err_nt="$(read_attempt_err "$corrupt_no_total")"
+assert_exit_code 1 "$rc_nt" "corrupt marker (total missing): read-attempt exits 1 (fail-closed)"
+assert_contains "$err_nt" "fail-closed" "corrupt marker (total missing): fail-closed in stderr"
+
+# stage=notarealstage — unknown stage name (semantic check) → fail-closed
+corrupt_nostage='[{"body":"Talos attempt record\n<!-- talos:attempt stage=notarealstage count=1 total=1 -->"}]'
+rc_nst="$(read_attempt_rc "$corrupt_nostage")"
+err_nst="$(read_attempt_err "$corrupt_nostage")"
+assert_exit_code 1 "$rc_nst" "corrupt marker (stage=notarealstage): read-attempt exits 1 (fail-closed)"
+assert_contains "$err_nst" "fail-closed" "corrupt marker (stage=notarealstage): fail-closed in stderr"
+
+# truncated marker — missing all fields → fail-closed
+corrupt_trunc='[{"body":"Talos attempt record\n<!-- talos:attempt -->"}]'
+rc_tr="$(read_attempt_rc "$corrupt_trunc")"
+err_tr="$(read_attempt_err "$corrupt_trunc")"
+assert_exit_code 1 "$rc_tr" "corrupt marker (truncated, no fields): read-attempt exits 1 (fail-closed)"
+assert_contains "$err_tr" "fail-closed" "corrupt marker (truncated): fail-closed in stderr"
+
+# marker with embedded literal \n (backslash-n) in a field value → fail-closed
+# JSON \\n → literal backslash-n (two chars) in the Python string, so the
+# marker stays on one last-line; LOOSE_RE sees it, STRICT_RE rejects it.
+corrupt_enl='[{"body":"Talos attempt record\n<!-- talos:attempt stage=qa count=1\\ntotal=1 -->"}]'
+rc_enl="$(read_attempt_rc "$corrupt_enl")"
+err_enl="$(read_attempt_err "$corrupt_enl")"
+assert_exit_code 1 "$rc_enl" "corrupt marker (embedded literal backslash-n): read-attempt exits 1 (fail-closed)"
+assert_contains "$err_enl" "fail-closed" "corrupt marker (embedded literal backslash-n): fail-closed in stderr"
+
+# All three verbs must propagate the fail-closed signal (spot-check with count=abc marker).
+rc_ca_corrupt="$(check_attempt_rc "$corrupt_abc")"
+assert_exit_code 1 "$rc_ca_corrupt" "corrupt marker: check-attempt also exits 1 (fail-closed)"
+rc_ra_corrupt="$(record_attempt_rc "$corrupt_abc" qa)"
+assert_exit_code 1 "$rc_ra_corrupt" "corrupt marker: record-attempt also exits 1 (fail-closed)"
+
+# Regression: no marker at all must still exit 0 with count=0 (not treated as corrupt).
+out_reg_none="$(read_attempt '[]')"; rc_reg_none="$(read_attempt_rc '[]')"
+assert_exit_code 0 "$rc_reg_none" "regression: no marker → exit 0 (not corrupt)"
+assert_contains "$out_reg_none" "count=0" "regression: no marker → count=0"
+
+# Regression: a well-formed marker must still exit 0 with correct values.
+valid_reg="$(mk_attempt_comment qa 2 5)"
+out_reg_valid="$(read_attempt "$valid_reg")"; rc_reg_valid="$(read_attempt_rc "$valid_reg")"
+assert_exit_code 0 "$rc_reg_valid" "regression: valid marker → exit 0"
+assert_contains "$out_reg_valid" "count=2" "regression: valid marker → count=2"
+assert_contains "$out_reg_valid" "total=5" "regression: valid marker → total=5"
+
 # Marker inside a fenced block must NOT win — it is not the last line
 fenced_marker='[{"body":"```\n<!-- talos:attempt stage=qa count=99 total=99 -->\n```\nsome text after"}]'
 out_fm="$(read_attempt "$fenced_marker")"; rc_fm="$(read_attempt_rc "$fenced_marker")"

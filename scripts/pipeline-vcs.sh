@@ -495,6 +495,12 @@ for r in runs:
       printf '%s' "$issue_data" | python3 -c "
 import json, re, sys
 
+# Stage-1 permissive detector: matches any HTML comment that looks like it
+# could be a talos:attempt marker.  Used to distinguish 'no marker present'
+# (safe) from 'marker present but unparseable' (corrupt → fail-closed).
+LOOSE_RE = re.compile(r'<!--\s*talos:attempt\b[^>]*-->')
+
+# Stage-2 strict extractor: only matches a syntactically valid marker.
 MARKER_RE = re.compile(
     r'<!--\s*talos:attempt\s+stage=(\S+)\s+count=(\d+)\s+total=(\d+)\s*-->$',
     re.MULTILINE
@@ -519,29 +525,43 @@ for body in reversed(comments):
     # body (same guard as talos:approval), so a quoted/fenced occurrence cannot win.
     stripped = body.rstrip()
     last_line = stripped.rsplit('\n', 1)[-1].strip()
+
+    # Stage 1: does this line look at all like a talos:attempt marker?
+    if not LOOSE_RE.search(last_line):
+        continue  # not a marker line — skip to next comment
+
+    # Stage 2: the line IS marker-like; it must parse exactly or it is corrupt.
+    # Corrupt markers NEVER fall through to zero — that would grant infinite retries.
     m = MARKER_RE.match(last_line)
-    if m:
-        stage, count_str, total_str = m.group(1), m.group(2), m.group(3)
-        # Validate: stage must be known, values must be non-negative integers
-        if stage not in KNOWN_STAGES:
-            print(f'pipeline-vcs: read-attempt: unrecognised stage \"{stage}\" in marker — fail-closed', file=sys.stderr)
-            sys.exit(1)
-        count_val = int(count_str)
-        total_val = int(total_str)
-        if count_val < 0 or total_val < 0:
-            print('pipeline-vcs: read-attempt: negative value in marker — fail-closed', file=sys.stderr)
-            sys.exit(1)
-        if total_val < count_val:
-            print('pipeline-vcs: read-attempt: total < count in marker — fail-closed', file=sys.stderr)
-            sys.exit(1)
-        found = (stage, count_val, total_val)
-        break
+    if not m:
+        print(
+            f'pipeline-vcs: read-attempt: corrupt marker (does not parse): '
+            f'{last_line!r} — fail-closed',
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    stage, count_str, total_str = m.group(1), m.group(2), m.group(3)
+    # Semantic validation: stage must be known, values non-negative, count <= total.
+    if stage not in KNOWN_STAGES:
+        print(f'pipeline-vcs: read-attempt: unrecognised stage \"{stage}\" in marker — fail-closed', file=sys.stderr)
+        sys.exit(1)
+    count_val = int(count_str)
+    total_val = int(total_str)
+    if count_val < 0 or total_val < 0:
+        print('pipeline-vcs: read-attempt: negative value in marker — fail-closed', file=sys.stderr)
+        sys.exit(1)
+    if total_val < count_val:
+        print('pipeline-vcs: read-attempt: total < count in marker — fail-closed', file=sys.stderr)
+        sys.exit(1)
+    found = (stage, count_val, total_val)
+    break
 
 if found:
     stage, count_val, total_val = found
     print(f'stage={stage} count={count_val} total={total_val}')
 else:
-    # No marker yet — treat as zero attempts (deliberate, not accidental)
+    # No marker detected at all — treat as zero attempts (deliberate, not accidental).
     print('stage= count=0 total=0')
 sys.exit(0)
 "
