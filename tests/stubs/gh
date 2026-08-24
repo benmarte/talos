@@ -50,7 +50,7 @@ tests/auth.test.js}" ;;
     fi ;;
   "run list --commit "*)
     printf '[{"databaseId":111,"conclusion":"failure"},{"databaseId":112,"conclusion":"success"}]\n' ;;
-  "issue comment "*"--json url -q .url"*)
+  "issue comment "*)
     printf 'https://github.com/%s/issues/comments/%s\n' "$REPO" "${STUB_COMMENT_ID:-100}" ;;
   "issue create "*)
     printf 'https://github.com/%s/issues/%s\n' "$REPO" "${STUB_NEW_ISSUE_NUMBER:-42}" ;;

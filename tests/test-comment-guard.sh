@@ -132,7 +132,7 @@ case "$args" in
   # State check fails for this test
   "issue view "*"--json state -q .state"*)
     exit 1 ;;
-  "issue comment "*"--json url -q .url"*)
+  "issue comment "*)
     printf 'https://github.com/%s/issues/comments/999\n' "$REPO" ;;
   *)
     exit 0 ;;

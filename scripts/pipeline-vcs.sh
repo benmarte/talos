@@ -158,9 +158,9 @@ _github() {
       local n="$1" body="$2"
       if [ "$DRY_RUN" = "true" ]; then
         if [ "$ALLOW_CLOSED" = "true" ]; then
-          echo "[dry-run] gh issue comment $n --body $body --json url -q .url (--allow-closed)"
+          echo "[dry-run] gh issue comment $n --body $body (--allow-closed; URL on stdout)"
         else
-          echo "[dry-run] gh issue view $n --json state -q .state; gh issue comment $n --body $body --json url -q .url"
+          echo "[dry-run] gh issue view $n --json state -q .state; gh issue comment $n --body $body (URL on stdout)"
         fi
         return 0
       fi
@@ -180,7 +180,7 @@ _github() {
         fi
       fi
       local _ci_url
-      _ci_url="$(gh issue comment "$n" --body "$body" --json url -q .url ${REPO:+--repo "$REPO"})"
+      _ci_url="$(gh issue comment "$n" --body "$body" ${REPO:+--repo "$REPO"})"
       echo "$_ci_url"
       if [ "$_ci_state_unverified" = "true" ]; then
         echo "talos:comment-state-unverified target=issue#$n reason=state-check-failed"
@@ -273,9 +273,9 @@ _github() {
       local n="$1" body="$2"
       if [ "$DRY_RUN" = "true" ]; then
         if [ "$ALLOW_CLOSED" = "true" ]; then
-          echo "[dry-run] gh issue comment $n --body $body --json url -q .url (--allow-closed)"
+          echo "[dry-run] gh issue comment $n --body $body (--allow-closed; URL on stdout)"
         else
-          echo "[dry-run] gh pr view $n --json state -q .state; gh issue comment $n --body $body --json url -q .url"
+          echo "[dry-run] gh pr view $n --json state -q .state; gh issue comment $n --body $body (URL on stdout)"
         fi
         return 0
       fi
@@ -295,7 +295,7 @@ _github() {
         fi
       fi
       local _cp_url
-      _cp_url="$(gh issue comment "$n" --body "$body" --json url -q .url ${REPO:+--repo "$REPO"})"
+      _cp_url="$(gh issue comment "$n" --body "$body" ${REPO:+--repo "$REPO"})"
       echo "$_cp_url"
       if [ "$_cp_state_unverified" = "true" ]; then
         echo "talos:comment-state-unverified target=pr#$n reason=state-check-failed"
