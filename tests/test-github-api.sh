@@ -180,6 +180,111 @@ assert_eq "0" "$rc" "github-api transparency: clean PR exits 0"
 assert_contains "$out" "talos:forbidden-files-active patterns=" "github-api transparency: active-patterns marker present"
 assert_contains "$out" "no forbidden files" "github-api transparency: clean result reported"
 
+# ── #63: SSH private keys and keystores blocked by default (github-api provider) ─
+# Restore base config first
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "github-api", "repo": "acme/widget"}}
+EOF
+
+# id_rsa
+: > "$CURL_LOG"
+printf '%s\n' '[{"filename":"id_rsa","status":"added"}]' > "$CURL_QUEUE"
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#63 github-api: id_rsa blocked by default (*id_rsa*)"
+assert_contains "$out" "id_rsa" "#63 github-api: id_rsa listed in output"
+
+# id_ecdsa
+: > "$CURL_LOG"
+printf '%s\n' '[{"filename":"id_ecdsa","status":"added"}]' > "$CURL_QUEUE"
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#63 github-api: id_ecdsa blocked by default (*id_ecdsa*)"
+assert_contains "$out" "id_ecdsa" "#63 github-api: id_ecdsa listed in output"
+
+# id_ed25519
+: > "$CURL_LOG"
+printf '%s\n' '[{"filename":"id_ed25519","status":"added"}]' > "$CURL_QUEUE"
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#63 github-api: id_ed25519 blocked by default (*id_ed25519*)"
+assert_contains "$out" "id_ed25519" "#63 github-api: id_ed25519 listed in output"
+
+# id_dsa
+: > "$CURL_LOG"
+printf '%s\n' '[{"filename":"id_dsa","status":"added"}]' > "$CURL_QUEUE"
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#63 github-api: id_dsa blocked by default (*id_dsa*)"
+assert_contains "$out" "id_dsa" "#63 github-api: id_dsa listed in output"
+
+# deploy_id_rsa (prefix variant)
+: > "$CURL_LOG"
+printf '%s\n' '[{"filename":"deploy_id_rsa","status":"added"}]' > "$CURL_QUEUE"
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#63 github-api: deploy_id_rsa blocked by default (*id_rsa*)"
+assert_contains "$out" "deploy_id_rsa" "#63 github-api: deploy_id_rsa listed in output"
+
+# .ssh/id_rsa (path-nested variant)
+: > "$CURL_LOG"
+printf '%s\n' '[{"filename":".ssh/id_rsa","status":"added"}]' > "$CURL_QUEUE"
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#63 github-api: .ssh/id_rsa blocked by default (*id_rsa*)"
+assert_contains "$out" ".ssh/id_rsa" "#63 github-api: .ssh/id_rsa listed in output"
+
+# key.ppk (PuTTY private key)
+: > "$CURL_LOG"
+printf '%s\n' '[{"filename":"key.ppk","status":"added"}]' > "$CURL_QUEUE"
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#63 github-api: key.ppk blocked by default (*.ppk)"
+assert_contains "$out" "key.ppk" "#63 github-api: key.ppk listed in output"
+
+# store.jks (Java KeyStore)
+: > "$CURL_LOG"
+printf '%s\n' '[{"filename":"store.jks","status":"added"}]' > "$CURL_QUEUE"
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#63 github-api: store.jks blocked by default (*.jks)"
+assert_contains "$out" "store.jks" "#63 github-api: store.jks listed in output"
+
+# x.keystore (Android keystore)
+: > "$CURL_LOG"
+printf '%s\n' '[{"filename":"x.keystore","status":"added"}]' > "$CURL_QUEUE"
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#63 github-api: x.keystore blocked by default (*.keystore)"
+assert_contains "$out" "x.keystore" "#63 github-api: x.keystore listed in output"
+
+# id_rsa.pub — accepted false positive, pinned intentionally
+: > "$CURL_LOG"
+printf '%s\n' '[{"filename":"id_rsa.pub","status":"added"}]' > "$CURL_QUEUE"
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#63 github-api: id_rsa.pub blocked by *id_rsa* (accepted false positive)"
+
+# No over-blocking: benign files pass
+: > "$CURL_LOG"
+printf '%s\n' '[{"filename":"README.md","status":"modified"},{"filename":"src/main.py","status":"added"},{"filename":"identity.md","status":"added"},{"filename":"rsa_notes.txt","status":"added"}]' > "$CURL_QUEUE"
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "0" "$rc" "#63 github-api: benign files not over-blocked"
+assert_contains "$out" "no forbidden files" "#63 github-api: benign files reported clean"
+
+# Previously-protected set still blocks
+: > "$CURL_LOG"
+printf '%s\n' '[{"filename":".env","status":"added"},{"filename":"server.pem","status":"added"},{"filename":".env.production","status":"added"}]' > "$CURL_QUEUE"
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#63 github-api: previously-protected files still blocked"
+assert_contains "$out" ".env" "#63 github-api: .env still blocked"
+assert_contains "$out" "server.pem" "#63 github-api: server.pem still blocked"
+
+# Allow-list can still exempt a specific file
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "github-api", "repo": "acme/widget"}, "merge": {"forbidden_files_allow": ["id_rsa.pub"]}}
+EOF
+: > "$CURL_LOG"
+printf '%s\n' '[{"filename":"id_rsa.pub","status":"added"},{"filename":"id_rsa","status":"added"}]' > "$CURL_QUEUE"
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#63 github-api: allow-list exempts id_rsa.pub but id_rsa is still blocked"
+assert_not_contains "$out" "id_rsa.pub" "#63 github-api: id_rsa.pub exempted by allow-list"
+assert_contains "$out" "id_rsa" "#63 github-api: id_rsa still blocked"
+# Restore base config
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "github-api", "repo": "acme/widget"}}
+EOF
+
 # ── approve-pr ────────────────────────────────────────────────────────────────
 : > "$CURL_LOG"
 printf '%s\n' \

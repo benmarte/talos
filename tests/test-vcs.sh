@@ -237,6 +237,76 @@ assert_contains "$out" "infra/prod.tfstate" "union+allow: custom pattern blocked
 assert_contains "$out" ".env.production" "union+allow: default .env.* still blocks"
 rm talos.pipeline.json
 
+# ── #63: SSH private keys and keystores blocked by default ────────────────────
+# Each of the 9 filenames must be blocked with NO config (default patterns only).
+
+# --- Bare SSH key names (extensionless private keys) ---
+out="$(STUB_PR_FILES='id_rsa' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#63: id_rsa blocked by default (*id_rsa*)"
+assert_contains "$out" "id_rsa" "#63: id_rsa listed in output"
+
+out="$(STUB_PR_FILES='id_ecdsa' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#63: id_ecdsa blocked by default (*id_ecdsa*)"
+assert_contains "$out" "id_ecdsa" "#63: id_ecdsa listed in output"
+
+out="$(STUB_PR_FILES='id_ed25519' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#63: id_ed25519 blocked by default (*id_ed25519*)"
+assert_contains "$out" "id_ed25519" "#63: id_ed25519 listed in output"
+
+out="$(STUB_PR_FILES='id_dsa' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#63: id_dsa blocked by default (*id_dsa*)"
+assert_contains "$out" "id_dsa" "#63: id_dsa listed in output"
+
+# --- Prefix variant (custom-named deploy key) ---
+out="$(STUB_PR_FILES='deploy_id_rsa' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#63: deploy_id_rsa blocked by default (*id_rsa*)"
+assert_contains "$out" "deploy_id_rsa" "#63: deploy_id_rsa listed in output"
+
+# --- Path-nested variant ---
+out="$(STUB_PR_FILES='.ssh/id_rsa' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#63: .ssh/id_rsa blocked by default (*id_rsa*)"
+assert_contains "$out" ".ssh/id_rsa" "#63: .ssh/id_rsa listed in output"
+
+# --- PuTTY private key ---
+out="$(STUB_PR_FILES='key.ppk' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#63: key.ppk blocked by default (*.ppk)"
+assert_contains "$out" "key.ppk" "#63: key.ppk listed in output"
+
+# --- Java KeyStore ---
+out="$(STUB_PR_FILES='store.jks' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#63: store.jks blocked by default (*.jks)"
+assert_contains "$out" "store.jks" "#63: store.jks listed in output"
+
+# --- Android keystore ---
+out="$(STUB_PR_FILES='x.keystore' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#63: x.keystore blocked by default (*.keystore)"
+assert_contains "$out" "x.keystore" "#63: x.keystore listed in output"
+
+# --- Accepted false positive: id_rsa.pub is blocked (pinned intentional behavior) ---
+out="$(STUB_PR_FILES='id_rsa.pub' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#63: id_rsa.pub blocked by *id_rsa* (accepted false positive — use allow list to exempt)"
+
+# --- No over-blocking: benign files still pass ---
+out="$(STUB_PR_FILES=$'README.md\nsrc/main.py\ntests/helpers.sh\nidentity.md\nrsa_notes.txt' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "0" "$rc" "#63: benign files not over-blocked"
+assert_contains "$out" "no forbidden files" "#63: benign files reported clean"
+
+# --- Previously-protected set still blocks ---
+out="$(STUB_PR_FILES=$'.env\nserver.pem\n.env.production' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#63: previously-protected .env/.pem still blocked"
+assert_contains "$out" ".env" "#63: .env still blocked"
+assert_contains "$out" "server.pem" "#63: server.pem still blocked"
+
+# --- Allow-list can still exempt a specific SSH key file ---
+cat > talos.pipeline.json <<'EOF'
+{"merge": {"forbidden_files_allow": ["id_rsa.pub"]}}
+EOF
+out="$(STUB_PR_FILES=$'id_rsa.pub\nid_rsa' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#63: allow-list exempts id_rsa.pub but id_rsa is still blocked"
+assert_not_contains "$out" "id_rsa.pub" "#63: id_rsa.pub exempted by allow-list"
+assert_contains "$out" "id_rsa" "#63: id_rsa still blocked despite allow-list"
+rm talos.pipeline.json
+
 # ── list-prs passes --base and includes baseRefName ──────────────────────────
 # With BASE_BRANCH set via config, --dry-run must show --base and baseRefName.
 cat > talos.pipeline.json <<'EOF'

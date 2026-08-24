@@ -352,6 +352,9 @@ for pr in prs:
       # Built-in defaults — always active unless merge.forbidden_files_replace: true.
       # #61 fix: setting merge.forbidden_files now UNIONs with these defaults rather
       # than replacing them wholesale, closing the silent neutering attack surface.
+      # .netrc is deliberately NOT included here: it is a literal pattern (no glob
+      # chars), generates no canary, and a wildcard allow entry could bypass it
+      # silently — that is issue #76's blind spot. Deferred until #76 is fixed.
       local _BUILTIN_DEFAULTS='.env
 .env.*
 *.pem
@@ -359,7 +362,14 @@ for pr in prs:
 *.p12
 *.pfx
 *.secrets
-secrets.*'
+secrets.*
+*id_rsa*
+*id_ecdsa*
+*id_ed25519*
+*id_dsa*
+*.ppk
+*.jks
+*.keystore'
       local patterns _defaults_active
       local _configured _replace
       _configured="$(cfg merge.forbidden_files "")"
@@ -1565,6 +1575,9 @@ for pr in prs:
       local _n="$1"
       # Built-in defaults — always active unless merge.forbidden_files_replace: true.
       # #61 fix: union semantics match the github provider; both providers are identical.
+      # .netrc is deliberately NOT included here: it is a literal pattern (no glob
+      # chars), generates no canary, and a wildcard allow entry could bypass it
+      # silently — that is issue #76's blind spot. Deferred until #76 is fixed.
       local _BUILTIN_DEFAULTS='.env
 .env.*
 *.pem
@@ -1572,7 +1585,14 @@ for pr in prs:
 *.p12
 *.pfx
 *.secrets
-secrets.*'
+secrets.*
+*id_rsa*
+*id_ecdsa*
+*id_ed25519*
+*id_dsa*
+*.ppk
+*.jks
+*.keystore'
       local _patterns _defaults_active
       local _ga_configured _ga_replace
       _ga_configured="$(cfg merge.forbidden_files "")"
