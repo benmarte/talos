@@ -259,7 +259,20 @@ Take at most `max_parallel` issues.
 
 ## Step 3 — Per-issue pipeline (VCS mode)
 
-Repeat this block for each queued issue. Track the attempt count; stop and set blocked after `max_fix_attempts`.
+Repeat this block for each queued issue. Attempt tracking is durable and enforced by `pipeline-vcs.sh` — do NOT count in your own context; always call the helper:
+
+```bash
+# Before re-dispatching the developer after any stage failure, record the
+# attempt and check the ceilings (exits non-zero → stop, set pipeline:blocked):
+bash scripts/pipeline-vcs.sh record-attempt <N> <blocking-stage>
+# blocking-stage is one of: developer qa reviewer security docs validator pm
+```
+
+Two ceilings apply (both checked atomically by record-attempt):
+- `limits.max_fix_attempts` (default 3): max **consecutive** failures of the **same blocking stage**.  Resets when a different stage blocks next.
+- `limits.max_total_dispatches` (default 8): absolute ceiling on total developer dispatches per issue.  **Never resets.**
+
+When `record-attempt` exits non-zero (either ceiling reached): set `pipeline:blocked`, post blocked.md, move on.  Do NOT re-dispatch the developer.
 
 ### 3a. Validator (if `roles.validator = true`)
 
@@ -550,7 +563,11 @@ After QA returns:
 - **Fail:**
   1. Relay findings: `bash scripts/pipeline-notify.sh qa "#<N>" "<FAIL: failing criterion + repro>" <N>`
   2. Lifecycle event: `bash scripts/pipeline-notify.sh blocked "#<N>" "QA failed: <criterion>" <N>`
-  3. Count fix attempt. Re-run developer if attempts < max_fix_attempts; else board "Blocked", stop.
+  3. Record attempt and check ceilings:
+     ```bash
+     bash scripts/pipeline-vcs.sh record-attempt <N> qa
+     ```
+     If exit 0: re-dispatch the developer. If exit non-zero (ceiling reached): board "Blocked", stop.
 
 ### 3e. Parallel review stages
 
@@ -656,11 +673,19 @@ After all three parallel stages complete:
 
 **Reviewer returned:**
 - Approved: `bash scripts/pipeline-notify.sh reviewer "#<N>" "<subagent's 2-3 line outcome>" <N>`
-- Changes needed: `bash scripts/pipeline-notify.sh reviewer "#<N>" "CHANGES: <findings>" <N>` then `bash scripts/pipeline-notify.sh blocked "#<N>" "reviewer: changes required" <N>`
+- Changes needed: `bash scripts/pipeline-notify.sh reviewer "#<N>" "CHANGES: <findings>" <N>` then `bash scripts/pipeline-notify.sh blocked "#<N>" "reviewer: changes required" <N>`; record attempt:
+  ```bash
+  bash scripts/pipeline-vcs.sh record-attempt <N> reviewer
+  ```
+  Exit 0 → re-dispatch developer. Exit non-zero → set `pipeline:blocked`, stop.
 
 **Security returned:**
 - Clear: `bash scripts/pipeline-notify.sh security "#<N>" "<subagent's 2-3 line outcome>" <N>`
-- Findings: `bash scripts/pipeline-notify.sh security "#<N>" "FINDINGS: <severity + fix>" <N>` then `bash scripts/pipeline-notify.sh blocked "#<N>" "security: findings in PR #<PR_NUMBER>" <N>`
+- Findings: `bash scripts/pipeline-notify.sh security "#<N>" "FINDINGS: <severity + fix>" <N>` then `bash scripts/pipeline-notify.sh blocked "#<N>" "security: findings in PR #<PR_NUMBER>" <N>`; record attempt:
+  ```bash
+  bash scripts/pipeline-vcs.sh record-attempt <N> security
+  ```
+  Exit 0 → re-dispatch developer. Exit non-zero → set `pipeline:blocked`, stop.
 
 **Docs returned:**
 - `bash scripts/pipeline-notify.sh docs "#<N>" "<subagent's 2-3 line outcome>" <N>`
@@ -776,7 +801,7 @@ After processing all issues, print a summary table:
 10. Notification failures never block the pipeline (pipeline-notify.sh always exits 0).
     Always pass the issue number as the 4th arg: `pipeline-notify.sh <event> "#<N>" "<msg>" <N>`
 11. Board update failures are warnings — the pipeline continues.
-12. After `max_fix_attempts` developer failures on one issue: set `pipeline:blocked`, notify, move on.
+12. Attempt counting is durable and enforced by `record-attempt`: call `bash scripts/pipeline-vcs.sh record-attempt <N> <stage>` before each developer re-dispatch.  When it exits non-zero (either `max_fix_attempts` consecutive same-stage failures OR `max_total_dispatches` total dispatches reached): set `pipeline:blocked`, notify, move on.  Never count attempts in orchestrator memory — the helper is the source of truth.
 13. In file mode: skip board calls, skip QA/reviewer/security/docs, developer commits to branch directly.
 14. Never merge a PR that fails `check-pr-files` — secret-like files require a human; `skip-qa` does not waive this gate (nor CI).
 15. Non-worktree subagents (reviewer, security, docs) must read the PR diff via `diff-pr` only; they must never run `git checkout`, `git switch`, or `git pull` in the orchestrator's working directory. Worktree-isolated stages (developer, QA) are exempt.

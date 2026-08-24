@@ -50,4 +50,11 @@ merge:
     - "CHANGELOG.md"
 
 limits:
+  # max_fix_attempts: max consecutive per-stage failures before pipeline:blocked.
+  # Semantics changed in #56: counts consecutive failures of the SAME blocking
+  # stage; resets when the blocking stage changes. (Was: all-time dispatch count.)
   max_fix_attempts: 3
+  # max_total_dispatches: absolute ceiling on developer dispatches per issue,
+  # never resets on stage change. Prevents QA↔reviewer ping-pong exhausting
+  # no per-stage budget. Enforced by `record-attempt` / `check-attempt`.
+  max_total_dispatches: 8
