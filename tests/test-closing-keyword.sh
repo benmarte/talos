@@ -174,8 +174,11 @@ rm talos.pipeline.json plan.md
 # ── Closing-keyword regex: #571 must NOT match issue 57 ───────────────────────
 # QA-failed case: a PR body saying "Closes #571" must exit 0 when no open PR for
 # issue 57 exists except the current PR (so no siblings).
+# An OPEN sibling PR #8 is included so that if (?!\d) is absent and "Closes #571"
+# wrongly fires has_closing, the gate will find the sibling and exit 1 — making
+# this assertion discriminating rather than vacuous.
 out="$(STUB_PR_BODY="Closes #571" STUB_PR_NUMBER=9 \
-  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix: unrelated","headRefName":"fix/issue-571-foo","body":"Closes #571"}]' \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix: unrelated","headRefName":"fix/issue-571-foo","body":"Closes #571"},{"number":8,"state":"OPEN","title":"fix: sibling","headRefName":"fix/issue-57-other","body":"Part of #57"}]' \
   bash "$VCS" check-closing-keyword 9 57 2>&1)"; rc=$?
 assert_exit_code 0 "$rc" "collision: Closes #571 does NOT match issue 57 (must exit 0)"
 assert_not_contains "$out" "blocked" "collision: Closes #571 no blocked message for issue 57"
@@ -229,7 +232,9 @@ assert_contains "$out" "fix/issue-57-slug" "find-pr 57: fix/issue-57-slug IS ret
 # ── find-pr: fix/issue-71-x is NOT returned by find-pr 7 ────────────────────
 out="$(STUB_PR_LIST='[{"number":12,"state":"OPEN","title":"fix: 71","headRefName":"fix/issue-71-foo","body":"Work on 71"}]' \
   bash "$VCS" find-pr 7 2>&1)"
-assert_not_contains "$out" "\"number\":12" "find-pr 7: fix/issue-71-foo must NOT be returned"
+# Assert on headRefName, not "number":12 — json.dumps emits "number": 12 (with space)
+# so the no-space needle never matches, making it vacuous. headRefName is unambiguous.
+assert_not_contains "$out" "fix/issue-71-foo" "find-pr 7: fix/issue-71-foo must NOT be returned"
 
 # ── find-pr: fix/issue-7-x IS returned by find-pr 7 ─────────────────────────
 out="$(STUB_PR_LIST='[{"number":13,"state":"OPEN","title":"fix: 7","headRefName":"fix/issue-7-slug","body":"Closes #7"}]' \
@@ -239,7 +244,9 @@ assert_contains "$out" "fix/issue-7-slug" "find-pr 7: fix/issue-7-slug IS return
 # ── find-pr body matching: #71 in body NOT returned by find-pr 7 ─────────────
 out="$(STUB_PR_LIST='[{"number":14,"state":"OPEN","title":"fix: seventy-one","headRefName":"feature/xyz","body":"Closes #71"}]' \
   bash "$VCS" find-pr 7 2>&1)"
-assert_not_contains "$out" "\"number\":14" "find-pr 7: PR with body #71 must NOT be returned"
+# Assert on title text, not "number":14 — json.dumps emits "number": 14 (with space)
+# so the no-space needle never matches, making it vacuous. Title is unambiguous here.
+assert_not_contains "$out" "seventy-one" "find-pr 7: PR with body #71 must NOT be returned"
 
 # ── find-pr body matching: #7 in body IS returned by find-pr 7 ───────────────
 out="$(STUB_PR_LIST='[{"number":15,"state":"OPEN","title":"fix: seven","headRefName":"feature/abc","body":"Closes #7"}]' \
