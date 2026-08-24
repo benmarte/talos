@@ -112,6 +112,35 @@ assert_contains "$out" "infra/prod.tfstate" "custom pattern matched"
 assert_not_contains "$out" ".env" "custom config replaces defaults"
 rm talos.pipeline.json
 
+# ── forbidden_files_allow: allow-list checked before deny patterns ─────────────
+# .env.example matches the default .env.* deny pattern, but should be exempt.
+cat > talos.pipeline.json <<'EOF'
+{"merge": {"forbidden_files_allow": [".env.example"]}}
+EOF
+out="$(STUB_PR_FILES=$'.env.example\n.env.production' bash "$VCS" check-pr-files 9)"; rc=$?
+assert_eq "1" "$rc" "allow-list: still blocks the non-allowed .env.production"
+assert_not_contains "$out" ".env.example" "allow-list: .env.example is not reported as forbidden"
+assert_contains "$out" ".env.production" "allow-list: .env.production is still blocked"
+
+# A file in BOTH allow and deny is permitted (allow wins because it is checked first).
+cat > talos.pipeline.json <<'EOF'
+{"merge": {"forbidden_files_allow": [".env.example"], "forbidden_files": [".env.*", ".env.example"]}}
+EOF
+out="$(STUB_PR_FILES=$'.env.example' bash "$VCS" check-pr-files 9)"; rc=$?
+assert_eq "0" "$rc" "allow-list before deny: allowed file is not blocked even when it appears in deny list"
+assert_contains "$out" "no forbidden files" "allow-list before deny: clean result reported"
+rm talos.pipeline.json
+
+# ── list-prs passes --base and includes baseRefName ──────────────────────────
+# With BASE_BRANCH set via config, --dry-run must show --base and baseRefName.
+cat > talos.pipeline.json <<'EOF'
+{"base_branch": "main"}
+EOF
+out="$(bash "$VCS" --dry-run list-prs)"
+assert_contains "$out" "--base" "list-prs passes --base flag when base_branch is configured"
+assert_contains "$out" "baseRefName" "list-prs includes baseRefName in the --json field list"
+rm talos.pipeline.json
+
 # ── rerun-ci: re-runs only failed runs for the head SHA ───────────────────────
 : > "$GH_LOG"
 bash "$VCS" rerun-ci 9 >/dev/null 2>&1

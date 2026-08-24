@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **`_is_lane_home` guard in `pipeline-worktree.sh`.** `remove <N>` and `sweep` now refuse to delete a worktree that contains a `.talos-lane-home` marker file. The file is placed by the operator in every long-lived lane home (never committed); it never propagates to disposable per-issue worktrees. Prevents a sweep run from one lane from deleting another lane's working directory.
+
+- **`_is_self` guard in `pipeline-worktree.sh`.** `remove <N>` and `sweep` now refuse to delete the checkout they are running from. In inline harnesses (`agents.runner: pi`) the developer stage works directly in the orchestrator's own checkout, which can match the per-issue branch pattern; removing it would destroy the running session. In subagent mode the guard is a no-op.
+
+- **Multi-lane sweep interlock.** When more than one `.talos-lane-home` marker exists among a repo's worktrees, `sweep` exits 0 without touching anything (safe no-op). Set `TALOS_SWEEP_ALL_LANES=1` to override. The per-issue `remove <N>` verb is always unaffected. Prevents cross-lane sweep collisions in repos that share one remote across multiple pipeline lanes.
+
+- **Lane-scoped `list-prs`.** `pipeline-vcs.sh list-prs` now passes `--base "$BASE_BRANCH"` (from `base_branch` config) to `gh pr list` and includes `baseRefName` in the `--json` field list. Without lane scoping, Step 1 reconciliation in a multi-lane repo can adopt another lane's open PR and merge it into the wrong base. This happened: the qwen-lane sweep merged a canonical-lane PR (base `main`) into `qwen`.
+
+- **`merge.forbidden_files_allow` config key.** An explicit allow-list checked **before** the deny patterns in `check-pr-files`. Glob-matched against filename and full path. Solves the case where a deny pattern (e.g. `.env.*`) over-matches a committed template (`.env.example`) that cannot simply be renamed. See README for usage.
+
 ## [0.13.0] - 2026-08-15
 
 ### Fixed

@@ -193,8 +193,15 @@ _github() {
         ${REPO:+--repo "$REPO"}
       ;;
     list-prs)
-      _run gh pr list --state open --json number,title,headRefName,labels \
-        ${REPO:+--repo "$REPO"}
+      # LANE SCOPING (2026-08-22): filter to PRs targeting THIS config's base_branch, and
+      # return baseRefName so callers can verify. Without --base, `gh pr list` is repo-wide:
+      # in a multi-lane repo (main + per-LLM experiment branches sharing one remote) a lane's
+      # Step-1 reconciliation sees another lane's in-flight PR, adopts it as its own orphaned
+      # work, retargets it and merges it into the wrong base. That happened: the qwen lane
+      # merged the canonical lane's P0-14 PR (#203, base main) into `qwen`, leaving `main`
+      # without its own work and contaminating the experiment.
+      _run gh pr list --state open --json number,title,headRefName,baseRefName,labels \
+        ${BASE_BRANCH:+--base "$BASE_BRANCH"} ${REPO:+--repo "$REPO"}
       ;;
     diff-pr)
       _run gh pr diff "$1" ${REPO:+--repo "$REPO"}
@@ -266,13 +273,24 @@ secrets.*'
         echo "[dry-run] gh pr view $n --json files | match against forbidden patterns"
         return 0
       fi
+      # merge.forbidden_files_allow — explicit exclusions, checked BEFORE the deny
+      # patterns. Added 2026-08-22: the default `.env.*` correctly guards real dotenv
+      # files but over-matches a committed `.env.example` template, which is the file
+      # developers copy to `.env` before `docker compose up`. Without an allow list the
+      # only way to permit the template is to drop `.env.*` entirely and lose protection
+      # for `.env.local`, `.env.production`, etc.
+      local allow
+      allow="$(cfg merge.forbidden_files_allow "")"
       gh pr view "$n" --json files -q '.files[].path' ${REPO:+--repo "$REPO"} 2>/dev/null \
-        | PATTERNS="$patterns" python3 -c "
+        | PATTERNS="$patterns" ALLOW="$allow" python3 -c "
 import fnmatch, os, sys
 patterns = [p.strip() for p in os.environ['PATTERNS'].splitlines() if p.strip()]
+allow = [a.strip() for a in os.environ.get('ALLOW','').splitlines() if a.strip()]
 bad = []
 for path in (l.strip() for l in sys.stdin if l.strip()):
     base = os.path.basename(path)
+    if any(fnmatch.fnmatch(base, a) or fnmatch.fnmatch(path, a) for a in allow):
+        continue
     if any(fnmatch.fnmatch(base, p) or fnmatch.fnmatch(path, p) for p in patterns):
         bad.append(path)
 if bad:

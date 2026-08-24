@@ -228,6 +228,8 @@ All keys live in `talos.pipeline.yml` at your repo root. Every key is optional a
 | `merge.method` | `squash` | `squash`, `merge`, or `rebase` |
 | `merge.required_checks` | `[]` | CI check names required before merge |
 | `merge.delete_branch` | `true` | Delete feature branch after merge |
+| `merge.forbidden_files` | see defaults | Glob patterns (matched against filename and full path) for files that must not appear in a PR. Defaults: `*.pem`, `*.key`, `*.p12`, `*.pfx`, `.env.*`, `*id_rsa*`, `*id_ecdsa*`, `secrets.*`. Setting this key **replaces** the defaults entirely. |
+| `merge.forbidden_files_allow` | `[]` | Explicit exemptions for `merge.forbidden_files`. Globs matched against filename and full path, checked **before** deny patterns. Use this when a deny pattern over-matches a committed template (e.g. allow `.env.example` while keeping `.env.production` blocked). Example: `[".env.example"]`. |
 | `issues.label_filter` | `pipeline:ready` | Label that queues issues |
 | `issues.skip_labels` | `[pipeline:blocked, wontfix]` | Issues with these are skipped |
 | `issues.max_parallel` | `1` | Max issues in-flight at once |
@@ -527,6 +529,26 @@ agents:
 Pick a model that supports function calling (Qwen coder-class or similar) —
 models without it will chat about the task instead of executing it. For a
 fully offline pipeline, combine a local runner with `vcs.provider: file`.
+
+---
+
+## Multi-lane repos and `.talos-lane-home`
+
+A single git remote can host multiple independent pipeline lanes — for example, a canonical `main` lane and one or more LLM-experiment branches (`qwen`, `phi4`, etc.) each with their own config and queue. These share one repo, which creates two hazards:
+
+1. **PR scope bleed** — `gh pr list` is repo-wide. Without lane scoping, Step 1 reconciliation in lane A can adopt an in-flight PR that belongs to lane B, retarget it, and merge it into the wrong base branch. The `base_branch` config key sets `--base` on every `list-prs` call so each lane only sees its own open PRs.
+
+2. **Sweep scope bleed** — `pipeline-worktree.sh sweep` is also repo-wide. An inline runner (`agents.runner: pi`) checks out `fix/issue-<N>-*` directly in its lane home directory, making that home match the per-issue worktree pattern. A sweep from another lane would delete a live checkout mid-run.
+
+The `.talos-lane-home` marker file prevents the second hazard. An operator creates it by hand in every checkout that is a lane home:
+
+```bash
+touch /path/to/lane-home/.talos-lane-home   # mark once; never commit it
+```
+
+The file is untracked and never propagates to worktrees created from a branch, so per-issue developer worktrees remain removable by their own lane's sweep. When more than one `.talos-lane-home` marker exists across a repo's worktrees, `sweep` skips entirely and exits 0 (safe no-op) unless `TALOS_SWEEP_ALL_LANES=1` is set. The per-issue `remove <N>` verb is always unaffected by the interlock.
+
+**When do you need this?** Only when you have multiple lanes sharing one remote. A single-lane repo (the common case) has zero `.talos-lane-home` files and sweep behaves exactly as before.
 
 ---
 
