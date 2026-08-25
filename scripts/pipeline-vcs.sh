@@ -559,7 +559,10 @@ for r in runs:
       #   close/closes/closed/fix/fixes/fixed/resolve/resolves/resolved
       #   followed by optional whitespace and then one of:
       #     #N  |  repo#N  |  owner/repo#N
-      #     GH-N  (case-insensitive; left-guard (?<![0-9]) prevents XGH-57 matching)
+      #     GH-N  (case-insensitive; the alternative starts with [Gg][Hh], so a
+      #            non-G prefix like XGH-57 simply does not match; the left-guard
+      #            (?<![0-9]) prevents a digit prefix, e.g. 1GH-57 — defence-in-depth
+      #            if this ref pattern is ever reused without the preceding \s+)
       #     https://github.com/<owner>/<repo>/issues/N  (optional trailing /,?,#)
       local has_closing
       has_closing="$(printf '%s' "$pr_body" | python3 -c "
