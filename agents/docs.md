@@ -21,7 +21,7 @@ If nothing needs documenting, say so explicitly and still add `docs:done`.
 Do not open a fix loop; this stage is terminal.
 
 **Approval marker (required after push):**
-After committing and pushing, call `pr-head` to obtain the post-push SHA, then stamp the marker. Call `pr-head` **after** the final push — it queries GitHub's API and reflects the commit you just pushed:
+After committing and pushing, call `pr-head` to obtain the post-push SHA, then stamp the marker. `pr-head` is correct regardless of checkout state, isolation mode, or timing. For docs, call it **after** the final push — it queries GitHub's API and will then reflect the commit you just pushed:
 
 ```bash
 HEAD_SHA=$(bash scripts/pipeline-vcs.sh pr-head <PR_NUMBER>)
@@ -29,7 +29,8 @@ bash scripts/pipeline-vcs.sh comment-pr <PR_NUMBER> "<!-- talos:approval sha=$HE
 ```
 
 Rules:
-- `pr-head` returns the full 40-character lowercase SHA — paste it exactly as printed; never reconstruct, pad, or abbreviate it. Do NOT use `git rev-parse HEAD` — even in an isolated worktree it can return the wrong SHA if run before checkout or from the wrong directory.
+- `pr-head` returns the full 40-character lowercase SHA — paste it exactly as printed; never reconstruct, pad, or abbreviate it.
+- Do NOT use `git rev-parse HEAD` — even in an isolated worktree it can return the wrong SHA if run before checkout or from the wrong directory.
 - `comment-pr` takes the comment body **as a string**, NOT a filename. Use `"$(cat <path>)"` if the body is in a file. (Contrast: `create-pr`/`create-issue` take a body **file**.)
 - The marker `<!-- talos:approval sha=… role=docs -->` must be the **last non-whitespace line** of the comment.
 - Adding the `docs:done` label does **not** satisfy the gate — the marker comment is separate and mandatory.

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **`agents/reviewer.md`, `agents/security.md`, `agents/qa.md`, `agents/docs.md`: marker-contract Rules block is now byte-identical across all four review-stage profiles (#103).** Three asymmetries introduced in PR #99 are resolved: (1) `reviewer.md` and `security.md` lacked the `(Contrast: create-pr/create-issue take a body file.)` note on the `comment-pr` bullet — its absence directly explains the PR #92 failure where the security stage passed a filesystem path to `comment-pr` and the comment landed as a one-line path; (2) `qa.md` and `docs.md` had the `git rev-parse HEAD` prohibition inlined in the SHA bullet rather than as a standalone bullet, matching the structure of the other two profiles; (3) `docs.md`'s preamble stated only the post-push timing rationale for `pr-head` without the universal justification (`correct regardless of checkout state, isolation mode, or timing`) that the other three carry — the timing instruction is preserved as docs is the only stage that commits. A new `tests/test-marker-contract.sh` extracts and normalises the shared Rules block from all four profiles, hashes each, and asserts byte-equality; it showed RED with 2 failures on the pre-patch state and GREEN (8 passed, 0 failed) after the patches.
+
 ### Added
 
 - **`skills/pipeline/SKILL.md` Rule 17: foreground-only execution (#58).** Agents must never append `&`, use `nohup`, or call `disown`; polling with `until ! pgrep …; do sleep N; done` is also forbidden. Stranded background children cause the harness to fire duplicate completion notifications when they exit — observed at 210 stranded shells peak, with one agent generating 5 spurious signals 90 minutes after finishing; Talos cannot suppress the harness-side notification and can only prevent background children from being created.
