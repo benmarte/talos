@@ -170,6 +170,68 @@ cat > talos.pipeline.json <<'EOF'
 {"vcs": {"provider": "github-api", "repo": "acme/widget"}}
 EOF
 
+# ── #76 github-api: wildcard allow entries defeating literal deny — now rejected ──
+# Mutation-verify: the assertions below go RED when the literal-skip guard
+# (the 'continue' on non-wildcard patterns) is restored in the github-api block,
+# and GREEN with the fix.
+
+# *.env — wildcard allow entry matching the literal .env deny pattern: REJECTED.
+# (Validation fails before the API call, so curl queue content is irrelevant.)
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "github-api", "repo": "acme/widget"}, "merge": {"forbidden_files_allow": ["*.env"]}}
+EOF
+: > "$CURL_LOG"
+: > "$CURL_QUEUE"
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#76 github-api *.env: validation exits 1 (wildcard defeats literal .env)"
+assert_contains "$out" "*.env" "#76 github-api *.env: offending entry named in error"
+assert_contains "$out" ".env" "#76 github-api *.env: error message names the matched canary"
+
+# ?env — glob ? matches leading dot; must also be rejected.
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "github-api", "repo": "acme/widget"}, "merge": {"forbidden_files_allow": ["?env"]}}
+EOF
+: > "$CURL_LOG"
+: > "$CURL_QUEUE"
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#76 github-api ?env: validation exits 1 (wildcard defeats literal .env)"
+assert_contains "$out" "?env" "#76 github-api ?env: offending entry named in error"
+
+# Exact literal .env — deliberate operator override: still ACCEPTED.
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "github-api", "repo": "acme/widget"}, "merge": {"forbidden_files_allow": [".env"]}}
+EOF
+: > "$CURL_LOG"
+printf '%s\n' '[{"filename":"src/app.js","status":"modified"}]' > "$CURL_QUEUE"
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "0" "$rc" "#76 github-api exact-literal-override: .env allow entry is accepted"
+
+# .env.example — must still be ACCEPTED by validation and must NOT exempt bare .env.
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "github-api", "repo": "acme/widget"}, "merge": {"forbidden_files_allow": [".env.example"]}}
+EOF
+: > "$CURL_LOG"
+printf '%s\n' '[{"filename":".env.example","status":"added"},{"filename":".env","status":"added"}]' > "$CURL_QUEUE"
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#76 github-api .env.example: validation accepted; bare .env still blocked"
+assert_not_contains "$out" ".env.example" "#76 github-api .env.example: .env.example is exempt"
+assert_contains "$out" "FORBIDDEN" "#76 github-api .env.example: .env is still blocked"
+
+# Real secret (.env) is still blocked with no allow entry.
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "github-api", "repo": "acme/widget"}}
+EOF
+: > "$CURL_LOG"
+printf '%s\n' '[{"filename":".env","status":"added"}]' > "$CURL_QUEUE"
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#76 github-api .env blocked: .env is still blocked with no allow entry"
+assert_contains "$out" ".env" "#76 github-api .env blocked: .env listed in output"
+
+# Restore original config
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "github-api", "repo": "acme/widget"}}
+EOF
+
 # ── github-api: check-pr-files — transparency markers ─────────────────────────
 : > "$CURL_LOG"
 printf '%s\n' \
