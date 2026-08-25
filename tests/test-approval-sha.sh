@@ -372,5 +372,11 @@ out="$(vcs_check "$SHA_E" '[{"name":"qa:pass"}]' "$_c")"; rc=$?
 assert_exit_code 1 "$rc" "abbreviated SHA: exits 1 (rejected at parse)"
 assert_contains "$out" "is not a valid 40-character commit SHA" \
   "abbreviated SHA: format-check message emitted"
+# [test F] remediation text names pr-head, not git rev-parse HEAD (issue #101)
+# This assertion must be RED before the fix and GREEN after.
+assert_contains "$out" "pr-head" \
+  "abbreviated SHA: remediation text names pr-head as the correct source"
+assert_not_contains "$out" "git rev-parse HEAD" \
+  "abbreviated SHA: remediation text does NOT tell stages to use git rev-parse HEAD"
 
 finish
