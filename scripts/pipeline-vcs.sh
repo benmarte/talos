@@ -352,9 +352,9 @@ for pr in prs:
       # Built-in defaults — always active unless merge.forbidden_files_replace: true.
       # #61 fix: setting merge.forbidden_files now UNIONs with these defaults rather
       # than replacing them wholesale, closing the silent neutering attack surface.
-      # .netrc is deliberately NOT included here: it is a literal pattern (no glob
-      # chars), generates no canary, and a wildcard allow entry could bypass it
-      # silently — that is issue #76's blind spot. Deferred until #76 is fixed.
+      # .netrc and _netrc are LITERAL patterns (no glob chars); they generate
+      # canaries as of #76 (PR #90, commit b1d3199), so wildcard allow entries
+      # that match them are rejected. Deferral from issue #78 is resolved.
       local _BUILTIN_DEFAULTS='.env
 .env.*
 *.pem
@@ -369,7 +369,12 @@ secrets.*
 *id_dsa*
 *.ppk
 *.jks
-*.keystore'
+*.keystore
+*.pkcs12
+*.kdbx
+*.ovpn
+.netrc
+_netrc'
       local patterns _defaults_active
       local _configured _replace
       _configured="$(cfg merge.forbidden_files "")"
@@ -1694,9 +1699,9 @@ for pr in prs:
       local _n="$1"
       # Built-in defaults — always active unless merge.forbidden_files_replace: true.
       # #61 fix: union semantics match the github provider; both providers are identical.
-      # .netrc is deliberately NOT included here: it is a literal pattern (no glob
-      # chars), generates no canary, and a wildcard allow entry could bypass it
-      # silently — that is issue #76's blind spot. Deferred until #76 is fixed.
+      # .netrc and _netrc are LITERAL patterns (no glob chars); they generate
+      # canaries as of #76 (PR #90, commit b1d3199), so wildcard allow entries
+      # that match them are rejected. Deferral from issue #78 is resolved.
       local _BUILTIN_DEFAULTS='.env
 .env.*
 *.pem
@@ -1711,7 +1716,12 @@ secrets.*
 *id_dsa*
 *.ppk
 *.jks
-*.keystore'
+*.keystore
+*.pkcs12
+*.kdbx
+*.ovpn
+.netrc
+_netrc'
       local _patterns _defaults_active
       local _ga_configured _ga_replace
       _ga_configured="$(cfg merge.forbidden_files "")"

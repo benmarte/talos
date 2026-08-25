@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`pipeline-vcs.sh` built-in `merge.forbidden_files` defaults extended to 20 patterns (#78).** Added `*.pkcs12` (PKCS#12 bundles under the alternative extension), `*.kdbx` (KeePass databases), and `*.ovpn` (OpenVPN profiles, which frequently embed inline private keys) as wildcard patterns. Added `.netrc` and `_netrc` (plaintext credential stores; Windows spelling) as literal patterns — these were previously deferred pending the literal-pattern canary fix in #76 (PR #90, commit b1d3199). The stale deferral comment has been removed from both the `github` and `github-api` providers and replaced with a note that literal deny patterns now generate canaries. Not added: `*.gpg` (encrypted-at-rest workflow used by `pass`/SOPS/git-crypt is a legitimate use case), `*.asc` (detached signatures routinely committed as public artifacts), `*.der` (DER encodes public certificates as well as private keys). Both providers remain byte-for-byte identical (#75).
+
 ### Fixed
 
 - **`pipeline-vcs.sh` allow-list validation: wildcard allow entries that match a literal deny pattern canary are now REJECTED (#76).** Previously, canaries were only generated from wildcard deny patterns; literal deny patterns (e.g. `.env`) had a skip guard and generated no canaries, so a wildcard allow entry such as `*.env` or `?env` could silently defeat `.env` and pass validation. The fix removes the skip guard and generates three canary forms for every literal deny pattern (root, `sub/dir/`, `config/`) tagged with the source pattern. An allow entry that exactly equals the literal deny pattern (exact string, case-sensitive) is still permitted as a deliberate operator override; any other entry that matches a literal-pattern canary is rejected. Both provider blocks (`~441` github, `~1747` github-api) are changed identically.
@@ -84,9 +88,8 @@
   cannot distinguish a real keystore from a test one. This is expected behaviour; operators whose CI pipeline
   commits a test keystore should add the specific filename to `merge.forbidden_files_allow`
   (e.g. `["test.keystore", "debug.keystore"]`).
-  **Deferred:** `.netrc` is deliberately excluded — it is a literal pattern (no glob characters), generates no
-  canary, and a wildcard allow entry could bypass it silently. This is issue #76's blind spot; `.netrc` will be
-  added after #76 is fixed.
+  **Note:** `.netrc` and `_netrc` were deferred at this release because literal patterns generated no canary. That
+  blind spot is fixed in #76 (PR #90); both patterns are included in the defaults as of #78.
 
 - **`pipeline-vcs.sh`: `check-pr-files` union semantics and canary fallback close compound gate bypass (#61, #64).**
   `merge.forbidden_files` now **unions** with the built-in defaults (`.env`, `.env.*`, `*.pem`, `*.key`,
