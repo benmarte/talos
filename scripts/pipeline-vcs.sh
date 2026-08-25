@@ -1148,14 +1148,15 @@ for label, role in present.items():
 
     # Reject abbreviated SHAs at parse time.  An abbreviated SHA can expand to a
     # real but wrong commit (e.g. bed2e4a expands to bed2e4ae... not bed2e4a9...).
-    # Stages must post the full 40-character SHA from `pipeline-vcs.sh pr-head <PR>` —
-    # not `git rev-parse HEAD`, which returns whatever commit is checked out locally
-    # and is wrong when run before checkout or from the wrong directory.
+    # NOTE: backticks and $ cannot appear here — this block runs inside a
+    # double-quoted bash string and bash would perform command substitution on them.
+    # Stages must post the full 40-character SHA from pipeline-vcs.sh pr-head <PR>,
+    # not git rev-parse HEAD, which returns whatever commit is checked out locally.
     if not re.fullmatch(r'[0-9a-f]{40}', found_sha):
         stale.append((label, role,
             f'marker SHA {found_sha!r} is not a valid 40-character commit SHA — '
             f'the {role} stage must obtain the SHA via '
-            f'`pipeline-vcs.sh pr-head <PR>`, not `git rev-parse HEAD` '
+            f'pipeline-vcs.sh pr-head <PR>, not git rev-parse HEAD '
             f'(which returns whatever commit is checked out locally)' ))
         continue
 

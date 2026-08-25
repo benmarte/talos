@@ -372,11 +372,17 @@ out="$(vcs_check "$SHA_E" '[{"name":"qa:pass"}]' "$_c")"; rc=$?
 assert_exit_code 1 "$rc" "abbreviated SHA: exits 1 (rejected at parse)"
 assert_contains "$out" "is not a valid 40-character commit SHA" \
   "abbreviated SHA: format-check message emitted"
-# [test F] remediation text names pr-head, not git rev-parse HEAD (issue #101)
-# This assertion must be RED before the fix and GREEN after.
-assert_contains "$out" "pr-head" \
-  "abbreviated SHA: remediation text names pr-head as the correct source"
-assert_not_contains "$out" "git rev-parse HEAD" \
-  "abbreviated SHA: remediation text does NOT tell stages to use git rev-parse HEAD"
+# [test F] remediation text names pr-head as correct source (issue #101).
+# Assertions are non-vacuous: they pin the rendered sentence, not incidental
+# error text.  bash command-substitution failures also write "command
+# substitution" / "syntax error" to stderr — caught by the last two checks.
+assert_contains "$out" "must obtain the SHA via pipeline-vcs.sh pr-head" \
+  "abbreviated SHA: remediation names pr-head (full rendered clause)"
+assert_not_contains "$out" "must post the full SHA from git rev-parse HEAD" \
+  "abbreviated SHA: old remediation instruction is gone"
+assert_not_contains "$out" "command substitution" \
+  "abbreviated SHA: no bash command-substitution error in output"
+assert_not_contains "$out" "syntax error" \
+  "abbreviated SHA: no bash syntax error in output"
 
 finish
