@@ -32,6 +32,7 @@ REPO="${STUB_REPO:-acme/widget}"
 args="$*"
 case "$args" in
   "issue view "*"--json state -q .state"*)
+    [ "${STUB_ISSUE_STATE_FAIL:-}" = "true" ] && exit 1
     printf '%s\n' "${STUB_ISSUE_STATE:-OPEN}" ;;
   "pr view "*"--json state -q .state"*)
     printf '%s\n' "${STUB_PR_STATE:-OPEN}" ;;
@@ -86,9 +87,12 @@ make_failing_post_stub "$_stub3"
 
 : > "$GH_LOG"
 _old_path="$PATH"; export PATH="$_stub3:$PATH"
-out3="$(STUB_ISSUE_STATE=OPEN bash "$VCS" comment-issue 5 "body" 2>/dev/null)"; rc3=$?
+out3="$(STUB_ISSUE_STATE_FAIL=true bash "$VCS" comment-issue 5 "body" 2>/dev/null)"; rc3=$?
 export PATH="$_old_path"; rm -rf "$_stub3"
 
+# State check fails → _ci_state_unverified=true; POST fails → || exit 1 fires
+# BEFORE the marker line. Without the || exit 1 guard, the marker WOULD be emitted
+# (discriminating: remove the guard and this assertion goes red).
 assert_not_contains "$out3" "talos:comment-state-unverified" \
   "gh/comment-issue: failed POST does not emit state-unverified marker [CRITERION 3]"
 
@@ -203,8 +207,6 @@ assert_eq "1" "$rc9a" \
   "github-api/comment-issue: failed POST (403) exits non-zero [CRITERION 9a]"
 assert_eq "" "$out9a" \
   "github-api/comment-issue: failed POST produces no stdout [CRITERION 9a]"
-assert_not_contains "$out9a" "talos:comment-state-unverified" \
-  "github-api/comment-issue: failed POST does not emit marker [CRITERION 9a]"
 
 # 9b: comment-pr — failed POST (503) exits non-zero
 : > "$CURL_LOG"; : > "$CURL_QUEUE"

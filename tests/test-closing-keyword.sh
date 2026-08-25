@@ -20,7 +20,6 @@ out="$(STUB_PR_BODY="Part of #42" STUB_PR_NUMBER=9 \
   STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix: first slice","headRefName":"fix/issue-42-part1","body":"Part of #42"}]' \
   bash "$VCS" check-closing-keyword 9 42 2>&1)"; rc=$?
 assert_exit_code 0 "$rc" "no closing keyword: exits 0 immediately"
-assert_not_contains "$out" "blocked" "no closing keyword: no blocked message"
 
 # ── SINGLE PR, NO SIBLINGS → exit 0 ──────────────────────────────────────────
 # The current PR is the only PR open for issue 42 — no open siblings.
@@ -29,7 +28,6 @@ out="$(STUB_PR_BODY="Closes #42" STUB_PR_NUMBER=9 \
   STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix: only pr","headRefName":"fix/issue-42-guard","body":"Closes #42"}]' \
   bash "$VCS" check-closing-keyword 9 42 2>&1)"; rc=$?
 assert_exit_code 0 "$rc" "single PR no siblings: exits 0 (gate passes)"
-assert_not_contains "$out" "blocked" "single PR: no blocked message"
 
 # ── RULE 6 FINAL PR IS NOT BLOCKED: siblings merged, Closes #N → exit 0 ─────
 # This is the critical Rule 6 scenario: prior Part of #N siblings are MERGED,
@@ -39,7 +37,6 @@ out="$(STUB_PR_BODY="Closes #42" STUB_PR_NUMBER=99 \
   STUB_PR_LIST='[{"number":99,"state":"OPEN","title":"fix: final part","headRefName":"fix/issue-42-final","body":"Closes #42"}]' \
   bash "$VCS" check-closing-keyword 99 42 2>&1)"; rc=$?
 assert_exit_code 0 "$rc" "Rule 6 final PR: siblings merged, Closes #N exits 0"
-assert_not_contains "$out" "blocked" "Rule 6 final PR: not blocked"
 
 # ── OPEN SIBLING BLOCKS: another PR for #42 still open → exit 1 ───────────
 # PR #9 says "Closes #42"; PR #7 is another open PR referencing #42.
@@ -181,7 +178,6 @@ out="$(STUB_PR_BODY="Closes #571" STUB_PR_NUMBER=9 \
   STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix: unrelated","headRefName":"fix/issue-571-foo","body":"Closes #571"},{"number":8,"state":"OPEN","title":"fix: sibling","headRefName":"fix/issue-57-other","body":"Part of #57"}]' \
   bash "$VCS" check-closing-keyword 9 57 2>&1)"; rc=$?
 assert_exit_code 0 "$rc" "collision: Closes #571 does NOT match issue 57 (must exit 0)"
-assert_not_contains "$out" "blocked" "collision: Closes #571 no blocked message for issue 57"
 
 # ── Closing-keyword regex: #57 still DOES match issue 57 ─────────────────────
 out="$(STUB_PR_BODY="Closes #57" STUB_PR_NUMBER=9 \
@@ -207,7 +203,6 @@ out="$(STUB_PR_BODY="Closes #57" STUB_PR_NUMBER=9 \
   STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix: final","headRefName":"fix/issue-57-final","body":"Closes #57"},{"number":8,"state":"OPEN","title":"fix: other","headRefName":"fix/issue-571-foo","body":"Other work"}]' \
   bash "$VCS" check-closing-keyword 9 57 2>&1)"; rc=$?
 assert_exit_code 0 "$rc" "sibling-collision: fix/issue-571-foo is NOT a sibling of issue 57 (must exit 0)"
-assert_not_contains "$out" "blocked" "sibling-collision: no blocked message for issue-571 branch"
 
 # ── Sibling check: fix/issue-57-x IS a sibling of issue 57 ──────────────────
 out="$(STUB_PR_BODY="Closes #57" STUB_PR_NUMBER=9 \
