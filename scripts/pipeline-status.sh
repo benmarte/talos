@@ -16,12 +16,19 @@
 #   board.owner            default: repo owner detected from gh (or from vcs.repo
 #                          when provider=github-api and gh is absent)
 #   board.status_field     default: Status
+#   board.status_map       optional: flat object mapping pipeline status names to
+#                          board column names, e.g. {Blocked: "Needs attention"}.
+#                          An absent key passes through unchanged; an absent map
+#                          produces zero behavioural change.
 #
 # Env var overrides (take priority over config file):
 #   PIPELINE_PROJECT_NUMBER   overrides board.project_number
 #   PIPELINE_BOARD_OWNER      overrides board.owner
 #   PIPELINE_STATUS_FIELD     overrides board.status_field
 #   PIPELINE_REPO             overrides repo (owner/name) for issue URL construction
+#   PIPELINE_RUN_ID           when set, scopes the per-run validation sentinel to
+#                             this value so multiple pipeline runs share the /tmp dir
+#                             without interfering with each other.
 #
 # Token path (activated when vcs.provider=github-api or gh is absent):
 #   All GitHub Projects v2 GraphQL calls are made via curl + GITHUB_TOKEN (or
@@ -30,8 +37,10 @@
 # --dry-run: prints the gh/curl commands that WOULD run without executing them.
 #            Always exits 0 — safe to use in CI previews.
 #
-# Always exits 0 on board-disabled or missing config; exits non-zero only on
-# genuine failures (missing project, bad field name, etc.) when not dry-run.
+# Always exits 0 on board-disabled, missing config, or missing status option
+# (missing option emits talos:board-unverified on stdout — board failures are
+# warnings by design, Rule 11). Exits non-zero only on genuine failures
+# (missing project, bad field name) when not dry-run.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cfg() { "$SCRIPT_DIR/pipeline-config.sh" "$@"; }
@@ -60,9 +69,9 @@ _resolve_token_path() {
 
 _graphql_token_update() {
   # ── Token GraphQL implementation for all 5 board operations ─────────────────
-  # $1=issue $2=status $3=project_num $4=owner $5=status_field $6=repo $7=dry_run
+  # $1=issue $2=status $3=project_num $4=owner $5=status_field $6=repo $7=dry_run $8=mapped_status
   local _issue="$1" _status="$2" _proj_num="$3" _owner="$4" _sfield="$5"
-  local _repo="$6" _dry="$7"
+  local _repo="$6" _dry="$7" _mapped_status="${8:-$2}"
 
   if [ -z "$_STATUS_TOKEN" ]; then
     echo "pipeline-status: GITHUB_TOKEN or GH_TOKEN required for github-api board updates" >&2
@@ -118,10 +127,10 @@ except Exception:
     fi
   fi
 
-  # 2. Resolve field ID and option ID
+  # 2. Resolve field ID and option ID (using mapped status name)
   local _field_data _field_id _opt_id
   _field_data="$(_gql "{\"query\":\"query{node(id:\\\"$_proj_id\\\"){...on ProjectV2{fields(first:50){nodes{...on ProjectV2SingleSelectField{id name options{id name}}}}}}}\"}" \
-    | SFIELD="$_sfield" SSTATUS="$_status" python3 -c "
+    | SFIELD="$_sfield" SSTATUS="$_mapped_status" python3 -c "
 import json, sys, os
 try:
     d = json.load(sys.stdin)
@@ -151,13 +160,8 @@ except Exception:
       echo "pipeline-status: status field '$_sfield' not found in project #$_proj_num" >&2; exit 1
     fi
   fi
-  if [ -z "$_opt_id" ] || [ "$_opt_id" = "$_field_id" ]; then
-    if [ "$_dry" = "true" ]; then _opt_id="<option-id>"; else
-      echo "pipeline-status: option '$_status' not found in field '$_sfield'" >&2; exit 1
-    fi
-  fi
 
-  # 3. Resolve (or add) issue item in project
+  # 3. Resolve (or add) issue item in project — ALWAYS before option-ID check
   local _issue_url="https://github.com/$_repo/issues/$_issue"
   local _item_id
   _item_id="$(_gql "{\"query\":\"query{node(id:\\\"$_proj_id\\\"){...on ProjectV2{items(first:200){nodes{id content{...on Issue{number}}}}}}}\"}" \
@@ -193,7 +197,18 @@ except Exception:
     fi
   fi
 
-  # 4. Set the status field
+  # 4. Check option ID — missing option is a warning, not fatal (Rule 11)
+  if [ -z "$_opt_id" ] || [ "$_opt_id" = "$_field_id" ]; then
+    if [ "$_dry" = "true" ]; then
+      _opt_id="<option-id>"
+    else
+      echo "talos:board-unverified project=$_proj_num"
+      echo "pipeline-status: option '$_mapped_status' not found in field '$_sfield' on project #$_proj_num; item added to board in default column" >&2
+      exit 0
+    fi
+  fi
+
+  # 5. Set the status field
   if [ "$_dry" = "true" ]; then
     echo "[dry-run] token-graphql: updateProjectV2ItemFieldValue project=$_proj_id item=$_item_id field=$_field_id option=$_opt_id"
     echo "#$_issue → $_status (dry-run via token-graphql)"
@@ -270,6 +285,11 @@ fi
 
 STATUS_FIELD="${PIPELINE_STATUS_FIELD:-$(cfg board.status_field "Status")}"
 
+# ── Apply board.status_map ────────────────────────────────────────────────────
+# Map the pipeline status name to the operator's board column name.
+# An absent key passes through unchanged; an absent map changes nothing.
+MAPPED_STATUS="$(cfg "board.status_map.$STATUS" "$STATUS")"
+
 # ── Detect whether to use token-based GraphQL path ────────────────────────────
 _resolve_token_path
 
@@ -304,7 +324,7 @@ fi
 # ── Token path: delegate to GraphQL helper ────────────────────────────────────
 if [ "$_USE_TOKEN_PATH" = "true" ]; then
   _graphql_token_update "$ISSUE" "$STATUS" "$PROJECT_NUM" "$OWNER" \
-    "$STATUS_FIELD" "$REPO" "$DRY_RUN"
+    "$STATUS_FIELD" "$REPO" "$DRY_RUN" "$MAPPED_STATUS"
   exit $?
 fi
 
@@ -335,7 +355,57 @@ if [ -z "$PROJ_ID" ]; then
   fi
 fi
 
-FIELD_DATA="$(_gh_safe gh project field-list "$PROJECT_NUM" --owner "$OWNER" --format json)"
+# ── Fetch field data (with per-run sentinel caching) ─────────────────────────
+# The sentinel file caches the field-list JSON for the duration of a pipeline
+# run, ensuring project field-list is called at most once per run (not once per
+# status update). It also gates the startup validation so the warning fires once.
+# Sentinel key: project number + optional PIPELINE_RUN_ID for multi-run isolation.
+_BOARD_SENTINEL="${TMPDIR:-/tmp}/talos-board-validated-${PROJECT_NUM}${PIPELINE_RUN_ID:+-${PIPELINE_RUN_ID}}"
+
+if [ -f "$_BOARD_SENTINEL" ]; then
+  # Reuse cached field data from earlier in this pipeline run
+  FIELD_DATA="$(cat "$_BOARD_SENTINEL")"
+else
+  FIELD_DATA="$(_gh_safe gh project field-list "$PROJECT_NUM" --owner "$OWNER" --format json)"
+
+  # ── Startup validation: check all four required statuses ──────────────────
+  # Fires exactly once per run (sentinel written below). Each status is checked
+  # after board.status_map substitution so mapped names are validated.
+  _MISSING_OPTIONS=""
+  for _req_status in "In progress" "In review" "Done" "Blocked"; do
+    _req_mapped="$(cfg "board.status_map.$_req_status" "$_req_status")"
+    if ! SF="$STATUS_FIELD" SM="$_req_mapped" python3 -c "
+import sys, json, os
+try:
+    import sys
+    data = sys.stdin.read()
+    d = json.loads(data)
+    sf = os.environ['SF']
+    sm = os.environ['SM']
+    for f in d.get('fields', []):
+        if f.get('name') == sf:
+            if any(o.get('name') == sm for o in f.get('options', [])):
+                sys.exit(0)
+    sys.exit(1)
+except Exception:
+    sys.exit(1)
+" <<< "$FIELD_DATA" 2>/dev/null; then
+      _MISSING_OPTIONS="${_MISSING_OPTIONS:+$_MISSING_OPTIONS,}$_req_mapped"
+    fi
+  done
+
+  # Write sentinel with cached field data (suppresses repeated validation + field-list calls)
+  if [ "$DRY_RUN" = "false" ]; then
+    printf '%s' "$FIELD_DATA" > "$_BOARD_SENTINEL" 2>/dev/null || true
+  fi
+
+  if [ -n "$_MISSING_OPTIONS" ]; then
+    # Marker: project number is a validated integer — safe to embed in stdout marker.
+    # Missing option names go to stderr only (not in the machine-readable marker).
+    echo "talos:board-unverified project=$PROJECT_NUM"
+    echo "pipeline-status: board status options missing from project #$PROJECT_NUM: $_MISSING_OPTIONS" >&2
+  fi
+fi
 
 FIELD_ID="$(printf '%s' "$FIELD_DATA" | python3 -c "
 import sys, json
@@ -358,30 +428,26 @@ if [ -z "$FIELD_ID" ]; then
   fi
 fi
 
-OPT_ID="$(printf '%s' "$FIELD_DATA" | python3 -c "
-import sys, json
+# Look up option ID using the mapped status name
+OPT_ID="$(printf '%s' "$FIELD_DATA" | SM="$MAPPED_STATUS" python3 -c "
+import sys, json, os
 try:
     d = json.load(sys.stdin)
+    sm = os.environ['SM']
     for f in d.get('fields', []):
         if f.get('name') == '$STATUS_FIELD':
             for opt in f.get('options', []):
-                if opt.get('name') == '$STATUS':
+                if opt.get('name') == sm:
                     print(opt.get('id',''))
                     sys.exit(0)
 except Exception:
     pass
 " 2>/dev/null)"
 
-if [ -z "$OPT_ID" ]; then
-  if [ "$DRY_RUN" = "true" ]; then
-    OPT_ID="<option-id>"
-  else
-    echo "pipeline-status: option '$STATUS' not found in field '$STATUS_FIELD'" >&2
-    exit 1
-  fi
-fi
-
 # ── Resolve (or create) the project item for this issue ──────────────────────
+# Item-add happens BEFORE the option-ID check so the issue always lands on the
+# board even when the status option is missing (a wrong column is far more useful
+# than an absent item).
 ITEM="$(_gh_safe gh project item-list "$PROJECT_NUM" --owner "$OWNER" --limit 400 --format json \
   | python3 -c "
 import sys, json
@@ -403,6 +469,19 @@ if [ -z "$ITEM" ]; then
       --url "$ISSUE_URL" --format json 2>/dev/null \
       | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))")"
     [ -z "$ITEM" ] && { echo "pipeline-status: could not add #$ISSUE to project" >&2; exit 1; }
+  fi
+fi
+
+# ── Check option ID — missing option is a warning, not fatal (Rule 11) ───────
+if [ -z "$OPT_ID" ]; then
+  if [ "$DRY_RUN" = "true" ]; then
+    OPT_ID="<option-id>"
+  else
+    # Marker: project number is a validated integer — safe to embed in stdout marker.
+    # Missing option name goes to stderr only.
+    echo "talos:board-unverified project=$PROJECT_NUM"
+    echo "pipeline-status: option '$MAPPED_STATUS' not found in field '$STATUS_FIELD' on project #$PROJECT_NUM; item added to board in default column" >&2
+    exit 0
   fi
 fi
 

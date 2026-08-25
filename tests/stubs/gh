@@ -73,7 +73,12 @@ tests/auth.test.js}" ;;
   "project list"*)
     printf '{"projects":[{"number":7,"id":"PROJ_ID_7"}]}\n' ;;
   "project field-list"*)
-    printf '{"fields":[{"name":"Status","id":"FIELD_ID_S","options":[{"name":"In progress","id":"OPT_INPROG"},{"name":"Done","id":"OPT_DONE"}]}]}\n' ;;
+    # Override STUB_BOARD_OPTIONS to supply custom options JSON (e.g. omitting "Blocked").
+    if [ -n "${STUB_BOARD_OPTIONS:-}" ]; then
+      printf '%s\n' "$STUB_BOARD_OPTIONS"
+    else
+      printf '{"fields":[{"name":"Status","id":"FIELD_ID_S","options":[{"name":"In progress","id":"OPT_INPROG"},{"name":"Done","id":"OPT_DONE"},{"name":"In review","id":"OPT_INREV"},{"name":"Blocked","id":"OPT_BLOCKED"}]}]}\n'
+    fi ;;
   "project item-list"*)
     printf '{"items":[{"id":"ITEM_42","content":{"number":42}}]}\n' ;;
   "project item-add"*)
