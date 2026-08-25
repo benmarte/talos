@@ -480,13 +480,13 @@ The pipeline deliberately preserves three gates that only a human should act on:
 
 | Verb | Arguments | Description |
 |------|-----------|-------------|
-| `create-issue` | `<title> <body-file> [--label label]` | Create a new issue; `--label` may be repeated (used by planner to create sub-issues) |
+| `create-issue` | `<title> <body-file> [--label label]` | Create a new issue; `--label` may be repeated (used by planner to create sub-issues). Exits non-zero if the POST fails. |
 | `list-issues` | | List open issues / unchecked plan items |
 | `view-issue` | `<id>` | Show issue body and metadata |
-| `comment-issue` | `<id> <body> [--allow-closed]` | Post a comment on an issue. **Exits 1 if the issue is closed** unless `--allow-closed` is passed (required when GitHub auto-closes via `Closes #N` at merge). Prints the comment `html_url` to stdout on success. On an indeterminate state lookup (network error), posts (exit 0) and emits `talos:comment-state-unverified target=issue#<N> reason=<short>` on stdout. |
+| `comment-issue` | `<id> <body> [--allow-closed]` | Post a comment on an issue. **Exits 1 if the issue is closed** unless `--allow-closed` is passed (required when GitHub auto-closes via `Closes #N` at merge). Prints the comment `html_url` to stdout on success. Exits non-zero if the POST itself fails (see below). On an indeterminate state lookup (network error), posts (exit 0) and emits `talos:comment-state-unverified target=issue#<N> reason=<short>` on stdout. |
 | `close-issue` | `<id> [reason]` | Close an issue |
 | `label-issue` | `<id> --add label [--remove label]` | Add/remove labels (or tags for Azure) |
-| `create-pr` | `<branch> <title> <body-file>` | Open a PR targeting base_branch |
+| `create-pr` | `<branch> <title> <body-file>` | Open a PR targeting base_branch. Exits non-zero if the POST fails. |
 | `view-pr` | `<branch>` | Show PR number, URL, status |
 | `list-prs` | | List open PRs |
 | `diff-pr` | `<pr-number>` | Show PR diff (Azure: via `git diff` between refs) |
@@ -495,7 +495,7 @@ The pipeline deliberately preserves three gates that only a human should act on:
 | `label-pr` | `<pr-number> --add label [--remove label]` | Add/remove PR labels |
 | `pr-checks` | `<pr-number>` | List CI check statuses |
 | `merge-pr` | `<pr-number>` | Merge a PR (uses `merge.method` from config) |
-| `comment-pr` | `<pr-number> <body> [--allow-closed]` | Post a comment on a PR. **Exits 1 if the PR is closed without being merged** unless `--allow-closed` is passed. Merged PRs are always commentable without the flag. Prints the comment `html_url` to stdout on success. On an indeterminate state lookup, posts (exit 0) and emits `talos:comment-state-unverified target=pr#<N> reason=<short>` on stdout. |
+| `comment-pr` | `<pr-number> <body> [--allow-closed]` | Post a comment on a PR. **Exits 1 if the PR is closed without being merged** unless `--allow-closed` is passed. Merged PRs are always commentable without the flag. Prints the comment `html_url` to stdout on success. Exits non-zero if the POST itself fails (see below). On an indeterminate state lookup, posts (exit 0) and emits `talos:comment-state-unverified target=pr#<N> reason=<short>` on stdout. |
 | `find-pr` | `<issue-number> [open\|merged\|all]` | Find PRs belonging to an issue (session-recovery adoption) |
 | `check-pr-files` | `<pr-number>` | Exit 1 if the PR touches `merge.forbidden_files` patterns |
 | `check-closing-keyword` | `<pr-number> <issue-n>` | Exit 1 if the PR body carries a closing keyword (`Closes/Fixes/Resolves #N`, all standard verb forms, case-insensitive, including `owner/repo#N` forms) while other PRs referencing issue `N` are still open. Fail-open: exits 0 and emits `talos:closing-keyword-unverified pr=<N> issue=<N> reason=<literal>` on stdout when PR body or sibling list cannot be fetched. GitHub provider only; no-op under gitlab, azure, and file. |
@@ -544,6 +544,8 @@ Pass `--dry-run` as the first argument to print the underlying CLI command witho
 **Comment URL on stdout (behaviour change).** Both `comment-issue` and `comment-pr` print the `html_url` of the created comment to stdout on success (e.g. `https://github.com/owner/repo/issues/42#issuecomment-123`). Capture it for relay messages or audit trails — no re-fetch required. **Callers that previously captured output from these verbs will now receive a URL instead of empty output.**
 
 **`talos:comment-state-unverified` marker.** When the state-check API call fails (transient network error, insufficient token scope), both verbs post the comment anyway (exit 0) and emit `talos:comment-state-unverified target=<issue|pr>#<N> reason=<short>` on stdout after the URL line. Operators who see this marker in logs should verify manually that the target was open at post time; no action is required if the pipeline is otherwise healthy.
+
+**POST failure exits non-zero (behaviour change from previous versions).** `comment-issue`, `comment-pr`, `create-issue`, and `create-pr` now exit non-zero immediately when the underlying HTTP POST fails, on both the `github` (gh CLI) and `github-api` providers. Previously, a failed POST was silently absorbed by the subshell-capture assignment — the script returned exit 0 with no URL on stdout, indistinguishable from success to a caller that did not check `$?`. **Callers must check the exit status** after any of these four verbs: a non-zero exit means the remote operation failed and no comment, issue, or PR was created. No URL is printed on failure.
 
 **Closing-keyword gate.** `check-closing-keyword <pr> <N>` exits 1 when the PR body carries a closing keyword (`Closes/Fixes/Resolves #N`, all standard verb forms, case-insensitive, including `owner/repo#N` and `repo#N` variants) and at least one other PR referencing issue `N` is still open. Merging a PR with a closing keyword while siblings are in flight would auto-close the issue tracker and orphan that in-progress work.
 
