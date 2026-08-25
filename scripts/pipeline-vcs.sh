@@ -2911,6 +2911,7 @@ if [ "$VERB" = "label-pr" ] && [ -n "${_ADDING_APPROVAL_LABELS:-}" ] \
     && [ "$PROVIDER" = "github" ] && [ "$_DISPATCH_RC" -eq 0 ]; then
   if ! bash "$0" check-approval-sha "$_LABEL_PR_N" >/dev/null 2>&1; then
     echo "pipeline-vcs: label-pr: WARNING — added approval label(s) but no approval marker found at current head." >&2
+    echo "pipeline-vcs: label-pr: If you have not already posted your verdict reasoning, do so first." >&2
     echo "pipeline-vcs: label-pr: The gate will reject this PR. Post the marker:" >&2
     for _lp_wl in $_ADDING_APPROVAL_LABELS; do
       case "$_lp_wl" in
