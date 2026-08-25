@@ -463,4 +463,60 @@ assert_exit_code 0 "$rc" "repo-unresolved: exits 0 (fail open)"
 assert_contains "$stdout_out" "talos:closing-keyword-unverified" "repo-unresolved: marker emitted on stdout"
 assert_contains "$stdout_out" "reason=repo-unresolved" "repo-unresolved: fixed-literal reason in marker"
 
+# =============================================================================
+# ISSUE-91: Repo-scoped sibling-scan body_match
+# All tests use issue 42, STUB_REPO=acme/widget (the default stub repo).
+# The current PR (#9) carries "Closes #42".
+# =============================================================================
+
+# -- S1. Foreign repo in sibling body -- must NOT be counted (the bug) --------
+# Sibling PR #8 body: "Fixes other-owner/other-repo#42" — foreign-repo reference.
+# With the current unscoped regex this counts as a sibling and exits 1.
+# After the fix it must NOT match, so exit 0.
+out="$(STUB_PR_BODY="Closes #42" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix: curr","headRefName":"fix/issue-42-a","body":"Closes #42"},{"number":8,"state":"OPEN","title":"fix: sibling","headRefName":"fix/other-b","body":"Fixes other-owner/other-repo#42"}]' \
+  bash "$VCS" check-closing-keyword 9 42 2>&1)"; rc=$?
+assert_exit_code 0 "$rc" "issue-91 S1: foreign other-owner/other-repo#42 in sibling body is NOT counted (must exit 0)"
+
+# -- S2. Bare #N in sibling body without keyword -- MUST be counted -----------
+# Sibling PR #8 body: "Part of #42" — bare #N with no closing keyword.
+# This is the guard's core purpose; must NOT be narrowed away by the scoping fix.
+out="$(STUB_PR_BODY="Closes #42" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix: curr","headRefName":"fix/issue-42-a","body":"Closes #42"},{"number":8,"state":"OPEN","title":"fix: sibling","headRefName":"fix/other-b","body":"Part of #42"}]' \
+  bash "$VCS" check-closing-keyword 9 42 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "issue-91 S2: bare #42 in sibling body (no keyword) IS counted (must exit 1)"
+assert_contains "$out" "#8" "issue-91 S2: sibling PR #8 named in diagnostic"
+
+# -- S3. Own-repo qualified form in sibling body -- MUST be counted -----------
+# Sibling PR #8 body: "See acme/widget#42" — own-repo qualified reference.
+out="$(STUB_PR_BODY="Closes #42" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix: curr","headRefName":"fix/issue-42-a","body":"Closes #42"},{"number":8,"state":"OPEN","title":"fix: sibling","headRefName":"fix/other-b","body":"See acme/widget#42"}]' \
+  bash "$VCS" check-closing-keyword 9 42 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "issue-91 S3: own-repo acme/widget#42 in sibling body IS counted (must exit 1)"
+assert_contains "$out" "#8" "issue-91 S3: sibling PR #8 named in diagnostic"
+
+# -- S4. Branch-name matcher unchanged ----------------------------------------
+# A sibling with a fix/issue-42-slug branch is still detected by branch match
+# regardless of the body content — branch matching is local and unchanged.
+out="$(STUB_PR_BODY="Closes #42" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix: curr","headRefName":"fix/issue-42-a","body":"Closes #42"},{"number":8,"state":"OPEN","title":"fix: sibling","headRefName":"fix/issue-42-b","body":"no reference here"}]' \
+  bash "$VCS" check-closing-keyword 9 42 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "issue-91 S4: branch fix/issue-42-b still fires (branch matcher unchanged, must exit 1)"
+assert_contains "$out" "#8" "issue-91 S4: sibling PR #8 named via branch match"
+
+# -- S5. Genuine sibling block still exits 1 ----------------------------------
+# Confirm the guard is not silently disabled by the scoping fix.
+# Sibling body "Related to #42" is a bare reference — must still block.
+out="$(STUB_PR_BODY="Closes #42" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix: curr","headRefName":"fix/issue-42-a","body":"Closes #42"},{"number":8,"state":"OPEN","title":"fix: sibling","headRefName":"fix/other-b","body":"Related to #42"}]' \
+  bash "$VCS" check-closing-keyword 9 42 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "issue-91 S5: genuine sibling with bare #42 still exits 1 (guard not disabled)"
+
+# -- S6. Exit-zero proof: closing keyword + no open siblings ------------------
+# A PR with a proper closing keyword and no open siblings must exit 0.
+out="$(STUB_PR_BODY="Closes #42" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix: curr","headRefName":"fix/issue-42-a","body":"Closes #42"}]' \
+  bash "$VCS" check-closing-keyword 9 42 2>&1)"; rc=$?
+assert_exit_code 0 "$rc" "issue-91 S6: closing keyword with no open siblings exits 0"
+
 finish
