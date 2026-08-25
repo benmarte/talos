@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- **`pipeline-vcs.sh`: `comment-issue` and `comment-pr` on the `github` (gh CLI) provider now exit non-zero when the comment POST fails (#69).** Previously, the subshell-capture assignment `_ci_url="$(gh …)"` absorbed a non-zero exit silently (no `set -e` is active), causing the verb to return 0 even though no comment was posted. Appending `|| exit 1` to each assignment makes the failure propagate immediately, before the `talos:comment-state-unverified` marker can be emitted. The `github-api` provider already failed hard via `_ga_req` and is unchanged.
+
 - **`pipeline-status.sh`: issues always appear on the board even when a required status option is missing (#67).**
   Three related fixes:
 
