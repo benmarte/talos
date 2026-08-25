@@ -272,4 +272,61 @@ assert_contains "$out" "[dry-run]" "new verbs support --dry-run"
 log_no_repo="$(grep -v "repo view" "$GH_LOG" 2>/dev/null || true)"
 assert_not_contains "$log_no_repo" "pr view" "dry-run makes no live pr view calls"
 
+# ── Issue #66 Part B: quoted-marker MUST NOT satisfy check-approval-sha ───────
+
+# mk_comment_with_marker_author <sha> <role> <author-login> — includes author field
+mk_comment_with_marker_author() {
+  printf '[{"body":"approval done\\n<!-- talos:approval sha=%s role=%s -->","author":{"login":"%s"}}]' \
+    "$1" "$2" "$3"
+}
+
+# mk_quoted_comment <sha> <role> — marker buried in a quote-reply block (not last line)
+mk_quoted_comment() {
+  printf '[{"body":"> <!-- talos:approval sha=%s role=%s -->\\n\\nI am quoting the above.","author":{"login":"trusted-bot"}}]' \
+    "$1" "$2"
+}
+
+# [test] Part B: a marker inside a quoted block does NOT satisfy check-approval-sha.
+# The marker must be the last non-whitespace line of the body.
+_qc="$(mk_quoted_comment "$SHA_B" qa)"
+out="$(vcs_check "$SHA_B" '[{"name":"qa:pass"}]' "$_qc")"; rc=$?
+assert_exit_code 1 "$rc" "quoted marker: check-approval-sha exits 1 (marker not on last line)"
+assert_contains "$out" "no SHA marker" "quoted marker: treated as missing, not as approval"
+
+# [test] Part B regression: a marker that IS the last line still passes (no over-correction).
+_lc="$(mk_comment_with_marker_author "$SHA_B" qa "trusted-bot")"
+out="$(vcs_check "$SHA_B" '[{"name":"qa:pass"}]' "$_lc")"; rc=$?
+assert_exit_code 0 "$rc" "last-line marker: check-approval-sha exits 0 (happy path)"
+assert_contains "$out" "all approval labels are current" "last-line marker: reports all current"
+
+# ── Issue #66 Part A: trusted-author allow-list for check-approval-sha ────────
+
+# [test] with trusted_authors configured, a marker from an untrusted author is treated as stale.
+printf '{"markers": {"trusted_authors": ["trusted-bot"]}}\n' > test-approval-config.json
+_untrusted="$(printf '[{"body":"approval done\\n<!-- talos:approval sha=%s role=qa -->","author":{"login":"evil-commenter"}}]' "$SHA_B")"
+out="$(vcs_check "$SHA_B" '[{"name":"qa:pass"}]' "$_untrusted")"; rc=$?
+assert_exit_code 1 "$rc" "untrusted author: check-approval-sha exits 1 (marker skipped)"
+assert_contains "$out" "no SHA marker" "untrusted author: treated as missing marker"
+printf '{}' > test-approval-config.json  # restore
+
+# [test] with trusted_authors configured, a trusted author's marker satisfies the gate
+# (EXIT-ZERO PROOF: proves the fix does not over-correct into rejecting everything).
+printf '{"markers": {"trusted_authors": ["trusted-bot"]}}\n' > test-approval-config.json
+_trusted="$(mk_comment_with_marker_author "$SHA_B" qa "trusted-bot")"
+out="$(vcs_check "$SHA_B" '[{"name":"qa:pass"}]' "$_trusted")"; rc=$?
+assert_exit_code 0 "$rc" "trusted author + last-line marker: exits 0 (exit-zero proof)"
+assert_contains "$out" "all approval labels are current" "trusted author: gate satisfied"
+printf '{}' > test-approval-config.json  # restore
+
+# [test] with markers.trusted_authors absent, check skipped AND talos:marker-authors-unverified emitted.
+# Config is '{}' (no trusted_authors key) — fail-open, warn, emit marker on stdout.
+out="$(vcs_check "$SHA_B" '[{"name":"qa:pass"}]' "$(mk_comment_with_marker "$SHA_B" qa)")"; rc=$?
+assert_exit_code 0 "$rc" "unconfigured trusted_authors: exits 0 (fail-open)"
+assert_contains "$out" "talos:marker-authors-unverified" \
+  "unconfigured trusted_authors: machine-readable marker emitted on stdout"
+assert_contains "$out" "reader=check-approval-sha" \
+  "unconfigured trusted_authors: marker identifies the reader"
+assert_contains "$out" "all approval labels are current" \
+  "unconfigured trusted_authors: approval still accepted (fail-open)"
+
 finish
