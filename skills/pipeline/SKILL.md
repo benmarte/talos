@@ -803,7 +803,7 @@ If failing: CI may be flaky — retry it, bounded to 2 re-runs per head SHA:
 3. If 2 re-runs already happened for this SHA: post a comment listing the failing
    checks, do NOT merge. Not blocked — just waiting for a human or a new commit.
 
-**CHANGELOG serialization guard:** Before merging, check whether the PR's base branch is behind `origin/main` AND another pipeline PR has merged since this branch was cut. If so, run `git fetch origin && git merge origin/main` in the developer's worktree branch first, then re-push. On CHANGELOG conflicts, keep BOTH entries (newest first). (Changelog fragment directories are out of scope for v1 — the inline-merge rule above is sufficient for this repo size.)
+**CHANGELOG serialization guard:** Before merging, check whether the PR's base branch is behind `origin/main` AND another pipeline PR has merged since this branch was cut. If so, run `git fetch origin && git merge origin/main` in the developer's worktree branch first, then re-push. On CHANGELOG conflicts, keep BOTH entries (newest first). (Changelog fragment directories are out of scope for v1 — the inline-merge rule above is sufficient for this repo size.) *(After the fix in #102: `check-approval-sha` filters out base-branch-only changes, so this sync no longer invalidates markers for files the PR did not touch. If the sync modifies a file the PR also touched, markers for that role are intentionally invalidated — verify the merge resolution and re-stamp.)*
 
 **Human-merge mode (`MERGE_AUTO = false`):** every gate above still applies —
 approval labels, `skip-qa` rules, forbidden-files, CI. When everything is green,

@@ -970,7 +970,7 @@ sys.exit(0)
         return 0
       fi
       local pr_data
-      pr_data="$(gh pr view "$n" --json headRefOid,labels,comments ${REPO:+--repo "$REPO"} 2>/dev/null)"
+      pr_data="$(gh pr view "$n" --json headRefOid,baseRefName,labels,comments ${REPO:+--repo "$REPO"} 2>/dev/null)"
       if [ -z "$pr_data" ]; then
         echo "pipeline-vcs: check-approval-sha: could not fetch PR #$n data" >&2
         exit 1
@@ -1086,6 +1086,32 @@ if not head_sha:
     print('pipeline-vcs: check-approval-sha: could not resolve head SHA', file=sys.stderr)
     sys.exit(1)
 
+# Three-dot diff: compute the set of files the PR itself touches relative to
+# origin/<base>. Files that arrived purely from a base-branch sync are absent
+# from this set (they are already in the merge base). Fail-open: if base_ref_name
+# is absent or the diff fails, pr_own_files = None and the filter is skipped —
+# the full changed set is used (conservative / pre-fix behavior).
+# NOTE: backticks and unescaped dollar signs cannot appear in this block — it
+# runs inside a double-quoted bash string and bash performs command substitution.
+base_ref_name = data.get('baseRefName', '').strip()
+pr_own_files = None
+if base_ref_name:
+    _own_root = os.environ.get('REPO_ROOT', '').strip() or None
+    try:
+        _pr_own = subprocess.run(
+            ['git', 'diff', '--name-only',
+             'origin/' + base_ref_name + '...' + head_sha],
+            capture_output=True, text=True,
+            cwd=_own_root, timeout=30
+        )
+        if _pr_own.returncode == 0:
+            pr_own_files = set(
+                f.strip() for f in _pr_own.stdout.splitlines() if f.strip()
+            )
+        # else: diff failed — fail-open, pr_own_files stays None
+    except Exception:
+        pr_own_files = None  # fail-open
+
 label_names  = {lb['name'] for lb in data.get('labels', [])}
 raw_comments = data.get('comments', [])
 
@@ -1193,6 +1219,13 @@ for label, role in present.items():
         print(f'pipeline-vcs: check-approval-sha: git diff failed: {exc}', file=sys.stderr)
         stale.append((label, role, f'git diff failed: {exc}'))
         continue
+
+    # Intersect with the PR's own file set to exclude base-branch-only changes.
+    # A file the PR itself also touches stays in pr_own_files and is evaluated
+    # normally — fail-closed for same-file-touched-by-both (rule 2).
+    # If pr_own_files is None (three-dot diff unavailable) the filter is skipped.
+    if pr_own_files is not None:
+        changed = [f for f in changed if f in pr_own_files]
 
     # First check hard-coded non-waivable paths (structurally enforced — config cannot override)
     blocked = [p for p in changed if is_hardcoded_nonwaivable(p)]

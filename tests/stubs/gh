@@ -33,15 +33,16 @@ case "$args" in
     _pn="${STUB_PR_NUMBER:-9}"
     _pb="${STUB_PR_BODY:-Closes #42}"
     printf '{"number":%s,"body":"%s"}\n' "$_pn" "$_pb" ;;
-  "pr view "*"--json headRefOid,labels,comments"*)
+  "pr view "*"--json headRefOid,baseRefName,labels,comments"*)
     # Used by check-approval-sha: return a combined PR object.
-    # Override STUB_PR_HEAD_SHA, STUB_PR_LABELS_JSON, STUB_PR_COMMENTS_JSON.
+    # Override STUB_PR_HEAD_SHA, STUB_PR_BASE_REF_NAME, STUB_PR_LABELS_JSON, STUB_PR_COMMENTS_JSON.
     # NOTE: must come BEFORE the plain headRefOid pattern — bash case matches first.
     _sha="${STUB_PR_HEAD_SHA:-abc123sha}"
+    _base="${STUB_PR_BASE_REF_NAME:-main}"
     _labels="${STUB_PR_LABELS_JSON:-[]}"
     _comments="${STUB_PR_COMMENTS_JSON:-[]}"
-    printf '{"headRefOid":"%s","labels":%s,"comments":%s}\n' \
-      "$_sha" "$_labels" "$_comments" ;;
+    printf '{"headRefOid":"%s","baseRefName":"%s","labels":%s,"comments":%s}\n' \
+      "$_sha" "$_base" "$_labels" "$_comments" ;;
   "pr view "*"--json headRefOid"*)
     printf '%s\n' "${STUB_PR_HEAD_SHA:-abc123sha}" ;;
   "pr view "*"--json files"*)
