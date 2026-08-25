@@ -37,6 +37,7 @@ case "$verb" in
     case "$ISOLATION" in
       worktree)
         # Default — unchanged; no new constraints.
+        printf 'resolved: worktree\n'
         exit 0
         ;;
       branch)
@@ -44,6 +45,7 @@ case "$verb" in
           printf 'ERROR: isolation: branch requires issues.max_parallel: 1 — two agents cannot safely share one checkout. Set max_parallel: 1 or switch to isolation: worktree.\n' >&2
           exit 1
         fi
+        printf 'resolved: branch\n'
         exit 0
         ;;
       checkout)

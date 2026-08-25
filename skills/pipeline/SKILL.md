@@ -734,7 +734,7 @@ Comments enabled: <COMMENTS_ENABLED>
 
 Read diff: `bash scripts/pipeline-vcs.sh diff-pr <PR_NUMBER>`
 Focus: correctness bugs first, simplification second. No speculative comments.
-IMPORTANT: never run `git checkout`, `git switch`, or `git pull` in your working directory — you are not worktree-isolated; read the diff only.
+IMPORTANT: never run `git checkout`, `git switch`, or `git pull` in your working directory — use `diff-pr` to read changes regardless of the active isolation mode.
 
 Approve:
   1. `bash scripts/pipeline-vcs.sh approve-pr <PR_NUMBER> "<summary>"`
@@ -771,7 +771,7 @@ Comments enabled: <COMMENTS_ENABLED>
 Read diff: `bash scripts/pipeline-vcs.sh diff-pr <PR_NUMBER>`
 Check: injection, authz, secrets, deserialization, path traversal, SSRF, new deps.
 Report only findings tied to specific changed lines.
-IMPORTANT: never run `git checkout`, `git switch`, or `git pull` in your working directory — you are not worktree-isolated; read the diff only.
+IMPORTANT: never run `git checkout`, `git switch`, or `git pull` in your working directory — use `diff-pr` to read changes regardless of the active isolation mode.
 
 Clear:
   1. `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --add security:approved --remove pipeline:blocked`
