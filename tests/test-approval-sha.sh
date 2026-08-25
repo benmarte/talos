@@ -329,4 +329,48 @@ assert_contains "$out" "reader=check-approval-sha" \
 assert_contains "$out" "all approval labels are current" \
   "unconfigured trusted_authors: approval still accepted (fail-open)"
 
+# ── Issue #81: fabricated-SHA diagnostic improvements ────────────────────────
+
+BOGUS_SHA="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+ABBREV_SHA="bed2e4a"
+
+# [test A] case (b): marker SHA not in repo → new distinct message, still exit 1
+# Regression spec: must say "does not exist in this repository"
+# and must NOT say "Invalid revision range"
+_c="$(mk_comment_with_marker "$BOGUS_SHA" qa)"
+out="$(vcs_check "$SHA_E" '[{"name":"qa:pass"}]' "$_c")"; rc=$?
+assert_exit_code 1 "$rc" "fabricated SHA: exits 1 (fail-closed)"
+assert_contains "$out" "does not exist in this repository" \
+  "fabricated SHA: new distinct message emitted"
+assert_not_contains "$out" "Invalid revision range" \
+  "fabricated SHA: old confusing git-layer message suppressed"
+
+# [test B] case (a) regression guard: real-but-old SHA still gets stale-approval message
+# This is the highest-priority regression: a broken probe would hit the
+# does-not-exist path for every real SHA, silently breaking the gate.
+_c="$(mk_comment_with_marker "$SHA_A" qa)"
+out="$(vcs_check "$SHA_E" '[{"name":"qa:pass"}]' "$_c")"; rc=$?
+assert_exit_code 1 "$rc" "real old SHA: exits 1 (stale)"
+assert_contains "$out" "non-waivable files changed since" \
+  "real old SHA: stale-approval message is UNCHANGED"
+assert_not_contains "$out" "does not exist in this repository" \
+  "real old SHA: does NOT hit the fabricated-SHA path"
+
+# [test D] exit-zero proof: marker SHA == head SHA → exit 0
+# Without this, a crashing probe would make every case block (appearing healthy
+# while permanently broken).
+_c="$(mk_comment_with_marker "$SHA_E" qa)"
+out="$(vcs_check "$SHA_E" '[{"name":"qa:pass"}]' "$_c")"; rc=$?
+assert_exit_code 0 "$rc" "matching SHA (exit-zero proof): exits 0"
+assert_contains "$out" "all approval labels are current" \
+  "matching SHA (exit-zero proof): gate is satisfied"
+
+# [test E] abbreviated SHA is rejected at parse time (format check)
+# Abbreviated SHAs can expand to the wrong commit; stages must use full SHAs.
+_c="$(mk_comment_with_marker "$ABBREV_SHA" qa)"
+out="$(vcs_check "$SHA_E" '[{"name":"qa:pass"}]' "$_c")"; rc=$?
+assert_exit_code 1 "$rc" "abbreviated SHA: exits 1 (rejected at parse)"
+assert_contains "$out" "is not a valid 40-character commit SHA" \
+  "abbreviated SHA: format-check message emitted"
+
 finish
