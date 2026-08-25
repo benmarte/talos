@@ -19,12 +19,17 @@
 #   agents.runner_cmd   full shell command for runner=custom;
 #                       receives the prompt on stdin
 #
-# runner_cmd environment: TALOS_ROLE is exported and visible to runner_cmd, so
-# you can route by role without a wrapper script:
+# runner_cmd environment: TALOS_ROLE, TALOS_ISSUE_NUMBER, and TALOS_WORKTREE_PATH
+# are exported and visible to runner_cmd. TALOS_ROLE lets you route by role:
 #   e.g. case "$TALOS_ROLE" in
 #          developer|qa) exec pi -p --provider ds4 --model deepseek-v4-flash "$(cat)" ;;
 #          *)            exec claude -p "$(cat)" ;;
 #        esac
+# TALOS_ISSUE_NUMBER is the issue number passed via TALOS_ISSUE=<N> in the caller's
+# environment; empty string when the caller does not set TALOS_ISSUE.
+# TALOS_WORKTREE_PATH is the $PWD at the time pipeline-agent.sh was invoked.
+# Verify scripts can assert they are running in the correct worktree:
+#   if [ "${TALOS_ISSUE_NUMBER:-}" != "$EXPECTED" ]; then exit 1; fi
 #
 # Runner invocations:
 #   claude       claude -p --setting-sources project [args] <prompt>
@@ -59,6 +64,16 @@ TASK="${2:-}"
 # ROLE is kept as the local variable used for role-file lookup below.
 TALOS_ROLE="$ROLE"
 export TALOS_ROLE
+
+# Export per-agent identity so verify: commands can self-check their environment.
+# TALOS_ISSUE is set by the caller (e.g. TALOS_ISSUE=54 pipeline-agent.sh qa "<prompt>").
+# Two-arg callers that do not set TALOS_ISSUE are unaffected: TALOS_ISSUE_NUMBER is
+# exported as the empty string, which is distinct from an unset variable and lets
+# verify scripts distinguish "Talos did not set this" from any real issue number.
+# TALOS_WORKTREE_PATH is the working directory at invocation time — the worktree root.
+TALOS_ISSUE_NUMBER="${TALOS_ISSUE:-}"
+TALOS_WORKTREE_PATH="$PWD"
+export TALOS_ISSUE_NUMBER TALOS_WORKTREE_PATH
 
 if [ -z "$ROLE" ] || [ -z "$TASK" ]; then
   echo "Usage: pipeline-agent.sh <role> <task-prompt|->" >&2

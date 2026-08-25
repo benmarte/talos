@@ -658,8 +658,16 @@ chat endpoint can generate text but cannot open a PR. Expect stage quality to
 track model capability; the validator/QA gates exist precisely to catch weak
 stage output.
 
-`TALOS_ROLE` is exported to every `runner_cmd` invocation, so you can route
-by role without a wrapper script. For the judgement-vs-volume split:
+`TALOS_ROLE`, `TALOS_ISSUE_NUMBER`, and `TALOS_WORKTREE_PATH` are exported to every `runner_cmd` invocation. `TALOS_ROLE` lets you route by role. `TALOS_ISSUE_NUMBER` is the issue number set by the caller via `TALOS_ISSUE=<N>`; it is the empty string when the caller does not set `TALOS_ISSUE`. `TALOS_WORKTREE_PATH` is the working directory at invocation time. Verify scripts can use these to assert they are running in the correct environment:
+
+```bash
+if [ "${TALOS_ISSUE_NUMBER:-}" != "$EXPECTED_ISSUE" ]; then
+  echo "ERROR: wrong environment (expected $EXPECTED_ISSUE, got ${TALOS_ISSUE_NUMBER:-unset})" >&2
+  exit 1
+fi
+```
+
+`TALOS_ROLE` lets you route by role without a wrapper script. For the judgement-vs-volume split:
 
 ```yaml
 agents:

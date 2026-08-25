@@ -4,6 +4,13 @@
 
 ### Added
 
+- **Per-agent environment identity: `TALOS_ISSUE_NUMBER` and `TALOS_WORKTREE_PATH` (#54).** Concurrent agents (`issues.max_parallel > 1`) share one compose project and scratch directory; verify scripts had no way to detect they were running in the wrong environment, producing silently incorrect results. Two new exports make degraded runs visible:
+  - **Adapter path (`subagents: false`, `pipeline-agent.sh`):** `TALOS_ISSUE_NUMBER` and `TALOS_WORKTREE_PATH` are now exported alongside `TALOS_ROLE` to every `runner_cmd`. Callers set `TALOS_ISSUE=<N>` in the environment; two-arg callers that do not set it receive `TALOS_ISSUE_NUMBER=""` (empty string, not unset), which lets verify scripts distinguish "Talos did not set this" from any real issue number. Backwards compatible: existing two-arg callers are unchanged.
+  - **Native path (`subagents: true`, Claude Code):** The task prompt for worktree-isolated stages (developer, QA) now includes the issue number and worktree path and instructs the stage to `export` them before running `verify:` commands. This is instruction-based and not airtight — a stage that ignores the instruction still runs verify without the exports.
+  - **`SKILL.md` Rule 18** added: worktree-isolated stages must export both values before any `verify:` command; honest documentation that the native-path mechanism is instruction-based.
+  - **`SKILL.md` concurrency warning** added after the `issues.max_parallel` config default: explains the compose-stack failures, provides a self-check pattern, and states that `COMPOSE_PROJECT_NAME` and port offsets are derived by consuming projects from `TALOS_ISSUE_NUMBER` — Talos does not supply derived values.
+  - Consuming projects derive `COMPOSE_PROJECT_NAME` via `talos-$TALOS_ISSUE_NUMBER`. Talos supplies identity, not infrastructure conventions.
+
 - **`skills/pipeline/SKILL.md` Rule 17: foreground-only execution (#58).** Agents must never append `&`, use `nohup`, or call `disown`; polling with `until ! pgrep …; do sleep N; done` is also forbidden. Stranded background children cause the harness to fire duplicate completion notifications when they exit — observed at 210 stranded shells peak, with one agent generating 5 spurious signals 90 minutes after finishing; Talos cannot suppress the harness-side notification and can only prevent background children from being created.
 
 - **Per-role model selection for native subagents (`agents.model`, `agents.roles.<role>.model`) and `TALOS_ROLE` export for adapter path (#96).** Two changes that together enable mixed-model pipelines without a human routing each stage:
