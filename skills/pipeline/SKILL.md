@@ -128,8 +128,14 @@ except Exception:
     print(os.environ.get('HEADER','') + '\n\n' + os.environ.get('VERDICT','') + ' — ' + os.environ.get('SUMMARY',''))
 " "$TMPL" 2>/dev/null
 )"
-COMMENT_URL="$(bash scripts/pipeline-vcs.sh comment-issue <N> "$COMMENT_BODY")"   # issue comments
-COMMENT_URL="$(bash scripts/pipeline-vcs.sh comment-pr <PR> "$COMMENT_BODY")"     # PR comments
+COMMENT_URL="$(bash scripts/pipeline-vcs.sh comment-issue <N> "$COMMENT_BODY")" || {   # issue comments
+  echo "comment-issue failed for #<N>" >&2
+  # do not assert the filing landed; surface the failure in the final message
+}
+COMMENT_URL="$(bash scripts/pipeline-vcs.sh comment-pr <PR> "$COMMENT_BODY")" || {     # PR comments
+  echo "comment-pr failed for #<PR>" >&2
+  # do not assert the filing landed; surface the failure in the final message
+}
 # COMMENT_URL is the html_url of the posted comment — use it in relay messages for
 # linkability; no re-fetch required.  If the state check was indeterminate, a second
 # line "talos:comment-state-unverified target=…" is also printed — capture and relay it.
@@ -306,12 +312,14 @@ CONFIRMED:
   2. Render and post validator-verdict.md on the ISSUE:
      VERDICT="CONFIRMED" SUMMARY="<one-line reason>" DETAILS="<2-5 bullets: root cause, affected code, repro steps>"
      `bash scripts/pipeline-vcs.sh comment-issue <N> "$COMMENT_BODY"`
+     If exit non-zero, report the failure in your final message; do not assert the comment was posted.
 
 Any other outcome:
   1. `bash scripts/pipeline-vcs.sh label-issue <N> --add pipeline:blocked --remove pipeline:ready`
   2. Render and post blocked.md on the ISSUE:
      VERDICT="<OUTCOME>" SUMMARY="<reason>" DETAILS="<what a human must do>"
      `bash scripts/pipeline-vcs.sh comment-issue <N> "$COMMENT_BODY"`
+     If exit non-zero, report the failure in your final message; do not assert the comment was posted.
 
 Final message (2-3 lines): verdict + key findings the orchestrator can relay to the notification channel.
 ```
@@ -376,12 +384,14 @@ After the planner returns (its output begins with `PLAN:`):
      bash scripts/pipeline-vcs.sh create-issue "<sub-task title>" /tmp/sub-issue-<i>.md \
        --label pipeline:ready --label epic:<N>
      ```
+     If exit non-zero, report the failure, set `pipeline:blocked`, and do not record a sub-issue number.
    - **Dependent sub-task** (planner listed `Depends on: <j>`) — do NOT add `pipeline:ready`;
      it stays out of the queue until Step 1 unblocks it, but is still tagged to the epic:
      ```bash
      bash scripts/pipeline-vcs.sh create-issue "<sub-task title>" /tmp/sub-issue-<i>.md \
        --label epic:<N>
      ```
+     If exit non-zero, report the failure, set `pipeline:blocked`, and do not record a sub-issue number.
      The body already carries the `Depends on: #<PREV>` line so Step 1 reconciliation can
      detect when the blocker closes and add `pipeline:ready` at that point.
    - Capture the returned issue number/URL as `SUB_N`. Record the mapping:
@@ -400,6 +410,7 @@ After the planner returns (its output begins with `PLAN:`):
    bash scripts/pipeline-vcs.sh comment-issue <N> \
      "**Planner:** decomposed into sub-issues: <list of #SUB_N>"
    ```
+   If exit non-zero, report the failure in the relay message; do not assert the comment was posted.
 
 4. Relay: `bash scripts/pipeline-notify.sh info "#<N>" "epic decomposed into K sub-issues" <N>`
 
@@ -430,6 +441,7 @@ Read relevant source files. Write a spec as a comment:
 - **Out of scope**: guard against over-reach
 
 Post: `bash scripts/pipeline-vcs.sh comment-issue <N> "**PM spec:** ..."`
+If the post exits non-zero, report the failure in your final message and do not advance the label.
 Advance: `bash scripts/pipeline-vcs.sh label-issue <N> --add pipeline:dev --remove pipeline:confirmed`
 
 For epics: post a decomposition and `label-issue --add pipeline:blocked` instead.
@@ -495,6 +507,7 @@ Workflow:
    `printf '%s' "<spec summary>\n\nTest types: <unit / regression / e2e — list what you added; for any type skipped, say why>\n\nCloses #<N>" > /tmp/pr-body-<N>.md`
 9. Open PR: `bash scripts/pipeline-vcs.sh create-pr fix/issue-<N>-<slug> "<title>" /tmp/pr-body-<N>.md`
    Use "Part of #<N>" instead of "Closes" for all but the last PR on multi-PR issues.
+   If `create-pr` exits non-zero: stop immediately, set `pipeline:blocked`, post blocked.md with the exact error — do not guess a PR number.
 10. Confirm PR exists: `bash scripts/pipeline-vcs.sh view-pr fix/issue-<N>-<slug>`
 11. On success:
     a. `bash scripts/pipeline-vcs.sh label-pr <PR> --add pipeline:review`
@@ -502,6 +515,7 @@ Workflow:
     c. Render and post pr-opened.md on the ISSUE:
        VERDICT="OPENED" SUMMARY="<PR title>" DETAILS="<2-5 bullets: what changed, files touched, verify results>"
        `bash scripts/pipeline-vcs.sh comment-issue <N> "$COMMENT_BODY"`
+       If exit non-zero, report the failure in your final message.
 12. On failure: `label-issue --add pipeline:blocked`, post blocked.md with exact error.
 
 Final message (2-3 lines): PR URL + what was implemented + verify outcome. Never fabricate a PR number. Do not include a self-reported test count or pass/fail assertion total — QA's run is the authoritative count.
@@ -546,6 +560,7 @@ Pass:
      `<!-- talos:approval sha=<HEAD_SHA> role=qa -->`
      VERDICT="PASS" SUMMARY="<what verified>" DETAILS="<2-5 bullets: each criterion checked + result>"
      `bash scripts/pipeline-vcs.sh comment-pr <PR_NUMBER> "$COMMENT_BODY"`
+     If exit non-zero, report the failure in your final message.
 
 Fail:
   1. `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --add pipeline:blocked --remove pipeline:review`
@@ -553,6 +568,7 @@ Fail:
   3. Render and post qa-verdict.md on the PR:
      VERDICT="FAIL" SUMMARY="<failing criterion>" DETAILS="<repro + suggested fix>"
      `bash scripts/pipeline-vcs.sh comment-pr <PR_NUMBER> "$COMMENT_BODY"`
+     If exit non-zero, report the failure in your final message.
 
 Final message (2-3 lines): PASS/FAIL + criteria outcome the orchestrator can relay.
 ```
@@ -597,12 +613,14 @@ Approve:
      `<!-- talos:approval sha=<HEAD_SHA> role=reviewer -->`
      VERDICT="APPROVED" SUMMARY="<summary>" DETAILS="<2-5 bullets: areas checked>"
      `bash scripts/pipeline-vcs.sh comment-pr <PR_NUMBER> "$COMMENT_BODY"`
+     If exit non-zero, report the failure in your final message.
 
 Changes needed:
   1. `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --add pipeline:blocked --remove pipeline:review`
   2. Render blocked.md on the PR:
      SUMMARY="<N> findings" DETAILS="<file:line findings>"
      `bash scripts/pipeline-vcs.sh comment-pr <PR_NUMBER> "$COMMENT_BODY"`
+     If exit non-zero, report the failure in your final message.
 
 Final (2-3 lines): APPROVED/CHANGES outcome + key points.
 ```
@@ -630,14 +648,17 @@ Clear:
      `<!-- talos:approval sha=<HEAD_SHA> role=security -->`
      VERDICT="CLEAR" SUMMARY="<checked>" DETAILS="<2-5 bullets: areas reviewed>"
      `bash scripts/pipeline-vcs.sh comment-pr <PR_NUMBER> "$COMMENT_BODY"`
+     If exit non-zero, report the failure in your final message.
 
 Findings:
   1. `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --add pipeline:blocked`
   2. Render security-signoff.md on the PR:
      VERDICT="FINDINGS" DETAILS="<severity+file:line+fix>"
      `bash scripts/pipeline-vcs.sh comment-pr <PR_NUMBER> "$COMMENT_BODY"`
+     If exit non-zero, report the failure in your final message.
   3. Also post blocked.md on the ISSUE: SUMMARY="security findings in PR #<PR_NUMBER>"
      `bash scripts/pipeline-vcs.sh comment-issue <N> "$COMMENT_BODY"`
+     If exit non-zero, report the failure in your final message.
 
 Final (2-3 lines): CLEAR/FINDINGS outcome + areas covered.
 ```
@@ -660,9 +681,11 @@ Comments enabled: <COMMENTS_ENABLED>
 6. Post an approval comment on the PR containing the HTML marker on its own line:
    `<!-- talos:approval sha=<HEAD_SHA> role=docs -->`
    `bash scripts/pipeline-vcs.sh comment-pr <PR_NUMBER> "<!-- talos:approval sha=$HEAD_SHA role=docs -->"`
+   If exit non-zero, report the failure in your final message.
 7. Render docs-posted.md on the ISSUE:
    VERDICT="POSTED" SUMMARY="<what updated>" DETAILS="<2-5 bullets: files changed>"
    `bash scripts/pipeline-vcs.sh comment-issue <N> "$COMMENT_BODY"`
+   If exit non-zero, report the failure in your final message.
 
 If nothing to update: still add docs:done and post with SUMMARY="no docs changes required".
 
@@ -767,6 +790,7 @@ do NOT call `merge-pr`. Instead hand off to a human:
    Render approved.md and post it on the PR:
    VERDICT="APPROVED" SUMMARY="all stages passed — ready for human merge"
    `bash scripts/pipeline-vcs.sh comment-pr <PR_NUMBER> "$COMMENT_BODY"`
+   If exit non-zero, report the failure in the relay message.
 4. Relay: `bash scripts/pipeline-notify.sh orchestrator "#<N>" "all stages passed — PR #<PR_NUMBER> ready for human merge" <N>`
 5. STOP. Do NOT close the issue and do NOT run the post-merge steps — the issue
    closes when the human merges (the "heal merged-but-open issues" sweep in
@@ -779,6 +803,7 @@ Compute header: `HEADER="${COMMENTS_HEADER_TPL//\{role\}/orchestrator}"`
 After merging:
 1. Render issue-closed.md on the ISSUE: VERDICT="CLOSED" SUMMARY="all stages passed"
    `bash scripts/pipeline-vcs.sh comment-issue <N> "$COMMENT_BODY" --allow-closed`
+   If exit non-zero, report the failure in the relay message; do not skip the close-issue step.
    (GitHub auto-closes the issue via the PR's `Closes #N` keyword at merge time, roughly
    20 seconds before this step runs — `--allow-closed` is required here.)
 2. `bash scripts/pipeline-vcs.sh close-issue <N> "closed by PR #<PR_NUMBER>"`
@@ -822,3 +847,4 @@ After processing all issues, print a summary table:
 13. In file mode: skip board calls, skip QA/reviewer/security/docs, developer commits to branch directly.
 14. Never merge a PR that fails `check-pr-files` — secret-like files require a human; `skip-qa` does not waive this gate (nor CI).
 15. Non-worktree subagents (reviewer, security, docs) must read the PR diff via `diff-pr` only; they must never run `git checkout`, `git switch`, or `git pull` in the orchestrator's working directory. Worktree-isolated stages (developer, QA) are exempt.
+16. `comment-issue`, `comment-pr`, `create-issue`, and `create-pr` exit non-zero when their POST fails. A stage must not assert a filing landed without a non-empty URL returned by the command. For `create-pr` failures, set `pipeline:blocked` immediately — no PR means all downstream stages are impossible.
