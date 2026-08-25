@@ -4,6 +4,12 @@
 
 ### Added
 
+- **Per-role model selection for native subagents (`agents.model`, `agents.roles.<role>.model`) and `TALOS_ROLE` export for adapter path (#96).** Two changes that together enable mixed-model pipelines without a human routing each stage:
+  - **Native path (`subagents: true`, Claude Code):** Two new config keys control which model the orchestrator passes when spawning each subagent. `agents.model` sets a global model for all stages; `agents.roles.<role>.model` overrides it for a specific role. Resolution: role-specific → global → absent (omit `model:` entirely, Agent SDK inherits the session default). Backwards compatible: a config with neither key behaves byte-identically to prior versions.
+  - **Adapter path (`subagents: false`, Codex / Gemini / custom):** `TALOS_ROLE` is now exported to every `runner_cmd` invocation, so a `case "$TALOS_ROLE"` statement can route implementation roles to a local model and review roles to a quality model without a wrapper script.
+  - **`SKILL.md` updated** to instruct the orchestrator to resolve and pass the model before each Agent spawn.
+  - No schema change required for existing configs. A config with no `agents.model` and no `agents.roles:` block continues to work exactly as before.
+
 - **`pipeline-vcs.sh` built-in `merge.forbidden_files` defaults extended to 20 patterns (#78).** Added `*.pkcs12` (PKCS#12 bundles under the alternative extension), `*.kdbx` (KeePass databases), and `*.ovpn` (OpenVPN profiles, which frequently embed inline private keys) as wildcard patterns. Added `.netrc` and `_netrc` (plaintext credential stores; Windows spelling) as literal patterns — these were previously deferred pending the literal-pattern canary fix in #76 (PR #90, commit b1d3199). The stale deferral comment has been removed from both the `github` and `github-api` providers and replaced with a note that literal deny patterns now generate canaries. Not added: `*.gpg` (encrypted-at-rest workflow used by `pass`/SOPS/git-crypt is a legitimate use case), `*.asc` (detached signatures routinely committed as public artifacts), `*.der` (DER encodes public certificates as well as private keys). Both providers remain byte-for-byte identical (#75).
 
 ### Fixed

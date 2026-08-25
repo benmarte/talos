@@ -579,6 +579,9 @@ orchestrate it. The execution mode is chosen by `agents.subagents` and
 agents:
   runner: codex        # claude (default) | pi | codex | gemini | antigravity | custom
   subagents: auto      # auto | true | false   (auto = true for claude, else false)
+  model: claude-haiku-4-5-20251001   # optional — model for all stages (native path only)
+  roles:               # optional — per-role model overrides (native path only)
+    reviewer: {model: claude-opus-5}
 ```
 
 - **`runner: claude`** (subagents: true) — native parallel subagents.
@@ -604,6 +607,38 @@ agents:
   stage prompt and executes it via the runner configured in `talos.pipeline.yml`
   (`codex` → `codex exec`, `pi` → `pi -p`, `custom` → `runner_cmd` on stdin).
 
+### Per-role model selection (`agents.model` and `agents.roles.<role>.model`)
+
+**Applies to the native path (`subagents: true`) only.** The adapter path (`subagents: false`) routes by role using `$TALOS_ROLE` in `runner_cmd` — see below.
+
+When spawning each subagent the orchestrator resolves the model in three steps:
+
+1. `agents.roles.<role>.model` — role-specific override.
+2. `agents.model` — global model for all stages not explicitly overridden.
+3. Neither present — omit `model:` entirely; the Agent SDK inherits the session default (current behaviour, fully backwards compatible).
+
+**Judgement vs. volume (the primary use case):** implementation work is high-volume and verifiable; review work requires judgement. Set a cheap model globally and a quality model for the stages that matter:
+
+```yaml
+agents:
+  runner: claude
+  model: claude-haiku-4-5-20251001      # volume stages: developer, QA, docs, …
+  roles:
+    reviewer: {model: claude-opus-5}    # judgement stages
+    security: {model: claude-opus-5}
+```
+
+Two overrides rather than eight entries. A new role added later automatically inherits `agents.model` rather than silently reverting to the session default.
+
+**Global override (all stages, one model):**
+
+```yaml
+agents:
+  model: claude-sonnet-5    # all stages; no roles: block needed
+```
+
+**Backwards compatibility:** a config with no `model:` key at either level behaves byte-identically to earlier versions — `model:` is omitted from each Agent spawn call.
+
 **pi:** register the `pipeline` skill with pi (e.g. `skills` in `~/.pi/settings.json`
 pointing at this repo's `skills/`), set `agents.subagents: false` and
 `agents.runner: pi`, then tell pi to run the talos pipeline. The playbook's
@@ -622,6 +657,19 @@ runs a stage must be able to execute shell commands and edit files — a bare
 chat endpoint can generate text but cannot open a PR. Expect stage quality to
 track model capability; the validator/QA gates exist precisely to catch weak
 stage output.
+
+`TALOS_ROLE` is exported to every `runner_cmd` invocation, so you can route
+by role without a wrapper script. For the judgement-vs-volume split:
+
+```yaml
+agents:
+  runner: custom
+  runner_cmd: |
+    case "$TALOS_ROLE" in
+      developer|qa) exec pi -p --provider ds4 --model deepseek-v4-flash "$(cat)" ;;
+      *)            exec claude -p "$(cat)" ;;
+    esac
+```
 
 Example — llama.cpp serving an OpenAI-compatible endpoint:
 

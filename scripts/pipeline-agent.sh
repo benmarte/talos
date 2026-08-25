@@ -19,6 +19,13 @@
 #   agents.runner_cmd   full shell command for runner=custom;
 #                       receives the prompt on stdin
 #
+# runner_cmd environment: TALOS_ROLE is exported and visible to runner_cmd, so
+# you can route by role without a wrapper script:
+#   e.g. case "$TALOS_ROLE" in
+#          developer|qa) exec pi -p --provider ds4 --model deepseek-v4-flash "$(cat)" ;;
+#          *)            exec claude -p "$(cat)" ;;
+#        esac
+#
 # Runner invocations:
 #   claude       claude -p --setting-sources project [args] <prompt>
 #                (--setting-sources project keeps user-global CLAUDE.md
@@ -48,6 +55,10 @@ cfg() { "$SCRIPT_DIR/pipeline-config.sh" "$@"; }
 
 ROLE="${1:-}"
 TASK="${2:-}"
+# Export TALOS_ROLE so runner_cmd (runner=custom) can route by role.
+# ROLE is kept as the local variable used for role-file lookup below.
+TALOS_ROLE="$ROLE"
+export TALOS_ROLE
 
 if [ -z "$ROLE" ] || [ -z "$TASK" ]; then
   echo "Usage: pipeline-agent.sh <role> <task-prompt|->" >&2

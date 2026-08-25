@@ -29,7 +29,17 @@ Check per role, not once for all eight — a repo may override only `developer` 
 
 **Harness compatibility** — driven by config `agents.subagents` (`auto` | `true` | `false`) and `agents.runner` (`claude` | `pi` | `codex` | `gemini` | `antigravity` | `custom`). `auto` = `true` when the runner is `claude`, otherwise `false`; if `agents.subagents` is unset, behave as `auto`.
 
-- **`subagents: true`** (native subagents, e.g. Claude Code) — spawn them as each stage instructs.
+- **`subagents: true`** (native subagents, e.g. Claude Code) — spawn them as each stage instructs. **Per-role model selection (native path):** Before spawning each subagent, resolve its model in three steps:
+  1. Read `agents.roles.<role>.model` via `bash scripts/pipeline-config.sh agents.roles.<role>.model` (substitute the actual role name, e.g. `agents.roles.developer.model`).
+  2. If empty, read `agents.model` via `bash scripts/pipeline-config.sh agents.model`.
+  3. If still empty, omit `model:` from the spawn call — the Agent SDK inherits the session default (current behaviour).
+
+  When a non-empty value is found at step 1 or 2, pass it as `model: "<value>"` in the Agent spawn call. A config with no `model:` at either level requires no lookup change — omit `model:` for all spawns exactly as today.
+
+  Examples:
+  - `agents.roles.developer.model` absent; `agents.model = claude-haiku-4-5-20251001` → `Agent(subagent_type: "talos:developer", model: "claude-haiku-4-5-20251001", ...)`
+  - `agents.roles.reviewer.model = claude-opus-5` → `Agent(subagent_type: "talos:reviewer", model: "claude-opus-5", ...)`
+  - No model at either level → `Agent(subagent_type: "talos:docs", ...)` (no `model:` key)
 - **`subagents: false` + `runner: pi`** — **inline mode**: you (the orchestrator) act as each stage role yourself, one role per turn. pi has no subagents and does NOT use `pipeline-agent.sh`. For every stage the playbook says "spawn a subagent with this prompt":
   1. Read the role profile `AGENTS_DIR/<role>.md` (resolve via the subagent-name rules above; fall back to `scripts/../agents/<role>.md`). Strip the YAML frontmatter — it is Claude Code metadata. Use only the body.
   2. Adopt the role: treat the role body + the stage prompt as your current instructions and carry them out **inline with your tools** (read/write/edit/bash). Do everything the role would do.
