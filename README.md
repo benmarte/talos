@@ -237,7 +237,7 @@ All keys live in `talos.pipeline.yml` at your repo root. Every key is optional a
 | `merge.approval_waiver_paths` | `["*.md", "docs/**", "CHANGELOG.md"]` | Glob patterns for files that, when they are the **only** changes between an approval SHA and the current head, do not invalidate that approval. A docs-only commit pushed after QA approval will therefore carry the approval forward rather than forcing a full re-run. **Hard-coded non-waivable (cannot be widened by this key):** any path under `scripts/`, any path under `tests/`, `talos.pipeline.yml`, and `pipeline.yaml` — these are enforced structurally after the config waiver check. **Validation:** entries that are too broad (catch-all globs such as `*`, `**`, `*/*`, or any pattern that would match the hard-coded non-waivable paths) are rejected at validation time and will **block the merge** (fail-closed), matching the behaviour of `merge.forbidden_files_allow`. Keep entries minimal and specific. |
 | `issues.label_filter` | `pipeline:ready` | Label that queues issues |
 | `issues.skip_labels` | `[pipeline:blocked, wontfix]` | Issues with these are skipped |
-| `issues.max_parallel` | `1` | Max issues in-flight at once |
+| `issues.max_parallel` | `1` | Max issues in-flight at once. **Concurrency warning:** raising this above `1` requires concurrency-safe `verify:` scripts. Talos provides filesystem isolation (one worktree per issue) but does NOT manage Docker/compose project names, port allocations, or shared scratch directories. Two simultaneous verify runs against a shared compose stack will collide — observed failures include container-recreate races, script overwrites, and green transcripts that describe the wrong worktree. Consuming projects must derive their own isolation from `TALOS_ISSUE_NUMBER` (e.g. `COMPOSE_PROJECT_NAME=talos-$TALOS_ISSUE_NUMBER`). With the integer guard in place, `TALOS_ISSUE_NUMBER` is guaranteed to be digits or empty — never shell-unsafe. **Footgun:** when `TALOS_ISSUE` is not set, `TALOS_ISSUE_NUMBER` is empty and the example yields `COMPOSE_PROJECT_NAME=talos-`, a name shared across all agents; under `max_parallel > 1` this silently undoes isolation. Always set `TALOS_ISSUE=<N>` when running concurrent pipelines. The default (`1`) has no contention and requires no action. |
 | `roles.validator` | `true` | Phase-1 gate: confirms issue is real |
 | `roles.pm` | `true` | Writes implementation spec |
 | `roles.qa` | `true` | Verifies PR satisfies acceptance criteria |
@@ -658,8 +658,22 @@ chat endpoint can generate text but cannot open a PR. Expect stage quality to
 track model capability; the validator/QA gates exist precisely to catch weak
 stage output.
 
-`TALOS_ROLE` is exported to every `runner_cmd` invocation, so you can route
-by role without a wrapper script. For the judgement-vs-volume split:
+`TALOS_ROLE`, `TALOS_ISSUE_NUMBER`, and `TALOS_WORKTREE_PATH` identify the current stage across both execution paths. How they arrive depends on the path:
+
+- **Adapter path (`subagents: false`, `pipeline-agent.sh`):** all three are exported as real shell variables to every `runner_cmd` invocation. `TALOS_ISSUE_NUMBER` is the issue number passed by the caller via `TALOS_ISSUE=<N>`; it is the empty string when the caller does not set `TALOS_ISSUE`. **`TALOS_ISSUE` must be a plain non-negative integer (digits only) or unset** — any other value (shell metacharacters, whitespace, letters) causes `pipeline-agent.sh` to exit 2 with a diagnostic before the runner is invoked. `TALOS_WORKTREE_PATH` is `$PWD` at the time `pipeline-agent.sh` was invoked. These are real shell exports — verify scripts inherit them automatically.
+
+- **Native path (`subagents: true`, Claude Code):** there is no shared shell environment between the orchestrator and a subagent. `TALOS_ISSUE_NUMBER` and `TALOS_WORKTREE_PATH` are injected into the stage's **task prompt**; the stage is instructed to `export` them before running any `verify:` command. This is **instruction-based and not airtight** — a stage that ignores the instruction runs verify without the exports. The exports make a degraded run visible (verify scripts can self-check) without claiming to make identity confusion impossible.
+
+Verify scripts can self-check their environment on the adapter path (and on the native path when the stage exports correctly):
+
+```bash
+if [ "${TALOS_ISSUE_NUMBER:-}" != "$EXPECTED_ISSUE" ]; then
+  echo "ERROR: wrong environment (expected $EXPECTED_ISSUE, got '${TALOS_ISSUE_NUMBER}')" >&2
+  exit 1
+fi
+```
+
+`TALOS_ROLE` lets you route by role without a wrapper script. For the judgement-vs-volume split:
 
 ```yaml
 agents:
