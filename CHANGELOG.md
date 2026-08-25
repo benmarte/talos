@@ -13,6 +13,10 @@
   **Accepted trade-off:** `*id_rsa*` also matches `id_rsa.pub` (a harmless public key). `fnmatch` has no negative
   lookahead, so blocking the public key is the cost of catching the private key with a single pattern. Operators
   who legitimately commit public keys should add the specific filename to `merge.forbidden_files_allow`.
+  **Over-blocking note:** `*.keystore` may also match self-signed test keystores committed for CI use — `fnmatch`
+  cannot distinguish a real keystore from a test one. This is expected behaviour; operators whose CI pipeline
+  commits a test keystore should add the specific filename to `merge.forbidden_files_allow`
+  (e.g. `["test.keystore", "debug.keystore"]`).
   **Deferred:** `.netrc` is deliberately excluded — it is a literal pattern (no glob characters), generates no
   canary, and a wildcard allow entry could bypass it silently. This is issue #76's blind spot; `.netrc` will be
   added after #76 is fixed.
