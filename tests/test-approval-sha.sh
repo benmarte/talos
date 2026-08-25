@@ -251,8 +251,8 @@ _mini_stub_dir2="$(mktemp -d "${TMPDIR:-/tmp}/talos-stub-mini2.XXXXXX")"
 cat > "$_mini_stub_dir2/gh" <<'GHEOF'
 #!/usr/bin/env bash
 case "$*" in
-  "pr view "*"--json headRefOid,labels,comments"*)
-    printf '{"headRefOid":"","labels":[{"name":"qa:pass"}],"comments":[]}\n' ;;
+  "pr view "*"--json headRefOid,baseRefName,labels,comments"*)
+    printf '{"headRefOid":"","baseRefName":"main","labels":[{"name":"qa:pass"}],"comments":[]}\n' ;;
   *) ;;
 esac
 exit 0
@@ -384,5 +384,183 @@ assert_not_contains "$out" "command substitution" \
   "abbreviated SHA: no bash command-substitution error in output"
 assert_not_contains "$out" "syntax error" \
   "abbreviated SHA: no bash syntax error in output"
+
+# ── Issue #102: base-sync false-invalidation fix ──────────────────────────────
+# Build a branching git history to simulate a base-branch sync.
+#
+# Timeline:
+#   SHA_A            — common ancestor (only feature.txt; scripts/ absent)
+#   SHA_ORIGIN_MAIN  — origin/main advances: adds scripts/new_helper.sh (non-waivable)
+#   SHA_PR_OWN       — PR branch: adds agents/pr-agent.md (PR's own waivable file)
+#   SHA_AFTER_SYNC   — PR branch after merging SHA_ORIGIN_MAIN (base sync)
+#
+# With the fix:
+#   git diff SHA_PR_OWN..SHA_AFTER_SYNC  = scripts/new_helper.sh  (from sync)
+#   git diff origin/main...SHA_AFTER_SYNC = agents/pr-agent.md    (PR's own file)
+#   Intersection = {} → exit 0 (no false invalidation)
+#
+# Note: mkdir -p is required after git checkout SHA_A because SHA_A predates
+# both the scripts/ and agents/ directories.
+
+# Branch 1: origin/main advances with a non-waivable file.
+git checkout "$SHA_A" -b _sync_main_sim -q 2>/dev/null
+mkdir -p scripts
+printf '#!/bin/bash\n# helper from another merged PR\n' > scripts/new_helper.sh
+git add scripts/new_helper.sh
+git commit -q -m "scripts: helper from another merged PR"
+SHA_ORIGIN_MAIN="$(git rev-parse HEAD)"
+
+# Branch 2: PR only adds agents/pr-agent.md (no scripts/ change).
+git checkout "$SHA_A" -b _sync_pr_sim -q 2>/dev/null
+mkdir -p agents
+printf 'agent content\n' > agents/pr-agent.md
+git add agents/pr-agent.md
+git commit -q -m "agents: add pr agent (PR own change)"
+SHA_PR_OWN="$(git rev-parse HEAD)"
+
+# Set the origin/main tracking ref so the three-dot diff resolves.
+git update-ref refs/remotes/origin/main "$SHA_ORIGIN_MAIN"
+
+# Base sync: merge origin/main advances into PR branch (no conflict — different files).
+git merge "$SHA_ORIGIN_MAIN" --no-edit -q 2>/dev/null
+SHA_AFTER_SYNC="$(git rev-parse HEAD)"
+
+# [test #102-1] Base sync bringing unrelated non-waivable file does NOT invalidate.
+# This is the headline regression from PR #99.
+# RED on original code: git diff SHA_PR_OWN..SHA_AFTER_SYNC = scripts/new_helper.sh
+# (non-waivable) → old code emitted STALE; new code filters it out via pr_own_files.
+_c="$(mk_comment_with_marker "$SHA_PR_OWN" qa)"
+out="$(STUB_PR_HEAD_SHA="$SHA_AFTER_SYNC" \
+       STUB_PR_BASE_REF_NAME="main" \
+       STUB_PR_LABELS_JSON='[{"name":"qa:pass"}]' \
+       STUB_PR_COMMENTS_JSON="$_c" \
+       PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+       bash "$VCS" check-approval-sha 9 2>&1)"; rc=$?
+assert_exit_code 0 "$rc" "#102-1 base-sync unrelated non-waivable: exits 0 (no false invalidation)"
+assert_contains "$out" "all approval labels are current" \
+  "#102-1 base-sync unrelated non-waivable: gate satisfied"
+assert_not_contains "$out" "STALE" \
+  "#102-1 base-sync unrelated non-waivable: no STALE emitted"
+
+# [test #102-2] Genuine post-approval edit to a non-waivable path DOES invalidate.
+# Regression guard (highest priority): PR author edits scripts/fake.sh after approval.
+# origin/main = SHA_A; SHA_C = SHA_A + README.md + scripts/fake.sh.
+# pr_own_files = {README.md, scripts/fake.sh} (all files PR changed vs origin/main).
+# scripts/fake.sh survives the filter (is in pr_own_files) → STALE.
+# Message MUST be byte-identical to main's rendered format (PM rule 3).
+git update-ref refs/remotes/origin/main "$SHA_A"
+
+_c="$(mk_comment_with_marker "$SHA_A" qa)"
+out="$(STUB_PR_HEAD_SHA="$SHA_C" \
+       STUB_PR_BASE_REF_NAME="main" \
+       STUB_PR_LABELS_JSON='[{"name":"qa:pass"}]' \
+       STUB_PR_COMMENTS_JSON="$_c" \
+       PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+       bash "$VCS" check-approval-sha 9 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "#102-2 genuine post-approval edit to scripts/: exits 1 (STALE)"
+assert_contains "$out" "STALE qa:pass (qa)" "#102-2 genuine edit: STALE label named"
+assert_contains "$out" "non-waivable files changed since" "#102-2 genuine edit: stale reason present"
+assert_contains "$out" "scripts/fake.sh" "#102-2 genuine edit: offending file named"
+
+# Byte-identical check: extract and display the rendered stale message.
+_stale_msg="$(printf '%s' "$out" | grep 'STALE qa:pass')"
+printf 'RENDERED STALE MSG: %s\n' "$_stale_msg"
+assert_contains "$_stale_msg" \
+  "pipeline-vcs: check-approval-sha: STALE qa:pass (qa): non-waivable files changed since" \
+  "#102-2 genuine edit: message format byte-identical to main"
+
+# [test #102-3] File touched by BOTH the PR and a base-branch update → STALE (fail-closed).
+# PM decision 2: same-file-touched-by-both is intentionally invalidated.
+# A merge resolution the reviewer never saw may exist; re-review is warranted.
+#
+# Scenario (no merge conflict needed):
+#   origin/main has scripts/shared.sh="v1" (SHA_BOTH_ORIGIN).
+#   PR edits scripts/shared.sh to "v2" (SHA_BOTH_HEAD), approval at SHA_BOTH_ORIGIN.
+#   pr_own_files = {scripts/shared.sh} (v2 differs from origin/main's v1).
+#   changed = {scripts/shared.sh} (approval at v1, head at v2).
+#   Intersection = {scripts/shared.sh} → STALE.
+git checkout "$SHA_A" -b _sync_both_sim -q 2>/dev/null
+mkdir -p scripts
+printf 'v1-from-main\n' > scripts/shared.sh
+git add scripts/shared.sh
+git commit -q -m "scripts: shared.sh v1 (origin/main state)"
+SHA_BOTH_ORIGIN="$(git rev-parse HEAD)"
+git update-ref refs/remotes/origin/main "$SHA_BOTH_ORIGIN"
+
+# PR edits the same file after approval
+printf 'v2-from-pr\n' > scripts/shared.sh
+git add scripts/shared.sh
+git commit -q -m "scripts: shared.sh v2 (PR edit after approval)"
+SHA_BOTH_HEAD="$(git rev-parse HEAD)"
+
+_c="$(mk_comment_with_marker "$SHA_BOTH_ORIGIN" qa)"
+out="$(STUB_PR_HEAD_SHA="$SHA_BOTH_HEAD" \
+       STUB_PR_BASE_REF_NAME="main" \
+       STUB_PR_LABELS_JSON='[{"name":"qa:pass"}]' \
+       STUB_PR_COMMENTS_JSON="$_c" \
+       PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+       bash "$VCS" check-approval-sha 9 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "#102-3 same-file-touched-by-both: exits 1 (STALE — fail-closed)"
+assert_contains "$out" "STALE" "#102-3 same-file-touched-by-both: STALE emitted"
+assert_contains "$out" "scripts/shared.sh" "#102-3 same-file-touched-by-both: offending file named"
+
+# [test #102-4] Waiver path: base sync brings waivable file → exit 0.
+# PR only adds agents/another.md; base sync brought README.md (waivable via *.md).
+# git diff SHA_WAIVER_PR_OWN..SHA_WAIVER_SYNC = {README.md} (from sync)
+# git diff origin/main...SHA_WAIVER_SYNC = {agents/another.md} (PR's own file)
+# Intersection = {} → filter removes README.md → exit 0.
+git checkout "$SHA_A" -b _sync_waiver_main -q 2>/dev/null
+printf 'readme from main\n' >> README.md
+git add README.md
+git commit -q -m "docs: README update from main"
+SHA_WAIVER_MAIN="$(git rev-parse HEAD)"
+
+git checkout "$SHA_A" -b _sync_waiver_pr -q 2>/dev/null
+mkdir -p agents
+printf 'another agent\n' > agents/another.md
+git add agents/another.md
+git commit -q -m "agents: another"
+SHA_WAIVER_PR_OWN="$(git rev-parse HEAD)"
+
+git update-ref refs/remotes/origin/main "$SHA_WAIVER_MAIN"
+git merge "$SHA_WAIVER_MAIN" --no-edit -q 2>/dev/null
+SHA_WAIVER_SYNC="$(git rev-parse HEAD)"
+
+_c="$(mk_comment_with_marker "$SHA_WAIVER_PR_OWN" qa)"
+out="$(STUB_PR_HEAD_SHA="$SHA_WAIVER_SYNC" \
+       STUB_PR_BASE_REF_NAME="main" \
+       STUB_PR_LABELS_JSON='[{"name":"qa:pass"}]' \
+       STUB_PR_COMMENTS_JSON="$_c" \
+       PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+       bash "$VCS" check-approval-sha 9 2>&1)"; rc=$?
+assert_exit_code 0 "$rc" "#102-4 waiver path via base-sync: exits 0"
+assert_contains "$out" "all approval labels are current" "#102-4 waiver path: gate satisfied"
+
+# [test #102-5] EXIT-ZERO PROOF: current marker (SHA == HEAD) exits 0.
+# Sanity guard: the fix must not break the happy path where marker SHA equals head SHA.
+_c="$(mk_comment_with_marker "$SHA_AFTER_SYNC" qa)"
+out="$(STUB_PR_HEAD_SHA="$SHA_AFTER_SYNC" \
+       STUB_PR_BASE_REF_NAME="main" \
+       STUB_PR_LABELS_JSON='[{"name":"qa:pass"}]' \
+       STUB_PR_COMMENTS_JSON="$_c" \
+       PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+       bash "$VCS" check-approval-sha 9 2>&1)"; rc=$?
+assert_exit_code 0 "$rc" "#102-5 exit-zero proof: current marker exits 0"
+assert_contains "$out" "all approval labels are current" "#102-5 exit-zero proof: gate satisfied"
+
+# [test #102-6] Three-dot diff failure → fail-open (filter skipped, full changed set used).
+# A non-existent base_ref_name causes the three-dot diff to fail → pr_own_files=None.
+# Filter is skipped → full changed set evaluated → scripts/fake.sh is non-waivable → STALE.
+# Confirms: the three-dot diff failure path does not silently swallow genuine violations.
+git update-ref refs/remotes/origin/main "$SHA_A"
+_c="$(mk_comment_with_marker "$SHA_A" qa)"
+out="$(STUB_PR_HEAD_SHA="$SHA_C" \
+       STUB_PR_BASE_REF_NAME="nonexistent-branch-xyz" \
+       STUB_PR_LABELS_JSON='[{"name":"qa:pass"}]' \
+       STUB_PR_COMMENTS_JSON="$_c" \
+       PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+       bash "$VCS" check-approval-sha 9 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "#102-6 three-dot diff failure: fail-open uses full changed set -> exits 1 (fail-closed on content)"
+assert_contains "$out" "STALE" "#102-6 three-dot diff failure: STALE emitted (fail-closed preserved)"
 
 finish
