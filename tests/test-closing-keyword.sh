@@ -284,33 +284,34 @@ out="$(STUB_PR_BODY="closes XGH-57" STUB_PR_NUMBER=9 \
   bash "$VCS" check-closing-keyword 9 57 2>&1)"; rc=$?
 assert_exit_code 0 "$rc" "GH-N left-guard: closes XGH-57 does NOT match issue 57 (must exit 0)"
 
-# ── URL form: positive — full github issue URL matches issue 57 ───────────────
-out="$(STUB_PR_BODY="Closes https://github.com/owner/repo/issues/57" STUB_PR_NUMBER=9 \
-  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-57","body":"Closes https://github.com/owner/repo/issues/57"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-57-b","body":"Part of #57"}]' \
+# ── URL form: positive — full github issue URL matches issue 57 (own repo) ────
+# Use stub repo acme/widget — the URL must reference the current repo to match.
+out="$(STUB_PR_BODY="Closes https://github.com/acme/widget/issues/57" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-57","body":"Closes https://github.com/acme/widget/issues/57"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-57-b","body":"Part of #57"}]' \
   bash "$VCS" check-closing-keyword 9 57 2>&1)"; rc=$?
-assert_exit_code 1 "$rc" "URL form: Closes https://github.com/o/r/issues/57 DOES match issue 57 (must exit 1)"
+assert_exit_code 1 "$rc" "URL form: Closes https://github.com/acme/widget/issues/57 DOES match issue 57 (must exit 1)"
 
 # ── URL form: negative — URL for issue 571 does NOT match issue 57 ────────────
-out="$(STUB_PR_BODY="Closes https://github.com/owner/repo/issues/571" STUB_PR_NUMBER=9 \
-  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-571","body":"Closes https://github.com/owner/repo/issues/571"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-57-b","body":"Part of #57"}]' \
+out="$(STUB_PR_BODY="Closes https://github.com/acme/widget/issues/571" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-571","body":"Closes https://github.com/acme/widget/issues/571"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-57-b","body":"Part of #57"}]' \
   bash "$VCS" check-closing-keyword 9 57 2>&1)"; rc=$?
 assert_exit_code 0 "$rc" "URL right-guard: Closes .../issues/571 does NOT match issue 57 (must exit 0)"
 
 # ── URL form: fragment — #issuecomment-999 is not a digit, so (?!\d) passes ──
-out="$(STUB_PR_BODY="Closes https://github.com/owner/repo/issues/57#issuecomment-999" STUB_PR_NUMBER=9 \
-  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-57","body":"Closes https://github.com/owner/repo/issues/57#issuecomment-999"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-57-b","body":"Part of #57"}]' \
+out="$(STUB_PR_BODY="Closes https://github.com/acme/widget/issues/57#issuecomment-999" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-57","body":"Closes https://github.com/acme/widget/issues/57#issuecomment-999"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-57-b","body":"Part of #57"}]' \
   bash "$VCS" check-closing-keyword 9 57 2>&1)"; rc=$?
 assert_exit_code 1 "$rc" "URL fragment: Closes .../issues/57#issuecomment-999 DOES match issue 57 (must exit 1)"
 
 # ── URL form: trailing slash ──────────────────────────────────────────────────
-out="$(STUB_PR_BODY="Closes https://github.com/owner/repo/issues/57/" STUB_PR_NUMBER=9 \
-  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-57","body":"Closes https://github.com/owner/repo/issues/57/"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-57-b","body":"Part of #57"}]' \
+out="$(STUB_PR_BODY="Closes https://github.com/acme/widget/issues/57/" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-57","body":"Closes https://github.com/acme/widget/issues/57/"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-57-b","body":"Part of #57"}]' \
   bash "$VCS" check-closing-keyword 9 57 2>&1)"; rc=$?
 assert_exit_code 1 "$rc" "URL trailing-slash: Closes .../issues/57/ DOES match issue 57 (must exit 1)"
 
 # ── URL form: query string ────────────────────────────────────────────────────
-out="$(STUB_PR_BODY="Closes https://github.com/owner/repo/issues/57?tab=timeline" STUB_PR_NUMBER=9 \
-  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-57","body":"Closes https://github.com/owner/repo/issues/57?tab=timeline"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-57-b","body":"Part of #57"}]' \
+out="$(STUB_PR_BODY="Closes https://github.com/acme/widget/issues/57?tab=timeline" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-57","body":"Closes https://github.com/acme/widget/issues/57?tab=timeline"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-57-b","body":"Part of #57"}]' \
   bash "$VCS" check-closing-keyword 9 57 2>&1)"; rc=$?
 assert_exit_code 1 "$rc" "URL query-string: Closes .../issues/57?tab=timeline DOES match issue 57 (must exit 1)"
 
@@ -331,14 +332,135 @@ out="$(STUB_PR_BODY="Closes #571" STUB_PR_NUMBER=9 \
   bash "$VCS" check-closing-keyword 9 57 2>&1)"; rc=$?
 assert_exit_code 0 "$rc" "regression: Closes #571 still does NOT match issue 57 (must exit 0)"
 
-out="$(STUB_PR_BODY="Fixes owner/repo#57" STUB_PR_NUMBER=9 \
-  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-57","body":"Fixes owner/repo#57"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-57-b","body":"Part of #57"}]' \
+out="$(STUB_PR_BODY="Fixes acme/widget#57" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-57","body":"Fixes acme/widget#57"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-57-b","body":"Part of #57"}]' \
   bash "$VCS" check-closing-keyword 9 57 2>&1)"; rc=$?
-assert_exit_code 1 "$rc" "regression: Fixes owner/repo#57 still DOES match issue 57 (must exit 1)"
+assert_exit_code 1 "$rc" "regression: Fixes acme/widget#57 still DOES match issue 57 (must exit 1)"
 
-out="$(STUB_PR_BODY="Fixes owner/repo#571" STUB_PR_NUMBER=9 \
-  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-571","body":"Fixes owner/repo#571"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-57-b","body":"Part of #57"}]' \
+out="$(STUB_PR_BODY="Fixes acme/widget#571" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-571","body":"Fixes acme/widget#571"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-57-b","body":"Part of #57"}]' \
   bash "$VCS" check-closing-keyword 9 57 2>&1)"; rc=$?
-assert_exit_code 0 "$rc" "regression: Fixes owner/repo#571 still does NOT match issue 57 (must exit 0)"
+assert_exit_code 0 "$rc" "regression: Fixes acme/widget#571 still does NOT match issue 57 (must exit 0)"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ISSUE-88: Repo-scoped closing-keyword matching
+# All tests use issue 76, STUB_REPO=acme/widget (the default stub repo).
+# MATCH rows include an open sibling so a wrong match causes exit 1 (discriminating).
+# NO MATCH rows include a sibling so a wrong match would also exit 1 (not vacuous).
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── A1. Bare #N — implicit current repo; must still match (regression guard) ──
+out="$(STUB_PR_BODY="Fixes #76" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-76-a","body":"Fixes #76"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-76-b","body":"Part of #76"}]' \
+  bash "$VCS" check-closing-keyword 9 76 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "#N bare: Fixes #76 matches own issue with open sibling (must exit 1)"
+
+# ── A2. Own-repo URL — must match ─────────────────────────────────────────────
+out="$(STUB_PR_BODY="Fixes https://github.com/acme/widget/issues/76" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-76-a","body":"Fixes https://github.com/acme/widget/issues/76"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-76-b","body":"Part of #76"}]' \
+  bash "$VCS" check-closing-keyword 9 76 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "URL own-repo: Fixes https://github.com/acme/widget/issues/76 matches (must exit 1)"
+
+# ── A3. Foreign-repo URL — must NOT match (the core bug being fixed) ──────────
+# Open sibling exists so a wrong MATCH would exit 1, making this non-vacuous.
+out="$(STUB_PR_BODY="Fixes https://github.com/other-owner/other-repo/issues/76" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-76-a","body":"Fixes https://github.com/other-owner/other-repo/issues/76"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-76-b","body":"Part of #76"}]' \
+  bash "$VCS" check-closing-keyword 9 76 2>&1)"; rc=$?
+assert_exit_code 0 "$rc" "URL foreign-repo: Fixes https://github.com/other-owner/other-repo/issues/76 does NOT match (must exit 0)"
+
+# ── A4. Own-repo shorthand (owner/repo#N) — must match ────────────────────────
+out="$(STUB_PR_BODY="Fixes acme/widget#76" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-76-a","body":"Fixes acme/widget#76"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-76-b","body":"Part of #76"}]' \
+  bash "$VCS" check-closing-keyword 9 76 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "owner/repo#N own-repo: Fixes acme/widget#76 matches (must exit 1)"
+
+# ── A5. Foreign shorthand (owner/repo#N) — must NOT match ─────────────────────
+# Open sibling exists so a wrong MATCH would exit 1, making this non-vacuous.
+out="$(STUB_PR_BODY="Fixes other-owner/other-repo#76" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-76-a","body":"Fixes other-owner/other-repo#76"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-76-b","body":"Part of #76"}]' \
+  bash "$VCS" check-closing-keyword 9 76 2>&1)"; rc=$?
+assert_exit_code 0 "$rc" "owner/repo#N foreign: Fixes other-owner/other-repo#76 does NOT match (must exit 0)"
+
+# ── A6. Right-guard: #760 does NOT match issue 76 ─────────────────────────────
+# Sibling present so a wrong MATCH would cause exit 1.
+out="$(STUB_PR_BODY="Fixes #760" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-760","body":"Fixes #760"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-76-b","body":"Part of #76"}]' \
+  bash "$VCS" check-closing-keyword 9 76 2>&1)"; rc=$?
+assert_exit_code 0 "$rc" "right-guard issue-88: Fixes #760 does NOT match issue 76 (must exit 0)"
+
+# ── A7. Left-boundary: #7 does NOT match issue 76 ─────────────────────────────
+out="$(STUB_PR_BODY="Fixes #7" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-7","body":"Fixes #7"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-76-b","body":"Part of #76"}]' \
+  bash "$VCS" check-closing-keyword 9 76 2>&1)"; rc=$?
+assert_exit_code 0 "$rc" "left-boundary issue-88: Fixes #7 does NOT match issue 76 (must exit 0)"
+
+# ── B. Case-insensitive own-repo match ────────────────────────────────────────
+# URL with different case for owner/repo — must match (case-insensitive).
+out="$(STUB_PR_BODY="Fixes https://github.com/Acme/Widget/issues/76" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-76-a","body":"Fixes https://github.com/Acme/Widget/issues/76"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-76-b","body":"Part of #76"}]' \
+  bash "$VCS" check-closing-keyword 9 76 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "URL case-insensitive: Fixes .../Acme/Widget/issues/76 matches (must exit 1)"
+
+# Shorthand with different case — must match (case-insensitive).
+out="$(STUB_PR_BODY="Fixes ACME/WIDGET#76" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-76-a","body":"Fixes ACME/WIDGET#76"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-76-b","body":"Part of #76"}]' \
+  bash "$VCS" check-closing-keyword 9 76 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "shorthand case-insensitive: Fixes ACME/WIDGET#76 matches (must exit 1)"
+
+# ── C. EXIT-ZERO PROOF: Fixes #76 with no open siblings exits 0 ───────────────
+# This is the most common real-world case. A crash or false-positive here would
+# block everything. Prove the gate does not crash and exits cleanly when healthy.
+out="$(STUB_PR_BODY="Fixes #76" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-76-a","body":"Fixes #76"}]' \
+  bash "$VCS" check-closing-keyword 9 76 2>&1)"; rc=$?
+assert_exit_code 0 "$rc" "exit-zero proof: Fixes #76 with no open siblings exits 0 (gate passes)"
+
+# ── D. Repo-resolution-failure: REPO empty → fail-open with fixed-literal marker
+# Override both cfg and gh to return nothing so $REPO stays empty.
+cat > "$SANDBOX/norepo_gh" <<'GHSCRIPT'
+#!/usr/bin/env bash
+args="$*"
+case "$args" in
+  "repo view --json nameWithOwner"*)
+    # Return nothing — simulate unresolvable repo
+    exit 1 ;;
+  "repo view --json defaultBranchRef"*)
+    printf 'main\n' ;;
+  "repo view --json url"*)
+    exit 1 ;;
+  "repo view --json owner"*)
+    exit 1 ;;
+  *)
+    ;;
+esac
+exit 0
+GHSCRIPT
+chmod +x "$SANDBOX/norepo_gh"
+mkdir -p "$SANDBOX/norepostubs"
+cp "$SANDBOX/norepo_gh" "$SANDBOX/norepostubs/gh"
+chmod +x "$SANDBOX/norepostubs/gh"
+
+# Also need a cfg stub that returns empty for vcs.repo.
+# pipeline-vcs.sh reads cfg vcs.repo first; if empty it falls back to gh/git.
+# With our norepo_gh, gh repo view also fails. git remote get-url would still
+# work unless we override it. Provide a fake git in the stubs dir that returns
+# nothing for remote get-url, to ensure REPO stays empty.
+cat > "$SANDBOX/norepostubs/git" <<'GITSCRIPT'
+#!/usr/bin/env bash
+args="$*"
+case "$args" in
+  "remote get-url origin")
+    exit 1 ;;
+  *)
+    command git "$@" ;;
+esac
+GITSCRIPT
+chmod +x "$SANDBOX/norepostubs/git"
+
+stdout_out="$(PATH="$SANDBOX/norepostubs:$PATH" \
+  bash "$VCS" check-closing-keyword 9 76 2>/dev/null)"; rc=$?
+assert_exit_code 0 "$rc" "repo-unresolved: exits 0 (fail open)"
+assert_contains "$stdout_out" "talos:closing-keyword-unverified" "repo-unresolved: marker emitted on stdout"
+assert_contains "$stdout_out" "reason=repo-unresolved" "repo-unresolved: fixed-literal reason in marker"
 
 finish
