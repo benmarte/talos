@@ -354,6 +354,85 @@ assert_not_contains "$out" "id_rsa.pub" "#63: id_rsa.pub exempted by allow-list"
 assert_contains "$out" "id_rsa" "#63: id_rsa still blocked despite allow-list"
 rm talos.pipeline.json
 
+# ── #78: Extended forbidden-files defaults (5 new patterns) ──────────────────
+# Each new pattern must block; rejected patterns must allow legitimate files.
+# Exit-zero proof: clean PR exits 0 (not shown as separate test — covered by
+# earlier clean-PR assertions in this file).
+
+# --- *.pkcs12 (PKCS#12 bundle — alternative extension) ---
+out="$(STUB_PR_FILES='bundle.pkcs12' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#78: bundle.pkcs12 blocked by default (*.pkcs12)"
+assert_contains "$out" "bundle.pkcs12" "#78: bundle.pkcs12 listed in output"
+
+# --- *.kdbx (KeePass database) ---
+out="$(STUB_PR_FILES='passwords.kdbx' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#78: passwords.kdbx blocked by default (*.kdbx)"
+assert_contains "$out" "passwords.kdbx" "#78: passwords.kdbx listed in output"
+
+# --- *.ovpn (OpenVPN profile) ---
+out="$(STUB_PR_FILES='client.ovpn' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#78: client.ovpn blocked by default (*.ovpn)"
+assert_contains "$out" "client.ovpn" "#78: client.ovpn listed in output"
+
+# --- .netrc (literal pattern — root and nested) ---
+out="$(STUB_PR_FILES='.netrc' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#78: .netrc blocked by default (.netrc)"
+assert_contains "$out" ".netrc" "#78: .netrc listed in output"
+
+out="$(STUB_PR_FILES='home/.netrc' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#78: home/.netrc blocked by default (.netrc — nested path)"
+assert_contains "$out" "home/.netrc" "#78: home/.netrc listed in output"
+
+# --- _netrc (Windows spelling — literal pattern) ---
+out="$(STUB_PR_FILES='_netrc' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#78: _netrc blocked by default (_netrc)"
+assert_contains "$out" "_netrc" "#78: _netrc listed in output"
+
+out="$(STUB_PR_FILES='home/_netrc' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#78: home/_netrc blocked by default (_netrc — nested path)"
+assert_contains "$out" "home/_netrc" "#78: home/_netrc listed in output"
+
+# --- REJECTED patterns: legitimate files must PASS ---
+
+# *.asc — detached signatures are public and routinely committed
+out="$(STUB_PR_FILES='release.tar.gz.asc' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "0" "$rc" "#78: release.tar.gz.asc NOT blocked (*.asc deliberately excluded)"
+assert_contains "$out" "no forbidden files" "#78: release.tar.gz.asc reported clean"
+
+# *.gpg — encrypted-at-rest workflow (pass/SOPS/git-crypt)
+# Must NOT be named secrets.gpg — secrets.* is an existing deny pattern.
+out="$(STUB_PR_FILES='vault/entry.gpg' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "0" "$rc" "#78: vault/entry.gpg NOT blocked (*.gpg deliberately excluded)"
+assert_contains "$out" "no forbidden files" "#78: vault/entry.gpg reported clean"
+
+# *.der — public X.509 certificates
+out="$(STUB_PR_FILES='fixtures/ca-root.der' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "0" "$rc" "#78: fixtures/ca-root.der NOT blocked (*.der deliberately excluded)"
+assert_contains "$out" "no forbidden files" "#78: fixtures/ca-root.der reported clean"
+
+# --- #76 canary: *netrc wildcard allow entry must be REJECTED ---
+cat > talos.pipeline.json <<'EOF'
+{"merge": {"forbidden_files_allow": ["*netrc"]}}
+EOF
+out="$(STUB_PR_FILES='README.md' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#78/#76: *netrc wildcard allow entry rejected (would defeat .netrc/_netrc)"
+rm talos.pipeline.json
+
+# --- #76 canary: exact allow entry for literal pattern is still accepted ---
+cat > talos.pipeline.json <<'EOF'
+{"merge": {"forbidden_files_allow": [".netrc"]}}
+EOF
+out="$(STUB_PR_FILES='.netrc' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "0" "$rc" "#78/#76: exact allow entry .netrc permits that specific file"
+assert_not_contains "$out" ".netrc" "#78/#76: .netrc not reported as forbidden when exact-allowed"
+assert_contains "$out" "no forbidden files" "#78/#76: exact-allowed .netrc reported clean"
+rm talos.pipeline.json
+
+# --- EXIT-ZERO PROOF: clean PR exits 0 ---
+out="$(STUB_PR_FILES=$'README.md\nsrc/main.py\ndocs/guide.md' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "0" "$rc" "#78: exit-zero proof — clean PR exits 0 from check-pr-files"
+assert_contains "$out" "no forbidden files" "#78: exit-zero proof — clean result reported"
+
 # ── list-prs passes --base and includes baseRefName ──────────────────────────
 # With BASE_BRANCH set via config, --dry-run must show --base and baseRefName.
 cat > talos.pipeline.json <<'EOF'

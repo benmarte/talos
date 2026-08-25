@@ -347,6 +347,112 @@ cat > talos.pipeline.json <<'EOF'
 {"vcs": {"provider": "github-api", "repo": "acme/widget"}}
 EOF
 
+# ── #78: Extended forbidden-files defaults (5 new patterns, github-api provider) ─
+
+# --- *.pkcs12 (PKCS#12 bundle) ---
+: > "$CURL_LOG"
+printf '%s\n' '[{"filename":"bundle.pkcs12","status":"added"}]' > "$CURL_QUEUE"
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#78 github-api: bundle.pkcs12 blocked by default (*.pkcs12)"
+assert_contains "$out" "bundle.pkcs12" "#78 github-api: bundle.pkcs12 listed in output"
+
+# --- *.kdbx (KeePass database) ---
+: > "$CURL_LOG"
+printf '%s\n' '[{"filename":"passwords.kdbx","status":"added"}]' > "$CURL_QUEUE"
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#78 github-api: passwords.kdbx blocked by default (*.kdbx)"
+assert_contains "$out" "passwords.kdbx" "#78 github-api: passwords.kdbx listed in output"
+
+# --- *.ovpn (OpenVPN profile) ---
+: > "$CURL_LOG"
+printf '%s\n' '[{"filename":"client.ovpn","status":"added"}]' > "$CURL_QUEUE"
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#78 github-api: client.ovpn blocked by default (*.ovpn)"
+assert_contains "$out" "client.ovpn" "#78 github-api: client.ovpn listed in output"
+
+# --- .netrc (literal — root) ---
+: > "$CURL_LOG"
+printf '%s\n' '[{"filename":".netrc","status":"added"}]' > "$CURL_QUEUE"
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#78 github-api: .netrc blocked by default (.netrc)"
+assert_contains "$out" ".netrc" "#78 github-api: .netrc listed in output"
+
+# --- .netrc (literal — nested path) ---
+: > "$CURL_LOG"
+printf '%s\n' '[{"filename":"home/.netrc","status":"added"}]' > "$CURL_QUEUE"
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#78 github-api: home/.netrc blocked by default (.netrc — nested)"
+assert_contains "$out" "home/.netrc" "#78 github-api: home/.netrc listed in output"
+
+# --- _netrc (Windows spelling — literal) ---
+: > "$CURL_LOG"
+printf '%s\n' '[{"filename":"_netrc","status":"added"}]' > "$CURL_QUEUE"
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#78 github-api: _netrc blocked by default (_netrc)"
+assert_contains "$out" "_netrc" "#78 github-api: _netrc listed in output"
+
+# --- _netrc (Windows spelling — nested path) ---
+: > "$CURL_LOG"
+printf '%s\n' '[{"filename":"home/_netrc","status":"added"}]' > "$CURL_QUEUE"
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#78 github-api: home/_netrc blocked by default (_netrc — nested)"
+assert_contains "$out" "home/_netrc" "#78 github-api: home/_netrc listed in output"
+
+# --- REJECTED patterns: legitimate files must PASS ---
+
+# *.asc — detached signatures
+: > "$CURL_LOG"
+printf '%s\n' '[{"filename":"release.tar.gz.asc","status":"added"}]' > "$CURL_QUEUE"
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "0" "$rc" "#78 github-api: release.tar.gz.asc NOT blocked (*.asc deliberately excluded)"
+assert_contains "$out" "no forbidden files" "#78 github-api: release.tar.gz.asc reported clean"
+
+# *.gpg — encrypted-at-rest workflow
+: > "$CURL_LOG"
+printf '%s\n' '[{"filename":"vault/entry.gpg","status":"added"}]' > "$CURL_QUEUE"
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "0" "$rc" "#78 github-api: vault/entry.gpg NOT blocked (*.gpg deliberately excluded)"
+assert_contains "$out" "no forbidden files" "#78 github-api: vault/entry.gpg reported clean"
+
+# *.der — public X.509 certificates
+: > "$CURL_LOG"
+printf '%s\n' '[{"filename":"fixtures/ca-root.der","status":"added"}]' > "$CURL_QUEUE"
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "0" "$rc" "#78 github-api: fixtures/ca-root.der NOT blocked (*.der deliberately excluded)"
+assert_contains "$out" "no forbidden files" "#78 github-api: fixtures/ca-root.der reported clean"
+
+# --- #76 canary: *netrc wildcard allow entry must be REJECTED ---
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "github-api", "repo": "acme/widget"}, "merge": {"forbidden_files_allow": ["*netrc"]}}
+EOF
+: > "$CURL_LOG"
+printf '%s\n' '[{"filename":"README.md","status":"modified"}]' > "$CURL_QUEUE"
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#78/#76 github-api: *netrc wildcard allow entry rejected (would defeat .netrc/_netrc)"
+
+# --- #76 canary: exact allow entry for literal pattern is accepted ---
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "github-api", "repo": "acme/widget"}, "merge": {"forbidden_files_allow": [".netrc"]}}
+EOF
+: > "$CURL_LOG"
+printf '%s\n' '[{"filename":".netrc","status":"added"}]' > "$CURL_QUEUE"
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "0" "$rc" "#78/#76 github-api: exact allow entry .netrc permits that specific file"
+assert_not_contains "$out" ".netrc" "#78/#76 github-api: .netrc not reported as forbidden when exact-allowed"
+assert_contains "$out" "no forbidden files" "#78/#76 github-api: exact-allowed .netrc reported clean"
+
+# Restore base config
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "github-api", "repo": "acme/widget"}}
+EOF
+
+# --- EXIT-ZERO PROOF: clean PR exits 0 ---
+: > "$CURL_LOG"
+printf '%s\n' '[{"filename":"README.md","status":"modified"},{"filename":"src/main.py","status":"added"}]' > "$CURL_QUEUE"
+out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "0" "$rc" "#78 github-api: exit-zero proof — clean PR exits 0"
+assert_contains "$out" "no forbidden files" "#78 github-api: exit-zero proof — clean result reported"
+
 # ── approve-pr ────────────────────────────────────────────────────────────────
 : > "$CURL_LOG"
 printf '%s\n' \
