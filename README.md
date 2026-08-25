@@ -483,7 +483,7 @@ The pipeline deliberately preserves three gates that only a human should act on:
 | `create-issue` | `<title> <body-file> [--label label]` | Create a new issue; `--label` may be repeated (used by planner to create sub-issues). Exits non-zero if the POST fails. |
 | `list-issues` | | List open issues / unchecked plan items |
 | `view-issue` | `<id>` | Show issue body and metadata |
-| `comment-issue` | `<id> <body> [--allow-closed]` | Post a comment on an issue. **Exits 1 if the issue is closed** unless `--allow-closed` is passed (required when GitHub auto-closes via `Closes #N` at merge). Prints the comment `html_url` to stdout on success. Exits non-zero if the POST itself fails (see below). On an indeterminate state lookup (network error), posts (exit 0) and emits `talos:comment-state-unverified target=issue#<N> reason=<short>` on stdout. |
+| `comment-issue` | `<id> <body> [--allow-closed]` `[--body-file <file>]` | Post a comment on an issue. Pass `--body-file <file>` to read the body from a file (use this for multi-line verdicts). **Passing a readable absolute path as the positional `<body>` argument exits 1** with a `--body-file` hint — use `--body-file` instead. **Exits 1 if the issue is closed** unless `--allow-closed` is passed (required when GitHub auto-closes via `Closes #N` at merge). Prints the comment `html_url` to stdout on success. Exits non-zero if the POST itself fails (see below). On an indeterminate state lookup (network error), posts (exit 0) and emits `talos:comment-state-unverified target=issue#<N> reason=<short>` on stdout. |
 | `close-issue` | `<id> [reason]` | Close an issue |
 | `label-issue` | `<id> --add label [--remove label]` | Add/remove labels (or tags for Azure) |
 | `create-pr` | `<branch> <title> <body-file>` | Open a PR targeting base_branch. Exits non-zero if the POST fails. |
@@ -492,10 +492,10 @@ The pipeline deliberately preserves three gates that only a human should act on:
 | `diff-pr` | `<pr-number>` | Show PR diff (Azure: via `git diff` between refs) |
 | `checkout-pr` | `<pr-number>` | Check out a PR branch locally |
 | `approve-pr` | `<pr-number> [summary]` | Approve a PR |
-| `label-pr` | `<pr-number> --add label [--remove label]` | Add/remove PR labels |
+| `label-pr` | `<pr-number> --add label [--remove label]` `[--require-marker]` | Add/remove PR labels. When an approval label (`qa:pass`, `review:approved`, `security:approved`, `docs:done`) is added and no approval marker exists at the current PR head, a WARNING is printed to stderr and the command exits 0 (non-fatal, so label-then-stamp call sites continue working). Pass `--require-marker` to make this check fatal and pre-apply: the label is not added if no marker is present at the current head (exits 1). `--require-marker` and the post-apply warning are `github` provider only. See **Approval-marker guard** below. |
 | `pr-checks` | `<pr-number>` | List CI check statuses |
 | `merge-pr` | `<pr-number>` | Merge a PR (uses `merge.method` from config) |
-| `comment-pr` | `<pr-number> <body> [--allow-closed]` | Post a comment on a PR. **Exits 1 if the PR is closed without being merged** unless `--allow-closed` is passed. Merged PRs are always commentable without the flag. Prints the comment `html_url` to stdout on success. Exits non-zero if the POST itself fails (see below). On an indeterminate state lookup, posts (exit 0) and emits `talos:comment-state-unverified target=pr#<N> reason=<short>` on stdout. |
+| `comment-pr` | `<pr-number> <body> [--allow-closed]` `[--body-file <file>]` | Post a comment on a PR. Pass `--body-file <file>` to read the body from a file (use this for multi-line verdicts). **Passing a readable absolute path as the positional `<body>` argument exits 1** with a `--body-file` hint — use `--body-file` instead. **Exits 1 if the PR is closed without being merged** unless `--allow-closed` is passed. Merged PRs are always commentable without the flag. Prints the comment `html_url` to stdout on success. Exits non-zero if the POST itself fails (see below). On an indeterminate state lookup, posts (exit 0) and emits `talos:comment-state-unverified target=pr#<N> reason=<short>` on stdout. |
 | `find-pr` | `<issue-number> [open\|merged\|all]` | Find PRs belonging to an issue (session-recovery adoption) |
 | `check-pr-files` | `<pr-number>` | Exit 1 if the PR touches `merge.forbidden_files` patterns |
 | `check-closing-keyword` | `<pr-number> <issue-n>` | Exit 1 if the PR body carries a closing keyword (`Closes/Fixes/Resolves #N`, all standard verb forms, case-insensitive, including `owner/repo#N` and full GitHub issue URL forms — both scoped to the current repository — and `GH-N` (case-insensitive)) while other PRs referencing issue `N` are still open. Fail-open: exits 0 and emits `talos:closing-keyword-unverified pr=<N> issue=<N> reason=<literal>` on stdout when PR body or sibling list cannot be fetched or repository cannot be resolved. GitHub provider only; no-op under gitlab, azure, and file. |
@@ -546,6 +546,28 @@ Pass `--dry-run` as the first argument to print the underlying CLI command witho
 **`talos:comment-state-unverified` marker.** When the state-check API call fails (transient network error, insufficient token scope), both verbs post the comment anyway (exit 0) and emit `talos:comment-state-unverified target=<issue|pr>#<N> reason=<short>` on stdout after the URL line. Operators who see this marker in logs should verify manually that the target was open at post time; no action is required if the pipeline is otherwise healthy.
 
 **POST failure exits non-zero (behaviour change from previous versions).** `comment-issue`, `comment-pr`, `create-issue`, and `create-pr` now exit non-zero immediately when the underlying HTTP POST fails, on both the `github` (gh CLI) and `github-api` providers. Previously, a failed POST was silently absorbed by the subshell-capture assignment — the script returned exit 0 with no URL on stdout, indistinguishable from success to a caller that did not check `$?`. **Callers must check the exit status** after any of these four verbs: a non-zero exit means the remote operation failed and no comment, issue, or PR was created. No URL is printed on failure.
+
+**Bare-path guard (`comment-pr` / `comment-issue`).** Both verbs reject a positional `<body>` argument that is a readable absolute path (i.e. starts with `/` and `[ -r ]` resolves). The command exits 1 with a hint to use `--body-file` instead. This prevents the silent failure mode where an agent writes a verdict to a file, passes the path as the body argument, and receives exit 0 with a one-line path as the posted comment. A string that starts with `/` but does not resolve to a readable file on the current machine is still posted as literal text (no over-rejection). The guard covers both the `github` and `github-api` providers.
+
+```
+# Wrong — posts the file path as a one-line comment (now exits 1):
+bash scripts/pipeline-vcs.sh comment-pr 9 /tmp/verdict.md
+
+# Correct — posts the file content:
+bash scripts/pipeline-vcs.sh comment-pr 9 --body-file /tmp/verdict.md
+```
+
+**Approval-marker guard (`label-pr`).** When `label-pr --add <approval-label>` successfully applies a recognised approval label (`qa:pass`, `review:approved`, `security:approved`, `docs:done`) and no approval marker exists at the current PR head, the command prints a WARNING to stderr naming the exact `comment-pr` command needed and exits 0 (non-fatal, so existing label-then-stamp call sites continue working). The warning reads:
+
+```
+pipeline-vcs: label-pr: WARNING — added approval label(s) but no approval marker found at current head.
+pipeline-vcs: label-pr: If you have not already posted your verdict reasoning, do so first.
+pipeline-vcs: label-pr: The gate will reject this PR. Post the marker:
+pipeline-vcs:   HEAD_SHA=$(bash scripts/pipeline-vcs.sh pr-head N)
+pipeline-vcs:   bash scripts/pipeline-vcs.sh comment-pr N "<!-- talos:approval sha=$HEAD_SHA role=<role> -->"
+```
+
+Pass `--require-marker` to make the check fatal and pre-apply: the label is not added if no marker exists at the current head; the command exits 1 with the same corrective hint. Both the post-apply warning and `--require-marker` are `github` provider only — the `github-api` provider is silently unprotected by this guard. Operators using `github-api` who want marker enforcement should use `check-approval-sha` directly after labelling.
 
 **Closing-keyword gate.** `check-closing-keyword <pr> <N>` exits 1 when the PR body carries a closing keyword (`Closes/Fixes/Resolves #N`, all standard verb forms, case-insensitive) in any recognised reference form and at least one other PR referencing issue `N` is still open. Merging a PR with a closing keyword while siblings are in flight would auto-close the issue tracker and orphan that in-progress work.
 
