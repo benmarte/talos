@@ -411,7 +411,7 @@ bash scripts/pipeline-notify.sh issue-closed "#42" "issue resolved" 42
 
 #### Conversation stream
 
-After each subagent completes, the orchestrator relays that agent's findings summary to the channel thread using the role name as the event. `pipeline-notify.sh` renders the message from `templates/notifications/<role>.md` when that file exists. This makes the Slack/Discord thread read as a **conversation between agents** — validator speaks first, then developer, QA, reviewer, security, docs, and finally orchestrator announces the merge. This mirrors Daedalus's thread delivery model.
+After each subagent completes, the orchestrator relays that agent's findings summary to the channel thread using the role name as the event. `pipeline-notify.sh` renders the message from `templates/notifications/<role>.md` when that file exists. This makes the Slack/Discord thread read as a **conversation between agents** — validator speaks first, then developer, QA, docs, reviewer, security, and finally orchestrator announces the merge. This mirrors Daedalus's thread delivery model.
 
 **Role events** (one per subagent):
 
@@ -450,7 +450,7 @@ Thread anchors are stored in `~/.talos/threads.json` keyed by `<repo-slug>:<issu
    - **PM** turns the confirmed issue into a spec comment (goal, acceptance criteria, branch name, out-of-scope).
    - **Developer** spawns in an isolated git worktree. It implements, runs your `verify` commands, and opens a PR. The worktree is removed (branch and all) right after the PR merges, via `pipeline-worktree.sh remove`; a startup sweep reclaims any orphaned worktree as a backstop.
    - **QA** checks out the PR branch and verifies each acceptance criterion.
-   - **Reviewer + Security + Docs** run in parallel after QA passes.
+   - **Docs** runs first after QA passes (phase 1); **Reviewer + Security** run in parallel after docs completes (phase 2).
 5. Once all stage labels are on the PR and required CI checks are green, the orchestrator squash-merges, closes the issue, sets the board status to Done, and sends a notification.
 6. If any stage returns a blocking outcome, the issue gets `pipeline:blocked` and a comment explaining what a human must do. The orchestrator moves on to the next issue.
 

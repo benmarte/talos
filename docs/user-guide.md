@@ -201,7 +201,7 @@ being run.
 
 pi is a minimal single-agent coding harness. It has no native subagents, so it
 runs the pipeline **inline, one agent per turn**: the pi session acts as each
-stage role itself (validator → pm → developer → qa → reviewer/security/docs →
+stage role itself (validator → pm → developer → qa → docs → reviewer/security →
 merge), waterfall handoff. No `pipeline-agent.sh`, no subprocesses. Works on
 any provider backing pi — a Claude account (`/login` → Claude Pro/Max, or
 `ANTHROPIC_API_KEY`) or a local model (llama.cpp / Ollama via `/login llama.cpp`).
