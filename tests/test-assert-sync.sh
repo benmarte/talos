@@ -160,25 +160,30 @@ assert_contains "$out" "ahead"      "T5: WARNING mentions ahead count"
 git fetch -q origin
 git reset -q --hard "origin/$BASE"
 
-# Build 'develop' in origin via ORIGIN_CLONE: write the config pointing to
-# 'develop', commit it, and push — so origin/develop carries the right config.
+# Build 'develop2' in origin via ORIGIN_CLONE.  Write the config as JSON so
+# pipeline-config.sh can parse it without PyYAML (macOS CI runners do not have
+# it installed).  Also remove talos.pipeline.yml from the commit so the JSON
+# file wins pipeline-config.sh's lookup order unambiguously.
 git -C "$ORIGIN_CLONE" fetch -q origin 2>/dev/null || true
 git -C "$ORIGIN_CLONE" checkout -q "$BASE" 2>/dev/null || true
 git -C "$ORIGIN_CLONE" checkout -q -b develop2 2>/dev/null \
   || git -C "$ORIGIN_CLONE" checkout -q develop2 2>/dev/null || true
-cat > "$ORIGIN_CLONE/talos.pipeline.yml" <<'EOF'
-base_branch: develop2
-vcs:
-  provider: github
-EOF
-git -C "$ORIGIN_CLONE" add talos.pipeline.yml
-git -C "$ORIGIN_CLONE" commit -q -m "develop2: config with develop2 base"
+# Remove the YAML config and replace with JSON — JSON needs no PyYAML.
+git -C "$ORIGIN_CLONE" rm -q talos.pipeline.yml 2>/dev/null || true
+printf '{"base_branch":"develop2","vcs":{"provider":"github"}}' \
+  > "$ORIGIN_CLONE/talos.pipeline.json"
+git -C "$ORIGIN_CLONE" add talos.pipeline.json
+git -C "$ORIGIN_CLONE" commit -q -m "develop2: config as JSON (no PyYAML dependency)"
 git -C "$ORIGIN_CLONE" push -q origin "HEAD:refs/heads/develop2"
 
 # Fetch develop2 into local and reset to it — local now == origin/develop2.
 git fetch -q origin
 git reset -q --hard "origin/develop2"
-# (talos.pipeline.yml now has base_branch: develop2 from the reset)
+# After reset: talos.pipeline.json has base_branch=develop2, .yml absent.
+# Assert the fixture is genuinely level before calling assert-sync, so any
+# future drift fails loudly here rather than silently changing what is measured.
+_t6_ahead="$(git rev-list --count "origin/develop2..HEAD" 2>/dev/null || echo "?")"
+assert_eq "0" "$_t6_ahead" "T6 fixture: local is level with origin/develop2 (0 commits ahead)"
 
 out="$(bash "$VCS" assert-sync 2>&1)"; rc=$?
 assert_exit_code 0 "$rc"  "T6: non-main base branch (develop2) exits 0 when level"
