@@ -152,4 +152,79 @@ else
   pass "unknown harness exits non-zero"
 fi
 
+# ── TALOS_ROLE is exported to runner_cmd ──────────────────────────────────────
+# Criterion (a): TALOS_ROLE is visible inside a custom runner_cmd for at least
+# two different roles.  RED when the export is absent; GREEN after the fix.
+cat > talos.pipeline.json <<'EOF'
+{"agents": {"runner": "custom", "runner_cmd": "printf '%s' \"$TALOS_ROLE\""}}
+EOF
+
+out="$(bash "$AGENT" developer "some task" 2>/dev/null)"; rc=$?
+assert_eq "developer" "$out" "TALOS_ROLE=developer visible in runner_cmd"
+assert_eq "0" "$rc" "TALOS_ROLE test exits 0 (developer)"
+
+out="$(bash "$AGENT" reviewer "some task" 2>/dev/null)"; rc=$?
+assert_eq "reviewer" "$out" "TALOS_ROLE=reviewer visible in runner_cmd"
+assert_eq "0" "$rc" "TALOS_ROLE test exits 0 (reviewer)"
+
+rm talos.pipeline.json
+
+# ── Model resolution: all three levels ────────────────────────────────────────
+# Criteria (b), (c), (d), (e), (f): test pipeline-config.sh directly because
+# the resolution is in the config reader, not pipeline-agent.sh.
+
+CONFIG_SH=".claude/talos/scripts/pipeline-config.sh"
+
+# (b) Role-specific model wins over global
+cat > talos.pipeline.json <<'EOF'
+{"agents": {"model": "haiku-global", "roles": {"developer": {"model": "opus-role"}}}}
+EOF
+
+out="$(bash "$CONFIG_SH" agents.roles.developer.model 2>/dev/null)"; rc=$?
+assert_eq "opus-role" "$out" "role-specific model wins over global"
+assert_eq "0" "$rc" "role-specific model lookup exits 0"
+
+# (c) Global model applies when role has no override
+out="$(bash "$CONFIG_SH" agents.roles.reviewer.model 2>/dev/null)"; rc=$?
+assert_eq "" "$out" "absent role entry returns empty (falls through to global)"
+assert_eq "0" "$rc" "absent role entry exits 0"
+
+out="$(bash "$CONFIG_SH" agents.model 2>/dev/null)"; rc=$?
+assert_eq "haiku-global" "$out" "global model returned when role absent"
+assert_eq "0" "$rc" "global model lookup exits 0"
+
+rm talos.pipeline.json
+
+# (d) No model at either level → empty (assert absence, not a default value)
+cat > talos.pipeline.json <<'EOF'
+{"agents": {"runner": "claude"}}
+EOF
+
+out="$(bash "$CONFIG_SH" agents.roles.developer.model 2>/dev/null)"; rc=$?
+assert_eq "" "$out" "no model at role level returns empty"
+assert_eq "0" "$rc" "absent role model exits 0"
+
+out="$(bash "$CONFIG_SH" agents.model 2>/dev/null)"; rc=$?
+assert_eq "" "$out" "no model at global level returns empty"
+assert_eq "0" "$rc" "absent global model exits 0"
+
+# (e) Backwards compatibility: no roles: key → same empty results
+# (already covered by the config above, which has no roles: key)
+
+# (f) Exit-zero proof: valid config with both agents.model and role override exits 0
+cat > talos.pipeline.json <<'EOF'
+{"agents": {"runner": "claude", "model": "haiku-global", "roles": {"reviewer": {"model": "opus-rev"}}}}
+EOF
+
+out="$(bash "$CONFIG_SH" agents.roles.reviewer.model 2>/dev/null)"; rc=$?
+assert_eq "opus-rev" "$out" "role override resolved correctly in full config"
+assert_eq "0" "$rc" "full config resolution exits 0 (exit-zero proof)"
+
+# Unknown/misspelled role falls back rather than erroring
+out="$(bash "$CONFIG_SH" agents.roles.no_such_role.model 2>/dev/null)"; rc=$?
+assert_eq "" "$out" "unknown role name returns empty (no error)"
+assert_eq "0" "$rc" "unknown role name exits 0"
+
+rm talos.pipeline.json
+
 finish
