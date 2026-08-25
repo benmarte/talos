@@ -2,7 +2,7 @@
 
 > *The bronze automaton that patrols your backlog.* Formerly "claude-pipeline".
 
-An autonomous issue→PR pipeline driven by a **Claude Code orchestrator session** — no CI runner required, no separate daemon, no Hermes. You open a Claude Code session in your repo, run `/pipeline`, and Claude drives the full backlog: validating issues, writing specs, implementing code (in isolated worktrees), verifying with your own test commands, running parallel QA/review/security/docs passes, and squash-merging when CI is green.
+An autonomous issue→PR pipeline driven by a **Claude Code orchestrator session** — no CI runner required, no separate daemon, no Hermes. You open a Claude Code session in your repo, run `/pipeline`, and Claude drives the full backlog: validating issues, writing specs, implementing code (in isolated worktrees), verifying with your own test commands, running QA, then documentation and parallel review/security passes, and squash-merging when CI is green.
 
 GitHub Issues (or a local markdown checklist in file mode) serve as the state machine. GitHub Projects optionally tracks board status. Everything else runs in your terminal.
 
