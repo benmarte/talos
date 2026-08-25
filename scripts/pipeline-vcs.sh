@@ -1118,12 +1118,35 @@ for label, role in present.items():
         stale.append((label, role, 'no SHA marker in PR comments'))
         continue
 
+    # Reject abbreviated SHAs at parse time.  An abbreviated SHA can expand to a
+    # real but wrong commit (e.g. bed2e4a expands to bed2e4ae... not bed2e4a9...).
+    # Stages must post the full 40-character SHA from git rev-parse HEAD.
+    if not re.fullmatch(r'[0-9a-f]{40}', found_sha):
+        stale.append((label, role,
+            f'marker SHA {found_sha!r} is not a valid 40-character commit SHA — '
+            f'the {role} stage must post the full SHA from git rev-parse HEAD'))
+        continue
+
     if found_sha == head_sha:
         continue  # Approval is current
 
     # SHA mismatch — check whether the delta is fully waivable
     repo_root = os.environ.get('REPO_ROOT', '').strip() or None
     try:
+        # Probe whether the marker SHA actually exists in this repository before
+        # attempting git diff.  git diff exits 128 for a missing SHA, which
+        # produces a confusing error about an invalid revision range.  A missing
+        # SHA is a different (and more serious) condition than a stale approval.
+        probe = subprocess.run(
+            ['git', 'cat-file', '-e', f'{found_sha}^{{commit}}'],
+            capture_output=True, cwd=repo_root, timeout=10
+        )
+        if probe.returncode != 0:
+            stale.append((label, role,
+                f'marker SHA {found_sha} does not exist in this repository — '
+                f'the {role} stage posted an invalid SHA; it must re-run and '
+                f're-post its marker using a SHA read from git, not reconstructed'))
+            continue
         result = subprocess.run(
             ['git', 'diff', '--name-only', f'{found_sha}..{head_sha}'],
             capture_output=True, text=True,
