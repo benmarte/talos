@@ -4,6 +4,8 @@
 
 ### Added
 
+- **`skills/pipeline/SKILL.md` Rule 17: foreground-only execution (#58).** Agents must never append `&`, use `nohup`, or call `disown`; polling with `until ! pgrep …; do sleep N; done` is also forbidden. Stranded background children cause the harness to fire duplicate completion notifications when they exit — observed at 210 stranded shells peak, with one agent generating 5 spurious signals 90 minutes after finishing; Talos cannot suppress the harness-side notification and can only prevent background children from being created.
+
 - **Per-role model selection for native subagents (`agents.model`, `agents.roles.<role>.model`) and `TALOS_ROLE` export for adapter path (#96).** Two changes that together enable mixed-model pipelines without a human routing each stage:
   - **Native path (`subagents: true`, Claude Code):** Two new config keys control which model the orchestrator passes when spawning each subagent. `agents.model` sets a global model for all stages; `agents.roles.<role>.model` overrides it for a specific role. Resolution: role-specific → global → absent (omit `model:` entirely, Agent SDK inherits the session default). Backwards compatible: a config with neither key behaves byte-identically to prior versions.
   - **Adapter path (`subagents: false`, Codex / Gemini / custom):** `TALOS_ROLE` is now exported to every `runner_cmd` invocation, so a `case "$TALOS_ROLE"` statement can route implementation roles to a local model and review roles to a quality model without a wrapper script.
