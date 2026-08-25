@@ -199,6 +199,12 @@ board:
     in_review: "In review"
     done: "Done"
     blocked: "Blocked"
+  # status_map: optional — map pipeline status names to your board's column names.
+  # Use this when your project uses different column names than the defaults above.
+  # An absent key passes through unchanged; omitting status_map entirely is safe.
+  # Example: if your board uses "Needs attention" instead of "Blocked":
+  # status_map:
+  #   Blocked: "Needs attention"
 
 # ── Verify commands ───────────────────────────────────────────────────────────
 verify:
@@ -372,6 +378,9 @@ Next steps:
   1. Add the 'pipeline:ready' label to a GitHub issue (or a '- [ ] task' in plan.md for file mode)
   2. Run /pipeline to process the backlog
   3. For GitHub Projects, make sure the Status field has: Ready, In progress, In review, Done, Blocked
+     (if your board uses different column names, configure board.status_map to remap them — see the
+     example in the config template above; pipeline-status.sh will emit talos:board-unverified on
+     stdout and warn to stderr when any required option is missing, so mis-configuration is visible)
   4. Use p0/p1/p2 labels to control dispatch order; use skip-qa to fast-track low-risk issues
 ```
 

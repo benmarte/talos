@@ -164,7 +164,9 @@ This creates the `pipeline:*`, `qa:pass`, `review:approved`, `security:approved`
 
 ### 4. Optional: GitHub Project board
 
-Create a GitHub Project with a single-select **Status** field containing: Ready, In progress, In review, Done, Blocked. Set `board.enabled: true` and fill in `board.project_number` and `board.owner` in your config. (GitHub only; skipped in file mode.)
+Create a GitHub Project with a single-select **Status** field. Set `board.enabled: true` and fill in `board.project_number` and `board.owner` in your config. (GitHub only; skipped in file mode.)
+
+The pipeline validates and sets four status columns: **In progress**, **In review**, **Done**, and **Blocked**. A fifth column **Ready** is conventional for backlog visibility but is not set by the pipeline. If your board uses different column names, configure `board.status_map` to remap them (see Config reference below). When a required option is missing, the issue is still added to the board in the default column and `talos:board-unverified project=<N>` is emitted on stdout — the pipeline continues running (board failures are warnings, not fatal errors).
 
 ### 5. Optional: notifications
 
@@ -223,6 +225,7 @@ All keys live in `talos.pipeline.yml` at your repo root. Every key is optional a
 | `board.owner` | repo owner | GitHub org/user owning the board |
 | `board.status_field` | `Status` | Single-select field name (GitHub) |
 | `board.statuses.*` | see example | Display names for each status option (GitHub) |
+| `board.status_map` | unset | Optional flat mapping from pipeline status names to the board's actual column names. Example: `{Blocked: "Needs attention"}`. An absent key passes through unchanged; omitting the map entirely is a no-op. Validation and option-ID lookup both run against the mapped name, so a correctly mapped name is treated as present. |
 | `board.azure_states.*` | Scrum defaults | Pipeline status → ADO work-item State (Azure) |
 | `verify` | `[]` | Shell commands every code subagent must pass |
 | `merge.method` | `squash` | `squash`, `merge`, or `rebase` |
@@ -254,6 +257,31 @@ All keys live in `talos.pipeline.yml` at your repo root. Every key is optional a
 | `limits.max_fix_attempts` | `3` | Max **consecutive** failures of the **same blocking stage** before `pipeline:blocked` is set. Resets to 1 when a different stage blocks next. **Behaviour change from v0.13:** this key previously counted every developer dispatch; it now counts consecutive same-stage failures only. Operators with existing configs should audit: a value of `3` previously allowed 3 total dispatches; it now allows 2 re-dispatches for the same stage (the third recording exits non-zero and blocks). |
 | `limits.max_total_dispatches` | `8` | Absolute ceiling on total developer dispatches per issue, across all stage changes. **Never resets** — not even when the blocking stage changes. Prevents a QA→reviewer→QA ping-pong from exploiting per-stage resets to run indefinitely. When the total reaches this value, `record-attempt` exits non-zero regardless of which stage is blocking. |
 | `markers.trusted_authors` | unset | Allowlist of GitHub login strings (YAML list) whose `talos:approval` and `talos:attempt` markers are accepted by `check-approval-sha` and `read-attempt`. Example: `["talos-bot", "gh-actions-bot"]`. When set and non-empty, a marker from any login not in the list is silently skipped — treated as absent by `read-attempt`, or as stale by `check-approval-sha`. **When absent or empty, author checking is skipped entirely (fail-open). The key's absence is NOT equivalent to enforced author security** — an operator should not treat this key as protection they have until it is actually set and non-empty. When author checking is skipped, both readers emit `talos:marker-authors-unverified reader=<verb>` on stdout (see Marker placement and trusted-author allow-list below). |
+
+### Board status options: required columns and `talos:board-unverified`
+
+The pipeline sets four GitHub Projects Status column values during a run: `In progress`, `In review`, `Done`, and `Blocked`. On the first `pipeline-status.sh` call of a run, the script fetches the board's Status field options and verifies all four are present (after `board.status_map` substitution — so a mapped name is what gets checked, not the default pipeline name).
+
+**What happens when a required option is missing:** the issue is still added to the board in the project's default column (`item-add` runs before the option check). A `talos:board-unverified project=<N>` marker is emitted on stdout, a warning naming the missing option(s) is written to stderr, and the script exits 0. Board failures are warnings by design (Rule 11) — a missing column degrades visibility, not progress. The pipeline continues running normally.
+
+| Marker | When emitted | What to do |
+|--------|-------------|-----------|
+| `talos:board-unverified project=N` | A required Status option (`In progress`, `In review`, `Done`, or `Blocked`, after `status_map` substitution) is absent from the board | Add the missing column to the project, or map the pipeline name to an existing column via `board.status_map` (see config table above) |
+
+**`board.status_map` worked example.** If your board uses "Needs attention" instead of "Blocked":
+
+```yaml
+board:
+  enabled: true
+  project_number: 4
+  owner: myorg
+  status_map:
+    Blocked: "Needs attention"
+```
+
+With this config, `pipeline-status.sh 42 "Blocked"` looks up and sets the "Needs attention" column option. The `talos:board-unverified` warning is suppressed as long as "Needs attention" exists on the board. Keys not in `status_map` pass through as-is (e.g. `In progress`, `In review`, and `Done` continue to use their default names).
+
+Note: `Ready` is a conventional fifth column that operators often add for backlog visibility, but the pipeline does not set it via `pipeline-status.sh` and it is not included in the startup validation.
 
 ### Forbidden-files gate: stdout markers
 
@@ -359,6 +387,7 @@ Scripts respect these env vars, which take priority over the config file:
 | `PIPELINE_REPO_URL` | repo URL used to build issue/PR links (default: detected via `gh repo view`) |
 | `PIPELINE_ISSUE_TITLE` / `PIPELINE_PR` / `PIPELINE_PR_TITLE` | issue/PR context for templates (skips the `gh` lookups) |
 | `PIPELINE_NOTIFY_DEBUG` | set to `1` to print payloads without posting (safe for testing) |
+| `PIPELINE_RUN_ID` | when set, scopes the per-run board-validation sentinel in `pipeline-status.sh` to this value so multiple concurrent pipeline runs sharing one `/tmp` directory do not interfere with each other. Without it, the sentinel is keyed on project number alone. |
 | `TALOS_SWEEP_ALL_LANES` | set to `1` to allow `pipeline-worktree.sh sweep` to run across all lanes when multiple `.talos-lane-home` markers exist in the repo. Without this, sweep exits safely when more than one lane home is detected (multi-lane interlock). `remove <N>` is always unaffected by this variable. |
 
 ### Per-issue notification threading

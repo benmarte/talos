@@ -4,6 +4,43 @@
 
 ### Fixed
 
+- **`pipeline-status.sh`: issues always appear on the board even when a required status option is missing (#67).**
+  Three related fixes:
+
+  1. **Item-add before option-ID lookup** — the item is now added to the project board _before_
+     the option-ID lookup can exit. Previously, when a status such as `Blocked` was absent from
+     the board, `pipeline-status.sh` exited 1 before calling `gh project item-add`, so the issue
+     never appeared on the board at all. The new order guarantees the issue is always present (in
+     the project's default column), even when the status column does not exist.
+
+  2. **`board.status_map` config key** — a new optional flat object under `board` maps pipeline
+     status display names to the operator's actual column names.  Example:
+     `board.status_map: {Blocked: "Needs attention"}`.  An absent key passes through unchanged;
+     an absent map produces zero behavioural change.  The four required statuses are validated
+     after `status_map` substitution, so a mapped name is checked against the board, not the
+     default pipeline name.
+
+  3. **`talos:board-unverified` marker** — on the first `pipeline-status.sh` call of a run, the
+     script fetches the board's Status field options and checks that all four required statuses
+     (`In progress`, `In review`, `Done`, `Blocked`, after `status_map` substitution) exist.  If
+     any are missing, `talos:board-unverified project=<N>` is emitted on stdout and a detailed
+     warning (naming the missing options) is written to stderr; the script exits 0 (board
+     failures are warnings by design, Rule 11).  A sentinel file in `${TMPDIR:-/tmp}` keyed on
+     project number (and `PIPELINE_RUN_ID` when set) ensures the validation fires at most once
+     per run and caches the field-list response so `gh project field-list` is called exactly once
+     regardless of how many status updates happen in the same run.
+
+  4. **Secure sentinel cache location** — the sentinel/cache file is now stored in a user-private
+     directory (`${XDG_RUNTIME_DIR:-$HOME/.cache}/talos/`) instead of `${TMPDIR:-/tmp}`, which is
+     world-writable and allowed any local process to pre-create a poisoned file.  The directory is
+     created with mode 0700 (`install -d -m 700`) and the file is written with mode 0600
+     (`umask 177`).  Before trusting a cached file the script verifies: (a) it is a regular file,
+     (b) it is owned by the current user (checked via `python3 os.stat` for BSD/GNU portability),
+     (c) it has no group/world-write bits, and (d) it contains valid JSON with the expected
+     `{fields:[{name,id,options:[]}]}` shape.  Any check failure falls back to a fresh
+     `gh project field-list` call — degrade to correct-but-slower, never to trusting untrusted
+     content.
+
 - **`pipeline-vcs.sh`: `check-approval-sha` and `read-attempt` reject quoted/fenced markers and gain an author allow-list (#66).**
   Two independent fixes applied together:
 
