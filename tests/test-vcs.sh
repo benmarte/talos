@@ -221,6 +221,53 @@ assert_eq "1" "$rc" "canary-fallback: allow='*' rejected under all-literal repla
 assert_contains "$out" "*" "canary-fallback: offending entry named"
 rm talos.pipeline.json
 
+# ── #76: wildcard allow entries defeated literal deny patterns — now rejected ──
+# Mutation-verify: the test assertions below go RED when the literal-skip guard
+# (the 'continue' on non-wildcard patterns) is restored, and GREEN with the fix.
+
+# *.env — wildcard allow entry matching the literal .env deny pattern: REJECTED.
+_assert_allow_rejected '*.env' "#76 wildcard *.env defeats literal .env"
+
+# ?env — glob ? matches leading dot; must also be rejected.
+_assert_allow_rejected '?env' "#76 wildcard ?env defeats literal .env"
+
+# Exact literal .env — deliberate operator override: still ACCEPTED.
+# Use a benign file in STUB_PR_FILES so the gate itself exits 0 (validation passes,
+# and no forbidden file is present in the PR to trigger a block).
+cat > talos.pipeline.json <<'EOF'
+{"merge": {"forbidden_files_allow": [".env"]}}
+EOF
+out="$(STUB_PR_FILES='src/app.js' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "0" "$rc" "#76 exact-literal-override: .env allow entry is accepted (deliberate override)"
+rm talos.pipeline.json
+
+# Rejection message must name the canary it matched (e.g. ".env" or "config/.env").
+cat > talos.pipeline.json <<'EOF'
+{"merge": {"forbidden_files_allow": ["*.env"]}}
+EOF
+out="$(STUB_PR_FILES=$'.env.production' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#76 *.env rejection: exits 1"
+assert_contains "$out" "*.env" "#76 *.env rejection: offending entry named"
+assert_contains "$out" ".env" "#76 *.env rejection: error message names the matched canary"
+rm talos.pipeline.json
+
+# .env.example — must still be ACCEPTED by validation (it is exempt via .env.* wildcard
+# pattern, not the literal .env pattern, so exact-literal-override path is NOT taken).
+# And it must NOT exempt the bare .env file.
+cat > talos.pipeline.json <<'EOF'
+{"merge": {"forbidden_files_allow": [".env.example"]}}
+EOF
+out="$(STUB_PR_FILES=$'.env.example\n.env' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#76 .env.example: validation accepts entry; bare .env still blocked"
+assert_not_contains "$out" ".env.example" "#76 .env.example: .env.example is exempt"
+assert_contains "$out" "FORBIDDEN" "#76 .env.example: .env is still blocked"
+rm talos.pipeline.json
+
+# Real secret (.env) is still blocked with no allow entry.
+out="$(STUB_PR_FILES='.env' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#76 .env blocked: no allow entry -> .env is still blocked"
+assert_contains "$out" ".env" "#76 .env blocked: .env listed in output"
+
 # ── #61: no forbidden files still exits 0 (gate does not over-correct) ────────
 out="$(bash "$VCS" check-pr-files 9)"; rc=$?
 assert_eq "0" "$rc" "exit-zero proof: clean PR exits 0 after fix"

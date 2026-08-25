@@ -432,31 +432,43 @@ def pat_to_literal(pat):
 #   root      — bare filename         catches bare globs like * and [a-z]*
 #   nested    — sub/dir/<name>        catches */* and **/*
 #   prefixed  — config/<name>         catches config/* (path check, not basename)
-# Only generate canaries from wildcard deny patterns.  A literal deny pattern
-# (no glob chars) represents one specific file; an exact allow entry overriding
-# it is an explicit user decision, not a wildcard bypass.  Wildcards in a deny
-# pattern guard many files at once — those need the semantic check.
-canaries = []
+# Build canaries from ALL deny patterns — wildcard and literal alike.  Three
+# forms per pattern (root, sub/dir/, config/) test allow globs along all path
+# dimensions.  Canaries from a LITERAL deny pattern carry a src_literal tag so
+# that an allow entry which is an EXACT string match for that pattern is still
+# permitted as a deliberate operator override (e.g. allowing '.env' when '.env'
+# is a deny pattern).  A wildcard allow entry (e.g. '*.env' or '?env') that
+# happens to match a literal-pattern canary is REJECTED — it is not an explicit
+# operator decision.
+canaries = []  # list of (canary_path, src_literal_or_None)
 for pat in patterns:
     if not re.search(r'[*?\[\]]', pat):
-        continue  # literal deny pattern — exact allow-entry override is legitimate
-    lit = pat_to_literal(pat)
-    if not lit:
-        continue
-    canaries.append(lit)
-    canaries.append('sub/dir/' + lit)
-    canaries.append('config/' + lit)
+        # Literal deny pattern: canary IS the pattern (no glob chars to expand).
+        # Tag with src_literal so exact-match overrides remain permitted.
+        canaries.append((pat, pat))
+        canaries.append(('sub/dir/' + pat, pat))
+        canaries.append(('config/' + pat, pat))
+    else:
+        lit = pat_to_literal(pat)
+        if not lit:
+            continue
+        canaries.append((lit, None))
+        canaries.append(('sub/dir/' + lit, None))
+        canaries.append(('config/' + lit, None))
 
 # #64 fix: when canary generation yields an empty set (all-literal deny list),
 # fall back to built-in canaries so the validator is never vacuous.
 # An empty canary set must NEVER mean every allow entry is permitted.
 if not canaries:
-    canaries = ['x.env', 'sub/dir/x.env', 'config/x.env',
-                'x.pem', 'sub/dir/x.pem', 'config/x.pem']
+    canaries = [('x.env', None), ('sub/dir/x.env', None), ('config/x.env', None),
+                ('x.pem', None), ('sub/dir/x.pem', None), ('config/x.pem', None)]
 
 errors = []
 for entry in allow:
-    for canary in canaries:
+    for canary, src_literal in canaries:
+        # Exact literal override: the operator deliberately listed the guarded filename.
+        if src_literal is not None and entry == src_literal:
+            continue
         base = os.path.basename(canary)
         if fnmatch.fnmatch(base, entry) or fnmatch.fnmatch(canary, entry):
             errors.append(
@@ -1741,25 +1753,33 @@ def pat_to_literal(pat):
     s = re.sub(r'\\[[^\\]]*\\]', 'x', pat)
     return s.replace('*', 'x').replace('?', 'x')
 
-canaries = []
+canaries = []  # list of (canary_path, src_literal_or_None)
 for pat in patterns:
     if not re.search(r'[*?\[\]]', pat):
-        continue
-    lit = pat_to_literal(pat)
-    if not lit:
-        continue
-    canaries.append(lit)
-    canaries.append('sub/dir/' + lit)
-    canaries.append('config/' + lit)
+        # Literal deny pattern: canary IS the pattern (no glob chars to expand).
+        # Tag with src_literal so exact-match overrides remain permitted.
+        canaries.append((pat, pat))
+        canaries.append(('sub/dir/' + pat, pat))
+        canaries.append(('config/' + pat, pat))
+    else:
+        lit = pat_to_literal(pat)
+        if not lit:
+            continue
+        canaries.append((lit, None))
+        canaries.append(('sub/dir/' + lit, None))
+        canaries.append(('config/' + lit, None))
 
 # #64 fix: fall back to built-in canaries when deny list is all-literal.
 if not canaries:
-    canaries = ['x.env', 'sub/dir/x.env', 'config/x.env',
-                'x.pem', 'sub/dir/x.pem', 'config/x.pem']
+    canaries = [('x.env', None), ('sub/dir/x.env', None), ('config/x.env', None),
+                ('x.pem', None), ('sub/dir/x.pem', None), ('config/x.pem', None)]
 
 errors = []
 for entry in allow:
-    for canary in canaries:
+    for canary, src_literal in canaries:
+        # Exact literal override: the operator deliberately listed the guarded filename.
+        if src_literal is not None and entry == src_literal:
+            continue
         base = os.path.basename(canary)
         if fnmatch.fnmatch(base, entry) or fnmatch.fnmatch(canary, entry):
             errors.append(
