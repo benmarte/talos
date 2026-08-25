@@ -182,13 +182,7 @@ assert_contains "$out8" "/comments/" \
   "gh/comment-issue: --allow-closed on closed issue returns URL [CRITERION 8]"
 
 # ═════════════════════════════════════════════════════════════════════════════
-# CRITERION 9: github-api provider success path is unaffected by the fix
-# (the || exit 1 changes are gh-CLI-only; github-api paths must not regress)
-# Note: _ga_req calls exit 1 inside command substitution which only exits the
-# subshell — the outer verb still exits 0 on an unhandled POST failure in the
-# github-api path (separate issue, not in scope). This test guards the SUCCESS
-# path so that the github-api provider's existing behaviour is documented and
-# a future change to this path cannot silently diverge.
+# CRITERION 9: github-api provider — failed POST exits non-zero (real fix)
 # ═════════════════════════════════════════════════════════════════════════════
 
 cat > "$SANDBOX/talos.pipeline.json" <<'EOF'
@@ -196,21 +190,67 @@ cat > "$SANDBOX/talos.pipeline.json" <<'EOF'
 EOF
 export GITHUB_TOKEN="test-token-69"
 
-# Prime CURL_QUEUE: state check (open) + successful POST response.
+# 9a: comment-issue — failed POST (403) exits non-zero
+: > "$CURL_LOG"; : > "$CURL_QUEUE"
+printf '%s\n' \
+  '{"state":"open","title":"issue 5"}' \
+  '403' \
+  > "$CURL_QUEUE"
+
+out9a="$(bash "$VCS" comment-issue 5 "body" 2>/dev/null)"; rc9a=$?
+
+assert_eq "1" "$rc9a" \
+  "github-api/comment-issue: failed POST (403) exits non-zero [CRITERION 9a]"
+assert_eq "" "$out9a" \
+  "github-api/comment-issue: failed POST produces no stdout [CRITERION 9a]"
+assert_not_contains "$out9a" "talos:comment-state-unverified" \
+  "github-api/comment-issue: failed POST does not emit marker [CRITERION 9a]"
+
+# 9b: comment-pr — failed POST (503) exits non-zero
+: > "$CURL_LOG"; : > "$CURL_QUEUE"
+printf '%s\n' \
+  '{"state":"open","merged_at":null,"number":9}' \
+  '503' \
+  > "$CURL_QUEUE"
+
+out9b="$(bash "$VCS" comment-pr 9 "body" 2>/dev/null)"; rc9b=$?
+
+assert_eq "1" "$rc9b" \
+  "github-api/comment-pr: failed POST (503) exits non-zero [CRITERION 9b]"
+assert_eq "" "$out9b" \
+  "github-api/comment-pr: failed POST produces no stdout [CRITERION 9b]"
+
+# 9c: comment-issue — successful POST still exits 0 and emits URL (PR #68 guard)
 : > "$CURL_LOG"; : > "$CURL_QUEUE"
 printf '%s\n' \
   '{"state":"open","title":"issue 5"}' \
   '{"id":999,"html_url":"https://github.com/acme/widget/issues/5#issuecomment-999"}' \
   > "$CURL_QUEUE"
 
-out9="$(bash "$VCS" comment-issue 5 "body" 2>/dev/null)"; rc9=$?
+out9c="$(bash "$VCS" comment-issue 5 "body" 2>/dev/null)"; rc9c=$?
 
-assert_eq "0" "$rc9" \
-  "github-api/comment-issue: successful POST exits 0 [CRITERION 9]"
-assert_contains "$out9" "issuecomment-999" \
-  "github-api/comment-issue: successful POST emits html_url [CRITERION 9]"
-assert_not_contains "$out9" "talos:comment-state-unverified" \
-  "github-api/comment-issue: successful POST does not emit state-unverified marker [CRITERION 9]"
+assert_eq "0" "$rc9c" \
+  "github-api/comment-issue: successful POST exits 0 [CRITERION 9c]"
+assert_contains "$out9c" "issuecomment-999" \
+  "github-api/comment-issue: successful POST emits html_url [CRITERION 9c]"
+assert_not_contains "$out9c" "talos:comment-state-unverified" \
+  "github-api/comment-issue: successful POST does not emit marker [CRITERION 9c]"
+
+# 9d: state-check-failed + POST succeeds → marker still emitted, exits 0
+: > "$CURL_LOG"; : > "$CURL_QUEUE"
+printf '%s\n' \
+  '500' \
+  '{"id":888,"html_url":"https://github.com/acme/widget/issues/5#issuecomment-888"}' \
+  > "$CURL_QUEUE"
+
+out9d="$(bash "$VCS" comment-issue 5 "body" 2>/dev/null)"; rc9d=$?
+
+assert_eq "0" "$rc9d" \
+  "github-api/comment-issue: state-check-fail + POST success exits 0 [CRITERION 9d]"
+assert_contains "$out9d" "talos:comment-state-unverified" \
+  "github-api/comment-issue: state-check-fail + POST success emits marker [CRITERION 9d]"
+assert_contains "$out9d" "issuecomment-888" \
+  "github-api/comment-issue: state-check-fail + POST success emits URL [CRITERION 9d]"
 
 rm -f "$SANDBOX/talos.pipeline.json"
 unset GITHUB_TOKEN

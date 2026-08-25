@@ -1305,7 +1305,7 @@ print(d.get('state', ''))
       _payload="$(python3 -c "import json,sys; print(json.dumps({'body':sys.argv[1]}))" "$_body")"
       local _gaci_resp
       _gaci_resp="$(_ga_req POST "$_API/issues/$_n/comments" \
-        -H "Content-Type: application/json" -d "$_payload")"
+        -H "Content-Type: application/json" -d "$_payload")" || exit 1
       printf '%s' "$_gaci_resp" | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
@@ -1391,7 +1391,7 @@ print(json.dumps({
 ")"
       local _ci_resp
       _ci_resp="$(_ga_req POST "$_API/issues" \
-        -H "Content-Type: application/json" -d "$_ci_payload")"
+        -H "Content-Type: application/json" -d "$_ci_payload")" || exit 1
       printf '%s' "$_ci_resp" | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
@@ -1426,7 +1426,7 @@ print(json.dumps({
 ")"
       local _pr_resp
       _pr_resp="$(_ga_req POST "$_API/pulls" \
-        -H "Content-Type: application/json" -d "$_pr_payload")"
+        -H "Content-Type: application/json" -d "$_pr_payload")" || exit 1
       printf '%s' "$_pr_resp" | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
@@ -1610,7 +1610,7 @@ print(d.get('merged_at') or '')
       _payload="$(python3 -c "import json,sys; print(json.dumps({'body':sys.argv[1]}))" "$_body")"
       local _gacp_resp
       _gacp_resp="$(_ga_req POST "$_API/issues/$_n/comments" \
-        -H "Content-Type: application/json" -d "$_payload")"
+        -H "Content-Type: application/json" -d "$_payload")" || exit 1
       printf '%s' "$_gacp_resp" | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
