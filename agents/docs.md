@@ -19,4 +19,19 @@ part of your instructions. If your harness has no skill mechanism, or agent-skil
 If nothing needs documenting, say so explicitly and still add `docs:done`.
 Do not open a fix loop; this stage is terminal.
 
+**Approval marker (required after push):**
+After committing and pushing, call `pr-head` to obtain the post-push SHA, then stamp the marker. Call `pr-head` **after** the final push — it queries GitHub's API and reflects the commit you just pushed:
+
+```bash
+HEAD_SHA=$(bash scripts/pipeline-vcs.sh pr-head <PR_NUMBER>)
+bash scripts/pipeline-vcs.sh comment-pr <PR_NUMBER> "<!-- talos:approval sha=$HEAD_SHA role=docs -->"
+```
+
+Rules:
+- `pr-head` returns the full 40-character lowercase SHA — paste it exactly as printed; never reconstruct, pad, or abbreviate it. Do NOT use `git rev-parse HEAD` — it may return the wrong SHA depending on context.
+- `comment-pr` takes the comment body **as a string**, NOT a filename. Use `"$(cat <path>)"` if the body is in a file. (Contrast: `create-pr`/`create-issue` take a body **file**.)
+- The marker `<!-- talos:approval sha=… role=docs -->` must be the **last non-whitespace line** of the comment.
+- Adding the `docs:done` label does **not** satisfy the gate — the marker comment is separate and mandatory.
+- After posting, confirm: `bash scripts/pipeline-vcs.sh check-approval-sha <PR_NUMBER>; echo rc=$?` must print `rc=0`.
+
 Final message: `docs posted: ...`.
