@@ -2783,6 +2783,22 @@ case "$VERB" in
         exit 1
         ;;
     esac
+    # Bare readable absolute path guard (#94): an agent that writes a verdict to
+    # a file and passes the path positionally gets a one-line path as the comment,
+    # exits 0, and never notices. Detect and reject so --body-file is used instead.
+    # Tie the check to [ -r ] so a body that merely looks path-like but does not
+    # exist on this machine is posted as literal text (no over-rejection).
+    case "${ARGS[1]-}" in
+      /*)
+        if [ -r "${ARGS[1]}" ]; then
+          echo "pipeline-vcs: $VERB: body looks like a file path ('${ARGS[1]}'), not comment text." >&2
+          echo "pipeline-vcs:   Use --body-file to post a file:" >&2
+          printf 'pipeline-vcs:     bash scripts/pipeline-vcs.sh %s %s --body-file %s\n' \
+            "$VERB" "${ARGS[0]}" "${ARGS[1]}" >&2
+          exit 1
+        fi
+        ;;
+    esac
     ;;
 esac
 
@@ -2802,7 +2818,10 @@ if [ "$VERB" = "assert-sync" ]; then
   # silently discarding it on conflict.
   _as_dirty="$(git status --porcelain 2>/dev/null)"
   if [ -n "$_as_dirty" ]; then
-    printf 'pipeline-vcs: assert-sync: ABORT -- working tree is dirty; commit or stash before running the pipeline.\nDirty files:\n%s\n' "$_as_dirty" >&2
+    printf 'pipeline-vcs: assert-sync: ABORT -- working tree is dirty; commit or stash before running the pipeline.
+Dirty files:
+%s
+' "$_as_dirty" >&2
     exit 1
   fi
 
@@ -2844,13 +2863,19 @@ if [ "$VERB" = "assert-sync" ]; then
 
   if [ "$_as_behind" -gt 0 ] && [ "$_as_ahead" -gt 0 ]; then
     # Diverged — both ahead and behind. Manual resolution required.
-    printf 'pipeline-vcs: assert-sync: ABORT -- working tree has diverged from origin/%s (ahead %s, behind %s commits). Manual resolution required -- do NOT force-push; this may represent legitimate concurrent work.\n  local:          %s\n  origin/%s: %s\n' \
+    printf 'pipeline-vcs: assert-sync: ABORT -- working tree has diverged from origin/%s (ahead %s, behind %s commits). Manual resolution required -- do NOT force-push; this may represent legitimate concurrent work.
+  local:          %s
+  origin/%s: %s
+' \
       "$_as_base" "$_as_ahead" "$_as_behind" \
       "$_as_local" "$_as_base" "$_as_origin" >&2
     exit 1
   elif [ "$_as_behind" -gt 0 ]; then
     # Behind — stale checkout. Abort so non-isolated stages read current source.
-    printf 'pipeline-vcs: assert-sync: ABORT -- working tree is behind origin/%s by %s commit(s). Run: git pull --ff-only\n  local:          %s\n  origin/%s: %s\n' \
+    printf 'pipeline-vcs: assert-sync: ABORT -- working tree is behind origin/%s by %s commit(s). Run: git pull --ff-only
+  local:          %s
+  origin/%s: %s
+' \
       "$_as_base" "$_as_behind" \
       "$_as_local" "$_as_base" "$_as_origin" >&2
     exit 1
@@ -2859,12 +2884,110 @@ if [ "$VERB" = "assert-sync" ]; then
     # The working tree is not stale; it is ahead of the remote.
     # Non-isolated stages reading this tree see a consistent, complete source
     # (even if not yet merged). Exits 0: ahead is not the failure mode this
-    # check guards against.
+    # check guards against. A warning is printed so a human with in-flight
+    # local commits is aware — in normal automated use the orchestrator never
+    # commits to the base branch, making this state unreachable automatically.
+    printf 'pipeline-vcs: assert-sync: WARNING -- working tree is ahead of origin/%s by %s commit(s); non-isolated stages will read unpushed commits.\n'       "$_as_base" "$_as_ahead" >&2
     exit 0
   fi
 fi
 
+# ── label-pr: approval-marker guard (#94) ────────────────────────────────────
+# Recognised approval labels and their role names (same set as check-approval-sha).
+# Two modes:
+#   Default (no flag): after the label is applied, call check-approval-sha; if it
+#     reports no current-head marker, print a loud WARNING to stderr and exit 0.
+#     Non-fatal: profiles document label-then-stamp order; a fatal here deadlocks.
+#   --require-marker: pre-apply check — fetch PR data directly, verify a marker
+#     comment exists for the role being labelled; exit 1 if absent (label not applied).
+#
+# --require-marker is stripped from ARGS so provider functions never see it.
+# _ADDING_APPROVAL_LABELS and _REQUIRE_MARKER are consumed by the post-dispatch block.
+_REQUIRE_MARKER=false
+_ADDING_APPROVAL_LABELS=""
+_LABEL_PR_N=""
+if [ "$VERB" = "label-pr" ] && [ "${#ARGS[@]}" -ge 1 ]; then
+  _LABEL_PR_N="${ARGS[0]}"
+  _lp_filtered=("${ARGS[0]}")
+  _lp_i=1
+  while [ "$_lp_i" -lt "${#ARGS[@]}" ]; do
+    _lp_arg="${ARGS[$_lp_i]}"
+    case "$_lp_arg" in
+      --require-marker)
+        _REQUIRE_MARKER=true ;;
+      --add)
+        _lp_ni=$((_lp_i + 1))
+        _lp_lbl="${ARGS[$_lp_ni]:-}"
+        _lp_filtered+=("$_lp_arg" "$_lp_lbl")
+        case "$_lp_lbl" in
+          qa:pass|review:approved|security:approved|docs:done)
+            _ADDING_APPROVAL_LABELS="$_ADDING_APPROVAL_LABELS $_lp_lbl" ;;
+        esac
+        _lp_i=$((_lp_ni + 1))
+        continue ;;
+      *)
+        _lp_filtered+=("$_lp_arg") ;;
+    esac
+    _lp_i=$((_lp_i + 1))
+  done
+  ARGS=("${_lp_filtered[@]}")
+  _ADDING_APPROVAL_LABELS="${_ADDING_APPROVAL_LABELS# }"
+
+  # --require-marker: pre-apply check.  Fetch PR data and verify a marker comment
+  # exists for each approval label being added.  Exit 1 (fatal) if absent.
+  # Only implemented for the github provider (check-approval-sha is github-only).
+  if [ "$_REQUIRE_MARKER" = "true" ] && [ -n "$_ADDING_APPROVAL_LABELS" ] \
+      && [ "$DRY_RUN" != "true" ] && [ "$PROVIDER" = "github" ]; then
+    _lp_pr_data=""
+    _lp_pr_data="$(gh pr view "$_LABEL_PR_N" --json headRefOid,baseRefName,labels,comments \
+      ${REPO:+--repo "$REPO"} 2>/dev/null)" || true
+    _lp_head_sha=""
+    _lp_comments=""
+    if [ -n "$_lp_pr_data" ]; then
+      _lp_head_sha="$(printf '%s' "$_lp_pr_data" \
+        | python3 -c "import json,sys; print(json.load(sys.stdin).get('headRefOid',''))" \
+        2>/dev/null)" || true
+      _lp_comments="$(printf '%s' "$_lp_pr_data" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for c in data.get('comments', []):
+    print(c.get('body', ''))
+" 2>/dev/null)" || true
+    fi
+    _lp_marker_found=false
+    if [ -n "$_lp_head_sha" ]; then
+      for _lp_lbl in $_ADDING_APPROVAL_LABELS; do
+        case "$_lp_lbl" in
+          qa:pass)           _lp_role=qa ;;
+          review:approved)   _lp_role=reviewer ;;
+          security:approved) _lp_role=security ;;
+          docs:done)         _lp_role=docs ;;
+          *)                 continue ;;
+        esac
+        if printf '%s
+' "$_lp_comments" \
+            | grep -qF "talos:approval sha=$_lp_head_sha role=$_lp_role"; then
+          _lp_marker_found=true
+          break
+        fi
+      done
+    fi
+    if [ "$_lp_marker_found" = "false" ]; then
+      echo "pipeline-vcs: label-pr: ERROR — --require-marker: no approval marker found at current head." >&2
+      echo "pipeline-vcs: label-pr: The gate will reject this PR. Post the marker first, then label:" >&2
+      printf 'pipeline-vcs:   HEAD_SHA=$(bash scripts/pipeline-vcs.sh pr-head %s)
+' \
+        "$_LABEL_PR_N" >&2
+      printf 'pipeline-vcs:   bash scripts/pipeline-vcs.sh comment-pr %s "<!-- talos:approval sha=$HEAD_SHA role=<role> -->"
+' \
+        "$_LABEL_PR_N" >&2
+      exit 1
+    fi
+  fi
+fi
+
 # ── Main dispatch ─────────────────────────────────────────────────────────────
+_DISPATCH_RC=0
 case "$PROVIDER" in
   github)     _github     "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
   github-api) _github_api "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
@@ -2876,3 +2999,34 @@ case "$PROVIDER" in
     exit 1
     ;;
 esac
+_DISPATCH_RC=$?
+
+# ── Post-dispatch: label-pr approval-marker warning (#94) ────────────────────
+# After label-pr successfully adds a recognised approval label, call
+# check-approval-sha.  If it exits non-zero (no current-head marker), print a
+# loud WARNING so the stage knows it must still post a marker before the gate
+# will accept the PR.  Exit remains 0 — profiles label before stamping.
+# Only runs for the github provider (check-approval-sha uses `gh`).
+if [ "$VERB" = "label-pr" ] && [ -n "${_ADDING_APPROVAL_LABELS:-}" ] \
+    && [ "${_REQUIRE_MARKER:-false}" = "false" ] && [ "$DRY_RUN" != "true" ] \
+    && [ "$PROVIDER" = "github" ] && [ "$_DISPATCH_RC" -eq 0 ]; then
+  if ! bash "$0" check-approval-sha "$_LABEL_PR_N" >/dev/null 2>&1; then
+    echo "pipeline-vcs: label-pr: WARNING — added approval label(s) but no approval marker found at current head." >&2
+    echo "pipeline-vcs: label-pr: If you have not already posted your verdict reasoning, do so first." >&2
+    echo "pipeline-vcs: label-pr: The gate will reject this PR. Post the marker:" >&2
+    for _lp_wl in $_ADDING_APPROVAL_LABELS; do
+      case "$_lp_wl" in
+        qa:pass)           _lp_wr=qa ;;
+        review:approved)   _lp_wr=reviewer ;;
+        security:approved) _lp_wr=security ;;
+        docs:done)         _lp_wr=docs ;;
+        *) continue ;;
+      esac
+      printf 'pipeline-vcs:   HEAD_SHA=$(bash scripts/pipeline-vcs.sh pr-head %s)\n' \
+        "$_LABEL_PR_N" >&2
+      printf 'pipeline-vcs:   bash scripts/pipeline-vcs.sh comment-pr %s "<!-- talos:approval sha=$HEAD_SHA role=%s -->"\n' \
+        "$_LABEL_PR_N" "$_lp_wr" >&2
+    done
+  fi
+fi
+exit "$_DISPATCH_RC"

@@ -136,11 +136,13 @@ assert_contains "$out" "ahead"     "T4: output states ahead count"
 assert_contains "$out" "behind"    "T4: output states behind count"
 assert_contains "$out" "force"     "T4: output warns against force-push"
 
-# ── Test 5: Ahead of origin only — exits 0 ───────────────────────────────────
+# ── Test 5: Ahead of origin only — exits 0 with a warning ───────────────────
 # Ruling: being ahead-only is not the failure mode this check guards against.
 # The concern is stale source (behind origin). A working tree that is ahead of
-# origin has MORE commits than origin — not stale. Non-isolated stages reading
-# it see a consistent, complete source (even if not yet merged). Exits 0.
+# origin has MORE commits — not stale. Exits 0 so local testing is not blocked.
+# A WARNING is printed to stderr: in normal automated use the orchestrator never
+# commits to the base branch, so ahead-only is unreachable; when it does occur
+# a human has in-flight local commits, which is when the warning is useful signal.
 #
 # Setup: fast-forward local to origin/<BASE>, then add one local-only commit.
 git fetch -q origin
@@ -148,38 +150,38 @@ git reset -q --hard "origin/$BASE"
 git commit -q --allow-empty -m "local-only commit (ahead-only state)"
 
 out="$(bash "$VCS" assert-sync 2>&1)"; rc=$?
-assert_exit_code 0 "$rc" "T5: ahead-only exits 0"
-assert_eq "" "$out"       "T5: ahead-only produces no output"
+assert_exit_code 0 "$rc"            "T5: ahead-only exits 0"
+assert_contains "$out" "WARNING"    "T5: ahead-only prints a WARNING"
+assert_contains "$out" "ahead"      "T5: WARNING mentions ahead count"
 
 # ── Test 6: Non-main base branch — resolves correctly ────────────────────────
-# Create a 'develop' branch in origin and confirm assert-sync resolves it via
-# the config key (not hardcoded to 'main').
+# Create a 'develop' branch in origin WITH the config file already present,
+# then reset local to exactly that commit so local == origin/develop.
 git fetch -q origin
 git reset -q --hard "origin/$BASE"
 
-# Create 'develop' in origin.
-git -C "$ORIGIN_CLONE" checkout -q -b develop
-git -C "$ORIGIN_CLONE" commit -q --allow-empty -m "develop base"
-git -C "$ORIGIN_CLONE" push -q origin develop
-
-git fetch -q origin
-
-# Point config at 'develop'.
-cat > talos.pipeline.yml <<EOF
-base_branch: develop
+# Build 'develop' in origin via ORIGIN_CLONE: write the config pointing to
+# 'develop', commit it, and push — so origin/develop carries the right config.
+git -C "$ORIGIN_CLONE" fetch -q origin 2>/dev/null || true
+git -C "$ORIGIN_CLONE" checkout -q "$BASE" 2>/dev/null || true
+git -C "$ORIGIN_CLONE" checkout -q -b develop2 2>/dev/null \
+  || git -C "$ORIGIN_CLONE" checkout -q develop2 2>/dev/null || true
+cat > "$ORIGIN_CLONE/talos.pipeline.yml" <<'EOF'
+base_branch: develop2
 vcs:
   provider: github
 EOF
-git add talos.pipeline.yml
-git commit -q -m "switch config to develop base"
-# Push this commit to develop so local is level with origin/develop.
-git push -q origin "HEAD:develop" 2>/dev/null || git -C "$ORIGIN_CLONE" push -q origin develop
-# Reset local HEAD to match origin/develop exactly.
+git -C "$ORIGIN_CLONE" add talos.pipeline.yml
+git -C "$ORIGIN_CLONE" commit -q -m "develop2: config with develop2 base"
+git -C "$ORIGIN_CLONE" push -q origin "HEAD:refs/heads/develop2"
+
+# Fetch develop2 into local and reset to it — local now == origin/develop2.
 git fetch -q origin
-git reset -q --hard "origin/develop"
+git reset -q --hard "origin/develop2"
+# (talos.pipeline.yml now has base_branch: develop2 from the reset)
 
 out="$(bash "$VCS" assert-sync 2>&1)"; rc=$?
-assert_exit_code 0 "$rc" "T6: non-main base branch (develop) exits 0 when level"
-assert_eq "" "$out"       "T6: non-main base branch produces no output when level"
+assert_exit_code 0 "$rc"  "T6: non-main base branch (develop2) exits 0 when level"
+assert_eq "" "$out"        "T6: non-main base branch produces no output when level"
 
 finish
