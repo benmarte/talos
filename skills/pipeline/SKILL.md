@@ -94,6 +94,29 @@ Store these for the run:
 - `issues.label_filter`: pipeline:ready
 - `issues.max_parallel`: 1
 - `limits.max_fix_attempts`: 3
+
+#### Concurrency and verify: isolation
+
+**`issues.max_parallel > 1` with compose-based `verify:` commands requires concurrency-safe scripts.**
+
+Talos provides filesystem isolation via `isolation: worktree` — each developer and QA stage runs in its own checkout. It does NOT manage Docker/compose project names, port allocations, or shared scratch directories. When two or more stages run verify commands simultaneously against a shared compose stack, the following failures have been observed (all of which produced results that look correct but describe the wrong worktree):
+
+- **Script collision:** one agent's verify script overwritten by another's mid-run, producing a green log about the wrong worktree.
+- **Container contention:** `--no-deps` runs completing successfully while DB-backed tests never ran.
+- **Recreate race:** a container restarted mid-run, causing unrelated commands to fail at random.
+
+To protect against this, verify scripts SHOULD assert their environment before proceeding:
+
+```bash
+if [ "${TALOS_ISSUE_NUMBER:-}" != "$EXPECTED_ISSUE" ]; then
+  echo "ERROR: running in wrong environment (expected issue $EXPECTED_ISSUE, got '${TALOS_ISSUE_NUMBER}')" >&2
+  exit 1
+fi
+```
+
+Talos exports `TALOS_ISSUE_NUMBER` and `TALOS_WORKTREE_PATH` into each stage's environment. On the native path (`subagents: true`), these are injected via the task prompt — this is instruction-based and not airtight; a stage that ignores the instruction runs verify without the exports. On the adapter path (`subagents: false`, `pipeline-agent.sh`), they are exported as real shell variables via `TALOS_ISSUE=<N> pipeline-agent.sh <role> "<prompt>"`. Consuming projects derive `COMPOSE_PROJECT_NAME` and port offsets from `TALOS_ISSUE_NUMBER` — Talos does not supply derived values.
+
+**Without this, a degraded run will report as clean.** The default (`max_parallel: 1`) has no contention and requires no action.
 - `verify`: [] (no verify commands)
 - `comments.enabled`: true
 - `comments.header`: `**Agent:** {role} (talos)`
@@ -487,10 +510,16 @@ You are the Developer. Implement the PM spec for issue #<N>.
 
 Base branch: <BASE_BRANCH>
 VCS provider: <VCS_PROVIDER>
-Worktree path: your current working directory IS the isolated worktree
+Issue number: <N>
+Worktree path: <ABSOLUTE_PATH_OF_THIS_WORKTREE>
 Comment header: <HEADER>
 Comment templates dir: <COMMENTS_TMPL_DIR>
 Comments enabled: <COMMENTS_ENABLED>
+
+Before running any verify: command, export these as shell variables so verify
+scripts can assert they are running in the correct environment:
+  export TALOS_ISSUE_NUMBER=<N>
+  export TALOS_WORKTREE_PATH=<ABSOLUTE_PATH_OF_THIS_WORKTREE>
 
 Verify commands (run each, fix failures before opening PR):
 <VERIFY_COMMANDS — one per line>
@@ -553,9 +582,16 @@ You are QA. A developer opened a PR for issue #<N>.
 
 PR: <PR_NUMBER>
 VCS provider: <VCS_PROVIDER>
+Issue number: <N>
+Worktree path: <ABSOLUTE_PATH_OF_THIS_WORKTREE>
 Comment header: <HEADER>
 Comment templates dir: <COMMENTS_TMPL_DIR>
 Comments enabled: <COMMENTS_ENABLED>
+
+Before running any verify: command, export these as shell variables so verify
+scripts can assert they are running in the correct environment:
+  export TALOS_ISSUE_NUMBER=<N>
+  export TALOS_WORKTREE_PATH=<ABSOLUTE_PATH_OF_THIS_WORKTREE>
 
 1. Check out the PR: `bash scripts/pipeline-vcs.sh checkout-pr <PR_NUMBER>`
 2. Run the full test suite and lint.
@@ -875,3 +911,4 @@ After processing all issues, print a summary table:
 15. Non-worktree subagents (reviewer, security) must read the PR diff via `diff-pr` only; they must never run `git checkout`, `git switch`, or `git pull` in the orchestrator's working directory. Worktree-isolated stages (developer, QA, docs) are exempt — docs commits and pushes and therefore runs in its own worktree.
 16. `comment-issue`, `comment-pr`, `create-issue`, and `create-pr` exit non-zero when their POST fails. A stage must not assert a filing landed without a non-empty URL returned by the command. For `create-pr` failures, set `pipeline:blocked` immediately — no PR means all downstream stages are impossible.
 17. Run all long-running work in the **foreground** — never append `&`, use `nohup`, or call `disown`. Do not poll for child exit with `until ! pgrep …; do sleep N; done`. The reason: when a stranded background child finally exits, the harness interprets its exit as a new completion event; those duplicates are indistinguishable from real completions on arrival (observed: 210 stranded shells at peak, one agent emitting 5 spurious "task finished" signals 90 minutes after finishing, two agents stopped by hand). Talos cannot suppress the harness-side notification — it can only ensure no background children remain.
+18. Worktree-isolated stages (developer, QA) must export `TALOS_ISSUE_NUMBER` and `TALOS_WORKTREE_PATH` before running any `verify:` command. Both values are present in the task prompt. This is instruction-based and not airtight on the native path — a stage that ignores it runs verify without the exports. The exports make a degraded run visible (verify scripts can self-check) without claiming to make it impossible. The adapter path (`pipeline-agent.sh`) exports them as real shell variables automatically.
