@@ -71,7 +71,20 @@ export TALOS_ROLE
 # exported as the empty string, which is distinct from an unset variable and lets
 # verify scripts distinguish "Talos did not set this" from any real issue number.
 # TALOS_WORKTREE_PATH is the working directory at invocation time — the worktree root.
-TALOS_ISSUE_NUMBER="${TALOS_ISSUE:-}"
+#
+# Validate TALOS_ISSUE: must be empty or a plain non-negative integer.
+# Empty is allowed — two-arg callers never set TALOS_ISSUE and must keep working.
+# Anything else (shell metacharacters, whitespace, non-digits) is rejected with exit 2.
+_raw_issue="${TALOS_ISSUE:-}"
+if [ -n "$_raw_issue" ]; then
+  case "$_raw_issue" in
+    *[!0-9]*)
+      echo "pipeline-agent: TALOS_ISSUE must be a plain integer (got: $_raw_issue)" >&2
+      exit 2
+      ;;
+  esac
+fi
+TALOS_ISSUE_NUMBER="$_raw_issue"
 TALOS_WORKTREE_PATH="$PWD"
 export TALOS_ISSUE_NUMBER TALOS_WORKTREE_PATH
 

@@ -65,4 +65,56 @@ assert_eq "99" "$actual_issue4" "TALOS_ISSUE_NUMBER=99 for issue 99"
 
 rm talos.pipeline.json
 
+# ── 5. Input validation: non-integer TALOS_ISSUE rejected with exit 2 ──────────
+# RED before fix: TALOS_ISSUE was passed verbatim; no validation existed.
+# The custom runner_cmd is no longer needed here — validation fires before runner.
+cat > talos.pipeline.json <<'EOF'
+{"agents": {"runner": "custom", "runner_cmd": "echo should-not-reach"}}
+EOF
+
+# Shell metacharacter: should be rejected
+out5="$(TALOS_ISSUE='54; rm -rf /' bash "$AGENT" developer "task" 2>&1)"; rc5=$?
+assert_eq "2" "$rc5" "TALOS_ISSUE with shell metacharacters exits 2"
+assert_contains "$out5" "must be a plain integer" "metacharacter rejection prints diagnostic"
+
+# Whitespace in value: should be rejected
+out6="$(TALOS_ISSUE='4 2' bash "$AGENT" developer "task" 2>&1)"; rc6=$?
+assert_eq "2" "$rc6" "TALOS_ISSUE with whitespace exits 2"
+assert_contains "$out6" "must be a plain integer" "whitespace rejection prints diagnostic"
+
+# Path traversal attempt: should be rejected
+out7="$(TALOS_ISSUE='../../etc' bash "$AGENT" developer "task" 2>&1)"; rc7=$?
+assert_eq "2" "$rc7" "TALOS_ISSUE with path traversal exits 2"
+assert_contains "$out7" "must be a plain integer" "path traversal rejection prints diagnostic"
+
+# Newline in value: should be rejected (newline becomes a digit test via non-digit char)
+out8="$(TALOS_ISSUE="$(printf '54\n99')" bash "$AGENT" developer "task" 2>&1)"; rc8=$?
+assert_eq "2" "$rc8" "TALOS_ISSUE with newline exits 2"
+
+# ── 6. Empty TALOS_ISSUE still exits 0 — regression guard ─────────────────────
+# This is the backwards-compatibility guarantee: two-arg callers must not break.
+# RED before fix (of the new guard): if we had implemented "reject empty", this fails.
+out9="$(TALOS_ISSUE='' bash "$AGENT" qa "verify pr" 2>/dev/null)"; rc9=$?
+assert_eq "0" "$rc9" "empty TALOS_ISSUE (explicit empty string) exits 0"
+actual_issue9="$(printf '%s' "$out9" | sed -n 's/.*ISSUE=\([^ ]*\).*/\1/p')"
+assert_eq "" "$actual_issue9" "TALOS_ISSUE_NUMBER is empty string when TALOS_ISSUE is empty"
+
+# Unset TALOS_ISSUE also exits 0 (existing test 6-8 covers this; confirm here too)
+out10="$(bash "$AGENT" qa "verify pr" 2>/dev/null)"; rc10=$?
+assert_eq "0" "$rc10" "unset TALOS_ISSUE exits 0"
+
+# ── 7. Valid integer exit-zero proof (guard does not over-reject) ───────────────
+# Value propagation is already verified in sections 1 and 4 above; these just
+# confirm the validation guard does not reject valid integers.
+out11="$(TALOS_ISSUE=1 bash "$AGENT" developer "task" 2>/dev/null)"; rc11=$?
+assert_eq "0" "$rc11" "TALOS_ISSUE=1 exits 0 (single digit)"
+
+out12="$(TALOS_ISSUE=12345 bash "$AGENT" developer "task" 2>/dev/null)"; rc12=$?
+assert_eq "0" "$rc12" "TALOS_ISSUE=12345 exits 0 (large integer)"
+
+out13="$(TALOS_ISSUE=0 bash "$AGENT" developer "task" 2>/dev/null)"; rc13=$?
+assert_eq "0" "$rc13" "TALOS_ISSUE=0 exits 0 (zero is a valid digit)"
+
+rm talos.pipeline.json
+
 finish

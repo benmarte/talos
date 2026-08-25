@@ -109,7 +109,7 @@ To protect against this, verify scripts SHOULD assert their environment before p
 
 ```bash
 if [ "${TALOS_ISSUE_NUMBER:-}" != "$EXPECTED_ISSUE" ]; then
-  echo "ERROR: running in wrong environment (expected issue $EXPECTED_ISSUE, got ${TALOS_ISSUE_NUMBER:-unset})" >&2
+  echo "ERROR: running in wrong environment (expected issue $EXPECTED_ISSUE, got '${TALOS_ISSUE_NUMBER}')" >&2
   exit 1
 fi
 ```

@@ -668,7 +668,7 @@ Verify scripts can self-check their environment on the adapter path (and on the 
 
 ```bash
 if [ "${TALOS_ISSUE_NUMBER:-}" != "$EXPECTED_ISSUE" ]; then
-  echo "ERROR: wrong environment (expected $EXPECTED_ISSUE, got ${TALOS_ISSUE_NUMBER:-unset})" >&2
+  echo "ERROR: wrong environment (expected $EXPECTED_ISSUE, got '${TALOS_ISSUE_NUMBER}')" >&2
   exit 1
 fi
 ```
