@@ -654,6 +654,23 @@ else:
 import json, re, sys
 n    = sys.argv[1]
 self = sys.argv[2]
+repo = sys.argv[3]   # owner/name — passed from \$REPO, same as has_closing block
+# Resolve repo components for scoped matching (case-insensitive).
+repo_lc = repo.lower()
+if '/' in repo_lc:
+    _owner_lc, _name_lc = repo_lc.split('/', 1)
+else:
+    _owner_lc = repo_lc; _name_lc = repo_lc
+owner_esc = re.escape(_owner_lc)
+name_esc  = re.escape(_name_lc)
+n_esc = re.escape(n)
+# Two-branch pattern for sibling body matching:
+#   Branch 1: own-repo qualified form — owner/repo#N (current repo only, case-insensitive)
+#   Branch 2: bare #N — not preceded by a word char or slash
+#     (?<!/) excludes foreign repo#N suffixes; (?<!\w) excludes alphanumeric prefixes
+own_repo_pat = r'(?<!\w)(?i:' + owner_esc + r'/' + name_esc + r')#' + n_esc + r'(?!\d)'
+bare_pat      = r'(?<!\w)(?<!/)#' + n_esc + r'(?!\d)'
+body_pat = r'(?:' + own_repo_pat + r'|' + bare_pat + r')'
 try: prs = json.load(sys.stdin)
 except Exception: prs = []
 siblings = []
@@ -662,15 +679,15 @@ for pr in prs:
         continue
     ref = pr.get('headRefName','')
     hay = pr.get('title','') + ' ' + pr.get('body','')
-    branch_match = bool(re.search(r'(?:^|/)issue-' + re.escape(n) + r'(?:-|$)', ref))
-    body_match   = bool(re.search(r'#' + re.escape(n) + r'(?!\d)', hay))
+    branch_match = bool(re.search(r'(?:^|/)issue-' + n_esc + r'(?:-|$)', ref))
+    body_match   = bool(re.search(body_pat, hay))
     if branch_match or body_match:
         siblings.append(str(pr.get('number','')))
 if siblings:
     print('blocked:' + ','.join(siblings))
 else:
     print('ok')
-" "$issue_n" "${pr_number:-}" 2>/dev/null)"
+" "$issue_n" "${pr_number:-}" "$REPO" 2>/dev/null)"
 
       case "$sibling_result" in
         ok)
