@@ -557,6 +557,13 @@ for r in runs:
         return 0
       fi
 
+      # Repo-scope guard: if $REPO is unresolved we cannot scope the URL/owner#N
+      # forms to the current repository — fail open with a fixed-literal marker.
+      if [ -z "$REPO" ]; then
+        echo "talos:closing-keyword-unverified pr=$pr_ref issue=$issue_n reason=repo-unresolved"
+        return 0
+      fi
+
       # Fetch the PR to get its number and body.
       local pr_json
       pr_json="$(gh pr view "$pr_ref" --json number,body ${REPO:+--repo "$REPO"} 2>/dev/null)"
@@ -575,34 +582,55 @@ for r in runs:
       # Patterns (case-insensitive):
       #   close/closes/closed/fix/fixes/fixed/resolve/resolves/resolved
       #   followed by optional whitespace and then one of:
-      #     #N  |  repo#N  |  owner/repo#N
-      #     GH-N  (case-insensitive; the alternative starts with [Gg][Hh], so a
-      #            non-G prefix like XGH-57 simply does not match; the left-guard
-      #            (?<![0-9]) prevents a digit prefix, e.g. 1GH-57 — defence-in-depth
-      #            if this ref pattern is ever reused without the preceding \s+)
-      #     https://github.com/<owner>/<repo>/issues/N  (optional trailing /,?,#)
+      #     #N              — bare, implicitly current repo (unmodified)
+      #     repo#N          — single-segment, no slash (unmodified)
+      #     owner/repo#N    — scoped to current repo (case-insensitive)
+      #     GH-N            — case-insensitive; left-guard prevents digit-prefix collision
+      #     https://github.com/<owner>/<repo>/issues/N  — scoped to current repo
       local has_closing
       has_closing="$(printf '%s' "$pr_body" | python3 -c "
 import re, sys
 body = sys.stdin.read()
-n = sys.argv[1]
+n    = sys.argv[1]
+repo = sys.argv[2]   # owner/name — already stripped of .git suffix, passed from \$REPO
 # Closing keywords (case-insensitive)
 kw = r'(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)'
-# Reference forms:
-#   1. #N  |  repo#N  |  owner/repo#N  (# provides left boundary)
-#   2. GH-N  case-insensitive; left-guard prevents digit-prefix collision (e.g. XGH-N ok, 1GH-N not)
-#   3. https://github.com/<owner>/<repo>/issues/N  URL structure provides left boundary
+# Resolve owner and repo name for repo-scoped patterns (case-insensitive).
+repo_lc = repo.lower()
+if '/' in repo_lc:
+    _owner_lc, _name_lc = repo_lc.split('/', 1)
+else:
+    _owner_lc = repo_lc; _name_lc = repo_lc
+owner_esc = re.escape(_owner_lc)
+name_esc  = re.escape(_name_lc)
 n_esc = re.escape(n)
-ref_hash = r'(?:[A-Za-z0-9_./-]+)?#' + n_esc + r'(?!\d)'
-ref_gh   = r'(?<![0-9])[Gg][Hh]-' + n_esc + r'(?!\d)'
-ref_url  = r'https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/' + n_esc + r'(?!\d)'
+# Reference forms:
+#   1. Hash forms — unified with boundary to prevent mid-token matches:
+#      (?<!\w)(?<!/) ensures the engine cannot start a match in the middle of
+#      a foreign owner/repo token (e.g. the 'repo' segment of 'other/repo#N').
+#      Alternation (tried left-to-right):
+#        a. owner/repo#N — must match current repo exactly (case-insensitive)
+#        b. repo#N — single-segment (no slash), implicitly current-server; unscoped
+#        c. #N — bare form (empty prefix)
+#   2. GH-N  case-insensitive; left-guard prevents digit-prefix collision
+#   3. URL — scoped to current repo (case-insensitive on owner/name)
+ref_hash = (
+    r'(?<!\w)(?<!/)(?:'
+    + r'(?i:' + owner_esc + r'/' + name_esc + r')'   # 1a: owner/repo#N (scoped)
+    + r'|[A-Za-z0-9_.-]+'                              # 1b: repo#N (single-segment)
+    + r'|'                                              # 1c: bare #N (empty prefix)
+    + r')#' + n_esc + r'(?!\d)'
+)
+ref_gh  = r'(?<![0-9])[Gg][Hh]-' + n_esc + r'(?!\d)'
+ref_url = (r'https://github\.com/(?i:' + owner_esc + r'/' + name_esc + r')'
+           + r'/issues/' + n_esc + r'(?!\d)')
 ref = r'(?:' + ref_hash + r'|' + ref_gh + r'|' + ref_url + r')'
 pattern = kw + r'\s+' + ref
 if re.search(pattern, body, re.IGNORECASE):
     print('yes')
 else:
     print('no')
-" "$issue_n" 2>/dev/null)"
+" "$issue_n" "$REPO" 2>/dev/null)"
 
       # No closing keyword → nothing to check.
       if [ "$has_closing" != "yes" ]; then
