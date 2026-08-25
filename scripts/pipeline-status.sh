@@ -360,11 +360,80 @@ fi
 # run, ensuring project field-list is called at most once per run (not once per
 # status update). It also gates the startup validation so the warning fires once.
 # Sentinel key: project number + optional PIPELINE_RUN_ID for multi-run isolation.
-_BOARD_SENTINEL="${TMPDIR:-/tmp}/talos-board-validated-${PROJECT_NUM}${PIPELINE_RUN_ID:+-${PIPELINE_RUN_ID}}"
+#
+# Security: the cache lives in a user-private directory (not world-writable /tmp)
+# and is validated before use: regular file, owned by current user, not
+# group/world-writable, and contains valid JSON with the expected shape.
+_CACHE_DIR="${XDG_RUNTIME_DIR:-${HOME}/.cache}/talos"
+_BOARD_SENTINEL="${_CACHE_DIR}/board-validated-${PROJECT_NUM}${PIPELINE_RUN_ID:+-${PIPELINE_RUN_ID}}"
 
-if [ -f "$_BOARD_SENTINEL" ]; then
-  # Reuse cached field data from earlier in this pipeline run
-  FIELD_DATA="$(cat "$_BOARD_SENTINEL")"
+# Create the cache directory with restrictive permissions (user-only).
+# Handle existing directory with potentially wrong permissions gracefully.
+if ! install -d -m 700 "$_CACHE_DIR" 2>/dev/null; then
+  mkdir -p "$_CACHE_DIR" 2>/dev/null || true
+  chmod 700 "$_CACHE_DIR" 2>/dev/null || true
+fi
+
+# _read_sentinel — read and validate the sentinel cache file.
+# Returns the cached FIELD_DATA on stdout if the file passes all checks;
+# exits with code 1 if any check fails (caller falls back to fresh lookup).
+_read_sentinel() {
+  local _f="$1"
+  # Must be a regular file
+  [ -f "$_f" ] || return 1
+
+  # Must be owned by the current user.
+  # Use python3 for portability (stat flags differ between BSD and GNU).
+  _owner_uid="$(python3 -c "import os,sys; st=os.stat(sys.argv[1]); print(st.st_uid)" "$_f" 2>/dev/null)" || return 1
+  _my_uid="$(id -u)" || return 1
+  [ "$_owner_uid" = "$_my_uid" ] || return 1
+
+  # Must not be group- or world-writable (mode bits 0g22 → 0022 mask)
+  _file_mode="$(python3 -c "import os,sys,stat; st=os.stat(sys.argv[1]); print(oct(stat.S_IMODE(st.st_mode)))" "$_f" 2>/dev/null)" || return 1
+  case "$_file_mode" in
+    *[2367])   # group- or world-writable bit set
+      return 1 ;;
+  esac
+  # More thorough: check write bits using python
+  python3 -c "
+import os, sys, stat
+st = os.stat(sys.argv[1])
+mode = stat.S_IMODE(st.st_mode)
+if mode & (stat.S_IWGRP | stat.S_IWOTH):
+    sys.exit(1)
+sys.exit(0)
+" "$_f" 2>/dev/null || return 1
+
+  # Must contain valid JSON with expected shape: {fields: [{name, id, options:[]}]}
+  _cached="$(cat "$_f")"
+  python3 -c "
+import sys, json
+try:
+    d = json.loads(sys.argv[1])
+    if not isinstance(d, dict):
+        sys.exit(1)
+    fields = d.get('fields')
+    if not isinstance(fields, list):
+        sys.exit(1)
+    for f in fields:
+        if not isinstance(f, dict):
+            sys.exit(1)
+        if 'name' not in f or 'id' not in f:
+            sys.exit(1)
+        if not isinstance(f.get('options', []), list):
+            sys.exit(1)
+    sys.exit(0)
+except Exception:
+    sys.exit(1)
+" "$_cached" 2>/dev/null || return 1
+
+  printf '%s' "$_cached"
+}
+
+_CACHED_FIELD_DATA="$(_read_sentinel "$_BOARD_SENTINEL" 2>/dev/null)"
+if [ -n "$_CACHED_FIELD_DATA" ]; then
+  # Reuse validated cached field data from earlier in this pipeline run
+  FIELD_DATA="$_CACHED_FIELD_DATA"
 else
   FIELD_DATA="$(_gh_safe gh project field-list "$PROJECT_NUM" --owner "$OWNER" --format json)"
 
@@ -394,9 +463,10 @@ except Exception:
     fi
   done
 
-  # Write sentinel with cached field data (suppresses repeated validation + field-list calls)
+  # Write sentinel with cached field data into the user-private cache directory.
+  # Write with mode 0600 so only the current user can read or modify it.
   if [ "$DRY_RUN" = "false" ]; then
-    printf '%s' "$FIELD_DATA" > "$_BOARD_SENTINEL" 2>/dev/null || true
+    (umask 177 && printf '%s' "$FIELD_DATA" > "$_BOARD_SENTINEL") 2>/dev/null || true
   fi
 
   if [ -n "$_MISSING_OPTIONS" ]; then

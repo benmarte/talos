@@ -30,6 +30,17 @@
      per run and caches the field-list response so `gh project field-list` is called exactly once
      regardless of how many status updates happen in the same run.
 
+  4. **Secure sentinel cache location** — the sentinel/cache file is now stored in a user-private
+     directory (`${XDG_RUNTIME_DIR:-$HOME/.cache}/talos/`) instead of `${TMPDIR:-/tmp}`, which is
+     world-writable and allowed any local process to pre-create a poisoned file.  The directory is
+     created with mode 0700 (`install -d -m 700`) and the file is written with mode 0600
+     (`umask 177`).  Before trusting a cached file the script verifies: (a) it is a regular file,
+     (b) it is owned by the current user (checked via `python3 os.stat` for BSD/GNU portability),
+     (c) it has no group/world-write bits, and (d) it contains valid JSON with the expected
+     `{fields:[{name,id,options:[]}]}` shape.  Any check failure falls back to a fresh
+     `gh project field-list` call — degrade to correct-but-slower, never to trusting untrusted
+     content.
+
 - **`pipeline-vcs.sh`: `check-approval-sha` and `read-attempt` reject quoted/fenced markers and gain an author allow-list (#66).**
   Two independent fixes applied together:
 
