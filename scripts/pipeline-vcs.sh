@@ -667,8 +667,10 @@ else:
         echo "pipeline-vcs: read-attempt: could not fetch issue #$n data" >&2
         exit 1
       fi
-      printf '%s' "$issue_data" | python3 -c "
-import json, re, sys
+      local trusted_authors
+      trusted_authors="$(cfg markers.trusted_authors "")"
+      printf '%s' "$issue_data" | TRUSTED_AUTHORS="$trusted_authors" python3 -c "
+import json, os, re, sys
 
 # Stage-1 permissive detector: matches any HTML comment that looks like it
 # could be a talos:attempt marker.  Used to distinguish 'no marker present'
@@ -685,25 +687,62 @@ KNOWN_STAGES = {
     'validator', 'pm', 'orchestrator', 'planner',
 }
 
+# Author allow-list — markers.trusted_authors config (YAML/JSON list of logins).
+# When absent or empty: fail-open with a warning so existing installs are not blocked.
+raw_authors = os.environ.get('TRUSTED_AUTHORS', '').strip()
+if raw_authors:
+    try:
+        parsed_authors = json.loads(raw_authors)
+        if not isinstance(parsed_authors, list):
+            raise ValueError('not a list')
+        trusted_authors = [str(a).strip() for a in parsed_authors if str(a).strip()]
+    except Exception:
+        trusted_authors = [a.strip() for a in raw_authors.splitlines() if a.strip()]
+else:
+    trusted_authors = []
+
+author_check_active = bool(trusted_authors)
+
 try:
     data = json.load(sys.stdin)
 except Exception as exc:
     print(f'pipeline-vcs: read-attempt: could not parse issue data: {exc}', file=sys.stderr)
     sys.exit(1)
 
-comments = [c.get('body', '') for c in data.get('comments', [])]
+raw_comments = data.get('comments', [])
 
 # GitHub returns comments oldest-first; search newest-first for the last marker.
 found = None
-for body in reversed(comments):
+for c in reversed(raw_comments):
+    body   = c.get('body', '')
+    author = c.get('author', {}).get('login', '') if isinstance(c.get('author'), dict) else ''
+
     # Require the marker to appear as the last non-whitespace line of the comment
-    # body (same guard as talos:approval), so a quoted/fenced occurrence cannot win.
-    stripped = body.rstrip()
+    # body, so a quoted/fenced occurrence cannot win.
+    stripped  = body.rstrip()
     last_line = stripped.rsplit('\n', 1)[-1].strip()
 
     # Stage 1: does this line look at all like a talos:attempt marker?
     if not LOOSE_RE.search(last_line):
         continue  # not a marker line — skip to next comment
+
+    # Author allow-list check (only when configured and non-empty).
+    if author_check_active:
+        if author not in trusted_authors:
+            print(
+                f'pipeline-vcs: read-attempt: skipping marker from untrusted author '
+                f'{author!r} (not in markers.trusted_authors)',
+                file=sys.stderr,
+            )
+            continue  # skip; keep searching older comments
+    else:
+        # Unconfigured allow-list — fail open but emit a machine-readable marker.
+        print('talos:marker-authors-unverified reader=read-attempt')
+        print(
+            'pipeline-vcs: read-attempt: [warn] markers.trusted_authors not configured '
+            '— author check skipped',
+            file=sys.stderr,
+        )
 
     # Stage 2: the line IS marker-like; it must parse exactly or it is corrupt.
     # Corrupt markers NEVER fall through to zero — that would grant infinite retries.
@@ -764,6 +803,11 @@ sys.exit(0)
         echo "pipeline-vcs: check-attempt: read-attempt failed: $state" >&2
         exit 1
       fi
+      # Pass through any machine-readable talos: markers from read-attempt to our
+      # own stdout, then narrow state to only the parseable stage=...count=...total=
+      # line (filters out both talos: markers and any stderr warnings captured via 2>&1).
+      printf '%s\n' "$state" | grep '^talos:' || true
+      state="$(printf '%s\n' "$state" | grep '^stage=')"
       # Parse the state line
       local cur_stage cur_count cur_total
       cur_stage="$(printf '%s' "$state" | sed 's/stage=\([^ ]*\).*/\1/')"
@@ -806,6 +850,11 @@ sys.exit(0)
         echo "pipeline-vcs: record-attempt: read-attempt failed: $state" >&2
         exit 1
       fi
+      # Pass through any machine-readable talos: markers from read-attempt to our
+      # own stdout, then narrow state to only the parseable stage=...count=...total=
+      # line (filters out both talos: markers and any stderr warnings captured via 2>&1).
+      printf '%s\n' "$state" | grep '^talos:' || true
+      state="$(printf '%s\n' "$state" | grep '^stage=')"
       local prev_stage prev_count prev_total
       prev_stage="$(printf '%s' "$state" | sed 's/stage=\([^ ]*\).*/\1/')"
       prev_count="$(printf '%s' "$state" | sed 's/.*count=\([0-9]*\).*/\1/')"
@@ -872,10 +921,12 @@ sys.exit(0)
       fi
       local waiver_paths
       waiver_paths="$(cfg merge.approval_waiver_paths "")"
+      local trusted_authors_cas
+      trusted_authors_cas="$(cfg markers.trusted_authors "")"
       local repo_root
       repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
       printf '%s' "$pr_data" \
-        | WAIVER_PATHS="$waiver_paths" REPO_ROOT="${repo_root:-}" python3 -c "
+        | WAIVER_PATHS="$waiver_paths" REPO_ROOT="${repo_root:-}" TRUSTED_AUTHORS="$trusted_authors_cas" python3 -c "
 import fnmatch, json, os, re, subprocess, sys
 
 APPROVAL_LABELS = {
@@ -951,6 +1002,22 @@ if errors:
         print(e, file=sys.stderr)
     sys.exit(1)
 
+# Author allow-list — markers.trusted_authors config (YAML/JSON list of logins).
+# When absent or empty: fail-open with a warning so existing installs are not blocked.
+raw_authors = os.environ.get('TRUSTED_AUTHORS', '').strip()
+if raw_authors:
+    try:
+        parsed_authors = json.loads(raw_authors)
+        if not isinstance(parsed_authors, list):
+            raise ValueError('not a list')
+        trusted_authors = [str(a).strip() for a in parsed_authors if str(a).strip()]
+    except Exception:
+        trusted_authors = [a.strip() for a in raw_authors.splitlines() if a.strip()]
+else:
+    trusted_authors = []
+
+author_check_active = bool(trusted_authors)
+
 # Parse PR data
 try:
     data = json.load(sys.stdin)
@@ -963,8 +1030,8 @@ if not head_sha:
     print('pipeline-vcs: check-approval-sha: could not resolve head SHA', file=sys.stderr)
     sys.exit(1)
 
-label_names = {lb['name'] for lb in data.get('labels', [])}
-comments    = [c.get('body', '') for c in data.get('comments', [])]
+label_names  = {lb['name'] for lb in data.get('labels', [])}
+raw_comments = data.get('comments', [])
 
 # Which approval labels are present?
 present = {label: role for label, role in APPROVAL_LABELS.items() if label in label_names}
@@ -973,19 +1040,48 @@ if not present:
     print('check-approval-sha: no approval labels present')
     sys.exit(0)
 
+# Strict extractor: marker must be a syntactically valid talos:approval HTML comment.
 MARKER_RE = re.compile(r'<!--\s*talos:approval\s+sha=([0-9a-f]+)\s+role=(\S+?)\s*-->')
 
 stale = []
 for label, role in present.items():
-    # Find the most recent marker for this role (search comments newest-first)
+    # Find the most recent marker for this role (search comments newest-first).
+    # Enforce the same last-line rule as read-attempt: the marker must be the
+    # last non-whitespace line of the comment body so a quoted/fenced occurrence
+    # (e.g. GitHub Quote-reply) cannot satisfy the gate.
     found_sha = None
-    for body in reversed(comments):
-        for m in MARKER_RE.finditer(body):
-            if m.group(2) == role:
-                found_sha = m.group(1)
-                break
-        if found_sha:
-            break
+    for c in reversed(raw_comments):
+        body   = c.get('body', '')
+        author = c.get('author', {}).get('login', '') if isinstance(c.get('author'), dict) else ''
+
+        # Last-line rule: strip trailing whitespace, take final newline-split segment.
+        stripped  = body.rstrip()
+        last_line = stripped.rsplit('\n', 1)[-1].strip()
+
+        m = MARKER_RE.match(last_line)
+        if not m or m.group(2) != role:
+            continue  # marker not on last line, or wrong role
+
+        # Author allow-list check (only when configured and non-empty).
+        if author_check_active:
+            if author not in trusted_authors:
+                print(
+                    f'pipeline-vcs: check-approval-sha: skipping marker for {label} '
+                    f'from untrusted author {author!r} (not in markers.trusted_authors)',
+                    file=sys.stderr,
+                )
+                continue  # skip; keep searching older comments
+        else:
+            # Unconfigured allow-list — fail open but emit a machine-readable marker.
+            print('talos:marker-authors-unverified reader=check-approval-sha')
+            print(
+                'pipeline-vcs: check-approval-sha: [warn] markers.trusted_authors not configured '
+                '— author check skipped',
+                file=sys.stderr,
+            )
+
+        found_sha = m.group(1)
+        break
 
     if not found_sha:
         # Fail-closed: missing marker means the approval predates SHA stamping —

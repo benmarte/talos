@@ -310,4 +310,73 @@ rc_tot="$(STUB_ISSUE_COMMENTS_JSON="$prior_tot4" PIPELINE_CONFIG="$SANDBOX/talos
   bash "$VCS" check-attempt 42 >/dev/null 2>&1; echo $?)"
 assert_exit_code 1 "$rc_tot" "custom limits: max_total_dispatches=4 triggers at total=4"
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Issue #66 Part B: quoted-marker guard in read-attempt (already present — confirmed)
+# The fenced-block test above already exercises the last-line rule for read-attempt.
+# These additional tests confirm read-attempt rejects a marker when text follows it.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# A comment with a reply quote: the marker is inside the quote, not the last line.
+quoted_attempt='[{"body":"> <!-- talos:attempt stage=qa count=99 total=99 -->\n\nI am quoting the above.","author":{"login":"trusted-bot"}}]'
+out_qa="$(read_attempt "$quoted_attempt")"; rc_qa="$(read_attempt_rc "$quoted_attempt")"
+assert_exit_code 0 "$rc_qa" "quoted attempt marker: read-attempt exits 0 (no marker found)"
+assert_contains "$out_qa" "count=0" "quoted attempt marker: treated as no marker (zero)"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Issue #66 Part A: trusted-author allow-list for read-attempt
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# mk_attempt_comment_author <stage> <count> <total> <author-login>
+mk_attempt_comment_author() {
+  printf '[{"body":"Talos attempt record\\n<!-- talos:attempt stage=%s count=%s total=%s -->","author":{"login":"%s"}}]' \
+    "$1" "$2" "$3" "$4"
+}
+
+# read_attempt_cfg <comments_json> <config_file> — run with specific config
+read_attempt_cfg() {
+  STUB_ISSUE_COMMENTS_JSON="$1" PIPELINE_CONFIG="$2" \
+    bash "$VCS" read-attempt 42 2>/dev/null
+}
+read_attempt_cfg_rc() {
+  STUB_ISSUE_COMMENTS_JSON="$1" PIPELINE_CONFIG="$2" \
+    bash "$VCS" read-attempt 42 >/dev/null 2>&1; echo $?
+}
+
+# [test] with trusted_authors configured, a marker from an untrusted author is skipped
+# (treated as no marker — continues to next comment; does not fail-closed).
+cat > "$SANDBOX/talos-trusted.json" <<'EOF'
+{"limits": {"max_fix_attempts": 3, "max_total_dispatches": 8},
+ "markers": {"trusted_authors": ["trusted-bot"]}}
+EOF
+_untrusted_attempt="$(mk_attempt_comment_author qa 5 5 "evil-commenter")"
+out_ua="$(read_attempt_cfg "$_untrusted_attempt" "$SANDBOX/talos-trusted.json")"
+rc_ua="$(read_attempt_cfg_rc "$_untrusted_attempt" "$SANDBOX/talos-trusted.json")"
+assert_exit_code 0 "$rc_ua" "untrusted author attempt: read-attempt exits 0 (skip, not fail)"
+assert_contains "$out_ua" "count=0" "untrusted author attempt: marker skipped → zero (untrusted)"
+
+# [test] EXIT-ZERO PROOF: a trusted author's marker IS accepted (fix must not over-correct).
+_trusted_attempt="$(mk_attempt_comment_author qa 2 5 "trusted-bot")"
+out_ta="$(read_attempt_cfg "$_trusted_attempt" "$SANDBOX/talos-trusted.json")"
+rc_ta="$(read_attempt_cfg_rc "$_trusted_attempt" "$SANDBOX/talos-trusted.json")"
+assert_exit_code 0 "$rc_ta" "trusted author attempt: read-attempt exits 0 (exit-zero proof)"
+assert_contains "$out_ta" "count=2" "trusted author attempt: marker accepted, count=2"
+assert_contains "$out_ta" "total=5" "trusted author attempt: marker accepted, total=5"
+
+# [test] with markers.trusted_authors absent/empty, fail-open: behavior unchanged
+# AND talos:marker-authors-unverified is emitted on stdout.
+# Config used: $PIPELINE_CONFIG which has no markers.trusted_authors key.
+_any_attempt="$(mk_attempt_comment qa 3 7)"
+# read-attempt stdout only (2>/dev/null) — the talos: marker goes to stdout
+out_fo="$(STUB_ISSUE_COMMENTS_JSON="$_any_attempt" PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+  bash "$VCS" read-attempt 42 2>/dev/null)"
+rc_fo="$(STUB_ISSUE_COMMENTS_JSON="$_any_attempt" PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+  bash "$VCS" read-attempt 42 >/dev/null 2>&1; echo $?)"
+assert_exit_code 0 "$rc_fo" "unconfigured trusted_authors read-attempt: exits 0 (fail-open)"
+assert_contains "$out_fo" "talos:marker-authors-unverified" \
+  "unconfigured trusted_authors read-attempt: machine-readable marker on stdout"
+assert_contains "$out_fo" "reader=read-attempt" \
+  "unconfigured trusted_authors read-attempt: marker identifies the reader"
+assert_contains "$out_fo" "count=3" \
+  "unconfigured trusted_authors read-attempt: marker still accepted (fail-open)"
+
 finish

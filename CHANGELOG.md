@@ -4,6 +4,28 @@
 
 ### Fixed
 
+- **`pipeline-vcs.sh`: `check-approval-sha` and `read-attempt` reject quoted/fenced markers and gain an author allow-list (#66).**
+  Two independent fixes applied together:
+
+  **Part B — last-line enforcement in `check-approval-sha`:** `check-approval-sha` previously accepted a
+  `talos:approval` marker that appeared anywhere in a comment body, including inside a GitHub "Quote reply"
+  block.  The fix applies the same last-line rule that `read-attempt` already enforced: the marker must be
+  the final non-whitespace line of the comment body.  A quoted or fenced occurrence is now silently skipped,
+  not accepted.  The false code comment that claimed the guard already existed in `check-approval-sha`
+  ("same guard as `talos:approval`") has been removed — after this fix the guard genuinely exists in both
+  readers and no misleading comment is needed.
+
+  **Part A — author allow-list (`markers.trusted_authors`):** A new config key `markers.trusted_authors`
+  (YAML list of GitHub login strings, e.g. `["talos-bot"]`) gates which accounts may post a winning marker
+  for both `talos:approval` and `talos:attempt` types.  When configured and non-empty, a marker from any
+  login not in the list is skipped (for `read-attempt`) or counted as stale (for `check-approval-sha`),
+  with a diagnostic message to stderr.  When absent or empty the author check is skipped (fail-open) so
+  existing installations with no config change are not broken; both readers then emit
+  `talos:marker-authors-unverified reader=<verb>` on stdout so the skip is observable.
+
+  Both fixes are unconditional with respect to each other and apply to the single copy of each reader in
+  `pipeline-vcs.sh` (no separate `github-api` copies exist for these verbs).
+
 - **`pipeline-vcs.sh`: `check-pr-files` default deny list now blocks SSH private keys and Java/Android keystores (#63).**
   Added 7 new wildcard patterns to `_BUILTIN_DEFAULTS` in both the `github` and `github-api` providers (byte-identical):
   `*id_rsa*`, `*id_ecdsa*`, `*id_ed25519*`, `*id_dsa*`, `*.ppk`, `*.jks`, `*.keystore`.
