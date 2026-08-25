@@ -246,6 +246,12 @@ Returns JSON array `[{"id": "1", "title": "..."}, ...]`.
 
 Board calls (`pipeline-status.sh`) are **skipped in file mode**. The file's checkbox IS the state.
 
+**Sync check (VCS mode only):** After reading config, verify the orchestrator's working tree is clean and current:
+```bash
+bash scripts/pipeline-vcs.sh assert-sync
+```
+If exit non-zero: print the error output and halt — do not proceed to Step 1. This prevents non-isolated stages from reading a stale or dirty working tree. (File mode: skip — no non-isolated stages run.)
+
 ---
 
 ## Step 1 — Reconcile in-flight work (VCS mode only)
@@ -645,6 +651,12 @@ latency on every PR to protect against a minority case. -->
 
 **Phase 1 — Docs first:** Dispatch the docs stage. Wait for docs to push and post
 `docs:done` before continuing to phase 2.
+
+**Sync guard (non-isolated stages):** Before dispatching reviewer and security, confirm the working tree is still current:
+```bash
+bash scripts/pipeline-vcs.sh assert-sync
+```
+If exit non-zero: halt the current issue with the error output; do not dispatch any of the three stages. Main can advance between run-start and this point — the Step 0 check does not cover mid-run drift.
 
 **Phase 2 — Reviewer and security in parallel:** After docs completes, dispatch
 reviewer and security concurrently.

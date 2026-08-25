@@ -56,6 +56,14 @@
 #                                             ceiling is already reached for the issue;
 #                                             exit 0 otherwise. Does NOT record a new
 #                                             attempt — use record-attempt for that.
+#   assert-sync                               Assert the working tree is clean AND level
+#                                             with origin/<base_branch>. Exits 0 (no
+#                                             output) on success. Exits 1 with a message
+#                                             on dirty tree, behind-origin, or diverged.
+#                                             Dirty-tree check runs BEFORE fetch so the
+#                                             working tree is never read in a mixed state.
+#                                             Used as an orchestrator precondition before
+#                                             dispatching non-worktree-isolated stages.
 #
 # Config keys (from talos.pipeline.yml via pipeline-config.sh):
 #   vcs.provider          github | github-api | gitlab | azure | file   (default: github)
@@ -2794,6 +2802,96 @@ case "$VERB" in
     ;;
 esac
 
+# ── assert-sync: working-tree precondition (provider-agnostic) ───────────────
+# Called by the orchestrator before dispatching non-worktree-isolated stages.
+# Provider-agnostic: exits before the provider dispatch so it works regardless
+# of which VCS provider is configured.
+if [ "$VERB" = "assert-sync" ]; then
+  if [ "$DRY_RUN" = "true" ]; then
+    echo "[dry-run] assert-sync: would check dirty tree, fetch origin, compare HEAD to origin/<base_branch>"
+    exit 0
+  fi
+
+  # Step 1: Dirty tree — refuse BEFORE fetching.
+  # Do not stash, do not pull over uncommitted work. Pulling over a dirty tree
+  # risks mixing in-progress work into what a non-isolated stage reads, or
+  # silently discarding it on conflict.
+  _as_dirty="$(git status --porcelain 2>/dev/null)"
+  if [ -n "$_as_dirty" ]; then
+    printf 'pipeline-vcs: assert-sync: ABORT -- working tree is dirty; commit or stash before running the pipeline.
+Dirty files:
+%s
+' "$_as_dirty" >&2
+    exit 1
+  fi
+
+  # Step 2: Resolve base branch (same logic as SKILL.md config defaults:
+  # configured value first, then symbolic-ref, then fall back to 'main').
+  _as_base="$BASE_BRANCH"
+  if [ -z "$_as_base" ]; then
+    _as_base="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|.*/||')"
+  fi
+  [ -z "$_as_base" ] && _as_base="main"
+
+  # Step 3: Fetch — network failure is itself a reason to abort, not continue.
+  if ! git fetch origin 2>/dev/null; then
+    echo "pipeline-vcs: assert-sync: ABORT -- git fetch origin failed; check network connectivity." >&2
+    exit 1
+  fi
+
+  # Step 4: Compare HEAD to origin/<base>.
+  # Note: git rev-parse HEAD here answers "what commit is my working tree at?" —
+  # a different question from "what commit does the PR point at?" (use pr-head for that).
+  # The pr-head verb is for agents writing approval markers; this is a shell comparison
+  # of two git refs to verify the working tree is current.
+  _as_local="$(git rev-parse HEAD 2>/dev/null)"
+  _as_origin="$(git rev-parse "origin/$_as_base" 2>/dev/null)"
+
+  if [ -z "$_as_local" ] || [ -z "$_as_origin" ]; then
+    echo "pipeline-vcs: assert-sync: ABORT -- could not resolve HEAD or origin/$_as_base" >&2
+    exit 1
+  fi
+
+  if [ "$_as_local" = "$_as_origin" ]; then
+    # Clean and level — exit 0, no output (safe to embed as a precondition
+    # without cluttering orchestrator logs).
+    exit 0
+  fi
+
+  _as_behind="$(git rev-list --count "HEAD..origin/$_as_base" 2>/dev/null || echo 0)"
+  _as_ahead="$(git rev-list --count "origin/$_as_base..HEAD" 2>/dev/null || echo 0)"
+
+  if [ "$_as_behind" -gt 0 ] && [ "$_as_ahead" -gt 0 ]; then
+    # Diverged — both ahead and behind. Manual resolution required.
+    printf 'pipeline-vcs: assert-sync: ABORT -- working tree has diverged from origin/%s (ahead %s, behind %s commits). Manual resolution required -- do NOT force-push; this may represent legitimate concurrent work.
+  local:          %s
+  origin/%s: %s
+' \
+      "$_as_base" "$_as_ahead" "$_as_behind" \
+      "$_as_local" "$_as_base" "$_as_origin" >&2
+    exit 1
+  elif [ "$_as_behind" -gt 0 ]; then
+    # Behind — stale checkout. Abort so non-isolated stages read current source.
+    printf 'pipeline-vcs: assert-sync: ABORT -- working tree is behind origin/%s by %s commit(s). Run: git pull --ff-only
+  local:          %s
+  origin/%s: %s
+' \
+      "$_as_base" "$_as_behind" \
+      "$_as_local" "$_as_base" "$_as_origin" >&2
+    exit 1
+  else
+    # Ahead only — local has commits not yet pushed to origin/<base>.
+    # The working tree is not stale; it is ahead of the remote.
+    # Non-isolated stages reading this tree see a consistent, complete source
+    # (even if not yet merged). Exits 0: ahead is not the failure mode this
+    # check guards against. A warning is printed so a human with in-flight
+    # local commits is aware — in normal automated use the orchestrator never
+    # commits to the base branch, making this state unreachable automatically.
+    printf 'pipeline-vcs: assert-sync: WARNING -- working tree is ahead of origin/%s by %s commit(s); non-isolated stages will read unpushed commits.\n'       "$_as_base" "$_as_ahead" >&2
+    exit 0
+  fi
+fi
+
 # ── label-pr: approval-marker guard (#94) ────────────────────────────────────
 # Recognised approval labels and their role names (same set as check-approval-sha).
 # Two modes:
@@ -2866,7 +2964,8 @@ for c in data.get('comments', []):
           docs:done)         _lp_role=docs ;;
           *)                 continue ;;
         esac
-        if printf '%s\n' "$_lp_comments" \
+        if printf '%s
+' "$_lp_comments" \
             | grep -qF "talos:approval sha=$_lp_head_sha role=$_lp_role"; then
           _lp_marker_found=true
           break
@@ -2876,9 +2975,11 @@ for c in data.get('comments', []):
     if [ "$_lp_marker_found" = "false" ]; then
       echo "pipeline-vcs: label-pr: ERROR — --require-marker: no approval marker found at current head." >&2
       echo "pipeline-vcs: label-pr: The gate will reject this PR. Post the marker first, then label:" >&2
-      printf 'pipeline-vcs:   HEAD_SHA=$(bash scripts/pipeline-vcs.sh pr-head %s)\n' \
+      printf 'pipeline-vcs:   HEAD_SHA=$(bash scripts/pipeline-vcs.sh pr-head %s)
+' \
         "$_LABEL_PR_N" >&2
-      printf 'pipeline-vcs:   bash scripts/pipeline-vcs.sh comment-pr %s "<!-- talos:approval sha=$HEAD_SHA role=<role> -->"\n' \
+      printf 'pipeline-vcs:   bash scripts/pipeline-vcs.sh comment-pr %s "<!-- talos:approval sha=$HEAD_SHA role=<role> -->"
+' \
         "$_LABEL_PR_N" >&2
       exit 1
     fi
