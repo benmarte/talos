@@ -4,6 +4,23 @@
 
 ### Fixed
 
+- **`pipeline-vcs.sh`: `check-pr-files` default deny list now blocks SSH private keys and Java/Android keystores (#63).**
+  Added 7 new wildcard patterns to `_BUILTIN_DEFAULTS` in both the `github` and `github-api` providers (byte-identical):
+  `*id_rsa*`, `*id_ecdsa*`, `*id_ed25519*`, `*id_dsa*`, `*.ppk`, `*.jks`, `*.keystore`.
+  These catch extensionless SSH private key files (`id_rsa`, `id_ecdsa`, `id_ed25519`, `id_dsa`) as well as
+  path-prefixed and custom-named variants (`deploy_id_rsa`, `.ssh/id_rsa`, `id_rsa.bak`), PuTTY private key
+  files (`*.ppk`), and Java/Android keystores (`*.jks`, `*.keystore`).
+  **Accepted trade-off:** `*id_rsa*` also matches `id_rsa.pub` (a harmless public key). `fnmatch` has no negative
+  lookahead, so blocking the public key is the cost of catching the private key with a single pattern. Operators
+  who legitimately commit public keys should add the specific filename to `merge.forbidden_files_allow`.
+  **Over-blocking note:** `*.keystore` may also match self-signed test keystores committed for CI use — `fnmatch`
+  cannot distinguish a real keystore from a test one. This is expected behaviour; operators whose CI pipeline
+  commits a test keystore should add the specific filename to `merge.forbidden_files_allow`
+  (e.g. `["test.keystore", "debug.keystore"]`).
+  **Deferred:** `.netrc` is deliberately excluded — it is a literal pattern (no glob characters), generates no
+  canary, and a wildcard allow entry could bypass it silently. This is issue #76's blind spot; `.netrc` will be
+  added after #76 is fixed.
+
 - **`pipeline-vcs.sh`: `check-pr-files` union semantics and canary fallback close compound gate bypass (#61, #64).**
   `merge.forbidden_files` now **unions** with the built-in defaults (`.env`, `.env.*`, `*.pem`, `*.key`,
   `*.p12`, `*.pfx`, `*.secrets`, `secrets.*`) rather than replacing them wholesale.  Operators who
