@@ -157,7 +157,7 @@ The findings comment carries: a verdict line + 2–5 detail bullets. It is non-o
 
 ## Conversation stream protocol
 
-The Slack/Discord thread for each issue reads as a **conversation between agents**: validator speaks first, then developer, QA, reviewer, security, docs, and finally orchestrator announces the merge. This mirrors how Daedalus threads issues.
+The Slack/Discord thread for each issue reads as a **conversation between agents**: validator speaks first, then developer, QA, docs, reviewer, security, and finally orchestrator announces the merge. This mirrors how Daedalus threads issues.
 
 Two rules apply for every stage, in this order:
 
@@ -595,9 +595,23 @@ After QA returns:
      ```
      If exit 0: re-dispatch the developer. If exit non-zero (ceiling reached): board "Blocked", stop.
 
-### 3e. Parallel review stages
+### 3e. Review stages
 
-Only after `qa:pass` is on the PR. Run reviewer, security, and docs **in parallel**.
+Only after `qa:pass` is on the PR.
+
+<!-- Ordering rationale: docs commits and pushes to the branch; reviewer and security
+are read-only. On PRs #80 and #87, docs pushed while a developer fix was in flight
+after a review block, causing a push race and invalidated approval markers. Running
+docs first ensures its push completes before reviewer/security start — no concurrent
+writes. Rework cost if review later blocks is low and rare; the gate already forces
+docs to re-run when non-waivable paths change. Serializing docs *after* would pay
+latency on every PR to protect against a minority case. -->
+
+**Phase 1 — Docs first:** Dispatch the docs stage. Wait for docs to push and post
+`docs:done` before continuing to phase 2.
+
+**Phase 2 — Reviewer and security in parallel:** After docs completes, dispatch
+reviewer and security concurrently.
 
 **Reviewer** (if `roles.reviewer = true`):
 ```
@@ -675,7 +689,7 @@ Final (2-3 lines): CLEAR/FINDINGS outcome + areas covered.
 
 **Docs** (if `roles.docs = true`):
 ```
-You are Documentation — terminal stage. QA passed and PR #<PR_NUMBER> is approved.
+You are Documentation. QA passed for PR #<PR_NUMBER>. Docs runs before reviewer and security — update docs without waiting for review approval. Do not open a fix loop.
 
 Base branch: <BASE_BRANCH>
 VCS provider: <VCS_PROVIDER>
@@ -702,7 +716,12 @@ If nothing to update: still add docs:done and post with SUMMARY="no docs changes
 Final (2-3 lines): "docs posted: <files updated>" or "no docs changes required".
 ```
 
-After all three parallel stages complete:
+After docs completes (phase 1):
+
+**Docs returned:**
+- `bash scripts/pipeline-notify.sh docs "#<N>" "<subagent's 2-3 line outcome>" <N>`
+
+After reviewer and security complete (phase 2):
 
 **Reviewer returned:**
 - Approved: `bash scripts/pipeline-notify.sh reviewer "#<N>" "<subagent's 2-3 line outcome>" <N>`
@@ -719,9 +738,6 @@ After all three parallel stages complete:
   bash scripts/pipeline-vcs.sh record-attempt <N> security
   ```
   Exit 0 → re-dispatch developer. Exit non-zero → set `pipeline:blocked`, stop.
-
-**Docs returned:**
-- `bash scripts/pipeline-notify.sh docs "#<N>" "<subagent's 2-3 line outcome>" <N>`
 
 If any stage blocked: set `pipeline:blocked` on issue, move on.
 
@@ -856,5 +872,5 @@ After processing all issues, print a summary table:
 12. Attempt counting is durable and enforced by `record-attempt`: call `bash scripts/pipeline-vcs.sh record-attempt <N> <stage>` before each developer re-dispatch.  When it exits non-zero (either `max_fix_attempts` consecutive same-stage failures OR `max_total_dispatches` total dispatches reached): set `pipeline:blocked`, notify, move on.  Never count attempts in orchestrator memory — the helper is the source of truth.
 13. In file mode: skip board calls, skip QA/reviewer/security/docs, developer commits to branch directly.
 14. Never merge a PR that fails `check-pr-files` — secret-like files require a human; `skip-qa` does not waive this gate (nor CI).
-15. Non-worktree subagents (reviewer, security, docs) must read the PR diff via `diff-pr` only; they must never run `git checkout`, `git switch`, or `git pull` in the orchestrator's working directory. Worktree-isolated stages (developer, QA) are exempt.
+15. Non-worktree subagents (reviewer, security) must read the PR diff via `diff-pr` only; they must never run `git checkout`, `git switch`, or `git pull` in the orchestrator's working directory. Worktree-isolated stages (developer, QA, docs) are exempt — docs commits and pushes and therefore runs in its own worktree.
 16. `comment-issue`, `comment-pr`, `create-issue`, and `create-pr` exit non-zero when their POST fails. A stage must not assert a filing landed without a non-empty URL returned by the command. For `create-pr` failures, set `pipeline:blocked` immediately — no PR means all downstream stages are impossible.
