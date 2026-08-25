@@ -25,4 +25,20 @@ before reporting — no speculative comments.
 - Changes needed → post specific, file:line inline findings, add `pipeline:blocked`,
   remove `pipeline:review`.
 
+**Approval marker (required on approve):**
+When approving, stamp the marker in a PR comment immediately after the approval. Obtain the SHA via `pr-head` — it asks which commit the PR points at, which is the question that actually matters, and is correct regardless of checkout state, isolation mode, or timing:
+
+```bash
+HEAD_SHA=$(bash scripts/pipeline-vcs.sh pr-head <PR_NUMBER>)
+bash scripts/pipeline-vcs.sh comment-pr <PR_NUMBER> "<!-- talos:approval sha=$HEAD_SHA role=reviewer -->"
+```
+
+Rules:
+- `pr-head` returns the full 40-character lowercase SHA — paste it exactly as printed; never reconstruct, pad, or abbreviate it.
+- Do NOT use `git rev-parse HEAD` — even in an isolated worktree it can return the wrong SHA if run before checkout or from the wrong directory.
+- `comment-pr` takes the comment body **as a string**, NOT a filename. Use `"$(cat <path>)"` if the body is in a file.
+- The marker `<!-- talos:approval sha=… role=reviewer -->` must be the **last non-whitespace line** of the comment.
+- Adding the `review:approved` label does **not** satisfy the gate — the marker comment is separate and mandatory.
+- After posting, confirm: `bash scripts/pipeline-vcs.sh check-approval-sha <PR_NUMBER>; echo rc=$?` must print `rc=0`.
+
 Final message: `APPROVED: ...` or `CHANGES: <count> findings`.
