@@ -557,8 +557,13 @@ for r in runs:
       # Check for a closing keyword for #<issue_n> in the PR body.
       # Patterns (case-insensitive):
       #   close/closes/closed/fix/fixes/fixed/resolve/resolves/resolved
-      #   followed by optional whitespace and then:
+      #   followed by optional whitespace and then one of:
       #     #N  |  repo#N  |  owner/repo#N
+      #     GH-N  (case-insensitive; the alternative starts with [Gg][Hh], so a
+      #            non-G prefix like XGH-57 simply does not match; the left-guard
+      #            (?<![0-9]) prevents a digit prefix, e.g. 1GH-57 — defence-in-depth
+      #            if this ref pattern is ever reused without the preceding \s+)
+      #     https://github.com/<owner>/<repo>/issues/N  (optional trailing /,?,#)
       local has_closing
       has_closing="$(printf '%s' "$pr_body" | python3 -c "
 import re, sys
@@ -566,9 +571,15 @@ body = sys.stdin.read()
 n = sys.argv[1]
 # Closing keywords (case-insensitive)
 kw = r'(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)'
-# Reference forms: #N  repo#N  owner/repo#N
-# The # is always required; only the leading owner/repo prefix is optional.
-ref = r'(?:[A-Za-z0-9_./-]+)?#' + re.escape(n) + r'(?!\d)'
+# Reference forms:
+#   1. #N  |  repo#N  |  owner/repo#N  (# provides left boundary)
+#   2. GH-N  case-insensitive; left-guard prevents digit-prefix collision (e.g. XGH-N ok, 1GH-N not)
+#   3. https://github.com/<owner>/<repo>/issues/N  URL structure provides left boundary
+n_esc = re.escape(n)
+ref_hash = r'(?:[A-Za-z0-9_./-]+)?#' + n_esc + r'(?!\d)'
+ref_gh   = r'(?<![0-9])[Gg][Hh]-' + n_esc + r'(?!\d)'
+ref_url  = r'https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/' + n_esc + r'(?!\d)'
+ref = r'(?:' + ref_hash + r'|' + ref_gh + r'|' + ref_url + r')'
 pattern = kw + r'\s+' + ref
 if re.search(pattern, body, re.IGNORECASE):
     print('yes')

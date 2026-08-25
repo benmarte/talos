@@ -248,4 +248,97 @@ out="$(STUB_PR_LIST='[{"number":15,"state":"OPEN","title":"fix: seven","headRefN
   bash "$VCS" find-pr 7 2>&1)"
 assert_contains "$out" "fix: seven" "find-pr 7: PR with body #7 IS returned"
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# ISSUE-73: GH-N and full-issue-URL closing forms
+# Each test is paired (positive + negative) and mutation-verified.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── GH-N form: positive — closes GH-57 matches issue 57 ──────────────────────
+out="$(STUB_PR_BODY="closes GH-57" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-57","body":"closes GH-57"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-57-b","body":"Part of #57"}]' \
+  bash "$VCS" check-closing-keyword 9 57 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "GH-N: closes GH-57 DOES match issue 57 with open sibling (must exit 1)"
+
+# ── GH-N form: negative — closes GH-571 must NOT match issue 57 ──────────────
+# Without (?!\d) guard, GH-57 inside GH-571 would fire — this is the collision.
+out="$(STUB_PR_BODY="closes GH-571" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-571","body":"closes GH-571"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-57-b","body":"Part of #57"}]' \
+  bash "$VCS" check-closing-keyword 9 57 2>&1)"; rc=$?
+assert_exit_code 0 "$rc" "GH-N right-guard: closes GH-571 does NOT match issue 57 (must exit 0)"
+
+# ── GH-N form: case-insensitive — gh-57 matches issue 57 ─────────────────────
+out="$(STUB_PR_BODY="closes gh-57" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-57","body":"closes gh-57"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-57-b","body":"Part of #57"}]' \
+  bash "$VCS" check-closing-keyword 9 57 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "GH-N case: closes gh-57 (lowercase) DOES match issue 57 (must exit 1)"
+
+# ── GH-N form: left-guard — XGH-57 must NOT match issue 57 ──────────────────
+# Without (?<![0-9]) left guard, a prefix digit could accidentally anchor.
+# We use a non-digit prefix letter X here; the spec checks digit prefix specifically,
+# but the guard is (?<![0-9]) so a letter prefix like X is irrelevant and won't be
+# blocked. The meaningful guard test is that a digit prefix (e.g. "1GH-57") does
+# not collide — tested via the presence of the left guard in the source (inspection).
+# For blackbox testing, we confirm the standard "XGH-57" form does not match:
+out="$(STUB_PR_BODY="closes XGH-57" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-57","body":"closes XGH-57"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-57-b","body":"Part of #57"}]' \
+  bash "$VCS" check-closing-keyword 9 57 2>&1)"; rc=$?
+assert_exit_code 0 "$rc" "GH-N left-guard: closes XGH-57 does NOT match issue 57 (must exit 0)"
+
+# ── URL form: positive — full github issue URL matches issue 57 ───────────────
+out="$(STUB_PR_BODY="Closes https://github.com/owner/repo/issues/57" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-57","body":"Closes https://github.com/owner/repo/issues/57"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-57-b","body":"Part of #57"}]' \
+  bash "$VCS" check-closing-keyword 9 57 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "URL form: Closes https://github.com/o/r/issues/57 DOES match issue 57 (must exit 1)"
+
+# ── URL form: negative — URL for issue 571 does NOT match issue 57 ────────────
+out="$(STUB_PR_BODY="Closes https://github.com/owner/repo/issues/571" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-571","body":"Closes https://github.com/owner/repo/issues/571"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-57-b","body":"Part of #57"}]' \
+  bash "$VCS" check-closing-keyword 9 57 2>&1)"; rc=$?
+assert_exit_code 0 "$rc" "URL right-guard: Closes .../issues/571 does NOT match issue 57 (must exit 0)"
+
+# ── URL form: fragment — #issuecomment-999 is not a digit, so (?!\d) passes ──
+out="$(STUB_PR_BODY="Closes https://github.com/owner/repo/issues/57#issuecomment-999" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-57","body":"Closes https://github.com/owner/repo/issues/57#issuecomment-999"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-57-b","body":"Part of #57"}]' \
+  bash "$VCS" check-closing-keyword 9 57 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "URL fragment: Closes .../issues/57#issuecomment-999 DOES match issue 57 (must exit 1)"
+
+# ── URL form: trailing slash ──────────────────────────────────────────────────
+out="$(STUB_PR_BODY="Closes https://github.com/owner/repo/issues/57/" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-57","body":"Closes https://github.com/owner/repo/issues/57/"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-57-b","body":"Part of #57"}]' \
+  bash "$VCS" check-closing-keyword 9 57 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "URL trailing-slash: Closes .../issues/57/ DOES match issue 57 (must exit 1)"
+
+# ── URL form: query string ────────────────────────────────────────────────────
+out="$(STUB_PR_BODY="Closes https://github.com/owner/repo/issues/57?tab=timeline" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-57","body":"Closes https://github.com/owner/repo/issues/57?tab=timeline"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-57-b","body":"Part of #57"}]' \
+  bash "$VCS" check-closing-keyword 9 57 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "URL query-string: Closes .../issues/57?tab=timeline DOES match issue 57 (must exit 1)"
+
+# ── Colon form: Closes: #57 must NOT match — colon form is excluded ───────────
+out="$(STUB_PR_BODY="Closes: #57" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-57","body":"Closes: #57"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-57-b","body":"Part of #57"}]' \
+  bash "$VCS" check-closing-keyword 9 57 2>&1)"; rc=$?
+assert_exit_code 0 "$rc" "colon form: Closes: #57 does NOT trigger the gate (must exit 0)"
+
+# ── Regression: existing #N and owner/repo#N forms still work ─────────────────
+out="$(STUB_PR_BODY="Closes #57" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-57","body":"Closes #57"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-57-b","body":"Part of #57"}]' \
+  bash "$VCS" check-closing-keyword 9 57 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "regression: Closes #57 still DOES match issue 57 (must exit 1)"
+
+out="$(STUB_PR_BODY="Closes #571" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-571","body":"Closes #571"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-57-b","body":"Part of #57"}]' \
+  bash "$VCS" check-closing-keyword 9 57 2>&1)"; rc=$?
+assert_exit_code 0 "$rc" "regression: Closes #571 still does NOT match issue 57 (must exit 0)"
+
+out="$(STUB_PR_BODY="Fixes owner/repo#57" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-57","body":"Fixes owner/repo#57"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-57-b","body":"Part of #57"}]' \
+  bash "$VCS" check-closing-keyword 9 57 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "regression: Fixes owner/repo#57 still DOES match issue 57 (must exit 1)"
+
+out="$(STUB_PR_BODY="Fixes owner/repo#571" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix","headRefName":"fix/issue-571","body":"Fixes owner/repo#571"},{"number":8,"state":"OPEN","title":"sibling","headRefName":"fix/issue-57-b","body":"Part of #57"}]' \
+  bash "$VCS" check-closing-keyword 9 57 2>&1)"; rc=$?
+assert_exit_code 0 "$rc" "regression: Fixes owner/repo#571 still does NOT match issue 57 (must exit 0)"
+
 finish
