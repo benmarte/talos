@@ -29,7 +29,7 @@ GitHub Issues (or a local markdown checklist in file mode) serve as the state ma
 | Validator gate | `pipeline:ready` → validator must emit CONFIRMED |
 | QA-gates-review | `qa:pass` required before reviewer/security/docs |
 | Auto-merge | Orchestrator merges when CI + all stage labels are green |
-| Dashboard / per-project config | `talos.pipeline.yml` per repo |
+| Dashboard / per-project config | `talos.pipeline.json` per repo (YAML also supported when PyYAML installed) |
 
 ---
 
@@ -82,7 +82,7 @@ gh auth login
 
 # GitHub API (token-only — no gh CLI required)
 export GITHUB_TOKEN="ghp_your_token_here"
-# talos.pipeline.yml: vcs.provider: github-api
+# talos.pipeline.json: { "vcs": { "provider": "github-api" } }
 
 # GitLab
 glab auth login
@@ -108,7 +108,7 @@ az devops configure --defaults organization=https://dev.azure.com/MYORG project=
 /plugin install talos@talos
 ```
 
-Restart the session, then run `/pipeline-setup` in any repo to write `talos.pipeline.yml` and bootstrap labels. The plugin carries the skills, all eight role agents, the scripts and the templates; the repo carries nothing but its config.
+Restart the session, then run `/pipeline-setup` in any repo to write `talos.pipeline.json` and bootstrap labels. The plugin carries the skills, all eight role agents, the scripts and the templates; the repo carries nothing but its config.
 
 agent-skills comes with it automatically (`+ 1 dependency: agent-skills`). If you already use Addy's marketplace you will see agent-skills registered twice; that is expected and harmless, see the [user guide](docs/user-guide.md) for why.
 
@@ -142,8 +142,10 @@ The two paths coexist. Talos resolves its scripts in this order — plugin root 
 ### 2. Configure
 
 ```bash
-cp path/to/talos/talos.pipeline.yml.example talos.pipeline.yml
-# Edit talos.pipeline.yml for your project
+cp path/to/talos/talos.pipeline.json.example talos.pipeline.json
+# Edit talos.pipeline.json for your project
+# JSON needs no PyYAML dependency — recommended for new projects.
+# YAML is also supported: cp talos.pipeline.yml.example talos.pipeline.yml (requires PyYAML)
 ```
 
 Minimum viable config (board and notifications optional):
@@ -207,7 +209,7 @@ Then open a Claude Code session in your repo and run:
 
 ## Config reference
 
-All keys live in `talos.pipeline.yml` at your repo root. Every key is optional and falls back to a sensible default.
+All keys live in `talos.pipeline.json` (or `talos.pipeline.yml` if PyYAML is installed) at your repo root. Every key is optional and falls back to a sensible default.
 
 | Key | Default | Description |
 |-----|---------|-------------|
@@ -234,8 +236,8 @@ All keys live in `talos.pipeline.yml` at your repo root. Every key is optional a
 | `merge.forbidden_files` | see defaults | Glob patterns (matched against filename and full path) for files that must not appear in a PR. Defaults (20 patterns): `.env`, `.env.*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.secrets`, `secrets.*`, `*id_rsa*`, `*id_ecdsa*`, `*id_ed25519*`, `*id_dsa*`, `*.ppk`, `*.jks`, `*.keystore`, `*.pkcs12`, `*.kdbx`, `*.ovpn`, `.netrc`, `_netrc`. Setting this key **adds** to the defaults (union semantics) — the built-in patterns remain active alongside any configured patterns. To replace the defaults entirely, also set `merge.forbidden_files_replace: true` (see below). **Note:** `*id_rsa*` also matches `id_rsa.pub` (a harmless public key) — this is an accepted false positive. If you commit public keys, add `id_rsa.pub` (or the specific filename) to `merge.forbidden_files_allow`. **Note:** `*.keystore` may also block self-signed test keystores committed for CI use — `fnmatch` cannot distinguish a real keystore from a test one. This is expected behaviour; operators who legitimately commit test keystores should add the specific filename to `merge.forbidden_files_allow` (e.g. `["test.keystore", "debug.keystore"]`). **Note:** `.netrc` and `_netrc` are literal patterns (no glob characters). As of #76 (PR #90), literal deny patterns generate canaries and wildcard allow entries that match them are rejected — the deferral that kept `.netrc` out of the defaults is resolved (#78). **Note:** Three extensions were deliberately excluded from the defaults in #78: `*.gpg` (`pass`/SOPS/git-crypt workflows commit GPG-encrypted blobs intentionally — encryption-at-rest is a legitimate reason to put a secret in a repo), `*.asc` (detached signatures and public signing keys are routinely committed as release artifacts), and `*.der` (DER is an encoding used equally by public X.509 certificates and private keys — the extension alone is not a reliable signal). If one of these applies to files that should genuinely never appear in your PRs, add the pattern to `merge.forbidden_files`. |
 | `merge.forbidden_files_replace` | `false` | Set to `true` to restore the pre-v0.13 replacement behaviour: `merge.forbidden_files` will then **replace** the built-in defaults entirely rather than unioning with them. **Security warning:** this suppresses the built-in secret-protection patterns for every PR until the key is removed. A `talos:forbidden-files-defaults-replaced` marker is emitted on stdout on every run so the suppressed state is auditable in the PR record. Keep this `false` unless you have a specific reason to narrow the deny list. |
 | `merge.forbidden_files_allow` | `[]` | Explicit exemptions for `merge.forbidden_files`. Globs matched against filename and full path, checked **before** deny patterns. Use this when a deny pattern over-matches a committed template (e.g. allow `.env.example` while keeping `.env.production` blocked). Example: `[".env.example"]`. **Security note:** each entry punches a hole in the secret-protection gate — if a real secret file matches an allow entry it will not be blocked. Keep the allow list minimal and specific. **Literal-override caveat:** the allow-list validation generates canaries from both wildcard and literal deny patterns. A wildcard allow entry (e.g. `*.env`) that matches a canary derived from any deny pattern is rejected. The one permitted exception is an allow entry that is an exact string match for a literal deny pattern (e.g. adding `.env` to allow when `.env` is a deny pattern) — this is treated as a deliberate operator decision to permit that specific file. Keep such overrides intentional and minimal. |
-| `merge.approval_waiver_paths` | `["*.md", "docs/**", "CHANGELOG.md"]` | Glob patterns for files that, when they are the **only** changes between an approval SHA and the current head, do not invalidate that approval. A docs-only commit pushed after QA approval will therefore carry the approval forward rather than forcing a full re-run. **Hard-coded non-waivable (cannot be widened by this key):** any path under `scripts/`, any path under `tests/`, `talos.pipeline.yml`, and `pipeline.yaml` — these are enforced structurally after the config waiver check. **Validation:** entries that are too broad (catch-all globs such as `*`, `**`, `*/*`, or any pattern that would match the hard-coded non-waivable paths) are rejected at validation time and will **block the merge** (fail-closed), matching the behaviour of `merge.forbidden_files_allow`. Keep entries minimal and specific. |
-| `issues.label_filter` | `pipeline:ready` | Label that queues issues |
+| `merge.approval_waiver_paths` | `["*.md", "docs/**", "CHANGELOG.md"]` | Glob patterns for files that, when they are the **only** changes between an approval SHA and the current head, do not invalidate that approval. A docs-only commit pushed after QA approval will therefore carry the approval forward rather than forcing a full re-run. **Hard-coded non-waivable (cannot be widened by this key):** any path under `scripts/`, any path under `tests/`, and all pipeline config filenames: `talos.pipeline.yml`, `talos.pipeline.yaml`, `talos.pipeline.json`, `.claude-pipeline.yaml`, `.claude-pipeline.json`, `pipeline.yaml`, `pipeline.json` — these are enforced structurally after the config waiver check. **Validation:** entries that are too broad (catch-all globs such as `*`, `**`, `*/*`, or any pattern that would match the hard-coded non-waivable paths) are rejected at validation time and will **block the merge** (fail-closed), matching the behaviour of `merge.forbidden_files_allow`. Keep entries minimal and specific. |
+| `issues.label_filter` | `pipeline:ready` | An issue enters the queue when it carries **both** `pipeline:ready` **and** this label. When `label_filter` is `pipeline:ready` (the default), the two conditions collapse to one — existing configs are byte-identical to today. When set to a custom value (e.g. `team:alice`), only issues carrying both labels are queued; issues that carry only the custom label are silently skipped. |
 | `issues.skip_labels` | `[pipeline:blocked, wontfix]` | Issues with these are skipped |
 | `issues.max_parallel` | `1` | Max issues in-flight at once. **Concurrency warning:** raising this above `1` requires concurrency-safe `verify:` scripts. Under `isolation: worktree` (the default), Talos provides filesystem isolation (one worktree per issue) but does NOT manage Docker/compose project names, port allocations, or shared scratch directories. Two simultaneous verify runs against a shared compose stack will collide — observed failures include container-recreate races, script overwrites, and green transcripts that describe the wrong worktree. Consuming projects must derive their own isolation from `TALOS_ISSUE_NUMBER` (e.g. `COMPOSE_PROJECT_NAME=talos-$TALOS_ISSUE_NUMBER`). With the integer guard in place, `TALOS_ISSUE_NUMBER` is guaranteed to be digits or empty — never shell-unsafe. **Footgun:** when `TALOS_ISSUE` is not set, `TALOS_ISSUE_NUMBER` is empty and the example yields `COMPOSE_PROJECT_NAME=talos-`, a name shared across all agents; under `max_parallel > 1` this silently undoes isolation. Always set `TALOS_ISSUE=<N>` when running concurrent pipelines. The default (`1`) has no contention and requires no action. **Hard constraint under `isolation: branch`:** `max_parallel > 1` is refused at startup — `pipeline-isolation.sh validate` exits 1 with: `ERROR: isolation: branch requires issues.max_parallel: 1 — two agents cannot safely share one checkout. Set max_parallel: 1 or switch to isolation: worktree.` |
 | `execution.isolation` | `worktree` | Working-copy strategy for each issue. **Absent key is identical to `worktree` — all existing configs are unaffected.** Three values: `worktree` (default) — each developer and QA stage runs in its own `git worktree`; unchanged from all prior releases. `branch` — stages run in the orchestrator's checkout on a per-issue branch; the checkout is never duplicated. **Cost:** execution is serialized — `max_parallel > 1` is refused at startup (hard failure, not a warning). The orchestrator asserts a clean, level tree (`assert-sync`) before each developer dispatch; a dirty or stale tree blocks the issue. `checkout` — recognised but **refused**: exits 1 with `ERROR: isolation: checkout is not yet implemented. Use isolation: worktree (default) or isolation: branch.` Planned for a future release. Any other value is refused with `ERROR: Unknown isolation mode '<value>'. Valid values: worktree, branch, checkout (checkout not yet implemented).` **Why `branch` exists:** worktrees are not viable in all setups — submodules are not populated in a fresh worktree; ignored-but-required artifacts (`node_modules/`, `.venv/`, generated protobufs) are absent so every stage pays a full install; absolute paths in build configs and Docker bind-mounts point at the original checkout; large monorepos pay real disk and time cost. Use `branch` when your project has any of these constraints and serial execution is acceptable. |
