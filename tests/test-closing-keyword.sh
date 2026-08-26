@@ -519,4 +519,52 @@ out="$(STUB_PR_BODY="Closes #42" STUB_PR_NUMBER=9 \
   bash "$VCS" check-closing-keyword 9 42 2>&1)"; rc=$?
 assert_exit_code 0 "$rc" "issue-91 S6: closing keyword with no open siblings exits 0"
 
+# ── issue-113: GH-N and URL forms in sibling body ────────────────────────────
+# Mutation that makes these tests fail: remove gh_pat and url_pat from body_pat
+# — a sibling using GH-42 or the full URL silently bypasses the guard.
+
+# -- 113-G1. GH-42 in sibling body IS counted (exits 1) ----------------------
+out="$(STUB_PR_BODY="Closes #42" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix: curr","headRefName":"fix/issue-42-a","body":"Closes #42"},{"number":8,"state":"OPEN","title":"fix: sibling","headRefName":"fix/other-b","body":"Part of GH-42"}]' \
+  bash "$VCS" check-closing-keyword 9 42 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "issue-113 G1: GH-42 in sibling body IS counted (must exit 1)"
+assert_contains "$out" "#8" "issue-113 G1: sibling PR #8 named in diagnostic"
+
+# -- 113-G2. GH-N case variant (gh-42) IS counted ----------------------------
+out="$(STUB_PR_BODY="Closes #42" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix: curr","headRefName":"fix/issue-42-a","body":"Closes #42"},{"number":8,"state":"OPEN","title":"fix: sibling","headRefName":"fix/other-b","body":"Related to gh-42"}]' \
+  bash "$VCS" check-closing-keyword 9 42 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "issue-113 G2: gh-42 (lowercase) in sibling body IS counted (case-insensitive)"
+
+# -- 113-G3. GH-420 does NOT match issue 42 (right boundary guard) ------------
+out="$(STUB_PR_BODY="Closes #42" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix: curr","headRefName":"fix/issue-42-a","body":"Closes #42"},{"number":8,"state":"OPEN","title":"fix: sibling","headRefName":"fix/other-b","body":"See GH-420 for context"}]' \
+  bash "$VCS" check-closing-keyword 9 42 2>&1)"; rc=$?
+assert_exit_code 0 "$rc" "issue-113 G3: GH-420 does NOT match issue 42 (right-digit guard)"
+
+# -- 113-G4. GH-4 does NOT match issue 42 (?!\d suffix guard) ----------------
+out="$(STUB_PR_BODY="Closes #42" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix: curr","headRefName":"fix/issue-42-a","body":"Closes #42"},{"number":8,"state":"OPEN","title":"fix: sibling","headRefName":"fix/other-b","body":"Related to GH-4"}]' \
+  bash "$VCS" check-closing-keyword 9 42 2>&1)"; rc=$?
+assert_exit_code 0 "$rc" "issue-113 G4: GH-4 does NOT match issue 42 (different issue number)"
+
+# -- 113-U1. Own-repo issue URL in sibling body IS counted (exits 1) ----------
+out="$(STUB_PR_BODY="Closes #42" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix: curr","headRefName":"fix/issue-42-a","body":"Closes #42"},{"number":8,"state":"OPEN","title":"fix: sibling","headRefName":"fix/other-b","body":"Part of https://github.com/acme/widget/issues/42"}]' \
+  bash "$VCS" check-closing-keyword 9 42 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "issue-113 U1: own-repo URL in sibling body IS counted (must exit 1)"
+assert_contains "$out" "#8" "issue-113 U1: sibling PR #8 named in diagnostic"
+
+# -- 113-U2. Foreign-repo URL is NOT counted (exits 0) -----------------------
+out="$(STUB_PR_BODY="Closes #42" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix: curr","headRefName":"fix/issue-42-a","body":"Closes #42"},{"number":8,"state":"OPEN","title":"fix: sibling","headRefName":"fix/other-b","body":"See https://github.com/other-owner/other-repo/issues/42"}]' \
+  bash "$VCS" check-closing-keyword 9 42 2>&1)"; rc=$?
+assert_exit_code 0 "$rc" "issue-113 U2: foreign-repo URL in sibling body is NOT counted (must exit 0)"
+
+# -- 113-U3. Own-repo URL with wrong issue number does NOT match (exits 0) ----
+out="$(STUB_PR_BODY="Closes #42" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix: curr","headRefName":"fix/issue-42-a","body":"Closes #42"},{"number":8,"state":"OPEN","title":"fix: sibling","headRefName":"fix/other-b","body":"Part of https://github.com/acme/widget/issues/420"}]' \
+  bash "$VCS" check-closing-keyword 9 42 2>&1)"; rc=$?
+assert_exit_code 0 "$rc" "issue-113 U3: own-repo URL /issues/420 does NOT match issue 42 (right-digit guard)"
+
 finish
