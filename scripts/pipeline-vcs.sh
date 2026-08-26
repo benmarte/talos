@@ -116,6 +116,33 @@ if [ -z "$_TALOS_CFG" ]; then
   unset _talos_c
 fi
 
+# ── Config-parse warning (#116) ───────────────────────────────────────────────
+# When a config file exists but cannot be parsed, warn once here in-process.
+# No sentinel file is written: there is nothing an unprivileged external process
+# can pre-create to suppress this check. Each pipeline-vcs.sh invocation either
+# parses the config successfully (silent) or emits exactly one warning (below).
+# Direct callers of pipeline-config.sh receive silent default-fallback behaviour;
+# that is the intended degradation path for non-pipeline invocations.
+if [ -n "$_TALOS_CFG" ] && [ -f "$_TALOS_CFG" ]; then
+  if ! python3 - "$_TALOS_CFG" 2>/dev/null <<'_CFG_PARSE_CHECK'
+import sys
+p = sys.argv[1]
+try:
+    try:
+        import yaml
+        yaml.safe_load(open(p))
+    except ImportError:
+        import json
+        json.load(open(p))
+    sys.exit(0)
+except Exception:
+    sys.exit(1)
+_CFG_PARSE_CHECK
+  then
+    printf 'pipeline-config: WARNING -- %s could not be parsed (malformed YAML/JSON or PyYAML not installed?); ALL configuration keys are using built-in defaults.\n' "$_TALOS_CFG" >&2
+  fi
+fi
+
 # ── Arg parsing ───────────────────────────────────────────────────────────────
 DRY_RUN=false
 ALLOW_CLOSED=false

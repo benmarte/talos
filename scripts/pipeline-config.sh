@@ -49,7 +49,7 @@ fi
 # ── Parse and extract with Python ────────────────────────────────────────────
 # The heredoc passes file path, key, and default as argv to avoid shell
 # quoting issues with special characters in values.
-TALOS_WARN_KEY="$PPID" python3 - "$CFG" "$KEY" "$DEFAULT" <<'PYEOF'
+python3 - "$CFG" "$KEY" "$DEFAULT" <<'PYEOF'
 import sys
 
 cfg_path = sys.argv[1]
@@ -75,20 +75,10 @@ try:
         with open(cfg_path) as f:
             cfg = json.load(f)
 except Exception:
-    # Config file present but unparseable (e.g. PyYAML absent, malformed JSON/YAML).
-    # Warn once per pipeline-vcs.sh invocation via a PPID-keyed sentinel (#116).
-    import os as _os_cfg, pathlib as _pl_cfg
-    _warn_key = _os_cfg.environ.get('TALOS_WARN_KEY', '')
-    if _warn_key:
-        _sentinel = _pl_cfg.Path('/tmp/talos-cfg-parse-warn-' + _warn_key)
-        if not _sentinel.exists():
-            print('pipeline-config: WARNING -- ' + cfg_path +
-                  ' could not be parsed (malformed YAML/JSON or PyYAML not installed?); '
-                  'ALL configuration keys are using built-in defaults.', file=sys.stderr)
-            try:
-                _sentinel.touch()
-            except Exception:
-                pass
+    # Config file present but unparseable. Return the caller-supplied default.
+    # The warning is emitted once in-process by pipeline-vcs.sh at startup.
+    # Direct invocations of pipeline-config.sh degrade silently -- not a crash,
+    # not permanent silence, and nothing an external process can suppress.
     print(default, end='')
     sys.exit(0)
 
