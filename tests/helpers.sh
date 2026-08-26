@@ -65,7 +65,7 @@ make_sandbox() {
   # BASH_SOURCE[-1] (bash 4+) is spelled out portably for bash 3.2 (macOS).
   _msb_outer="${BASH_SOURCE[${#BASH_SOURCE[@]}-1]:-}"
   if [ -n "$_msb_outer" ] && [ "$_msb_outer" != "$0" ]; then
-    printf 'make_sandbox: ERROR: do not source test files — run them directly:\n' >&2
+    printf 'make_sandbox: ERROR: do not source test files -- run them directly:\n' >&2
     printf '  bash %s\n' "$_msb_outer" >&2
     printf 'Sourcing make_sandbox cds the caller shell into a temp dir that is\n' >&2
     printf 'deleted on exit, stranding the caller in a non-existent path.\n' >&2
