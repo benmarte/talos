@@ -48,6 +48,12 @@ assert_exit_code() {  # $1=expected $2=actual $3=label
 
 # make_sandbox — create an isolated temp dir with a git repo + fake origin.
 # Sets SANDBOX and cds into it. Cleaned up automatically on exit.
+#
+# WARNING (#121): make_sandbox cds into a temp dir and registers an EXIT trap
+# that deletes it. This function must only be called inside a subprocess
+# (e.g. "bash tests/my-test.sh") — never sourced into the caller's own shell.
+# Sourcing it changes the caller's CWD to a directory that gets deleted when
+# the subprocess exits, stranding the caller in a non-existent path.
 make_sandbox() {
   SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/talos-test.XXXXXX")"
   trap 'rm -rf "$SANDBOX"' EXIT

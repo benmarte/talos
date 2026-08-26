@@ -4,6 +4,14 @@
 #   pattern  optional substring filter, e.g. "notify" runs test-notify*.sh
 set -u
 
+# Source guard (#121): sourcing this file would run test suites in the caller's
+# shell, changing the caller's CWD to a temp sandbox that gets deleted on exit.
+# Always invoke as: bash tests/run-tests.sh [pattern]
+if [ "${BASH_SOURCE[0]:-$0}" != "$0" ]; then
+  printf 'ERROR: do not source run-tests.sh; use: bash tests/run-tests.sh\n' >&2
+  return 1
+fi
+
 TALOS_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export TALOS_ROOT
 chmod +x "$TALOS_ROOT"/tests/stubs/* 2>/dev/null
