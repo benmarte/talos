@@ -672,13 +672,18 @@ else:
 owner_esc = re.escape(_owner_lc)
 name_esc  = re.escape(_name_lc)
 n_esc = re.escape(n)
-# Two-branch pattern for sibling body matching:
+# Four-branch pattern for sibling body matching (#113: added GH-N and URL forms):
 #   Branch 1: own-repo qualified form — owner/repo#N (current repo only, case-insensitive)
 #   Branch 2: bare #N — not preceded by a word char or slash
 #     (?<!/) excludes foreign repo#N suffixes; (?<!\w) excludes alphanumeric prefixes
+#   Branch 3: GH-N (case-insensitive) — same boundary guards as has_closing
+#   Branch 4: https://github.com/<owner>/<repo>/issues/N (scoped to current repo)
 own_repo_pat = r'(?<!\w)(?i:' + owner_esc + r'/' + name_esc + r')#' + n_esc + r'(?!\d)'
 bare_pat      = r'(?<!\w)(?<!/)#' + n_esc + r'(?!\d)'
-body_pat = r'(?:' + own_repo_pat + r'|' + bare_pat + r')'
+gh_pat        = r'(?<![0-9])[Gg][Hh]-' + n_esc + r'(?!\d)'
+url_pat       = (r'https://github\.com/(?i:' + owner_esc + r'/' + name_esc + r')'
+                 + r'/issues/' + n_esc + r'(?!\d)')
+body_pat = r'(?:' + own_repo_pat + r'|' + bare_pat + r'|' + gh_pat + r'|' + url_pat + r')'
 try: prs = json.load(sys.stdin)
 except Exception: prs = []
 siblings = []
@@ -2617,7 +2622,10 @@ name_esc  = re.escape(_name_lc)
 n_esc = re.escape(n)
 own_repo_pat = r'(?<!\w)(?i:' + owner_esc + r'/' + name_esc + r')#' + n_esc + r'(?!\d)'
 bare_pat      = r'(?<!\w)(?<!/)#' + n_esc + r'(?!\d)'
-body_pat = r'(?:' + own_repo_pat + r'|' + bare_pat + r')'
+gh_pat        = r'(?<![0-9])[Gg][Hh]-' + n_esc + r'(?!\d)'
+url_pat       = (r'https://github\.com/(?i:' + owner_esc + r'/' + name_esc + r')'
+                 + r'/issues/' + n_esc + r'(?!\d)')
+body_pat = r'(?:' + own_repo_pat + r'|' + bare_pat + r'|' + gh_pat + r'|' + url_pat + r')'
 try: prs = json.load(sys.stdin)
 except Exception: prs = []
 siblings = []
