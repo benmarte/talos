@@ -13,6 +13,10 @@
 #   - When -D <file> is passed, writes a minimal HTTP response header block
 #     including X-RateLimit-Reset: ${CURL_RATE_LIMIT_RESET:-0} to that file.
 #     Default CURL_RATE_LIMIT_RESET=0 keeps existing tests unbroken.
+#   - CURL_LINK_QUEUE: optional file whose lines are Link: next URLs (one per
+#     call). When non-empty the first line is popped and written as a Link
+#     header in the -D response block; an empty line means no Link header for
+#     that call. Enables pagination simulation without modifying the stub.
 
 payload=""
 url=""
@@ -60,10 +64,23 @@ else
   esac
 fi
 
+# Pop one Link: next URL from CURL_LINK_QUEUE (empty line = no Link header)
+link_next=""
+if [ -n "${CURL_LINK_QUEUE:-}" ] && [ -f "$CURL_LINK_QUEUE" ] && [ -s "$CURL_LINK_QUEUE" ]; then
+  link_next="$(head -1 "$CURL_LINK_QUEUE")"
+  tail -n +2 "$CURL_LINK_QUEUE" > "$CURL_LINK_QUEUE.tmp" \
+    && mv "$CURL_LINK_QUEUE.tmp" "$CURL_LINK_QUEUE"
+fi
+
 # Write minimal response headers when -D <file> was requested
 if [ -n "$hdr_file" ]; then
-  printf 'HTTP/1.1 %s\r\nX-RateLimit-Reset: %s\r\n\r\n' \
-    "$http_status" "${CURL_RATE_LIMIT_RESET:-0}" > "$hdr_file"
+  if [ -n "$link_next" ]; then
+    printf 'HTTP/1.1 %s\r\nX-RateLimit-Reset: %s\r\nLink: <%s>; rel="next"\r\n\r\n' \
+      "$http_status" "${CURL_RATE_LIMIT_RESET:-0}" "$link_next" > "$hdr_file"
+  else
+    printf 'HTTP/1.1 %s\r\nX-RateLimit-Reset: %s\r\n\r\n' \
+      "$http_status" "${CURL_RATE_LIMIT_RESET:-0}" > "$hdr_file"
+  fi
 fi
 
 [ -n "$resp" ] && printf '%s\n' "$resp"

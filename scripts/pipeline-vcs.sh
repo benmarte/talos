@@ -1381,6 +1381,51 @@ _github_api() {
     printf '%s' "$_body"
   }
 
+  # _ga_fetch_all_comments <issue-n>
+  # Fetches every page of issue comments by following Link: rel="next" headers.
+  # Prints a JSON array of all comment objects. Exits 1 on any HTTP error.
+  # Uses the same auth headers as _ga_req; does not use _ga_req itself because
+  # _ga_req discards the Link header after each request.
+  _ga_fetch_all_comments() {
+    local _gafc_n="$1"
+    local _gafc_url="$_API/issues/$_gafc_n/comments?per_page=100"
+    local _gafc_all _gafc_hdr _gafc_full _gafc_status _gafc_body _gafc_next
+    _gafc_all="[]"
+    while [ -n "$_gafc_url" ]; do
+      _gafc_hdr="$(mktemp)"
+      _gafc_full="$(curl -sS -w "\n%{http_code}" \
+        -D "$_gafc_hdr" -X GET \
+        -H "Authorization: Bearer $_TOKEN" \
+        -H "Accept: application/vnd.github+json" \
+        -H "X-GitHub-Api-Version: 2022-11-28" \
+        "$_gafc_url")"
+      _gafc_status="$(printf '%s' "$_gafc_full" | tail -1)"
+      _gafc_body="$(printf '%s' "$_gafc_full" | sed '$d')"
+      _gafc_next="$(grep -i '^link:' "$_gafc_hdr" \
+        | grep -o '<[^>]*>; rel="next"' \
+        | sed 's/<\([^>]*\)>; rel="next"/\1/')"
+      rm -f "$_gafc_hdr"
+      if [ "${_gafc_status:-0}" -ge 300 ] 2>/dev/null; then
+        printf 'github-api: HTTP %s fetching comments page\n' "$_gafc_status" >&2
+        return 1
+      fi
+      _gafc_all="$(PREV="$_gafc_all" PAGE="$_gafc_body" python3 -c "
+import json, os, sys
+prev = json.loads(os.environ.get('PREV', '[]'))
+try:
+    page = json.loads(os.environ.get('PAGE', '[]'))
+    if not isinstance(page, list):
+        page = []
+except Exception:
+    page = []
+prev.extend(page)
+json.dump(prev, sys.stdout)
+")"
+      _gafc_url="$_gafc_next"
+    done
+    printf '%s' "$_gafc_all"
+  }
+
   # ── Verb dispatch ───────────────────────────────────────────────────────────
   case "$_VERB" in
 
@@ -2027,20 +2072,23 @@ except Exception:
         return 0
       fi
       local _raw_comments
-      _raw_comments="$(_ga_req GET "$_API/issues/$_n/comments?per_page=100")"
-      if [ -z "$_raw_comments" ]; then
+      # Paginate: follow Link: rel="next" headers so markers beyond comment #100
+      # are never missed (fix for #126 -- single per_page=100 fetch fails open).
+      _raw_comments="$(_ga_fetch_all_comments "$_n")"
+      if [ $? -ne 0 ] || [ -z "$_raw_comments" ]; then
         echo "pipeline-vcs: read-attempt: could not fetch issue #$_n data" >&2
         exit 1
       fi
       # Normalize REST response (array with user.login) to gh-compatible shape
       # (object with comments array where author.login replaces user.login).
+      # Guard: (c.get('user') or {}) handles "user": null (deleted account).
       local _normalized
       _normalized="$(printf '%s' "$_raw_comments" | python3 -c "
 import json, sys
 raw = json.load(sys.stdin)
 if not isinstance(raw, list):
     raw = []
-comments = [dict(c, author={'login': c.get('user', {}).get('login', '')}) for c in raw]
+comments = [dict(c, author={'login': (c.get('user') or {}).get('login', '')}) for c in raw]
 json.dump({'comments': comments}, sys.stdout)
 ")"
       local _trusted_authors
@@ -2262,8 +2310,11 @@ sys.exit(0)
       if [ -z "$_pr_raw" ]; then
         echo "pipeline-vcs: check-approval-sha: could not fetch PR #$_n data" >&2; exit 1
       fi
-      _comments_raw="$(_ga_req GET "$_API/issues/$_n/comments?per_page=100")"
-      if [ -z "$_comments_raw" ]; then
+      # Paginate comments: follow Link: rel="next" so approvals beyond #100 are
+      # found (fix for #126 -- single per_page=100 fetch fails closed here but
+      # forces unnecessary re-stamp; paginating avoids the stale false-positive).
+      _comments_raw="$(_ga_fetch_all_comments "$_n")"
+      if [ $? -ne 0 ] || [ -z "$_comments_raw" ]; then
         echo "pipeline-vcs: check-approval-sha: could not fetch PR #$_n data" >&2; exit 1
       fi
       # Assemble gh-compatible JSON: headRefOid, baseRefName, labels, comments
@@ -2275,7 +2326,7 @@ pr   = json.loads(lines[0]) if lines else {}
 craw = json.loads(lines[1]) if len(lines) > 1 else []
 if not isinstance(craw, list):
     craw = []
-comments = [dict(c, author={'login': c.get('user', {}).get('login', '')}) for c in craw]
+comments = [dict(c, author={'login': (c.get('user') or {}).get('login', '')}) for c in craw]
 labels = [{'name': lb.get('name', '')} for lb in pr.get('labels', [])]
 out = {
     'headRefOid':  pr.get('head', {}).get('sha', ''),

@@ -723,6 +723,79 @@ assert_contains "$dry_out" "[dry-run]"           "dry-run: all verbs print [dry-
 dry_log="$(cat "$CURL_LOG")"
 assert_eq "" "$dry_log"                          "dry-run: no curl calls made"
 
+# ── Pagination regression tests (#126) ───────────────────────────────────────
+export GITHUB_TOKEN="$TEST_TOKEN"
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "github-api", "repo": "acme/widget"}}
+EOF
+
+# T-pagination: read-attempt finds marker at comment #101 (on page 2)
+# Mutation: revert _ga_fetch_all_comments to single per_page=100 call → RED.
+: > "$CURL_LOG"; : > "$CURL_QUEUE"; : > "$CURL_LINK_QUEUE"
+_page2_url="https://api.github.com/repos/acme/widget/issues/42/comments?per_page=100&page=2"
+_page1="$(python3 -c "
+import json
+c = [{'body': 'comment ' + str(i), 'user': {'login': 'user'}} for i in range(100)]
+print(json.dumps(c))
+")"
+_page2='[{"body":"talos record\n<!-- talos:attempt stage=developer count=3 total=5 -->","user":{"login":"bot"}}]'
+printf '%s\n' "$_page2_url" "" > "$CURL_LINK_QUEUE"
+printf '%s\n' "$_page1" "$_page2" > "$CURL_QUEUE"
+out="$(bash "$VCS" read-attempt 42 2>/dev/null)"; rc=$?
+# Extract stage= line only (talos:marker-authors-unverified also goes to stdout)
+stage_line="$(printf '%s' "$out" | grep '^stage=' || true)"
+assert_eq "0" "$rc" \
+  "T-pagination: read-attempt exits 0 when marker on page 2"
+assert_eq "stage=developer count=3 total=5" "$stage_line" \
+  "T-pagination: read-attempt finds attempt marker beyond comment #100 (mutation: remove pagination)"
+
+# T-user-null: comment with "user": null does not crash; marker in later comment is found
+: > "$CURL_LOG"; : > "$CURL_QUEUE"; : > "$CURL_LINK_QUEUE"
+_null_user_list='[{"body":"some text","user":null},{"body":"record\n<!-- talos:attempt stage=qa count=1 total=1 -->","user":{"login":"bot"}}]'
+printf '%s\n' "$_null_user_list" > "$CURL_QUEUE"
+out="$(bash "$VCS" read-attempt 42 2>&1)"; rc=$?
+assert_eq "0" "$rc" \
+  "T-user-null: user:null comment does not crash read-attempt"
+assert_contains "$out" "stage=qa count=1 total=1" \
+  "T-user-null: marker found in comment following user:null comment"
+
+# T-check-attempt-ceil-paged: check-attempt exits 1 when marker is on page 2 and ceiling reached
+# Mutation: revert pagination → check-attempt returns ok (exits 0) → RED.
+: > "$CURL_LOG"; : > "$CURL_QUEUE"; : > "$CURL_LINK_QUEUE"
+_ceil_url="https://api.github.com/repos/acme/widget/issues/42/comments?per_page=100&page=2"
+printf '%s\n' "$_ceil_url" "" > "$CURL_LINK_QUEUE"
+_ceil_p1="$(python3 -c "
+import json
+c = [{'body': 'comment ' + str(i), 'user': {'login': 'u'}} for i in range(100)]
+print(json.dumps(c))
+")"
+_ceil_p2='[{"body":"<!-- talos:attempt stage=developer count=3 total=3 -->","user":{"login":"bot"}}]'
+printf '%s\n' "$_ceil_p1" "$_ceil_p2" > "$CURL_QUEUE"
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "github-api", "repo": "acme/widget"}, "limits": {"max_fix_attempts": 3}}
+EOF
+err="$(bash "$VCS" check-attempt 42 2>&1)"; rc=$?
+assert_eq "1" "$rc" \
+  "T-ceil-paged: check-attempt exits 1 when ceiling reached via page-2 marker (mutation: remove pagination)"
+assert_contains "$err" "BLOCKED" \
+  "T-ceil-paged: BLOCKED message when ceiling is reached on page 2"
+
+# T-regression: behaviour on <100 comments is byte-identical to before
+: > "$CURL_LOG"; : > "$CURL_QUEUE"; : > "$CURL_LINK_QUEUE"
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "github-api", "repo": "acme/widget"}}
+EOF
+export GITHUB_TOKEN="$TEST_TOKEN"
+printf '%s\n' \
+  '[{"body":"<!-- talos:attempt stage=qa count=2 total=5 -->","user":{"login":"bot"}}]' \
+  > "$CURL_QUEUE"
+out="$(bash "$VCS" read-attempt 99 2>/dev/null)"; rc=$?
+reg_stage="$(printf '%s' "$out" | grep '^stage=' || true)"
+assert_eq "0" "$rc" \
+  "T-regression: read-attempt exits 0 on <100-comment issue (no pagination needed)"
+assert_eq "stage=qa count=2 total=5" "$reg_stage" \
+  "T-regression: stage= output byte-identical to pre-fix for <100-comment path"
+
 # ── unknown provider error still works (sanity) ──────────────────────────────
 unset GITHUB_TOKEN GH_TOKEN
 cat > talos.pipeline.json <<'EOF'
