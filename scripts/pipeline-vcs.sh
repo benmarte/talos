@@ -4091,9 +4091,9 @@ for c in data.get('comments', []):
   }
   rm -f "$_pa_tmpfile"
 
-  # Apply approval label via label-pr (both halves in one operation -- closes
-  # #94 by construction: label with no marker is architecturally eliminated
-  # for callers using this verb).
+  # Apply approval label via label-pr (both halves in one operation --
+  # label-without-marker eliminated (marker posts first); marker-without-label
+  # remains possible if label-pr fails, surfaced loudly by exit 1 (#144)).
   # Do NOT pass --repo here: label-pr's _parse_label_args has no --repo case,
   # so it falls through to the catch-all and treats "--repo" as a label name.
   # label-pr resolves $REPO independently from the config.
