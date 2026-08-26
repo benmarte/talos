@@ -4,6 +4,8 @@
 
 ### Added
 
+- **`docs/user-guide.md`: three new subsections covering `issues.label_filter`, `execution.isolation`, and `agents.roles.<role>.model` (#149).** Each section covers what the key does, its default, a worked YAML config example (with a note that the JSON equivalent works identically), and the footgun a README table row cannot convey: AND-logic for `label_filter` (silent empty queue if both labels are not present); `branch` isolation forcing `max_parallel: 1` as a hard startup failure plus the rationale for when `branch` is needed; and the native-path-only constraint on `agents.roles` (`subagents: true` only -- adapter-path users on codex/gemini/antigravity must route via `$TALOS_ROLE` in `runner_cmd` instead).
+
 - **`talos.pipeline.json.example`: JSON example config alongside the existing YAML example (#145).** New projects should start with JSON; no PyYAML dependency, works on every platform. The YAML example remains for projects already using YAML.
 
 ### Fixed
