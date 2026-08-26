@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths-ignore: ['**.md']
 
 jobs:
@@ -11,6 +12,8 @@ jobs:
     # Skip CI on draft PRs — developers iterate freely on drafts and mark
     # ready-for-review only once every stage has approved. This yields one
     # CI run per PR on the final SHA, immediately before merge.
+    # IMPORTANT: ready_for_review must be in types above — without it,
+    # marking a draft ready fires no event and CI never runs for drafted PRs.
     # NOTE: != true is used rather than == false; both are behaviourally
     # identical under GHA numeric coercion, but != true states the intent.
     # NOTE: if required status checks are ever added for merge, a no-op job
