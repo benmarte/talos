@@ -1025,7 +1025,7 @@ APPROVAL_LABELS = {
     'docs:done':         'docs',
 }
 
-# Fixed valid role set — derived from APPROVAL_LABELS values.
+# Fixed valid role set -- derived from APPROVAL_LABELS values.
 # Any marker whose role is not in this set is ignored (issue #128).
 # This must be a fixed literal, never interpolated from config or API text
 # (PR #68 precedent: injected text could forge an approval marker).
@@ -1187,7 +1187,7 @@ for label, role in present.items():
             continue  # marker not on last line
         marker_role = m.group(2)
         if marker_role not in VALID_ROLES:
-            # Unknown role value — log and skip so the gate falls through to
+            # Unknown role value -- log and skip so the gate falls through to
             # the existing STALE path (fail-closed). Issue #128.
             print(
                 'pipeline-vcs: check-approval-sha: ignoring marker with unknown role '
