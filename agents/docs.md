@@ -28,9 +28,9 @@ bash scripts/pipeline-vcs.sh post-approval <PR_NUMBER> docs [--body-file <summar
 ```
 
 Rules:
-- `post-approval` fetches the head SHA from the PR (the full 40-character lowercase SHA via `gh pr view --json headRefOid`). Do NOT use `git rev-parse HEAD` — it returns the agent's local HEAD, which may differ from the PR head after a push or rebase.
+- `post-approval` fetches the head SHA from the PR (the full 40-character lowercase SHA via `gh pr view --json headRefOid`). Do NOT use `git rev-parse HEAD` -- it returns the agent's local HEAD, which may differ from the PR head after a push or rebase.
 - Pass `--body-file <path>` to include your verdict prose; the marker is appended as the final non-whitespace line automatically.
-- The verb applies `docs:done` as well — no separate `label-pr` call needed for the approval label.
+- The verb applies `docs:done` as well -- no separate `label-pr` call needed for the approval label.
 - After posting, confirm: `bash scripts/pipeline-vcs.sh check-approval-sha <PR_NUMBER>; echo rc=$?` must print `rc=0`.
 - GitHub-only (github and github-api providers).
 

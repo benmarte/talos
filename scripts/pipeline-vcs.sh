@@ -4017,13 +4017,24 @@ if [ "$VERB" = "post-approval" ]; then
   # Fetch head SHA from the PR head -- not from the local worktree.
   # git rev-parse HEAD returns the agent's checkout, which may differ from the
   # PR head after a push or rebase (#85). Same call as pr-head verb.
+  # Use 2>/dev/null so that any future warning on stderr does not corrupt the
+  # SHA variable; exit status alone signals failure.
   _pa_sha="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" pr-head "$_pa_n" \
-    ${REPO:+--repo "$REPO"} 2>&1)" || {
+    ${REPO:+--repo "$REPO"} 2>/dev/null)" || {
     echo "pipeline-vcs: post-approval: could not resolve head SHA for PR #$_pa_n" >&2
     exit 1
   }
-  if [ -z "$_pa_sha" ]; then
-    echo "pipeline-vcs: post-approval: could not resolve head SHA for PR #$_pa_n" >&2
+  # Validate SHA: must be exactly 40 lowercase hex characters before it enters
+  # the marker. An internally derived value can still be wrong if the provider
+  # API returns unexpected data (PR #68 discipline).
+  case "$_pa_sha" in
+    *[!0-9a-f]*|"")
+      echo "pipeline-vcs: post-approval: invalid SHA from pr-head: '$_pa_sha'" >&2
+      exit 1
+      ;;
+  esac
+  if [ "${#_pa_sha}" -ne 40 ]; then
+    echo "pipeline-vcs: post-approval: SHA must be 40 hex chars, got ${#_pa_sha}: '$_pa_sha'" >&2
     exit 1
   fi
 
@@ -4066,12 +4077,12 @@ for c in data.get('comments', []):
   fi
 
   # Post via comment-pr so write-time validation (#110/#132) applies automatically.
-  # _TALOS_POST_APPROVAL_INTERNAL suppresses the hand-built marker warning: the
-  # marker was built by this verb, not by the caller.
+  # No _TALOS_POST_APPROVAL_INTERNAL guard needed: post-approval always calls
+  # comment-pr with --body-file, so ARGS[1] is "--body-file" -- that string
+  # never matches the marker regex, so the warning would not fire anyway.
   _pa_comment_url=""
-  _pa_comment_url="$(_TALOS_POST_APPROVAL_INTERNAL=1 \
-    bash "$SCRIPT_DIR/pipeline-vcs.sh" comment-pr "$_pa_n" \
-    --body-file "$_pa_tmpfile" ${REPO:+--repo "$REPO"} 2>&1)" || {
+  _pa_comment_url="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" comment-pr "$_pa_n" \
+    --body-file "$_pa_tmpfile" 2>&1)" || {
     echo "pipeline-vcs: post-approval: comment-pr failed for PR #$_pa_n" >&2
     rm -f "$_pa_tmpfile"
     exit 1
@@ -4081,8 +4092,10 @@ for c in data.get('comments', []):
   # Apply approval label via label-pr (both halves in one operation -- closes
   # #94 by construction: label with no marker is architecturally eliminated
   # for callers using this verb).
-  bash "$SCRIPT_DIR/pipeline-vcs.sh" label-pr "$_pa_n" --add "$_pa_label" \
-    ${REPO:+--repo "$REPO"} || {
+  # Do NOT pass --repo here: label-pr's _parse_label_args has no --repo case,
+  # so it falls through to the catch-all and treats "--repo" as a label name.
+  # label-pr resolves $REPO independently from the config.
+  bash "$SCRIPT_DIR/pipeline-vcs.sh" label-pr "$_pa_n" --add "$_pa_label" || {
     echo "pipeline-vcs: post-approval: label-pr failed for PR #$_pa_n" >&2
     exit 1
   }
@@ -4177,12 +4190,9 @@ fi
 # line is a hand-built talos:approval HTML comment. The check is scoped to the
 # last non-whitespace line only (#140: prose discussing the marker format does
 # not trigger this). GitHub-only. Exit remains 0 (nudge, not a wall).
-# Suppressed when called from post-approval (_TALOS_POST_APPROVAL_INTERNAL=1)
-# because the verb builds the correct format itself.
 if [ "$VERB" = "comment-pr" ] && [ "$_DISPATCH_RC" -eq 0 ] \
     && [ "$DRY_RUN" != "true" ] \
-    && { [ "$PROVIDER" = "github" ] || [ "$PROVIDER" = "github-api" ]; } \
-    && [ "${_TALOS_POST_APPROVAL_INTERNAL:-}" != "1" ]; then
+    && { [ "$PROVIDER" = "github" ] || [ "$PROVIDER" = "github-api" ]; }; then
   _cp_warn_body="${ARGS[1]-}"
   if [ -n "$_cp_warn_body" ]; then
     printf '%s' "$_cp_warn_body" | python3 -c "

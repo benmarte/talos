@@ -274,6 +274,9 @@ assert_contains "$out13" "integer" \
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CRITERION 14: post-approval with --body-file prepends the prose body.
+# Also checks ORDER: marker must be the last non-whitespace content (gate
+# requirement). RED if marker were prepended instead of appended -- marker_pos
+# would be less than prose_pos and the ordering assertion would fail.
 # ─────────────────────────────────────────────────────────────────────────────
 
 printf 'QA PASS: all criteria verified.\n\nDetails here.\n' > "$SANDBOX/verdict.md"
@@ -285,7 +288,19 @@ _gh_log14="$(cat "$GH_LOG")"
 assert_contains "$_gh_log14" "QA PASS" \
   "body-file: prose body content reaches gh"
 assert_contains "$_gh_log14" "talos:approval sha=${STUB_SHA} role=qa" \
-  "body-file: marker appended after prose body"
+  "body-file: marker present in body"
+# Ordering: marker must come AFTER prose (not before). The gate requires the
+# marker to be the final non-whitespace line; a prepended marker would fail the
+# gate. RED: if post-approval put the marker first, marker_pos < prose_pos.
+_order14="$(python3 -c "
+import sys
+log = open('$GH_LOG').read()
+pi = log.find('QA PASS')
+mi = log.find('talos:approval sha=')
+print('OK' if pi >= 0 and mi > pi else 'WRONG_ORDER_OR_MISSING')
+")"
+assert_eq "OK" "$_order14" \
+  "body-file: marker appears AFTER prose (marker is last, not first)"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CRITERION 15: github-api provider also supported.
@@ -332,14 +347,42 @@ assert_contains "$(cat "$GH_LOG")" "review:approved" \
   "normal path: review:approved label applied via gh pr edit"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CRITERION 17: comment-pr warning suppressed when called from post-approval.
-# post-approval posts a comment ending in a marker, but the warning must NOT
-# fire because _TALOS_POST_APPROVAL_INTERNAL=1 is set.
+# CRITERION 16b: Label applied when vcs.repo is set (REPO non-empty path).
+# RED: before the fix, post-approval passed ${REPO:+--repo "$REPO"} to label-pr,
+# but _parse_label_args has no --repo case -- catch-all treats it as a label
+# name. With REPO empty (default stub env), the broken branch is never reached.
+# This test forces REPO non-empty to exercise the path that was actually broken.
+# On broken code: gh log contains "--add-label --repo"; assertion is RED.
+# After fix: --repo dropped from label-pr call; assertion is GREEN.
+# ─────────────────────────────────────────────────────────────────────────────
+
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "github", "repo": "acme/testrepo"}}
+EOF
+: > "$GH_LOG"
+out16b="$(STUB_PR_HEAD_SHA="$STUB_SHA" bash "$VCS" post-approval 9 qa 2>&1)"; rc16b=$?
+assert_exit_code 0 "$rc16b" "REPO set: post-approval exits 0"
+assert_contains "$(cat "$GH_LOG")" "qa:pass" \
+  "REPO set: qa:pass label present in gh log"
+assert_not_contains "$(cat "$GH_LOG")" "--add-label --repo" \
+  "REPO set: --repo not treated as label name (label not corrupted)"
+assert_contains "$(cat "$GH_LOG")" "talos:approval sha=${STUB_SHA} role=qa" \
+  "REPO set: marker posted with correct SHA"
+rm -f talos.pipeline.json
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CRITERION 17: comment-pr warning is not visible in post-approval output.
+# _TALOS_POST_APPROVAL_INTERNAL has been removed. The warning still cannot
+# reach post-approval's stderr because the inner comment-pr subprocess is
+# called with 2>&1, capturing its stderr into $_pa_comment_url (which is
+# discarded). The test verifies exit 0 and no visible warning on stderr.
 # ─────────────────────────────────────────────────────────────────────────────
 
 : > "$GH_LOG"
 warn17="$(STUB_PR_HEAD_SHA="$STUB_SHA" bash "$VCS" post-approval 9 docs 2>&1 >/dev/null)"
+assert_exit_code 0 "$?" \
+  "no-suppress: post-approval still exits 0 without _TALOS_POST_APPROVAL_INTERNAL"
 assert_not_contains "$warn17" "hand-built talos:approval marker" \
-  "internal suppress: comment-pr warning does NOT fire when called from post-approval"
+  "no-suppress: inner comment-pr warning is captured in subprocess, not on post-approval stderr"
 
 finish

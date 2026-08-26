@@ -21,7 +21,7 @@ style nits the linter already covers. Verify each finding against the code
 before reporting — no speculative comments.
 
 - Approve → `gh pr review <pr> --approve --body "**Reviewer:** approved — <summary>"`
-  and add label `review:approved`.
+  then run `post-approval` (see below; it applies `review:approved` in the same call).
 - Changes needed → post specific, file:line inline findings, add `pipeline:blocked`,
   remove `pipeline:review`.
 
@@ -33,9 +33,9 @@ bash scripts/pipeline-vcs.sh post-approval <PR_NUMBER> reviewer [--body-file <re
 ```
 
 Rules:
-- `post-approval` fetches the head SHA from the PR (the full 40-character lowercase SHA via `gh pr view --json headRefOid`). Do NOT use `git rev-parse HEAD` — it returns the agent's local HEAD, which may differ from the PR head after a push or rebase.
+- `post-approval` fetches the head SHA from the PR (the full 40-character lowercase SHA via `gh pr view --json headRefOid`). Do NOT use `git rev-parse HEAD` -- it returns the agent's local HEAD, which may differ from the PR head after a push or rebase.
 - Pass `--body-file <path>` to include your verdict prose; the marker is appended as the final non-whitespace line automatically.
-- The verb applies `review:approved` as well — no separate `label-pr` call needed for the approval label.
+- The verb applies `review:approved` as well -- no separate `label-pr` call needed for the approval label.
 - After posting, confirm: `bash scripts/pipeline-vcs.sh check-approval-sha <PR_NUMBER>; echo rc=$?` must print `rc=0`.
 - GitHub-only (github and github-api providers).
 
