@@ -49,8 +49,9 @@ origin.git/
 .claude/worktrees/
 EOF
 
-# Write config as JSON — no PyYAML dependency (macOS CI runners may lack it).
-printf '{"base_branch":"main","vcs":{"provider":"github"}}' > talos.pipeline.json
+# Write a placeholder config file so the initial commit has a tracked file;
+# we rewrite it with the real base branch once we know it.
+printf '{"base_branch":"placeholder","vcs":{"provider":"github"}}' > talos.pipeline.json
 
 git add .gitignore talos.pipeline.json
 git commit -q -m "root: add gitignore and config"
@@ -62,12 +63,24 @@ git remote remove origin 2>/dev/null || true
 git remote add origin "$ORIGIN_DIR"
 git fetch -q origin
 
+# Detect the actual default branch from the bare clone so the fixture is
+# platform-independent regardless of init.defaultBranch (main vs master).
 BASE="$(git -C "$ORIGIN_DIR" symbolic-ref HEAD 2>/dev/null | sed 's|.*/||')"
 [ -z "$BASE" ] && BASE="main"
+
+# Rewrite the config with the detected branch name — JSON, no PyYAML needed.
+printf '{"base_branch":"%s","vcs":{"provider":"github"}}' "$BASE" > talos.pipeline.json
+git add talos.pipeline.json
+git commit -q -m "update config: base_branch=$BASE"
 
 # Push so local and origin are level.
 git branch -u "origin/$BASE" "$BASE" 2>/dev/null || true
 git push -q origin "$BASE"
+
+# Self-assertion: local must be level with origin/<BASE> before any test runs,
+# so a broken fixture fails loudly here rather than silently skewing results.
+_setup_ahead="$(git rev-list --count "origin/$BASE..HEAD" 2>/dev/null || echo "?")"
+assert_eq "0" "$_setup_ahead" "fixture: local is level with origin/$BASE (0 commits ahead)"
 
 # ── Test 1 (REGRESSION): .claude/worktrees/ present — exits 0 ────────────────
 # Mutation that makes this test fail: remove `.`.claude/worktrees/` from .gitignore.
