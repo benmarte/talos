@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test-isolation.sh — execution.isolation startup validation (#98)
+# test-isolation.sh — execution.isolation startup validation (#98, #120)
 #
 # Tests:
 #   1. pipeline-config.sh: absent key returns "worktree" as default value.
@@ -10,6 +10,10 @@
 #   6. Unknown mode → exit 1, message lists valid values.
 #   7. pipeline-worktree.sh: remove with no matching worktree exits 0 ("already clean").
 #   8. Absent config: validate resolves to worktree (mode reported + exit 0).
+#   9.  branch + max_parallel:"two" → exit non-zero, stderr names the value (#120).
+#   10. branch + max_parallel:"" → exit non-zero, stderr names the value (#120).
+#   11. worktree + max_parallel:"two" → exit non-zero, fires before mode dispatch (#120).
+#   12. Absent isolation + max_parallel:1 → exit 0, output "resolved: worktree" (#120).
 #
 # Mutation-3 guard: tests 2 and 8 assert the stdout text "resolved: worktree".
 # Changing the default to "branch" causes both to FAIL with:
@@ -85,5 +89,40 @@ rm -f talos.pipeline.json talos.pipeline.yml talos.pipeline.yaml
 out="$(bash "$ISO" validate 2>&1)"; rc=$?
 assert_eq "0" "$rc" "absent config treated as worktree, exits 0"
 assert_contains "$out" "resolved: worktree" "absent config: validate reports resolved mode as worktree"
+
+# ── 9. branch + max_parallel:"two" → exit non-zero, stderr names the value ───
+# Mutation: the original 2>/dev/null line causes silent exit 0 (the defect).
+# Fix: integer guard before case dispatch exits 1 naming "two".
+printf '{"execution":{"isolation":"branch"},"issues":{"max_parallel":"two"}}' > talos.pipeline.json
+out="$(bash "$ISO" validate 2>&1)"; rc=$?
+assert_eq "1" "$rc" "branch + max_parallel:two exits 1 (#120)"
+assert_contains "$out" "two" "branch+max_parallel:two error names the offending value"
+rm -f talos.pipeline.json
+
+# ── 10. branch + max_parallel:"" → exit non-zero, message names empty value ──
+# Mutation: original guard treats empty as numeric (fails -gt 1, exits 0).
+# Fix: integer guard catches empty string before case dispatch.
+printf '{"execution":{"isolation":"branch"},"issues":{"max_parallel":""}}' > talos.pipeline.json
+out="$(bash "$ISO" validate 2>&1)"; rc=$?
+assert_eq "1" "$rc" "branch + max_parallel:empty exits 1 (#120)"
+assert_contains "$out" "issues.max_parallel" "branch+max_parallel:empty error names the config key"
+rm -f talos.pipeline.json
+
+# ── 11. worktree + max_parallel:"two" → exit non-zero before mode dispatch ───
+# Validates the guard fires in worktree mode too (check is before case dispatch).
+# Mutation: moving the guard inside the branch arm means this exits 0 silently.
+printf '{"execution":{"isolation":"worktree"},"issues":{"max_parallel":"two"}}' > talos.pipeline.json
+out="$(bash "$ISO" validate 2>&1)"; rc=$?
+assert_eq "1" "$rc" "worktree + max_parallel:two exits 1 (guard fires in all modes)"
+assert_contains "$out" "two" "worktree+max_parallel:two error names the offending value"
+rm -f talos.pipeline.json
+
+# ── 12. Absent isolation + max_parallel:1 → exit 0, resolved: worktree ───────
+# Compatibility guarantee: a valid numeric max_parallel with absent isolation
+# is byte-identical to today — defaults to worktree and exits 0.
+rm -f talos.pipeline.json talos.pipeline.yml talos.pipeline.yaml
+out="$(bash "$ISO" validate 2>&1)"; rc=$?
+assert_eq "0" "$rc" "absent isolation + max_parallel:1 exits 0 (compat guarantee)"
+assert_contains "$out" "resolved: worktree" "absent isolation: validate reports resolved mode as worktree"
 
 finish
