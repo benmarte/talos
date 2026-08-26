@@ -216,8 +216,8 @@ err10="$(STUB_PR_STATE=OPEN \
 assert_eq "0" "$rc10" "github/label-pr: approval label without marker exits 0"
 assert_contains "$err10" "WARNING" \
   "github/label-pr: WARNING printed to stderr when no marker"
-assert_contains "$err10" "comment-pr" \
-  "github/label-pr: warning contains comment-pr command hint"
+assert_contains "$err10" "post-approval" \
+  "github/label-pr: warning contains post-approval command hint"
 assert_contains "$err10" "verdict reasoning" \
   "github/label-pr: warning reminds stage to post verdict reasoning first"
 

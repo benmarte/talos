@@ -667,13 +667,9 @@ scripts can assert they are running in the correct environment:
 4. Look for missing edge-case tests and obvious regressions.
 
 Pass:
-  1. `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --add qa:pass`
-  2. Obtain the current head SHA: `HEAD_SHA=$(bash scripts/pipeline-vcs.sh pr-head <PR_NUMBER>)`
-  3. Render and post qa-verdict.md on the PR.  The rendered comment body MUST end
-     with the HTML marker on its own line:
-     `<!-- talos:approval sha=<HEAD_SHA> role=qa -->`
-     VERDICT="PASS" SUMMARY="<what verified>" DETAILS="<2-5 bullets: each criterion checked + result>"
-     `bash scripts/pipeline-vcs.sh comment-pr <PR_NUMBER> "$COMMENT_BODY"`
+  1. Render verdict to a file (VERDICT="PASS" SUMMARY="..." DETAILS="...") and post via
+     `post-approval`, which fetches the head SHA, posts the wrapped marker, and applies qa:pass:
+     `bash scripts/pipeline-vcs.sh post-approval <PR_NUMBER> qa --body-file <verdict-file>`
      If exit non-zero, report the failure in your final message.
 
 Fail:
@@ -739,14 +735,11 @@ IMPORTANT: never run `git checkout`, `git switch`, or `git pull` in your working
 Approve:
   1. `bash scripts/pipeline-vcs.sh approve-pr <PR_NUMBER> "<summary>"`
      Note: `gh pr review --approve` may fail with "cannot approve your own pull request" in single-account setups — this is expected and ignorable; the `review:approved` label is the gate.
-  2. `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --add review:approved --remove pipeline:blocked`
+  2. `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --remove pipeline:blocked`
   3. `bash scripts/pipeline-vcs.sh label-issue <N> --remove pipeline:blocked`
-  4. Obtain the current head SHA: `HEAD_SHA=$(bash scripts/pipeline-vcs.sh pr-head <PR_NUMBER>)`
-  5. Render review-signoff.md on the PR.  The rendered comment body MUST end
-     with the HTML marker on its own line:
-     `<!-- talos:approval sha=<HEAD_SHA> role=reviewer -->`
-     VERDICT="APPROVED" SUMMARY="<summary>" DETAILS="<2-5 bullets: areas checked>"
-     `bash scripts/pipeline-vcs.sh comment-pr <PR_NUMBER> "$COMMENT_BODY"`
+  4. Render review verdict to a file and post via `post-approval`, which fetches the
+     head SHA, posts the wrapped marker, and applies review:approved:
+     `bash scripts/pipeline-vcs.sh post-approval <PR_NUMBER> reviewer --body-file <review-file>`
      If exit non-zero, report the failure in your final message.
 
 Changes needed:
@@ -774,14 +767,11 @@ Report only findings tied to specific changed lines.
 IMPORTANT: never run `git checkout`, `git switch`, or `git pull` in your working directory — use `diff-pr` to read changes regardless of the active isolation mode.
 
 Clear:
-  1. `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --add security:approved --remove pipeline:blocked`
+  1. `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --remove pipeline:blocked`
   2. `bash scripts/pipeline-vcs.sh label-issue <N> --remove pipeline:blocked`
-  3. Obtain the current head SHA: `HEAD_SHA=$(bash scripts/pipeline-vcs.sh pr-head <PR_NUMBER>)`
-  4. Render security-signoff.md on the PR.  The rendered comment body MUST end
-     with the HTML marker on its own line:
-     `<!-- talos:approval sha=<HEAD_SHA> role=security -->`
-     VERDICT="CLEAR" SUMMARY="<checked>" DETAILS="<2-5 bullets: areas reviewed>"
-     `bash scripts/pipeline-vcs.sh comment-pr <PR_NUMBER> "$COMMENT_BODY"`
+  3. Render security verdict to a file and post via `post-approval`, which fetches the
+     head SHA, posts the wrapped marker, and applies security:approved:
+     `bash scripts/pipeline-vcs.sh post-approval <PR_NUMBER> security --body-file <signoff-file>`
      If exit non-zero, report the failure in your final message.
 
 Findings:
@@ -810,13 +800,11 @@ Comments enabled: <COMMENTS_ENABLED>
 1. Read diff: `bash scripts/pipeline-vcs.sh diff-pr <PR_NUMBER>`
 2. Update README, docs, CHANGELOG for the change.
 3. Commit to PR branch: `git commit -m "docs: update for #<N>"` and push.
-4. `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --add docs:done`
-5. Obtain the current head SHA: `HEAD_SHA=$(bash scripts/pipeline-vcs.sh pr-head <PR_NUMBER>)`
-6. Post an approval comment on the PR containing the HTML marker on its own line:
-   `<!-- talos:approval sha=<HEAD_SHA> role=docs -->`
-   `bash scripts/pipeline-vcs.sh comment-pr <PR_NUMBER> "<!-- talos:approval sha=$HEAD_SHA role=docs -->"`
+4. After pushing, call `post-approval` (fetches post-push SHA from GitHub, posts wrapped marker,
+   applies docs:done label — all in one step):
+   `bash scripts/pipeline-vcs.sh post-approval <PR_NUMBER> docs --body-file <summary-file>`
    If exit non-zero, report the failure in your final message.
-7. Render docs-posted.md on the ISSUE:
+5. Render docs-posted.md on the ISSUE:
    VERDICT="POSTED" SUMMARY="<what updated>" DETAILS="<2-5 bullets: files changed>"
    `bash scripts/pipeline-vcs.sh comment-issue <N> "$COMMENT_BODY"`
    If exit non-zero, report the failure in your final message.
