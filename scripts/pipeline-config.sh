@@ -75,7 +75,11 @@ try:
         with open(cfg_path) as f:
             cfg = json.load(f)
 except Exception:
-    print(default, end="")
+    # Config file present but unparseable. Return the caller-supplied default.
+    # The warning is emitted once in-process by pipeline-vcs.sh at startup.
+    # Direct invocations of pipeline-config.sh degrade silently -- not a crash,
+    # not permanent silence, and nothing an external process can suppress.
+    print(default, end='')
     sys.exit(0)
 
 value = walk(cfg, key.split("."))
