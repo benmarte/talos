@@ -1,0 +1,47 @@
+{
+  "base_branch": "main",
+  "vcs": {
+    "provider": "github"
+  },
+  "board": {
+    "enabled": true,
+    "project_number": 4,
+    "owner": "benmarte"
+  },
+  "issues": {
+    "label_filter": "pipeline:ready",
+    "skip_labels": [
+      "pipeline:blocked",
+      "wontfix"
+    ],
+    "max_parallel": 1
+  },
+  "roles": {
+    "validator": true,
+    "pm": true,
+    "qa": true,
+    "reviewer": true,
+    "security": true,
+    "docs": true
+  },
+  "verify": [
+    "bash tests/run-tests.sh"
+  ],
+  "merge": {
+    "method": "squash",
+    "required_checks": [
+      "test (ubuntu-latest)",
+      "test (macos-latest)"
+    ],
+    "delete_branch": true,
+    "approval_waiver_paths": [
+      "*.md",
+      "docs/**",
+      "CHANGELOG.md"
+    ]
+  },
+  "limits": {
+    "max_fix_attempts": 3,
+    "max_total_dispatches": 8
+  }
+}

@@ -78,7 +78,7 @@ Core (all setups):
 |------|-----------|-------|
 | `bash` | everything | macOS/Linux; Windows via WSL or Git Bash |
 | `git` | everything | |
-| `python3` | config parsing, notify payloads | stdlib only; PyYAML optional — without it use a JSON config (`talos.pipeline.json`) |
+| `python3` | config parsing, notify payloads | stdlib only; JSON config (`talos.pipeline.json`) needs no extra dependency — recommended for new projects. YAML config requires PyYAML (`pip install pyyaml`); not installable on some platforms (PEP 668). |
 | `curl` | notifications | skip if you don't use notifications |
 | `nak` | Buzz notifications only | `brew install nak`; signs/publishes Nostr events — skip unless you use Buzz |
 
@@ -536,8 +536,11 @@ pack installed.
 - **No threading** — webhooks can't thread; use a bot token + channel ID.
 - **Test what would be sent**: `PIPELINE_NOTIFY_DEBUG=1 bash
   .claude/talos/scripts/pipeline-notify.sh validator "#1" "test" 1`.
-- **YAML config ignored** — PyYAML not installed. `pip install pyyaml`, or
-  rename your config to `talos.pipeline.json` and use JSON.
+- **YAML config ignored** — PyYAML not installed. JSON config (`talos.pipeline.json`)
+  needs no dependency and works on every platform — recommended for new projects.
+  To keep YAML: `pip install pyyaml` (may fail on macOS with PEP 668 / Homebrew
+  Python; try `pip install --break-system-packages pyyaml` or use `talos.pipeline.json.example`
+  as a starting point).
 - **Board updates fail** — Two paths depending on your provider:
   - **`github` provider:** `gh auth refresh -s project` (Projects v2 needs the
     `project` scope); verify `board.project_number` and `board.owner`.

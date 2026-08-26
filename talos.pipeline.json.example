@@ -1,0 +1,80 @@
+{
+  "_note": "talos.pipeline.json — recommended for new projects (no PyYAML dependency). Copy to your repo root as talos.pipeline.json and edit for your project. Config file lookup order: $PIPELINE_CONFIG env var, talos.pipeline.yml, talos.pipeline.yaml, talos.pipeline.json, .claude-pipeline.yaml, .claude-pipeline.json, pipeline.yaml, pipeline.json.",
+
+  "base_branch": "dev",
+
+  "vcs": {
+    "provider": "github"
+  },
+
+  "release_branch": "main",
+
+  "board": {
+    "enabled": true,
+    "project_number": 1,
+    "owner": "myorg",
+    "status_field": "Status",
+    "statuses": {
+      "ready": "Ready",
+      "in_progress": "In progress",
+      "in_review": "In review",
+      "done": "Done",
+      "blocked": "Blocked"
+    }
+  },
+
+  "verify": [
+    "python -m pytest tests/ -x -q"
+  ],
+
+  "merge": {
+    "auto": true,
+    "method": "squash",
+    "required_checks": [
+      "test"
+    ],
+    "delete_branch": true,
+    "approval_waiver_paths": [
+      "*.md",
+      "docs/**",
+      "CHANGELOG.md"
+    ]
+  },
+
+  "issues": {
+    "label_filter": "pipeline:ready",
+    "skip_labels": [
+      "pipeline:blocked",
+      "wontfix"
+    ],
+    "max_parallel": 1
+  },
+
+  "roles": {
+    "validator": true,
+    "pm": true,
+    "qa": true,
+    "reviewer": true,
+    "security": true,
+    "docs": true,
+    "planner": false
+  },
+
+  "comments": {
+    "enabled": true,
+    "header": "**Agent:** {role} (talos)",
+    "templates_dir": "templates/comments"
+  },
+
+  "notifications": {
+    "slack_channel": "",
+    "discord_channel": "",
+    "buzz_channel": "",
+    "templates_dir": "templates/notifications",
+    "threading": true
+  },
+
+  "limits": {
+    "max_fix_attempts": 3
+  }
+}
