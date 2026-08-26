@@ -796,6 +796,49 @@ assert_eq "0" "$rc" \
 assert_eq "stage=qa count=2 total=5" "$reg_stage" \
   "T-regression: stage= output byte-identical to pre-fix for <100-comment path"
 
+# ── Issue #128: Role validation — _github_api provider parity ────────────────
+# Verifies that the VALID_ROLES check in _github_api behaves identically to
+# the _github check. Reason strings must be byte-identical across providers.
+
+export GITHUB_TOKEN="$TEST_TOKEN"
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "github-api", "repo": "acme/widget"}}
+EOF
+
+_API_HEAD="ff00112233445566778899aabbccddeeff001122"
+
+# #128-api M1: unknown role=qa-extra is logged and skipped; gate exits 1.
+# Without Change: gate still exits 1 (role-equality fails) but no log line.
+# RED comes from the missing stderr line, not the exit code.
+: > "$CURL_LOG"
+printf '%s\n' \
+  "{\"number\":7,\"head\":{\"sha\":\"$_API_HEAD\"},\"base\":{\"ref\":\"main\"},\"labels\":[{\"name\":\"qa:pass\"}]}" \
+  "[{\"body\":\"approval done\\n<!-- talos:approval sha=${_API_HEAD} role=qa-extra -->\",\"user\":{\"login\":\"bot\"}}]" \
+  > "$CURL_QUEUE"
+out="$(bash "$VCS" check-approval-sha 7 2>&1)"; rc=$?
+assert_eq "1" "$rc" \
+  "#128-api M1 unknown role: exits 1 (_github_api)"
+assert_contains "$out" "ignoring marker with unknown role 'qa-extra'" \
+  "#128-api M1 unknown role: stderr line emitted (_github_api) — byte-identical to _github"
+assert_contains "$out" "valid: docs, qa, reviewer, security" \
+  "#128-api M1 unknown role: valid set listed (_github_api)"
+assert_contains "$out" "no SHA marker" \
+  "#128-api M1 unknown role: falls through to STALE (_github_api)"
+
+# #128-api M3: full valid four-role set still exits 0 (regression guard).
+: > "$CURL_LOG"
+printf '%s\n' \
+  "{\"number\":7,\"head\":{\"sha\":\"$_API_HEAD\"},\"base\":{\"ref\":\"main\"},\"labels\":[{\"name\":\"qa:pass\"},{\"name\":\"review:approved\"},{\"name\":\"security:approved\"},{\"name\":\"docs:done\"}]}" \
+  "[{\"body\":\"<!-- talos:approval sha=${_API_HEAD} role=qa -->\"},{\"body\":\"<!-- talos:approval sha=${_API_HEAD} role=reviewer -->\"},{\"body\":\"<!-- talos:approval sha=${_API_HEAD} role=security -->\"},{\"body\":\"<!-- talos:approval sha=${_API_HEAD} role=docs -->\"}]" \
+  > "$CURL_QUEUE"
+out="$(bash "$VCS" check-approval-sha 7 2>&1)"; rc=$?
+assert_eq "0" "$rc" \
+  "#128-api M3 full four-role set: exits 0 (_github_api regression guard)"
+assert_contains "$out" "all approval labels are current" \
+  "#128-api M3 full four-role set: all current reported"
+assert_not_contains "$out" "ignoring marker" \
+  "#128-api M3 full four-role set: no spurious unknown-role warnings"
+
 # ── unknown provider error still works (sanity) ──────────────────────────────
 unset GITHUB_TOKEN GH_TOKEN
 cat > talos.pipeline.json <<'EOF'

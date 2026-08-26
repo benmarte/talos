@@ -563,4 +563,79 @@ out="$(STUB_PR_HEAD_SHA="$SHA_C" \
 assert_exit_code 1 "$rc" "#102-6 three-dot diff failure: fail-open uses full changed set -> exits 1 (fail-closed on content)"
 assert_contains "$out" "STALE" "#102-6 three-dot diff failure: STALE emitted (fail-closed preserved)"
 
+# ── Issue #128: Role validation — VALID_ROLES enforcement ────────────────────
+#
+# M1 (unknown role — new behaviour): marker with role=qa-extra is logged to
+# stderr as unknown and skipped; gate exits 1 (STALE, no valid marker).
+# Without Change: gate exits 1 too (role-equality fails qa-extra!=qa) but the
+# new stderr line is absent. RED comes from missing log line, not exit code.
+
+_invalid_role_comment='[{"body":"approval done\n<!-- talos:approval sha='"$SHA_B"' role=qa-extra -->"}]'
+out="$(vcs_check "$SHA_B" '[{"name":"qa:pass"}]' "$_invalid_role_comment")"; rc=$?
+assert_exit_code 1 "$rc" \
+  "#128 M1 unknown role: exits 1 (no valid marker for qa:pass)"
+assert_contains "$out" "ignoring marker with unknown role 'qa-extra'" \
+  "#128 M1 unknown role: stderr log line emitted (RED without Change)"
+assert_contains "$out" "valid: docs, qa, reviewer, security" \
+  "#128 M1 unknown role: valid set listed in log line"
+assert_contains "$out" "no SHA marker" \
+  "#128 M1 unknown role: gate falls through to STALE no-marker path"
+
+# role=review is the specific invalid value from PR #125.
+_review_role_comment='[{"body":"approval done\n<!-- talos:approval sha='"$SHA_B"' role=review -->"}]'
+out="$(vcs_check "$SHA_B" '[{"name":"review:approved"}]' "$_review_role_comment")"; rc=$?
+assert_exit_code 1 "$rc" \
+  "#128 M1 role=review (PR#125 case): exits 1 (not a valid role)"
+assert_contains "$out" "ignoring marker with unknown role 'review'" \
+  "#128 M1 role=review: stderr log line emitted"
+
+# M2 (regression — valid role passes): each of the four canonical roles is accepted.
+for _r in qa reviewer security docs; do
+  _label=""
+  case "$_r" in
+    qa)       _label="qa:pass"           ;;
+    reviewer) _label="review:approved"   ;;
+    security) _label="security:approved" ;;
+    docs)     _label="docs:done"         ;;
+  esac
+  _c="$(mk_comment_with_marker "$SHA_B" "$_r")"
+  out="$(vcs_check "$SHA_B" "[{\"name\":\"$_label\"}]" "$_c")"; rc=$?
+  assert_exit_code 0 "$rc" \
+    "#128 M2 valid role=$_r: exits 0 (regression guard)"
+  assert_contains "$out" "all approval labels are current" \
+    "#128 M2 valid role=$_r: gate satisfied"
+done
+
+# M3 (regression — full four-role approval set still passes, byte-identical).
+# This is the regression guard the spec calls most important: genuinely
+# dispatched approvals must still merge, unchanged.
+_all4='[{"body":"<!-- talos:approval sha=HSHA role=qa -->"},{"body":"<!-- talos:approval sha=HSHA role=reviewer -->"},{"body":"<!-- talos:approval sha=HSHA role=security -->"},{"body":"<!-- talos:approval sha=HSHA role=docs -->"}]'
+_all4="${_all4//HSHA/$SHA_B}"
+out="$(vcs_check "$SHA_B" \
+  '[{"name":"qa:pass"},{"name":"review:approved"},{"name":"security:approved"},{"name":"docs:done"}]' \
+  "$_all4")"; rc=$?
+assert_exit_code 0 "$rc" \
+  "#128 M3 full four-role set: exits 0 (regression guard — must not break real approvals)"
+assert_contains "$out" "all approval labels are current" \
+  "#128 M3 full four-role set: all current reported"
+assert_not_contains "$out" "ignoring marker" \
+  "#128 M3 full four-role set: no spurious unknown-role warnings"
+
+# M4 (regression — stale SHA still blocked after role validation added).
+# role=qa is valid; but the marker SHA is old and non-waivable files changed.
+git update-ref refs/remotes/origin/main "$SHA_A"
+_c="$(mk_comment_with_marker "$SHA_A" qa)"
+out="$(STUB_PR_HEAD_SHA="$SHA_C" \
+       STUB_PR_BASE_REF_NAME="main" \
+       STUB_PR_LABELS_JSON='[{"name":"qa:pass"}]' \
+       STUB_PR_COMMENTS_JSON="$_c" \
+       PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+       bash "$VCS" check-approval-sha 9 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" \
+  "#128 M4 stale SHA: exits 1 (VALID_ROLES check must not disturb stale-SHA path)"
+assert_contains "$out" "STALE" \
+  "#128 M4 stale SHA: STALE reported as before"
+assert_not_contains "$out" "ignoring marker" \
+  "#128 M4 stale SHA: no spurious unknown-role warning for valid role"
+
 finish
