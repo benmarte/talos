@@ -4038,29 +4038,6 @@ if [ "$VERB" = "post-approval" ]; then
     exit 1
   fi
 
-  # Best-effort duplicate detection: scan existing comments for a marker at
-  # this exact SHA for this role. Warn and proceed on duplicate (exit 0).
-  # Re-stamping after a rebase is legitimate and must not be blocked.
-  # Only implemented for github provider (gh CLI); github-api skips (fail-open).
-  if [ "$PROVIDER" = "github" ]; then
-    _pa_comments=""
-    _pa_pr_data="$(gh pr view "$_pa_n" --json headRefOid,comments \
-      ${REPO:+--repo "$REPO"} 2>/dev/null)" || true
-    if [ -n "$_pa_pr_data" ]; then
-      _pa_comments="$(printf '%s' "$_pa_pr_data" | python3 -c "
-import json, sys
-data = json.load(sys.stdin)
-for c in data.get('comments', []):
-    print(c.get('body', ''))
-" 2>/dev/null)" || true
-    fi
-    _pa_dup_marker="talos:approval sha=${_pa_sha} role=${_pa_role}"
-    if printf '%s\n' "$_pa_comments" | grep -qF "$_pa_dup_marker"; then
-      printf 'pipeline-vcs: post-approval: warning -- a %s marker already exists at %s; posting again\n' \
-        "$_pa_role" "$_pa_sha" >&2
-    fi
-  fi
-
   # Construct the marker body. The marker is a fixed template with only two
   # interpolated values: the SHA (validated 40-char hex from headRefOid) and
   # the role (validated member of _PA_VALID_ROLES). No config text, no API
@@ -4093,7 +4070,7 @@ for c in data.get('comments', []):
 
   # Apply approval label via label-pr (both halves in one operation --
   # label-without-marker eliminated (marker posts first); marker-without-label
-  # remains possible if label-pr fails, surfaced loudly by exit 1 (#144)).
+  # remains possible if label-pr fails, surfaced loudly by exit 1 -- #144).
   # Do NOT pass --repo here: label-pr's _parse_label_args has no --repo case,
   # so it falls through to the catch-all and treats "--repo" as a label name.
   # label-pr resolves $REPO independently from the config.

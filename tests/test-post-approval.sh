@@ -9,7 +9,7 @@
 #  3. SHA comes from the PR head, not the local worktree (verify marker SHA
 #     matches STUB_PR_HEAD_SHA even when local HEAD differs).
 #  4. Existing hand-posted wrapped markers keep working (regression guard).
-#  5. Same-SHA duplicate warns and exits 0.
+#  5. Same-SHA re-stamp exits 0 (no warning -- duplicate check removed in #156).
 #  6. comment-pr warning fires on a last-line hand-built marker.
 #  7. comment-pr warning does NOT fire on prose mentioning the format.
 #  8. Inverse diagnostic in check-approval-sha:
@@ -127,24 +127,17 @@ assert_contains "$out4" "all approval labels are current" \
   "regression: hand-posted wrapped marker still passes the gate"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CRITERION 5: Same-SHA duplicate warns and exits 0.
-# Simulate existing marker by injecting it into STUB_PR_COMMENTS_JSON before
-# the post-approval call. The stub returns that marker when post-approval
-# fetches headRefOid,comments for the duplicate check.
+# CRITERION 5: Same-SHA re-stamp exits 0 (no duplicate warning since #156).
+# The duplicate detection block was removed in #156 -- it used an unpaginated
+# gh pr view call that silently capped at 100 comments, making its absence
+# indistinguishable from "no duplicate found". Re-stamping is still legitimate
+# and must exit 0 with the marker posted.
 # ─────────────────────────────────────────────────────────────────────────────
-
-_dup_marker="<!-- talos:approval sha=${STUB_SHA} role=qa -->"
-_dup_comments="$(python3 -c "import json; print(json.dumps([{'body': '${_dup_marker}', 'author': {'login': 'bot'}}]))")"
 
 : > "$GH_LOG"
 err5="$(STUB_PR_HEAD_SHA="$STUB_SHA" \
-         STUB_PR_COMMENTS_JSON="$_dup_comments" \
          bash "$VCS" post-approval 9 qa 2>&1 >/dev/null)"; rc5=$?
-assert_exit_code 0 "$rc5" "duplicate: same-SHA duplicate exits 0"
-assert_contains "$err5" "warning" \
-  "duplicate: same-SHA duplicate prints a warning"
-assert_contains "$err5" "already exists" \
-  "duplicate: warning mentions the duplicate"
+assert_exit_code 0 "$rc5" "re-stamp: same-SHA re-stamp exits 0"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CRITERION 6: comment-pr warning fires on a last-line hand-built marker.
