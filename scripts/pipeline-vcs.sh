@@ -103,6 +103,19 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cfg() { "$SCRIPT_DIR/pipeline-config.sh" "$@"; }
 
+# ── Resolve config path for Python blocks (#116) ─────────────────────────────
+# Mirrors the lookup order in pipeline-config.sh; passed as TALOS_CFG env var
+# to Python blocks that need to detect config-parse failures.
+_TALOS_CFG="${PIPELINE_CONFIG:-}"
+if [ -z "$_TALOS_CFG" ]; then
+  for _talos_c in "talos.pipeline.yml" "talos.pipeline.yaml" "talos.pipeline.json" \
+                  ".claude-pipeline.yaml" "pipeline.yaml" \
+                  ".claude-pipeline.json" "pipeline.json"; do
+    if [ -f "$_talos_c" ]; then _TALOS_CFG="$_talos_c"; break; fi
+  done
+  unset _talos_c
+fi
+
 # ── Arg parsing ───────────────────────────────────────────────────────────────
 DRY_RUN=false
 ALLOW_CLOSED=false
@@ -755,7 +768,7 @@ else:
       fi
       local trusted_authors
       trusted_authors="$(cfg markers.trusted_authors "")"
-      printf '%s' "$issue_data" | TRUSTED_AUTHORS="$trusted_authors" python3 -c "
+      printf '%s' "$issue_data" | TRUSTED_AUTHORS="$trusted_authors" TALOS_CFG="$_TALOS_CFG" python3 -c "
 import json, os, re, sys
 
 # Stage-1 permissive detector: matches any HTML comment that looks like it
@@ -788,6 +801,19 @@ else:
     trusted_authors = []
 
 author_check_active = bool(trusted_authors)
+
+# Config-parse-failed detection for improved marker-authors-unverified message (#116).
+import pathlib as _pathlib_ra
+_talos_cfg_ra = os.environ.get('TALOS_CFG', '')
+_config_parse_failed_ra = False
+if _talos_cfg_ra and _pathlib_ra.Path(_talos_cfg_ra).exists():
+    try:
+        try:
+            import yaml as _yaml_ra; _yaml_ra.safe_load(open(_talos_cfg_ra))
+        except ImportError:
+            import json as _json_ra; _json_ra.load(open(_talos_cfg_ra))
+    except Exception:
+        _config_parse_failed_ra = True
 
 try:
     data = json.load(sys.stdin)
@@ -827,11 +853,19 @@ for c in reversed(raw_comments):
     else:
         # Unconfigured allow-list — fail open but emit a machine-readable marker.
         print('talos:marker-authors-unverified reader=read-attempt')
-        print(
-            'pipeline-vcs: read-attempt: [warn] markers.trusted_authors not configured '
-            '— author check skipped',
-            file=sys.stderr,
-        )
+        if _config_parse_failed_ra:
+            print(
+                'pipeline-vcs: read-attempt: [warn] markers.trusted_authors not configured '
+                '— config file could not be parsed (see pipeline-config warning); '
+                'any commenter\'s marker is accepted',
+                file=sys.stderr,
+            )
+        else:
+            print(
+                'pipeline-vcs: read-attempt: [warn] markers.trusted_authors not configured '
+                '— author check skipped',
+                file=sys.stderr,
+            )
 
     # Stage 2: the line IS marker-like; it must parse exactly or it is corrupt.
     # Corrupt markers NEVER fall through to zero — that would grant infinite retries.
@@ -1015,7 +1049,7 @@ sys.exit(0)
       local repo_root
       repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
       printf '%s' "$pr_data" \
-        | WAIVER_PATHS="$waiver_paths" REPO_ROOT="${repo_root:-}" TRUSTED_AUTHORS="$trusted_authors_cas" python3 -c "
+        | WAIVER_PATHS="$waiver_paths" REPO_ROOT="${repo_root:-}" TRUSTED_AUTHORS="$trusted_authors_cas" TALOS_CFG="$_TALOS_CFG" python3 -c "
 import fnmatch, json, os, re, subprocess, sys
 
 APPROVAL_LABELS = {
@@ -1112,6 +1146,19 @@ else:
     trusted_authors = []
 
 author_check_active = bool(trusted_authors)
+
+# Config-parse-failed detection for improved marker-authors-unverified message (#116).
+import pathlib as _pathlib_cas
+_talos_cfg_cas = os.environ.get('TALOS_CFG', '')
+_config_parse_failed_cas = False
+if _talos_cfg_cas and _pathlib_cas.Path(_talos_cfg_cas).exists():
+    try:
+        try:
+            import yaml as _yaml_cas; _yaml_cas.safe_load(open(_talos_cfg_cas))
+        except ImportError:
+            import json as _json_cas; _json_cas.load(open(_talos_cfg_cas))
+    except Exception:
+        _config_parse_failed_cas = True
 
 # Parse PR data
 try:
@@ -1210,11 +1257,19 @@ for label, role in present.items():
         else:
             # Unconfigured allow-list — fail open but emit a machine-readable marker.
             print('talos:marker-authors-unverified reader=check-approval-sha')
-            print(
-                'pipeline-vcs: check-approval-sha: [warn] markers.trusted_authors not configured '
-                '— author check skipped',
-                file=sys.stderr,
-            )
+            if _config_parse_failed_cas:
+                print(
+                    'pipeline-vcs: check-approval-sha: [warn] markers.trusted_authors not configured '
+                    '— config file could not be parsed (see pipeline-config warning); '
+                    'any commenter\'s marker is accepted',
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    'pipeline-vcs: check-approval-sha: [warn] markers.trusted_authors not configured '
+                    '— author check skipped',
+                    file=sys.stderr,
+                )
 
         found_sha = m.group(1)
         break
@@ -2111,7 +2166,7 @@ json.dump({'comments': comments}, sys.stdout)
 ")"
       local _trusted_authors
       _trusted_authors="$(cfg markers.trusted_authors "")"
-      printf '%s' "$_normalized" | TRUSTED_AUTHORS="$_trusted_authors" python3 -c "
+      printf '%s' "$_normalized" | TRUSTED_AUTHORS="$_trusted_authors" TALOS_CFG="$_TALOS_CFG" python3 -c "
 import json, os, re, sys
 
 # Stage-1 permissive detector: matches any HTML comment that looks like it
@@ -2143,6 +2198,19 @@ else:
     trusted_authors = []
 
 author_check_active = bool(trusted_authors)
+
+# Config-parse-failed detection for improved marker-authors-unverified message (#116).
+import pathlib as _pathlib_ra2
+_talos_cfg_ra2 = os.environ.get('TALOS_CFG', '')
+_config_parse_failed_ra2 = False
+if _talos_cfg_ra2 and _pathlib_ra2.Path(_talos_cfg_ra2).exists():
+    try:
+        try:
+            import yaml as _yaml_ra2; _yaml_ra2.safe_load(open(_talos_cfg_ra2))
+        except ImportError:
+            import json as _json_ra2; _json_ra2.load(open(_talos_cfg_ra2))
+    except Exception:
+        _config_parse_failed_ra2 = True
 
 try:
     data = json.load(sys.stdin)
@@ -2176,11 +2244,19 @@ for c in reversed(raw_comments):
             continue
     else:
         print('talos:marker-authors-unverified reader=read-attempt')
-        print(
-            'pipeline-vcs: read-attempt: [warn] markers.trusted_authors not configured '
-            '-- author check skipped',
-            file=sys.stderr,
-        )
+        if _config_parse_failed_ra2:
+            print(
+                'pipeline-vcs: read-attempt: [warn] markers.trusted_authors not configured '
+                '-- config file could not be parsed (see pipeline-config warning); '
+                'any commenter\'s marker is accepted',
+                file=sys.stderr,
+            )
+        else:
+            print(
+                'pipeline-vcs: read-attempt: [warn] markers.trusted_authors not configured '
+                '-- author check skipped',
+                file=sys.stderr,
+            )
 
     m = MARKER_RE.match(last_line)
     if not m:
@@ -2359,7 +2435,7 @@ json.dump(out, sys.stdout)
       _trusted_authors_cas="$(cfg markers.trusted_authors "")"
       _repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
       printf '%s' "$_pr_data" \
-        | WAIVER_PATHS="$_waiver_paths" REPO_ROOT="${_repo_root:-}" TRUSTED_AUTHORS="$_trusted_authors_cas" python3 -c "
+        | WAIVER_PATHS="$_waiver_paths" REPO_ROOT="${_repo_root:-}" TRUSTED_AUTHORS="$_trusted_authors_cas" TALOS_CFG="$_TALOS_CFG" python3 -c "
 import fnmatch, json, os, re, subprocess, sys
 
 APPROVAL_LABELS = {
@@ -2445,6 +2521,19 @@ else:
 
 author_check_active = bool(trusted_authors)
 
+# Config-parse-failed detection for improved marker-authors-unverified message (#116).
+import pathlib as _pathlib_cas2
+_talos_cfg_cas2 = os.environ.get('TALOS_CFG', '')
+_config_parse_failed_cas2 = False
+if _talos_cfg_cas2 and _pathlib_cas2.Path(_talos_cfg_cas2).exists():
+    try:
+        try:
+            import yaml as _yaml_cas2; _yaml_cas2.safe_load(open(_talos_cfg_cas2))
+        except ImportError:
+            import json as _json_cas2; _json_cas2.load(open(_talos_cfg_cas2))
+    except Exception:
+        _config_parse_failed_cas2 = True
+
 try:
     data = json.load(sys.stdin)
 except Exception as exc:
@@ -2522,11 +2611,19 @@ for label, role in present.items():
                 continue
         else:
             print('talos:marker-authors-unverified reader=check-approval-sha')
-            print(
-                'pipeline-vcs: check-approval-sha: [warn] markers.trusted_authors not configured '
-                '-- author check skipped',
-                file=sys.stderr,
-            )
+            if _config_parse_failed_cas2:
+                print(
+                    'pipeline-vcs: check-approval-sha: [warn] markers.trusted_authors not configured '
+                    '-- config file could not be parsed (see pipeline-config warning); '
+                    'any commenter\'s marker is accepted',
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    'pipeline-vcs: check-approval-sha: [warn] markers.trusted_authors not configured '
+                    '-- author check skipped',
+                    file=sys.stderr,
+                )
 
         found_sha = m.group(1)
         break
