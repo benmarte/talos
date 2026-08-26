@@ -839,6 +839,39 @@ assert_contains "$out" "all approval labels are current" \
 assert_not_contains "$out" "ignoring marker" \
   "#128-api M3 full four-role set: no spurious unknown-role warnings"
 
+# ── Issue #142: near-miss message parity for _github_api ─────────────────────
+# Case A: no talos:approval text -> existing message, byte-identical (regression guard).
+: > "$CURL_LOG"
+printf '%s\n' \
+  "{\"number\":7,\"head\":{\"sha\":\"$_API_HEAD\"},\"base\":{\"ref\":\"main\"},\"labels\":[{\"name\":\"qa:pass\"}]}" \
+  "[{\"body\":\"qa passed, no marker here\",\"user\":{\"login\":\"bot\"}}]" \
+  > "$CURL_QUEUE"
+out="$(bash "$VCS" check-approval-sha 7 2>&1)"; rc=$?
+assert_eq "1" "$rc" \
+  "#142-api Case A (no approval text): exits 1 (_github_api)"
+assert_contains "$out" "no SHA marker in PR comments" \
+  "#142-api Case A: existing message byte-identical (_github_api regression guard)"
+assert_not_contains "$out" "found talos:approval text" \
+  "#142-api Case A: near-miss message NOT shown when no approval text"
+
+# Case B: unwrapped talos:approval sha= text -> new near-miss message.
+# RED before fix: gate reported "no SHA marker" instead of naming the expected form.
+: > "$CURL_LOG"
+_NEAR_MISS_SHA="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+printf '%s\n' \
+  "{\"number\":7,\"head\":{\"sha\":\"$_API_HEAD\"},\"base\":{\"ref\":\"main\"},\"labels\":[{\"name\":\"qa:pass\"}]}" \
+  "[{\"body\":\"talos:approval sha=${_NEAR_MISS_SHA} role=qa\",\"user\":{\"login\":\"bot\"}}]" \
+  > "$CURL_QUEUE"
+out="$(bash "$VCS" check-approval-sha 7 2>&1)"; rc=$?
+assert_eq "1" "$rc" \
+  "#142-api Case B (near-miss): exits 1 (_github_api, unchanged)"
+assert_contains "$out" "found talos:approval text but no valid marker" \
+  "#142-api Case B: near-miss message emitted (_github_api) -- byte-identical to _github"
+assert_contains "$out" "expected <!-- talos:approval sha=<40-hex-lowercase> role=<role> -->" \
+  "#142-api Case B: expected form named (_github_api)"
+assert_not_contains "$out" "no SHA marker in PR comments" \
+  "#142-api Case B: old generic message NOT shown when near-miss present (_github_api)"
+
 # ── unknown provider error still works (sanity) ──────────────────────────────
 unset GITHUB_TOKEN GH_TOKEN
 cat > talos.pipeline.json <<'EOF'
