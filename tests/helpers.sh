@@ -71,10 +71,12 @@ use_stubs() {
   export PATH="$STUBS_DIR:$PATH"
   export GH_LOG="$SANDBOX/gh.log"
   export CURL_LOG="$SANDBOX/curl.log"
-  export CURL_QUEUE="$SANDBOX/curl.queue"   # optional: one canned response per line
+  export CURL_QUEUE="$SANDBOX/curl.queue"        # optional: one canned response per line
+  export CURL_LINK_QUEUE="$SANDBOX/curl.link.queue"  # optional: Link: next URL per call
   export NAK_LOG="$SANDBOX/nak.log"
   export NAK_QUEUE="$SANDBOX/nak.queue"     # optional: "fail" or canned event JSON per line
-  : > "$GH_LOG"; : > "$CURL_LOG"; : > "$CURL_QUEUE"; : > "$NAK_LOG"; : > "$NAK_QUEUE"
+  : > "$GH_LOG"; : > "$CURL_LOG"; : > "$CURL_QUEUE"; : > "$CURL_LINK_QUEUE"
+  : > "$NAK_LOG"; : > "$NAK_QUEUE"
 }
 
 # install_talos — run install.sh into the sandbox quietly.
