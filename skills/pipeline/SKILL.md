@@ -92,7 +92,7 @@ Store these for the run:
 - `merge.auto`: true
 - `merge.method`: squash
 - `merge.required_checks`: []
-- `issues.label_filter`: pipeline:ready
+- `issues.label_filter`: pipeline:ready (an additional label requirement; see Step 2)
 - `issues.max_parallel`: 1
 - `limits.max_fix_attempts`: 3
 - `execution.isolation`: worktree
@@ -307,7 +307,7 @@ List issues matching `issues.label_filter` that do NOT have any `issues.skip_lab
 bash scripts/pipeline-vcs.sh list-issues
 ```
 
-For VCS mode: filter for issues with `pipeline:ready` label, excluding any with skip labels.
+For VCS mode: an issue enters the queue when it carries `pipeline:ready` **AND** the configured `issues.label_filter` label. When `label_filter` is `pipeline:ready` (the default), the two conditions collapse to one — existing configs are byte-identical to today. When `label_filter` is set to a custom value (e.g. `team:alice`), only issues carrying **both** `pipeline:ready` and `team:alice` are queued. Issues that carry only the custom label but not `pipeline:ready` do not stall silently — they never enter the queue. Exclude any issues that carry a `skip_labels` label.
 For file mode: return unchecked items from `list-issues` (IDs are assigned on first call).
 
 Sort by priority label first — `p0` before `p1` before `p2` before unlabeled
