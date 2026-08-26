@@ -8,10 +8,27 @@
 # Non-vacuity proof: the test counts extracted lines and asserts content against
 # known-present strings before comparing hashes, so four empty strings cannot
 # hash equal and silently pass.
+#
+# Coverage (important):
+#   This test checks TWO sets of profiles:
+#   1. Plugin-shipped profiles in $TALOS_ROOT/agents/{reviewer,security,qa,docs}.md
+#      (always checked).
+#   2. Repo-level overrides in $TALOS_ROOT/.claude/agents/{reviewer,security,qa,docs}.md
+#      (checked when the file exists; skipped when absent).
+#   GREEN means: every profile that IS present carries the byte-identical shared
+#   Rules block.  It does NOT guarantee that a profile absent from .claude/agents/
+#   will remain absent — a future addition without the contract would be caught
+#   on the next test run.
+#
+# Mutation discipline (repo-level section):
+#   Mutation that makes the override assertions fail: place a
+#   .claude/agents/security.md that lacks the Rules: block or contains a
+#   divergent block — the corresponding assert_eq exits 1 naming the role.
 set -u
 . "$(dirname "$0")/helpers.sh"
 
 AGENTS_DIR="$TALOS_ROOT/agents"
+REPO_AGENTS_DIR="$TALOS_ROOT/.claude/agents"
 
 # ── Extraction helper ─────────────────────────────────────────────────────────
 # extract_rules_block <file>
@@ -125,5 +142,35 @@ if [ "$REVIEWER_HASH" != "$SECURITY_HASH" ] || \
         fi
     done
 fi
+
+# ── Repo-level override check ─────────────────────────────────────────────────
+# When a consumer repo places .claude/agents/<role>.md, that file wins over the
+# plugin-shipped copy (SKILL.md line 24).  The shipped Rules block is the
+# canonical contract; every override must carry it byte-identically.
+#
+# Logic: iterate the four review roles.  If no override file exists, skip with a
+# pass (no drift possible).  If the override exists but has no Rules: block, fail
+# loudly — the most likely mistake is copying a minimal profile.  If the block
+# exists, compare its hash against the canonical shipped hash.
+#
+# Mutation: remove this section → a bad .claude/agents/security.md passes silently.
+_canonical_hash="$REVIEWER_HASH"
+for _role in reviewer security qa docs; do
+    _override="$REPO_AGENTS_DIR/$_role.md"
+    if [ ! -f "$_override" ]; then
+        pass "repo-level override absent: .claude/agents/$_role.md — skipped (no drift possible)"
+        continue
+    fi
+    # Override exists — extract its Rules block.
+    _override_block="$(extract_rules_block "$_override")"
+    if [ -z "$_override_block" ]; then
+        fail "repo-level override .claude/agents/$_role.md: Rules block present" \
+             "Rules: block missing in override — the shared contract is absent; add it or the gate will reject stamps"
+        continue
+    fi
+    _override_hash="$(printf '%s' "$_override_block" | sha256sum | awk '{print $1}')"
+    assert_eq "$_canonical_hash" "$_override_hash" \
+        "repo-level .claude/agents/$_role.md == shipped agents/$_role.md Rules block (byte-identical after normalisation)"
+done
 
 finish
