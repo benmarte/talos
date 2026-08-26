@@ -883,7 +883,7 @@ for c in reversed(raw_comments):
         if _config_parse_failed_ra:
             print(
                 'pipeline-vcs: read-attempt: [warn] markers.trusted_authors not configured '
-                '— config file could not be parsed (see pipeline-config warning); '
+                '-- config file could not be parsed (see pipeline-config warning); '
                 'any commenter\'s marker is accepted',
                 file=sys.stderr,
             )
@@ -1287,7 +1287,7 @@ for label, role in present.items():
             if _config_parse_failed_cas:
                 print(
                     'pipeline-vcs: check-approval-sha: [warn] markers.trusted_authors not configured '
-                    '— config file could not be parsed (see pipeline-config warning); '
+                    '-- config file could not be parsed (see pipeline-config warning); '
                     'any commenter\'s marker is accepted',
                     file=sys.stderr,
                 )
