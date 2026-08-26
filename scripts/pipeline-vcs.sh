@@ -4077,9 +4077,11 @@ for c in data.get('comments', []):
   fi
 
   # Post via comment-pr so write-time validation (#110/#132) applies automatically.
-  # No _TALOS_POST_APPROVAL_INTERNAL guard needed: post-approval always calls
-  # comment-pr with --body-file, so ARGS[1] is "--body-file" -- that string
-  # never matches the marker regex, so the warning would not fire anyway.
+  # No _TALOS_POST_APPROVAL_INTERNAL guard needed: comment-pr is invoked as a
+  # subprocess whose stderr is captured into _pa_comment_url via 2>&1 -- any
+  # marker-detection warning it emits is absorbed into the output variable and
+  # not forwarded to the caller's stderr. Do not re-add the guard: it was
+  # blocked on #151 as an externally-settable bypass.
   _pa_comment_url=""
   _pa_comment_url="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" comment-pr "$_pa_n" \
     --body-file "$_pa_tmpfile" 2>&1)" || {
