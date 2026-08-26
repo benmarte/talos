@@ -798,6 +798,7 @@ for c in reversed(raw_comments):
     body   = c.get('body', '')
     author = c.get('author', {}).get('login', '') if isinstance(c.get('author'), dict) else ''
 
+    # INVARIANT (issue #79): last-line rule applied unconditionally before marker check.
     # Require the marker to appear as the last non-whitespace line of the comment
     # body, so a quoted/fenced occurrence cannot win.
     stripped  = body.rstrip()
@@ -1161,6 +1162,7 @@ for label, role in present.items():
         body   = c.get('body', '')
         author = c.get('author', {}).get('login', '') if isinstance(c.get('author'), dict) else ''
 
+        # INVARIANT (issue #79): last-line rule applied unconditionally before marker check.
         # Last-line rule: strip trailing whitespace, take final newline-split segment.
         stripped  = body.rstrip()
         last_line = stripped.rsplit('\n', 1)[-1].strip()
@@ -1982,6 +1984,636 @@ except Exception:
             -H "Content-Type: application/json" -d '{}' >/dev/null
       done <<< "$_failed_ids"
       echo "rerun-ci: re-ran failed runs for PR #$_n ($_sha)"
+      ;;
+
+    # ── Attempt counting (REST equivalents of _github verbs) ─────────────────
+
+    pr-head)
+      # pr-head <n> — print current head SHA for a PR (fail-closed: exits 1 if unresolvable)
+      local _n="$1"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: GET $_API/pulls/$_n (head.sha)"
+        return 0
+      fi
+      local _pr_raw _sha
+      _pr_raw="$(_ga_req GET "$_API/pulls/$_n")"
+      _sha="$(printf '%s' "$_pr_raw" | python3 -c "import json,sys; print(json.load(sys.stdin).get('head',{}).get('sha',''))")"
+      [ -z "$_sha" ] && { echo "pipeline-vcs: pr-head: could not resolve head SHA for PR #$_n" >&2; exit 1; }
+      printf '%s\n' "$_sha"
+      ;;
+
+    read-attempt)
+      # read-attempt <issue-n>
+      # Print "stage=<s> count=<k> total=<t>" from the most-recent attempt
+      # marker on the issue. Prints "stage= count=0 total=0" when no marker
+      # exists. Exits 0 always (read-only query).
+      local _n="${1:-}"
+      [ -z "$_n" ] && { echo "pipeline-vcs: read-attempt: missing issue number" >&2; exit 1; }
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: read-attempt $_n: GET issue comments and extract last talos:attempt marker"
+        return 0
+      fi
+      local _comments_raw
+      _comments_raw="$(_ga_req GET "$_API/issues/$_n/comments?per_page=100")"
+      # Normalize REST (user.login) → gh shape (author.login) and wrap as {"comments":[...]}
+      local issue_data
+      issue_data="$(printf '%s' "${_comments_raw:-[]}" | python3 -c "
+import json, sys
+raw = json.load(sys.stdin)
+for c in raw:
+    c['author'] = c.pop('user', {})
+print(json.dumps({'comments': raw}))
+")"
+      if [ -z "$issue_data" ]; then
+        echo "pipeline-vcs: read-attempt: could not fetch issue #$_n data" >&2
+        exit 1
+      fi
+      local trusted_authors
+      trusted_authors="$(cfg markers.trusted_authors "")"
+      printf '%s' "$issue_data" | TRUSTED_AUTHORS="$trusted_authors" python3 -c "
+import json, os, re, sys
+
+LOOSE_RE = re.compile(r'<!--\s*talos:attempt\b[^>]*-->')
+MARKER_RE = re.compile(
+    r'<!--\s*talos:attempt\s+stage=(\S+)\s+count=(\d+)\s+total=(\d+)\s*-->$',
+    re.MULTILINE
+)
+KNOWN_STAGES = {
+    'developer', 'qa', 'reviewer', 'security', 'docs',
+    'validator', 'pm', 'orchestrator', 'planner',
+}
+
+raw_authors = os.environ.get('TRUSTED_AUTHORS', '').strip()
+if raw_authors:
+    try:
+        parsed_authors = json.loads(raw_authors)
+        if not isinstance(parsed_authors, list):
+            raise ValueError('not a list')
+        trusted_authors = [str(a).strip() for a in parsed_authors if str(a).strip()]
+    except Exception:
+        trusted_authors = [a.strip() for a in raw_authors.splitlines() if a.strip()]
+else:
+    trusted_authors = []
+
+author_check_active = bool(trusted_authors)
+
+try:
+    data = json.load(sys.stdin)
+except Exception as exc:
+    print('pipeline-vcs: read-attempt: could not parse issue data: ' + str(exc), file=sys.stderr)
+    sys.exit(1)
+
+raw_comments = data.get('comments', [])
+
+found = None
+for c in reversed(raw_comments):
+    body   = c.get('body', '')
+    author = c.get('author', {}).get('login', '') if isinstance(c.get('author'), dict) else ''
+
+    # INVARIANT (issue #79): last-line rule applied unconditionally before marker check.
+    stripped  = body.rstrip()
+    last_line = stripped.rsplit('\n', 1)[-1].strip()
+
+    if not LOOSE_RE.search(last_line):
+        continue
+
+    if author_check_active:
+        if author not in trusted_authors:
+            print(
+                'pipeline-vcs: read-attempt: skipping marker from untrusted author '
+                + repr(author) + ' (not in markers.trusted_authors)',
+                file=sys.stderr,
+            )
+            continue
+    else:
+        print('talos:marker-authors-unverified reader=read-attempt')
+        print(
+            'pipeline-vcs: read-attempt: [warn] markers.trusted_authors not configured '
+            '-- author check skipped',
+            file=sys.stderr,
+        )
+
+    m = MARKER_RE.match(last_line)
+    if not m:
+        print(
+            'pipeline-vcs: read-attempt: corrupt marker (does not parse): '
+            + repr(last_line) + ' -- fail-closed',
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    stage, count_str, total_str = m.group(1), m.group(2), m.group(3)
+    if stage not in KNOWN_STAGES:
+        print('pipeline-vcs: read-attempt: unrecognised stage \"' + stage + '\" in marker -- fail-closed', file=sys.stderr)
+        sys.exit(1)
+    count_val = int(count_str)
+    total_val = int(total_str)
+    if count_val < 0 or total_val < 0:
+        print('pipeline-vcs: read-attempt: negative value in marker -- fail-closed', file=sys.stderr)
+        sys.exit(1)
+    if total_val < count_val:
+        print('pipeline-vcs: read-attempt: total < count in marker -- fail-closed', file=sys.stderr)
+        sys.exit(1)
+    found = (stage, count_val, total_val)
+    break
+
+if found:
+    stage, count_val, total_val = found
+    print('stage=' + stage + ' count=' + str(count_val) + ' total=' + str(total_val))
+else:
+    print('stage= count=0 total=0')
+sys.exit(0)
+"
+      ;;
+
+    check-attempt)
+      # check-attempt <issue-n>
+      # Exit 1 when EITHER ceiling is already reached. Does NOT record — callers
+      # do that with record-attempt.
+      local _n="${1:-}"
+      [ -z "$_n" ] && { echo "pipeline-vcs: check-attempt: missing issue number" >&2; exit 1; }
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: check-attempt $_n: compare current attempt state against configured ceilings"
+        return 0
+      fi
+      local max_stage max_total
+      max_stage="$(cfg limits.max_fix_attempts 3)"
+      max_total="$(cfg limits.max_total_dispatches 8)"
+      local state
+      state="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" read-attempt "$_n" ${REPO:+--repo "$REPO"} 2>&1)"
+      local rc=$?
+      if [ $rc -ne 0 ]; then
+        echo "pipeline-vcs: check-attempt: read-attempt failed: $state" >&2
+        exit 1
+      fi
+      printf '%s\n' "$state" | grep '^talos:' || true
+      state="$(printf '%s\n' "$state" | grep '^stage=')"
+      local cur_stage cur_count cur_total
+      cur_stage="$(printf '%s' "$state" | sed 's/stage=\([^ ]*\).*/\1/')"
+      cur_count="$(printf '%s' "$state" | sed 's/.*count=\([0-9]*\).*/\1/')"
+      cur_total="$(printf '%s' "$state" | sed 's/.*total=\([0-9]*\).*/\1/')"
+      if [ "$cur_total" -ge "$max_total" ]; then
+        echo "pipeline-vcs: check-attempt: BLOCKED — total dispatches ($cur_total) >= max_total_dispatches ($max_total)" >&2
+        exit 1
+      fi
+      if [ -n "$cur_stage" ] && [ "$cur_count" -ge "$max_stage" ]; then
+        echo "pipeline-vcs: check-attempt: BLOCKED — $cur_stage consecutive attempts ($cur_count) >= max_fix_attempts ($max_stage)" >&2
+        exit 1
+      fi
+      echo "pipeline-vcs: check-attempt: ok (stage=$cur_stage count=$cur_count total=$cur_total; max_stage=$max_stage max_total=$max_total)"
+      exit 0
+      ;;
+
+    record-attempt)
+      # record-attempt <issue-n> <blocking-stage>
+      # Read prior state, compute new counts, POST the marker comment, print
+      # "stage=<s> count=<k> total=<t>". Exits non-zero when EITHER ceiling
+      # is exceeded AFTER recording.
+      local _n="${1:-}" _stage="${2:-}"
+      [ -z "$_n" ]     && { echo "pipeline-vcs: record-attempt: missing issue number" >&2; exit 1; }
+      [ -z "$_stage" ] && { echo "pipeline-vcs: record-attempt: missing stage argument" >&2; exit 1; }
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: record-attempt $_n $_stage: read prior state, POST attempt marker comment"
+        return 0
+      fi
+      local max_stage max_total
+      max_stage="$(cfg limits.max_fix_attempts 3)"
+      max_total="$(cfg limits.max_total_dispatches 8)"
+      local state
+      state="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" read-attempt "$_n" ${REPO:+--repo "$REPO"} 2>&1)"
+      local rc=$?
+      if [ $rc -ne 0 ]; then
+        echo "pipeline-vcs: record-attempt: read-attempt failed: $state" >&2
+        exit 1
+      fi
+      printf '%s\n' "$state" | grep '^talos:' || true
+      state="$(printf '%s\n' "$state" | grep '^stage=')"
+      local prev_stage prev_count prev_total
+      prev_stage="$(printf '%s' "$state" | sed 's/stage=\([^ ]*\).*/\1/')"
+      prev_count="$(printf '%s' "$state" | sed 's/.*count=\([0-9]*\).*/\1/')"
+      prev_total="$(printf '%s' "$state" | sed 's/.*total=\([0-9]*\).*/\1/')"
+      local new_count new_total
+      new_total=$(( prev_total + 1 ))
+      if [ "$prev_stage" = "$_stage" ]; then
+        new_count=$(( prev_count + 1 ))
+      else
+        new_count=1
+      fi
+      local marker_body
+      marker_body="$(printf 'Talos attempt record — stage=%s count=%d total=%d\n<!-- talos:attempt stage=%s count=%d total=%d -->' \
+        "$_stage" "$new_count" "$new_total" \
+        "$_stage" "$new_count" "$new_total")"
+      local _comment_payload _comment_resp _comment_url
+      _comment_payload="$(printf '%s' "$marker_body" | python3 -c "import json,sys; print(json.dumps({'body':sys.stdin.read()}))")"
+      _comment_resp="$(_ga_req POST "$_API/issues/$_n/comments" \
+        -H "Content-Type: application/json" -d "$_comment_payload")"
+      _comment_url="$(printf '%s' "$_comment_resp" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('html_url',''))" 2>/dev/null)"
+      if [ -z "$_comment_url" ]; then
+        echo "pipeline-vcs: record-attempt: failed to post attempt marker for issue #$_n" >&2
+        exit 1
+      fi
+      echo "pipeline-vcs: record-attempt: marker posted at $_comment_url" >&2
+      printf 'stage=%s count=%d total=%d\n' "$_stage" "$new_count" "$new_total"
+      local blocked=false
+      if [ "$new_total" -ge "$max_total" ]; then
+        echo "pipeline-vcs: record-attempt: BLOCKED — total dispatches ($new_total) >= max_total_dispatches ($max_total)" >&2
+        blocked=true
+      fi
+      if [ "$new_count" -ge "$max_stage" ]; then
+        echo "pipeline-vcs: record-attempt: BLOCKED — $_stage consecutive attempts ($new_count) >= max_fix_attempts ($max_stage)" >&2
+        blocked=true
+      fi
+      [ "$blocked" = "true" ] && exit 1
+      exit 0
+      ;;
+
+    check-approval-sha)
+      # check-approval-sha <n>
+      # Verify every approval label was earned against the current head SHA.
+      # Two REST calls: GET /pulls/<n> and GET /issues/<n>/comments.
+      # Normalises REST user.login → author.login before piping to the Python
+      # decision block (byte-identical to the _github implementation).
+      local _n="$1"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: check-approval-sha $_n: verify all approval labels match current head SHA"
+        return 0
+      fi
+      local _pr_raw _comments_raw
+      _pr_raw="$(_ga_req GET "$_API/pulls/$_n")"
+      if [ -z "$_pr_raw" ]; then
+        echo "pipeline-vcs: check-approval-sha: could not fetch PR #$_n data" >&2
+        exit 1
+      fi
+      _comments_raw="$(_ga_req GET "$_API/issues/$_n/comments?per_page=100")"
+      # Normalise REST → gh-compatible shape: headRefOid, baseRefName, labels,
+      # comments with user renamed to author.
+      local pr_data
+      pr_data="$(printf '%s' "$_pr_raw" | PR_COMMENTS="${_comments_raw:-[]}" python3 -c "
+import json, os, sys
+pr = json.load(sys.stdin)
+comments_raw = json.loads(os.environ.get('PR_COMMENTS', '[]'))
+for c in comments_raw:
+    c['author'] = c.pop('user', {})
+print(json.dumps({
+    'headRefOid': pr.get('head', {}).get('sha', ''),
+    'baseRefName': pr.get('base', {}).get('ref', ''),
+    'labels': [{'name': l['name']} for l in pr.get('labels', [])],
+    'comments': comments_raw,
+}))
+")"
+      if [ -z "$pr_data" ]; then
+        echo "pipeline-vcs: check-approval-sha: could not fetch PR #$_n data" >&2
+        exit 1
+      fi
+      local waiver_paths trusted_authors_cas repo_root
+      waiver_paths="$(cfg merge.approval_waiver_paths "")"
+      trusted_authors_cas="$(cfg markers.trusted_authors "")"
+      repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
+      printf '%s' "$pr_data" \
+        | WAIVER_PATHS="$waiver_paths" REPO_ROOT="${repo_root:-}" TRUSTED_AUTHORS="$trusted_authors_cas" python3 -c "
+import fnmatch, json, os, re, subprocess, sys
+
+APPROVAL_LABELS = {
+    'qa:pass':           'qa',
+    'review:approved':   'reviewer',
+    'security:approved': 'security',
+    'docs:done':         'docs',
+}
+
+HARDCODED_NONWAIVABLE_PREFIXES = ('scripts/', 'tests/')
+HARDCODED_NONWAIVABLE_EXACT    = ('talos.pipeline.yml', 'pipeline.yaml')
+DEFAULT_WAIVER = ['*.md', 'docs/**', 'CHANGELOG.md']
+VALIDATION_CANARIES = [
+    'scripts/core.sh',      'scripts/pipeline-vcs.sh',
+    'sub/dir/scripts/x.sh',
+    'tests/test-vcs.sh',    'tests/run-tests.sh',
+    'sub/dir/tests/y.sh',
+    'talos.pipeline.yml',   'pipeline.yaml',
+    'src/arbitrary.js',     'lib/main.py', 'cmd/server.go',
+    'sub/dir/arbitrary.js',
+]
+
+def is_hardcoded_nonwaivable(path):
+    for prefix in HARDCODED_NONWAIVABLE_PREFIXES:
+        if path == prefix.rstrip('/') or path.startswith(prefix):
+            return True
+    return path in HARDCODED_NONWAIVABLE_EXACT
+
+def path_matches(path, patterns):
+    base = os.path.basename(path)
+    return any(fnmatch.fnmatch(base, p) or fnmatch.fnmatch(path, p) for p in patterns)
+
+def validate_waiver_entries(entries):
+    errors = []
+    for entry in entries:
+        for canary in VALIDATION_CANARIES:
+            base = os.path.basename(canary)
+            if fnmatch.fnmatch(base, entry) or fnmatch.fnmatch(canary, entry):
+                errors.append(
+                    \"pipeline-vcs: ERROR: merge.approval_waiver_paths entry '\" + entry +
+                    \"' would waive '\" + canary +
+                    \"' -- rejected (catch-all or covers non-waivable paths)\"
+                )
+                break
+    return errors
+
+raw_waiver = os.environ.get('WAIVER_PATHS', '').strip()
+if raw_waiver:
+    try:
+        parsed = json.loads(raw_waiver)
+        if not isinstance(parsed, list):
+            raise ValueError('not a list')
+        waiver_entries = [str(e).strip() for e in parsed if str(e).strip()]
+    except Exception:
+        waiver_entries = [e.strip() for e in raw_waiver.splitlines() if e.strip()]
+else:
+    waiver_entries = DEFAULT_WAIVER
+
+errors = validate_waiver_entries(waiver_entries)
+if errors:
+    for e in errors:
+        print(e, file=sys.stderr)
+    sys.exit(1)
+
+raw_authors = os.environ.get('TRUSTED_AUTHORS', '').strip()
+if raw_authors:
+    try:
+        parsed_authors = json.loads(raw_authors)
+        if not isinstance(parsed_authors, list):
+            raise ValueError('not a list')
+        trusted_authors = [str(a).strip() for a in parsed_authors if str(a).strip()]
+    except Exception:
+        trusted_authors = [a.strip() for a in raw_authors.splitlines() if a.strip()]
+else:
+    trusted_authors = []
+
+author_check_active = bool(trusted_authors)
+
+try:
+    data = json.load(sys.stdin)
+except Exception as exc:
+    print('pipeline-vcs: check-approval-sha: could not parse PR data: ' + str(exc), file=sys.stderr)
+    sys.exit(1)
+
+head_sha = data.get('headRefOid', '').strip()
+if not head_sha:
+    print('pipeline-vcs: check-approval-sha: could not resolve head SHA', file=sys.stderr)
+    sys.exit(1)
+
+base_ref_name = data.get('baseRefName', '').strip()
+pr_own_files = None
+if base_ref_name:
+    _own_root = os.environ.get('REPO_ROOT', '').strip() or None
+    try:
+        _pr_own = subprocess.run(
+            ['git', 'diff', '--name-only',
+             'origin/' + base_ref_name + '...' + head_sha],
+            capture_output=True, text=True,
+            cwd=_own_root, timeout=30
+        )
+        if _pr_own.returncode == 0:
+            pr_own_files = set(
+                f.strip() for f in _pr_own.stdout.splitlines() if f.strip()
+            )
+    except Exception:
+        pr_own_files = None
+
+label_names  = {lb['name'] for lb in data.get('labels', [])}
+raw_comments = data.get('comments', [])
+
+present = {label: role for label, role in APPROVAL_LABELS.items() if label in label_names}
+
+if not present:
+    print('check-approval-sha: no approval labels present')
+    sys.exit(0)
+
+MARKER_RE = re.compile(r'<!--\s*talos:approval\s+sha=([0-9a-f]+)\s+role=(\S+?)\s*-->')
+
+stale = []
+for label, role in present.items():
+    found_sha = None
+    for c in reversed(raw_comments):
+        body   = c.get('body', '')
+        author = c.get('author', {}).get('login', '') if isinstance(c.get('author'), dict) else ''
+
+        # INVARIANT (issue #79): last-line rule applied unconditionally before marker check.
+        stripped  = body.rstrip()
+        last_line = stripped.rsplit('\n', 1)[-1].strip()
+
+        m = MARKER_RE.match(last_line)
+        if not m or m.group(2) != role:
+            continue
+
+        if author_check_active:
+            if author not in trusted_authors:
+                print(
+                    'pipeline-vcs: check-approval-sha: skipping marker for ' + label +
+                    ' from untrusted author ' + repr(author) + ' (not in markers.trusted_authors)',
+                    file=sys.stderr,
+                )
+                continue
+        else:
+            print('talos:marker-authors-unverified reader=check-approval-sha')
+            print(
+                'pipeline-vcs: check-approval-sha: [warn] markers.trusted_authors not configured '
+                '-- author check skipped',
+                file=sys.stderr,
+            )
+
+        found_sha = m.group(1)
+        break
+
+    if not found_sha:
+        print('pipeline-vcs: check-approval-sha: ' + label + ' has no SHA marker -- treating as stale', file=sys.stderr)
+        stale.append((label, role, 'no SHA marker in PR comments'))
+        continue
+
+    if not re.fullmatch(r'[0-9a-f]{40}', found_sha):
+        stale.append((label, role,
+            'marker SHA ' + repr(found_sha) + ' is not a valid 40-character commit SHA -- '
+            'the ' + role + ' stage must obtain the SHA via '
+            'pipeline-vcs.sh pr-head <PR>, not git rev-parse HEAD '
+            '(which returns whatever commit is checked out locally)' ))
+        continue
+
+    if found_sha == head_sha:
+        continue
+
+    repo_root = os.environ.get('REPO_ROOT', '').strip() or None
+    try:
+        probe = subprocess.run(
+            ['git', 'cat-file', '-e', found_sha + '^{commit}'],
+            capture_output=True, cwd=repo_root, timeout=10
+        )
+        if probe.returncode != 0:
+            stale.append((label, role,
+                'marker SHA ' + found_sha + ' does not exist in this repository -- '
+                'the ' + role + ' stage posted an invalid SHA; it must re-run and '
+                're-post its marker using a SHA read from git, not reconstructed'))
+            continue
+        result = subprocess.run(
+            ['git', 'diff', '--name-only', found_sha + '..' + head_sha],
+            capture_output=True, text=True,
+            cwd=repo_root, timeout=30
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or 'non-zero exit')
+        changed = [f.strip() for f in result.stdout.splitlines() if f.strip()]
+    except Exception as exc:
+        print('pipeline-vcs: check-approval-sha: git diff failed: ' + str(exc), file=sys.stderr)
+        stale.append((label, role, 'git diff failed: ' + str(exc)))
+        continue
+
+    if pr_own_files is not None:
+        changed = [f for f in changed if f in pr_own_files]
+
+    blocked = [p for p in changed if is_hardcoded_nonwaivable(p)]
+    if not blocked:
+        blocked = [p for p in changed if not path_matches(p, waiver_entries)]
+
+    if blocked:
+        stale.append((label, role,
+            'non-waivable files changed since ' + found_sha + ': ' + ', '.join(blocked[:5])))
+
+if stale:
+    for label, role, reason in stale:
+        print('pipeline-vcs: check-approval-sha: STALE ' + label + ' (' + role + '): ' + reason, file=sys.stderr)
+    sys.exit(1)
+
+print('check-approval-sha: all approval labels are current')
+sys.exit(0)
+"
+      ;;
+
+    check-closing-keyword)
+      # check-closing-keyword <pr_number> <issue_n>
+      # Exit 0 when safe to merge; exit 1 when the PR body has a closing
+      # keyword for <issue_n> AND open sibling PRs reference the same issue.
+      # REST-based equivalent of the _github implementation.
+      local _pr_ref="${1:-}" _issue_n="${2:-}"
+      [ -z "$_pr_ref" ]  && { echo "pipeline-vcs: check-closing-keyword: missing PR ref"      >&2; exit 1; }
+      [ -z "$_issue_n" ] && { echo "pipeline-vcs: check-closing-keyword: missing issue number" >&2; exit 1; }
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: check-closing-keyword $_pr_ref $_issue_n: fetch PR body, look for closing keyword, then scan open PRs"
+        return 0
+      fi
+      if [ -z "$_OWNER" ] || [ -z "$_NAME" ]; then
+        echo "talos:closing-keyword-unverified pr=$_pr_ref issue=$_issue_n reason=repo-unresolved"
+        return 0
+      fi
+      local _pr_raw
+      _pr_raw="$(_ga_req GET "$_API/pulls/$_pr_ref" 2>/dev/null)" || true
+      if [ -z "$_pr_raw" ]; then
+        echo "pipeline-vcs: check-closing-keyword: could not fetch PR '$_pr_ref' -- skipping check" >&2
+        echo "talos:closing-keyword-unverified pr=$_pr_ref issue=$_issue_n reason=pr-fetch-failed"
+        return 0
+      fi
+      local _pr_number _pr_body
+      _pr_number="$(printf '%s' "$_pr_raw" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('number',''))")"
+      _pr_body="$(printf '%s' "$_pr_raw" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('body','') or '')")"
+      local has_closing
+      has_closing="$(printf '%s' "$_pr_body" | python3 -c "
+import re, sys
+body = sys.stdin.read()
+n    = sys.argv[1]
+repo = sys.argv[2]
+kw = r'(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)'
+repo_lc = repo.lower()
+if '/' in repo_lc:
+    _owner_lc, _name_lc = repo_lc.split('/', 1)
+else:
+    _owner_lc = repo_lc; _name_lc = repo_lc
+owner_esc = re.escape(_owner_lc)
+name_esc  = re.escape(_name_lc)
+n_esc = re.escape(n)
+ref_hash = (
+    r'(?<!\w)(?<!/)(?:'
+    + r'(?i:' + owner_esc + r'/' + name_esc + r')'
+    + r'|[A-Za-z0-9_.-]+'
+    + r'|'
+    + r')#' + n_esc + r'(?!\d)'
+)
+ref_gh  = r'(?<![0-9])[Gg][Hh]-' + n_esc + r'(?!\d)'
+ref_url = (r'https://github\.com/(?i:' + owner_esc + r'/' + name_esc + r')'
+           + r'/issues/' + n_esc + r'(?!\d)')
+ref = r'(?:' + ref_hash + r'|' + ref_gh + r'|' + ref_url + r')'
+pattern = kw + r'\s+' + ref
+if re.search(pattern, body, re.IGNORECASE):
+    print('yes')
+else:
+    print('no')
+" "$_issue_n" "$_OWNER/$_NAME" 2>/dev/null)"
+
+      if [ "$has_closing" != "yes" ]; then
+        return 0
+      fi
+
+      local _open_prs_raw
+      _open_prs_raw="$(_ga_req GET "$_API/pulls?state=open&per_page=100" 2>/dev/null)" || true
+      if [ -z "$_open_prs_raw" ]; then
+        echo "pipeline-vcs: check-closing-keyword: could not fetch open PR list -- skipping sibling check" >&2
+        echo "talos:closing-keyword-unverified pr=${_pr_number:-$_pr_ref} issue=$_issue_n reason=sibling-fetch-failed"
+        return 0
+      fi
+      # Normalise REST head.ref → headRefName so the sibling Python block works unchanged.
+      local _siblings_json
+      _siblings_json="$(printf '%s' "$_open_prs_raw" | python3 -c "
+import json, sys
+prs = json.load(sys.stdin)
+for pr in prs:
+    pr['headRefName'] = pr.get('head', {}).get('ref', '')
+print(json.dumps(prs))
+")"
+      local sibling_result
+      sibling_result="$(printf '%s' "$_siblings_json" | python3 -c "
+import json, re, sys
+n    = sys.argv[1]
+self = sys.argv[2]
+repo = sys.argv[3]
+repo_lc = repo.lower()
+if '/' in repo_lc:
+    _owner_lc, _name_lc = repo_lc.split('/', 1)
+else:
+    _owner_lc = repo_lc; _name_lc = repo_lc
+owner_esc = re.escape(_owner_lc)
+name_esc  = re.escape(_name_lc)
+n_esc = re.escape(n)
+own_repo_pat = r'(?<!\w)(?i:' + owner_esc + r'/' + name_esc + r')#' + n_esc + r'(?!\d)'
+bare_pat      = r'(?<!\w)(?<!/)#' + n_esc + r'(?!\d)'
+body_pat = r'(?:' + own_repo_pat + r'|' + bare_pat + r')'
+try: prs = json.load(sys.stdin)
+except Exception: prs = []
+siblings = []
+for pr in prs:
+    if str(pr.get('number','')) == self:
+        continue
+    ref = pr.get('headRefName','')
+    hay = pr.get('title','') + ' ' + pr.get('body','')
+    branch_match = bool(re.search(r'(?:^|/)issue-' + n_esc + r'(?:-|' + r'$)', ref))
+    body_match   = bool(re.search(body_pat, hay))
+    if branch_match or body_match:
+        siblings.append(str(pr.get('number','')))
+if siblings:
+    print('blocked:' + ','.join(siblings))
+else:
+    print('ok')
+" "$_issue_n" "${_pr_number:-}" "$_OWNER/$_NAME" 2>/dev/null)"
+
+      case "$sibling_result" in
+        ok)
+          return 0
+          ;;
+        blocked:*)
+          local _sibling_list="${sibling_result#blocked:}"
+          echo "pipeline-vcs: check-closing-keyword: PR #${_pr_number:-$_pr_ref} carries 'Closes #${_issue_n}' but open sibling PR(s) still reference the same issue: #${_sibling_list/,/ #} — merge the siblings first, or change this PR body to 'Part of #${_issue_n}'" >&2
+          exit 1
+          ;;
+        *)
+          echo "pipeline-vcs: check-closing-keyword: unexpected sibling-check output -- skipping" >&2
+          echo "talos:closing-keyword-unverified pr=${_pr_number:-$_pr_ref} issue=$_issue_n reason=sibling-check-failed"
+          return 0
+          ;;
+      esac
       ;;
 
     *) echo "pipeline-vcs: unknown verb: $_VERB" >&2; exit 1 ;;
@@ -2935,51 +3567,56 @@ if [ "$VERB" = "label-pr" ] && [ "${#ARGS[@]}" -ge 1 ]; then
 
   # --require-marker: pre-apply check.  Fetch PR data and verify a marker comment
   # exists for each approval label being added.  Exit 1 (fatal) if absent.
-  # Only implemented for the github provider (check-approval-sha is github-only).
+  # github: inline check via gh. github-api: delegates to check-approval-sha (REST).
   if [ "$_REQUIRE_MARKER" = "true" ] && [ -n "$_ADDING_APPROVAL_LABELS" ] \
-      && [ "$DRY_RUN" != "true" ] && [ "$PROVIDER" = "github" ]; then
-    _lp_pr_data=""
-    _lp_pr_data="$(gh pr view "$_LABEL_PR_N" --json headRefOid,baseRefName,labels,comments \
-      ${REPO:+--repo "$REPO"} 2>/dev/null)" || true
-    _lp_head_sha=""
-    _lp_comments=""
-    if [ -n "$_lp_pr_data" ]; then
-      _lp_head_sha="$(printf '%s' "$_lp_pr_data" \
-        | python3 -c "import json,sys; print(json.load(sys.stdin).get('headRefOid',''))" \
-        2>/dev/null)" || true
-      _lp_comments="$(printf '%s' "$_lp_pr_data" | python3 -c "
+      && [ "$DRY_RUN" != "true" ] \
+      && { [ "$PROVIDER" = "github" ] || [ "$PROVIDER" = "github-api" ]; }; then
+    _lp_marker_found=false
+    if [ "$PROVIDER" = "github" ]; then
+      _lp_pr_data=""
+      _lp_pr_data="$(gh pr view "$_LABEL_PR_N" --json headRefOid,baseRefName,labels,comments \
+        ${REPO:+--repo "$REPO"} 2>/dev/null)" || true
+      _lp_head_sha=""
+      _lp_comments=""
+      if [ -n "$_lp_pr_data" ]; then
+        _lp_head_sha="$(printf '%s' "$_lp_pr_data" \
+          | python3 -c "import json,sys; print(json.load(sys.stdin).get('headRefOid',''))" \
+          2>/dev/null)" || true
+        _lp_comments="$(printf '%s' "$_lp_pr_data" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
 for c in data.get('comments', []):
     print(c.get('body', ''))
 " 2>/dev/null)" || true
-    fi
-    _lp_marker_found=false
-    if [ -n "$_lp_head_sha" ]; then
-      for _lp_lbl in $_ADDING_APPROVAL_LABELS; do
-        case "$_lp_lbl" in
-          qa:pass)           _lp_role=qa ;;
-          review:approved)   _lp_role=reviewer ;;
-          security:approved) _lp_role=security ;;
-          docs:done)         _lp_role=docs ;;
-          *)                 continue ;;
-        esac
-        if printf '%s
-' "$_lp_comments" \
-            | grep -qF "talos:approval sha=$_lp_head_sha role=$_lp_role"; then
-          _lp_marker_found=true
-          break
-        fi
-      done
+      fi
+      if [ -n "$_lp_head_sha" ]; then
+        for _lp_lbl in $_ADDING_APPROVAL_LABELS; do
+          case "$_lp_lbl" in
+            qa:pass)           _lp_role=qa ;;
+            review:approved)   _lp_role=reviewer ;;
+            security:approved) _lp_role=security ;;
+            docs:done)         _lp_role=docs ;;
+            *)                 continue ;;
+          esac
+          if printf '%s\n' "$_lp_comments" \
+              | grep -qF "talos:approval sha=$_lp_head_sha role=$_lp_role"; then
+            _lp_marker_found=true
+            break
+          fi
+        done
+      fi
+    else
+      # github-api: delegate to check-approval-sha (REST-based).
+      if bash "$0" check-approval-sha "$_LABEL_PR_N" >/dev/null 2>&1; then
+        _lp_marker_found=true
+      fi
     fi
     if [ "$_lp_marker_found" = "false" ]; then
       echo "pipeline-vcs: label-pr: ERROR — --require-marker: no approval marker found at current head." >&2
       echo "pipeline-vcs: label-pr: The gate will reject this PR. Post the marker first, then label:" >&2
-      printf 'pipeline-vcs:   HEAD_SHA=$(bash scripts/pipeline-vcs.sh pr-head %s)
-' \
+      printf 'pipeline-vcs:   HEAD_SHA=$(bash scripts/pipeline-vcs.sh pr-head %s)\n' \
         "$_LABEL_PR_N" >&2
-      printf 'pipeline-vcs:   bash scripts/pipeline-vcs.sh comment-pr %s "<!-- talos:approval sha=$HEAD_SHA role=<role> -->"
-' \
+      printf 'pipeline-vcs:   bash scripts/pipeline-vcs.sh comment-pr %s "<!-- talos:approval sha=$HEAD_SHA role=<role> -->"\n' \
         "$_LABEL_PR_N" >&2
       exit 1
     fi
@@ -3006,10 +3643,11 @@ _DISPATCH_RC=$?
 # check-approval-sha.  If it exits non-zero (no current-head marker), print a
 # loud WARNING so the stage knows it must still post a marker before the gate
 # will accept the PR.  Exit remains 0 — profiles label before stamping.
-# Only runs for the github provider (check-approval-sha uses `gh`).
+# Runs for github and github-api providers (check-approval-sha is now available for both).
 if [ "$VERB" = "label-pr" ] && [ -n "${_ADDING_APPROVAL_LABELS:-}" ] \
     && [ "${_REQUIRE_MARKER:-false}" = "false" ] && [ "$DRY_RUN" != "true" ] \
-    && [ "$PROVIDER" = "github" ] && [ "$_DISPATCH_RC" -eq 0 ]; then
+    && { [ "$PROVIDER" = "github" ] || [ "$PROVIDER" = "github-api" ]; } \
+    && [ "$_DISPATCH_RC" -eq 0 ]; then
   if ! bash "$0" check-approval-sha "$_LABEL_PR_N" >/dev/null 2>&1; then
     echo "pipeline-vcs: label-pr: WARNING — added approval label(s) but no approval marker found at current head." >&2
     echo "pipeline-vcs: label-pr: If you have not already posted your verdict reasoning, do so first." >&2
