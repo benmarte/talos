@@ -418,6 +418,107 @@ automatically adds `pipeline:ready`. The epic itself is labelled
 resolved. The planner role is off by default — it adds API calls and is most useful
 when you regularly work with multi-task epics.
 
+### Filtering which issues enter the queue (`issues.label_filter`)
+
+> **Note on config format:** all examples below are YAML (`talos.pipeline.yml`).
+> The JSON equivalent (`talos.pipeline.json`) works identically -- rename the
+> file and translate the structure to JSON. As of v0.13 the README install path
+> points new users at `talos.pipeline.json`, so if you arrived here from the
+> README you are using JSON. The key paths and default values are the same in
+> both formats.
+
+**What it does.** The orchestrator's Step 1 queue filter uses AND-logic: an
+issue enters the queue when it carries **both** `pipeline:ready` **and** the
+configured `issues.label_filter` label. The two labels must both be present on
+the issue.
+
+**Default:** `pipeline:ready`
+
+At the default value the two conditions collapse to a single check -- an issue
+needs `pipeline:ready`, and the filter requires `pipeline:ready`, so existing
+configs are unaffected byte-for-byte. No migration is needed.
+
+**Worked config example:**
+
+```yaml
+issues:
+  label_filter: "team:alice"
+```
+
+With this config an issue must carry **both** `team:alice` **and**
+`pipeline:ready` to enter the queue. An issue that carries only `team:alice`
+(without `pipeline:ready`) is ignored. An issue that carries only
+`pipeline:ready` (without `team:alice`) is also ignored.
+
+**Footgun -- silently empty queue.** Setting a custom `label_filter` without
+understanding the AND-logic produces a queue that appears empty even when issues
+are labelled correctly. The pipeline starts, finds nothing, and exits without
+error. If your queue is unexpectedly empty after setting this key:
+
+1. Confirm the target issue carries both `pipeline:ready` and your filter label.
+2. Temporarily set `label_filter: "pipeline:ready"` (the default) to verify
+   the queue logic itself is working.
+
+The queue logic is in `scripts/pipeline-vcs.sh`; the key is read via
+`pipeline-config.sh issues.label_filter`.
+
+### Choosing an isolation mode (`execution.isolation`)
+
+> **Note on config format:** examples below are YAML (`talos.pipeline.yml`).
+> The JSON equivalent (`talos.pipeline.json`) works identically -- rename the
+> file and translate the structure to JSON. As of v0.13 the README install path
+> points new users at `talos.pipeline.json`, so if you arrived here from the
+> README you are using JSON. The key path `execution.isolation` and the
+> default value `worktree` are the same in both formats.
+
+**What it does.** Selects the working-copy strategy that each stage runs in.
+Three values are recognised:
+
+| Value | Behaviour |
+|-------|-----------|
+| `worktree` | (default) Each issue gets a dedicated git worktree, enabling parallel execution. |
+| `branch` | Each stage runs in the main checkout on its own branch. Parallel execution is disabled (see below). |
+| `checkout` | Planned but not yet implemented -- the orchestrator refuses this value at startup. |
+
+**Default:** `worktree` (an absent key is identical to `worktree`)
+
+**Worked config example:**
+
+```yaml
+execution:
+  isolation: branch
+```
+
+**Hard constraint -- `branch` forces `max_parallel: 1`.** When `isolation:
+branch` is set, the orchestrator refuses to start if `issues.max_parallel` is
+greater than 1. This is a hard startup failure, not a warning -- the pipeline
+does not degrade gracefully to sequential mode; it exits with an error telling
+you to set `max_parallel: 1` explicitly. Add both keys together:
+
+```yaml
+execution:
+  isolation: branch
+issues:
+  max_parallel: 1
+```
+
+**Why `branch` exists.** Worktrees are the default because they isolate each
+issue cleanly. `branch` exists for projects where worktrees cause problems:
+
+- **Submodules** are not populated in a fresh worktree; a project that relies on
+  submodule content at build time fails immediately.
+- **Ignored-but-required artifacts** (`node_modules/`, `.venv/`, generated
+  protobufs) are absent from a clean worktree, so every stage pays a full
+  install/build cycle.
+- **Absolute paths** in build configs and Docker bind-mounts point at the
+  original checkout, not the worktree path -- builds break or silently use
+  stale artifacts.
+- **Large monorepos** pay real disk and time cost to create and populate a new
+  worktree for every issue.
+
+If any of these applies, set `isolation: branch` and `max_parallel: 1`. The
+sequential constraint is the price of working in a single checkout.
+
 ## Customizing agent profiles
 
 Each role profile is a markdown file with YAML frontmatter (Claude Code
@@ -512,21 +613,24 @@ This config routes six roles (developer, pm, validator, qa, docs, planner) to
 `claude-haiku-4-5-20251001` and two roles (reviewer, security) to
 `claude-opus-5`. Two overrides rather than eight entries.
 
-**Hard constraint -- native path only (`subagents: true`).**
-`agents.roles.<role>.model` is read and applied only when the orchestrator
-spawns native subagents (Claude Code, `subagents: true` or `agents.subagents:
-auto` with `runner: claude`). The model-resolution logic is in
-`skills/pipeline/SKILL.md` under the `subagents: true` block (lines 32-42):
-the orchestrator reads `agents.roles.<role>.model`, falls back to
-`agents.model`, then omits `model:` entirely if neither is set.
+**Footgun -- silent no-op on adapter-path harnesses.** `agents.roles.<role>.model`
+is read and applied **only** when the orchestrator spawns native subagents (Claude
+Code, `subagents: true` or `agents.subagents: auto` with `runner: claude`). On
+the adapter path (`subagents: false`, runner: `codex` / `gemini` / `antigravity`
+/ `custom` / `pi`) the `agents.roles` block is never read -- `pipeline-agent.sh`
+ignores it entirely and the pipeline produces no warning or error. A user on
+`runner: codex` who sets `agents.roles` and sees no change in behaviour has no
+discoverable symptom: the pipeline runs normally at whatever model the runner
+uses by default.
 
-On the adapter path (`subagents: false`, runner: `codex` / `gemini` /
-`antigravity` / `custom` / `pi`), model routing is done by the runner via the
-`$TALOS_ROLE` environment variable in `runner_cmd`. The `agents.roles` block is
-never read on this path -- `pipeline-agent.sh` ignores it. **A user on
-`runner: codex` who sets `agents.roles` and sees no effect has no current way
-to discover why from the pipeline output.** State this constraint explicitly in
-your config comments to save future-you a debugging session.
+The model-resolution logic for the native path is in `skills/pipeline/SKILL.md`
+under the `subagents: true` block (lines 32-42): the orchestrator reads
+`agents.roles.<role>.model`, falls back to `agents.model`, then omits `model:`
+entirely if neither is set.
+
+On adapter-path harnesses, model routing is done by the runner via the
+`$TALOS_ROLE` environment variable in `runner_cmd`. State this constraint
+explicitly in your config comments to prevent confusion when switching harnesses.
 
 If you are on an adapter-path harness and want per-role model control, set the
 model in `runner_cmd` conditional on `$TALOS_ROLE`:
@@ -588,104 +692,6 @@ b) On-demand: keep `Skill` in tools: and reference the namespaced skill in
 Preload guarantees the skill shapes every run (at the cost of context);
 on-demand keeps stages lean and degrades gracefully on machines without the
 pack installed.
-
-### Filtering which issues enter the queue (`issues.label_filter`)
-
-> **Note on config format:** all examples below are YAML (`talos.pipeline.yml`).
-> The JSON equivalent (`talos.pipeline.json`) works identically -- rename the
-> file and translate the structure to JSON. As of v0.13 the README install path
-> points new users at `talos.pipeline.json`, so if you arrived here from the
-> README you are using JSON. The key paths and default values are the same in
-> both formats.
-
-**What it does.** The orchestrator's Step 1 queue filter uses AND-logic: an
-issue enters the queue when it carries **both** `pipeline:ready` **and** the
-configured `issues.label_filter` label. The two labels must both be present on
-the issue.
-
-**Default:** `pipeline:ready`
-
-At the default value the two conditions collapse to a single check -- an issue
-needs `pipeline:ready`, and the filter requires `pipeline:ready`, so existing
-configs are unaffected byte-for-byte. No migration is needed.
-
-**Worked config example:**
-
-```yaml
-issues:
-  label_filter: "team:alice"
-```
-
-With this config an issue must carry **both** `team:alice` **and**
-`pipeline:ready` to enter the queue. An issue that carries only `team:alice`
-(without `pipeline:ready`) is ignored. An issue that carries only
-`pipeline:ready` (without `team:alice`) is also ignored.
-
-**Footgun -- silently empty queue.** Setting a custom `label_filter` without
-understanding the AND-logic produces a queue that appears empty even when issues
-are labelled correctly. The pipeline starts, finds nothing, and exits without
-error. If your queue is unexpectedly empty after setting this key:
-
-1. Confirm the target issue carries both `pipeline:ready` and your filter label.
-2. Temporarily set `label_filter: "pipeline:ready"` (the default) to verify
-   the queue logic itself is working.
-
-The queue logic is in `scripts/pipeline-vcs.sh`; the key is read via
-`pipeline-config.sh issues.label_filter`.
-
-### Choosing an isolation mode (`execution.isolation`)
-
-> **Note on config format:** YAML and JSON are equivalent -- see the note above
-> the `issues.label_filter` section. The key path `execution.isolation` and the
-> default value `worktree` are the same in both formats.
-
-**What it does.** Selects the working-copy strategy that each stage runs in.
-Three values are recognised:
-
-| Value | Behaviour |
-|-------|-----------|
-| `worktree` | (default) Each issue gets a dedicated git worktree, enabling parallel execution. |
-| `branch` | Each stage runs in the main checkout on its own branch. Parallel execution is disabled (see below). |
-| `checkout` | Planned but not yet implemented -- the orchestrator refuses this value at startup. |
-
-**Default:** `worktree` (an absent key is identical to `worktree`)
-
-**Worked config example:**
-
-```yaml
-execution:
-  isolation: branch
-```
-
-**Hard constraint -- `branch` forces `max_parallel: 1`.** When `isolation:
-branch` is set, the orchestrator refuses to start if `issues.max_parallel` is
-greater than 1. This is a hard startup failure, not a warning -- the pipeline
-does not degrade gracefully to sequential mode; it exits with an error telling
-you to set `max_parallel: 1` explicitly. Add both keys together:
-
-```yaml
-execution:
-  isolation: branch
-issues:
-  max_parallel: 1
-```
-
-**Why `branch` exists.** Worktrees are the default because they isolate each
-issue cleanly. `branch` exists for projects where worktrees cause problems:
-
-- **Submodules** are not populated in a fresh worktree; a project that relies on
-  submodule content at build time fails immediately.
-- **Ignored-but-required artifacts** (`node_modules/`, `.venv/`, generated
-  protobufs) are absent from a clean worktree, so every stage pays a full
-  install/build cycle.
-- **Absolute paths** in build configs and Docker bind-mounts point at the
-  original checkout, not the worktree path -- builds break or silently use
-  stale artifacts.
-- **Large monorepos** pay real disk and time cost to create and populate a new
-  worktree for every issue.
-
-If any of these applies, set `isolation: branch` and `max_parallel: 1`. The
-sequential constraint is the price of working in a single checkout.
 
 ## Troubleshooting
 
