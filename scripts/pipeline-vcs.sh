@@ -1025,6 +1025,12 @@ APPROVAL_LABELS = {
     'docs:done':         'docs',
 }
 
+# Fixed valid role set -- derived from APPROVAL_LABELS values.
+# Any marker whose role is not in this set is ignored (issue #128).
+# This must be a fixed literal, never interpolated from config or API text
+# (PR #68 precedent: injected text could forge an approval marker).
+VALID_ROLES = {'qa', 'reviewer', 'security', 'docs'}
+
 # Hard-coded non-waivable: applied AFTER the config waiver check.
 # The config can NEVER widen a waiver to cover these paths.
 HARDCODED_NONWAIVABLE_PREFIXES = ('scripts/', 'tests/')
@@ -1177,8 +1183,20 @@ for label, role in present.items():
         last_line = stripped.rsplit('\n', 1)[-1].strip()
 
         m = MARKER_RE.match(last_line)
-        if not m or m.group(2) != role:
-            continue  # marker not on last line, or wrong role
+        if not m:
+            continue  # marker not on last line
+        marker_role = m.group(2)
+        if marker_role not in VALID_ROLES:
+            # Unknown role value -- log and skip so the gate falls through to
+            # the existing STALE path (fail-closed). Issue #128.
+            print(
+                'pipeline-vcs: check-approval-sha: ignoring marker with unknown role '
+                + repr(marker_role) + ' (valid: docs, qa, reviewer, security)',
+                file=sys.stderr,
+            )
+            continue
+        if marker_role != role:
+            continue  # wrong role for this label
 
         # Author allow-list check (only when configured and non-empty).
         if author_check_active:
@@ -2351,6 +2369,11 @@ APPROVAL_LABELS = {
     'docs:done':         'docs',
 }
 
+# Fixed valid role set -- derived from APPROVAL_LABELS values.
+# Any marker whose role is not in this set is ignored (issue #128).
+# Must be a fixed literal, never interpolated from config or API text.
+VALID_ROLES = {'qa', 'reviewer', 'security', 'docs'}
+
 HARDCODED_NONWAIVABLE_PREFIXES = ('scripts/', 'tests/')
 HARDCODED_NONWAIVABLE_EXACT    = ('talos.pipeline.yml', 'pipeline.yaml')
 
@@ -2476,7 +2499,17 @@ for label, role in present.items():
         last_line = stripped.rsplit('\n', 1)[-1].strip()
 
         m = MARKER_RE.match(last_line)
-        if not m or m.group(2) != role:
+        if not m:
+            continue
+        marker_role = m.group(2)
+        if marker_role not in VALID_ROLES:
+            print(
+                'pipeline-vcs: check-approval-sha: ignoring marker with unknown role '
+                + repr(marker_role) + ' (valid: docs, qa, reviewer, security)',
+                file=sys.stderr,
+            )
+            continue
+        if marker_role != role:
             continue
 
         if author_check_active:
