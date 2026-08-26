@@ -80,10 +80,30 @@ assert_exit_code 0 "$rc" "matching SHA: exits 0"
 assert_contains "$out" "all approval labels are current" "matching SHA: reports all current"
 
 # ── [test] approval label present + no marker → exit 1 (fail-closed) ──────────
+# Case A regression guard: no talos:approval text at all -> existing message, byte-identical.
 out="$(vcs_check "$SHA_B" '[{"name":"qa:pass"}]' '[{"body":"qa pass no marker"}]')"; rc=$?
-assert_exit_code 1 "$rc" "missing marker: exits 1 (fail-closed)"
-assert_contains "$out" "no SHA marker" "missing marker: explains reason"
-assert_contains "$out" "qa:pass" "missing marker: names the label"
+assert_exit_code 1 "$rc" "missing marker (Case A): exits 1 (fail-closed)"
+assert_contains "$out" "no SHA marker in PR comments" "missing marker (Case A): existing message byte-identical"
+assert_contains "$out" "qa:pass" "missing marker (Case A): names the label"
+assert_not_contains "$out" "found talos:approval text" "missing marker (Case A): no near-miss message when no approval text"
+
+# ── [test] Issue #142: near-miss — unwrapped marker text present but no valid wrapper ──
+# Case B: talos:approval sha= text in a comment but no HTML-comment wrapper.
+# RED before fix: gate reported "no SHA marker" instead of naming the expected form.
+_near_miss_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+_near_miss_comment="[{\"body\":\"talos:approval sha=${_near_miss_sha} role=qa\"}]"
+out="$(vcs_check "$SHA_B" '[{"name":"qa:pass"}]' "$_near_miss_comment")"; rc=$?
+assert_exit_code 1 "$rc" "#142 near-miss (Case B): exits 1 (fail-closed, unchanged)"
+assert_contains "$out" "found talos:approval text but no valid marker" \
+  "#142 near-miss (Case B): names near-miss condition (RED before fix)"
+assert_contains "$out" "expected <!-- talos:approval sha=<40-hex-lowercase> role=<role> -->" \
+  "#142 near-miss (Case B): names expected form"
+assert_contains "$out" "as the last non-whitespace line" \
+  "#142 near-miss (Case B): names last-line requirement"
+assert_not_contains "$out" "no SHA marker in PR comments" \
+  "#142 near-miss (Case B): old generic message NOT shown when near-miss present"
+
+# Exit status is identical for both Case A and Case B (both exit 1, proven above).
 
 # ── [test] SHA mismatch + changed file is waivable → exit 0 ───────────────────
 # SHA_A → SHA_B only changed README.md, which matches default *.md waiver

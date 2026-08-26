@@ -1238,6 +1238,9 @@ if not present:
 # Strict extractor: marker must be a syntactically valid talos:approval HTML comment.
 MARKER_RE = re.compile(r'<!--\s*talos:approval\s+sha=([0-9a-f]+)\s+role=(\S+?)\s*-->')
 
+# Precompute once: does any comment contain near-miss marker text?
+any_approval_text = any('talos:approval sha=' in c.get('body', '') for c in raw_comments)
+
 stale = []
 for label, role in present.items():
     # Find the most recent marker for this role (search comments newest-first).
@@ -1305,7 +1308,10 @@ for label, role in present.items():
         # Fail-closed: missing marker means the approval predates SHA stamping —
         # treat it as stale rather than assuming it is safe.
         print(f'pipeline-vcs: check-approval-sha: {label} has no SHA marker — treating as stale', file=sys.stderr)
-        stale.append((label, role, 'no SHA marker in PR comments'))
+        if any_approval_text:
+            stale.append((label, role, 'found talos:approval text but no valid marker -- expected <!-- talos:approval sha=<40-hex-lowercase> role=<role> --> as the last non-whitespace line'))
+        else:
+            stale.append((label, role, 'no SHA marker in PR comments'))
         continue
 
     # Reject abbreviated SHAs at parse time.  An abbreviated SHA can expand to a
@@ -2601,6 +2607,9 @@ if not present:
 
 MARKER_RE = re.compile(r'<!--\s*talos:approval\s+sha=([0-9a-f]+)\s+role=(\S+?)\s*-->')
 
+# Precompute once: does any comment contain near-miss marker text?
+any_approval_text = any('talos:approval sha=' in c.get('body', '') for c in raw_comments)
+
 stale = []
 for label, role in present.items():
     found_sha = None
@@ -2657,7 +2666,10 @@ for label, role in present.items():
 
     if not found_sha:
         print('pipeline-vcs: check-approval-sha: ' + label + ' has no SHA marker -- treating as stale', file=sys.stderr)
-        stale.append((label, role, 'no SHA marker in PR comments'))
+        if any_approval_text:
+            stale.append((label, role, 'found talos:approval text but no valid marker -- expected <!-- talos:approval sha=<40-hex-lowercase> role=<role> --> as the last non-whitespace line'))
+        else:
+            stale.append((label, role, 'no SHA marker in PR comments'))
         continue
 
     if not re.fullmatch(r'[0-9a-f]{40}', found_sha):
