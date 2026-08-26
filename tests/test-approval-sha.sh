@@ -87,7 +87,7 @@ assert_contains "$out" "no SHA marker in PR comments" "missing marker (Case A): 
 assert_contains "$out" "qa:pass" "missing marker (Case A): names the label"
 assert_not_contains "$out" "found talos:approval text" "missing marker (Case A): no near-miss message when no approval text"
 
-# ── [test] Issue #142: near-miss — unwrapped marker text present but no valid wrapper ──
+# -- [test] Issue #142: near-miss -- unwrapped marker text present but no valid wrapper --
 # Case B: talos:approval sha= text in a comment but no HTML-comment wrapper.
 # RED before fix: gate reported "no SHA marker" instead of naming the expected form.
 _near_miss_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
