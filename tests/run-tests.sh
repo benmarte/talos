@@ -99,4 +99,10 @@ if [ "$failed_files" -gt 0 ]; then
   echo "RESULT: $failed_files of $total_files test file(s) FAILED"
   exit 1
 fi
-echo "RESULT: all $total_files test file(s) passed"
+if [ -n "$PATTERN" ]; then
+  echo "RESULT: all $total_files test file(s) passed (FILTERED by '$PATTERN' -- count check skipped)"
+elif [ "$SKIP_COUNT_CHECK" -eq 1 ]; then
+  echo "RESULT: all $total_files test file(s) passed (count check skipped -- base ref unresolvable)"
+else
+  echo "RESULT: all $total_files test file(s) passed"
+fi

@@ -8,6 +8,7 @@
 #   3. Fails open (warn + continue) when the base ref is unresolvable.
 #   4. Respects --base-ref override when supplied.
 #   5. Emits a base-currency WARN when HEAD is behind origin, without hard-failing.
+#   6. Marks filtered runs in the RESULT line so they cannot be mistaken for full runs.
 #
 # Fixture design:
 #   Each case gets its own subdirectory within SANDBOX, each with its own git
@@ -25,6 +26,8 @@
 #   T3: remove the SKIP_COUNT_CHECK=1 path -- the no-remote test would fail.
 #   T4: ignore BASE_REF_OVERRIDE -- the --base-ref test would stop working.
 #   T5: turn the WARN into an exit 1 -- the currency warning hard-fails.
+#   T6: emit plain "all N test file(s) passed" even when PATTERN is set --
+#       the filtered-run RESULT would be indistinguishable from a full run.
 set -u
 . "$(dirname "$0")/helpers.sh"
 
@@ -205,5 +208,24 @@ assert_not_contains "$out" "SHORT" "T5: no count shortfall (same test files on b
 out_both="$(bash "$FD1/tests/run-tests.sh" 2>&1)"; rc_both=$?
 assert_exit_code 1 "$rc_both" "T5: count SHORT causes exit 1"
 assert_contains "$out_both" "WARN" "T5: WARN present alongside count failure"
+
+# ── Test 6: filtered run RESULT is distinguishable from a full run ────────────
+# Named mutation: emit plain "all N test file(s) passed" even when PATTERN is set.
+# A filtered run's RESULT must be impossible to mistake for a complete run when
+# quoted or pasted -- it must name the pattern and state the count check was skipped.
+# Uses FD2 (current checkout, two stubs: test-alpha.sh and test-beta.sh).
+
+# Filtered run (matches "alpha") -- only 1 file runs.
+out_f="$(bash "$FD2/tests/run-tests.sh" alpha 2>&1)"; rc_f=$?
+assert_exit_code 0 "$rc_f" "T6: filtered run exits 0"
+assert_contains "$out_f" "FILTERED" "T6: RESULT contains FILTERED"
+assert_contains "$out_f" "alpha" "T6: RESULT names the pattern"
+assert_contains "$out_f" "count check skipped" "T6: RESULT states count check was skipped"
+
+# Full run (no pattern) -- plain RESULT line, no FILTERED marker.
+out_full="$(bash "$FD2/tests/run-tests.sh" 2>&1)"; rc_full=$?
+assert_exit_code 0 "$rc_full" "T6: full run exits 0"
+assert_not_contains "$out_full" "FILTERED" "T6: full-run RESULT does not say FILTERED"
+assert_not_contains "$out_f" "all 2 test file(s) passed" "T6: filtered RESULT differs from full-run wording"
 
 finish
