@@ -82,6 +82,8 @@ Core (all setups):
 | `curl` | notifications | skip if you don't use notifications |
 | `nak` | Buzz notifications only | `brew install nak`; signs/publishes Nostr events — skip unless you use Buzz |
 
+> **Note: examples throughout this guide use `talos.pipeline.yml` syntax.** The repo ships `talos.pipeline.json`; for new projects, JSON is recommended and requires no extra dependency (see the `python3` row above).
+
 Per VCS provider (pick one):
 
 | Provider | Tool | Auth |
@@ -425,7 +427,9 @@ when you regularly work with multi-task epics.
 > file and translate the structure to JSON. As of v0.13 the README install path
 > points new users at `talos.pipeline.json`, so if you arrived here from the
 > README you are using JSON. The key paths and default values are the same in
-> both formats.
+> both formats. YAML requires PyYAML (`pip install pyyaml`), which is refused on
+> some platforms (PEP 668, macOS Homebrew Python) -- see Prerequisites; JSON
+> needs no extra dependency.
 
 **What it does.** The orchestrator's Step 1 queue filter uses AND-logic: an
 issue enters the queue when it carries **both** `pipeline:ready` **and** the
@@ -469,7 +473,9 @@ The queue logic is in `scripts/pipeline-vcs.sh`; the key is read via
 > file and translate the structure to JSON. As of v0.13 the README install path
 > points new users at `talos.pipeline.json`, so if you arrived here from the
 > README you are using JSON. The key path `execution.isolation` and the
-> default value `worktree` are the same in both formats.
+> default value `worktree` are the same in both formats. YAML requires PyYAML
+> (`pip install pyyaml`), which is refused on some platforms (PEP 668, macOS
+> Homebrew Python) -- see Prerequisites; JSON needs no extra dependency.
 
 **What it does.** Selects the working-copy strategy that each stage runs in.
 Three values are recognised:
@@ -586,7 +592,9 @@ published for multiple agent tools can also be installed cross-harness with
 > you arrived from the README install instructions you are using JSON. Translate
 > the YAML examples below to JSON by mapping each YAML key/value to its JSON
 > equivalent -- the key paths (`agents.model`, `agents.roles.reviewer.model`,
-> etc.) and default values are identical in both formats.
+> etc.) and default values are identical in both formats. YAML requires PyYAML
+> (`pip install pyyaml`), which is refused on some platforms (PEP 668, macOS
+> Homebrew Python) -- see Prerequisites; JSON needs no extra dependency.
 
 **What it does.** Sets the LLM model for a specific role when the orchestrator
 spawns it as a native subagent. This lets you run a cheap global model for
