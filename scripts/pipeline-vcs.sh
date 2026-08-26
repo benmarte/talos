@@ -1053,8 +1053,9 @@ sys.exit(0)
       # the current head SHA.  If a SHA differs, check whether all changed files
       # since the approval SHA are covered by the configured waiver list
       # (merge.approval_waiver_paths; default: *.md docs/** CHANGELOG.md).
-      # Hard-coded non-waivable: scripts/**, tests/**, talos.pipeline.yml,
-      # pipeline.yaml — these are enforced FIRST (before the config waiver) so
+      # Hard-coded non-waivable: scripts/**, tests/**, and all pipeline config
+      # filenames (talos.pipeline.{yml,yaml,json}, .claude-pipeline.{yaml,json},
+      # pipeline.{yaml,json}) — enforced FIRST (before the config waiver) so
       # the config waiver can never be widened to cover them.
       # Fail-closed: unresolvable head SHA, missing marker, or git diff failure
       # all exit non-zero.
@@ -1095,7 +1096,11 @@ VALID_ROLES = {'qa', 'reviewer', 'security', 'docs'}
 # Hard-coded non-waivable: applied AFTER the config waiver check.
 # The config can NEVER widen a waiver to cover these paths.
 HARDCODED_NONWAIVABLE_PREFIXES = ('scripts/', 'tests/')
-HARDCODED_NONWAIVABLE_EXACT    = ('talos.pipeline.yml', 'pipeline.yaml')
+HARDCODED_NONWAIVABLE_EXACT    = (
+    'talos.pipeline.yml', 'talos.pipeline.yaml', 'talos.pipeline.json',
+    '.claude-pipeline.yaml', '.claude-pipeline.json',
+    'pipeline.yaml', 'pipeline.json',
+)
 
 # Default waiver paths — used when the config key is absent or unparseable.
 DEFAULT_WAIVER = ['*.md', 'docs/**', 'CHANGELOG.md']
@@ -1108,7 +1113,9 @@ VALIDATION_CANARIES = [
     'sub/dir/scripts/x.sh',
     'tests/test-vcs.sh',    'tests/run-tests.sh',
     'sub/dir/tests/y.sh',
-    'talos.pipeline.yml',   'pipeline.yaml',
+    'talos.pipeline.yml',   'talos.pipeline.yaml',  'talos.pipeline.json',
+    '.claude-pipeline.yaml', '.claude-pipeline.json',
+    'pipeline.yaml',        'pipeline.json',
     'src/arbitrary.js',     'lib/main.py', 'cmd/server.go',
     'sub/dir/arbitrary.js',
 ]
@@ -2484,7 +2491,11 @@ APPROVAL_LABELS = {
 VALID_ROLES = {'qa', 'reviewer', 'security', 'docs'}
 
 HARDCODED_NONWAIVABLE_PREFIXES = ('scripts/', 'tests/')
-HARDCODED_NONWAIVABLE_EXACT    = ('talos.pipeline.yml', 'pipeline.yaml')
+HARDCODED_NONWAIVABLE_EXACT    = (
+    'talos.pipeline.yml', 'talos.pipeline.yaml', 'talos.pipeline.json',
+    '.claude-pipeline.yaml', '.claude-pipeline.json',
+    'pipeline.yaml', 'pipeline.json',
+)
 
 DEFAULT_WAIVER = ['*.md', 'docs/**', 'CHANGELOG.md']
 
@@ -2493,7 +2504,9 @@ VALIDATION_CANARIES = [
     'sub/dir/scripts/x.sh',
     'tests/test-vcs.sh',    'tests/run-tests.sh',
     'sub/dir/tests/y.sh',
-    'talos.pipeline.yml',   'pipeline.yaml',
+    'talos.pipeline.yml',   'talos.pipeline.yaml',  'talos.pipeline.json',
+    '.claude-pipeline.yaml', '.claude-pipeline.json',
+    'pipeline.yaml',        'pipeline.json',
     'src/arbitrary.js',     'lib/main.py', 'cmd/server.go',
     'sub/dir/arbitrary.js',
 ]

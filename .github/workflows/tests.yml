@@ -4,9 +4,19 @@ on:
   push:
     branches: [main]
   pull_request:
+    paths-ignore: ['**.md']
 
 jobs:
   test:
+    # Skip CI on draft PRs — developers iterate freely on drafts and mark
+    # ready-for-review only once every stage has approved. This yields one
+    # CI run per PR on the final SHA, immediately before merge.
+    # NOTE: != true is used rather than == false; both are behaviourally
+    # identical under GHA numeric coercion, but != true states the intent.
+    # NOTE: if required status checks are ever added for merge, a no-op job
+    # matching "test (ubuntu-latest)" and "test (macos-latest)" that always
+    # passes will be needed, or markdown-only PRs will hang "expected — waiting".
+    if: github.event.pull_request.draft != true
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
