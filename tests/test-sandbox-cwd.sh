@@ -4,12 +4,12 @@
 # Tests:
 #   T1. Sandbox is removed after the subprocess exits (leak guard).
 #   T2. Sandbox is removed even when the test fails (cleanup-on-failure guard).
-#   T3. bash-executing a test file does not strand the caller's CWD.
-#   T4. run-tests.sh rejects being sourced.
+#   T3. make_sandbox refuses when called from a sourced context (the actual fix).
+#   T4. run-tests.sh rejects being sourced (secondary defence).
 #
 # Mutations that make each test RED:
 #   T1/T2: remove 'rm -rf "$SANDBOX"' from the EXIT trap in make_sandbox.
-#   T3:    change 'bash "$t"' to '. "$t"' in run-tests.sh.
+#   T3:    remove the BASH_SOURCE guard from make_sandbox in helpers.sh.
 #   T4:    remove the BASH_SOURCE guard from run-tests.sh.
 set -u
 . "$(dirname "$0")/helpers.sh"
@@ -21,6 +21,7 @@ use_stubs
 # ═════════════════════════════════════════════════════════════════════════════
 before_t1="$(ls -d "${TMPDIR:-/tmp}"/talos-test.* 2>/dev/null | wc -l | tr -d ' ')"
 (
+  # subshell: BASH_SOURCE[-1]=test-sandbox-cwd.sh = $0 → guard does not fire
   . "$TALOS_ROOT/tests/helpers.sh"
   make_sandbox
   # subshell exits here; EXIT trap fires; rm -rf "$SANDBOX" runs
@@ -43,19 +44,22 @@ assert_eq "$before_t2" "$after_t2" \
   "T2: make_sandbox: sandbox removed on deliberate failure (mutation: omit rm -rf from trap)"
 
 # ═════════════════════════════════════════════════════════════════════════════
-# T3: bash-executing a test file does not change the caller's CWD
+# T3: make_sandbox refuses when called from a sourced context (the real fix)
 # ═════════════════════════════════════════════════════════════════════════════
-# run-tests.sh invokes each test via "bash \"$t\"" (a subprocess); the test's
-# cd into $SANDBOX cannot propagate to the parent. This assertion goes RED if
-# run-tests.sh is changed to ". \"$t\"" (sourced execution).
-before_t3="$(pwd)"
-bash "$TALOS_ROOT/tests/test-config.sh" >/dev/null 2>&1 || true
-after_t3="$(pwd)"
-assert_eq "$before_t3" "$after_t3" \
-  "T3: bash-executing a test file does not strand caller CWD (mutation: source instead of bash)"
+# When helpers.sh is sourced into an interactive shell (. tests/helpers.sh &&
+# make_sandbox), BASH_SOURCE[-1] differs from $0 — the guard in make_sandbox
+# detects this and returns 1, printing an error.
+#
+# Here we simulate the dangerous case via "bash -c" (where $0 = "bash") to
+# verify the guard fires.  This test is RED on the pre-fix code (no guard).
+_t3_out="$(bash -c ". '$TALOS_ROOT/tests/helpers.sh' && make_sandbox; echo rc=\$?" 2>&1)"
+assert_not_contains "$_t3_out" "rc=0" \
+  "T3: make_sandbox from sourced context returns non-zero (mutation: remove guard from make_sandbox)"
+assert_contains "$_t3_out" "do not source" \
+  "T3: make_sandbox error message says 'do not source'"
 
 # ═════════════════════════════════════════════════════════════════════════════
-# T4: run-tests.sh rejects being sourced
+# T4: run-tests.sh rejects being sourced (secondary defence)
 # ═════════════════════════════════════════════════════════════════════════════
 out_t4="$(bash -c ". '$TALOS_ROOT/tests/run-tests.sh'" 2>&1 || true)"
 assert_contains "$out_t4" "ERROR" \

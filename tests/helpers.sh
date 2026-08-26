@@ -54,7 +54,25 @@ assert_exit_code() {  # $1=expected $2=actual $3=label
 # (e.g. "bash tests/my-test.sh") — never sourced into the caller's own shell.
 # Sourcing it changes the caller's CWD to a directory that gets deleted when
 # the subprocess exits, stranding the caller in a non-existent path.
+#
+# The guard below detects the sourced case by comparing BASH_SOURCE[-1]
+# (the outermost file in the call stack) with $0 (the running script). When
+# a test file is executed directly ("bash tests/test-foo.sh"), both equal the
+# test file path. When helpers.sh is sourced into an interactive shell,
+# BASH_SOURCE[-1] differs from $0 — the guard fires and returns 1.
 make_sandbox() {
+  # Guard: refuse when called from a sourced context.
+  # BASH_SOURCE[-1] (bash 4+) is spelled out portably for bash 3.2 (macOS).
+  _msb_outer="${BASH_SOURCE[${#BASH_SOURCE[@]}-1]:-}"
+  if [ -n "$_msb_outer" ] && [ "$_msb_outer" != "$0" ]; then
+    printf 'make_sandbox: ERROR: do not source test files — run them directly:\n' >&2
+    printf '  bash %s\n' "$_msb_outer" >&2
+    printf 'Sourcing make_sandbox cds the caller shell into a temp dir that is\n' >&2
+    printf 'deleted on exit, stranding the caller in a non-existent path.\n' >&2
+    unset _msb_outer
+    return 1
+  fi
+  unset _msb_outer
   SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/talos-test.XXXXXX")"
   trap 'rm -rf "$SANDBOX"' EXIT
   cd "$SANDBOX"
