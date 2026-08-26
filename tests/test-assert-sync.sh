@@ -40,12 +40,8 @@ origin.git/
 origin-clone/
 .home/
 EOF
-cat > talos.pipeline.yml <<'EOF'
-base_branch: main
-vcs:
-  provider: github
-EOF
-git add .gitignore talos.pipeline.yml
+printf '{"base_branch":"main","vcs":{"provider":"github"}}' > talos.pipeline.json
+git add .gitignore talos.pipeline.json
 git commit -q -m "root: add gitignore and config"
 
 # Create a bare "origin" from the committed root.
@@ -62,13 +58,9 @@ BASE="$(git -C "$ORIGIN_DIR" symbolic-ref HEAD 2>/dev/null | sed 's|.*/||')"
 [ -z "$BASE" ] && BASE="main"
 git branch -u "origin/$BASE" "$BASE" 2>/dev/null || true
 
-# Update config to use the detected base branch.
-cat > talos.pipeline.yml <<EOF
-base_branch: $BASE
-vcs:
-  provider: github
-EOF
-git add talos.pipeline.yml
+# Update config to use the detected base branch (JSON -- no PyYAML needed on macOS CI).
+printf '{"base_branch":"%s","vcs":{"provider":"github"}}' "$BASE" > talos.pipeline.json
+git add talos.pipeline.json
 git commit -q -m "update config with detected base branch"
 # Push so local and origin are level.
 git push -q origin "$BASE"
@@ -168,18 +160,17 @@ git -C "$ORIGIN_CLONE" fetch -q origin 2>/dev/null || true
 git -C "$ORIGIN_CLONE" checkout -q "$BASE" 2>/dev/null || true
 git -C "$ORIGIN_CLONE" checkout -q -b develop2 2>/dev/null \
   || git -C "$ORIGIN_CLONE" checkout -q develop2 2>/dev/null || true
-# Remove the YAML config and replace with JSON — JSON needs no PyYAML.
-git -C "$ORIGIN_CLONE" rm -q talos.pipeline.yml 2>/dev/null || true
+# Update the JSON config for the develop2 branch (JSON -- no PyYAML needed on macOS CI).
 printf '{"base_branch":"develop2","vcs":{"provider":"github"}}' \
   > "$ORIGIN_CLONE/talos.pipeline.json"
 git -C "$ORIGIN_CLONE" add talos.pipeline.json
-git -C "$ORIGIN_CLONE" commit -q -m "develop2: config as JSON (no PyYAML dependency)"
+git -C "$ORIGIN_CLONE" commit -q -m "develop2: config with develop2 base_branch"
 git -C "$ORIGIN_CLONE" push -q origin "HEAD:refs/heads/develop2"
 
 # Fetch develop2 into local and reset to it — local now == origin/develop2.
 git fetch -q origin
 git reset -q --hard "origin/develop2"
-# After reset: talos.pipeline.json has base_branch=develop2, .yml absent.
+# After reset: talos.pipeline.json has base_branch=develop2.
 # Assert the fixture is genuinely level before calling assert-sync, so any
 # future drift fails loudly here rather than silently changing what is measured.
 _t6_ahead="$(git rev-list --count "origin/develop2..HEAD" 2>/dev/null || echo "?")"
