@@ -79,6 +79,7 @@ Store these for the run:
 - COMMENTS_ENABLED, COMMENTS_HEADER_TPL, COMMENTS_TMPL_DIR
 - AGENTS_RUNNER (`agents.runner`, default `claude`), AGENTS_SUBAGENTS (`agents.subagents`, default `auto`) — select the harness execution mode (see Harness compatibility)
 - FILE_SOURCE_PATH (`vcs.file.source.path`, for file mode)
+- ISOLATION (`execution.isolation`, default `worktree`) — how each stage gets its working copy; validated immediately after config is read
 
 **File mode vs VCS mode:**
 - If `VCS_PROVIDER = file`: no PRs are opened; developer commits to branch; QA/reviewer/security/docs stages are skipped; board calls are skipped (the file IS the board). See the File Mode section.
@@ -94,12 +95,13 @@ Store these for the run:
 - `issues.label_filter`: pipeline:ready
 - `issues.max_parallel`: 1
 - `limits.max_fix_attempts`: 3
+- `execution.isolation`: worktree
 
 #### Concurrency and verify: isolation
 
 **`issues.max_parallel > 1` with compose-based `verify:` commands requires concurrency-safe scripts.**
 
-Talos provides filesystem isolation via `isolation: worktree` — each developer and QA stage runs in its own checkout. It does NOT manage Docker/compose project names, port allocations, or shared scratch directories. When two or more stages run verify commands simultaneously against a shared compose stack, the following failures have been observed (all of which produced results that look correct but describe the wrong worktree):
+Under `isolation: worktree` (the default), Talos provides filesystem isolation — each developer and QA stage runs in its own checkout. It does NOT manage Docker/compose project names, port allocations, or shared scratch directories. (`isolation: branch` serializes stages by enforcing `max_parallel: 1`, so compose contention does not apply.) When two or more stages run verify commands simultaneously against a shared compose stack, the following failures have been observed (all of which produced results that look correct but describe the wrong worktree):
 
 - **Script collision:** one agent's verify script overwritten by another's mid-run, producing a green log about the wrong worktree.
 - **Container contention:** `--no-deps` runs completing successfully while DB-backed tests never ran.
@@ -122,6 +124,20 @@ Talos exports `TALOS_ISSUE_NUMBER` and `TALOS_WORKTREE_PATH` into each stage's e
 - `comments.header`: `**Agent:** {role} (talos)`
 - `comments.templates_dir`: `templates/comments`
 - `notifications.threading`: true
+
+**Startup isolation gate (immediately after config is read, before Step 1):**
+
+```bash
+bash scripts/pipeline-isolation.sh validate
+```
+
+If this exits non-zero (invalid or unimplemented isolation mode, or `isolation: branch` with `max_parallel > 1`): abort the run — print the error from stderr, do not begin processing issues.
+
+Valid modes:
+- `worktree` (default) — unchanged; each developer/QA stage gets a private `git worktree`.
+- `branch` — stages run in the orchestrator's checkout; requires `max_parallel: 1`.
+- `checkout` — recognised but **refused**: exits 1 with a clear "not yet implemented" message.
+- Any other value — exits 1 naming valid values.
 
 ---
 
@@ -501,15 +517,21 @@ indistinguishable from a dead pipeline.
 
 Continue to developer.
 
-### 3c. Developer (isolation:worktree — always runs)
+### 3c. Developer (always runs)
 
 Only run if the issue has `pipeline:dev` but no open PR yet.
 
-**IMPORTANT**: always use `isolation: "worktree"`.
-
 Compute header: `HEADER="${COMMENTS_HEADER_TPL//\{role\}/developer}"`
 
-Read the PM spec first. Then spawn with `isolation: "worktree"`:
+Read the PM spec first. Then dispatch the developer according to `ISOLATION`:
+
+**If `ISOLATION = worktree` (default):** spawn with `isolation: "worktree"`:
+
+**Pre-dispatch precondition (branch mode only):** If `ISOLATION = branch`, assert the working tree is clean and level before dispatching the developer:
+```bash
+bash scripts/pipeline-vcs.sh assert-sync
+```
+If this exits non-zero: set `pipeline:blocked` on the issue, post blocked.md with the error, and skip to the next issue. Do NOT dispatch the developer into a dirty tree.
 
 ```
 You are the Developer. Implement the PM spec for issue #<N>.
@@ -518,6 +540,8 @@ Base branch: <BASE_BRANCH>
 VCS provider: <VCS_PROVIDER>
 Issue number: <N>
 Worktree path: <ABSOLUTE_PATH_OF_THIS_WORKTREE>
+Scripts dir: scripts
+You ARE worktree-isolated.
 Comment header: <HEADER>
 Comment templates dir: <COMMENTS_TMPL_DIR>
 Comments enabled: <COMMENTS_ENABLED>
@@ -564,6 +588,44 @@ Workflow:
 12. On failure: `label-issue --add pipeline:blocked`, post blocked.md with exact error.
 
 Final message (2-3 lines): PR URL + what was implemented + verify outcome. Never fabricate a PR number. Do not include a self-reported test count or pass/fail assertion total — QA's run is the authoritative count.
+```
+
+**If `ISOLATION = branch`:** spawn as a plain subagent (no worktree isolation) in the orchestrator's checkout:
+
+```
+You are the Developer. Implement the PM spec for issue #<N>.
+
+Base branch: <BASE_BRANCH>
+VCS provider: <VCS_PROVIDER>
+Issue number: <N>
+Scripts dir: scripts
+You are NOT worktree-isolated. Your working directory IS the orchestrator's checkout, which is clean and level with origin/<BASE_BRANCH>.
+Comment header: <HEADER>
+Comment templates dir: <COMMENTS_TMPL_DIR>
+Comments enabled: <COMMENTS_ENABLED>
+
+Note: TALOS_WORKTREE_PATH is not meaningful in branch isolation mode — skip or ignore it.
+
+Verify commands (run each, fix failures before opening PR):
+<VERIFY_COMMANDS — one per line>
+
+Workflow:
+1. Read spec: `bash scripts/pipeline-vcs.sh view-issue <N>`
+2. `git checkout -b fix/issue-<N>-<slug> origin/<BASE_BRANCH>`
+3. Implement. Match surrounding code style. Stay focused on acceptance criteria.
+4. Write tests — not optional, and not limited to unit tests (same requirements as worktree mode).
+5. Run verify commands AND all relevant test suites. Iterate until all pass.
+6. `git commit -m "fix: <description> (#<N>)"`
+7. `git push -u origin fix/issue-<N>-<slug>`
+8. Write PR body to a temp file:
+   `printf '%s' "<spec summary>\n\nTest types: ...\n\nCloses #<N>" > /tmp/pr-body-<N>.md`
+9. Open PR: `bash scripts/pipeline-vcs.sh create-pr fix/issue-<N>-<slug> "<title>" /tmp/pr-body-<N>.md`
+   If `create-pr` exits non-zero: stop immediately, set `pipeline:blocked`, post blocked.md with the exact error.
+10. Confirm PR exists: `bash scripts/pipeline-vcs.sh view-pr fix/issue-<N>-<slug>`
+11. On success: label-pr pipeline:review, label-issue remove pipeline:dev, post pr-opened.md.
+12. On failure: label-issue pipeline:blocked, post blocked.md with exact error.
+
+Final message (2-3 lines): PR URL + what was implemented + verify outcome.
 ```
 
 After developer returns:
@@ -672,7 +734,7 @@ Comments enabled: <COMMENTS_ENABLED>
 
 Read diff: `bash scripts/pipeline-vcs.sh diff-pr <PR_NUMBER>`
 Focus: correctness bugs first, simplification second. No speculative comments.
-IMPORTANT: never run `git checkout`, `git switch`, or `git pull` in your working directory — you are not worktree-isolated; read the diff only.
+IMPORTANT: never run `git checkout`, `git switch`, or `git pull` in your working directory — use `diff-pr` to read changes regardless of the active isolation mode.
 
 Approve:
   1. `bash scripts/pipeline-vcs.sh approve-pr <PR_NUMBER> "<summary>"`
@@ -709,7 +771,7 @@ Comments enabled: <COMMENTS_ENABLED>
 Read diff: `bash scripts/pipeline-vcs.sh diff-pr <PR_NUMBER>`
 Check: injection, authz, secrets, deserialization, path traversal, SSRF, new deps.
 Report only findings tied to specific changed lines.
-IMPORTANT: never run `git checkout`, `git switch`, or `git pull` in your working directory — you are not worktree-isolated; read the diff only.
+IMPORTANT: never run `git checkout`, `git switch`, or `git pull` in your working directory — use `diff-pr` to read changes regardless of the active isolation mode.
 
 Clear:
   1. `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --add security:approved --remove pipeline:blocked`
@@ -920,7 +982,7 @@ After processing all issues, print a summary table:
 12. Attempt counting is durable and enforced by `record-attempt`: call `bash scripts/pipeline-vcs.sh record-attempt <N> <stage>` before each developer re-dispatch.  When it exits non-zero (either `max_fix_attempts` consecutive same-stage failures OR `max_total_dispatches` total dispatches reached): set `pipeline:blocked`, notify, move on.  Never count attempts in orchestrator memory — the helper is the source of truth.
 13. In file mode: skip board calls, skip QA/reviewer/security/docs, developer commits to branch directly.
 14. Never merge a PR that fails `check-pr-files` — secret-like files require a human; `skip-qa` does not waive this gate (nor CI).
-15. Non-worktree subagents (reviewer, security) must read the PR diff via `diff-pr` only; they must never run `git checkout`, `git switch`, or `git pull` in the orchestrator's working directory. Worktree-isolated stages (developer, QA, docs) are exempt — docs commits and pushes and therefore runs in its own worktree.
+15. Only the developer stage may move HEAD in the orchestrator's checkout. All other stages (reviewer, security, docs, QA, validator, PM) must never run `git checkout`, `git switch`, or `git pull` in their working directory — read diffs via `diff-pr` only. This holds regardless of `execution.isolation` mode.
 16. `comment-issue`, `comment-pr`, `create-issue`, and `create-pr` exit non-zero when their POST fails. A stage must not assert a filing landed without a non-empty URL returned by the command. For `create-pr` failures, set `pipeline:blocked` immediately — no PR means all downstream stages are impossible.
 17. Run all long-running work in the **foreground** — never append `&`, use `nohup`, or call `disown`. Do not poll for child exit with `until ! pgrep …; do sleep N; done`. The reason: when a stranded background child finally exits, the harness interprets its exit as a new completion event; those duplicates are indistinguishable from real completions on arrival (observed: 210 stranded shells at peak, one agent emitting 5 spurious "task finished" signals 90 minutes after finishing, two agents stopped by hand). Talos cannot suppress the harness-side notification — it can only ensure no background children remain.
-18. Worktree-isolated stages (developer, QA) must export `TALOS_ISSUE_NUMBER` and `TALOS_WORKTREE_PATH` before running any `verify:` command. Both values are present in the task prompt. This is instruction-based and not airtight on the native path — a stage that ignores it runs verify without the exports. The exports make a degraded run visible (verify scripts can self-check) without claiming to make it impossible. The adapter path (`pipeline-agent.sh`) exports them as real shell variables automatically.
+18. Under `isolation: worktree`, the developer and QA stages must export `TALOS_ISSUE_NUMBER` and `TALOS_WORKTREE_PATH` before running any `verify:` command. Both values are present in the task prompt. Under `isolation: branch`, `TALOS_WORKTREE_PATH` is not meaningful — skip or warn, do not fabricate a path. This is instruction-based and not airtight on the native path — a stage that ignores it runs verify without the exports. The exports make a degraded run visible (verify scripts can self-check) without claiming to make it impossible. The adapter path (`pipeline-agent.sh`) exports them as real shell variables automatically.
