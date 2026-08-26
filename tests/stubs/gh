@@ -43,6 +43,13 @@ case "$args" in
     _comments="${STUB_PR_COMMENTS_JSON:-[]}"
     printf '{"headRefOid":"%s","baseRefName":"%s","labels":%s,"comments":%s}\n' \
       "$_sha" "$_base" "$_labels" "$_comments" ;;
+  "pr view "*"--json headRefOid,comments"*)
+    # Used by label-pr post-dispatch warning (#115): headRefOid + comments only.
+    # Override STUB_PR_HEAD_SHA, STUB_PR_COMMENTS_JSON.
+    # NOTE: must come BEFORE the plain headRefOid pattern — bash case matches first.
+    _sha="${STUB_PR_HEAD_SHA:-abc123sha}"
+    _comments="${STUB_PR_COMMENTS_JSON:-[]}"
+    printf '{"headRefOid":"%s","comments":%s}\n' "$_sha" "$_comments" ;;
   "pr view "*"--json headRefOid"*)
     printf '%s\n' "${STUB_PR_HEAD_SHA:-abc123sha}" ;;
   "pr view "*"--json files"*)

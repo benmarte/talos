@@ -3676,16 +3676,54 @@ case "$PROVIDER" in
 esac
 _DISPATCH_RC=$?
 
-# ── Post-dispatch: label-pr approval-marker warning (#94) ────────────────────
-# After label-pr successfully adds a recognised approval label, call
-# check-approval-sha.  If it exits non-zero (no current-head marker), print a
-# loud WARNING so the stage knows it must still post a marker before the gate
-# will accept the PR.  Exit remains 0 — profiles label before stamping.
-# Only runs for the github provider (check-approval-sha uses `gh`).
+# ── Post-dispatch: label-pr approval-marker warning (#94, #115) ──────────────
+# After label-pr successfully adds a recognised approval label, verify that a
+# matching marker comment exists at the current head.  Fetches headRefOid and
+# comments directly — no label re-read, no race window (#115).  Exit remains 0
+# (profiles label before stamping; the merge gate is the hard enforcement).
+# Only runs for the github provider.
+#
+# Invariant: _ADDING_APPROVAL_LABELS is known locally; no remote label fetch is
+# needed.  The only remote reads are headRefOid (cheap) and comments (already
+# present in the PR object).  The race that plagued check-approval-sha cannot
+# occur here because we never re-read the labels we just applied.
 if [ "$VERB" = "label-pr" ] && [ -n "${_ADDING_APPROVAL_LABELS:-}" ] \
     && [ "${_REQUIRE_MARKER:-false}" = "false" ] && [ "$DRY_RUN" != "true" ] \
     && [ "$PROVIDER" = "github" ] && [ "$_DISPATCH_RC" -eq 0 ]; then
-  if ! bash "$0" check-approval-sha "$_LABEL_PR_N" >/dev/null 2>&1; then
+  _pd_pr_data=""
+  _pd_pr_data="$(gh pr view "$_LABEL_PR_N" --json headRefOid,comments \
+    ${REPO:+--repo "$REPO"} 2>/dev/null)" || true
+  _pd_head_sha=""
+  _pd_comments=""
+  if [ -n "$_pd_pr_data" ]; then
+    _pd_head_sha="$(printf '%s' "$_pd_pr_data" \
+      | python3 -c "import json,sys; print(json.load(sys.stdin).get('headRefOid',''))" \
+      2>/dev/null)" || true
+    _pd_comments="$(printf '%s' "$_pd_pr_data" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for c in data.get('comments', []):
+    print(c.get('body', ''))
+" 2>/dev/null)" || true
+  fi
+  _pd_missing=false
+  if [ -n "$_pd_head_sha" ]; then
+    for _pd_lbl in $_ADDING_APPROVAL_LABELS; do
+      case "$_pd_lbl" in
+        qa:pass)           _pd_role=qa ;;
+        review:approved)   _pd_role=reviewer ;;
+        security:approved) _pd_role=security ;;
+        docs:done)         _pd_role=docs ;;
+        *) continue ;;
+      esac
+      if ! printf '%s\n' "$_pd_comments" \
+          | grep -qF "talos:approval sha=$_pd_head_sha role=$_pd_role"; then
+        _pd_missing=true
+        break
+      fi
+    done
+  fi
+  if [ "$_pd_missing" = "true" ]; then
     echo "pipeline-vcs: label-pr: WARNING — added approval label(s) but no approval marker found at current head." >&2
     echo "pipeline-vcs: label-pr: If you have not already posted your verdict reasoning, do so first." >&2
     echo "pipeline-vcs: label-pr: The gate will reject this PR. Post the marker:" >&2

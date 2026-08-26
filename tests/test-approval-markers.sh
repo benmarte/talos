@@ -204,8 +204,8 @@ teardown_github_api
 # ═════════════════════════════════════════════════════════════════════════════
 # CRITERION 10: label-pr --add qa:pass, no marker → exits 0, WARNING on stderr
 # ═════════════════════════════════════════════════════════════════════════════
-# Stub state: label qa:pass is present (post-apply), no marker comments.
-# check-approval-sha will find qa:pass label and no marker → exits 1 → we warn.
+# Stub state: no marker in comments.  Post-dispatch block fetches headRefOid,
+# comments directly — no label re-read.  WARNING fires because no marker found.
 
 : > "$GH_LOG"
 err10="$(STUB_PR_STATE=OPEN \
@@ -220,6 +220,65 @@ assert_contains "$err10" "comment-pr" \
   "github/label-pr: warning contains comment-pr command hint"
 assert_contains "$err10" "verdict reasoning" \
   "github/label-pr: warning reminds stage to post verdict reasoning first"
+
+# ── Criterion 10r: race-simulation regression guard (#115) ───────────────────
+# Simulates the race condition that existed before #115: the label has been
+# added but the labels API has not yet propagated it (STUB_PR_LABELS_JSON=[]).
+# OLD code: check-approval-sha reads labels → sees [] → "no approval labels" →
+#   exits 0 → no warning → BUG.
+# NEW code: reads headRefOid,comments → finds no role=qa marker → warning fires.
+# This assertion must be RED on the pre-fix code and GREEN after.
+
+: > "$GH_LOG"
+err10r="$(STUB_PR_STATE=OPEN \
+           STUB_PR_HEAD_SHA="abc123sha000000000000000000000000000000" \
+           STUB_PR_LABELS_JSON='[]' \
+           STUB_PR_COMMENTS_JSON='[]' \
+           bash "$VCS" label-pr 9 --add qa:pass 2>&1 >/dev/null)"; rc10r=$?
+assert_eq "0" "$rc10r" \
+  "race-sim: exits 0 even when label not yet propagated in labels API"
+assert_contains "$err10r" "WARNING" \
+  "race-sim: WARNING fires even when label absent from labels API (regression guard #115)"
+
+# ── Criterion 13: wrong-sha-marker → WARNING fires ───────────────────────────
+# A marker exists but with a stale SHA (different commit).  The post-dispatch
+# block looks for an exact sha=<head> match, so this must still warn.
+
+: > "$GH_LOG"
+err13="$(STUB_PR_STATE=OPEN \
+          STUB_PR_HEAD_SHA="aaa0000000000000000000000000000000000001" \
+          STUB_PR_LABELS_JSON='[{"name":"qa:pass"}]' \
+          STUB_PR_COMMENTS_JSON='[{"body":"<!-- talos:approval sha=bbb9999999999999999999999999999999999999 role=qa -->"}]' \
+          bash "$VCS" label-pr 9 --add qa:pass 2>&1 >/dev/null)"; rc13=$?
+assert_eq "0" "$rc13" "wrong-sha-marker: exits 0 (non-fatal)"
+assert_contains "$err13" "WARNING" \
+  "wrong-sha-marker: WARNING fires when marker SHA does not match current head"
+
+# ── Criterion 14: marker-present → no WARNING ────────────────────────────────
+# Correct marker for the role exists at the current head.  No warning expected.
+
+: > "$GH_LOG"
+err14="$(STUB_PR_STATE=OPEN \
+          STUB_PR_HEAD_SHA="abc123sha000000000000000000000000000000" \
+          STUB_PR_LABELS_JSON='[]' \
+          STUB_PR_COMMENTS_JSON='[{"body":"<!-- talos:approval sha=abc123sha000000000000000000000000000000 role=qa -->"}]' \
+          bash "$VCS" label-pr 9 --add qa:pass 2>&1 >/dev/null)"; rc14=$?
+assert_eq "0" "$rc14" "marker-present: exits 0"
+assert_not_contains "$err14" "WARNING" \
+  "marker-present: no WARNING when correct marker exists at current head"
+
+# ── Criterion 15: non-approval-label → no marker check, no warning ────────────
+# Adding pipeline:ready is not an approval label; post-dispatch block skips it.
+
+: > "$GH_LOG"
+err15="$(STUB_PR_STATE=OPEN \
+          STUB_PR_HEAD_SHA="abc123sha000000000000000000000000000000" \
+          STUB_PR_LABELS_JSON='[]' \
+          STUB_PR_COMMENTS_JSON='[]' \
+          bash "$VCS" label-pr 9 --add pipeline:ready 2>&1 >/dev/null)"; rc15=$?
+assert_eq "0" "$rc15" "non-approval-label: exits 0"
+assert_not_contains "$err15" "WARNING" \
+  "non-approval-label: no WARNING for non-approval label (pipeline:ready)"
 
 # ═════════════════════════════════════════════════════════════════════════════
 # CRITERION 11: label-pr --add qa:pass --require-marker, no marker → exits 1
