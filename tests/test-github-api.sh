@@ -539,6 +539,164 @@ assert_contains "$err" "GITHUB_TOKEN or GH_TOKEN required" "missing-token: clear
 
 export GITHUB_TOKEN="$TEST_TOKEN"  # restore for remaining tests
 
+# ── pr-head ───────────────────────────────────────────────────────────────────
+: > "$CURL_LOG"
+printf '%s\n' \
+  '{"number":7,"head":{"sha":"aabbccddeeff001122334455667788990011aabb"},"base":{"ref":"main"}}' \
+  > "$CURL_QUEUE"
+
+out="$(bash "$VCS" pr-head 7)"; rc=$?
+assert_eq "0" "$rc"                                                      "pr-head: exits 0"
+assert_eq "aabbccddeeff001122334455667788990011aabb" "$out"              "pr-head: prints 40-char SHA"
+log="$(cat "$CURL_LOG")"
+assert_contains "$log" "pulls/7"                                         "pr-head: called pulls endpoint"
+assert_contains "$log" "Authorization: Bearer"                           "pr-head: auth header sent"
+
+# pr-head: error when SHA is absent
+: > "$CURL_LOG"
+printf '%s\n' '{"number":7,"head":{}}' > "$CURL_QUEUE"
+err="$(bash "$VCS" pr-head 7 2>&1)"; rc=$?
+assert_eq "1" "$rc"                                                      "pr-head: exits 1 when SHA absent"
+assert_contains "$err" "pr-head: could not resolve head SHA"             "pr-head: error message on missing SHA"
+
+# ── read-attempt ──────────────────────────────────────────────────────────────
+: > "$CURL_LOG"
+printf '%s\n' \
+  '[{"body":"Talos attempt record -- stage=qa count=2 total=5\n<!-- talos:attempt stage=qa count=2 total=5 -->","user":{"login":"bot"}}]' \
+  > "$CURL_QUEUE"
+
+out="$(bash "$VCS" read-attempt 9)"; rc=$?
+assert_eq "0" "$rc"                                                      "read-attempt: exits 0"
+assert_contains "$out" "stage=qa count=2 total=5"                        "read-attempt: extracts marker values"
+log="$(cat "$CURL_LOG")"
+assert_contains "$log" "issues/9/comments"                               "read-attempt: called comments endpoint"
+assert_contains "$log" "Authorization: Bearer"                           "read-attempt: auth header sent"
+
+# read-attempt: no marker present → zero state
+: > "$CURL_LOG"
+printf '%s\n' '[]' > "$CURL_QUEUE"
+out="$(bash "$VCS" read-attempt 9)"; rc=$?
+assert_eq "0" "$rc"                                                      "read-attempt: exits 0 with no marker"
+assert_eq "stage= count=0 total=0" "$out"                               "read-attempt: zero state when no marker"
+
+# ── record-attempt ────────────────────────────────────────────────────────────
+: > "$CURL_LOG"
+# First call: read-attempt (returns prior state: developer count=1)
+# Second call: POST comment
+printf '%s\n' \
+  '[{"body":"Talos attempt record\n<!-- talos:attempt stage=developer count=1 total=1 -->","user":{"login":"bot"}}]' \
+  '{"id":200,"html_url":"https://github.com/acme/widget/issues/9#issuecomment-200"}' \
+  > "$CURL_QUEUE"
+
+out="$(bash "$VCS" record-attempt 9 developer)"; rc=$?
+assert_eq "0" "$rc"                                                      "record-attempt: exits 0 under ceiling"
+assert_contains "$out" "stage=developer count=2 total=2"                 "record-attempt: increments consecutive count"
+log="$(cat "$CURL_LOG")"
+assert_contains "$log" "issues/9/comments"                               "record-attempt: POSTed comment"
+
+# ── check-attempt ─────────────────────────────────────────────────────────────
+: > "$CURL_LOG"
+printf '%s\n' \
+  '[{"body":"<!-- talos:attempt stage=qa count=1 total=2 -->","user":{"login":"bot"}}]' \
+  > "$CURL_QUEUE"
+
+out="$(bash "$VCS" check-attempt 9)"; rc=$?
+assert_eq "0" "$rc"                                                      "check-attempt: exits 0 below ceiling"
+assert_contains "$out" "ok (stage=qa"                                    "check-attempt: reports ok state"
+
+# check-attempt: ceiling exceeded (max_fix_attempts=1, count=1 >= 1)
+: > "$CURL_LOG"
+printf '%s\n' \
+  '[{"body":"<!-- talos:attempt stage=developer count=1 total=1 -->","user":{"login":"bot"}}]' \
+  > "$CURL_QUEUE"
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "github-api", "repo": "acme/widget"}, "limits": {"max_fix_attempts": 1}}
+EOF
+err="$(bash "$VCS" check-attempt 9 2>&1)"; rc=$?
+assert_eq "1" "$rc"                                                      "check-attempt: exits 1 when ceiling exceeded"
+assert_contains "$err" "BLOCKED"                                         "check-attempt: BLOCKED in stderr"
+# Restore config
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "github-api", "repo": "acme/widget"}}
+EOF
+export GITHUB_TOKEN="$TEST_TOKEN"
+
+# ── check-approval-sha ────────────────────────────────────────────────────────
+: > "$CURL_LOG"
+_HEAD="aabbccddeeff001122334455667788990011aabb"
+# Call 1: GET /pulls/7  (pr-data)
+# Call 2: GET /issues/7/comments (comments)
+printf '%s\n' \
+  "{\"number\":7,\"head\":{\"sha\":\"$_HEAD\"},\"base\":{\"ref\":\"main\"},\"labels\":[{\"name\":\"qa:pass\"}]}" \
+  "[{\"body\":\"<!-- talos:approval sha=${_HEAD} role=qa -->\",\"user\":{\"login\":\"bot\"}}]" \
+  > "$CURL_QUEUE"
+
+out="$(bash "$VCS" check-approval-sha 7)"; rc=$?
+assert_eq "0" "$rc"                                                      "check-approval-sha: exits 0 for current SHA"
+assert_contains "$out" "all approval labels are current"                 "check-approval-sha: current message"
+
+# check-approval-sha: stale detection (SHA mismatch, non-waivable file changed)
+: > "$CURL_LOG"
+_STALE="0000000000000000000000000000000000000001"
+printf '%s\n' \
+  "{\"number\":7,\"head\":{\"sha\":\"$_HEAD\"},\"base\":{\"ref\":\"main\"},\"labels\":[{\"name\":\"qa:pass\"}]}" \
+  "[{\"body\":\"<!-- talos:approval sha=${_STALE} role=qa -->\",\"user\":{\"login\":\"bot\"}}]" \
+  > "$CURL_QUEUE"
+err="$(bash "$VCS" check-approval-sha 7 2>&1)"; rc=$?
+# rc may be 1 (STALE) OR 0 (when git diff is not available in test env, probe fails)
+# The important thing is that a mismatched short SHA is detected — check message:
+# (Stale detection requires git cat-file to succeed; in sandbox it won't have the
+# commit, so we get the "does not exist" stale reason — either way rc is nonzero.)
+assert_eq "1" "$rc"                                                      "check-approval-sha: exits 1 for stale label"
+assert_contains "$err" "STALE qa:pass"                                   "check-approval-sha: STALE in stderr"
+
+# ── check-closing-keyword ─────────────────────────────────────────────────────
+: > "$CURL_LOG"
+# No closing keyword: should exit 0, one API call only
+printf '%s\n' \
+  '{"number":7,"body":"Part of #9","head":{"ref":"fix/branch"},"base":{"ref":"main"}}' \
+  > "$CURL_QUEUE"
+
+out="$(bash "$VCS" check-closing-keyword 7 9 2>&1)"; rc=$?
+assert_eq "0" "$rc"                                                      "check-closing-keyword: exits 0 when no closing keyword"
+log="$(cat "$CURL_LOG")"
+# Only one API call should have been made (no sibling fetch needed)
+_call_count="$(grep -c 'api.github.com' "$CURL_LOG" || true)"
+assert_eq "1" "$_call_count"                                             "check-closing-keyword: only one API call when no keyword"
+
+# check-closing-keyword: closing keyword present, no open siblings
+: > "$CURL_LOG"
+printf '%s\n' \
+  '{"number":7,"body":"Closes #9","head":{"ref":"fix/branch"},"base":{"ref":"main"}}' \
+  '[{"number":7,"head":{"ref":"fix/branch"},"title":"the PR","body":"Closes #9","state":"open"}]' \
+  > "$CURL_QUEUE"
+out="$(bash "$VCS" check-closing-keyword 7 9 2>&1)"; rc=$?
+assert_eq "0" "$rc"                                                      "check-closing-keyword: exits 0 when only sibling is self"
+
+# check-closing-keyword: open sibling → exit 1
+: > "$CURL_LOG"
+printf '%s\n' \
+  '{"number":7,"body":"Closes #9","head":{"ref":"fix/branch"},"base":{"ref":"main"}}' \
+  '[{"number":7,"head":{"ref":"fix/branch"},"title":"PR 7","body":"Closes #9","state":"open"},{"number":8,"head":{"ref":"fix/issue-9-other"},"title":"PR 8","body":"Part of #9","state":"open"}]' \
+  > "$CURL_QUEUE"
+err="$(bash "$VCS" check-closing-keyword 7 9 2>&1)"; rc=$?
+assert_eq "1" "$rc"                                                      "check-closing-keyword: exits 1 when open sibling present"
+assert_contains "$err" "sibling"                                         "check-closing-keyword: sibling in error message"
+
+# ── label-pr gate: check-approval-sha routes through github-api when provider=github-api ──
+# Verify that label-pr's internal check-approval-sha call works end-to-end via _github_api.
+: > "$CURL_LOG"
+_HEAD2="ccddee112233445566778899aabbccddeeff0011"
+# label-pr queues: 1) GET current labels, 2) PUT updated labels, 3) GET /pulls/$n (check-approval-sha), 4) GET /issues/$n/comments
+printf '%s\n' \
+  "[{\"id\":1,\"name\":\"pipeline:review\",\"color\":\"5319e7\"}]" \
+  "[{\"id\":1,\"name\":\"pipeline:review\"},{\"id\":2,\"name\":\"qa:pass\"}]" \
+  "{\"number\":3,\"head\":{\"sha\":\"$_HEAD2\"},\"base\":{\"ref\":\"main\"},\"labels\":[{\"name\":\"qa:pass\"}]}" \
+  "[{\"body\":\"<!-- talos:approval sha=${_HEAD2} role=qa -->\",\"user\":{\"login\":\"bot\"}}]" \
+  > "$CURL_QUEUE"
+out="$(bash "$VCS" label-pr 3 --add qa:pass 2>&1)"; rc=$?
+assert_eq "0" "$rc"                                                      "label-pr gate: exits 0 with current marker"
+
 # ── dry-run: all new verbs print [dry-run] and never invoke curl ──────────────
 : > "$CURL_LOG"
 : > "$CURL_QUEUE"
@@ -552,7 +710,13 @@ dry_out="$(bash "$VCS" --dry-run list-issues; \
            bash "$VCS" --dry-run find-pr 42; \
            bash "$VCS" --dry-run check-pr-files 9; \
            bash "$VCS" --dry-run approve-pr 9 body; \
-           bash "$VCS" --dry-run rerun-ci 9)"
+           bash "$VCS" --dry-run rerun-ci 9; \
+           bash "$VCS" --dry-run pr-head 7; \
+           bash "$VCS" --dry-run read-attempt 9; \
+           bash "$VCS" --dry-run record-attempt 9 developer; \
+           bash "$VCS" --dry-run check-attempt 9; \
+           bash "$VCS" --dry-run check-approval-sha 7; \
+           bash "$VCS" --dry-run check-closing-keyword 7 9)"
 
 assert_contains "$dry_out" "[dry-run]"           "dry-run: all verbs print [dry-run]"
 # Curl log should be empty (no curl calls in dry-run)
