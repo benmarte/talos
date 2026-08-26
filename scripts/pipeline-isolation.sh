@@ -34,6 +34,17 @@ case "$verb" in
     ISOLATION="$(bash "$CFG" execution.isolation worktree)"
     MAX_PARALLEL="$(bash "$CFG" issues.max_parallel 1)"
 
+    # Guard: refuse non-numeric or empty max_parallel before mode dispatch.
+    # An absent key returns "1" via the default argument above, so this cannot
+    # reject a legitimate default. An empty or non-numeric value is always a
+    # config error regardless of isolation mode. (#120)
+    case "$MAX_PARALLEL" in
+      ''|*[!0-9-]*|*-*-*)
+        printf 'ERROR: issues.max_parallel must be an integer — got: '\''%s'\''. Fix the config and retry.\n' "$MAX_PARALLEL" >&2
+        exit 1
+        ;;
+    esac
+
     case "$ISOLATION" in
       worktree)
         # Default — unchanged; no new constraints.
@@ -41,7 +52,7 @@ case "$verb" in
         exit 0
         ;;
       branch)
-        if [ "$MAX_PARALLEL" -gt 1 ] 2>/dev/null; then
+        if [ "$MAX_PARALLEL" -gt 1 ]; then
           printf 'ERROR: isolation: branch requires issues.max_parallel: 1 — two agents cannot safely share one checkout. Set max_parallel: 1 or switch to isolation: worktree.\n' >&2
           exit 1
         fi
