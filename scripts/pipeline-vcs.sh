@@ -64,6 +64,13 @@
 #                                             working tree is never read in a mixed state.
 #                                             Used as an orchestrator precondition before
 #                                             dispatching non-worktree-isolated stages.
+#   post-approval <pr> <role> [--body-file p] Fetch head SHA from the PR, construct
+#                                             the wrapped approval marker, post it as a
+#                                             comment, and apply the approval label.
+#                                             GitHub-only (github and github-api providers).
+#                                             Roles: qa, reviewer, security, docs.
+#                                             Eliminates marker format failures for any
+#                                             stage that uses this verb (#146).
 #
 # Config keys (from talos.pipeline.yml via pipeline-config.sh):
 #   vcs.provider          github | github-api | gitlab | azure | file   (default: github)
@@ -1239,7 +1246,22 @@ raw_comments = data.get('comments', [])
 present = {label: role for label, role in APPROVAL_LABELS.items() if label in label_names}
 
 if not present:
-    print('check-approval-sha: no approval labels present')
+    # Inverse diagnostic (#146): when no approval labels are present but
+    # talos:approval markers exist in comments, a stage likely posted the
+    # marker without calling label-pr -- the mirror of the Case B diagnostic
+    # shipped in #144/#142 for the other direction.
+    _no_label_marker_count = sum(
+        1 for c in raw_comments
+        if 'talos:approval sha=' in c.get('body', '')
+    )
+    if _no_label_marker_count > 0:
+        print(
+            f'check-approval-sha: no approval labels present'
+            f' (but {_no_label_marker_count} approval marker(s) found in comments'
+            f' - did a stage post a marker without applying its label?)'
+        )
+    else:
+        print('check-approval-sha: no approval labels present')
     sys.exit(0)
 
 # Strict extractor: marker must be a syntactically valid talos:approval HTML comment.
@@ -2615,7 +2637,24 @@ raw_comments = data.get('comments', [])
 present = {label: role for label, role in APPROVAL_LABELS.items() if label in label_names}
 
 if not present:
-    print('check-approval-sha: no approval labels present')
+    # Inverse diagnostic (#146): when no approval labels are present but
+    # talos:approval markers exist in comments, a stage likely posted the
+    # marker without calling label-pr -- the mirror of the Case B diagnostic
+    # shipped in #144/#142 for the other direction.
+    # NOTE: no f-strings or backticks here -- this block runs inside a
+    # double-quoted bash string and bash performs command substitution on them.
+    _no_label_marker_count = sum(
+        1 for c in raw_comments
+        if 'talos:approval sha=' in c.get('body', '')
+    )
+    if _no_label_marker_count > 0:
+        print(
+            'check-approval-sha: no approval labels present'
+            ' (but ' + str(_no_label_marker_count) + ' approval marker(s) found in comments'
+            ' - did a stage post a marker without applying its label?)'
+        )
+    else:
+        print('check-approval-sha: no approval labels present')
     sys.exit(0)
 
 MARKER_RE = re.compile(r'<!--\s*talos:approval\s+sha=([0-9a-f]+)\s+role=(\S+?)\s*-->')
@@ -3881,17 +3920,189 @@ for c in data.get('comments', []):
       done
     fi
     if [ "$_lp_marker_found" = "false" ]; then
-      echo "pipeline-vcs: label-pr: ERROR — --require-marker: no approval marker found at current head." >&2
-      echo "pipeline-vcs: label-pr: The gate will reject this PR. Post the marker first, then label:" >&2
-      printf 'pipeline-vcs:   HEAD_SHA=$(bash scripts/pipeline-vcs.sh pr-head %s)
-' \
-        "$_LABEL_PR_N" >&2
-      printf 'pipeline-vcs:   bash scripts/pipeline-vcs.sh comment-pr %s "<!-- talos:approval sha=$HEAD_SHA role=<role> -->"
-' \
+      echo "pipeline-vcs: label-pr: ERROR -- --require-marker: no approval marker found at current head." >&2
+      echo "pipeline-vcs: label-pr: Use post-approval to post the marker and apply the label in one step:" >&2
+      printf 'pipeline-vcs:   bash scripts/pipeline-vcs.sh post-approval %s <role>\n' \
         "$_LABEL_PR_N" >&2
       exit 1
     fi
   fi
+fi
+
+# ── post-approval: atomic marker-post + label (#146) ─────────────────────────
+# GitHub-only (github and github-api providers). For other providers, exit 1.
+#
+# Issue #128 note: post-approval is the single controlled surface through which
+# all approval markers enter the system. Future provenance work (signed markers,
+# dispatch-chain verification) instruments here. Do not add --skip-validation,
+# --no-label, --raw-marker, or any bypass flag.
+#
+# Failure modes eliminated for stages that use this verb:
+#   - Marker posted without <!-- --> wrapper (verb constructs wrapper always)
+#   - sha=PLACEHOLDER_NOT_REAL (SHA always fetched from PR head, never caller-supplied)
+#   - Correct marker posted, label never applied (verb does both atomically)
+# Hand-construction of approval markers remains possible and remains the
+# caller's responsibility -- these failures are eliminated for verb users only.
+if [ "$VERB" = "post-approval" ]; then
+  if [ "$PROVIDER" != "github" ] && [ "$PROVIDER" != "github-api" ]; then
+    echo "pipeline-vcs: post-approval: not implemented for provider '$PROVIDER'" >&2
+    exit 1
+  fi
+
+  _pa_n="${ARGS[0]:-}"
+  _pa_role="${ARGS[1]:-}"
+  _pa_body_file=""
+  _pa_i=2
+  while [ "$_pa_i" -lt "${#ARGS[@]}" ]; do
+    case "${ARGS[$_pa_i]}" in
+      --body-file)
+        _pa_ni=$((_pa_i + 1))
+        _pa_body_file="${ARGS[$_pa_ni]:-}"
+        _pa_i=$((_pa_ni + 1))
+        ;;
+      *) _pa_i=$((_pa_i + 1)) ;;
+    esac
+  done
+
+  # Validate PR number
+  if [ -z "$_pa_n" ]; then
+    echo "pipeline-vcs: post-approval: missing PR number" >&2
+    exit 1
+  fi
+  case "$_pa_n" in
+    ''|*[!0-9]*)
+      echo "pipeline-vcs: post-approval: PR number must be an integer, got '$_pa_n'" >&2
+      exit 1
+      ;;
+  esac
+
+  # Validate role -- same set as check-approval-sha VALID_ROLES (#128).
+  # Fixed literal, never interpolated from config or API text (PR #68).
+  # Three inconsistent copies must not exist: reference check-approval-sha
+  # when reading this set.
+  if [ -z "$_pa_role" ]; then
+    echo "pipeline-vcs: post-approval: missing role (valid: docs, qa, reviewer, security)" >&2
+    exit 1
+  fi
+  _PA_VALID_ROLES="qa reviewer security docs"
+  _pa_role_valid=false
+  for _pa_vr in $_PA_VALID_ROLES; do
+    [ "$_pa_role" = "$_pa_vr" ] && { _pa_role_valid=true; break; }
+  done
+  if [ "$_pa_role_valid" = "false" ]; then
+    echo "pipeline-vcs: post-approval: unknown role '$_pa_role' (valid: docs, qa, reviewer, security)" >&2
+    exit 1
+  fi
+
+  # Validate body-file if provided
+  if [ -n "$_pa_body_file" ] && [ ! -r "$_pa_body_file" ]; then
+    echo "pipeline-vcs: post-approval: --body-file: cannot read '$_pa_body_file'" >&2
+    exit 1
+  fi
+
+  # Map role to approval label -- same mapping as check-approval-sha (#128).
+  case "$_pa_role" in
+    qa)       _pa_label="qa:pass" ;;
+    reviewer) _pa_label="review:approved" ;;
+    security) _pa_label="security:approved" ;;
+    docs)     _pa_label="docs:done" ;;
+  esac
+
+  if [ "$DRY_RUN" = "true" ]; then
+    printf '[dry-run] post-approval: would fetch head SHA for PR #%s, post marker role=%s, add label %s\n' \
+      "$_pa_n" "$_pa_role" "$_pa_label"
+    exit 0
+  fi
+
+  # Fetch head SHA from the PR head -- not from the local worktree.
+  # git rev-parse HEAD returns the agent's checkout, which may differ from the
+  # PR head after a push or rebase (#85). Same call as pr-head verb.
+  # Use 2>/dev/null so that any future warning on stderr does not corrupt the
+  # SHA variable; exit status alone signals failure.
+  _pa_sha="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" pr-head "$_pa_n" \
+    ${REPO:+--repo "$REPO"} 2>/dev/null)" || {
+    echo "pipeline-vcs: post-approval: could not resolve head SHA for PR #$_pa_n" >&2
+    exit 1
+  }
+  # Validate SHA: must be exactly 40 lowercase hex characters before it enters
+  # the marker. An internally derived value can still be wrong if the provider
+  # API returns unexpected data (PR #68 discipline).
+  case "$_pa_sha" in
+    *[!0-9a-f]*|"")
+      echo "pipeline-vcs: post-approval: invalid SHA from pr-head: '$_pa_sha'" >&2
+      exit 1
+      ;;
+  esac
+  if [ "${#_pa_sha}" -ne 40 ]; then
+    echo "pipeline-vcs: post-approval: SHA must be 40 hex chars, got ${#_pa_sha}: '$_pa_sha'" >&2
+    exit 1
+  fi
+
+  # Best-effort duplicate detection: scan existing comments for a marker at
+  # this exact SHA for this role. Warn and proceed on duplicate (exit 0).
+  # Re-stamping after a rebase is legitimate and must not be blocked.
+  # Only implemented for github provider (gh CLI); github-api skips (fail-open).
+  if [ "$PROVIDER" = "github" ]; then
+    _pa_comments=""
+    _pa_pr_data="$(gh pr view "$_pa_n" --json headRefOid,comments \
+      ${REPO:+--repo "$REPO"} 2>/dev/null)" || true
+    if [ -n "$_pa_pr_data" ]; then
+      _pa_comments="$(printf '%s' "$_pa_pr_data" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for c in data.get('comments', []):
+    print(c.get('body', ''))
+" 2>/dev/null)" || true
+    fi
+    _pa_dup_marker="talos:approval sha=${_pa_sha} role=${_pa_role}"
+    if printf '%s\n' "$_pa_comments" | grep -qF "$_pa_dup_marker"; then
+      printf 'pipeline-vcs: post-approval: warning -- a %s marker already exists at %s; posting again\n' \
+        "$_pa_role" "$_pa_sha" >&2
+    fi
+  fi
+
+  # Construct the marker body. The marker is a fixed template with only two
+  # interpolated values: the SHA (validated 40-char hex from headRefOid) and
+  # the role (validated member of _PA_VALID_ROLES). No config text, no API
+  # response text, no caller-supplied strings enter the marker value (PR #68).
+  _pa_marker="<!-- talos:approval sha=${_pa_sha} role=${_pa_role} -->"
+
+  _pa_tmpfile="$(mktemp)"
+  trap 'rm -f "$_pa_tmpfile"' EXIT
+  if [ -n "$_pa_body_file" ]; then
+    cat "$_pa_body_file" > "$_pa_tmpfile"
+    printf '\n%s\n' "$_pa_marker" >> "$_pa_tmpfile"
+  else
+    printf '%s\n' "$_pa_marker" > "$_pa_tmpfile"
+  fi
+
+  # Post via comment-pr so write-time validation (#110/#132) applies automatically.
+  # No _TALOS_POST_APPROVAL_INTERNAL guard needed: post-approval always calls
+  # comment-pr with --body-file, so ARGS[1] is "--body-file" -- that string
+  # never matches the marker regex, so the warning would not fire anyway.
+  _pa_comment_url=""
+  _pa_comment_url="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" comment-pr "$_pa_n" \
+    --body-file "$_pa_tmpfile" 2>&1)" || {
+    echo "pipeline-vcs: post-approval: comment-pr failed for PR #$_pa_n" >&2
+    rm -f "$_pa_tmpfile"
+    exit 1
+  }
+  rm -f "$_pa_tmpfile"
+
+  # Apply approval label via label-pr (both halves in one operation -- closes
+  # #94 by construction: label with no marker is architecturally eliminated
+  # for callers using this verb).
+  # Do NOT pass --repo here: label-pr's _parse_label_args has no --repo case,
+  # so it falls through to the catch-all and treats "--repo" as a label name.
+  # label-pr resolves $REPO independently from the config.
+  bash "$SCRIPT_DIR/pipeline-vcs.sh" label-pr "$_pa_n" --add "$_pa_label" || {
+    echo "pipeline-vcs: post-approval: label-pr failed for PR #$_pa_n" >&2
+    exit 1
+  }
+
+  printf 'post-approval: PR #%s %s marker posted and %s label applied\n' \
+    "$_pa_n" "$_pa_role" "$_pa_label"
+  exit 0
 fi
 
 # ── Main dispatch ─────────────────────────────────────────────────────────────
@@ -3968,11 +4179,36 @@ for c in data.get('comments', []):
         docs:done)         _lp_wr=docs ;;
         *) continue ;;
       esac
-      printf 'pipeline-vcs:   HEAD_SHA=$(bash scripts/pipeline-vcs.sh pr-head %s)\n' \
-        "$_LABEL_PR_N" >&2
-      printf 'pipeline-vcs:   bash scripts/pipeline-vcs.sh comment-pr %s "<!-- talos:approval sha=$HEAD_SHA role=%s -->"\n' \
+      printf 'pipeline-vcs:   bash scripts/pipeline-vcs.sh post-approval %s %s\n' \
         "$_LABEL_PR_N" "$_lp_wr" >&2
     done
   fi
 fi
+
+# ── Post-dispatch: comment-pr hand-built marker warning (#146) ────────────────
+# After comment-pr successfully posts, warn when the body's final non-whitespace
+# line is a hand-built talos:approval HTML comment. The check is scoped to the
+# last non-whitespace line only (#140: prose discussing the marker format does
+# not trigger this). GitHub-only. Exit remains 0 (nudge, not a wall).
+if [ "$VERB" = "comment-pr" ] && [ "$_DISPATCH_RC" -eq 0 ] \
+    && [ "$DRY_RUN" != "true" ] \
+    && { [ "$PROVIDER" = "github" ] || [ "$PROVIDER" = "github-api" ]; }; then
+  _cp_warn_body="${ARGS[1]-}"
+  if [ -n "$_cp_warn_body" ]; then
+    printf '%s' "$_cp_warn_body" | python3 -c "
+import re, sys
+body = sys.stdin.read()
+stripped = body.rstrip()
+last_line = stripped.rsplit('\n', 1)[-1].strip()
+MARKER_RE = re.compile(r'<!--\s*talos:approval\b[^>]*-->')
+if MARKER_RE.match(last_line):
+    sys.stderr.write(
+        'pipeline-vcs: comment-pr: warning -- body ends with a hand-built'
+        ' talos:approval marker; use post-approval instead to ensure'
+        ' correct format and label application\n'
+    )
+" || true
+  fi
+fi
+
 exit "$_DISPATCH_RC"

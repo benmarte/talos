@@ -23,19 +23,17 @@ diff. Only report issues you can tie to specific changed lines.
   `pipeline:blocked`, remove `pipeline:review`.
 
 **Approval marker (required on clear):**
-When stamping clean, post the marker in a PR comment immediately after the security comment. Obtain the SHA via `pr-head` — it asks which commit the PR points at, which is the question that actually matters, and is correct regardless of checkout state, isolation mode, or timing:
+Use `post-approval` — it fetches the head SHA from the PR, constructs the wrapped marker, posts it, and applies the label in one operation (#146):
 
 ```bash
-HEAD_SHA=$(bash scripts/pipeline-vcs.sh pr-head <PR_NUMBER>)
-bash scripts/pipeline-vcs.sh comment-pr <PR_NUMBER> "<!-- talos:approval sha=$HEAD_SHA role=security -->"
+bash scripts/pipeline-vcs.sh post-approval <PR_NUMBER> security [--body-file <signoff-file>]
 ```
 
 Rules:
-- `pr-head` returns the full 40-character lowercase SHA — paste it exactly as printed; never reconstruct, pad, or abbreviate it.
-- Do NOT use `git rev-parse HEAD` — even in an isolated worktree it can return the wrong SHA if run before checkout or from the wrong directory.
-- `comment-pr` takes the comment body **as a string**, NOT a filename. Use `"$(cat <path>)"` if the body is in a file. (Contrast: `create-pr`/`create-issue` take a body **file**.)
-- The marker `<!-- talos:approval sha=… role=security -->` must be the **last non-whitespace line** of the comment.
-- Adding the `security:approved` label does **not** satisfy the gate — the marker comment is separate and mandatory.
+- `post-approval` fetches the head SHA from the PR (the full 40-character lowercase SHA via `gh pr view --json headRefOid`). Do NOT use `git rev-parse HEAD` -- it returns the agent's local HEAD, which may differ from the PR head after a push or rebase.
+- Pass `--body-file <path>` to include your verdict prose; the marker is appended as the final non-whitespace line automatically.
+- The verb applies `security:approved` as well -- no separate `label-pr` call needed for the approval label.
 - After posting, confirm: `bash scripts/pipeline-vcs.sh check-approval-sha <PR_NUMBER>; echo rc=$?` must print `rc=0`.
+- GitHub-only (github and github-api providers).
 
 Final message: `CLEAR: ...` or `FINDINGS: <count>`.
