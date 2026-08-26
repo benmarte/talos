@@ -418,6 +418,107 @@ automatically adds `pipeline:ready`. The epic itself is labelled
 resolved. The planner role is off by default — it adds API calls and is most useful
 when you regularly work with multi-task epics.
 
+### Filtering which issues enter the queue (`issues.label_filter`)
+
+> **Note on config format:** all examples below are YAML (`talos.pipeline.yml`).
+> The JSON equivalent (`talos.pipeline.json`) works identically -- rename the
+> file and translate the structure to JSON. As of v0.13 the README install path
+> points new users at `talos.pipeline.json`, so if you arrived here from the
+> README you are using JSON. The key paths and default values are the same in
+> both formats.
+
+**What it does.** The orchestrator's Step 1 queue filter uses AND-logic: an
+issue enters the queue when it carries **both** `pipeline:ready` **and** the
+configured `issues.label_filter` label. The two labels must both be present on
+the issue.
+
+**Default:** `pipeline:ready`
+
+At the default value the two conditions collapse to a single check -- an issue
+needs `pipeline:ready`, and the filter requires `pipeline:ready`, so existing
+configs are unaffected byte-for-byte. No migration is needed.
+
+**Worked config example:**
+
+```yaml
+issues:
+  label_filter: "team:alice"
+```
+
+With this config an issue must carry **both** `team:alice` **and**
+`pipeline:ready` to enter the queue. An issue that carries only `team:alice`
+(without `pipeline:ready`) is ignored. An issue that carries only
+`pipeline:ready` (without `team:alice`) is also ignored.
+
+**Footgun -- silently empty queue.** Setting a custom `label_filter` without
+understanding the AND-logic produces a queue that appears empty even when issues
+are labelled correctly. The pipeline starts, finds nothing, and exits without
+error. If your queue is unexpectedly empty after setting this key:
+
+1. Confirm the target issue carries both `pipeline:ready` and your filter label.
+2. Temporarily set `label_filter: "pipeline:ready"` (the default) to verify
+   the queue logic itself is working.
+
+The queue logic is in `scripts/pipeline-vcs.sh`; the key is read via
+`pipeline-config.sh issues.label_filter`.
+
+### Choosing an isolation mode (`execution.isolation`)
+
+> **Note on config format:** examples below are YAML (`talos.pipeline.yml`).
+> The JSON equivalent (`talos.pipeline.json`) works identically -- rename the
+> file and translate the structure to JSON. As of v0.13 the README install path
+> points new users at `talos.pipeline.json`, so if you arrived here from the
+> README you are using JSON. The key path `execution.isolation` and the
+> default value `worktree` are the same in both formats.
+
+**What it does.** Selects the working-copy strategy that each stage runs in.
+Three values are recognised:
+
+| Value | Behaviour |
+|-------|-----------|
+| `worktree` | (default) Each issue gets a dedicated git worktree, enabling parallel execution. |
+| `branch` | Each stage runs in the main checkout on its own branch. Parallel execution is disabled (see below). |
+| `checkout` | Planned but not yet implemented -- the orchestrator refuses this value at startup. |
+
+**Default:** `worktree` (an absent key is identical to `worktree`)
+
+**Worked config example:**
+
+```yaml
+execution:
+  isolation: branch
+```
+
+**Hard constraint -- `branch` forces `max_parallel: 1`.** When `isolation:
+branch` is set, the orchestrator refuses to start if `issues.max_parallel` is
+greater than 1. This is a hard startup failure, not a warning -- the pipeline
+does not degrade gracefully to sequential mode; it exits with an error telling
+you to set `max_parallel: 1` explicitly. Add both keys together:
+
+```yaml
+execution:
+  isolation: branch
+issues:
+  max_parallel: 1
+```
+
+**Why `branch` exists.** Worktrees are the default because they isolate each
+issue cleanly. `branch` exists for projects where worktrees cause problems:
+
+- **Submodules** are not populated in a fresh worktree; a project that relies on
+  submodule content at build time fails immediately.
+- **Ignored-but-required artifacts** (`node_modules/`, `.venv/`, generated
+  protobufs) are absent from a clean worktree, so every stage pays a full
+  install/build cycle.
+- **Absolute paths** in build configs and Docker bind-mounts point at the
+  original checkout, not the worktree path -- builds break or silently use
+  stale artifacts.
+- **Large monorepos** pay real disk and time cost to create and populate a new
+  worktree for every issue.
+
+If any of these applies, set `isolation: branch` and `max_parallel: 1`. The
+sequential constraint is the price of working in a single checkout.
+
 ## Customizing agent profiles
 
 Each role profile is a markdown file with YAML frontmatter (Claude Code
@@ -477,6 +578,73 @@ write the instructions (or paste the relevant skill content) directly into
 the body — it flows into every stage prompt on every harness. Skill packs
 published for multiple agent tools can also be installed cross-harness with
 [`npx skills add <owner>/<repo>`](https://github.com/vercel-labs/skills).
+
+### Per-role model selection (`agents.roles.<role>.model`)
+
+> **Note on config format:** YAML and JSON are equivalent throughout this
+> section. The install path now points new users at `talos.pipeline.json`; if
+> you arrived from the README install instructions you are using JSON. Translate
+> the YAML examples below to JSON by mapping each YAML key/value to its JSON
+> equivalent -- the key paths (`agents.model`, `agents.roles.reviewer.model`,
+> etc.) and default values are identical in both formats.
+
+**What it does.** Sets the LLM model for a specific role when the orchestrator
+spawns it as a native subagent. This lets you run a cheap global model for
+high-volume, machine-verifiable work (implementation, docs) while routing
+judgement-heavy roles (reviewer, security) to a higher-quality model.
+
+**Default.** Each role inherits `agents.model`. If `agents.model` is also
+absent, the Agent SDK inherits the session default. You only need to set
+`agents.roles` for roles where you want to deviate from the global default.
+
+**Worked config example:**
+
+```yaml
+agents:
+  model: claude-haiku-4-5-20251001   # default for all roles
+  roles:
+    reviewer:
+      model: claude-opus-5           # upgrade only the reviewer
+    security:
+      model: claude-opus-5           # and the security auditor
+```
+
+This config routes six roles (developer, pm, validator, qa, docs, planner) to
+`claude-haiku-4-5-20251001` and two roles (reviewer, security) to
+`claude-opus-5`. Two overrides rather than eight entries.
+
+**Footgun -- silent no-op on adapter-path harnesses.** `agents.roles.<role>.model`
+is read and applied **only** when the orchestrator spawns native subagents (Claude
+Code, `subagents: true` or `agents.subagents: auto` with `runner: claude`). On
+the adapter path (`subagents: false`, runner: `codex` / `gemini` / `antigravity`
+/ `custom` / `pi`) the `agents.roles` block is never read -- `pipeline-agent.sh`
+ignores it entirely and the pipeline produces no warning or error. A user on
+`runner: codex` who sets `agents.roles` and sees no change in behaviour has no
+discoverable symptom: the pipeline runs normally at whatever model the runner
+uses by default.
+
+The model-resolution logic for the native path is in `skills/pipeline/SKILL.md`
+under the `subagents: true` block (lines 32-42): the orchestrator reads
+`agents.roles.<role>.model`, falls back to `agents.model`, then omits `model:`
+entirely if neither is set.
+
+On adapter-path harnesses, model routing is done by the runner via the
+`$TALOS_ROLE` environment variable in `runner_cmd`. State this constraint
+explicitly in your config comments to prevent confusion when switching harnesses.
+
+If you are on an adapter-path harness and want per-role model control, set the
+model in `runner_cmd` conditional on `$TALOS_ROLE`:
+
+```yaml
+agents:
+  runner: codex
+  runner_cmd: |
+    case "$TALOS_ROLE" in
+      reviewer|security) MODEL="o3" ;;
+      *) MODEL="o4-mini" ;;
+    esac
+    codex --model "$MODEL" --role "$TALOS_ROLE" -
+```
 
 ### Worked example: Addy Osmani's agent-skills pack
 
