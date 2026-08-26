@@ -1204,7 +1204,7 @@ for label, role in present.items():
     if not found_sha:
         # Fail-closed: missing marker means the approval predates SHA stamping —
         # treat it as stale rather than assuming it is safe.
-        print(f'pipeline-vcs: check-approval-sha: {label} has no SHA marker — treating as stale', file=sys.stderr)
+        print(f'pipeline-vcs: check-approval-sha: {label} has no SHA marker -- treating as stale', file=sys.stderr)
         stale.append((label, role, 'no SHA marker in PR comments'))
         continue
 
@@ -1216,7 +1216,7 @@ for label, role in present.items():
     # not git rev-parse HEAD, which returns whatever commit is checked out locally.
     if not re.fullmatch(r'[0-9a-f]{40}', found_sha):
         stale.append((label, role,
-            f'marker SHA {found_sha!r} is not a valid 40-character commit SHA — '
+            f'marker SHA {found_sha!r} is not a valid 40-character commit SHA -- '
             f'the {role} stage must obtain the SHA via '
             f'pipeline-vcs.sh pr-head <PR>, not git rev-parse HEAD '
             f'(which returns whatever commit is checked out locally)' ))
@@ -1238,7 +1238,7 @@ for label, role in present.items():
         )
         if probe.returncode != 0:
             stale.append((label, role,
-                f'marker SHA {found_sha} does not exist in this repository — '
+                f'marker SHA {found_sha} does not exist in this repository -- '
                 f'the {role} stage posted an invalid SHA; it must re-run and '
                 f're-post its marker using a SHA read from git, not reconstructed'))
             continue

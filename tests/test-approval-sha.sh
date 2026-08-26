@@ -563,4 +563,83 @@ out="$(STUB_PR_HEAD_SHA="$SHA_C" \
 assert_exit_code 1 "$rc" "#102-6 three-dot diff failure: fail-open uses full changed set -> exits 1 (fail-closed on content)"
 assert_contains "$out" "STALE" "#102-6 three-dot diff failure: STALE emitted (fail-closed preserved)"
 
+# ── Cross-provider STALE reason byte-identity (#127) ─────────────────────────
+# Both providers must produce byte-identical STALE reason strings.
+# _github uses f-strings; _github_api uses string concatenation inside
+# double-quoted bash strings where f-strings are unavailable.  Both must
+# emit ASCII '--' so that future edits to _github_api cannot accidentally
+# introduce non-ASCII characters that bash double-quoting may silently narrow.
+# assert_eq (not assert_contains) means a single character change -> RED.
+
+_orig_pipeline_config_127="$PIPELINE_CONFIG"
+_head_sha_127="$(printf '%040d' 1)"  # 40-char placeholder head SHA
+
+# -- 1. Abbreviated SHA (not 40-char hex): both providers must agree ----------
+
+_abbrev_sha_127="abcdef1"
+
+# _github provider (gh stub, STUB_PR_* env vars)
+printf '{}' > test-approval-config-127.json
+export PIPELINE_CONFIG="$SANDBOX/test-approval-config-127.json"
+_out_gh_abbrev="$(STUB_PR_HEAD_SHA="$_head_sha_127" \
+  STUB_PR_LABELS_JSON='[{"name":"qa:pass"}]' \
+  STUB_PR_COMMENTS_JSON="$(printf '[{"body":"x\\n<!-- talos:approval sha=%s role=qa -->"}]' "$_abbrev_sha_127")" \
+  PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+  bash "$VCS" check-approval-sha 9 2>&1)"; _rc_gh_abbrev=$?
+
+# _github_api provider (curl stub, CURL_QUEUE)
+cat > talos-api-127.json <<'EOF'
+{"vcs": {"provider": "github-api", "repo": "acme/widget"}}
+EOF
+export PIPELINE_CONFIG="$SANDBOX/talos-api-127.json"
+export GITHUB_TOKEN="test-token-parity-127"
+: > "$CURL_QUEUE"
+printf '%s\n' \
+  "{\"number\":9,\"head\":{\"sha\":\"$_head_sha_127\"},\"base\":{\"ref\":\"main\"},\"labels\":[{\"name\":\"qa:pass\"}]}" \
+  "[{\"body\":\"x\\n<!-- talos:approval sha=${_abbrev_sha_127} role=qa -->\",\"user\":{\"login\":\"bot\"}}]" \
+  > "$CURL_QUEUE"
+_out_api_abbrev="$(PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+  bash "$VCS" check-approval-sha 9 2>&1)"; _rc_api_abbrev=$?
+
+assert_eq "$_rc_gh_abbrev" "$_rc_api_abbrev" \
+  "cross-provider/abbrev-sha: exit codes identical (_github vs _github_api)"
+_stale_gh_abbrev="$(printf '%s' "$_out_gh_abbrev" | grep '^pipeline-vcs: check-approval-sha: STALE' || true)"
+_stale_api_abbrev="$(printf '%s' "$_out_api_abbrev" | grep '^pipeline-vcs: check-approval-sha: STALE' || true)"
+assert_eq "$_stale_gh_abbrev" "$_stale_api_abbrev" \
+  "cross-provider/abbrev-sha: STALE reason byte-identical (mutation: change -- in one provider -> RED)"
+
+# -- 2. Nonexistent SHA (40-char hex not in repo): both providers must agree --
+
+_nonexist_sha_127="deadbeef000000000000000000000000deadbeef"
+
+# _github provider
+printf '{}' > test-approval-config-127.json
+export PIPELINE_CONFIG="$SANDBOX/test-approval-config-127.json"
+_out_gh_nonexist="$(STUB_PR_HEAD_SHA="$_head_sha_127" \
+  STUB_PR_LABELS_JSON='[{"name":"qa:pass"}]' \
+  STUB_PR_COMMENTS_JSON="$(printf '[{"body":"x\\n<!-- talos:approval sha=%s role=qa -->"}]' "$_nonexist_sha_127")" \
+  PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+  bash "$VCS" check-approval-sha 9 2>&1)"; _rc_gh_nonexist=$?
+
+# _github_api provider
+export PIPELINE_CONFIG="$SANDBOX/talos-api-127.json"
+: > "$CURL_QUEUE"
+printf '%s\n' \
+  "{\"number\":9,\"head\":{\"sha\":\"$_head_sha_127\"},\"base\":{\"ref\":\"main\"},\"labels\":[{\"name\":\"qa:pass\"}]}" \
+  "[{\"body\":\"x\\n<!-- talos:approval sha=${_nonexist_sha_127} role=qa -->\",\"user\":{\"login\":\"bot\"}}]" \
+  > "$CURL_QUEUE"
+_out_api_nonexist="$(PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+  bash "$VCS" check-approval-sha 9 2>&1)"; _rc_api_nonexist=$?
+
+assert_eq "$_rc_gh_nonexist" "$_rc_api_nonexist" \
+  "cross-provider/nonexist-sha: exit codes identical (_github vs _github_api)"
+_stale_gh_nonexist="$(printf '%s' "$_out_gh_nonexist" | grep '^pipeline-vcs: check-approval-sha: STALE' || true)"
+_stale_api_nonexist="$(printf '%s' "$_out_api_nonexist" | grep '^pipeline-vcs: check-approval-sha: STALE' || true)"
+assert_eq "$_stale_gh_nonexist" "$_stale_api_nonexist" \
+  "cross-provider/nonexist-sha: STALE reason byte-identical (mutation: change -- in one provider -> RED)"
+
+# Restore config
+export PIPELINE_CONFIG="$_orig_pipeline_config_127"
+unset GITHUB_TOKEN
+
 finish
