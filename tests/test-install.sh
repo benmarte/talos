@@ -190,19 +190,28 @@ assert_contains "$out_with" "/pipeline" \
 
 # ── Probe-site sync / divergence test (#164) ─────────────────────────────────
 # Design: pipeline-paths.sh is the single source of truth for the 5-location
-# probe order. The two Bash scripts source it and call _resolve_talos_dir().
-# The two SKILL.md files cannot source shell, so they inline the probe loop
-# directly -- they are the only sites that must match pipeline-paths.sh literally.
+# probe order. Bash scripts that can source shell delegate to _resolve_talos_dir().
+# Sites that cannot source shell (the two SKILL.md files) and sites that ship an
+# executable probe loop to third-party harnesses (install.sh AGENTS.md heredoc)
+# must match pipeline-paths.sh literally.
 #
-# Three checks:
-#   A. Both Bash sites call _resolve_talos_dir (they delegate; no duplication).
-#   B. Both SKILL.md sites contain each canonical probe string (literal match).
-#   C. pipeline-paths.sh (the canonical definition) contains the same strings.
+# Tree-wide grep (grep -rn TALOS_HOME --include=*.sh --include=*.md, excl tests/.git)
+# confirmed four literal-probe sites and two delegation sites -- no others exist.
+# Docs files (README.md, user-guide.md, CHANGELOG.md) mention probe strings but
+# do not execute them; they are not probe sites.
 #
-# RED when any site drifts: A catches Bash sites dropping the delegation;
-# B+C catches SKILL.md files diverging from the canonical definition.
+# Two checks:
+#   A. Delegation sites call _resolve_talos_dir (no duplication):
+#        scripts/pipeline-agent.sh, scripts/pipeline-notify.sh
+#   B. Literal sites contain each canonical probe string:
+#        scripts/pipeline-paths.sh (canonical definition)
+#        skills/pipeline/SKILL.md
+#        skills/pipeline-setup/SKILL.md
+#        install.sh (AGENTS.md heredoc -- executed as shell by codex/antigravity)
+#
+# RED when any site drifts: A catches dropped delegation; B catches literal divergence.
 
-# A. Bash sites must CALL _resolve_talos_dir (delegation, not duplication).
+# A. Delegation sites must CALL _resolve_talos_dir.
 for sh_file in \
   "$TALOS_ROOT/scripts/pipeline-agent.sh" \
   "$TALOS_ROOT/scripts/pipeline-notify.sh"; do
@@ -213,13 +222,21 @@ for sh_file in \
   fi
 done
 
-# B+C. SKILL.md files and pipeline-paths.sh must contain each probe string.
-# These are the sites where the order is spelled out literally.
-for probe_str in "TALOS_HOME" ".talos/scripts" "CLAUDE_PLUGIN_ROOT" ".claude/talos/scripts"; do
+# B. Literal sites must contain each probe string.
+# install.sh is included because its AGENTS.md heredoc is executed as shell by
+# codex and antigravity harnesses -- a drift here means those harnesses resolve
+# to the wrong install, the exact failure #164 exists to eliminate.
+#
+# Probe strings use the conditional expansion form (${VAR:+...}) so they are
+# specific to probe loops rather than general variable uses. "TALOS_HOME" alone
+# appears in install.sh many times via TALOS_HOME_DIR; "${TALOS_HOME:+" only
+# appears in the probe loop, making the check falsifiable.
+for probe_str in '${TALOS_HOME:+' ".talos/scripts" '${CLAUDE_PLUGIN_ROOT:+' ".claude/talos/scripts"; do
   for pf in \
+    "$TALOS_ROOT/scripts/pipeline-paths.sh" \
     "$TALOS_ROOT/skills/pipeline/SKILL.md" \
     "$TALOS_ROOT/skills/pipeline-setup/SKILL.md" \
-    "$TALOS_ROOT/scripts/pipeline-paths.sh"; do
+    "$TALOS_ROOT/install.sh"; do
     if grep -qF "$probe_str" "$pf"; then
       pass "$(basename "$pf") contains probe string: $probe_str"
     else
