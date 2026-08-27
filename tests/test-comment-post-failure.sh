@@ -258,20 +258,20 @@ rm -f "$SANDBOX/talos.pipeline.json"
 unset GITHUB_TOKEN
 
 # ═════════════════════════════════════════════════════════════════════════════
-# CRITERION 10 [test]: CHANGELOG has entry under [Unreleased] for this fix
+# CRITERION 10 [test]: CHANGELOG has entry for this fix (released in [0.14.0])
 # ═════════════════════════════════════════════════════════════════════════════
 
 _changelog="$TALOS_ROOT/CHANGELOG.md"
-# Extract [Unreleased] section up to the next versioned heading (BSD-compat awk)
-_unreleased_section="$(awk '
-  /## \[Unreleased\]/ { found=1; next }
+# Extract [0.14.0] section up to the next versioned heading (BSD-compat awk)
+_release_section="$(awk '
+  /## \[0\.14\.0\]/ { found=1; next }
   found && /## \[[0-9]/ { exit }
   found { print }
 ' "$_changelog")"
 
-assert_contains "$_unreleased_section" "comment-issue" \
+assert_contains "$_release_section" "comment-issue" \
   "CHANGELOG: [Unreleased] section mentions comment-issue fix (#69) [CRITERION 10]"
-assert_contains "$_unreleased_section" "69" \
+assert_contains "$_release_section" "69" \
   "CHANGELOG: [Unreleased] section references issue #69 [CRITERION 10]"
 
 finish

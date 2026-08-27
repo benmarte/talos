@@ -1,7 +1,7 @@
 {
   "name": "talos",
   "description": "Autonomous issue-to-PR pipeline orchestrated by a Claude Code session. Supports multi-harness runners (Claude, pi, Codex CLI, Gemini CLI, custom/local) and an optional planner role for epic decomposition. pi runs inline one-agent-per-turn without subagents. Validator, developer (worktree-isolated), QA, reviewer, security, and docs subagents drive GitHub issues through to merged PRs.",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "dependencies": [
     "agent-skills"
   ],
