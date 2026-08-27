@@ -189,35 +189,41 @@ assert_contains "$out_with" "/pipeline" \
   "plugin installed: tells the user to run /pipeline"
 
 # ── Probe-site sync / divergence test (#164) ─────────────────────────────────
-# All four probe sites must contain each canonical path string.
-# RED when any site drifts; the test itself is the enforcement mechanism.
+# Design: pipeline-paths.sh is the single source of truth for the 5-location
+# probe order. The two Bash scripts source it and call _resolve_talos_dir().
+# The two SKILL.md files cannot source shell, so they inline the probe loop
+# directly -- they are the only sites that must match pipeline-paths.sh literally.
 #
-# The four sites:
-#   1. skills/pipeline/SKILL.md          (Markdown -- cannot source Bash)
-#   2. skills/pipeline-setup/SKILL.md    (Markdown -- cannot source Bash)
-#   3. scripts/pipeline-agent.sh         (Bash -- sources pipeline-paths.sh)
-#   4. scripts/pipeline-notify.sh        (Bash -- sources pipeline-paths.sh)
+# Three checks:
+#   A. Both Bash sites call _resolve_talos_dir (they delegate; no duplication).
+#   B. Both SKILL.md sites contain each canonical probe string (literal match).
+#   C. pipeline-paths.sh (the canonical definition) contains the same strings.
 #
-# The canonical definition:
-#   5. scripts/pipeline-paths.sh         (Bash -- the single shared definition)
-#
-# Each string below must appear in ALL FIVE files.
-# probe_str values must appear literally in all five files.
-# Use .talos (not .talos/scripts) because pipeline-agent.sh probes .talos/agents --
-# the common prefix covers all four sites regardless of which sub-dir each probes.
-# .claude/talos covers pipeline-agent.sh (.claude/talos/agents) and the rest
-# (.claude/talos/scripts), ensuring the vendored-install location is consistent.
-for probe_str in "TALOS_HOME" ".talos" "CLAUDE_PLUGIN_ROOT" ".claude/talos"; do
+# RED when any site drifts: A catches Bash sites dropping the delegation;
+# B+C catches SKILL.md files diverging from the canonical definition.
+
+# A. Bash sites must CALL _resolve_talos_dir (delegation, not duplication).
+for sh_file in \
+  "$TALOS_ROOT/scripts/pipeline-agent.sh" \
+  "$TALOS_ROOT/scripts/pipeline-notify.sh"; do
+  if grep -q "_resolve_talos_dir" "$sh_file"; then
+    pass "$(basename "$sh_file") calls _resolve_talos_dir (delegates to pipeline-paths.sh)"
+  else
+    fail "$(basename "$sh_file") does NOT call _resolve_talos_dir -- probe order no longer enforced"
+  fi
+done
+
+# B+C. SKILL.md files and pipeline-paths.sh must contain each probe string.
+# These are the sites where the order is spelled out literally.
+for probe_str in "TALOS_HOME" ".talos/scripts" "CLAUDE_PLUGIN_ROOT" ".claude/talos/scripts"; do
   for pf in \
     "$TALOS_ROOT/skills/pipeline/SKILL.md" \
     "$TALOS_ROOT/skills/pipeline-setup/SKILL.md" \
-    "$TALOS_ROOT/scripts/pipeline-agent.sh" \
-    "$TALOS_ROOT/scripts/pipeline-notify.sh" \
     "$TALOS_ROOT/scripts/pipeline-paths.sh"; do
     if grep -qF "$probe_str" "$pf"; then
       pass "$(basename "$pf") contains probe string: $probe_str"
     else
-      fail "$(basename "$pf") is MISSING probe string: $probe_str  -- probe sites have drifted"
+      fail "$(basename "$pf") is MISSING probe string: $probe_str -- probe sites have drifted"
     fi
   done
 done
