@@ -14,6 +14,8 @@
 
 - **Probe-site divergence test in `tests/test-install.sh` (#164).** Greps all five probe sites (both SKILL.md files, `pipeline-agent.sh`, `pipeline-notify.sh`, `pipeline-paths.sh`) for each canonical probe string; fails RED when any site is missing a string. Proved RED by temporarily removing a string from one SKILL.md, then GREEN after restoring.
 
+- **`README.md` and `docs/user-guide.md`: global install documentation and security note (#164).** Documents the global install workflow with a prominent update command (`git pull` + `install.sh --global` reaches every repo at once), per-repo config-only install, vendored back-compat (existing `.claude/talos/` installs require no action), and the five-position probe order with a one-line reason per entry. Adds a security note in both files: `$TALOS_HOME` is environment-controlled at the highest probe priority -- treat it like `PATH` and point it only at directories you trust, because Talos executes scripts from the resolved location.
+
 ## [0.14.0] - 2026-08-26
 
 ### Notes

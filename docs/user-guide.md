@@ -174,15 +174,15 @@ the sections below), or when you want the pipeline pinned in-tree and reviewed
 alongside your code.
 
 ```bash
-# 1. Global install (once per machine — all repos share this copy)
+# 1. Global install (once per machine -- all repos share this copy)
 git clone https://github.com/benmarte/talos
 bash talos/install.sh --global          # installs to ~/.talos/ and ~/.claude/skills/
 
-# 2. Per-repo config (once per repo — writes only talos.pipeline.json)
+# 2. Per-repo config (once per repo -- writes config; no scripts copied into repo)
 bash talos/install.sh /path/to/your-repo
 # add --harness codex or --harness antigravity for non-Claude harnesses
 
-# 3. Configure (interactive — or copy talos.pipeline.yml.example manually)
+# 3. Configure (interactive -- or copy talos.pipeline.yml.example manually)
 cd /path/to/your-repo
 # in a Claude Code session:  /pipeline-setup
 
@@ -196,8 +196,12 @@ gh issue edit 42 --add-label pipeline:ready
 
 What the global install writes: `~/.talos/{scripts,agents,templates}/` and
 `~/.claude/skills/pipeline/SKILL.md` (the command). Per-repo installs write
-only `talos.pipeline.json`. Nothing else goes into the repo; updating Talos
-is `git -C path/to/talos pull && bash talos/install.sh --global`.
+only `talos.pipeline.*` config (plus agent-skills to `.claude/skills/`); no
+Talos scripts are copied into repos. To update every repo at once:
+
+```bash
+git -C path/to/talos pull && bash path/to/talos/install.sh --global
+```
 
 **Vendored (legacy) back-compat**: existing `.claude/talos/` installs keep
 working with zero user action. The probe order includes `.claude/talos/scripts`
@@ -205,14 +209,21 @@ at position 4, so old vendored copies are found automatically. No migration
 required -- run `install.sh --global` when you are ready to switch.
 
 **Probe order** (first directory containing `pipeline-vcs.sh` wins):
-1. `$TALOS_HOME/scripts` -- explicit override (skipped when unset)
-2. `~/.talos/scripts` -- global install
-3. `$CLAUDE_PLUGIN_ROOT/scripts` -- Claude Code plugin
-4. `.claude/talos/scripts` -- legacy vendored install
-5. `scripts` -- Talos source repo
+1. `$TALOS_HOME/scripts` -- explicit override (skipped when unset); highest priority
+2. `~/.talos/scripts` -- global install; wins over plugin when present
+3. `$CLAUDE_PLUGIN_ROOT/scripts` -- Claude Code plugin; bundled copy matching the running skill
+4. `.claude/talos/scripts` -- legacy vendored install; back-compat, no action needed
+5. `scripts` -- Talos source repo; used when developing Talos itself
 
 The global install wins when present; the plugin falls back to its bundled
 copy only when no global install exists.
+
+**Security note:** `$TALOS_HOME` is environment-controlled and sits at the top of
+the probe order. Treat it like `PATH` -- point it only at a directory you trust,
+because Talos executes scripts from the location it resolves to. This is a
+documented property of the design: the skill already executed from
+`$CLAUDE_PLUGIN_ROOT`, `.claude/talos/`, and `scripts/` before this change;
+`$TALOS_HOME` is a new, environment-controlled entry at the highest priority.
 
 ## Setup: pi
 
