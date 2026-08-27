@@ -7,7 +7,7 @@ make_sandbox
 use_stubs
 install_talos
 
-AGENT=".claude/talos/scripts/pipeline-agent.sh"
+AGENT="$HOME/.talos/scripts/pipeline-agent.sh"
 export RUNNER_LOG="$SANDBOX/runner.log"
 
 # ── Default runner is claude, with global-config isolation ───────────────────
@@ -113,8 +113,8 @@ out="$(bash "$AGENT" 2>&1)"; rc=$?
 assert_eq "2" "$rc" "missing args exits 2"
 
 # ── install.sh --harness codex ────────────────────────────────────────────────
-assert_file_exists ".claude/talos/scripts/pipeline-agent.sh" \
-  "pipeline-agent.sh installed by default"
+assert_file_exists "$HOME/.talos/scripts/pipeline-agent.sh" \
+  "pipeline-agent.sh installed by --global into ~/.talos/scripts/"
 
 out="$(bash "$TALOS_ROOT/install.sh" "$SANDBOX" --harness codex)"
 assert_file_exists "AGENTS.md" "--harness codex writes AGENTS.md"
@@ -173,7 +173,7 @@ rm talos.pipeline.json
 # Criteria (b), (c), (d), (e), (f): test pipeline-config.sh directly because
 # the resolution is in the config reader, not pipeline-agent.sh.
 
-CONFIG_SH=".claude/talos/scripts/pipeline-config.sh"
+CONFIG_SH="$HOME/.talos/scripts/pipeline-config.sh"
 
 # (b) Role-specific model wins over global
 cat > talos.pipeline.json <<'EOF'

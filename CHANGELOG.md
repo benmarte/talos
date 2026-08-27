@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Global install (`install.sh --global`): one update reaches every repo and every harness (#164).** `install.sh --global` writes scripts, agents, and templates to `~/.talos/` and skills to `~/.claude/skills/`. Per-repo installs now write only `talos.pipeline.*` config and harness glue (AGENTS.md). Existing `.claude/talos/` vendored installs continue to work with zero user action via probe position 4. Re-running `--global` overwrites scripts by default (update semantics); `--no-overwrite` opts out. `talos.pipeline.*` config is never overwritten by any install mode.
+
+- **`scripts/pipeline-paths.sh`: canonical 5-location probe shared by all Bash scripts (#164).** Defines `_resolve_talos_dir()` implementing the one probe order used everywhere: (1) `$TALOS_HOME/scripts`, (2) `~/.talos/scripts`, (3) `$CLAUDE_PLUGIN_ROOT/scripts`, (4) `.claude/talos/scripts`, (5) `scripts`. Sourced by `pipeline-agent.sh` and `pipeline-notify.sh`.
+
+- **Updated probe loop in both SKILL.md files (#164).** `skills/pipeline/SKILL.md` and `skills/pipeline-setup/SKILL.md` now probe all five locations in the canonical order. The global install wins when present; the plugin falls back to its bundled copy only when no global install exists. Prose updated to match the new precedence (was: "the plugin case wins when both are present").
+
+- **`tests/test-global-install.sh`: full precedence coverage (#164).** Populates all five probe locations with distinguishable working copies and asserts the full order. Tests the primary skew scenario (stale `.claude/talos/` + fresh `~/.talos/` resolves to `~/.talos/`), vendored back-compat (no global install, vendored still works), and per-repo config-only behavior (scripts directory absent from repo). Wrong precedence returns the wrong token, not a file-not-found error.
+
+- **Probe-site divergence test in `tests/test-install.sh` (#164).** Guards two delegation sites (`pipeline-agent.sh`, `pipeline-notify.sh`) for `_resolve_talos_dir` calls (no literal duplication), and four literal-probe sites (`scripts/pipeline-paths.sh`, `skills/pipeline/SKILL.md`, `skills/pipeline-setup/SKILL.md`, `install.sh`) for each canonical probe string. The `install.sh` check covers its AGENTS.md heredoc, which codex and antigravity execute as shell -- drift there means those harnesses resolve to the wrong install, the exact failure #164 exists to eliminate. Probe strings use the conditional expansion form (`${TALOS_HOME:+`) to distinguish probe-loop occurrences from general variable uses. Fails RED when any site drifts from the canonical definition.
+
+- **`README.md` and `docs/user-guide.md`: global install documentation and security note (#164).** Documents the global install workflow with a prominent update command (`git pull` + `install.sh --global` reaches every repo at once), per-repo config-only install, vendored back-compat (existing `.claude/talos/` installs require no action), and the five-position probe order with a one-line reason per entry. Adds a security note in both files: `$TALOS_HOME` is environment-controlled at the highest probe priority -- treat it like `PATH` and point it only at directories you trust, because Talos executes scripts from the resolved location.
+
 ## [0.14.0] - 2026-08-26
 
 ### Notes

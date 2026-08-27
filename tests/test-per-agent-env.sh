@@ -18,7 +18,7 @@ make_sandbox
 use_stubs
 install_talos
 
-AGENT=".claude/talos/scripts/pipeline-agent.sh"
+AGENT="$HOME/.talos/scripts/pipeline-agent.sh"
 export RUNNER_LOG="$SANDBOX/runner.log"
 
 # Configure a custom runner that prints all three identity vars so we can inspect them.

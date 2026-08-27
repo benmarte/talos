@@ -51,6 +51,8 @@
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=pipeline-paths.sh
+. "$SCRIPT_DIR/pipeline-paths.sh"
 cfg() { "$SCRIPT_DIR/pipeline-config.sh" "$@"; }
 
 EVENT="${1:-info}"
@@ -247,12 +249,21 @@ TEXT="$ICON [talos] $EVENT $REF — $MSG${PRIMARY_URL:+ ($PRIMARY_URL)}"
 # ── Template rendering ────────────────────────────────────────────────────────
 TMPL_DIR_CFG="$(cfg notifications.templates_dir "templates/notifications")"
 if [ -n "$TMPL_DIR_CFG" ]; then
-  # Absolute path: use as-is. Relative: caller's cwd first, then the
-  # Talos repo's bundled templates as fallback.
+  # Absolute path: use as-is. Relative: caller's cwd first, then delegate to
+  # _resolve_talos_dir() (sourced from pipeline-paths.sh above) which implements
+  # the canonical 5-location probe and returns the scripts dir. Templates live
+  # one level up from scripts, so we cd to the parent.
   case "$TMPL_DIR_CFG" in
     /*) TMPL_FILE="$TMPL_DIR_CFG/$EVENT.md" ;;
     *)  TMPL_FILE="$PWD/$TMPL_DIR_CFG/$EVENT.md"
-        [ -f "$TMPL_FILE" ] || TMPL_FILE="$REPO_ROOT/$TMPL_DIR_CFG/$EVENT.md" ;;
+        if [ ! -f "$TMPL_FILE" ]; then
+          _tmpl_scripts="$(_resolve_talos_dir pipeline-notify.sh 2>/dev/null || true)"
+          if [ -n "$_tmpl_scripts" ]; then
+            TMPL_FILE="$(cd "$_tmpl_scripts/.." && pwd)/$TMPL_DIR_CFG/$EVENT.md"
+          else
+            TMPL_FILE="$REPO_ROOT/$TMPL_DIR_CFG/$EVENT.md"
+          fi
+        fi ;;
   esac
   if [ -f "$TMPL_FILE" ]; then
     RENDERED="$(ICON="$ICON" REF="$REF" MSG="$MSG" EVENT="$EVENT" \

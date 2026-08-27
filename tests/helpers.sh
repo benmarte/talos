@@ -103,9 +103,38 @@ use_stubs() {
   : > "$NAK_LOG"; : > "$NAK_QUEUE"
 }
 
-# install_talos — run install.sh into the sandbox quietly.
+# install_talos — install Talos globally into the sandbox HOME (~/.talos/) and
+# configure the sandbox repo (config only). Scripts land in $HOME/.talos/scripts/
+# which is probe position 2 in the canonical order, so all probe-using helpers
+# find them without per-repo vendoring.
+# After calling install_talos, use TALOS_SCRIPTS="$HOME/.talos/scripts" to
+# reference installed scripts.
 install_talos() {
-  bash "$TALOS_ROOT/install.sh" "$SANDBOX" >/dev/null
+  bash "$TALOS_ROOT/install.sh" --global --no-agent-skills >/dev/null
+  bash "$TALOS_ROOT/install.sh" "$SANDBOX" --no-agent-skills >/dev/null
+}
+
+# install_talos_vendored — legacy helper: copies scripts directly into
+# .claude/talos/scripts/ to test probe position 4 (vendored back-compat).
+# Use only in tests that explicitly test the old vendored layout.
+install_talos_vendored() {
+  mkdir -p "$SANDBOX/.claude/talos/scripts" "$SANDBOX/.claude/talos/templates/notifications" \
+           "$SANDBOX/.claude/talos/templates/comments" "$SANDBOX/.claude/agents"
+  for script in "$TALOS_ROOT"/scripts/pipeline-*.sh "$TALOS_ROOT"/scripts/bootstrap-labels.sh; do
+    cp "$script" "$SANDBOX/.claude/talos/scripts/"
+    chmod +x "$SANDBOX/.claude/talos/scripts/$(basename "$script")"
+  done
+  for dir in notifications comments; do
+    for tmpl in "$TALOS_ROOT/templates/$dir"/*.md; do
+      [ -f "$tmpl" ] || continue
+      cp "$tmpl" "$SANDBOX/.claude/talos/templates/$dir/"
+    done
+  done
+  for agent in validator pm developer qa reviewer security docs planner; do
+    for src in "$TALOS_ROOT/agents/$agent.md" "$TALOS_ROOT/.claude/agents/$agent.md"; do
+      [ -f "$src" ] && cp "$src" "$SANDBOX/.claude/agents/$agent.md" && break
+    done
+  done
 }
 
 # finish — print summary for this file and exit non-zero on any failure.
