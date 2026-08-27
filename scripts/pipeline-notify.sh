@@ -51,6 +51,8 @@
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=pipeline-paths.sh
+. "$SCRIPT_DIR/pipeline-paths.sh"
 cfg() { "$SCRIPT_DIR/pipeline-config.sh" "$@"; }
 
 EVENT="${1:-info}"
@@ -247,12 +249,34 @@ TEXT="$ICON [talos] $EVENT $REF — $MSG${PRIMARY_URL:+ ($PRIMARY_URL)}"
 # ── Template rendering ────────────────────────────────────────────────────────
 TMPL_DIR_CFG="$(cfg notifications.templates_dir "templates/notifications")"
 if [ -n "$TMPL_DIR_CFG" ]; then
-  # Absolute path: use as-is. Relative: caller's cwd first, then the
-  # Talos repo's bundled templates as fallback.
+  # Absolute path: use as-is. Relative: caller's cwd first, then probe the
+  # canonical Talos install locations in precedence order so the global
+  # install's bundled templates are found regardless of where this script lives.
+  # Probe order must match pipeline-paths.sh and the SKILL.md probe loops.
   case "$TMPL_DIR_CFG" in
     /*) TMPL_FILE="$TMPL_DIR_CFG/$EVENT.md" ;;
     *)  TMPL_FILE="$PWD/$TMPL_DIR_CFG/$EVENT.md"
-        [ -f "$TMPL_FILE" ] || TMPL_FILE="$REPO_ROOT/$TMPL_DIR_CFG/$EVENT.md" ;;
+        if [ ! -f "$TMPL_FILE" ]; then
+          # Probe the canonical 5-location order for bundled templates.
+          _tmpl_base=""
+          for _tmpl_d in \
+            "${TALOS_HOME:+$TALOS_HOME/scripts}" \
+            "$HOME/.talos/scripts" \
+            "${CLAUDE_PLUGIN_ROOT:+$CLAUDE_PLUGIN_ROOT/scripts}" \
+            ".claude/talos/scripts" \
+            "scripts"; do
+            [ -n "$_tmpl_d" ] || continue
+            if [ -f "$_tmpl_d/pipeline-notify.sh" ]; then
+              _tmpl_base="$(cd "$_tmpl_d/.." && pwd)"
+              break
+            fi
+          done
+          if [ -n "$_tmpl_base" ]; then
+            TMPL_FILE="$_tmpl_base/$TMPL_DIR_CFG/$EVENT.md"
+          else
+            TMPL_FILE="$REPO_ROOT/$TMPL_DIR_CFG/$EVENT.md"
+          fi
+        fi ;;
   esac
   if [ -f "$TMPL_FILE" ]; then
     RENDERED="$(ICON="$ICON" REF="$REF" MSG="$MSG" EVENT="$EVENT" \

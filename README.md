@@ -112,23 +112,24 @@ Restart the session, then run `/pipeline-setup` in any repo to write `talos.pipe
 
 agent-skills comes with it automatically (`+ 1 dependency: agent-skills`). If you already use Addy's marketplace you will see agent-skills registered twice; that is expected and harmless, see the [user guide](docs/user-guide.md) for why.
 
-**Option B — vendor into the repo with `install.sh`.** Use this when the pipeline must be driven by a harness that cannot load a Claude Code plugin (Codex CLI, Gemini CLI, Antigravity), or when you want the pipeline pinned in-tree and reviewed alongside your code.
+**Option B — global install with `install.sh`.** Installs once to `~/.talos/`; every repo and every harness on this machine picks it up. One `git pull` + re-run updates everything at once.
 
 ```bash
-bash path/to/talos/install.sh /path/to/your-repo
+git clone https://github.com/benmarte/talos
+bash talos/install.sh --global          # installs to ~/.talos/ and ~/.claude/skills/
+bash talos/install.sh /path/to/your-repo  # writes only talos.pipeline.json
 # add --harness codex or --harness antigravity to also write the AGENTS.md section
 ```
 
-**Option C — manual copy.** Equivalent to Option B, by hand.
+**Option C — vendored (legacy).** Existing `.claude/talos/` installs keep working with zero user action; the probe order includes them at position 4. Re-install to upgrade an existing vendored copy:
 
 ```bash
-cp -r path/to/talos/scripts/   .claude/talos/scripts/
-cp -r path/to/talos/skills/pipeline/ .claude/skills/pipeline/   # MUST be .claude/skills/ — see below
-cp -r path/to/talos/templates/ .claude/talos/templates/   # required for rich messages
-cp -r path/to/talos/agents/    .claude/agents/
+bash path/to/talos/install.sh --global   # recommended: upgrade globally
+# or keep vendored: bash path/to/talos/install.sh --global followed by
+# your existing .claude/talos/ install continues to work as-is
 ```
 
-The two paths coexist. Talos resolves its scripts in this order — plugin root (`$CLAUDE_PLUGIN_ROOT/scripts`), vendored (`.claude/talos/scripts`), source repo (`scripts`) — so if a repo has both, the plugin wins, which is what you want: it is the copy that matches the skill being run.
+Talos resolves its scripts in this order — `$TALOS_HOME/scripts` (explicit override), `~/.talos/scripts` (global install), `$CLAUDE_PLUGIN_ROOT/scripts` (plugin), `.claude/talos/scripts` (legacy vendored), `scripts` (source repo). The global install wins when present; the plugin falls back to its bundled copy only when no global install exists.
 
 > **Why `.claude/skills/`?** Claude Code discovers skills at `<repo>/.claude/skills/<name>/SKILL.md`
 > and `~/.claude/skills/<name>/SKILL.md`. It does not recurse, so a skill under
@@ -159,7 +160,8 @@ verify:
 ### 3. Bootstrap labels (GitHub / GitLab / Azure only)
 
 ```bash
-bash .claude/talos/scripts/bootstrap-labels.sh
+bash ~/.talos/scripts/bootstrap-labels.sh          # global install
+# or: bash .claude/talos/scripts/bootstrap-labels.sh  # vendored legacy
 ```
 
 This creates the `pipeline:*`, `qa:pass`, `review:approved`, `security:approved`, and `docs:done` labels in your repo (idempotent). Skip this step for file mode — checkboxes replace labels.

@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Global install (`install.sh --global`): one update reaches every repo and every harness (#164).** `install.sh --global` writes scripts, agents, and templates to `~/.talos/` and skills to `~/.claude/skills/`. Per-repo installs now write only `talos.pipeline.*` config and harness glue (AGENTS.md). Existing `.claude/talos/` vendored installs continue to work with zero user action via probe position 4. Re-running `--global` overwrites scripts by default (update semantics); `--no-overwrite` opts out. `talos.pipeline.*` config is never overwritten by any install mode.
+
+- **`scripts/pipeline-paths.sh`: canonical 5-location probe shared by all Bash scripts (#164).** Defines `_resolve_talos_dir()` implementing the one probe order used everywhere: (1) `$TALOS_HOME/scripts`, (2) `~/.talos/scripts`, (3) `$CLAUDE_PLUGIN_ROOT/scripts`, (4) `.claude/talos/scripts`, (5) `scripts`. Sourced by `pipeline-agent.sh` and `pipeline-notify.sh`.
+
+- **Updated probe loop in both SKILL.md files (#164).** `skills/pipeline/SKILL.md` and `skills/pipeline-setup/SKILL.md` now probe all five locations in the canonical order. The global install wins when present; the plugin falls back to its bundled copy only when no global install exists. Prose updated to match the new precedence (was: "the plugin case wins when both are present").
+
+- **`tests/test-global-install.sh`: full precedence coverage (#164).** Populates all five probe locations with distinguishable working copies and asserts the full order. Tests the primary skew scenario (stale `.claude/talos/` + fresh `~/.talos/` resolves to `~/.talos/`), vendored back-compat (no global install, vendored still works), and per-repo config-only behavior (scripts directory absent from repo). Wrong precedence returns the wrong token, not a file-not-found error.
+
+- **Probe-site divergence test in `tests/test-install.sh` (#164).** Greps all five probe sites (both SKILL.md files, `pipeline-agent.sh`, `pipeline-notify.sh`, `pipeline-paths.sh`) for each canonical probe string; fails RED when any site is missing a string. Proved RED by temporarily removing a string from one SKILL.md, then GREEN after restoring.
+
 ## [0.14.0] - 2026-08-26
 
 ### Notes

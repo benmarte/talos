@@ -9,7 +9,7 @@ make_sandbox
 use_stubs
 install_talos
 
-NOTIFY=".claude/talos/scripts/pipeline-notify.sh"
+NOTIFY="$HOME/.talos/scripts/pipeline-notify.sh"
 export PIPELINE_THREAD_STATE="$SANDBOX/threads.json"
 
 DEFAULT_ID="aaaa000000000000000000000000000000000000000000000000000000000001"

@@ -56,6 +56,8 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=pipeline-paths.sh
+. "$SCRIPT_DIR/pipeline-paths.sh"
 cfg() { "$SCRIPT_DIR/pipeline-config.sh" "$@"; }
 
 ROLE="${1:-}"
@@ -99,20 +101,25 @@ fi
 # subagents so both harnesses pick the same profile:
 #   1. Repo override     — <repo>/.claude/agents/<role>.md. Always wins, so a
 #                          project can replace one role without forking Talos.
-#                          This is also the vendored-install layout, where the
-#                          repo copy IS the install.
-#   2. Plugin cache      — $CLAUDE_PLUGIN_ROOT/agents/, set when Talos was
+#                          This is also the vendored-install layout (back-compat),
+#                          where install.sh wrote agents to .claude/agents/.
+#   2. $TALOS_HOME       — explicit global override (skipped when unset).
+#   3. ~/.talos          — standard global install.
+#   4. Plugin cache      — $CLAUDE_PLUGIN_ROOT/agents/, set when Talos was
 #                          installed from the marketplace.
-#   3. Plugin, no env    — this script at <plugin>/scripts/, agents at
+#   5. Plugin, no env    — this script at <plugin>/scripts/, agents at
 #                          <plugin>/agents/. Covers harnesses that run the
 #                          script without exporting CLAUDE_PLUGIN_ROOT, and the
 #                          Talos source repo, which shares this layout.
-#   4. Legacy layouts    — pre-0.6.0, before the agents moved to the plugin
+#   6. Legacy layouts    — pre-0.6.0, before the agents moved to the plugin
 #                          root. Kept so an old checkout still runs.
 ROLE_FILE=""
 for candidate in \
   "$PWD/.claude/agents/$ROLE.md" \
+  "${TALOS_HOME:+$TALOS_HOME/agents/$ROLE.md}" \
+  "$HOME/.talos/agents/$ROLE.md" \
   "${CLAUDE_PLUGIN_ROOT:+$CLAUDE_PLUGIN_ROOT/agents/$ROLE.md}" \
+  "$PWD/.claude/talos/agents/$ROLE.md" \
   "$SCRIPT_DIR/../agents/$ROLE.md" \
   "$SCRIPT_DIR/../../agents/$ROLE.md" \
   "$SCRIPT_DIR/../.claude/agents/$ROLE.md"; do
@@ -121,7 +128,7 @@ for candidate in \
 done
 if [ -z "$ROLE_FILE" ]; then
   echo "pipeline-agent: role definition not found: $ROLE" >&2
-  echo "  looked in: \$CLAUDE_PLUGIN_ROOT/agents/, $SCRIPT_DIR/../agents/, $PWD/.claude/agents/" >&2
+  echo "  looked in: \$TALOS_HOME/agents/, \$HOME/.talos/agents/, \$CLAUDE_PLUGIN_ROOT/agents/, $SCRIPT_DIR/../agents/, $PWD/.claude/agents/" >&2
   exit 1
 fi
 

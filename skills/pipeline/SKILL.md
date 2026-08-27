@@ -10,14 +10,19 @@ All VCS operations go through `scripts/pipeline-vcs.sh` — never call `gh`, `gl
 **Script location:** resolve once before anything else, and reuse the answer — every `bash scripts/<name>.sh` command in this playbook means the directory you resolve here. Run this and use what it prints:
 
 ```bash
-for d in "${CLAUDE_PLUGIN_ROOT:+$CLAUDE_PLUGIN_ROOT/scripts}" .claude/talos/scripts scripts; do
+for d in \
+  "${TALOS_HOME:+$TALOS_HOME/scripts}" \
+  "$HOME/.talos/scripts" \
+  "${CLAUDE_PLUGIN_ROOT:+$CLAUDE_PLUGIN_ROOT/scripts}" \
+  ".claude/talos/scripts" \
+  "scripts"; do
   [ -n "$d" ] && [ -f "$d/pipeline-vcs.sh" ] && { echo "$d"; break; }
 done
 ```
 
-The three cases, in priority order: installed from the marketplace (`$CLAUDE_PLUGIN_ROOT/scripts`, where the plugin cache holds them), vendored into the repo by `install.sh` (`.claude/talos/scripts`), or running inside the Talos source repo (`scripts`). If it prints nothing, stop and tell the user Talos is not installed — do not improvise with `gh` directly.
+The five cases, in priority order: explicit override (`$TALOS_HOME/scripts`, skipped when unset), global install (`~/.talos/scripts`), installed from the marketplace (`$CLAUDE_PLUGIN_ROOT/scripts`), vendored into the repo by `install.sh` (`.claude/talos/scripts`), or running inside the Talos source repo (`scripts`). If it prints nothing, stop and tell the user Talos is not installed — do not improvise with `gh` directly.
 
-Note that the plugin case wins when both are present. A repo can have a stale vendored copy from an older `install.sh`; the plugin is the one that matches the skill you are reading now.
+The global install (~/.talos) wins when present; the plugin falls back to its bundled copy only when no global install exists. A repo can have a stale vendored copy from an older `install.sh`; the global install or the plugin is the one that matches the skill you are reading now.
 
 **Subagent names:** resolve the prefix once, then apply it everywhere this playbook names a role.
 

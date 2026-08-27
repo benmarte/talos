@@ -1,30 +1,44 @@
 #!/usr/bin/env bash
-# install.sh — copy Talos scripts and skills into a target repo.
+# install.sh -- copy Talos scripts and skills into a target repo, or install globally.
 #
-# Usage: bash install.sh [target-repo-path] [--force] [--harness claude|codex|antigravity]
-#   target-repo-path defaults to the current directory.
+# Global install (recommended for new setups):
+#   bash install.sh --global
+#   Writes scripts, agents, and templates to ~/.talos/ and skills to ~/.claude/skills/.
+#   A single update (git pull + install.sh --global) reaches every repo and harness.
+#   Re-runs overwrite existing ~/.talos/ files by default. Pass --no-overwrite to skip.
+#
+# Per-repo config (after global install):
+#   bash install.sh [target-repo-path] [--harness claude|codex|antigravity]
+#   Writes only talos.pipeline.* config and, for non-Claude harnesses, AGENTS.md glue.
+#   No scripts are copied into the repo. Relies on the global install at ~/.talos/.
 #   --harness codex or --harness antigravity additionally writes a Talos section
 #   into <target>/AGENTS.md so the harness can orchestrate the pipeline, running
-#   role stages via scripts/pipeline-agent.sh. Antigravity reads AGENTS.md
-#   natively since v1.20.3; no separate config file is needed.
+#   role stages via ~/.talos/scripts/pipeline-agent.sh.
 #
-# What it installs:
-#   <target>/.claude/talos/scripts/   — pipeline-config, pipeline-status, pipeline-notify, bootstrap-labels
-#   <target>/.claude/skills/pipeline/ — orchestrator skill (SKILL.md); this path is what
-#                                       registers /pipeline, because Claude Code only
-#                                       scans .claude/skills/ — not nested directories
-#   <target>/.claude/talos/templates/ — notification + comment templates (rich messages)
-#   <target>/.claude/agents/             — subagent definitions (validator, pm, developer, qa, reviewer, security, docs)
+# Vendored (legacy, back-compat):
+#   Existing .claude/talos/ installs keep working with zero user action.
+#   The scripts probe order includes .claude/talos/scripts at position 4, so old
+#   vendored copies are still found. Only run install.sh --global first if you
+#   want a fresh install to benefit from the new centralized location.
 #
-# It does NOT overwrite files that already exist unless --force is passed.
-# It does NOT modify git history or commit anything.
+# Probe order (used by SKILL.md and all scripts):
+#   1. $TALOS_HOME/scripts        -- explicit override (skipped when unset)
+#   2. ~/.talos/scripts           -- global install (NEW)
+#   3. $CLAUDE_PLUGIN_ROOT/scripts -- Claude Code plugin
+#   4. .claude/talos/scripts      -- legacy vendored, back-compat
+#   5. scripts                    -- Talos source repo
+#
+# Notes:
+#   talos.pipeline.* config files are NEVER overwritten by any install mode.
+#   Git history is never modified. Nothing is committed.
 set -euo pipefail
 
 SRC="$(cd "$(dirname "$0")" && pwd)"
 TARGET=""
-FORCE=false
+FORCE_MODE=""       # "overwrite" | "no-overwrite" | "" (default varies by mode)
 HARNESS="claude"
 WITH_SKILLS=true
+GLOBAL=false
 AGENT_SKILLS_REPO="${TALOS_AGENT_SKILLS_REPO:-https://github.com/addyosmani/agent-skills}"
 
 expect_harness=false
@@ -33,34 +47,33 @@ for arg in "$@"; do
     HARNESS="$arg"; expect_harness=false; continue
   fi
   case "$arg" in
-    --force)            FORCE=true ;;
-    --no-agent-skills)  WITH_SKILLS=false ;;
-    --harness)          expect_harness=true ;;
-    --harness=*)        HARNESS="${arg#*=}" ;;
-    *)                  [ -z "$TARGET" ] && TARGET="$arg" ;;
+    --global)          GLOBAL=true ;;
+    --force)           FORCE_MODE="overwrite" ;;
+    --no-overwrite)    FORCE_MODE="no-overwrite" ;;
+    --no-agent-skills) WITH_SKILLS=false ;;
+    --harness)         expect_harness=true ;;
+    --harness=*)       HARNESS="${arg#*=}" ;;
+    *)                 [ -z "$TARGET" ] && TARGET="$arg" ;;
   esac
 done
-[ -z "$TARGET" ] && TARGET="$(pwd)"
+
+# Default overwrite semantics:
+#   --global:   overwrite by default (re-run = update); --no-overwrite opts out.
+#   per-repo:   skip-if-exists by default; --force opts in.
+if [ "$GLOBAL" = "true" ]; then
+  [ -z "$FORCE_MODE" ] && FORCE_MODE="overwrite"
+else
+  [ -z "$FORCE_MODE" ] && FORCE_MODE="no-overwrite"
+fi
+FORCE=false
+[ "$FORCE_MODE" = "overwrite" ] && FORCE=true
 
 case "$HARNESS" in
   claude|codex|antigravity) ;;
   *) echo "error: unknown --harness '$HARNESS'. Valid: claude | codex | antigravity" >&2; exit 1 ;;
 esac
 
-# Ensure target looks like a repo
-if [ ! -d "$TARGET" ]; then
-  echo "error: target directory not found: $TARGET" >&2
-  exit 1
-fi
-
-# Legacy layout: Talos used to install into .claude/pipeline/
-if [ -d "$TARGET/.claude/pipeline" ]; then
-  echo "NOTE: legacy install detected at $TARGET/.claude/pipeline — Talos now lives in .claude/talos/."
-  echo "      Move any customized templates or .env out of the old directory, then remove it:"
-  echo "        rm -rf $TARGET/.claude/pipeline"
-  echo ""
-fi
-
+# ── install_file helper ───────────────────────────────────────────────────────
 install_file() {
   local src="$1" dest="$2"
   if [ -f "$dest" ] && [ "$FORCE" = "false" ]; then
@@ -72,79 +85,98 @@ install_file() {
   echo "  installed: $dest"
 }
 
-echo "Installing Talos into: $TARGET"
-echo ""
+# ── GLOBAL INSTALL ────────────────────────────────────────────────────────────
+if [ "$GLOBAL" = "true" ]; then
+  TALOS_HOME_DIR="${TALOS_HOME:-$HOME/.talos}"
+  CLAUDE_SKILLS_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills"
+  echo "Installing Talos globally into: $TALOS_HOME_DIR"
+  echo "(Skills -> $CLAUDE_SKILLS_DIR)"
+  echo ""
 
-# Scripts
-echo "Scripts:"
-for script in pipeline-config.sh pipeline-status.sh pipeline-notify.sh pipeline-vcs.sh pipeline-agent.sh pipeline-worktree.sh bootstrap-labels.sh; do
-  install_file "$SRC/scripts/$script" "$TARGET/.claude/talos/scripts/$script"
-  chmod +x "$TARGET/.claude/talos/scripts/$script"
-done
+  # Scripts
+  echo "Scripts:"
+  mkdir -p "$TALOS_HOME_DIR/scripts"
+  for script in pipeline-config.sh pipeline-status.sh pipeline-notify.sh \
+                pipeline-vcs.sh pipeline-agent.sh pipeline-worktree.sh \
+                bootstrap-labels.sh pipeline-paths.sh; do
+    install_file "$SRC/scripts/$script" "$TALOS_HOME_DIR/scripts/$script"
+    chmod +x "$TALOS_HOME_DIR/scripts/$script"
+  done
 
-# Skill — MUST land in .claude/skills/. Claude Code discovers skills at
-# <repo>/.claude/skills/<name>/SKILL.md and ~/.claude/skills/<name>/SKILL.md only;
-# it does not recurse. Talos used to write this to .claude/talos/skills/, where
-# nothing scanned it, so /pipeline silently did not exist in any installed repo
-# (#33). The skill body resolves scripts by probing for .claude/talos/scripts/ vs
-# scripts/, so it works the same from either location.
-echo ""
-echo "Orchestrator skill:"
-install_file "$SRC/skills/pipeline/SKILL.md" "$TARGET/.claude/skills/pipeline/SKILL.md"
+  # Agents
+  echo ""
+  echo "Agents:"
+  for agent in validator pm developer qa reviewer security docs planner; do
+    for src_agent in "$SRC/agents/$agent.md" "$SRC/.claude/agents/$agent.md"; do
+      if [ -f "$src_agent" ]; then
+        install_file "$src_agent" "$TALOS_HOME_DIR/agents/$agent.md"
+        break
+      fi
+    done
+  done
 
-# Relocate the pre-0.5.0 copy. Leaving it behind is not harmless: the AGENTS.md
-# block and the docs used to point at that path, so a stale playbook would still
-# be followed by non-Claude harnesses long after an upgrade. Only the file Talos
-# itself wrote is removed; anything else you keep there survives, as do the
-# parent dirs if they still hold something (rmdir refuses non-empty).
-STALE_SKILL="$TARGET/.claude/talos/skills/pipeline/SKILL.md"
-if [ -f "$STALE_SKILL" ]; then
-  rm -f "$STALE_SKILL"
-  rmdir "$TARGET/.claude/talos/skills/pipeline" 2>/dev/null || true
-  rmdir "$TARGET/.claude/talos/skills" 2>/dev/null || true
-  echo "  migrated: removed stale $STALE_SKILL (skill now lives in .claude/skills/)"
+  # Templates
+  echo ""
+  echo "Templates:"
+  for dir in notifications comments; do
+    for tmpl in "$SRC/templates/$dir"/*.md; do
+      [ -f "$tmpl" ] || continue
+      install_file "$tmpl" "$TALOS_HOME_DIR/templates/$dir/$(basename "$tmpl")"
+    done
+  done
+
+  # Skills -> ~/.claude/skills/ (user-scoped; Claude Code scans this path)
+  echo ""
+  echo "Orchestrator skills (user-scoped):"
+  install_file "$SRC/skills/pipeline/SKILL.md" "$CLAUDE_SKILLS_DIR/pipeline/SKILL.md"
+  install_file "$SRC/skills/pipeline-setup/SKILL.md" "$CLAUDE_SKILLS_DIR/pipeline-setup/SKILL.md"
+
+  echo ""
+  echo "Done. Global Talos install at $TALOS_HOME_DIR"
+  echo ""
+  echo "Next: run per-repo config in each repository:"
+  echo "  bash $SRC/install.sh /path/to/your-repo"
+  echo ""
+  echo "  NOTE: skills are discovered when a session starts. Restart any open"
+  echo "        Claude Code session to pick up the newly installed skills."
+  echo "        Registered at: $CLAUDE_SKILLS_DIR/pipeline/SKILL.md"
+  exit 0
 fi
 
-# Templates — pipeline-notify.sh falls back to <script-dir>/../templates/notifications,
-# i.e. .claude/talos/templates/. Without these, notifications degrade to plain text.
-echo ""
-echo "Templates:"
-for dir in notifications comments; do
-  for tmpl in "$SRC/templates/$dir"/*.md; do
-    [ -f "$tmpl" ] || continue
-    install_file "$tmpl" "$TARGET/.claude/talos/templates/$dir/$(basename "$tmpl")"
-  done
-done
+# ── PER-REPO CONFIG INSTALL ───────────────────────────────────────────────────
+[ -z "$TARGET" ] && TARGET="$(pwd)"
 
-# Subagent definitions
+# Ensure target looks like a repo
+if [ ! -d "$TARGET" ]; then
+  echo "error: target directory not found: $TARGET" >&2
+  exit 1
+fi
+
+# Legacy layout: Talos used to install into .claude/pipeline/
+if [ -d "$TARGET/.claude/pipeline" ]; then
+  echo "NOTE: legacy install detected at $TARGET/.claude/pipeline -- Talos now lives in .claude/talos/."
+  echo "      Move any customized templates or .env out of the old directory, then remove it:"
+  echo "        rm -rf $TARGET/.claude/pipeline"
+  echo ""
+fi
+
+echo "Configuring Talos for repo: $TARGET"
+echo "(scripts are NOT copied into repos -- run 'bash install.sh --global' once per machine)"
 echo ""
-echo "Subagents:"
-# Role definitions moved to the plugin root in 0.6.0 (agents/), which is where
-# Claude Code loads plugin-shipped agents from; .claude/agents/ in the source
-# repo is now a symlink to it. Prefer the real directory, fall back to the old
-# path so an older checkout still installs.
-for agent in validator pm developer qa reviewer security docs planner; do
-  for src_agent in "$SRC/agents/$agent.md" "$SRC/.claude/agents/$agent.md"; do
-    if [ -f "$src_agent" ]; then
-      install_file "$src_agent" "$TARGET/.claude/agents/$agent.md"
-      break
-    fi
-  done
-done
 
 # ── agent-skills ─────────────────────────────────────────────────────────────
 # The role profiles delegate their methodology to these skills instead of
 # restating it, so a vendored install without them runs every stage from a
 # paragraph rather than a rubric. The PLUGIN gets them via a declared dependency;
-# install.sh has to fetch them itself.
+# install.sh has to fetch them itself. For per-repo installs, agent-skills still
+# goes into the repo's .claude/skills/ so role profiles can find them locally.
 #
-# Only skills/ is vendored. The roles invoke skills, never agents — they have no
-# Task tool — so agent-skills' own agents would be dead weight in the target repo.
+# Only skills/ is vendored. The roles invoke skills, never agents -- they have no
+# Task tool -- so agent-skills' own agents would be dead weight in the target repo.
 #
 # Never fatal: a failure here degrades the install, it does not break it.
 if [ "$WITH_SKILLS" = "true" ]; then
-  echo ""
-  echo "agent-skills (required by the role profiles — Talos installs it for you):"
+  echo "agent-skills (required by the role profiles -- Talos installs it for you):"
   if ! command -v git >/dev/null 2>&1; then
     echo "  SKIPPED: git not found. Install agent-skills manually:"
     echo "    $AGENT_SKILLS_REPO"
@@ -165,7 +197,7 @@ if [ "$WITH_SKILLS" = "true" ]; then
           as_n=$((as_n + 1))
         fi
       done
-      # Ship the licence alongside the copy — this is third-party MIT content.
+      # Ship the licence alongside the copy -- this is third-party MIT content.
       for lic in LICENSE LICENSE.md; do
         if [ -f "$as_tmp/agent-skills/$lic" ]; then
           mkdir -p "$TARGET/.claude/skills"
@@ -184,7 +216,6 @@ if [ "$WITH_SKILLS" = "true" ]; then
     rm -rf "$as_tmp"
   fi
 else
-  echo ""
   echo "agent-skills: skipped (--no-agent-skills)."
   echo "  The role profiles delegate their methodology to these skills; without"
   echo "  them each stage falls back to its embedded instructions."
@@ -192,7 +223,7 @@ fi
 
 # Codex / Antigravity / AGENTS.md harness: add a marker-fenced Talos section so
 # the harness knows the pipeline exists and how to run stages without native
-# subagents. Antigravity reads AGENTS.md natively since v1.20.3 — the same
+# subagents. Antigravity reads AGENTS.md natively since v1.20.3 -- the same
 # section written for Codex works for Antigravity without modification.
 if [ "$HARNESS" = "codex" ] || [ "$HARNESS" = "antigravity" ]; then
   echo ""
@@ -206,20 +237,29 @@ if [ "$HARNESS" = "codex" ] || [ "$HARNESS" = "antigravity" ]; then
 <!-- talos:begin -->
 ## Talos pipeline
 
-This repo has the Talos issue→PR pipeline installed under `.claude/talos/`.
-When asked to run the pipeline, act as the orchestrator: follow the playbook in
-`.claude/skills/pipeline/SKILL.md` exactly.
+This repo uses the Talos issue->PR pipeline. When asked to run the pipeline, act
+as the orchestrator: follow the playbook in .claude/skills/pipeline/SKILL.md exactly.
 
 This harness has no native subagents. Wherever the playbook says "spawn a
-subagent with this prompt", instead run the stage headlessly:
+subagent with this prompt", instead run the stage headlessly using the script
+resolved via the pipeline's probe order (global install at ~/.talos/scripts/ wins
+over vendored at .claude/talos/scripts/):
 
-    bash .claude/talos/scripts/pipeline-agent.sh <role> - <<'PROMPT'
+    # Resolve the scripts directory first:
+    for d in "${TALOS_HOME:+$TALOS_HOME/scripts}" "$HOME/.talos/scripts" \
+              "${CLAUDE_PLUGIN_ROOT:+$CLAUDE_PLUGIN_ROOT/scripts}" \
+              ".claude/talos/scripts" "scripts"; do
+      [ -n "$d" ] && [ -f "$d/pipeline-agent.sh" ] && { SCRIPTS="$d"; break; }
+    done
+
+    bash "$SCRIPTS/pipeline-agent.sh" <role> - <<'PROMPT'
     <the stage prompt from the playbook>
     PROMPT
 
-Role definitions live in `.claude/agents/*.md`. Set the runner in
-`talos.pipeline.yml` (`agents.runner: codex`). All VCS operations go through
-`.claude/talos/scripts/pipeline-vcs.sh` — never call `gh` directly.
+Role definitions live in .claude/agents/*.md (or ~/.talos/agents/ for a global
+install). Set the runner in talos.pipeline.yml (agents.runner: codex). All VCS
+operations go through the resolved scripts/pipeline-vcs.sh -- never call gh
+directly.
 <!-- talos:end -->
 AGENTSEOF
     echo "  installed: talos section in $AGENTS_MD"
@@ -229,34 +269,40 @@ AGENTSEOF
   fi
 fi
 
-# Offer to copy config example
+# Offer to copy config example. talos.pipeline.* is NEVER overwritten.
 echo ""
-if [ ! -f "$TARGET/talos.pipeline.yml" ]; then
+if [ ! -f "$TARGET/talos.pipeline.yml" ] && [ ! -f "$TARGET/talos.pipeline.json" ]; then
   echo "Config template:"
   echo "  Copy talos.pipeline.yml.example to talos.pipeline.yml and edit it:"
   echo "    cp $SRC/talos.pipeline.yml.example $TARGET/talos.pipeline.yml"
 else
-  echo "Config: talos.pipeline.yml already exists — not overwriting."
+  echo "Config: talos.pipeline.* already exists -- not overwriting."
 fi
 
 # ── /pipeline availability ────────────────────────────────────────────────────
-# As of 0.5.0 install.sh registers the command itself by writing the skill to
-# .claude/skills/pipeline/, so /pipeline exists in this repo with no plugin and
-# no marketplace. The plugin remains useful for /pipeline-setup and for having
-# the orchestrator available in repos where install.sh has not run, but it is no
-# longer load-bearing.
+# The skill is discovered via the global install (~/.claude/skills/pipeline/SKILL.md
+# from install.sh --global) or the marketplace plugin. Per-repo installs no longer
+# write scripts into the repo; run 'bash install.sh --global' first to register
+# /pipeline for all sessions on this machine.
 #
 # Skills are enumerated at session start, so a session already open in $TARGET
-# will not see the new skill until it restarts. That is now the only remaining
-# way to type /pipeline and have it resolve to something else (#31) — call it out.
+# will not see the skill until it restarts.
 echo ""
 echo "Done. Next steps:"
 echo "  1. Edit $TARGET/talos.pipeline.yml for your project"
-echo "  2. Run: bash $TARGET/.claude/talos/scripts/bootstrap-labels.sh"
+echo "  2. Bootstrap labels (if using GitHub/GitLab/Azure):"
+
+TALOS_HOME_DIR="${TALOS_HOME:-$HOME/.talos}"
+if [ -f "$TALOS_HOME_DIR/scripts/bootstrap-labels.sh" ]; then
+  echo "     bash $TALOS_HOME_DIR/scripts/bootstrap-labels.sh"
+else
+  echo "     bash <talos-scripts>/bootstrap-labels.sh"
+  echo "     (run 'bash $SRC/install.sh --global' first to install scripts globally)"
+fi
 echo "  3. Add 'pipeline:ready' to a GitHub issue"
 echo "  4. Open a Claude Code session in $TARGET and run: /pipeline"
 echo ""
-echo "  NOTE: skills are discovered when a session starts. If you already had a"
-echo "        session open in $TARGET, restart it — otherwise /pipeline is still"
-echo "        unresolved there and may fuzzy-match an unrelated skill (#31)."
-echo "        Registered at: $TARGET/.claude/skills/pipeline/SKILL.md"
+echo "  NOTE: /pipeline requires the skill to be installed. If you have not run"
+echo "        'bash install.sh --global' yet, do so now -- or install the plugin:"
+echo "        /plugin marketplace add benmarte/talos"
+echo "        Skills are discovered at session start; restart any open session."

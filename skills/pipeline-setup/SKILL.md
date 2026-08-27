@@ -8,12 +8,17 @@ You are the **pipeline setup wizard**. Walk the user through configuring Talos f
 **Script location:** resolve once before anything else, and reuse the answer — every `bash scripts/<name>.sh` below means the directory you resolve here:
 
 ```bash
-for d in "${CLAUDE_PLUGIN_ROOT:+$CLAUDE_PLUGIN_ROOT/scripts}" .claude/talos/scripts scripts; do
+for d in \
+  "${TALOS_HOME:+$TALOS_HOME/scripts}" \
+  "$HOME/.talos/scripts" \
+  "${CLAUDE_PLUGIN_ROOT:+$CLAUDE_PLUGIN_ROOT/scripts}" \
+  ".claude/talos/scripts" \
+  "scripts"; do
   [ -n "$d" ] && [ -f "$d/pipeline-config.sh" ] && { echo "$d"; break; }
 done
 ```
 
-Marketplace install, vendored install, or Talos source repo, in that order. If it prints nothing, Talos is not installed — tell the user and stop.
+Five cases, in priority order: explicit override ($TALOS_HOME), global install (~/.talos), marketplace plugin, vendored into the repo by install.sh (.claude/talos/scripts), or the Talos source repo. The global install wins when present; the plugin falls back to its bundled copy only when no global install exists. If it prints nothing, Talos is not installed — tell the user and stop.
 
 ---
 

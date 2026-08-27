@@ -8,7 +8,7 @@ make_sandbox
 use_stubs
 install_talos
 
-NOTIFY=".claude/talos/scripts/pipeline-notify.sh"
+NOTIFY="$HOME/.talos/scripts/pipeline-notify.sh"
 run_notify() {  # all args forwarded; debug mode, slack bot creds
   PIPELINE_NOTIFY_DEBUG=1 SLACK_BOT_TOKEN=xoxb-test PIPELINE_SLACK_CHANNEL=C0TEST \
     bash "$NOTIFY" "$@" 2>&1
@@ -101,7 +101,7 @@ assert_eq "" "$out" "no credentials produces no output"
 # nested subdir to prove git rev-parse resolves to the repo root.
 printf 'SLACK_BOT_TOKEN=xoxb-from-dotenv\nPIPELINE_SLACK_CHANNEL=C_FROM_DOTENV\n' > "$SANDBOX/.env"
 mkdir -p "$SANDBOX/subdir"
-out="$(cd "$SANDBOX/subdir" && PIPELINE_NOTIFY_DEBUG=1 bash "$SANDBOX/$NOTIFY" \
+out="$(cd "$SANDBOX/subdir" && PIPELINE_NOTIFY_DEBUG=1 bash "$NOTIFY" \
   info "#1" "dotenv test" 1 2>&1)"
 assert_contains "$out" "SLACK" \
   "root .env loaded from nested subdir (bot token picked up)"

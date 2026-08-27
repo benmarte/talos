@@ -174,30 +174,45 @@ the sections below), or when you want the pipeline pinned in-tree and reviewed
 alongside your code.
 
 ```bash
-# 1. Install into your repo
+# 1. Global install (once per machine — all repos share this copy)
 git clone https://github.com/benmarte/talos
-bash talos/install.sh /path/to/your-repo
+bash talos/install.sh --global          # installs to ~/.talos/ and ~/.claude/skills/
 
-# 2. Configure (interactive — or copy talos.pipeline.yml.example manually)
+# 2. Per-repo config (once per repo — writes only talos.pipeline.json)
+bash talos/install.sh /path/to/your-repo
+# add --harness codex or --harness antigravity for non-Claude harnesses
+
+# 3. Configure (interactive — or copy talos.pipeline.yml.example manually)
 cd /path/to/your-repo
 # in a Claude Code session:  /pipeline-setup
 
-# 3. Bootstrap the label state machine (GitHub/GitLab/Azure only)
-bash .claude/talos/scripts/bootstrap-labels.sh
+# 4. Bootstrap the label state machine (GitHub/GitLab/Azure only)
+bash ~/.talos/scripts/bootstrap-labels.sh
 
-# 4. Queue work and run
+# 5. Queue work and run
 gh issue edit 42 --add-label pipeline:ready
 # in a Claude Code session:  /pipeline
 ```
 
-What gets installed: `.claude/talos/{scripts,templates}/`,
-`.claude/skills/pipeline/SKILL.md` (the command), and `.claude/agents/*.md`
-(the role profiles). Nothing outside `.claude/` except an optional
-`talos.pipeline.yml` you create.
+What the global install writes: `~/.talos/{scripts,agents,templates}/` and
+`~/.claude/skills/pipeline/SKILL.md` (the command). Per-repo installs write
+only `talos.pipeline.json`. Nothing else goes into the repo; updating Talos
+is `git -C path/to/talos pull && bash talos/install.sh --global`.
 
-Both paths can coexist. Scripts resolve plugin root → vendored → source repo, so
-where both are present the plugin wins — it is the copy that matches the skill
-being run.
+**Vendored (legacy) back-compat**: existing `.claude/talos/` installs keep
+working with zero user action. The probe order includes `.claude/talos/scripts`
+at position 4, so old vendored copies are found automatically. No migration
+required -- run `install.sh --global` when you are ready to switch.
+
+**Probe order** (first directory containing `pipeline-vcs.sh` wins):
+1. `$TALOS_HOME/scripts` -- explicit override (skipped when unset)
+2. `~/.talos/scripts` -- global install
+3. `$CLAUDE_PLUGIN_ROOT/scripts` -- Claude Code plugin
+4. `.claude/talos/scripts` -- legacy vendored install
+5. `scripts` -- Talos source repo
+
+The global install wins when present; the plugin falls back to its bundled
+copy only when no global install exists.
 
 ## Setup: pi
 
@@ -394,7 +409,7 @@ catch bad stage output, but nothing gates the orchestrator itself.
    explaining what a human must do.
 4. Watch progress: issue/PR comments from each role, one Slack/Discord thread
    per issue, board column updates — or run
-   `bash .claude/talos/scripts/pipeline-status.sh --dry-run <n> "In progress"`
+   `bash ~/.talos/scripts/pipeline-status.sh --dry-run <n> "In progress"`
    style commands manually.
 
 **Human-merge mode:** set `merge.auto: false` in `talos.pipeline.yml` to run the
@@ -711,7 +726,7 @@ pack installed.
   full list from `talos.pipeline.yml.example`.
 - **No threading** — webhooks can't thread; use a bot token + channel ID.
 - **Test what would be sent**: `PIPELINE_NOTIFY_DEBUG=1 bash
-  .claude/talos/scripts/pipeline-notify.sh validator "#1" "test" 1`.
+  ~/.talos/scripts/pipeline-notify.sh validator "#1" "test" 1`.
 - **YAML config ignored** — PyYAML not installed. JSON config (`talos.pipeline.json`)
   needs no dependency and works on every platform — recommended for new projects.
   To keep YAML: `pip install pyyaml` (may fail on macOS with PEP 668 / Homebrew
@@ -726,7 +741,7 @@ pack installed.
     `talos.pipeline.yml` (or `PIPELINE_BOARD_OWNER` env var); without it the
     board step is silently skipped.
 - **Preview any VCS action** without executing:
-  `bash .claude/talos/scripts/pipeline-vcs.sh --dry-run <verb> ...`.
+  `bash ~/.talos/scripts/pipeline-vcs.sh --dry-run <verb> ...`.
 
 ## FAQ
 
