@@ -11,7 +11,7 @@
 #  7. state-check-failed + POST succeeds → marker still emitted, exits 0
 #  8. --allow-closed still works after the fix
 #  9. github-api provider still fails hard on a failed POST
-# 10. CHANGELOG has entry under [Unreleased] for this fix
+# 10. CHANGELOG has entry for this fix (released in [0.14.0])
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox
@@ -270,8 +270,8 @@ _release_section="$(awk '
 ' "$_changelog")"
 
 assert_contains "$_release_section" "comment-issue" \
-  "CHANGELOG: [Unreleased] section mentions comment-issue fix (#69) [CRITERION 10]"
+  "CHANGELOG: [0.14.0] section mentions comment-issue fix (#69) [CRITERION 10]"
 assert_contains "$_release_section" "69" \
-  "CHANGELOG: [Unreleased] section references issue #69 [CRITERION 10]"
+  "CHANGELOG: [0.14.0] section references issue #69 [CRITERION 10]"
 
 finish
