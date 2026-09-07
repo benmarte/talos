@@ -261,7 +261,7 @@ All keys live in `talos.pipeline.json` (or `talos.pipeline.yml` if PyYAML is ins
 | `roles.reviewer` | `true` | Code-quality review |
 | `roles.security` | `true` | Security review |
 | `roles.docs` | `true` | Updates docs/CHANGELOG; terminal stage |
-| `roles.planner` | `false` | Epic decomposition (optional, off by default) — detects epics (via `epic` label, ≥ 4 checklist items, or body ≥ 2000 chars) and creates dependency-ordered sub-issues; independent sub-issues enter the queue immediately, dependent sub-issues are unblocked automatically as predecessors close |
+| `roles.planner` | `false` | Epic decomposition (optional, off by default) — detects epics (via `epic` label, ≥ 4 checklist items, or body ≥ 2000 chars) and creates dependency-ordered sub-issues; independent sub-issues enter the queue immediately, dependent sub-issues are unblocked automatically as predecessors close. The auto-close sweep does NOT close an epic once its sub-issues finish if the epic's own body still has unticked `- [ ]` acceptance boxes — it gets `pipeline:epic-children-done` and a comment naming what's outstanding instead, and stays open for a human |
 | `comments.enabled` | `true` | Post a stage comment at each handoff (Daedalus parity) |
 | `comments.header` | `**Agent:** {role} (talos)` | Header prepended to every stage comment; `{role}` is replaced at runtime |
 | `comments.templates_dir` | `templates/comments` | Path (relative to repo root) containing comment templates |
@@ -341,6 +341,7 @@ Stage comments use `string.Template`-style `${PLACEHOLDER}` substitution. Templa
 | `security-signoff.md` | security | `${HEADER}`, `${VERDICT}`, `${SUMMARY}`, `${DETAILS}` |
 | `docs-posted.md` | docs | `${HEADER}`, `${SUMMARY}`, `${DETAILS}` |
 | `issue-closed.md` | orchestrator | `${HEADER}`, `${PR}`, `${DETAILS}` |
+| `epic-acceptance-pending.md` | orchestrator | `${HEADER}`, `${DETAILS}` |
 | `blocked.md` | any stage | `${HEADER}`, `${SUMMARY}`, `${DETAILS}` |
 
 Edit these files to customise the comment format for your team. The subagent falls back to an inline summary if a template file is missing.

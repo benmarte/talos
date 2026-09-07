@@ -14,6 +14,13 @@
 #                 <n> --body-file <path>      ...or read the body from a file
 #   close-issue <n> <body>                    Close issue with a comment
 #   label-issue <n> [--add <l>] [--remove <l>]  Add/remove labels
+#   check-epic-acceptance <n>                 Scan issue <n>'s body for unticked
+#                                             "- [ ] " checklist boxes. Exits 0
+#                                             (no output) when none remain —
+#                                             including bodies with no checkboxes
+#                                             at all. Exits non-zero and prints
+#                                             each unticked item's text, one per
+#                                             line, when any remain. GitHub only.
 #   create-pr <branch> <title> <body-file>    Open a pull / merge request
 #   view-pr <n|branch>                        View PR details
 #   list-prs                                  List open PRs
@@ -219,6 +226,26 @@ _parse_label_args() {
   REMOVE_LABELS="${REMOVE_LABELS# }"
 }
 
+# ── Epic acceptance-checkbox scan (shared by check-epic-acceptance, #168) ────
+# Reads an issue body on stdin and looks for GitHub checklist lines of the
+# form "- [ ] text" (an unticked box; "- [x]"/"- [X]" are ticked and ignored).
+# Exits 0 and prints nothing when zero unticked boxes remain — this includes
+# bodies with NO checkboxes at all, since the gate only fires on checkboxes
+# that exist (option 2 in issue #168). Exits 1 and prints each unticked box's
+# text, one per line, when any remain.
+_epic_acceptance_scan() {
+  python3 -c "
+import re, sys
+body = sys.stdin.read()
+unticked = [m.group(1).strip() for m in re.finditer(r'^\s*-\s*\[\s\]\s*(.*)\$', body, re.MULTILINE)]
+if unticked:
+    for item in unticked:
+        print(item)
+    sys.exit(1)
+sys.exit(0)
+"
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # GITHUB ADAPTER
 # ─────────────────────────────────────────────────────────────────────────────
@@ -283,6 +310,19 @@ _github() {
       [ -n "$REPO" ] && cmd="$cmd --repo '$REPO'"
       if [ "$DRY_RUN" = "true" ]; then echo "[dry-run] $cmd"; return 0; fi
       eval "$cmd"
+      ;;
+    check-epic-acceptance)
+      # check-epic-acceptance <epic-n> — see header comment. Fetches the
+      # epic's body and delegates to the shared checklist scan.
+      local n="$1"
+      [ -z "$n" ] && { echo "pipeline-vcs: check-epic-acceptance: missing issue number" >&2; exit 1; }
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] gh issue view $n --json body -q .body | scan for unticked '- [ ]' checklist lines"
+        return 0
+      fi
+      local _cea_body
+      _cea_body="$(gh issue view "$n" --json body -q .body ${REPO:+--repo "$REPO"})" || exit 1
+      printf '%s' "$_cea_body" | _epic_acceptance_scan
       ;;
     create-issue)
       local title="$1" body_file="$2"; shift 2
@@ -1692,6 +1732,25 @@ print(json.dumps({'labels': labels}))
       echo "Labels updated on issue #$_n"
       ;;
 
+    check-epic-acceptance)
+      # check-epic-acceptance <epic-n> — see header comment. Fetches the
+      # epic's body and delegates to the shared checklist scan.
+      local _n="$1"
+      [ -z "$_n" ] && { echo "pipeline-vcs: check-epic-acceptance: missing issue number" >&2; exit 1; }
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: GET $_API/issues/$_n | scan for unticked '- [ ]' checklist lines"
+        return 0
+      fi
+      local _cea_issue _cea_body
+      _cea_issue="$(_ga_req GET "$_API/issues/$_n")" || exit 1
+      _cea_body="$(printf '%s' "$_cea_issue" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print(d.get('body','') or '')
+")"
+      printf '%s' "$_cea_body" | _epic_acceptance_scan
+      ;;
+
     create-issue)
       local _ci_title="$1" _ci_body_file="$2"; shift 2
       local _ci_labels=()
@@ -3037,7 +3096,7 @@ _gitlab() {
       local n="$1" body="$2"
       _run glab mr note "$n" --message "$body" $RARG
       ;;
-    find-pr|check-pr-files|rerun-ci|check-closing-keyword)
+    find-pr|check-pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
       # Best-effort providers: not implemented — fail open with a warning so
       # the orchestrator falls back to its manual instructions.
       echo "pipeline-vcs: $verb not implemented for gitlab — verify manually" >&2
@@ -3432,7 +3491,7 @@ PYEOF
         --headers "Content-Type=application/json" --body "@$tf" >/dev/null
       local rc=$?; rm -f "$tf"; return $rc
       ;;
-    find-pr|check-pr-files|rerun-ci|check-closing-keyword)
+    find-pr|check-pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
       echo "pipeline-vcs: $verb not implemented for azure — verify manually" >&2
       return 0
       ;;
@@ -3469,7 +3528,7 @@ _file() {
       echo "file mode: no PR to merge — orchestrator should close-issue directly after verifying the branch" >&2
       return 0
       ;;
-    diff-pr|pr-checks|list-prs|view-pr|find-pr|check-pr-files|rerun-ci|check-closing-keyword)
+    diff-pr|pr-checks|list-prs|view-pr|find-pr|check-pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
       echo "file mode: $verb not applicable in file mode" >&2
       return 0
       ;;

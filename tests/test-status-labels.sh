@@ -232,7 +232,7 @@ log="$(cat "$GH_LOG")"
 for label in pipeline:ready pipeline:confirmed pipeline:dev pipeline:review \
              pipeline:approved pipeline:blocked skip-qa p0 p1 p2 \
              qa:pass review:approved security:approved docs:done \
-             epic pipeline:epic-decomposed; do
+             epic pipeline:epic-decomposed pipeline:epic-children-done; do
   assert_contains "$log" "label create $label" "creates $label"
 done
 # Regression: names contain ':' — pipe-delimited parsing must keep colors intact

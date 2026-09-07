@@ -23,6 +23,7 @@ labels=(
   "docs:done|c2e0c6|Documentation updated"
   "epic|e4e669|Epic — planner decomposes into sub-issues"
   "pipeline:epic-decomposed|c5def5|Epic split into sub-issues — never routed to developer"
+  "pipeline:epic-children-done|c5def5|All sub-issues closed but the epic's own acceptance boxes are still unticked — human review needed"
 )
 
 for entry in "${labels[@]}"; do

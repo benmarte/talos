@@ -98,4 +98,149 @@ assert_contains "$payloads" "closed" "e2e: issue-closed event announced"
 # Message count: dispatched, validator, pr-opened, qa, merged, issue-closed = 6
 assert_eq "6" "$(wc -l < "$CURL_LOG" | tr -d ' ')" "e2e: six chat messages, no dupes or drops"
 
+# ── Step 1.6: epic auto-close sweep gate (#168) ──────────────────────────────
+# An epic whose children have all closed must NOT auto-close while its own
+# `- [ ]` acceptance boxes are still unticked; it gets pipeline:epic-children-done
+# and a comment instead, and stays open. An epic with all boxes ticked (or no
+# checkboxes) still closes exactly as before.
+
+# Epic #100: all sub-issues closed, but the epic's own body has an unticked box.
+: > "$GH_LOG"
+export STUB_EPIC_BODY='Epic description.
+
+- [ ] Bring the full stack up and prove it communicates'
+bash "$VCS" check-epic-acceptance 100 >/dev/null 2>&1
+sweep_rc=$?
+if [ "$sweep_rc" -ne 0 ]; then
+  bash "$VCS" label-issue 100 --add pipeline:epic-children-done >/dev/null 2>&1
+  bash "$VCS" comment-issue 100 "All sub-issues are closed, but this epic's own acceptance criteria still have unticked boxes -- needs human review:
+- Bring the full stack up and prove it communicates" >/dev/null 2>&1
+fi
+sweep_log="$(cat "$GH_LOG")"
+assert_contains "$sweep_log" "issue edit 100 --add-label pipeline:epic-children-done" \
+  "e2e: epic with unticked boxes gets pipeline:epic-children-done"
+assert_contains "$sweep_log" "issue comment 100" \
+  "e2e: epic with unticked boxes gets a comment naming what's outstanding"
+assert_not_contains "$sweep_log" "issue close 100" \
+  "e2e: epic with unticked boxes is NOT closed"
+
+# Epic #200: all sub-issues closed, and every acceptance box is ticked.
+: > "$GH_LOG"
+export STUB_EPIC_BODY='Epic description.
+
+- [x] Bring the full stack up and prove it communicates'
+bash "$VCS" check-epic-acceptance 200 >/dev/null 2>&1
+sweep_rc=$?
+if [ "$sweep_rc" -eq 0 ]; then
+  bash "$VCS" close-issue 200 "All sub-issues resolved." >/dev/null 2>&1
+fi
+sweep_log="$(cat "$GH_LOG")"
+assert_contains "$sweep_log" "issue close 200" \
+  "e2e: epic with all boxes ticked still closes"
+assert_not_contains "$sweep_log" "epic-children-done" \
+  "e2e: epic with all boxes ticked does not get pipeline:epic-children-done"
+
+# Epic #300: all sub-issues closed, and the epic has no checkboxes at all.
+: > "$GH_LOG"
+export STUB_EPIC_BODY='Epic description with no checklist at all.'
+bash "$VCS" check-epic-acceptance 300 >/dev/null 2>&1
+sweep_rc=$?
+if [ "$sweep_rc" -eq 0 ]; then
+  bash "$VCS" close-issue 300 "All sub-issues resolved." >/dev/null 2>&1
+fi
+sweep_log="$(cat "$GH_LOG")"
+assert_contains "$sweep_log" "issue close 300" \
+  "e2e: epic with no checkboxes still closes"
+
+# ── Idempotency across repeated sweeps (PR #190 reviewer finding) ───────────
+# The label+comment action must fire exactly once per epic, not on every
+# sweep, while check-epic-acceptance keeps running every sweep so an epic
+# whose boxes get ticked later still auto-closes -- and the flag label gets
+# removed on that close (mirrors the "does NOT yet carry pipeline:ready"
+# guard idiom Step 1.7 already uses).
+epic400_labeled=false
+
+sweep_epic_400() {
+  local items rc
+  items="$(bash "$VCS" check-epic-acceptance 400 2>&1)"; rc=$?
+  if [ "$rc" -eq 0 ]; then
+    bash "$VCS" close-issue 400 "All sub-issues resolved." >/dev/null 2>&1
+    if [ "$epic400_labeled" = "true" ]; then
+      bash "$VCS" label-issue 400 --remove pipeline:epic-children-done >/dev/null 2>&1
+      epic400_labeled=false
+    fi
+  else
+    if [ "$epic400_labeled" != "true" ]; then
+      bash "$VCS" label-issue 400 --add pipeline:epic-children-done >/dev/null 2>&1
+      bash "$VCS" comment-issue 400 "All sub-issues are closed, but this epic's own acceptance criteria still have unticked boxes -- needs human review:
+- Bring the full stack up and prove it communicates" >/dev/null 2>&1
+      epic400_labeled=true
+    fi
+  fi
+}
+
+: > "$GH_LOG"
+export STUB_EPIC_BODY='Epic description.
+
+- [ ] Bring the full stack up and prove it communicates'
+sweep_epic_400   # sweep 1: unticked -> labels + comments
+sweep_epic_400   # sweep 2: still unticked, already labeled -> must not repeat
+
+sweep_log="$(cat "$GH_LOG")"
+label_calls="$(grep -c "issue edit 400 --add-label pipeline:epic-children-done" <<<"$sweep_log")"
+comment_calls="$(grep -c "issue comment 400" <<<"$sweep_log")"
+assert_eq "1" "$label_calls" \
+  "e2e: two sweeps of a still-unticked epic add pipeline:epic-children-done exactly once"
+assert_eq "1" "$comment_calls" \
+  "e2e: two sweeps of a still-unticked epic comment exactly once"
+
+# Sweep 3: a human ticks the box since the last sweep -> the epic auto-closes
+# and the flag label added earlier is removed.
+: > "$GH_LOG"
+export STUB_EPIC_BODY='Epic description.
+
+- [x] Bring the full stack up and prove it communicates'
+sweep_epic_400
+sweep_log="$(cat "$GH_LOG")"
+assert_contains "$sweep_log" "issue close 400" \
+  "e2e: epic closes once its boxes are ticked on a later sweep"
+assert_contains "$sweep_log" "issue edit 400 --remove-label pipeline:epic-children-done" \
+  "e2e: pipeline:epic-children-done is removed once the epic closes"
+
+# ── Untrusted checklist text must never reach a shell command literal ───────
+# (PR #190 security finding, HIGH). check-epic-acceptance's stdout is
+# unescaped text taken straight from the epic body -- reporter-controlled.
+# The sweep must capture it into a variable and render it through the
+# templates/comments recipe, then pass the fully-rendered variable to
+# comment-issue -- never splice the item text into a command string.
+: > "$GH_LOG"
+rm -f INJECTED_MARKER
+export STUB_EPIC_BODY='Epic description.
+
+- [ ] " ; touch INJECTED_MARKER #'
+items="$(bash "$VCS" check-epic-acceptance 500 2>&1)"; rc=$?
+if [ "$rc" -ne 0 ]; then
+  TMPL="$HOME/.talos/templates/comments/epic-acceptance-pending.md"
+  comment_body="$(
+    HEADER='**Agent:** orchestrator (talos)' DETAILS="$items" \
+    python3 -c "
+import os, string, sys
+with open(sys.argv[1]) as f:
+    t = string.Template(f.read())
+print(t.safe_substitute(os.environ).strip())
+" "$TMPL"
+  )"
+  bash "$VCS" comment-issue 500 "$comment_body" >/dev/null 2>&1
+fi
+sweep_log="$(cat "$GH_LOG")"
+assert_contains "$sweep_log" '" ; touch INJECTED_MARKER #' \
+  "e2e: malicious checklist text is rendered verbatim in the posted comment"
+if [ -f INJECTED_MARKER ]; then
+  fail "e2e: checklist metacharacters must never execute during the sweep"
+else
+  pass "e2e: checklist metacharacters do not execute during the sweep"
+fi
+
+unset STUB_EPIC_BODY
+
 finish
