@@ -98,4 +98,60 @@ assert_contains "$payloads" "closed" "e2e: issue-closed event announced"
 # Message count: dispatched, validator, pr-opened, qa, merged, issue-closed = 6
 assert_eq "6" "$(wc -l < "$CURL_LOG" | tr -d ' ')" "e2e: six chat messages, no dupes or drops"
 
+# ── Step 1.6: epic auto-close sweep gate (#168) ──────────────────────────────
+# An epic whose children have all closed must NOT auto-close while its own
+# `- [ ]` acceptance boxes are still unticked; it gets pipeline:epic-children-done
+# and a comment instead, and stays open. An epic with all boxes ticked (or no
+# checkboxes) still closes exactly as before.
+
+# Epic #100: all sub-issues closed, but the epic's own body has an unticked box.
+: > "$GH_LOG"
+export STUB_EPIC_BODY='Epic description.
+
+- [ ] Bring the full stack up and prove it communicates'
+bash "$VCS" check-epic-acceptance 100 >/dev/null 2>&1
+sweep_rc=$?
+if [ "$sweep_rc" -ne 0 ]; then
+  bash "$VCS" label-issue 100 --add pipeline:epic-children-done >/dev/null 2>&1
+  bash "$VCS" comment-issue 100 "All sub-issues are closed, but this epic's own acceptance criteria still have unticked boxes -- needs human review:
+- Bring the full stack up and prove it communicates" >/dev/null 2>&1
+fi
+sweep_log="$(cat "$GH_LOG")"
+assert_contains "$sweep_log" "issue edit 100 --add-label pipeline:epic-children-done" \
+  "e2e: epic with unticked boxes gets pipeline:epic-children-done"
+assert_contains "$sweep_log" "issue comment 100" \
+  "e2e: epic with unticked boxes gets a comment naming what's outstanding"
+assert_not_contains "$sweep_log" "issue close 100" \
+  "e2e: epic with unticked boxes is NOT closed"
+
+# Epic #200: all sub-issues closed, and every acceptance box is ticked.
+: > "$GH_LOG"
+export STUB_EPIC_BODY='Epic description.
+
+- [x] Bring the full stack up and prove it communicates'
+bash "$VCS" check-epic-acceptance 200 >/dev/null 2>&1
+sweep_rc=$?
+if [ "$sweep_rc" -eq 0 ]; then
+  bash "$VCS" close-issue 200 "All sub-issues resolved." >/dev/null 2>&1
+fi
+sweep_log="$(cat "$GH_LOG")"
+assert_contains "$sweep_log" "issue close 200" \
+  "e2e: epic with all boxes ticked still closes"
+assert_not_contains "$sweep_log" "epic-children-done" \
+  "e2e: epic with all boxes ticked does not get pipeline:epic-children-done"
+
+# Epic #300: all sub-issues closed, and the epic has no checkboxes at all.
+: > "$GH_LOG"
+export STUB_EPIC_BODY='Epic description with no checklist at all.'
+bash "$VCS" check-epic-acceptance 300 >/dev/null 2>&1
+sweep_rc=$?
+if [ "$sweep_rc" -eq 0 ]; then
+  bash "$VCS" close-issue 300 "All sub-issues resolved." >/dev/null 2>&1
+fi
+sweep_log="$(cat "$GH_LOG")"
+assert_contains "$sweep_log" "issue close 300" \
+  "e2e: epic with no checkboxes still closes"
+
+unset STUB_EPIC_BODY
+
 finish

@@ -447,9 +447,19 @@ sub-issues receive `pipeline:ready` immediately so they enter the queue on the c
 or next run. Sub-issues that depend on another sub-issue are held back until their
 predecessor closes, at which point the orchestrator's Step 1 reconciliation sweep
 automatically adds `pipeline:ready`. The epic itself is labelled
-`pipeline:epic-decomposed` and is closed automatically once every sub-issue is
-resolved. The planner role is off by default — it adds API calls and is most useful
-when you regularly work with multi-task epics.
+`pipeline:epic-decomposed`.
+
+Once every sub-issue is resolved, the epic auto-close sweep does NOT close the
+epic on that signal alone — children closing is evidence about the children,
+not about the epic. It first runs `check-epic-acceptance <E>` against the
+epic's own body: if the epic still has unticked `- [ ] ...` acceptance boxes,
+the sweep leaves it open, adds `pipeline:epic-children-done`, and comments
+naming every outstanding item, so a human can decide whether to tick them off
+or file follow-up work. Only when no unticked boxes remain (including epics
+with no checklist at all) does the sweep close the epic with `close-issue <E>
+"All sub-issues resolved."` as before. The planner role is off by default — it
+adds API calls and is most useful when you regularly work with multi-task
+epics.
 
 ### Filtering which issues enter the queue (`issues.label_filter`)
 

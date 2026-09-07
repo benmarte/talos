@@ -307,8 +307,14 @@ bash scripts/pipeline-vcs.sh list-issues
    `bash scripts/pipeline-notify.sh info "backlog" "K blocked issues awaiting human action: #a, #b" backlog` (only when K > 0).
 6. **Epic auto-close sweep (when `ROLE_PLANNER = true`).** Find all open issues carrying `pipeline:epic-decomposed`. For each epic `#E`:
    - List all open issues and scan their bodies for `Part of #<E>` references.
-   - If every such issue is now closed (none found open with `Part of #<E>`), call:
-     `bash scripts/pipeline-vcs.sh close-issue <E> "All sub-issues resolved."`
+   - If every such issue is now closed (none found open with `Part of #<E>`), children are done — but children closing is evidence about the children, not about the epic. Before closing, verify the epic's own acceptance criteria:
+     `bash scripts/pipeline-vcs.sh check-epic-acceptance <E>`
+     - **Exit 0** (no unticked `- [ ]` boxes remain in the epic's body — including epics with no checkboxes at all) → the epic's own criteria are satisfied. Proceed with:
+       `bash scripts/pipeline-vcs.sh close-issue <E> "All sub-issues resolved."`
+     - **Exit non-zero** (unticked boxes remain — stdout lists each one) → do NOT close. The decomposition dropped or under-scoped a criterion. Instead:
+       `bash scripts/pipeline-vcs.sh label-issue <E> --add pipeline:epic-children-done`
+       `bash scripts/pipeline-vcs.sh comment-issue <E> "All sub-issues are closed, but this epic's own acceptance criteria still have unticked boxes — needs human review:\n- <item 1>\n- <item 2>..."` (name every item `check-epic-acceptance` printed)
+       Leave the epic open; a human decides whether to file follow-up work or tick the boxes.
 7. **Dependency unblocking sweep (when `ROLE_PLANNER = true`).** For every open issue that has a `Depends on: #<DEP>` line in its body but does NOT yet carry `pipeline:ready`:
    - Check whether issue `#<DEP>` is now closed.
    - If closed: `bash scripts/pipeline-vcs.sh label-issue <SUB> --add pipeline:ready`
