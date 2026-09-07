@@ -117,4 +117,117 @@ assert_file_absent "$SANDBOX/wt/106" "TALOS_SWEEP_ALL_LANES=1 sweeps all orphane
 # Lane home (wt/101) must still be protected by the per-worktree guard.
 assert_file_exists "$SANDBOX/wt/101/.talos-lane-home" "TALOS_SWEEP_ALL_LANES=1 still respects the per-worktree lane-home guard"
 
+# ── End-of-run sweep: harness (worktree-agent-*) worktrees ──────────────────
+#
+# $SANDBOX and wt/101 are both lane homes at this point, so every sweep below
+# needs TALOS_SWEEP_ALL_LANES=1 to actually run (matches the interlock tested
+# above -- it is not being re-tested here).
+
+# A harness worktree with zero commits ahead of its base and no uncommitted
+# changes is swept.
+git worktree add -q -b worktree-agent-h1 "$SANDBOX/wt/h1" >/dev/null 2>&1
+out="$(TALOS_SWEEP_ALL_LANES=1 bash "$WT" sweep)"; rc=$?
+assert_eq "0" "$rc" "sweep with a clean harness worktree exits 0"
+assert_contains "$out" "swept harness worktree" "sweep reports the swept harness worktree"
+assert_file_absent "$SANDBOX/wt/h1" "sweep removes a clean harness worktree"
+
+# A harness worktree with uncommitted changes is preserved and listed.
+git worktree add -q -b worktree-agent-h2 "$SANDBOX/wt/h2" >/dev/null 2>&1
+echo "scratch" > "$SANDBOX/wt/h2/scratch.txt"
+out="$(TALOS_SWEEP_ALL_LANES=1 bash "$WT" sweep)"; rc=$?
+assert_eq "0" "$rc" "sweep with a dirty harness worktree exits 0"
+assert_contains "$out" "preserving harness worktree" "sweep preserves a dirty harness worktree"
+assert_contains "$out" "wt/h2" "sweep lists the preserved dirty harness worktree's path"
+assert_file_exists "$SANDBOX/wt/h2/scratch.txt" "sweep leaves the dirty harness worktree's file intact"
+assert_contains "$(git worktree list)" "wt/h2" "sweep does not remove the dirty harness worktree"
+# Clean up directly (bypassing the tool under test) so later count-based
+# assertions start from a known baseline.
+rm -f "$SANDBOX/wt/h2/scratch.txt"
+git worktree remove --force "$SANDBOX/wt/h2" 2>/dev/null
+git branch -D worktree-agent-h2 >/dev/null 2>&1
+
+# A harness worktree with commits ahead of its base (no upstream configured,
+# so the base falls back to the repo's default branch) is preserved and
+# listed -- this is the "unpushed work" case.
+git worktree add -q -b worktree-agent-h3 "$SANDBOX/wt/h3" >/dev/null 2>&1
+git -C "$SANDBOX/wt/h3" commit -q --allow-empty -m "agent work"
+out="$(TALOS_SWEEP_ALL_LANES=1 bash "$WT" sweep)"; rc=$?
+assert_eq "0" "$rc" "sweep with an ahead harness worktree exits 0"
+assert_contains "$out" "preserving harness worktree" "sweep preserves a harness worktree with unpushed commits"
+assert_contains "$out" "wt/h3" "sweep lists the preserved ahead harness worktree's path"
+assert_contains "$(git worktree list)" "wt/h3" "sweep does not remove the ahead harness worktree"
+git worktree remove --force "$SANDBOX/wt/h3" 2>/dev/null
+git branch -D worktree-agent-h3 >/dev/null 2>&1
+
+# A harness worktree whose directory no longer exists (prunable) is reclaimed
+# regardless of ahead/dirty state, and no longer appears in `git worktree list`.
+git worktree add -q -b worktree-agent-h4 "$SANDBOX/wt/h4" >/dev/null 2>&1
+rm -rf "$SANDBOX/wt/h4"
+out="$(TALOS_SWEEP_ALL_LANES=1 bash "$WT" sweep)"; rc=$?
+assert_eq "0" "$rc" "sweep with a prunable harness worktree exits 0"
+assert_contains "$out" "reclaimed prunable harness worktree" "sweep reports reclaiming the prunable harness worktree"
+assert_not_contains "$(git worktree list)" "wt/h4" "sweep drops the prunable harness worktree from git"
+
+# ── End-of-run sweep: issue-pattern worktrees with uncommitted changes ──────
+#
+# Extends the earlier "sweep with no keep list reclaims everything" case,
+# which assumed no dirty state: an issue-pattern worktree with uncommitted
+# changes must survive `sweep` even when its id is not in the keep list.
+git worktree add -q -b fix/issue-201-dirty "$SANDBOX/wt/201" >/dev/null 2>&1
+echo "wip" > "$SANDBOX/wt/201/wip.txt"
+out="$(TALOS_SWEEP_ALL_LANES=1 bash "$WT" sweep)"; rc=$?
+assert_eq "0" "$rc" "sweep with a dirty issue worktree (no keep list) exits 0"
+assert_contains "$out" "preserving worktree for issue #201" "sweep preserves a dirty issue worktree not in the keep list"
+assert_file_exists "$SANDBOX/wt/201/wip.txt" "sweep leaves the dirty issue worktree's file intact"
+assert_contains "$(git worktree list)" "wt/201" "sweep does not remove the dirty issue worktree"
+rm -f "$SANDBOX/wt/201/wip.txt"
+git worktree remove --force "$SANDBOX/wt/201" 2>/dev/null
+git branch -D fix/issue-201-dirty >/dev/null 2>&1
+
+# ── git worktree prune always runs, even when nothing matches for removal ───
+#
+# Only wt/101 (lane home) remains at this point besides $SANDBOX itself, so
+# neither of sweep's own loops has anything to act on. A worktree on a branch
+# that matches NEITHER pattern is invisible to those loops -- if it still gets
+# dropped, that can only be the trailing, unconditional `git worktree prune`.
+git worktree add -q -b scratch/not-managed "$SANDBOX/wt/scratch1" >/dev/null 2>&1
+rm -rf "$SANDBOX/wt/scratch1"
+assert_contains "$(git worktree list --porcelain)" "prunable" "the unmanaged worktree is prunable before sweep"
+out="$(TALOS_SWEEP_ALL_LANES=1 bash "$WT" sweep)"; rc=$?
+assert_eq "0" "$rc" "sweep with only lane-home/self worktrees present exits 0"
+assert_not_contains "$(git worktree list)" "wt/scratch1" "sweep's trailing git worktree prune reclaims an unrelated prunable worktree"
+git branch -D scratch/not-managed >/dev/null 2>&1
+
+# ── list: threshold warning ───────────────────────────────────────────────────
+
+# Default threshold is 10. 11 stale worktrees (301..311) trips the warning.
+for i in $(seq 301 311); do
+  git worktree add -q -b "fix/issue-$i-stale" "$SANDBOX/wt/$i" >/dev/null 2>&1
+done
+out="$(bash "$WT" list)"
+assert_contains "$out" "WARNING" "list warns when stale worktree count (11) exceeds the default threshold (10)"
+assert_contains "$out" "exceed threshold 10" "list's warning names the default threshold"
+
+# Drop to exactly the threshold: no warning.
+git worktree remove --force "$SANDBOX/wt/311" >/dev/null 2>&1
+git branch -D fix/issue-311-stale >/dev/null 2>&1
+out="$(bash "$WT" list)"
+assert_not_contains "$out" "WARNING" "list does not warn at exactly the default threshold (10)"
+
+# A configured override (execution.worktree_warn_threshold) replaces the
+# default. Count is still 10 (301..310); threshold 9 -> warns.
+cat > "$SANDBOX/talos.pipeline.json" <<'EOF'
+{"execution": {"worktree_warn_threshold": 9}}
+EOF
+out="$(bash "$WT" list)"
+assert_contains "$out" "WARNING" "list warns above a configured threshold override (9, count 10)"
+assert_contains "$out" "exceed threshold 9" "list's warning names the configured threshold"
+
+# Drop to exactly the configured threshold: no warning.
+git worktree remove --force "$SANDBOX/wt/310" >/dev/null 2>&1
+git branch -D fix/issue-310-stale >/dev/null 2>&1
+out="$(bash "$WT" list)"
+assert_not_contains "$out" "WARNING" "list does not warn at exactly a configured threshold override (9, count 9)"
+rm -f "$SANDBOX/talos.pipeline.json"
+
 finish
