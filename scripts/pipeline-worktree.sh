@@ -19,11 +19,15 @@
 #                       it never creates or controls them.
 #
 # Safety: a worktree in either category is NEVER deleted (by `sweep` or
-# `remove`) while it has uncommitted changes (`git status --porcelain`) or
-# commits its upstream doesn't have yet ("unpushed"). Harness worktrees have
-# no PR/push precedent to compare against, so when no upstream is configured
-# the check falls back to the repo's default branch instead. Such worktrees
-# are listed in the command's output (path, branch, reason) instead of being
+# `remove`) while it has uncommitted changes, commits its upstream doesn't
+# have yet ("unpushed"), or whose dirty state simply can't be determined
+# (a broken/corrupted worktree fails `git status --porcelain` closed, not
+# open). When no upstream is configured (or it can no longer be resolved,
+# e.g. deleted on the remote and pruned) the ahead-check falls back to the
+# repo's default branch instead of assuming "nothing to lose" — this applies
+# equally to issue worktrees with real, never-pushed commits and to harness
+# worktrees, which have no PR/push precedent at all. Such worktrees are
+# listed in the command's output (path, branch, reason) instead of being
 # silently skipped. A worktree whose directory no longer exists (prunable) is
 # always reclaimed, regardless of dirty/unpushed state — there is no working
 # tree left to preserve.
@@ -161,42 +165,31 @@ _default_branch_ref() {
   return 1
 }
 
-# True when local branch $1 has commits its upstream doesn't have yet -- i.e.
-# genuinely unpushed work. A branch with no upstream configured, or whose
-# configured upstream can no longer be resolved (e.g. deleted on the remote
-# and pruned), is reported as NOT ahead (fail-open): this is the normal state
-# for a just-merged, already force-deletable issue branch, and for a
-# never-pushed worktree we have no push history to compare against anyway.
-# `--verify --quiet` is required here: a bare `rev-parse --symbolic-full-name`
+# True when local branch $1 has commits ahead of its upstream/base ref --
+# i.e. genuinely unpushed work. Used for BOTH issue-pattern and harness
+# worktrees (issue #170 review round 2: these were two near-duplicate
+# functions -- _ahead_of_upstream compared only against the upstream and
+# treated "no upstream configured" as fail-open "not ahead", while
+# _ahead_of_base fell back to the default branch. That divergence was itself
+# a bug: an issue worktree with real, committed-but-never-pushed work (no PR
+# opened yet, so no upstream at all) read as "not ahead" and was silently
+# swept. There is exactly one safe rule now, applied everywhere: no upstream
+# (or an unresolvable one) always falls back to comparing against the repo's
+# default branch, never to "nothing to lose".
+#
+# `--verify --quiet` is required: a bare `rev-parse --symbolic-full-name`
 # prints the literal, unresolved "$branch@{upstream}" token to stdout when the
 # upstream can't be resolved (exit 128) instead of leaving it empty, so a
-# careless "$(...)" capture can read that token back as if it were a real ref.
-# Once a base ref IS resolved, any later failure to compute the ahead count
-# fails safe toward "ahead" -- an uncomputable count must never be read as
-# "nothing to lose".
-_ahead_of_upstream() {
-  local branch="$1" upstream ahead
-  upstream="$(git rev-parse --verify --quiet --abbrev-ref --symbolic-full-name "$branch@{upstream}" 2>/dev/null)"
-  [ -z "$upstream" ] && return 1
-  ahead="$(git rev-list --count "$upstream..$branch" 2>/dev/null)" || return 0
-  [ -z "$ahead" ] && return 0
-  [ "$ahead" -gt 0 ]
-}
-
-# True when local branch $1 has commits ahead of its upstream/base ref. Same
-# as _ahead_of_upstream, but falls back to the repo's default branch when no
-# upstream is configured OR the configured upstream can no longer be resolved
-# (e.g. deleted on the remote and pruned) -- the only available signal for a
-# harness worktree, which has no push history at all. `--verify --quiet` is
-# required for the same reason as in _ahead_of_upstream: without it, an
-# unresolvable upstream leaves $base holding the literal "$branch@{upstream}"
-# token (not empty), so the `[ -z "$base" ]` fallback check never fires, the
-# bogus token is fed to `git rev-list --count` as a ref, that command fails
-# silently (stderr redirected), and the empty result reads back as "0 commits
-# ahead" -- sweeping a worktree that actually has unpushed commits. Any
-# unresolvable base (no upstream and no default branch), or any later failure
-# to compute the ahead count, fails safe toward "ahead" so the worktree is
-# preserved rather than guessed away.
+# careless "$(...)" capture can read that token back as if it were a real ref
+# and feed it to `git rev-list --count`, which then fails silently (stderr
+# redirected) and reads back as "0 commits ahead" -- exactly the bug this
+# guards against, both for a deleted+pruned remote branch and for no upstream
+# at all. Any unresolvable base (no upstream and no default branch), or any
+# later failure to compute the ahead count, fails safe toward "ahead" so the
+# worktree is preserved rather than guessed away.
+#
+# A branch that IS the resolved default branch itself (base == branch, e.g. a
+# lane home checked out on main) is never "ahead" of itself.
 _ahead_of_base() {
   local branch="$1" base ahead
   base="$(git rev-parse --verify --quiet --abbrev-ref --symbolic-full-name "$branch@{upstream}" 2>/dev/null)"
@@ -209,47 +202,70 @@ _ahead_of_base() {
   [ "$ahead" -gt 0 ]
 }
 
-# Prints a reason ("dirty", "unpushed", or "dirty,unpushed") when worktree
-# $1 (branch $2) must be preserved. Prints nothing when it is safe to remove.
-# $3 selects the unpushed check: "base" uses _ahead_of_base (harness
-# worktrees), anything else uses _ahead_of_upstream (issue worktrees).
+# Single "is this worktree safe to delete" gate, shared by remove and sweep
+# for both worktree categories (issue-pattern and harness). Prints a reason
+# ("status failed", "dirty", "unpushed", or "dirty,unpushed") when worktree
+# $1 (branch $2) must be preserved. Prints nothing when every check succeeds
+# and it is safe to remove.
+#
+# The status check captures `git status --porcelain`'s output and exit code
+# SEPARATELY and checks the exit code first: a broken/corrupted worktree
+# (bad index, permission error, etc.) also prints nothing to stdout, which is
+# indistinguishable from a genuinely clean tree if only `-n "$(...)"` is
+# tested -- that misread it as clean and let a worktree whose real state is
+# unknown be force-removed with no trace. Any non-zero status short-circuits
+# straight to "status failed" without also running the ahead check, since a
+# worktree we can't even inspect can't be trusted for anything else either.
 _preserve_reason() {
-  local path="$1" branch="$2" mode="$3" dirty="" unpushed=""
-  [ -n "$(git -C "$path" status --porcelain 2>/dev/null)" ] && dirty="dirty"
-  if [ "$mode" = "base" ]; then
-    _ahead_of_base "$branch" && unpushed="unpushed"
-  else
-    _ahead_of_upstream "$branch" && unpushed="unpushed"
+  local path="$1" branch="$2" status_out status_rc unpushed=""
+  status_out="$(git -C "$path" status --porcelain 2>/dev/null)"
+  status_rc=$?
+  if [ "$status_rc" -ne 0 ]; then
+    printf 'status failed'
+    return
   fi
-  if [ -n "$dirty" ] && [ -n "$unpushed" ]; then
+  _ahead_of_base "$branch" && unpushed="unpushed"
+  if [ -n "$status_out" ] && [ -n "$unpushed" ]; then
     printf 'dirty,unpushed'
+  elif [ -n "$status_out" ]; then
+    printf 'dirty'
   else
-    printf '%s%s' "$dirty" "$unpushed"
+    printf '%s' "$unpushed"
   fi
 }
 
 # Count non-active worktrees (issue-pattern + harness, excluding lane homes
 # and the current checkout) — mirrors what `sweep` would consider removing.
+# Takes the already-fetched `_issue_worktrees`/`_harness_worktrees` output as
+# $1/$2 rather than calling them again itself: `list` is the only caller, and
+# it already fetched both once to print them, so re-running `git worktree
+# list --porcelain` (and re-parsing it) a second time per category here would
+# be pure overhead.
 _stale_worktree_count() {
+  local issue_listing="$1" harness_listing="$2"
   local count=0 wt_path
   while IFS=$'\t' read -r wt_path _wt_branch _wt_id; do
+    [ -z "$wt_path" ] && continue
     _is_lane_home "$wt_path" && continue
     _is_self "$wt_path" && continue
     count=$((count + 1))
-  done < <(_issue_worktrees)
+  done <<<"$issue_listing"
   while IFS=$'\t' read -r wt_path _wt_branch; do
+    [ -z "$wt_path" ] && continue
     _is_lane_home "$wt_path" && continue
     _is_self "$wt_path" && continue
     count=$((count + 1))
-  done < <(_harness_worktrees)
+  done <<<"$harness_listing"
   printf '%d' "$count"
 }
 
 case "$verb" in
   list)
-    _issue_worktrees | awk -F'\t' '{print $3"\t"$1"\t"$2}'
-    _harness_worktrees | awk -F'\t' '{print "-\t"$1"\t"$2}'
-    count="$(_stale_worktree_count)"
+    issue_listing="$(_issue_worktrees)"
+    harness_listing="$(_harness_worktrees)"
+    [ -n "$issue_listing" ] && printf '%s\n' "$issue_listing" | awk -F'\t' '{print $3"\t"$1"\t"$2}'
+    [ -n "$harness_listing" ] && printf '%s\n' "$harness_listing" | awk -F'\t' '{print "-\t"$1"\t"$2}'
+    count="$(_stale_worktree_count "$issue_listing" "$harness_listing")"
     threshold="$(cfg execution.worktree_warn_threshold 10)"
     if [ "$count" -gt "$threshold" ] 2>/dev/null; then
       echo "pipeline-worktree: WARNING: $count stale worktrees exceed threshold $threshold"
@@ -274,7 +290,7 @@ case "$verb" in
         continue
       fi
       if [ -d "$wt_path" ]; then
-        reason="$(_preserve_reason "$wt_path" "$wt_branch" upstream)"
+        reason="$(_preserve_reason "$wt_path" "$wt_branch")"
         if [ -n "$reason" ]; then
           echo "pipeline-worktree: preserving worktree for issue #$wt_id ($wt_path, $wt_branch) — reason: $reason"
           continue
@@ -326,7 +342,7 @@ case "$verb" in
         echo "pipeline-worktree: reclaimed prunable worktree for issue #$wt_id ($wt_path)"
         continue
       fi
-      reason="$(_preserve_reason "$wt_path" "$wt_branch" upstream)"
+      reason="$(_preserve_reason "$wt_path" "$wt_branch")"
       if [ -n "$reason" ]; then
         echo "pipeline-worktree: preserving worktree for issue #$wt_id ($wt_path, $wt_branch) — reason: $reason"
         continue
@@ -348,7 +364,7 @@ case "$verb" in
         echo "pipeline-worktree: reclaimed prunable harness worktree ($wt_path, $wt_branch)"
         continue
       fi
-      reason="$(_preserve_reason "$wt_path" "$wt_branch" base)"
+      reason="$(_preserve_reason "$wt_path" "$wt_branch")"
       if [ -n "$reason" ]; then
         echo "pipeline-worktree: preserving harness worktree $wt_path ($wt_branch) — reason: $reason"
         continue

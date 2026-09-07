@@ -221,6 +221,31 @@ assert_contains "$(git worktree list)" "wt/h6" "sweep does not remove the worktr
 git worktree remove --force "$SANDBOX/wt/h6" 2>/dev/null
 git branch -D worktree-agent-h6 >/dev/null 2>&1
 
+# ── reviewer finding 1 (#170 round 2): broken worktree fails safe ──────────
+#
+# `_preserve_reason`'s old dirty check was `[ -n "$(git status --porcelain)" ]`
+# -- it looked only at stdout and ignored `git status`'s exit code. A worktree
+# whose `git status --porcelain` itself fails (corrupted worktree metadata,
+# permission error, etc.) also prints nothing to stdout, which read back
+# identical to a genuinely clean tree and let it be force-removed with no
+# trace. Simulate a broken worktree by truncating its `.git` file (for a
+# linked worktree this is a file pointing at the real repo's metadata, not a
+# directory) -- `git -C <path> status` then fails outright.
+git worktree add -q -b worktree-agent-broken "$SANDBOX/wt/broken" >/dev/null 2>&1
+: > "$SANDBOX/wt/broken/.git"
+assert_eq "" "$(git -C "$SANDBOX/wt/broken" status --porcelain 2>/dev/null)" "sanity: the broken worktree's git status prints nothing to stdout"
+out="$(TALOS_SWEEP_ALL_LANES=1 bash "$WT" sweep)"; rc=$?
+assert_eq "0" "$rc" "sweep with a broken worktree exits 0"
+assert_contains "$out" "preserving harness worktree" "sweep preserves a worktree whose git status itself fails"
+assert_contains "$out" "status failed" "sweep names the reason as a status failure, not a guessed clean tree"
+assert_contains "$out" "wt/broken" "sweep lists the path of the broken worktree"
+assert_contains "$(git worktree list)" "wt/broken" "sweep does not remove the broken worktree"
+# cleanup: the corrupted .git file makes `worktree remove` itself unreliable,
+# so drop the directory directly and let `git worktree prune` reconcile it.
+rm -rf "$SANDBOX/wt/broken"
+git worktree prune 2>/dev/null || true
+git branch -D worktree-agent-broken >/dev/null 2>&1
+
 # ── End-of-run sweep: issue-pattern worktrees with uncommitted changes ──────
 #
 # Extends the earlier "sweep with no keep list reclaims everything" case,
@@ -236,6 +261,56 @@ assert_contains "$(git worktree list)" "wt/201" "sweep does not remove the dirty
 rm -f "$SANDBOX/wt/201/wip.txt"
 git worktree remove --force "$SANDBOX/wt/201" 2>/dev/null
 git branch -D fix/issue-201-dirty >/dev/null 2>&1
+
+# ── reviewer finding 2 (#170 round 2): committed-but-never-pushed issue work ─
+#
+# `_ahead_of_upstream` used to `return 1` ("not ahead") whenever no upstream
+# was configured at all -- a fail-OPEN default the code comment justified only
+# for the just-merged `remove <N>` case. But `sweep`'s issue-pattern loop
+# reused it unmodified for every orphaned worktree, including one that was
+# interrupted (crash, or simply no PR opened yet) after making real local
+# commits and before ever pushing. Such a worktree is not dirty (already
+# committed) and, under the old logic, not "ahead" either (no upstream to
+# diff against) -- both guards passed and `sweep` deleted it, losing the only
+# copy of that work. The fix folds `_ahead_of_upstream` into `_ahead_of_base`:
+# no upstream now falls back to comparing against the repo's default branch,
+# exactly like harness worktrees already did.
+
+# No upstream configured, with a real commit ahead of the default branch:
+# preserved and listed.
+git worktree add -q -b fix/issue-401-neverpushed "$SANDBOX/wt/401" >/dev/null 2>&1
+git -C "$SANDBOX/wt/401" commit -q --allow-empty -m "never pushed work"
+out="$(TALOS_SWEEP_ALL_LANES=1 bash "$WT" sweep)"; rc=$?
+assert_eq "0" "$rc" "sweep with a never-pushed issue worktree (ahead of base) exits 0"
+assert_contains "$out" "preserving worktree for issue #401" "sweep preserves a committed-but-never-pushed issue worktree"
+assert_contains "$out" "wt/401" "sweep lists the path of the never-pushed issue worktree"
+assert_contains "$(git worktree list)" "wt/401" "sweep does not remove the never-pushed issue worktree"
+git worktree remove --force "$SANDBOX/wt/401" 2>/dev/null
+git branch -D fix/issue-401-neverpushed >/dev/null 2>&1
+
+# No upstream configured, but level with the default branch (no local
+# commits beyond it): safe to remove -- this is the ordinary "worktree
+# created, nothing done yet" case, not lost work.
+git worktree add -q -b fix/issue-402-neverpushed-clean "$SANDBOX/wt/402" >/dev/null 2>&1
+out="$(TALOS_SWEEP_ALL_LANES=1 bash "$WT" sweep)"; rc=$?
+assert_eq "0" "$rc" "sweep with a never-pushed, level-with-base issue worktree exits 0"
+assert_contains "$out" "swept orphaned worktree for issue #402" "sweep removes a never-pushed issue worktree that is level with the default branch"
+assert_file_absent "$SANDBOX/wt/402" "sweep drops the level-with-base issue worktree's directory"
+
+# ── remove <N>: the just-merged path still works (unaffected by the round-2
+# unification of _ahead_of_upstream/_ahead_of_base) ─────────────────────────
+#
+# The ordinary case remove <N> depends on: pushed, upstream still resolvable,
+# local branch level with it (0 commits ahead) -> removed, not preserved.
+git worktree add -q -b fix/issue-403-merged "$SANDBOX/wt/403" >/dev/null 2>&1
+merged_sha="$(git -C "$SANDBOX/wt/403" rev-parse HEAD)"
+git update-ref refs/remotes/origin/fix/issue-403-merged "$merged_sha"
+git branch --set-upstream-to=origin/fix/issue-403-merged fix/issue-403-merged >/dev/null 2>&1
+out="$(bash "$WT" remove 403)"; rc=$?
+assert_eq "0" "$rc" "remove 403 exits 0"
+assert_contains "$out" "removed worktree for issue #403" "remove still removes a merged, upstream-level branch after the round-2 unification"
+assert_file_absent "$SANDBOX/wt/403" "remove deletes the merged worktree directory"
+git update-ref -d refs/remotes/origin/fix/issue-403-merged 2>/dev/null || true
 
 # ── git worktree prune always runs, even when nothing matches for removal ───
 #
