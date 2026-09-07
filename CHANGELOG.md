@@ -16,6 +16,10 @@
 
 - **`README.md` and `docs/user-guide.md`: global install documentation and security note (#164).** Documents the global install workflow with a prominent update command (`git pull` + `install.sh --global` reaches every repo at once), per-repo config-only install, vendored back-compat (existing `.claude/talos/` installs require no action), and the five-position probe order with a one-line reason per entry. Adds a security note in both files: `$TALOS_HOME` is environment-controlled at the highest probe priority -- treat it like `PATH` and point it only at directories you trust, because Talos executes scripts from the resolved location.
 
+### Fixed
+
+- **`install.sh --global` now writes role profiles where Claude Code's native subagent discovery reads them, not just where the non-Claude adapter reads them (#166).** `--global` wrote all 8 role profiles to `~/.talos/agents/`, which `pipeline-agent.sh` reads for pi/codex/gemini/antigravity, but Claude Code's own subagent discovery only scans `<repo>/.claude/agents/` and `~/.claude/agents/` -- neither of which `--global` touched. A Claude Code session after a global install therefore fell back to whatever role profiles an installed plugin shipped, reintroducing the exact version skew #164 was filed to eliminate. Fixed by also writing each profile to `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/agents/<role>.md` through the existing `install_file` helper, so it honors `--force`/`--no-overwrite` like every other global artifact. A repo-level `.claude/agents/<role>.md` still wins over the global copy. `skills/pipeline/SKILL.md` also gained a one-line startup diagnostic naming the resolved scripts directory and agent source for the run (visibility only -- no change to which source is actually used).
+
 ## [0.14.0] - 2026-08-26
 
 ### Notes

@@ -3,9 +3,12 @@
 #
 # Global install (recommended for new setups):
 #   bash install.sh --global
-#   Writes scripts, agents, and templates to ~/.talos/ and skills to ~/.claude/skills/.
+#   Writes scripts, agents, and templates to ~/.talos/, skills to ~/.claude/skills/,
+#   and role profiles ALSO to ~/.claude/agents/ so Claude Code's native subagent
+#   discovery finds the current profiles instead of a stale plugin copy.
 #   A single update (git pull + install.sh --global) reaches every repo and harness.
-#   Re-runs overwrite existing ~/.talos/ files by default. Pass --no-overwrite to skip.
+#   Re-runs overwrite existing ~/.talos/ and ~/.claude/agents/ files by default.
+#   Pass --no-overwrite to skip.
 #
 # Per-repo config (after global install):
 #   bash install.sh [target-repo-path] [--harness claude|codex|antigravity]
@@ -89,8 +92,9 @@ install_file() {
 if [ "$GLOBAL" = "true" ]; then
   TALOS_HOME_DIR="${TALOS_HOME:-$HOME/.talos}"
   CLAUDE_SKILLS_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills"
+  CLAUDE_AGENTS_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/agents"
   echo "Installing Talos globally into: $TALOS_HOME_DIR"
-  echo "(Skills -> $CLAUDE_SKILLS_DIR)"
+  echo "(Skills -> $CLAUDE_SKILLS_DIR, Agents -> $TALOS_HOME_DIR/agents and $CLAUDE_AGENTS_DIR)"
   echo ""
 
   # Scripts
@@ -103,13 +107,17 @@ if [ "$GLOBAL" = "true" ]; then
     chmod +x "$TALOS_HOME_DIR/scripts/$script"
   done
 
-  # Agents
+  # Agents -> both ~/.talos/agents/ (read by pipeline-agent.sh for pi/codex/
+  # gemini/antigravity) and ~/.claude/agents/ (read by Claude Code's native
+  # subagent discovery). A repo-level .claude/agents/<role>.md still wins over
+  # either -- see SKILL.md's subagent-name resolution rules.
   echo ""
   echo "Agents:"
   for agent in validator pm developer qa reviewer security docs planner; do
     for src_agent in "$SRC/agents/$agent.md" "$SRC/.claude/agents/$agent.md"; do
       if [ -f "$src_agent" ]; then
         install_file "$src_agent" "$TALOS_HOME_DIR/agents/$agent.md"
+        install_file "$src_agent" "$CLAUDE_AGENTS_DIR/$agent.md"
         break
       fi
     done
@@ -140,6 +148,7 @@ if [ "$GLOBAL" = "true" ]; then
   echo "  NOTE: skills are discovered when a session starts. Restart any open"
   echo "        Claude Code session to pick up the newly installed skills."
   echo "        Registered at: $CLAUDE_SKILLS_DIR/pipeline/SKILL.md"
+  echo "        Role profiles registered at: $CLAUDE_AGENTS_DIR/<role>.md"
   exit 0
 fi
 

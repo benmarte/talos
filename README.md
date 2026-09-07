@@ -116,7 +116,7 @@ agent-skills comes with it automatically (`+ 1 dependency: agent-skills`). If yo
 
 ```bash
 git clone https://github.com/benmarte/talos
-bash talos/install.sh --global          # installs to ~/.talos/ and ~/.claude/skills/
+bash talos/install.sh --global          # installs to ~/.talos/, ~/.claude/skills/, and role profiles to ~/.claude/agents/
 bash talos/install.sh /path/to/your-repo  # writes config; no scripts copied into repo
 # add --harness codex or --harness antigravity to also write the AGENTS.md section
 ```
