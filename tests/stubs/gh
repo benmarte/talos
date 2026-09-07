@@ -63,6 +63,16 @@ tests/auth.test.js}" ;;
     else
       printf '[{"number":9,"state":"OPEN","title":"fix: guard null session","headRefName":"fix/issue-42-guard","body":"Closes #42"}]\n'
     fi ;;
+  "issue list --state "*)
+    # NB: JSON braces can't live inside ${VAR:-default} — } ends the expansion.
+    # Override STUB_ISSUE_LIST to simulate a larger result set (#171); a real
+    # `gh issue list --limit N` request is a single invocation that fetches N
+    # results internally, so the stub doesn't need to model multiple calls.
+    if [ -n "${STUB_ISSUE_LIST:-}" ]; then
+      printf '%s\n' "$STUB_ISSUE_LIST"
+    else
+      printf '[{"number":3,"title":"Fix login bug","labels":[{"name":"pipeline:dev"}],"body":"Body text"}]\n'
+    fi ;;
   "run list --commit "*)
     printf '[{"databaseId":111,"conclusion":"failure"},{"databaseId":112,"conclusion":"success"}]\n' ;;
   "issue comment "*)

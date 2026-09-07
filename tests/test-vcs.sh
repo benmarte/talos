@@ -443,6 +443,39 @@ assert_contains "$out" "--base" "list-prs passes --base flag when base_branch is
 assert_contains "$out" "baseRefName" "list-prs includes baseRefName in the --json field list"
 rm talos.pipeline.json
 
+# ── Issue #171: list-issues/list-prs pagination (github/gh CLI provider) ─────
+# `gh issue list --limit 100` (the old hardcoded value) silently truncated any
+# backlog bigger than 100. A 150-issue fixture must come back whole.
+_171_gh_issues="$(python3 -c "
+import json
+print(json.dumps([{'number': i, 'title': 't'+str(i), 'labels': [], 'body': ''} for i in range(1, 151)]))
+")"
+out="$(STUB_ISSUE_LIST="$_171_gh_issues" bash "$VCS" list-issues)"; rc=$?
+_171_gh_count="$(printf '%s' "$out" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))")"
+assert_eq "0" "$rc" "#171 github: list-issues exits 0 for a 150-issue backlog"
+assert_eq "150" "$_171_gh_count" "#171 github: list-issues returns all 150 issues, not just the first 100"
+assert_contains "$out" '"number": 150' "#171 github: list-issues includes the last issue (id 150)"
+assert_not_contains "$out" "WARNING result capped" "#171 github: list-issues does not warn when under the cap"
+
+# Landing exactly on the cap (--limit 1000) warns loudly rather than silently
+# reporting a possibly-incomplete list as if it were everything.
+_171_gh_capped="$(python3 -c "
+import json
+print(json.dumps([{'number': i, 'title': 't'+str(i), 'labels': [], 'body': ''} for i in range(1, 1001)]))
+")"
+err="$(STUB_ISSUE_LIST="$_171_gh_capped" bash "$VCS" list-issues 2>&1 >/dev/null)"
+assert_contains "$err" "WARNING result capped at 1000" "#171 github: list-issues warns loudly when landing exactly on the --limit ceiling"
+
+_171_gh_prs="$(python3 -c "
+import json
+print(json.dumps([{'number': i, 'title': 't'+str(i), 'state':'OPEN', 'headRefName': 'b'+str(i), 'baseRefName': 'main', 'labels': []} for i in range(1, 151)]))
+")"
+out="$(STUB_PR_LIST="$_171_gh_prs" bash "$VCS" list-prs)"; rc=$?
+_171_gh_pr_count="$(printf '%s' "$out" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))")"
+assert_eq "0" "$rc" "#171 github: list-prs exits 0 for a 150-PR backlog"
+assert_eq "150" "$_171_gh_pr_count" "#171 github: list-prs returns all 150 PRs, not just the first 30"
+assert_contains "$out" '"number": 150' "#171 github: list-prs includes the last PR (id 150)"
+
 # ── rerun-ci: re-runs only failed runs for the head SHA ───────────────────────
 : > "$GH_LOG"
 bash "$VCS" rerun-ci 9 >/dev/null 2>&1
