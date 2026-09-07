@@ -341,6 +341,7 @@ Stage comments use `string.Template`-style `${PLACEHOLDER}` substitution. Templa
 | `security-signoff.md` | security | `${HEADER}`, `${VERDICT}`, `${SUMMARY}`, `${DETAILS}` |
 | `docs-posted.md` | docs | `${HEADER}`, `${SUMMARY}`, `${DETAILS}` |
 | `issue-closed.md` | orchestrator | `${HEADER}`, `${PR}`, `${DETAILS}` |
+| `epic-acceptance-pending.md` | orchestrator | `${HEADER}`, `${DETAILS}` |
 | `blocked.md` | any stage | `${HEADER}`, `${SUMMARY}`, `${DETAILS}` |
 
 Edit these files to customise the comment format for your team. The subagent falls back to an inline summary if a template file is missing.
