@@ -307,13 +307,32 @@ bash scripts/pipeline-vcs.sh list-issues
    `bash scripts/pipeline-notify.sh info "backlog" "K blocked issues awaiting human action: #a, #b" backlog` (only when K > 0).
 6. **Epic auto-close sweep (when `ROLE_PLANNER = true`).** Find all open issues carrying `pipeline:epic-decomposed`. For each epic `#E`:
    - List all open issues and scan their bodies for `Part of #<E>` references.
-   - If every such issue is now closed (none found open with `Part of #<E>`), children are done — but children closing is evidence about the children, not about the epic. Before closing, verify the epic's own acceptance criteria:
-     `bash scripts/pipeline-vcs.sh check-epic-acceptance <E>`
-     - **Exit 0** (no unticked `- [ ]` boxes remain in the epic's body — including epics with no checkboxes at all) → the epic's own criteria are satisfied. Proceed with:
+   - If every such issue is now closed (none found open with `Part of #<E>`), children are done — but children closing is evidence about the children, not about the epic. Before closing, verify the epic's own acceptance criteria **on every sweep** (an epic flagged on an earlier sweep may have had its boxes ticked since, and must still be able to auto-close):
+     ```bash
+     ITEMS="$(bash scripts/pipeline-vcs.sh check-epic-acceptance <E>)"; RC=$?
+     ```
+     - **`$RC` = 0** (no unticked `- [ ]` boxes remain in the epic's body — including epics with no checkboxes at all) → the epic's own criteria are satisfied. Close it:
        `bash scripts/pipeline-vcs.sh close-issue <E> "All sub-issues resolved."`
-     - **Exit non-zero** (unticked boxes remain — stdout lists each one) → do NOT close. The decomposition dropped or under-scoped a criterion. Instead:
+       If the epic currently carries `pipeline:epic-children-done` (flagged on an earlier sweep), also remove it:
+       `bash scripts/pipeline-vcs.sh label-issue <E> --remove pipeline:epic-children-done`
+     - **`$RC` != 0** (unticked boxes remain — `$ITEMS` holds each one, one per line) → do NOT close. The decomposition dropped or under-scoped a criterion.
+       **Idempotency guard:** only label and comment if the epic does NOT yet carry `pipeline:epic-children-done` (mirror the "does NOT yet carry `pipeline:ready`" idiom in Step 1.7 below) — this makes the label+comment action fire exactly once per epic instead of re-firing on every sweep while the epic sits unresolved. Keep calling `check-epic-acceptance` every sweep regardless (that's how a later-ticked epic gets picked up by the `$RC` = 0 branch above). When the guard passes:
        `bash scripts/pipeline-vcs.sh label-issue <E> --add pipeline:epic-children-done`
-       `bash scripts/pipeline-vcs.sh comment-issue <E> "All sub-issues are closed, but this epic's own acceptance criteria still have unticked boxes — needs human review:\n- <item 1>\n- <item 2>..."` (name every item `check-epic-acceptance` printed)
+       Render the comment — **never** splice `$ITEMS` (checklist text taken from the epic body; untrusted, reporter-controlled) directly into a shell command string. Capture it into a variable first (already done above) and pass it through the standard template rendering recipe (see "Stage comment convention"), then hand the orchestrator the fully-rendered `$COMMENT_BODY` variable — never the raw item text — as the argument to `comment-issue`:
+       ```bash
+       TMPL="<TMPL_DIR>/epic-acceptance-pending.md"
+       [ -f "$TMPL" ] || TMPL=".claude/talos/templates/comments/epic-acceptance-pending.md"
+       COMMENT_BODY="$(
+         HEADER="<HEADER>" DETAILS="$ITEMS" \
+         python3 -c "
+       import os, string, sys
+       with open(sys.argv[1]) as f:
+           t = string.Template(f.read())
+       print(t.safe_substitute(os.environ).strip())
+       " "$TMPL"
+       )"
+       bash scripts/pipeline-vcs.sh comment-issue <E> "$COMMENT_BODY"
+       ```
        Leave the epic open; a human decides whether to file follow-up work or tick the boxes.
 7. **Dependency unblocking sweep (when `ROLE_PLANNER = true`).** For every open issue that has a `Depends on: #<DEP>` line in its body but does NOT yet carry `pipeline:ready`:
    - Check whether issue `#<DEP>` is now closed.

@@ -451,16 +451,21 @@ automatically adds `pipeline:ready`. The epic itself is labelled
 
 Once every sub-issue is resolved, the epic auto-close sweep does NOT close the
 epic on that signal alone — children closing is evidence about the children,
-not about the epic. It first runs `check-epic-acceptance <E>` against the
-epic's own body: if the epic still has unticked `- [ ] ...` acceptance boxes,
-the sweep leaves it open, adds `pipeline:epic-children-done`, and comments
-naming every outstanding item, so a human can decide whether to tick them off
-or file follow-up work. Checkboxes inside fenced code blocks are also counted
-as acceptance items. Only when no unticked boxes remain (including epics
-with no checklist at all) does the sweep close the epic with `close-issue <E>
-"All sub-issues resolved."` as before. The planner role is off by default — it
-adds API calls and is most useful when you regularly work with multi-task
-epics.
+not about the epic. It runs `check-epic-acceptance <E>` against the epic's
+own body on every sweep: if the epic still has unticked `- [ ] ...` acceptance
+boxes, the sweep leaves it open and — the first time this happens — adds
+`pipeline:epic-children-done` and comments naming every outstanding item, so a
+human can decide whether to tick them off or file follow-up work. That
+label+comment step is idempotent: a repeated sweep against the same
+still-unticked epic re-checks the boxes but does not re-label or re-comment,
+so the notice fires once rather than on every pipeline run. Checkboxes inside
+fenced code blocks are also counted as acceptance items. Once no unticked
+boxes remain (including epics with no checklist at all) the sweep closes the
+epic with `close-issue <E> "All sub-issues resolved."` as before, removing
+`pipeline:epic-children-done` first if a prior sweep had added it — so an
+epic flagged for missing boxes still auto-closes once a human ticks them.
+The planner role is off by default — it adds API calls and is most useful
+when you regularly work with multi-task epics.
 
 ### Filtering which issues enter the queue (`issues.label_filter`)
 
