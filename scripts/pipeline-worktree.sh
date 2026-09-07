@@ -161,33 +161,52 @@ _default_branch_ref() {
   return 1
 }
 
-# True when local branch $1 has commits its upstream doesn't have yet — i.e.
-# genuinely unpushed work. A branch with no upstream configured is reported as
-# NOT ahead (fail-open): this is the normal state for a just-merged, already
-# force-deletable issue branch, and for a never-pushed worktree we have no
-# push history to compare against anyway.
+# True when local branch $1 has commits its upstream doesn't have yet -- i.e.
+# genuinely unpushed work. A branch with no upstream configured, or whose
+# configured upstream can no longer be resolved (e.g. deleted on the remote
+# and pruned), is reported as NOT ahead (fail-open): this is the normal state
+# for a just-merged, already force-deletable issue branch, and for a
+# never-pushed worktree we have no push history to compare against anyway.
+# `--verify --quiet` is required here: a bare `rev-parse --symbolic-full-name`
+# prints the literal, unresolved "$branch@{upstream}" token to stdout when the
+# upstream can't be resolved (exit 128) instead of leaving it empty, so a
+# careless "$(...)" capture can read that token back as if it were a real ref.
+# Once a base ref IS resolved, any later failure to compute the ahead count
+# fails safe toward "ahead" -- an uncomputable count must never be read as
+# "nothing to lose".
 _ahead_of_upstream() {
   local branch="$1" upstream ahead
-  upstream="$(git rev-parse --abbrev-ref --symbolic-full-name "$branch@{upstream}" 2>/dev/null)" || return 1
-  ahead="$(git rev-list --count "$upstream..$branch" 2>/dev/null)"
-  [ "${ahead:-0}" -gt 0 ]
+  upstream="$(git rev-parse --verify --quiet --abbrev-ref --symbolic-full-name "$branch@{upstream}" 2>/dev/null)"
+  [ -z "$upstream" ] && return 1
+  ahead="$(git rev-list --count "$upstream..$branch" 2>/dev/null)" || return 0
+  [ -z "$ahead" ] && return 0
+  [ "$ahead" -gt 0 ]
 }
 
 # True when local branch $1 has commits ahead of its upstream/base ref. Same
 # as _ahead_of_upstream, but falls back to the repo's default branch when no
-# upstream is configured — the only available signal for a harness worktree,
-# which has no push history at all. Unresolvable (no upstream AND no default
-# branch found) fails safe: reported as ahead, so the worktree is preserved
-# rather than guessed away.
+# upstream is configured OR the configured upstream can no longer be resolved
+# (e.g. deleted on the remote and pruned) -- the only available signal for a
+# harness worktree, which has no push history at all. `--verify --quiet` is
+# required for the same reason as in _ahead_of_upstream: without it, an
+# unresolvable upstream leaves $base holding the literal "$branch@{upstream}"
+# token (not empty), so the `[ -z "$base" ]` fallback check never fires, the
+# bogus token is fed to `git rev-list --count` as a ref, that command fails
+# silently (stderr redirected), and the empty result reads back as "0 commits
+# ahead" -- sweeping a worktree that actually has unpushed commits. Any
+# unresolvable base (no upstream and no default branch), or any later failure
+# to compute the ahead count, fails safe toward "ahead" so the worktree is
+# preserved rather than guessed away.
 _ahead_of_base() {
   local branch="$1" base ahead
-  base="$(git rev-parse --abbrev-ref --symbolic-full-name "$branch@{upstream}" 2>/dev/null)"
+  base="$(git rev-parse --verify --quiet --abbrev-ref --symbolic-full-name "$branch@{upstream}" 2>/dev/null)"
   if [ -z "$base" ]; then
     base="$(_default_branch_ref)" || return 0
     [ "$base" = "$branch" ] && return 1
   fi
-  ahead="$(git rev-list --count "$base..$branch" 2>/dev/null)"
-  [ "${ahead:-0}" -gt 0 ]
+  ahead="$(git rev-list --count "$base..$branch" 2>/dev/null)" || return 0
+  [ -z "$ahead" ] && return 0
+  [ "$ahead" -gt 0 ]
 }
 
 # Prints a reason ("dirty", "unpushed", or "dirty,unpushed") when worktree

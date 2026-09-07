@@ -168,6 +168,59 @@ assert_eq "0" "$rc" "sweep with a prunable harness worktree exits 0"
 assert_contains "$out" "reclaimed prunable harness worktree" "sweep reports reclaiming the prunable harness worktree"
 assert_not_contains "$(git worktree list)" "wt/h4" "sweep drops the prunable harness worktree from git"
 
+# ── QA regression (#170): deleted+pruned upstream must not read as "not ahead"
+#
+# The buggy `_ahead_of_base` compared `[ -z "$base" ]` against the output of a
+# bare `git rev-parse --symbolic-full-name "$branch@{upstream}"`. Without
+# --verify, that command prints the literal, unresolved "$branch@{upstream}"
+# token to stdout on failure (exit 128) instead of leaving it empty, so the
+# fallback-to-default-branch check never fired. The bogus token was then fed
+# to `git rev-list --count` as a ref, which failed silently (stderr
+# redirected), and the empty result read back as "0 commits ahead" -- sweeping
+# a worktree with a real, unpushed commit. This reproduces that exact
+# scenario: upstream configured, then the remote branch deleted and pruned
+# (the tracking ref is gone; `branch.<name>.merge`/`.remote` config is left
+# stale, exactly as a real `git remote prune` leaves it).
+git worktree add -q -b worktree-agent-h5 "$SANDBOX/wt/h5" >/dev/null 2>&1
+base_sha="$(git -C "$SANDBOX/wt/h5" rev-parse HEAD)"
+git update-ref refs/remotes/origin/worktree-agent-h5 "$base_sha"
+git branch --set-upstream-to=origin/worktree-agent-h5 worktree-agent-h5 >/dev/null 2>&1
+git -C "$SANDBOX/wt/h5" commit -q --allow-empty -m "agent work"
+git update-ref -d refs/remotes/origin/worktree-agent-h5
+out="$(TALOS_SWEEP_ALL_LANES=1 bash "$WT" sweep)"; rc=$?
+assert_eq "0" "$rc" "sweep with a harness worktree whose upstream was deleted+pruned exits 0"
+assert_contains "$out" "preserving harness worktree" "sweep preserves a harness worktree whose upstream was deleted and pruned"
+assert_contains "$out" "wt/h5" "sweep lists the path of the worktree with a deleted+pruned upstream"
+assert_contains "$(git worktree list)" "wt/h5" "sweep does not remove the worktree with a deleted+pruned upstream"
+git worktree remove --force "$SANDBOX/wt/h5" 2>/dev/null
+git branch -D worktree-agent-h5 >/dev/null 2>&1
+
+# ── ahead-count computation failure always fails safe (preserve) ────────────
+#
+# Whatever the cause, a failed `git rev-list --count` must never be read back
+# as "0 commits ahead" -- an uncomputable count is preserved, not swept. Force
+# the failure deterministically with a `git` shim that fails only `rev-list`
+# calls (opted into via an env var), leaving every other git call (worktree
+# list, status, symbolic-ref, ...) untouched.
+REAL_GIT="$(command -v git)"
+mkdir -p "$SANDBOX/bin"
+cat > "$SANDBOX/bin/git" <<SHIM
+#!/usr/bin/env bash
+if [ "\$1" = "rev-list" ] && [ -n "\${TALOS_TEST_FORCE_REV_LIST_FAIL:-}" ]; then
+  exit 1
+fi
+exec "$REAL_GIT" "\$@"
+SHIM
+chmod +x "$SANDBOX/bin/git"
+git worktree add -q -b worktree-agent-h6 "$SANDBOX/wt/h6" >/dev/null 2>&1
+out="$(PATH="$SANDBOX/bin:$PATH" TALOS_TEST_FORCE_REV_LIST_FAIL=1 TALOS_SWEEP_ALL_LANES=1 bash "$WT" sweep)"; rc=$?
+assert_eq "0" "$rc" "sweep with a forced ahead-count failure exits 0"
+assert_contains "$out" "preserving harness worktree" "sweep preserves a worktree when the ahead-count computation itself fails"
+assert_contains "$out" "wt/h6" "sweep lists the path of the worktree whose ahead-count computation failed"
+assert_contains "$(git worktree list)" "wt/h6" "sweep does not remove the worktree when the ahead-count computation fails"
+git worktree remove --force "$SANDBOX/wt/h6" 2>/dev/null
+git branch -D worktree-agent-h6 >/dev/null 2>&1
+
 # ── End-of-run sweep: issue-pattern worktrees with uncommitted changes ──────
 #
 # Extends the earlier "sweep with no keep list reclaims everything" case,
