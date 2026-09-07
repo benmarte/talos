@@ -455,7 +455,8 @@ not about the epic. It first runs `check-epic-acceptance <E>` against the
 epic's own body: if the epic still has unticked `- [ ] ...` acceptance boxes,
 the sweep leaves it open, adds `pipeline:epic-children-done`, and comments
 naming every outstanding item, so a human can decide whether to tick them off
-or file follow-up work. Only when no unticked boxes remain (including epics
+or file follow-up work. Checkboxes inside fenced code blocks are also counted
+as acceptance items. Only when no unticked boxes remain (including epics
 with no checklist at all) does the sweep close the epic with `close-issue <E>
 "All sub-issues resolved."` as before. The planner role is off by default — it
 adds API calls and is most useful when you regularly work with multi-task
