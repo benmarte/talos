@@ -43,5 +43,25 @@
   "limits": {
     "max_fix_attempts": 3,
     "max_total_dispatches": 8
+  },
+  "agents": {
+    "model": "claude-haiku-4-5-20251001",
+    "roles": {
+      "developer": {
+        "model": "claude-sonnet-5"
+      },
+      "pm": {
+        "model": "claude-sonnet-5"
+      },
+      "qa": {
+        "model": "claude-sonnet-5"
+      },
+      "reviewer": {
+        "model": "claude-sonnet-5"
+      },
+      "security": {
+        "model": "claude-sonnet-5"
+      }
+    }
   }
 }
