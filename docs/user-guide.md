@@ -572,6 +572,48 @@ issue cleanly. `branch` exists for projects where worktrees cause problems:
 If any of these applies, set `isolation: branch` and `max_parallel: 1`. The
 sequential constraint is the price of working in a single checkout.
 
+### Worktree cleanup and the stale-worktree warning (`execution.worktree_warn_threshold`)
+
+**What it does.** Under `isolation: worktree` (the default), the developer and
+QA stages each get a disposable `git worktree` on a `fix/issue-<N>-*` or
+`feat/issue-<N>-*` branch. `scripts/pipeline-worktree.sh remove <N>` deletes
+that worktree on every merge (Step 4), but worktrees for issues that never
+finished -- abandoned, blocked, or from an interrupted run -- are not touched
+by `remove`. Two sweeps reclaim those:
+
+- **Step 1 (startup)** runs `pipeline-worktree.sh sweep <queue ids>` as a
+  backstop for a run that ended before Step 4 could clean up.
+- **Step 5 (end of run)** runs the same `sweep` unconditionally, every run --
+  not only as a startup backstop. It also reclaims Claude Code harness
+  worktrees (branches named `worktree-agent-<hash>`, created by the harness
+  itself, not by Talos) that have no uncommitted changes and no commits ahead
+  of their upstream (or, absent an upstream, the repo's default branch).
+
+**Safety.** Neither sweep ever deletes a worktree with uncommitted changes or
+commits its upstream doesn't have yet -- those are listed in the sweep's
+output (path, branch, reason) instead of being removed, so an operator can see
+what is waiting on them. A worktree whose directory is already gone (git calls
+this "prunable") is always reclaimed, in either category, since there is no
+working tree left to preserve.
+
+**Default:** `10` (an absent key behaves exactly like `10`)
+
+**Worked config example:**
+
+```yaml
+execution:
+  worktree_warn_threshold: 15
+```
+
+**What the threshold does.** `pipeline-worktree.sh list` counts every
+non-active worktree (both categories above, excluding lane homes and the
+checkout the command is run from) and, when that count exceeds the threshold,
+appends a line: `pipeline-worktree: WARNING: <N> stale worktrees exceed
+threshold <T>`. Step 5 relays that line verbatim via `pipeline-notify.sh info`
+when present, and says nothing when the count is at or under the threshold.
+This is visibility only -- raising or lowering the threshold does not change
+what `sweep` removes; it only changes when the warning fires.
+
 ## Customizing agent profiles
 
 Each role profile is a markdown file with YAML frontmatter (Claude Code

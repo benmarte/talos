@@ -98,6 +98,7 @@ Store these for the run:
 - AGENTS_RUNNER (`agents.runner`, default `claude`), AGENTS_SUBAGENTS (`agents.subagents`, default `auto`) — select the harness execution mode (see Harness compatibility)
 - FILE_SOURCE_PATH (`vcs.file.source.path`, for file mode)
 - ISOLATION (`execution.isolation`, default `worktree`) — how each stage gets its working copy; validated immediately after config is read
+- WORKTREE_WARN_THRESHOLD (`execution.worktree_warn_threshold`, default `10`) — non-active worktree count above which Step 5 relays a warning
 
 **File mode vs VCS mode:**
 - If `VCS_PROVIDER = file`: no PRs are opened; developer commits to branch; QA/reviewer/security/docs stages are skipped; board calls are skipped (the file IS the board). See the File Mode section.
@@ -114,6 +115,7 @@ Store these for the run:
 - `issues.max_parallel`: 1
 - `limits.max_fix_attempts`: 3
 - `execution.isolation`: worktree
+- `execution.worktree_warn_threshold`: 10
 
 #### Concurrency and verify: isolation
 
@@ -983,6 +985,9 @@ After merging:
 ---
 
 ## Step 5 — End of run summary
+
+1. **Sweep worktrees unconditionally.** `bash scripts/pipeline-worktree.sh sweep <space-separated ids of every issue in this run's queue>` — this runs at the end of EVERY run, not only as the Step 1 startup backstop. It removes any `fix/issue-*`/`feat/issue-*` worktree whose issue is not in this run's queue, plus any Claude Code harness `worktree-agent-*` worktree that has no uncommitted changes and no commits ahead of its upstream/base ref. A worktree with uncommitted changes or unpushed commits is never deleted — it is listed in the command's output instead, so leave those alone. (Step 4 post-merge item 4, `remove <N>` per issue, is unchanged and still runs on every merge.)
+2. **Warn above the worktree threshold.** `bash scripts/pipeline-worktree.sh list` — if its output includes a `pipeline-worktree: WARNING:` line, relay it verbatim: `bash scripts/pipeline-notify.sh info "worktrees" "<the WARNING line>" ""`. Say nothing when no warning line is present (count at or under `execution.worktree_warn_threshold`, default `10`).
 
 After processing all issues, print a summary table:
 

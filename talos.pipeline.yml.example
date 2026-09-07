@@ -134,6 +134,10 @@ issues:
   # Priority: issues labeled p0 are dispatched before p1, before p2, before
   # unlabeled. Apply the labels by hand; bootstrap-labels.sh creates them.
 
+# ── Execution ──────────────────────────────────────────────────────────────
+# execution:
+#   worktree_warn_threshold: 10  # Non-active worktrees above this count trip a Step 5 warning
+
 # ── Role toggles ─────────────────────────────────────────────────────────────
 # developer is always active. Disable roles you don't need to reduce cost.
 roles:
