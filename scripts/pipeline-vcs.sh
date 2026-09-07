@@ -263,7 +263,9 @@ except Exception:
 }
 
 # ── Cap-reached warning (shared by every provider that still caps list-issues
-# /list-prs instead of paginating: github's gh-CLI limit, gitlab, azure) ─────
+# /list-prs instead of paginating: gitlab, azure — github/github-api now
+# paginate fully via gh api --paginate / Link headers, so neither calls this
+# anymore) ────────────────────────────────────────────────────────────────────
 # Usage: _list_cap_warn <verb> <cap> <count> <reason> <noun>
 # Prints a loud stderr warning naming the exact cap when <count> == <cap>,
 # since landing exactly on a request cap means more items may exist beyond
@@ -276,6 +278,31 @@ _list_cap_warn() {
   fi
 }
 
+# ── gh api --paginate multi-page merge (shared by _github list-issues/
+# list-prs, #171) ─────────────────────────────────────────────────────────────
+# `gh api --paginate <endpoint>` fetches every page of a REST list endpoint
+# (following Link: rel="next" headers internally) with NO cap, but per gh's
+# own --help text: "Each page is a separate JSON array or object" — pages are
+# written to stdout back-to-back with no separator, not merged into one
+# array. Reads that raw concatenated stdout on stdin and prints a single
+# flattened JSON array containing every item from every page, in order.
+_gh_paginate_merge() {
+  python3 -c "
+import json, sys
+data = sys.stdin.read()
+dec = json.JSONDecoder()
+idx, n, items = 0, len(data), []
+while idx < n:
+    while idx < n and data[idx].isspace():
+        idx += 1
+    if idx >= n:
+        break
+    obj, idx = dec.raw_decode(data, idx)
+    items.extend(obj) if isinstance(obj, list) else items.append(obj)
+print(json.dumps(items))
+"
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # GITHUB ADAPTER
 # ─────────────────────────────────────────────────────────────────────────────
@@ -283,27 +310,33 @@ _github() {
   local verb="$1"; shift
   case "$verb" in
     list-issues)
-      # `gh issue list --limit N` fetches N results internally via successive
-      # GraphQL pages (it is not a single-page request capped at 100) — the
-      # bug was the old hardcoded `--limit 100`, which silently truncated any
-      # backlog bigger than one page. 1000 is GitHub's own hard ceiling on
-      # search-API result sets, so it is the highest bound `gh issue list`
-      # can honor; warn loudly if we ever land exactly on it, since that
-      # means more issues may exist beyond what we can fetch this way (#171).
-      local _li_limit=1000
-      local -a _li_args=(gh issue list --state open --json number,title,labels,body --limit "$_li_limit")
-      [ -n "$REPO" ] && _li_args+=(--repo "$REPO")
-      _li_args+=("$@")
+      # `gh issue list --limit N` is a single request capped at N (1000 was
+      # GitHub's own hard ceiling on search-API result sets) — it silently
+      # truncated any backlog bigger than N. `gh api --paginate` against the
+      # REST issues endpoint has no such cap: it follows Link: rel="next"
+      # headers internally until exhausted (#171). That endpoint returns
+      # pull requests too (they carry a `pull_request` key) — filter those
+      # out and reshape to the historical
+      # `gh issue list --json number,title,labels,body` field set so callers
+      # see no schema change.
+      local _li_repo="$REPO"
+      [ -z "$_li_repo" ] && _li_repo='{owner}/{repo}'
+      local _li_endpoint="repos/${_li_repo}/issues?state=open&per_page=100"
       if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] ${_li_args[*]}"
+        echo "[dry-run] gh api --paginate $_li_endpoint"
         return 0
       fi
-      local _li_out
-      _li_out="$("${_li_args[@]}")" || exit 1
-      local _li_count
-      _li_count="$(printf '%s' "$_li_out" | _json_array_count)"
-      _list_cap_warn list-issues "$_li_limit" "$_li_count" "gh issue list --limit ceiling" issues
-      printf '%s\n' "$_li_out"
+      local _li_raw
+      _li_raw="$(gh api --paginate "$_li_endpoint")" || exit 1
+      printf '%s' "$_li_raw" | _gh_paginate_merge | python3 -c "
+import json, sys
+items = json.load(sys.stdin)
+out = [{'number': i.get('number'), 'title': i.get('title', ''),
+        'labels': [{'name': l.get('name')} for l in (i.get('labels') or [])],
+        'body': i.get('body') or ''}
+       for i in items if 'pull_request' not in i]
+print(json.dumps(out))
+"
       ;;
     view-issue)
       _run gh issue view "$1" --json title,body,labels,comments \
@@ -397,7 +430,7 @@ _github() {
       ;;
     list-prs)
       # LANE SCOPING (2026-08-22): filter to PRs targeting THIS config's base_branch, and
-      # return baseRefName so callers can verify. Without --base, `gh pr list` is repo-wide:
+      # return baseRefName so callers can verify. Without a base filter, PRs are repo-wide:
       # in a multi-lane repo (main + per-LLM experiment branches sharing one remote) a lane's
       # Step-1 reconciliation sees another lane's in-flight PR, adopts it as its own orphaned
       # work, retargets it and merges it into the wrong base. That happened: the qwen lane
@@ -406,25 +439,30 @@ _github() {
       #
       # PAGINATION (#171): `gh pr list` defaulted to --limit 30 with no
       # override, so it silently truncated any lane with more than 30 open
-      # PRs. `--limit N` makes `gh` fetch N results across successive
-      # GraphQL pages; 1000 is GitHub's own ceiling on search-API result
-      # sets, so it's the highest bound `gh pr list` can honor. Warn loudly
-      # if a result lands exactly on that ceiling, since more PRs may exist
-      # beyond what we can fetch this way.
-      local _lp_limit=1000
-      local -a _lp_args=(gh pr list --state open --json number,title,headRefName,baseRefName,labels --limit "$_lp_limit")
-      [ -n "$BASE_BRANCH" ] && _lp_args+=(--base "$BASE_BRANCH")
-      [ -n "$REPO" ] && _lp_args+=(--repo "$REPO")
+      # PRs. `gh api --paginate` against the REST pulls endpoint has no cap:
+      # it follows Link: rel="next" headers internally until exhausted. The
+      # REST endpoint's own `base` query param covers the lane-scoping the
+      # old `--base` flag provided.
+      local _lp_repo="$REPO"
+      [ -z "$_lp_repo" ] && _lp_repo='{owner}/{repo}'
+      local _lp_endpoint="repos/${_lp_repo}/pulls?state=open&per_page=100"
+      [ -n "$BASE_BRANCH" ] && _lp_endpoint="${_lp_endpoint}&base=${BASE_BRANCH}"
       if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] ${_lp_args[*]}"
+        echo "[dry-run] gh api --paginate $_lp_endpoint"
         return 0
       fi
-      local _lp_out
-      _lp_out="$("${_lp_args[@]}")" || exit 1
-      local _lp_count
-      _lp_count="$(printf '%s' "$_lp_out" | _json_array_count)"
-      _list_cap_warn list-prs "$_lp_limit" "$_lp_count" "gh pr list --limit ceiling" PRs
-      printf '%s\n' "$_lp_out"
+      local _lp_raw
+      _lp_raw="$(gh api --paginate "$_lp_endpoint")" || exit 1
+      printf '%s' "$_lp_raw" | _gh_paginate_merge | python3 -c "
+import json, sys
+items = json.load(sys.stdin)
+out = [{'number': i.get('number'), 'title': i.get('title', ''),
+        'headRefName': (i.get('head') or {}).get('ref', ''),
+        'baseRefName': (i.get('base') or {}).get('ref', ''),
+        'labels': [{'name': l.get('name')} for l in (i.get('labels') or [])]}
+       for i in items]
+print(json.dumps(out))
+"
       ;;
     diff-pr)
       _run gh pr diff "$1" ${REPO:+--repo "$REPO"}

@@ -8,6 +8,20 @@
 REPO="${STUB_REPO:-acme/widget}"
 OWNER="${REPO%%/*}"
 
+# _stub_limit <args...> — prints the value following a "--limit" argument, or
+# nothing if none was passed. Used so "issue list"/"pr list" can honor
+# --limit faithfully (#171) instead of always returning the full canned list.
+_stub_limit() {
+  local prev=""
+  for a in "$@"; do
+    if [ "$prev" = "--limit" ]; then
+      printf '%s' "$a"
+      return 0
+    fi
+    prev="$a"
+  done
+}
+
 args="$*"
 case "$args" in
   "repo view --json nameWithOwner -q .nameWithOwner"*)
@@ -59,19 +73,68 @@ tests/auth.test.js}" ;;
   "pr list --state "*)
     # NB: JSON braces can't live inside ${VAR:-default} — } ends the expansion
     if [ -n "${STUB_PR_LIST:-}" ]; then
-      printf '%s\n' "$STUB_PR_LIST"
+      _pl_raw="$STUB_PR_LIST"
     else
-      printf '[{"number":9,"state":"OPEN","title":"fix: guard null session","headRefName":"fix/issue-42-guard","body":"Closes #42"}]\n'
-    fi ;;
+      _pl_raw='[{"number":9,"state":"OPEN","title":"fix: guard null session","headRefName":"fix/issue-42-guard","body":"Closes #42"}]'
+    fi
+    # Honor --limit N faithfully (#171): a real `gh pr list --limit N`
+    # truncates to at most N results, so a stub that ignores --limit would
+    # make a "does list-prs paginate past the old cap" test pass even
+    # against the pre-fix code. Truncate here so that test is genuinely red
+    # on the old hardcoded-cap implementation.
+    _limit="$(_stub_limit "$@")"
+    if [ -n "$_limit" ]; then
+      _pl_raw="$(printf '%s' "$_pl_raw" | LIMIT="$_limit" python3 -c "
+import json, os, sys
+d = json.load(sys.stdin)
+print(json.dumps(d[:int(os.environ['LIMIT'])]))
+")"
+    fi
+    printf '%s\n' "$_pl_raw" ;;
   "issue list --state "*)
     # NB: JSON braces can't live inside ${VAR:-default} — } ends the expansion.
-    # Override STUB_ISSUE_LIST to simulate a larger result set (#171); a real
-    # `gh issue list --limit N` request is a single invocation that fetches N
-    # results internally, so the stub doesn't need to model multiple calls.
+    # Override STUB_ISSUE_LIST to simulate a larger result set (#171).
     if [ -n "${STUB_ISSUE_LIST:-}" ]; then
-      printf '%s\n' "$STUB_ISSUE_LIST"
+      _il_raw="$STUB_ISSUE_LIST"
     else
-      printf '[{"number":3,"title":"Fix login bug","labels":[{"name":"pipeline:dev"}],"body":"Body text"}]\n'
+      _il_raw='[{"number":3,"title":"Fix login bug","labels":[{"name":"pipeline:dev"}],"body":"Body text"}]'
+    fi
+    # Honor --limit N faithfully (#171) — see rationale on "pr list" above.
+    _limit="$(_stub_limit "$@")"
+    if [ -n "$_limit" ]; then
+      _il_raw="$(printf '%s' "$_il_raw" | LIMIT="$_limit" python3 -c "
+import json, os, sys
+d = json.load(sys.stdin)
+print(json.dumps(d[:int(os.environ['LIMIT'])]))
+")"
+    fi
+    printf '%s\n' "$_il_raw" ;;
+  "api --paginate repos/"*"/issues?state=open"*)
+    # Simulates `gh api --paginate` for the REST issues endpoint (#171): pages
+    # are streamed back-to-back with NO separator and no merging (per gh's
+    # own --help text) — override STUB_GH_ISSUES_RAW with pre-concatenated
+    # page JSON to exercise the multi-page merge in pipeline-vcs.sh. Set
+    # STUB_GH_API_FAIL=issues to simulate a failed page (non-zero exit, no
+    # stdout), mirroring how a real failed request never prints partial JSON.
+    if [ "${STUB_GH_API_FAIL:-}" = "issues" ]; then
+      exit 1
+    fi
+    if [ -n "${STUB_GH_ISSUES_RAW:-}" ]; then
+      printf '%s' "$STUB_GH_ISSUES_RAW"
+    else
+      printf '[{"number":3,"title":"Fix login bug","labels":[{"name":"pipeline:dev"}],"body":"Body text"}]'
+    fi ;;
+  "api --paginate repos/"*"/pulls?state=open"*)
+    # Simulates `gh api --paginate` for the REST pulls endpoint (#171); see
+    # the issues variant above for the page-concatenation rationale.
+    # STUB_GH_API_FAIL=prs simulates a failed page.
+    if [ "${STUB_GH_API_FAIL:-}" = "prs" ]; then
+      exit 1
+    fi
+    if [ -n "${STUB_GH_PRS_RAW:-}" ]; then
+      printf '%s' "$STUB_GH_PRS_RAW"
+    else
+      printf '[{"number":9,"title":"fix: guard null session","head":{"ref":"fix/issue-42-guard"},"base":{"ref":"main"},"labels":[]}]'
     fi ;;
   "run list --commit "*)
     printf '[{"databaseId":111,"conclusion":"failure"},{"databaseId":112,"conclusion":"success"}]\n' ;;

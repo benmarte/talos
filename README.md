@@ -58,7 +58,7 @@ All VCS operations are delegated to `scripts/pipeline-vcs.sh`, which wraps each 
 
 | Provider | `vcs.provider` | CLI required | Status | Notes |
 |----------|---------------|--------------|--------|-------|
-| GitHub | `github` | `gh` | **Battle-tested** | Full support. Requires `gh auth login`. |
+| GitHub | `github` | `gh` | **Battle-tested** | Full support. Requires `gh auth login`. `list-issues`/`list-prs` paginate fully via `gh api --paginate` — no cap. |
 | GitHub (token-only) | `github-api` | none | **Supported** | All 18 verbs via `curl` + `GITHUB_TOKEN`. No `gh` CLI needed — ideal for CI/containers. Set `GITHUB_TOKEN` or `GH_TOKEN`. Projects v2 board updates also use the token. |
 | GitLab | `gitlab` | `glab` | **Best-effort** | Implemented; `glab` version quirks may surface. Requires `glab auth login`. `list-issues`/`list-prs` are capped at 100 items (`glab` has no "fetch every page" flag for these commands) — a result landing exactly on the cap prints a `WARNING result capped at 100` line to stderr rather than truncating silently. |
 | Azure DevOps | `azure` | `az` + azure-devops extension | **Supported** | Full issue/board/PR flow — work items, Tags, board State, and PR labels/comments/diff (via `az rest` where `az` has no command). Merges are human-gated when `main` has branch policies. `find-pr`/`check-pr-files`/`rerun-ci` not implemented. Requires `az login` + `az extension add --name azure-devops`. `list-issues`/`list-prs` are capped at 1000 items (`az boards query` has no `--top`/page flag at all; `az repos pr list --top` has one but no further pagination) — a result landing exactly on the cap prints a `WARNING result capped at 1000` line to stderr rather than truncating silently. |
