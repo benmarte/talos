@@ -171,6 +171,43 @@ assert_eq "$src_tmpl" "$n_tmpl" "--global writes all notification templates"
 assert_file_exists "$T6_CLAUDE/skills/pipeline/SKILL.md" \
   "--global writes skill to ~/.claude/skills/"
 
+# #166: --global ALSO writes every role profile to ~/.claude/agents/ (the path
+# Claude Code's native subagent discovery actually reads), not just
+# ~/.talos/agents/ (the path pipeline-agent.sh reads for pi/codex/gemini/
+# antigravity). Before the fix ~/.claude/agents/ never receives agents at all,
+# so this loop fails RED on unfixed install.sh.
+for agent in validator pm developer qa reviewer security docs planner; do
+  assert_file_exists "$T6_CLAUDE/agents/$agent.md" \
+    "--global writes $agent role profile to \$CLAUDE_CONFIG_DIR/agents/ (#166)"
+done
+assert_eq "$(cat "$T6_HOME/.talos/agents/developer.md")" \
+  "$(cat "$T6_CLAUDE/agents/developer.md")" \
+  "role profile content at ~/.talos/agents/ and ~/.claude/agents/ matches (#166)"
+
+# #166: re-running --global is idempotent -- second run produces the same
+# content, no errors.
+gout_again="$(HOME="$T6_HOME" CLAUDE_CONFIG_DIR="$T6_CLAUDE" \
+  bash "$TALOS_ROOT/install.sh" --global --no-agent-skills 2>&1)"
+rc_again=$?
+assert_eq "0" "$rc_again" "--global re-run exits 0 (idempotent, #166)"
+SRC_DEVELOPER_AGENT="$TALOS_ROOT/agents/developer.md"
+[ -f "$SRC_DEVELOPER_AGENT" ] || SRC_DEVELOPER_AGENT="$TALOS_ROOT/.claude/agents/developer.md"
+assert_eq "$(cat "$SRC_DEVELOPER_AGENT")" "$(cat "$T6_CLAUDE/agents/developer.md")" \
+  "--global re-run leaves \$CLAUDE_CONFIG_DIR/agents/developer.md matching source (idempotent, #166)"
+
+# #166: --no-overwrite preserves a locally-edited ~/.claude/agents/<role>.md.
+printf '\nLOCAL EDIT TOKEN\n' >> "$T6_CLAUDE/agents/developer.md"
+HOME="$T6_HOME" CLAUDE_CONFIG_DIR="$T6_CLAUDE" \
+  bash "$TALOS_ROOT/install.sh" --global --no-overwrite --no-agent-skills >/dev/null 2>&1
+assert_contains "$(cat "$T6_CLAUDE/agents/developer.md")" "LOCAL EDIT TOKEN" \
+  "--no-overwrite preserves a locally-edited \$CLAUDE_CONFIG_DIR/agents/<role>.md (#166)"
+
+# Restore overwrite semantics (default) so a follow-up --global re-run cleans up.
+HOME="$T6_HOME" CLAUDE_CONFIG_DIR="$T6_CLAUDE" \
+  bash "$TALOS_ROOT/install.sh" --global --no-agent-skills >/dev/null 2>&1
+assert_not_contains "$(cat "$T6_CLAUDE/agents/developer.md")" "LOCAL EDIT TOKEN" \
+  "--global (default overwrite) re-run clobbers the local edit again (#166)"
+
 # ── Test 7: per-repo install writes NO scripts ───────────────────────────────
 T7_REPO="$SANDBOX/t7-repo"
 mkdir -p "$T7_REPO"
@@ -184,5 +221,38 @@ assert_file_absent "$T7_REPO/.claude/agents/developer.md" \
   "per-repo install writes no agents"
 assert_file_absent "$T7_REPO/.claude/skills/pipeline/SKILL.md" \
   "per-repo install writes no skill to repo"
+
+# ── Test 8: repo-level .claude/agents/<role>.md wins over the global profile ──
+# Claude Code's own subagent discovery precedence (documented in SKILL.md's
+# "Subagent names" section) checks <repo>/.claude/agents/<role>.md before
+# ~/.claude/agents/<role>.md. We cannot literally drive a Claude Code session
+# from a bash test, so this proves the outcome with DISTINGUISHABLE content at
+# each candidate path and a resolution helper that mirrors SKILL.md's own
+# documented rule -- asserting on file existence alone would be worthless
+# (a wrong-precedence bug still leaves both files present).
+_resolve_agent_profile() {  # $1=repo_dir $2=claude_config_dir $3=role
+  if [ -f "$1/.claude/agents/$3.md" ]; then
+    echo "$1/.claude/agents/$3.md"
+  else
+    echo "$2/agents/$3.md"
+  fi
+}
+
+T8_HOME="$SANDBOX/t8-home"
+T8_CLAUDE="$SANDBOX/t8-claude"
+T8_REPO="$SANDBOX/t8-repo"
+mkdir -p "$T8_HOME" "$T8_REPO/.claude/agents"
+
+HOME="$T8_HOME" CLAUDE_CONFIG_DIR="$T8_CLAUDE" \
+  bash "$TALOS_ROOT/install.sh" --global --no-agent-skills >/dev/null 2>&1
+printf -- '---\nname: developer\n---\nTOKEN-REPO-OVERRIDE\n' > "$T8_REPO/.claude/agents/developer.md"
+
+winning_path="$(_resolve_agent_profile "$T8_REPO" "$T8_CLAUDE" developer)"
+assert_eq "$T8_REPO/.claude/agents/developer.md" "$winning_path" \
+  "repo-level .claude/agents/developer.md is the winning path per SKILL.md's documented order (#166)"
+assert_contains "$(cat "$winning_path")" "TOKEN-REPO-OVERRIDE" \
+  "content at the winning path is the repo-level override, not the global install (#166)"
+assert_not_contains "$(cat "$T8_CLAUDE/agents/developer.md")" "TOKEN-REPO-OVERRIDE" \
+  "the global ~/.claude/agents/developer.md written by --global is untouched by the repo-level override (#166)"
 
 finish

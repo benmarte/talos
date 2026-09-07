@@ -176,7 +176,7 @@ alongside your code.
 ```bash
 # 1. Global install (once per machine -- all repos share this copy)
 git clone https://github.com/benmarte/talos
-bash talos/install.sh --global          # installs to ~/.talos/ and ~/.claude/skills/
+bash talos/install.sh --global          # installs to ~/.talos/, ~/.claude/skills/, and role profiles to ~/.claude/agents/
 
 # 2. Per-repo config (once per repo -- writes config; no scripts copied into repo)
 bash talos/install.sh /path/to/your-repo
@@ -194,10 +194,15 @@ gh issue edit 42 --add-label pipeline:ready
 # in a Claude Code session:  /pipeline
 ```
 
-What the global install writes: `~/.talos/{scripts,agents,templates}/` and
-`~/.claude/skills/pipeline/SKILL.md` (the command). Per-repo installs write
-only `talos.pipeline.*` config (plus agent-skills to `.claude/skills/`); no
-Talos scripts are copied into repos. To update every repo at once:
+What the global install writes: `~/.talos/{scripts,agents,templates}/`,
+`~/.claude/skills/pipeline/SKILL.md` (the command), and role profiles
+ALSO to `~/.claude/agents/<role>.md` -- that second copy is what Claude
+Code's native subagent discovery actually reads, so a global install no
+longer leaves Claude Code sessions pinned to a stale plugin profile. A
+repo-level `.claude/agents/<role>.md` still wins over both. Per-repo
+installs write only `talos.pipeline.*` config (plus agent-skills to
+`.claude/skills/`); no Talos scripts are copied into repos. To update
+every repo at once:
 
 ```bash
 git -C path/to/talos pull && bash path/to/talos/install.sh --global
@@ -565,6 +570,13 @@ customized profiles in your repo's git history).
 **Plugin install.** The profiles ship inside the plugin at `agents/*.md` and are
 copied into `~/.claude/plugins/cache/`, which is replaced wholesale on every
 `/plugin update` — edits there are silently lost. Do not edit them in place.
+
+**Global install (`install.sh --global`).** The profiles land at
+`~/.claude/agents/*.md` (read by Claude Code's native subagent discovery) and
+`~/.talos/agents/*.md` (read by `pipeline-agent.sh` for non-Claude harnesses).
+Re-running `--global` overwrites both by default; pass `--no-overwrite` to
+preserve local edits. As with a vendored install, a repo-level
+`.claude/agents/<role>.md` always wins over the global copy for that role.
 
 To customize a role, add your own `.claude/agents/<role>.md` to the repo. The
 orchestrator checks for a repo-level profile before falling back to the plugin's

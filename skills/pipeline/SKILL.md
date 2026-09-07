@@ -32,6 +32,19 @@ The global install (~/.talos) wins when present; the plugin falls back to its bu
 
 Check per role, not once for all eight — a repo may override only `developer` and take the other seven from the plugin.
 
+**Startup diagnostic:** once per run, print a single line naming the two resolved sources above — the scripts directory already resolved, and which of the three subagent-name cases applies. This is visibility only: it does not change which source is used, and does not alter the per-role decision logic above.
+
+```bash
+if [ -f .claude/agents/developer.md ]; then
+  agent_source="repo override (.claude/agents/)"
+elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
+  agent_source="plugin (talos:<role>, \$CLAUDE_PLUGIN_ROOT set)"
+else
+  agent_source="global/bare (~/.claude/agents/ or none)"
+fi
+echo "talos: scripts=<resolved scripts dir>  agents=$agent_source"
+```
+
 **Harness compatibility** — driven by config `agents.subagents` (`auto` | `true` | `false`) and `agents.runner` (`claude` | `pi` | `codex` | `gemini` | `antigravity` | `custom`). `auto` = `true` when the runner is `claude`, otherwise `false`; if `agents.subagents` is unset, behave as `auto`.
 
 - **`subagents: true`** (native subagents, e.g. Claude Code) — spawn them as each stage instructs. **Per-role model selection (native path):** Before spawning each subagent, resolve its model in three steps:

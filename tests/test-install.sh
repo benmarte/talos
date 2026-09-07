@@ -58,6 +58,11 @@ done
 
 for agent in validator pm developer qa reviewer security docs planner; do
   assert_file_exists "$GLOBAL_HOME/.talos/agents/$agent.md" "--global installs $agent agent"
+  # #166: role profiles must ALSO land at $CLAUDE_CONFIG_DIR/agents/, the path
+  # Claude Code's native subagent discovery reads. ~/.talos/agents/ alone
+  # leaves Claude Code sessions pinned to whatever a plugin ships.
+  assert_file_exists "$FAKE_CLAUDE_HOME/agents/$agent.md" \
+    "--global installs $agent role profile to \$CLAUDE_CONFIG_DIR/agents/ (#166)"
 done
 
 n_notif="$(ls "$GLOBAL_HOME/.talos/templates/notifications/"*.md 2>/dev/null | wc -l | tr -d ' ')"
