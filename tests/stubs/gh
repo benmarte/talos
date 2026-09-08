@@ -167,6 +167,30 @@ print(json.dumps(d[:int(os.environ['LIMIT'])]))
     else
       printf '[{"number":9,"title":"fix: guard null session","head":{"ref":"fix/issue-42-guard"},"base":{"ref":"main"},"labels":[]}]'
     fi ;;
+  "api --paginate repos/"*"/pulls/"*"/files"*)
+    # Simulates `gh api --paginate` for the REST PR-files endpoint (#211
+    # review fix -- pr-files now paginates instead of a single `gh pr view
+    # --json files` call capped at 100 entries). Pages stream back-to-back
+    # with NO separator, same convention as the issues/pulls endpoints above.
+    # STUB_GH_API_FAIL=pr-files simulates a failed page (non-zero exit, no
+    # stdout). Override STUB_GH_PR_FILES_RAW with pre-concatenated page JSON
+    # to exercise the multi-page merge (e.g. >100 files); otherwise falls
+    # back to converting STUB_PR_FILES (newline-separated paths -- back-compat
+    # with the pre-#211 `gh pr view --json files` stub contract) into a
+    # single-page filename array.
+    if [ "${STUB_GH_API_FAIL:-}" = "pr-files" ]; then
+      exit 1
+    fi
+    if [ -n "${STUB_GH_PR_FILES_RAW:-}" ]; then
+      printf '%s' "$STUB_GH_PR_FILES_RAW"
+    else
+      FILES="${STUB_PR_FILES:-src/auth.js
+tests/auth.test.js}" python3 -c "
+import json, os
+paths = [p for p in os.environ['FILES'].splitlines() if p]
+print(json.dumps([{'filename': p} for p in paths]))
+"
+    fi ;;
   "api --paginate repos/"*"/issues/"*"/comments"*)
     # Simulates `gh api --paginate` for the REST issue/PR comments endpoint
     # (#172 read-comments, used by read-attempt and post-approval's

@@ -52,6 +52,17 @@
 #                                             state: open (default) | merged | all
 #   check-pr-files <n>                        Exit 1 if the PR touches any
 #                                             merge.forbidden_files pattern
+#   pr-files <n>                              Print the PR's changed paths, one per
+#                                             line -- no filtering, no exit-1 gate
+#                                             (that's check-pr-files). Fully paginated
+#                                             (#171 pattern) so PRs with >100 changed
+#                                             files are never silently truncated.
+#                                             Used by the Step 3e Phase 1 docs-mode
+#                                             gate (#200) to decide whether the docs
+#                                             stage needs to run at all. GitHub only
+#                                             (github/github-api parity); gitlab,
+#                                             azure, and file mode fail open with a
+#                                             stderr warning (empty stdout).
 #   check-closing-keyword <n|branch> <issue>  Exit 1 if the PR body has a closing
 #                                             keyword for <issue> while other PRs
 #                                             for that issue are still open.
@@ -955,6 +966,35 @@ if bad:
     for p in bad: print(f'  {p}')
     sys.exit(1)
 print(f'no forbidden files [{pat_count} patterns: defaults={defaults_active}]')
+"
+      ;;
+    pr-files)
+      # #211 review fix: `gh pr view --json files` (used until PR #211) never
+      # paginated past its first 100 entries, unlike every other list endpoint
+      # in this file. A >100-file PR silently returned only the first 100
+      # paths, which could make the Step 3e Phase 1 auto-docs gate (SKILL.md)
+      # look at a truncated path list and auto-skip docs incorrectly. Switch
+      # to `gh api --paginate` + `_gh_paginate_merge` (#171 pattern, same as
+      # list-issues/list-prs above) so every changed path is returned
+      # regardless of PR size, and a failed page exits non-zero with no
+      # partial output rather than a silently-short list.
+      local n="$1"
+      local _pf_repo="$REPO"
+      [ -z "$_pf_repo" ] && _pf_repo='{owner}/{repo}'
+      local _pf_endpoint="repos/${_pf_repo}/pulls/${n}/files?per_page=100"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] gh api --paginate $_pf_endpoint"
+        return 0
+      fi
+      local _pf_raw
+      _pf_raw="$(gh api --paginate "$_pf_endpoint")" || exit 1
+      printf '%s' "$_pf_raw" | _gh_paginate_merge | python3 -c "
+import json, sys
+items = json.load(sys.stdin)
+for i in items:
+    path = i.get('filename', '')
+    if path:
+        print(path)
 "
       ;;
     rerun-ci)
@@ -2781,6 +2821,35 @@ print(f'no forbidden files [{pat_count} patterns: defaults={defaults_active}]')
 "
       ;;
 
+    pr-files)
+      # #211 review fix: a single `_ga_req GET .../files?per_page=100` (used
+      # until PR #211) never followed the Link: rel="next" header, unlike
+      # every other list endpoint in this file -- a >100-file PR silently
+      # returned only the first 100 paths, which could feed a truncated list
+      # into the Step 3e Phase 1 auto-docs gate (SKILL.md). Switch to
+      # `_ga_fetch_all_pages` (#171 pattern, same as list-issues above) so
+      # every changed path is returned regardless of PR size, and a failed
+      # page exits non-zero with no partial output.
+      local _n="$1"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: GET $_API/pulls/$_n/files (paginated via Link headers until exhausted) | print .filename, one per line"
+        return 0
+      fi
+      local _pf_raw
+      _pf_raw="$(_ga_fetch_all_pages "$_API/pulls/$_n/files?per_page=100")" || exit 1
+      printf '%s' "$_pf_raw" | python3 -c "
+import json, sys
+try:
+    files = json.load(sys.stdin)
+except Exception:
+    files = []
+for f in files:
+    path = f.get('filename', '')
+    if path:
+        print(path)
+"
+      ;;
+
     rerun-ci)
       local _n="$1"
       if [ "$DRY_RUN" = "true" ]; then
@@ -3841,7 +3910,7 @@ _gitlab() {
       local n="$1" body="$2"
       _run glab mr note "$n" --message "$body" $RARG
       ;;
-    find-pr|check-pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
+    find-pr|check-pr-files|pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
       # Best-effort providers: not implemented — fail open with a warning so
       # the orchestrator falls back to its manual instructions.
       echo "pipeline-vcs: $verb not implemented for gitlab — verify manually" >&2
@@ -4274,7 +4343,7 @@ PYEOF
         --headers "Content-Type=application/json" --body "@$tf" >/dev/null
       local rc=$?; rm -f "$tf"; return $rc
       ;;
-    find-pr|check-pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
+    find-pr|check-pr-files|pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
       echo "pipeline-vcs: $verb not implemented for azure — verify manually" >&2
       return 0
       ;;
@@ -4311,7 +4380,7 @@ _file() {
       echo "file mode: no PR to merge — orchestrator should close-issue directly after verifying the branch" >&2
       return 0
       ;;
-    diff-pr|pr-checks|list-prs|view-pr|find-pr|check-pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
+    diff-pr|pr-checks|list-prs|view-pr|find-pr|check-pr-files|pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
       echo "file mode: $verb not applicable in file mode" >&2
       return 0
       ;;

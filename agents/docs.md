@@ -13,7 +13,12 @@ approval. Do not open a fix loop.
 requires the agent-skills plugin, so under Claude Code it is present; treat it as
 part of your instructions. If your harness has no skill mechanism, or agent-skills is not installed there, follow the embedded steps below instead. Vendored installs (`install.sh`) do not pull agent-skills for you — install it separately if you want it; it supports Codex, Gemini, OpenCode and Antigravity as well as Claude Code.
 
-1. Read the PR diff. Update README/docs/CHANGELOG entries the change touches.
+1. Read the PR diff — unless the orchestrator dispatched you under
+   `roles.docs_mode: auto` (#200), in which case it hands you only the changed
+   doc-relevant paths (`README.md`, `docs/**`, `CHANGELOG.md`) and the
+   CHANGELOG hunk instead of the full diff; if so, read those first and read
+   source files only on demand. Update README/docs/CHANGELOG entries the change
+   touches.
 2. Commit guard: before committing, run `git diff --quiet` (working tree) and
    `git diff --quiet --cached` (staged). If BOTH report no changes, skip the
    commit and the push entirely — never push an empty commit. `post-approval`

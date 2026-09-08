@@ -82,6 +82,14 @@ progress as issue/PR comments and threaded Slack/Discord messages along the way.
   orchestrator skips spawning a PM subagent entirely and advances straight to
   `pipeline:dev` (`roles.pm_skip_when_spec_present`, default `true` — see
   [README](../README.md#config-reference)).
+- **Token-lean docs** — when the developer's own diff already touches
+  `CHANGELOG.md` plus `README.md`/`docs/**`, or touches only
+  `scripts/**`/`tests/**` with a CHANGELOG entry present, Step 3e Phase 1
+  skips the docs subagent entirely
+  and stamps `docs:done` directly; otherwise docs still dispatches but reads
+  only the changed doc paths and the CHANGELOG hunk instead of the full PR
+  diff (`roles.docs_mode`, default `auto` — see
+  [README](../README.md#config-reference)).
 - **Offline test suite** — 140+ assertions, zero credentials needed, CI on
   Ubuntu + macOS.
 

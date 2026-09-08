@@ -119,4 +119,22 @@ EOF
 assert_eq "rebase" "$(bash "$CFG_SH" merge.method squash)" "talos.pipeline.json wins over legacy"
 rm .claude-pipeline.json talos.pipeline.json
 
+# roles.docs_mode (#200): default resolution — auto unless explicitly set
+assert_eq "auto" "$(bash "$CFG_SH" roles.docs_mode auto)" \
+  "roles.docs_mode: no config file returns the caller-supplied 'auto' default (#200)"
+
+cat > talos.pipeline.json <<'EOF'
+{"roles": {"docs_mode": "always"}}
+EOF
+assert_eq "always" "$(bash "$CFG_SH" roles.docs_mode auto)" \
+  "roles.docs_mode: explicit 'always' overrides the 'auto' default (#200)"
+rm talos.pipeline.json
+
+cat > talos.pipeline.json <<'EOF'
+{"roles": {"docs": true}}
+EOF
+assert_eq "auto" "$(bash "$CFG_SH" roles.docs_mode auto)" \
+  "roles.docs_mode: absent key falls back to the caller default even with sibling roles.* keys set (#200)"
+rm talos.pipeline.json
+
 finish
