@@ -13,6 +13,9 @@
 #   - When -D <file> is passed, writes a minimal HTTP response header block
 #     including X-RateLimit-Reset: ${CURL_RATE_LIMIT_RESET:-0} to that file.
 #     Default CURL_RATE_LIMIT_RESET=0 keeps existing tests unbroken.
+#   - CURL_RETRY_AFTER: when set (non-empty), adds a Retry-After: <value>
+#     header to the -D response block (#194). Unset by default -- no header,
+#     same as before.
 #   - CURL_LINK_QUEUE: optional file whose lines are Link: next URLs (one per
 #     call). When non-empty the first line is popped and written as a Link
 #     header in the -D response block; an empty line means no Link header for
@@ -43,7 +46,9 @@ for arg in "$@"; do url="$arg"; done
 
 # HTTP status to emit when -w was requested (default 200).
 # If a CURL_QUEUE entry is a bare 3-digit number it is treated as a status
-# override (empty body); all other queue entries are response bodies.
+# override (empty body). A "<status>:<body>" entry (#173, e.g. for simulating
+# GitHub's 403 secondary-rate-limit body) overrides both. All other queue
+# entries are response bodies with the default 200 status.
 http_status=200
 resp=""
 if [ -n "${CURL_QUEUE:-}" ] && [ -s "$CURL_QUEUE" ]; then
@@ -53,6 +58,9 @@ if [ -n "${CURL_QUEUE:-}" ] && [ -s "$CURL_QUEUE" ]; then
     [0-9][0-9][0-9])
       http_status="$raw"
       resp="" ;;
+    [0-9][0-9][0-9]:*)
+      http_status="${raw%%:*}"
+      resp="${raw#*:}" ;;
     *)
       resp="$raw" ;;
   esac
@@ -74,13 +82,10 @@ fi
 
 # Write minimal response headers when -D <file> was requested
 if [ -n "$hdr_file" ]; then
-  if [ -n "$link_next" ]; then
-    printf 'HTTP/1.1 %s\r\nX-RateLimit-Reset: %s\r\nLink: <%s>; rel="next"\r\n\r\n' \
-      "$http_status" "${CURL_RATE_LIMIT_RESET:-0}" "$link_next" > "$hdr_file"
-  else
-    printf 'HTTP/1.1 %s\r\nX-RateLimit-Reset: %s\r\n\r\n' \
-      "$http_status" "${CURL_RATE_LIMIT_RESET:-0}" > "$hdr_file"
-  fi
+  hdr_block="HTTP/1.1 $http_status\r\nX-RateLimit-Reset: ${CURL_RATE_LIMIT_RESET:-0}\r\n"
+  [ -n "${CURL_RETRY_AFTER:-}" ] && hdr_block="${hdr_block}Retry-After: ${CURL_RETRY_AFTER}\r\n"
+  [ -n "$link_next" ] && hdr_block="${hdr_block}Link: <${link_next}>; rel=\"next\"\r\n"
+  printf '%b\r\n' "$hdr_block" > "$hdr_file"
 fi
 
 [ -n "$resp" ] && printf '%s\n' "$resp"

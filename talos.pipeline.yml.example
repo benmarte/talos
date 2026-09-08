@@ -239,3 +239,15 @@ notifications:
 # ── Safety limits ─────────────────────────────────────────────────────────────
 limits:
   max_fix_attempts: 3        # Developer re-tries before escalating to pipeline:blocked
+  max_retries: 5             # Retries per network call after a rate-limit / transient
+                             # error, on top of the original try (up to 6 total attempts
+                             # by default). Applies to gh/glab/az CLI invocations and
+                             # the github-api provider's curl requests. Retried: HTTP
+                             # 429, GitHub 403 secondary-rate-limit/abuse-detection,
+                             # gh/glab/az CLI errors with explicit rate-limit phrases
+                             # only (e.g. "HTTP 429", never bare numbers). Not retried:
+                             # 401/404/422/etc. Backoff: Retry-After header (capped at
+                             # 60s) when supplied, else exponential 2s to 60s — both
+                             # capped at 60s. Must be a non-negative integer; non-numeric
+                             # value warns and defaults to 5. Set
+                             # TALOS_RETRY_SLEEP_SCALE=0 in tests for instant runs.
