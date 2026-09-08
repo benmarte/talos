@@ -123,8 +123,16 @@ assert_file_exists "$CAPTURE" "failing hook: the command still ran (received std
 
 # ── (d) Slow hook (exceeds hooks.timeout_s) -- exit 0, killed at the timeout,
 # no orphaned watchdog process ─────────────────────────────────────────────
+# The sleep duration is a unique, unlikely-to-collide value (not the plain
+# "sleep 3" test-hooks-pre-dispatch.sh's own slow-hook case also spawns as a
+# child of its compound hook command) -- pgrep -f matches on the exec'd
+# command line, which is indistinguishable from any other "sleep 3" process
+# running anywhere on the box, including a sibling test file's own
+# not-yet-killed hook when both run concurrently (-j > 1) or just close
+# together in time. A generic pattern here previously produced a false
+# "leak" by catching that unrelated, legitimately-still-running process.
 cat > talos.pipeline.json <<EOF
-{"hooks": {"post_stage": "sleep 3", "timeout_s": 1}}
+{"hooks": {"post_stage": "sleep 3.194717", "timeout_s": 1}}
 EOF
 _start=$(date +%s)
 err="$(bash "$HOOKS" post_stage qa qa 42 --verdict PASS 2>&1 >/dev/null)"
@@ -138,8 +146,16 @@ else
   fail "slow hook: killed at hooks.timeout_s (1s), not left to run its full 3s sleep" \
     "elapsed: ${_elapsed}s"
 fi
-sleep 1
-_leaked="$(pgrep -f 'sleep 3$' || true)"
+# Bounded retry: tolerate up to ~0.5s beyond the watchdog's own kill
+# deadline for the SIGKILL follow-up to be reflected in the process table
+# under a noisy CI scheduler, without weakening the assertion -- it still
+# fails if the process is genuinely still there after every retry.
+_leaked=""
+for _i in 1 2 3 4 5; do
+  _leaked="$(pgrep -f 'sleep 3\.194717$' || true)"
+  [ -z "$_leaked" ] && break
+  sleep 0.1
+done
 assert_eq "" "$_leaked" "slow hook: no orphaned sleep left running"
 
 # ── (e) Adapter path: exactly one stage_complete event per run ───────────────
