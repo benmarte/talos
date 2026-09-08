@@ -96,12 +96,19 @@ out="$(bash "$AGENT" validator "line one")"
 # RED on the old pipe implementation: a 200 KB prompt reliably overflows the
 # pipe buffer, so `exit 0` (reads nothing) used to fail deterministically,
 # not just under load.
+#
+# The prompt is passed via stdin (`developer -`), not as an argv element:
+# Linux caps a single argv element at MAX_ARG_STRLEN (128 KB), so a ~209 KB
+# prompt passed as `bash "$AGENT" developer "$BIG_PROMPT"` fails with "Argument
+# list too long" on Linux CI even though it fits fine in a macOS argv.
 BIG_PROMPT="$(head -c 204800 /dev/zero | tr '\0' 'x')"
+BIG_PROMPT_FILE="$SANDBOX/big-prompt.txt"
+printf '%s' "$BIG_PROMPT" > "$BIG_PROMPT_FILE"
 
 cat > talos.pipeline.json <<'EOF'
 {"agents": {"runner": "custom", "runner_cmd": "exit 0"}}
 EOF
-out="$(bash "$AGENT" developer "$BIG_PROMPT" 2>"$ERRFILE")"; rc=$?
+out="$(bash "$AGENT" developer - < "$BIG_PROMPT_FILE" 2>"$ERRFILE")"; rc=$?
 assert_eq_ctx "0" "$rc" "runner_cmd 'exit 0' with 200 KB prompt exits 0 (no EPIPE)" "$(cat "$ERRFILE")"
 
 # A runner that reads all of stdin must receive the prompt byte-for-byte.
@@ -113,7 +120,7 @@ printf '%s\n\n---\n\n%s' "$ROLE_BODY" "$BIG_PROMPT" > "$EXPECT_FILE"
 cat > talos.pipeline.json <<EOF
 {"agents": {"runner": "custom", "runner_cmd": "cat > $GOT_FILE"}}
 EOF
-out="$(bash "$AGENT" developer "$BIG_PROMPT" 2>"$ERRFILE")"; rc=$?
+out="$(bash "$AGENT" developer - < "$BIG_PROMPT_FILE" 2>"$ERRFILE")"; rc=$?
 assert_eq_ctx "0" "$rc" "full-stdin runner exits 0" "$(cat "$ERRFILE")"
 expect_bytes="$(wc -c < "$EXPECT_FILE" | tr -d ' ')"
 got_bytes="$(wc -c < "$GOT_FILE" | tr -d ' ')"
@@ -128,7 +135,7 @@ fi
 cat > talos.pipeline.json <<'EOF'
 {"agents": {"runner": "custom", "runner_cmd": "exit 3"}}
 EOF
-bash "$AGENT" developer "$BIG_PROMPT" >/dev/null 2>"$ERRFILE"; rc=$?
+bash "$AGENT" developer - < "$BIG_PROMPT_FILE" >/dev/null 2>"$ERRFILE"; rc=$?
 assert_eq_ctx "3" "$rc" "runner_cmd exit code propagates exactly (exit 3)" "$(cat "$ERRFILE")"
 
 # The prompt temp file/dir must be cleaned up afterward, pass or fail.
@@ -138,7 +145,7 @@ assert_eq_ctx "3" "$rc" "runner_cmd exit code propagates exactly (exit 3)" "$(ca
 # talos-prompt.* dirs concurrently under the parallel test runner.
 _PRIVATE_TMPDIR="$SANDBOX/tmp"
 mkdir -p "$_PRIVATE_TMPDIR"
-TMPDIR="$_PRIVATE_TMPDIR" bash "$AGENT" developer "$BIG_PROMPT" >/dev/null 2>&1
+TMPDIR="$_PRIVATE_TMPDIR" bash "$AGENT" developer - < "$BIG_PROMPT_FILE" >/dev/null 2>&1
 _prompt_tmp_after="$(find "$_PRIVATE_TMPDIR" -mindepth 1 -maxdepth 1 -name 'talos-prompt.*' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "0" "$_prompt_tmp_after" "prompt temp dir is removed after the runner exits"
 
