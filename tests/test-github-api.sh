@@ -974,6 +974,79 @@ out_g_idem3="$(bash "$VCS" record-attempt 42 qa --idempotency-key 'bad key!' 2>&
 assert_eq "1" "$rc_g_idem3" "#172 github-api: invalid idempotency-key exits 1"
 assert_eq "" "$(cat "$CURL_LOG")" "#172 github-api: invalid idempotency-key makes no curl call"
 
+# ── Issue #172 QA follow-up: record-attempt --pr <pr-n> (github-api) ────────
+# Retry-stable key derived server-side from the PR head SHA -- SKILL.md's
+# qa/reviewer/security call sites now pass --pr instead of hand-minting a
+# token with $(date +%s), which re-evaluated on every separate Bash
+# invocation and reproduced the #172 double-post bug on retry (PR #193 QA).
+_PR2_SHA1="aabb1122ccdd3344eeff556677889900aabb1122"
+_PR2_SHA2="00112233445566778899aabbccddeeff00112233"
+
+# The exact SKILL.md command form ("record-attempt <N> qa --pr <PR_NUMBER>"),
+# run twice in two SEPARATE `bash -c` invocations (no shared shell state --
+# the same harness gap the old $(date +%s) form fell into). Queue order per
+# call: GET pulls/9 (pr-head), GET comments, POST comment.
+: > "$CURL_LOG"; : > "$CURL_QUEUE"; : > "$CURL_LINK_QUEUE"
+printf '%s\n%s\n%s\n' \
+  "{\"head\":{\"sha\":\"$_PR2_SHA1\"}}" \
+  '[]' \
+  '{"id":901,"html_url":"https://github.com/acme/widget/issues/42#issuecomment-901"}' \
+  > "$CURL_QUEUE"
+out_g_pr1="$(bash -c 'bash "$0" record-attempt 42 qa --pr 9' "$VCS" 2>/dev/null)"; rc_g_pr1=$?
+assert_eq "0" "$rc_g_pr1" "#172 github-api: --pr first call (bash -c #1) exits 0"
+assert_contains "$out_g_pr1" "count=1" "#172 github-api: --pr first call (bash -c #1) count=1"
+assert_contains "$(cat "$CURL_LOG")" "pulls/9" "#172 github-api: --pr first call resolved head via pulls/9"
+assert_contains "$(cat "$CURL_LOG")" "key=qa-${_PR2_SHA1}" \
+  "#172 github-api: --pr first call marker carries stage-sha key"
+
+# Retry at the SAME head, in a second SEPARATE bash -c invocation, against
+# comment state that already carries the marker call #1 posted: does not
+# post again, count stays N+1 (1), not N+2 (2).
+_g_pr_prior="[{\"body\":\"<!-- talos:attempt stage=qa count=1 total=1 key=qa-${_PR2_SHA1} -->\",\"user\":{\"login\":\"bot\"}}]"
+: > "$CURL_LOG"; : > "$CURL_QUEUE"; : > "$CURL_LINK_QUEUE"
+printf '%s\n%s\n' \
+  "{\"head\":{\"sha\":\"$_PR2_SHA1\"}}" \
+  "$_g_pr_prior" \
+  > "$CURL_QUEUE"
+out_g_pr2="$(bash -c 'bash "$0" record-attempt 42 qa --pr 9' "$VCS" 2>/dev/null)"; rc_g_pr2=$?
+assert_eq "0" "$rc_g_pr2" "#172 github-api: --pr retry (bash -c #2, same head) exits 0"
+assert_contains "$out_g_pr2" "count=1" \
+  "#172 github-api: --pr retry (bash -c #2, same head) count stays N+1 (1), not N+2 (2)"
+_g_pr2_log="$(cat "$CURL_LOG")"
+assert_not_contains "$_g_pr2_log" $'\t{"body"' \
+  "#172 github-api: --pr retry (bash -c #2, same head) posts no new comment"
+
+# A NEW head SHA (genuinely new commit) yields a different key and DOES
+# increment, against that same prior marker.
+: > "$CURL_LOG"; : > "$CURL_QUEUE"; : > "$CURL_LINK_QUEUE"
+printf '%s\n%s\n%s\n' \
+  "{\"head\":{\"sha\":\"$_PR2_SHA2\"}}" \
+  "$_g_pr_prior" \
+  '{"id":902,"html_url":"https://github.com/acme/widget/issues/42#issuecomment-902"}' \
+  > "$CURL_QUEUE"
+out_g_pr3="$(bash "$VCS" record-attempt 42 qa --pr 9 2>/dev/null)"; rc_g_pr3=$?
+assert_eq "0" "$rc_g_pr3" "#172 github-api: --pr new head exits 0"
+assert_contains "$out_g_pr3" "count=2" \
+  "#172 github-api: --pr new head count increments to 2 (new key, new attempt)"
+assert_contains "$(cat "$CURL_LOG")" "key=qa-${_PR2_SHA2}" \
+  "#172 github-api: --pr new head posts a new marker keyed on the new head SHA"
+
+# --pr and --idempotency-key together are rejected.
+: > "$CURL_LOG"; : > "$CURL_QUEUE"; : > "$CURL_LINK_QUEUE"
+out_g_pr_both="$(bash "$VCS" record-attempt 42 qa --pr 9 --idempotency-key run-abc123 2>&1)"; rc_g_pr_both=$?
+assert_eq "1" "$rc_g_pr_both" "#172 github-api: --pr with --idempotency-key exits 1"
+assert_contains "$out_g_pr_both" "mutually exclusive" \
+  "#172 github-api: --pr with --idempotency-key error names the conflict"
+assert_eq "" "$(cat "$CURL_LOG")" "#172 github-api: --pr with --idempotency-key makes no curl call"
+
+# Unresolvable head SHA fails closed -- exit 1, nothing posted.
+: > "$CURL_LOG"; : > "$CURL_QUEUE"; : > "$CURL_LINK_QUEUE"
+printf '%s\n' '{"head":{}}' > "$CURL_QUEUE"
+out_g_pr_nohead="$(bash "$VCS" record-attempt 42 qa --pr 404 2>&1)"; rc_g_pr_nohead=$?
+assert_eq "1" "$rc_g_pr_nohead" "#172 github-api: --pr unresolvable head exits 1"
+assert_not_contains "$(cat "$CURL_LOG")" $'\t{"body"' \
+  "#172 github-api: --pr unresolvable head posts nothing"
+
 # ── Issue #172: post-approval duplicate-marker detection, 150 comments,
 #    marker on page 2 (github-api) ───────────────────────────────────────────
 cat > talos.pipeline.json <<'EOF'

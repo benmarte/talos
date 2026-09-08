@@ -49,12 +49,27 @@
 #                                             approvals); respects
 #                                             merge.approval_waiver_paths config
 #   record-attempt <issue-n> <stage>          Record one attempt for the given blocking
-#     [--idempotency-key <token>]             stage on the issue. Reads prior state,
+#     [--pr <pr-n> | --idempotency-key <token>]
+#                                             stage on the issue. Reads prior state,
 #                                             computes new per-stage count and running
 #                                             total, posts a <!-- talos:attempt --> marker
 #                                             comment, and prints "stage=<s> count=<k>
 #                                             total=<t>" on stdout. Exits non-zero when
 #                                             either ceiling would be exceeded.
+#                                             --pr <pr-n>: derives the idempotency key
+#                                             itself as "<stage>-<pr-head-sha>" by
+#                                             resolving the PR's current head SHA
+#                                             server-side (same call as the pr-head verb).
+#                                             Retry-stable by construction -- the exact
+#                                             same command, run again in a fresh shell/
+#                                             process, always recomputes the same key as
+#                                             long as the PR head has not moved, so callers
+#                                             never mint a token by hand (e.g. no
+#                                             $(date +%s), which re-evaluates on every
+#                                             invocation and defeats dedup on retry). Fails
+#                                             closed (exit 1, nothing posted) if the head
+#                                             SHA cannot be resolved. Mutually exclusive
+#                                             with --idempotency-key.
 #                                             --idempotency-key <token>: when the most
 #                                             recent marker already carries this stage and
 #                                             key, does not post again -- reprints the
@@ -63,8 +78,12 @@
 #                                             [A-Za-z0-9._-]+ (exit 1 otherwise). Only
 #                                             dedupes an immediate retry within the same
 #                                             orchestrator turn -- it does not persist
-#                                             across process restarts. Omitted: unchanged
-#                                             back-compat behaviour (always posts).
+#                                             across process restarts. Use this only when
+#                                             no PR exists yet (e.g. developer/validator/pm
+#                                             stages before a PR is opened); prefer --pr
+#                                             whenever a PR number is available. Omitted:
+#                                             unchanged back-compat behaviour (always
+#                                             posts).
 #   read-attempt <issue-n>                    Print stage/count/total from the most
 #                                             recent attempt marker on the issue.
 #                                             Exits 0 (prints "stage= count=0 total=0")
@@ -1218,7 +1237,12 @@ sys.exit(0)
       fi
       # --idempotency-key <token> (#172): optional flag, back-compat when omitted.
       # token must match [A-Za-z0-9._-]+ -- no free-form text enters a marker (PR #68).
-      local idem_key="" idem_key_seen=false
+      # --pr <pr-n> (#172 QA follow-up): derives the key itself as
+      # "<stage>-<pr-head-sha>" -- retry-stable across separate shells/processes
+      # because it depends only on the PR's current head SHA, never on a
+      # freshly-minted value like $(date +%s). Mutually exclusive with
+      # --idempotency-key.
+      local idem_key="" idem_key_seen=false pr_n=""
       shift 2 2>/dev/null || shift "$#"
       while [ $# -gt 0 ]; do
         case "$1" in
@@ -1227,9 +1251,36 @@ sys.exit(0)
             idem_key_seen=true
             shift 2 2>/dev/null || shift "$#"
             ;;
+          --pr)
+            pr_n="${2:-}"
+            shift 2 2>/dev/null || shift "$#"
+            ;;
           *) shift ;;
         esac
       done
+      if [ -n "$pr_n" ] && [ "$idem_key_seen" = "true" ]; then
+        echo "pipeline-vcs: record-attempt: --pr and --idempotency-key are mutually exclusive" >&2
+        exit 1
+      fi
+      if [ -n "$pr_n" ]; then
+        local pr_sha
+        pr_sha="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" pr-head "$pr_n" ${REPO:+--repo "$REPO"} 2>/dev/null)" || {
+          echo "pipeline-vcs: record-attempt: could not resolve head SHA for PR #$pr_n" >&2
+          exit 1
+        }
+        case "$pr_sha" in
+          *[!0-9a-f]*|"")
+            echo "pipeline-vcs: record-attempt: invalid SHA from pr-head: '$pr_sha'" >&2
+            exit 1
+            ;;
+        esac
+        if [ "${#pr_sha}" -ne 40 ]; then
+          echo "pipeline-vcs: record-attempt: SHA must be 40 hex chars, got ${#pr_sha}: '$pr_sha'" >&2
+          exit 1
+        fi
+        idem_key="${stage}-${pr_sha}"
+        idem_key_seen=true
+      fi
       if [ "$idem_key_seen" = "true" ]; then
         case "$idem_key" in
           ''|*[!A-Za-z0-9._-]*)
@@ -2746,7 +2797,9 @@ sys.exit(0)
       fi
       # --idempotency-key <token> (#172): optional flag, back-compat when omitted.
       # token must match [A-Za-z0-9._-]+ -- no free-form text enters a marker (PR #68).
-      local _idem_key="" _idem_key_seen=false
+      # --pr <pr-n> (#172 QA follow-up): see the _github provider's record-attempt
+      # for the full rationale -- identical behaviour here.
+      local _idem_key="" _idem_key_seen=false _pr_n=""
       shift 2 2>/dev/null || shift "$#"
       while [ $# -gt 0 ]; do
         case "$1" in
@@ -2755,9 +2808,36 @@ sys.exit(0)
             _idem_key_seen=true
             shift 2 2>/dev/null || shift "$#"
             ;;
+          --pr)
+            _pr_n="${2:-}"
+            shift 2 2>/dev/null || shift "$#"
+            ;;
           *) shift ;;
         esac
       done
+      if [ -n "$_pr_n" ] && [ "$_idem_key_seen" = "true" ]; then
+        echo "pipeline-vcs: record-attempt: --pr and --idempotency-key are mutually exclusive" >&2
+        exit 1
+      fi
+      if [ -n "$_pr_n" ]; then
+        local _pr_sha
+        _pr_sha="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" pr-head "$_pr_n" ${REPO:+--repo "$REPO"} 2>/dev/null)" || {
+          echo "pipeline-vcs: record-attempt: could not resolve head SHA for PR #$_pr_n" >&2
+          exit 1
+        }
+        case "$_pr_sha" in
+          *[!0-9a-f]*|"")
+            echo "pipeline-vcs: record-attempt: invalid SHA from pr-head: '$_pr_sha'" >&2
+            exit 1
+            ;;
+        esac
+        if [ "${#_pr_sha}" -ne 40 ]; then
+          echo "pipeline-vcs: record-attempt: SHA must be 40 hex chars, got ${#_pr_sha}: '$_pr_sha'" >&2
+          exit 1
+        fi
+        _idem_key="${_stage}-${_pr_sha}"
+        _idem_key_seen=true
+      fi
       if [ "$_idem_key_seen" = "true" ]; then
         case "$_idem_key" in
           ''|*[!A-Za-z0-9._-]*)
