@@ -852,6 +852,62 @@ hooks:
 cat >> "$HOME/.talos-events.jsonl"
 ```
 
+This is exactly what Talos's built-in events log does out of the box for
+every project -- see below -- so a custom `hooks.post_stage` command like
+this one is only needed when the destination has to be something other than
+the repo-local `.talos/events.jsonl` file (a different path, a remote sink,
+etc).
+
+### The built-in events log (`events.enabled`, `events.path`)
+
+**What it does.** Every `hooks.post_stage` payload (the exact same JSON
+schema shown above) is also appended, as one JSON line, to a local audit log
+-- independently of whether `hooks.post_stage` itself is configured. Enabled
+by default, so every project gets a durable local record of what happened in
+a run for free, without wiring up an external sink.
+
+**Where.** The log path (`events.path`, default `.talos/events.jsonl`) is
+resolved relative to the **main repository root**, via `git rev-parse
+--git-common-dir` -- not the current worktree's own `.git` dir. Every linked
+worktree of a repo shares one common dir (git-common-dir(5)), so a
+developer/QA/reviewer stage running from inside a per-issue worktree still
+appends to the single log file at the main checkout, never a worktree-local
+copy. A relative `events.path` is joined onto that resolved root; an
+absolute one is used as-is. `.talos/` is gitignored by default.
+
+**Concurrency.** Appends are a single `printf '%s\n' >>` -- one `O_APPEND`
+write syscall. A JSON event line is well under the POSIX `PIPE_BUF` atomic
+threshold, so stages finishing concurrently (`issues.max_parallel` > 1)
+interleave whole lines, never partial ones. No lock file is used or needed.
+
+**Failure mode.** A failure to write (path unresolvable, permissions, disk
+full) is a stderr note only -- it never changes `pipeline-hooks.sh`'s exit
+code or affects the pipeline.
+
+**Worked config example** (disable it, or point it somewhere else):
+
+```yaml
+events:
+  enabled: true                 # default true
+  path: ".talos/events.jsonl"   # relative to the main repo root, unless absolute
+```
+
+**Reading the log.** Use `scripts/pipeline-events.sh` rather than parsing the
+file directly -- it tolerates malformed lines and supports filtering:
+
+```bash
+bash scripts/pipeline-events.sh path
+bash scripts/pipeline-events.sh list --issue 42 --role qa --last 20
+bash scripts/pipeline-events.sh list --json
+bash scripts/pipeline-events.sh tail --issue 42
+```
+
+`list`/`tail` print one line per matching event, oldest first: a compact
+tab-separated table by default (`ts`, `event`, `role`, `issue`, `pr`,
+`verdict`, `summary` truncated to 80 chars), or one JSON object per line with
+`--json`. A malformed line is skipped, not fatal -- the count of skipped
+lines is reported once on stderr.
+
 ### A generic notification sink (`notifications.cmd`)
 
 **What it does.** `notifications.cmd` runs a shell command (via `sh -c`) for

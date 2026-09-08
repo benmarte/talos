@@ -6,7 +6,10 @@
 #                 prepended to that prompt (#181).
 #   post_stage    runs after every verdict, approval, block or merge is
 #                 known; receives a JSON outcome event on stdin, fire-and-
-#                 forget (#182).
+#                 forget (#182). The same payload is also appended as one
+#                 JSON line to the local events log (#183) -- see
+#                 events.enabled / events.path below -- independently of
+#                 whether hooks.post_stage is configured at all.
 #
 # Usage: pipeline-hooks.sh pre_dispatch <role> <issue> [<pr>] [<worktree_path>] [files_hint...]
 #        pipeline-hooks.sh post_stage <event> <role> <issue> [--pr N] [--sha S]
@@ -25,6 +28,15 @@
 #                        verify.timeout_ms / verify.ci_wait_s): a non-integer
 #                        or non-positive value warns once on stderr and falls
 #                        back to the default. Default: 30.
+#   events.enabled       whether every post_stage payload is also appended,
+#                        as one JSON line, to the local events log (#183).
+#                        Default: true.
+#   events.path          path to the events log, relative to the MAIN
+#                        repository root (resolved via `git rev-parse
+#                        --git-common-dir`, so every linked worktree of the
+#                        same repo appends to the one file) unless already
+#                        absolute. Default: ".talos/events.jsonl". Read with
+#                        scripts/pipeline-events.sh.
 #
 # Contract (mirrors pipeline-notify.sh): NEVER blocks the pipeline. A
 # non-zero exit, a timeout, or (pre_dispatch only) empty stdout from the
@@ -94,6 +106,71 @@ _hooks_timeout_s() {
   esac
   [ "$timeout_s" -gt 0 ] 2>/dev/null || timeout_s=30
   printf '%s' "$timeout_s"
+}
+
+# _events_log_path -> prints the absolute path to the events.jsonl log, or
+# nothing (rc 1) if it can't be resolved (not a git repo, etc).
+#
+# Resolved via `git rev-parse --git-common-dir`, NOT --git-dir: the common
+# dir is shared by every linked worktree of a repo (git-common-dir(5)), so a
+# developer/QA/reviewer stage running from inside a per-issue worktree still
+# appends to the one log file at the main repository's root -- never a
+# worktree-local copy. --git-common-dir can print a path relative to the
+# caller's cwd (e.g. ".git" from the main repo, "../../.git" from a linked
+# worktree two levels down), so it's resolved to absolute here before use;
+# events.path (default ".talos/events.jsonl") is then joined onto that
+# resolved root when it isn't already absolute.
+_events_log_path() {
+  local common_dir root path_cfg
+  common_dir="$(git rev-parse --git-common-dir 2>/dev/null)" || return 1
+  [ -n "$common_dir" ] || return 1
+  case "$common_dir" in
+    /*) : ;;
+    *) common_dir="$(cd "$(dirname "$common_dir")" 2>/dev/null && pwd)/$(basename "$common_dir")" ;;
+  esac
+  [ -n "$common_dir" ] || return 1
+  root="$(dirname "$common_dir")"
+
+  path_cfg="$(cfg events.path ".talos/events.jsonl")"
+  case "$path_cfg" in
+    /*) printf '%s' "$path_cfg" ;;
+    *) printf '%s/%s' "$root" "$path_cfg" ;;
+  esac
+}
+
+# _events_append <json_line> -- appends one JSON object, as a single line, to
+# the events log (see _events_log_path), when events.enabled (default true).
+# Best-effort only: any failure (disabled, unresolvable path, mkdir/write
+# error) is a stderr note, never a non-zero return -- this must never affect
+# post_stage's own always-exit-0 contract.
+#
+# Concurrency: a single `printf '%s\n' >>` is one O_APPEND write syscall; on
+# POSIX a write below PIPE_BUF (a JSON event line is well under the 4KB
+# typical minimum) is atomic, so concurrent post_stage calls (e.g. several
+# stages finishing at once under issues.max_parallel) interleave whole lines,
+# never partial ones. No flock/lockfile needed.
+_events_append() {
+  local json_line="$1"
+  local enabled log_path log_dir
+  enabled="$(cfg events.enabled "true")"
+  [ "$enabled" = "false" ] && return 0
+
+  log_path="$(_events_log_path)"
+  if [ -z "$log_path" ]; then
+    echo "pipeline-hooks: events log path could not be resolved -- skipping" >&2
+    return 0
+  fi
+
+  log_dir="$(dirname "$log_path")"
+  if ! mkdir -p "$log_dir" 2>/dev/null; then
+    echo "pipeline-hooks: could not create events log directory ($log_dir) -- skipping" >&2
+    return 0
+  fi
+
+  if ! printf '%s\n' "$json_line" >> "$log_path" 2>/dev/null; then
+    echo "pipeline-hooks: could not write to events log ($log_path) -- skipping" >&2
+  fi
+  return 0
 }
 
 # _hooks_repo -> prints "owner/name", resolved from config or the origin remote.
@@ -265,12 +342,6 @@ post_stage() {
 
   local hook_cmd
   hook_cmd="$(cfg hooks.post_stage "")"
-  if [ -z "$hook_cmd" ]; then
-    return 0
-  fi
-
-  local timeout_s
-  timeout_s="$(_hooks_timeout_s)"
 
   local repo
   repo="$(_hooks_repo)"
@@ -345,6 +416,18 @@ payload = {
 }
 json.dump(payload, sys.stdout)
 ')"
+
+  # Local audit log (#183): written from the same payload regardless of
+  # whether hooks.post_stage is configured -- independent concerns, see
+  # _events_append.
+  _events_append "$stdin_json"
+
+  if [ -z "$hook_cmd" ]; then
+    return 0
+  fi
+
+  local timeout_s
+  timeout_s="$(_hooks_timeout_s)"
 
   _hooks_run "$hook_cmd" "$timeout_s" "$stdin_json" "$role" "$issue" ""
 
