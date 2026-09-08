@@ -8,6 +8,14 @@
 #   --quiet     print one line per file (pass/fail/cached) plus full output
 #               only for failing files (also: TALOS_TEST_QUIET=1)
 #   --no-cache  ignore and do not write the per-file result cache
+#   --repeat N  run the selected files N times, stopping at the first
+#               iteration that fails (its full log is printed; also implies
+#               --no-cache, since a cache hit on iteration 2+ would silently
+#               skip the re-run this flag exists for). N=1 (the default) is
+#               a no-op: output is byte-for-byte identical to omitting the
+#               flag. Intended for reproducing nondeterministic ("flaky")
+#               failures locally, e.g.:
+#                 bash tests/run-tests.sh -j 8 --repeat 20 test-foo.sh
 #   pattern     optional substring filter, e.g. "notify" runs test-notify*.sh
 #
 # A test file that cannot run concurrently with the others (shared fixtures,
@@ -50,6 +58,7 @@ PATTERN=""
 JOBS_OVERRIDE=""
 QUIET=0
 NO_CACHE=0
+REPEAT=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --base-ref)
@@ -68,6 +77,10 @@ while [ $# -gt 0 ]; do
       NO_CACHE=1
       shift
       ;;
+    --repeat)
+      REPEAT="$2"
+      shift 2
+      ;;
     *)
       PATTERN="$1"
       shift
@@ -77,6 +90,16 @@ done
 if [ "${TALOS_TEST_QUIET:-0}" = "1" ]; then
   QUIET=1
 fi
+
+# --repeat validation: fall back to 1 (a no-op) on anything non-numeric,
+# same convention as the JOBS fallback below.
+case "$REPEAT" in
+  ''|*[!0-9]*) REPEAT=1 ;;
+esac
+[ "$REPEAT" -lt 1 ] && REPEAT=1
+# Repeating with a warm cache would report CACHED (not re-run) from the
+# second iteration on, defeating the flag's purpose of catching flakes.
+[ "$REPEAT" -gt 1 ] && NO_CACHE=1
 
 # ── Resolve worker count ──────────────────────────────────────────────────────
 JOBS=""
@@ -239,7 +262,7 @@ COMBINED=()
 PARALLEL_COUNT=${#PARALLEL_FILES[@]}
 TOTAL_COUNT=${#COMBINED[@]}
 
-RUN_TMP="$(mktemp -d "${TMPDIR:-/tmp}/talos-run-tests.XXXXXX")"
+RUN_TMP=""
 trap 'rm -rf "$RUN_TMP"' EXIT
 
 # run_test_file TESTFILE LOGFILE EXITFILE STATUSFILE -- runs (or serves from
@@ -287,81 +310,104 @@ run_parallel_batch() {
   done
 }
 
-run_parallel_batch
+# ── Repeat loop ────────────────────────────────────────────────────────────────
+# --repeat N re-runs the block below N times, stopping at the first iteration
+# that fails. For the default N=1 this loop body runs exactly once and prints
+# nothing but what it always printed -- no banner, no iteration count -- so
+# output is unchanged from before --repeat existed.
+_repeat_iter=1
+while [ "$_repeat_iter" -le "$REPEAT" ]; do
+  [ "$REPEAT" -gt 1 ] && echo "===== repeat $_repeat_iter/$REPEAT ====="
 
-# Serial files run after the entire parallel batch has finished, one at a time.
-i=$PARALLEL_COUNT
-while [ "$i" -lt "$TOTAL_COUNT" ]; do
-  run_test_file "${COMBINED[$i]}" "$RUN_TMP/$i.log" "$RUN_TMP/$i.exit" "$RUN_TMP/$i.status"
-  i=$((i + 1))
-done
+  RUN_TMP="$(mktemp -d "${TMPDIR:-/tmp}/talos-run-tests.XXXXXX")"
 
-# ── Report, in stable (original file-list) order ──────────────────────────────
-total_files=0
-failed_files=0
-i=0
-while [ "$i" -lt "$TOTAL_COUNT" ]; do
-  t="${COMBINED[$i]}"
-  name="$(basename "$t")"
-  status="$(cat "$RUN_TMP/$i.status" 2>/dev/null || echo RAN)"
-  rc="$(cat "$RUN_TMP/$i.exit" 2>/dev/null || echo 1)"
-  log="$RUN_TMP/$i.log"
-  total_files=$((total_files + 1))
-  [ "$rc" != "0" ] && failed_files=$((failed_files + 1))
+  run_parallel_batch
 
-  if [ "$QUIET" -eq 1 ]; then
-    if [ "$status" = "CACHED" ]; then
-      echo "CACHED tests/$name"
-    elif [ "$rc" = "0" ]; then
-      echo "PASS  tests/$name"
+  # Serial files run after the entire parallel batch has finished, one at a time.
+  i=$PARALLEL_COUNT
+  while [ "$i" -lt "$TOTAL_COUNT" ]; do
+    run_test_file "${COMBINED[$i]}" "$RUN_TMP/$i.log" "$RUN_TMP/$i.exit" "$RUN_TMP/$i.status"
+    i=$((i + 1))
+  done
+
+  # ── Report, in stable (original file-list) order ──────────────────────────────
+  total_files=0
+  failed_files=0
+  i=0
+  while [ "$i" -lt "$TOTAL_COUNT" ]; do
+    t="${COMBINED[$i]}"
+    name="$(basename "$t")"
+    status="$(cat "$RUN_TMP/$i.status" 2>/dev/null || echo RAN)"
+    rc="$(cat "$RUN_TMP/$i.exit" 2>/dev/null || echo 1)"
+    log="$RUN_TMP/$i.log"
+    total_files=$((total_files + 1))
+    [ "$rc" != "0" ] && failed_files=$((failed_files + 1))
+
+    if [ "$QUIET" -eq 1 ]; then
+      if [ "$status" = "CACHED" ]; then
+        echo "CACHED tests/$name"
+      elif [ "$rc" = "0" ]; then
+        echo "PASS  tests/$name"
+      else
+        echo "FAIL  tests/$name"
+        cat "$log"
+      fi
     else
-      echo "FAIL  tests/$name"
-      cat "$log"
+      echo "-- $name"
+      if [ "$status" = "CACHED" ]; then
+        echo "CACHED tests/$name"
+      else
+        cat "$log"
+      fi
+      echo ""
     fi
-  else
-    echo "-- $name"
-    if [ "$status" = "CACHED" ]; then
-      echo "CACHED tests/$name"
-    else
-      cat "$log"
-    fi
-    echo ""
-  fi
-  i=$((i + 1))
-done
+    i=$((i + 1))
+  done
 
-# ── Part A: test-file count check ────────────────────────────────────────────
-# Only applies when no pattern filter is active (pattern runs a subset by design).
-if [ "$SKIP_COUNT_CHECK" -eq 0 ] && [ -z "$PATTERN" ] && [ -n "$EXPECTED_FILES" ]; then
-  MISSING_FILES=""
-  EXPECTED_COUNT=0
-  while IFS= read -r _entry; do
-    [ -z "$_entry" ] && continue
-    _fname="$(basename "$_entry")"
-    EXPECTED_COUNT=$((EXPECTED_COUNT + 1))
-    if [ ! -f "$TALOS_ROOT/tests/$_fname" ]; then
-      MISSING_FILES="${MISSING_FILES}  $_fname
+  rm -rf "$RUN_TMP"
+
+  # ── Part A: test-file count check ────────────────────────────────────────────
+  # Only applies when no pattern filter is active (pattern runs a subset by design).
+  if [ "$SKIP_COUNT_CHECK" -eq 0 ] && [ -z "$PATTERN" ] && [ -n "$EXPECTED_FILES" ]; then
+    MISSING_FILES=""
+    EXPECTED_COUNT=0
+    while IFS= read -r _entry; do
+      [ -z "$_entry" ] && continue
+      _fname="$(basename "$_entry")"
+      EXPECTED_COUNT=$((EXPECTED_COUNT + 1))
+      if [ ! -f "$TALOS_ROOT/tests/$_fname" ]; then
+        MISSING_FILES="${MISSING_FILES}  $_fname
 "
-    fi
-  done <<EOF
+      fi
+    done <<EOF
 $EXPECTED_FILES
 EOF
 
-  if [ -n "$MISSING_FILES" ]; then
-    echo "RESULT: test count SHORT -- ran $total_files of $EXPECTED_COUNT file(s); missing:" >&2
-    printf '%s' "$MISSING_FILES" >&2
+    if [ -n "$MISSING_FILES" ]; then
+      echo "RESULT: test count SHORT -- ran $total_files of $EXPECTED_COUNT file(s); missing:" >&2
+      printf '%s' "$MISSING_FILES" >&2
+      exit 1
+    fi
+  fi
+
+  if [ "$failed_files" -gt 0 ]; then
+    if [ "$REPEAT" -gt 1 ]; then
+      echo "RESULT: repeat $_repeat_iter/$REPEAT FAILED -- $failed_files of $total_files test file(s) FAILED"
+    else
+      echo "RESULT: $failed_files of $total_files test file(s) FAILED"
+    fi
     exit 1
   fi
-fi
 
-if [ "$failed_files" -gt 0 ]; then
-  echo "RESULT: $failed_files of $total_files test file(s) FAILED"
-  exit 1
-fi
-if [ -n "$PATTERN" ]; then
-  echo "RESULT: all $total_files test file(s) passed (FILTERED by '$PATTERN' -- count check skipped)"
-elif [ "$SKIP_COUNT_CHECK" -eq 1 ]; then
-  echo "RESULT: all $total_files test file(s) passed (count check skipped -- base ref unresolvable)"
-else
-  echo "RESULT: all $total_files test file(s) passed"
-fi
+  if [ "$_repeat_iter" -eq "$REPEAT" ]; then
+    if [ -n "$PATTERN" ]; then
+      echo "RESULT: all $total_files test file(s) passed (FILTERED by '$PATTERN' -- count check skipped)"
+    elif [ "$SKIP_COUNT_CHECK" -eq 1 ]; then
+      echo "RESULT: all $total_files test file(s) passed (count check skipped -- base ref unresolvable)"
+    else
+      echo "RESULT: all $total_files test file(s) passed"
+    fi
+  fi
+
+  _repeat_iter=$((_repeat_iter + 1))
+done
