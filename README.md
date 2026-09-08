@@ -495,7 +495,8 @@ The pipeline deliberately preserves three gates that only a human should act on:
 
 | Script | Purpose |
 |--------|---------|
-| `scripts/pipeline-config.sh KEY [default]` | Dot-path config reader (YAML/JSON) |
+| `scripts/pipeline-config.sh KEY [default]` | Dot-path config reader (YAML/JSON); use `--dump` to print the entire resolved config as NUL-delimited key/value pairs |
+| `scripts/pipeline-cfg-cache.sh` | Per-invocation config cache that eliminates redundant python3 parses (sourced by pipeline-*.sh internally) |
 | `scripts/pipeline-vcs.sh [--dry-run] <verb> [args...]` | Uniform VCS adapter (github/gitlab/azure/file) |
 | `scripts/pipeline-status.sh [--dry-run] <issue> <status>` | Set GitHub Project board status |
 | `scripts/pipeline-notify.sh <event> <ref> <message> [thread_key]` | Post event to Slack/Discord/Teams |
