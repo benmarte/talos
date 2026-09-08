@@ -843,17 +843,20 @@ bash tests/run-tests.sh --changed                             # git diff vs orig
 bash tests/run-tests.sh --changed HEAD~3                      # explicit base ref
 ```
 
-Each path is mapped to test files by convention: `scripts/pipeline-<name>.sh`
-maps to `tests/test-<name>*.sh`; `tests/test-*.sh` maps to itself;
-`agents/*.md`, `skills/**`, and `templates/**` map to `tests/test-skill-names.sh`
-plus any test file whose contents reference that path's directory. A small
-always-run set is layered on top (e.g. `scripts/pipeline-vcs.sh` also selects
-`test-verb-parity.sh`). `tests/stubs/*`, `tests/helpers.sh`,
-`tests/run-tests.sh`, `talos.pipeline.*`, `.github/**`, and any path matching
-no rule above fall back to the full suite (fail-safe, with a one-line stderr
-note for the unmapped case). The selected file list is printed before
-running, and both flags compose with `--quiet`, `-j`, `--no-cache`, and
-`--repeat`.
+Each path is mapped to test files by convention plus any test that references
+the script: `scripts/pipeline-<name>.sh` maps to `tests/test-<name>*.sh`
+unioned with every `tests/test-*.sh` file whose contents mention the script's
+basename (a fixed-string `grep -l` sweep of the whole suite -- e.g.
+`scripts/pipeline-vcs.sh` selects `test-vcs.sh` by convention plus every
+other test file, such as `test-verb-parity.sh`, that names
+`pipeline-vcs.sh`); `tests/test-*.sh` maps to itself; `agents/*.md`,
+`skills/**`, and `templates/**` map to `tests/test-skill-names.sh` plus any
+test file whose contents reference that path's directory. `tests/stubs/*`,
+`tests/helpers.sh`, `tests/run-tests.sh`, `talos.pipeline.*`, `.github/**`,
+and any path matching no rule above fall back to the full suite (fail-safe,
+with a one-line stderr note for the unmapped case). The selected file list is
+printed before running, and both flags compose with `--quiet`, `-j`,
+`--no-cache`, and `--repeat`.
 
 Passing runs are cached under `.talos/test-cache/` (gitignored), keyed on the
 test file's own content plus a whole-set hash of **all tracked files except**

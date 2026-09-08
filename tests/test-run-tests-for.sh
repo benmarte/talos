@@ -239,7 +239,39 @@ assert_exit_code 1 "$rc_j" "J: a selection with no file on disk exits non-zero"
 assert_contains "$out_j" "selected 0 test file(s) to run" "J: prints a clear message naming the empty selection"
 assert_not_contains "$out_j" "RESULT: all 0 test file(s) passed" "J: never reports a 0-file pass"
 
-# ── Test K: "RESULT: all 0 test file(s) passed" must never appear in any
+# ── Test K: scripts/pipeline-<name>.sh unions the convention match with
+# every test file that references the script's basename (#220 review fix) ──
+# Three fixture tests cover pipeline-foo.sh: one matches by the
+# tests/test-foo*.sh naming convention, and two others -- with names that do
+# NOT match the convention -- reference "pipeline-foo.sh" as a fixed string
+# in their contents. A fourth, unrelated test neither matches the
+# convention nor references the script and must be excluded.
+# Named mutation: this is the exact gap the reviewer found -- reverting the
+# union back to convention-only would drop the SELECTED set to just
+# test-foo.sh (1 file instead of 3), and reverting to "any test matching a
+# broad substring" instead of a fixed-string basename match would risk
+# pulling in test-gamma-unrelated.sh too. Asserting the SELECTED line's
+# exact contents (not just "contains") catches both directions.
+FDL="$SANDBOX/l"
+build_min_fixture "$FDL"
+mkdir -p "$FDL/scripts"
+printf '#!/usr/bin/env bash\necho stub\n' > "$FDL/scripts/pipeline-foo.sh"
+write_stub "$FDL" "test-foo.sh" "exit 0"
+write_stub "$FDL" "test-alpha-refs-foo.sh" $'# exercises scripts/pipeline-foo.sh\nexit 0'
+write_stub "$FDL" "test-beta-refs-foo.sh" $'# also calls scripts/pipeline-foo.sh\nexit 0'
+write_stub "$FDL" "test-gamma-unrelated.sh" "exit 0"
+
+out_l="$(bash "$FDL/tests/run-tests.sh" --no-cache --for scripts/pipeline-foo.sh --quiet 2>&1)"; rc_l=$?
+assert_exit_code 0 "$rc_l" "K: exits 0"
+selected_line_l="$(printf '%s\n' "$out_l" | grep '^SELECTED:')"
+assert_eq "SELECTED: test-foo.sh test-alpha-refs-foo.sh test-beta-refs-foo.sh" "$selected_line_l" "K: selects the convention match plus both referencing tests, exact set"
+assert_contains "$out_l" "PASS  tests/test-foo.sh" "K: runs the convention-matched test-foo.sh"
+assert_contains "$out_l" "PASS  tests/test-alpha-refs-foo.sh" "K: runs the non-convention test that references pipeline-foo.sh"
+assert_contains "$out_l" "PASS  tests/test-beta-refs-foo.sh" "K: runs the second non-convention test that references pipeline-foo.sh"
+assert_not_contains "$out_l" "test-gamma-unrelated.sh" "K: does not select the unrelated, non-referencing test"
+assert_contains "$out_l" "RESULT: all 3 test file(s) passed" "K: RESULT line covers exactly the 3 selected files"
+
+# ── Test L: "RESULT: all 0 test file(s) passed" must never appear in any
 # --for/--changed output captured above ───────────────────────────────────────
 ALL_TARGETED_OUTPUT="$out_a
 $out_b
@@ -250,7 +282,8 @@ $out_f
 $out_g
 $out_h
 $out_i
-$out_j"
-assert_not_contains "$ALL_TARGETED_OUTPUT" "RESULT: all 0 test file(s) passed" "K: no --for/--changed run ever silently passes with 0 files"
+$out_j
+$out_l"
+assert_not_contains "$ALL_TARGETED_OUTPUT" "RESULT: all 0 test file(s) passed" "L: no --for/--changed run ever silently passes with 0 files"
 
 finish

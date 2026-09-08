@@ -23,6 +23,13 @@
 #                       whole suite; repeatable. Convention (nothing else
 #                       runs unless a rule below adds it):
 #                         scripts/pipeline-<name>.sh -> tests/test-<name>*.sh
+#                                                        plus any test file
+#                                                        whose contents
+#                                                        reference the
+#                                                        script's basename
+#                                                        (a fixed-string
+#                                                        grep -l over
+#                                                        tests/test-*.sh)
 #                         tests/test-*.sh            -> itself
 #                         agents/*.md, skills/**, templates/**
 #                                                     -> tests/test-skill-names.sh
@@ -30,20 +37,17 @@
 #                                                        whose contents
 #                                                        reference the path's
 #                                                        directory prefix
-#                       Always-run additions:
-#                         scripts/pipeline-vcs.sh              -> + test-verb-parity.sh
-#                         scripts/pipeline-config.sh,
-#                         scripts/pipeline-cfg-cache.sh         -> + tests/test-config*.sh
 #                       Fail-safe (full suite, one-line stderr note):
 #                         tests/stubs/*, tests/helpers.sh, tests/run-tests.sh,
 #                         talos.pipeline.*, .github/**, any path matching no
 #                         rule above, or a scripts/pipeline-<name>.sh whose
-#                         convention + always-run rules match zero files
-#                         (e.g. no tests/test-<name>*.sh exists). An empty
-#                         selection is never allowed to silently "pass"; if
-#                         the final selected list is still empty after all
-#                         rules (e.g. every mapped file was deleted), the
-#                         run exits non-zero with a clear message instead.
+#                         convention + referencing rules match zero files
+#                         (e.g. no tests/test-<name>*.sh exists and no test
+#                         file names the script). An empty selection is
+#                         never allowed to silently "pass"; if the final
+#                         selected list is still empty after all rules
+#                         (e.g. every mapped file was deleted), the run
+#                         exits non-zero with a clear message instead.
 #                       Prints the selected file list before running.
 #   --changed [<ref>]  derive --for's paths from
 #                       `git diff --name-only <ref>...HEAD` plus uncommitted
@@ -342,13 +346,14 @@ _add_glob_matches() {
   done
 }
 
-# _add_referencing PREFIX -- append every tests/test-*.sh whose contents
-# mention PREFIX (e.g. "agents/"), found via grep -l over the whole suite.
+# _add_referencing NEEDLE -- append every tests/test-*.sh whose contents
+# mention NEEDLE as a fixed string (e.g. "agents/" or "pipeline-vcs.sh"),
+# found via grep -lF over the whole suite.
 _add_referencing() {
-  local prefix="$1" f
+  local needle="$1" f
   for f in "$TALOS_ROOT"/tests/test-*.sh; do
     [ -f "$f" ] || continue
-    grep -q -- "$prefix" "$f" 2>/dev/null && _add_selected "$(basename "$f")"
+    grep -qF -- "$needle" "$f" 2>/dev/null && _add_selected "$(basename "$f")"
   done
 }
 
@@ -368,15 +373,12 @@ _map_changed_path() {
       name="${name%.sh}"
       before="${#SELECTED_SET[@]}"
       _add_glob_matches "test-${name}*.sh"
-      [ "$base" = "pipeline-vcs.sh" ] && _add_selected "test-verb-parity.sh"
-      case "$base" in
-        pipeline-config.sh|pipeline-cfg-cache.sh) _add_glob_matches "test-config*.sh" ;;
-      esac
-      # Convention + always-run rules matched nothing for this path (e.g. no
-      # tests/test-<name>*.sh exists and it isn't one of the always-run
-      # names above): an empty mapping must never pass through as an empty
-      # selection, so fail open to the full suite -- same fail-safe as an
-      # unmapped path below.
+      _add_referencing "$base"
+      # Convention + referencing rules matched nothing for this path (e.g.
+      # no tests/test-<name>*.sh exists and no test file names the script):
+      # an empty mapping must never pass through as an empty selection, so
+      # fail open to the full suite -- same fail-safe as an unmapped path
+      # below.
       if [ "${#SELECTED_SET[@]}" -eq "$before" ]; then
         echo "run-tests.sh: --for: no tests map to '$p'; running the full suite" >&2
         FULL_SUITE=1
