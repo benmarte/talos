@@ -369,7 +369,28 @@ Repeat this block for each queued issue. Attempt tracking is durable and enforce
 
 ```bash
 # Before re-dispatching the developer after any stage failure, record the
-# attempt and check the ceilings (exits non-zero → stop, set pipeline:blocked):
+# attempt and check the ceilings (exits non-zero → stop, set pipeline:blocked).
+#
+# When a PR already exists for this issue (blocking-stage is qa, reviewer,
+# security, or docs — all of which only run after a PR is open), pass
+# --pr <PR_NUMBER>: record-attempt derives its own idempotency key as
+# "<blocking-stage>-<pr-head-sha>" by resolving the PR's current head SHA
+# itself. This is retry-stable by construction — the exact same command, run
+# again in a fresh Bash tool call after an ambiguous failure, always
+# recomputes the same key as long as the PR head has not moved, so retries
+# dedupe and genuinely new attempts (a new head, a new stage) do not. Never
+# hand-mint a token with $(date +%s) or similar — that re-evaluates on every
+# invocation and silently defeats dedup on retry (#172):
+bash scripts/pipeline-vcs.sh record-attempt <N> <blocking-stage> --pr <PR_NUMBER>
+
+# When no PR exists yet (blocking-stage is developer, validator, or pm —
+# these can block before a PR is ever opened), there is no stable per-attempt
+# token available without inventing state that does not otherwise exist, so
+# call record-attempt with no key at all (back-compat: always posts). This
+# retains the pre-#172 exposure for that narrow case only — a same-turn retry
+# of an issue-side stage can still double-post — which is acceptable because
+# those stages are rare, human-visible in the transcript, and self-correct
+# once a PR exists and later stages start passing --pr:
 bash scripts/pipeline-vcs.sh record-attempt <N> <blocking-stage>
 # blocking-stage is one of: developer qa reviewer security docs validator pm
 ```
@@ -379,6 +400,8 @@ Two ceilings apply (both checked atomically by record-attempt):
 - `limits.max_total_dispatches` (default 8): absolute ceiling on total developer dispatches per issue.  **Never resets.**
 
 When `record-attempt` exits non-zero (either ceiling reached): set `pipeline:blocked`, post blocked.md, move on.  Do NOT re-dispatch the developer.
+
+**Idempotency limit:** `--pr` dedupes any retry at the same PR head, even across a fresh orchestrator process — it cannot distinguish two genuinely separate attempts that happen to land while the PR head is unchanged (e.g. two ambiguous-failure retries of the same stage before a new commit lands), which is treated as one attempt by design. Issue-side stages called with no key (no PR yet) are not deduped at all. That gap is by design, not a bug to chase; see README.md.
 
 ### 3a. Validator (if `roles.validator = true`)
 
@@ -734,9 +757,9 @@ After QA returns:
 - **Fail:**
   1. Relay findings: `bash scripts/pipeline-notify.sh qa "#<N>" "<FAIL: failing criterion + repro>" <N>`
   2. Lifecycle event: `bash scripts/pipeline-notify.sh blocked "#<N>" "QA failed: <criterion>" <N>`
-  3. Record attempt and check ceilings:
+  3. Record attempt and check ceilings (PR already exists, so pass --pr as in Step 3):
      ```bash
-     bash scripts/pipeline-vcs.sh record-attempt <N> qa
+     bash scripts/pipeline-vcs.sh record-attempt <N> qa --pr <PR_NUMBER>
      ```
      If exit 0: re-dispatch the developer. If exit non-zero (ceiling reached): board "Blocked", stop.
 
@@ -868,17 +891,17 @@ After reviewer and security complete (phase 2):
 
 **Reviewer returned:**
 - Approved: `bash scripts/pipeline-notify.sh reviewer "#<N>" "<subagent's 2-3 line outcome>" <N>`
-- Changes needed: `bash scripts/pipeline-notify.sh reviewer "#<N>" "CHANGES: <findings>" <N>` then `bash scripts/pipeline-notify.sh blocked "#<N>" "reviewer: changes required" <N>`; record attempt:
+- Changes needed: `bash scripts/pipeline-notify.sh reviewer "#<N>" "CHANGES: <findings>" <N>` then `bash scripts/pipeline-notify.sh blocked "#<N>" "reviewer: changes required" <N>`; record attempt (PR already exists, so pass --pr as in Step 3):
   ```bash
-  bash scripts/pipeline-vcs.sh record-attempt <N> reviewer
+  bash scripts/pipeline-vcs.sh record-attempt <N> reviewer --pr <PR_NUMBER>
   ```
   Exit 0 → re-dispatch developer. Exit non-zero → set `pipeline:blocked`, stop.
 
 **Security returned:**
 - Clear: `bash scripts/pipeline-notify.sh security "#<N>" "<subagent's 2-3 line outcome>" <N>`
-- Findings: `bash scripts/pipeline-notify.sh security "#<N>" "FINDINGS: <severity + fix>" <N>` then `bash scripts/pipeline-notify.sh blocked "#<N>" "security: findings in PR #<PR_NUMBER>" <N>`; record attempt:
+- Findings: `bash scripts/pipeline-notify.sh security "#<N>" "FINDINGS: <severity + fix>" <N>` then `bash scripts/pipeline-notify.sh blocked "#<N>" "security: findings in PR #<PR_NUMBER>" <N>`; record attempt (PR already exists, so pass --pr as in Step 3):
   ```bash
-  bash scripts/pipeline-vcs.sh record-attempt <N> security
+  bash scripts/pipeline-vcs.sh record-attempt <N> security --pr <PR_NUMBER>
   ```
   Exit 0 → re-dispatch developer. Exit non-zero → set `pipeline:blocked`, stop.
 
@@ -1015,7 +1038,7 @@ After processing all issues, print a summary table:
 10. Notification failures never block the pipeline (pipeline-notify.sh always exits 0).
     Always pass the issue number as the 4th arg: `pipeline-notify.sh <event> "#<N>" "<msg>" <N>`
 11. Board update failures are warnings — the pipeline continues.
-12. Attempt counting is durable and enforced by `record-attempt`: call `bash scripts/pipeline-vcs.sh record-attempt <N> <stage>` before each developer re-dispatch.  When it exits non-zero (either `max_fix_attempts` consecutive same-stage failures OR `max_total_dispatches` total dispatches reached): set `pipeline:blocked`, notify, move on.  Never count attempts in orchestrator memory — the helper is the source of truth.
+12. Attempt counting is durable and enforced by `record-attempt`: call `bash scripts/pipeline-vcs.sh record-attempt <N> <stage> --pr <PR_NUMBER>` (or, before a PR exists, with no key at all) before each developer re-dispatch, exactly as in Step 3.  When it exits non-zero (either `max_fix_attempts` consecutive same-stage failures OR `max_total_dispatches` total dispatches reached): set `pipeline:blocked`, notify, move on.  Never count attempts in orchestrator memory — the helper is the source of truth.
 13. In file mode: skip board calls, skip QA/reviewer/security/docs, developer commits to branch directly.
 14. Never merge a PR that fails `check-pr-files` — secret-like files require a human; `skip-qa` does not waive this gate (nor CI).
 15. Only the developer stage may move HEAD in the orchestrator's checkout. All other stages (reviewer, security, docs, QA, validator, PM) must never run `git checkout`, `git switch`, or `git pull` in their working directory — read diffs via `diff-pr` only. This holds regardless of `execution.isolation` mode.

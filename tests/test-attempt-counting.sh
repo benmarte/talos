@@ -379,4 +379,173 @@ assert_contains "$out_fo" "reader=read-attempt" \
 assert_contains "$out_fo" "count=3" \
   "unconfigured trusted_authors read-attempt: marker still accepted (fail-open)"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# #172: record-attempt --idempotency-key idempotency
+# ─────────────────────────────────────────────────────────────────────────────
+
+# [test] first call with a key posts normally (count=1, total=1) and the
+# marker on the wire carries key=<token>.
+: > "$GH_LOG"
+out_idem1="$(STUB_ISSUE_COMMENTS_JSON='[]' PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+  bash "$VCS" record-attempt 42 qa --idempotency-key run-abc123 2>/dev/null)"
+rc_idem1=$?
+assert_exit_code 0 "$rc_idem1" "idempotency-key first call: exits 0"
+assert_contains "$out_idem1" "count=1" "idempotency-key first call: count=1"
+assert_contains "$out_idem1" "total=1" "idempotency-key first call: total=1"
+assert_contains "$(cat "$GH_LOG")" "key=run-abc123" \
+  "idempotency-key first call: marker on the wire carries the key"
+
+# [test] second call with the SAME key, against a prior marker that already
+# carries stage=qa count=1 total=1 key=run-abc123 (simulating the marker the
+# first call just posted): does NOT post again, count stays N+1 (not N+2),
+# and only the one POST from the first call is ever logged.
+_idem_prior="$(mk_attempt_comment_author qa 1 1 bot)"
+_idem_prior="$(printf '%s' "$_idem_prior" | python3 -c "
+import json, sys
+c = json.load(sys.stdin)
+c[0]['body'] = c[0]['body'].replace('-->', 'key=run-abc123 -->')
+print(json.dumps(c))
+")"
+: > "$GH_LOG"
+out_idem2="$(STUB_ISSUE_COMMENTS_JSON="$_idem_prior" PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+  bash "$VCS" record-attempt 42 qa --idempotency-key run-abc123 2>/dev/null)"
+rc_idem2=$?
+assert_exit_code 0 "$rc_idem2" "idempotency-key second call (same key): exits 0"
+assert_contains "$out_idem2" "count=1" \
+  "idempotency-key second call (same key): count stays 1, not 2"
+assert_contains "$out_idem2" "total=1" \
+  "idempotency-key second call (same key): total stays 1, not 2"
+assert_not_contains "$(cat "$GH_LOG")" "issue comment" \
+  "idempotency-key second call (same key): no second POST logged"
+
+# [test] a DIFFERENT key against the same prior marker does NOT dedupe -- it
+# is a distinct retry token, so it posts and increments normally.
+: > "$GH_LOG"
+out_idem3="$(STUB_ISSUE_COMMENTS_JSON="$_idem_prior" PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+  bash "$VCS" record-attempt 42 qa --idempotency-key run-xyz789 2>/dev/null)"
+rc_idem3=$?
+assert_exit_code 0 "$rc_idem3" "idempotency-key different key: exits 0"
+assert_contains "$out_idem3" "count=2" "idempotency-key different key: count increments to 2"
+assert_contains "$(cat "$GH_LOG")" "issue comment" \
+  "idempotency-key different key: a new marker IS posted"
+
+# [test] omitting --idempotency-key preserves today's behaviour: always
+# posts and increments, even though the prior marker carries a key.
+: > "$GH_LOG"
+out_idem4="$(STUB_ISSUE_COMMENTS_JSON="$_idem_prior" PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+  bash "$VCS" record-attempt 42 qa 2>/dev/null)"
+rc_idem4=$?
+assert_exit_code 0 "$rc_idem4" "no --idempotency-key: exits 0 (back-compat)"
+assert_contains "$out_idem4" "count=2" "no --idempotency-key: count increments as before"
+assert_contains "$(cat "$GH_LOG")" "issue comment" \
+  "no --idempotency-key: always posts (back-compat)"
+
+# [test] an invalid token (disallowed characters) is rejected, exit 1, before
+# anything is posted.
+: > "$GH_LOG"
+out_idem5="$(STUB_ISSUE_COMMENTS_JSON='[]' PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+  bash "$VCS" record-attempt 42 qa --idempotency-key 'bad key!' 2>&1)"
+rc_idem5=$?
+assert_exit_code 1 "$rc_idem5" "invalid idempotency-key: exits 1"
+assert_contains "$out_idem5" "idempotency-key" "invalid idempotency-key: error names the flag"
+assert_not_contains "$(cat "$GH_LOG")" "issue comment" \
+  "invalid idempotency-key: nothing posted"
+
+# [test] dry-run with --idempotency-key is unchanged: single [dry-run] line,
+# no read-attempt/comment fetch attempted.
+out_idem_dr="$(PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+  bash "$VCS" --dry-run record-attempt 42 qa --idempotency-key run-abc123 2>&1)"
+assert_contains "$out_idem_dr" "[dry-run]" "dry-run with idempotency-key: prints dry-run marker"
+assert_contains "$out_idem_dr" "record-attempt" "dry-run with idempotency-key: names the verb"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# #172 QA follow-up: record-attempt --pr <pr-n> (retry-stable key derived
+# server-side from the PR head SHA -- see SKILL.md's qa/reviewer/security
+# call sites, which now pass --pr instead of hand-minting a token).
+# ─────────────────────────────────────────────────────────────────────────────
+
+_PR_SHA1="aabb1122ccdd3344eeff556677889900aabb1122"
+_PR_SHA2="00112233445566778899aabbccddeeff00112233"  # different head, also 40 hex chars
+
+# [test] The QA repro (#172 PR #193): run the EXACT literal command form
+# documented in SKILL.md's qa/reviewer/security bullets ("bash
+# scripts/pipeline-vcs.sh record-attempt <N> qa --pr <PR_NUMBER>") twice, in
+# two SEPARATE `bash -c` invocations (no shared shell state between them --
+# the same harness gap that made the old $(date +%s) form double-post on
+# retry). The second call is run against comment state that already carries
+# the marker the first call posted (the PR head has not moved), simulating
+# an orchestrator retry after an ambiguous failure. count must land at N+1,
+# not N+2, and only one POST may ever be logged.
+: > "$GH_LOG"
+out_pr1="$(STUB_PR_HEAD_SHA="$_PR_SHA1" STUB_ISSUE_COMMENTS_JSON='[]' \
+  PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+  bash -c 'bash "$0" record-attempt 42 qa --pr 9' "$VCS" 2>/dev/null)"
+rc_pr1=$?
+assert_exit_code 0 "$rc_pr1" "--pr first call (bash -c #1): exits 0"
+assert_contains "$out_pr1" "count=1" "--pr first call (bash -c #1): count=1"
+assert_contains "$(cat "$GH_LOG")" "key=qa-${_PR_SHA1}" \
+  "--pr first call (bash -c #1): marker on the wire carries stage-sha key"
+
+_pr_prior="$(printf '[{"body":"Talos attempt record — stage=qa count=1 total=1\\n<!-- talos:attempt stage=qa count=1 total=1 key=qa-%s -->"}]' "$_PR_SHA1")"
+: > "$GH_LOG"
+out_pr2="$(STUB_PR_HEAD_SHA="$_PR_SHA1" STUB_ISSUE_COMMENTS_JSON="$_pr_prior" \
+  PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+  bash -c 'bash "$0" record-attempt 42 qa --pr 9' "$VCS" 2>/dev/null)"
+rc_pr2=$?
+assert_exit_code 0 "$rc_pr2" "--pr retry (bash -c #2, same head): exits 0"
+assert_contains "$out_pr2" "count=1" \
+  "--pr retry (bash -c #2, same head): count stays N+1 (1), not N+2 (2)"
+assert_not_contains "$(cat "$GH_LOG")" "issue comment" \
+  "--pr retry (bash -c #2, same head): no second POST logged"
+
+# [test] a NEW head SHA (genuinely new commit -> genuinely new attempt)
+# yields a different key and DOES increment, against that same prior marker.
+: > "$GH_LOG"
+out_pr3="$(STUB_PR_HEAD_SHA="$_PR_SHA2" STUB_ISSUE_COMMENTS_JSON="$_pr_prior" \
+  PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+  bash -c 'bash "$0" record-attempt 42 qa --pr 9' "$VCS" 2>/dev/null)"
+rc_pr3=$?
+assert_exit_code 0 "$rc_pr3" "--pr new head: exits 0"
+assert_contains "$out_pr3" "count=2" "--pr new head: count increments to 2 (new key, new attempt)"
+assert_contains "$(cat "$GH_LOG")" "key=qa-${_PR_SHA2}" \
+  "--pr new head: a new marker IS posted, keyed on the new head SHA"
+
+# [test] --pr and --idempotency-key together are rejected -- exactly one
+# key-derivation strategy per call, no ambiguity about which wins.
+: > "$GH_LOG"
+out_pr_both="$(STUB_PR_HEAD_SHA="$_PR_SHA1" PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+  bash "$VCS" record-attempt 42 qa --pr 9 --idempotency-key run-abc123 2>&1)"
+rc_pr_both=$?
+assert_exit_code 1 "$rc_pr_both" "--pr with --idempotency-key: exits 1"
+assert_contains "$out_pr_both" "mutually exclusive" \
+  "--pr with --idempotency-key: error names the conflict"
+assert_not_contains "$(cat "$GH_LOG")" "issue comment" \
+  "--pr with --idempotency-key: nothing posted"
+
+# [test] unresolvable head SHA fails closed -- exit 1, nothing posted.
+: > "$GH_LOG"
+out_pr_nohead="$(STUB_PR_HEAD_SHA='' PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+  bash "$VCS" record-attempt 42 qa --pr 404 2>&1)"
+rc_pr_nohead=$?
+assert_exit_code 1 "$rc_pr_nohead" "--pr unresolvable head: exits 1"
+assert_not_contains "$(cat "$GH_LOG")" "issue comment" \
+  "--pr unresolvable head: nothing posted"
+
+# [test] grep guard: no SKILL.md record-attempt call site hand-mints a token
+# with $(date -- the exact pattern that reproduced the #172 double-post bug
+# on an orchestrator retry in a fresh shell (QA finding on PR #193).
+_skill="$TALOS_ROOT/skills/pipeline/SKILL.md"
+if grep -n 'record-attempt' "$_skill" | grep -q '\$(date'; then
+  fail "SKILL.md: no record-attempt call site embeds \$(date" \
+    "$(grep -n 'record-attempt' "$_skill" | grep '\$(date')"
+else
+  pass "SKILL.md: no record-attempt call site embeds \$(date"
+fi
+if grep -q -- '--idempotency-key "<N>-' "$_skill"; then
+  fail "SKILL.md: no call site hand-mints an --idempotency-key token" \
+    "found a literal <N>-<stage>-\$(date) style token"
+else
+  pass "SKILL.md: no call site hand-mints an --idempotency-key token"
+fi
+
 finish
