@@ -202,4 +202,16 @@ assert_single_definition "rejected (catch-all or covers non-waivable paths)" \
 assert_single_definition "STALE {label} ({role}): {reason}" \
   "single-definition: STALE message construction"
 
+# ── Single-definition assertions (#177 slice 3) ───────────────────────────────
+# _github and _github_api used to hand-duplicate the forbidden-files pattern
+# building, allow-list validation, and matching logic below. Slice 3 moved
+# them into _vcs_shared_check_pr_files, defined exactly once, above both
+# adapters.
+assert_single_definition "talos:forbidden-files-active patterns=" \
+  "single-definition: talos:forbidden-files-active marker"
+assert_single_definition "FORBIDDEN FILES in PR" \
+  "single-definition: FORBIDDEN FILES in PR banner"
+assert_single_definition "ERROR: merge.forbidden_files_allow entry" \
+  "single-definition: forbidden_files_allow entry rejection message"
+
 finish
