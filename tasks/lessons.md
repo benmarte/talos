@@ -19,3 +19,14 @@
 - GitHub schedules no pull_request workflow when it cannot build the merge ref. Under Talos' CI-oracle QA this looks like "pending or missing" forever (PR #212 cost a 12-minute QA pass and an empty retrigger commit before the conflict was found).
 - Rule: when `pr-checks` reports no checks for a fresh head, run `git merge-tree --write-tree origin/main origin/<branch>` first. A conflict is the diagnosis; merge main into the branch (never rebase), then CI appears.
 - Running two PRs concurrently that touch CHANGELOG.md, the JSON example note, or the verb tables in pipeline-vcs.sh guarantees this. Prefer pairing PRs with disjoint files, or accept one merge-fix pass per pair. Filed #214 so Talos detects CONFLICTING before dispatching QA.
+
+## Linux caps a single argv element at 128 KB; macOS does not (2026-09-08)
+
+PR #215's new test passed a 200 KB prompt as one argument to `pipeline-agent.sh`. Green locally on macOS, red on both CI runners (`Argument list too long`, exit 126; ubuntu enforces MAX_ARG_STRLEN=131072, and the macOS runner tripped over it as well). Two developer rounds and one QA round were spent before the CI log was read.
+
+- Any test or script feeding large text to a child process must use stdin (`pipeline-agent.sh <role> -`) or a file, never argv.
+- When CI is red and the local run is green, read the failing job log first (`gh run view <id> --log-failed | grep -A3 FAIL`) before dispatching a fix; the diagnosis took one command.
+
+## API spend limit kills subagents mid-task (2026-09-08)
+
+Two Sonnet subagents died on HTTP 429 (monthly spend limit) with uncommitted work in worktrees. Before dispatching a long developer task near a budget boundary, prefer smaller commits; when a subagent dies, immediately WIP-commit and push its worktree so `pipeline-worktree.sh sweep` cannot destroy the work, then label the issue `pipeline:blocked` with a resume note.
