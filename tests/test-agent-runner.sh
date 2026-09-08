@@ -10,6 +10,11 @@ install_talos
 AGENT="$HOME/.talos/scripts/pipeline-agent.sh"
 export RUNNER_LOG="$SANDBOX/runner.log"
 
+# ERRFILE -- captures pipeline-agent.sh's stderr so assertion failures show
+# the diagnostic instead of it being silently redirected away (#208, same
+# pattern as tests/test-per-agent-env.sh from #210).
+ERRFILE="$SANDBOX/agent.stderr"
+
 # ── Default runner is claude, with global-config isolation ───────────────────
 : > "$RUNNER_LOG"
 out="$(bash "$AGENT" validator "Issue #7 is assigned to you.")"
@@ -83,6 +88,67 @@ out="$(bash "$AGENT" validator "line one")"
   && pass "custom runner receives full prompt on stdin" \
   || fail "custom runner receives full prompt on stdin" "got: $out"
 
+# ── Custom runner: no EPIPE on a large prompt (#208) ──────────────────────────
+# Root cause: the old implementation was `printf '%s' "$PROMPT" | sh -c
+# "$RUNNER_CMD"`. A runner_cmd that exits without reading stdin (or simply
+# wins the race on a loaded host) makes printf receive EPIPE; under
+# `set -o pipefail` that turned into a spurious pipeline-agent.sh exit 1.
+# RED on the old pipe implementation: a 200 KB prompt reliably overflows the
+# pipe buffer, so `exit 0` (reads nothing) used to fail deterministically,
+# not just under load.
+#
+# The prompt is passed via stdin (`developer -`), not as an argv element:
+# Linux caps a single argv element at MAX_ARG_STRLEN (128 KB), so a ~209 KB
+# prompt passed as `bash "$AGENT" developer "$BIG_PROMPT"` fails with "Argument
+# list too long" on Linux CI even though it fits fine in a macOS argv.
+BIG_PROMPT="$(head -c 204800 /dev/zero | tr '\0' 'x')"
+BIG_PROMPT_FILE="$SANDBOX/big-prompt.txt"
+printf '%s' "$BIG_PROMPT" > "$BIG_PROMPT_FILE"
+
+cat > talos.pipeline.json <<'EOF'
+{"agents": {"runner": "custom", "runner_cmd": "exit 0"}}
+EOF
+out="$(bash "$AGENT" developer - < "$BIG_PROMPT_FILE" 2>"$ERRFILE")"; rc=$?
+assert_eq_ctx "0" "$rc" "runner_cmd 'exit 0' with 200 KB prompt exits 0 (no EPIPE)" "$(cat "$ERRFILE")"
+
+# A runner that reads all of stdin must receive the prompt byte-for-byte.
+EXPECT_FILE="$SANDBOX/expected-prompt.txt"
+GOT_FILE="$SANDBOX/got-prompt.txt"
+ROLE_BODY="$(awk 'NR==1 && /^---$/ {fm=1; next} fm && /^---$/ {fm=0; next} !fm' \
+  "$HOME/.talos/agents/developer.md")"
+printf '%s\n\n---\n\n%s' "$ROLE_BODY" "$BIG_PROMPT" > "$EXPECT_FILE"
+cat > talos.pipeline.json <<EOF
+{"agents": {"runner": "custom", "runner_cmd": "cat > $GOT_FILE"}}
+EOF
+out="$(bash "$AGENT" developer - < "$BIG_PROMPT_FILE" 2>"$ERRFILE")"; rc=$?
+assert_eq_ctx "0" "$rc" "full-stdin runner exits 0" "$(cat "$ERRFILE")"
+expect_bytes="$(wc -c < "$EXPECT_FILE" | tr -d ' ')"
+got_bytes="$(wc -c < "$GOT_FILE" | tr -d ' ')"
+assert_eq "$expect_bytes" "$got_bytes" "runner_cmd receives the prompt byte-for-byte (wc -c)"
+if diff -q "$EXPECT_FILE" "$GOT_FILE" >/dev/null 2>&1; then
+  pass "runner_cmd receives the prompt byte-for-byte (diff)"
+else
+  fail "runner_cmd receives the prompt byte-for-byte (diff)" "expected vs got prompt differ"
+fi
+
+# A runner's own exit code must propagate exactly.
+cat > talos.pipeline.json <<'EOF'
+{"agents": {"runner": "custom", "runner_cmd": "exit 3"}}
+EOF
+bash "$AGENT" developer - < "$BIG_PROMPT_FILE" >/dev/null 2>"$ERRFILE"; rc=$?
+assert_eq_ctx "3" "$rc" "runner_cmd exit code propagates exactly (exit 3)" "$(cat "$ERRFILE")"
+
+# The prompt temp file/dir must be cleaned up afterward, pass or fail.
+# Use a private TMPDIR for this one invocation (#215 QA) instead of a glob
+# over the shared ${TMPDIR:-/tmp} namespace: that glob races against any
+# other test (e.g. tests/test-per-agent-env.sh) creating/removing its own
+# talos-prompt.* dirs concurrently under the parallel test runner.
+_PRIVATE_TMPDIR="$SANDBOX/tmp"
+mkdir -p "$_PRIVATE_TMPDIR"
+TMPDIR="$_PRIVATE_TMPDIR" bash "$AGENT" developer - < "$BIG_PROMPT_FILE" >/dev/null 2>&1
+_prompt_tmp_after="$(find "$_PRIVATE_TMPDIR" -mindepth 1 -maxdepth 1 -name 'talos-prompt.*' 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "0" "$_prompt_tmp_after" "prompt temp dir is removed after the runner exits"
+
 cat > talos.pipeline.json <<'EOF'
 {"agents": {"runner": "custom"}}
 EOF
@@ -90,6 +156,54 @@ if bash "$AGENT" validator "x" >/dev/null 2>&1; then
   fail "custom runner without runner_cmd exits non-zero"
 else
   pass "custom runner without runner_cmd exits non-zero"
+fi
+
+# ── mktemp -d failure fails closed, never falls back to a fixed path (#215) ──
+# Regression for the PR #215 review finding: the old code did not check
+# `mktemp -d`'s exit status, so a failure (e.g. an unwritable/nonexistent
+# TMPDIR) left _PROMPT_DIR empty, _PROMPT_FILE became the literal path
+# "/prompt", and the prompt (which may contain issue-thread text) was
+# written there unconditionally on a root CI container -- with the EXIT
+# trap's `rm -rf "$_PROMPT_DIR"` a no-op since _PROMPT_DIR was never set.
+#
+# A bare `TMPDIR=/nonexistent/dir` would also break pipeline-cfg-cache.sh's
+# own `mktemp -d` (it shares TMPDIR), which silently falls back to
+# cfg()-returns-default instead of erroring -- masking agents.runner=custom
+# entirely and defeating this test before it reaches the code under test.
+# Instead, shadow `mktemp` on PATH so only the prompt-dir call (matched by
+# its "talos-prompt." template) fails; every other caller, including the
+# config cache, still gets the real binary.
+_REAL_MKTEMP="$(command -v mktemp)"
+_FAKE_BIN="$SANDBOX/fakebin"
+mkdir -p "$_FAKE_BIN"
+cat > "$_FAKE_BIN/mktemp" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+  *talos-prompt.*) exit 1 ;;
+  *) exec "$_REAL_MKTEMP" "\$@" ;;
+esac
+EOF
+chmod +x "$_FAKE_BIN/mktemp"
+
+cat > talos.pipeline.json <<'EOF'
+{"agents": {"runner": "custom", "runner_cmd": "cat > /dev/null"}}
+EOF
+if PATH="$_FAKE_BIN:$PATH" bash "$AGENT" developer "sensitive issue text" >/dev/null 2>"$ERRFILE"; then
+  fail "custom runner exits non-zero when mktemp -d fails" "stderr: $(cat "$ERRFILE")"
+else
+  pass "custom runner exits non-zero when mktemp -d fails"
+fi
+assert_contains "$(cat "$ERRFILE")" "custom runner" \
+  "mktemp -d failure error names the custom adapter"
+assert_contains "$(cat "$ERRFILE")" "temp directory" \
+  "mktemp -d failure error mentions the temp directory failure"
+if [ -w / ]; then
+  _prompt_leak="$(find "$SANDBOX" -mindepth 1 -name 'prompt' 2>/dev/null | head -1)"
+  assert_eq "" "$_prompt_leak" \
+    "mktemp -d failure never writes the prompt anywhere under \$SANDBOX"
+else
+  assert_file_absent "/prompt" \
+    "mktemp -d failure never falls back to writing the prompt at the fixed /prompt path"
 fi
 
 # ── Error paths ───────────────────────────────────────────────────────────────
@@ -159,13 +273,13 @@ cat > talos.pipeline.json <<'EOF'
 {"agents": {"runner": "custom", "runner_cmd": "printf '%s' \"$TALOS_ROLE\""}}
 EOF
 
-out="$(bash "$AGENT" developer "some task" 2>/dev/null)"; rc=$?
+out="$(bash "$AGENT" developer "some task" 2>"$ERRFILE")"; rc=$?
 assert_eq "developer" "$out" "TALOS_ROLE=developer visible in runner_cmd"
-assert_eq "0" "$rc" "TALOS_ROLE test exits 0 (developer)"
+assert_eq_ctx "0" "$rc" "TALOS_ROLE test exits 0 (developer)" "$(cat "$ERRFILE")"
 
-out="$(bash "$AGENT" reviewer "some task" 2>/dev/null)"; rc=$?
+out="$(bash "$AGENT" reviewer "some task" 2>"$ERRFILE")"; rc=$?
 assert_eq "reviewer" "$out" "TALOS_ROLE=reviewer visible in runner_cmd"
-assert_eq "0" "$rc" "TALOS_ROLE test exits 0 (reviewer)"
+assert_eq_ctx "0" "$rc" "TALOS_ROLE test exits 0 (reviewer)" "$(cat "$ERRFILE")"
 
 rm talos.pipeline.json
 
