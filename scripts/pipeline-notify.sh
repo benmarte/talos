@@ -39,6 +39,20 @@
 #   and Discord webhooks do not support message_reference. Threading is
 #   silently skipped in webhook mode.
 #
+# Generic command sink (notifications.cmd, #184):
+#   Runs an arbitrary shell command (via `sh -c`) for any sink the four
+#   platforms above don't cover -- a local desktop notifier, a webhook
+#   relay, a log shipper. Disabled by default (empty string). Runs last,
+#   after Slack/Discord/Teams/Buzz, and never blocks them or the caller.
+#   The command receives a JSON object on stdin:
+#     {event, ref, message, thread_key, fields:[{label,text,url}], repo, issue}
+#   message is the same rendered text every other sink builds its message
+#   from; fields is the same platform-neutral metadata table (PR/Issue/
+#   Stage/Repo) the other sinks render natively. Bounded by
+#   notifications.cmd_timeout_s (default 10s, positive integer). A missing
+#   command, non-zero exit, or timeout logs one line to stderr; this script
+#   still exits 0.
+#
 # Debug mode:
 #   PIPELINE_NOTIFY_DEBUG=1 — prints the payload each platform WOULD send
 #   without actually posting or updating thread state. Safe for testing.
@@ -837,6 +851,112 @@ PY
       fi
     else
       echo "pipeline-notify: buzz publish failed" >&2
+    fi
+  fi
+fi
+
+# ── Generic command sink (notifications.cmd, #184) ───────────────────────────
+# For any sink Slack/Discord/Teams/Buzz don't cover (a local desktop
+# notifier, a webhook relay, a log shipper): run an arbitrary shell command
+# with a JSON payload on stdin. Disabled by default (empty string). Same
+# always-exit-0 contract as every sink above -- a missing command, a
+# non-zero exit, or a timeout logs one line to stderr and this script still
+# exits 0; it never blocks the sinks above (it runs last) or the caller.
+CMD_SINK="$(cfg notifications.cmd "")"
+if [ -n "$CMD_SINK" ]; then
+  CMD_TIMEOUT_S="$(cfg notifications.cmd_timeout_s "10")"
+  case "$CMD_TIMEOUT_S" in
+    ''|*[!0-9]*) CMD_TIMEOUT_S=10 ;;
+  esac
+  [ "$CMD_TIMEOUT_S" -gt 0 ] 2>/dev/null || CMD_TIMEOUT_S=10
+
+  # Stdin payload: {event, ref, message, thread_key, fields, repo, issue}.
+  # message is the same rendered TEXT every other sink builds its message
+  # from; fields reuses NFIELDS (already built as a JSON array above).
+  CMD_PAYLOAD="$(
+    NC_EVENT="$EVENT" NC_REF="$REF" NC_MSG="$TEXT" NC_THREAD="$THREAD_KEY" \
+    NC_FIELDS="$NFIELDS" NC_REPO="${_NOTIFY_REPO:-}" NC_ISSUE="${_num:-}" \
+    python3 -c '
+import json
+import os
+import sys
+
+
+def _int_or_none(raw):
+    raw = (raw or "").strip()
+    if raw == "":
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return raw
+
+
+try:
+    fields = json.loads(os.environ.get("NC_FIELDS") or "[]")
+except Exception:
+    fields = []
+
+payload = {
+    "event": os.environ.get("NC_EVENT", ""),
+    "ref": os.environ.get("NC_REF", ""),
+    "message": os.environ.get("NC_MSG", ""),
+    "thread_key": os.environ.get("NC_THREAD", ""),
+    "fields": fields,
+    "repo": os.environ.get("NC_REPO", ""),
+    "issue": _int_or_none(os.environ.get("NC_ISSUE")),
+}
+json.dump(payload, sys.stdout)
+'
+  )"
+
+  if [ "${PIPELINE_NOTIFY_DEBUG:-}" = "1" ]; then
+    echo "[pipeline-notify DEBUG] CMD cmd=$CMD_SINK timeout_s=$CMD_TIMEOUT_S payload=$CMD_PAYLOAD"
+  else
+    # Portable timeout: the command runs as its own process group (set -m)
+    # and a background watchdog subshell sends it SIGTERM, then SIGKILL
+    # shortly after, once CMD_TIMEOUT_S elapses -- the same pattern
+    # pipeline-hooks.sh's hooks.pre_dispatch uses (#219/#181). Not reused
+    # directly: that logic lives inline inside pre_dispatch(), interleaved
+    # with hook-specific JSON building, and isn't exposed as a standalone
+    # sourceable function, so this mirrors the pattern instead of calling
+    # into pipeline-hooks.sh. `wait` on the command's pid returns non-zero
+    # for both a real command failure and a kill-by-timeout, and both are
+    # treated identically here -- one stderr note, continue.
+    CMD_IN_FILE="$(mktemp "${TMPDIR:-/tmp}/talos-notify-cmd-in.XXXXXX" 2>/dev/null)"
+    if [ -z "$CMD_IN_FILE" ]; then
+      echo "pipeline-notify: notifications.cmd skipped (mktemp failed)" >&2
+    else
+      printf '%s' "$CMD_PAYLOAD" > "$CMD_IN_FILE"
+
+      set -m
+      sh -c "$CMD_SINK" < "$CMD_IN_FILE" >/dev/null 2>&1 &
+      CMD_PID=$!
+      set +m
+
+      set -m
+      ( sleep "$CMD_TIMEOUT_S"
+        kill -TERM -"$CMD_PID" 2>/dev/null
+        sleep 0.2
+        kill -KILL -"$CMD_PID" 2>/dev/null
+      ) &
+      CMD_WATCHDOG_PID=$!
+      set +m
+
+      CMD_RC=0
+      wait "$CMD_PID" 2>/dev/null
+      CMD_RC=$?
+
+      # Kill the watchdog's whole process group so its "sleep
+      # $CMD_TIMEOUT_S" child is reaped too, not just the subshell leader.
+      kill -- -"$CMD_WATCHDOG_PID" 2>/dev/null
+      wait "$CMD_WATCHDOG_PID" 2>/dev/null
+
+      rm -f "$CMD_IN_FILE"
+
+      if [ "$CMD_RC" -ne 0 ]; then
+        echo "pipeline-notify: notifications.cmd exited non-zero or timed out (rc=$CMD_RC) -- skipping" >&2
+      fi
     fi
   fi
 fi

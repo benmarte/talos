@@ -772,6 +772,49 @@ cat >/dev/null   # the stdin JSON, unused here
 echo "This repo's style guide: 2-space indent, no semicolons."
 ```
 
+### A generic notification sink (`notifications.cmd`)
+
+**What it does.** `notifications.cmd` runs a shell command (via `sh -c`) for
+every pipeline event that passes the `notifications.events` filter, after
+Slack/Discord/Teams/Buzz. This is how a sink Talos doesn't natively support
+-- a local desktop notifier, a webhook relay, a log shipper -- gets wired in
+without a code change. Disabled by default -- an absent or empty
+`notifications.cmd` runs nothing.
+
+**Contract.** The command receives this JSON on stdin:
+
+```json
+{"event": "pr-opened", "ref": "#42", "message": "🔀 [talos] pr-opened #42 — ...",
+ "thread_key": "42", "fields": [{"label": "PR", "text": "#9", "url": "https://github.com/acme/widget/pull/9"}],
+ "repo": "acme/widget", "issue": 42}
+```
+
+`message` is the same rendered text every other sink builds its message
+from. `fields` is the same platform-neutral metadata table (PR/Issue/Stage/
+Repo) Slack/Discord/Teams/Buzz render natively -- each entry carries `label`,
+`text`, and `url` (empty string when there's nothing to link). A missing
+command, a non-zero exit, or a timeout (`notifications.cmd_timeout_s`,
+default 10s) is a silent no-op with one line on stderr -- it never blocks the
+pipeline or any other sink, and this script still exits 0.
+
+**Worked config example:**
+
+```yaml
+notifications:
+  cmd: "my-notify-tool"
+  cmd_timeout_s: 10
+```
+
+**Worked command example** (bash, writes the message to a local desktop
+notification):
+
+```bash
+#!/usr/bin/env bash
+payload="$(cat)"
+msg="$(printf '%s' "$payload" | python3 -c 'import json,sys; print(json.load(sys.stdin)["message"])')"
+terminal-notifier -message "$msg" -title "Talos"
+```
+
 ## Customizing agent profiles
 
 Each role profile is a markdown file with YAML frontmatter (Claude Code
