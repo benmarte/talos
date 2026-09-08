@@ -14,7 +14,7 @@
 # Usage: pipeline-hooks.sh pre_dispatch <role> <issue> [<pr>] [<worktree_path>] [files_hint...]
 #        pipeline-hooks.sh post_stage <event> <role> <issue> [--pr N] [--sha S]
 #          [--verdict V] [--summary "..."] [--details-file F]
-#          [--attempt stage:count:total] [--duration-s N]
+#          [--attempt stage:count:total] [--duration-s N] [--tokens N] [--tool-uses N]
 #
 # Config (talos.pipeline.yml via pipeline-config.sh, read through the cfg()
 # cache — see pipeline-cfg-cache.sh):
@@ -54,12 +54,17 @@
 #   {"event":"qa","role":"qa","issue":42,"pr":57,"repo":"owner/name",
 #    "sha":"<40hex or null>","verdict":"PASS","summary":"...","details":"...",
 #    "attempt":{"stage":"qa","count":1,"total":3},"model":"claude-sonnet-5",
-#    "runner":"claude","duration_s":312,"ts":"2026-09-07T14:00:00Z"}
+#    "runner":"claude","duration_s":312,"tokens":48213,"tool_uses":19,
+#    "ts":"2026-09-07T14:00:00Z"}
 # pr/sha/verdict/model/runner are null when the caller did not supply them
-# (or they can't be resolved); attempt/duration_s are null unless the caller
-# passes --attempt/--duration-s. model comes from agents.roles.<role>.model,
-# falling back to agents.model; runner from agents.runner. ts is UTC
-# ISO-8601.
+# (or they can't be resolved); attempt/duration_s/tokens/tool_uses are null
+# unless the caller passes --attempt/--duration-s/--tokens/--tool-uses (#202).
+# --tokens and --tool-uses are validated as non-negative integers -- an
+# invalid or missing value is null in the payload, with one stderr note for
+# an invalid (non-empty, non-numeric) value. Schema field order is stable:
+# tokens and tool_uses are appended after duration_s, never inserted earlier.
+# model comes from agents.roles.<role>.model, falling back to agents.model;
+# runner from agents.runner. ts is UTC ISO-8601.
 #
 # Environment exported to both hook commands: TALOS_ROLE, TALOS_ISSUE_NUMBER,
 # TALOS_WORKTREE_PATH — same names/values pipeline-agent.sh already exports
@@ -171,6 +176,23 @@ _events_append() {
     echo "pipeline-hooks: could not write to events log ($log_path) -- skipping" >&2
   fi
   return 0
+}
+
+# _validate_nonneg_int <flag_label> <raw_value> -> prints <raw_value> back out
+# when it is empty (not supplied) or a valid non-negative integer; otherwise
+# prints nothing and writes one stderr note. Used for --tokens/--tool-uses
+# (#202): a bad value must degrade to null in the payload, never abort
+# post_stage's always-exit-0 contract.
+_validate_nonneg_int() {
+  local flag_label="$1" raw="$2"
+  [ -z "$raw" ] && return 0
+  case "$raw" in
+    ''|*[!0-9]*)
+      echo "pipeline-hooks: --$flag_label value '$raw' is not a non-negative integer -- using null" >&2
+      return 0
+      ;;
+  esac
+  printf '%s' "$raw"
 }
 
 # _hooks_repo -> prints "owner/name", resolved from config or the origin remote.
@@ -321,12 +343,13 @@ json.dump(payload, sys.stdout)
 
 # post_stage EVENT ROLE ISSUE [--pr N] [--sha S] [--verdict V] [--summary S]
 #            [--details-file F] [--attempt stage:count:total] [--duration-s N]
+#            [--tokens N] [--tool-uses N]
 post_stage() {
   local event="${1:-}" role="${2:-}" issue="${3:-}"
   local _shift_n=$(( $# >= 3 ? 3 : $# ))
   shift "$_shift_n" 2>/dev/null || true
 
-  local pr="" sha="" verdict="" summary="" details_file="" attempt="" duration_s=""
+  local pr="" sha="" verdict="" summary="" details_file="" attempt="" duration_s="" tokens="" tool_uses=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --pr) pr="${2:-}"; shift 2 ;;
@@ -336,9 +359,17 @@ post_stage() {
       --details-file) details_file="${2:-}"; shift 2 ;;
       --attempt) attempt="${2:-}"; shift 2 ;;
       --duration-s) duration_s="${2:-}"; shift 2 ;;
+      --tokens) tokens="${2:-}"; shift 2 ;;
+      --tool-uses) tool_uses="${2:-}"; shift 2 ;;
       *) shift ;;
     esac
   done
+
+  # #202: --tokens/--tool-uses are validated non-negative integers -- an
+  # invalid value becomes empty here (-> null in the payload below) with one
+  # stderr note; missing (never supplied) is already empty and silent.
+  tokens="$(_validate_nonneg_int tokens "$tokens")"
+  tool_uses="$(_validate_nonneg_int tool-uses "$tool_uses")"
 
   local hook_cmd
   hook_cmd="$(cfg hooks.post_stage "")"
@@ -372,7 +403,8 @@ post_stage() {
     TALOS_HOOK_VERDICT="$verdict" TALOS_HOOK_SUMMARY="$summary" TALOS_HOOK_DETAILS="$details" \
     TALOS_HOOK_ATTEMPT_STAGE="$attempt_stage" TALOS_HOOK_ATTEMPT_COUNT="$attempt_count" \
     TALOS_HOOK_ATTEMPT_TOTAL="$attempt_total" TALOS_HOOK_MODEL="$model" TALOS_HOOK_RUNNER="$runner" \
-    TALOS_HOOK_DURATION="$duration_s" TALOS_HOOK_TS="$ts" \
+    TALOS_HOOK_DURATION="$duration_s" TALOS_HOOK_TOKENS="$tokens" TALOS_HOOK_TOOL_USES="$tool_uses" \
+    TALOS_HOOK_TS="$ts" \
     python3 -c '
 import json
 import os
@@ -412,6 +444,8 @@ payload = {
     "model": os.environ.get("TALOS_HOOK_MODEL") or None,
     "runner": os.environ.get("TALOS_HOOK_RUNNER") or None,
     "duration_s": _int_or_none(os.environ.get("TALOS_HOOK_DURATION")),
+    "tokens": _int_or_none(os.environ.get("TALOS_HOOK_TOKENS")),
+    "tool_uses": _int_or_none(os.environ.get("TALOS_HOOK_TOOL_USES")),
     "ts": os.environ.get("TALOS_HOOK_TS", ""),
 }
 json.dump(payload, sys.stdout)
@@ -449,7 +483,7 @@ case "$VERB" in
     ;;
   *)
     echo "Usage: pipeline-hooks.sh pre_dispatch <role> <issue> [<pr>] [<worktree_path>] [files_hint...]" >&2
-    echo "       pipeline-hooks.sh post_stage <event> <role> <issue> [--pr N] [--sha S] [--verdict V] [--summary \"...\"] [--details-file F] [--attempt stage:count:total] [--duration-s N]" >&2
+    echo "       pipeline-hooks.sh post_stage <event> <role> <issue> [--pr N] [--sha S] [--verdict V] [--summary \"...\"] [--details-file F] [--attempt stage:count:total] [--duration-s N] [--tokens N] [--tool-uses N]" >&2
     exit 2
     ;;
 esac

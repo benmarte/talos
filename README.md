@@ -378,6 +378,10 @@ bash scripts/pipeline-events.sh tail [--issue N]
 
 `list` (and `tail`, shorthand for `list --last 20`) print one line per matching event, oldest first: by default a compact tab-separated table (`ts`, `event`, `role`, `issue`, `pr`, `verdict`, `summary` truncated to 80 chars); `--json` prints one JSON object per line instead. A malformed line in the log is skipped, with the count of skipped lines reported once on stderr — never on stdout, and never fatal.
 
+#### Cost accounting
+
+`post_stage` also accepts `--tokens N` and `--tool-uses N` (validated non-negative integers; an invalid or omitted value is `null` in the payload, with one stderr note for an invalid value), stored alongside `duration_s`. Summarize with `bash scripts/pipeline-events.sh cost [--issue N] [--json]`: a per-issue, per-role table (`issue`, `role`, `events`, `tokens`, `tool_uses`, `duration_s`, `n/a`) with a `TOTAL` row — `n/a` counts events with a null `tokens` field (e.g. adapter-path runs, which record duration only) so an untracked group is visible rather than reading as a real zero.
+
 ### Board status options: required columns and `talos:board-unverified`
 
 The pipeline sets four GitHub Projects Status column values during a run: `In progress`, `In review`, `Done`, and `Blocked`. On the first `pipeline-status.sh` call of a run, the script fetches the board's Status field options and verifies all four are present (after `board.status_map` substitution — so a mapped name is what gets checked, not the default pipeline name).
