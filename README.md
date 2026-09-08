@@ -824,7 +824,7 @@ batch. `--quiet` (or `TALOS_TEST_QUIET=1`) prints one line per file
 
 Passing runs are cached under `.talos/test-cache/` (gitignored), keyed on the
 test file's own content plus every file under `scripts/*.sh`,
-`tests/helpers.sh`, `tests/stubs/*`, and `templates/**` — touching any of
+`tests/helpers.sh`, `tests/stubs/*`, and `templates/**` -- touching any of
 those invalidates every cached result. A cache hit prints
 `CACHED tests/<name>.sh` and skips re-running the file; a failing file is
 never cached. `--no-cache` ignores the cache entirely (reads and writes); CI
