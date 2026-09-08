@@ -84,6 +84,103 @@ except Exception:
 if not isinstance(cfg, dict):
     cfg = {}
 
+# ── Unknown-key warning (#176) ──────────────────────────────────────────────
+# This dump is what cfg() (pipeline-cfg-cache.sh) answers every lookup from,
+# so it's the one place a typo in the config file is guaranteed to be seen
+# exactly once per script invocation, regardless of how many keys the
+# invoking script goes on to look up. The single-key path below runs this
+# same check for direct (non-cached) callers -- it parses the file
+# independently in its own python3 process, so the check can't literally be
+# one shared function call; both paths define the identical
+# _KNOWN_CONFIG_KEYS list and _warn_unknown_keys() helper (same
+# wildcard-matching rules, same nearest-match suggestion, same env
+# opt-out) so a typo warns identically no matter which path answered the
+# lookup. Runs against the config exactly as parsed -- not after any
+# derived-default keys (verify.qa_mode, etc.) are synthesized below -- so
+# only keys the user actually wrote are ever flagged.
+import difflib
+import os
+
+_KNOWN_CONFIG_KEYS = [
+    "base_branch", "release_branch", "repo",
+    "vcs.provider", "vcs.repo", "vcs.token_env",
+    "vcs.azure.org_url", "vcs.azure.project", "vcs.azure.work_item_type",
+    "vcs.azure.area_path", "vcs.file.source.path",
+    "board.enabled", "board.project_number", "board.owner",
+    "board.status_field", "board.statuses.*", "board.status_map.*",
+    "board.azure_states.*",
+    "verify", "verify.qa_mode", "verify.targeted", "verify.ci_wait_s",
+    "verify.timeout_ms",
+    "merge.auto", "merge.method", "merge.required_checks",
+    "merge.delete_branch", "merge.forbidden_files",
+    "merge.forbidden_files_replace", "merge.forbidden_files_allow",
+    "merge.approval_waiver_paths",
+    "issues.label_filter", "issues.skip_labels", "issues.max_parallel",
+    "execution.isolation", "execution.worktree_warn_threshold",
+    "roles.validator", "roles.pm", "roles.pm_skip_when_spec_present",
+    "roles.qa", "roles.reviewer", "roles.security", "roles.docs",
+    "roles.docs_mode", "roles.planner",
+    "comments.enabled", "comments.header", "comments.templates_dir",
+    "notifications.slack_channel", "notifications.discord_channel",
+    "notifications.buzz_channel", "notifications.buzz_relay",
+    "notifications.templates_dir", "notifications.threading",
+    "notifications.events",
+    "agents.runner", "agents.subagents", "agents.runner_args",
+    "agents.runner_cmd", "agents.model",
+    "agents.roles.*.model", "agents.roles.*.runner",
+    "agents.roles.*.runner_cmd",
+    "limits.max_fix_attempts", "limits.max_total_dispatches",
+    "limits.max_retries",
+    "markers.trusted_authors",
+]
+
+def _present_leaf_keys(obj, prefix, out):
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            _present_leaf_keys(v, "%s.%s" % (prefix, k) if prefix else k, out)
+    elif obj is not None:
+        out.append(prefix)
+
+def _key_matches(parts, template_parts):
+    return len(parts) == len(template_parts) and all(
+        t == "*" or t == p for t, p in zip(template_parts, parts)
+    )
+
+def _warn_unknown_keys(cfg_obj):
+    if os.environ.get("TALOS_CONFIG_STRICT_KEYS", "1") == "0":
+        return
+    if not isinstance(cfg_obj, dict):
+        return
+    present = []
+    _present_leaf_keys(cfg_obj, "", present)
+    templates = [t.split(".") for t in _KNOWN_CONFIG_KEYS]
+    for key in present:
+        if key.split(".")[-1] == "_note":
+            continue
+        parts = key.split(".")
+        if any(_key_matches(parts, t) for t in templates):
+            continue
+        candidates = []
+        for t in templates:
+            if len(t) == len(parts):
+                candidates.append(
+                    ".".join(tp if tp != "*" else p for tp, p in zip(t, parts))
+                )
+            else:
+                candidates.append(".".join(t))
+        match = difflib.get_close_matches(key, candidates, n=1, cutoff=0.6)
+        if match:
+            sys.stderr.write(
+                "pipeline-config: [warn] unknown config key '%s' "
+                "(did you mean '%s'?)\n" % (key, match[0])
+            )
+        else:
+            sys.stderr.write(
+                "pipeline-config: [warn] unknown config key '%s'\n" % key
+            )
+
+_warn_unknown_keys(cfg)
+
 flat = {}
 
 def flatten(obj, prefix):
@@ -229,6 +326,100 @@ except Exception:
     # not permanent silence, and nothing an external process can suppress.
     print(default, end='')
     sys.exit(0)
+
+# ── Unknown-key warning (#176) ──────────────────────────────────────────────
+# This path parses the config file independently of the --dump path above
+# (two separate python3 processes), so the check can't literally be one
+# shared function call -- both paths define the identical
+# _KNOWN_CONFIG_KEYS list and _warn_unknown_keys() helper (same
+# wildcard-matching rules, same nearest-match suggestion, same env
+# opt-out) so a typo warns identically no matter which path answered the
+# lookup. cfg() (pipeline-cfg-cache.sh) calls --dump once per script
+# invocation and answers every lookup from that cache, so a cached caller
+# only hits the --dump path's copy of this check; a direct (non-cached)
+# call to this script hits this copy instead, once per invocation.
+import difflib
+import os
+
+_KNOWN_CONFIG_KEYS = [
+    "base_branch", "release_branch", "repo",
+    "vcs.provider", "vcs.repo", "vcs.token_env",
+    "vcs.azure.org_url", "vcs.azure.project", "vcs.azure.work_item_type",
+    "vcs.azure.area_path", "vcs.file.source.path",
+    "board.enabled", "board.project_number", "board.owner",
+    "board.status_field", "board.statuses.*", "board.status_map.*",
+    "board.azure_states.*",
+    "verify", "verify.qa_mode", "verify.targeted", "verify.ci_wait_s",
+    "verify.timeout_ms",
+    "merge.auto", "merge.method", "merge.required_checks",
+    "merge.delete_branch", "merge.forbidden_files",
+    "merge.forbidden_files_replace", "merge.forbidden_files_allow",
+    "merge.approval_waiver_paths",
+    "issues.label_filter", "issues.skip_labels", "issues.max_parallel",
+    "execution.isolation", "execution.worktree_warn_threshold",
+    "roles.validator", "roles.pm", "roles.pm_skip_when_spec_present",
+    "roles.qa", "roles.reviewer", "roles.security", "roles.docs",
+    "roles.docs_mode", "roles.planner",
+    "comments.enabled", "comments.header", "comments.templates_dir",
+    "notifications.slack_channel", "notifications.discord_channel",
+    "notifications.buzz_channel", "notifications.buzz_relay",
+    "notifications.templates_dir", "notifications.threading",
+    "notifications.events",
+    "agents.runner", "agents.subagents", "agents.runner_args",
+    "agents.runner_cmd", "agents.model",
+    "agents.roles.*.model", "agents.roles.*.runner",
+    "agents.roles.*.runner_cmd",
+    "limits.max_fix_attempts", "limits.max_total_dispatches",
+    "limits.max_retries",
+    "markers.trusted_authors",
+]
+
+def _present_leaf_keys(obj, prefix, out):
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            _present_leaf_keys(v, "%s.%s" % (prefix, k) if prefix else k, out)
+    elif obj is not None:
+        out.append(prefix)
+
+def _key_matches(parts, template_parts):
+    return len(parts) == len(template_parts) and all(
+        t == "*" or t == p for t, p in zip(template_parts, parts)
+    )
+
+def _warn_unknown_keys(cfg_obj):
+    if os.environ.get("TALOS_CONFIG_STRICT_KEYS", "1") == "0":
+        return
+    if not isinstance(cfg_obj, dict):
+        return
+    present = []
+    _present_leaf_keys(cfg_obj, "", present)
+    templates = [t.split(".") for t in _KNOWN_CONFIG_KEYS]
+    for key in present:
+        if key.split(".")[-1] == "_note":
+            continue
+        parts = key.split(".")
+        if any(_key_matches(parts, t) for t in templates):
+            continue
+        candidates = []
+        for t in templates:
+            if len(t) == len(parts):
+                candidates.append(
+                    ".".join(tp if tp != "*" else p for tp, p in zip(t, parts))
+                )
+            else:
+                candidates.append(".".join(t))
+        match = difflib.get_close_matches(key, candidates, n=1, cutoff=0.6)
+        if match:
+            sys.stderr.write(
+                "pipeline-config: [warn] unknown config key '%s' "
+                "(did you mean '%s'?)\n" % (key, match[0])
+            )
+        else:
+            sys.stderr.write(
+                "pipeline-config: [warn] unknown config key '%s'\n" % key
+            )
+
+_warn_unknown_keys(cfg)
 
 value = walk(cfg, key.split("."))
 

@@ -223,7 +223,7 @@ Then open a Claude Code session in your repo and run:
 
 ## Config reference
 
-All keys live in `talos.pipeline.json` (or `talos.pipeline.yml` if PyYAML is installed) at your repo root. Every key is optional and falls back to a sensible default.
+All keys live in `talos.pipeline.json` (or `talos.pipeline.yml` if PyYAML is installed) at your repo root. Every key is optional and falls back to a sensible default. An unrecognized key (typo, wrong section) prints a one-line `pipeline-config: [warn] unknown config key '...' (did you mean '...'?)` warning to stderr instead of silently doing nothing — set `TALOS_CONFIG_STRICT_KEYS=0` to disable it.
 
 | Key | Default | Description |
 |-----|---------|-------------|
