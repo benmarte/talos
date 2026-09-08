@@ -1,5 +1,5 @@
 {
-  "_note": "talos.pipeline.json — recommended for new projects (no PyYAML dependency). Copy to your repo root as talos.pipeline.json and edit for your project. Config file lookup order: $PIPELINE_CONFIG env var, talos.pipeline.yml, talos.pipeline.yaml, talos.pipeline.json, .claude-pipeline.yaml, .claude-pipeline.json, pipeline.yaml, pipeline.json. JSON has no comment syntax, so commented-out example keys (see talos.pipeline.yml.example) are described here instead of shown inline: execution.worktree_warn_threshold (default 10) sets the non-active worktree count above which the Step 5 end-of-run sweep warns, e.g. \"execution\": {\"worktree_warn_threshold\": 10}. If using Talos's own bash test suite as your verify command, prefer \"bash tests/run-tests.sh --quiet\" (see talos.pipeline.yml.example) over the plain form -- it prints one line per file plus full output only for failures.",
+  "_note": "talos.pipeline.json — recommended for new projects (no PyYAML dependency). Copy to your repo root as talos.pipeline.json and edit for your project. Config file lookup order: $PIPELINE_CONFIG env var, talos.pipeline.yml, talos.pipeline.yaml, talos.pipeline.json, .claude-pipeline.yaml, .claude-pipeline.json, pipeline.yaml, pipeline.json. JSON has no comment syntax, so commented-out example keys (see talos.pipeline.yml.example) are described here instead of shown inline: execution.worktree_warn_threshold (default 10) sets the non-active worktree count above which the Step 5 end-of-run sweep warns, e.g. \"execution\": {\"worktree_warn_threshold\": 10}. If using Talos's own bash test suite as your verify command, prefer \"bash tests/run-tests.sh --quiet\" (see talos.pipeline.yml.example) over the plain form -- it prints one line per file plus full output only for failures. limits.max_retries (default 5) sets retries per network call after a rate-limit/transient error (must be a non-negative integer), on top of the original try (up to 6 total attempts by default); Retry-After is honored but capped at 60s, e.g. \"limits\": {\"max_retries\": 5}.",
 
   "base_branch": "dev",
 
@@ -75,6 +75,7 @@
   },
 
   "limits": {
-    "max_fix_attempts": 3
+    "max_fix_attempts": 3,
+    "max_retries": 5
   }
 }

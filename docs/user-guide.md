@@ -57,6 +57,14 @@ progress as issue/PR comments and threaded Slack/Discord messages along the way.
   `pipeline:blocked` for human attention; human-only gates for destructive
   actions; **forbidden-files gate** blocks merging PRs that touch secret-like
   paths (`.env`, `*.pem`, …; `merge.forbidden_files`).
+- **Rate-limit retry with backoff** — every network call in every provider
+  (`gh`/`glab`/`az` CLI invocations, and the `github-api` provider's `curl`
+  requests) automatically retries on HTTP 429, a GitHub secondary rate limit,
+  or a matching CLI rate-limit error, honouring `Retry-After` when supplied
+  (capped at 60s) and otherwise backing off exponentially (2s, doubling, capped at 60s), up
+  to `limits.max_retries` (default `5`, must be a non-negative integer) times. Everything else (401, 404,
+  422, …) still fails immediately with no added delay. `--dry-run` never
+  sleeps or retries.
 - **Human-merge mode** — `merge.auto: false` runs every stage and gate but
   stops at `pipeline:approved` and hands the final merge to a human (for
   protected integration branches).
@@ -140,6 +148,12 @@ path is no longer read — move any credentials to the repo root.
 | `PIPELINE_ISSUE_TITLE` / `PIPELINE_PR` / `PIPELINE_PR_TITLE` | notification context (skips `gh` lookups) |
 | `PIPELINE_THREAD_STATE` | thread anchor file (default `~/.talos/threads.json`) |
 | `PIPELINE_NOTIFY_DEBUG` | `1` = print payloads instead of posting |
+
+**Runtime/testing** (optional; advanced):
+
+| Variable | Purpose |
+|----------|---------|
+| `TALOS_RETRY_SLEEP_SCALE` | Scale factor for retry backoff sleeps (default `1`; tests set to `0` for instant runs without delay). Scales every sleep uniformly — e.g. `TALOS_RETRY_SLEEP_SCALE=0.1` makes retries 10x faster for local testing, `TALOS_RETRY_SLEEP_SCALE=0` skips all sleeps entirely (network calls still retry, no delay between attempts). |
 
 Nothing is strictly *required*: with no credentials at all, notifications are
 a silent no-op and the pipeline still runs.
