@@ -14,7 +14,7 @@
       "pipeline:blocked",
       "wontfix"
     ],
-    "max_parallel": 1
+    "max_parallel": 2
   },
   "roles": {
     "validator": true,
@@ -37,7 +37,8 @@
     "approval_waiver_paths": [
       "*.md",
       "docs/**",
-      "CHANGELOG.md"
+      "CHANGELOG.md",
+      "*.example"
     ]
   },
   "limits": {
