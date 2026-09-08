@@ -49,7 +49,8 @@ assert_file_exists "$GLOBAL_HOME/.talos/scripts/pipeline-paths.sh" \
   "--global installs pipeline-paths.sh to ~/.talos/scripts/"
 
 for script in pipeline-config.sh pipeline-cfg-cache.sh pipeline-status.sh pipeline-notify.sh \
-              pipeline-vcs.sh pipeline-agent.sh pipeline-worktree.sh bootstrap-labels.sh; do
+              pipeline-vcs.sh pipeline-agent.sh pipeline-worktree.sh bootstrap-labels.sh \
+              pipeline-lock.sh; do
   assert_file_exists "$GLOBAL_HOME/.talos/scripts/$script" "--global installs $script"
 done
 
