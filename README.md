@@ -842,7 +842,10 @@ and writes); CI always runs with `--no-cache`. If neither `sha256sum` nor
 than key on a degraded hash.
 
 CI runs the suite on Ubuntu and macOS for every push and PR
-(`.github/workflows/tests.yml`).
+(`.github/workflows/tests.yml`). Test sandboxes unset Talos and Claude
+environment variables (`TALOS_HOME`, `CLAUDE_PLUGIN_ROOT`, `CLAUDE_CONFIG_DIR`,
+etc.) to isolate per-test configuration and prevent ambient settings from
+leaking into test runs.
 
 To reproduce a nondeterministic ("flaky") failure locally, re-run the same
 selection under load with `--repeat N`: it runs the selected files N times,
