@@ -179,7 +179,18 @@ def _warn_unknown_keys(cfg_obj):
                 "pipeline-config: [warn] unknown config key '%s'\n" % key
             )
 
-_warn_unknown_keys(cfg)
+try:
+    _warn_unknown_keys(cfg)
+except Exception as _e:
+    # The unknown-key check must never take stdout down with it -- a
+    # crash here (e.g. an unexpected cfg shape) would abort the whole
+    # python3 process before flat/stdout is built, silently breaking
+    # every caller's config lookup, not just the warning. Fail loud
+    # instead of silent: one line naming the reason, then continue.
+    sys.stderr.write(
+        "pipeline-config: [warn] unknown-key check unavailable: %s\n"
+        % _e
+    )
 
 flat = {}
 
@@ -419,7 +430,18 @@ def _warn_unknown_keys(cfg_obj):
                 "pipeline-config: [warn] unknown config key '%s'\n" % key
             )
 
-_warn_unknown_keys(cfg)
+try:
+    _warn_unknown_keys(cfg)
+except Exception as _e:
+    # The unknown-key check must never take stdout down with it -- a
+    # crash here (e.g. an unexpected cfg shape) would abort the whole
+    # python3 process before flat/stdout is built, silently breaking
+    # every caller's config lookup, not just the warning. Fail loud
+    # instead of silent: one line naming the reason, then continue.
+    sys.stderr.write(
+        "pipeline-config: [warn] unknown-key check unavailable: %s\n"
+        % _e
+    )
 
 value = walk(cfg, key.split("."))
 
