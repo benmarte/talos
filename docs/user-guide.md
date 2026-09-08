@@ -944,6 +944,14 @@ pack installed.
 - **Preview any VCS action** without executing:
   `bash ~/.talos/scripts/pipeline-vcs.sh --dry-run <verb> ...`.
 - **Approval label lost after a new commit** — when a non-waived file (source code, tests, protected config) is pushed after an approval, that approval is marked stale; only the affected stages are re-run, and docs approvals whose delta touches only `*.example` or other waived paths are re-stamped without re-dispatch (see `merge.approval_waiver_paths` in README).
+- **`pipeline-config: [warn] unknown config key '...'`** — a key in your
+  `talos.pipeline.yml`/`talos.pipeline.json` doesn't match anything Talos
+  reads; the warning names the nearest known key it thinks you meant (e.g.
+  `merge.atuo` → `merge.auto`). Fix the typo — an unknown key is otherwise
+  silently ignored and the pipeline runs with that key's default. Set
+  `TALOS_CONFIG_STRICT_KEYS=0` to silence this check entirely (e.g. while
+  intentionally staging a forward-compatible key ahead of the Talos release
+  that reads it).
 
 ## FAQ
 

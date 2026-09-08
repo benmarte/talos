@@ -76,7 +76,17 @@ cfg() {
   local _key="${1:-}" _default="${2:-}"
   if [ -n "$_CFG_CACHE_DIR" ]; then
     if [ ! -e "$_CFG_CACHE_DONE" ]; then
-      "$SCRIPT_DIR/pipeline-config.sh" --dump > "$_CFG_CACHE_FILE" 2>/dev/null
+      # stderr intentionally NOT redirected (#176): --dump's stderr is where
+      # pipeline-config.sh's unknown-config-key warning (and the
+      # verify.qa_mode / verify.timeout_ms / verify.ci_wait_s fail-closed
+      # notices) lives, and this dump is the only pipeline-config.sh call
+      # every cfg()-caching script makes (pipeline-vcs.sh, pipeline-notify.sh,
+      # pipeline-status.sh, pipeline-agent.sh, pipeline-worktree.sh) --
+      # swallowing stderr here meant none of them ever surfaced a config
+      # typo. --dump's "no config file found" case exits before touching
+      # python3 and never wrote to stderr, so there was never a routine
+      # message this redirect was hiding.
+      "$SCRIPT_DIR/pipeline-config.sh" --dump > "$_CFG_CACHE_FILE"
       : > "$_CFG_CACHE_DONE"
     fi
     if [ -f "$_CFG_CACHE_FILE" ]; then
