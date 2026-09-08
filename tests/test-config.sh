@@ -113,6 +113,34 @@ assert_eq "pytest -q" "$(bash "$CFG_SH" verify "")" \
   "verify dict form still returns its commands list for the plain verify key (#195)"
 rm talos.pipeline.json
 
+# ── verify.timeout_ms (#205): default, explicit override, non-integer rejection ──
+assert_eq "600000" "$(bash "$CFG_SH" verify.timeout_ms 600000)" \
+  "verify.timeout_ms defaults to 600000 when absent (#205)"
+
+cat > talos.pipeline.json <<'EOF'
+{"verify": {"timeout_ms": 120000}}
+EOF
+assert_eq "120000" "$(bash "$CFG_SH" verify.timeout_ms 600000)" \
+  "explicit verify.timeout_ms overrides the 600000 default (#205)"
+rm talos.pipeline.json
+
+cat > talos.pipeline.json <<'EOF'
+{"verify": {"timeout_ms": "soon"}}
+EOF
+assert_eq "600000" "$(bash "$CFG_SH" verify.timeout_ms 600000)" \
+  "non-integer verify.timeout_ms falls back to the default (#205)"
+timeout_ms_err="$(bash "$CFG_SH" verify.timeout_ms 600000 2>&1 >/dev/null)"
+assert_contains "$timeout_ms_err" "must be a positive integer" \
+  "non-integer verify.timeout_ms warns on stderr (#205)"
+rm talos.pipeline.json
+
+cat > talos.pipeline.json <<'EOF'
+{"verify": {"timeout_ms": 0}}
+EOF
+assert_eq "600000" "$(bash "$CFG_SH" verify.timeout_ms 600000)" \
+  "non-positive verify.timeout_ms falls back to the default (#205)"
+rm talos.pipeline.json
+
 cat > talos.pipeline.json <<'EOF'
 {"merge": {"method": "rebase"}}
 EOF

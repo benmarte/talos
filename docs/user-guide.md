@@ -488,7 +488,7 @@ epic flagged for missing boxes still auto-closes once a human ticks them.
 The planner role is off by default — it adds API calls and is most useful
 when you regularly work with multi-task epics.
 
-### Running `verify:` once per PR, and QA trusting CI (`verify.qa_mode`, `verify.targeted`, `verify.ci_wait_s`)
+### Running `verify:` once per PR, and QA trusting CI (`verify.qa_mode`, `verify.targeted`, `verify.ci_wait_s`, `verify.timeout_ms`)
 
 The full `verify:` suite is expensive to run repeatedly, and by default CI
 (`merge.required_checks`) already runs it on every push. Talos avoids paying
@@ -530,6 +530,18 @@ for the same suite run more than it needs to:
   the diff (`pipeline-vcs.sh diff-pr`) and CI status
   (`pipeline-vcs.sh pr-checks`) — this was already true in practice and is
   now stated explicitly in each profile.
+- **`verify.timeout_ms`** (default `600000`): the explicit timeout, in
+  milliseconds, that the developer and QA prompts substitute into a one-line
+  foreground rule placed within a few lines of every verify and CI-wait
+  instruction — never background execution (`&`, `nohup`, `disown`), never
+  sleep-polling, never end the turn while a verify command or the CI-wait
+  poll is running. This exists because developers backgrounded the verify
+  suite and stalled waiting for its own notification on three separate runs,
+  and QA did the same with its `pr-checks` poll under `qa_mode: ci` — Rule 17
+  already forbade it in prose, hundreds of lines from the decision point, and
+  agents missed it. Must be a positive integer; a non-integer or
+  non-positive value is rejected by `pipeline-config.sh` (one-line warning on
+  stderr, falls back to the default).
 
 Set `verify.qa_mode: local` explicitly if you want QA to always re-run the
 suite itself regardless of `merge.required_checks` — for example, if your CI

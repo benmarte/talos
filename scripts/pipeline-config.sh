@@ -85,8 +85,9 @@ except Exception:
 value = walk(cfg, key.split("."))
 
 # "verify" is historically a flat list of shell commands. Also accept a dict
-# form (verify: {commands: [...], qa_mode: ..., targeted: ..., ci_wait_s: ...})
-# so verify.qa_mode / verify.targeted / verify.ci_wait_s can be read with the
+# form (verify: {commands: [...], qa_mode: ..., targeted: ..., ci_wait_s: ...,
+# timeout_ms: ...}) so verify.qa_mode / verify.targeted / verify.ci_wait_s /
+# verify.timeout_ms can be read with the
 # normal dot-path lookup below without disturbing what plain "verify" returns
 # to existing callers (a newline-joined command list).
 if key == "verify" and isinstance(value, dict):
@@ -114,6 +115,25 @@ if key == "verify.qa_mode":
             "pass QA vacuously with no required checks to poll)\n"
         )
         value = "local"
+
+# verify.timeout_ms (#205) is the explicit foreground timeout, in
+# milliseconds, that developer/QA prompts substitute into their verify and
+# CI-wait instructions. It must be a positive integer -- a non-integer or
+# non-positive config value is a config error, not a value an agent can act
+# on, so fail closed to the caller-supplied default (600000 from Step 0) and
+# warn once on stderr rather than handing a subagent a garbage timeout.
+if key == "verify.timeout_ms" and value is not None:
+    try:
+        iv = int(value)
+        if iv <= 0:
+            raise ValueError
+        value = iv
+    except (TypeError, ValueError):
+        sys.stderr.write(
+            "pipeline-config: verify.timeout_ms must be a positive integer "
+            "(milliseconds) -- got: %r -- using default\n" % (value,)
+        )
+        value = None
 
 if value is None:
     print(default, end="")

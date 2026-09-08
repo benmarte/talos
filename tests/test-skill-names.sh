@@ -49,6 +49,57 @@ assert_contains "$(cat "$TALOS_ROOT/talos.pipeline.yml.example")" "quiet" \
 assert_contains "$(cat "$TALOS_ROOT/talos.pipeline.json.example")" "quiet" \
   "talos.pipeline.json.example mentions --quiet"
 
+# ── Foreground rule adjacent to every verify instruction (#205) ────────────
+# Rule 17 already forbade backgrounding verify, but as prose ~400 lines away
+# from the actual verify instruction developers missed it three separate
+# times (#166, #173, #196) and QA missed the equivalent CI-wait poll once
+# (#206). The rule must sit within N lines *before* the instruction it
+# governs so it is unmissable at the decision point.
+assert_rule_before_all() {  # $1=file $2=anchor-regex $3=label-prefix $4=max-lines-before
+  local file="$1" anchor="$2" label_prefix="$3" maxd="${4:-5}"
+  local anchor_lines
+  anchor_lines="$(grep -n -E "$anchor" "$file" | cut -d: -f1)"
+  if [ -z "$anchor_lines" ]; then
+    fail "$label_prefix" "anchor not found: $anchor"
+    return
+  fi
+  local idx=0 line start window
+  for line in $anchor_lines; do
+    idx=$((idx + 1))
+    start=$((line - maxd))
+    [ "$start" -lt 1 ] && start=1
+    window="$(sed -n "${start},$((line - 1))p" "$file")"
+    case "$window" in
+      *"Foreground rule:"*) pass "$label_prefix (occurrence $idx, line $line)" ;;
+      *) fail "$label_prefix (occurrence $idx, line $line)" \
+           "no 'Foreground rule:' within $maxd lines before line $line" ;;
+    esac
+  done
+}
+
+# Both developer prompt profiles (worktree and branch isolation) in SKILL.md.
+assert_rule_before_all "$SKILL_MD" '^5\. Verify commands' \
+  "skills/pipeline/SKILL.md developer prompt: foreground rule precedes step 5"
+# The QA prompt in SKILL.md -- rule sits directly beside the QA-mode /
+# CI-wait decision (both the ci poll and the local verify branch hang off it).
+assert_rule_before_all "$SKILL_MD" 'QA mode above is already resolved' \
+  "skills/pipeline/SKILL.md QA prompt: foreground rule precedes verify/CI-wait instruction"
+assert_rule_before_all "$TALOS_ROOT/agents/developer.md" \
+  'Verify commands — two mutually exclusive' \
+  "agents/developer.md: foreground rule precedes verify instruction"
+assert_rule_before_all "$TALOS_ROOT/agents/qa.md" 'Check `verify.qa_mode`' \
+  "agents/qa.md: foreground rule precedes verify/CI-wait instruction"
+
+# The QA prompt's CI-wait poll must be a literal, single foreground command
+# (an `until ... do sleep N; done` loop with a deadline) -- not left for the
+# agent to improvise, per the #205 scope addition after PR #206 stalled.
+assert_contains "$qa_block" "until" \
+  "skills/pipeline/SKILL.md QA prompt writes the CI-wait loop out literally"
+assert_contains "$qa_block" "sleep 30" \
+  "skills/pipeline/SKILL.md QA prompt CI-wait loop has a literal sleep interval"
+assert_contains "$(cat "$TALOS_ROOT/agents/qa.md")" "until" \
+  "agents/qa.md writes the CI-wait loop out literally"
+
 # The "5. Verify commands" step -- the shared verify-mode + quiet-output
 # guidance -- must stay byte-identical between the worktree-isolation and
 # branch-isolation developer prompt variants (the surrounding blocks differ,
