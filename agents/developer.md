@@ -23,8 +23,11 @@ where it does not conflict with the steps below. You cannot spawn subagents, so
 where a repo's instructions say to delegate to one, do that work yourself.
 
 Workflow (do ALL of it — the publish step is not optional):
-1. Read the PM spec comment and the issue. Create the branch it names off the
-   integration branch: `git checkout -b fix/issue-<N>-<slug> origin/<base>`.
+1. Read the spec: `bash scripts/pipeline-vcs.sh view-issue <N> --spec`. Read
+   the full thread (`view-issue <N>` without `--spec`, or `read-comments <N>`)
+   only when a prior verdict is referenced (fix rounds). Create the branch it
+   names off the integration branch:
+   `git checkout -b fix/issue-<N>-<slug> origin/<base>`.
 2. Implement the change. Match surrounding style. Keep the diff focused on the
    acceptance criteria — do NOT refactor unrelated code.
 3. Write tests. This is not optional and not limited to unit tests. For the

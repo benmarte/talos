@@ -131,6 +131,83 @@ else
     "could not locate both step-5 sections"
 fi
 
+# ── Compact stage handoff: every role's first view-issue call uses --spec,
+# reviewer/security read diff-pr --stat first (#201) ────────────────────────
+# Busy issue threads accumulate a verdict/marker/attempt comment per stage;
+# `view-issue --spec` trims that down to the issue body plus the latest PM
+# spec comment. A role prompt's FIRST `view-issue` invocation (the one used
+# to establish initial context) must use `--spec` -- a later, explicit full
+# `view-issue` (no `--spec`) or `read-comments` call, used only when a prior
+# verdict is referenced (fix rounds), is fine and expected.
+
+# Checks that the first `view-issue` occurrence in $1 (if any) is paired
+# with `--spec` on the same or the following line (prompt text sometimes
+# wraps across lines). A prompt with no `view-issue` call at all passes
+# vacuously -- reviewer/security/docs read the diff, not the issue, and
+# nothing in this check requires them to.
+assert_first_view_issue_uses_spec() {  # $1=text $2=label
+  local text="$1" label="$2"
+  local lineno
+  lineno="$(printf '%s\n' "$text" | grep -n 'view-issue' | head -1 | cut -d: -f1)"
+  if [ -z "$lineno" ]; then
+    pass "$label (no view-issue call present)"
+    return
+  fi
+  local window
+  window="$(printf '%s\n' "$text" | sed -n "${lineno},$((lineno + 1))p")"
+  case "$window" in
+    *"view-issue"*"--spec"*) pass "$label" ;;
+    *) fail "$label" "first view-issue call has no --spec: $(printf '%s' "$window" | head -c 200)" ;;
+  esac
+}
+
+# extract_block above scans every fenced block in the file for the FIRST one
+# whose first content line matches the anchor, toggling on every literal
+# "```" line -- a ```bash/```yaml opener paired with a plain ``` closer
+# elsewhere in the file desyncs that toggle by the time it reaches the
+# reviewer/security/docs blocks further down. extract_window instead anchors
+# directly on the prompt's own opening line and scans forward for its own
+# closing "```", so it can't inherit drift from earlier blocks.
+extract_window() {  # $1=file $2=anchor substring
+  local file="$1" anchor="$2" start end
+  start="$(grep -n -F "$anchor" "$file" | head -1 | cut -d: -f1)"
+  [ -z "$start" ] && return 1
+  end="$(awk -v s="$start" 'NR > s && /^```$/ { print NR; exit }' "$file")"
+  [ -z "$end" ] && end=$((start + 60))
+  sed -n "${start},$((end - 1))p" "$file"
+}
+
+reviewer_block="$(extract_window "$SKILL_MD" "You are the Reviewer. QA passed PR")"
+security_block="$(extract_window "$SKILL_MD" "You are the Security Analyst. QA passed PR")"
+docs_block="$(extract_window "$SKILL_MD" "You are Documentation. QA passed for PR")"
+
+assert_first_view_issue_uses_spec "$dev_blocks" \
+  "skills/pipeline/SKILL.md developer prompt block(s): first view-issue call uses --spec"
+assert_first_view_issue_uses_spec "$qa_block" \
+  "skills/pipeline/SKILL.md QA prompt block: first view-issue call uses --spec"
+assert_first_view_issue_uses_spec "$reviewer_block" \
+  "skills/pipeline/SKILL.md reviewer prompt block: first view-issue call uses --spec"
+assert_first_view_issue_uses_spec "$security_block" \
+  "skills/pipeline/SKILL.md security prompt block: first view-issue call uses --spec"
+assert_first_view_issue_uses_spec "$docs_block" \
+  "skills/pipeline/SKILL.md docs prompt block: first view-issue call uses --spec"
+
+for _role in developer qa reviewer security docs; do
+  assert_first_view_issue_uses_spec "$(cat "$TALOS_ROOT/agents/$_role.md")" \
+    "agents/$_role.md: first view-issue call uses --spec"
+done
+
+# Reviewer and security prompts read the cheap per-file summary before the
+# full diff.
+assert_contains "$reviewer_block" "diff-pr <PR_NUMBER> --stat" \
+  "skills/pipeline/SKILL.md reviewer prompt block reads diff-pr --stat before the full diff"
+assert_contains "$security_block" "diff-pr <PR_NUMBER> --stat" \
+  "skills/pipeline/SKILL.md security prompt block reads diff-pr --stat before the full diff"
+assert_contains "$(cat "$TALOS_ROOT/agents/reviewer.md")" "diff-pr <pr> --stat" \
+  "agents/reviewer.md reads diff-pr --stat before the full diff"
+assert_contains "$(cat "$TALOS_ROOT/agents/security.md")" "diff-pr <pr> --stat" \
+  "agents/security.md reads diff-pr --stat before the full diff"
+
 REPO="${TALOS_AGENT_SKILLS_REPO:-https://github.com/addyosmani/agent-skills}"
 
 if ! command -v git >/dev/null 2>&1; then
