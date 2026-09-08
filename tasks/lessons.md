@@ -37,3 +37,10 @@ Two Sonnet subagents died on HTTP 429 (monthly spend limit) with uncommitted wor
 
 - Board calls are one cheap shell command each and are part of the visible contract. Never trim them.
 - Checklist per transition: validator CONFIRMED → "In progress"; PR opened → "In review"; blocked → "Blocked"; merged → "Done".
+
+## Run summary 2026-09-08 (second session): 5 PRs merged, 6 issues closed
+
+Every PR needed at least one fix round; the findings were real, not noise: Linux 128 KB argv cap, unchecked `mktemp -d`, orchestrator-run git in SKILL.md (rule 15), validation missing from the `--dump` path, `2>/dev/null` swallowing a feature's only output, a missing known key, `%s` vs `%r` in a warning. Pattern: features that only manifest on stderr or on a second code path need a test that drives the real consumer (a cache, a CI runner, another OS), not the function in isolation.
+
+- macOS GitHub runners lack PyYAML; anything YAML-fixture-based must simulate its absence locally.
+- The `pr-mergeable` verb (#214) caught two CONFLICTING PRs on its first day; the CHANGELOG is the usual conflict file, so merging main via a developer task right after each merge is the cheap default.
