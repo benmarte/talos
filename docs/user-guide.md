@@ -858,6 +858,71 @@ this one is only needed when the destination has to be something other than
 the repo-local `.talos/events.jsonl` file (a different path, a remote sink,
 etc).
 
+### One script, both hooks
+
+`hooks.pre_dispatch` and `hooks.post_stage` are independent config keys, but
+nothing stops the same shell command from being wired to both -- the two
+payload shapes never overlap, so a single script can tell them apart on
+stdin and branch accordingly. A pre-dispatch payload always carries a
+`files_hint` key (`null`/`[]` when the caller doesn't have one yet); a
+post-stage payload always carries `event` and `verdict` keys instead. This
+worked example (`scripts/talos-hook.sh` -- adjust the path for your own
+project) uses that to serve both roles from one file: it prints context on
+stdout for `pre_dispatch`, and appends the outcome to a local log for
+`post_stage`.
+
+```bash
+#!/usr/bin/env bash
+# scripts/talos-hook.sh -- wired to both hooks.pre_dispatch and
+# hooks.post_stage (see the config snippet below). Dispatches on the stdin
+# JSON's shape: a pre_dispatch payload always has "files_hint"; a post_stage
+# payload always has "event" and "verdict".
+set -euo pipefail
+
+payload="$(cat)"
+kind="$(printf '%s' "$payload" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+print("post_stage" if "event" in data else "pre_dispatch")
+')"
+
+if [ "$kind" = "pre_dispatch" ]; then
+  # pre_dispatch: stdout is prepended to the stage prompt under "## Context".
+  role="$(printf '%s' "$payload" | python3 -c 'import json,sys; print(json.load(sys.stdin)["role"])')"
+  issue="$(printf '%s' "$payload" | python3 -c 'import json,sys; print(json.load(sys.stdin)["issue"])')"
+  echo "Stage: $role, issue #$issue -- see docs/adr/ for prior decisions."
+else
+  # post_stage: no stdout contract -- append the outcome to a local log.
+  printf '%s\n' "$payload" >> "$HOME/.talos-hook-outcomes.jsonl"
+fi
+```
+
+**Config snippet, YAML (`talos.pipeline.yml`):**
+
+```yaml
+hooks:
+  pre_dispatch: "scripts/talos-hook.sh"
+  post_stage: "scripts/talos-hook.sh"
+  timeout_s: 30
+```
+
+**Config snippet, JSON (`talos.pipeline.json`):**
+
+```json
+{
+  "hooks": {
+    "pre_dispatch": "scripts/talos-hook.sh",
+    "post_stage": "scripts/talos-hook.sh",
+    "timeout_s": 30
+  }
+}
+```
+
+To read back what this hook (or the built-in events log below) recorded for
+a given issue, prefer `scripts/pipeline-events.sh tail --issue 42` over
+grepping the raw file -- it tolerates malformed lines and prints the
+outcomes oldest-first.
+
 ### The built-in events log (`events.enabled`, `events.path`)
 
 **What it does.** Every `hooks.post_stage` payload (the exact same JSON

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # tests/test-docs-149-config-examples.sh
-# Verifies that the three config examples added in #149 parse correctly.
+# Verifies that the three config examples added in #149 parse correctly, plus
+# the hooks.* / events.* keys documented in #185 (README hooks section,
+# docs/user-guide.md worked example, talos.pipeline.*.example).
 #
 # Strategy: use a sentinel default (__MISS__) that cannot be a real config
 # value.  If the file fails to parse, pipeline-config.sh returns the caller's
@@ -210,6 +212,128 @@ EOF
   assert_not_eq "roles.reviewer.model/yaml: sentinel returned for corrupted config" "claude-opus-5" "$actual"
 else
   printf 'skip: agents.roles/yaml -- PyYAML not available\n'
+fi
+
+# ── 4. hooks.pre_dispatch / hooks.post_stage / hooks.timeout_s (#185) ────────
+# JSON (always runs)
+
+GOOD_HOOKS_JSON="$SCRATCH/hooks_good.json"
+cat > "$GOOD_HOOKS_JSON" <<'EOF'
+{
+  "hooks": {
+    "pre_dispatch": "scripts/talos-hook.sh",
+    "post_stage": "scripts/talos-hook.sh",
+    "timeout_s": 45
+  }
+}
+EOF
+
+actual=$(PIPELINE_CONFIG="$GOOD_HOOKS_JSON" bash "$CONFIG_SH" hooks.pre_dispatch "$SENTINEL")
+assert_eq "hooks.pre_dispatch/json: correct value from good config" "scripts/talos-hook.sh" "$actual"
+
+actual=$(PIPELINE_CONFIG="$GOOD_HOOKS_JSON" bash "$CONFIG_SH" hooks.post_stage "$SENTINEL")
+assert_eq "hooks.post_stage/json: correct value from good config" "scripts/talos-hook.sh" "$actual"
+
+actual=$(PIPELINE_CONFIG="$GOOD_HOOKS_JSON" bash "$CONFIG_SH" hooks.timeout_s "$SENTINEL")
+assert_eq "hooks.timeout_s/json: correct value from good config" "45" "$actual"
+
+# Corruption: wrong key path (hook instead of hooks).
+CORRUPT_HOOKS_JSON="$SCRATCH/hooks_corrupt.json"
+cat > "$CORRUPT_HOOKS_JSON" <<'EOF'
+{
+  "hook": {
+    "pre_dispatch": "scripts/talos-hook.sh"
+  }
+}
+EOF
+
+actual=$(PIPELINE_CONFIG="$CORRUPT_HOOKS_JSON" bash "$CONFIG_SH" hooks.pre_dispatch "$SENTINEL")
+assert_not_eq "hooks.pre_dispatch/json: sentinel returned for corrupted config" "scripts/talos-hook.sh" "$actual"
+
+# YAML (only when PyYAML is available)
+if $HAVE_YAML; then
+  GOOD_HOOKS_YML="$SCRATCH/hooks_good.yml"
+  cat > "$GOOD_HOOKS_YML" <<'EOF'
+hooks:
+  pre_dispatch: "scripts/talos-hook.sh"
+  post_stage: "scripts/talos-hook.sh"
+  timeout_s: 45
+EOF
+  actual=$(PIPELINE_CONFIG="$GOOD_HOOKS_YML" bash "$CONFIG_SH" hooks.pre_dispatch "$SENTINEL")
+  assert_eq "hooks.pre_dispatch/yaml: correct value from good config" "scripts/talos-hook.sh" "$actual"
+
+  actual=$(PIPELINE_CONFIG="$GOOD_HOOKS_YML" bash "$CONFIG_SH" hooks.post_stage "$SENTINEL")
+  assert_eq "hooks.post_stage/yaml: correct value from good config" "scripts/talos-hook.sh" "$actual"
+
+  actual=$(PIPELINE_CONFIG="$GOOD_HOOKS_YML" bash "$CONFIG_SH" hooks.timeout_s "$SENTINEL")
+  assert_eq "hooks.timeout_s/yaml: correct value from good config" "45" "$actual"
+
+  CORRUPT_HOOKS_YML="$SCRATCH/hooks_corrupt.yml"
+  cat > "$CORRUPT_HOOKS_YML" <<'EOF'
+hook:
+  pre_dispatch: "scripts/talos-hook.sh"
+EOF
+  actual=$(PIPELINE_CONFIG="$CORRUPT_HOOKS_YML" bash "$CONFIG_SH" hooks.pre_dispatch "$SENTINEL")
+  assert_not_eq "hooks.pre_dispatch/yaml: sentinel returned for corrupted config" "scripts/talos-hook.sh" "$actual"
+else
+  printf 'skip: hooks/yaml -- PyYAML not available\n'
+fi
+
+# ── 5. events.enabled / events.path (#185) ────────────────────────────────────
+# JSON (always runs)
+
+GOOD_EVENTS_JSON="$SCRATCH/events_good.json"
+cat > "$GOOD_EVENTS_JSON" <<'EOF'
+{
+  "events": {
+    "enabled": false,
+    "path": ".talos/custom-events.jsonl"
+  }
+}
+EOF
+
+actual=$(PIPELINE_CONFIG="$GOOD_EVENTS_JSON" bash "$CONFIG_SH" events.enabled "$SENTINEL")
+assert_eq "events.enabled/json: correct value from good config" "false" "$actual"
+
+actual=$(PIPELINE_CONFIG="$GOOD_EVENTS_JSON" bash "$CONFIG_SH" events.path "$SENTINEL")
+assert_eq "events.path/json: correct value from good config" ".talos/custom-events.jsonl" "$actual"
+
+# Corruption: wrong key path (event instead of events).
+CORRUPT_EVENTS_JSON="$SCRATCH/events_corrupt.json"
+cat > "$CORRUPT_EVENTS_JSON" <<'EOF'
+{
+  "event": {
+    "path": ".talos/custom-events.jsonl"
+  }
+}
+EOF
+
+actual=$(PIPELINE_CONFIG="$CORRUPT_EVENTS_JSON" bash "$CONFIG_SH" events.path "$SENTINEL")
+assert_not_eq "events.path/json: sentinel returned for corrupted config" ".talos/custom-events.jsonl" "$actual"
+
+# YAML (only when PyYAML is available)
+if $HAVE_YAML; then
+  GOOD_EVENTS_YML="$SCRATCH/events_good.yml"
+  cat > "$GOOD_EVENTS_YML" <<'EOF'
+events:
+  enabled: false
+  path: ".talos/custom-events.jsonl"
+EOF
+  actual=$(PIPELINE_CONFIG="$GOOD_EVENTS_YML" bash "$CONFIG_SH" events.enabled "$SENTINEL")
+  assert_eq "events.enabled/yaml: correct value from good config" "false" "$actual"
+
+  actual=$(PIPELINE_CONFIG="$GOOD_EVENTS_YML" bash "$CONFIG_SH" events.path "$SENTINEL")
+  assert_eq "events.path/yaml: correct value from good config" ".talos/custom-events.jsonl" "$actual"
+
+  CORRUPT_EVENTS_YML="$SCRATCH/events_corrupt.yml"
+  cat > "$CORRUPT_EVENTS_YML" <<'EOF'
+event:
+  path: ".talos/custom-events.jsonl"
+EOF
+  actual=$(PIPELINE_CONFIG="$CORRUPT_EVENTS_YML" bash "$CONFIG_SH" events.path "$SENTINEL")
+  assert_not_eq "events.path/yaml: sentinel returned for corrupted config" ".talos/custom-events.jsonl" "$actual"
+else
+  printf 'skip: events/yaml -- PyYAML not available\n'
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
