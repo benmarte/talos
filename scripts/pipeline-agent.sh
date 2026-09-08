@@ -58,7 +58,9 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=pipeline-paths.sh
 . "$SCRIPT_DIR/pipeline-paths.sh"
-cfg() { "$SCRIPT_DIR/pipeline-config.sh" "$@"; }
+# cfg() (#169): dumps the config once per invocation and answers lookups
+# from that cache instead of re-parsing on every call.
+. "$SCRIPT_DIR/pipeline-cfg-cache.sh"
 
 ROLE="${1:-}"
 TASK="${2:-}"

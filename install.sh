@@ -100,9 +100,9 @@ if [ "$GLOBAL" = "true" ]; then
   # Scripts
   echo "Scripts:"
   mkdir -p "$TALOS_HOME_DIR/scripts"
-  for script in pipeline-config.sh pipeline-status.sh pipeline-notify.sh \
-                pipeline-vcs.sh pipeline-agent.sh pipeline-worktree.sh \
-                bootstrap-labels.sh pipeline-paths.sh; do
+  for script in pipeline-config.sh pipeline-cfg-cache.sh pipeline-status.sh \
+                pipeline-notify.sh pipeline-vcs.sh pipeline-agent.sh \
+                pipeline-worktree.sh bootstrap-labels.sh pipeline-paths.sh; do
     install_file "$SRC/scripts/$script" "$TALOS_HOME_DIR/scripts/$script"
     chmod +x "$TALOS_HOME_DIR/scripts/$script"
   done

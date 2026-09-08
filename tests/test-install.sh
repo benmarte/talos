@@ -48,8 +48,8 @@ gout="$(HOME="$GLOBAL_HOME" CLAUDE_CONFIG_DIR="$FAKE_CLAUDE_HOME" \
 assert_file_exists "$GLOBAL_HOME/.talos/scripts/pipeline-paths.sh" \
   "--global installs pipeline-paths.sh to ~/.talos/scripts/"
 
-for script in pipeline-config.sh pipeline-status.sh pipeline-notify.sh pipeline-vcs.sh \
-              pipeline-agent.sh pipeline-worktree.sh bootstrap-labels.sh; do
+for script in pipeline-config.sh pipeline-cfg-cache.sh pipeline-status.sh pipeline-notify.sh \
+              pipeline-vcs.sh pipeline-agent.sh pipeline-worktree.sh bootstrap-labels.sh; do
   assert_file_exists "$GLOBAL_HOME/.talos/scripts/$script" "--global installs $script"
 done
 

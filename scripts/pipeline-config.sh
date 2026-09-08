@@ -21,6 +21,116 @@
 #
 set -u
 
+# ── --dump (#169) ─────────────────────────────────────────────────────────────
+# Prints the whole resolved config once as NUL-delimited key/value pairs
+# (key NUL value NUL key NUL value NUL ...) instead of one dot-path lookup.
+# Callers that used to shell out to this script once per cfg() call (a fresh
+# python3 process re-parsing the config file every time) can spawn python3
+# once per script invocation instead: dump here, then answer every lookup
+# from the cached output with pure shell. A key absent from the dump means
+# "absent in config" — the caller applies its own caller-supplied default,
+# exactly like the single-key path below does. Same file-lookup order, same
+# YAML-then-JSON precedence, and the same "verify" (dict-form → commands
+# list) / "verify.qa_mode" (merge.required_checks-derived default, fail-
+# closed downgrade) special cases as the single-key path, so a lookup
+# against this dump is byte-identical to calling this script for that key
+# directly. Purely additive: an early exit, does not touch anything below.
+if [ "${1:-}" = "--dump" ]; then
+  _DCFG="${PIPELINE_CONFIG:-}"
+  if [ -z "$_DCFG" ]; then
+    for _dcandidate in "talos.pipeline.yml" "talos.pipeline.yaml" "talos.pipeline.json" \
+                     ".claude-pipeline.yaml" "pipeline.yaml" \
+                     ".claude-pipeline.json" "pipeline.json"; do
+      if [ -f "$_dcandidate" ]; then
+        _DCFG="$_dcandidate"
+        break
+      fi
+    done
+  fi
+  # No config present (or unreadable) — nothing to dump; every lookup falls
+  # back to its caller's default, same as "no config found" below.
+  if [ -z "$_DCFG" ] || [ ! -f "$_DCFG" ]; then
+    exit 0
+  fi
+  python3 - "$_DCFG" <<'PYEOF'
+import sys
+
+cfg_path = sys.argv[1]
+
+def walk(obj, parts):
+    for part in parts:
+        if isinstance(obj, dict) and part in obj:
+            obj = obj[part]
+        else:
+            return None
+    return obj
+
+try:
+    try:
+        import yaml
+        with open(cfg_path) as f:
+            cfg = yaml.safe_load(f) or {}
+    except ImportError:
+        import json
+        with open(cfg_path) as f:
+            cfg = json.load(f)
+except Exception:
+    # Unparseable config -- dump nothing; every key falls back to its
+    # caller-supplied default, same as the single-key path's behaviour.
+    cfg = {}
+
+if not isinstance(cfg, dict):
+    cfg = {}
+
+flat = {}
+
+def flatten(obj, prefix):
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            flatten(v, "%s.%s" % (prefix, k) if prefix else k)
+    elif obj is not None:
+        flat[prefix] = obj
+
+flatten(cfg, "")
+
+# "verify" dict-form -> commands list (mirrors the single-key path). List
+# form is already captured correctly by the generic flatten() above.
+_raw_verify = cfg.get("verify")
+if isinstance(_raw_verify, dict):
+    flat["verify"] = _raw_verify.get("commands", [])
+
+# verify.qa_mode derived default + fail-closed downgrade (mirrors the
+# single-key path exactly, including the one-line stderr warning).
+_required_checks = walk(cfg, "merge.required_checks".split("."))
+_has_required_checks = isinstance(_required_checks, list) and len(_required_checks) > 0
+_qa_mode = walk(cfg, "verify.qa_mode".split("."))
+if _qa_mode is None:
+    _qa_mode = "ci" if _has_required_checks else "local"
+if _qa_mode == "ci" and not _has_required_checks:
+    sys.stderr.write(
+        "pipeline-config: verify.qa_mode=ci with empty/absent "
+        "merge.required_checks -- resolving to 'local' (ci mode would "
+        "pass QA vacuously with no required checks to poll)\n"
+    )
+    _qa_mode = "local"
+flat["verify.qa_mode"] = _qa_mode
+
+out = sys.stdout.buffer
+for k, v in flat.items():
+    if isinstance(v, bool):
+        s = "true" if v else "false"
+    elif isinstance(v, list):
+        s = "\n".join(str(x) for x in v)
+    else:
+        s = str(v)
+    out.write(k.encode("utf-8", "surrogateescape"))
+    out.write(b"\x00")
+    out.write(s.encode("utf-8", "surrogateescape"))
+    out.write(b"\x00")
+PYEOF
+  exit 0
+fi
+
 KEY="${1:-}"
 DEFAULT="${2:-}"
 

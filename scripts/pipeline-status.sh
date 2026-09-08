@@ -43,7 +43,9 @@
 # (missing project, bad field name) when not dry-run.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cfg() { "$SCRIPT_DIR/pipeline-config.sh" "$@"; }
+# cfg() (#169): dumps the config once per invocation and answers lookups
+# from that cache instead of re-parsing on every call.
+. "$SCRIPT_DIR/pipeline-cfg-cache.sh"
 
 # ── Token-based GraphQL path ──────────────────────────────────────────────────
 # Activated when vcs.provider=github-api OR when gh is not on PATH.
