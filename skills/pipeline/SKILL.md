@@ -343,7 +343,7 @@ bash scripts/pipeline-vcs.sh list-issues
    - Open PR found → adopt it: do NOT re-dispatch the developer; resume from the first missing approval label (QA if `qa:pass` absent, etc.).
    - No PR → the developer stage never finished; re-dispatch it (counts toward `max_fix_attempts`).
 2. **Heal merged-but-open issues.** For each open `pipeline:*` issue, `bash scripts/pipeline-vcs.sh find-pr <N> merged` — if a merged PR closes it, run the post-merge steps from Step 4 (comment, close, board → Done, notify) instead of doing any work. Pass `--allow-closed` to `comment-issue` in the post-merge steps here, since GitHub may have already auto-closed the issue at merge time via `Closes #N`.
-3. **Resume in-flight PRs.** For each open pipeline PR (head branch `fix/issue-*` or `feat/issue-*`): all approval labels present → merge queue (when `merge.auto: false`, a PR already labeled `pipeline:approved` is waiting for a human — leave it alone); otherwise resume at the blocking stage.
+3. **Resume in-flight PRs.** For each open pipeline PR (head branch `fix/issue-*` or `feat/issue-*`): all approval labels present → merge queue (when `merge.auto: false`, a PR already labeled `pipeline:approved` is waiting for a human — leave it alone); otherwise resume at the blocking stage. If the blocking stage is QA, run the **Mergeability gate (#214)** (Step 3c, "After developer returns") first — do not resume straight into QA.
 4. **Sweep orphaned worktrees.** `bash scripts/pipeline-worktree.sh sweep <space-separated ids of every issue in this run's queue>` — removes any `fix/issue-*`/`feat/issue-*` worktree whose issue is not in the queue (a backstop for runs that ended before the Step 4 post-merge removal). Pass no ids to reclaim all of them.
 5. **Report stale blocked work.** List issues labeled `pipeline:blocked` and include them in the Step 1 summary notification so humans see what's waiting on them:
    `bash scripts/pipeline-notify.sh info "backlog" "K blocked issues awaiting human action: #a, #b" backlog` (only when K > 0).
@@ -802,6 +802,23 @@ After developer returns:
   1. Board → "In review": `bash scripts/pipeline-status.sh <N> "In review"`
   2. Relay findings: `bash scripts/pipeline-notify.sh developer "#<N>" "<subagent's 2-3 line summary: what was implemented + PR URL>" <N>`
   3. Lifecycle event: `bash scripts/pipeline-notify.sh pr-opened "#<N>" "PR <URL> opened" <N>`
+  4. **Mergeability gate (#214), before dispatching QA (Step 3d):** `bash
+     scripts/pipeline-vcs.sh pr-mergeable <PR>`.
+     - Exit 0 (`MERGEABLE`) or exit 2 (`UNKNOWN`, still unresolved after
+       retries — fail open, the same as every other best-effort gate in this
+       pipeline): proceed to Step 3d.
+     - Exit 1 (`CONFLICTING`): do NOT dispatch QA yet — GitHub schedules no
+       `pull_request` CI run for a conflicting PR, so QA would hang waiting
+       for CI that never starts. Check out the PR branch and `git fetch
+       origin && git merge origin/<BASE_BRANCH>`. If the only conflict is in
+       `CHANGELOG.md`, resolve it per the **CHANGELOG serialization guard**
+       (Step 4): keep BOTH entries, newest first, then commit and push.
+       Otherwise abort the merge and dispatch a developer "merge base" task
+       to resolve it and push — this counts toward `max_fix_attempts` via
+       `bash scripts/pipeline-vcs.sh record-attempt <N> merge-base --pr
+       <PR>`; ceiling reached → board "Blocked", stop. Either way, re-run
+       `pr-mergeable <PR>` afterward and only proceed to Step 3d once it
+       reports `MERGEABLE` (or `UNKNOWN`).
 - **Blocked:**
   1. Board → "Blocked": `bash scripts/pipeline-status.sh <N> "Blocked"`
   2. Relay findings: `bash scripts/pipeline-notify.sh developer "#<N>" "<what failed>" <N>`
@@ -834,7 +851,11 @@ scripts can assert they are running in the correct environment:
   export TALOS_WORKTREE_PATH=<ABSOLUTE_PATH_OF_THIS_WORKTREE>
 
 1. Check out the PR: `bash scripts/pipeline-vcs.sh checkout-pr <PR_NUMBER>`
-2. QA mode above is already resolved: `ci` with an empty/absent Required
+2. Before any CI wait, run `bash scripts/pipeline-vcs.sh pr-mergeable
+   <PR_NUMBER>` (#214). On `CONFLICTING` (exit 1), return FAIL immediately
+   with reason "PR conflicts with base; no CI run will be scheduled" — do not
+   wait on CI or run verify. `MERGEABLE`/`UNKNOWN` (exit 0/2): continue below.
+3. QA mode above is already resolved: `ci` with an empty/absent Required
    checks list is reported here as `local`, not `ci` — trusting CI as the
    oracle for zero required checks would let QA pass vacuously, so that
    combination fails closed to `local` before you ever see it.
@@ -850,8 +871,8 @@ scripts can assert they are running in the correct environment:
    Prefer summary output for verify commands (e.g. `--quiet` for Talos's own
    suite, or the project's equivalent) -- quote only failures, never paste
    full green output into comments or final messages.
-3. Verify each acceptance criterion — drive actual behavior.
-4. Look for missing edge-case tests and obvious regressions.
+4. Verify each acceptance criterion — drive actual behavior.
+5. Look for missing edge-case tests and obvious regressions.
 
 Pass:
   1. Render verdict to a file (VERDICT="PASS" SUMMARY="..." DETAILS="...") and post via
