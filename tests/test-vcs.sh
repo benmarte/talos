@@ -728,4 +728,13 @@ assert_eq "0" "$rc" "file: create-pr is a safe no-op"
 out="$(bash "$VCS" check-pr-files 1 2>&1)"; rc=$?
 assert_eq "0" "$rc" "file: check-pr-files is a safe no-op"
 
+# pr-checks-required must fail closed under provider file too (#205 security
+# follow-up): it previously fell into the generic "not applicable" bucket
+# that returns exit 0, which would let a file-mode CI-wait loop treat an
+# unimplemented check as a vacuous pass.
+out="$(bash "$VCS" pr-checks-required 1 2>&1)"; rc=$?
+assert_eq "1" "$rc" "file: pr-checks-required fails closed (exit 1), not a vacuous pass"
+assert_contains "$out" "pipeline-vcs: pr-checks-required: not supported for provider file (fail closed)" \
+  "file: pr-checks-required prints the fail-closed message"
+
 finish

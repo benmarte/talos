@@ -4518,9 +4518,14 @@ _file() {
       echo "file mode: no PR to merge — orchestrator should close-issue directly after verifying the branch" >&2
       return 0
       ;;
-    diff-pr|pr-checks|pr-checks-required|list-prs|view-pr|find-pr|check-pr-files|pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
+    diff-pr|pr-checks|list-prs|view-pr|find-pr|check-pr-files|pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
       echo "file mode: $verb not applicable in file mode" >&2
       return 0
+      ;;
+    pr-checks-required)
+      # Fail closed, not open (#205) -- see the matching comment in _gitlab.
+      echo "pipeline-vcs: pr-checks-required: not supported for provider file (fail closed)" >&2
+      return 1
       ;;
     checkout-pr)
       echo "file mode: checkout-pr not applicable — use 'git checkout <branch>'" >&2
