@@ -725,6 +725,51 @@ when present, and says nothing when the count is at or under the threshold.
 This is visibility only -- raising or lowering the threshold does not change
 what `sweep` removes; it only changes when the warning fires.
 
+### Adding context to every stage prompt (`hooks.pre_dispatch`)
+
+**What it does.** `hooks.pre_dispatch` runs a shell command before every
+stage's prompt is built -- validator, PM, developer, QA, reviewer, security,
+docs, planner -- on both the native subagent path and the
+`pipeline-agent.sh` adapter path. This is how an external tool (a project
+memory store, a cost budget, a repo-specific style guide, anything) can hand
+a stage extra context without Talos knowing or caring what that tool is.
+Disabled by default -- an absent or empty `hooks.pre_dispatch` runs nothing
+and changes no prompt.
+
+**Contract.** The command receives this JSON on stdin (`pr` and `files_hint`
+are `null`/`[]` when the caller doesn't have them yet, e.g. before a PR
+exists):
+
+```json
+{"role":"developer","issue":42,"pr":57,"repo":"owner/name",
+ "base_branch":"main","worktree_path":"/abs/path","files_hint":["a.sh"]}
+```
+
+`TALOS_ROLE`, `TALOS_ISSUE_NUMBER`, and `TALOS_WORKTREE_PATH` are also
+exported to the command's environment. A non-zero exit, a timeout
+(`hooks.timeout_s`, default 30s), or empty stdout is a silent no-op -- the
+prompt is left exactly as it would have been with no hook configured -- with
+one line on stderr explaining why. It never blocks or delays dispatch beyond
+`hooks.timeout_s`. Non-empty stdout is prepended to the prompt verbatim under
+a `## Context` heading followed by `---`.
+
+**Worked config example:**
+
+```yaml
+hooks:
+  pre_dispatch: "my-context-tool"
+  timeout_s: 30
+```
+
+**Worked hook example** (bash, reads stdin only to discard it, writes to
+stdout):
+
+```bash
+#!/usr/bin/env bash
+cat >/dev/null   # the stdin JSON, unused here
+echo "This repo's style guide: 2-space indent, no semicolons."
+```
+
 ## Customizing agent profiles
 
 Each role profile is a markdown file with YAML frontmatter (Claude Code

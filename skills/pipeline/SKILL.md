@@ -74,6 +74,8 @@ echo "talos: scripts=<resolved scripts dir>  agents=$agent_source"
 
   The adapter finds the role definition itself (plugin root, then `.claude/agents/`), combines it with the stage prompt, and runs it through the CLI configured in `agents.runner`. Everything else in this playbook is identical. Note: without native subagents, developer stages run sequentially in the working tree — set `issues.max_parallel: 1`.
 
+**`hooks.pre_dispatch` (#181):** before building ANY stage's prompt below — every "spawn a subagent" / "spawn" step, on every harness path — run `bash scripts/pipeline-hooks.sh pre_dispatch <role> <N> <PR> <worktree>` (role name; issue number; PR number if one exists yet, else omit it; worktree path if one exists yet, else omit it). This is always safe and never worth waiting on: disabled by default (empty `hooks.pre_dispatch` config), and any failure, timeout (`hooks.timeout_s`), or empty output is a silent no-op on its own, with a one-line stderr note — you never branch on it. If it prints anything, paste that output verbatim at the very top of the prompt you are about to send (before the role body on the adapter path, before the stage-specific instructions on the native path) — it already carries its own `## Context` / `---` framing, so add nothing else around it. This one rule covers every stage; it is not restated per stage below except as a one-line reminder on the developer and QA blocks.
+
 ---
 
 ## Step 0 — Read config
@@ -660,6 +662,8 @@ Continue to developer.
 
 Only run if the issue has `pipeline:dev` but no open PR yet.
 
+Reminder: run `hooks.pre_dispatch` (see Harness compatibility above) before building this stage's prompt.
+
 Compute header: `HEADER="${COMMENTS_HEADER_TPL//\{role\}/developer}"`
 
 Read the PM spec first — unless Stage 3b was skipped (Skip-PM check exited 0),
@@ -872,6 +876,8 @@ After developer returns:
 ### 3d. QA (if `roles.qa = true`)
 
 Compute header: `HEADER="${COMMENTS_HEADER_TPL//\{role\}/qa}"`
+
+Reminder: run `hooks.pre_dispatch` (see Harness compatibility above) before building this stage's prompt.
 
 Spawn:
 

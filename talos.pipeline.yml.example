@@ -268,6 +268,29 @@ notifications:
 #   #                             # files); use one backed by a local model
 #   #                             # (e.g. Ollama) for fully local pipelines.
 
+# ── Hooks ─────────────────────────────────────────────────────────────────────
+# hooks.pre_dispatch (#181): a shell command run before EVERY stage's prompt
+# is built (validator, PM, developer, QA, reviewer, security, docs, planner —
+# both the native subagent path and the pipeline-agent.sh adapter path). Lets
+# an external tool (project memory, a cost budget, a style guide, anything)
+# contribute context to a stage without Talos depending on it. Disabled by
+# default (empty — no command runs, nothing is added to any prompt).
+#
+# The command receives this JSON on stdin (fields the caller doesn't know yet,
+# e.g. pr/files_hint before a PR exists, are null/[] rather than omitted):
+#   {"role":"developer","issue":42,"pr":57,"repo":"owner/name",
+#    "base_branch":"main","worktree_path":"/abs/path","files_hint":["a.sh"]}
+# TALOS_ROLE, TALOS_ISSUE_NUMBER, and TALOS_WORKTREE_PATH are also exported.
+#
+# Non-zero exit, a timeout (hooks.timeout_s below), or empty stdout is a
+# silent no-op — the prompt is unmodified — with one line on stderr. Never
+# blocks dispatch. Non-empty stdout is prepended to the prompt under a
+# "## Context" heading. See scripts/pipeline-hooks.sh for the full contract.
+# hooks:
+#   pre_dispatch: "my-context-tool"  # any shell command; "" (default) disables
+#   timeout_s: 30                    # seconds before the hook is killed; must
+#                                     # be a positive integer (default 30)
+
 # ── Safety limits ─────────────────────────────────────────────────────────────
 limits:
   max_fix_attempts: 3        # Developer re-tries before escalating to pipeline:blocked

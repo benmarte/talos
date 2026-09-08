@@ -32,11 +32,11 @@ set -u
 # exactly like the single-key path below does. Same file-lookup order, same
 # YAML-then-JSON precedence, and the same "verify" (dict-form → commands
 # list) / "verify.qa_mode" (merge.required_checks-derived default, fail-
-# closed downgrade) / "verify.timeout_ms" / "verify.ci_wait_s" (positive-
-# integer validation, fail-closed to the caller's default) special cases as
-# the single-key path, so a lookup against this dump is byte-identical to
-# calling this script for that key directly. Purely additive: an early
-# exit, does not touch anything below.
+# closed downgrade) / "verify.timeout_ms" / "verify.ci_wait_s" /
+# "hooks.timeout_s" (positive-integer validation, fail-closed to the
+# caller's default) special cases as the single-key path, so a lookup
+# against this dump is byte-identical to calling this script for that key
+# directly. Purely additive: an early exit, does not touch anything below.
 
 # ── Known config keys (#176) ────────────────────────────────────────────────
 # Every documented config key, "*" standing in for a dynamic segment
@@ -76,7 +76,8 @@ _KNOWN_CONFIG_KEYS_JSON='[
   "agents.roles.*.runner_cmd",
   "limits.max_fix_attempts", "limits.max_total_dispatches",
   "limits.max_retries",
-  "markers.trusted_authors"
+  "markers.trusted_authors",
+  "hooks.pre_dispatch", "hooks.timeout_s"
 ]'
 
 if [ "${1:-}" = "--dump" ]; then
@@ -254,7 +255,7 @@ flat["verify.qa_mode"] = _qa_mode
 # one-line stderr warning) so the two paths stay byte-identical for these
 # keys.
 def _validate_int_key(key, value):
-    unit = {"verify.timeout_ms": "milliseconds", "verify.ci_wait_s": "seconds"}.get(key)
+    unit = {"verify.timeout_ms": "milliseconds", "verify.ci_wait_s": "seconds", "hooks.timeout_s": "seconds"}.get(key)
     if unit is None or value is None:
         return value
     try:
@@ -269,7 +270,7 @@ def _validate_int_key(key, value):
         )
         return None
 
-for _int_key in ("verify.timeout_ms", "verify.ci_wait_s"):
+for _int_key in ("verify.timeout_ms", "verify.ci_wait_s", "hooks.timeout_s"):
     if _int_key in flat:
         _validated = _validate_int_key(_int_key, flat[_int_key])
         if _validated is None:
@@ -473,18 +474,20 @@ if key == "verify.qa_mode":
 # milliseconds, that developer/QA prompts substitute into their verify and
 # CI-wait instructions. verify.ci_wait_s (#205 security follow-up) is
 # interpolated unquoted into a literal, agent-executed shell test
-# (`[ "$SECONDS" -ge <VERIFY_CI_WAIT_S> ]`) in the QA CI-wait loop. Both
-# must be a positive integer -- a non-integer or non-positive config value
-# (or one carrying shell metacharacters) is a config error, not a value an
-# agent can act on, so fail closed to the caller-supplied default (600000 /
-# 900 respectively, from Step 0) and warn once on stderr rather than
-# handing a subagent a garbage timeout or an injectable string. Mirrors the
-# --dump path above: both define the identical _validate_int_key(key,
-# value) helper (same units, same fail-closed-to-absent behaviour, same
-# one-line stderr warning) so the two paths stay byte-identical for these
-# keys.
+# (`[ "$SECONDS" -ge <VERIFY_CI_WAIT_S> ]`) in the QA CI-wait loop.
+# hooks.timeout_s (#181) bounds how long a hooks.pre_dispatch command may
+# run before pipeline-hooks.sh kills it. All three must be a positive
+# integer -- a non-integer or non-positive config value (or one carrying
+# shell metacharacters) is a config error, not a value an agent (or
+# pipeline-hooks.sh) can act on, so fail closed to the caller-supplied
+# default (600000 / 900 / 30 respectively) and warn once on stderr rather
+# than handing a subagent a garbage timeout or an injectable string.
+# Mirrors the --dump path above: both define the identical
+# _validate_int_key(key, value) helper (same units, same
+# fail-closed-to-absent behaviour, same one-line stderr warning) so the
+# two paths stay byte-identical for these keys.
 def _validate_int_key(key, value):
-    unit = {"verify.timeout_ms": "milliseconds", "verify.ci_wait_s": "seconds"}.get(key)
+    unit = {"verify.timeout_ms": "milliseconds", "verify.ci_wait_s": "seconds", "hooks.timeout_s": "seconds"}.get(key)
     if unit is None or value is None:
         return value
     try:

@@ -282,6 +282,39 @@ All keys live in `talos.pipeline.json` (or `talos.pipeline.yml` if PyYAML is ins
 | `limits.max_total_dispatches` | `8` | Absolute ceiling on total developer dispatches per issue, across all stage changes. **Never resets** — not even when the blocking stage changes. Prevents a QA→reviewer→QA ping-pong from exploiting per-stage resets to run indefinitely. When the total reaches this value, `record-attempt` exits non-zero regardless of which stage is blocking. |
 | `limits.max_retries` | `5` | Retries per network call after a rate-limit / transient error, on top of the original try — up to 6 total attempts by default (#173). Applies uniformly to every network verb in every provider: `gh`/`glab`/`az` CLI invocations (shadowed once per adapter so no call site needs editing) and the `github-api` provider's `curl` requests. **Retried:** HTTP 429; GitHub 403 responses whose body mentions a secondary rate limit or abuse detection; `gh`/`glab`/`az` errors whose stderr matches a rate-limit pattern. **Not retried (fails immediately, today's behaviour):** 401, 404, 422, and any other error that doesn't match those patterns. **Backoff:** honours a `Retry-After` value when the transport supplies one; otherwise exponential starting at 2s, doubling each attempt, capped at 60s. Each retry logs one line to stderr naming the attempt number and wait duration. `--dry-run` never sleeps or retries — every verb returns before its first network call. `TALOS_RETRY_SLEEP_SCALE` (default `1`) scales every sleep; set to `0` in tests for instant runs. |
 | `markers.trusted_authors` | unset | Allowlist of GitHub login strings (YAML list) whose `talos:approval` and `talos:attempt` markers are accepted by `check-approval-sha` and `read-attempt`. Example: `["talos-bot", "gh-actions-bot"]`. When set and non-empty, a marker from any login not in the list is silently skipped — treated as absent by `read-attempt`, or as stale by `check-approval-sha`. **When absent or empty, author checking is skipped entirely (fail-open). The key's absence is NOT equivalent to enforced author security** — an operator should not treat this key as protection they have until it is actually set and non-empty. When author checking is skipped, both readers emit `talos:marker-authors-unverified reader=<verb>` on stdout (see Marker placement and trusted-author allow-list below). |
+| `hooks.pre_dispatch` | `""` (disabled) | Shell command run before every stage's prompt is built (all roles, both the native subagent and `pipeline-agent.sh` adapter paths). Non-empty stdout is prepended to the prompt under a `## Context` heading; a non-zero exit, a timeout, or empty stdout is a silent no-op with one line on stderr — it never blocks dispatch. See [Hooks](#hooks) below for the stdin JSON schema. |
+| `hooks.timeout_s` | `30` | Seconds `hooks.pre_dispatch` may run before being killed. Must be a positive integer; a non-integer or non-positive value is rejected (stderr warning, falls back to the default). |
+
+### Hooks
+
+`hooks.pre_dispatch` lets an external tool — a project-memory store, a cost budget, a style guide, anything — contribute context to a stage's prompt without Talos depending on it. Disabled by default.
+
+The configured command runs once per stage, before that stage's prompt is assembled, with this JSON on stdin (fields the caller doesn't know yet — e.g. `pr`/`files_hint` before a PR exists — are `null`/`[]` rather than omitted):
+
+```json
+{
+  "role": "developer",
+  "issue": 42,
+  "pr": 57,
+  "repo": "owner/name",
+  "base_branch": "main",
+  "worktree_path": "/abs/path",
+  "files_hint": ["a.sh", "b.md"]
+}
+```
+
+`TALOS_ROLE`, `TALOS_ISSUE_NUMBER`, and `TALOS_WORKTREE_PATH` are also exported into the command's environment — the same names/values `pipeline-agent.sh` already exports to `agents.runner_cmd`.
+
+Contract: a non-zero exit, a timeout (`hooks.timeout_s`, default 30s), or empty stdout is a silent no-op — the prompt is left unmodified — with exactly one line on stderr explaining why. `hooks.pre_dispatch` never blocks dispatch. Non-empty stdout is prepended to the prompt exactly as:
+
+```
+## Context
+<hook stdout>
+---
+<the rest of the prompt, unchanged>
+```
+
+Implemented in `scripts/pipeline-hooks.sh`; wired into the adapter path (`scripts/pipeline-agent.sh`) and the native orchestrator path (`skills/pipeline/SKILL.md`, Harness compatibility section).
 
 ### Board status options: required columns and `talos:board-unverified`
 
