@@ -132,10 +132,15 @@ bash "$AGENT" developer "$BIG_PROMPT" >/dev/null 2>"$ERRFILE"; rc=$?
 assert_eq_ctx "3" "$rc" "runner_cmd exit code propagates exactly (exit 3)" "$(cat "$ERRFILE")"
 
 # The prompt temp file/dir must be cleaned up afterward, pass or fail.
-_prompt_tmp_before="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'talos-prompt.*' 2>/dev/null | wc -l | tr -d ' ')"
-bash "$AGENT" developer "$BIG_PROMPT" >/dev/null 2>&1
-_prompt_tmp_after="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'talos-prompt.*' 2>/dev/null | wc -l | tr -d ' ')"
-assert_eq "$_prompt_tmp_before" "$_prompt_tmp_after" "prompt temp dir is removed after the runner exits"
+# Use a private TMPDIR for this one invocation (#215 QA) instead of a glob
+# over the shared ${TMPDIR:-/tmp} namespace: that glob races against any
+# other test (e.g. tests/test-per-agent-env.sh) creating/removing its own
+# talos-prompt.* dirs concurrently under the parallel test runner.
+_PRIVATE_TMPDIR="$SANDBOX/tmp"
+mkdir -p "$_PRIVATE_TMPDIR"
+TMPDIR="$_PRIVATE_TMPDIR" bash "$AGENT" developer "$BIG_PROMPT" >/dev/null 2>&1
+_prompt_tmp_after="$(find "$_PRIVATE_TMPDIR" -mindepth 1 -maxdepth 1 -name 'talos-prompt.*' 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "0" "$_prompt_tmp_after" "prompt temp dir is removed after the runner exits"
 
 cat > talos.pipeline.json <<'EOF'
 {"agents": {"runner": "custom"}}
