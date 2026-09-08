@@ -785,6 +785,26 @@ err="$(bash "$VCS" check-approval-sha 7 2>&1)"; rc=$?
 assert_eq "1" "$rc"                                                      "check-approval-sha: exits 1 for stale label"
 assert_contains "$err" "STALE qa:pass"                                   "check-approval-sha: STALE in stderr"
 
+# check-approval-sha: --stale-list stdout parity with the gh provider (issue #196)
+: > "$CURL_LOG"
+printf '%s\n' \
+  "{\"number\":7,\"head\":{\"sha\":\"$_HEAD\"},\"base\":{\"ref\":\"main\"},\"labels\":[{\"name\":\"qa:pass\"}]}" \
+  "[{\"body\":\"<!-- talos:approval sha=${_STALE} role=qa -->\",\"user\":{\"login\":\"bot\"}}]" \
+  > "$CURL_QUEUE"
+out="$(bash "$VCS" check-approval-sha 7 --stale-list 2>/dev/null)"; rc=$?
+assert_eq "1" "$rc"                                                      "check-approval-sha --stale-list: exits 1"
+assert_contains "$out" "stale role=qa label=qa:pass"                     "check-approval-sha --stale-list: greppable stdout line"
+
+# Without the flag, no stdout stale-list line is present (unchanged behavior).
+: > "$CURL_LOG"
+printf '%s\n' \
+  "{\"number\":7,\"head\":{\"sha\":\"$_HEAD\"},\"base\":{\"ref\":\"main\"},\"labels\":[{\"name\":\"qa:pass\"}]}" \
+  "[{\"body\":\"<!-- talos:approval sha=${_STALE} role=qa -->\",\"user\":{\"login\":\"bot\"}}]" \
+  > "$CURL_QUEUE"
+out="$(bash "$VCS" check-approval-sha 7 2>/dev/null)"; rc=$?
+assert_eq "1" "$rc"                                                      "check-approval-sha without flag: still exits 1"
+assert_not_contains "$out" "stale role="                                 "check-approval-sha without flag: no stdout stale-list line"
+
 # ── check-closing-keyword ─────────────────────────────────────────────────────
 : > "$CURL_LOG"
 # No closing keyword: should exit 0, one API call only

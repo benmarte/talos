@@ -893,6 +893,7 @@ pack installed.
     board step is silently skipped.
 - **Preview any VCS action** without executing:
   `bash ~/.talos/scripts/pipeline-vcs.sh --dry-run <verb> ...`.
+- **Approval label lost after a new commit** — when a non-waived file (source code, tests, protected config) is pushed after an approval, that approval is marked stale; only the affected stages are re-run, and docs approvals whose delta touches only `*.example` or other waived paths are re-stamped without re-dispatch (see `merge.approval_waiver_paths` in README).
 
 ## FAQ
 

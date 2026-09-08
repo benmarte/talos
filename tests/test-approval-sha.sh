@@ -50,6 +50,19 @@ git add src_core.js
 git commit -q -m "src: core change"
 SHA_E="$(git rev-parse HEAD)"
 
+# SHA_F — *.example config files only, branched directly off SHA_A so the
+# delta contains ONLY the two .example files (issue #196: must be covered by
+# DEFAULT_WAIVER). Built on its own branch to avoid inheriting the scripts/,
+# talos.pipeline.yml, and src_core.js changes from SHA_C/SHA_D/SHA_E.
+_orig_branch="$(git symbolic-ref --short HEAD)"
+git checkout -q -b tmp-example-only "$SHA_A"
+printf '{"example": true}\n' > talos.pipeline.json.example
+printf 'example: true\n' > talos.pipeline.yml.example
+git add talos.pipeline.json.example talos.pipeline.yml.example
+git commit -q -m "docs: regenerate example pipeline configs"
+SHA_F="$(git rev-parse HEAD)"
+git checkout -q "$_orig_branch"
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 # mk_comment_with_marker <sha> <role> — produce a single-element JSON comments array
@@ -237,6 +250,66 @@ _assert_waiver_rejected '*'       "catch-all '*'"
 _assert_waiver_rejected '**'      "catch-all '**'"
 _assert_waiver_rejected '*/*'     "path-wildcard '*/*'"
 _assert_waiver_rejected '**/*'    "path-wildcard '**/*'"
+
+# Regression guard specifically named in the issue #196 PM spec canary set.
+_assert_waiver_rejected '*.sh'    "generic script glob '*.sh'"
+
+# ── [test] issue #196: *.example files are covered by DEFAULT_WAIVER ──────────
+# SHA_A → SHA_F only touches talos.pipeline.json.example / talos.pipeline.yml.example.
+# No config override (waiver_entries falls back to DEFAULT_WAIVER) — RED on
+# unpatched main (where DEFAULT_WAIVER lacked '*.example'), GREEN after the fix.
+_c="$(mk_comment_with_marker "$SHA_A" qa)"
+out="$(vcs_check "$SHA_F" '[{"name":"qa:pass"}]' "$_c")"; rc=$?
+assert_exit_code 0 "$rc" "#196 *.example-only delta: DEFAULT_WAIVER covers it, exits 0"
+assert_contains "$out" "all approval labels are current" "#196 *.example-only delta: reports current"
+
+# ── [test] issue #196: hypothetical catch-all DEFAULT_WAIVER still fails validation ──
+# validate_waiver_entries() runs unconditionally against whatever waiver_entries
+# resolves to -- including DEFAULT_WAIVER when no config override is present.
+# Prove that invariant holds even if a future edit widened the default to a
+# catch-all, by running against a throwaway copy of the script with DEFAULT_WAIVER
+# mutated to include '*'. This must NOT be achieved by weakening VALIDATION_CANARIES.
+# Written inside the real scripts/ dir (not $SANDBOX) so SCRIPT_DIR resolves
+# and cfg()'s pipeline-config.sh sibling is found; removed via trap below.
+_hypothetical_vcs="$TALOS_ROOT/scripts/.vcs-hypothetical-catchall.sh.tmp"
+_cleanup_hypothetical_vcs() { rm -f "$_hypothetical_vcs"; }
+trap _cleanup_hypothetical_vcs EXIT
+sed "s/CHANGELOG.md', '\*\.example'\]/CHANGELOG.md', '*.example', '*']/" \
+  "$VCS" > "$_hypothetical_vcs"
+# Sanity: the substitution must have actually changed something in both provider blocks.
+_changed_lines="$(diff "$VCS" "$_hypothetical_vcs" | grep -c '^>' || true)"
+assert_eq "2" "$_changed_lines" "#196 hypothetical catch-all default: sed patched both provider blocks"
+_c="$(mk_comment_with_marker "$SHA_A" qa)"
+out="$(STUB_PR_HEAD_SHA="$SHA_B" \
+       STUB_PR_LABELS_JSON='[{"name":"qa:pass"}]' \
+       STUB_PR_COMMENTS_JSON="$_c" \
+       PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+       bash "$_hypothetical_vcs" check-approval-sha 9 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "#196 hypothetical catch-all default: still rejected, exits 1"
+assert_contains "$out" "rejected (catch-all or covers non-waivable paths)" \
+  "#196 hypothetical catch-all default: validation error reported"
+
+# ── [test] issue #196: check-approval-sha --stale-list stdout format ──────────
+# Without the flag: stdout has no "stale role=" line (behavior unchanged).
+_c="$(mk_comment_with_marker "$SHA_A" qa)"
+out="$(vcs_check "$SHA_E" '[{"name":"qa:pass"}]' "$_c")"; rc=$?
+assert_exit_code 1 "$rc" "#196 stale without --stale-list: still exits 1"
+assert_not_contains "$out" "stale role=" "#196 stale without --stale-list: no stdout stale-list line"
+
+# With the flag: stdout gains one "stale role=<role> label=<label>" line per stale role.
+out="$(STUB_PR_HEAD_SHA="$SHA_E" \
+       STUB_PR_LABELS_JSON='[{"name":"qa:pass"}]' \
+       STUB_PR_COMMENTS_JSON="$_c" \
+       PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+       bash "$VCS" check-approval-sha 9 --stale-list 2>/dev/null)"; rc=$?
+assert_exit_code 1 "$rc" "#196 --stale-list: still exits 1"
+assert_contains "$out" "stale role=qa label=qa:pass" "#196 --stale-list: stdout carries greppable stale line"
+err_only="$(STUB_PR_HEAD_SHA="$SHA_E" \
+       STUB_PR_LABELS_JSON='[{"name":"qa:pass"}]' \
+       STUB_PR_COMMENTS_JSON="$_c" \
+       PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+       bash "$VCS" check-approval-sha 9 --stale-list 2>&1 1>/dev/null)"
+assert_contains "$err_only" "STALE qa:pass" "#196 --stale-list: existing stderr prose unchanged"
 
 # ── [test] pr-head: prints head SHA, fails when unresolvable ──────────────────
 out="$(STUB_PR_HEAD_SHA="$SHA_B" PIPELINE_CONFIG="$PIPELINE_CONFIG" \
