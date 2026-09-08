@@ -49,6 +49,16 @@ assert_contains "$(cat "$TALOS_ROOT/talos.pipeline.yml.example")" "quiet" \
 assert_contains "$(cat "$TALOS_ROOT/talos.pipeline.json.example")" "quiet" \
   "talos.pipeline.json.example mentions --quiet"
 
+# ── Mergeability pre-CI check before QA waits on CI (#214) ─────────────────
+# A CONFLICTING PR gets no `pull_request` CI run scheduled; QA must check
+# pr-mergeable BEFORE its CI wait, not discover a hung wait the hard way.
+assert_contains "$qa_block" "pr-mergeable" \
+  "skills/pipeline/SKILL.md QA prompt block calls pr-mergeable before the CI wait"
+assert_contains "$qa_block" "CONFLICTING" \
+  "skills/pipeline/SKILL.md QA prompt block handles a CONFLICTING result"
+assert_contains "$(cat "$TALOS_ROOT/agents/qa.md")" "pr-mergeable" \
+  "agents/qa.md mentions the pr-mergeable pre-CI check"
+
 # The "5. Verify commands" step -- the shared verify-mode + quiet-output
 # guidance -- must stay byte-identical between the worktree-isolation and
 # branch-isolation developer prompt variants (the surrounding blocks differ,

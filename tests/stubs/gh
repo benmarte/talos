@@ -67,6 +67,19 @@ case "$args" in
     printf '%s\n' "${STUB_ISSUE_STATE:-OPEN}" ;;
   "pr view "*"--json state -q .state"*)
     printf '%s\n' "${STUB_PR_STATE:-OPEN}" ;;
+  "pr view "*"--json mergeable -q .mergeable"*)
+    # Used by pr-mergeable (#214). Override STUB_PR_MERGEABLE (default
+    # MERGEABLE), or supply STUB_PR_MERGEABLE_QUEUE -- a file, one value
+    # popped per call, same pattern as CURL_QUEUE -- to simulate GitHub's
+    # lazy UNKNOWN -> settled transition across retries.
+    if [ -n "${STUB_PR_MERGEABLE_QUEUE:-}" ] && [ -s "$STUB_PR_MERGEABLE_QUEUE" ]; then
+      _mg="$(head -1 "$STUB_PR_MERGEABLE_QUEUE")"
+      tail -n +2 "$STUB_PR_MERGEABLE_QUEUE" > "$STUB_PR_MERGEABLE_QUEUE.tmp" \
+        && mv "$STUB_PR_MERGEABLE_QUEUE.tmp" "$STUB_PR_MERGEABLE_QUEUE"
+    else
+      _mg="${STUB_PR_MERGEABLE:-MERGEABLE}"
+    fi
+    printf '%s\n' "$_mg" ;;
   "issue view "*"--json title -q .title"*)
     printf '%s\n' "${STUB_ISSUE_TITLE:-Fix login crash}" ;;
   "pr view "*"--json title -q .title"*)

@@ -639,4 +639,75 @@ assert_contains "$log" "full diff" \
   "e2e: docs_mode: always uses the full-diff path, not the filtered one (#200)"
 rm -f talos.pipeline.json
 
+# ── #214: CONFLICTING PR never dispatches QA; ci-mode QA fails within one poll ──
+# Stub-driven simulation of the SKILL.md Step 3c "Mergeability gate" (before
+# Step 3d dispatches QA) and the QA-prompt's own pr-mergeable check
+# (agents/qa.md step 2, SKILL.md 3d step 2). Both drive the real
+# `pr-mergeable` verb against the gh stub's controllable `mergeable` field
+# (STUB_PR_MERGEABLE, added on this branch): CONFLICTING (exit 1) must never
+# reach QA, and must never let QA's own ci-mode poll touch pr-checks even
+# once. Reuses simulate_qa_verify's pr-checks poll loop from #195 so a
+# CONFLICTING short-circuit provably skips it (zero pr-checks calls logged).
+simulate_pre_qa_mergeable_gate() {  # $1 = PR number
+  local pr="$1" rc
+  bash "$VCS" pr-mergeable "$pr" >/dev/null 2>&1
+  rc=$?
+  if [ "$rc" -eq 1 ]; then
+    echo "dispatch:developer-merge" >> "$DISPATCH_LOG"
+  else
+    echo "dispatch:qa" >> "$DISPATCH_LOG"
+  fi
+}
+
+# (a) CONFLICTING -> zero QA dispatches, exactly one developer merge-base
+#     dispatch. Once the merge lands and pr-mergeable settles MERGEABLE, the
+#     gate is re-run and dispatches QA exactly once -- not zero, not twice.
+: > "$DISPATCH_LOG"
+STUB_PR_MERGEABLE="CONFLICTING" simulate_pre_qa_mergeable_gate 9
+assert_eq "0" "$(grep -c '^dispatch:qa$' "$DISPATCH_LOG")" \
+  "e2e: a CONFLICTING PR dispatches zero QA subagents (#214)"
+assert_eq "1" "$(grep -c '^dispatch:developer-merge$' "$DISPATCH_LOG")" \
+  "e2e: a CONFLICTING PR dispatches exactly one developer merge-base task (#214)"
+
+STUB_PR_MERGEABLE="MERGEABLE" simulate_pre_qa_mergeable_gate 9
+assert_eq "1" "$(grep -c '^dispatch:qa$' "$DISPATCH_LOG")" \
+  "e2e: once the merge lands and pr-mergeable reports MERGEABLE, the gate dispatches QA exactly once (#214)"
+assert_eq "1" "$(grep -c '^dispatch:developer-merge$' "$DISPATCH_LOG")" \
+  "e2e: the earlier developer merge-base dispatch is not re-counted or duplicated (#214)"
+
+# (b) qa_mode: ci -- QA's own pr-mergeable check on a CONFLICTING PR fails
+#     within one poll: exactly one pr-mergeable call, zero pr-checks calls,
+#     and the failure reason names the conflict.
+cat > talos.pipeline.json <<'EOF'
+{"merge": {"required_checks": ["test"]}}
+EOF
+qa_mode="$(bash "$CFG" verify.qa_mode local)"
+assert_eq "ci" "$qa_mode" \
+  "e2e: verify.qa_mode resolves to ci ahead of the CONFLICTING-PR QA check (#214)"
+
+simulate_qa_ci_mode_conflicting() {  # $1 = PR number
+  local pr="$1" rc
+  bash "$VCS" pr-mergeable "$pr" >/dev/null 2>&1
+  rc=$?
+  if [ "$rc" -eq 1 ]; then
+    echo "FAIL: PR conflicts with base; no CI run will be scheduled"
+    return 1
+  fi
+  simulate_qa_verify ci
+}
+
+: > "$GH_LOG"
+out="$(STUB_PR_MERGEABLE="CONFLICTING" simulate_qa_ci_mode_conflicting 9)"
+qa_rc=$?
+log="$(cat "$GH_LOG")"
+assert_eq "1" "$qa_rc" \
+  "e2e: QA in ci mode fails within one poll on a CONFLICTING PR (#214)"
+assert_contains "$out" "conflicts with base" \
+  "e2e: QA's CONFLICTING-PR failure reason names the conflict (#214)"
+assert_eq "1" "$(grep -c '^pr view 9 --json mergeable -q \.mergeable' <<<"$log")" \
+  "e2e: QA in ci mode calls pr-mergeable exactly once on a CONFLICTING PR (#214)"
+assert_eq "0" "$(grep -c '^pr checks 9' <<<"$log")" \
+  "e2e: QA in ci mode never polls pr-checks after a CONFLICTING pr-mergeable result (#214)"
+rm -f talos.pipeline.json
+
 finish
