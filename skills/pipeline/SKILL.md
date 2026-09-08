@@ -941,9 +941,15 @@ Never run `verify:`; QA and CI already did. `pipeline-vcs.sh pr-checks` (CI stat
 
 1. Read diff: `bash scripts/pipeline-vcs.sh diff-pr <PR_NUMBER>`
 2. Update README, docs, CHANGELOG for the change.
-3. Commit to PR branch: `git commit -m "docs: update for #<N>"` and push.
-4. After pushing, call `post-approval` (fetches post-push SHA from GitHub, posts wrapped marker,
-   applies docs:done label — all in one step):
+3. Commit guard: before committing, run `git diff --quiet` (working tree) and
+   `git diff --quiet --cached` (staged). If BOTH report no changes, skip the
+   commit and the push entirely — do not push an empty commit. `post-approval`
+   fetches the head SHA fresh from GitHub regardless, so skipping is safe even
+   with no new commit. Otherwise: commit to PR branch: `git commit -m "docs:
+   update for #<N>"` and push.
+4. After pushing (or after the commit guard skips because there was nothing to
+   commit), call `post-approval` (fetches post-push SHA from GitHub, posts wrapped
+   marker, applies docs:done label — all in one step):
    `bash scripts/pipeline-vcs.sh post-approval <PR_NUMBER> docs --body-file <summary-file>`
    If exit non-zero, report the failure in your final message.
 5. Render docs-posted.md on the ISSUE:
@@ -996,21 +1002,42 @@ A PR is ready when ALL of:
 human applied it — docs-only change or emergency hotfix), the four approval
 labels above are waived. CI and the forbidden-files check are NEVER waived.
 
-**Approval-SHA gate:** `bash scripts/pipeline-vcs.sh check-approval-sha <PR_NUMBER>`
+**Approval-SHA gate:** `bash scripts/pipeline-vcs.sh check-approval-sha <PR_NUMBER> --stale-list`
 If `check-approval-sha` exits non-zero for ANY reason, do NOT merge.  A non-zero
 exit means at least one approval label is stale (earned against an older head SHA
-whose delta is not fully covered by `merge.approval_waiver_paths`).  When it
+whose delta is not fully covered by `merge.approval_waiver_paths`).  `--stale-list`
+additionally prints one greppable stdout line per stale role: `stale role=<role>
+label=<label>` (existing stderr prose and exit codes are unchanged). When it
 exits non-zero:
-1. Strip all stale approval labels from the PR.
+1. Strip only the labels reported stale by `--stale-list` (not all four).
 2. Post a PR comment listing which approvals were stale and why (the helper
    prints each reason to stderr; capture and post it).
-3. Re-dispatch the affected approval stages (QA, reviewer, security, docs as
-   indicated by the stale labels).
+3. Selective re-dispatch, driven by the stale roles from `--stale-list`, in
+   dependency order (QA before reviewer/security/docs, mirroring Step 3e's
+   docs-before-reviewer/security ordering):
+   - `qa` stale → re-dispatch QA (Step 3d).
+   - `reviewer` stale → re-dispatch reviewer (Step 3e phase 2).
+   - `security` stale → re-dispatch security (Step 3e phase 2).
+   - `docs` stale → check whether the delta since docs' approved SHA touches
+     any docs-relevant path: `README.md`, `docs/**`, `CHANGELOG.md`,
+     `templates/**`, or any other `*.md` outside `tests/`.
+     - If yes: re-dispatch docs (Step 3e phase 1) normally.
+     - If no: do NOT dispatch the docs subagent. Re-stamp `docs:done` directly
+       against the current head SHA: `bash scripts/pipeline-vcs.sh
+       post-approval <PR_NUMBER> docs --body-file <synthetic-summary>` with
+       synthetic summary text "no docs-relevant changes since prior docs
+       approval". This is strictly cheaper than a dispatch and has no
+       prompt-injection surface to design — the issue's own docs-stage change
+       (Step 3e Docs prompt) already skips the commit/push when there is
+       nothing to do; a zero-dispatch re-stamp applies the same idea one level
+       up, at the orchestrator.
 
-`merge.approval_waiver_paths` (default: `["*.md", "docs/**", "CHANGELOG.md"]`)
-— glob patterns for files that, when they are the only changes since an approval,
-do not invalidate that approval.  Hard-coded non-waivable regardless of config:
-paths under `scripts/`, paths under `tests/`, `talos.pipeline.yml`, `pipeline.yaml`.
+`merge.approval_waiver_paths` (default: `["*.md", "docs/**", "CHANGELOG.md",
+"*.example"]`) — glob patterns for files that, when they are the only changes
+since an approval, do not invalidate that approval. `*.example` covers generated
+pipeline-config examples (e.g. `talos.pipeline.json.example`), which are never
+executed. Hard-coded non-waivable regardless of config: paths under `scripts/`,
+paths under `tests/`, `talos.pipeline.yml`, `pipeline.yaml`.
 
 **Forbidden-files gate:** `bash scripts/pipeline-vcs.sh check-pr-files <PR_NUMBER>`
 If it exits non-zero the PR touches secret-like files (`merge.forbidden_files`

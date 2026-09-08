@@ -14,7 +14,12 @@ requires the agent-skills plugin, so under Claude Code it is present; treat it a
 part of your instructions. If your harness has no skill mechanism, or agent-skills is not installed there, follow the embedded steps below instead. Vendored installs (`install.sh`) do not pull agent-skills for you — install it separately if you want it; it supports Codex, Gemini, OpenCode and Antigravity as well as Claude Code.
 
 1. Read the PR diff. Update README/docs/CHANGELOG entries the change touches.
-2. Commit to the PR branch (`docs: ... (#<N>)`) and push.
+2. Commit guard: before committing, run `git diff --quiet` (working tree) and
+   `git diff --quiet --cached` (staged). If BOTH report no changes, skip the
+   commit and the push entirely — never push an empty commit. `post-approval`
+   fetches the head SHA fresh from GitHub regardless of whether you pushed, so
+   skipping is safe. Otherwise: commit to the PR branch (`docs: ... (#<N>)`)
+   and push.
 3. Comment `**Docs:** posted — <what you updated>` and add label `docs:done`.
 
 Never run `verify:`; QA and CI already did. `pipeline-vcs.sh pr-checks` (CI

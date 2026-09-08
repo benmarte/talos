@@ -44,10 +44,13 @@
 #                                             if data cannot be fetched.
 #   rerun-ci <n>                              Re-run failed CI for the PR head SHA
 #   pr-head <n>                               Print the current head SHA for a PR
-#   check-approval-sha <n>                    Exit 1 if any approval label was earned
+#   check-approval-sha <n> [--stale-list]     Exit 1 if any approval label was earned
 #                                             against a non-current head SHA (stale
 #                                             approvals); respects
-#                                             merge.approval_waiver_paths config
+#                                             merge.approval_waiver_paths config.
+#                                             --stale-list additionally prints one
+#                                             stdout line per stale role:
+#                                             "stale role=<role> label=<label>"
 #   record-attempt <issue-n> <stage>          Record one attempt for the given blocking
 #     [--pr <pr-n> | --idempotency-key <token>]
 #                                             stage on the issue. Reads prior state,
@@ -1505,18 +1508,25 @@ sys.exit(0)
       ;;
 
     check-approval-sha)
-      # check-approval-sha <n>
+      # check-approval-sha <n> [--stale-list]
       # Verify that every approval label present on the PR was earned against
       # the current head SHA.  If a SHA differs, check whether all changed files
       # since the approval SHA are covered by the configured waiver list
-      # (merge.approval_waiver_paths; default: *.md docs/** CHANGELOG.md).
+      # (merge.approval_waiver_paths; default: *.md docs/** CHANGELOG.md *.example).
       # Hard-coded non-waivable: scripts/**, tests/**, and all pipeline config
       # filenames (talos.pipeline.{yml,yaml,json}, .claude-pipeline.{yaml,json},
       # pipeline.{yaml,json}) — enforced FIRST (before the config waiver) so
       # the config waiver can never be widened to cover them.
       # Fail-closed: unresolvable head SHA, missing marker, or git diff failure
       # all exit non-zero.
-      local n="$1"
+      # --stale-list: additionally print one greppable stdout line per stale
+      # role ("stale role=<role> label=<label>"), on top of the unchanged
+      # stderr prose and exit code. Without the flag, behavior is unchanged.
+      local n="$1"; shift
+      local stale_list_flag="false"
+      if [ "${1:-}" = "--stale-list" ]; then
+        stale_list_flag="true"
+      fi
       if [ "$DRY_RUN" = "true" ]; then
         echo "[dry-run] check-approval-sha $n: verify all approval labels match current head SHA"
         return 0
@@ -1534,7 +1544,7 @@ sys.exit(0)
       local repo_root
       repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
       printf '%s' "$pr_data" \
-        | WAIVER_PATHS="$waiver_paths" REPO_ROOT="${repo_root:-}" TRUSTED_AUTHORS="$trusted_authors_cas" TALOS_CFG="$_TALOS_CFG" python3 -c "
+        | WAIVER_PATHS="$waiver_paths" REPO_ROOT="${repo_root:-}" TRUSTED_AUTHORS="$trusted_authors_cas" TALOS_CFG="$_TALOS_CFG" STALE_LIST="$stale_list_flag" python3 -c "
 import fnmatch, json, os, re, subprocess, sys
 
 APPROVAL_LABELS = {
@@ -1560,7 +1570,7 @@ HARDCODED_NONWAIVABLE_EXACT    = (
 )
 
 # Default waiver paths — used when the config key is absent or unparseable.
-DEFAULT_WAIVER = ['*.md', 'docs/**', 'CHANGELOG.md']
+DEFAULT_WAIVER = ['*.md', 'docs/**', 'CHANGELOG.md', '*.example']
 
 # Validation canaries: if a waiver entry matches any of these it is too broad
 # (catch-all or covers non-waivable territory) and must be rejected.
@@ -1862,6 +1872,9 @@ for label, role in present.items():
 if stale:
     for label, role, reason in stale:
         print(f'pipeline-vcs: check-approval-sha: STALE {label} ({role}): {reason}', file=sys.stderr)
+    if os.environ.get('STALE_LIST', '') == 'true':
+        for label, role, reason in stale:
+            print(f'stale role={role} label={label}')
     sys.exit(1)
 
 print('check-approval-sha: all approval labels are current')
@@ -3138,9 +3151,15 @@ sys.exit(0)
       ;;
 
     check-approval-sha)
-      # check-approval-sha <n>
+      # check-approval-sha <n> [--stale-list]
       # Verify every approval label on the PR was earned against the current head SHA.
-      local _n="$1"
+      # --stale-list: additionally print one greppable stdout line per stale
+      # role ("stale role=<role> label=<label>"). Without the flag, unchanged.
+      local _n="$1"; shift
+      local _stale_list_flag="false"
+      if [ "${1:-}" = "--stale-list" ]; then
+        _stale_list_flag="true"
+      fi
       if [ "$DRY_RUN" = "true" ]; then
         echo "[dry-run] github-api: check-approval-sha $_n: verify all approval labels match current head SHA"
         return 0
@@ -3181,7 +3200,7 @@ json.dump(out, sys.stdout)
       _trusted_authors_cas="$(cfg markers.trusted_authors "")"
       _repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
       printf '%s' "$_pr_data" \
-        | WAIVER_PATHS="$_waiver_paths" REPO_ROOT="${_repo_root:-}" TRUSTED_AUTHORS="$_trusted_authors_cas" TALOS_CFG="$_TALOS_CFG" python3 -c "
+        | WAIVER_PATHS="$_waiver_paths" REPO_ROOT="${_repo_root:-}" TRUSTED_AUTHORS="$_trusted_authors_cas" TALOS_CFG="$_TALOS_CFG" STALE_LIST="$_stale_list_flag" python3 -c "
 import fnmatch, json, os, re, subprocess, sys
 
 APPROVAL_LABELS = {
@@ -3203,7 +3222,7 @@ HARDCODED_NONWAIVABLE_EXACT    = (
     'pipeline.yaml', 'pipeline.json',
 )
 
-DEFAULT_WAIVER = ['*.md', 'docs/**', 'CHANGELOG.md']
+DEFAULT_WAIVER = ['*.md', 'docs/**', 'CHANGELOG.md', '*.example']
 
 VALIDATION_CANARIES = [
     'scripts/core.sh',      'scripts/pipeline-vcs.sh',
@@ -3458,6 +3477,9 @@ for label, role in present.items():
 if stale:
     for label, role, reason in stale:
         print('pipeline-vcs: check-approval-sha: STALE ' + label + ' (' + role + '): ' + reason, file=sys.stderr)
+    if os.environ.get('STALE_LIST', '') == 'true':
+        for label, role, reason in stale:
+            print('stale role=' + role + ' label=' + label)
     sys.exit(1)
 
 print('check-approval-sha: all approval labels are current')

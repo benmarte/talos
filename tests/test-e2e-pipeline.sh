@@ -351,4 +351,127 @@ assert_eq "0" "$qa_rc" \
   "e2e: qa_mode: ci with empty required_checks -- QA passes only after actually running verify: (#195)"
 rm -f talos.pipeline.json
 
+# ── #196: selective stage re-runs -- only stale roles re-dispatch ────────────
+# Stub-driven simulation of the SKILL.md Step 4 Approval-SHA gate decision
+# list: strip only the labels `check-approval-sha --stale-list` reports stale,
+# dispatch qa/reviewer/security whenever stale, and dispatch docs only when
+# the delta since its approved SHA touches a docs-relevant path -- otherwise
+# re-stamp docs:done directly with no subagent dispatch.
+_ALL4_LABELS_196='[{"name":"qa:pass"},{"name":"review:approved"},{"name":"security:approved"},{"name":"docs:done"}]'
+
+is_docs_relevant_delta() {  # $1 = base sha, $2 = head sha
+  local changed f
+  changed="$(git diff --name-only "$1..$2")"
+  for f in $changed; do
+    case "$f" in
+      tests/*) continue ;;
+      README.md|docs/*|CHANGELOG.md|templates/*|*.md) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+simulate_selective_redispatch() {  # $1=base sha $2=head sha $3=comments JSON $4=labels JSON (default: all four)
+  local labels="${4:-$_ALL4_LABELS_196}"
+  local stale_out role
+  stale_out="$(STUB_PR_HEAD_SHA="$2" STUB_PR_LABELS_JSON="$labels" STUB_PR_COMMENTS_JSON="$3" \
+               bash "$VCS" check-approval-sha 9 --stale-list 2>/dev/null)"
+  while IFS= read -r line; do
+    case "$line" in
+      "stale role="*)
+        role="${line#stale role=}"; role="${role%% label=*}"
+        case "$role" in
+          qa)       echo "dispatch:qa"       >> "$DISPATCH_LOG" ;;
+          reviewer) echo "dispatch:reviewer" >> "$DISPATCH_LOG" ;;
+          security) echo "dispatch:security" >> "$DISPATCH_LOG" ;;
+          docs)
+            if is_docs_relevant_delta "$1" "$2"; then
+              echo "dispatch:docs" >> "$DISPATCH_LOG"
+            else
+              echo "restamp:docs" >> "$DISPATCH_LOG"
+            fi
+            ;;
+        esac
+        ;;
+    esac
+  done <<< "$stale_out"
+}
+
+# Real commits in the sandbox repo: all four approvals earned at SHA_BASE,
+# then a fix commit that touches only scripts/x.sh (non-waivable, docs-irrelevant).
+printf 'base\n' > base.txt
+git add base.txt
+git commit -q -m "base commit"
+SHA_BASE="$(git rev-parse HEAD)"
+mkdir -p scripts
+printf '#!/bin/bash\necho fix\n' > scripts/x.sh
+git add scripts/x.sh
+git commit -q -m "fix: guard null session (scripts/x.sh only)"
+SHA_FIX="$(git rev-parse HEAD)"
+
+_all4_markers='[{"body":"<!-- talos:approval sha=BASESHA role=qa -->"},{"body":"<!-- talos:approval sha=BASESHA role=reviewer -->"},{"body":"<!-- talos:approval sha=BASESHA role=security -->"},{"body":"<!-- talos:approval sha=BASESHA role=docs -->"}]'
+_all4_markers="${_all4_markers//BASESHA/$SHA_BASE}"
+
+DISPATCH_LOG="$SANDBOX/dispatch.log"
+: > "$DISPATCH_LOG"
+simulate_selective_redispatch "$SHA_BASE" "$SHA_FIX" "$_all4_markers"
+
+dispatch_out="$(cat "$DISPATCH_LOG")"
+assert_contains "$dispatch_out" "dispatch:qa"       "e2e #196: scripts/x.sh-only fix re-dispatches QA"
+assert_contains "$dispatch_out" "dispatch:reviewer" "e2e #196: scripts/x.sh-only fix re-dispatches reviewer"
+assert_contains "$dispatch_out" "dispatch:security" "e2e #196: scripts/x.sh-only fix re-dispatches security"
+assert_not_contains "$dispatch_out" "dispatch:docs" "e2e #196: scripts/x.sh-only fix does NOT dispatch docs"
+assert_contains "$dispatch_out" "restamp:docs"       "e2e #196: docs is re-stamped instead of dispatched"
+assert_eq "1" "$(grep -c '^dispatch:qa$' "$DISPATCH_LOG")"       "e2e #196: QA dispatched exactly once"
+assert_eq "1" "$(grep -c '^dispatch:reviewer$' "$DISPATCH_LOG")" "e2e #196: reviewer dispatched exactly once"
+assert_eq "1" "$(grep -c '^dispatch:security$' "$DISPATCH_LOG")" "e2e #196: security dispatched exactly once"
+assert_eq "0" "$(grep -c '^dispatch:docs$' "$DISPATCH_LOG")"     "e2e #196: docs dispatch count is zero"
+
+# Counter-case: a docs-relevant delta DOES re-dispatch docs. README.md alone
+# is fully waivable (covered by DEFAULT_WAIVER for every role, docs included)
+# so it would never show up as stale on its own -- pair it with a non-waivable
+# scripts/ change so the label goes stale at all, same as the primary case,
+# but this time the stale delta also touches a docs-relevant path.
+_orig_branch_196="$(git symbolic-ref --short HEAD)"
+git checkout -q -b tmp-readme-fix-196 "$SHA_BASE"
+printf 'updated readme\n' > README.md
+mkdir -p scripts
+printf '#!/bin/bash\necho other fix\n' > scripts/y.sh
+git add README.md scripts/y.sh
+git commit -q -m "fix: guard null session + update readme"
+SHA_README="$(git rev-parse HEAD)"
+git checkout -q "$_orig_branch_196"
+
+_docs_only_marker='[{"body":"<!-- talos:approval sha=BASESHA role=docs -->"}]'
+_docs_only_marker="${_docs_only_marker//BASESHA/$SHA_BASE}"
+: > "$DISPATCH_LOG"
+simulate_selective_redispatch "$SHA_BASE" "$SHA_README" "$_docs_only_marker" '[{"name":"docs:done"}]'
+assert_contains "$(cat "$DISPATCH_LOG")" "dispatch:docs" \
+  "e2e #196: README.md-touching delta DOES re-dispatch docs (counter-case)"
+assert_not_contains "$(cat "$DISPATCH_LOG")" "restamp:docs" \
+  "e2e #196: README.md-touching delta is NOT silently re-stamped (counter-case)"
+
+# ── #196: docs stage never pushes an empty commit ────────────────────────────
+# Stub-driven simulation of the docs commit guard (agents/docs.md /
+# SKILL.md Docs prompt): before committing, check both the working tree and
+# the index; if BOTH are clean, skip commit + push entirely and still apply
+# docs:done via post-approval (which re-fetches the head SHA regardless).
+COMMIT_LOG_BEFORE="$(git rev-parse HEAD)"
+simulate_docs_commit_guard() {
+  if git diff --quiet && git diff --quiet --cached; then
+    echo "skip-commit-and-push"
+    return 0
+  fi
+  git commit -q -m "docs: update for #$N"
+  echo "committed"
+}
+guard_out="$(simulate_docs_commit_guard)"
+COMMIT_LOG_AFTER="$(git rev-parse HEAD)"
+assert_eq "skip-commit-and-push" "$guard_out" "e2e #196: docs guard skips commit when nothing changed"
+assert_eq "$COMMIT_LOG_BEFORE" "$COMMIT_LOG_AFTER" "e2e #196: no new commit created (no empty commit, no push)"
+# docs:done is still applied, independent of whether a commit was made.
+bash "$VCS" label-pr 9 --add docs:done >/dev/null 2>&1
+log="$(cat "$GH_LOG")"
+assert_contains "$log" "pr edit 9 --add-label docs:done" "e2e #196: docs:done still applied when nothing to commit"
+
 finish
