@@ -61,8 +61,8 @@ progress as issue/PR comments and threaded Slack/Discord messages along the way.
   (`gh`/`glab`/`az` CLI invocations, and the `github-api` provider's `curl`
   requests) automatically retries on HTTP 429, a GitHub secondary rate limit,
   or a matching CLI rate-limit error, honouring `Retry-After` when supplied
-  and otherwise backing off exponentially (2s, doubling, capped at 60s), up
-  to `limits.max_retries` (default `5`) times. Everything else (401, 404,
+  (capped at 60s) and otherwise backing off exponentially (2s, doubling, capped at 60s), up
+  to `limits.max_retries` (default `5`, must be a non-negative integer) times. Everything else (401, 404,
   422, …) still fails immediately with no added delay. `--dry-run` never
   sleeps or retries.
 - **Human-merge mode** — `merge.auto: false` runs every stage and gate but
