@@ -98,7 +98,12 @@ Store these for the run:
   — `pipeline-config.sh` applies the `merge.required_checks`-derived default
   itself, so passing `local` as the fallback here is correct for both branches.
   `ci` means QA trusts CI (`pr-checks`) instead of re-running `verify:` locally;
-  `local` means QA runs the full `verify:` list once, as before.
+  `local` means QA runs the full `verify:` list once, as before. An explicit
+  `verify.qa_mode: ci` with an empty or absent `merge.required_checks` list is
+  treated as `local`, not `ci` — trusting CI as the oracle for zero required
+  checks would let QA pass vacuously, so `pipeline-config.sh` fails this
+  combination closed to `local` and warns on stderr; QA always sees the
+  resolved value here, never the raw config.
 - VERIFY_TARGETED (`verify.targeted`, default `true`): whether the developer
   runs only the tests covering its changed files while iterating (`true`), or
   the full `verify:` list on every iteration (`false`). Either way the
@@ -126,6 +131,8 @@ Store these for the run:
 - `merge.method`: squash
 - `merge.required_checks`: []
 - `verify.qa_mode`: `ci` when `merge.required_checks` is non-empty, else `local`
+  (an explicit `ci` with an empty/absent `merge.required_checks` list is
+  itself resolved to `local`, never a vacuous `ci` pass)
 - `verify.targeted`: `true`
 - `verify.ci_wait_s`: `900`
 - `issues.label_filter`: pipeline:ready (an additional label requirement; see Step 2)
@@ -654,15 +661,22 @@ Workflow:
       add/extend an e2e test that drives the feature in a browser, following
       the repo's existing e2e pattern. If no e2e harness exists, state that
       in the PR body instead of silently skipping.
-5. If Targeted iteration is `true` (default): while iterating, run only the
-   tests that cover the files you changed — `bash tests/run-tests.sh --for
-   <changed files>` if that flag exists (#197), else the test files whose
-   name or contents reference the changed scripts. If `false`, run the full
-   verify commands on each iteration instead. Either way, run the full
-   verify commands list exactly once, immediately before the final commit
-   and push — this is the one full-suite run for this PR. Forbidden: running
-   verify commands more than once after the last code change, running them
-   in the background, and sleep-polling for results. Never zero local runs.
+5. Verify commands — two mutually exclusive modes, chosen by Targeted
+   iteration:
+   - If `true` (default): while iterating, run only the tests that cover
+     the files you changed — `bash tests/run-tests.sh --for <changed
+     files>` if that flag exists (#197), else the test files whose name or
+     contents reference the changed scripts. Then run the full verify
+     commands list exactly once, after the last code change, immediately
+     before the final commit and push — this is the one full-suite run for
+     this PR. Forbidden: running the full verify commands list more than
+     once for this PR.
+   - If `false`: run the full verify commands list after each meaningful
+     change while iterating (the old, non-targeted behavior — no targeted-
+     test shortcut), and still exactly once after the last code change,
+     immediately before the final commit and push.
+   In both modes: no verify runs after that final run, never in the
+   background, and never sleep-polling for results. Never zero local runs.
 6. `git commit -m "fix: <description> (#<N>)"`
 7. `git push -u origin fix/issue-<N>-<slug>`
 8. Write PR body to a temp file (multi-line OK):
@@ -708,15 +722,22 @@ Workflow:
 2. `git checkout -b fix/issue-<N>-<slug> origin/<BASE_BRANCH>`
 3. Implement. Match surrounding code style. Stay focused on acceptance criteria.
 4. Write tests — not optional, and not limited to unit tests (same requirements as worktree mode).
-5. If Targeted iteration is `true` (default): while iterating, run only the
-   tests that cover the files you changed — `bash tests/run-tests.sh --for
-   <changed files>` if that flag exists (#197), else the test files whose
-   name or contents reference the changed scripts. If `false`, run the full
-   verify commands on each iteration instead. Either way, run the full
-   verify commands list exactly once, immediately before the final commit
-   and push — this is the one full-suite run for this PR. Forbidden: running
-   verify commands more than once after the last code change, running them
-   in the background, and sleep-polling for results. Never zero local runs.
+5. Verify commands — two mutually exclusive modes, chosen by Targeted
+   iteration:
+   - If `true` (default): while iterating, run only the tests that cover
+     the files you changed — `bash tests/run-tests.sh --for <changed
+     files>` if that flag exists (#197), else the test files whose name or
+     contents reference the changed scripts. Then run the full verify
+     commands list exactly once, after the last code change, immediately
+     before the final commit and push — this is the one full-suite run for
+     this PR. Forbidden: running the full verify commands list more than
+     once for this PR.
+   - If `false`: run the full verify commands list after each meaningful
+     change while iterating (the old, non-targeted behavior — no targeted-
+     test shortcut), and still exactly once after the last code change,
+     immediately before the final commit and push.
+   In both modes: no verify runs after that final run, never in the
+   background, and never sleep-polling for results. Never zero local runs.
 6. `git commit -m "fix: <description> (#<N>)"`
 7. `git push -u origin fix/issue-<N>-<slug>`
 8. Write PR body to a temp file:
@@ -767,7 +788,11 @@ scripts can assert they are running in the correct environment:
   export TALOS_WORKTREE_PATH=<ABSOLUTE_PATH_OF_THIS_WORKTREE>
 
 1. Check out the PR: `bash scripts/pipeline-vcs.sh checkout-pr <PR_NUMBER>`
-2. If QA mode is `ci`: do NOT run `verify:` or the test suite locally — CI
+2. QA mode above is already resolved: `ci` with an empty/absent Required
+   checks list is reported here as `local`, not `ci` — trusting CI as the
+   oracle for zero required checks would let QA pass vacuously, so that
+   combination fails closed to `local` before you ever see it.
+   If QA mode is `ci`: do NOT run `verify:` or the test suite locally — CI
    already runs it on every push. Instead, poll `bash scripts/pipeline-vcs.sh
    pr-checks <PR_NUMBER>` in the foreground (no background process, no long
    sleep loop) until every check named in Required checks reports a passing

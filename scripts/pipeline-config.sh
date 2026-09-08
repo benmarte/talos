@@ -95,11 +95,25 @@ if key == "verify" and isinstance(value, dict):
 # verify.qa_mode has a config-derived default that overrides whatever default
 # the caller passed in: "ci" when merge.required_checks is a non-empty list
 # (CI is already the suite oracle), "local" otherwise. An explicit
-# verify.qa_mode value in config always wins over this derived default.
-if key == "verify.qa_mode" and value is None:
+# verify.qa_mode value in config always wins over this derived default --
+# EXCEPT that "ci" with an empty/absent merge.required_checks list is a
+# fail-open trap: QA would trust CI as the oracle for a check list that has
+# nothing in it, i.e. pass vacuously without ever running verify: locally
+# or observing any real CI signal. Fail closed instead: resolve to "local"
+# and warn once on stderr, regardless of whether "ci" came from this derived
+# default or from an explicit verify.qa_mode: ci in the config.
+if key == "verify.qa_mode":
     required_checks = walk(cfg, "merge.required_checks".split("."))
-    if isinstance(required_checks, list) and len(required_checks) > 0:
-        value = "ci"
+    has_required_checks = isinstance(required_checks, list) and len(required_checks) > 0
+    if value is None:
+        value = "ci" if has_required_checks else "local"
+    if value == "ci" and not has_required_checks:
+        sys.stderr.write(
+            "pipeline-config: verify.qa_mode=ci with empty/absent "
+            "merge.required_checks -- resolving to 'local' (ci mode would "
+            "pass QA vacuously with no required checks to poll)\n"
+        )
+        value = "local"
 
 if value is None:
     print(default, end="")

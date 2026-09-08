@@ -38,14 +38,21 @@ Workflow (do ALL of it — the publish step is not optional):
       add/extend an e2e test that drives the feature in a browser, following
       the repo's existing e2e pattern. If no e2e harness exists, state that in
       the PR body instead of silently skipping.
-   While iterating, run only the tests that cover the files you changed
-   (`verify.targeted`, default `true`) — `tests/run-tests.sh --for <changed
-   files>` if that flag exists, else the test files whose name or contents
-   reference the changed scripts. Then run the full verify/lint suite exactly
-   once, immediately before your final commit and push — this is the one
-   full-suite run for this PR. Never run it more than once after the last
-   code change, never run it in the background, and never sleep-poll for
-   results. Never zero local runs.
+   Verify commands — two mutually exclusive modes, chosen by
+   `verify.targeted`:
+   - If `true` (default): while iterating, run only the tests that cover
+     the files you changed — `tests/run-tests.sh --for <changed files>` if
+     that flag exists, else the test files whose name or contents reference
+     the changed scripts. Then run the full verify/lint suite exactly once,
+     after the last code change, immediately before your final commit and
+     push — this is the one full-suite run for this PR. Never run the full
+     suite more than once for this PR.
+   - If `false`: run the full verify/lint suite after each meaningful
+     change while iterating (the old, non-targeted behavior), and still
+     exactly once after the last code change, immediately before your final
+     commit and push.
+   In both modes: no verify runs after that final run, never run it in the
+   background, and never sleep-poll for results. Never zero local runs.
    In the PR body, list which test types you added (unit / regression / e2e) —
    and if you skipped a type, say why.
 4. Commit with a conventional message (`fix:`/`feat:` … `(#<N>)`).

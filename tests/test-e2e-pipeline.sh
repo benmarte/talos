@@ -328,4 +328,27 @@ else
 fi
 rm -f talos.pipeline.json
 
+# qa_mode: ci explicitly set, but required_checks is empty -- the fail-open
+# trap from review finding #3: trusting CI as the oracle for an empty check
+# list would let QA pass vacuously without ever running verify: or observing
+# a real CI signal. pipeline-config.sh resolves this combination to "local"
+# instead, so QA must fall back to running verify: once itself, exactly like
+# genuine qa_mode: local -- not pass without running anything.
+cat > talos.pipeline.json <<'EOF'
+{"merge": {"required_checks": []}, "verify": {"qa_mode": "ci"}}
+EOF
+qa_mode="$(bash "$CFG" verify.qa_mode local 2>/dev/null)"
+assert_eq "local" "$qa_mode" \
+  "e2e: explicit qa_mode: ci with empty required_checks resolves to local, not a vacuous ci pass (#195)"
+: > "$VERIFY_LOG"
+simulate_developer_verify
+simulate_qa_verify "$qa_mode" >/dev/null 2>&1
+qa_rc=$?
+count_fail_open="$(wc -l < "$VERIFY_LOG" | tr -d ' ')"
+assert_eq "2" "$count_fail_open" \
+  "e2e: qa_mode: ci with empty required_checks -- QA runs verify: once (local behavior), not zero times (#195)"
+assert_eq "0" "$qa_rc" \
+  "e2e: qa_mode: ci with empty required_checks -- QA passes only after actually running verify: (#195)"
+rm -f talos.pipeline.json
+
 finish

@@ -80,6 +80,20 @@ rm talos.pipeline.json
 assert_eq "local" "$(bash "$CFG_SH" verify.qa_mode local)" \
   "verify.qa_mode defaults to local when no config / merge.required_checks is absent (#195)"
 
+# Fail-closed guard: an explicit verify.qa_mode: ci with an empty
+# merge.required_checks list must not pass QA vacuously -- it resolves to
+# local instead, with a one-line warning on stderr (#195 review finding 3).
+cat > talos.pipeline.json <<'EOF'
+{"merge": {"required_checks": []}, "verify": {"qa_mode": "ci"}}
+EOF
+qa_mode_out="$(bash "$CFG_SH" verify.qa_mode local 2>/tmp/qa_mode_stderr.$$)"
+assert_eq "local" "$qa_mode_out" \
+  "explicit verify.qa_mode: ci with empty required_checks falls back to local (#195)"
+assert_contains "$(cat /tmp/qa_mode_stderr.$$)" "qa_mode=ci" \
+  "empty-required_checks fallback prints a stderr warning naming the reason (#195)"
+rm -f /tmp/qa_mode_stderr.$$
+rm talos.pipeline.json
+
 assert_eq "true" "$(bash "$CFG_SH" verify.targeted true)" \
   "verify.targeted defaults to true when unset (#195)"
 

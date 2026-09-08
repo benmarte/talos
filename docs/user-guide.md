@@ -487,15 +487,21 @@ The full `verify:` suite is expensive to run repeatedly, and by default CI
 (`merge.required_checks`) already runs it on every push. Talos avoids paying
 for the same suite run more than it needs to:
 
-- **Developer** (`verify.targeted`, default `true`): while iterating, the
-  developer runs only the tests that cover the files it changed —
-  `tests/run-tests.sh --for <changed files>` when that flag exists, else the
-  test files whose name or contents reference the changed scripts. It runs
-  the full `verify:` list exactly once, immediately before its final commit
-  and push. It never runs `verify:` more than once after the last code
-  change, in the background, or via a sleep-poll loop — and never zero times.
-  Set `verify.targeted: false` to have it run the full list on every
-  iteration instead (the old behavior).
+- **Developer** (`verify.targeted`, default `true`): two mutually exclusive
+  modes.
+  - `true` (default): while iterating, the developer runs only the tests
+    that cover the files it changed — `tests/run-tests.sh --for <changed
+    files>` when that flag exists, else the test files whose name or
+    contents reference the changed scripts — then runs the full `verify:`
+    list exactly once, after the last code change, immediately before its
+    final commit and push. It never runs the full list more than once for
+    the PR.
+  - `false`: the developer runs the full `verify:` list after each
+    meaningful change while iterating (the old, non-targeted behavior — no
+    per-file test shortcut), and still exactly once after the last code
+    change, immediately before its final commit and push.
+  In both modes, the developer never runs `verify:` after that final run,
+  in the background, or via a sleep-poll loop — and never zero times.
 - **QA** (`verify.qa_mode`, default `ci` when `merge.required_checks` is
   non-empty, else `local`): under `ci`, QA does not re-run `verify:` at all —
   it polls `pipeline-vcs.sh pr-checks` in the foreground, bounded by
@@ -506,7 +512,13 @@ for the same suite run more than it needs to:
   budget QA saves by not re-running the suite goes into driving acceptance
   criteria and edge cases instead. Under `local` (the default when no
   `merge.required_checks` are configured, so there is no CI oracle to trust),
-  QA runs the full `verify:` list once itself, same as before.
+  QA runs the full `verify:` list once itself, same as before. An explicit
+  `verify.qa_mode: ci` combined with an empty or absent
+  `merge.required_checks` list is itself treated as `local` (with a one-line
+  warning on stderr from `pipeline-config.sh`) — trusting CI as the oracle
+  for zero required checks would let QA pass vacuously, without ever running
+  `verify:` or observing a real CI signal, so that combination fails closed
+  to `local` instead of passing silently.
 - **Reviewer, security, and docs never run `verify:`.** They only ever read
   the diff (`pipeline-vcs.sh diff-pr`) and CI status
   (`pipeline-vcs.sh pr-checks`) — this was already true in practice and is
