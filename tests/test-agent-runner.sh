@@ -10,6 +10,11 @@ install_talos
 AGENT="$HOME/.talos/scripts/pipeline-agent.sh"
 export RUNNER_LOG="$SANDBOX/runner.log"
 
+# ERRFILE -- captures pipeline-agent.sh's stderr so assertion failures show
+# the diagnostic instead of it being silently redirected away (#208, same
+# pattern as tests/test-per-agent-env.sh from #210).
+ERRFILE="$SANDBOX/agent.stderr"
+
 # ── Default runner is claude, with global-config isolation ───────────────────
 : > "$RUNNER_LOG"
 out="$(bash "$AGENT" validator "Issue #7 is assigned to you.")"
@@ -82,6 +87,55 @@ out="$(bash "$AGENT" validator "line one")"
 [ "$out" -gt 10 ] 2>/dev/null \
   && pass "custom runner receives full prompt on stdin" \
   || fail "custom runner receives full prompt on stdin" "got: $out"
+
+# ── Custom runner: no EPIPE on a large prompt (#208) ──────────────────────────
+# Root cause: the old implementation was `printf '%s' "$PROMPT" | sh -c
+# "$RUNNER_CMD"`. A runner_cmd that exits without reading stdin (or simply
+# wins the race on a loaded host) makes printf receive EPIPE; under
+# `set -o pipefail` that turned into a spurious pipeline-agent.sh exit 1.
+# RED on the old pipe implementation: a 200 KB prompt reliably overflows the
+# pipe buffer, so `exit 0` (reads nothing) used to fail deterministically,
+# not just under load.
+BIG_PROMPT="$(head -c 204800 /dev/zero | tr '\0' 'x')"
+
+cat > talos.pipeline.json <<'EOF'
+{"agents": {"runner": "custom", "runner_cmd": "exit 0"}}
+EOF
+out="$(bash "$AGENT" developer "$BIG_PROMPT" 2>"$ERRFILE")"; rc=$?
+assert_eq_ctx "0" "$rc" "runner_cmd 'exit 0' with 200 KB prompt exits 0 (no EPIPE)" "$(cat "$ERRFILE")"
+
+# A runner that reads all of stdin must receive the prompt byte-for-byte.
+EXPECT_FILE="$SANDBOX/expected-prompt.txt"
+GOT_FILE="$SANDBOX/got-prompt.txt"
+ROLE_BODY="$(awk 'NR==1 && /^---$/ {fm=1; next} fm && /^---$/ {fm=0; next} !fm' \
+  "$HOME/.talos/agents/developer.md")"
+printf '%s\n\n---\n\n%s' "$ROLE_BODY" "$BIG_PROMPT" > "$EXPECT_FILE"
+cat > talos.pipeline.json <<EOF
+{"agents": {"runner": "custom", "runner_cmd": "cat > $GOT_FILE"}}
+EOF
+out="$(bash "$AGENT" developer "$BIG_PROMPT" 2>"$ERRFILE")"; rc=$?
+assert_eq_ctx "0" "$rc" "full-stdin runner exits 0" "$(cat "$ERRFILE")"
+expect_bytes="$(wc -c < "$EXPECT_FILE" | tr -d ' ')"
+got_bytes="$(wc -c < "$GOT_FILE" | tr -d ' ')"
+assert_eq "$expect_bytes" "$got_bytes" "runner_cmd receives the prompt byte-for-byte (wc -c)"
+if diff -q "$EXPECT_FILE" "$GOT_FILE" >/dev/null 2>&1; then
+  pass "runner_cmd receives the prompt byte-for-byte (diff)"
+else
+  fail "runner_cmd receives the prompt byte-for-byte (diff)" "expected vs got prompt differ"
+fi
+
+# A runner's own exit code must propagate exactly.
+cat > talos.pipeline.json <<'EOF'
+{"agents": {"runner": "custom", "runner_cmd": "exit 3"}}
+EOF
+bash "$AGENT" developer "$BIG_PROMPT" >/dev/null 2>"$ERRFILE"; rc=$?
+assert_eq_ctx "3" "$rc" "runner_cmd exit code propagates exactly (exit 3)" "$(cat "$ERRFILE")"
+
+# The prompt temp file/dir must be cleaned up afterward, pass or fail.
+_prompt_tmp_before="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'talos-prompt.*' 2>/dev/null | wc -l | tr -d ' ')"
+bash "$AGENT" developer "$BIG_PROMPT" >/dev/null 2>&1
+_prompt_tmp_after="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'talos-prompt.*' 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "$_prompt_tmp_before" "$_prompt_tmp_after" "prompt temp dir is removed after the runner exits"
 
 cat > talos.pipeline.json <<'EOF'
 {"agents": {"runner": "custom"}}
@@ -159,13 +213,13 @@ cat > talos.pipeline.json <<'EOF'
 {"agents": {"runner": "custom", "runner_cmd": "printf '%s' \"$TALOS_ROLE\""}}
 EOF
 
-out="$(bash "$AGENT" developer "some task" 2>/dev/null)"; rc=$?
+out="$(bash "$AGENT" developer "some task" 2>"$ERRFILE")"; rc=$?
 assert_eq "developer" "$out" "TALOS_ROLE=developer visible in runner_cmd"
-assert_eq "0" "$rc" "TALOS_ROLE test exits 0 (developer)"
+assert_eq_ctx "0" "$rc" "TALOS_ROLE test exits 0 (developer)" "$(cat "$ERRFILE")"
 
-out="$(bash "$AGENT" reviewer "some task" 2>/dev/null)"; rc=$?
+out="$(bash "$AGENT" reviewer "some task" 2>"$ERRFILE")"; rc=$?
 assert_eq "reviewer" "$out" "TALOS_ROLE=reviewer visible in runner_cmd"
-assert_eq "0" "$rc" "TALOS_ROLE test exits 0 (reviewer)"
+assert_eq_ctx "0" "$rc" "TALOS_ROLE test exits 0 (reviewer)" "$(cat "$ERRFILE")"
 
 rm talos.pipeline.json
 

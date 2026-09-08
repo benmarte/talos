@@ -40,7 +40,8 @@
 #   gemini       gemini [args] -p <prompt>
 #   antigravity  agy [args] -p <prompt>
 #                # invocation per Antigravity CLI docs (2026-03)
-#   custom       printf '%s' <prompt> | sh -c "$runner_cmd"
+#   custom       prompt written to a temp file, then
+#                sh -c "$runner_cmd" < <prompt-file>   (not a pipe -- #208)
 #
 # NOTE: the pi orchestrator playbook uses INLINE mode (agents.subagents: false,
 # agents.runner: pi) and does NOT call this script — pi acts as each stage role
@@ -184,7 +185,22 @@ case "$RUNNER" in
       echo "pipeline-agent: agents.runner=custom requires agents.runner_cmd" >&2
       exit 1
     fi
-    printf '%s' "$PROMPT" | sh -c "$RUNNER_CMD"
+    # Feed the prompt via a temp file, not a pipe (#208): piping through
+    # `printf | sh -c` puts printf on the writer end, and a runner_cmd that
+    # exits without reading all of stdin (or simply loses the race on a
+    # loaded host) sends printf a SIGPIPE/EPIPE. Under `set -o pipefail`
+    # that turns into a spurious pipeline-agent.sh exit 1 even though the
+    # runner itself exited 0. Writing to a file first removes the writer
+    # process entirely, so there is nothing to receive EPIPE.
+    _PROMPT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/talos-prompt.XXXXXX")"
+    _PROMPT_FILE="$_PROMPT_DIR/prompt"
+    (umask 077 && printf '%s' "$PROMPT" >"$_PROMPT_FILE")
+    if command -v _talos_on_exit >/dev/null 2>&1; then
+      _talos_on_exit 'rm -rf "$_PROMPT_DIR"'
+    else
+      trap 'rm -rf "$_PROMPT_DIR"' EXIT
+    fi
+    sh -c "$RUNNER_CMD" <"$_PROMPT_FILE"
     ;;
   *)
     echo "pipeline-agent: unknown agents.runner '$RUNNER'. Valid: claude | pi | codex | gemini | antigravity | custom" >&2
