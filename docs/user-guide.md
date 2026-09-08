@@ -90,6 +90,15 @@ progress as issue/PR comments and threaded Slack/Discord messages along the way.
   only the changed doc paths and the CHANGELOG hunk instead of the full PR
   diff (`roles.docs_mode`, default `auto` — see
   [README](../README.md#config-reference)).
+- **Compact stage handoff** — `pipeline-vcs.sh view-issue <n> --spec` prints
+  the issue body plus only the latest `**PM spec:**` comment, dropping every
+  `<!-- talos:` marker, stage-verdict, and other comment, so a busy thread
+  (10+ comments by the time security runs) is not re-ingested in full by
+  every stage; `diff-pr <pr> --stat` prints a per-file additions/deletions
+  summary instead of the full diff. Developer, QA, reviewer, and security now
+  read the compact forms first and fall back to the full thread/diff only
+  when a prior verdict is referenced (fix rounds); both are `github`/
+  `github-api` only (#201).
 - **Offline test suite** — 140+ assertions, zero credentials needed, CI on
   Ubuntu + macOS.
 
