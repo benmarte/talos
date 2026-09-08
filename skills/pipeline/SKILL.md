@@ -350,7 +350,7 @@ bash scripts/pipeline-vcs.sh list-issues
    - Open PR found → adopt it: do NOT re-dispatch the developer; resume from the first missing approval label (QA if `qa:pass` absent, etc.).
    - No PR → the developer stage never finished; re-dispatch it (counts toward `max_fix_attempts`).
 2. **Heal merged-but-open issues.** For each open `pipeline:*` issue, `bash scripts/pipeline-vcs.sh find-pr <N> merged` — if a merged PR closes it, run the post-merge steps from Step 4 (comment, close, board → Done, notify) instead of doing any work. Pass `--allow-closed` to `comment-issue` in the post-merge steps here, since GitHub may have already auto-closed the issue at merge time via `Closes #N`.
-3. **Resume in-flight PRs.** For each open pipeline PR (head branch `fix/issue-*` or `feat/issue-*`): all approval labels present → merge queue (when `merge.auto: false`, a PR already labeled `pipeline:approved` is waiting for a human — leave it alone); otherwise resume at the blocking stage.
+3. **Resume in-flight PRs.** For each open pipeline PR (head branch `fix/issue-*` or `feat/issue-*`): all approval labels present → merge queue (when `merge.auto: false`, a PR already labeled `pipeline:approved` is waiting for a human — leave it alone); otherwise resume at the blocking stage. If the blocking stage is QA, run the **Mergeability gate (#214)** (Step 3c, "After developer returns") first — do not resume straight into QA.
 4. **Sweep orphaned worktrees.** `bash scripts/pipeline-worktree.sh sweep <space-separated ids of every issue in this run's queue>` — removes any `fix/issue-*`/`feat/issue-*` worktree whose issue is not in the queue (a backstop for runs that ended before the Step 4 post-merge removal). Pass no ids to reclaim all of them.
 5. **Report stale blocked work.** List issues labeled `pipeline:blocked` and include them in the Step 1 summary notification so humans see what's waiting on them:
    `bash scripts/pipeline-notify.sh info "backlog" "K blocked issues awaiting human action: #a, #b" backlog` (only when K > 0).
@@ -813,6 +813,30 @@ After developer returns:
   1. Board → "In review": `bash scripts/pipeline-status.sh <N> "In review"`
   2. Relay findings: `bash scripts/pipeline-notify.sh developer "#<N>" "<subagent's 2-3 line summary: what was implemented + PR URL>" <N>`
   3. Lifecycle event: `bash scripts/pipeline-notify.sh pr-opened "#<N>" "PR <URL> opened" <N>`
+  4. **Mergeability gate (#214), before dispatching QA (Step 3d):** `bash
+     scripts/pipeline-vcs.sh pr-mergeable <PR>`.
+     - Exit 0 (`MERGEABLE`) or exit 2 (`UNKNOWN`, still unresolved after
+       retries — fail open, the same as every other best-effort gate in this
+       pipeline): proceed to Step 3d.
+     - Exit 1 (`CONFLICTING`): do NOT dispatch QA yet — GitHub schedules no
+       `pull_request` CI run for a conflicting PR, so QA would hang waiting
+       for CI that never starts. The orchestrator itself must never run
+       `git checkout`/`git fetch`/`git merge`/commit/push here — rule 15
+       reserves moving HEAD in the orchestrator's checkout for the developer
+       stage, and the orchestrator is not the developer stage. Instead,
+       ALWAYS record the attempt and dispatch a worktree-isolated developer
+       "merge base" task, exactly like any other developer re-dispatch:
+       `bash scripts/pipeline-vcs.sh record-attempt <N> developer --pr
+       <PR>`; exit non-zero (ceiling reached) → board "Blocked", stop. On
+       success, spawn the developer with `isolation: "worktree"` (same
+       mechanism as Step 3c) with a prompt to: check out the PR branch,
+       `git fetch origin && git merge origin/<BASE_BRANCH>` in its own
+       worktree; if the only conflict is in `CHANGELOG.md`, keep BOTH
+       entries (newest first), the same rule as the **CHANGELOG
+       serialization guard** (Step 4); resolve any other conflicts the
+       same way a normal fix would; run the targeted verify tests; then
+       push. Either way, re-run `pr-mergeable <PR>` afterward and only
+       proceed to Step 3d once it reports `MERGEABLE` (or `UNKNOWN`).
 - **No PR, and the final message says it is waiting on a background job**
   (e.g. it backgrounded verify with `&`/`nohup`/`disown` and ended its turn
   to "wait for the notification" — Rule 17 (#205)): resend the developer the
@@ -857,8 +881,13 @@ scripts can assert they are running in the correct environment:
   export TALOS_WORKTREE_PATH=<ABSOLUTE_PATH_OF_THIS_WORKTREE>
 
 1. Check out the PR: `bash scripts/pipeline-vcs.sh checkout-pr <PR_NUMBER>`
+2. Before any CI wait, run `bash scripts/pipeline-vcs.sh pr-mergeable
+   <PR_NUMBER>` (#214). On `CONFLICTING` (exit 1), treat as FAIL and follow
+   the **Fail:** procedure below (labels + qa-verdict comment) with reason
+   "PR conflicts with base; no CI run will be scheduled" — do not wait on CI
+   or run verify. `MERGEABLE`/`UNKNOWN` (exit 0/2): continue below.
 Foreground rule: run the verify list or the CI-wait poll below in the foreground with an explicit timeout of <VERIFY_TIMEOUT_MS> ms; never use background execution, `&`, `nohup`, `disown`, or sleep-polling; never end your turn while a verify command is running.
-2. QA mode above is already resolved: `ci` with an empty/absent Required
+3. QA mode above is already resolved: `ci` with an empty/absent Required
    checks list is reported here as `local`, not `ci` — trusting CI as the
    oracle for zero required checks would let QA pass vacuously, so that
    combination fails closed to `local` before you ever see it.
@@ -883,8 +912,8 @@ Foreground rule: run the verify list or the CI-wait poll below in the foreground
    Prefer summary output for verify commands (e.g. `--quiet` for Talos's own
    suite, or the project's equivalent) -- quote only failures, never paste
    full green output into comments or final messages.
-3. Verify each acceptance criterion — drive actual behavior.
-4. Look for missing edge-case tests and obvious regressions.
+4. Verify each acceptance criterion — drive actual behavior.
+5. Look for missing edge-case tests and obvious regressions.
 
 Pass:
   1. Render verdict to a file (VERDICT="PASS" SUMMARY="..." DETAILS="...") and post via

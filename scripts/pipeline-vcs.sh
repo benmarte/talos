@@ -76,6 +76,20 @@
 #                                             if data cannot be fetched.
 #   rerun-ci <n>                              Re-run failed CI for the PR head SHA
 #   pr-head <n>                               Print the current head SHA for a PR
+#   pr-mergeable <n>                          Print MERGEABLE / CONFLICTING / UNKNOWN
+#                                             for the PR's mergeability with its base
+#                                             (#214). Exit 0/1/2 respectively. UNKNOWN
+#                                             is retried up to 4 times (GitHub computes
+#                                             it lazily), sleeping a
+#                                             TALOS_RETRY_SLEEP_SCALE-scaled 2s between
+#                                             attempts. github/github-api parity;
+#                                             gitlab/azure best-effort off their own
+#                                             merge-status fields, else UNKNOWN with a
+#                                             stderr note; file mode: UNKNOWN (no PR
+#                                             concept). Used before dispatching QA and
+#                                             before QA's CI wait, since GitHub
+#                                             schedules no `pull_request` run for a
+#                                             CONFLICTING PR.
 #   check-approval-sha <n> [--stale-list]     Exit 1 if any approval label was earned
 #                                             against a non-current head SHA (stale
 #                                             approvals); respects
@@ -215,7 +229,16 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cfg() { "$SCRIPT_DIR/pipeline-config.sh" "$@"; }
+# cfg() (#169): dumps the config once per invocation and answers lookups
+# from that cache instead of re-parsing on every call. Guarded (#169 review):
+# a partial install/sync may not yet ship pipeline-cfg-cache.sh, so fall back
+# to the old per-call cfg() instead of leaving cfg undefined.
+if [ -f "$SCRIPT_DIR/pipeline-cfg-cache.sh" ]; then
+  . "$SCRIPT_DIR/pipeline-cfg-cache.sh"
+else
+  cfg() { bash "$SCRIPT_DIR/pipeline-config.sh" "$@"; }
+  echo "pipeline: config cache helper missing, falling back to per-call parsing" >&2
+fi
 
 # ── Resolve config path for Python blocks (#116) ─────────────────────────────
 # Mirrors the lookup order in pipeline-config.sh; passed as TALOS_CFG env var
@@ -1298,6 +1321,40 @@ else:
       sha="$(gh pr view "$n" --json headRefOid -q .headRefOid ${REPO:+--repo "$REPO"} 2>/dev/null)"
       [ -z "$sha" ] && { echo "pipeline-vcs: pr-head: could not resolve head SHA for PR #$n" >&2; exit 1; }
       printf '%s\n' "$sha"
+      ;;
+    pr-mergeable)
+      # pr-mergeable <n> (#214) — print exactly one of MERGEABLE / CONFLICTING
+      # / UNKNOWN from `gh pr view --json mergeable`. GitHub computes
+      # mergeability lazily, so a just-pushed PR often reads UNKNOWN for a few
+      # seconds before settling — retried up to 4 times, sleeping a
+      # TALOS_RETRY_SLEEP_SCALE-scaled 2s between attempts (same scale/default/
+      # validation as _with_retry, but this is a value-based poll, not a
+      # rate-limit retry, so it does not route through _with_retry itself).
+      # Exit 0 MERGEABLE, 1 CONFLICTING, 2 UNKNOWN (still unresolved after
+      # retries). Used to skip a CI wait GitHub will never schedule a run for.
+      local n="$1"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] gh pr view $n --json mergeable -q .mergeable"
+        return 0
+      fi
+      local _pm_scale
+      _pm_scale="${TALOS_RETRY_SLEEP_SCALE:-1}"
+      if ! printf '%s' "$_pm_scale" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
+        _pm_scale=1
+      fi
+      local _pm_attempt=0 _pm_status
+      while :; do
+        _pm_status="$(gh pr view "$n" --json mergeable -q .mergeable ${REPO:+--repo "$REPO"} 2>/dev/null)"
+        case "$_pm_status" in
+          MERGEABLE)   echo MERGEABLE;   exit 0 ;;
+          CONFLICTING) echo CONFLICTING; exit 1 ;;
+        esac
+        _pm_attempt=$((_pm_attempt + 1))
+        [ "$_pm_attempt" -gt 4 ] && break
+        sleep "$(awk -v s="$_pm_scale" 'BEGIN { printf "%.4f", 2 * s }')"
+      done
+      echo UNKNOWN
+      exit 2
       ;;
 
     # ── Attempt counting ─────────────────────────────────────────────────────
@@ -3034,6 +3091,49 @@ except Exception:
       printf '%s\n' "$_sha"
       ;;
 
+    pr-mergeable)
+      # pr-mergeable <n> (#214) — GitHub REST returns `mergeable` as
+      # true/false/null (null = not yet computed). Print exactly one of
+      # MERGEABLE / CONFLICTING / UNKNOWN; exit 0/1/2 respectively. Retried up
+      # to 4 times on null, sleeping a TALOS_RETRY_SLEEP_SCALE-scaled 2s
+      # between attempts — see the _github counterpart for why this doesn't
+      # route through _with_retry (a value-based poll, not a rate-limit
+      # retry). Mirrors pr-head's fetch above but re-fetches per attempt since
+      # mergeable is computed lazily and can change between polls.
+      local _n="$1"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: GET $_API/pulls/$_n .mergeable"
+        return 0
+      fi
+      local _pm_scale
+      _pm_scale="${TALOS_RETRY_SLEEP_SCALE:-1}"
+      if ! printf '%s' "$_pm_scale" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
+        _pm_scale=1
+      fi
+      local _pm_attempt=0 _pm_data _pm_mergeable
+      while :; do
+        _pm_data="$(_ga_req GET "$_API/pulls/$_n")"
+        _pm_mergeable="$(printf '%s' "$_pm_data" | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = {}
+v = d.get('mergeable', None)
+print('true' if v is True else 'false' if v is False else 'null')
+")"
+        case "$_pm_mergeable" in
+          true)  echo MERGEABLE;   exit 0 ;;
+          false) echo CONFLICTING; exit 1 ;;
+        esac
+        _pm_attempt=$((_pm_attempt + 1))
+        [ "$_pm_attempt" -gt 4 ] && break
+        sleep "$(awk -v s="$_pm_scale" 'BEGIN { printf "%.4f", 2 * s }')"
+      done
+      echo UNKNOWN
+      exit 2
+      ;;
+
     read-comments)
       # read-comments <issue-or-pr-n>
       # Print every comment on an issue/PR as {"comments": [...]}, fully
@@ -4035,6 +4135,39 @@ _gitlab() {
       local n="$1" body="$2"
       _run glab mr note "$n" --message "$body" $RARG
       ;;
+    pr-mergeable)
+      # pr-mergeable <n> (#214) — best-effort: `glab mr view --output json`
+      # exposes GitLab's own merge_status field (can_be_merged /
+      # cannot_be_merged / unchecked / checking / ...). Only the two
+      # conclusive values are trusted; anything else (including a fetch
+      # failure) is reported as UNKNOWN with a stderr note, same contract as
+      # the GitHub providers but without their lazy-computation retry loop
+      # (GitLab does not need one for this field).
+      local n="$1"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] glab mr view $n --output json $RARG  # .merge_status"
+        return 0
+      fi
+      local _pm_json _pm_status
+      _pm_json="$(glab mr view "$n" --output json $RARG 2>/dev/null)"
+      _pm_status="$(printf '%s' "$_pm_json" | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = {}
+print(d.get('merge_status') or d.get('detailed_merge_status') or '')
+" 2>/dev/null)"
+      case "$_pm_status" in
+        can_be_merged|mergeable)     echo MERGEABLE;   exit 0 ;;
+        cannot_be_merged|conflict)   echo CONFLICTING; exit 1 ;;
+        *)
+          echo "pipeline-vcs: pr-mergeable: gitlab merge_status '$_pm_status' not conclusive — reporting UNKNOWN" >&2
+          echo UNKNOWN
+          exit 2
+          ;;
+      esac
+      ;;
     find-pr|check-pr-files|pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
       # Best-effort providers: not implemented — fail open with a warning so
       # the orchestrator falls back to its manual instructions.
@@ -4476,6 +4609,30 @@ PYEOF
         --headers "Content-Type=application/json" --body "@$tf" >/dev/null
       local rc=$?; rm -f "$tf"; return $rc
       ;;
+    pr-mergeable)
+      # pr-mergeable <n> (#214) — best-effort: `az repos pr show --query
+      # mergeStatus` returns ADO's own status ("succeeded", "conflicts",
+      # "queued", "rejectedByPolicy", "failure", "notSet"). Only the two
+      # conclusive values are trusted; anything else (including a fetch
+      # failure) is reported as UNKNOWN with a stderr note, same contract as
+      # the GitHub providers but without their lazy-computation retry loop.
+      local n="$1"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] az repos pr show --id $n $ORG_ARG --query mergeStatus --output tsv"
+        return 0
+      fi
+      local _pm_status
+      _pm_status="$(az repos pr show --id "$n" $ORG_ARG --query mergeStatus --output tsv 2>/dev/null)"
+      case "$_pm_status" in
+        succeeded)  echo MERGEABLE;   exit 0 ;;
+        conflicts)  echo CONFLICTING; exit 1 ;;
+        *)
+          echo "pipeline-vcs: pr-mergeable: azure mergeStatus '$_pm_status' not conclusive — reporting UNKNOWN" >&2
+          echo UNKNOWN
+          exit 2
+          ;;
+      esac
+      ;;
     find-pr|check-pr-files|pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
       echo "pipeline-vcs: $verb not implemented for azure — verify manually" >&2
       return 0
@@ -4526,6 +4683,14 @@ _file() {
       # Fail closed, not open (#205) -- see the matching comment in _gitlab.
       echo "pipeline-vcs: pr-checks-required: not supported for provider file (fail closed)" >&2
       return 1
+      ;;
+    pr-mergeable)
+      # No PR concept in file mode; report UNKNOWN (exit 2) rather than a
+      # bare 0 so callers that switch on this verb's stdout never mistake
+      # "not applicable" for MERGEABLE.
+      echo "file mode: pr-mergeable not applicable in file mode" >&2
+      echo UNKNOWN
+      exit 2
       ;;
     checkout-pr)
       echo "file mode: checkout-pr not applicable — use 'git checkout <branch>'" >&2
@@ -5197,7 +5362,10 @@ print('none')
   fi
 
   _pa_tmpfile="$(mktemp)"
-  trap 'rm -f "$_pa_tmpfile"' EXIT
+  # (#169) composable hook, not a bare `trap ... EXIT` -- pipeline-cfg-cache.sh
+  # already registered its own cleanup for the config cache dir, and a bare
+  # `trap ... EXIT` here would silently clobber it.
+  _talos_on_exit 'rm -f "$_pa_tmpfile"'
   if [ -n "$_pa_body_file" ]; then
     cat "$_pa_body_file" > "$_pa_tmpfile"
     printf '\n%s\n' "$_pa_marker" >> "$_pa_tmpfile"

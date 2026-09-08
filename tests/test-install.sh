@@ -48,8 +48,8 @@ gout="$(HOME="$GLOBAL_HOME" CLAUDE_CONFIG_DIR="$FAKE_CLAUDE_HOME" \
 assert_file_exists "$GLOBAL_HOME/.talos/scripts/pipeline-paths.sh" \
   "--global installs pipeline-paths.sh to ~/.talos/scripts/"
 
-for script in pipeline-config.sh pipeline-status.sh pipeline-notify.sh pipeline-vcs.sh \
-              pipeline-agent.sh pipeline-worktree.sh bootstrap-labels.sh; do
+for script in pipeline-config.sh pipeline-cfg-cache.sh pipeline-status.sh pipeline-notify.sh \
+              pipeline-vcs.sh pipeline-agent.sh pipeline-worktree.sh bootstrap-labels.sh; do
   assert_file_exists "$GLOBAL_HOME/.talos/scripts/$script" "--global installs $script"
 done
 
@@ -248,6 +248,39 @@ for probe_str in '${TALOS_HOME:+' ".talos/scripts" '${CLAUDE_PLUGIN_ROOT:+' ".cl
       fail "$(basename "$pf") is MISSING probe string: $probe_str -- probe sites have drifted"
     fi
   done
+done
+
+# ── cfg-cache guard block sync (#169 review) ─────────────────────────────────
+# The 5 scripts that source pipeline-cfg-cache.sh each guard that source with
+# an identical if/else block (fall back to the old self-contained cfg() and
+# warn on stderr if the helper is missing from a partial install/sync) rather
+# than a bare `. "$SCRIPT_DIR/pipeline-cfg-cache.sh"`. There is no single
+# shared file to factor this into -- SCRIPT_DIR must already be set at each
+# call site -- so, following the same pattern as the probe-site sync check
+# above, this asserts the block stays byte-identical across all 5 sites
+# instead of silently drifting (e.g. one site losing the fallback or the
+# warning).
+_guard_marker='# cfg() (#169): dumps the config once per invocation and answers lookups'
+_guard_ref=""
+for sh_file in \
+  "$TALOS_ROOT/scripts/pipeline-vcs.sh" \
+  "$TALOS_ROOT/scripts/pipeline-notify.sh" \
+  "$TALOS_ROOT/scripts/pipeline-status.sh" \
+  "$TALOS_ROOT/scripts/pipeline-agent.sh" \
+  "$TALOS_ROOT/scripts/pipeline-worktree.sh"; do
+  _guard_block="$(grep -A9 -F "$_guard_marker" "$sh_file")"
+  if ! printf '%s\n' "$_guard_block" | grep -q '^fi$'; then
+    fail "$(basename "$sh_file") cfg-cache guard block does not end with 'fi' -- pattern drifted, update the marker/line count in this test"
+    continue
+  fi
+  if [ -z "$_guard_ref" ]; then
+    _guard_ref="$_guard_block"
+    pass "$(basename "$sh_file") has the cfg-cache guard block (reference copy)"
+  elif [ "$_guard_block" = "$_guard_ref" ]; then
+    pass "$(basename "$sh_file") cfg-cache guard block matches the reference copy"
+  else
+    fail "$(basename "$sh_file") cfg-cache guard block has DRIFTED from the other 4 sites (#169 review fix)"
+  fi
 done
 
 finish

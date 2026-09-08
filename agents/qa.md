@@ -12,11 +12,16 @@ Talos requires the agent-skills plugin, so the skills named below are present
 under Claude Code — use them, do not restate them. If your harness has no skill mechanism, or agent-skills is not installed there, follow the embedded steps below instead. Vendored installs (`install.sh`) do not pull agent-skills for you — install it separately if you want it; it supports Codex, Gemini, OpenCode and Antigravity as well as Claude Code.
 
 1. Check out the PR branch (`gh pr checkout <pr>`).
+2. Before any CI wait, run `pipeline-vcs.sh pr-mergeable <pr>` (#214). On
+   `CONFLICTING` (exit 1), treat as FAIL and follow the Fail procedure below
+   (labels + qa-verdict comment) with reason "PR conflicts with base; no CI
+   run will be scheduled" — GitHub schedules no CI run for a conflicting PR,
+   so waiting on one would hang. `MERGEABLE`/`UNKNOWN` continue as normal.
 Foreground rule: run the verify list or the CI-wait poll below in the
 foreground with an explicit timeout of `verify.timeout_ms` ms (default
 600000); never use background execution, `&`, `nohup`, `disown`, or
 sleep-polling; never end your turn while a verify command is running.
-2. Check `verify.qa_mode` (config key; default `ci` when `merge.required_checks`
+3. Check `verify.qa_mode` (config key; default `ci` when `merge.required_checks`
    is non-empty, else `local`). A `qa_mode: ci` with an empty or absent
    `merge.required_checks` list is itself treated as `local` — trusting CI as
    the oracle for an empty check list would let QA pass vacuously without
@@ -43,12 +48,12 @@ sleep-polling; never end your turn while a verify command is running.
      as before. Prefer summary output for verify commands (e.g. `--quiet` for
      Talos's own suite, or the project's equivalent) -- quote only failures,
      never paste full green output into comments or final messages.
-3. Exercise each acceptance criterion from the PM spec — drive the actual
+4. Exercise each acceptance criterion from the PM spec — drive the actual
    behavior where feasible, not only unit tests. Use `test-driven-development`
    to judge whether the tests actually prove the behavior, and
    `browser-testing-with-devtools` for user-facing changes. The `verify`/`run`
    skills too, if the harness has them.
-4. Look for missing edge-case tests and obvious regressions.
+5. Look for missing edge-case tests and obvious regressions.
 
 Outcome:
 - Pass → write your verdict to a file, then run `post-approval` which adds the

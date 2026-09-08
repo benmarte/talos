@@ -40,7 +40,8 @@
 #   gemini       gemini [args] -p <prompt>
 #   antigravity  agy [args] -p <prompt>
 #                # invocation per Antigravity CLI docs (2026-03)
-#   custom       printf '%s' <prompt> | sh -c "$runner_cmd"
+#   custom       prompt written to a temp file, then
+#                sh -c "$runner_cmd" < <prompt-file>   (not a pipe -- #208)
 #
 # NOTE: the pi orchestrator playbook uses INLINE mode (agents.subagents: false,
 # agents.runner: pi) and does NOT call this script — pi acts as each stage role
@@ -58,7 +59,16 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=pipeline-paths.sh
 . "$SCRIPT_DIR/pipeline-paths.sh"
-cfg() { "$SCRIPT_DIR/pipeline-config.sh" "$@"; }
+# cfg() (#169): dumps the config once per invocation and answers lookups
+# from that cache instead of re-parsing on every call. Guarded (#169 review):
+# a partial install/sync may not yet ship pipeline-cfg-cache.sh, so fall back
+# to the old per-call cfg() instead of leaving cfg undefined.
+if [ -f "$SCRIPT_DIR/pipeline-cfg-cache.sh" ]; then
+  . "$SCRIPT_DIR/pipeline-cfg-cache.sh"
+else
+  cfg() { bash "$SCRIPT_DIR/pipeline-config.sh" "$@"; }
+  echo "pipeline: config cache helper missing, falling back to per-call parsing" >&2
+fi
 
 ROLE="${1:-}"
 TASK="${2:-}"
@@ -175,7 +185,32 @@ case "$RUNNER" in
       echo "pipeline-agent: agents.runner=custom requires agents.runner_cmd" >&2
       exit 1
     fi
-    printf '%s' "$PROMPT" | sh -c "$RUNNER_CMD"
+    # Feed the prompt via a temp file, not a pipe (#208): piping through
+    # `printf | sh -c` puts printf on the writer end, and a runner_cmd that
+    # exits without reading all of stdin (or simply loses the race on a
+    # loaded host) sends printf a SIGPIPE/EPIPE. Under `set -o pipefail`
+    # that turns into a spurious pipeline-agent.sh exit 1 even though the
+    # runner itself exited 0. Writing to a file first removes the writer
+    # process entirely, so there is nothing to receive EPIPE.
+    # Fail closed if mktemp -d fails (#215 review): an empty _PROMPT_DIR
+    # would otherwise make _PROMPT_FILE the literal path "/prompt", writing
+    # the prompt (which may contain issue-thread text) to a fixed path on a
+    # root CI container, with the EXIT trap's `rm -rf "$_PROMPT_DIR"` a
+    # no-op since _PROMPT_DIR was never set. Mirrors the guard pattern in
+    # pipeline-cfg-cache.sh: `mktemp -d ... || VAR=""` gated by `[ -n "$VAR" ]`.
+    _PROMPT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/talos-prompt.XXXXXX" 2>/dev/null)" || _PROMPT_DIR=""
+    if [ -z "$_PROMPT_DIR" ]; then
+      echo "pipeline-agent: custom runner: failed to create a temp directory for the prompt (mktemp -d)" >&2
+      exit 1
+    fi
+    _PROMPT_FILE="$_PROMPT_DIR/prompt"
+    (umask 077 && printf '%s' "$PROMPT" >"$_PROMPT_FILE")
+    if command -v _talos_on_exit >/dev/null 2>&1; then
+      _talos_on_exit 'rm -rf "$_PROMPT_DIR"'
+    else
+      trap 'rm -rf "$_PROMPT_DIR"' EXIT
+    fi
+    sh -c "$RUNNER_CMD" <"$_PROMPT_FILE"
     ;;
   *)
     echo "pipeline-agent: unknown agents.runner '$RUNNER'. Valid: claude | pi | codex | gemini | antigravity | custom" >&2
