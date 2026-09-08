@@ -214,4 +214,21 @@ assert_single_definition "FORBIDDEN FILES in PR" \
 assert_single_definition "ERROR: merge.forbidden_files_allow entry" \
   "single-definition: forbidden_files_allow entry rejection message"
 
+# ── Single-definition assertions (#177 slice 4) ───────────────────────────────
+# _github and _github_api used to hand-duplicate the closing-keyword regex,
+# the sibling-scan diagnostic (drifted em-dash vs "--", resolved to _github
+# wording), the pr-mergeable retry/backoff constants, and the
+# --idempotency-key format check. Slice 4 moved them into
+# _vcs_shared_check_closing_keyword, _vcs_shared_pr_mergeable and (already
+# since slice 1) _vcs_shared_record_attempt, each defined exactly once,
+# above both adapters.
+assert_single_definition "kw = r'(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)'" \
+  "single-definition: closing-keyword regex"
+assert_single_definition "but open sibling PR(s) still reference the same issue:" \
+  "single-definition: sibling diagnostic (em-dash/hyphen drift, #177)"
+assert_single_definition 'BEGIN { printf "%.4f", 2 * s }' \
+  "single-definition: pr-mergeable retry backoff constant"
+assert_single_definition "must match [A-Za-z0-9._-]+, got" \
+  "single-definition: idempotency-key format validation"
+
 finish

@@ -1643,6 +1643,253 @@ print(f'no forbidden files [{pat_count} patterns: defaults={defaults_active}]')
 "
 }
 
+# _vcs_shared_check_closing_keyword <issue_n> <pr_number> <pr_ref> <siblings-fetch-fn>
+#   (#177 slice 4) Exit 0 when safe to merge; exit 1 when the candidate PR's
+#   body (read from stdin) carries a closing keyword for <issue_n> AND
+#   another OPEN PR still references the same issue (an unmerged sibling
+#   from a multi-PR issue). See Rule 6 in the CLI usage comment near the top
+#   of this file.
+#
+#   stdin:  the candidate PR's raw body text.
+#   args:   issue_n           -- issue number the candidate PR claims to close.
+#           pr_number         -- the candidate PR's own number (excluded from
+#                                 the sibling scan; falls back to pr_ref in
+#                                 the diagnostic message when empty).
+#           pr_ref            -- the original PR ref argument (branch name or
+#                                 number) the verb was invoked with -- used
+#                                 only as a diagnostic fallback label.
+#           siblings-fetch-fn -- caller-supplied function name, invoked with
+#                                 no arguments ONLY when a closing keyword is
+#                                 present (preserves the original lazy fetch:
+#                                 no sibling-list API call when there is
+#                                 nothing to gate on). Must print a JSON
+#                                 array of open PRs, each with number, state,
+#                                 title, headRefName and body, and exit 0; or
+#                                 print nothing and exit non-zero on fetch
+#                                 failure.
+#   env:    REPO -- "owner/name", scopes the #N / owner/repo#N / URL
+#                    reference forms to the current repository. A missing
+#                    REPO is an adapter-side "can we even ask" guard (fail
+#                    open before calling this function) -- not shared logic.
+#   stdout: nothing on the common paths; a `talos:closing-keyword-unverified`
+#           marker when the sibling fetch fails or returns something this
+#           function cannot parse (fail open).
+#   exit:   0 safe to merge (no closing keyword, no open siblings, or a
+#           fetch failure -- fail open); 1 blocked by an open sibling.
+#
+# NOTE (#221, filed 2026-09-08): a sibling is currently counted whenever its
+# title/body mentions #<issue_n> in ANY form (Closes, Part of, an unrelated
+# comment, ...). #221 wants siblings counted only when their own body has a
+# closing keyword or a literal "Part of #N" -- tightening `body_pat` in the
+# sibling-scan block below (or wrapping it in a `closing_or_part_of` check)
+# is the entire fix. This slice intentionally leaves that behaviour
+# unchanged; it only stops _github and _github_api from hand-duplicating it.
+_vcs_shared_check_closing_keyword() {
+  local issue_n="$1" pr_number="$2" pr_ref="$3" siblings_fetch_fn="$4"
+  local pr_body
+  pr_body="$(cat)"
+
+  # Check for a closing keyword for #<issue_n> in the PR body.
+  # Patterns (case-insensitive):
+  #   close/closes/closed/fix/fixes/fixed/resolve/resolves/resolved
+  #   followed by optional whitespace and then one of:
+  #     #N              — bare, implicitly current repo (unmodified)
+  #     repo#N          — single-segment, no slash (unmodified)
+  #     owner/repo#N    — scoped to current repo (case-insensitive)
+  #     GH-N            — case-insensitive; left-guard prevents digit-prefix collision
+  #     https://github.com/<owner>/<repo>/issues/N  — scoped to current repo
+  local has_closing
+  has_closing="$(printf '%s' "$pr_body" | python3 -c "
+import re, sys
+body = sys.stdin.read()
+n    = sys.argv[1]
+repo = sys.argv[2]   # owner/name — already stripped of .git suffix, passed from \$REPO
+# Closing keywords (case-insensitive)
+kw = r'(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)'
+# Resolve owner and repo name for repo-scoped patterns (case-insensitive).
+repo_lc = repo.lower()
+if '/' in repo_lc:
+    _owner_lc, _name_lc = repo_lc.split('/', 1)
+else:
+    _owner_lc = repo_lc; _name_lc = repo_lc
+owner_esc = re.escape(_owner_lc)
+name_esc  = re.escape(_name_lc)
+n_esc = re.escape(n)
+# Reference forms:
+#   1. Hash forms — unified with boundary to prevent mid-token matches:
+#      (?<!\w)(?<!/) ensures the engine cannot start a match in the middle of
+#      a foreign owner/repo token (e.g. the 'repo' segment of 'other/repo#N').
+#      Alternation (tried left-to-right):
+#        a. owner/repo#N — must match current repo exactly (case-insensitive)
+#        b. repo#N — single-segment (no slash), implicitly current-server; unscoped
+#        c. #N — bare form (empty prefix)
+#   2. GH-N  case-insensitive; left-guard prevents digit-prefix collision
+#   3. URL — scoped to current repo (case-insensitive on owner/name)
+ref_hash = (
+    r'(?<!\w)(?<!/)(?:'
+    + r'(?i:' + owner_esc + r'/' + name_esc + r')'   # 1a: owner/repo#N (scoped)
+    + r'|[A-Za-z0-9_.-]+'                              # 1b: repo#N (single-segment)
+    + r'|'                                              # 1c: bare #N (empty prefix)
+    + r')#' + n_esc + r'(?!\d)'
+)
+ref_gh  = r'(?<![0-9])[Gg][Hh]-' + n_esc + r'(?!\d)'
+ref_url = (r'https://github\.com/(?i:' + owner_esc + r'/' + name_esc + r')'
+           + r'/issues/' + n_esc + r'(?!\d)')
+ref = r'(?:' + ref_hash + r'|' + ref_gh + r'|' + ref_url + r')'
+pattern = kw + r'\s+' + ref
+if re.search(pattern, body, re.IGNORECASE):
+    print('yes')
+else:
+    print('no')
+" "$issue_n" "$REPO" 2>/dev/null)"
+
+  # No closing keyword → nothing to check.
+  if [ "$has_closing" != "yes" ]; then
+    return 0
+  fi
+
+  # Closing keyword found. Fetch open PRs for this issue (lazily -- only now
+  # that we know we need them) and filter out the current PR by number.
+  local siblings_json
+  siblings_json="$("$siblings_fetch_fn")"
+  if [ -z "$siblings_json" ]; then
+    echo "pipeline-vcs: check-closing-keyword: could not fetch open PR list — skipping sibling check" >&2
+    echo "talos:closing-keyword-unverified pr=${pr_number:-$pr_ref} issue=$issue_n reason=sibling-fetch-failed"
+    return 0
+  fi
+
+  # Find open siblings (any PR referencing #N in branch/title/body, excluding this PR).
+  local sibling_result
+  sibling_result="$(printf '%s' "$siblings_json" | python3 -c "
+import json, re, sys
+n    = sys.argv[1]
+self = sys.argv[2]
+repo = sys.argv[3]   # owner/name — passed from \$REPO, same as has_closing block
+# Resolve repo components for scoped matching (case-insensitive).
+repo_lc = repo.lower()
+if '/' in repo_lc:
+    _owner_lc, _name_lc = repo_lc.split('/', 1)
+else:
+    _owner_lc = repo_lc; _name_lc = repo_lc
+owner_esc = re.escape(_owner_lc)
+name_esc  = re.escape(_name_lc)
+n_esc = re.escape(n)
+# Four-branch pattern for sibling body matching (#113: added GH-N and URL forms):
+#   Branch 1: own-repo qualified form — owner/repo#N (current repo only, case-insensitive)
+#   Branch 2: bare #N — not preceded by a word char or slash
+#     (?<!/) excludes foreign repo#N suffixes; (?<!\w) excludes alphanumeric prefixes
+#   Branch 3: GH-N (case-insensitive) — same boundary guards as has_closing
+#   Branch 4: https://github.com/<owner>/<repo>/issues/N (scoped to current repo)
+own_repo_pat = r'(?<!\w)(?i:' + owner_esc + r'/' + name_esc + r')#' + n_esc + r'(?!\d)'
+bare_pat      = r'(?<!\w)(?<!/)#' + n_esc + r'(?!\d)'
+gh_pat        = r'(?<![0-9])[Gg][Hh]-' + n_esc + r'(?!\d)'
+url_pat       = (r'https://github\.com/(?i:' + owner_esc + r'/' + name_esc + r')'
+                 + r'/issues/' + n_esc + r'(?!\d)')
+body_pat = r'(?:' + own_repo_pat + r'|' + bare_pat + r'|' + gh_pat + r'|' + url_pat + r')'
+try: prs = json.load(sys.stdin)
+except Exception: prs = []
+siblings = []
+for pr in prs:
+    if str(pr.get('number','')) == self:
+        continue
+    ref = pr.get('headRefName','')
+    hay = pr.get('title','') + ' ' + (pr.get('body','') or '')
+    branch_match = bool(re.search(r'(?:^|/)issue-' + n_esc + r'(?:-|$)', ref))
+    body_match   = bool(re.search(body_pat, hay))
+    if branch_match or body_match:
+        siblings.append(str(pr.get('number','')))
+if siblings:
+    print('blocked:' + ','.join(siblings))
+else:
+    print('ok')
+" "$issue_n" "${pr_number:-}" "$REPO" 2>/dev/null)"
+
+  case "$sibling_result" in
+    ok)
+      return 0
+      ;;
+    blocked:*)
+      local sibling_list="${sibling_result#blocked:}"
+      echo "pipeline-vcs: check-closing-keyword: PR #${pr_number:-$pr_ref} carries 'Closes #${issue_n}' but open sibling PR(s) still reference the same issue: #${sibling_list/,/ #} — merge the siblings first, or change this PR body to 'Part of #${issue_n}'" >&2
+      return 1
+      ;;
+    *)
+      # Unexpected output from python3 — fail open.
+      echo "pipeline-vcs: check-closing-keyword: unexpected sibling-check output — skipping" >&2
+      echo "talos:closing-keyword-unverified pr=${pr_number:-$pr_ref} issue=$issue_n reason=sibling-check-failed"
+      return 0
+      ;;
+  esac
+}
+
+# _vcs_shared_find_pr <issue_n>
+#   (#177 slice 4) The issue-reference matching _github and _github_api used
+#   to hand-duplicate, extracted verbatim. State filtering (open/closed/
+#   merged/all) is NOT shared: gh natively supports server-side `--state
+#   merged`, but the REST list-PRs endpoint has no such value -- the
+#   github-api adapter maps merged to state=closed plus an application-side
+#   merged_at check, and normalises `state` to OPEN/CLOSED/MERGED and
+#   `headRefName` (from `head.ref`) before calling this function. That
+#   normalisation is genuinely provider-specific, so it stays in the
+#   adapter; this function does only the part both sides agreed on anyway.
+#   stdin:  a JSON array of PR objects, each already normalised by the
+#           caller to {number, state, title, headRefName, body}.
+#   args:   issue_n -- the issue number to match branches/bodies against.
+#   stdout: one JSON object per matching PR: {number, state, title, headRefName}.
+_vcs_shared_find_pr() {
+  local n="$1"
+  python3 -c "
+import json, re, sys
+n = sys.argv[1]
+try: prs = json.load(sys.stdin)
+except Exception: prs = []
+for pr in prs:
+    ref = pr.get('headRefName','')
+    hay = pr.get('title','') + ' ' + (pr.get('body','') or '')
+    branch_match = bool(re.search(r'(?:^|/)issue-' + re.escape(n) + r'(?:-|$)', ref))
+    body_match   = bool(re.search(r'#' + re.escape(n) + r'(?!\d)', hay))
+    if branch_match or body_match:
+        print(json.dumps({k: pr.get(k) for k in ('number','state','title','headRefName')}))
+" "$n"
+}
+
+# _vcs_shared_pr_mergeable <status-fetch-fn>
+#   (#177 slice 4) The retry/backoff loop and MERGEABLE/CONFLICTING/UNKNOWN
+#   exit-code contract _github and _github_api used to hand-duplicate.
+#   <status-fetch-fn> is a caller-supplied function name, invoked with no
+#   arguments on every attempt; it must print exactly one of MERGEABLE /
+#   CONFLICTING / UNKNOWN (anything else is treated as "still computing" and
+#   retried) -- translating the provider's native mergeable representation
+#   (gh: MERGEABLE/CONFLICTING/UNKNOWN directly via `--json mergeable -q
+#   .mergeable`; REST: true/false/null via `.mergeable`) is the adapter's
+#   job. Retries up to 4 times, sleeping a TALOS_RETRY_SLEEP_SCALE-scaled 2s
+#   between attempts -- same scale/default/validation as _with_retry, but
+#   this is a value-based poll (GitHub computes mergeability lazily), not a
+#   rate-limit retry, so it does not route through _with_retry itself.
+#   stdout: exactly one of MERGEABLE / CONFLICTING / UNKNOWN.
+#   exit:   0 MERGEABLE, 1 CONFLICTING, 2 UNKNOWN (still unresolved after retries).
+_vcs_shared_pr_mergeable() {
+  local status_fetch_fn="$1"
+  local scale
+  scale="${TALOS_RETRY_SLEEP_SCALE:-1}"
+  if ! printf '%s' "$scale" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
+    scale=1
+  fi
+  local attempt=0 pm_status
+  while :; do
+    pm_status="$("$status_fetch_fn")"
+    case "$pm_status" in
+      MERGEABLE)   echo MERGEABLE;   return 0 ;;
+      CONFLICTING) echo CONFLICTING; return 1 ;;
+    esac
+    attempt=$((attempt + 1))
+    [ "$attempt" -gt 4 ] && break
+    sleep "$(awk -v s="$scale" 'BEGIN { printf "%.4f", 2 * s }')"
+  done
+  echo UNKNOWN
+  return 2
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # GITHUB ADAPTER
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1956,6 +2203,10 @@ for line in sys.stdin:
       fi
       ;;
     find-pr)
+      # Issue-reference matching is _vcs_shared_find_pr (#177 slice 4). This
+      # arm is now just fetch -> call: gh natively supports server-side
+      # `--state open|closed|merged|all`, so no post-fetch normalisation is
+      # needed on this side (see the shared function's header comment).
       local n="$1" state="${2:-open}"
       if [ "$DRY_RUN" = "true" ]; then
         echo "[dry-run] gh pr list --state $state ... | filter issue-$n / #$n"
@@ -1963,19 +2214,7 @@ for line in sys.stdin:
       fi
       gh pr list --state "$state" --limit 100 \
         --json number,state,title,headRefName,body ${REPO:+--repo "$REPO"} 2>/dev/null \
-        | python3 -c "
-import json, re, sys
-n = sys.argv[1]
-try: prs = json.load(sys.stdin)
-except Exception: prs = []
-for pr in prs:
-    ref = pr.get('headRefName','')
-    hay = pr.get('title','') + ' ' + pr.get('body','')
-    branch_match = bool(re.search(r'(?:^|/)issue-' + re.escape(n) + r'(?:-|$)', ref))
-    body_match   = bool(re.search(r'#' + re.escape(n) + r'(?!\d)', hay))
-    if branch_match or body_match:
-        print(json.dumps({k: pr.get(k) for k in ('number','state','title','headRefName')}))
-" "$n"
+        | _vcs_shared_find_pr "$n"
       ;;
     check-pr-files)
       # Forbidden-files pattern/allow-list logic is _vcs_shared_check_pr_files
@@ -2073,6 +2312,10 @@ for r in runs:
       # machine-readable marker on stdout and exit 0.  The reason field is a
       # fixed literal — never interpolated from an API response — so a remote
       # error string cannot inject extra output lines.
+      #
+      # The closing-keyword regex, the sibling scan and the diagnostic
+      # message are _vcs_shared_check_closing_keyword (#177 slice 4). This
+      # arm is now just fetch -> call.
       local pr_ref="${1:-}" issue_n="${2:-}"
       [ -z "$pr_ref" ]  && { echo "pipeline-vcs: check-closing-keyword: missing PR ref"     >&2; exit 1; }
       [ -z "$issue_n" ] && { echo "pipeline-vcs: check-closing-keyword: missing issue number" >&2; exit 1; }
@@ -2103,138 +2346,16 @@ for r in runs:
       pr_number="$(printf '%s' "$pr_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('number',''))")"
       pr_body="$(printf '%s' "$pr_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('body',''))")"
 
-      # Check for a closing keyword for #<issue_n> in the PR body.
-      # Patterns (case-insensitive):
-      #   close/closes/closed/fix/fixes/fixed/resolve/resolves/resolved
-      #   followed by optional whitespace and then one of:
-      #     #N              — bare, implicitly current repo (unmodified)
-      #     repo#N          — single-segment, no slash (unmodified)
-      #     owner/repo#N    — scoped to current repo (case-insensitive)
-      #     GH-N            — case-insensitive; left-guard prevents digit-prefix collision
-      #     https://github.com/<owner>/<repo>/issues/N  — scoped to current repo
-      local has_closing
-      has_closing="$(printf '%s' "$pr_body" | python3 -c "
-import re, sys
-body = sys.stdin.read()
-n    = sys.argv[1]
-repo = sys.argv[2]   # owner/name — already stripped of .git suffix, passed from \$REPO
-# Closing keywords (case-insensitive)
-kw = r'(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)'
-# Resolve owner and repo name for repo-scoped patterns (case-insensitive).
-repo_lc = repo.lower()
-if '/' in repo_lc:
-    _owner_lc, _name_lc = repo_lc.split('/', 1)
-else:
-    _owner_lc = repo_lc; _name_lc = repo_lc
-owner_esc = re.escape(_owner_lc)
-name_esc  = re.escape(_name_lc)
-n_esc = re.escape(n)
-# Reference forms:
-#   1. Hash forms — unified with boundary to prevent mid-token matches:
-#      (?<!\w)(?<!/) ensures the engine cannot start a match in the middle of
-#      a foreign owner/repo token (e.g. the 'repo' segment of 'other/repo#N').
-#      Alternation (tried left-to-right):
-#        a. owner/repo#N — must match current repo exactly (case-insensitive)
-#        b. repo#N — single-segment (no slash), implicitly current-server; unscoped
-#        c. #N — bare form (empty prefix)
-#   2. GH-N  case-insensitive; left-guard prevents digit-prefix collision
-#   3. URL — scoped to current repo (case-insensitive on owner/name)
-ref_hash = (
-    r'(?<!\w)(?<!/)(?:'
-    + r'(?i:' + owner_esc + r'/' + name_esc + r')'   # 1a: owner/repo#N (scoped)
-    + r'|[A-Za-z0-9_.-]+'                              # 1b: repo#N (single-segment)
-    + r'|'                                              # 1c: bare #N (empty prefix)
-    + r')#' + n_esc + r'(?!\d)'
-)
-ref_gh  = r'(?<![0-9])[Gg][Hh]-' + n_esc + r'(?!\d)'
-ref_url = (r'https://github\.com/(?i:' + owner_esc + r'/' + name_esc + r')'
-           + r'/issues/' + n_esc + r'(?!\d)')
-ref = r'(?:' + ref_hash + r'|' + ref_gh + r'|' + ref_url + r')'
-pattern = kw + r'\s+' + ref
-if re.search(pattern, body, re.IGNORECASE):
-    print('yes')
-else:
-    print('no')
-" "$issue_n" "$REPO" 2>/dev/null)"
+      # Lazily fetches the open-PR list -- only invoked by the shared
+      # function when a closing keyword is actually present.
+      _github_fetch_closing_siblings() {
+        gh pr list --state open --limit 100 \
+          --json number,state,title,headRefName,body ${REPO:+--repo "$REPO"} 2>/dev/null
+      }
 
-      # No closing keyword → nothing to check.
-      if [ "$has_closing" != "yes" ]; then
-        return 0
-      fi
-
-      # Closing keyword found.  Fetch open PRs for this issue and filter out
-      # the current PR by number.
-      local siblings_json
-      siblings_json="$(gh pr list --state open --limit 100 \
-        --json number,state,title,headRefName,body ${REPO:+--repo "$REPO"} 2>/dev/null)"
-      if [ -z "$siblings_json" ]; then
-        echo "pipeline-vcs: check-closing-keyword: could not fetch open PR list — skipping sibling check" >&2
-        echo "talos:closing-keyword-unverified pr=${pr_number:-$pr_ref} issue=$issue_n reason=sibling-fetch-failed"
-        return 0
-      fi
-
-      # Find open siblings (any PR referencing #N in branch/title/body, excluding this PR).
-      local sibling_result
-      sibling_result="$(printf '%s' "$siblings_json" | python3 -c "
-import json, re, sys
-n    = sys.argv[1]
-self = sys.argv[2]
-repo = sys.argv[3]   # owner/name — passed from \$REPO, same as has_closing block
-# Resolve repo components for scoped matching (case-insensitive).
-repo_lc = repo.lower()
-if '/' in repo_lc:
-    _owner_lc, _name_lc = repo_lc.split('/', 1)
-else:
-    _owner_lc = repo_lc; _name_lc = repo_lc
-owner_esc = re.escape(_owner_lc)
-name_esc  = re.escape(_name_lc)
-n_esc = re.escape(n)
-# Four-branch pattern for sibling body matching (#113: added GH-N and URL forms):
-#   Branch 1: own-repo qualified form — owner/repo#N (current repo only, case-insensitive)
-#   Branch 2: bare #N — not preceded by a word char or slash
-#     (?<!/) excludes foreign repo#N suffixes; (?<!\w) excludes alphanumeric prefixes
-#   Branch 3: GH-N (case-insensitive) — same boundary guards as has_closing
-#   Branch 4: https://github.com/<owner>/<repo>/issues/N (scoped to current repo)
-own_repo_pat = r'(?<!\w)(?i:' + owner_esc + r'/' + name_esc + r')#' + n_esc + r'(?!\d)'
-bare_pat      = r'(?<!\w)(?<!/)#' + n_esc + r'(?!\d)'
-gh_pat        = r'(?<![0-9])[Gg][Hh]-' + n_esc + r'(?!\d)'
-url_pat       = (r'https://github\.com/(?i:' + owner_esc + r'/' + name_esc + r')'
-                 + r'/issues/' + n_esc + r'(?!\d)')
-body_pat = r'(?:' + own_repo_pat + r'|' + bare_pat + r'|' + gh_pat + r'|' + url_pat + r')'
-try: prs = json.load(sys.stdin)
-except Exception: prs = []
-siblings = []
-for pr in prs:
-    if str(pr.get('number','')) == self:
-        continue
-    ref = pr.get('headRefName','')
-    hay = pr.get('title','') + ' ' + pr.get('body','')
-    branch_match = bool(re.search(r'(?:^|/)issue-' + n_esc + r'(?:-|$)', ref))
-    body_match   = bool(re.search(body_pat, hay))
-    if branch_match or body_match:
-        siblings.append(str(pr.get('number','')))
-if siblings:
-    print('blocked:' + ','.join(siblings))
-else:
-    print('ok')
-" "$issue_n" "${pr_number:-}" "$REPO" 2>/dev/null)"
-
-      case "$sibling_result" in
-        ok)
-          return 0
-          ;;
-        blocked:*)
-          local sibling_list="${sibling_result#blocked:}"
-          echo "pipeline-vcs: check-closing-keyword: PR #${pr_number:-$pr_ref} carries 'Closes #${issue_n}' but open sibling PR(s) still reference the same issue: #${sibling_list/,/ #} — merge the siblings first, or change this PR body to 'Part of #${issue_n}'" >&2
-          exit 1
-          ;;
-        *)
-          # Unexpected output from python3 — fail open.
-          echo "pipeline-vcs: check-closing-keyword: unexpected sibling-check output — skipping" >&2
-          echo "talos:closing-keyword-unverified pr=${pr_number:-$pr_ref} issue=$issue_n reason=sibling-check-failed"
-          return 0
-          ;;
-      esac
+      printf '%s' "$pr_body" | REPO="$REPO" \
+        _vcs_shared_check_closing_keyword "$issue_n" "$pr_number" "$pr_ref" _github_fetch_closing_siblings
+      exit $?
       ;;
     pr-head)
       # pr-head <n> — print the current head SHA for a PR (fail-closed: exits 1 if unresolvable)
@@ -2250,37 +2371,20 @@ else:
       ;;
     pr-mergeable)
       # pr-mergeable <n> (#214) — print exactly one of MERGEABLE / CONFLICTING
-      # / UNKNOWN from `gh pr view --json mergeable`. GitHub computes
-      # mergeability lazily, so a just-pushed PR often reads UNKNOWN for a few
-      # seconds before settling — retried up to 4 times, sleeping a
-      # TALOS_RETRY_SLEEP_SCALE-scaled 2s between attempts (same scale/default/
-      # validation as _with_retry, but this is a value-based poll, not a
-      # rate-limit retry, so it does not route through _with_retry itself).
-      # Exit 0 MERGEABLE, 1 CONFLICTING, 2 UNKNOWN (still unresolved after
-      # retries). Used to skip a CI wait GitHub will never schedule a run for.
+      # / UNKNOWN from `gh pr view --json mergeable`. The retry/backoff loop
+      # and the exit-code contract are _vcs_shared_pr_mergeable (#177 slice
+      # 4); this arm only fetches and translates gh's own already-normalised
+      # MERGEABLE/CONFLICTING/UNKNOWN value.
       local n="$1"
       if [ "$DRY_RUN" = "true" ]; then
         echo "[dry-run] gh pr view $n --json mergeable -q .mergeable"
         return 0
       fi
-      local _pm_scale
-      _pm_scale="${TALOS_RETRY_SLEEP_SCALE:-1}"
-      if ! printf '%s' "$_pm_scale" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
-        _pm_scale=1
-      fi
-      local _pm_attempt=0 _pm_status
-      while :; do
-        _pm_status="$(gh pr view "$n" --json mergeable -q .mergeable ${REPO:+--repo "$REPO"} 2>/dev/null)"
-        case "$_pm_status" in
-          MERGEABLE)   echo MERGEABLE;   exit 0 ;;
-          CONFLICTING) echo CONFLICTING; exit 1 ;;
-        esac
-        _pm_attempt=$((_pm_attempt + 1))
-        [ "$_pm_attempt" -gt 4 ] && break
-        sleep "$(awk -v s="$_pm_scale" 'BEGIN { printf "%.4f", 2 * s }')"
-      done
-      echo UNKNOWN
-      exit 2
+      _github_fetch_mergeable() {
+        gh pr view "$n" --json mergeable -q .mergeable ${REPO:+--repo "$REPO"} 2>/dev/null
+      }
+      _vcs_shared_pr_mergeable _github_fetch_mergeable
+      exit $?
       ;;
 
     # ── Attempt counting ─────────────────────────────────────────────────────
@@ -3222,6 +3326,13 @@ print(d.get('html_url', ''))
       ;;
 
     find-pr)
+      # Issue-reference matching is _vcs_shared_find_pr (#177 slice 4). REST's
+      # list-PRs endpoint has no state=merged query value and no MERGED
+      # distinction in the raw `state` field (unlike gh's own `--json
+      # state`), so this arm still owns its state mapping/merged_at filter --
+      # it hands the shared function an already state-filtered, common
+      # {number, state, title, headRefName, body} shape. See the shared
+      # function's header comment for why that split holds.
       local _n="$1" _state="${2:-open}"
       if [ "$DRY_RUN" = "true" ]; then
         echo "[dry-run] github-api: GET $_API/pulls?state=<mapped>&per_page=100 | filter issue-$_n / #$_n"
@@ -3239,16 +3350,12 @@ print(d.get('html_url', ''))
       local _raw
       _raw="$(_ga_req GET "$_API/pulls?state=$_api_state&per_page=100")"
       printf '%s' "$_raw" | STATE_FILTER="$_state" python3 -c "
-import json, re, sys, os
-n = sys.argv[1]
+import json, sys, os
 state_filter = os.environ.get('STATE_FILTER','open')
 try: prs = json.load(sys.stdin)
 except Exception: prs = []
+out = []
 for pr in prs:
-    hay = pr.get('title','') + ' ' + (pr.get('body','') or '')
-    ref = pr.get('head',{}).get('ref','')
-    if not (re.search(r'(?:^|/)issue-' + re.escape(n) + r'(?:-|$)', ref) or re.search(r'#' + re.escape(n) + r'(?!\d)', hay)):
-        continue
     # For merged filter: only PRs with merged_at set
     if state_filter == 'merged' and not pr.get('merged_at'):
         continue
@@ -3260,11 +3367,12 @@ for pr in prs:
         out_state = 'OPEN'
     else:
         out_state = 'CLOSED'
-    print(json.dumps({'number': pr.get('number'),
-                      'state':  out_state,
-                      'title':  pr.get('title',''),
-                      'headRefName': ref}))
-" "$_n"
+    out.append({'number': pr.get('number'), 'state': out_state,
+                'title': pr.get('title',''),
+                'headRefName': pr.get('head',{}).get('ref',''),
+                'body': pr.get('body','') or ''})
+json.dump(out, sys.stdout)
+" | _vcs_shared_find_pr "$_n"
       ;;
 
     check-pr-files)
@@ -3385,27 +3493,20 @@ except Exception:
 
     pr-mergeable)
       # pr-mergeable <n> (#214) — GitHub REST returns `mergeable` as
-      # true/false/null (null = not yet computed). Print exactly one of
-      # MERGEABLE / CONFLICTING / UNKNOWN; exit 0/1/2 respectively. Retried up
-      # to 4 times on null, sleeping a TALOS_RETRY_SLEEP_SCALE-scaled 2s
-      # between attempts — see the _github counterpart for why this doesn't
-      # route through _with_retry (a value-based poll, not a rate-limit
-      # retry). Mirrors pr-head's fetch above but re-fetches per attempt since
-      # mergeable is computed lazily and can change between polls.
+      # true/false/null (null = not yet computed). The retry/backoff loop and
+      # the exit-code contract are _vcs_shared_pr_mergeable (#177 slice 4);
+      # this arm only fetches and translates REST's true/false/null. Mirrors
+      # pr-head's fetch above but re-fetches per attempt since mergeable is
+      # computed lazily and can change between polls.
       local _n="$1"
       if [ "$DRY_RUN" = "true" ]; then
         echo "[dry-run] github-api: GET $_API/pulls/$_n .mergeable"
         return 0
       fi
-      local _pm_scale
-      _pm_scale="${TALOS_RETRY_SLEEP_SCALE:-1}"
-      if ! printf '%s' "$_pm_scale" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
-        _pm_scale=1
-      fi
-      local _pm_attempt=0 _pm_data _pm_mergeable
-      while :; do
+      _github_api_fetch_mergeable() {
+        local _pm_data _pm_v
         _pm_data="$(_ga_req GET "$_API/pulls/$_n")"
-        _pm_mergeable="$(printf '%s' "$_pm_data" | python3 -c "
+        _pm_v="$(printf '%s' "$_pm_data" | python3 -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -3414,16 +3515,14 @@ except Exception:
 v = d.get('mergeable', None)
 print('true' if v is True else 'false' if v is False else 'null')
 ")"
-        case "$_pm_mergeable" in
-          true)  echo MERGEABLE;   exit 0 ;;
-          false) echo CONFLICTING; exit 1 ;;
+        case "$_pm_v" in
+          true)  echo MERGEABLE ;;
+          false) echo CONFLICTING ;;
+          *)     echo UNKNOWN ;;
         esac
-        _pm_attempt=$((_pm_attempt + 1))
-        [ "$_pm_attempt" -gt 4 ] && break
-        sleep "$(awk -v s="$_pm_scale" 'BEGIN { printf "%.4f", 2 * s }')"
-      done
-      echo UNKNOWN
-      exit 2
+      }
+      _vcs_shared_pr_mergeable _github_api_fetch_mergeable
+      exit $?
       ;;
 
     read-comments)
@@ -3648,6 +3747,10 @@ json.dump(out, sys.stdout)
       # check-closing-keyword <pr_ref> <issue_n>
       # Fail-open. Exit 1 only when a closing keyword is present AND open
       # sibling PRs still reference the same issue.
+      #
+      # The closing-keyword regex, the sibling scan and the diagnostic
+      # message are _vcs_shared_check_closing_keyword (#177 slice 4). This
+      # arm is now just fetch -> call.
       local _pr_ref="${1:-}" _issue_n="${2:-}"
       [ -z "$_pr_ref" ]  && { echo "pipeline-vcs: check-closing-keyword: missing PR ref"     >&2; exit 1; }
       [ -z "$_issue_n" ] && { echo "pipeline-vcs: check-closing-keyword: missing issue number" >&2; exit 1; }
@@ -3683,53 +3786,15 @@ json.dump(out, sys.stdout)
       fi
       local _pr_body
       _pr_body="$(printf '%s' "$_pr_raw" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('body',''))")"
-      # Check for closing keyword
-      local _has_closing
-      _has_closing="$(printf '%s' "$_pr_body" | python3 -c "
-import re, sys
-body = sys.stdin.read()
-n    = sys.argv[1]
-repo = sys.argv[2]
-kw = r'(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)'
-repo_lc = repo.lower()
-if '/' in repo_lc:
-    _owner_lc, _name_lc = repo_lc.split('/', 1)
-else:
-    _owner_lc = repo_lc; _name_lc = repo_lc
-owner_esc = re.escape(_owner_lc)
-name_esc  = re.escape(_name_lc)
-n_esc = re.escape(n)
-ref_hash = (
-    r'(?<!\w)(?<!/)(?:'
-    + r'(?i:' + owner_esc + r'/' + name_esc + r')'
-    + r'|[A-Za-z0-9_.-]+'
-    + r'|'
-    + r')#' + n_esc + r'(?!\d)'
-)
-ref_gh  = r'(?<![0-9])[Gg][Hh]-' + n_esc + r'(?!\d)'
-ref_url = (r'https://github\.com/(?i:' + owner_esc + r'/' + name_esc + r')'
-           + r'/issues/' + n_esc + r'(?!\d)')
-ref = r'(?:' + ref_hash + r'|' + ref_gh + r'|' + ref_url + r')'
-pattern = kw + r'\s+' + ref
-if re.search(pattern, body, re.IGNORECASE):
-    print('yes')
-else:
-    print('no')
-" "$_issue_n" "$_REPO" 2>/dev/null)"
-      if [ "$_has_closing" != "yes" ]; then
-        return 0
-      fi
-      # Closing keyword found — check for open siblings
-      local _open_prs_raw
-      _open_prs_raw="$(_ga_req GET "$_API/pulls?state=open&per_page=100")"
-      if [ -z "$_open_prs_raw" ]; then
-        echo "pipeline-vcs: check-closing-keyword: could not fetch open PR list -- skipping sibling check" >&2
-        echo "talos:closing-keyword-unverified pr=$_pr_num issue=$_issue_n reason=sibling-fetch-failed"
-        return 0
-      fi
-      # Normalize open PRs: add headRefName from head.ref
-      local _siblings_json
-      _siblings_json="$(printf '%s' "$_open_prs_raw" | python3 -c "
+
+      # Lazily fetches and normalises the open-PR list -- only invoked by the
+      # shared function when a closing keyword is actually present. REST has
+      # no headRefName field natively, so it's derived from head.ref here.
+      _github_api_fetch_closing_siblings() {
+        local _open_prs_raw
+        _open_prs_raw="$(_ga_req GET "$_API/pulls?state=open&per_page=100")"
+        [ -z "$_open_prs_raw" ] && return 1
+        printf '%s' "$_open_prs_raw" | python3 -c "
 import json, sys
 prs = json.load(sys.stdin)
 if not isinstance(prs, list):
@@ -3740,58 +3805,12 @@ for pr in prs:
     p['headRefName'] = pr.get('head', {}).get('ref', '')
     normalized.append(p)
 json.dump(normalized, sys.stdout)
-")"
-      local _sibling_result
-      _sibling_result="$(printf '%s' "$_siblings_json" | python3 -c "
-import json, re, sys
-n    = sys.argv[1]
-self = sys.argv[2]
-repo = sys.argv[3]
-repo_lc = repo.lower()
-if '/' in repo_lc:
-    _owner_lc, _name_lc = repo_lc.split('/', 1)
-else:
-    _owner_lc = repo_lc; _name_lc = repo_lc
-owner_esc = re.escape(_owner_lc)
-name_esc  = re.escape(_name_lc)
-n_esc = re.escape(n)
-own_repo_pat = r'(?<!\w)(?i:' + owner_esc + r'/' + name_esc + r')#' + n_esc + r'(?!\d)'
-bare_pat      = r'(?<!\w)(?<!/)#' + n_esc + r'(?!\d)'
-gh_pat        = r'(?<![0-9])[Gg][Hh]-' + n_esc + r'(?!\d)'
-url_pat       = (r'https://github\.com/(?i:' + owner_esc + r'/' + name_esc + r')'
-                 + r'/issues/' + n_esc + r'(?!\d)')
-body_pat = r'(?:' + own_repo_pat + r'|' + bare_pat + r'|' + gh_pat + r'|' + url_pat + r')'
-try: prs = json.load(sys.stdin)
-except Exception: prs = []
-siblings = []
-for pr in prs:
-    if str(pr.get('number','')) == self:
-        continue
-    ref = pr.get('headRefName','')
-    hay = pr.get('title','') + ' ' + pr.get('body','')
-    branch_match = bool(re.search(r'(?:^|/)issue-' + n_esc + r'(?:-|$)', ref))
-    body_match   = bool(re.search(body_pat, hay))
-    if branch_match or body_match:
-        siblings.append(str(pr.get('number','')))
-if siblings:
-    print('blocked:' + ','.join(siblings))
-else:
-    print('ok')
-" "$_issue_n" "$_pr_num" "$_REPO" 2>/dev/null)"
-      case "$_sibling_result" in
-        ok)
-          return 0
-          ;;
-        blocked:*)
-          local _sibling_list="${_sibling_result#blocked:}"
-          echo "pipeline-vcs: check-closing-keyword: PR #${_pr_num} carries 'Closes #${_issue_n}' but open sibling PR(s) still reference the same issue: #${_sibling_list/,/ #} -- merge the siblings first, or change this PR body to 'Part of #${_issue_n}'" >&2
-          exit 1
-          ;;
-        *)
-          echo "talos:closing-keyword-unverified pr=$_pr_num issue=$_issue_n reason=unexpected-sibling-result"
-          return 0
-          ;;
-      esac
+"
+      }
+
+      printf '%s' "$_pr_body" | REPO="$_REPO" \
+        _vcs_shared_check_closing_keyword "$_issue_n" "$_pr_num" "$_pr_ref" _github_api_fetch_closing_siblings
+      exit $?
       ;;
 
     *) echo "pipeline-vcs: unknown verb: $_VERB" >&2; exit 1 ;;
