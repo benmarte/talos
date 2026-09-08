@@ -198,4 +198,59 @@ assert_exit_code 0 "$rc_h" "H: --for composes with -j -- exits 0"
 assert_contains "$out_h" "SELECTED: test-worktree.sh" "H: --for composes with -j -- same selection"
 assert_contains "$out_h" "RESULT: all 1 test file(s) passed" "H: --for composes with -j -- same RESULT"
 
+# ── Test I: a pipeline-<name>.sh with no matching test-<name>*.sh falls back
+# to the full suite (not an empty, silently-passing selection) ───────────────
+# Reproduces the exact gap QA found: mapping scripts/pipeline-config.sh via
+# the convention rule produces zero matches (no tests/test-config*.sh exists
+# in this fixture), and pipeline-config.sh isn't otherwise special-cased to
+# add anything either. That must fail open to the full suite, never print
+# "SELECTED: (none)" / "RESULT: all 0 test file(s) passed".
+# Named mutation: this is QA's own "map pipeline-config.sh to nothing"
+# mutation -- drop the fallback check in _map_changed_path's
+# scripts/pipeline-*.sh branch and rc_i stays 0 but out_i loses both the
+# fail-safe note and the "full suite" selection, running 0 files instead.
+FDI="$SANDBOX/i"
+build_min_fixture "$FDI"
+mkdir -p "$FDI/scripts"
+for f in test-x.sh test-y.sh; do write_stub "$FDI" "$f" "exit 0"; done
+printf '#!/usr/bin/env bash\necho stub\n' > "$FDI/scripts/pipeline-config.sh"
+
+out_i="$(bash "$FDI/tests/run-tests.sh" --no-cache --for scripts/pipeline-config.sh --quiet 2>&1)"; rc_i=$?
+assert_exit_code 0 "$rc_i" "I: exits 0"
+assert_contains "$out_i" "no tests map to 'scripts/pipeline-config.sh'; running the full suite" "I: prints the fail-safe note"
+assert_contains "$out_i" "SELECTED: full suite" "I: falls back to the full suite, not an empty selection"
+assert_contains "$out_i" "PASS  tests/test-x.sh" "I: falls back to running test-x.sh"
+assert_contains "$out_i" "PASS  tests/test-y.sh" "I: falls back to running test-y.sh"
+assert_contains "$out_i" "RESULT: all 2 test file(s) passed" "I: RESULT line covers the whole fixture suite"
+assert_not_contains "$out_i" "SELECTED: (none)" "I: never reports an empty selection"
+assert_not_contains "$out_i" "RESULT: all 0 test file(s) passed" "I: never silently passes with 0 files"
+
+# ── Test J: a selection that maps to a name with no file on disk (all mapped
+# files deleted/renamed) exits non-zero instead of reporting a pass ──────────
+# "tests/test-*.sh" maps a path to its own basename unconditionally (it never
+# checks the file exists) -- pointing --for at a tests/test-*.sh path that
+# isn't a real file reproduces "final selection resolves to nothing" without
+# touching run-tests.sh's own source.
+# Named mutation: drop the post-ALL_FILES empty-selection guard -- rc_j
+# would stay 0 and out_j would print "RESULT: all 0 test file(s) passed"
+# instead of failing.
+out_j="$(bash "$FDA/tests/run-tests.sh" --no-cache --for tests/test-does-not-exist.sh --quiet 2>&1)"; rc_j=$?
+assert_exit_code 1 "$rc_j" "J: a selection with no file on disk exits non-zero"
+assert_contains "$out_j" "selected 0 test file(s) to run" "J: prints a clear message naming the empty selection"
+assert_not_contains "$out_j" "RESULT: all 0 test file(s) passed" "J: never reports a 0-file pass"
+
+# ── Test K: "RESULT: all 0 test file(s) passed" must never appear in any
+# --for/--changed output captured above ───────────────────────────────────────
+ALL_TARGETED_OUTPUT="$out_a
+$out_b
+$out_c
+$out_d
+$out_e
+$out_f
+$out_g
+$out_h
+$out_i
+$out_j"
+assert_not_contains "$ALL_TARGETED_OUTPUT" "RESULT: all 0 test file(s) passed" "K: no --for/--changed run ever silently passes with 0 files"
+
 finish

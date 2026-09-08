@@ -36,8 +36,14 @@
 #                         scripts/pipeline-cfg-cache.sh         -> + tests/test-config*.sh
 #                       Fail-safe (full suite, one-line stderr note):
 #                         tests/stubs/*, tests/helpers.sh, tests/run-tests.sh,
-#                         talos.pipeline.*, .github/**, or any path matching
-#                         no rule above.
+#                         talos.pipeline.*, .github/**, any path matching no
+#                         rule above, or a scripts/pipeline-<name>.sh whose
+#                         convention + always-run rules match zero files
+#                         (e.g. no tests/test-<name>*.sh exists). An empty
+#                         selection is never allowed to silently "pass"; if
+#                         the final selected list is still empty after all
+#                         rules (e.g. every mapped file was deleted), the
+#                         run exits non-zero with a clear message instead.
 #                       Prints the selected file list before running.
 #   --changed [<ref>]  derive --for's paths from
 #                       `git diff --name-only <ref>...HEAD` plus uncommitted
@@ -348,7 +354,7 @@ _add_referencing() {
 
 # _map_changed_path PATH -- the convention table from the usage comment.
 _map_changed_path() {
-  local p="$1" base name
+  local p="$1" base name before
   case "$p" in
     tests/stubs/*|tests/helpers.sh|tests/run-tests.sh|talos.pipeline.*|.github/*)
       FULL_SUITE=1
@@ -360,11 +366,21 @@ _map_changed_path() {
       base="$(basename "$p")"
       name="${base#pipeline-}"
       name="${name%.sh}"
+      before="${#SELECTED_SET[@]}"
       _add_glob_matches "test-${name}*.sh"
       [ "$base" = "pipeline-vcs.sh" ] && _add_selected "test-verb-parity.sh"
       case "$base" in
         pipeline-config.sh|pipeline-cfg-cache.sh) _add_glob_matches "test-config*.sh" ;;
       esac
+      # Convention + always-run rules matched nothing for this path (e.g. no
+      # tests/test-<name>*.sh exists and it isn't one of the always-run
+      # names above): an empty mapping must never pass through as an empty
+      # selection, so fail open to the full suite -- same fail-safe as an
+      # unmapped path below.
+      if [ "${#SELECTED_SET[@]}" -eq "$before" ]; then
+        echo "run-tests.sh: --for: no tests map to '$p'; running the full suite" >&2
+        FULL_SUITE=1
+      fi
       ;;
     agents/*.md|skills/*|templates/*)
       _add_selected "test-skill-names.sh"
@@ -426,6 +442,16 @@ else
     [ -n "$PATTERN" ] && case "$name" in *"$PATTERN"*) ;; *) continue ;; esac
     ALL_FILES+=("$t")
   done
+fi
+
+# A targeted (--for/--changed) run that isn't falling back to the full suite
+# must never finish with an empty file list -- e.g. every name the mapping
+# selected turned out not to exist under tests/ (deleted, renamed, or a
+# mapping bug). "0 of 0 passed" is not a pass; it means the selection is
+# broken, so fail loudly instead of reporting a silent green.
+if [ "$TARGETED_ACTIVE" -eq 1 ] && [ "$FULL_SUITE" -eq 0 ] && [ "${#ALL_FILES[@]}" -eq 0 ]; then
+  echo "run-tests.sh: --for/--changed selected 0 test file(s) to run -- refusing to report a pass; check the mapping in _map_changed_path (a selected name may not exist under tests/)" >&2
+  exit 1
 fi
 
 PARALLEL_FILES=()
