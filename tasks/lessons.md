@@ -44,3 +44,11 @@ Every PR needed at least one fix round; the findings were real, not noise: Linux
 
 - macOS GitHub runners lack PyYAML; anything YAML-fixture-based must simulate its absence locally.
 - The `pr-mergeable` verb (#214) caught two CONFLICTING PRs on its first day; the CHANGELOG is the usual conflict file, so merging main via a developer task right after each merge is the cheap default.
+
+## A QA agent overwrote the orchestrator's talos.pipeline.json (2026-09-08)
+
+QA for PR #219 wrote a 77-byte test config (`agents.runner: custom`) over the real `talos.pipeline.json` in the main checkout; the next board call silently skipped with "project_number not configured" and `--dump` showed the test config. Cause: a subagent's `cd <worktree>` does not persist between its shell calls, so a later `cat > talos.pipeline.json` landed in the orchestrator's cwd.
+
+- Run `bash scripts/pipeline-vcs.sh assert-sync` before dispatching reviewer/security (the playbook's sync guard) and after every QA stage; a dirty tree here is always a leak.
+- QA/developer prompts: "every sandbox file goes under an absolute `$SANDBOX` path; never write a relative `talos.pipeline.*`; prefix multi-step commands with `cd <abs worktree> &&`".
+- Any `pipeline-status` "not configured; skipping" or config value that suddenly reads empty means the config file was replaced, not that config is missing.
