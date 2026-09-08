@@ -245,7 +245,7 @@ All keys live in `talos.pipeline.json` (or `talos.pipeline.yml` if PyYAML is ins
 | `board.azure_states.*` | Scrum defaults | Pipeline status → ADO work-item State (Azure) |
 | `verify` | `[]` | Shell commands every code subagent must pass |
 | `verify.qa_mode` | `ci` when `merge.required_checks` is non-empty, else `local` | `ci`: QA trusts CI (`pr-checks`) as the suite oracle instead of re-running `verify:` locally — CI already runs it on every push. `local`: QA runs the full `verify:` list once itself, as before. An explicit value always wins over the `merge.required_checks`-derived default — **except** an explicit `ci` combined with an empty or absent `merge.required_checks` list, which resolves to `local` instead (with a one-line warning on stderr): trusting CI as the oracle for zero required checks would let QA pass vacuously, without ever running `verify:` or observing a real CI signal. |
-| `verify.targeted` | `true` | While iterating, the developer runs only the tests covering the files it changed (`tests/run-tests.sh --for <changed files>` when that flag exists, else the test files that reference the changed scripts), then runs the full `verify:` list exactly once, immediately before its final commit and push. Set `false` to run the full `verify:` list on every iteration instead — never zero local runs either way. |
+| `verify.targeted` | `true` | While iterating, the developer runs only the tests covering the files it changed (`tests/run-tests.sh --for <path>...` or `--changed [<base-ref>]`; see [Tests](#tests)), then runs the full `verify:` list exactly once, immediately before its final commit and push. Set `false` to run the full `verify:` list on every iteration instead — never zero local runs either way. |
 | `verify.ci_wait_s` | `900` | Seconds QA waits in the foreground (no background process, no sleep-polling) for every check named in `merge.required_checks` to go green under `qa_mode: ci`, via `pipeline-vcs.sh pr-checks-required` -- scoped to just those checks, so an unrelated non-required check cannot burn the budget or mask a required check GitHub hasn't scheduled yet. Any required check still failing, missing, or pending when the budget elapses is treated as FAIL (fail closed). Must be a positive integer; a non-integer or non-positive value is rejected (stderr warning, falls back to the default) -- it is interpolated unquoted into the CI-wait loop's shell test. |
 | `verify.timeout_ms` | `600000` | Milliseconds substituted as `<VERIFY_TIMEOUT_MS>` into the foreground rule placed next to every verify and CI-wait instruction in the developer and QA prompts — the explicit timeout a stage passes to its verify command instead of backgrounding it. Must be a positive integer; a non-integer or non-positive value is rejected (stderr warning, falls back to the default). |
 | `merge.method` | `squash` | `squash`, `merge`, or `rebase` |
@@ -833,6 +833,27 @@ fixtures, fixed ports) opts out with a full-line `# SERIAL` marker comment
 anywhere in the file; marked files run sequentially, after the parallel
 batch. `--quiet` (or `TALOS_TEST_QUIET=1`) prints one line per file
 (pass/fail/cached) and shows full output only for failing files.
+
+To run only the tests that cover a set of changed files instead of the whole
+suite, use `--for` (repeatable) or `--changed`:
+
+```bash
+bash tests/run-tests.sh --for scripts/pipeline-worktree.sh   # -> test-worktree.sh
+bash tests/run-tests.sh --changed                             # git diff vs origin/main + uncommitted
+bash tests/run-tests.sh --changed HEAD~3                      # explicit base ref
+```
+
+Each path is mapped to test files by convention: `scripts/pipeline-<name>.sh`
+maps to `tests/test-<name>*.sh`; `tests/test-*.sh` maps to itself;
+`agents/*.md`, `skills/**`, and `templates/**` map to `tests/test-skill-names.sh`
+plus any test file whose contents reference that path's directory. A small
+always-run set is layered on top (e.g. `scripts/pipeline-vcs.sh` also selects
+`test-verb-parity.sh`). `tests/stubs/*`, `tests/helpers.sh`,
+`tests/run-tests.sh`, `talos.pipeline.*`, `.github/**`, and any path matching
+no rule above fall back to the full suite (fail-safe, with a one-line stderr
+note for the unmapped case). The selected file list is printed before
+running, and both flags compose with `--quiet`, `-j`, `--no-cache`, and
+`--repeat`.
 
 Passing runs are cached under `.talos/test-cache/` (gitignored), keyed on the
 test file's own content plus a whole-set hash of **all tracked files except**
