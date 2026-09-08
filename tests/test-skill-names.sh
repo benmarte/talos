@@ -12,6 +12,64 @@ set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox
 
+# ── Quiet-verify guidance in prompts and example configs (#198) ────────────
+# A green verify run is hundreds of lines that every developer/QA stage pays
+# for in context, for information nobody reads when the run is green. The
+# developer and QA prompts should steer stage agents toward summary verify
+# output (e.g. `--quiet`) and toward quoting only failures. Offline, no
+# network required -- runs before the agent-skills clone below so it still
+# executes on the skip paths.
+
+SKILL_MD="$TALOS_ROOT/skills/pipeline/SKILL.md"
+
+# Extract a fenced (```` ``` ````) block whose first content line contains $2.
+extract_block() {  # $1=file $2=anchor substring
+  awk -v anchor="$2" '
+    /^```$/ { if (in_block) { in_block = 0; next }; in_block = 1; first = 1; next }
+    in_block {
+      if (first) { first = 0; match_block = (index($0, anchor) > 0) }
+      if (match_block) print
+    }
+  ' "$1"
+}
+
+dev_blocks="$(extract_block "$SKILL_MD" "You are the Developer. Implement the PM spec for issue")"
+qa_block="$(extract_block "$SKILL_MD" "You are QA. A developer opened a PR for issue")"
+
+assert_contains "$dev_blocks" "quiet" \
+  "skills/pipeline/SKILL.md developer prompt block(s) mention quiet verify output"
+assert_contains "$qa_block" "quiet" \
+  "skills/pipeline/SKILL.md QA prompt block mentions quiet verify output"
+assert_contains "$(cat "$TALOS_ROOT/agents/developer.md")" "quiet" \
+  "agents/developer.md mentions quiet verify output"
+assert_contains "$(cat "$TALOS_ROOT/agents/qa.md")" "quiet" \
+  "agents/qa.md mentions quiet verify output"
+assert_contains "$(cat "$TALOS_ROOT/talos.pipeline.yml.example")" "quiet" \
+  "talos.pipeline.yml.example mentions --quiet"
+assert_contains "$(cat "$TALOS_ROOT/talos.pipeline.json.example")" "quiet" \
+  "talos.pipeline.json.example mentions --quiet"
+
+# The "5. Verify commands" step -- the shared verify-mode + quiet-output
+# guidance -- must stay byte-identical between the worktree-isolation and
+# branch-isolation developer prompt variants (the surrounding blocks differ,
+# e.g. the "Worktree path:" line, so only this step is compared).
+find_step_end() {  # $1=file $2=start_line -> line number of "6. `git commit" after start
+  awk -v start="$2" 'NR > start && /^6\. `git commit/ { print NR; exit }' "$1"
+}
+step5_start1=$(grep -n '^5\. Verify commands' "$SKILL_MD" | sed -n '1p' | cut -d: -f1)
+step5_start2=$(grep -n '^5\. Verify commands' "$SKILL_MD" | sed -n '2p' | cut -d: -f1)
+if [ -n "$step5_start1" ] && [ -n "$step5_start2" ]; then
+  step5_end1=$(find_step_end "$SKILL_MD" "$step5_start1")
+  step5_end2=$(find_step_end "$SKILL_MD" "$step5_start2")
+  step1="$(sed -n "${step5_start1},$((step5_end1 - 1))p" "$SKILL_MD")"
+  step2="$(sed -n "${step5_start2},$((step5_end2 - 1))p" "$SKILL_MD")"
+  assert_eq "$step1" "$step2" \
+    "the two developer prompt blocks' step-5 verify guidance is byte-identical"
+else
+  fail "the two developer prompt blocks' step-5 verify guidance is byte-identical" \
+    "could not locate both step-5 sections"
+fi
+
 REPO="${TALOS_AGENT_SKILLS_REPO:-https://github.com/addyosmani/agent-skills}"
 
 if ! command -v git >/dev/null 2>&1; then

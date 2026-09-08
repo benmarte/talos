@@ -677,6 +677,9 @@ Workflow:
      immediately before the final commit and push.
    In both modes: no verify runs after that final run, never in the
    background, and never sleep-polling for results. Never zero local runs.
+   Prefer summary output for verify commands (e.g. `--quiet` for Talos's own
+   suite, or the project's equivalent) -- quote only failures, never paste
+   full green output into comments or final messages.
 6. `git commit -m "fix: <description> (#<N>)"`
 7. `git push -u origin fix/issue-<N>-<slug>`
 8. Write PR body to a temp file (multi-line OK):
@@ -738,6 +741,9 @@ Workflow:
      immediately before the final commit and push.
    In both modes: no verify runs after that final run, never in the
    background, and never sleep-polling for results. Never zero local runs.
+   Prefer summary output for verify commands (e.g. `--quiet` for Talos's own
+   suite, or the project's equivalent) -- quote only failures, never paste
+   full green output into comments or final messages.
 6. `git commit -m "fix: <description> (#<N>)"`
 7. `git push -u origin fix/issue-<N>-<slug>`
 8. Write PR body to a temp file:
@@ -801,6 +807,9 @@ scripts can assert they are running in the correct environment:
    fail closed, never assume a missing check would have passed. Spend the
    time this saves driving acceptance criteria and edge cases instead.
    If QA mode is `local`: run the full `verify:` list exactly once (as before).
+   Prefer summary output for verify commands (e.g. `--quiet` for Talos's own
+   suite, or the project's equivalent) -- quote only failures, never paste
+   full green output into comments or final messages.
 3. Verify each acceptance criterion — drive actual behavior.
 4. Look for missing edge-case tests and obvious regressions.
 

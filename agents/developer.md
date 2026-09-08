@@ -53,6 +53,9 @@ Workflow (do ALL of it — the publish step is not optional):
      commit and push.
    In both modes: no verify runs after that final run, never run it in the
    background, and never sleep-poll for results. Never zero local runs.
+   Prefer summary output for verify commands (e.g. `--quiet` for Talos's own
+   suite, or the project's equivalent) -- quote only failures, never paste
+   full green output into comments or final messages.
    In the PR body, list which test types you added (unit / regression / e2e) —
    and if you skipped a type, say why.
 4. Commit with a conventional message (`fix:`/`feat:` … `(#<N>)`).
