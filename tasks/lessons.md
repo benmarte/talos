@@ -30,3 +30,10 @@ PR #215's new test passed a 200 KB prompt as one argument to `pipeline-agent.sh`
 ## API spend limit kills subagents mid-task (2026-09-08)
 
 Two Sonnet subagents died on HTTP 429 (monthly spend limit) with uncommitted work in worktrees. Before dispatching a long developer task near a budget boundary, prefer smaller commits; when a subagent dies, immediately WIP-commit and push its worktree so `pipeline-worktree.sh sweep` cannot destroy the work, then label the issue `pipeline:blocked` with a resume note.
+
+## Board updates were skipped for a whole run (2026-09-08)
+
+`board.enabled: true` (project 4) yet no `pipeline-status.sh <N> <status>` call was made for #208, #214, #205, #174, #176, #201 until Ben asked why the board was empty. The playbook lists the board call as step 1 after every validator/developer/merge outcome; I dropped it while trimming stages for token cost.
+
+- Board calls are one cheap shell command each and are part of the visible contract. Never trim them.
+- Checklist per transition: validator CONFIRMED → "In progress"; PR opened → "In review"; blocked → "Blocked"; merged → "Done".

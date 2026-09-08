@@ -16,6 +16,10 @@ queries, loops or rendering. Claude Code's built-in `code-review` too, if presen
 Talos requires the agent-skills plugin, so under Claude Code these are present;
 treat them as part of your instructions. If your harness has no skill mechanism, or agent-skills is not installed there, follow the embedded steps below instead. Vendored installs (`install.sh`) do not pull agent-skills for you — install it separately if you want it; it supports Codex, Gemini, OpenCode and Antigravity as well as Claude Code.
 
+Read diff: start with `bash scripts/pipeline-vcs.sh diff-pr <pr> --stat` to see
+which files changed and by how much, then read the full
+`bash scripts/pipeline-vcs.sh diff-pr <pr>` for the files that matter.
+
 Focus: real correctness bugs first, then simplification/reuse/efficiency. Ignore
 style nits the linter already covers. Verify each finding against the code
 before reporting — no speculative comments.

@@ -10,6 +10,21 @@
 # Verbs:
 #   list-issues                               List open issues / work items
 #   view-issue <n>                            View issue details
+#             <n> --spec                      Compact form for stage handoff (#201):
+#                                             same {title, body, labels, comments}
+#                                             shape, but comments is at most the one
+#                                             latest comment whose body starts with
+#                                             "**PM spec:**". Every comment containing
+#                                             a "<!-- talos:" marker, every stage-
+#                                             verdict comment (body starting with
+#                                             "**Agent:**"), and any other comment
+#                                             (including plain human replies -- the
+#                                             spec is the contract, not the thread)
+#                                             is dropped. Reuses the paginated
+#                                             read-comments path -- no new fetches.
+#                                             GitHub only (github/github-api parity);
+#                                             gitlab, azure, and file mode fall back
+#                                             to plain view-issue with a stderr note.
 #   comment-issue <n> <body>                  Post comment on issue <n>
 #                 <n> --body-file <path>      ...or read the body from a file
 #   close-issue <n> <body>                    Close issue with a comment
@@ -40,6 +55,17 @@
 #   view-pr <n|branch>                        View PR details
 #   list-prs                                  List open PRs
 #   diff-pr <n>                               Show PR diff
+#          <n> --stat                         Print a `git diff --stat`-style
+#                                             per-file summary (path, additions,
+#                                             deletions) instead of the full diff,
+#                                             so reviewer/security/QA can decide
+#                                             whether they need the full diff at
+#                                             all (#201). Derived from the same
+#                                             paginated PR-files endpoint pr-files
+#                                             (#200) uses. GitHub only
+#                                             (github/github-api parity); other
+#                                             providers print the full diff (flag
+#                                             ignored).
 #   checkout-pr <n>                           Check out PR branch locally
 #   approve-pr <n> <body>                     Approve a PR with a comment
 #   label-pr <n> [--add <l>] [--remove <l>]   Add/remove labels on PR
@@ -625,6 +651,91 @@ print(json.dumps(items))
 "
 }
 
+# ── Compact spec-only comment filter (shared by view-issue --spec, github and
+# github-api, #201) ───────────────────────────────────────────────────────────
+# $1: issue metadata JSON ({"title", "body", "labels"}).
+# $2: a read-comments-shaped JSON document ({"comments": [...]}), each comment
+#     carrying at least a "body" field -- the exact shape both providers'
+#     read-comments verb already returns, so this needs no new fetch.
+# Prints a view-issue-shaped JSON document ({title, body, labels, comments})
+# whose comments list holds at most one entry: the latest surviving comment
+# whose body starts with "**PM spec:**". Every comment containing a
+# "<!-- talos:" marker and every stage-verdict comment (body starting with
+# "**Agent:**") is dropped before that scan. A plain human comment survives
+# the marker/verdict filter but is still excluded from the result -- it never
+# starts with "**PM spec:**" -- since the spec comment is the contract each
+# stage implements against, not the discussion around it.
+_vi_spec_filter() {
+  python3 -c "
+import json, sys
+
+meta = json.loads(sys.argv[1])
+comments = json.loads(sys.argv[2]).get('comments', [])
+if not isinstance(comments, list):
+    comments = []
+
+def body_of(c):
+    return c.get('body') or ''
+
+def is_marker(c):
+    return '<!-- talos:' in body_of(c)
+
+def is_verdict(c):
+    return body_of(c).lstrip().startswith('**Agent:**')
+
+def is_spec(c):
+    return body_of(c).lstrip().startswith('**PM spec:**')
+
+candidates = [c for c in comments if not is_marker(c) and not is_verdict(c)]
+spec_comments = [c for c in candidates if is_spec(c)]
+kept = [spec_comments[-1]] if spec_comments else []
+
+result = {
+    'title': meta.get('title', ''),
+    'body': meta.get('body') or '',
+    'labels': meta.get('labels', []),
+    'comments': kept,
+}
+print(json.dumps(result))
+" "$1" "$2"
+}
+
+# ── diff --stat formatting (shared by diff-pr --stat, github and github-api,
+# #201) ────────────────────────────────────────────────────────────────────────
+# Reads a JSON array of {"filename", "additions", "deletions"} on stdin (the
+# shape both providers' PR-files endpoint already returns -- the same data
+# pr-files (#200) consumes) and prints a `git diff --stat`-style summary: one
+# " <path> | +<additions> -<deletions>" line per file, then a
+# "<n> files changed, <a> insertions(+), <d> deletions(-)" total line.
+_diff_stat_format() {
+  python3 -c "
+import json, sys
+
+try:
+    files = json.load(sys.stdin)
+except Exception:
+    files = []
+if not isinstance(files, list):
+    files = []
+
+lines = []
+total_add = total_del = 0
+for f in files:
+    path = f.get('filename', '')
+    if not path:
+        continue
+    add = int(f.get('additions', 0) or 0)
+    dele = int(f.get('deletions', 0) or 0)
+    total_add += add
+    total_del += dele
+    lines.append(f' {path} | +{add} -{dele}')
+
+noun = 'file' if len(lines) == 1 else 'files'
+lines.append(f' {len(lines)} {noun} changed, {total_add} insertions(+), {total_del} deletions(-)')
+print('\n'.join(lines))
+"
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # GITHUB ADAPTER
 # ─────────────────────────────────────────────────────────────────────────────
@@ -673,7 +784,26 @@ print(json.dumps(out))
 "
       ;;
     view-issue)
-      _run gh issue view "$1" --json title,body,labels,comments \
+      local _vi_n="$1"; shift
+      local _vi_spec=false
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --spec) _vi_spec=true ;;
+        esac
+        shift
+      done
+      if [ "$_vi_spec" = "true" ]; then
+        if [ "$DRY_RUN" = "true" ]; then
+          echo "[dry-run] gh issue view $_vi_n --json title,body,labels; read-comments $_vi_n (filter to latest **PM spec:** comment, dropping talos: markers and **Agent:** verdicts)"
+          return 0
+        fi
+        local _vi_meta _vi_comments
+        _vi_meta="$(gh issue view "$_vi_n" --json title,body,labels ${REPO:+--repo "$REPO"})" || exit 1
+        _vi_comments="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" read-comments "$_vi_n" ${REPO:+--repo "$REPO"})" || exit 1
+        _vi_spec_filter "$_vi_meta" "$_vi_comments"
+        return
+      fi
+      _run gh issue view "$_vi_n" --json title,body,labels,comments \
         ${REPO:+--repo "$REPO"}
       ;;
     comment-issue)
@@ -799,7 +929,30 @@ print(json.dumps(out))
 "
       ;;
     diff-pr)
-      _run gh pr diff "$1" ${REPO:+--repo "$REPO"}
+      local _dp_n="$1"; shift
+      local _dp_stat=false
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --stat) _dp_stat=true ;;
+        esac
+        shift
+      done
+      if [ "$_dp_stat" = "true" ]; then
+        # Derived from the same paginated pr-files (#200) endpoint -- no new
+        # fetch pattern, just additions/deletions instead of just paths.
+        local _dp_repo="$REPO"
+        [ -z "$_dp_repo" ] && _dp_repo='{owner}/{repo}'
+        local _dp_endpoint="repos/${_dp_repo}/pulls/${_dp_n}/files?per_page=100"
+        if [ "$DRY_RUN" = "true" ]; then
+          echo "[dry-run] gh api --paginate $_dp_endpoint | git-diff-stat-style summary"
+          return 0
+        fi
+        local _dp_raw
+        _dp_raw="$(gh api --paginate "$_dp_endpoint")" || exit 1
+        printf '%s' "$_dp_raw" | _gh_paginate_merge | _diff_stat_format
+        return
+      fi
+      _run gh pr diff "$_dp_n" ${REPO:+--repo "$REPO"}
       ;;
     checkout-pr)
       _run gh pr checkout "$1" ${REPO:+--repo "$REPO"}
@@ -2397,7 +2550,31 @@ print(json.dumps(result, indent=2))
       ;;
 
     view-issue)
-      local _n="$1"
+      local _n="$1"; shift
+      local _vi_spec=false
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --spec) _vi_spec=true ;;
+        esac
+        shift
+      done
+      if [ "$_vi_spec" = "true" ]; then
+        if [ "$DRY_RUN" = "true" ]; then
+          echo "[dry-run] github-api: GET $_API/issues/$_n; read-comments $_n (filter to latest **PM spec:** comment, dropping talos: markers and **Agent:** verdicts)"
+          return 0
+        fi
+        local _issue _comments _meta
+        _issue="$(_ga_req GET "$_API/issues/$_n")"
+        _comments="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" read-comments "$_n" ${REPO:+--repo "$REPO"})" || exit 1
+        _meta="$(printf '%s' "$_issue" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+print(json.dumps({'title': data.get('title',''), 'body': data.get('body') or '',
+                   'labels': [{'name': l['name']} for l in data.get('labels',[])]}))
+")"
+        _vi_spec_filter "$_meta" "$_comments"
+        return
+      fi
       if [ "$DRY_RUN" = "true" ]; then
         echo "[dry-run] github-api: GET $_API/issues/$_n"
         return 0
@@ -2639,7 +2816,26 @@ print(json.dumps(result, indent=2))
       ;;
 
     diff-pr)
-      local _n="$1"
+      local _n="$1"; shift
+      local _dp_stat=false
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --stat) _dp_stat=true ;;
+        esac
+        shift
+      done
+      if [ "$_dp_stat" = "true" ]; then
+        # Derived from the same paginated pr-files (#200) endpoint -- no new
+        # fetch pattern, just additions/deletions instead of just paths.
+        if [ "$DRY_RUN" = "true" ]; then
+          echo "[dry-run] github-api: GET $_API/pulls/$_n/files (paginated via Link headers) | git-diff-stat-style summary"
+          return 0
+        fi
+        local _dp_raw
+        _dp_raw="$(_ga_fetch_all_pages "$_API/pulls/$_n/files?per_page=100")" || exit 1
+        printf '%s' "$_dp_raw" | _diff_stat_format
+        return
+      fi
       if [ "$DRY_RUN" = "true" ]; then
         echo "[dry-run] github-api: GET $_API/pulls/$_n (Accept: vnd.github.v3.diff)"
         return 0
@@ -4037,6 +4233,11 @@ _gitlab() {
       printf '%s\n' "$_gli_out"
       ;;
     view-issue)
+      # --spec (#201) is a GitHub-only compact form; fall back to the plain
+      # full view rather than silently ignoring the flag.
+      for _vi_a in "$@"; do
+        [ "$_vi_a" = "--spec" ] && echo "pipeline-vcs: view-issue --spec: not implemented for provider 'gitlab' -- falling back to full view-issue" >&2
+      done
       _run glab issue view "$1" $RARG
       ;;
     comment-issue)
@@ -4383,6 +4584,11 @@ _azure() {
       printf '%s\n' "$_azli_out"
       ;;
     view-issue)
+      # --spec (#201) is a GitHub-only compact form; fall back to the plain
+      # full view rather than silently ignoring the flag.
+      for _vi_a in "$@"; do
+        [ "$_vi_a" = "--spec" ] && echo "pipeline-vcs: view-issue --spec: not implemented for provider 'azure' -- falling back to full view-issue" >&2
+      done
       _run az boards work-item show --id "$1" $ORG_ARG --output json
       ;;
     comment-issue)
@@ -4836,6 +5042,10 @@ if verb == 'list-issues':
 
 elif verb == 'view-issue':
     n = args[0]
+    if '--spec' in args:
+        # --spec (#201) is a GitHub-only compact form; fall back to the
+        # plain full view rather than silently ignoring the flag.
+        print("pipeline-vcs: view-issue --spec: not implemented for provider 'file' -- falling back to full view-issue", file=sys.stderr)
     content = load_file()
     content, changed = ensure_ids(content)
     if changed:

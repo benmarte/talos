@@ -509,14 +509,14 @@ The pipeline deliberately preserves three gates that only a human should act on:
 |------|-----------|-------------|
 | `create-issue` | `<title> <body-file> [--label label]` | Create a new issue; `--label` may be repeated (used by planner to create sub-issues). Exits non-zero if the POST fails. |
 | `list-issues` | | List open issues / unchecked plan items |
-| `view-issue` | `<id>` | Show issue body and metadata |
+| `view-issue` | `<id> [--spec]` | Show issue body and metadata. `--spec` (#201) prints the same shape but trims `comments` to at most the latest comment whose body starts with `**PM spec:**`, dropping every `<!-- talos:` marker comment and every stage-verdict comment (body starting with `**Agent:**`) -- also every other comment, including plain human replies, since the spec is the contract each stage implements against. Reuses the paginated `read-comments` fetch, no new request. `github`/`github-api` only (parity); `gitlab`, `azure`, and `file` fall back to the plain full view with a stderr note. |
 | `comment-issue` | `<id> <body> [--allow-closed]` `[--body-file <file>]` | Post a comment on an issue. Pass `--body-file <file>` to read the body from a file (use this for multi-line verdicts). **Passing a readable absolute path as the positional `<body>` argument exits 1** with a `--body-file` hint — use `--body-file` instead. **Exits 1 if the issue is closed** unless `--allow-closed` is passed (required when GitHub auto-closes via `Closes #N` at merge). Prints the comment `html_url` to stdout on success. Exits non-zero if the POST itself fails (see below). On an indeterminate state lookup (network error), posts (exit 0) and emits `talos:comment-state-unverified target=issue#<N> reason=<short>` on stdout. |
 | `close-issue` | `<id> [reason]` | Close an issue |
 | `label-issue` | `<id> --add label [--remove label]` | Add/remove labels (or tags for Azure) |
 | `create-pr` | `<branch> <title> <body-file>` | Open a PR targeting base_branch. Exits non-zero if the POST fails. |
 | `view-pr` | `<branch>` | Show PR number, URL, status |
 | `list-prs` | | List open PRs |
-| `diff-pr` | `<pr-number>` | Show PR diff (Azure: via `git diff` between refs) |
+| `diff-pr` | `<pr-number> [--stat]` | Show PR diff (Azure: via `git diff` between refs). `--stat` (#201) prints a `git diff --stat`-style per-file additions/deletions summary instead, derived from the same paginated PR-files endpoint `pr-files` (#200) uses -- no new fetch. `github`/`github-api` only (parity); other providers print the full diff (flag ignored). |
 | `checkout-pr` | `<pr-number>` | Check out a PR branch locally |
 | `approve-pr` | `<pr-number> [summary]` | Approve a PR |
 | `label-pr` | `<pr-number> --add label [--remove label]` `[--require-marker]` | Add/remove PR labels. When an approval label (`qa:pass`, `review:approved`, `security:approved`, `docs:done`) is added and no approval marker exists at the current PR head, a WARNING is printed to stderr and the command exits 0 (non-fatal, so label-then-stamp call sites continue working). Pass `--require-marker` to make this check fatal and pre-apply: the label is not added if no marker is present at the current head (exits 1). `--require-marker` and the post-apply warning are `github` provider only. See **Approval-marker guard** below. |

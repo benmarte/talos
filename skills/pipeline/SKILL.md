@@ -259,6 +259,15 @@ COMMENT_URL="$(bash scripts/pipeline-vcs.sh comment-pr <PR> "$COMMENT_BODY")" ||
 
 The findings comment carries: a verdict line + 2–5 detail bullets. It is non-optional when `comments.enabled = true`. Fall back to inline text only if the template file is missing.
 
+**Prior stage summary handoff (#201):** the developer (fix-round re-dispatch),
+QA, reviewer, and security prompt blocks each carry a
+`Prior stage summary: <PRIOR_STAGE_SUMMARY>` line. Substitute it with the text
+of the last `pipeline-notify.sh` relay for this issue/PR (e.g. QA's prompt
+gets the developer's pr-opened relay; a re-dispatched developer gets the
+failing stage's relay) so the subagent does not have to find it by reading
+the full thread. Leave it blank (or `none`) on the very first developer
+dispatch, before any stage has relayed anything yet.
+
 ---
 
 ## Conversation stream protocol
@@ -686,6 +695,7 @@ Comment templates dir: <COMMENTS_TMPL_DIR>
 Comments enabled: <COMMENTS_ENABLED>
 Targeted iteration: <VERIFY_TARGETED>
 Verify timeout: <VERIFY_TIMEOUT_MS> ms
+Prior stage summary: <PRIOR_STAGE_SUMMARY>
 
 Before running any verify: command, export these as shell variables so verify
 scripts can assert they are running in the correct environment:
@@ -696,7 +706,9 @@ Verify commands (run once, immediately before your final commit — see step 5):
 <VERIFY_COMMANDS — one per line>
 
 Workflow:
-1. Read spec: `bash scripts/pipeline-vcs.sh view-issue <N>`
+1. Read spec: `bash scripts/pipeline-vcs.sh view-issue <N> --spec`. Read the
+   full thread (`view-issue <N>` without `--spec`, or `read-comments <N>`)
+   only when a prior verdict is referenced (fix rounds).
 2. `git checkout -b fix/issue-<N>-<slug> origin/<BASE_BRANCH>`
 3. Implement. Match surrounding code style. Stay focused on acceptance criteria.
 4. Write tests — not optional, and not limited to unit tests:
@@ -764,6 +776,7 @@ Comment templates dir: <COMMENTS_TMPL_DIR>
 Comments enabled: <COMMENTS_ENABLED>
 Targeted iteration: <VERIFY_TARGETED>
 Verify timeout: <VERIFY_TIMEOUT_MS> ms
+Prior stage summary: <PRIOR_STAGE_SUMMARY>
 
 Note: TALOS_WORKTREE_PATH is not meaningful in branch isolation mode — skip or ignore it.
 
@@ -771,7 +784,9 @@ Verify commands (run once, immediately before your final commit — see step 5):
 <VERIFY_COMMANDS — one per line>
 
 Workflow:
-1. Read spec: `bash scripts/pipeline-vcs.sh view-issue <N>`
+1. Read spec: `bash scripts/pipeline-vcs.sh view-issue <N> --spec`. Read the
+   full thread (`view-issue <N>` without `--spec`, or `read-comments <N>`)
+   only when a prior verdict is referenced (fix rounds).
 2. `git checkout -b fix/issue-<N>-<slug> origin/<BASE_BRANCH>`
 3. Implement. Match surrounding code style. Stay focused on acceptance criteria.
 4. Write tests — not optional, and not limited to unit tests (same requirements as worktree mode).
@@ -874,20 +889,24 @@ QA mode: <VERIFY_QA_MODE> (ci | local)
 Required checks: <MERGE_REQUIRED_CHECKS — one per line, or "none">
 CI wait budget: <VERIFY_CI_WAIT_S> seconds
 Verify timeout: <VERIFY_TIMEOUT_MS> ms
+Prior stage summary: <PRIOR_STAGE_SUMMARY>
 
 Before running any verify: command, export these as shell variables so verify
 scripts can assert they are running in the correct environment:
   export TALOS_ISSUE_NUMBER=<N>
   export TALOS_WORKTREE_PATH=<ABSOLUTE_PATH_OF_THIS_WORKTREE>
 
-1. Check out the PR: `bash scripts/pipeline-vcs.sh checkout-pr <PR_NUMBER>`
-2. Before any CI wait, run `bash scripts/pipeline-vcs.sh pr-mergeable
+1. Read spec: `bash scripts/pipeline-vcs.sh view-issue <N> --spec`. Read the
+   full thread (`view-issue <N>` without `--spec`, or `read-comments <N>`)
+   only when a prior verdict is referenced (fix rounds).
+2. Check out the PR: `bash scripts/pipeline-vcs.sh checkout-pr <PR_NUMBER>`
+3. Before any CI wait, run `bash scripts/pipeline-vcs.sh pr-mergeable
    <PR_NUMBER>` (#214). On `CONFLICTING` (exit 1), treat as FAIL and follow
    the **Fail:** procedure below (labels + qa-verdict comment) with reason
    "PR conflicts with base; no CI run will be scheduled" — do not wait on CI
    or run verify. `MERGEABLE`/`UNKNOWN` (exit 0/2): continue below.
 Foreground rule: run the verify list or the CI-wait poll below in the foreground with an explicit timeout of <VERIFY_TIMEOUT_MS> ms; never use background execution, `&`, `nohup`, `disown`, or sleep-polling; never end your turn while a verify command is running.
-3. QA mode above is already resolved: `ci` with an empty/absent Required
+4. QA mode above is already resolved: `ci` with an empty/absent Required
    checks list is reported here as `local`, not `ci` — trusting CI as the
    oracle for zero required checks would let QA pass vacuously, so that
    combination fails closed to `local` before you ever see it.
@@ -912,8 +931,8 @@ Foreground rule: run the verify list or the CI-wait poll below in the foreground
    Prefer summary output for verify commands (e.g. `--quiet` for Talos's own
    suite, or the project's equivalent) -- quote only failures, never paste
    full green output into comments or final messages.
-4. Verify each acceptance criterion — drive actual behavior.
-5. Look for missing edge-case tests and obvious regressions.
+5. Verify each acceptance criterion — drive actual behavior.
+6. Look for missing edge-case tests and obvious regressions.
 
 Pass:
   1. Render verdict to a file (VERDICT="PASS" SUMMARY="..." DETAILS="...") and post via
@@ -1017,8 +1036,11 @@ VCS provider: <VCS_PROVIDER>
 Comment header: <HEADER>
 Comment templates dir: <COMMENTS_TMPL_DIR>
 Comments enabled: <COMMENTS_ENABLED>
+Prior stage summary: <PRIOR_STAGE_SUMMARY>
 
-Read diff: `bash scripts/pipeline-vcs.sh diff-pr <PR_NUMBER>`
+Read diff: start with `bash scripts/pipeline-vcs.sh diff-pr <PR_NUMBER> --stat`
+to see which files changed and by how much, then read the full
+`bash scripts/pipeline-vcs.sh diff-pr <PR_NUMBER>` for the files that matter.
 Focus: correctness bugs first, simplification second. No speculative comments.
 IMPORTANT: never run `git checkout`, `git switch`, or `git pull` in your working directory — use `diff-pr` to read changes regardless of the active isolation mode.
 Never run `verify:`; QA and CI already did. `pipeline-vcs.sh pr-checks` (CI status) is the oracle for whether the suite passes — this stage is diff-only.
@@ -1051,8 +1073,11 @@ VCS provider: <VCS_PROVIDER>
 Comment header: <HEADER>
 Comment templates dir: <COMMENTS_TMPL_DIR>
 Comments enabled: <COMMENTS_ENABLED>
+Prior stage summary: <PRIOR_STAGE_SUMMARY>
 
-Read diff: `bash scripts/pipeline-vcs.sh diff-pr <PR_NUMBER>`
+Read diff: start with `bash scripts/pipeline-vcs.sh diff-pr <PR_NUMBER> --stat`
+to see which files changed and by how much, then read the full
+`bash scripts/pipeline-vcs.sh diff-pr <PR_NUMBER>` for the files that matter.
 Check: injection, authz, secrets, deserialization, path traversal, SSRF, new deps.
 Report only findings tied to specific changed lines.
 IMPORTANT: never run `git checkout`, `git switch`, or `git pull` in your working directory — use `diff-pr` to read changes regardless of the active isolation mode.

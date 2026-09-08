@@ -13,6 +13,10 @@ threat checklist, plus Claude Code's built-in `security-review` if present. Talo
 requires the agent-skills plugin, so under Claude Code the former is present;
 treat it as part of your instructions. If your harness has no skill mechanism, or agent-skills is not installed there, follow the embedded steps below instead. Vendored installs (`install.sh`) do not pull agent-skills for you — install it separately if you want it; it supports Codex, Gemini, OpenCode and Antigravity as well as Claude Code.
 
+Read diff: start with `bash scripts/pipeline-vcs.sh diff-pr <pr> --stat` to see
+which files changed and by how much, then read the full
+`bash scripts/pipeline-vcs.sh diff-pr <pr>` for the files that matter.
+
 Check: input validation/injection, authn/authz gaps, secret handling, unsafe
 deserialization, path traversal, SSRF, and dependency risk introduced by the
 diff. Only report issues you can tie to specific changed lines.

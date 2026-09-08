@@ -248,10 +248,30 @@ print(json.dumps([{'filename': p} for p in paths]))
     printf '%s\n' "${STUB_EPIC_BODY:-No checkboxes here.}" ;;
   "issue view "*"--json title,body,labels,comments"*)
     # Used by view-issue (and has-spec, which calls it internally, #199).
-    # Override STUB_ISSUE_BODY (default: "stub body") and
-    # STUB_ISSUE_LABELS_JSON (default: "[]"). Built via python so a multi-line
-    # STUB_ISSUE_BODY is JSON-escaped correctly.
+    # Override STUB_ISSUE_BODY (default: "stub body"),
+    # STUB_ISSUE_LABELS_JSON (default: "[]"), and STUB_ISSUE_COMMENTS_JSON
+    # (default: "[]" -- same override read-attempt's "--json comments" case
+    # above uses, so a test can set the fixture thread once for both plain
+    # view-issue and --spec's separate read-comments fetch). Built via
+    # python so a multi-line STUB_ISSUE_BODY is JSON-escaped correctly.
     # NOTE: must come BEFORE the generic "issue view" pattern.
+    TITLE="${STUB_ISSUE_TITLE:-Fix login crash}" \
+    BODY="${STUB_ISSUE_BODY:-stub body}" \
+    LABELS_JSON="${STUB_ISSUE_LABELS_JSON:-[]}" \
+    COMMENTS_JSON="${STUB_ISSUE_COMMENTS_JSON:-[]}" \
+    python3 -c "
+import json, os
+labels = json.loads(os.environ['LABELS_JSON'])
+comments = json.loads(os.environ['COMMENTS_JSON'])
+print(json.dumps({'title': os.environ['TITLE'], 'body': os.environ['BODY'],
+                   'labels': labels, 'comments': comments}))
+" ;;
+  "issue view "*"--json title,body,labels"*)
+    # Used by view-issue --spec (#201): the metadata-only fetch (title/body/
+    # labels, no comments field -- comments come from a separate paginated
+    # read-comments call). Must come AFTER the ...,comments variant above
+    # (bash `case` matches the first pattern that fits) and BEFORE the fully
+    # generic "issue view" fallback.
     TITLE="${STUB_ISSUE_TITLE:-Fix login crash}" \
     BODY="${STUB_ISSUE_BODY:-stub body}" \
     LABELS_JSON="${STUB_ISSUE_LABELS_JSON:-[]}" \
@@ -259,7 +279,7 @@ print(json.dumps([{'filename': p} for p in paths]))
 import json, os
 labels = json.loads(os.environ['LABELS_JSON'])
 print(json.dumps({'title': os.environ['TITLE'], 'body': os.environ['BODY'],
-                   'labels': labels, 'comments': []}))
+                   'labels': labels}))
 " ;;
   "issue view "*)
     printf '{"title":"%s","body":"stub body","labels":[],"comments":[]}\n' \
