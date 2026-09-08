@@ -21,6 +21,21 @@
 #                                             at all. Exits non-zero and prints
 #                                             each unticked item's text, one per
 #                                             line, when any remain. GitHub only.
+#   has-spec <n>                              Exit 0 when issue <n>'s body already
+#                                             IS a usable spec — an "acceptance
+#                                             criteria" heading (case-insensitive,
+#                                             `#`-prefixed or bold) followed by at
+#                                             least one `- [ ]`/`- [x]` item, or the
+#                                             `spec:ready` label — so the orchestrator
+#                                             can skip the PM stage (#199). Exit 1
+#                                             otherwise. Prints nothing either way.
+#                                             GitHub only (github, github-api parity).
+#   slug-for <title>                          Print the `<=40`-char slug for
+#                                             `fix/issue-<n>-<slug>` / `feat/issue-
+#                                             <n>-<slug>`: title lowercased,
+#                                             non-alphanumeric runs collapsed to a
+#                                             single '-', trimmed. Provider-agnostic
+#                                             (#199).
 #   create-pr <branch> <title> <body-file>    Open a pull / merge request
 #   view-pr <n|branch>                        View PR details
 #   list-prs                                  List open PRs
@@ -418,6 +433,51 @@ if unticked:
         print(item)
     sys.exit(1)
 sys.exit(0)
+"
+}
+
+# ── Spec-present scan (shared by has-spec, #199) ──────────────────────────────
+# Reads a view-issue-shaped JSON document ({title, body, labels, comments}) on
+# stdin. Exits 0 (issue body already IS a usable spec — PM can be skipped)
+# when either:
+#   - the issue carries the `spec:ready` label, or
+#   - the body has a heading matching "acceptance criteria" (case-insensitive,
+#     `#`-prefixed e.g. "## Acceptance criteria" or bold e.g.
+#     "**Acceptance criteria**", optional trailing colon) followed — before
+#     the next `#`-heading, if any — by at least one `- [ ]` / `- [x]` item.
+# Exits 1 (PM should still run) otherwise. Prints nothing either way.
+_has_spec_scan() {
+  python3 -c "
+import json, re, sys
+
+d = json.load(sys.stdin)
+body = d.get('body') or ''
+labels = [l.get('name', '') for l in (d.get('labels') or [])]
+if 'spec:ready' in labels:
+    sys.exit(0)
+
+def is_heading(line):
+    s = line.strip()
+    if s.startswith('#'):
+        s = s.lstrip('#').strip()
+    elif s.startswith('**') and s.endswith('**') and len(s) > 4:
+        s = s[2:-2].strip()
+    else:
+        return False
+    return s.rstrip(':').strip().lower() == 'acceptance criteria'
+
+lines = body.splitlines()
+heading_idx = next((i for i, l in enumerate(lines) if is_heading(l)), None)
+if heading_idx is None:
+    sys.exit(1)
+
+checkbox_re = re.compile(r'^\s*-\s*\[[ xX]\]\s*\S')
+for line in lines[heading_idx + 1:]:
+    if line.strip().startswith('#'):
+        break
+    if checkbox_re.match(line):
+        sys.exit(0)
+sys.exit(1)
 "
 }
 
@@ -4619,6 +4679,56 @@ Dirty files:
     printf 'pipeline-vcs: assert-sync: WARNING -- working tree is ahead of origin/%s by %s commit(s); non-isolated stages will read unpushed commits.\n'       "$_as_base" "$_as_ahead" >&2
     exit 0
   fi
+fi
+
+# ── has-spec: skip-PM detection (#199) ────────────────────────────────────────
+# Exits 0 when issue <n>'s body already IS a usable spec (skip the PM stage),
+# exits 1 when PM should still run. GitHub only (github, github-api parity) —
+# fetches via this script's own view-issue verb, so both providers share one
+# code path and one scan (_has_spec_scan above).
+if [ "$VERB" = "has-spec" ]; then
+  if [ "$PROVIDER" != "github" ] && [ "$PROVIDER" != "github-api" ]; then
+    echo "pipeline-vcs: has-spec: not implemented for provider '$PROVIDER'" >&2
+    exit 1
+  fi
+  _hs_n="${ARGS[0]:-}"
+  if [ -z "$_hs_n" ]; then
+    echo "pipeline-vcs: has-spec: missing issue number" >&2
+    exit 1
+  fi
+  if [ "$DRY_RUN" = "true" ]; then
+    echo "[dry-run] has-spec: view-issue $_hs_n | scan for an 'acceptance criteria' heading with a checklist item, or a spec:ready label"
+    exit 0
+  fi
+  _hs_json="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" view-issue "$_hs_n" ${REPO:+--repo "$REPO"})" || {
+    echo "pipeline-vcs: has-spec: could not fetch issue #$_hs_n" >&2
+    exit 1
+  }
+  printf '%s' "$_hs_json" | _has_spec_scan
+  exit $?
+fi
+
+# ── slug-for: branch-slug derivation (#199) ───────────────────────────────────
+# Provider-agnostic (pure string transform, no VCS call): prints the slug
+# component of `fix/issue-<N>-<slug>` / `feat/issue-<N>-<slug>` for a given
+# issue title. Lowercases the title, collapses every run of non-alphanumeric
+# characters to a single '-', trims leading/trailing '-', then truncates to 40
+# characters (re-trimming a trailing '-' left by the cut). The fix/feat prefix
+# choice itself is not this verb's job — the caller decides that from the
+# title (feat/... when the title starts with "feat").
+if [ "$VERB" = "slug-for" ]; then
+  _sf_title="${ARGS[0]:-}"
+  if [ "$DRY_RUN" = "true" ]; then
+    echo "[dry-run] slug-for: would derive a <=40-char slug from title '$_sf_title'"
+    exit 0
+  fi
+  python3 -c "
+import re, sys
+title = sys.argv[1] if len(sys.argv) > 1 else ''
+slug = re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')
+print(slug[:40].rstrip('-'))
+" "$_sf_title"
+  exit 0
 fi
 
 # ── label-pr: approval-marker guard (#94) ────────────────────────────────────

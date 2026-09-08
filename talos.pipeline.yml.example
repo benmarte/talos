@@ -165,6 +165,10 @@ roles:
                        # items, or body ≥2000 chars) and breaks them into dependency-
                        # ordered sub-issues via create-issue. Off by default; enable
                        # only when you regularly work with large, multi-task epics.
+  # pm_skip_when_spec_present: true  # Skip PM when issue body already IS a usable
+                       # spec (has acceptance-criteria heading with checklist items or
+                       # carries spec:ready label). Default true, GitHub only. Set to
+                       # false to always run PM on pipeline:confirmed issues.
 
 # ── Stage comments ───────────────────────────────────────────────────────────
 # Each role subagent posts a GitHub comment at its handoff point (Daedalus parity).

@@ -474,4 +474,67 @@ bash "$VCS" label-pr 9 --add docs:done >/dev/null 2>&1
 log="$(cat "$GH_LOG")"
 assert_contains "$log" "pr edit 9 --add-label docs:done" "e2e #196: docs:done still applied when nothing to commit"
 
+# ── #199: skip the PM stage when the issue body is already a usable spec ────
+# Simulates the Step 3b decision this playbook prescribes: has-spec gates
+# whether a PM subagent is ever dispatched for a pipeline:confirmed issue.
+# This stub harness has no live-agent dispatcher to count real subagent
+# spawns against, so a "**PM spec:**" comment on the issue stands in for one
+# PM dispatch -- the skip path must post zero of them.
+CFG_PM="$HOME/.talos/scripts/pipeline-config.sh"
+
+simulate_stage_3b() {  # $1 = issue number
+  local n="$1" skip_cfg
+  skip_cfg="$(bash "$CFG_PM" roles.pm_skip_when_spec_present true)"
+  if [ "$skip_cfg" = "true" ] && bash "$VCS" has-spec "$n" >/dev/null 2>&1; then
+    bash "$VCS" comment-issue "$n" "**PM:** skipped, issue body is the spec" >/dev/null 2>&1
+    bash "$VCS" label-issue "$n" --add pipeline:dev --remove pipeline:confirmed >/dev/null 2>&1
+    return 0
+  fi
+  bash "$VCS" comment-issue "$n" "**PM spec:** goal, acceptance criteria, branch" >/dev/null 2>&1
+  bash "$VCS" label-issue "$n" --add pipeline:dev --remove pipeline:confirmed >/dev/null 2>&1
+  return 1
+}
+
+# (a) body has '## Acceptance criteria' + a checkbox -> zero PM dispatches,
+#     issue reaches pipeline:dev directly.
+: > "$GH_LOG"
+export STUB_ISSUE_BODY='Goal: fix the thing.
+
+## Acceptance criteria
+- [ ] It is fixed'
+simulate_stage_3b 601
+log="$(cat "$GH_LOG")"
+pm_calls="$(grep -c "PM spec:" <<<"$log" || true)"
+assert_eq "0" "$pm_calls" "e2e: issue with acceptance criteria dispatches zero PM subagents (#199)"
+assert_contains "$log" "**PM:** skipped, issue body is the spec" "e2e: skip comment posted (#199)"
+assert_contains "$log" "issue edit 601 --add-label pipeline:dev --remove-label pipeline:confirmed" \
+  "e2e: skip path advances straight to pipeline:dev (#199)"
+
+# (b) body has no acceptance-criteria heading -> PM still runs (one dispatch).
+: > "$GH_LOG"
+export STUB_ISSUE_BODY='Just a plain description, no structure.'
+simulate_stage_3b 602
+log="$(cat "$GH_LOG")"
+pm_calls="$(grep -c "PM spec:" <<<"$log" || true)"
+assert_eq "1" "$pm_calls" "e2e: issue without acceptance criteria still dispatches PM (#199)"
+assert_not_contains "$log" "PM:** skipped" "e2e: no skip comment when PM ran (#199)"
+
+# (c) roles.pm_skip_when_spec_present: false -> PM dispatches even though the
+#     body qualifies for the skip.
+: > "$GH_LOG"
+cat > talos.pipeline.json <<'EOF'
+{"roles": {"pm_skip_when_spec_present": false}}
+EOF
+export STUB_ISSUE_BODY='Goal: fix the thing.
+
+## Acceptance criteria
+- [ ] It is fixed'
+simulate_stage_3b 603
+log="$(cat "$GH_LOG")"
+pm_calls="$(grep -c "PM spec:" <<<"$log" || true)"
+assert_eq "1" "$pm_calls" \
+  "e2e: roles.pm_skip_when_spec_present: false restores PM dispatch even with criteria present (#199)"
+rm -f talos.pipeline.json
+unset STUB_ISSUE_BODY
+
 finish

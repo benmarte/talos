@@ -113,6 +113,11 @@ Store these for the run:
   before failing closed.
 - Each role toggle: ROLE_VALIDATOR, ROLE_PM, ROLE_QA, ROLE_REVIEWER, ROLE_SECURITY, ROLE_DOCS (all default true)
 - ROLE_PLANNER (`roles.planner`, default `false`) — off by default; zero behavior change when absent or false
+- ROLE_PM_SKIP_WHEN_SPEC_PRESENT (`roles.pm_skip_when_spec_present`, default
+  `true`) — when `true` (and `roles.pm` is also `true`), Step 3b skips
+  spawning the PM subagent for an issue whose body already carries a usable
+  spec (see Step 3b). Set to `false` to force PM to always run on
+  `pipeline:confirmed` issues, ignoring this shortcut.
 - COMMENTS_ENABLED, COMMENTS_HEADER_TPL, COMMENTS_TMPL_DIR
 - AGENTS_RUNNER (`agents.runner`, default `claude`), AGENTS_SUBAGENTS (`agents.subagents`, default `auto`) — select the harness execution mode (see Harness compatibility)
 - FILE_SOURCE_PATH (`vcs.file.source.path`, for file mode)
@@ -565,6 +570,21 @@ After the planner returns (its output begins with `PLAN:`):
 
 Only run if the issue has `pipeline:confirmed` but NOT `pipeline:dev`.
 
+**Skip-PM check** (only when `ROLE_PM_SKIP_WHEN_SPEC_PRESENT = true` — the
+higher-precedence `roles.pm` toggle above is checked first; this runs only
+once PM would otherwise fire, #199). Run: `bash scripts/pipeline-vcs.sh has-spec <N>`.
+Exit 0 means issue #<N>'s body already IS a usable spec — an "acceptance
+criteria" heading (`## Acceptance criteria` or `**Acceptance criteria**`,
+case-insensitive) followed by at least one `- [ ]`/`- [x]` item, or the issue
+carries the `spec:ready` label. When it exits 0, skip straight to developer —
+no PM subagent, no `pipeline-notify.sh pm` relay:
+1. Post the one-line skip comment: `bash scripts/pipeline-vcs.sh comment-issue <N> "**PM:** skipped, issue body is the spec"`
+2. Advance directly: `bash scripts/pipeline-vcs.sh label-issue <N> --add pipeline:dev --remove pipeline:confirmed`
+3. Continue to developer (Stage 3c) — its prompt says "the spec is the issue body" instead of pointing at a PM spec comment.
+
+When `has-spec` exits non-zero, or `ROLE_PM_SKIP_WHEN_SPEC_PRESENT = false`,
+proceed with the PM subagent below exactly as before.
+
 Compute header: `HEADER="${COMMENTS_HEADER_TPL//\{role\}/pm}"`
 
 Spawn a subagent:
@@ -615,7 +635,16 @@ Only run if the issue has `pipeline:dev` but no open PR yet.
 
 Compute header: `HEADER="${COMMENTS_HEADER_TPL//\{role\}/developer}"`
 
-Read the PM spec first. Then dispatch the developer according to `ISOLATION`:
+Read the PM spec first — unless Stage 3b was skipped (Skip-PM check exited 0),
+in which case there is no PM spec comment; the issue body itself is the spec.
+Then dispatch the developer according to `ISOLATION`. Either way, open the
+developer's prompt with the matching first line:
+- PM ran: `You are the Developer. Implement the PM spec for issue #<N>.`
+- PM was skipped: `You are the Developer. Implement issue #<N> — the spec is the issue body (PM was skipped).`
+
+`<slug>` throughout this stage (branch `fix/issue-<N>-<slug>` / `feat/issue-<N>-<slug>`)
+is `bash scripts/pipeline-vcs.sh slug-for "<title>"`; prefix is `feat/` when the
+title starts with `feat`, else `fix/` (#199).
 
 **If `ISOLATION = worktree` (default):** spawn with `isolation: "worktree"`:
 

@@ -230,7 +230,7 @@ rm -f "$_SENTINEL_DIR"
 out="$(bash "$TALOS_ROOT/scripts/bootstrap-labels.sh" acme/widget)"
 log="$(cat "$GH_LOG")"
 for label in pipeline:ready pipeline:confirmed pipeline:dev pipeline:review \
-             pipeline:approved pipeline:blocked skip-qa p0 p1 p2 \
+             pipeline:approved pipeline:blocked skip-qa spec:ready p0 p1 p2 \
              qa:pass review:approved security:approved docs:done \
              epic pipeline:epic-decomposed pipeline:epic-children-done; do
   assert_contains "$log" "label create $label" "creates $label"
