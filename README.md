@@ -205,6 +205,14 @@ BUZZ_BOT_PRIVATE_KEY=<bot nsec or hex secret>
 
 Talos publishes a signed `kind:9` event tagged with the channel; on a closed or allowlisted relay, add the bot's pubkey as a member/allowlist entry first (see buzz's `NOSTR.md`).
 
+For anything else — a local desktop notifier, a webhook relay, a log shipper — set `notifications.cmd` to a shell command. It runs (via `sh -c`) after the four sinks above, for every event that passes `notifications.events`, with a JSON object on stdin:
+
+```json
+{"event": "pr-opened", "ref": "#42", "message": "🔀 [talos] pr-opened #42 — ...", "thread_key": "42", "fields": [{"label": "PR", "text": "#9", "url": "https://github.com/acme/widget/pull/9"}], "repo": "acme/widget", "issue": 42}
+```
+
+`message` is the same rendered text the other sinks build their message from; `fields` is the same platform-neutral metadata table (PR/Issue/Stage/Repo) they render natively. Bounded by `notifications.cmd_timeout_s` (default `10` seconds); a missing command, non-zero exit, or timeout logs one line to stderr and never blocks the pipeline or any other sink.
+
 ### 6. Queue work
 
 **VCS mode** (GitHub / GitLab / Azure): add the `pipeline:ready` label to any issue.
@@ -278,6 +286,8 @@ All keys live in `talos.pipeline.json` (or `talos.pipeline.yml` if PyYAML is ins
 | `notifications.templates_dir` | `templates/notifications` | Path to notification message templates; `""` disables templates |
 | `notifications.threading` | `true` | Thread all events per issue in one Slack/Discord thread (bot-token mode only) |
 | `notifications.events` | all (unset) | Events filter. **Leave unset** — when set, any unlisted event is silently dropped, including all role events that make up the conversation stream. See warning below. |
+| `notifications.cmd` | `""` (disabled) | Shell command run (via `sh -c`) for every event that passes `notifications.events`, after Slack/Discord/Teams/Buzz. Receives a JSON payload on stdin (`{event, ref, message, thread_key, fields, repo, issue}`); see [Optional: notifications](#5-optional-notifications) above for the schema. A missing command, non-zero exit, or timeout is a silent no-op with one line on stderr — never blocks the pipeline or the other sinks. |
+| `notifications.cmd_timeout_s` | `10` | Seconds `notifications.cmd` may run before being killed. Must be a positive integer; a non-integer or non-positive value is rejected (stderr warning, falls back to the default). |
 | `limits.max_fix_attempts` | `3` | Max **consecutive** failures of the **same blocking stage** before `pipeline:blocked` is set. Resets to 1 when a different stage blocks next. **Behaviour change from v0.13:** this key previously counted every developer dispatch; it now counts consecutive same-stage failures only. Operators with existing configs should audit: a value of `3` previously allowed 3 total dispatches; it now allows 2 re-dispatches for the same stage (the third recording exits non-zero and blocks). |
 | `limits.max_total_dispatches` | `8` | Absolute ceiling on total developer dispatches per issue, across all stage changes. **Never resets** — not even when the blocking stage changes. Prevents a QA→reviewer→QA ping-pong from exploiting per-stage resets to run indefinitely. When the total reaches this value, `record-attempt` exits non-zero regardless of which stage is blocking. |
 | `limits.max_retries` | `5` | Retries per network call after a rate-limit / transient error, on top of the original try — up to 6 total attempts by default (#173). Applies uniformly to every network verb in every provider: `gh`/`glab`/`az` CLI invocations (shadowed once per adapter so no call site needs editing) and the `github-api` provider's `curl` requests. **Retried:** HTTP 429; GitHub 403 responses whose body mentions a secondary rate limit or abuse detection; `gh`/`glab`/`az` errors whose stderr matches a rate-limit pattern. **Not retried (fails immediately, today's behaviour):** 401, 404, 422, and any other error that doesn't match those patterns. **Backoff:** honours a `Retry-After` value when the transport supplies one; otherwise exponential starting at 2s, doubling each attempt, capped at 60s. Each retry logs one line to stderr naming the attempt number and wait duration. `--dry-run` never sleeps or retries — every verb returns before its first network call. `TALOS_RETRY_SLEEP_SCALE` (default `1`) scales every sleep; set to `0` in tests for instant runs. |
