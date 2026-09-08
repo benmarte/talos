@@ -880,4 +880,60 @@ EOF
 err="$(bash "$VCS" view-issue 3 2>&1)"; rc=$?
 assert_eq "1" "$rc"                              "github-api without token: exits 1"
 
+# ── Issue #171: list-issues/list-prs pagination ──────────────────────────────
+export GITHUB_TOKEN="$TEST_TOKEN"
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "github-api", "repo": "acme/widget"}}
+EOF
+
+# T171-issues-150: 150-issue backlog spread over two Link-paginated pages
+# (100 + 50) returns all 150, not just the first page.
+: > "$CURL_LOG"; : > "$CURL_QUEUE"; : > "$CURL_LINK_QUEUE"
+_171_page2_url="https://api.github.com/repos/acme/widget/issues?state=open&per_page=100&page=2"
+_171_p1="$(python3 -c "
+import json
+print(json.dumps([{'number': i, 'title': 't'+str(i), 'body': '', 'labels': []} for i in range(1, 101)]))
+")"
+_171_p2="$(python3 -c "
+import json
+print(json.dumps([{'number': i, 'title': 't'+str(i), 'body': '', 'labels': []} for i in range(101, 151)]))
+")"
+printf '%s\n' "$_171_page2_url" "" > "$CURL_LINK_QUEUE"
+printf '%s\n' "$_171_p1" "$_171_p2" > "$CURL_QUEUE"
+out="$(bash "$VCS" list-issues)"; rc=$?
+_171_count="$(printf '%s' "$out" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))")"
+assert_eq "0" "$rc" "#171 github-api: list-issues exits 0 across pages"
+assert_eq "150" "$_171_count" "#171 github-api: list-issues returns all 150 issues, not just page 1"
+assert_contains "$out" '"number": 150' "#171 github-api: list-issues includes the last issue (id 150)"
+
+# T171-issues-failed-page: page 2 returns HTTP 500 -> exit non-zero, no
+# partial 100-item list printed as if it were complete.
+: > "$CURL_LOG"; : > "$CURL_QUEUE"; : > "$CURL_LINK_QUEUE"
+printf '%s\n' "$_171_page2_url" "" > "$CURL_LINK_QUEUE"
+printf '%s\n' "$_171_p1" "500" > "$CURL_QUEUE"
+out="$(bash "$VCS" list-issues 2>"$SANDBOX/171_err.txt")"; rc=$?
+err="$(cat "$SANDBOX/171_err.txt")"
+assert_eq "1" "$rc" "#171 github-api: list-issues exits non-zero when a page fails"
+assert_eq "" "$out" "#171 github-api: list-issues prints no partial list on a failed page"
+assert_contains "$err" "HTTP 500" "#171 github-api: list-issues names the failing HTTP status"
+
+# T171-prs-150: same 150-item pagination proof for list-prs.
+: > "$CURL_LOG"; : > "$CURL_QUEUE"; : > "$CURL_LINK_QUEUE"
+_171_pr_page2_url="https://api.github.com/repos/acme/widget/pulls?state=open&per_page=100&page=2"
+_171_pr_p1="$(python3 -c "
+import json
+print(json.dumps([{'number': i, 'title': 't'+str(i), 'head': {'ref': 'b'+str(i)}, 'labels': []} for i in range(1, 101)]))
+")"
+_171_pr_p2="$(python3 -c "
+import json
+print(json.dumps([{'number': i, 'title': 't'+str(i), 'head': {'ref': 'b'+str(i)}, 'labels': []} for i in range(101, 151)]))
+")"
+printf '%s\n' "$_171_pr_page2_url" "" > "$CURL_LINK_QUEUE"
+printf '%s\n' "$_171_pr_p1" "$_171_pr_p2" > "$CURL_QUEUE"
+out="$(bash "$VCS" list-prs)"; rc=$?
+_171_pr_count="$(printf '%s' "$out" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))")"
+assert_eq "0" "$rc" "#171 github-api: list-prs exits 0 across pages"
+assert_eq "150" "$_171_pr_count" "#171 github-api: list-prs returns all 150 PRs, not just page 1"
+assert_contains "$out" '"number": 150' "#171 github-api: list-prs includes the last PR (id 150)"
+
 finish

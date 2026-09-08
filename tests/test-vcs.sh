@@ -433,15 +433,79 @@ out="$(STUB_PR_FILES=$'README.md\nsrc/main.py\ndocs/guide.md' bash "$VCS" check-
 assert_eq "0" "$rc" "#78: exit-zero proof — clean PR exits 0 from check-pr-files"
 assert_contains "$out" "no forbidden files" "#78: exit-zero proof — clean result reported"
 
-# ── list-prs passes --base and includes baseRefName ──────────────────────────
-# With BASE_BRANCH set via config, --dry-run must show --base and baseRefName.
+# ── list-prs scopes to base_branch and includes baseRefName ──────────────────
+# With BASE_BRANCH set via config, --dry-run must show the REST `base=`
+# query filter, and a real run must include baseRefName in its output (#171:
+# list-prs moved from `gh pr list --base` to `gh api --paginate .../pulls`,
+# whose REST endpoint takes `base` as a query param instead).
 cat > talos.pipeline.json <<'EOF'
 {"base_branch": "main"}
 EOF
 out="$(bash "$VCS" --dry-run list-prs)"
-assert_contains "$out" "--base" "list-prs passes --base flag when base_branch is configured"
-assert_contains "$out" "baseRefName" "list-prs includes baseRefName in the --json field list"
+assert_contains "$out" "base=main" "list-prs scopes the REST query to base_branch when configured"
+out="$(bash "$VCS" list-prs)"
+assert_contains "$out" "baseRefName" "list-prs includes baseRefName in its output"
 rm talos.pipeline.json
+
+# ── Issue #171: list-issues/list-prs pagination (github/gh CLI provider) ─────
+# `gh issue list --limit 100` (the old hardcoded value) silently truncated any
+# backlog bigger than 100; raising --limit only moves the same cap higher.
+# The fix moved to `gh api --paginate`, which has no cap. Simulate a 150-item
+# backlog spread over two pages (100 + 50) exactly as `gh api --paginate`
+# streams them: back-to-back JSON arrays with NO separator and no merging
+# (see the gh stub's "api --paginate" case) — proves pipeline-vcs.sh's own
+# merge logic, not just that the stub echoes back a pre-merged list.
+_171_gh_i_p1="$(python3 -c "
+import json
+print(json.dumps([{'number': i, 'title': 't'+str(i), 'labels': [], 'body': ''} for i in range(1, 101)]))
+")"
+_171_gh_i_p2="$(python3 -c "
+import json
+print(json.dumps([{'number': i, 'title': 't'+str(i), 'labels': [], 'body': ''} for i in range(101, 151)]))
+")"
+out="$(STUB_GH_ISSUES_RAW="${_171_gh_i_p1}${_171_gh_i_p2}" bash "$VCS" list-issues)"; rc=$?
+_171_gh_count="$(printf '%s' "$out" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))")"
+assert_eq "0" "$rc" "#171 github: list-issues exits 0 for a 150-issue backlog spread over 2 pages"
+assert_eq "150" "$_171_gh_count" "#171 github: list-issues returns all 150 issues across pages, not just page 1"
+assert_contains "$out" '"number": 150' "#171 github: list-issues includes the last issue (id 150, from page 2)"
+
+# Pull requests come back from the same REST issues endpoint (they carry a
+# `pull_request` key) — they must be filtered out, not counted as issues.
+_171_gh_i_with_pr="$(python3 -c "
+import json
+print(json.dumps([
+    {'number': 1, 'title': 'a real issue', 'labels': [], 'body': ''},
+    {'number': 2, 'title': 'actually a PR', 'labels': [], 'body': '', 'pull_request': {'url': 'x'}},
+]))
+")"
+out="$(STUB_GH_ISSUES_RAW="$_171_gh_i_with_pr" bash "$VCS" list-issues)"
+_171_gh_pr_filtered_count="$(printf '%s' "$out" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))")"
+assert_eq "1" "$_171_gh_pr_filtered_count" "#171 github: list-issues filters out entries carrying a pull_request key"
+assert_not_contains "$out" "actually a PR" "#171 github: list-issues does not include the filtered PR's title"
+
+# A failed page must exit non-zero and print NO partial list (never mistake a
+# failed fetch for a complete-but-short one).
+out="$(STUB_GH_API_FAIL=issues bash "$VCS" list-issues 2>/dev/null)"; rc=$?
+assert_eq "1" "$rc" "#171 github: list-issues exits non-zero when gh api --paginate fails"
+assert_eq "" "$out" "#171 github: list-issues prints no partial list on a failed page"
+
+_171_gh_pr_p1="$(python3 -c "
+import json
+print(json.dumps([{'number': i, 'title': 't'+str(i), 'head': {'ref': 'b'+str(i)}, 'base': {'ref': 'main'}, 'labels': []} for i in range(1, 101)]))
+")"
+_171_gh_pr_p2="$(python3 -c "
+import json
+print(json.dumps([{'number': i, 'title': 't'+str(i), 'head': {'ref': 'b'+str(i)}, 'base': {'ref': 'main'}, 'labels': []} for i in range(101, 151)]))
+")"
+out="$(STUB_GH_PRS_RAW="${_171_gh_pr_p1}${_171_gh_pr_p2}" bash "$VCS" list-prs)"; rc=$?
+_171_gh_pr_count="$(printf '%s' "$out" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))")"
+assert_eq "0" "$rc" "#171 github: list-prs exits 0 for a 150-PR backlog spread over 2 pages"
+assert_eq "150" "$_171_gh_pr_count" "#171 github: list-prs returns all 150 PRs across pages, not just the first 30"
+assert_contains "$out" '"number": 150' "#171 github: list-prs includes the last PR (id 150, from page 2)"
+
+out="$(STUB_GH_API_FAIL=prs bash "$VCS" list-prs 2>/dev/null)"; rc=$?
+assert_eq "1" "$rc" "#171 github: list-prs exits non-zero when gh api --paginate fails"
+assert_eq "" "$out" "#171 github: list-prs prints no partial list on a failed page"
 
 # ── rerun-ci: re-runs only failed runs for the head SHA ───────────────────────
 : > "$GH_LOG"

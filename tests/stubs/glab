@@ -12,9 +12,19 @@ case "$args" in
   "issue view "*)
     printf '{"title":"Fix login crash","description":"stub body","labels":[]}\n' ;;
   "issue list "*)
-    printf '[{"iid":5,"title":"Fix login crash","state":"opened"}]\n' ;;
+    # Override STUB_GITLAB_ISSUE_LIST to simulate a capped/large result set (#171).
+    if [ -n "${STUB_GITLAB_ISSUE_LIST:-}" ]; then
+      printf '%s\n' "$STUB_GITLAB_ISSUE_LIST"
+    else
+      printf '[{"iid":5,"title":"Fix login crash","state":"opened"}]\n'
+    fi ;;
   "mr list "*)
-    printf '[{"iid":7,"title":"fix: guard","state":"opened","sourceBranch":"fix/issue-42-guard"}]\n' ;;
+    # Override STUB_GITLAB_MR_LIST to simulate a capped/large result set (#171).
+    if [ -n "${STUB_GITLAB_MR_LIST:-}" ]; then
+      printf '%s\n' "$STUB_GITLAB_MR_LIST"
+    else
+      printf '[{"iid":7,"title":"fix: guard","state":"opened","sourceBranch":"fix/issue-42-guard"}]\n'
+    fi ;;
   "mr view "*)
     printf '{"iid":7,"title":"fix: guard","state":"opened"}\n' ;;
   *)

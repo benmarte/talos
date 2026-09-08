@@ -67,6 +67,34 @@ assert_contains "$log" "mr approve 7" "gitlab approve-pr invokes glab mr approve
 assert_contains "$log" "mr note 7" "gitlab approve-pr posts body as a separate note"
 assert_contains "$log" "--message LGTM" "gitlab approve-pr note includes the body"
 
+# ── Issue #171: list-issues/list-prs stay capped on gitlab -- warn loudly ────
+# glab has no "fetch every page" flag, so the cap stays; a result that lands
+# exactly on it must warn on stderr naming the cap rather than pretending the
+# list is complete.
+: > "$GH_LOG"
+_171_gl_issues="$(python3 -c "
+import json
+print(json.dumps([{'iid': i, 'title': 't'+str(i), 'state': 'opened'} for i in range(1, 101)]))
+")"
+err="$(STUB_GITLAB_ISSUE_LIST="$_171_gl_issues" bash "$VCS" list-issues 2>&1 >/dev/null)"
+assert_contains "$err" "WARNING result capped at 100" "gitlab list-issues warns loudly when landing exactly on the --per-page cap"
+
+: > "$GH_LOG"
+_171_gl_issues_under="$(python3 -c "
+import json
+print(json.dumps([{'iid': i, 'title': 't'+str(i), 'state': 'opened'} for i in range(1, 6)]))
+")"
+out="$(STUB_GITLAB_ISSUE_LIST="$_171_gl_issues_under" bash "$VCS" list-issues 2>&1)"
+assert_not_contains "$out" "WARNING result capped" "gitlab list-issues does not warn when under the cap"
+
+: > "$GH_LOG"
+_171_gl_mrs="$(python3 -c "
+import json
+print(json.dumps([{'iid': i, 'title': 't'+str(i), 'state': 'opened', 'sourceBranch': 'b'+str(i)} for i in range(1, 101)]))
+")"
+err="$(STUB_GITLAB_MR_LIST="$_171_gl_mrs" bash "$VCS" list-prs 2>&1 >/dev/null)"
+assert_contains "$err" "WARNING result capped at 100" "gitlab list-prs warns loudly when landing exactly on the --per-page cap"
+
 # ── Azure DevOps adapter ──────────────────────────────────────────────────────
 echo "  [azure]"
 
@@ -97,6 +125,30 @@ log="$(cat "$GH_LOG")"
 assert_contains "$log" "[boards] [query]" "azure list-issues invokes az boards query"
 assert_contains "$log" "[--wiql]" "azure list-issues passes a WIQL query"
 assert_not_contains "$log" "[work-item] [list]" "azure list-issues does not call nonexistent work-item list"
+
+# ── Issue #171: list-issues/list-prs stay capped on azure -- warn loudly ────
+# `az boards query` has no --top flag; WIQL's own "SELECT TOP N" is the only
+# cheap cap available, so a result landing exactly on it must warn.
+_171_az_items="$(python3 -c "
+import json
+print(json.dumps([{'id': i, 'fields': {'System.Title': 't'+str(i), 'System.State': 'New'}} for i in range(1, 1001)]))
+")"
+err="$(STUB_AZURE_WORKITEM_LIST="$_171_az_items" bash "$VCS" list-issues 2>&1 >/dev/null)"
+assert_contains "$err" "WARNING result capped at 1000" "azure list-issues warns loudly when landing exactly on the WIQL TOP ceiling"
+
+_171_az_items_under="$(python3 -c "
+import json
+print(json.dumps([{'id': i, 'fields': {'System.Title': 't'+str(i), 'System.State': 'New'}} for i in range(1, 6)]))
+")"
+out="$(STUB_AZURE_WORKITEM_LIST="$_171_az_items_under" bash "$VCS" list-issues 2>&1)"
+assert_not_contains "$out" "WARNING result capped" "azure list-issues does not warn when under the cap"
+
+_171_az_prs="$(python3 -c "
+import json
+print(json.dumps([{'pullRequestId': i, 'title': 't'+str(i), 'status': 'active'} for i in range(1, 1001)]))
+")"
+err="$(STUB_AZURE_PR_LIST="$_171_az_prs" bash "$VCS" list-prs 2>&1 >/dev/null)"
+assert_contains "$err" "WARNING result capped at 1000" "azure list-prs warns loudly when landing exactly on the --top ceiling"
 
 # label-issue needs an org URL (az rest is absolute); set it for these tests.
 cat > talos.pipeline.json <<'EOF'

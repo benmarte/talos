@@ -246,6 +246,63 @@ sys.exit(0)
 "
 }
 
+# ── JSON array length (shared by list-issues/list-prs cap-warning checks) ────
+# Reads a JSON document on stdin; prints its element count if it parses as a
+# JSON array, else 0. Never fails the caller — malformed/non-JSON input
+# degrades to "0" (no cap warning fires), which is the safe default for
+# providers whose list output isn't guaranteed to be JSON (#171).
+_json_array_count() {
+  python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print(len(d) if isinstance(d, list) else 0)
+except Exception:
+    print(0)
+"
+}
+
+# ── Cap-reached warning (shared by every provider that still caps list-issues
+# /list-prs instead of paginating: gitlab, azure — github/github-api now
+# paginate fully via gh api --paginate / Link headers, so neither calls this
+# anymore) ────────────────────────────────────────────────────────────────────
+# Usage: _list_cap_warn <verb> <cap> <count> <reason> <noun>
+# Prints a loud stderr warning naming the exact cap when <count> == <cap>,
+# since landing exactly on a request cap means more items may exist beyond
+# what was fetched — truncation must never be silent (#171).
+_list_cap_warn() {
+  local _lcw_verb="$1" _lcw_cap="$2" _lcw_count="$3" _lcw_reason="$4" _lcw_noun="$5"
+  if [ "$_lcw_count" = "$_lcw_cap" ]; then
+    printf 'pipeline-vcs: %s: WARNING result capped at %s (%s) -- some %s may be missing\n' \
+      "$_lcw_verb" "$_lcw_cap" "$_lcw_reason" "$_lcw_noun" >&2
+  fi
+}
+
+# ── gh api --paginate multi-page merge (shared by _github list-issues/
+# list-prs, #171) ─────────────────────────────────────────────────────────────
+# `gh api --paginate <endpoint>` fetches every page of a REST list endpoint
+# (following Link: rel="next" headers internally) with NO cap, but per gh's
+# own --help text: "Each page is a separate JSON array or object" — pages are
+# written to stdout back-to-back with no separator, not merged into one
+# array. Reads that raw concatenated stdout on stdin and prints a single
+# flattened JSON array containing every item from every page, in order.
+_gh_paginate_merge() {
+  python3 -c "
+import json, sys
+data = sys.stdin.read()
+dec = json.JSONDecoder()
+idx, n, items = 0, len(data), []
+while idx < n:
+    while idx < n and data[idx].isspace():
+        idx += 1
+    if idx >= n:
+        break
+    obj, idx = dec.raw_decode(data, idx)
+    items.extend(obj) if isinstance(obj, list) else items.append(obj)
+print(json.dumps(items))
+"
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # GITHUB ADAPTER
 # ─────────────────────────────────────────────────────────────────────────────
@@ -253,8 +310,33 @@ _github() {
   local verb="$1"; shift
   case "$verb" in
     list-issues)
-      _run gh issue list --state open --json number,title,labels,body \
-        --limit 100 ${REPO:+--repo "$REPO"} "$@"
+      # `gh issue list --limit N` is a single request capped at N (1000 was
+      # GitHub's own hard ceiling on search-API result sets) — it silently
+      # truncated any backlog bigger than N. `gh api --paginate` against the
+      # REST issues endpoint has no such cap: it follows Link: rel="next"
+      # headers internally until exhausted (#171). That endpoint returns
+      # pull requests too (they carry a `pull_request` key) — filter those
+      # out and reshape to the historical
+      # `gh issue list --json number,title,labels,body` field set so callers
+      # see no schema change.
+      local _li_repo="$REPO"
+      [ -z "$_li_repo" ] && _li_repo='{owner}/{repo}'
+      local _li_endpoint="repos/${_li_repo}/issues?state=open&per_page=100"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] gh api --paginate $_li_endpoint"
+        return 0
+      fi
+      local _li_raw
+      _li_raw="$(gh api --paginate "$_li_endpoint")" || exit 1
+      printf '%s' "$_li_raw" | _gh_paginate_merge | python3 -c "
+import json, sys
+items = json.load(sys.stdin)
+out = [{'number': i.get('number'), 'title': i.get('title', ''),
+        'labels': [{'name': l.get('name')} for l in (i.get('labels') or [])],
+        'body': i.get('body') or ''}
+       for i in items if 'pull_request' not in i]
+print(json.dumps(out))
+"
       ;;
     view-issue)
       _run gh issue view "$1" --json title,body,labels,comments \
@@ -348,14 +430,39 @@ _github() {
       ;;
     list-prs)
       # LANE SCOPING (2026-08-22): filter to PRs targeting THIS config's base_branch, and
-      # return baseRefName so callers can verify. Without --base, `gh pr list` is repo-wide:
+      # return baseRefName so callers can verify. Without a base filter, PRs are repo-wide:
       # in a multi-lane repo (main + per-LLM experiment branches sharing one remote) a lane's
       # Step-1 reconciliation sees another lane's in-flight PR, adopts it as its own orphaned
       # work, retargets it and merges it into the wrong base. That happened: the qwen lane
       # merged the canonical lane's P0-14 PR (#203, base main) into `qwen`, leaving `main`
       # without its own work and contaminating the experiment.
-      _run gh pr list --state open --json number,title,headRefName,baseRefName,labels \
-        ${BASE_BRANCH:+--base "$BASE_BRANCH"} ${REPO:+--repo "$REPO"}
+      #
+      # PAGINATION (#171): `gh pr list` defaulted to --limit 30 with no
+      # override, so it silently truncated any lane with more than 30 open
+      # PRs. `gh api --paginate` against the REST pulls endpoint has no cap:
+      # it follows Link: rel="next" headers internally until exhausted. The
+      # REST endpoint's own `base` query param covers the lane-scoping the
+      # old `--base` flag provided.
+      local _lp_repo="$REPO"
+      [ -z "$_lp_repo" ] && _lp_repo='{owner}/{repo}'
+      local _lp_endpoint="repos/${_lp_repo}/pulls?state=open&per_page=100"
+      [ -n "$BASE_BRANCH" ] && _lp_endpoint="${_lp_endpoint}&base=${BASE_BRANCH}"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] gh api --paginate $_lp_endpoint"
+        return 0
+      fi
+      local _lp_raw
+      _lp_raw="$(gh api --paginate "$_lp_endpoint")" || exit 1
+      printf '%s' "$_lp_raw" | _gh_paginate_merge | python3 -c "
+import json, sys
+items = json.load(sys.stdin)
+out = [{'number': i.get('number'), 'title': i.get('title', ''),
+        'headRefName': (i.get('head') or {}).get('ref', ''),
+        'baseRefName': (i.get('base') or {}).get('ref', ''),
+        'labels': [{'name': l.get('name')} for l in (i.get('labels') or [])]}
+       for i in items]
+print(json.dumps(out))
+"
       ;;
     diff-pr)
       _run gh pr diff "$1" ${REPO:+--repo "$REPO"}
@@ -1556,35 +1663,51 @@ _github_api() {
     printf '%s' "$_body"
   }
 
-  # _ga_fetch_all_comments <issue-n>
-  # Fetches every page of issue comments by following Link: rel="next" headers.
-  # Prints a JSON array of all comment objects. Exits 1 on any HTTP error.
+  # _ga_fetch_all_pages <start-url>
+  # Fetches every page of a GitHub REST list endpoint by following
+  # Link: rel="next" headers, starting from <start-url>. Prints a single JSON
+  # array concatenating every page's items. Exits 1 (prints NOTHING to
+  # stdout) on any HTTP error partway through — callers must treat a non-zero
+  # exit as "no usable data", never as a complete-but-short list, so a failed
+  # page can never be mistaken for a complete result (#171).
   # Uses the same auth headers as _ga_req; does not use _ga_req itself because
   # _ga_req discards the Link header after each request.
-  _ga_fetch_all_comments() {
-    local _gafc_n="$1"
-    local _gafc_url="$_API/issues/$_gafc_n/comments?per_page=100"
-    local _gafc_all _gafc_hdr _gafc_full _gafc_status _gafc_body _gafc_next
-    _gafc_all="[]"
-    while [ -n "$_gafc_url" ]; do
-      _gafc_hdr="$(mktemp)"
-      _gafc_full="$(curl -sS -w "\n%{http_code}" \
-        -D "$_gafc_hdr" -X GET \
+  _ga_fetch_all_pages() {
+    local _gafp_url="$1"
+    local _gafp_all _gafp_hdr _gafp_full _gafp_status _gafp_body _gafp_next
+    _gafp_all="[]"
+    while [ -n "$_gafp_url" ]; do
+      _gafp_hdr="$(mktemp)"
+      _gafp_full="$(curl -sS -w "\n%{http_code}" \
+        -D "$_gafp_hdr" -X GET \
         -H "Authorization: Bearer $_TOKEN" \
         -H "Accept: application/vnd.github+json" \
         -H "X-GitHub-Api-Version: 2022-11-28" \
-        "$_gafc_url")"
-      _gafc_status="$(printf '%s' "$_gafc_full" | tail -1)"
-      _gafc_body="$(printf '%s' "$_gafc_full" | sed '$d')"
-      _gafc_next="$(grep -i '^link:' "$_gafc_hdr" \
+        "$_gafp_url")"
+      _gafp_status="$(printf '%s' "$_gafp_full" | tail -1)"
+      _gafp_body="$(printf '%s' "$_gafp_full" | sed '$d')"
+      _gafp_next="$(grep -i '^link:' "$_gafp_hdr" \
         | grep -o '<[^>]*>; rel="next"' \
         | sed 's/<\([^>]*\)>; rel="next"/\1/')"
-      rm -f "$_gafc_hdr"
-      if [ "${_gafc_status:-0}" -ge 300 ] 2>/dev/null; then
-        printf 'github-api: HTTP %s fetching comments page\n' "$_gafc_status" >&2
+      if [ "${_gafp_status:-0}" -ge 300 ] 2>/dev/null; then
+        if [ "$_gafp_status" = "429" ]; then
+          local _gafp_reset
+          _gafp_reset="$(grep -i '^x-ratelimit-reset:' "$_gafp_hdr" 2>/dev/null \
+            | sed 's/[^0-9]*//g' | tr -d '[:space:]')"
+          rm -f "$_gafp_hdr"
+          if [ -n "$_gafp_reset" ]; then
+            printf 'github-api: rate-limited; reset at %s\n' "$_gafp_reset" >&2
+          else
+            printf 'github-api: HTTP 429 fetching page (rate-limited): %s\n' "$_gafp_url" >&2
+          fi
+        else
+          rm -f "$_gafp_hdr"
+          printf 'github-api: HTTP %s fetching page: %s\n' "$_gafp_status" "$_gafp_url" >&2
+        fi
         return 1
       fi
-      _gafc_all="$(PREV="$_gafc_all" PAGE="$_gafc_body" python3 -c "
+      rm -f "$_gafp_hdr"
+      _gafp_all="$(PREV="$_gafp_all" PAGE="$_gafp_body" python3 -c "
 import json, os, sys
 prev = json.loads(os.environ.get('PREV', '[]'))
 try:
@@ -1596,9 +1719,15 @@ except Exception:
 prev.extend(page)
 json.dump(prev, sys.stdout)
 ")"
-      _gafc_url="$_gafc_next"
+      _gafp_url="$_gafp_next"
     done
-    printf '%s' "$_gafc_all"
+    printf '%s' "$_gafp_all"
+  }
+
+  # _ga_fetch_all_comments <issue-n> — thin wrapper over _ga_fetch_all_pages
+  # for the one caller (view-issue) that needs a single issue's comments.
+  _ga_fetch_all_comments() {
+    _ga_fetch_all_pages "$_API/issues/$1/comments?per_page=100"
   }
 
   # ── Verb dispatch ───────────────────────────────────────────────────────────
@@ -1606,16 +1735,14 @@ json.dump(prev, sys.stdout)
 
     list-issues)
       if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: GET $_API/issues?state=open&per_page=100"
+        echo "[dry-run] github-api: GET $_API/issues?state=open&per_page=100 (paginated via Link headers until exhausted)"
         return 0
       fi
       local _raw
-      _raw="$(_ga_req GET "$_API/issues?state=open&per_page=100")"
+      _raw="$(_ga_fetch_all_pages "$_API/issues?state=open&per_page=100")" || exit 1
       printf '%s' "$_raw" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
-if len(data) == 100:
-    print('NOTE: github-api: results truncated at 100 items', file=sys.stderr)
 result = [{'number': i['number'], 'title': i.get('title',''),
            'body': i.get('body','') or '',
            'labels': [{'name': l['name']} for l in i.get('labels',[])]}
@@ -1850,16 +1977,14 @@ print(json.dumps(result, indent=2))
 
     list-prs)
       if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: GET $_API/pulls?state=open&per_page=100"
+        echo "[dry-run] github-api: GET $_API/pulls?state=open&per_page=100 (paginated via Link headers until exhausted)"
         return 0
       fi
       local _raw
-      _raw="$(_ga_req GET "$_API/pulls?state=open&per_page=100")"
+      _raw="$(_ga_fetch_all_pages "$_API/pulls?state=open&per_page=100")" || exit 1
       printf '%s' "$_raw" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
-if len(data) == 100:
-    print('NOTE: github-api: results truncated at 100 items', file=sys.stderr)
 result = [{'number': i['number'], 'title': i.get('title',''),
            'headRefName': i.get('head',{}).get('ref',''),
            'labels': [{'name': l['name']} for l in i.get('labels',[])]}
@@ -3007,7 +3132,22 @@ _gitlab() {
   [ -n "$REPO" ] && RARG="-R $REPO"
   case "$verb" in
     list-issues)
-      _run glab issue list --state opened $RARG "$@"
+      # glab's default page size is well under 100; --per-page raises it to
+      # GitLab's own per-page ceiling. glab has no built-in "fetch every
+      # page" flag, so unlike github/github-api this stays capped — warn
+      # loudly naming the cap whenever a result lands exactly on it, so
+      # truncation is never silent (#171).
+      local _gli_cap=100
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] glab issue list --state opened --per-page $_gli_cap $RARG $*"
+        return 0
+      fi
+      local _gli_out
+      _gli_out="$(glab issue list --state opened --per-page "$_gli_cap" $RARG "$@")" || exit 1
+      local _gli_count
+      _gli_count="$(printf '%s' "$_gli_out" | _json_array_count)"
+      _list_cap_warn list-issues "$_gli_cap" "$_gli_count" "glab --per-page ceiling" issues
+      printf '%s\n' "$_gli_out"
       ;;
     view-issue)
       _run glab issue view "$1" $RARG
@@ -3058,7 +3198,19 @@ _gitlab() {
       _run glab mr view "$1" $RARG
       ;;
     list-prs)
-      _run glab mr list --state opened $RARG
+      # Same reasoning as list-issues above: raise the page size and warn
+      # loudly if a result lands exactly on the cap (#171).
+      local _glp_cap=100
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] glab mr list --state opened --per-page $_glp_cap $RARG"
+        return 0
+      fi
+      local _glp_out
+      _glp_out="$(glab mr list --state opened --per-page "$_glp_cap" $RARG)" || exit 1
+      local _glp_count
+      _glp_count="$(printf '%s' "$_glp_out" | _json_array_count)"
+      _list_cap_warn list-prs "$_glp_cap" "$_glp_count" "glab --per-page ceiling" PRs
+      printf '%s\n' "$_glp_out"
       ;;
     diff-pr)
       _run glab mr diff "$1" $RARG
@@ -3272,9 +3424,25 @@ _azure() {
       # query instead. The GitHub adapter's "open issues only" maps to ADO's
       # non-terminal states — which are Done/Removed/Closed, not just Closed —
       # so exclude all three.
-      _run az boards query $ORG_ARG $PROJ_ARG \
-        --wiql "SELECT [System.Id], [System.Title], [System.State], [System.Tags] FROM WorkItems WHERE [System.State] NOT IN ('Closed', 'Done', 'Removed') ORDER BY [System.ChangedDate] DESC" \
-        --output json
+      #
+      # PAGINATION (#171): `az boards query` has no --top/--page flag (see
+      # `az boards query --help`); WIQL itself supports "SELECT TOP N" in the
+      # query text, so that's the only cheap cap available. Warn loudly if a
+      # result lands exactly on it, since more work items may exist beyond
+      # what we can fetch this way.
+      local _azli_cap=1000
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] az boards query $ORG_ARG $PROJ_ARG --wiql \"SELECT TOP $_azli_cap ...\" --output json"
+        return 0
+      fi
+      local _azli_out
+      _azli_out="$(az boards query $ORG_ARG $PROJ_ARG \
+        --wiql "SELECT TOP $_azli_cap [System.Id], [System.Title], [System.State], [System.Tags] FROM WorkItems WHERE [System.State] NOT IN ('Closed', 'Done', 'Removed') ORDER BY [System.ChangedDate] DESC" \
+        --output json)" || exit 1
+      local _azli_count
+      _azli_count="$(printf '%s' "$_azli_out" | _json_array_count)"
+      _list_cap_warn list-issues "$_azli_cap" "$_azli_count" "WIQL SELECT TOP ceiling" "work items"
+      printf '%s\n' "$_azli_out"
       ;;
     view-issue)
       _run az boards work-item show --id "$1" $ORG_ARG --output json
@@ -3393,7 +3561,19 @@ PYEOF
       _run az repos pr show --id "$1" $ORG_ARG --output json
       ;;
     list-prs)
-      _run az repos pr list --status active $ORG_ARG $PROJ_ARG --output json
+      # PAGINATION (#171): `az repos pr list --top` exists (unlike `az boards
+      # query`), so use it and warn loudly if a result lands exactly on it.
+      local _azlp_cap=1000
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] az repos pr list --status active --top $_azlp_cap $ORG_ARG $PROJ_ARG --output json"
+        return 0
+      fi
+      local _azlp_out
+      _azlp_out="$(az repos pr list --status active --top "$_azlp_cap" $ORG_ARG $PROJ_ARG --output json)" || exit 1
+      local _azlp_count
+      _azlp_count="$(printf '%s' "$_azlp_out" | _json_array_count)"
+      _list_cap_warn list-prs "$_azlp_cap" "$_azlp_count" "az repos pr list --top ceiling" PRs
+      printf '%s\n' "$_azlp_out"
       ;;
     diff-pr)
       # az has no PR-diff command. Fetch both refs and diff them — this reads the

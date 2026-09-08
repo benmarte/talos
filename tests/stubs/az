@@ -28,8 +28,13 @@ case "$args" in
   "boards work-item show "*)
     printf '{"id":5,"fields":{"System.Title":"Fix login crash","System.Tags":"bug; ui"}}\n' ;;
   "boards query "*)
-    # Canned WIQL result set for list-issues
-    printf '[{"id":5,"fields":{"System.Title":"Fix login crash","System.State":"New","System.Tags":"pipeline:ready"}}]\n' ;;
+    # Canned WIQL result set for list-issues.
+    # Override STUB_AZURE_WORKITEM_LIST to simulate a capped/large result set (#171).
+    if [ -n "${STUB_AZURE_WORKITEM_LIST:-}" ]; then
+      printf '%s\n' "$STUB_AZURE_WORKITEM_LIST"
+    else
+      printf '[{"id":5,"fields":{"System.Title":"Fix login crash","System.State":"New","System.Tags":"pipeline:ready"}}]\n'
+    fi ;;
   "boards work-item create "*)
     printf '{"id":1}\n' ;;
   "boards work-item update "*)
@@ -38,6 +43,13 @@ case "$args" in
     printf '{"pullRequestId":7,"status":"completed"}\n' ;;
   "repos pr create "*)
     printf '{"pullRequestId":7,"status":"active"}\n' ;;
+  "repos pr list "*)
+    # Override STUB_AZURE_PR_LIST to simulate a capped/large result set (#171).
+    if [ -n "${STUB_AZURE_PR_LIST:-}" ]; then
+      printf '%s\n' "$STUB_AZURE_PR_LIST"
+    else
+      printf '[{"pullRequestId":7,"title":"fix: guard","status":"active","sourceRefName":"refs/heads/fix/issue-42-guard"}]\n'
+    fi ;;
   "repos pr show "*)
     # diff-pr / checkout-pr query specific refs with -o tsv; honor that.
     case "$args" in
