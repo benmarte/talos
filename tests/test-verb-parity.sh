@@ -154,4 +154,28 @@ fi
 # The real mutation test runs the full parity check against the pre-fix script —
 # that is tested in CI by the "verify: bash tests/run-tests.sh" step.
 
+# ── Single-definition assertions (#177 slice 1) ───────────────────────────────
+# _github and _github_api used to hand-duplicate the marker-parsing regexes
+# and constants below (and had already drifted on message wording -- #177).
+# Slice 1 moved them into shared helpers defined exactly once, above both
+# adapters. Assert each string's exact-text occurrence count in the script is
+# 1, so a future PR that reintroduces a second definition fails loudly here
+# instead of silently drifting again.
+assert_single_definition() {  # $1=needle (fixed string) $2=label
+  local count
+  count="$(grep -Fc -- "$1" "$VCS")"
+  assert_eq "1" "$count" "$2"
+}
+
+assert_single_definition "talos:attempt\s+stage=" \
+  "single-definition: talos:attempt marker regex"
+assert_single_definition "KNOWN_STAGES = {" \
+  "single-definition: KNOWN_STAGES"
+assert_single_definition "talos:approval\s+sha=" \
+  "single-definition: talos:approval marker regex (strict extractor)"
+assert_single_definition "APPROVAL_LABELS = {" \
+  "single-definition: APPROVAL_LABELS"
+assert_single_definition "VALID_ROLES = {" \
+  "single-definition: VALID_ROLES"
+
 finish
