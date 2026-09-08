@@ -25,7 +25,7 @@
     "docs": true
   },
   "verify": [
-    "bash tests/run-tests.sh"
+    "bash tests/run-tests.sh --quiet"
   ],
   "merge": {
     "method": "squash",
