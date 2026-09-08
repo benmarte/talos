@@ -295,6 +295,8 @@ All keys live in `talos.pipeline.json` (or `talos.pipeline.yml` if PyYAML is ins
 | `hooks.pre_dispatch` | `""` (disabled) | Shell command run before every stage's prompt is built (all roles, both the native subagent and `pipeline-agent.sh` adapter paths). Non-empty stdout is prepended to the prompt under a `## Context` heading; a non-zero exit, a timeout, or empty stdout is a silent no-op with one line on stderr — it never blocks dispatch. See [Hooks](#hooks) below for the stdin JSON schema. |
 | `hooks.post_stage` | `""` (disabled) | Shell command run after every verdict, approval, block, and merge — fire-and-forget with the same never-block contract as `hooks.pre_dispatch`. Receives a JSON outcome event on stdin. See [Hooks](#hooks) below for the schema. |
 | `hooks.timeout_s` | `30` | Seconds `hooks.pre_dispatch` / `hooks.post_stage` may run before being killed. Must be a positive integer; a non-integer or non-positive value is rejected (stderr warning, falls back to the default). |
+| `events.enabled` | `true` | Whether every `hooks.post_stage` payload is also appended, as one JSON line, to the local events log — independently of whether `hooks.post_stage` itself is configured. See [Events log](#events-log) below. |
+| `events.path` | `.talos/events.jsonl` | Path to the events log, relative to the **main repository root** (resolved via `git rev-parse --git-common-dir`, so every linked worktree of the same repo appends to the one file) unless already absolute. |
 
 ### Hooks
 
@@ -355,6 +357,24 @@ The configured command receives this JSON on stdin (fields the caller didn't sup
 Contract: a non-zero exit or a timeout (`hooks.timeout_s`) is a silent no-op with exactly one line on stderr; `hooks.post_stage` never blocks the pipeline and has no output to prepend anywhere — it is purely a side channel. `TALOS_ROLE` and `TALOS_ISSUE_NUMBER` are also exported into the command's environment.
 
 Implemented in `scripts/pipeline-hooks.sh` (`post_stage`, sharing its watchdog/timeout machinery with `pre_dispatch`); wired into the adapter path (`scripts/pipeline-agent.sh`, once per stage run — event `stage_complete`, verdict from the runner's exit code) and the native orchestrator path (`skills/pipeline/SKILL.md`, Conversation stream protocol, Rule 3).
+
+### Events log
+
+Every `hooks.post_stage` payload (see the JSON schema above) is also appended, as one JSON line, to a local `.talos/events.jsonl` audit log — independently of whether `hooks.post_stage` itself is configured. This gives every run a local, durable record of what happened without depending on an external sink.
+
+Enabled by default (`events.enabled: true`); set it to `false` to disable. The log path (`events.path`, default `.talos/events.jsonl`) is resolved relative to the **main repository root** via `git rev-parse --git-common-dir` — so a developer/QA/reviewer stage running from inside a per-issue worktree still appends to the one log file shared by every worktree of the repo. `.talos/` is gitignored by default.
+
+Appends are a single `printf '%s\n' >>` (one `O_APPEND` write syscall) — a JSON event line is well under the POSIX `PIPE_BUF` atomic-write threshold, so concurrent stages appending at once (e.g. under `issues.max_parallel`) never interleave partial lines. No file lock is used or needed. A failure to write (unresolvable path, permissions, disk full) is a stderr note only — it never affects the pipeline's exit code.
+
+Read the log with `scripts/pipeline-events.sh`:
+
+```
+bash scripts/pipeline-events.sh path
+bash scripts/pipeline-events.sh list [--issue N] [--role R] [--event E] [--last K] [--json]
+bash scripts/pipeline-events.sh tail [--issue N]
+```
+
+`list` (and `tail`, shorthand for `list --last 20`) print one line per matching event, oldest first: by default a compact tab-separated table (`ts`, `event`, `role`, `issue`, `pr`, `verdict`, `summary` truncated to 80 chars); `--json` prints one JSON object per line instead. A malformed line in the log is skipped, with the count of skipped lines reported once on stderr — never on stdout, and never fatal.
 
 ### Board status options: required columns and `talos:board-unverified`
 

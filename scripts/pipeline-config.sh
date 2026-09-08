@@ -78,7 +78,8 @@ _KNOWN_CONFIG_KEYS_JSON='[
   "limits.max_fix_attempts", "limits.max_total_dispatches",
   "limits.max_retries",
   "markers.trusted_authors",
-  "hooks.pre_dispatch", "hooks.post_stage", "hooks.timeout_s"
+  "hooks.pre_dispatch", "hooks.post_stage", "hooks.timeout_s",
+  "events.enabled", "events.path"
 ]'
 
 if [ "${1:-}" = "--dump" ]; then
