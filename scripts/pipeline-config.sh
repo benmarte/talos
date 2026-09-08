@@ -37,6 +37,48 @@ set -u
 # the single-key path, so a lookup against this dump is byte-identical to
 # calling this script for that key directly. Purely additive: an early
 # exit, does not touch anything below.
+
+# ── Known config keys (#176) ────────────────────────────────────────────────
+# Every documented config key, "*" standing in for a dynamic segment
+# (board.status_map.*, agents.roles.*.model, etc.). Defined once, here, at
+# module level, as JSON -- the --dump path and the single-key path below
+# each parse the config file in their own separate python3 process (so the
+# unknown-key check itself can't literally be one shared function call, see
+# both copies' comments), but both are handed this exact same JSON via argv
+# instead of each embedding their own copy of the list as a Python literal.
+_KNOWN_CONFIG_KEYS_JSON='[
+  "base_branch", "release_branch", "repo",
+  "vcs.provider", "vcs.repo", "vcs.token_env",
+  "vcs.azure.org_url", "vcs.azure.project", "vcs.azure.work_item_type",
+  "vcs.azure.area_path", "vcs.file.source.path",
+  "board.enabled", "board.project_number", "board.owner",
+  "board.status_field", "board.statuses.*", "board.status_map.*",
+  "board.azure_states.*",
+  "verify", "verify.commands", "verify.qa_mode", "verify.targeted",
+  "verify.ci_wait_s", "verify.timeout_ms",
+  "merge.auto", "merge.method", "merge.required_checks",
+  "merge.delete_branch", "merge.forbidden_files",
+  "merge.forbidden_files_replace", "merge.forbidden_files_allow",
+  "merge.approval_waiver_paths",
+  "issues.label_filter", "issues.skip_labels", "issues.max_parallel",
+  "execution.isolation", "execution.worktree_warn_threshold",
+  "roles.validator", "roles.pm", "roles.pm_skip_when_spec_present",
+  "roles.qa", "roles.reviewer", "roles.security", "roles.docs",
+  "roles.docs_mode", "roles.planner",
+  "comments.enabled", "comments.header", "comments.templates_dir",
+  "notifications.slack_channel", "notifications.discord_channel",
+  "notifications.buzz_channel", "notifications.buzz_relay",
+  "notifications.templates_dir", "notifications.threading",
+  "notifications.events",
+  "agents.runner", "agents.subagents", "agents.runner_args",
+  "agents.runner_cmd", "agents.model",
+  "agents.roles.*.model", "agents.roles.*.runner",
+  "agents.roles.*.runner_cmd",
+  "limits.max_fix_attempts", "limits.max_total_dispatches",
+  "limits.max_retries",
+  "markers.trusted_authors"
+]'
+
 if [ "${1:-}" = "--dump" ]; then
   _DCFG="${PIPELINE_CONFIG:-}"
   if [ -z "$_DCFG" ]; then
@@ -54,10 +96,11 @@ if [ "${1:-}" = "--dump" ]; then
   if [ -z "$_DCFG" ] || [ ! -f "$_DCFG" ]; then
     exit 0
   fi
-  python3 - "$_DCFG" <<'PYEOF'
+  python3 - "$_DCFG" "$_KNOWN_CONFIG_KEYS_JSON" <<'PYEOF'
 import sys
 
 cfg_path = sys.argv[1]
+known_keys_json = sys.argv[2]
 
 def walk(obj, parts):
     for part in parts:
@@ -91,48 +134,22 @@ if not isinstance(cfg, dict):
 # invoking script goes on to look up. The single-key path below runs this
 # same check for direct (non-cached) callers -- it parses the file
 # independently in its own python3 process, so the check can't literally be
-# one shared function call; both paths define the identical
-# _KNOWN_CONFIG_KEYS list and _warn_unknown_keys() helper (same
-# wildcard-matching rules, same nearest-match suggestion, same env
-# opt-out) so a typo warns identically no matter which path answered the
-# lookup. Runs against the config exactly as parsed -- not after any
-# derived-default keys (verify.qa_mode, etc.) are synthesized below -- so
-# only keys the user actually wrote are ever flagged.
+# one shared function call, but both paths define the identical
+# _warn_unknown_keys() helper (same wildcard-matching rules, same
+# nearest-match suggestion, same env opt-out) against the same
+# _KNOWN_CONFIG_KEYS list (module-level, passed in via argv -- see the
+# top of this script) so a typo warns identically no matter which path
+# answered the lookup. Runs against the config exactly as parsed -- not
+# after any derived-default keys (verify.qa_mode, etc.) are synthesized
+# below -- so only keys the user actually wrote are ever flagged.
 import difflib
+import json
 import os
 
-_KNOWN_CONFIG_KEYS = [
-    "base_branch", "release_branch", "repo",
-    "vcs.provider", "vcs.repo", "vcs.token_env",
-    "vcs.azure.org_url", "vcs.azure.project", "vcs.azure.work_item_type",
-    "vcs.azure.area_path", "vcs.file.source.path",
-    "board.enabled", "board.project_number", "board.owner",
-    "board.status_field", "board.statuses.*", "board.status_map.*",
-    "board.azure_states.*",
-    "verify", "verify.qa_mode", "verify.targeted", "verify.ci_wait_s",
-    "verify.timeout_ms",
-    "merge.auto", "merge.method", "merge.required_checks",
-    "merge.delete_branch", "merge.forbidden_files",
-    "merge.forbidden_files_replace", "merge.forbidden_files_allow",
-    "merge.approval_waiver_paths",
-    "issues.label_filter", "issues.skip_labels", "issues.max_parallel",
-    "execution.isolation", "execution.worktree_warn_threshold",
-    "roles.validator", "roles.pm", "roles.pm_skip_when_spec_present",
-    "roles.qa", "roles.reviewer", "roles.security", "roles.docs",
-    "roles.docs_mode", "roles.planner",
-    "comments.enabled", "comments.header", "comments.templates_dir",
-    "notifications.slack_channel", "notifications.discord_channel",
-    "notifications.buzz_channel", "notifications.buzz_relay",
-    "notifications.templates_dir", "notifications.threading",
-    "notifications.events",
-    "agents.runner", "agents.subagents", "agents.runner_args",
-    "agents.runner_cmd", "agents.model",
-    "agents.roles.*.model", "agents.roles.*.runner",
-    "agents.roles.*.runner_cmd",
-    "limits.max_fix_attempts", "limits.max_total_dispatches",
-    "limits.max_retries",
-    "markers.trusted_authors",
-]
+# Handed in via argv (module-level definition, see top of this script) so
+# both this path and the single-key path below stay byte-identical for
+# every key without either duplicating the list as a Python literal.
+_KNOWN_CONFIG_KEYS = json.loads(known_keys_json)
 
 def _present_leaf_keys(obj, prefix, out):
     if isinstance(obj, dict):
@@ -171,12 +188,12 @@ def _warn_unknown_keys(cfg_obj):
         match = difflib.get_close_matches(key, candidates, n=1, cutoff=0.6)
         if match:
             sys.stderr.write(
-                "pipeline-config: [warn] unknown config key '%s' "
-                "(did you mean '%s'?)\n" % (key, match[0])
+                "pipeline-config: [warn] unknown config key %r "
+                "(did you mean %r?)\n" % (key, match[0])
             )
         else:
             sys.stderr.write(
-                "pipeline-config: [warn] unknown config key '%s'\n" % key
+                "pipeline-config: [warn] unknown config key %r\n" % key
             )
 
 try:
@@ -303,14 +320,15 @@ if [ -z "$CFG" ] || [ ! -f "$CFG" ]; then
 fi
 
 # ── Parse and extract with Python ────────────────────────────────────────────
-# The heredoc passes file path, key, and default as argv to avoid shell
-# quoting issues with special characters in values.
-python3 - "$CFG" "$KEY" "$DEFAULT" <<'PYEOF'
+# The heredoc passes file path, key, default, and the known-keys JSON as
+# argv to avoid shell quoting issues with special characters in values.
+python3 - "$CFG" "$KEY" "$DEFAULT" "$_KNOWN_CONFIG_KEYS_JSON" <<'PYEOF'
 import sys
 
 cfg_path = sys.argv[1]
 key      = sys.argv[2]
 default  = sys.argv[3] if len(sys.argv) > 3 else ""
+known_keys_json = sys.argv[4] if len(sys.argv) > 4 else "[]"
 
 def walk(obj, parts):
     for part in parts:
@@ -341,49 +359,23 @@ except Exception:
 # ── Unknown-key warning (#176) ──────────────────────────────────────────────
 # This path parses the config file independently of the --dump path above
 # (two separate python3 processes), so the check can't literally be one
-# shared function call -- both paths define the identical
-# _KNOWN_CONFIG_KEYS list and _warn_unknown_keys() helper (same
-# wildcard-matching rules, same nearest-match suggestion, same env
-# opt-out) so a typo warns identically no matter which path answered the
-# lookup. cfg() (pipeline-cfg-cache.sh) calls --dump once per script
+# shared function call, but both paths define the identical
+# _warn_unknown_keys() helper (same wildcard-matching rules, same
+# nearest-match suggestion, same env opt-out) against the same
+# _KNOWN_CONFIG_KEYS list (module-level, passed in via argv -- see the
+# top of this script) so a typo warns identically no matter which path
+# answered the lookup. cfg() (pipeline-cfg-cache.sh) calls --dump once per script
 # invocation and answers every lookup from that cache, so a cached caller
 # only hits the --dump path's copy of this check; a direct (non-cached)
 # call to this script hits this copy instead, once per invocation.
 import difflib
+import json
 import os
 
-_KNOWN_CONFIG_KEYS = [
-    "base_branch", "release_branch", "repo",
-    "vcs.provider", "vcs.repo", "vcs.token_env",
-    "vcs.azure.org_url", "vcs.azure.project", "vcs.azure.work_item_type",
-    "vcs.azure.area_path", "vcs.file.source.path",
-    "board.enabled", "board.project_number", "board.owner",
-    "board.status_field", "board.statuses.*", "board.status_map.*",
-    "board.azure_states.*",
-    "verify", "verify.qa_mode", "verify.targeted", "verify.ci_wait_s",
-    "verify.timeout_ms",
-    "merge.auto", "merge.method", "merge.required_checks",
-    "merge.delete_branch", "merge.forbidden_files",
-    "merge.forbidden_files_replace", "merge.forbidden_files_allow",
-    "merge.approval_waiver_paths",
-    "issues.label_filter", "issues.skip_labels", "issues.max_parallel",
-    "execution.isolation", "execution.worktree_warn_threshold",
-    "roles.validator", "roles.pm", "roles.pm_skip_when_spec_present",
-    "roles.qa", "roles.reviewer", "roles.security", "roles.docs",
-    "roles.docs_mode", "roles.planner",
-    "comments.enabled", "comments.header", "comments.templates_dir",
-    "notifications.slack_channel", "notifications.discord_channel",
-    "notifications.buzz_channel", "notifications.buzz_relay",
-    "notifications.templates_dir", "notifications.threading",
-    "notifications.events",
-    "agents.runner", "agents.subagents", "agents.runner_args",
-    "agents.runner_cmd", "agents.model",
-    "agents.roles.*.model", "agents.roles.*.runner",
-    "agents.roles.*.runner_cmd",
-    "limits.max_fix_attempts", "limits.max_total_dispatches",
-    "limits.max_retries",
-    "markers.trusted_authors",
-]
+# Handed in via argv (module-level definition, see top of this script) so
+# both this path and the --dump path above stay byte-identical for every
+# key without either duplicating the list as a Python literal.
+_KNOWN_CONFIG_KEYS = json.loads(known_keys_json)
 
 def _present_leaf_keys(obj, prefix, out):
     if isinstance(obj, dict):
@@ -422,12 +414,12 @@ def _warn_unknown_keys(cfg_obj):
         match = difflib.get_close_matches(key, candidates, n=1, cutoff=0.6)
         if match:
             sys.stderr.write(
-                "pipeline-config: [warn] unknown config key '%s' "
-                "(did you mean '%s'?)\n" % (key, match[0])
+                "pipeline-config: [warn] unknown config key %r "
+                "(did you mean %r?)\n" % (key, match[0])
             )
         else:
             sys.stderr.write(
-                "pipeline-config: [warn] unknown config key '%s'\n" % key
+                "pipeline-config: [warn] unknown config key %r\n" % key
             )
 
 try:

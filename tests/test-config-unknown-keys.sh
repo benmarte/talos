@@ -169,4 +169,41 @@ assert_eq "1" "$_count11" \
   "11: the warning appears exactly once through a real cache consumer"
 rm talos.pipeline.json
 
+# ---- 12: dict-form "verify" with "commands" plus the other four verify.* ---
+# sub-keys produces zero warnings (PR #217 review: _KNOWN_CONFIG_KEYS omitted
+# "verify.commands", the real sub-key the dict form's "commands" list is read
+# from -- pipeline-config.sh itself does `.get("commands", [])` -- so this
+# exact shape used to warn "unknown config key 'verify.commands'").
+cat > talos.pipeline.json <<'EOF'
+{
+  "merge": {"required_checks": ["build"]},
+  "verify": {
+    "commands": ["bash tests/run-tests.sh --quiet"],
+    "qa_mode": "ci",
+    "targeted": true,
+    "ci_wait_s": 900,
+    "timeout_ms": 600000
+  }
+}
+EOF
+err12="$(bash "$CFG_SH" --dump 2>&1 1>/dev/null)"
+assert_eq "" "$err12" \
+  "12: dict-form verify.commands plus qa_mode/targeted/ci_wait_s/timeout_ms produces zero warnings"
+rm talos.pipeline.json
+
+# ---- 13: a key containing a newline is repr-escaped into a single warning --
+# line (PR #217 security: the warning printed `key`/nearest-match with %s,
+# so a key literally containing "\n" or an ANSI escape could forge extra
+# stderr lines; %r repr-escapes control characters instead).
+cat > talos.pipeline.json <<'EOF'
+{"a\nb": 1}
+EOF
+err13="$(bash "$CFG_SH" --dump 2>&1 1>/dev/null)"
+assert_contains "$err13" "unknown config key 'a\\nb'" \
+  "13: a key containing a literal newline is repr-escaped in the warning"
+_lines13="$(printf '%s\n' "$err13" | wc -l | tr -d ' ')"
+assert_eq "1" "$_lines13" \
+  "13: the repr-escaped warning is exactly one stderr line"
+rm talos.pipeline.json
+
 finish
