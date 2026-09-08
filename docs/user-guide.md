@@ -860,6 +860,15 @@ pack installed.
 
 ## Troubleshooting
 
+- **Verify output is too noisy for the developer/QA agent's context** — pass
+  `--quiet` to `tests/run-tests.sh` (or set `TALOS_TEST_QUIET=1`) as the
+  `verify:` command in `talos.pipeline.yml`/`talos.pipeline.json`. It prints
+  one line per test file (pass/fail/cached) plus full output only for failing
+  files, instead of every assertion of every file. The developer and QA
+  prompts already prefer summary output for verify commands and are
+  instructed to quote only failures — never paste full green output into
+  comments or final messages — so `--quiet` (or your own suite's equivalent
+  summary flag) keeps that guidance cheap to follow.
 - **Notifications are plain one-liners, not rich cards** — templates missing.
   Re-run `install.sh <repo> --force` (older installs didn't ship
   `templates/`; manual copies often omit them).

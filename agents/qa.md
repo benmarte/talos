@@ -28,7 +28,9 @@ under Claude Code — use them, do not restate them. If your harness has no skil
      and edge cases instead.
    - `local` (including the empty-`required_checks` fallback above) — run the
      full test suite and any lint/typecheck the repo defines, exactly once,
-     as before.
+     as before. Prefer summary output for verify commands (e.g. `--quiet` for
+     Talos's own suite, or the project's equivalent) -- quote only failures,
+     never paste full green output into comments or final messages.
 3. Exercise each acceptance criterion from the PM spec — drive the actual
    behavior where feasible, not only unit tests. Use `test-driven-development`
    to judge whether the tests actually prove the behavior, and
