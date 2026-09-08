@@ -178,4 +178,28 @@ assert_single_definition "APPROVAL_LABELS = {" \
 assert_single_definition "VALID_ROLES = {" \
   "single-definition: VALID_ROLES"
 
+# ── Single-definition assertions (#177 slice 2) ───────────────────────────────
+# _github and _github_api used to hand-duplicate the approval-SHA waiver
+# rules below, and had drifted on the "rejected" message wording (em-dash in
+# _github vs "--" in _github_api). Slice 2 moved them into
+# _vcs_shared_check_approval_sha, defined exactly once, above both adapters.
+assert_single_definition "HARDCODED_NONWAIVABLE_PREFIXES = (" \
+  "single-definition: HARDCODED_NONWAIVABLE_PREFIXES"
+assert_single_definition "HARDCODED_NONWAIVABLE_EXACT    = (" \
+  "single-definition: HARDCODED_NONWAIVABLE_EXACT"
+assert_single_definition "DEFAULT_WAIVER = " \
+  "single-definition: DEFAULT_WAIVER"
+assert_single_definition "VALIDATION_CANARIES = [" \
+  "single-definition: VALIDATION_CANARIES"
+assert_single_definition "def is_hardcoded_nonwaivable" \
+  "single-definition: is_hardcoded_nonwaivable"
+assert_single_definition "def path_matches" \
+  "single-definition: path_matches"
+assert_single_definition "def validate_waiver_entries" \
+  "single-definition: validate_waiver_entries"
+assert_single_definition "rejected (catch-all or covers non-waivable paths)" \
+  "single-definition: waiver-validation rejection message (em-dash/hyphen drift, #177)"
+assert_single_definition "STALE {label} ({role}): {reason}" \
+  "single-definition: STALE message construction"
+
 finish

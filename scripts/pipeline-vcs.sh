@@ -1251,6 +1251,228 @@ sys.exit(0)
 "
 }
 
+# _vcs_shared_check_approval_sha
+#   stdin:  the same PR JSON both adapters assemble for check-approval-sha
+#           ({"headRefOid", "baseRefName", "labels", "comments"} -- only
+#           "headRefOid" and "baseRefName" are read here; the entries below
+#           already carry whatever "labels"/"comments" produced).
+#   env:    MARKER_ENTRIES -- stdout of _vcs_shared_check_approval_marker
+#             (rc 0 case): {"entries": [{"label","role","sha","reason"}]}.
+#           WAIVER_PATHS   -- merge.approval_waiver_paths config value (JSON
+#             array, newline-delimited fallback, or empty for DEFAULT_WAIVER).
+#           REPO_ROOT      -- repo root for the `git diff`/`git cat-file`
+#             probes below (both adapters resolve this identically via
+#             `git rev-parse --show-toplevel`; it is local-repo work, not
+#             GitHub-API work, so it stays here rather than per-adapter).
+#           STALE_LIST     -- "true" to additionally print one greppable
+#             "stale role=<role> label=<label>" stdout line per stale entry.
+#   stdout: "check-approval-sha: all approval labels are current" (plus, when
+#           STALE_LIST=true and there ARE stale entries, the stale-role lines
+#           instead) on success paths; STALE diagnostics go to stderr.
+#   exit:   0 when every approval label is current or waived; 1 on stdin
+#           parse failure, bad waiver config, or any stale/non-waivable entry.
+#
+# Waiver rules: a SHA-mismatched approval is stale unless every file changed
+# between the marker SHA and head is covered by merge.approval_waiver_paths
+# (default: *.md docs/** CHANGELOG.md *.example) AND none of the hard-coded
+# non-waivable paths (scripts/**, tests/**, pipeline config filenames) --
+# checked FIRST, before the config waiver, so config can never widen a waiver
+# to cover them. Files that only arrived via a base-branch sync (absent from
+# the PR's own three-dot diff, #102) are excluded from consideration.
+_vcs_shared_check_approval_sha() {
+  python3 -c "
+import fnmatch, json, os, subprocess, sys
+
+# Hard-coded non-waivable: applied AFTER the config waiver check.
+# The config can NEVER widen a waiver to cover these paths.
+HARDCODED_NONWAIVABLE_PREFIXES = ('scripts/', 'tests/')
+HARDCODED_NONWAIVABLE_EXACT    = (
+    'talos.pipeline.yml', 'talos.pipeline.yaml', 'talos.pipeline.json',
+    '.claude-pipeline.yaml', '.claude-pipeline.json',
+    'pipeline.yaml', 'pipeline.json',
+)
+
+# Default waiver paths -- used when the config key is absent or unparseable.
+DEFAULT_WAIVER = ['*.md', 'docs/**', 'CHANGELOG.md', '*.example']
+
+# Validation canaries: if a waiver entry matches any of these it is too broad
+# (catch-all or covers non-waivable territory) and must be rejected.
+# Generated to catch both basename-level and full-path-level matches.
+VALIDATION_CANARIES = [
+    'scripts/core.sh',      'scripts/pipeline-vcs.sh',
+    'sub/dir/scripts/x.sh',
+    'tests/test-vcs.sh',    'tests/run-tests.sh',
+    'sub/dir/tests/y.sh',
+    'talos.pipeline.yml',   'talos.pipeline.yaml',  'talos.pipeline.json',
+    '.claude-pipeline.yaml', '.claude-pipeline.json',
+    'pipeline.yaml',        'pipeline.json',
+    'src/arbitrary.js',     'lib/main.py', 'cmd/server.go',
+    'sub/dir/arbitrary.js',
+]
+
+def is_hardcoded_nonwaivable(path):
+    for prefix in HARDCODED_NONWAIVABLE_PREFIXES:
+        if path == prefix.rstrip('/') or path.startswith(prefix):
+            return True
+    return path in HARDCODED_NONWAIVABLE_EXACT
+
+def path_matches(path, patterns):
+    base = os.path.basename(path)
+    return any(fnmatch.fnmatch(base, p) or fnmatch.fnmatch(path, p) for p in patterns)
+
+def validate_waiver_entries(entries):
+    errors = []
+    for entry in entries:
+        for canary in VALIDATION_CANARIES:
+            base = os.path.basename(canary)
+            if fnmatch.fnmatch(base, entry) or fnmatch.fnmatch(canary, entry):
+                errors.append(
+                    f\"pipeline-vcs: ERROR: merge.approval_waiver_paths entry '{entry}'\"
+                    f\" would waive '{canary}' — rejected (catch-all or covers non-waivable paths)\"
+                )
+                break
+    return errors
+
+# Resolve waiver paths from config (safe degradation: parse error -> defaults)
+raw_waiver = os.environ.get('WAIVER_PATHS', '').strip()
+if raw_waiver:
+    try:
+        parsed = json.loads(raw_waiver)
+        if not isinstance(parsed, list):
+            raise ValueError('not a list')
+        waiver_entries = [str(e).strip() for e in parsed if str(e).strip()]
+    except Exception:
+        # Newline-delimited fallback (YAML scalar block)
+        waiver_entries = [e.strip() for e in raw_waiver.splitlines() if e.strip()]
+else:
+    waiver_entries = DEFAULT_WAIVER
+
+# Validate waiver config entries -- fail closed on bad config
+errors = validate_waiver_entries(waiver_entries)
+if errors:
+    for e in errors:
+        print(e, file=sys.stderr)
+    sys.exit(1)
+
+# Parse PR data
+try:
+    data = json.load(sys.stdin)
+except Exception as exc:
+    print(f'pipeline-vcs: check-approval-sha: could not parse PR data: {exc}', file=sys.stderr)
+    sys.exit(1)
+
+head_sha = data.get('headRefOid', '').strip()
+if not head_sha:
+    print('pipeline-vcs: check-approval-sha: could not resolve head SHA', file=sys.stderr)
+    sys.exit(1)
+
+# Three-dot diff: compute the set of files the PR itself touches relative to
+# origin/<base>. Files that arrived purely from a base-branch sync are absent
+# from this set (they are already in the merge base). Fail-open: if base_ref_name
+# is absent or the diff fails, pr_own_files = None and the filter is skipped --
+# the full changed set is used (conservative / pre-fix behavior).
+base_ref_name = data.get('baseRefName', '').strip()
+pr_own_files = None
+if base_ref_name:
+    _own_root = os.environ.get('REPO_ROOT', '').strip() or None
+    try:
+        _pr_own = subprocess.run(
+            ['git', 'diff', '--name-only',
+             'origin/' + base_ref_name + '...' + head_sha],
+            capture_output=True, text=True,
+            cwd=_own_root, timeout=30
+        )
+        if _pr_own.returncode == 0:
+            pr_own_files = set(
+                f.strip() for f in _pr_own.stdout.splitlines() if f.strip()
+            )
+        # else: diff failed -- fail-open, pr_own_files stays None
+    except Exception:
+        pr_own_files = None  # fail-open
+
+try:
+    marker_data = json.loads(os.environ.get('MARKER_ENTRIES', '') or '{}')
+except Exception:
+    marker_data = {}
+entries = marker_data.get('entries', [])
+
+stale = []
+for entry in entries:
+    label, role = entry.get('label'), entry.get('role')
+    found_sha = entry.get('sha')
+    reason = entry.get('reason')
+
+    if reason is not None:
+        # Marker extraction already determined this label/role is stale
+        # (no marker, unparseable marker, or an invalid-length SHA).
+        stale.append((label, role, reason))
+        continue
+
+    if found_sha == head_sha:
+        continue  # Approval is current
+
+    # SHA mismatch -- check whether the delta is fully waivable
+    repo_root = os.environ.get('REPO_ROOT', '').strip() or None
+    try:
+        # Probe whether the marker SHA actually exists in this repository before
+        # attempting git diff.  git diff exits 128 for a missing SHA, which
+        # produces a confusing error about an invalid revision range.  A missing
+        # SHA is a different (and more serious) condition than a stale approval.
+        probe = subprocess.run(
+            ['git', 'cat-file', '-e', f'{found_sha}^{{commit}}'],
+            capture_output=True, cwd=repo_root, timeout=10
+        )
+        if probe.returncode != 0:
+            stale.append((label, role,
+                f'marker SHA {found_sha} does not exist in this repository -- '
+                f'the {role} stage posted an invalid SHA; it must re-run and '
+                f're-post its marker using a SHA read from git, not reconstructed'))
+            continue
+        result = subprocess.run(
+            ['git', 'diff', '--name-only', f'{found_sha}..{head_sha}'],
+            capture_output=True, text=True,
+            cwd=repo_root, timeout=30
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or 'non-zero exit')
+        changed = [f.strip() for f in result.stdout.splitlines() if f.strip()]
+    except Exception as exc:
+        # git diff failure -> treat delta as non-waivable (fail-closed)
+        print(f'pipeline-vcs: check-approval-sha: git diff failed: {exc}', file=sys.stderr)
+        stale.append((label, role, f'git diff failed: {exc}'))
+        continue
+
+    # Intersect with the PR's own file set to exclude base-branch-only changes.
+    # A file the PR itself also touches stays in pr_own_files and is evaluated
+    # normally -- fail-closed for same-file-touched-by-both (rule 2).
+    # If pr_own_files is None (three-dot diff unavailable) the filter is skipped.
+    if pr_own_files is not None:
+        changed = [f for f in changed if f in pr_own_files]
+
+    # First check hard-coded non-waivable paths (structurally enforced -- config cannot override)
+    blocked = [p for p in changed if is_hardcoded_nonwaivable(p)]
+    if not blocked:
+        # Then check config waiver list for remaining paths
+        blocked = [p for p in changed if not path_matches(p, waiver_entries)]
+
+    if blocked:
+        stale.append((label, role,
+            f'non-waivable files changed since {found_sha}: ' + ', '.join(blocked[:5])))
+    # else every changed file is waivable -- approval stands
+
+if stale:
+    for label, role, reason in stale:
+        print(f'pipeline-vcs: check-approval-sha: STALE {label} ({role}): {reason}', file=sys.stderr)
+    if os.environ.get('STALE_LIST', '') == 'true':
+        for label, role, reason in stale:
+            print(f'stale role={role} label={label}')
+    sys.exit(1)
+
+print('check-approval-sha: all approval labels are current')
+sys.exit(0)
+"
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # GITHUB ADAPTER
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2170,7 +2392,7 @@ json.dump({'comments': comments}, sys.stdout)
       # (merge.approval_waiver_paths; default: *.md docs/** CHANGELOG.md *.example).
       # Hard-coded non-waivable: scripts/**, tests/**, and all pipeline config
       # filenames (talos.pipeline.{yml,yaml,json}, .claude-pipeline.{yaml,json},
-      # pipeline.{yaml,json}) — enforced FIRST (before the config waiver) so
+      # pipeline.{yaml,json}) -- enforced FIRST (before the config waiver) so
       # the config waiver can never be widened to cover them.
       # Fail-closed: unresolvable head SHA, missing marker, or git diff failure
       # all exit non-zero.
@@ -2178,11 +2400,10 @@ json.dump({'comments': comments}, sys.stdout)
       # role ("stale role=<role> label=<label>"), on top of the unchanged
       # stderr prose and exit code. Without the flag, behavior is unchanged.
       #
-      # Marker extraction (which labels are present, and whether each has a
-      # valid, current-role, trusted-author marker) is handled once by
-      # _vcs_shared_check_approval_marker (#177 slice 1). The SHA-vs-head
-      # comparison and waiver-path logic below still lives per-adapter
-      # (#177 slice 2).
+      # Marker extraction is _vcs_shared_check_approval_marker (#177 slice 1);
+      # the SHA-vs-head comparison and waiver-path logic is
+      # _vcs_shared_check_approval_sha (#177 slice 2). This arm is now just
+      # fetch (gh pr view) -> call.
       local n="$1"; shift
       local stale_list_flag="false"
       if [ "${1:-}" = "--stale-list" ]; then
@@ -2218,205 +2439,12 @@ json.dump({'comments': comments}, sys.stdout)
       # comparison below.
       printf '%s\n' "$marker_out" | grep '^talos:' || true
       marker_json="$(printf '%s\n' "$marker_out" | grep -v '^talos:')"
-      local waiver_paths
+      local waiver_paths repo_root
       waiver_paths="$(cfg merge.approval_waiver_paths "")"
-      local repo_root
       repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
       printf '%s' "$pr_data" \
-        | WAIVER_PATHS="$waiver_paths" REPO_ROOT="${repo_root:-}" MARKER_ENTRIES="$marker_json" STALE_LIST="$stale_list_flag" python3 -c "
-import fnmatch, json, os, subprocess, sys
-
-# Hard-coded non-waivable: applied AFTER the config waiver check.
-# The config can NEVER widen a waiver to cover these paths.
-HARDCODED_NONWAIVABLE_PREFIXES = ('scripts/', 'tests/')
-HARDCODED_NONWAIVABLE_EXACT    = (
-    'talos.pipeline.yml', 'talos.pipeline.yaml', 'talos.pipeline.json',
-    '.claude-pipeline.yaml', '.claude-pipeline.json',
-    'pipeline.yaml', 'pipeline.json',
-)
-
-# Default waiver paths — used when the config key is absent or unparseable.
-DEFAULT_WAIVER = ['*.md', 'docs/**', 'CHANGELOG.md', '*.example']
-
-# Validation canaries: if a waiver entry matches any of these it is too broad
-# (catch-all or covers non-waivable territory) and must be rejected.
-# Generated to catch both basename-level and full-path-level matches.
-VALIDATION_CANARIES = [
-    'scripts/core.sh',      'scripts/pipeline-vcs.sh',
-    'sub/dir/scripts/x.sh',
-    'tests/test-vcs.sh',    'tests/run-tests.sh',
-    'sub/dir/tests/y.sh',
-    'talos.pipeline.yml',   'talos.pipeline.yaml',  'talos.pipeline.json',
-    '.claude-pipeline.yaml', '.claude-pipeline.json',
-    'pipeline.yaml',        'pipeline.json',
-    'src/arbitrary.js',     'lib/main.py', 'cmd/server.go',
-    'sub/dir/arbitrary.js',
-]
-
-def is_hardcoded_nonwaivable(path):
-    for prefix in HARDCODED_NONWAIVABLE_PREFIXES:
-        if path == prefix.rstrip('/') or path.startswith(prefix):
-            return True
-    return path in HARDCODED_NONWAIVABLE_EXACT
-
-def path_matches(path, patterns):
-    base = os.path.basename(path)
-    return any(fnmatch.fnmatch(base, p) or fnmatch.fnmatch(path, p) for p in patterns)
-
-def validate_waiver_entries(entries):
-    errors = []
-    for entry in entries:
-        for canary in VALIDATION_CANARIES:
-            base = os.path.basename(canary)
-            if fnmatch.fnmatch(base, entry) or fnmatch.fnmatch(canary, entry):
-                errors.append(
-                    \"pipeline-vcs: ERROR: merge.approval_waiver_paths entry '\" + entry +
-                    \"' would waive '\" + canary +
-                    \"' — rejected (catch-all or covers non-waivable paths)\"
-                )
-                break
-    return errors
-
-# Resolve waiver paths from config (safe degradation: parse error → defaults)
-raw_waiver = os.environ.get('WAIVER_PATHS', '').strip()
-if raw_waiver:
-    try:
-        parsed = json.loads(raw_waiver)
-        if not isinstance(parsed, list):
-            raise ValueError('not a list')
-        waiver_entries = [str(e).strip() for e in parsed if str(e).strip()]
-    except Exception:
-        # Newline-delimited fallback (YAML scalar block)
-        waiver_entries = [e.strip() for e in raw_waiver.splitlines() if e.strip()]
-else:
-    waiver_entries = DEFAULT_WAIVER
-
-# Validate waiver config entries — fail closed on bad config
-errors = validate_waiver_entries(waiver_entries)
-if errors:
-    for e in errors:
-        print(e, file=sys.stderr)
-    sys.exit(1)
-
-# Parse PR data
-try:
-    data = json.load(sys.stdin)
-except Exception as exc:
-    print(f'pipeline-vcs: check-approval-sha: could not parse PR data: {exc}', file=sys.stderr)
-    sys.exit(1)
-
-head_sha = data.get('headRefOid', '').strip()
-if not head_sha:
-    print('pipeline-vcs: check-approval-sha: could not resolve head SHA', file=sys.stderr)
-    sys.exit(1)
-
-# Three-dot diff: compute the set of files the PR itself touches relative to
-# origin/<base>. Files that arrived purely from a base-branch sync are absent
-# from this set (they are already in the merge base). Fail-open: if base_ref_name
-# is absent or the diff fails, pr_own_files = None and the filter is skipped —
-# the full changed set is used (conservative / pre-fix behavior).
-# NOTE: backticks and unescaped dollar signs cannot appear in this block — it
-# runs inside a double-quoted bash string and bash performs command substitution.
-base_ref_name = data.get('baseRefName', '').strip()
-pr_own_files = None
-if base_ref_name:
-    _own_root = os.environ.get('REPO_ROOT', '').strip() or None
-    try:
-        _pr_own = subprocess.run(
-            ['git', 'diff', '--name-only',
-             'origin/' + base_ref_name + '...' + head_sha],
-            capture_output=True, text=True,
-            cwd=_own_root, timeout=30
-        )
-        if _pr_own.returncode == 0:
-            pr_own_files = set(
-                f.strip() for f in _pr_own.stdout.splitlines() if f.strip()
-            )
-        # else: diff failed — fail-open, pr_own_files stays None
-    except Exception:
-        pr_own_files = None  # fail-open
-
-try:
-    marker_data = json.loads(os.environ.get('MARKER_ENTRIES', '') or '{}')
-except Exception:
-    marker_data = {}
-entries = marker_data.get('entries', [])
-
-stale = []
-for entry in entries:
-    label, role = entry.get('label'), entry.get('role')
-    found_sha = entry.get('sha')
-    reason = entry.get('reason')
-
-    if reason is not None:
-        # Marker extraction already determined this label/role is stale
-        # (no marker, unparseable marker, or an invalid-length SHA).
-        stale.append((label, role, reason))
-        continue
-
-    if found_sha == head_sha:
-        continue  # Approval is current
-
-    # SHA mismatch — check whether the delta is fully waivable
-    repo_root = os.environ.get('REPO_ROOT', '').strip() or None
-    try:
-        # Probe whether the marker SHA actually exists in this repository before
-        # attempting git diff.  git diff exits 128 for a missing SHA, which
-        # produces a confusing error about an invalid revision range.  A missing
-        # SHA is a different (and more serious) condition than a stale approval.
-        probe = subprocess.run(
-            ['git', 'cat-file', '-e', f'{found_sha}^{{commit}}'],
-            capture_output=True, cwd=repo_root, timeout=10
-        )
-        if probe.returncode != 0:
-            stale.append((label, role,
-                f'marker SHA {found_sha} does not exist in this repository — '
-                f'the {role} stage posted an invalid SHA; it must re-run and '
-                f're-post its marker using a SHA read from git, not reconstructed'))
-            continue
-        result = subprocess.run(
-            ['git', 'diff', '--name-only', f'{found_sha}..{head_sha}'],
-            capture_output=True, text=True,
-            cwd=repo_root, timeout=30
-        )
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr.strip() or 'non-zero exit')
-        changed = [f.strip() for f in result.stdout.splitlines() if f.strip()]
-    except Exception as exc:
-        # git diff failure → treat delta as non-waivable (fail-closed)
-        print(f'pipeline-vcs: check-approval-sha: git diff failed: {exc}', file=sys.stderr)
-        stale.append((label, role, f'git diff failed: {exc}'))
-        continue
-
-    # Intersect with the PR's own file set to exclude base-branch-only changes.
-    # A file the PR itself also touches stays in pr_own_files and is evaluated
-    # normally — fail-closed for same-file-touched-by-both (rule 2).
-    # If pr_own_files is None (three-dot diff unavailable) the filter is skipped.
-    if pr_own_files is not None:
-        changed = [f for f in changed if f in pr_own_files]
-
-    # First check hard-coded non-waivable paths (structurally enforced — config cannot override)
-    blocked = [p for p in changed if is_hardcoded_nonwaivable(p)]
-    if not blocked:
-        # Then check config waiver list for remaining paths
-        blocked = [p for p in changed if not path_matches(p, waiver_entries)]
-
-    if blocked:
-        stale.append((label, role,
-            f'non-waivable files changed since {found_sha}: ' + ', '.join(blocked[:5])))
-    # else every changed file is waivable — approval stands
-
-if stale:
-    for label, role, reason in stale:
-        print(f'pipeline-vcs: check-approval-sha: STALE {label} ({role}): {reason}', file=sys.stderr)
-    if os.environ.get('STALE_LIST', '') == 'true':
-        for label, role, reason in stale:
-            print(f'stale role={role} label={label}')
-    sys.exit(1)
-
-print('check-approval-sha: all approval labels are current')
-sys.exit(0)
-"
+        | WAIVER_PATHS="$waiver_paths" REPO_ROOT="${repo_root:-}" MARKER_ENTRIES="$marker_json" STALE_LIST="$stale_list_flag" _vcs_shared_check_approval_sha
+      exit $?
       ;;
     *) echo "pipeline-vcs: unknown verb: $verb" >&2; exit 1 ;;
   esac
@@ -3617,11 +3645,10 @@ json.dump({'comments': comments}, sys.stdout)
       # --stale-list: additionally print one greppable stdout line per stale
       # role ("stale role=<role> label=<label>"). Without the flag, unchanged.
       #
-      # Marker extraction (which labels are present, and whether each has a
-      # valid, current-role, trusted-author marker) is handled once by
-      # _vcs_shared_check_approval_marker (#177 slice 1). The SHA-vs-head
-      # comparison and waiver-path logic below still lives per-adapter
-      # (#177 slice 2).
+      # Marker extraction is _vcs_shared_check_approval_marker (#177 slice 1);
+      # the SHA-vs-head comparison and waiver-path logic is
+      # _vcs_shared_check_approval_sha (#177 slice 2). This arm is now just
+      # fetch (REST) -> normalise to the gh-compatible shape -> call.
       local _n="$1"; shift
       local _stale_list_flag="false"
       if [ "${1:-}" = "--stale-list" ]; then
@@ -3686,167 +3713,8 @@ json.dump(out, sys.stdout)
       _waiver_paths="$(cfg merge.approval_waiver_paths "")"
       _repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
       printf '%s' "$_pr_data" \
-        | WAIVER_PATHS="$_waiver_paths" REPO_ROOT="${_repo_root:-}" MARKER_ENTRIES="$_marker_json" STALE_LIST="$_stale_list_flag" python3 -c "
-import fnmatch, json, os, subprocess, sys
-
-HARDCODED_NONWAIVABLE_PREFIXES = ('scripts/', 'tests/')
-HARDCODED_NONWAIVABLE_EXACT    = (
-    'talos.pipeline.yml', 'talos.pipeline.yaml', 'talos.pipeline.json',
-    '.claude-pipeline.yaml', '.claude-pipeline.json',
-    'pipeline.yaml', 'pipeline.json',
-)
-
-DEFAULT_WAIVER = ['*.md', 'docs/**', 'CHANGELOG.md', '*.example']
-
-VALIDATION_CANARIES = [
-    'scripts/core.sh',      'scripts/pipeline-vcs.sh',
-    'sub/dir/scripts/x.sh',
-    'tests/test-vcs.sh',    'tests/run-tests.sh',
-    'sub/dir/tests/y.sh',
-    'talos.pipeline.yml',   'talos.pipeline.yaml',  'talos.pipeline.json',
-    '.claude-pipeline.yaml', '.claude-pipeline.json',
-    'pipeline.yaml',        'pipeline.json',
-    'src/arbitrary.js',     'lib/main.py', 'cmd/server.go',
-    'sub/dir/arbitrary.js',
-]
-
-def is_hardcoded_nonwaivable(path):
-    for prefix in HARDCODED_NONWAIVABLE_PREFIXES:
-        if path == prefix.rstrip('/') or path.startswith(prefix):
-            return True
-    return path in HARDCODED_NONWAIVABLE_EXACT
-
-def path_matches(path, patterns):
-    base = os.path.basename(path)
-    return any(fnmatch.fnmatch(base, p) or fnmatch.fnmatch(path, p) for p in patterns)
-
-def validate_waiver_entries(entries):
-    errors = []
-    for entry in entries:
-        for canary in VALIDATION_CANARIES:
-            base = os.path.basename(canary)
-            if fnmatch.fnmatch(base, entry) or fnmatch.fnmatch(canary, entry):
-                errors.append(
-                    \"pipeline-vcs: ERROR: merge.approval_waiver_paths entry '\" + entry +
-                    \"' would waive '\" + canary +
-                    \"' -- rejected (catch-all or covers non-waivable paths)\"
-                )
-                break
-    return errors
-
-raw_waiver = os.environ.get('WAIVER_PATHS', '').strip()
-if raw_waiver:
-    try:
-        parsed = json.loads(raw_waiver)
-        if not isinstance(parsed, list):
-            raise ValueError('not a list')
-        waiver_entries = [str(e).strip() for e in parsed if str(e).strip()]
-    except Exception:
-        waiver_entries = [e.strip() for e in raw_waiver.splitlines() if e.strip()]
-else:
-    waiver_entries = DEFAULT_WAIVER
-
-errors = validate_waiver_entries(waiver_entries)
-if errors:
-    for e in errors:
-        print(e, file=sys.stderr)
-    sys.exit(1)
-
-try:
-    data = json.load(sys.stdin)
-except Exception as exc:
-    print('pipeline-vcs: check-approval-sha: could not parse PR data: ' + str(exc), file=sys.stderr)
-    sys.exit(1)
-
-head_sha = data.get('headRefOid', '').strip()
-if not head_sha:
-    print('pipeline-vcs: check-approval-sha: could not resolve head SHA', file=sys.stderr)
-    sys.exit(1)
-
-base_ref_name = data.get('baseRefName', '').strip()
-pr_own_files = None
-if base_ref_name:
-    _own_root = os.environ.get('REPO_ROOT', '').strip() or None
-    try:
-        _pr_own = subprocess.run(
-            ['git', 'diff', '--name-only',
-             'origin/' + base_ref_name + '...' + head_sha],
-            capture_output=True, text=True,
-            cwd=_own_root, timeout=30
-        )
-        if _pr_own.returncode == 0:
-            pr_own_files = set(
-                f.strip() for f in _pr_own.stdout.splitlines() if f.strip()
-            )
-    except Exception:
-        pr_own_files = None
-
-try:
-    marker_data = json.loads(os.environ.get('MARKER_ENTRIES', '') or '{}')
-except Exception:
-    marker_data = {}
-entries = marker_data.get('entries', [])
-
-stale = []
-for entry in entries:
-    label, role = entry.get('label'), entry.get('role')
-    found_sha = entry.get('sha')
-    reason = entry.get('reason')
-
-    if reason is not None:
-        stale.append((label, role, reason))
-        continue
-
-    if found_sha == head_sha:
-        continue
-
-    repo_root = os.environ.get('REPO_ROOT', '').strip() or None
-    try:
-        probe = subprocess.run(
-            ['git', 'cat-file', '-e', found_sha + '^{commit}'],
-            capture_output=True, cwd=repo_root, timeout=10
-        )
-        if probe.returncode != 0:
-            stale.append((label, role,
-                'marker SHA ' + found_sha + ' does not exist in this repository -- '
-                'the ' + role + ' stage posted an invalid SHA; it must re-run and '
-                're-post its marker using a SHA read from git, not reconstructed'))
-            continue
-        result = subprocess.run(
-            ['git', 'diff', '--name-only', found_sha + '..' + head_sha],
-            capture_output=True, text=True,
-            cwd=repo_root, timeout=30
-        )
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr.strip() or 'non-zero exit')
-        changed = [f.strip() for f in result.stdout.splitlines() if f.strip()]
-    except Exception as exc:
-        print('pipeline-vcs: check-approval-sha: git diff failed: ' + str(exc), file=sys.stderr)
-        stale.append((label, role, 'git diff failed: ' + str(exc)))
-        continue
-
-    if pr_own_files is not None:
-        changed = [f for f in changed if f in pr_own_files]
-
-    blocked = [p for p in changed if is_hardcoded_nonwaivable(p)]
-    if not blocked:
-        blocked = [p for p in changed if not path_matches(p, waiver_entries)]
-
-    if blocked:
-        stale.append((label, role,
-            'non-waivable files changed since ' + found_sha + ': ' + ', '.join(blocked[:5])))
-
-if stale:
-    for label, role, reason in stale:
-        print('pipeline-vcs: check-approval-sha: STALE ' + label + ' (' + role + '): ' + reason, file=sys.stderr)
-    if os.environ.get('STALE_LIST', '') == 'true':
-        for label, role, reason in stale:
-            print('stale role=' + role + ' label=' + label)
-    sys.exit(1)
-
-print('check-approval-sha: all approval labels are current')
-sys.exit(0)
-"
+        | WAIVER_PATHS="$_waiver_paths" REPO_ROOT="${_repo_root:-}" MARKER_ENTRIES="$_marker_json" STALE_LIST="$_stale_list_flag" _vcs_shared_check_approval_sha
+      exit $?
       ;;
     check-closing-keyword)
       # check-closing-keyword <pr_ref> <issue_n>
