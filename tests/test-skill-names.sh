@@ -216,6 +216,15 @@ assert_contains "$(cat "$SKILL_MD")" \
   "bash scripts/pipeline-hooks.sh post_stage <event> <role> <N>" \
   "skills/pipeline/SKILL.md Rule 3 gives the literal post_stage invocation"
 
+# ── Per-stage cost accounting (#202): Rule 3 usage-passthrough sentence and
+# the Step 5 cost mention ───────────────────────────────────────────────────
+assert_contains "$(cat "$SKILL_MD")" \
+  "When the harness completion notification carries usage (subagent_tokens, tool_uses, duration_ms), pass them as \`--tokens\`, \`--tool-uses\`, \`--duration-s\` (ms/1000, integer)" \
+  "skills/pipeline/SKILL.md Rule 3 tells the orchestrator to pass harness usage through to post_stage"
+assert_contains "$(cat "$SKILL_MD")" \
+  "pipeline-events.sh cost" \
+  "skills/pipeline/SKILL.md Step 5 mentions the cost summary"
+
 REPO="${TALOS_AGENT_SKILLS_REPO:-https://github.com/addyosmani/agent-skills}"
 
 if ! command -v git >/dev/null 2>&1; then

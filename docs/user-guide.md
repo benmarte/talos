@@ -908,6 +908,17 @@ tab-separated table by default (`ts`, `event`, `role`, `issue`, `pr`,
 `--json`. A malformed line is skipped, not fatal -- the count of skipped
 lines is reported once on stderr.
 
+**Cost accounting (`--tokens`/`--tool-uses`, `pipeline-events.sh cost`).**
+`pipeline-hooks.sh post_stage` accepts `--tokens N` and `--tool-uses N`
+alongside `--duration-s N`; each is validated as a non-negative integer and
+lands in the payload/log line as `tokens`/`tool_uses`, or `null` when
+omitted or invalid (one stderr note explains an invalid value). Summarize
+the log with `bash scripts/pipeline-events.sh cost [--issue N] [--json]`: a
+per-issue, per-role table (`issue`, `role`, `events`, `tokens`, `tool_uses`,
+`duration_s`, `n/a`) with a `TOTAL` row, where `n/a` counts events whose
+`tokens` field is `null` (e.g. adapter-path runs, which record duration
+only) so an untracked group reads as "no data", not a real zero.
+
 ### A generic notification sink (`notifications.cmd`)
 
 **What it does.** `notifications.cmd` runs a shell command (via `sh -c`) for

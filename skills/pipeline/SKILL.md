@@ -288,7 +288,7 @@ bash scripts/pipeline-notify.sh <role> "#<N>" "<2-3 line findings summary>" <N>
 
 The `<role>` argument is the exact role name (validator / pm / developer / qa / reviewer / security / docs / orchestrator). `pipeline-notify.sh` uses `templates/notifications/<role>.md` to render the message; if that template exists it controls the format, otherwise the summary is posted verbatim. This relay call is separate from lifecycle events (pr-opened, merged, blocked, issue-closed) — both are sent when applicable.
 
-**Rule 3 — Post-stage hook (always, #182):** After every role relay (`pipeline-notify.sh <role> ...`) and every lifecycle event (pr-opened, merged, blocked, issue-closed), also run `bash scripts/pipeline-hooks.sh post_stage <event> <role> <N> [--pr] [--sha] [--verdict] [--summary] [--attempt ...]` — this is what lets an external tool (metrics, cost tracking, a project memory) subscribe to every structured outcome the moment it's known. Disabled by default (empty `hooks.post_stage`); a failure, timeout, or missing config is a silent no-op with one stderr line, same as `hooks.pre_dispatch` — never worth waiting on or branching on. Example, right after the QA PASS relay:
+**Rule 3 — Post-stage hook (always, #182):** After every role relay (`pipeline-notify.sh <role> ...`) and every lifecycle event (pr-opened, merged, blocked, issue-closed), also run `bash scripts/pipeline-hooks.sh post_stage <event> <role> <N> [--pr] [--sha] [--verdict] [--summary] [--attempt ...]` — this is what lets an external tool (metrics, cost tracking, a project memory) subscribe to every structured outcome the moment it's known. When the harness completion notification carries usage (subagent_tokens, tool_uses, duration_ms), pass them as `--tokens`, `--tool-uses`, `--duration-s` (ms/1000, integer). Disabled by default (empty `hooks.post_stage`); a failure, timeout, or missing config is a silent no-op with one stderr line, same as `hooks.pre_dispatch` — never worth waiting on or branching on. Example, right after the QA PASS relay:
 `bash scripts/pipeline-notify.sh qa "#42" "PASS: 3 criteria verified" 42`
 `bash scripts/pipeline-hooks.sh post_stage qa qa 42 --pr 57 --verdict PASS --summary "3 criteria verified"`
 
@@ -1316,6 +1316,8 @@ After processing all issues, print a summary table:
 | #N    | merged  | #M | ... |
 | #N    | blocked | —  | reason |
 | #N    | in-flight | #M | waiting on CI |
+
+3. **Cost column.** After the outcome table, print `bash scripts/pipeline-events.sh cost` output scoped to the issues processed in this run (loop `--issue N` per issue, or run it unscoped and read only the matching rows) — a compact per-issue, per-role tokens / tool uses / duration_s table, so a run's spend is visible without hand-tallying harness notifications (#202).
 
 ---
 

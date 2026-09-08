@@ -7,6 +7,7 @@
 # Usage: pipeline-events.sh path
 #        pipeline-events.sh list [--issue N] [--role R] [--event E] [--last K] [--json]
 #        pipeline-events.sh tail [--issue N]
+#        pipeline-events.sh cost [--issue N] [--json]
 #
 #   path   Prints the resolved absolute path to the events log (does not
 #          require the file to exist).
@@ -17,6 +18,18 @@
 #          per event). --issue/--role/--event filter by exact match;
 #          --last K keeps only the last K matching events.
 #   tail   Shorthand for `list --last 20`, optionally scoped to --issue.
+#   cost   Per-issue, per-role cost summary (#202): sums tokens, tool_uses
+#          and duration_s, and counts events, grouped by (issue, role).
+#          A row's tokens/tool_uses/duration_s are summed treating a null
+#          value as 0; the `n/a` column instead counts how many of that
+#          group's events had a null tokens field (e.g. adapter-path runs,
+#          which record duration only, per #202's proposal), so a group
+#          made entirely of untracked events is visible rather than
+#          silently reading as a real zero. Ends with a TOTAL row. Default
+#          output is a compact table (issue, role, events, tokens,
+#          tool_uses, duration_s, n/a); --json prints the same data as one
+#          JSON object: {"rows": [...], "total": {...}}. --issue filters to
+#          one issue.
 #
 # A malformed line (not valid JSON, or not a JSON object) is skipped rather
 # than aborting the read; the count of skipped lines is reported once on
@@ -141,6 +154,94 @@ if skipped:
 PYEOF
 }
 
+# cmd_cost ISSUE JSON_MODE -- per-(issue, role) cost summary (#202): sums
+# tokens, tool_uses, duration_s and counts events, treating a null numeric
+# field as 0 for the sum but tallying it separately in the n/a column (a
+# group where every event is n/a is still visible as "no data", not a real
+# zero -- e.g. adapter-path runs that record duration only, per #202).
+cmd_cost() {
+  local issue="$1" json_mode="$2"
+  local log_path
+  log_path="$(_events_log_path)" || {
+    echo "pipeline-events: could not resolve the events log path (not a git repo?)" >&2
+    return 1
+  }
+  if [ ! -f "$log_path" ]; then
+    return 0
+  fi
+
+  python3 - "$log_path" "$issue" "$json_mode" <<'PYEOF'
+import json
+import sys
+
+log_path, issue, json_mode = sys.argv[1:4]
+
+def matches(rec):
+    if issue and str(rec.get("issue")) != issue:
+        return False
+    return True
+
+groups = {}
+order = []
+skipped = 0
+with open(log_path, "r", errors="replace") as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+            if not isinstance(rec, dict):
+                raise ValueError("not an object")
+        except (ValueError, TypeError):
+            skipped += 1
+            continue
+        if not matches(rec):
+            continue
+        key = (rec.get("issue"), rec.get("role"))
+        if key not in groups:
+            groups[key] = {"events": 0, "tokens": 0, "tool_uses": 0, "duration_s": 0, "n_a": 0}
+            order.append(key)
+        g = groups[key]
+        g["events"] += 1
+        g["tokens"] += rec.get("tokens") or 0
+        g["tool_uses"] += rec.get("tool_uses") or 0
+        g["duration_s"] += rec.get("duration_s") or 0
+        if rec.get("tokens") is None:
+            g["n_a"] += 1
+
+order.sort(key=lambda k: (str(k[0]), str(k[1])))
+
+rows = []
+total = {"events": 0, "tokens": 0, "tool_uses": 0, "duration_s": 0, "n_a": 0}
+for key in order:
+    g = groups[key]
+    rows.append({"issue": key[0], "role": key[1], **g})
+    for field in total:
+        total[field] += g[field]
+
+if json_mode == "1":
+    print(json.dumps({"rows": rows, "total": total}))
+else:
+    def _s(v):
+        return "" if v is None else str(v)
+
+    print("	".join(["issue", "role", "events", "tokens", "tool_uses", "duration_s", "n/a"]))
+    for row in rows:
+        print("	".join(_s(x) for x in [
+            row["issue"], row["role"], row["events"], row["tokens"],
+            row["tool_uses"], row["duration_s"], row["n_a"],
+        ]))
+    print("	".join(_s(x) for x in [
+        "TOTAL", "", total["events"], total["tokens"],
+        total["tool_uses"], total["duration_s"], total["n_a"],
+    ]))
+
+if skipped:
+    print(f"pipeline-events: skipped {skipped} malformed line(s)", file=sys.stderr)
+PYEOF
+}
+
 VERB="${1:-}"
 case "$VERB" in
   path)
@@ -172,10 +273,23 @@ case "$VERB" in
     done
     cmd_list "$issue" "" "" "20" "0"
     ;;
+  cost)
+    shift
+    issue="" json_mode="0"
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --issue) issue="${2:-}"; shift 2 ;;
+        --json) json_mode="1"; shift ;;
+        *) shift ;;
+      esac
+    done
+    cmd_cost "$issue" "$json_mode"
+    ;;
   *)
     echo "Usage: pipeline-events.sh path" >&2
     echo "       pipeline-events.sh list [--issue N] [--role R] [--event E] [--last K] [--json]" >&2
     echo "       pipeline-events.sh tail [--issue N]" >&2
+    echo "       pipeline-events.sh cost [--issue N] [--json]" >&2
     exit 2
     ;;
 esac
