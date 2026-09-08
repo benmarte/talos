@@ -124,6 +124,16 @@ Store these for the run:
   spawning the PM subagent for an issue whose body already carries a usable
   spec (see Step 3b). Set to `false` to force PM to always run on
   `pipeline:confirmed` issues, ignoring this shortcut.
+- ROLE_DOCS_MODE (`roles.docs_mode`, default `auto`) — only meaningful when
+  `roles.docs` is also `true`. `auto`: Step 3e Phase 1 checks the PR's changed
+  paths (`pr-files`) before dispatching docs; when the developer's own diff
+  already covers CHANGELOG + README/docs, or touches only
+  `scripts/**`/`tests/**` with a CHANGELOG entry present, no docs subagent is
+  dispatched at all — `docs:done` is stamped directly. When docs does dispatch
+  under `auto` (the gate did not match), its prompt receives only the changed
+  doc-relevant paths and the CHANGELOG hunk, not the full PR diff. `always`:
+  restores the pre-#200 behavior — docs always dispatches, always reads the
+  full diff via `diff-pr`.
 - COMMENTS_ENABLED, COMMENTS_HEADER_TPL, COMMENTS_TMPL_DIR
 - AGENTS_RUNNER (`agents.runner`, default `claude`), AGENTS_SUBAGENTS (`agents.subagents`, default `auto`) — select the harness execution mode (see Harness compatibility)
 - FILE_SOURCE_PATH (`vcs.file.source.path`, for file mode)
@@ -138,6 +148,7 @@ Store these for the run:
 - `base_branch`: `git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|.*/||'` or `main`
 - `board.enabled`: false
 - `roles.*`: all true
+- `roles.docs_mode`: `auto`
 - `merge.auto`: true
 - `merge.method`: squash
 - `merge.required_checks`: []
@@ -916,7 +927,48 @@ writes. Rework cost if review later blocks is low and rare; the gate already for
 docs to re-run when non-waivable paths change. Serializing docs *after* would pay
 latency on every PR to protect against a minority case. -->
 
-**Phase 1 — Docs first:** Dispatch the docs stage. Wait for docs to push and post
+**Phase 1 — Docs first:** how much docs work happens is gated by `ROLE_DOCS_MODE`
+(`roles.docs_mode`, default `auto`, #200 — token-lean docs: developers routinely
+already update CHANGELOG/README/docs as part of their own acceptance criteria,
+and a docs subagent re-reading the whole PR diff to confirm that costs 26k-108k
+tokens per PR for no change).
+
+`always` — dispatch the docs stage exactly as before, no gate, full diff. Skip
+straight to the Docs prompt below with `<DOCS_DIFF_INSTRUCTION>` = `` `bash
+scripts/pipeline-vcs.sh diff-pr <PR_NUMBER>` ``.
+
+`auto` (default) — check the developer's own diff before deciding whether docs
+needs to run at all:
+1. `CHANGED_PATHS="$(bash scripts/pipeline-vcs.sh pr-files <PR_NUMBER>)"` — one
+   changed path per line. If `pr-files` exits non-zero (e.g. a failed page
+   during pagination), treat the gate as **not matching** and fall through to
+   step 4 below — dispatch the docs subagent with the full diff. Fail-safe:
+   a fetch failure must never be mistaken for "nothing to check" and silently
+   skip docs.
+2. The gate matches (no docs subagent needed) when EITHER:
+   - `CHANGELOG.md` is among `CHANGED_PATHS` AND (`README.md` is also among
+     them, OR at least one path starts with `docs/`), OR
+   - every path in `CHANGED_PATHS` other than `CHANGELOG.md` itself starts
+     with `scripts/` or `tests/`, AND `CHANGELOG.md` is among them (at least
+     one non-`CHANGELOG.md` path must be present — a PR touching only
+     `CHANGELOG.md` falls through to the first bullet, which requires
+     `README.md`/`docs/**` too).
+3. Gate matches: dispatch **no** docs subagent. Stamp the approval directly —
+   write "docs verified by developer diff (docs_mode: auto)" to a body file and:
+   `bash scripts/pipeline-vcs.sh post-approval <PR_NUMBER> docs --body-file <body-file>`
+   If exit non-zero, report the failure in your final message. Then relay
+   (see "After docs completes" below, using this stamp as the outcome) and
+   continue straight to phase 2 — do not wait on a subagent that was never
+   dispatched.
+4. Gate does not match: dispatch the docs subagent, but hand it filtered
+   context instead of the full diff — `<DOCS_DIFF_INSTRUCTION>` below becomes
+   the changed doc-relevant paths (the subset of `CHANGED_PATHS` matching
+   `README.md`, `docs/**`, or `CHANGELOG.md` — empty list if none) plus the
+   instruction to run `git diff origin/<BASE_BRANCH>...HEAD -- CHANGELOG.md` in
+   its own worktree for the CHANGELOG hunk. Tell it explicitly to read source
+   files only on demand, not as a first step.
+
+Either way (subagent dispatched or gate auto-stamped), wait for docs to reach
 `docs:done` before continuing to phase 2.
 
 **Sync guard (non-isolated stages):** Before dispatching reviewer and security, confirm the working tree is still current:
@@ -1010,7 +1062,10 @@ Comments enabled: <COMMENTS_ENABLED>
 
 Never run `verify:`; QA and CI already did. `pipeline-vcs.sh pr-checks` (CI status) is the oracle for whether the suite passes — this stage is diff-only.
 
-1. Read diff: `bash scripts/pipeline-vcs.sh diff-pr <PR_NUMBER>`
+1. Read diff: <DOCS_DIFF_INSTRUCTION> — under `docs_mode: auto` this is the
+   changed doc-relevant paths plus the CHANGELOG hunk, not the full PR diff;
+   read source files only on demand, not as a first step. Under `docs_mode:
+   always` it is the full `diff-pr` output as before.
 2. Update README, docs, CHANGELOG for the change.
 3. Commit guard: before committing, run `git diff --quiet` (working tree) and
    `git diff --quiet --cached` (staged). If BOTH report no changes, skip the
@@ -1036,7 +1091,8 @@ Final (2-3 lines): "docs posted: <files updated>" or "no docs changes required".
 After docs completes (phase 1):
 
 **Docs returned:**
-- `bash scripts/pipeline-notify.sh docs "#<N>" "<subagent's 2-3 line outcome>" <N>`
+- Subagent dispatched: `bash scripts/pipeline-notify.sh docs "#<N>" "<subagent's 2-3 line outcome>" <N>`
+- Gate auto-stamped (`docs_mode: auto`, no subagent dispatched): `bash scripts/pipeline-notify.sh docs "#<N>" "docs verified by developer diff (docs_mode: auto) — no subagent dispatched" <N>`
 
 After reviewer and security complete (phase 2):
 

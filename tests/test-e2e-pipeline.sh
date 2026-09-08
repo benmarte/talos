@@ -537,4 +537,106 @@ assert_eq "1" "$pm_calls" \
 rm -f talos.pipeline.json
 unset STUB_ISSUE_BODY
 
+# ── #200: lean docs stage -- gate dispatch on the developer's own diff ───────
+# Simulates the SKILL.md Step 3e Phase 1 decision this playbook prescribes:
+# under roles.docs_mode: auto, check pr-files before ever dispatching a docs
+# subagent; under always, dispatch unconditionally exactly as before #200.
+# This stub harness has no live-agent dispatcher to count real subagent
+# spawns against, so a "**Docs:** posted" comment on the PR stands in for one
+# docs dispatch -- the gated path must post zero of them.
+DOCS_SHA_200="aabb1122ccdd3344eeff556677889900aabb1122"
+
+docs_gate_matches() {  # $1 = newline-separated changed paths
+  CHANGED="$1" python3 -c "
+import os, sys
+paths = [p for p in os.environ['CHANGED'].splitlines() if p.strip()]
+has_changelog = 'CHANGELOG.md' in paths
+has_readme = 'README.md' in paths
+has_docs_dir = any(p.startswith('docs/') for p in paths)
+cond1 = has_changelog and (has_readme or has_docs_dir)
+allowed = ('scripts/', 'tests/')
+non_changelog = [p for p in paths if p != 'CHANGELOG.md']
+cond2 = has_changelog and bool(non_changelog) and all(p.startswith(allowed) for p in non_changelog)
+sys.exit(0 if (cond1 or cond2) else 1)
+"
+}
+
+simulate_stage_3e_phase1() {  # $1 = PR number, $2 = changed-paths (STUB_PR_FILES form)
+  local pr="$1" files="$2" docs_mode
+  docs_mode="$(bash "$CFG_PM" roles.docs_mode auto)"
+  if [ "$docs_mode" = "always" ]; then
+    bash "$VCS" comment-pr "$pr" "**Docs:** posted -- full diff (docs_mode: always)" >/dev/null 2>&1
+    printf 'docs posted (always)\n' > docs-body-200.md
+    STUB_PR_HEAD_SHA="$DOCS_SHA_200" bash "$VCS" post-approval "$pr" docs --body-file docs-body-200.md >/dev/null 2>&1
+    rm -f docs-body-200.md
+    return 0
+  fi
+  # Drive the gate off the real pr-files verb (#200), not a hand-rolled list --
+  # this is what actually proves the new verb and the gate compose correctly.
+  local changed
+  changed="$(STUB_PR_FILES="$files" bash "$VCS" pr-files "$pr")"
+  if docs_gate_matches "$changed"; then
+    printf 'docs verified by developer diff (docs_mode: auto)\n' > docs-body-200.md
+    STUB_PR_HEAD_SHA="$DOCS_SHA_200" bash "$VCS" post-approval "$pr" docs --body-file docs-body-200.md >/dev/null 2>&1
+    rm -f docs-body-200.md
+    return 0
+  fi
+  bash "$VCS" comment-pr "$pr" "**Docs:** posted -- filtered context (docs_mode: auto)" >/dev/null 2>&1
+  printf 'docs posted (auto, dispatched)\n' > docs-body-200.md
+  STUB_PR_HEAD_SHA="$DOCS_SHA_200" bash "$VCS" post-approval "$pr" docs --body-file docs-body-200.md >/dev/null 2>&1
+  rm -f docs-body-200.md
+}
+
+# (a) scripts + tests + CHANGELOG -> gate matches -> zero docs dispatches,
+#     docs:done still applied.
+: > "$GH_LOG"
+simulate_stage_3e_phase1 9 "$(printf 'scripts/x.sh\ntests/test-x.sh\nCHANGELOG.md')"
+log="$(cat "$GH_LOG")"
+docs_calls="$(grep -c "Docs:\*\* posted" <<<"$log" || true)"
+assert_eq "0" "$docs_calls" \
+  "e2e: scripts+tests+CHANGELOG PR dispatches zero docs subagents (#200)"
+assert_contains "$log" "pr edit 9 --add-label docs:done" \
+  "e2e: scripts+tests+CHANGELOG PR still reaches docs:done via direct stamp (#200)"
+assert_contains "$log" "docs verified by developer diff (docs_mode: auto)" \
+  "e2e: gate auto-stamp carries the synthetic summary text (#200)"
+
+# (b) scripts only, no CHANGELOG -> gate does not match -> docs dispatches.
+: > "$GH_LOG"
+simulate_stage_3e_phase1 9 "$(printf 'scripts/x.sh\ntests/test-x.sh')"
+log="$(cat "$GH_LOG")"
+docs_calls="$(grep -c "Docs:\*\* posted" <<<"$log" || true)"
+assert_eq "1" "$docs_calls" \
+  "e2e: scripts-only PR (no CHANGELOG) dispatches docs exactly once (#200)"
+assert_contains "$log" "filtered context" \
+  "e2e: dispatched-under-auto docs run is flagged as filtered context, not full diff (#200)"
+assert_contains "$log" "pr edit 9 --add-label docs:done" \
+  "e2e: dispatched docs run still reaches docs:done (#200)"
+
+# (b2) #211 review fix: the auto-skip prefix list is exactly scripts/** and
+#      tests/** -- agents/** does NOT qualify, so a PR touching agents/x.md
+#      plus CHANGELOG.md must still dispatch docs (the gate must not match).
+: > "$GH_LOG"
+simulate_stage_3e_phase1 9 "$(printf 'agents/x.md\nCHANGELOG.md')"
+log="$(cat "$GH_LOG")"
+docs_calls="$(grep -c "Docs:\*\* posted" <<<"$log" || true)"
+assert_eq "1" "$docs_calls" \
+  "e2e: #211 review fix -- agents/x.md + CHANGELOG.md dispatches docs (agents/ is not in the auto-skip list)"
+assert_contains "$log" "filtered context" \
+  "e2e: agents/x.md + CHANGELOG.md dispatched-under-auto docs run is filtered context, not the auto-stamp path"
+
+# (c) roles.docs_mode: always -> docs dispatches regardless of files, even
+#     when the same diff would have gated in auto mode.
+: > "$GH_LOG"
+cat > talos.pipeline.json <<'EOF'
+{"roles": {"docs_mode": "always"}}
+EOF
+simulate_stage_3e_phase1 9 "$(printf 'scripts/x.sh\ntests/test-x.sh\nCHANGELOG.md')"
+log="$(cat "$GH_LOG")"
+docs_calls="$(grep -c "Docs:\*\* posted" <<<"$log" || true)"
+assert_eq "1" "$docs_calls" \
+  "e2e: docs_mode: always dispatches docs even for a gate-qualifying diff (#200)"
+assert_contains "$log" "full diff" \
+  "e2e: docs_mode: always uses the full-diff path, not the filtered one (#200)"
+rm -f talos.pipeline.json
+
 finish

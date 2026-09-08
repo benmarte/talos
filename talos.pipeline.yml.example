@@ -175,6 +175,14 @@ roles:
                        # spec (has acceptance-criteria heading with checklist items or
                        # carries spec:ready label). Default true, GitHub only. Set to
                        # false to always run PM on pipeline:confirmed issues.
+  # docs_mode: auto      # auto (default) — before dispatching docs, check whether the
+                       # developer's own diff already covers it (CHANGELOG.md + README/
+                       # docs, or scripts/tests-only with a CHANGELOG entry); if so,
+                       # stamp docs:done directly with no subagent dispatch. When docs
+                       # does dispatch under auto, it reads only the changed doc paths
+                       # + CHANGELOG hunk, not the full diff. Set to "always" to restore
+                       # the pre-#200 behavior (docs always dispatches, always reads the
+                       # full diff).
 
 # ── Stage comments ───────────────────────────────────────────────────────────
 # Each role subagent posts a GitHub comment at its handoff point (Daedalus parity).
