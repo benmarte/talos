@@ -53,6 +53,25 @@ STRIPPED="$(printf '%s' "$HOOKED_PROMPT" | tail -n +4)"
 assert_eq "$NOHOOK_PROMPT" "$STRIPPED" \
   "everything after the hook block is unchanged from the no-hook prompt"
 
+# ── Watchdog reaps itself on the fast-success path (#181 review) ────────────
+# A successful hook returns well within hooks.timeout_s. The watchdog runs
+# `sleep "$timeout_s"` in the background to enforce that timeout; if the
+# watchdog isn't reaped as a whole process group, that sleep is orphaned and
+# keeps running for up to hooks.timeout_s after this call returns. Use a
+# large, unique timeout_s value so the pgrep below can't match any other
+# sleep started elsewhere in this test file.
+cat > talos.pipeline.json <<EOF
+{"agents": {"runner": "custom", "runner_cmd": "cat > $RECEIVED"},
+ "hooks": {"pre_dispatch": "cat > /dev/null; echo fast-ok", "timeout_s": 20}}
+EOF
+: > "$RECEIVED"
+out="$(TALOS_ISSUE=42 bash "$AGENT" developer "Implement the spec.")"; rc=$?
+assert_eq "0" "$rc" "fast-success hook: pipeline-agent.sh still exits 0"
+sleep 1
+_leaked="$(pgrep -f 'sleep 20$' || true)"
+assert_eq "" "$_leaked" \
+  "fast-success hook: watchdog's own 'sleep 20' is reaped, not left running"
+
 # ── (b) Failing hook -- no-op, byte-identical to no-hook ─────────────────────
 cat > talos.pipeline.json <<EOF
 {"agents": {"runner": "custom", "runner_cmd": "cat > $RECEIVED"},

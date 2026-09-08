@@ -161,8 +161,17 @@ $TASK"
 # branches on failure. Guarded the same way pipeline-cfg-cache.sh is above:
 # a partial install/sync may not yet ship pipeline-hooks.sh.
 if [ -f "$SCRIPT_DIR/pipeline-hooks.sh" ]; then
+  # files_hint (#181 review): populated only when the caller provides it --
+  # today that means TALOS_FILES_HINT, newline-separated paths, if set.
+  _HOOK_FILES_HINT=()
+  if [ -n "${TALOS_FILES_HINT:-}" ]; then
+    while IFS= read -r _hook_file; do
+      [ -n "$_hook_file" ] && _HOOK_FILES_HINT+=("$_hook_file")
+    done <<<"$TALOS_FILES_HINT"
+  fi
   _HOOK_CONTEXT="$(bash "$SCRIPT_DIR/pipeline-hooks.sh" pre_dispatch \
-    "$ROLE" "$TALOS_ISSUE_NUMBER" "" "$TALOS_WORKTREE_PATH")"
+    "$ROLE" "$TALOS_ISSUE_NUMBER" "" "$TALOS_WORKTREE_PATH" \
+    ${_HOOK_FILES_HINT[@]+"${_HOOK_FILES_HINT[@]}"})"
   if [ -n "$_HOOK_CONTEXT" ]; then
     PROMPT="$_HOOK_CONTEXT
 $PROMPT"

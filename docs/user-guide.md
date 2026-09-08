@@ -738,7 +738,9 @@ and changes no prompt.
 
 **Contract.** The command receives this JSON on stdin (`pr` and `files_hint`
 are `null`/`[]` when the caller doesn't have them yet, e.g. before a PR
-exists):
+exists). `files_hint` is currently populated only when the caller sets it --
+`pipeline-agent.sh` passes through `TALOS_FILES_HINT` (newline-separated
+paths) when that env var is set, and `[]` otherwise:
 
 ```json
 {"role":"developer","issue":42,"pr":57,"repo":"owner/name",

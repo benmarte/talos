@@ -146,18 +146,26 @@ json.dump(payload, sys.stdout)
   local hook_pid=$!
   set +m
 
+  # The watchdog also gets its own process group (set -m), same as the hook
+  # above: on the fast-success path below we need to kill the *group*, not
+  # just the subshell pid, or the "sleep $timeout_s" it already forked is
+  # orphaned and keeps running for up to hooks.timeout_s (#181 review).
+  set -m
   ( sleep "$timeout_s"
     kill -TERM -"$hook_pid" 2>/dev/null
     sleep 0.2
     kill -KILL -"$hook_pid" 2>/dev/null
   ) &
   local watchdog_pid=$!
+  set +m
 
   local rc=0
   wait "$hook_pid" 2>/dev/null
   rc=$?
 
-  kill "$watchdog_pid" 2>/dev/null
+  # Kill the watchdog's whole process group (negative pid) so its "sleep
+  # $timeout_s" child is reaped too, not just the subshell leader.
+  kill -- -"$watchdog_pid" 2>/dev/null
   wait "$watchdog_pid" 2>/dev/null
 
   local out=""
