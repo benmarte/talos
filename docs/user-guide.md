@@ -514,12 +514,12 @@ for the same suite run more than it needs to:
 - **Developer** (`verify.targeted`, default `true`): two mutually exclusive
   modes.
   - `true` (default): while iterating, the developer runs only the tests
-    that cover the files it changed — `tests/run-tests.sh --for <changed
-    files>` when that flag exists, else the test files whose name or
-    contents reference the changed scripts — then runs the full `verify:`
-    list exactly once, after the last code change, immediately before its
-    final commit and push. It never runs the full list more than once for
-    the PR.
+    that cover the files it changed — `tests/run-tests.sh --for <path>
+    [--for <path> ...]`, or `tests/run-tests.sh --changed [<base-ref>]` to
+    derive the paths from `git diff` plus uncommitted changes (default
+    base ref `origin/main`) — then runs the full `verify:` list exactly
+    once, after the last code change, immediately before its final commit
+    and push. It never runs the full list more than once for the PR.
   - `false`: the developer runs the full `verify:` list after each
     meaningful change while iterating (the old, non-targeted behavior — no
     per-file test shortcut), and still exactly once after the last code

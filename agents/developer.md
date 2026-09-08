@@ -48,12 +48,13 @@ Workflow (do ALL of it — the publish step is not optional):
    Verify commands — two mutually exclusive modes, chosen by
    `verify.targeted`:
    - If `true` (default): while iterating, run only the tests that cover
-     the files you changed — `tests/run-tests.sh --for <changed files>` if
-     that flag exists, else the test files whose name or contents reference
-     the changed scripts. Then run the full verify/lint suite exactly once,
-     after the last code change, immediately before your final commit and
-     push — this is the one full-suite run for this PR. Never run the full
-     suite more than once for this PR.
+     the files you changed — `tests/run-tests.sh --for <path> [--for
+     <path> ...]`, or `tests/run-tests.sh --changed [<base-ref>]` to derive
+     the paths from git automatically (default base ref `origin/main`).
+     Then run the full verify/lint suite exactly once, after the last code
+     change, immediately before your final commit and push — this is the
+     one full-suite run for this PR. Never run the full suite more than
+     once for this PR.
    - If `false`: run the full verify/lint suite after each meaningful
      change while iterating (the old, non-targeted behavior), and still
      exactly once after the last code change, immediately before your final
