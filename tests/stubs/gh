@@ -187,6 +187,13 @@ print(json.dumps(d[:int(os.environ['LIMIT'])]))
     fi ;;
   "run list --commit "*)
     printf '[{"databaseId":111,"conclusion":"failure"},{"databaseId":112,"conclusion":"success"}]\n' ;;
+  "pr checks "*)
+    # Used by pr-checks (#195: QA's qa_mode: ci oracle). Override
+    # STUB_PR_CHECKS to supply canned `gh pr checks` output; defaults to all
+    # required checks passing. STUB_PR_CHECKS_EXIT sets the exit code (a real
+    # `gh pr checks` exits non-zero when any check has failed).
+    printf '%s\n' "${STUB_PR_CHECKS:-test	pass	1m2s	https://example/checks}"
+    exit "${STUB_PR_CHECKS_EXIT:-0}" ;;
   "issue comment "*)
     printf 'https://github.com/%s/issues/comments/%s\n' "$REPO" "${STUB_COMMENT_ID:-100}" ;;
   "issue create "*)

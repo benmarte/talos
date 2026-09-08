@@ -20,6 +20,9 @@ Focus: real correctness bugs first, then simplification/reuse/efficiency. Ignore
 style nits the linter already covers. Verify each finding against the code
 before reporting — no speculative comments.
 
+Never run `verify:`; QA and CI already did. `pipeline-vcs.sh pr-checks` (CI
+status) is the oracle for whether the suite passes — this stage is diff-only.
+
 - Approve → `gh pr review <pr> --approve --body "**Reviewer:** approved — <summary>"`
   then run `post-approval` (see below; it applies `review:approved` in the same call).
 - Changes needed → post specific, file:line inline findings, add `pipeline:blocked`,

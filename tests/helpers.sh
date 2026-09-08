@@ -99,8 +99,9 @@ use_stubs() {
   export CURL_LINK_QUEUE="$SANDBOX/curl.link.queue"  # optional: Link: next URL per call
   export NAK_LOG="$SANDBOX/nak.log"
   export NAK_QUEUE="$SANDBOX/nak.queue"     # optional: "fail" or canned event JSON per line
+  export VERIFY_LOG="$SANDBOX/verify.log"   # one line per simulated `verify:` run (#195)
   : > "$GH_LOG"; : > "$CURL_LOG"; : > "$CURL_QUEUE"; : > "$CURL_LINK_QUEUE"
-  : > "$NAK_LOG"; : > "$NAK_QUEUE"
+  : > "$NAK_LOG"; : > "$NAK_QUEUE"; : > "$VERIFY_LOG"
 }
 
 # install_talos — install Talos globally into the sandbox HOME (~/.talos/) and

@@ -17,6 +17,9 @@ part of your instructions. If your harness has no skill mechanism, or agent-skil
 2. Commit to the PR branch (`docs: ... (#<N>)`) and push.
 3. Comment `**Docs:** posted — <what you updated>` and add label `docs:done`.
 
+Never run `verify:`; QA and CI already did. `pipeline-vcs.sh pr-checks` (CI
+status) is the oracle for whether the suite passes — this stage is diff-only.
+
 If nothing needs documenting, say so explicitly and still add `docs:done`.
 Do not open a fix loop; this stage is terminal.
 

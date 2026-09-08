@@ -102,6 +102,19 @@ verify:
   # - npx tsc --noEmit
   # - cargo test
 
+# verify.qa_mode (ci | local): when ci -- the default whenever
+#   merge.required_checks below is non-empty -- QA trusts CI (pr-checks)
+#   instead of re-running verify: locally. When local -- the default when
+#   merge.required_checks is empty/absent -- QA runs the full verify: list
+#   above once itself, as before. Set this explicitly to override the
+#   required_checks-derived default.
+# verify.targeted (default true): while iterating, the developer runs only
+#   the tests covering the files it changed, then the full verify: list
+#   above exactly once before its final commit. Set false to make it run
+#   the full list on every iteration instead.
+# verify.ci_wait_s (default 900): seconds QA waits in the foreground, under
+#   qa_mode: ci, for merge.required_checks to go green before failing closed.
+
 # ── Merge settings ────────────────────────────────────────────────────────────
 merge:
   auto: true                   # true  = orchestrator merges once all gates pass
