@@ -141,6 +141,37 @@ assert_eq "600000" "$(bash "$CFG_SH" verify.timeout_ms 600000)" \
   "non-positive verify.timeout_ms falls back to the default (#205)"
 rm talos.pipeline.json
 
+# ── verify.ci_wait_s (#205 security follow-up): default, explicit override, ──
+# non-integer/non-positive rejection -- mirrors verify.timeout_ms exactly,
+# because ci_wait_s is interpolated unquoted into a literal agent-executed
+# shell test (`[ "$SECONDS" -ge <VERIFY_CI_WAIT_S> ]`).
+assert_eq "900" "$(bash "$CFG_SH" verify.ci_wait_s 900)" \
+  "verify.ci_wait_s defaults to 900 when absent (#205)"
+
+cat > talos.pipeline.json <<'EOF'
+{"verify": {"ci_wait_s": 120}}
+EOF
+assert_eq "120" "$(bash "$CFG_SH" verify.ci_wait_s 900)" \
+  "explicit verify.ci_wait_s overrides the 900 default (#205)"
+rm talos.pipeline.json
+
+cat > talos.pipeline.json <<'EOF'
+{"verify": {"ci_wait_s": "soon; rm -rf /"}}
+EOF
+assert_eq "900" "$(bash "$CFG_SH" verify.ci_wait_s 900)" \
+  "non-integer verify.ci_wait_s (incl. shell metacharacters) falls back to the default (#205)"
+ci_wait_s_err="$(bash "$CFG_SH" verify.ci_wait_s 900 2>&1 >/dev/null)"
+assert_contains "$ci_wait_s_err" "must be a positive integer" \
+  "non-integer verify.ci_wait_s warns on stderr (#205)"
+rm talos.pipeline.json
+
+cat > talos.pipeline.json <<'EOF'
+{"verify": {"ci_wait_s": 0}}
+EOF
+assert_eq "900" "$(bash "$CFG_SH" verify.ci_wait_s 900)" \
+  "non-positive verify.ci_wait_s falls back to the default (#205)"
+rm talos.pipeline.json
+
 cat > talos.pipeline.json <<'EOF'
 {"merge": {"method": "rebase"}}
 EOF

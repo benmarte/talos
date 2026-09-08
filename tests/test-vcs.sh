@@ -581,6 +581,57 @@ bash "$VCS" create-issue "Fix the crash" "$SANDBOX/body.md" --label pipeline:rea
 assert_contains "$(cat "$GH_LOG")" "issue create" "create-issue invokes gh with issue create"
 assert_contains "$(cat "$GH_LOG")" "--label pipeline:ready" "create-issue passes label to gh"
 
+# ── pr-checks-required: scoped to merge.required_checks only (#205 review) ───
+# The literal QA CI-wait loop used to aggregate every check `gh pr checks`
+# reported, so an unrelated pending check could burn the whole wait budget
+# and a required check GitHub hadn't scheduled yet was invisible. This verb
+# reads merge.required_checks and reports pass/fail/pending against only
+# those names.
+cat > talos.pipeline.json <<'EOF'
+{"merge": {"required_checks": ["build", "test"]}}
+EOF
+
+STUB_PR_CHECKS="$(printf 'build\tpass\t1m0s\thttps://x\ntest\tpass\t2m0s\thttps://x\nlint\tfail\t0m5s\thttps://x')" \
+  bash "$VCS" pr-checks-required 9 >/dev/null 2>err.log; rc=$?
+assert_eq "0" "$rc" \
+  "pr-checks-required: exits 0 when every required check passes, ignoring a non-required failure (#205)"
+
+STUB_PR_CHECKS="$(printf 'build\tpass\t1m0s\thttps://x')" \
+  bash "$VCS" pr-checks-required 9 >/dev/null 2>err.log; rc=$?
+assert_eq "2" "$rc" \
+  "pr-checks-required: exits 2 when a required check is missing from the report (#205)"
+assert_contains "$(cat err.log)" "test" \
+  "pr-checks-required: missing-check message names the absent required check (#205)"
+
+STUB_PR_CHECKS="$(printf 'build\tpass\t1m0s\thttps://x\ntest\tpending\t0m1s\thttps://x')" \
+  bash "$VCS" pr-checks-required 9 >/dev/null 2>err.log; rc=$?
+assert_eq "2" "$rc" \
+  "pr-checks-required: exits 2 while a required check is still pending (#205)"
+
+STUB_PR_CHECKS="$(printf 'build\tpass\t1m0s\thttps://x\ntest\tfail\t2m0s\thttps://x')" \
+  bash "$VCS" pr-checks-required 9 >/dev/null 2>err.log; rc=$?
+assert_eq "1" "$rc" \
+  "pr-checks-required: exits 1 when a required check has failed (#205)"
+rm -f err.log
+rm talos.pipeline.json
+
+# Empty merge.required_checks must never pass vacuously (#195 consistency).
+out="$(bash "$VCS" pr-checks-required 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" \
+  "pr-checks-required: exits 1 (never vacuously passes) when merge.required_checks is empty/absent (#205)"
+assert_contains "$out" "empty" \
+  "pr-checks-required: empty-config message explains why it did not pass (#205)"
+
+# --dry-run never calls gh
+cat > talos.pipeline.json <<'EOF'
+{"merge": {"required_checks": ["test"]}}
+EOF
+: > "$GH_LOG"
+out="$(bash "$VCS" --dry-run pr-checks-required 9)"
+assert_contains "$out" "[dry-run]" "pr-checks-required: --dry-run prints a dry-run line"
+assert_not_contains "$(grep -v "repo view" "$GH_LOG")" "pr " "pr-checks-required: --dry-run makes no gh pr calls"
+rm talos.pipeline.json
+
 # ── GitLab adapter: new verbs fail open with a warning ───────────────────────
 cat > talos.pipeline.json <<'EOF'
 {"vcs": {"provider": "gitlab"}}
@@ -588,6 +639,12 @@ EOF
 out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
 assert_eq "0" "$rc" "gitlab: check-pr-files fails open (exit 0)"
 assert_contains "$out" "not implemented for gitlab" "gitlab: fail-open warns the orchestrator"
+
+# pr-checks-required is the one verb that must NOT fail open here (#205): the
+# QA CI-wait loop trusts exit 0 as "every required check passed", so an
+# unimplemented provider must fail closed instead of vacuously passing.
+out="$(bash "$VCS" pr-checks-required 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" "gitlab: pr-checks-required fails closed (exit 1), not vacuously open (#205)"
 rm talos.pipeline.json
 
 # ── File-mode adapter: real markdown checklist manipulation ──────────────────

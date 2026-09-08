@@ -135,6 +135,27 @@ if key == "verify.timeout_ms" and value is not None:
         )
         value = None
 
+# verify.ci_wait_s (#205 security follow-up) is interpolated unquoted into a
+# literal, agent-executed shell test (`[ "$SECONDS" -ge <VERIFY_CI_WAIT_S> ]`)
+# in the QA CI-wait loop, so -- exactly like verify.timeout_ms above -- it must
+# be a positive integer before it ever reaches that prompt. A non-integer or
+# non-positive config value (or one carrying shell metacharacters) is a config
+# error, not a value an agent can act on: fail closed to the caller-supplied
+# default (900 from Step 0) and warn once on stderr rather than handing a
+# subagent an injectable string.
+if key == "verify.ci_wait_s" and value is not None:
+    try:
+        iv = int(value)
+        if iv <= 0:
+            raise ValueError
+        value = iv
+    except (TypeError, ValueError):
+        sys.stderr.write(
+            "pipeline-config: verify.ci_wait_s must be a positive integer "
+            "(seconds) -- got: %r -- using default\n" % (value,)
+        )
+        value = None
+
 if value is None:
     print(default, end="")
 elif isinstance(value, bool):

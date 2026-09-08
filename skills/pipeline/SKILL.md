@@ -854,13 +854,20 @@ Foreground rule: run the verify list or the CI-wait poll below in the foreground
    If QA mode is `ci`: do NOT run `verify:` or the test suite locally — CI
    already runs it on every push. Instead, run this single bounded foreground
    command and wait for it to finish before continuing — it blocks in one
-   Bash call and returns only once every check passes or the CI wait budget
-   elapses, so there is nothing left to improvise:
-   `SECONDS=0; until [ "$(bash scripts/pipeline-vcs.sh pr-checks <PR_NUMBER> | cut -f2 | sort -u)" = "pass" ] || [ "$SECONDS" -ge <VERIFY_CI_WAIT_S> ]; do sleep 30; done`
-   Treat any required check that is failing, missing, or still pending when
-   that command returns as FAIL — fail closed, never assume a missing check
-   would have passed. Spend the time this saves driving acceptance criteria
-   and edge cases instead.
+   Bash call and returns only once every check named in `merge.required_checks`
+   passes or the CI wait budget elapses, so there is nothing left to improvise.
+   `pipeline-vcs.sh pr-checks-required` (unlike plain `pipeline-vcs.sh
+   pr-checks`) is already scoped to only the required checks, exits 2 while
+   any of them is still pending or missing (keep polling), exits 1 the moment
+   one has definitively failed (stop early, no need to wait out the budget),
+   and exits 0 only once every one of them passes:
+   `SECONDS=0; until bash scripts/pipeline-vcs.sh pr-checks-required <PR_NUMBER>; rc=$?; [ "$rc" -ne 2 ] || [ "$SECONDS" -ge <VERIFY_CI_WAIT_S> ]; do sleep 30; done; test "$rc" -eq 0`
+   The final `test "$rc" -eq 0` is what your Bash call's exit status reflects:
+   FAIL whenever the loop stopped for any reason other than every required
+   check passing -- an explicit failure (`rc=1`) or the wait budget elapsing
+   while a check was still pending or missing (`rc=2` at timeout) -- fail
+   closed, never assume a missing check would have passed. Spend the time
+   this saves driving acceptance criteria and edge cases instead.
    If QA mode is `local`: run the full `verify:` list exactly once (as before).
    Prefer summary output for verify commands (e.g. `--quiet` for Talos's own
    suite, or the project's equivalent) -- quote only failures, never paste
@@ -1124,9 +1131,13 @@ Note: this gate does NOT catch a lone PR that overclaims its deliverables (e.g.,
 items with `Closes #N` and no siblings). Detecting that requires a ledger; nothing in the
 pipeline ticks one in VCS mode today.
 
-Check CI: `bash scripts/pipeline-vcs.sh pr-checks <PR_NUMBER>`
+Check CI: `bash scripts/pipeline-vcs.sh pr-checks-required <PR_NUMBER>` -- scoped to
+`merge.required_checks` only (#205), so an unrelated non-required check does not
+block a merge that every required check has already cleared. Exit 0 means every
+required check passed; any non-zero exit (1 = a required check failed, 2 = one is
+still pending or missing) means do not merge yet.
 
-If failing: CI may be flaky — retry it, bounded to 2 re-runs per head SHA:
+If failing (non-zero exit): CI may be flaky — retry it, bounded to 2 re-runs per head SHA:
 1. Count existing `<!-- talos:ci-rerun <HEAD_SHA> -->` marker comments on the PR.
 2. If fewer than 2: `bash scripts/pipeline-vcs.sh rerun-ci <PR_NUMBER>`, then post
    a PR comment containing the marker `<!-- talos:ci-rerun <HEAD_SHA> -->` and a

@@ -44,6 +44,12 @@
 #   approve-pr <n> <body>                     Approve a PR with a comment
 #   label-pr <n> [--add <l>] [--remove <l>]   Add/remove labels on PR
 #   pr-checks <n>                             Show CI check status
+#   pr-checks-required <n>                    Exit 0 only when every check in
+#                                             merge.required_checks passes on
+#                                             the current head; exit 2 while
+#                                             any is pending/missing, exit 1
+#                                             on failure or an empty
+#                                             merge.required_checks (#205)
 #   merge-pr <n>                              Merge the PR
 #   comment-pr <n> <body>                     Post comment on PR <n>
 #              <n> --body-file <path>         ...or read the body from a file
@@ -290,6 +296,53 @@ _run() {
     return 0
   fi
   "$@"
+}
+
+# ── Shared: evaluate a set of required checks against their current status ────
+# (#205 review follow-up) Both `_github` and `_github_api`'s `pr-checks-required`
+# normalize their provider-specific check data down to "<name><TAB>status" lines
+# (status is one of pass|fail|pending) and feed them here on stdin, so the
+# pass/fail/pending decision -- and the "empty required_checks never passes
+# vacuously" rule from #195 -- lives in exactly one place.
+#
+# Usage: printf '<name>\t<status>\n...' | _eval_required_checks "<required checks, newline-separated>"
+# Exit codes:
+#   0 -- every required check reports pass on the current head
+#   1 -- merge.required_checks is empty (never a vacuous pass), OR at least one
+#       required check has explicitly failed
+#   2 -- no required check has failed, but at least one is pending or missing
+#       from the status data (still worth polling again)
+# Prints a one-line summary to stderr either way.
+_eval_required_checks() {
+  local _required="$1"
+  python3 -c "
+import sys
+
+required = [l.strip() for l in sys.argv[1].splitlines() if l.strip()]
+if not required:
+    print('pr-checks-required: merge.required_checks is empty -- refusing to '
+          'vacuously pass (see #195)', file=sys.stderr)
+    sys.exit(1)
+
+status = {}
+for line in sys.stdin:
+    parts = line.rstrip('\n').split('\t')
+    if len(parts) >= 2 and parts[0]:
+        status[parts[0]] = parts[1]
+
+failed  = [n for n in required if status.get(n) == 'fail']
+pending = [n for n in required if status.get(n) != 'pass' and n not in failed]
+passed  = [n for n in required if status.get(n) == 'pass']
+
+if failed:
+    print('pr-checks-required: failed: ' + ', '.join(failed), file=sys.stderr)
+    sys.exit(1)
+if pending:
+    print('pr-checks-required: pending or missing: ' + ', '.join(pending), file=sys.stderr)
+    sys.exit(2)
+print('pr-checks-required: all required checks passed: ' + ', '.join(passed), file=sys.stderr)
+sys.exit(0)
+" "$_required"
 }
 
 # ── Retry-with-backoff (#173) ─────────────────────────────────────────────────
@@ -733,6 +786,40 @@ print(json.dumps(out))
       ;;
     pr-checks)
       _run gh pr checks "$1" ${REPO:+--repo "$REPO"}
+      ;;
+    pr-checks-required)
+      # (#205 review follow-up) Scoped to merge.required_checks only -- the
+      # literal QA CI-wait loop used to aggregate every check `gh pr checks`
+      # reported (`cut -f2 | sort -u`), so an unrelated optional check stuck
+      # pending burned the whole wait budget, and a required check GitHub
+      # hadn't scheduled yet was invisible (every *reported* check could read
+      # "pass" while the required one was simply absent -- a false PASS).
+      local _n="$1" _required
+      _required="$(cfg merge.required_checks "")"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] gh pr checks $_n ${REPO:+--repo $REPO}; evaluate against merge.required_checks"
+        return 0
+      fi
+      # Empty config never passes vacuously and needs no CI data to say so.
+      [ -z "$_required" ] && { printf '' | _eval_required_checks "$_required"; return; }
+      local _raw _norm
+      _raw="$(gh pr checks "$_n" ${REPO:+--repo "$REPO"} 2>/dev/null)"
+      _norm="$(printf '%s\n' "$_raw" | python3 -c "
+import sys
+for line in sys.stdin:
+    parts = line.rstrip('\n').split('\t')
+    if len(parts) < 2 or not parts[0]:
+        continue
+    name, raw = parts[0], parts[1].strip().lower()
+    if raw == 'pass':
+        status = 'pass'
+    elif raw in ('pending', 'queued', 'in_progress', 'expected', 'requested', 'waiting'):
+        status = 'pending'
+    else:
+        status = 'fail'
+    print(name + '\t' + status)
+")"
+      printf '%s\n' "$_norm" | _eval_required_checks "$_required"
       ;;
     merge-pr)
       local flag
@@ -2537,6 +2624,44 @@ print(json.load(sys.stdin).get('head',{}).get('sha',''))
       _ga_req GET "$_API/commits/$_sha/check-runs"
       ;;
 
+    pr-checks-required)
+      # (#205 review follow-up) Scoped to merge.required_checks only -- see
+      # the matching comment on _github's pr-checks-required for why.
+      local _n="$1" _required
+      _required="$(cfg merge.required_checks "")"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: GET $_API/pulls/$_n, GET $_API/commits/<sha>/check-runs for PR #$_n; evaluate against merge.required_checks"
+        return 0
+      fi
+      # Empty config never passes vacuously and needs no CI data to say so.
+      [ -z "$_required" ] && { printf '' | _eval_required_checks "$_required"; return; }
+      local _pr_data _sha
+      _pr_data="$(_ga_req GET "$_API/pulls/$_n")"
+      _sha="$(printf '%s' "$_pr_data" | python3 -c "
+import json, sys
+print(json.load(sys.stdin).get('head',{}).get('sha',''))
+")"
+      [ -z "$_sha" ] && { echo "github-api: could not resolve head SHA for PR #$_n" >&2; exit 1; }
+      local _cr_data _norm
+      _cr_data="$(_ga_req GET "$_API/commits/$_sha/check-runs")"
+      _norm="$(printf '%s' "$_cr_data" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for c in data.get('check_runs', []):
+    name = c.get('name', '')
+    if not name:
+        continue
+    if c.get('status') != 'completed':
+        status = 'pending'
+    elif c.get('conclusion') == 'success':
+        status = 'pass'
+    else:
+        status = 'fail'
+    print(name + '\t' + status)
+")"
+      printf '%s\n' "$_norm" | _eval_required_checks "$_required"
+      ;;
+
     merge-pr)
       local _n="$1"
       if [ "$DRY_RUN" = "true" ]; then
@@ -3847,6 +3972,14 @@ _gitlab() {
       echo "pipeline-vcs: $verb not implemented for gitlab — verify manually" >&2
       return 0
       ;;
+    pr-checks-required)
+      # Unlike the best-effort providers above, this verb gates a CI-wait
+      # loop that trusts exit 0 as "every required check passed" -- failing
+      # open here would let that loop treat unimplemented CI status as a
+      # vacuous pass. Fail closed instead (#205).
+      echo "pipeline-vcs: pr-checks-required not implemented for gitlab -- falls back to failing closed, not a vacuous pass" >&2
+      return 1
+      ;;
     *) echo "pipeline-vcs: unknown verb: $verb" >&2; exit 1 ;;
   esac
 }
@@ -4278,6 +4411,11 @@ PYEOF
       echo "pipeline-vcs: $verb not implemented for azure — verify manually" >&2
       return 0
       ;;
+    pr-checks-required)
+      # Fail closed, not open (#205) -- see the matching comment in _gitlab.
+      echo "pipeline-vcs: pr-checks-required not implemented for azure -- falls back to failing closed, not a vacuous pass" >&2
+      return 1
+      ;;
     *) echo "pipeline-vcs: unknown verb: $verb" >&2; exit 1 ;;
   esac
 }
@@ -4311,7 +4449,7 @@ _file() {
       echo "file mode: no PR to merge — orchestrator should close-issue directly after verifying the branch" >&2
       return 0
       ;;
-    diff-pr|pr-checks|list-prs|view-pr|find-pr|check-pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
+    diff-pr|pr-checks|pr-checks-required|list-prs|view-pr|find-pr|check-pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
       echo "file mode: $verb not applicable in file mode" >&2
       return 0
       ;;

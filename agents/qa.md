@@ -25,12 +25,19 @@ sleep-polling; never end your turn while a verify command is running.
    - `ci` — do NOT run the test suite or lint locally. CI already runs
      `verify:` on every push. Instead, run this single bounded foreground
      command and wait for it to finish before continuing — it blocks in one
-     shell call and returns only once every check passes or the wait budget
-     elapses, so there is nothing left to improvise:
-     `SECONDS=0; until [ "$(pipeline-vcs.sh pr-checks <pr> | cut -f2 | sort -u)" = "pass" ] || [ "$SECONDS" -ge <verify.ci_wait_s, default 900> ]; do sleep 30; done`
-     Treat any required check that is failing, missing, or still pending when
-     that command returns as FAIL; fail closed. Put the time this saves into
-     acceptance criteria and edge cases instead.
+     shell call and returns only once every check named in
+     `merge.required_checks` passes or the wait budget elapses, so there is
+     nothing left to improvise. The `pipeline-vcs.sh pr-checks-required` verb
+     (unlike plain `pipeline-vcs.sh pr-checks`) is scoped to only the required
+     checks: it exits 2 while any of them is pending or missing (keep
+     polling), exits 1 the moment one has definitively failed (stop early),
+     and exits 0 only once every one of them passes:
+     `SECONDS=0; until bash scripts/pipeline-vcs.sh pr-checks-required <pr>; rc=$?; [ "$rc" -ne 2 ] || [ "$SECONDS" -ge <verify.ci_wait_s, default 900> ]; do sleep 30; done; test "$rc" -eq 0`
+     Your Bash call's exit status is that final `test "$rc" -eq 0`: FAIL
+     whenever the loop stopped for any reason other than every required
+     check passing -- an explicit failure or the wait budget elapsing while a
+     check was still pending or missing; fail closed. Put the time this saves
+     into acceptance criteria and edge cases instead.
    - `local` (including the empty-`required_checks` fallback above) — run the
      full test suite and any lint/typecheck the repo defines, exactly once,
      as before. Prefer summary output for verify commands (e.g. `--quiet` for

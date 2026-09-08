@@ -511,13 +511,27 @@ for the same suite run more than it needs to:
   in the background, or via a sleep-poll loop — and never zero times.
 - **QA** (`verify.qa_mode`, default `ci` when `merge.required_checks` is
   non-empty, else `local`): under `ci`, QA does not re-run `verify:` at all —
-  it polls `pipeline-vcs.sh pr-checks` in the foreground, bounded by
-  `verify.ci_wait_s` (default `900` seconds), until every check named in
-  `merge.required_checks` is passing. Any check that is failing, missing, or
-  still pending when the budget elapses is treated as a QA **FAIL** — this is
-  fail-closed by design, never assume a missing check would have passed. The
-  budget QA saves by not re-running the suite goes into driving acceptance
-  criteria and edge cases instead. Under `local` (the default when no
+  it polls `pipeline-vcs.sh pr-checks-required` in the foreground, bounded by
+  `verify.ci_wait_s` (default `900` seconds; must be a positive integer,
+  rejected otherwise with a one-line stderr warning and a fallback to the
+  default -- it is interpolated unquoted into the CI-wait loop's shell test,
+  same rule as `verify.timeout_ms` below), until every check named in
+  `merge.required_checks` is passing. Unlike plain `pipeline-vcs.sh
+  pr-checks` (which reports every check the provider knows about),
+  `pr-checks-required` reads `merge.required_checks` itself and reports only
+  those: exit 0 once all of them pass, exit 2 while any is still pending or
+  missing (keep polling), exit 1 the instant one has definitively failed (stop
+  early, no need to wait out the budget), and exit 1 -- never a vacuous pass --
+  when `merge.required_checks` is empty. This closes two gaps in the earlier
+  aggregate-everything poll: an unrelated non-required check stuck pending
+  could no longer burn the whole wait budget, and a required check the
+  provider hadn't scheduled yet could no longer read as a false PASS just
+  because every check it *had* reported was green. Any required check that is
+  failing, missing, or still pending when the budget elapses is treated as a
+  QA **FAIL** -- this is fail-closed by design, never assume a missing check
+  would have passed. The budget QA saves by not re-running the suite goes
+  into driving acceptance criteria and edge cases instead. Under `local` (the
+  default when no
   `merge.required_checks` are configured, so there is no CI oracle to trust),
   QA runs the full `verify:` list once itself, same as before. An explicit
   `verify.qa_mode: ci` combined with an empty or absent
