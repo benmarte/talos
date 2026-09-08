@@ -276,9 +276,12 @@ _cleanup_hypothetical_vcs() { rm -f "$_hypothetical_vcs"; }
 trap _cleanup_hypothetical_vcs EXIT
 sed "s/CHANGELOG.md', '\*\.example'\]/CHANGELOG.md', '*.example', '*']/" \
   "$VCS" > "$_hypothetical_vcs"
-# Sanity: the substitution must have actually changed something in both provider blocks.
+# Sanity: the substitution must have actually changed something. Since #177
+# slice 2, DEFAULT_WAIVER is defined exactly once (in the shared
+# _vcs_shared_check_approval_sha helper both adapters call) instead of once
+# per provider block, so the patch touches exactly one line.
 _changed_lines="$(diff "$VCS" "$_hypothetical_vcs" | grep -c '^>' || true)"
-assert_eq "2" "$_changed_lines" "#196 hypothetical catch-all default: sed patched both provider blocks"
+assert_eq "1" "$_changed_lines" "#196 hypothetical catch-all default: sed patched the single shared definition"
 _c="$(mk_comment_with_marker "$SHA_A" qa)"
 out="$(STUB_PR_HEAD_SHA="$SHA_B" \
        STUB_PR_LABELS_JSON='[{"name":"qa:pass"}]' \
