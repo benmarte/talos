@@ -215,6 +215,20 @@ notifications:
   threading: true            # Thread all events per issue (bot-token mode only;
                              # silently skipped in webhook mode)
   #
+  # cmd (#184): a generic command sink for anything the four platforms above
+  # don't cover — a local desktop notifier, a webhook relay, a log shipper.
+  # Runs (via sh -c) after Slack/Discord/Teams/Buzz, for every event that
+  # passes the events filter below, with this JSON on stdin:
+  #   {"event": "pr-opened", "ref": "#42", "message": "...", "thread_key": "42",
+  #    "fields": [{"label": "PR", "text": "#9", "url": "https://.../pull/9"}],
+  #    "repo": "acme/widget", "issue": 42}
+  # A missing command, non-zero exit, or timeout (cmd_timeout_s below) is a
+  # silent no-op with one line on stderr — never blocks the pipeline or the
+  # other sinks. Disabled by default (empty string).
+  # cmd: "my-notify-tool"      # any shell command; "" (default) disables
+  # cmd_timeout_s: 10          # seconds before the command is killed; must
+  #                            # be a positive integer (default 10)
+  #
   # events: LEAVE THIS COMMENTED OUT to fire all events (recommended).
   #
   # WARNING — if you enable the events filter you MUST include the role events
