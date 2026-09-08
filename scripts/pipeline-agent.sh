@@ -192,7 +192,17 @@ case "$RUNNER" in
     # that turns into a spurious pipeline-agent.sh exit 1 even though the
     # runner itself exited 0. Writing to a file first removes the writer
     # process entirely, so there is nothing to receive EPIPE.
-    _PROMPT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/talos-prompt.XXXXXX")"
+    # Fail closed if mktemp -d fails (#215 review): an empty _PROMPT_DIR
+    # would otherwise make _PROMPT_FILE the literal path "/prompt", writing
+    # the prompt (which may contain issue-thread text) to a fixed path on a
+    # root CI container, with the EXIT trap's `rm -rf "$_PROMPT_DIR"` a
+    # no-op since _PROMPT_DIR was never set. Mirrors the guard pattern in
+    # pipeline-cfg-cache.sh: `mktemp -d ... || VAR=""` gated by `[ -n "$VAR" ]`.
+    _PROMPT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/talos-prompt.XXXXXX" 2>/dev/null)" || _PROMPT_DIR=""
+    if [ -z "$_PROMPT_DIR" ]; then
+      echo "pipeline-agent: custom runner: failed to create a temp directory for the prompt (mktemp -d)" >&2
+      exit 1
+    fi
     _PROMPT_FILE="$_PROMPT_DIR/prompt"
     (umask 077 && printf '%s' "$PROMPT" >"$_PROMPT_FILE")
     if command -v _talos_on_exit >/dev/null 2>&1; then

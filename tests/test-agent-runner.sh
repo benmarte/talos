@@ -158,6 +158,54 @@ else
   pass "custom runner without runner_cmd exits non-zero"
 fi
 
+# ── mktemp -d failure fails closed, never falls back to a fixed path (#215) ──
+# Regression for the PR #215 review finding: the old code did not check
+# `mktemp -d`'s exit status, so a failure (e.g. an unwritable/nonexistent
+# TMPDIR) left _PROMPT_DIR empty, _PROMPT_FILE became the literal path
+# "/prompt", and the prompt (which may contain issue-thread text) was
+# written there unconditionally on a root CI container -- with the EXIT
+# trap's `rm -rf "$_PROMPT_DIR"` a no-op since _PROMPT_DIR was never set.
+#
+# A bare `TMPDIR=/nonexistent/dir` would also break pipeline-cfg-cache.sh's
+# own `mktemp -d` (it shares TMPDIR), which silently falls back to
+# cfg()-returns-default instead of erroring -- masking agents.runner=custom
+# entirely and defeating this test before it reaches the code under test.
+# Instead, shadow `mktemp` on PATH so only the prompt-dir call (matched by
+# its "talos-prompt." template) fails; every other caller, including the
+# config cache, still gets the real binary.
+_REAL_MKTEMP="$(command -v mktemp)"
+_FAKE_BIN="$SANDBOX/fakebin"
+mkdir -p "$_FAKE_BIN"
+cat > "$_FAKE_BIN/mktemp" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+  *talos-prompt.*) exit 1 ;;
+  *) exec "$_REAL_MKTEMP" "\$@" ;;
+esac
+EOF
+chmod +x "$_FAKE_BIN/mktemp"
+
+cat > talos.pipeline.json <<'EOF'
+{"agents": {"runner": "custom", "runner_cmd": "cat > /dev/null"}}
+EOF
+if PATH="$_FAKE_BIN:$PATH" bash "$AGENT" developer "sensitive issue text" >/dev/null 2>"$ERRFILE"; then
+  fail "custom runner exits non-zero when mktemp -d fails" "stderr: $(cat "$ERRFILE")"
+else
+  pass "custom runner exits non-zero when mktemp -d fails"
+fi
+assert_contains "$(cat "$ERRFILE")" "custom runner" \
+  "mktemp -d failure error names the custom adapter"
+assert_contains "$(cat "$ERRFILE")" "temp directory" \
+  "mktemp -d failure error mentions the temp directory failure"
+if [ -w / ]; then
+  _prompt_leak="$(find "$SANDBOX" -mindepth 1 -name 'prompt' 2>/dev/null | head -1)"
+  assert_eq "" "$_prompt_leak" \
+    "mktemp -d failure never writes the prompt anywhere under \$SANDBOX"
+else
+  assert_file_absent "/prompt" \
+    "mktemp -d failure never falls back to writing the prompt at the fixed /prompt path"
+fi
+
 # ── Error paths ───────────────────────────────────────────────────────────────
 cat > talos.pipeline.json <<'EOF'
 {"agents": {"runner": "no-such-runner"}}
