@@ -243,4 +243,112 @@ fi
 
 unset STUB_EPIC_BODY
 
+# ── #195: verify: runs once per PR; QA trusts CI under qa_mode: ci ──────────
+# Stub-driven simulation of the developer + QA verify policy this playbook
+# documents (skills/pipeline/SKILL.md 3c/3d, agents/developer.md, agents/qa.md):
+# the developer runs the full verify: list exactly once, immediately before
+# its final commit -- targeted iteration (verify.targeted) never shows up
+# here, only the one required run does. QA does not run verify: at all under
+# qa_mode: ci (it polls pr-checks in the foreground instead, fail-closed) and
+# runs it exactly once more under qa_mode: local. Uses the `verify` PATH stub
+# (tests/stubs/verify, logs to $VERIFY_LOG) the same way GH_LOG/CURL_LOG track
+# gh/curl invocations, and the gh stub's "pr checks" case for the CI oracle.
+CFG="$HOME/.talos/scripts/pipeline-config.sh"
+
+simulate_developer_verify() {
+  verify >/dev/null
+}
+
+simulate_qa_verify() {  # $1 = qa_mode ("ci" | "local")
+  if [ "$1" = "local" ]; then
+    verify >/dev/null
+    return 0
+  fi
+  # ci: never run verify: locally -- poll pr-checks in the foreground,
+  # bounded (no sleep-loop workaround), fail closed on anything but "pass".
+  local out i=0
+  while [ "$i" -lt 3 ]; do
+    out="$(bash "$VCS" pr-checks 9 2>&1)"
+    case "$out" in
+      *$'\t'pass$'\t'*) return 0 ;;
+    esac
+    i=$((i + 1))
+  done
+  return 1
+}
+
+# qa_mode resolves to ci when merge.required_checks is non-empty: developer
+# runs verify: once, QA runs it zero times -- at most 1 execution total.
+cat > talos.pipeline.json <<'EOF'
+{"merge": {"required_checks": ["test"]}}
+EOF
+qa_mode="$(bash "$CFG" verify.qa_mode local)"
+assert_eq "ci" "$qa_mode" \
+  "e2e: verify.qa_mode resolves to ci when merge.required_checks is set (#195)"
+: > "$VERIFY_LOG"
+simulate_developer_verify
+simulate_qa_verify "$qa_mode" >/dev/null 2>&1
+qa_rc=$?
+count_ci="$(wc -l < "$VERIFY_LOG" | tr -d ' ')"
+assert_eq "1" "$count_ci" \
+  "e2e: verify: runs at most once per PR under qa_mode: ci (#195)"
+assert_eq "0" "$qa_rc" \
+  "e2e: QA passes under qa_mode: ci when pr-checks is green (#195)"
+
+# qa_mode: local (no required_checks configured) -- developer runs verify:
+# once, QA runs it once more -- at most 2 executions total, never more.
+rm -f talos.pipeline.json
+qa_mode="$(bash "$CFG" verify.qa_mode local)"
+assert_eq "local" "$qa_mode" \
+  "e2e: verify.qa_mode resolves to local when merge.required_checks is empty/absent (#195)"
+: > "$VERIFY_LOG"
+simulate_developer_verify
+simulate_qa_verify "$qa_mode" >/dev/null 2>&1
+count_local="$(wc -l < "$VERIFY_LOG" | tr -d ' ')"
+assert_eq "2" "$count_local" \
+  "e2e: verify: runs at most twice per PR under qa_mode: local (#195)"
+
+# qa_mode: ci, pr-checks NOT green -- QA fails closed and still never runs
+# verify: locally (the whole point of trusting CI as the oracle).
+cat > talos.pipeline.json <<'EOF'
+{"merge": {"required_checks": ["test"]}}
+EOF
+: > "$VERIFY_LOG"
+simulate_developer_verify
+STUB_PR_CHECKS="$(printf 'test\tfail\t1m2s\thttps://example/checks')" STUB_PR_CHECKS_EXIT=1 \
+  simulate_qa_verify ci >/dev/null 2>&1
+qa_rc=$?
+count_ci_fail="$(wc -l < "$VERIFY_LOG" | tr -d ' ')"
+assert_eq "1" "$count_ci_fail" \
+  "e2e: QA under qa_mode: ci never runs verify: even when pr-checks is red (#195)"
+if [ "$qa_rc" -ne 0 ]; then
+  pass "e2e: QA fails closed under qa_mode: ci when pr-checks is not green (#195)"
+else
+  fail "e2e: QA fails closed under qa_mode: ci when pr-checks is not green (#195)"
+fi
+rm -f talos.pipeline.json
+
+# qa_mode: ci explicitly set, but required_checks is empty -- the fail-open
+# trap from review finding #3: trusting CI as the oracle for an empty check
+# list would let QA pass vacuously without ever running verify: or observing
+# a real CI signal. pipeline-config.sh resolves this combination to "local"
+# instead, so QA must fall back to running verify: once itself, exactly like
+# genuine qa_mode: local -- not pass without running anything.
+cat > talos.pipeline.json <<'EOF'
+{"merge": {"required_checks": []}, "verify": {"qa_mode": "ci"}}
+EOF
+qa_mode="$(bash "$CFG" verify.qa_mode local 2>/dev/null)"
+assert_eq "local" "$qa_mode" \
+  "e2e: explicit qa_mode: ci with empty required_checks resolves to local, not a vacuous ci pass (#195)"
+: > "$VERIFY_LOG"
+simulate_developer_verify
+simulate_qa_verify "$qa_mode" >/dev/null 2>&1
+qa_rc=$?
+count_fail_open="$(wc -l < "$VERIFY_LOG" | tr -d ' ')"
+assert_eq "2" "$count_fail_open" \
+  "e2e: qa_mode: ci with empty required_checks -- QA runs verify: once (local behavior), not zero times (#195)"
+assert_eq "0" "$qa_rc" \
+  "e2e: qa_mode: ci with empty required_checks -- QA passes only after actually running verify: (#195)"
+rm -f talos.pipeline.json
+
 finish

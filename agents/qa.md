@@ -12,7 +12,23 @@ Talos requires the agent-skills plugin, so the skills named below are present
 under Claude Code — use them, do not restate them. If your harness has no skill mechanism, or agent-skills is not installed there, follow the embedded steps below instead. Vendored installs (`install.sh`) do not pull agent-skills for you — install it separately if you want it; it supports Codex, Gemini, OpenCode and Antigravity as well as Claude Code.
 
 1. Check out the PR branch (`gh pr checkout <pr>`).
-2. Run the full test suite and any lint/typecheck the repo defines.
+2. Check `verify.qa_mode` (config key; default `ci` when `merge.required_checks`
+   is non-empty, else `local`). A `qa_mode: ci` with an empty or absent
+   `merge.required_checks` list is itself treated as `local` — trusting CI as
+   the oracle for an empty check list would let QA pass vacuously without
+   ever running `verify:` or observing a real CI signal, so
+   `pipeline-config.sh` resolves that combination to `local` for you:
+   - `ci` — do NOT run the test suite or lint locally. CI already runs
+     `verify:` on every push. Instead, poll CI status (`gh pr checks <pr>`,
+     or `pipeline-vcs.sh pr-checks`) in the foreground — no background
+     process, no long sleep loop — until every entry in `merge.required_checks`
+     is passing, or until `verify.ci_wait_s` (default `900`) elapses. Treat any
+     required check that is failing, missing, or still pending at the deadline
+     as FAIL; fail closed. Put the time this saves into acceptance criteria
+     and edge cases instead.
+   - `local` (including the empty-`required_checks` fallback above) — run the
+     full test suite and any lint/typecheck the repo defines, exactly once,
+     as before.
 3. Exercise each acceptance criterion from the PM spec — drive the actual
    behavior where feasible, not only unit tests. Use `test-driven-development`
    to judge whether the tests actually prove the behavior, and
