@@ -737,6 +737,521 @@ print('\n'.join(lines))
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# SHARED ATTEMPT/APPROVAL MARKER HELPERS (#177 slice 1)
+#   Provider-independent marker-parsing logic that `_github` and `_github_api`
+#   used to hand-duplicate (and had already drifted on -- see #177). Each
+#   adapter still owns its own fetch (gh vs REST) and write (gh vs REST POST);
+#   everything downstream of "already-normalised JSON in hand" lives here,
+#   defined exactly once, so the two adapters cannot drift on regexes,
+#   ceiling math, or message wording again.
+#
+#   Where the two adapters previously drifted on wording (an em dash vs a
+#   double hyphen), this refactor keeps the `_github` adapter's original
+#   wording throughout (both read equally well; picking one avoids a second,
+#   silent choice being made per call site).
+# ─────────────────────────────────────────────────────────────────────────────
+
+# _vcs_shared_read_attempt
+#   stdin:  normalised comments JSON, {"comments":[{"author":{"login":...},
+#           "body":...}, ...]} -- the shape the `read-comments` verb (and
+#           _github_api's inline REST normalisation) already produce.
+#   env:    TRUSTED_AUTHORS, TALOS_CFG -- same contract read-attempt has
+#           always used.
+#   stdout: "stage=<s> count=<k> total=<t>[ key=<tok>]" (or "stage= count=0
+#           total=0" when no marker exists), preceded by any
+#           `talos:marker-authors-unverified` passthrough lines.
+#   exit:   0 normally; 1 when stdin is unparseable or the most recent
+#           marker is present but corrupt/unrecognised (fail-closed --
+#           corrupt markers never silently fall through to zero attempts).
+_vcs_shared_read_attempt() {
+  python3 -c "
+import json, os, re, sys
+
+# Stage-1 permissive detector: matches any HTML comment that looks like it
+# could be a talos:attempt marker.  Used to distinguish 'no marker present'
+# (safe) from 'marker present but unparseable' (corrupt → fail-closed).
+LOOSE_RE = re.compile(r'<!--\s*talos:attempt\b[^>]*-->')
+
+# Stage-2 strict extractor: only matches a syntactically valid marker.
+# Group 4 (key=<token>) is optional (#172 --idempotency-key); pre-existing
+# markers without it continue to parse unchanged.
+MARKER_RE = re.compile(
+    r'<!--\s*talos:attempt\s+stage=(\S+)\s+count=(\d+)\s+total=(\d+)'
+    r'(?:\s+key=([A-Za-z0-9._-]+))?\s*-->$',
+    re.MULTILINE
+)
+KNOWN_STAGES = {
+    'developer', 'qa', 'reviewer', 'security', 'docs',
+    'validator', 'pm', 'orchestrator', 'planner',
+}
+
+# Author allow-list — markers.trusted_authors config (YAML/JSON list of logins).
+# When absent or empty: fail-open with a warning so existing installs are not blocked.
+raw_authors = os.environ.get('TRUSTED_AUTHORS', '').strip()
+if raw_authors:
+    try:
+        parsed_authors = json.loads(raw_authors)
+        if not isinstance(parsed_authors, list):
+            raise ValueError('not a list')
+        trusted_authors = [str(a).strip() for a in parsed_authors if str(a).strip()]
+    except Exception:
+        trusted_authors = [a.strip() for a in raw_authors.splitlines() if a.strip()]
+else:
+    trusted_authors = []
+
+author_check_active = bool(trusted_authors)
+
+# Config-parse-failed detection for improved marker-authors-unverified message (#116).
+import pathlib as _pathlib_ra
+_talos_cfg_ra = os.environ.get('TALOS_CFG', '')
+_config_parse_failed_ra = False
+if _talos_cfg_ra and _pathlib_ra.Path(_talos_cfg_ra).exists():
+    try:
+        try:
+            import yaml as _yaml_ra; _yaml_ra.safe_load(open(_talos_cfg_ra))
+        except ImportError:
+            import json as _json_ra; _json_ra.load(open(_talos_cfg_ra))
+    except Exception:
+        _config_parse_failed_ra = True
+
+try:
+    data = json.load(sys.stdin)
+except Exception as exc:
+    print(f'pipeline-vcs: read-attempt: could not parse issue data: {exc}', file=sys.stderr)
+    sys.exit(1)
+
+raw_comments = data.get('comments', [])
+
+# GitHub returns comments oldest-first; search newest-first for the last marker.
+found = None
+for c in reversed(raw_comments):
+    body   = c.get('body', '')
+    author = c.get('author', {}).get('login', '') if isinstance(c.get('author'), dict) else ''
+
+    # Require the marker to appear as the last non-whitespace line of the comment
+    # body, so a quoted/fenced occurrence cannot win.
+    stripped  = body.rstrip()
+    last_line = stripped.rsplit('\n', 1)[-1].strip()
+
+    # INVARIANT (issue #79): last-line check is unconditional — MUST precede
+    # author_check_active block. Reordering these two sections silently reopens
+    # the quoted-marker bypass. Do not move the lines below past author_check_active.
+    # Stage 1: does this line look at all like a talos:attempt marker?
+    if not LOOSE_RE.search(last_line):
+        continue  # not a marker line — skip to next comment
+
+    # Author allow-list check (only when configured and non-empty).
+    if author_check_active:
+        if author not in trusted_authors:
+            print(
+                f'pipeline-vcs: read-attempt: skipping marker from untrusted author '
+                f'{author!r} (not in markers.trusted_authors)',
+                file=sys.stderr,
+            )
+            continue  # skip; keep searching older comments
+    else:
+        # Unconfigured allow-list — fail open but emit a machine-readable marker.
+        print('talos:marker-authors-unverified reader=read-attempt')
+        if _config_parse_failed_ra:
+            print(
+                'pipeline-vcs: read-attempt: [warn] markers.trusted_authors not configured '
+                '-- config file could not be parsed (see pipeline-config warning); '
+                'any commenter\'s marker is accepted',
+                file=sys.stderr,
+            )
+        else:
+            print(
+                'pipeline-vcs: read-attempt: [warn] markers.trusted_authors not configured '
+                '— author check skipped',
+                file=sys.stderr,
+            )
+
+    # Stage 2: the line IS marker-like; it must parse exactly or it is corrupt.
+    # Corrupt markers NEVER fall through to zero — that would grant infinite retries.
+    m = MARKER_RE.match(last_line)
+    if not m:
+        print(
+            f'pipeline-vcs: read-attempt: corrupt marker (does not parse): '
+            f'{last_line!r} — fail-closed',
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    stage, count_str, total_str, key_val = m.group(1), m.group(2), m.group(3), m.group(4)
+    # Semantic validation: stage must be known, values non-negative, count <= total.
+    if stage not in KNOWN_STAGES:
+        print(f'pipeline-vcs: read-attempt: unrecognised stage \"{stage}\" in marker — fail-closed', file=sys.stderr)
+        sys.exit(1)
+    count_val = int(count_str)
+    total_val = int(total_str)
+    if count_val < 0 or total_val < 0:
+        print('pipeline-vcs: read-attempt: negative value in marker — fail-closed', file=sys.stderr)
+        sys.exit(1)
+    if total_val < count_val:
+        print('pipeline-vcs: read-attempt: total < count in marker — fail-closed', file=sys.stderr)
+        sys.exit(1)
+    found = (stage, count_val, total_val, key_val or '')
+    break
+
+if found:
+    stage, count_val, total_val, key_val = found
+    if key_val:
+        print(f'stage={stage} count={count_val} total={total_val} key={key_val}')
+    else:
+        print(f'stage={stage} count={count_val} total={total_val}')
+else:
+    # No marker detected at all — treat as zero attempts (deliberate, not accidental).
+    print('stage= count=0 total=0')
+sys.exit(0)
+"
+}
+
+# _vcs_shared_attempt_blocked <verb> <count> <total> <max-count> <max-total> <stage>
+#   Prints "pipeline-vcs: <verb>: BLOCKED — ..." to stderr for each ceiling
+#   that is met/exceeded (total dispatches first, then per-stage consecutive
+#   attempts). Shared by check-attempt (pre-check) and record-attempt
+#   (post-record check) in both adapters, so the two can no longer drift on
+#   BLOCKED wording. Returns 1 if either ceiling is blocked, 0 otherwise.
+_vcs_shared_attempt_blocked() {
+  local verb="$1" count="$2" total="$3" max_count="$4" max_total="$5" stage="$6"
+  local blocked=false
+  if [ "$total" -ge "$max_total" ]; then
+    echo "pipeline-vcs: ${verb}: BLOCKED — total dispatches (${total}) >= max_total_dispatches (${max_total})" >&2
+    blocked=true
+  fi
+  if [ -n "$stage" ] && [ "$count" -ge "$max_count" ]; then
+    echo "pipeline-vcs: ${verb}: BLOCKED — ${stage} consecutive attempts (${count}) >= max_fix_attempts (${max_count})" >&2
+    blocked=true
+  fi
+  [ "$blocked" = "true" ] && return 1
+  return 0
+}
+
+# _vcs_shared_record_attempt <issue-n> <stage> <post-fn> [--idempotency-key <token> | --pr <pr-n>]
+#   Everything about record-attempt is provider-independent EXCEPT the actual
+#   write, so this function does all of it: parses the record-attempt CLI
+#   args, resolves an idempotency key (directly, or via the provider-agnostic
+#   recursive `pr-head <pr-n>` call), reads prior state via the
+#   provider-agnostic recursive `read-attempt` call, computes the new
+#   stage/total counts, and -- unless an idempotent duplicate short-circuits
+#   the write -- builds the marker body and calls `"$post_fn" <issue-n>
+#   <marker-body>`, a caller-supplied function name that performs the actual
+#   write and must print the created comment's URL (or the empty string on
+#   failure) to stdout.
+#   stdout: "stage=<s> count=<k> total=<t>" on success or idempotent replay.
+#   exit:   0 if under both ceilings after recording; 1 on a bad/missing
+#           argument, a failed write, or when either ceiling is now met.
+_vcs_shared_record_attempt() {
+  local n="$1" stage="$2" post_fn="$3"
+  shift 3
+  local idem_key="" idem_key_seen=false pr_n=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --idempotency-key)
+        idem_key="${2:-}"
+        idem_key_seen=true
+        shift 2 2>/dev/null || shift "$#"
+        ;;
+      --pr)
+        pr_n="${2:-}"
+        shift 2 2>/dev/null || shift "$#"
+        ;;
+      *) shift ;;
+    esac
+  done
+  if [ -n "$pr_n" ] && [ "$idem_key_seen" = "true" ]; then
+    echo "pipeline-vcs: record-attempt: --pr and --idempotency-key are mutually exclusive" >&2
+    return 1
+  fi
+  if [ -n "$pr_n" ]; then
+    local pr_sha
+    pr_sha="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" pr-head "$pr_n" ${REPO:+--repo "$REPO"} 2>/dev/null)" || {
+      echo "pipeline-vcs: record-attempt: could not resolve head SHA for PR #$pr_n" >&2
+      return 1
+    }
+    case "$pr_sha" in
+      *[!0-9a-f]*|"")
+        echo "pipeline-vcs: record-attempt: invalid SHA from pr-head: '$pr_sha'" >&2
+        return 1
+        ;;
+    esac
+    if [ "${#pr_sha}" -ne 40 ]; then
+      echo "pipeline-vcs: record-attempt: SHA must be 40 hex chars, got ${#pr_sha}: '$pr_sha'" >&2
+      return 1
+    fi
+    idem_key="${stage}-${pr_sha}"
+    idem_key_seen=true
+  fi
+  if [ "$idem_key_seen" = "true" ]; then
+    case "$idem_key" in
+      ''|*[!A-Za-z0-9._-]*)
+        echo "pipeline-vcs: record-attempt: --idempotency-key must match [A-Za-z0-9._-]+, got '$idem_key'" >&2
+        return 1
+        ;;
+    esac
+  fi
+  local max_stage max_total
+  max_stage="$(cfg limits.max_fix_attempts 3)"
+  max_total="$(cfg limits.max_total_dispatches 8)"
+  # Read current state (fail-closed on parse error)
+  local state
+  state="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" read-attempt "$n" ${REPO:+--repo "$REPO"} 2>&1)"
+  local rc=$?
+  if [ $rc -ne 0 ]; then
+    echo "pipeline-vcs: record-attempt: read-attempt failed: $state" >&2
+    return 1
+  fi
+  # Pass through any machine-readable talos: markers from read-attempt to our
+  # own stdout, then narrow state to only the parseable stage=...count=...total=
+  # line (filters out both talos: markers and any stderr warnings captured via 2>&1).
+  printf '%s\n' "$state" | grep '^talos:' || true
+  state="$(printf '%s\n' "$state" | grep '^stage=')"
+  local prev_stage prev_count prev_total prev_key
+  prev_stage="$(printf '%s' "$state" | sed 's/stage=\([^ ]*\).*/\1/')"
+  prev_count="$(printf '%s' "$state" | sed 's/.*count=\([0-9]*\).*/\1/')"
+  prev_total="$(printf '%s' "$state" | sed 's/.*total=\([0-9]*\).*/\1/')"
+  prev_key="$(printf '%s' "$state" | sed -n 's/.*key=\([^ ]*\).*/\1/p')"
+  # Idempotency dedup (#172): an immediate retry with the same stage and
+  # key as the most-recent marker does not post again -- reprints the
+  # existing (unincremented) counts and exits with the status those
+  # counts already imply. Only covers a same-turn retry that reuses the
+  # same token; it cannot detect a retry across a process restart, which
+  # by definition cannot know the prior token (see README.md).
+  if [ "$idem_key_seen" = "true" ] && [ "$prev_stage" = "$stage" ] && [ -n "$prev_key" ] && [ "$prev_key" = "$idem_key" ]; then
+    echo "pipeline-vcs: record-attempt: duplicate --idempotency-key '$idem_key' for stage=$stage; not posting again" >&2
+    printf 'stage=%s count=%d total=%d\n' "$stage" "$prev_count" "$prev_total"
+    if [ "$prev_total" -ge "$max_total" ] || [ "$prev_count" -ge "$max_stage" ]; then
+      return 1
+    fi
+    return 0
+  fi
+  # Compute new counts
+  local new_count new_total
+  new_total=$(( prev_total + 1 ))
+  if [ "$prev_stage" = "$stage" ]; then
+    # Same stage: increment consecutive count
+    new_count=$(( prev_count + 1 ))
+  else
+    # Different stage: reset per-stage count to 1
+    new_count=1
+  fi
+  # Build marker body (marker MUST be the last line of the comment).
+  # key=<token> is appended only when --idempotency-key was supplied.
+  local key_suffix="" marker_body
+  [ "$idem_key_seen" = "true" ] && key_suffix=" key=${idem_key}"
+  marker_body="$(printf 'Talos attempt record — stage=%s count=%d total=%d\n<!-- talos:attempt stage=%s count=%d total=%d%s -->' \
+    "$stage" "$new_count" "$new_total" \
+    "$stage" "$new_count" "$new_total" "$key_suffix")"
+  # Delegate the actual write to the adapter-supplied poster function. Its
+  # exit status (not stdout emptiness) is the write-succeeded signal, because
+  # the two adapters disagree on what a "successful but URL-less" write looks
+  # like: gh always returns a URL on success, REST can succeed without one.
+  local comment_url post_rc
+  comment_url="$("$post_fn" "$n" "$marker_body")"
+  post_rc=$?
+  if [ "$post_rc" -ne 0 ]; then
+    echo "pipeline-vcs: record-attempt: failed to post attempt marker for issue #$n" >&2
+    return 1
+  fi
+  echo "pipeline-vcs: record-attempt: marker posted at ${comment_url:-<unknown>}" >&2
+  printf 'stage=%s count=%d total=%d\n' "$stage" "$new_count" "$new_total"
+  # Exit non-zero if EITHER ceiling is now reached
+  _vcs_shared_attempt_blocked "record-attempt" "$new_count" "$new_total" "$max_stage" "$max_total" "$stage"
+}
+
+# _vcs_shared_check_approval_marker
+#   stdin:  the same PR JSON both adapters already assemble for
+#           check-approval-sha: {"headRefOid", "baseRefName",
+#           "labels":[{"name":...}], "comments":[...]}. Only "labels" and
+#           "comments" are read here -- headRefOid/baseRefName stay with the
+#           (still per-adapter, until #177 slice 2) SHA/waiver comparison.
+#   env:    TRUSTED_AUTHORS, TALOS_CFG -- same contract check-approval-sha
+#           has always used.
+#   stdout: JSON {"entries": [{"label", "role", "sha", "reason"}, ...]} in
+#           APPROVAL_LABELS order, restricted to labels present on the PR --
+#           for each entry exactly one of "sha"/"reason" is non-null. When no
+#           approval label is present at all, stdout is instead the plain
+#           diagnostic message check-approval-sha has always printed for that
+#           case.
+#   exit:   0 with JSON entries when at least one approval label is present;
+#           3 (no error -- a legitimate short-circuit) when no approval label
+#           is present, in which case the caller should relay stdout as-is
+#           and exit 0; 1 when stdin is unparseable.
+_vcs_shared_check_approval_marker() {
+  python3 -c "
+import json, os, re, sys
+
+APPROVAL_LABELS = {
+    'qa:pass':           'qa',
+    'review:approved':   'reviewer',
+    'security:approved': 'security',
+    'docs:done':         'docs',
+}
+
+# Fixed valid role set -- derived from APPROVAL_LABELS values.
+# Any marker whose role is not in this set is ignored (issue #128).
+# This must be a fixed literal, never interpolated from config or API text
+# (PR #68 precedent: injected text could forge an approval marker).
+VALID_ROLES = {'qa', 'reviewer', 'security', 'docs'}
+
+# Strict extractor: marker must be a syntactically valid talos:approval HTML comment.
+MARKER_RE = re.compile(r'<!--\s*talos:approval\s+sha=([0-9a-f]+)\s+role=(\S+?)\s*-->')
+
+raw_authors = os.environ.get('TRUSTED_AUTHORS', '').strip()
+if raw_authors:
+    try:
+        parsed_authors = json.loads(raw_authors)
+        if not isinstance(parsed_authors, list):
+            raise ValueError('not a list')
+        trusted_authors = [str(a).strip() for a in parsed_authors if str(a).strip()]
+    except Exception:
+        trusted_authors = [a.strip() for a in raw_authors.splitlines() if a.strip()]
+else:
+    trusted_authors = []
+
+author_check_active = bool(trusted_authors)
+
+# Config-parse-failed detection for improved marker-authors-unverified message (#116).
+import pathlib as _pathlib_cas
+_talos_cfg_cas = os.environ.get('TALOS_CFG', '')
+_config_parse_failed_cas = False
+if _talos_cfg_cas and _pathlib_cas.Path(_talos_cfg_cas).exists():
+    try:
+        try:
+            import yaml as _yaml_cas; _yaml_cas.safe_load(open(_talos_cfg_cas))
+        except ImportError:
+            import json as _json_cas; _json_cas.load(open(_talos_cfg_cas))
+    except Exception:
+        _config_parse_failed_cas = True
+
+try:
+    data = json.load(sys.stdin)
+except Exception as exc:
+    print(f'pipeline-vcs: check-approval-sha: could not parse PR data: {exc}', file=sys.stderr)
+    sys.exit(1)
+
+label_names  = {lb.get('name', '') for lb in data.get('labels', [])}
+raw_comments = data.get('comments', [])
+
+# Which approval labels are present?
+present = {label: role for label, role in APPROVAL_LABELS.items() if label in label_names}
+
+if not present:
+    # Inverse diagnostic (#146): when no approval labels are present but
+    # talos:approval markers exist in comments, a stage likely posted the
+    # marker without calling label-pr -- the mirror of the Case B diagnostic
+    # shipped in #144/#142 for the other direction.
+    no_label_marker_count = sum(
+        1 for c in raw_comments
+        if 'talos:approval sha=' in c.get('body', '')
+    )
+    if no_label_marker_count > 0:
+        print(
+            f'check-approval-sha: no approval labels present'
+            f' (but {no_label_marker_count} approval marker(s) found in comments'
+            f' - did a stage post a marker without applying its label?)'
+        )
+    else:
+        print('check-approval-sha: no approval labels present')
+    sys.exit(3)
+
+# Strict extractor: marker must be a syntactically valid talos:approval HTML comment.
+# Precompute once: does any comment contain near-miss marker text?
+any_approval_text = any('talos:approval sha=' in c.get('body', '') for c in raw_comments)
+
+entries = []
+for label, role in present.items():
+    # Find the most recent marker for this role (search comments newest-first).
+    # Enforce the same last-line rule as read-attempt: the marker must be the
+    # last non-whitespace line of the comment body so a quoted/fenced occurrence
+    # (e.g. GitHub Quote-reply) cannot satisfy the gate.
+    found_sha = None
+    reason = None
+    for c in reversed(raw_comments):
+        body   = c.get('body', '')
+        author = c.get('author', {}).get('login', '') if isinstance(c.get('author'), dict) else ''
+
+        # INVARIANT (issue #79): last-line check is unconditional — MUST precede
+        # author_check_active block. Reordering these two sections silently reopens
+        # the quoted-marker bypass. Do not move the lines below past author_check_active.
+        # Last-line rule: strip trailing whitespace, take final newline-split segment.
+        stripped  = body.rstrip()
+        last_line = stripped.rsplit('\n', 1)[-1].strip()
+
+        m = MARKER_RE.match(last_line)
+        if not m:
+            continue  # marker not on last line
+        marker_role = m.group(2)
+        if marker_role not in VALID_ROLES:
+            # Unknown role value -- log and skip so the gate falls through to
+            # the existing STALE path (fail-closed). Issue #128.
+            print(
+                'pipeline-vcs: check-approval-sha: ignoring marker with unknown role '
+                + repr(marker_role) + ' (valid: docs, qa, reviewer, security)',
+                file=sys.stderr,
+            )
+            continue
+        if marker_role != role:
+            continue  # wrong role for this label
+
+        # Author allow-list check (only when configured and non-empty).
+        if author_check_active:
+            if author not in trusted_authors:
+                print(
+                    f'pipeline-vcs: check-approval-sha: skipping marker for {label} '
+                    f'from untrusted author {author!r} (not in markers.trusted_authors)',
+                    file=sys.stderr,
+                )
+                continue  # skip; keep searching older comments
+        else:
+            # Unconfigured allow-list — fail open but emit a machine-readable marker.
+            print('talos:marker-authors-unverified reader=check-approval-sha')
+            if _config_parse_failed_cas:
+                print(
+                    'pipeline-vcs: check-approval-sha: [warn] markers.trusted_authors not configured '
+                    '-- config file could not be parsed (see pipeline-config warning); '
+                    'any commenter\'s marker is accepted',
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    'pipeline-vcs: check-approval-sha: [warn] markers.trusted_authors not configured '
+                    '— author check skipped',
+                    file=sys.stderr,
+                )
+
+        found_sha = m.group(1)
+        break
+
+    if not found_sha:
+        # Fail-closed: missing marker means the approval predates SHA stamping —
+        # treat it as stale rather than assuming it is safe.
+        print(f'pipeline-vcs: check-approval-sha: {label} has no SHA marker — treating as stale', file=sys.stderr)
+        if any_approval_text:
+            reason = 'found talos:approval text but no valid marker -- expected <!-- talos:approval sha=<40-hex-lowercase> role=<role> --> as the last non-whitespace line'
+        else:
+            reason = 'no SHA marker in PR comments'
+    elif not re.fullmatch(r'[0-9a-f]{40}', found_sha):
+        # Reject abbreviated SHAs at parse time.  An abbreviated SHA can expand to a
+        # real but wrong commit (e.g. bed2e4a expands to bed2e4ae... not bed2e4a9...).
+        # Stages must post the full 40-character SHA from pipeline-vcs.sh pr-head <PR>,
+        # not git rev-parse HEAD, which returns whatever commit is checked out locally.
+        reason = (
+            f'marker SHA {found_sha!r} is not a valid 40-character commit SHA — '
+            f'the {role} stage must obtain the SHA via '
+            f'pipeline-vcs.sh pr-head <PR>, not git rev-parse HEAD '
+            f'(which returns whatever commit is checked out locally)'
+        )
+        found_sha = None
+
+    entries.append({'label': label, 'role': role, 'sha': found_sha, 'reason': reason})
+
+json.dump({'entries': entries}, sys.stdout)
+sys.exit(0)
+"
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # GITHUB ADAPTER
 # ─────────────────────────────────────────────────────────────────────────────
 _github() {
@@ -1575,147 +2090,9 @@ json.dump({'comments': comments}, sys.stdout)
       fi
       local trusted_authors
       trusted_authors="$(cfg markers.trusted_authors "")"
-      printf '%s' "$issue_data" | TRUSTED_AUTHORS="$trusted_authors" TALOS_CFG="$_TALOS_CFG" python3 -c "
-import json, os, re, sys
-
-# Stage-1 permissive detector: matches any HTML comment that looks like it
-# could be a talos:attempt marker.  Used to distinguish 'no marker present'
-# (safe) from 'marker present but unparseable' (corrupt → fail-closed).
-LOOSE_RE = re.compile(r'<!--\s*talos:attempt\b[^>]*-->')
-
-# Stage-2 strict extractor: only matches a syntactically valid marker.
-# Group 4 (key=<token>) is optional (#172 --idempotency-key); pre-existing
-# markers without it continue to parse unchanged.
-MARKER_RE = re.compile(
-    r'<!--\s*talos:attempt\s+stage=(\S+)\s+count=(\d+)\s+total=(\d+)'
-    r'(?:\s+key=([A-Za-z0-9._-]+))?\s*-->$',
-    re.MULTILINE
-)
-KNOWN_STAGES = {
-    'developer', 'qa', 'reviewer', 'security', 'docs',
-    'validator', 'pm', 'orchestrator', 'planner',
-}
-
-# Author allow-list — markers.trusted_authors config (YAML/JSON list of logins).
-# When absent or empty: fail-open with a warning so existing installs are not blocked.
-raw_authors = os.environ.get('TRUSTED_AUTHORS', '').strip()
-if raw_authors:
-    try:
-        parsed_authors = json.loads(raw_authors)
-        if not isinstance(parsed_authors, list):
-            raise ValueError('not a list')
-        trusted_authors = [str(a).strip() for a in parsed_authors if str(a).strip()]
-    except Exception:
-        trusted_authors = [a.strip() for a in raw_authors.splitlines() if a.strip()]
-else:
-    trusted_authors = []
-
-author_check_active = bool(trusted_authors)
-
-# Config-parse-failed detection for improved marker-authors-unverified message (#116).
-import pathlib as _pathlib_ra
-_talos_cfg_ra = os.environ.get('TALOS_CFG', '')
-_config_parse_failed_ra = False
-if _talos_cfg_ra and _pathlib_ra.Path(_talos_cfg_ra).exists():
-    try:
-        try:
-            import yaml as _yaml_ra; _yaml_ra.safe_load(open(_talos_cfg_ra))
-        except ImportError:
-            import json as _json_ra; _json_ra.load(open(_talos_cfg_ra))
-    except Exception:
-        _config_parse_failed_ra = True
-
-try:
-    data = json.load(sys.stdin)
-except Exception as exc:
-    print(f'pipeline-vcs: read-attempt: could not parse issue data: {exc}', file=sys.stderr)
-    sys.exit(1)
-
-raw_comments = data.get('comments', [])
-
-# GitHub returns comments oldest-first; search newest-first for the last marker.
-found = None
-for c in reversed(raw_comments):
-    body   = c.get('body', '')
-    author = c.get('author', {}).get('login', '') if isinstance(c.get('author'), dict) else ''
-
-    # Require the marker to appear as the last non-whitespace line of the comment
-    # body, so a quoted/fenced occurrence cannot win.
-    stripped  = body.rstrip()
-    last_line = stripped.rsplit('\n', 1)[-1].strip()
-
-    # INVARIANT (issue #79): last-line check is unconditional — MUST precede
-    # author_check_active block. Reordering these two sections silently reopens
-    # the quoted-marker bypass. Do not move the lines below past author_check_active.
-    # Stage 1: does this line look at all like a talos:attempt marker?
-    if not LOOSE_RE.search(last_line):
-        continue  # not a marker line — skip to next comment
-
-    # Author allow-list check (only when configured and non-empty).
-    if author_check_active:
-        if author not in trusted_authors:
-            print(
-                f'pipeline-vcs: read-attempt: skipping marker from untrusted author '
-                f'{author!r} (not in markers.trusted_authors)',
-                file=sys.stderr,
-            )
-            continue  # skip; keep searching older comments
-    else:
-        # Unconfigured allow-list — fail open but emit a machine-readable marker.
-        print('talos:marker-authors-unverified reader=read-attempt')
-        if _config_parse_failed_ra:
-            print(
-                'pipeline-vcs: read-attempt: [warn] markers.trusted_authors not configured '
-                '-- config file could not be parsed (see pipeline-config warning); '
-                'any commenter\'s marker is accepted',
-                file=sys.stderr,
-            )
-        else:
-            print(
-                'pipeline-vcs: read-attempt: [warn] markers.trusted_authors not configured '
-                '— author check skipped',
-                file=sys.stderr,
-            )
-
-    # Stage 2: the line IS marker-like; it must parse exactly or it is corrupt.
-    # Corrupt markers NEVER fall through to zero — that would grant infinite retries.
-    m = MARKER_RE.match(last_line)
-    if not m:
-        print(
-            f'pipeline-vcs: read-attempt: corrupt marker (does not parse): '
-            f'{last_line!r} — fail-closed',
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    stage, count_str, total_str, key_val = m.group(1), m.group(2), m.group(3), m.group(4)
-    # Semantic validation: stage must be known, values non-negative, count <= total.
-    if stage not in KNOWN_STAGES:
-        print(f'pipeline-vcs: read-attempt: unrecognised stage \"{stage}\" in marker — fail-closed', file=sys.stderr)
-        sys.exit(1)
-    count_val = int(count_str)
-    total_val = int(total_str)
-    if count_val < 0 or total_val < 0:
-        print('pipeline-vcs: read-attempt: negative value in marker — fail-closed', file=sys.stderr)
-        sys.exit(1)
-    if total_val < count_val:
-        print('pipeline-vcs: read-attempt: total < count in marker — fail-closed', file=sys.stderr)
-        sys.exit(1)
-    found = (stage, count_val, total_val, key_val or '')
-    break
-
-if found:
-    stage, count_val, total_val, key_val = found
-    if key_val:
-        print(f'stage={stage} count={count_val} total={total_val} key={key_val}')
-    else:
-        print(f'stage={stage} count={count_val} total={total_val}')
-else:
-    # No marker detected at all — treat as zero attempts (deliberate, not accidental).
-    print('stage= count=0 total=0')
-sys.exit(0)
-"
+      printf '%s' "$issue_data" | TRUSTED_AUTHORS="$trusted_authors" TALOS_CFG="$_TALOS_CFG" _vcs_shared_read_attempt
       ;;
+
 
     check-attempt)
       # check-attempt <issue-n>
@@ -1749,14 +2126,7 @@ sys.exit(0)
       cur_stage="$(printf '%s' "$state" | sed 's/stage=\([^ ]*\).*/\1/')"
       cur_count="$(printf '%s' "$state" | sed 's/.*count=\([0-9]*\).*/\1/')"
       cur_total="$(printf '%s' "$state" | sed 's/.*total=\([0-9]*\).*/\1/')"
-      # Check total ceiling first
-      if [ "$cur_total" -ge "$max_total" ]; then
-        echo "pipeline-vcs: check-attempt: BLOCKED — total dispatches ($cur_total) >= max_total_dispatches ($max_total)" >&2
-        exit 1
-      fi
-      # Check per-stage ceiling
-      if [ -n "$cur_stage" ] && [ "$cur_count" -ge "$max_stage" ]; then
-        echo "pipeline-vcs: check-attempt: BLOCKED — $cur_stage consecutive attempts ($cur_count) >= max_fix_attempts ($max_stage)" >&2
+      if ! _vcs_shared_attempt_blocked "check-attempt" "$cur_count" "$cur_total" "$max_stage" "$max_total" "$cur_stage"; then
         exit 1
       fi
       echo "pipeline-vcs: check-attempt: ok (stage=$cur_stage count=$cur_count total=$cur_total; max_stage=$max_stage max_total=$max_total)"
@@ -1768,6 +2138,10 @@ sys.exit(0)
       # Read prior state, compute new per-stage count and total, post the
       # marker comment, and print "stage=<s> count=<k> total=<t>".
       # Exits non-zero when EITHER ceiling is exceeded AFTER recording.
+      # --idempotency-key <token> (#172): optional flag, back-compat when omitted.
+      # --pr <pr-n> (#172 QA follow-up): derives the key itself as
+      # "<stage>-<pr-head-sha>". See _vcs_shared_record_attempt for the full
+      # rationale -- identical behaviour on both adapters.
       local n="${1:-}" stage="${2:-}"
       [ -z "$n" ]     && { echo "pipeline-vcs: record-attempt: missing issue number" >&2; exit 1; }
       [ -z "$stage" ] && { echo "pipeline-vcs: record-attempt: missing stage argument" >&2; exit 1; }
@@ -1775,133 +2149,17 @@ sys.exit(0)
         echo "[dry-run] record-attempt $n $stage: read prior state, post <!-- talos:attempt stage=$stage ... --> marker"
         return 0
       fi
-      # --idempotency-key <token> (#172): optional flag, back-compat when omitted.
-      # token must match [A-Za-z0-9._-]+ -- no free-form text enters a marker (PR #68).
-      # --pr <pr-n> (#172 QA follow-up): derives the key itself as
-      # "<stage>-<pr-head-sha>" -- retry-stable across separate shells/processes
-      # because it depends only on the PR's current head SHA, never on a
-      # freshly-minted value like $(date +%s). Mutually exclusive with
-      # --idempotency-key.
-      local idem_key="" idem_key_seen=false pr_n=""
+      # Adapter-specific write: post the marker comment via `gh`, print the
+      # created comment's URL, and exit non-zero when the write itself
+      # failed (an empty URL from a successful gh call never happens).
+      _github_post_attempt_marker() {
+        local _url
+        _url="$(gh issue comment "$1" --body "$2" ${REPO:+--repo "$REPO"} 2>/dev/null)"
+        printf '%s' "$_url"
+        [ -n "$_url" ]
+      }
       shift 2 2>/dev/null || shift "$#"
-      while [ $# -gt 0 ]; do
-        case "$1" in
-          --idempotency-key)
-            idem_key="${2:-}"
-            idem_key_seen=true
-            shift 2 2>/dev/null || shift "$#"
-            ;;
-          --pr)
-            pr_n="${2:-}"
-            shift 2 2>/dev/null || shift "$#"
-            ;;
-          *) shift ;;
-        esac
-      done
-      if [ -n "$pr_n" ] && [ "$idem_key_seen" = "true" ]; then
-        echo "pipeline-vcs: record-attempt: --pr and --idempotency-key are mutually exclusive" >&2
-        exit 1
-      fi
-      if [ -n "$pr_n" ]; then
-        local pr_sha
-        pr_sha="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" pr-head "$pr_n" ${REPO:+--repo "$REPO"} 2>/dev/null)" || {
-          echo "pipeline-vcs: record-attempt: could not resolve head SHA for PR #$pr_n" >&2
-          exit 1
-        }
-        case "$pr_sha" in
-          *[!0-9a-f]*|"")
-            echo "pipeline-vcs: record-attempt: invalid SHA from pr-head: '$pr_sha'" >&2
-            exit 1
-            ;;
-        esac
-        if [ "${#pr_sha}" -ne 40 ]; then
-          echo "pipeline-vcs: record-attempt: SHA must be 40 hex chars, got ${#pr_sha}: '$pr_sha'" >&2
-          exit 1
-        fi
-        idem_key="${stage}-${pr_sha}"
-        idem_key_seen=true
-      fi
-      if [ "$idem_key_seen" = "true" ]; then
-        case "$idem_key" in
-          ''|*[!A-Za-z0-9._-]*)
-            echo "pipeline-vcs: record-attempt: --idempotency-key must match [A-Za-z0-9._-]+, got '$idem_key'" >&2
-            exit 1
-            ;;
-        esac
-      fi
-      local max_stage max_total
-      max_stage="$(cfg limits.max_fix_attempts 3)"
-      max_total="$(cfg limits.max_total_dispatches 8)"
-      # Read current state (fail-closed on parse error)
-      local state
-      state="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" read-attempt "$n" ${REPO:+--repo "$REPO"} 2>&1)"
-      local rc=$?
-      if [ $rc -ne 0 ]; then
-        echo "pipeline-vcs: record-attempt: read-attempt failed: $state" >&2
-        exit 1
-      fi
-      # Pass through any machine-readable talos: markers from read-attempt to our
-      # own stdout, then narrow state to only the parseable stage=...count=...total=
-      # line (filters out both talos: markers and any stderr warnings captured via 2>&1).
-      printf '%s\n' "$state" | grep '^talos:' || true
-      state="$(printf '%s\n' "$state" | grep '^stage=')"
-      local prev_stage prev_count prev_total prev_key
-      prev_stage="$(printf '%s' "$state" | sed 's/stage=\([^ ]*\).*/\1/')"
-      prev_count="$(printf '%s' "$state" | sed 's/.*count=\([0-9]*\).*/\1/')"
-      prev_total="$(printf '%s' "$state" | sed 's/.*total=\([0-9]*\).*/\1/')"
-      prev_key="$(printf '%s' "$state" | sed -n 's/.*key=\([^ ]*\).*/\1/p')"
-      # Idempotency dedup (#172): an immediate retry with the same stage and
-      # key as the most-recent marker does not post again -- reprints the
-      # existing (unincremented) counts and exits with the status those
-      # counts already imply. Only covers a same-turn retry that reuses the
-      # same token; it cannot detect a retry across a process restart, which
-      # by definition cannot know the prior token (see README.md).
-      if [ "$idem_key_seen" = "true" ] && [ "$prev_stage" = "$stage" ] && [ -n "$prev_key" ] && [ "$prev_key" = "$idem_key" ]; then
-        echo "pipeline-vcs: record-attempt: duplicate --idempotency-key '$idem_key' for stage=$stage; not posting again" >&2
-        printf 'stage=%s count=%d total=%d\n' "$stage" "$prev_count" "$prev_total"
-        if [ "$prev_total" -ge "$max_total" ] || [ "$prev_count" -ge "$max_stage" ]; then
-          exit 1
-        fi
-        exit 0
-      fi
-      # Compute new counts
-      local new_count new_total
-      new_total=$(( prev_total + 1 ))
-      if [ "$prev_stage" = "$stage" ]; then
-        # Same stage: increment consecutive count
-        new_count=$(( prev_count + 1 ))
-      else
-        # Different stage: reset per-stage count to 1
-        new_count=1
-      fi
-      # Build marker body (marker MUST be the last line of the comment).
-      # key=<token> is appended only when --idempotency-key was supplied.
-      local key_suffix="" marker_body
-      [ "$idem_key_seen" = "true" ] && key_suffix=" key=${idem_key}"
-      marker_body="$(printf 'Talos attempt record — stage=%s count=%d total=%d\n<!-- talos:attempt stage=%s count=%d total=%d%s -->' \
-        "$stage" "$new_count" "$new_total" \
-        "$stage" "$new_count" "$new_total" "$key_suffix")"
-      # Post the comment and verify the write landed
-      local comment_url
-      comment_url="$(gh issue comment "$n" --body "$marker_body" ${REPO:+--repo "$REPO"} 2>/dev/null)"
-      if [ -z "$comment_url" ]; then
-        echo "pipeline-vcs: record-attempt: failed to post attempt marker for issue #$n" >&2
-        exit 1
-      fi
-      echo "pipeline-vcs: record-attempt: marker posted at $comment_url" >&2
-      printf 'stage=%s count=%d total=%d\n' "$stage" "$new_count" "$new_total"
-      # Exit non-zero if EITHER ceiling is now reached
-      local blocked=false
-      if [ "$new_total" -ge "$max_total" ]; then
-        echo "pipeline-vcs: record-attempt: BLOCKED — total dispatches ($new_total) >= max_total_dispatches ($max_total)" >&2
-        blocked=true
-      fi
-      if [ "$new_count" -ge "$max_stage" ]; then
-        echo "pipeline-vcs: record-attempt: BLOCKED — $stage consecutive attempts ($new_count) >= max_fix_attempts ($max_stage)" >&2
-        blocked=true
-      fi
-      [ "$blocked" = "true" ] && exit 1
-      exit 0
+      _vcs_shared_record_attempt "$n" "$stage" _github_post_attempt_marker "$@"
       ;;
 
     check-approval-sha)
@@ -1919,6 +2177,12 @@ sys.exit(0)
       # --stale-list: additionally print one greppable stdout line per stale
       # role ("stale role=<role> label=<label>"), on top of the unchanged
       # stderr prose and exit code. Without the flag, behavior is unchanged.
+      #
+      # Marker extraction (which labels are present, and whether each has a
+      # valid, current-role, trusted-author marker) is handled once by
+      # _vcs_shared_check_approval_marker (#177 slice 1). The SHA-vs-head
+      # comparison and waiver-path logic below still lives per-adapter
+      # (#177 slice 2).
       local n="$1"; shift
       local stale_list_flag="false"
       if [ "${1:-}" = "--stale-list" ]; then
@@ -1934,28 +2198,33 @@ sys.exit(0)
         echo "pipeline-vcs: check-approval-sha: could not fetch PR #$n data" >&2
         exit 1
       fi
-      local waiver_paths
-      waiver_paths="$(cfg merge.approval_waiver_paths "")"
       local trusted_authors_cas
       trusted_authors_cas="$(cfg markers.trusted_authors "")"
+      local marker_out marker_rc marker_json
+      marker_out="$(printf '%s' "$pr_data" | TRUSTED_AUTHORS="$trusted_authors_cas" TALOS_CFG="$_TALOS_CFG" _vcs_shared_check_approval_marker)"
+      marker_rc=$?
+      if [ "$marker_rc" -eq 1 ]; then
+        exit 1
+      fi
+      if [ "$marker_rc" -eq 3 ]; then
+        # No approval labels present: marker_out IS the diagnostic message.
+        printf '%s\n' "$marker_out"
+        exit 0
+      fi
+      # marker_rc == 0: marker_out is zero or more machine-readable
+      # `talos:...` passthrough lines followed by exactly one JSON payload
+      # line -- relay the former to our own stdout (same convention
+      # read-attempt/check-attempt use) and keep the latter for the waiver
+      # comparison below.
+      printf '%s\n' "$marker_out" | grep '^talos:' || true
+      marker_json="$(printf '%s\n' "$marker_out" | grep -v '^talos:')"
+      local waiver_paths
+      waiver_paths="$(cfg merge.approval_waiver_paths "")"
       local repo_root
       repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
       printf '%s' "$pr_data" \
-        | WAIVER_PATHS="$waiver_paths" REPO_ROOT="${repo_root:-}" TRUSTED_AUTHORS="$trusted_authors_cas" TALOS_CFG="$_TALOS_CFG" STALE_LIST="$stale_list_flag" python3 -c "
-import fnmatch, json, os, re, subprocess, sys
-
-APPROVAL_LABELS = {
-    'qa:pass':           'qa',
-    'review:approved':   'reviewer',
-    'security:approved': 'security',
-    'docs:done':         'docs',
-}
-
-# Fixed valid role set -- derived from APPROVAL_LABELS values.
-# Any marker whose role is not in this set is ignored (issue #128).
-# This must be a fixed literal, never interpolated from config or API text
-# (PR #68 precedent: injected text could forge an approval marker).
-VALID_ROLES = {'qa', 'reviewer', 'security', 'docs'}
+        | WAIVER_PATHS="$waiver_paths" REPO_ROOT="${repo_root:-}" MARKER_ENTRIES="$marker_json" STALE_LIST="$stale_list_flag" python3 -c "
+import fnmatch, json, os, subprocess, sys
 
 # Hard-coded non-waivable: applied AFTER the config waiver check.
 # The config can NEVER widen a waiver to cover these paths.
@@ -2029,35 +2298,6 @@ if errors:
         print(e, file=sys.stderr)
     sys.exit(1)
 
-# Author allow-list — markers.trusted_authors config (YAML/JSON list of logins).
-# When absent or empty: fail-open with a warning so existing installs are not blocked.
-raw_authors = os.environ.get('TRUSTED_AUTHORS', '').strip()
-if raw_authors:
-    try:
-        parsed_authors = json.loads(raw_authors)
-        if not isinstance(parsed_authors, list):
-            raise ValueError('not a list')
-        trusted_authors = [str(a).strip() for a in parsed_authors if str(a).strip()]
-    except Exception:
-        trusted_authors = [a.strip() for a in raw_authors.splitlines() if a.strip()]
-else:
-    trusted_authors = []
-
-author_check_active = bool(trusted_authors)
-
-# Config-parse-failed detection for improved marker-authors-unverified message (#116).
-import pathlib as _pathlib_cas
-_talos_cfg_cas = os.environ.get('TALOS_CFG', '')
-_config_parse_failed_cas = False
-if _talos_cfg_cas and _pathlib_cas.Path(_talos_cfg_cas).exists():
-    try:
-        try:
-            import yaml as _yaml_cas; _yaml_cas.safe_load(open(_talos_cfg_cas))
-        except ImportError:
-            import json as _json_cas; _json_cas.load(open(_talos_cfg_cas))
-    except Exception:
-        _config_parse_failed_cas = True
-
 # Parse PR data
 try:
     data = json.load(sys.stdin)
@@ -2096,122 +2336,22 @@ if base_ref_name:
     except Exception:
         pr_own_files = None  # fail-open
 
-label_names  = {lb['name'] for lb in data.get('labels', [])}
-raw_comments = data.get('comments', [])
-
-# Which approval labels are present?
-present = {label: role for label, role in APPROVAL_LABELS.items() if label in label_names}
-
-if not present:
-    # Inverse diagnostic (#146): when no approval labels are present but
-    # talos:approval markers exist in comments, a stage likely posted the
-    # marker without calling label-pr -- the mirror of the Case B diagnostic
-    # shipped in #144/#142 for the other direction.
-    _no_label_marker_count = sum(
-        1 for c in raw_comments
-        if 'talos:approval sha=' in c.get('body', '')
-    )
-    if _no_label_marker_count > 0:
-        print(
-            f'check-approval-sha: no approval labels present'
-            f' (but {_no_label_marker_count} approval marker(s) found in comments'
-            f' - did a stage post a marker without applying its label?)'
-        )
-    else:
-        print('check-approval-sha: no approval labels present')
-    sys.exit(0)
-
-# Strict extractor: marker must be a syntactically valid talos:approval HTML comment.
-MARKER_RE = re.compile(r'<!--\s*talos:approval\s+sha=([0-9a-f]+)\s+role=(\S+?)\s*-->')
-
-# Precompute once: does any comment contain near-miss marker text?
-any_approval_text = any('talos:approval sha=' in c.get('body', '') for c in raw_comments)
+try:
+    marker_data = json.loads(os.environ.get('MARKER_ENTRIES', '') or '{}')
+except Exception:
+    marker_data = {}
+entries = marker_data.get('entries', [])
 
 stale = []
-for label, role in present.items():
-    # Find the most recent marker for this role (search comments newest-first).
-    # Enforce the same last-line rule as read-attempt: the marker must be the
-    # last non-whitespace line of the comment body so a quoted/fenced occurrence
-    # (e.g. GitHub Quote-reply) cannot satisfy the gate.
-    found_sha = None
-    for c in reversed(raw_comments):
-        body   = c.get('body', '')
-        author = c.get('author', {}).get('login', '') if isinstance(c.get('author'), dict) else ''
+for entry in entries:
+    label, role = entry.get('label'), entry.get('role')
+    found_sha = entry.get('sha')
+    reason = entry.get('reason')
 
-        # INVARIANT (issue #79): last-line check is unconditional — MUST precede
-        # author_check_active block. Reordering these two sections silently reopens
-        # the quoted-marker bypass. Do not move the lines below past author_check_active.
-        # Last-line rule: strip trailing whitespace, take final newline-split segment.
-        stripped  = body.rstrip()
-        last_line = stripped.rsplit('\n', 1)[-1].strip()
-
-        m = MARKER_RE.match(last_line)
-        if not m:
-            continue  # marker not on last line
-        marker_role = m.group(2)
-        if marker_role not in VALID_ROLES:
-            # Unknown role value -- log and skip so the gate falls through to
-            # the existing STALE path (fail-closed). Issue #128.
-            print(
-                'pipeline-vcs: check-approval-sha: ignoring marker with unknown role '
-                + repr(marker_role) + ' (valid: docs, qa, reviewer, security)',
-                file=sys.stderr,
-            )
-            continue
-        if marker_role != role:
-            continue  # wrong role for this label
-
-        # Author allow-list check (only when configured and non-empty).
-        if author_check_active:
-            if author not in trusted_authors:
-                print(
-                    f'pipeline-vcs: check-approval-sha: skipping marker for {label} '
-                    f'from untrusted author {author!r} (not in markers.trusted_authors)',
-                    file=sys.stderr,
-                )
-                continue  # skip; keep searching older comments
-        else:
-            # Unconfigured allow-list — fail open but emit a machine-readable marker.
-            print('talos:marker-authors-unverified reader=check-approval-sha')
-            if _config_parse_failed_cas:
-                print(
-                    'pipeline-vcs: check-approval-sha: [warn] markers.trusted_authors not configured '
-                    '-- config file could not be parsed (see pipeline-config warning); '
-                    'any commenter\'s marker is accepted',
-                    file=sys.stderr,
-                )
-            else:
-                print(
-                    'pipeline-vcs: check-approval-sha: [warn] markers.trusted_authors not configured '
-                    '— author check skipped',
-                    file=sys.stderr,
-                )
-
-        found_sha = m.group(1)
-        break
-
-    if not found_sha:
-        # Fail-closed: missing marker means the approval predates SHA stamping —
-        # treat it as stale rather than assuming it is safe.
-        print(f'pipeline-vcs: check-approval-sha: {label} has no SHA marker — treating as stale', file=sys.stderr)
-        if any_approval_text:
-            stale.append((label, role, 'found talos:approval text but no valid marker -- expected <!-- talos:approval sha=<40-hex-lowercase> role=<role> --> as the last non-whitespace line'))
-        else:
-            stale.append((label, role, 'no SHA marker in PR comments'))
-        continue
-
-    # Reject abbreviated SHAs at parse time.  An abbreviated SHA can expand to a
-    # real but wrong commit (e.g. bed2e4a expands to bed2e4ae... not bed2e4a9...).
-    # NOTE: backticks and $ cannot appear here — this block runs inside a
-    # double-quoted bash string and bash would perform command substitution on them.
-    # Stages must post the full 40-character SHA from pipeline-vcs.sh pr-head <PR>,
-    # not git rev-parse HEAD, which returns whatever commit is checked out locally.
-    if not re.fullmatch(r'[0-9a-f]{40}', found_sha):
-        stale.append((label, role,
-            f'marker SHA {found_sha!r} is not a valid 40-character commit SHA — '
-            f'the {role} stage must obtain the SHA via '
-            f'pipeline-vcs.sh pr-head <PR>, not git rev-parse HEAD '
-            f'(which returns whatever commit is checked out locally)' ))
+    if reason is not None:
+        # Marker extraction already determined this label/role is stale
+        # (no marker, unparseable marker, or an invalid-length SHA).
+        stale.append((label, role, reason))
         continue
 
     if found_sha == head_sha:
@@ -3406,135 +3546,7 @@ json.dump({'comments': comments}, sys.stdout)
 ")"
       local _trusted_authors
       _trusted_authors="$(cfg markers.trusted_authors "")"
-      printf '%s' "$_normalized" | TRUSTED_AUTHORS="$_trusted_authors" TALOS_CFG="$_TALOS_CFG" python3 -c "
-import json, os, re, sys
-
-# Stage-1 permissive detector: matches any HTML comment that looks like it
-# could be a talos:attempt marker.  Used to distinguish 'no marker present'
-# (safe) from 'marker present but unparseable' (corrupt -> fail-closed).
-LOOSE_RE = re.compile(r'<!--\s*talos:attempt\b[^>]*-->')
-
-# Stage-2 strict extractor: only matches a syntactically valid marker.
-# Group 4 (key=<token>) is optional (#172 --idempotency-key); pre-existing
-# markers without it continue to parse unchanged.
-MARKER_RE = re.compile(
-    r'<!--\s*talos:attempt\s+stage=(\S+)\s+count=(\d+)\s+total=(\d+)'
-    r'(?:\s+key=([A-Za-z0-9._-]+))?\s*-->$',
-    re.MULTILINE
-)
-KNOWN_STAGES = {
-    'developer', 'qa', 'reviewer', 'security', 'docs',
-    'validator', 'pm', 'orchestrator', 'planner',
-}
-
-# Author allow-list
-raw_authors = os.environ.get('TRUSTED_AUTHORS', '').strip()
-if raw_authors:
-    try:
-        parsed_authors = json.loads(raw_authors)
-        if not isinstance(parsed_authors, list):
-            raise ValueError('not a list')
-        trusted_authors = [str(a).strip() for a in parsed_authors if str(a).strip()]
-    except Exception:
-        trusted_authors = [a.strip() for a in raw_authors.splitlines() if a.strip()]
-else:
-    trusted_authors = []
-
-author_check_active = bool(trusted_authors)
-
-# Config-parse-failed detection for improved marker-authors-unverified message (#116).
-import pathlib as _pathlib_ra2
-_talos_cfg_ra2 = os.environ.get('TALOS_CFG', '')
-_config_parse_failed_ra2 = False
-if _talos_cfg_ra2 and _pathlib_ra2.Path(_talos_cfg_ra2).exists():
-    try:
-        try:
-            import yaml as _yaml_ra2; _yaml_ra2.safe_load(open(_talos_cfg_ra2))
-        except ImportError:
-            import json as _json_ra2; _json_ra2.load(open(_talos_cfg_ra2))
-    except Exception:
-        _config_parse_failed_ra2 = True
-
-try:
-    data = json.load(sys.stdin)
-except Exception as exc:
-    print('pipeline-vcs: read-attempt: could not parse issue data: ' + str(exc), file=sys.stderr)
-    sys.exit(1)
-
-raw_comments = data.get('comments', [])
-
-found = None
-for c in reversed(raw_comments):
-    body   = c.get('body', '')
-    author = c.get('author', {}).get('login', '') if isinstance(c.get('author'), dict) else ''
-
-    # INVARIANT (issue #79): last-line check is unconditional -- MUST precede
-    # author_check_active block. Reordering these two sections silently reopens
-    # the quoted-marker bypass. Do not move the lines below past author_check_active.
-    stripped  = body.rstrip()
-    last_line = stripped.rsplit('\n', 1)[-1].strip()
-
-    if not LOOSE_RE.search(last_line):
-        continue
-
-    if author_check_active:
-        if author not in trusted_authors:
-            print(
-                'pipeline-vcs: read-attempt: skipping marker from untrusted author '
-                + repr(author) + ' (not in markers.trusted_authors)',
-                file=sys.stderr,
-            )
-            continue
-    else:
-        print('talos:marker-authors-unverified reader=read-attempt')
-        if _config_parse_failed_ra2:
-            print(
-                'pipeline-vcs: read-attempt: [warn] markers.trusted_authors not configured '
-                '-- config file could not be parsed (see pipeline-config warning); '
-                'any commenter\'s marker is accepted',
-                file=sys.stderr,
-            )
-        else:
-            print(
-                'pipeline-vcs: read-attempt: [warn] markers.trusted_authors not configured '
-                '-- author check skipped',
-                file=sys.stderr,
-            )
-
-    m = MARKER_RE.match(last_line)
-    if not m:
-        print(
-            'pipeline-vcs: read-attempt: corrupt marker (does not parse): '
-            + repr(last_line) + ' -- fail-closed',
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    stage, count_str, total_str, key_val = m.group(1), m.group(2), m.group(3), m.group(4)
-    if stage not in KNOWN_STAGES:
-        print('pipeline-vcs: read-attempt: unrecognised stage ' + repr(stage) + ' in marker -- fail-closed', file=sys.stderr)
-        sys.exit(1)
-    count_val = int(count_str)
-    total_val = int(total_str)
-    if count_val < 0 or total_val < 0:
-        print('pipeline-vcs: read-attempt: negative value in marker -- fail-closed', file=sys.stderr)
-        sys.exit(1)
-    if total_val < count_val:
-        print('pipeline-vcs: read-attempt: total < count in marker -- fail-closed', file=sys.stderr)
-        sys.exit(1)
-    found = (stage, count_val, total_val, key_val or '')
-    break
-
-if found:
-    stage, count_val, total_val, key_val = found
-    if key_val:
-        print('stage=' + stage + ' count=' + str(count_val) + ' total=' + str(total_val) + ' key=' + key_val)
-    else:
-        print('stage=' + stage + ' count=' + str(count_val) + ' total=' + str(total_val))
-else:
-    print('stage= count=0 total=0')
-sys.exit(0)
-"
+      printf '%s' "$_normalized" | TRUSTED_AUTHORS="$_trusted_authors" TALOS_CFG="$_TALOS_CFG" _vcs_shared_read_attempt
       ;;
 
     check-attempt)
@@ -3562,12 +3574,7 @@ sys.exit(0)
       _cur_stage="$(printf '%s' "$_state" | sed 's/stage=\([^ ]*\).*/\1/')"
       _cur_count="$(printf '%s' "$_state" | sed 's/.*count=\([0-9]*\).*/\1/')"
       _cur_total="$(printf '%s' "$_state" | sed 's/.*total=\([0-9]*\).*/\1/')"
-      if [ "$_cur_total" -ge "$_max_total" ]; then
-        echo "pipeline-vcs: check-attempt: BLOCKED -- total dispatches ($_cur_total) >= max_total_dispatches ($_max_total)" >&2
-        exit 1
-      fi
-      if [ -n "$_cur_stage" ] && [ "$_cur_count" -ge "$_max_stage" ]; then
-        echo "pipeline-vcs: check-attempt: BLOCKED -- $_cur_stage consecutive attempts ($_cur_count) >= max_fix_attempts ($_max_stage)" >&2
+      if ! _vcs_shared_attempt_blocked "check-attempt" "$_cur_count" "$_cur_total" "$_max_stage" "$_max_total" "$_cur_stage"; then
         exit 1
       fi
       echo "pipeline-vcs: check-attempt: ok (stage=$_cur_stage count=$_cur_count total=$_cur_total; max_stage=$_max_stage max_total=$_max_total)"
@@ -3576,6 +3583,8 @@ sys.exit(0)
 
     record-attempt)
       # record-attempt <n> <stage> [--idempotency-key <token>]
+      # See _vcs_shared_record_attempt for the full rationale -- identical
+      # behaviour on both adapters.
       local _n="${1:-}" _stage="${2:-}"
       [ -z "$_n" ]     && { echo "pipeline-vcs: record-attempt: missing issue number" >&2; exit 1; }
       [ -z "$_stage" ] && { echo "pipeline-vcs: record-attempt: missing stage argument" >&2; exit 1; }
@@ -3583,121 +3592,23 @@ sys.exit(0)
         echo "[dry-run] record-attempt $_n $_stage: read prior state, post <!-- talos:attempt stage=$_stage ... --> marker"
         return 0
       fi
-      # --idempotency-key <token> (#172): optional flag, back-compat when omitted.
-      # token must match [A-Za-z0-9._-]+ -- no free-form text enters a marker (PR #68).
-      # --pr <pr-n> (#172 QA follow-up): see the _github provider's record-attempt
-      # for the full rationale -- identical behaviour here.
-      local _idem_key="" _idem_key_seen=false _pr_n=""
+      # Adapter-specific write: POST the marker comment via the REST API,
+      # print the created comment's html_url (may legitimately be empty even
+      # on success), and exit non-zero only when the write itself failed.
+      _github_api_post_attempt_marker() {
+        local _json_body
+        _json_body="$(python3 -c "import json,sys; print(json.dumps({'body': sys.argv[1]}))" "$2")"
+        local _resp
+        _resp="$(_ga_req POST "$_API/issues/$1/comments" \
+          -H "Content-Type: application/json" -d "$_json_body")"
+        if [ -z "$_resp" ]; then
+          return 1
+        fi
+        printf '%s' "$_resp" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('html_url',''))" 2>/dev/null
+        return 0
+      }
       shift 2 2>/dev/null || shift "$#"
-      while [ $# -gt 0 ]; do
-        case "$1" in
-          --idempotency-key)
-            _idem_key="${2:-}"
-            _idem_key_seen=true
-            shift 2 2>/dev/null || shift "$#"
-            ;;
-          --pr)
-            _pr_n="${2:-}"
-            shift 2 2>/dev/null || shift "$#"
-            ;;
-          *) shift ;;
-        esac
-      done
-      if [ -n "$_pr_n" ] && [ "$_idem_key_seen" = "true" ]; then
-        echo "pipeline-vcs: record-attempt: --pr and --idempotency-key are mutually exclusive" >&2
-        exit 1
-      fi
-      if [ -n "$_pr_n" ]; then
-        local _pr_sha
-        _pr_sha="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" pr-head "$_pr_n" ${REPO:+--repo "$REPO"} 2>/dev/null)" || {
-          echo "pipeline-vcs: record-attempt: could not resolve head SHA for PR #$_pr_n" >&2
-          exit 1
-        }
-        case "$_pr_sha" in
-          *[!0-9a-f]*|"")
-            echo "pipeline-vcs: record-attempt: invalid SHA from pr-head: '$_pr_sha'" >&2
-            exit 1
-            ;;
-        esac
-        if [ "${#_pr_sha}" -ne 40 ]; then
-          echo "pipeline-vcs: record-attempt: SHA must be 40 hex chars, got ${#_pr_sha}: '$_pr_sha'" >&2
-          exit 1
-        fi
-        _idem_key="${_stage}-${_pr_sha}"
-        _idem_key_seen=true
-      fi
-      if [ "$_idem_key_seen" = "true" ]; then
-        case "$_idem_key" in
-          ''|*[!A-Za-z0-9._-]*)
-            echo "pipeline-vcs: record-attempt: --idempotency-key must match [A-Za-z0-9._-]+, got '$_idem_key'" >&2
-            exit 1
-            ;;
-        esac
-      fi
-      local _max_stage _max_total
-      _max_stage="$(cfg limits.max_fix_attempts 3)"
-      _max_total="$(cfg limits.max_total_dispatches 8)"
-      local _state
-      _state="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" read-attempt "$_n" ${REPO:+--repo "$REPO"} 2>&1)"
-      local _rc=$?
-      if [ $_rc -ne 0 ]; then
-        echo "pipeline-vcs: record-attempt: read-attempt failed: $_state" >&2
-        exit 1
-      fi
-      printf '%s\n' "$_state" | grep '^talos:' || true
-      _state="$(printf '%s\n' "$_state" | grep '^stage=')"
-      local _prev_stage _prev_count _prev_total _prev_key
-      _prev_stage="$(printf '%s' "$_state" | sed 's/stage=\([^ ]*\).*/\1/')"
-      _prev_count="$(printf '%s' "$_state" | sed 's/.*count=\([0-9]*\).*/\1/')"
-      _prev_total="$(printf '%s' "$_state" | sed 's/.*total=\([0-9]*\).*/\1/')"
-      _prev_key="$(printf '%s' "$_state" | sed -n 's/.*key=\([^ ]*\).*/\1/p')"
-      # Idempotency dedup (#172): see the _github provider's record-attempt
-      # for the full rationale -- identical behaviour here.
-      if [ "$_idem_key_seen" = "true" ] && [ "$_prev_stage" = "$_stage" ] && [ -n "$_prev_key" ] && [ "$_prev_key" = "$_idem_key" ]; then
-        echo "pipeline-vcs: record-attempt: duplicate --idempotency-key '$_idem_key' for stage=$_stage; not posting again" >&2
-        printf 'stage=%s count=%d total=%d\n' "$_stage" "$_prev_count" "$_prev_total"
-        if [ "$_prev_total" -ge "$_max_total" ] || [ "$_prev_count" -ge "$_max_stage" ]; then
-          exit 1
-        fi
-        exit 0
-      fi
-      local _new_count _new_total
-      _new_total=$(( _prev_total + 1 ))
-      if [ "$_prev_stage" = "$_stage" ]; then
-        _new_count=$(( _prev_count + 1 ))
-      else
-        _new_count=1
-      fi
-      local _key_suffix="" _marker_body
-      [ "$_idem_key_seen" = "true" ] && _key_suffix=" key=${_idem_key}"
-      _marker_body="$(printf 'Talos attempt record -- stage=%s count=%d total=%d\n<!-- talos:attempt stage=%s count=%d total=%d%s -->' \
-        "$_stage" "$_new_count" "$_new_total" \
-        "$_stage" "$_new_count" "$_new_total" "$_key_suffix")"
-      # Use Python to produce valid JSON for the POST body (avoids unsafe interpolation)
-      local _json_body
-      _json_body="$(python3 -c "import json,sys; print(json.dumps({'body': sys.argv[1]}))" "$_marker_body")"
-      local _comment_resp
-      _comment_resp="$(_ga_req POST "$_API/issues/$_n/comments" \
-        -H "Content-Type: application/json" -d "$_json_body")"
-      if [ -z "$_comment_resp" ]; then
-        echo "pipeline-vcs: record-attempt: failed to post attempt marker for issue #$_n" >&2
-        exit 1
-      fi
-      local _comment_url
-      _comment_url="$(printf '%s' "$_comment_resp" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('html_url',''))" 2>/dev/null)"
-      echo "pipeline-vcs: record-attempt: marker posted at ${_comment_url:-<unknown>}" >&2
-      printf 'stage=%s count=%d total=%d\n' "$_stage" "$_new_count" "$_new_total"
-      local _blocked=false
-      if [ "$_new_total" -ge "$_max_total" ]; then
-        echo "pipeline-vcs: record-attempt: BLOCKED -- total dispatches ($_new_total) >= max_total_dispatches ($_max_total)" >&2
-        _blocked=true
-      fi
-      if [ "$_new_count" -ge "$_max_stage" ]; then
-        echo "pipeline-vcs: record-attempt: BLOCKED -- $_stage consecutive attempts ($_new_count) >= max_fix_attempts ($_max_stage)" >&2
-        _blocked=true
-      fi
-      [ "$_blocked" = "true" ] && exit 1
-      exit 0
+      _vcs_shared_record_attempt "$_n" "$_stage" _github_api_post_attempt_marker "$@"
       ;;
 
     check-approval-sha)
@@ -3705,6 +3616,12 @@ sys.exit(0)
       # Verify every approval label on the PR was earned against the current head SHA.
       # --stale-list: additionally print one greppable stdout line per stale
       # role ("stale role=<role> label=<label>"). Without the flag, unchanged.
+      #
+      # Marker extraction (which labels are present, and whether each has a
+      # valid, current-role, trusted-author marker) is handled once by
+      # _vcs_shared_check_approval_marker (#177 slice 1). The SHA-vs-head
+      # comparison and waiver-path logic below still lives per-adapter
+      # (#177 slice 2).
       local _n="$1"; shift
       local _stale_list_flag="false"
       if [ "${1:-}" = "--stale-list" ]; then
@@ -3745,25 +3662,32 @@ out = {
 }
 json.dump(out, sys.stdout)
 ")"
-      local _waiver_paths _trusted_authors_cas _repo_root
-      _waiver_paths="$(cfg merge.approval_waiver_paths "")"
+      local _trusted_authors_cas
       _trusted_authors_cas="$(cfg markers.trusted_authors "")"
+      local _marker_out _marker_rc _marker_json
+      _marker_out="$(printf '%s' "$_pr_data" | TRUSTED_AUTHORS="$_trusted_authors_cas" TALOS_CFG="$_TALOS_CFG" _vcs_shared_check_approval_marker)"
+      _marker_rc=$?
+      if [ "$_marker_rc" -eq 1 ]; then
+        exit 1
+      fi
+      if [ "$_marker_rc" -eq 3 ]; then
+        # No approval labels present: _marker_out IS the diagnostic message.
+        printf '%s\n' "$_marker_out"
+        exit 0
+      fi
+      # _marker_rc == 0: _marker_out is zero or more machine-readable
+      # `talos:...` passthrough lines followed by exactly one JSON payload
+      # line -- relay the former to our own stdout (same convention
+      # read-attempt/check-attempt use) and keep the latter for the waiver
+      # comparison below.
+      printf '%s\n' "$_marker_out" | grep '^talos:' || true
+      _marker_json="$(printf '%s\n' "$_marker_out" | grep -v '^talos:')"
+      local _waiver_paths _repo_root
+      _waiver_paths="$(cfg merge.approval_waiver_paths "")"
       _repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
       printf '%s' "$_pr_data" \
-        | WAIVER_PATHS="$_waiver_paths" REPO_ROOT="${_repo_root:-}" TRUSTED_AUTHORS="$_trusted_authors_cas" TALOS_CFG="$_TALOS_CFG" STALE_LIST="$_stale_list_flag" python3 -c "
-import fnmatch, json, os, re, subprocess, sys
-
-APPROVAL_LABELS = {
-    'qa:pass':           'qa',
-    'review:approved':   'reviewer',
-    'security:approved': 'security',
-    'docs:done':         'docs',
-}
-
-# Fixed valid role set -- derived from APPROVAL_LABELS values.
-# Any marker whose role is not in this set is ignored (issue #128).
-# Must be a fixed literal, never interpolated from config or API text.
-VALID_ROLES = {'qa', 'reviewer', 'security', 'docs'}
+        | WAIVER_PATHS="$_waiver_paths" REPO_ROOT="${_repo_root:-}" MARKER_ENTRIES="$_marker_json" STALE_LIST="$_stale_list_flag" python3 -c "
+import fnmatch, json, os, subprocess, sys
 
 HARDCODED_NONWAIVABLE_PREFIXES = ('scripts/', 'tests/')
 HARDCODED_NONWAIVABLE_EXACT    = (
@@ -3828,33 +3752,6 @@ if errors:
         print(e, file=sys.stderr)
     sys.exit(1)
 
-raw_authors = os.environ.get('TRUSTED_AUTHORS', '').strip()
-if raw_authors:
-    try:
-        parsed_authors = json.loads(raw_authors)
-        if not isinstance(parsed_authors, list):
-            raise ValueError('not a list')
-        trusted_authors = [str(a).strip() for a in parsed_authors if str(a).strip()]
-    except Exception:
-        trusted_authors = [a.strip() for a in raw_authors.splitlines() if a.strip()]
-else:
-    trusted_authors = []
-
-author_check_active = bool(trusted_authors)
-
-# Config-parse-failed detection for improved marker-authors-unverified message (#116).
-import pathlib as _pathlib_cas2
-_talos_cfg_cas2 = os.environ.get('TALOS_CFG', '')
-_config_parse_failed_cas2 = False
-if _talos_cfg_cas2 and _pathlib_cas2.Path(_talos_cfg_cas2).exists():
-    try:
-        try:
-            import yaml as _yaml_cas2; _yaml_cas2.safe_load(open(_talos_cfg_cas2))
-        except ImportError:
-            import json as _json_cas2; _json_cas2.load(open(_talos_cfg_cas2))
-    except Exception:
-        _config_parse_failed_cas2 = True
-
 try:
     data = json.load(sys.stdin)
 except Exception as exc:
@@ -3884,105 +3781,20 @@ if base_ref_name:
     except Exception:
         pr_own_files = None
 
-label_names  = {lb['name'] for lb in data.get('labels', [])}
-raw_comments = data.get('comments', [])
-
-present = {label: role for label, role in APPROVAL_LABELS.items() if label in label_names}
-
-if not present:
-    # Inverse diagnostic (#146): when no approval labels are present but
-    # talos:approval markers exist in comments, a stage likely posted the
-    # marker without calling label-pr -- the mirror of the Case B diagnostic
-    # shipped in #144/#142 for the other direction.
-    # NOTE: no f-strings or backticks here -- this block runs inside a
-    # double-quoted bash string and bash performs command substitution on them.
-    _no_label_marker_count = sum(
-        1 for c in raw_comments
-        if 'talos:approval sha=' in c.get('body', '')
-    )
-    if _no_label_marker_count > 0:
-        print(
-            'check-approval-sha: no approval labels present'
-            ' (but ' + str(_no_label_marker_count) + ' approval marker(s) found in comments'
-            ' - did a stage post a marker without applying its label?)'
-        )
-    else:
-        print('check-approval-sha: no approval labels present')
-    sys.exit(0)
-
-MARKER_RE = re.compile(r'<!--\s*talos:approval\s+sha=([0-9a-f]+)\s+role=(\S+?)\s*-->')
-
-# Precompute once: does any comment contain near-miss marker text?
-any_approval_text = any('talos:approval sha=' in c.get('body', '') for c in raw_comments)
+try:
+    marker_data = json.loads(os.environ.get('MARKER_ENTRIES', '') or '{}')
+except Exception:
+    marker_data = {}
+entries = marker_data.get('entries', [])
 
 stale = []
-for label, role in present.items():
-    found_sha = None
-    for c in reversed(raw_comments):
-        body   = c.get('body', '')
-        author = c.get('author', {}).get('login', '') if isinstance(c.get('author'), dict) else ''
+for entry in entries:
+    label, role = entry.get('label'), entry.get('role')
+    found_sha = entry.get('sha')
+    reason = entry.get('reason')
 
-        # INVARIANT (issue #79): last-line check is unconditional -- MUST precede
-        # author_check_active block. Reordering these two sections silently reopens
-        # the quoted-marker bypass. Do not move the lines below past author_check_active.
-        stripped  = body.rstrip()
-        last_line = stripped.rsplit('\n', 1)[-1].strip()
-
-        m = MARKER_RE.match(last_line)
-        if not m:
-            continue
-        marker_role = m.group(2)
-        if marker_role not in VALID_ROLES:
-            print(
-                'pipeline-vcs: check-approval-sha: ignoring marker with unknown role '
-                + repr(marker_role) + ' (valid: docs, qa, reviewer, security)',
-                file=sys.stderr,
-            )
-            continue
-        if marker_role != role:
-            continue
-
-        if author_check_active:
-            if author not in trusted_authors:
-                print(
-                    'pipeline-vcs: check-approval-sha: skipping marker for ' + label +
-                    ' from untrusted author ' + repr(author) + ' (not in markers.trusted_authors)',
-                    file=sys.stderr,
-                )
-                continue
-        else:
-            print('talos:marker-authors-unverified reader=check-approval-sha')
-            if _config_parse_failed_cas2:
-                print(
-                    'pipeline-vcs: check-approval-sha: [warn] markers.trusted_authors not configured '
-                    '-- config file could not be parsed (see pipeline-config warning); '
-                    'any commenter\'s marker is accepted',
-                    file=sys.stderr,
-                )
-            else:
-                print(
-                    'pipeline-vcs: check-approval-sha: [warn] markers.trusted_authors not configured '
-                    '-- author check skipped',
-                    file=sys.stderr,
-                )
-
-        found_sha = m.group(1)
-        break
-
-    if not found_sha:
-        print('pipeline-vcs: check-approval-sha: ' + label + ' has no SHA marker -- treating as stale', file=sys.stderr)
-        if any_approval_text:
-            stale.append((label, role, 'found talos:approval text but no valid marker -- expected <!-- talos:approval sha=<40-hex-lowercase> role=<role> --> as the last non-whitespace line'))
-        else:
-            stale.append((label, role, 'no SHA marker in PR comments'))
-        continue
-
-    if not re.fullmatch(r'[0-9a-f]{40}', found_sha):
-        stale.append((label, role,
-            'marker SHA ' + repr(found_sha) + ' is not a valid 40-character commit SHA -- '
-            'the ' + role + ' stage must obtain the SHA via '
-            'pipeline-vcs.sh pr-head <PR>, not git rev-parse HEAD '
-            '(which returns whatever commit is checked out locally)'))
+    if reason is not None:
+        stale.append((label, role, reason))
         continue
 
     if found_sha == head_sha:
@@ -4036,7 +3848,6 @@ print('check-approval-sha: all approval labels are current')
 sys.exit(0)
 "
       ;;
-
     check-closing-keyword)
       # check-closing-keyword <pr_ref> <issue_n>
       # Fail-open. Exit 1 only when a closing keyword is present AND open
