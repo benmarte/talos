@@ -368,9 +368,19 @@ Take at most `max_parallel` issues.
 Repeat this block for each queued issue. Attempt tracking is durable and enforced by `pipeline-vcs.sh` — do NOT count in your own context; always call the helper:
 
 ```bash
+# Mint the idempotency-key token ONCE per record-attempt decision, before the
+# first call, and reuse the SAME token if you must retry this exact call
+# after an ambiguous failure later in this turn (network timeout, unclear
+# exit status, etc.) -- that is what lets record-attempt tell "the same
+# decision, retried" apart from "a genuinely new attempt" (#172). Token
+# source: issue number + blocking stage + the second the decision was made
+# -- unique enough across concurrent issues/stages, cheap to mint, and needs
+# no persistent state. Must match [A-Za-z0-9._-]+.
+ATTEMPT_KEY="<N>-<blocking-stage>-$(date +%s)"
+
 # Before re-dispatching the developer after any stage failure, record the
 # attempt and check the ceilings (exits non-zero → stop, set pipeline:blocked):
-bash scripts/pipeline-vcs.sh record-attempt <N> <blocking-stage>
+bash scripts/pipeline-vcs.sh record-attempt <N> <blocking-stage> --idempotency-key "$ATTEMPT_KEY"
 # blocking-stage is one of: developer qa reviewer security docs validator pm
 ```
 
@@ -379,6 +389,8 @@ Two ceilings apply (both checked atomically by record-attempt):
 - `limits.max_total_dispatches` (default 8): absolute ceiling on total developer dispatches per issue.  **Never resets.**
 
 When `record-attempt` exits non-zero (either ceiling reached): set `pipeline:blocked`, post blocked.md, move on.  Do NOT re-dispatch the developer.
+
+**Idempotency limit:** `--idempotency-key` only dedupes an immediate retry that reuses the same token within this turn/tick — it cannot detect a retry across a fresh orchestrator process (a new process cannot know the prior token). That gap is by design, not a bug to chase; see README.md.
 
 ### 3a. Validator (if `roles.validator = true`)
 
@@ -734,9 +746,9 @@ After QA returns:
 - **Fail:**
   1. Relay findings: `bash scripts/pipeline-notify.sh qa "#<N>" "<FAIL: failing criterion + repro>" <N>`
   2. Lifecycle event: `bash scripts/pipeline-notify.sh blocked "#<N>" "QA failed: <criterion>" <N>`
-  3. Record attempt and check ceilings:
+  3. Record attempt and check ceilings (mint `--idempotency-key` as in Step 3):
      ```bash
-     bash scripts/pipeline-vcs.sh record-attempt <N> qa
+     bash scripts/pipeline-vcs.sh record-attempt <N> qa --idempotency-key "<N>-qa-$(date +%s)"
      ```
      If exit 0: re-dispatch the developer. If exit non-zero (ceiling reached): board "Blocked", stop.
 
@@ -868,17 +880,17 @@ After reviewer and security complete (phase 2):
 
 **Reviewer returned:**
 - Approved: `bash scripts/pipeline-notify.sh reviewer "#<N>" "<subagent's 2-3 line outcome>" <N>`
-- Changes needed: `bash scripts/pipeline-notify.sh reviewer "#<N>" "CHANGES: <findings>" <N>` then `bash scripts/pipeline-notify.sh blocked "#<N>" "reviewer: changes required" <N>`; record attempt:
+- Changes needed: `bash scripts/pipeline-notify.sh reviewer "#<N>" "CHANGES: <findings>" <N>` then `bash scripts/pipeline-notify.sh blocked "#<N>" "reviewer: changes required" <N>`; record attempt (mint `--idempotency-key` as in Step 3):
   ```bash
-  bash scripts/pipeline-vcs.sh record-attempt <N> reviewer
+  bash scripts/pipeline-vcs.sh record-attempt <N> reviewer --idempotency-key "<N>-reviewer-$(date +%s)"
   ```
   Exit 0 → re-dispatch developer. Exit non-zero → set `pipeline:blocked`, stop.
 
 **Security returned:**
 - Clear: `bash scripts/pipeline-notify.sh security "#<N>" "<subagent's 2-3 line outcome>" <N>`
-- Findings: `bash scripts/pipeline-notify.sh security "#<N>" "FINDINGS: <severity + fix>" <N>` then `bash scripts/pipeline-notify.sh blocked "#<N>" "security: findings in PR #<PR_NUMBER>" <N>`; record attempt:
+- Findings: `bash scripts/pipeline-notify.sh security "#<N>" "FINDINGS: <severity + fix>" <N>` then `bash scripts/pipeline-notify.sh blocked "#<N>" "security: findings in PR #<PR_NUMBER>" <N>`; record attempt (mint `--idempotency-key` as in Step 3):
   ```bash
-  bash scripts/pipeline-vcs.sh record-attempt <N> security
+  bash scripts/pipeline-vcs.sh record-attempt <N> security --idempotency-key "<N>-security-$(date +%s)"
   ```
   Exit 0 → re-dispatch developer. Exit non-zero → set `pipeline:blocked`, stop.
 
@@ -1015,7 +1027,7 @@ After processing all issues, print a summary table:
 10. Notification failures never block the pipeline (pipeline-notify.sh always exits 0).
     Always pass the issue number as the 4th arg: `pipeline-notify.sh <event> "#<N>" "<msg>" <N>`
 11. Board update failures are warnings — the pipeline continues.
-12. Attempt counting is durable and enforced by `record-attempt`: call `bash scripts/pipeline-vcs.sh record-attempt <N> <stage>` before each developer re-dispatch.  When it exits non-zero (either `max_fix_attempts` consecutive same-stage failures OR `max_total_dispatches` total dispatches reached): set `pipeline:blocked`, notify, move on.  Never count attempts in orchestrator memory — the helper is the source of truth.
+12. Attempt counting is durable and enforced by `record-attempt`: call `bash scripts/pipeline-vcs.sh record-attempt <N> <stage> --idempotency-key <token>` before each developer re-dispatch, minting `<token>` once per decision as in Step 3 and reusing it only for an immediate retry of that same call.  When it exits non-zero (either `max_fix_attempts` consecutive same-stage failures OR `max_total_dispatches` total dispatches reached): set `pipeline:blocked`, notify, move on.  Never count attempts in orchestrator memory — the helper is the source of truth.
 13. In file mode: skip board calls, skip QA/reviewer/security/docs, developer commits to branch directly.
 14. Never merge a PR that fails `check-pr-files` — secret-like files require a human; `skip-qa` does not waive this gate (nor CI).
 15. Only the developer stage may move HEAD in the orchestrator's checkout. All other stages (reviewer, security, docs, QA, validator, PM) must never run `git checkout`, `git switch`, or `git pull` in their working directory — read diffs via `diff-pr` only. This holds regardless of `execution.isolation` mode.

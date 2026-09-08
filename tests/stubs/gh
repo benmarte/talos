@@ -136,6 +136,24 @@ print(json.dumps(d[:int(os.environ['LIMIT'])]))
     else
       printf '[{"number":9,"title":"fix: guard null session","head":{"ref":"fix/issue-42-guard"},"base":{"ref":"main"},"labels":[]}]'
     fi ;;
+  "api --paginate repos/"*"/issues/"*"/comments"*)
+    # Simulates `gh api --paginate` for the REST issue/PR comments endpoint
+    # (#172 read-comments, used by read-attempt and post-approval's
+    # duplicate-marker check): pages are streamed back-to-back with NO
+    # separator, same as the issues/pulls list endpoints above. Override
+    # STUB_GH_COMMENTS_RAW with pre-concatenated page JSON to exercise the
+    # multi-page merge; falls back to STUB_ISSUE_COMMENTS_JSON (back-compat
+    # with pre-#172 tests that stubbed the old `gh issue view --json comments`
+    # call) then to an empty array. STUB_GH_API_FAIL=comments simulates a
+    # failed page (non-zero exit, no stdout).
+    if [ "${STUB_GH_API_FAIL:-}" = "comments" ]; then
+      exit 1
+    fi
+    if [ -n "${STUB_GH_COMMENTS_RAW:-}" ]; then
+      printf '%s' "$STUB_GH_COMMENTS_RAW"
+    else
+      printf '%s' "${STUB_ISSUE_COMMENTS_JSON:-[]}"
+    fi ;;
   "run list --commit "*)
     printf '[{"databaseId":111,"conclusion":"failure"},{"databaseId":112,"conclusion":"success"}]\n' ;;
   "issue comment "*)

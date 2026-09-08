@@ -936,4 +936,89 @@ assert_eq "0" "$rc" "#171 github-api: list-prs exits 0 across pages"
 assert_eq "150" "$_171_pr_count" "#171 github-api: list-prs returns all 150 PRs, not just page 1"
 assert_contains "$out" '"number": 150' "#171 github-api: list-prs includes the last PR (id 150)"
 
+# ── Issue #172: record-attempt --idempotency-key idempotency (github-api) ───
+export GITHUB_TOKEN="$TEST_TOKEN"
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "github-api", "repo": "acme/widget"}, "limits": {"max_fix_attempts": 3, "max_total_dispatches": 8}}
+EOF
+
+# First call with a key: posts normally, marker on the wire carries key=<token>.
+: > "$CURL_LOG"; : > "$CURL_QUEUE"; : > "$CURL_LINK_QUEUE"
+printf '%s\n%s\n' \
+  '[]' \
+  '{"id":900,"html_url":"https://github.com/acme/widget/issues/42#issuecomment-900"}' \
+  > "$CURL_QUEUE"
+out_g_idem1="$(bash "$VCS" record-attempt 42 qa --idempotency-key run-abc123 2>/dev/null)"; rc_g_idem1=$?
+assert_eq "0" "$rc_g_idem1" "#172 github-api: idempotency-key first call exits 0"
+assert_contains "$out_g_idem1" "count=1" "#172 github-api: idempotency-key first call count=1"
+assert_contains "$(cat "$CURL_LOG")" "key=run-abc123" \
+  "#172 github-api: idempotency-key first call marker carries the key"
+
+# Second call, same key, against a prior marker that already carries it:
+# does NOT post again -- count stays 1, not 2.
+: > "$CURL_LOG"; : > "$CURL_QUEUE"; : > "$CURL_LINK_QUEUE"
+printf '%s\n' \
+  '[{"body":"<!-- talos:attempt stage=qa count=1 total=1 key=run-abc123 -->","user":{"login":"bot"}}]' \
+  > "$CURL_QUEUE"
+out_g_idem2="$(bash "$VCS" record-attempt 42 qa --idempotency-key run-abc123 2>/dev/null)"; rc_g_idem2=$?
+assert_eq "0" "$rc_g_idem2" "#172 github-api: idempotency-key second call (same key) exits 0"
+assert_contains "$out_g_idem2" "count=1" \
+  "#172 github-api: idempotency-key second call count stays 1, not 2"
+_g_idem2_log="$(cat "$CURL_LOG")"
+assert_not_contains "$_g_idem2_log" $'\t{"body"' \
+  "#172 github-api: idempotency-key second call posts no new comment"
+
+# Invalid token rejected, exit 1, nothing posted.
+: > "$CURL_LOG"; : > "$CURL_QUEUE"; : > "$CURL_LINK_QUEUE"
+out_g_idem3="$(bash "$VCS" record-attempt 42 qa --idempotency-key 'bad key!' 2>&1)"; rc_g_idem3=$?
+assert_eq "1" "$rc_g_idem3" "#172 github-api: invalid idempotency-key exits 1"
+assert_eq "" "$(cat "$CURL_LOG")" "#172 github-api: invalid idempotency-key makes no curl call"
+
+# ── Issue #172: post-approval duplicate-marker detection, 150 comments,
+#    marker on page 2 (github-api) ───────────────────────────────────────────
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "github-api", "repo": "acme/widget"}}
+EOF
+_172_SHA="cc00112233445566778899aabbccddeeff001122"
+_172_page2_url="https://api.github.com/repos/acme/widget/issues/9/comments?per_page=100&page=2"
+_172_p1="$(python3 -c "
+import json
+print(json.dumps([{'body': 'comment ' + str(i), 'user': {'login': 'someone'}} for i in range(100)]))
+")"
+_172_p2="$(python3 -c "
+import json
+c = [{'body': 'comment ' + str(i), 'user': {'login': 'someone'}} for i in range(49)]
+c.append({'body': '<!-- talos:approval sha=${_172_SHA} role=qa -->', 'user': {'login': 'bot'}})
+print(json.dumps(c))
+")"
+
+: > "$CURL_LOG"; : > "$CURL_QUEUE"; : > "$CURL_LINK_QUEUE"
+printf '%s\n' "{\"head\":{\"sha\":\"$_172_SHA\"}}" > "$CURL_QUEUE"
+printf '%s\n' "$_172_p1" >> "$CURL_QUEUE"
+# CURL_LINK_QUEUE is popped on EVERY curl call, not just paginated ones -- the
+# leading empty line accounts for the preceding pr-head GET (no Link header).
+printf '%s\n' "" "$_172_page2_url" "" > "$CURL_LINK_QUEUE"
+printf '%s\n' "$_172_p2" >> "$CURL_QUEUE"
+# duplicate found -> label-pr still runs defensively (get labels + put)
+printf '%s\n' '[]' '{"labels":[{"name":"qa:pass"}]}' >> "$CURL_QUEUE"
+out_g_pa150="$(bash "$VCS" post-approval 9 qa 2>&1)"; rc_g_pa150=$?
+assert_eq "0" "$rc_g_pa150" "#172 github-api T-pagination-150: post-approval exits 0 (marker on page 2)"
+assert_contains "$out_g_pa150" "already exists" \
+  "#172 github-api T-pagination-150: reports the marker already exists"
+_g_pa150_log="$(cat "$CURL_LOG")"
+assert_not_contains "$_g_pa150_log" $'\t{"body"' \
+  "#172 github-api T-pagination-150: no comment POST logged (zero POSTs)"
+
+# A failed page during the duplicate check fails closed: non-zero, nothing posted.
+: > "$CURL_LOG"; : > "$CURL_QUEUE"; : > "$CURL_LINK_QUEUE"
+printf '%s\n' "{\"head\":{\"sha\":\"$_172_SHA\"}}" > "$CURL_QUEUE"
+printf '999\n' >> "$CURL_QUEUE"
+out_g_pafail="$(bash "$VCS" post-approval 9 qa 2>&1)"; rc_g_pafail=$?
+assert_eq "1" "$rc_g_pafail" "#172 github-api: failed duplicate-check page exits non-zero"
+_g_pafail_log="$(cat "$CURL_LOG")"
+assert_not_contains "$_g_pafail_log" $'\t{"body"' \
+  "#172 github-api: failed duplicate-check page posts nothing"
+
+unset GITHUB_TOKEN
+
 finish

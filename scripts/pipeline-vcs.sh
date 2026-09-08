@@ -49,16 +49,33 @@
 #                                             approvals); respects
 #                                             merge.approval_waiver_paths config
 #   record-attempt <issue-n> <stage>          Record one attempt for the given blocking
-#                                             stage on the issue. Reads prior state,
+#     [--idempotency-key <token>]             stage on the issue. Reads prior state,
 #                                             computes new per-stage count and running
 #                                             total, posts a <!-- talos:attempt --> marker
 #                                             comment, and prints "stage=<s> count=<k>
 #                                             total=<t>" on stdout. Exits non-zero when
 #                                             either ceiling would be exceeded.
+#                                             --idempotency-key <token>: when the most
+#                                             recent marker already carries this stage and
+#                                             key, does not post again -- reprints the
+#                                             existing counts unchanged and exits with the
+#                                             status those counts imply. token must match
+#                                             [A-Za-z0-9._-]+ (exit 1 otherwise). Only
+#                                             dedupes an immediate retry within the same
+#                                             orchestrator turn -- it does not persist
+#                                             across process restarts. Omitted: unchanged
+#                                             back-compat behaviour (always posts).
 #   read-attempt <issue-n>                    Print stage/count/total from the most
 #                                             recent attempt marker on the issue.
 #                                             Exits 0 (prints "stage= count=0 total=0")
 #                                             when no marker exists yet.
+#   read-comments <issue-or-pr-n>              Print every comment on an issue/PR (GitHub
+#                                             treats PRs as issues for this endpoint) as
+#                                             {"comments": [...]}, fully paginated (no
+#                                             100-comment cap). Shared reader used by both
+#                                             read-attempt and post-approval's duplicate-
+#                                             marker check (#172). Fail-closed: prints
+#                                             nothing and exits 1 on any page failure.
 #   check-attempt <issue-n>                   Exit 1 (and print reason) when EITHER
 #                                             ceiling is already reached for the issue;
 #                                             exit 0 otherwise. Does NOT record a new
@@ -78,6 +95,14 @@
 #                                             Roles: qa, reviewer, security, docs.
 #                                             Eliminates marker format failures for any
 #                                             stage that uses this verb (#146).
+#                                             Duplicate-marker check (#172): before
+#                                             posting, fetches every PR comment
+#                                             (paginated) and skips the post (exit 0, no
+#                                             comment-pr call) when an identical marker
+#                                             already exists at the current head SHA --
+#                                             the label is still applied defensively. A
+#                                             failed comment fetch fails closed: exit 1,
+#                                             nothing posted.
 #
 # Config keys (from talos.pipeline.yml via pipeline-config.sh):
 #   vcs.provider          github | github-api | gitlab | azure | file   (default: github)
@@ -930,6 +955,48 @@ else:
     # Shared Python helper embedded here; called by record-attempt, read-attempt,
     # check-attempt. Follows the same fail-closed pattern as check-approval-sha.
 
+    read-comments)
+      # read-comments <issue-or-pr-n>
+      # Print every comment on an issue/PR as {"comments": [...]}, fully
+      # paginated via `gh api --paginate` against the REST issues/{n}/comments
+      # endpoint (PRs are issues in GitHub's data model, so this endpoint
+      # covers PR comments too -- the same endpoint check-approval-sha's
+      # github-api counterpart already uses via _ga_fetch_all_comments).
+      # No 100-comment cap (#171 pattern via _gh_paginate_merge). Shared
+      # reader: read-attempt and post-approval's duplicate-marker check both
+      # call this verb rather than each fetching comments themselves (#172).
+      # Fail-closed: prints nothing to stdout and exits 1 on any page failure.
+      local n="${1:-}"
+      [ -z "$n" ] && { echo "pipeline-vcs: read-comments: missing issue/PR number" >&2; exit 1; }
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] gh api --paginate repos/{owner}/{repo}/issues/$n/comments"
+        return 0
+      fi
+      local rc_repo rc_raw
+      rc_repo="$REPO"
+      [ -z "$rc_repo" ] && rc_repo='{owner}/{repo}'
+      rc_raw="$(gh api --paginate "repos/${rc_repo}/issues/${n}/comments?per_page=100")" || exit 1
+      printf '%s' "$rc_raw" | _gh_paginate_merge | python3 -c "
+import json, sys
+
+def _login(c):
+    # REST payloads carry 'user'; some fixtures/older shapes carry 'author'
+    # directly (gh's own --json comments GraphQL shape) -- accept either.
+    u = c.get('user')
+    if isinstance(u, dict) and u.get('login'):
+        return u.get('login')
+    a = c.get('author')
+    return a.get('login', '') if isinstance(a, dict) else ''
+
+items = json.load(sys.stdin)
+if not isinstance(items, list):
+    items = []
+comments = [dict(c, author={'login': _login(c)},
+                  createdAt=c.get('created_at', c.get('createdAt', ''))) for c in items]
+json.dump({'comments': comments}, sys.stdout)
+"
+      ;;
+
     read-attempt)
       # read-attempt <issue-n>
       # Print "stage=<s> count=<k> total=<t>" from the most-recent attempt
@@ -942,8 +1009,8 @@ else:
         return 0
       fi
       local issue_data
-      issue_data="$(gh issue view "$n" --json comments ${REPO:+--repo "$REPO"} 2>/dev/null)"
-      if [ -z "$issue_data" ]; then
+      issue_data="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" read-comments "$n" ${REPO:+--repo "$REPO"} 2>/dev/null)"
+      if [ $? -ne 0 ] || [ -z "$issue_data" ]; then
         echo "pipeline-vcs: read-attempt: could not fetch issue #$n data" >&2
         exit 1
       fi
@@ -958,8 +1025,11 @@ import json, os, re, sys
 LOOSE_RE = re.compile(r'<!--\s*talos:attempt\b[^>]*-->')
 
 # Stage-2 strict extractor: only matches a syntactically valid marker.
+# Group 4 (key=<token>) is optional (#172 --idempotency-key); pre-existing
+# markers without it continue to parse unchanged.
 MARKER_RE = re.compile(
-    r'<!--\s*talos:attempt\s+stage=(\S+)\s+count=(\d+)\s+total=(\d+)\s*-->$',
+    r'<!--\s*talos:attempt\s+stage=(\S+)\s+count=(\d+)\s+total=(\d+)'
+    r'(?:\s+key=([A-Za-z0-9._-]+))?\s*-->$',
     re.MULTILINE
 )
 KNOWN_STAGES = {
@@ -1059,7 +1129,7 @@ for c in reversed(raw_comments):
         )
         sys.exit(1)
 
-    stage, count_str, total_str = m.group(1), m.group(2), m.group(3)
+    stage, count_str, total_str, key_val = m.group(1), m.group(2), m.group(3), m.group(4)
     # Semantic validation: stage must be known, values non-negative, count <= total.
     if stage not in KNOWN_STAGES:
         print(f'pipeline-vcs: read-attempt: unrecognised stage \"{stage}\" in marker — fail-closed', file=sys.stderr)
@@ -1072,12 +1142,15 @@ for c in reversed(raw_comments):
     if total_val < count_val:
         print('pipeline-vcs: read-attempt: total < count in marker — fail-closed', file=sys.stderr)
         sys.exit(1)
-    found = (stage, count_val, total_val)
+    found = (stage, count_val, total_val, key_val or '')
     break
 
 if found:
-    stage, count_val, total_val = found
-    print(f'stage={stage} count={count_val} total={total_val}')
+    stage, count_val, total_val, key_val = found
+    if key_val:
+        print(f'stage={stage} count={count_val} total={total_val} key={key_val}')
+    else:
+        print(f'stage={stage} count={count_val} total={total_val}')
 else:
     # No marker detected at all — treat as zero attempts (deliberate, not accidental).
     print('stage= count=0 total=0')
@@ -1132,7 +1205,7 @@ sys.exit(0)
       ;;
 
     record-attempt)
-      # record-attempt <issue-n> <blocking-stage>
+      # record-attempt <issue-n> <blocking-stage> [--idempotency-key <token>]
       # Read prior state, compute new per-stage count and total, post the
       # marker comment, and print "stage=<s> count=<k> total=<t>".
       # Exits non-zero when EITHER ceiling is exceeded AFTER recording.
@@ -1142,6 +1215,28 @@ sys.exit(0)
       if [ "$DRY_RUN" = "true" ]; then
         echo "[dry-run] record-attempt $n $stage: read prior state, post <!-- talos:attempt stage=$stage ... --> marker"
         return 0
+      fi
+      # --idempotency-key <token> (#172): optional flag, back-compat when omitted.
+      # token must match [A-Za-z0-9._-]+ -- no free-form text enters a marker (PR #68).
+      local idem_key="" idem_key_seen=false
+      shift 2 2>/dev/null || shift "$#"
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --idempotency-key)
+            idem_key="${2:-}"
+            idem_key_seen=true
+            shift 2 2>/dev/null || shift "$#"
+            ;;
+          *) shift ;;
+        esac
+      done
+      if [ "$idem_key_seen" = "true" ]; then
+        case "$idem_key" in
+          ''|*[!A-Za-z0-9._-]*)
+            echo "pipeline-vcs: record-attempt: --idempotency-key must match [A-Za-z0-9._-]+, got '$idem_key'" >&2
+            exit 1
+            ;;
+        esac
       fi
       local max_stage max_total
       max_stage="$(cfg limits.max_fix_attempts 3)"
@@ -1159,10 +1254,25 @@ sys.exit(0)
       # line (filters out both talos: markers and any stderr warnings captured via 2>&1).
       printf '%s\n' "$state" | grep '^talos:' || true
       state="$(printf '%s\n' "$state" | grep '^stage=')"
-      local prev_stage prev_count prev_total
+      local prev_stage prev_count prev_total prev_key
       prev_stage="$(printf '%s' "$state" | sed 's/stage=\([^ ]*\).*/\1/')"
       prev_count="$(printf '%s' "$state" | sed 's/.*count=\([0-9]*\).*/\1/')"
       prev_total="$(printf '%s' "$state" | sed 's/.*total=\([0-9]*\).*/\1/')"
+      prev_key="$(printf '%s' "$state" | sed -n 's/.*key=\([^ ]*\).*/\1/p')"
+      # Idempotency dedup (#172): an immediate retry with the same stage and
+      # key as the most-recent marker does not post again -- reprints the
+      # existing (unincremented) counts and exits with the status those
+      # counts already imply. Only covers a same-turn retry that reuses the
+      # same token; it cannot detect a retry across a process restart, which
+      # by definition cannot know the prior token (see README.md).
+      if [ "$idem_key_seen" = "true" ] && [ "$prev_stage" = "$stage" ] && [ -n "$prev_key" ] && [ "$prev_key" = "$idem_key" ]; then
+        echo "pipeline-vcs: record-attempt: duplicate --idempotency-key '$idem_key' for stage=$stage; not posting again" >&2
+        printf 'stage=%s count=%d total=%d\n' "$stage" "$prev_count" "$prev_total"
+        if [ "$prev_total" -ge "$max_total" ] || [ "$prev_count" -ge "$max_stage" ]; then
+          exit 1
+        fi
+        exit 0
+      fi
       # Compute new counts
       local new_count new_total
       new_total=$(( prev_total + 1 ))
@@ -1173,11 +1283,13 @@ sys.exit(0)
         # Different stage: reset per-stage count to 1
         new_count=1
       fi
-      # Build marker body (marker MUST be the last line of the comment)
-      local marker_body
-      marker_body="$(printf 'Talos attempt record — stage=%s count=%d total=%d\n<!-- talos:attempt stage=%s count=%d total=%d -->' \
+      # Build marker body (marker MUST be the last line of the comment).
+      # key=<token> is appended only when --idempotency-key was supplied.
+      local key_suffix="" marker_body
+      [ "$idem_key_seen" = "true" ] && key_suffix=" key=${idem_key}"
+      marker_body="$(printf 'Talos attempt record — stage=%s count=%d total=%d\n<!-- talos:attempt stage=%s count=%d total=%d%s -->' \
         "$stage" "$new_count" "$new_total" \
-        "$stage" "$new_count" "$new_total")"
+        "$stage" "$new_count" "$new_total" "$key_suffix")"
       # Post the comment and verify the write landed
       local comment_url
       comment_url="$(gh issue comment "$n" --body "$marker_body" ${REPO:+--repo "$REPO"} 2>/dev/null)"
@@ -2379,6 +2491,49 @@ except Exception:
       printf '%s\n' "$_sha"
       ;;
 
+    read-comments)
+      # read-comments <issue-or-pr-n>
+      # Print every comment on an issue/PR as {"comments": [...]}, fully
+      # paginated via _ga_fetch_all_comments (the same shared reader
+      # check-approval-sha already uses for PR comments). Shared reader used
+      # by both post-approval's duplicate-marker check and (via subprocess,
+      # on the _github side) read-attempt (#172). No change to this
+      # provider's own read-attempt, which already normalises inline via
+      # _ga_fetch_all_comments.
+      # Fail-closed: prints nothing to stdout and exits 1 on any page failure.
+      local _n="${1:-}"
+      [ -z "$_n" ] && { echo "pipeline-vcs: read-comments: missing issue/PR number" >&2; exit 1; }
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: GET $_API/issues/$_n/comments (read-comments, paginated)"
+        return 0
+      fi
+      local _rc_raw
+      _rc_raw="$(_ga_fetch_all_comments "$_n")"
+      if [ $? -ne 0 ] || [ -z "$_rc_raw" ]; then
+        echo "pipeline-vcs: read-comments: could not fetch issue #$_n data" >&2
+        exit 1
+      fi
+      printf '%s' "$_rc_raw" | python3 -c "
+import json, sys
+
+def _login(c):
+    # REST payloads carry 'user'; some fixtures/older shapes carry 'author'
+    # directly (gh's own --json comments GraphQL shape) -- accept either.
+    u = c.get('user')
+    if isinstance(u, dict) and u.get('login'):
+        return u.get('login')
+    a = c.get('author')
+    return a.get('login', '') if isinstance(a, dict) else ''
+
+raw = json.load(sys.stdin)
+if not isinstance(raw, list):
+    raw = []
+comments = [dict(c, author={'login': _login(c)},
+                  createdAt=c.get('created_at', c.get('createdAt', ''))) for c in raw]
+json.dump({'comments': comments}, sys.stdout)
+"
+      ;;
+
     read-attempt)
       # read-attempt <n>
       # Print "stage=<s> count=<k> total=<t>" from the most-recent attempt
@@ -2421,8 +2576,11 @@ import json, os, re, sys
 LOOSE_RE = re.compile(r'<!--\s*talos:attempt\b[^>]*-->')
 
 # Stage-2 strict extractor: only matches a syntactically valid marker.
+# Group 4 (key=<token>) is optional (#172 --idempotency-key); pre-existing
+# markers without it continue to parse unchanged.
 MARKER_RE = re.compile(
-    r'<!--\s*talos:attempt\s+stage=(\S+)\s+count=(\d+)\s+total=(\d+)\s*-->$',
+    r'<!--\s*talos:attempt\s+stage=(\S+)\s+count=(\d+)\s+total=(\d+)'
+    r'(?:\s+key=([A-Za-z0-9._-]+))?\s*-->$',
     re.MULTILINE
 )
 KNOWN_STAGES = {
@@ -2513,7 +2671,7 @@ for c in reversed(raw_comments):
         )
         sys.exit(1)
 
-    stage, count_str, total_str = m.group(1), m.group(2), m.group(3)
+    stage, count_str, total_str, key_val = m.group(1), m.group(2), m.group(3), m.group(4)
     if stage not in KNOWN_STAGES:
         print('pipeline-vcs: read-attempt: unrecognised stage ' + repr(stage) + ' in marker -- fail-closed', file=sys.stderr)
         sys.exit(1)
@@ -2525,12 +2683,15 @@ for c in reversed(raw_comments):
     if total_val < count_val:
         print('pipeline-vcs: read-attempt: total < count in marker -- fail-closed', file=sys.stderr)
         sys.exit(1)
-    found = (stage, count_val, total_val)
+    found = (stage, count_val, total_val, key_val or '')
     break
 
 if found:
-    stage, count_val, total_val = found
-    print('stage=' + stage + ' count=' + str(count_val) + ' total=' + str(total_val))
+    stage, count_val, total_val, key_val = found
+    if key_val:
+        print('stage=' + stage + ' count=' + str(count_val) + ' total=' + str(total_val) + ' key=' + key_val)
+    else:
+        print('stage=' + stage + ' count=' + str(count_val) + ' total=' + str(total_val))
 else:
     print('stage= count=0 total=0')
 sys.exit(0)
@@ -2575,13 +2736,35 @@ sys.exit(0)
       ;;
 
     record-attempt)
-      # record-attempt <n> <stage>
+      # record-attempt <n> <stage> [--idempotency-key <token>]
       local _n="${1:-}" _stage="${2:-}"
       [ -z "$_n" ]     && { echo "pipeline-vcs: record-attempt: missing issue number" >&2; exit 1; }
       [ -z "$_stage" ] && { echo "pipeline-vcs: record-attempt: missing stage argument" >&2; exit 1; }
       if [ "$DRY_RUN" = "true" ]; then
         echo "[dry-run] record-attempt $_n $_stage: read prior state, post <!-- talos:attempt stage=$_stage ... --> marker"
         return 0
+      fi
+      # --idempotency-key <token> (#172): optional flag, back-compat when omitted.
+      # token must match [A-Za-z0-9._-]+ -- no free-form text enters a marker (PR #68).
+      local _idem_key="" _idem_key_seen=false
+      shift 2 2>/dev/null || shift "$#"
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --idempotency-key)
+            _idem_key="${2:-}"
+            _idem_key_seen=true
+            shift 2 2>/dev/null || shift "$#"
+            ;;
+          *) shift ;;
+        esac
+      done
+      if [ "$_idem_key_seen" = "true" ]; then
+        case "$_idem_key" in
+          ''|*[!A-Za-z0-9._-]*)
+            echo "pipeline-vcs: record-attempt: --idempotency-key must match [A-Za-z0-9._-]+, got '$_idem_key'" >&2
+            exit 1
+            ;;
+        esac
       fi
       local _max_stage _max_total
       _max_stage="$(cfg limits.max_fix_attempts 3)"
@@ -2595,10 +2778,21 @@ sys.exit(0)
       fi
       printf '%s\n' "$_state" | grep '^talos:' || true
       _state="$(printf '%s\n' "$_state" | grep '^stage=')"
-      local _prev_stage _prev_count _prev_total
+      local _prev_stage _prev_count _prev_total _prev_key
       _prev_stage="$(printf '%s' "$_state" | sed 's/stage=\([^ ]*\).*/\1/')"
       _prev_count="$(printf '%s' "$_state" | sed 's/.*count=\([0-9]*\).*/\1/')"
       _prev_total="$(printf '%s' "$_state" | sed 's/.*total=\([0-9]*\).*/\1/')"
+      _prev_key="$(printf '%s' "$_state" | sed -n 's/.*key=\([^ ]*\).*/\1/p')"
+      # Idempotency dedup (#172): see the _github provider's record-attempt
+      # for the full rationale -- identical behaviour here.
+      if [ "$_idem_key_seen" = "true" ] && [ "$_prev_stage" = "$_stage" ] && [ -n "$_prev_key" ] && [ "$_prev_key" = "$_idem_key" ]; then
+        echo "pipeline-vcs: record-attempt: duplicate --idempotency-key '$_idem_key' for stage=$_stage; not posting again" >&2
+        printf 'stage=%s count=%d total=%d\n' "$_stage" "$_prev_count" "$_prev_total"
+        if [ "$_prev_total" -ge "$_max_total" ] || [ "$_prev_count" -ge "$_max_stage" ]; then
+          exit 1
+        fi
+        exit 0
+      fi
       local _new_count _new_total
       _new_total=$(( _prev_total + 1 ))
       if [ "$_prev_stage" = "$_stage" ]; then
@@ -2606,10 +2800,11 @@ sys.exit(0)
       else
         _new_count=1
       fi
-      local _marker_body
-      _marker_body="$(printf 'Talos attempt record -- stage=%s count=%d total=%d\n<!-- talos:attempt stage=%s count=%d total=%d -->' \
+      local _key_suffix="" _marker_body
+      [ "$_idem_key_seen" = "true" ] && _key_suffix=" key=${_idem_key}"
+      _marker_body="$(printf 'Talos attempt record -- stage=%s count=%d total=%d\n<!-- talos:attempt stage=%s count=%d total=%d%s -->' \
         "$_stage" "$_new_count" "$_new_total" \
-        "$_stage" "$_new_count" "$_new_total")"
+        "$_stage" "$_new_count" "$_new_total" "$_key_suffix")"
       # Use Python to produce valid JSON for the POST body (avoids unsafe interpolation)
       local _json_body
       _json_body="$(python3 -c "import json,sys; print(json.dumps({'body': sys.argv[1]}))" "$_marker_body")"
@@ -4282,6 +4477,54 @@ if [ "$VERB" = "post-approval" ]; then
   # the role (validated member of _PA_VALID_ROLES). No config text, no API
   # response text, no caller-supplied strings enter the marker value (PR #68).
   _pa_marker="<!-- talos:approval sha=${_pa_sha} role=${_pa_role} -->"
+
+  # ── Duplicate-marker detection (#172, restores what d7aedf2 removed) ──────
+  # Fetch every PR comment (paginated via the shared read-comments verb --
+  # gh api --paginate for _github, _ga_fetch_all_comments for github-api; see
+  # each provider's read-comments arm) and check whether this exact marker
+  # already exists as the last non-whitespace line of any comment (same
+  # last-line rule as read-attempt/check-approval-sha, #79). A different SHA
+  # is a different marker string and always posts (re-stamp after a head
+  # change). Fail-closed: if the fetch itself cannot complete, post nothing.
+  _pa_comments_json="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" read-comments "$_pa_n" \
+    ${REPO:+--repo "$REPO"} 2>/dev/null)"
+  _pa_comments_rc=$?
+  if [ $_pa_comments_rc -ne 0 ] || [ -z "$_pa_comments_json" ]; then
+    echo "pipeline-vcs: post-approval: could not fetch PR #$_pa_n comments for duplicate check" >&2
+    exit 1
+  fi
+  _pa_dup="$(printf '%s' "$_pa_comments_json" | PA_MARKER="$_pa_marker" python3 -c "
+import json, os, sys
+marker = os.environ.get('PA_MARKER', '')
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print('error')
+    sys.exit(0)
+for c in data.get('comments', []):
+    body = c.get('body', '') or ''
+    last_line = body.rstrip().rsplit('\n', 1)[-1].strip()
+    if last_line == marker:
+        print('found')
+        sys.exit(0)
+print('none')
+")"
+  if [ "$_pa_dup" = "error" ]; then
+    echo "pipeline-vcs: post-approval: could not parse PR #$_pa_n comments for duplicate check" >&2
+    exit 1
+  fi
+  if [ "$_pa_dup" = "found" ]; then
+    echo "pipeline-vcs: post-approval: $_pa_role marker already exists at $_pa_sha; not posting again" >&2
+    # Apply the label defensively — a missing label alongside an existing
+    # marker must still self-heal (label-pr is idempotent).
+    bash "$SCRIPT_DIR/pipeline-vcs.sh" label-pr "$_pa_n" --add "$_pa_label" || {
+      echo "pipeline-vcs: post-approval: label-pr failed for PR #$_pa_n" >&2
+      exit 1
+    }
+    printf 'post-approval: PR #%s %s marker already present at %s; %s label ensured\n' \
+      "$_pa_n" "$_pa_role" "$_pa_sha" "$_pa_label"
+    exit 0
+  fi
 
   _pa_tmpfile="$(mktemp)"
   trap 'rm -f "$_pa_tmpfile"' EXIT

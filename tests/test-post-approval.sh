@@ -127,17 +127,47 @@ assert_contains "$out4" "all approval labels are current" \
   "regression: hand-posted wrapped marker still passes the gate"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CRITERION 5: Same-SHA re-stamp exits 0 (no duplicate warning since #156).
-# The duplicate detection block was removed in #156 -- it used an unpaginated
-# gh pr view call that silently capped at 100 comments, making its absence
-# indistinguishable from "no duplicate found". Re-stamping is still legitimate
-# and must exit 0 with the marker posted.
+# CRITERION 5 (#172): Same-SHA re-stamp is detected as a duplicate and exits 0
+# WITHOUT posting a second marker -- restores the check removed in #156 (that
+# one used an unpaginated gh pr view call capped at 100 comments; this one
+# uses the paginated read-comments verb, #172). The label is still applied
+# defensively so a missing label alongside an existing marker self-heals.
+# A different SHA is a different marker string and always posts (5b below).
 # ─────────────────────────────────────────────────────────────────────────────
 
+EXISTING_MARKER="<!-- talos:approval sha=${STUB_SHA} role=qa -->"
+_dup_comments="$(python3 -c "import json; print(json.dumps([{'body': '${EXISTING_MARKER}', 'user': {'login': 'bot'}}]))")"
+
 : > "$GH_LOG"
-err5="$(STUB_PR_HEAD_SHA="$STUB_SHA" \
-         bash "$VCS" post-approval 9 qa 2>&1 >/dev/null)"; rc5=$?
+out5="$(STUB_PR_HEAD_SHA="$STUB_SHA" STUB_ISSUE_COMMENTS_JSON="$_dup_comments" \
+         bash "$VCS" post-approval 9 qa 2>&1)"; rc5=$?
 assert_exit_code 0 "$rc5" "re-stamp: same-SHA re-stamp exits 0"
+assert_contains "$out5" "already exists" \
+  "re-stamp: stderr note explains the marker already exists"
+assert_not_contains "$(cat "$GH_LOG")" "issue comment" \
+  "re-stamp: no comment posted (duplicate detected, zero POSTs)"
+assert_contains "$(cat "$GH_LOG")" "pr edit 9 --add-label qa:pass" \
+  "re-stamp: label still applied defensively (label-pr is idempotent)"
+
+# CRITERION 5b: a DIFFERENT SHA is a different marker string -- always posts.
+: > "$GH_LOG"
+DIFFERENT_SHA="ffffffffffffffffffffffffffffffffffffffff"
+out5b="$(STUB_PR_HEAD_SHA="$DIFFERENT_SHA" STUB_ISSUE_COMMENTS_JSON="$_dup_comments" \
+          bash "$VCS" post-approval 9 qa 2>&1)"; rc5b=$?
+assert_exit_code 0 "$rc5b" "different SHA: post-approval exits 0"
+assert_contains "$(cat "$GH_LOG")" "issue comment" \
+  "different SHA: comment IS posted (new marker at the new head)"
+
+# CRITERION 5c: a failed comment fetch during the duplicate check fails
+# closed -- non-zero exit, nothing posted (no comment-pr, no label-pr call).
+: > "$GH_LOG"
+out5c="$(STUB_PR_HEAD_SHA="$STUB_SHA" STUB_GH_API_FAIL="comments" \
+          bash "$VCS" post-approval 9 qa 2>&1)"; rc5c=$?
+assert_exit_code 1 "$rc5c" "failed duplicate-check fetch: exits non-zero"
+assert_not_contains "$(cat "$GH_LOG")" "issue comment" \
+  "failed duplicate-check fetch: no comment posted"
+assert_not_contains "$(cat "$GH_LOG")" "pr edit" \
+  "failed duplicate-check fetch: no label applied"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CRITERION 6: comment-pr warning fires on a last-line hand-built marker.
@@ -306,12 +336,15 @@ export GITHUB_TOKEN="test-token-146"
 
 : > "$CURL_LOG"
 : > "$CURL_QUEUE"
-# post-approval calls pr-head, comment-pr, label-pr -- each needs a curl response.
+# post-approval calls pr-head, read-comments (duplicate check, #172),
+# comment-pr, label-pr -- each needs a curl response.
 # pr-head: {"head": {"sha": "<sha>"}}
+# read-comments: paginated comments fetch -- empty (no duplicate)
 # comment-pr: state check + post
 # label-pr: get labels + put
-printf '%s\n%s\n%s\n%s\n%s\n' \
+printf '%s\n%s\n%s\n%s\n%s\n%s\n' \
   "{\"head\":{\"sha\":\"${STUB_SHA}\"}}" \
+  "[]" \
   "{\"state\":\"open\",\"merged_at\":null}" \
   "{\"id\":900,\"html_url\":\"https://github.com/acme/widget/pull/9#issuecomment-900\"}" \
   "[]" \
@@ -324,6 +357,34 @@ assert_contains "$out15" "marker posted" \
   "github-api: post-approval reports success"
 rm -f talos.pipeline.json
 unset GITHUB_TOKEN
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T-pagination-150 (#172): 150-comment PR with the approval marker on page 2
+# (comments 101-150) -- post-approval must find it via the paginated
+# read-comments verb and NOT post again. Mutation guard: reverting read-comments
+# to a single per_page=100 fetch would miss the marker and post a duplicate.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_150_page1="$(python3 -c "
+import json
+c = [{'body': 'comment ' + str(i), 'author': {'login': 'someone'}} for i in range(100)]
+print(json.dumps(c))
+")"
+_150_page2="$(python3 -c "
+import json
+c = [{'body': 'comment ' + str(i), 'author': {'login': 'someone'}} for i in range(49)]
+c.append({'body': '<!-- talos:approval sha=${STUB_SHA} role=qa -->', 'author': {'login': 'bot'}})
+print(json.dumps(c))
+")"
+
+: > "$GH_LOG"
+outp150="$(STUB_PR_HEAD_SHA="$STUB_SHA" STUB_GH_COMMENTS_RAW="${_150_page1}${_150_page2}" \
+            bash "$VCS" post-approval 9 qa 2>&1)"; rcp150=$?
+assert_exit_code 0 "$rcp150" "T-pagination-150: post-approval exits 0 when marker is on page 2 of 150"
+assert_contains "$outp150" "already exists" \
+  "T-pagination-150: reports the marker already exists"
+assert_not_contains "$(cat "$GH_LOG")" "issue comment" \
+  "T-pagination-150: zero comment POSTs when marker found beyond comment #100"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CRITERION 16: Exit 0 on normal path (end-to-end via github provider).

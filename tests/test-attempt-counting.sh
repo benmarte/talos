@@ -379,4 +379,83 @@ assert_contains "$out_fo" "reader=read-attempt" \
 assert_contains "$out_fo" "count=3" \
   "unconfigured trusted_authors read-attempt: marker still accepted (fail-open)"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# #172: record-attempt --idempotency-key idempotency
+# ─────────────────────────────────────────────────────────────────────────────
+
+# [test] first call with a key posts normally (count=1, total=1) and the
+# marker on the wire carries key=<token>.
+: > "$GH_LOG"
+out_idem1="$(STUB_ISSUE_COMMENTS_JSON='[]' PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+  bash "$VCS" record-attempt 42 qa --idempotency-key run-abc123 2>/dev/null)"
+rc_idem1=$?
+assert_exit_code 0 "$rc_idem1" "idempotency-key first call: exits 0"
+assert_contains "$out_idem1" "count=1" "idempotency-key first call: count=1"
+assert_contains "$out_idem1" "total=1" "idempotency-key first call: total=1"
+assert_contains "$(cat "$GH_LOG")" "key=run-abc123" \
+  "idempotency-key first call: marker on the wire carries the key"
+
+# [test] second call with the SAME key, against a prior marker that already
+# carries stage=qa count=1 total=1 key=run-abc123 (simulating the marker the
+# first call just posted): does NOT post again, count stays N+1 (not N+2),
+# and only the one POST from the first call is ever logged.
+_idem_prior="$(mk_attempt_comment_author qa 1 1 bot)"
+_idem_prior="$(printf '%s' "$_idem_prior" | python3 -c "
+import json, sys
+c = json.load(sys.stdin)
+c[0]['body'] = c[0]['body'].replace('-->', 'key=run-abc123 -->')
+print(json.dumps(c))
+")"
+: > "$GH_LOG"
+out_idem2="$(STUB_ISSUE_COMMENTS_JSON="$_idem_prior" PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+  bash "$VCS" record-attempt 42 qa --idempotency-key run-abc123 2>/dev/null)"
+rc_idem2=$?
+assert_exit_code 0 "$rc_idem2" "idempotency-key second call (same key): exits 0"
+assert_contains "$out_idem2" "count=1" \
+  "idempotency-key second call (same key): count stays 1, not 2"
+assert_contains "$out_idem2" "total=1" \
+  "idempotency-key second call (same key): total stays 1, not 2"
+assert_not_contains "$(cat "$GH_LOG")" "issue comment" \
+  "idempotency-key second call (same key): no second POST logged"
+
+# [test] a DIFFERENT key against the same prior marker does NOT dedupe -- it
+# is a distinct retry token, so it posts and increments normally.
+: > "$GH_LOG"
+out_idem3="$(STUB_ISSUE_COMMENTS_JSON="$_idem_prior" PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+  bash "$VCS" record-attempt 42 qa --idempotency-key run-xyz789 2>/dev/null)"
+rc_idem3=$?
+assert_exit_code 0 "$rc_idem3" "idempotency-key different key: exits 0"
+assert_contains "$out_idem3" "count=2" "idempotency-key different key: count increments to 2"
+assert_contains "$(cat "$GH_LOG")" "issue comment" \
+  "idempotency-key different key: a new marker IS posted"
+
+# [test] omitting --idempotency-key preserves today's behaviour: always
+# posts and increments, even though the prior marker carries a key.
+: > "$GH_LOG"
+out_idem4="$(STUB_ISSUE_COMMENTS_JSON="$_idem_prior" PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+  bash "$VCS" record-attempt 42 qa 2>/dev/null)"
+rc_idem4=$?
+assert_exit_code 0 "$rc_idem4" "no --idempotency-key: exits 0 (back-compat)"
+assert_contains "$out_idem4" "count=2" "no --idempotency-key: count increments as before"
+assert_contains "$(cat "$GH_LOG")" "issue comment" \
+  "no --idempotency-key: always posts (back-compat)"
+
+# [test] an invalid token (disallowed characters) is rejected, exit 1, before
+# anything is posted.
+: > "$GH_LOG"
+out_idem5="$(STUB_ISSUE_COMMENTS_JSON='[]' PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+  bash "$VCS" record-attempt 42 qa --idempotency-key 'bad key!' 2>&1)"
+rc_idem5=$?
+assert_exit_code 1 "$rc_idem5" "invalid idempotency-key: exits 1"
+assert_contains "$out_idem5" "idempotency-key" "invalid idempotency-key: error names the flag"
+assert_not_contains "$(cat "$GH_LOG")" "issue comment" \
+  "invalid idempotency-key: nothing posted"
+
+# [test] dry-run with --idempotency-key is unchanged: single [dry-run] line,
+# no read-attempt/comment fetch attempted.
+out_idem_dr="$(PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+  bash "$VCS" --dry-run record-attempt 42 qa --idempotency-key run-abc123 2>&1)"
+assert_contains "$out_idem_dr" "[dry-run]" "dry-run with idempotency-key: prints dry-run marker"
+assert_contains "$out_idem_dr" "record-attempt" "dry-run with idempotency-key: names the verb"
+
 finish
