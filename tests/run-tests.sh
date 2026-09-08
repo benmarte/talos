@@ -17,12 +17,19 @@
 # Marked files run sequentially, after the parallel batch finishes.
 #
 # Result cache: passing files are cached under .talos/test-cache/<key>, keyed
-# on the test file's own content plus every file under scripts/*.sh,
-# tests/helpers.sh, tests/stubs/*, and templates/** (whole-set hashing, not
-# per-file dependency tracking -- any change to any of those invalidates
-# every cached test). A cache hit prints "CACHED tests/<name>.sh", counts as
-# passed, and is not re-executed. Failing files are never cached. --no-cache
-# bypasses reads and writes; CI always runs with --no-cache.
+# on the test file's own content plus a whole-set hash of every git-tracked
+# file in the repo (`git ls-files`) EXCEPT a small, proven-unread exclusion
+# list -- see the comment on compute_deps_hash() for the list and how it was
+# proven safe. This includes tests/run-tests.sh itself and every
+# tests/test-*.sh (whole-set hashing, not per-file dependency tracking -- any
+# tracked change outside the exclusion list invalidates every cached test).
+# Untracked files are not hashed and cannot invalidate the cache; a test that
+# asserts against an untracked file is outside this cache's safety net. A
+# cache hit prints "CACHED tests/<name>.sh", counts as passed, and is not
+# re-executed. Failing files are never cached. --no-cache bypasses reads and
+# writes; CI always runs with --no-cache. If neither sha256sum nor shasum is
+# available, caching is disabled outright (a warning is printed) rather than
+# risk a degraded key.
 set -u
 
 # Source guard (#121): sourcing this file would run test suites in the caller's
@@ -92,16 +99,27 @@ CACHE_ENABLED=1
 [ "$NO_CACHE" -eq 1 ] && CACHE_ENABLED=0
 CACHE_DIR="$TALOS_ROOT/.talos/test-cache"
 
+# _HASH_TOOL -- the hashing command to pipe stdin through, resolved once.
+# Left empty (rather than defaulting to a missing binary) if neither tool
+# exists, so callers can detect and disable caching instead of erroring out.
+_HASH_TOOL=""
+if command -v sha256sum >/dev/null 2>&1; then
+  _HASH_TOOL="sha256sum"
+elif command -v shasum >/dev/null 2>&1; then
+  _HASH_TOOL="shasum -a 256"
+fi
+if [ -z "$_HASH_TOOL" ] && [ "$CACHE_ENABLED" -eq 1 ]; then
+  echo "WARNING: neither sha256sum nor shasum found; disabling test result cache" >&2
+  CACHE_ENABLED=0
+fi
+
 # _sha256 -- hash stdin, print the hex digest only.
 _sha256() {
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum | awk '{print $1}'
-  else
-    shasum -a 256 | awk '{print $1}'
-  fi
+  $_HASH_TOOL | awk '{print $1}'
 }
 
-# _sha256_file PATH -- hash a file's content (empty hash if it does not exist).
+# _sha256_file PATH -- hash a file's content (empty hash if it does not exist
+# or is not a regular file, e.g. a symlink to a directory).
 _sha256_file() {
   if [ -f "$1" ]; then
     _sha256 < "$1"
@@ -110,19 +128,44 @@ _sha256_file() {
   fi
 }
 
-# compute_deps_hash -- whole-set hash of everything a test's outcome can
-# depend on besides its own content: scripts/*.sh, tests/helpers.sh,
-# tests/stubs/*, templates/** . Sorted so the result is order-independent.
+# compute_deps_hash -- whole-set hash of every git-tracked file in the repo
+# (`git ls-files -z`, NUL-delimited so filenames with spaces are safe) EXCEPT
+# an explicit exclusion list, plus tests/run-tests.sh and every
+# tests/test-*.sh (both already git-tracked, so no special-casing is needed).
+# Sorted (LC_ALL=C) so the result is order-independent.
+#
+# Why "every tracked file minus an exclusion list" instead of an allow-list
+# of directories: an allow-list silently rots -- #175's own review round
+# found the original allow-list (scripts/*.sh, tests/helpers.sh,
+# tests/stubs/*, templates/**) missing tests/run-tests.sh itself, and a
+# follow-up security finding found it also missing agents/**, skills/**, and
+# .claude-plugin/**, which several tests read directly (test-callsite-guard.sh,
+# test-marker-contract.sh, test-global-install.sh, test-plugin-install.sh).
+# An exclusion list only needs to be provably *safe to leave out*, not
+# provably *complete* -- so it is far cheaper to keep correct.
+#
+# Exclusion list and how it was proven safe: for each candidate below,
+# `grep -l '<pattern>' tests/*.sh` was run across every tests/test-*.sh (the
+# full read-closure of the suite) and returned zero matches, i.e. no test
+# reads or asserts against that path. Re-run that grep before adding
+# anything here.
+#   tasks/**             -- internal planning notes; zero references
+#   docs/superpowers/**  -- spec drafts; zero references
+#   .github/**           -- CI workflow config; zero references
+#   .gitignore           -- tests that mention ".gitignore" (test-assert-sync*)
+#                            write and check their OWN fixture .gitignore in
+#                            a sandbox; none reads the repo's real .gitignore
+# CHANGELOG.md was considered and REJECTED: tests/test-comment-post-failure.sh
+# reads "$TALOS_ROOT/CHANGELOG.md" directly and asserts on its content, so it
+# stays hashed like every other tracked file.
 compute_deps_hash() {
-  {
-    [ -d "$TALOS_ROOT/scripts" ] && find "$TALOS_ROOT/scripts" -maxdepth 1 -type f -name '*.sh' 2>/dev/null
-    [ -f "$TALOS_ROOT/tests/helpers.sh" ] && printf '%s\n' "$TALOS_ROOT/tests/helpers.sh"
-    [ -d "$TALOS_ROOT/tests/stubs" ] && find "$TALOS_ROOT/tests/stubs" -maxdepth 1 -type f 2>/dev/null
-    [ -d "$TALOS_ROOT/templates" ] && find "$TALOS_ROOT/templates" -type f 2>/dev/null
-  } | LC_ALL=C sort | while IFS= read -r _dep; do
-    [ -z "$_dep" ] && continue
-    printf '%s %s\n' "$_dep" "$(_sha256_file "$_dep")"
-  done | _sha256
+  [ -z "$_HASH_TOOL" ] && { printf '' | _sha256; return; }
+  git -C "$TALOS_ROOT" ls-files -z 2>/dev/null | while IFS= read -r -d '' _dep; do
+    case "$_dep" in
+      tasks/*|docs/superpowers/*|.github/*|.gitignore) continue ;;
+    esac
+    printf '%s %s\n' "$_dep" "$(_sha256_file "$TALOS_ROOT/$_dep")"
+  done | LC_ALL=C sort | _sha256
 }
 
 if [ "$CACHE_ENABLED" -eq 1 ]; then

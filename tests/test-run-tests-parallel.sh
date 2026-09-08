@@ -4,10 +4,15 @@
 #
 # Fixture design: each case gets its own subdirectory within SANDBOX with a
 # COPY (not symlink) of the real run-tests.sh, so TALOS_ROOT resolves to the
-# fixture directory and its own .talos/test-cache/ stays isolated. No git
-# repo is created (these tests are not about the --base-ref count check,
-# which is already covered by tests/test-run-tests-count.sh) -- run-tests.sh
-# fails open on an unresolvable base ref and continues.
+# fixture directory and its own .talos/test-cache/ stays isolated. No dedicated
+# git repo is created per fixture (these tests are not about the --base-ref
+# count check, which is already covered by tests/test-run-tests-count.sh) --
+# run-tests.sh fails open on an unresolvable base ref and continues. They DO
+# reuse the single git repo make_sandbox already initializes at $SANDBOX (a
+# parent of every fixture dir), because compute_deps_hash() (#175 cache-key
+# fix) now walks `git ls-files`, so tests that assert on dependency-hash
+# invalidation must `track_fixture` a file before editing it for the edit to
+# be visible to the hash at all.
 #
 # MEASUREMENT DISCIPLINE: out=$(cmd 2>&1); rc=$? throughout -- never pipe.
 set -u
@@ -20,12 +25,22 @@ build_min_fixture() {
   local FD="$1"
   mkdir -p "$FD/tests/stubs"
   cp "$REAL_RUN_TESTS" "$FD/tests/run-tests.sh"
+  track_fixture "$FD"
 }
 
 # write_stub FD NAME BODY -- writes an executable tests/<NAME> in FD.
 write_stub() {
   local FD="$1" NAME="$2" BODY="$3"
   printf '#!/usr/bin/env bash\n%s\n' "$BODY" > "$FD/tests/$NAME"
+}
+
+# track_fixture FD -- stages every file currently under FD in the shared
+# $SANDBOX git repo, so `git ls-files` (which compute_deps_hash() walks)
+# reports them as tracked. A file only needs this once: compute_deps_hash()
+# reads content straight off disk, so a later edit to an already-tracked
+# file is picked up without re-tracking it.
+track_fixture() {
+  git -C "$SANDBOX" add -A "$1" >/dev/null 2>&1 || true
 }
 
 # order_of OUTPUT -- extracts the sequence of "-- <name>" headers, one per line.
@@ -155,6 +170,7 @@ FDF="$SANDBOX/f"
 build_min_fixture "$FDF"
 mkdir -p "$FDF/scripts"
 printf '#!/usr/bin/env bash\necho v1\n' > "$FDF/scripts/pipeline-config.sh"
+track_fixture "$FDF"   # must be tracked for compute_deps_hash (git ls-files) to see it
 CTR_F="$FDF/counter-f"
 : > "$CTR_F"
 write_stub "$FDF" "test-x.sh" "echo ran >> '$CTR_F'; exit 0"
@@ -216,5 +232,95 @@ assert_exit_code 1 "$rc_i_quiet" "I: quiet mode exits 1 on failure"
 assert_contains "$out_i_quiet" "FAIL  tests/test-loud-fail.sh" "I: quiet mode names the failing file"
 assert_contains "$out_i_quiet" "DISTINCTIVE_FAILURE_MARKER_XYZ" "I: quiet mode still shows the failing file's full output"
 assert_contains "$out_i_quiet" "RESULT: 1 of 1 test file(s) FAILED" "I: quiet mode RESULT line"
+
+# ── #175 review/security follow-up: compute_deps_hash() completeness ─────────
+# PR #203 was blocked twice on the same class of finding: the cache key
+# (compute_deps_hash) did not cover every input a test's outcome can depend
+# on. It now hashes every git-tracked file except a small, proven-unread
+# exclusion list (see the comment on compute_deps_hash() in run-tests.sh).
+# Tests J-M each name a file OUTSIDE the old allow-list (the runner script
+# itself, plus agents/, skills/, and repo-root README.md) that must now
+# invalidate the cache; test N proves an excluded path does NOT.
+#
+# assert_dep_invalidates LABEL FD RELPATH -- RELPATH must already be tracked
+# (track_fixture) under FD. Populates the cache for a throwaway test-x.sh,
+# confirms an unchanged second run hits, edits RELPATH, and confirms the
+# third run misses (re-executes) because the dependency hash changed.
+assert_dep_invalidates() {
+  local label="$1" FD="$2" relpath="$3" ctr out2 out3
+  ctr="$FD/counter"
+  : > "$ctr"
+  write_stub "$FD" "test-x.sh" "echo ran >> '$ctr'; exit 0"
+  bash "$FD/tests/run-tests.sh" >/dev/null 2>&1                # run 1: miss, populates cache
+  out2="$(bash "$FD/tests/run-tests.sh" 2>&1)"                 # run 2: unchanged -> hit
+  assert_contains "$out2" "CACHED tests/test-x.sh" "$label: unchanged $relpath stays cached"
+  printf '\n# edited for %s\n' "$label" >> "$FD/$relpath"
+  out3="$(bash "$FD/tests/run-tests.sh" 2>&1)"                 # run 3: edited -> miss
+  assert_not_contains "$out3" "CACHED tests/test-x.sh" "$label: editing $relpath invalidates the key"
+  assert_eq 2 "$(wc -l < "$ctr" | tr -d ' ')" "$label: invalidated cache re-executed the file"
+}
+
+# assert_dep_excluded LABEL FD RELPATH -- same setup, but RELPATH falls under
+# the exclusion list: editing it must NOT invalidate the cache.
+assert_dep_excluded() {
+  local label="$1" FD="$2" relpath="$3" ctr out3
+  ctr="$FD/counter"
+  : > "$ctr"
+  write_stub "$FD" "test-x.sh" "echo ran >> '$ctr'; exit 0"
+  bash "$FD/tests/run-tests.sh" >/dev/null 2>&1                # run 1: miss, populates cache
+  printf '\n# edited for %s\n' "$label" >> "$FD/$relpath"
+  out3="$(bash "$FD/tests/run-tests.sh" 2>&1)"                 # run 2: excluded path edited -> still hit
+  assert_contains "$out3" "CACHED tests/test-x.sh" "$label: editing excluded $relpath does NOT invalidate the key"
+  assert_eq 1 "$(wc -l < "$ctr" | tr -d ' ')" "$label: excluded-file edit did not re-execute the file"
+}
+
+# ── Test J: editing tests/run-tests.sh itself invalidates the key ────────────
+# Named mutation: leave tests/run-tests.sh out of the hashed set (the exact
+# bug the #203 reviewer round found) -- this test would then see a stale
+# CACHED result after the runner script changed.
+FDJ="$SANDBOX/j"
+build_min_fixture "$FDJ"   # already tracks tests/run-tests.sh via track_fixture
+assert_dep_invalidates "J" "$FDJ" "tests/run-tests.sh"
+
+# ── Test K: editing a file under agents/ invalidates the key ─────────────────
+# Named mutation: omit agents/** from the hashed set (the #203 security
+# finding) -- a regression in agents/*.md that a test asserts against would
+# then hide behind a stale CACHED pass.
+FDK="$SANDBOX/k"
+build_min_fixture "$FDK"
+mkdir -p "$FDK/agents"
+printf '# developer\n' > "$FDK/agents/developer.md"
+track_fixture "$FDK"
+assert_dep_invalidates "K" "$FDK" "agents/developer.md"
+
+# ── Test L: editing a file under skills/ invalidates the key ─────────────────
+# Same mutation shape as K, for skills/**.
+FDL="$SANDBOX/l"
+build_min_fixture "$FDL"
+mkdir -p "$FDL/skills/pipeline"
+printf '# SKILL\n' > "$FDL/skills/pipeline/SKILL.md"
+track_fixture "$FDL"
+assert_dep_invalidates "L" "$FDL" "skills/pipeline/SKILL.md"
+
+# ── Test M: editing README.md invalidates the key ─────────────────────────────
+# Same mutation shape, for repo-root docs that never lived in the old
+# allow-list (scripts/*.sh, tests/helpers.sh, tests/stubs/*, templates/**).
+FDM="$SANDBOX/m"
+build_min_fixture "$FDM"
+printf '# fixture readme\n' > "$FDM/README.md"
+track_fixture "$FDM"
+assert_dep_invalidates "M" "$FDM" "README.md"
+
+# ── Test N: editing an excluded path does NOT invalidate the key ─────────────
+# Named mutation: hash literally everything under $TALOS_ROOT with no
+# exclusion list at all -- editing tasks/** (proven unread by any test; see
+# compute_deps_hash()'s comment) would then also invalidate, and this test
+# would see an unexpected cache miss.
+FDN="$SANDBOX/n"
+build_min_fixture "$FDN"
+mkdir -p "$FDN/tasks"
+printf '# scratch notes\n' > "$FDN/tasks/scratch.md"
+track_fixture "$FDN"
+assert_dep_excluded "N" "$FDN" "tasks/scratch.md"
 
 finish
