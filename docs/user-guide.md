@@ -149,6 +149,12 @@ path is no longer read — move any credentials to the repo root.
 | `PIPELINE_THREAD_STATE` | thread anchor file (default `~/.talos/threads.json`) |
 | `PIPELINE_NOTIFY_DEBUG` | `1` = print payloads instead of posting |
 
+**Runtime/testing** (optional; advanced):
+
+| Variable | Purpose |
+|----------|---------|
+| `TALOS_RETRY_SLEEP_SCALE` | Scale factor for retry backoff sleeps (default `1`; tests set to `0` for instant runs without delay). Scales every sleep uniformly — e.g. `TALOS_RETRY_SLEEP_SCALE=0.1` makes retries 10x faster for local testing, `TALOS_RETRY_SLEEP_SCALE=0` skips all sleeps entirely (network calls still retry, no delay between attempts). |
+
 Nothing is strictly *required*: with no credentials at all, notifications are
 a silent no-op and the pipeline still runs.
 
