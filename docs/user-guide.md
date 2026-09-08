@@ -481,6 +481,41 @@ epic flagged for missing boxes still auto-closes once a human ticks them.
 The planner role is off by default — it adds API calls and is most useful
 when you regularly work with multi-task epics.
 
+### Running `verify:` once per PR, and QA trusting CI (`verify.qa_mode`, `verify.targeted`, `verify.ci_wait_s`)
+
+The full `verify:` suite is expensive to run repeatedly, and by default CI
+(`merge.required_checks`) already runs it on every push. Talos avoids paying
+for the same suite run more than it needs to:
+
+- **Developer** (`verify.targeted`, default `true`): while iterating, the
+  developer runs only the tests that cover the files it changed —
+  `tests/run-tests.sh --for <changed files>` when that flag exists, else the
+  test files whose name or contents reference the changed scripts. It runs
+  the full `verify:` list exactly once, immediately before its final commit
+  and push. It never runs `verify:` more than once after the last code
+  change, in the background, or via a sleep-poll loop — and never zero times.
+  Set `verify.targeted: false` to have it run the full list on every
+  iteration instead (the old behavior).
+- **QA** (`verify.qa_mode`, default `ci` when `merge.required_checks` is
+  non-empty, else `local`): under `ci`, QA does not re-run `verify:` at all —
+  it polls `pipeline-vcs.sh pr-checks` in the foreground, bounded by
+  `verify.ci_wait_s` (default `900` seconds), until every check named in
+  `merge.required_checks` is passing. Any check that is failing, missing, or
+  still pending when the budget elapses is treated as a QA **FAIL** — this is
+  fail-closed by design, never assume a missing check would have passed. The
+  budget QA saves by not re-running the suite goes into driving acceptance
+  criteria and edge cases instead. Under `local` (the default when no
+  `merge.required_checks` are configured, so there is no CI oracle to trust),
+  QA runs the full `verify:` list once itself, same as before.
+- **Reviewer, security, and docs never run `verify:`.** They only ever read
+  the diff (`pipeline-vcs.sh diff-pr`) and CI status
+  (`pipeline-vcs.sh pr-checks`) — this was already true in practice and is
+  now stated explicitly in each profile.
+
+Set `verify.qa_mode: local` explicitly if you want QA to always re-run the
+suite itself regardless of `merge.required_checks` — for example, if your CI
+doesn't run the same suite Talos does.
+
 ### Filtering which issues enter the queue (`issues.label_filter`)
 
 > **Note on config format:** all examples below are YAML (`talos.pipeline.yml`).

@@ -17,6 +17,9 @@ Check: input validation/injection, authn/authz gaps, secret handling, unsafe
 deserialization, path traversal, SSRF, and dependency risk introduced by the
 diff. Only report issues you can tie to specific changed lines.
 
+Never run `verify:`; QA and CI already did. `pipeline-vcs.sh pr-checks` (CI
+status) is the oracle for whether the suite passes — this stage is diff-only.
+
 - Clean → comment `**Security:** clear — <what you checked>` and add
   label `security:approved`.
 - Issue found → comment severity + file:line + remediation, add

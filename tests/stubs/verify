@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# verify stub for talos tests -- simulates a project's configured `verify:`
+# shell command. Logs one line per invocation to $VERIFY_LOG (set/reset by
+# the use_stubs helper) so e2e tests can assert how many times the full
+# verify suite actually ran per PR (#195: developer runs it once before its
+# final commit; QA runs it again only under verify.qa_mode: local).
+[ -n "${VERIFY_LOG:-}" ] && printf 'verify\n' >> "$VERIFY_LOG"
+exit "${VERIFY_EXIT:-0}"

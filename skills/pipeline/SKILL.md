@@ -91,7 +91,21 @@ Store these for the run:
 - BOARD_ENABLED, PROJECT_NUMBER, BOARD_OWNER
 - MAX_PARALLEL, MAX_FIX_ATTEMPTS, LABEL_FILTER, SKIP_LABELS
 - MERGE_AUTO (`merge.auto`, default `true`) — when `false`, Step 4 stops at `pipeline:approved` and hands the merge to a human
+- MERGE_REQUIRED_CHECKS (`merge.required_checks`, default `[]`, newline-separated)
 - VERIFY_COMMANDS (newline-separated list from `verify`)
+- VERIFY_QA_MODE (`verify.qa_mode`, default `ci` when `merge.required_checks` is
+  non-empty, else `local`): `bash scripts/pipeline-config.sh verify.qa_mode local`
+  — `pipeline-config.sh` applies the `merge.required_checks`-derived default
+  itself, so passing `local` as the fallback here is correct for both branches.
+  `ci` means QA trusts CI (`pr-checks`) instead of re-running `verify:` locally;
+  `local` means QA runs the full `verify:` list once, as before.
+- VERIFY_TARGETED (`verify.targeted`, default `true`): whether the developer
+  runs only the tests covering its changed files while iterating (`true`), or
+  the full `verify:` list on every iteration (`false`). Either way the
+  developer runs the full `verify:` list exactly once before the final commit.
+- VERIFY_CI_WAIT_S (`verify.ci_wait_s`, default `900`): seconds QA waits in the
+  foreground, under `qa_mode: ci`, for `merge.required_checks` to go green
+  before failing closed.
 - Each role toggle: ROLE_VALIDATOR, ROLE_PM, ROLE_QA, ROLE_REVIEWER, ROLE_SECURITY, ROLE_DOCS (all default true)
 - ROLE_PLANNER (`roles.planner`, default `false`) — off by default; zero behavior change when absent or false
 - COMMENTS_ENABLED, COMMENTS_HEADER_TPL, COMMENTS_TMPL_DIR
@@ -111,6 +125,9 @@ Store these for the run:
 - `merge.auto`: true
 - `merge.method`: squash
 - `merge.required_checks`: []
+- `verify.qa_mode`: `ci` when `merge.required_checks` is non-empty, else `local`
+- `verify.targeted`: `true`
+- `verify.ci_wait_s`: `900`
 - `issues.label_filter`: pipeline:ready (an additional label requirement; see Step 2)
 - `issues.max_parallel`: 1
 - `limits.max_fix_attempts`: 3
@@ -613,13 +630,14 @@ You ARE worktree-isolated.
 Comment header: <HEADER>
 Comment templates dir: <COMMENTS_TMPL_DIR>
 Comments enabled: <COMMENTS_ENABLED>
+Targeted iteration: <VERIFY_TARGETED>
 
 Before running any verify: command, export these as shell variables so verify
 scripts can assert they are running in the correct environment:
   export TALOS_ISSUE_NUMBER=<N>
   export TALOS_WORKTREE_PATH=<ABSOLUTE_PATH_OF_THIS_WORKTREE>
 
-Verify commands (run each, fix failures before opening PR):
+Verify commands (run once, immediately before your final commit — see step 5):
 <VERIFY_COMMANDS — one per line>
 
 Workflow:
@@ -636,8 +654,15 @@ Workflow:
       add/extend an e2e test that drives the feature in a browser, following
       the repo's existing e2e pattern. If no e2e harness exists, state that
       in the PR body instead of silently skipping.
-5. Run verify commands AND all relevant test suites (unit + e2e where
-   applicable). Iterate until all pass.
+5. If Targeted iteration is `true` (default): while iterating, run only the
+   tests that cover the files you changed — `bash tests/run-tests.sh --for
+   <changed files>` if that flag exists (#197), else the test files whose
+   name or contents reference the changed scripts. If `false`, run the full
+   verify commands on each iteration instead. Either way, run the full
+   verify commands list exactly once, immediately before the final commit
+   and push — this is the one full-suite run for this PR. Forbidden: running
+   verify commands more than once after the last code change, running them
+   in the background, and sleep-polling for results. Never zero local runs.
 6. `git commit -m "fix: <description> (#<N>)"`
 7. `git push -u origin fix/issue-<N>-<slug>`
 8. Write PR body to a temp file (multi-line OK):
@@ -671,10 +696,11 @@ You are NOT worktree-isolated. Your working directory IS the orchestrator's chec
 Comment header: <HEADER>
 Comment templates dir: <COMMENTS_TMPL_DIR>
 Comments enabled: <COMMENTS_ENABLED>
+Targeted iteration: <VERIFY_TARGETED>
 
 Note: TALOS_WORKTREE_PATH is not meaningful in branch isolation mode — skip or ignore it.
 
-Verify commands (run each, fix failures before opening PR):
+Verify commands (run once, immediately before your final commit — see step 5):
 <VERIFY_COMMANDS — one per line>
 
 Workflow:
@@ -682,7 +708,15 @@ Workflow:
 2. `git checkout -b fix/issue-<N>-<slug> origin/<BASE_BRANCH>`
 3. Implement. Match surrounding code style. Stay focused on acceptance criteria.
 4. Write tests — not optional, and not limited to unit tests (same requirements as worktree mode).
-5. Run verify commands AND all relevant test suites. Iterate until all pass.
+5. If Targeted iteration is `true` (default): while iterating, run only the
+   tests that cover the files you changed — `bash tests/run-tests.sh --for
+   <changed files>` if that flag exists (#197), else the test files whose
+   name or contents reference the changed scripts. If `false`, run the full
+   verify commands on each iteration instead. Either way, run the full
+   verify commands list exactly once, immediately before the final commit
+   and push — this is the one full-suite run for this PR. Forbidden: running
+   verify commands more than once after the last code change, running them
+   in the background, and sleep-polling for results. Never zero local runs.
 6. `git commit -m "fix: <description> (#<N>)"`
 7. `git push -u origin fix/issue-<N>-<slug>`
 8. Write PR body to a temp file:
@@ -723,6 +757,9 @@ Worktree path: <ABSOLUTE_PATH_OF_THIS_WORKTREE>
 Comment header: <HEADER>
 Comment templates dir: <COMMENTS_TMPL_DIR>
 Comments enabled: <COMMENTS_ENABLED>
+QA mode: <VERIFY_QA_MODE> (ci | local)
+Required checks: <MERGE_REQUIRED_CHECKS — one per line, or "none">
+CI wait budget: <VERIFY_CI_WAIT_S> seconds
 
 Before running any verify: command, export these as shell variables so verify
 scripts can assert they are running in the correct environment:
@@ -730,7 +767,15 @@ scripts can assert they are running in the correct environment:
   export TALOS_WORKTREE_PATH=<ABSOLUTE_PATH_OF_THIS_WORKTREE>
 
 1. Check out the PR: `bash scripts/pipeline-vcs.sh checkout-pr <PR_NUMBER>`
-2. Run the full test suite and lint.
+2. If QA mode is `ci`: do NOT run `verify:` or the test suite locally — CI
+   already runs it on every push. Instead, poll `bash scripts/pipeline-vcs.sh
+   pr-checks <PR_NUMBER>` in the foreground (no background process, no long
+   sleep loop) until every check named in Required checks reports a passing
+   state, or until the CI wait budget elapses. Treat any required check that
+   is failing, missing, or still pending when the budget elapses as FAIL —
+   fail closed, never assume a missing check would have passed. Spend the
+   time this saves driving acceptance criteria and edge cases instead.
+   If QA mode is `local`: run the full `verify:` list exactly once (as before).
 3. Verify each acceptance criterion — drive actual behavior.
 4. Look for missing edge-case tests and obvious regressions.
 
@@ -799,6 +844,7 @@ Comments enabled: <COMMENTS_ENABLED>
 Read diff: `bash scripts/pipeline-vcs.sh diff-pr <PR_NUMBER>`
 Focus: correctness bugs first, simplification second. No speculative comments.
 IMPORTANT: never run `git checkout`, `git switch`, or `git pull` in your working directory — use `diff-pr` to read changes regardless of the active isolation mode.
+Never run `verify:`; QA and CI already did. `pipeline-vcs.sh pr-checks` (CI status) is the oracle for whether the suite passes — this stage is diff-only.
 
 Approve:
   1. `bash scripts/pipeline-vcs.sh approve-pr <PR_NUMBER> "<summary>"`
@@ -833,6 +879,7 @@ Read diff: `bash scripts/pipeline-vcs.sh diff-pr <PR_NUMBER>`
 Check: injection, authz, secrets, deserialization, path traversal, SSRF, new deps.
 Report only findings tied to specific changed lines.
 IMPORTANT: never run `git checkout`, `git switch`, or `git pull` in your working directory — use `diff-pr` to read changes regardless of the active isolation mode.
+Never run `verify:`; QA and CI already did. `pipeline-vcs.sh pr-checks` (CI status) is the oracle for whether the suite passes — this stage is diff-only.
 
 Clear:
   1. `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --remove pipeline:blocked`
@@ -864,6 +911,8 @@ VCS provider: <VCS_PROVIDER>
 Comment header: <HEADER>
 Comment templates dir: <COMMENTS_TMPL_DIR>
 Comments enabled: <COMMENTS_ENABLED>
+
+Never run `verify:`; QA and CI already did. `pipeline-vcs.sh pr-checks` (CI status) is the oracle for whether the suite passes — this stage is diff-only.
 
 1. Read diff: `bash scripts/pipeline-vcs.sh diff-pr <PR_NUMBER>`
 2. Update README, docs, CHANGELOG for the change.

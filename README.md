@@ -244,6 +244,9 @@ All keys live in `talos.pipeline.json` (or `talos.pipeline.yml` if PyYAML is ins
 | `board.status_map` | unset | Optional flat mapping from pipeline status names to the board's actual column names. Example: `{Blocked: "Needs attention"}`. An absent key passes through unchanged; omitting the map entirely is a no-op. Validation and option-ID lookup both run against the mapped name, so a correctly mapped name is treated as present. |
 | `board.azure_states.*` | Scrum defaults | Pipeline status → ADO work-item State (Azure) |
 | `verify` | `[]` | Shell commands every code subagent must pass |
+| `verify.qa_mode` | `ci` when `merge.required_checks` is non-empty, else `local` | `ci`: QA trusts CI (`pr-checks`) as the suite oracle instead of re-running `verify:` locally — CI already runs it on every push. `local`: QA runs the full `verify:` list once itself, as before. An explicit value always wins over the `merge.required_checks`-derived default. |
+| `verify.targeted` | `true` | While iterating, the developer runs only the tests covering the files it changed (`tests/run-tests.sh --for <changed files>` when that flag exists, else the test files that reference the changed scripts), then runs the full `verify:` list exactly once, immediately before its final commit and push. Set `false` to run the full `verify:` list on every iteration instead — never zero local runs either way. |
+| `verify.ci_wait_s` | `900` | Seconds QA waits in the foreground (no background process, no sleep-polling) for every check in `merge.required_checks` to go green under `qa_mode: ci`. Any check still failing, missing, or pending when the budget elapses is treated as FAIL (fail closed). |
 | `merge.method` | `squash` | `squash`, `merge`, or `rebase` |
 | `merge.required_checks` | `[]` | CI check names required before merge |
 | `merge.delete_branch` | `true` | Delete feature branch after merge |
@@ -468,8 +471,8 @@ Thread anchors are stored in `~/.talos/threads.json` keyed by `<repo-slug>:<issu
 4. For each issue:
    - **Validator** reads the issue and codebase. CONFIRMED advances; anything else sets `pipeline:blocked`.
    - **PM** turns the confirmed issue into a spec comment (goal, acceptance criteria, branch name, out-of-scope).
-   - **Developer** spawns in an isolated git worktree. It implements, runs your `verify` commands, and opens a PR. The worktree is removed (branch and all) right after the PR merges, via `pipeline-worktree.sh remove`; a startup sweep reclaims any orphaned worktree as a backstop.
-   - **QA** checks out the PR branch and verifies each acceptance criterion.
+   - **Developer** spawns in an isolated git worktree. It implements, iterates with targeted tests (`verify.targeted`, default `true`), then runs your full `verify` commands exactly once before its final commit, and opens a PR. The worktree is removed (branch and all) right after the PR merges, via `pipeline-worktree.sh remove`; a startup sweep reclaims any orphaned worktree as a backstop.
+   - **QA** checks out the PR branch and verifies each acceptance criterion. Under `verify.qa_mode: ci` (the default once `merge.required_checks` is set) it does not re-run `verify:` — it waits for CI to go green and fails closed if it doesn't; under `local` it runs `verify:` once itself.
    - **Docs** runs first after QA passes (phase 1); **Reviewer + Security** run in parallel after docs completes (phase 2).
 5. Once all stage labels are on the PR and required CI checks are green, the orchestrator squash-merges, closes the issue, sets the board status to Done, and sends a notification.
 6. If any stage returns a blocking outcome, the issue gets `pipeline:blocked` and a comment explaining what a human must do. The orchestrator moves on to the next issue.

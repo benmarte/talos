@@ -83,6 +83,24 @@ except Exception:
     sys.exit(0)
 
 value = walk(cfg, key.split("."))
+
+# "verify" is historically a flat list of shell commands. Also accept a dict
+# form (verify: {commands: [...], qa_mode: ..., targeted: ..., ci_wait_s: ...})
+# so verify.qa_mode / verify.targeted / verify.ci_wait_s can be read with the
+# normal dot-path lookup below without disturbing what plain "verify" returns
+# to existing callers (a newline-joined command list).
+if key == "verify" and isinstance(value, dict):
+    value = value.get("commands", [])
+
+# verify.qa_mode has a config-derived default that overrides whatever default
+# the caller passed in: "ci" when merge.required_checks is a non-empty list
+# (CI is already the suite oracle), "local" otherwise. An explicit
+# verify.qa_mode value in config always wins over this derived default.
+if key == "verify.qa_mode" and value is None:
+    required_checks = walk(cfg, "merge.required_checks".split("."))
+    if isinstance(required_checks, list) and len(required_checks) > 0:
+        value = "ci"
+
 if value is None:
     print(default, end="")
 elif isinstance(value, bool):
