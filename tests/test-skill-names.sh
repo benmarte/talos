@@ -208,6 +208,14 @@ assert_contains "$(cat "$TALOS_ROOT/agents/reviewer.md")" "diff-pr <pr> --stat" 
 assert_contains "$(cat "$TALOS_ROOT/agents/security.md")" "diff-pr <pr> --stat" \
   "agents/security.md reads diff-pr --stat before the full diff"
 
+# ── hooks.post_stage: Rule 3 in the conversation-stream section (#182) ─────
+assert_contains "$(cat "$SKILL_MD")" \
+  "Rule 3 — Post-stage hook" \
+  "skills/pipeline/SKILL.md has the Rule 3 (post-stage hook) orchestrator rule"
+assert_contains "$(cat "$SKILL_MD")" \
+  "bash scripts/pipeline-hooks.sh post_stage <event> <role> <N>" \
+  "skills/pipeline/SKILL.md Rule 3 gives the literal post_stage invocation"
+
 REPO="${TALOS_AGENT_SKILLS_REPO:-https://github.com/addyosmani/agent-skills}"
 
 if ! command -v git >/dev/null 2>&1; then

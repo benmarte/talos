@@ -293,7 +293,8 @@ All keys live in `talos.pipeline.json` (or `talos.pipeline.yml` if PyYAML is ins
 | `limits.max_retries` | `5` | Retries per network call after a rate-limit / transient error, on top of the original try — up to 6 total attempts by default (#173). Applies uniformly to every network verb in every provider: `gh`/`glab`/`az` CLI invocations (shadowed once per adapter so no call site needs editing) and the `github-api` provider's `curl` requests. **Retried:** HTTP 429; GitHub 403 responses whose body mentions a secondary rate limit or abuse detection; `gh`/`glab`/`az` errors whose stderr matches a rate-limit pattern. **Not retried (fails immediately, today's behaviour):** 401, 404, 422, and any other error that doesn't match those patterns. **Backoff:** honours a `Retry-After` value when the transport supplies one; otherwise exponential starting at 2s, doubling each attempt, capped at 60s. Each retry logs one line to stderr naming the attempt number and wait duration. `--dry-run` never sleeps or retries — every verb returns before its first network call. `TALOS_RETRY_SLEEP_SCALE` (default `1`) scales every sleep; set to `0` in tests for instant runs. |
 | `markers.trusted_authors` | unset | Allowlist of GitHub login strings (YAML list) whose `talos:approval` and `talos:attempt` markers are accepted by `check-approval-sha` and `read-attempt`. Example: `["talos-bot", "gh-actions-bot"]`. When set and non-empty, a marker from any login not in the list is silently skipped — treated as absent by `read-attempt`, or as stale by `check-approval-sha`. **When absent or empty, author checking is skipped entirely (fail-open). The key's absence is NOT equivalent to enforced author security** — an operator should not treat this key as protection they have until it is actually set and non-empty. When author checking is skipped, both readers emit `talos:marker-authors-unverified reader=<verb>` on stdout (see Marker placement and trusted-author allow-list below). |
 | `hooks.pre_dispatch` | `""` (disabled) | Shell command run before every stage's prompt is built (all roles, both the native subagent and `pipeline-agent.sh` adapter paths). Non-empty stdout is prepended to the prompt under a `## Context` heading; a non-zero exit, a timeout, or empty stdout is a silent no-op with one line on stderr — it never blocks dispatch. See [Hooks](#hooks) below for the stdin JSON schema. |
-| `hooks.timeout_s` | `30` | Seconds `hooks.pre_dispatch` may run before being killed. Must be a positive integer; a non-integer or non-positive value is rejected (stderr warning, falls back to the default). |
+| `hooks.post_stage` | `""` (disabled) | Shell command run after every verdict, approval, block, and merge — fire-and-forget with the same never-block contract as `hooks.pre_dispatch`. Receives a JSON outcome event on stdin. See [Hooks](#hooks) below for the schema. |
+| `hooks.timeout_s` | `30` | Seconds `hooks.pre_dispatch` / `hooks.post_stage` may run before being killed. Must be a positive integer; a non-integer or non-positive value is rejected (stderr warning, falls back to the default). |
 
 ### Hooks
 
@@ -325,6 +326,35 @@ Contract: a non-zero exit, a timeout (`hooks.timeout_s`, default 30s), or empty 
 ```
 
 Implemented in `scripts/pipeline-hooks.sh`; wired into the adapter path (`scripts/pipeline-agent.sh`) and the native orchestrator path (`skills/pipeline/SKILL.md`, Harness compatibility section).
+
+`hooks.post_stage` is the outcome-side counterpart: it runs after every verdict, approval, block, and merge is known — the moment a subagent posts findings, the moment a lifecycle event (`pr-opened`/`merged`/`blocked`/`issue-closed`) fires. Fire-and-forget with the same never-block contract as `hooks.pre_dispatch`, disabled by default.
+
+The configured command receives this JSON on stdin (fields the caller didn't supply, e.g. `sha`/`verdict`/`attempt` before they're known, are `null` rather than omitted):
+
+```json
+{
+  "event": "qa",
+  "role": "qa",
+  "issue": 42,
+  "pr": 57,
+  "repo": "owner/name",
+  "sha": "<40hex or null>",
+  "verdict": "PASS",
+  "summary": "3 criteria verified",
+  "details": "...",
+  "attempt": { "stage": "qa", "count": 1, "total": 3 },
+  "model": "claude-sonnet-5",
+  "runner": "claude",
+  "duration_s": 312,
+  "ts": "2026-09-07T14:00:00Z"
+}
+```
+
+`model` comes from `agents.roles.<role>.model`, falling back to `agents.model`; `runner` from `agents.runner`. `duration_s` is `null` unless the caller supplies it — Talos does not time stages today. `ts` is UTC, ISO-8601.
+
+Contract: a non-zero exit or a timeout (`hooks.timeout_s`) is a silent no-op with exactly one line on stderr; `hooks.post_stage` never blocks the pipeline and has no output to prepend anywhere — it is purely a side channel. `TALOS_ROLE` and `TALOS_ISSUE_NUMBER` are also exported into the command's environment.
+
+Implemented in `scripts/pipeline-hooks.sh` (`post_stage`, sharing its watchdog/timeout machinery with `pre_dispatch`); wired into the adapter path (`scripts/pipeline-agent.sh`, once per stage run — event `stage_complete`, verdict from the runner's exit code) and the native orchestrator path (`skills/pipeline/SKILL.md`, Conversation stream protocol, Rule 3).
 
 ### Board status options: required columns and `talos:board-unverified`
 

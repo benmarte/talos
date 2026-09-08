@@ -276,7 +276,7 @@ dispatch, before any stage has relayed anything yet.
 
 The Slack/Discord thread for each issue reads as a **conversation between agents**: validator speaks first, then developer, QA, docs, reviewer, security, and finally orchestrator announces the merge. This mirrors how Daedalus threads issues.
 
-Two rules apply for every stage, in this order:
+Three rules apply for every stage, in this order:
 
 **Rule 1 — Findings comment (always):** Each subagent posts its verdict/findings on the correct VCS target (issue or PR per the table above) using the `templates/comments/` template. This is mandatory when `comments.enabled = true`.
 
@@ -287,6 +287,10 @@ bash scripts/pipeline-notify.sh <role> "#<N>" "<2-3 line findings summary>" <N>
 ```
 
 The `<role>` argument is the exact role name (validator / pm / developer / qa / reviewer / security / docs / orchestrator). `pipeline-notify.sh` uses `templates/notifications/<role>.md` to render the message; if that template exists it controls the format, otherwise the summary is posted verbatim. This relay call is separate from lifecycle events (pr-opened, merged, blocked, issue-closed) — both are sent when applicable.
+
+**Rule 3 — Post-stage hook (always, #182):** After every role relay (`pipeline-notify.sh <role> ...`) and every lifecycle event (pr-opened, merged, blocked, issue-closed), also run `bash scripts/pipeline-hooks.sh post_stage <event> <role> <N> [--pr] [--sha] [--verdict] [--summary] [--attempt ...]` — this is what lets an external tool (metrics, cost tracking, a project memory) subscribe to every structured outcome the moment it's known. Disabled by default (empty `hooks.post_stage`); a failure, timeout, or missing config is a silent no-op with one stderr line, same as `hooks.pre_dispatch` — never worth waiting on or branching on. Example, right after the QA PASS relay:
+`bash scripts/pipeline-notify.sh qa "#42" "PASS: 3 criteria verified" 42`
+`bash scripts/pipeline-hooks.sh post_stage qa qa 42 --pr 57 --verdict PASS --summary "3 criteria verified"`
 
 **Example thread for issue #42:**
 ```
@@ -1296,6 +1300,7 @@ After merging:
 5. Relay: `bash scripts/pipeline-notify.sh orchestrator "#<N>" "all stages passed — merged PR #<PR_NUMBER>, issue closed" <N>`
 6. Lifecycle: `bash scripts/pipeline-notify.sh merged "#<N>" "PR #<PR_NUMBER> merged" <N>`
 7. Lifecycle: `bash scripts/pipeline-notify.sh issue-closed "#<N>" "issue resolved" <N>`
+8. Rule 3: also fire `hooks.post_stage` for both lifecycle events above (`merged` and `issue-closed`) — see Conversation stream protocol.
 
 ---
 

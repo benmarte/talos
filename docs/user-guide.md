@@ -772,6 +772,51 @@ cat >/dev/null   # the stdin JSON, unused here
 echo "This repo's style guide: 2-space indent, no semicolons."
 ```
 
+### Subscribing to outcomes (`hooks.post_stage`)
+
+**What it does.** `hooks.post_stage` runs a shell command after every
+verdict, approval, block, and merge is known -- the outcome-side counterpart
+to `hooks.pre_dispatch` above. It fires from both the role-relay site (right
+after each subagent's findings are posted and relayed) and every lifecycle
+event (`pr-opened`, `merged`, `blocked`, `issue-closed`). Fire-and-forget,
+same never-block contract: disabled by default, and a failure or timeout
+never affects the pipeline.
+
+**Contract.** The command receives this JSON on stdin (fields the caller
+hasn't supplied yet, e.g. `sha`/`verdict`/`attempt` before they're known,
+are `null` rather than omitted):
+
+```json
+{"event":"qa","role":"qa","issue":42,"pr":57,"repo":"owner/name",
+ "sha":"<40hex or null>","verdict":"PASS","summary":"...","details":"...",
+ "attempt":{"stage":"qa","count":1,"total":3},"model":"claude-sonnet-5",
+ "runner":"claude","duration_s":312,"ts":"2026-09-07T14:00:00Z"}
+```
+
+`model` is read from `agents.roles.<role>.model`, falling back to
+`agents.model`; `runner` from `agents.runner`. `duration_s` is `null` unless
+the caller explicitly supplies it -- Talos doesn't time stage execution
+today. `ts` is UTC, ISO-8601. `TALOS_ROLE` and `TALOS_ISSUE_NUMBER` are
+exported to the command's environment. A non-zero exit or a timeout
+(`hooks.timeout_s`, shared with `hooks.pre_dispatch`) is a silent no-op with
+one line on stderr; there is no stdout contract to honor since nothing
+consumes this command's output.
+
+**Worked config example:**
+
+```yaml
+hooks:
+  post_stage: "my-outcome-sink"
+  timeout_s: 30
+```
+
+**Worked hook example** (bash, appends every event to a local JSONL file):
+
+```bash
+#!/usr/bin/env bash
+cat >> "$HOME/.talos-events.jsonl"
+```
+
 ### A generic notification sink (`notifications.cmd`)
 
 **What it does.** `notifications.cmd` runs a shell command (via `sh -c`) for
