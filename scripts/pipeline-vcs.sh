@@ -209,7 +209,16 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cfg() { "$SCRIPT_DIR/pipeline-config.sh" "$@"; }
+# cfg() (#169): dumps the config once per invocation and answers lookups
+# from that cache instead of re-parsing on every call. Guarded (#169 review):
+# a partial install/sync may not yet ship pipeline-cfg-cache.sh, so fall back
+# to the old per-call cfg() instead of leaving cfg undefined.
+if [ -f "$SCRIPT_DIR/pipeline-cfg-cache.sh" ]; then
+  . "$SCRIPT_DIR/pipeline-cfg-cache.sh"
+else
+  cfg() { bash "$SCRIPT_DIR/pipeline-config.sh" "$@"; }
+  echo "pipeline: config cache helper missing, falling back to per-call parsing" >&2
+fi
 
 # ── Resolve config path for Python blocks (#116) ─────────────────────────────
 # Mirrors the lookup order in pipeline-config.sh; passed as TALOS_CFG env var
@@ -5054,7 +5063,10 @@ print('none')
   fi
 
   _pa_tmpfile="$(mktemp)"
-  trap 'rm -f "$_pa_tmpfile"' EXIT
+  # (#169) composable hook, not a bare `trap ... EXIT` -- pipeline-cfg-cache.sh
+  # already registered its own cleanup for the config cache dir, and a bare
+  # `trap ... EXIT` here would silently clobber it.
+  _talos_on_exit 'rm -f "$_pa_tmpfile"'
   if [ -n "$_pa_body_file" ]; then
     cat "$_pa_body_file" > "$_pa_tmpfile"
     printf '\n%s\n' "$_pa_marker" >> "$_pa_tmpfile"
