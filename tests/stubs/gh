@@ -27,6 +27,15 @@ if [ -n "${GH_RATE_LIMIT_UNTIL_CALL:-}" ]; then
   fi
 fi
 
+# GH_FAIL_STDERR: when set, every invocation of this stub prints the given
+# text to stderr and exits 1, unconditionally (#194). Used to prove a
+# non-rate-limit error whose text happens to contain a bare "429" (e.g. an
+# issue/PR number) is not misclassified as retryable by _with_retry.
+if [ -n "${GH_FAIL_STDERR:-}" ]; then
+  printf '%s\n' "$GH_FAIL_STDERR" >&2
+  exit 1
+fi
+
 REPO="${STUB_REPO:-acme/widget}"
 OWNER="${REPO%%/*}"
 

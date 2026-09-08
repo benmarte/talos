@@ -561,6 +561,64 @@ assert_eq "6" "$_calls"                          "429 exhaustion: exactly max_re
 
 unset CURL_RATE_LIMIT_RESET
 
+# -- #194 security: a Retry-After value is clamped to the same 60s cap as the
+#    exponential path, so a malicious/misbehaving endpoint returning a huge
+#    Retry-After (e.g. a full year) can't force an effectively unbounded
+#    sleep. Asserts the *logged* wait, since TALOS_RETRY_SLEEP_SCALE=0 in
+#    this file makes the actual sleep instant regardless of the value used --
+#    the cap has to be applied before scaling, not just make the test fast.
+: > "$CURL_LOG"
+: > "$_errfile"
+export CURL_RETRY_AFTER=31536000
+printf '429\n%s\n' \
+  '[{"number":3,"title":"Fix login bug","body":"Body text","labels":[]}]' \
+  > "$CURL_QUEUE"
+
+out="$(bash "$VCS" list-issues 2>"$_errfile")"; rc=$?
+err="$(cat "$_errfile")"
+assert_eq "0" "$rc"                              "Retry-After cap: still succeeds after the retry"
+assert_contains "$err" "in 60s"                  "Retry-After cap: logged wait is clamped to 60s"
+assert_not_contains "$err" "31536000"            "Retry-After cap: the raw uncapped header value is never used as the wait"
+unset CURL_RETRY_AFTER
+
+# -- #194 review: TALOS_RETRY_SLEEP_SCALE accepts decimals. Bash's `$(( ))`
+#    arithmetic is integer-only and errors out on a fractional scale, which
+#    would abort the retry loop's subshell after the first attempt instead
+#    of retrying -- the exact scale value docs/user-guide.md recommends for
+#    local testing (0.1) must actually retry-then-succeed, not fail fast.
+: > "$CURL_LOG"
+: > "$_errfile"
+printf '429\n%s\n' \
+  '[{"number":3,"title":"Fix login bug","body":"Body text","labels":[]}]' \
+  > "$CURL_QUEUE"
+
+out="$(TALOS_RETRY_SLEEP_SCALE=0.1 bash "$VCS" list-issues 2>"$_errfile")"; rc=$?
+assert_eq "0" "$rc"                              "decimal scale: 0.1 retries then succeeds (no arithmetic crash)"
+assert_contains "$out" '"number": 3'             "decimal scale: returns the issue after the retry"
+_calls="$(wc -l < "$CURL_LOG" | tr -d ' ')"
+assert_eq "2" "$_calls"                          "decimal scale: exactly two curl calls (one 429 + the success)"
+
+# -- #194 security: limits.max_retries must be a non-negative integer; a
+#    non-numeric value is rejected with a clear message and falls back to
+#    the default (5) instead of silently disabling the exhaustion guard --
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "github-api", "repo": "acme/widget"}, "limits": {"max_retries": "abc"}}
+EOF
+: > "$CURL_LOG"
+: > "$_errfile"
+printf '429\n429\n429\n429\n429\n429\n' > "$CURL_QUEUE"
+
+out="$(bash "$VCS" list-issues 2>"$_errfile")"; rc=$?
+err="$(cat "$_errfile")"
+assert_eq "1" "$rc"                              "max_retries=abc: exits 1 once the default (5) is exhausted"
+assert_contains "$err" "must be a non-negative integer" "max_retries=abc: rejects the invalid value with a clear message"
+_calls="$(wc -l < "$CURL_LOG" | tr -d ' ')"
+assert_eq "6" "$_calls"                          "max_retries=abc: falls back to default 5 -- exactly 6 curl calls"
+
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "github-api", "repo": "acme/widget"}}
+EOF
+
 # -- GitHub 403 secondary-rate-limit body: retryable even though the status
 #    is 403, not 429 --
 : > "$CURL_LOG"

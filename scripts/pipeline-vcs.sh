@@ -139,19 +139,25 @@
 #                               per issue — never resets (default: 8)
 #   limits.max_retries          max retries per network call after a rate-limit
 #                               / transient error, on top of the original try
-#                               (default: 5, so up to 6 total attempts). Applies
-#                               to every network verb in every adapter via the
-#                               shared _with_retry helper (#173). Backoff:
-#                               Retry-After header when the transport supplies
-#                               one, else exponential starting at 2s, doubling
-#                               each attempt, capped at 60s. Retried: HTTP 429;
-#                               GitHub 403 secondary-rate-limit/abuse-detection
-#                               bodies; gh/glab/az CLI errors whose stderr
-#                               matches a rate-limit pattern. Not retried: 401,
-#                               404, 422, and any other non-matching error —
-#                               those fail immediately with today's behaviour.
+#                               (default: 5, so up to 6 total attempts). Must be
+#                               a non-negative integer — a non-numeric value is
+#                               rejected with a warning and the default is used.
+#                               Applies to every network verb in every adapter
+#                               via the shared _with_retry helper (#173).
+#                               Backoff: Retry-After header when the transport
+#                               supplies one, else exponential starting at 2s,
+#                               doubling each attempt — both are capped at 60s.
+#                               Retried: HTTP 429 (curl paths: decided from the
+#                               parsed status code, not text); GitHub 403
+#                               secondary-rate-limit/abuse-detection bodies;
+#                               gh/glab/az CLI errors whose stderr matches an
+#                               anchored rate-limit phrase (never a bare
+#                               number). Not retried: 401, 404, 422, and any
+#                               other non-matching error — those fail
+#                               immediately with today's behaviour.
 #                               TALOS_RETRY_SLEEP_SCALE (default 1) scales every
-#                               sleep; set to 0 in tests for instant runs.
+#                               sleep and accepts decimals (e.g. 0.1); set to 0
+#                               in tests for instant runs.
 #
 # --dry-run: print the underlying CLI command instead of running it.
 #            For file mode: describe the edit without applying it.
@@ -284,34 +290,57 @@ _run() {
 #   the final attempt (the one that succeeds, exhausts retries, or fails
 #   non-retryably) ever reaches the real stdout/stderr.
 #
-#   Retryability is decided by one generic check: does the captured stderr
-#   match $_RETRY_STDERR_PATTERN?
-#     - gh/glab/az shadow functions: the CLI's own stderr on a rate-limited
-#       call (gh: "API rate limit exceeded" / secondary rate limit message;
-#       glab/az: documented at their shadow-function definitions — best
-#       effort, no repo fixture reproduces their real bodies today).
-#     - curl-based *_once helpers print a matching message themselves (via
-#       _ga_rate_limit_msg) whenever the parsed HTTP status is 429, or 403
-#       with a secondary-rate-limit/abuse-detection body.
+#   Retryability is decided by one generic check: was $_WR_RETRYABLE set by
+#   the attempt, or does the captured stderr match $_RETRY_STDERR_PATTERN?
+#     - curl-based *_once helpers (which already parse the real HTTP status
+#       code) set $_WR_RETRYABLE=1 themselves whenever that status is 429, or
+#       403 with a secondary-rate-limit/abuse-detection body — retryability
+#       for these is decided from the status, never by pattern-matching the
+#       printed message text.
+#     - gh/glab/az shadow functions have no status code to inspect (an
+#       external CLI's stderr is all there is), so they fall back to
+#       $_RETRY_STDERR_PATTERN — anchored phrases only (e.g. "HTTP 429",
+#       "API rate limit exceeded", "secondary rate limit", "abuse detection",
+#       "rate limited"), deliberately excluding a bare "429" so an unrelated
+#       error that happens to mention an issue/PR number 429 is never
+#       misclassified as a rate limit (#194 review).
 #   Any other non-zero exit is treated as non-retryable and returned
 #   immediately with its real exit code, output, and no delay (401/404/422/etc).
 #
 #   A retryable attempt may set global $_WR_RETRY_AFTER (seconds) before
 #   returning non-zero, to honour a Retry-After/rate-limit hint; otherwise
-#   backoff is exponential: 2s, 4s, 8s, ... capped at 60s. Every sleep is
-#   scaled by $TALOS_RETRY_SLEEP_SCALE (default 1; tests set 0 for instant
-#   runs). Total attempts = limits.max_retries (default 5) plus the original
-#   try, i.e. up to 6 tries by default. --dry-run never reaches this helper:
-#   every verb returns before its first network call when $DRY_RUN = true.
-_RETRY_STDERR_PATTERN='rate[- ]limit|429|secondary rate limit|abuse detection|too many requests'
+#   backoff is exponential: 2s, 4s, 8s, ... Both are capped at 60s — an
+#   untrusted Retry-After header can never force an arbitrarily long sleep
+#   (#194 security). Every sleep is scaled by $TALOS_RETRY_SLEEP_SCALE
+#   (default 1; tests set 0 for instant runs) — the scale accepts decimals
+#   (e.g. 0.1), computed via awk since bash arithmetic is integer-only; a
+#   non-numeric scale is rejected with a warning and the default is used.
+#   Total attempts = limits.max_retries (default 5, must be a non-negative
+#   integer or the default is used) plus the original try, i.e. up to 6
+#   tries by default. --dry-run never reaches this helper: every verb
+#   returns before its first network call when $DRY_RUN = true.
+_RETRY_STDERR_PATTERN='HTTP 429|API rate limit exceeded|secondary rate limit|abuse detection|rate limited|too many requests'
 
 _with_retry() {
   local _wr_verb="$1"; shift
   local _wr_max _wr_scale _wr_attempt=0 _wr_wait _wr_out _wr_err _wr_rc _wr_err_text
   _wr_max="$(cfg limits.max_retries 5)"
+  case "$_wr_max" in
+    ''|*[!0-9]*)
+      printf 'pipeline-vcs: limits.max_retries must be a non-negative integer, got %s; using default 5\n' \
+        "$_wr_max" >&2
+      _wr_max=5
+      ;;
+  esac
   _wr_scale="${TALOS_RETRY_SLEEP_SCALE:-1}"
+  if ! printf '%s' "$_wr_scale" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
+    printf 'pipeline-vcs: TALOS_RETRY_SLEEP_SCALE must be a non-negative number, got %s; using default 1\n' \
+      "$_wr_scale" >&2
+    _wr_scale=1
+  fi
   while :; do
     _WR_RETRY_AFTER=""
+    _WR_RETRYABLE=""
     _wr_out="$(mktemp)"
     _wr_err="$(mktemp)"
     "$@" >"$_wr_out" 2>"$_wr_err"
@@ -325,7 +354,7 @@ _with_retry() {
       return 0
     fi
 
-    if printf '%s' "$_wr_err_text" | grep -qiE "$_RETRY_STDERR_PATTERN"; then
+    if [ -n "$_WR_RETRYABLE" ] || printf '%s' "$_wr_err_text" | grep -qiE "$_RETRY_STDERR_PATTERN"; then
       rm -f "$_wr_out" "$_wr_err"
       _wr_attempt=$((_wr_attempt + 1))
       if [ "$_wr_attempt" -gt "$_wr_max" ]; then
@@ -337,11 +366,11 @@ _with_retry() {
         _wr_wait="$_WR_RETRY_AFTER"
       else
         _wr_wait=$(( 2 ** _wr_attempt ))
-        [ "$_wr_wait" -gt 60 ] && _wr_wait=60
       fi
+      [ "$_wr_wait" -gt 60 ] && _wr_wait=60
       printf 'pipeline-vcs: %s: rate-limited, retry %s/%s in %ss\n' \
         "$_wr_verb" "$_wr_attempt" "$_wr_max" "$_wr_wait" >&2
-      sleep $(( _wr_wait * _wr_scale ))
+      sleep "$(awk -v w="$_wr_wait" -v s="$_wr_scale" 'BEGIN { printf "%.4f", w * s }')"
       continue
     fi
 
@@ -1899,10 +1928,10 @@ _github_api() {
   _ga_retry_after() {
     grep -i '^retry-after:' "$1" 2>/dev/null | head -1 | sed 's/[^0-9]*//g' | tr -d '[:space:]'
   }
-  # _ga_rate_limit_msg <status> <header-file> <verb> — the retryable-error
-  # message printed to stderr. Deliberately contains "429" so it matches
-  # $_RETRY_STDERR_PATTERN regardless of which branch (429 vs secondary
-  # limit) produced it.
+  # _ga_rate_limit_msg <status> <header-file> <verb> — the human-readable
+  # message printed to stderr for a retryable failure. Retryability itself is
+  # signalled to _with_retry via $_WR_RETRYABLE (set by the caller from the
+  # parsed status code, not from this text) — #194 review.
   _ga_rate_limit_msg() {
     local _status="$1" _hdr="$2" _verb="$3" _reset
     _reset="$(grep -i '^x-ratelimit-reset:' "$_hdr" 2>/dev/null \
@@ -1933,6 +1962,7 @@ _github_api() {
     _body="$(printf '%s' "$_full" | sed '$d')"
     if [ "${_status:-0}" -ge 300 ] 2>/dev/null; then
       if [ "$_status" = "429" ] || _ga_is_secondary_limit "$_status" "$_body"; then
+        _WR_RETRYABLE=1
         _WR_RETRY_AFTER="$(_ga_retry_after "$_hdr_file")"
         _ga_rate_limit_msg "$_status" "$_hdr_file" "$_VERB" >&2
         rm -f "$_hdr_file"
@@ -1969,6 +1999,7 @@ _github_api() {
     _body="$(printf '%s' "$_full" | sed '$d')"
     if [ "${_status:-0}" -ge 300 ] 2>/dev/null; then
       if [ "$_status" = "429" ] || _ga_is_secondary_limit "$_status" "$_body"; then
+        _WR_RETRYABLE=1
         _WR_RETRY_AFTER="$(_ga_retry_after "$_hdr_file")"
         _ga_rate_limit_msg "$_status" "$_hdr_file" "$_VERB" >&2
         rm -f "$_hdr_file"
@@ -2031,6 +2062,7 @@ _github_api() {
     printf '%s' "$_next" > "$_next_file"
     if [ "${_status:-0}" -ge 300 ] 2>/dev/null; then
       if [ "$_status" = "429" ] || _ga_is_secondary_limit "$_status" "$_body"; then
+        _WR_RETRYABLE=1
         _WR_RETRY_AFTER="$(_ga_retry_after "$_hdr_file")"
         _ga_rate_limit_msg "$_status" "$_hdr_file" "$_VERB (fetching $_u)" >&2
         rm -f "$_hdr_file"
@@ -2049,6 +2081,13 @@ _github_api() {
     local _gafp_all _gafp_body _gafp_next_file
     _gafp_all="[]"
     _gafp_next_file="$(mktemp)"
+    # Note (#194 security, non-blocking): unlike post-approval's $_pa_tmpfile,
+    # this file lives in a `local` variable inside a function that is always
+    # invoked via a command-substitution subshell -- the file's trap-EXIT
+    # convention doesn't apply cleanly here (an EXIT trap fires after the
+    # function has already returned and its locals have gone out of scope,
+    # which trips `set -u`). Cleanup stays explicit `rm -f` on every return
+    # path instead.
     while [ -n "$_gafp_url" ]; do
       : > "$_gafp_next_file"
       if ! _gafp_body="$(_with_retry "$_VERB" _ga_fetch_page_once "$_gafp_url" "$_gafp_next_file")"; then

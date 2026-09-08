@@ -518,6 +518,27 @@ assert_eq "2" "$_173_calls" "#173 github: gh invoked twice (rate-limited attempt
 rm -f "$GH_LOG.rlcount" talos.pipeline.json
 unset TALOS_RETRY_SLEEP_SCALE
 
+# ── #194 review: bare "429" in an unrelated gh error must NOT be retried ─────
+# A gh error naming issue/PR #429 (e.g. "issues/429/comments" or "issue 429")
+# is a completely different failure from a rate limit, but the pre-fix
+# $_RETRY_STDERR_PATTERN ('...|429|...') matched the bare digits and burned
+# the whole retry budget before surfacing a misleading "rate-limited" error.
+export TALOS_RETRY_SLEEP_SCALE=0
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"repo": "acme/widget"}}
+EOF
+: > "$GH_LOG"
+_194_errfile="$SANDBOX/gh-stderr-429.txt"
+out="$(GH_FAIL_STDERR='gh: api call to repos/acme/widget/issues/429/comments failed: HTTP 404: Not Found (issue 429)' \
+  bash "$VCS" list-issues 2>"$_194_errfile")"; rc=$?
+_194_err="$(cat "$_194_errfile")"
+assert_eq "1" "$rc" "#194 github: a bare-429 error is not swallowed by retry -- still exits 1"
+assert_not_contains "$_194_err" "retry" "#194 github: a bare-429 error is never treated as retryable"
+_194_calls="$(wc -l < "$GH_LOG" | tr -d ' ')"
+assert_eq "1" "$_194_calls" "#194 github: exactly one gh call -- no retries burned on a false-positive 429 match"
+rm -f talos.pipeline.json
+unset TALOS_RETRY_SLEEP_SCALE
+
 _171_gh_pr_p1="$(python3 -c "
 import json
 print(json.dumps([{'number': i, 'title': 't'+str(i), 'head': {'ref': 'b'+str(i)}, 'base': {'ref': 'main'}, 'labels': []} for i in range(1, 101)]))
