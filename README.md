@@ -300,6 +300,8 @@ All keys live in `talos.pipeline.json` (or `talos.pipeline.yml` if PyYAML is ins
 
 ### Hooks
 
+For a worked example wiring one shell script to both `hooks.pre_dispatch` and `hooks.post_stage`, see [One script, both hooks](docs/user-guide.md#one-script-both-hooks) in the user guide.
+
 `hooks.pre_dispatch` lets an external tool — a project-memory store, a cost budget, a style guide, anything — contribute context to a stage's prompt without Talos depending on it. Disabled by default.
 
 The configured command runs once per stage, before that stage's prompt is assembled, with this JSON on stdin (fields the caller doesn't know yet — e.g. `pr`/`files_hint` before a PR exists — are `null`/`[]` rather than omitted):
