@@ -683,6 +683,41 @@ issue cleanly. `branch` exists for projects where worktrees cause problems:
 If any of these applies, set `isolation: branch` and `max_parallel: 1`. The
 sequential constraint is the price of working in a single checkout.
 
+### Shared local state under `issues.max_parallel > 1` (#180)
+
+**What it does.** Under `isolation: worktree`, each concurrent issue gets its
+own working directory, but three pieces of state still live outside that
+per-issue isolation, in files/dirs shared by every stage of every issue in the
+same repo:
+
+- The notification thread map, `${PIPELINE_THREAD_STATE:-~/.talos/threads.json}`
+  -- every `pipeline-notify.sh` call across every concurrent issue reads,
+  updates, and rewrites the same file.
+- `git worktree add`/`remove` -- every worktree, regardless of which issue it
+  belongs to, is metadata inside the *same* repo's `.git` directory.
+- `tests/run-tests.sh`'s per-file result cache, `.talos/test-cache/` -- every
+  `-j`-parallel test-file worker in every concurrently-running verify writes
+  into the same cache directory.
+
+`scripts/pipeline-lock.sh` serializes all three with a portable, `mkdir`-based
+advisory lock (macOS ships no `flock(1)`, so this is deliberately not built on
+it -- the same lock code runs unmodified on macOS and Linux CI runners). If a
+lock can't be acquired within its timeout, the caller proceeds without it and
+prints one warning to stderr -- a stuck lock must never deadlock the pipeline.
+The test-cache write path additionally uses a write-to-temp-file-then-`mv`
+pattern rather than a lock: `mv` within one filesystem is atomic, so two
+`-j` workers racing to mark the same cache key done can't produce a corrupt
+half-written file.
+
+**What is deliberately left unlocked.** GitHub Project board updates
+(`pipeline-status.sh`) are remote and idempotent -- a lost update there just
+means a re-read picks up the latest state on the next call, not a corrupted
+local file. Locking it would add latency without fixing a real race.
+
+**You don't need to do anything.** This is on by default whenever
+`pipeline-lock.sh` is installed (`bash install.sh --global` ships it); no new
+config key exists for it.
+
 ### Worktree cleanup and the stale-worktree warning (`execution.worktree_warn_threshold`)
 
 **What it does.** Under `isolation: worktree` (the default), the developer and

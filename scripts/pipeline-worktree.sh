@@ -65,6 +65,25 @@ else
   cfg() { bash "$SCRIPT_DIR/pipeline-config.sh" "$@"; }
   echo "pipeline: config cache helper missing, falling back to per-call parsing" >&2
 fi
+# pipeline-lock.sh (#180): `git worktree add/remove` races on the same
+# repo's shared .git metadata when two stages run concurrently
+# (issues.max_parallel > 1) -- serialize remove/sweep bodies below. Guarded
+# like pipeline-cfg-cache.sh above: fall back to running unlocked with a
+# warning rather than failing a partial install outright.
+if [ -f "$SCRIPT_DIR/pipeline-lock.sh" ]; then
+  . "$SCRIPT_DIR/pipeline-lock.sh"
+else
+  with_lock() { shift 2; [ "${1:-}" = "--" ] && shift; "$@"; }
+  echo "pipeline: lock helper missing, worktree operations are unsynchronized" >&2
+fi
+
+# Lock is keyed on the repo's shared git dir (via --git-common-dir, which
+# resolves to the SAME path from any of that repo's worktrees) so concurrent
+# `remove`/`sweep` invocations from different worktree checkouts of the same
+# repo still serialize against each other, and different repos never share a
+# lock.
+_WT_GIT_COMMON_DIR="$(git rev-parse --git-common-dir 2>/dev/null || echo .git)"
+_WT_LOCK_RESOURCE="$_WT_GIT_COMMON_DIR/talos-worktree"
 
 verb="${1:-}"; shift || true
 
@@ -268,6 +287,111 @@ _stale_worktree_count() {
   printf '%d' "$count"
 }
 
+# _wt_remove_body <issue-number> -- the actual work of `remove`, run under
+# the repo-wide lock (#180) so a concurrent `remove`/`sweep` from another
+# stage can't race `git worktree remove`/`git branch -D` against this one.
+_wt_remove_body() {
+  n="${1:-}"
+  removed=0
+  while IFS=$'\t' read -r wt_path wt_branch wt_id; do
+    [ "$wt_id" = "$n" ] || continue
+    if _is_lane_home "$wt_path"; then
+      echo "pipeline-worktree: refusing to remove lane home $wt_path (.talos-lane-home present)"
+      continue
+    fi
+    if _is_self "$wt_path"; then
+      echo "pipeline-worktree: refusing to remove the current checkout ($wt_path) — inline mode implements in place; branch $wt_branch left alone"
+      continue
+    fi
+    if [ -d "$wt_path" ]; then
+      reason="$(_preserve_reason "$wt_path" "$wt_branch")"
+      if [ -n "$reason" ]; then
+        echo "pipeline-worktree: preserving worktree for issue #$wt_id ($wt_path, $wt_branch) — reason: $reason"
+        continue
+      fi
+    fi
+    git worktree remove --force "$wt_path" 2>/dev/null || true
+    # Branch is merged (PR completed) — force-delete; squash merges are not
+    # ancestors, so `-d` would refuse.
+    git branch -D "$wt_branch" 2>/dev/null || true
+    removed=$((removed + 1))
+    echo "pipeline-worktree: removed worktree for issue #$n ($wt_path, $wt_branch)"
+  done < <(_issue_worktrees)
+  git worktree prune 2>/dev/null || true
+  [ "$removed" -eq 0 ] && echo "pipeline-worktree: no worktree for issue #$n (already clean)"
+  exit 0
+}
+
+# _wt_sweep_body <keep-id>... -- the actual work of `sweep`, run under the
+# repo-wide lock (#180) for the same reason as _wt_remove_body.
+_wt_sweep_body() {
+  keep=" $* "   # space-delimited so we can match " <id> " exactly
+  # Multi-lane interlock: sweep is repo-wide, but per-issue worktrees belong to
+  # ONE lane (their issue id is only in that lane's queue). With several lanes
+  # sharing this repo, a sweep run from lane A deletes lane B's in-flight
+  # developer worktree. Lane homes are protected by .talos-lane-home; the
+  # disposable per-issue worktrees deliberately are not — they must stay
+  # removable by their OWN lane. So when more than one lane home exists, do
+  # nothing unless the operator explicitly opts in.
+  _lane_home_count=0
+  while IFS= read -r _p; do
+    [ -f "$_p/.talos-lane-home" ] && _lane_home_count=$((_lane_home_count + 1))
+  done < <(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0,10)}')
+  if [ "$_lane_home_count" -gt 1 ] && [ -z "${TALOS_SWEEP_ALL_LANES:-}" ]; then
+    echo "pipeline-worktree: $_lane_home_count lanes share this repo — skipping sweep (it is repo-wide and would delete another lane's in-flight worktree)."
+    echo "pipeline-worktree: per-issue 'remove <N>' is unaffected. To override: TALOS_SWEEP_ALL_LANES=1 pipeline-worktree.sh sweep ..."
+    git worktree prune 2>/dev/null || true
+    exit 0
+  fi
+  while IFS=$'\t' read -r wt_path wt_branch wt_id; do
+    case "$keep" in *" $wt_id "*) continue ;; esac
+    if _is_lane_home "$wt_path"; then
+      echo "pipeline-worktree: refusing to sweep lane home $wt_path (.talos-lane-home present)"
+      continue
+    fi
+    if _is_self "$wt_path"; then
+      echo "pipeline-worktree: refusing to sweep the current checkout ($wt_path)"
+      continue
+    fi
+    if [ ! -d "$wt_path" ]; then
+      git worktree remove --force "$wt_path" 2>/dev/null || true
+      echo "pipeline-worktree: reclaimed prunable worktree for issue #$wt_id ($wt_path)"
+      continue
+    fi
+    reason="$(_preserve_reason "$wt_path" "$wt_branch")"
+    if [ -n "$reason" ]; then
+      echo "pipeline-worktree: preserving worktree for issue #$wt_id ($wt_path, $wt_branch) — reason: $reason"
+      continue
+    fi
+    git worktree remove --force "$wt_path" 2>/dev/null || true
+    echo "pipeline-worktree: swept orphaned worktree for issue #$wt_id ($wt_path)"
+  done < <(_issue_worktrees)
+  while IFS=$'\t' read -r wt_path wt_branch; do
+    if _is_lane_home "$wt_path"; then
+      echo "pipeline-worktree: refusing to sweep lane home $wt_path (.talos-lane-home present)"
+      continue
+    fi
+    if _is_self "$wt_path"; then
+      echo "pipeline-worktree: refusing to sweep the current checkout ($wt_path)"
+      continue
+    fi
+    if [ ! -d "$wt_path" ]; then
+      git worktree remove --force "$wt_path" 2>/dev/null || true
+      echo "pipeline-worktree: reclaimed prunable harness worktree ($wt_path, $wt_branch)"
+      continue
+    fi
+    reason="$(_preserve_reason "$wt_path" "$wt_branch")"
+    if [ -n "$reason" ]; then
+      echo "pipeline-worktree: preserving harness worktree $wt_path ($wt_branch) — reason: $reason"
+      continue
+    fi
+    git worktree remove --force "$wt_path" 2>/dev/null || true
+    echo "pipeline-worktree: swept harness worktree ($wt_path, $wt_branch)"
+  done < <(_harness_worktrees)
+  git worktree prune 2>/dev/null || true
+  exit 0
+}
+
 case "$verb" in
   list)
     issue_listing="$(_issue_worktrees)"
@@ -282,107 +406,15 @@ case "$verb" in
     ;;
 
   remove)
-    n="${1:-}"
-    if [ -z "$n" ]; then
+    if [ -z "${1:-}" ]; then
       echo "usage: pipeline-worktree.sh remove <issue-number>" >&2
       exit 2
     fi
-    removed=0
-    while IFS=$'\t' read -r wt_path wt_branch wt_id; do
-      [ "$wt_id" = "$n" ] || continue
-      if _is_lane_home "$wt_path"; then
-        echo "pipeline-worktree: refusing to remove lane home $wt_path (.talos-lane-home present)"
-        continue
-      fi
-      if _is_self "$wt_path"; then
-        echo "pipeline-worktree: refusing to remove the current checkout ($wt_path) — inline mode implements in place; branch $wt_branch left alone"
-        continue
-      fi
-      if [ -d "$wt_path" ]; then
-        reason="$(_preserve_reason "$wt_path" "$wt_branch")"
-        if [ -n "$reason" ]; then
-          echo "pipeline-worktree: preserving worktree for issue #$wt_id ($wt_path, $wt_branch) — reason: $reason"
-          continue
-        fi
-      fi
-      git worktree remove --force "$wt_path" 2>/dev/null || true
-      # Branch is merged (PR completed) — force-delete; squash merges are not
-      # ancestors, so `-d` would refuse.
-      git branch -D "$wt_branch" 2>/dev/null || true
-      removed=$((removed + 1))
-      echo "pipeline-worktree: removed worktree for issue #$n ($wt_path, $wt_branch)"
-    done < <(_issue_worktrees)
-    git worktree prune 2>/dev/null || true
-    [ "$removed" -eq 0 ] && echo "pipeline-worktree: no worktree for issue #$n (already clean)"
-    exit 0
+    with_lock "$_WT_LOCK_RESOURCE" 10 -- _wt_remove_body "$@"
     ;;
 
   sweep)
-    keep=" $* "   # space-delimited so we can match " <id> " exactly
-    # Multi-lane interlock: sweep is repo-wide, but per-issue worktrees belong to
-    # ONE lane (their issue id is only in that lane's queue). With several lanes
-    # sharing this repo, a sweep run from lane A deletes lane B's in-flight
-    # developer worktree. Lane homes are protected by .talos-lane-home; the
-    # disposable per-issue worktrees deliberately are not — they must stay
-    # removable by their OWN lane. So when more than one lane home exists, do
-    # nothing unless the operator explicitly opts in.
-    _lane_home_count=0
-    while IFS= read -r _p; do
-      [ -f "$_p/.talos-lane-home" ] && _lane_home_count=$((_lane_home_count + 1))
-    done < <(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0,10)}')
-    if [ "$_lane_home_count" -gt 1 ] && [ -z "${TALOS_SWEEP_ALL_LANES:-}" ]; then
-      echo "pipeline-worktree: $_lane_home_count lanes share this repo — skipping sweep (it is repo-wide and would delete another lane's in-flight worktree)."
-      echo "pipeline-worktree: per-issue 'remove <N>' is unaffected. To override: TALOS_SWEEP_ALL_LANES=1 pipeline-worktree.sh sweep ..."
-      git worktree prune 2>/dev/null || true
-      exit 0
-    fi
-    while IFS=$'\t' read -r wt_path wt_branch wt_id; do
-      case "$keep" in *" $wt_id "*) continue ;; esac
-      if _is_lane_home "$wt_path"; then
-        echo "pipeline-worktree: refusing to sweep lane home $wt_path (.talos-lane-home present)"
-        continue
-      fi
-      if _is_self "$wt_path"; then
-        echo "pipeline-worktree: refusing to sweep the current checkout ($wt_path)"
-        continue
-      fi
-      if [ ! -d "$wt_path" ]; then
-        git worktree remove --force "$wt_path" 2>/dev/null || true
-        echo "pipeline-worktree: reclaimed prunable worktree for issue #$wt_id ($wt_path)"
-        continue
-      fi
-      reason="$(_preserve_reason "$wt_path" "$wt_branch")"
-      if [ -n "$reason" ]; then
-        echo "pipeline-worktree: preserving worktree for issue #$wt_id ($wt_path, $wt_branch) — reason: $reason"
-        continue
-      fi
-      git worktree remove --force "$wt_path" 2>/dev/null || true
-      echo "pipeline-worktree: swept orphaned worktree for issue #$wt_id ($wt_path)"
-    done < <(_issue_worktrees)
-    while IFS=$'\t' read -r wt_path wt_branch; do
-      if _is_lane_home "$wt_path"; then
-        echo "pipeline-worktree: refusing to sweep lane home $wt_path (.talos-lane-home present)"
-        continue
-      fi
-      if _is_self "$wt_path"; then
-        echo "pipeline-worktree: refusing to sweep the current checkout ($wt_path)"
-        continue
-      fi
-      if [ ! -d "$wt_path" ]; then
-        git worktree remove --force "$wt_path" 2>/dev/null || true
-        echo "pipeline-worktree: reclaimed prunable harness worktree ($wt_path, $wt_branch)"
-        continue
-      fi
-      reason="$(_preserve_reason "$wt_path" "$wt_branch")"
-      if [ -n "$reason" ]; then
-        echo "pipeline-worktree: preserving harness worktree $wt_path ($wt_branch) — reason: $reason"
-        continue
-      fi
-      git worktree remove --force "$wt_path" 2>/dev/null || true
-      echo "pipeline-worktree: swept harness worktree ($wt_path, $wt_branch)"
-    done < <(_harness_worktrees)
-    git worktree prune 2>/dev/null || true
-    exit 0
+    with_lock "$_WT_LOCK_RESOURCE" 10 -- _wt_sweep_body "$@"
     ;;
 
   *)

@@ -215,6 +215,40 @@ out_h2="$(bash "$FDH/tests/run-tests.sh" --no-cache 2>&1)"     # run 2: --no-cac
 assert_not_contains "$out_h2" "CACHED" "H: --no-cache bypasses an existing cache hit"
 assert_eq 2 "$(wc -l < "$CTR_H" | tr -d ' ')" "H: --no-cache re-executed the file"
 
+# ── Test H2 (#180): parallel cache writes to the SAME key don't corrupt it ───
+# Several -j workers finishing at once and marking the SAME cache key done
+# (byte-identical test files hash to the same key) used to write directly to
+# "$CACHE_DIR/$key" with a plain `:>` truncate -- now a temp file + atomic
+# `mv`. Named mutation: revert to the direct truncate write -- flaky under
+# load, but reliably reproducible by running many byte-identical files under
+# high concurrency many times; this test's -j value and file count are
+# chosen to make the race window as wide as possible.
+FDH2="$SANDBOX/h2"
+build_min_fixture "$FDH2"
+for i in 1 2 3 4 5 6 7 8; do
+  write_stub "$FDH2" "test-dup-$i.sh" "exit 0"   # identical content -> identical cache key
+done
+
+out_h2_1="$(bash "$FDH2/tests/run-tests.sh" -j 8 2>&1)"; rc_h2_1=$?
+assert_exit_code 0 "$rc_h2_1" "H2: first parallel run of 8 identical files exits 0"
+
+# The shared key's cache file must exist, be exactly one file (mv never
+# leaves a stray .tmp.* behind, win or lose the race), and be a plain empty
+# marker -- not truncated garbage from an interleaved partial write.
+_h2_cache_dir="$FDH2/.talos/test-cache"
+_h2_entries="$(find "$_h2_cache_dir" -type f ! -name '.tmp.*' 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq 1 "$_h2_entries" "H2: exactly one cache entry for 8 identical files (same key)"
+_h2_tmp_leftover="$(find "$_h2_cache_dir" -name '.tmp.*' 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq 0 "$_h2_tmp_leftover" "H2: no leftover .tmp.* files after the atomic rename"
+_h2_key_file="$(find "$_h2_cache_dir" -type f ! -name '.tmp.*' 2>/dev/null | head -1)"
+assert_eq 0 "$(wc -c < "$_h2_key_file" | tr -d ' ')" "H2: cache entry is an empty marker file, not corrupt"
+
+# A second run must see the (uncorrupted) cache and report every file CACHED.
+out_h2_2="$(bash "$FDH2/tests/run-tests.sh" -j 8 2>&1)"; rc_h2_2=$?
+assert_exit_code 0 "$rc_h2_2" "H2: second run exits 0"
+_h2_cached_count="$(printf '%s\n' "$out_h2_2" | grep -c 'CACHED tests/test-dup-')"
+assert_eq 8 "$_h2_cached_count" "H2: second run reports all 8 identical files CACHED"
+
 # ── Test I: a failing file's full output is shown under --quiet and normal ───
 # Named mutation: --quiet suppresses output for failing files too -- the
 # marker string would be missing from the quiet-mode run's output.

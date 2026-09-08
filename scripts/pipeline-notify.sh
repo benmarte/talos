@@ -77,6 +77,17 @@ else
   cfg() { bash "$SCRIPT_DIR/pipeline-config.sh" "$@"; }
   echo "pipeline: config cache helper missing, falling back to per-call parsing" >&2
 fi
+# pipeline-lock.sh (#180): portable mkdir-based locking so concurrent
+# stages (issues.max_parallel > 1) don't lose entries doing a
+# read-modify-write on threads.json at the same time. Guarded the same way
+# as pipeline-cfg-cache.sh above: a partial install may not ship it yet, so
+# fall back to running unlocked with a warning instead of failing outright.
+if [ -f "$SCRIPT_DIR/pipeline-lock.sh" ]; then
+  . "$SCRIPT_DIR/pipeline-lock.sh"
+else
+  with_lock() { shift 2; [ "${1:-}" = "--" ] && shift; "$@"; }
+  echo "pipeline: lock helper missing, thread-state writes are unsynchronized" >&2
+fi
 
 EVENT="${1:-info}"
 REF="${2:-}"
@@ -333,8 +344,16 @@ STATE_KEY="${REPO_SLUG}:${THREAD_KEY}"
 
 # Python helper for thread anchor state. Uses env vars STATE_FILE and STATE_KEY
 # to avoid quoting issues. Never crashes on corrupt/missing state files.
+#
+# Locked (#180): each call is its own read-whole-file/modify/write-whole-file
+# python3 process, so two concurrent stages (issues.max_parallel > 1) racing
+# on the same STATE_FILE can each load the pre-update state and then clobber
+# each other's write, losing an entry. with_lock serializes every get/set/
+# clear against STATE_FILE (reads too, so a reader never sees a half-written
+# file); on timeout it proceeds unlocked with a warning rather than block
+# the pipeline.
 _thread_state() {
-  STATE_FILE="$STATE_FILE" STATE_KEY="$STATE_KEY" python3 - "$@" <<'PYEOF'
+  STATE_FILE="$STATE_FILE" STATE_KEY="$STATE_KEY" with_lock "$STATE_FILE" 5 -- python3 - "$@" <<'PYEOF'
 import json, sys, os
 
 cmd   = sys.argv[1]          # get | set | clear

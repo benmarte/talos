@@ -246,6 +246,12 @@ compute_deps_hash() {
   done | LC_ALL=C sort | _sha256
 }
 
+# (#180) mkdir -p is idempotent and race-safe on its own -- POSIX mkdir(2)
+# fails closed with EEXIST if another concurrent invocation (issues.
+# max_parallel > 1, or two -j workers of the SAME invocation both starting
+# cold) creates CACHE_DIR first; either way the directory ends up existing
+# and neither caller needs to know which one actually created it. No lock
+# needed here.
 if [ "$CACHE_ENABLED" -eq 1 ]; then
   DEPS_HASH="$(compute_deps_hash)"
   mkdir -p "$CACHE_DIR" 2>/dev/null
@@ -498,7 +504,19 @@ run_test_file() {
   printf 'RAN' > "$statusfile"
   if bash "$t" > "$logfile" 2>&1; then
     printf '0' > "$exitfile"
-    [ "$CACHE_ENABLED" -eq 1 ] && : > "$CACHE_DIR/$key"
+    if [ "$CACHE_ENABLED" -eq 1 ]; then
+      # (#180) Write-then-rename instead of writing "$CACHE_DIR/$key"
+      # directly: two -j workers racing to mark the SAME key done (e.g.
+      # --repeat re-running one file, or two byte-identical test files)
+      # would otherwise interleave two `>` truncate-opens of one path. A
+      # temp file in the same directory + `mv` is atomic (rename(2) never
+      # produces a partial/corrupt destination) and mv within one
+      # filesystem never needs a lock.
+      _cache_tmp="$(mktemp "$CACHE_DIR/.tmp.XXXXXX" 2>/dev/null)" || _cache_tmp=""
+      if [ -n "$_cache_tmp" ]; then
+        mv -f "$_cache_tmp" "$CACHE_DIR/$key" 2>/dev/null || rm -f "$_cache_tmp" 2>/dev/null
+      fi
+    fi
   else
     printf '1' > "$exitfile"
   fi
