@@ -16,6 +16,7 @@
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox
+use_stubs
 
 CFG_SH="$TALOS_ROOT/scripts/pipeline-config.sh"
 
@@ -147,6 +148,25 @@ cat > talos.pipeline.json <<'EOF'
 EOF
 err10="$(bash "$CFG_SH" --dump 2>&1 1>/dev/null)"
 assert_eq "" "$err10" "10: a config using only known keys produces zero warnings"
+rm talos.pipeline.json
+
+# ---- 11: the warning reaches a real cache consumer, not just pipeline- -----
+# config.sh run directly (regression: pipeline-cfg-cache.sh's cfg() populated
+# its cache with `pipeline-config.sh --dump ... 2>/dev/null`, discarding this
+# exact warning for every script that sources it -- pipeline-vcs.sh,
+# pipeline-notify.sh, pipeline-status.sh, pipeline-agent.sh,
+# pipeline-worktree.sh). pipeline-vcs.sh --dry-run is stub-free (no gh/curl
+# calls happen in dry-run mode) and cheap.
+VCS_SH="$TALOS_ROOT/scripts/pipeline-vcs.sh"
+cat > talos.pipeline.json <<'EOF'
+{"limts": {"max_fix_attempts": 3}}
+EOF
+err11="$(bash "$VCS_SH" --dry-run merge-pr 9 2>&1 1>/dev/null)"
+assert_contains "$err11" "unknown config key 'limts.max_fix_attempts'" \
+  "11: a real cfg()-caching consumer (pipeline-vcs.sh) surfaces the unknown-key warning (#176 regression)"
+_count11="$(printf '%s\n' "$err11" | grep -c "unknown config key 'limts.max_fix_attempts'")"
+assert_eq "1" "$_count11" \
+  "11: the warning appears exactly once through a real cache consumer"
 rm talos.pipeline.json
 
 finish
