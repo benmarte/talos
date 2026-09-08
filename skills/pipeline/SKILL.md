@@ -111,6 +111,12 @@ Store these for the run:
 - VERIFY_CI_WAIT_S (`verify.ci_wait_s`, default `900`): seconds QA waits in the
   foreground, under `qa_mode: ci`, for `merge.required_checks` to go green
   before failing closed.
+- VERIFY_TIMEOUT_MS (`verify.timeout_ms`, default `600000`): milliseconds the
+  developer and QA prompts substitute as `<VERIFY_TIMEOUT_MS>` into the
+  foreground rule placed next to every verify and CI-wait instruction (#205)
+  — the explicit timeout a stage must pass to its verify command instead of
+  backgrounding it. A non-integer or non-positive config value is rejected by
+  `pipeline-config.sh` (stderr warning, falls back to this default).
 - Each role toggle: ROLE_VALIDATOR, ROLE_PM, ROLE_QA, ROLE_REVIEWER, ROLE_SECURITY, ROLE_DOCS (all default true)
 - ROLE_PLANNER (`roles.planner`, default `false`) — off by default; zero behavior change when absent or false
 - ROLE_PM_SKIP_WHEN_SPEC_PRESENT (`roles.pm_skip_when_spec_present`, default
@@ -151,6 +157,7 @@ Store these for the run:
   itself resolved to `local`, never a vacuous `ci` pass)
 - `verify.targeted`: `true`
 - `verify.ci_wait_s`: `900`
+- `verify.timeout_ms`: `600000`
 - `issues.label_filter`: pipeline:ready (an additional label requirement; see Step 2)
 - `issues.max_parallel`: 1
 - `limits.max_fix_attempts`: 3
@@ -678,6 +685,7 @@ Comment header: <HEADER>
 Comment templates dir: <COMMENTS_TMPL_DIR>
 Comments enabled: <COMMENTS_ENABLED>
 Targeted iteration: <VERIFY_TARGETED>
+Verify timeout: <VERIFY_TIMEOUT_MS> ms
 
 Before running any verify: command, export these as shell variables so verify
 scripts can assert they are running in the correct environment:
@@ -701,6 +709,7 @@ Workflow:
       add/extend an e2e test that drives the feature in a browser, following
       the repo's existing e2e pattern. If no e2e harness exists, state that
       in the PR body instead of silently skipping.
+Foreground rule: run verify commands in the foreground with an explicit timeout of <VERIFY_TIMEOUT_MS> ms; never use background execution, `&`, `nohup`, `disown`, or sleep-polling; never end your turn while a verify command is running.
 5. Verify commands — two mutually exclusive modes, chosen by Targeted
    iteration:
    - If `true` (default): while iterating, run only the tests that cover
@@ -754,6 +763,7 @@ Comment header: <HEADER>
 Comment templates dir: <COMMENTS_TMPL_DIR>
 Comments enabled: <COMMENTS_ENABLED>
 Targeted iteration: <VERIFY_TARGETED>
+Verify timeout: <VERIFY_TIMEOUT_MS> ms
 
 Note: TALOS_WORKTREE_PATH is not meaningful in branch isolation mode — skip or ignore it.
 
@@ -765,6 +775,7 @@ Workflow:
 2. `git checkout -b fix/issue-<N>-<slug> origin/<BASE_BRANCH>`
 3. Implement. Match surrounding code style. Stay focused on acceptance criteria.
 4. Write tests — not optional, and not limited to unit tests (same requirements as worktree mode).
+Foreground rule: run verify commands in the foreground with an explicit timeout of <VERIFY_TIMEOUT_MS> ms; never use background execution, `&`, `nohup`, `disown`, or sleep-polling; never end your turn while a verify command is running.
 5. Verify commands — two mutually exclusive modes, chosen by Targeted
    iteration:
    - If `true` (default): while iterating, run only the tests that cover
@@ -826,6 +837,17 @@ After developer returns:
        same way a normal fix would; run the targeted verify tests; then
        push. Either way, re-run `pr-mergeable <PR>` afterward and only
        proceed to Step 3d once it reports `MERGEABLE` (or `UNKNOWN`).
+- **No PR, and the final message says it is waiting on a background job**
+  (e.g. it backgrounded verify with `&`/`nohup`/`disown` and ended its turn
+  to "wait for the notification" — Rule 17 (#205)): resend the developer the
+  exact same task once, prefixed with the foreground rule: "Foreground rule:
+  run verify commands in the foreground with an explicit timeout of
+  <VERIFY_TIMEOUT_MS> ms; never use background execution, `&`, `nohup`,
+  `disown`, or sleep-polling; never end your turn while a verify command is
+  running." If the resend also returns without a PR, do not resend again —
+  record the attempt (`bash scripts/pipeline-vcs.sh record-attempt <N>
+  developer` — no `--pr` yet, per Step 3) and fall through to **Blocked**
+  below.
 - **Blocked:**
   1. Board → "Blocked": `bash scripts/pipeline-status.sh <N> "Blocked"`
   2. Relay findings: `bash scripts/pipeline-notify.sh developer "#<N>" "<what failed>" <N>`
@@ -851,6 +873,7 @@ Comments enabled: <COMMENTS_ENABLED>
 QA mode: <VERIFY_QA_MODE> (ci | local)
 Required checks: <MERGE_REQUIRED_CHECKS — one per line, or "none">
 CI wait budget: <VERIFY_CI_WAIT_S> seconds
+Verify timeout: <VERIFY_TIMEOUT_MS> ms
 
 Before running any verify: command, export these as shell variables so verify
 scripts can assert they are running in the correct environment:
@@ -863,18 +886,28 @@ scripts can assert they are running in the correct environment:
    the **Fail:** procedure below (labels + qa-verdict comment) with reason
    "PR conflicts with base; no CI run will be scheduled" — do not wait on CI
    or run verify. `MERGEABLE`/`UNKNOWN` (exit 0/2): continue below.
+Foreground rule: run the verify list or the CI-wait poll below in the foreground with an explicit timeout of <VERIFY_TIMEOUT_MS> ms; never use background execution, `&`, `nohup`, `disown`, or sleep-polling; never end your turn while a verify command is running.
 3. QA mode above is already resolved: `ci` with an empty/absent Required
    checks list is reported here as `local`, not `ci` — trusting CI as the
    oracle for zero required checks would let QA pass vacuously, so that
    combination fails closed to `local` before you ever see it.
    If QA mode is `ci`: do NOT run `verify:` or the test suite locally — CI
-   already runs it on every push. Instead, poll `bash scripts/pipeline-vcs.sh
-   pr-checks <PR_NUMBER>` in the foreground (no background process, no long
-   sleep loop) until every check named in Required checks reports a passing
-   state, or until the CI wait budget elapses. Treat any required check that
-   is failing, missing, or still pending when the budget elapses as FAIL —
-   fail closed, never assume a missing check would have passed. Spend the
-   time this saves driving acceptance criteria and edge cases instead.
+   already runs it on every push. Instead, run this single bounded foreground
+   command and wait for it to finish before continuing — it blocks in one
+   Bash call and returns only once every check named in `merge.required_checks`
+   passes or the CI wait budget elapses, so there is nothing left to improvise.
+   `pipeline-vcs.sh pr-checks-required` (unlike plain `pipeline-vcs.sh
+   pr-checks`) is already scoped to only the required checks, exits 2 while
+   any of them is still pending or missing (keep polling), exits 1 the moment
+   one has definitively failed (stop early, no need to wait out the budget),
+   and exits 0 only once every one of them passes:
+   `SECONDS=0; until bash scripts/pipeline-vcs.sh pr-checks-required <PR_NUMBER>; rc=$?; [ "$rc" -ne 2 ] || [ "$SECONDS" -ge <VERIFY_CI_WAIT_S> ]; do sleep 30; done; test "$rc" -eq 0`
+   The final `test "$rc" -eq 0` is what your Bash call's exit status reflects:
+   FAIL whenever the loop stopped for any reason other than every required
+   check passing -- an explicit failure (`rc=1`) or the wait budget elapsing
+   while a check was still pending or missing (`rc=2` at timeout) -- fail
+   closed, never assume a missing check would have passed. Spend the time
+   this saves driving acceptance criteria and edge cases instead.
    If QA mode is `local`: run the full `verify:` list exactly once (as before).
    Prefer summary output for verify commands (e.g. `--quiet` for Talos's own
    suite, or the project's equivalent) -- quote only failures, never paste
@@ -1183,9 +1216,13 @@ Note: this gate does NOT catch a lone PR that overclaims its deliverables (e.g.,
 items with `Closes #N` and no siblings). Detecting that requires a ledger; nothing in the
 pipeline ticks one in VCS mode today.
 
-Check CI: `bash scripts/pipeline-vcs.sh pr-checks <PR_NUMBER>`
+Check CI: `bash scripts/pipeline-vcs.sh pr-checks-required <PR_NUMBER>` -- scoped to
+`merge.required_checks` only (#205), so an unrelated non-required check does not
+block a merge that every required check has already cleared. Exit 0 means every
+required check passed; any non-zero exit (1 = a required check failed, 2 = one is
+still pending or missing) means do not merge yet.
 
-If failing: CI may be flaky — retry it, bounded to 2 re-runs per head SHA:
+If failing (non-zero exit): CI may be flaky — retry it, bounded to 2 re-runs per head SHA:
 1. Count existing `<!-- talos:ci-rerun <HEAD_SHA> -->` marker comments on the PR.
 2. If fewer than 2: `bash scripts/pipeline-vcs.sh rerun-ci <PR_NUMBER>`, then post
    a PR comment containing the marker `<!-- talos:ci-rerun <HEAD_SHA> -->` and a

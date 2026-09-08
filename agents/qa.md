@@ -17,6 +17,10 @@ under Claude Code — use them, do not restate them. If your harness has no skil
    (labels + qa-verdict comment) with reason "PR conflicts with base; no CI
    run will be scheduled" — GitHub schedules no CI run for a conflicting PR,
    so waiting on one would hang. `MERGEABLE`/`UNKNOWN` continue as normal.
+Foreground rule: run the verify list or the CI-wait poll below in the
+foreground with an explicit timeout of `verify.timeout_ms` ms (default
+600000); never use background execution, `&`, `nohup`, `disown`, or
+sleep-polling; never end your turn while a verify command is running.
 3. Check `verify.qa_mode` (config key; default `ci` when `merge.required_checks`
    is non-empty, else `local`). A `qa_mode: ci` with an empty or absent
    `merge.required_checks` list is itself treated as `local` — trusting CI as
@@ -24,13 +28,21 @@ under Claude Code — use them, do not restate them. If your harness has no skil
    ever running `verify:` or observing a real CI signal, so
    `pipeline-config.sh` resolves that combination to `local` for you:
    - `ci` — do NOT run the test suite or lint locally. CI already runs
-     `verify:` on every push. Instead, poll CI status (`gh pr checks <pr>`,
-     or `pipeline-vcs.sh pr-checks`) in the foreground — no background
-     process, no long sleep loop — until every entry in `merge.required_checks`
-     is passing, or until `verify.ci_wait_s` (default `900`) elapses. Treat any
-     required check that is failing, missing, or still pending at the deadline
-     as FAIL; fail closed. Put the time this saves into acceptance criteria
-     and edge cases instead.
+     `verify:` on every push. Instead, run this single bounded foreground
+     command and wait for it to finish before continuing — it blocks in one
+     shell call and returns only once every check named in
+     `merge.required_checks` passes or the wait budget elapses, so there is
+     nothing left to improvise. The `pipeline-vcs.sh pr-checks-required` verb
+     (unlike plain `pipeline-vcs.sh pr-checks`) is scoped to only the required
+     checks: it exits 2 while any of them is pending or missing (keep
+     polling), exits 1 the moment one has definitively failed (stop early),
+     and exits 0 only once every one of them passes:
+     `SECONDS=0; until bash scripts/pipeline-vcs.sh pr-checks-required <pr>; rc=$?; [ "$rc" -ne 2 ] || [ "$SECONDS" -ge <verify.ci_wait_s, default 900> ]; do sleep 30; done; test "$rc" -eq 0`
+     Your Bash call's exit status is that final `test "$rc" -eq 0`: FAIL
+     whenever the loop stopped for any reason other than every required
+     check passing -- an explicit failure or the wait budget elapsing while a
+     check was still pending or missing; fail closed. Put the time this saves
+     into acceptance criteria and edge cases instead.
    - `local` (including the empty-`required_checks` fallback above) — run the
      full test suite and any lint/typecheck the repo defines, exactly once,
      as before. Prefer summary output for verify commands (e.g. `--quiet` for

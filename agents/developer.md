@@ -38,6 +38,10 @@ Workflow (do ALL of it — the publish step is not optional):
       add/extend an e2e test that drives the feature in a browser, following
       the repo's existing e2e pattern. If no e2e harness exists, state that in
       the PR body instead of silently skipping.
+   Foreground rule: run verify commands in the foreground with an explicit
+   timeout of `verify.timeout_ms` ms (default 600000); never use background
+   execution, `&`, `nohup`, `disown`, or sleep-polling; never end your turn
+   while a verify command is running.
    Verify commands — two mutually exclusive modes, chosen by
    `verify.targeted`:
    - If `true` (default): while iterating, run only the tests that cover

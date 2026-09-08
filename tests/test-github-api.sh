@@ -1294,6 +1294,70 @@ _g_pafail_log="$(cat "$CURL_LOG")"
 assert_not_contains "$_g_pafail_log" $'\t{"body"' \
   "#172 github-api: failed duplicate-check page posts nothing"
 
+# ── pr-checks-required: scoped to merge.required_checks only (#205 review) ───
+# github-api reads GET pulls/<n> for the head SHA, then GET
+# commits/<sha>/check-runs; a check run is pass only when status=completed
+# and conclusion=success.
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "github-api", "repo": "acme/widget"}, "merge": {"required_checks": ["build", "test"]}}
+EOF
+_pcr_sha="dd11223344556677889900aabbccddeeff11223"
+
+: > "$CURL_LOG"; : > "$CURL_QUEUE"; : > "$CURL_LINK_QUEUE"
+printf '%s\n' \
+  "{\"head\":{\"sha\":\"$_pcr_sha\"}}" \
+  '{"check_runs":[{"name":"build","status":"completed","conclusion":"success"},{"name":"test","status":"completed","conclusion":"success"},{"name":"lint","status":"completed","conclusion":"failure"}]}' \
+  > "$CURL_QUEUE"
+bash "$VCS" pr-checks-required 9 >/dev/null 2>pcr_err.log; rc=$?
+assert_eq "0" "$rc" \
+  "github-api pr-checks-required: exits 0 when every required check passes, ignoring a non-required failure (#205)"
+
+: > "$CURL_LOG"; : > "$CURL_QUEUE"; : > "$CURL_LINK_QUEUE"
+printf '%s\n' \
+  "{\"head\":{\"sha\":\"$_pcr_sha\"}}" \
+  '{"check_runs":[{"name":"build","status":"completed","conclusion":"success"}]}' \
+  > "$CURL_QUEUE"
+bash "$VCS" pr-checks-required 9 >/dev/null 2>pcr_err.log; rc=$?
+assert_eq "2" "$rc" \
+  "github-api pr-checks-required: exits 2 when a required check is missing from check-runs (#205)"
+assert_contains "$(cat pcr_err.log)" "test" \
+  "github-api pr-checks-required: missing-check message names the absent required check (#205)"
+
+: > "$CURL_LOG"; : > "$CURL_QUEUE"; : > "$CURL_LINK_QUEUE"
+printf '%s\n' \
+  "{\"head\":{\"sha\":\"$_pcr_sha\"}}" \
+  '{"check_runs":[{"name":"build","status":"completed","conclusion":"success"},{"name":"test","status":"in_progress"}]}' \
+  > "$CURL_QUEUE"
+bash "$VCS" pr-checks-required 9 >/dev/null 2>pcr_err.log; rc=$?
+assert_eq "2" "$rc" \
+  "github-api pr-checks-required: exits 2 while a required check is still in_progress (#205)"
+
+: > "$CURL_LOG"; : > "$CURL_QUEUE"; : > "$CURL_LINK_QUEUE"
+printf '%s\n' \
+  "{\"head\":{\"sha\":\"$_pcr_sha\"}}" \
+  '{"check_runs":[{"name":"build","status":"completed","conclusion":"success"},{"name":"test","status":"completed","conclusion":"failure"}]}' \
+  > "$CURL_QUEUE"
+bash "$VCS" pr-checks-required 9 >/dev/null 2>pcr_err.log; rc=$?
+assert_eq "1" "$rc" \
+  "github-api pr-checks-required: exits 1 when a required check has failed (#205)"
+rm -f pcr_err.log
+
+# Empty merge.required_checks must never pass vacuously, and makes no curl
+# calls at all -- there is nothing to check against.
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "github-api", "repo": "acme/widget"}}
+EOF
+: > "$CURL_LOG"; : > "$CURL_QUEUE"; : > "$CURL_LINK_QUEUE"
+out="$(bash "$VCS" pr-checks-required 9 2>&1)"; rc=$?
+assert_eq "1" "$rc" \
+  "github-api pr-checks-required: exits 1 (never vacuously passes) when merge.required_checks is empty/absent (#205)"
+assert_contains "$out" "empty" \
+  "github-api pr-checks-required: empty-config message explains why it did not pass (#205)"
+assert_eq "" "$(cat "$CURL_LOG")" \
+  "github-api pr-checks-required: empty merge.required_checks makes no curl calls (#205)"
+
+rm talos.pipeline.json
+
 unset GITHUB_TOKEN
 
 finish

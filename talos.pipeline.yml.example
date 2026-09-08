@@ -113,7 +113,13 @@ verify:
 #   above exactly once before its final commit. Set false to make it run
 #   the full list on every iteration instead.
 # verify.ci_wait_s (default 900): seconds QA waits in the foreground, under
-#   qa_mode: ci, for merge.required_checks to go green before failing closed.
+#   qa_mode: ci, for merge.required_checks to go green before failing closed
+#   (via pr-checks-required, scoped to just those checks). Must be a positive
+#   integer.
+# verify.timeout_ms (default 600000): milliseconds substituted into the
+#   foreground rule placed next to every verify and CI-wait instruction in
+#   the developer/QA prompts -- the explicit timeout a stage passes to its
+#   verify command instead of backgrounding it. Must be a positive integer.
 
 # ── Merge settings ────────────────────────────────────────────────────────────
 merge:

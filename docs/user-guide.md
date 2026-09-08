@@ -496,7 +496,7 @@ epic flagged for missing boxes still auto-closes once a human ticks them.
 The planner role is off by default — it adds API calls and is most useful
 when you regularly work with multi-task epics.
 
-### Running `verify:` once per PR, and QA trusting CI (`verify.qa_mode`, `verify.targeted`, `verify.ci_wait_s`)
+### Running `verify:` once per PR, and QA trusting CI (`verify.qa_mode`, `verify.targeted`, `verify.ci_wait_s`, `verify.timeout_ms`)
 
 The full `verify:` suite is expensive to run repeatedly, and by default CI
 (`merge.required_checks`) already runs it on every push. Talos avoids paying
@@ -519,13 +519,27 @@ for the same suite run more than it needs to:
   in the background, or via a sleep-poll loop — and never zero times.
 - **QA** (`verify.qa_mode`, default `ci` when `merge.required_checks` is
   non-empty, else `local`): under `ci`, QA does not re-run `verify:` at all —
-  it polls `pipeline-vcs.sh pr-checks` in the foreground, bounded by
-  `verify.ci_wait_s` (default `900` seconds), until every check named in
-  `merge.required_checks` is passing. Any check that is failing, missing, or
-  still pending when the budget elapses is treated as a QA **FAIL** — this is
-  fail-closed by design, never assume a missing check would have passed. The
-  budget QA saves by not re-running the suite goes into driving acceptance
-  criteria and edge cases instead. Under `local` (the default when no
+  it polls `pipeline-vcs.sh pr-checks-required` in the foreground, bounded by
+  `verify.ci_wait_s` (default `900` seconds; must be a positive integer,
+  rejected otherwise with a one-line stderr warning and a fallback to the
+  default -- it is interpolated unquoted into the CI-wait loop's shell test,
+  same rule as `verify.timeout_ms` below), until every check named in
+  `merge.required_checks` is passing. Unlike plain `pipeline-vcs.sh
+  pr-checks` (which reports every check the provider knows about),
+  `pr-checks-required` reads `merge.required_checks` itself and reports only
+  those: exit 0 once all of them pass, exit 2 while any is still pending or
+  missing (keep polling), exit 1 the instant one has definitively failed (stop
+  early, no need to wait out the budget), and exit 1 -- never a vacuous pass --
+  when `merge.required_checks` is empty. This closes two gaps in the earlier
+  aggregate-everything poll: an unrelated non-required check stuck pending
+  could no longer burn the whole wait budget, and a required check the
+  provider hadn't scheduled yet could no longer read as a false PASS just
+  because every check it *had* reported was green. Any required check that is
+  failing, missing, or still pending when the budget elapses is treated as a
+  QA **FAIL** -- this is fail-closed by design, never assume a missing check
+  would have passed. The budget QA saves by not re-running the suite goes
+  into driving acceptance criteria and edge cases instead. Under `local` (the
+  default when no
   `merge.required_checks` are configured, so there is no CI oracle to trust),
   QA runs the full `verify:` list once itself, same as before. An explicit
   `verify.qa_mode: ci` combined with an empty or absent
@@ -538,6 +552,18 @@ for the same suite run more than it needs to:
   the diff (`pipeline-vcs.sh diff-pr`) and CI status
   (`pipeline-vcs.sh pr-checks`) — this was already true in practice and is
   now stated explicitly in each profile.
+- **`verify.timeout_ms`** (default `600000`): the explicit timeout, in
+  milliseconds, that the developer and QA prompts substitute into a one-line
+  foreground rule placed within a few lines of every verify and CI-wait
+  instruction — never background execution (`&`, `nohup`, `disown`), never
+  sleep-polling, never end the turn while a verify command or the CI-wait
+  poll is running. This exists because developers backgrounded the verify
+  suite and stalled waiting for its own notification on three separate runs,
+  and QA did the same with its `pr-checks` poll under `qa_mode: ci` — Rule 17
+  already forbade it in prose, hundreds of lines from the decision point, and
+  agents missed it. Must be a positive integer; a non-integer or
+  non-positive value is rejected by `pipeline-config.sh` (one-line warning on
+  stderr, falls back to the default).
 
 Set `verify.qa_mode: local` explicitly if you want QA to always re-run the
 suite itself regardless of `merge.required_checks` — for example, if your CI

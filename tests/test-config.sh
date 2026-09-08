@@ -113,6 +113,65 @@ assert_eq "pytest -q" "$(bash "$CFG_SH" verify "")" \
   "verify dict form still returns its commands list for the plain verify key (#195)"
 rm talos.pipeline.json
 
+# ── verify.timeout_ms (#205): default, explicit override, non-integer rejection ──
+assert_eq "600000" "$(bash "$CFG_SH" verify.timeout_ms 600000)" \
+  "verify.timeout_ms defaults to 600000 when absent (#205)"
+
+cat > talos.pipeline.json <<'EOF'
+{"verify": {"timeout_ms": 120000}}
+EOF
+assert_eq "120000" "$(bash "$CFG_SH" verify.timeout_ms 600000)" \
+  "explicit verify.timeout_ms overrides the 600000 default (#205)"
+rm talos.pipeline.json
+
+cat > talos.pipeline.json <<'EOF'
+{"verify": {"timeout_ms": "soon"}}
+EOF
+assert_eq "600000" "$(bash "$CFG_SH" verify.timeout_ms 600000)" \
+  "non-integer verify.timeout_ms falls back to the default (#205)"
+timeout_ms_err="$(bash "$CFG_SH" verify.timeout_ms 600000 2>&1 >/dev/null)"
+assert_contains "$timeout_ms_err" "must be a positive integer" \
+  "non-integer verify.timeout_ms warns on stderr (#205)"
+rm talos.pipeline.json
+
+cat > talos.pipeline.json <<'EOF'
+{"verify": {"timeout_ms": 0}}
+EOF
+assert_eq "600000" "$(bash "$CFG_SH" verify.timeout_ms 600000)" \
+  "non-positive verify.timeout_ms falls back to the default (#205)"
+rm talos.pipeline.json
+
+# ── verify.ci_wait_s (#205 security follow-up): default, explicit override, ──
+# non-integer/non-positive rejection -- mirrors verify.timeout_ms exactly,
+# because ci_wait_s is interpolated unquoted into a literal agent-executed
+# shell test (`[ "$SECONDS" -ge <VERIFY_CI_WAIT_S> ]`).
+assert_eq "900" "$(bash "$CFG_SH" verify.ci_wait_s 900)" \
+  "verify.ci_wait_s defaults to 900 when absent (#205)"
+
+cat > talos.pipeline.json <<'EOF'
+{"verify": {"ci_wait_s": 120}}
+EOF
+assert_eq "120" "$(bash "$CFG_SH" verify.ci_wait_s 900)" \
+  "explicit verify.ci_wait_s overrides the 900 default (#205)"
+rm talos.pipeline.json
+
+cat > talos.pipeline.json <<'EOF'
+{"verify": {"ci_wait_s": "soon; rm -rf /"}}
+EOF
+assert_eq "900" "$(bash "$CFG_SH" verify.ci_wait_s 900)" \
+  "non-integer verify.ci_wait_s (incl. shell metacharacters) falls back to the default (#205)"
+ci_wait_s_err="$(bash "$CFG_SH" verify.ci_wait_s 900 2>&1 >/dev/null)"
+assert_contains "$ci_wait_s_err" "must be a positive integer" \
+  "non-integer verify.ci_wait_s warns on stderr (#205)"
+rm talos.pipeline.json
+
+cat > talos.pipeline.json <<'EOF'
+{"verify": {"ci_wait_s": 0}}
+EOF
+assert_eq "900" "$(bash "$CFG_SH" verify.ci_wait_s 900)" \
+  "non-positive verify.ci_wait_s falls back to the default (#205)"
+rm talos.pipeline.json
+
 cat > talos.pipeline.json <<'EOF'
 {"merge": {"method": "rebase"}}
 EOF
@@ -135,6 +194,87 @@ cat > talos.pipeline.json <<'EOF'
 EOF
 assert_eq "auto" "$(bash "$CFG_SH" roles.docs_mode auto)" \
   "roles.docs_mode: absent key falls back to the caller default even with sibling roles.* keys set (#200)"
+rm talos.pipeline.json
+
+# ── --dump / single-key parity (#169 invariant, #212 review follow-up) ──────
+# The header comment on --dump promises "a lookup against this dump is
+# byte-identical to calling this script for that key directly". _dump_get
+# parses --dump's NUL-delimited output the same way pipeline-cfg-cache.sh's
+# cfg() does; a key absent from the dump means "apply the caller's own
+# default", exactly like a missing key on the single-key path.
+_dump_get() {
+  local _key="$1" _dump_file="$2" _k _v
+  while IFS= read -r -d '' _k && IFS= read -r -d '' _v; do
+    if [ "$_k" = "$_key" ]; then
+      printf '%s' "$_v"
+      return 0
+    fi
+  done < "$_dump_file"
+  return 1
+}
+
+# Baseline parity: a valid config with several already-covered special
+# cases (verify dict-form, verify.qa_mode, plain scalars) -- --dump's output
+# for each key equals the single-key lookup for that key, unchanged by this
+# PR.
+cat > talos.pipeline.json <<'EOF'
+{
+  "merge": {"method": "rebase", "required_checks": ["test"]},
+  "board": {"enabled": true, "project_number": 7},
+  "verify": {"commands": ["pytest -q"], "qa_mode": "local", "ci_wait_s": 120, "timeout_ms": 120000}
+}
+EOF
+dump_baseline="$SANDBOX/dump-baseline"
+bash "$CFG_SH" --dump > "$dump_baseline" 2>/dev/null
+for k in merge.method board.enabled board.project_number verify verify.qa_mode \
+         verify.ci_wait_s verify.timeout_ms; do
+  single="$(bash "$CFG_SH" "$k" "")"
+  dumped="$(_dump_get "$k" "$dump_baseline")" || dumped=""
+  assert_eq "$single" "$dumped" \
+    "--dump matches single-key lookup for $k on a valid config (#169 parity)"
+done
+rm talos.pipeline.json
+
+# Injection parity: verify.ci_wait_s carrying shell metacharacters and
+# verify.timeout_ms carrying a non-positive value must resolve to their
+# defaults -- and warn on stderr -- identically on both paths. Before this
+# fix, --dump (what cfg() actually reads) returned the raw unvalidated
+# value with no warning, reopening the injection surface the single-key
+# path closed.
+cat > talos.pipeline.json <<'EOF'
+{"verify": {"ci_wait_s": "; rm -rf /", "timeout_ms": -5}}
+EOF
+
+single_ci_wait_s="$(bash "$CFG_SH" verify.ci_wait_s 900)"
+assert_eq "900" "$single_ci_wait_s" \
+  "single-key verify.ci_wait_s falls back to the default for an injection payload (#212)"
+single_ci_wait_s_err="$(bash "$CFG_SH" verify.ci_wait_s 900 2>&1 >/dev/null)"
+assert_contains "$single_ci_wait_s_err" "must be a positive integer" \
+  "single-key verify.ci_wait_s warns on stderr for an injection payload (#212)"
+
+single_timeout_ms="$(bash "$CFG_SH" verify.timeout_ms 600000)"
+assert_eq "600000" "$single_timeout_ms" \
+  "single-key verify.timeout_ms falls back to the default for a non-positive value (#212)"
+single_timeout_ms_err="$(bash "$CFG_SH" verify.timeout_ms 600000 2>&1 >/dev/null)"
+assert_contains "$single_timeout_ms_err" "must be a positive integer" \
+  "single-key verify.timeout_ms warns on stderr for a non-positive value (#212)"
+
+dump_injection="$SANDBOX/dump-injection"
+dump_injection_err="$SANDBOX/dump-injection.stderr"
+bash "$CFG_SH" --dump > "$dump_injection" 2>"$dump_injection_err"
+
+dump_ci_wait_s="$(_dump_get verify.ci_wait_s "$dump_injection")" || dump_ci_wait_s="900"
+assert_eq "900" "$dump_ci_wait_s" \
+  "--dump verify.ci_wait_s falls back to the default for an injection payload, same as the single-key path (#212)"
+
+dump_timeout_ms="$(_dump_get verify.timeout_ms "$dump_injection")" || dump_timeout_ms="600000"
+assert_eq "600000" "$dump_timeout_ms" \
+  "--dump verify.timeout_ms falls back to the default for a non-positive value, same as the single-key path (#212)"
+
+assert_contains "$(cat "$dump_injection_err")" "verify.ci_wait_s must be a positive integer" \
+  "--dump warns on stderr for verify.ci_wait_s, same as the single-key path (#212)"
+assert_contains "$(cat "$dump_injection_err")" "verify.timeout_ms must be a positive integer" \
+  "--dump warns on stderr for verify.timeout_ms, same as the single-key path (#212)"
 rm talos.pipeline.json
 
 finish

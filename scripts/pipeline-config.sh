@@ -32,9 +32,11 @@ set -u
 # exactly like the single-key path below does. Same file-lookup order, same
 # YAML-then-JSON precedence, and the same "verify" (dict-form → commands
 # list) / "verify.qa_mode" (merge.required_checks-derived default, fail-
-# closed downgrade) special cases as the single-key path, so a lookup
-# against this dump is byte-identical to calling this script for that key
-# directly. Purely additive: an early exit, does not touch anything below.
+# closed downgrade) / "verify.timeout_ms" / "verify.ci_wait_s" (positive-
+# integer validation, fail-closed to the caller's default) special cases as
+# the single-key path, so a lookup against this dump is byte-identical to
+# calling this script for that key directly. Purely additive: an early
+# exit, does not touch anything below.
 if [ "${1:-}" = "--dump" ]; then
   _DCFG="${PIPELINE_CONFIG:-}"
   if [ -z "$_DCFG" ]; then
@@ -114,6 +116,42 @@ if _qa_mode == "ci" and not _has_required_checks:
     )
     _qa_mode = "local"
 flat["verify.qa_mode"] = _qa_mode
+
+# verify.timeout_ms / verify.ci_wait_s (#205 review follow-up): this dump is
+# what cfg() answers every lookup from (pipeline-cfg-cache.sh), so it must
+# mirror the single-key path's positive-integer validation below or a
+# non-integer/injectable config value would reach a caller unvalidated,
+# reopening the shell-injection surface that validation closed on the
+# direct path. This block and the single-key path below run as separate
+# python3 processes, so the validation can't literally be one shared
+# function call -- instead both define the identical _validate_int_key(key,
+# value) helper (same units, same fail-closed-to-absent behaviour, same
+# one-line stderr warning) so the two paths stay byte-identical for these
+# keys.
+def _validate_int_key(key, value):
+    unit = {"verify.timeout_ms": "milliseconds", "verify.ci_wait_s": "seconds"}.get(key)
+    if unit is None or value is None:
+        return value
+    try:
+        iv = int(value)
+        if iv <= 0:
+            raise ValueError
+        return iv
+    except (TypeError, ValueError):
+        sys.stderr.write(
+            "pipeline-config: %s must be a positive integer (%s) -- got: %r "
+            "-- using default\n" % (key, unit, value)
+        )
+        return None
+
+for _int_key in ("verify.timeout_ms", "verify.ci_wait_s"):
+    if _int_key in flat:
+        _validated = _validate_int_key(_int_key, flat[_int_key])
+        if _validated is None:
+            # Same as an absent key: the caller applies its own default.
+            del flat[_int_key]
+        else:
+            flat[_int_key] = _validated
 
 out = sys.stdout.buffer
 for k, v in flat.items():
@@ -195,8 +233,9 @@ except Exception:
 value = walk(cfg, key.split("."))
 
 # "verify" is historically a flat list of shell commands. Also accept a dict
-# form (verify: {commands: [...], qa_mode: ..., targeted: ..., ci_wait_s: ...})
-# so verify.qa_mode / verify.targeted / verify.ci_wait_s can be read with the
+# form (verify: {commands: [...], qa_mode: ..., targeted: ..., ci_wait_s: ...,
+# timeout_ms: ...}) so verify.qa_mode / verify.targeted / verify.ci_wait_s /
+# verify.timeout_ms can be read with the
 # normal dot-path lookup below without disturbing what plain "verify" returns
 # to existing callers (a newline-joined command list).
 if key == "verify" and isinstance(value, dict):
@@ -224,6 +263,38 @@ if key == "verify.qa_mode":
             "pass QA vacuously with no required checks to poll)\n"
         )
         value = "local"
+
+# verify.timeout_ms (#205) is the explicit foreground timeout, in
+# milliseconds, that developer/QA prompts substitute into their verify and
+# CI-wait instructions. verify.ci_wait_s (#205 security follow-up) is
+# interpolated unquoted into a literal, agent-executed shell test
+# (`[ "$SECONDS" -ge <VERIFY_CI_WAIT_S> ]`) in the QA CI-wait loop. Both
+# must be a positive integer -- a non-integer or non-positive config value
+# (or one carrying shell metacharacters) is a config error, not a value an
+# agent can act on, so fail closed to the caller-supplied default (600000 /
+# 900 respectively, from Step 0) and warn once on stderr rather than
+# handing a subagent a garbage timeout or an injectable string. Mirrors the
+# --dump path above: both define the identical _validate_int_key(key,
+# value) helper (same units, same fail-closed-to-absent behaviour, same
+# one-line stderr warning) so the two paths stay byte-identical for these
+# keys.
+def _validate_int_key(key, value):
+    unit = {"verify.timeout_ms": "milliseconds", "verify.ci_wait_s": "seconds"}.get(key)
+    if unit is None or value is None:
+        return value
+    try:
+        iv = int(value)
+        if iv <= 0:
+            raise ValueError
+        return iv
+    except (TypeError, ValueError):
+        sys.stderr.write(
+            "pipeline-config: %s must be a positive integer (%s) -- got: %r "
+            "-- using default\n" % (key, unit, value)
+        )
+        return None
+
+value = _validate_int_key(key, value)
 
 if value is None:
     print(default, end="")
