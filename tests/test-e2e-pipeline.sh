@@ -554,7 +554,7 @@ has_changelog = 'CHANGELOG.md' in paths
 has_readme = 'README.md' in paths
 has_docs_dir = any(p.startswith('docs/') for p in paths)
 cond1 = has_changelog and (has_readme or has_docs_dir)
-allowed = ('scripts/', 'tests/', 'agents/', 'skills/', 'templates/')
+allowed = ('scripts/', 'tests/')
 non_changelog = [p for p in paths if p != 'CHANGELOG.md']
 cond2 = has_changelog and bool(non_changelog) and all(p.startswith(allowed) for p in non_changelog)
 sys.exit(0 if (cond1 or cond2) else 1)
@@ -611,6 +611,18 @@ assert_contains "$log" "filtered context" \
   "e2e: dispatched-under-auto docs run is flagged as filtered context, not full diff (#200)"
 assert_contains "$log" "pr edit 9 --add-label docs:done" \
   "e2e: dispatched docs run still reaches docs:done (#200)"
+
+# (b2) #211 review fix: the auto-skip prefix list is exactly scripts/** and
+#      tests/** -- agents/** does NOT qualify, so a PR touching agents/x.md
+#      plus CHANGELOG.md must still dispatch docs (the gate must not match).
+: > "$GH_LOG"
+simulate_stage_3e_phase1 9 "$(printf 'agents/x.md\nCHANGELOG.md')"
+log="$(cat "$GH_LOG")"
+docs_calls="$(grep -c "Docs:\*\* posted" <<<"$log" || true)"
+assert_eq "1" "$docs_calls" \
+  "e2e: #211 review fix -- agents/x.md + CHANGELOG.md dispatches docs (agents/ is not in the auto-skip list)"
+assert_contains "$log" "filtered context" \
+  "e2e: agents/x.md + CHANGELOG.md dispatched-under-auto docs run is filtered context, not the auto-stamp path"
 
 # (c) roles.docs_mode: always -> docs dispatches regardless of files, even
 #     when the same diff would have gated in auto mode.

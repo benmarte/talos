@@ -122,12 +122,12 @@ Store these for the run:
   `roles.docs` is also `true`. `auto`: Step 3e Phase 1 checks the PR's changed
   paths (`pr-files`) before dispatching docs; when the developer's own diff
   already covers CHANGELOG + README/docs, or touches only
-  `scripts/**`/`tests/**`/`agents/**`/`skills/**`/`templates/**` with a
-  CHANGELOG entry present, no docs subagent is dispatched at all — `docs:done`
-  is stamped directly. When docs does dispatch under `auto` (the gate did not
-  match), its prompt receives only the changed doc-relevant paths and the
-  CHANGELOG hunk, not the full PR diff. `always`: restores the pre-#200
-  behavior — docs always dispatches, always reads the full diff via `diff-pr`.
+  `scripts/**`/`tests/**` with a CHANGELOG entry present, no docs subagent is
+  dispatched at all — `docs:done` is stamped directly. When docs does dispatch
+  under `auto` (the gate did not match), its prompt receives only the changed
+  doc-relevant paths and the CHANGELOG hunk, not the full PR diff. `always`:
+  restores the pre-#200 behavior — docs always dispatches, always reads the
+  full diff via `diff-pr`.
 - COMMENTS_ENABLED, COMMENTS_HEADER_TPL, COMMENTS_TMPL_DIR
 - AGENTS_RUNNER (`agents.runner`, default `claude`), AGENTS_SUBAGENTS (`agents.subagents`, default `auto`) — select the harness execution mode (see Harness compatibility)
 - FILE_SOURCE_PATH (`vcs.file.source.path`, for file mode)
@@ -907,15 +907,19 @@ scripts/pipeline-vcs.sh diff-pr <PR_NUMBER>` ``.
 `auto` (default) — check the developer's own diff before deciding whether docs
 needs to run at all:
 1. `CHANGED_PATHS="$(bash scripts/pipeline-vcs.sh pr-files <PR_NUMBER>)"` — one
-   changed path per line.
+   changed path per line. If `pr-files` exits non-zero (e.g. a failed page
+   during pagination), treat the gate as **not matching** and fall through to
+   step 4 below — dispatch the docs subagent with the full diff. Fail-safe:
+   a fetch failure must never be mistaken for "nothing to check" and silently
+   skip docs.
 2. The gate matches (no docs subagent needed) when EITHER:
    - `CHANGELOG.md` is among `CHANGED_PATHS` AND (`README.md` is also among
      them, OR at least one path starts with `docs/`), OR
    - every path in `CHANGED_PATHS` other than `CHANGELOG.md` itself starts
-     with `scripts/`, `tests/`, `agents/`, `skills/`, or `templates/`, AND
-     `CHANGELOG.md` is among them (at least one non-`CHANGELOG.md` path must
-     be present — a PR touching only `CHANGELOG.md` falls through to the
-     first bullet, which requires `README.md`/`docs/**` too).
+     with `scripts/` or `tests/`, AND `CHANGELOG.md` is among them (at least
+     one non-`CHANGELOG.md` path must be present — a PR touching only
+     `CHANGELOG.md` falls through to the first bullet, which requires
+     `README.md`/`docs/**` too).
 3. Gate matches: dispatch **no** docs subagent. Stamp the approval directly —
    write "docs verified by developer diff (docs_mode: auto)" to a body file and:
    `bash scripts/pipeline-vcs.sh post-approval <PR_NUMBER> docs --body-file <body-file>`

@@ -84,8 +84,8 @@ progress as issue/PR comments and threaded Slack/Discord messages along the way.
   [README](../README.md#config-reference)).
 - **Token-lean docs** — when the developer's own diff already touches
   `CHANGELOG.md` plus `README.md`/`docs/**`, or touches only
-  `scripts/**`/`tests/**`/`agents/**`/`skills/**`/`templates/**` with a
-  CHANGELOG entry present, Step 3e Phase 1 skips the docs subagent entirely
+  `scripts/**`/`tests/**` with a CHANGELOG entry present, Step 3e Phase 1
+  skips the docs subagent entirely
   and stamps `docs:done` directly; otherwise docs still dispatches but reads
   only the changed doc paths and the CHANGELOG hunk instead of the full PR
   diff (`roles.docs_mode`, default `auto` — see

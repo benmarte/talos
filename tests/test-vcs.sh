@@ -104,6 +104,32 @@ assert_eq "$(printf 'scripts/x.sh\ntests/test-x.sh\nCHANGELOG.md')" "$out" \
 out="$(bash "$VCS" --dry-run pr-files 9)"
 assert_contains "$out" "[dry-run]" "pr-files: --dry-run prints a marker, not a real call"
 
+# ── #211 review: pr-files must paginate past 100 changed files ───────────────
+# `gh pr view --json files` (used until #211) never paginated past its first
+# 100 entries. pr-files now uses `gh api --paginate` + _gh_paginate_merge (the
+# #171 pattern) so a PR touching >100 files returns every path, not just the
+# first page -- proves pipeline-vcs.sh's own merge logic, not just that the
+# stub echoes back a pre-merged list.
+_211_gh_pf_p1="$(python3 -c "
+import json
+print(json.dumps([{'filename': 'scripts/file' + str(i) + '.sh'} for i in range(1, 101)]))
+")"
+_211_gh_pf_p2="$(python3 -c "
+import json
+print(json.dumps([{'filename': 'scripts/file' + str(i) + '.sh'} for i in range(101, 150)] + [{'filename': 'CHANGELOG.md'}]))
+")"
+out="$(STUB_GH_PR_FILES_RAW="${_211_gh_pf_p1}${_211_gh_pf_p2}" bash "$VCS" pr-files 9)"; rc=$?
+_211_gh_pf_count="$(printf '%s\n' "$out" | grep -c '.')"
+assert_eq "0" "$rc" "#211 github: pr-files exits 0 for a 150-file PR spread over 2 pages"
+assert_eq "150" "$_211_gh_pf_count" "#211 github: pr-files returns all 150 paths across pages, not just page 1"
+assert_contains "$out" "scripts/file149.sh" "#211 github: pr-files includes the last file from page 2"
+assert_contains "$out" "CHANGELOG.md" "#211 github: pr-files includes CHANGELOG.md from page 2"
+
+# A failed page must exit non-zero and print NO partial list.
+out="$(STUB_GH_API_FAIL=pr-files bash "$VCS" pr-files 9 2>/dev/null)"; rc=$?
+assert_eq "1" "$rc" "#211 github: pr-files exits non-zero when a page fails"
+assert_eq "" "$out" "#211 github: pr-files prints no partial list on a failed page"
+
 # ── check-pr-files: forbidden-files gate ──────────────────────────────────────
 out="$(bash "$VCS" check-pr-files 9)"; rc=$?
 assert_eq "0" "$rc" "clean PR passes forbidden-files check"
