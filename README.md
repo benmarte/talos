@@ -39,7 +39,7 @@ GitHub Issues (or a local markdown checklist in file mode) serve as the state ma
 issue: pipeline:ready
   └─ validator ──→ pipeline:confirmed
        ├─ planner (optional) ──→ sub-issues created (epic) OR pass-through (non-epic)
-       └─ pm ─────→ pipeline:dev
+       └─ pm (skipped when body already has acceptance criteria, or spec:ready) ──→ pipeline:dev
             └─ developer (worktree) ──→ PR: pipeline:review
                  ├─ qa ─────────────→ qa:pass
                  ├─ reviewer ────────→ review:approved
@@ -261,6 +261,7 @@ All keys live in `talos.pipeline.json` (or `talos.pipeline.yml` if PyYAML is ins
 | `execution.worktree_warn_threshold` | `10` | Non-active worktree count (issue-pattern `fix\|feat/issue-*` plus Claude Code harness `worktree-agent-*`, excluding lane homes and the current checkout) above which `pipeline-worktree.sh list` prints a `pipeline-worktree: WARNING: <N> stale worktrees exceed threshold <T>` line. Step 5 (end of run) relays that line via `pipeline-notify.sh info` when present, and says nothing when the count is at or under the threshold. This is a visibility signal only — it does not change what `sweep` removes. |
 | `roles.validator` | `true` | Phase-1 gate: confirms issue is real |
 | `roles.pm` | `true` | Writes implementation spec |
+| `roles.pm_skip_when_spec_present` | `true` | Skips spawning a PM subagent for a `pipeline:confirmed` issue whose body already IS a usable spec — an "acceptance criteria" heading (`## Acceptance criteria` or `**Acceptance criteria**`, case-insensitive) followed by at least one `- [ ]`/`- [x]` item, or the `spec:ready` label. When it fires, the orchestrator posts `**PM:** skipped, issue body is the spec` and advances straight to `pipeline:dev`; the developer's prompt says the spec is the issue body instead of pointing at a PM comment. Set to `false` to always run PM on `pipeline:confirmed` issues, ignoring this shortcut. Has no effect when `roles.pm` is `false` (PM never runs either way). Detection is `pipeline-vcs.sh has-spec <n>` (GitHub only — `github`/`github-api`). |
 | `roles.qa` | `true` | Verifies PR satisfies acceptance criteria |
 | `roles.reviewer` | `true` | Code-quality review |
 | `roles.security` | `true` | Security review |

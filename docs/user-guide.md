@@ -73,8 +73,15 @@ progress as issue/PR comments and threaded Slack/Discord messages along the way.
   worktrees, and reports stale blocked work.
 - **Backlog controls** — `p0`/`p1`/`p2` priority labels order dispatch;
   `skip-qa` (human-applied) bypasses review gates for docs-only/emergency
-  changes (CI and forbidden-files still enforced); flaky CI is retried up to
-  2× per head SHA before waiting on a human.
+  changes (CI and forbidden-files still enforced); `spec:ready`
+  (human-applied) force-skips the PM stage for an issue whose body is already
+  a usable spec; flaky CI is retried up to 2× per head SHA before waiting on a
+  human.
+- **Token-lean PM skip** — when an issue's body already has an "acceptance
+  criteria" heading with a checklist item (or carries `spec:ready`), the
+  orchestrator skips spawning a PM subagent entirely and advances straight to
+  `pipeline:dev` (`roles.pm_skip_when_spec_present`, default `true` — see
+  [README](../README.md#config-reference)).
 - **Offline test suite** — 140+ assertions, zero credentials needed, CI on
   Ubuntu + macOS.
 

@@ -9,6 +9,7 @@ echo "Bootstrapping pipeline labels in $REPO"
 labels=(
   "pipeline:ready|0e8a16|Queued for the pipeline — validator picks it up"
   "pipeline:confirmed|1d76db|Validated as real & in-scope — PM writes the spec"
+  "spec:ready|0e8a16|Human-applied: issue body is already a usable spec — force-skips the PM stage"
   "pipeline:dev|5319e7|Spec ready — developer implements + opens PR"
   "pipeline:review|fbca04|PR open — QA then reviewer/security/docs"
   "pipeline:approved|0e8a16|All stages passed — orchestrator merges when CI is green"

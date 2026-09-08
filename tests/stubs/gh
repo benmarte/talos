@@ -209,6 +209,21 @@ print(json.dumps(d[:int(os.environ['LIMIT'])]))
     # Override STUB_EPIC_BODY (default: no checkboxes).
     # NOTE: must come BEFORE the generic "issue view" pattern.
     printf '%s\n' "${STUB_EPIC_BODY:-No checkboxes here.}" ;;
+  "issue view "*"--json title,body,labels,comments"*)
+    # Used by view-issue (and has-spec, which calls it internally, #199).
+    # Override STUB_ISSUE_BODY (default: "stub body") and
+    # STUB_ISSUE_LABELS_JSON (default: "[]"). Built via python so a multi-line
+    # STUB_ISSUE_BODY is JSON-escaped correctly.
+    # NOTE: must come BEFORE the generic "issue view" pattern.
+    TITLE="${STUB_ISSUE_TITLE:-Fix login crash}" \
+    BODY="${STUB_ISSUE_BODY:-stub body}" \
+    LABELS_JSON="${STUB_ISSUE_LABELS_JSON:-[]}" \
+    python3 -c "
+import json, os
+labels = json.loads(os.environ['LABELS_JSON'])
+print(json.dumps({'title': os.environ['TITLE'], 'body': os.environ['BODY'],
+                   'labels': labels, 'comments': []}))
+" ;;
   "issue view "*)
     printf '{"title":"%s","body":"stub body","labels":[],"comments":[]}\n' \
       "${STUB_ISSUE_TITLE:-Fix login crash}" ;;
