@@ -137,6 +137,21 @@
 #                               pipeline:blocked (default: 3)
 #   limits.max_total_dispatches absolute ceiling on total developer dispatches
 #                               per issue — never resets (default: 8)
+#   limits.max_retries          max retries per network call after a rate-limit
+#                               / transient error, on top of the original try
+#                               (default: 5, so up to 6 total attempts). Applies
+#                               to every network verb in every adapter via the
+#                               shared _with_retry helper (#173). Backoff:
+#                               Retry-After header when the transport supplies
+#                               one, else exponential starting at 2s, doubling
+#                               each attempt, capped at 60s. Retried: HTTP 429;
+#                               GitHub 403 secondary-rate-limit/abuse-detection
+#                               bodies; gh/glab/az CLI errors whose stderr
+#                               matches a rate-limit pattern. Not retried: 401,
+#                               404, 422, and any other non-matching error —
+#                               those fail immediately with today's behaviour.
+#                               TALOS_RETRY_SLEEP_SCALE (default 1) scales every
+#                               sleep; set to 0 in tests for instant runs.
 #
 # --dry-run: print the underlying CLI command instead of running it.
 #            For file mode: describe the edit without applying it.
@@ -253,6 +268,90 @@ _run() {
   "$@"
 }
 
+# ── Retry-with-backoff (#173) ─────────────────────────────────────────────────
+# Single point of truth for retry/backoff — the only place this logic lives.
+# Every network-facing verb in every adapter routes through it:
+#   - _github:     the `gh`   shadow function defined at the top of _github()
+#   - _gitlab:     the `glab` shadow function defined at the top of _gitlab()
+#   - _azure:      the `az`   shadow function defined at the top of _azure()
+#   - _github_api: _ga_req, _ga_diff_req, _ga_fetch_all_pages, via their
+#                  *_once single-attempt helpers
+# _file has no network calls and is deliberately not wired up.
+#
+# Usage: _with_retry <verb-label> <cmd...>
+#   Runs <cmd...> once, with its stdout and stderr fully captured (never
+#   streamed live) — a retried attempt's output is entirely suppressed, only
+#   the final attempt (the one that succeeds, exhausts retries, or fails
+#   non-retryably) ever reaches the real stdout/stderr.
+#
+#   Retryability is decided by one generic check: does the captured stderr
+#   match $_RETRY_STDERR_PATTERN?
+#     - gh/glab/az shadow functions: the CLI's own stderr on a rate-limited
+#       call (gh: "API rate limit exceeded" / secondary rate limit message;
+#       glab/az: documented at their shadow-function definitions — best
+#       effort, no repo fixture reproduces their real bodies today).
+#     - curl-based *_once helpers print a matching message themselves (via
+#       _ga_rate_limit_msg) whenever the parsed HTTP status is 429, or 403
+#       with a secondary-rate-limit/abuse-detection body.
+#   Any other non-zero exit is treated as non-retryable and returned
+#   immediately with its real exit code, output, and no delay (401/404/422/etc).
+#
+#   A retryable attempt may set global $_WR_RETRY_AFTER (seconds) before
+#   returning non-zero, to honour a Retry-After/rate-limit hint; otherwise
+#   backoff is exponential: 2s, 4s, 8s, ... capped at 60s. Every sleep is
+#   scaled by $TALOS_RETRY_SLEEP_SCALE (default 1; tests set 0 for instant
+#   runs). Total attempts = limits.max_retries (default 5) plus the original
+#   try, i.e. up to 6 tries by default. --dry-run never reaches this helper:
+#   every verb returns before its first network call when $DRY_RUN = true.
+_RETRY_STDERR_PATTERN='rate[- ]limit|429|secondary rate limit|abuse detection|too many requests'
+
+_with_retry() {
+  local _wr_verb="$1"; shift
+  local _wr_max _wr_scale _wr_attempt=0 _wr_wait _wr_out _wr_err _wr_rc _wr_err_text
+  _wr_max="$(cfg limits.max_retries 5)"
+  _wr_scale="${TALOS_RETRY_SLEEP_SCALE:-1}"
+  while :; do
+    _WR_RETRY_AFTER=""
+    _wr_out="$(mktemp)"
+    _wr_err="$(mktemp)"
+    "$@" >"$_wr_out" 2>"$_wr_err"
+    _wr_rc=$?
+    _wr_err_text="$(cat "$_wr_err")"
+
+    if [ "$_wr_rc" -eq 0 ]; then
+      cat "$_wr_out"
+      [ -n "$_wr_err_text" ] && printf '%s\n' "$_wr_err_text" >&2
+      rm -f "$_wr_out" "$_wr_err"
+      return 0
+    fi
+
+    if printf '%s' "$_wr_err_text" | grep -qiE "$_RETRY_STDERR_PATTERN"; then
+      rm -f "$_wr_out" "$_wr_err"
+      _wr_attempt=$((_wr_attempt + 1))
+      if [ "$_wr_attempt" -gt "$_wr_max" ]; then
+        printf 'pipeline-vcs: %s: rate-limited; exhausted %s retries; last error: %s\n' \
+          "$_wr_verb" "$_wr_max" "$_wr_err_text" >&2
+        return 1
+      fi
+      if [ -n "${_WR_RETRY_AFTER:-}" ] && [ "$_WR_RETRY_AFTER" -gt 0 ] 2>/dev/null; then
+        _wr_wait="$_WR_RETRY_AFTER"
+      else
+        _wr_wait=$(( 2 ** _wr_attempt ))
+        [ "$_wr_wait" -gt 60 ] && _wr_wait=60
+      fi
+      printf 'pipeline-vcs: %s: rate-limited, retry %s/%s in %ss\n' \
+        "$_wr_verb" "$_wr_attempt" "$_wr_max" "$_wr_wait" >&2
+      sleep $(( _wr_wait * _wr_scale ))
+      continue
+    fi
+
+    cat "$_wr_out"
+    [ -n "$_wr_err_text" ] && printf '%s\n' "$_wr_err_text" >&2
+    rm -f "$_wr_out" "$_wr_err"
+    return "$_wr_rc"
+  done
+}
+
 # ── Label arg parser (shared by label-issue / label-pr) ──────────────────────
 # Parses [--add <label>]... [--remove <label>]... from $@
 # Outputs: ADD_LABELS (space-separated), REMOVE_LABELS (space-separated)
@@ -351,6 +450,18 @@ print(json.dumps(items))
 # GITHUB ADAPTER
 # ─────────────────────────────────────────────────────────────────────────────
 _github() {
+  # Shadow `gh` for the duration of this adapter so every one of the ~33
+  # bare `gh ...` call sites below (including ones inside `_run gh ...`,
+  # `$(gh ...)`, and pipelines like `gh ... | ...`) gets retry/backoff for
+  # free, with zero call-site edits (#173). An explicit `_gh` wrapper would
+  # require touching every site — including the ones inside `_run` and
+  # command substitutions — and is guaranteed to drift the next time a call
+  # site is added; this scoped shadow is a single point of truth with
+  # identical call syntax. Defined here (not at top level) so it never
+  # shadows the top-level repo auto-detection `gh repo view` call above,
+  # which runs before any adapter function is invoked.
+  gh() { _with_retry "$VERB" command gh "$@"; }
+
   local verb="$1"; shift
   case "$verb" in
     list-issues)
@@ -1772,10 +1883,42 @@ _github_api() {
 
   local _VERB="$1"; shift
 
+  # ── Rate-limit helpers shared by _ga_req/_ga_diff_req/_ga_fetch_all_pages
+  # (#173) — reused, not forked, since all three already share status/body
+  # parsing conventions. Each *_once single-attempt function below routes
+  # through _with_retry via these.
+  # _ga_is_secondary_limit <status> <body> — true when GitHub returned 403
+  # with a secondary-rate-limit / abuse-detection body (retryable even though
+  # the status is not 429).
+  _ga_is_secondary_limit() {
+    [ "$1" = "403" ] && printf '%s' "$2" | grep -qiE 'secondary rate limit|abuse detection'
+  }
+  # _ga_retry_after <header-file> — prints the Retry-After value in seconds
+  # if the response carried one, else nothing (caller falls back to
+  # exponential backoff).
+  _ga_retry_after() {
+    grep -i '^retry-after:' "$1" 2>/dev/null | head -1 | sed 's/[^0-9]*//g' | tr -d '[:space:]'
+  }
+  # _ga_rate_limit_msg <status> <header-file> <verb> — the retryable-error
+  # message printed to stderr. Deliberately contains "429" so it matches
+  # $_RETRY_STDERR_PATTERN regardless of which branch (429 vs secondary
+  # limit) produced it.
+  _ga_rate_limit_msg() {
+    local _status="$1" _hdr="$2" _verb="$3" _reset
+    _reset="$(grep -i '^x-ratelimit-reset:' "$_hdr" 2>/dev/null \
+      | sed 's/[^0-9]*//g' | tr -d '[:space:]')"
+    if [ -n "$_reset" ]; then
+      printf 'github-api: HTTP %s on %s (rate-limited; reset at %s)\n' "$_status" "$_verb" "$_reset"
+    else
+      printf 'github-api: HTTP %s on %s (rate-limited)\n' "$_status" "$_verb"
+    fi
+  }
+
   # ── HTTP request helper (never logs token) ──────────────────────────────────
   # Usage: _ga_req <METHOD> <URL> [extra curl args...]
-  # Outputs response body; exits 1 on non-2xx.
-  _ga_req() {
+  # Outputs response body; exits 1 on non-2xx (after exhausting retries on a
+  # retryable status via _with_retry, #173).
+  _ga_req_once() {
     local _m="$1" _u="$2"; shift 2
     local _full _status _body _hdr_file
     _hdr_file="$(mktemp)"
@@ -1789,30 +1932,35 @@ _github_api() {
     _status="$(printf '%s' "$_full" | tail -1)"
     _body="$(printf '%s' "$_full" | sed '$d')"
     if [ "${_status:-0}" -ge 300 ] 2>/dev/null; then
-      if [ "$_status" = "429" ]; then
-        local _reset
-        _reset="$(grep -i '^x-ratelimit-reset:' "$_hdr_file" 2>/dev/null \
-          | sed 's/[^0-9]*//g' | tr -d '[:space:]')"
-        if [ -n "$_reset" ]; then
-          printf 'github-api: rate-limited; reset at %s\n' "$_reset" >&2
-        else
-          printf 'github-api: HTTP 429 on %s (rate-limited)\n' "$_VERB" >&2
-        fi
-      else
-        printf 'github-api: HTTP %s on %s\n' "$_status" "$_VERB" >&2
+      if [ "$_status" = "429" ] || _ga_is_secondary_limit "$_status" "$_body"; then
+        _WR_RETRY_AFTER="$(_ga_retry_after "$_hdr_file")"
+        _ga_rate_limit_msg "$_status" "$_hdr_file" "$_VERB" >&2
+        rm -f "$_hdr_file"
+        return 1
       fi
       rm -f "$_hdr_file"
-      exit 1
+      printf 'github-api: HTTP %s on %s\n' "$_status" "$_VERB" >&2
+      return 1
     fi
     rm -f "$_hdr_file"
     printf '%s' "$_body"
   }
 
+  _ga_req() {
+    local _gr_body
+    if ! _gr_body="$(_with_retry "$_VERB" _ga_req_once "$@")"; then
+      exit 1
+    fi
+    printf '%s' "$_gr_body"
+  }
+
   # ── Diff request (different Accept header) ──────────────────────────────────
-  _ga_diff_req() {
+  _ga_diff_req_once() {
     local _u="$1"
-    local _full _status _body
+    local _full _status _body _hdr_file
+    _hdr_file="$(mktemp)"
     _full="$(curl -sS -w "\n%{http_code}" \
+      -D "$_hdr_file" \
       -H "Authorization: Bearer $_TOKEN" \
       -H "Accept: application/vnd.github.v3.diff" \
       -H "X-GitHub-Api-Version: 2022-11-28" \
@@ -1820,56 +1968,93 @@ _github_api() {
     _status="$(printf '%s' "$_full" | tail -1)"
     _body="$(printf '%s' "$_full" | sed '$d')"
     if [ "${_status:-0}" -ge 300 ] 2>/dev/null; then
-      printf 'github-api: HTTP %s on diff-pr\n' "$_status" >&2
+      if [ "$_status" = "429" ] || _ga_is_secondary_limit "$_status" "$_body"; then
+        _WR_RETRY_AFTER="$(_ga_retry_after "$_hdr_file")"
+        _ga_rate_limit_msg "$_status" "$_hdr_file" "$_VERB" >&2
+        rm -f "$_hdr_file"
+        return 1
+      fi
+      rm -f "$_hdr_file"
+      printf 'github-api: HTTP %s on %s\n' "$_status" "$_VERB" >&2
+      return 1
+    fi
+    rm -f "$_hdr_file"
+    printf '%s' "$_body"
+  }
+
+  _ga_diff_req() {
+    local _u="$1"
+    local _gdr_body
+    if ! _gdr_body="$(_with_retry "$_VERB" _ga_diff_req_once "$_u")"; then
       exit 1
     fi
-    printf '%s' "$_body"
+    printf '%s' "$_gdr_body"
   }
 
   # _ga_fetch_all_pages <start-url>
   # Fetches every page of a GitHub REST list endpoint by following
   # Link: rel="next" headers, starting from <start-url>. Prints a single JSON
   # array concatenating every page's items. Exits 1 (prints NOTHING to
-  # stdout) on any HTTP error partway through — callers must treat a non-zero
+  # stdout) on any HTTP error partway through, including a page that fails
+  # only after exhausting its retries (#173) — callers must treat a non-zero
   # exit as "no usable data", never as a complete-but-short list, so a failed
   # page can never be mistaken for a complete result (#171).
   # Uses the same auth headers as _ga_req; does not use _ga_req itself because
   # _ga_req discards the Link header after each request.
-  _ga_fetch_all_pages() {
-    local _gafp_url="$1"
-    local _gafp_all _gafp_hdr _gafp_full _gafp_status _gafp_body _gafp_next
-    _gafp_all="[]"
-    while [ -n "$_gafp_url" ]; do
-      _gafp_hdr="$(mktemp)"
-      _gafp_full="$(curl -sS -w "\n%{http_code}" \
-        -D "$_gafp_hdr" -X GET \
-        -H "Authorization: Bearer $_TOKEN" \
-        -H "Accept: application/vnd.github+json" \
-        -H "X-GitHub-Api-Version: 2022-11-28" \
-        "$_gafp_url")"
-      _gafp_status="$(printf '%s' "$_gafp_full" | tail -1)"
-      _gafp_body="$(printf '%s' "$_gafp_full" | sed '$d')"
-      _gafp_next="$(grep -i '^link:' "$_gafp_hdr" \
-        | grep -o '<[^>]*>; rel="next"' \
-        | sed 's/<\([^>]*\)>; rel="next"/\1/')"
-      if [ "${_gafp_status:-0}" -ge 300 ] 2>/dev/null; then
-        if [ "$_gafp_status" = "429" ]; then
-          local _gafp_reset
-          _gafp_reset="$(grep -i '^x-ratelimit-reset:' "$_gafp_hdr" 2>/dev/null \
-            | sed 's/[^0-9]*//g' | tr -d '[:space:]')"
-          rm -f "$_gafp_hdr"
-          if [ -n "$_gafp_reset" ]; then
-            printf 'github-api: rate-limited; reset at %s\n' "$_gafp_reset" >&2
-          else
-            printf 'github-api: HTTP 429 fetching page (rate-limited): %s\n' "$_gafp_url" >&2
-          fi
-        else
-          rm -f "$_gafp_hdr"
-          printf 'github-api: HTTP %s fetching page: %s\n' "$_gafp_status" "$_gafp_url" >&2
-        fi
+  # _ga_fetch_page_once <url> <next-link-file> — single-attempt fetch of one
+  # page. On success, prints the page body and writes the next page's URL
+  # (empty when there is none) to <next-link-file>. _with_retry captures this
+  # function's stdout/stderr via a command substitution around the ENTIRE
+  # retry loop (`_gafp_body="$(_with_retry ...)"` below) — that forks a
+  # subshell, so a plain global variable set in here would not survive back
+  # out to _ga_fetch_all_pages. A file is used instead of the $_WR_RETRY_AFTER
+  # global-variable convention (which works fine elsewhere: it's read by
+  # _with_retry itself, inside the same subshell it was set in) specifically
+  # to cross that subshell boundary (#173 regression found in review: an
+  # earlier version of this fix used a global here and silently stopped
+  # paginating after page 1).
+  _ga_fetch_page_once() {
+    local _u="$1" _next_file="$2"
+    local _full _status _body _hdr_file _next
+    _hdr_file="$(mktemp)"
+    _full="$(curl -sS -w "\n%{http_code}" \
+      -D "$_hdr_file" -X GET \
+      -H "Authorization: Bearer $_TOKEN" \
+      -H "Accept: application/vnd.github+json" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      "$_u")"
+    _status="$(printf '%s' "$_full" | tail -1)"
+    _body="$(printf '%s' "$_full" | sed '$d')"
+    _next="$(grep -i '^link:' "$_hdr_file" \
+      | grep -o '<[^>]*>; rel="next"' \
+      | sed 's/<\([^>]*\)>; rel="next"/\1/')"
+    printf '%s' "$_next" > "$_next_file"
+    if [ "${_status:-0}" -ge 300 ] 2>/dev/null; then
+      if [ "$_status" = "429" ] || _ga_is_secondary_limit "$_status" "$_body"; then
+        _WR_RETRY_AFTER="$(_ga_retry_after "$_hdr_file")"
+        _ga_rate_limit_msg "$_status" "$_hdr_file" "$_VERB (fetching $_u)" >&2
+        rm -f "$_hdr_file"
         return 1
       fi
-      rm -f "$_gafp_hdr"
+      rm -f "$_hdr_file"
+      printf 'github-api: HTTP %s fetching page: %s\n' "$_status" "$_u" >&2
+      return 1
+    fi
+    rm -f "$_hdr_file"
+    printf '%s' "$_body"
+  }
+
+  _ga_fetch_all_pages() {
+    local _gafp_url="$1"
+    local _gafp_all _gafp_body _gafp_next_file
+    _gafp_all="[]"
+    _gafp_next_file="$(mktemp)"
+    while [ -n "$_gafp_url" ]; do
+      : > "$_gafp_next_file"
+      if ! _gafp_body="$(_with_retry "$_VERB" _ga_fetch_page_once "$_gafp_url" "$_gafp_next_file")"; then
+        rm -f "$_gafp_next_file"
+        return 1
+      fi
       _gafp_all="$(PREV="$_gafp_all" PAGE="$_gafp_body" python3 -c "
 import json, os, sys
 prev = json.loads(os.environ.get('PREV', '[]'))
@@ -1882,8 +2067,9 @@ except Exception:
 prev.extend(page)
 json.dump(prev, sys.stdout)
 ")"
-      _gafp_url="$_gafp_next"
+      _gafp_url="$(cat "$_gafp_next_file")"
     done
+    rm -f "$_gafp_next_file"
     printf '%s' "$_gafp_all"
   }
 
@@ -3402,6 +3588,17 @@ _gitlab() {
     echo "pipeline-vcs: 'glab' not found. Install from https://gitlab.com/gitlab-org/cli" >&2
     exit 1
   fi
+
+  # Shadow `glab` for the same reason _github shadows `gh` (#173): a single
+  # point of truth covering every call site below with zero edits. Defined
+  # after the command-v check above so that pre-flight probe still resolves
+  # the real binary. glab's rate-limit behaviour is not covered by a repo
+  # test fixture today — GitLab returns HTTP 429 with a plain-text/JSON body
+  # depending on endpoint; glab CLI surfaces this on stderr typically
+  # containing "429" or "too many requests". Match both, best-effort; revisit
+  # if a real glab rate-limit stderr sample becomes available.
+  glab() { _with_retry "$VERB" command glab "$@"; }
+
   local verb="$1"; shift
   local RARG=""
   [ -n "$REPO" ] && RARG="-R $REPO"
@@ -3687,6 +3884,16 @@ _azure() {
     echo "pipeline-vcs: azure-devops extension missing. Run: az extension add --name azure-devops" >&2
     exit 1
   fi
+
+  # Shadow `az` for the same reason _github shadows `gh` (#173): a single
+  # point of truth covering every call site below with zero edits. Defined
+  # after the command-v / extension pre-flight checks above so those still
+  # resolve the real binary. Azure DevOps REST throttling returns HTTP 429
+  # or 503 with a "TF400733"/"rate limit" style message; the `az` CLI
+  # surfaces this on stderr, typically containing "429" or "rate limit". No
+  # repo test fixture reproduces az's real throttling body today — best
+  # effort, revisit if a real sample becomes available.
+  az() { _with_retry "$VERB" command az "$@"; }
 
   local ORG_ARG="" PROJ_ARG=""
   [ -n "$AZURE_ORG" ]     && ORG_ARG="--org $AZURE_ORG"

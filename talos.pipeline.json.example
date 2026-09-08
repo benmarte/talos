@@ -75,6 +75,7 @@
   },
 
   "limits": {
-    "max_fix_attempts": 3
+    "max_fix_attempts": 3,
+    "max_retries": 5
   }
 }

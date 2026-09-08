@@ -239,3 +239,9 @@ notifications:
 # ── Safety limits ─────────────────────────────────────────────────────────────
 limits:
   max_fix_attempts: 3        # Developer re-tries before escalating to pipeline:blocked
+  max_retries: 5              # Network retries per call after a rate-limit / transient
+                               # error (429, GitHub secondary rate limit, gh/glab/az
+                               # rate-limit errors), on top of the original try -- so up
+                               # to 6 total attempts by default. Backoff: Retry-After
+                               # header when supplied, else exponential from 2s,
+                               # doubling, capped at 60s.

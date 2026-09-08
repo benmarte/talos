@@ -489,6 +489,35 @@ out="$(STUB_GH_API_FAIL=issues bash "$VCS" list-issues 2>/dev/null)"; rc=$?
 assert_eq "1" "$rc" "#171 github: list-issues exits non-zero when gh api --paginate fails"
 assert_eq "" "$out" "#171 github: list-issues prints no partial list on a failed page"
 
+# ── #173: gh CLI rate-limit retry ─────────────────────────────────────────────
+# The `gh` shadow function in _github() routes every bare `gh ...` call
+# through _with_retry. GH_RATE_LIMIT_UNTIL_CALL=1 makes the gh stub emit a
+# rate-limit-style stderr message + exit 1 on its first invocation only; the
+# `gh api --paginate` call for list-issues is a single invocation, so this
+# proves one retry recovers a rate-limited call.
+# vcs.repo is set explicitly here so REPO is never empty -- otherwise the
+# top-level repo-auto-detect `gh repo view` call (which runs before any
+# adapter, and so is never retry-wrapped) would consume the rate-limit
+# budget itself, leaving the paginate call unaffected and this test unable
+# to prove anything.
+export TALOS_RETRY_SLEEP_SCALE=0
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"repo": "acme/widget"}}
+EOF
+rm -f "$GH_LOG.rlcount"
+: > "$GH_LOG"
+_173_errfile="$SANDBOX/gh-stderr.txt"
+out="$(GH_RATE_LIMIT_UNTIL_CALL=1 bash "$VCS" list-issues 2>"$_173_errfile")"; rc=$?
+_173_err="$(cat "$_173_errfile")"
+assert_eq "0" "$rc" "#173 github: list-issues succeeds after one gh rate-limit retry"
+assert_contains "$out" '"number": 3' "#173 github: list-issues returns the default stub issue after retry"
+_173_retry_lines="$(printf '%s\n' "$_173_err" | grep -c 'retry [0-9]*/[0-9]* in')"
+assert_eq "1" "$_173_retry_lines" "#173 github: exactly one retry log line"
+_173_calls="$(wc -l < "$GH_LOG" | tr -d ' ')"
+assert_eq "2" "$_173_calls" "#173 github: gh invoked twice (rate-limited attempt + success)"
+rm -f "$GH_LOG.rlcount" talos.pipeline.json
+unset TALOS_RETRY_SLEEP_SCALE
+
 _171_gh_pr_p1="$(python3 -c "
 import json
 print(json.dumps([{'number': i, 'title': 't'+str(i), 'head': {'ref': 'b'+str(i)}, 'base': {'ref': 'main'}, 'labels': []} for i in range(1, 101)]))

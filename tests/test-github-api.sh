@@ -15,6 +15,9 @@ VCS="$TALOS_ROOT/scripts/pipeline-vcs.sh"
 TEST_TOKEN="test-secret-token-12345"
 export GITHUB_TOKEN="$TEST_TOKEN"
 
+# Instant retries (#173): no test in this file should wait out a real backoff.
+export TALOS_RETRY_SLEEP_SCALE=0
+
 cat > talos.pipeline.json <<'EOF'
 {"vcs": {"provider": "github-api", "repo": "acme/widget"}}
 EOF
@@ -515,19 +518,93 @@ printf '%s\n' \
 out="$(bash "$VCS" find-pr 42)"
 assert_contains "$out" '"state": "OPEN"'         "find-pr open: state normalized to OPEN"
 
-# ── 429 rate-limit: logs reset epoch and exits 1 ─────────────────────────────
+# ── 429 rate-limit retry/backoff (#173) ───────────────────────────────────────
+# Replaces the old "429 immediately exits 1" test: under the new retry
+# contract a single 429 is retried, not fatal. Covers retry-then-succeed,
+# exhaustion (naming the verb + last status/reset), a plain 404 (no retry
+# entered at all), and --dry-run (never sleeps, never retries, never even
+# calls curl).
 export GITHUB_TOKEN="$TEST_TOKEN"
+_errfile="$SANDBOX/stderr.txt"
+
+# -- retry-then-succeed: 429, 429, then a real 200 body --
 : > "$CURL_LOG"
-# A bare 3-digit number in CURL_QUEUE is treated as an HTTP status override.
-printf '429\n' > "$CURL_QUEUE"
+printf '429\n429\n%s\n' \
+  '[{"number":3,"title":"Fix login bug","body":"Body text","labels":[]}]' \
+  > "$CURL_QUEUE"
 export CURL_RATE_LIMIT_RESET=1999999999
 
-err="$(bash "$VCS" list-issues 2>&1 >/dev/null)"; rc=$?
-assert_eq "1" "$rc"                                          "429: exits 1"
-assert_contains "$err" "rate-limited"                        "429: stderr mentions rate-limited"
-assert_contains "$err" "1999999999"                          "429: stderr includes reset epoch"
+out="$(bash "$VCS" list-issues 2>"$_errfile")"; rc=$?
+err="$(cat "$_errfile")"
+assert_eq "0" "$rc"                              "429 retry: succeeds after two retries"
+assert_contains "$out" '"number": 3'             "429 retry: returns the issue once the retry succeeds"
+_retry_lines="$(printf '%s\n' "$err" | grep -c 'retry [0-9]*/[0-9]* in')"
+assert_eq "2" "$_retry_lines"                    "429 retry: exactly two retry log lines"
+_calls="$(wc -l < "$CURL_LOG" | tr -d ' ')"
+assert_eq "3" "$_calls"                          "429 retry: three curl calls (two 429s + the success)"
+
+# -- exhaustion: limits.max_retries (default 5) consecutive 429s -> exit 1,
+#    naming the last status and reset epoch, after exactly max_retries+1 tries --
+: > "$CURL_LOG"
+: > "$_errfile"
+printf '429\n429\n429\n429\n429\n429\n' > "$CURL_QUEUE"
+
+out="$(bash "$VCS" list-issues 2>"$_errfile")"; rc=$?
+err="$(cat "$_errfile")"
+assert_eq "1" "$rc"                              "429 exhaustion: exits 1 once max_retries is exhausted"
+assert_eq ""  "$out"                             "429 exhaustion: no partial output"
+assert_contains "$err" "list-issues"             "429 exhaustion: message names the verb attempted"
+assert_contains "$err" "rate-limited"             "429 exhaustion: message mentions rate-limited"
+assert_contains "$err" "1999999999"              "429 exhaustion: message includes the last reset epoch"
+_calls="$(wc -l < "$CURL_LOG" | tr -d ' ')"
+assert_eq "6" "$_calls"                          "429 exhaustion: exactly max_retries+1 (6) curl calls, no more"
 
 unset CURL_RATE_LIMIT_RESET
+
+# -- GitHub 403 secondary-rate-limit body: retryable even though the status
+#    is 403, not 429 --
+: > "$CURL_LOG"
+: > "$_errfile"
+printf '403:{"message":"You have exceeded a secondary rate limit"}\n%s\n' \
+  '[{"number":3,"title":"Fix login bug","body":"Body text","labels":[]}]' \
+  > "$CURL_QUEUE"
+
+out="$(bash "$VCS" list-issues 2>"$_errfile")"; rc=$?
+err="$(cat "$_errfile")"
+assert_eq "0" "$rc"                              "403 secondary-limit: succeeds after one retry"
+assert_contains "$out" '"number": 3'             "403 secondary-limit: returns the issue once the retry succeeds"
+_retry_lines="$(printf '%s\n' "$err" | grep -c 'retry [0-9]*/[0-9]* in')"
+assert_eq "1" "$_retry_lines"                    "403 secondary-limit: exactly one retry log line"
+
+# -- plain 404 (no rate-limit body): fails immediately, no retry attempted --
+: > "$CURL_LOG"
+: > "$_errfile"
+printf '404\n' > "$CURL_QUEUE"
+
+out="$(bash "$VCS" list-issues 2>"$_errfile")"; rc=$?
+err="$(cat "$_errfile")"
+assert_eq "1" "$rc"                              "404: exits 1"
+assert_not_contains "$err" "retry"               "404: no retry log line -- not a retryable status"
+_calls="$(wc -l < "$CURL_LOG" | tr -d ' ')"
+assert_eq "1" "$_calls"                          "404: exactly one curl call, no retry"
+
+# -- --dry-run: never sleeps, never retries, never even reaches curl.
+#    TALOS_RETRY_SLEEP_SCALE is deliberately left unset (defaults to 1) here so
+#    the assertion proves --dry-run itself prevents the sleep, not the scale --
+: > "$CURL_LOG"
+printf '429\n' > "$CURL_QUEUE"
+_t0="$(date +%s)"
+out="$(bash "$VCS" --dry-run list-issues)"
+_t1="$(date +%s)"
+_elapsed=$((_t1 - _t0))
+assert_contains "$out" "dry-run"                 "dry-run: prints the dry-run marker instead of calling curl"
+_calls="$(wc -l < "$CURL_LOG" | tr -d ' ')"
+assert_eq "0" "$_calls"                          "dry-run: no curl call is made at all"
+if [ "$_elapsed" -lt 2 ]; then
+  pass "dry-run: completes near-instantly (no backoff sleep)"
+else
+  fail "dry-run: completes near-instantly (no backoff sleep)" "elapsed=${_elapsed}s"
+fi
 
 # ── missing token → clear error ───────────────────────────────────────────────
 unset GITHUB_TOKEN GH_TOKEN

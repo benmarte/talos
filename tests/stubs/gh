@@ -5,6 +5,28 @@
 
 [ -n "${GH_LOG:-}" ] && printf '%s\n' "$*" >> "$GH_LOG"
 
+# ── Rate-limit simulation hook (#173) ─────────────────────────────────────────
+# GH_RATE_LIMIT_UNTIL_CALL=<N>: the first N invocations of this stub (across
+# the whole test, or since GH_RATE_LIMIT_COUNTER_FILE was last removed) print
+# a gh-CLI-style rate-limit error to stderr and exit 1; the (N+1)th and later
+# invocations fall through to the normal canned response below. Modeled on
+# CURL_QUEUE's pop-one-line-per-call pattern, but needs a persistent counter
+# (not a queue) since each invocation is a separate process. Counter file
+# defaults to "$GH_LOG.rlcount" (override with GH_RATE_LIMIT_COUNTER_FILE);
+# tests should `rm -f` it before use so counts from earlier assertions in the
+# same file don't bleed in.
+if [ -n "${GH_RATE_LIMIT_UNTIL_CALL:-}" ]; then
+  _rl_counter="${GH_RATE_LIMIT_COUNTER_FILE:-${GH_LOG:-/tmp/gh-stub-no-log}.rlcount}"
+  _rl_count=0
+  [ -f "$_rl_counter" ] && _rl_count="$(cat "$_rl_counter")"
+  _rl_count=$((_rl_count + 1))
+  printf '%s' "$_rl_count" > "$_rl_counter"
+  if [ "$_rl_count" -le "$GH_RATE_LIMIT_UNTIL_CALL" ]; then
+    echo "gh: API rate limit exceeded for installation ID 1. (HTTP 403)" >&2
+    exit 1
+  fi
+fi
+
 REPO="${STUB_REPO:-acme/widget}"
 OWNER="${REPO%%/*}"
 

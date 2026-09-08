@@ -43,7 +43,9 @@ for arg in "$@"; do url="$arg"; done
 
 # HTTP status to emit when -w was requested (default 200).
 # If a CURL_QUEUE entry is a bare 3-digit number it is treated as a status
-# override (empty body); all other queue entries are response bodies.
+# override (empty body). A "<status>:<body>" entry (#173, e.g. for simulating
+# GitHub's 403 secondary-rate-limit body) overrides both. All other queue
+# entries are response bodies with the default 200 status.
 http_status=200
 resp=""
 if [ -n "${CURL_QUEUE:-}" ] && [ -s "$CURL_QUEUE" ]; then
@@ -53,6 +55,9 @@ if [ -n "${CURL_QUEUE:-}" ] && [ -s "$CURL_QUEUE" ]; then
     [0-9][0-9][0-9])
       http_status="$raw"
       resp="" ;;
+    [0-9][0-9][0-9]:*)
+      http_status="${raw%%:*}"
+      resp="${raw#*:}" ;;
     *)
       resp="$raw" ;;
   esac
