@@ -809,16 +809,23 @@ After developer returns:
        pipeline): proceed to Step 3d.
      - Exit 1 (`CONFLICTING`): do NOT dispatch QA yet — GitHub schedules no
        `pull_request` CI run for a conflicting PR, so QA would hang waiting
-       for CI that never starts. Check out the PR branch and `git fetch
-       origin && git merge origin/<BASE_BRANCH>`. If the only conflict is in
-       `CHANGELOG.md`, resolve it per the **CHANGELOG serialization guard**
-       (Step 4): keep BOTH entries, newest first, then commit and push.
-       Otherwise abort the merge and dispatch a developer "merge base" task
-       to resolve it and push — this counts toward `max_fix_attempts` via
-       `bash scripts/pipeline-vcs.sh record-attempt <N> merge-base --pr
-       <PR>`; ceiling reached → board "Blocked", stop. Either way, re-run
-       `pr-mergeable <PR>` afterward and only proceed to Step 3d once it
-       reports `MERGEABLE` (or `UNKNOWN`).
+       for CI that never starts. The orchestrator itself must never run
+       `git checkout`/`git fetch`/`git merge`/commit/push here — rule 15
+       reserves moving HEAD in the orchestrator's checkout for the developer
+       stage, and the orchestrator is not the developer stage. Instead,
+       ALWAYS record the attempt and dispatch a worktree-isolated developer
+       "merge base" task, exactly like any other developer re-dispatch:
+       `bash scripts/pipeline-vcs.sh record-attempt <N> developer --pr
+       <PR>`; exit non-zero (ceiling reached) → board "Blocked", stop. On
+       success, spawn the developer with `isolation: "worktree"` (same
+       mechanism as Step 3c) with a prompt to: check out the PR branch,
+       `git fetch origin && git merge origin/<BASE_BRANCH>` in its own
+       worktree; if the only conflict is in `CHANGELOG.md`, keep BOTH
+       entries (newest first), the same rule as the **CHANGELOG
+       serialization guard** (Step 4); resolve any other conflicts the
+       same way a normal fix would; run the targeted verify tests; then
+       push. Either way, re-run `pr-mergeable <PR>` afterward and only
+       proceed to Step 3d once it reports `MERGEABLE` (or `UNKNOWN`).
 - **Blocked:**
   1. Board → "Blocked": `bash scripts/pipeline-status.sh <N> "Blocked"`
   2. Relay findings: `bash scripts/pipeline-notify.sh developer "#<N>" "<what failed>" <N>`
@@ -852,9 +859,10 @@ scripts can assert they are running in the correct environment:
 
 1. Check out the PR: `bash scripts/pipeline-vcs.sh checkout-pr <PR_NUMBER>`
 2. Before any CI wait, run `bash scripts/pipeline-vcs.sh pr-mergeable
-   <PR_NUMBER>` (#214). On `CONFLICTING` (exit 1), return FAIL immediately
-   with reason "PR conflicts with base; no CI run will be scheduled" — do not
-   wait on CI or run verify. `MERGEABLE`/`UNKNOWN` (exit 0/2): continue below.
+   <PR_NUMBER>` (#214). On `CONFLICTING` (exit 1), treat as FAIL and follow
+   the **Fail:** procedure below (labels + qa-verdict comment) with reason
+   "PR conflicts with base; no CI run will be scheduled" — do not wait on CI
+   or run verify. `MERGEABLE`/`UNKNOWN` (exit 0/2): continue below.
 3. QA mode above is already resolved: `ci` with an empty/absent Required
    checks list is reported here as `local`, not `ci` — trusting CI as the
    oracle for zero required checks would let QA pass vacuously, so that

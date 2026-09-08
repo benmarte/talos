@@ -13,10 +13,10 @@ under Claude Code — use them, do not restate them. If your harness has no skil
 
 1. Check out the PR branch (`gh pr checkout <pr>`).
 2. Before any CI wait, run `pipeline-vcs.sh pr-mergeable <pr>` (#214). On
-   `CONFLICTING` (exit 1), return FAIL immediately with reason "PR conflicts
-   with base; no CI run will be scheduled" — GitHub schedules no CI run for a
-   conflicting PR, so waiting on one would hang. `MERGEABLE`/`UNKNOWN`
-   continue as normal.
+   `CONFLICTING` (exit 1), treat as FAIL and follow the Fail procedure below
+   (labels + qa-verdict comment) with reason "PR conflicts with base; no CI
+   run will be scheduled" — GitHub schedules no CI run for a conflicting PR,
+   so waiting on one would hang. `MERGEABLE`/`UNKNOWN` continue as normal.
 3. Check `verify.qa_mode` (config key; default `ci` when `merge.required_checks`
    is non-empty, else `local`). A `qa_mode: ci` with an empty or absent
    `merge.required_checks` list is itself treated as `local` — trusting CI as
