@@ -21,6 +21,12 @@ install_talos
 AGENT="$HOME/.talos/scripts/pipeline-agent.sh"
 export RUNNER_LOG="$SANDBOX/runner.log"
 
+# ERRFILE -- reused per call to capture pipeline-agent.sh's stderr instead of
+# discarding it to /dev/null. On an unexpected exit code this is the only way
+# a CI log names the actual cause (e.g. the "looked in:" line from a role-file
+# lookup miss) rather than just "expected 0, actual 1" (#208).
+ERRFILE="$SANDBOX/agent.stderr"
+
 # Configure a custom runner that prints all three identity vars so we can inspect them.
 cat > talos.pipeline.json <<'EOF'
 {"agents": {"runner": "custom", "runner_cmd": "printf 'ROLE=%s ISSUE=%s PATH=%s' \"$TALOS_ROLE\" \"$TALOS_ISSUE_NUMBER\" \"$TALOS_WORKTREE_PATH\""}}
@@ -28,8 +34,8 @@ EOF
 
 # ── 1. TALOS_ISSUE_NUMBER and TALOS_WORKTREE_PATH visible in runner_cmd ────────
 # RED before fix: TALOS_ISSUE_NUMBER and TALOS_WORKTREE_PATH were not exported.
-out="$(TALOS_ISSUE=54 bash "$AGENT" developer "some task" 2>/dev/null)"; rc=$?
-assert_eq "0" "$rc" "TALOS_ISSUE set — exits 0 (exit-zero proof)"
+out="$(TALOS_ISSUE=54 bash "$AGENT" developer "some task" 2>"$ERRFILE")"; rc=$?
+assert_eq_ctx "0" "$rc" "TALOS_ISSUE set — exits 0 (exit-zero proof)" "$(cat "$ERRFILE")"
 assert_contains "$out" "ISSUE=54" "TALOS_ISSUE_NUMBER=54 visible in runner_cmd"
 
 # Verify the exact values (not just non-empty) to satisfy the proof requirement.
@@ -44,8 +50,8 @@ assert_contains "$out" "PATH=$SANDBOX_NORM" "TALOS_WORKTREE_PATH visible in runn
 # ── 2. Two-arg callers unchanged — TALOS_ISSUE unset → TALOS_ISSUE_NUMBER="" ──
 # RED before fix: TALOS_ISSUE_NUMBER was not exported at all (would be unset).
 # After fix: exported as empty string; two-arg call still exits 0.
-out2="$(bash "$AGENT" qa "verify pr" 2>/dev/null)"; rc2=$?
-assert_eq "0" "$rc2" "two-arg caller (no TALOS_ISSUE) exits 0"
+out2="$(bash "$AGENT" qa "verify pr" 2>"$ERRFILE")"; rc2=$?
+assert_eq_ctx "0" "$rc2" "two-arg caller (no TALOS_ISSUE) exits 0" "$(cat "$ERRFILE")"
 assert_contains "$out2" "ISSUE=" "TALOS_ISSUE_NUMBER exported (possibly empty) in two-arg call"
 # The empty string distinguishes "Talos did not set TALOS_ISSUE" from any real number.
 actual_issue2="$(printf '%s' "$out2" | sed -n 's/.*ISSUE=\([^ ]*\).*/\1/p')"
@@ -58,8 +64,8 @@ actual_role="$(printf '%s' "$out3" | sed -n 's/ROLE=\([^ ]*\).*/\1/p')"
 assert_eq "reviewer" "$actual_role" "TALOS_ROLE still exported alongside new vars"
 
 # ── 4. Different TALOS_ISSUE values produce correct TALOS_ISSUE_NUMBER ─────────
-out4="$(TALOS_ISSUE=99 bash "$AGENT" security "check it" 2>/dev/null)"; rc4=$?
-assert_eq "0" "$rc4" "TALOS_ISSUE=99 exits 0"
+out4="$(TALOS_ISSUE=99 bash "$AGENT" security "check it" 2>"$ERRFILE")"; rc4=$?
+assert_eq_ctx "0" "$rc4" "TALOS_ISSUE=99 exits 0" "$(cat "$ERRFILE")"
 actual_issue4="$(printf '%s' "$out4" | sed -n 's/.*ISSUE=\([^ ]*\).*/\1/p')"
 assert_eq "99" "$actual_issue4" "TALOS_ISSUE_NUMBER=99 for issue 99"
 
@@ -94,27 +100,53 @@ assert_eq "2" "$rc8" "TALOS_ISSUE with newline exits 2"
 # ── 6. Empty TALOS_ISSUE still exits 0 — regression guard ─────────────────────
 # This is the backwards-compatibility guarantee: two-arg callers must not break.
 # RED before fix (of the new guard): if we had implemented "reject empty", this fails.
-out9="$(TALOS_ISSUE='' bash "$AGENT" qa "verify pr" 2>/dev/null)"; rc9=$?
-assert_eq "0" "$rc9" "empty TALOS_ISSUE (explicit empty string) exits 0"
+out9="$(TALOS_ISSUE='' bash "$AGENT" qa "verify pr" 2>"$ERRFILE")"; rc9=$?
+assert_eq_ctx "0" "$rc9" "empty TALOS_ISSUE (explicit empty string) exits 0" "$(cat "$ERRFILE")"
 actual_issue9="$(printf '%s' "$out9" | sed -n 's/.*ISSUE=\([^ ]*\).*/\1/p')"
 assert_eq "" "$actual_issue9" "TALOS_ISSUE_NUMBER is empty string when TALOS_ISSUE is empty"
 
 # Unset TALOS_ISSUE also exits 0 (existing test 6-8 covers this; confirm here too)
-out10="$(bash "$AGENT" qa "verify pr" 2>/dev/null)"; rc10=$?
-assert_eq "0" "$rc10" "unset TALOS_ISSUE exits 0"
+out10="$(bash "$AGENT" qa "verify pr" 2>"$ERRFILE")"; rc10=$?
+assert_eq_ctx "0" "$rc10" "unset TALOS_ISSUE exits 0" "$(cat "$ERRFILE")"
 
 # ── 7. Valid integer exit-zero proof (guard does not over-reject) ───────────────
 # Value propagation is already verified in sections 1 and 4 above; these just
 # confirm the validation guard does not reject valid integers.
-out11="$(TALOS_ISSUE=1 bash "$AGENT" developer "task" 2>/dev/null)"; rc11=$?
-assert_eq "0" "$rc11" "TALOS_ISSUE=1 exits 0 (single digit)"
+out11="$(TALOS_ISSUE=1 bash "$AGENT" developer "task" 2>"$ERRFILE")"; rc11=$?
+assert_eq_ctx "0" "$rc11" "TALOS_ISSUE=1 exits 0 (single digit)" "$(cat "$ERRFILE")"
 
-out12="$(TALOS_ISSUE=12345 bash "$AGENT" developer "task" 2>/dev/null)"; rc12=$?
-assert_eq "0" "$rc12" "TALOS_ISSUE=12345 exits 0 (large integer)"
+out12="$(TALOS_ISSUE=12345 bash "$AGENT" developer "task" 2>"$ERRFILE")"; rc12=$?
+assert_eq_ctx "0" "$rc12" "TALOS_ISSUE=12345 exits 0 (large integer)" "$(cat "$ERRFILE")"
 
-out13="$(TALOS_ISSUE=0 bash "$AGENT" developer "task" 2>/dev/null)"; rc13=$?
-assert_eq "0" "$rc13" "TALOS_ISSUE=0 exits 0 (zero is a valid digit)"
+out13="$(TALOS_ISSUE=0 bash "$AGENT" developer "task" 2>"$ERRFILE")"; rc13=$?
+assert_eq_ctx "0" "$rc13" "TALOS_ISSUE=0 exits 0 (zero is a valid digit)" "$(cat "$ERRFILE")"
 
 rm talos.pipeline.json
+
+# ── 8. Ambient TALOS_HOME cannot leak into a sandbox (#208 hardening) ─────────
+# Run in a subshell (established pattern -- see test-sandbox-cwd.sh) so the
+# nested make_sandbox gets its own EXIT trap/cleanup and TALOS_HOME does not
+# linger for anything below. A bogus, nonexistent TALOS_HOME simulates a
+# developer shell (or another Talos agent) leaking it in ambient; if
+# make_sandbox's unset is ever removed, _resolve_talos_dir would try
+# /nonexistent/talos-home/scripts first and pipeline-agent.sh would fail
+# role lookup exactly like the CI flake in #208.
+_leak_result="$(
+  . "$TALOS_ROOT/tests/helpers.sh"
+  export TALOS_HOME=/nonexistent/talos-home
+  make_sandbox
+  install_talos >/dev/null 2>&1
+  _r="$(_resolve_talos_dir 2>/dev/null || true)"
+  printf 'RESOLVED=%s\nHOME=%s\n' "$_r" "$HOME"
+)"
+_leak_resolved="$(printf '%s\n' "$_leak_result" | sed -n 's/^RESOLVED=//p')"
+_leak_home="$(printf '%s\n' "$_leak_result" | sed -n 's/^HOME=//p')"
+case "$_leak_resolved" in
+  "$_leak_home"/*)
+    pass "ambient TALOS_HOME=/nonexistent does not leak into a fresh sandbox" ;;
+  *)
+    fail "ambient TALOS_HOME=/nonexistent does not leak into a fresh sandbox" \
+         "resolved: ${_leak_resolved:-<none>} | sandbox HOME: $_leak_home" ;;
+esac
 
 finish

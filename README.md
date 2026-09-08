@@ -842,7 +842,23 @@ and writes); CI always runs with `--no-cache`. If neither `sha256sum` nor
 than key on a degraded hash.
 
 CI runs the suite on Ubuntu and macOS for every push and PR
-(`.github/workflows/tests.yml`).
+(`.github/workflows/tests.yml`). Test sandboxes unset Talos and Claude
+environment variables (`TALOS_HOME`, `CLAUDE_PLUGIN_ROOT`, `CLAUDE_CONFIG_DIR`,
+etc.) to isolate per-test configuration and prevent ambient settings from
+leaking into test runs.
+
+To reproduce a nondeterministic ("flaky") failure locally, re-run the same
+selection under load with `--repeat N`: it runs the selected files N times,
+stopping at the first iteration that fails (that iteration's full log is
+printed, and the `RESULT` line names it, e.g. `RESULT: repeat 2/20 FAILED`).
+`--repeat` implies `--no-cache` -- a cache hit on iteration 2+ would just
+skip the re-run the flag exists for. `N=1` (the default) is a no-op: no
+iteration banner, output unchanged from omitting the flag.
+
+```bash
+bash tests/run-tests.sh -j 8 --repeat 20 test-per-agent-env.sh   # one file, stress
+bash tests/run-tests.sh -j 8 --repeat 3                          # whole suite, stress
+```
 
 ---
 

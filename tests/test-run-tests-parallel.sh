@@ -323,4 +323,74 @@ printf '# scratch notes\n' > "$FDN/tasks/scratch.md"
 track_fixture "$FDN"
 assert_dep_excluded "N" "$FDN" "tasks/scratch.md"
 
+# ── Test O: --repeat 1 is a no-op -- output unchanged (#208) ─────────────────
+# Named mutation: always print the "===== repeat" banner regardless of N --
+# the N=1 output would then differ from output before --repeat existed.
+FDO="$SANDBOX/o"
+build_min_fixture "$FDO"
+for f in test-a.sh test-b.sh; do
+  write_stub "$FDO" "$f" "exit 0"
+done
+
+out_o_plain="$(bash "$FDO/tests/run-tests.sh" --no-cache 2>&1)"; rc_o_plain=$?
+out_o_repeat1="$(bash "$FDO/tests/run-tests.sh" --no-cache --repeat 1 2>&1)"; rc_o_repeat1=$?
+
+assert_exit_code 0 "$rc_o_plain" "O: plain run exits 0"
+assert_exit_code 0 "$rc_o_repeat1" "O: --repeat 1 run exits 0"
+assert_eq "$out_o_plain" "$out_o_repeat1" "O: --repeat 1 output is byte-for-byte identical to omitting the flag"
+assert_not_contains "$out_o_repeat1" "===== repeat" "O: --repeat 1 prints no iteration banner"
+
+# ── Test P: --repeat N runs the selected files N times, one RESULT line ──────
+# Named mutation: run --repeat N only once (ignore N) -- the counter file
+# below would show 1 execution instead of 3, and only one banner would print.
+FDP="$SANDBOX/p"
+build_min_fixture "$FDP"
+P_COUNT_FILE="$FDP/count.txt"
+: > "$P_COUNT_FILE"
+write_stub "$FDP" "test-a.sh" "echo x >> '$P_COUNT_FILE'; exit 0"
+
+out_p_repeat="$(bash "$FDP/tests/run-tests.sh" --no-cache --repeat 3 2>&1)"; rc_p_repeat=$?
+
+assert_exit_code 0 "$rc_p_repeat" "P: --repeat 3 (all passing) exits 0"
+assert_eq "3" "$(wc -l < "$P_COUNT_FILE" | tr -d ' ')" "P: --repeat 3 actually re-runs the file 3 times"
+assert_eq "3" "$(printf '%s\n' "$out_p_repeat" | grep -c '^===== repeat ')" \
+  "P: --repeat 3 prints one banner per iteration"
+assert_eq "1" "$(printf '%s\n' "$out_p_repeat" | grep -c '^RESULT:')" \
+  "P: --repeat 3 (all passing) prints exactly one RESULT line, at the end"
+
+# ── Test Q: --repeat N stops at the first failing iteration ──────────────────
+# Named mutation: keep looping past a failure instead of stopping -- the
+# counter file below would show more than 2 executions (it would run all 5
+# requested iterations instead of stopping after the 2nd, which fails).
+FDQ="$SANDBOX/q"
+build_min_fixture "$FDQ"
+Q_COUNT_FILE="$FDQ/count.txt"
+: > "$Q_COUNT_FILE"
+write_stub "$FDQ" "test-a.sh" \
+  "echo x >> '$Q_COUNT_FILE'; n=\$(wc -l < '$Q_COUNT_FILE'); [ \"\$n\" -eq 2 ] && exit 1; exit 0"
+
+out_q_repeat="$(bash "$FDQ/tests/run-tests.sh" --no-cache --repeat 5 2>&1)"; rc_q_repeat=$?
+
+assert_exit_code 1 "$rc_q_repeat" "Q: --repeat 5 (fails on 2nd) exits 1"
+assert_eq "2" "$(wc -l < "$Q_COUNT_FILE" | tr -d ' ')" \
+  "Q: --repeat 5 stops immediately after the failing iteration (2 runs, not 5)"
+assert_contains "$out_q_repeat" "RESULT: repeat 2/5 FAILED" "Q: RESULT line names the failing iteration"
+
+# ── Test R: --repeat N implies --no-cache (a cache hit would hide the flake) ──
+# Named mutation: let --repeat honor a warm cache -- the counter file below
+# would show 1 execution (iteration 2 served from cache) instead of 2.
+FDR="$SANDBOX/r"
+build_min_fixture "$FDR"
+R_COUNT_FILE="$FDR/count.txt"
+: > "$R_COUNT_FILE"
+write_stub "$FDR" "test-a.sh" "echo x >> '$R_COUNT_FILE'; exit 0"
+bash "$FDR/tests/run-tests.sh" >/dev/null 2>&1   # warm the cache (no --no-cache)
+
+out_r_repeat="$(bash "$FDR/tests/run-tests.sh" --repeat 2 2>&1)"; rc_r_repeat=$?
+
+assert_exit_code 0 "$rc_r_repeat" "R: --repeat 2 without an explicit --no-cache exits 0"
+assert_eq "3" "$(wc -l < "$R_COUNT_FILE" | tr -d ' ')" \
+  "R: --repeat 2 forces --no-cache -- 1 warm-up run + 2 real repeats, not 1 + 0 cached"
+assert_not_contains "$out_r_repeat" "CACHED" "R: --repeat never reports CACHED"
+
 finish

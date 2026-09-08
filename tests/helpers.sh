@@ -5,6 +5,12 @@
 TALOS_ROOT="${TALOS_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 STUBS_DIR="$TALOS_ROOT/tests/stubs"
 
+# _resolve_talos_dir() -- the same canonical scripts-dir probe pipeline-agent.sh
+# and pipeline-notify.sh use. Sourced once here (function-definition only, no
+# side effects) so install_talos and any test can call it directly instead of
+# re-sourcing it per call.
+. "$TALOS_ROOT/scripts/pipeline-paths.sh"
+
 _PASS=0
 _FAIL=0
 
@@ -46,6 +52,19 @@ assert_exit_code() {  # $1=expected $2=actual $3=label
   assert_eq "$1" "$2" "$3"
 }
 
+# assert_eq_ctx -- like assert_eq, but appends extra diagnostic context (e.g.
+# a captured stderr stream) to the failure message only. Passing tests print
+# nothing extra; failing tests get the context that would otherwise be
+# silently redirected to /dev/null, which is exactly what a flaky CI failure
+# needs to be diagnosable from the log alone (#208).
+assert_eq_ctx() {  # $1=expected $2=actual $3=label $4=context
+  if [ "$1" = "$2" ]; then
+    pass "$3"
+  else
+    fail "$3" "expected: $1 | actual: $2 | stderr: ${4:-<empty>}"
+  fi
+}
+
 # make_sandbox — create an isolated temp dir with a git repo + fake origin.
 # Sets SANDBOX and cds into it. Cleaned up automatically on exit.
 #
@@ -73,6 +92,18 @@ make_sandbox() {
     return 1
   fi
   unset _msb_outer
+
+  # Isolate from ambient identity/override env vars (#208). A developer shell
+  # (or a Talos agent invoking this very suite from inside a worktree) commonly
+  # exports one or more of these -- CLAUDE_CONFIG_DIR in particular routinely
+  # points at a real ~/.claude on a machine with Claude Code installed. Left
+  # ambient, they redirect install_talos's "global" install (and the role/
+  # identity vars pipeline-agent.sh reads) outside the per-test sandbox: two
+  # tests racing on the same real path under the parallel runner, or a test
+  # silently overwriting a developer's real ~/.talos or ~/.claude.
+  unset TALOS_HOME CLAUDE_PLUGIN_ROOT CLAUDE_CONFIG_DIR \
+        TALOS_ISSUE TALOS_ISSUE_NUMBER TALOS_ROLE TALOS_WORKTREE_PATH
+
   SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/talos-test.XXXXXX")"
   trap 'rm -rf "$SANDBOX"' EXIT
   cd "$SANDBOX"
@@ -113,6 +144,19 @@ use_stubs() {
 install_talos() {
   bash "$TALOS_ROOT/install.sh" --global --no-agent-skills >/dev/null
   bash "$TALOS_ROOT/install.sh" "$SANDBOX" --no-agent-skills >/dev/null
+
+  # Hardening (#208): confirm the "global" install actually landed under the
+  # sandboxed $HOME by running the same probe pipeline-agent.sh uses. If any
+  # of the vars make_sandbox unsets above ever leaks back in (or a future
+  # change to install.sh adds a new override), this fails loudly here instead
+  # of two unrelated tests silently racing on a real, shared path.
+  _resolved="$(_resolve_talos_dir 2>/dev/null || true)"
+  case "$_resolved" in
+    "$HOME"/*) pass "install_talos: resolved scripts dir is under \$HOME" ;;
+    *) fail "install_talos: resolved scripts dir is under \$HOME" \
+            "resolved: ${_resolved:-<none>} | HOME: $HOME" ;;
+  esac
+  unset _resolved
 }
 
 # install_talos_vendored — legacy helper: copies scripts directly into
