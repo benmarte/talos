@@ -26,4 +26,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Run test suite
-        run: bash tests/run-tests.sh
+        run: bash tests/run-tests.sh --no-cache
