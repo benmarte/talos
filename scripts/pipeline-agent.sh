@@ -22,8 +22,17 @@
 #                       stdout, if non-empty, is prepended to the prompt
 #                       under a "## Context" heading. Default "" (disabled).
 #                       See pipeline-hooks.sh for the full contract.
-#   hooks.timeout_s     seconds hooks.pre_dispatch may run before being
-#                       killed. Default 30.
+#   hooks.timeout_s     seconds hooks.pre_dispatch / hooks.post_stage may run
+#                       before being killed. Default 30.
+#   hooks.post_stage    command run once the stage runner exits (#182); gets
+#                       a JSON outcome event on stdin (event "stage_complete",
+#                       verdict PASS/FAIL from the runner's exit code).
+#                       Default "" (disabled). See pipeline-hooks.sh for the
+#                       full contract.
+#
+# TALOS_STAGE_DURATION_S: if the caller sets this (seconds, integer), it is
+# forwarded as hooks.post_stage's duration_s field; otherwise duration_s is
+# null. pipeline-agent.sh does not time the run itself.
 #
 # runner_cmd environment: TALOS_ROLE, TALOS_ISSUE_NUMBER, and TALOS_WORKTREE_PATH
 # are exported and visible to runner_cmd. TALOS_ROLE lets you route by role:
@@ -60,6 +69,8 @@
 # runner_cmd wrapping an Ollama-backed coding agent).
 #
 # Exit code is the runner's exit code — the orchestrator reacts to failures.
+# (hooks.post_stage, if configured, runs after the runner exits but before
+# this script returns; it never changes the exit code.)
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -189,25 +200,38 @@ done <<EOF
 $(cfg agents.runner_args "")
 EOF
 
+# RC (#182): every branch below used to `exec` straight into the runner, so
+# the runner's exit code WAS this script's exit code and nothing ran after
+# it. hooks.post_stage needs to fire once the runner exits (event
+# stage_complete, verdict derived from its exit code), so each branch now
+# runs the runner as a normal foreground command and records its exit code
+# in RC instead — the post-`esac` block below fires the hook, then exits
+# with RC so callers still see exactly the runner's own exit status.
+RC=0
 case "$RUNNER" in
   claude)
-    exec claude -p --setting-sources project \
+    claude -p --setting-sources project \
       ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} "$PROMPT"
+    RC=$?
     ;;
   codex)
-    exec codex exec ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} "$PROMPT"
+    codex exec ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} "$PROMPT"
+    RC=$?
     ;;
   gemini)
-    exec gemini ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} -p "$PROMPT"
+    gemini ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} -p "$PROMPT"
+    RC=$?
     ;;
   antigravity)
     # invocation per Antigravity CLI docs (2026-03)
-    exec agy ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} -p "$PROMPT"
+    agy ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} -p "$PROMPT"
+    RC=$?
     ;;
   pi)
     # pi print mode — one-shot headless stage (inline mode is the pi default;
     # this case exists for callers that want a single headless stage).
-    exec pi -p ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} "$PROMPT"
+    pi -p ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} "$PROMPT"
+    RC=$?
     ;;
   custom)
     RUNNER_CMD="$(cfg agents.runner_cmd "")"
@@ -241,9 +265,29 @@ case "$RUNNER" in
       trap 'rm -rf "$_PROMPT_DIR"' EXIT
     fi
     sh -c "$RUNNER_CMD" <"$_PROMPT_FILE"
+    RC=$?
     ;;
   *)
     echo "pipeline-agent: unknown agents.runner '$RUNNER'. Valid: claude | pi | codex | gemini | antigravity | custom" >&2
     exit 1
     ;;
 esac
+
+# hooks.post_stage (#182): fire once, here, the moment the stage runner has
+# exited -- this is the single adapter-path call site for the
+# "stage_complete" event. Verdict is derived from RC: 0 -> PASS, anything
+# else -> FAIL. Guarded the same way pipeline-hooks.sh itself is above: a
+# partial install/sync may not yet ship it.
+if [ -f "$SCRIPT_DIR/pipeline-hooks.sh" ]; then
+  _POST_STAGE_VERDICT="PASS"
+  [ "$RC" -eq 0 ] || _POST_STAGE_VERDICT="FAIL"
+  _POST_STAGE_ARGS=(post_stage stage_complete "$ROLE" "$TALOS_ISSUE_NUMBER" --verdict "$_POST_STAGE_VERDICT")
+  # duration_s is not tracked anywhere today (PM scope note, #182): emit it
+  # only when the caller supplies it via TALOS_STAGE_DURATION_S, null
+  # otherwise -- no timer plumbing added in this change.
+  if [ -n "${TALOS_STAGE_DURATION_S:-}" ]; then
+    _POST_STAGE_ARGS+=(--duration-s "$TALOS_STAGE_DURATION_S")
+  fi
+  bash "$SCRIPT_DIR/pipeline-hooks.sh" "${_POST_STAGE_ARGS[@]}"
+fi
+exit "$RC"

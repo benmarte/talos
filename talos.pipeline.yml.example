@@ -286,10 +286,27 @@ notifications:
 # silent no-op — the prompt is unmodified — with one line on stderr. Never
 # blocks dispatch. Non-empty stdout is prepended to the prompt under a
 # "## Context" heading. See scripts/pipeline-hooks.sh for the full contract.
+#
+# hooks.post_stage (#182): a shell command run after EVERY verdict, approval,
+# block, and merge — the outcome-side counterpart to hooks.pre_dispatch.
+# Fire-and-forget, same never-block contract: lets an external tool (metrics,
+# cost tracking, a project memory) subscribe to every structured outcome the
+# moment it's known, without Talos depending on it. Disabled by default.
+#
+# The command receives this JSON on stdin (fields the caller didn't supply,
+# e.g. sha/verdict/attempt before they're known, are null rather than
+# omitted):
+#   {"event":"qa","role":"qa","issue":42,"pr":57,"repo":"owner/name",
+#    "sha":"<40hex or null>","verdict":"PASS","summary":"...","details":"...",
+#    "attempt":{"stage":"qa","count":1,"total":3},"model":"claude-sonnet-5",
+#    "runner":"claude","duration_s":312,"ts":"2026-09-07T14:00:00Z"}
+# TALOS_ROLE and TALOS_ISSUE_NUMBER are also exported. Non-zero exit or a
+# timeout (hooks.timeout_s) is a silent no-op with one line on stderr.
 # hooks:
 #   pre_dispatch: "my-context-tool"  # any shell command; "" (default) disables
-#   timeout_s: 30                    # seconds before the hook is killed; must
-#                                     # be a positive integer (default 30)
+#   post_stage: "my-outcome-sink"    # any shell command; "" (default) disables
+#   timeout_s: 30                    # seconds before either hook is killed;
+#                                     # must be a positive integer (default 30)
 
 # ── Safety limits ─────────────────────────────────────────────────────────────
 limits:

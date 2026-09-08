@@ -77,7 +77,7 @@ _KNOWN_CONFIG_KEYS_JSON='[
   "limits.max_fix_attempts", "limits.max_total_dispatches",
   "limits.max_retries",
   "markers.trusted_authors",
-  "hooks.pre_dispatch", "hooks.timeout_s"
+  "hooks.pre_dispatch", "hooks.post_stage", "hooks.timeout_s"
 ]'
 
 if [ "${1:-}" = "--dump" ]; then
@@ -475,8 +475,9 @@ if key == "verify.qa_mode":
 # CI-wait instructions. verify.ci_wait_s (#205 security follow-up) is
 # interpolated unquoted into a literal, agent-executed shell test
 # (`[ "$SECONDS" -ge <VERIFY_CI_WAIT_S> ]`) in the QA CI-wait loop.
-# hooks.timeout_s (#181) bounds how long a hooks.pre_dispatch command may
-# run before pipeline-hooks.sh kills it. All three must be a positive
+# hooks.timeout_s (#181, shared with hooks.post_stage per #182) bounds how
+# long a hooks.pre_dispatch or hooks.post_stage command may run before
+# pipeline-hooks.sh kills it. All three must be a positive
 # integer -- a non-integer or non-positive config value (or one carrying
 # shell metacharacters) is a config error, not a value an agent (or
 # pipeline-hooks.sh) can act on, so fail closed to the caller-supplied
