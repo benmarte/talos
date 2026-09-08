@@ -138,4 +138,26 @@ assert_eq "0" "$( [ -e "$_two_cfg" ] && echo 1 || echo 0 )" \
 assert_eq "0" "$( [ -e "$_two_other" ] && echo 1 || echo 0 )" \
   "a second site's own exit hook (e.g. post-approval's tempfile) also runs -- hooks compose, not clobber (#169)"
 
+# ── Missing-helper fallback: a partial install/sync that has every script ───
+# except pipeline-cfg-cache.sh must not silently lose cfg() (#169 review
+# finding on PR #213). Reuse the AC1 WRAP dir but drop the cache-helper
+# symlink to simulate the helper being absent from $SCRIPT_DIR.
+WRAP_NO_HELPER="$SANDBOX/wrapped-no-helper"
+mkdir -p "$WRAP_NO_HELPER"
+for f in "$TALOS_ROOT"/scripts/*.sh; do
+  base="$(basename "$f")"
+  [ "$base" = "pipeline-cfg-cache.sh" ] && continue
+  ln -s "$f" "$WRAP_NO_HELPER/$base"
+done
+cat > talos.pipeline.json <<'EOF'
+{"merge": {"method": "squash"}}
+EOF
+_nh_stderr="$SANDBOX/no-helper.stderr"
+_nh_stdout="$(bash "$WRAP_NO_HELPER/pipeline-vcs.sh" --dry-run merge-pr 9 2>"$_nh_stderr")"
+assert_contains "$_nh_stdout" "--squash" \
+  "cfg() still resolves merge.method correctly when pipeline-cfg-cache.sh is missing (#169 fallback)"
+_nh_warn_count="$(grep -c "^pipeline: config cache helper missing, falling back to per-call parsing$" "$_nh_stderr")"
+assert_eq "1" "$_nh_warn_count" \
+  "missing-helper fallback prints exactly one stderr warning (#169 fallback)"
+
 finish

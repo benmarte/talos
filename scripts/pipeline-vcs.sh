@@ -210,8 +210,15 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # cfg() (#169): dumps the config once per invocation and answers lookups
-# from that cache instead of re-parsing on every call.
-. "$SCRIPT_DIR/pipeline-cfg-cache.sh"
+# from that cache instead of re-parsing on every call. Guarded (#169 review):
+# a partial install/sync may not yet ship pipeline-cfg-cache.sh, so fall back
+# to the old per-call cfg() instead of leaving cfg undefined.
+if [ -f "$SCRIPT_DIR/pipeline-cfg-cache.sh" ]; then
+  . "$SCRIPT_DIR/pipeline-cfg-cache.sh"
+else
+  cfg() { bash "$SCRIPT_DIR/pipeline-config.sh" "$@"; }
+  echo "pipeline: config cache helper missing, falling back to per-call parsing" >&2
+fi
 
 # ── Resolve config path for Python blocks (#116) ─────────────────────────────
 # Mirrors the lookup order in pipeline-config.sh; passed as TALOS_CFG env var
