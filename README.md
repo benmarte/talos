@@ -817,6 +817,27 @@ bash tests/run-tests.sh            # everything
 bash tests/run-tests.sh notify     # only files matching "notify"
 ```
 
+Test files run concurrently by default, in a bash job pool sized to the CPU
+count (`nproc`, then `sysctl -n hw.ncpu`, then a fallback of 4). Override with
+`-j N` or `TALOS_TEST_JOBS=N`. A file that cannot run in parallel (shared
+fixtures, fixed ports) opts out with a full-line `# SERIAL` marker comment
+anywhere in the file; marked files run sequentially, after the parallel
+batch. `--quiet` (or `TALOS_TEST_QUIET=1`) prints one line per file
+(pass/fail/cached) and shows full output only for failing files.
+
+Passing runs are cached under `.talos/test-cache/` (gitignored), keyed on the
+test file's own content plus a whole-set hash of **all tracked files except**
+`tasks/**`, `docs/superpowers/**`, `.github/**`, and `.gitignore` (each
+proven, via a `grep -l` sweep of every `tests/test-*.sh`, to be read by no
+test) -- touching any other git-tracked file, including `tests/run-tests.sh`
+itself, invalidates every cached result. Only tracked files are hashed;
+untracked files are ignored by design and cannot invalidate the cache. A
+cache hit prints `CACHED tests/<name>.sh` and skips re-running the file; a
+failing file is never cached. `--no-cache` ignores the cache entirely (reads
+and writes); CI always runs with `--no-cache`. If neither `sha256sum` nor
+`shasum` is available, caching is disabled outright (with a warning) rather
+than key on a degraded hash.
+
 CI runs the suite on Ubuntu and macOS for every push and PR
 (`.github/workflows/tests.yml`).
 

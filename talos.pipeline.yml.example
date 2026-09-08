@@ -98,6 +98,7 @@ verify:
   - python -m pytest tests/ -x -q
   # - npm test
   # - make lint
+  # - bash tests/run-tests.sh --quiet   # if using Talos's own bash test suite
   # - npx tsc --noEmit
   # - cargo test
 

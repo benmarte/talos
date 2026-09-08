@@ -4,3 +4,4 @@ __pycache__/
 .DS_Store
 # Talos-managed ephemeral artifacts — never content, always build output
 .claude/worktrees/
+.talos/

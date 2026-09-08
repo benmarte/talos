@@ -1,9 +1,35 @@
 #!/usr/bin/env bash
 # run-tests.sh -- run every tests/test-*.sh file and report a summary.
-# Usage: bash tests/run-tests.sh [--base-ref <ref>] [pattern]
+# Usage: bash tests/run-tests.sh [--base-ref <ref>] [-j N] [--quiet] [--no-cache] [pattern]
 #   --base-ref  override the auto-detected base ref for count comparison
 #               (default: auto-detects origin/HEAD, falls back to origin/main)
+#   -j N        run up to N test files concurrently (also: TALOS_TEST_JOBS)
+#               default: CPU count (nproc, then sysctl -n hw.ncpu, then 4)
+#   --quiet     print one line per file (pass/fail/cached) plus full output
+#               only for failing files (also: TALOS_TEST_QUIET=1)
+#   --no-cache  ignore and do not write the per-file result cache
 #   pattern     optional substring filter, e.g. "notify" runs test-notify*.sh
+#
+# A test file that cannot run concurrently with the others (shared fixtures,
+# fixed ports) can opt out of the parallel pool with a full-line marker
+# comment anywhere in the file:
+#   # SERIAL
+# Marked files run sequentially, after the parallel batch finishes.
+#
+# Result cache: passing files are cached under .talos/test-cache/<key>, keyed
+# on the test file's own content plus a whole-set hash of every git-tracked
+# file in the repo (`git ls-files`) EXCEPT a small, proven-unread exclusion
+# list -- see the comment on compute_deps_hash() for the list and how it was
+# proven safe. This includes tests/run-tests.sh itself and every
+# tests/test-*.sh (whole-set hashing, not per-file dependency tracking -- any
+# tracked change outside the exclusion list invalidates every cached test).
+# Untracked files are not hashed and cannot invalidate the cache; a test that
+# asserts against an untracked file is outside this cache's safety net. A
+# cache hit prints "CACHED tests/<name>.sh", counts as passed, and is not
+# re-executed. Failing files are never cached. --no-cache bypasses reads and
+# writes; CI always runs with --no-cache. If neither sha256sum nor shasum is
+# available, caching is disabled outright (a warning is printed) rather than
+# risk a degraded key.
 set -u
 
 # Source guard (#121): sourcing this file would run test suites in the caller's
@@ -21,11 +47,26 @@ chmod +x "$TALOS_ROOT"/tests/stubs/* 2>/dev/null
 # ── Argument parsing ──────────────────────────────────────────────────────────
 BASE_REF_OVERRIDE=""
 PATTERN=""
+JOBS_OVERRIDE=""
+QUIET=0
+NO_CACHE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --base-ref)
       BASE_REF_OVERRIDE="$2"
       shift 2
+      ;;
+    -j)
+      JOBS_OVERRIDE="$2"
+      shift 2
+      ;;
+    --quiet)
+      QUIET=1
+      shift
+      ;;
+    --no-cache)
+      NO_CACHE=1
+      shift
       ;;
     *)
       PATTERN="$1"
@@ -33,6 +74,110 @@ while [ $# -gt 0 ]; do
       ;;
   esac
 done
+if [ "${TALOS_TEST_QUIET:-0}" = "1" ]; then
+  QUIET=1
+fi
+
+# ── Resolve worker count ──────────────────────────────────────────────────────
+JOBS=""
+if [ -n "$JOBS_OVERRIDE" ]; then
+  JOBS="$JOBS_OVERRIDE"
+elif [ -n "${TALOS_TEST_JOBS:-}" ]; then
+  JOBS="$TALOS_TEST_JOBS"
+elif command -v nproc >/dev/null 2>&1; then
+  JOBS="$(nproc)"
+elif command -v sysctl >/dev/null 2>&1; then
+  JOBS="$(sysctl -n hw.ncpu 2>/dev/null)"
+fi
+case "$JOBS" in
+  ''|*[!0-9]*) JOBS=4 ;;
+esac
+[ "$JOBS" -lt 1 ] && JOBS=1
+
+# ── Result cache ───────────────────────────────────────────────────────────────
+CACHE_ENABLED=1
+[ "$NO_CACHE" -eq 1 ] && CACHE_ENABLED=0
+CACHE_DIR="$TALOS_ROOT/.talos/test-cache"
+
+# _HASH_TOOL -- the hashing command to pipe stdin through, resolved once.
+# Left empty (rather than defaulting to a missing binary) if neither tool
+# exists, so callers can detect and disable caching instead of erroring out.
+_HASH_TOOL=""
+if command -v sha256sum >/dev/null 2>&1; then
+  _HASH_TOOL="sha256sum"
+elif command -v shasum >/dev/null 2>&1; then
+  _HASH_TOOL="shasum -a 256"
+fi
+if [ -z "$_HASH_TOOL" ] && [ "$CACHE_ENABLED" -eq 1 ]; then
+  echo "WARNING: neither sha256sum nor shasum found; disabling test result cache" >&2
+  CACHE_ENABLED=0
+fi
+
+# _sha256 -- hash stdin, print the hex digest only.
+_sha256() {
+  $_HASH_TOOL | awk '{print $1}'
+}
+
+# _sha256_file PATH -- hash a file's content (empty hash if it does not exist
+# or is not a regular file, e.g. a symlink to a directory).
+_sha256_file() {
+  if [ -f "$1" ]; then
+    _sha256 < "$1"
+  else
+    printf '' | _sha256
+  fi
+}
+
+# compute_deps_hash -- whole-set hash of every git-tracked file in the repo
+# (`git ls-files -z`, NUL-delimited so filenames with spaces are safe) EXCEPT
+# an explicit exclusion list, plus tests/run-tests.sh and every
+# tests/test-*.sh (both already git-tracked, so no special-casing is needed).
+# Sorted (LC_ALL=C) so the result is order-independent.
+#
+# Why "every tracked file minus an exclusion list" instead of an allow-list
+# of directories: an allow-list silently rots -- #175's own review round
+# found the original allow-list (scripts/*.sh, tests/helpers.sh,
+# tests/stubs/*, templates/**) missing tests/run-tests.sh itself, and a
+# follow-up security finding found it also missing agents/**, skills/**, and
+# .claude-plugin/**, which several tests read directly (test-callsite-guard.sh,
+# test-marker-contract.sh, test-global-install.sh, test-plugin-install.sh).
+# An exclusion list only needs to be provably *safe to leave out*, not
+# provably *complete* -- so it is far cheaper to keep correct.
+#
+# Exclusion list and how it was proven safe: for each candidate below,
+# `grep -l '<pattern>' tests/*.sh` was run across every tests/test-*.sh (the
+# full read-closure of the suite) and returned zero matches, i.e. no test
+# reads or asserts against that path. Re-run that grep before adding
+# anything here.
+#   tasks/**             -- internal planning notes; zero references
+#   docs/superpowers/**  -- spec drafts; zero references
+#   .github/**           -- CI workflow config; zero references
+#   .gitignore           -- tests that mention ".gitignore" (test-assert-sync*)
+#                            write and check their OWN fixture .gitignore in
+#                            a sandbox; none reads the repo's real .gitignore
+# CHANGELOG.md was considered and REJECTED: tests/test-comment-post-failure.sh
+# reads "$TALOS_ROOT/CHANGELOG.md" directly and asserts on its content, so it
+# stays hashed like every other tracked file.
+compute_deps_hash() {
+  [ -z "$_HASH_TOOL" ] && { printf '' | _sha256; return; }
+  git -C "$TALOS_ROOT" ls-files -z 2>/dev/null | while IFS= read -r -d '' _dep; do
+    case "$_dep" in
+      tasks/*|docs/superpowers/*|.github/*|.gitignore) continue ;;
+    esac
+    printf '%s %s\n' "$_dep" "$(_sha256_file "$TALOS_ROOT/$_dep")"
+  done | LC_ALL=C sort | _sha256
+}
+
+if [ "$CACHE_ENABLED" -eq 1 ]; then
+  DEPS_HASH="$(compute_deps_hash)"
+  mkdir -p "$CACHE_DIR" 2>/dev/null
+fi
+
+# cache_key_for TESTFILE -- deterministic key combining the test file's own
+# content hash with the shared dependency-set hash.
+cache_key_for() {
+  printf '%s:%s' "$(_sha256_file "$1")" "$DEPS_HASH" | _sha256
+}
 
 # ── Resolve base ref (default-on) ────────────────────────────────────────────
 if [ -n "$BASE_REF_OVERRIDE" ]; then
@@ -65,18 +210,124 @@ else
   SKIP_COUNT_CHECK=1
 fi
 
-total_files=0
-failed_files=0
-
+# ── Build the file list, then split into parallel/serial groups ──────────────
+# A file opts out of the parallel pool with a full-line "# SERIAL" marker
+# comment anywhere in its body; those run sequentially, after the parallel
+# batch. Order within each group follows the original glob (alphabetical),
+# and reporting order is always parallel-group-then-serial-group -- stable,
+# and independent of actual completion order.
+ALL_FILES=()
 for t in "$TALOS_ROOT"/tests/test-*.sh; do
+  [ -f "$t" ] || continue
   name="$(basename "$t")"
   [ -n "$PATTERN" ] && case "$name" in *"$PATTERN"*) ;; *) continue ;; esac
-  total_files=$((total_files + 1))
-  echo "-- $name"
-  if ! bash "$t"; then
-    failed_files=$((failed_files + 1))
+  ALL_FILES+=("$t")
+done
+
+PARALLEL_FILES=()
+SERIAL_FILES=()
+for t in "${ALL_FILES[@]}"; do
+  if grep -Eq '^# SERIAL[[:space:]]*$' "$t" 2>/dev/null; then
+    SERIAL_FILES+=("$t")
+  else
+    PARALLEL_FILES+=("$t")
   fi
-  echo ""
+done
+COMBINED=()
+[ "${#PARALLEL_FILES[@]}" -gt 0 ] && COMBINED+=("${PARALLEL_FILES[@]}")
+[ "${#SERIAL_FILES[@]}" -gt 0 ] && COMBINED+=("${SERIAL_FILES[@]}")
+PARALLEL_COUNT=${#PARALLEL_FILES[@]}
+TOTAL_COUNT=${#COMBINED[@]}
+
+RUN_TMP="$(mktemp -d "${TMPDIR:-/tmp}/talos-run-tests.XXXXXX")"
+trap 'rm -rf "$RUN_TMP"' EXIT
+
+# run_test_file TESTFILE LOGFILE EXITFILE STATUSFILE -- runs (or serves from
+# cache) a single test file. Safe to background: writes results to files
+# instead of returning them, since a backgrounded function's exit status and
+# variables are invisible to the parent shell.
+run_test_file() {
+  local t="$1" logfile="$2" exitfile="$3" statusfile="$4" key=""
+  if [ "$CACHE_ENABLED" -eq 1 ]; then
+    key="$(cache_key_for "$t")"
+    if [ -f "$CACHE_DIR/$key" ]; then
+      : > "$logfile"
+      printf '0' > "$exitfile"
+      printf 'CACHED' > "$statusfile"
+      return 0
+    fi
+  fi
+  printf 'RAN' > "$statusfile"
+  if bash "$t" > "$logfile" 2>&1; then
+    printf '0' > "$exitfile"
+    [ "$CACHE_ENABLED" -eq 1 ] && : > "$CACHE_DIR/$key"
+  else
+    printf '1' > "$exitfile"
+  fi
+}
+
+# run_parallel_batch -- runs COMBINED[0..PARALLEL_COUNT) in batches of $JOBS
+# concurrent background jobs, waiting for each batch before starting the
+# next. No GNU parallel and no bash-4-only job control (`wait -n`) so this
+# stays portable to bash 3.2 (macOS's default /bin/bash).
+run_parallel_batch() {
+  local i=0 k batch_end pids
+  while [ "$i" -lt "$PARALLEL_COUNT" ]; do
+    batch_end=$((i + JOBS))
+    [ "$batch_end" -gt "$PARALLEL_COUNT" ] && batch_end=$PARALLEL_COUNT
+    pids=""
+    k=$i
+    while [ "$k" -lt "$batch_end" ]; do
+      run_test_file "${COMBINED[$k]}" "$RUN_TMP/$k.log" "$RUN_TMP/$k.exit" "$RUN_TMP/$k.status" &
+      pids="$pids $!"
+      k=$((k + 1))
+    done
+    wait $pids
+    i=$batch_end
+  done
+}
+
+run_parallel_batch
+
+# Serial files run after the entire parallel batch has finished, one at a time.
+i=$PARALLEL_COUNT
+while [ "$i" -lt "$TOTAL_COUNT" ]; do
+  run_test_file "${COMBINED[$i]}" "$RUN_TMP/$i.log" "$RUN_TMP/$i.exit" "$RUN_TMP/$i.status"
+  i=$((i + 1))
+done
+
+# ── Report, in stable (original file-list) order ──────────────────────────────
+total_files=0
+failed_files=0
+i=0
+while [ "$i" -lt "$TOTAL_COUNT" ]; do
+  t="${COMBINED[$i]}"
+  name="$(basename "$t")"
+  status="$(cat "$RUN_TMP/$i.status" 2>/dev/null || echo RAN)"
+  rc="$(cat "$RUN_TMP/$i.exit" 2>/dev/null || echo 1)"
+  log="$RUN_TMP/$i.log"
+  total_files=$((total_files + 1))
+  [ "$rc" != "0" ] && failed_files=$((failed_files + 1))
+
+  if [ "$QUIET" -eq 1 ]; then
+    if [ "$status" = "CACHED" ]; then
+      echo "CACHED tests/$name"
+    elif [ "$rc" = "0" ]; then
+      echo "PASS  tests/$name"
+    else
+      echo "FAIL  tests/$name"
+      cat "$log"
+    fi
+  else
+    echo "-- $name"
+    if [ "$status" = "CACHED" ]; then
+      echo "CACHED tests/$name"
+    else
+      cat "$log"
+    fi
+    echo ""
+  fi
+  i=$((i + 1))
 done
 
 # ── Part A: test-file count check ────────────────────────────────────────────
