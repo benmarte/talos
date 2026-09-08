@@ -135,6 +135,19 @@ printf '%s\n' \
 out="$(bash "$VCS" find-pr 7)"
 assert_eq "" "$out"                              "find-pr: no match returns empty"
 
+# ── pr-files: unfiltered changed-path listing (#200) ───────────────────────────
+: > "$CURL_LOG"
+printf '%s\n' \
+  '[{"filename":"scripts/x.sh","status":"modified"},{"filename":"tests/test-x.sh","status":"added"},{"filename":"CHANGELOG.md","status":"modified"}]' \
+  > "$CURL_QUEUE"
+
+out="$(bash "$VCS" pr-files 9)"
+assert_eq "$(printf 'scripts/x.sh\ntests/test-x.sh\nCHANGELOG.md')" "$out" \
+  "pr-files: prints every changed path verbatim, one per line"
+
+out="$(bash "$VCS" --dry-run pr-files 9)"
+assert_contains "$out" "[dry-run]"               "pr-files: --dry-run prints a marker, not a real call"
+
 # ── check-pr-files ────────────────────────────────────────────────────────────
 : > "$CURL_LOG"
 printf '%s\n' \

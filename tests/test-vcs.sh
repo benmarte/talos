@@ -92,6 +92,18 @@ assert_contains "$out" '"number": 9' "find-pr matches branch fix/issue-42"
 out="$(bash "$VCS" find-pr 7)"
 assert_eq "" "$out" "find-pr returns nothing for unrelated issue"
 
+# ── pr-files: unfiltered changed-path listing (#200) ───────────────────────────
+out="$(bash "$VCS" pr-files 9)"
+assert_eq "$(printf 'src/auth.js\ntests/auth.test.js')" "$out" \
+  "pr-files: prints the stub's default changed paths, one per line"
+
+out="$(STUB_PR_FILES=$'scripts/x.sh\ntests/test-x.sh\nCHANGELOG.md' bash "$VCS" pr-files 9)"
+assert_eq "$(printf 'scripts/x.sh\ntests/test-x.sh\nCHANGELOG.md')" "$out" \
+  "pr-files: reflects STUB_PR_FILES verbatim, no filtering (that's check-pr-files' job)"
+
+out="$(bash "$VCS" --dry-run pr-files 9)"
+assert_contains "$out" "[dry-run]" "pr-files: --dry-run prints a marker, not a real call"
+
 # ── check-pr-files: forbidden-files gate ──────────────────────────────────────
 out="$(bash "$VCS" check-pr-files 9)"; rc=$?
 assert_eq "0" "$rc" "clean PR passes forbidden-files check"

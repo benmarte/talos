@@ -52,6 +52,16 @@
 #                                             state: open (default) | merged | all
 #   check-pr-files <n>                        Exit 1 if the PR touches any
 #                                             merge.forbidden_files pattern
+#   pr-files <n>                              Print the PR's changed paths, one per
+#                                             line -- no filtering, no exit-1 gate
+#                                             (that's check-pr-files). Reuses the same
+#                                             fetch check-pr-files already makes.
+#                                             Used by the Step 3e Phase 1 docs-mode
+#                                             gate (#200) to decide whether the docs
+#                                             stage needs to run at all. GitHub only
+#                                             (github/github-api parity); gitlab,
+#                                             azure, and file mode fail open with a
+#                                             stderr warning (empty stdout).
 #   check-closing-keyword <n|branch> <issue>  Exit 1 if the PR body has a closing
 #                                             keyword for <issue> while other PRs
 #                                             for that issue are still open.
@@ -956,6 +966,14 @@ if bad:
     sys.exit(1)
 print(f'no forbidden files [{pat_count} patterns: defaults={defaults_active}]')
 "
+      ;;
+    pr-files)
+      local n="$1"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] gh pr view $n --json files -q '.files[].path'"
+        return 0
+      fi
+      gh pr view "$n" --json files -q '.files[].path' ${REPO:+--repo "$REPO"} 2>/dev/null
       ;;
     rerun-ci)
       local n="$1"
@@ -2781,6 +2799,25 @@ print(f'no forbidden files [{pat_count} patterns: defaults={defaults_active}]')
 "
       ;;
 
+    pr-files)
+      local _n="$1"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: GET $_API/pulls/$_n/files | print .filename, one per line"
+        return 0
+      fi
+      _ga_req GET "$_API/pulls/$_n/files?per_page=100" | python3 -c "
+import json, sys
+try:
+    files = json.load(sys.stdin)
+except Exception:
+    files = []
+for f in files:
+    path = f.get('filename', '')
+    if path:
+        print(path)
+"
+      ;;
+
     rerun-ci)
       local _n="$1"
       if [ "$DRY_RUN" = "true" ]; then
@@ -3841,7 +3878,7 @@ _gitlab() {
       local n="$1" body="$2"
       _run glab mr note "$n" --message "$body" $RARG
       ;;
-    find-pr|check-pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
+    find-pr|check-pr-files|pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
       # Best-effort providers: not implemented — fail open with a warning so
       # the orchestrator falls back to its manual instructions.
       echo "pipeline-vcs: $verb not implemented for gitlab — verify manually" >&2
@@ -4274,7 +4311,7 @@ PYEOF
         --headers "Content-Type=application/json" --body "@$tf" >/dev/null
       local rc=$?; rm -f "$tf"; return $rc
       ;;
-    find-pr|check-pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
+    find-pr|check-pr-files|pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
       echo "pipeline-vcs: $verb not implemented for azure — verify manually" >&2
       return 0
       ;;
@@ -4311,7 +4348,7 @@ _file() {
       echo "file mode: no PR to merge — orchestrator should close-issue directly after verifying the branch" >&2
       return 0
       ;;
-    diff-pr|pr-checks|list-prs|view-pr|find-pr|check-pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
+    diff-pr|pr-checks|list-prs|view-pr|find-pr|check-pr-files|pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
       echo "file mode: $verb not applicable in file mode" >&2
       return 0
       ;;
