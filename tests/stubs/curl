@@ -81,6 +81,14 @@ else
   esac
 fi
 
+# CURL_QUEUE holds one response body per line, so a queue entry cannot
+# contain a literal newline. Tests that need a pretty-printed (multi-line)
+# response body -- matching the live GitHub REST API shape (#244) -- encode
+# embedded newlines as the control byte \x01 before queuing; decode back to
+# real newlines here. \x01 cannot appear in valid JSON text, so this is a
+# no-op for every pre-existing single-line queue entry.
+resp="${resp//$'\x01'/$'\n'}"
+
 # Pop one Link: next URL from CURL_LINK_QUEUE (empty line = no Link header)
 link_next=""
 if [ -n "${CURL_LINK_QUEUE:-}" ] && [ -f "$CURL_LINK_QUEUE" ] && [ -s "$CURL_LINK_QUEUE" ]; then
