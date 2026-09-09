@@ -51,6 +51,23 @@ assert_contains "$(cat "$TALOS_ROOT/talos.pipeline.yml.example")" "quiet" \
 assert_contains "$(cat "$TALOS_ROOT/talos.pipeline.json.example")" "quiet" \
   "talos.pipeline.json.example mentions --quiet"
 
+# ── Per-role runner dispatch rule (#167) ────────────────────────────────────
+# The native-vs-adapter decision is made per role, not once for the whole
+# pipeline: a role whose effective runner (agents.roles.<role>.runner, else
+# agents.runner) is not claude must be dispatched via pipeline-agent.sh even
+# while the rest of the pipeline runs native subagents. Assert the rule text
+# and the shared --resolve helper are actually in SKILL.md's harness-
+# compatibility section, not just implemented in the scripts.
+harness_section="$(extract_window "$SKILL_MD" "Harness compatibility")"
+assert_contains "$harness_section" "resolved per role" \
+  "SKILL.md harness-compatibility section states the runner is resolved per role"
+assert_contains "$harness_section" "agents.roles.<role>.runner" \
+  "SKILL.md harness-compatibility section names the per-role runner key"
+assert_contains "$harness_section" "pipeline-agent.sh --resolve" \
+  "SKILL.md harness-compatibility section points at the shared --resolve helper"
+assert_contains "$harness_section" "even while the rest of the pipeline stays native" \
+  "SKILL.md harness-compatibility section states a non-claude role dispatches via pipeline-agent.sh even in native mode"
+
 # ── Verify identity is mechanical, not instruction-based (#186) ────────────
 # Every verify instruction in the developer/QA prompts must route through
 # pipeline-verify.sh, which exports TALOS_ISSUE_NUMBER/TALOS_WORKTREE_PATH

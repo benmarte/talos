@@ -45,9 +45,11 @@ fi
 echo "talos: scripts=<resolved scripts dir>  agents=$agent_source"
 ```
 
-**Harness compatibility** — driven by config `agents.subagents` (`auto` | `true` | `false`) and `agents.runner` (`claude` | `pi` | `codex` | `gemini` | `antigravity` | `custom`). `auto` = `true` when the runner is `claude`, otherwise `false`; if `agents.subagents` is unset, behave as `auto`.
+**Harness compatibility** — driven by config `agents.subagents` (`auto` | `true` | `false`) and `agents.runner` (`claude` | `pi` | `codex` | `gemini` | `antigravity` | `custom`). `auto` = `true` when the *global* runner is `claude`, otherwise `false`; if `agents.subagents` is unset, behave as `auto`.
 
-- **`subagents: true`** (native subagents, e.g. Claude Code) — spawn them as each stage instructs. **Per-role model selection (native path):** Before spawning each subagent, resolve its model in three steps:
+**Per-role runner override (#167):** the runner is resolved per role, not once for the whole pipeline. Before every spawn, on every harness path, resolve that role's effective runner: `agents.roles.<role>.runner` if set, else `agents.runner` (default `claude`) — run `bash scripts/pipeline-agent.sh --resolve <role>` for the one-line `runner=<r> runner_cmd=<c> model=<m>` answer instead of separate `pipeline-config.sh` lookups. On the native path (`subagents: true`), a role whose effective runner is `claude` spawns natively as below; a role whose effective runner is anything else spawns via `bash scripts/pipeline-agent.sh <role> - <<'PROMPT' ... PROMPT` instead, even while the rest of the pipeline stays native — this is a per-spawn decision, so two roles in the same run can take different paths.
+
+- **`subagents: true`** (native subagents, e.g. Claude Code) — spawn them as each stage instructs, after the per-role runner check above sends it here. **Per-role model selection (native path, `claude`-routed roles only):** Before spawning each subagent, resolve its model in three steps:
   1. Read `agents.roles.<role>.model` via `bash scripts/pipeline-config.sh agents.roles.<role>.model` (substitute the actual role name, e.g. `agents.roles.developer.model`).
   2. If empty, read `agents.model` via `bash scripts/pipeline-config.sh agents.model`.
   3. If still empty, omit `model:` from the spawn call — the Agent SDK inherits the session default (current behaviour).
@@ -72,7 +74,7 @@ echo "talos: scripts=<resolved scripts dir>  agents=$agent_source"
   PROMPT
   ```
 
-  The adapter finds the role definition itself (plugin root, then `.claude/agents/`), combines it with the stage prompt, and runs it through the CLI configured in `agents.runner`. Everything else in this playbook is identical. Note: without native subagents, developer stages run sequentially in the working tree — set `issues.max_parallel: 1`.
+  The adapter finds the role definition itself (plugin root, then `.claude/agents/`), combines it with the stage prompt, and runs it through the CLI configured for that role (`pipeline-agent.sh` does the same per-role resolution above internally, so you never need to pass an override in). Everything else in this playbook is identical. Note: without native subagents, developer stages run sequentially in the working tree — set `issues.max_parallel: 1`.
 
 **`hooks.pre_dispatch` (#181):** before building ANY stage's prompt below — every "spawn a subagent" / "spawn" step, on every harness path — run `bash scripts/pipeline-hooks.sh pre_dispatch <role> <N> <PR> <worktree>` (role name; issue number; PR number if one exists yet, else omit it; worktree path if one exists yet, else omit it). This is always safe and never worth waiting on: disabled by default (empty `hooks.pre_dispatch` config), and any failure, timeout (`hooks.timeout_s`), or empty output is a silent no-op on its own, with a one-line stderr note — you never branch on it. If it prints anything, paste that output verbatim at the very top of the prompt you are about to send (before the role body on the adapter path, before the stage-specific instructions on the native path) — it already carries its own `## Context` / `---` framing, so add nothing else around it. This one rule covers every stage; it is not restated per stage below except as a one-line reminder on the developer and QA blocks.
 

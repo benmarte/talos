@@ -1234,6 +1234,65 @@ agents:
     codex --model "$MODEL" --role "$TALOS_ROLE" -
 ```
 
+### Per-role runner override (`agents.roles.<role>.runner` / `.runner_cmd`)
+
+**What it does.** Unlike `agents.roles.<role>.model` above, this key is read
+on **both** execution paths -- native subagents and the `pipeline-agent.sh`
+adapter. `agents.runner` picks one backend for the whole pipeline;
+`agents.roles.<role>.runner` overrides it for a single role, resolved
+role-first: the role's own key wins when set, else `agents.runner` (default
+`claude`). `agents.roles.<role>.runner_cmd` follows the same precedence and
+is only read when the resolved runner is `custom`. `agents.runner_args`
+stays global-only -- there is no per-role `runner_args` in this release.
+
+**On the native path** (Claude Code, `subagents: true`), the orchestrator
+resolves the effective runner for each role *before* deciding how to spawn
+it: a role whose effective runner is `claude` still spawns as a native
+subagent; a role whose effective runner is anything else is dispatched
+through `bash scripts/pipeline-agent.sh <role> - <<'PROMPT' ... PROMPT`
+instead -- even though the rest of the pipeline is otherwise running
+natively. This is the fix for the model footgun described above: a role
+routed off `claude` no longer silently keeps using the native path at
+whatever default the harness happens to apply -- it is dispatched through
+the adapter, which is where `runner_cmd` and `$TALOS_ROLE` routing actually
+take effect.
+
+**On the adapter path** (`subagents: false`), `pipeline-agent.sh` already
+resolves this precedence internally -- no config or prompt change is needed
+to get per-role behaviour there; it is the same lookup either way.
+
+**Check what a role will actually use** without running anything:
+
+```bash
+bash scripts/pipeline-agent.sh --resolve reviewer
+# runner=custom runner_cmd=my-endpoint model=
+```
+
+**Worked example -- second opinion on a local model.** Give one role (here,
+`security`) an independent pass through a local model served by llama.cpp,
+while every other role keeps running natively on Claude:
+
+```bash
+# --jinja enables tool/function calling -- agentic CLIs need it
+llama-server -m qwen2.5-coder-32b-instruct-q4_k_m.gguf --port 8080 -c 32768 --jinja
+```
+
+```yaml
+agents:
+  runner: claude                 # everything else stays native
+  roles:
+    security:
+      runner: custom
+      runner_cmd: >-
+        OPENAI_API_BASE=http://localhost:8080/v1 OPENAI_API_KEY=local
+        aider --model openai/local --yes-always --no-auto-commits --message "$(cat)"
+```
+
+Only `security` pays the local round trip; the other seven roles are
+unaffected. This is the enabling piece for a second, independent review pass
+on a different backend -- a dedicated `adversarial` stage is a separate,
+larger change (tracked separately) that this key alone does not provide.
+
 ### Worked example: Addy Osmani's agent-skills pack
 
 Wiring [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills)

@@ -8,6 +8,16 @@
 #
 # Usage: pipeline-agent.sh <role> <task-prompt>
 #        pipeline-agent.sh <role> -          # read task prompt from stdin
+#        pipeline-agent.sh --resolve <role>  # print the resolved runner/
+#                                             # runner_cmd/model for <role>
+#                                             # and exit 0 -- no prompt is
+#                                             # run. One line on stdout:
+#                                             #   runner=<r> runner_cmd=<c> model=<m>
+#                                             # Shared with the orchestrator
+#                                             # (skills/pipeline/SKILL.md) so
+#                                             # both the adapter path and the
+#                                             # native-path per-role dispatch
+#                                             # decision use one resolution.
 #
 # The executed prompt = role definition body (.claude/agents/<role>.md with
 # its YAML frontmatter stripped — the frontmatter is Claude Code metadata)
@@ -18,6 +28,15 @@
 #   agents.runner_args  list of extra CLI args appended to claude/pi/codex/gemini/agy
 #   agents.runner_cmd   full shell command for runner=custom;
 #                       receives the prompt on stdin
+#   agents.roles.<role>.runner      per-role override of agents.runner (#167).
+#                                    Resolved role-first: this key wins when
+#                                    set, else agents.runner, else "claude".
+#   agents.roles.<role>.runner_cmd  per-role override of agents.runner_cmd,
+#                                    same role-first precedence. Only read
+#                                    when the resolved runner is "custom".
+#                                    agents.runner_args stays global-only —
+#                                    no agents.roles.<role>.runner_args (S1
+#                                    scope, #167).
 #   hooks.pre_dispatch  command run before the prompt is built (#181); its
 #                       stdout, if non-empty, is prepended to the prompt
 #                       under a "## Context" heading. Default "" (disabled).
@@ -85,6 +104,56 @@ if [ -f "$SCRIPT_DIR/pipeline-cfg-cache.sh" ]; then
 else
   cfg() { bash "$SCRIPT_DIR/pipeline-config.sh" "$@"; }
   echo "pipeline: config cache helper missing, falling back to per-call parsing" >&2
+fi
+
+# ── Per-role runner resolution (#167) ─────────────────────────────────────────
+# Role-first: agents.roles.<role>.runner / .runner_cmd win over the global
+# agents.runner / agents.runner_cmd when set. One function each, shared by
+# --resolve below and the real dispatch further down, so there is exactly
+# one place this precedence is decided.
+_resolve_runner() {
+  local _role="$1" _r
+  _r="$(cfg "agents.roles.$_role.runner" "")"
+  [ -n "$_r" ] || _r="$(cfg agents.runner "claude")"
+  printf '%s' "$_r"
+}
+
+_resolve_runner_cmd() {
+  local _role="$1" _c
+  _c="$(cfg "agents.roles.$_role.runner_cmd" "")"
+  [ -n "$_c" ] || _c="$(cfg agents.runner_cmd "")"
+  printf '%s' "$_c"
+}
+
+_resolve_model() {
+  local _role="$1" _m
+  _m="$(cfg "agents.roles.$_role.model" "")"
+  [ -n "$_m" ] || _m="$(cfg agents.model "")"
+  printf '%s' "$_m"
+}
+
+# --resolve <role>: print the resolved runner/runner_cmd/model and exit,
+# without running anything. Shared resolution for the orchestrator's
+# native-path per-role dispatch decision (skills/pipeline/SKILL.md).
+if [ "${1:-}" = "--resolve" ]; then
+  _RESOLVE_ROLE="${2:-}"
+  if [ -z "$_RESOLVE_ROLE" ]; then
+    echo "Usage: pipeline-agent.sh --resolve <role>" >&2
+    exit 2
+  fi
+  _RESOLVED_RUNNER="$(_resolve_runner "$_RESOLVE_ROLE")"
+  case "$_RESOLVED_RUNNER" in
+    claude | pi | codex | gemini | antigravity | custom) : ;;
+    *)
+      echo "pipeline-agent: unknown agents.runner '$_RESOLVED_RUNNER' (role=$_RESOLVE_ROLE). Valid: claude | pi | codex | gemini | antigravity | custom" >&2
+      exit 1
+      ;;
+  esac
+  printf 'runner=%s runner_cmd=%s model=%s\n' \
+    "$_RESOLVED_RUNNER" \
+    "$(_resolve_runner_cmd "$_RESOLVE_ROLE")" \
+    "$(_resolve_model "$_RESOLVE_ROLE")"
+  exit 0
 fi
 
 ROLE="${1:-}"
@@ -189,8 +258,21 @@ $PROMPT"
   fi
 fi
 
-# ── Runner selection ──────────────────────────────────────────────────────────
-RUNNER="$(cfg agents.runner "claude")"
+# ── Runner selection (role-first; #167) ───────────────────────────────────────
+# agents.roles.<role>.runner wins over agents.runner (default claude) — see
+# _resolve_runner above. Validated against the supported set up front so an
+# invalid value fails clearly before any prompt-building work happens, and
+# the resolution is announced once on stderr (talos:runner marker) so a run
+# mixing per-role runners is legible in logs without re-deriving precedence.
+RUNNER="$(_resolve_runner "$ROLE")"
+case "$RUNNER" in
+  claude | pi | codex | gemini | antigravity | custom) : ;;
+  *)
+    echo "pipeline-agent: unknown agents.runner '$RUNNER' (role=$ROLE). Valid: claude | pi | codex | gemini | antigravity | custom" >&2
+    exit 1
+    ;;
+esac
+echo "talos:runner role=$ROLE runner=$RUNNER" >&2
 
 # agents.runner_args comes back newline-separated (list) — build an array.
 RUNNER_ARGS=()
@@ -234,9 +316,9 @@ case "$RUNNER" in
     RC=$?
     ;;
   custom)
-    RUNNER_CMD="$(cfg agents.runner_cmd "")"
+    RUNNER_CMD="$(_resolve_runner_cmd "$ROLE")"
     if [ -z "$RUNNER_CMD" ]; then
-      echo "pipeline-agent: agents.runner=custom requires agents.runner_cmd" >&2
+      echo "pipeline-agent: agents.runner=custom requires agents.runner_cmd (role=$ROLE)" >&2
       exit 1
     fi
     # Feed the prompt via a temp file, not a pipe (#208): piping through
@@ -267,10 +349,9 @@ case "$RUNNER" in
     sh -c "$RUNNER_CMD" <"$_PROMPT_FILE"
     RC=$?
     ;;
-  *)
-    echo "pipeline-agent: unknown agents.runner '$RUNNER'. Valid: claude | pi | codex | gemini | antigravity | custom" >&2
-    exit 1
-    ;;
+    # No *) arm: RUNNER is already validated against the supported set
+    # above, before the talos:runner marker is emitted -- an unknown value
+    # exits there and never reaches this case.
 esac
 
 # hooks.post_stage (#182): fire once, here, the moment the stage runner has
