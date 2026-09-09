@@ -13,6 +13,10 @@
 #       `gh label create` to create) equals the contract's label set.
 #   (c) talos_contract_json prints valid JSON with the expected top-level
 #       keys.
+#   (d) every label name/description in the contract is within GitHub's
+#       50/100-char limits (#250), via talos_contract_check_label_length --
+#       plus a negative check that the same helper rejects a synthetic
+#       over-long entry.
 set -u
 . "$(dirname "$0")/helpers.sh"
 
@@ -128,5 +132,32 @@ else:
     print("OK")
 ')"
 assert_eq "OK" "$_json_check" "talos_contract_json is valid JSON with the expected keys"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# (d) label name/description length limits (#250)
+# ═══════════════════════════════════════════════════════════════════════════
+declare -F talos_contract_check_label_length >/dev/null 2>&1 \
+  || fail "setup: talos_contract_check_label_length is defined" "missing after sourcing $CONTRACT"
+
+_length_violation=false
+for entry in "${TALOS_STAGE_LABELS[@]}" "${TALOS_APPROVAL_LABELS[@]}" "${TALOS_MISC_LABELS[@]}"; do
+  if ! talos_contract_check_label_length "$entry" >/dev/null 2>&1; then
+    _length_violation=true
+    fail "label length: '${entry%%|*}' is within GitHub's 50/100-char limits" \
+      "$(talos_contract_check_label_length "$entry" 2>&1 >/dev/null)"
+  fi
+done
+[ "$_length_violation" = "false" ] && \
+  pass "label length: every contract label name/description is within GitHub's 50/100-char limits"
+
+# Negative check: the same helper must reject an over-long entry -- proves
+# the assertion above isn't vacuously true.
+_over_long_desc="$(printf 'x%.0s' $(seq 1 101))"
+talos_contract_check_label_length "over-long-description|ededed|$_over_long_desc" >/dev/null 2>&1
+assert_exit_code "1" "$?" "label length: helper rejects a 101-char description"
+
+_over_long_name="$(printf 'y%.0s' $(seq 1 51))"
+talos_contract_check_label_length "$_over_long_name|ededed|short" >/dev/null 2>&1
+assert_exit_code "1" "$?" "label length: helper rejects a 51-char name"
 
 finish
