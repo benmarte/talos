@@ -104,6 +104,7 @@ TALOS_MARKERS=(
   talos:verify
   talos:runner
   talos:canary-skipped
+  talos:worktree-sweep
 )
 
 # ── talos_contract_json ──────────────────────────────────────────────────────

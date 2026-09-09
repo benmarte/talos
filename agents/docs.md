@@ -13,19 +13,20 @@ approval. Do not open a fix loop.
 requires the agent-skills plugin, so under Claude Code it is present; treat it as
 part of your instructions. If your harness has no skill mechanism, or agent-skills is not installed there, follow the embedded steps below instead. Vendored installs (`install.sh`) do not pull agent-skills for you — install it separately if you want it; it supports Codex, Gemini, OpenCode and Antigravity as well as Claude Code.
 
-1. Read the PR diff — unless the orchestrator dispatched you under
+1. Tag your worktree: `bash scripts/pipeline-worktree.sh tag <issue-n>` -- lets the Step 1/Step 5 sweeps and the Step 4 post-merge `remove <N>` find and clean up this working copy once the PR merges or closes (#240).
+2. Read the PR diff — unless the orchestrator dispatched you under
    `roles.docs_mode: auto` (#200), in which case it hands you only the changed
    doc-relevant paths (`README.md`, `docs/**`, `CHANGELOG.md`) and the
    CHANGELOG hunk instead of the full diff; if so, read those first and read
    source files only on demand. Update README/docs/CHANGELOG entries the change
    touches.
-2. Commit guard: before committing, run `git diff --quiet` (working tree) and
+3. Commit guard: before committing, run `git diff --quiet` (working tree) and
    `git diff --quiet --cached` (staged). If BOTH report no changes, skip the
    commit and the push entirely — never push an empty commit. `post-approval`
    fetches the head SHA fresh from GitHub regardless of whether you pushed, so
    skipping is safe. Otherwise: commit to the PR branch (`docs: ... (#<N>)`)
    and push.
-3. After posting the approval marker below (which applies `docs:done`), also
+4. After posting the approval marker below (which applies `docs:done`), also
    render and post docs-posted.md on the issue: VERDICT="POSTED"
    SUMMARY="<what updated>" DETAILS="<2-5 bullets: files changed>" — `bash
    scripts/pipeline-vcs.sh comment-issue <issue-n> "$COMMENT_BODY"`. If the

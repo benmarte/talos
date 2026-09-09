@@ -205,7 +205,7 @@ bash scripts/pipeline-isolation.sh validate
 If this exits non-zero (invalid or unimplemented isolation mode, or `isolation: branch` with `max_parallel > 1`): abort the run — print the error from stderr, do not begin processing issues.
 
 Valid modes:
-- `worktree` (default) — unchanged; each developer/QA stage gets a private `git worktree`.
+- `worktree` (default) — unchanged; each developer/QA stage gets a private `git worktree`. Stage profiles (QA, docs; reviewer and security only if the harness happens to give them one) tag their worktree with `pipeline-worktree.sh tag <N>` so it can be found and removed once the PR merges or closes (#240) — see the developer/QA/docs prompts below.
 - `branch` — stages run in the orchestrator's checkout; requires `max_parallel: 1`.
 - `checkout` — recognised but **refused**: exits 1 with a clear "not yet implemented" message.
 - Any other value — exits 1 naming valid values.
@@ -368,7 +368,7 @@ bash scripts/pipeline-vcs.sh list-issues
    - No PR → the developer stage never finished; re-dispatch it (counts toward `max_fix_attempts`).
 2. **Heal merged-but-open issues.** For each open `pipeline:*` issue, `bash scripts/pipeline-vcs.sh find-pr <N> merged` — if a merged PR closes it, run the post-merge steps from Step 4 (comment, close, board → Done, notify) instead of doing any work. Pass `--allow-closed` to `comment-issue` in the post-merge steps here, since GitHub may have already auto-closed the issue at merge time via `Closes #N`.
 3. **Resume in-flight PRs.** For each open pipeline PR (head branch `fix/issue-*` or `feat/issue-*`): all approval labels present → merge queue (when `merge.auto: false`, a PR already labeled `pipeline:approved` is waiting for a human — leave it alone); otherwise resume at the blocking stage. If the blocking stage is QA, run the **Mergeability gate (#214)** (Step 3c, "After developer returns") first — do not resume straight into QA.
-4. **Sweep orphaned worktrees.** `bash scripts/pipeline-worktree.sh sweep <space-separated ids of every issue in this run's queue>` — removes any `fix/issue-*`/`feat/issue-*` worktree whose issue is not in the queue (a backstop for runs that ended before the Step 4 post-merge removal). Pass no ids to reclaim all of them.
+4. **Sweep orphaned worktrees.** `bash scripts/pipeline-worktree.sh sweep <space-separated ids of every issue in this run's queue>` — removes every worktree (developer AND any Claude Code harness `agent-*` worktree QA/reviewer/security/docs tagged via `tag <N>`, #240) whose issue is not in the queue, regardless of dirty/unpushed state, plus stale local scratch branches (a backstop for runs that ended before the Step 4 post-merge removal). Pass no ids to reclaim all of them.
 5. **Report stale blocked work.** List issues labeled `pipeline:blocked` and include them in the Step 1 summary notification so humans see what's waiting on them:
    `bash scripts/pipeline-notify.sh info "backlog" "K blocked issues awaiting human action: #a, #b" backlog` (only when K > 0).
 6. **Epic auto-close sweep (when `ROLE_PLANNER = true`).** Find all open issues carrying `pipeline:epic-decomposed`. For each epic `#E`:
@@ -1043,7 +1043,7 @@ After merging:
    20 seconds before this step runs — `--allow-closed` is required here.)
 2. `bash scripts/pipeline-vcs.sh close-issue <N> "closed by PR #<PR_NUMBER>"`
 3. `bash scripts/pipeline-status.sh <N> "Done"`
-4. **Remove the developer worktree.** `bash scripts/pipeline-worktree.sh remove <N>` — deletes the `fix/issue-<N>-*` worktree and its now-merged local branch so worktrees don't accumulate on disk. Idempotent: a no-op if the worktree is already gone. Do this on every merge, including when healing a merged-but-open issue in Step 0.
+4. **Remove the developer worktree.** `bash scripts/pipeline-worktree.sh remove <N>` — deletes the `fix/issue-<N>-*` developer worktree AND any Claude Code harness `agent-*` worktree QA/reviewer/security/docs tagged to <N> (#240), plus their now-merged local branches, so worktrees don't accumulate on disk. Idempotent: a no-op if no worktree matches. Do this on every merge, including when healing a merged-but-open issue in Step 0.
 5. Relay: `bash scripts/pipeline-notify.sh orchestrator "#<N>" "all stages passed — merged PR #<PR_NUMBER>, issue closed" <N>`
 6. Lifecycle: `bash scripts/pipeline-notify.sh merged "#<N>" "PR #<PR_NUMBER> merged" <N>`
 7. Lifecycle: `bash scripts/pipeline-notify.sh issue-closed "#<N>" "issue resolved" <N>`
@@ -1053,7 +1053,7 @@ After merging:
 
 ## Step 5 — End of run summary
 
-1. **Sweep worktrees unconditionally.** `bash scripts/pipeline-worktree.sh sweep <space-separated ids of every issue in this run's queue>` — this runs at the end of EVERY run, not only as the Step 1 startup backstop. It removes any `fix/issue-*`/`feat/issue-*` worktree whose issue is not in this run's queue, plus any Claude Code harness `worktree-agent-*` worktree that has no uncommitted changes and no commits ahead of its upstream/base ref. A worktree with uncommitted changes or unpushed commits is never deleted — it is listed in the command's output instead, so leave those alone. (Step 4 post-merge item 4, `remove <N>` per issue, is unchanged and still runs on every merge.)
+1. **Sweep worktrees unconditionally.** `bash scripts/pipeline-worktree.sh sweep <space-separated ids of every issue in this run's queue, PLUS the issue id of every PR still open>` — this runs at the end of EVERY run, not only as the Step 1 startup backstop (use `list-prs`/`find-pr` to resolve open-PR issue ids so a PR that's still awaiting review after this run doesn't lose its worktree). It removes every worktree — developer AND any Claude Code harness `agent-*` worktree tagged via `tag <N>` (#240) — whose issue is not in that combined list, regardless of dirty/unpushed state, plus stale local scratch branches (not main/master/base, not tracking a live remote, not the head of an open PR). Preserves ONLY worktrees identified with an id in that list. Relay the `talos:worktree-sweep removed=<n> kept=<n> freed=<size>` summary line it prints. (Step 4 post-merge item 4, `remove <N>` per issue, is unchanged and still runs on every merge.)
 2. **Warn above the worktree threshold.** `bash scripts/pipeline-worktree.sh list` — if its output includes a `pipeline-worktree: WARNING:` line, relay it verbatim: `bash scripts/pipeline-notify.sh info "worktrees" "<the WARNING line>" ""`. Say nothing when no warning line is present (count at or under `execution.worktree_warn_threshold`, default `10`).
 
 After processing all issues, print a summary table:

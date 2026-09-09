@@ -33,14 +33,41 @@
 # tree left to preserve.
 #
 # Verbs:
-#   remove <issue-number>   Remove the worktree(s) for issue <N> and delete the
-#                           now-merged local branch. Idempotent: a no-op (exit 0)
-#                           when no matching worktree exists.
-#   sweep <keep-id>...      Remove every issue worktree whose id is NOT in the
-#                           keep list, plus every reclaimable harness worktree.
-#                           Leaves branches intact (they may be unmerged). Pass
-#                           the ids of every issue still in the current run's
-#                           queue.
+#   remove <issue-number>   Remove EVERY worktree for issue <N> -- the
+#                           developer worktree AND any Claude Code harness
+#                           (`agent-*`) worktree tagged to <N> (#240) -- and
+#                           delete their now-merged local branches. Idempotent:
+#                           a no-op (exit 0) when no matching worktree exists.
+#   sweep [<open-id>...]    Remove every non-main worktree whose issue is NOT
+#                           in the open-id list -- developer AND harness
+#                           worktrees alike, regardless of dirty/unpushed
+#                           state (#240): an untagged or otherwise
+#                           unidentifiable worktree counts as "not open".
+#                           Preserves ONLY worktrees tagged/identified with an
+#                           open id (plus lane homes and the current
+#                           checkout, as always). Also deletes local branches
+#                           that are not main/master/the configured base, do
+#                           not track a live remote branch, and are not the
+#                           head of an open PR (queries `pipeline-vcs.sh
+#                           list-prs` once, not per branch; on failure,
+#                           branch cleanup is skipped entirely -- fail safe).
+#                           Runs `git worktree prune` afterward. Prints one
+#                           line per removal/deletion and a summary line
+#                           `talos:worktree-sweep removed=<n> kept=<n>
+#                           freed=<size>`.
+#   tag <issue-number>      Write <current worktree toplevel>/.talos/env
+#                           (the #186 KEY=value format) so `remove`/`sweep`
+#                           can identify this worktree even when it isn't a
+#                           developer worktree (QA/reviewer/security/docs
+#                           harness worktrees, #240). Idempotent (overwrites).
+#                           Refuses -- with a clear error, exit 1 -- to run in
+#                           the main worktree (the one whose toplevel is the
+#                           parent directory of the repo's shared
+#                           `git-common-dir`), so the orchestrator's own
+#                           checkout can never be mistaken for a disposable
+#                           issue worktree.
+#   status                  Print worktree/dirty/branch counts and the total
+#                           size of .claude/worktrees.
 #   list                    Print "id<TAB>path<TAB>branch" for each issue and
 #                           harness worktree (id is "-" for harness entries).
 #                           When the count of non-active worktrees (excluding
@@ -71,7 +98,9 @@
 #                           gitignored. `create` acquires the same
 #                           repo-wide lock as `remove`/`sweep` (#180) since
 #                           `git worktree add` races their mutation of the
-#                           shared git-common-dir metadata.
+#                           shared git-common-dir metadata. `tag` (#240)
+#                           writes the very same per-worktree file from
+#                           inside an already-created worktree instead.
 #
 
 # `remove` and `sweep` act on the repository containing the current working
@@ -288,6 +317,102 @@ _preserve_reason() {
   fi
 }
 
+# ── #240: unified worktree identification, used by remove/sweep/tag/status ──
+#
+# Prior to #240, `remove`/`sweep` only ever recognized two hard-coded
+# patterns: developer worktrees (fix|feat/issue-<N>-...) and the Claude Code
+# harness's own worktree-agent-<hash> branches. Neither pattern covers a
+# harness worktree the ORCHESTRATOR spawned for QA/reviewer/security/docs
+# (branch/dir named "agent-*" by the harness, no issue number anywhere in
+# it) -- those only ever got reclaimed when the harness itself judged them
+# "unchanged", which QA's scratch files (.bak, temp configs) defeat forever.
+# `tag <N>` (below) lets any stage record its own issue number in a
+# per-worktree file; `_wt_issue_of` is the single place that now resolves
+# "which issue does this worktree belong to" for every verb, checking (in
+# order) the developer path/branch pattern, then the tag file.
+
+# Emit "path" for EVERY worktree in the repo (main and linked alike) --
+# generalizes _issue_worktrees/_harness_worktrees's pattern-scoped listings
+# for callers (remove/sweep/status) that must consider every worktree, not
+# just the two legacy patterns.
+_wt_all_worktrees() {
+  git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0,10)}'
+}
+
+# Absolute path of the MAIN worktree, resolved from worktree $1 (default:
+# cwd). Every worktree of a repo -- main or linked -- resolves the SAME
+# `git rev-parse --git-common-dir`; git always creates the shared `.git` as
+# a plain directory directly under the main worktree's own toplevel, so that
+# common dir's parent directory IS the main worktree's path, from anywhere.
+_wt_main_worktree_path_for() {
+  local path="${1:-.}" common_dir common_abs
+  common_dir="$(git -C "$path" rev-parse --git-common-dir 2>/dev/null)" || return 1
+  case "$common_dir" in
+    # -P (physical, symlinks resolved) so this matches `git rev-parse
+    # --show-toplevel`'s own resolution -- git always resolves symlinks in
+    # its output, and on macOS $TMPDIR (what test sandboxes live under) is
+    # itself a symlink, so a plain `pwd` here would silently never equal
+    # `--show-toplevel` for the very worktree it IS the main one of (#240
+    # review: _wt_is_main_worktree fails to recognize the main worktree).
+    /*) common_abs="$common_dir" ;;
+    *) common_abs="$(cd "$path" && cd "$(dirname "$common_dir")" 2>/dev/null && pwd -P)/$(basename "$common_dir")" ;;
+  esac
+  [ -z "$common_abs" ] && return 1
+  dirname "$common_abs"
+}
+
+# True when worktree $1 (default: cwd) IS the main worktree -- see
+# _wt_main_worktree_path_for above for why this comparison is reliable from
+# any worktree of the repo.
+_wt_is_main_worktree() {
+  local path="${1:-.}" toplevel main_path
+  toplevel="$(git -C "$path" rev-parse --show-toplevel 2>/dev/null)" || return 1
+  main_path="$(_wt_main_worktree_path_for "$path")" || return 1
+  [ "$toplevel" = "$main_path" ]
+}
+
+# Read a validated TALOS_ISSUE_NUMBER from <path>/.talos/env (the file `tag`
+# and `create` write, #186/#240 format). PARSES the file line-by-line --
+# never `source`s it, matching the format's own no-shell-quoting contract --
+# and only accepts an all-digits value; anything else (missing file, missing
+# key, non-numeric value) yields nothing.
+_wt_tag_issue() {
+  local path="$1" envfile="$1/.talos/env" line val
+  [ -f "$envfile" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      TALOS_ISSUE_NUMBER=*)
+        val="${line#TALOS_ISSUE_NUMBER=}"
+        case "$val" in
+          ''|*[!0-9]*) ;;
+          *) printf '%s' "$val"; return 0 ;;
+        esac
+        ;;
+    esac
+  done < "$envfile"
+}
+
+# Resolve the issue number worktree $1 belongs to, or print nothing when it
+# can't be identified. Checked in order: (1) the worktree directory's own
+# basename contains "issue-<N>" (what `create` and QA's convention both
+# produce), (2) the checked-out branch matches
+# (fix|feat|refactor|docs|ci)/issue-<N>-..., (3) the #186/#240 tag file.
+_wt_issue_of() {
+  local path="$1" base branch id
+  base="${path##*/}"
+  if [[ "$base" =~ issue-([0-9]+) ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  branch="$(git -C "$path" symbolic-ref -q --short HEAD 2>/dev/null)"
+  if [[ "$branch" =~ ^(fix|feat|refactor|docs|ci)/issue-([0-9]+)- ]]; then
+    printf '%s' "${BASH_REMATCH[2]}"
+    return 0
+  fi
+  id="$(_wt_tag_issue "$path")"
+  [ -n "$id" ] && printf '%s' "$id"
+}
+
 # Count non-active worktrees (issue-pattern + harness, excluding lane homes
 # and the current checkout) — mirrors what `sweep` would consider removing.
 # Takes the already-fetched `_issue_worktrees`/`_harness_worktrees` output as
@@ -316,11 +441,19 @@ _stale_worktree_count() {
 # _wt_remove_body <issue-number> -- the actual work of `remove`, run under
 # the repo-wide lock (#180) so a concurrent `remove`/`sweep` from another
 # stage can't race `git worktree remove`/`git branch -D` against this one.
+#
+# #240: matches EVERY worktree whose issue (per _wt_issue_of) is <N> -- the
+# developer worktree AND any harness (agent-*) worktree QA/reviewer/security/
+# docs tagged to <N> -- not just the fix|feat/issue-<N>-... pattern.
 _wt_remove_body() {
   n="${1:-}"
   removed=0
-  while IFS=$'\t' read -r wt_path wt_branch wt_id; do
+  while IFS= read -r wt_path; do
+    [ -z "$wt_path" ] && continue
+    _wt_is_main_worktree "$wt_path" && continue
+    wt_id="$(_wt_issue_of "$wt_path")"
     [ "$wt_id" = "$n" ] || continue
+    wt_branch="$(git -C "$wt_path" symbolic-ref -q --short HEAD 2>/dev/null)"
     if _is_lane_home "$wt_path"; then
       echo "pipeline-worktree: refusing to remove lane home $wt_path (.talos-lane-home present)"
       continue
@@ -339,10 +472,10 @@ _wt_remove_body() {
     git worktree remove --force "$wt_path" 2>/dev/null || true
     # Branch is merged (PR completed) — force-delete; squash merges are not
     # ancestors, so `-d` would refuse.
-    git branch -D "$wt_branch" 2>/dev/null || true
+    [ -n "$wt_branch" ] && git branch -D "$wt_branch" 2>/dev/null
     removed=$((removed + 1))
     echo "pipeline-worktree: removed worktree for issue #$n ($wt_path, $wt_branch)"
-  done < <(_issue_worktrees)
+  done < <(_wt_all_worktrees)
   git worktree prune 2>/dev/null || true
   [ "$removed" -eq 0 ] && echo "pipeline-worktree: no worktree for issue #$n (already clean)"
   exit 0
@@ -369,8 +502,21 @@ _wt_sweep_body() {
     git worktree prune 2>/dev/null || true
     exit 0
   fi
-  while IFS=$'\t' read -r wt_path wt_branch wt_id; do
-    case "$keep" in *" $wt_id "*) continue ;; esac
+  # #240: the ONLY thing that preserves a worktree here is being identified
+  # (_wt_issue_of: developer pattern, then tag file) with an id in the keep
+  # list -- i.e. an issue the orchestrator says is still open (still in the
+  # run's queue, or the id of an issue with an open PR, per SKILL.md Step 5).
+  # Dirty working trees and unpushed commits no longer preserve a worktree on
+  # their own: real work lives on a pushed PR branch, and this is a repo-wide
+  # sweep, not a per-issue `remove` -- scratch left behind by a QA/reviewer/
+  # security/docs harness worktree (agent-*, never tagged, or tagged to an
+  # issue whose PR already closed) is garbage, not work in progress.
+  # `remove <N>` (above) is unaffected and still honors _preserve_reason for
+  # the one issue it targets.
+  local removed=0 kept=0 freed_kb=0 wt_id wt_kb is_open
+  while IFS= read -r wt_path; do
+    [ -z "$wt_path" ] && continue
+    _wt_is_main_worktree "$wt_path" && continue
     if _is_lane_home "$wt_path"; then
       echo "pipeline-worktree: refusing to sweep lane home $wt_path (.talos-lane-home present)"
       continue
@@ -381,40 +527,180 @@ _wt_sweep_body() {
     fi
     if [ ! -d "$wt_path" ]; then
       git worktree remove --force "$wt_path" 2>/dev/null || true
-      echo "pipeline-worktree: reclaimed prunable worktree for issue #$wt_id ($wt_path)"
+      echo "pipeline-worktree: reclaimed prunable worktree ($wt_path)"
+      removed=$((removed + 1))
       continue
     fi
-    reason="$(_preserve_reason "$wt_path" "$wt_branch")"
-    if [ -n "$reason" ]; then
-      echo "pipeline-worktree: preserving worktree for issue #$wt_id ($wt_path, $wt_branch) — reason: $reason"
+    wt_id="$(_wt_issue_of "$wt_path")"
+    is_open=false
+    if [ -n "$wt_id" ]; then
+      case "$keep" in *" $wt_id "*) is_open=true ;; esac
+    fi
+    if [ "$is_open" = true ]; then
+      echo "pipeline-worktree: keeping worktree for issue #$wt_id ($wt_path) — open"
+      kept=$((kept + 1))
       continue
     fi
+    wt_kb="$(_wt_dir_size_kb "$wt_path")"
     git worktree remove --force "$wt_path" 2>/dev/null || true
-    echo "pipeline-worktree: swept orphaned worktree for issue #$wt_id ($wt_path)"
-  done < <(_issue_worktrees)
-  while IFS=$'\t' read -r wt_path wt_branch; do
-    if _is_lane_home "$wt_path"; then
-      echo "pipeline-worktree: refusing to sweep lane home $wt_path (.talos-lane-home present)"
-      continue
+    freed_kb=$((freed_kb + wt_kb))
+    removed=$((removed + 1))
+    if [ -n "$wt_id" ]; then
+      echo "pipeline-worktree: swept worktree for issue #$wt_id ($wt_path)"
+    else
+      echo "pipeline-worktree: swept unidentified worktree ($wt_path)"
     fi
-    if _is_self "$wt_path"; then
-      echo "pipeline-worktree: refusing to sweep the current checkout ($wt_path)"
-      continue
-    fi
-    if [ ! -d "$wt_path" ]; then
-      git worktree remove --force "$wt_path" 2>/dev/null || true
-      echo "pipeline-worktree: reclaimed prunable harness worktree ($wt_path, $wt_branch)"
-      continue
-    fi
-    reason="$(_preserve_reason "$wt_path" "$wt_branch")"
-    if [ -n "$reason" ]; then
-      echo "pipeline-worktree: preserving harness worktree $wt_path ($wt_branch) — reason: $reason"
-      continue
-    fi
-    git worktree remove --force "$wt_path" 2>/dev/null || true
-    echo "pipeline-worktree: swept harness worktree ($wt_path, $wt_branch)"
-  done < <(_harness_worktrees)
+  done < <(_wt_all_worktrees)
+
+  _wt_sweep_branches "$keep"
+
   git worktree prune 2>/dev/null || true
+  echo "talos:worktree-sweep removed=$removed kept=$kept freed=$(_wt_format_kb "$freed_kb")"
+  exit 0
+}
+
+# Delete stale local branches: every ref under refs/heads/ that is NOT
+# main/master/the configured base branch, does NOT track a still-existing
+# remote branch, and is NOT the head of a currently open PR. `pipeline-vcs.sh
+# list-prs` is queried exactly once for the open-PR head-branch set (not per
+# branch) via _wt_open_pr_heads. A branch still checked out by a worktree
+# `sweep` decided to keep is naturally protected too -- `git branch -D`
+# refuses to delete a checked-out branch regardless of these checks.
+#
+# Fails SAFE: if the open-PR lookup itself fails, an unknown open-PR set must
+# never be treated as an empty one (that would delete a live PR's branch), so
+# branch cleanup is skipped entirely for this sweep rather than guessed.
+_wt_sweep_branches() {
+  local base_branch open_heads rc=0 br
+  base_branch="$(_wt_configured_base_branch)"
+  open_heads="$(_wt_open_pr_heads)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "pipeline-worktree: sweep: could not list open PRs -- skipping stale local-branch cleanup"
+    return 0
+  fi
+  open_heads=" $(printf '%s' "$open_heads" | tr '\n' ' ') "
+  while IFS= read -r br; do
+    [ -z "$br" ] && continue
+    case "$br" in main|master) continue ;; esac
+    [ -n "$base_branch" ] && [ "$br" = "$base_branch" ] && continue
+    git show-ref --verify --quiet "refs/remotes/origin/$br" && continue
+    case "$open_heads" in *" $br "*) continue ;; esac
+    git branch -D "$br" >/dev/null 2>&1 \
+      && echo "pipeline-worktree: deleted stale local branch $br"
+  done < <(git for-each-ref --format='%(refname:short)' refs/heads/)
+}
+
+# The repo's `base_branch` config, falling back to the resolved default
+# branch (stripped of its "origin/" prefix) when unconfigured.
+_wt_configured_base_branch() {
+  local b
+  b="$(cfg base_branch '' 2>/dev/null)"
+  if [ -z "$b" ]; then
+    b="$(_default_branch_ref 2>/dev/null)"
+    b="${b#origin/}"
+  fi
+  printf '%s' "$b"
+}
+
+# Print one headRefName per line for every currently open PR (queried once
+# via `pipeline-vcs.sh list-prs`), or return non-zero if that call fails --
+# callers must treat a non-zero return as "unknown", never as "no open PRs".
+_wt_open_pr_heads() {
+  local raw
+  raw="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" list-prs 2>/dev/null)" || return 1
+  [ -z "$raw" ] && return 0
+  printf '%s' "$raw" | python3 -c '
+import json, sys
+try:
+    items = json.load(sys.stdin)
+except Exception:
+    items = []
+for i in items:
+    ref = (i or {}).get("headRefName")
+    if ref:
+        print(ref)
+' 2>/dev/null
+}
+
+# KB used on disk by path $1 (0 if it does not exist or du is unavailable) --
+# used to compute sweep's "freed=" summary. `du -sk` is available on both
+# GNU and BSD du, unlike `du -sh`'s unit-suffixed, unsummable output.
+_wt_dir_size_kb() {
+  local kb
+  kb="$(du -sk "$1" 2>/dev/null | awk '{print $1}')"
+  printf '%d' "${kb:-0}"
+}
+
+# Human-readable size for a KB count (e.g. "512K", "3.4M", "1.2G").
+_wt_format_kb() {
+  python3 -c "
+kb = $1
+units = ['K', 'M', 'G', 'T']
+f = float(kb)
+i = 0
+while f >= 1024 and i < len(units) - 1:
+    f /= 1024
+    i += 1
+print(f'{int(f)}{units[i]}' if f == int(f) else f'{f:.1f}{units[i]}')
+"
+}
+
+# _wt_tag_body <issue-number> -- the actual work of `tag` (#240), run under
+# the same lock as remove/sweep/create for consistency (it only touches this
+# worktree's own .talos/env, so it can't race their git-common-dir mutations,
+# but a mutating verb should not be the one exception to #180's lock rule).
+#
+# Refuses to run in the MAIN worktree: tagging it would make the
+# orchestrator's own checkout indistinguishable from a disposable issue
+# worktree to `remove`/`sweep`, which would then delete it out from under
+# the running session.
+_wt_tag_body() {
+  local n="${1:-}" toplevel
+  case "$n" in
+    ''|*[!0-9]*)
+      echo "usage: pipeline-worktree.sh tag <issue-number>" >&2
+      exit 2
+      ;;
+  esac
+  if _wt_is_main_worktree "."; then
+    echo "pipeline-worktree: tag: refusing to tag the main worktree -- this would make the orchestrator's own checkout look like a disposable issue worktree to remove/sweep" >&2
+    exit 1
+  fi
+  toplevel="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+    echo "pipeline-worktree: tag: not inside a git worktree" >&2
+    exit 1
+  }
+  mkdir -p "$toplevel/.talos"
+  # Same plain KEY=value format as `create` writes (#186) -- parsed by the
+  # reader, never `source`d. Overwriting on every call is what makes this
+  # idempotent.
+  {
+    printf 'TALOS_ISSUE_NUMBER=%s\n' "$n"
+    printf 'TALOS_WORKTREE_PATH=%s\n' "$toplevel"
+  } > "$toplevel/.talos/env"
+  echo "pipeline-worktree: tagged $toplevel for issue #$n"
+  exit 0
+}
+
+# _wt_status_body -- counts of worktrees/dirty-worktrees/local-branches, plus
+# the total on-disk size of the main worktree's .claude/worktrees directory.
+# Read-only; does not need the #180 lock.
+_wt_status_body() {
+  local total=0 dirty=0 branches main_path size_kb=0
+  while IFS= read -r wt_path; do
+    [ -z "$wt_path" ] && continue
+    _wt_is_main_worktree "$wt_path" && continue
+    total=$((total + 1))
+    if [ -d "$wt_path" ] && [ -n "$(git -C "$wt_path" status --porcelain 2>/dev/null)" ]; then
+      dirty=$((dirty + 1))
+    fi
+  done < <(_wt_all_worktrees)
+  branches="$(git for-each-ref --format='%(refname)' refs/heads/ 2>/dev/null | wc -l | tr -d ' ')"
+  main_path="$(_wt_main_worktree_path_for '.')"
+  if [ -n "$main_path" ] && [ -d "$main_path/.claude/worktrees" ]; then
+    size_kb="$(_wt_dir_size_kb "$main_path/.claude/worktrees")"
+  fi
+  echo "pipeline-worktree: status worktrees=$total dirty=$dirty branches=$branches size=$(_wt_format_kb "$size_kb")"
   exit 0
 }
 
@@ -487,8 +773,20 @@ case "$verb" in
     with_lock "$_WT_LOCK_RESOURCE" 10 -- _wt_create_body "$1" "$2"
     ;;
 
+  tag)
+    if [ -z "${1:-}" ]; then
+      echo "usage: pipeline-worktree.sh tag <issue-number>" >&2
+      exit 2
+    fi
+    with_lock "$_WT_LOCK_RESOURCE" 10 -- _wt_tag_body "$1"
+    ;;
+
+  status)
+    _wt_status_body
+    ;;
+
   *)
-    echo "usage: pipeline-worktree.sh <remove <n> | sweep <keep-id>... | list | create <n> <branch>>" >&2
+    echo "usage: pipeline-worktree.sh <remove <n> | sweep [<open-id>...] | list | create <n> <branch> | tag <n> | status>" >&2
     exit 2
     ;;
 esac
