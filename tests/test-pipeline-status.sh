@@ -13,6 +13,12 @@
 #      pipeline).
 #   3. No request in the script asks for more than 100 records on any
 #      connection.
+#   4. A page with hasNextPage=true and an empty/null endCursor bails out via
+#      talos:board-unverified instead of re-issuing the identical query
+#      forever (#248 review follow-up).
+#   5. The items() pagination loop is capped at TALOS_BOARD_MAX_PAGES pages
+#      and bails out via talos:board-unverified once the cap is hit, instead
+#      of looping past it.
 #
 # Uses the curl stub (CURL_LOG + CURL_QUEUE) — no real network calls.
 set -u
@@ -83,5 +89,38 @@ assert_eq 0 "$rc" "pipeline-status: exits 0 even when the items query returns a 
 assert_contains "$out" "talos:board-unverified project=4" "pipeline-status: prints the board-unverified marker on a GraphQL errors array"
 assert_not_contains "$out" "#246 → In review" "pipeline-status: never prints the success line when the update never happened"
 assert_contains "$err2" "Requesting 200 records" "pipeline-status: GraphQL error message is surfaced on stderr"
+
+# ── Test 3: hasNextPage=true with an empty endCursor bails, doesn't loop ────
+: > "$CURL_LOG"
+BAD_CURSOR_PAGE='{"data":{"node":{"items":{"nodes":[],"pageInfo":{"hasNextPage":true,"endCursor":null}}}}}'
+printf '%s\n' "$USER_RESP" "$FIELDS_RESP" "$BAD_CURSOR_PAGE" > "$CURL_QUEUE"
+
+out="$(bash "$STATUS" 247 "In review" 2>"$SANDBOX/err3.txt")"
+rc=$?
+err3="$(cat "$SANDBOX/err3.txt")"
+items_calls="$(grep -c 'graphql' "$CURL_LOG")"
+
+assert_eq 0 "$rc" "pipeline-status: exits 0 when a page has hasNextPage=true but an empty endCursor"
+assert_contains "$out" "talos:board-unverified project=4" "pipeline-status: prints the board-unverified marker on an empty endCursor"
+assert_not_contains "$out" "#247 → In review" "pipeline-status: never prints the success line when pagination bails on empty endCursor"
+assert_contains "$err3" "endCursor" "pipeline-status: empty-endCursor bail explains itself on stderr"
+assert_eq 3 "$items_calls" "pipeline-status: the identical items() query is NOT re-issued after an empty endCursor (user + fields + one items call only)"
+
+# ── Test 4: the page cap stops pagination instead of looping past it ───────
+: > "$CURL_LOG"
+CAP_PAGE1='{"data":{"node":{"items":{"nodes":[{"id":"cap-1","content":{"number":9001}}],"pageInfo":{"hasNextPage":true,"endCursor":"CAP_CURSOR_1"}}}}}'
+CAP_PAGE2='{"data":{"node":{"items":{"nodes":[{"id":"cap-2","content":{"number":9002}}],"pageInfo":{"hasNextPage":true,"endCursor":"CAP_CURSOR_2"}}}}}'
+printf '%s\n' "$USER_RESP" "$FIELDS_RESP" "$CAP_PAGE1" "$CAP_PAGE2" > "$CURL_QUEUE"
+
+out="$(TALOS_BOARD_MAX_PAGES=2 bash "$STATUS" 248 "In review" 2>"$SANDBOX/err4.txt")"
+rc=$?
+err4="$(cat "$SANDBOX/err4.txt")"
+items_calls="$(grep -c 'graphql' "$CURL_LOG")"
+
+assert_eq 0 "$rc" "pipeline-status: exits 0 once the page cap is reached"
+assert_contains "$out" "talos:board-unverified project=4" "pipeline-status: prints the board-unverified marker once the page cap is reached"
+assert_not_contains "$out" "#248 → In review" "pipeline-status: never prints the success line when pagination bails on the page cap"
+assert_contains "$err4" "pagination exhausted after 2 pages" "pipeline-status: page-cap bail explains itself on stderr"
+assert_eq 4 "$items_calls" "pipeline-status: pagination stops at the cap (user + fields + exactly 2 items calls, no 3rd)"
 
 finish

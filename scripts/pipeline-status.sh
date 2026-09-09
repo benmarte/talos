@@ -29,6 +29,11 @@
 #   PIPELINE_RUN_ID           when set, scopes the per-run validation sentinel to
 #                             this value so multiple pipeline runs share the /tmp dir
 #                             without interfering with each other.
+#   TALOS_BOARD_MAX_PAGES     overrides the items() pagination page cap (default 50,
+#                             i.e. 5000 items at 100/page). A malformed page
+#                             (hasNextPage=true with an empty endCursor) or hitting
+#                             this cap bails out via talos:board-unverified instead
+#                             of looping forever (#248 follow-up, Rule 11).
 #
 # Token path (activated when vcs.provider=github-api or gh is absent):
 #   All GitHub Projects v2 GraphQL calls are made via curl + GITHUB_TOKEN (or
@@ -59,6 +64,11 @@ fi
 # Resolves OWNER from: PIPELINE_BOARD_OWNER > board.owner > first component of vcs.repo.
 _USE_TOKEN_PATH=false
 _STATUS_TOKEN=""
+# Page cap for the items() pagination loop below (#248 follow-up): bounds a
+# pathological project (or a malformed page with hasNextPage=true and an
+# empty endCursor) so the loop always terminates instead of hanging the
+# pipeline stage. Override via TALOS_BOARD_MAX_PAGES.
+_MAX_PAGES="${TALOS_BOARD_MAX_PAGES:-50}"
 
 _resolve_token_path() {
   local provider
@@ -213,9 +223,21 @@ except Exception:
   # Paginated (#248): GitHub rejects items(first:>100) with EXCESSIVE_PAGINATION,
   # so walk pages of 100 via pageInfo{hasNextPage endCursor} until the issue is
   # found or pages run out (a 108-item project needs 2 pages at 100/page).
+  # Bounded (#248 follow-up): a malformed page can report hasNextPage=true with
+  # a null/empty endCursor, which would otherwise re-issue the identical query
+  # forever. Guard against both that case and a pathological project by
+  # capping at $_MAX_PAGES pages and bailing out via talos:board-unverified
+  # (Rule 11: board failures never block the pipeline) instead of looping.
   local _issue_url="https://github.com/$_repo/issues/$_issue"
   local _item_id="" _cursor="" _has_next="true" _after_clause _page_data
+  local _page_count=0
   while [ "$_has_next" = "true" ]; do
+    _page_count=$((_page_count + 1))
+    if [ "$_page_count" -gt "$_MAX_PAGES" ]; then
+      echo "pipeline-status: items() pagination exhausted after $_MAX_PAGES pages for project #$_proj_num; giving up" >&2
+      echo "talos:board-unverified project=$_proj_num"
+      exit 0
+    fi
     _after_clause=""
     [ -n "$_cursor" ] && _after_clause=" after:\\\"$_cursor\\\""
     _raw="$(_gql "{\"query\":\"query{node(id:\\\"$_proj_id\\\"){...on ProjectV2{items(first:100$_after_clause){nodes{id content{...on Issue{number}}} pageInfo{hasNextPage endCursor}}}}}\"}")"
@@ -244,6 +266,11 @@ except Exception:
     _has_next="$(printf '%s' "$_page_data" | sed -n '2p')"
     _cursor="$(printf '%s' "$_page_data" | sed -n '3p')"
     [ -n "$_item_id" ] && break
+    if [ "$_has_next" = "true" ] && [ -z "$_cursor" ]; then
+      echo "pipeline-status: items() pageInfo.hasNextPage=true but endCursor is empty for project #$_proj_num; giving up" >&2
+      echo "talos:board-unverified project=$_proj_num"
+      exit 0
+    fi
   done
 
   if [ -z "$_item_id" ]; then
