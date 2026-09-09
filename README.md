@@ -44,6 +44,7 @@ issue: pipeline:ready
                  ├─ qa ─────────────→ qa:pass
                  ├─ reviewer ────────→ review:approved
                  ├─ security ────────→ security:approved
+                 ├─ adversarial (optional, roles.adversarial, after security) ─→ adversarial:approved
                  └─ docs (auto-stamped when the diff already covers docs, else filtered context) ─→ docs:done
                       └─ all labels green + CI green → MERGE → close issue
 ```
@@ -286,6 +287,7 @@ All keys live in `talos.pipeline.json` (or `talos.pipeline.yml` if PyYAML is ins
 | `roles.qa` | `true` | Verifies PR satisfies acceptance criteria |
 | `roles.reviewer` | `true` | Code-quality review |
 | `roles.security` | `true` | Security review |
+| `roles.adversarial` | `false` | Optional pre-merge second opinion (#237), off by default — attacks the diff for vacuous tests, weak patterns, secret shapes and unverified claims. Runs after security. Typically paired with `agents.roles.adversarial.runner: custom` + `runner_cmd` pointing at a second, independent backend (e.g. a local model). Zero behaviour change when absent or `false`: no dispatch, and `adversarial:approved` is never required by the merge gate. |
 | `roles.docs` | `true` | Updates docs/CHANGELOG; terminal stage |
 | `roles.docs_mode` | `auto` | Only relevant when `roles.docs` is `true`. `auto`: Step 3e Phase 1 checks the PR's changed paths (`pipeline-vcs.sh pr-files <pr>`) before dispatching docs. No docs subagent is dispatched (the orchestrator stamps `docs:done` directly with "docs verified by developer diff (docs_mode: auto)") when `CHANGELOG.md` is changed AND (`README.md` or a `docs/**` path is also changed), OR every changed path other than `CHANGELOG.md` itself is under `scripts/**` or `tests/**` AND `CHANGELOG.md` is changed. When docs does dispatch under `auto` (the gate above didn't match), its prompt receives only the changed doc-relevant paths and the CHANGELOG hunk (`git diff origin/<base>...HEAD -- CHANGELOG.md`), not the full PR diff, and is told to read source only on demand. `always`: restores the pre-#200 behavior — docs always dispatches and always reads the full diff via `diff-pr`. Filed from a pipeline run where the docs stage spent 26k-108k tokens per PR concluding "no docs changes required" because the developer had already updated docs as part of its own acceptance criteria (#200). |
 | `roles.planner` | `false` | Epic decomposition (optional, off by default) — detects epics (via `epic` label, ≥ 4 checklist items, or body ≥ 2000 chars) and creates dependency-ordered sub-issues; independent sub-issues enter the queue immediately, dependent sub-issues are unblocked automatically as predecessors close. The auto-close sweep does NOT close an epic once its sub-issues finish if the epic's own body still has unticked `- [ ]` acceptance boxes — it gets `pipeline:epic-children-done` and a comment naming what's outstanding instead, and stays open for a human |

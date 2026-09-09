@@ -123,6 +123,11 @@ Store these for the run:
   `pipeline-config.sh` (stderr warning, falls back to this default).
 - Each role toggle: ROLE_VALIDATOR, ROLE_PM, ROLE_QA, ROLE_REVIEWER, ROLE_SECURITY, ROLE_DOCS (all default true)
 - ROLE_PLANNER (`roles.planner`, default `false`) — off by default; zero behavior change when absent or false
+- ROLE_ADVERSARIAL (`roles.adversarial`, default `false`, #237) — off by
+  default; zero behavior change when absent or false (no dispatch, no
+  `adversarial:approved` requirement, no stale-role handling). When `true`,
+  Step 3e Phase 3 dispatches it after security, typically paired with
+  `agents.roles.adversarial.runner: custom` + a local `runner_cmd`.
 - ROLE_PM_SKIP_WHEN_SPEC_PRESENT (`roles.pm_skip_when_spec_present`, default
   `true`) — when `true` (and `roles.pm` is also `true`), Step 3b skips
   spawning the PM subagent for an issue whose body already carries a usable
@@ -923,6 +928,40 @@ After reviewer and security complete (phase 2):
   ```
   Exit 0 → re-dispatch developer. Exit non-zero → set `pipeline:blocked`, stop.
 
+**Phase 3 — Adversarial (if `roles.adversarial = true`, default `false`, #237):**
+After security's phase-2 block above completes, dispatch adversarial — an
+optional, independent second opinion, typically on a different backend
+(`agents.roles.adversarial.runner: custom` + `runner_cmd`); the per-role
+runner rule at the top of this step governs how it spawns, exactly like
+every other role. Skip this phase entirely when `roles.adversarial` is
+absent or `false`: zero dispatches, and `adversarial:approved` is never
+required by Step 4.
+
+**Adversarial** (if `roles.adversarial = true`):
+```
+You are the Adversarial Reviewer. QA, review, and security passed PR #<PR_NUMBER> for issue #<N>.
+
+VCS provider: <VCS_PROVIDER>
+Comment header: <HEADER>
+Comment templates dir: <COMMENTS_TMPL_DIR>
+Comments enabled: <COMMENTS_ENABLED>
+Prior stage summary: <PRIOR_STAGE_SUMMARY>
+
+Your role profile carries the full procedure.
+
+Final (2-3 lines): CLEAR/FINDINGS outcome + areas covered.
+```
+
+After adversarial completes:
+
+**Adversarial returned:**
+- Clear: `bash scripts/pipeline-notify.sh adversarial "#<N>" "<subagent's 2-3 line outcome>" <N>`
+- Findings: `bash scripts/pipeline-notify.sh adversarial "#<N>" "FINDINGS: <count + summary>" <N>` then `bash scripts/pipeline-notify.sh blocked "#<N>" "adversarial: findings in PR #<PR_NUMBER>" <N>`; record attempt (PR already exists, so pass --pr as in Step 3):
+  ```bash
+  bash scripts/pipeline-vcs.sh record-attempt <N> adversarial --pr <PR_NUMBER>
+  ```
+  Exit 0 → re-dispatch developer. Exit non-zero → set `pipeline:blocked`, stop.
+
 If any stage blocked: set `pipeline:blocked` on issue, move on.
 
 ---
@@ -934,11 +973,12 @@ A PR is ready when ALL of:
 - `qa:pass` present (if roles.qa = true)
 - `review:approved` present (if roles.reviewer = true)
 - `security:approved` present (if roles.security = true)
+- `adversarial:approved` present (if roles.adversarial = true, default false, #237)
 - `docs:done` present (if roles.docs = true)
 
 **`skip-qa` bypass:** if the PR or its issue carries the `skip-qa` label (a
-human applied it — docs-only change or emergency hotfix), the four approval
-labels above are waived. CI and the forbidden-files check are NEVER waived.
+human applied it — docs-only change or emergency hotfix), the approval labels
+above are waived. CI and the forbidden-files check are NEVER waived.
 
 **Approval-SHA gate:** `bash scripts/pipeline-vcs.sh check-approval-sha <PR_NUMBER> --stale-list`
 If `check-approval-sha` exits non-zero for ANY reason, do NOT merge.  A non-zero
@@ -956,6 +996,9 @@ exits non-zero:
    - `qa` stale → re-dispatch QA (Step 3d).
    - `reviewer` stale → re-dispatch reviewer (Step 3e phase 2).
    - `security` stale → re-dispatch security (Step 3e phase 2).
+   - `adversarial` stale → re-dispatch adversarial (Step 3e phase 3; only
+     reachable when `roles.adversarial = true`, since the label is otherwise
+     never present to go stale).
    - `docs` stale → check whether the delta since docs' approved SHA touches
      any docs-relevant path: `README.md`, `docs/**`, `CHANGELOG.md`,
      `templates/**`, or any other `*.md` outside `tests/`.

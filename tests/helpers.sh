@@ -175,7 +175,7 @@ install_talos_vendored() {
       cp "$tmpl" "$SANDBOX/.claude/talos/templates/$dir/"
     done
   done
-  for agent in validator pm developer qa reviewer security docs planner; do
+  for agent in validator pm developer qa reviewer security adversarial docs planner; do
     for src in "$TALOS_ROOT/agents/$agent.md" "$TALOS_ROOT/.claude/agents/$agent.md"; do
       [ -f "$src" ] && cp "$src" "$SANDBOX/.claude/agents/$agent.md" && break
     done

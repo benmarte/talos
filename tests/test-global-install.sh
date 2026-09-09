@@ -176,7 +176,7 @@ assert_file_exists "$T6_CLAUDE/skills/pipeline/SKILL.md" \
 # ~/.talos/agents/ (the path pipeline-agent.sh reads for pi/codex/gemini/
 # antigravity). Before the fix ~/.claude/agents/ never receives agents at all,
 # so this loop fails RED on unfixed install.sh.
-for agent in validator pm developer qa reviewer security docs planner; do
+for agent in validator pm developer qa reviewer security adversarial docs planner; do
   assert_file_exists "$T6_CLAUDE/agents/$agent.md" \
     "--global writes $agent role profile to \$CLAUDE_CONFIG_DIR/agents/ (#166)"
 done

@@ -239,6 +239,60 @@ _assert_block_max_lines "$reviewer_block" "skills/pipeline/SKILL.md reviewer pro
 _assert_block_max_lines "$security_block" "skills/pipeline/SKILL.md security prompt block is <= 40 lines"
 _assert_block_max_lines "$docs_block" "skills/pipeline/SKILL.md docs prompt block is <= 40 lines"
 
+# ── Adversarial pre-merge stage (#237) ──────────────────────────────────────
+# Optional stage: Step 3e Phase 3 (after security) and Step 4's merge gate
+# must both know about it, and the profile must carry its whole method
+# inline -- a harness with no skill mechanism has nothing else to go on.
+assert_contains "$(cat "$SKILL_MD")" \
+  "Phase 3 — Adversarial (if \`roles.adversarial = true\`" \
+  "skills/pipeline/SKILL.md has the Phase 3 adversarial dispatch section"
+assert_contains "$(cat "$SKILL_MD")" \
+  "\`adversarial:approved\` present (if roles.adversarial = true" \
+  "skills/pipeline/SKILL.md Step 4 gate list requires adversarial:approved when enabled"
+
+ADVERSARIAL_MD="$TALOS_ROOT/agents/adversarial.md"
+assert_file_exists "$ADVERSARIAL_MD" "agents/adversarial.md exists"
+adv_flat="$(tr '\n' ' ' < "$ADVERSARIAL_MD" | tr -s ' ')"
+
+# Self-contained: every embedded method step (from the issue #237 addendum)
+# must actually be present in the profile body, in plain text a small local
+# model can follow -- not just referenced via a skill name that may not
+# exist on that harness.
+for phrase in \
+  "diff-pr <pr> --stat" \
+  "revert-in-mind" \
+  "3 inputs that should match" \
+  "secret-shaped strings" \
+  "Check every claim" \
+  "CLEAR or FINDINGS"; do
+  assert_contains "$adv_flat" "$phrase" \
+    "agents/adversarial.md embeds method step: '$phrase'"
+done
+
+# Skill list: the six #237 skills, named explicitly.
+for skill in \
+  "agent-skills:doubt-driven-development" \
+  "agent-skills:security-and-hardening" \
+  "agent-skills:code-review-and-quality" \
+  "superpowers:verification-before-completion" \
+  "verifying-agent-gate-verdicts" \
+  "testing-llm-gated-pipelines"; do
+  assert_contains "$adv_flat" "$skill" \
+    "agents/adversarial.md names skill: $skill"
+done
+
+# The agent-skills-plugin sentence must reuse the exact tail every other
+# profile shares verbatim (qa.md's version is the one #237's spec addendum
+# points at), not a bespoke "if available" phrasing invented for this
+# profile. Extracted from a flattened (newline-collapsed) copy of qa.md so
+# wrapping differences between profiles don't affect the comparison -- the
+# anchor phrase can sit mid-line in either file.
+qa_flat="$(tr '\n' ' ' < "$TALOS_ROOT/agents/qa.md" | tr -s ' ')"
+qa_tail_flat="${qa_flat#*If your harness has no skill mechanism}"
+qa_tail_flat="If your harness has no skill mechanism${qa_tail_flat%%as well as Claude Code.*}as well as Claude Code."
+assert_contains "$adv_flat" "$qa_tail_flat" \
+  "agents/adversarial.md's agent-skills sentence matches qa.md's verbatim (harness-portability tail)"
+
 # ── hooks.post_stage: Rule 3 in the conversation-stream section (#182) ─────
 assert_contains "$(cat "$SKILL_MD")" \
   "Rule 3 — Post-stage hook" \
@@ -271,7 +325,11 @@ if ! git clone --depth 1 --quiet "$REPO" "$SANDBOX/pack" 2>/dev/null; then
 fi
 
 # Names Talos's own profiles and Claude Code provide; not agent-skills' job.
-BUILTINS="code-review security-review verify run"
+# verifying-agent-gate-verdicts/testing-llm-gated-pipelines (#237, agents/
+# adversarial.md) are locally-installed skills, not shipped by the
+# addyosmani/agent-skills marketplace repo this loop clones -- excluded for
+# the same reason code-review/security-review/verify/run are.
+BUILTINS="code-review security-review verify run verifying-agent-gate-verdicts testing-llm-gated-pipelines"
 
 available="$(ls "$SANDBOX/pack/skills" 2>/dev/null)"
 if [ -z "$available" ]; then

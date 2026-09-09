@@ -1022,7 +1022,7 @@ assert_eq "1" "$rc" \
   "#128-api M1 unknown role: exits 1 (_github_api)"
 assert_contains "$out" "ignoring marker with unknown role 'qa-extra'" \
   "#128-api M1 unknown role: stderr line emitted (_github_api) — byte-identical to _github"
-assert_contains "$out" "valid: docs, qa, reviewer, security" \
+assert_contains "$out" "valid: adversarial, docs, qa, reviewer, security" \
   "#128-api M1 unknown role: valid set listed (_github_api)"
 assert_contains "$out" "no SHA marker" \
   "#128-api M1 unknown role: falls through to STALE (_github_api)"

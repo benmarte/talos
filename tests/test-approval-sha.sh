@@ -672,7 +672,7 @@ assert_exit_code 1 "$rc" \
   "#128 M1 unknown role: exits 1 (no valid marker for qa:pass)"
 assert_contains "$out" "ignoring marker with unknown role 'qa-extra'" \
   "#128 M1 unknown role: stderr log line emitted (RED without Change)"
-assert_contains "$out" "valid: docs, qa, reviewer, security" \
+assert_contains "$out" "valid: adversarial, docs, qa, reviewer, security" \
   "#128 M1 unknown role: valid set listed in log line"
 assert_contains "$out" "no SHA marker" \
   "#128 M1 unknown role: gate falls through to STALE no-marker path"

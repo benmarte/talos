@@ -72,7 +72,7 @@ fi
 [ -x "$GLOBAL_HOME/.talos/scripts/pipeline-notify.sh" ] \
   && pass "--global scripts are executable" || fail "--global scripts are executable"
 
-for agent in validator pm developer qa reviewer security docs planner; do
+for agent in validator pm developer qa reviewer security adversarial docs planner; do
   assert_file_exists "$GLOBAL_HOME/.talos/agents/$agent.md" "--global installs $agent agent"
   # #166: role profiles must ALSO land at $CLAUDE_CONFIG_DIR/agents/, the path
   # Claude Code's native subagent discovery reads. ~/.talos/agents/ alone
