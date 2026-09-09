@@ -322,8 +322,22 @@ print(json.dumps({'title': os.environ['TITLE'], 'body': os.environ['BODY'],
     printf '{"items":[{"id":"ITEM_42","content":{"number":42}}]}\n' ;;
   "project item-add"*)
     printf '{"id":"ITEM_NEW"}\n' ;;
+  "label create "*)
+    # STUB_LABEL_CREATE_FAIL=1 simulates a failed create (#245's
+    # bootstrap-labels test needs this to reach the edit fallback).
+    if [ "${STUB_LABEL_CREATE_FAIL:-}" = "1" ]; then
+      echo "gh: HTTP 422: already_exists" >&2
+      exit 1
+    fi ;;
+  "label edit "*)
+    # STUB_LABEL_EDIT_FAIL=1 simulates a failed edit (paired with
+    # STUB_LABEL_CREATE_FAIL=1 to exercise the "both fail" path).
+    if [ "${STUB_LABEL_EDIT_FAIL:-}" = "1" ]; then
+      echo "gh: HTTP 404: Not Found" >&2
+      exit 1
+    fi ;;
   *)
-    # label create/edit, comments, pr edits, merges, item-edit: succeed silently
+    # comments, pr edits, merges, item-edit: succeed silently
     ;;
 esac
 exit 0

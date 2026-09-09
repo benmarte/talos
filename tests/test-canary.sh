@@ -97,6 +97,7 @@ printf '%s\n' \
 out="$(bash "$RUN" 2>&1)"; rc=$?
 assert_eq "0" "$rc" "happy path: exits 0"
 assert_not_contains "$out" "FAIL " "happy path: no FAIL lines"
+assert_contains "$out" "PASS bootstrap-labels" "happy path: bootstrap-labels step runs before the provider loop"
 assert_contains "$out" "PASS create-issue[github] issue=#301" "happy path: github create-issue"
 assert_contains "$out" "PASS create-pr[github] pr=#302" "happy path: github create-pr"
 assert_contains "$out" "PASS check-pr-files[github]" "happy path: github check-pr-files"
@@ -107,6 +108,8 @@ assert_contains "$out" "PASS check-pr-files[github-api]" "happy path: github-api
 gh_log="$(cat "$GH_LOG")"
 assert_contains "$gh_log" "pr close 302" "happy path: github cleanup closes the PR"
 assert_contains "$gh_log" "issue close 301" "happy path: github cleanup closes the issue"
+assert_contains "$gh_log" "label create pipeline:ready --color" "happy path: bootstrap-labels created a pipeline:* label"
+assert_contains "$gh_log" "--repo acme/widget-canary" "happy path: bootstrap-labels ran against the sandbox repo"
 
 curl_leftover="$(cat "$CURL_QUEUE")"
 assert_eq "" "$curl_leftover" "happy path: curl queue consumed exactly (github-api call count matches)"
