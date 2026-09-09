@@ -29,6 +29,13 @@
 #   PIPELINE_RUN_ID           when set, scopes the per-run validation sentinel to
 #                             this value so multiple pipeline runs share the /tmp dir
 #                             without interfering with each other.
+#   TALOS_BOARD_MAX_PAGES     overrides the items() pagination page cap (default 50,
+#                             i.e. 5000 items at 100/page). A non-positive-integer
+#                             value falls back to the default 50 with a warning.
+#                             A malformed page (hasNextPage=true with an empty
+#                             endCursor) or hitting this cap bails out via
+#                             talos:board-unverified instead of looping forever
+#                             (#248 follow-up, Rule 11).
 #
 # Token path (activated when vcs.provider=github-api or gh is absent):
 #   All GitHub Projects v2 GraphQL calls are made via curl + GITHUB_TOKEN (or
@@ -59,6 +66,18 @@ fi
 # Resolves OWNER from: PIPELINE_BOARD_OWNER > board.owner > first component of vcs.repo.
 _USE_TOKEN_PATH=false
 _STATUS_TOKEN=""
+# Page cap for the items() pagination loop below (#248 follow-up): bounds a
+# pathological project (or a malformed page with hasNextPage=true and an
+# empty endCursor) so the loop always terminates instead of hanging the
+# pipeline stage. Override via TALOS_BOARD_MAX_PAGES.
+_MAX_PAGES="${TALOS_BOARD_MAX_PAGES:-50}"
+# Validate the override: must be a positive integer, or fall back to the
+# default (#248 second follow-up) -- otherwise a malformed value (e.g. a
+# non-numeric string) makes the `-gt` cap check below error and evaluate
+# false, silently disabling the cap instead of bounding it.
+case "$_MAX_PAGES" in
+  ''|*[!0-9]*|0) echo "pipeline-status: TALOS_BOARD_MAX_PAGES='$_MAX_PAGES' is not a positive integer; using default 50" >&2; _MAX_PAGES=50 ;;
+esac
 
 _resolve_token_path() {
   local provider
@@ -74,6 +93,25 @@ _resolve_token_path() {
       _STATUS_TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
     fi
   fi
+}
+
+# _gql_error_message RAW_JSON — prints the joined GraphQL error message(s) to
+# stdout when RAW_JSON carries a top-level "errors" array (e.g. GitHub's
+# EXCESSIVE_PAGINATION when a connection asks for more than 100 records);
+# prints nothing when there is none. Never fails the caller's shell (#248).
+_gql_error_message() {
+  printf '%s' "$1" | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    errs = d.get('errors')
+    if errs:
+        msgs = [e.get('message', '') for e in errs if isinstance(e, dict)]
+        msgs = [m for m in msgs if m]
+        print('; '.join(msgs) if msgs else 'GraphQL request failed')
+except Exception:
+    pass
+" 2>/dev/null
 }
 
 _graphql_token_update() {
@@ -99,10 +137,28 @@ _graphql_token_update() {
     printf '%s' "$_result"
   }
 
+  # _bail_on_gql_error RAW_JSON — fail-loud convention (#248): on a GraphQL
+  # "errors" array from ANY request (project id, fields, items, add, update),
+  # print the message to stderr and talos:board-unverified to stdout, never
+  # the "#N → status" success line, and exit 0 (Rule 11: board failures never
+  # block the pipeline). Must be called directly (not inside a `$(...)`
+  # command substitution / pipeline) so `exit` reaches the whole script
+  # instead of just a subshell.
+  _bail_on_gql_error() {
+    local _err
+    _err="$(_gql_error_message "$1")"
+    if [ -n "$_err" ]; then
+      echo "pipeline-status: GraphQL error: $_err" >&2
+      echo "talos:board-unverified project=$_proj_num"
+      exit 0
+    fi
+  }
+
   # 1. Resolve project ID
-  local _proj_id
-  _proj_id="$(_gql "{\"query\":\"query{user(login:\\\"$_owner\\\"){projectV2(number:$_proj_num){id}}}\"}" \
-    | python3 -c "
+  local _proj_id _raw
+  _raw="$(_gql "{\"query\":\"query{user(login:\\\"$_owner\\\"){projectV2(number:$_proj_num){id}}}\"}")"
+  _bail_on_gql_error "$_raw"
+  _proj_id="$(printf '%s' "$_raw" | python3 -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -116,8 +172,9 @@ except Exception:
 
   # Try organization if user lookup failed
   if [ -z "$_proj_id" ]; then
-    _proj_id="$(_gql "{\"query\":\"query{organization(login:\\\"$_owner\\\"){projectV2(number:$_proj_num){id}}}\"}" \
-      | python3 -c "
+    _raw="$(_gql "{\"query\":\"query{organization(login:\\\"$_owner\\\"){projectV2(number:$_proj_num){id}}}\"}")"
+    _bail_on_gql_error "$_raw"
+    _proj_id="$(printf '%s' "$_raw" | python3 -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -138,8 +195,9 @@ except Exception:
 
   # 2. Resolve field ID and option ID (using mapped status name)
   local _field_data _field_id _opt_id
-  _field_data="$(_gql "{\"query\":\"query{node(id:\\\"$_proj_id\\\"){...on ProjectV2{fields(first:50){nodes{...on ProjectV2SingleSelectField{id name options{id name}}}}}}}\"}" \
-    | SFIELD="$_sfield" SSTATUS="$_mapped_status" python3 -c "
+  _raw="$(_gql "{\"query\":\"query{node(id:\\\"$_proj_id\\\"){...on ProjectV2{fields(first:50){nodes{...on ProjectV2SingleSelectField{id name options{id name}}}}}}}\"}")"
+  _bail_on_gql_error "$_raw"
+  _field_data="$(printf '%s' "$_raw" | SFIELD="$_sfield" SSTATUS="$_mapped_status" python3 -c "
 import json, sys, os
 try:
     d = json.load(sys.stdin)
@@ -170,31 +228,70 @@ except Exception:
     fi
   fi
 
-  # 3. Resolve (or add) issue item in project — ALWAYS before option-ID check
+  # 3. Resolve (or add) issue item in project — ALWAYS before option-ID check.
+  # Paginated (#248): GitHub rejects items(first:>100) with EXCESSIVE_PAGINATION,
+  # so walk pages of 100 via pageInfo{hasNextPage endCursor} until the issue is
+  # found or pages run out (a 108-item project needs 2 pages at 100/page).
+  # Bounded (#248 follow-up): a malformed page can report hasNextPage=true with
+  # a null/empty endCursor, which would otherwise re-issue the identical query
+  # forever. Guard against both that case and a pathological project by
+  # capping at $_MAX_PAGES pages and bailing out via talos:board-unverified
+  # (Rule 11: board failures never block the pipeline) instead of looping.
   local _issue_url="https://github.com/$_repo/issues/$_issue"
-  local _item_id
-  _item_id="$(_gql "{\"query\":\"query{node(id:\\\"$_proj_id\\\"){...on ProjectV2{items(first:200){nodes{id content{...on Issue{number}}}}}}}\"}" \
-    | python3 -c "
-import json, sys
+  local _item_id="" _cursor="" _has_next="true" _after_clause _page_data
+  local _page_count=0
+  while [ "$_has_next" = "true" ]; do
+    _page_count=$((_page_count + 1))
+    if [ "$_page_count" -gt "$_MAX_PAGES" ]; then
+      echo "pipeline-status: items() pagination exhausted after $_MAX_PAGES pages for project #$_proj_num; giving up" >&2
+      echo "talos:board-unverified project=$_proj_num"
+      exit 0
+    fi
+    _after_clause=""
+    [ -n "$_cursor" ] && _after_clause=" after:\\\"$_cursor\\\""
+    _raw="$(_gql "{\"query\":\"query{node(id:\\\"$_proj_id\\\"){...on ProjectV2{items(first:100$_after_clause){nodes{id content{...on Issue{number}}} pageInfo{hasNextPage endCursor}}}}}\"}")"
+    _bail_on_gql_error "$_raw"
+    _page_data="$(printf '%s' "$_raw" | ISSUE_NUM="$_issue" python3 -c "
+import json, sys, os
 try:
     d = json.load(sys.stdin)
-    n = int('$_issue')
-    items = d['data']['node']['items']['nodes']
-    for item in items:
-        if item and item.get('content',{}).get('number') == n:
-            print(item['id'])
+    n = int(os.environ['ISSUE_NUM'])
+    items = d['data']['node']['items']
+    found = ''
+    for item in items.get('nodes', []):
+        if item and item.get('content', {}).get('number') == n:
+            found = item['id']
             break
+    page_info = items.get('pageInfo') or {}
+    print(found)
+    print('true' if page_info.get('hasNextPage') else 'false')
+    print(page_info.get('endCursor') or '')
 except Exception:
-    pass
+    print('')
+    print('false')
+    print('')
 " 2>/dev/null)"
+    _item_id="$(printf '%s' "$_page_data" | sed -n '1p')"
+    _has_next="$(printf '%s' "$_page_data" | sed -n '2p')"
+    _cursor="$(printf '%s' "$_page_data" | sed -n '3p')"
+    [ -n "$_item_id" ] && break
+    if [ "$_has_next" = "true" ] && [ -z "$_cursor" ]; then
+      echo "pipeline-status: items() pageInfo.hasNextPage=true but endCursor is empty for project #$_proj_num; giving up" >&2
+      echo "talos:board-unverified project=$_proj_num"
+      exit 0
+    fi
+  done
 
   if [ -z "$_item_id" ]; then
     if [ "$_dry" = "true" ]; then
       echo "[dry-run] token-graphql: addProjectV2ItemByContentId for $_issue_url"
       _item_id="<item-id>"
     else
-      _item_id="$(_gql "{\"query\":\"mutation{addProjectV2ItemByContentId(input:{projectId:\\\"$_proj_id\\\" contentId:\\\"$(curl -sS -H "Authorization: Bearer $_STATUS_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$_repo/issues/$_issue" 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('node_id',''))")\\\"}) {item{id}}}\"}\"" \
-        | python3 -c "
+      local _node_id
+      _node_id="$(curl -sS -H "Authorization: Bearer $_STATUS_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$_repo/issues/$_issue" 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('node_id',''))" 2>/dev/null)"
+      _raw="$(_gql "{\"query\":\"mutation{addProjectV2ItemByContentId(input:{projectId:\\\"$_proj_id\\\" contentId:\\\"$_node_id\\\"}) {item{id}}}\"}")"
+      _bail_on_gql_error "$_raw"
+      _item_id="$(printf '%s' "$_raw" | python3 -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -222,7 +319,8 @@ except Exception:
     echo "[dry-run] token-graphql: updateProjectV2ItemFieldValue project=$_proj_id item=$_item_id field=$_field_id option=$_opt_id"
     echo "#$_issue → $_status (dry-run via token-graphql)"
   else
-    _gql "{\"query\":\"mutation{updateProjectV2ItemFieldValue(input:{projectId:\\\"$_proj_id\\\" itemId:\\\"$_item_id\\\" fieldId:\\\"$_field_id\\\" value:{singleSelectOptionId:\\\"$_opt_id\\\"}}){projectV2Item{id}}}\"}" >/dev/null
+    _raw="$(_gql "{\"query\":\"mutation{updateProjectV2ItemFieldValue(input:{projectId:\\\"$_proj_id\\\" itemId:\\\"$_item_id\\\" fieldId:\\\"$_field_id\\\" value:{singleSelectOptionId:\\\"$_opt_id\\\"}}){projectV2Item{id}}}\"}")"
+    _bail_on_gql_error "$_raw"
     echo "#$_issue → $_status"
   fi
 }
