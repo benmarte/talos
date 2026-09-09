@@ -52,3 +52,7 @@ QA for PR #219 wrote a 77-byte test config (`agents.runner: custom`) over the re
 - Run `bash scripts/pipeline-vcs.sh assert-sync` before dispatching reviewer/security (the playbook's sync guard) and after every QA stage; a dirty tree here is always a leak.
 - QA/developer prompts: "every sandbox file goes under an absolute `$SANDBOX` path; never write a relative `talos.pipeline.*`; prefix multi-step commands with `cd <abs worktree> &&`".
 - Any `pipeline-status` "not configured; skipping" or config value that suddenly reads empty means the config file was replaced, not that config is missing.
+
+## Reviewer left a relative-path verdict file in the orchestrator checkout (2026-09-08)
+
+`rev-233.md` appeared in the main checkout; `assert-sync` caught it before the next merge. Same root cause as the config overwrite: a subagent wrote a relative path after its `cd` had not persisted. Stage prompts now say `/tmp/<file>`; keep it that way, and keep running `assert-sync` before every merge.
