@@ -1,0 +1,50 @@
+name: canary
+
+on:
+  schedule:
+    # Nightly, 06:00 UTC.
+    - cron: '0 6 * * *'
+  workflow_dispatch: {}
+
+# One canary run at a time -- a second nightly firing (or a manual dispatch)
+# while one is still touching the sandbox repo would race on issue/PR/branch
+# numbers. Queue rather than cancel: an in-flight run's cleanup must finish.
+concurrency:
+  group: canary-${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Roadmap 3.4: exercise tests/run-tests.sh's base-currency check in CI --
+  # today it only ever runs locally, where it is easy to never trigger.
+  base-currency:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fetch origin/main
+        run: git fetch origin main
+      - name: Base-currency check
+        run: bash tests/run-tests.sh --no-cache --base-ref origin/main --quiet
+
+  # Roadmap 3.3: a real gh/REST run against a dedicated sandbox repo, so
+  # schema drift in GitHub's responses or gh CLI output fails here instead of
+  # in production. Every test in tests/ stubs gh/curl/glab/az -- this is the
+  # one job that doesn't.
+  real-api:
+    # Secrets aren't readable in a job-level `if`, so this only gates on the
+    # (non-secret) repo variable; tests/canary/run.sh's own guard covers the
+    # token and prints a skip notice + exits 0 when either is missing.
+    if: ${{ vars.TALOS_CANARY_REPO != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run canary
+        env:
+          TALOS_CANARY_REPO: ${{ vars.TALOS_CANARY_REPO }}
+          GH_TOKEN: ${{ secrets.TALOS_CANARY_TOKEN }}
+          TALOS_GITHUB_TOKEN: ${{ secrets.TALOS_CANARY_TOKEN }}
+        run: bash tests/canary/run.sh
