@@ -64,3 +64,7 @@ All 15 remaining roadmap issues merged in conflict-avoiding waves of two. Every 
 - The orchestrator session ran on the pre-#182 playbook and never called `pipeline-hooks.sh post_stage` after relays, so `.talos/events.jsonl` has only the two entries QA generated. Next run: follow Rule 3 (post_stage with `--tokens/--tool-uses/--duration-s` from each completion notification) so `pipeline-events.sh cost` is real.
 - `assert-sync` before every merge and after every QA stage caught two stray files; keep it.
 - Owner steps still open: sandbox repo + `TALOS_CANARY_REPO`/`TALOS_CANARY_TOKEN` for the canary; decide on a release.
+
+## Worktree lifecycle policy (Ben, 2026-09-09)
+
+"They should always be cleaned once a PR is merged or created." Policy filed as #240: a stage's working copy lives only as long as its PR is open; post-merge removes every worktree and scratch branch for that issue (developer AND harness `agent-*` ones); Step 1 and Step 5 sweeps remove anything not tied to an open issue/PR, dirty or not, because dirty scratch is never work in progress (real work is on a pushed PR branch). Until #240 lands, run the manual cleanup at the end of each run: remove all non-main worktrees, delete all non-main local branches, `git worktree prune`.
