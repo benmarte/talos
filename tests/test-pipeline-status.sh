@@ -19,6 +19,9 @@
 #   5. The items() pagination loop is capped at TALOS_BOARD_MAX_PAGES pages
 #      and bails out via talos:board-unverified once the cap is hit, instead
 #      of looping past it.
+#   6. A non-numeric or zero TALOS_BOARD_MAX_PAGES override is rejected (with
+#      a one-line stderr warning) and falls back to the default cap of 50
+#      instead of silently disabling the cap (#248 second follow-up).
 #
 # Uses the curl stub (CURL_LOG + CURL_QUEUE) — no real network calls.
 set -u
@@ -122,5 +125,42 @@ assert_contains "$out" "talos:board-unverified project=4" "pipeline-status: prin
 assert_not_contains "$out" "#248 → In review" "pipeline-status: never prints the success line when pagination bails on the page cap"
 assert_contains "$err4" "pagination exhausted after 2 pages" "pipeline-status: page-cap bail explains itself on stderr"
 assert_eq 4 "$items_calls" "pipeline-status: pagination stops at the cap (user + fields + exactly 2 items calls, no 3rd)"
+
+# ── Test 5: a non-numeric TALOS_BOARD_MAX_PAGES override falls back to the
+#    default cap (50) instead of silently disabling it ─────────────────────
+: > "$CURL_LOG"
+PAGE_A1='{"data":{"node":{"items":{"nodes":[{"id":"a1-1","content":{"number":9101}}],"pageInfo":{"hasNextPage":true,"endCursor":"ABC_CURSOR_1"}}}}}'
+PAGE_A2='{"data":{"node":{"items":{"nodes":[{"id":"a1-2","content":{"number":9102}}],"pageInfo":{"hasNextPage":true,"endCursor":"ABC_CURSOR_2"}}}}}'
+PAGE_A3='{"data":{"node":{"items":{"nodes":[{"id":"a1-3","content":{"number":9103}}],"pageInfo":{"hasNextPage":true,"endCursor":"ABC_CURSOR_3"}}}}}'
+printf '%s\n' "$USER_RESP" "$FIELDS_RESP" "$PAGE_A1" "$PAGE_A2" "$PAGE_A3" "$ERROR_RESP" > "$CURL_QUEUE"
+
+out="$(TALOS_BOARD_MAX_PAGES=abc bash "$STATUS" 249 "In review" 2>"$SANDBOX/err5.txt")"
+rc=$?
+err5="$(cat "$SANDBOX/err5.txt")"
+log5="$(cat "$CURL_LOG")"
+items_calls5="$(grep -c 'graphql' "$CURL_LOG")"
+
+assert_eq 0 "$rc" "pipeline-status: exits 0 with a non-numeric TALOS_BOARD_MAX_PAGES override"
+assert_contains "$err5" "TALOS_BOARD_MAX_PAGES='abc'" "pipeline-status: warns on stderr about the invalid override value"
+assert_contains "$err5" "using default 50" "pipeline-status: falls back to the default page cap of 50"
+assert_not_contains "$err5" "integer expression expected" "pipeline-status: never reaches the raw -gt comparison with a non-numeric cap (the cap is not silently disabled)"
+assert_contains "$log5" "ABC_CURSOR_2" "pipeline-status: pagination advances past page 1 under the fallback default cap"
+assert_contains "$out" "talos:board-unverified project=4" "pipeline-status: still bails cleanly via board-unverified once the queue's staged GraphQL error is hit"
+assert_eq 6 "$items_calls5" "pipeline-status: pagination consumes all 3 fresh-cursor pages plus the staged error page (user + fields + 3 items + 1 error = 6 calls)"
+
+# ── Test 6: TALOS_BOARD_MAX_PAGES=0 also falls back to the default cap ─────
+: > "$CURL_LOG"
+printf '%s\n' "$USER_RESP" "$FIELDS_RESP" "$PAGE_A1" "$ERROR_RESP" > "$CURL_QUEUE"
+
+out="$(TALOS_BOARD_MAX_PAGES=0 bash "$STATUS" 250 "In review" 2>"$SANDBOX/err6.txt")"
+rc=$?
+err6="$(cat "$SANDBOX/err6.txt")"
+items_calls6="$(grep -c 'graphql' "$CURL_LOG")"
+
+assert_eq 0 "$rc" "pipeline-status: exits 0 with TALOS_BOARD_MAX_PAGES=0"
+assert_contains "$err6" "TALOS_BOARD_MAX_PAGES='0'" "pipeline-status: warns on stderr that 0 is not a positive integer"
+assert_contains "$err6" "using default 50" "pipeline-status: falls back to the default page cap of 50 for a zero override"
+assert_contains "$out" "talos:board-unverified project=4" "pipeline-status: still bails cleanly via board-unverified once the queue's staged GraphQL error is hit"
+assert_eq 4 "$items_calls6" "pipeline-status: page 1 is processed normally under the fallback default cap (user + fields + 1 items + 1 error = 4 calls) instead of bailing at page 1 like an unvalidated cap of 0 would"
 
 finish

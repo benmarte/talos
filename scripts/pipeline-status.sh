@@ -30,10 +30,12 @@
 #                             this value so multiple pipeline runs share the /tmp dir
 #                             without interfering with each other.
 #   TALOS_BOARD_MAX_PAGES     overrides the items() pagination page cap (default 50,
-#                             i.e. 5000 items at 100/page). A malformed page
-#                             (hasNextPage=true with an empty endCursor) or hitting
-#                             this cap bails out via talos:board-unverified instead
-#                             of looping forever (#248 follow-up, Rule 11).
+#                             i.e. 5000 items at 100/page). A non-positive-integer
+#                             value falls back to the default 50 with a warning.
+#                             A malformed page (hasNextPage=true with an empty
+#                             endCursor) or hitting this cap bails out via
+#                             talos:board-unverified instead of looping forever
+#                             (#248 follow-up, Rule 11).
 #
 # Token path (activated when vcs.provider=github-api or gh is absent):
 #   All GitHub Projects v2 GraphQL calls are made via curl + GITHUB_TOKEN (or
@@ -69,6 +71,13 @@ _STATUS_TOKEN=""
 # empty endCursor) so the loop always terminates instead of hanging the
 # pipeline stage. Override via TALOS_BOARD_MAX_PAGES.
 _MAX_PAGES="${TALOS_BOARD_MAX_PAGES:-50}"
+# Validate the override: must be a positive integer, or fall back to the
+# default (#248 second follow-up) -- otherwise a malformed value (e.g. a
+# non-numeric string) makes the `-gt` cap check below error and evaluate
+# false, silently disabling the cap instead of bounding it.
+case "$_MAX_PAGES" in
+  ''|*[!0-9]*|0) echo "pipeline-status: TALOS_BOARD_MAX_PAGES='$_MAX_PAGES' is not a positive integer; using default 50" >&2; _MAX_PAGES=50 ;;
+esac
 
 _resolve_token_path() {
   local provider
