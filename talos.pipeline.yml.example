@@ -281,6 +281,20 @@ notifications:
 #   #                             # Must be an AGENTIC CLI (executes shell/edits
 #   #                             # files); use one backed by a local model
 #   #                             # (e.g. Ollama) for fully local pipelines.
+#
+# Per-role runner override (agents.roles.<role>.runner / .runner_cmd): a role
+# can be pointed at a different backend from the pipeline default, on both
+# the native and adapter execution paths — resolved role-first (the role's
+# own key wins, else the global agents.runner/.runner_cmd above). No
+# agents.roles.<role>.runner_args in this release — runner_args stays
+# global-only. `bash scripts/pipeline-agent.sh --resolve <role>` prints what
+# a role will actually use.
+#   roles:
+#     security:
+#       runner: custom                # this role only; everything else stays claude
+#       # runner_cmd: |               # second opinion via a local llama.cpp model
+#       #   OPENAI_API_BASE=http://localhost:8080/v1 OPENAI_API_KEY=local \
+#       #     aider --model openai/local --yes-always --no-auto-commits --message "$(cat)"
 
 # ── Hooks ─────────────────────────────────────────────────────────────────────
 # hooks.pre_dispatch (#181): a shell command run before EVERY stage's prompt

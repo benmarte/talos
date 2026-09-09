@@ -830,6 +830,45 @@ agents:
 
 **Backwards compatibility:** a config with no `model:` key at either level behaves byte-identically to earlier versions — `model:` is omitted from each Agent spawn call.
 
+### Per-role runner override (`agents.roles.<role>.runner` / `.runner_cmd`)
+
+`agents.runner` picks one backend for the whole pipeline. `agents.roles.<role>.runner` (and `.runner_cmd`) overrides it for a single role, on **both** execution paths — resolved role-first: the role's own key wins when set, else `agents.runner` (default `claude`); `runner_cmd` follows the same precedence and is only read when the resolved runner is `custom`. `agents.runner_args` stays global-only — there is no `agents.roles.<role>.runner_args`.
+
+```yaml
+agents:
+  runner: claude                 # pipeline default, unchanged
+  roles:
+    qa:
+      model: claude-opus-5       # existing per-role model override, unchanged
+    reviewer:
+      runner: custom             # this role only — everything else stays claude
+      runner_cmd: "…"            # required when runner: custom
+```
+
+On the native path (Claude Code, `subagents: true`), a role whose effective runner is `claude` still spawns as a native subagent; a role whose effective runner is anything else is dispatched via `bash scripts/pipeline-agent.sh <role> - <<'PROMPT' ... PROMPT` instead — the orchestrator makes this decision per role, so the rest of the pipeline keeps running natively. On the adapter path, `pipeline-agent.sh` already resolves the same precedence internally, so no config change is needed to get the per-role behaviour there.
+
+Run `bash scripts/pipeline-agent.sh --resolve <role>` to see what a role will actually use — it prints `runner=<r> runner_cmd=<c> model=<m>` without running anything, and it is the same resolution the orchestrator and `pipeline-agent.sh` itself use, so it never drifts from the real dispatch.
+
+**Second opinion on a local model:** point one role at a llama.cpp-served model while the rest of the pipeline stays on the default runner — e.g. give `security` (or any single stage) an independent pass through a local model without rerouting everything:
+
+```bash
+# --jinja enables tool/function calling — agentic CLIs need it
+llama-server -m qwen2.5-coder-32b-instruct-q4_k_m.gguf --port 8080 -c 32768 --jinja
+```
+
+```yaml
+agents:
+  runner: claude                 # everything else: native Claude subagents
+  roles:
+    security:
+      runner: custom
+      runner_cmd: >-
+        OPENAI_API_BASE=http://localhost:8080/v1 OPENAI_API_KEY=local
+        aider --model openai/local --yes-always --no-auto-commits --message "$(cat)"
+```
+
+Every other role keeps running natively; only `security` pays the local-model round trip, and it costs nothing per PR since the endpoint is local.
+
 **pi:** register the `pipeline` skill with pi (e.g. `skills` in `~/.pi/settings.json`
 pointing at this repo's `skills/`), set `agents.subagents: false` and
 `agents.runner: pi`, then tell pi to run the talos pipeline. The playbook's

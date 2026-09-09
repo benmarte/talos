@@ -102,6 +102,7 @@ TALOS_MARKERS=(
   talos:marker-authors-rejected
   talos:board-unverified
   talos:verify
+  talos:runner
 )
 
 # ── talos_contract_json ──────────────────────────────────────────────────────
