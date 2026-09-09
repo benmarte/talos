@@ -33,7 +33,14 @@
 # out, success or failure, via a single `trap cleanup EXIT`.
 set -u
 
-RUN_ID="canary-$(date -u +%Y%m%d%H%M%S)-$$"
+# CANARY_TITLE_PREFIX -- every issue/PR title this script creates starts
+# with this (via RUN_ID, below). sweep_stale() anchors on it: `gh ... list
+# --search "canary- in:title"` is free-text and would also match an
+# unrelated issue that merely contains "canary" somewhere in its title, so
+# the search result is only ever a pre-filter -- the actual close decision
+# requires title.startswith(CANARY_TITLE_PREFIX), checked client-side.
+CANARY_TITLE_PREFIX="canary-"
+RUN_ID="${CANARY_TITLE_PREFIX}$(date -u +%Y%m%d%H%M%S)-$$"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TALOS_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 VCS="$TALOS_ROOT/scripts/pipeline-vcs.sh"
@@ -57,11 +64,18 @@ WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/talos-canary.XXXXXX")"
 CLONE_URL="${TALOS_CANARY_CLONE_URL:-https://github.com/${TALOS_CANARY_REPO}.git}"
 PROVIDERS="${TALOS_CANARY_PROVIDERS:-github github-api}"
 
-# Route github.com clone/push through the token (no-op for a local/file://
-# clone URL, which is what tests/test-canary.sh uses).
+# Route github.com clone/push through the token via gh's own git credential
+# helper (no-op for a local/file:// clone URL, which is what
+# tests/test-canary.sh uses, so gh is never invoked there). Deliberately
+# NOT `git config url.insteadOf "https://x-access-token:$TOKEN@..."` --
+# that puts the token in the `git config` argv, which is visible to any
+# other process on the runner via `ps` and often lands in CI step logs.
+# `gh auth setup-git` instead points git's credential.helper at
+# `gh auth git-credential`, which reads the token from GH_TOKEN (already
+# exported above) only when git actually asks for credentials.
 case "$CLONE_URL" in
   https://github.com/*)
-    git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
+    gh auth setup-git >/dev/null 2>&1 || true
     ;;
 esac
 git config --global user.email "talos-canary@users.noreply.github.com"
@@ -119,30 +133,52 @@ sweep_stale() {
   local cutoff
   cutoff="$(python3 -c 'import datetime;print((datetime.datetime.utcnow()-datetime.timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ"))' 2>/dev/null)" || return 0
 
-  # _stale_numbers -- reads a `gh ... list --json number,title,createdAt`
-  # array on stdin, prints the number of every item older than $cutoff.
+  # Best-effort: also restrict closes to items authored by this token's own
+  # login, when that's cheaply available (one extra `gh api user` call,
+  # reused for both list calls below). Never fatal -- an unresolved login
+  # (empty) just means the login check is skipped, same fail-open posture
+  # as _vcs_shared_current_user in pipeline-vcs.sh; the anchored-title check
+  # in _stale_numbers is what actually guards against closing anything that
+  # isn't ours.
+  local login
+  login="$(gh api user --jq .login 2>/dev/null)" || login=""
+
+  # _stale_numbers -- reads a `gh ... list --json number,title,createdAt,author`
+  # array on stdin, prints the number of every item that is ALL of:
+  #   - older than $cutoff
+  #   - title starts with $CANARY_TITLE_PREFIX (anchored -- the --search
+  #     "canary- in:title" above is free-text and only a pre-filter; an
+  #     unrelated issue titled e.g. "my canary bird" would also match it)
+  #   - authored by $login, when $login resolved to a non-empty value
   _stale_numbers() {
-    CUTOFF="$cutoff" python3 -c "
+    CUTOFF="$cutoff" PREFIX="$CANARY_TITLE_PREFIX" LOGIN="$login" python3 -c "
 import json, os, sys
 try:
     items = json.load(sys.stdin)
 except Exception:
     items = []
+prefix = os.environ['PREFIX']
+login = os.environ.get('LOGIN', '')
 for i in items:
-    if i.get('createdAt', '') < os.environ['CUTOFF']:
-        print(i['number'])
+    if not i.get('title', '').startswith(prefix):
+        continue
+    if i.get('createdAt', '') >= os.environ['CUTOFF']:
+        continue
+    if login and i.get('author', {}).get('login', '') != login:
+        continue
+    print(i['number'])
 " 2>/dev/null
   }
 
   local raw
   raw="$(gh issue list --repo "$TALOS_CANARY_REPO" --search "canary- in:title" --state open \
-    --json number,title,createdAt --limit 100 2>/dev/null)"
+    --json number,title,createdAt,author --limit 100 2>/dev/null)"
   printf '%s' "${raw:-[]}" | _stale_numbers | while IFS= read -r n; do
     [ -n "$n" ] && gh issue close "$n" --repo "$TALOS_CANARY_REPO" >/dev/null 2>&1
   done
 
   raw="$(gh pr list --repo "$TALOS_CANARY_REPO" --search "canary- in:title" --state open \
-    --json number,title,createdAt --limit 100 2>/dev/null)"
+    --json number,title,createdAt,author --limit 100 2>/dev/null)"
   printf '%s' "${raw:-[]}" | _stale_numbers | while IFS= read -r n; do
     [ -n "$n" ] && gh pr close "$n" --repo "$TALOS_CANARY_REPO" --delete-branch >/dev/null 2>&1
   done

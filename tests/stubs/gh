@@ -135,6 +135,16 @@ print(json.dumps(d[:int(os.environ['LIMIT'])]))
 ")"
     fi
     printf '%s\n' "$_pl_raw" ;;
+  "issue list --repo "*"--search "*"--state open "*"--json number,title,createdAt,author"*)
+    # Used by tests/canary/run.sh's sweep_stale (#188): search-then-anchor
+    # stale-issue sweep. Override STUB_CANARY_ISSUE_LIST_STALE with the
+    # canned `[{"number":N,"title":"...","createdAt":"...","author":{"login":"..."}}]`
+    # array; default is empty (no stale leftovers to sweep).
+    printf '%s\n' "${STUB_CANARY_ISSUE_LIST_STALE:-[]}" ;;
+  "pr list --repo "*"--search "*"--state open "*"--json number,title,createdAt,author"*)
+    # Used by tests/canary/run.sh's sweep_stale (#188) -- see issue-list
+    # case above. Override STUB_CANARY_PR_LIST_STALE.
+    printf '%s\n' "${STUB_CANARY_PR_LIST_STALE:-[]}" ;;
   "issue list --state "*)
     # NB: JSON braces can't live inside ${VAR:-default} — } ends the expansion.
     # Override STUB_ISSUE_LIST to simulate a larger result set (#171).

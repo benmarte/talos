@@ -8,8 +8,12 @@
 #      PASS, cleanup runs for both, and the curl queue is consumed exactly
 #      (a leftover or missing line means the call-count assumptions below
 #      have drifted from pipeline-vcs.sh's actual github-api call sequence).
-#   3. A failing step -> exit non-zero, AND cleanup still runs (close-pr /
+#   3. sweep_stale only closes issues/PRs whose title *starts with* the
+#      canary prefix -- an unrelated old item that merely contains "canary"
+#      in its title (matched by the free-text `--search`) must survive.
+#   4. A failing step -> exit non-zero, AND cleanup still runs (close-pr /
 #      close-issue calls land in the gh stub log).
+#   5. canary.yml workflow structure.
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox
@@ -108,7 +112,33 @@ curl_leftover="$(cat "$CURL_QUEUE")"
 assert_eq "" "$curl_leftover" "happy path: curl queue consumed exactly (github-api call count matches)"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. A failing step still runs cleanup, and the run exits non-zero.
+# 3. sweep_stale anchors on the canary title prefix (#188 review finding):
+#    `gh ... list --search "canary- in:title"` is free-text, so an unrelated
+#    old issue/PR that merely *contains* "canary" in its title must survive
+#    the sweep -- only a title that *starts with* "canary-" may be closed.
+# ─────────────────────────────────────────────────────────────────────────────
+: > "$GH_LOG"
+export TALOS_CANARY_PROVIDERS="github"
+export STUB_NEW_ISSUE_NUMBER=601
+export STUB_NEW_PR_NUMBER=602
+OLD_CREATED="2000-01-01T00:00:00Z"
+export STUB_CANARY_ISSUE_LIST_STALE="[{\"number\":9001,\"title\":\"my canary bird\",\"createdAt\":\"$OLD_CREATED\",\"author\":{\"login\":\"someone-else\"}},{\"number\":9002,\"title\":\"canary-19990101000000-1 github: canary smoke test\",\"createdAt\":\"$OLD_CREATED\",\"author\":{\"login\":\"someone-else\"}}]"
+export STUB_CANARY_PR_LIST_STALE="[{\"number\":9101,\"title\":\"my canary bird PR\",\"createdAt\":\"$OLD_CREATED\",\"author\":{\"login\":\"someone-else\"}},{\"number\":9102,\"title\":\"canary-19990101000000-1 github: trivial canary change\",\"createdAt\":\"$OLD_CREATED\",\"author\":{\"login\":\"someone-else\"}}]"
+
+out="$(bash "$RUN" 2>&1)"; rc=$?
+assert_eq "0" "$rc" "stale sweep: run still exits 0"
+assert_contains "$out" "PASS sweep-stale-leftovers" "stale sweep: step passes"
+
+gh_log="$(cat "$GH_LOG")"
+assert_contains "$gh_log" "issue close 9002" "stale sweep: closes the anchored 'canary-...' issue"
+assert_not_contains "$gh_log" "issue close 9001" "stale sweep: leaves the unrelated 'my canary bird' issue alone"
+assert_contains "$gh_log" "pr close 9102 --repo acme/widget-canary --delete-branch" "stale sweep: closes the anchored 'canary-...' PR"
+assert_not_contains "$gh_log" "pr close 9101" "stale sweep: leaves the unrelated 'my canary bird' PR alone"
+
+unset STUB_CANARY_ISSUE_LIST_STALE STUB_CANARY_PR_LIST_STALE TALOS_CANARY_PROVIDERS
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. A failing step still runs cleanup, and the run exits non-zero.
 # ─────────────────────────────────────────────────────────────────────────────
 : > "$GH_LOG"
 export TALOS_CANARY_PROVIDERS="github"
@@ -128,7 +158,7 @@ assert_contains "$gh_log" "issue close 501" "failing step: cleanup still closes 
 unset STUB_GH_API_FAIL TALOS_CANARY_PROVIDERS
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4. Workflow YAML structure -- never calls the real API, PyYAML optional.
+# 5. Workflow YAML structure -- never calls the real API, PyYAML optional.
 # ─────────────────────────────────────────────────────────────────────────────
 CANARY_YML="$TALOS_ROOT/.github/workflows/canary.yml"
 assert_file_exists "$CANARY_YML" "canary.yml exists"
