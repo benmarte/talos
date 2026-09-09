@@ -13,7 +13,9 @@ the spec, and `api-and-interface-design` whenever the change touches a public
 interface. Talos requires the agent-skills plugin, so under Claude Code these are
 present; treat them as part of your instructions. If your harness has no skill mechanism, or agent-skills is not installed there, follow the embedded steps below instead. Vendored installs (`install.sh`) do not pull agent-skills for you — install it separately if you want it; it supports Codex, Gemini, OpenCode and Antigravity as well as Claude Code.
 
-Given the issue number, read it and the relevant code, then write a spec with:
+Given the issue number, read it (`bash scripts/pipeline-vcs.sh view-issue <N>`)
+and the relevant code, then write a spec as an issue comment starting
+`**PM spec:** ...` with:
 - **Goal** (one sentence).
 - **Acceptance criteria** (checklist, each testable).
 - **Files likely to change** (paths).
@@ -21,11 +23,15 @@ Given the issue number, read it and the relevant code, then write a spec with:
 - **PR target**: the repo's integration branch (default branch unless told otherwise).
 - **Out of scope** (guard against over-reach).
 
-Post the spec as an issue comment starting `**PM spec:** ...`, then advance:
-`gh issue edit <N> --add-label pipeline:dev --remove-label pipeline:confirmed`.
+Post: `bash scripts/pipeline-vcs.sh comment-issue <N> "**PM spec:** ..."`. If
+the post fails, report it in your final message and do not advance the label.
+Advance: `bash scripts/pipeline-vcs.sh label-issue <N> --add pipeline:dev --remove pipeline:confirmed`.
+The PM spec comment IS the handoff artifact — no separate Agent header comment
+needed.
 
 Keep it small. If the issue is actually an epic (many independent deliverables),
-instead comment a decomposition proposal and set `pipeline:blocked` for a human
-to split it.
+instead comment a decomposition proposal and
+`bash scripts/pipeline-vcs.sh label-issue <N> --add pipeline:blocked` for a
+human to split it.
 
 Final message: the one-line goal + branch name.

@@ -24,13 +24,25 @@ Focus: real correctness bugs first, then simplification/reuse/efficiency. Ignore
 style nits the linter already covers. Verify each finding against the code
 before reporting — no speculative comments.
 
+IMPORTANT: never run `git checkout`, `git switch`, or `git pull` in your
+working directory — use `diff-pr` to read changes regardless of the active
+isolation mode.
+
 Never run `verify:`; QA and CI already did. `pipeline-vcs.sh pr-checks` (CI
 status) is the oracle for whether the suite passes — this stage is diff-only.
 
-- Approve → `gh pr review <pr> --approve --body "**Reviewer:** approved — <summary>"`
-  then run `post-approval` (see below; it applies `review:approved` in the same call).
-- Changes needed → post specific, file:line inline findings, add `pipeline:blocked`,
-  remove `pipeline:review`.
+- Approve:
+  1. `bash scripts/pipeline-vcs.sh approve-pr <pr> "<summary>"` (note: this may
+     fail with "cannot approve your own pull request" in single-account
+     setups — expected and ignorable; the `review:approved` label is the gate)
+  2. `bash scripts/pipeline-vcs.sh label-pr <pr> --remove pipeline:blocked`
+  3. `bash scripts/pipeline-vcs.sh label-issue <issue-n> --remove pipeline:blocked`
+  4. Run `post-approval` (see below; it applies `review:approved` in the same call).
+- Changes needed:
+  1. `bash scripts/pipeline-vcs.sh label-pr <pr> --add pipeline:blocked --remove pipeline:review`
+  2. Render blocked.md on the PR with specific, file:line inline findings:
+     SUMMARY="<N> findings" DETAILS="<file:line findings>" — `bash
+     scripts/pipeline-vcs.sh comment-pr <pr> "$COMMENT_BODY"`.
 
 **Approval marker (required on approve):**
 Use `post-approval` — it fetches the head SHA from the PR, constructs the wrapped marker, posts it, and applies the label in one operation (#146):

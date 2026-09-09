@@ -22,24 +22,26 @@ make_sandbox
 
 SKILL_MD="$TALOS_ROOT/skills/pipeline/SKILL.md"
 
-# Extract a fenced (```` ``` ````) block whose first content line contains $2.
-extract_block() {  # $1=file $2=anchor substring
-  awk -v anchor="$2" '
-    /^```$/ { if (in_block) { in_block = 0; next }; in_block = 1; first = 1; next }
-    in_block {
-      if (first) { first = 0; match_block = (index($0, anchor) > 0) }
-      if (match_block) print
-    }
-  ' "$1"
+# Extract the fenced (```` ``` ````) block whose opening line contains $2,
+# by anchoring directly on that line and scanning forward for its own
+# closing "```" -- a ```bash/```yaml snippet nested in the surrounding prose
+# (e.g. the assert-sync precondition ahead of the developer prompt) would
+# desync a naive every-```-toggles approach, so this anchors on the prompt's
+# own first line instead of counting fences from the top of the file.
+extract_window() {  # $1=file $2=anchor substring
+  local file="$1" anchor="$2" start end
+  start="$(grep -n -F "$anchor" "$file" | head -1 | cut -d: -f1)"
+  [ -z "$start" ] && return 1
+  end="$(awk -v s="$start" 'NR > s && /^```$/ { print NR; exit }' "$file")"
+  [ -z "$end" ] && end=$((start + 60))
+  sed -n "${start},$((end - 1))p" "$file"
 }
 
-dev_blocks="$(extract_block "$SKILL_MD" "You are the Developer. Implement the PM spec for issue")"
-qa_block="$(extract_block "$SKILL_MD" "You are QA. A developer opened a PR for issue")"
+dev_blocks="$(extract_window "$SKILL_MD" "You are the Developer. Implement")"
+qa_block="$(extract_window "$SKILL_MD" "You are QA. A developer opened a PR for issue")"
 
-assert_contains "$dev_blocks" "quiet" \
-  "skills/pipeline/SKILL.md developer prompt block(s) mention quiet verify output"
-assert_contains "$qa_block" "quiet" \
-  "skills/pipeline/SKILL.md QA prompt block mentions quiet verify output"
+# quiet-verify guidance is role methodology (#179): it now lives once in each
+# role's agent profile rather than being restated in the SKILL.md task prompt.
 assert_contains "$(cat "$TALOS_ROOT/agents/developer.md")" "quiet" \
   "agents/developer.md mentions quiet verify output"
 assert_contains "$(cat "$TALOS_ROOT/agents/qa.md")" "quiet" \
@@ -96,13 +98,11 @@ assert_rule_before_all() {  # $1=file $2=anchor-regex $3=label-prefix $4=max-lin
   done
 }
 
-# Both developer prompt profiles (worktree and branch isolation) in SKILL.md.
-assert_rule_before_all "$SKILL_MD" '^5\. Verify commands' \
-  "skills/pipeline/SKILL.md developer prompt: foreground rule precedes step 5"
-# The QA prompt in SKILL.md -- rule sits directly beside the QA-mode /
-# CI-wait decision (both the ci poll and the local verify branch hang off it).
-assert_rule_before_all "$SKILL_MD" 'QA mode above is already resolved' \
-  "skills/pipeline/SKILL.md QA prompt: foreground rule precedes verify/CI-wait instruction"
+# The full workflow (including the foreground-rule / verify-mode narrative)
+# now lives once in each role's agent profile (#179) -- SKILL.md's task
+# prompts only carry per-issue values and a pointer to the profile. So the
+# proximity check runs against the profiles, which is where a stage agent
+# actually reads its verify instructions from.
 assert_rule_before_all "$TALOS_ROOT/agents/developer.md" \
   'Verify commands — two mutually exclusive' \
   "agents/developer.md: foreground rule precedes verify instruction"
@@ -112,43 +112,32 @@ assert_rule_before_all "$TALOS_ROOT/agents/qa.md" 'Check `verify.qa_mode`' \
 # The QA prompt's CI-wait poll must be a literal, single foreground command
 # (an `until ... do sleep N; done` loop with a deadline) -- not left for the
 # agent to improvise, per the #205 scope addition after PR #206 stalled.
-assert_contains "$qa_block" "until" \
-  "skills/pipeline/SKILL.md QA prompt writes the CI-wait loop out literally"
-assert_contains "$qa_block" "sleep 30" \
-  "skills/pipeline/SKILL.md QA prompt CI-wait loop has a literal sleep interval"
+# This procedure lives in agents/qa.md (#179); SKILL.md's QA task prompt no
+# longer restates it.
 assert_contains "$(cat "$TALOS_ROOT/agents/qa.md")" "until" \
   "agents/qa.md writes the CI-wait loop out literally"
+assert_contains "$(cat "$TALOS_ROOT/agents/qa.md")" "sleep 30" \
+  "agents/qa.md CI-wait loop has a literal sleep interval"
 
 # ── Mergeability pre-CI check before QA waits on CI (#214) ─────────────────
 # A CONFLICTING PR gets no `pull_request` CI run scheduled; QA must check
 # pr-mergeable BEFORE its CI wait, not discover a hung wait the hard way.
-assert_contains "$qa_block" "pr-mergeable" \
-  "skills/pipeline/SKILL.md QA prompt block calls pr-mergeable before the CI wait"
-assert_contains "$qa_block" "CONFLICTING" \
-  "skills/pipeline/SKILL.md QA prompt block handles a CONFLICTING result"
+# This procedure lives in agents/qa.md (#179).
 assert_contains "$(cat "$TALOS_ROOT/agents/qa.md")" "pr-mergeable" \
   "agents/qa.md mentions the pr-mergeable pre-CI check"
+assert_contains "$(cat "$TALOS_ROOT/agents/qa.md")" "CONFLICTING" \
+  "agents/qa.md handles a CONFLICTING result"
 
-# The "5. Verify commands" step -- the shared verify-mode + quiet-output
-# guidance -- must stay byte-identical between the worktree-isolation and
-# branch-isolation developer prompt variants (the surrounding blocks differ,
-# e.g. the "Worktree path:" line, so only this step is compared).
-find_step_end() {  # $1=file $2=start_line -> line number of "6. `git commit" after start
-  awk -v start="$2" 'NR > start && /^6\. `git commit/ { print NR; exit }' "$1"
-}
-step5_start1=$(grep -n '^5\. Verify commands' "$SKILL_MD" | sed -n '1p' | cut -d: -f1)
-step5_start2=$(grep -n '^5\. Verify commands' "$SKILL_MD" | sed -n '2p' | cut -d: -f1)
-if [ -n "$step5_start1" ] && [ -n "$step5_start2" ]; then
-  step5_end1=$(find_step_end "$SKILL_MD" "$step5_start1")
-  step5_end2=$(find_step_end "$SKILL_MD" "$step5_start2")
-  step1="$(sed -n "${step5_start1},$((step5_end1 - 1))p" "$SKILL_MD")"
-  step2="$(sed -n "${step5_start2},$((step5_end2 - 1))p" "$SKILL_MD")"
-  assert_eq "$step1" "$step2" \
-    "the two developer prompt blocks' step-5 verify guidance is byte-identical"
-else
-  fail "the two developer prompt blocks' step-5 verify guidance is byte-identical" \
-    "could not locate both step-5 sections"
-fi
+# ── Developer worktree/branch variants merged into one block (#179) ────────
+# SKILL.md used to carry two near-identical developer prompt blocks (one per
+# isolation mode); they are now a single block with a two-line isolation
+# note as the only difference the orchestrator substitutes. Guard against
+# the duplication creeping back.
+_dev_block_count="$(grep -c 'You are the Developer\. Implement' "$SKILL_MD")"
+assert_eq "1" "$_dev_block_count" \
+  "skills/pipeline/SKILL.md carries exactly one developer prompt block (worktree/branch merged)"
+assert_contains "$dev_blocks" "ISOLATION_NOTE" \
+  "skills/pipeline/SKILL.md developer prompt block carries the isolation-note placeholder"
 
 # ── Compact stage handoff: every role's first view-issue call uses --spec,
 # reviewer/security read diff-pr --stat first (#201) ────────────────────────
@@ -180,22 +169,6 @@ assert_first_view_issue_uses_spec() {  # $1=text $2=label
   esac
 }
 
-# extract_block above scans every fenced block in the file for the FIRST one
-# whose first content line matches the anchor, toggling on every literal
-# "```" line -- a ```bash/```yaml opener paired with a plain ``` closer
-# elsewhere in the file desyncs that toggle by the time it reaches the
-# reviewer/security/docs blocks further down. extract_window instead anchors
-# directly on the prompt's own opening line and scans forward for its own
-# closing "```", so it can't inherit drift from earlier blocks.
-extract_window() {  # $1=file $2=anchor substring
-  local file="$1" anchor="$2" start end
-  start="$(grep -n -F "$anchor" "$file" | head -1 | cut -d: -f1)"
-  [ -z "$start" ] && return 1
-  end="$(awk -v s="$start" 'NR > s && /^```$/ { print NR; exit }' "$file")"
-  [ -z "$end" ] && end=$((start + 60))
-  sed -n "${start},$((end - 1))p" "$file"
-}
-
 reviewer_block="$(extract_window "$SKILL_MD" "You are the Reviewer. QA passed PR")"
 security_block="$(extract_window "$SKILL_MD" "You are the Security Analyst. QA passed PR")"
 docs_block="$(extract_window "$SKILL_MD" "You are Documentation. QA passed for PR")"
@@ -217,15 +190,37 @@ for _role in developer qa reviewer security docs; do
 done
 
 # Reviewer and security prompts read the cheap per-file summary before the
-# full diff.
-assert_contains "$reviewer_block" "diff-pr <PR_NUMBER> --stat" \
-  "skills/pipeline/SKILL.md reviewer prompt block reads diff-pr --stat before the full diff"
-assert_contains "$security_block" "diff-pr <PR_NUMBER> --stat" \
-  "skills/pipeline/SKILL.md security prompt block reads diff-pr --stat before the full diff"
+# full diff. This procedure lives in the agent profiles (#179); SKILL.md's
+# reviewer/security task prompts point at the profile instead of restating it.
 assert_contains "$(cat "$TALOS_ROOT/agents/reviewer.md")" "diff-pr <pr> --stat" \
   "agents/reviewer.md reads diff-pr --stat before the full diff"
 assert_contains "$(cat "$TALOS_ROOT/agents/security.md")" "diff-pr <pr> --stat" \
   "agents/security.md reads diff-pr --stat before the full diff"
+
+# ── SKILL.md role blocks stay task prompts, not restated methodology (#179) ─
+# Each role's SKILL.md block is now per-issue values + a pointer to the role
+# profile, not a full workflow. Cap each block's line count so the
+# duplication this issue removed cannot silently creep back in.
+validator_block="$(extract_window "$SKILL_MD" "You are the Validator. Issue")"
+pm_block="$(extract_window "$SKILL_MD" "You are the Project Manager. Issue")"
+
+_assert_block_max_lines() {  # $1=block-text $2=label $3=max-lines (default 40)
+  local text="$1" label="$2" max="${3:-40}" n
+  n="$(printf '%s\n' "$text" | grep -c '')"
+  if [ "$n" -le "$max" ]; then
+    pass "$label ($n <= $max lines)"
+  else
+    fail "$label" "$n lines, expected <= $max"
+  fi
+}
+
+_assert_block_max_lines "$validator_block" "skills/pipeline/SKILL.md validator prompt block is <= 40 lines"
+_assert_block_max_lines "$pm_block" "skills/pipeline/SKILL.md PM prompt block is <= 40 lines"
+_assert_block_max_lines "$dev_blocks" "skills/pipeline/SKILL.md developer prompt block is <= 40 lines"
+_assert_block_max_lines "$qa_block" "skills/pipeline/SKILL.md QA prompt block is <= 40 lines"
+_assert_block_max_lines "$reviewer_block" "skills/pipeline/SKILL.md reviewer prompt block is <= 40 lines"
+_assert_block_max_lines "$security_block" "skills/pipeline/SKILL.md security prompt block is <= 40 lines"
+_assert_block_max_lines "$docs_block" "skills/pipeline/SKILL.md docs prompt block is <= 40 lines"
 
 # ── hooks.post_stage: Rule 3 in the conversation-stream section (#182) ─────
 assert_contains "$(cat "$SKILL_MD")" \

@@ -50,6 +50,18 @@ issue: pipeline:ready
 
 Any stage can set `pipeline:blocked` with a comment. A blocked issue is skipped until a human resolves it and removes the label.
 
+**Where a role's instructions live (#179):** `agents/<role>.md` is the single
+home for a role's methodology — its workflow steps, verdict procedures, and
+the exact `pipeline-vcs.sh` commands it runs. `skills/pipeline/SKILL.md`'s
+per-stage blocks in Step 3 stay task prompts: per-issue values (issue/PR
+numbers, branch, comment header, verify commands) plus a pointer back to the
+profile, not a restatement of the procedure. On the adapter path
+(`subagents: false`) `pipeline-agent.sh` concatenates the profile with the
+task prompt before running it; on the native path (`subagents: true`) Claude
+Code loads the profile as the subagent's system prompt and the orchestrator
+supplies the task prompt as its message — either way the role only has to be
+taught once.
+
 ---
 
 ## VCS providers
