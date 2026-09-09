@@ -89,17 +89,42 @@ Wait for answer.
 
 ## Step 4 — Ask: roles
 
-> "Which review stages should run? (all are on by default)
+> "Which review stages should run? (all are on by default except adversarial)
 > - validator: Phase-1 gate — confirms the issue is real [on]
 > - pm: Writes the implementation spec [on]
 > - qa: Verifies the PR satisfies acceptance criteria [on]
 > - reviewer: Code-quality review [on]
 > - security: Security review [on]
 > - docs: Updates README/CHANGELOG [on]
+> - adversarial: Optional pre-merge second opinion — attacks the diff for
+>   vacuous tests, weak patterns, secret shapes and unverified claims [off]
 >
-> Type the names of any you want to turn OFF, or 'none' to keep all on."
+> Type the names of any you want to turn OFF (or, for adversarial, ON), or
+> 'none' to keep the defaults."
 
 Wait for answer.
+
+If the user turns `adversarial` **on**:
+> "Adversarial is usually paired with an independent second backend so it
+> isn't grading the same model that wrote the diff. Should it run on the
+> same agent harness as everything else, or a different one (e.g. a local
+> model via a custom runner)?
+> [default: same harness — no extra config needed]"
+
+If they want a different backend, record it the same way as Step 6b's
+`custom` harness answer (runner + optional `runner_cmd`); this is written as
+`agents.roles.adversarial.runner` (and `runner_cmd` when custom), not the
+top-level `agents.runner`, so only adversarial pays for the different
+backend.
+
+Also ask (2 more questions, defaults shown, only if the user wants to change them):
+> "Two more role toggles, both fine to leave at their defaults:
+> - Skip PM when an issue's body is already a usable spec (an acceptance-criteria
+>   heading with checklist items, or the `spec:ready` label)? [on — `roles.pm_skip_when_spec_present`]
+> - How should docs decide whether to dispatch: `auto` (skip the docs subagent
+>   when the developer's diff already covers CHANGELOG + README/docs, or is
+>   scripts/tests-only with a CHANGELOG entry) or `always` (docs subagent always
+>   runs and reads the full diff)? [auto — `roles.docs_mode`]"
 
 ---
 
@@ -258,6 +283,9 @@ roles:
   reviewer: <true|false>
   security: <true|false>
   docs: <true|false>
+  adversarial: <true|false>   # optional pre-merge second opinion, off by default (#237)
+  # pm_skip_when_spec_present: true  # default; set false to always run PM
+  # docs_mode: auto                  # auto (default) | always
 
 # ── Comments ──────────────────────────────────────────────────────────────────
 comments:
@@ -306,6 +334,7 @@ When writing the file:
 - If harness = `claude`: omit the `agents:` block entirely (Claude Code spawns native subagents and ignores it).
 - If harness = `codex` or `gemini`: write the active `agents:` block with the chosen `runner` value; omit `runner_cmd`.
 - If harness = `custom`: write the active `agents:` block with `runner: custom` and `runner_cmd: "<value the user provided>"`.
+- If `roles.adversarial: true` AND the user asked for a different backend for it (Step 4): write (or extend) the `agents:` block with a `roles: { adversarial: { runner: ..., runner_cmd: ... } }` sub-block — same shape as the `docs/user-guide.md` "Second opinion on a local model" example — even when the top-level harness is `claude`, since only `adversarial` is opting out of the native default.
 
 Also ask before writing:
 > "The merge gate blocks PRs that touch sensitive file patterns (.env, *.pem, *.key, …). Would you like to add any extra patterns beyond the defaults?"
@@ -367,7 +396,7 @@ Config:       talos.pipeline.yml
 Provider:     <PROVIDER>
 Base branch:  <BASE_BRANCH>
 Verify:       <commands or "none">
-Roles:        validator pm developer qa reviewer security docs
+Roles:        validator pm developer qa reviewer security docs [adversarial]
 Board:        <enabled/disabled>
 Notifications: <configured platforms or "none">
 Harness:      <claude (native subagents) | codex | gemini | custom>
