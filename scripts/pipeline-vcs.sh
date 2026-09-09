@@ -1262,7 +1262,7 @@ for label, role in present.items():
             # the existing STALE path (fail-closed). Issue #128.
             print(
                 'pipeline-vcs: check-approval-sha: ignoring marker with unknown role '
-                + repr(marker_role) + ' (valid: docs, qa, reviewer, security)',
+                + repr(marker_role) + ' (valid: ' + ', '.join(sorted(VALID_ROLES)) + ')',
                 file=sys.stderr,
             )
             continue
@@ -5121,20 +5121,33 @@ if [ "$VERB" = "post-approval" ]; then
   esac
 
   # Validate role -- same set as check-approval-sha VALID_ROLES (#128).
-  # Fixed literal, never interpolated from config or API text (PR #68).
-  # Three inconsistent copies must not exist: reference check-approval-sha
-  # when reading this set.
+  # Single source of truth: scripts/pipeline-contract.sh's
+  # TALOS_APPROVAL_ROLES/TALOS_APPROVAL_LABELS (#178) -- never hand-restate
+  # this list or the role->label mapping below. _vcs_shared_contract_env
+  # both sources the contract (idempotent) and falls back to the pre-#178
+  # literals if pipeline-contract.sh is missing (partial install/sync), so
+  # TALOS_APPROVAL_ROLES/TALOS_APPROVAL_LABELS are guaranteed set here.
+  _vcs_shared_contract_env
+  # "docs, qa, reviewer, security" -- same sorted, comma-joined wording
+  # check-approval-sha's unknown-role diagnostic uses, built from the
+  # contract array rather than hand-restated (#178).
+  _pa_valid_roles_msg="$(printf '%s\n' "${TALOS_APPROVAL_ROLES[@]}" | sort | paste -sd, -)"
+  _pa_valid_roles_msg="${_pa_valid_roles_msg//,/, }"
   if [ -z "$_pa_role" ]; then
-    echo "pipeline-vcs: post-approval: missing role (valid: docs, qa, reviewer, security)" >&2
+    echo "pipeline-vcs: post-approval: missing role (valid: ${_pa_valid_roles_msg})" >&2
     exit 1
   fi
-  _PA_VALID_ROLES="qa reviewer security docs"
   _pa_role_valid=false
-  for _pa_vr in $_PA_VALID_ROLES; do
-    [ "$_pa_role" = "$_pa_vr" ] && { _pa_role_valid=true; break; }
+  _pa_label=""
+  for _pa_i2 in "${!TALOS_APPROVAL_ROLES[@]}"; do
+    if [ "${TALOS_APPROVAL_ROLES[$_pa_i2]}" = "$_pa_role" ]; then
+      _pa_role_valid=true
+      _pa_label="${TALOS_APPROVAL_LABELS[$_pa_i2]%%|*}"
+      break
+    fi
   done
   if [ "$_pa_role_valid" = "false" ]; then
-    echo "pipeline-vcs: post-approval: unknown role '$_pa_role' (valid: docs, qa, reviewer, security)" >&2
+    echo "pipeline-vcs: post-approval: unknown role '$_pa_role' (valid: ${_pa_valid_roles_msg})" >&2
     exit 1
   fi
 
@@ -5143,14 +5156,6 @@ if [ "$VERB" = "post-approval" ]; then
     echo "pipeline-vcs: post-approval: --body-file: cannot read '$_pa_body_file'" >&2
     exit 1
   fi
-
-  # Map role to approval label -- same mapping as check-approval-sha (#128).
-  case "$_pa_role" in
-    qa)       _pa_label="qa:pass" ;;
-    reviewer) _pa_label="review:approved" ;;
-    security) _pa_label="security:approved" ;;
-    docs)     _pa_label="docs:done" ;;
-  esac
 
   if [ "$DRY_RUN" = "true" ]; then
     printf '[dry-run] post-approval: would fetch head SHA for PR #%s, post marker role=%s, add label %s\n' \
