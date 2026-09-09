@@ -1098,6 +1098,28 @@ msg="$(printf '%s' "$payload" | python3 -c 'import json,sys; print(json.load(sys
 terminal-notifier -message "$msg" -title "Talos"
 ```
 
+### Nightly canary against a real sandbox repo
+
+`bash tests/run-tests.sh` never touches a real API -- `gh`, `curl`, `glab`,
+and `az` are all stubbed. `.github/workflows/canary.yml` runs nightly (and
+on `workflow_dispatch`) and closes that gap: `tests/canary/run.sh` drives a
+minimal issue → PR → approval → merge-gate flow through real `gh`/REST calls
+against a dedicated sandbox repository, for both the `github` and
+`github-api` providers, then deletes everything it created.
+
+Setup (skip either step and the job is a clean no-op -- it prints
+`talos:canary-skipped reason=...` and exits 0):
+
+1. Create a sandbox repository -- not a real project repo -- the canary can
+   freely open and close throwaway issues/PRs against.
+2. On the Talos repo, add repository variable `TALOS_CANARY_REPO`
+   (`owner/repo` of the sandbox) and repository secret `TALOS_CANARY_TOKEN`:
+   a fine-grained PAT scoped to the sandbox repo with `issues`,
+   `pull requests`, and `contents` write access.
+
+See the README's [Tests](../README.md#tests) section for what each of the
+canary's two jobs (`base-currency`, `real-api`) checks.
+
 ## Customizing agent profiles
 
 Each role profile is a markdown file with YAML frontmatter (Claude Code

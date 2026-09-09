@@ -103,6 +103,7 @@ TALOS_MARKERS=(
   talos:board-unverified
   talos:verify
   talos:runner
+  talos:canary-skipped
 )
 
 # ── talos_contract_json ──────────────────────────────────────────────────────

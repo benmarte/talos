@@ -243,6 +243,13 @@ print(json.dumps([{'filename': p} for p in paths]))
     printf 'https://github.com/%s/issues/comments/%s\n' "$REPO" "${STUB_COMMENT_ID:-100}" ;;
   "issue create "*)
     printf 'https://github.com/%s/issues/%s\n' "$REPO" "${STUB_NEW_ISSUE_NUMBER:-42}" ;;
+  "pr create "*)
+    # Real `gh pr create` prints the new PR's URL on success. No prior test
+    # captured this stdout (create-pr calls were always `>/dev/null`), so
+    # this case was missing entirely -- added for tests/test-canary.sh,
+    # which parses the PR number back out of create-pr's own output the way
+    # a real caller would. Override STUB_NEW_PR_NUMBER.
+    printf 'https://github.com/%s/pull/%s\n' "$REPO" "${STUB_NEW_PR_NUMBER:-9}" ;;
   "issue view "*"--json comments"*)
     # Used by read-attempt: return an object with a comments array.
     # Override STUB_ISSUE_COMMENTS_JSON (default: empty array).

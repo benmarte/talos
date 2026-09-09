@@ -1050,6 +1050,38 @@ bash tests/run-tests.sh -j 8 --repeat 20 test-per-agent-env.sh   # one file, str
 bash tests/run-tests.sh -j 8 --repeat 3                          # whole suite, stress
 ```
 
+### Nightly canary (real API)
+
+Every test above stubs `gh`/`curl`/`glab`/`az` -- none of them touches a real
+API, so schema drift in GitHub's REST responses or gh CLI output would pass
+CI and fail in production. `.github/workflows/canary.yml` runs nightly (and
+on demand via `workflow_dispatch`) and closes that gap with two jobs:
+
+- **`base-currency`** -- runs `tests/run-tests.sh --no-cache --base-ref
+  origin/main --quiet` on a full-history checkout, so the base-currency
+  warning (a branch behind `origin/main`) is exercised in CI, not just
+  locally.
+- **`real-api`** -- `tests/canary/run.sh` drives a minimal pipeline flow
+  (`create-issue` → `label-issue` → `view-issue --spec` → a trivial branch +
+  commit + PR → `post-approval qa` → `check-approval-sha` → `pr-mergeable` →
+  `check-pr-files`) against a real, dedicated sandbox repository, once for
+  each of the `github` and `github-api` providers, then cleans up everything
+  it created -- on success or failure, via a `trap ... EXIT`.
+
+Two one-time setup steps enable `real-api` (it is a clean no-op, printing
+`talos:canary-skipped reason=...` and exiting 0, until both are done):
+
+1. Create a dedicated sandbox repository the canary is free to spam with
+   throwaway issues/PRs -- never point it at a real project repo.
+2. On the *Talos* repo (not the sandbox), add repository variable
+   `TALOS_CANARY_REPO` (`owner/repo` of the sandbox) and repository secret
+   `TALOS_CANARY_TOKEN` -- a fine-grained PAT scoped to the sandbox repo with
+   `issues`, `pull requests`, and `contents` write access.
+
+`tests/test-canary.sh` runs the same script against `tests/stubs/` (no
+network) -- happy path, a failing step (asserting cleanup still runs), and
+the missing-repo/token skip path.
+
 ---
 
 ## Credits
