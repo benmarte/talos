@@ -439,6 +439,24 @@ fi
 # All discovery calls are wrapped to never abort in dry-run mode.
 _gh_safe() { "$@" 2>/dev/null || echo ""; }
 
+# Set when any talos:board-unverified marker fires during this invocation, so
+# the "#N → status" success line is never printed alongside it (#252).
+_BOARD_UNVERIFIED=false
+
+# _gh_fail_board MESSAGE — fail-loud convention for the gh CLI path (Rule 11),
+# mirroring _bail_on_gql_error in the token path (#248): on a non-zero exit
+# from `gh project item-add`/`item-edit`, print MESSAGE to stderr and
+# talos:board-unverified to stdout, never the "#N → status" success line,
+# delete the sentinel so the next call re-validates instead of retrying
+# forever with the same (possibly stale) cached ids, and exit 0.
+_gh_fail_board() {
+  local _msg="$1"
+  [ -n "$_msg" ] && echo "pipeline-status: $_msg" >&2
+  echo "talos:board-unverified project=$PROJECT_NUM"
+  rm -f "$_BOARD_SENTINEL" 2>/dev/null || true
+  exit 0
+}
+
 PROJ_ID="$(_gh_safe gh project list --owner "$OWNER" --format json --limit 50 \
   | python3 -c "
 import sys, json
@@ -466,13 +484,21 @@ fi
 # The sentinel file caches the field-list JSON for the duration of a pipeline
 # run, ensuring project field-list is called at most once per run (not once per
 # status update). It also gates the startup validation so the warning fires once.
-# Sentinel key: project number + optional PIPELINE_RUN_ID for multi-run isolation.
+# Sentinel key: owner + project number + optional PIPELINE_RUN_ID for multi-run
+# isolation (#252: the key MUST include the owner -- a project number alone is
+# not globally unique, so two owners with the same project number used to
+# silently share (and poison) each other's cached field ids).
 #
 # Security: the cache lives in a user-private directory (not world-writable /tmp)
 # and is validated before use: regular file, owned by current user, not
-# group/world-writable, and contains valid JSON with the expected shape.
+# group/world-writable, and contains valid JSON with the expected shape, and
+# (#252) tagged with the project node id it was fetched for -- a cached file
+# whose project id no longer matches the freshly resolved PROJ_ID is treated
+# as a miss (see _read_sentinel below) so a stale/foreign cache never leaks
+# field ids across projects.
 _CACHE_DIR="${XDG_RUNTIME_DIR:-${HOME}/.cache}/talos"
-_BOARD_SENTINEL="${_CACHE_DIR}/board-validated-${PROJECT_NUM}${PIPELINE_RUN_ID:+-${PIPELINE_RUN_ID}}"
+_SAFE_OWNER="$(printf '%s' "$OWNER" | tr -c 'A-Za-z0-9_-' '_')"
+_BOARD_SENTINEL="${_CACHE_DIR}/board-validated-${_SAFE_OWNER}-${PROJECT_NUM}${PIPELINE_RUN_ID:+-${PIPELINE_RUN_ID}}"
 
 # Create the cache directory with restrictive permissions (user-only).
 # Handle existing directory with potentially wrong permissions gracefully.
@@ -482,10 +508,11 @@ if ! install -d -m 700 "$_CACHE_DIR" 2>/dev/null; then
 fi
 
 # _read_sentinel — read and validate the sentinel cache file.
-# Returns the cached FIELD_DATA on stdout if the file passes all checks;
-# exits with code 1 if any check fails (caller falls back to fresh lookup).
+# $1=path $2=expected project node id (freshly resolved PROJ_ID). Returns the
+# cached FIELD_DATA on stdout if the file passes all checks; exits with code 1
+# if any check fails (caller falls back to fresh lookup).
 _read_sentinel() {
-  local _f="$1"
+  local _f="$1" _expected_proj_id="$2"
   # Must be a regular file
   [ -f "$_f" ] || return 1
 
@@ -511,10 +538,14 @@ if mode & (stat.S_IWGRP | stat.S_IWOTH):
 sys.exit(0)
 " "$_f" 2>/dev/null || return 1
 
-  # Must contain valid JSON with expected shape: {fields: [{name, id, options:[]}]}
+  # Must contain valid JSON with expected shape: {fields: [{name, id, options:[]}],
+  # project_id: "..."}, and (#252) the embedded project_id must match the
+  # freshly resolved project -- otherwise this is a stale/foreign cache (e.g.
+  # left over from a different owner's identically-numbered project) and must
+  # be discarded rather than silently reused.
   _cached="$(cat "$_f")"
-  python3 -c "
-import sys, json
+  EXPECTED_PROJ_ID="$_expected_proj_id" python3 -c "
+import sys, json, os
 try:
     d = json.loads(sys.argv[1])
     if not isinstance(d, dict):
@@ -529,6 +560,9 @@ try:
             sys.exit(1)
         if not isinstance(f.get('options', []), list):
             sys.exit(1)
+    expected = os.environ.get('EXPECTED_PROJ_ID', '')
+    if not expected or d.get('project_id') != expected:
+        sys.exit(1)
     sys.exit(0)
 except Exception:
     sys.exit(1)
@@ -537,12 +571,26 @@ except Exception:
   printf '%s' "$_cached"
 }
 
-_CACHED_FIELD_DATA="$(_read_sentinel "$_BOARD_SENTINEL" 2>/dev/null)"
+_CACHED_FIELD_DATA="$(_read_sentinel "$_BOARD_SENTINEL" "$PROJ_ID" 2>/dev/null)"
 if [ -n "$_CACHED_FIELD_DATA" ]; then
   # Reuse validated cached field data from earlier in this pipeline run
   FIELD_DATA="$_CACHED_FIELD_DATA"
 else
-  FIELD_DATA="$(_gh_safe gh project field-list "$PROJECT_NUM" --owner "$OWNER" --format json)"
+  _RAW_FIELD_LIST="$(_gh_safe gh project field-list "$PROJECT_NUM" --owner "$OWNER" --format json)"
+  # Tag the field data with the project node id it was fetched for (#252),
+  # so a future read can detect and discard a stale/foreign cache instead of
+  # trusting a cache keyed only by (owner, project number).
+  FIELD_DATA="$(PROJ_ID_TAG="$PROJ_ID" python3 -c "
+import sys, json, os
+try:
+    d = json.loads(sys.argv[1])
+    if not isinstance(d, dict):
+        d = {}
+except Exception:
+    d = {}
+d['project_id'] = os.environ.get('PROJ_ID_TAG', '')
+print(json.dumps(d))
+" "$_RAW_FIELD_LIST")"
 
   # ── Startup validation: check all four required statuses ──────────────────
   # Fires exactly once per run (sentinel written below). Each status is checked
@@ -581,6 +629,12 @@ except Exception:
     # Missing option names go to stderr only (not in the machine-readable marker).
     echo "talos:board-unverified project=$PROJECT_NUM"
     echo "pipeline-status: board status options missing from project #$PROJECT_NUM: $_MISSING_OPTIONS" >&2
+    # #252: this startup validation checks all four required statuses, not just
+    # the one requested in this call -- so it can fire (e.g. "Blocked" missing)
+    # even when the current call's own status resolves and updates fine. Track
+    # that so the "#N → status" success line further down is suppressed rather
+    # than printing alongside talos:board-unverified.
+    _BOARD_UNVERIFIED=true
   fi
 fi
 
@@ -642,9 +696,21 @@ if [ -z "$ITEM" ]; then
     echo "[dry-run] gh project item-add $PROJECT_NUM --owner $OWNER --url $ISSUE_URL"
     ITEM="<item-id>"
   else
-    ITEM="$(gh project item-add "$PROJECT_NUM" --owner "$OWNER" \
-      --url "$ISSUE_URL" --format json 2>/dev/null \
-      | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))")"
+    # #252: capture gh's own exit status and stderr instead of only checking
+    # whether the parsed item id came out empty, so a failed item-add is
+    # reported the same way a failed item-edit is (talos:board-unverified,
+    # sentinel cleared, exit 0 -- Rule 11) rather than silently falling
+    # through to whatever happened to be on stdout.
+    _ITEM_ADD_ERR="$(mktemp)"
+    ITEM_JSON="$(gh project item-add "$PROJECT_NUM" --owner "$OWNER" \
+      --url "$ISSUE_URL" --format json 2>"$_ITEM_ADD_ERR")"
+    _ITEM_ADD_RC=$?
+    _ITEM_ADD_STDERR="$(cat "$_ITEM_ADD_ERR" 2>/dev/null)"
+    rm -f "$_ITEM_ADD_ERR"
+    if [ "$_ITEM_ADD_RC" -ne 0 ]; then
+      _gh_fail_board "gh project item-add failed: $_ITEM_ADD_STDERR"
+    fi
+    ITEM="$(printf '%s' "$ITEM_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)"
     [ -z "$ITEM" ] && { echo "pipeline-status: could not add #$ISSUE to project" >&2; exit 1; }
   fi
 fi
@@ -665,12 +731,22 @@ fi
 # ── Set the status field ──────────────────────────────────────────────────────
 if [ "$DRY_RUN" = "true" ]; then
   echo "[dry-run] gh project item-edit --id $ITEM --project-id $PROJ_ID --field-id $FIELD_ID --single-select-option-id $OPT_ID"
-  echo "#$ISSUE → $STATUS (dry-run)"
+  [ "$_BOARD_UNVERIFIED" = "true" ] || echo "#$ISSUE → $STATUS (dry-run)"
 else
-  gh project item-edit \
+  # #252: capture gh's exit status instead of discarding it -- a failed
+  # item-edit (e.g. a stale/foreign field id from a poisoned cache) used to
+  # print the success line regardless. Mirror the token-path fix from #248.
+  _ITEM_EDIT_STDERR="$(gh project item-edit \
     --id "$ITEM" \
     --project-id "$PROJ_ID" \
     --field-id "$FIELD_ID" \
-    --single-select-option-id "$OPT_ID" >/dev/null
-  echo "#$ISSUE → $STATUS"
+    --single-select-option-id "$OPT_ID" 2>&1 >/dev/null)"
+  _ITEM_EDIT_RC=$?
+  if [ "$_ITEM_EDIT_RC" -ne 0 ]; then
+    _gh_fail_board "gh project item-edit failed: $_ITEM_EDIT_STDERR"
+  fi
+  # #252: the success line must never print alongside a talos:board-unverified
+  # marker emitted earlier in this run (e.g. the startup validation found a
+  # different status option missing).
+  [ "$_BOARD_UNVERIFIED" = "true" ] || echo "#$ISSUE → $STATUS"
 fi

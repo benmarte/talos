@@ -321,7 +321,22 @@ print(json.dumps({'title': os.environ['TITLE'], 'body': os.environ['BODY'],
   "project item-list"*)
     printf '{"items":[{"id":"ITEM_42","content":{"number":42}}]}\n' ;;
   "project item-add"*)
+    # STUB_ITEM_ADD_FAIL=1 simulates a failed item-add (#252): non-zero exit,
+    # an error on stderr, no JSON on stdout.
+    if [ "${STUB_ITEM_ADD_FAIL:-}" = "1" ]; then
+      echo "gh: GraphQL: could not resolve to a ProjectV2 with the number 7 (item-add)" >&2
+      exit 1
+    fi
     printf '{"id":"ITEM_NEW"}\n' ;;
+  "project item-edit"*)
+    # STUB_ITEM_EDIT_FAIL=1 simulates a failed item-edit (#252) -- e.g. a
+    # stale/foreign field id from a poisoned cache: non-zero exit, an error
+    # on stderr. Default (unset): succeed silently, same as before this stub
+    # case existed (it used to fall through to the catch-all `*` below).
+    if [ "${STUB_ITEM_EDIT_FAIL:-}" = "1" ]; then
+      echo "gh: GraphQL: The field does not exist in the project (updateProjectV2ItemFieldValue)" >&2
+      exit 1
+    fi ;;
   "label create "*)
     # STUB_LABEL_CREATE_FAIL=1 simulates a failed create (#245's
     # bootstrap-labels test needs this to reach the edit fallback).
