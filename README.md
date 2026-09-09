@@ -1073,18 +1073,21 @@ on demand via `workflow_dispatch`) and closes that gap with two jobs:
   origin/main --quiet` on a full-history checkout, so the base-currency
   warning (a branch behind `origin/main`) is exercised in CI, not just
   locally.
-- **`real-api`** -- `tests/canary/run.sh` drives a minimal pipeline flow
-  (`create-issue` → `label-issue` → `view-issue --spec` → a trivial branch +
-  commit + PR → `post-approval qa` → `check-approval-sha` → `pr-mergeable` →
-  `check-pr-files`) against a real, dedicated sandbox repository, once for
-  each of the `github` and `github-api` providers, then cleans up everything
-  it created -- on success or failure, via a `trap ... EXIT`.
+- **`real-api`** -- `tests/canary/run.sh` bootstraps the Talos labels into
+  the sandbox repo (`scripts/bootstrap-labels.sh`, idempotent), then drives
+  a minimal pipeline flow (`create-issue` → `label-issue` → `view-issue
+  --spec` → a trivial branch + commit + PR → `post-approval qa` →
+  `check-approval-sha` → `pr-mergeable` → `check-pr-files`) against that
+  real, dedicated sandbox repository, once for each of the `github` and
+  `github-api` providers, then cleans up everything it created -- on
+  success or failure, via a `trap ... EXIT`.
 
 Two one-time setup steps enable `real-api` (it is a clean no-op, printing
 `talos:canary-skipped reason=...` and exiting 0, until both are done):
 
 1. Create a dedicated sandbox repository the canary is free to spam with
-   throwaway issues/PRs -- never point it at a real project repo.
+   throwaway issues/PRs -- never point it at a real project repo. It can
+   start with zero labels; the canary bootstraps them itself.
 2. On the *Talos* repo (not the sandbox), add repository variable
    `TALOS_CANARY_REPO` (`owner/repo` of the sandbox) and repository secret
    `TALOS_CANARY_TOKEN` -- a fine-grained PAT scoped to the sandbox repo with
