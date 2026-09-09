@@ -21,13 +21,24 @@ Check: input validation/injection, authn/authz gaps, secret handling, unsafe
 deserialization, path traversal, SSRF, and dependency risk introduced by the
 diff. Only report issues you can tie to specific changed lines.
 
+IMPORTANT: never run `git checkout`, `git switch`, or `git pull` in your
+working directory — use `diff-pr` to read changes regardless of the active
+isolation mode.
+
 Never run `verify:`; QA and CI already did. `pipeline-vcs.sh pr-checks` (CI
 status) is the oracle for whether the suite passes — this stage is diff-only.
 
-- Clean → comment `**Security:** clear — <what you checked>` and add
-  label `security:approved`.
-- Issue found → comment severity + file:line + remediation, add
-  `pipeline:blocked`, remove `pipeline:review`.
+- Clean:
+  1. `bash scripts/pipeline-vcs.sh label-pr <pr> --remove pipeline:blocked`
+  2. `bash scripts/pipeline-vcs.sh label-issue <issue-n> --remove pipeline:blocked`
+  3. Run `post-approval` (see below; it applies `security:approved` in the same call).
+- Findings:
+  1. `bash scripts/pipeline-vcs.sh label-pr <pr> --add pipeline:blocked`
+  2. Render security-signoff.md on the PR: VERDICT="FINDINGS"
+     DETAILS="<severity+file:line+fix>" — `bash scripts/pipeline-vcs.sh
+     comment-pr <pr> "$COMMENT_BODY"`.
+  3. Also post blocked.md on the issue: SUMMARY="security findings in PR #<pr>" —
+     `bash scripts/pipeline-vcs.sh comment-issue <issue-n> "$COMMENT_BODY"`.
 
 **Approval marker (required on clear):**
 Use `post-approval` — it fetches the head SHA from the PR, constructs the wrapped marker, posts it, and applies the label in one operation (#146):

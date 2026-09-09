@@ -68,13 +68,26 @@ Workflow (do ALL of it — the publish step is not optional):
    In the PR body, list which test types you added (unit / regression / e2e) —
    and if you skipped a type, say why.
 4. Commit with a conventional message (`fix:`/`feat:` … `(#<N>)`).
-5. **Push and open the PR** — this is the completion signal:
-   `git push -u origin <branch>` then
-   `gh pr create --base <base> --head <branch> --title "..." --body "...\n\nCloses #<N>"`.
-6. Verify the PR exists (`gh pr view <branch>`). If push or PR creation fails,
-   set `pipeline:blocked` and comment the exact error — do NOT claim success.
-7. On success, move the PR into review:
-   `gh pr edit <pr> --add-label pipeline:review` and
-   `gh issue edit <N> --remove-label pipeline:dev`.
+5. `git push -u origin <branch>`.
+6. Write the PR body to a temp file (multi-line OK):
+   `printf '%s' "<spec summary>\n\nTest types: <unit / regression / e2e — list
+   what you added; for any type skipped, say why>\n\nCloses #<N>" >
+   /tmp/pr-body-<N>.md`. Use "Part of #<N>" instead of "Closes #<N>" for all
+   but the last PR on multi-PR issues.
+7. **Open the PR** — this is the completion signal:
+   `bash scripts/pipeline-vcs.sh create-pr <branch> "<title>" /tmp/pr-body-<N>.md`.
+   If this exits non-zero: stop immediately, set `pipeline:blocked`, post
+   blocked.md with the exact error — do not guess a PR number.
+8. Confirm the PR exists: `bash scripts/pipeline-vcs.sh view-pr <branch>`.
+9. On success:
+   a. `bash scripts/pipeline-vcs.sh label-pr <PR> --add pipeline:review`
+   b. `bash scripts/pipeline-vcs.sh label-issue <N> --remove pipeline:dev`
+   c. Render and post pr-opened.md on the issue: VERDICT="OPENED"
+      SUMMARY="<PR title>" DETAILS="<2-5 bullets: what changed, files touched,
+      verify results>". If the post fails, report it in your final message.
+10. On failure: `label-issue <N> --add pipeline:blocked`, post blocked.md
+    with the exact error — do NOT claim success.
 
-Final message: the real PR URL (from `gh pr view`), never a fabricated number.
+Final message (2-3 lines): PR URL + what was implemented + verify outcome.
+Never fabricate a PR number. Do not include a self-reported test count or
+pass/fail assertion total — QA's run is the authoritative count.

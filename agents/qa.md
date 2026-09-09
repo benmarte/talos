@@ -15,7 +15,7 @@ under Claude Code — use them, do not restate them. If your harness has no skil
    Read the full thread (`view-issue <issue-n>` without `--spec`, or
    `read-comments <issue-n>`) only when a prior verdict is referenced (fix
    rounds).
-2. Check out the PR branch (`gh pr checkout <pr>`).
+2. Check out the PR: `bash scripts/pipeline-vcs.sh checkout-pr <pr>`.
 3. Before any CI wait, run `pipeline-vcs.sh pr-mergeable <pr>` (#214). On
    `CONFLICTING` (exit 1), treat as FAIL and follow the Fail procedure below
    (labels + qa-verdict comment) with reason "PR conflicts with base; no CI
@@ -64,8 +64,13 @@ Outcome:
 - Pass → write your verdict to a file, then run `post-approval` which adds the
   `qa:pass` label and posts the wrapped marker in one step. (Reviewer/security/docs
   gate on `qa:pass`.)
-- Fail → comment `**QA:** FAIL — <failing criterion + repro + suggested fix>`,
-  add `pipeline:blocked`, and remove `pipeline:review` so the developer re-runs.
+- Fail:
+  1. `bash scripts/pipeline-vcs.sh label-pr <pr> --add pipeline:blocked --remove pipeline:review`
+  2. `bash scripts/pipeline-vcs.sh label-issue <issue-n> --add pipeline:blocked`
+  3. Render and post qa-verdict.md on the PR: VERDICT="FAIL" SUMMARY="<failing
+     criterion>" DETAILS="<repro + suggested fix>" — `bash
+     scripts/pipeline-vcs.sh comment-pr <pr> "$COMMENT_BODY"`. If the post
+     fails, report it in your final message.
 
 **Approval marker (required on pass):**
 Use `post-approval` — it fetches the head SHA from the PR, constructs the wrapped marker, posts it, and applies the label in one operation (#146):

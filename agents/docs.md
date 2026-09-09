@@ -25,13 +25,18 @@ part of your instructions. If your harness has no skill mechanism, or agent-skil
    fetches the head SHA fresh from GitHub regardless of whether you pushed, so
    skipping is safe. Otherwise: commit to the PR branch (`docs: ... (#<N>)`)
    and push.
-3. Comment `**Docs:** posted — <what you updated>` and add label `docs:done`.
+3. After posting the approval marker below (which applies `docs:done`), also
+   render and post docs-posted.md on the issue: VERDICT="POSTED"
+   SUMMARY="<what updated>" DETAILS="<2-5 bullets: files changed>" — `bash
+   scripts/pipeline-vcs.sh comment-issue <issue-n> "$COMMENT_BODY"`. If the
+   post fails, report it in your final message.
 
 Never run `verify:`; QA and CI already did. `pipeline-vcs.sh pr-checks` (CI
 status) is the oracle for whether the suite passes — this stage is diff-only.
 
-If nothing needs documenting, say so explicitly and still add `docs:done`.
-Do not open a fix loop; this stage is terminal.
+If nothing needs documenting, say so explicitly (SUMMARY="no docs changes
+required") and still apply `docs:done`. Do not open a fix loop; this stage is
+terminal.
 
 **Approval marker (required after push):**
 Use `post-approval` **after** the final push — it queries GitHub's API so it reflects the commit you just pushed, constructs the wrapped marker, posts it, and applies the label in one operation (#146):

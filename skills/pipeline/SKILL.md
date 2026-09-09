@@ -482,31 +482,7 @@ Comments enabled: <COMMENTS_ENABLED>
 Comment header: <HEADER>
 Comment templates dir: <COMMENTS_TMPL_DIR>
 
-Read the issue: `bash scripts/pipeline-vcs.sh view-issue <N>`
-Read relevant source files. Do NOT fix anything.
-
-Determine one outcome:
-- CONFIRMED — real, reproducible, in-scope, enough detail to act.
-- ALREADY_FIXED — current <BASE_BRANCH> already resolves it (cite commit/code).
-- DUPLICATE — another open issue covers it (cite #N).
-- NEEDS_MORE_INFO — under-specified; list exactly what is missing.
-- SECURITY_THREAT — do not process publicly; flag for private handling.
-
-CONFIRMED:
-  1. `bash scripts/pipeline-vcs.sh label-issue <N> --add pipeline:confirmed --remove pipeline:ready`
-  2. Render and post validator-verdict.md on the ISSUE:
-     VERDICT="CONFIRMED" SUMMARY="<one-line reason>" DETAILS="<2-5 bullets: root cause, affected code, repro steps>"
-     `bash scripts/pipeline-vcs.sh comment-issue <N> "$COMMENT_BODY"`
-     If exit non-zero, report the failure in your final message; do not assert the comment was posted.
-
-Any other outcome:
-  1. `bash scripts/pipeline-vcs.sh label-issue <N> --add pipeline:blocked --remove pipeline:ready`
-  2. Render and post blocked.md on the ISSUE:
-     VERDICT="<OUTCOME>" SUMMARY="<reason>" DETAILS="<what a human must do>"
-     `bash scripts/pipeline-vcs.sh comment-issue <N> "$COMMENT_BODY"`
-     If exit non-zero, report the failure in your final message; do not assert the comment was posted.
-
-Final message (2-3 lines): verdict + key findings the orchestrator can relay to the notification channel.
+Your role profile carries the full procedure.
 ```
 
 After validator returns:
@@ -628,27 +604,9 @@ You are the Project Manager. Issue #<N> has been CONFIRMED.
 Base branch: <BASE_BRANCH>
 VCS provider: <VCS_PROVIDER>
 Comment header: <HEADER>
+PR target: <BASE_BRANCH>
 
-Read the issue: `bash scripts/pipeline-vcs.sh view-issue <N>`
-Read relevant source files. Write a spec as a comment:
-
-**PM spec:**
-- **Goal** (one sentence)
-- **Acceptance criteria** (checklist, each testable)
-- **Files likely to change** (paths)
-- **Branch name**: fix/issue-<N>-<slug>  (or feat/... for features)
-- **PR target**: <BASE_BRANCH>
-- **Out of scope**: guard against over-reach
-
-Post: `bash scripts/pipeline-vcs.sh comment-issue <N> "**PM spec:** ..."`
-If the post exits non-zero, report the failure in your final message and do not advance the label.
-Advance: `bash scripts/pipeline-vcs.sh label-issue <N> --add pipeline:dev --remove pipeline:confirmed`
-
-For epics: post a decomposition and `label-issue --add pipeline:blocked` instead.
-
-Note: The PM spec IS the handoff artifact — no separate Agent header comment needed.
-
-Final message: one-line goal + branch name.
+Your role profile carries the full procedure.
 ```
 
 Relay: `bash scripts/pipeline-notify.sh pm "#<N>" "<goal line> — <K> acceptance criteria, branch <branch-name>" <N>`
@@ -670,34 +628,42 @@ Reminder: run `hooks.pre_dispatch` (see Harness compatibility above) before buil
 
 Compute header: `HEADER="${COMMENTS_HEADER_TPL//\{role\}/developer}"`
 
-Read the PM spec first — unless Stage 3b was skipped (Skip-PM check exited 0),
-in which case there is no PM spec comment; the issue body itself is the spec.
-Then dispatch the developer according to `ISOLATION`. Either way, open the
-developer's prompt with the matching first line:
-- PM ran: `You are the Developer. Implement the PM spec for issue #<N>.`
-- PM was skipped: `You are the Developer. Implement issue #<N> — the spec is the issue body (PM was skipped).`
+Spec source: the PM spec comment on the issue, unless Stage 3b was skipped
+(Skip-PM check exited 0), in which case there is no PM spec comment and the
+issue body itself is the spec — substitute `<SPEC_SOURCE>` below with
+"the PM spec" or "the issue body (PM was skipped)" accordingly.
 
 `<slug>` throughout this stage (branch `fix/issue-<N>-<slug>` / `feat/issue-<N>-<slug>`)
 is `bash scripts/pipeline-vcs.sh slug-for "<title>"`; prefix is `feat/` when the
 title starts with `feat`, else `fix/` (#199).
 
-**If `ISOLATION = worktree` (default):** spawn with `isolation: "worktree"`:
+Dispatch according to `ISOLATION`:
+- `worktree` (default): spawn with `isolation: "worktree"`.
+- `branch`: spawn as a plain subagent (no worktree isolation) in the
+  orchestrator's checkout. **Pre-dispatch precondition:** assert the working
+  tree is clean and level first:
+  ```bash
+  bash scripts/pipeline-vcs.sh assert-sync
+  ```
+  If this exits non-zero: set `pipeline:blocked` on the issue, post blocked.md
+  with the error, and skip to the next issue. Do NOT dispatch the developer
+  into a dirty tree.
 
-**Pre-dispatch precondition (branch mode only):** If `ISOLATION = branch`, assert the working tree is clean and level before dispatching the developer:
-```bash
-bash scripts/pipeline-vcs.sh assert-sync
-```
-If this exits non-zero: set `pipeline:blocked` on the issue, post blocked.md with the error, and skip to the next issue. Do NOT dispatch the developer into a dirty tree.
+The prompt below is identical for both isolation modes except `<ISOLATION_NOTE>`
+(substitute one of the two variants):
+- `worktree`: `Worktree path: <ABSOLUTE_PATH_OF_THIS_WORKTREE>` then a line
+  `You ARE worktree-isolated.`
+- `branch`: `You are NOT worktree-isolated. Your working directory IS the
+  orchestrator's checkout, which is clean and level with origin/<BASE_BRANCH>.`
 
 ```
-You are the Developer. Implement the PM spec for issue #<N>.
+You are the Developer. Implement <SPEC_SOURCE> for issue #<N>.
 
 Base branch: <BASE_BRANCH>
 VCS provider: <VCS_PROVIDER>
 Issue number: <N>
-Worktree path: <ABSOLUTE_PATH_OF_THIS_WORKTREE>
 Scripts dir: scripts
-You ARE worktree-isolated.
+<ISOLATION_NOTE>
 Comment header: <HEADER>
 Comment templates dir: <COMMENTS_TMPL_DIR>
 Comments enabled: <COMMENTS_ENABLED>
@@ -708,129 +674,21 @@ Prior stage summary: <PRIOR_STAGE_SUMMARY>
 Run verify: commands through `bash scripts/pipeline-verify.sh` — it exports
 the identity mechanically; do not export TALOS_ISSUE_NUMBER /
 TALOS_WORKTREE_PATH by hand:
-  bash scripts/pipeline-verify.sh --issue <N> --worktree <ABSOLUTE_PATH_OF_THIS_WORKTREE> -- <cmd...>
+  bash scripts/pipeline-verify.sh --issue <N> [--worktree <ABSOLUTE_PATH_OF_THIS_WORKTREE>] -- <cmd...>
+(worktree isolation: pass --worktree; branch isolation: omit it —
+TALOS_WORKTREE_PATH is not meaningful there.)
 
-Verify commands (run once, immediately before your final commit — see step 5):
+Verify commands (run once, immediately before your final commit):
 <VERIFY_COMMANDS — one per line>
 
-Workflow:
-1. Read spec: `bash scripts/pipeline-vcs.sh view-issue <N> --spec`. Read the
-   full thread (`view-issue <N>` without `--spec`, or `read-comments <N>`)
-   only when a prior verdict is referenced (fix rounds).
-2. `git checkout -b fix/issue-<N>-<slug> origin/<BASE_BRANCH>`
-3. Implement. Match surrounding code style. Stay focused on acceptance criteria.
-4. Write tests — not optional, and not limited to unit tests:
-   a. **Unit/component tests** — cover each acceptance criterion in isolation.
-   b. **Regression test** — when fixing a bug, first add a test that FAILS on
-      the current behavior and passes after your fix; keep it.
-   c. **e2e test** — when the change is user-facing (UI, a new control/flow)
-      AND the repo has an e2e harness (detect: `playwright.config.*`,
-      `cypress.config.*`, a `tests/e2e/` dir, or a `test:e2e` script),
-      add/extend an e2e test that drives the feature in a browser, following
-      the repo's existing e2e pattern. If no e2e harness exists, state that
-      in the PR body instead of silently skipping.
-Foreground rule: run verify commands in the foreground with an explicit timeout of <VERIFY_TIMEOUT_MS> ms; never use background execution, `&`, `nohup`, `disown`, or sleep-polling; never end your turn while a verify command is running.
-5. Verify commands — two mutually exclusive modes, chosen by Targeted
-   iteration:
-   - If `true` (default): while iterating, run only the tests that cover
-     the files you changed — `bash tests/run-tests.sh --for <changed
-     files>` if that flag exists (#197), else the test files whose name or
-     contents reference the changed scripts. Then run the full verify
-     commands list exactly once, after the last code change, immediately
-     before the final commit and push — this is the one full-suite run for
-     this PR. Forbidden: running the full verify commands list more than
-     once for this PR.
-   - If `false`: run the full verify commands list after each meaningful
-     change while iterating (the old, non-targeted behavior — no targeted-
-     test shortcut), and still exactly once after the last code change,
-     immediately before the final commit and push.
-   In both modes: no verify runs after that final run, never in the
-   background, and never sleep-polling for results. Never zero local runs.
-   Prefer summary output for verify commands (e.g. `--quiet` for Talos's own
-   suite, or the project's equivalent) -- quote only failures, never paste
-   full green output into comments or final messages.
-6. `git commit -m "fix: <description> (#<N>)"`
-7. `git push -u origin fix/issue-<N>-<slug>`
-8. Write PR body to a temp file (multi-line OK):
-   `printf '%s' "<spec summary>\n\nTest types: <unit / regression / e2e — list what you added; for any type skipped, say why>\n\nCloses #<N>" > /tmp/pr-body-<N>.md`
-9. Open PR: `bash scripts/pipeline-vcs.sh create-pr fix/issue-<N>-<slug> "<title>" /tmp/pr-body-<N>.md`
-   Use "Part of #<N>" instead of "Closes" for all but the last PR on multi-PR issues.
-   If `create-pr` exits non-zero: stop immediately, set `pipeline:blocked`, post blocked.md with the exact error — do not guess a PR number.
-10. Confirm PR exists: `bash scripts/pipeline-vcs.sh view-pr fix/issue-<N>-<slug>`
-11. On success:
-    a. `bash scripts/pipeline-vcs.sh label-pr <PR> --add pipeline:review`
-    b. `bash scripts/pipeline-vcs.sh label-issue <N> --remove pipeline:dev`
-    c. Render and post pr-opened.md on the ISSUE:
-       VERDICT="OPENED" SUMMARY="<PR title>" DETAILS="<2-5 bullets: what changed, files touched, verify results>"
-       `bash scripts/pipeline-vcs.sh comment-issue <N> "$COMMENT_BODY"`
-       If exit non-zero, report the failure in your final message.
-12. On failure: `label-issue --add pipeline:blocked`, post blocked.md with exact error.
+Use "Part of #<N>" instead of "Closes #<N>" in the PR body for all but the
+last PR on multi-PR issues.
 
-Final message (2-3 lines): PR URL + what was implemented + verify outcome. Never fabricate a PR number. Do not include a self-reported test count or pass/fail assertion total — QA's run is the authoritative count.
-```
-
-**If `ISOLATION = branch`:** spawn as a plain subagent (no worktree isolation) in the orchestrator's checkout:
-
-```
-You are the Developer. Implement the PM spec for issue #<N>.
-
-Base branch: <BASE_BRANCH>
-VCS provider: <VCS_PROVIDER>
-Issue number: <N>
-Scripts dir: scripts
-You are NOT worktree-isolated. Your working directory IS the orchestrator's checkout, which is clean and level with origin/<BASE_BRANCH>.
-Comment header: <HEADER>
-Comment templates dir: <COMMENTS_TMPL_DIR>
-Comments enabled: <COMMENTS_ENABLED>
-Targeted iteration: <VERIFY_TARGETED>
-Verify timeout: <VERIFY_TIMEOUT_MS> ms
-Prior stage summary: <PRIOR_STAGE_SUMMARY>
-
-Run verify: commands through `bash scripts/pipeline-verify.sh --issue <N> -- <cmd...>` —
-it exports the identity mechanically; do not export TALOS_ISSUE_NUMBER by hand.
-TALOS_WORKTREE_PATH is not meaningful in branch isolation mode — omit --worktree.
-
-Verify commands (run once, immediately before your final commit — see step 5):
-<VERIFY_COMMANDS — one per line>
-
-Workflow:
-1. Read spec: `bash scripts/pipeline-vcs.sh view-issue <N> --spec`. Read the
-   full thread (`view-issue <N>` without `--spec`, or `read-comments <N>`)
-   only when a prior verdict is referenced (fix rounds).
-2. `git checkout -b fix/issue-<N>-<slug> origin/<BASE_BRANCH>`
-3. Implement. Match surrounding code style. Stay focused on acceptance criteria.
-4. Write tests — not optional, and not limited to unit tests (same requirements as worktree mode).
-Foreground rule: run verify commands in the foreground with an explicit timeout of <VERIFY_TIMEOUT_MS> ms; never use background execution, `&`, `nohup`, `disown`, or sleep-polling; never end your turn while a verify command is running.
-5. Verify commands — two mutually exclusive modes, chosen by Targeted
-   iteration:
-   - If `true` (default): while iterating, run only the tests that cover
-     the files you changed — `bash tests/run-tests.sh --for <changed
-     files>` if that flag exists (#197), else the test files whose name or
-     contents reference the changed scripts. Then run the full verify
-     commands list exactly once, after the last code change, immediately
-     before the final commit and push — this is the one full-suite run for
-     this PR. Forbidden: running the full verify commands list more than
-     once for this PR.
-   - If `false`: run the full verify commands list after each meaningful
-     change while iterating (the old, non-targeted behavior — no targeted-
-     test shortcut), and still exactly once after the last code change,
-     immediately before the final commit and push.
-   In both modes: no verify runs after that final run, never in the
-   background, and never sleep-polling for results. Never zero local runs.
-   Prefer summary output for verify commands (e.g. `--quiet` for Talos's own
-   suite, or the project's equivalent) -- quote only failures, never paste
-   full green output into comments or final messages.
-6. `git commit -m "fix: <description> (#<N>)"`
-7. `git push -u origin fix/issue-<N>-<slug>`
-8. Write PR body to a temp file:
-   `printf '%s' "<spec summary>\n\nTest types: ...\n\nCloses #<N>" > /tmp/pr-body-<N>.md`
-9. Open PR: `bash scripts/pipeline-vcs.sh create-pr fix/issue-<N>-<slug> "<title>" /tmp/pr-body-<N>.md`
-   If `create-pr` exits non-zero: stop immediately, set `pipeline:blocked`, post blocked.md with the exact error.
-10. Confirm PR exists: `bash scripts/pipeline-vcs.sh view-pr fix/issue-<N>-<slug>`
-11. On success: label-pr pipeline:review, label-issue remove pipeline:dev, post pr-opened.md.
-12. On failure: label-issue pipeline:blocked, post blocked.md with exact error.
+Your role profile carries the full procedure.
 
 Final message (2-3 lines): PR URL + what was implemented + verify outcome.
+Never fabricate a PR number. Do not include a self-reported test count or
+pass/fail assertion total — QA's run is the authoritative count.
 ```
 
 After developer returns:
@@ -903,62 +761,12 @@ CI wait budget: <VERIFY_CI_WAIT_S> seconds
 Verify timeout: <VERIFY_TIMEOUT_MS> ms
 Prior stage summary: <PRIOR_STAGE_SUMMARY>
 
-Run verify: commands through `bash scripts/pipeline-verify.sh` — it exports
-the identity mechanically; do not export TALOS_ISSUE_NUMBER /
-TALOS_WORKTREE_PATH by hand:
+Run verify: commands (and the CI-wait poll) through `bash
+scripts/pipeline-verify.sh` — it exports the identity mechanically; do not
+export TALOS_ISSUE_NUMBER / TALOS_WORKTREE_PATH by hand:
   bash scripts/pipeline-verify.sh --issue <N> --worktree <ABSOLUTE_PATH_OF_THIS_WORKTREE> -- <cmd...>
 
-1. Read spec: `bash scripts/pipeline-vcs.sh view-issue <N> --spec`. Read the
-   full thread (`view-issue <N>` without `--spec`, or `read-comments <N>`)
-   only when a prior verdict is referenced (fix rounds).
-2. Check out the PR: `bash scripts/pipeline-vcs.sh checkout-pr <PR_NUMBER>`
-3. Before any CI wait, run `bash scripts/pipeline-vcs.sh pr-mergeable
-   <PR_NUMBER>` (#214). On `CONFLICTING` (exit 1), treat as FAIL and follow
-   the **Fail:** procedure below (labels + qa-verdict comment) with reason
-   "PR conflicts with base; no CI run will be scheduled" — do not wait on CI
-   or run verify. `MERGEABLE`/`UNKNOWN` (exit 0/2): continue below.
-Foreground rule: run the verify list or the CI-wait poll below in the foreground with an explicit timeout of <VERIFY_TIMEOUT_MS> ms; never use background execution, `&`, `nohup`, `disown`, or sleep-polling; never end your turn while a verify command is running.
-4. QA mode above is already resolved: `ci` with an empty/absent Required
-   checks list is reported here as `local`, not `ci` — trusting CI as the
-   oracle for zero required checks would let QA pass vacuously, so that
-   combination fails closed to `local` before you ever see it.
-   If QA mode is `ci`: do NOT run `verify:` or the test suite locally — CI
-   already runs it on every push. Instead, run this single bounded foreground
-   command and wait for it to finish before continuing — it blocks in one
-   Bash call and returns only once every check named in `merge.required_checks`
-   passes or the CI wait budget elapses, so there is nothing left to improvise.
-   `pipeline-vcs.sh pr-checks-required` (unlike plain `pipeline-vcs.sh
-   pr-checks`) is already scoped to only the required checks, exits 2 while
-   any of them is still pending or missing (keep polling), exits 1 the moment
-   one has definitively failed (stop early, no need to wait out the budget),
-   and exits 0 only once every one of them passes:
-   `SECONDS=0; until bash scripts/pipeline-vcs.sh pr-checks-required <PR_NUMBER>; rc=$?; [ "$rc" -ne 2 ] || [ "$SECONDS" -ge <VERIFY_CI_WAIT_S> ]; do sleep 30; done; test "$rc" -eq 0`
-   The final `test "$rc" -eq 0` is what your Bash call's exit status reflects:
-   FAIL whenever the loop stopped for any reason other than every required
-   check passing -- an explicit failure (`rc=1`) or the wait budget elapsing
-   while a check was still pending or missing (`rc=2` at timeout) -- fail
-   closed, never assume a missing check would have passed. Spend the time
-   this saves driving acceptance criteria and edge cases instead.
-   If QA mode is `local`: run the full `verify:` list exactly once (as before).
-   Prefer summary output for verify commands (e.g. `--quiet` for Talos's own
-   suite, or the project's equivalent) -- quote only failures, never paste
-   full green output into comments or final messages.
-5. Verify each acceptance criterion — drive actual behavior.
-6. Look for missing edge-case tests and obvious regressions.
-
-Pass:
-  1. Render verdict to a file (VERDICT="PASS" SUMMARY="..." DETAILS="...") and post via
-     `post-approval`, which fetches the head SHA, posts the wrapped marker, and applies qa:pass:
-     `bash scripts/pipeline-vcs.sh post-approval <PR_NUMBER> qa --body-file <verdict-file>`
-     If exit non-zero, report the failure in your final message.
-
-Fail:
-  1. `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --add pipeline:blocked --remove pipeline:review`
-  2. `bash scripts/pipeline-vcs.sh label-issue <N> --add pipeline:blocked`
-  3. Render and post qa-verdict.md on the PR:
-     VERDICT="FAIL" SUMMARY="<failing criterion>" DETAILS="<repro + suggested fix>"
-     `bash scripts/pipeline-vcs.sh comment-pr <PR_NUMBER> "$COMMENT_BODY"`
-     If exit non-zero, report the failure in your final message.
+Your role profile carries the full procedure.
 
 Final message (2-3 lines): PASS/FAIL + criteria outcome the orchestrator can relay.
 ```
@@ -1050,29 +858,7 @@ Comment templates dir: <COMMENTS_TMPL_DIR>
 Comments enabled: <COMMENTS_ENABLED>
 Prior stage summary: <PRIOR_STAGE_SUMMARY>
 
-Read diff: start with `bash scripts/pipeline-vcs.sh diff-pr <PR_NUMBER> --stat`
-to see which files changed and by how much, then read the full
-`bash scripts/pipeline-vcs.sh diff-pr <PR_NUMBER>` for the files that matter.
-Focus: correctness bugs first, simplification second. No speculative comments.
-IMPORTANT: never run `git checkout`, `git switch`, or `git pull` in your working directory — use `diff-pr` to read changes regardless of the active isolation mode.
-Never run `verify:`; QA and CI already did. `pipeline-vcs.sh pr-checks` (CI status) is the oracle for whether the suite passes — this stage is diff-only.
-
-Approve:
-  1. `bash scripts/pipeline-vcs.sh approve-pr <PR_NUMBER> "<summary>"`
-     Note: `gh pr review --approve` may fail with "cannot approve your own pull request" in single-account setups — this is expected and ignorable; the `review:approved` label is the gate.
-  2. `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --remove pipeline:blocked`
-  3. `bash scripts/pipeline-vcs.sh label-issue <N> --remove pipeline:blocked`
-  4. Render review verdict to a file and post via `post-approval`, which fetches the
-     head SHA, posts the wrapped marker, and applies review:approved:
-     `bash scripts/pipeline-vcs.sh post-approval <PR_NUMBER> reviewer --body-file <review-file>`
-     If exit non-zero, report the failure in your final message.
-
-Changes needed:
-  1. `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --add pipeline:blocked --remove pipeline:review`
-  2. Render blocked.md on the PR:
-     SUMMARY="<N> findings" DETAILS="<file:line findings>"
-     `bash scripts/pipeline-vcs.sh comment-pr <PR_NUMBER> "$COMMENT_BODY"`
-     If exit non-zero, report the failure in your final message.
+Your role profile carries the full procedure.
 
 Final (2-3 lines): APPROVED/CHANGES outcome + key points.
 ```
@@ -1087,31 +873,7 @@ Comment templates dir: <COMMENTS_TMPL_DIR>
 Comments enabled: <COMMENTS_ENABLED>
 Prior stage summary: <PRIOR_STAGE_SUMMARY>
 
-Read diff: start with `bash scripts/pipeline-vcs.sh diff-pr <PR_NUMBER> --stat`
-to see which files changed and by how much, then read the full
-`bash scripts/pipeline-vcs.sh diff-pr <PR_NUMBER>` for the files that matter.
-Check: injection, authz, secrets, deserialization, path traversal, SSRF, new deps.
-Report only findings tied to specific changed lines.
-IMPORTANT: never run `git checkout`, `git switch`, or `git pull` in your working directory — use `diff-pr` to read changes regardless of the active isolation mode.
-Never run `verify:`; QA and CI already did. `pipeline-vcs.sh pr-checks` (CI status) is the oracle for whether the suite passes — this stage is diff-only.
-
-Clear:
-  1. `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --remove pipeline:blocked`
-  2. `bash scripts/pipeline-vcs.sh label-issue <N> --remove pipeline:blocked`
-  3. Render security verdict to a file and post via `post-approval`, which fetches the
-     head SHA, posts the wrapped marker, and applies security:approved:
-     `bash scripts/pipeline-vcs.sh post-approval <PR_NUMBER> security --body-file <signoff-file>`
-     If exit non-zero, report the failure in your final message.
-
-Findings:
-  1. `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --add pipeline:blocked`
-  2. Render security-signoff.md on the PR:
-     VERDICT="FINDINGS" DETAILS="<severity+file:line+fix>"
-     `bash scripts/pipeline-vcs.sh comment-pr <PR_NUMBER> "$COMMENT_BODY"`
-     If exit non-zero, report the failure in your final message.
-  3. Also post blocked.md on the ISSUE: SUMMARY="security findings in PR #<PR_NUMBER>"
-     `bash scripts/pipeline-vcs.sh comment-issue <N> "$COMMENT_BODY"`
-     If exit non-zero, report the failure in your final message.
+Your role profile carries the full procedure.
 
 Final (2-3 lines): CLEAR/FINDINGS outcome + areas covered.
 ```
@@ -1126,30 +888,11 @@ Comment header: <HEADER>
 Comment templates dir: <COMMENTS_TMPL_DIR>
 Comments enabled: <COMMENTS_ENABLED>
 
-Never run `verify:`; QA and CI already did. `pipeline-vcs.sh pr-checks` (CI status) is the oracle for whether the suite passes — this stage is diff-only.
+Read diff: <DOCS_DIFF_INSTRUCTION> — under `docs_mode: auto` this is the
+changed doc-relevant paths plus the CHANGELOG hunk, not the full PR diff.
+Under `docs_mode: always` it is the full `diff-pr` output.
 
-1. Read diff: <DOCS_DIFF_INSTRUCTION> — under `docs_mode: auto` this is the
-   changed doc-relevant paths plus the CHANGELOG hunk, not the full PR diff;
-   read source files only on demand, not as a first step. Under `docs_mode:
-   always` it is the full `diff-pr` output as before.
-2. Update README, docs, CHANGELOG for the change.
-3. Commit guard: before committing, run `git diff --quiet` (working tree) and
-   `git diff --quiet --cached` (staged). If BOTH report no changes, skip the
-   commit and the push entirely — do not push an empty commit. `post-approval`
-   fetches the head SHA fresh from GitHub regardless, so skipping is safe even
-   with no new commit. Otherwise: commit to PR branch: `git commit -m "docs:
-   update for #<N>"` and push.
-4. After pushing (or after the commit guard skips because there was nothing to
-   commit), call `post-approval` (fetches post-push SHA from GitHub, posts wrapped
-   marker, applies docs:done label — all in one step):
-   `bash scripts/pipeline-vcs.sh post-approval <PR_NUMBER> docs --body-file <summary-file>`
-   If exit non-zero, report the failure in your final message.
-5. Render docs-posted.md on the ISSUE:
-   VERDICT="POSTED" SUMMARY="<what updated>" DETAILS="<2-5 bullets: files changed>"
-   `bash scripts/pipeline-vcs.sh comment-issue <N> "$COMMENT_BODY"`
-   If exit non-zero, report the failure in your final message.
-
-If nothing to update: still add docs:done and post with SUMMARY="no docs changes required".
+Your role profile carries the full procedure.
 
 Final (2-3 lines): "docs posted: <files updated>" or "no docs changes required".
 ```
