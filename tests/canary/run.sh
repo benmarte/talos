@@ -186,6 +186,14 @@ for i in items:
 }
 step "sweep-stale-leftovers" sweep_stale
 
+# A fresh sandbox repo (created exactly as docs/user-guide.md's "Nightly
+# canary" section describes) has none of the pipeline:*/qa:*/etc. labels
+# this script applies below (label-issue, post-approval) -- without this,
+# every fresh sandbox fails at the first label call. Idempotent: re-running
+# against an already-bootstrapped repo just edits existing labels in place.
+# The fine-grained token's `issues: write` permission covers label creation.
+step "bootstrap-labels" bash "$TALOS_ROOT/scripts/bootstrap-labels.sh" "$TALOS_CANARY_REPO" || exit 1
+
 # run_provider <provider> -- the full sequence for one provider. Returns 1
 # (and leaves CUR_* pointing at whatever was created) the moment any step
 # fails; the caller exits, and the EXIT trap cleans up via those CUR_* vars.

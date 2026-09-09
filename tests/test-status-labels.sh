@@ -240,4 +240,26 @@ assert_contains "$log" "label create pipeline:ready --color 0e8a16" \
   "color survives ':' in label name"
 assert_contains "$log" "Queued for the pipeline" "description passed through"
 
+# Regression (#245): create-succeeds path must print exactly ONE status line
+# per label ("+ name"), never also "~ name (updated)" for the same label.
+_plus_count="$(printf '%s\n' "$out" | grep -c '^  + pipeline:ready$' || true)"
+_tilde_count="$(printf '%s\n' "$out" | grep -c '^  ~ pipeline:ready' || true)"
+assert_eq "1" "$_plus_count" "create-success path prints '+ name' exactly once"
+assert_eq "0" "$_tilde_count" "create-success path never also prints '~ name (updated)'"
+
+# ── bootstrap-labels.sh: create fails, edit succeeds → single '~' line, exit 0 ──
+: > "$GH_LOG"
+out="$(STUB_LABEL_CREATE_FAIL=1 bash "$TALOS_ROOT/scripts/bootstrap-labels.sh" acme/widget)"; rc=$?
+assert_eq "0" "$rc" "create-fails/edit-succeeds: exits 0"
+assert_contains "$out" "  ~ pipeline:ready (updated)" "create-fails/edit-succeeds: prints '~ name (updated)'"
+assert_not_contains "$out" "  + pipeline:ready" "create-fails/edit-succeeds: never prints '+ name' for that label"
+_tilde_lines="$(printf '%s\n' "$out" | grep -c '^  ~ pipeline:ready' || true)"
+assert_eq "1" "$_tilde_lines" "create-fails/edit-succeeds: exactly one status line for the label"
+
+# ── bootstrap-labels.sh: both create and edit fail → non-zero exit, names the label ──
+: > "$GH_LOG"
+out="$(STUB_LABEL_CREATE_FAIL=1 STUB_LABEL_EDIT_FAIL=1 bash "$TALOS_ROOT/scripts/bootstrap-labels.sh" acme/widget 2>&1)"; rc=$?
+assert_eq "1" "$rc" "both create and edit fail: exits non-zero"
+assert_contains "$out" "pipeline:ready" "both create and edit fail: names the failing label"
+
 finish

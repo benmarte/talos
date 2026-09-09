@@ -1136,7 +1136,9 @@ Setup (skip either step and the job is a clean no-op -- it prints
 `talos:canary-skipped reason=...` and exits 0):
 
 1. Create a sandbox repository -- not a real project repo -- the canary can
-   freely open and close throwaway issues/PRs against.
+   freely open and close throwaway issues/PRs against. It can start with
+   zero labels: the canary run bootstraps the Talos `pipeline:*`/`qa:*`/etc.
+   labels into it itself before exercising any flow.
 2. On the Talos repo, add repository variable `TALOS_CANARY_REPO`
    (`owner/repo` of the sandbox) and repository secret `TALOS_CANARY_TOKEN`:
    a fine-grained PAT scoped to the sandbox repo with `issues`,

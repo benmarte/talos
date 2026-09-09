@@ -25,9 +25,13 @@ labels=(
 for entry in "${labels[@]}"; do
   name="${entry%%|*}"; rest="${entry#*|}"
   color="${rest%%|*}"; desc="${rest#*|}"
-  gh label create "$name" --color "$color" --description "$desc" --repo "$REPO" 2>/dev/null \
-    && echo "  + $name" \
-    || gh label edit "$name" --color "$color" --description "$desc" --repo "$REPO" >/dev/null \
-    && echo "  ~ $name (updated)"
+  if gh label create "$name" --color "$color" --description "$desc" --repo "$REPO" >/dev/null 2>&1; then
+    echo "  + $name"
+  elif gh label edit "$name" --color "$color" --description "$desc" --repo "$REPO" >/dev/null 2>&1; then
+    echo "  ~ $name (updated)"
+  else
+    echo "bootstrap-labels: failed to create or edit label '$name' in $REPO" >&2
+    exit 1
+  fi
 done
 echo "Done. Add 'pipeline:ready' to an issue to start the pipeline."
