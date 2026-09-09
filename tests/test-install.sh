@@ -48,11 +48,26 @@ gout="$(HOME="$GLOBAL_HOME" CLAUDE_CONFIG_DIR="$FAKE_CLAUDE_HOME" \
 assert_file_exists "$GLOBAL_HOME/.talos/scripts/pipeline-paths.sh" \
   "--global installs pipeline-paths.sh to ~/.talos/scripts/"
 
-for script in pipeline-config.sh pipeline-cfg-cache.sh pipeline-status.sh pipeline-notify.sh \
+for script in pipeline-config.sh pipeline-cfg-cache.sh pipeline-contract.sh \
+              pipeline-status.sh pipeline-notify.sh \
               pipeline-vcs.sh pipeline-agent.sh pipeline-worktree.sh bootstrap-labels.sh \
               pipeline-lock.sh; do
   assert_file_exists "$GLOBAL_HOME/.talos/scripts/$script" "--global installs $script"
 done
+
+# pipeline-contract.sh (#178) is the single source of truth for roles/labels/
+# markers, sourced by pipeline-vcs.sh and bootstrap-labels.sh at runtime -- a
+# global install missing it silently breaks both (they fall back to stale
+# pre-#178 literals or, for bootstrap-labels.sh, abort outright). Assert its
+# *contents* round-trip (cmp, not just assert_file_exists), so a future
+# refactor that installs an empty/wrong file here is still caught.
+if cmp -s "$TALOS_ROOT/scripts/pipeline-contract.sh" \
+          "$GLOBAL_HOME/.talos/scripts/pipeline-contract.sh" 2>/dev/null; then
+  pass "--global installs pipeline-contract.sh with matching contents"
+else
+  fail "--global installs pipeline-contract.sh with matching contents" \
+       "$GLOBAL_HOME/.talos/scripts/pipeline-contract.sh missing or differs from source"
+fi
 
 [ -x "$GLOBAL_HOME/.talos/scripts/pipeline-notify.sh" ] \
   && pass "--global scripts are executable" || fail "--global scripts are executable"

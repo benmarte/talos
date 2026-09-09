@@ -597,10 +597,15 @@ The pipeline deliberately preserves three gates that only a human should act on:
 |--------|---------|
 | `scripts/pipeline-config.sh KEY [default]` | Dot-path config reader (YAML/JSON); use `--dump` to print the entire resolved config as NUL-delimited key/value pairs |
 | `scripts/pipeline-cfg-cache.sh` | Per-invocation config cache that eliminates redundant python3 parses (sourced by pipeline-*.sh internally) |
+| `scripts/pipeline-contract.sh` | Single source of truth for roles, labels, and `talos:` markers (sourced by pipeline-vcs.sh and bootstrap-labels.sh; see "Contract" below) |
 | `scripts/pipeline-vcs.sh [--dry-run] <verb> [args...]` | Uniform VCS adapter (github/gitlab/azure/file) |
 | `scripts/pipeline-status.sh [--dry-run] <issue> <status>` | Set GitHub Project board status |
 | `scripts/pipeline-notify.sh <event> <ref> <message> [thread_key]` | Post event to Slack/Discord/Teams |
 | `scripts/bootstrap-labels.sh [owner/repo]` | Create `pipeline:*` labels (idempotent) |
+
+### Contract
+
+`scripts/pipeline-contract.sh` is the single source of truth for every role name, `pipeline:*`/`qa:pass`/`review:approved`/`security:approved`/`docs:done`/`spec:ready`/`skip-qa` label, and `talos:` marker Talos uses (issue #178 -- previously restated across `pipeline-vcs.sh`, `bootstrap-labels.sh`, and the prompts, and drifting silently). It's a plain sourceable bash file (indexed arrays, bash 3.2 compatible) that `pipeline-vcs.sh` and `bootstrap-labels.sh` read instead of hand-duplicating the lists, plus a `talos_contract_json` function that prints the whole contract as JSON. `tests/test-contract.sh` greps `skills/pipeline/SKILL.md`, `agents/*.md`, `templates/**`, `README.md`, and `docs/user-guide.md` for every such string and fails if any is missing from the contract.
 
 ### pipeline-vcs.sh verbs
 
