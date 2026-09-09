@@ -683,6 +683,19 @@ issue cleanly. `branch` exists for projects where worktrees cause problems:
 If any of these applies, set `isolation: branch` and `max_parallel: 1`. The
 sequential constraint is the price of working in a single checkout.
 
+**Stage identity during `verify:` (`scripts/pipeline-verify.sh`).** A verify
+command sometimes needs to know which issue/worktree it is running for (e.g.
+to derive a unique compose project name or port range). On the adapter path
+(`subagents: false`), `pipeline-agent.sh` exports `TALOS_ISSUE_NUMBER` and
+`TALOS_WORKTREE_PATH` as real shell variables automatically. On the native
+path (Claude Code subagents), the developer/QA prompts run every `verify:`
+command through `bash scripts/pipeline-verify.sh --issue <N> --worktree
+<path> -- <cmd>` instead of exporting the vars by hand -- the wrapper
+resolves the identity (from `--issue`/`--worktree`, then
+`<worktree>/.talos/env` written by `pipeline-worktree.sh create`, then the
+calling environment) and exports it before running the command, so the
+mechanism is mechanical rather than instruction-based (#186).
+
 ### Shared local state under `issues.max_parallel > 1` (#180)
 
 **What it does.** Under `isolation: worktree`, each concurrent issue gets its

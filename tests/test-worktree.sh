@@ -358,4 +358,31 @@ out="$(bash "$WT" list)"
 assert_not_contains "$out" "WARNING" "list does not warn at exactly a configured threshold override (9, count 9)"
 rm -f "$SANDBOX/talos.pipeline.json"
 
+# ── create <n> <branch>: creates a worktree and writes .talos/env (#186) ────
+# .talos/ is gitignored in the real Talos repo (production usage); mirror
+# that here — committed to HEAD so `create`'s new worktree (branched off
+# HEAD) sees it too — so the created worktree's .talos/env doesn't read as
+# "dirty" for the safety check in `remove`/`sweep` below, same as production.
+printf '.talos/\n' >> "$SANDBOX/.gitignore"
+git add .gitignore >/dev/null
+git commit -q -m "gitignore .talos/"
+out="$(bash "$WT" create 555 fix/issue-555-mechanical-env)"; rc=$?
+assert_eq "0" "$rc" "create exits 0"
+new_wt="$out"
+assert_contains "$(git worktree list)" "$new_wt" "create adds a real git worktree at the printed path"
+assert_contains "$(git -C "$new_wt" branch --show-current)" "fix/issue-555-mechanical-env" "create checks out the requested new branch"
+assert_file_exists "$new_wt/.talos/env" "create writes <worktree>/.talos/env"
+env_contents="$(cat "$new_wt/.talos/env")"
+assert_contains "$env_contents" "export TALOS_ISSUE_NUMBER=555" ".talos/env exports TALOS_ISSUE_NUMBER"
+assert_contains "$env_contents" "export TALOS_WORKTREE_PATH=$new_wt" ".talos/env exports TALOS_WORKTREE_PATH matching the worktree's own path"
+
+# .talos/env is per-worktree, not the shared main-repo .talos/ (distinct
+# from events.jsonl's git-common-dir resolution) -- the main checkout must
+# not have gained one as a side effect of creating an issue worktree.
+assert_file_absent "$SANDBOX/.talos/env" "create does not write .talos/env into the main checkout"
+
+# create is cleaned up normally by remove/sweep like any other issue worktree.
+out2="$(bash "$WT" remove 555)"
+assert_contains "$out2" "removed worktree for issue #555" "remove cleans up a worktree created by create"
+
 finish
