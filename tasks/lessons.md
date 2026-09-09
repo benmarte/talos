@@ -79,3 +79,14 @@ Set up `benmarte/talos-canary` + `TALOS_CANARY_REPO` + fine-grained `TALOS_CANAR
 
 - In this harness the Agent tool's `model:` takes only the aliases `haiku|sonnet|opus|fable`; a full ID like `claude-haiku-4-5-20251001` from `talos.pipeline.json` is rejected. Map `agents.roles.<role>.model` to its alias before spawning.
 - When a Talos-found bug is small, still file it and run it through Talos; do not hand-patch `pipeline-vcs.sh` from the orchestrator session.
+
+## 2026-09-09 (later): canary green; five live-API bugs fixed via Talos in one afternoon
+
+Canary run 34376183708 is fully green on both providers. Bugs it (and the board) surfaced, all merged through the full pipeline: #244 pretty-printed JSON split, #245 sandbox labels, #248 `items(first:200)` cap + fail-loud, #250 label description > 100 chars, #252 board sentinel keyed by project number only + gh path printing success on failure.
+
+- GitHub facts now encoded in tests: ProjectV2 connections cap `first` at 100; label descriptions max 100 chars, names 50; REST bodies are pretty-printed. The `curl`/`gh` stubs used to hide all three.
+- The real `~/.cache/talos` sentinel was poisoned by the test suite: `make_sandbox` sandboxed HOME but not `XDG_RUNTIME_DIR`. Any script that caches under `$XDG_RUNTIME_DIR` must be tested with that variable overridden. Fixed in #252.
+- A project's built-in "closed → Done" automation can mask a broken board integration for weeks. Check a non-terminal status ("In review") when verifying the board, never "Done".
+- CHANGELOG conflicts hit every second PR when two are in flight; each cost a merge-base developer dispatch (~50k tokens). Consider a changelog-fragments directory (`changelog.d/`) as a lean-mandate follow-up.
+- Two review rounds on #249 both came from the same class: an unbounded loop / unvalidated operator input. Add "every loop has a cap; every env override is validated" to the developer profile's self-check.
+- Rule 3 followed this run: `post_stage` fired with `--tokens/--tool-uses/--duration-s` after every stage, so `pipeline-events.sh cost` is populated for the first time.
