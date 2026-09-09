@@ -101,7 +101,15 @@ make_sandbox() {
   # identity vars pipeline-agent.sh reads) outside the per-test sandbox: two
   # tests racing on the same real path under the parallel runner, or a test
   # silently overwriting a developer's real ~/.talos or ~/.claude.
-  unset TALOS_HOME CLAUDE_PLUGIN_ROOT CLAUDE_CONFIG_DIR \
+  #
+  # XDG_RUNTIME_DIR (#252): pipeline-status.sh's board sentinel cache resolves
+  # to "${XDG_RUNTIME_DIR:-$HOME/.cache}/talos" -- on a machine/CI runner
+  # where XDG_RUNTIME_DIR is set ambiently (common under a systemd user
+  # session), leaving it exported here would make every test write its
+  # sentinel to that *real*, shared location instead of the sandboxed HOME
+  # set below -- exactly how the real ~/.cache/talos got poisoned with a
+  # stale cross-owner cache in the first place.
+  unset TALOS_HOME CLAUDE_PLUGIN_ROOT CLAUDE_CONFIG_DIR XDG_RUNTIME_DIR \
         TALOS_ISSUE TALOS_ISSUE_NUMBER TALOS_ROLE TALOS_WORKTREE_PATH
 
   SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/talos-test.XXXXXX")"

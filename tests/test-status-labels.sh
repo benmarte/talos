@@ -73,12 +73,18 @@ assert_contains "$log" "project item-edit --id ITEM_42 --project-id PROJ_ID_7 --
 
 # ── Statuses not in status_map pass through unchanged ───────────────────────
 : > "$GH_LOG"
-# Config has status_map for Blocked only; "In progress" has no mapping
+# Config has status_map for Blocked only; "In progress" has no mapping.
+# Uses _OPTS_WITH_ATTN (defined above) so the startup validation's "Blocked"
+# check -- which runs unconditionally for all four required statuses,
+# independent of which status this call actually requested -- also resolves
+# cleanly; otherwise an unrelated "Needs attention missing" would trip
+# talos:board-unverified and (correctly, #252) suppress this call's own
+# success line, which is not what this test is exercising.
 cat > talos.pipeline.json <<'EOF'
 {"board": {"enabled": true, "project_number": 7, "owner": "acme",
   "status_map": {"Blocked": "Needs attention"}}}
 EOF
-out="$(PIPELINE_RUN_ID="test-passthrough-$$" bash "$STATUS" 42 "In progress" 2>&1)"; rc=$?
+out="$(STUB_BOARD_OPTIONS="$_OPTS_WITH_ATTN" PIPELINE_RUN_ID="test-passthrough-$$" bash "$STATUS" 42 "In progress" 2>&1)"; rc=$?
 log="$(cat "$GH_LOG")"
 assert_eq "0" "$rc" "unmapped status exits 0"
 assert_contains "$out" "#42 → In progress" "unmapped status output unchanged"
@@ -132,7 +138,7 @@ cat > talos.pipeline.json <<'EOF'
 {"board": {"enabled": true, "project_number": 7, "owner": "acme"}}
 EOF
 _RUN_OWN="test-sec-owner-$$"
-_SENTINEL_PATH="${_TALOS_CACHE_DIR}/board-validated-7-${_RUN_OWN}"
+_SENTINEL_PATH="${_TALOS_CACHE_DIR}/board-validated-acme-7-${_RUN_OWN}"
 mkdir -p "$_TALOS_CACHE_DIR" 2>/dev/null || true
 printf '{"fields":[{"name":"Status","id":"POISONED","options":[{"name":"In progress","id":"OPT_POISON"}]}]}' > "$_SENTINEL_PATH"
 chmod 666 "$_SENTINEL_PATH"  # user-readable AND world-writable: the permission check should reject this
@@ -151,7 +157,7 @@ cat > talos.pipeline.json <<'EOF'
 {"board": {"enabled": true, "project_number": 7, "owner": "acme"}}
 EOF
 _RUN_MALFORM="test-sec-malform-$$"
-_SENTINEL_MALFORM="${_TALOS_CACHE_DIR}/board-validated-7-${_RUN_MALFORM}"
+_SENTINEL_MALFORM="${_TALOS_CACHE_DIR}/board-validated-acme-7-${_RUN_MALFORM}"
 mkdir -p "$_TALOS_CACHE_DIR" 2>/dev/null || true
 (umask 177 && printf 'THIS IS NOT JSON }{' > "$_SENTINEL_MALFORM")
 : > "$GH_LOG"
@@ -167,7 +173,7 @@ cat > talos.pipeline.json <<'EOF'
 {"board": {"enabled": true, "project_number": 7, "owner": "acme"}}
 EOF
 _RUN_SHAPE="test-sec-shape-$$"
-_SENTINEL_SHAPE="${_TALOS_CACHE_DIR}/board-validated-7-${_RUN_SHAPE}"
+_SENTINEL_SHAPE="${_TALOS_CACHE_DIR}/board-validated-acme-7-${_RUN_SHAPE}"
 mkdir -p "$_TALOS_CACHE_DIR" 2>/dev/null || true
 (umask 177 && printf '{"not_fields":[]}' > "$_SENTINEL_SHAPE")
 : > "$GH_LOG"
@@ -183,7 +189,7 @@ cat > talos.pipeline.json <<'EOF'
 {"board": {"enabled": true, "project_number": 7, "owner": "acme"}}
 EOF
 _RUN_CACHE="test-sec-cache-$$"
-_SENTINEL_CACHE="${_TALOS_CACHE_DIR}/board-validated-7-${_RUN_CACHE}"
+_SENTINEL_CACHE="${_TALOS_CACHE_DIR}/board-validated-acme-7-${_RUN_CACHE}"
 rm -f "$_SENTINEL_CACHE"
 PIPELINE_RUN_ID="$_RUN_CACHE" bash "$STATUS" 42 "In progress" >/dev/null 2>&1
 PIPELINE_RUN_ID="$_RUN_CACHE" bash "$STATUS" 42 "Done" >/dev/null 2>&1
@@ -198,7 +204,7 @@ cat > talos.pipeline.json <<'EOF'
 EOF
 _OPTS_NO_BLOCKED_SEC='{"fields":[{"name":"Status","id":"FIELD_ID_S","options":[{"name":"In progress","id":"OPT_INPROG"},{"name":"Done","id":"OPT_DONE"},{"name":"In review","id":"OPT_INREV"}]}]}'
 _RUN_SUPPRESS="test-sec-suppress-$$"
-_SENTINEL_SUPPRESS="${_TALOS_CACHE_DIR}/board-validated-7-${_RUN_SUPPRESS}"
+_SENTINEL_SUPPRESS="${_TALOS_CACHE_DIR}/board-validated-acme-7-${_RUN_SUPPRESS}"
 rm -f "$_SENTINEL_SUPPRESS"
 # First call with missing "Blocked" option → should emit talos:board-unverified
 stdout_supp="$(STUB_BOARD_OPTIONS="$_OPTS_NO_BLOCKED_SEC" PIPELINE_RUN_ID="$_RUN_SUPPRESS" bash "$STATUS" 54 "Blocked" 2>/dev/null)"
@@ -216,7 +222,7 @@ cat > talos.pipeline.json <<'EOF'
 {"board": {"enabled": true, "project_number": 7, "owner": "acme"}}
 EOF
 _RUN_DIR="test-sec-dir-$$"
-_SENTINEL_DIR="${_TALOS_CACHE_DIR}/board-validated-7-${_RUN_DIR}"
+_SENTINEL_DIR="${_TALOS_CACHE_DIR}/board-validated-acme-7-${_RUN_DIR}"
 rm -f "$_SENTINEL_DIR"
 PIPELINE_RUN_ID="$_RUN_DIR" bash "$STATUS" 42 "In progress" >/dev/null 2>&1
 assert_file_exists "$_SENTINEL_DIR" "sentinel is written to the user-private cache directory"
@@ -224,6 +230,109 @@ assert_file_exists "$_SENTINEL_DIR" "sentinel is written to the user-private cac
 _mode="$(python3 -c "import os,stat; st=os.stat('$_SENTINEL_DIR'); print(oct(stat.S_IMODE(st.st_mode)))" 2>/dev/null)"
 assert_eq "0o600" "$_mode" "sentinel file is written with mode 0600"
 rm -f "$_SENTINEL_DIR"
+
+# ── #252: board sentinel owner scoping + gh-path failure handling ───────────
+# Regression coverage for: a sentinel cache keyed only by project number
+# silently picked up another owner's cached field/option ids (project #4
+# looked identical whether it belonged to an org or to benmarte), and a
+# failed `gh project item-edit`/`item-add` printed the "#N → status" success
+# line anyway because the exit status was discarded.
+
+# Test 7: two owners with the same project number get separate sentinel
+# files, and neither reads the other's cache.
+: > "$GH_LOG"
+_RUN_OWNERS="test-owners-$$"
+cat > talos.pipeline.json <<'EOF'
+{"board": {"enabled": true, "project_number": 7, "owner": "acme"}}
+EOF
+PIPELINE_RUN_ID="$_RUN_OWNERS" bash "$STATUS" 42 "In progress" >/dev/null 2>&1
+cat > talos.pipeline.json <<'EOF'
+{"board": {"enabled": true, "project_number": 7, "owner": "beta"}}
+EOF
+PIPELINE_RUN_ID="$_RUN_OWNERS" bash "$STATUS" 42 "In progress" >/dev/null 2>&1
+cat > talos.pipeline.json <<'EOF'
+{"board": {"enabled": true, "project_number": 7, "owner": "acme"}}
+EOF
+PIPELINE_RUN_ID="$_RUN_OWNERS" bash "$STATUS" 42 "Done" >/dev/null 2>&1
+log_owners="$(cat "$GH_LOG")"
+_fl_owners="$(printf '%s\n' "$log_owners" | grep -c "project field-list" || true)"
+assert_eq "2" "$_fl_owners" \
+  "owner-scoped sentinel: field-list fires once per owner; acme's 2nd call reuses its own cache, not beta's"
+_SENTINEL_ACME="${_TALOS_CACHE_DIR}/board-validated-acme-7-${_RUN_OWNERS}"
+_SENTINEL_BETA="${_TALOS_CACHE_DIR}/board-validated-beta-7-${_RUN_OWNERS}"
+assert_file_exists "$_SENTINEL_ACME" "acme (project #7) gets its own sentinel file"
+assert_file_exists "$_SENTINEL_BETA" "beta (also project #7) gets a separate sentinel file"
+rm -f "$_SENTINEL_ACME" "$_SENTINEL_BETA"
+
+# Test 8: a sentinel tagged with a foreign project node id is discarded (not
+# reused), and is rewritten with the freshly resolved project id.
+: > "$GH_LOG"
+cat > talos.pipeline.json <<'EOF'
+{"board": {"enabled": true, "project_number": 7, "owner": "acme"}}
+EOF
+_RUN_FOREIGN="test-foreign-$$"
+_SENTINEL_FOREIGN="${_TALOS_CACHE_DIR}/board-validated-acme-7-${_RUN_FOREIGN}"
+mkdir -p "$_TALOS_CACHE_DIR" 2>/dev/null || true
+(umask 177 && printf '{"project_id":"FOREIGN_PROJECT_ID","fields":[{"name":"Status","id":"FOREIGN_FIELD_ID","options":[{"name":"In progress","id":"FOREIGN_OPT"}]}]}' > "$_SENTINEL_FOREIGN")
+PIPELINE_RUN_ID="$_RUN_FOREIGN" bash "$STATUS" 42 "In progress" >/dev/null 2>&1
+log_foreign="$(cat "$GH_LOG")"
+_fl_foreign="$(printf '%s\n' "$log_foreign" | grep -c "project field-list" || true)"
+assert_eq "1" "$_fl_foreign" "sentinel tagged with a foreign project id is discarded; fresh field-list fires"
+assert_not_contains "$log_foreign" "FOREIGN_FIELD_ID" "foreign FIELD_ID is never sent to item-edit"
+_new_sentinel="$(cat "$_SENTINEL_FOREIGN")"
+assert_contains "$_new_sentinel" "PROJ_ID_7" "sentinel is rewritten tagged with the freshly resolved project id"
+assert_not_contains "$_new_sentinel" "FOREIGN_PROJECT_ID" "sentinel no longer carries the foreign project id"
+rm -f "$_SENTINEL_FOREIGN"
+
+# Test 9: gh project item-edit failure -- stderr message, talos:board-unverified
+# on stdout, no success line, sentinel removed, exit 0 (Rule 11).
+: > "$GH_LOG"
+cat > talos.pipeline.json <<'EOF'
+{"board": {"enabled": true, "project_number": 7, "owner": "acme"}}
+EOF
+_RUN_EDITFAIL="test-editfail-$$"
+_SENTINEL_EDITFAIL="${_TALOS_CACHE_DIR}/board-validated-acme-7-${_RUN_EDITFAIL}"
+rm -f "$_SENTINEL_EDITFAIL"
+stdout_ef="$(STUB_ITEM_EDIT_FAIL=1 PIPELINE_RUN_ID="$_RUN_EDITFAIL" bash "$STATUS" 42 "In progress" 2>/dev/null)"; rc_ef=$?
+stderr_ef="$(STUB_ITEM_EDIT_FAIL=1 PIPELINE_RUN_ID="${_RUN_EDITFAIL}-stderr" bash "$STATUS" 42 "In progress" 2>&1 >/dev/null)"
+assert_eq "0" "$rc_ef" "item-edit failure still exits 0 (Rule 11: board failures never block the pipeline)"
+assert_contains "$stdout_ef" "talos:board-unverified project=7" "item-edit failure emits talos:board-unverified on stdout"
+assert_not_contains "$stdout_ef" "#42 → In progress" "item-edit failure never prints the success line"
+assert_contains "$stderr_ef" "item-edit failed" "item-edit failure reason is reported on stderr"
+assert_file_absent "$_SENTINEL_EDITFAIL" "sentinel is deleted after item-edit failure so the next call re-validates"
+
+# Test 10: gh project item-add failure gets the same treatment.
+: > "$GH_LOG"
+cat > talos.pipeline.json <<'EOF'
+{"board": {"enabled": true, "project_number": 7, "owner": "acme"}}
+EOF
+_RUN_ADDFAIL="test-addfail-$$"
+_SENTINEL_ADDFAIL="${_TALOS_CACHE_DIR}/board-validated-acme-7-${_RUN_ADDFAIL}"
+rm -f "$_SENTINEL_ADDFAIL"
+stdout_af="$(STUB_ITEM_ADD_FAIL=1 PIPELINE_RUN_ID="$_RUN_ADDFAIL" bash "$STATUS" 99 "Done" 2>/dev/null)"; rc_af=$?
+stderr_af="$(STUB_ITEM_ADD_FAIL=1 PIPELINE_RUN_ID="${_RUN_ADDFAIL}-stderr" bash "$STATUS" 99 "Done" 2>&1 >/dev/null)"
+assert_eq "0" "$rc_af" "item-add failure exits 0 (Rule 11)"
+assert_contains "$stdout_af" "talos:board-unverified project=7" "item-add failure emits talos:board-unverified on stdout"
+assert_not_contains "$stdout_af" "#99 → Done" "item-add failure never prints the success line"
+assert_contains "$stderr_af" "item-add failed" "item-add failure reason is reported on stderr"
+assert_file_absent "$_SENTINEL_ADDFAIL" "sentinel is deleted after item-add failure too"
+
+# Test 11: the startup validation's missing-option marker (some OTHER status
+# missing from the board) never co-prints with a successful transition's own
+# "#N → status" line.
+: > "$GH_LOG"
+cat > talos.pipeline.json <<'EOF'
+{"board": {"enabled": true, "project_number": 7, "owner": "acme"}}
+EOF
+_OPTS_NO_BLOCKED_SUCC='{"fields":[{"name":"Status","id":"FIELD_ID_S","options":[{"name":"In progress","id":"OPT_INPROG"},{"name":"Done","id":"OPT_DONE"},{"name":"In review","id":"OPT_INREV"}]}]}'
+_RUN_SUCC_SUPPRESS="test-succ-suppress-$$"
+out_succ="$(STUB_BOARD_OPTIONS="$_OPTS_NO_BLOCKED_SUCC" PIPELINE_RUN_ID="$_RUN_SUCC_SUPPRESS" bash "$STATUS" 42 "In progress" 2>/dev/null)"; rc_succ=$?
+log_succ="$(cat "$GH_LOG")"
+assert_eq "0" "$rc_succ" "requested status ('In progress') still resolves fine even though Blocked is missing elsewhere"
+assert_contains "$out_succ" "talos:board-unverified" "startup validation still emits talos:board-unverified (Blocked missing)"
+assert_not_contains "$out_succ" "#42 → In progress" \
+  "success line is suppressed when talos:board-unverified already fired earlier in the same run"
+assert_contains "$log_succ" "project item-edit" "item-edit still runs -- the requested status option itself was found"
 
 # ── bootstrap-labels.sh ──────────────────────────────────────────────────────
 : > "$GH_LOG"
