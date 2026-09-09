@@ -852,6 +852,51 @@ out="$(bash "$VCS" check-approval-sha 7 2>/dev/null)"; rc=$?
 assert_eq "1" "$rc"                                                      "check-approval-sha without flag: still exits 1"
 assert_not_contains "$out" "stale role="                                 "check-approval-sha without flag: no stdout stale-list line"
 
+# check-approval-sha: pretty-printed multi-line JSON (live REST API shape) --
+# regression test for #244. The live GitHub REST API returns pretty-printed,
+# multi-line JSON (unlike the compact single-line JSON used above); the
+# github-api check-approval-sha arm used to split the concatenated PR +
+# comments payload on the first '\n', which broke on multi-line bodies. Each
+# CURL_QUEUE entry must stay one physical line, so embedded newlines are
+# encoded as \x01 here and decoded back by tests/stubs/curl (see its #244
+# comment) -- this reproduces the live-API wire format, not a stub-only shape.
+: > "$CURL_LOG"
+_pr_pretty="$(cat <<EOF
+{
+  "number": 7,
+  "head": {
+    "sha": "$_HEAD"
+  },
+  "base": {
+    "ref": "main"
+  },
+  "labels": [
+    {
+      "name": "qa:pass"
+    }
+  ]
+}
+EOF
+)"
+_comments_pretty="$(cat <<EOF
+[
+  {
+    "body": "<!-- talos:approval sha=${_HEAD} role=qa -->",
+    "user": {
+      "login": "bot"
+    }
+  }
+]
+EOF
+)"
+printf '%s\n' \
+  "${_pr_pretty//$'\n'/$'\x01'}" \
+  "${_comments_pretty//$'\n'/$'\x01'}" \
+  > "$CURL_QUEUE"
+out="$(bash "$VCS" check-approval-sha 7)"; rc=$?
+assert_eq "0" "$rc"                                                      "check-approval-sha: exits 0 for pretty-printed multi-line JSON (#244)"
+assert_contains "$out" "all approval labels are current"                 "check-approval-sha: current message for pretty-printed JSON (#244)"
+
 # ── check-closing-keyword ─────────────────────────────────────────────────────
 : > "$CURL_LOG"
 # No closing keyword: should exit 0, one API call only
