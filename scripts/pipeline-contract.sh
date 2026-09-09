@@ -86,7 +86,7 @@ TALOS_APPROVAL_LABELS=(
 # labels, the epic marker, and the priority ladder.
 TALOS_MISC_LABELS=(
   "spec:ready|0e8a16|Human-applied: issue body is already a usable spec — force-skips the PM stage"
-  "skip-qa|ededed|Human-applied: bypass QA/review/security gates (docs-only or hotfix); CI + forbidden-files still enforced"
+  "skip-qa|ededed|Human-applied: skip QA/review/security gates (docs-only or hotfix); CI + forbidden-files still run"
   "epic|e4e669|Epic — planner decomposes into sub-issues"
   "p0|b60205|Priority: critical — dispatched first"
   "p1|d93f0b|Priority: high"
@@ -115,6 +115,36 @@ TALOS_MARKERS=(
   talos:canary-skipped
   talos:worktree-sweep
 )
+
+# ── talos_contract_check_label_length ────────────────────────────────────
+# GitHub rejects label names > 50 chars and descriptions > 100 chars on
+# both create and edit (422 "description is too long" / "name is too
+# long") -- #250 found `skip-qa`'s description was 105 chars, which made
+# bootstrap-labels.sh fail on every real repo while the `gh` stub (which
+# accepts any length) let the test suite stay green. This is the one
+# place that limit is encoded; tests/test-contract.sh calls it for every
+# entry in TALOS_STAGE_LABELS/TALOS_APPROVAL_LABELS/TALOS_MISC_LABELS
+# (must pass) and for a synthetic over-long entry (must fail), so a
+# future contract edit that regresses this is caught before it reaches
+# `gh`.
+#
+# $1: a "name|color|description" entry, same shape as the *_LABELS
+#     arrays. Prints an error and returns 1 if the name is > 50 chars or
+#     the description is > 100 chars; silent, returns 0 otherwise.
+talos_contract_check_label_length() {
+  local entry="$1" name rest desc
+  name="${entry%%|*}"; rest="${entry#*|}"
+  desc="${rest#*|}"
+  if [ "${#name}" -gt 50 ]; then
+    echo "label name '$name' is ${#name} chars (GitHub max 50)" >&2
+    return 1
+  fi
+  if [ "${#desc}" -gt 100 ]; then
+    echo "label '$name' description is ${#desc} chars (GitHub max 100): $desc" >&2
+    return 1
+  fi
+  return 0
+}
 
 # ── talos_contract_json ──────────────────────────────────────────────────────
 # Prints the whole contract as JSON: {"roles", "stage_labels",
