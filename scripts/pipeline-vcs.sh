@@ -1966,7 +1966,15 @@ bare_pat      = r'(?<!\w)(?<!/)#' + n_esc + r'(?!\d)'
 gh_pat        = r'(?<![0-9])[Gg][Hh]-' + n_esc + r'(?!\d)'
 url_pat       = (r'https://github\.com/(?i:' + owner_esc + r'/' + name_esc + r')'
                  + r'/issues/' + n_esc + r'(?!\d)')
-body_pat = r'(?:' + own_repo_pat + r'|' + bare_pat + r'|' + gh_pat + r'|' + url_pat + r')'
+ref_pat = r'(?:' + own_repo_pat + r'|' + bare_pat + r'|' + gh_pat + r'|' + url_pat + r')'
+# #221: a sibling counts only when one of the four reference forms above is
+# introduced by a real closing keyword (close/closes/closed/fix/fixes/fixed/
+# resolve/resolves/resolved, optionally followed by a colon) or by a
+# Part of #N line -- a bare prose mention (See #42, Related to #42,
+# owned by #42) must NOT count as a sibling.
+kw_prefix     = r'(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*'
+partof_prefix = r'\bpart\s+of\s+'
+body_pat = r'(?:' + kw_prefix + r'|' + partof_prefix + r')' + ref_pat
 try: prs = json.load(sys.stdin)
 except Exception: prs = []
 siblings = []
@@ -1976,7 +1984,7 @@ for pr in prs:
     ref = pr.get('headRefName','')
     hay = pr.get('title','') + ' ' + (pr.get('body','') or '')
     branch_match = bool(re.search(r'(?:^|/)issue-' + n_esc + r'(?:-|$)', ref))
-    body_match   = bool(re.search(body_pat, hay))
+    body_match   = bool(re.search(body_pat, hay, re.IGNORECASE))
     if branch_match or body_match:
         siblings.append(str(pr.get('number','')))
 if siblings:

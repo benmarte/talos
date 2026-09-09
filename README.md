@@ -749,6 +749,8 @@ Recognised reference forms:
 
 The colon form `Closes: #N` is **not** recognised. It is not part of GitHub's documented closing-keyword syntax, and the gate deliberately excludes it. A PR body that uses only the colon form will not trigger the gate, and no `talos:closing-keyword-unverified` marker is emitted.
 
+A sibling PR only counts when *its own* body carries a closing keyword (colon optional, e.g. `Fixes: #N`) or a `Part of #N` line for the same issue in one of the recognised reference forms above; a PR that merely mentions `#N` in prose (`See #N`, `Related to #N`, `owned by #N`) is not treated as a sibling.
+
 This gate implements Rule 6: the legitimate final PR in a multi-PR issue says `Closes #N`. By the time it is ready to merge, all prior siblings are already merged — no open siblings exist, so the gate exits 0 and does not block. The gate only fires when a sibling is still open. An operator who sees this gate block should either merge the open sibling PRs first, or change this PR's body from `Closes #N` to `Part of #N` if it is not actually the final PR.
 
 **Known limitation:** a lone PR that overclaims its deliverables (one PR carrying `Closes #N` with no sibling PRs at all) cannot be detected by this gate. Detecting overclaiming requires a work-ledger that records how many items the issue committed to; nothing in the pipeline maintains such a ledger in VCS mode today. This gate exclusively catches the sibling-still-open case.

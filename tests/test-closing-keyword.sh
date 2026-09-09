@@ -487,13 +487,13 @@ out="$(STUB_PR_BODY="Closes #42" STUB_PR_NUMBER=9 \
 assert_exit_code 1 "$rc" "issue-91 S2: bare #42 in sibling body (no keyword) IS counted (must exit 1)"
 assert_contains "$out" "#8" "issue-91 S2: sibling PR #8 named in diagnostic"
 
-# -- S3. Own-repo qualified form in sibling body -- MUST be counted -----------
-# Sibling PR #8 body: "See acme/widget#42" — own-repo qualified reference.
+# -- S3. Own-repo qualified form in sibling body, prose-only -- NOT counted ---
+# Sibling PR #8 body: "See acme/widget#42" — a plain mention, no closing
+# keyword and no "Part of" line. #221: prose mentions are not siblings.
 out="$(STUB_PR_BODY="Closes #42" STUB_PR_NUMBER=9 \
   STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix: curr","headRefName":"fix/issue-42-a","body":"Closes #42"},{"number":8,"state":"OPEN","title":"fix: sibling","headRefName":"fix/other-b","body":"See acme/widget#42"}]' \
   bash "$VCS" check-closing-keyword 9 42 2>&1)"; rc=$?
-assert_exit_code 1 "$rc" "issue-91 S3: own-repo acme/widget#42 in sibling body IS counted (must exit 1)"
-assert_contains "$out" "#8" "issue-91 S3: sibling PR #8 named in diagnostic"
+assert_exit_code 0 "$rc" "issue-221 S3: prose mention 'See acme/widget#42' in sibling body is NOT counted (must exit 0)"
 
 # -- S4. Branch-name matcher unchanged ----------------------------------------
 # A sibling with a fix/issue-42-slug branch is still detected by branch match
@@ -504,13 +504,13 @@ out="$(STUB_PR_BODY="Closes #42" STUB_PR_NUMBER=9 \
 assert_exit_code 1 "$rc" "issue-91 S4: branch fix/issue-42-b still fires (branch matcher unchanged, must exit 1)"
 assert_contains "$out" "#8" "issue-91 S4: sibling PR #8 named via branch match"
 
-# -- S5. Genuine sibling block still exits 1 ----------------------------------
-# Confirm the guard is not silently disabled by the scoping fix.
-# Sibling body "Related to #42" is a bare reference — must still block.
+# -- S5. Prose-only mention -- NOT counted, guard fires only for real siblings
+# Sibling body "Related to #42" is a bare prose reference, no closing keyword
+# and no "Part of" line. #221: this must not block.
 out="$(STUB_PR_BODY="Closes #42" STUB_PR_NUMBER=9 \
   STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix: curr","headRefName":"fix/issue-42-a","body":"Closes #42"},{"number":8,"state":"OPEN","title":"fix: sibling","headRefName":"fix/other-b","body":"Related to #42"}]' \
   bash "$VCS" check-closing-keyword 9 42 2>&1)"; rc=$?
-assert_exit_code 1 "$rc" "issue-91 S5: genuine sibling with bare #42 still exits 1 (guard not disabled)"
+assert_exit_code 0 "$rc" "issue-221 S5: prose mention 'Related to #42' in sibling body is NOT counted (must exit 0)"
 
 # -- S6. Exit-zero proof: closing keyword + no open siblings ------------------
 # A PR with a proper closing keyword and no open siblings must exit 0.
@@ -518,6 +518,53 @@ out="$(STUB_PR_BODY="Closes #42" STUB_PR_NUMBER=9 \
   STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix: curr","headRefName":"fix/issue-42-a","body":"Closes #42"}]' \
   bash "$VCS" check-closing-keyword 9 42 2>&1)"; rc=$?
 assert_exit_code 0 "$rc" "issue-91 S6: closing keyword with no open siblings exits 0"
+
+# =============================================================================
+# ISSUE-221: sibling detection requires a real closing keyword or "Part of",
+# not just any prose mention of #N (PR #219 vs #220, 2026-09-08).
+# =============================================================================
+
+# -- 221-A. "Part of #N" sibling still blocks ---------------------------------
+out="$(STUB_PR_BODY="Closes #42" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix: curr","headRefName":"fix/issue-42-a","body":"Closes #42"},{"number":8,"state":"OPEN","title":"fix: sibling","headRefName":"fix/other-b","body":"Part of #42"}]' \
+  bash "$VCS" check-closing-keyword 9 42 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "issue-221 A: 'Part of #42' sibling still blocks (must exit 1)"
+assert_contains "$out" "#8" "issue-221 A: sibling PR #8 named in diagnostic"
+
+# -- 221-B. "Closes #N" sibling still blocks ----------------------------------
+out="$(STUB_PR_BODY="Closes #42" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix: curr","headRefName":"fix/issue-42-a","body":"Closes #42"},{"number":8,"state":"OPEN","title":"fix: sibling","headRefName":"fix/other-b","body":"Closes #42"}]' \
+  bash "$VCS" check-closing-keyword 9 42 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "issue-221 B: 'Closes #42' sibling still blocks (must exit 1)"
+assert_contains "$out" "#8" "issue-221 B: sibling PR #8 named in diagnostic"
+
+# -- 221-C. "Fixes: #N" (colon form) sibling blocks ---------------------------
+out="$(STUB_PR_BODY="Closes #42" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix: curr","headRefName":"fix/issue-42-a","body":"Closes #42"},{"number":8,"state":"OPEN","title":"fix: sibling","headRefName":"fix/other-b","body":"Fixes: #42"}]' \
+  bash "$VCS" check-closing-keyword 9 42 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "issue-221 C: 'Fixes: #42' (colon form) sibling blocks (must exit 1)"
+assert_contains "$out" "#8" "issue-221 C: sibling PR #8 named in diagnostic"
+
+# -- 221-D. "resolves acme/widget#N" (own-repo, closing keyword) blocks ------
+out="$(STUB_PR_BODY="Closes #42" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix: curr","headRefName":"fix/issue-42-a","body":"Closes #42"},{"number":8,"state":"OPEN","title":"fix: sibling","headRefName":"fix/other-b","body":"resolves acme/widget#42"}]' \
+  bash "$VCS" check-closing-keyword 9 42 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "issue-221 D: 'resolves acme/widget#42' sibling blocks (must exit 1)"
+assert_contains "$out" "#8" "issue-221 D: sibling PR #8 named in diagnostic"
+
+# -- 221-E. "#N0" (different number sharing a prefix) does NOT block ---------
+out="$(STUB_PR_BODY="Closes #42" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix: curr","headRefName":"fix/issue-42-a","body":"Closes #42"},{"number":8,"state":"OPEN","title":"fix: sibling","headRefName":"fix/other-b","body":"Closes #420"}]' \
+  bash "$VCS" check-closing-keyword 9 42 2>&1)"; rc=$?
+assert_exit_code 0 "$rc" "issue-221 E: 'Closes #420' does NOT block issue 42 (right-digit guard, must exit 0)"
+
+# -- 221-F. Plain prose mentions of #N do not block (owned by / see / related)
+for phrase in "See #42 (concurrent PR)" "Related to #42" "owned by #42"; do
+  out="$(STUB_PR_BODY="Closes #42" STUB_PR_NUMBER=9 \
+    STUB_PR_LIST="[{\"number\":9,\"state\":\"OPEN\",\"title\":\"fix: curr\",\"headRefName\":\"fix/issue-42-a\",\"body\":\"Closes #42\"},{\"number\":8,\"state\":\"OPEN\",\"title\":\"fix: sibling\",\"headRefName\":\"fix/other-b\",\"body\":\"$phrase\"}]" \
+    bash "$VCS" check-closing-keyword 9 42 2>&1)"; rc=$?
+  assert_exit_code 0 "$rc" "issue-221 F: prose mention '$phrase' does NOT block (must exit 0)"
+done
 
 # ── issue-113: GH-N and URL forms in sibling body ────────────────────────────
 # Mutation that makes these tests fail: remove gh_pat and url_pat from body_pat
@@ -530,11 +577,19 @@ out="$(STUB_PR_BODY="Closes #42" STUB_PR_NUMBER=9 \
 assert_exit_code 1 "$rc" "issue-113 G1: GH-42 in sibling body IS counted (must exit 1)"
 assert_contains "$out" "#8" "issue-113 G1: sibling PR #8 named in diagnostic"
 
-# -- 113-G2. GH-N case variant (gh-42) IS counted ----------------------------
+# -- 113-G2. GH-N case variant (gh-42), prose-only -- NOT counted -------------
+# #221: "Related to gh-42" is a prose mention (no closing keyword, no "Part
+# of" line) — flipped from "IS counted" now that mentions don't block.
 out="$(STUB_PR_BODY="Closes #42" STUB_PR_NUMBER=9 \
   STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix: curr","headRefName":"fix/issue-42-a","body":"Closes #42"},{"number":8,"state":"OPEN","title":"fix: sibling","headRefName":"fix/other-b","body":"Related to gh-42"}]' \
   bash "$VCS" check-closing-keyword 9 42 2>&1)"; rc=$?
-assert_exit_code 1 "$rc" "issue-113 G2: gh-42 (lowercase) in sibling body IS counted (case-insensitive)"
+assert_exit_code 0 "$rc" "issue-221 G2: prose mention 'Related to gh-42' (lowercase, case-insensitive) is NOT counted (must exit 0)"
+
+# -- 113-G2b. GH-N case variant (gh-42) with a real closing keyword IS counted
+out="$(STUB_PR_BODY="Closes #42" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"fix: curr","headRefName":"fix/issue-42-a","body":"Closes #42"},{"number":8,"state":"OPEN","title":"fix: sibling","headRefName":"fix/other-b","body":"fixes gh-42"}]' \
+  bash "$VCS" check-closing-keyword 9 42 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "issue-113 G2b: 'fixes gh-42' (lowercase, case-insensitive) IS counted"
 
 # -- 113-G3. GH-420 does NOT match issue 42 (right boundary guard) ------------
 out="$(STUB_PR_BODY="Closes #42" STUB_PR_NUMBER=9 \
