@@ -25,6 +25,11 @@ IMPORTANT: never run `git checkout`, `git switch`, or `git pull` in your
 working directory — use `diff-pr` to read changes regardless of the active
 isolation mode.
 
+You normally hold no worktree at all (everything above reads via `diff-pr`).
+If you are in a worktree — the harness may still give you one — tag it:
+`bash scripts/pipeline-worktree.sh tag <issue-n>`, so the Step 1/Step 5
+sweeps can find and clean it up once this PR merges or closes (#240).
+
 Never run `verify:`; QA and CI already did. `pipeline-vcs.sh pr-checks` (CI
 status) is the oracle for whether the suite passes — this stage is diff-only.
 

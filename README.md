@@ -954,6 +954,14 @@ fully offline pipeline, combine a local runner with `vcs.provider: file`.
 
 ---
 
+## Worktree lifecycle
+
+**Policy:** a stage's working copy lives exactly as long as the stage needs it — every developer, QA, reviewer, security, and docs worktree (and its scratch branch) is removed as soon as the PR it belongs to merges or closes, and anything left behind that doesn't belong to an issue still in the queue or with an open PR is garbage, removed on sight regardless of dirty/unpushed state.
+
+Only the developer worktree identifies itself by naming convention (`fix|feat/issue-<N>-...`); the other stages get a Claude Code harness `agent-*` worktree with no issue number in its name, so QA and docs run `pipeline-worktree.sh tag <N>` as their first step to write `<worktree>/.talos/env` (reviewer and security hold no worktree under normal operation, so they only tag if the harness happens to give them one). `remove <N>` (post-merge) and `sweep [<open-id>...]` (Step 1 startup backstop and Step 5 end-of-run) both use this tag — or the naming convention — to find every worktree for an issue, developer and harness alike; `sweep` additionally deletes local branches that are not main/master/base, don't track a live remote, and aren't the head of an open PR, and prints `talos:worktree-sweep removed=<n> kept=<n> freed=<size>`. `pipeline-worktree.sh status` reports current worktree/dirty/branch counts and total `.claude/worktrees` disk usage.
+
+---
+
 ## Multi-lane repos and `.talos-lane-home`
 
 A single git remote can host multiple independent pipeline lanes — for example, a canonical `main` lane and one or more LLM-experiment branches (`qwen`, `phi4`, etc.) each with their own config and queue. These share one repo, which creates two hazards:

@@ -791,27 +791,52 @@ config key exists for it.
 
 ### Worktree cleanup and the stale-worktree warning (`execution.worktree_warn_threshold`)
 
-**What it does.** Under `isolation: worktree` (the default), the developer and
-QA stages each get a disposable `git worktree` on a `fix/issue-<N>-*` or
-`feat/issue-<N>-*` branch. `scripts/pipeline-worktree.sh remove <N>` deletes
-that worktree on every merge (Step 4), but worktrees for issues that never
-finished -- abandoned, blocked, or from an interrupted run -- are not touched
-by `remove`. Two sweeps reclaim those:
+**Policy (#240):** a stage's working copy lives exactly as long as the stage
+needs it -- every worktree and scratch branch is removed as soon as the PR it
+belongs to merges or closes. Anything left behind that doesn't belong to an
+issue still in the queue or with an open PR is garbage, removed regardless of
+dirty/unpushed state -- dirty scratch is not work in progress; real work lives
+on a pushed PR branch.
 
+**What it does.** Under `isolation: worktree` (the default), the developer,
+QA, and (when the harness gives them one) reviewer/security/docs stages each
+get a disposable `git worktree`. The developer worktree is self-identifying
+(`fix|feat/issue-<N>-*` branch); the others are Claude Code harness `agent-*`
+worktrees with no issue number in their name, so QA and docs run `bash
+scripts/pipeline-worktree.sh tag <N>` as their first step, writing
+`<worktree>/.talos/env` (the same #186 format `create` writes) so later
+verbs can find them:
+
+- `scripts/pipeline-worktree.sh remove <N>` deletes EVERY worktree for issue
+  `<N>` -- the developer worktree and any harness worktree tagged to `<N>` --
+  plus their local branches, on every merge (Step 4).
 - **Step 1 (startup)** runs `pipeline-worktree.sh sweep <queue ids>` as a
   backstop for a run that ended before Step 4 could clean up.
 - **Step 5 (end of run)** runs the same `sweep` unconditionally, every run --
-  not only as a startup backstop. It also reclaims Claude Code harness
-  worktrees (branches named `worktree-agent-<hash>`, created by the harness
-  itself, not by Talos) that have no uncommitted changes and no commits ahead
-  of their upstream (or, absent an upstream, the repo's default branch).
+  not only as a startup backstop -- passing the queue ids PLUS the issue id of
+  every PR still open, so a worktree whose PR is still under review keeps its
+  place.
 
-**Safety.** Neither sweep ever deletes a worktree with uncommitted changes or
-commits its upstream doesn't have yet -- those are listed in the sweep's
-output (path, branch, reason) instead of being removed, so an operator can see
-what is waiting on them. A worktree whose directory is already gone (git calls
-this "prunable") is always reclaimed, in either category, since there is no
-working tree left to preserve.
+**Safety.** `sweep` preserves ONLY a worktree identified (by naming
+convention, or by its tag file) with an id in the list passed to it -- an
+untagged or otherwise unidentifiable worktree counts as "not open" and is
+removed regardless of dirty/unpushed state. `sweep` also deletes local
+branches that are not `main`/`master`/the configured base, do not track a
+still-existing remote branch, and are not the head of a currently open PR
+(queried from `list-prs` once per sweep, not per branch); if that lookup
+itself fails, branch cleanup is skipped entirely for that run rather than
+guessed. A worktree whose directory is already gone (git calls this
+"prunable") is always reclaimed. `remove <N>` is narrower and keeps the
+older, per-issue safety net: it still refuses to delete the ONE worktree it
+targets while it has uncommitted changes or commits its upstream doesn't have
+yet, listing the reason in its output instead of removing it.
+
+Every `sweep` run ends with a summary line:
+`talos:worktree-sweep removed=<n> kept=<n> freed=<size>`.
+
+**`pipeline-worktree.sh status`** prints worktree/dirty/local-branch counts
+and the total on-disk size of `.claude/worktrees`, for a quick health check
+without wading through `list`'s per-worktree output.
 
 **Default:** `10` (an absent key behaves exactly like `10`)
 
