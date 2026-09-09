@@ -72,3 +72,10 @@ All 15 remaining roadmap issues merged in conflict-avoiding waves of two. Every 
 ## 2026-09-09: backlog at zero
 
 #221, #237, #240 merged via Talos. Every open issue and PR is closed. The new `pipeline-worktree.sh remove <N>` cleaned each stage's worktree and branch on merge without manual work, and `sweep`/`status` report zero leftovers. Next run must: follow Rule 3 (post_stage with usage) so the cost log fills; use `tag <N>` in QA/docs prompts (now in the profiles).
+
+## 2026-09-09: first live canary run found two real bugs; Agent model must be an alias
+
+Set up `benmarte/talos-canary` + `TALOS_CANARY_REPO` + fine-grained `TALOS_CANARY_TOKEN` (minted through the GitHub UI via the browser tools; there is no API for PATs). First run: `github` provider passes end to end; `github-api` fails at `check-approval-sha` because the live REST API pretty-prints JSON and the arm splits PR/comments payloads on `\n` (#244). Fresh sandbox also has no Talos labels, so `post-approval` failed until `bootstrap-labels.sh` ran against it (#245). Both are exactly what the canary exists to catch: the `curl` stub returns compact JSON, so no stubbed test could see either.
+
+- In this harness the Agent tool's `model:` takes only the aliases `haiku|sonnet|opus|fable`; a full ID like `claude-haiku-4-5-20251001` from `talos.pipeline.json` is rejected. Map `agents.roles.<role>.model` to its alias before spawning.
+- When a Talos-found bug is small, still file it and run it through Talos; do not hand-patch `pipeline-vcs.sh` from the orchestrator session.
