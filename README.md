@@ -72,7 +72,7 @@ All VCS operations are delegated to `scripts/pipeline-vcs.sh`, which wraps each 
 | Provider | `vcs.provider` | CLI required | Status | Notes |
 |----------|---------------|--------------|--------|-------|
 | GitHub | `github` | `gh` | **Battle-tested** | Full support. Requires `gh auth login`. `list-issues`/`list-prs` paginate fully via `gh api --paginate` — no cap. |
-| GitHub (token-only) | `github-api` | none | **Supported** | All 18 verbs via `curl` + `GITHUB_TOKEN`. No `gh` CLI needed — ideal for CI/containers. Set `GITHUB_TOKEN` or `GH_TOKEN`. Projects v2 board updates also use the token. |
+| GitHub (token-only) | `github-api` | none | **Supported** | All 18 verbs via `curl` + `GITHUB_TOKEN`. No `gh` CLI needed — ideal for CI/containers. Set `GITHUB_TOKEN` or `GH_TOKEN`. Projects v2 board updates also use the token. `list-issues`/`list-prs` paginate fully via Link-header pagination — same no-cap behavior as `github`, so backlogs over 100 items are never silently truncated on either GitHub provider (#171). |
 | GitLab | `gitlab` | `glab` | **Best-effort** | Implemented; `glab` version quirks may surface. Requires `glab auth login`. `list-issues`/`list-prs` are capped at 100 items (`glab` has no "fetch every page" flag for these commands) — a result landing exactly on the cap prints a `WARNING result capped at 100` line to stderr rather than truncating silently. |
 | Azure DevOps | `azure` | `az` + azure-devops extension | **Supported** | Full issue/board/PR flow — work items, Tags, board State, and PR labels/comments/diff (via `az rest` where `az` has no command). Merges are human-gated when `main` has branch policies. `find-pr`/`check-pr-files`/`rerun-ci` not implemented. Requires `az login` + `az extension add --name azure-devops`. `list-issues`/`list-prs` are capped at 1000 items (`az boards query` has no `--top`/page flag at all; `az repos pr list --top` has one but no further pagination) — a result landing exactly on the cap prints a `WARNING result capped at 1000` line to stderr rather than truncating silently. |
 | File / chat | `file` | none | **Supported** | Work items are `- [ ] Task` checkboxes in a local markdown file. No PRs; developer commits to a branch; QA/review/security/docs stages skipped. |
@@ -250,8 +250,10 @@ All keys live in `talos.pipeline.json` (or `talos.pipeline.yml` if PyYAML is ins
 |-----|---------|-------------|
 | `base_branch` | repo default branch | Branch all PRs target |
 | `release_branch` | `main` | Production branch (changelog headers) |
+| `repo` | auto-detect | Legacy top-level alias for `vcs.repo` — checked first (before `vcs.repo`, before the git remote) by helpers that resolve `owner/repo` (e.g. `pipeline-hooks.sh`). Prefer `vcs.repo` in new configs; both are read for back-compat. |
 | `vcs.provider` | `github` | VCS backend: `github`, `gitlab`, `azure`, or `file` |
 | `vcs.repo` | auto-detect | `owner/repo` override (required when git remote unavailable) |
+| `vcs.token_env` | unset (falls back to `GITHUB_TOKEN`, then `GH_TOKEN`) | Name of the environment variable holding the GitHub token, for the `github-api` provider (token-only, no `gh` CLI). Lets you point Talos at a differently-named secret (e.g. `MY_BOT_TOKEN`) without renaming it to `GITHUB_TOKEN`/`GH_TOKEN`. Also read by `pipeline-status.sh` for Projects v2 board updates when `gh` is absent. No effect on the `github` provider (uses `gh auth`). |
 | `vcs.azure.org_url` | — | Azure DevOps org URL (`https://dev.azure.com/MYORG`) |
 | `vcs.azure.project` | — | Azure DevOps project name |
 | `vcs.azure.work_item_type` | `Product Backlog Item` | Type for `create-issue` (Azure) |
@@ -264,11 +266,12 @@ All keys live in `talos.pipeline.json` (or `talos.pipeline.yml` if PyYAML is ins
 | `board.statuses.*` | see example | Display names for each status option (GitHub) |
 | `board.status_map` | unset | Optional flat mapping from pipeline status names to the board's actual column names. Example: `{Blocked: "Needs attention"}`. An absent key passes through unchanged; omitting the map entirely is a no-op. Validation and option-ID lookup both run against the mapped name, so a correctly mapped name is treated as present. |
 | `board.azure_states.*` | Scrum defaults | Pipeline status → ADO work-item State (Azure) |
-| `verify` | `[]` | Shell commands every code subagent must pass |
+| `verify` | `[]` | Shell commands every code subagent must pass. Also accepts a dict form — `verify: {commands: [...], qa_mode: ..., targeted: ..., ci_wait_s: ..., timeout_ms: ...}` (`verify.commands` is then this dict's `commands` list) — so the sibling `verify.*` keys below can live under the same top-level key instead of alongside it. |
 | `verify.qa_mode` | `ci` when `merge.required_checks` is non-empty, else `local` | `ci`: QA trusts CI (`pr-checks`) as the suite oracle instead of re-running `verify:` locally — CI already runs it on every push. `local`: QA runs the full `verify:` list once itself, as before. An explicit value always wins over the `merge.required_checks`-derived default — **except** an explicit `ci` combined with an empty or absent `merge.required_checks` list, which resolves to `local` instead (with a one-line warning on stderr): trusting CI as the oracle for zero required checks would let QA pass vacuously, without ever running `verify:` or observing a real CI signal. |
 | `verify.targeted` | `true` | While iterating, the developer runs only the tests covering the files it changed (`tests/run-tests.sh --for <path>...` or `--changed [<base-ref>]`; see [Tests](#tests)), then runs the full `verify:` list exactly once, immediately before its final commit and push. Set `false` to run the full `verify:` list on every iteration instead — never zero local runs either way. |
 | `verify.ci_wait_s` | `900` | Seconds QA waits in the foreground (no background process, no sleep-polling) for every check named in `merge.required_checks` to go green under `qa_mode: ci`, via `pipeline-vcs.sh pr-checks-required` -- scoped to just those checks, so an unrelated non-required check cannot burn the budget or mask a required check GitHub hasn't scheduled yet. Any required check still failing, missing, or pending when the budget elapses is treated as FAIL (fail closed). Must be a positive integer; a non-integer or non-positive value is rejected (stderr warning, falls back to the default) -- it is interpolated unquoted into the CI-wait loop's shell test. |
 | `verify.timeout_ms` | `600000` | Milliseconds substituted as `<VERIFY_TIMEOUT_MS>` into the foreground rule placed next to every verify and CI-wait instruction in the developer and QA prompts — the explicit timeout a stage passes to its verify command instead of backgrounding it. Must be a positive integer; a non-integer or non-positive value is rejected (stderr warning, falls back to the default). |
+| `merge.auto` | `true` | `false` runs every stage and gate (approvals, forbidden-files check, green CI) but leaves the final merge to a human: the orchestrator labels the PR `pipeline:approved`, posts a "ready for human merge" comment, and stops instead of merging. The issue stays open and is closed by the reconciliation sweep after you merge. See [Human-merge mode](docs/user-guide.md#running-the-pipeline) in the user guide. |
 | `merge.method` | `squash` | `squash`, `merge`, or `rebase` |
 | `merge.required_checks` | `[]` | CI check names required before merge |
 | `merge.delete_branch` | `true` | Delete feature branch after merge |
@@ -297,6 +300,7 @@ All keys live in `talos.pipeline.json` (or `talos.pipeline.yml` if PyYAML is ins
 | `notifications.slack_channel` | `""` | Slack channel ID fallback |
 | `notifications.discord_channel` | `""` | Discord channel ID fallback |
 | `notifications.buzz_channel` | `""` | Buzz channel UUID (Nostr `h` tag target) |
+| `notifications.buzz_relay` | `""` | Buzz (Nostr) relay URL. Not a secret — it identifies a deployment the same way `buzz_channel` does, so it belongs in the committed config. Precedence: exported env (`PIPELINE_BUZZ_RELAY`) > repo/Hermes `.env` > this config key. |
 | `notifications.templates_dir` | `templates/notifications` | Path to notification message templates; `""` disables templates |
 | `notifications.threading` | `true` | Thread all events per issue in one Slack/Discord thread (bot-token mode only) |
 | `notifications.events` | all (unset) | Events filter. **Leave unset** — when set, any unlisted event is silently dropped, including all role events that make up the conversation stream. See warning below. |
@@ -312,6 +316,14 @@ All keys live in `talos.pipeline.json` (or `talos.pipeline.yml` if PyYAML is ins
 | `hooks.timeout_s` | `30` | Seconds `hooks.pre_dispatch` / `hooks.post_stage` may run before being killed. Must be a positive integer; a non-integer or non-positive value is rejected (stderr warning, falls back to the default). |
 | `events.enabled` | `true` | Whether every `hooks.post_stage` payload is also appended, as one JSON line, to the local events log — independently of whether `hooks.post_stage` itself is configured. See [Events log](#events-log) below. |
 | `events.path` | `.talos/events.jsonl` | Path to the events log, relative to the **main repository root** (resolved via `git rev-parse --git-common-dir`, so every linked worktree of the same repo appends to the one file) unless already absolute. |
+| `agents.runner` | `claude` | Agent harness for the whole pipeline: `claude` (native subagents), `pi`, `codex`, `gemini`, `antigravity`, or `custom` (with `agents.runner_cmd`). See [Other harnesses](#other-harnesses-pi-codex-cli-gemini-cli-antigravity-local-models). |
+| `agents.subagents` | `auto` | `auto` (true for `claude`, else false), `true`, or `false`. Chooses native parallel subagents vs. the headless `pipeline-agent.sh` adapter. |
+| `agents.runner_cmd` | — | Command for `agents.runner: custom` — the prompt arrives on stdin. Global-only; use `agents.roles.<role>.runner_cmd` to override a single role. |
+| `agents.runner_args` | — | Extra CLI args passed to the `claude`/`codex`/`gemini` runner. Global-only — there is no `agents.roles.<role>.runner_args`. |
+| `agents.model` | session default | Model for all stages not explicitly overridden (native path only). See [Per-role model selection](#per-role-model-selection-agentsmodel-and-agentsrolesrolemodel). |
+| `agents.roles.<role>.model` | falls back to `agents.model` | Role-specific model override (native path only), e.g. a cheaper model for volume stages and a stronger one for judgement stages (reviewer, security). |
+| `agents.roles.<role>.runner` | falls back to `agents.runner` | Role-specific backend override, on both the native and adapter execution paths — e.g. routing just `security` or `adversarial` through a different (often local) model while the rest of the pipeline stays on the default runner. See [Per-role runner override](#per-role-runner-override-agentsrolesrolerunner--runner_cmd). |
+| `agents.roles.<role>.runner_cmd` | falls back to `agents.runner_cmd` | Role-specific command, read only when that role's resolved runner is `custom`. |
 
 ### Hooks
 
@@ -529,6 +541,7 @@ Scripts respect these env vars, which take priority over the config file:
 | `PIPELINE_NOTIFY_DEBUG` | set to `1` to print payloads without posting (safe for testing) |
 | `PIPELINE_RUN_ID` | when set, scopes the per-run board-validation sentinel in `pipeline-status.sh` to this value so multiple concurrent pipeline runs sharing one `/tmp` directory do not interfere with each other. Without it, the sentinel is keyed on project number alone. |
 | `TALOS_SWEEP_ALL_LANES` | set to `1` to allow `pipeline-worktree.sh sweep` to run across all lanes when multiple `.talos-lane-home` markers exist in the repo. Without this, sweep exits safely when more than one lane home is detected (multi-lane interlock). `remove <N>` is always unaffected by this variable. |
+| `TALOS_BOARD_MAX_PAGES` | overrides the page cap for `pipeline-status.sh`'s items() pagination loop (default `50`, i.e. 5000 items at 100/page). A non-positive-integer value falls back to the default with a warning on stderr. Hitting the cap, or a malformed page (`hasNextPage=true` with an empty cursor), bails out via `talos:board-unverified` instead of looping forever. |
 
 ### Per-issue notification threading
 
@@ -632,6 +645,7 @@ The pipeline deliberately preserves three gates that only a human should act on:
 | `comment-issue` | `<id> <body> [--allow-closed]` `[--body-file <file>]` | Post a comment on an issue. Pass `--body-file <file>` to read the body from a file (use this for multi-line verdicts). **Passing a readable absolute path as the positional `<body>` argument exits 1** with a `--body-file` hint — use `--body-file` instead. **Exits 1 if the issue is closed** unless `--allow-closed` is passed (required when GitHub auto-closes via `Closes #N` at merge). Prints the comment `html_url` to stdout on success. Exits non-zero if the POST itself fails (see below). On an indeterminate state lookup (network error), posts (exit 0) and emits `talos:comment-state-unverified target=issue#<N> reason=<short>` on stdout. |
 | `close-issue` | `<id> [reason]` | Close an issue |
 | `label-issue` | `<id> --add label [--remove label]` | Add/remove labels (or tags for Azure) |
+| `check-epic-acceptance` | `<epic-n>` | Scan the epic issue's body for unticked `- [ ] ` checklist boxes (checkboxes inside fenced code blocks count too). Exit 0 with no output when none remain, including bodies with no checkboxes at all. Exit non-zero and print each unticked item's text, one per line, when any remain. GitHub only (#168). Used by the epic auto-close sweep — see docs/user-guide.md's "Working with epics" section for the full flow. |
 | `create-pr` | `<branch> <title> <body-file>` | Open a PR targeting base_branch. Exits non-zero if the POST fails. |
 | `view-pr` | `<branch>` | Show PR number, URL, status |
 | `list-prs` | | List open PRs |

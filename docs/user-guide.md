@@ -489,7 +489,8 @@ automatically adds `pipeline:ready`. The epic itself is labelled
 
 Once every sub-issue is resolved, the epic auto-close sweep does NOT close the
 epic on that signal alone — children closing is evidence about the children,
-not about the epic. It runs `check-epic-acceptance <E>` against the epic's
+not about the epic. It runs `check-epic-acceptance <E>` (see README's
+`pipeline-vcs.sh` verbs table for the exit codes) against the epic's
 own body on every sweep: if the epic still has unticked `- [ ] ...` acceptance
 boxes, the sweep leaves it open and — the first time this happens — adds
 `pipeline:epic-children-done` and comments naming every outstanding item, so a
@@ -526,8 +527,15 @@ for the same suite run more than it needs to:
     change, immediately before its final commit and push.
   In both modes, the developer never runs `verify:` after that final run,
   in the background, or via a sleep-poll loop — and never zero times.
+  Outside the pipeline, `tests/run-tests.sh --repeat N` stress-tests a
+  selection (one flaky file, or the whole suite) by running it N times and
+  stopping at the first failure — see the README's [Tests](../README.md#tests)
+  section for the full flag reference.
 - **QA** (`verify.qa_mode`, default `ci` when `merge.required_checks` is
-  non-empty, else `local`): under `ci`, QA does not re-run `verify:` at all —
+  non-empty, else `local`): before either mode runs, the orchestrator checks
+  `pipeline-vcs.sh pr-mergeable <pr>` — a `CONFLICTING` PR gets no
+  `pull_request` CI run to wait for, so QA is not dispatched into a poll
+  that would never resolve. Under `ci`, QA does not re-run `verify:` at all —
   it polls `pipeline-vcs.sh pr-checks-required` in the foreground, bounded by
   `verify.ci_wait_s` (default `900` seconds; must be a positive integer,
   rejected otherwise with a one-line stderr warning and a fallback to the
@@ -633,6 +641,38 @@ Every marker skipped for an untrusted author is reported once per
 invocation on stderr as `talos:marker-authors-rejected
 authors=<comma-separated logins>` — never one line per marker, even when
 several markers are rejected in the same run.
+
+### Retries and attempt counting (`record-attempt`, #172)
+
+**What it does.** Every re-dispatch of a blocking stage (developer fix
+rounds, a re-run QA/reviewer/security cycle) is recorded via
+`pipeline-vcs.sh record-attempt <issue-n> <stage>`, which posts a
+`<!-- talos:attempt -->` marker comment on the issue and enforces the two
+ceilings from `limits`: `max_fix_attempts` (per-stage) and
+`max_total_dispatches` (across the whole issue). The orchestrator checks
+the exit code before re-dispatching — a non-zero exit means a ceiling would
+be exceeded, and the issue is blocked instead.
+
+**Deduplication.** `record-attempt` accepts two mutually exclusive flags so
+a retried call (a fresh shell, a restarted orchestrator process, a flaky
+network write) doesn't double-count the same attempt:
+
+- `--pr <pr-n>` derives the idempotency key itself as
+  `<stage>-<pr-head-sha>` by resolving the PR's current head SHA
+  server-side — nothing to mint by hand. As long as the PR head hasn't
+  moved, calling `record-attempt` again for the same stage/PR recomputes
+  the identical key and is a no-op (it reprints the existing counts instead
+  of posting again). Prefer this whenever a PR already exists.
+- `--idempotency-key <token>` is for stages with no PR yet (before a PR
+  exists, `--pr` is unavailable); the caller mints its own token
+  (`[A-Za-z0-9._-]+`). Deduplication here only covers the process that
+  minted the token — it can't detect a retry across a fresh orchestrator
+  restart the way `--pr` can.
+
+Omitting both flags entirely preserves the pre-#172 behaviour: every call
+posts a new marker, unconditionally. See README's `pipeline-vcs.sh` verbs
+table for `record-attempt`'s full flag reference and `read-attempt` /
+`check-attempt` for reading state back without recording a new attempt.
 
 ### Filtering which issues enter the queue (`issues.label_filter`)
 
@@ -754,7 +794,7 @@ so it resolves from a subdirectory too -- then the calling environment) and
 exports it before running the command, so the mechanism is mechanical
 rather than instruction-based (#186).
 
-### Shared local state under `issues.max_parallel > 1` (#180)
+### Parallel runs and locking: shared local state under `issues.max_parallel > 1` (#180)
 
 **What it does.** Under `isolation: worktree`, each concurrent issue gets its
 own working directory, but three pieces of state still live outside that
@@ -1483,6 +1523,13 @@ pack installed.
     cannot be auto-detected — you must set `board.owner` explicitly in
     `talos.pipeline.yml` (or `PIPELINE_BOARD_OWNER` env var); without it the
     board step is silently skipped.
+  - **Large backlogs / `talos:board-unverified`:** `pipeline-status.sh`
+    paginates the board's items() query up to 50 pages (5000 items at
+    100/page) by default. Override the cap with `TALOS_BOARD_MAX_PAGES`; an
+    invalid (non-positive-integer) value falls back to 50 with a warning on
+    stderr. Hitting the cap, or a malformed page from the GraphQL API,
+    prints `talos:board-unverified` and exits 0 rather than looping forever
+    or failing the pipeline (board failures are warnings by design).
 - **Preview any VCS action** without executing:
   `bash ~/.talos/scripts/pipeline-vcs.sh --dry-run <verb> ...`.
 - **Approval label lost after a new commit** — when a non-waived file (source code, tests, protected config) is pushed after an approval, that approval is marked stale; only the affected stages are re-run, and docs approvals whose delta touches only `*.example` or other waived paths are re-stamped without re-dispatch (see `merge.approval_waiver_paths` in README).
