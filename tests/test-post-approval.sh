@@ -85,7 +85,7 @@ out2="$(STUB_PR_HEAD_SHA="$STUB_SHA" bash "$VCS" post-approval 9 badrole 2>&1)";
 assert_exit_code 1 "$rc2" "invalid role: exits 1"
 assert_contains "$out2" "unknown role 'badrole'" \
   "invalid role: names the invalid role"
-assert_contains "$out2" "valid: docs, qa, reviewer, security" \
+assert_contains "$out2" "valid: adversarial, docs, qa, reviewer, security" \
   "invalid role: names the valid set"
 # ASCII only: no non-ASCII bytes in the error message
 if printf '%s' "$out2" | LC_ALL=C grep -qP '[^\x00-\x7F]' 2>/dev/null; then

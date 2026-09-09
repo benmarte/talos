@@ -1312,8 +1312,69 @@ agents:
 
 Only `security` pays the local round trip; the other seven roles are
 unaffected. This is the enabling piece for a second, independent review pass
-on a different backend -- a dedicated `adversarial` stage is a separate,
-larger change (tracked separately) that this key alone does not provide.
+on a different backend, which the dedicated `adversarial` stage below
+actually uses.
+
+### Adversarial pre-merge stage (`roles.adversarial`, #237)
+
+Optional, off by default. When `roles.adversarial: true`, a new stage runs
+after security and before the merge gates: it attacks the diff rather than
+re-checking what QA/reviewer/security already checked -- vacuous tests,
+weak regex/allow-list patterns, secret-shaped strings, and unverified claims
+in the PR body. Findings block the merge (`pipeline:blocked` + a PR comment)
+exactly like security's do; a clear verdict applies `adversarial:approved`,
+which the merge gate then requires. Leaving `roles.adversarial` absent or
+`false` is a no-op: no dispatch, and the merge gate never looks for
+`adversarial:approved`.
+
+Its profile, `agents/adversarial.md`, carries its own complete method
+inline (read the diff, hunt vacuous tests with a revert-in-mind check, stress
+every pattern with 3 matching/3 non-matching inputs, scan for secret shapes,
+verify every PR-body claim, then verdict) so it works even on a harness with
+no skill mechanism -- only a bare `runner_cmd` to a model endpoint lacks one;
+every harness Talos supports natively (Claude Code, Codex, Gemini, OpenCode,
+Antigravity) ships agent-skills.
+
+**Second opinion on a local model.** The whole point of `adversarial` is that
+it is cheap enough (a local model) to run on every PR as a genuinely
+independent second opinion -- pair `roles.adversarial: true` with
+`agents.roles.adversarial.runner: custom` and a `runner_cmd` wrapper around a
+llama.cpp `llama-server` endpoint:
+
+```bash
+# --jinja enables tool/function calling -- agentic CLIs need it
+llama-server -m qwen2.5-coder-32b-instruct-q4_k_m.gguf --port 8081 -c 32768 --jinja
+```
+
+`runner_cmd` must point at an agentic CLI, not the bare endpoint -- write a
+small wrapper that reads the prompt from stdin and forwards it to the
+OpenAI-compatible endpoint:
+
+```bash
+#!/usr/bin/env bash
+# adversarial-runner.sh -- wraps a local llama.cpp endpoint as the agentic
+# CLI Talos's `runner_cmd` expects. Receives the full prompt on stdin.
+set -euo pipefail
+OPENAI_API_BASE=http://localhost:8081/v1 OPENAI_API_KEY=local \
+  aider --model openai/local --yes-always --no-auto-commits --message "$(cat)"
+```
+
+```yaml
+roles:
+  adversarial: true              # off by default -- opt in explicitly
+
+agents:
+  runner: claude                 # everything else: native Claude subagents
+  roles:
+    adversarial:
+      runner: custom
+      runner_cmd: "/path/to/adversarial-runner.sh"
+```
+
+Every other role keeps running natively; only `adversarial` pays the local
+round trip, and it costs nothing per PR once the endpoint is running
+locally. Both example configs (`talos.pipeline.json.example` and
+`talos.pipeline.yml.example`) carry this same block, commented out.
 
 ### Worked example: Addy Osmani's agent-skills pack
 

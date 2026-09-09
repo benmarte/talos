@@ -50,7 +50,7 @@ assert_file_absent "$REPO/.claude/agents" "target repo has no repo-level agents"
 # them in .claude/agents/, which is the plugin repo's own config and is not
 # exported — so a marketplace install shipped /pipeline with none of the eight
 # subagents it spawns.
-for agent in validator pm developer qa reviewer security docs planner; do
+for agent in validator pm developer qa reviewer security adversarial docs planner; do
   assert_file_exists "$PLUGIN_ROOT/agents/$agent.md" "plugin ships $agent role at agents/"
 done
 
@@ -58,7 +58,7 @@ done
 # tool, so an installed skill pack — agent-skills, or Claude Code's own
 # code-review/security-review — was unreachable from those stages no matter what
 # the profile said. The dependency was never the problem; the tool grant was.
-for agent in validator pm developer qa reviewer security docs planner; do
+for agent in validator pm developer qa reviewer security adversarial docs planner; do
   tools_line="$(grep -E '^tools:' "$PLUGIN_ROOT/agents/$agent.md" || true)"
   case "$tools_line" in
     *Skill*) pass "$agent can invoke skills" ;;
@@ -73,7 +73,7 @@ done
 # whitespace before matching or these assertions fail on prose reflow alone.
 flat() { tr '\n' ' ' < "$1" | tr -s ' '; }
 
-for agent in validator pm developer qa reviewer security docs planner; do
+for agent in validator pm developer qa reviewer security adversarial docs planner; do
   body="$(flat "$PLUGIN_ROOT/agents/$agent.md")"
   case "$body" in
     *"do not restate them"*) pass "$agent directs the model to use skills" ;;
@@ -88,7 +88,7 @@ done
 # The fallback must NOT claim other harnesses lack skills. agent-skills ships
 # .gemini/, .opencode/, .codex-plugin/ and an AGENTS.md naming Antigravity — it
 # is not Claude-Code-only, and 0.8.0's wording said otherwise (#41).
-for agent in validator pm developer qa reviewer security docs planner; do
+for agent in validator pm developer qa reviewer security adversarial docs planner; do
   body="$(flat "$PLUGIN_ROOT/agents/$agent.md")"
   case "$body" in
     *"no skill mechanism"*) pass "$agent carries a skills fallback" ;;

@@ -37,13 +37,17 @@
 # form) -- those identifiers are this list prefixed with "talos:", not a
 # separately maintained set.
 TALOS_ROLES=(
-  developer qa reviewer security docs validator pm orchestrator planner
+  developer qa reviewer security adversarial docs validator pm orchestrator planner
 )
 
 # The subset of TALOS_ROLES that carries an approval label (gated by
 # check-approval-sha / post-approval), in the same order as
 # TALOS_APPROVAL_LABELS below -- index i's role owns index i's label.
-TALOS_APPROVAL_ROLES=(qa reviewer security docs)
+# `adversarial` is optional (roles.adversarial, default false, #237) -- its
+# label is only ever present on a PR where the stage actually ran, so
+# check-approval-sha needs no config-awareness of its own (see the label's
+# comment below).
+TALOS_APPROVAL_ROLES=(qa reviewer security adversarial docs)
 
 # ── Labels ─────────────────────────────────────────────────────────────────
 # Format: "name|color|description" (pipe-delimited -- label names contain
@@ -65,11 +69,16 @@ TALOS_STAGE_LABELS=(
 )
 
 # Approval labels a gate stage applies once its own check passes. Parallel
-# to TALOS_APPROVAL_ROLES (same index order: qa, reviewer, security, docs).
+# to TALOS_APPROVAL_ROLES (same index order: qa, reviewer, security,
+# adversarial, docs). adversarial:approved is only required by the merge
+# gate when roles.adversarial = true (SKILL.md Step 4); check-approval-sha
+# only validates labels already present on the PR, so an absent label is
+# simply never checked -- see the TALOS_APPROVAL_ROLES comment above.
 TALOS_APPROVAL_LABELS=(
   "qa:pass|c2e0c6|QA verified acceptance criteria"
   "review:approved|c2e0c6|Code review approved"
   "security:approved|c2e0c6|Security review clear"
+  "adversarial:approved|c2e0c6|Adversarial review clear"
   "docs:done|c2e0c6|Documentation updated"
 )
 

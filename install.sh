@@ -115,7 +115,7 @@ if [ "$GLOBAL" = "true" ]; then
   # either -- see SKILL.md's subagent-name resolution rules.
   echo ""
   echo "Agents:"
-  for agent in validator pm developer qa reviewer security docs planner; do
+  for agent in validator pm developer qa reviewer security adversarial docs planner; do
     for src_agent in "$SRC/agents/$agent.md" "$SRC/.claude/agents/$agent.md"; do
       if [ -f "$src_agent" ]; then
         install_file "$src_agent" "$TALOS_HOME_DIR/agents/$agent.md"
