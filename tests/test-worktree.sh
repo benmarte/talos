@@ -373,8 +373,9 @@ assert_contains "$(git worktree list)" "$new_wt" "create adds a real git worktre
 assert_contains "$(git -C "$new_wt" branch --show-current)" "fix/issue-555-mechanical-env" "create checks out the requested new branch"
 assert_file_exists "$new_wt/.talos/env" "create writes <worktree>/.talos/env"
 env_contents="$(cat "$new_wt/.talos/env")"
-assert_contains "$env_contents" "export TALOS_ISSUE_NUMBER=555" ".talos/env exports TALOS_ISSUE_NUMBER"
-assert_contains "$env_contents" "export TALOS_WORKTREE_PATH=$new_wt" ".talos/env exports TALOS_WORKTREE_PATH matching the worktree's own path"
+assert_contains "$env_contents" "TALOS_ISSUE_NUMBER=555" ".talos/env has a TALOS_ISSUE_NUMBER=<n> line"
+assert_contains "$env_contents" "TALOS_WORKTREE_PATH=$new_wt" ".talos/env has a TALOS_WORKTREE_PATH=<path> line matching the worktree's own path"
+assert_not_contains "$env_contents" "export " ".talos/env is written as plain KEY=value, not shell 'export' lines (#186 security fix -- the reader parses, never sources, this file)"
 
 # .talos/env is per-worktree, not the shared main-repo .talos/ (distinct
 # from events.jsonl's git-common-dir resolution) -- the main checkout must
@@ -384,5 +385,39 @@ assert_file_absent "$SANDBOX/.talos/env" "create does not write .talos/env into 
 # create is cleaned up normally by remove/sweep like any other issue worktree.
 out2="$(bash "$WT" remove 555)"
 assert_contains "$out2" "removed worktree for issue #555" "remove cleans up a worktree created by create"
+
+# ── create acquires the repo lock like remove/sweep (#180 review) ──────────
+# Structural guard: the dispatch line itself wraps _wt_create_body in with_lock.
+if grep -q 'with_lock "\$_WT_LOCK_RESOURCE" 10 -- _wt_create_body' "$WT"; then
+  pass "create dispatches through with_lock like remove/sweep"
+else
+  fail "create dispatches through with_lock like remove/sweep" \
+       "no with_lock wrapping found for _wt_create_body in $WT"
+fi
+
+# Functional guard: hold the same lock resource from a background holder,
+# then run create and confirm it waits for the lock to free instead of
+# racing git worktree add against it (the #180 race this closes).
+LOCK_SH="$TALOS_ROOT/scripts/pipeline-lock.sh"
+LOCK_RESOURCE="$(git rev-parse --git-common-dir)/talos-worktree"
+(
+  . "$LOCK_SH"
+  _lock_acquire "$LOCK_RESOURCE" 5 >/dev/null 2>&1
+  sleep 1.5
+) &
+holder_pid=$!
+sleep 0.3   # let the holder actually acquire before create starts waiting
+start_ts=$(date +%s)
+out3="$(bash "$WT" create 556 fix/issue-556-lock-wait)"; rc3=$?
+end_ts=$(date +%s)
+wait "$holder_pid" 2>/dev/null
+assert_eq "0" "$rc3" "create still succeeds after the held lock is released"
+elapsed=$((end_ts - start_ts))
+if [ "$elapsed" -ge 1 ]; then
+  pass "create waited for the held lock instead of racing it (elapsed ${elapsed}s)"
+else
+  fail "create waited for the held lock instead of racing it" "elapsed only ${elapsed}s"
+fi
+bash "$WT" remove 556 >/dev/null 2>&1
 
 finish

@@ -692,9 +692,11 @@ path (Claude Code subagents), the developer/QA prompts run every `verify:`
 command through `bash scripts/pipeline-verify.sh --issue <N> --worktree
 <path> -- <cmd>` instead of exporting the vars by hand -- the wrapper
 resolves the identity (from `--issue`/`--worktree`, then
-`<worktree>/.talos/env` written by `pipeline-worktree.sh create`, then the
-calling environment) and exports it before running the command, so the
-mechanism is mechanical rather than instruction-based (#186).
+`<worktree>/.talos/env` written by `pipeline-worktree.sh create` -- found by
+walking up to the worktree's toplevel via `git rev-parse --show-toplevel`,
+so it resolves from a subdirectory too -- then the calling environment) and
+exports it before running the command, so the mechanism is mechanical
+rather than instruction-based (#186).
 
 ### Shared local state under `issues.max_parallel > 1` (#180)
 

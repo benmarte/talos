@@ -7,7 +7,15 @@ set -u
 make_sandbox
 
 VERIFY_SH="$TALOS_ROOT/scripts/pipeline-verify.sh"
+WT="$TALOS_ROOT/scripts/pipeline-worktree.sh"
 assert_file_exists "$VERIFY_SH" "pipeline-verify.sh exists"
+
+# Real commits so pipeline-worktree.sh create (used below to produce genuine
+# .talos/env files, written by the actual writer this reader must agree
+# with) has a default branch to fork worktrees from.
+git config user.email "test@talos"
+git config user.name "talos test"
+git commit -q --allow-empty -m "root"
 
 # A tiny "verify script" that asserts $TALOS_ISSUE_NUMBER equals an expected
 # value — the Prove-It fixture every case below runs through.
@@ -40,17 +48,58 @@ assert_contains "$out_args" "OK: TALOS_ISSUE_NUMBER=186" "args form: TALOS_ISSUE
 assert_contains "$out_args" "WT=$WT_DIR" "args form: TALOS_WORKTREE_PATH reaches the command"
 
 # ── GREEN: .talos/env form — resolves identity with zero flags ─────────────
-ENV_WT="$SANDBOX/wt-env"
-mkdir -p "$ENV_WT/.talos"
-{
-  printf 'export TALOS_ISSUE_NUMBER=186\n'
-  printf 'export TALOS_WORKTREE_PATH=%s\n' "$ENV_WT"
-} > "$ENV_WT/.talos/env"
+# A real worktree via pipeline-worktree.sh create (#186), not a hand-built
+# fixture: proves the writer's plain KEY=value format and the reader's
+# parser actually agree.
+ENV_WT="$(bash "$WT" create 186 fix/issue-186-verify-env)"; rc_create_env=$?
+assert_eq "0" "$rc_create_env" "setup: pipeline-worktree.sh create succeeds for the .talos/env test"
 out_env="$(cd "$ENV_WT" && bash "$VERIFY_SH" -- bash "$CHECK" 2>"$SANDBOX/env.err")"
 rc_env=$?
 assert_eq "0" "$rc_env" ".talos/env form: wrapper exit code is the wrapped command's"
 assert_contains "$out_env" "OK: TALOS_ISSUE_NUMBER=186" ".talos/env form: TALOS_ISSUE_NUMBER=186 resolved with zero flags"
 assert_contains "$out_env" "WT=$ENV_WT" ".talos/env form: TALOS_WORKTREE_PATH resolved with zero flags"
+
+# ── GREEN: a subdirectory of the worktree still resolves the toplevel
+# .talos/env (walk up via `git rev-parse --show-toplevel`, #186 note) ──────
+SUB_DIR="$ENV_WT/nested/deeper"
+mkdir -p "$SUB_DIR"
+out_sub="$(cd "$SUB_DIR" && bash "$VERIFY_SH" -- bash "$CHECK" 2>"$SANDBOX/sub.err")"
+rc_sub=$?
+assert_eq "0" "$rc_sub" "subdirectory cwd: wrapper exit code is the wrapped command's"
+assert_contains "$out_sub" "OK: TALOS_ISSUE_NUMBER=186" "subdirectory cwd resolves the toplevel .talos/env"
+assert_contains "$out_sub" "WT=$ENV_WT" "subdirectory cwd resolves TALOS_WORKTREE_PATH from the toplevel .talos/env"
+
+# ── SECURITY: .talos/env is parsed, never sourced -- old export-style /
+# injected content is a hard failure (exit 2), not partial trust or a code
+# execution vector (#186 security finding) ─────────────────────────────────
+INJ_WT="$(bash "$WT" create 1 fix/issue-1-injected-env)"
+_pwn_marker="$SANDBOX/pwned-$$-$RANDOM"
+printf 'export TALOS_ISSUE_NUMBER=1; touch %s\n' "$_pwn_marker" > "$INJ_WT/.talos/env"
+out_inj="$(cd "$INJ_WT" && bash "$VERIFY_SH" -- bash "$CHECK" 2>"$SANDBOX/inj.err")"
+rc_inj=$?
+assert_eq "2" "$rc_inj" "malformed/injected .talos/env: wrapper exits 2"
+assert_file_absent "$_pwn_marker" "malformed .talos/env is never executed as shell -- injected touch never ran"
+assert_contains "$(cat "$SANDBOX/inj.err")" "$INJ_WT/.talos/env" "exit-2 diagnostic names the offending file"
+
+# ── GREEN: a worktree path containing a space round-trips exactly (#186
+# security-fix note: the file is parsed, not sourced, so no quoting needed)
+SPACE_PARENT="$SANDBOX/repo with space"
+mkdir -p "$SPACE_PARENT"
+(
+  cd "$SPACE_PARENT" || exit 1
+  git init -q
+  git config user.email "test@talos"
+  git config user.name "talos test"
+  git commit -q --allow-empty -m "root"
+  bash "$WT" create 558 fix/issue-558-space
+) > "$SANDBOX/space-create.out" 2>"$SANDBOX/space-create.err"
+SPACE_WT="$(cat "$SANDBOX/space-create.out")"
+assert_contains "$SPACE_WT" " " "setup: the created worktree path actually contains a space"
+out_space="$(cd "$SPACE_WT" && EXPECTED_ISSUE=558 bash "$VERIFY_SH" -- bash "$CHECK" 2>"$SANDBOX/space.err")"
+rc_space=$?
+assert_eq "0" "$rc_space" "space-containing worktree path: wrapper exit code is the wrapped command's"
+assert_contains "$out_space" "OK: TALOS_ISSUE_NUMBER=558" "space-containing worktree path: TALOS_ISSUE_NUMBER resolved"
+assert_contains "$out_space" "WT=$SPACE_WT" "space-containing worktree path round-trips exactly, including the space"
 
 # ── GREEN: ambient-environment form (adapter path) — flags/.talos/env absent
 NO_ENV_WT="$SANDBOX/wt-ambient"

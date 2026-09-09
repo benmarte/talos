@@ -15,12 +15,26 @@
 #
 # Identity resolution (per variable, first match wins):
 #   1. --issue / --worktree flags
-#   2. <cwd>/.talos/env — two `export` lines written by
-#      `pipeline-worktree.sh create`. NOTE: this is a *per-worktree* file at
-#      this worktree's own root, not the shared main-repo .talos/ that
-#      pipeline-events.sh's events.jsonl lives under (that one resolves via
-#      `git rev-parse --git-common-dir`, one path shared by every worktree
-#      of a repo). Same ".talos/" name, deliberately different resolution.
+#   2. <toplevel>/.talos/env, where <toplevel> is `git rev-parse
+#      --show-toplevel` for the current worktree (falls back to $PWD if not
+#      inside a git repo, or from a subdirectory of the worktree this still
+#      finds the file at the worktree's own root) — two plain `KEY=value`
+#      lines written by `pipeline-worktree.sh create`:
+#        TALOS_ISSUE_NUMBER=<digits>
+#        TALOS_WORKTREE_PATH=<absolute path, raw, no quoting>
+#      This file is PARSED line-by-line (never `source`d / dot-sourced): it
+#      is worktree-local and agent-writable, so treating it as executable
+#      shell would let a corrupted or adversarial file run arbitrary code in
+#      this trusted wrapper's process. Any line that isn't one of the two
+#      expected `KEY=value` forms, an issue number that isn't all digits, or
+#      a worktree path that isn't an existing absolute directory is a fatal
+#      error (diagnostic to stderr naming the file, exit 2) rather than a
+#      silently-ignored or partially-trusted value. NOTE: this is a
+#      *per-worktree* file at this worktree's own root, not the shared
+#      main-repo .talos/ that pipeline-events.sh's events.jsonl lives under
+#      (that one resolves via `git rev-parse --git-common-dir`, one path
+#      shared by every worktree of a repo). Same ".talos/" name, deliberately
+#      different resolution.
 #   3. TALOS_ISSUE_NUMBER / TALOS_WORKTREE_PATH already in the calling
 #      environment (e.g. the adapter path, which exports both before this
 #      script would ever run — re-exporting the same value is a no-op).
@@ -75,21 +89,56 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# Fallback 2: <cwd>/.talos/env. Sourced in a subshell (not eval'd inline)
-# so a malformed file can't clobber this process's own locals, and only
-# consulted for whichever of issue/worktree the flags above left unset.
-if { [ -z "$_issue" ] || [ -z "$_worktree" ]; } && [ -f "$PWD/.talos/env" ]; then
-  _env_vals="$(
-    TALOS_ISSUE_NUMBER=""
-    TALOS_WORKTREE_PATH=""
-    # shellcheck source=/dev/null
-    . "$PWD/.talos/env"
-    printf '%s\n%s\n' "$TALOS_ISSUE_NUMBER" "$TALOS_WORKTREE_PATH"
-  )"
-  _env_issue="$(printf '%s\n' "$_env_vals" | sed -n '1p')"
-  _env_worktree="$(printf '%s\n' "$_env_vals" | sed -n '2p')"
-  [ -z "$_issue" ] && _issue="$_env_issue"
-  [ -z "$_worktree" ] && _worktree="$_env_worktree"
+# _parse_talos_env FILE -- parse a .talos/env file line-by-line (never
+# executed as shell — see the header comment). Sets _envfile_issue /
+# _envfile_worktree, or prints a diagnostic naming FILE and exits 2 if any
+# line doesn't match one of the two expected KEY=value forms, the issue
+# isn't all-digits, or the worktree path isn't an existing absolute
+# directory.
+_parse_talos_env() {
+  local f="$1" line val bad=0
+  _envfile_issue=""
+  _envfile_worktree=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -z "$line" ] && continue
+    case "$line" in
+      TALOS_ISSUE_NUMBER=*)
+        val="${line#TALOS_ISSUE_NUMBER=}"
+        case "$val" in
+          ''|*[!0-9]*) bad=1 ;;
+          *) _envfile_issue="$val" ;;
+        esac
+        ;;
+      TALOS_WORKTREE_PATH=*)
+        val="${line#TALOS_WORKTREE_PATH=}"
+        case "$val" in
+          /*) [ -d "$val" ] && _envfile_worktree="$val" || bad=1 ;;
+          *) bad=1 ;;
+        esac
+        ;;
+      *)
+        bad=1
+        ;;
+    esac
+  done < "$f"
+  if [ "$bad" -ne 0 ]; then
+    echo "pipeline-verify: malformed $f: expected only lines matching TALOS_ISSUE_NUMBER=<digits> or TALOS_WORKTREE_PATH=<existing absolute dir>" >&2
+    exit 2
+  fi
+}
+
+# Fallback 2: <toplevel>/.talos/env (toplevel of the current worktree, or
+# $PWD if not inside a git repo), parsed (never sourced) and only consulted
+# for whichever of issue/worktree the flags above left unset.
+if { [ -z "$_issue" ] || [ -z "$_worktree" ]; }; then
+  _env_toplevel="$(git rev-parse --show-toplevel 2>/dev/null)"
+  [ -n "$_env_toplevel" ] || _env_toplevel="$PWD"
+  _envfile="$_env_toplevel/.talos/env"
+  if [ -f "$_envfile" ]; then
+    _parse_talos_env "$_envfile"
+    [ -z "$_issue" ] && _issue="$_envfile_issue"
+    [ -z "$_worktree" ] && _worktree="$_envfile_worktree"
+  fi
 fi
 
 # Fallback 3: whatever the calling environment already set (adapter path).
