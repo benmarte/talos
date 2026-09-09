@@ -56,3 +56,11 @@ QA for PR #219 wrote a 77-byte test config (`agents.runner: custom`) over the re
 ## Reviewer left a relative-path verdict file in the orchestrator checkout (2026-09-08)
 
 `rev-233.md` appeared in the main checkout; `assert-sync` caught it before the next merge. Same root cause as the config overwrite: a subagent wrote a relative path after its `cd` had not persisted. Stage prompts now say `/tmp/<file>`; keep it that way, and keep running `assert-sync` before every merge.
+
+## Roadmap run complete 2026-09-08: 15 issues, 24 PRs, one unfollowed rule
+
+All 15 remaining roadmap issues merged in conflict-avoiding waves of two. Every PR needed one to three real fix rounds; the reviewer and security stages earned their cost (dot-sourced env file, unanchored stale sweep, watchdog orphan, argv token, missing known key, hard-coded role list, etc.).
+
+- The orchestrator session ran on the pre-#182 playbook and never called `pipeline-hooks.sh post_stage` after relays, so `.talos/events.jsonl` has only the two entries QA generated. Next run: follow Rule 3 (post_stage with `--tokens/--tool-uses/--duration-s` from each completion notification) so `pipeline-events.sh cost` is real.
+- `assert-sync` before every merge and after every QA stage caught two stray files; keep it.
+- Owner steps still open: sandbox repo + `TALOS_CANARY_REPO`/`TALOS_CANARY_TOKEN` for the canary; decide on a release.
