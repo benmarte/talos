@@ -99,6 +99,7 @@ TALOS_MARKERS=(
   talos:closing-keyword-unverified
   talos:comment-state-unverified
   talos:marker-authors-unverified
+  talos:marker-authors-rejected
   talos:board-unverified
   talos:verify
 )

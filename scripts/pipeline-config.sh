@@ -77,7 +77,7 @@ _KNOWN_CONFIG_KEYS_JSON='[
   "agents.roles.*.runner_cmd",
   "limits.max_fix_attempts", "limits.max_total_dispatches",
   "limits.max_retries",
-  "markers.trusted_authors",
+  "markers.trusted_authors", "markers.verify_authors",
   "hooks.pre_dispatch", "hooks.post_stage", "hooks.timeout_s",
   "events.enabled", "events.path"
 ]'

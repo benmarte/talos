@@ -796,11 +796,18 @@ print('\n'.join(lines))
 #           "body":...}, ...]} -- the shape the `read-comments` verb (and
 #           _github_api's inline REST normalisation) already produce.
 #   env:    TRUSTED_AUTHORS, TALOS_CFG -- same contract read-attempt has
-#           always used. TALOS_CONTRACT_ROLES_ENV (#178) -- KNOWN_STAGES,
-#           derived from scripts/pipeline-contract.sh's TALOS_ROLES.
+#           always used. VERIFY_AUTHORS, CURRENT_USER (#187) -- effective
+#           trust set is TRUSTED_AUTHORS ∪ {CURRENT_USER} when
+#           VERIFY_AUTHORS is not "false" and CURRENT_USER is non-empty;
+#           VERIFY_AUTHORS defaults to "true" when unset. TALOS_CONTRACT_
+#           ROLES_ENV (#178) -- KNOWN_STAGES, derived from scripts/
+#           pipeline-contract.sh's TALOS_ROLES.
 #   stdout: "stage=<s> count=<k> total=<t>[ key=<tok>]" (or "stage= count=0
 #           total=0" when no marker exists), preceded by any
-#           `talos:marker-authors-unverified` passthrough lines.
+#           `talos:marker-authors-unverified` passthrough line.
+#   stderr: one `talos:marker-authors-rejected authors=<comma list>` line
+#           when the trust set is enforced and at least one marker was
+#           skipped for having an untrusted author (#187).
 #   exit:   0 normally; 1 when stdin is unparseable or the most recent
 #           marker is present but corrupt/unrecognised (fail-closed --
 #           corrupt markers never silently fall through to zero attempts).
@@ -827,8 +834,13 @@ MARKER_RE = re.compile(
 # role list here.
 KNOWN_STAGES = set(os.environ.get('TALOS_CONTRACT_ROLES_ENV', '').split())
 
-# Author allow-list — markers.trusted_authors config (YAML/JSON list of logins).
-# When absent or empty: fail-open with a warning so existing installs are not blocked.
+# Author trust set (#187): markers.trusted_authors config (YAML/JSON list of
+# logins) unioned with the authenticated user (CURRENT_USER, resolved by
+# _vcs_shared_current_user in the calling adapter) when markers.verify_authors
+# is not explicitly false and that identity resolved. When neither an
+# explicit list nor a resolved identity is available: fail-open, once per
+# invocation, with the pre-#187 warning -- unless verify_authors is
+# explicitly false, which fails open silently (opt-out).
 raw_authors = os.environ.get('TRUSTED_AUTHORS', '').strip()
 if raw_authors:
     try:
@@ -841,7 +853,16 @@ if raw_authors:
 else:
     trusted_authors = []
 
-author_check_active = bool(trusted_authors)
+verify_authors = os.environ.get('VERIFY_AUTHORS', 'true').strip().lower() not in ('false', '0', 'no', 'off')
+current_user = os.environ.get('CURRENT_USER', '').strip()
+
+effective_trusted = list(trusted_authors)
+if verify_authors and current_user and current_user not in effective_trusted:
+    effective_trusted.append(current_user)
+
+author_check_active = verify_authors and bool(effective_trusted)
+fail_open_warned = False
+rejected_authors_seen = []
 
 # Config-parse-failed detection for improved marker-authors-unverified message (#116).
 import pathlib as _pathlib_ra
@@ -882,31 +903,35 @@ for c in reversed(raw_comments):
     if not LOOSE_RE.search(last_line):
         continue  # not a marker line — skip to next comment
 
-    # Author allow-list check (only when configured and non-empty).
+    # Author trust check (#187): only when verify_authors resolved a
+    # non-empty effective trust set (an explicit list and/or the current
+    # user).
     if author_check_active:
-        if author not in trusted_authors:
-            print(
-                f'pipeline-vcs: read-attempt: skipping marker from untrusted author '
-                f'{author!r} (not in markers.trusted_authors)',
-                file=sys.stderr,
-            )
+        if author not in effective_trusted:
+            if author not in rejected_authors_seen:
+                rejected_authors_seen.append(author)
             continue  # skip; keep searching older comments
-    else:
-        # Unconfigured allow-list — fail open but emit a machine-readable marker.
-        print('talos:marker-authors-unverified reader=read-attempt')
-        if _config_parse_failed_ra:
-            print(
-                'pipeline-vcs: read-attempt: [warn] markers.trusted_authors not configured '
-                '-- config file could not be parsed (see pipeline-config warning); '
-                'any commenter\'s marker is accepted',
-                file=sys.stderr,
-            )
-        else:
-            print(
-                'pipeline-vcs: read-attempt: [warn] markers.trusted_authors not configured '
-                '— author check skipped',
-                file=sys.stderr,
-            )
+    elif verify_authors:
+        # No explicit list AND no resolved identity — fail open, once per
+        # invocation, exactly as an unset markers.trusted_authors always has.
+        if not fail_open_warned:
+            print('talos:marker-authors-unverified reader=read-attempt')
+            if _config_parse_failed_ra:
+                print(
+                    'pipeline-vcs: read-attempt: [warn] markers.trusted_authors not configured '
+                    '-- config file could not be parsed (see pipeline-config warning); '
+                    'any commenter\'s marker is accepted',
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    'pipeline-vcs: read-attempt: [warn] markers.trusted_authors not configured '
+                    '— author check skipped',
+                    file=sys.stderr,
+                )
+            fail_open_warned = True
+    # else: markers.verify_authors is explicitly false — silent fail-open,
+    # no warning (#187 opt-out).
 
     # Stage 2: the line IS marker-like; it must parse exactly or it is corrupt.
     # Corrupt markers NEVER fall through to zero — that would grant infinite retries.
@@ -934,6 +959,12 @@ for c in reversed(raw_comments):
         sys.exit(1)
     found = (stage, count_val, total_val, key_val or '')
     break
+
+# One machine-readable line per invocation (#187), never one per marker --
+# a PR/issue with several untrusted-author markers would otherwise spam
+# stderr with a near-duplicate line per marker.
+if rejected_authors_seen:
+    print('talos:marker-authors-rejected authors=' + ','.join(rejected_authors_seen), file=sys.stderr)
 
 if found:
     stage, count_val, total_val, key_val = found
@@ -975,6 +1006,51 @@ _vcs_shared_contract_env() {
   done
   TALOS_CONTRACT_APPROVAL_ENV="${_cev_pairs# }"
   export TALOS_CONTRACT_ROLES_ENV TALOS_CONTRACT_APPROVAL_ENV
+}
+
+# _vcs_shared_current_user <resolver-cmd> [args...]
+#   Resolves and caches, once per process, the authenticated user's login
+#   (#187) -- markers.verify_authors' "infer the current user as trusted"
+#   half. The two adapters keep owning their own fetch mechanics exactly as
+#   they already do for every other read: _github calls this as
+#   `_vcs_shared_current_user gh api user --jq .login`, _github_api as
+#   `_vcs_shared_current_user _ga_current_user_login` (a thin REST wrapper
+#   defined alongside that adapter's other _ga_* helpers). This function
+#   owns only the caching.
+#   stdout: the login, or the empty string when the resolver fails / prints
+#   nothing -- callers treat an empty result as "identity unresolved" and
+#   fail open exactly as an unset markers.trusted_authors already does,
+#   never as fatal.
+#
+#   Caching mirrors pipeline-cfg-cache.sh's cfg(): most call sites run
+#   inside a `$(...)` command-substitution subshell, so a bare shell
+#   variable set *inside* this function on a first call is invisible to a
+#   second call made from a *different* subshell -- only a file on disk
+#   (read/written identically by every subshell) survives across them.
+#   Reuses the per-invocation cfg-cache directory (_CFG_CACHE_DIR, created
+#   once at script start by pipeline-cfg-cache.sh) for that file when
+#   available; the in-memory variable alone still makes repeat calls within
+#   the same subshell free even when it is not.
+_vcs_shared_current_user() {
+  if [ -n "${_VCS_CURRENT_USER_RESOLVED:-}" ]; then
+    printf '%s' "${_VCS_CURRENT_USER_VALUE:-}"
+    return 0
+  fi
+  local _cu_cache_file=""
+  [ -n "${_CFG_CACHE_DIR:-}" ] && _cu_cache_file="$_CFG_CACHE_DIR/current-user"
+  if [ -n "$_cu_cache_file" ] && [ -f "$_cu_cache_file" ]; then
+    _VCS_CURRENT_USER_VALUE="$(cat "$_cu_cache_file")"
+    _VCS_CURRENT_USER_RESOLVED=1
+    printf '%s' "$_VCS_CURRENT_USER_VALUE"
+    return 0
+  fi
+  local _cu_login
+  _cu_login="$("$@" 2>/dev/null)"
+  _cu_login="$(printf '%s' "$_cu_login" | head -1 | tr -d '[:space:]')"
+  _VCS_CURRENT_USER_VALUE="$_cu_login"
+  _VCS_CURRENT_USER_RESOLVED=1
+  [ -n "$_cu_cache_file" ] && printf '%s' "$_cu_login" > "$_cu_cache_file" 2>/dev/null
+  printf '%s' "$_cu_login"
 }
 
 # _vcs_shared_attempt_blocked <verb> <count> <total> <max-count> <max-total> <stage>
@@ -1137,15 +1213,22 @@ _vcs_shared_record_attempt() {
 #           "comments" are read here -- headRefOid/baseRefName stay with the
 #           (still per-adapter, until #177 slice 2) SHA/waiver comparison.
 #   env:    TRUSTED_AUTHORS, TALOS_CFG -- same contract check-approval-sha
-#           has always used. TALOS_CONTRACT_APPROVAL_ENV (#178) --
-#           APPROVAL_LABELS/VALID_ROLES, derived from scripts/pipeline-
-#           contract.sh's TALOS_APPROVAL_LABELS/TALOS_APPROVAL_ROLES.
+#           has always used. VERIFY_AUTHORS, CURRENT_USER (#187) -- effective
+#           trust set is TRUSTED_AUTHORS ∪ {CURRENT_USER} when
+#           VERIFY_AUTHORS is not "false" and CURRENT_USER is non-empty;
+#           VERIFY_AUTHORS defaults to "true" when unset. TALOS_CONTRACT_
+#           APPROVAL_ENV (#178) -- APPROVAL_LABELS/VALID_ROLES, derived from
+#           scripts/pipeline-contract.sh's TALOS_APPROVAL_LABELS/
+#           TALOS_APPROVAL_ROLES.
 #   stdout: JSON {"entries": [{"label", "role", "sha", "reason"}, ...]} in
 #           APPROVAL_LABELS order, restricted to labels present on the PR --
 #           for each entry exactly one of "sha"/"reason" is non-null. When no
 #           approval label is present at all, stdout is instead the plain
 #           diagnostic message check-approval-sha has always printed for that
 #           case.
+#   stderr: one `talos:marker-authors-rejected authors=<comma list>` line
+#           when the trust set is enforced and at least one marker (across
+#           any role) was skipped for having an untrusted author (#187).
 #   exit:   0 with JSON entries when at least one approval label is present;
 #           3 (no error -- a legitimate short-circuit) when no approval label
 #           is present, in which case the caller should relay stdout as-is
@@ -1184,7 +1267,19 @@ if raw_authors:
 else:
     trusted_authors = []
 
-author_check_active = bool(trusted_authors)
+# Author trust set (#187) -- see _vcs_shared_read_attempt's identical block
+# for the full rationale; kept in lock-step here so the two readers cannot
+# drift on this logic again.
+verify_authors = os.environ.get('VERIFY_AUTHORS', 'true').strip().lower() not in ('false', '0', 'no', 'off')
+current_user = os.environ.get('CURRENT_USER', '').strip()
+
+effective_trusted = list(trusted_authors)
+if verify_authors and current_user and current_user not in effective_trusted:
+    effective_trusted.append(current_user)
+
+author_check_active = verify_authors and bool(effective_trusted)
+fail_open_warned = False
+rejected_authors_seen = []
 
 # Config-parse-failed detection for improved marker-authors-unverified message (#116).
 import pathlib as _pathlib_cas
@@ -1269,31 +1364,36 @@ for label, role in present.items():
         if marker_role != role:
             continue  # wrong role for this label
 
-        # Author allow-list check (only when configured and non-empty).
+        # Author trust check (#187): only when verify_authors resolved a
+        # non-empty effective trust set (an explicit list and/or the
+        # current user).
         if author_check_active:
-            if author not in trusted_authors:
-                print(
-                    f'pipeline-vcs: check-approval-sha: skipping marker for {label} '
-                    f'from untrusted author {author!r} (not in markers.trusted_authors)',
-                    file=sys.stderr,
-                )
+            if author not in effective_trusted:
+                if author not in rejected_authors_seen:
+                    rejected_authors_seen.append(author)
                 continue  # skip; keep searching older comments
-        else:
-            # Unconfigured allow-list — fail open but emit a machine-readable marker.
-            print('talos:marker-authors-unverified reader=check-approval-sha')
-            if _config_parse_failed_cas:
-                print(
-                    'pipeline-vcs: check-approval-sha: [warn] markers.trusted_authors not configured '
-                    '-- config file could not be parsed (see pipeline-config warning); '
-                    'any commenter\'s marker is accepted',
-                    file=sys.stderr,
-                )
-            else:
-                print(
-                    'pipeline-vcs: check-approval-sha: [warn] markers.trusted_authors not configured '
-                    '— author check skipped',
-                    file=sys.stderr,
-                )
+        elif verify_authors:
+            # No explicit list AND no resolved identity — fail open, once
+            # per invocation, exactly as an unset markers.trusted_authors
+            # always has.
+            if not fail_open_warned:
+                print('talos:marker-authors-unverified reader=check-approval-sha')
+                if _config_parse_failed_cas:
+                    print(
+                        'pipeline-vcs: check-approval-sha: [warn] markers.trusted_authors not configured '
+                        '-- config file could not be parsed (see pipeline-config warning); '
+                        'any commenter\'s marker is accepted',
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        'pipeline-vcs: check-approval-sha: [warn] markers.trusted_authors not configured '
+                        '— author check skipped',
+                        file=sys.stderr,
+                    )
+                fail_open_warned = True
+        # else: markers.verify_authors is explicitly false — silent
+        # fail-open, no warning (#187 opt-out).
 
         found_sha = m.group(1)
         break
@@ -1320,6 +1420,12 @@ for label, role in present.items():
         found_sha = None
 
     entries.append({'label': label, 'role': role, 'sha': found_sha, 'reason': reason})
+
+# One machine-readable line per invocation (#187), never one per marker --
+# a PR with several untrusted-author markers across roles would otherwise
+# spam stderr with a near-duplicate line per marker.
+if rejected_authors_seen:
+    print('talos:marker-authors-rejected authors=' + ','.join(rejected_authors_seen), file=sys.stderr)
 
 json.dump({'entries': entries}, sys.stdout)
 sys.exit(0)
@@ -2507,9 +2613,12 @@ for r in runs:
         echo "pipeline-vcs: read-attempt: could not fetch issue #$n data" >&2
         exit 1
       fi
-      local trusted_authors
+      local trusted_authors verify_authors current_user
       trusted_authors="$(cfg markers.trusted_authors "")"
-      printf '%s' "$issue_data" | TRUSTED_AUTHORS="$trusted_authors" TALOS_CFG="$_TALOS_CFG" _vcs_shared_read_attempt
+      verify_authors="$(cfg markers.verify_authors true)"
+      current_user=""
+      [ "$verify_authors" = "true" ] && current_user="$(_vcs_shared_current_user gh api user --jq .login)"
+      printf '%s' "$issue_data" | TRUSTED_AUTHORS="$trusted_authors" VERIFY_AUTHORS="$verify_authors" CURRENT_USER="$current_user" TALOS_CFG="$_TALOS_CFG" _vcs_shared_read_attempt
       ;;
 
 
@@ -2616,10 +2725,13 @@ for r in runs:
         echo "pipeline-vcs: check-approval-sha: could not fetch PR #$n data" >&2
         exit 1
       fi
-      local trusted_authors_cas
+      local trusted_authors_cas verify_authors_cas current_user_cas
       trusted_authors_cas="$(cfg markers.trusted_authors "")"
+      verify_authors_cas="$(cfg markers.verify_authors true)"
+      current_user_cas=""
+      [ "$verify_authors_cas" = "true" ] && current_user_cas="$(_vcs_shared_current_user gh api user --jq .login)"
       local marker_out marker_rc marker_json
-      marker_out="$(printf '%s' "$pr_data" | TRUSTED_AUTHORS="$trusted_authors_cas" TALOS_CFG="$_TALOS_CFG" _vcs_shared_check_approval_marker)"
+      marker_out="$(printf '%s' "$pr_data" | TRUSTED_AUTHORS="$trusted_authors_cas" VERIFY_AUTHORS="$verify_authors_cas" CURRENT_USER="$current_user_cas" TALOS_CFG="$_TALOS_CFG" _vcs_shared_check_approval_marker)"
       marker_rc=$?
       if [ "$marker_rc" -eq 1 ]; then
         exit 1
@@ -2891,6 +3003,25 @@ json.dump(prev, sys.stdout)
   # for the one caller (view-issue) that needs a single issue's comments.
   _ga_fetch_all_comments() {
     _ga_fetch_all_pages "$_API/issues/$1/comments?per_page=100"
+  }
+
+  # _ga_current_user_login -- REST resolver for _vcs_shared_current_user
+  # (#187): GET /user and print the .login field, or nothing on any
+  # failure. Uses _ga_req_once (not _ga_req) deliberately -- this lookup is
+  # a best-effort trust signal, never a hard dependency, so a rate limit or
+  # missing token scope must degrade to "identity unresolved" (fail open,
+  # same as no markers.trusted_authors configured) rather than aborting the
+  # whole verb the way _ga_req's exit-1-on-failure would.
+  _ga_current_user_login() {
+    local _cul_body
+    _cul_body="$(_ga_req_once GET "${_API%%/repos/*}/user" 2>/dev/null)" || return 0
+    printf '%s' "$_cul_body" | python3 -c "
+import json, sys
+try:
+    print(json.load(sys.stdin).get('login', ''))
+except Exception:
+    pass
+" 2>/dev/null
   }
 
   # ── Verb dispatch ───────────────────────────────────────────────────────────
@@ -3638,9 +3769,12 @@ if not isinstance(raw, list):
 comments = [dict(c, author={'login': (c.get('user') or {}).get('login', '')}) for c in raw]
 json.dump({'comments': comments}, sys.stdout)
 ")"
-      local _trusted_authors
+      local _trusted_authors _verify_authors _current_user
       _trusted_authors="$(cfg markers.trusted_authors "")"
-      printf '%s' "$_normalized" | TRUSTED_AUTHORS="$_trusted_authors" TALOS_CFG="$_TALOS_CFG" _vcs_shared_read_attempt
+      _verify_authors="$(cfg markers.verify_authors true)"
+      _current_user=""
+      [ "$_verify_authors" = "true" ] && _current_user="$(_vcs_shared_current_user _ga_current_user_login)"
+      printf '%s' "$_normalized" | TRUSTED_AUTHORS="$_trusted_authors" VERIFY_AUTHORS="$_verify_authors" CURRENT_USER="$_current_user" TALOS_CFG="$_TALOS_CFG" _vcs_shared_read_attempt
       ;;
 
     check-attempt)
@@ -3755,10 +3889,13 @@ out = {
 }
 json.dump(out, sys.stdout)
 ")"
-      local _trusted_authors_cas
+      local _trusted_authors_cas _verify_authors_cas _current_user_cas
       _trusted_authors_cas="$(cfg markers.trusted_authors "")"
+      _verify_authors_cas="$(cfg markers.verify_authors true)"
+      _current_user_cas=""
+      [ "$_verify_authors_cas" = "true" ] && _current_user_cas="$(_vcs_shared_current_user _ga_current_user_login)"
       local _marker_out _marker_rc _marker_json
-      _marker_out="$(printf '%s' "$_pr_data" | TRUSTED_AUTHORS="$_trusted_authors_cas" TALOS_CFG="$_TALOS_CFG" _vcs_shared_check_approval_marker)"
+      _marker_out="$(printf '%s' "$_pr_data" | TRUSTED_AUTHORS="$_trusted_authors_cas" VERIFY_AUTHORS="$_verify_authors_cas" CURRENT_USER="$_current_user_cas" TALOS_CFG="$_TALOS_CFG" _vcs_shared_check_approval_marker)"
       _marker_rc=$?
       if [ "$_marker_rc" -eq 1 ]; then
         exit 1

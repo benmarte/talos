@@ -578,6 +578,62 @@ Set `verify.qa_mode: local` explicitly if you want QA to always re-run the
 suite itself regardless of `merge.required_checks` — for example, if your CI
 doesn't run the same suite Talos does.
 
+### Approval-marker author verification (`markers.verify_authors`)
+
+**What it does.** `check-approval-sha` and `read-attempt` trust
+`talos:approval`/`talos:attempt` markers only from an *effective trust set*.
+As of #187, `markers.verify_authors` defaults to `true`, and that set is the
+identity Talos itself is authenticated as — inferred automatically, with no
+config needed — unioned with `markers.trusted_authors` (if you've also set
+that). This closes the gap the pre-#187 opt-in allow-list left open by
+default: previously, an unconfigured `markers.trusted_authors` meant *any*
+commenter's marker was accepted, so a single misbehaving or compromised
+stage could post all four approval markers itself and merge its own PR.
+
+**How the identity is inferred.** No new credentials or scopes are
+required — the same ones every other verb already uses:
+
+- `github` provider: `gh api user --jq .login` (the identity `gh auth
+  login` is signed in as).
+- `github-api` provider: `GET /user` against the configured token
+  (`GITHUB_TOKEN`/`GH_TOKEN`, or `vcs.token_env`).
+
+The lookup happens at most once per `pipeline-vcs.sh` invocation, however
+many markers that invocation reads.
+
+**Opting out.** Set `markers.verify_authors: false` to restore the
+pre-#187 behaviour exactly: author checking is skipped entirely, silently,
+for every marker, regardless of `markers.trusted_authors`.
+
+```yaml
+markers:
+  verify_authors: false   # pre-#187 behaviour: accept any commenter's marker
+```
+
+**When the identity can't be resolved.** If verification is on (the
+default) but the lookup fails — an insufficiently-scoped token, a
+transient API error — and `markers.trusted_authors` is also unset, Talos
+falls open exactly as it always has: the marker is accepted, and a
+`talos:marker-authors-unverified reader=<verb>` line is printed once so
+you can see it happened. Configuring `markers.trusted_authors` (even
+without a resolvable identity) is enough to enforce the check anyway.
+
+**CI-bot caveat.** The inferred identity is whichever account's token
+Talos runs under — it is *not* "any account whose login ends in
+`[bot]`". If a separate CI job (not Talos's own dispatch) also posts
+approval or attempt markers under a different bot identity — for example
+`github-actions[bot]` — you must list that login explicitly:
+
+```yaml
+markers:
+  trusted_authors: ["github-actions[bot]"]   # unioned with the inferred identity
+```
+
+Every marker skipped for an untrusted author is reported once per
+invocation on stderr as `talos:marker-authors-rejected
+authors=<comma-separated logins>` — never one line per marker, even when
+several markers are rejected in the same run.
+
 ### Filtering which issues enter the queue (`issues.label_filter`)
 
 > **Note on config format:** all examples below are YAML (`talos.pipeline.yml`).

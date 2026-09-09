@@ -204,6 +204,14 @@ paths = [p for p in os.environ['FILES'].splitlines() if p]
 print(json.dumps([{'filename': p} for p in paths]))
 "
     fi ;;
+  "api user --jq .login"*)
+    # Used by _vcs_shared_current_user (#187) to infer the authenticated
+    # login as trusted for approval-marker/attempt-marker author checks.
+    # Override STUB_CURRENT_USER; empty (default) simulates an unresolved
+    # identity -- same as any other unmatched command falling to the
+    # catch-all -- so every pre-#187 test keeps its unconfigured/fail-open
+    # behaviour without needing to set this.
+    printf '%s\n' "${STUB_CURRENT_USER:-}" ;;
   "api --paginate repos/"*"/issues/"*"/comments"*)
     # Simulates `gh api --paginate` for the REST issue/PR comments endpoint
     # (#172 read-comments, used by read-attempt and post-approval's

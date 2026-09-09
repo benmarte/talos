@@ -20,6 +20,13 @@
 #     call). When non-empty the first line is popped and written as a Link
 #     header in the -D response block; an empty line means no Link header for
 #     that call. Enables pagination simulation without modifying the stub.
+#   - GET .../user (#187, _ga_current_user_login) is intercepted BEFORE the
+#     CURL_QUEUE pop below, on the URL alone -- never consumes a queue slot --
+#     so every pre-#187 test's CURL_QUEUE sequencing for its own endpoint(s)
+#     is unaffected whether or not it ever anticipated this call. Override
+#     STUB_CURRENT_USER (bare login, default "" -- unresolved identity, same
+#     as no override) or STUB_CURRENT_USER_JSON (raw response body, for
+#     malformed-response tests).
 
 payload=""
 url=""
@@ -51,7 +58,9 @@ for arg in "$@"; do url="$arg"; done
 # entries are response bodies with the default 200 status.
 http_status=200
 resp=""
-if [ -n "${CURL_QUEUE:-}" ] && [ -s "$CURL_QUEUE" ]; then
+if [[ "$url" == *"/user" && "$url" != *"/users/"* ]]; then
+  resp="${STUB_CURRENT_USER_JSON:-$(printf '{"login":"%s"}' "${STUB_CURRENT_USER:-}")}"
+elif [ -n "${CURL_QUEUE:-}" ] && [ -s "$CURL_QUEUE" ]; then
   raw="$(head -1 "$CURL_QUEUE")"
   tail -n +2 "$CURL_QUEUE" > "$CURL_QUEUE.tmp" && mv "$CURL_QUEUE.tmp" "$CURL_QUEUE"
   case "$raw" in

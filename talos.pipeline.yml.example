@@ -351,3 +351,19 @@ limits:
                              # capped at 60s. Must be a non-negative integer; non-numeric
                              # value warns and defaults to 5. Set
                              # TALOS_RETRY_SLEEP_SCALE=0 in tests for instant runs.
+
+# ── Approval-marker author trust (#187) ────────────────────────────────────────
+# check-approval-sha / read-attempt only trust talos:approval / talos:attempt
+# markers from an effective trust set. As of #187 that defaults ON:
+# markers.verify_authors: true infers the identity Talos itself is
+# authenticated as (gh api user --jq .login for the github provider; GET
+# /user for github-api) and unions it with markers.trusted_authors below --
+# no config required to close the "one stage posts all its own approval
+# markers" gap. A bot login is never trusted implicitly for just looking like
+# a bot -- it must be that inferred identity, or be listed explicitly below.
+# markers:
+#   verify_authors: false       # opt out entirely: accept any commenter's
+#                                # marker, silently, exactly as before #187
+#   trusted_authors:             # ADDITIONAL logins to trust, unioned with
+#     - "github-actions[bot]"    # (not replacing) the inferred identity --
+#     - "talos-bot"               # e.g. a separate CI job's bot account
