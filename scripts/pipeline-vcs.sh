@@ -3879,12 +3879,32 @@ json.dump({'comments': comments}, sys.stdout)
         echo "pipeline-vcs: check-approval-sha: could not fetch PR #$_n data" >&2; exit 1
       fi
       # Assemble gh-compatible JSON: headRefOid, baseRefName, labels, comments
+      #
+      # _pr_raw and _comments_raw are concatenated on stdin and parsed with
+      # json.JSONDecoder().raw_decode instead of split('\n', 1): the live
+      # REST API returns pretty-printed, multi-line JSON (lines[0] would be
+      # just '{'), while tests/stubs/curl returns compact single-line JSON --
+      # raw_decode is format-agnostic and handles both (#244).
       local _pr_data
       _pr_data="$(printf '%s\n%s' "$_pr_raw" "$_comments_raw" | python3 -c "
 import json, sys
-lines = sys.stdin.read().split('\n', 1)
-pr   = json.loads(lines[0]) if lines else {}
-craw = json.loads(lines[1]) if len(lines) > 1 else []
+
+data = sys.stdin.read()
+decoder = json.JSONDecoder()
+
+def decode_next(s, i):
+    while i < len(s) and s[i].isspace():
+        i += 1
+    return decoder.raw_decode(s, i)
+
+pr = {}
+craw = []
+if data.strip():
+    pr, idx = decode_next(data, 0)
+    try:
+        craw, _ = decode_next(data, idx)
+    except (json.JSONDecodeError, ValueError):
+        craw = []
 if not isinstance(craw, list):
     craw = []
 comments = [dict(c, author={'login': (c.get('user') or {}).get('login', '')}) for c in craw]
