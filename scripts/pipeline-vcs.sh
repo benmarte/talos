@@ -651,6 +651,37 @@ print(json.dumps(items))
 "
 }
 
+# ── REST comment normaliser (shared by read-comments, github and github-api,
+# #177 slice 5) ───────────────────────────────────────────────────────────
+# stdin: a raw REST comments array (GitHub's "user" field per comment).
+# Prints {"comments": [...]}, each comment's author normalised to
+# {"login": ...} (accepting either 'user' -- the REST shape -- or 'author'
+# -- gh's own GraphQL shape -- so this also tolerates being handed an
+# already-normalised list) and createdAt copied from created_at/createdAt.
+# Both adapters hand-duplicated this exact python block in their own
+# read-comments arm before this slice; extracted here so it is defined once.
+_vcs_shared_normalize_comments() {
+  python3 -c "
+import json, sys
+
+def _login(c):
+    # REST payloads carry 'user'; some fixtures/older shapes carry 'author'
+    # directly (gh's own --json comments GraphQL shape) -- accept either.
+    u = c.get('user')
+    if isinstance(u, dict) and u.get('login'):
+        return u.get('login')
+    a = c.get('author')
+    return a.get('login', '') if isinstance(a, dict) else ''
+
+raw = json.load(sys.stdin)
+if not isinstance(raw, list):
+    raw = []
+comments = [dict(c, author={'login': _login(c)},
+                  createdAt=c.get('created_at', c.get('createdAt', ''))) for c in raw]
+json.dump({'comments': comments}, sys.stdout)
+"
+}
+
 # ── Compact spec-only comment filter (shared by view-issue --spec, github and
 # github-api, #201) ───────────────────────────────────────────────────────────
 # $1: issue metadata JSON ({"title", "body", "labels"}).
@@ -2412,25 +2443,7 @@ for r in runs:
       rc_repo="$REPO"
       [ -z "$rc_repo" ] && rc_repo='{owner}/{repo}'
       rc_raw="$(gh api --paginate "repos/${rc_repo}/issues/${n}/comments?per_page=100")" || exit 1
-      printf '%s' "$rc_raw" | _gh_paginate_merge | python3 -c "
-import json, sys
-
-def _login(c):
-    # REST payloads carry 'user'; some fixtures/older shapes carry 'author'
-    # directly (gh's own --json comments GraphQL shape) -- accept either.
-    u = c.get('user')
-    if isinstance(u, dict) and u.get('login'):
-        return u.get('login')
-    a = c.get('author')
-    return a.get('login', '') if isinstance(a, dict) else ''
-
-items = json.load(sys.stdin)
-if not isinstance(items, list):
-    items = []
-comments = [dict(c, author={'login': _login(c)},
-                  createdAt=c.get('created_at', c.get('createdAt', ''))) for c in items]
-json.dump({'comments': comments}, sys.stdout)
-"
+      printf '%s' "$rc_raw" | _gh_paginate_merge | _vcs_shared_normalize_comments
       ;;
 
     read-attempt)
@@ -3547,25 +3560,7 @@ print('true' if v is True else 'false' if v is False else 'null')
         echo "pipeline-vcs: read-comments: could not fetch issue #$_n data" >&2
         exit 1
       fi
-      printf '%s' "$_rc_raw" | python3 -c "
-import json, sys
-
-def _login(c):
-    # REST payloads carry 'user'; some fixtures/older shapes carry 'author'
-    # directly (gh's own --json comments GraphQL shape) -- accept either.
-    u = c.get('user')
-    if isinstance(u, dict) and u.get('login'):
-        return u.get('login')
-    a = c.get('author')
-    return a.get('login', '') if isinstance(a, dict) else ''
-
-raw = json.load(sys.stdin)
-if not isinstance(raw, list):
-    raw = []
-comments = [dict(c, author={'login': _login(c)},
-                  createdAt=c.get('created_at', c.get('createdAt', ''))) for c in raw]
-json.dump({'comments': comments}, sys.stdout)
-"
+      printf '%s' "$_rc_raw" | _vcs_shared_normalize_comments
       ;;
 
     read-attempt)
