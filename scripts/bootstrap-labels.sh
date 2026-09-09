@@ -2,29 +2,24 @@
 # Create the pipeline:* label state machine in the current repo (idempotent).
 # Usage: bash scripts/bootstrap-labels.sh [owner/repo]
 set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Label list is the single source of truth in pipeline-contract.sh (#178) --
+# guarded like every other pipeline-*.sh's cfg-cache source, since a
+# partial install/sync may not yet ship it.
+if [ -f "$SCRIPT_DIR/pipeline-contract.sh" ]; then
+  . "$SCRIPT_DIR/pipeline-contract.sh"
+else
+  echo "bootstrap-labels: pipeline-contract.sh not found next to this script -- aborting" >&2
+  exit 1
+fi
+
 REPO="${1:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}"
 echo "Bootstrapping pipeline labels in $REPO"
 
-# name|color|description  (pipe-delimited: label names contain ':')
 labels=(
-  "pipeline:ready|0e8a16|Queued for the pipeline — validator picks it up"
-  "pipeline:confirmed|1d76db|Validated as real & in-scope — PM writes the spec"
-  "spec:ready|0e8a16|Human-applied: issue body is already a usable spec — force-skips the PM stage"
-  "pipeline:dev|5319e7|Spec ready — developer implements + opens PR"
-  "pipeline:review|fbca04|PR open — QA then reviewer/security/docs"
-  "pipeline:approved|0e8a16|All stages passed — orchestrator merges when CI is green"
-  "pipeline:blocked|b60205|Halted — a human needs to act (see comments)"
-  "skip-qa|ededed|Human-applied: bypass QA/review/security gates (docs-only or hotfix); CI + forbidden-files still enforced"
-  "p0|b60205|Priority: critical — dispatched first"
-  "p1|d93f0b|Priority: high"
-  "p2|fbca04|Priority: normal"
-  "qa:pass|c2e0c6|QA verified acceptance criteria"
-  "review:approved|c2e0c6|Code review approved"
-  "security:approved|c2e0c6|Security review clear"
-  "docs:done|c2e0c6|Documentation updated"
-  "epic|e4e669|Epic — planner decomposes into sub-issues"
-  "pipeline:epic-decomposed|c5def5|Epic split into sub-issues — never routed to developer"
-  "pipeline:epic-children-done|c5def5|All sub-issues closed but the epic's own acceptance boxes are still unticked — human review needed"
+  "${TALOS_STAGE_LABELS[@]}"
+  "${TALOS_APPROVAL_LABELS[@]}"
+  "${TALOS_MISC_LABELS[@]}"
 )
 
 for entry in "${labels[@]}"; do

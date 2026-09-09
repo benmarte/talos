@@ -266,6 +266,15 @@ else
   echo "pipeline: config cache helper missing, falling back to per-call parsing" >&2
 fi
 
+# ── Contract (#178): roles / labels / markers single source of truth ────────
+# Makes TALOS_ROLES/TALOS_APPROVAL_LABELS/TALOS_APPROVAL_ROLES available
+# script-wide. If pipeline-contract.sh is missing (partial install/sync),
+# _vcs_shared_contract_env() (below, in the shared-helper block -- so test
+# harnesses that `eval` only that byte range still work) is the single
+# place that falls back to the pre-#178 literals instead of leaving these
+# undefined; nothing here needs its own copy of that fallback.
+[ -f "$SCRIPT_DIR/pipeline-contract.sh" ] && . "$SCRIPT_DIR/pipeline-contract.sh"
+
 # ── Resolve config path for Python blocks (#116) ─────────────────────────────
 # Mirrors the lookup order in pipeline-config.sh; passed as TALOS_CFG env var
 # to Python blocks that need to detect config-parse failures.
@@ -787,7 +796,8 @@ print('\n'.join(lines))
 #           "body":...}, ...]} -- the shape the `read-comments` verb (and
 #           _github_api's inline REST normalisation) already produce.
 #   env:    TRUSTED_AUTHORS, TALOS_CFG -- same contract read-attempt has
-#           always used.
+#           always used. TALOS_CONTRACT_ROLES_ENV (#178) -- KNOWN_STAGES,
+#           derived from scripts/pipeline-contract.sh's TALOS_ROLES.
 #   stdout: "stage=<s> count=<k> total=<t>[ key=<tok>]" (or "stage= count=0
 #           total=0" when no marker exists), preceded by any
 #           `talos:marker-authors-unverified` passthrough lines.
@@ -795,6 +805,7 @@ print('\n'.join(lines))
 #           marker is present but corrupt/unrecognised (fail-closed --
 #           corrupt markers never silently fall through to zero attempts).
 _vcs_shared_read_attempt() {
+  _vcs_shared_contract_env
   python3 -c "
 import json, os, re, sys
 
@@ -811,10 +822,10 @@ MARKER_RE = re.compile(
     r'(?:\s+key=([A-Za-z0-9._-]+))?\s*-->$',
     re.MULTILINE
 )
-KNOWN_STAGES = {
-    'developer', 'qa', 'reviewer', 'security', 'docs',
-    'validator', 'pm', 'orchestrator', 'planner',
-}
+# Single source of truth: scripts/pipeline-contract.sh's TALOS_ROLES,
+# passed in via TALOS_CONTRACT_ROLES_ENV (#178) -- never hand-restate the
+# role list here.
+KNOWN_STAGES = set(os.environ.get('TALOS_CONTRACT_ROLES_ENV', '').split())
 
 # Author allow-list — markers.trusted_authors config (YAML/JSON list of logins).
 # When absent or empty: fail-open with a warning so existing installs are not blocked.
@@ -935,6 +946,35 @@ else:
     print('stage= count=0 total=0')
 sys.exit(0)
 "
+}
+
+# _vcs_shared_contract_env (#178)
+#   Sources scripts/pipeline-contract.sh (via $SCRIPT_DIR, which every real
+#   invocation of this script sets at the top, and which
+#   tests/test-vcs-shared-markers.sh sets by hand before `eval`-ing this
+#   function range in isolation) and derives the env vars the embedded
+#   python3 blocks below read: TALOS_CONTRACT_ROLES_ENV (KNOWN_STAGES) and
+#   TALOS_CONTRACT_APPROVAL_ENV (APPROVAL_LABELS/VALID_ROLES, "label=role"
+#   pairs). Called at the top of every shared helper that needs them --
+#   defined here, in the shared-helper block, rather than only at
+#   top-of-script, so it still works when only this function range is
+#   loaded. Side-effect-free to call more than once per process.
+_vcs_shared_contract_env() {
+  if [ -f "${SCRIPT_DIR:-}/pipeline-contract.sh" ]; then
+    . "$SCRIPT_DIR/pipeline-contract.sh"
+  elif [ "${TALOS_ROLES+set}" != "set" ]; then
+    TALOS_ROLES=(developer qa reviewer security docs validator pm orchestrator planner)
+    TALOS_APPROVAL_ROLES=(qa reviewer security docs)
+    TALOS_APPROVAL_LABELS=("qa:pass|" "review:approved|" "security:approved|" "docs:done|")
+  fi
+  TALOS_CONTRACT_ROLES_ENV="${TALOS_ROLES[*]}"
+  local _cev_i _cev_label _cev_pairs=""
+  for _cev_i in "${!TALOS_APPROVAL_ROLES[@]}"; do
+    _cev_label="${TALOS_APPROVAL_LABELS[$_cev_i]%%|*}"
+    _cev_pairs="$_cev_pairs ${_cev_label}=${TALOS_APPROVAL_ROLES[$_cev_i]}"
+  done
+  TALOS_CONTRACT_APPROVAL_ENV="${_cev_pairs# }"
+  export TALOS_CONTRACT_ROLES_ENV TALOS_CONTRACT_APPROVAL_ENV
 }
 
 # _vcs_shared_attempt_blocked <verb> <count> <total> <max-count> <max-total> <stage>
@@ -1097,7 +1137,9 @@ _vcs_shared_record_attempt() {
 #           "comments" are read here -- headRefOid/baseRefName stay with the
 #           (still per-adapter, until #177 slice 2) SHA/waiver comparison.
 #   env:    TRUSTED_AUTHORS, TALOS_CFG -- same contract check-approval-sha
-#           has always used.
+#           has always used. TALOS_CONTRACT_APPROVAL_ENV (#178) --
+#           APPROVAL_LABELS/VALID_ROLES, derived from scripts/pipeline-
+#           contract.sh's TALOS_APPROVAL_LABELS/TALOS_APPROVAL_ROLES.
 #   stdout: JSON {"entries": [{"label", "role", "sha", "reason"}, ...]} in
 #           APPROVAL_LABELS order, restricted to labels present on the PR --
 #           for each entry exactly one of "sha"/"reason" is non-null. When no
@@ -1109,21 +1151,23 @@ _vcs_shared_record_attempt() {
 #           is present, in which case the caller should relay stdout as-is
 #           and exit 0; 1 when stdin is unparseable.
 _vcs_shared_check_approval_marker() {
+  _vcs_shared_contract_env
   python3 -c "
 import json, os, re, sys
 
-APPROVAL_LABELS = {
-    'qa:pass':           'qa',
-    'review:approved':   'reviewer',
-    'security:approved': 'security',
-    'docs:done':         'docs',
-}
+# Single source of truth: scripts/pipeline-contract.sh's TALOS_APPROVAL_LABELS
+# / TALOS_APPROVAL_ROLES, passed in via TALOS_CONTRACT_APPROVAL_ENV (#178,
+# "label=role" pairs) -- never hand-restate this mapping here.
+APPROVAL_LABELS = {}
+for _pair in os.environ.get('TALOS_CONTRACT_APPROVAL_ENV', '').split():
+    _label, _role = _pair.split('=', 1)
+    APPROVAL_LABELS[_label] = _role
 
-# Fixed valid role set -- derived from APPROVAL_LABELS values.
-# Any marker whose role is not in this set is ignored (issue #128).
-# This must be a fixed literal, never interpolated from config or API text
+# Fixed valid role set -- derived from APPROVAL_LABELS values, which in turn
+# come only from the contract file above, never from config or API text
 # (PR #68 precedent: injected text could forge an approval marker).
-VALID_ROLES = {'qa', 'reviewer', 'security', 'docs'}
+# Any marker whose role is not in this set is ignored (issue #128).
+VALID_ROLES = set(APPROVAL_LABELS.values())
 
 # Strict extractor: marker must be a syntactically valid talos:approval HTML comment.
 MARKER_RE = re.compile(r'<!--\s*talos:approval\s+sha=([0-9a-f]+)\s+role=(\S+?)\s*-->')

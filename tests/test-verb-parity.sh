@@ -15,6 +15,7 @@ set -u
 # No sandbox needed — we only read the script; no git ops or network calls.
 
 VCS="$TALOS_ROOT/scripts/pipeline-vcs.sh"
+CONTRACT="$TALOS_ROOT/scripts/pipeline-contract.sh"
 
 # ── Extract verbs from a named function in pipeline-vcs.sh ───────────────────
 # Usage: extract_verbs <function-name>
@@ -164,16 +165,22 @@ fi
 # new shared symbol to pipeline-vcs.sh only ever needs ONE new line here --
 # no new call site, no new assert_single_definition invocation.
 #
-# Format: one "label\tneedle" pair per (non-comment, non-blank) line. needle
-# is matched with `grep -F` (a literal substring, no regex metacharacters),
-# so a needle containing a literal tab would break the split -- none do.
-read -r -d '' SINGLE_DEFINITION_REGISTRY <<'REGISTRY' || true
+# Format: one "label\tneedle[\tfile]" trio per (non-comment, non-blank)
+# line. needle is matched with `grep -F` (a literal substring, no regex
+# metacharacters), so a needle containing a literal tab would break the
+# split -- none do. file defaults to $VCS when the third field is absent.
+read -r -d '' SINGLE_DEFINITION_REGISTRY <<REGISTRY || true
 # --- slice 1: attempt/approval marker regexes and role/label constants ---
 single-definition: talos:attempt marker regex	talos:attempt\s+stage=
-single-definition: KNOWN_STAGES	KNOWN_STAGES = {
 single-definition: talos:approval marker regex (strict extractor)	talos:approval\s+sha=
-single-definition: APPROVAL_LABELS	APPROVAL_LABELS = {
-single-definition: VALID_ROLES	VALID_ROLES = {
+# KNOWN_STAGES/APPROVAL_LABELS/VALID_ROLES (#128) moved to
+# scripts/pipeline-contract.sh (#178) -- pipeline-vcs.sh derives them from
+# TALOS_ROLES/TALOS_APPROVAL_LABELS/TALOS_APPROVAL_ROLES via
+# _vcs_shared_contract_env() instead of hand-restating the sets, so the
+# single-definition assertion moves to the contract arrays it derives from.
+single-definition: KNOWN_STAGES (TALOS_ROLES, contract for #178)	TALOS_ROLES=(	$CONTRACT
+single-definition: APPROVAL_LABELS (TALOS_APPROVAL_LABELS, contract for #178)	TALOS_APPROVAL_LABELS=(	$CONTRACT
+single-definition: VALID_ROLES (TALOS_APPROVAL_ROLES, contract for #178)	TALOS_APPROVAL_ROLES=(	$CONTRACT
 # --- slice 2: approval-SHA waiver rules (em-dash/hyphen drift, #177) ---
 single-definition: HARDCODED_NONWAIVABLE_PREFIXES	HARDCODED_NONWAIVABLE_PREFIXES = (
 single-definition: HARDCODED_NONWAIVABLE_EXACT	HARDCODED_NONWAIVABLE_EXACT    = (
@@ -197,17 +204,17 @@ single-definition: idempotency-key format validation	must match [A-Za-z0-9._-]+,
 single-definition: REST comment normaliser (_login helper)	def _login(c):
 REGISTRY
 
-assert_single_definition() {  # $1=needle (fixed string) $2=label
-  local count
-  count="$(grep -Fc -- "$1" "$VCS")"
+assert_single_definition() {  # $1=needle (fixed string) $2=label $3=file (default $VCS)
+  local count file="${3:-$VCS}"
+  count="$(grep -Fc -- "$1" "$file")"
   assert_eq "1" "$count" "$2"
 }
 
-while IFS="$(printf '\t')" read -r _label _needle; do
+while IFS="$(printf '\t')" read -r _label _needle _file; do
   case "$_label" in
     ''|'#'*) continue ;;
   esac
-  assert_single_definition "$_needle" "$_label"
+  assert_single_definition "$_needle" "$_label" "$_file"
 done <<REGISTRY_LINES
 $SINGLE_DEFINITION_REGISTRY
 REGISTRY_LINES
