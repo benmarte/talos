@@ -49,6 +49,25 @@ assert_contains "$(cat "$TALOS_ROOT/talos.pipeline.yml.example")" "quiet" \
 assert_contains "$(cat "$TALOS_ROOT/talos.pipeline.json.example")" "quiet" \
   "talos.pipeline.json.example mentions --quiet"
 
+# ── Verify identity is mechanical, not instruction-based (#186) ────────────
+# Every verify instruction in the developer/QA prompts must route through
+# pipeline-verify.sh, which exports TALOS_ISSUE_NUMBER/TALOS_WORKTREE_PATH
+# itself, instead of asking the agent to `export` them by hand -- a stage
+# that ignored a hand-export instruction silently ran verify without the
+# identity vars.
+assert_contains "$dev_blocks" "pipeline-verify.sh" \
+  "skills/pipeline/SKILL.md developer prompt block(s) run verify through pipeline-verify.sh"
+assert_contains "$qa_block" "pipeline-verify.sh" \
+  "skills/pipeline/SKILL.md QA prompt block runs verify through pipeline-verify.sh"
+assert_contains "$(cat "$TALOS_ROOT/agents/developer.md")" "pipeline-verify.sh" \
+  "agents/developer.md runs verify through pipeline-verify.sh"
+assert_contains "$(cat "$TALOS_ROOT/agents/qa.md")" "pipeline-verify.sh" \
+  "agents/qa.md runs verify through pipeline-verify.sh"
+assert_not_contains "$dev_blocks" "export TALOS_ISSUE_NUMBER=" \
+  "skills/pipeline/SKILL.md developer prompt block(s) no longer instruct a hand-written export"
+assert_not_contains "$qa_block" "export TALOS_ISSUE_NUMBER=" \
+  "skills/pipeline/SKILL.md QA prompt block no longer instructs a hand-written export"
+
 # ── Foreground rule adjacent to every verify instruction (#205) ────────────
 # Rule 17 already forbade backgrounding verify, but as prose ~400 lines away
 # from the actual verify instruction developers missed it three separate

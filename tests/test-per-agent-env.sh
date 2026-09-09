@@ -123,6 +123,16 @@ assert_eq_ctx "0" "$rc13" "TALOS_ISSUE=0 exits 0 (zero is a valid digit)" "$(cat
 
 rm talos.pipeline.json
 
+# ── 7b. Native path (#186): pipeline-verify.sh makes the identity mechanical
+# instead of instruction-based export. Cheap smoke check alongside the
+# adapter-path assertions above -- the full wrapper suite is
+# tests/test-pipeline-verify.sh.
+VERIFY="$HOME/.talos/scripts/pipeline-verify.sh"
+assert_file_exists "$VERIFY" "pipeline-verify.sh is installed alongside pipeline-agent.sh"
+out_native="$(bash "$VERIFY" --issue 186 --worktree "$SANDBOX" -- bash -c 'echo "ISSUE=$TALOS_ISSUE_NUMBER WT=$TALOS_WORKTREE_PATH"' 2>/dev/null)"
+assert_contains "$out_native" "ISSUE=186" "pipeline-verify.sh exports TALOS_ISSUE_NUMBER on the native path without a hand-written export"
+assert_contains "$out_native" "WT=$SANDBOX" "pipeline-verify.sh exports TALOS_WORKTREE_PATH on the native path without a hand-written export"
+
 # ── 8. Ambient TALOS_HOME cannot leak into a sandbox (#208 hardening) ─────────
 # Run in a subshell (established pattern -- see test-sandbox-cwd.sh) so the
 # nested make_sandbox gets its own EXIT trap/cleanup and TALOS_HOME does not

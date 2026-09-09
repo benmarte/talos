@@ -104,7 +104,7 @@ if [ "$GLOBAL" = "true" ]; then
                 pipeline-status.sh pipeline-notify.sh pipeline-vcs.sh \
                 pipeline-agent.sh pipeline-worktree.sh bootstrap-labels.sh \
                 pipeline-paths.sh pipeline-hooks.sh pipeline-lock.sh \
-                pipeline-events.sh; do
+                pipeline-events.sh pipeline-verify.sh; do
     install_file "$SRC/scripts/$script" "$TALOS_HOME_DIR/scripts/$script"
     chmod +x "$TALOS_HOME_DIR/scripts/$script"
   done

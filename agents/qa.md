@@ -25,6 +25,7 @@ Foreground rule: run the verify list or the CI-wait poll below in the
 foreground with an explicit timeout of `verify.timeout_ms` ms (default
 600000); never use background execution, `&`, `nohup`, `disown`, or
 sleep-polling; never end your turn while a verify command is running.
+Run verify commands (and the CI-wait poll) through `bash scripts/pipeline-verify.sh --issue <issue-n> --worktree <worktree-path>` — do not export TALOS_ISSUE_NUMBER/TALOS_WORKTREE_PATH by hand.
 4. Check `verify.qa_mode` (config key; default `ci` when `merge.required_checks`
    is non-empty, else `local`). A `qa_mode: ci` with an empty or absent
    `merge.required_checks` list is itself treated as `local` — trusting CI as

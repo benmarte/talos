@@ -705,10 +705,10 @@ Targeted iteration: <VERIFY_TARGETED>
 Verify timeout: <VERIFY_TIMEOUT_MS> ms
 Prior stage summary: <PRIOR_STAGE_SUMMARY>
 
-Before running any verify: command, export these as shell variables so verify
-scripts can assert they are running in the correct environment:
-  export TALOS_ISSUE_NUMBER=<N>
-  export TALOS_WORKTREE_PATH=<ABSOLUTE_PATH_OF_THIS_WORKTREE>
+Run verify: commands through `bash scripts/pipeline-verify.sh` — it exports
+the identity mechanically; do not export TALOS_ISSUE_NUMBER /
+TALOS_WORKTREE_PATH by hand:
+  bash scripts/pipeline-verify.sh --issue <N> --worktree <ABSOLUTE_PATH_OF_THIS_WORKTREE> -- <cmd...>
 
 Verify commands (run once, immediately before your final commit — see step 5):
 <VERIFY_COMMANDS — one per line>
@@ -786,7 +786,9 @@ Targeted iteration: <VERIFY_TARGETED>
 Verify timeout: <VERIFY_TIMEOUT_MS> ms
 Prior stage summary: <PRIOR_STAGE_SUMMARY>
 
-Note: TALOS_WORKTREE_PATH is not meaningful in branch isolation mode — skip or ignore it.
+Run verify: commands through `bash scripts/pipeline-verify.sh --issue <N> -- <cmd...>` —
+it exports the identity mechanically; do not export TALOS_ISSUE_NUMBER by hand.
+TALOS_WORKTREE_PATH is not meaningful in branch isolation mode — omit --worktree.
 
 Verify commands (run once, immediately before your final commit — see step 5):
 <VERIFY_COMMANDS — one per line>
@@ -901,10 +903,10 @@ CI wait budget: <VERIFY_CI_WAIT_S> seconds
 Verify timeout: <VERIFY_TIMEOUT_MS> ms
 Prior stage summary: <PRIOR_STAGE_SUMMARY>
 
-Before running any verify: command, export these as shell variables so verify
-scripts can assert they are running in the correct environment:
-  export TALOS_ISSUE_NUMBER=<N>
-  export TALOS_WORKTREE_PATH=<ABSOLUTE_PATH_OF_THIS_WORKTREE>
+Run verify: commands through `bash scripts/pipeline-verify.sh` — it exports
+the identity mechanically; do not export TALOS_ISSUE_NUMBER /
+TALOS_WORKTREE_PATH by hand:
+  bash scripts/pipeline-verify.sh --issue <N> --worktree <ABSOLUTE_PATH_OF_THIS_WORKTREE> -- <cmd...>
 
 1. Read spec: `bash scripts/pipeline-vcs.sh view-issue <N> --spec`. Read the
    full thread (`view-issue <N>` without `--spec`, or `read-comments <N>`)
@@ -1343,4 +1345,4 @@ After processing all issues, print a summary table:
 15. Only the developer stage may move HEAD in the orchestrator's checkout. All other stages (reviewer, security, docs, QA, validator, PM) must never run `git checkout`, `git switch`, or `git pull` in their working directory — read diffs via `diff-pr` only. This holds regardless of `execution.isolation` mode.
 16. `comment-issue`, `comment-pr`, `create-issue`, and `create-pr` exit non-zero when their POST fails. A stage must not assert a filing landed without a non-empty URL returned by the command. For `create-pr` failures, set `pipeline:blocked` immediately — no PR means all downstream stages are impossible.
 17. Run all long-running work in the **foreground** — never append `&`, use `nohup`, or call `disown`. Do not poll for child exit with `until ! pgrep …; do sleep N; done`. The reason: when a stranded background child finally exits, the harness interprets its exit as a new completion event; those duplicates are indistinguishable from real completions on arrival (observed: 210 stranded shells at peak, one agent emitting 5 spurious "task finished" signals 90 minutes after finishing, two agents stopped by hand). Talos cannot suppress the harness-side notification — it can only ensure no background children remain.
-18. Under `isolation: worktree`, the developer and QA stages must export `TALOS_ISSUE_NUMBER` and `TALOS_WORKTREE_PATH` before running any `verify:` command. Both values are present in the task prompt. Under `isolation: branch`, `TALOS_WORKTREE_PATH` is not meaningful — skip or warn, do not fabricate a path. This is instruction-based and not airtight on the native path — a stage that ignores it runs verify without the exports. The exports make a degraded run visible (verify scripts can self-check) without claiming to make it impossible. The adapter path (`pipeline-agent.sh`) exports them as real shell variables automatically.
+18. Under `isolation: worktree`, the developer and QA stages run every `verify:` command through `bash scripts/pipeline-verify.sh --issue <N> --worktree <path> -- <cmd>` instead of exporting `TALOS_ISSUE_NUMBER`/`TALOS_WORKTREE_PATH` by hand — both values are present in the task prompt and the wrapper exports them itself before running the command, mechanically, on the native path (#186). Under `isolation: branch`, `TALOS_WORKTREE_PATH` is not meaningful — omit `--worktree`. The adapter path (`pipeline-agent.sh`) exports them as real shell variables automatically before invoking the runner CLI; running `pipeline-verify.sh` there is a same-value no-op, never a conflict.

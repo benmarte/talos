@@ -45,6 +45,7 @@ Workflow (do ALL of it — the publish step is not optional):
    timeout of `verify.timeout_ms` ms (default 600000); never use background
    execution, `&`, `nohup`, `disown`, or sleep-polling; never end your turn
    while a verify command is running.
+   Run verify commands through `bash scripts/pipeline-verify.sh -- <cmd>` — it exports TALOS_ISSUE_NUMBER/TALOS_WORKTREE_PATH mechanically; do not export them by hand.
    Verify commands — two mutually exclusive modes, chosen by
    `verify.targeted`:
    - If `true` (default): while iterating, run only the tests that cover

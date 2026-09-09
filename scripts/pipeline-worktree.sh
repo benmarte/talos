@@ -47,11 +47,37 @@
 #                           lane homes and the current checkout) exceeds
 #                           execution.worktree_warn_threshold (default 10),
 #                           prints a final warning line.
+#   create <n> <branch>     Create a worktree for issue <n> on a new local
+#                           <branch> off origin/<default-branch> (best-effort
+#                           default: origin/HEAD, else local main/master), at
+#                           .claude/worktrees/<branch, "/" -> "-">. Prints
+#                           the absolute worktree
+#                           path on stdout. After creating it, writes
+#                           <worktree>/.talos/env with two plain `KEY=value`
+#                           lines (TALOS_ISSUE_NUMBER, TALOS_WORKTREE_PATH;
+#                           raw values, no quoting) so `pipeline-verify.sh`
+#                           can resolve stage identity with zero arguments
+#                           from inside that worktree (#186). This file is
+#                           PARSED line-by-line by the reader, never
+#                           `source`d, so no shell quoting is needed even
+#                           when the worktree path contains spaces. This is
+#                           a PER-WORKTREE file at that worktree's own root
+#                           -- not the shared main-repo .talos/ that
+#                           pipeline-events.sh's events.jsonl lives under
+#                           (that one resolves via `git rev-parse
+#                           --git-common-dir`, one path shared by every
+#                           worktree of this repo). Same ".talos/" name,
+#                           deliberately different resolution; both are
+#                           gitignored. `create` acquires the same
+#                           repo-wide lock as `remove`/`sweep` (#180) since
+#                           `git worktree add` races their mutation of the
+#                           shared git-common-dir metadata.
 #
-# All verbs act on the repository containing the current working directory and
-# run `git worktree prune` afterward — including when nothing matched for
-# removal. Safe to run from the orchestrator's main checkout (worktrees are
-# listed repo-wide).
+
+# `remove` and `sweep` act on the repository containing the current working
+# directory and run `git worktree prune` afterward — including when nothing
+# matched for removal. `create` does not prune (it only adds). Safe to run
+# from the orchestrator's main checkout (worktrees are listed repo-wide).
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -392,6 +418,42 @@ _wt_sweep_body() {
   exit 0
 }
 
+# _wt_create_body <issue-number> <branch> -- create a worktree for issue
+# <n> off the repo's default branch, on a new local <branch>, and write its
+# per-worktree .talos/env (#186). Run under the worktree lock (dispatched via
+# with_lock below) since `git worktree add` mutates the same shared
+# git-common-dir metadata that `remove`/`sweep` race on (#180).
+_wt_create_body() {
+  local n="$1" branch="$2" base slug wt_path
+  base="$(_default_branch_ref)" || {
+    echo "pipeline-worktree: create: could not resolve a default branch (no origin/HEAD, no local main/master)" >&2
+    exit 1
+  }
+  slug="$(printf '%s' "$branch" | tr '/' '-')"
+  wt_path="$PWD/.claude/worktrees/$slug"
+  if [ -e "$wt_path" ]; then
+    echo "pipeline-worktree: create: $wt_path already exists" >&2
+    exit 1
+  fi
+  git fetch origin "${base#origin/}" -q 2>/dev/null || true
+  if ! git worktree add -q -b "$branch" "$wt_path" "$base"; then
+    echo "pipeline-worktree: create: git worktree add failed for branch $branch off $base" >&2
+    exit 1
+  fi
+  mkdir -p "$wt_path/.talos"
+  # Plain KEY=value lines, raw value, no shell quoting. This file is PARSED
+  # by pipeline-verify.sh's reader, never `source`d, so it is safe even when
+  # $wt_path contains spaces or shell metacharacters -- see the format note
+  # in that script's header comment. Keep both scripts' notion of this
+  # format in sync if it ever changes.
+  {
+    printf 'TALOS_ISSUE_NUMBER=%s\n' "$n"
+    printf 'TALOS_WORKTREE_PATH=%s\n' "$wt_path"
+  } > "$wt_path/.talos/env"
+  printf '%s\n' "$wt_path"
+  exit 0
+}
+
 case "$verb" in
   list)
     issue_listing="$(_issue_worktrees)"
@@ -417,8 +479,16 @@ case "$verb" in
     with_lock "$_WT_LOCK_RESOURCE" 10 -- _wt_sweep_body "$@"
     ;;
 
+  create)
+    if [ -z "${1:-}" ] || [ -z "${2:-}" ]; then
+      echo "usage: pipeline-worktree.sh create <issue-number> <branch>" >&2
+      exit 2
+    fi
+    with_lock "$_WT_LOCK_RESOURCE" 10 -- _wt_create_body "$1" "$2"
+    ;;
+
   *)
-    echo "usage: pipeline-worktree.sh <remove <n> | sweep <keep-id>... | list>" >&2
+    echo "usage: pipeline-worktree.sh <remove <n> | sweep <keep-id>... | list | create <n> <branch>>" >&2
     exit 2
     ;;
 esac

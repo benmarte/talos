@@ -100,6 +100,7 @@ TALOS_MARKERS=(
   talos:comment-state-unverified
   talos:marker-authors-unverified
   talos:board-unverified
+  talos:verify
 )
 
 # ── talos_contract_json ──────────────────────────────────────────────────────
