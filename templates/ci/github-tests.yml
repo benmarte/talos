@@ -15,10 +15,16 @@
 #     docs/**, tasks/**) -- nothing under test changed, so there is no
 #     coverage lost by not running.
 #
-#   concurrency + cancel-in-progress
-#     A new push on the same ref cancels any run still in flight for that
-#     ref. Without this, every superseded push on a PR branch still burns a
-#     full run to completion for code nobody will look at again.
+#   concurrency + cancel-in-progress (pull_request only)
+#     A new push on the same PR cancels any run still in flight for that PR
+#     -- without this, every superseded push on a PR branch still burns a
+#     full run to completion for code nobody will look at again. Push runs
+#     to the base branch are grouped by commit SHA instead and are NEVER
+#     cancelled: two merges landing close together each still run their own
+#     full OS matrix to completion, so a fast second merge can't cancel the
+#     first merge's still-running macOS job and silently lose that
+#     coverage (queue rather than cancel, same reasoning as
+#     .github/workflows/canary.yml).
 #
 #   pull_request: ubuntu-latest only
 #     Full cross-OS runs are the expensive half of CI cost, and on most repos
@@ -37,6 +43,12 @@
 #     Iterate freely on a draft; CI runs once the PR is marked ready for
 #     review, yielding one run per PR on the final SHA instead of one per
 #     push.
+#
+#   permissions: contents: read
+#     Least privilege -- this job only checks out the repo and runs tests,
+#     so it never needs a GITHUB_TOKEN scoped beyond read access; without an
+#     explicit permissions block it silently inherits the repo's (possibly
+#     broader) default token scope instead.
 #
 # CAVEAT -- merge.required_checks (talos.pipeline.json / .yml):
 #   Under this template, "test (macos-latest)" only ever runs on push to the
@@ -62,8 +74,11 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
 
 concurrency:
-  group: tests-${{ github.ref }}
-  cancel-in-progress: true
+  group: tests-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
 
 jobs:
   test:

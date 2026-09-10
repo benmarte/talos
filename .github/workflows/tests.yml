@@ -15,8 +15,11 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
 
 concurrency:
-  group: tests-${{ github.ref }}
-  cancel-in-progress: true
+  group: tests-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
 
 jobs:
   test:

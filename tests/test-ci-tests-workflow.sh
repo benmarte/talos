@@ -13,6 +13,11 @@
 #      names .github/workflows/tests.yml actually runs on pull_request --
 #      naming a push-only check (e.g. "test (macos-latest)") hangs QA's
 #      CI-wait loop on every PR forever (found live on this PR: #261).
+#   5. Both files declare permissions: { contents: read } (least privilege --
+#      security review finding on #261) and cancel-in-progress is NOT
+#      unconditionally true -- it must be scoped to pull_request only, or a
+#      second push-to-main merge cancels the first merge's still-running
+#      macOS job and silently loses that coverage (reviewer finding on #261).
 set -u
 . "$(dirname "$0")/helpers.sh"
 
@@ -39,15 +44,23 @@ pr = triggers.get('pull_request', {}) or {}
 jobs = doc.get('jobs', {}) or {}
 test_job = jobs.get('test', {}) or {}
 concurrency = doc.get('concurrency', {}) or {}
+cancel = concurrency.get('cancel-in-progress')
+permissions = doc.get('permissions', {}) or {}
 ok = (
     'paths-ignore' in push
     and '**.md' in push['paths-ignore']
-    and concurrency.get('cancel-in-progress') is True
+    # cancel-in-progress must NOT be the unconditional boolean True -- an
+    # in-flight push-to-main run (e.g. the macOS job) must survive a second
+    # merge landing on top of it. It must instead be an expression scoped
+    # to pull_request.
+    and cancel is not True
+    and 'pull_request' in str(cancel)
     and 'ready_for_review' in pr.get('types', [])
     and 'draft' in str(test_job.get('if', ''))
     and 'pull_request' in str(test_job.get('strategy', ''))
     and 'macos-latest' in str(test_job.get('strategy', ''))
     and 'ubuntu-latest' in str(test_job.get('strategy', ''))
+    and permissions == {'contents': 'read'}
 )
 print('OK' if ok else 'STRUCTURE_MISMATCH')
 " 2>&1)"
@@ -57,11 +70,16 @@ print('OK' if ok else 'STRUCTURE_MISMATCH')
     local content
     content="$(cat "$file")"
     assert_contains "$content" "paths-ignore:" "$label: push has paths-ignore"
-    assert_contains "$content" "cancel-in-progress: true" "$label: concurrency cancels in-progress runs"
+    assert_not_contains "$content" "cancel-in-progress: true" \
+      "$label: cancel-in-progress is not the unconditional boolean true"
+    assert_contains "$content" "cancel-in-progress: \${{ github.event_name == 'pull_request' }}" \
+      "$label: cancel-in-progress is scoped to pull_request"
     assert_contains "$content" "ready_for_review" "$label: pull_request types include ready_for_review"
     assert_contains "$content" "draft != true" "$label: draft PRs are skipped"
     assert_contains "$content" "ubuntu-latest" "$label: matrix mentions ubuntu-latest"
     assert_contains "$content" "macos-latest" "$label: matrix mentions macos-latest"
+    assert_contains "$content" "permissions:" "$label: has a permissions block"
+    assert_contains "$content" "contents: read" "$label: permissions is contents: read"
   fi
 }
 
@@ -79,6 +97,10 @@ assert_contains "$template_content" "wait forever" \
 assert_contains "$template_content" "jobs:" "template: has a jobs section"
 assert_contains "$template_content" "  test:" "template: job id is \"test\" (required-check name stability)"
 assert_contains "$template_content" "tests/run-tests.sh" "template: runs tests/run-tests.sh"
+assert_contains "$template_content" "permissions:" "template: declares a permissions block"
+assert_contains "$template_content" "contents: read" "template: permissions is contents: read (least privilege)"
+assert_not_contains "$template_content" "cancel-in-progress: true" \
+  "template: cancel-in-progress is not unconditionally true"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. Dogfooding: this repo's own tests.yml matches the template's structure.
@@ -91,6 +113,11 @@ assert_contains "$repo_content" "  test:" ".github/workflows/tests.yml: job id i
 assert_contains "$repo_content" "tests/run-tests.sh" ".github/workflows/tests.yml: runs tests/run-tests.sh"
 assert_contains "$repo_content" "github-tests.yml" \
   ".github/workflows/tests.yml: points back at the template it dogfoods"
+assert_contains "$repo_content" "permissions:" ".github/workflows/tests.yml: declares a permissions block"
+assert_contains "$repo_content" "contents: read" \
+  ".github/workflows/tests.yml: permissions is contents: read (least privilege)"
+assert_not_contains "$repo_content" "cancel-in-progress: true" \
+  ".github/workflows/tests.yml: cancel-in-progress is not unconditionally true"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 3. Setup skill: offers the template only when absent, never edits an
