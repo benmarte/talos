@@ -768,10 +768,15 @@ CI wait budget: <VERIFY_CI_WAIT_S> seconds
 Verify timeout: <VERIFY_TIMEOUT_MS> ms
 Prior stage summary: <PRIOR_STAGE_SUMMARY>
 
-Run verify: commands (and the CI-wait poll) through `bash
+CI is the authoritative full run (`pr-checks-required <PR>` must already be
+green). Run ONLY targeted tests: `bash tests/run-tests.sh --for <each path
+from pr-files>` (or `--changed origin/<BASE_BRANCH>`), through `bash
 scripts/pipeline-verify.sh` — it exports the identity mechanically; do not
 export TALOS_ISSUE_NUMBER / TALOS_WORKTREE_PATH by hand:
-  bash scripts/pipeline-verify.sh --issue <N> --worktree <ABSOLUTE_PATH_OF_THIS_WORKTREE> -- <cmd...>
+  bash scripts/pipeline-verify.sh --issue <N> --worktree <ABSOLUTE_PATH_OF_THIS_WORKTREE> -- bash tests/run-tests.sh --for <path> [--for <path> ...]
+Never run the full suite. If no targeted test maps to a changed path, say so
+in the verdict instead of running everything. The CI-wait poll also goes
+through `pipeline-verify.sh` the same way.
 
 Your role profile carries the full procedure.
 
@@ -865,6 +870,8 @@ Comment templates dir: <COMMENTS_TMPL_DIR>
 Comments enabled: <COMMENTS_ENABLED>
 Prior stage summary: <PRIOR_STAGE_SUMMARY>
 
+Do not run tests; QA and CI already own that. Review the diff only.
+
 Your role profile carries the full procedure.
 
 Final (2-3 lines): APPROVED/CHANGES outcome + key points.
@@ -879,6 +886,8 @@ Comment header: <HEADER>
 Comment templates dir: <COMMENTS_TMPL_DIR>
 Comments enabled: <COMMENTS_ENABLED>
 Prior stage summary: <PRIOR_STAGE_SUMMARY>
+
+Do not run tests; QA and CI already own that. Review the diff only.
 
 Your role profile carries the full procedure.
 
@@ -993,7 +1002,8 @@ exits non-zero:
 3. Selective re-dispatch, driven by the stale roles from `--stale-list`, in
    dependency order (QA before reviewer/security/docs, mirroring Step 3e's
    docs-before-reviewer/security ordering):
-   - `qa` stale → re-dispatch QA (Step 3d).
+   - `qa` stale → re-dispatch QA (Step 3d) — targeted tests only, per that
+     step's rule; never the full suite.
    - `reviewer` stale → re-dispatch reviewer (Step 3e phase 2).
    - `security` stale → re-dispatch security (Step 3e phase 2).
    - `adversarial` stale → re-dispatch adversarial (Step 3e phase 3; only
@@ -1134,3 +1144,4 @@ After processing all issues, print a summary table:
 16. `comment-issue`, `comment-pr`, `create-issue`, and `create-pr` exit non-zero when their POST fails. A stage must not assert a filing landed without a non-empty URL returned by the command. For `create-pr` failures, set `pipeline:blocked` immediately — no PR means all downstream stages are impossible.
 17. Run all long-running work in the **foreground** — never append `&`, use `nohup`, or call `disown`. Do not poll for child exit with `until ! pgrep …; do sleep N; done`. The reason: when a stranded background child finally exits, the harness interprets its exit as a new completion event; those duplicates are indistinguishable from real completions on arrival (observed: 210 stranded shells at peak, one agent emitting 5 spurious "task finished" signals 90 minutes after finishing, two agents stopped by hand). Talos cannot suppress the harness-side notification — it can only ensure no background children remain.
 18. Under `isolation: worktree`, the developer and QA stages run every `verify:` command through `bash scripts/pipeline-verify.sh --issue <N> --worktree <path> -- <cmd>` instead of exporting `TALOS_ISSUE_NUMBER`/`TALOS_WORKTREE_PATH` by hand — both values are present in the task prompt and the wrapper exports them itself before running the command, mechanically, on the native path (#186). Under `isolation: branch`, `TALOS_WORKTREE_PATH` is not meaningful — omit `--worktree`. The adapter path (`pipeline-agent.sh`) exports them as real shell variables automatically before invoking the runner CLI; running `pipeline-verify.sh` there is a same-value no-op, never a conflict.
+19. The orchestrator never commits or pushes to the base branch while any issue is in flight; lessons/memory/summary commits are batched after Step 5.
