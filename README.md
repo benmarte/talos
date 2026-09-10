@@ -410,7 +410,7 @@ bash scripts/pipeline-events.sh tail [--issue N]
 
 #### Cost accounting
 
-`post_stage` also accepts `--tokens N` and `--tool-uses N` (validated non-negative integers; an invalid or omitted value is `null` in the payload, with one stderr note for an invalid value), stored alongside `duration_s`. Summarize with `bash scripts/pipeline-events.sh cost [--issue N] [--json]`: a per-issue, per-role table (`issue`, `role`, `events`, `tokens`, `tool_uses`, `duration_s`, `n/a`, `restamp`) with a `TOTAL` row — `n/a` counts events with a null `tokens` field (e.g. adapter-path runs, which record duration only) so an untracked group is visible rather than reading as a real zero; `restamp` counts events with verdict `RESTAMP_PASS`/`RESTAMP_FAIL` (#258) — a cheap delta re-review of a PR the same role already approved — separately from that group's full-stage events/tokens.
+`post_stage` also accepts `--tokens N` and `--tool-uses N` (validated non-negative integers; an invalid or omitted value is `null` in the payload, with one stderr note for an invalid value), stored alongside `duration_s`. Summarize with `bash scripts/pipeline-events.sh cost [--issue N] [--json]`: a per-issue, per-role table (`issue`, `role`, `events`, `tokens`, `tool_uses`, `duration_s`, `unrecorded`, `restamp`) with a `TOTAL` row — `unrecorded` counts events with a null `tokens` field (e.g. adapter-path runs, which record duration only) so an untracked group is visible rather than reading as a real zero; `restamp` counts events with verdict `RESTAMP_PASS`/`RESTAMP_FAIL` (#258) — a cheap delta re-review of a PR the same role already approved — separately from that group's full-stage events/tokens.
 
 ### Board status options: required columns and `talos:board-unverified`
 
