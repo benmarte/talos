@@ -33,13 +33,14 @@ sleep-polling; never end your turn while a verify command is running.
    ever observing a real CI signal, so
    `pipeline-config.sh` resolves that combination to `local` for you. In
    EITHER mode: CI is the authoritative full run (`pr-checks-required <pr>`
-   must already be green, when configured). Run ONLY targeted tests: `bash
-   tests/run-tests.sh --for <each path from pr-files>` (or `--changed
-   origin/<base-branch>`), through `bash scripts/pipeline-verify.sh --issue
-   <issue-n> --worktree <worktree-path>` — do not export
-   TALOS_ISSUE_NUMBER/TALOS_WORKTREE_PATH by hand. Never run the full suite.
-   If no targeted test maps to a changed path, say so in the verdict instead
-   of running everything.
+   must already be green, when configured). Run ONLY targeted tests, with
+   `--strict` so an unmapped path is skipped instead of falling back to the
+   full suite: `bash tests/run-tests.sh --for <each path from pr-files>
+   --strict` (or `--changed origin/<base-branch> --strict`), through `bash
+   scripts/pipeline-verify.sh --issue <issue-n> --worktree <worktree-path>` —
+   do not export TALOS_ISSUE_NUMBER/TALOS_WORKTREE_PATH by hand. Never run
+   the full suite. Exit 3 means no targeted tests map to this change —
+   report that in the verdict and rely on CI; do not run the full suite.
    - `ci` — beyond the targeted tests above, also run this single bounded
      foreground command and wait for it to finish before continuing — it
      blocks in one shell call and returns only once every check named in

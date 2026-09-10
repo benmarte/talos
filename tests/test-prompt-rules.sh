@@ -33,16 +33,27 @@ reviewer_block="$(extract_window "$SKILL_MD" "You are the Reviewer. QA passed")"
 security_block="$(extract_window "$SKILL_MD" "You are the Security Analyst. QA passed")"
 
 # Flatten line wraps to spaces: prose wraps at ~80 cols, so a phrase can
-# straddle a newline and miss a literal substring match otherwise.
-qa_block_flat="$(printf '%s' "$qa_block" | tr '\n' ' ')"
-reviewer_block_flat="$(printf '%s' "$reviewer_block" | tr '\n' ' ')"
-security_block_flat="$(printf '%s' "$security_block" | tr '\n' ' ')"
+# straddle a newline and miss a literal substring match otherwise. Squeeze
+# repeated spaces too -- a wrapped continuation line's leading indent would
+# otherwise leave "word1    word2" (newline-as-space plus the indent itself)
+# instead of the single space a literal match needs.
+qa_block_flat="$(printf '%s' "$qa_block" | tr '\n' ' ' | tr -s ' ')"
+reviewer_block_flat="$(printf '%s' "$reviewer_block" | tr '\n' ' ' | tr -s ' ')"
+security_block_flat="$(printf '%s' "$security_block" | tr '\n' ' ' | tr -s ' ')"
 
 # ── QA: SKILL.md Step 3d prompt must state the targeted-only rule (#257) ───
 assert_contains "$qa_block_flat" "--for" \
   "SKILL.md QA prompt block mentions --for (targeted tests)"
 assert_contains "$qa_block_flat" "Never run the full suite" \
   "SKILL.md QA prompt block forbids the full suite"
+
+# A plain --for/--changed still falls back to the full suite on an unmapped
+# path (e.g. CHANGELOG.md) -- --strict is required so QA never hits that
+# fallback (#263 review follow-up).
+assert_contains "$qa_block_flat" "--strict" \
+  "SKILL.md QA prompt block uses --strict"
+assert_contains "$qa_block_flat" "Exit 3" \
+  "SKILL.md QA prompt block explains exit 3 (no targeted tests map)"
 
 # A regression back to a bare "run-tests.sh" instruction (no --for/--changed
 # scoping) is exactly the bug #257 fixes -- fail if that pattern reappears.
@@ -53,14 +64,18 @@ else
   pass "SKILL.md QA prompt block never instructs a bare run-tests.sh (no --for/--changed)"
 fi
 
-# ── QA: agents/qa.md mirrors the same rule (#257) ───────────────────────────
-# Flatten line wraps to spaces first: prose in this file wraps at ~80 cols,
-# so a phrase can straddle a newline and miss a literal substring match.
-qa_md_flat="$(tr '\n' ' ' < "$QA_MD")"
+# ── QA: agents/qa.md mirrors the same rule (#257, #263) ─────────────────────
+# Flatten line wraps to spaces first (and squeeze repeated spaces from
+# wrapped continuation lines' leading indent -- see the comment above).
+qa_md_flat="$(tr '\n' ' ' < "$QA_MD" | tr -s ' ')"
 assert_contains "$qa_md_flat" "--for" \
   "agents/qa.md mentions --for (targeted tests)"
 assert_contains "$qa_md_flat" "Never run the full suite" \
   "agents/qa.md forbids the full suite"
+assert_contains "$qa_md_flat" "--strict" \
+  "agents/qa.md uses --strict"
+assert_contains "$qa_md_flat" "Exit 3" \
+  "agents/qa.md explains exit 3 (no targeted tests map)"
 
 # ── Reviewer/security: SKILL.md Step 3e prompts say not to run tests (#257) ─
 assert_contains "$reviewer_block_flat" "Do not run tests" \

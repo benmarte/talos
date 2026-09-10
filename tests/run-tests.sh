@@ -53,6 +53,19 @@
 #                       `git diff --name-only <ref>...HEAD` plus uncommitted
 #                       and untracked changes. <ref> defaults to origin/main;
 #                       an unresolvable ref falls back to the full suite.
+#   --strict           modifies --for/--changed: a path that would otherwise
+#                       fall back to the full suite (no convention mapping,
+#                       or a scripts/pipeline-<name>.sh with zero matches) is
+#                       instead skipped -- printed to stderr as
+#                       `run-tests.sh: --for: no test mapping for '<p>'
+#                       (skipped)` -- and the full suite never runs. Paths
+#                       that DO map still run as usual. If every path is
+#                       skipped (or --for/--changed produced none to begin
+#                       with), the resulting selection is empty: print
+#                       `run-tests.sh: no targeted tests selected` and exit 3
+#                       -- a distinct code, never a silent pass (#220) and
+#                       never the full suite. No effect without --for or
+#                       --changed.
 #
 # A test file that cannot run concurrently with the others (shared fixtures,
 # fixed ports) can opt out of the parallel pool with a full-line marker
@@ -98,6 +111,7 @@ REPEAT=1
 FOR_PATHS=()
 CHANGED_MODE=0
 CHANGED_BASE_REF=""
+STRICT=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --base-ref)
@@ -123,6 +137,10 @@ while [ $# -gt 0 ]; do
     --for)
       FOR_PATHS+=("$2")
       shift 2
+      ;;
+    --strict)
+      STRICT=1
+      shift
       ;;
     --changed)
       CHANGED_MODE=1
@@ -364,11 +382,22 @@ _add_referencing() {
 }
 
 # _map_changed_path PATH -- the convention table from the usage comment.
+# _fail_open LABEL -- shared by every branch below that would otherwise force
+# the full suite: under --strict, skip the path (print a "(skipped)" note,
+# select nothing, never touch FULL_SUITE) instead of falling back.
+_fail_open() {  # $1=message (no trailing punctuation)
+  if [ "$STRICT" -eq 1 ]; then
+    echo "run-tests.sh: --for: $1 (skipped)" >&2
+  else
+    echo "run-tests.sh: --for: $1; running the full suite" >&2
+    FULL_SUITE=1
+  fi
+}
 _map_changed_path() {
   local p="$1" base name before
   case "$p" in
     tests/stubs/*|tests/helpers.sh|tests/run-tests.sh|talos.pipeline.*|.github/*)
-      FULL_SUITE=1
+      _fail_open "no test mapping for '$p'"
       ;;
     tests/test-*.sh)
       _add_selected "$(basename "$p")"
@@ -384,10 +413,9 @@ _map_changed_path() {
       # no tests/test-<name>*.sh exists and no test file names the script):
       # an empty mapping must never pass through as an empty selection, so
       # fail open to the full suite -- same fail-safe as an unmapped path
-      # below.
+      # below (or, under --strict, skip instead -- see _fail_open).
       if [ "${#SELECTED_SET[@]}" -eq "$before" ]; then
-        echo "run-tests.sh: --for: no tests map to '$p'; running the full suite" >&2
-        FULL_SUITE=1
+        _fail_open "no tests map to '$p'"
       fi
       ;;
     agents/*.md|skills/*|templates/*)
@@ -399,8 +427,7 @@ _map_changed_path() {
       esac
       ;;
     *)
-      echo "run-tests.sh: --for: no test mapping for '$p'; falling back to full suite" >&2
-      FULL_SUITE=1
+      _fail_open "no test mapping for '$p'"
       ;;
   esac
 }
@@ -420,6 +447,18 @@ if [ "$TARGETED_ACTIVE" -eq 1 ]; then
   else
     echo "SELECTED: ${SELECTED_SET[*]}" >&2
   fi
+fi
+
+# --strict never falls back to the full suite: if every path was skipped (or
+# --for/--changed produced none to begin with), the selection is empty by
+# design, not a bug -- a distinct exit code (3) so a caller (QA) can tell
+# "nothing targeted maps to this change" apart from both a pass and the
+# generic "selection came up empty" failure below (exit 1, which stays a bug
+# signal for the non-strict, non-full-suite case).
+if [ "$STRICT" -eq 1 ] && [ "$TARGETED_ACTIVE" -eq 1 ] && [ "$FULL_SUITE" -eq 0 ] \
+   && [ "${#SELECTED_SET[@]}" -eq 0 ]; then
+  echo "run-tests.sh: no targeted tests selected" >&2
+  exit 3
 fi
 
 # ── Build the file list, then split into parallel/serial groups ──────────────

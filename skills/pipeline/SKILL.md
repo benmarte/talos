@@ -769,14 +769,15 @@ Verify timeout: <VERIFY_TIMEOUT_MS> ms
 Prior stage summary: <PRIOR_STAGE_SUMMARY>
 
 CI is the authoritative full run (`pr-checks-required <PR>` must already be
-green). Run ONLY targeted tests: `bash tests/run-tests.sh --for <each path
-from pr-files>` (or `--changed origin/<BASE_BRANCH>`), through `bash
-scripts/pipeline-verify.sh` — it exports the identity mechanically; do not
-export TALOS_ISSUE_NUMBER / TALOS_WORKTREE_PATH by hand:
-  bash scripts/pipeline-verify.sh --issue <N> --worktree <ABSOLUTE_PATH_OF_THIS_WORKTREE> -- bash tests/run-tests.sh --for <path> [--for <path> ...]
-Never run the full suite. If no targeted test maps to a changed path, say so
-in the verdict instead of running everything. The CI-wait poll also goes
-through `pipeline-verify.sh` the same way.
+green). Run ONLY targeted tests, with `--strict` so an unmapped path is
+skipped instead of falling back: `bash tests/run-tests.sh --for <each path
+from pr-files> --strict` (or `--changed origin/<BASE_BRANCH> --strict`),
+through `bash scripts/pipeline-verify.sh` — it exports the identity
+mechanically; do not export TALOS_ISSUE_NUMBER / TALOS_WORKTREE_PATH by hand:
+  bash scripts/pipeline-verify.sh --issue <N> --worktree <ABSOLUTE_PATH_OF_THIS_WORKTREE> -- bash tests/run-tests.sh --for <path> [--for <path> ...] --strict
+Never run the full suite. Exit 3 means no targeted tests map to this change
+— report that in the verdict and rely on CI, do not run the full suite. The
+CI-wait poll also goes through `pipeline-verify.sh` the same way.
 
 Your role profile carries the full procedure.
 

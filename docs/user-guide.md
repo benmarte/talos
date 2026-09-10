@@ -534,10 +534,17 @@ for the same suite run more than it needs to:
 - **QA never runs the full `verify:` list, in either mode (#257).** CI is the
   authoritative full run — the developer's own required-once-per-PR run
   (above) plus, under `qa_mode: ci`, the CI check itself. QA's only local
-  test execution is targeted: `tests/run-tests.sh --for <each path from
-  pr-files>` (or `--changed origin/<base-branch>`), through
-  `pipeline-verify.sh`. If no targeted test maps to a changed path, QA says
-  so in its verdict instead of falling back to a full run. This is stated
+  test execution is targeted, and always passes `--strict`: `tests/run-tests.sh
+  --for <each path from pr-files> --strict` (or `--changed
+  origin/<base-branch> --strict`), through `pipeline-verify.sh`. `--strict`
+  (#263) closes a gap plain `--for`/`--changed` left open: without it, a path
+  with no convention mapping (e.g. `CHANGELOG.md`, most of `docs/**`) silently
+  falls back to running the full suite — exactly the outcome QA must never
+  produce. Under `--strict`, an unmapped path is skipped (`no test mapping for
+  '<path>' (skipped)` on stderr) instead of triggering that fallback; if the
+  resulting selection is empty, the run exits 3 with `no targeted tests
+  selected` rather than running anything — QA reports that in its verdict
+  and relies on CI instead of running the full suite. This is stated
   explicitly in both `skills/pipeline/SKILL.md`'s Step 3d prompt and
   `agents/qa.md`, closing a gap where the orchestrator's stage prompt asked
   for verify commands generically and every QA dispatch ran the full suite
