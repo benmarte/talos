@@ -116,6 +116,26 @@
 #                                             before QA's CI wait, since GitHub
 #                                             schedules no `pull_request` run for a
 #                                             CONFLICTING PR.
+#   conflict-files <n>                        Print the paths that conflict between
+#                                             PR <n>'s head and origin/<base_branch>,
+#                                             one per line (#256). Resolved with a
+#                                             throwaway `git merge --no-commit` in a
+#                                             detached temp worktree outside the
+#                                             caller's own checkout -- `git status`/
+#                                             `assert-sync` on the caller's checkout
+#                                             are unaffected, and the temp worktree is
+#                                             removed on every exit path. Exit 0 with
+#                                             output when conflicting, exit 0 with no
+#                                             output when clean, exit 2 when it cannot
+#                                             be determined (fetch/worktree failure).
+#                                             GitHub only (github/github-api parity),
+#                                             backed by one shared implementation
+#                                             (same pattern as has-spec/post-approval).
+#                                             Used by the Step 3c mergeability gate to
+#                                             decide whether a CONFLICTING PR qualifies
+#                                             for pipeline-mergebase.sh's mechanical
+#                                             union-merge instead of a developer
+#                                             merge-base dispatch.
 #   check-approval-sha <n> [--stale-list]     Exit 1 if any approval label was earned
 #                                             against a non-current head SHA (stale
 #                                             approvals); respects
@@ -2077,6 +2097,95 @@ _vcs_shared_pr_mergeable() {
   done
   echo UNKNOWN
   return 2
+}
+
+# _vcs_shared_conflict_files <pr-number> <base-branch>
+#   (#256) Provider-agnostic conflict detection for the Step 3c mergeability
+#   gate: is a CONFLICTING PR's only conflict something mechanical (e.g.
+#   CHANGELOG.md) that pipeline-mergebase.sh can resolve without a developer
+#   dispatch? <pr-number>'s head is fetched via GitHub's own
+#   `refs/pull/<n>/head` ref -- a plain git ref exposed for every PR
+#   regardless of gh-CLI vs REST auth, so this needs no adapter-specific API
+#   call; both `_github` and `_github_api` call this directly with just the
+#   PR number and their resolved base branch.
+#
+#   The actual merge attempt runs in a throwaway DETACHED worktree created
+#   OUTSIDE the caller's own checkout (mktemp -d under ${TMPDIR:-/tmp}) --
+#   `git status`/`assert-sync` on the caller's checkout are provably
+#   unaffected (no branch is created, no ref in the caller's checkout
+#   moves). The temp worktree is removed on every return path below,
+#   including the error paths -- there is exactly one cleanup call site,
+#   reached by falling through rather than by an EXIT trap (this runs as a
+#   plain function inside the caller's own process/subshell, not a
+#   standalone script, so an EXIT trap here would fire at the wrong time --
+#   see pipeline-worktree.sh's identical fall-through-cleanup convention).
+#
+#   stdout: one conflicting path per line (git diff --diff-filter=U against
+#           the aborted merge attempt); nothing when the merge is clean.
+#   exit:   0 -- merge attempt completed (0 or more conflicts printed).
+#           2 -- could not determine: missing args, fetch failure, or the
+#               merge/worktree machinery itself failed for a reason other
+#               than a content conflict.
+_vcs_shared_conflict_files() {
+  local pr_n="$1" base="$2"
+  if [ -z "$pr_n" ] || [ -z "$base" ]; then
+    echo "pipeline-vcs: conflict-files: missing PR number or base branch" >&2
+    return 2
+  fi
+
+  if ! git fetch -q origin "$base" 2>/dev/null; then
+    echo "pipeline-vcs: conflict-files: git fetch origin $base failed" >&2
+    return 2
+  fi
+  if ! git rev-parse -q --verify "origin/$base" >/dev/null 2>&1; then
+    echo "pipeline-vcs: conflict-files: origin/$base does not resolve after fetch" >&2
+    return 2
+  fi
+  if ! git fetch -q origin "refs/pull/$pr_n/head" 2>/dev/null; then
+    echo "pipeline-vcs: conflict-files: git fetch origin refs/pull/$pr_n/head failed" >&2
+    return 2
+  fi
+  local pr_head
+  pr_head="$(git rev-parse -q --verify FETCH_HEAD 2>/dev/null)"
+  if [ -z "$pr_head" ]; then
+    echo "pipeline-vcs: conflict-files: could not resolve PR #$pr_n head" >&2
+    return 2
+  fi
+
+  local tmpdir
+  tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/talos-conflict-files.XXXXXX" 2>/dev/null)"
+  if [ -z "$tmpdir" ]; then
+    echo "pipeline-vcs: conflict-files: mktemp failed" >&2
+    return 2
+  fi
+
+  local rc_out=2 paths=""
+  if git worktree add -q --detach "$tmpdir" "$pr_head" >/dev/null 2>&1; then
+    git -C "$tmpdir" -c user.email=talos@local -c user.name=talos-conflict-files \
+      merge --no-commit --no-ff "origin/$base" >/dev/null 2>&1
+    local merge_rc=$?
+    case "$merge_rc" in
+      0) rc_out=0 ;;
+      1)
+        paths="$(git -C "$tmpdir" diff --name-only --diff-filter=U 2>/dev/null)"
+        rc_out=0
+        ;;
+      *)
+        echo "pipeline-vcs: conflict-files: merge attempt exited $merge_rc" >&2
+        rc_out=2
+        ;;
+    esac
+  else
+    echo "pipeline-vcs: conflict-files: could not create temp worktree for PR #$pr_n head" >&2
+    rc_out=2
+  fi
+
+  # Single cleanup call site (see header comment) -- reached on every path above.
+  git worktree remove --force "$tmpdir" >/dev/null 2>&1
+  rm -rf "$tmpdir" 2>/dev/null
+
+  [ -n "$paths" ] && printf '%s\n' "$paths"
+  return "$rc_out"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -5447,6 +5556,47 @@ print('none')
   printf 'post-approval: PR #%s %s marker posted and %s label applied\n' \
     "$_pa_n" "$_pa_role" "$_pa_label"
   exit 0
+fi
+
+# ── conflict-files: mechanical-merge eligibility check (#256) ────────────────
+# GitHub-only (github and github-api providers), single shared implementation
+# -- see _vcs_shared_conflict_files's header comment. Same top-level-gated-
+# block shape as has-spec/post-approval above (a verb backed by one shared
+# helper, reachable from both providers without duplicating a case arm into
+# each provider's own dispatch function).
+if [ "$VERB" = "conflict-files" ]; then
+  if [ "$PROVIDER" != "github" ] && [ "$PROVIDER" != "github-api" ]; then
+    echo "pipeline-vcs: conflict-files: not implemented for provider '$PROVIDER'" >&2
+    exit 1
+  fi
+  _cf_n="${ARGS[0]:-}"
+  if [ -z "$_cf_n" ]; then
+    echo "pipeline-vcs: conflict-files: missing PR number" >&2
+    exit 1
+  fi
+  case "$_cf_n" in
+    ''|*[!0-9]*)
+      echo "pipeline-vcs: conflict-files: PR number must be an integer, got '$_cf_n'" >&2
+      exit 1
+      ;;
+  esac
+
+  # Same base-branch resolution as assert-sync: configured value first, then
+  # origin/HEAD's symbolic ref, else 'main'.
+  _cf_base="$BASE_BRANCH"
+  if [ -z "$_cf_base" ]; then
+    _cf_base="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|.*/||')"
+  fi
+  [ -z "$_cf_base" ] && _cf_base="main"
+
+  if [ "$DRY_RUN" = "true" ]; then
+    printf '[dry-run] conflict-files: git fetch origin refs/pull/%s/head %s; attempt a throwaway merge in a detached temp worktree; print conflicting paths\n' \
+      "$_cf_n" "$_cf_base"
+    exit 0
+  fi
+
+  _vcs_shared_conflict_files "$_cf_n" "$_cf_base"
+  exit $?
 fi
 
 # ── Main dispatch ─────────────────────────────────────────────────────────────

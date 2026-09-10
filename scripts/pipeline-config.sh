@@ -60,7 +60,7 @@ _KNOWN_CONFIG_KEYS_JSON='[
   "merge.auto", "merge.method", "merge.required_checks",
   "merge.delete_branch", "merge.forbidden_files",
   "merge.forbidden_files_replace", "merge.forbidden_files_allow",
-  "merge.approval_waiver_paths",
+  "merge.approval_waiver_paths", "merge.union_paths",
   "issues.label_filter", "issues.skip_labels", "issues.max_parallel",
   "execution.isolation", "execution.worktree_warn_threshold",
   "roles.validator", "roles.pm", "roles.pm_skip_when_spec_present",
