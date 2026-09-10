@@ -660,6 +660,22 @@ Step 3e inline whenever a fix round returns to a role that already approved
   (verdict `RESTAMP_FAIL`) — a re-stamp that finds a problem is not a
   special case, it escalates to that role's normal full stage on the next
   round, exactly like a first-time CHANGES/FINDINGS verdict.
+- **Trigger condition, explicit:** a role only gets the re-stamp variant
+  when its approval label is present on the PR AND `--stale-list` reports
+  it stale. A role whose label is absent (first pass, or its own previous
+  verdict left no approval label) always gets the full stage instead.
+- **`RESTAMP_FAIL` strips the stale label** before relaying —
+  `label-pr <PR> --remove <label>`, using the exact `label=<label>`
+  `--stale-list` reported for that role (`qa:pass` / `review:approved` /
+  `security:approved` / `adversarial:approved` — the label name does not
+  always match the role name, so this is never guessed). Without this, the
+  role's stale label would still be present on the next pass, so
+  `--stale-list` would report it stale again and dispatch another re-stamp
+  instead of the promised full stage. Step 4's own stale handling already
+  strips this same label before it ever reaches the re-stamp dispatch
+  (its step 1, below); the strip in the re-stamp dispatch itself is what
+  makes the Step 3e fix-round path — which has no equivalent prior strip —
+  correct too.
 
 First-time approvals, and any verdict of BLOCKED/CHANGES REQUESTED/FINDINGS,
 are unaffected — `check-approval-sha --stale-list` only ever names a role

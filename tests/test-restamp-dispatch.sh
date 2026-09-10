@@ -48,6 +48,31 @@ assert_contains "$restamp_block_flat" "RESTAMP_PASS" \
 assert_contains "$restamp_block_flat" "RESTAMP_FAIL" \
   "Step 3e re-stamp block names the RESTAMP_FAIL verdict"
 
+# ── Review finding (PR #265): a RESTAMP_FAIL must strip the stale label,
+# or the next pass finds the role stale again and re-stamps forever ────────
+assert_contains "$restamp_block_flat" "label-pr <PR_NUMBER> --remove <label>" \
+  "Step 3e re-stamp block strips the stale label on RESTAMP_FAIL"
+assert_contains "$restamp_block_flat" "before relaying" \
+  "Step 3e re-stamp block strips the label before relaying, not after"
+assert_contains "$restamp_block_flat" "stale role=<role> label=<label>" \
+  "Step 3e re-stamp block sources the exact label from --stale-list's own output"
+assert_contains "$restamp_block_flat" "never guess a \`<role>:approved\` pattern" \
+  "Step 3e re-stamp block warns against guessing a <role>:approved label name"
+
+# ── Trigger condition is explicit: label present AND stale, absent -> full
+# stage (review finding: make this unambiguous, not implied) ───────────────
+assert_contains "$restamp_block_flat" "Trigger, explicit" \
+  "Step 3e re-stamp block states its trigger condition explicitly"
+assert_contains "$restamp_block_flat" "present on the PR AND \`--stale-list\` reports it stale" \
+  "Step 3e re-stamp block's trigger requires the label present AND stale"
+assert_contains "$restamp_block_flat" "label is absent" \
+  "Step 3e re-stamp block: an absent label always gets the full dispatch"
+
+# ── Non-blocking review note: the re-stamp dispatch spawns per the same
+# usage-reporting spawn form as every other dispatch prompt ────────────────
+assert_contains "$restamp_block_flat" "spawn per the usage-reporting spawn form above" \
+  "Step 3e re-stamp dispatch block points at the usage-reporting spawn form"
+
 # ── Phase 3 (adversarial) points back at the same re-stamp check ───────────
 phase3_block="$(sed -n '/^\*\*Phase 3 — Adversarial/,/^\*\*Adversarial\*\* (if/p' "$SKILL_MD")"
 assert_contains "$phase3_block" "re-stamp check above" \
