@@ -99,3 +99,13 @@ Measured from `.talos/events.jsonl` and `gh run list`: ~1.46M recorded subagent 
 3. My QA prompts asked for the FULL suite via pipeline-verify even though #195 says QA trusts CI and runs targeted tests only. Orchestrator error — QA prompts must say `run-tests.sh --for <changed files>`, never the whole suite.
 4. CI: 22 push runs on main today (4 were lessons.md-only commits) × 2 OS × ~5 min. No `paths-ignore`, no per-branch `concurrency: cancel-in-progress` (#249's 4 pushes all ran to completion), macOS on every PR push.
 5. Reviewer/security spawned without usage capture → cost log undercounts by roughly a third.
+
+## 2026-09-10: efficiency batch merged (#256-#260); first measured effects
+
+All five efficiency issues merged through the full pipeline. Effects observed inside the same batch:
+- Mechanical CHANGELOG merge (#256) ran live three times (on its own PR, #264, and via the developer for #265): 0 LLM tokens each vs ~57k per developer merge-base yesterday.
+- Haiku delta re-stamps (formalised as #258) cost 24k-48k vs 49k-71k full re-runs; QA on #263 with `--for --strict` was 49k vs 60-70k full-suite runs.
+- CI: `test (ubuntu-latest)` only on PRs; main pushes keep the matrix. `merge.required_checks` had to drop macOS or the gate hangs — the issue predicted it and the PR still hit it; the doc caveat alone was not enough, so the test now enforces required_checks ⊆ PR jobs.
+- Reviewer/security caught one real gap per PR again (missing `permissions:` block, shared concurrency group on main, no forbidden-files cross-check on union paths, unlocked worktree ops, `--for` fail-open fallback, unscoped spawn rule, stale label surviving RESTAMP_FAIL). The pattern holds: every "simple" change had one thing a second reader had to find. Do not skip review stages to save tokens.
+- Cost: 4.24M tokens across the whole `.talos/events.jsonl` (both days); reviewer/security now report usage (#259), so the log is complete from here on.
+- Orchestrator discipline: no pushes to main mid-run this batch (Rule 19 now in the playbook).
