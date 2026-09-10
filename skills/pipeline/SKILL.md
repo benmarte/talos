@@ -710,7 +710,39 @@ After developer returns:
        pipeline): proceed to Step 3d.
      - Exit 1 (`CONFLICTING`): do NOT dispatch QA yet — GitHub schedules no
        `pull_request` CI run for a conflicting PR, so QA would hang waiting
-       for CI that never starts. The orchestrator itself must never run
+       for CI that never starts. **Try the mechanical path first (#256)** —
+       a CHANGELOG-only conflict is a git operation, not a reasoning task,
+       and does not need a developer dispatch:
+       1. `bash scripts/pipeline-vcs.sh conflict-files <PR>` lists the
+          conflicting paths, one per line (exit 2 → cannot determine, skip
+          straight to the developer dispatch below).
+       2. If every printed path matches `merge.union_paths` (default
+          `["CHANGELOG.md"]`), run `bash scripts/pipeline-mergebase.sh
+          <PR>`:
+          - Exit 0: resolved and pushed. Post a one-line PR comment naming
+            the mechanical merge (e.g. "Merged `<BASE_BRANCH>` into this
+            branch automatically — mechanical union merge, no developer
+            dispatch"), fire `bash scripts/pipeline-hooks.sh post_stage
+            merge-base orchestrator <N> --pr <PR> --summary "mechanical
+            union"`, then re-check `pr-mergeable <PR>` and proceed exactly
+            as the top-level bullets above say (`MERGEABLE`/`UNKNOWN` →
+            Step 3d; still `CONFLICTING` → fall through to the developer
+            dispatch below). Do NOT call `record-attempt` for this path —
+            no developer ran.
+          - Exit 3 (a conflicting path is not covered by
+            `merge.union_paths`) or exit 1 (setup/git error): not
+            mechanically resolvable — fall through to the developer
+            dispatch below.
+       3. Any path `conflict-files` printed that does not match
+          `merge.union_paths`, or a `conflict-files` exit 2, also falls
+          straight through to the developer dispatch below.
+          Approval markers are unaffected either way: `check-approval-sha`
+          already treats `CHANGELOG.md` as a waiver path
+          (`merge.approval_waiver_paths` default), so a mechanical union
+          merge that only touches `CHANGELOG.md` does not invalidate an
+          existing QA/security approval stamp — do not re-stamp it.
+       When the mechanical path is unavailable or still leaves the PR
+       `CONFLICTING`, the orchestrator itself must never run
        `git checkout`/`git fetch`/`git merge`/commit/push here — rule 15
        reserves moving HEAD in the orchestrator's checkout for the developer
        stage, and the orchestrator is not the developer stage. Instead,
@@ -1055,7 +1087,7 @@ If failing (non-zero exit): CI may be flaky — retry it, bounded to 2 re-runs p
 3. If 2 re-runs already happened for this SHA: post a comment listing the failing
    checks, do NOT merge. Not blocked — just waiting for a human or a new commit.
 
-**CHANGELOG serialization guard:** Before merging, check whether the PR's base branch is behind `origin/main` AND another pipeline PR has merged since this branch was cut. If so, run `git fetch origin && git merge origin/main` in the developer's worktree branch first, then re-push. On CHANGELOG conflicts, keep BOTH entries (newest first). (Changelog fragment directories are out of scope for v1 — the inline-merge rule above is sufficient for this repo size.) *(After the fix in #102: `check-approval-sha` filters out base-branch-only changes, so this sync no longer invalidates markers for files the PR did not touch. If the sync modifies a file the PR also touched, markers for that role are intentionally invalidated — verify the merge resolution and re-stamp.)*
+**CHANGELOG serialization guard:** Before merging, check whether the PR's base branch is behind `origin/main` AND another pipeline PR has merged since this branch was cut. If so, try the mechanical path first (#256), same as the Step 3c mergeability gate: `bash scripts/pipeline-vcs.sh conflict-files <PR>`; if every path it prints matches `merge.union_paths` (default `["CHANGELOG.md"]`), run `bash scripts/pipeline-mergebase.sh <PR>` instead of dispatching a developer — it resolves and pushes the merge itself (both entries kept, newest first, same rule as the inline-merge fallback below), then re-check mergeability before merging. Only when `conflict-files` reports a non-union path (exit 3/1/2 from `pipeline-mergebase.sh`, or a path outside `merge.union_paths`) fall back to the pre-#256 developer-dispatch path: run `git fetch origin && git merge origin/main` in the developer's worktree branch first, then re-push. On CHANGELOG conflicts, keep BOTH entries (newest first). (Changelog fragment directories are out of scope for v1 — the inline-merge rule above is sufficient for this repo size.) *(After the fix in #102: `check-approval-sha` filters out base-branch-only changes, so this sync no longer invalidates markers for files the PR did not touch. If the sync modifies a file the PR also touched, markers for that role are intentionally invalidated — verify the merge resolution and re-stamp. #256: `check-approval-sha` already treats `CHANGELOG.md` as a waiver path, so a mechanical union merge through `pipeline-mergebase.sh` that only touches `CHANGELOG.md` never invalidates an existing approval stamp — do not re-stamp it.)*
 
 **Human-merge mode (`MERGE_AUTO = false`):** every gate above still applies —
 approval labels, `skip-qa` rules, forbidden-files, CI. When everything is green,
