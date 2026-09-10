@@ -310,6 +310,35 @@ assert_contains "$(cat "$SKILL_MD")" \
   "pipeline-events.sh cost" \
   "skills/pipeline/SKILL.md Step 5 mentions the cost summary"
 
+# ── Usage-reporting spawn form (#259): every role names the same spawn
+# form ───────────────────────────────────────────────────────────────────
+# reviewer/security/validator/docs events logged null tokens while
+# developer/QA logged real numbers -- not a post_stage bug, but a spawn-form
+# gap (worktree isolation + Agent-tool spawn yields a usage-bearing
+# completion notification; a named non-isolated agent spawn reports via a
+# no-usage mailbox message instead). The Harness compatibility section must
+# name every role and require them all to use the one spawn form that
+# reports usage, and Rule 3 must call out a usage-less completion as a
+# playbook bug rather than something to shrug off as --tokens 0.
+spawn_rule_line="$(grep -n "Usage-reporting spawn form" "$SKILL_MD" | head -1 | cut -d: -f1)"
+if [ -z "$spawn_rule_line" ]; then
+  fail "skills/pipeline/SKILL.md has a Usage-reporting spawn form rule" "not found"
+else
+  spawn_rule_text="$(sed -n "${spawn_rule_line}p" "$SKILL_MD")"
+  for role in developer QA reviewer security validator docs adversarial planner; do
+    assert_contains "$spawn_rule_text" "$role" \
+      "Usage-reporting spawn form rule names role: $role"
+  done
+  assert_contains "$spawn_rule_text" "background/async" \
+    "Usage-reporting spawn form rule names the background/async spawn form"
+  assert_contains "$spawn_rule_text" "subagent_tokens" \
+    "Usage-reporting spawn form rule names the usage fields the notification must carry"
+fi
+
+assert_contains "$(cat "$SKILL_MD")" \
+  "a stage completion without usage is a playbook bug" \
+  "skills/pipeline/SKILL.md Rule 3 flags a usage-less completion as a playbook bug, not a real zero"
+
 REPO="${TALOS_AGENT_SKILLS_REPO:-https://github.com/addyosmani/agent-skills}"
 
 if ! command -v git >/dev/null 2>&1; then

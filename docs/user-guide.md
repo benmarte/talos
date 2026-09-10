@@ -1141,9 +1141,13 @@ lands in the payload/log line as `tokens`/`tool_uses`, or `null` when
 omitted or invalid (one stderr note explains an invalid value). Summarize
 the log with `bash scripts/pipeline-events.sh cost [--issue N] [--json]`: a
 per-issue, per-role table (`issue`, `role`, `events`, `tokens`, `tool_uses`,
-`duration_s`, `n/a`) with a `TOTAL` row, where `n/a` counts events whose
-`tokens` field is `null` (e.g. adapter-path runs, which record duration
-only) so an untracked group reads as "no data", not a real zero.
+`duration_s`, `unrecorded`) with a `TOTAL` row, where `unrecorded` counts
+events whose `tokens` field is `null` (e.g. adapter-path runs that record
+duration only, or a stage spawned in a form whose harness completion
+notification carries no usage at all -- see "Harness compatibility" in
+`skills/pipeline/SKILL.md`) so an untracked group reads as "no data", not a
+real zero. An explicit `--tokens 0` is a real zero and is never counted in
+`unrecorded`.
 
 ### A generic notification sink (`notifications.cmd`)
 

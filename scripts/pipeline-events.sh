@@ -21,13 +21,13 @@
 #   cost   Per-issue, per-role cost summary (#202): sums tokens, tool_uses
 #          and duration_s, and counts events, grouped by (issue, role).
 #          A row's tokens/tool_uses/duration_s are summed treating a null
-#          value as 0; the `n/a` column instead counts how many of that
+#          value as 0; the `unrecorded` column instead counts how many of that
 #          group's events had a null tokens field (e.g. adapter-path runs,
 #          which record duration only, per #202's proposal), so a group
 #          made entirely of untracked events is visible rather than
 #          silently reading as a real zero. Ends with a TOTAL row. Default
 #          output is a compact table (issue, role, events, tokens,
-#          tool_uses, duration_s, n/a); --json prints the same data as one
+#          tool_uses, duration_s, unrecorded); --json prints the same data as one
 #          JSON object: {"rows": [...], "total": {...}}. --issue filters to
 #          one issue.
 #
@@ -154,11 +154,13 @@ if skipped:
 PYEOF
 }
 
-# cmd_cost ISSUE JSON_MODE -- per-(issue, role) cost summary (#202): sums
+# cmd_cost ISSUE JSON_MODE -- per-(issue, role) cost summary (#202, #259): sums
 # tokens, tool_uses, duration_s and counts events, treating a null numeric
-# field as 0 for the sum but tallying it separately in the n/a column (a
-# group where every event is n/a is still visible as "no data", not a real
-# zero -- e.g. adapter-path runs that record duration only, per #202).
+# field as 0 for the sum but tallying it separately in the unrecorded column
+# (a group where every event is unrecorded is still visible as "no data",
+# not a real zero -- e.g. adapter-path runs that record duration only, per
+# #202, or a non-worktree-spawned stage whose harness never reports usage,
+# per #259).
 cmd_cost() {
   local issue="$1" json_mode="$2"
   local log_path
@@ -200,7 +202,7 @@ with open(log_path, "r", errors="replace") as f:
             continue
         key = (rec.get("issue"), rec.get("role"))
         if key not in groups:
-            groups[key] = {"events": 0, "tokens": 0, "tool_uses": 0, "duration_s": 0, "n_a": 0}
+            groups[key] = {"events": 0, "tokens": 0, "tool_uses": 0, "duration_s": 0, "unrecorded": 0}
             order.append(key)
         g = groups[key]
         g["events"] += 1
@@ -208,12 +210,12 @@ with open(log_path, "r", errors="replace") as f:
         g["tool_uses"] += rec.get("tool_uses") or 0
         g["duration_s"] += rec.get("duration_s") or 0
         if rec.get("tokens") is None:
-            g["n_a"] += 1
+            g["unrecorded"] += 1
 
 order.sort(key=lambda k: (str(k[0]), str(k[1])))
 
 rows = []
-total = {"events": 0, "tokens": 0, "tool_uses": 0, "duration_s": 0, "n_a": 0}
+total = {"events": 0, "tokens": 0, "tool_uses": 0, "duration_s": 0, "unrecorded": 0}
 for key in order:
     g = groups[key]
     rows.append({"issue": key[0], "role": key[1], **g})
@@ -226,15 +228,15 @@ else:
     def _s(v):
         return "" if v is None else str(v)
 
-    print("	".join(["issue", "role", "events", "tokens", "tool_uses", "duration_s", "n/a"]))
+    print("	".join(["issue", "role", "events", "tokens", "tool_uses", "duration_s", "unrecorded"]))
     for row in rows:
         print("	".join(_s(x) for x in [
             row["issue"], row["role"], row["events"], row["tokens"],
-            row["tool_uses"], row["duration_s"], row["n_a"],
+            row["tool_uses"], row["duration_s"], row["unrecorded"],
         ]))
     print("	".join(_s(x) for x in [
         "TOTAL", "", total["events"], total["tokens"],
-        total["tool_uses"], total["duration_s"], total["n_a"],
+        total["tool_uses"], total["duration_s"], total["unrecorded"],
     ]))
 
 if skipped:
