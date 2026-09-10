@@ -607,6 +607,31 @@ regardless of `merge.required_checks` — for example, if your CI doesn't run
 the same suite Talos does. It does not make QA re-run the full suite; QA
 always runs targeted tests only (#257).
 
+### Mechanical merge for CHANGELOG-only conflicts (`merge.union_paths`, #256)
+
+When `pr-mergeable` reports `CONFLICTING`, the orchestrator does not jump
+straight to a developer "merge base" dispatch. It first checks
+`pipeline-vcs.sh conflict-files <pr>` — a purely mechanical git operation
+(a throwaway merge attempt in a detached temp worktree, never in the
+orchestrator's own checkout) that lists exactly which paths conflict. Two
+PRs each adding a bullet under `CHANGELOG.md`'s `## [Unreleased]` heading is
+the common case: that conflict is a git operation, not a reasoning task, and
+does not need an LLM dispatch to resolve. If every conflicting path matches
+`merge.union_paths` (default `["CHANGELOG.md"]`), `scripts/pipeline-mergebase.sh`
+resolves it itself with `git merge-file --union` (both sides kept, the PR's
+own entry first) and pushes — no developer subagent runs at all. Any other
+conflicting path (or a config error) falls straight through to the same
+developer merge-base dispatch as before #256. `merge.union_paths` entries
+are validated the same way as `merge.approval_waiver_paths` — catch-all or
+non-unionable-matching patterns (`scripts/**`, `tests/**`, pipeline config
+filenames) are rejected, since a union merge blindly concatenates both
+sides of a conflict, which is safe for an additive changelog but would
+corrupt a source file. A mechanical union merge that only touches
+`CHANGELOG.md` never invalidates an existing QA/security approval stamp —
+`check-approval-sha` already treats `CHANGELOG.md` as a waiver path (see
+`merge.approval_waiver_paths` above), so the orchestrator does not need to
+re-dispatch those roles afterward.
+
 ### Approval-marker author verification (`markers.verify_authors`)
 
 **What it does.** `check-approval-sha` and `read-attempt` trust

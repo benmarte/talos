@@ -116,6 +116,26 @@
 #                                             before QA's CI wait, since GitHub
 #                                             schedules no `pull_request` run for a
 #                                             CONFLICTING PR.
+#   conflict-files <n>                        Print the paths that conflict between
+#                                             PR <n>'s head and origin/<base_branch>,
+#                                             one per line (#256). Resolved with a
+#                                             throwaway `git merge --no-commit` in a
+#                                             detached temp worktree outside the
+#                                             caller's own checkout -- `git status`/
+#                                             `assert-sync` on the caller's checkout
+#                                             are unaffected, and the temp worktree is
+#                                             removed on every exit path. Exit 0 with
+#                                             output when conflicting, exit 0 with no
+#                                             output when clean, exit 2 when it cannot
+#                                             be determined (fetch/worktree failure).
+#                                             GitHub only (github/github-api parity),
+#                                             backed by one shared implementation
+#                                             (same pattern as has-spec/post-approval).
+#                                             Used by the Step 3c mergeability gate to
+#                                             decide whether a CONFLICTING PR qualifies
+#                                             for pipeline-mergebase.sh's mechanical
+#                                             union-merge instead of a developer
+#                                             merge-base dispatch.
 #   check-approval-sha <n> [--stale-list]     Exit 1 if any approval label was earned
 #                                             against a non-current head SHA (stale
 #                                             approvals); respects
@@ -264,6 +284,19 @@ if [ -f "$SCRIPT_DIR/pipeline-cfg-cache.sh" ]; then
 else
   cfg() { bash "$SCRIPT_DIR/pipeline-config.sh" "$@"; }
   echo "pipeline: config cache helper missing, falling back to per-call parsing" >&2
+fi
+
+# with_lock (#180 pattern, #262 review follow-up): `_vcs_shared_conflict_files`'s
+# `git worktree add`/`remove` race the same shared git-common-dir metadata
+# pipeline-worktree.sh's create/remove/sweep and pipeline-mergebase.sh's own
+# worktree already serialize against. Guarded the same way as
+# pipeline-cfg-cache.sh above: fall back to running unlocked with a warning
+# rather than failing a partial install outright.
+if [ -f "$SCRIPT_DIR/pipeline-lock.sh" ]; then
+  . "$SCRIPT_DIR/pipeline-lock.sh"
+else
+  with_lock() { shift 2; [ "${1:-}" = "--" ] && shift; "$@"; }
+  echo "pipeline: lock helper missing, worktree operations are unsynchronized" >&2
 fi
 
 # ── Contract (#178): roles / labels / markers single source of truth ────────
@@ -1673,13 +1706,26 @@ sys.exit(0)
 #           allow-list entry is too broad for the active deny patterns
 #           (fail-closed on bad config) or when >=1 forbidden file matched.
 #
+# _vcs_shared_forbidden_patterns
+#   (#262 security-review follow-up) Single source of truth for the built-in
+#   merge.forbidden_files default list -- factored out of
+#   _vcs_shared_check_pr_files so pipeline-mergebase.sh's merge.union_paths
+#   cross-check (exposed via the forbidden-files-patterns verb below) reuses
+#   the SAME 20-pattern list rather than hand-duplicating it. Behaviour
+#   unchanged from before this refactor.
+#   env:    CONFIGURED -- merge.forbidden_files config value (raw string).
+#           REPLACE    -- merge.forbidden_files_replace config value.
+#   stdout: the effective forbidden-files patterns, one per line -- built-in
+#           defaults unioned with CONFIGURED, unless REPLACE=true (then
+#           CONFIGURED replaces the defaults wholesale).
+#
 # Built-in defaults — always active unless merge.forbidden_files_replace: true.
 # #61 fix: merge.forbidden_files UNIONs with these defaults rather than
 # replacing them wholesale, closing the silent neutering attack surface.
 # .netrc and _netrc are LITERAL patterns (no glob chars); they generate
 # canaries as of #76 (PR #90, commit b1d3199), so wildcard allow entries
 # that match them are rejected. Deferral from issue #78 is resolved.
-_vcs_shared_check_pr_files() {
+_vcs_shared_forbidden_patterns() {
   local _BUILTIN_DEFAULTS='.env
 .env.*
 *.pem
@@ -1700,19 +1746,23 @@ secrets.*
 *.ovpn
 .netrc
 _netrc'
+  if [ -n "$CONFIGURED" ] && [ "$REPLACE" = "true" ]; then
+    printf '%s\n' "$CONFIGURED"
+  elif [ -n "$CONFIGURED" ]; then
+    printf '%s\n%s\n' "$_BUILTIN_DEFAULTS" "$CONFIGURED"
+  else
+    printf '%s\n' "$_BUILTIN_DEFAULTS"
+  fi
+}
+
+_vcs_shared_check_pr_files() {
   local _patterns _defaults_active
+  _patterns="$(_vcs_shared_forbidden_patterns)"
   if [ -n "$CONFIGURED" ] && [ "$REPLACE" = "true" ]; then
     # Explicit opt-out: operator acknowledged they want replacement behaviour.
     echo "pipeline-vcs: WARNING: merge.forbidden_files_replace=true — built-in secret-protection defaults are SUPPRESSED; only configured patterns are active" >&2
-    _patterns="$CONFIGURED"
     _defaults_active="replaced"
-  elif [ -n "$CONFIGURED" ]; then
-    # Default (union): configured patterns are ADDED to the built-in defaults.
-    _patterns="$_BUILTIN_DEFAULTS
-$CONFIGURED"
-    _defaults_active="in-force"
   else
-    _patterns="$_BUILTIN_DEFAULTS"
     _defaults_active="in-force"
   fi
   # Transparency markers — always emitted on stdout so every run record is
@@ -2077,6 +2127,109 @@ _vcs_shared_pr_mergeable() {
   done
   echo UNKNOWN
   return 2
+}
+
+# _vcs_shared_conflict_files <pr-number> <base-branch>
+#   (#256) Provider-agnostic conflict detection for the Step 3c mergeability
+#   gate: is a CONFLICTING PR's only conflict something mechanical (e.g.
+#   CHANGELOG.md) that pipeline-mergebase.sh can resolve without a developer
+#   dispatch? <pr-number>'s head is fetched via GitHub's own
+#   `refs/pull/<n>/head` ref -- a plain git ref exposed for every PR
+#   regardless of gh-CLI vs REST auth, so this needs no adapter-specific API
+#   call; both `_github` and `_github_api` call this directly with just the
+#   PR number and their resolved base branch.
+#
+#   The actual merge attempt runs in a throwaway DETACHED worktree created
+#   OUTSIDE the caller's own checkout (mktemp -d under ${TMPDIR:-/tmp}) --
+#   `git status`/`assert-sync` on the caller's checkout are provably
+#   unaffected (no branch is created, no ref in the caller's checkout
+#   moves). The temp worktree is removed on every return path below,
+#   including the error paths -- there is exactly one cleanup call site,
+#   reached by falling through rather than by an EXIT trap (this runs as a
+#   plain function inside the caller's own process/subshell, not a
+#   standalone script, so an EXIT trap here would fire at the wrong time --
+#   see pipeline-worktree.sh's identical fall-through-cleanup convention).
+#   Both `git worktree add` and the cleanup `git worktree remove` are
+#   serialized with `with_lock` (same resource key/timeout pipeline-
+#   worktree.sh's create/remove/sweep and pipeline-mergebase.sh's own
+#   worktree use, #180/#262) -- they mutate the same shared git-common-dir
+#   metadata a concurrent stage may be touching under issues.max_parallel > 1.
+#
+#   stdout: one conflicting path per line (git diff --diff-filter=U against
+#           the aborted merge attempt); nothing when the merge is clean.
+#   exit:   0 -- merge attempt completed (0 or more conflicts printed).
+#           2 -- could not determine: missing args, fetch failure, or the
+#               merge/worktree machinery itself failed for a reason other
+#               than a content conflict.
+_vcs_shared_conflict_files() {
+  local pr_n="$1" base="$2"
+  if [ -z "$pr_n" ] || [ -z "$base" ]; then
+    echo "pipeline-vcs: conflict-files: missing PR number or base branch" >&2
+    return 2
+  fi
+
+  if ! git fetch -q origin "$base" 2>/dev/null; then
+    echo "pipeline-vcs: conflict-files: git fetch origin $base failed" >&2
+    return 2
+  fi
+  if ! git rev-parse -q --verify "origin/$base" >/dev/null 2>&1; then
+    echo "pipeline-vcs: conflict-files: origin/$base does not resolve after fetch" >&2
+    return 2
+  fi
+  if ! git fetch -q origin "refs/pull/$pr_n/head" 2>/dev/null; then
+    echo "pipeline-vcs: conflict-files: git fetch origin refs/pull/$pr_n/head failed" >&2
+    return 2
+  fi
+  local pr_head
+  pr_head="$(git rev-parse -q --verify FETCH_HEAD 2>/dev/null)"
+  if [ -z "$pr_head" ]; then
+    echo "pipeline-vcs: conflict-files: could not resolve PR #$pr_n head" >&2
+    return 2
+  fi
+
+  local tmpdir
+  tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/talos-conflict-files.XXXXXX" 2>/dev/null)"
+  if [ -z "$tmpdir" ]; then
+    echo "pipeline-vcs: conflict-files: mktemp failed" >&2
+    return 2
+  fi
+
+  # Locked the same way pipeline-worktree.sh's create/remove/sweep and
+  # pipeline-mergebase.sh's own worktree add serialize against: `git
+  # worktree add`/`remove` mutate the same shared git-common-dir metadata,
+  # and this repo may be running other worktree-mutating stages
+  # concurrently (issues.max_parallel > 1, #180).
+  local _cf_lock_resource
+  _cf_lock_resource="$(git rev-parse --git-common-dir 2>/dev/null || echo .git)/talos-worktree"
+
+  local rc_out=2 paths=""
+  if with_lock "$_cf_lock_resource" 10 -- \
+      git worktree add -q --detach "$tmpdir" "$pr_head" >/dev/null 2>&1; then
+    git -C "$tmpdir" -c user.email=talos@local -c user.name=talos-conflict-files \
+      merge --no-commit --no-ff "origin/$base" >/dev/null 2>&1
+    local merge_rc=$?
+    case "$merge_rc" in
+      0) rc_out=0 ;;
+      1)
+        paths="$(git -C "$tmpdir" diff --name-only --diff-filter=U 2>/dev/null)"
+        rc_out=0
+        ;;
+      *)
+        echo "pipeline-vcs: conflict-files: merge attempt exited $merge_rc" >&2
+        rc_out=2
+        ;;
+    esac
+  else
+    echo "pipeline-vcs: conflict-files: could not create temp worktree for PR #$pr_n head" >&2
+    rc_out=2
+  fi
+
+  # Single cleanup call site (see header comment) -- reached on every path above.
+  with_lock "$_cf_lock_resource" 10 -- git worktree remove --force "$tmpdir" >/dev/null 2>&1
+  rm -rf "$tmpdir" 2>/dev/null
+
+  [ -n "$paths" ] && printf '%s\n' "$paths"
+  return "$rc_out"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -5148,6 +5301,27 @@ print(slug[:40].rstrip('-'))
   exit 0
 fi
 
+# ── forbidden-files-patterns: effective merge.forbidden_files list (#262) ────
+# Provider-agnostic (pure config transform, no VCS call): prints the
+# effective merge.forbidden_files patterns, one per line -- built-in
+# defaults unioned with config, or replaced wholesale under
+# merge.forbidden_files_replace. Single source of truth
+# (_vcs_shared_forbidden_patterns) reused by check-pr-files's own deny list
+# AND by pipeline-mergebase.sh, which cross-checks merge.union_paths (and
+# each actual conflicting path) against this same list before ever
+# mechanically resolving a conflict -- an operator widening union_paths must
+# never be able to get forbidden-shaped content union-merged and pushed
+# unreviewed.
+if [ "$VERB" = "forbidden-files-patterns" ]; then
+  if [ "$DRY_RUN" = "true" ]; then
+    echo "[dry-run] forbidden-files-patterns: print the effective merge.forbidden_files pattern list"
+    exit 0
+  fi
+  CONFIGURED="$(cfg merge.forbidden_files "")" REPLACE="$(cfg merge.forbidden_files_replace "")" \
+    _vcs_shared_forbidden_patterns
+  exit 0
+fi
+
 # ── label-pr: approval-marker guard (#94) ────────────────────────────────────
 # Recognised approval labels and their role names (same set as check-approval-sha).
 # Two modes:
@@ -5447,6 +5621,47 @@ print('none')
   printf 'post-approval: PR #%s %s marker posted and %s label applied\n' \
     "$_pa_n" "$_pa_role" "$_pa_label"
   exit 0
+fi
+
+# ── conflict-files: mechanical-merge eligibility check (#256) ────────────────
+# GitHub-only (github and github-api providers), single shared implementation
+# -- see _vcs_shared_conflict_files's header comment. Same top-level-gated-
+# block shape as has-spec/post-approval above (a verb backed by one shared
+# helper, reachable from both providers without duplicating a case arm into
+# each provider's own dispatch function).
+if [ "$VERB" = "conflict-files" ]; then
+  if [ "$PROVIDER" != "github" ] && [ "$PROVIDER" != "github-api" ]; then
+    echo "pipeline-vcs: conflict-files: not implemented for provider '$PROVIDER'" >&2
+    exit 1
+  fi
+  _cf_n="${ARGS[0]:-}"
+  if [ -z "$_cf_n" ]; then
+    echo "pipeline-vcs: conflict-files: missing PR number" >&2
+    exit 1
+  fi
+  case "$_cf_n" in
+    ''|*[!0-9]*)
+      echo "pipeline-vcs: conflict-files: PR number must be an integer, got '$_cf_n'" >&2
+      exit 1
+      ;;
+  esac
+
+  # Same base-branch resolution as assert-sync: configured value first, then
+  # origin/HEAD's symbolic ref, else 'main'.
+  _cf_base="$BASE_BRANCH"
+  if [ -z "$_cf_base" ]; then
+    _cf_base="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|.*/||')"
+  fi
+  [ -z "$_cf_base" ] && _cf_base="main"
+
+  if [ "$DRY_RUN" = "true" ]; then
+    printf '[dry-run] conflict-files: git fetch origin refs/pull/%s/head %s; attempt a throwaway merge in a detached temp worktree; print conflicting paths\n' \
+      "$_cf_n" "$_cf_base"
+    exit 0
+  fi
+
+  _vcs_shared_conflict_files "$_cf_n" "$_cf_base"
+  exit $?
 fi
 
 # ── Main dispatch ─────────────────────────────────────────────────────────────

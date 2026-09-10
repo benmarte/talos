@@ -84,6 +84,12 @@ case "$args" in
     printf '%s\n' "${STUB_ISSUE_TITLE:-Fix login crash}" ;;
   "pr view "*"--json title -q .title"*)
     printf '%s\n' "${STUB_PR_TITLE:-fix: guard null session}" ;;
+  "pr view "*"--json number,title,headRefName,labels,url,body"*)
+    # Used by view-pr. Override STUB_PR_HEAD_REF_NAME -- unset (not just
+    # empty) falls back to "pr-branch"; explicitly set to "" to simulate an
+    # unresolvable head ref.
+    printf '{"number":9,"title":"%s","headRefName":"%s","labels":[],"url":"https://github.com/%s/pull/9","body":""}\n' \
+      "${STUB_PR_TITLE:-fix: guard null session}" "${STUB_PR_HEAD_REF_NAME-pr-branch}" "$REPO" ;;
   "pr view "*"--json number,body"*)
     # Used by check-closing-keyword: return PR number and body.
     # Override STUB_PR_NUMBER, STUB_PR_BODY.

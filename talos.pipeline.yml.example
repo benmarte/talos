@@ -143,6 +143,14 @@ merge:
   #   - "*.pfx"
   #   - "*.secrets"
   #   - "secrets.*"
+  # union_paths:                # Paths a CONFLICTING PR's conflicts must be
+  #   - "CHANGELOG.md"           # fully covered by (default shown) for
+                                 # pipeline-mergebase.sh to resolve them
+                                 # mechanically -- both sides kept via
+                                 # `git merge-file --union`, no developer
+                                 # dispatch (#256). Any other conflicting
+                                 # path falls back to the developer
+                                 # merge-base task as before.
 
 # ── Issue selection ───────────────────────────────────────────────────────────
 issues:
