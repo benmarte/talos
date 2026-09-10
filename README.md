@@ -273,7 +273,7 @@ All keys live in `talos.pipeline.json` (or `talos.pipeline.yml` if PyYAML is ins
 | `verify.timeout_ms` | `600000` | Milliseconds substituted as `<VERIFY_TIMEOUT_MS>` into the foreground rule placed next to every verify and CI-wait instruction in the developer and QA prompts — the explicit timeout a stage passes to its verify command instead of backgrounding it. Must be a positive integer; a non-integer or non-positive value is rejected (stderr warning, falls back to the default). |
 | `merge.auto` | `true` | `false` runs every stage and gate (approvals, forbidden-files check, green CI) but leaves the final merge to a human: the orchestrator labels the PR `pipeline:approved`, posts a "ready for human merge" comment, and stops instead of merging. The issue stays open and is closed by the reconciliation sweep after you merge. See [Human-merge mode](docs/user-guide.md#running-the-pipeline) in the user guide. |
 | `merge.method` | `squash` | `squash`, `merge`, or `rebase` |
-| `merge.required_checks` | `[]` | CI check names required before merge |
+| `merge.required_checks` | `[]` | CI check names required before merge. If your workflow only runs some checks (e.g. a macOS job) on push and not on pull requests -- as `templates/ci/github-tests.yml` does by default -- do not name that check here, or QA's CI-wait loop will wait for a check that never appears on the PR; see [CI](#ci). |
 | `merge.delete_branch` | `true` | Delete feature branch after merge |
 | `merge.forbidden_files` | see defaults | Glob patterns (matched against filename and full path) for files that must not appear in a PR. Defaults (20 patterns): `.env`, `.env.*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.secrets`, `secrets.*`, `*id_rsa*`, `*id_ecdsa*`, `*id_ed25519*`, `*id_dsa*`, `*.ppk`, `*.jks`, `*.keystore`, `*.pkcs12`, `*.kdbx`, `*.ovpn`, `.netrc`, `_netrc`. Setting this key **adds** to the defaults (union semantics) — the built-in patterns remain active alongside any configured patterns. To replace the defaults entirely, also set `merge.forbidden_files_replace: true` (see below). **Note:** `*id_rsa*` also matches `id_rsa.pub` (a harmless public key) — this is an accepted false positive. If you commit public keys, add `id_rsa.pub` (or the specific filename) to `merge.forbidden_files_allow`. **Note:** `*.keystore` may also block self-signed test keystores committed for CI use — `fnmatch` cannot distinguish a real keystore from a test one. This is expected behaviour; operators who legitimately commit test keystores should add the specific filename to `merge.forbidden_files_allow` (e.g. `["test.keystore", "debug.keystore"]`). **Note:** `.netrc` and `_netrc` are literal patterns (no glob characters). As of #76 (PR #90), literal deny patterns generate canaries and wildcard allow entries that match them are rejected — the deferral that kept `.netrc` out of the defaults is resolved (#78). **Note:** Three extensions were deliberately excluded from the defaults in #78: `*.gpg` (`pass`/SOPS/git-crypt workflows commit GPG-encrypted blobs intentionally — encryption-at-rest is a legitimate reason to put a secret in a repo), `*.asc` (detached signatures and public signing keys are routinely committed as release artifacts), and `*.der` (DER is an encoding used equally by public X.509 certificates and private keys — the extension alone is not a reliable signal). If one of these applies to files that should genuinely never appear in your PRs, add the pattern to `merge.forbidden_files`. |
 | `merge.forbidden_files_replace` | `false` | Set to `true` to restore the pre-v0.13 replacement behaviour: `merge.forbidden_files` will then **replace** the built-in defaults entirely rather than unioning with them. **Security warning:** this suppresses the built-in secret-protection patterns for every PR until the key is removed. A `talos:forbidden-files-defaults-replaced` marker is emitted on stdout on every run so the suppressed state is auditable in the PR record. Keep this `false` unless you have a specific reason to narrow the deny list. |
@@ -1057,8 +1057,9 @@ and writes); CI always runs with `--no-cache`. If neither `sha256sum` nor
 `shasum` is available, caching is disabled outright (with a warning) rather
 than key on a degraded hash.
 
-CI runs the suite on Ubuntu and macOS for every push and PR
-(`.github/workflows/tests.yml`). Test sandboxes unset Talos and Claude
+CI (`.github/workflows/tests.yml`) runs the suite on Ubuntu for every PR push
+and on the full Ubuntu + macOS matrix for every push to `main` -- see the
+[CI](#ci) section below for why. Test sandboxes unset Talos and Claude
 environment variables (`TALOS_HOME`, `CLAUDE_PLUGIN_ROOT`, `CLAUDE_CONFIG_DIR`,
 etc.) to isolate per-test configuration and prevent ambient settings from
 leaking into test runs.
@@ -1110,6 +1111,26 @@ Two one-time setup steps enable `real-api` (it is a clean no-op, printing
 `tests/test-canary.sh` runs the same script against `tests/stubs/` (no
 network) -- happy path, a failing step (asserting cleanup still runs), and
 the missing-repo/token skip path.
+
+### CI
+
+`templates/ci/github-tests.yml` is a **recommendation**, not something Talos
+enforces -- CI cadence and cost are your repo's policy. It skips docs-only
+pushes (`paths-ignore`), cancels superseded runs on the same branch
+(`concurrency` + `cancel-in-progress`), runs pull requests on `ubuntu-latest`
+only, and runs the full `ubuntu-latest` + `macos-latest` matrix on pushes to
+the base branch (so cross-OS drift is caught just after merge instead of
+before it). `/pipeline-setup` offers to write it to
+`.github/workflows/tests.yml` when no existing workflow already runs your
+test suite, and never edits a workflow that already exists. This repo's own
+`.github/workflows/tests.yml` dogfoods it.
+
+**Caveat:** if you add `merge.required_checks` and name a check that this
+template only runs on push (e.g. `test (macos-latest)`), QA's CI-wait loop
+(`pipeline-vcs.sh pr-checks-required`) will wait for a check that never
+appears on the PR and hang until `verify.ci_wait_s` elapses, then fail
+closed. Under this template, only `test (ubuntu-latest)` is safe to name in
+`merge.required_checks`.
 
 ---
 

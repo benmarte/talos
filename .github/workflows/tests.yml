@@ -1,10 +1,22 @@
+# Dogfoods templates/ci/github-tests.yml (#260) -- see that file for the
+# full explanation of paths-ignore, concurrency, and the PR-vs-push matrix
+# split. Keep this file and the template in sync.
+
 name: tests
 
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'tasks/**'
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -21,7 +33,10 @@ jobs:
     if: github.event.pull_request.draft != true
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # PR pushes: ubuntu-latest only. Push to main: the full matrix. See
+        # templates/ci/github-tests.yml's header for the merge.required_checks
+        # caveat this implies (only "test (ubuntu-latest)" is PR-safe to name).
+        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "macos-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
