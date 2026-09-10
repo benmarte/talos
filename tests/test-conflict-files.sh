@@ -147,6 +147,33 @@ assert_eq "0" "$rc" "conflict-files: --dry-run exits 0"
 assert_contains "$out" "[dry-run]" "conflict-files: --dry-run prints a marker"
 assert_eq "$wt_before" "$(git worktree list | wc -l | tr -d ' ')" "conflict-files: --dry-run creates no worktree"
 
+# ── (i) git worktree add/remove are serialized with with_lock (#262 review) ─
+# Same resource key pipeline-worktree.sh's create/remove/sweep use:
+# <git-common-dir>/talos-worktree. Hold it with a LIVE pid (so with_lock's
+# staleness check cannot reclaim it immediately) via a background holder
+# that releases it after ~1s -- if _vcs_shared_conflict_files really routes
+# its `git worktree add` through with_lock, the call blocks until the
+# holder releases (a plain unlocked `git worktree add` would ignore the
+# directory entirely and return almost instantly).
+_lock_resource="$(git rev-parse --git-common-dir 2>/dev/null || echo .git)/talos-worktree"
+_lock_dir="${_lock_resource}.lock.d"
+rm -rf "$_lock_dir"
+mkdir -p "$_lock_dir"
+printf '%s:1\n' "$$" > "$_lock_dir/pid"
+( sleep 1; rm -rf "$_lock_dir" ) &
+_release_pid=$!
+
+_lock_start="$(date +%s)"
+out="$(bash "$VCS" conflict-files 42 2>&1)"; rc=$?
+_lock_end="$(date +%s)"
+_lock_elapsed=$((_lock_end - _lock_start))
+
+wait "$_release_pid" 2>/dev/null
+assert_eq "0" "$rc" "conflict-files: still succeeds once the held lock is released"
+assert_eq "CHANGELOG.md" "$out" "conflict-files: still produces the correct result after waiting on the lock"
+assert_eq "1" "$([ "$_lock_elapsed" -ge 1 ] && echo 1 || echo 0)" "conflict-files: git worktree add waited on the held lock (with_lock is actually wired in)"
+assert_file_absent "$_lock_dir" "conflict-files: lock dir is released, not left behind"
+
 # ── (h) unsupported provider -> exit 1 ──────────────────────────────────────
 cat > talos.pipeline.json <<EOF
 {"vcs": {"provider": "gitlab"}, "base_branch": "main"}

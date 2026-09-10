@@ -160,6 +160,55 @@ assert_contains "$out" "non-unionable" "mergebase: names the rejection reason"
 git fetch -q origin pr-51
 assert_eq "$pr51_sha_before" "$(git rev-parse origin/pr-51)" "mergebase: nothing pushed when the override itself is rejected"
 
+# ── (d2) merge.union_paths cross-checked against merge.forbidden_files ─────
+# (#262 security-review follow-up) Widening union_paths to a glob that
+# overlaps merge.forbidden_files must never let forbidden-shaped content get
+# union-merged and pushed unreviewed. Rejected at validation time (before
+# any fetch), exit 3 -- not exit 1 like the hard-coded scripts/**/tests/**
+# case above, since the forbidden-files list is operator-configurable (not
+# a structural invariant) and a rejection here is closer in kind to "this
+# conflict isn't mechanically resolvable" than to "the config itself is
+# malformed".
+out="$(bash "$MB" 51 --union-paths '*.env' 2>&1)"; rc=$?
+assert_eq "3" "$rc" "mergebase: rejects a *.env union-paths override (matches merge.forbidden_files)"
+assert_contains "$out" "forbidden" "mergebase: names the forbidden-files rejection reason"
+
+out="$(bash "$MB" 51 --union-paths '.env' 2>&1)"; rc=$?
+assert_eq "3" "$rc" "mergebase: rejects a .env union-paths override (exact forbidden-files match)"
+assert_contains "$out" "forbidden" "mergebase: names the forbidden-files rejection reason (.env)"
+
+# End-to-end: a PR that actually conflicts on .env, widened to allow it.
+git fetch -q origin main
+git checkout -q -b pr-53 origin/main
+echo "SECRET=pr-value" > .env
+git add .env
+git commit -qm "pr: add .env"
+git push -q origin pr-53
+git push -q origin pr-53:refs/pull/53/head
+git checkout -q main
+git branch -D pr-53 >/dev/null 2>&1 || true
+
+echo "SECRET=base-value" > .env
+git add .env
+git commit -qm "base: add .env"
+git push -q origin main
+
+pr53_sha_before="$(git rev-parse origin/pr-53)"
+
+# Default union_paths (CHANGELOG.md only) does not cover .env -- already the
+# generic non-union-path behaviour, exercised here with the secrets-shaped
+# file the security review was scoped to.
+out="$(STUB_PR_HEAD_REF_NAME="pr-53" bash "$MB" 53 2>&1)"; rc=$?
+assert_eq "3" "$rc" "mergebase: a real .env conflict is exit 3 under the default union_paths"
+
+# Explicitly widening union_paths to .env is rejected at validation --
+# before pipeline-mergebase.sh ever fetches or looks at the actual conflict.
+out="$(STUB_PR_HEAD_REF_NAME="pr-53" bash "$MB" 53 --union-paths '.env' 2>&1)"; rc=$?
+assert_eq "3" "$rc" "mergebase: widening union_paths to .env is still exit 3 for a real .env conflict"
+assert_contains "$out" "forbidden" "mergebase: names the forbidden-files rejection reason for the real conflict"
+git fetch -q origin pr-53
+assert_eq "$pr53_sha_before" "$(git rev-parse origin/pr-53)" "mergebase: nothing pushed for the .env conflict, override or not"
+
 # ── (e) worktree removed on every exit path ─────────────────────────────────
 wt_before="$(git worktree list | wc -l | tr -d ' ')"
 STUB_PR_HEAD_REF_NAME="pr-50" bash "$MB" 50 >/dev/null 2>&1  # already merged -> harmless re-run
@@ -172,6 +221,61 @@ assert_eq "1" "$rc" "mergebase: exits 1 with no PR number"
 # ── (g) unresolvable PR -> exit 1 ───────────────────────────────────────────
 out="$(STUB_PR_HEAD_REF_NAME="" bash "$MB" 999999 2>&1)"; rc=$?
 assert_eq "1" "$rc" "mergebase: exits 1 when the PR's head branch cannot be resolved"
+
+# ── (h) git worktree add is serialized with with_lock (#262 review) ────────
+# Dynamic proof the SAME resource key pipeline-worktree.sh's create/remove/
+# sweep use (<git-common-dir>/talos-worktree) actually blocks
+# pipeline-mergebase.sh's `git worktree add`, the same technique
+# test-conflict-files.sh uses for _vcs_shared_conflict_files: hold the lock
+# with a LIVE pid (so staleness reclaim cannot skip the wait), release it
+# after ~1s from a background job, and confirm the call took at least that
+# long before succeeding.
+git fetch -q origin main
+git checkout -q -b pr-55 origin/main
+echo "pr version" > lockcheck.txt
+git add lockcheck.txt
+git commit -qm "pr: add lockcheck.txt"
+git push -q origin pr-55
+git push -q origin pr-55:refs/pull/55/head
+git checkout -q main
+git branch -D pr-55 >/dev/null 2>&1 || true
+
+# main must diverge too (an unrelated, non-conflicting file), otherwise
+# merging origin/main into pr-55 is a no-op fast-forward with nothing to
+# commit -- pipeline-mergebase.sh would fail at the commit step regardless
+# of locking, unrelated to what this test is checking.
+echo "base extra" > lockcheck-base.txt
+git add lockcheck-base.txt
+git commit -qm "base: unrelated file"
+git push -q origin main
+
+_lock_resource="$(git rev-parse --git-common-dir 2>/dev/null || echo .git)/talos-worktree"
+_lock_dir="${_lock_resource}.lock.d"
+rm -rf "$_lock_dir"
+mkdir -p "$_lock_dir"
+printf '%s:1\n' "$$" > "$_lock_dir/pid"
+( sleep 1; rm -rf "$_lock_dir" ) &
+_release_pid=$!
+
+_lock_start="$(date +%s)"
+out="$(STUB_PR_HEAD_REF_NAME="pr-55" bash "$MB" 55 2>&1)"; rc=$?
+_lock_end="$(date +%s)"
+_lock_elapsed=$((_lock_end - _lock_start))
+
+wait "$_release_pid" 2>/dev/null
+assert_eq "0" "$rc" "mergebase: still succeeds once the held lock is released"
+assert_eq "1" "$([ "$_lock_elapsed" -ge 1 ] && echo 1 || echo 0)" "mergebase: git worktree add waited on the held lock (with_lock is actually wired in)"
+assert_file_absent "$_lock_dir" "mergebase: lock dir is released, not left behind"
+
+# ── (i) the cleanup trap's git worktree remove also routes through with_lock ─
+# A pure timing test cannot isolate the cleanup trap's own with_lock call
+# from the (already-locked, pre-#262) `git worktree add` a few lines above
+# it in the same process -- both serialize on the identical resource, so
+# holding the lock once around the whole invocation cannot tell them apart.
+# Assert it structurally instead: the exact review-flagged gap was
+# `_mb_cleanup`'s `git worktree remove --force` NOT going through with_lock.
+_cleanup_body="$(awk '/^_mb_cleanup\(\) \{/,/^\}/' "$MB")"
+assert_contains "$_cleanup_body" "with_lock" "mergebase: _mb_cleanup's git worktree remove is wrapped in with_lock"
 
 rm -f talos.pipeline.json
 
