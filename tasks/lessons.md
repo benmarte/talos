@@ -90,3 +90,12 @@ Canary run 34376183708 is fully green on both providers. Bugs it (and the board)
 - CHANGELOG conflicts hit every second PR when two are in flight; each cost a merge-base developer dispatch (~50k tokens). Consider a changelog-fragments directory (`changelog.d/`) as a lean-mandate follow-up.
 - Two review rounds on #249 both came from the same class: an unbounded loop / unvalidated operator input. Add "every loop has a cap; every env override is validated" to the developer profile's self-check.
 - Rule 3 followed this run: `post_stage` fired with `--tokens/--tool-uses/--duration-s` after every stage, so `pipeline-events.sh cost` is populated for the first time.
+
+## 2026-09-09: efficiency audit of the day's run (Ben asked whether we were prudent)
+
+Measured from `.talos/events.jsonl` and `gh run list`: ~1.46M recorded subagent tokens for 7 issues, plus reviewer/security usage that went unrecorded because they were spawned as mailbox teammates (no usage in the notification). Leaks, largest first:
+1. CHANGELOG merge-base dispatches (5 today, ~280k tokens, 5 extra CI runs). Fragments directory is the fix.
+2. Re-stamp cascades: #248 needed QA three times (~170k) because each reviewer round moved the head. A cheaper "delta re-stamp" QA (Haiku, targeted tests only) would cut that by ~70%.
+3. My QA prompts asked for the FULL suite via pipeline-verify even though #195 says QA trusts CI and runs targeted tests only. Orchestrator error — QA prompts must say `run-tests.sh --for <changed files>`, never the whole suite.
+4. CI: 22 push runs on main today (4 were lessons.md-only commits) × 2 OS × ~5 min. No `paths-ignore`, no per-branch `concurrency: cancel-in-progress` (#249's 4 pushes all ran to completion), macOS on every PR push.
+5. Reviewer/security spawned without usage capture → cost log undercounts by roughly a third.
