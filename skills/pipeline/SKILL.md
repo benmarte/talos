@@ -76,6 +76,8 @@ echo "talos: scripts=<resolved scripts dir>  agents=$agent_source"
 
   The adapter finds the role definition itself (plugin root, then `.claude/agents/`), combines it with the stage prompt, and runs it through the CLI configured for that role (`pipeline-agent.sh` does the same per-role resolution above internally, so you never need to pass an override in). Everything else in this playbook is identical. Note: without native subagents, developer stages run sequentially in the working tree — set `issues.max_parallel: 1`.
 
+**Usage-reporting spawn form (#259):** on the native subagent path (`subagents: true`), spawn every stage — developer, QA, reviewer, security, validator, docs, adversarial, planner — with the Agent tool's background form (the same call shape the developer/QA stages already use: `isolation: "worktree"` for stages that need a writable checkout, the `run_in_background`/async form without a worktree for read-only stages) so its completion notification carries usage (`subagent_tokens`/`tool_uses`/`duration_ms`) — the Agent tool exposes no other async trigger, so `isolation: "worktree"` (or, for a role with no checkout, the bare background/async spawn) is the concrete parameter to set. Observed in this repo, 2026-09-09 (Claude Code, native path): a stage spawned via the Agent tool with `isolation: "worktree"` (developer, QA) returned a completion notification carrying usage; a stage spawned as a named agent with no isolation (reviewer, security, validator, docs) instead reported through a mailbox message with no usage at all — that gap, not a `post_stage` bug, is why `.talos/events.jsonl` shows real token counts for developer/QA and `null` for the rest (see `pipeline-events.sh cost`'s `unrecorded` column). On the adapter path (`subagents: false` + a non-`pi` runner, via `pipeline-agent.sh`) and pi inline mode, stages run synchronously with no completion notification at all — usage is not available there, and `tokens` is recorded as null; that is expected, not a bug.
+
 **`hooks.pre_dispatch` (#181):** before building ANY stage's prompt below — every "spawn a subagent" / "spawn" step, on every harness path — run `bash scripts/pipeline-hooks.sh pre_dispatch <role> <N> <PR> <worktree>` (role name; issue number; PR number if one exists yet, else omit it; worktree path if one exists yet, else omit it). This is always safe and never worth waiting on: disabled by default (empty `hooks.pre_dispatch` config), and any failure, timeout (`hooks.timeout_s`), or empty output is a silent no-op on its own, with a one-line stderr note — you never branch on it. If it prints anything, paste that output verbatim at the very top of the prompt you are about to send (before the role body on the adapter path, before the stage-specific instructions on the native path) — it already carries its own `## Context` / `---` framing, so add nothing else around it. This one rule covers every stage; it is not restated per stage below except as a one-line reminder on the developer and QA blocks.
 
 ---
@@ -295,7 +297,7 @@ bash scripts/pipeline-notify.sh <role> "#<N>" "<2-3 line findings summary>" <N>
 
 The `<role>` argument is the exact role name (validator / pm / developer / qa / reviewer / security / docs / orchestrator). `pipeline-notify.sh` uses `templates/notifications/<role>.md` to render the message; if that template exists it controls the format, otherwise the summary is posted verbatim. This relay call is separate from lifecycle events (pr-opened, merged, blocked, issue-closed) — both are sent when applicable.
 
-**Rule 3 — Post-stage hook (always, #182):** After every role relay (`pipeline-notify.sh <role> ...`) and every lifecycle event (pr-opened, merged, blocked, issue-closed), also run `bash scripts/pipeline-hooks.sh post_stage <event> <role> <N> [--pr] [--sha] [--verdict] [--summary] [--attempt ...]` — this is what lets an external tool (metrics, cost tracking, a project memory) subscribe to every structured outcome the moment it's known. When the harness completion notification carries usage (subagent_tokens, tool_uses, duration_ms), pass them as `--tokens`, `--tool-uses`, `--duration-s` (ms/1000, integer). Disabled by default (empty `hooks.post_stage`); a failure, timeout, or missing config is a silent no-op with one stderr line, same as `hooks.pre_dispatch` — never worth waiting on or branching on. Example, right after the QA PASS relay:
+**Rule 3 — Post-stage hook (always, #182):** After every role relay (`pipeline-notify.sh <role> ...`) and every lifecycle event (pr-opened, merged, blocked, issue-closed), also run `bash scripts/pipeline-hooks.sh post_stage <event> <role> <N> [--pr] [--sha] [--verdict] [--summary] [--attempt ...]` — this is what lets an external tool (metrics, cost tracking, a project memory) subscribe to every structured outcome the moment it's known. When the harness completion notification carries usage (subagent_tokens, tool_uses, duration_ms), pass them as `--tokens`, `--tool-uses`, `--duration-s` (ms/1000, integer). Per the Usage-reporting spawn form above: on the native path, a completion without usage is a playbook bug — note it in the run summary rather than passing `--tokens 0`; on the adapter/pi-inline paths it is expected, so omit `--tokens`/`--tool-uses` there without comment. Disabled by default (empty `hooks.post_stage`); a failure, timeout, or missing config is a silent no-op with one stderr line, same as `hooks.pre_dispatch` — never worth waiting on or branching on. Example, right after the QA PASS relay:
 `bash scripts/pipeline-notify.sh qa "#42" "PASS: 3 criteria verified" 42`
 `bash scripts/pipeline-hooks.sh post_stage qa qa 42 --pr 57 --verdict PASS --summary "3 criteria verified"`
 
@@ -478,7 +480,7 @@ Only run if the issue still has `pipeline:ready` (not `pipeline:confirmed`).
 
 Compute header: `HEADER="${COMMENTS_HEADER_TPL//\{role\}/validator}"`
 
-Spawn a subagent with this prompt (substitute <PLACEHOLDERS> before spawning):
+Spawn a subagent with this prompt (substitute <PLACEHOLDERS> before spawning) — spawn per the usage-reporting spawn form above:
 
 ```
 You are the Validator. Issue #<N> is assigned to you.
@@ -903,7 +905,7 @@ If exit non-zero: halt the current issue with the error output; do not dispatch 
 **Phase 2 — Reviewer and security in parallel:** After docs completes, dispatch
 reviewer and security concurrently — for either role named by the re-stamp check above, dispatch its re-stamp variant instead of the full prompt below.
 
-**Reviewer** (if `roles.reviewer = true`):
+**Reviewer** (if `roles.reviewer = true`; spawn per the usage-reporting spawn form above):
 ```
 You are the Reviewer. QA passed PR #<PR_NUMBER> for issue #<N>.
 
@@ -920,7 +922,7 @@ Your role profile carries the full procedure.
 Final (2-3 lines): APPROVED/CHANGES outcome + key points.
 ```
 
-**Security** (if `roles.security = true`):
+**Security** (if `roles.security = true`; spawn per the usage-reporting spawn form above):
 ```
 You are the Security Analyst. QA passed PR #<PR_NUMBER> for issue #<N>.
 
@@ -937,7 +939,7 @@ Your role profile carries the full procedure.
 Final (2-3 lines): CLEAR/FINDINGS outcome + areas covered.
 ```
 
-**Docs** (if `roles.docs = true`):
+**Docs** (if `roles.docs = true`; spawn per the usage-reporting spawn form above):
 ```
 You are Documentation. QA passed for PR #<PR_NUMBER>. Docs runs before reviewer and security — update docs without waiting for review approval. Do not open a fix loop.
 
