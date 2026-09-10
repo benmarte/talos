@@ -72,9 +72,9 @@ _KNOWN_CONFIG_KEYS_JSON='[
   "notifications.templates_dir", "notifications.threading",
   "notifications.events", "notifications.cmd", "notifications.cmd_timeout_s",
   "agents.runner", "agents.subagents", "agents.runner_args",
-  "agents.runner_cmd", "agents.model",
+  "agents.runner_cmd", "agents.model", "agents.restamp_model",
   "agents.roles.*.model", "agents.roles.*.runner",
-  "agents.roles.*.runner_cmd",
+  "agents.roles.*.runner_cmd", "agents.roles.*.restamp_model",
   "limits.max_fix_attempts", "limits.max_total_dispatches",
   "limits.max_retries",
   "markers.trusted_authors", "markers.verify_authors",
@@ -280,6 +280,41 @@ for _int_key in ("verify.timeout_ms", "verify.ci_wait_s", "hooks.timeout_s", "no
             del flat[_int_key]
         else:
             flat[_int_key] = _validated
+
+# agents.restamp_model / agents.roles.<role>.restamp_model derived default
+# (#258): role restamp -> global restamp -> agents.model, mirroring
+# verify.qa_mode's derived-default pattern above -- a re-stamp dispatch
+# should default to the same cheap tier as agents.model, not silently fall
+# back to the session default the way an unset agents.roles.<role>.model
+# does. This dump only ever contains keys named up front, so only roles
+# already present under agents.roles get a computed entry here; a role
+# with no agents.roles.<role> block at all still resolves correctly
+# through the single-key path's identical fallback chain below, since a
+# cfg() cache miss on this key is exactly "absent -- use the caller's
+# default" (agents.model, read separately).
+_agents_model = walk(cfg, "agents.model".split("."))
+_global_restamp = walk(cfg, "agents.restamp_model".split("."))
+if _global_restamp is None or _global_restamp == "":
+    _global_restamp = _agents_model
+if _global_restamp is not None and _global_restamp != "":
+    flat["agents.restamp_model"] = _global_restamp
+elif "agents.restamp_model" in flat:
+    del flat["agents.restamp_model"]
+
+_roles_cfg = walk(cfg, "agents.roles".split("."))
+if isinstance(_roles_cfg, dict):
+    for _role_name in _roles_cfg:
+        _role_restamp = walk(cfg, ["agents", "roles", _role_name, "restamp_model"])
+        _resolved = _role_restamp
+        if _resolved is None or _resolved == "":
+            _resolved = walk(cfg, "agents.restamp_model".split("."))
+        if _resolved is None or _resolved == "":
+            _resolved = _agents_model
+        _rkey = "agents.roles.%s.restamp_model" % _role_name
+        if _resolved is not None and _resolved != "":
+            flat[_rkey] = _resolved
+        elif _rkey in flat:
+            del flat[_rkey]
 
 out = sys.stdout.buffer
 for k, v in flat.items():
@@ -507,6 +542,19 @@ def _validate_int_key(key, value):
             "-- using default\n" % (key, unit, value)
         )
         return None
+
+# agents.restamp_model / agents.roles.<role>.restamp_model derived default
+# (#258): role restamp -> global restamp -> agents.model. Mirrors the
+# --dump path's identical block above -- see that copy's comment for why
+# the two can't literally be one shared function call.
+if key == "agents.restamp_model":
+    if value is None or value == "":
+        value = walk(cfg, "agents.model".split("."))
+elif key.startswith("agents.roles.") and key.endswith(".restamp_model"):
+    if value is None or value == "":
+        value = walk(cfg, "agents.restamp_model".split("."))
+        if value is None or value == "":
+            value = walk(cfg, "agents.model".split("."))
 
 value = _validate_int_key(key, value)
 

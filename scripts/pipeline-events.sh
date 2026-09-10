@@ -25,10 +25,14 @@
 #          group's events had a null tokens field (e.g. adapter-path runs,
 #          which record duration only, per #202's proposal), so a group
 #          made entirely of untracked events is visible rather than
-#          silently reading as a real zero. Ends with a TOTAL row. Default
-#          output is a compact table (issue, role, events, tokens,
-#          tool_uses, duration_s, n/a); --json prints the same data as one
-#          JSON object: {"rows": [...], "total": {...}}. --issue filters to
+#          silently reading as a real zero. The `restamp` column (#258)
+#          counts events with verdict RESTAMP_PASS or RESTAMP_FAIL -- a
+#          cheap delta re-review of a PR the same role already approved,
+#          separate from that group's full-stage events/tokens totals.
+#          Ends with a TOTAL row. Default output is a compact table (issue,
+#          role, events, tokens, tool_uses, duration_s, n/a, restamp);
+#          --json prints the same data as one JSON object:
+#          {"rows": [...], "total": {...}}. --issue filters to
 #          one issue.
 #
 # A malformed line (not valid JSON, or not a JSON object) is skipped rather
@@ -158,7 +162,13 @@ PYEOF
 # tokens, tool_uses, duration_s and counts events, treating a null numeric
 # field as 0 for the sum but tallying it separately in the n/a column (a
 # group where every event is n/a is still visible as "no data", not a real
-# zero -- e.g. adapter-path runs that record duration only, per #202).
+# zero -- e.g. adapter-path runs that record duration only, per #202). The
+# "restamp" column (#258) separately counts events whose verdict is
+# RESTAMP_PASS or RESTAMP_FAIL -- a cheap delta re-review of a PR the same
+# role already approved (see skills/pipeline/SKILL.md's re-stamp dispatch)
+# -- so a group's re-stamp cost is visible next to its full-stage cost
+# instead of being folded into the same "events"/"tokens" totals with no
+# way to tell them apart.
 cmd_cost() {
   local issue="$1" json_mode="$2"
   local log_path
@@ -200,7 +210,7 @@ with open(log_path, "r", errors="replace") as f:
             continue
         key = (rec.get("issue"), rec.get("role"))
         if key not in groups:
-            groups[key] = {"events": 0, "tokens": 0, "tool_uses": 0, "duration_s": 0, "n_a": 0}
+            groups[key] = {"events": 0, "tokens": 0, "tool_uses": 0, "duration_s": 0, "n_a": 0, "restamp": 0}
             order.append(key)
         g = groups[key]
         g["events"] += 1
@@ -209,11 +219,13 @@ with open(log_path, "r", errors="replace") as f:
         g["duration_s"] += rec.get("duration_s") or 0
         if rec.get("tokens") is None:
             g["n_a"] += 1
+        if rec.get("verdict") in ("RESTAMP_PASS", "RESTAMP_FAIL"):
+            g["restamp"] += 1
 
 order.sort(key=lambda k: (str(k[0]), str(k[1])))
 
 rows = []
-total = {"events": 0, "tokens": 0, "tool_uses": 0, "duration_s": 0, "n_a": 0}
+total = {"events": 0, "tokens": 0, "tool_uses": 0, "duration_s": 0, "n_a": 0, "restamp": 0}
 for key in order:
     g = groups[key]
     rows.append({"issue": key[0], "role": key[1], **g})
@@ -226,15 +238,15 @@ else:
     def _s(v):
         return "" if v is None else str(v)
 
-    print("	".join(["issue", "role", "events", "tokens", "tool_uses", "duration_s", "n/a"]))
+    print("	".join(["issue", "role", "events", "tokens", "tool_uses", "duration_s", "n/a", "restamp"]))
     for row in rows:
         print("	".join(_s(x) for x in [
             row["issue"], row["role"], row["events"], row["tokens"],
-            row["tool_uses"], row["duration_s"], row["n_a"],
+            row["tool_uses"], row["duration_s"], row["n_a"], row["restamp"],
         ]))
     print("	".join(_s(x) for x in [
         "TOTAL", "", total["events"], total["tokens"],
-        total["tool_uses"], total["duration_s"], total["n_a"],
+        total["tool_uses"], total["duration_s"], total["n_a"], total["restamp"],
     ]))
 
 if skipped:
