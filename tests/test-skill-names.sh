@@ -311,15 +311,18 @@ assert_contains "$(cat "$SKILL_MD")" \
   "skills/pipeline/SKILL.md Step 5 mentions the cost summary"
 
 # ── Usage-reporting spawn form (#259): every role names the same spawn
-# form ───────────────────────────────────────────────────────────────────
+# form, scoped to the native path only ─────────────────────────────────────
 # reviewer/security/validator/docs events logged null tokens while
 # developer/QA logged real numbers -- not a post_stage bug, but a spawn-form
 # gap (worktree isolation + Agent-tool spawn yields a usage-bearing
 # completion notification; a named non-isolated agent spawn reports via a
 # no-usage mailbox message instead). The Harness compatibility section must
-# name every role and require them all to use the one spawn form that
-# reports usage, and Rule 3 must call out a usage-less completion as a
-# playbook bug rather than something to shrug off as --tokens 0.
+# name every role and require them all to use the one concrete spawn
+# parameter (`isolation: "worktree"`) that reports usage -- but only on the
+# native subagent path; the adapter (pipeline-agent.sh) and pi-inline paths
+# run synchronously with no completion notification at all, so `unrecorded`
+# there is expected, not a bug. Rule 3 must draw the same native-vs-adapter
+# line rather than calling every usage-less completion a bug.
 spawn_rule_line="$(grep -n "Usage-reporting spawn form" "$SKILL_MD" | head -1 | cut -d: -f1)"
 if [ -z "$spawn_rule_line" ]; then
   fail "skills/pipeline/SKILL.md has a Usage-reporting spawn form rule" "not found"
@@ -329,15 +332,43 @@ else
     assert_contains "$spawn_rule_text" "$role" \
       "Usage-reporting spawn form rule names role: $role"
   done
-  assert_contains "$spawn_rule_text" "background/async" \
-    "Usage-reporting spawn form rule names the background/async spawn form"
+  assert_contains "$spawn_rule_text" 'subagents: true' \
+    "Usage-reporting spawn form rule scopes the requirement to the native subagent path"
+  assert_contains "$spawn_rule_text" 'isolation: "worktree"' \
+    "Usage-reporting spawn form rule names the concrete spawn parameter"
   assert_contains "$spawn_rule_text" "subagent_tokens" \
     "Usage-reporting spawn form rule names the usage fields the notification must carry"
+  assert_contains "$spawn_rule_text" "2026-09-09" \
+    "Usage-reporting spawn form rule cites the date of the observed behaviour"
+  assert_contains "$spawn_rule_text" "adapter path" \
+    "Usage-reporting spawn form rule states the adapter path has no completion notification"
+  assert_contains "$spawn_rule_text" "expected, not a bug" \
+    "Usage-reporting spawn form rule states adapter/pi-inline unrecorded usage is expected"
 fi
 
 assert_contains "$(cat "$SKILL_MD")" \
-  "a stage completion without usage is a playbook bug" \
-  "skills/pipeline/SKILL.md Rule 3 flags a usage-less completion as a playbook bug, not a real zero"
+  "on the native path, a completion without usage is a playbook bug" \
+  "skills/pipeline/SKILL.md Rule 3 flags a usage-less completion as a playbook bug on the native path only"
+assert_contains "$(cat "$SKILL_MD")" \
+  "on the adapter/pi-inline paths it is expected" \
+  "skills/pipeline/SKILL.md Rule 3 states adapter/pi-inline usage-less completions are expected, not a bug"
+
+# ── Reviewer/security/validator/docs Step 3e blocks point at the spawn
+# rule (#259) -- one short line each, not a restatement ────────────────────
+for anchor in \
+  '**Reviewer** (if `roles.reviewer = true`' \
+  '**Security** (if `roles.security = true`' \
+  '**Docs** (if `roles.docs = true`' \
+  'Spawn a subagent with this prompt (substitute <PLACEHOLDERS> before spawning)'; do
+  line="$(grep -n -F -- "$anchor" "$SKILL_MD" | head -1 | cut -d: -f1)"
+  if [ -z "$line" ]; then
+    fail "skills/pipeline/SKILL.md: spawn-rule pointer anchor found" "not found: $anchor"
+    continue
+  fi
+  text="$(sed -n "${line}p" "$SKILL_MD")"
+  assert_contains "$text" "usage-reporting spawn form above" \
+    "skills/pipeline/SKILL.md: '$anchor' points at the usage-reporting spawn form"
+done
 
 REPO="${TALOS_AGENT_SKILLS_REPO:-https://github.com/addyosmani/agent-skills}"
 
