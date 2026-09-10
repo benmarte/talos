@@ -1162,9 +1162,17 @@ lands in the payload/log line as `tokens`/`tool_uses`, or `null` when
 omitted or invalid (one stderr note explains an invalid value). Summarize
 the log with `bash scripts/pipeline-events.sh cost [--issue N] [--json]`: a
 per-issue, per-role table (`issue`, `role`, `events`, `tokens`, `tool_uses`,
-`duration_s`, `n/a`) with a `TOTAL` row, where `n/a` counts events whose
-`tokens` field is `null` (e.g. adapter-path runs, which record duration
-only) so an untracked group reads as "no data", not a real zero.
+`duration_s`, `unrecorded`) with a `TOTAL` row, where `unrecorded` counts
+events whose `tokens` field is `null` so an untracked group reads as "no
+data", not a real zero (an explicit `--tokens 0` is a real zero and is
+never counted in `unrecorded`). Whether `unrecorded` is expected depends on
+the spawn path (see "Usage-reporting spawn form" under "Harness
+compatibility" in `skills/pipeline/SKILL.md`): on the native subagent path,
+every stage is spawned so its completion notification carries usage, so an
+`unrecorded` native-path event is a playbook bug worth investigating; on
+the adapter path (`pipeline-agent.sh`) and pi inline mode, stages run
+synchronously with no completion notification, so `unrecorded` there is
+expected, not a bug.
 
 ### A generic notification sink (`notifications.cmd`)
 
