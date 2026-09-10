@@ -277,4 +277,62 @@ assert_contains "$(cat "$dump_injection_err")" "verify.timeout_ms must be a posi
   "--dump warns on stderr for verify.timeout_ms, same as the single-key path (#212)"
 rm talos.pipeline.json
 
+# ── agents.restamp_model / agents.roles.<role>.restamp_model (#258) ────────
+# Documented precedence: role restamp_model -> global restamp_model ->
+# agents.model. A re-stamp dispatch should default to the same cheap tier
+# as agents.model rather than the session default an unset
+# agents.roles.<role>.model would fall back to.
+
+# No agents.restamp_model anywhere -> falls all the way back to agents.model,
+# for both a role with no override at all and a role with an unrelated
+# (.model, not .restamp_model) override.
+cat > talos.pipeline.json <<'EOF'
+{"agents": {"model": "claude-haiku-4-5", "roles": {"reviewer": {"model": "claude-opus-5"}}}}
+EOF
+assert_eq "claude-haiku-4-5" "$(bash "$CFG_SH" agents.restamp_model "")" \
+  "agents.restamp_model with no override falls back to agents.model (#258)"
+assert_eq "claude-haiku-4-5" "$(bash "$CFG_SH" agents.roles.reviewer.restamp_model "")" \
+  "agents.roles.<role>.restamp_model falls back to agents.model when neither restamp key is set (#258)"
+assert_eq "claude-haiku-4-5" "$(bash "$CFG_SH" agents.roles.docs.restamp_model "")" \
+  "agents.roles.<role>.restamp_model falls back to agents.model for a role with no agents.roles entry at all (#258)"
+rm talos.pipeline.json
+
+# Global agents.restamp_model set, no per-role override -> role inherits the
+# global restamp_model, not agents.model.
+cat > talos.pipeline.json <<'EOF'
+{"agents": {"model": "claude-sonnet-5", "restamp_model": "claude-haiku-4-5", "roles": {"reviewer": {"model": "claude-opus-5"}}}}
+EOF
+assert_eq "claude-haiku-4-5" "$(bash "$CFG_SH" agents.restamp_model "")" \
+  "agents.restamp_model returns its own explicit value (#258)"
+assert_eq "claude-haiku-4-5" "$(bash "$CFG_SH" agents.roles.reviewer.restamp_model "")" \
+  "agents.roles.<role>.restamp_model falls back to the global restamp_model, not agents.model, when set (#258)"
+rm talos.pipeline.json
+
+# Role restamp_model set -> wins over both the global restamp_model and
+# agents.model.
+cat > talos.pipeline.json <<'EOF'
+{
+  "agents": {
+    "model": "claude-sonnet-5",
+    "restamp_model": "claude-haiku-4-5-global",
+    "roles": {"qa": {"restamp_model": "claude-haiku-4-5-role"}}
+  }
+}
+EOF
+assert_eq "claude-haiku-4-5-role" "$(bash "$CFG_SH" agents.roles.qa.restamp_model "")" \
+  "agents.roles.<role>.restamp_model wins over both agents.restamp_model and agents.model (#258)"
+assert_eq "claude-haiku-4-5-global" "$(bash "$CFG_SH" agents.restamp_model "")" \
+  "the global agents.restamp_model is unaffected by a role-specific override (#258)"
+
+# --dump parity: the derived value matches the single-key lookup exactly.
+dump_restamp="$SANDBOX/dump-restamp"
+bash "$CFG_SH" --dump > "$dump_restamp" 2>/dev/null
+for k in agents.restamp_model agents.roles.qa.restamp_model; do
+  single="$(bash "$CFG_SH" "$k" "")"
+  dumped="$(_dump_get "$k" "$dump_restamp")" || dumped=""
+  assert_eq "$single" "$dumped" \
+    "--dump matches single-key lookup for $k (#258 parity)"
+done
+rm talos.pipeline.json
+
 finish

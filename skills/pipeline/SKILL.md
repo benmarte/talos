@@ -892,8 +892,19 @@ bash scripts/pipeline-vcs.sh assert-sync
 ```
 If exit non-zero: halt the current issue with the error output; do not dispatch any of the three stages. Main can advance between run-start and this point — the Step 0 check does not cover mid-run drift.
 
+**Re-stamp check (fix-round path, #258):** Before dispatching reviewer/security below (and adversarial in phase 3), check whether either role already carries a stale approval from an earlier pass through this step: `bash scripts/pipeline-vcs.sh check-approval-sha <PR_NUMBER> --stale-list`. This is the same helper Step 4 uses before merge; capture its `stale role=<role> label=<label>` lines — the re-stamp dispatch below needs the exact `<label>` per role. This is the same list a normal Step 4 run would also strip and re-dispatch off of, so nothing here duplicates work Step 4 would otherwise do first. **Trigger, explicit:** dispatch the re-stamp variant for a role only when that role's approval label is present on the PR AND `--stale-list` reports it stale. A role whose label is absent — first pass through this step, or its own previous verdict was CHANGES/FINDINGS and left no approval label — always gets the normal full dispatch below instead; a re-stamp is only ever a cheap reconfirmation of a review that already happened, never a substitute for a role's first look. On a PR's first pass through this step no approval labels exist yet, so the list is empty and every role gets its full dispatch, unchanged.
+
+**Re-stamp dispatch** (shared by this check and Step 4's stale-approval handling below — same shape for `qa`, `reviewer`, `security`, `adversarial`; spawn per the usage-reporting spawn form above):
+- Same role and role profile as the role's full stage — never a different agent, never a different role prompt.
+- Model: resolve `agents.roles.<role>.restamp_model` via `bash scripts/pipeline-config.sh agents.roles.<role>.restamp_model`, falling back to `agents.restamp_model` via `bash scripts/pipeline-config.sh agents.restamp_model`, falling back to that role's already-resolved model from the Harness compatibility section above (`agents.roles.<role>.model` → `agents.model` → session default). `pipeline-config.sh` resolves the first two steps of this chain itself — a call to either key already returns the correct value with no further fallback needed at that step (role restamp → global restamp), so only a genuinely empty result falls through to the role's normal model.
+- Comment header: `**Agent:** <role> (talos) — re-stamp`.
+- Prompt inputs only — not the full PR context a first-time dispatch gets: the approved SHA and stale file list from `check-approval-sha --stale-list`'s output, the current head SHA, `bash scripts/pipeline-vcs.sh diff-pr <PR_NUMBER> --stat`, and the role's previous verdict comment URL (from `read-comments <PR_NUMBER>`, filtered to that role's header).
+- Instruction: "Review only the delta since your prior approval. Targeted tests only, and only if your role runs tests at all: `bash tests/run-tests.sh --for <changed files> --strict`. If the delta does not change your prior verdict: `bash scripts/pipeline-vcs.sh post-approval <PR_NUMBER> <role>`. Otherwise post findings exactly as your normal stage would."
+- **On `RESTAMP_FAIL` (findings), before relaying: strip the stale label** — `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --remove <label>`, using the exact `<label>` this role's `stale role=<role> label=<label>` line reported above (`qa:pass` / `review:approved` / `security:approved` / `adversarial:approved` — never guess a `<role>:approved` pattern, the label name does not always match the role name). This is what makes the role no longer "previously approved": without it, the next pass still finds the (still-present, still-stale) label and dispatches another re-stamp instead of the promised full stage, forever. Step 4's own stale handling already strips this same label as its step 1, before ever reaching this dispatch, so the removal here is a no-op there — it is required only on the Step 3e fix-round path, which has no equivalent prior strip.
+- Relay and `hooks.post_stage` (Rule 3) use the role's normal verdict wording, except the verdict value passed to `post_stage` is `RESTAMP_PASS` (re-confirmed) or `RESTAMP_FAIL` (findings) instead of the role's usual PASS/CHANGES/FINDINGS value — this is what lets `pipeline-events.sh cost` separate re-stamp cost from full-stage cost. A `RESTAMP_FAIL` outcome is not a special case from here on: with its label already stripped above, it escalates to that role's normal full-stage re-dispatch on the next round exactly like a first-time CHANGES/FINDINGS verdict (see that role's "returned" handling below).
+
 **Phase 2 — Reviewer and security in parallel:** After docs completes, dispatch
-reviewer and security concurrently.
+reviewer and security concurrently — for either role named by the re-stamp check above, dispatch its re-stamp variant instead of the full prompt below.
 
 **Reviewer** (if `roles.reviewer = true`; spawn per the usage-reporting spawn form above):
 ```
@@ -977,7 +988,9 @@ After security's phase-2 block above completes, dispatch adversarial — an
 optional, independent second opinion, typically on a different backend
 (`agents.roles.adversarial.runner: custom` + `runner_cmd`); the per-role
 runner rule at the top of this step governs how it spawns, exactly like
-every other role. Skip this phase entirely when `roles.adversarial` is
+every other role. If adversarial is named by the re-stamp check above
+(Phase 2's preamble), dispatch its re-stamp variant instead of the full
+prompt below. Skip this phase entirely when `roles.adversarial` is
 absent or `false`: zero dispatches, and `adversarial:approved` is never
 required by Step 4.
 
@@ -1037,13 +1050,16 @@ exits non-zero:
 3. Selective re-dispatch, driven by the stale roles from `--stale-list`, in
    dependency order (QA before reviewer/security/docs, mirroring Step 3e's
    docs-before-reviewer/security ordering):
-   - `qa` stale → re-dispatch QA (Step 3d) — targeted tests only, per that
-     step's rule; never the full suite.
-   - `reviewer` stale → re-dispatch reviewer (Step 3e phase 2).
-   - `security` stale → re-dispatch security (Step 3e phase 2).
-   - `adversarial` stale → re-dispatch adversarial (Step 3e phase 3; only
-     reachable when `roles.adversarial = true`, since the label is otherwise
-     never present to go stale).
+   - `qa` / `reviewer` / `security` / `adversarial` stale → every role
+     `--stale-list` names here already has a prior approval on this PR (that
+     is what "stale" means) — dispatch that role's **re-stamp** variant
+     (Step 3e's Re-stamp dispatch block above), not its full stage. QA's
+     re-stamp still runs targeted tests only, per Step 3d's rule — never the
+     full suite. `adversarial` is only reachable when `roles.adversarial =
+     true`, since the label is otherwise never present to go stale. A
+     `RESTAMP_FAIL` re-stamp verdict is not merged against — it escalates to
+     that role's normal full-stage re-dispatch on the next pass, same as a
+     first-time CHANGES/FINDINGS/FAIL verdict.
    - `docs` stale → check whether the delta since docs' approved SHA touches
      any docs-relevant path: `README.md`, `docs/**`, `CHANGELOG.md`,
      `templates/**`, or any other `*.md` outside `tests/`.

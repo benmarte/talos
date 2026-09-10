@@ -326,6 +326,26 @@ notifications:
 #       #   OPENAI_API_BASE=http://localhost:8081/v1 OPENAI_API_KEY=local \
 #       #     aider --model openai/local --yes-always --no-auto-commits --message "$(cat)"
 #       # runner_cmd: "/path/to/adversarial-runner.sh"
+#
+# Per-role model selection (native path only): agents.model sets a global
+# default; agents.roles.<role>.model overrides a single role, else falls
+# back to agents.model, else the session default.
+#   model: claude-haiku-4-5-20251001   # volume stages: developer, qa, docs, ...
+#   roles:
+#     reviewer:
+#       model: claude-opus-5           # judgement stages
+#
+# Re-stamp model (agents.restamp_model / agents.roles.<role>.restamp_model,
+# #258): when a role's approval goes stale (check-approval-sha --stale-list)
+# purely because a later commit landed, the orchestrator re-reviews only the
+# delta instead of the whole diff again -- a cheap "re-stamp" dispatch, not
+# a full stage. Precedence: role restamp_model → global restamp_model →
+# agents.model (falls back to the same volume tier as agents.model, not the
+# session default). Unset by default -- no behaviour change until set.
+#   restamp_model: claude-haiku-4-5-20251001
+#   roles:
+#     security:
+#       restamp_model: claude-haiku-4-5-20251001   # even if security itself runs opus
 
 # ── Hooks ─────────────────────────────────────────────────────────────────────
 # hooks.pre_dispatch (#181): a shell command run before EVERY stage's prompt

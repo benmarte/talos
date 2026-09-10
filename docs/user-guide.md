@@ -632,6 +632,60 @@ corrupt a source file. A mechanical union merge that only touches
 `merge.approval_waiver_paths` above), so the orchestrator does not need to
 re-dispatch those roles afterward.
 
+### Stale approvals — cheap delta re-stamp (`agents.restamp_model`, #258)
+
+A role reported by `check-approval-sha --stale-list` already approved this
+PR once — a later commit (from a fix round, or a sibling stage sending the
+PR back to the developer) just invalidated that approval's stamped SHA. Only
+the delta since the approved SHA is new to that role; re-running its full
+stage re-reads the entire diff for no reason. Both places the orchestrator
+re-dispatches a stale role — Step 4's stale-approval gate before merge, and
+Step 3e inline whenever a fix round returns to a role that already approved
+— dispatch a **re-stamp** instead of the normal full stage:
+
+- Same role and role profile as the full stage — never a different agent.
+- Model: `agents.roles.<role>.restamp_model`, falling back to
+  `agents.restamp_model`, falling back to `agents.model` (a re-stamp
+  defaults to the same volume tier as `agents.model`, not the session
+  default an unset `agents.roles.<role>.model` would fall back to).
+- Comment header: `**Agent:** <role> (talos) — re-stamp`.
+- Prompt inputs: the approved SHA and stale file list from
+  `check-approval-sha --stale-list`'s output, the current head SHA,
+  `diff-pr <PR> --stat`, and the role's previous verdict comment URL.
+- Instruction: review only the delta since the prior approval; run only the
+  tests that map to the changed files (`run-tests.sh --for <changed files>
+  --strict`) if the role runs tests at all; if the delta does not change the
+  prior verdict, re-confirm it with `post-approval <PR> <role>` (verdict
+  `RESTAMP_PASS`); otherwise post findings exactly as a normal stage would
+  (verdict `RESTAMP_FAIL`) — a re-stamp that finds a problem is not a
+  special case, it escalates to that role's normal full stage on the next
+  round, exactly like a first-time CHANGES/FINDINGS verdict.
+- **Trigger condition, explicit:** a role only gets the re-stamp variant
+  when its approval label is present on the PR AND `--stale-list` reports
+  it stale. A role whose label is absent (first pass, or its own previous
+  verdict left no approval label) always gets the full stage instead.
+- **`RESTAMP_FAIL` strips the stale label** before relaying —
+  `label-pr <PR> --remove <label>`, using the exact `label=<label>`
+  `--stale-list` reported for that role (`qa:pass` / `review:approved` /
+  `security:approved` / `adversarial:approved` — the label name does not
+  always match the role name, so this is never guessed). Without this, the
+  role's stale label would still be present on the next pass, so
+  `--stale-list` would report it stale again and dispatch another re-stamp
+  instead of the promised full stage. Step 4's own stale handling already
+  strips this same label before it ever reaches the re-stamp dispatch
+  (its step 1, below); the strip in the re-stamp dispatch itself is what
+  makes the Step 3e fix-round path — which has no equivalent prior strip —
+  correct too.
+
+First-time approvals, and any verdict of BLOCKED/CHANGES REQUESTED/FINDINGS,
+are unaffected — `check-approval-sha --stale-list` only ever names a role
+that already has a (now-stale) approval, so the first pass through a stage
+is never mistaken for a re-stamp. `pipeline-events.sh cost` reports
+re-stamp dispatches in their own `restamp` column (a count of
+`RESTAMP_PASS`/`RESTAMP_FAIL` events per issue/role), so re-stamp cost is
+visible next to that role's full-stage cost rather than folded into the
+same totals.
+
 ### Approval-marker author verification (`markers.verify_authors`)
 
 **What it does.** `check-approval-sha` and `read-attempt` trust
@@ -1162,9 +1216,9 @@ lands in the payload/log line as `tokens`/`tool_uses`, or `null` when
 omitted or invalid (one stderr note explains an invalid value). Summarize
 the log with `bash scripts/pipeline-events.sh cost [--issue N] [--json]`: a
 per-issue, per-role table (`issue`, `role`, `events`, `tokens`, `tool_uses`,
-`duration_s`, `unrecorded`) with a `TOTAL` row, where `unrecorded` counts
-events whose `tokens` field is `null` so an untracked group reads as "no
-data", not a real zero (an explicit `--tokens 0` is a real zero and is
+`duration_s`, `unrecorded`, `restamp`) with a `TOTAL` row, where `unrecorded`
+counts events whose `tokens` field is `null` so an untracked group reads as
+"no data", not a real zero (an explicit `--tokens 0` is a real zero and is
 never counted in `unrecorded`). Whether `unrecorded` is expected depends on
 the spawn path (see "Usage-reporting spawn form" under "Harness
 compatibility" in `skills/pipeline/SKILL.md`): on the native subagent path,
@@ -1172,7 +1226,10 @@ every stage is spawned so its completion notification carries usage, so an
 `unrecorded` native-path event is a playbook bug worth investigating; on
 the adapter path (`pipeline-agent.sh`) and pi inline mode, stages run
 synchronously with no completion notification, so `unrecorded` there is
-expected, not a bug.
+expected, not a bug. `restamp` counts events with verdict
+`RESTAMP_PASS`/`RESTAMP_FAIL` (#258) — a cheap delta re-review of a PR the
+same role already approved — separately from that group's full-stage
+events/tokens (see "Stale approvals — cheap delta re-stamp" above).
 
 ### A generic notification sink (`notifications.cmd`)
 
