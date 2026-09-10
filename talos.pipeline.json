@@ -30,8 +30,7 @@
   "merge": {
     "method": "squash",
     "required_checks": [
-      "test (ubuntu-latest)",
-      "test (macos-latest)"
+      "test (ubuntu-latest)"
     ],
     "delete_branch": true,
     "approval_waiver_paths": [

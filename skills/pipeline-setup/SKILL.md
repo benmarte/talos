@@ -394,6 +394,19 @@ they differ from `bash tests/run-tests.sh --no-cache`, and the base branch
 name for `main` if this repo's base branch differs. Tell the user it was
 written and that the header comments in the file explain each knob.
 
+**Check `merge.required_checks` before finishing this step.** If the
+existing (or about-to-be-written) `talos.pipeline.yml`/`.json` names a job
+this template only runs on push, not on PRs — most commonly
+`test (macos-latest)` — warn explicitly: "your `merge.required_checks`
+names `test (macos-latest)`, which this template no longer runs on pull
+requests. If you don't remove it, the merge gate will wait forever on every
+PR (QA's CI-wait loop waits for a check that will never appear, until
+`verify.ci_wait_s` elapses, then fails closed). Remove it from
+`merge.required_checks`, or add `macos-latest` back to the `pull_request`
+matrix in the workflow you just wrote." This check applies whether the
+config was written earlier in this same run (Step 7) or already existed
+before setup started.
+
 If no: skip, no file is written.
 
 ---

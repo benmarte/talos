@@ -9,6 +9,10 @@
 #   3. skills/pipeline-setup/SKILL.md's CI step: offers the template only
 #      when no existing workflow runs the test suite, and never edits an
 #      existing workflow (prompt text assertions).
+#   4. talos.pipeline.json's merge.required_checks is a subset of the job
+#      names .github/workflows/tests.yml actually runs on pull_request --
+#      naming a push-only check (e.g. "test (macos-latest)") hangs QA's
+#      CI-wait loop on every PR forever (found live on this PR: #261).
 set -u
 . "$(dirname "$0")/helpers.sh"
 
@@ -70,6 +74,8 @@ assert_contains "$template_content" "merge.required_checks" \
   "template: header documents the merge.required_checks caveat"
 assert_contains "$template_content" "test (macos-latest)" \
   "template: header names the unsafe required-check example explicitly"
+assert_contains "$template_content" "wait forever" \
+  "template: header states explicitly the merge gate will wait forever if not removed"
 assert_contains "$template_content" "jobs:" "template: has a jobs section"
 assert_contains "$template_content" "  test:" "template: job id is \"test\" (required-check name stability)"
 assert_contains "$template_content" "tests/run-tests.sh" "template: runs tests/run-tests.sh"
@@ -102,5 +108,49 @@ assert_contains "$setup_content" "never edit it" \
   "pipeline-setup SKILL.md states it never edits an existing workflow"
 assert_contains "$setup_content" "No workflow runs your test suite yet" \
   "pipeline-setup SKILL.md only offers the template when no workflow runs the suite"
+assert_contains "$setup_content" "merge.required_checks" \
+  "pipeline-setup SKILL.md checks merge.required_checks after writing the template"
+assert_contains "$setup_content" "test (macos-latest)" \
+  "pipeline-setup SKILL.md names the unsafe required-check example"
+assert_contains "$setup_content" "wait forever" \
+  "pipeline-setup SKILL.md warns the merge gate will wait forever if not removed"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. talos.pipeline.json's merge.required_checks must be a subset of the job
+#    names this repo's own tests.yml actually runs on pull_request -- a name
+#    the workflow only produces on push (e.g. "test (macos-latest)") hangs
+#    QA's CI-wait loop on every PR forever. This is the dogfooding gap that
+#    made #261's own merge gate hang.
+# ─────────────────────────────────────────────────────────────────────────────
+CONFIG_JSON="$TALOS_ROOT/talos.pipeline.json"
+if [ -f "$CONFIG_JSON" ] && python3 -c "import yaml" 2>/dev/null; then
+  out="$(python3 -c "
+import json, re, yaml
+
+with open('$CONFIG_JSON') as f:
+    cfg = json.load(f)
+required = set(cfg.get('merge', {}).get('required_checks', []) or [])
+
+with open('$REPO_WORKFLOW') as f:
+    wf = yaml.safe_load(f)
+matrix_os = str(wf['jobs']['test']['strategy']['matrix']['os'])
+
+# The matrix os expression is:
+#   \${{ github.event_name == 'pull_request' && fromJSON('[...]') || fromJSON('[...]') }}
+# The FIRST fromJSON(...) is the value used when the expression's condition
+# (github.event_name == 'pull_request') is true -- i.e. what actually runs
+# on a PR push. Extract it without evaluating GHA expression syntax.
+m = re.search(r\"fromJSON\('(\[[^]]*\])'\)\", matrix_os)
+pr_os = json.loads(m.group(1)) if m else []
+pr_checks = {'test (%s)' % os for os in pr_os}
+
+missing = required - pr_checks
+print('OK' if not missing else 'HANGS_ON_PR: ' + ', '.join(sorted(missing)))
+" 2>&1)"
+  assert_eq "OK" "$out" \
+    "talos.pipeline.json merge.required_checks only names checks that actually run on pull_request"
+else
+  echo "  skip: talos.pipeline.json or PyYAML not available"
+fi
 
 finish

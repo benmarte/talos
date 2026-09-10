@@ -38,14 +38,16 @@
 #     review, yielding one run per PR on the final SHA instead of one per
 #     push.
 #
-# CAVEAT -- merge.required_checks (talos.pipeline.yml):
+# CAVEAT -- merge.required_checks (talos.pipeline.json / .yml):
 #   Under this template, "test (macos-latest)" only ever runs on push to the
-#   base branch, never on a PR. If you name it in merge.required_checks,
-#   Talos's QA CI-wait loop (`pipeline-vcs.sh pr-checks-required`) will wait
-#   for a check that never appears on the PR and hang until verify.ci_wait_s
-#   elapses, then fail closed. Only name checks that actually run on PR
-#   pushes under this template -- "test (ubuntu-latest)" is safe,
-#   "test (macos-latest)" is not.
+#   base branch, never on a PR. If merge.required_checks names a job that
+#   this template no longer runs on PRs (macOS), REMOVE IT -- or the merge
+#   gate will wait forever: Talos's QA CI-wait loop
+#   (`pipeline-vcs.sh pr-checks-required`) will wait for a check that never
+#   appears on the PR until verify.ci_wait_s elapses, then fail closed, on
+#   every single PR. Only name checks that actually run on PR pushes under
+#   this template -- "test (ubuntu-latest)" is safe, "test (macos-latest)"
+#   is not.
 
 name: tests
 

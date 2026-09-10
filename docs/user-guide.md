@@ -1200,12 +1200,13 @@ already running your tests, it only prints a one-line note about the
 `paths-ignore`/`concurrency` knobs it's missing, in case you want to add
 them by hand. Talos dogfoods this exact template in its own repo.
 
-If you set `merge.required_checks`, only name checks this workflow actually
-runs on pull requests (`test (ubuntu-latest)` under the default template) --
-naming a push-only check (e.g. `test (macos-latest)`) makes QA's CI-wait
-loop (`pipeline-vcs.sh pr-checks-required`) wait for a check that will never
-appear on the PR, until `verify.ci_wait_s` elapses and it fails closed. See
-the README's [CI](../README.md#ci) section.
+If `merge.required_checks` names a job that this template no longer runs on
+PRs (macOS, e.g. `test (macos-latest)`), **remove it -- or the merge gate
+will wait forever**: QA's CI-wait loop (`pipeline-vcs.sh
+pr-checks-required`) will wait for a check that will never appear on the PR
+until `verify.ci_wait_s` elapses and it fails closed, on every single PR.
+Only `test (ubuntu-latest)` is safe to name under this template. See the
+README's [CI](../README.md#ci) section.
 
 ## Customizing agent profiles
 

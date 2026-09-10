@@ -1125,12 +1125,15 @@ before it). `/pipeline-setup` offers to write it to
 test suite, and never edits a workflow that already exists. This repo's own
 `.github/workflows/tests.yml` dogfoods it.
 
-**Caveat:** if you add `merge.required_checks` and name a check that this
-template only runs on push (e.g. `test (macos-latest)`), QA's CI-wait loop
+**Caveat:** if `merge.required_checks` names a job that this template no
+longer runs on PRs (macOS, e.g. `test (macos-latest)`), **remove it -- or
+the merge gate will wait forever**: QA's CI-wait loop
 (`pipeline-vcs.sh pr-checks-required`) will wait for a check that never
-appears on the PR and hang until `verify.ci_wait_s` elapses, then fail
-closed. Under this template, only `test (ubuntu-latest)` is safe to name in
-`merge.required_checks`.
+appears on the PR until `verify.ci_wait_s` elapses, then fail closed, on
+every single PR. Under this template, only `test (ubuntu-latest)` is safe to
+name in `merge.required_checks`. This repo's own `talos.pipeline.json`
+dogfoods that too -- `merge.required_checks` names only `test
+(ubuntu-latest)`.
 
 ---
 
