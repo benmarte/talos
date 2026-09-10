@@ -359,6 +359,58 @@ If provider is "file": skip labels, tell the user "File mode uses checkboxes for
 
 ---
 
+## Step 8b — Recommended CI workflow (github only)
+
+Only run this step if provider is "github". Skip silently for gitlab/azure/file.
+
+Check whether any workflow under `.github/workflows/*.yml` already runs
+`tests/run-tests.sh` (or, if this repo's `verify:` commands name a different
+test entry point, that command):
+
+```bash
+grep -l "run-tests.sh" .github/workflows/*.yml 2>/dev/null
+```
+
+**If a matching workflow already exists: never edit it.** This step only
+ever offers to write a brand-new file — it does not modify, append to, or
+overwrite an existing workflow under any circumstance. Instead, check
+whether that workflow already has `paths-ignore` and `concurrency` keys; if
+either is missing, print one line noting that `templates/ci/github-tests.yml`
+documents both as CI-cost recommendations, and move on. Do not offer to
+apply the template.
+
+**If no workflow runs the test suite:** offer to write one.
+
+> "No workflow runs your test suite yet. Talos ships a recommended CI
+> template (`templates/ci/github-tests.yml`) that skips docs-only pushes,
+> cancels superseded runs on the same branch, and runs the full OS matrix
+> only on merges to your base branch (pull requests run the cheap OS only).
+> This is a recommendation, not something Talos enforces — want me to write
+> it to `.github/workflows/tests.yml`? (y/n)"
+
+If yes: copy `templates/ci/github-tests.yml` to `.github/workflows/tests.yml`,
+substituting the test command for this repo's actual `verify:` command(s) if
+they differ from `bash tests/run-tests.sh --no-cache`, and the base branch
+name for `main` if this repo's base branch differs. Tell the user it was
+written and that the header comments in the file explain each knob.
+
+**Check `merge.required_checks` before finishing this step.** If the
+existing (or about-to-be-written) `talos.pipeline.yml`/`.json` names a job
+this template only runs on push, not on PRs — most commonly
+`test (macos-latest)` — warn explicitly: "your `merge.required_checks`
+names `test (macos-latest)`, which this template no longer runs on pull
+requests. If you don't remove it, the merge gate will wait forever on every
+PR (QA's CI-wait loop waits for a check that will never appear, until
+`verify.ci_wait_s` elapses, then fails closed). Remove it from
+`merge.required_checks`, or add `macos-latest` back to the `pull_request`
+matrix in the workflow you just wrote." This check applies whether the
+config was written earlier in this same run (Step 7) or already existed
+before setup started.
+
+If no: skip, no file is written.
+
+---
+
 ## Step 9 — GitHub Project setup (optional, github only)
 
 If board.enabled = true AND the user said they don't have a project yet:

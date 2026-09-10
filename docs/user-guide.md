@@ -1187,6 +1187,27 @@ Setup (skip either step and the job is a clean no-op -- it prints
 See the README's [Tests](../README.md#tests) section for what each of the
 canary's two jobs (`base-currency`, `real-api`) checks.
 
+### Recommended CI workflow template
+
+`templates/ci/github-tests.yml` is a **recommendation**, not something Talos
+enforces -- your repo's CI cadence and cost are your call. It skips
+docs-only pushes, cancels superseded runs on the same branch, runs pull
+requests on `ubuntu-latest` only, and runs the full OS matrix on pushes to
+the base branch. `/pipeline-setup` offers to write it to
+`.github/workflows/tests.yml` when no existing workflow already runs your
+test suite, and it never edits a workflow that already exists -- if one is
+already running your tests, it only prints a one-line note about the
+`paths-ignore`/`concurrency` knobs it's missing, in case you want to add
+them by hand. Talos dogfoods this exact template in its own repo.
+
+If `merge.required_checks` names a job that this template no longer runs on
+PRs (macOS, e.g. `test (macos-latest)`), **remove it -- or the merge gate
+will wait forever**: QA's CI-wait loop (`pipeline-vcs.sh
+pr-checks-required`) will wait for a check that will never appear on the PR
+until `verify.ci_wait_s` elapses and it fails closed, on every single PR.
+Only `test (ubuntu-latest)` is safe to name under this template. See the
+README's [CI](../README.md#ci) section.
+
 ## Customizing agent profiles
 
 Each role profile is a markdown file with YAML frontmatter (Claude Code

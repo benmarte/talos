@@ -1,0 +1,106 @@
+# Recommended GitHub Actions workflow for a repo using Talos
+# (tests/run-tests.sh, or your own equivalent test entry point).
+#
+# This is a TEMPLATE, not something Talos enforces at runtime -- CI cadence
+# and cost are the consuming repo's policy. Copy this file to
+# .github/workflows/tests.yml (or let `/pipeline-setup` write it for you when
+# no existing workflow runs your test suite -- it never edits a workflow that
+# already exists), then adjust the paths, job name, and test command for your
+# project. Talos dogfoods this exact template in its own repo.
+#
+# What each knob buys you, and the trade-off it makes:
+#
+#   paths-ignore (push)
+#     Skips the whole workflow for commits that touch only docs (markdown,
+#     docs/**, tasks/**) -- nothing under test changed, so there is no
+#     coverage lost by not running.
+#
+#   concurrency + cancel-in-progress (pull_request only)
+#     A new push on the same PR cancels any run still in flight for that PR
+#     -- without this, every superseded push on a PR branch still burns a
+#     full run to completion for code nobody will look at again. Push runs
+#     to the base branch are grouped by commit SHA instead and are NEVER
+#     cancelled: two merges landing close together each still run their own
+#     full OS matrix to completion, so a fast second merge can't cancel the
+#     first merge's still-running macOS job and silently lose that
+#     coverage (queue rather than cancel, same reasoning as
+#     .github/workflows/canary.yml).
+#
+#   pull_request: ubuntu-latest only
+#     Full cross-OS runs are the expensive half of CI cost, and on most repos
+#     they catch OS-specific drift rather than correctness bugs. Running only
+#     the cheap OS on every PR push keeps feedback fast; see the trade-off
+#     below for what this defers.
+#
+#   push to the base branch: full matrix (ubuntu-latest + macos-latest)
+#     Every merge to the base branch still runs the full matrix, so
+#     macOS-only drift IS caught -- just after merge instead of before it.
+#     If your project can't tolerate that window (e.g. you ship a macOS
+#     binary on every merge, or macOS-specific bugs are common), add
+#     macos-latest back to the pull_request matrix and drop this knob.
+#
+#   draft PRs are skipped entirely
+#     Iterate freely on a draft; CI runs once the PR is marked ready for
+#     review, yielding one run per PR on the final SHA instead of one per
+#     push.
+#
+#   permissions: contents: read
+#     Least privilege -- this job only checks out the repo and runs tests,
+#     so it never needs a GITHUB_TOKEN scoped beyond read access; without an
+#     explicit permissions block it silently inherits the repo's (possibly
+#     broader) default token scope instead.
+#
+# CAVEAT -- merge.required_checks (talos.pipeline.json / .yml):
+#   Under this template, "test (macos-latest)" only ever runs on push to the
+#   base branch, never on a PR. If merge.required_checks names a job that
+#   this template no longer runs on PRs (macOS), REMOVE IT -- or the merge
+#   gate will wait forever: Talos's QA CI-wait loop
+#   (`pipeline-vcs.sh pr-checks-required`) will wait for a check that never
+#   appears on the PR until verify.ci_wait_s elapses, then fail closed, on
+#   every single PR. Only name checks that actually run on PR pushes under
+#   this template -- "test (ubuntu-latest)" is safe, "test (macos-latest)"
+#   is not.
+
+name: tests
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'tasks/**'
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: tests-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # Skip CI on draft PRs -- developers iterate freely on drafts and mark
+    # ready-for-review only once every stage has approved. This yields one
+    # CI run per PR on the final SHA, immediately before merge.
+    # IMPORTANT: ready_for_review must be in types above -- without it,
+    # marking a draft ready fires no event and CI never runs for drafted PRs.
+    # NOTE: != true is used rather than == false; both are behaviourally
+    # identical under GHA numeric coercion, but != true states the intent.
+    if: github.event.pull_request.draft != true
+    strategy:
+      matrix:
+        # PR pushes: ubuntu-latest only. Push to the base branch (github.ref
+        # == refs/heads/main and no PR context): the full ubuntu+macos matrix.
+        # The job id stays "test" either way, so the required-check name
+        # "test (ubuntu-latest)" is stable across both trigger types --
+        # branch-protection / merge.required_checks configuration doesn't
+        # need to change when a PR is opened vs. when it merges.
+        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "macos-latest"]') }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run test suite
+        run: bash tests/run-tests.sh --no-cache
