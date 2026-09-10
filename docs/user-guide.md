@@ -531,12 +531,30 @@ for the same suite run more than it needs to:
   selection (one flaky file, or the whole suite) by running it N times and
   stopping at the first failure — see the README's [Tests](../README.md#tests)
   section for the full flag reference.
+- **QA never runs the full `verify:` list, in either mode (#257).** CI is the
+  authoritative full run — the developer's own required-once-per-PR run
+  (above) plus, under `qa_mode: ci`, the CI check itself. QA's only local
+  test execution is targeted, and always passes `--strict`: `tests/run-tests.sh
+  --for <each path from pr-files> --strict` (or `--changed
+  origin/<base-branch> --strict`), through `pipeline-verify.sh`. `--strict`
+  (#263) closes a gap plain `--for`/`--changed` left open: without it, a path
+  with no convention mapping (e.g. `CHANGELOG.md`, most of `docs/**`) silently
+  falls back to running the full suite — exactly the outcome QA must never
+  produce. Under `--strict`, an unmapped path is skipped (`no test mapping for
+  '<path>' (skipped)` on stderr) instead of triggering that fallback; if the
+  resulting selection is empty, the run exits 3 with `no targeted tests
+  selected` rather than running anything — QA reports that in its verdict
+  and relies on CI instead of running the full suite. This is stated
+  explicitly in both `skills/pipeline/SKILL.md`'s Step 3d prompt and
+  `agents/qa.md`, closing a gap where the orchestrator's stage prompt asked
+  for verify commands generically and every QA dispatch ran the full suite
+  anyway.
 - **QA** (`verify.qa_mode`, default `ci` when `merge.required_checks` is
   non-empty, else `local`): before either mode runs, the orchestrator checks
   `pipeline-vcs.sh pr-mergeable <pr>` — a `CONFLICTING` PR gets no
   `pull_request` CI run to wait for, so QA is not dispatched into a poll
-  that would never resolve. Under `ci`, QA does not re-run `verify:` at all —
-  it polls `pipeline-vcs.sh pr-checks-required` in the foreground, bounded by
+  that would never resolve. Under `ci`, QA additionally polls
+  `pipeline-vcs.sh pr-checks-required` in the foreground, bounded by
   `verify.ci_wait_s` (default `900` seconds; must be a positive integer,
   rejected otherwise with a one-line stderr warning and a fallback to the
   default -- it is interpolated unquoted into the CI-wait loop's shell test,
@@ -556,15 +574,17 @@ for the same suite run more than it needs to:
   QA **FAIL** -- this is fail-closed by design, never assume a missing check
   would have passed. The budget QA saves by not re-running the suite goes
   into driving acceptance criteria and edge cases instead. Under `local` (the
-  default when no
-  `merge.required_checks` are configured, so there is no CI oracle to trust),
-  QA runs the full `verify:` list once itself, same as before. An explicit
-  `verify.qa_mode: ci` combined with an empty or absent
+  default when no `merge.required_checks` are configured, so there is no CI
+  oracle to trust), there is nothing extra to wait on, but the targeted-tests
+  rule above still applies unchanged — QA does not fall back to a full run
+  just because CI isn't configured; the developer's one required full
+  `verify:` run before opening the PR is still the full-suite guarantee. An
+  explicit `verify.qa_mode: ci` combined with an empty or absent
   `merge.required_checks` list is itself treated as `local` (with a one-line
   warning on stderr from `pipeline-config.sh`) — trusting CI as the oracle
-  for zero required checks would let QA pass vacuously, without ever running
-  `verify:` or observing a real CI signal, so that combination fails closed
-  to `local` instead of passing silently.
+  for zero required checks would let QA pass vacuously, without ever
+  observing a real CI signal, so that combination fails closed to `local`
+  instead of passing silently.
 - **Reviewer, security, and docs never run `verify:`.** They only ever read
   the diff (`pipeline-vcs.sh diff-pr`) and CI status
   (`pipeline-vcs.sh pr-checks`) — this was already true in practice and is
@@ -582,9 +602,10 @@ for the same suite run more than it needs to:
   non-positive value is rejected by `pipeline-config.sh` (one-line warning on
   stderr, falls back to the default).
 
-Set `verify.qa_mode: local` explicitly if you want QA to always re-run the
-suite itself regardless of `merge.required_checks` — for example, if your CI
-doesn't run the same suite Talos does.
+Set `verify.qa_mode: local` explicitly if you want QA to skip the CI-wait poll
+regardless of `merge.required_checks` — for example, if your CI doesn't run
+the same suite Talos does. It does not make QA re-run the full suite; QA
+always runs targeted tests only (#257).
 
 ### Mechanical merge for CHANGELOG-only conflicts (`merge.union_paths`, #256)
 

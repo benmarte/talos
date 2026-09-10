@@ -26,17 +26,24 @@ Foreground rule: run the verify list or the CI-wait poll below in the
 foreground with an explicit timeout of `verify.timeout_ms` ms (default
 600000); never use background execution, `&`, `nohup`, `disown`, or
 sleep-polling; never end your turn while a verify command is running.
-Run verify commands (and the CI-wait poll) through `bash scripts/pipeline-verify.sh --issue <issue-n> --worktree <worktree-path>` — do not export TALOS_ISSUE_NUMBER/TALOS_WORKTREE_PATH by hand.
 5. Check `verify.qa_mode` (config key; default `ci` when `merge.required_checks`
    is non-empty, else `local`). A `qa_mode: ci` with an empty or absent
    `merge.required_checks` list is itself treated as `local` — trusting CI as
    the oracle for an empty check list would let QA pass vacuously without
-   ever running `verify:` or observing a real CI signal, so
-   `pipeline-config.sh` resolves that combination to `local` for you:
-   - `ci` — do NOT run the test suite or lint locally. CI already runs
-     `verify:` on every push. Instead, run this single bounded foreground
-     command and wait for it to finish before continuing — it blocks in one
-     shell call and returns only once every check named in
+   ever observing a real CI signal, so
+   `pipeline-config.sh` resolves that combination to `local` for you. In
+   EITHER mode: CI is the authoritative full run (`pr-checks-required <pr>`
+   must already be green, when configured). Run ONLY targeted tests, with
+   `--strict` so an unmapped path is skipped instead of falling back to the
+   full suite: `bash tests/run-tests.sh --for <each path from pr-files>
+   --strict` (or `--changed origin/<base-branch> --strict`), through `bash
+   scripts/pipeline-verify.sh --issue <issue-n> --worktree <worktree-path>` —
+   do not export TALOS_ISSUE_NUMBER/TALOS_WORKTREE_PATH by hand. Never run
+   the full suite. Exit 3 means no targeted tests map to this change —
+   report that in the verdict and rely on CI; do not run the full suite.
+   - `ci` — beyond the targeted tests above, also run this single bounded
+     foreground command and wait for it to finish before continuing — it
+     blocks in one shell call and returns only once every check named in
      `merge.required_checks` passes or the wait budget elapses, so there is
      nothing left to improvise. The `pipeline-vcs.sh pr-checks-required` verb
      (unlike plain `pipeline-vcs.sh pr-checks`) is scoped to only the required
@@ -49,11 +56,13 @@ Run verify commands (and the CI-wait poll) through `bash scripts/pipeline-verify
      check passing -- an explicit failure or the wait budget elapsing while a
      check was still pending or missing; fail closed. Put the time this saves
      into acceptance criteria and edge cases instead.
-   - `local` (including the empty-`required_checks` fallback above) — run the
-     full test suite and any lint/typecheck the repo defines, exactly once,
-     as before. Prefer summary output for verify commands (e.g. `--quiet` for
-     Talos's own suite, or the project's equivalent) -- quote only failures,
-     never paste full green output into comments or final messages.
+   - `local` (including the empty-`required_checks` fallback above) — there is
+     no CI to trust, but the developer already ran the full `verify:` list
+     once before opening the PR (#195), so the targeted-tests-only rule above
+     still applies unchanged; there is nothing extra to run here. Prefer
+     summary output for verify commands (e.g. `--quiet` for Talos's own
+     suite, or the project's equivalent) -- quote only failures, never paste
+     full green output into comments or final messages.
 6. Exercise each acceptance criterion from the PM spec — drive the actual
    behavior where feasible, not only unit tests. Use `test-driven-development`
    to judge whether the tests actually prove the behavior, and

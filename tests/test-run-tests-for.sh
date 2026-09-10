@@ -286,4 +286,50 @@ $out_j
 $out_l"
 assert_not_contains "$ALL_TARGETED_OUTPUT" "RESULT: all 0 test file(s) passed" "L: no --for/--changed run ever silently passes with 0 files"
 
+# ── Test M: --strict skips an unmapped path instead of falling back to the
+# full suite; a mapped sibling path still runs (#263 review follow-up) ───────
+# Reproduces the reviewer's finding: without --strict, a path like
+# CHANGELOG.md with no convention mapping silently forces the full suite --
+# exactly what QA must never do. --strict must skip it and keep going.
+# Named mutation: dropping the STRICT branch in _fail_open would set
+# FULL_SUITE=1 here too, and out_m would show "SELECTED: full suite" /
+# "PASS tests/test-other.sh" instead of skipping the unmapped path.
+FDM="$SANDBOX/m"
+build_min_fixture "$FDM"
+mkdir -p "$FDM/scripts"
+write_stub "$FDM" "test-worktree.sh" "exit 0"
+write_stub "$FDM" "test-other.sh" "exit 0"
+printf '#!/usr/bin/env bash\necho stub\n' > "$FDM/scripts/pipeline-worktree.sh"
+
+out_m="$(bash "$FDM/tests/run-tests.sh" --no-cache --for scripts/pipeline-worktree.sh --for some/unmapped/path.txt --strict --quiet 2>&1)"; rc_m=$?
+assert_exit_code 0 "$rc_m" "M: exits 0 (mapped path still selected despite an unmapped sibling)"
+assert_contains "$out_m" "no test mapping for 'some/unmapped/path.txt' (skipped)" "M: --strict skips the unmapped path instead of falling back"
+assert_contains "$out_m" "SELECTED: test-worktree.sh" "M: --strict still selects the mapped path's test"
+assert_contains "$out_m" "PASS  tests/test-worktree.sh" "M: runs the mapped test"
+assert_not_contains "$out_m" "test-other.sh" "M: does not run the unrelated test"
+assert_not_contains "$out_m" "full suite" "M: --strict never falls back to the full suite"
+
+# ── Test N: --strict with an all-unmapped selection exits 3, distinct from
+# both a pass and the generic empty-selection exit 1 (#263 review follow-up) ─
+# Named mutation: reverting the post-loop --strict guard would let this fall
+# through to the pre-existing "selected 0 test file(s)" exit 1 path (or, if
+# _fail_open still forced FULL_SUITE, run the whole fixture suite instead).
+FDN="$SANDBOX/n"
+build_min_fixture "$FDN"
+for f in test-p2.sh test-q2.sh; do write_stub "$FDN" "$f" "exit 0"; done
+
+out_n="$(bash "$FDN/tests/run-tests.sh" --no-cache --for some/unmapped/path.txt --strict --quiet 2>&1)"; rc_n=$?
+assert_exit_code 3 "$rc_n" "N: --strict with an all-unmapped selection exits 3"
+assert_contains "$out_n" "no test mapping for 'some/unmapped/path.txt' (skipped)" "N: prints the skip note"
+assert_contains "$out_n" "no targeted tests selected" "N: prints the distinct empty-selection message"
+assert_not_contains "$out_n" "PASS" "N: does not run any test file"
+assert_not_contains "$out_n" "full suite" "N: never falls back to the full suite"
+
+# ── Test O: --strict with a fully-mapped selection behaves exactly like the
+# non-strict case (#263 review follow-up) ─────────────────────────────────────
+out_o="$(bash "$FDA/tests/run-tests.sh" --no-cache --for scripts/pipeline-worktree.sh --strict --quiet 2>&1)"; rc_o=$?
+assert_exit_code 0 "$rc_o" "O: exits 0"
+assert_contains "$out_o" "SELECTED: test-worktree.sh" "O: same selection as without --strict"
+assert_contains "$out_o" "RESULT: all 1 test file(s) passed" "O: same RESULT as without --strict"
+
 finish
