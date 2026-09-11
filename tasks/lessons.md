@@ -109,3 +109,7 @@ All five efficiency issues merged through the full pipeline. Effects observed in
 - Reviewer/security caught one real gap per PR again (missing `permissions:` block, shared concurrency group on main, no forbidden-files cross-check on union paths, unlocked worktree ops, `--for` fail-open fallback, unscoped spawn rule, stale label surviving RESTAMP_FAIL). The pattern holds: every "simple" change had one thing a second reader had to find. Do not skip review stages to save tokens.
 - Cost: 4.24M tokens across the whole `.talos/events.jsonl` (both days); reviewer/security now report usage (#259), so the log is complete from here on.
 - Orchestrator discipline: no pushes to main mid-run this batch (Rule 19 now in the playbook).
+
+## 2026-09-11: v0.15.0 released via Talos
+
+Release flow that worked: one release issue (#268) combining the fresh docs audit's gaps, version bump, CHANGELOG rename and README upgrade notes; run through the full pipeline; orchestrator creates the annotated tag and GitHub release after main CI passes on the merge commit. Two review rounds were needed and both were real: the JSON example carried new keys only as prose in a `_note` (the guard test used a substring match), and one upgrade note misdescribed the cost report's `tokens` field as null. For future releases: example-config coverage must be a structural check (JSON tree walk / anchored YAML line), and every upgrade note must be verified against the script before it ships. `gh release view` has no `isLatest` field; use `gh release list`.
