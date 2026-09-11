@@ -467,6 +467,20 @@ Previously, setting `merge.forbidden_files` replaced the built-in defaults entir
 - **If you intended to add extra patterns on top of the defaults** (the common case): no action required. Your config now works as you most likely intended.
 - **If you intentionally narrowed the deny list** (removed some built-in patterns to allow those file types): add `merge.forbidden_files_replace: true` to restore the old replacement behaviour. Review the security warning in the `merge.forbidden_files_replace` table row above before doing so — replacement suppresses all built-in secret-protection patterns and should be treated as a deliberate security trade-off.
 
+### Upgrade notes (v0.15+)
+
+**(a) Approval-marker author verification is now on by default (#187).** `markers.verify_authors` defaults to `true`: `check-approval-sha`/`read-attempt` now only trust a `talos:approval`/`talos:attempt` marker posted by the identity Talos itself is authenticated as (inferred automatically, no config required) unioned with `markers.trusted_authors`. Previously any commenter's marker was trusted. If your setup relies on a separate bot/CI job posting markers under a different identity, list its login under `markers.trusted_authors`; to restore the exact pre-#187 behaviour (accept any commenter's marker, silently), set `markers.verify_authors: false`.
+
+**(b) `pipeline-events.sh cost`'s `n/a` column is now `unrecorded` (#259).** Raw event lines in `.talos/events.jsonl` (written by `post_stage`) carry `tokens: null` when usage was not reported — expected for reviewer/security/validator/docs stages on the native subagent path, which record duration only. The `cost` report (table and `--json`) never surfaces that `null`: its `tokens` column is always an integer sum (treating a null event as `0`), and the previously `n/a`-named column — now `unrecorded` — separately counts how many of that group's events had a null `tokens` field, so an untracked group stays visible instead of reading as a real zero. Any script or dashboard consuming `pipeline-events.sh cost --json` must key on `unrecorded`, not on a null `tokens` value, since `tokens` in the `cost` report is never `null`.
+
+**(c) Worktree lifecycle now removes every stage's worktree and scratch branch, not just the developer's (#240).** QA/reviewer/security/docs harness worktrees and their scratch branches are now tagged (`pipeline-worktree.sh tag`) and removed alongside the developer's once the PR merges or closes; `sweep` also reclaims any orphan regardless of dirty state, rather than preserving it indefinitely. No config key to change — this is a behaviour change to `remove`/`sweep`, not an opt-in. See [Worktree lifecycle](#worktree-lifecycle).
+
+**(d) QA runs targeted tests only, via `run-tests.sh --for`/`--changed --strict` (#257).** QA no longer re-runs the full suite (CI already did, under `verify.qa_mode: ci`) and never falls back to the full suite for an unmapped path — an unmapped path is skipped instead, and an all-unmapped selection exits `3`. If you have external tooling that scrapes QA's test output expecting a full-suite run, expect a scoped selection instead; no config key changes this, it is the QA stage prompt itself. See the `--strict` documentation in [Tests](#tests).
+
+**(e) CHANGELOG-only merge conflicts are now resolved mechanically, without a developer dispatch (#256).** A `CONFLICTING` PR whose only conflicting paths are covered by `merge.union_paths` (default `["CHANGELOG.md"]`) is now merged automatically by `pipeline-mergebase.sh` (`git merge-file --union`, both sides kept) instead of triggering a full developer merge-base task. Widen or narrow which paths qualify via `merge.union_paths`; entries under `scripts/**`, `tests/**`, or matching a pipeline config filename are rejected at validation time and can never be added.
+
+**(f) `merge.required_checks` must only name checks that actually run on PRs, if you adopt the CI template (#260).** The new `templates/ci/github-tests.yml` splits the OS matrix by trigger — pull requests run `ubuntu-latest` only; pushes to the base branch run the full `ubuntu-latest` + `macos-latest` matrix. Naming a push-only check (e.g. `test (macos-latest)`) in `merge.required_checks` makes QA's CI-wait loop wait for a check that never appears on the PR, hanging until `verify.ci_wait_s` elapses. Keep `merge.required_checks` scoped to checks that run on every PR.
+
 ### Comment templates
 
 Stage comments use `string.Template`-style `${PLACEHOLDER}` substitution. Templates live in `templates/comments/`:
@@ -608,7 +622,7 @@ Thread anchors are stored in `~/.talos/threads.json` keyed by `<repo-slug>:<issu
    - **PM** turns the confirmed issue into a spec comment (goal, acceptance criteria, branch name, out-of-scope).
    - **Developer** spawns in an isolated git worktree. It implements, iterates with targeted tests (`verify.targeted`, default `true`), then runs your full `verify` commands exactly once before its final commit, and opens a PR. The worktree is removed (branch and all) right after the PR merges, via `pipeline-worktree.sh remove`; a startup sweep reclaims any orphaned worktree as a backstop.
    - **QA** checks out the PR branch and verifies each acceptance criterion. Under `verify.qa_mode: ci` (the default once `merge.required_checks` is set) it does not re-run `verify:` — it waits for CI to go green and fails closed if it doesn't; under `local` it runs `verify:` once itself.
-   - **Docs** runs first after QA passes (phase 1); **Reviewer + Security** run in parallel after docs completes (phase 2).
+   - **Docs** runs first after QA passes (phase 1); **Reviewer + Security** run in parallel after docs completes (phase 2). Reviewer and security run no tests at all — CI and QA already own that, and neither stage re-runs `verify:` or `run-tests.sh`.
 5. Once all stage labels are on the PR and required CI checks are green, the orchestrator squash-merges, closes the issue, sets the board status to Done, and sends a notification.
 6. If any stage returns a blocking outcome, the issue gets `pipeline:blocked` and a comment explaining what a human must do. The orchestrator moves on to the next issue.
 
@@ -637,6 +651,15 @@ The pipeline deliberately preserves three gates that only a human should act on:
 | `scripts/pipeline-notify.sh <event> <ref> <message> [thread_key]` | Post event to Slack/Discord/Teams |
 | `scripts/bootstrap-labels.sh [owner/repo]` | Create `pipeline:*` labels (idempotent) |
 | `scripts/bootstrap-board.sh [owner/project_number]` | Provision GitHub board Status options (id-preserving, idempotent); validate Azure states / GitLab labels for parity |
+| `scripts/pipeline-agent.sh` | Run one pipeline role stage through a headless LLM CLI, for harnesses without native subagents (Codex CLI, Gemini CLI, Antigravity CLI, any headless runner); see [Other harnesses](#other-harnesses-pi-codex-cli-gemini-cli-antigravity-local-models) |
+| `scripts/pipeline-events.sh path\|list [--issue N] [--role R] [--event E] [--last K] [--json]\|cost` | Reader for the local `.talos/events.jsonl` audit log; see [Events log](#events-log) and [Cost accounting](#cost-accounting) |
+| `scripts/pipeline-hooks.sh` | Run `hooks.pre_dispatch`/`hooks.post_stage` external commands at fixed pipeline points; see [Hooks](#hooks) |
+| `scripts/pipeline-isolation.sh validate` | Startup gate for `execution.isolation` + `issues.max_parallel` combinations; see the `execution.isolation` row in [Config reference](#config-reference) |
+| `scripts/pipeline-lock.sh` | Portable `mkdir`-based advisory locking for shared local state (threads.json, worktree metadata, test cache) under `issues.max_parallel > 1`; see the `issues.max_parallel` row in [Config reference](#config-reference) |
+| `scripts/pipeline-mergebase.sh` | Mechanical union merge for a CONFLICTING PR whose only conflicting paths are covered by `merge.union_paths` (default `CHANGELOG.md`), no developer dispatch; see the `merge.union_paths` row in [Config reference](#config-reference) |
+| `scripts/pipeline-paths.sh` | Sourced helper exporting `_resolve_talos_dir()`, the canonical probe for the Talos scripts directory; see [1. Install](#1-install) |
+| `scripts/pipeline-verify.sh --issue N --worktree PATH -- <cmd>` | Run a `verify:` command with `TALOS_ROLE`/`TALOS_ISSUE_NUMBER`/`TALOS_WORKTREE_PATH` exported mechanically for native Claude Code subagents; see [Context](#context) |
+| `scripts/pipeline-worktree.sh` | Lifecycle for per-issue developer worktrees and Claude Code harness worktrees (create/remove/sweep); see [Worktree lifecycle](#worktree-lifecycle) |
 
 ### Contract
 
@@ -1037,7 +1060,19 @@ suite, use `--for` (repeatable) or `--changed`:
 bash tests/run-tests.sh --for scripts/pipeline-worktree.sh   # -> test-worktree.sh
 bash tests/run-tests.sh --changed                             # git diff vs origin/main + uncommitted
 bash tests/run-tests.sh --changed HEAD~3                      # explicit base ref
+bash tests/run-tests.sh --strict --changed                    # skip unmapped paths instead of falling back
 ```
+
+`--strict` modifies `--for`/`--changed`: a path that would otherwise fall
+back to the full suite (no convention mapping, or a `scripts/pipeline-<name>.sh`
+with zero matches) is instead skipped, with a `run-tests.sh: --for: no test
+mapping for '<path>' (skipped)` note on stderr -- the full suite never runs
+under `--strict`. If every path ends up skipped (or `--for`/`--changed`
+produced none to begin with), the resulting selection is empty:
+`run-tests.sh: no targeted tests selected` is printed and the run exits `3`,
+a distinct code so an empty selection is never mistaken for a pass. Without
+`--strict`, the default behaviour (fail-safe fallback to the full suite for
+any unmapped path) is unchanged.
 
 Each path is mapped to test files by convention plus any test that references
 the script: `scripts/pipeline-<name>.sh` maps to `tests/test-<name>*.sh`
