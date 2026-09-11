@@ -61,6 +61,97 @@ else
   echo "pipeline: config cache helper missing, falling back to per-call parsing" >&2
 fi
 
+# Owner/project-id resolution and the curl-GraphQL + error-parsing helpers
+# are shared with bootstrap-board.sh (#266). Guarded like every other
+# pipeline-*.sh's cfg-cache source: a partial install/sync may not yet ship
+# this file, so fall back to the pre-extraction inline implementations
+# (identical behavior, just not de-duplicated).
+if [ -f "$SCRIPT_DIR/pipeline-board-shared.sh" ]; then
+  . "$SCRIPT_DIR/pipeline-board-shared.sh"
+else
+  echo "pipeline-status: pipeline-board-shared.sh not found next to this script, using inline board helpers" >&2
+  _board_gql() {
+    local _token="$1" _query="$2"
+    curl -sS -H "Authorization: Bearer $_token" -H "Content-Type: application/json" \
+      -d "$_query" "https://api.github.com/graphql"
+  }
+  _board_gql_error_message() {
+    printf '%s' "$1" | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    errs = d.get('errors')
+    if errs:
+        msgs = [e.get('message', '') for e in errs if isinstance(e, dict)]
+        msgs = [m for m in msgs if m]
+        print('; '.join(msgs) if msgs else 'GraphQL request failed')
+except Exception:
+    pass
+" 2>/dev/null
+  }
+  _board_resolve_owner() {
+    local _use_token_path="$1" _env_override="$2" _dry_run="${3:-false}"
+    local _default_owner=""
+    if [ "$_use_token_path" = "false" ] && [ "$_dry_run" = "false" ]; then
+      _default_owner="$(gh repo view --json owner -q .owner.login 2>/dev/null || echo "")"
+    fi
+    if [ -z "$_default_owner" ]; then
+      local _vcs_repo
+      _vcs_repo="$(cfg vcs.repo "")"
+      [ -n "$_vcs_repo" ] && _default_owner="${_vcs_repo%%/*}"
+    fi
+    printf '%s' "${_env_override:-$(cfg board.owner "$_default_owner")}"
+  }
+  _board_resolve_project_id_gh() {
+    local _proj_num="$1" _owner="$2"
+    gh project list --owner "$_owner" --format json --limit 50 2>/dev/null \
+      | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    n = int('$_proj_num')
+    for p in d.get('projects', []):
+        if p.get('number') == n:
+            print(p.get('id',''))
+            sys.exit(0)
+except Exception:
+    pass
+" 2>/dev/null
+  }
+  _BOARD_LAST_GQL_RAW=""
+  _board_resolve_project_id_token() {
+    local _proj_num="$1" _owner="$2" _token="$3"
+    local _raw _id
+    _raw="$(_board_gql "$_token" "{\"query\":\"query{user(login:\\\"$_owner\\\"){projectV2(number:$_proj_num){id}}}\"}")"
+    _BOARD_LAST_GQL_RAW="$_raw"
+    if [ -n "$(_board_gql_error_message "$_raw")" ]; then
+      printf ''
+      return 0
+    fi
+    _id="$(printf '%s' "$_raw" | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print(d['data']['user']['projectV2']['id'])
+except Exception:
+    pass
+" 2>/dev/null)"
+    if [ -z "$_id" ]; then
+      _raw="$(_board_gql "$_token" "{\"query\":\"query{organization(login:\\\"$_owner\\\"){projectV2(number:$_proj_num){id}}}\"}")"
+      _BOARD_LAST_GQL_RAW="$_raw"
+      _id="$(printf '%s' "$_raw" | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print(d['data']['organization']['projectV2']['id'])
+except Exception:
+    pass
+" 2>/dev/null)"
+    fi
+    printf '%s' "$_id"
+  }
+fi
+
 # ── Token-based GraphQL path ──────────────────────────────────────────────────
 # Activated when vcs.provider=github-api OR when gh is not on PATH.
 # Resolves OWNER from: PIPELINE_BOARD_OWNER > board.owner > first component of vcs.repo.
@@ -95,25 +186,6 @@ _resolve_token_path() {
   fi
 }
 
-# _gql_error_message RAW_JSON — prints the joined GraphQL error message(s) to
-# stdout when RAW_JSON carries a top-level "errors" array (e.g. GitHub's
-# EXCESSIVE_PAGINATION when a connection asks for more than 100 records);
-# prints nothing when there is none. Never fails the caller's shell (#248).
-_gql_error_message() {
-  printf '%s' "$1" | python3 -c "
-import json, sys
-try:
-    d = json.load(sys.stdin)
-    errs = d.get('errors')
-    if errs:
-        msgs = [e.get('message', '') for e in errs if isinstance(e, dict)]
-        msgs = [m for m in msgs if m]
-        print('; '.join(msgs) if msgs else 'GraphQL request failed')
-except Exception:
-    pass
-" 2>/dev/null
-}
-
 _graphql_token_update() {
   # ── Token GraphQL implementation for all 5 board operations ─────────────────
   # $1=issue $2=status $3=project_num $4=owner $5=status_field $6=repo $7=dry_run $8=mapped_status
@@ -125,16 +197,11 @@ _graphql_token_update() {
     exit 1
   fi
 
-  # Helper: run a GraphQL query
+  # Helper: run a GraphQL query. Delegates to the shared curl+auth helper
+  # (#266) so pipeline-status.sh and bootstrap-board.sh issue token-path
+  # GraphQL requests identically.
   _gql() {
-    local _query="$1"
-    local _result
-    _result="$(curl -sS \
-      -H "Authorization: Bearer $_STATUS_TOKEN" \
-      -H "Content-Type: application/json" \
-      -d "$_query" \
-      "https://api.github.com/graphql")"
-    printf '%s' "$_result"
+    _board_gql "$_STATUS_TOKEN" "$1"
   }
 
   # _bail_on_gql_error RAW_JSON — fail-loud convention (#248): on a GraphQL
@@ -146,7 +213,7 @@ _graphql_token_update() {
   # instead of just a subshell.
   _bail_on_gql_error() {
     local _err
-    _err="$(_gql_error_message "$1")"
+    _err="$(_board_gql_error_message "$1")"
     if [ -n "$_err" ]; then
       echo "pipeline-status: GraphQL error: $_err" >&2
       echo "talos:board-unverified project=$_proj_num"
@@ -154,35 +221,10 @@ _graphql_token_update() {
     fi
   }
 
-  # 1. Resolve project ID
-  local _proj_id _raw
-  _raw="$(_gql "{\"query\":\"query{user(login:\\\"$_owner\\\"){projectV2(number:$_proj_num){id}}}\"}")"
-  _bail_on_gql_error "$_raw"
-  _proj_id="$(printf '%s' "$_raw" | python3 -c "
-import json, sys
-try:
-    d = json.load(sys.stdin)
-    print(d['data']['user']['projectV2']['id'])
-except Exception:
-    try:
-        print(d['data']['organization']['projectV2']['id'])
-    except Exception:
-        pass
-" 2>/dev/null)"
-
-  # Try organization if user lookup failed
-  if [ -z "$_proj_id" ]; then
-    _raw="$(_gql "{\"query\":\"query{organization(login:\\\"$_owner\\\"){projectV2(number:$_proj_num){id}}}\"}")"
-    _bail_on_gql_error "$_raw"
-    _proj_id="$(printf '%s' "$_raw" | python3 -c "
-import json, sys
-try:
-    d = json.load(sys.stdin)
-    print(d['data']['organization']['projectV2']['id'])
-except Exception:
-    pass
-" 2>/dev/null)"
-  fi
+  # 1. Resolve project ID (shared with bootstrap-board.sh, #266)
+  local _proj_id
+  _proj_id="$(_board_resolve_project_id_token "$_proj_num" "$_owner" "$_STATUS_TOKEN")"
+  _bail_on_gql_error "$_BOARD_LAST_GQL_RAW"
 
   if [ -z "$_proj_id" ]; then
     if [ "$_dry" = "true" ]; then
@@ -401,16 +443,8 @@ MAPPED_STATUS="$(cfg "board.status_map.$STATUS" "$STATUS")"
 _resolve_token_path
 
 # Owner: env var > config > gh (if available) > first component of vcs.repo
-DEFAULT_OWNER=""
-if [ "$_USE_TOKEN_PATH" = "false" ] && [ "$DRY_RUN" = "false" ]; then
-  DEFAULT_OWNER="$(gh repo view --json owner -q .owner.login 2>/dev/null || echo "")"
-fi
-if [ -z "$DEFAULT_OWNER" ]; then
-  # Fall back to first component of vcs.repo config
-  _VCS_REPO="$(cfg vcs.repo "")"
-  [ -n "$_VCS_REPO" ] && DEFAULT_OWNER="${_VCS_REPO%%/*}"
-fi
-OWNER="${PIPELINE_BOARD_OWNER:-$(cfg board.owner "$DEFAULT_OWNER")}"
+# (shared with bootstrap-board.sh, #266)
+OWNER="$(_board_resolve_owner "$_USE_TOKEN_PATH" "$PIPELINE_BOARD_OWNER" "$DRY_RUN")"
 
 if [ -z "$OWNER" ]; then
   echo "pipeline-status: board.owner not set; skipping" >&2
@@ -457,19 +491,8 @@ _gh_fail_board() {
   exit 0
 }
 
-PROJ_ID="$(_gh_safe gh project list --owner "$OWNER" --format json --limit 50 \
-  | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    n = int('$PROJECT_NUM')
-    for p in d.get('projects', []):
-        if p.get('number') == n:
-            print(p.get('id',''))
-            sys.exit(0)
-except Exception:
-    pass
-" 2>/dev/null)"
+# Shared with bootstrap-board.sh (#266)
+PROJ_ID="$(_board_resolve_project_id_gh "$PROJECT_NUM" "$OWNER")"
 
 if [ -z "$PROJ_ID" ]; then
   if [ "$DRY_RUN" = "true" ]; then
@@ -629,6 +652,7 @@ except Exception:
     # Missing option names go to stderr only (not in the machine-readable marker).
     echo "talos:board-unverified project=$PROJECT_NUM"
     echo "pipeline-status: board status options missing from project #$PROJECT_NUM: $_MISSING_OPTIONS" >&2
+    echo "pipeline-status: run: bash $SCRIPT_DIR/bootstrap-board.sh" >&2
     # #252: this startup validation checks all four required statuses, not just
     # the one requested in this call -- so it can fire (e.g. "Blocked" missing)
     # even when the current call's own status resolves and updates fine. Track

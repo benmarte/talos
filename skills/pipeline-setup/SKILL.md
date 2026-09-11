@@ -359,6 +359,25 @@ If provider is "file": skip labels, tell the user "File mode uses checkboxes for
 
 ---
 
+## Step 8a — Offer to bootstrap the board (when board.enabled is true)
+
+Only ask if `board.enabled` is `true` AND `board.project_number` is already set (i.e. Step 5 recorded an *existing* project). A brand-new project created in Step 9 below doesn't exist yet at this point in the flow — Step 9 offers this same script right after creating it, so skip the prompt here and don't ask twice.
+
+> "Would you like me to provision your board's Status options now?
+> (checks/creates the In progress, In review, Done, Blocked, and Ready columns) (y/n)"
+
+If yes:
+```bash
+bash scripts/bootstrap-board.sh
+```
+Show its output to the user. Never run this silently or without an explicit yes — a mistaken run against the wrong project number/owner would touch a real board.
+
+If no: skip, tell the user they can run it later with `bash scripts/bootstrap-board.sh`.
+
+If `board.enabled` is `false`, or `board.project_number` isn't set yet: skip this step entirely, no prompt.
+
+---
+
 ## Step 8b — Recommended CI workflow (github only)
 
 Only run this step if provider is "github". Skip silently for gitlab/azure/file.
@@ -420,9 +439,13 @@ Offer to create one:
 gh project create --owner <OWNER> --title "talos" --format json
 ```
 
-Then add the five status options to the Status field. Walk the user through this if `gh project field-create` is available, otherwise provide copy-paste instructions.
+Record the returned project number as `board.project_number` (and the owner as `board.owner`) in `talos.pipeline.yml`, then offer to provision its Status options with the same script Step 8a uses:
+```bash
+bash scripts/bootstrap-board.sh
+```
+Show its output — it creates the In progress, In review, Done, Blocked, and Ready options on the field named `board.status_field` (default `Status`; if that field doesn't exist yet, tell the user to add it via the GitHub UI first, the script only manages a field's options, not the field itself).
 
-If the project already exists or the user prefers manual setup: print the five required status names and tell them to add them via the GitHub UI.
+If the project already exists (Step 5) or the user prefers manual setup: print the five required status names and tell them to add them via the GitHub UI, or run `bash scripts/bootstrap-board.sh` themselves later.
 
 ---
 

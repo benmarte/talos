@@ -53,6 +53,9 @@ progress as issue/PR comments and threaded Slack/Discord messages along the way.
 - **Stage comments on GitHub** — every role posts its verdict/findings on the
   issue or PR, so the audit trail lives where the code lives.
 - **GitHub Projects v2 board** — optional automatic Status column updates.
+  `scripts/bootstrap-board.sh` provisions the required Status options
+  (id-preserving, idempotent) so the columns exist before the pipeline needs
+  them; it also validates Azure states and GitLab's board-relied-on labels.
 - **Safety limits** — `max_fix_attempts` before an issue is marked
   `pipeline:blocked` for human attention; human-only gates for destructive
   actions; **forbidden-files gate** blocks merging PRs that touch secret-like
@@ -1648,6 +1651,9 @@ pack installed.
   Python; try `pip install --break-system-packages pyyaml` or use `talos.pipeline.json.example`
   as a starting point).
 - **Board updates fail** — Two paths depending on your provider:
+  - **Missing Status option** (e.g. `Blocked`): run
+    `bash scripts/bootstrap-board.sh` to provision it — idempotent, safe to
+    re-run, and verifies every pre-existing option kept its id afterward.
   - **`github` provider:** `gh auth refresh -s project` (Projects v2 needs the
     `project` scope); verify `board.project_number` and `board.owner`.
   - **`github-api` provider (no `gh` CLI):** board updates use the same

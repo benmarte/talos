@@ -59,6 +59,17 @@ case "$args" in
     esac ;;
   "boards work-item comment add "*)
     printf '{"id":1,"text":"stub comment"}\n' ;;
+  "rest "*"workitemtypes"*)
+    # bootstrap-board.sh (#266) Azure state validation: GET
+    # .../_apis/wit/workitemtypes/<type>?api-version=... -- lists the work
+    # item type's allowed states. Override STUB_AZURE_STATES_JSON (raw
+    # {"states":[...]} body) to simulate a missing state. Must come BEFORE
+    # the generic "rest "* case below (bash `case` matches first).
+    if [ -n "${STUB_AZURE_STATES_JSON:-}" ]; then
+      printf '%s\n' "$STUB_AZURE_STATES_JSON"
+    else
+      printf '{"states":[{"name":"New"},{"name":"Committed"},{"name":"Done"}]}\n'
+    fi ;;
   "rest "*)
     # label-issue uses `az rest` for the json-patch tag update. Echo the
     # --body @file contents into the log so tests can assert the computed tags.

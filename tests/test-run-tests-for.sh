@@ -198,6 +198,34 @@ assert_exit_code 0 "$rc_h" "H: --for composes with -j -- exits 0"
 assert_contains "$out_h" "SELECTED: test-worktree.sh" "H: --for composes with -j -- same selection"
 assert_contains "$out_h" "RESULT: all 1 test file(s) passed" "H: --for composes with -j -- same RESULT"
 
+# ── Test H2: a single --for accepts multiple bare paths, same as repeating
+# --for for each one (#266: several prompt templates in this repo write
+# "--for a b c" instead of "--for a --for b --for c") ────────────────────────
+# Named mutation: reverting the --for parser to `shift 2` (one value only)
+# makes the second/third bare path fall through to the generic positional
+# `PATTERN=` case instead -- PATTERN ends up "test-other-mapped.sh" (the last
+# one), which then substring-filters SELECTED_SET down to nothing matching,
+# and this test's "both selected" and "RESULT: all 2" assertions fail.
+FDH2="$SANDBOX/h2"
+build_min_fixture "$FDH2"
+mkdir -p "$FDH2/scripts"
+write_stub "$FDH2" "test-worktree.sh" "exit 0"
+write_stub "$FDH2" "test-other-mapped.sh" "exit 0"
+printf '#!/usr/bin/env bash\necho stub\n' > "$FDH2/scripts/pipeline-worktree.sh"
+printf '#!/usr/bin/env bash\necho stub\n' > "$FDH2/scripts/pipeline-other-mapped.sh"
+
+out_h2="$(bash "$FDH2/tests/run-tests.sh" --no-cache --for scripts/pipeline-worktree.sh scripts/pipeline-other-mapped.sh --quiet 2>&1)"; rc_h2=$?
+assert_exit_code 0 "$rc_h2" "H2: a single --for with two bare paths exits 0"
+assert_contains "$out_h2" "SELECTED: test-worktree.sh test-other-mapped.sh" "H2: selects both mapped test files"
+assert_contains "$out_h2" "PASS  tests/test-worktree.sh" "H2: runs the first mapped test file"
+assert_contains "$out_h2" "PASS  tests/test-other-mapped.sh" "H2: runs the second mapped test file"
+assert_contains "$out_h2" "RESULT: all 2 test file(s) passed" "H2: RESULT line covers both files"
+
+# Equivalent repeated form must select the exact same set (documented form).
+out_h2b="$(bash "$FDH2/tests/run-tests.sh" --no-cache --for scripts/pipeline-worktree.sh --for scripts/pipeline-other-mapped.sh --quiet 2>&1)"; rc_h2b=$?
+assert_exit_code 0 "$rc_h2b" "H2: the repeated --for form exits 0"
+assert_contains "$out_h2b" "SELECTED: test-worktree.sh test-other-mapped.sh" "H2: the repeated --for form selects the same two files"
+
 # ── Test I: a pipeline-<name>.sh with no matching test-<name>*.sh falls back
 # to the full suite (not an empty, silently-passing selection) ───────────────
 # Reproduces the exact gap QA found: mapping scripts/pipeline-config.sh via
