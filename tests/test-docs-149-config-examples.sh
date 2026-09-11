@@ -19,7 +19,10 @@
 # #268 additionally asserts every key in pipeline-config.sh's
 # _KNOWN_CONFIG_KEYS_JSON appears in at least one example config (regression
 # guard against a wholly-undocumented key), and that the seven keys #268
-# added examples for appear in BOTH example configs.
+# added examples for are real JSON structure (parsed and walked by dotted
+# path, not a `_note` prose mention -- QA's first-round finding) plus present
+# in the YAML example. A self-check proves the JSON structural assertion is
+# not vacuous by removing one key from a temp copy and confirming it goes RED.
 #
 # Usage: bash tests/test-docs-149-config-examples.sh
 #        (or via tests/run-tests.sh)
@@ -342,68 +345,102 @@ else
 fi
 
 # ── 6. Every known config key has an example somewhere, and #268's seven ─────
-# keys (previously missing entirely) have one in BOTH example configs (#268).
+# keys (previously missing entirely) are real JSON structure -- not merely
+# mentioned in prose -- and appear in both example configs (#268 fix round).
 #
 # _KNOWN_CONFIG_KEYS_JSON in pipeline-config.sh is the single source of truth
 # for the unknown-key warning (#176); this reads that same list so a key
 # added there later without a matching example fails here instead of
-# drifting silently. Presence is a leaf-name text match (both example files
-# document most optional keys via prose/comments naming the key, not
-# necessarily a live YAML/JSON value) -- lenient enough to avoid false
-# failures on the many pre-existing single-file-only keys, but it still
-# catches a key with literally zero mention in either file.
-
-YML_EXAMPLE="$REPO_ROOT/talos.pipeline.yml.example"
-JSON_EXAMPLE="$REPO_ROOT/talos.pipeline.json.example"
-
-KEY_CHECK_OUT=$(python3 - "$REPO_ROOT/scripts/pipeline-config.sh" "$YML_EXAMPLE" "$JSON_EXAMPLE" <<'PYEOF'
+# drifting silently.
+#
+# QA's first-round finding: a bare `leaf in jsn` substring check is satisfied
+# by the leaf name appearing ANYWHERE in the file, including inside the
+# free-text `_note` prose field -- so a key documented only in prose (never
+# added as real JSON structure) passed silently. Fixed here two ways:
+#   - JSON: json_structural() parses the file and walks the actual object
+#     tree by dotted path (a `*` wildcard segment matches any one concrete
+#     key, e.g. a role name under agents.roles.*) -- this is the only check
+#     used for #268's seven keys (BOTH_REQUIRED below), so a key present only
+#     in _note prose does NOT satisfy it. json_note_mentions() is a fallback
+#     for the general (non-#268) key set only: an exact, word-boundary-
+#     anchored match of the FULL dotted path (never a bare leaf substring).
+#   - YAML: yml_leaf_present() anchors the leaf at the start of a line
+#     (optional leading whitespace/`#`), i.e. a key DECLARATION -- never a
+#     substring inside a wrapped prose sentence (the YAML file's flaw was the
+#     same shape: a `leaf in yml` OR-fallback).
+KEY_CHECK_PY="$SCRATCH/check_known_keys.py"
+cat > "$KEY_CHECK_PY" <<'PYEOF'
 import re, sys, json
 
 cfg_path, yml_path, json_path = sys.argv[1], sys.argv[2], sys.argv[3]
 content = open(cfg_path).read()
 m = re.search(r"_KNOWN_CONFIG_KEYS_JSON='(\[.*?\])'", content, re.S)
 keys = json.loads(m.group(1))
-yml = open(yml_path).read()
-jsn = open(json_path).read()
+yml_text = open(yml_path).read()
+json_text = open(json_path).read()
+json_data = json.load(open(json_path))
 
 # #268's seven keys, previously missing from both files entirely -- these
-# must now appear in BOTH, not just one.
+# must be real JSON structure (not a prose mention) AND appear in the YAML
+# example too.
 BOTH_REQUIRED = {
     "vcs.token_env", "board.status_map.*", "merge.forbidden_files_replace",
     "merge.forbidden_files_allow", "execution.isolation",
     "notifications.buzz_relay", "limits.max_total_dispatches",
 }
 
-def leaf_of(key):
-    leaf = key.split(".")[-1]
-    if leaf == "*":
-        leaf = key.split(".")[-2]
-    return leaf
 
-def in_yml(leaf):
-    return bool(re.search(r"(?m)^\s*#?\s*" + re.escape(leaf) + r":", yml)) or leaf in yml
+def json_walk(data, segments):
+    node = data
+    for seg in segments:
+        if seg == "*":
+            if not isinstance(node, dict) or not node:
+                return False
+            node = next(iter(node.values()))
+            continue
+        if not isinstance(node, dict) or seg not in node:
+            return False
+        node = node[seg]
+    return True
 
-def in_json(leaf):
-    return ('"' + leaf + '":') in jsn or leaf in jsn
 
-missing_either = []   # no known key may be undocumented in BOTH files
-missing_both_required = []  # #268's seven keys must be in BOTH files
+def json_structural(key):
+    return json_walk(json_data, key.split("."))
+
+
+def json_note_mentions(key):
+    base = key[:-2] if key.endswith(".*") else key
+    pattern = r"(?<![\w.])" + re.escape(base) + r"(?![\w])"
+    return re.search(pattern, json_text) is not None
+
+
+def yml_leaf_present(key):
+    segments = key.split(".")
+    leaf = segments[-1] if segments[-1] != "*" else segments[-2]
+    pattern = r"(?m)^[\s#]*" + re.escape(leaf) + r":"
+    return re.search(pattern, yml_text) is not None
+
+
+missing_either = []          # no known key may be undocumented in BOTH files
+missing_both_required = []   # #268's seven keys: JSON structural AND yaml
 
 for k in keys:
-    if k.endswith(".*") and k not in BOTH_REQUIRED:
-        continue
-    leaf = leaf_of(k)
-    yml_hit, json_hit = in_yml(leaf), in_json(leaf)
-    if not (yml_hit or json_hit):
+    j_ok = json_structural(k) or json_note_mentions(k)
+    y_ok = yml_leaf_present(k)
+    if not (j_ok or y_ok):
         missing_either.append(k)
-    if k in BOTH_REQUIRED and not (yml_hit and json_hit):
+    if k in BOTH_REQUIRED and not (json_structural(k) and y_ok):
         missing_both_required.append(k)
 
 print("MISSING_EITHER=" + ",".join(missing_either))
 print("MISSING_BOTH_REQUIRED=" + ",".join(missing_both_required))
 PYEOF
-)
 
+YML_EXAMPLE="$REPO_ROOT/talos.pipeline.yml.example"
+JSON_EXAMPLE="$REPO_ROOT/talos.pipeline.json.example"
+CFG_SH="$REPO_ROOT/scripts/pipeline-config.sh"
+
+KEY_CHECK_OUT=$(python3 "$KEY_CHECK_PY" "$CFG_SH" "$YML_EXAMPLE" "$JSON_EXAMPLE")
 MISSING_EITHER=$(printf '%s\n' "$KEY_CHECK_OUT" | sed -n 's/^MISSING_EITHER=//p')
 MISSING_BOTH_REQUIRED=$(printf '%s\n' "$KEY_CHECK_OUT" | sed -n 's/^MISSING_BOTH_REQUIRED=//p')
 
@@ -414,10 +451,33 @@ else
 fi
 
 if [ -z "$MISSING_BOTH_REQUIRED" ]; then
-  ok "config examples: #268's seven keys (vcs.token_env, board.status_map, merge.forbidden_files_replace, merge.forbidden_files_allow, execution.isolation, notifications.buzz_relay, limits.max_total_dispatches) each appear in BOTH example configs"
+  ok "config examples: #268's seven keys (vcs.token_env, board.status_map, merge.forbidden_files_replace, merge.forbidden_files_allow, execution.isolation, notifications.buzz_relay, limits.max_total_dispatches) are real JSON structure AND appear in the YAML example"
 else
-  fail "config examples: #268 key(s) missing from one of the two example configs: $MISSING_BOTH_REQUIRED"
+  fail "config examples: #268 key(s) missing real JSON structure or the YAML example: $MISSING_BOTH_REQUIRED"
 fi
+
+# Prove the JSON structural check is not vacuous: strip one #268 key
+# (vcs.token_env) from a temp copy of the JSON example -- keeping its _note
+# prose mention intact -- and confirm the check now reports it missing. This
+# is exactly the regression QA's first round hit (a key present only in
+# prose passing silently).
+CORRUPT_JSON_EXAMPLE="$SCRATCH/json_example_missing_token_env.json"
+python3 -c "
+import json
+d = json.load(open('$JSON_EXAMPLE'))
+del d['vcs']['token_env']
+json.dump(d, open('$CORRUPT_JSON_EXAMPLE', 'w'))
+"
+CORRUPT_CHECK_OUT=$(python3 "$KEY_CHECK_PY" "$CFG_SH" "$YML_EXAMPLE" "$CORRUPT_JSON_EXAMPLE")
+CORRUPT_MISSING=$(printf '%s\n' "$CORRUPT_CHECK_OUT" | sed -n 's/^MISSING_BOTH_REQUIRED=//p')
+case ",$CORRUPT_MISSING," in
+  *,vcs.token_env,*)
+    ok "config examples: JSON structural check catches vcs.token_env removed from JSON structure, even though the _note prose still mentions it (RED -- regression caught)"
+    ;;
+  *)
+    fail "config examples: removing vcs.token_env's JSON structure did not trip the check -- the check is vacuous (got: '$CORRUPT_MISSING')"
+    ;;
+esac
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 

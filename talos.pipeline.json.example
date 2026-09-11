@@ -4,7 +4,8 @@
   "base_branch": "dev",
 
   "vcs": {
-    "provider": "github"
+    "provider": "github",
+    "token_env": "MY_BOT_TOKEN"
   },
 
   "release_branch": "main",
@@ -20,6 +21,9 @@
       "in_review": "In review",
       "done": "Done",
       "blocked": "Blocked"
+    },
+    "status_map": {
+      "Blocked": "Needs attention"
     }
   },
 
@@ -34,6 +38,10 @@
       "test"
     ],
     "delete_branch": true,
+    "forbidden_files_replace": false,
+    "forbidden_files_allow": [
+      ".env.example"
+    ],
     "approval_waiver_paths": [
       "*.md",
       "docs/**",
@@ -51,6 +59,10 @@
       "wontfix"
     ],
     "max_parallel": 1
+  },
+
+  "execution": {
+    "isolation": "worktree"
   },
 
   "roles": {
@@ -74,12 +86,14 @@
     "slack_channel": "",
     "discord_channel": "",
     "buzz_channel": "",
+    "buzz_relay": "",
     "templates_dir": "templates/notifications",
     "threading": true
   },
 
   "limits": {
     "max_fix_attempts": 3,
+    "max_total_dispatches": 8,
     "max_retries": 5
   }
 }

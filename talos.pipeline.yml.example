@@ -114,6 +114,13 @@ verify:
   # - npx tsc --noEmit
   # - cargo test
 
+# Alternate dict form -- lets the sibling verify.* keys below live under this
+# same top-level key instead of alongside it:
+# verify:
+#   commands:                  # verify.commands: same list as the plain
+#     - python -m pytest tests/ -x -q  # form above
+#   qa_mode: ci
+
 # verify.qa_mode (ci | local): when ci -- the default whenever
 #   merge.required_checks below is non-empty -- QA trusts CI (pr-checks)
 #   instead of re-running verify: locally. When local -- the default when
