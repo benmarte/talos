@@ -343,6 +343,30 @@ print(json.dumps({'title': os.environ['TITLE'], 'body': os.environ['BODY'],
       echo "gh: GraphQL: The field does not exist in the project (updateProjectV2ItemFieldValue)" >&2
       exit 1
     fi ;;
+  "api graphql "*"updateProjectV2Field"*)
+    # bootstrap-board.sh's option-replace mutation (#266). STUB_BOARD_MUTATION_FAIL=1
+    # simulates a GraphQL/CLI failure: non-zero exit, error text on stderr.
+    if [ "${STUB_BOARD_MUTATION_FAIL:-}" = "1" ]; then
+      echo "gh: GraphQL: Something went wrong while executing your query. (updateProjectV2Field)" >&2
+      exit 1
+    fi
+    printf '{"data":{"updateProjectV2Field":{"projectV2Field":{"id":"FIELD_1"}}}}\n' ;;
+  "api graphql "*"ProjectV2SingleSelectField"*)
+    # bootstrap-board.sh's fields(first:50) fetch (#266) -- used for both the
+    # pre-mutation read and the post-mutation id-drift verification, which
+    # issue the identical query text. STUB_BOARD_FIELD_QUEUE (a file, one
+    # JSON response per line, popped per call -- same pop-one-line pattern as
+    # CURL_QUEUE) lets a test supply different responses per call, e.g. to
+    # simulate an id changing between the two fetches. Falls back to a
+    # single default response when unset/empty.
+    if [ -n "${STUB_BOARD_FIELD_QUEUE:-}" ] && [ -s "$STUB_BOARD_FIELD_QUEUE" ]; then
+      _bf="$(head -1 "$STUB_BOARD_FIELD_QUEUE")"
+      tail -n +2 "$STUB_BOARD_FIELD_QUEUE" > "$STUB_BOARD_FIELD_QUEUE.tmp" \
+        && mv "$STUB_BOARD_FIELD_QUEUE.tmp" "$STUB_BOARD_FIELD_QUEUE"
+      printf '%s\n' "$_bf"
+    else
+      printf '{"data":{"node":{"fields":{"nodes":[{"id":"FIELD_1","name":"Status","options":[{"id":"OPT_INPROG","name":"In progress","color":"YELLOW","description":""},{"id":"OPT_INREV","name":"In review","color":"PURPLE","description":""},{"id":"OPT_DONE","name":"Done","color":"GREEN","description":""},{"id":"OPT_BLOCKED","name":"Blocked","color":"RED","description":""}]}]}}}}\n'
+    fi ;;
   "label create "*)
     # STUB_LABEL_CREATE_FAIL=1 simulates a failed create (#245's
     # bootstrap-labels test needs this to reach the edit fallback).

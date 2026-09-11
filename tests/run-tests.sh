@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # run-tests.sh -- run every tests/test-*.sh file and report a summary.
 # Usage: bash tests/run-tests.sh [--base-ref <ref>] [-j N] [--quiet] [--no-cache] [pattern]
-#        bash tests/run-tests.sh --for <path> [--for <path> ...] [--quiet] ...
+#        bash tests/run-tests.sh --for <path> [<path> ...] [--for <path> ...] [--quiet] ...
 #        bash tests/run-tests.sh --changed [<base-ref>] [--quiet] ...
 #   --base-ref  override the auto-detected base ref for count comparison
 #               (default: auto-detects origin/HEAD, falls back to origin/main)
@@ -19,9 +19,11 @@
 #               failures locally, e.g.:
 #                 bash tests/run-tests.sh -j 8 --repeat 20 test-foo.sh
 #   pattern     optional substring filter, e.g. "notify" runs test-notify*.sh
-#   --for <path>       select tests by convention instead of running the
-#                       whole suite; repeatable. Convention (nothing else
-#                       runs unless a rule below adds it):
+#   --for <path> [<path> ...]   select tests by convention instead of running
+#                       the whole suite; repeatable (--for a --for b), and a
+#                       single --for also accepts multiple bare paths
+#                       (--for a b c) -- both forms are equivalent. Convention
+#                       (nothing else runs unless a rule below adds it):
 #                         scripts/pipeline-<name>.sh -> tests/test-<name>*.sh
 #                                                        plus any test file
 #                                                        whose contents
@@ -135,8 +137,18 @@ while [ $# -gt 0 ]; do
       shift 2
       ;;
     --for)
-      FOR_PATHS+=("$2")
-      shift 2
+      # Accepts both the documented repeated form (--for a --for b) and a
+      # single --for followed by multiple bare paths (--for a b c) -- several
+      # prompt templates elsewhere in this repo (skills/pipeline/SKILL.md's
+      # targeted-test instructions) write the latter, so both must work the
+      # same: consume every following token up to the next recognized flag.
+      shift
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          -*) break ;;
+          *) FOR_PATHS+=("$1"); shift ;;
+        esac
+      done
       ;;
     --strict)
       STRICT=1
@@ -414,6 +426,19 @@ _map_changed_path() {
       # an empty mapping must never pass through as an empty selection, so
       # fail open to the full suite -- same fail-safe as an unmapped path
       # below (or, under --strict, skip instead -- see _fail_open).
+      if [ "${#SELECTED_SET[@]}" -eq "$before" ]; then
+        _fail_open "no tests map to '$p'"
+      fi
+      ;;
+    scripts/bootstrap-*.sh)
+      # Same convention as scripts/pipeline-*.sh above, just a different
+      # prefix (#266: scripts/bootstrap-board.sh -> test-bootstrap-board*.sh).
+      base="$(basename "$p")"
+      name="${base#bootstrap-}"
+      name="${name%.sh}"
+      before="${#SELECTED_SET[@]}"
+      _add_glob_matches "test-bootstrap-${name}*.sh"
+      _add_referencing "$base"
       if [ "${#SELECTED_SET[@]}" -eq "$before" ]; then
         _fail_open "no tests map to '$p'"
       fi

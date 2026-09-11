@@ -27,6 +27,16 @@ case "$args" in
     fi ;;
   "mr view "*)
     printf '{"iid":7,"title":"fix: guard","state":"opened"}\n' ;;
+  "label list "*)
+    # Used by bootstrap-board.sh (#266) to verify board-relied-on labels
+    # exist. Override STUB_GITLAB_LABEL_LIST to simulate a repo missing one.
+    # NB: JSON braces can't live inside ${VAR:-default} -- } ends the
+    # expansion -- so branch instead (same pattern as the gh stub's PR list).
+    if [ -n "${STUB_GITLAB_LABEL_LIST:-}" ]; then
+      printf '%s\n' "$STUB_GITLAB_LABEL_LIST"
+    else
+      printf '[{"name":"pipeline:blocked"}]\n'
+    fi ;;
   *)
     # issue note, issue close, issue update, mr approve, mr note, mr merge, etc.
     # succeed silently

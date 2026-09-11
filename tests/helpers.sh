@@ -173,7 +173,7 @@ install_talos() {
 install_talos_vendored() {
   mkdir -p "$SANDBOX/.claude/talos/scripts" "$SANDBOX/.claude/talos/templates/notifications" \
            "$SANDBOX/.claude/talos/templates/comments" "$SANDBOX/.claude/agents"
-  for script in "$TALOS_ROOT"/scripts/pipeline-*.sh "$TALOS_ROOT"/scripts/bootstrap-labels.sh; do
+  for script in "$TALOS_ROOT"/scripts/pipeline-*.sh "$TALOS_ROOT"/scripts/bootstrap-*.sh; do
     cp "$script" "$SANDBOX/.claude/talos/scripts/"
     chmod +x "$SANDBOX/.claude/talos/scripts/$(basename "$script")"
   done

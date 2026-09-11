@@ -197,6 +197,8 @@ Create a GitHub Project with a single-select **Status** field. Set `board.enable
 
 The pipeline validates and sets four status columns: **In progress**, **In review**, **Done**, and **Blocked**. A fifth column **Ready** is conventional for backlog visibility but is not set by the pipeline. If your board uses different column names, configure `board.status_map` to remap them (see Config reference below). When a required option is missing, the issue is still added to the board in the default column and `talos:board-unverified project=<N>` is emitted on stdout — the pipeline continues running (board failures are warnings, not fatal errors).
 
+Run `bash scripts/bootstrap-board.sh` to provision the missing Status options for you (idempotent — safe to re-run; a no-op once every option exists). GitHub's underlying `updateProjectV2Field` mutation replaces the Status field's entire option list in one call, so the script always resends every existing option's name/color/description exactly as fetched before appending the missing ones, then re-fetches and verifies every pre-existing option kept its id — failing loudly if one didn't, since a silently reassigned id would blank every card's status. Azure/GitLab providers use the same script to *validate* (never create) the states/labels their boards rely on: Azure reports each `board.azure_states.*` value as present or missing against the work item type's allowed states (exits non-zero on a miss, naming the config key); GitLab boards are label-driven, so it just confirms `pipeline:blocked` (etc.) exist. `board.enabled: false` or `vcs.provider: file` print "board disabled" and exit 0.
+
 ### 5. Optional: notifications
 
 Set one or more of these in your environment (exported variables always win) or in a `.env` file at the repo root (`<repo>/.env`):
@@ -631,8 +633,10 @@ The pipeline deliberately preserves three gates that only a human should act on:
 | `scripts/pipeline-contract.sh` | Single source of truth for roles, labels, and `talos:` markers (sourced by pipeline-vcs.sh and bootstrap-labels.sh; see "Contract" below) |
 | `scripts/pipeline-vcs.sh [--dry-run] <verb> [args...]` | Uniform VCS adapter (github/gitlab/azure/file) |
 | `scripts/pipeline-status.sh [--dry-run] <issue> <status>` | Set GitHub Project board status |
+| `scripts/pipeline-board-shared.sh` | Owner/project-id resolution + curl-GraphQL helpers shared by pipeline-status.sh and bootstrap-board.sh (sourced, not run directly) |
 | `scripts/pipeline-notify.sh <event> <ref> <message> [thread_key]` | Post event to Slack/Discord/Teams |
 | `scripts/bootstrap-labels.sh [owner/repo]` | Create `pipeline:*` labels (idempotent) |
+| `scripts/bootstrap-board.sh [owner/project_number]` | Provision GitHub board Status options (id-preserving, idempotent); validate Azure states / GitLab labels for parity |
 
 ### Contract
 
