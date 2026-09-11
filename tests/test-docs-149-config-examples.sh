@@ -16,6 +16,11 @@
 # The test also deliberately corrupts each example and asserts the check goes
 # RED, proving the sentinel approach actually catches bad config.
 #
+# #268 additionally asserts every key in pipeline-config.sh's
+# _KNOWN_CONFIG_KEYS_JSON appears in at least one example config (regression
+# guard against a wholly-undocumented key), and that the seven keys #268
+# added examples for appear in BOTH example configs.
+#
 # Usage: bash tests/test-docs-149-config-examples.sh
 #        (or via tests/run-tests.sh)
 
@@ -334,6 +339,84 @@ EOF
   assert_not_eq "events.path/yaml: sentinel returned for corrupted config" ".talos/custom-events.jsonl" "$actual"
 else
   printf 'skip: events/yaml -- PyYAML not available\n'
+fi
+
+# ── 6. Every known config key has an example somewhere, and #268's seven ─────
+# keys (previously missing entirely) have one in BOTH example configs (#268).
+#
+# _KNOWN_CONFIG_KEYS_JSON in pipeline-config.sh is the single source of truth
+# for the unknown-key warning (#176); this reads that same list so a key
+# added there later without a matching example fails here instead of
+# drifting silently. Presence is a leaf-name text match (both example files
+# document most optional keys via prose/comments naming the key, not
+# necessarily a live YAML/JSON value) -- lenient enough to avoid false
+# failures on the many pre-existing single-file-only keys, but it still
+# catches a key with literally zero mention in either file.
+
+YML_EXAMPLE="$REPO_ROOT/talos.pipeline.yml.example"
+JSON_EXAMPLE="$REPO_ROOT/talos.pipeline.json.example"
+
+KEY_CHECK_OUT=$(python3 - "$REPO_ROOT/scripts/pipeline-config.sh" "$YML_EXAMPLE" "$JSON_EXAMPLE" <<'PYEOF'
+import re, sys, json
+
+cfg_path, yml_path, json_path = sys.argv[1], sys.argv[2], sys.argv[3]
+content = open(cfg_path).read()
+m = re.search(r"_KNOWN_CONFIG_KEYS_JSON='(\[.*?\])'", content, re.S)
+keys = json.loads(m.group(1))
+yml = open(yml_path).read()
+jsn = open(json_path).read()
+
+# #268's seven keys, previously missing from both files entirely -- these
+# must now appear in BOTH, not just one.
+BOTH_REQUIRED = {
+    "vcs.token_env", "board.status_map.*", "merge.forbidden_files_replace",
+    "merge.forbidden_files_allow", "execution.isolation",
+    "notifications.buzz_relay", "limits.max_total_dispatches",
+}
+
+def leaf_of(key):
+    leaf = key.split(".")[-1]
+    if leaf == "*":
+        leaf = key.split(".")[-2]
+    return leaf
+
+def in_yml(leaf):
+    return bool(re.search(r"(?m)^\s*#?\s*" + re.escape(leaf) + r":", yml)) or leaf in yml
+
+def in_json(leaf):
+    return ('"' + leaf + '":') in jsn or leaf in jsn
+
+missing_either = []   # no known key may be undocumented in BOTH files
+missing_both_required = []  # #268's seven keys must be in BOTH files
+
+for k in keys:
+    if k.endswith(".*") and k not in BOTH_REQUIRED:
+        continue
+    leaf = leaf_of(k)
+    yml_hit, json_hit = in_yml(leaf), in_json(leaf)
+    if not (yml_hit or json_hit):
+        missing_either.append(k)
+    if k in BOTH_REQUIRED and not (yml_hit and json_hit):
+        missing_both_required.append(k)
+
+print("MISSING_EITHER=" + ",".join(missing_either))
+print("MISSING_BOTH_REQUIRED=" + ",".join(missing_both_required))
+PYEOF
+)
+
+MISSING_EITHER=$(printf '%s\n' "$KEY_CHECK_OUT" | sed -n 's/^MISSING_EITHER=//p')
+MISSING_BOTH_REQUIRED=$(printf '%s\n' "$KEY_CHECK_OUT" | sed -n 's/^MISSING_BOTH_REQUIRED=//p')
+
+if [ -z "$MISSING_EITHER" ]; then
+  ok "config examples: every known config key appears in at least one example config"
+else
+  fail "config examples: known key(s) missing from BOTH example configs: $MISSING_EITHER"
+fi
+
+if [ -z "$MISSING_BOTH_REQUIRED" ]; then
+  ok "config examples: #268's seven keys (vcs.token_env, board.status_map, merge.forbidden_files_replace, merge.forbidden_files_allow, execution.isolation, notifications.buzz_relay, limits.max_total_dispatches) each appear in BOTH example configs"
+else
+  fail "config examples: #268 key(s) missing from one of the two example configs: $MISSING_BOTH_REQUIRED"
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────

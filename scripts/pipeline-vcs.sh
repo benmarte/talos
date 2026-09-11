@@ -9,6 +9,10 @@
 #
 # Verbs:
 #   list-issues                               List open issues / work items
+#   create-issue <title> <body-file> [--label l]  Create a new issue; --label
+#                                             may be repeated (used by planner
+#                                             to create sub-issues). Exits
+#                                             non-zero if the POST fails.
 #   view-issue <n>                            View issue details
 #             <n> --spec                      Compact form for stage handoff (#201):
 #                                             same {title, body, labels, comments}

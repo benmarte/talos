@@ -40,6 +40,12 @@ vcs:
   # repo: myorg/myrepo         # override auto-detect; required for azure if
                                 # `git remote get-url origin` is unavailable
 
+  # token_env: "MY_BOT_TOKEN"  # vcs.token_env: name of the env var holding
+                                # the GitHub token for the github-api provider
+                                # (token-only, no gh CLI). Default: unset,
+                                # falls back to GITHUB_TOKEN then GH_TOKEN.
+                                # No effect on the github provider (uses gh auth).
+
   # ── Azure DevOps only ────────────────────────────────────────────────────
   # azure:
   #   org_url: https://dev.azure.com/myorg
@@ -79,6 +85,12 @@ board:
     in_review: "In review"
     done: "Done"
     blocked: "Blocked"
+
+  # status_map:                 # board.status_map: optional flat mapping from
+  #   Blocked: "Needs attention" # pipeline status names to your board's actual
+                                  # column names, when they differ from the
+                                  # "statuses" display names above. An absent
+                                  # key passes through unchanged. Default: unset.
 
   # ── Azure DevOps (provider: azure) ────────────────────────────────────────
   # ADO has no separate status field — a work item's State drives its Kanban
@@ -143,6 +155,16 @@ merge:
   #   - "*.pfx"
   #   - "*.secrets"
   #   - "secrets.*"
+  # forbidden_files_replace: false  # merge.forbidden_files_replace: set true to
+                                     # restore pre-v0.13 behaviour -- forbidden_files
+                                     # REPLACES the built-in defaults above instead
+                                     # of unioning with them. Security warning:
+                                     # suppresses built-in secret-protection
+                                     # patterns for every PR. Default: false.
+  # forbidden_files_allow:      # merge.forbidden_files_allow: explicit exemptions
+  #   - ".env.example"           # checked before deny patterns (e.g. allow a
+                                  # committed template while keeping the real
+                                  # file blocked). Default: [] (empty).
   # union_paths:                # Paths a CONFLICTING PR's conflicts must be
   #   - "CHANGELOG.md"           # fully covered by (default shown) for
                                  # pipeline-mergebase.sh to resolve them
@@ -164,6 +186,12 @@ issues:
 
 # ── Execution ──────────────────────────────────────────────────────────────
 # execution:
+#   isolation: worktree          # execution.isolation: worktree (default) --
+                                  # each developer/QA stage runs in its own git
+                                  # worktree. branch -- stages run in the
+                                  # orchestrator's checkout on a per-issue
+                                  # branch (serialized, max_parallel: 1 only).
+                                  # checkout -- not yet implemented, refused.
 #   worktree_warn_threshold: 10  # Non-active worktrees above this count trip a Step 5 warning
 
 # ── Role toggles ─────────────────────────────────────────────────────────────
@@ -226,6 +254,10 @@ notifications:
   slack_channel: ""          # Slack channel ID; overridden by PIPELINE_SLACK_CHANNEL
   discord_channel: ""        # Discord channel ID; overridden by PIPELINE_DISCORD_CHANNEL
   buzz_channel: ""           # Buzz channel UUID; overridden by PIPELINE_BUZZ_CHANNEL
+  # buzz_relay: ""            # notifications.buzz_relay: Buzz (Nostr) relay URL.
+                               # Not a secret -- identifies a deployment like
+                               # buzz_channel does. Overridden by
+                               # PIPELINE_BUZZ_RELAY. Default: "" (unset).
   templates_dir: "templates/notifications"  # relative to repo root; "" disables templates
   threading: true            # Thread all events per issue (bot-token mode only;
                              # silently skipped in webhook mode)
@@ -404,6 +436,10 @@ notifications:
 # ── Safety limits ─────────────────────────────────────────────────────────────
 limits:
   max_fix_attempts: 3        # Developer re-tries before escalating to pipeline:blocked
+  # max_total_dispatches: 8    # limits.max_total_dispatches: absolute ceiling
+                                # on total developer dispatches per issue, across
+                                # all stage changes -- never resets, even when
+                                # the blocking stage changes. Default: 8.
   max_retries: 5             # Retries per network call after a rate-limit / transient
                              # error, on top of the original try (up to 6 total attempts
                              # by default). Applies to gh/glab/az CLI invocations and
