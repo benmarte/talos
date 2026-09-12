@@ -385,6 +385,28 @@ notifications:
 #   roles:
 #     security:
 #       restamp_model: claude-haiku-4-5-20251001   # even if security itself runs opus
+#
+# Per-role reasoning effort (agents.effort / agents.roles.<role>.effort,
+# #271): a finer lever than model swap alone -- low | medium | high | max.
+# Precedence: role effort → global effort → the runner's own default (unset
+# means no behaviour change, exactly like model). An invalid value is
+# rejected with a stderr warning and treated as unset.
+# `bash scripts/pipeline-agent.sh --resolve <role>` prints it alongside
+# runner/runner_cmd/model. The claude runner applies it via the dispatched
+# agent definition's frontmatter `effort:` field (the mechanism Claude Code
+# exposes for subagents -- there is no per-spawn Agent tool parameter for
+# it); every other runner gets it as TALOS_EFFORT in the environment, for a
+# runner_cmd to map onto its own flag.
+#   effort: medium                     # validator, docs, planner — cheap stages
+#   roles:
+#     developer:
+#       effort: high                   # the stage that writes code
+#
+# Re-stamp effort (agents.restamp_effort / agents.roles.<role>.restamp_effort,
+# #271): same chain shape as agents.restamp_model above, base key
+# agents.effort instead of agents.model — role restamp_effort → global
+# restamp_effort → agents.effort.
+#   restamp_effort: low
 
 # ── Hooks ─────────────────────────────────────────────────────────────────────
 # hooks.pre_dispatch (#181): a shell command run before EVERY stage's prompt

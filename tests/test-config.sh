@@ -335,4 +335,111 @@ for k in agents.restamp_model agents.roles.qa.restamp_model; do
 done
 rm talos.pipeline.json
 
+# ── agents.effort / agents.roles.<role>.effort / agents.restamp_effort (#271) ──
+# Same chain shapes as agents.model/.restamp_model above, plus allowed-value
+# validation (low/medium/high/max) that neither model nor runner has.
+
+# No agents.effort anywhere -> empty (no session-default fallback the way
+# restamp_model borrows agents.model -- an unset effort really does mean
+# "let the runner apply its own default").
+cat > talos.pipeline.json <<'EOF'
+{"agents": {"model": "claude-haiku-4-5"}}
+EOF
+assert_eq "" "$(bash "$CFG_SH" agents.effort "")" \
+  "agents.effort with no override is empty (#271)"
+assert_eq "" "$(bash "$CFG_SH" agents.roles.developer.effort "")" \
+  "agents.roles.<role>.effort with no override is empty (#271)"
+rm talos.pipeline.json
+
+# Explicit agents.effort value round-trips.
+cat > talos.pipeline.json <<'EOF'
+{"agents": {"effort": "medium"}}
+EOF
+assert_eq "medium" "$(bash "$CFG_SH" agents.effort "")" \
+  "agents.effort returns its explicit value (#271)"
+rm talos.pipeline.json
+
+# Invalid agents.effort value fails validation with a clear message and
+# falls back to the caller's default, same fail-closed shape as
+# verify.timeout_ms / verify.ci_wait_s.
+cat > talos.pipeline.json <<'EOF'
+{"agents": {"effort": "ultra-mega"}}
+EOF
+assert_eq "" "$(bash "$CFG_SH" agents.effort "")" \
+  "invalid agents.effort falls back to the default (#271)"
+effort_err="$(bash "$CFG_SH" agents.effort "" 2>&1 >/dev/null)"
+assert_contains "$effort_err" "must be one of low, medium, high, max" \
+  "invalid agents.effort warns on stderr with a clear message (#271)"
+assert_contains "$effort_err" "ultra-mega" \
+  "invalid agents.effort error names the offending value (#271)"
+rm talos.pipeline.json
+
+# Invalid agents.roles.<role>.effort value fails the same way.
+cat > talos.pipeline.json <<'EOF'
+{"agents": {"roles": {"qa": {"effort": "not-a-level"}}}}
+EOF
+assert_eq "" "$(bash "$CFG_SH" agents.roles.qa.effort "")" \
+  "invalid agents.roles.<role>.effort falls back to the default (#271)"
+role_effort_err="$(bash "$CFG_SH" agents.roles.qa.effort "" 2>&1 >/dev/null)"
+assert_contains "$role_effort_err" "must be one of low, medium, high, max" \
+  "invalid agents.roles.<role>.effort warns on stderr (#271)"
+rm talos.pipeline.json
+
+# ── agents.restamp_effort / agents.roles.<role>.restamp_effort (#271) ──
+# Documented precedence: role restamp_effort -> global restamp_effort ->
+# agents.effort (mirrors agents.restamp_model exactly, base key
+# agents.effort instead of agents.model).
+
+# No agents.restamp_effort anywhere -> falls back to agents.effort, for both
+# a role with no override at all and a role with an unrelated (.effort, not
+# .restamp_effort) override.
+cat > talos.pipeline.json <<'EOF'
+{"agents": {"effort": "low", "roles": {"reviewer": {"effort": "high"}}}}
+EOF
+assert_eq "low" "$(bash "$CFG_SH" agents.restamp_effort "")" \
+  "agents.restamp_effort with no override falls back to agents.effort (#271)"
+assert_eq "low" "$(bash "$CFG_SH" agents.roles.reviewer.restamp_effort "")" \
+  "agents.roles.<role>.restamp_effort falls back to agents.effort when neither restamp key is set (#271)"
+assert_eq "low" "$(bash "$CFG_SH" agents.roles.docs.restamp_effort "")" \
+  "agents.roles.<role>.restamp_effort falls back to agents.effort for a role with no agents.roles entry at all (#271)"
+rm talos.pipeline.json
+
+# Global agents.restamp_effort set, no per-role override -> role inherits the
+# global restamp_effort, not agents.effort.
+cat > talos.pipeline.json <<'EOF'
+{"agents": {"effort": "high", "restamp_effort": "low", "roles": {"reviewer": {"effort": "max"}}}}
+EOF
+assert_eq "low" "$(bash "$CFG_SH" agents.restamp_effort "")" \
+  "agents.restamp_effort returns its own explicit value (#271)"
+assert_eq "low" "$(bash "$CFG_SH" agents.roles.reviewer.restamp_effort "")" \
+  "agents.roles.<role>.restamp_effort falls back to the global restamp_effort, not agents.effort, when set (#271)"
+rm talos.pipeline.json
+
+# Role restamp_effort set -> wins over both the global restamp_effort and
+# agents.effort.
+cat > talos.pipeline.json <<'EOF'
+{
+  "agents": {
+    "effort": "high",
+    "restamp_effort": "medium",
+    "roles": {"qa": {"restamp_effort": "low"}}
+  }
+}
+EOF
+assert_eq "low" "$(bash "$CFG_SH" agents.roles.qa.restamp_effort "")" \
+  "agents.roles.<role>.restamp_effort wins over both agents.restamp_effort and agents.effort (#271)"
+assert_eq "medium" "$(bash "$CFG_SH" agents.restamp_effort "")" \
+  "the global agents.restamp_effort is unaffected by a role-specific override (#271)"
+
+# --dump parity: the derived value matches the single-key lookup exactly.
+dump_restamp_effort="$SANDBOX/dump-restamp-effort"
+bash "$CFG_SH" --dump > "$dump_restamp_effort" 2>/dev/null
+for k in agents.restamp_effort agents.roles.qa.restamp_effort; do
+  single="$(bash "$CFG_SH" "$k" "")"
+  dumped="$(_dump_get "$k" "$dump_restamp_effort")" || dumped=""
+  assert_eq "$single" "$dumped" \
+    "--dump matches single-key lookup for $k (#271 parity)"
+done
+rm talos.pipeline.json
+
 finish

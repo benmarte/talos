@@ -1458,6 +1458,21 @@ agents:
     codex --model "$MODEL" --role "$TALOS_ROLE" -
 ```
 
+### Per-role reasoning effort (`agents.roles.<role>.effort`, #271)
+
+A finer lever than model swap alone: `agents.effort` / `agents.roles.<role>.effort`
+set the reasoning effort (`low` | `medium` | `high` | `max`) with the same
+role-first precedence as `agents.model` above. Unlike `agents.roles.<role>.model`,
+this key is **not** a silent no-op on the adapter path: `pipeline-agent.sh`
+resolves it for every runner and exports it as `TALOS_EFFORT`, so a `runner_cmd`
+can map it onto that CLI's own effort/reasoning flag exactly the way `$TALOS_ROLE`
+routes by role. On the native path (`claude`), where there is no per-spawn Agent
+tool parameter for effort, the orchestrator applies the resolved value via the
+dispatched agent definition's frontmatter `effort:` field instead. See the
+README's [Per-role reasoning effort](../README.md#per-role-reasoning-effort-agentseffort-and-agentsroleseffort)
+section for the full precedence chain, the re-stamp variant
+(`agents.restamp_effort`), and a worked config example.
+
 ### Per-role runner override (`agents.roles.<role>.runner` / `.runner_cmd`)
 
 **What it does.** Unlike `agents.roles.<role>.model` above, this key is read

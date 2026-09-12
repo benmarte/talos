@@ -73,8 +73,10 @@ _KNOWN_CONFIG_KEYS_JSON='[
   "notifications.events", "notifications.cmd", "notifications.cmd_timeout_s",
   "agents.runner", "agents.subagents", "agents.runner_args",
   "agents.runner_cmd", "agents.model", "agents.restamp_model",
+  "agents.effort", "agents.restamp_effort",
   "agents.roles.*.model", "agents.roles.*.runner",
   "agents.roles.*.runner_cmd", "agents.roles.*.restamp_model",
+  "agents.roles.*.effort", "agents.roles.*.restamp_effort",
   "limits.max_fix_attempts", "limits.max_total_dispatches",
   "limits.max_retries",
   "markers.trusted_authors", "markers.verify_authors",
@@ -316,6 +318,60 @@ if isinstance(_roles_cfg, dict):
         elif _rkey in flat:
             del flat[_rkey]
 
+# agents.effort / agents.roles.<role>.effort / agents.restamp_effort /
+# agents.roles.<role>.restamp_effort (#271): reasoning-effort lever
+# alongside agents.model/.restamp_model. Allowed values low/medium/high/max
+# -- anything else is reported on stderr and treated as absent, mirroring
+# _validate_int_key's fail-closed-to-absent shape for a fixed string enum.
+# restamp_effort's derived-default chain mirrors the restamp_model block
+# just above exactly, with agents.effort standing in for agents.model as
+# the base key -- effort has no runner-independent session default the way
+# an unset model falls back to the harness default, so bottoming out at an
+# empty agents.effort really does mean "let the runner apply its own
+# default effort".
+_EFFORT_VALUES = ("low", "medium", "high", "max")
+
+def _valid_effort(effort_key, effort_value):
+    if effort_value is None or effort_value == "":
+        return None
+    if effort_value not in _EFFORT_VALUES:
+        sys.stderr.write(
+            "pipeline-config: %s must be one of low, medium, high, max -- "
+            "got: %r -- using default\n" % (effort_key, effort_value)
+        )
+        return None
+    return effort_value
+
+for _ekey in [
+    k for k in list(flat.keys())
+    if k == "agents.effort" or (k.startswith("agents.roles.") and k.endswith(".effort"))
+]:
+    _evalue = _valid_effort(_ekey, flat[_ekey])
+    if _evalue is None:
+        del flat[_ekey]
+    else:
+        flat[_ekey] = _evalue
+
+_agents_effort = flat.get("agents.effort")
+_global_restamp_effort = _valid_effort("agents.restamp_effort", walk(cfg, "agents.restamp_effort".split("."))) or _agents_effort
+if _global_restamp_effort:
+    flat["agents.restamp_effort"] = _global_restamp_effort
+elif "agents.restamp_effort" in flat:
+    del flat["agents.restamp_effort"]
+
+if isinstance(_roles_cfg, dict):
+    for _role_name in _roles_cfg:
+        _role_restamp_effort = _valid_effort(
+            "agents.roles.%s.restamp_effort" % _role_name,
+            walk(cfg, ["agents", "roles", _role_name, "restamp_effort"]),
+        )
+        _resolved_effort = _role_restamp_effort or _global_restamp_effort
+        _rekey_effort = "agents.roles.%s.restamp_effort" % _role_name
+        if _resolved_effort:
+            flat[_rekey_effort] = _resolved_effort
+        elif _rekey_effort in flat:
+            del flat[_rekey_effort]
+
 out = sys.stdout.buffer
 for k, v in flat.items():
     if isinstance(v, bool):
@@ -555,6 +611,36 @@ elif key.startswith("agents.roles.") and key.endswith(".restamp_model"):
         value = walk(cfg, "agents.restamp_model".split("."))
         if value is None or value == "":
             value = walk(cfg, "agents.model".split("."))
+
+# agents.effort / agents.roles.<role>.effort / agents.restamp_effort /
+# agents.roles.<role>.restamp_effort (#271): reasoning-effort lever
+# alongside agents.model/.restamp_model. Mirrors the --dump path's
+# identical block above -- see that copy's comment for the full rationale
+# (allowed values, why restamp_effort's base key is agents.effort, and why
+# an invalid value falls through the chain like an absent one).
+_EFFORT_VALUES = ("low", "medium", "high", "max")
+
+def _valid_effort(effort_key, effort_value):
+    if effort_value is None or effort_value == "":
+        return None
+    if effort_value not in _EFFORT_VALUES:
+        sys.stderr.write(
+            "pipeline-config: %s must be one of low, medium, high, max -- "
+            "got: %r -- using default\n" % (effort_key, effort_value)
+        )
+        return None
+    return effort_value
+
+if key == "agents.effort" or (key.startswith("agents.roles.") and key.endswith(".effort")):
+    value = _valid_effort(key, value)
+elif key == "agents.restamp_effort":
+    value = _valid_effort(key, value) or _valid_effort("agents.effort", walk(cfg, "agents.effort".split(".")))
+elif key.startswith("agents.roles.") and key.endswith(".restamp_effort"):
+    value = (
+        _valid_effort(key, value)
+        or _valid_effort("agents.restamp_effort", walk(cfg, "agents.restamp_effort".split(".")))
+        or _valid_effort("agents.effort", walk(cfg, "agents.effort".split(".")))
+    )
 
 value = _validate_int_key(key, value)
 

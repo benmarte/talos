@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Per-role reasoning effort config (`agents.effort`, `agents.restamp_effort`, #271).** A finer lever than a model swap alone: `agents.effort` / `agents.roles.<role>.effort` set the reasoning effort (`low` | `medium` | `high` | `max`) per role, resolved role-first exactly like `agents.model` (new `_resolve_effort` in `pipeline-agent.sh`, beside `_resolve_model`); `agents.restamp_effort` / `agents.roles.<role>.restamp_effort` follow the same derived-default chain as `agents.restamp_model` (#258), base key `agents.effort` instead of `agents.model`, resolved by `pipeline-config.sh`. `pipeline-agent.sh --resolve <role>` now prints `effort=<e>` alongside `runner`/`runner_cmd`/`model`. An invalid value (anything other than the four above) is rejected with a one-line stderr warning and treated as unset -- it never reaches a runner. There is no per-spawn Agent tool parameter for effort, unlike model: the claude runner applies the resolved value via the dispatched agent definition's frontmatter `effort:` field (the mechanism Claude Code exposes for subagents), scoped to a repo-override role only (`skills/pipeline/SKILL.md`'s new Per-role effort selection block); every other runner gets it as `TALOS_EFFORT` in the environment, exported by `pipeline-agent.sh` alongside `TALOS_ROLE`, for a `runner_cmd` to map onto its own flag. Omitted at every level behaves byte-identically to earlier versions. Documented in both example configs and a new README "Per-role reasoning effort" section.
+
 ## [0.15.0] - 2026-09-11
 
 ### Added
