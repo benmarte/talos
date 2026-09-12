@@ -1466,10 +1466,13 @@ role-first precedence as `agents.model` above. Unlike `agents.roles.<role>.model
 this key is **not** a silent no-op on the adapter path: `pipeline-agent.sh`
 resolves it for every runner and exports it as `TALOS_EFFORT`, so a `runner_cmd`
 can map it onto that CLI's own effort/reasoning flag exactly the way `$TALOS_ROLE`
-routes by role. On the native path (`claude`), where there is no per-spawn Agent
-tool parameter for effort, the orchestrator applies the resolved value via the
-dispatched agent definition's frontmatter `effort:` field instead. See the
-README's [Per-role reasoning effort](../README.md#per-role-reasoning-effort-agentseffort-and-agentsroleseffort)
+routes by role. On the native path (`claude`), it is advisory only — there is
+no per-spawn Agent tool parameter for effort, and the orchestrator never
+writes to a role file at spawn time, so the value that actually runs is
+whatever `effort:` (if any) is already committed in the role's frontmatter.
+A resolved config value that disagrees with the committed frontmatter just
+gets a logged notice, not a rewrite. See the README's
+[Per-role reasoning effort](../README.md#per-role-reasoning-effort-agentseffort-and-agentsrolesroleeffort)
 section for the full precedence chain, the re-stamp variant
 (`agents.restamp_effort`), and a worked config example.
 

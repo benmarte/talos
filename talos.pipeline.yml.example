@@ -392,11 +392,14 @@ notifications:
 # means no behaviour change, exactly like model). An invalid value is
 # rejected with a stderr warning and treated as unset.
 # `bash scripts/pipeline-agent.sh --resolve <role>` prints it alongside
-# runner/runner_cmd/model. The claude runner applies it via the dispatched
-# agent definition's frontmatter `effort:` field (the mechanism Claude Code
-# exposes for subagents -- there is no per-spawn Agent tool parameter for
-# it); every other runner gets it as TALOS_EFFORT in the environment, for a
-# runner_cmd to map onto its own flag.
+# runner/runner_cmd/model. Every adapter-path runner gets it applied for
+# real, as TALOS_EFFORT in the environment, for a runner_cmd to map onto its
+# own flag. On the native claude path this key is advisory only -- there is
+# no per-spawn Agent tool parameter for effort, and the orchestrator never
+# writes to a role file, so what actually runs is whatever `effort:` is
+# already committed in the role's own frontmatter (agents/<role>.md);
+# a resolved value that disagrees with that frontmatter just gets a logged
+# notice, not a rewrite.
 #   effort: medium                     # validator, docs, planner — cheap stages
 #   roles:
 #     developer:

@@ -337,7 +337,7 @@ All keys live in `talos.pipeline.json` (or `talos.pipeline.yml` if PyYAML is ins
 | `agents.roles.<role>.runner_cmd` | falls back to `agents.runner_cmd` | Role-specific command, read only when that role's resolved runner is `custom`. |
 | `agents.restamp_model` | falls back to `agents.model` | Model for **re-stamp** dispatches — a cheap delta re-review of a PR the same role already approved (#258). See "Stale approvals — cheap delta re-stamp" under [`pipeline-vcs.sh` verbs](#scripts-reference) below. |
 | `agents.roles.<role>.restamp_model` | falls back to `agents.restamp_model`, then `agents.model` | Role-specific re-stamp model override. Precedence: role restamp model → global restamp model → `agents.model`. |
-| `agents.effort` | unset (runner's own default) | Reasoning effort (`low` \| `medium` \| `high` \| `max`) for all stages not explicitly overridden (#271). See [Per-role reasoning effort](#per-role-reasoning-effort-agentseffort-and-agentsroleseffort). An invalid value is rejected with a stderr warning and treated as unset. |
+| `agents.effort` | unset (runner's own default) | Reasoning effort (`low` \| `medium` \| `high` \| `max`) for all stages not explicitly overridden (#271). Applied for real on every adapter-path runner; on the native `claude` path it is advisory only — see [Per-role reasoning effort](#per-role-reasoning-effort-agentseffort-and-agentsrolesroleeffort). An invalid value is rejected with a stderr warning and treated as unset. |
 | `agents.roles.<role>.effort` | falls back to `agents.effort` | Role-specific effort override, e.g. `high` for `developer`, `low` for cheap volume stages. |
 | `agents.restamp_effort` | falls back to `agents.effort` | Effort for **re-stamp** dispatches (#271), same chain shape as `agents.restamp_model`. |
 | `agents.roles.<role>.restamp_effort` | falls back to `agents.restamp_effort`, then `agents.effort` | Role-specific re-stamp effort override. Precedence: role restamp effort → global restamp effort → `agents.effort`. |
@@ -897,13 +897,23 @@ agents:
 
 A finer lever than a model swap alone (#271): `low` | `medium` | `high` | `max`, resolved role-first exactly like `agents.model` — `agents.roles.<role>.effort` wins, else `agents.effort`, else empty (the runner's own default; omitted behaves byte-identically to earlier versions). `bash scripts/pipeline-agent.sh --resolve <role>` prints it alongside `runner`/`runner_cmd`/`model`. An invalid value (anything other than the four above) is rejected with a stderr warning and treated as unset — it never reaches a runner.
 
-Applying the resolved value differs from `model`, because there is no per-spawn Agent tool parameter for effort: the claude runner applies it via the dispatched agent definition's **frontmatter `effort:` field** — the mechanism Claude Code exposes for subagents — on the native path only. Every other runner (`codex` / `gemini` / `antigravity` / `custom`) gets it as `TALOS_EFFORT` in the environment, the same way `TALOS_ROLE` is exported, so a `runner_cmd` can map it onto that CLI's own effort/reasoning flag:
+Applying the resolved value differs from `model`, because there is no per-spawn Agent tool parameter for effort, and the orchestrator never edits a tracked file at spawn time. On the **adapter path** (`codex` / `gemini` / `antigravity` / `custom`), `pipeline-agent.sh` applies it for real: it exports the resolved value as `TALOS_EFFORT` in the environment, the same way `TALOS_ROLE` is exported, so a `runner_cmd` can map it onto that CLI's own effort/reasoning flag. On the **native `claude` path**, this config key is advisory only — the mechanism Claude Code exposes for subagents is the dispatched agent definition's **frontmatter `effort:` field**, and that field is only ever set by committing it directly in `agents/<role>.md` (or its repo-override copy). If the resolved config value is non-empty and does not match what the role's committed frontmatter says, the orchestrator logs a one-line notice and spawns anyway — it does not rewrite the file:
 
 ```yaml
 agents:
-  effort: medium          # validator, docs, planner — cheap stages
+  effort: medium          # applied via TALOS_EFFORT on the adapter path;
+                          # advisory-only notice on the native claude path
   roles:
-    developer: {effort: high}   # the stage that writes code
+    developer: {effort: high}   # same split, per role
+```
+
+```yaml
+# agents/developer.md frontmatter — this is what actually changes effort
+# on the native claude path:
+---
+model: claude-sonnet-5
+effort: high
+---
 ```
 
 **Re-stamp effort (`agents.restamp_effort` / `agents.roles.<role>.restamp_effort`):** same chain shape as `agents.restamp_model` — role restamp effort → global restamp effort → `agents.effort` — for the cheap delta re-review dispatch described under "Stale approvals — cheap delta re-stamp" below.

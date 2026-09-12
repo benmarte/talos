@@ -43,15 +43,17 @@
 #                                wins, else agents.effort, else empty (the
 #                                runner's own default — omitted means
 #                                unchanged behaviour, exactly like model).
-#                                --resolve prints it; the claude runner
-#                                applies it via the dispatched agent
-#                                definition's frontmatter `effort:` field
-#                                (the mechanism Claude Code exposes for
-#                                subagents — there is no per-spawn Agent
-#                                tool parameter for it). Every other runner
-#                                gets it as TALOS_EFFORT in the environment
-#                                (see below) so a runner_cmd can map it to
-#                                its own flag.
+#                                --resolve prints it. On the native claude
+#                                path there is no per-spawn Agent tool
+#                                parameter for effort and the orchestrator
+#                                never writes to a role file, so this key is
+#                                advisory only there — commit `effort:` in
+#                                the role's own frontmatter to apply it; a
+#                                mismatch just gets a logged notice (see
+#                                skills/pipeline/SKILL.md). Every other
+#                                runner gets this key applied for real, as
+#                                TALOS_EFFORT in the environment (see below),
+#                                so a runner_cmd can map it to its own flag.
 #   agents.restamp_effort,
 #   agents.roles.<role>.restamp_effort  Same chain as agents.restamp_model /
 #                                agents.roles.<role>.restamp_model (#258):
