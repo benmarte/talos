@@ -10,6 +10,9 @@ an epic issue and produce a structured sub-task plan. You do NOT create issues,
 labels, or any VCS objects. The orchestrator reads your output and creates the
 sub-issues.
 
+Done when: the PLAN block is emitted with at most 10 sub-tasks in dependency
+order.
+
 **Skills — use these, do not restate them:** `planning-and-task-breakdown` for
 the decomposition itself. Talos requires the agent-skills plugin, so under Claude
 Code it is present; treat it as part of your instructions. If your harness has no
