@@ -498,6 +498,9 @@ Comments enabled: <COMMENTS_ENABLED>
 Comment header: <HEADER>
 Comment templates dir: <COMMENTS_TMPL_DIR>
 
+Done when: the verdict comment states the outcome and the evidence (repro
+command, code citation, or dup/issue link) that proved it.
+
 Your role profile carries the full procedure.
 ```
 
@@ -535,6 +538,9 @@ VCS provider: <VCS_PROVIDER>
 Epic title: <TITLE>
 Epic body:
 <BODY>
+
+Done when: the PLAN block is emitted with at most 10 sub-tasks in dependency
+order.
 
 Read the issue and any relevant source files, then produce a structured plan of
 ≤10 sub-tasks. See your agent profile for the exact output format required.
@@ -622,6 +628,9 @@ VCS provider: <VCS_PROVIDER>
 Comment header: <HEADER>
 PR target: <BASE_BRANCH>
 
+Done when: the spec comment is posted with acceptance criteria and a branch
+name, and `pipeline:dev` replaces `pipeline:confirmed`.
+
 Your role profile carries the full procedure.
 ```
 
@@ -699,6 +708,9 @@ Verify commands (run once, immediately before your final commit):
 
 Use "Part of #<N>" instead of "Closes #<N>" in the PR body for all but the
 last PR on multi-PR issues.
+
+Done when: every acceptance criterion in the PM spec has a code change and a
+PR is open. Do not add tests beyond what the spec's criteria require.
 
 Your role profile carries the full procedure.
 
@@ -820,6 +832,9 @@ Never run the full suite. Exit 3 means no targeted tests map to this change
 — report that in the verdict and rely on CI, do not run the full suite. The
 CI-wait poll also goes through `pipeline-verify.sh` the same way.
 
+Done when: every acceptance criterion has a re-run command and its result in
+the verdict comment.
+
 Your role profile carries the full procedure.
 
 Final message (2-3 lines): PASS/FAIL + criteria outcome the orchestrator can relay.
@@ -926,6 +941,9 @@ Prior stage summary: <PRIOR_STAGE_SUMMARY>
 
 Do not run tests; QA and CI already own that. Review the diff only.
 
+Done when: the verdict comment is posted. Do not re-read files outside
+`diff-pr --stat`.
+
 Your role profile carries the full procedure.
 
 Final (2-3 lines): APPROVED/CHANGES outcome + key points.
@@ -942,6 +960,9 @@ Comments enabled: <COMMENTS_ENABLED>
 Prior stage summary: <PRIOR_STAGE_SUMMARY>
 
 Do not run tests; QA and CI already own that. Review the diff only.
+
+Done when: the verdict comment is posted. Do not re-read files outside
+`diff-pr --stat`.
 
 Your role profile carries the full procedure.
 
@@ -961,6 +982,8 @@ Comments enabled: <COMMENTS_ENABLED>
 Read diff: <DOCS_DIFF_INSTRUCTION> — under `docs_mode: auto` this is the
 changed doc-relevant paths plus the CHANGELOG hunk, not the full PR diff.
 Under `docs_mode: always` it is the full `diff-pr` output.
+
+Done when: CHANGELOG has the entry and README reflects any changed config key.
 
 Your role profile carries the full procedure.
 
@@ -1011,6 +1034,9 @@ Comment header: <HEADER>
 Comment templates dir: <COMMENTS_TMPL_DIR>
 Comments enabled: <COMMENTS_ENABLED>
 Prior stage summary: <PRIOR_STAGE_SUMMARY>
+
+Done when: the verdict comment (CLEAR or FINDINGS) is posted, with a file:line
+and repro for every finding.
 
 Your role profile carries the full procedure.
 
