@@ -710,4 +710,59 @@ assert_eq "0" "$(grep -c '^pr checks 9' <<<"$log")" \
   "e2e: QA in ci mode never polls pr-checks after a CONFLICTING pr-mergeable result (#214)"
 rm -f talos.pipeline.json
 
+# ── #272: pipeline:blocked comments cite the file/line that triggered them ──
+# Every stage prompt requires naming the file and quoting the line that made
+# it stop, and saying whether that is an explicit requirement or the agent's
+# own interpretation. Render blocked.md the same way a stage would and assert
+# the rendered comment carries a "Blocked by: <file>:<quote> (explicit|
+# interpreted)" line.
+BLOCKED_TMPL="$HOME/.talos/templates/comments/blocked.md"
+render_blocked() {  # $1=SUMMARY $2=DETAILS $3=BLOCKED_BY
+  HEADER='**Agent:** developer (talos)' SUMMARY="$1" DETAILS="$2" BLOCKED_BY="$3" \
+    python3 -c "
+import os, string, sys
+with open(sys.argv[1]) as f:
+    t = string.Template(f.read())
+print(t.safe_substitute(os.environ).strip())
+" "$BLOCKED_TMPL"
+}
+
+blocked_comment="$(render_blocked \
+  "create-pr failed" \
+  "- create-pr exited 1" \
+  "agents/developer.md:82 (explicit)")"
+assert_contains "$blocked_comment" \
+  "Blocked by: agents/developer.md:82 (explicit)" \
+  "e2e: blocked.md renders a Blocked by: line naming the file:line and explicit|interpreted (#272)"
+
+blocked_comment_interpreted="$(render_blocked \
+  "spec ambiguous on retry policy" \
+  "- PM spec does not say how many retries to allow" \
+  "issue #42 PM spec, retry section (interpreted)")"
+assert_contains "$blocked_comment_interpreted" \
+  "Blocked by: issue #42 PM spec, retry section (interpreted)" \
+  "e2e: blocked.md renders the interpreted case with the same Blocked by: shape (#272)"
+
+# ── The quoted line named in BLOCKED_BY is text copied from a file the agent
+# read (issue body, PM spec) -- reporter-controlled. It must be captured into
+# BLOCKED_BY via a quoted heredoc (never pasted directly into a live command
+# string) so backticks/$() inside it are never interpreted, then rendered as
+# inert data (PR #275 security finding).
+rm -f INJECTED_MARKER_BLOCKED
+read -r -d '' BLOCKED_BY_INJECTED <<'EOF' || true
+agents/developer.md:82: `touch INJECTED_MARKER_BLOCKED` and $(touch INJECTED_MARKER_BLOCKED) (explicit)
+EOF
+blocked_comment_injected="$(render_blocked \
+  "create-pr failed" \
+  "- create-pr exited 1" \
+  "$BLOCKED_BY_INJECTED")"
+assert_contains "$blocked_comment_injected" \
+  'Blocked by: agents/developer.md:82: `touch INJECTED_MARKER_BLOCKED` and $(touch INJECTED_MARKER_BLOCKED) (explicit)' \
+  "e2e: blocked.md renders a BLOCKED_BY value with backticks and \$() literally (#272 security)"
+if [ -f INJECTED_MARKER_BLOCKED ]; then
+  fail "e2e: BLOCKED_BY metacharacters must never execute when captured via a quoted heredoc"
+else
+  pass "e2e: BLOCKED_BY metacharacters do not execute when captured via a quoted heredoc (#272 security)"
+fi
+
 finish

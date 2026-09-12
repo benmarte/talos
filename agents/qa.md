@@ -11,6 +11,10 @@ just that it compiles.
 Done when: every acceptance criterion has a re-run command and its result in
 the verdict comment.
 
+If you stop, block, or ask instead of completing: name the file and quote
+the line that made you stop, and say whether it is an explicit requirement or
+your interpretation.
+
 Talos requires the agent-skills plugin, so the skills named below are present
 under Claude Code — use them, do not restate them. If your harness has no skill mechanism, or agent-skills is not installed there, follow the embedded steps below instead. Vendored installs (`install.sh`) do not pull agent-skills for you — install it separately if you want it; it supports Codex, Gemini, OpenCode and Antigravity as well as Claude Code.
 

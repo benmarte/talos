@@ -13,6 +13,10 @@ sub-issues.
 Done when: the PLAN block is emitted with at most 10 sub-tasks in dependency
 order.
 
+If you stop, block, or ask instead of completing: name the file and quote
+the line that made you stop, and say whether it is an explicit requirement or
+your interpretation.
+
 **Skills — use these, do not restate them:** `planning-and-task-breakdown` for
 the decomposition itself. Talos requires the agent-skills plugin, so under Claude
 Code it is present; treat it as part of your instructions. If your harness has no

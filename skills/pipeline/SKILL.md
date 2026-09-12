@@ -477,7 +477,7 @@ Two ceilings apply (both checked atomically by record-attempt):
 - `limits.max_fix_attempts` (default 3): max **consecutive** failures of the **same blocking stage**.  Resets when a different stage blocks next.
 - `limits.max_total_dispatches` (default 8): absolute ceiling on total developer dispatches per issue.  **Never resets.**
 
-When `record-attempt` exits non-zero (either ceiling reached): set `pipeline:blocked`, post blocked.md, move on.  Do NOT re-dispatch the developer.
+When `record-attempt` exits non-zero (either ceiling reached): set `pipeline:blocked`, post blocked.md with BLOCKED_BY="talos.pipeline.yml:limits.max_fix_attempts or limits.max_total_dispatches (explicit)" — whichever ceiling `record-attempt` reported — move on.  Do NOT re-dispatch the developer.
 
 **Idempotency limit:** `--pr` dedupes any retry at the same PR head, even across a fresh orchestrator process — it cannot distinguish two genuinely separate attempts that happen to land while the PR head is unchanged (e.g. two ambiguous-failure retries of the same stage before a new commit lands), which is treated as one attempt by design. Issue-side stages called with no key (no PR yet) are not deduped at all. That gap is by design, not a bug to chase; see README.md.
 
@@ -500,6 +500,10 @@ Comment templates dir: <COMMENTS_TMPL_DIR>
 
 Done when: the verdict comment states the outcome and the evidence (repro
 command, code citation, or dup/issue link) that proved it.
+
+If you stop, block, or ask instead of completing: name the file and quote
+the line that made you stop, and say whether it is an explicit requirement or
+your interpretation.
 
 Your role profile carries the full procedure.
 ```
@@ -541,6 +545,10 @@ Epic body:
 
 Done when: the PLAN block is emitted with at most 10 sub-tasks in dependency
 order.
+
+If you stop, block, or ask instead of completing: name the file and quote
+the line that made you stop, and say whether it is an explicit requirement or
+your interpretation.
 
 Read the issue and any relevant source files, then produce a structured plan of
 ≤10 sub-tasks. See your agent profile for the exact output format required.
@@ -631,6 +639,10 @@ PR target: <BASE_BRANCH>
 Done when: the spec comment is posted with acceptance criteria and a branch
 name, and `pipeline:dev` replaces `pipeline:confirmed`.
 
+If you stop, block, or ask instead of completing: name the file and quote
+the line that made you stop, and say whether it is an explicit requirement or
+your interpretation.
+
 Your role profile carries the full procedure.
 ```
 
@@ -671,7 +683,8 @@ Dispatch according to `ISOLATION`:
   bash scripts/pipeline-vcs.sh assert-sync
   ```
   If this exits non-zero: set `pipeline:blocked` on the issue, post blocked.md
-  with the error, and skip to the next issue. Do NOT dispatch the developer
+  with the error and BLOCKED_BY="scripts/pipeline-vcs.sh assert-sync output
+  (explicit)", and skip to the next issue. Do NOT dispatch the developer
   into a dirty tree.
 
 The prompt below is identical for both isolation modes except `<ISOLATION_NOTE>`
@@ -711,6 +724,10 @@ last PR on multi-PR issues.
 
 Done when: every acceptance criterion in the PM spec has a code change and a
 PR is open. Do not add tests beyond what the spec's criteria require.
+
+If you stop, block, or ask instead of completing: name the file and quote
+the line that made you stop, and say whether it is an explicit requirement or
+your interpretation.
 
 Your role profile carries the full procedure.
 
@@ -835,6 +852,10 @@ CI-wait poll also goes through `pipeline-verify.sh` the same way.
 Done when: every acceptance criterion has a re-run command and its result in
 the verdict comment.
 
+If you stop, block, or ask instead of completing: name the file and quote
+the line that made you stop, and say whether it is an explicit requirement or
+your interpretation.
+
 Your role profile carries the full procedure.
 
 Final message (2-3 lines): PASS/FAIL + criteria outcome the orchestrator can relay.
@@ -944,6 +965,10 @@ Do not run tests; QA and CI already own that. Review the diff only.
 Done when: the verdict comment is posted. Do not re-read files outside
 `diff-pr --stat`.
 
+If you stop, block, or ask instead of completing: name the file and quote
+the line that made you stop, and say whether it is an explicit requirement or
+your interpretation.
+
 Your role profile carries the full procedure.
 
 Final (2-3 lines): APPROVED/CHANGES outcome + key points.
@@ -963,6 +988,10 @@ Do not run tests; QA and CI already own that. Review the diff only.
 
 Done when: the verdict comment is posted. Do not re-read files outside
 `diff-pr --stat`.
+
+If you stop, block, or ask instead of completing: name the file and quote
+the line that made you stop, and say whether it is an explicit requirement or
+your interpretation.
 
 Your role profile carries the full procedure.
 
@@ -984,6 +1013,10 @@ changed doc-relevant paths plus the CHANGELOG hunk, not the full PR diff.
 Under `docs_mode: always` it is the full `diff-pr` output.
 
 Done when: CHANGELOG has the entry and README reflects any changed config key.
+
+If you stop, block, or ask instead of completing: name the file and quote
+the line that made you stop, and say whether it is an explicit requirement or
+your interpretation.
 
 Your role profile carries the full procedure.
 
@@ -1037,6 +1070,10 @@ Prior stage summary: <PRIOR_STAGE_SUMMARY>
 
 Done when: the verdict comment (CLEAR or FINDINGS) is posted, with a file:line
 and repro for every finding.
+
+If you stop, block, or ask instead of completing: name the file and quote
+the line that made you stop, and say whether it is an explicit requirement or
+your interpretation.
 
 Your role profile carries the full procedure.
 

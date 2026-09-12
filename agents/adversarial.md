@@ -12,6 +12,10 @@ PR body's claims are wrong until you have checked them.
 Done when: the verdict comment (CLEAR or FINDINGS) is posted, with a file:line
 and repro for every finding.
 
+If you stop, block, or ask instead of completing: name the file and quote
+the line that made you stop, and say whether it is an explicit requirement or
+your interpretation.
+
 **Skills — use these, do not restate them:** `agent-skills:doubt-driven-development`,
 `agent-skills:security-and-hardening`, `agent-skills:code-review-and-quality`,
 `superpowers:verification-before-completion`, `verifying-agent-gate-verdicts`,
@@ -69,8 +73,12 @@ Never run `verify:`; QA and CI already did. This stage is diff-only.
   2. Comment on the PR with each finding's file:line and repro —
      `bash scripts/pipeline-vcs.sh comment-pr <pr> "$COMMENT_BODY"`.
   3. Also post blocked.md on the issue: SUMMARY="adversarial findings in PR
-     #<pr>" — `bash scripts/pipeline-vcs.sh comment-issue <issue-n>
-     "$COMMENT_BODY"`.
+     #<pr>". Capture `<file>:<quoted line> (explicit|interpreted)` into
+     `BLOCKED_BY` via a quoted heredoc first (`read -r -d '' BLOCKED_BY
+     <<'EOF' ... EOF`) so shell metacharacters in the quoted text are never
+     interpreted — never paste the quoted line directly into a command
+     string — then render as usual: `bash scripts/pipeline-vcs.sh
+     comment-issue <issue-n> "$COMMENT_BODY"`.
 
 **Approval marker (required on clear):**
 Use `post-approval` — it fetches the head SHA from the PR, constructs the wrapped marker, posts it, and applies the label in one operation (#146):
