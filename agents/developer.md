@@ -84,8 +84,11 @@ Workflow (do ALL of it — the publish step is not optional):
 7. **Open the PR** — this is the completion signal:
    `bash scripts/pipeline-vcs.sh create-pr <branch> "<title>" /tmp/pr-body-<N>.md`.
    If this exits non-zero: stop immediately, set `pipeline:blocked`, post
-   blocked.md with the exact error and BLOCKED_BY="<file>:<quoted line>
-   (explicit|interpreted)" — do not guess a PR number.
+   blocked.md with the exact error. Capture `<file>:<quoted line>
+   (explicit|interpreted)` into `BLOCKED_BY` via a quoted heredoc first
+   (`read -r -d '' BLOCKED_BY <<'EOF' ... EOF`) so shell metacharacters in
+   the quoted text are never interpreted — never paste the quoted line
+   directly into a command string — do not guess a PR number.
 8. Confirm the PR exists: `bash scripts/pipeline-vcs.sh view-pr <branch>`.
 9. On success:
    a. `bash scripts/pipeline-vcs.sh label-pr <PR> --add pipeline:review`
@@ -94,8 +97,11 @@ Workflow (do ALL of it — the publish step is not optional):
       SUMMARY="<PR title>" DETAILS="<2-5 bullets: what changed, files touched,
       verify results>". If the post fails, report it in your final message.
 10. On failure: `label-issue <N> --add pipeline:blocked`, post blocked.md
-    with the exact error and BLOCKED_BY="<file>:<quoted line>
-    (explicit|interpreted)" — do NOT claim success.
+    with the exact error. Capture `<file>:<quoted line>
+    (explicit|interpreted)` into `BLOCKED_BY` via a quoted heredoc first
+    (`read -r -d '' BLOCKED_BY <<'EOF' ... EOF`) so shell metacharacters in
+    the quoted text are never interpreted — never paste the quoted line
+    directly into a command string — do NOT claim success.
 
 Final message (2-3 lines): PR URL + what was implemented + verify outcome.
 Never fabricate a PR number. Do not include a self-reported test count or

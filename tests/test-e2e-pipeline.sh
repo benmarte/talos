@@ -743,4 +743,26 @@ assert_contains "$blocked_comment_interpreted" \
   "Blocked by: issue #42 PM spec, retry section (interpreted)" \
   "e2e: blocked.md renders the interpreted case with the same Blocked by: shape (#272)"
 
+# ── The quoted line named in BLOCKED_BY is text copied from a file the agent
+# read (issue body, PM spec) -- reporter-controlled. It must be captured into
+# BLOCKED_BY via a quoted heredoc (never pasted directly into a live command
+# string) so backticks/$() inside it are never interpreted, then rendered as
+# inert data (PR #275 security finding).
+rm -f INJECTED_MARKER_BLOCKED
+read -r -d '' BLOCKED_BY_INJECTED <<'EOF' || true
+agents/developer.md:82: `touch INJECTED_MARKER_BLOCKED` and $(touch INJECTED_MARKER_BLOCKED) (explicit)
+EOF
+blocked_comment_injected="$(render_blocked \
+  "create-pr failed" \
+  "- create-pr exited 1" \
+  "$BLOCKED_BY_INJECTED")"
+assert_contains "$blocked_comment_injected" \
+  'Blocked by: agents/developer.md:82: `touch INJECTED_MARKER_BLOCKED` and $(touch INJECTED_MARKER_BLOCKED) (explicit)' \
+  "e2e: blocked.md renders a BLOCKED_BY value with backticks and \$() literally (#272 security)"
+if [ -f INJECTED_MARKER_BLOCKED ]; then
+  fail "e2e: BLOCKED_BY metacharacters must never execute when captured via a quoted heredoc"
+else
+  pass "e2e: BLOCKED_BY metacharacters do not execute when captured via a quoted heredoc (#272 security)"
+fi
+
 finish

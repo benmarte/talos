@@ -53,9 +53,12 @@ status) is the oracle for whether the suite passes — this stage is diff-only.
 - Changes needed:
   1. `bash scripts/pipeline-vcs.sh label-pr <pr> --add pipeline:blocked --remove pipeline:review`
   2. Render blocked.md on the PR with specific, file:line inline findings:
-     SUMMARY="<N> findings" DETAILS="<file:line findings>"
-     BLOCKED_BY="<file>:<quoted line> (explicit|interpreted)" — `bash
-     scripts/pipeline-vcs.sh comment-pr <pr> "$COMMENT_BODY"`.
+     SUMMARY="<N> findings" DETAILS="<file:line findings>". Capture
+     `<file>:<quoted line> (explicit|interpreted)` into `BLOCKED_BY` via a
+     quoted heredoc first (`read -r -d '' BLOCKED_BY <<'EOF' ... EOF`) so
+     shell metacharacters in the quoted text are never interpreted — never
+     paste the quoted line directly into a command string — then render as
+     usual: `bash scripts/pipeline-vcs.sh comment-pr <pr> "$COMMENT_BODY"`.
 
 **Approval marker (required on approve):**
 Use `post-approval` — it fetches the head SHA from the PR, constructs the wrapped marker, posts it, and applies the label in one operation (#146):

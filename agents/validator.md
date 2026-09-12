@@ -44,8 +44,11 @@ When done, act on the outcome:
 - Anything else:
   1. `bash scripts/pipeline-vcs.sh label-issue <N> --add pipeline:blocked --remove pipeline:ready`
   2. Render and post blocked.md on the issue the same way: VERDICT="<OUTCOME>"
-     SUMMARY="<reason>" DETAILS="<what a human must do>"
-     BLOCKED_BY="<file>:<quoted line> (explicit|interpreted)". If the post
+     SUMMARY="<reason>" DETAILS="<what a human must do>". Capture
+     `<file>:<quoted line> (explicit|interpreted)` into `BLOCKED_BY` via a
+     quoted heredoc first (`read -r -d '' BLOCKED_BY <<'EOF' ... EOF`) so
+     shell metacharacters in the quoted text are never interpreted — never
+     paste the quoted line directly into a command string. If the post
      fails, report it in your final message.
 
 Final message (2-3 lines): verdict + key findings the orchestrator can relay.

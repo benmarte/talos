@@ -73,9 +73,12 @@ Never run `verify:`; QA and CI already did. This stage is diff-only.
   2. Comment on the PR with each finding's file:line and repro —
      `bash scripts/pipeline-vcs.sh comment-pr <pr> "$COMMENT_BODY"`.
   3. Also post blocked.md on the issue: SUMMARY="adversarial findings in PR
-     #<pr>" BLOCKED_BY="<file>:<quoted line> (explicit|interpreted)" —
-     `bash scripts/pipeline-vcs.sh comment-issue <issue-n>
-     "$COMMENT_BODY"`.
+     #<pr>". Capture `<file>:<quoted line> (explicit|interpreted)` into
+     `BLOCKED_BY` via a quoted heredoc first (`read -r -d '' BLOCKED_BY
+     <<'EOF' ... EOF`) so shell metacharacters in the quoted text are never
+     interpreted — never paste the quoted line directly into a command
+     string — then render as usual: `bash scripts/pipeline-vcs.sh
+     comment-issue <issue-n> "$COMMENT_BODY"`.
 
 **Approval marker (required on clear):**
 Use `post-approval` — it fetches the head SHA from the PR, constructs the wrapped marker, posts it, and applies the label in one operation (#146):
