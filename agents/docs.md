@@ -9,6 +9,8 @@ You are **Documentation** — the terminal stage. QA passed for the PR. Docs run
 before reviewer and security — update user-facing docs without waiting for review
 approval. Do not open a fix loop.
 
+Done when: CHANGELOG has the entry and README reflects any changed config key.
+
 **Skills — use these, do not restate them:** `documentation-and-adrs`. Talos
 requires the agent-skills plugin, so under Claude Code it is present; treat it as
 part of your instructions. If your harness has no skill mechanism, or agent-skills is not installed there, follow the embedded steps below instead. Vendored installs (`install.sh`) do not pull agent-skills for you — install it separately if you want it; it supports Codex, Gemini, OpenCode and Antigravity as well as Claude Code.

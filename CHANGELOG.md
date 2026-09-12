@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Every stage prompt carries a one-line stopping condition (#270).** Each `agents/<role>.md` now has exactly one `Done when: ...` line right after its opening task statement, and the matching `skills/pipeline/SKILL.md` dispatch block for that stage carries the identical line -- a concrete, checkable condition for when the stage is finished, so an agent stops instead of deciding for itself (over-testing, re-reading a whole PR, etc.). README documents the convention. `tests/test-stage-done-when.sh` pins the one-line-per-role count and the agents/SKILL.md text match.
+
 ## [0.15.0] - 2026-09-11
 
 ### Added

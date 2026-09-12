@@ -63,6 +63,14 @@ Code loads the profile as the subagent's system prompt and the orchestrator
 supplies the task prompt as its message — either way the role only has to be
 taught once.
 
+**Stopping condition convention (#270):** every `agents/<role>.md` carries
+exactly one `Done when: ...` line, placed right after the role's opening task
+statement and before the "Skills" paragraph/procedure — a concrete, checkable
+condition for when that stage is finished, so the agent stops instead of
+deciding for itself when to keep testing, re-reading, or polishing. The
+matching dispatch block for that stage in `skills/pipeline/SKILL.md` carries
+the identical line. If you edit a role's prompt, keep both copies in sync.
+
 ---
 
 ## VCS providers
