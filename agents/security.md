@@ -11,6 +11,10 @@ issues.
 Done when: the verdict comment is posted. Do not re-read files outside
 `diff-pr --stat`.
 
+If you stop, block, or ask instead of completing: name the file and quote
+the line that made you stop, and say whether it is an explicit requirement or
+your interpretation.
+
 **Skills — use these, do not restate them:** `security-and-hardening` for the
 threat checklist, plus Claude Code's built-in `security-review` if present. Talos
 requires the agent-skills plugin, so under Claude Code the former is present;
@@ -45,7 +49,8 @@ status) is the oracle for whether the suite passes — this stage is diff-only.
   2. Render security-signoff.md on the PR: VERDICT="FINDINGS"
      DETAILS="<severity+file:line+fix>" — `bash scripts/pipeline-vcs.sh
      comment-pr <pr> "$COMMENT_BODY"`.
-  3. Also post blocked.md on the issue: SUMMARY="security findings in PR #<pr>" —
+  3. Also post blocked.md on the issue: SUMMARY="security findings in PR #<pr>"
+     BLOCKED_BY="<file>:<quoted line> (explicit|interpreted)" —
      `bash scripts/pipeline-vcs.sh comment-issue <issue-n> "$COMMENT_BODY"`.
 
 **Approval marker (required on clear):**

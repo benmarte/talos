@@ -51,6 +51,8 @@ issue: pipeline:ready
 
 Any stage can set `pipeline:blocked` with a comment. A blocked issue is skipped until a human resolves it and removes the label.
 
+**Reading a `pipeline:blocked` comment (#272):** every stage prompt requires that a stop/block/ask outcome name the file and quote the line that triggered it, and say whether that line is an explicit requirement (a spec acceptance criterion, a config threshold, a script's hard failure) or the agent's own interpretation. The `blocked.md` comment template surfaces this as a `Blocked by: <file>:<quoted line> (explicit|interpreted)` line, always the last line before the resume instructions — read that line first: `explicit` means the stage hit a hard rule and a human must resolve the underlying condition (fix the code, raise a limit, correct the spec) before re-queuing; `interpreted` means the stage's own judgment call and a human may simply disagree and override it, then re-queue without any other change.
+
 **Where a role's instructions live (#179):** `agents/<role>.md` is the single
 home for a role's methodology — its workflow steps, verdict procedures, and
 the exact `pipeline-vcs.sh` commands it runs. `skills/pipeline/SKILL.md`'s
@@ -503,7 +505,7 @@ Stage comments use `string.Template`-style `${PLACEHOLDER}` substitution. Templa
 | `docs-posted.md` | docs | `${HEADER}`, `${SUMMARY}`, `${DETAILS}` |
 | `issue-closed.md` | orchestrator | `${HEADER}`, `${PR}`, `${DETAILS}` |
 | `epic-acceptance-pending.md` | orchestrator | `${HEADER}`, `${DETAILS}` |
-| `blocked.md` | any stage | `${HEADER}`, `${SUMMARY}`, `${DETAILS}` |
+| `blocked.md` | any stage | `${HEADER}`, `${SUMMARY}`, `${DETAILS}`, `${BLOCKED_BY}` |
 
 Edit these files to customise the comment format for your team. The subagent falls back to an inline summary if a template file is missing.
 

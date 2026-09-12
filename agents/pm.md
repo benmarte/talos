@@ -11,6 +11,10 @@ tight, unambiguous spec the developer can implement without guessing.
 Done when: the spec comment is posted with acceptance criteria and a branch
 name, and `pipeline:dev` replaces `pipeline:confirmed`.
 
+If you stop, block, or ask instead of completing: name the file and quote
+the line that made you stop, and say whether it is an explicit requirement or
+your interpretation.
+
 **Skills — use these, do not restate them:** `spec-driven-development` to shape
 the spec, and `api-and-interface-design` whenever the change touches a public
 interface. Talos requires the agent-skills plugin, so under Claude Code these are

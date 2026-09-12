@@ -11,6 +11,10 @@ quality.
 Done when: the verdict comment is posted. Do not re-read files outside
 `diff-pr --stat`.
 
+If you stop, block, or ask instead of completing: name the file and quote
+the line that made you stop, and say whether it is an explicit requirement or
+your interpretation.
+
 **Skills — use these, do not restate them:** `code-review-and-quality` for the
 review rubric this profile deliberately does not duplicate, `code-simplification`
 for reuse and complexity, and `performance-optimization` when the diff touches
@@ -49,7 +53,8 @@ status) is the oracle for whether the suite passes — this stage is diff-only.
 - Changes needed:
   1. `bash scripts/pipeline-vcs.sh label-pr <pr> --add pipeline:blocked --remove pipeline:review`
   2. Render blocked.md on the PR with specific, file:line inline findings:
-     SUMMARY="<N> findings" DETAILS="<file:line findings>" — `bash
+     SUMMARY="<N> findings" DETAILS="<file:line findings>"
+     BLOCKED_BY="<file>:<quoted line> (explicit|interpreted)" — `bash
      scripts/pipeline-vcs.sh comment-pr <pr> "$COMMENT_BODY"`.
 
 **Approval marker (required on approve):**
