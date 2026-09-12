@@ -20,7 +20,7 @@ ERRFILE="$SANDBOX/agent.stderr"
 # No config at all: every role falls back to claude / empty runner_cmd / empty model.
 out="$(bash "$AGENT" --resolve developer 2>"$ERRFILE")"; rc=$?
 assert_eq_ctx "0" "$rc" "--resolve exits 0 with no config" "$(cat "$ERRFILE")"
-assert_eq "runner=claude runner_cmd= model=" "$out" \
+assert_eq "runner=claude runner_cmd= model= effort=" "$out" \
   "--resolve developer with no config falls back to claude/empty/empty"
 
 # Role override wins over global for both runner and runner_cmd.
@@ -30,13 +30,13 @@ cat > talos.pipeline.json <<'EOF'
 EOF
 out="$(bash "$AGENT" --resolve qa 2>"$ERRFILE")"; rc=$?
 assert_eq_ctx "0" "$rc" "--resolve qa exits 0 (role override present)" "$(cat "$ERRFILE")"
-assert_eq "runner=custom runner_cmd=role-cmd model=" "$out" \
+assert_eq "runner=custom runner_cmd=role-cmd model= effort=" "$out" \
   "--resolve qa: role runner+runner_cmd override win over global"
 
 # Absent role key falls back to the global runner/runner_cmd.
 out="$(bash "$AGENT" --resolve developer 2>"$ERRFILE")"; rc=$?
 assert_eq_ctx "0" "$rc" "--resolve developer exits 0 (no role override)" "$(cat "$ERRFILE")"
-assert_eq "runner=codex runner_cmd=global-cmd model=" "$out" \
+assert_eq "runner=codex runner_cmd=global-cmd model= effort=" "$out" \
   "--resolve developer: no role override, falls back to global runner+runner_cmd"
 
 # runner_cmd falls back independently of runner: a role can override just
@@ -47,7 +47,7 @@ cat > talos.pipeline.json <<'EOF'
 EOF
 out="$(bash "$AGENT" --resolve security 2>"$ERRFILE")"; rc=$?
 assert_eq_ctx "0" "$rc" "--resolve security exits 0" "$(cat "$ERRFILE")"
-assert_eq "runner=custom runner_cmd=global-cmd model=" "$out" \
+assert_eq "runner=custom runner_cmd=global-cmd model= effort=" "$out" \
   "--resolve security: role runner override, runner_cmd falls back to global"
 
 # Model resolution (role-first, same precedence as the native path) is part
@@ -56,11 +56,78 @@ cat > talos.pipeline.json <<'EOF'
 {"agents": {"model": "haiku-global", "roles": {"reviewer": {"model": "opus-role"}}}}
 EOF
 out="$(bash "$AGENT" --resolve reviewer 2>"$ERRFILE")"; rc=$?
-assert_eq "runner=claude runner_cmd= model=opus-role" "$out" \
+assert_eq "runner=claude runner_cmd= model=opus-role effort=" "$out" \
   "--resolve reviewer: role model wins over global model"
 out="$(bash "$AGENT" --resolve docs 2>"$ERRFILE")"; rc=$?
-assert_eq "runner=claude runner_cmd= model=haiku-global" "$out" \
+assert_eq "runner=claude runner_cmd= model=haiku-global effort=" "$out" \
   "--resolve docs: no role model, falls back to global model"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Effort resolution (#271): role-first, same precedence shape as model.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# No agents.effort anywhere -> empty (already covered by the no-config case
+# above, since --resolve developer with no config asserts effort= too).
+
+# Role effort wins over global effort.
+cat > talos.pipeline.json <<'EOF'
+{"agents": {"effort": "medium", "roles": {"developer": {"effort": "low"}}}}
+EOF
+out="$(bash "$AGENT" --resolve developer 2>"$ERRFILE")"; rc=$?
+assert_eq_ctx "0" "$rc" "--resolve developer exits 0 (role effort override)" "$(cat "$ERRFILE")"
+assert_eq "runner=claude runner_cmd= model= effort=low" "$out" \
+  "--resolve developer: role effort wins over global effort"
+
+# No role override -> falls back to the global effort.
+out="$(bash "$AGENT" --resolve reviewer 2>"$ERRFILE")"; rc=$?
+assert_eq "runner=claude runner_cmd= model= effort=medium" "$out" \
+  "--resolve reviewer: no role effort, falls back to global effort"
+
+# Neither level set -> empty (the runner's own default, unchanged behaviour).
+cat > talos.pipeline.json <<'EOF'
+{"agents": {"model": "haiku-global"}}
+EOF
+out="$(bash "$AGENT" --resolve developer 2>"$ERRFILE")"; rc=$?
+assert_eq "runner=claude runner_cmd= model=haiku-global effort=" "$out" \
+  "--resolve developer: no effort at either level resolves to empty"
+
+# agents.restamp_effort (#271, same chain as agents.restamp_model, #258):
+# resolved by pipeline-config.sh, not this script's role-first _resolve_effort
+# -- exercised directly against pipeline-config.sh in tests/test-config.sh.
+# Here, confirm --resolve's plain agents.effort output is unaffected by an
+# unrelated restamp_effort override (the two chains are independent).
+cat > talos.pipeline.json <<'EOF'
+{"agents": {"effort": "high", "restamp_effort": "low", "roles": {"developer": {"restamp_effort": "max"}}}}
+EOF
+out="$(bash "$AGENT" --resolve developer 2>"$ERRFILE")"; rc=$?
+assert_eq "runner=claude runner_cmd= model= effort=high" "$out" \
+  "--resolve developer: plain effort output unaffected by a restamp_effort override"
+
+rm -f talos.pipeline.json
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TALOS_EFFORT is exported to runner_cmd (#271, mirrors TALOS_ROLE above)
+# ═══════════════════════════════════════════════════════════════════════════
+
+cat > talos.pipeline.json <<'EOF'
+{"agents": {"runner": "custom", "runner_cmd": "printf '%s' \"$TALOS_EFFORT\"",
+  "effort": "medium", "roles": {"qa": {"effort": "low"}}}}
+EOF
+out="$(bash "$AGENT" qa "Verify PR #9." 2>"$ERRFILE")"; rc=$?
+assert_eq_ctx "0" "$rc" "TALOS_EFFORT test exits 0 (qa)" "$(cat "$ERRFILE")"
+assert_eq "low" "$out" "TALOS_EFFORT=low visible in runner_cmd (role override)"
+
+out="$(bash "$AGENT" reviewer "Review PR #9." 2>"$ERRFILE")"; rc=$?
+assert_eq_ctx "0" "$rc" "TALOS_EFFORT test exits 0 (reviewer)" "$(cat "$ERRFILE")"
+assert_eq "medium" "$out" "TALOS_EFFORT=medium visible in runner_cmd (global fallback)"
+
+cat > talos.pipeline.json <<'EOF'
+{"agents": {"runner": "custom", "runner_cmd": "printf 'EFFORT=[%s]' \"$TALOS_EFFORT\""}}
+EOF
+out="$(bash "$AGENT" docs "Update docs." 2>"$ERRFILE")"; rc=$?
+assert_eq "EFFORT=[]" "$out" "TALOS_EFFORT is the empty string when unset at either level"
+
+rm -f talos.pipeline.json
 
 # --resolve with an invalid runner value errors clearly instead of printing
 # a bogus resolution.

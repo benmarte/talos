@@ -12,7 +12,7 @@
 #                                             # runner_cmd/model for <role>
 #                                             # and exit 0 -- no prompt is
 #                                             # run. One line on stdout:
-#                                             #   runner=<r> runner_cmd=<c> model=<m>
+#                                             #   runner=<r> runner_cmd=<c> model=<m> effort=<e>
 #                                             # Shared with the orchestrator
 #                                             # (skills/pipeline/SKILL.md) so
 #                                             # both the adapter path and the
@@ -37,6 +37,33 @@
 #                                    agents.runner_args stays global-only —
 #                                    no agents.roles.<role>.runner_args (S1
 #                                    scope, #167).
+#   agents.effort               low | medium | high | max (#271). Reasoning
+#                                effort per role, resolved role-first same
+#                                as agents.model: agents.roles.<role>.effort
+#                                wins, else agents.effort, else empty (the
+#                                runner's own default — omitted means
+#                                unchanged behaviour, exactly like model).
+#                                --resolve prints it. On the native claude
+#                                path there is no per-spawn Agent tool
+#                                parameter for effort and the orchestrator
+#                                never writes to a role file, so this key is
+#                                advisory only there — commit `effort:` in
+#                                the role's own frontmatter to apply it; a
+#                                mismatch just gets a logged notice (see
+#                                skills/pipeline/SKILL.md). Every other
+#                                runner gets this key applied for real, as
+#                                TALOS_EFFORT in the environment (see below),
+#                                so a runner_cmd can map it to its own flag.
+#   agents.restamp_effort,
+#   agents.roles.<role>.restamp_effort  Same chain as agents.restamp_model /
+#                                agents.roles.<role>.restamp_model (#258):
+#                                role restamp_effort -> global
+#                                restamp_effort -> agents.effort. Resolved
+#                                by pipeline-config.sh itself (unlike plain
+#                                agents.effort, which pipeline-agent.sh
+#                                resolves role-first below) — see
+#                                skills/pipeline/SKILL.md's Step 3e re-stamp
+#                                block for where it is used.
 #   hooks.pre_dispatch  command run before the prompt is built (#181); its
 #                       stdout, if non-empty, is prepended to the prompt
 #                       under a "## Context" heading. Default "" (disabled).
@@ -53,8 +80,9 @@
 # forwarded as hooks.post_stage's duration_s field; otherwise duration_s is
 # null. pipeline-agent.sh does not time the run itself.
 #
-# runner_cmd environment: TALOS_ROLE, TALOS_ISSUE_NUMBER, and TALOS_WORKTREE_PATH
-# are exported and visible to runner_cmd. TALOS_ROLE lets you route by role:
+# runner_cmd environment: TALOS_ROLE, TALOS_ISSUE_NUMBER, TALOS_WORKTREE_PATH,
+# and TALOS_EFFORT are exported and visible to runner_cmd. TALOS_ROLE lets you
+# route by role:
 #   e.g. case "$TALOS_ROLE" in
 #          developer|qa) exec pi -p --provider ds4 --model deepseek-v4-flash "$(cat)" ;;
 #          *)            exec claude -p "$(cat)" ;;
@@ -62,6 +90,10 @@
 # TALOS_ISSUE_NUMBER is the issue number passed via TALOS_ISSUE=<N> in the caller's
 # environment; empty string when the caller does not set TALOS_ISSUE.
 # TALOS_WORKTREE_PATH is the $PWD at the time pipeline-agent.sh was invoked.
+# TALOS_EFFORT is the role's resolved agents.effort (#271, see the config-keys
+# block above) — empty string when neither agents.roles.<role>.effort nor
+# agents.effort is set. A runner_cmd maps it to its own CLI's effort/reasoning
+# flag, e.g. case "$TALOS_EFFORT" in low) set -- --reasoning-effort low ;; esac.
 # Verify scripts can assert they are running in the correct worktree:
 #   if [ "${TALOS_ISSUE_NUMBER:-}" != "$EXPECTED" ]; then exit 1; fi
 #
@@ -132,8 +164,21 @@ _resolve_model() {
   printf '%s' "$_m"
 }
 
-# --resolve <role>: print the resolved runner/runner_cmd/model and exit,
-# without running anything. Shared resolution for the orchestrator's
+# _resolve_effort (#271): same role-first precedence as _resolve_model above
+# — agents.roles.<role>.effort wins, else the global agents.effort, else
+# empty (the runner's own default, unchanged behaviour). Unlike
+# agents.restamp_model/.restamp_effort, this chain has no config-derived
+# default to lean on, so it is resolved here rather than in
+# pipeline-config.sh, exactly like _resolve_model.
+_resolve_effort() {
+  local _role="$1" _e
+  _e="$(cfg "agents.roles.$_role.effort" "")"
+  [ -n "$_e" ] || _e="$(cfg agents.effort "")"
+  printf '%s' "$_e"
+}
+
+# --resolve <role>: print the resolved runner/runner_cmd/model/effort and
+# exit, without running anything. Shared resolution for the orchestrator's
 # native-path per-role dispatch decision (skills/pipeline/SKILL.md).
 if [ "${1:-}" = "--resolve" ]; then
   _RESOLVE_ROLE="${2:-}"
@@ -149,10 +194,11 @@ if [ "${1:-}" = "--resolve" ]; then
       exit 1
       ;;
   esac
-  printf 'runner=%s runner_cmd=%s model=%s\n' \
+  printf 'runner=%s runner_cmd=%s model=%s effort=%s\n' \
     "$_RESOLVED_RUNNER" \
     "$(_resolve_runner_cmd "$_RESOLVE_ROLE")" \
-    "$(_resolve_model "$_RESOLVE_ROLE")"
+    "$(_resolve_model "$_RESOLVE_ROLE")" \
+    "$(_resolve_effort "$_RESOLVE_ROLE")"
   exit 0
 fi
 
@@ -184,7 +230,15 @@ if [ -n "$_raw_issue" ]; then
 fi
 TALOS_ISSUE_NUMBER="$_raw_issue"
 TALOS_WORKTREE_PATH="$PWD"
-export TALOS_ISSUE_NUMBER TALOS_WORKTREE_PATH
+# TALOS_EFFORT (#271): role-first resolved agents.effort, same precedence as
+# _resolve_model. Empty when neither the role nor the global key is set —
+# runner_cmd (or a runner-specific branch below) maps it to that CLI's own
+# effort/reasoning flag; it is not applied to the claude case below because
+# claude's mechanism is the dispatched agent definition's frontmatter
+# `effort:` field, which only exists on the native Claude Code subagent
+# path (skills/pipeline/SKILL.md), not this script's single-shot `claude -p`.
+TALOS_EFFORT="$(_resolve_effort "$ROLE")"
+export TALOS_ISSUE_NUMBER TALOS_WORKTREE_PATH TALOS_EFFORT
 
 if [ -z "$ROLE" ] || [ -z "$TASK" ]; then
   echo "Usage: pipeline-agent.sh <role> <task-prompt|->" >&2
