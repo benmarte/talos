@@ -97,16 +97,14 @@ if [ "$GLOBAL" = "true" ]; then
   echo "(Skills -> $CLAUDE_SKILLS_DIR, Agents -> $TALOS_HOME_DIR/agents and $CLAUDE_AGENTS_DIR)"
   echo ""
 
-  # Scripts
+  # Scripts -- glob every *.sh in $SRC/scripts so a new script is picked up
+  # automatically; a hardcoded list drifts from the repo (#276).
   echo "Scripts:"
   mkdir -p "$TALOS_HOME_DIR/scripts"
-  for script in pipeline-config.sh pipeline-cfg-cache.sh pipeline-contract.sh \
-                pipeline-status.sh pipeline-board-shared.sh pipeline-notify.sh \
-                pipeline-vcs.sh pipeline-agent.sh pipeline-worktree.sh \
-                bootstrap-labels.sh bootstrap-board.sh \
-                pipeline-paths.sh pipeline-hooks.sh pipeline-lock.sh \
-                pipeline-events.sh pipeline-verify.sh; do
-    install_file "$SRC/scripts/$script" "$TALOS_HOME_DIR/scripts/$script"
+  for script_src in "$SRC"/scripts/*.sh; do
+    [ -f "$script_src" ] || continue
+    script="$(basename "$script_src")"
+    install_file "$script_src" "$TALOS_HOME_DIR/scripts/$script"
     chmod +x "$TALOS_HOME_DIR/scripts/$script"
   done
 
@@ -126,11 +124,15 @@ if [ "$GLOBAL" = "true" ]; then
     done
   done
 
-  # Templates
+  # Templates -- glob every subdirectory of $SRC/templates so a new template
+  # dir (e.g. ci) is picked up automatically; a hardcoded list drifts from the
+  # repo (#276).
   echo ""
   echo "Templates:"
-  for dir in notifications comments; do
-    for tmpl in "$SRC/templates/$dir"/*.md; do
+  for dir_path in "$SRC"/templates/*/; do
+    [ -d "$dir_path" ] || continue
+    dir="$(basename "$dir_path")"
+    for tmpl in "$dir_path"*; do
       [ -f "$tmpl" ] || continue
       install_file "$tmpl" "$TALOS_HOME_DIR/templates/$dir/$(basename "$tmpl")"
     done

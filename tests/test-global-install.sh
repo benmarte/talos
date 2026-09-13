@@ -254,5 +254,46 @@ assert_contains "$(cat "$winning_path")" "TOKEN-REPO-OVERRIDE" \
   "content at the winning path is the repo-level override, not the global install (#166)"
 assert_not_contains "$(cat "$T8_CLAUDE/agents/developer.md")" "TOKEN-REPO-OVERRIDE" \
   "the global ~/.claude/agents/developer.md written by --global is untouched by the repo-level override (#166)"
+# ── Test 9: --global scripts/templates match repo structurally (#276) ───────
+# Acceptance criteria: diff -rq between repo scripts/templates and the
+# installed ~/.talos/{scripts,templates} must be empty -- not a fixed name
+# list the installer can drift from again.
+T9_HOME="$SANDBOX/t9-home"
+T9_CLAUDE="$SANDBOX/t9-claude"
+mkdir -p "$T9_HOME" "$T9_CLAUDE"
+HOME="$T9_HOME" CLAUDE_CONFIG_DIR="$T9_CLAUDE" \
+  bash "$TALOS_ROOT/install.sh" --global --no-agent-skills >/dev/null 2>&1
+
+scripts_diff="$(diff -rq "$TALOS_ROOT/scripts" "$T9_HOME/.talos/scripts" 2>&1 || true)"
+[ -z "$scripts_diff" ] && pass "--global scripts/ matches repo scripts/ structurally (#276)" \
+  || fail "--global scripts/ matches repo scripts/ structurally (#276)" "$scripts_diff"
+
+templates_diff="$(diff -rq "$TALOS_ROOT/templates" "$T9_HOME/.talos/templates" 2>&1 || true)"
+[ -z "$templates_diff" ] && pass "--global templates/ matches repo templates/ structurally (#276)" \
+  || fail "--global templates/ matches repo templates/ structurally (#276)" "$templates_diff"
+
+# ── Test 10: a NEW scripts/*.sh is installed with zero install.sh edits ─────
+# Build a scratch copy of just what install.sh reads from $SRC, add a brand
+# new script, and prove --global installs it -- covering "adding a new
+# scripts/foo.sh requires no install.sh edit" (#276).
+T10_SRC="$SANDBOX/t10-src"
+mkdir -p "$T10_SRC/skills"
+cp "$TALOS_ROOT/install.sh" "$T10_SRC/install.sh"
+cp -R "$TALOS_ROOT/scripts" "$T10_SRC/scripts"
+cp -R "$TALOS_ROOT/agents" "$T10_SRC/agents"
+cp -R "$TALOS_ROOT/templates" "$T10_SRC/templates"
+cp -R "$TALOS_ROOT/skills/pipeline" "$T10_SRC/skills/pipeline"
+cp -R "$TALOS_ROOT/skills/pipeline-setup" "$T10_SRC/skills/pipeline-setup"
+printf '#!/usr/bin/env bash\necho new\n' > "$T10_SRC/scripts/pipeline-newthing.sh"
+chmod +x "$T10_SRC/scripts/pipeline-newthing.sh"
+
+T10_HOME="$SANDBOX/t10-home"
+T10_CLAUDE="$SANDBOX/t10-claude"
+mkdir -p "$T10_HOME" "$T10_CLAUDE"
+HOME="$T10_HOME" CLAUDE_CONFIG_DIR="$T10_CLAUDE" \
+  bash "$T10_SRC/install.sh" --global --no-agent-skills >/dev/null 2>&1
+
+assert_file_exists "$T10_HOME/.talos/scripts/pipeline-newthing.sh" \
+  "a newly added scripts/*.sh is installed by --global with no install.sh edit (#276)"
 
 finish
