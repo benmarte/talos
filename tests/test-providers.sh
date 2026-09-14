@@ -126,15 +126,30 @@ assert_contains "$log" "[boards] [query]" "azure list-issues invokes az boards q
 assert_contains "$log" "[--wiql]" "azure list-issues passes a WIQL query"
 assert_not_contains "$log" "[work-item] [list]" "azure list-issues does not call nonexistent work-item list"
 
+# ── Issue #278: WIQL has no "SELECT TOP N" -- ADO rejects it (TF51006) ──────
+# #171 capped azure list-issues with "SELECT TOP 1000 ..." in the WIQL text,
+# which the real service refuses ("missing a FROM clause ... caused by «1000»"),
+# so every azure run had an empty queue. The stub never validates WIQL, so pin
+# the query text itself: it must start with "SELECT [System.Id]" and never
+# carry a TOP clause.
+: > "$GH_LOG"
+bash "$VCS" list-issues >/dev/null 2>&1
+log="$(cat "$GH_LOG")"
+assert_not_contains "$log" "SELECT TOP" "azure list-issues WIQL carries no TOP clause (#278: WIQL has none; ADO rejects it with TF51006)"
+assert_contains "$log" "[SELECT [System.Id]," "azure list-issues WIQL starts with the select list, not a cap"
+
 # ── Issue #171: list-issues/list-prs stay capped on azure -- warn loudly ────
-# `az boards query` has no --top flag; WIQL's own "SELECT TOP N" is the only
-# cheap cap available, so a result landing exactly on it must warn.
-_171_az_items="$(python3 -c "
+# `az boards query` has no --top flag and WIQL has no TOP clause (#278), so the
+# only ceiling is ADO's own 20000-item flat-query limit; a result landing
+# exactly on it must warn.
+# 20000 items is too big for an env var (ARG_MAX), so the stub reads a file.
+_171_az_items_file="$SANDBOX/az-workitems-20000.json"
+python3 -c "
 import json
-print(json.dumps([{'id': i, 'fields': {'System.Title': 't'+str(i), 'System.State': 'New'}} for i in range(1, 1001)]))
-")"
-err="$(STUB_AZURE_WORKITEM_LIST="$_171_az_items" bash "$VCS" list-issues 2>&1 >/dev/null)"
-assert_contains "$err" "WARNING result capped at 1000" "azure list-issues warns loudly when landing exactly on the WIQL TOP ceiling"
+print(json.dumps([{'id': i, 'fields': {'System.Title': 't'+str(i), 'System.State': 'New'}} for i in range(1, 20001)]))
+" > "$_171_az_items_file"
+err="$(STUB_AZURE_WORKITEM_LIST_FILE="$_171_az_items_file" bash "$VCS" list-issues 2>&1 >/dev/null)"
+assert_contains "$err" "WARNING result capped at 20000" "azure list-issues warns loudly when landing exactly on ADO's 20000-item WIQL ceiling"
 
 _171_az_items_under="$(python3 -c "
 import json
