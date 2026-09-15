@@ -29,8 +29,12 @@ case "$args" in
     printf '{"id":5,"fields":{"System.Title":"Fix login crash","System.Tags":"bug; ui"}}\n' ;;
   "boards query "*)
     # Canned WIQL result set for list-issues.
-    # Override STUB_AZURE_WORKITEM_LIST to simulate a capped/large result set (#171).
-    if [ -n "${STUB_AZURE_WORKITEM_LIST:-}" ]; then
+    # Override STUB_AZURE_WORKITEM_LIST to simulate a capped/large result set (#171),
+    # or STUB_AZURE_WORKITEM_LIST_FILE (a path) when the fixture is too big for
+    # the environment (#278: the 20000-item ceiling fixture exceeds ARG_MAX).
+    if [ -n "${STUB_AZURE_WORKITEM_LIST_FILE:-}" ]; then
+      cat "$STUB_AZURE_WORKITEM_LIST_FILE"
+    elif [ -n "${STUB_AZURE_WORKITEM_LIST:-}" ]; then
       printf '%s\n' "$STUB_AZURE_WORKITEM_LIST"
     else
       printf '[{"id":5,"fields":{"System.Title":"Fix login crash","System.State":"New","System.Tags":"pipeline:ready"}}]\n'
