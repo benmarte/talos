@@ -1,7 +1,7 @@
-🚪 ${REF_TITLE} — closed
+${HEADLINE}
 
-${MSG}
+${REF_LINK}
+
+${SUMMARY}
 
 _All stages complete. Board → Done._
-
-🔗 ${REF_LINK}

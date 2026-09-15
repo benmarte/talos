@@ -32,17 +32,24 @@ pm_payload="$(tail -1 "$CURL_LOG" | cut -f2)"
 assert_contains "$pm_payload" "acceptance criteria" "pm summary body is delivered"
 assert_contains "$pm_payload" "fix/issue-42-parsetoken-null" "pm message carries the branch name"
 
-# ── Rendered through a pm template, not the verbatim fallback ───────────
-# The template's distinguishing header. Without a pm template the script posts
-# the bare summary, which would not contain this string. Slack is the sink
-# under test here, so the winning file is slack/pm.md (#280).
-assert_contains "$pm_payload" "*Project Manager*" "the pm template controls the format"
-# The pm -> project-manager role mapping is what ${ROLE} resolves to; the
-# platform-neutral template is the one that still spells it out, so render that
-# directly rather than asserting it against a headline that uses a display name.
-role_render="$(PIPELINE_ISSUE_TITLE="Fix login crash" \
+# ── Rendered through the pm template, not the verbatim fallback ─────────────
+# The headline's role label, built by the script from ${ROLE_LABEL} (#284).
+# Without the pm template the script posts the bare summary, which would carry
+# no headline at all. "PM" is the display label -- shortened from #283's
+# "Project Manager" when the labels were aligned with daedalus _ROLE_LABELS --
+# and is distinct from the ${ROLE} slug asserted below.
+assert_contains "$pm_payload" "*PM*" "the pm template controls the format"
+# The pm -> project-manager role mapping is what ${ROLE} resolves to. No
+# shipped template spells ${ROLE} out any more (they are built from ${HEADLINE}
+# /${REF_LINK}/${SUMMARY}), so render a project override that uses the variable
+# directly: this pins the MAPPING, which is what matters, rather than a
+# particular template happening to print it.
+mkdir -p "$SANDBOX/templates/notifications"
+printf 'ROLE=${ROLE}\n' > "$SANDBOX/templates/notifications/pm.md"
+role_render="$(cd "$SANDBOX" && PIPELINE_ISSUE_TITLE="Fix login crash" \
   bash "$NOTIFY" --render default pm "#42" "$PM_MSG" 2>&1)"
-assert_contains "$role_render" "project-manager" "pm maps to the project-manager role name"
+rm -f "$SANDBOX/templates/notifications/pm.md"
+assert_contains "$role_render" "ROLE=project-manager" "pm maps to the project-manager role name"
 
 # ── Threads under the same anchor as every other role event ─────────────────
 # A pm event that started its own root would split the issue's thread in two.

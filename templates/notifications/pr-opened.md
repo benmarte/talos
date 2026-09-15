@@ -1,5 +1,5 @@
-🔍 ${PR_REF} — opened for review
+${HEADLINE}
 
-${MSG}
+${REF_LINK}
 
-🔗 ${PR_LINK}
+${SUMMARY}

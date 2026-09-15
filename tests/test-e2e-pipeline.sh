@@ -88,15 +88,20 @@ payloads="$(cut -f2 "$CURL_LOG")"
 roots="$(grep -c -v thread_ts "$CURL_LOG" || true)"
 assert_eq "1" "$roots" "e2e: exactly one root post — all later events threaded"
 assert_contains "$payloads" '"thread_ts": "1111.2222"' "e2e: replies reference the dispatch anchor"
-# Per-role slack headline from templates/notifications/slack/validator.md
-# (#280). json.dumps escapes non-ASCII, so assert on the ASCII parts.
+# Per-role slack headline, built by the script from the one neutral template
+# per event (#284). json.dumps escapes non-ASCII, so assert on the ASCII parts.
 assert_contains "$payloads" "*Validator*" \
-  "e2e: validator relay rendered from its per-role template"
-assert_contains "$payloads" "#$N: $STUB_ISSUE_TITLE" \
-  "e2e: validator relay carries the issue ref and title"
+  "e2e: validator relay carries its per-role headline"
+# The root's title line is ${REF_LINK}: the ref and the issue title, linked.
+assert_contains "$payloads" "|#$N $STUB_ISSUE_TITLE>" \
+  "e2e: thread root title line carries the issue ref and title"
 assert_contains "$payloads" "<https://github.com/acme/widget/issues/$N|" "e2e: issue link present in thread"
+# A lifecycle event renders under the Talos identity, and its headline ref links
+# the PR -- the only route from a reply to the PR, since ${REF_LINK} is
+# root-only and replies carry no metadata block (#284).
+assert_contains "$payloads" "*Talos* — merged · <https://github.com/acme/widget/pull/9|#$N>" \
+  "e2e: merged event rendered, headline ref links the PR"
 assert_contains "$payloads" "<https://github.com/acme/widget/pull/9|" "e2e: PR link present in thread"
-assert_contains "$payloads" "*Merged*" "e2e: merged template rendered"
 assert_contains "$payloads" "closed" "e2e: issue-closed event announced"
 
 # Message count: dispatched, validator, pr-opened, qa, merged, issue-closed = 6

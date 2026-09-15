@@ -1,5 +1,5 @@
-📋 Spec ready from ${ROLE} agent on ${REF_TITLE}
+${HEADLINE}
 
-${MSG}
+${REF_LINK}
 
-🔗 ${REF_LINK}
+${SUMMARY}

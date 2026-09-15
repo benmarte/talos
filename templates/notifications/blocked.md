@@ -1,7 +1,7 @@
-⛔ ${REF_TITLE} — blocked
+${HEADLINE}
 
-${MSG}
+${REF_LINK}
 
-_⚠️ Human attention needed before the pipeline can continue._
+${SUMMARY}
 
-🔗 ${REF_LINK}
+_Human attention needed before the pipeline can continue._

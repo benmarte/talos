@@ -1,1 +1,5 @@
-ℹ️ ${MSG}
+${HEADLINE}
+
+${REF_LINK}
+
+${SUMMARY}
