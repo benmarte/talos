@@ -69,6 +69,7 @@ _KNOWN_CONFIG_KEYS_JSON='[
   "comments.enabled", "comments.header", "comments.templates_dir",
   "notifications.slack_channel", "notifications.discord_channel",
   "notifications.buzz_channel", "notifications.buzz_relay",
+  "notifications.buzz_timeout_s",
   "notifications.templates_dir", "notifications.threading",
   "notifications.events", "notifications.cmd", "notifications.cmd_timeout_s",
   "agents.runner", "agents.subagents", "agents.runner_args",

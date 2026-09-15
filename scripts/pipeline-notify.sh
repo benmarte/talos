@@ -27,8 +27,12 @@
 #   (hex or nsec; env, repo .env, or ~/.hermes/.env), and a channel UUID from
 #   notifications.buzz_channel / PIPELINE_BUZZ_CHANNEL. Threading uses NIP-10
 #   reply tags ["e", <root-id>, "", "reply"] with the anchor persisted as
-#   buzz_event_id. If buzz is configured but nak is missing, buzz is skipped
-#   with a warning; the pipeline never breaks.
+#   buzz_event_id. The bot key reaches nak through NOSTR_SECRET_KEY, never on
+#   argv (`ps` would expose it). Each nak call is bounded by
+#   notifications.buzz_timeout_s (default 15s, positive integer) — a relay that
+#   never answers logs one stderr line and writes no anchor. If buzz is
+#   configured but nak is missing, buzz is skipped with a warning; the pipeline
+#   never breaks.
 #
 # Threading (bot-token mode only; Buzz always threads — it is key-based):
 #   When notifications.threading = true (default) and a bot token is in use,
@@ -810,24 +814,74 @@ PY
     BUZZ_TEXT="$TEXT"
   fi
 
+  # Seconds a single nak call may run before it is killed (#281). A relay that
+  # never answers sends no RST, never closes, and never issues the NIP-42 AUTH
+  # challenge, so an unbounded nak hangs this script — and with it the
+  # orchestrator's whole post-merge chain — indefinitely.
+  BUZZ_TIMEOUT_S="$(cfg notifications.buzz_timeout_s "15")"
+  case "$BUZZ_TIMEOUT_S" in
+    ''|*[!0-9]*) BUZZ_TIMEOUT_S=15 ;;
+  esac
+  [ "$BUZZ_TIMEOUT_S" -gt 0 ] 2>/dev/null || BUZZ_TIMEOUT_S=15
+
   # nak exits 0 even when the relay REJECTS the event, and prints the
   # locally-signed JSON to stdout regardless (it signs before publishing). So
   # neither the exit code nor stdout distinguishes success from failure — an id
   # parsed from that stdout can be an event the relay never stored, which then
   # gets persisted as a thread anchor and makes a dead sink look healthy.
   # The relay's actual verdict is only on stderr, so capture and inspect it.
-  _buzz_publish() {  # $1=anchor event id (may be empty); prints nak stdout, non-zero on rejection
-    _buzz_err="$(mktemp)"
+  _buzz_publish() {  # $1=anchor event id (may be empty); prints nak stdout
+    # rc 0 = published, 1 = rejected/failed, 2 = timed out. A timeout is its
+    # own code because it says nothing about the anchor: the caller must not
+    # read it as "stale anchor" and burn a second timeout on a recovery repost.
+    _buzz_err="$(mktemp)"; _buzz_res="$(mktemp)"; _buzz_expired="$(mktemp)"
+
+    # Portable timeout: no timeout(1) on macOS by default, so nak runs as its
+    # own process group (set -m) with a background watchdog that sends SIGTERM,
+    # then SIGKILL, to that group once BUZZ_TIMEOUT_S elapses — the same
+    # pattern pipeline-hooks.sh's _hooks_run and the notifications.cmd sink use.
+    # The bot key travels in NOSTR_SECRET_KEY, which nak documents as the source
+    # for --sec (`nak event --help`, GLOBAL OPTIONS), instead of on argv, where
+    # `ps` exposes it to every local user for the life of the process.
+    set -m
     if [ -n "$1" ]; then
-      _buzz_out="$(nak event --auth --sec "$BUZZ_BOT_PRIVATE_KEY" -k 9 -c "$BUZZ_TEXT" \
-        -t "h=$BUZZ_CHANNEL" -t "e=$1;;reply" "$BUZZ_RELAY_URL" 2>"$_buzz_err")"
+      NOSTR_SECRET_KEY="$BUZZ_BOT_PRIVATE_KEY" nak event --auth -k 9 -c "$BUZZ_TEXT" \
+        -t "h=$BUZZ_CHANNEL" -t "e=$1;;reply" "$BUZZ_RELAY_URL" >"$_buzz_res" 2>"$_buzz_err" &
     else
-      _buzz_out="$(nak event --auth --sec "$BUZZ_BOT_PRIVATE_KEY" -k 9 -c "$BUZZ_TEXT" \
-        -t "h=$BUZZ_CHANNEL" "$BUZZ_RELAY_URL" 2>"$_buzz_err")"
+      NOSTR_SECRET_KEY="$BUZZ_BOT_PRIVATE_KEY" nak event --auth -k 9 -c "$BUZZ_TEXT" \
+        -t "h=$BUZZ_CHANNEL" "$BUZZ_RELAY_URL" >"$_buzz_res" 2>"$_buzz_err" &
     fi
+    _buzz_pid=$!
+    set +m
+
+    # The watchdog gets its own process group too: killing it below must reap
+    # the `sleep` it already forked, not orphan it for BUZZ_TIMEOUT_S.
+    set -m
+    ( sleep "$BUZZ_TIMEOUT_S"
+      printf 'timeout' > "$_buzz_expired"
+      kill -TERM -"$_buzz_pid" 2>/dev/null
+      sleep 0.2
+      kill -KILL -"$_buzz_pid" 2>/dev/null
+    ) &
+    _buzz_wd=$!
+    set +m
+
+    wait "$_buzz_pid" 2>/dev/null
     _buzz_rc=$?
+    kill -- -"$_buzz_wd" 2>/dev/null
+    wait "$_buzz_wd" 2>/dev/null
+
+    _buzz_out="$(cat "$_buzz_res" 2>/dev/null)"
     _buzz_msg="$(cat "$_buzz_err" 2>/dev/null)"
-    rm -f "$_buzz_err"
+    _buzz_timed_out=0
+    [ -s "$_buzz_expired" ] && _buzz_timed_out=1
+    rm -f "$_buzz_err" "$_buzz_res" "$_buzz_expired"
+
+    if [ "$_buzz_timed_out" -eq 1 ]; then
+      printf 'pipeline-notify: buzz relay timed out after %ss: %s\n' \
+        "$BUZZ_TIMEOUT_S" "$BUZZ_RELAY_URL" >&2
+      return 2
+    fi
     # Failure markers, verified against a rejected publish: an unadmitted key
     # yields "auth error: msg: restricted: not a relay member. failed: msg:
     # auth-required: not authenticated" with rc=0. Success prints only
@@ -850,25 +904,30 @@ PY
   elif ! command -v nak >/dev/null 2>&1; then
     echo "pipeline-notify: buzz configured but 'nak' CLI not found — skipping (brew install nak)" >&2
   else
-    if resp="$(_buzz_publish "$BUZZ_ANCHOR")"; then
+    # rc 2 (timed out) already logged its one stderr line and is no evidence
+    # the anchor is stale, so it skips both the recovery repost and the generic
+    # failure line below.
+    resp="$(_buzz_publish "$BUZZ_ANCHOR")"; BUZZ_RC=$?
+    if [ "$BUZZ_RC" -eq 0 ]; then
       # Store the root event id as the thread anchor for the first post
       if [ "$THREADING_ENABLED" = "true" ] && [ -z "$BUZZ_ANCHOR" ]; then
         NEW_ID="$(_buzz_event_id "$resp")"
         [ -n "$NEW_ID" ] && _thread_state set buzz_event_id "$NEW_ID"
       fi
-    elif [ -n "$BUZZ_ANCHOR" ]; then
+    elif [ "$BUZZ_RC" -eq 1 ] && [ -n "$BUZZ_ANCHOR" ]; then
       # Reply rejected (Buzz rejects replies to unknown parents) — clear the
       # stale anchor and repost as a fresh root, mirroring Slack recovery.
       _thread_state clear buzz_event_id
-      if resp2="$(_buzz_publish "")"; then
+      resp2="$(_buzz_publish "")"; BUZZ_RETRY_RC=$?
+      if [ "$BUZZ_RETRY_RC" -eq 0 ]; then
         if [ "$THREADING_ENABLED" = "true" ]; then
           NEW_ID="$(_buzz_event_id "$resp2")"
           [ -n "$NEW_ID" ] && _thread_state set buzz_event_id "$NEW_ID"
         fi
-      else
+      elif [ "$BUZZ_RETRY_RC" -eq 1 ]; then
         echo "pipeline-notify: buzz retry (stale anchor recovery) failed" >&2
       fi
-    else
+    elif [ "$BUZZ_RC" -eq 1 ]; then
       echo "pipeline-notify: buzz publish failed" >&2
     fi
   fi

@@ -129,7 +129,8 @@ make_sandbox() {
 }
 
 # use_stubs — put the gh/curl/nak stubs first on PATH and reset their logs.
-# Sets GH_LOG, CURL_LOG, and NAK_LOG (files the stubs append every invocation to).
+# Sets GH_LOG, CURL_LOG, NAK_LOG, and NAK_ENV_LOG (files the stubs append every
+# invocation to; NAK_ENV_LOG carries nak's NOSTR_* environment, #281).
 use_stubs() {
   export PATH="$STUBS_DIR:$PATH"
   export GH_LOG="$SANDBOX/gh.log"
@@ -137,10 +138,11 @@ use_stubs() {
   export CURL_QUEUE="$SANDBOX/curl.queue"        # optional: one canned response per line
   export CURL_LINK_QUEUE="$SANDBOX/curl.link.queue"  # optional: Link: next URL per call
   export NAK_LOG="$SANDBOX/nak.log"
-  export NAK_QUEUE="$SANDBOX/nak.queue"     # optional: "fail" or canned event JSON per line
+  export NAK_QUEUE="$SANDBOX/nak.queue"     # optional: "fail"/"reject"/"hang" or canned event JSON per line
+  export NAK_ENV_LOG="$SANDBOX/nak.env.log" # NOSTR_* env vars seen by the nak stub
   export VERIFY_LOG="$SANDBOX/verify.log"   # one line per simulated `verify:` run (#195)
   : > "$GH_LOG"; : > "$CURL_LOG"; : > "$CURL_QUEUE"; : > "$CURL_LINK_QUEUE"
-  : > "$NAK_LOG"; : > "$NAK_QUEUE"; : > "$VERIFY_LOG"
+  : > "$NAK_LOG"; : > "$NAK_QUEUE"; : > "$NAK_ENV_LOG"; : > "$VERIFY_LOG"
 }
 
 # install_talos — install Talos globally into the sandbox HOME (~/.talos/) and
