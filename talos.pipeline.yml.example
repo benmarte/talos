@@ -265,6 +265,11 @@ notifications:
                                # Not a secret -- identifies a deployment like
                                # buzz_channel does. Overridden by
                                # PIPELINE_BUZZ_RELAY. Default: "" (unset).
+  # buzz_timeout_s: 15        # notifications.buzz_timeout_s: seconds one `nak`
+                               # publish may run before it is killed; must be a
+                               # positive integer. A relay that never answers
+                               # logs one stderr line and writes no thread
+                               # anchor. Default: 15.
   templates_dir: "templates/notifications"  # relative to repo root; "" disables templates
   threading: true            # Thread all events per issue (bot-token mode only;
                              # silently skipped in webhook mode)

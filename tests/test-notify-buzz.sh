@@ -23,7 +23,7 @@ live_notify() {
 # ── Root post: kind:9 with h tag, no reply tag, anchor persisted ─────────────
 live_notify dispatched "#42" "kickoff" 42 >/dev/null
 first_call="$(head -1 "$NAK_LOG")"
-assert_contains "$first_call" "event --auth --sec deadbeef -k 9" "nak publishes a signed kind:9 event with auth"
+assert_contains "$first_call" "event --auth -k 9" "nak publishes a signed kind:9 event with auth"
 assert_contains "$first_call" "h=chan-uuid-1" "root post carries the channel h tag"
 assert_contains "$first_call" "ws://localhost:3000" "root post targets the configured relay"
 assert_not_contains "$first_call" ";;reply" "root post has no NIP-10 reply tag"
@@ -182,5 +182,40 @@ if printf '%s' "$long" | grep -qE '^ +x+$'; then
 else
   fail "long comment wraps instead of truncating"
 fi
+
+# ── Unresponsive relay is bounded, not a hang (#281) ─────────────────────────
+# A relay that never answers used to hang the $(nak …) command substitution
+# forever, blocking the orchestrator's whole post-merge chain.
+rm -f "$PIPELINE_THREAD_STATE"; : > "$NAK_LOG"
+cat > talos.pipeline.json <<'EOF'
+{"notifications": {"buzz_timeout_s": 1}}
+EOF
+printf 'hang\n' > "$NAK_QUEUE"
+t0="$(date +%s)"
+out="$(NAK_HANG_S=20 live_notify dispatched "#90" "relay went dark" 90)"; rc=$?
+elapsed=$(( $(date +%s) - t0 ))
+assert_eq "0" "$rc" "timed-out buzz publish still exits 0"
+[ "$elapsed" -lt 10 ] \
+  && pass "timed-out buzz publish returns within the configured bound" \
+  || fail "timed-out buzz publish returns within the configured bound (took ${elapsed}s)"
+assert_contains "$out" "buzz relay timed out" "timeout is reported as a timeout"
+assert_not_contains "$out" "rejected publish" "timeout is not reported as a relay rejection"
+assert_eq "1" "$(printf '%s\n' "$out" | grep -c 'pipeline-notify: buzz')" \
+  "timeout logs exactly one stderr line"
+[ -f "$PIPELINE_THREAD_STATE" ] \
+  && fail "timed-out publish persists no thread anchor" \
+  || pass "timed-out publish persists no thread anchor"
+rm talos.pipeline.json
+: > "$NAK_QUEUE"
+
+# ── The bot key travels in the environment, never on argv (#281) ─────────────
+# argv is world-readable through `ps` for the life of the process.
+: > "$NAK_LOG"; : > "$NAK_ENV_LOG"; rm -f "$PIPELINE_THREAD_STATE"
+live_notify dispatched "#91" "key hygiene" 91 >/dev/null
+last_call="$(tail -1 "$NAK_LOG")"
+assert_not_contains "$last_call" "deadbeef" "bot key never appears in nak argv"
+assert_not_contains "$last_call" "--sec" "no --sec flag on the nak command line"
+assert_contains "$(cat "$NAK_ENV_LOG")" "NOSTR_SECRET_KEY=deadbeef" \
+  "bot key reaches nak via NOSTR_SECRET_KEY"
 
 finish

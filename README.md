@@ -228,7 +228,7 @@ BUZZ_RELAY_URL=ws://your-relay:3000
 BUZZ_BOT_PRIVATE_KEY=<bot nsec or hex secret>
 ```
 
-Talos publishes a signed `kind:9` event tagged with the channel; on a closed or allowlisted relay, add the bot's pubkey as a member/allowlist entry first (see buzz's `NOSTR.md`).
+Talos publishes a signed `kind:9` event tagged with the channel; on a closed or allowlisted relay, add the bot's pubkey as a member/allowlist entry first (see buzz's `NOSTR.md`). The bot key is handed to `nak` through the `NOSTR_SECRET_KEY` environment variable it documents for `--sec`, so it never appears on the command line where `ps` would expose it. Each publish is bounded by `notifications.buzz_timeout_s` (default `15` seconds): a relay that never answers logs one line to stderr and is skipped, exactly like any other failed publish.
 
 For anything else — a local desktop notifier, a webhook relay, a log shipper — set `notifications.cmd` to a shell command. It runs (via `sh -c`) after the four sinks above, for every event that passes `notifications.events`, with a JSON object on stdin:
 
@@ -314,6 +314,7 @@ All keys live in `talos.pipeline.json` (or `talos.pipeline.yml` if PyYAML is ins
 | `notifications.discord_channel` | `""` | Discord channel ID fallback |
 | `notifications.buzz_channel` | `""` | Buzz channel UUID (Nostr `h` tag target) |
 | `notifications.buzz_relay` | `""` | Buzz (Nostr) relay URL. Not a secret — it identifies a deployment the same way `buzz_channel` does, so it belongs in the committed config. Precedence: exported env (`PIPELINE_BUZZ_RELAY`) > repo/Hermes `.env` > this config key. |
+| `notifications.buzz_timeout_s` | `15` | Seconds a single `nak` publish may run before it is killed. Same validation as `notifications.cmd_timeout_s` below (positive integer; anything else falls back to the default). A relay that never answers logs one line on stderr, writes no thread anchor, and never blocks the pipeline. |
 | `notifications.templates_dir` | `templates/notifications` | Path to notification message templates; `""` disables templates |
 | `notifications.threading` | `true` | Thread all events per issue in one Slack/Discord thread (bot-token mode only) |
 | `notifications.events` | all (unset) | Events filter. **Leave unset** — when set, any unlisted event is silently dropped, including all role events that make up the conversation stream. See warning below. |
