@@ -117,10 +117,11 @@ BUZZ_RELAY_URL=ws://env-relay:3000 BUZZ_BOT_PRIVATE_KEY=deadbeef PIPELINE_ISSUE_
 assert_contains "$(tail -1 "$NAK_LOG")" "ws://env-relay:3000" "env BUZZ_RELAY_URL overrides config"
 rm talos.pipeline.json
 
-# ── GFM card: heading + body + metadata table ────────────────────────────────
-# Buzz renders remark-gfm, so the sink emits headings and a table — neither of
-# which Slack's mrkdwn supports. Inspect the real argv via debug mode rather
-# than the space-flattened log, so line structure is actually observable.
+# ── GFM card: heading + body + metadata table ───────────────────────
+# Buzz renders remark-gfm, so with a templates/notifications/buzz/<event>.md in
+# play the sink emits headings and a real table — neither of which Slack's
+# mrkdwn supports (#280). Inspect the real argv via debug mode rather than the
+# space-flattened log, so line structure is actually observable.
 buzz_card() {  # $@ = notify args; prints the rendered kind:9 body
   BUZZ_RELAY_URL=ws://localhost:3000 BUZZ_BOT_PRIVATE_KEY=deadbeef \
   PIPELINE_BUZZ_CHANNEL=chan-uuid-1 PIPELINE_ISSUE_TITLE="Fix login crash" \
@@ -132,36 +133,55 @@ card="$(buzz_card pr-opened "#80" "body text" 80)"
 printf '%s' "$card" | grep -q '^### ' \
   && pass "title line rendered as a GFM heading" \
   || fail "title line rendered as a GFM heading"
-assert_contains "$card" "Stage    pr-opened" "monospace grid emitted"
-assert_contains "$card" "Repo     acme/widget" "repo row uses owner/name, not the state-key slug"
-assert_contains "$card" "Comment  body text" "grid leads with the comment"
-assert_contains "$card" "[Issue #80](" "link row appended below the grid"
+assert_contains "$card" "body text" "the message body survives into the card"
+assert_contains "$card" "| Field | Value |" "metadata rendered as a real GFM table"
+assert_contains "$card" "| Stage | pr-opened |" "stage row present in the table"
+assert_contains "$card" "| Repo | acme/widget |" "repo row uses owner/name, not the state-key slug"
+assert_contains "$card" "| Issue | [#80](" "table cells carry inline links"
+assert_not_contains "$card" "Stage    pr-opened" \
+  "no monospace grid once buzz has its own template"
 
-# Links must stay OUT of the fenced block — no client makes a URL clickable
-# inside a code fence, so a link there would render as dead text.
-printf '%s' "$card" | awk '/^```$/{f=!f; next} f' | grep -q 'http' \
-  && fail "no links inside the code fence" \
-  || pass "no links inside the code fence"
-
-# The link row carries the links, so the template's trailing "🔗 …" line — which
+# The table carries the links, so the template's trailing "🔗 …" line — which
 # repeats the title already in the heading — must not survive into the card.
-printf '%s' "$card" | grep -q '^🔗 ' \
-  && fail "template link line dropped once the link row carries it" \
-  || pass "template link line dropped once the link row carries it"
+if printf '%s' "$card" | grep -q '^🔗 '; then
+  fail "template link line dropped once the table carries it"
+else
+  pass "template link line dropped once the table carries it"
+fi
 
 # An issue-only event has no PR: the row must be omitted, not rendered blank.
 card_issue="$(buzz_card validator "#81" "confirmed" 81)"
-assert_contains "$card_issue" "Issue    #81" "issue-only event still gets an issue row"
-printf '%s' "$card_issue" | grep -qE '^PR +#' \
-  && fail "PR row omitted entirely when there is no PR" \
-  || pass "PR row omitted entirely when there is no PR"
+assert_contains "$card_issue" "| Issue | [#81](" "issue-only event still gets an issue row"
+if printf '%s' "$card_issue" | grep -q '^| PR |'; then
+  fail "PR row omitted entirely when there is no PR"
+else
+  pass "PR row omitted entirely when there is no PR"
+fi
+
+# ── Fallback card: no buzz/ template → the shared monospace grid ──────────
+# `info` ships only a platform-neutral template, so Buzz falls back to the
+# fenced grid every template-less sink shows.
+fb="$(buzz_card info "#83" "kickoff" 83)"
+assert_contains "$fb" "Stage    info" "fallback card emits the monospace grid"
+assert_contains "$fb" "Repo     acme/widget" "fallback grid repo row uses owner/name"
+assert_contains "$fb" "[Issue #83](" "fallback link row appended below the grid"
+
+# Links must stay OUT of the fenced block — no client makes a URL clickable
+# inside a code fence, so a link there would render as dead text.
+if printf '%s' "$fb" | awk '/^```$/{f=!f; next} f' | grep -q 'http'; then
+  fail "no links inside the code fence"
+else
+  pass "no links inside the code fence"
+fi
 
 # A long comment wraps onto continuation lines aligned under the value column
 # rather than being truncated — agent verdicts carry the actual finding.
-long="$(buzz_card validator "#82" "$(printf 'x%.0s' $(seq 1 140))" 82)"
-printf '%s' "$long" | grep -qE '^ +x+$' \
-  && pass "long comment wraps instead of truncating" \
-  || fail "long comment wraps instead of truncating"
+long="$(buzz_card info "#84" "$(printf 'x%.0s' $(seq 1 140))" 84)"
+if printf '%s' "$long" | grep -qE '^ +x+$'; then
+  pass "long comment wraps instead of truncating"
+else
+  fail "long comment wraps instead of truncating"
+fi
 
 # ── Unresponsive relay is bounded, not a hang (#281) ─────────────────────────
 # A relay that never answers used to hang the $(nak …) command substitution

@@ -516,7 +516,7 @@ Edit these files to customise the comment format for your team. The subagent fal
 
 ### Notification templates
 
-Notification messages are rendered as Slack Block Kit (header + section + colored attachment) or Discord embeds (title/description/color/footer). The first line of the rendered template becomes the title; the rest becomes the body. Templates use `${PLACEHOLDER}` substitution with these variables:
+Notification messages are rendered as Slack Block Kit (section + colored attachment), Discord embeds (title/description/color/footer), a Teams Adaptive Card, or Buzz GFM. The first line of the rendered template becomes the title; the rest becomes the body. Templates use `${PLACEHOLDER}` substitution with these variables:
 
 | Variable | Value |
 |----------|-------|
@@ -530,6 +530,42 @@ Notification messages are rendered as Slack Block Kit (header + section + colore
 | `${BOARD}` | board name (owner-repo) |
 
 Keep the first template line free of markdown links — Discord embed titles don't render them (the embed title is made clickable via the embed `url` instead). Put `${REF_LINK}`/`${PR_LINK}` in the body.
+
+Anything outside this table renders as a literal `${NAME}` in a real notification, so `tests/test-notify-templates.sh` fails when a shipped template references an undocumented variable.
+
+#### Per-platform templates
+
+Templates live in two layers under `notifications.templates_dir`:
+
+```
+templates/notifications/
+  <event>.md              # platform-neutral fallback
+  slack/<event>.md        # Slack mrkdwn (*bold*, <url|text>)
+  discord/<event>.md      # Discord markdown, embed-styled title
+  teams/<event>.md        # Adaptive Card text (the FactSet carries the links)
+  buzz/<event>.md         # real GFM — headings, bold, tables, inline links
+```
+
+Each sink renders **its own** template, so the metadata (PR / Issue / Stage / Repo) comes out in that platform's native construct — Block Kit `fields` on Slack, embed `fields` on Discord, an Adaptive Card `FactSet` on Teams, a real GFM table on Buzz. A sink with no platform file (and `notifications.cmd`, which never gets one) falls back to the shared fenced monospace grid.
+
+Resolution order per platform, first hit wins:
+
+| # | Looked up | Wins when |
+|---|-----------|-----------|
+| 1 | `<project>/<templates_dir>/<platform>/<event>.md` | your repo overrides one platform |
+| 2 | `<project>/<templates_dir>/<event>.md` | your repo overrides all platforms |
+| 3 | `~/.talos/<templates_dir>/<platform>/<event>.md` | shipped, platform-specific |
+| 4 | `~/.talos/<templates_dir>/<event>.md` | shipped, platform-neutral |
+
+The project copy wins at **both** layers, so an existing single-level `templates/notifications/<event>.md` override keeps winning over a shipped platform template — no config change, nothing to migrate.
+
+**Adding your own:** drop a file at `templates/notifications/<platform>/<event>.md` in your repo (create the directory if it does not exist). Preview it without posting anything:
+
+```bash
+bash ~/.talos/scripts/pipeline-notify.sh --render buzz qa "#42" "PASS: 3 criteria verified"
+```
+
+`--render <platform> <event> [ref] [message]` prints the resolved template path and the exact payload that platform would send, then exits 0. It posts nothing, reads and writes no thread anchors, and ignores the `notifications.events` filter. Platform is one of `slack`, `discord`, `teams`, `buzz`, or `default` (the platform-neutral rendering `notifications.cmd` receives).
 
 **Role event templates** (one per agent — make up the conversation stream):
 
@@ -552,6 +588,8 @@ Keep the first template line free of markdown links — Discord embed titles don
 | `blocked.md` | `blocked` | Any stage sets pipeline:blocked |
 | `issue-closed.md` | `issue-closed` | Issue closed after merge |
 | `info.md` | `info` | Generic informational events |
+
+Every role file above, plus `pm.md`, `pr-opened.md`, `merged.md`, `blocked.md` and `issue-closed.md`, also ships a per-platform variant (`slack/<file>`, `discord/<file>`, `teams/<file>`, `buzz/<file>`). `dispatched.md` and `info.md` are platform-neutral only, so every sink renders them through the shared monospace grid.
 
 **Events-filter warning:** `notifications.events` defaults to unset (all events fire). If you set a list, any event not in it is **silently dropped** — no error, no log line. A lifecycle-only list like `[pr-opened, merged, blocked, issue-closed]` kills the entire conversation stream. When you need a filter, copy the full list from `talos.pipeline.yml.example` and remove only what you don't want.
 

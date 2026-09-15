@@ -88,11 +88,15 @@ payloads="$(cut -f2 "$CURL_LOG")"
 roots="$(grep -c -v thread_ts "$CURL_LOG" || true)"
 assert_eq "1" "$roots" "e2e: exactly one root post — all later events threaded"
 assert_contains "$payloads" '"thread_ts": "1111.2222"' "e2e: replies reference the dispatch anchor"
-assert_contains "$payloads" "New comment by validator agent on #$N: $STUB_ISSUE_TITLE" \
-  "e2e: validator relay rendered from template"
+# Per-role slack headline from templates/notifications/slack/validator.md
+# (#280). json.dumps escapes non-ASCII, so assert on the ASCII parts.
+assert_contains "$payloads" "*Validator*" \
+  "e2e: validator relay rendered from its per-role template"
+assert_contains "$payloads" "#$N: $STUB_ISSUE_TITLE" \
+  "e2e: validator relay carries the issue ref and title"
 assert_contains "$payloads" "<https://github.com/acme/widget/issues/$N|" "e2e: issue link present in thread"
 assert_contains "$payloads" "<https://github.com/acme/widget/pull/9|" "e2e: PR link present in thread"
-assert_contains "$payloads" "merged, work complete" "e2e: merged template rendered"
+assert_contains "$payloads" "*Merged*" "e2e: merged template rendered"
 assert_contains "$payloads" "closed" "e2e: issue-closed event announced"
 
 # Message count: dispatched, validator, pr-opened, qa, merged, issue-closed = 6

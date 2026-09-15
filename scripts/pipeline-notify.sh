@@ -2,6 +2,7 @@
 # pipeline-notify.sh — post a pipeline event to Slack, Discord, Teams, and/or Buzz.
 #
 # Usage: pipeline-notify.sh <event> <ref> <message> [thread_key]
+#        pipeline-notify.sh --render <platform> <event> [ref] [message]
 #   event       pr-opened | merged | blocked | issue-closed | info
 #   ref         issue/PR identifier shown in the message (e.g. "#42")
 #   message     free text describing the event
@@ -9,6 +10,26 @@
 #               platform thread. Pass the issue number (e.g. "42"). Defaults to
 #               <ref>. Orchestrator should always pass the issue number so PR
 #               events and validator events land in the same thread.
+#
+# Templates (#280):
+#   Each sink renders its OWN template, so a platform gets its native syntax
+#   (Slack mrkdwn + Block Kit fields, Discord embed fields, a Teams FactSet,
+#   real GFM incl. tables on Buzz) instead of one shared monospace grid:
+#     <templates_dir>/<platform>/<event>.md   platform-specific, rich
+#     <templates_dir>/<event>.md              platform-neutral fallback
+#   Resolution per platform, first hit wins:
+#     project/<platform>/<event>.md -> project/<event>.md
+#       -> install/<platform>/<event>.md -> install/<event>.md
+#   The project copy wins at BOTH layers, so a repo that already overrides
+#   <templates_dir>/<event>.md keeps winning over a shipped platform file.
+#   A sink with no platform template (and notifications.cmd, which never gets
+#   one) falls back to the monospace grid.
+#
+#   --render <platform> <event> prints the payload that platform would send and
+#   exits 0 without posting or touching thread state. Platform is one of
+#   slack | discord | teams | buzz | default (the platform-neutral rendering);
+#   anything else is a usage error on stderr with exit 2 -- the one place this
+#   script does not exit 0, because a preview is interactive, not delivery.
 #
 # Delivery order (first match wins per platform):
 #   1. Incoming webhook env vars:
@@ -98,6 +119,21 @@ REF="${2:-}"
 MSG="${3:-}"
 THREAD_KEY="${4:-$REF}"
 
+# ── --render: preview a template without posting (#280) ──────────────────────
+# `pipeline-notify.sh --render <platform> <event> [ref] [message]` resolves the
+# template the given platform would use, renders it, and prints the payload
+# that platform would send. It exits before any sink runs, so nothing is posted
+# and no thread anchor is read or written. Platform "default" previews the
+# platform-neutral template (the one notifications.cmd receives).
+RENDER_ONLY=""
+if [ "$EVENT" = "--render" ]; then
+  RENDER_ONLY="${2:-default}"
+  EVENT="${3:-info}"
+  REF="${4:-#0}"
+  MSG="${5:-Sample message body for template preview.}"
+  THREAD_KEY="$REF"
+fi
+
 # ── Load repo .env if present ─────────────────────────────────────────────────
 # NOTE: REPO_ROOT keeps its current meaning (script-relative install dir)
 # because line 152 uses it for the bundled template fallback path.
@@ -131,7 +167,7 @@ unset REPO_ENV ENV_ROOT
 
 # ── Event filter (from config) ────────────────────────────────────────────────
 CONFIGURED_EVENTS="$(cfg notifications.events "")"
-if [ -n "$CONFIGURED_EVENTS" ]; then
+if [ -n "$CONFIGURED_EVENTS" ] && [ -z "$RENDER_ONLY" ]; then
   if ! printf '%s' "$CONFIGURED_EVENTS" | grep -qxF "$EVENT"; then
     exit 0
   fi
@@ -279,50 +315,131 @@ case "$EVENT" in
   pr-opened)    ICON="🔀" ;;
   blocked)      ICON="🛑" ;;
   issue-closed) ICON="🏁" ;;
+  # Per-role icons (#280): role events used to all resolve to the generic
+  # ℹ️, so a template could not tell validator from security via ${ICON}.
+  validator)    ICON="🔎" ;;
+  pm)           ICON="📋" ;;
+  developer)    ICON="🛠" ;;
+  qa)           ICON="🧪" ;;
+  reviewer)     ICON="👀" ;;
+  security)     ICON="🔐" ;;
+  docs)         ICON="📚" ;;
+  orchestrator) ICON="🤖" ;;
   *)            ICON="ℹ️"  ;;
 esac
 
-TEXT="$ICON [talos] $EVENT $REF — $MSG${PRIMARY_URL:+ ($PRIMARY_URL)}"
+TEXT_PLAIN="$ICON [talos] $EVENT $REF — $MSG${PRIMARY_URL:+ ($PRIMARY_URL)}"
 
-# ── Template rendering ────────────────────────────────────────────────────────
+# ── Template resolution (#280) ───────────────────────────────────────────────
+# Templates live in two layers under <templates_dir>:
+#   <templates_dir>/<platform>/<event>.md  — platform-specific, rich syntax
+#   <templates_dir>/<event>.md             — platform-neutral fallback
+# and in two ROOTS: the caller's project dir (an override) and the Talos
+# install dir (the shipped defaults). Resolution order for platform P:
+#   1. project/<P>/<event>.md   2. project/<event>.md
+#   3. install/<P>/<event>.md   4. install/<event>.md
+# Project before install at BOTH layers, so a repo that already overrides
+# <templates_dir>/<event>.md keeps winning over a shipped platform file — the
+# pre-#280 single-level layout must not break when Talos starts shipping
+# <platform>/ dirs underneath it.
 TMPL_DIR_CFG="$(cfg notifications.templates_dir "templates/notifications")"
+TMPL_ROOTS=""
 if [ -n "$TMPL_DIR_CFG" ]; then
-  # Absolute path: use as-is. Relative: caller's cwd first, then delegate to
-  # _resolve_talos_dir() (sourced from pipeline-paths.sh above) which implements
-  # the canonical 5-location probe and returns the scripts dir. Templates live
-  # one level up from scripts, so we cd to the parent.
   case "$TMPL_DIR_CFG" in
-    /*) TMPL_FILE="$TMPL_DIR_CFG/$EVENT.md" ;;
-    *)  TMPL_FILE="$PWD/$TMPL_DIR_CFG/$EVENT.md"
-        if [ ! -f "$TMPL_FILE" ]; then
-          _tmpl_scripts="$(_resolve_talos_dir pipeline-notify.sh 2>/dev/null || true)"
-          if [ -n "$_tmpl_scripts" ]; then
-            TMPL_FILE="$(cd "$_tmpl_scripts/.." && pwd)/$TMPL_DIR_CFG/$EVENT.md"
-          else
-            TMPL_FILE="$REPO_ROOT/$TMPL_DIR_CFG/$EVENT.md"
-          fi
-        fi ;;
+    # Absolute path names exactly one root — there is no install-relative
+    # counterpart to fall back to.
+    /*) TMPL_ROOTS="$TMPL_DIR_CFG" ;;
+    # Relative: caller's cwd first, then delegate to _resolve_talos_dir()
+    # (sourced from pipeline-paths.sh above) which implements the canonical
+    # 5-location probe and returns the scripts dir. Templates live one level
+    # up from scripts, so we cd to the parent.
+    *)  _tmpl_scripts="$(_resolve_talos_dir pipeline-notify.sh 2>/dev/null || true)"
+        if [ -n "$_tmpl_scripts" ]; then
+          _tmpl_install="$(cd "$_tmpl_scripts/.." && pwd)/$TMPL_DIR_CFG"
+        else
+          _tmpl_install="$REPO_ROOT/$TMPL_DIR_CFG"
+        fi
+        TMPL_ROOTS="$PWD/$TMPL_DIR_CFG"
+        [ "$_tmpl_install" != "$TMPL_ROOTS" ] && TMPL_ROOTS="$TMPL_ROOTS
+$_tmpl_install"
+        unset _tmpl_scripts _tmpl_install ;;
   esac
-  if [ -f "$TMPL_FILE" ]; then
-    RENDERED="$(ICON="$ICON" REF="$REF" MSG="$MSG" EVENT="$EVENT" \
-      ROLE="$ROLE" TITLE="$TITLE" REF_TITLE="$REF_TITLE" \
-      PR="$PR" PR_TITLE="$PR_TITLE" PR_REF="$PR_REF" BOARD="$BOARD" \
-      ISSUE_URL="$ISSUE_URL" PR_URL="$PR_URL" \
-      REF_LINK="$REF_LINK" PR_LINK="$PR_LINK" \
-      python3 -c "
+fi
+
+_tmpl_resolve() {  # $1=platform ("" = neutral only); prints path, rc 1 if none
+  [ -n "$TMPL_ROOTS" ] || return 1
+  while IFS= read -r _tr_root; do
+    [ -n "$_tr_root" ] || continue
+    if [ -n "${1:-}" ] && [ -f "$_tr_root/$1/$EVENT.md" ]; then
+      printf '%s' "$_tr_root/$1/$EVENT.md"; return 0
+    fi
+    if [ -f "$_tr_root/$EVENT.md" ]; then
+      printf '%s' "$_tr_root/$EVENT.md"; return 0
+    fi
+  done <<EOF
+$TMPL_ROOTS
+EOF
+  return 1
+}
+
+# Substitutes the documented variable set (README "Notification templates").
+# A template referencing anything outside it renders the literal ${NAME},
+# which is why tests/test-notify-templates.sh pins the list against every
+# shipped file.
+_tmpl_render() {  # $1=template path; prints the rendered text
+  ICON="$ICON" REF="$REF" MSG="$MSG" EVENT="$EVENT" \
+    ROLE="$ROLE" TITLE="$TITLE" REF_TITLE="$REF_TITLE" \
+    PR="$PR" PR_TITLE="$PR_TITLE" PR_REF="$PR_REF" BOARD="$BOARD" \
+    ISSUE_URL="$ISSUE_URL" PR_URL="$PR_URL" \
+    REF_LINK="$REF_LINK" PR_LINK="$PR_LINK" \
+    python3 -c "
 import os, string, sys
+# Only the documented variables (README 'Notification templates' table) are
+# substituted. Handing safe_substitute() the whole of os.environ would render
+# any exported secret a template happens to name -- \${SLACK_WEBHOOK_URL},
+# \${NOSTR_SECRET_KEY}, \${GITHUB_TOKEN} -- straight into an outbound message,
+# and a project-supplied override template is untrusted input. Anything
+# outside this list stays the literal \${NAME} the docs promise.
+DOCUMENTED = (
+    'ICON', 'REF', 'MSG', 'EVENT', 'ROLE', 'TITLE', 'REF_TITLE',
+    'PR', 'PR_TITLE', 'PR_REF', 'BOARD', 'ISSUE_URL', 'PR_URL',
+    'REF_LINK', 'PR_LINK',
+)
 try:
     with open(sys.argv[1]) as f:
         t = string.Template(f.read())
-    result = t.safe_substitute(os.environ).strip()
+    result = t.safe_substitute(
+        {k: os.environ.get(k, '') for k in DOCUMENTED}).strip()
     if result:
         print(result)
 except Exception:
     pass
-" "$TMPL_FILE" 2>/dev/null)"
-    [ -n "$RENDERED" ] && TEXT="$RENDERED"
+" "$1" 2>/dev/null
+}
+
+# _render_template <platform> — sets NTMPL (resolved path, empty if none),
+# NTEXT (rendered text; plain-text fallback when nothing renders) and NRICH
+# (1 only when the winning file is that platform's OWN template, which is the
+# signal each sink uses to render metadata natively instead of the monospace
+# grid).
+_render_template() {  # $1=platform ("" = neutral)
+  NTMPL="$(_tmpl_resolve "${1:-}")" || NTMPL=""
+  NRICH=0
+  NTEXT=""
+  if [ -n "$NTMPL" ]; then
+    NTEXT="$(_tmpl_render "$NTMPL")"
+    if [ -n "${1:-}" ] && [ -n "$NTEXT" ] && [ "$NTMPL" != "${NTMPL%/$1/$EVENT.md}" ]; then
+      NRICH=1
+    fi
   fi
-fi
+  [ -n "$NTEXT" ] || NTEXT="$TEXT_PLAIN"
+}
+
+# TEXT is the platform-NEUTRAL rendering and stays fixed for the whole run:
+# notifications.cmd receives it verbatim, and it is what any sink falls back
+# to when no template resolves at all.
+_render_template ""
+TEXT="$NTEXT"
 
 json_escape() { python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"; }
 PAYLOAD_TEXT="$(json_escape "$TEXT")"
@@ -415,10 +532,9 @@ post() {  # $1=url $2=json-body $3=platform [$4=auth-header]
 }
 
 # ── Rich payload builders (Daedalus-style Block Kit / embeds) ─────────────────
-# First line of the rendered text = title; remaining lines = body.
-NTITLE="$(printf '%s\n' "$TEXT" | head -1)"
-NBODY="$(printf '%s\n' "$TEXT" | tail -n +2 | sed '/./,$!d')"
-[ -z "$NBODY" ] && NBODY="$NTITLE"
+# The rendered text is now per-sink (#280) — see _prepare_sink() below, which
+# each sink calls immediately before building its payload. What stays shared is
+# the colour, the context line, and the metadata field set.
 case "$EVENT" in
   merged|issue-closed|qa) NCOLOR="#2ecc71"; NCOLOR_INT=3066993  ;;
   blocked)                NCOLOR="#e74c3c"; NCOLOR_INT=15158332 ;;
@@ -457,35 +573,56 @@ print(json.dumps(f))
 PY
 )"
 
+# ── Per-sink rendering ───────────────────────────────────────────────────────
 # Two body variants, because only the card carries the metadata.
 #
 # NBODY keeps the template's trailing "🔗 …" line and is used for thread
 # REPLIES, where that link is the only one in the message. NBODY_CARD drops it
 # and is used for ROOT posts, where it would merely repeat the PR/issue link
-# already in the fields. Each template spells the line exactly "🔗 ${PR_LINK}"
-# or "🔗 ${REF_LINK}", so matching the prefix is a defined rule, not a guess.
-NBODY_CARD="$(printf '%s\n' "$NBODY" | grep -v '^🔗 ' | sed '/./,$!d')"
-[ -z "$NBODY_CARD" ] && NBODY_CARD="$NTITLE"
+# already in the fields; NTEXT_CARD is the same strip over the whole text,
+# title line included, for sinks that emit the template verbatim. Each template
+# spells the line exactly "🔗 ${PR_LINK}" or "🔗 ${REF_LINK}", so matching the
+# prefix is a defined rule, not a guess.
 
-# ── Shared monospace grid ────────────────────────────────────────────────────
-# One pre-aligned plain-text grid, reused verbatim by every sink. Slack mrkdwn
-# has no table syntax — a pipe table posts as literal pipes — so a fixed-width
-# block inside a code fence (a Monospace TextBlock on Teams) is the only
-# construct that renders as the same aligned grid on all four platforms.
+# _build_grid — the shared monospace grid. Since #280 it is the FALLBACK
+# rendering: it is what notifications.cmd sees, and what a sink shows when no
+# template exists for its platform. One pre-aligned plain-text grid: Slack
+# mrkdwn has no table syntax — a pipe table posts as literal pipes — so a
+# fixed-width block inside a code fence (a Monospace TextBlock on Teams) is the
+# only construct that renders as the same aligned grid on all four platforms.
 #
 # The comment is wrapped onto continuation lines aligned under the value column
 # rather than truncated: agent verdicts carry the actual finding, and a card
 # that silently drops half of one is worse than a slightly tall card. Links are
 # NOT put in here — no platform makes a URL clickable inside a code block — so
 # each sink appends its own link line underneath in its own syntax.
-NGRID="$(NFIELDS="$NFIELDS" NBODY_CARD="$NBODY_CARD" python3 - <<'PY'
+_build_grid() {
+  NGRID="$(NFIELDS="$NFIELDS" NBODY_CARD="$NBODY_CARD" python3 - <<'PY'
 import json, os, re, textwrap
+
+
+def cell(s):
+    # Every row lands inside the literal triple-backtick fence the three
+    # markdown sinks wrap this grid in, and inside a fence a backslash
+    # escapes nothing. Only two things can break out: a run of 3+ backticks,
+    # which closes the fence early and lets the rest of an issue title or
+    # agent message render as arbitrary markdown, and a raw newline, which
+    # ends the row. Lone backticks are harmless in a fence and common in
+    # agent verdicts, so only the closing run is defused -- split by
+    # zero-width spaces, which reads the same but no longer delimits.
+    # Written \x60 because a literal backtick (and, for bash, a literal
+    # apostrophe) inside the enclosing $( … ) breaks the file -- see
+    # _bt_fence below.
+    s = re.sub(r'\s*[\r\n]+\s*', ' ', str(s)).strip()
+    return re.sub(r'\x60{3,}', lambda m: '\u200b'.join(m.group(0)), s)
+
+
 rows = []
-comment = re.sub(r'\s*\n+\s*', ' ', os.environ.get('NBODY_CARD', '')).strip()
+comment = cell(os.environ.get('NBODY_CARD', ''))
 if comment:
     rows.append(("Comment", comment))
 for f in json.loads(os.environ.get('NFIELDS') or '[]'):
-    rows.append((f["label"], f["text"]))
+    rows.append((cell(f["label"]), cell(f["text"])))
 if rows:
     w = max(len(l) for l, _ in rows)
     out = []
@@ -496,10 +633,62 @@ if rows:
     print("\n".join(out))
 PY
 )"
+}
+
+# _gfm_table — the same metadata as a real GFM table. Buzz renders remark-gfm,
+# so it gets the table the monospace grid was standing in for; the other three
+# sinks have no table syntax and use their own native field constructs instead.
+_gfm_table() {
+  NFIELDS="$NFIELDS" python3 - <<'PY'
+import json, os, re
+
+
+def cell(s):
+    # Cell values carry externally-influenced text (repo slug, stage, ref).
+    # A GFM row ends at a newline and a cell at an unescaped "|", so either
+    # one would inject extra rows/cells and let that text spoof the metadata
+    # a human reviewer reads. Backslashes first, so the value's own "\"
+    # cannot escape the escape; backticks so it cannot open a code span.
+    s = re.sub(r'\s*[\r\n]+\s*', ' ', str(s))
+    return s.replace('\\', '\\\\').replace('|', '\\|').replace('`', '\\`')
+
+
+rows = json.loads(os.environ.get('NFIELDS') or '[]')
+if rows:
+    print("| Field | Value |")
+    print("| --- | --- |")
+    for f in rows:
+        v = cell(f["text"])
+        if f.get("url"):
+            v = "[{}]({})".format(v, cell(f["url"]).replace(' ', '%20'))
+        print("| {} | {} |".format(cell(f["label"]), v))
+PY
+}
+
+# _prepare_sink <platform> — render that platform's template and derive every
+# N* variable its payload builder reads. Called once per sink: the four
+# platforms no longer share one rendered string (#280). Pass "" for the
+# platform-neutral rendering.
+_prepare_sink() {
+  _render_template "${1:-}"
+  NTITLE="$(printf '%s\n' "$NTEXT" | head -1)"
+  NBODY="$(printf '%s\n' "$NTEXT" | tail -n +2 | sed '/./,$!d')"
+  [ -z "$NBODY" ] && NBODY="$NTITLE"
+  NBODY_CARD="$(printf '%s\n' "$NBODY" | grep -v '^🔗 ' | sed '/./,$!d')"
+  [ -z "$NBODY_CARD" ] && NBODY_CARD="$NTITLE"
+  NTEXT_CARD="$(printf '%s\n' "$NTEXT" | grep -v '^🔗 ' | sed '/./,$!d')"
+  [ -z "$NTEXT_CARD" ] && NTEXT_CARD="$NTITLE"
+  _build_grid
+}
+
+# Baseline state: the platform-neutral rendering. Every sink re-prepares with
+# its own platform when it actually runs; this call guarantees the N*
+# variables are defined even when no sink is configured (set -u).
+_prepare_sink ""
 
 _slack_payload() {  # $1=thread_ts (may be empty) $2=mode: bot|webhook
   NTITLE="$NTITLE" NBODY="$NBODY" NBODY_CARD="$NBODY_CARD" NCTX="$NCONTEXT" NCOLOR="$NCOLOR" \
-  NFIELDS="$NFIELDS" NGRID="$NGRID" \
+  NFIELDS="$NFIELDS" NGRID="$NGRID" NRICH="$NRICH" \
   NCHANNEL="$SLACK_CHANNEL" NTHREAD="$1" NMODE="$2" python3 - <<'PY'
 import json, os, re
 raw_title = os.environ['NTITLE']
@@ -518,21 +707,39 @@ if body and body.strip() and body.strip() != raw_title.strip():
 # Templates author in daedalus/CommonMark style (**bold**, [text](url)); convert.
 full = re.sub(r'\*\*([^*\n]+)\*\*', r'*\1*', full)          # **bold** -> *bold*
 full = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<\2|\1>', full)  # [text](url) -> <url|text>
-# Root: title, the shared monospace grid (which already carries the comment),
-# then a clickable link row — URLs are inert inside a code block, so they live
-# underneath it. Replies keep the plain title+body rendering.
+# Root with a slack/ template (#280): the template's own mrkdwn, then the
+# metadata as a native Block Kit `fields` section — a two-column label/value
+# grid Slack lays out itself, with each link in Slack's <url|text> syntax.
+# Root WITHOUT one: the shared monospace grid (which already carries the
+# comment), then a clickable link row — URLs are inert inside a code block, so
+# they live underneath it. Replies keep the plain title+body rendering.
+rich = os.environ.get('NRICH') == '1'
 grid = os.environ.get('NGRID', '')
-if is_root and grid:
-    parts = [raw_title, "```\n" + grid + "\n```"]
-    links = [
-        "<{}|{} {}>".format(f["url"], f["label"], f["text"])
-        for f in json.loads(os.environ.get('NFIELDS') or '[]') if f.get("url")
-    ]
-    if links:
-        parts.append(" · ".join(links))
-    full = "\n".join(parts)
-    full = re.sub(r'\*\*([^*\n]+)\*\*', r'*\1*', full)
-blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": full[:3000]}}]
+fields = json.loads(os.environ.get('NFIELDS') or '[]')
+blocks = []
+if is_root and rich:
+    blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": full[:3000]}})
+    # Block Kit caps a section at 10 fields; the metadata set is 4 at most.
+    field_blocks = [
+        {"type": "mrkdwn", "text": "*{}*\n{}".format(
+            f["label"],
+            "<{}|{}>".format(f["url"], f["text"]) if f.get("url") else f["text"])}
+        for f in fields
+    ][:10]
+    if field_blocks:
+        blocks.append({"type": "section", "fields": field_blocks})
+else:
+    if is_root and grid:
+        parts = [raw_title, "```\n" + grid + "\n```"]
+        links = [
+            "<{}|{} {}>".format(f["url"], f["label"], f["text"])
+            for f in fields if f.get("url")
+        ]
+        if links:
+            parts.append(" · ".join(links))
+        full = "\n".join(parts)
+        full = re.sub(r'\*\*([^*\n]+)\*\*', r'*\1*', full)
+    blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": full[:3000]}})
 blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": os.environ['NCTX']}]})
 p = {
     "text": title,
@@ -549,7 +756,7 @@ PY
 
 _discord_payload() {  # $1=anchor msg id (may be empty) $2=mode: bot|webhook
   NTITLE="$NTITLE" NBODY="$NBODY" NBODY_CARD="$NBODY_CARD" NCTX="$NCONTEXT" NCOLOR_INT="$NCOLOR_INT" \
-  NFIELDS="$NFIELDS" NGRID="$NGRID" \
+  NFIELDS="$NFIELDS" NGRID="$NGRID" NRICH="$NRICH" \
   NURL="$PRIMARY_URL" NANCHOR="$1" NMODE="$2" python3 - <<'PY'
 import json, os, re
 title = re.sub(r'[*_`]', '', os.environ['NTITLE']).strip()
@@ -566,15 +773,28 @@ p = {
         "footer": {"text": os.environ['NCTX'][:2048]},
     }],
 }
-# Root: the same monospace grid every other sink shows, with a clickable link
-# row beneath it (URLs are inert inside a code block). Embed fields are
-# deliberately unused — they would render a second, differently-shaped copy of
-# the metadata already in the grid.
+# Root with a discord/ template (#280): the description stays the template's
+# own markdown and the metadata goes into native embed `fields`, which Discord
+# lays out as inline chips under the body. Root WITHOUT one falls back to the
+# monospace grid with a clickable link row beneath it (URLs are inert inside a
+# code block).
+_rich = os.environ.get('NRICH') == '1'
 _grid = os.environ.get('NGRID', '')
-if is_root and _grid:
+_fields = json.loads(os.environ.get('NFIELDS') or '[]')
+if is_root and _rich:
+    # Discord caps an embed at 25 fields; the metadata set is 4 at most.
+    _fl = [
+        {"name": f["label"],
+         "value": "[{}]({})".format(f["text"], f["url"]) if f.get("url") else f["text"],
+         "inline": True}
+        for f in _fields
+    ][:25]
+    if _fl:
+        p["embeds"][0]["fields"] = _fl
+elif is_root and _grid:
     _links = " · ".join(
         "[{} {}]({})".format(f["label"], f["text"], f["url"])
-        for f in json.loads(os.environ.get('NFIELDS') or '[]') if f.get("url")
+        for f in _fields if f.get("url")
     )
     _desc = "```\n" + _grid + "\n```"
     if _links:
@@ -588,16 +808,155 @@ print(json.dumps(p))
 PY
 }
 
+# _teams_payload — built with python3 rather than shell interpolation so the
+# FactSet — the Adaptive Card equivalent of the Buzz table and the Slack/
+# Discord field sets — is assembled as real JSON. Facts render as an aligned
+# label/value grid. Built unconditionally so debug mode can print the real
+# payload rather than a text approximation; Teams cannot thread, so every post
+# is a root card.
+_teams_payload() {
+  NTITLE="$NTITLE" NBODY_CARD="$NBODY_CARD" NGRID="$NGRID" NRICH="$NRICH" \
+  NCTX="$NCONTEXT" NFIELDS="$NFIELDS" python3 - <<'PY'
+import json, os
+# With a teams/ template (#280): title, body, then the metadata as a native
+# FactSet. Without one: the same monospace grid every other fallback sink
+# shows, plus a link row. Adaptive Cards do not render markdown code fences, so
+# the grid goes in a TextBlock with fontType Monospace — the Teams equivalent
+# of a fenced block. (No literal fence characters in this comment: this heredoc
+# sits inside a $( … ), where bash scans for the closing paren and an odd
+# number of backticks silently breaks the parse of the whole file.)
+rich = os.environ.get('NRICH') == '1'
+fields = json.loads(os.environ.get('NFIELDS') or '[]')
+title = os.environ['NTITLE']
+body = [{"type": "TextBlock", "wrap": True, "weight": "Bolder", "size": "Medium",
+         "text": title}]
+if rich:
+    text = os.environ.get('NBODY_CARD', '')
+    if text and text.strip() != title.strip():
+        body.append({"type": "TextBlock", "wrap": True, "text": text})
+    facts = [
+        {"title": f["label"],
+         "value": "[{}]({})".format(f["text"], f["url"]) if f.get("url") else f["text"]}
+        for f in fields
+    ]
+    if facts:
+        body.append({"type": "FactSet", "facts": facts})
+else:
+    grid = os.environ.get('NGRID', '')
+    if grid:
+        body.append({"type": "TextBlock", "wrap": True, "fontType": "Monospace",
+                     "text": grid})
+    links = " · ".join(
+        "[{} {}]({})".format(f["label"], f["text"], f["url"])
+        for f in fields if f.get("url")
+    )
+    if links:
+        body.append({"type": "TextBlock", "wrap": True, "text": links})
+body.append({"type": "TextBlock", "wrap": True, "isSubtle": True,
+             "spacing": "Small", "text": os.environ['NCTX']})
+print(json.dumps({
+    "type": "message",
+    "attachments": [{
+        "contentType": "application/vnd.microsoft.card.adaptive",
+        "content": {"type": "AdaptiveCard", "version": "1.4", "body": body},
+    }],
+}))
+PY
+}
+
+# _buzz_text <anchor> — the kind:9 body Buzz publishes.
+#
+# Buzz renders GitHub-Flavored Markdown (remark-gfm + remark-breaks), so it
+# supports headings and tables — neither of which Slack's mrkdwn can do. With a
+# buzz/ template (#280) the root card is the template's own GFM plus a real
+# metadata table; without one it falls back to the monospace grid every other
+# template-less sink shows.
+#
+# The metadata replaces the template's trailing "🔗 …" line, which would
+# otherwise repeat the PR/issue title already shown in the heading (see
+# NTEXT_CARD in _prepare_sink).
+#
+# Rows are emitted only when they have a value — a fixed row set would render
+# empty cells for issue-only events, which have no PR. Severity stays in the
+# per-event emoji the templates already carry: GFM has no colour, and spelling
+# out BLOCKED would only duplicate the icon.
+#
+# Root posts get the full card; replies stay light so a thread does not repeat
+# the same PR/Issue/Repo block under every stage. The anchor is the signal:
+# absent => this is the first message for the issue.
+_buzz_text() {  # $1=anchor event id (may be empty)
+  if [ -n "${1:-}" ]; then
+    # Light reply: the rendered template as-is, keeping its "🔗 …" line, which
+    # is the only link a reply carries.
+    printf '%s' "$NTEXT"
+    return 0
+  fi
+  if [ "$NRICH" = "1" ]; then
+    _bt_table="$(_gfm_table)"
+    printf '%s\n' "$NTEXT_CARD"
+    [ -n "$_bt_table" ] && printf '\n%s\n' "$_bt_table"
+    return 0
+  fi
+  _bt_links="$(NFIELDS="$NFIELDS" python3 - <<'PY'
+import json, os
+print(" · ".join(
+    "[{} {}]({})".format(f["label"], f["text"], f["url"])
+    for f in json.loads(os.environ.get('NFIELDS') or '[]') if f.get("url")
+))
+PY
+)"
+  # The fence lives in a variable: a literal triple-backtick inside $( … ) is
+  # parsed as legacy backtick command substitution and breaks the file.
+  _bt_fence='```'
+  printf '### %s\n' "$NTITLE"
+  [ -n "$NGRID" ] && printf '\n%s\n%s\n%s\n' "$_bt_fence" "$NGRID" "$_bt_fence"
+  [ -n "$_bt_links" ] && printf '\n%s\n' "$_bt_links"
+  return 0
+}
+
+# ── --render: preview and exit (#280) ────────────────────────────────────────
+# Everything below this point talks to a network or to threads.json. The render
+# path stops here: it resolves and renders the template, prints the payload the
+# platform would send, and exits 0 without posting or touching thread state.
+if [ -n "$RENDER_ONLY" ]; then
+  _render_platform="$RENDER_ONLY"
+  # A typo must not quietly preview the neutral template and look like an
+  # answer. This is an interactive preview, not a delivery path, so it is the
+  # one place the script reports a usage error instead of exiting 0.
+  case "$_render_platform" in
+    slack|discord|teams|buzz) ;;
+    default) _render_platform="" ;;
+    *) echo "pipeline-notify: --render: unknown platform '$RENDER_ONLY' (slack|discord|teams|buzz|default)" >&2
+       exit 2 ;;
+  esac
+  _prepare_sink "$_render_platform"
+  printf '# platform: %s\n' "$RENDER_ONLY"
+  printf '# event:    %s\n' "$EVENT"
+  printf '# template: %s\n' "${NTMPL:-(none — plain-text fallback)}"
+  if [ "$NRICH" = "1" ]; then printf '# rich:     yes\n'; else printf '# rich:     no\n'; fi
+  printf '\n'
+  case "$_render_platform" in
+    slack)   _slack_payload "" bot ;;
+    discord) _discord_payload "" bot ;;
+    teams)   _teams_payload ;;
+    buzz)    _buzz_text "" ;;
+    *)       printf '%s\n' "$NTEXT" ;;
+  esac
+  exit 0
+fi
+
 # ── Slack ─────────────────────────────────────────────────────────────────────
 if [ -n "${SLACK_WEBHOOK_URL:-}" ]; then
+  _prepare_sink slack
   # Webhook mode — threading not supported (Slack incoming webhooks have no thread_ts)
   if [ "${PIPELINE_NOTIFY_DEBUG:-}" = "1" ]; then
-    echo "[pipeline-notify DEBUG] SLACK (webhook, no threading): $TEXT"
+    echo "[pipeline-notify DEBUG] SLACK (webhook, no threading): $NTEXT"
   else
     post "$SLACK_WEBHOOK_URL" "$(_slack_payload "" webhook)" slack >/dev/null 2>&1 \
       || echo "pipeline-notify: slack webhook delivery failed" >&2
   fi
 elif [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "$SLACK_CHANNEL" ]; then
+  _prepare_sink slack
   # Bot-token mode — threading supported
   SLACK_ANCHOR=""
   if [ "$THREADING_ENABLED" = "true" ]; then
@@ -645,14 +1004,16 @@ fi
 
 # ── Discord ───────────────────────────────────────────────────────────────────
 if [ -n "${DISCORD_WEBHOOK_URL:-}" ]; then
+  _prepare_sink discord
   # Webhook mode — threading not supported (Discord webhooks cannot target message threads)
   if [ "${PIPELINE_NOTIFY_DEBUG:-}" = "1" ]; then
-    echo "[pipeline-notify DEBUG] DISCORD (webhook, no threading): $TEXT"
+    echo "[pipeline-notify DEBUG] DISCORD (webhook, no threading): $NTEXT"
   else
     post "$DISCORD_WEBHOOK_URL" "$(_discord_payload "" webhook)" discord >/dev/null 2>&1 \
       || echo "pipeline-notify: discord webhook delivery failed" >&2
   fi
 elif [ -n "${DISCORD_BOT_TOKEN:-}" ] && [ -n "$DISCORD_CHANNEL" ]; then
+  _prepare_sink discord
   # Bot-token mode — real threads, matching Slack and Buzz.
   #
   # message_reference (the previous approach) is an inline REPLY, not a thread:
@@ -721,42 +1082,8 @@ fi
 
 # ── Teams (webhook only — no threading) ──────────────────────────────────────
 if [ -n "${TEAMS_WEBHOOK_URL:-}" ]; then
-  # Built with python3 rather than shell interpolation so the FactSet — the
-  # Adaptive Card equivalent of the Buzz table and Slack/Discord fields — is
-  # assembled as real JSON. Facts render as an aligned label/value grid.
-  # Built unconditionally so debug mode can print the real payload rather than
-  # a text approximation; Teams cannot thread, so every post is a root card.
-  TEAMS_PAYLOAD="$(NTITLE="$NTITLE" NGRID="$NGRID" NCTX="$NCONTEXT" NFIELDS="$NFIELDS" python3 - <<'PY'
-import json, os
-# Same card as every other sink: title, monospace grid, link row, context.
-# Adaptive Cards do not render markdown code fences, so the grid goes in a
-# TextBlock with fontType Monospace — the Teams equivalent of a fenced block.
-# (No literal fence characters in this comment: this heredoc sits inside a
-# $( … ), where bash scans for the closing paren and an odd number of
-# backticks silently breaks the parse of the whole file.)
-body = [{"type": "TextBlock", "wrap": True, "weight": "Bolder", "size": "Medium",
-         "text": os.environ['NTITLE']}]
-grid = os.environ.get('NGRID', '')
-if grid:
-    body.append({"type": "TextBlock", "wrap": True, "fontType": "Monospace",
-                 "text": grid})
-links = " · ".join(
-    "[{} {}]({})".format(f["label"], f["text"], f["url"])
-    for f in json.loads(os.environ.get('NFIELDS') or '[]') if f.get("url")
-)
-if links:
-    body.append({"type": "TextBlock", "wrap": True, "text": links})
-body.append({"type": "TextBlock", "wrap": True, "isSubtle": True,
-             "spacing": "Small", "text": os.environ['NCTX']})
-print(json.dumps({
-    "type": "message",
-    "attachments": [{
-        "contentType": "application/vnd.microsoft.card.adaptive",
-        "content": {"type": "AdaptiveCard", "version": "1.4", "body": body},
-    }],
-}))
-PY
-)"
+  _prepare_sink teams
+  TEAMS_PAYLOAD="$(_teams_payload)"
   if [ "${PIPELINE_NOTIFY_DEBUG:-}" = "1" ]; then
     echo "[pipeline-notify DEBUG] TEAMS payload=$TEAMS_PAYLOAD"
   else
@@ -767,52 +1094,13 @@ fi
 
 # ── Buzz (Nostr kind:9 via nak — key-based, threads via NIP-10 replies) ──────
 if [ -n "${BUZZ_RELAY_URL:-}" ] && [ -n "${BUZZ_BOT_PRIVATE_KEY:-}" ] && [ -n "$BUZZ_CHANNEL" ]; then
+  _prepare_sink buzz
   BUZZ_ANCHOR=""
   if [ "$THREADING_ENABLED" = "true" ]; then
     BUZZ_ANCHOR="$(_thread_state get buzz_event_id)"
   fi
 
-  # Buzz renders GitHub-Flavored Markdown (remark-gfm + remark-breaks), so it
-  # supports headings and tables — neither of which Slack's mrkdwn can do. The
-  # sink builds a card: heading, body, then a metadata table carrying the links.
-  #
-  # The table replaces the template's trailing "🔗 …" line, which would
-  # otherwise repeat the PR/issue title already shown in the heading. Every
-  # template spells that line exactly "🔗 ${PR_LINK}" or "🔗 ${REF_LINK}", so
-  # dropping lines with that prefix is well-defined rather than a guess.
-  #
-  # Rows are emitted only when they have a value — a fixed row set would render
-  # empty cells for issue-only events, which have no PR. Severity stays in the
-  # per-event emoji the templates already carry: GFM has no colour, and
-  # spelling out BLOCKED would only duplicate 🚫.
-  # Root posts get the full card; replies stay light so a thread does not repeat
-  # the same PR/Issue/Repo block under every stage. The anchor is the signal:
-  # absent => this is the first message for the issue.
-  if [ -z "$BUZZ_ANCHOR" ]; then
-    # Buzz could render a real GFM table, but it deliberately shows the same
-    # monospace grid as everywhere else — the point is one identical card across
-    # all four platforms, and Slack/Discord/Teams cannot do tables at all.
-    _buzz_links="$(NFIELDS="$NFIELDS" python3 - <<'PY'
-import json, os
-print(" · ".join(
-    "[{} {}]({})".format(f["label"], f["text"], f["url"])
-    for f in json.loads(os.environ.get('NFIELDS') or '[]') if f.get("url")
-))
-PY
-)"
-    # The fence lives in a variable: a literal ``` inside $( … ) is parsed as
-    # legacy backtick command substitution and breaks the file.
-    _fence='```'
-    BUZZ_TEXT="$(
-      printf '### %s\n' "$NTITLE"
-      [ -n "$NGRID" ] && printf '\n%s\n%s\n%s\n' "$_fence" "$NGRID" "$_fence"
-      [ -n "$_buzz_links" ] && printf '\n%s\n' "$_buzz_links"
-    )"
-  else
-    # Light reply: the rendered template as-is, keeping its "🔗 …" line, which
-    # is the only link a reply carries.
-    BUZZ_TEXT="$TEXT"
-  fi
+  BUZZ_TEXT="$(_buzz_text "$BUZZ_ANCHOR")"
 
   # Seconds a single nak call may run before it is killed (#281). A relay that
   # never answers sends no RST, never closes, and never issues the NIP-42 AUTH
