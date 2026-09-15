@@ -484,6 +484,23 @@ Previously, setting `merge.forbidden_files` replaced the built-in defaults entir
 - **If you intended to add extra patterns on top of the defaults** (the common case): no action required. Your config now works as you most likely intended.
 - **If you intentionally narrowed the deny list** (removed some built-in patterns to allow those file types): add `merge.forbidden_files_replace: true` to restore the old replacement behaviour. Review the security warning in the `merge.forbidden_files_replace` table row above before doing so — replacement suppresses all built-in secret-protection patterns and should be treated as a deliberate security trade-off.
 
+### Upgrade notes (v0.16+)
+
+**(a) The 48 shipped per-platform notification templates are gone; one neutral template per event replaces them (#284).** Each event now has a single rich template at `<templates_dir>/<event>.md`, written in a neutral dialect that `pipeline-notify.sh` transpiles per sink (Slack mrkdwn, Discord/Teams markdown, pass-through GFM on Buzz). **Project overrides are unaffected** -- both `templates/notifications/<event>.md` and `templates/notifications/<platform>/<event>.md` in your repo keep working and still win over the shipped copy, so no customisation breaks.
+
+**(b) If you ran `install.sh --global` while tracking `main` between #283 and #284, delete the orphaned per-platform directories.** `install.sh` copies files into `~/.talos/`; it never prunes ones that have been removed upstream. Resolution checks a root's `<platform>/<event>.md` *before* its `<event>.md`, so 48 stale files left in the install root would silently win over every new neutral template and you would keep getting the old layout with no error. This affects only people who installed from `main` between those two commits -- #283 never reached a release. Check and clean with:
+
+```bash
+ls -d ~/.talos/templates/notifications/{slack,discord,teams,buzz} 2>/dev/null   # should print nothing
+rm -rf ~/.talos/templates/notifications/{slack,discord,teams,buzz}              # if it printed anything
+```
+
+**(c) The headline's issue/PR reference is now a link (#284).** `${HEADLINE}` renders as `<icon> **<Role>** - <verdict> · <ref>` with the ref linked to the event's primary URL (the PR for `pr-opened`/`merged`, the issue otherwise), degrading to plain text when no URL resolves. `${REF_LINK}` is a title line carried by thread roots only, and replies also omit the metadata block, so the linked ref is what gives a reply its route back to the PR. Anything scraping notification text for a bare `#42` should expect `<url|#42>` on Slack and `[#42](url)` elsewhere.
+
+**(d) Role display labels changed where they were verbose.** `pm` now renders as **PM** rather than "Project Manager", aligning the label set with daedalus `_ROLE_LABELS`. The `${ROLE}` slug is unchanged (`pm` still maps to `project-manager`); only the human-facing `${ROLE_LABEL}` in the headline differs.
+
+**(e) Teams cannot thread, and `TEAMS_WEBHOOK_URL` is read from the environment only.** Teams delivery is incoming-webhook only, so every event lands as a separate root post rather than a per-issue thread as on Slack, Discord and Buzz. Unlike `SLACK_BOT_TOKEN`, `DISCORD_BOT_TOKEN`, `BUZZ_RELAY_URL` and `BUZZ_BOT_PRIVATE_KEY`, `TEAMS_WEBHOOK_URL` is **not** sourced from `~/.hermes/.env` -- export it. Microsoft retired the legacy Office 365 "Incoming Webhook" connector in May 2026; the supported route is a Power Automate **Workflows** webhook ("Post to a channel when a webhook request is received"). Treat that URL as a bearer credential: its `sig` query parameter authorises posting to the channel.
+
 ### Upgrade notes (v0.15+)
 
 **(a) Approval-marker author verification is now on by default (#187).** `markers.verify_authors` defaults to `true`: `check-approval-sha`/`read-attempt` now only trust a `talos:approval`/`talos:attempt` marker posted by the identity Talos itself is authenticated as (inferred automatically, no config required) unioned with `markers.trusted_authors`. Previously any commenter's marker was trusted. If your setup relies on a separate bot/CI job posting markers under a different identity, list its login under `markers.trusted_authors`; to restore the exact pre-#187 behaviour (accept any commenter's marker, silently), set `markers.verify_authors: false`.
