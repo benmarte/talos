@@ -4551,23 +4551,26 @@ _azure() {
       # non-terminal states — which are Done/Removed/Closed, not just Closed —
       # so exclude all three.
       #
-      # PAGINATION (#171): `az boards query` has no --top/--page flag (see
-      # `az boards query --help`); WIQL itself supports "SELECT TOP N" in the
-      # query text, so that's the only cheap cap available. Warn loudly if a
-      # result lands exactly on it, since more work items may exist beyond
-      # what we can fetch this way.
-      local _azli_cap=1000
+      # PAGINATION (#171, #278): `az boards query` has no --top/--page flag
+      # (see `az boards query --help`) and WIQL has NO "SELECT TOP N" clause
+      # either -- ADO rejects it with "TF51006: The query statement is missing
+      # a FROM clause. The error is caused by «N»" (#278; the REST endpoint's
+      # cap is a `$top` query parameter `az` never exposes). The only ceiling
+      # left is the server's own: a flat WIQL query returns at most 20000 work
+      # items (VS402337 beyond that). Warn loudly if a result lands exactly on
+      # it, since more work items may exist beyond what we can fetch this way.
+      local _azli_cap=20000
       if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] az boards query $ORG_ARG $PROJ_ARG --wiql \"SELECT TOP $_azli_cap ...\" --output json"
+        echo "[dry-run] az boards query $ORG_ARG $PROJ_ARG --wiql \"SELECT [System.Id], ... FROM WorkItems ...\" --output json"
         return 0
       fi
       local _azli_out
       _azli_out="$(az boards query $ORG_ARG $PROJ_ARG \
-        --wiql "SELECT TOP $_azli_cap [System.Id], [System.Title], [System.State], [System.Tags] FROM WorkItems WHERE [System.State] NOT IN ('Closed', 'Done', 'Removed') ORDER BY [System.ChangedDate] DESC" \
+        --wiql "SELECT [System.Id], [System.Title], [System.State], [System.Tags] FROM WorkItems WHERE [System.State] NOT IN ('Closed', 'Done', 'Removed') ORDER BY [System.ChangedDate] DESC" \
         --output json)" || exit 1
       local _azli_count
       _azli_count="$(printf '%s' "$_azli_out" | _json_array_count)"
-      _list_cap_warn list-issues "$_azli_cap" "$_azli_count" "WIQL SELECT TOP ceiling" "work items"
+      _list_cap_warn list-issues "$_azli_cap" "$_azli_count" "ADO flat-WIQL 20000-item server ceiling" "work items"
       printf '%s\n' "$_azli_out"
       ;;
     view-issue)
