@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # nak stub for talos tests. Logs the full argv (newlines flattened to spaces,
-# one line per invocation) to $NAK_LOG.
+# one line per invocation) to $NAK_LOG, and every NOSTR_* variable visible in
+# its environment at invocation time to $NAK_ENV_LOG — the pair is what proves
+# the bot key travels in the environment and never on argv (#281).
 # Response: pops the first line of $NAK_QUEUE if non-empty — the literal word
 # "fail" exits 1 with no output (publish failure); the literal word "reject"
 # reproduces a RELAY REJECTION, which is NOT the same thing: real nak exits 0
 # and still prints the locally-signed event on stdout, putting the relay's
-# refusal only on stderr. Any other line is printed as the canned event JSON.
+# refusal only on stderr; the literal word "hang" reproduces an UNRESPONSIVE
+# relay by sleeping $NAK_HANG_S (default 5) before answering — bounded on
+# purpose, so a broken caller-side timeout fails a test instead of wedging the
+# suite. Any other line is printed as the canned event JSON.
 # Default: a fixed success event id.
 
 if [ -n "${NAK_LOG:-}" ]; then
@@ -13,10 +18,19 @@ if [ -n "${NAK_LOG:-}" ]; then
   printf '\n' >> "$NAK_LOG"
 fi
 
+if [ -n "${NAK_ENV_LOG:-}" ]; then
+  env | grep '^NOSTR_' >> "$NAK_ENV_LOG"
+fi
+
 if [ -n "${NAK_QUEUE:-}" ] && [ -s "$NAK_QUEUE" ]; then
   raw="$(head -1 "$NAK_QUEUE")"
   tail -n +2 "$NAK_QUEUE" > "$NAK_QUEUE.tmp" && mv "$NAK_QUEUE.tmp" "$NAK_QUEUE"
   [ "$raw" = "fail" ] && exit 1
+  if [ "$raw" = "hang" ]; then
+    sleep "${NAK_HANG_S:-5}"
+    printf '{"id":"dddd000000000000000000000000000000000000000000000000000000000004","kind":9}\n'
+    exit 0
+  fi
   if [ "$raw" = "reject" ]; then
     # Verbatim shape of a real rejection: signed event on stdout, refusal on
     # stderr, exit 0. Anything keying off $? or stdout reads this as success.
