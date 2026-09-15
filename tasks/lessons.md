@@ -124,3 +124,10 @@ Three ideas taken from an agent-fleet guide (done-in-one-line per stage, per-rol
 - Orchestrator `assert-sync` fails after any merge in the run (checkout is behind main). `git pull --ff-only` on main between issues is the guard's own remedy and touches no in-flight worktree; do it right after each post-merge step rather than waiting for the guard to abort.
 - PM skip (#199) fired on all three issues because each body carried `## Acceptance criteria` with checkboxes. Writing issues that way is the cheapest lean win available.
 - Follow-up 2026-09-13: `install.sh --global` itself was the reason the global copy drifted — a hardcoded script list had missed `pipeline-isolation.sh`, `pipeline-mergebase.sh` and `templates/ci`. Fixed in #276 with globs plus a structural `diff -rq` test. With every stage spawned in the background form, `pipeline-events.sh cost` for #276 recorded tokens for all six roles (only orchestrator rows null, as expected): 310k for one small bug through the full pipeline.
+
+## 2026-09-15: "get talos working on the open issues" means the Talos repo, not a consumer repo
+
+- Ben asked, from a home-directory session, to "get talos working on the 2 issues that are currently open". I went looking for a Talos *config*, found `~/.talos/terrasow.pipeline.yml`, cd'd into terrasow and spent the session there. He meant Talos dogfooding its own GitHub issues in `~/Documents/github/ai/talos`.
+- Rule: when the prompt names Talos as the subject and no repo is stated, the target is the Talos source repo. Before touching any other repo's config or checkout, state the resolved repo path in the first message and let Ben correct it.
+- Rule: never `cd` into a repo that was not named; a `cd` in a Bash call silently rebinds the session's primary working directory and every later step inherits the mistake.
+- Rule: check for other live Claude sessions in a repo (`ps -eo pid,command | grep <repo>`, `.talos/events.jsonl` mtime) before dispatching any stage that moves HEAD.

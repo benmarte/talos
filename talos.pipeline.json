@@ -45,22 +45,29 @@
     "max_total_dispatches": 8
   },
   "agents": {
-    "model": "claude-haiku-4-5-20251001",
+    "model": "claude-sonnet-5",
+    "restamp_model": "claude-sonnet-5",
     "roles": {
-      "developer": {
-        "model": "claude-sonnet-5"
+      "validator": {
+        "model": "claude-haiku-4-5-20251001"
       },
       "pm": {
         "model": "claude-sonnet-5"
+      },
+      "developer": {
+        "model": "claude-opus-5"
       },
       "qa": {
         "model": "claude-sonnet-5"
       },
       "reviewer": {
-        "model": "claude-sonnet-5"
+        "model": "claude-opus-5"
       },
       "security": {
         "model": "claude-sonnet-5"
+      },
+      "docs": {
+        "model": "claude-haiku-4-5-20251001"
       }
     }
   }
