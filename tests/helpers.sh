@@ -182,6 +182,12 @@ install_talos_vendored() {
       [ -f "$tmpl" ] || continue
       cp "$tmpl" "$SANDBOX/.claude/talos/templates/$dir/"
     done
+    # Per-platform notification templates (#280) live one level deeper.
+    for sub in "$TALOS_ROOT/templates/$dir"/*/; do
+      [ -d "$sub" ] || continue
+      mkdir -p "$SANDBOX/.claude/talos/templates/$dir/$(basename "$sub")"
+      cp "$sub"*.md "$SANDBOX/.claude/talos/templates/$dir/$(basename "$sub")/" 2>/dev/null || true
+    done
   done
   for agent in validator pm developer qa reviewer security adversarial docs planner; do
     for src in "$TALOS_ROOT/agents/$agent.md" "$TALOS_ROOT/.claude/agents/$agent.md"; do

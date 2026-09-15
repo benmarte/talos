@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# test-notify-templates.sh -- per-platform notification templates (#280).
+#
+# Covers:
+#   (a) resolution order: project/<platform> -> project/<event> ->
+#       install/<platform> -> install/<event>
+#   (b) fallback to the platform-neutral template when a platform ships none
+#   (c) the pre-#280 single-level project override still wins over a shipped
+#       platform template, with no config change
+#   (d) --render prints a rendering without posting or touching thread state
+#   (e) every SHIPPED template references only documented variables
+#
+# Hermetic: make_sandbox exports a sandbox-local HOME, so nothing here reads a
+# developer's real ~/.hermes/.env (see CHANGELOG ~line 427).
+set -u
+. "$(dirname "$0")/helpers.sh"
+make_sandbox
+use_stubs
+install_talos
+
+NOTIFY="$HOME/.talos/scripts/pipeline-notify.sh"
+export PIPELINE_THREAD_STATE="$SANDBOX/threads.json"
+
+render() {  # $1=platform $2=event [$3=ref] [$4=message]
+  PIPELINE_ISSUE_TITLE="Fix login crash" \
+    bash "$NOTIFY" --render "$1" "$2" "${3:-#42}" "${4:-a message}" 2>&1
+}
+
+# ── (a) Platform-specific template wins for its own platform ─────────────────
+out="$(render buzz validator)"
+assert_contains "$out" "templates/notifications/buzz/validator.md" \
+  "buzz resolves the shipped buzz/ template"
+assert_contains "$out" "# rich:     yes" "a platform template marks the sink rich"
+assert_contains "$out" "### " "buzz template uses a real GFM heading"
+
+out="$(render slack validator)"
+assert_contains "$out" "templates/notifications/slack/validator.md" \
+  "slack resolves the shipped slack/ template"
+
+# Every platform ships every role and lifecycle event.
+for _ev in validator pm developer qa reviewer security docs \
+           pr-opened blocked merged issue-closed; do
+  for _pl in slack discord teams buzz; do
+    assert_file_exists "$TALOS_ROOT/templates/notifications/$_pl/$_ev.md" \
+      "shipped template exists: $_pl/$_ev.md"
+  done
+done
+
+# ── (b) Fallback to the platform-neutral template ────────────────────────────
+# `dispatched` ships only a top-level template, so every platform falls back.
+out="$(render slack dispatched)"
+assert_contains "$out" "templates/notifications/dispatched.md" \
+  "no platform file -> platform-neutral template"
+assert_not_contains "$out" "/slack/dispatched.md" \
+  "the fallback is not silently attributed to the platform dir"
+assert_contains "$out" "# rich:     no" "a neutral fallback is not marked rich"
+
+# An event with no template at all degrades to the plain-text line.
+out="$(render slack some-unknown-event)"
+assert_contains "$out" "# template: (none" "unknown event resolves no template"
+assert_contains "$out" "[talos] some-unknown-event" "unknown event falls back to plain text"
+
+# ── (c) Project override precedence ──────────────────────────────────────────
+# The pre-#280 single-level layout: a repo-local templates/notifications/<event>.md
+# must keep winning over the SHIPPED slack/<event>.md, with no config change.
+mkdir -p "$SANDBOX/templates/notifications"
+printf 'PROJECT-NEUTRAL ${REF_TITLE}\n' > "$SANDBOX/templates/notifications/validator.md"
+out="$(render slack validator)"
+assert_contains "$out" "PROJECT-NEUTRAL" \
+  "project single-level override beats the shipped platform template"
+assert_contains "$out" "# rich:     no" \
+  "a neutral project override does not claim to be a platform template"
+
+# A project platform template beats the project's own neutral one.
+mkdir -p "$SANDBOX/templates/notifications/slack"
+printf 'PROJECT-SLACK ${REF_TITLE}\n' > "$SANDBOX/templates/notifications/slack/validator.md"
+out="$(render slack validator)"
+assert_contains "$out" "PROJECT-SLACK" \
+  "project platform override beats the project neutral override"
+assert_contains "$out" "# rich:     yes" "a project platform template marks the sink rich"
+
+# ...and only for its own platform: discord still falls through to the project
+# neutral override, never to another platform's file.
+out="$(render discord validator)"
+assert_contains "$out" "PROJECT-NEUTRAL" \
+  "a slack/ override does not leak into the discord sink"
+
+rm -rf "$SANDBOX/templates"
+
+# ── (d) --render posts nothing and mutates no thread state ───────────────────
+rm -f "$PIPELINE_THREAD_STATE"; : > "$CURL_LOG"; : > "$NAK_LOG"
+out="$(SLACK_BOT_TOKEN=xoxb-test PIPELINE_SLACK_CHANNEL=C0TEST \
+  BUZZ_RELAY_URL=ws://localhost:3000 BUZZ_BOT_PRIVATE_KEY=deadbeef \
+  PIPELINE_BUZZ_CHANNEL=chan-1 PIPELINE_ISSUE_TITLE="Fix login crash" \
+  bash "$NOTIFY" --render slack qa "#42" "PASS: 3 criteria verified" 2>&1)"; rc=$?
+assert_eq "0" "$rc" "--render exits 0"
+assert_contains "$out" "PASS: 3 criteria verified" "--render substitutes the message"
+assert_contains "$out" '"type": "section"' "--render prints the real slack payload"
+assert_eq "" "$(cat "$CURL_LOG")" "--render posts nothing over curl"
+assert_eq "" "$(cat "$NAK_LOG")" "--render publishes nothing over nak"
+assert_file_absent "$PIPELINE_THREAD_STATE" "--render writes no thread anchor"
+
+# Each platform renders in its own payload shape.
+assert_contains "$(render discord qa)" '"embeds"' "--render discord prints an embed payload"
+assert_contains "$(render teams qa)" '"AdaptiveCard"' "--render teams prints an adaptive card"
+assert_contains "$(render buzz qa)" '| Field | Value |' "--render buzz prints the GFM card"
+
+# A typo must not quietly preview the neutral template and look like an answer.
+out="$(bash "$NOTIFY" --render slak validator "#42" "m" 2>&1)"; rc=$?
+assert_eq "2" "$rc" "--render rejects an unknown platform"
+assert_contains "$out" "unknown platform 'slak'" "--render names the bad platform"
+
+# notifications.events must not silence a preview -- a filtered pipeline still
+# has to be able to inspect its templates.
+cat > talos.pipeline.json <<'EOF'
+{"notifications": {"events": ["merged"]}}
+EOF
+assert_contains "$(render slack validator)" "Validator" \
+  "--render ignores the notifications.events filter"
+rm talos.pipeline.json
+
+# ── (e) Shipped templates reference only documented variables ────────────────
+# The README "Notification templates" table is the contract; a template that
+# reaches outside it renders a literal ${NAME} into a real notification.
+undocumented_vars() {  # $1=dir holding templates/notifications; prints offenders
+  SCAN_ROOT="$1" python3 - <<'PY'
+import os
+import pathlib
+import re
+
+# Mirrors the env vars _tmpl_render() exports in pipeline-notify.sh and the
+# README "Notification templates" variable table.
+allowed = {
+    "ICON", "EVENT", "MSG", "REF", "ROLE", "TITLE", "REF_TITLE",
+    "PR", "PR_TITLE", "PR_REF", "BOARD", "ISSUE_URL", "PR_URL",
+    "REF_LINK", "PR_LINK",
+}
+root = pathlib.Path(os.environ["SCAN_ROOT"]) / "templates" / "notifications"
+bad = []
+for f in sorted(root.rglob("*.md")):
+    for name in re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", f.read_text()):
+        if name not in allowed:
+            bad.append("{}:${{{}}}".format(f.relative_to(root), name))
+print(" ".join(sorted(set(bad))))
+PY
+}
+
+assert_eq "" "$(undocumented_vars "$TALOS_ROOT")" \
+  "every shipped notification template uses only documented variables"
+
+# The guard itself must be able to fail: a template with a bogus variable is
+# caught. (Written into the sandbox copy of the shipped set, not the repo.)
+printf 'bad ${NOT_A_REAL_VARIABLE}\n' > "$HOME/.talos/templates/notifications/slack/_probe.md"
+assert_contains "$(undocumented_vars "$HOME/.talos")" 'slack/_probe.md:${NOT_A_REAL_VARIABLE}' \
+  "the variable guard actually fails on an undocumented variable"
+rm -f "$HOME/.talos/templates/notifications/slack/_probe.md"
+
+finish

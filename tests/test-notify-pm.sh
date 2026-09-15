@@ -32,11 +32,17 @@ pm_payload="$(tail -1 "$CURL_LOG" | cut -f2)"
 assert_contains "$pm_payload" "acceptance criteria" "pm summary body is delivered"
 assert_contains "$pm_payload" "fix/issue-42-parsetoken-null" "pm message carries the branch name"
 
-# ── Rendered through templates/notifications/pm.md, not the verbatim fallback ─
-# The template's distinguishing header. Without pm.md the script posts the bare
-# summary, which would not contain this string.
-assert_contains "$pm_payload" "Spec ready" "pm.md template controls the format"
-assert_contains "$pm_payload" "project-manager" "pm maps to the project-manager role name"
+# ── Rendered through a pm template, not the verbatim fallback ───────────
+# The template's distinguishing header. Without a pm template the script posts
+# the bare summary, which would not contain this string. Slack is the sink
+# under test here, so the winning file is slack/pm.md (#280).
+assert_contains "$pm_payload" "*Project Manager*" "the pm template controls the format"
+# The pm -> project-manager role mapping is what ${ROLE} resolves to; the
+# platform-neutral template is the one that still spells it out, so render that
+# directly rather than asserting it against a headline that uses a display name.
+role_render="$(PIPELINE_ISSUE_TITLE="Fix login crash" \
+  bash "$NOTIFY" --render default pm "#42" "$PM_MSG" 2>&1)"
+assert_contains "$role_render" "project-manager" "pm maps to the project-manager role name"
 
 # ── Threads under the same anchor as every other role event ─────────────────
 # A pm event that started its own root would split the issue's thread in two.

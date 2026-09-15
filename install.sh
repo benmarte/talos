@@ -136,6 +136,16 @@ if [ "$GLOBAL" = "true" ]; then
       [ -f "$tmpl" ] || continue
       install_file "$tmpl" "$TALOS_HOME_DIR/templates/$dir/$(basename "$tmpl")"
     done
+    # One level deeper: notifications/<platform>/<event>.md (#280). Globbed the
+    # same way, so adding a platform needs no installer edit.
+    for sub_path in "$dir_path"*/; do
+      [ -d "$sub_path" ] || continue
+      sub="$(basename "$sub_path")"
+      for tmpl in "$sub_path"*; do
+        [ -f "$tmpl" ] || continue
+        install_file "$tmpl" "$TALOS_HOME_DIR/templates/$dir/$sub/$(basename "$tmpl")"
+      done
+    done
   done
 
   # Skills -> ~/.claude/skills/ (user-scoped; Claude Code scans this path)

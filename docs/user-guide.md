@@ -48,7 +48,7 @@ progress as issue/PR comments and threaded Slack/Discord messages along the way.
   `pipeline-agent.sh` adapter.
 - **Rich notifications** — Slack (Block Kit), Discord (embeds), Teams
   (Adaptive Cards), Buzz (Nostr kind:9 via `nak`). Per-issue threading
-  (bot-token mode; NIP-10 replies on Buzz), customizable markdown templates,
+  (bot-token mode; NIP-10 replies on Buzz), per-platform markdown templates,
   clickable issue/PR links.
 - **Stage comments on GitHub** — every role posts its verdict/findings on the
   issue or PR, so the audit trail lives where the code lives.
@@ -1234,6 +1234,83 @@ expected, not a bug. `restamp` counts events with verdict
 same role already approved — separately from that group's full-stage
 events/tokens (see "Stale approvals — cheap delta re-stamp" above).
 
+### Per-platform notification templates
+
+**What it does.** Each sink renders its **own** template, so a notification
+comes out in that platform's native syntax instead of one shared monospace
+card. Templates live in two layers under `notifications.templates_dir`
+(default `templates/notifications`):
+
+```
+templates/notifications/
+  <event>.md            # platform-neutral fallback
+  slack/<event>.md      # Slack mrkdwn (*bold*, <url|text>)
+  discord/<event>.md    # Discord markdown, embed-styled title
+  teams/<event>.md      # Adaptive Card text (the FactSet carries the links)
+  buzz/<event>.md       # real GFM -- headings, bold, tables, inline links
+```
+
+The metadata (PR / Issue / Stage / Repo) is rendered by the sink, not the
+template: Block Kit `fields` on Slack, embed `fields` on Discord, an Adaptive
+Card `FactSet` on Teams, a real GFM table on Buzz. A sink with no platform
+file -- and `notifications.cmd`, which never gets one -- falls back to the
+shared fenced monospace grid.
+
+**Resolution order** per platform, first hit wins:
+
+1. `<project>/<templates_dir>/<platform>/<event>.md`
+2. `<project>/<templates_dir>/<event>.md`
+3. `~/.talos/<templates_dir>/<platform>/<event>.md`
+4. `~/.talos/<templates_dir>/<event>.md`
+
+The project copy wins at **both** layers. An existing single-level
+`templates/notifications/<event>.md` override therefore keeps winning over a
+shipped platform template -- nothing to migrate, no config change.
+
+**Adding your own.** Create `templates/notifications/<platform>/<event>.md`
+in your repo and use only the documented variables (`ICON`, `EVENT`, `MSG`,
+`REF`, `ROLE`, `TITLE`, `REF_TITLE`, `PR`, `PR_TITLE`, `PR_REF`, `BOARD`,
+`ISSUE_URL`, `PR_URL`, `REF_LINK`, `PR_LINK`) -- anything else renders as a
+literal `${NAME}`. Example `templates/notifications/buzz/qa.md`:
+
+```markdown
+### 🧪 QA — ${REF_TITLE}
+
+${MSG}
+
+🔗 ${REF_LINK}
+```
+
+**Previewing without posting.** `--render` resolves the template, renders it,
+prints the exact payload that platform would send, and exits 0 -- it posts
+nothing, reads and writes no thread anchors, and ignores the
+`notifications.events` filter:
+
+```bash
+bash ~/.talos/scripts/pipeline-notify.sh --render buzz qa "#42" "PASS: 3 criteria verified"
+```
+
+```
+# platform: buzz
+# event:    qa
+# template: /Users/you/.talos/templates/notifications/buzz/qa.md
+# rich:     yes
+
+### 🧪 QA — #42: Fix login crash
+
+PASS: 3 criteria verified
+
+| Field | Value |
+| --- | --- |
+| Issue | [#42](https://github.com/acme/widget/issues/42) |
+| Stage | qa |
+| Repo | acme/widget |
+```
+
+`<platform>` is `slack`, `discord`, `teams`, `buzz`, or `default` (the
+platform-neutral rendering `notifications.cmd` receives). `rich: no` means no
+platform file matched and the sink will use the monospace-grid fallback.
+
 ### A generic notification sink (`notifications.cmd`)
 
 **What it does.** `notifications.cmd` runs a shell command (via `sh -c`) for
@@ -1662,7 +1739,10 @@ pack installed.
   full list from `talos.pipeline.yml.example`.
 - **No threading** — webhooks can't thread; use a bot token + channel ID.
 - **Test what would be sent**: `PIPELINE_NOTIFY_DEBUG=1 bash
-  ~/.talos/scripts/pipeline-notify.sh validator "#1" "test" 1`.
+  ~/.talos/scripts/pipeline-notify.sh validator "#1" "test" 1` prints what
+  every configured sink would post. To preview ONE platform's template with no
+  credentials configured at all, use `--render`:
+  `bash ~/.talos/scripts/pipeline-notify.sh --render buzz qa "#42" "PASS"`.
 - **YAML config ignored** — PyYAML not installed. JSON config (`talos.pipeline.json`)
   needs no dependency and works on every platform — recommended for new projects.
   To keep YAML: `pip install pyyaml` (may fail on macOS with PEP 668 / Homebrew
