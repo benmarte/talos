@@ -595,12 +595,30 @@ PY
 _build_grid() {
   NGRID="$(NFIELDS="$NFIELDS" NBODY_CARD="$NBODY_CARD" python3 - <<'PY'
 import json, os, re, textwrap
+
+
+def cell(s):
+    # Every row lands inside the literal triple-backtick fence the three
+    # markdown sinks wrap this grid in, and inside a fence a backslash
+    # escapes nothing. Only two things can break out: a run of 3+ backticks,
+    # which closes the fence early and lets the rest of an issue title or
+    # agent message render as arbitrary markdown, and a raw newline, which
+    # ends the row. Lone backticks are harmless in a fence and common in
+    # agent verdicts, so only the closing run is defused -- split by
+    # zero-width spaces, which reads the same but no longer delimits.
+    # Written \x60 because a literal backtick (and, for bash, a literal
+    # apostrophe) inside the enclosing $( … ) breaks the file -- see
+    # _bt_fence below.
+    s = re.sub(r'\s*[\r\n]+\s*', ' ', str(s)).strip()
+    return re.sub(r'\x60{3,}', lambda m: '\u200b'.join(m.group(0)), s)
+
+
 rows = []
-comment = re.sub(r'\s*\n+\s*', ' ', os.environ.get('NBODY_CARD', '')).strip()
+comment = cell(os.environ.get('NBODY_CARD', ''))
 if comment:
     rows.append(("Comment", comment))
 for f in json.loads(os.environ.get('NFIELDS') or '[]'):
-    rows.append((f["label"], f["text"]))
+    rows.append((cell(f["label"]), cell(f["text"])))
 if rows:
     w = max(len(l) for l, _ in rows)
     out = []

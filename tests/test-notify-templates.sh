@@ -12,6 +12,7 @@
 #   (f) an undocumented variable -- notably an exported secret -- renders
 #       as a literal ${NAME} and never leaks its value (#283 security)
 #   (g) pipes/newlines in GFM table cells are escaped, not injected
+#   (h) a triple-backtick run can't break out of the fallback grid's fence
 #
 # Hermetic: make_sandbox exports a sandbox-local HOME, so nothing here reads a
 # developer's real ~/.hermes/.env (see CHANGELOG ~line 427).
@@ -192,5 +193,27 @@ INJECTED | row' PIPELINE_ISSUE_TITLE="Fix login crash" \
 assert_contains "$out" 'owner/repo INJECTED \| row' \
   "a newline in a cell value collapses instead of ending the row"
 assert_not_contains "$out" 'INJECTED | row' "a newline never injects an extra row"
+
+# ── (h) The monospace grid fallback cannot break out of its code fence ───────
+# Slack/Discord/Buzz wrap the fallback grid in a literal ``` fence. A triple-
+# backtick run in the comment or in a field value would close that fence early
+# and let the rest render as arbitrary markdown in the pipeline's own stream.
+_fence='```'
+mkdir -p "$SANDBOX/templates/notifications"
+# A neutral project template -> rich:no -> the grid fallback, with a clean
+# title line so every fence left in the payload belongs to the grid itself.
+printf 'Grid probe\n\n${MSG}\n' > "$SANDBOX/templates/notifications/info.md"
+for _pl in slack discord buzz; do
+  out="$(PIPELINE_REPO="ow${_fence}ner/repo" PIPELINE_ISSUE_TITLE="Fix login crash" \
+    bash "$NOTIFY" --render "$_pl" info "#42" "closing ${_fence} then # PWNED" 2>&1)"
+  assert_eq "2" "$(printf '%s' "$out" | grep -o -- "$_fence" | wc -l | tr -d ' ')" \
+    "$_pl grid keeps exactly one opening and one closing fence"
+  assert_not_contains "$out" "closing ${_fence}" \
+    "$_pl grid comment cannot close the fence"
+  assert_not_contains "$out" "ow${_fence}ner" \
+    "$_pl grid field value cannot close the fence"
+  assert_contains "$out" "PWNED" "$_pl grid still carries the comment text"
+done
+rm -rf "$SANDBOX/templates"
 
 finish
