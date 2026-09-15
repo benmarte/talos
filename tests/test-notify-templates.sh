@@ -9,6 +9,9 @@
 #       platform template, with no config change
 #   (d) --render prints a rendering without posting or touching thread state
 #   (e) every SHIPPED template references only documented variables
+#   (f) an undocumented variable -- notably an exported secret -- renders
+#       as a literal ${NAME} and never leaks its value (#283 security)
+#   (g) pipes/newlines in GFM table cells are escaped, not injected
 #
 # Hermetic: make_sandbox exports a sandbox-local HOME, so nothing here reads a
 # developer's real ~/.hermes/.env (see CHANGELOG ~line 427).
@@ -154,5 +157,40 @@ printf 'bad ${NOT_A_REAL_VARIABLE}\n' > "$HOME/.talos/templates/notifications/sl
 assert_contains "$(undocumented_vars "$HOME/.talos")" 'slack/_probe.md:${NOT_A_REAL_VARIABLE}' \
   "the variable guard actually fails on an undocumented variable"
 rm -f "$HOME/.talos/templates/notifications/slack/_probe.md"
+
+# ── (f) Only documented variables substitute; secrets stay literal ───────────
+# A project override template is untrusted input: it must not be able to name
+# an exported secret and have its value rendered into an outbound message.
+mkdir -p "$SANDBOX/templates/notifications"
+printf 'SECRETS ${SLACK_WEBHOOK_URL} ${GITHUB_TOKEN} ok=${REF_TITLE}\n' \
+  > "$SANDBOX/templates/notifications/validator.md"
+out="$(SLACK_WEBHOOK_URL=https://hooks.example/SUPERSECRETHOOK \
+  GITHUB_TOKEN=ghp_SUPERSECRETTOKEN PIPELINE_ISSUE_TITLE="Fix login crash" \
+  bash "$NOTIFY" --render slack validator "#42" "a message" 2>&1)"
+assert_not_contains "$out" "SUPERSECRETHOOK" \
+  "an exported webhook secret is never substituted into the rendering"
+assert_not_contains "$out" "SUPERSECRETTOKEN" \
+  "an exported API token is never substituted into the rendering"
+assert_contains "$out" '${SLACK_WEBHOOK_URL}' \
+  "an undocumented variable renders as the literal \${NAME} the docs promise"
+assert_contains "$out" "Fix login crash" \
+  "documented variables still substitute"
+rm -rf "$SANDBOX/templates"
+
+# ── (g) GFM table cells escape pipes and newlines ────────────────────────────
+# Cell values carry repo/issue metadata; a "|" or newline in one would inject
+# extra cells/rows and let that text spoof the metadata a reviewer reads.
+out="$(PIPELINE_REPO='ow|ner/re|po' PIPELINE_ISSUE_TITLE="Fix login crash" \
+  bash "$NOTIFY" --render buzz qa "#42" "PASS" 2>&1)"
+assert_contains "$out" '| Field | Value |' "the buzz card is still a GFM table"
+assert_contains "$out" 'ow\|ner/re\|po' "a pipe in a cell value is escaped"
+assert_not_contains "$out" '| ow|ner/re|po |' "a pipe never injects extra cells"
+
+out="$(PIPELINE_REPO='owner/repo
+INJECTED | row' PIPELINE_ISSUE_TITLE="Fix login crash" \
+  bash "$NOTIFY" --render buzz qa "#42" "PASS" 2>&1)"
+assert_contains "$out" 'owner/repo INJECTED \| row' \
+  "a newline in a cell value collapses instead of ending the row"
+assert_not_contains "$out" 'INJECTED | row' "a newline never injects an extra row"
 
 finish

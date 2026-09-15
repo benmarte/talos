@@ -390,10 +390,22 @@ _tmpl_render() {  # $1=template path; prints the rendered text
     REF_LINK="$REF_LINK" PR_LINK="$PR_LINK" \
     python3 -c "
 import os, string, sys
+# Only the documented variables (README 'Notification templates' table) are
+# substituted. Handing safe_substitute() the whole of os.environ would render
+# any exported secret a template happens to name -- \${SLACK_WEBHOOK_URL},
+# \${NOSTR_SECRET_KEY}, \${GITHUB_TOKEN} -- straight into an outbound message,
+# and a project-supplied override template is untrusted input. Anything
+# outside this list stays the literal \${NAME} the docs promise.
+DOCUMENTED = (
+    'ICON', 'REF', 'MSG', 'EVENT', 'ROLE', 'TITLE', 'REF_TITLE',
+    'PR', 'PR_TITLE', 'PR_REF', 'BOARD', 'ISSUE_URL', 'PR_URL',
+    'REF_LINK', 'PR_LINK',
+)
 try:
     with open(sys.argv[1]) as f:
         t = string.Template(f.read())
-    result = t.safe_substitute(os.environ).strip()
+    result = t.safe_substitute(
+        {k: os.environ.get(k, '') for k in DOCUMENTED}).strip()
     if result:
         print(result)
 except Exception:
@@ -606,14 +618,28 @@ PY
 # sinks have no table syntax and use their own native field constructs instead.
 _gfm_table() {
   NFIELDS="$NFIELDS" python3 - <<'PY'
-import json, os
+import json, os, re
+
+
+def cell(s):
+    # Cell values carry externally-influenced text (repo slug, stage, ref).
+    # A GFM row ends at a newline and a cell at an unescaped "|", so either
+    # one would inject extra rows/cells and let that text spoof the metadata
+    # a human reviewer reads. Backslashes first, so the value's own "\"
+    # cannot escape the escape; backticks so it cannot open a code span.
+    s = re.sub(r'\s*[\r\n]+\s*', ' ', str(s))
+    return s.replace('\\', '\\\\').replace('|', '\\|').replace('`', '\\`')
+
+
 rows = json.loads(os.environ.get('NFIELDS') or '[]')
 if rows:
     print("| Field | Value |")
     print("| --- | --- |")
     for f in rows:
-        v = "[{}]({})".format(f["text"], f["url"]) if f.get("url") else f["text"]
-        print("| {} | {} |".format(f["label"], v))
+        v = cell(f["text"])
+        if f.get("url"):
+            v = "[{}]({})".format(v, cell(f["url"]).replace(' ', '%20'))
+        print("| {} | {} |".format(cell(f["label"]), v))
 PY
 }
 
