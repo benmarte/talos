@@ -221,6 +221,8 @@ TEAMS_WEBHOOK_URL=https://...
 
 Alternatively, set `notifications.slack_channel` / `notifications.discord_channel` in your config and put `SLACK_BOT_TOKEN` / `DISCORD_BOT_TOKEN` in `~/.hermes/.env` (Hermes platform credential store — optional convenience, not required).
 
+**Teams has no bot-token path and no Hermes convenience.** `TEAMS_WEBHOOK_URL` is Talos's only way to deliver to Teams — there is no bot-token/channel-ID alternative like Slack and Discord have — and `pipeline-notify.sh` reads it from the environment or repo `.env` only; unlike `SLACK_BOT_TOKEN`, `DISCORD_BOT_TOKEN`, `BUZZ_RELAY_URL`, and `BUZZ_BOT_PRIVATE_KEY`, it is **not** sourced from `~/.hermes/.env`, so putting it there silently does nothing. Because delivery is always webhook-only, Teams also never threads (see [Per-issue notification threading](#per-issue-notification-threading)). Microsoft retired the legacy Office 365 "Incoming Webhook" connector in May 2026; provision a Power Automate **Workflows** webhook instead ("Post to a channel when a webhook request is received") and put its URL in `TEAMS_WEBHOOK_URL`.
+
 For [Buzz](https://github.com/block/buzz) (self-hosted Nostr/NIP-29 workspace — no webhooks), install the [`nak`](https://github.com/fiatjaf/nak) CLI (`brew install nak`), set `notifications.buzz_channel` to the channel UUID, and provide the relay + bot key (env, repo `.env`, or `~/.hermes/.env`):
 
 ```
@@ -516,62 +518,77 @@ Edit these files to customise the comment format for your team. The subagent fal
 
 ### Notification templates
 
-Notification messages are rendered as Slack Block Kit (section + colored attachment), Discord embeds (title/description/color/footer), a Teams Adaptive Card, or Buzz GFM. The first line of the rendered template becomes the title; the rest becomes the body. Templates use `${PLACEHOLDER}` substitution with these variables:
+Notification messages are rendered as Slack Block Kit (section + colored attachment), Discord embeds (title/description/color/footer), a Teams Adaptive Card, or Buzz GFM. Every event has **one neutral template**, written once in a small markdown dialect (`**bold**`, `[text](url)`, `- ` bullets, blank-line paragraphs, at most one leading `### ` heading) and transpiled into each sink's native syntax — templates never need per-platform conditionals. Templates use `${PLACEHOLDER}` substitution with these variables:
 
 | Variable | Value |
 |----------|-------|
 | `${ICON}` / `${EVENT}` / `${MSG}` | event icon, event name, message text |
 | `${REF}` | issue ref as passed (e.g. `#42`) |
 | `${ROLE}` | role label (validator / project-manager / developer / …) |
-| `${TITLE}` / `${REF_TITLE}` | issue title / `#42: title` |
+| `${TITLE}` / `${REF_TITLE}` | issue title / `#42 title` — no colon; the title reads as one phrase now that it appears exactly once, not repeated under a verdict-first headline |
 | `${PR}` / `${PR_TITLE}` / `${PR_REF}` | PR number / title / `PR #9: title` |
 | `${ISSUE_URL}` / `${PR_URL}` | GitHub URLs (empty if undetectable) |
-| `${REF_LINK}` / `${PR_LINK}` | markdown links `[#42: title](url)` — Slack/Discord render them clickable; fall back to plain text when no URL |
+| `${REF_LINK}` / `${PR_LINK}` | markdown links `[#42 title](url)` / `[PR #9: title](url)` — transpiled to each sink's native link syntax; fall back to plain text when no URL |
 | `${BOARD}` | board name (owner-repo) |
+| `${REPO}` | repo slug (`owner/name`) |
+| `${VERDICT}` | the leading verdict token lifted out of `${MSG}` — one of `PASS`, `FAIL`, `DONE`, `CLEAR`, `CLOSED`, `MERGED`, `BLOCKED`, `CHANGES`, `FINDINGS`, `APPROVED`, `CONFIRMED`, `RESTAMP_PASS`, `RESTAMP_FAIL`; empty when `${MSG}` carries none |
+| `${SUMMARY}` | `${MSG}` with the verdict token (and, for `blocked`, a leading `<stage>:`) stripped off; a long single-line, semicolon-joined summary (over 160 chars, at least two `; `) is reflowed into a lead sentence plus `- ` bullets |
+| `${ROLE_ICON}` / `${ROLE_LABEL}` | fixed per-role pair — 🔎 Validator, 📝 PM, 🛠 Developer, 🧪 QA, 👀 Reviewer, 🔐 Security, 📚 Docs, 🗺 Planner, 😈 Adversarial; every lifecycle event (`pr-opened`, `merged`, `blocked`, `issue-closed`, `dispatched`, `info`, `orchestrator`) is 🤖 Talos |
+| `${HEADLINE}` | line 1 of every shipped template — assembled by the script itself, not written by the template, as `${ROLE_ICON} **${ROLE_LABEL}** — ${VERDICT or action} · ${REF}`, with `${REF}` itself linked to the issue/PR URL when one is known (the PR's URL for `pr-opened`/`merged`, otherwise the issue's) — a thread reply carries neither the title line nor the metadata block, so this linked ref is the only route back to GitHub a reply gets |
 
-Keep the first template line free of markdown links — Discord embed titles don't render them (the embed title is made clickable via the embed `url` instead). Put `${REF_LINK}`/`${PR_LINK}` in the body.
+Every shipped template follows the same three-line layout: `${HEADLINE}` (line 1, who's speaking and their verdict), `${REF_LINK}` (line 2, the title once), then `${SUMMARY}` as the body, never fenced. A `pr-opened`/`merged`/`issue-closed` event shows the PR title as `${SUMMARY}` instead of the raw "PR https://… opened" boilerplate; a `blocked` event lifts a leading `<stage>: ` out of `${MSG}` into the headline (`blocked by <stage>`) rather than repeating it in the body.
+
+**Root vs. reply.** A post with no thread anchor yet is the root — the first message for that issue — and gets the full card: `${HEADLINE}`, the `${REF_LINK}` title line, the native metadata construct (fields/FactSet), and, on Slack/Discord, a `repo · event · ref` context footer (Slack's `context` block, Discord's embed `footer`). A threaded reply (same issue, an anchor already on file) drops **both** the title line and the metadata block — the root above already carries them — and renders as just `${HEADLINE}` plus `${SUMMARY}` as the body; Slack/Discord replies still carry the context footer, Buzz replies carry neither footer nor metadata, just the headline and body. This is exactly why `${REF}` inside `${HEADLINE}` is linked: it is a reply's *only* click-through to the issue/PR. Teams never threads (see below), so every Teams post is a root card. See [Per-issue notification threading](#per-issue-notification-threading).
 
 Anything outside this table renders as a literal `${NAME}` in a real notification, so `tests/test-notify-templates.sh` fails when a shipped template references an undocumented variable.
 
-#### Per-platform templates
+#### One template per event, transpiled per platform
 
-Templates live in two layers under `notifications.templates_dir`:
+Templates live under `notifications.templates_dir` — 14 shipped files, one per event, at the top level:
 
 ```
 templates/notifications/
-  <event>.md              # platform-neutral fallback
-  slack/<event>.md        # Slack mrkdwn (*bold*, <url|text>)
-  discord/<event>.md      # Discord markdown, embed-styled title
-  teams/<event>.md        # Adaptive Card text (the FactSet carries the links)
-  buzz/<event>.md         # real GFM — headings, bold, tables, inline links
+  <event>.md   # e.g. validator.md, qa.md, blocked.md, pr-opened.md, …
 ```
 
-Each sink renders **its own** template, so the metadata (PR / Issue / Stage / Repo) comes out in that platform's native construct — Block Kit `fields` on Slack, embed `fields` on Discord, an Adaptive Card `FactSet` on Teams, a real GFM table on Buzz. A sink with no platform file (and `notifications.cmd`, which never gets one) falls back to the shared fenced monospace grid.
+`_neutral_to_platform()` in `pipeline-notify.sh` turns the neutral dialect into each sink's native syntax right before a payload builder consumes it:
 
-Resolution order per platform, first hit wins:
+| Sink | Transpiles to |
+|------|---------------|
+| Slack | mrkdwn — `**bold**` → `*bold*`, `[text](url)` → `<url\|text>`, a heading → a bold line, `- ` → `• ` |
+| Discord | native CommonMark, unchanged — bold/links/`- ` render as-is; a heading becomes a bold line (embeds have no heading syntax) |
+| Teams | same rules as Discord — the heading/first line becomes the Adaptive Card's Bolder TextBlock, the rest a wrapping TextBlock; links stay markdown |
+| Buzz | pass-through GFM — Buzz renders `remark-gfm`, so the dialect needs no transpiling |
+
+The transpiler also tidies whatever an unavailable variable leaves behind — an empty link target, a dangling `·` separator, an empty `**bold**` run — so a template never needs a conditional: `[PR ${PR}](${PR_URL})` simply disappears when there is no PR, and `${REF_LINK}` degrades to plain text when no URL was detectable.
+
+Metadata (PR / Issue / Stage / Repo) is rendered by the sink as its own native construct, **root messages only** — Block Kit `fields` on Slack, embed `fields` on Discord, an Adaptive Card `FactSet` on Teams (always, since Teams has no reply state), one compact `repo · [PR #n](url)` line on Buzz (in place of the four-row GFM table an earlier design used, since the role is on line 1 now). A sink is "rich" whenever a template resolved at all; only `notifications.cmd` (which never gets a template) and a project that has deleted its templates fall back to the shared fenced monospace grid.
+
+**Per-platform files remain a valid, optional project override.** A project may still ship `templates/notifications/<platform>/<event>.md` to hand-tune one sink — Talos itself ships none. Resolution order per platform, first hit wins:
 
 | # | Looked up | Wins when |
 |---|-----------|-----------|
 | 1 | `<project>/<templates_dir>/<platform>/<event>.md` | your repo overrides one platform |
 | 2 | `<project>/<templates_dir>/<event>.md` | your repo overrides all platforms |
-| 3 | `~/.talos/<templates_dir>/<platform>/<event>.md` | shipped, platform-specific |
-| 4 | `~/.talos/<templates_dir>/<event>.md` | shipped, platform-neutral |
+| 3 | `~/.talos/<templates_dir>/<platform>/<event>.md` | shipped, platform-specific (Talos ships none by default) |
+| 4 | `~/.talos/<templates_dir>/<event>.md` | shipped, neutral |
 
 The project copy wins at **both** layers, so an existing single-level `templates/notifications/<event>.md` override keeps winning over a shipped platform template — no config change, nothing to migrate.
 
-**Adding your own:** drop a file at `templates/notifications/<platform>/<event>.md` in your repo (create the directory if it does not exist). Preview it without posting anything:
+**Adding your own:** drop a file at `templates/notifications/<event>.md` (or `templates/notifications/<platform>/<event>.md` to override one sink; create the directory if it does not exist) in your repo. Preview it without posting anything:
 
 ```bash
 bash ~/.talos/scripts/pipeline-notify.sh --render buzz qa "#42" "PASS: 3 criteria verified"
 ```
 
-`--render <platform> <event> [ref] [message]` prints the resolved template path and the exact payload that platform would send, then exits 0. It posts nothing, reads and writes no thread anchors, and ignores the `notifications.events` filter. Platform is one of `slack`, `discord`, `teams`, `buzz`, or `default` (the platform-neutral rendering `notifications.cmd` receives).
+`--render <platform> <event> [ref] [message]` prints the resolved template path and the exact payload that platform would send, then exits 0. It posts nothing, reads and writes no thread anchors, and ignores the `notifications.events` filter. It always renders the **root** form (title line + metadata) — since it touches no thread state, it has no anchor to treat as an existing thread. Platform is one of `slack`, `discord`, `teams`, `buzz`, or `default` (the neutral rendering `notifications.cmd` receives).
 
 **Role event templates** (one per agent — make up the conversation stream):
 
 | File | Event arg | Sent after |
 |------|-----------|-----------|
 | `validator.md` | `validator` | Validator returns |
+| `pm.md` | `pm` | PM posts the spec |
 | `developer.md` | `developer` | Developer opens PR |
 | `qa.md` | `qa` | QA returns |
 | `reviewer.md` | `reviewer` | Reviewer returns |
@@ -583,13 +600,12 @@ bash ~/.talos/scripts/pipeline-notify.sh --render buzz qa "#42" "PASS: 3 criteri
 
 | File | Event arg | Sent when |
 |------|-----------|-----------|
+| `dispatched.md` | `dispatched` | A stage is dispatched — icon/headline wired, but not emitted by the shipped playbook; available for custom orchestration |
 | `pr-opened.md` | `pr-opened` | PR created by developer |
 | `merged.md` | `merged` | PR merged |
 | `blocked.md` | `blocked` | Any stage sets pipeline:blocked |
 | `issue-closed.md` | `issue-closed` | Issue closed after merge |
 | `info.md` | `info` | Generic informational events |
-
-Every role file above, plus `pm.md`, `pr-opened.md`, `merged.md`, `blocked.md` and `issue-closed.md`, also ships a per-platform variant (`slack/<file>`, `discord/<file>`, `teams/<file>`, `buzz/<file>`). `dispatched.md` and `info.md` are platform-neutral only, so every sink renders them through the shared monospace grid.
 
 **Events-filter warning:** `notifications.events` defaults to unset (all events fire). If you set a list, any event not in it is **silently dropped** — no error, no log line. A lifecycle-only list like `[pr-opened, merged, blocked, issue-closed]` kills the entire conversation stream. When you need a filter, copy the full list from `talos.pipeline.yml.example` and remove only what you don't want.
 
@@ -617,7 +633,7 @@ Scripts respect these env vars, which take priority over the config file:
 
 ### Per-issue notification threading
 
-When `notifications.threading: true` (the default) and a Slack or Discord **bot token** is in use, all events for the same issue land in a single thread rather than flooding the channel as separate top-level messages. Buzz is always key-based, so it always threads when enabled — follow-ups publish as NIP-10 replies (`["e", <root-id>, "", "reply"]`) to the issue's root event.
+When `notifications.threading: true` (the default) and a Slack or Discord **bot token** is in use, all events for the same issue land in a single thread rather than flooding the channel as separate top-level messages. Buzz is always key-based, so it always threads when enabled — follow-ups publish as NIP-10 replies (`["e", <root-id>, "", "reply"]`) to the issue's root event. **Teams cannot thread at all:** delivery is incoming-webhook only, with no bot-token alternative to opt into, so every Teams event lands as a separate root card — unlike Slack, Discord, and Buzz, which all thread per issue.
 
 The orchestrator passes the issue number as the 4th argument to `pipeline-notify.sh` so that all role events and lifecycle events reply to the same root message:
 

@@ -1,5 +1,5 @@
-✅ ${PR_REF} — merged, work complete
+${HEADLINE}
 
-${MSG}
+${REF_LINK}
 
-🔗 ${PR_LINK}
+${SUMMARY}

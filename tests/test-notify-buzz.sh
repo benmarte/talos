@@ -117,10 +117,12 @@ BUZZ_RELAY_URL=ws://env-relay:3000 BUZZ_BOT_PRIVATE_KEY=deadbeef PIPELINE_ISSUE_
 assert_contains "$(tail -1 "$NAK_LOG")" "ws://env-relay:3000" "env BUZZ_RELAY_URL overrides config"
 rm talos.pipeline.json
 
-# ── GFM card: heading + body + metadata table ───────────────────────
-# Buzz renders remark-gfm, so with a templates/notifications/buzz/<event>.md in
-# play the sink emits headings and a real table — neither of which Slack's
-# mrkdwn supports (#280). Inspect the real argv via debug mode rather than the
+# ── Rich card: bold role headline + compact footer (#284) ───────────────────
+# #284 replaced the per-platform buzz/ templates and their four-row GFM table
+# with ONE neutral template — now shipped for every event, so NRICH is true
+# on every call below — rendered straight through remark-gfm (Buzz needs no
+# transpiling), plus a single compact "repo · [PR #n](url)" metadata line in
+# place of the old table. Inspect the real argv via debug mode rather than the
 # space-flattened log, so line structure is actually observable.
 buzz_card() {  # $@ = notify args; prints the rendered kind:9 body
   BUZZ_RELAY_URL=ws://localhost:3000 BUZZ_BOT_PRIVATE_KEY=deadbeef \
@@ -129,42 +131,69 @@ buzz_card() {  # $@ = notify args; prints the rendered kind:9 body
     | sed -n '/BUZZ relay/,$p' | sed 's/.*kind=9 text=//'
 }
 
-card="$(buzz_card pr-opened "#80" "body text" 80)"
+card="$(buzz_card qa "#80" "PASS: 9/9 criteria met" 80)"
 printf '%s' "$card" | grep -q '^### ' \
-  && pass "title line rendered as a GFM heading" \
-  || fail "title line rendered as a GFM heading"
-assert_contains "$card" "body text" "the message body survives into the card"
-assert_contains "$card" "| Field | Value |" "metadata rendered as a real GFM table"
-assert_contains "$card" "| Stage | pr-opened |" "stage row present in the table"
-assert_contains "$card" "| Repo | acme/widget |" "repo row uses owner/name, not the state-key slug"
-assert_contains "$card" "| Issue | [#80](" "table cells carry inline links"
-assert_not_contains "$card" "Stage    pr-opened" \
-  "no monospace grid once buzz has its own template"
+  && fail "headline is bold, not a GFM heading" \
+  || pass "headline is bold, not a GFM heading"
+assert_contains "$card" "🧪 **QA** — PASS · [#80](https://github.com/acme/widget/issues/80)" \
+  "headline carries the per-role icon/label, the lifted verdict, and a clickable ref"
+assert_contains "$card" "[#80 Fix login crash](https://github.com/acme/widget/issues/80)" \
+  "CommonMark links pass through to buzz unconverted"
+assert_contains "$card" "9/9 criteria met" "the verdict body survives into the card"
+assert_not_contains "$card" '```' "no monospace grid once a template has resolved"
 
-# The table carries the links, so the template's trailing "🔗 …" line — which
-# repeats the title already in the heading — must not survive into the card.
-if printf '%s' "$card" | grep -q '^🔗 '; then
-  fail "template link line dropped once the table carries it"
+# When no URL is resolvable at all, the ref in the headline degrades to plain
+# text rather than an empty, dangling link -- "[#87]()" would defeat the
+# _neutral_to_platform tidy-up that is supposed to catch exactly this.
+card_nourl="$(GH_FAIL_STDERR="rate limited" buzz_card qa "#87" "PASS: all good" 87)"
+assert_contains "$card_nourl" "🧪 **QA** — PASS · #87" \
+  "ref in headline stays plain text when no URL is resolvable"
+assert_not_contains "$card_nourl" "[#87]" \
+  "ref never renders as a dangling [ref]() with an empty URL"
+
+# Issue-only event: PR is not resolvable, so the footer is the repo alone —
+# no dangling "· [PR #n]" left behind by an empty variable.
+if printf '%s' "$card" | grep -qx 'acme/widget'; then
+  pass "footer degrades to a repo-only line when there is no PR"
 else
-  pass "template link line dropped once the table carries it"
+  fail "footer degrades to a repo-only line when there is no PR"
 fi
+assert_not_contains "$card" "PR #" "no PR reference when there is no PR"
 
-# An issue-only event has no PR: the row must be omitted, not rendered blank.
-card_issue="$(buzz_card validator "#81" "confirmed" 81)"
-assert_contains "$card_issue" "| Issue | [#81](" "issue-only event still gets an issue row"
-if printf '%s' "$card_issue" | grep -q '^| PR |'; then
-  fail "PR row omitted entirely when there is no PR"
-else
-  pass "PR row omitted entirely when there is no PR"
-fi
+# Event with a resolvable PR: the footer appends "· [PR #n](url)".
+card_pr="$(PIPELINE_PR=90 buzz_card pr-opened "#86" "opened" 86)"
+assert_contains "$card_pr" "acme/widget · [PR #90](https://github.com/acme/widget/pull/90)" \
+  "footer appends repo · [PR #n](url) when a PR is resolvable"
 
-# ── Fallback card: no buzz/ template → the shared monospace grid ──────────
-# `info` ships only a platform-neutral template, so Buzz falls back to the
-# fenced grid every template-less sink shows.
+# ── Long, semicolon-joined summary becomes a lead sentence + bullets ────────
+# A wall of a single 200-char line is unreadable in a chat client; only a
+# long, single-line, multi-clause summary is restructured — a short one reads
+# fine as a sentence and a multi-line one is already structured by its author.
+long_msg="FINDINGS: first clause here with some words to pad it out nicely and further; second clause also has plenty of words to pad it out nicely too; third clause finishes off the list with even more padding words added"
+card_long="$(buzz_card qa "#85" "$long_msg" 85)"
+assert_eq "2" "$(printf '%s' "$card_long" | grep -c '^- ')" \
+  "long semicolon-joined summary becomes a lead sentence plus bullets"
+
+# ── Fallback card: no template resolves → the shared monospace grid ────────
+# NRICH now means "a template resolved" — every shipped event has one, so the
+# grid only shows for a project that has deleted/misconfigured its templates
+# (or notifications.cmd). Force that by pointing templates_dir somewhere empty.
+cat > talos.pipeline.json <<'EOF'
+{"notifications": {"templates_dir": "templates/notifications-missing"}}
+EOF
 fb="$(buzz_card info "#83" "kickoff" 83)"
+printf '%s' "$fb" | grep -q '^### ' \
+  && pass "fallback card keeps the GFM heading (no template resolved)" \
+  || fail "fallback card keeps the GFM heading (no template resolved)"
 assert_contains "$fb" "Stage    info" "fallback card emits the monospace grid"
-assert_contains "$fb" "Repo     acme/widget" "fallback grid repo row uses owner/name"
+assert_contains "$fb" "Repo     acme/widget" \
+  "fallback grid repo row uses owner/name, not the state-key slug"
 assert_contains "$fb" "[Issue #83](" "fallback link row appended below the grid"
+if printf '%s' "$fb" | grep -q '^PR '; then
+  fail "fallback grid omits the PR row when there is no PR"
+else
+  pass "fallback grid omits the PR row when there is no PR"
+fi
 
 # Links must stay OUT of the fenced block — no client makes a URL clickable
 # inside a code fence, so a link there would render as dead text.
@@ -175,13 +204,16 @@ else
 fi
 
 # A long comment wraps onto continuation lines aligned under the value column
-# rather than being truncated — agent verdicts carry the actual finding.
-long="$(buzz_card info "#84" "$(printf 'x%.0s' $(seq 1 140))" 84)"
-if printf '%s' "$long" | grep -qE '^ +x+$'; then
-  pass "long comment wraps instead of truncating"
+# rather than being truncated — agent verdicts carry the actual finding. This
+# is the OLD grid's own wrapping (unchanged by #284), exercised here only
+# because the fallback path is what still uses it.
+long_grid="$(buzz_card info "#84" "$(printf 'x%.0s' $(seq 1 140))" 84)"
+if printf '%s' "$long_grid" | grep -qE '^ +x+$'; then
+  pass "long comment wraps instead of truncating in the fallback grid"
 else
-  fail "long comment wraps instead of truncating"
+  fail "long comment wraps instead of truncating in the fallback grid"
 fi
+rm talos.pipeline.json
 
 # ── Unresponsive relay is bounded, not a hang (#281) ─────────────────────────
 # A relay that never answers used to hang the $(nak …) command substitution

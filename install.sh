@@ -136,8 +136,12 @@ if [ "$GLOBAL" = "true" ]; then
       [ -f "$tmpl" ] || continue
       install_file "$tmpl" "$TALOS_HOME_DIR/templates/$dir/$(basename "$tmpl")"
     done
-    # One level deeper: notifications/<platform>/<event>.md (#280). Globbed the
-    # same way, so adding a platform needs no installer edit.
+    # One level deeper, globbed the same way so a nested template dir needs no
+    # installer edit. #280 shipped notifications/<platform>/<event>.md here;
+    # #284 flattened that back to a single notifications/<event>.md, which the
+    # file loop above already installs. Kept because the cost is one no-op glob
+    # and the alternative -- rediscovering this the next time a template dir
+    # nests -- is a silently incomplete --global install (#276).
     for sub_path in "$dir_path"*/; do
       [ -d "$sub_path" ] || continue
       sub="$(basename "$sub_path")"

@@ -11,19 +11,34 @@
 #               <ref>. Orchestrator should always pass the issue number so PR
 #               events and validator events land in the same thread.
 #
-# Templates (#280):
-#   Each sink renders its OWN template, so a platform gets its native syntax
-#   (Slack mrkdwn + Block Kit fields, Discord embed fields, a Teams FactSet,
-#   real GFM incl. tables on Buzz) instead of one shared monospace grid:
-#     <templates_dir>/<platform>/<event>.md   platform-specific, rich
-#     <templates_dir>/<event>.md              platform-neutral fallback
-#   Resolution per platform, first hit wins:
+# Templates (#280, reshaped in #284):
+#   ONE neutral template per event, written once in a small markdown dialect
+#   (**bold**, [text](url), "- " bullets, blank-line paragraphs, at most one
+#   leading "### " heading) and transpiled per sink by _neutral_to_platform():
+#     slack   **bold** -> *bold*, [text](url) -> <url|text>, "- " -> "• ",
+#             a heading becomes a bold line
+#     discord native markdown; a heading becomes a bold line (embeds have none)
+#     teams   the heading/first line is the card's Bolder TextBlock, the body a
+#             wrapping TextBlock; links stay markdown
+#     buzz    pass-through GFM
+#   Per-platform files are an OPTIONAL project override for hand-tuning one
+#   sink; Talos itself ships none. Resolution per platform, first hit wins:
 #     project/<platform>/<event>.md -> project/<event>.md
 #       -> install/<platform>/<event>.md -> install/<event>.md
 #   The project copy wins at BOTH layers, so a repo that already overrides
 #   <templates_dir>/<event>.md keeps winning over a shipped platform file.
-#   A sink with no platform template (and notifications.cmd, which never gets
-#   one) falls back to the monospace grid.
+#   A sink is "rich" (native metadata instead of the monospace grid) whenever a
+#   template resolved at all. The grid remains only for notifications.cmd and
+#   for a project that has deleted its templates.
+#
+#   Layout every template follows (#284):
+#     line 1  ${HEADLINE}  — "🧪 **QA** — PASS · #42": which agent, then its
+#             verdict (or, with no verdict token, what it did)
+#     line 2  ${REF_LINK}  — the title, ONCE; dropped automatically on thread
+#             replies, where the root above already carries it
+#     body    ${SUMMARY}   — never fenced
+#     footer  native fields on slack/discord/teams; one compact
+#             "repo · [PR #n](url)" line on buzz
 #
 #   --render <platform> <event> prints the payload that platform would send and
 #   exits 0 without posting or touching thread state. Platform is one of
@@ -248,6 +263,24 @@ if [ -z "$_NOTIFY_REPO" ]; then
     | sed 's|.*github\.com[:/]||; s|\.git$||' || true)"
 fi
 
+# Repo slug: namespaces thread anchors so multiple repos don't collide, and is
+# the fallback for ${REPO} when the owner/name lookup finds nothing. Derived
+# here rather than further down because the template layer (#284) needs it.
+REPO_SLUG="$(git -C "$PWD" remote get-url origin 2>/dev/null \
+  | python3 -c "
+import sys, re
+url = sys.stdin.read().strip()
+url = re.sub(r'\.git$', '', url)
+url = re.sub(r'^https?://(www\.)?', '', url)
+url = re.sub(r'^git@([^:]+):', r'\1/', url)
+parts = [p for p in url.split('/') if p]
+print('-'.join(parts[-2:]) if len(parts) >= 2 else url.replace('/', '-'))
+" 2>/dev/null)" || true
+[ -z "${REPO_SLUG:-}" ] && REPO_SLUG="default"
+
+# ${REPO} (#284): the owner/name a human recognises, for the compact footer.
+REPO="${_NOTIFY_REPO:-$REPO_SLUG}"
+
 # Board name (owner-repo). Override with PIPELINE_BOARD.
 BOARD="${PIPELINE_BOARD:-}"
 [ -z "$BOARD" ] && BOARD="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null | tr '/' '-')"
@@ -264,7 +297,10 @@ if [ -z "$TITLE" ] && [ -n "$_num" ]; then
   fi
 fi
 REF_DISP="${REF:-#$_num}"
-if [ -n "$TITLE" ]; then REF_TITLE="$REF_DISP: $TITLE"; else REF_TITLE="$REF_DISP"; fi
+# "#42 Fix login crash", not "#42: Fix login crash" (#284): the title line is
+# read as one phrase now that it appears exactly once, and the colon read as a
+# label separator against the verdict-first headline above it.
+if [ -n "$TITLE" ]; then REF_TITLE="$REF_DISP $TITLE"; else REF_TITLE="$REF_DISP"; fi
 
 # PR number + title. Prefer PIPELINE_PR/PIPELINE_PR_TITLE; else parse MSG, then fetch.
 PR="${PIPELINE_PR:-}"
@@ -325,10 +361,147 @@ case "$EVENT" in
   security)     ICON="🔐" ;;
   docs)         ICON="📚" ;;
   orchestrator) ICON="🤖" ;;
+  dispatched)   ICON="🧵" ;;
   *)            ICON="ℹ️"  ;;
 esac
 
 TEXT_PLAIN="$ICON [talos] $EVENT $REF — $MSG${PRIMARY_URL:+ ($PRIMARY_URL)}"
+
+# $MSG is caller-supplied, and when no template resolves this line is what the
+# sinks render: on Slack/Discord immediately above the monospace grid's literal
+# triple-backtick fence, on Buzz inside the "### " heading directly above it.
+# A bare 3+ backtick run in it therefore closes that fence early and renders
+# everything after as arbitrary markdown -- the same break-out that
+# _build_grid's cell() and _tmpl_render()'s defuse() already close for every
+# other value, left open on the one path meant to be the safe default. Split
+# the run with zero-width spaces: it reads the same and no longer delimits.
+# Written \x60 because a literal backtick inside $( … ) is command
+# substitution to bash and breaks the parse of the whole file.
+TEXT_PLAIN="$(TP="$TEXT_PLAIN" python3 -c 'import os,re,sys; sys.stdout.write(re.sub(r"\x60{3,}", lambda m: chr(0x200b).join(m.group(0)), os.environ["TP"]))' 2>/dev/null || printf '%s' "$TEXT_PLAIN")"
+
+# ── Verdict-first headline (#284) ────────────────────────────────────────────
+# Agents open their message with a verdict token ("PASS: 9/9 criteria…",
+# "FINDINGS — High: …"). Buried mid-paragraph it is unreadable in a channel, so
+# the token is lifted out of ${MSG} into ${VERDICT} and the remainder becomes
+# ${SUMMARY}. When nothing matches, ${VERDICT} is empty and ${SUMMARY} is the
+# whole message, unchanged.
+#
+# WHO said it comes first: in a thread carrying eight stages, the reader's
+# first question is which agent is speaking, and a bare verdict token does not
+# answer it. ${ROLE_ICON}/${ROLE_LABEL} are a fixed per-role pair so the same
+# agent always looks the same; every lifecycle event is Talos itself speaking.
+case "$EVENT" in
+  validator)          ROLE_ICON="🔎"; ROLE_LABEL="Validator" ;;
+  pm)                 ROLE_ICON="📝"; ROLE_LABEL="PM" ;;
+  developer)          ROLE_ICON="🛠"; ROLE_LABEL="Developer" ;;
+  qa)                 ROLE_ICON="🧪"; ROLE_LABEL="QA" ;;
+  reviewer)           ROLE_ICON="👀"; ROLE_LABEL="Reviewer" ;;
+  security)           ROLE_ICON="🔐"; ROLE_LABEL="Security" ;;
+  docs|documentation) ROLE_ICON="📚"; ROLE_LABEL="Docs" ;;
+  planner)            ROLE_ICON="🗺"; ROLE_LABEL="Planner" ;;
+  adversarial)        ROLE_ICON="😈"; ROLE_LABEL="Adversarial" ;;
+  *)                  ROLE_ICON="🤖"; ROLE_LABEL="Talos" ;;
+esac
+
+# What that agent DID, used when the message carries no verdict token.
+case "$EVENT" in
+  pr-opened)          NACTION="PR opened" ;;
+  merged)             NACTION="merged" ;;
+  blocked)            NACTION="blocked" ;;
+  issue-closed)       NACTION="issue closed" ;;
+  dispatched)         NACTION="dispatched" ;;
+  info)               NACTION="info" ;;
+  pm)                 NACTION="spec posted" ;;
+  docs|documentation) NACTION="docs updated" ;;
+  *)                  NACTION="update" ;;
+esac
+
+# Emits the verdict on line 1 and the summary (which may itself be multi-line)
+# from line 2 on.
+_VERDICT_SPLIT="$(MSG="$MSG" python3 - <<'PY'
+import os, re
+
+TOKENS = (
+    'RESTAMP_PASS', 'RESTAMP_FAIL', 'CONFIRMED', 'APPROVED', 'FINDINGS',
+    'CHANGES', 'BLOCKED', 'MERGED', 'CLOSED', 'CLEAR', 'PASS', 'FAIL', 'DONE',
+)
+msg = os.environ.get('MSG', '')
+# Separator set is deliberately narrow: ":" (optionally spaced), " — ", " - ".
+# "PASSING the baton" must not read as a PASS verdict, and neither must
+# "FAIL-safe defaults" — hence the required space around the dashes.
+m = re.match(
+    r'^[ \t]*(' + '|'.join(TOKENS) + r')(?:[ \t]*:|[ \t]+[—-])[ \t]*(.*)$',
+    msg, re.S | re.I)
+if m:
+    verdict, summary = m.group(1).upper(), m.group(2)
+else:
+    verdict, summary = '', msg
+summary = summary.strip()
+
+# Readability: one unbroken 200-character line of semicolon-joined clauses is a
+# wall of text in a chat client. Long, single-line, multi-clause summaries only
+# — a short one reads fine as a sentence and a multi-line one is already
+# structured by its author.
+if '\n' not in summary and len(summary) > 160 and summary.count('; ') >= 2:
+    lead, _, rest = summary.partition('; ')
+    summary = lead + '\n\n' + '\n'.join('- ' + s for s in rest.split('; '))
+
+print(verdict)
+print(summary)
+PY
+)"
+VERDICT="$(printf '%s\n' "$_VERDICT_SPLIT" | head -1)"
+SUMMARY="$(printf '%s\n' "$_VERDICT_SPLIT" | tail -n +2)"
+unset _VERDICT_SPLIT
+
+# "blocked" is posted by the orchestrator on behalf of whichever stage stopped,
+# and that stage is the single most useful word in the message. The convention
+# is a leading "<stage>: " in MSG; lift it into the headline and out of the body.
+if [ "$EVENT" = "blocked" ] && [ -z "$VERDICT" ]; then
+  _BLOCKER="$(SUMMARY="$SUMMARY" python3 - <<'PY'
+import os, re
+STAGES = ('validator', 'pm', 'developer', 'qa', 'reviewer', 'security',
+          'docs', 'planner', 'adversarial', 'orchestrator')
+m = re.match(r'^[ \t]*(' + '|'.join(STAGES) + r')[ \t]*:[ \t]*(.*)$',
+             os.environ.get('SUMMARY', ''), re.S | re.I)
+print(m.group(1).lower() if m else '')
+print(m.group(2).strip() if m else os.environ.get('SUMMARY', ''))
+PY
+)"
+  _BLOCKER_STAGE="$(printf '%s\n' "$_BLOCKER" | head -1)"
+  if [ -n "$_BLOCKER_STAGE" ]; then
+    NACTION="blocked by $_BLOCKER_STAGE"
+    SUMMARY="$(printf '%s\n' "$_BLOCKER" | tail -n +2)"
+  fi
+  unset _BLOCKER _BLOCKER_STAGE
+fi
+
+# A PR event's message is boilerplate ("PR https://…/pull/282 opened"); the PR
+# title is the line a human actually reads. The URL keeps its place in the
+# footer/fields, so nothing is lost. No title resolved => keep the message.
+case "$EVENT" in
+  pr-opened|merged|issue-closed) [ -n "$PR_TITLE" ] && SUMMARY="$PR_TITLE" ;;
+esac
+
+# ${HEADLINE} is line 1, assembled here rather than in each template: the
+# verdict-or-action branch is exactly the kind of thing 14 template files would
+# get subtly wrong.
+#
+# The ref carries the link. ${REF_LINK} is a title line and so belongs to the
+# thread root only, and a reply also drops the metadata block — which together
+# left a "PR opened"/"merged" reply with no route to the PR at all. Linking the
+# ref restores click-through on every message without adding a line.
+#
+# Built here rather than as "[$REF]($PRIMARY_URL)" in the neutral text because
+# _neutral_to_platform() DELETES " · [text]()" outright (that is what makes an
+# absent ${PR} vanish cleanly from a template); the ref must degrade to plain
+# text instead of disappearing, so the empty-URL case never reaches the tidier.
+if [ -n "$PRIMARY_URL" ]; then
+  HEADLINE_REF="[$REF]($PRIMARY_URL)"
+else
+  HEADLINE_REF="$REF"
+fi
+HEADLINE="$ROLE_ICON **$ROLE_LABEL** — ${VERDICT:-$NACTION}${REF:+ · $HEADLINE_REF}"
 
 # ── Template resolution (#280) ───────────────────────────────────────────────
 # Templates live in two layers under <templates_dir>:
@@ -392,8 +565,10 @@ _tmpl_render() {  # $1=template path; prints the rendered text
     PR="$PR" PR_TITLE="$PR_TITLE" PR_REF="$PR_REF" BOARD="$BOARD" \
     ISSUE_URL="$ISSUE_URL" PR_URL="$PR_URL" \
     REF_LINK="$REF_LINK" PR_LINK="$PR_LINK" \
+    VERDICT="$VERDICT" SUMMARY="$SUMMARY" HEADLINE="$HEADLINE" \
+    ROLE_ICON="$ROLE_ICON" ROLE_LABEL="$ROLE_LABEL" REPO="$REPO" \
     python3 -c "
-import os, string, sys
+import os, re, string, sys
 # Only the documented variables (README 'Notification templates' table) are
 # substituted. Handing safe_substitute() the whole of os.environ would render
 # any exported secret a template happens to name -- \${SLACK_WEBHOOK_URL},
@@ -403,13 +578,28 @@ import os, string, sys
 DOCUMENTED = (
     'ICON', 'REF', 'MSG', 'EVENT', 'ROLE', 'TITLE', 'REF_TITLE',
     'PR', 'PR_TITLE', 'PR_REF', 'BOARD', 'ISSUE_URL', 'PR_URL',
-    'REF_LINK', 'PR_LINK',
+    'REF_LINK', 'PR_LINK', 'VERDICT', 'SUMMARY', 'HEADLINE',
+    'ROLE_ICON', 'ROLE_LABEL', 'REPO',
 )
+
+
+def defuse(v):
+    # Values carry externally-influenced text (issue titles, agent verdicts).
+    # A run of 3+ backticks at the head of a line opens or closes a fence, so a
+    # title carrying one could swallow the rest of the message -- or escape the
+    # fence the monospace-grid fallback still puts it in -- and render as
+    # arbitrary markdown in the pipeline's own stream. Split the run with
+    # zero-width spaces: it reads the same and no longer delimits. Written
+    # \x60 because a literal backtick inside this double-quoted string is
+    # command substitution to bash.
+    return re.sub(r'\x60{3,}', lambda m: '​'.join(m.group(0)), v)
+
+
 try:
     with open(sys.argv[1]) as f:
         t = string.Template(f.read())
     result = t.safe_substitute(
-        {k: os.environ.get(k, '') for k in DOCUMENTED}).strip()
+        {k: defuse(os.environ.get(k, '')) for k in DOCUMENTED}).strip()
     if result:
         print(result)
 except Exception:
@@ -418,28 +608,80 @@ except Exception:
 }
 
 # _render_template <platform> — sets NTMPL (resolved path, empty if none),
-# NTEXT (rendered text; plain-text fallback when nothing renders) and NRICH
-# (1 only when the winning file is that platform's OWN template, which is the
-# signal each sink uses to render metadata natively instead of the monospace
-# grid).
+# NTEXT (rendered text; plain-text fallback when nothing renders) and NRICH.
+#
+# NRICH means "a template resolved" (#284) — neutral or per-platform override —
+# not "a platform-specific file was hit". One neutral template now renders rich
+# on every sink, so every sink with a template gets native metadata; only a
+# project that has deleted its templates falls back to the monospace grid.
 _render_template() {  # $1=platform ("" = neutral)
   NTMPL="$(_tmpl_resolve "${1:-}")" || NTMPL=""
   NRICH=0
   NTEXT=""
   if [ -n "$NTMPL" ]; then
     NTEXT="$(_tmpl_render "$NTMPL")"
-    if [ -n "${1:-}" ] && [ -n "$NTEXT" ] && [ "$NTMPL" != "${NTMPL%/$1/$EVENT.md}" ]; then
-      NRICH=1
-    fi
+    [ -n "$NTEXT" ] && NRICH=1
   fi
   [ -n "$NTEXT" ] || NTEXT="$TEXT_PLAIN"
+}
+
+# _neutral_to_platform <platform> <text> — the transpiler (#284).
+#
+# Templates are authored once in a small neutral dialect; this is the single
+# place it becomes each sink's native syntax. Applied to the rendered text
+# right before a payload builder consumes it, and to ${REF_LINK}/${PR_LINK} so
+# _prepare_sink can recognise the title line it must drop on replies.
+#
+# It also tidies what an unavailable variable leaves behind — an empty link
+# target, a dangling " · " separator, an empty bold run — so a template needs
+# no conditionals: "[PR ${PR}](${PR_URL})" simply disappears when there is no
+# PR, and "${REF_LINK}" degrades to plain text when no URL was detectable.
+_neutral_to_platform() {  # $1=platform ("" = neutral pass-through), $2=text
+  NP_PLATFORM="${1:-}" NP_TEXT="$2" python3 - <<'PY'
+import os
+import re
+
+text = os.environ.get('NP_TEXT', '')
+platform = os.environ.get('NP_PLATFORM', '')
+
+# ── tidy up after empty variables ───────────────────────────────────────────
+text = re.sub(r'\[[ \t]+', '[', text)
+text = re.sub(r'[ \t]+\]\(', '](', text)
+text = re.sub(r'[ \t]*·[ \t]*\[[^\]\n]*\]\([ \t]*\)', '', text)
+text = re.sub(r'\[[^\]\n]*\]\([ \t]*\)[ \t]*·[ \t]*', '', text)
+text = re.sub(r'\[[ \t]*\]\([^)\n]*\)', '', text)
+text = re.sub(r'\[([^\]\n]*)\]\([ \t]*\)', r'\1', text)   # no URL -> plain text
+text = re.sub(r'\*\*[ \t]*\*\*', '', text)                 # empty bold run
+lines = []
+for line in text.split('\n'):
+    line = re.sub(r'(?:[ \t]*·)+[ \t]*$', '', line.rstrip())
+    line = re.sub(r'^[ \t]*(?:·[ \t]*)+', '', line)
+    lines.append(line)
+text = re.sub(r'\n{3,}', '\n\n', '\n'.join(lines)).strip()
+
+# ── per-sink syntax ─────────────────────────────────────────────────────────
+if platform == 'slack':
+    # Slack mrkdwn: single-asterisk bold, <url|text> links, no headings, no
+    # markdown list syntax (a literal "- " renders as a dash).
+    text = re.sub(r'(?m)^[ \t]*#{1,6}[ \t]+(.*)$', r'*\1*', text)
+    text = re.sub(r'\*\*([^*\n]+)\*\*', r'*\1*', text)
+    text = re.sub(r'\[([^\]\n]+)\]\(([^)\n]+)\)', r'<\2|\1>', text)
+    text = re.sub(r'(?m)^([ \t]*)[-*][ \t]+', r'\1• ', text)
+elif platform in ('discord', 'teams'):
+    # Both render CommonMark bold, links and "- " lists natively; neither
+    # renders a heading inside an embed / Adaptive Card TextBlock.
+    text = re.sub(r'(?m)^[ \t]*#{1,6}[ \t]+(.*)$', r'**\1**', text)
+# discord/teams/buzz keep the rest verbatim; buzz renders the dialect as-is.
+
+print(text)
+PY
 }
 
 # TEXT is the platform-NEUTRAL rendering and stays fixed for the whole run:
 # notifications.cmd receives it verbatim, and it is what any sink falls back
 # to when no template resolves at all.
 _render_template ""
-TEXT="$NTEXT"
+TEXT="$(_neutral_to_platform "" "$NTEXT")"
 
 json_escape() { python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"; }
 PAYLOAD_TEXT="$(json_escape "$TEXT")"
@@ -447,19 +689,6 @@ PAYLOAD_TEXT="$(json_escape "$TEXT")"
 # ── Threading setup ───────────────────────────────────────────────────────────
 THREADING_ENABLED="$(cfg notifications.threading "true")"
 STATE_FILE="${PIPELINE_THREAD_STATE:-$HOME/.talos/threads.json}"
-
-# Repo slug: namespaces thread anchors so multiple repos don't collide.
-REPO_SLUG="$(git -C "$PWD" remote get-url origin 2>/dev/null \
-  | python3 -c "
-import sys, re
-url = sys.stdin.read().strip()
-url = re.sub(r'\.git$', '', url)
-url = re.sub(r'^https?://(www\.)?', '', url)
-url = re.sub(r'^git@([^:]+):', r'\1/', url)
-parts = [p for p in url.split('/') if p]
-print('-'.join(parts[-2:]) if len(parts) >= 2 else url.replace('/', '-'))
-" 2>/dev/null)" || true
-[ -z "${REPO_SLUG:-}" ] && REPO_SLUG="default"
 
 STATE_KEY="${REPO_SLUG}:${THREAD_KEY}"
 
@@ -574,15 +803,13 @@ PY
 )"
 
 # ── Per-sink rendering ───────────────────────────────────────────────────────
-# Two body variants, because only the card carries the metadata.
+# Two body variants, because the title belongs to the thread ROOT only (#284).
 #
-# NBODY keeps the template's trailing "🔗 …" line and is used for thread
-# REPLIES, where that link is the only one in the message. NBODY_CARD drops it
-# and is used for ROOT posts, where it would merely repeat the PR/issue link
-# already in the fields; NTEXT_CARD is the same strip over the whole text,
-# title line included, for sinks that emit the template verbatim. Each template
-# spells the line exactly "🔗 ${PR_LINK}" or "🔗 ${REF_LINK}", so matching the
-# prefix is a defined rule, not a guess.
+# NBODY is the root form and carries the title line. NBODY_REPLY drops it: a
+# reply lands under a root that already shows "#42 Fix login crash", and
+# repeating it on every stage is what made a live thread unreadable. The title
+# line is spelled exactly "${REF_LINK}" (or "${PR_LINK}") in every template, so
+# matching the rendered value of those variables is a defined rule, not a guess.
 
 # _build_grid — the shared monospace grid. Since #280 it is the FALLBACK
 # rendering: it is what notifications.cmd sees, and what a sink shows when no
@@ -597,7 +824,7 @@ PY
 # NOT put in here — no platform makes a URL clickable inside a code block — so
 # each sink appends its own link line underneath in its own syntax.
 _build_grid() {
-  NGRID="$(NFIELDS="$NFIELDS" NBODY_CARD="$NBODY_CARD" python3 - <<'PY'
+  NGRID="$(NFIELDS="$NFIELDS" NBODY_REPLY="$NBODY_REPLY" NPRIMARY_URL="$PRIMARY_URL" python3 - <<'PY'
 import json, os, re, textwrap
 
 
@@ -618,7 +845,20 @@ def cell(s):
 
 
 rows = []
-comment = cell(os.environ.get('NBODY_CARD', ''))
+# On the template-less path the comment IS ${TEXT_PLAIN}, which the script
+# builds with a trailing " (<primary url>)". That would put a URL inside the
+# fence -- inert there, and already repeated as the clickable link line each
+# sink appends underneath -- breaking the no-links invariant of this block
+# using text the script itself generated rather than anything a caller sent.
+# Strip exactly that suffix. A URL an agent wrote into its own message is left
+# alone, since dropping part of a verdict is the failure this grid refuses to
+# make. (No apostrophes in this block: a literal one inside the enclosing
+# $( ... ) breaks the parse of the whole file -- see _bt_fence below.)
+_comment = os.environ.get('NBODY_REPLY', '')
+_purl = os.environ.get('NPRIMARY_URL', '')
+if _purl:
+    _comment = re.sub(r'\s*\(' + re.escape(_purl) + r'\)\s*$', '', _comment)
+comment = cell(_comment)
 if comment:
     rows.append(("Comment", comment))
 for f in json.loads(os.environ.get('NFIELDS') or '[]'):
@@ -635,49 +875,62 @@ PY
 )"
 }
 
-# _gfm_table — the same metadata as a real GFM table. Buzz renders remark-gfm,
-# so it gets the table the monospace grid was standing in for; the other three
-# sinks have no table syntax and use their own native field constructs instead.
-_gfm_table() {
-  NFIELDS="$NFIELDS" python3 - <<'PY'
-import json, os, re
+# _buzz_footer — the compact metadata line Buzz gets instead of a table (#284).
+#
+# A "| Field | Value |" table for four short values is a heavy construct in a
+# chat client; the same information reads as one dim line under the message.
+# Slack/Discord/Teams keep their native field blocks, which lay out on their
+# own. Values are externally influenced, so pipes/backticks/newlines are
+# neutralised exactly as the table's cell() did — GFM is still GFM.
+_buzz_footer() {
+  NF_REPO="$REPO" NF_PR="${PR:-}" NF_PR_URL="${PR_URL:-}" \
+    python3 - <<'PY'
+import os
+import re
 
 
 def cell(s):
-    # Cell values carry externally-influenced text (repo slug, stage, ref).
-    # A GFM row ends at a newline and a cell at an unescaped "|", so either
-    # one would inject extra rows/cells and let that text spoof the metadata
-    # a human reviewer reads. Backslashes first, so the value's own "\"
-    # cannot escape the escape; backticks so it cannot open a code span.
-    s = re.sub(r'\s*[\r\n]+\s*', ' ', str(s))
-    return s.replace('\\', '\\\\').replace('|', '\\|').replace('`', '\\`')
+    s = re.sub(r'\s*[\r\n]+\s*', ' ', str(s)).strip()
+    return s.replace('\\', '\\\\').replace('|', '\\|').replace('\x60', "'")
 
 
-rows = json.loads(os.environ.get('NFIELDS') or '[]')
-if rows:
-    print("| Field | Value |")
-    print("| --- | --- |")
-    for f in rows:
-        v = cell(f["text"])
-        if f.get("url"):
-            v = "[{}]({})".format(v, cell(f["url"]).replace(' ', '%20'))
-        print("| {} | {} |".format(cell(f["label"]), v))
+e = os.environ
+# The role is on line 1 now, so the footer is just where the work lives.
+parts = [p for p in (cell(e['NF_REPO']),) if p]
+if e['NF_PR']:
+    pr = 'PR #' + cell(e['NF_PR'])
+    url = cell(e['NF_PR_URL']).replace(' ', '%20')
+    parts.append('[{}]({})'.format(pr, url) if url else pr)
+if parts:
+    print(' \u00b7 '.join(parts))
 PY
 }
 
-# _prepare_sink <platform> — render that platform's template and derive every
-# N* variable its payload builder reads. Called once per sink: the four
-# platforms no longer share one rendered string (#280). Pass "" for the
-# platform-neutral rendering.
+# _prepare_sink <platform> — resolve and render the ONE neutral template,
+# transpile it for this sink, and derive every N* variable its payload builder
+# reads. Called once per sink. Pass "" for the platform-neutral rendering
+# (which is what notifications.cmd receives).
 _prepare_sink() {
   _render_template "${1:-}"
+  NTEXT="$(_neutral_to_platform "${1:-}" "$NTEXT")"
   NTITLE="$(printf '%s\n' "$NTEXT" | head -1)"
   NBODY="$(printf '%s\n' "$NTEXT" | tail -n +2 | sed '/./,$!d')"
   [ -z "$NBODY" ] && NBODY="$NTITLE"
-  NBODY_CARD="$(printf '%s\n' "$NBODY" | grep -v '^🔗 ' | sed '/./,$!d')"
-  [ -z "$NBODY_CARD" ] && NBODY_CARD="$NTITLE"
-  NTEXT_CARD="$(printf '%s\n' "$NTEXT" | grep -v '^🔗 ' | sed '/./,$!d')"
-  [ -z "$NTEXT_CARD" ] && NTEXT_CARD="$NTITLE"
+  # Thread replies drop the title line: the root already carries it. The line
+  # is exactly the rendered ${REF_LINK} / ${PR_LINK}, transpiled the same way,
+  # so this is an equality test rather than a heuristic.
+  _ps_ref="$(_neutral_to_platform "${1:-}" "$REF_LINK")"
+  _ps_pr="$(_neutral_to_platform "${1:-}" "$PR_LINK")"
+  NBODY_REPLY="$(printf '%s\n' "$NBODY" \
+    | { [ -n "$_ps_ref" ] && grep -vxF "$_ps_ref" || cat; } \
+    | { [ -n "$_ps_pr" ] && grep -vxF "$_ps_pr" || cat; } \
+    | sed '/./,$!d')"
+  [ -z "$NBODY_REPLY" ] && NBODY_REPLY="$NTITLE"
+  NTEXT_REPLY="$NTITLE"
+  [ "$NBODY_REPLY" != "$NTITLE" ] && NTEXT_REPLY="$NTITLE
+
+$NBODY_REPLY"
+  unset _ps_ref _ps_pr
   _build_grid
 }
 
@@ -687,32 +940,35 @@ _prepare_sink() {
 _prepare_sink ""
 
 _slack_payload() {  # $1=thread_ts (may be empty) $2=mode: bot|webhook
-  NTITLE="$NTITLE" NBODY="$NBODY" NBODY_CARD="$NBODY_CARD" NCTX="$NCONTEXT" NCOLOR="$NCOLOR" \
+  NTITLE="$NTITLE" NBODY="$NBODY" NBODY_REPLY="$NBODY_REPLY" NCTX="$NCONTEXT" NCOLOR="$NCOLOR" \
   NFIELDS="$NFIELDS" NGRID="$NGRID" NRICH="$NRICH" \
   NCHANNEL="$SLACK_CHANNEL" NTHREAD="$1" NMODE="$2" python3 - <<'PY'
 import json, os, re
 raw_title = os.environ['NTITLE']
-title = re.sub(r'[*_`]', '', raw_title).strip()   # plain text for notification/fallback
+# Plain text for the notification preview and the attachment fallback. The
+# headline's ref is a link by the time it gets here, and neither field renders
+# markup, so unwrap <url|text> to text before stripping emphasis — otherwise a
+# push notification reads "... · <https://github.com/o/r/pull/9|#42>".
+title = re.sub(r'<[^|>\s]+\|([^>]*)>', r'\1', raw_title)
+title = re.sub(r'[*_`]', '', title).strip()
 # A post with no thread anchor is the first message for this issue — the root —
 # and carries the full metadata card. Replies stay light so a thread does not
 # repeat the same PR/Issue/Repo block on every stage. Recovery reposts pass an
 # empty anchor and are correctly treated as new roots.
 is_root = not os.environ['NTHREAD']
-body  = os.environ['NBODY_CARD'] if is_root else os.environ['NBODY']
+# The title line belongs to the root only (#284); a reply drops it.
+body = os.environ['NBODY'] if is_root else os.environ['NBODY_REPLY']
 # Daedalus-style: one cohesive markdown message, NOT a heavy Slack header block.
+# Already transpiled to mrkdwn by _neutral_to_platform().
 full = raw_title
 if body and body.strip() and body.strip() != raw_title.strip():
     full = raw_title + "\n\n" + body
-# Slack mrkdwn uses *single* asterisks for bold and <url|text> links.
-# Templates author in daedalus/CommonMark style (**bold**, [text](url)); convert.
-full = re.sub(r'\*\*([^*\n]+)\*\*', r'*\1*', full)          # **bold** -> *bold*
-full = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<\2|\1>', full)  # [text](url) -> <url|text>
-# Root with a slack/ template (#280): the template's own mrkdwn, then the
-# metadata as a native Block Kit `fields` section — a two-column label/value
-# grid Slack lays out itself, with each link in Slack's <url|text> syntax.
-# Root WITHOUT one: the shared monospace grid (which already carries the
-# comment), then a clickable link row — URLs are inert inside a code block, so
-# they live underneath it. Replies keep the plain title+body rendering.
+# Root with a template: its own mrkdwn, then the metadata as a native Block Kit
+# `fields` section — a two-column label/value grid Slack lays out itself, with
+# each link in Slack's <url|text> syntax. Root WITHOUT one: the shared
+# monospace grid (which already carries the comment), then a clickable link row
+# — URLs are inert inside a code block, so they live underneath it. Replies
+# keep the plain title+body rendering.
 rich = os.environ.get('NRICH') == '1'
 grid = os.environ.get('NGRID', '')
 fields = json.loads(os.environ.get('NFIELDS') or '[]')
@@ -738,7 +994,6 @@ else:
         if links:
             parts.append(" · ".join(links))
         full = "\n".join(parts)
-        full = re.sub(r'\*\*([^*\n]+)\*\*', r'*\1*', full)
     blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": full[:3000]}})
 blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": os.environ['NCTX']}]})
 p = {
@@ -750,21 +1005,24 @@ if os.environ['NMODE'] == 'bot':
     p["channel"] = os.environ['NCHANNEL']
     if os.environ['NTHREAD']:
         p["thread_ts"] = os.environ['NTHREAD']
-print(json.dumps(p))
+print(json.dumps(p, ensure_ascii=False))
 PY
 }
 
 _discord_payload() {  # $1=anchor msg id (may be empty) $2=mode: bot|webhook
-  NTITLE="$NTITLE" NBODY="$NBODY" NBODY_CARD="$NBODY_CARD" NCTX="$NCONTEXT" NCOLOR_INT="$NCOLOR_INT" \
+  NTITLE="$NTITLE" NBODY="$NBODY" NBODY_REPLY="$NBODY_REPLY" NCTX="$NCONTEXT" NCOLOR_INT="$NCOLOR_INT" \
   NFIELDS="$NFIELDS" NGRID="$NGRID" NRICH="$NRICH" \
   NURL="$PRIMARY_URL" NANCHOR="$1" NMODE="$2" python3 - <<'PY'
 import json, os, re
-title = re.sub(r'[*_`]', '', os.environ['NTITLE']).strip()
+# A Discord embed `title` is plain text -- it renders neither bold nor links --
+# so unwrap [text](url) to text before stripping emphasis, or the linked ref
+# would show as raw markdown in the title.
+title = re.sub(r'\[([^\]\n]*)\]\([^)\n]*\)', r'\1', os.environ['NTITLE'])
+title = re.sub(r'[*_`]', '', title).strip()
 # No anchor => first message for this issue => full metadata card; replies light.
 is_root = not os.environ['NANCHOR']
-_raw_body = os.environ['NBODY_CARD'] if is_root else os.environ['NBODY']
-# Discord bold is **…**; templates use Slack-style single *…* — upconvert.
-body = re.sub(r'(?<!\*)\*([^*\n]+)\*(?!\*)', r'**\1**', _raw_body)
+# The title line belongs to the root only (#284); a reply drops it.
+body = os.environ['NBODY'] if is_root else os.environ['NBODY_REPLY']
 p = {
     "embeds": [{
         "title": title[:256],
@@ -804,7 +1062,7 @@ if os.environ.get('NURL'):
     p["embeds"][0]["url"] = os.environ['NURL']
 if os.environ['NMODE'] == 'bot' and os.environ['NANCHOR']:
     p["message_reference"] = {"message_id": os.environ['NANCHOR'], "fail_if_not_exists": False}
-print(json.dumps(p))
+print(json.dumps(p, ensure_ascii=False))
 PY
 }
 
@@ -815,7 +1073,7 @@ PY
 # payload rather than a text approximation; Teams cannot thread, so every post
 # is a root card.
 _teams_payload() {
-  NTITLE="$NTITLE" NBODY_CARD="$NBODY_CARD" NGRID="$NGRID" NRICH="$NRICH" \
+  NTITLE="$NTITLE" NBODY="$NBODY" NGRID="$NGRID" NRICH="$NRICH" \
   NCTX="$NCONTEXT" NFIELDS="$NFIELDS" python3 - <<'PY'
 import json, os
 # With a teams/ template (#280): title, body, then the metadata as a native
@@ -831,7 +1089,7 @@ title = os.environ['NTITLE']
 body = [{"type": "TextBlock", "wrap": True, "weight": "Bolder", "size": "Medium",
          "text": title}]
 if rich:
-    text = os.environ.get('NBODY_CARD', '')
+    text = os.environ.get('NBODY', '')
     if text and text.strip() != title.strip():
         body.append({"type": "TextBlock", "wrap": True, "text": text})
     facts = [
@@ -860,41 +1118,31 @@ print(json.dumps({
         "contentType": "application/vnd.microsoft.card.adaptive",
         "content": {"type": "AdaptiveCard", "version": "1.4", "body": body},
     }],
-}))
+}, ensure_ascii=False))
 PY
 }
 
 # _buzz_text <anchor> — the kind:9 body Buzz publishes.
 #
-# Buzz renders GitHub-Flavored Markdown (remark-gfm + remark-breaks), so it
-# supports headings and tables — neither of which Slack's mrkdwn can do. With a
-# buzz/ template (#280) the root card is the template's own GFM plus a real
-# metadata table; without one it falls back to the monospace grid every other
-# template-less sink shows.
+# Buzz renders GitHub-Flavored Markdown (remark-gfm + remark-breaks), so the
+# neutral dialect goes out verbatim — bold, links and "- " bullets all render.
+# With a template in play the root post is that rendering plus one compact
+# footer line (#284: a four-row "| Field | Value |" table was a heavy construct
+# for four short values); without one it falls back to the monospace grid every
+# other template-less sink shows.
 #
-# The metadata replaces the template's trailing "🔗 …" line, which would
-# otherwise repeat the PR/issue title already shown in the heading (see
-# NTEXT_CARD in _prepare_sink).
-#
-# Rows are emitted only when they have a value — a fixed row set would render
-# empty cells for issue-only events, which have no PR. Severity stays in the
-# per-event emoji the templates already carry: GFM has no colour, and spelling
-# out BLOCKED would only duplicate the icon.
-#
-# Root posts get the full card; replies stay light so a thread does not repeat
-# the same PR/Issue/Repo block under every stage. The anchor is the signal:
-# absent => this is the first message for the issue.
+# Root posts get the footer; replies stay light — they carry neither the title
+# line nor the footer, because the root above them already does. The anchor is
+# the signal: absent => this is the first message for the issue.
 _buzz_text() {  # $1=anchor event id (may be empty)
   if [ -n "${1:-}" ]; then
-    # Light reply: the rendered template as-is, keeping its "🔗 …" line, which
-    # is the only link a reply carries.
-    printf '%s' "$NTEXT"
+    printf '%s' "$NTEXT_REPLY"
     return 0
   fi
   if [ "$NRICH" = "1" ]; then
-    _bt_table="$(_gfm_table)"
-    printf '%s\n' "$NTEXT_CARD"
-    [ -n "$_bt_table" ] && printf '\n%s\n' "$_bt_table"
+    _bt_footer="$(_buzz_footer)"
+    printf '%s\n' "$NTEXT"
+    [ -n "$_bt_footer" ] && printf '\n%s\n' "$_bt_footer"
     return 0
   fi
   _bt_links="$(NFIELDS="$NFIELDS" python3 - <<'PY'
@@ -1061,7 +1309,11 @@ elif [ -n "${DISCORD_BOT_TOKEN:-}" ] && [ -n "$DISCORD_CHANNEL" ]; then
             _thread_state set discord_msg_id "$NEW_ID"
             # Start the thread from the root message. Thread names are capped at
             # 100 chars by Discord and rejected outright if longer.
-            _dc_name="$(printf '%s' "${REF:-$EVENT}${NTITLE:+ — $NTITLE}" | tr '\n' ' ' | cut -c1-95)"
+            # A Discord thread name is plain text, capped at 100 chars. Unwrap
+            # [text](url) first so a linked ref spends the budget on the ref,
+            # not on the URL.
+            _dc_title="$(printf '%s' "$NTITLE" | sed -E 's/\[([^]]*)\]\([^)]*\)/\1/g')"
+            _dc_name="$(printf '%s' "${REF:-$EVENT}${_dc_title:+ — $_dc_title}" | tr '\n' ' ' | cut -c1-95)"
             _dc_body="$(NAME="$_dc_name" python3 -c 'import json,os; print(json.dumps({"name": os.environ["NAME"], "auto_archive_duration": 1440}))')"
             tresp="$(post "https://discord.com/api/v10/channels/$DISCORD_CHANNEL/messages/$NEW_ID/threads" \
               "$_dc_body" discord "Authorization: Bot $DISCORD_BOT_TOKEN" 2>/dev/null)"
