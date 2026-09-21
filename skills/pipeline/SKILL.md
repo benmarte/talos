@@ -899,7 +899,8 @@ tokens per PR for no change).
 
 `always` — dispatch the docs stage exactly as before, no gate, full diff. Skip
 straight to the Docs prompt below with `<DOCS_DIFF_INSTRUCTION>` = `` `bash
-scripts/pipeline-vcs.sh diff-pr <PR_NUMBER>` ``.
+scripts/pipeline-vcs.sh diff-pr <PR_NUMBER>` `` and the `<CHANGELOG_MODE_LINE>`
+per the fragment rule below.
 
 `auto` (default) — check the developer's own diff before deciding whether docs
 needs to run at all:
@@ -925,7 +926,9 @@ needs to run at all:
    if the developer already wrote correct fragments, the subagent confirms
    and posts `docs:done` without touching anything else).
 3. Gate matches: dispatch **no** docs subagent. Stamp the approval directly —
-   write "docs verified by developer diff (docs_mode: auto)" to a body file and:
+   write "docs verified by developer diff (docs_mode: auto)" (plus, when
+   `ROLE_CHANGELOG_FRAGMENTS = true`, " — CHANGELOG handled via fragments,
+   not direct edits (#296)") to a body file and:
    `bash scripts/pipeline-vcs.sh post-approval <PR_NUMBER> docs --body-file <body-file>`
    If exit non-zero, report the failure in your final message. Then relay
    (see "After docs completes" below, using this stamp as the outcome) and
@@ -938,6 +941,17 @@ needs to run at all:
    instruction to run `git diff origin/<BASE_BRANCH>...HEAD -- CHANGELOG.md` in
    its own worktree for the CHANGELOG hunk. Tell it explicitly to read source
    files only on demand, not as a first step.
+
+**Changelog mode line (#296):** this is what ACTIVATES fragment mode — without
+it, `roles.changelog_fragments: true` silently degrades to direct
+CHANGELOG.md edits. When dispatching the docs subagent on either path above:
+- `ROLE_CHANGELOG_FRAGMENTS = true` → the prompt MUST include the literal line
+  `CHANGELOG MODE: fragments` (substitute `<CHANGELOG_MODE_LINE>` with it).
+- otherwise → substitute `<CHANGELOG_MODE_LINE>` with `CHANGELOG MODE: direct`
+  (or omit it — the docs profile treats an absent line as direct mode).
+When the gate auto-stamps (step 3, no subagent), no line is needed; if the
+flag is on, mention the fragment convention in the stamp body so the thread
+records why CHANGELOG.md was not edited.
 
 Either way (subagent dispatched or gate auto-stamped), wait for docs to reach
 `docs:done` before continuing to phase 2.
@@ -1028,6 +1042,8 @@ VCS provider: <VCS_PROVIDER>
 Comment header: <HEADER>
 Comment templates dir: <COMMENTS_TMPL_DIR>
 Comments enabled: <COMMENTS_ENABLED>
+
+Changelog mode: <CHANGELOG_MODE_LINE>
 
 Read diff: <DOCS_DIFF_INSTRUCTION> — under `docs_mode: auto` this is the
 changed doc-relevant paths plus the CHANGELOG hunk, not the full PR diff.
