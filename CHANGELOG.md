@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **Stale-base guard generalizes the CHANGELOG serialization guard (#288, part of #287).** SKILL.md Step 4's merge-time guard now applies to ANY stale base before each `merge-pr` — a PR whose base is behind `origin/main` after a sibling merge — with CHANGELOG conflicts as its most common instance rather than a special case. The ladder is unchanged (conflict-files → union-covered paths resolve via pipeline-mergebase.sh; anything else falls to the developer merge-base dispatch), and a config-level `merge.union_paths` entry now demonstrably covers non-CHANGELOG additive paths (tests/test-mergebase.sh (c2) exercises README.md). New tests/test-stale-base-guard.sh pins the guard's skill text.
+
 ## [0.16.0] - 2026-09-15
 
 ### Added

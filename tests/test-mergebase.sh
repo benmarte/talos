@@ -153,6 +153,59 @@ merged_notes="$(git show origin/pr-52:notes.txt)"
 assert_contains "$merged_notes" "pr version" "mergebase: --union-paths override kept the PR's own content"
 assert_contains "$merged_notes" "base version" "mergebase: --union-paths override kept the base's content too"
 
+# ── (c2) config-provided union_paths covers a non-CHANGELOG path (#288) ─────
+# The stale-base guard's acceptance: union resolution must work for ANY
+# path merge.union_paths covers from CONFIG (not just the CLI override in
+# (c)), with the PR-side content kept ahead of the base's, and the commit
+# message naming the actual unioned path. README.md is a docs-relevant
+# additive-append path outside the hard-coded non-unionable set.
+git fetch -q origin main
+git checkout -q -b pr-56 origin/main
+echo "- PR readme bullet" >> README.md
+git add README.md
+git commit -qm "pr: append README bullet"
+git push -q origin pr-56
+git push -q origin pr-56:refs/pull/56/head
+git checkout -q main
+git branch -D pr-56 >/dev/null 2>&1 || true
+
+echo "- base readme bullet" >> README.md
+git add README.md
+git commit -qm "base: append README bullet"
+git push -q origin main
+
+# Sanity: default union_paths (CHANGELOG.md only) does NOT cover README.md.
+pr56_sha_before="$(git rev-parse origin/pr-56)"
+out="$(STUB_PR_HEAD_REF_NAME="pr-56" bash "$MB" 56 2>&1)"; rc=$?
+assert_eq "3" "$rc" "mergebase: a README conflict is exit 3 under the default union_paths"
+git fetch -q origin pr-56
+assert_eq "$pr56_sha_before" "$(git rev-parse origin/pr-56)" "mergebase: nothing pushed for README conflict under default union_paths"
+
+# Config-level union_paths covering README.md resolves it mechanically.
+python3 -c "
+import json
+cfg = json.load(open('talos.pipeline.json'))
+cfg['merge'] = {'union_paths': ['CHANGELOG.md', 'README.md']}
+json.dump(cfg, open('talos.pipeline.json', 'w'))
+"
+out="$(STUB_PR_HEAD_REF_NAME="pr-56" bash "$MB" 56 2>&1)"; rc=$?
+assert_eq "0" "$rc" "mergebase: config union_paths covering README.md resolves a non-CHANGELOG conflict"
+assert_contains "$out" "README.md" "mergebase: success message names the unioned path"
+git fetch -q origin pr-56
+merged_readme="$(git show origin/pr-56:README.md)"
+assert_contains "$merged_readme" "PR readme bullet" "mergebase: README union kept the PR's bullet"
+assert_contains "$merged_readme" "base readme bullet" "mergebase: README union kept the base's bullet too"
+assert_not_contains "$merged_readme" "<<<<<<<" "mergebase: README union has no conflict markers"
+pr_line="$(printf '%s\n' "$merged_readme" | grep -n 'PR readme bullet' | head -1 | cut -d: -f1)"
+base_line="$(printf '%s\n' "$merged_readme" | grep -n 'base readme bullet' | head -1 | cut -d: -f1)"
+assert_eq "1" "$([ "$pr_line" -lt "$base_line" ] && echo 1 || echo 0)" "mergebase: README union keeps PR content first (newest first)"
+commit_msg="$(git log -1 --format=%s origin/pr-56)"
+assert_contains "$commit_msg" "README.md" "mergebase: commit message names the README union path"
+# Restore the default-union config for the remaining cases.
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "github", "repo": "acme/widget"}, "base_branch": "main"}
+EOF
+
 # ── (d) hard-coded non-unionable prefix rejected even via override ─────────
 out="$(bash "$MB" 51 --union-paths 'scripts/**' 2>&1)"; rc=$?
 assert_eq "1" "$rc" "mergebase: rejects a scripts/** union-paths override"
