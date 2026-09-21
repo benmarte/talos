@@ -81,6 +81,24 @@
 #                                             on failure or an empty
 #                                             merge.required_checks (#205)
 #   merge-pr <n>                              Merge the PR
+#   update-branch <n>                         Update the PR's head branch by
+#                                             merging its base into it
+#                                             server-side (#289): GitHub
+#                                             `PUT .../pulls/{n}/update-branch`
+#                                             with expected_head_sha (gh and
+#                                             github-api parity), GitLab
+#                                             `glab mr rebase`. Exit 0 on
+#                                             success; exit 1 on a head-moved
+#                                             conflict (HTTP 409) or other
+#                                             GitHub failure; exit 2 where
+#                                             unsupported (azure, file mode) —
+#                                             callers skip silently and fall
+#                                             back to the developer merge-base
+#                                             dispatch. Does NOT resolve
+#                                             content conflicts on the PR's
+#                                             own files: a 409 there means
+#                                             the caller must dispatch the
+#                                             developer merge-base task.
 #   comment-pr <n> <body>                     Post comment on PR <n>
 #              <n> --body-file <path>         ...or read the body from a file
 #   find-pr <issue-n> [state]                 Find PRs for an issue (branch has
@@ -2640,6 +2658,33 @@ for r in runs:
         done
       echo "rerun-ci: re-ran failed runs for PR #$n ($sha)"
       ;;
+    update-branch)
+      # update-branch <n> (#289) — update the PR's head branch by merging its
+      # base into it SERVER-SIDE (GitHub's own "Update branch" button):
+      # `PUT /repos/{owner}/{repo}/pulls/{n}/update-branch` with
+      # `expected_head_sha`. Contract: exit 0 on success, exit 1 on a
+      # head-moved conflict (HTTP 409) or any other failure — the caller
+      # re-checks pr-mergeable either way. Nothing is resolved for the PR's
+      # own conflicted files: if the PR conflicts with its base in content,
+      # the update itself returns 409 and the caller falls back to the
+      # developer merge-base dispatch.
+      local _ub_n="$1"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] gh api --method PUT repos/{owner}/{repo}/pulls/$_ub_n/update-branch"
+        return 0
+      fi
+      local _ub_sha
+      _ub_sha="$(gh pr view "$_ub_n" --json headRefOid -q .headRefOid ${REPO:+--repo "$REPO"} 2>/dev/null)"
+      [ -z "$_ub_sha" ] && { echo "pipeline-vcs: update-branch: could not resolve head SHA for PR #$_ub_n" >&2; exit 1; }
+      local _ub_repo="${REPO:-$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)}"
+      [ -z "$_ub_repo" ] && { echo "pipeline-vcs: update-branch: could not resolve repo" >&2; exit 1; }
+      gh api --method PUT "repos/$_ub_repo/pulls/$_ub_n/update-branch" \
+        -f expected_head_sha="$_ub_sha" >/dev/null 2>&1 || {
+        echo "pipeline-vcs: update-branch: GitHub refused the branch update for PR #$_ub_n (head moved, or conflicts unresolved server-side)" >&2
+        exit 1
+      }
+      echo "update-branch: PR #$_ub_n branch updated with its base"
+      ;;
     check-closing-keyword)
       # check-closing-keyword <pr_branch_or_number> <issue_N>
       # Exit 0 when safe to merge; exit 1 when the PR body contains a closing
@@ -3633,6 +3678,30 @@ for c in data.get('check_runs', []):
       echo "Merged PR #$_n"
       ;;
 
+    update-branch)
+      # update-branch <n> (#289) — REST twin of the gh adapter's verb: server-
+      # side base update via `PUT /repos/{owner}/{repo}/pulls/{n}/update-branch`
+      # with expected_head_sha. Exit 0 on success, exit 1 on HTTP 409 (head
+      # moved or server-side conflicts) — caller re-checks pr-mergeable.
+      local _ub_n="$1"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: PUT $_API/pulls/$_ub_n/update-branch"
+        return 0
+      fi
+      local _ub_sha_json _ub_sha
+      _ub_sha_json="$(_ga_req GET "$_API/pulls/$_ub_n" 2>/dev/null)" || exit 1
+      _ub_sha="$(printf '%s' "$_ub_sha_json" | python3 -c "
+import json, sys
+try: print(json.load(sys.stdin).get('head', {}).get('sha', ''))
+except Exception: print('')
+" 2>/dev/null)"
+      [ -z "$_ub_sha" ] && { echo "pipeline-vcs: update-branch: could not resolve head SHA for PR #$_ub_n" >&2; exit 1; }
+      _ga_req PUT "$_API/pulls/$_ub_n/update-branch" \
+        -H "Content-Type: application/json" \
+        -d "{\"expected_head_sha\":\"$_ub_sha\"}" >/dev/null
+      echo "update-branch: PR #$_ub_n branch updated with its base"
+      ;;
+
     comment-pr)
       # PRs share the issues comment API on GitHub
       local _n="$1" _body="$2"
@@ -4319,6 +4388,12 @@ _gitlab() {
     merge-pr)
       _run glab mr merge "$1" $RARG
       ;;
+    update-branch)
+      # update-branch <n> (#289) — GitLab's equivalent of the server-side base
+      # update: `glab mr rebase <iid>` rebases the MR onto its target branch.
+      # Exit non-zero on failure; caller re-checks pr-mergeable.
+      _run glab mr rebase "$1" $RARG
+      ;;
     comment-pr)
       local n="$1" body="$2"
       _run glab mr note "$n" --message "$body" $RARG
@@ -4793,6 +4868,14 @@ PYEOF
     merge-pr)
       _run az repos pr update --id "$1" --status completed $ORG_ARG --output json
       ;;
+    update-branch)
+      # update-branch <n> (#289) — not supported for azure: ADO has no
+      # single server-side "update branch with base" PR endpoint talos can
+      # call idempotently here. Exit 2; the caller skips silently and falls
+      # back to the developer merge-base dispatch.
+      echo "pipeline-vcs: update-branch: not implemented for azure" >&2
+      exit 2
+      ;;
     comment-pr)
       # az has no PR-comment command; post a thread via REST.
       local n="$1" body="$2"
@@ -4870,6 +4953,11 @@ _file() {
     merge-pr)
       echo "file mode: no PR to merge — orchestrator should close-issue directly after verifying the branch" >&2
       return 0
+      ;;
+    update-branch)
+      # update-branch (#289) — no PR concept in file mode. Exit 2; caller skips.
+      echo "file mode: update-branch not applicable in file mode" >&2
+      exit 2
       ;;
     diff-pr|pr-checks|list-prs|view-pr|find-pr|check-pr-files|pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
       echo "file mode: $verb not applicable in file mode" >&2

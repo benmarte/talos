@@ -180,6 +180,15 @@ merge:
                                  # dispatch (#256). Any other conflicting
                                  # path falls back to the developer
                                  # merge-base task as before.
+  # auto_sync: true             # merge.auto_sync: after each merge, update
+                                 # every other open pipeline PR's branch with
+                                 # the new base (#289): union-only conflicts
+                                 # resolve mechanically, non-union ones go to
+                                 # `update-branch` (server-side base update)
+                                 # then the developer merge-base dispatch.
+                                 # Default: true. Set false to restore the
+                                 # pre-#289 behavior (conflicts discovered at
+                                 # each PR's own merge time).
 
 # ── Issue selection ───────────────────────────────────────────────────────────
 issues:
