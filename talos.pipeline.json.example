@@ -73,7 +73,8 @@
     "security": true,
     "adversarial": false,
     "docs": true,
-    "planner": false
+    "planner": false,
+    "changelog_fragments": false
   },
 
   "comments": {

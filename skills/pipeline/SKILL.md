@@ -142,6 +142,7 @@ Store these for the run:
   spawning the PM subagent for an issue whose body already carries a usable
   spec (see Step 3b). Set to `false` to force PM to always run on
   `pipeline:confirmed` issues, ignoring this shortcut.
+- ROLE_CHANGELOG_FRAGMENTS (`roles.changelog_fragments`, default `false`) — when `true`, the docs stage writes `docs/CHANGELOG.d/<issue>.md` fragments instead of editing `CHANGELOG.md` (#290), and Step 4's post-merge bookkeeping runs `bash scripts/pipeline-changelog.sh assemble` after each merge that added fragments
 - ROLE_DOCS_MODE (`roles.docs_mode`, default `auto`) — only meaningful when
   `roles.docs` is also `true`. `auto`: Step 3e Phase 1 checks the PR's changed
   paths (`pr-files`) before dispatching docs; when the developer's own diff
@@ -167,6 +168,9 @@ Store these for the run:
 - `board.enabled`: false
 - `roles.*`: all true
 - `roles.docs_mode`: `auto`
+- `roles.changelog_fragments`: false (#290 — when `true`, docs writes
+  `docs/CHANGELOG.d/<issue>.md` fragments instead of editing `CHANGELOG.md`,
+  and Step 4 assembles them after each merge)
 - `merge.auto`: true
 - `merge.method`: squash
 - `merge.required_checks`: []
@@ -911,6 +915,13 @@ needs to run at all:
      one non-`CHANGELOG.md` path must be present — a PR touching only
      `CHANGELOG.md` falls through to the first bullet, which requires
      `README.md`/`docs/**` too).
+   With `roles.changelog_fragments: true` (#290): fragment files under
+   `docs/CHANGELOG.d/**` count as `docs/**` paths for both bullets, and a PR
+   touching ONLY fragments (no `CHANGELOG.md`, no `README.md`) still does NOT
+   match the gate — fragments are cheap to write but docs owns their prose,
+   so a PR whose only doc change is new fragments still dispatches docs (or,
+   if the developer already wrote correct fragments, the subagent confirms
+   and posts `docs:done` without touching anything else).
 3. Gate matches: dispatch **no** docs subagent. Stamp the approval directly —
    write "docs verified by developer diff (docs_mode: auto)" to a body file and:
    `bash scripts/pipeline-vcs.sh post-approval <PR_NUMBER> docs --body-file <body-file>`
@@ -1013,6 +1024,15 @@ changed doc-relevant paths plus the CHANGELOG hunk, not the full PR diff.
 Under `docs_mode: always` it is the full `diff-pr` output.
 
 Done when: CHANGELOG has the entry and README reflects any changed config key.
+
+**Changelog fragments (`roles.changelog_fragments: true`, #290):** when the
+orchestrator's prompt includes the line `CHANGELOG MODE: fragments`, do NOT
+edit `CHANGELOG.md`. Write/extend the per-issue fragment file
+`docs/CHANGELOG.d/<issue-number>.md` in this PR's branch instead — the
+bullet(s) for THIS issue, same prose style as a direct CHANGELOG entry. If
+the fragment file already exists on the branch, append to it; never touch
+other issues' fragments or `CHANGELOG.md` itself. The orchestrator assembles
+all fragments into `CHANGELOG.md` on the base branch after the merge.
 
 If you stop, block, or ask instead of completing: name the file and quote
 the line that made you stop, and say whether it is an explicit requirement or
@@ -1150,7 +1170,10 @@ exits non-zero:
 since an approval, do not invalidate that approval. `*.example` covers generated
 pipeline-config examples (e.g. `talos.pipeline.json.example`), which are never
 executed. Hard-coded non-waivable regardless of config: paths under `scripts/`,
-paths under `tests/`, `talos.pipeline.yml`, `pipeline.yaml`.
+paths under `tests/`, `talos.pipeline.yml`, `pipeline.yaml`. With
+`roles.changelog_fragments: true` (#290), fragment files under
+`docs/CHANGELOG.d/**` are already covered by the `docs/**` and `*.md` default
+patterns — adding fragments to a PR never invalidates an approval.
 
 **Forbidden-files gate:** `bash scripts/pipeline-vcs.sh check-pr-files <PR_NUMBER>`
 If it exits non-zero the PR touches secret-like files (`merge.forbidden_files`
@@ -1211,6 +1234,12 @@ Otherwise (`MERGE_AUTO = true`), if green, merge: `bash scripts/pipeline-vcs.sh 
 Compute header: `HEADER="${COMMENTS_HEADER_TPL//\{role\}/orchestrator}"`
 
 After merging:
+0. **Assemble changelog fragments (`ROLE_CHANGELOG_FRAGMENTS = true`, #290).**
+   Run `bash scripts/pipeline-changelog.sh assemble` — it exits 0 with
+   "nothing to assemble" when no unconsumed fragments remain on the base, so
+   it is always safe to run while the flag is on. Non-fatal: a failed
+   assemble leaves fragments on the base and the next merge's assemble
+   retries.
 1. Render issue-closed.md on the ISSUE: VERDICT="CLOSED" SUMMARY="all stages passed"
    `bash scripts/pipeline-vcs.sh comment-issue <N> "$COMMENT_BODY" --allow-closed`
    If exit non-zero, report the failure in the relay message; do not skip the close-issue step.
