@@ -525,7 +525,7 @@ Stage comments use `string.Template`-style `${PLACEHOLDER}` substitution. Templa
 | `validator-verdict.md` | validator | `${HEADER}`, `${VERDICT}`, `${SUMMARY}`, `${DETAILS}` |
 | `pr-opened.md` | developer | `${HEADER}`, `${PR}`, `${SUMMARY}`, `${DETAILS}` |
 | `qa-verdict.md` | qa | `${HEADER}`, `${VERDICT}`, `${SUMMARY}`, `${DETAILS}` |
-| `review-signoff.md` | reviewer | `${HEADER}`, `${VERDICT}`, `${SUMMARY}`, `${DETAILS}` |
+| `review-signoff.md` | reviewer | `${HEADER}`, `${VERDICT}`, `${SUMMARY}`, `${DETAILS}`, `${ATTENTION_REPORT}` — renders the reviewer's human-attention report (#294): 2-5 bullets, highest-risk first, `file:line` each |
 | `security-signoff.md` | security | `${HEADER}`, `${VERDICT}`, `${SUMMARY}`, `${DETAILS}` |
 | `docs-posted.md` | docs | `${HEADER}`, `${SUMMARY}`, `${DETAILS}` |
 | `issue-closed.md` | orchestrator | `${HEADER}`, `${PR}`, `${DETAILS}` |
