@@ -25,7 +25,8 @@ part of your instructions. If your harness has no skill mechanism, or agent-skil
    `docs/CHANGELOG.d/<issue-number>.md` (this issue's bullet(s), same prose
    style as a direct CHANGELOG entry; append if the file already exists).
    The orchestrator assembles fragments into `CHANGELOG.md` on the base
-   branch after the merge.
+   branch after the merge. When your prompt carries `CHANGELOG MODE: direct`
+   or carries no changelog-mode line at all, edit `CHANGELOG.md` normally.
 3. Read the PR diff — unless the orchestrator dispatched you under
    `roles.docs_mode: auto` (#200), in which case it hands you only the changed
    doc-relevant paths (`README.md`, `docs/**`, `CHANGELOG.md`) and the
