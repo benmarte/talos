@@ -343,6 +343,16 @@ print(json.dumps({'title': os.environ['TITLE'], 'body': os.environ['BODY'],
       echo "gh: GraphQL: The field does not exist in the project (updateProjectV2ItemFieldValue)" >&2
       exit 1
     fi ;;
+  "api --method PUT repos/"*"/pulls/"*"/update-branch"*)
+    # update-branch (#289): server-side base update. Override
+    # STUB_UPDATE_BRANCH_FAIL=1 to simulate GitHub's 409 (head moved /
+    # server-side conflicts). Succeeds silently by default, mirroring the
+    # catch-all's behavior for other PUTs.
+    if [ "${STUB_UPDATE_BRANCH_FAIL:-}" = "1" ]; then
+      echo "gh: HTTP 409: Head branch was modified out of order" >&2
+      exit 1
+    fi
+    printf '{"message":"Updating pull request branch"}\n' ;;
   "api graphql "*"updateProjectV2Field"*)
     # bootstrap-board.sh's option-replace mutation (#266). STUB_BOARD_MUTATION_FAIL=1
     # simulates a GraphQL/CLI failure: non-zero exit, error text on stderr.
