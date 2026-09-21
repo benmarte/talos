@@ -104,6 +104,7 @@ Store these for the run:
 - BOARD_ENABLED, PROJECT_NUMBER, BOARD_OWNER
 - MAX_PARALLEL, MAX_FIX_ATTEMPTS, LABEL_FILTER, SKIP_LABELS
 - MERGE_AUTO (`merge.auto`, default `true`) — when `false`, Step 4 stops at `pipeline:approved` and hands the merge to a human
+- MERGE_AUTO_SYNC (`merge.auto_sync`, default `true`) — when `true`, Step 4's post-merge sibling sync block updates every other open pipeline PR's branch with the new base (#289); `false` skips it
 - MERGE_REQUIRED_CHECKS (`merge.required_checks`, default `[]`, newline-separated)
 - VERIFY_COMMANDS (newline-separated list from `verify`)
 - VERIFY_QA_MODE (`verify.qa_mode`, default `ci` when `merge.required_checks` is
@@ -168,6 +169,7 @@ Store these for the run:
 - `roles.*`: all true
 - `roles.docs_mode`: `auto`
 - `merge.auto`: true
+- `merge.auto_sync`: true
 - `merge.method`: squash
 - `merge.required_checks`: []
 - `verify.qa_mode`: `ci` when `merge.required_checks` is non-empty, else `local`
@@ -1210,6 +1212,44 @@ do NOT call `merge-pr`. Instead hand off to a human:
    Step 0 completes the post-merge bookkeeping on a later run).
 
 Otherwise (`MERGE_AUTO = true`), if green, merge: `bash scripts/pipeline-vcs.sh merge-pr <PR_NUMBER>`
+
+**Post-merge sibling sync (#289, when `merge.auto_sync` is `true` — default).**
+Immediately after a successful `merge-pr`, before the post-merge bookkeeping
+below, bring every OTHER open pipeline PR's branch up to date with the new
+base so conflicts are resolved seconds after each merge instead of
+accumulating until each PR's own merge time:
+
+1. `bash scripts/pipeline-vcs.sh list-prs` — every open pipeline PR other than
+   the one just merged (lane-scoped to `base_branch`, same as Step 1).
+2. For each sibling PR, in PR-number order:
+   - `bash scripts/pipeline-vcs.sh conflict-files <PR>`:
+     - **no output** (the updated base merges clean) → nothing to do; continue.
+     - **output, every path in `merge.union_paths`** → `bash
+       scripts/pipeline-mergebase.sh <PR>` (mechanical union, already pushes),
+       then re-check `pr-mergeable <PR>`.
+     - **output with a non-union path** (exit 3/1/2 from
+       `pipeline-mergebase.sh`) → `bash scripts/pipeline-vcs.sh update-branch
+       <PR>` (server-side base update; GitHub/GitLab). Exit 0 → re-check
+       `pr-mergeable`. Exit 1 (409 — head moved or server-side conflicts) or
+       exit 2 (provider unsupported) → dispatch the developer merge-base task
+       (the existing Step 3c fallback prompt: check out the PR branch, `git
+       fetch origin && git merge origin/<BASE_BRANCH>`, resolve, verify,
+       push) **immediately**, not at that PR's merge time.
+   - Never dispatch more than one sibling sync developer task per merge; if
+     several siblings conflict, handle them one at a time and re-check
+     `pr-mergeable` between each.
+3. Every sync action (mergebase push, update-branch, developer dispatch) is
+   relayed so the thread shows why an approval may have gone stale:
+   `bash scripts/pipeline-notify.sh info "merge-base" "#<N> sibling PR #<PR>
+   synced with new base (<mechanism>)" <N>`.
+4. Approval impact: an `update-branch`/`pipeline-mergebase.sh` push that only
+   changes the PR's relationship to its base does not invalidate approval
+   markers (#102/#256 — base-branch-only changes and `CHANGELOG.md` are
+   waived by `check-approval-sha`). If a sync modifies a file the PR also
+   touched, the existing `check-approval-sha --stale-list` path at Step 4
+   re-stamps as usual.
+5. When `merge.auto_sync` is `false`, skip this block entirely — conflicts
+   surface at each PR's own mergeability gate as before #289.
 
 Compute header: `HEADER="${COMMENTS_HEADER_TPL//\{role\}/orchestrator}"`
 
