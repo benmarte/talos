@@ -66,7 +66,7 @@ _KNOWN_CONFIG_KEYS_JSON='[
   "execution.isolation", "execution.worktree_warn_threshold",
   "roles.validator", "roles.pm", "roles.pm_skip_when_spec_present",
   "roles.qa", "roles.reviewer", "roles.security", "roles.adversarial",
-  "roles.docs", "roles.docs_mode", "roles.planner",
+  "roles.docs", "roles.docs_mode", "roles.planner", "roles.changelog_fragments",
   "comments.enabled", "comments.header", "comments.templates_dir",
   "notifications.slack_channel", "notifications.discord_channel",
   "notifications.buzz_channel", "notifications.buzz_relay",

@@ -242,6 +242,14 @@ roles:
                        # + CHANGELOG hunk, not the full diff. Set to "always" to restore
                        # the pre-#200 behavior (docs always dispatches, always reads the
                        # full diff).
+  # changelog_fragments: false  # roles.changelog_fragments: docs writes one fragment
+                       # per issue under docs/CHANGELOG.d/<issue>.md instead of
+                       # editing CHANGELOG.md, so parallel PRs never touch the
+                       # same file (#290, part of #287). After each merge, the
+                       # orchestrator runs `scripts/pipeline-changelog.sh
+                       # assemble` to fold consumed fragments into the
+                       # `## [Unreleased]` section on the base branch.
+                       # Default false — docs edits CHANGELOG.md as before.
 
 # ── Stage comments ───────────────────────────────────────────────────────────
 # Each role subagent posts a GitHub comment at its handoff point (Daedalus parity).
