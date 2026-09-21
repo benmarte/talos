@@ -964,8 +964,16 @@ Prior stage summary: <PRIOR_STAGE_SUMMARY>
 
 Do not run tests; QA and CI already own that. Review the diff only.
 
-Done when: the verdict comment is posted. Do not re-read files outside
-`diff-pr --stat`.
+Done when: the verdict comment is posted, human-attention report included. Do
+not re-read files outside `diff-pr --stat`.
+
+Human-attention report (#294, contract in agents/reviewer.md): 2-5 bullets,
+highest-risk first, each with a `file:line` pointer, rendered into the verdict
+comment's `ATTENTION_REPORT` placeholder (templates/comments/review-signoff.md)
+— behavioral changes, new config keys + defaults, fail-closed/fail-open
+contract changes, anything the verdict trusts QA/CI or a sibling PR for, and
+test coverage gaps. Write exactly "nothing requires human attention beyond the
+diff" when the list is empty.
 
 If you stop, block, or ask instead of completing: name the file and quote
 the line that made you stop, and say whether it is an explicit requirement or
@@ -1034,7 +1042,7 @@ After docs completes (phase 1):
 After reviewer and security complete (phase 2):
 
 **Reviewer returned:**
-- Approved: `bash scripts/pipeline-notify.sh reviewer "#<N>" "<subagent's 2-3 line outcome>" <N>`
+- Approved: `bash scripts/pipeline-notify.sh reviewer "#<N>" "<subagent's 2-3 line outcome, including the top 1-2 human-attention report items (#294)>" <N>`
 - Changes needed: `bash scripts/pipeline-notify.sh reviewer "#<N>" "CHANGES: <findings>" <N>` then `bash scripts/pipeline-notify.sh blocked "#<N>" "reviewer: changes required" <N>`; record attempt (PR already exists, so pass --pr as in Step 3):
   ```bash
   bash scripts/pipeline-vcs.sh record-attempt <N> reviewer --pr <PR_NUMBER>
