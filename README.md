@@ -486,6 +486,16 @@ Previously, setting `merge.forbidden_files` replaced the built-in defaults entir
 - **If you intended to add extra patterns on top of the defaults** (the common case): no action required. Your config now works as you most likely intended.
 - **If you intentionally narrowed the deny list** (removed some built-in patterns to allow those file types): add `merge.forbidden_files_replace: true` to restore the old replacement behaviour. Review the security warning in the `merge.forbidden_files_replace` table row above before doing so — replacement suppresses all built-in secret-protection patterns and should be treated as a deliberate security trade-off.
 
+### Upgrade notes (v0.17+)
+
+**(a) `merge.auto_sync` defaults to `true` (#289).** After every merge, Talos now syncs every other open pipeline PR's branch with the new base — union conflicts resolve mechanically, non-union ones go through the new `update-branch` server-side verb, then the developer merge-base dispatch. If you prefer conflicts to surface at each PR's own merge time (pre-0.17 behavior), set `merge.auto_sync: false`. Note `update-branch` requires a GitHub token with PR-write scope (the same one `merge-pr` uses) or `gh` auth.
+
+**(b) Reviewer verdicts carry a "Human-attention report" (#294).** If you parse reviewer comments (e.g. `review-signoff` consumers), the verdict comment now ends with an `ATTENTION_REPORT` section — a trailing prose block. Vendored project copies of `templates/comments/review-signoff.md` render without the section until you re-copy the shipped template (`${ATTENTION_REPORT}` unsubstituted is a safe_substitute no-op, so nothing breaks — the section just stays empty).
+
+**(c) `roles.changelog_fragments` is opt-in and default-`false` (#290, #296).** When `true`, docs writes `docs/CHANGELOG.d/<issue>.md` fragments instead of editing CHANGELOG.md and the orchestrator assembles them on the base branch post-merge (`scripts/pipeline-changelog.sh assemble`, non-fatal). When `false` (default) nothing changes. Enabling it requires nothing else — the `CHANGELOG MODE: fragments` trigger is wired into the docs dispatch automatically.
+
+**(d) The stale-base guard now fires on every merge (#288).** Previously CHANGELOG-only; now any stale base resolves through the same conflict-files → union/update-branch → developer-dispatch ladder before `merge-pr`. If you relied on merging PRs with knowingly-stale bases, expect an automatic branch sync attempt first.
+
 ### Upgrade notes (v0.16+)
 
 **(a) The 48 shipped per-platform notification templates are gone; one neutral template per event replaces them (#284).** Each event now has a single rich template at `<templates_dir>/<event>.md`, written in a neutral dialect that `pipeline-notify.sh` transpiles per sink (Slack mrkdwn, Discord/Teams markdown, pass-through GFM on Buzz). **Project overrides are unaffected** -- both `templates/notifications/<event>.md` and `templates/notifications/<platform>/<event>.md` in your repo keep working and still win over the shipped copy, so no customisation breaks.

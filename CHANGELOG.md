@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-09-21
+
+### Added
+
+- **Post-merge sibling branch auto-sync (`merge.auto_sync` + `update-branch`, #289, part of #287).** After each merge, every other open pipeline PR is synced with the new base: union-only conflicts resolve mechanically via pipeline-mergebase.sh, non-union ones via the new `update-branch` verb (GitHub `PUT /pulls/{n}/update-branch` with `expected_head_sha`, gh/github-api parity; GitLab `glab mr rebase`; azure/file exit 2), then the developer merge-base dispatch. Conflicts are resolved seconds after each merge instead of accumulating until each PR's own merge time. Default: true. Set false to restore pre-0.17 behavior.
+
+- **Reviewer human-attention report (#294).** Every reviewer verdict comment ends with a "Human-attention report" section — 2-5 bullets, highest-risk first, each with a `file:line` pointer — covering behavioral changes, new config keys and their defaults, fail-closed/fail-open contract changes, anything the verdict trusts QA/CI or a sibling PR for, and test coverage gaps. The orchestrator's reviewer relay carries the top 1-2 items. Empty case renders exactly "nothing requires human attention beyond the diff".
+
+- **Opt-in CHANGELOG fragment directories (`roles.changelog_fragments`, #290, part of #287).** Docs writes one fragment per issue under `docs/CHANGELOG.d/<issue>.md` instead of editing CHANGELOG.md, so parallel PRs never touch the same file; `scripts/pipeline-changelog.sh assemble` folds them into `[Unreleased]` on the base branch after each merge (newest first, consumed fragments deleted, non-fatal on failure). Default false. Default: false — docs edits CHANGELOG.md as before.
+
+- **Fragment-mode activation wiring (#296).** `roles.changelog_fragments: true` now actually emits the `CHANGELOG MODE: fragments` trigger into the docs dispatch prompt on both dispatch paths; `agents/docs.md` documents the direct-mode fallback for an absent or `direct` line.
+
+### Changed
+
+- **Stale-base guard (#288, part of #287).** SKILL.md Step 4's merge-time guard now applies to ANY stale base before each `merge-pr` (CHANGELOG conflicts are its most common instance, not a special case). A config-level `merge.union_paths` entry demonstrably covers non-CHANGELOG additive paths (tests/test-mergebase.sh (c2) exercises README.md). New tests/test-stale-base-guard.sh pins the guard text.
+
+
 - **CHANGELOG fragments actually activate (#296).** `roles.changelog_fragments: true` now wires the `CHANGELOG MODE: fragments` trigger line into the docs dispatch prompt on both dispatch paths (`docs_mode: always` and the `auto` gate's dispatch), so the flag no longer silently degrades to direct CHANGELOG.md edits; the auto-stamp body records fragment handling, and `agents/docs.md` spells out that an absent or `direct` line means normal CHANGELOG editing. Found by the #294 human-attention report on PR #293.
 
 - **Opt-in CHANGELOG fragment directories (`roles.changelog_fragments`, #290, part of #287).** When the flag is `true`, the docs stage writes `docs/CHANGELOG.d/<issue>.md` — one fragment file per issue, carrying that issue's bullet(s) in the same prose style as a direct entry, appended to if the file already exists on the branch — instead of editing `CHANGELOG.md`, so parallel PRs never touch the same file and the CHANGELOG serialization guard has nothing to serialize. After each merge, Step 4's post-merge bookkeeping runs `bash scripts/pipeline-changelog.sh assemble`, which folds every unconsumed fragment into `CHANGELOG.md`'s `## [Unreleased]` section on the base branch, newest issue first, then deletes the consumed fragments so the next assemble cannot double-insert; a failed assemble is non-fatal by design (fragments remain on the base and the next merge's assemble retries), and the verb exits 0 with "nothing to assemble" when none remain, so it is always safe to run while the flag is on. Default `false` — docs edits `CHANGELOG.md` as before. Pinned by `tests/test-changelog-assemble.sh` and `tests/test-changelog-fragments-skill.sh`.
