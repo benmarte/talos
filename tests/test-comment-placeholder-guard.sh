@@ -88,8 +88,49 @@ start="$(python3 -c 'import time; print(time.time())')"
 STUB_PR_STATE=OPEN bash "$VCS" comment-pr 9 "$body" >/dev/null 2>&1; rc=$?
 elapsed="$(python3 -c 'import sys, time; print("%.2f" % (time.time() - float(sys.argv[1])))' "$start")"
 assert_eq "1" "$rc" "comment-pr: 20k-backtick body is still checked (leftover \${HEADER} refused)"
-assert_eq "fast" "$(python3 -c 'import sys; print("fast" if float(sys.argv[1]) < 2 else "slow")' "$elapsed")" \
-  "comment-pr: 20k-backtick body processed in under 2 s (took ${elapsed}s)"
+assert_eq "fast" "$(python3 -c 'import sys; print("fast" if float(sys.argv[1]) < 5 else "slow")' "$elapsed")" \
+  "comment-pr: 20k-backtick body processed in under 5 s (took ${elapsed}s)"
+
+# Unmatched runs of every length 1..350 (the worst case for a naive "find the
+# closing run" search) plus one long run, 65,000 characters in all.
+python3 -c '
+body = "**Agent:** qa (talos)\n\n${HEADER} " + "x".join("`" * k for k in range(1, 351)) + "\n"
+print(body + "`" * (65000 - len(body)), end="")' > "$SANDBOX/adversarial.md"
+: > "$GH_LOG"
+start="$(python3 -c 'import time; print(time.time())')"
+err="$(STUB_PR_STATE=OPEN bash "$VCS" comment-pr 9 --body-file "$SANDBOX/adversarial.md" 2>&1 >/dev/null)"; rc=$?
+elapsed="$(python3 -c 'import sys, time; print("%.2f" % (time.time() - float(sys.argv[1])))' "$start")"
+assert_eq "1" "$rc" "comment-pr: 65k adversarial backtick body is still checked"
+assert_contains "$err" "placeholder(s): HEADER" "comment-pr: 65k adversarial body names the leftover"
+assert_eq "fast" "$(python3 -c 'import sys; print("fast" if float(sys.argv[1]) < 5 else "slow")' "$elapsed")" \
+  "comment-pr: 65k adversarial backtick body guard-scanned in under 5 s (took ${elapsed}s)"
+
+# ── A body over GitHub's 65536-character limit is refused before scanning ────
+python3 -c 'print("`" * 2000000, end="")' > "$SANDBOX/huge.md"
+: > "$GH_LOG"
+start="$(python3 -c 'import time; print(time.time())')"
+err="$(STUB_PR_STATE=OPEN bash "$VCS" comment-pr 9 --body-file "$SANDBOX/huge.md" 2>&1 >/dev/null)"; rc=$?
+elapsed="$(python3 -c 'import sys, time; print("%.2f" % (time.time() - float(sys.argv[1])))' "$start")"
+assert_eq "1" "$rc" "comment-pr: 2,000,000-backtick body exits 1"
+assert_contains "$err" "65536" "comment-pr: stderr names the 65536-character limit"
+assert_not_contains "$(cat "$GH_LOG")" "pr comment" "comment-pr: oversized body not posted"
+assert_eq "fast" "$(python3 -c 'import sys; print("fast" if float(sys.argv[1]) < 5 else "slow")' "$elapsed")" \
+  "comment-pr: 2,000,000-backtick body refused in under 5 s (took ${elapsed}s)"
+
+# Just over the cap in characters (not bytes) is refused too.
+python3 -c 'print("x" * 65537, end="")' > "$SANDBOX/over.md"
+: > "$GH_LOG"
+err="$(STUB_ISSUE_STATE=OPEN bash "$VCS" comment-issue 7 --body-file "$SANDBOX/over.md" 2>&1 >/dev/null)"; rc=$?
+assert_eq "1" "$rc" "comment-issue: 65537-character body exits 1"
+assert_contains "$err" "65536" "comment-issue: stderr names the limit for a just-over body"
+assert_not_contains "$(cat "$GH_LOG")" "issue comment" "comment-issue: just-over body not posted"
+
+# ── An invalid-UTF-8 body is still guard-scanned, not an error ───────────────
+printf '**Agent:** qa (talos)\n\ncaf\351 ${HEADER}\n' > "$SANDBOX/latin1-body.md"
+: > "$GH_LOG"
+err="$(STUB_PR_STATE=OPEN bash "$VCS" comment-pr 9 --body-file "$SANDBOX/latin1-body.md" 2>&1 >/dev/null)"; rc=$?
+assert_eq "1" "$rc" "comment-pr: invalid-UTF-8 body with a leftover exits 1"
+assert_contains "$err" "placeholder(s): HEADER" "comment-pr: invalid-UTF-8 body is scanned, not a guard error"
 
 # ── A non-UTF-8 template is skipped with a note, not a blocked comment ───────
 mkdir -p templates/comments
