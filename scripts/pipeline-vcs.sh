@@ -694,8 +694,7 @@ except Exception:
 
 # ── Cap-reached warning (shared by every provider that still caps list-issues
 # /list-prs instead of paginating: gitlab, azure — github/github-api now
-# paginate fully via gh api --paginate / Link headers, so neither calls this
-# anymore) ────────────────────────────────────────────────────────────────────
+# paginate those fully; github's find-pr still caps at --limit, #302) ────────
 # Usage: _list_cap_warn <verb> <cap> <count> <reason> <noun>
 # Prints a loud stderr warning naming the exact cap when <count> == <cap>,
 # since landing exactly on a request cap means more items may exist beyond
@@ -2741,13 +2740,17 @@ for line in sys.stdin:
       # `--state open|closed|merged|all`, so no post-fetch normalisation is
       # needed on this side (see the shared function's header comment).
       local n="$1" state="${2:-open}"
+      # A result count equal to --limit may be truncated -- warn (#302).
+      local _fp_limit=100 _fp_out
       if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] gh pr list --state $state ... | filter issue-$n / #$n"
+        echo "[dry-run] gh pr list --state $state --limit $_fp_limit ... | filter issue-$n / #$n"
         return 0
       fi
-      gh pr list --state "$state" --limit 100 \
-        --json number,state,title,headRefName,body ${REPO:+--repo "$REPO"} 2>/dev/null \
-        | _vcs_shared_find_pr "$n" "$state" "$REPO"
+      _fp_out="$(gh pr list --state "$state" --limit "$_fp_limit" \
+        --json number,state,title,headRefName,body ${REPO:+--repo "$REPO"})" || {
+        echo "pipeline-vcs: find-pr: gh pr list failed" >&2; exit 1; }
+      _list_cap_warn find-pr "$_fp_limit" "$(printf '%s' "$_fp_out" | _json_array_count)" "gh pr list --limit ceiling" PRs
+      printf '%s' "$_fp_out" | _vcs_shared_find_pr "$n" "$state" "$REPO"
       ;;
     check-pr-files)
       # Forbidden-files pattern/allow-list logic is _vcs_shared_check_pr_files
@@ -3288,9 +3291,12 @@ _github_api() {
     printf '%s' "$_gdr_body"
   }
 
-  # _ga_fetch_all_pages <start-url>
+  # _ga_fetch_all_pages <start-url> [<max-pages> <noun>]
   # Fetches every page of a GitHub REST list endpoint by following
-  # Link: rel="next" headers, starting from <start-url>. Prints a single JSON
+  # Link: rel="next" headers, starting from <start-url>. With <max-pages>,
+  # stops after that many pages; if a next page still exists it prints a
+  # _list_cap_warn-style stderr warning naming the cap (#302 -- a truncated
+  # lookup must never look like one that found nothing). Prints a single JSON
   # array concatenating every page's items. Exits 1 (prints NOTHING to
   # stdout) on any HTTP error partway through, including a page that fails
   # only after exhausting its retries (#173) — callers must treat a non-zero
@@ -3343,8 +3349,8 @@ _github_api() {
   }
 
   _ga_fetch_all_pages() {
-    local _gafp_url="$1"
-    local _gafp_all _gafp_body _gafp_next_file
+    local _gafp_url="$1" _gafp_max="${2:-}" _gafp_noun="${3:-items}"
+    local _gafp_all _gafp_body _gafp_next_file _gafp_pages=0
     _gafp_all="[]"
     _gafp_next_file="$(mktemp)"
     # Note (#194 security, non-blocking): unlike post-approval's $_pa_tmpfile,
@@ -3373,6 +3379,12 @@ prev.extend(page)
 json.dump(prev, sys.stdout)
 ")"
       _gafp_url="$(cat "$_gafp_next_file")"
+      _gafp_pages=$((_gafp_pages + 1))
+      if [ -n "$_gafp_max" ] && [ -n "$_gafp_url" ] && [ "$_gafp_pages" -ge "$_gafp_max" ]; then
+        printf 'pipeline-vcs: %s: WARNING result capped at %s pages (github-api page cap) -- some %s may be missing\n' \
+          "$_VERB" "$_gafp_max" "$_gafp_noun" >&2
+        break
+      fi
     done
     rm -f "$_gafp_next_file"
     printf '%s' "$_gafp_all"
@@ -3952,11 +3964,10 @@ print(d.get('html_url', ''))
       # it hands the shared function an already state-filtered, common
       # {number, state, title, headRefName, body} shape. See the shared
       # function's header comment for why that split holds.
-      local _n="$1" _state="${2:-open}"
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: GET $_API/pulls?state=<mapped>&per_page=100 | filter issue-$_n / #$_n"
-        return 0
-      fi
+      # The list is paginated (#302): state=closed also returns unmerged PRs,
+      # so the PR closing an older issue can sit past the first 100. Pages
+      # are capped at _fp_max_pages; hitting it warns on stderr.
+      local _n="$1" _state="${2:-open}" _fp_max_pages=10
       # GitHub REST only accepts state=open|closed|all.
       # "merged" PRs are closed with merged_at set; "all" covers both open and closed.
       local _api_state
@@ -3966,8 +3977,12 @@ print(d.get('html_url', ''))
         all)    _api_state="all" ;;
         *)      _api_state="$_state" ;;
       esac
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: GET $_API/pulls?state=$_api_state&per_page=100 (paginated via Link headers, up to $_fp_max_pages pages) | filter issue-$_n / #$_n"
+        return 0
+      fi
       local _raw
-      _raw="$(_ga_req GET "$_API/pulls?state=$_api_state&per_page=100")"
+      _raw="$(_ga_fetch_all_pages "$_API/pulls?state=$_api_state&per_page=100" "$_fp_max_pages" PRs)" || exit 1
       printf '%s' "$_raw" | STATE_FILTER="$_state" python3 -c "
 import json, sys, os
 state_filter = os.environ.get('STATE_FILTER','open')
