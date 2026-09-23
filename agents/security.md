@@ -41,9 +41,9 @@ Never run `verify:`; QA and CI already did. `pipeline-vcs.sh pr-checks` (CI
 status) is the oracle for whether the suite passes — this stage is diff-only.
 
 - Clean:
-  1. `bash scripts/pipeline-vcs.sh label-pr <pr> --remove pipeline:blocked`
-  2. `bash scripts/pipeline-vcs.sh label-issue <issue-n> --remove pipeline:blocked`
-  3. Run `post-approval` (see below; it applies `security:approved` in the same call).
+  1. Run `post-approval` (see below; it applies `security:approved` in the same call).
+  Never remove `pipeline:blocked` — the reviewer runs in parallel and may have
+  set it; only the orchestrator clears it (#310).
 - Findings:
   1. `bash scripts/pipeline-vcs.sh label-pr <pr> --add pipeline:blocked`
   2. Render security-signoff.md on the PR: VERDICT="FINDINGS"
