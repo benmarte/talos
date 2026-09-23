@@ -92,6 +92,52 @@ assert_contains "$out" '"number": 9' "find-pr matches branch fix/issue-42"
 out="$(bash "$VCS" find-pr 7)"
 assert_eq "" "$out" "find-pr returns nothing for unrelated issue"
 
+# ── #298: find-pr merged counts closing keywords only, never bare #N ─────────
+# A merged PR that merely *references* an issue (a dependency, a parent epic)
+# used to be returned by `find-pr <N> merged`, so the Step 1 heal closed the
+# epic and the unfinished dependency. Runs on github and github-api.
+_298_dep='[{"number":999,"state":"MERGED","title":"fix: harness","headRefName":"fix/issue-223-harness","body":"Depends on #208. Part of #207."}]'
+_298_dep_api='[{"number":999,"state":"closed","merged_at":"2026-09-01T00:00:00Z","title":"fix: harness","head":{"ref":"fix/issue-223-harness"},"body":"Depends on #208. Part of #207."}]'
+_298_kw='[{"number":998,"state":"MERGED","title":"fix: y","headRefName":"chore/other","body":"Fixes: #301 and resolves acme/widget#302. See #303."}]'
+# A qualified owner/repo#N or issue URL closes THIS repo's #N only when the
+# owner/repo is this repo (case-insensitive); another repo's #5 must not.
+_298_xr='[{"number":997,"state":"MERGED","title":"a","headRefName":"a","body":"Closes other-org/other#5"},
+{"number":996,"state":"MERGED","title":"b","headRefName":"b","body":"Fixes https://github.com/other-org/other/issues/5"},
+{"number":995,"state":"MERGED","title":"c","headRefName":"c","body":"Closes acme/widget#5"},
+{"number":994,"state":"MERGED","title":"d","headRefName":"d","body":"Fixes https://github.com/Acme/Widget/issues/5"}]'
+_298_xr_api='[{"number":997,"state":"closed","merged_at":"x","title":"a","head":{"ref":"a"},"body":"Closes other-org/other#5"}, {"number":996,"state":"closed","merged_at":"x","title":"b","head":{"ref":"b"},"body":"Fixes https://github.com/other-org/other/issues/5"}, {"number":995,"state":"closed","merged_at":"x","title":"c","head":{"ref":"c"},"body":"Closes acme/widget#5"}, {"number":994,"state":"closed","merged_at":"x","title":"d","head":{"ref":"d"},"body":"Fixes https://github.com/Acme/Widget/issues/5"}]'
+for _298_p in github github-api; do
+  if [ "$_298_p" = "github-api" ]; then
+    printf '{"vcs": {"provider": "github-api", "repo": "acme/widget"}}' > talos.pipeline.json
+    _298_run() { printf '%s' "${_298_fx:-$_298_dep_api}" > "$SANDBOX/298.json"
+      GITHUB_TOKEN=t CURL_QUEUE="$SANDBOX/298.json" bash "$VCS" find-pr "$@" 2>/dev/null; }
+    _298_xr_fx="$_298_xr_api"
+  else
+    printf '{"vcs": {"provider": "github", "repo": "acme/widget"}}' > talos.pipeline.json
+    _298_run() { STUB_PR_LIST="${_298_fx:-$_298_dep}" bash "$VCS" find-pr "$@" 2>/dev/null; }
+    _298_xr_fx="$_298_xr"
+  fi
+  assert_contains "$(_298_run 223 merged)" '"number": 999' "#298 $_298_p: find-pr merged matches the branch convention"
+  assert_eq "" "$(_298_run 208 merged)" "#298 $_298_p: find-pr merged ignores 'Depends on #N'"
+  assert_eq "" "$(_298_run 207 merged)" "#298 $_298_p: find-pr merged ignores 'Part of #N'"
+  out="$(_298_fx="$_298_xr_fx" _298_run 5 merged)"
+  assert_not_contains "$out" '"number": 997' "#298 $_298_p: 'Closes other-org/other#N' does not close this repo's #N"
+  assert_not_contains "$out" '"number": 996' "#298 $_298_p: an issue URL on another repo does not close this repo's #N"
+  assert_contains "$out" '"number": 995' "#298 $_298_p: 'Closes <this-owner>/<this-repo>#N' still counts"
+  assert_contains "$out" '"number": 994' "#298 $_298_p: an issue URL on this repo counts (owner/repo case-insensitive)"
+done
+printf '{"vcs": {"provider": "github", "repo": "acme/widget"}}' > talos.pipeline.json
+out="$(STUB_PR_LIST="$_298_kw" bash "$VCS" find-pr 301 merged)"
+assert_contains "$out" '"number": 998' "#298 github: 'Fixes: #N' counts as a closing keyword for merged"
+out="$(STUB_PR_LIST="$_298_kw" bash "$VCS" find-pr 302 merged)"
+assert_contains "$out" '"number": 998' "#298 github: 'resolves owner/repo#N' counts for merged"
+out="$(STUB_PR_LIST="$_298_kw" bash "$VCS" find-pr 303 merged)"
+assert_eq "" "$out" "#298 github: a bare 'See #N' mention does not count for merged"
+# Open lookups keep the loose #N match (Step 1.1 adopt-orphaned-PR path).
+out="$(STUB_PR_LIST="$_298_dep" bash "$VCS" find-pr 208 open)"
+assert_contains "$out" '"number": 999' "#298 github: find-pr open keeps the loose bare-#N match"
+rm -f talos.pipeline.json "$SANDBOX/298.json"
+
 # ── pr-files: unfiltered changed-path listing (#200) ───────────────────────────
 out="$(bash "$VCS" pr-files 9)"
 assert_eq "$(printf 'src/auth.js\ntests/auth.test.js')" "$out" \
@@ -683,6 +729,53 @@ assert_contains "$out" "not implemented for gitlab" "gitlab: fail-open warns the
 # unimplemented provider must fail closed instead of vacuously passing.
 out="$(bash "$VCS" pr-checks-required 9 2>&1)"; rc=$?
 assert_eq "1" "$rc" "gitlab: pr-checks-required fails closed (exit 1), not vacuously open (#205)"
+
+# ── #298: gitlab find-pr is implemented (was a fail-open exit-0 stub) ────────
+: > "$GH_LOG"
+out="$(STUB_GITLAB_MR_LIST='[{"iid":12,"title":"fix: y","state":"merged","source_branch":"feature/y","description":"Closes #50. Depends on #51."}]' \
+  bash "$VCS" find-pr 50 merged 2>&1)"; rc=$?
+assert_eq "0" "$rc" "#298 gitlab: find-pr merged exits 0"
+assert_contains "$out" '"number": 12' "#298 gitlab: find-pr merged returns the MR that closes the issue"
+assert_contains "$out" '"state": "MERGED"' "#298 gitlab: find-pr normalises state to MERGED"
+assert_not_contains "$out" "not implemented" "#298 gitlab: find-pr no longer fails open"
+assert_contains "$(cat "$GH_LOG")" "mr list --merged" "#298 gitlab: find-pr merged asks glab for merged MRs"
+out="$(STUB_GITLAB_MR_LIST='[{"iid":12,"title":"fix: y","state":"merged","source_branch":"feature/y","description":"Closes #50. Depends on #51."}]' \
+  bash "$VCS" find-pr 51 merged 2>&1)"
+assert_eq "" "$out" "#298 gitlab: find-pr merged ignores an MR that only mentions the issue"
+out="$(STUB_GITLAB_MR_LIST='[{"iid":13,"title":"x","state":"merged","source_branch":"x","description":"Closes other-org/other#52"}]' \
+  bash "$VCS" find-pr 52 merged 2>&1)"
+assert_eq "" "$out" "#298 gitlab: find-pr merged ignores another project's owner/repo#N"
+out="$(bash "$VCS" find-pr 42 2>&1)"
+assert_contains "$out" '"number": 7' "#298 gitlab: find-pr open still returns the active MR on fix/issue-42"
+rm talos.pipeline.json
+
+# ── #298: azure find-pr is implemented (linked work items + branch fallback) ─
+printf '{"vcs": {"provider": "azure", "repo": "myrepo"}}' > talos.pipeline.json
+_298_rel='[{"rel":"ArtifactLink","url":"vstfs:///Git/PullRequestId/proj%2Frepo%2F234","attributes":{"name":"Pull Request"}}]'
+out="$(STUB_AZURE_WORKITEM_RELATIONS="$_298_rel" \
+  STUB_AZURE_PR_234='{"pullRequestId":234,"title":"fix: z","status":"completed","sourceRefName":"refs/heads/feat/z"}' \
+  bash "$VCS" find-pr 157 merged 2>&1)"; rc=$?
+assert_eq "0" "$rc" "#298 azure: find-pr merged exits 0"
+assert_contains "$out" '"number": 234' "#298 azure: find-pr merged returns the completed PR linked to the work item"
+assert_contains "$out" '"state": "MERGED"' "#298 azure: a completed PR is reported MERGED"
+assert_not_contains "$out" "not implemented" "#298 azure: find-pr no longer fails open"
+out="$(STUB_AZURE_WORKITEM_RELATIONS="$_298_rel" \
+  STUB_AZURE_PR_234='{"pullRequestId":234,"title":"fix: z","status":"active","sourceRefName":"refs/heads/feat/z"}' \
+  bash "$VCS" find-pr 157 2>&1)"
+assert_contains "$out" '"number": 234' "#298 azure: find-pr open returns the active linked PR (adopt-orphaned-PR)"
+_298_az_done='[{"pullRequestId":300,"title":"fix: h","status":"completed","sourceRefName":"refs/heads/fix/issue-223-h","description":"Depends on #160. Part of #159."}]'
+out="$(STUB_AZURE_PR_LIST="$_298_az_done" bash "$VCS" find-pr 160 merged 2>&1)"
+assert_eq "" "$out" "#298 azure: find-pr merged ignores an unlinked PR that only mentions the item"
+# Azure has no owner/repo identity to compare, so only a bare #N counts.
+out="$(STUB_AZURE_PR_LIST='[{"pullRequestId":301,"title":"x","status":"completed","sourceRefName":"refs/heads/x","description":"Closes other-org/other#161"}]' \
+  bash "$VCS" find-pr 161 merged 2>&1)"
+assert_eq "" "$out" "#298 azure: find-pr merged rejects a qualified owner/repo#N reference"
+out="$(STUB_AZURE_PR_LIST="$_298_az_done" bash "$VCS" find-pr 223 merged 2>&1)"
+assert_contains "$out" '"number": 300' "#298 azure: find-pr merged falls back to the fix/issue-N branch convention"
+: > "$GH_LOG"
+out="$(bash "$VCS" find-pr 42 2>&1)"
+assert_contains "$out" '"number": 7' "#298 azure: find-pr open falls back to the active PR on fix/issue-42"
+assert_contains "$(cat "$GH_LOG")" "[--status] [active]" "#298 azure: find-pr open lists active PRs"
 rm talos.pipeline.json
 
 # ── File-mode adapter: real markdown checklist manipulation ──────────────────

@@ -23,8 +23,13 @@ case "$args" in
     # Return a line containing azure-devops so the extension check passes
     printf 'azure-devops\t1.0.0\t/path/to/ext\n' ;;
   "boards work-item show "*"-o tsv")
-    # Canned current tags for label-issue test
-    printf 'bug; ui\n' ;;
+    # Canned current tags for label-issue test. STUB_AZURE_WORKITEM_TAGS
+    # overrides (#298: close-issue strips pipeline:* tags).
+    printf '%s\n' "${STUB_AZURE_WORKITEM_TAGS:-bug; ui}" ;;
+  "boards work-item show "*"--expand relations"*)
+    # find-pr (#298) reads the work item's ArtifactLink relations to find
+    # linked PRs. STUB_AZURE_WORKITEM_RELATIONS is the raw relations array.
+    printf '{"id":5,"relations":%s}\n' "${STUB_AZURE_WORKITEM_RELATIONS:-[]}" ;;
   "boards work-item show "*)
     # System.AssignedTo reflects STUB_ASSIGNEE_FILE (#299; absent or empty =
     # unassigned, i.e. the field is missing, as ADO returns it), so
@@ -89,7 +94,16 @@ print(json.dumps({'id': 5, 'fields': fields}))
     case "$args" in
       *sourceRefName*tsv*) printf 'refs/heads/fix/issue-5-x\n' ;;
       *targetRefName*tsv*) printf 'refs/heads/main\n' ;;
-      *) printf '{"pullRequestId":7,"status":"active"}\n' ;;
+      *)
+        # find-pr (#298): STUB_AZURE_PR_<id> overrides the PR object per id.
+        _prs_id=""; _prs_prev=""
+        for _a in "$@"; do [ "$_prs_prev" = "--id" ] && _prs_id="$_a"; _prs_prev="$_a"; done
+        _prs_var="STUB_AZURE_PR_${_prs_id}"
+        if [ -n "$_prs_id" ] && [ -n "${!_prs_var:-}" ]; then
+          printf '%s\n' "${!_prs_var}"
+        else
+          printf '{"pullRequestId":7,"status":"active"}\n'
+        fi ;;
     esac ;;
   "boards work-item comment add "*)
     printf '{"id":1,"text":"stub comment"}\n' ;;

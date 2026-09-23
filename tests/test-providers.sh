@@ -195,6 +195,29 @@ assert_contains "$body_line" "bug" "azure label-issue remove keeps the surviving
 assert_not_contains "$body_line" "ui" "azure label-issue remove actually drops the removed tag"
 assert_contains "$log" "[--method] [patch]" "azure label-issue remove issues a PATCH"
 
+# #298: close-issue moves the item to the configured terminal state (not a
+# hardcoded Done) and strips every pipeline:* tag with a json-patch replace.
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "azure", "azure": {"org_url": "https://dev.azure.com/testorg"}}, "board": {"azure_states": {"done": "Closed"}}}
+EOF
+: > "$GH_LOG"
+STUB_AZURE_WORKITEM_TAGS="pipeline:review; bug; pipeline:qa" bash "$VCS" close-issue 157 "merged" >/dev/null 2>&1
+log="$(cat "$GH_LOG")"
+assert_contains "$log" "[work-item] [update] [--id] [157] [--state] [Closed]" "#298 azure close-issue uses board.azure_states.done"
+assert_not_contains "$log" "[--state] [Done]" "#298 azure close-issue no longer hardcodes Done"
+patch_line="$(printf '%s\n' "$log" | grep '^AZ BODY:' | grep 'System.Tags')"
+assert_contains "$patch_line" '"op": "replace"' "#298 azure close-issue replaces System.Tags (the --fields path only appends)"
+assert_contains "$patch_line" '"value": "bug"' "#298 azure close-issue keeps non-pipeline tags and drops every pipeline:* tag"
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "azure", "azure": {"org_url": "https://dev.azure.com/testorg"}}}
+EOF
+: > "$GH_LOG"
+bash "$VCS" close-issue 5 "merged" >/dev/null 2>&1
+log="$(cat "$GH_LOG")"
+assert_contains "$log" "[--state] [Done]" "#298 azure close-issue defaults the terminal state to Done"
+assert_not_contains "$(printf '%s\n' "$log" | grep '^AZ BODY:')" "/fields/System.Tags" \
+  "#298 azure close-issue skips the tag patch when no pipeline:* tag is set"
+
 # Restore config without org_url for remaining tests
 cat > talos.pipeline.json <<'EOF'
 {"vcs": {"provider": "azure"}}
@@ -218,6 +241,18 @@ log="$(cat "$GH_LOG")"
 assert_contains "$log" "[repos] [pr] [create]" "azure create-pr invokes repos pr create"
 assert_contains "$log" "[--repository] [myrepo]" "azure create-pr passes --repository (required by az)"
 assert_contains "$log" "[--source-branch] [feature/x]" "azure create-pr passes source branch"
+assert_not_contains "$log" "--work-items" "azure create-pr links no work item when the branch has no issue-N"
+
+# #298: a fix/issue-N-* branch links work item N and completes it on merge,
+# so ADO closes the item natively even when a human completes the PR.
+: > "$GH_LOG"
+bash "$VCS" create-pr "fix/issue-157-guard" "PR title" body.txt >/dev/null 2>&1
+log="$(cat "$GH_LOG")"
+assert_contains "$log" "[--work-items] [157]" "#298 azure create-pr links the work item parsed from the branch"
+assert_contains "$log" "[--transition-work-items] [true]" "#298 azure create-pr transitions linked work items on completion"
+: > "$GH_LOG"
+bash "$VCS" create-pr "feat/issue-1570" "PR title" body.txt >/dev/null 2>&1
+assert_contains "$(cat "$GH_LOG")" "[--work-items] [1570]" "#298 azure create-pr accepts a trailing issue-N branch"
 # Restore config without repo for remaining tests
 cat > talos.pipeline.json <<'EOF'
 {"vcs": {"provider": "azure"}}
