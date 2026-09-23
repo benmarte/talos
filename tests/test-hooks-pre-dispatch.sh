@@ -56,21 +56,66 @@ assert_eq "$NOHOOK_PROMPT" "$STRIPPED" \
 # ── Watchdog reaps itself on the fast-success path (#181 review) ────────────
 # A successful hook returns well within hooks.timeout_s. The watchdog runs
 # `sleep "$timeout_s"` in the background to enforce that timeout; if the
-# watchdog isn't reaped as a whole process group, that sleep is orphaned and
-# keeps running for up to hooks.timeout_s after this call returns. Use a
-# large, unique timeout_s value so the pgrep below can't match any other
-# sleep started elsewhere in this test file.
-cat > talos.pipeline.json <<EOF
+# watchdog isn't reaped as a whole process group, that sleep is orphaned.
+# The orphan still holds the stdout pipe of pipeline-agent.sh's
+# `$(pipeline-hooks.sh ...)`, so a leak shows up as the agent blocking until
+# the sleep ends, and a check made after the agent returns always passes.
+# So the agent runs in the background and the sleep is looked for while a
+# leak would still be blocking it. pgrep is host-wide, so the watchdog's sleep
+# is identified by a duration no other process shares (#314): the old fixed
+# 20 matched unrelated `sleep 20` loops from other sessions. timeout_s
+# must be a positive integer, so each check draws a fresh random one
+# (100000-132767s) and pgrep anchors on the whole command line.
+_check_watchdog_reaped() {  # $1=label prefix
+  local ts leaked agent_pid i=0
+  ts=$(( 100000 + RANDOM ))
+  cat > talos.pipeline.json <<EOF
 {"agents": {"runner": "custom", "runner_cmd": "cat > $RECEIVED"},
- "hooks": {"pre_dispatch": "cat > /dev/null; echo fast-ok", "timeout_s": 20}}
+ "hooks": {"pre_dispatch": "cat > /dev/null; echo fast-ok", "timeout_s": $ts}}
 EOF
-: > "$RECEIVED"
-out="$(TALOS_ISSUE=42 bash "$AGENT" developer "Implement the spec.")"; rc=$?
-assert_eq "0" "$rc" "fast-success hook: pipeline-agent.sh still exits 0"
-sleep 1
-_leaked="$(pgrep -f 'sleep 20$' || true)"
-assert_eq "" "$_leaked" \
-  "fast-success hook: watchdog's own 'sleep 20' is reaped, not left running"
+  : > "$RECEIVED"
+  # Own process group (set -m), so a stuck agent can be killed as a group.
+  set -m
+  TALOS_ISSUE=42 bash "$AGENT" developer "Implement the spec." \
+    < /dev/null > "$SANDBOX/watchdog-check.out" 2>&1 &
+  agent_pid=$!
+  set +m
+  # Up to 15s for the agent to finish; a leak keeps it blocked past that.
+  while kill -0 "$agent_pid" 2>/dev/null && [ "$i" -lt 30 ]; do
+    sleep 0.5; i=$((i + 1))
+  done
+  sleep 1
+  leaked="$(pgrep -f "^sleep $ts\$" || true)"
+  # Kill a leaked sleep so the blocked agent can finish instead of hanging.
+  [ -z "$leaked" ] || kill $leaked 2>/dev/null
+  i=0
+  while kill -0 "$agent_pid" 2>/dev/null && [ "$i" -lt 10 ]; do
+    sleep 0.2; i=$((i + 1))
+  done
+  if kill -0 "$agent_pid" 2>/dev/null; then
+    # Still blocked: something the sentinel pattern misses leaked. Fail now
+    # rather than `wait` for that sleep to end (a day or more).
+    kill -KILL -- -"$agent_pid" 2>/dev/null
+    wait "$agent_pid" 2>/dev/null
+    fail "$1: agent still running after 15s -- watchdog leaked"
+  else
+    wait "$agent_pid"; rc=$?
+    assert_eq "0" "$rc" "$1: pipeline-agent.sh still exits 0"
+  fi
+  assert_eq "" "$leaked" \
+    "$1: watchdog's own 'sleep $ts' is reaped, not left running"
+}
+_check_watchdog_reaped "fast-success hook"
+
+# The same check while an unrelated `sleep 20` runs on the host (#314) must
+# not mistake that process for the watchdog's sleep. The EXIT trap keeps the
+# sandbox cleanup from make_sandbox and also kills this sleep on any exit.
+sleep 20 & _unrelated_sleep=$!
+trap 'kill "$_unrelated_sleep" 2>/dev/null; rm -rf "$SANDBOX"' EXIT
+_check_watchdog_reaped "fast-success hook, unrelated 'sleep 20' running"
+kill "$_unrelated_sleep" 2>/dev/null
+wait "$_unrelated_sleep" 2>/dev/null
+trap 'rm -rf "$SANDBOX"' EXIT
 
 # ── (b) Failing hook -- no-op, byte-identical to no-hook ─────────────────────
 cat > talos.pipeline.json <<EOF
