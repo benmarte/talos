@@ -49,7 +49,7 @@ issue: pipeline:ready
                       └─ all labels green + CI green → MERGE → close issue
 ```
 
-Any stage can set `pipeline:blocked` with a comment. A blocked issue is skipped until a human resolves it and removes the label.
+Any stage can set `pipeline:blocked` with a comment. Stages only add the label; the orchestrator removes it automatically when re-dispatching a developer fix round after `record-attempt` exits 0 (SKILL.md Step 3, "Clearing `pipeline:blocked`"). Otherwise, a human resolves the block and removes the label manually.
 
 **Reading a `pipeline:blocked` comment (#272):** every stage prompt requires that a stop/block/ask outcome name the file and quote the line that triggered it, and say whether that line is an explicit requirement (a spec acceptance criterion, a config threshold, a script's hard failure) or the agent's own interpretation. The `blocked.md` comment template surfaces this as a `Blocked by: <file>:<quoted line> (explicit|interpreted)` line, always the last line before the resume instructions — read that line first: `explicit` means the stage hit a hard rule and a human must resolve the underlying condition (fix the code, raise a limit, correct the spec) before re-queuing; `interpreted` means the stage's own judgment call and a human may simply disagree and override it, then re-queue without any other change.
 

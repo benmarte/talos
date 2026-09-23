@@ -487,6 +487,8 @@ Two ceilings apply (both checked atomically by record-attempt):
 
 When `record-attempt` exits non-zero (either ceiling reached): set `pipeline:blocked`, post blocked.md with BLOCKED_BY="talos.pipeline.yml:limits.max_fix_attempts or limits.max_total_dispatches (explicit)" — whichever ceiling `record-attempt` reported — move on.  Do NOT re-dispatch the developer.
 
+**Clearing `pipeline:blocked` (#310):** only the orchestrator clears `pipeline:blocked` — no stage role removes it, because reviewer and security run in parallel and one role's approval would otherwise erase the other's block. When `record-attempt` exits 0, clear it right before re-dispatching the developer fix round: `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --remove pipeline:blocked` (skip when no PR exists yet) and `bash scripts/pipeline-vcs.sh label-issue <N> --remove pipeline:blocked`. The stages that re-run after that fix round start unblocked, and any block they set stays until the next fix round. Never clear a block that no fix round follows (a ceiling, forbidden-files, or closing-keyword block) — that one waits for a human.
+
 **Idempotency limit:** `--pr` dedupes any retry at the same PR head, even across a fresh orchestrator process — it cannot distinguish two genuinely separate attempts that happen to land while the PR head is unchanged (e.g. two ambiguous-failure retries of the same stage before a new commit lands), which is treated as one attempt by design. Issue-side stages called with no key (no PR yet) are not deduped at all. That gap is by design, not a bug to chase; see README.md.
 
 ### 3a. Validator (if `roles.validator = true`)
@@ -879,7 +881,7 @@ After QA returns:
      ```bash
      bash scripts/pipeline-vcs.sh record-attempt <N> qa --pr <PR_NUMBER>
      ```
-     If exit 0: re-dispatch the developer. If exit non-zero (ceiling reached): board "Blocked", stop.
+     If exit 0: clear `pipeline:blocked` (Step 3, "Clearing `pipeline:blocked`"), then re-dispatch the developer. If exit non-zero (ceiling reached): board "Blocked", stop.
 
 ### 3e. Review stages
 
@@ -971,6 +973,7 @@ If exit non-zero: halt the current issue with the error output; do not dispatch 
 - Model: resolve `agents.roles.<role>.restamp_model` via `bash scripts/pipeline-config.sh agents.roles.<role>.restamp_model`, falling back to `agents.restamp_model` via `bash scripts/pipeline-config.sh agents.restamp_model`, falling back to that role's already-resolved model from the Harness compatibility section above (`agents.roles.<role>.model` → `agents.model` → session default). `pipeline-config.sh` resolves the first two steps of this chain itself — a call to either key already returns the correct value with no further fallback needed at that step (role restamp → global restamp), so only a genuinely empty result falls through to the role's normal model.
 - Effort (#271): same chain shape, resolve `agents.roles.<role>.restamp_effort` via `bash scripts/pipeline-config.sh agents.roles.<role>.restamp_effort`, falling back to `agents.restamp_effort`, falling back to that role's already-resolved effort from the Per-role effort selection block above (`agents.roles.<role>.effort` → `agents.effort` → unset). Also resolved by `pipeline-config.sh` itself — a genuinely empty result falls through to the role's normal effort. Applied the same way as the role's normal effort — advisory-notice only on the native path (committed frontmatter is what actually runs), `TALOS_EFFORT` on the adapter path — a re-stamp is a cheap dispatch, not a different application mechanism.
 - Comment header: `**Agent:** <role> (talos) — re-stamp`.
+- A re-stamp never clears `pipeline:blocked` (#310) — the orchestrator already cleared it before the developer fix round that made this approval stale (Step 3, "Clearing `pipeline:blocked`").
 - Prompt inputs only — not the full PR context a first-time dispatch gets: the approved SHA and stale file list from `check-approval-sha --stale-list`'s output, the current head SHA, `bash scripts/pipeline-vcs.sh diff-pr <PR_NUMBER> --stat`, and the role's previous verdict comment URL (from `read-comments <PR_NUMBER>`, filtered to that role's header).
 - Instruction: "Review only the delta since your prior approval. Targeted tests only, and only if your role runs tests at all: `bash tests/run-tests.sh --for <changed files> --strict`. If the delta does not change your prior verdict: `bash scripts/pipeline-vcs.sh post-approval <PR_NUMBER> <role>`. Otherwise post findings exactly as your normal stage would."
 - **On `RESTAMP_FAIL` (findings), before relaying: strip the stale label** — `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --remove <label>`, using the exact `<label>` this role's `stale role=<role> label=<label>` line reported above (`qa:pass` / `review:approved` / `security:approved` / `adversarial:approved` — never guess a `<role>:approved` pattern, the label name does not always match the role name). This is what makes the role no longer "previously approved": without it, the next pass still finds the (still-present, still-stale) label and dispatches another re-stamp instead of the promised full stage, forever. Step 4's own stale handling already strips this same label as its step 1, before ever reaching this dispatch, so the removal here is a no-op there — it is required only on the Step 3e fix-round path, which has no equivalent prior strip.
@@ -1085,7 +1088,7 @@ After reviewer and security complete (phase 2):
   ```bash
   bash scripts/pipeline-vcs.sh record-attempt <N> reviewer --pr <PR_NUMBER>
   ```
-  Exit 0 → re-dispatch developer. Exit non-zero → set `pipeline:blocked`, stop.
+  Exit 0 → clear `pipeline:blocked` (Step 3, "Clearing `pipeline:blocked`"), then re-dispatch developer. Exit non-zero → set `pipeline:blocked`, stop.
 
 **Security returned:**
 - Clear: `bash scripts/pipeline-notify.sh security "#<N>" "<subagent's 2-3 line outcome>" <N>`
@@ -1093,7 +1096,7 @@ After reviewer and security complete (phase 2):
   ```bash
   bash scripts/pipeline-vcs.sh record-attempt <N> security --pr <PR_NUMBER>
   ```
-  Exit 0 → re-dispatch developer. Exit non-zero → set `pipeline:blocked`, stop.
+  Exit 0 → clear `pipeline:blocked` (Step 3, "Clearing `pipeline:blocked`"), then re-dispatch developer. Exit non-zero → set `pipeline:blocked`, stop.
 
 **Phase 3 — Adversarial (if `roles.adversarial = true`, default `false`, #237):**
 After security's phase-2 block above completes, dispatch adversarial — an
@@ -1136,7 +1139,7 @@ After adversarial completes:
   ```bash
   bash scripts/pipeline-vcs.sh record-attempt <N> adversarial --pr <PR_NUMBER>
   ```
-  Exit 0 → re-dispatch developer. Exit non-zero → set `pipeline:blocked`, stop.
+  Exit 0 → clear `pipeline:blocked` (Step 3, "Clearing `pipeline:blocked`"), then re-dispatch developer. Exit non-zero → set `pipeline:blocked`, stop.
 
 If any stage blocked: set `pipeline:blocked` on issue, move on.
 
