@@ -5639,36 +5639,44 @@ case "$VERB" in
     #
     # The variable names are derived from the templates themselves (the shipped
     # copy next to this script plus the project's comments.templates_dir), so
-    # the list cannot drift. Only those names count: `$5`, `${foo}`, `$PATH` are
-    # ordinary text. Fenced code blocks and inline code spans are skipped --
-    # templates never place a variable in code, and a comment *about* a
-    # placeholder (e.g. a verdict on this very bug) quotes it that way.
+    # the list cannot drift; the shipped names are also built in, so the guard
+    # still holds when neither directory resolves. Only those names count: `$5`,
+    # `${foo}`, `$PATH` are ordinary text. Matched fence pairs and inline code
+    # spans are skipped -- templates never place a variable in code, and a
+    # comment *about* a placeholder quotes it that way. An unclosed fence exempts
+    # nothing. Every regex here is linear (no backtracking across backticks).
     if [ "${#ARGS[@]}" -ge 2 ]; then
       _ph_left="$(printf '%s' "${ARGS[1]}" | python3 -c '
 import glob, os, re, sys
 TOKEN = re.compile(r"\$(?:(\$)|\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+FENCE = re.compile(r"\s{0,3}(`{3,}|~{3,})")
+INLINE = re.compile(r"(`+)[^`]*?\1")
 def names(text):
     return {m.group(2) or m.group(3) for m in TOKEN.finditer(text) if not m.group(1)}
-known = set()
+# Variables of the shipped templates/comments/*.md (#306 fallback).
+known = {"ATTENTION_REPORT", "BLOCKED_BY", "DETAILS", "HEADER", "PR", "SUMMARY", "VERDICT"}
 for d in sys.argv[1:]:
     for path in glob.glob(os.path.join(d, "*.md")):
         try:
             with open(path, encoding="utf-8") as f:
                 known |= names(f.read())
-        except OSError:
-            pass
-prose, fence = [], None
+        except (OSError, UnicodeDecodeError) as e:
+            print("pipeline-vcs: placeholder guard: skipping unreadable template %s (%s)" % (path, type(e).__name__), file=sys.stderr)
+prose, fence, held = [], None, []
 for line in sys.stdin.read().splitlines():
-    m = re.match(r"\s{0,3}(`{3,}|~{3,})", line)
-    if m:
-        if fence is None:
-            fence = m.group(1)
-        elif m.group(1).startswith(fence):
-            fence = None
-        continue
     if fence is None:
-        prose.append(re.sub(r"(`+).+?\1", "", line))
-print(" ".join(sorted(names("\n".join(prose)) & known)))
+        m = FENCE.match(line)
+        if m:
+            fence, held = m.group(1), [line]
+        else:
+            prose.append(line)
+    else:
+        held.append(line)
+        m = FENCE.match(line)
+        if m and m.group(1).startswith(fence):
+            fence, held = None, []
+prose += held
+print(" ".join(sorted(names("\n".join(INLINE.sub("", l) for l in prose)) & known)))
 ' "$SCRIPT_DIR/../templates/comments" "$(cfg comments.templates_dir "templates/comments")")"
       _ph_rc=$?
       if [ "$_ph_rc" -ne 0 ]; then

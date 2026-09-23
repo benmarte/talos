@@ -64,4 +64,61 @@ assert_eq "0" "$rc" "comment-pr: \${foo} / \$PATH in a code fence exits 0"
 assert_contains "$(cat "$GH_LOG")" 'echo "${foo}" "$PATH"' \
   "comment-pr: code-fenced body is posted verbatim"
 
+# ── An unclosed fence exempts nothing ────────────────────────────────────────
+: > "$GH_LOG"
+err="$(STUB_PR_STATE=OPEN bash "$VCS" comment-pr 9 '**Agent:** qa (talos)
+
+```bash
+echo hi
+
+**QA:** PASS -- ${SUMMARY}' 2>&1 >/dev/null)"; rc=$?
+assert_eq "1" "$rc" "comment-pr: placeholder after an unclosed fence exits 1"
+assert_contains "$err" "SUMMARY" "comment-pr: unclosed fence does not hide the leftover"
+assert_not_contains "$(cat "$GH_LOG")" "pr comment" "comment-pr: unclosed-fence body not posted"
+
+# ── A long unmatched backtick run is processed in linear time (ReDoS) ────────
+# (`+).+?\1 backtracked catastrophically: 16k backticks took ~35 s.
+ticks="$(printf '%*s' 20000 '' | tr ' ' '`')"
+body="**Agent:** qa (talos)
+
+see ${ticks}x and \${HEADER}
+${ticks}"
+: > "$GH_LOG"
+start="$(python3 -c 'import time; print(time.time())')"
+STUB_PR_STATE=OPEN bash "$VCS" comment-pr 9 "$body" >/dev/null 2>&1; rc=$?
+elapsed="$(python3 -c 'import sys, time; print("%.2f" % (time.time() - float(sys.argv[1])))' "$start")"
+assert_eq "1" "$rc" "comment-pr: 20k-backtick body is still checked (leftover \${HEADER} refused)"
+assert_eq "fast" "$(python3 -c 'import sys; print("fast" if float(sys.argv[1]) < 2 else "slow")' "$elapsed")" \
+  "comment-pr: 20k-backtick body processed in under 2 s (took ${elapsed}s)"
+
+# ── A non-UTF-8 template is skipped with a note, not a blocked comment ───────
+mkdir -p templates/comments
+printf 'caf\351 ${HEADER}\n' > templates/comments/latin1.md
+: > "$GH_LOG"
+err="$(STUB_ISSUE_STATE=OPEN bash "$VCS" comment-issue 7 '**Agent:** validator (talos)
+
+**Verdict:** CONFIRMED' 2>&1 >/dev/null)"; rc=$?
+assert_eq "0" "$rc" "comment-issue: a non-UTF-8 template does not block the comment"
+assert_contains "$err" "latin1.md" "comment-issue: stderr names the skipped template"
+assert_contains "$(cat "$GH_LOG")" "issue comment 7" "comment-issue: body posted despite the bad template"
+rm -rf templates
+
+# ── No template directory resolves: the built-in names still guard ───────────
+# A scripts/ copy with no sibling templates/ and no project templates_dir;
+# every variable of the shipped templates must still be refused.
+mkdir -p "$SANDBOX/bare"
+cp -R "$TALOS_ROOT/scripts" "$SANDBOX/bare/scripts"
+for name in $(cat "$TALOS_ROOT"/templates/comments/*.md \
+              | grep -oE '\$\{?[A-Za-z_][A-Za-z0-9_]*' | tr -d '${' | sort -u); do
+  : > "$GH_LOG"
+  STUB_ISSUE_STATE=OPEN bash "$SANDBOX/bare/scripts/pipeline-vcs.sh" comment-issue 7 "left \${$name}" \
+    >/dev/null 2>&1; rc=$?
+  assert_eq "1" "$rc" "comment-issue: no template dir -- built-in \${$name} still refused"
+  assert_not_contains "$(cat "$GH_LOG")" "issue comment" "comment-issue: no template dir -- \${$name} body not posted"
+done
+# Control: the bare copy itself works, so the refusals above are the guard's.
+STUB_ISSUE_STATE=OPEN bash "$SANDBOX/bare/scripts/pipeline-vcs.sh" comment-issue 7 "all filled" \
+  >/dev/null 2>&1; rc=$?
+assert_eq "0" "$rc" "comment-issue: no template dir -- a fully rendered body still posts"
+
 finish

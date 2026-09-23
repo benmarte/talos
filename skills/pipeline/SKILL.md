@@ -266,9 +266,10 @@ try:
     with open(sys.argv[1]) as f:
         t = string.Template(f.read())
     print(t.substitute(os.environ).strip())
-except Exception:
+except Exception as e:
+    print(f'template render fell back to the inline line: {type(e).__name__} {e}', file=sys.stderr)
     print(os.environ.get('HEADER','') + '\n\n' + os.environ.get('VERDICT','') + ' — ' + os.environ.get('SUMMARY',''))
-" "$TMPL" 2>/dev/null
+" "$TMPL"
 )"
 COMMENT_URL="$(bash scripts/pipeline-vcs.sh comment-issue <N> "$COMMENT_BODY")" || {   # issue comments
   echo "comment-issue failed for #<N>" >&2
