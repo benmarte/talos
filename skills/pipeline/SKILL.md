@@ -260,10 +260,12 @@ COMMENT_BODY="$(
   VERDICT="<VERDICT>" SUMMARY="<one-line>" DETAILS="<bullet list>" \
   python3 -c "
 import os, string, sys
+# substitute(), not safe_substitute(): an unset variable raises instead of
+# leaving its placeholder in the body, so the inline fallback below posts (#306).
 try:
     with open(sys.argv[1]) as f:
         t = string.Template(f.read())
-    print(t.safe_substitute(os.environ).strip())
+    print(t.substitute(os.environ).strip())
 except Exception:
     print(os.environ.get('HEADER','') + '\n\n' + os.environ.get('VERDICT','') + ' — ' + os.environ.get('SUMMARY',''))
 " "$TMPL" 2>/dev/null
@@ -282,6 +284,8 @@ COMMENT_URL="$(bash scripts/pipeline-vcs.sh comment-pr <PR> "$COMMENT_BODY")" ||
 ```
 
 The findings comment carries: a verdict line + 2–5 detail bullets. It is non-optional when `comments.enabled = true`. Fall back to inline text only if the template file is missing.
+
+`HEADER` is required on every render (set it from the prompt's `Comment header:` line). Every variable the template uses must be set — export `BLOCKED_BY` for blocked.md and `ATTENTION_REPORT` for review-signoff.md; an unset one drops the render to the inline fallback. As a backstop, `comment-issue` / `comment-pr` refuse (exit 1, nothing posted) any body still containing a `${NAME}` / `$NAME` placeholder whose NAME appears in the comment templates (#306).
 
 **Prior stage summary handoff (#201):** the developer (fix-round re-dispatch),
 QA, reviewer, and security prompt blocks each carry a
@@ -415,7 +419,7 @@ bash scripts/pipeline-vcs.sh list-issues
        import os, string, sys
        with open(sys.argv[1]) as f:
            t = string.Template(f.read())
-       print(t.safe_substitute(os.environ).strip())
+       print(t.substitute(os.environ).strip())
        " "$TMPL"
        )"
        bash scripts/pipeline-vcs.sh comment-issue <E> "$COMMENT_BODY"

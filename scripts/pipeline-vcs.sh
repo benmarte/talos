@@ -5616,6 +5616,55 @@ case "$VERB" in
         fi
         ;;
     esac
+    # Unsubstituted template placeholder guard (#306): the stage-comment recipe
+    # renders templates/comments/*.md with string.Template, and a variable the
+    # agent forgot to export used to survive as a literal `${HEADER}` in a public
+    # comment -- no role attribution, and readers keyed on the `**Agent:**`
+    # header miss it. Refuse such a body before any provider sees it.
+    #
+    # The variable names are derived from the templates themselves (the shipped
+    # copy next to this script plus the project's comments.templates_dir), so
+    # the list cannot drift. Only those names count: `$5`, `${foo}`, `$PATH` are
+    # ordinary text. Fenced code blocks and inline code spans are skipped --
+    # templates never place a variable in code, and a comment *about* a
+    # placeholder (e.g. a verdict on this very bug) quotes it that way.
+    if [ "${#ARGS[@]}" -ge 2 ]; then
+      _ph_left="$(printf '%s' "${ARGS[1]}" | python3 -c '
+import glob, os, re, sys
+TOKEN = re.compile(r"\$(?:(\$)|\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+def names(text):
+    return {m.group(2) or m.group(3) for m in TOKEN.finditer(text) if not m.group(1)}
+known = set()
+for d in sys.argv[1:]:
+    for path in glob.glob(os.path.join(d, "*.md")):
+        try:
+            with open(path, encoding="utf-8") as f:
+                known |= names(f.read())
+        except OSError:
+            pass
+prose, fence = [], None
+for line in sys.stdin.read().splitlines():
+    m = re.match(r"\s{0,3}(`{3,}|~{3,})", line)
+    if m:
+        if fence is None:
+            fence = m.group(1)
+        elif m.group(1).startswith(fence):
+            fence = None
+        continue
+    if fence is None:
+        prose.append(re.sub(r"(`+).+?\1", "", line))
+print(" ".join(sorted(names("\n".join(prose)) & known)))
+' "$SCRIPT_DIR/../templates/comments" "$(cfg comments.templates_dir "templates/comments")")"
+      _ph_rc=$?
+      if [ "$_ph_rc" -ne 0 ]; then
+        echo "pipeline-vcs: $VERB: could not check the body for unsubstituted template placeholders; nothing posted." >&2
+        exit 1
+      elif [ -n "$_ph_left" ]; then
+        echo "pipeline-vcs: $VERB: body still contains unsubstituted template placeholder(s): $_ph_left -- nothing posted." >&2
+        echo "              Export each variable before rendering the template (see SKILL.md \"Stage comment convention\")." >&2
+        exit 1
+      fi
+    fi
     ;;
 esac
 
