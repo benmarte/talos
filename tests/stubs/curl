@@ -27,17 +27,25 @@
 #     STUB_CURRENT_USER (bare login, default "" -- unresolved identity, same
 #     as no override) or STUB_CURRENT_USER_JSON (raw response body, for
 #     malformed-response tests).
+#   - Issue assignees (#299, assign-issue): when STUB_ASSIGNEE_FILE is set,
+#     GET .../issues/<n> and POST .../issues/<n>/assignees are intercepted
+#     (again BEFORE the CURL_QUEUE pop) against that file's contents -- the
+#     issue's current assignee, absent/empty = unassigned. POST honours
+#     STUB_ASSIGN_FAIL=1 (HTTP 422) and STUB_ASSIGN_DROP=1 (201, but the
+#     assignee never lands -- GitHub's real behaviour for a non-collaborator).
 
 payload=""
 url=""
 prev=""
 has_w=false
+method=""
 auth_field=""
 hdr_file=""
 for arg in "$@"; do
   [ "$prev" = "-d" ] && payload="$arg"
   [ "$prev" = "-w" ] && has_w=true
   [ "$prev" = "-D" ] && hdr_file="$arg"
+  [ "$prev" = "-X" ] && method="$arg"
   if [ "$prev" = "-H" ]; then
     case "$arg" in
       "Authorization: Bearer "*) auth_field="Authorization: Bearer" ;;
@@ -60,6 +68,24 @@ http_status=200
 resp=""
 if [[ "$url" == *"/user" && "$url" != *"/users/"* ]]; then
   resp="${STUB_CURRENT_USER_JSON:-$(printf '{"login":"%s"}' "${STUB_CURRENT_USER:-}")}"
+elif [ -n "${STUB_ASSIGNEE_FILE:-}" ] && [[ "$url" =~ /issues/[0-9]+/assignees$ ]]; then
+  if [ "${STUB_ASSIGN_FAIL:-}" = "1" ]; then
+    http_status=422
+    resp='{"message":"Validation Failed"}'
+  else
+    [ "${STUB_ASSIGN_DROP:-}" != "1" ] && printf '%s' "$payload" \
+      | python3 -c "import json,sys; print(json.load(sys.stdin)['assignees'][0])" > "$STUB_ASSIGNEE_FILE"
+    http_status=201
+    resp='{}'
+  fi
+elif [ -n "${STUB_ASSIGNEE_FILE:-}" ] && [ "$method" = "GET" ] && [[ "$url" =~ /issues/[0-9]+$ ]]; then
+  _as_cur=""
+  [ -s "$STUB_ASSIGNEE_FILE" ] && _as_cur="$(cat "$STUB_ASSIGNEE_FILE")"
+  resp="$(CUR="$_as_cur" python3 -c "
+import json, os
+cur = os.environ['CUR']
+print(json.dumps({'number': 42, 'assignees': [{'login': cur}] if cur else []}))
+")"
 elif [ -n "${CURL_QUEUE:-}" ] && [ -s "$CURL_QUEUE" ]; then
   raw="$(head -1 "$CURL_QUEUE")"
   tail -n +2 "$CURL_QUEUE" > "$CURL_QUEUE.tmp" && mv "$CURL_QUEUE.tmp" "$CURL_QUEUE"

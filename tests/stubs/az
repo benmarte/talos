@@ -26,7 +26,19 @@ case "$args" in
     # Canned current tags for label-issue test
     printf 'bug; ui\n' ;;
   "boards work-item show "*)
-    printf '{"id":5,"fields":{"System.Title":"Fix login crash","System.Tags":"bug; ui"}}\n' ;;
+    # System.AssignedTo reflects STUB_ASSIGNEE_FILE (#299; absent or empty =
+    # unassigned, i.e. the field is missing, as ADO returns it), so
+    # assign-issue's write is visible to its read-back.
+    _as_cur=""
+    [ -n "${STUB_ASSIGNEE_FILE:-}" ] && [ -s "$STUB_ASSIGNEE_FILE" ] && _as_cur="$(cat "$STUB_ASSIGNEE_FILE")"
+    CUR="$_as_cur" python3 -c "
+import json, os
+cur = os.environ['CUR']
+fields = {'System.Title': 'Fix login crash', 'System.Tags': 'bug; ui'}
+if cur:
+    fields['System.AssignedTo'] = {'displayName': cur, 'uniqueName': cur}
+print(json.dumps({'id': 5, 'fields': fields}))
+" ;;
   "boards query "*)
     # Canned WIQL result set for list-issues.
     # Override STUB_AZURE_WORKITEM_LIST to simulate a capped/large result set (#171),
@@ -41,8 +53,26 @@ case "$args" in
     fi ;;
   "boards work-item create "*)
     printf '{"id":1}\n' ;;
+  "boards work-item update "*"--assigned-to "*)
+    # assign-issue's write (#299). STUB_ASSIGN_FAIL / STUB_ASSIGN_DROP as in
+    # the gh stub.
+    if [ "${STUB_ASSIGN_FAIL:-}" = "1" ]; then
+      echo "ERROR: TF401320: Rule Error for field Assigned To. Error code: Required, HasValues, LimitedToValues, AllowsOldValue, InvalidEmpty." >&2
+      exit 1
+    fi
+    _as_prev=""
+    for _as_a in "$@"; do
+      [ "$_as_prev" = "--assigned-to" ] && _as_login="$_as_a"
+      _as_prev="$_as_a"
+    done
+    [ "${STUB_ASSIGN_DROP:-}" != "1" ] && [ -n "${STUB_ASSIGNEE_FILE:-}" ] \
+      && printf '%s\n' "$_as_login" > "$STUB_ASSIGNEE_FILE"
+    exit 0 ;;
   "boards work-item update "*)
     printf '{"id":1}\n' ;;
+  "account show "*)
+    # Operator identity for issues.assignee: self (#299).
+    printf '%s\n' "${STUB_CURRENT_USER:-}" ;;
   "repos pr update "*)
     printf '{"pullRequestId":7,"status":"completed"}\n' ;;
   "repos pr create "*)
