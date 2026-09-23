@@ -9,6 +9,37 @@ case "$args" in
     printf 'https://gitlab.com/acme/widget/-/merge_requests/7\n' ;;
   "repo view --format="*"default_branch"*)
     printf 'main\n' ;;
+  "issue create "*)
+    printf 'https://gitlab.com/acme/widget/-/issues/%s\n' "${STUB_NEW_ISSUE_NUMBER:-42}" ;;
+  "issue view "*"--output json"*)
+    # assign-issue's read / read-back (#299): same STUB_ASSIGNEE_FILE state
+    # contract as the gh stub (absent or empty = unassigned).
+    _as_cur=""
+    [ -n "${STUB_ASSIGNEE_FILE:-}" ] && [ -s "$STUB_ASSIGNEE_FILE" ] && _as_cur="$(cat "$STUB_ASSIGNEE_FILE")"
+    CUR="$_as_cur" python3 -c "
+import json, os
+cur = os.environ['CUR']
+print(json.dumps({'iid': 42, 'title': 'Fix login crash',
+                  'assignees': [{'username': cur}] if cur else []}))
+" ;;
+  "issue update "*"--assignee "*)
+    # assign-issue's write (#299). STUB_ASSIGN_FAIL / STUB_ASSIGN_DROP as in
+    # the gh stub. The value carries glab's "+" add-prefix; strip it.
+    if [ "${STUB_ASSIGN_FAIL:-}" = "1" ]; then
+      echo "ERROR: 422 {message: {assignee_ids: [not a member]}}" >&2
+      exit 1
+    fi
+    _as_prev=""
+    for _as_a in "$@"; do
+      [ "$_as_prev" = "--assignee" ] && _as_login="${_as_a#+}"
+      _as_prev="$_as_a"
+    done
+    [ "${STUB_ASSIGN_DROP:-}" != "1" ] && [ -n "${STUB_ASSIGNEE_FILE:-}" ] \
+      && printf '%s\n' "$_as_login" > "$STUB_ASSIGNEE_FILE"
+    exit 0 ;;
+  "api user"*)
+    # Operator identity for issues.assignee: self (#299).
+    printf '{"username":"%s"}\n' "${STUB_CURRENT_USER:-}" ;;
   "issue view "*)
     printf '{"title":"Fix login crash","description":"stub body","labels":[]}\n' ;;
   "issue list "*)

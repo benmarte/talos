@@ -737,4 +737,118 @@ assert_eq "1" "$rc" "file: pr-checks-required fails closed (exit 1), not a vacuo
 assert_contains "$out" "pipeline-vcs: pr-checks-required: not supported for provider file (fail closed)" \
   "file: pr-checks-required prints the fail-closed message"
 
+# ── #299: issues.assignee -- create-issue assigns, assign-issue fills empty ──
+# The stubs keep the issue's assignee in STUB_ASSIGNEE_FILE: every provider's
+# write lands there and every read / read-back returns it, so the assertions
+# below are on the field's VALUE, never just on exit 0.
+export STUB_ASSIGNEE_FILE="$SANDBOX/assignee.state"
+export GITHUB_TOKEN="test-token-299"
+printf 'body\n' > "$SANDBOX/body299.md"
+
+# _a299_cfg <provider> [assignee] -- write the config; no 2nd arg = key absent.
+_a299_cfg() {
+  if [ -n "${2:-}" ]; then
+    printf '{"vcs": {"provider": "%s", "repo": "acme/widget"}, "issues": {"assignee": "%s"}}\n' "$1" "$2" > talos.pipeline.json
+  else
+    printf '{"vcs": {"provider": "%s", "repo": "acme/widget"}}\n' "$1" > talos.pipeline.json
+  fi
+}
+# _a299_run <provider> <verb args...> -- run pipeline-vcs.sh with fresh logs;
+# sets out / err / rc / log.
+_a299_run() {
+  local _p="$1"; shift
+  : > "$GH_LOG"; : > "$CURL_LOG"; : > "$CURL_QUEUE"
+  [ "$_p" = "github-api" ] && [ "$1" = "create-issue" ] \
+    && printf '%s\n' '{"number":42,"html_url":"https://github.com/acme/widget/issues/42"}' > "$CURL_QUEUE"
+  out="$(bash "$VCS" "$@" 2>"$SANDBOX/err299")"; rc=$?
+  err="$(cat "$SANDBOX/err299")"
+  log="$(cat "$GH_LOG" "$CURL_LOG")"
+}
+_a299_state() { cat "$STUB_ASSIGNEE_FILE" 2>/dev/null; }
+
+for _p in github github-api gitlab azure; do
+  case "$_p" in
+    github)     _new=42; _created="https://github.com/acme/widget/issues/42"
+                _read_sig="--json assignees"; _write_sig="--add-assignee" ;;
+    github-api) _new=42; _created="https://github.com/acme/widget/issues/42"
+                _read_sig="/issues/42	"; _write_sig="/assignees" ;;
+    gitlab)     _new=42; _created="https://gitlab.com/acme/widget/-/issues/42"
+                _read_sig="--output json"; _write_sig="--assignee" ;;
+    azure)      _new=1;  _created='{"id":1}'
+                _read_sig="[work-item] [show]"; _write_sig="[--assigned-to]" ;;
+  esac
+
+  # Default (key absent = self): the new issue is assigned to the operator,
+  # and create-issue's stdout contract is untouched.
+  _a299_cfg "$_p"; rm -f "$STUB_ASSIGNEE_FILE"
+  export STUB_CURRENT_USER=operator1
+  _a299_run "$_p" create-issue "t299" "$SANDBOX/body299.md"
+  assert_eq 0 "$rc" "#299 $_p: create-issue exits 0 with assignee self"
+  assert_eq "$_created" "$out" "#299 $_p: create-issue stdout is unchanged (assignment messages go to stderr)"
+  assert_eq "operator1" "$(_a299_state)" "#299 $_p: create-issue assigns the new issue to the operator (self)"
+  assert_contains "$err" "assigned to operator1" "#299 $_p: create-issue reports the verified assignment on stderr"
+
+  # An explicit identity is assigned literally.
+  _a299_cfg "$_p" "alice"; rm -f "$STUB_ASSIGNEE_FILE"
+  _a299_run "$_p" create-issue "t299" "$SANDBOX/body299.md"
+  assert_eq "alice" "$(_a299_state)" "#299 $_p: create-issue assigns an explicit issues.assignee literally"
+
+  # issues.assignee: none -- no assignee read or write at all (today's path).
+  _a299_cfg "$_p" "none"; rm -f "$STUB_ASSIGNEE_FILE"
+  _a299_run "$_p" create-issue "t299" "$SANDBOX/body299.md"
+  assert_eq 0 "$rc" "#299 $_p: create-issue exits 0 with assignee none"
+  assert_eq "$_created" "$out" "#299 $_p: create-issue stdout unchanged with assignee none"
+  assert_eq "" "$(_a299_state)" "#299 $_p: assignee none leaves the new issue unassigned"
+  assert_not_contains "$log" "$_read_sig" "#299 $_p: assignee none never reads the assignee"
+  assert_not_contains "$log" "$_write_sig" "#299 $_p: assignee none never writes an assignee"
+  assert_eq "" "$err" "#299 $_p: assignee none prints nothing on stderr"
+  _a299_run "$_p" assign-issue "$_new"
+  assert_eq "0|" "$rc|$out" "#299 $_p: assign-issue is a silent no-op with assignee none"
+  assert_not_contains "$log" "$_read_sig" "#299 $_p: assign-issue with none makes no provider call"
+
+  # An existing (human) assignee is preserved, never overwritten.
+  _a299_cfg "$_p"; printf 'human\n' > "$STUB_ASSIGNEE_FILE"
+  _a299_run "$_p" assign-issue "$_new"
+  assert_eq 0 "$rc" "#299 $_p: assign-issue exits 0 when already assigned"
+  assert_eq "human" "$(_a299_state)" "#299 $_p: assign-issue preserves an existing assignee"
+  assert_not_contains "$log" "$_write_sig" "#299 $_p: assign-issue does not write over an existing assignee"
+  assert_eq "" "$out" "#299 $_p: preserved assignee prints no success line"
+
+  # Empty assignee: assign-issue fills it and says so on stdout.
+  rm -f "$STUB_ASSIGNEE_FILE"
+  _a299_run "$_p" assign-issue "$_new"
+  assert_eq "operator1" "$(_a299_state)" "#299 $_p: assign-issue fills an empty assignee"
+  assert_contains "$out" "assigned to operator1" "#299 $_p: assign-issue prints the verified assignment"
+
+  # Rejected write: warn, exit 0, never a success line; create-issue unharmed.
+  rm -f "$STUB_ASSIGNEE_FILE"
+  export STUB_ASSIGN_FAIL=1
+  _a299_run "$_p" create-issue "t299" "$SANDBOX/body299.md"
+  assert_eq 0 "$rc" "#299 $_p: a rejected assignment does not fail create-issue"
+  assert_eq "$_created" "$out" "#299 $_p: create-issue stdout unchanged when assignment is rejected"
+  assert_contains "$err" "WARNING" "#299 $_p: a rejected assignment warns on stderr"
+  assert_not_contains "$err" "assigned to operator1" "#299 $_p: a rejected assignment is not reported as success"
+  assert_eq "" "$(_a299_state)" "#299 $_p: a rejected assignment leaves the issue unassigned"
+  unset STUB_ASSIGN_FAIL
+
+  # Write "succeeds" but never lands: only the read-back can tell.
+  rm -f "$STUB_ASSIGNEE_FILE"
+  export STUB_ASSIGN_DROP=1
+  _a299_run "$_p" assign-issue "$_new"
+  assert_eq 0 "$rc" "#299 $_p: an unverified assignment still exits 0"
+  assert_eq "" "$out" "#299 $_p: an assignment the read-back cannot confirm prints no success line"
+  assert_contains "$err" "WARNING" "#299 $_p: an assignment the read-back cannot confirm warns"
+  unset STUB_ASSIGN_DROP
+
+  # Unresolvable self (e.g. no identity): warn, no write, exit 0.
+  rm -f "$STUB_ASSIGNEE_FILE"
+  export STUB_CURRENT_USER=""
+  _a299_run "$_p" assign-issue "$_new"
+  assert_eq "0|" "$rc|$out" "#299 $_p: an unresolved operator identity exits 0 with no success line"
+  assert_contains "$err" "WARNING" "#299 $_p: an unresolved operator identity warns"
+  assert_not_contains "$log" "$_write_sig" "#299 $_p: an unresolved operator identity never writes"
+done
+unset STUB_CURRENT_USER STUB_ASSIGNEE_FILE
+rm -f talos.pipeline.json
+
 finish

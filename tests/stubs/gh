@@ -255,6 +255,28 @@ print(json.dumps([{'filename': p} for p in paths]))
     # `gh pr checks` exits non-zero when any check has failed).
     printf '%s\n' "${STUB_PR_CHECKS:-test	pass	1m2s	https://example/checks}"
     exit "${STUB_PR_CHECKS_EXIT:-0}" ;;
+  "issue view "*"--json assignees"*)
+    # assign-issue's read / read-back (#299). STUB_ASSIGNEE_FILE holds the
+    # issue's current assignee (absent or empty = unassigned), so a write
+    # below is visible to the read-back that follows it.
+    [ -n "${STUB_ASSIGNEE_FILE:-}" ] && [ -s "$STUB_ASSIGNEE_FILE" ] && cat "$STUB_ASSIGNEE_FILE"
+    exit 0 ;;
+  "issue edit "*"--add-assignee "*)
+    # assign-issue's write (#299). STUB_ASSIGN_FAIL=1: GitHub rejects the
+    # assignee (non-zero exit, error on stderr). STUB_ASSIGN_DROP=1: exits 0
+    # but the assignee never lands, so only the read-back can catch it.
+    if [ "${STUB_ASSIGN_FAIL:-}" = "1" ]; then
+      echo "failed to update https://github.com/$REPO/issues/42: could not assign user: not found" >&2
+      exit 1
+    fi
+    _as_prev=""
+    for _as_a in "$@"; do
+      [ "$_as_prev" = "--add-assignee" ] && _as_login="$_as_a"
+      _as_prev="$_as_a"
+    done
+    [ "${STUB_ASSIGN_DROP:-}" != "1" ] && [ -n "${STUB_ASSIGNEE_FILE:-}" ] \
+      && printf '%s\n' "$_as_login" > "$STUB_ASSIGNEE_FILE"
+    exit 0 ;;
   "issue comment "*)
     printf 'https://github.com/%s/issues/comments/%s\n' "$REPO" "${STUB_COMMENT_ID:-100}" ;;
   "issue create "*)
