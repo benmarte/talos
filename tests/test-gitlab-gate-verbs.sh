@@ -138,6 +138,61 @@ out="$(STUB_GITLAB_MR_LIST='[{"iid":12,"title":"x","state":"merged","source_bran
   bash "$VCS" find-pr 53 merged 2>&1)"
 assert_eq "" "$out" "find-pr merged: a same-path URL on another host does not match"
 
+# An ssh alias host (no dot, from ~/.ssh/config) is not the URL host: treat
+# it as unknown and accept the project's URL on any host (#303 review).
+git remote set-url origin git@gitlab-work:acme/widget.git
+STUB_GITLAB_MR_VIEW='{"iid":9,"description":"Closes https://gitlab.com/acme/widget/-/issues/42"}' STUB_GITLAB_MR_LIST="$_sibling" \
+  bash "$VCS" check-closing-keyword 9 42 >/dev/null 2>&1; rc=$?
+assert_eq "1" "$rc" "check-closing-keyword: an ssh-alias origin host does not reject the project's https URL"
+out="$(STUB_GITLAB_MR_LIST='[{"iid":12,"title":"x","state":"merged","source_branch":"x","description":"Closes https://gitlab.com/acme/widget/-/issues/53"}]' \
+  bash "$VCS" find-pr 53 merged 2>&1)"
+assert_contains "$out" '"number": 12' "find-pr merged: an ssh-alias origin host does not reject the project's https URL"
+git remote set-url origin git@gitlab.com:acme/widget.git
+
+# The closing-list scan stays linear (#303 review): `fix#1 ` is both a
+# keyword and a list item, which made every keyword re-walk the rest of the
+# list (2.9 s at 24 KB). A 1 MB description must finish well inside 5 s.
+# The body is too big for an env var, so a glab wrapper serves it from a
+# file; a 30 s watchdog turns a regression into a failure, not a hang.
+mkdir -p "$SANDBOX/bigglab"
+cat > "$SANDBOX/bigglab/glab" <<EOF
+#!/bin/sh
+case "\$1 \$2" in
+  "mr view") cat "\$BIG_VIEW" ;;
+  "mr list") cat "\$BIG_LIST" ;;
+  *) exec "$STUBS_DIR/glab" "\$@" ;;
+esac
+EOF
+chmod +x "$SANDBOX/bigglab/glab"
+python3 - "$SANDBOX" <<'EOF'
+import json, sys
+d, big = sys.argv[1], ('fix#1 ' * 174763)[:1048576]
+mr = lambda iid, state, desc: {"iid": iid, "title": "t", "state": state, "source_branch": "b%d" % iid, "description": desc}
+json.dump(mr(9, "opened", big), open(d + "/big-view.json", "w"))
+json.dump(mr(9, "opened", "Closes #42"), open(d + "/closes-view.json", "w"))
+json.dump([mr(9, "opened", "Closes #42"), mr(11, "opened", big)], open(d + "/big-open.json", "w"))
+json.dump([mr(12, "merged", big)], open(d + "/big-merged.json", "w"))
+EOF
+_timed() {  # prints "<rc> <seconds>" for "$@"; rc 124 when its process group is killed after 30 s
+  python3 -c '
+import os, signal, subprocess, sys, time
+t = time.time()
+p = subprocess.Popen(sys.argv[1:], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+try: rc = p.wait(timeout=30)
+except subprocess.TimeoutExpired:
+    os.killpg(p.pid, signal.SIGKILL); p.wait(); rc = 124
+print("%d %.2f" % (rc, time.time() - t))' "$@"
+}
+for _case in "big-view|big-open|check-closing-keyword 9 42|the MR body" \
+    "closes-view|big-open|check-closing-keyword 9 42|a sibling body" \
+    "closes-view|big-merged|find-pr 42 merged|a merged MR body"; do
+  IFS='|' read -r _view _list _verb _what <<<"$_case"
+  read -r rc _secs <<<"$(PATH="$SANDBOX/bigglab:$PATH" BIG_VIEW="$SANDBOX/$_view.json" BIG_LIST="$SANDBOX/$_list.json" \
+    _timed bash "$VCS" $_verb)"
+  assert_eq "0" "$rc" "linear scan: $_verb on a 1 MB 'fix#1 ' $_what exits 0 (no match)"
+  awk -v s="$_secs" 'BEGIN { exit !(s < 5) }'; assert_eq "0" "$?" "linear scan: $_verb on a 1 MB $_what took ${_secs}s (< 5 s)"
+done
+
 # github keeps its narrower keyword set: Implements is not a closing keyword,
 # and only the first reference after a keyword counts (no GitLab lists).
 rm talos.pipeline.json
