@@ -14,13 +14,24 @@ case "$args" in
   "issue view "*"--output json"*)
     # assign-issue's read / read-back (#299): same STUB_ASSIGNEE_FILE state
     # contract as the gh stub (absent or empty = unassigned).
+    # check-epic-acceptance (#303): STUB_GITLAB_ISSUE_VIEW_FAIL=1 fails the
+    # fetch; a set STUB_GITLAB_ISSUE_DESCRIPTION (even empty) adds the
+    # issue's `description` field. Unset = the #299 shape, unchanged.
+    if [ "${STUB_GITLAB_ISSUE_VIEW_FAIL:-}" = "1" ]; then
+      echo "ERROR: 404 Not Found" >&2
+      exit 1
+    fi
     _as_cur=""
     [ -n "${STUB_ASSIGNEE_FILE:-}" ] && [ -s "$STUB_ASSIGNEE_FILE" ] && _as_cur="$(cat "$STUB_ASSIGNEE_FILE")"
-    CUR="$_as_cur" python3 -c "
+    CUR="$_as_cur" HAS_DESC="${STUB_GITLAB_ISSUE_DESCRIPTION+1}" \
+      DESC="${STUB_GITLAB_ISSUE_DESCRIPTION:-}" python3 -c "
 import json, os
 cur = os.environ['CUR']
-print(json.dumps({'iid': 42, 'title': 'Fix login crash',
-                  'assignees': [{'username': cur}] if cur else []}))
+d = {'iid': 42, 'title': 'Fix login crash',
+     'assignees': [{'username': cur}] if cur else []}
+if os.environ['HAS_DESC']:
+    d['description'] = os.environ['DESC']
+print(json.dumps(d))
 " ;;
   "issue update "*"--assignee "*)
     # assign-issue's write (#299). STUB_ASSIGN_FAIL / STUB_ASSIGN_DROP as in
@@ -37,6 +48,21 @@ print(json.dumps({'iid': 42, 'title': 'Fix login crash',
     [ "${STUB_ASSIGN_DROP:-}" != "1" ] && [ -n "${STUB_ASSIGNEE_FILE:-}" ] \
       && printf '%s\n' "$_as_login" > "$STUB_ASSIGNEE_FILE"
     exit 0 ;;
+  "api "*"merge_requests/"*"/diffs"*|"api "*"/pipelines/"*"/retry"*|"api projects/"*"/merge_requests/"*)
+    # MR REST calls (#303): pr-files/check-pr-files read
+    # STUB_GITLAB_MR_DIFFS, rerun-ci reads STUB_GITLAB_MR_API and POSTs the
+    # retry. STUB_GITLAB_API_FAIL=1 fails every one of them. Unset = empty
+    # output, exit 0 -- the fall-through behaviour these shapes had before.
+    if [ "${STUB_GITLAB_API_FAIL:-}" = "1" ]; then
+      echo "ERROR: 500 Internal Server Error" >&2
+      exit 1
+    fi
+    case "$args" in
+      *"/diffs"*) [ -n "${STUB_GITLAB_MR_DIFFS:-}" ] && printf '%s\n' "$STUB_GITLAB_MR_DIFFS" ;;
+      *"/retry"*) ;;
+      *)          [ -n "${STUB_GITLAB_MR_API:-}" ] && printf '%s\n' "$STUB_GITLAB_MR_API" ;;
+    esac
+    exit 0 ;;
   "api user"*)
     # Operator identity for issues.assignee: self (#299).
     printf '{"username":"%s"}\n' "${STUB_CURRENT_USER:-}" ;;
@@ -51,13 +77,27 @@ print(json.dumps({'iid': 42, 'title': 'Fix login crash',
     fi ;;
   "mr list "*)
     # Override STUB_GITLAB_MR_LIST to simulate a capped/large result set (#171).
+    # STUB_GITLAB_MR_LIST_FAIL=1 fails the call (#303).
+    if [ "${STUB_GITLAB_MR_LIST_FAIL:-}" = "1" ]; then
+      echo "ERROR: 500 Internal Server Error" >&2
+      exit 1
+    fi
     if [ -n "${STUB_GITLAB_MR_LIST:-}" ]; then
       printf '%s\n' "$STUB_GITLAB_MR_LIST"
     else
       printf '[{"iid":7,"title":"fix: guard","state":"opened","sourceBranch":"fix/issue-42-guard"}]\n'
     fi ;;
   "mr view "*)
-    printf '{"iid":7,"title":"fix: guard","state":"opened"}\n' ;;
+    # check-closing-keyword (#303): STUB_GITLAB_MR_VIEW overrides the MR JSON,
+    # STUB_GITLAB_MR_VIEW_FAIL=1 fails the fetch.
+    if [ "${STUB_GITLAB_MR_VIEW_FAIL:-}" = "1" ]; then
+      echo "ERROR: 404 Not Found" >&2
+      exit 1
+    elif [ -n "${STUB_GITLAB_MR_VIEW:-}" ]; then
+      printf '%s\n' "$STUB_GITLAB_MR_VIEW"
+    else
+      printf '{"iid":7,"title":"fix: guard","state":"opened"}\n'
+    fi ;;
   "label list "*)
     # Used by bootstrap-board.sh (#266) to verify board-relied-on labels
     # exist. Override STUB_GITLAB_LABEL_LIST to simulate a repo missing one.

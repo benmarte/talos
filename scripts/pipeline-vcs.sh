@@ -48,7 +48,8 @@
 #                                             including bodies with no checkboxes
 #                                             at all. Exits non-zero and prints
 #                                             each unticked item's text, one per
-#                                             line, when any remain. GitHub only.
+#                                             line, when any remain. github,
+#                                             github-api, gitlab (#303).
 #   has-spec <n>                              Exit 0 when issue <n>'s body already
 #                                             IS a usable spec — an "acceptance
 #                                             criteria" heading (case-insensitive,
@@ -128,10 +129,10 @@
 #                                             files are never silently truncated.
 #                                             Used by the Step 3e Phase 1 docs-mode
 #                                             gate (#200) to decide whether the docs
-#                                             stage needs to run at all. GitHub only
-#                                             (github/github-api parity); gitlab,
-#                                             azure, and file mode fail open with a
-#                                             stderr warning (empty stdout).
+#                                             stage needs to run at all. github,
+#                                             github-api, gitlab (#303, MR diffs
+#                                             API); a failed fetch exits 1. azure
+#                                             and file mode fail open (empty stdout).
 #   check-closing-keyword <n|branch> <issue>  Exit 1 if the PR body has a closing
 #                                             keyword for <issue> while other PRs
 #                                             for that issue are still open.
@@ -4459,6 +4460,55 @@ for a in json.load(sys.stdin).get('assignees') or []:
     glab api user | python3 -c "import json, sys; print(json.load(sys.stdin).get('username', ''))"
   }
 
+  # REST project reference for `glab api` (#303), which takes no -R flag:
+  # the URL-encoded vcs.repo path (GitLab accepts it wherever :id goes), or
+  # glab's own :id placeholder for the current directory's project.
+  _gl_api_project() {
+    if [ -n "$REPO" ]; then
+      python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$REPO"
+    else
+      echo ":id"
+    fi
+  }
+  # MR iids are interpolated into REST paths -- accept digits only.
+  _gl_require_iid() {
+    case "$2" in
+      ''|*[!0-9]*) echo "pipeline-vcs: $1: expected a numeric MR iid, got '$2'" >&2; return 1 ;;
+    esac
+  }
+  # glab MR list JSON on stdin -> the shared {number,state,title,
+  # headRefName,body} PR shape (find-pr, check-closing-keyword).
+  _gl_mrs_to_prs() {
+    python3 -c '
+import json, sys
+try: mrs = json.load(sys.stdin)
+except Exception: mrs = []
+json.dump([{"number": m.get("iid"),
+            "state": {"opened": "OPEN", "merged": "MERGED"}.get(m.get("state", ""), "CLOSED"),
+            "title": m.get("title", ""),
+            "headRefName": m.get("source_branch") or m.get("sourceBranch") or "",
+            "body": m.get("description") or ""} for m in mrs], sys.stdout)
+'
+  }
+  # MR <iid>'s changed paths, one per line (#303): new_path covers added,
+  # modified and renamed files. GET /projects/:id/merge_requests/:iid/diffs,
+  # every page. Returns non-zero with no stdout on an API failure or an
+  # empty/unparseable response -- never a short or empty "no files" list.
+  # GitLab itself truncates MRs above its instance diff limits.
+  _gl_pr_files() {
+    local _raw
+    _raw="$(glab api --paginate "projects/$(_gl_api_project)/merge_requests/$1/diffs?per_page=100")" || return 1
+    [ -n "$_raw" ] || return 1
+    # Strict parse: an entry without new_path (e.g. an error object) is a
+    # failure, not an MR with no files -- raises before anything is printed.
+    printf '%s' "$_raw" | _gh_paginate_merge | python3 -c '
+import json, sys
+paths = [d["new_path"] for d in json.load(sys.stdin)]
+for p in paths:
+    print(p)
+' 2>/dev/null
+  }
+
   case "$verb" in
     assign-issue)
       _vcs_shared_assign_issue "${1:-}" _gl_assignees_get _gl_assignee_add _gl_current_user
@@ -4655,25 +4705,123 @@ print(d.get('merge_status') or d.get('detailed_merge_status') or '')
       _glfp_out="$(glab mr list $_glfp_flag --per-page 100 --output json $RARG)" || {
         echo "pipeline-vcs: find-pr: glab mr list failed" >&2; exit 1; }
       _list_cap_warn find-pr 100 "$(printf '%s' "$_glfp_out" | _json_array_count)" "glab --per-page ceiling" MRs
-      printf '%s' "$_glfp_out" | python3 -c '
-import json, sys
-try: mrs = json.load(sys.stdin)
-except Exception: mrs = []
-json.dump([{"number": m.get("iid"),
-            "state": {"opened": "OPEN", "merged": "MERGED"}.get(m.get("state", ""), "CLOSED"),
-            "title": m.get("title", ""),
-            "headRefName": m.get("source_branch") or m.get("sourceBranch") or "",
-            "body": m.get("description") or ""} for m in mrs], sys.stdout)
-' | _vcs_shared_find_pr "$n" "$state" "$REPO"
+      printf '%s' "$_glfp_out" | _gl_mrs_to_prs | _vcs_shared_find_pr "$n" "$state" "$REPO"
       ;;
-    check-pr-files|pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
-      # Best-effort providers: not implemented — fail open with a warning so
-      # the orchestrator falls back to its manual instructions.
-      echo "pipeline-vcs: $verb not implemented for gitlab — verify manually" >&2
-      return 0
+    pr-files)
+      # pr-files <iid> (#303) -- same contract as github: one changed path
+      # per line; a failed or empty fetch exits 1 with no stdout.
+      local n="${1:-}"
+      _gl_require_iid pr-files "$n" || exit 1
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] glab api --paginate projects/$(_gl_api_project)/merge_requests/$n/diffs?per_page=100"
+        return 0
+      fi
+      _gl_pr_files "$n" || { echo "pipeline-vcs: pr-files: could not fetch the changed files of MR !$n" >&2; exit 1; }
+      ;;
+    check-pr-files)
+      # Forbidden-files merge gate (#303): pr-files output through the same
+      # shared matcher github uses. Fails closed on any fetch failure.
+      local n="${1:-}"
+      _gl_require_iid check-pr-files "$n" || exit 1
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] pr-files $n | match against forbidden patterns"
+        return 0
+      fi
+      local _glcpf_paths
+      _glcpf_paths="$(_gl_pr_files "$n")" || {
+        echo "pipeline-vcs: check-pr-files: could not fetch the changed files of MR !$n -- failing closed, do not merge" >&2
+        exit 1; }
+      printf '%s\n' "$_glcpf_paths" | CONFIGURED="$(cfg merge.forbidden_files "")" REPLACE="$(cfg merge.forbidden_files_replace "")" ALLOW="$(cfg merge.forbidden_files_allow "")" _vcs_shared_check_pr_files
+      ;;
+    check-closing-keyword)
+      # check-closing-keyword <iid|branch> <issue_N> (#303) -- github
+      # semantics via _vcs_shared_check_closing_keyword: exit 1 when the MR
+      # description closes #N while another opened MR references N. A
+      # fetch failure fails open with the talos:closing-keyword-unverified
+      # marker (fixed-literal reason), exactly as on github.
+      local pr_ref="${1:-}" issue_n="${2:-}"
+      [ -z "$pr_ref" ]  && { echo "pipeline-vcs: check-closing-keyword: missing MR ref"       >&2; exit 1; }
+      [ -z "$issue_n" ] && { echo "pipeline-vcs: check-closing-keyword: missing issue number" >&2; exit 1; }
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] check-closing-keyword $pr_ref $issue_n: glab mr view (description), then glab mr list --output json"
+        return 0
+      fi
+      if [ -z "$REPO" ]; then
+        echo "talos:closing-keyword-unverified pr=$pr_ref issue=$issue_n reason=repo-unresolved"
+        return 0
+      fi
+      local _glck_json _glck_number _glck_body
+      _glck_json="$(glab mr view "$pr_ref" --output json $RARG 2>/dev/null)"
+      _glck_number="$(printf '%s' "$_glck_json" | python3 -c "import json,sys; print(json.load(sys.stdin).get('iid',''))" 2>/dev/null)"
+      if [ -z "$_glck_number" ]; then
+        echo "pipeline-vcs: check-closing-keyword: could not fetch MR '$pr_ref' — skipping check" >&2
+        echo "talos:closing-keyword-unverified pr=$pr_ref issue=$issue_n reason=pr-fetch-failed"
+        return 0
+      fi
+      _glck_body="$(printf '%s' "$_glck_json" | python3 -c "import json,sys; print(json.load(sys.stdin).get('description') or '')")"
+      # Opened MRs only (glab's default state); empty stdout on failure.
+      _gl_fetch_closing_siblings() {
+        local _out
+        _out="$(glab mr list --per-page 100 --output json $RARG 2>/dev/null)" || return 1
+        _list_cap_warn check-closing-keyword 100 "$(printf '%s' "$_out" | _json_array_count)" "glab --per-page ceiling" MRs
+        printf '%s' "$_out" | _gl_mrs_to_prs
+      }
+      printf '%s' "$_glck_body" | \
+        _vcs_shared_check_closing_keyword "$issue_n" "$_glck_number" "$pr_ref" _gl_fetch_closing_siblings
+      exit $?
+      ;;
+    check-epic-acceptance)
+      # check-epic-acceptance <N> (#303): the issue description through the
+      # shared unticked-box scan. A failed fetch, or a response without a
+      # description field, exits 1 so the epic sweep never closes the epic.
+      local n="${1:-}"
+      [ -z "$n" ] && { echo "pipeline-vcs: check-epic-acceptance: missing issue number" >&2; exit 1; }
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] glab issue view $n --output json $RARG | .description | scan for unticked '- [ ]' checklist lines"
+        return 0
+      fi
+      local _glcea_json _glcea_body
+      _glcea_json="$(glab issue view "$n" --output json $RARG)" || exit 1
+      _glcea_body="$(printf '%s' "$_glcea_json" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+if not isinstance(d, dict) or "description" not in d:
+    sys.exit(1)
+print(d["description"] or "")
+' 2>/dev/null)" || {
+        echo "pipeline-vcs: check-epic-acceptance: could not read the description of issue #$n -- not closing" >&2
+        exit 1; }
+      printf '%s' "$_glcea_body" | _epic_acceptance_scan
+      ;;
+    rerun-ci)
+      # rerun-ci <iid> (#303): retry the failed/canceled jobs of the MR's
+      # head pipeline -- GET /projects/:id/merge_requests/:iid (.head_pipeline)
+      # then POST /projects/:id/pipelines/:pipeline_id/retry. Any failure,
+      # including an MR with no pipeline, exits 1.
+      local n="${1:-}"
+      _gl_require_iid rerun-ci "$n" || exit 1
+      local _glrc_proj
+      _glrc_proj="$(_gl_api_project)"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] glab api --method POST projects/$_glrc_proj/pipelines/<head pipeline of MR !$n>/retry"
+        return 0
+      fi
+      local _glrc_pid
+      _glrc_pid="$(glab api "projects/$_glrc_proj/merge_requests/$n" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+p = d.get("head_pipeline") or d.get("pipeline") or {}
+print(p.get("id") or "")
+' 2>/dev/null)"
+      case "$_glrc_pid" in
+        ''|*[!0-9]*) echo "pipeline-vcs: rerun-ci: could not resolve a head pipeline for MR !$n" >&2; exit 1 ;;
+      esac
+      glab api --method POST "projects/$_glrc_proj/pipelines/$_glrc_pid/retry" >/dev/null || {
+        echo "pipeline-vcs: rerun-ci: retry of pipeline $_glrc_pid failed" >&2; exit 1; }
+      echo "rerun-ci: retried pipeline $_glrc_pid for MR !$n"
       ;;
     pr-checks-required)
-      # Unlike the best-effort providers above, this verb gates a CI-wait
+      # Not implemented for gitlab yet. This verb gates a CI-wait
       # loop that trusts exit 0 as "every required check passed" -- failing
       # open here would let that loop treat unimplemented CI status as a
       # vacuous pass. Fail closed instead (#205).

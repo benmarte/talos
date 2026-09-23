@@ -716,13 +716,10 @@ assert_contains "$out" "[dry-run]" "pr-checks-required: --dry-run prints a dry-r
 assert_not_contains "$(grep -v "repo view" "$GH_LOG")" "pr " "pr-checks-required: --dry-run makes no gh pr calls"
 rm talos.pipeline.json
 
-# ── GitLab adapter: new verbs fail open with a warning ───────────────────────
+# ── GitLab adapter (gate verbs: tests/test-gitlab-gate-verbs.sh, #303) ───────
 cat > talos.pipeline.json <<'EOF'
 {"vcs": {"provider": "gitlab"}}
 EOF
-out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
-assert_eq "0" "$rc" "gitlab: check-pr-files fails open (exit 0)"
-assert_contains "$out" "not implemented for gitlab" "gitlab: fail-open warns the orchestrator"
 
 # pr-checks-required is the one verb that must NOT fail open here (#205): the
 # QA CI-wait loop trusts exit 0 as "every required check passed", so an
