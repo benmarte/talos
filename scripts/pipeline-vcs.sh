@@ -2015,6 +2015,13 @@ print(f'no forbidden files [{pat_count} patterns: defaults={defaults_active}]')
 #                                 title, headRefName and body, and exit 0; or
 #                                 print nothing and exit non-zero on fetch
 #                                 failure.
+#           flavor            -- optional, default "github". "gitlab" (#303)
+#                                 widens the keywords to GitLab's default
+#                                 issue_closing_pattern (adds closing/fixing/
+#                                 resolving and implement[s|ed|ing], optional
+#                                 colon) and the URL form to a same-project
+#                                 https://<host>/<repo>/-/issues/N. The
+#                                 github regexes are unchanged.
 #   env:    REPO -- "owner/name", scopes the #N / owner/repo#N / URL
 #                    reference forms to the current repository. A missing
 #                    REPO is an adapter-side "can we even ask" guard (fail
@@ -2033,7 +2040,7 @@ print(f'no forbidden files [{pat_count} patterns: defaults={defaults_active}]')
 # is the entire fix. This slice intentionally leaves that behaviour
 # unchanged; it only stops _github and _github_api from hand-duplicating it.
 _vcs_shared_check_closing_keyword() {
-  local issue_n="$1" pr_number="$2" pr_ref="$3" siblings_fetch_fn="$4"
+  local issue_n="$1" pr_number="$2" pr_ref="$3" siblings_fetch_fn="$4" flavor="${5:-github}"
   local pr_body
   pr_body="$(cat)"
 
@@ -2054,6 +2061,9 @@ n    = sys.argv[1]
 repo = sys.argv[2]   # owner/name — already stripped of .git suffix, passed from \$REPO
 # Closing keywords (case-insensitive)
 kw = r'(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)'
+gitlab = sys.argv[3] == 'gitlab'
+if gitlab:
+    kw = r'(?:clos(?:e[sd]?|ing)|fix(?:e[sd]|ing)?|resolv(?:e[sd]?|ing)|implement(?:s|ed|ing)?)'
 # Resolve owner and repo name for repo-scoped patterns (case-insensitive).
 repo_lc = repo.lower()
 if '/' in repo_lc:
@@ -2083,13 +2093,16 @@ ref_hash = (
 ref_gh  = r'(?<![0-9])[Gg][Hh]-' + n_esc + r'(?!\d)'
 ref_url = (r'https://github\.com/(?i:' + owner_esc + r'/' + name_esc + r')'
            + r'/issues/' + n_esc + r'(?!\d)')
+if gitlab:
+    ref_url = (r'https?://[^/\s]+/(?i:' + owner_esc + r'/' + name_esc + r')'
+               + r'(?:/-)?/issues/' + n_esc + r'(?!\d)')
 ref = r'(?:' + ref_hash + r'|' + ref_gh + r'|' + ref_url + r')'
-pattern = kw + r'\s+' + ref
+pattern = kw + (r':?\s+' if gitlab else r'\s+') + ref
 if re.search(pattern, body, re.IGNORECASE):
     print('yes')
 else:
     print('no')
-" "$issue_n" "$REPO" 2>/dev/null)"
+" "$issue_n" "$REPO" "$flavor" 2>/dev/null)"
 
   # No closing keyword → nothing to check.
   if [ "$has_closing" != "yes" ]; then
@@ -2133,6 +2146,10 @@ bare_pat      = r'(?<!\w)(?<!/)#' + n_esc + r'(?!\d)'
 gh_pat        = r'(?<![0-9])[Gg][Hh]-' + n_esc + r'(?!\d)'
 url_pat       = (r'https://github\.com/(?i:' + owner_esc + r'/' + name_esc + r')'
                  + r'/issues/' + n_esc + r'(?!\d)')
+gitlab = sys.argv[4] == 'gitlab'
+if gitlab:
+    url_pat = (r'https?://[^/\s]+/(?i:' + owner_esc + r'/' + name_esc + r')'
+               + r'(?:/-)?/issues/' + n_esc + r'(?!\d)')
 ref_pat = r'(?:' + own_repo_pat + r'|' + bare_pat + r'|' + gh_pat + r'|' + url_pat + r')'
 # #221: a sibling counts only when one of the four reference forms above is
 # introduced by a real closing keyword (close/closes/closed/fix/fixes/fixed/
@@ -2140,6 +2157,8 @@ ref_pat = r'(?:' + own_repo_pat + r'|' + bare_pat + r'|' + gh_pat + r'|' + url_p
 # Part of #N line -- a bare prose mention (See #42, Related to #42,
 # owned by #42) must NOT count as a sibling.
 kw_prefix     = r'(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*'
+if gitlab:
+    kw_prefix = r'(?:clos(?:e[sd]?|ing)|fix(?:e[sd]|ing)?|resolv(?:e[sd]?|ing)|implement(?:s|ed|ing)?)' + r'\s*:?\s*'
 partof_prefix = r'\bpart\s+of\s+'
 body_pat = r'(?:' + kw_prefix + r'|' + partof_prefix + r')' + ref_pat
 try: prs = json.load(sys.stdin)
@@ -2158,7 +2177,7 @@ if siblings:
     print('blocked:' + ','.join(siblings))
 else:
     print('ok')
-" "$issue_n" "${pr_number:-}" "$REPO" 2>/dev/null)"
+" "$issue_n" "${pr_number:-}" "$REPO" "$flavor" 2>/dev/null)"
 
   case "$sibling_result" in
     ok)
@@ -2207,15 +2226,21 @@ else:
 #                      "group[/sub]/project"). Empty or not of that shape
 #                      means no identity to compare: fail closed and accept
 #                      only a bare #N after the keyword.
+#           flavor  -- optional, default "github". "gitlab" (#303) widens
+#                      the merged-state keywords to GitLab's default
+#                      issue_closing_pattern (closing/fixing/resolving,
+#                      implement[s|ed|ing]); github is unchanged.
 #   stdout: one JSON object per matching PR: {number, state, title, headRefName}.
 _vcs_shared_find_pr() {
-  local n="$1" state="${2:-open}" repo="${3:-}"
+  local n="$1" state="${2:-open}" repo="${3:-}" flavor="${4:-github}"
   python3 -c "
 import json, re, sys
 n, state, repo = sys.argv[1], sys.argv[2], sys.argv[3]
 n_esc = re.escape(n)
 if state == 'merged':
     kw   = r'(?<![\w-])(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*'
+    if sys.argv[4] == 'gitlab':
+        kw = r'(?<![\w-])' + r'(?:clos(?:e[sd]?|ing)|fix(?:e[sd]|ing)?|resolv(?:e[sd]?|ing)|implement(?:s|ed|ing)?)' + r'\s*:?\s*'
     refs = [r'(?<![\w/])#' + n_esc]
     if re.fullmatch(r'[\w.-]+(?:/[\w.-]+)+', repo):
         r_esc = re.escape(repo)
@@ -2234,7 +2259,7 @@ for pr in prs:
     body_match   = bool(body_re.search(hay))
     if branch_match or body_match:
         print(json.dumps({k: pr.get(k) for k in ('number','state','title','headRefName')}))
-" "$n" "$state" "$repo"
+" "$n" "$state" "$repo" "$flavor"
 }
 
 # _vcs_shared_pr_mergeable <status-fetch-fn>
@@ -4705,7 +4730,7 @@ print(d.get('merge_status') or d.get('detailed_merge_status') or '')
       _glfp_out="$(glab mr list $_glfp_flag --per-page 100 --output json $RARG)" || {
         echo "pipeline-vcs: find-pr: glab mr list failed" >&2; exit 1; }
       _list_cap_warn find-pr 100 "$(printf '%s' "$_glfp_out" | _json_array_count)" "glab --per-page ceiling" MRs
-      printf '%s' "$_glfp_out" | _gl_mrs_to_prs | _vcs_shared_find_pr "$n" "$state" "$REPO"
+      printf '%s' "$_glfp_out" | _gl_mrs_to_prs | _vcs_shared_find_pr "$n" "$state" "$REPO" gitlab
       ;;
     pr-files)
       # pr-files <iid> (#303) -- same contract as github: one changed path
@@ -4767,7 +4792,7 @@ print(d.get('merge_status') or d.get('detailed_merge_status') or '')
         printf '%s' "$_out" | _gl_mrs_to_prs
       }
       printf '%s' "$_glck_body" | \
-        _vcs_shared_check_closing_keyword "$issue_n" "$_glck_number" "$pr_ref" _gl_fetch_closing_siblings
+        _vcs_shared_check_closing_keyword "$issue_n" "$_glck_number" "$pr_ref" _gl_fetch_closing_siblings gitlab
       exit $?
       ;;
     check-epic-acceptance)

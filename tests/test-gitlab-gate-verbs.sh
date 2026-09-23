@@ -81,6 +81,36 @@ assert_eq "0" "$rc" "check-closing-keyword: a sibling-list failure fails open (g
 assert_contains "$out" "talos:closing-keyword-unverified pr=9 issue=42 reason=sibling-fetch-failed" \
   "check-closing-keyword: a sibling-list failure prints the unverified marker"
 
+# GitLab's default issue_closing_pattern keywords and same-project /-/issues/N
+# URLs close the issue too; another project's URL must not.
+for _body in 'Implements #42' 'Closing #42' 'Closes https://gitlab.com/acme/widget/-/issues/42'; do
+  STUB_GITLAB_MR_VIEW="{\"iid\":9,\"description\":\"$_body\"}" STUB_GITLAB_MR_LIST="$_sibling" \
+    bash "$VCS" check-closing-keyword 9 42 >/dev/null 2>&1; rc=$?
+  assert_eq "1" "$rc" "check-closing-keyword: '$_body' is a gitlab closing reference"
+done
+STUB_GITLAB_MR_VIEW='{"iid":9,"description":"Closes https://gitlab.com/other/proj/-/issues/42"}' STUB_GITLAB_MR_LIST="$_sibling" \
+  bash "$VCS" check-closing-keyword 9 42 >/dev/null 2>&1; rc=$?
+assert_eq "0" "$rc" "check-closing-keyword: another project's /-/issues/N URL does not close the issue"
+
+# find-pr merged (#298 strict match) accepts the same gitlab forms.
+_merged='[{"iid":12,"title":"feat: x","state":"merged","source_branch":"feature/x","description":"Implements #50. Resolving https://gitlab.com/acme/widget/-/issues/51. Closes https://gitlab.com/other/proj/-/issues/52"}]'
+for _n in 50 51; do
+  out="$(STUB_GITLAB_MR_LIST="$_merged" bash "$VCS" find-pr "$_n" merged 2>&1)"
+  assert_contains "$out" '"number": 12' "find-pr merged: gitlab closing reference to #$_n matches"
+done
+out="$(STUB_GITLAB_MR_LIST="$_merged" bash "$VCS" find-pr 52 merged 2>&1)"
+assert_eq "" "$out" "find-pr merged: another project's /-/issues/N URL does not match"
+
+# github keeps its narrower keyword set: Implements is not a closing keyword.
+rm talos.pipeline.json
+STUB_PR_BODY="Implements #42" STUB_PR_NUMBER=9 \
+  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"a","headRefName":"fix/issue-42-a","body":"Implements #42"},{"number":7,"state":"OPEN","title":"b","headRefName":"fix/issue-42-b","body":"Part of #42"}]' \
+  bash "$VCS" check-closing-keyword 9 42 >/dev/null 2>&1; rc=$?
+assert_eq "0" "$rc" "github: 'Implements #42' is still not a closing keyword"
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "gitlab", "repo": "acme/widget"}}
+EOF
+
 # ── check-epic-acceptance ─────────────────────────────────────────────────────
 out="$(STUB_GITLAB_ISSUE_DESCRIPTION='Epic.
 
