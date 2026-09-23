@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- **Merged work closes correctly on every PR provider (#298).** `find-pr <N> merged` now counts a PR only by its `issue-<N>` branch or a real closing keyword, so a merged PR that merely says `Depends on #N` or `Part of #N` no longer makes the Step 1 heal close a parent epic or an unfinished dependency (`github`/`github-api`; open lookups keep the loose match). `find-pr` is implemented for `azure` (linked work-item PRs, falling back to the branch convention) and `gitlab` (`glab mr list`) instead of failing open with exit 0, and the heal treats exit 2 as "not verified" rather than "no merged PR". Azure `create-pr` links the branch's work item with `--transition-work-items true`, so ADO closes it natively when a human completes the PR (keywords are ignored on a squash merge); Azure `close-issue` uses `board.azure_states.done` and strips `pipeline:*` tags via json-patch replace. `pipeline-status.sh` says the board is unsupported on `gitlab` instead of a misleading owner skip.
+
 ## [0.17.0] - 2026-09-21
 
 ### Added

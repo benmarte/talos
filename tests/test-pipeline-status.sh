@@ -163,4 +163,15 @@ assert_contains "$err6" "using default 50" "pipeline-status: falls back to the d
 assert_contains "$out" "talos:board-unverified project=4" "pipeline-status: still bails cleanly via board-unverified once the queue's staged GraphQL error is hit"
 assert_eq 4 "$items_calls6" "pipeline-status: page 1 is processed normally under the fallback default cap (user + fields + 1 items + 1 error = 4 calls) instead of bailing at page 1 like an unvalidated cap of 0 would"
 
+# ── Test 7 (#298): gitlab reports the board as unsupported, not a GitHub owner miss ─
+cat > talos.pipeline.json <<'EOF2'
+{"vcs": {"provider": "gitlab"}, "board": {"enabled": true, "project_number": 4}}
+EOF2
+: > "$CURL_LOG"
+out="$(bash "$STATUS" 157 "Done" 2>&1)"; rc=$?
+assert_eq 0 "$rc" "#298 pipeline-status: gitlab board update stays non-fatal (exit 0)"
+assert_contains "$out" "board unsupported for gitlab" "#298 pipeline-status: gitlab names the board as unsupported"
+assert_not_contains "$out" "board.owner not set" "#298 pipeline-status: gitlab no longer falls through to the GitHub Projects path"
+assert_eq "" "$(cat "$CURL_LOG")" "#298 pipeline-status: gitlab makes no GitHub GraphQL call"
+
 finish

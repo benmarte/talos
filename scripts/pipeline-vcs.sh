@@ -104,6 +104,12 @@
 #   find-pr <issue-n> [state]                 Find PRs for an issue (branch has
 #                                             issue-<n> or title/body has #<n>).
 #                                             state: open (default) | merged | all
+#                                             merged: only the branch or a closing
+#                                             keyword (Closes #<n>) counts (#298).
+#                                             azure also matches PRs linked to the
+#                                             work item. Exit 2 = find-pr is not
+#                                             implemented for this provider (never
+#                                             "no PR found").
 #   check-pr-files <n>                        Exit 1 if the PR touches any
 #                                             merge.forbidden_files pattern
 #   pr-files <n>                              Print the PR's changed paths, one per
@@ -2096,22 +2102,39 @@ else:
 #   stdin:  a JSON array of PR objects, each already normalised by the
 #           caller to {number, state, title, headRefName, body}.
 #   args:   issue_n -- the issue number to match branches/bodies against.
+#           state   -- the requested state (default open). For `merged` (#298)
+#                      the body/title match is STRICT: only a closing keyword
+#                      (close[sd]?|fix(e[sd])?|resolve[sd]?, optional `:`)
+#                      directly before #N / GH-N / owner/repo#N / an
+#                      .../issues/N URL counts. A bare mention (`Depends on
+#                      #N`, `Part of #N`) must not, or the Step 1 heal closes
+#                      the parent epic and unfinished dependencies. Other
+#                      states keep the loose bare-#N match (adopt-orphaned-PR).
 #   stdout: one JSON object per matching PR: {number, state, title, headRefName}.
 _vcs_shared_find_pr() {
-  local n="$1"
+  local n="$1" state="${2:-open}"
   python3 -c "
 import json, re, sys
-n = sys.argv[1]
+n, state = sys.argv[1], sys.argv[2]
+n_esc = re.escape(n)
+if state == 'merged':
+    kw  = r'(?<![\w-])(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*'
+    ref = (r'(?:(?<![\w/])(?:[\w.-]+/[\w.-]+)?#' + n_esc
+           + r'|(?<!\d)GH-' + n_esc
+           + r'|https?://\S+/issues/' + n_esc + r')(?!\d)')
+    body_re = re.compile(kw + ref, re.IGNORECASE)
+else:
+    body_re = re.compile(r'#' + n_esc + r'(?!\d)')
 try: prs = json.load(sys.stdin)
 except Exception: prs = []
 for pr in prs:
     ref = pr.get('headRefName','')
     hay = pr.get('title','') + ' ' + (pr.get('body','') or '')
-    branch_match = bool(re.search(r'(?:^|/)issue-' + re.escape(n) + r'(?:-|$)', ref))
-    body_match   = bool(re.search(r'#' + re.escape(n) + r'(?!\d)', hay))
+    branch_match = bool(re.search(r'(?:^|/)issue-' + n_esc + r'(?:-|$)', ref))
+    body_match   = bool(body_re.search(hay))
     if branch_match or body_match:
         print(json.dumps({k: pr.get(k) for k in ('number','state','title','headRefName')}))
-" "$n"
+" "$n" "$state"
 }
 
 # _vcs_shared_pr_mergeable <status-fetch-fn>
@@ -2578,7 +2601,7 @@ for line in sys.stdin:
       fi
       gh pr list --state "$state" --limit 100 \
         --json number,state,title,headRefName,body ${REPO:+--repo "$REPO"} 2>/dev/null \
-        | _vcs_shared_find_pr "$n"
+        | _vcs_shared_find_pr "$n" "$state"
       ;;
     check-pr-files)
       # Forbidden-files pattern/allow-list logic is _vcs_shared_check_pr_files
@@ -3794,7 +3817,7 @@ for pr in prs:
                 'headRefName': pr.get('head',{}).get('ref',''),
                 'body': pr.get('body','') or ''})
 json.dump(out, sys.stdout)
-" | _vcs_shared_find_pr "$_n"
+" | _vcs_shared_find_pr "$_n" "$_state"
       ;;
 
     check-pr-files)
@@ -4431,7 +4454,38 @@ print(d.get('merge_status') or d.get('detailed_merge_status') or '')
           ;;
       esac
       ;;
-    find-pr|check-pr-files|pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
+    find-pr)
+      # find-pr <issue-n> [open|merged|closed|all] (#298). glab selects the
+      # state with a flag (default = opened); normalise GitLab MR fields to
+      # the shared {number,state,title,headRefName,body} shape and reuse the
+      # github matcher, so `merged` counts only the branch convention or a
+      # closing keyword -- GitLab uses the same Closes #N syntax.
+      local n="$1" state="${2:-open}" _glfp_flag=""
+      case "$state" in
+        merged) _glfp_flag="--merged" ;;
+        closed) _glfp_flag="--closed" ;;
+        all)    _glfp_flag="--all" ;;
+      esac
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] glab mr list $_glfp_flag --per-page 100 --output json $RARG | filter issue-$n / #$n"
+        return 0
+      fi
+      local _glfp_out
+      _glfp_out="$(glab mr list $_glfp_flag --per-page 100 --output json $RARG)" || {
+        echo "pipeline-vcs: find-pr: glab mr list failed" >&2; exit 1; }
+      _list_cap_warn find-pr 100 "$(printf '%s' "$_glfp_out" | _json_array_count)" "glab --per-page ceiling" MRs
+      printf '%s' "$_glfp_out" | python3 -c '
+import json, sys
+try: mrs = json.load(sys.stdin)
+except Exception: mrs = []
+json.dump([{"number": m.get("iid"),
+            "state": {"opened": "OPEN", "merged": "MERGED"}.get(m.get("state", ""), "CLOSED"),
+            "title": m.get("title", ""),
+            "headRefName": m.get("source_branch") or m.get("sourceBranch") or "",
+            "body": m.get("description") or ""} for m in mrs], sys.stdout)
+' | _vcs_shared_find_pr "$n" "$state"
+      ;;
+    check-pr-files|pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
       # Best-effort providers: not implemented — fail open with a warning so
       # the orchestrator falls back to its manual instructions.
       echo "pipeline-vcs: $verb not implemented for gitlab — verify manually" >&2
@@ -4662,11 +4716,26 @@ _azure() {
     close-issue)
       local n="$1" body="$2"
       _azure_post_comment "$n" "$body"
+      # #298: honour the process's terminal state (e.g. "Closed" on Agile/
+      # CMMI), same key and default pipeline-status.sh uses for "Done".
+      local done_state
+      done_state="$(cfg board.azure_states.done "Done")"
       if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] az boards work-item update --id $n --state Done $ORG_ARG"
+        echo "[dry-run] az boards work-item update --id $n --state $done_state $ORG_ARG"
       else
-        az boards work-item update --id "$n" --state Done $ORG_ARG
+        az boards work-item update --id "$n" --state "$done_state" $ORG_ARG
       fi
+      # A Done work item stays "open" on the board with its tags, so strip
+      # every pipeline:* tag or the next run treats it as in flight. Goes
+      # through label-issue's json-patch replace (--fields only appends).
+      local tag stale_tags=()
+      while IFS= read -r tag; do
+        tag="${tag#"${tag%%[![:space:]]*}"}"
+        case "$tag" in pipeline:*) stale_tags+=(--remove "$tag") ;; esac
+      done < <(az boards work-item show --id "$n" $ORG_ARG \
+        --query fields.\"System.Tags\" -o tsv 2>/dev/null | tr ';' '\n')
+      [ ${#stale_tags[@]} -gt 0 ] && _azure label-issue "$n" "${stale_tags[@]}"
+      return 0
       ;;
     label-issue)
       # Azure uses tags, not labels. Manage the whole System.Tags string.
@@ -4761,10 +4830,16 @@ PYEOF
       # (or git-remote auto-detect); pass it only when set so az emits its own
       # clear error rather than us fabricating a repo name.
       local repo_arg=""; [ -n "$REPO" ] && repo_arg="--repository $REPO"
+      # #298: link the work item named by the issue-<N> branch convention and
+      # transition it on completion. ADO ignores `Closes #N` on a squash
+      # merge, so this link is the native close path when a human merges.
+      local wi_args=""
+      [[ "$branch" =~ (^|/)issue-([0-9]+)(-|$) ]] \
+        && wi_args="--work-items ${BASH_REMATCH[2]} --transition-work-items true"
       _run az repos pr create \
         --source-branch "$branch" --target-branch "$BASE_BRANCH" \
         --title "$title" --description "$(cat "$body_file")" \
-        $ORG_ARG $PROJ_ARG $repo_arg --output json
+        $wi_args $ORG_ARG $PROJ_ARG $repo_arg --output json
       ;;
     view-pr)
       _run az repos pr show --id "$1" $ORG_ARG --output json
@@ -4912,7 +4987,79 @@ PYEOF
           ;;
       esac
       ;;
-    find-pr|check-pr-files|pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
+    find-pr)
+      # find-pr <work-item-id> [open|merged|closed|all] (#298). ADO links PRs
+      # to work items natively (create-pr passes --work-items), so the
+      # authoritative answer is the work item's own ArtifactLink relations:
+      # one `work-item show --expand relations`, then one `pr show` per
+      # linked PR. When no linked PR is in the requested state, fall back to
+      # the shared branch-convention / closing-keyword matcher over
+      # `repos pr list` -- that catches PRs created before linking existed.
+      local n="$1" state="${2:-open}"
+      local az_status
+      case "$state" in
+        merged) az_status="completed" ;;
+        closed) az_status="abandoned" ;;
+        all)    az_status="all" ;;
+        *)      az_status="active" ;;
+      esac
+      local repo_arg=""; [ -n "$REPO" ] && repo_arg="--repository $REPO"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] az boards work-item show --id $n --expand relations $ORG_ARG | az repos pr show --id <linked>; else az repos pr list --status $az_status | filter issue-$n"
+        return 0
+      fi
+      # Normalise an ADO PR object to the shared {number,state,title,
+      # headRefName,body} shape; state is OPEN/MERGED/CLOSED like github-api.
+      local _azfp_norm='
+import json, sys
+def norm(p):
+    st = {"active": "OPEN", "completed": "MERGED"}.get(p.get("status", ""), "CLOSED")
+    return {"number": p.get("pullRequestId"), "state": st,
+            "title": p.get("title", ""),
+            "headRefName": (p.get("sourceRefName") or "").replace("refs/heads/", "", 1),
+            "body": p.get("description") or ""}
+'
+      local _azfp_wi _azfp_ids _azfp_id _azfp_pr _azfp_linked=""
+      _azfp_wi="$(az boards work-item show --id "$n" --expand relations $ORG_ARG --output json 2>/dev/null)" || {
+        echo "pipeline-vcs: find-pr: could not read work item #$n relations" >&2; exit 1; }
+      # PR links look like vstfs:///Git/PullRequestId/<project>%2F<repo>%2F<pr-id>.
+      _azfp_ids="$(printf '%s' "$_azfp_wi" | python3 -c '
+import json, sys
+try: rels = json.load(sys.stdin).get("relations") or []
+except Exception: rels = []
+for r in rels:
+    url = r.get("url", "")
+    if r.get("rel") == "ArtifactLink" and url.startswith("vstfs:///Git/PullRequestId/"):
+        print(url.replace("%2F", "/").replace("%2f", "/").rsplit("/", 1)[-1])
+')"
+      for _azfp_id in $_azfp_ids; do
+        _azfp_pr="$(az repos pr show --id "$_azfp_id" $ORG_ARG --output json 2>/dev/null)" || continue
+        [ -n "$_azfp_pr" ] && _azfp_linked="${_azfp_linked:+$_azfp_linked,}$_azfp_pr"
+      done
+      _azfp_linked="$(printf '[%s]' "$_azfp_linked" | STATE="$state" python3 -c "$_azfp_norm"'
+import os
+want = {"open": "OPEN", "merged": "MERGED", "closed": "CLOSED"}.get(os.environ["STATE"])
+try: prs = json.load(sys.stdin)
+except Exception: prs = []
+for p in map(norm, prs):
+    if want is None or p["state"] == want:
+        print(json.dumps({k: p[k] for k in ("number", "state", "title", "headRefName")}))
+')"
+      if [ -n "$_azfp_linked" ]; then
+        printf '%s\n' "$_azfp_linked"
+        return 0
+      fi
+      local _azfp_list
+      _azfp_list="$(az repos pr list --status "$az_status" --top 1000 $ORG_ARG $PROJ_ARG $repo_arg --output json)" || {
+        echo "pipeline-vcs: find-pr: az repos pr list failed" >&2; exit 1; }
+      _list_cap_warn find-pr 1000 "$(printf '%s' "$_azfp_list" | _json_array_count)" "az repos pr list --top ceiling" PRs
+      printf '%s' "$_azfp_list" | python3 -c "$_azfp_norm"'
+try: prs = json.load(sys.stdin)
+except Exception: prs = []
+json.dump([norm(p) for p in prs], sys.stdout)
+' | _vcs_shared_find_pr "$n" "$state"
+      ;;
+    check-pr-files|pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
       echo "pipeline-vcs: $verb not implemented for azure — verify manually" >&2
       return 0
       ;;

@@ -425,6 +425,14 @@ if [ "$PROVIDER" = "azure" ]; then
   exit 0
 fi
 
+# ── GitLab: no board integration ──────────────────────────────────────────────
+# Everything below is GitHub Projects. Say so instead of falling through to a
+# misleading "board.owner not set" skip (#298). Still non-fatal (Rule 11).
+if [ "$PROVIDER" = "gitlab" ]; then
+  echo "pipeline-status: board unsupported for gitlab; #$ISSUE → $STATUS not applied" >&2
+  exit 0
+fi
+
 # ── Read config with env var overrides ───────────────────────────────────────
 PROJECT_NUM="${PIPELINE_PROJECT_NUMBER:-$(cfg board.project_number "")}"
 if [ -z "$PROJECT_NUM" ]; then
