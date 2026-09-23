@@ -46,4 +46,26 @@ assert_contains "$skill_flat" 'label-pr <PR_NUMBER> --remove pipeline:blocked' \
 assert_contains "$skill_flat" 'label-issue <N> --remove pipeline:blocked' \
   "SKILL.md gives the orchestrator's issue clear command"
 
+# ── The four fix-round clear points (#312) ─────────────────────────────────
+# Each blocking stage's record-attempt step must clear the block before the
+# developer fix round; losing one leaves that stage's fix round blocked.
+CLEAR_PHRASE='clear `pipeline:blocked` (Step 3, "Clearing `pipeline:blocked`"), then re-dispatch'
+for stage in qa reviewer security adversarial; do
+  after="$(grep -F -A3 -- "record-attempt <N> $stage --pr <PR_NUMBER>" "$SKILL_MD")"
+  assert_contains "$after" "$CLEAR_PHRASE" \
+    "SKILL.md clears pipeline:blocked after the $stage record-attempt"
+done
+
+# ── Blocked PRs are reported, not silent (#312) ────────────────────────────
+assert_contains "$skill_flat" 'K blocked issues, J blocked PRs awaiting human action: #a, PR #b' \
+  "SKILL.md Step 1 blocked-work report lists blocked PRs"
+assert_contains "$skill_flat" '(only when K + J > 0)' \
+  "SKILL.md Step 1 blocked-work report fires only when K + J > 0"
+assert_contains "$skill_flat" 'A PR skipped because it carries `pipeline:blocked`' \
+  "SKILL.md Step 5 summary reports a blocked PR as blocked"
+
+readme_flat="$(tr '\n' ' ' < "$TALOS_ROOT/README.md" | tr -s ' ')"
+assert_contains "$readme_flat" 'removes `pipeline:blocked` from both the PR and its issue' \
+  "README says to remove pipeline:blocked from both the PR and its issue"
+
 finish

@@ -49,7 +49,7 @@ issue: pipeline:ready
                       └─ all labels green + CI green → MERGE → close issue
 ```
 
-Any stage can set `pipeline:blocked` with a comment. Stages only add the label; the orchestrator removes it automatically when re-dispatching a developer fix round after `record-attempt` exits 0 (SKILL.md Step 3, "Clearing `pipeline:blocked`"). Otherwise, a human resolves the block and removes the label manually.
+Any stage can set `pipeline:blocked` with a comment. Stages only add the label; the orchestrator removes it automatically when re-dispatching a developer fix round after `record-attempt` exits 0 (SKILL.md Step 3, "Clearing `pipeline:blocked`"). Otherwise, a human resolves the block and removes `pipeline:blocked` from both the PR and its issue. Removing it from only one leaves the work stuck: the issue label keeps it out of the queue (`issues.skip_labels`) and the PR label blocks the merge. Each run's Step 1 reports blocked issues and blocked PRs together in one `backlog` notification (#312).
 
 **Reading a `pipeline:blocked` comment (#272):** every stage prompt requires that a stop/block/ask outcome name the file and quote the line that triggered it, and say whether that line is an explicit requirement (a spec acceptance criterion, a config threshold, a script's hard failure) or the agent's own interpretation. The `blocked.md` comment template surfaces this as a `Blocked by: <file>:<quoted line> (explicit|interpreted)` line, always the last line before the resume instructions — read that line first: `explicit` means the stage hit a hard rule and a human must resolve the underlying condition (fix the code, raise a limit, correct the spec) before re-queuing; `interpreted` means the stage's own judgment call and a human may simply disagree and override it, then re-queue without any other change.
 
@@ -823,7 +823,7 @@ If an issue becomes blocked with a corrupt marker, the recovery procedure is:
 2. Find the comment containing the `<!-- talos:attempt ... -->` marker (search for `talos:attempt` in the comment thread).
 3. Delete that comment using the GitHub UI (three-dot menu → Delete).
 4. `read-attempt` will then fall back to the next most-recent valid marker, or report zero attempts if none exists.
-5. Remove `pipeline:blocked`, re-add `pipeline:ready` to re-enter the pipeline.
+5. Remove `pipeline:blocked` from the issue and from its PR if one is open, then re-add `pipeline:ready` to re-enter the pipeline.
 
 Do not edit the marker comment — partial edits may leave it in an ambiguous state. Delete and let the pipeline rewrite it.
 
