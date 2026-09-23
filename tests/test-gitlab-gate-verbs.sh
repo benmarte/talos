@@ -11,6 +11,8 @@ make_sandbox
 use_stubs
 
 VCS="$TALOS_ROOT/scripts/pipeline-vcs.sh"
+# A gitlab project's origin remote: its host pins same-project issue URLs.
+git remote set-url origin git@gitlab.com:acme/widget.git
 cat > talos.pipeline.json <<'EOF'
 {"vcs": {"provider": "gitlab", "repo": "acme/widget"}}
 EOF
@@ -101,12 +103,78 @@ done
 out="$(STUB_GITLAB_MR_LIST="$_merged" bash "$VCS" find-pr 52 merged 2>&1)"
 assert_eq "" "$out" "find-pr merged: another project's /-/issues/N URL does not match"
 
-# github keeps its narrower keyword set: Implements is not a closing keyword.
-rm talos.pipeline.json
-STUB_PR_BODY="Implements #42" STUB_PR_NUMBER=9 \
-  STUB_PR_LIST='[{"number":9,"state":"OPEN","title":"a","headRefName":"fix/issue-42-a","body":"Implements #42"},{"number":7,"state":"OPEN","title":"b","headRefName":"fix/issue-42-b","body":"Part of #42"}]' \
+# GitLab closes every reference in a list after one keyword (#303 review):
+# `Closes #1, #2 and #3` closes #3 too. A list never spans a line break.
+for _body in 'Closes #40, #41 and #42' 'Fixes #40 #42' 'Closes issues #40, acme/widget#41, #42' \
+    'Implements #40,#42' 'Closes #40 and https://gitlab.com/acme/widget/-/issues/42'; do
+  STUB_GITLAB_MR_VIEW="{\"iid\":9,\"description\":\"$_body\"}" STUB_GITLAB_MR_LIST="$_sibling" \
+    bash "$VCS" check-closing-keyword 9 42 >/dev/null 2>&1; rc=$?
+  assert_eq "1" "$rc" "check-closing-keyword: '$_body' closes #42 (gitlab list)"
+done
+for _body in 'Closes #40 and see #42' 'Closes #40\n#42'; do
+  STUB_GITLAB_MR_VIEW="{\"iid\":9,\"description\":\"$_body\"}" STUB_GITLAB_MR_LIST="$_sibling" \
+    bash "$VCS" check-closing-keyword 9 42 >/dev/null 2>&1; rc=$?
+  assert_eq "0" "$rc" "check-closing-keyword: '$_body' does not close #42"
+done
+# The sibling scan reads lists too: MR 11 closes #42 as the second item.
+STUB_GITLAB_MR_VIEW="$_mr_closes" \
+  STUB_GITLAB_MR_LIST='[{"iid":9,"title":"a","state":"opened","source_branch":"a","description":"Closes #42"},{"iid":11,"title":"b","state":"opened","source_branch":"b","description":"Closes #7, #42"}]' \
   bash "$VCS" check-closing-keyword 9 42 >/dev/null 2>&1; rc=$?
-assert_eq "0" "$rc" "github: 'Implements #42' is still not a closing keyword"
+assert_eq "1" "$rc" "check-closing-keyword: a sibling closing #42 later in a list blocks"
+
+_list_merged='[{"iid":14,"title":"feat: y","state":"merged","source_branch":"feature/y","description":"Closes #60, #61 and issue #62. Depends on #63"}]'
+for _n in 60 61 62; do
+  out="$(STUB_GITLAB_MR_LIST="$_list_merged" bash "$VCS" find-pr "$_n" merged 2>&1)"
+  assert_contains "$out" '"number": 14' "find-pr merged: #$_n in a gitlab closing list matches"
+done
+out="$(STUB_GITLAB_MR_LIST="$_list_merged" bash "$VCS" find-pr 63 merged 2>&1)"
+assert_eq "" "$out" "find-pr merged: a mention after the list does not match"
+
+# A same-project URL counts only on the project's host (#303 review).
+STUB_GITLAB_MR_VIEW='{"iid":9,"description":"Closes https://gitlab.evil.example/acme/widget/-/issues/42"}' STUB_GITLAB_MR_LIST="$_sibling" \
+  bash "$VCS" check-closing-keyword 9 42 >/dev/null 2>&1; rc=$?
+assert_eq "0" "$rc" "check-closing-keyword: a same-path URL on another host does not close the issue"
+out="$(STUB_GITLAB_MR_LIST='[{"iid":12,"title":"x","state":"merged","source_branch":"x","description":"Closes https://gitlab.evil.example/acme/widget/-/issues/53"}]' \
+  bash "$VCS" find-pr 53 merged 2>&1)"
+assert_eq "" "$out" "find-pr merged: a same-path URL on another host does not match"
+
+# github keeps its narrower keyword set: Implements is not a closing keyword,
+# and only the first reference after a keyword counts (no GitLab lists).
+rm talos.pipeline.json
+_gh_siblings() { printf '[{"number":9,"state":"OPEN","title":"a","headRefName":"a","body":"%s"},{"number":7,"state":"OPEN","title":"b","headRefName":"fix/issue-42-b","body":"Part of #42"}]' "$1"; }
+for _case in '1|Closes #42' '0|Implements #42' '0|Closes #40, #42'; do
+  _body="${_case#*|}"
+  STUB_PR_BODY="$_body" STUB_PR_NUMBER=9 STUB_PR_LIST="$(_gh_siblings "$_body")" \
+    bash "$VCS" check-closing-keyword 9 42 >/dev/null 2>&1; rc=$?
+  assert_eq "${_case%%|*}" "$rc" "github: check-closing-keyword on '$_body'"
+done
+# ── self-hosted GitLab, vcs.repo unset (#303 review) ─────────────────────────
+# The auto-detect leaves REPO as the whole self-hosted remote. REST paths
+# must use the bare, URL-encoded group/sub/project, and the remote's host
+# pins same-project issue URLs. `gh repo view` fails outside GitHub.
+mkdir -p "$SANDBOX/nogh"
+printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/nogh/gh"
+chmod +x "$SANDBOX/nogh/gh"
+printf '{"vcs": {"provider": "gitlab"}}' > talos.pipeline.json
+for _remote in https://gitlab.example.com/acme/sub/widget.git \
+    ssh://git@gitlab.example.com:2222/acme/sub/widget.git \
+    git@gitlab.example.com:acme/sub/widget.git; do
+  git remote set-url origin "$_remote"
+  : > "$GH_LOG"
+  out="$(PATH="$SANDBOX/nogh:$PATH" STUB_GITLAB_MR_DIFFS='[{"new_path":"a.txt"}]' bash "$VCS" pr-files 9 2>&1)"; rc=$?
+  assert_eq "0" "$rc" "self-hosted $_remote: pr-files exits 0"
+  assert_contains "$(cat "$GH_LOG")" "api --paginate projects/acme%2Fsub%2Fwidget/merge_requests/9/diffs" \
+    "self-hosted $_remote: REST paths use the bare group/sub/project"
+  PATH="$SANDBOX/nogh:$PATH" STUB_GITLAB_MR_LIST="$_sibling" \
+    STUB_GITLAB_MR_VIEW='{"iid":9,"description":"Closes https://gitlab.example.com/acme/sub/widget/-/issues/42"}' \
+    bash "$VCS" check-closing-keyword 9 42 >/dev/null 2>&1; rc=$?
+  assert_eq "1" "$rc" "self-hosted $_remote: a same-project URL on the instance's host closes the issue"
+  PATH="$SANDBOX/nogh:$PATH" STUB_GITLAB_MR_LIST="$_sibling" \
+    STUB_GITLAB_MR_VIEW='{"iid":9,"description":"Closes https://gitlab.com/acme/sub/widget/-/issues/42"}' \
+    bash "$VCS" check-closing-keyword 9 42 >/dev/null 2>&1; rc=$?
+  assert_eq "0" "$rc" "self-hosted $_remote: the same path on another host does not"
+done
+git remote set-url origin git@gitlab.com:acme/widget.git
 cat > talos.pipeline.json <<'EOF'
 {"vcs": {"provider": "gitlab", "repo": "acme/widget"}}
 EOF
