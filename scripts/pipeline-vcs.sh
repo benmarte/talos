@@ -2105,24 +2105,35 @@ else:
 #           state   -- the requested state (default open). For `merged` (#298)
 #                      the body/title match is STRICT: only a closing keyword
 #                      (close[sd]?|fix(e[sd])?|resolve[sd]?, optional `:`)
-#                      directly before #N / GH-N / owner/repo#N / an
-#                      .../issues/N URL counts. A bare mention (`Depends on
-#                      #N`, `Part of #N`) must not, or the Step 1 heal closes
+#                      directly before a reference to THIS repo's #N counts:
+#                      bare #N always; GH-N, <repo>#N and an
+#                      http(s)://<host>/<repo>[/-]/issues/N URL only when
+#                      `repo` is known, <repo> compared case-insensitively.
+#                      Another repo's `Closes other/repo#N` must not close
+#                      ours, and a bare mention (`Depends on #N`, `Part of
+#                      #N`) must not count at all, or the Step 1 heal closes
 #                      the parent epic and unfinished dependencies. Other
 #                      states keep the loose bare-#N match (adopt-orphaned-PR).
+#           repo    -- optional current repo, "owner/name" (GitLab:
+#                      "group[/sub]/project"). Empty or not of that shape
+#                      means no identity to compare: fail closed and accept
+#                      only a bare #N after the keyword.
 #   stdout: one JSON object per matching PR: {number, state, title, headRefName}.
 _vcs_shared_find_pr() {
-  local n="$1" state="${2:-open}"
+  local n="$1" state="${2:-open}" repo="${3:-}"
   python3 -c "
 import json, re, sys
-n, state = sys.argv[1], sys.argv[2]
+n, state, repo = sys.argv[1], sys.argv[2], sys.argv[3]
 n_esc = re.escape(n)
 if state == 'merged':
-    kw  = r'(?<![\w-])(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*'
-    ref = (r'(?:(?<![\w/])(?:[\w.-]+/[\w.-]+)?#' + n_esc
-           + r'|(?<!\d)GH-' + n_esc
-           + r'|https?://\S+/issues/' + n_esc + r')(?!\d)')
-    body_re = re.compile(kw + ref, re.IGNORECASE)
+    kw   = r'(?<![\w-])(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*'
+    refs = [r'(?<![\w/])#' + n_esc]
+    if re.fullmatch(r'[\w.-]+(?:/[\w.-]+)+', repo):
+        r_esc = re.escape(repo)
+        refs += [r'(?<!\d)GH-' + n_esc,
+                 r'(?<![\w/])' + r_esc + r'#' + n_esc,
+                 r'https?://[^/\s]+/' + r_esc + r'(?:/-)?/issues/' + n_esc]
+    body_re = re.compile(kw + r'(?:' + '|'.join(refs) + r')(?!\d)', re.IGNORECASE)
 else:
     body_re = re.compile(r'#' + n_esc + r'(?!\d)')
 try: prs = json.load(sys.stdin)
@@ -2134,7 +2145,7 @@ for pr in prs:
     body_match   = bool(body_re.search(hay))
     if branch_match or body_match:
         print(json.dumps({k: pr.get(k) for k in ('number','state','title','headRefName')}))
-" "$n" "$state"
+" "$n" "$state" "$repo"
 }
 
 # _vcs_shared_pr_mergeable <status-fetch-fn>
@@ -2601,7 +2612,7 @@ for line in sys.stdin:
       fi
       gh pr list --state "$state" --limit 100 \
         --json number,state,title,headRefName,body ${REPO:+--repo "$REPO"} 2>/dev/null \
-        | _vcs_shared_find_pr "$n" "$state"
+        | _vcs_shared_find_pr "$n" "$state" "$REPO"
       ;;
     check-pr-files)
       # Forbidden-files pattern/allow-list logic is _vcs_shared_check_pr_files
@@ -3817,7 +3828,7 @@ for pr in prs:
                 'headRefName': pr.get('head',{}).get('ref',''),
                 'body': pr.get('body','') or ''})
 json.dump(out, sys.stdout)
-" | _vcs_shared_find_pr "$_n" "$_state"
+" | _vcs_shared_find_pr "$_n" "$_state" "$_REPO"
       ;;
 
     check-pr-files)
@@ -4483,7 +4494,7 @@ json.dump([{"number": m.get("iid"),
             "title": m.get("title", ""),
             "headRefName": m.get("source_branch") or m.get("sourceBranch") or "",
             "body": m.get("description") or ""} for m in mrs], sys.stdout)
-' | _vcs_shared_find_pr "$n" "$state"
+' | _vcs_shared_find_pr "$n" "$state" "$REPO"
       ;;
     check-pr-files|pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
       # Best-effort providers: not implemented — fail open with a warning so

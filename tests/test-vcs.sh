@@ -99,18 +99,32 @@ assert_eq "" "$out" "find-pr returns nothing for unrelated issue"
 _298_dep='[{"number":999,"state":"MERGED","title":"fix: harness","headRefName":"fix/issue-223-harness","body":"Depends on #208. Part of #207."}]'
 _298_dep_api='[{"number":999,"state":"closed","merged_at":"2026-09-01T00:00:00Z","title":"fix: harness","head":{"ref":"fix/issue-223-harness"},"body":"Depends on #208. Part of #207."}]'
 _298_kw='[{"number":998,"state":"MERGED","title":"fix: y","headRefName":"chore/other","body":"Fixes: #301 and resolves acme/widget#302. See #303."}]'
+# A qualified owner/repo#N or issue URL closes THIS repo's #N only when the
+# owner/repo is this repo (case-insensitive); another repo's #5 must not.
+_298_xr='[{"number":997,"state":"MERGED","title":"a","headRefName":"a","body":"Closes other-org/other#5"},
+{"number":996,"state":"MERGED","title":"b","headRefName":"b","body":"Fixes https://github.com/other-org/other/issues/5"},
+{"number":995,"state":"MERGED","title":"c","headRefName":"c","body":"Closes acme/widget#5"},
+{"number":994,"state":"MERGED","title":"d","headRefName":"d","body":"Fixes https://github.com/Acme/Widget/issues/5"}]'
+_298_xr_api='[{"number":997,"state":"closed","merged_at":"x","title":"a","head":{"ref":"a"},"body":"Closes other-org/other#5"}, {"number":996,"state":"closed","merged_at":"x","title":"b","head":{"ref":"b"},"body":"Fixes https://github.com/other-org/other/issues/5"}, {"number":995,"state":"closed","merged_at":"x","title":"c","head":{"ref":"c"},"body":"Closes acme/widget#5"}, {"number":994,"state":"closed","merged_at":"x","title":"d","head":{"ref":"d"},"body":"Fixes https://github.com/Acme/Widget/issues/5"}]'
 for _298_p in github github-api; do
   if [ "$_298_p" = "github-api" ]; then
     printf '{"vcs": {"provider": "github-api", "repo": "acme/widget"}}' > talos.pipeline.json
-    _298_run() { printf '%s' "$_298_dep_api" > "$SANDBOX/298.json"
+    _298_run() { printf '%s' "${_298_fx:-$_298_dep_api}" > "$SANDBOX/298.json"
       GITHUB_TOKEN=t CURL_QUEUE="$SANDBOX/298.json" bash "$VCS" find-pr "$@" 2>/dev/null; }
+    _298_xr_fx="$_298_xr_api"
   else
     printf '{"vcs": {"provider": "github", "repo": "acme/widget"}}' > talos.pipeline.json
-    _298_run() { STUB_PR_LIST="$_298_dep" bash "$VCS" find-pr "$@" 2>/dev/null; }
+    _298_run() { STUB_PR_LIST="${_298_fx:-$_298_dep}" bash "$VCS" find-pr "$@" 2>/dev/null; }
+    _298_xr_fx="$_298_xr"
   fi
   assert_contains "$(_298_run 223 merged)" '"number": 999' "#298 $_298_p: find-pr merged matches the branch convention"
   assert_eq "" "$(_298_run 208 merged)" "#298 $_298_p: find-pr merged ignores 'Depends on #N'"
   assert_eq "" "$(_298_run 207 merged)" "#298 $_298_p: find-pr merged ignores 'Part of #N'"
+  out="$(_298_fx="$_298_xr_fx" _298_run 5 merged)"
+  assert_not_contains "$out" '"number": 997' "#298 $_298_p: 'Closes other-org/other#N' does not close this repo's #N"
+  assert_not_contains "$out" '"number": 996' "#298 $_298_p: an issue URL on another repo does not close this repo's #N"
+  assert_contains "$out" '"number": 995' "#298 $_298_p: 'Closes <this-owner>/<this-repo>#N' still counts"
+  assert_contains "$out" '"number": 994' "#298 $_298_p: an issue URL on this repo counts (owner/repo case-insensitive)"
 done
 printf '{"vcs": {"provider": "github", "repo": "acme/widget"}}' > talos.pipeline.json
 out="$(STUB_PR_LIST="$_298_kw" bash "$VCS" find-pr 301 merged)"
@@ -728,6 +742,9 @@ assert_contains "$(cat "$GH_LOG")" "mr list --merged" "#298 gitlab: find-pr merg
 out="$(STUB_GITLAB_MR_LIST='[{"iid":12,"title":"fix: y","state":"merged","source_branch":"feature/y","description":"Closes #50. Depends on #51."}]' \
   bash "$VCS" find-pr 51 merged 2>&1)"
 assert_eq "" "$out" "#298 gitlab: find-pr merged ignores an MR that only mentions the issue"
+out="$(STUB_GITLAB_MR_LIST='[{"iid":13,"title":"x","state":"merged","source_branch":"x","description":"Closes other-org/other#52"}]' \
+  bash "$VCS" find-pr 52 merged 2>&1)"
+assert_eq "" "$out" "#298 gitlab: find-pr merged ignores another project's owner/repo#N"
 out="$(bash "$VCS" find-pr 42 2>&1)"
 assert_contains "$out" '"number": 7' "#298 gitlab: find-pr open still returns the active MR on fix/issue-42"
 rm talos.pipeline.json
@@ -749,6 +766,10 @@ assert_contains "$out" '"number": 234' "#298 azure: find-pr open returns the act
 _298_az_done='[{"pullRequestId":300,"title":"fix: h","status":"completed","sourceRefName":"refs/heads/fix/issue-223-h","description":"Depends on #160. Part of #159."}]'
 out="$(STUB_AZURE_PR_LIST="$_298_az_done" bash "$VCS" find-pr 160 merged 2>&1)"
 assert_eq "" "$out" "#298 azure: find-pr merged ignores an unlinked PR that only mentions the item"
+# Azure has no owner/repo identity to compare, so only a bare #N counts.
+out="$(STUB_AZURE_PR_LIST='[{"pullRequestId":301,"title":"x","status":"completed","sourceRefName":"refs/heads/x","description":"Closes other-org/other#161"}]' \
+  bash "$VCS" find-pr 161 merged 2>&1)"
+assert_eq "" "$out" "#298 azure: find-pr merged rejects a qualified owner/repo#N reference"
 out="$(STUB_AZURE_PR_LIST="$_298_az_done" bash "$VCS" find-pr 223 merged 2>&1)"
 assert_contains "$out" '"number": 300' "#298 azure: find-pr merged falls back to the fix/issue-N branch convention"
 : > "$GH_LOG"
