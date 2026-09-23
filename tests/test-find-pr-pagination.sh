@@ -49,6 +49,14 @@ assert_eq "0" "$rc" "#302 github-api: find-pr still exits 0 at the page cap"
 assert_eq "10" "$(grep -c '/pulls?state=closed' "$CURL_LOG")" "#302 github-api: find-pr stops at the 10-page cap"
 assert_contains "$err" "find-pr: WARNING result capped at 10 pages" "#302 github-api: the cap warning names the cap"
 
+# A failed page must fail find-pr, not read as "no merged PR" (#302 review).
+: > "$CURL_LOG"; : > "$CURL_QUEUE"; : > "$CURL_LINK_QUEUE"
+printf '%s\n' "$_302_next" > "$CURL_LINK_QUEUE"
+printf '%s\n' "$(_302_prs 101 200)" '401:{"message":"Bad credentials"}' > "$CURL_QUEUE"
+out="$(bash "$VCS" find-pr 500 merged 2>/dev/null)"; rc=$?
+assert_eq "1" "$rc" "#302 github-api: a failed page makes find-pr exit non-zero"
+assert_eq "" "$out" "#302 github-api: a failed page prints no partial result"
+
 out="$(bash "$VCS" --dry-run find-pr 500 merged)"
 assert_contains "$out" "pulls?state=closed&per_page=100 (paginated via Link headers, up to 10 pages)" \
   "#302 github-api: --dry-run describes the paginated request"
@@ -67,6 +75,11 @@ assert_contains "$(cat "$SANDBOX/err")" "find-pr: WARNING result capped at 100 (
   "#302 github: a result count equal to --limit warns"
 STUB_PR_LIST="$(_302_gh 99)" bash "$VCS" find-pr 500 merged >/dev/null 2>"$SANDBOX/err"
 assert_not_contains "$(cat "$SANDBOX/err")" "WARNING" "#302 github: a result under --limit does not warn"
+
+GH_FAIL_STDERR="HTTP 401: Bad credentials" bash "$VCS" find-pr 500 merged >"$SANDBOX/out" 2>"$SANDBOX/err"; rc=$?
+assert_eq "1" "$rc" "#302 github: a failed gh pr list makes find-pr exit non-zero"
+assert_eq "" "$(cat "$SANDBOX/out")" "#302 github: a failed gh pr list prints no result"
+assert_contains "$(cat "$SANDBOX/err")" "Bad credentials" "#302 github: gh's own error reaches stderr"
 
 rm -f talos.pipeline.json
 finish

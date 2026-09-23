@@ -2721,7 +2721,8 @@ for line in sys.stdin:
         return 0
       fi
       _fp_out="$(gh pr list --state "$state" --limit "$_fp_limit" \
-        --json number,state,title,headRefName,body ${REPO:+--repo "$REPO"} 2>/dev/null)"
+        --json number,state,title,headRefName,body ${REPO:+--repo "$REPO"})" || {
+        echo "pipeline-vcs: find-pr: gh pr list failed" >&2; exit 1; }
       _list_cap_warn find-pr "$_fp_limit" "$(printf '%s' "$_fp_out" | _json_array_count)" "gh pr list --limit ceiling" PRs
       printf '%s' "$_fp_out" | _vcs_shared_find_pr "$n" "$state" "$REPO"
       ;;
