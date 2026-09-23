@@ -20,6 +20,9 @@
 #                          board column names, e.g. {Blocked: "Needs attention"}.
 #                          An absent key passes through unchanged; an absent map
 #                          produces zero behavioural change.
+#   issues.assignee        default: self. On "In progress", fills an empty
+#                          assignee via `pipeline-vcs.sh assign-issue` (#299),
+#                          independent of board.enabled; none skips it.
 #
 # Env var overrides (take priority over config file):
 #   PIPELINE_PROJECT_NUMBER   overrides board.project_number
@@ -383,6 +386,21 @@ STATUS="${POSITIONAL[1]:-}"
 if [ -z "$ISSUE" ] || [ -z "$STATUS" ]; then
   echo "Usage: pipeline-status.sh [--dry-run] <issue-number> <status>" >&2
   exit 2
+fi
+
+# ── Claim: fill an empty assignee on "In progress" (#299) ────────────────────
+# The assignee is an issue property, not a board one, so this runs for every
+# PR provider (not file) before -- and regardless of -- board.enabled and the
+# provider-specific state/status blocks below. assign-issue never overwrites
+# an existing assignee and never fails; its output goes to stderr so this
+# script's stdout contract ("#N → status", talos:board-unverified) is
+# unchanged. issues.assignee: none skips it without spawning anything.
+if [ "$(printf '%s' "$STATUS" | tr '[:upper:]' '[:lower:]')" = "in progress" ] \
+    && [ "$(cfg vcs.provider "github")" != "file" ] \
+    && [ "$(cfg issues.assignee "self" | tr '[:upper:]' '[:lower:]')" != "none" ]; then
+  _claim_flags=()
+  [ "$DRY_RUN" = "true" ] && _claim_flags=(--dry-run)
+  bash "$SCRIPT_DIR/pipeline-vcs.sh" "${_claim_flags[@]+"${_claim_flags[@]}"}" assign-issue "$ISSUE" >&2 || true
 fi
 
 # ── Board enabled? ────────────────────────────────────────────────────────────

@@ -68,13 +68,16 @@ export STUB_PR_COMMENTS_JSON="[{\"body\":\"<!-- talos:approval sha=${SHA_GH} rol
 
 # github-api provider (curl stub -- a strict FIFO; every call below must be
 # queued in the exact order pipeline-vcs.sh's _github_api arms issue them:
-# create-issue(1) label-issue(GET+PUT) view-issue--spec(meta+comments)
+# create-issue(POST + #299 assignee read; GET /user is intercepted, not
+# queued, and resolves empty so no assignee write follow) label-issue(GET+PUT)
+# view-issue--spec(meta+comments)
 # create-pr(1) post-approval(pr-head, dup-check comments, comment-pr state
 # check, comment-pr POST, label-pr GET+PUT) check-approval-sha(PR+comments)
 # pr-mergeable(1) check-pr-files(1) cleanup-close-issue(comment+PATCH).
 SHA_API="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 printf '%s\n' \
   '{"number":401,"html_url":"https://github.com/acme/widget-canary/issues/401"}' \
+  '{"number":401,"assignees":[]}' \
   '[]' \
   '{}' \
   '{"title":"canary","body":"canary run body","labels":[]}' \

@@ -13,6 +13,15 @@
 #                                             may be repeated (used by planner
 #                                             to create sub-issues). Exits
 #                                             non-zero if the POST fails.
+#                                             Then runs assign-issue on the new
+#                                             issue (messages on stderr only).
+#   assign-issue <n>                          Assign issue <n> per issues.assignee
+#                                             (#299) only when it has no assignee;
+#                                             read back, and print "assign-issue:
+#                                             #<n> assigned to <id>" only when the
+#                                             write is confirmed. Every failure is
+#                                             a stderr WARNING + exit 0. github,
+#                                             github-api, gitlab, azure (not file).
 #   view-issue <n>                            View issue details
 #             <n> --spec                      Compact form for stage handoff (#201):
 #                                             same {title, body, labels, comments}
@@ -256,6 +265,8 @@
 #   vcs.file.source.path  path to plan.md  (default: plan.md)
 #   base_branch           PR target branch
 #   merge.method          squash | merge | rebase   (default: squash)
+#   issues.assignee       self | <identity> | none   (default: self) -- who
+#                         create-issue / assign-issue assign an issue to (#299)
 #   limits.max_fix_attempts     max consecutive per-stage failures before
 #                               pipeline:blocked (default: 3)
 #   limits.max_total_dispatches absolute ceiling on total developer dispatches
@@ -1112,6 +1123,83 @@ _vcs_shared_current_user() {
   _VCS_CURRENT_USER_RESOLVED=1
   [ -n "$_cu_cache_file" ] && printf '%s' "$_cu_login" > "$_cu_cache_file" 2>/dev/null
   printf '%s' "$_cu_login"
+}
+
+# _vcs_shared_assign_issue <n> <get-fn> <add-fn> <self-resolver-cmd> [args...]
+#   The policy half of assign-issue (#299), shared by github, github-api,
+#   gitlab and azure. Each adapter supplies only its provider calls:
+#     <get-fn> <n>        print the current assignee(s), one per line (nothing
+#                         when unassigned); non-zero exit = could not read
+#     <add-fn> <n> <id>   add <id> as an assignee; non-zero exit = rejected
+#     <self-resolver...>  print the operator's identity (issues.assignee:
+#                         self), cached via _vcs_shared_current_user
+#   issues.assignee (default "self"): "none" returns before any provider
+#   call, so it is exactly the pre-#299 behaviour; any other value is the
+#   identity assigned literally. The current assignee is read first and a
+#   non-empty one is never touched -- a person who picked up the card keeps
+#   it. After the write the field is read back, and success is reported only
+#   when the identity is actually there (GitHub silently drops
+#   non-collaborators; ADO rejects identities outside the project).
+#   Every failure is a stderr WARNING and return 0: an assignment must never
+#   fail the stage that asked for it, and must never read as success when it
+#   did not land (#147). stdout: one "assign-issue: #<n> assigned to <id>"
+#   line on verified success, nothing otherwise.
+_vcs_shared_assign_issue() {
+  local n="$1" get_fn="$2" add_fn="$3"; shift 3
+  local want want_lc
+  want="$(cfg issues.assignee "self")"
+  want_lc="$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]')"
+  case "$want_lc" in none|'') return 0 ;; esac
+
+  case "$n" in
+    ''|*[!0-9]*)
+      echo "pipeline-vcs: assign-issue: WARNING -- issue number must be an integer, got '$n'; not assigned" >&2
+      return 0
+      ;;
+  esac
+  if [ "$DRY_RUN" = "true" ]; then
+    echo "[dry-run] assign-issue #$n: read the current assignee; if empty, assign '$want' and read it back"
+    return 0
+  fi
+
+  local current
+  if ! current="$("$get_fn" "$n" 2>/dev/null)"; then
+    echo "pipeline-vcs: assign-issue: WARNING -- could not read #$n's current assignee; leaving it untouched" >&2
+    return 0
+  fi
+  current="$(printf '%s\n' "$current" | sed '/^[[:space:]]*$/d')"
+  if [ -n "$current" ]; then
+    echo "pipeline-vcs: assign-issue: #$n already assigned to $(printf '%s' "$current" | paste -sd, -); preserving" >&2
+    return 0
+  fi
+
+  local id="$want"
+  if [ "$want_lc" = "self" ]; then
+    id="$(_vcs_shared_current_user "$@")"
+    if [ -z "$id" ]; then
+      echo "pipeline-vcs: assign-issue: WARNING -- could not resolve the operator identity (issues.assignee: self); #$n left unassigned" >&2
+      return 0
+    fi
+  fi
+
+  local add_err
+  if ! add_err="$("$add_fn" "$n" "$id" 2>&1 >/dev/null)"; then
+    echo "pipeline-vcs: assign-issue: WARNING -- could not assign #$n to '$id': $(printf '%s' "$add_err" | tail -1)" >&2
+    return 0
+  fi
+  if "$get_fn" "$n" 2>/dev/null | grep -qixF -- "$id"; then
+    echo "assign-issue: #$n assigned to $id"
+  else
+    echo "pipeline-vcs: assign-issue: WARNING -- '$id' is not #$n's assignee on read-back (not assignable in this project?); left unassigned" >&2
+  fi
+  return 0
+}
+
+# _vcs_issue_number_from_url <create-issue output> -- the <n> of the last
+# ".../issues/<n>" URL in it (gh and glab both print the new issue's URL), or
+# nothing, which _vcs_shared_assign_issue turns into a warning.
+_vcs_issue_number_from_url() {
+  printf '%s\n' "$1" | grep -oE '/issues/[0-9]+' | tail -1 | sed 's|.*/||'
 }
 
 # _vcs_shared_attempt_blocked <verb> <count> <total> <max-count> <max-total> <stage>
@@ -2304,8 +2392,19 @@ _github() {
   # which runs before any adapter function is invoked.
   gh() { _with_retry "$VERB" command gh "$@"; }
 
+  # Provider calls for _vcs_shared_assign_issue (#299).
+  _gh_assignees_get() {
+    gh issue view "$1" --json assignees -q '.assignees[].login' ${REPO:+--repo "$REPO"}
+  }
+  _gh_assignee_add() {
+    gh issue edit "$1" --add-assignee "$2" ${REPO:+--repo "$REPO"}
+  }
+
   local verb="$1"; shift
   case "$verb" in
+    assign-issue)
+      _vcs_shared_assign_issue "${1:-}" _gh_assignees_get _gh_assignee_add gh api user --jq .login
+      ;;
     list-issues)
       # `gh issue list --limit N` is a single request capped at N (1000 was
       # GitHub's own hard ceiling on search-API result sets) — it silently
@@ -2431,8 +2530,18 @@ print(json.dumps(out))
           *) shift ;;
         esac
       done
-      _run gh issue create --title "$title" --body-file "$body_file" \
-        "${label_args[@]+"${label_args[@]}"}" ${REPO:+--repo "$REPO"}
+      if [ "$DRY_RUN" = "true" ]; then
+        _run gh issue create --title "$title" --body-file "$body_file" \
+          "${label_args[@]+"${label_args[@]}"}" ${REPO:+--repo "$REPO"}
+        return 0
+      fi
+      local _ci_url
+      _ci_url="$(gh issue create --title "$title" --body-file "$body_file" \
+        "${label_args[@]+"${label_args[@]}"}" ${REPO:+--repo "$REPO"})" || return
+      [ -n "$_ci_url" ] && printf '%s\n' "$_ci_url"
+      # Assign the new issue (#299) -- stdout stays the URL alone.
+      _vcs_shared_assign_issue "$(_vcs_issue_number_from_url "$_ci_url")" \
+        _gh_assignees_get _gh_assignee_add gh api user --jq .login >&2
       ;;
     create-pr)
       local branch="$1" title="$2" body_file="$3"
@@ -3268,8 +3377,32 @@ except Exception:
 " 2>/dev/null
   }
 
+  # Provider calls for _vcs_shared_assign_issue (#299). _ga_req_once under
+  # _with_retry, not _ga_req: _ga_req exits the whole script on failure, and
+  # a failed assignment must never fail the verb that asked for it.
+  _ga_assignees_get() {
+    local _ag_body
+    _ag_body="$(_with_retry "$_VERB" _ga_req_once GET "$_API/issues/$1")" || return 1
+    printf '%s' "$_ag_body" | python3 -c "
+import json, sys
+for a in json.load(sys.stdin).get('assignees') or []:
+    print(a.get('login', ''))
+"
+  }
+  # POST .../assignees ADDS to the list (PATCH .../issues/{n} would replace it).
+  _ga_assignee_add() {
+    local _aa_payload
+    _aa_payload="$(python3 -c "import json, sys; print(json.dumps({'assignees': [sys.argv[1]]}))" "$2")"
+    _with_retry "$_VERB" _ga_req_once POST "$_API/issues/$1/assignees" \
+      -H "Content-Type: application/json" -d "$_aa_payload"
+  }
+
   # ── Verb dispatch ───────────────────────────────────────────────────────────
   case "$_VERB" in
+
+    assign-issue)
+      _vcs_shared_assign_issue "${1:-}" _ga_assignees_get _ga_assignee_add _ga_current_user_login
+      ;;
 
     list-issues)
       if [ "$DRY_RUN" = "true" ]; then
@@ -3483,6 +3616,10 @@ if url:
 else:
     print(n)
 "
+      # Assign the new issue (#299) -- stdout stays the URL alone.
+      _vcs_shared_assign_issue "$(printf '%s' "$_ci_resp" \
+          | python3 -c "import json, sys; print(json.load(sys.stdin).get('number', ''))" 2>/dev/null)" \
+        _ga_assignees_get _ga_assignee_add _ga_current_user_login >&2
       ;;
 
     create-pr)
@@ -4303,7 +4440,29 @@ _gitlab() {
   local verb="$1"; shift
   local RARG=""
   [ -n "$REPO" ] && RARG="-R $REPO"
+
+  # Provider calls for _vcs_shared_assign_issue (#299).
+  _gl_assignees_get() {
+    local _ag_json
+    _ag_json="$(glab issue view "$1" --output json $RARG)" || return 1
+    printf '%s' "$_ag_json" | python3 -c "
+import json, sys
+for a in json.load(sys.stdin).get('assignees') or []:
+    print(a.get('username', ''))
+"
+  }
+  # glab's "+" prefix ADDS to the assignee list instead of replacing it.
+  _gl_assignee_add() {
+    glab issue update "$1" --assignee "+$2" $RARG
+  }
+  _gl_current_user() {
+    glab api user | python3 -c "import json, sys; print(json.load(sys.stdin).get('username', ''))"
+  }
+
   case "$verb" in
+    assign-issue)
+      _vcs_shared_assign_issue "${1:-}" _gl_assignees_get _gl_assignee_add _gl_current_user
+      ;;
     list-issues)
       # glab's default page size is well under 100; --per-page raises it to
       # GitLab's own per-page ceiling. glab has no built-in "fetch every
@@ -4362,9 +4521,20 @@ _gitlab() {
           *) shift ;;
         esac
       done
-      _run glab issue create --title "$title" \
+      if [ "$DRY_RUN" = "true" ]; then
+        _run glab issue create --title "$title" \
+          --description "$(cat "$body_file")" \
+          "${label_args[@]+"${label_args[@]}"}" $RARG
+        return 0
+      fi
+      local _ci_url
+      _ci_url="$(glab issue create --title "$title" \
         --description "$(cat "$body_file")" \
-        "${label_args[@]+"${label_args[@]}"}" $RARG
+        "${label_args[@]+"${label_args[@]}"}" $RARG)" || return
+      [ -n "$_ci_url" ] && printf '%s\n' "$_ci_url"
+      # Assign the new issue (#299) -- stdout stays glab's own output.
+      _vcs_shared_assign_issue "$(_vcs_issue_number_from_url "$_ci_url")" \
+        _gl_assignees_get _gl_assignee_add _gl_current_user >&2
       ;;
     create-pr)
       local branch="$1" title="$2" body_file="$3"
@@ -4683,8 +4853,37 @@ _azure() {
   [ -n "$AZURE_ORG" ]     && ORG_ARG="--org $AZURE_ORG"
   [ -n "$AZURE_PROJECT" ] && PROJ_ARG="--project $AZURE_PROJECT"
 
+  # Provider calls for _vcs_shared_assign_issue (#299). ADO has a single
+  # System.AssignedTo; print both its uniqueName and displayName so the
+  # read-back matches whichever form issues.assignee was given in. Older
+  # az/ADO versions return the field as a "Name <upn>" string instead.
+  _az_assignee_get() {
+    local _ag_json
+    _ag_json="$(az boards work-item show --id "$1" $ORG_ARG --output json)" || return 1
+    printf '%s' "$_ag_json" | python3 -c "
+import json, re, sys
+v = (json.load(sys.stdin).get('fields') or {}).get('System.AssignedTo')
+if isinstance(v, dict):
+    for k in ('uniqueName', 'displayName'):
+        if v.get(k):
+            print(v[k])
+elif v:
+    print(v)
+    m = re.search(r'<([^>]+)>', v)
+    if m:
+        print(m.group(1))
+"
+  }
+  _az_assignee_set() {
+    az boards work-item update --id "$1" --assigned-to "$2" $ORG_ARG --output none
+  }
+
   local verb="$1"; shift
   case "$verb" in
+    assign-issue)
+      _vcs_shared_assign_issue "${1:-}" _az_assignee_get _az_assignee_set \
+        az account show --query user.name --output tsv
+      ;;
     list-issues)
       # ADO has no `az boards work-item list`. Discover work items with a WIQL
       # query instead. The GitHub adapter's "open issues only" maps to ADO's
@@ -4830,9 +5029,15 @@ PYEOF
       ci_args+=(--output json)
       if [ "$DRY_RUN" = "true" ]; then
         echo "[dry-run] az ${ci_args[*]}"
-      else
-        az "${ci_args[@]}"
+        return 0
       fi
+      local _ci_out
+      _ci_out="$(az "${ci_args[@]}")" || return
+      [ -n "$_ci_out" ] && printf '%s\n' "$_ci_out"
+      # Assign the new work item (#299) -- stdout stays az's JSON alone.
+      _vcs_shared_assign_issue "$(printf '%s' "$_ci_out" \
+          | python3 -c "import json, sys; print(json.load(sys.stdin).get('id', ''))" 2>/dev/null)" \
+        _az_assignee_get _az_assignee_set az account show --query user.name --output tsv >&2
       ;;
     create-pr)
       local branch="$1" title="$2" body_file="$3"

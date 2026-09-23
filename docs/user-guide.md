@@ -832,6 +832,42 @@ error. If your queue is unexpectedly empty after setting this key:
 The queue logic is in `scripts/pipeline-vcs.sh`; the key is read via
 `pipeline-config.sh issues.label_filter`.
 
+### Who issues are assigned to (`issues.assignee`)
+
+**What it does.** Talos assigns an issue (or Azure DevOps work item) at two
+moments: right after `create-issue` opens it, and when `pipeline-status.sh`
+moves it to "In progress" (the claim). Both go through the
+`pipeline-vcs.sh assign-issue <n>` verb, on `github`, `github-api`, `gitlab`
+and `azure`. The `file` provider has no assignee concept and is unaffected.
+
+**Default:** `self`
+
+| Value | Effect |
+| --- | --- |
+| `self` | The authenticated operator: `gh api user` (github), `GET /user` (github-api), `glab api user` (gitlab), `az account show --query user.name` (azure). |
+| any other string | That identity, assigned verbatim: a GitHub login, a GitLab username, an Azure DevOps UPN or display name. |
+| `none` | Never assign. Talos behaves as it did before this key existed. |
+
+```yaml
+issues:
+  assignee: "alice@example.com"
+```
+
+**It never takes a card from a person.** `assign-issue` reads the current
+assignee first. If anyone already holds the issue, it leaves it alone. On
+GitHub and GitLab, which allow several assignees, it adds the identity only
+when the list is empty.
+
+**Failures warn and do not block.** If the identity cannot be resolved or
+the provider rejects it, Talos prints a `WARNING` on stderr, leaves the
+issue unassigned, and the stage continues. For example, GitHub rejects
+non-collaborators, and Azure DevOps rejects identities outside the project.
+An `az` login as a service principal also fails, because it resolves to a
+GUID rather than a user. After every write Talos reads the field back and
+reports `assign-issue: #<n> assigned to <id>` only when the identity is
+actually there. If you see the warning, set `issues.assignee` to an identity
+the project accepts, or to `none`.
+
 ### Choosing an isolation mode (`execution.isolation`)
 
 > **Note on config format:** examples below are YAML (`talos.pipeline.yml`).

@@ -174,4 +174,41 @@ assert_contains "$out" "board unsupported for gitlab" "#298 pipeline-status: git
 assert_not_contains "$out" "board.owner not set" "#298 pipeline-status: gitlab no longer falls through to the GitHub Projects path"
 assert_eq "" "$(cat "$CURL_LOG")" "#298 pipeline-status: gitlab makes no GitHub GraphQL call"
 
+# ── #299: moving to "In progress" claims an unassigned issue ────────────────
+# The stubs keep the issue's assignee in STUB_ASSIGNEE_FILE, so these assert
+# the field's value. Board disabled on purpose: assignee is an issue property,
+# so the claim must not depend on board.enabled.
+export STUB_ASSIGNEE_FILE="$SANDBOX/assignee.state"
+export STUB_CURRENT_USER=operator1
+_s299_cfg() {  # $1=provider $2=board.enabled [$3=assignee]
+  local _as=""
+  [ -n "${3:-}" ] && _as=", \"issues\": {\"assignee\": \"$3\"}"
+  printf '{"vcs": {"provider": "%s", "repo": "acme/widget"}, "board": {"enabled": %s}%s}\n' "$1" "$2" "$_as" > talos.pipeline.json
+}
+for _p in github github-api gitlab azure; do
+  _s299_cfg "$_p" false; rm -f "$STUB_ASSIGNEE_FILE"; : > "$CURL_QUEUE"
+  out="$(bash "$STATUS" 42 "In progress" 2>/dev/null)"; rc=$?
+  assert_eq 0 "$rc" "#299 $_p: pipeline-status exits 0 on the claim path"
+  assert_eq "operator1" "$(cat "$STUB_ASSIGNEE_FILE" 2>/dev/null)" "#299 $_p: 'In progress' assigns an unassigned issue even with board.enabled: false"
+  assert_not_contains "$out" "assign" "#299 $_p: assignment messages stay off pipeline-status stdout"
+
+  printf 'human\n' > "$STUB_ASSIGNEE_FILE"
+  bash "$STATUS" 42 "in PROGRESS" >/dev/null 2>&1
+  assert_eq "human" "$(cat "$STUB_ASSIGNEE_FILE")" "#299 $_p: 'In progress' preserves an existing assignee"
+
+  _s299_cfg "$_p" false none; rm -f "$STUB_ASSIGNEE_FILE"
+  bash "$STATUS" 42 "In progress" >/dev/null 2>&1
+  assert_file_absent "$STUB_ASSIGNEE_FILE" "#299 $_p: issues.assignee none skips the claim"
+
+  _s299_cfg "$_p" false; rm -f "$STUB_ASSIGNEE_FILE"
+  bash "$STATUS" 42 "In review" >/dev/null 2>&1
+  assert_file_absent "$STUB_ASSIGNEE_FILE" "#299 $_p: statuses other than 'In progress' never assign"
+done
+
+# Board enabled (no project configured) claims too.
+_s299_cfg github true; rm -f "$STUB_ASSIGNEE_FILE"
+bash "$STATUS" 42 "In progress" >/dev/null 2>&1
+assert_eq "operator1" "$(cat "$STUB_ASSIGNEE_FILE" 2>/dev/null)" "#299 github: 'In progress' assigns with board.enabled: true as well"
+unset STUB_ASSIGNEE_FILE STUB_CURRENT_USER
+
 finish
