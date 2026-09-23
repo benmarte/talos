@@ -67,9 +67,9 @@ status) is the oracle for whether the suite passes — this stage is diff-only.
   1. `bash scripts/pipeline-vcs.sh approve-pr <pr> "<summary>"` (note: this may
      fail with "cannot approve your own pull request" in single-account
      setups — expected and ignorable; the `review:approved` label is the gate)
-  2. `bash scripts/pipeline-vcs.sh label-pr <pr> --remove pipeline:blocked`
-  3. `bash scripts/pipeline-vcs.sh label-issue <issue-n> --remove pipeline:blocked`
-  4. Run `post-approval` (see below; it applies `review:approved` in the same call).
+  2. Run `post-approval` (see below; it applies `review:approved` in the same call).
+  Never remove `pipeline:blocked` — security runs in parallel and may have set
+  it; only the orchestrator clears it (#310).
 - Changes needed:
   1. `bash scripts/pipeline-vcs.sh label-pr <pr> --add pipeline:blocked --remove pipeline:review`
   2. Render blocked.md on the PR with specific, file:line inline findings:

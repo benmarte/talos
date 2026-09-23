@@ -64,10 +64,10 @@ about how you read the diff.
 Never run `verify:`; QA and CI already did. This stage is diff-only.
 
 - Clear:
-  1. `bash scripts/pipeline-vcs.sh label-pr <pr> --remove pipeline:blocked`
-  2. `bash scripts/pipeline-vcs.sh label-issue <issue-n> --remove pipeline:blocked`
-  3. Run `post-approval` (see below; it applies `adversarial:approved` in the
+  1. Run `post-approval` (see below; it applies `adversarial:approved` in the
      same call).
+  Never remove `pipeline:blocked` — another stage may have set it; only the
+  orchestrator clears it (#310).
 - Findings:
   1. `bash scripts/pipeline-vcs.sh label-pr <pr> --add pipeline:blocked`
   2. Comment on the PR with each finding's file:line and repro —
