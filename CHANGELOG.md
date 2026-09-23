@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Auto-assign issues (`issues.assignee`, #299).** New config key to auto-assign issues and work items on create and when moving to "In progress". Values: `self` (the authenticated operator), any identity string, or `none` (never assign). Never overwrites existing assignees; failures warn and continue. Supported on github, github-api, gitlab, and azure.
+
 ## [0.17.0] - 2026-09-21
 
 ### Added
