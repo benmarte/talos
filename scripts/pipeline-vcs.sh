@@ -5590,12 +5590,18 @@ PYEOF
 #
 # So accept both spellings, and refuse a body that is still a bare flag instead
 # of posting it. Applied before dispatch, so every provider inherits it.
+_TALOS_COMMENT_MAX=65536   # GitHub rejects longer comment bodies; cap every provider
 case "$VERB" in
   comment-issue|comment-pr)
     if [ "${#ARGS[@]}" -ge 3 ]; then
       case "${ARGS[1]}" in
         --body-file)
-          if [ -r "${ARGS[2]}" ]; then
+          # A UTF-8 character is at most 4 bytes, so a file over 4x the
+          # character cap cannot fit; refuse it without reading it (#306).
+          if [ -r "${ARGS[2]}" ] && [ "$(wc -c < "${ARGS[2]}")" -gt $((4 * _TALOS_COMMENT_MAX)) ]; then
+            echo "pipeline-vcs: $VERB: body is longer than $_TALOS_COMMENT_MAX characters (GitHub's comment limit); nothing posted." >&2
+            exit 1
+          elif [ -r "${ARGS[2]}" ]; then
             ARGS=("${ARGS[0]}" "$(cat "${ARGS[2]}")")
           else
             echo "pipeline-vcs: $VERB --body-file: cannot read '${ARGS[2]}'" >&2
@@ -5631,6 +5637,93 @@ case "$VERB" in
         fi
         ;;
     esac
+    # Unsubstituted template placeholder guard (#306): the stage-comment recipe
+    # renders templates/comments/*.md with string.Template, and a variable the
+    # agent forgot to export used to survive as a literal `${HEADER}` in a public
+    # comment -- no role attribution, and readers keyed on the `**Agent:**`
+    # header miss it. Refuse such a body before any provider sees it.
+    #
+    # The variable names are derived from the templates themselves (the shipped
+    # copy next to this script plus the project's comments.templates_dir), so
+    # the list cannot drift; the shipped names are also built in, so the guard
+    # still holds when neither directory resolves. Only those names count: `$5`,
+    # `${foo}`, `$PATH` are ordinary text. Matched fence pairs and inline code
+    # spans are skipped -- templates never place a variable in code, and a
+    # comment *about* a placeholder quotes it that way. An unclosed fence exempts
+    # nothing. A body over $_TALOS_COMMENT_MAX characters is refused before the
+    # scan (exit 3), and the scan is a single linear pass: no regex backtracks
+    # across backticks, and inline code is found by walking backtick runs once.
+    if [ "${#ARGS[@]}" -ge 2 ]; then
+      _ph_left="$(printf '%s' "${ARGS[1]}" | _TALOS_COMMENT_MAX="$_TALOS_COMMENT_MAX" python3 -c '
+import glob, os, re, sys
+TOKEN = re.compile(r"\$(?:(\$)|\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+FENCE = re.compile(r"\s{0,3}(`{3,}|~{3,})")
+RUN = re.compile(r"`+")
+def names(text):
+    return {m.group(2) or m.group(3) for m in TOKEN.finditer(text) if not m.group(1)}
+def strip_code(line):
+    # A run of k backticks opens a span closed by the next run of exactly k;
+    # an unmatched run is literal text. Each per-length cursor only moves
+    # forward, so the whole line costs O(len(line)).
+    runs = [m.span() for m in RUN.finditer(line)]
+    by_len, cursor = {}, {}
+    for i, (s, e) in enumerate(runs):
+        by_len.setdefault(e - s, []).append(i)
+    out, pos, i = [], 0, 0
+    while i < len(runs):
+        k = runs[i][1] - runs[i][0]
+        same, c = by_len[k], cursor.get(k, 0)
+        while c < len(same) and same[c] <= i:
+            c += 1
+        cursor[k] = c
+        if c < len(same):
+            out.append(line[pos:runs[i][0]])
+            pos, i = runs[same[c]][1], same[c] + 1
+        else:
+            i += 1
+    out.append(line[pos:])
+    return "".join(out)
+body = sys.stdin.buffer.read().decode("utf-8", errors="replace")
+if len(body) > int(os.environ["_TALOS_COMMENT_MAX"]):
+    sys.exit(3)
+# Variables of the shipped templates/comments/*.md (#306 fallback).
+known = {"ATTENTION_REPORT", "BLOCKED_BY", "DETAILS", "HEADER", "PR", "SUMMARY", "VERDICT"}
+for d in sys.argv[1:]:
+    for path in glob.glob(os.path.join(d, "*.md")):
+        try:
+            with open(path, encoding="utf-8") as f:
+                known |= names(f.read())
+        except (OSError, UnicodeDecodeError) as e:
+            print("pipeline-vcs: placeholder guard: skipping unreadable template %s (%s)" % (path, type(e).__name__), file=sys.stderr)
+prose, fence, held = [], None, []
+for line in body.splitlines():
+    if fence is None:
+        m = FENCE.match(line)
+        if m:
+            fence, held = m.group(1), [line]
+        else:
+            prose.append(line)
+    else:
+        held.append(line)
+        m = FENCE.match(line)
+        if m and m.group(1).startswith(fence):
+            fence, held = None, []
+prose += held
+print(" ".join(sorted(names("\n".join(strip_code(l) for l in prose)) & known)))
+' "$SCRIPT_DIR/../templates/comments" "$(cfg comments.templates_dir "templates/comments")")"
+      _ph_rc=$?
+      if [ "$_ph_rc" -eq 3 ]; then
+        echo "pipeline-vcs: $VERB: body is longer than $_TALOS_COMMENT_MAX characters (GitHub's comment limit); nothing posted." >&2
+        exit 1
+      elif [ "$_ph_rc" -ne 0 ]; then
+        echo "pipeline-vcs: $VERB: could not check the body for unsubstituted template placeholders; nothing posted." >&2
+        exit 1
+      elif [ -n "$_ph_left" ]; then
+        echo "pipeline-vcs: $VERB: body still contains unsubstituted template placeholder(s): $_ph_left -- nothing posted." >&2
+        echo "              Export each variable before rendering the template (see SKILL.md \"Stage comment convention\")." >&2
+        exit 1
+      fi
+    fi
     ;;
 esac
 
