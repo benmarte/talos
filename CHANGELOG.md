@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-09-24
+
 ### Fixed
 
 - **Azure `pr-checks-required` sees policies that do not apply to the PR, and no longer passes an out-of-date approval (#328).** It read evaluations through `az repos pr policy list`, which has no `includeNotApplicable` flag and returns only the policies that apply to the PR. A required check whose policy was path-filtered away from the PR therefore read as missing, exited 2, and the PR waited out `verify.ci_wait_s`, then failed closed and never merged. It now calls the REST endpoint (`GET {org}/{projectId}/_apis/policy/evaluations?artifactId=vstfs:///CodeReview/CodeReviewId/{projectId}/{prId}&includeNotApplicable=true`, api-version 7.1-preview.1), with the project id from `az repos pr show`, so that check has a `notApplicable` record and passes. A required name with no record at all is still missing (exit 2). An `approved` record whose `context.isExpired` is true, or whose `context.lastMergeSourceCommitId` is not the PR's `lastMergeSourceCommit`, is now pending (exit 2), never passed. ADO does not document `context`, so both fields are read only when present; when they are absent the previous behaviour is kept. A project id that is not a GUID, a PR read failure, and a full 1000-record page (which may be truncated) exit 1. `rerun-ci` is unchanged and still re-queues from `az repos pr policy list`. Pinned by `tests/test-azure-pr-checks.sh`.

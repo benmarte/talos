@@ -491,6 +491,22 @@ Previously, setting `merge.forbidden_files` replaced the built-in defaults entir
 - **If you intended to add extra patterns on top of the defaults** (the common case): no action required. Your config now works as you most likely intended.
 - **If you intentionally narrowed the deny list** (removed some built-in patterns to allow those file types): add `merge.forbidden_files_replace: true` to restore the old replacement behaviour. Review the security warning in the `merge.forbidden_files_replace` table row above before doing so — replacement suppresses all built-in secret-protection patterns and should be treated as a deliberate security trade-off.
 
+### Upgrade notes (v0.18+)
+
+**(a) Issues are now assigned to the operator by default (`issues.assignee`, #299, #305, #321).** `create-issue` and the "In progress" claim assign the issue or work item to `self` (the authenticated `gh`/`glab`/`az` identity) on github, github-api, gitlab and azure. An existing assignee is never overwritten, and a rejected identity is a warning, never a stage failure. To keep the pre-0.18 behavior set `issues.assignee: none`, or the quoted `issues.assignee: ""`. A bare `assignee:` is YAML null and still means `self`. The value is trimmed of surrounding whitespace.
+
+**(b) GitLab and Azure merge gates now enforce instead of passing (#303, #304, #318, #328).** `check-pr-files`, `check-epic-acceptance`, `check-closing-keyword`, `pr-files` and `rerun-ci` used to print "not implemented" and exit 0 on gitlab/azure. They now do real work. The forbidden-files gate and the epic sweep fail closed when a fetch fails, so a GitLab or Azure repo can now see merges or epic closes blocked that silently passed before. On azure, `pr-checks-required` is implemented: every `merge.required_checks` name must match an ADO policy display name (case-insensitive). A policy that does not apply to the PR counts as passed, and an approval for an older commit counts as pending.
+
+**(c) `siblings-capped` blocks the merge (#319).** When `check-closing-keyword` cannot see every open sibling PR, it prints `talos:closing-keyword-unverified … reason=siblings-capped`. Step 4 then adds `pipeline:blocked` for a human instead of merging. Only very large repos hit the cap.
+
+**(d) `github-api` list endpoints must return JSON arrays (#319, #329).** A non-array page (e.g. a test stub returning `{}`) now fails the paginated verb instead of reading as empty. Update any stub that serves a `github-api` list endpoint. Pagination links that point off the API host are refused before the token is sent (#320).
+
+**(e) Comments with unfilled template placeholders or over 65536 characters are refused (#306).** `comment-issue` and `comment-pr` exit 1 and post nothing when a body still contains a placeholder such as `${HEADER}` (outside code fences). Custom templates in `comments.templates_dir` are checked too. Render with all variables set.
+
+**(f) Only the orchestrator clears `pipeline:blocked` (#310, #312, #322).** Stage agents no longer remove the label when they approve. Blocked PRs are reported in Step 1 and are not resumed or adopted. To resume blocked work, remove the label from **both** the PR and its issue.
+
+**(g) The Step 1 heal closes only issues a merged PR really closes (#298).** `find-pr <N> merged` matches only the `issue-<N>` branch or a closing keyword aimed at this repository, never a bare `#N` mention, so an epic or dependency is no longer closed by mistake. On azure, `create-pr` links the work item with `--transition-work-items true`, so ADO closes it when the PR completes.
+
 ### Upgrade notes (v0.17+)
 
 **(a) `merge.auto_sync` defaults to `true` (#289).** After every merge, Talos now syncs every other open pipeline PR's branch with the new base — union conflicts resolve mechanically, non-union ones go through the new `update-branch` server-side verb, then the developer merge-base dispatch. If you prefer conflicts to surface at each PR's own merge time (pre-0.17 behavior), set `merge.auto_sync: false`. Note `update-branch` requires a GitHub token with PR-write scope (the same one `merge-pr` uses) or `gh` auth.
