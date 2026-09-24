@@ -3432,9 +3432,41 @@ _github_api() {
     printf '%s' "$_body"
   }
 
+  # _ga_refused_origin <url> -- prints nothing and returns 0 when <url> is on
+  # the API origin ($_API): https, same host, same port (443 when omitted).
+  # Otherwise prints the refused scheme://host:port (never the path, query or
+  # userinfo) and returns 1. Parsed with urllib.parse, not a regex (#320), and
+  # stricter than the parser alone: userinfo, backslashes, whitespace and
+  # control characters are refused outright, so curl cannot read a different
+  # host out of the same string.
+  _ga_refused_origin() {
+    python3 -c '
+import sys
+from urllib.parse import urlsplit
+
+def origin(url):
+    p = urlsplit(url)
+    scheme = p.scheme.lower()
+    port = p.port if p.port is not None else {"https": 443, "http": 80}.get(scheme)
+    return p, (scheme, p.hostname or "", port)
+
+try:
+    p, got = origin(sys.argv[2])
+except ValueError:
+    print("<unparseable URL>")
+    sys.exit(1)
+odd = any(ord(c) <= 0x20 or c in "\\\x7f" for c in sys.argv[2])
+if odd or p.username is not None or got[0] != "https" or got != origin(sys.argv[1])[1]:
+    host = "".join(c for c in got[1] if c.isprintable() and c not in " \\") or "<no host>"
+    port = "" if got[2] is None else ":%s" % got[2]
+    print("%s://%s%s" % (got[0] or "<no scheme>", host, port))
+    sys.exit(1)
+' "$_API" "$1"
+  }
+
   _ga_fetch_all_pages() {
     local _gafp_url="$1" _gafp_max="${2:-}" _gafp_noun="${3:-items}"
-    local _gafp_all _gafp_body _gafp_next_file _gafp_pages=0
+    local _gafp_all _gafp_body _gafp_next_file _gafp_pages=0 _gafp_refused
     _gafp_all="[]"
     _gafp_next_file="$(mktemp)"
     # Note (#194 security, non-blocking): unlike post-approval's $_pa_tmpfile,
@@ -3445,6 +3477,15 @@ _github_api() {
     # which trips `set -u`). Cleanup stays explicit `rm -f` on every return
     # path instead.
     while [ -n "$_gafp_url" ]; do
+      # Pin every page to the API origin before curl sends the token (#320):
+      # a Link: rel="next" naming any other host, an http downgrade or another
+      # port fails like a failed page (#302) -- non-zero, no partial output.
+      if ! _gafp_refused="$(_ga_refused_origin "$_gafp_url")"; then
+        printf 'github-api: %s: refusing to follow pagination link to %s (not the API origin); no token sent\n' \
+          "$_VERB" "$_gafp_refused" >&2
+        rm -f "$_gafp_next_file"
+        return 1
+      fi
       : > "$_gafp_next_file"
       if ! _gafp_body="$(_with_retry "$_VERB" _ga_fetch_page_once "$_gafp_url" "$_gafp_next_file")"; then
         rm -f "$_gafp_next_file"
