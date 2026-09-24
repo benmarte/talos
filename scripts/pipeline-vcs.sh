@@ -1155,6 +1155,11 @@ _vcs_shared_assign_issue() {
   local n="$1" get_fn="$2" add_fn="$3"; shift 3
   local want want_lc
   want="$(cfg issues.assignee "self")"
+  # Trim leading/trailing whitespace (spaces, tabs, newlines) once, up
+  # front, so "  " is "none" (not a literal identity), "self " is "self",
+  # and a literal identity is never passed to the provider with surrounding
+  # whitespace (#321).
+  want="$(printf '%s' "$want" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
   want_lc="$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]')"
   # An explicit empty value means "none" (#305), never "self": clearing the
   # key is read as switching assignment off, and assigning is a visible
