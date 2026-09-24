@@ -391,7 +391,7 @@ bash scripts/pipeline-vcs.sh list-issues
 ```
 
 1. **Adopt orphaned PRs.** For each open issue labeled `pipeline:dev` or `pipeline:review` that has no obvious in-flight PR, run `bash scripts/pipeline-vcs.sh find-pr <N>`:
-   - Open PR found → adopt it: do NOT re-dispatch the developer; resume from the first missing approval label (QA if `qa:pass` absent, etc.).
+   - Open PR found → adopt it: do NOT re-dispatch the developer; resume from the first missing approval label (QA if `qa:pass` absent, etc.). A PR that carries `pipeline:blocked` (on the PR or its issue) is not resumed — leave it for item 5's blocked-work report.
    - No PR → the developer stage never finished; re-dispatch it (counts toward `max_fix_attempts`).
 2. **Heal merged-but-open issues.** For each open `pipeline:*` issue, `bash scripts/pipeline-vcs.sh find-pr <N> merged` — if a merged PR closes it, run the post-merge steps from Step 4 (comment, close, board → Done, notify) instead of doing any work. Pass `--allow-closed` to `comment-issue` in the post-merge steps here, since GitHub may have already auto-closed the issue at merge time via `Closes #N`. `find-pr ... merged` counts only the `issue-<N>` branch or a closing keyword — never a bare `Depends on #N` / `Part of #N` mention (#298).
    - **Exit 2 → not verified, not "no PR".** `find-pr` exits 2 when the provider cannot answer it. Do NOT treat that as "no merged PR": skip the heal for `#N` and add `find-pr not verified for #N — heal skipped, verify manually` to the run summary (Step 5). Any other non-zero exit is a fetch failure — report it the same way.
