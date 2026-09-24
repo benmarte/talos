@@ -2,6 +2,39 @@
 # glab CLI stub for talos tests — logs every invocation and returns canned
 # responses for the query shapes the pipeline scripts use.
 [ -n "${GH_LOG:-}" ] && printf 'GLAB %s\n' "$*" >> "$GH_LOG"
+# STUB_GLAB_ARGV_LOG (#305): one line per call, each argv element in [...],
+# so a test can assert the exact argument boundaries GH_LOG's "$*" loses.
+if [ -n "${STUB_GLAB_ARGV_LOG:-}" ]; then
+  printf '[%s] ' "$@" >> "$STUB_GLAB_ARGV_LOG"
+  printf '\n' >> "$STUB_GLAB_ARGV_LOG"
+fi
+
+# _stub_flags <value-flags> <bool-flags> <args...> (#305) -- reject any flag
+# the real subcommand does not define, the way cobra does ("unknown flag"),
+# so a wrong flag fails here instead of passing silently. Lists are
+# space-padded, e.g. " -R --repo ". A value flag's next argv element is its
+# value and is skipped even when it starts with "-" (a description can).
+_stub_flags() {
+  local _vf="$1" _bf="$2" _skip="" _f; shift 2
+  for _f in "$@"; do
+    if [ -n "$_skip" ]; then _skip=""; continue; fi
+    case "$_f" in
+      -*)
+        case "$_vf" in *" ${_f%%=*} "*) case "$_f" in *=*) ;; *) _skip=1 ;; esac; continue ;; esac
+        case "$_bf" in *" $_f "*) continue ;; esac
+        echo "ERROR: unknown flag: $_f" >&2
+        exit 1 ;;
+    esac
+  done
+}
+# Flag sets from gitlab-org/cli docs/source/issue/{view,update,create}.md
+# (Options + inherited -R/--repo, -h/--help).
+_GL_VIEW_VF=" --jq -F --output -p --page -P --per-page -R --repo "
+_GL_VIEW_BF=" -c --comments -s --system-logs -w --web -h --help "
+_GL_UPDATE_VF=" -a --assignee --attach -d --description --description-file --due-date -l --label -m --milestone -t --title -u --unlabel -w --weight -R --repo "
+_GL_UPDATE_BF=" -c --confidential --lock-discussion -p --public --unassign --unlock-discussion -h --help "
+_GL_CREATE_VF=" -a --assignee --attach -d --description --description-file --due-date --epic -l --label --link-type --linked-issues --linked-mr -m --milestone --template -e --time-estimate -s --time-spent -t --title -w --weight -R --repo "
+_GL_CREATE_BF=" -c --confidential --no-editor --recover --web -y --yes -h --help "
 
 args="$*"
 case "$args" in
@@ -10,43 +43,106 @@ case "$args" in
   "repo view --format="*"default_branch"*)
     printf 'main\n' ;;
   "issue create "*)
+    # Real glab (#305): non-interactive create needs --title plus
+    # --description (or --template / --attach), and with stdout not a TTY
+    # prints only the new issue's web_url on its own line
+    # (issueutils.DisplayIssue, via IOStreams.LogInfo = stdout).
+    shift 2
+    _stub_flags "$_GL_CREATE_VF" "$_GL_CREATE_BF" "$@"
+    case " $* " in
+      *" --title "*|*" -t "*|*" --title="*) ;;
+      *) echo "ERROR: '--title' and '--description' (or '--template' or '--attach') required for non-interactive mode" >&2; exit 1 ;;
+    esac
+    case " $* " in
+      *" --description "*|*" -d "*|*" --description="*|*" --description-file "*|*" --template "*|*" --attach "*) ;;
+      *) echo "ERROR: '--title' and '--description' (or '--template' or '--attach') required for non-interactive mode" >&2; exit 1 ;;
+    esac
     printf 'https://gitlab.com/acme/widget/-/issues/%s\n' "${STUB_NEW_ISSUE_NUMBER:-42}" ;;
-  "issue view "*"--output json"*)
-    # assign-issue's read / read-back (#299): same STUB_ASSIGNEE_FILE state
-    # contract as the gh stub (absent or empty = unassigned).
+  "issue view "*)
+    shift 2
+    _stub_flags "$_GL_VIEW_VF" "$_GL_VIEW_BF" "$@"
+    _iv_n="" _iv_fmt="text" _iv_prev=""
+    for _iv_a in "$@"; do
+      case "$_iv_prev" in -F|--output) _iv_fmt="$_iv_a" ;; esac
+      case "$_iv_a" in --output=*) _iv_fmt="${_iv_a#--output=}" ;; esac
+      [ -z "$_iv_n" ] && case "$_iv_a" in *[!0-9]*|'') ;; *) _iv_n="$_iv_a" ;; esac
+      _iv_prev="$_iv_a"
+    done
+    if [ "$_iv_fmt" != "json" ]; then
+      printf '{"title":"Fix login crash","description":"stub body","labels":[]}\n'
+      exit 0
+    fi
+    # -F/--output json prints the client-go Issue (#305 models its shape):
+    # `assignees` is [{id, username, name, state, web_url}] -- one entry per
+    # line of STUB_ASSIGNEE_FILE (absent or empty = unassigned, the gh
+    # stub's contract, #299) -- plus the deprecated singular `assignee`.
     # check-epic-acceptance (#303): STUB_GITLAB_ISSUE_VIEW_FAIL=1 fails the
     # fetch; a set STUB_GITLAB_ISSUE_DESCRIPTION (even empty) adds the
-    # issue's `description` field. Unset = the #299 shape, unchanged.
+    # issue's `description` field. Unset = no description field.
     if [ "${STUB_GITLAB_ISSUE_VIEW_FAIL:-}" = "1" ]; then
       echo "ERROR: 404 Not Found" >&2
       exit 1
     fi
     _as_cur=""
     [ -n "${STUB_ASSIGNEE_FILE:-}" ] && [ -s "$STUB_ASSIGNEE_FILE" ] && _as_cur="$(cat "$STUB_ASSIGNEE_FILE")"
-    CUR="$_as_cur" HAS_DESC="${STUB_GITLAB_ISSUE_DESCRIPTION+1}" \
+    CUR="$_as_cur" IID="${_iv_n:-42}" HAS_DESC="${STUB_GITLAB_ISSUE_DESCRIPTION+1}" \
       DESC="${STUB_GITLAB_ISSUE_DESCRIPTION:-}" python3 -c "
 import json, os
-cur = os.environ['CUR']
-d = {'iid': 42, 'title': 'Fix login crash',
-     'assignees': [{'username': cur}] if cur else []}
+users = [u for u in os.environ['CUR'].splitlines() if u.strip()]
+iid = int(os.environ['IID'])
+assignees = [{'id': 100 + i, 'username': u, 'name': u.title(), 'state': 'active',
+              'avatar_url': '', 'web_url': 'https://gitlab.com/' + u}
+             for i, u in enumerate(users)]
+d = {'id': 9000 + iid, 'iid': iid, 'project_id': 1, 'title': 'Fix login crash',
+     'state': 'opened', 'assignees': assignees,
+     'assignee': assignees[0] if assignees else None,
+     'web_url': 'https://gitlab.com/acme/widget/-/issues/%d' % iid}
 if os.environ['HAS_DESC']:
     d['description'] = os.environ['DESC']
 print(json.dumps(d))
 " ;;
-  "issue update "*"--assignee "*)
-    # assign-issue's write (#299). STUB_ASSIGN_FAIL / STUB_ASSIGN_DROP as in
-    # the gh stub. The value carries glab's "+" add-prefix; strip it.
+  "issue update "*)
+    # assign-issue's write (#299). Real glab --assignee semantics (#305,
+    # cmdutils.ParseAssignees): comma-separated and repeatable; "+u" adds to
+    # the current assignees, "-u"/"!u" removes, a bare "u" replaces them all,
+    # and mixing bare with prefixed names is an error. STUB_ASSIGNEE_FILE
+    # holds one assignee per line. STUB_ASSIGN_FAIL / STUB_ASSIGN_DROP as in
+    # the gh stub. No --assignee (label-issue) = silent success.
+    shift 2
+    _stub_flags "$_GL_UPDATE_VF" "$_GL_UPDATE_BF" "$@"
+    _as_vals="" _as_prev=""
+    for _as_a in "$@"; do
+      case "$_as_prev" in -a|--assignee) _as_vals="$_as_vals,$_as_a" ;; esac
+      case "$_as_a" in --assignee=*) _as_vals="$_as_vals,${_as_a#--assignee=}" ;; esac
+      _as_prev="$_as_a"
+    done
+    [ -z "$_as_vals" ] && exit 0
     if [ "${STUB_ASSIGN_FAIL:-}" = "1" ]; then
       echo "ERROR: 422 {message: {assignee_ids: [not a member]}}" >&2
       exit 1
     fi
-    _as_prev=""
-    for _as_a in "$@"; do
-      [ "$_as_prev" = "--assignee" ] && _as_login="${_as_a#+}"
-      _as_prev="$_as_a"
-    done
+    _as_cur=""
+    [ -n "${STUB_ASSIGNEE_FILE:-}" ] && [ -s "$STUB_ASSIGNEE_FILE" ] && _as_cur="$(cat "$STUB_ASSIGNEE_FILE")"
+    _as_new="$(CUR="$_as_cur" VALS="$_as_vals" python3 -c "
+import os, sys
+cur = [u for u in os.environ['CUR'].splitlines() if u.strip()]
+add, rm, rep = [], [], []
+for v in os.environ['VALS'].split(','):
+    if not v:
+        continue
+    if v[0] == '+':
+        add.append(v[1:])
+    elif v[0] in '-!':
+        rm.append(v[1:])
+    else:
+        rep.append(v)
+if rep and (add or rm):
+    sys.exit('ERROR: --assignee: mixing relative (+,!,-) and absolute assignments is forbidden')
+out = rep if rep else [u for u in cur if u not in rm] + [u for u in add if u not in cur]
+print('\n'.join(out))
+")" || exit 1
     [ "${STUB_ASSIGN_DROP:-}" != "1" ] && [ -n "${STUB_ASSIGNEE_FILE:-}" ] \
-      && printf '%s\n' "$_as_login" > "$STUB_ASSIGNEE_FILE"
+      && printf '%s\n' "$_as_new" > "$STUB_ASSIGNEE_FILE"
     exit 0 ;;
   "api "*"merge_requests/"*"/diffs"*|"api "*"/pipelines/"*"/retry"*|"api projects/"*"/merge_requests/"*)
     # MR REST calls (#303): pr-files/check-pr-files read
@@ -64,10 +160,10 @@ print(json.dumps(d))
     esac
     exit 0 ;;
   "api user"*)
-    # Operator identity for issues.assignee: self (#299).
-    printf '{"username":"%s"}\n' "${STUB_CURRENT_USER:-}" ;;
-  "issue view "*)
-    printf '{"title":"Fix login crash","description":"stub body","labels":[]}\n' ;;
+    # Operator identity for issues.assignee: self (#299). glab api user is
+    # GET /user; a subset of the documented response (#305).
+    printf '{"id":1,"username":"%s","name":"Operator","state":"active","locked":false,"web_url":"https://gitlab.com/%s"}\n' \
+      "${STUB_CURRENT_USER:-}" "${STUB_CURRENT_USER:-}" ;;
   "issue list "*)
     # Override STUB_GITLAB_ISSUE_LIST to simulate a capped/large result set (#171).
     if [ -n "${STUB_GITLAB_ISSUE_LIST:-}" ]; then
