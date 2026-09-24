@@ -5134,15 +5134,21 @@ _VCS_AZURE_SCAN_CAP=65536
 #   stdout: its System.Description (HTML) as text, one non-empty stripped
 #           line each, every checkbox rewritten as a `- [ ] ` / `- [x] ` line
 #           for _epic_acceptance_scan: an <input type="checkbox"> (ticked
-#           when it has a `checked` attribute), ☐ (unticked), ☑/☒ (ticked),
-#           and a line starting with [ ] or [x], e.g. <li>[ ] text</li>.
+#           only by a `checked` attribute of its own, never by a value such
+#           as value="checked"), U+2610 (unticked), U+2611/U+2612 (ticked),
+#           and a line starting with [ ] or [x], e.g. <li>[ ] text</li>. A
+#           box's text is the rest of its line or list item, on either side
+#           of the box; on a line with several boxes each takes the text
+#           after it, or the text before it when the line ends in a box.
 #   exit:   0; 1 when the document is not a work item (no `fields` object);
-#           3 when the description was longer than _VCS_AZURE_SCAN_CAP and
-#           only its first _VCS_AZURE_SCAN_CAP characters were converted.
+#           3, printing nothing, when the description is longer than
+#           _VCS_AZURE_SCAN_CAP (checked before any regex runs).
 #   A missing System.Description is an empty one: ADO omits empty fields.
 #   Linear: a tag match starts only at `<` and its [^<>]* stops at the next
-#   `<`, the lookahead after the name stops name/attribute backtracking, and
-#   blank lines are dropped so the scan's leading \s* never spans lines.
+#   `<`, and the lookahead after the name stops name/attribute backtracking;
+#   an attribute match starts only at a name, and a quoted value stops at
+#   the next matching quote; blank lines are dropped so the scan's leading
+#   \s* never spans lines.
 _ado_description_text() {
   python3 -c '
 import html, json, re, sys
@@ -5154,31 +5160,48 @@ if not isinstance(fields, dict):
 src = fields.get("System.Description") or ""
 if not isinstance(src, str):
     sys.exit(1)
-truncated = len(src) > cap
-src = src[:cap]
+if len(src) > cap:
+    sys.exit(3)
+OPEN, DONE = "", ""   # in-line box markers (private use)
+src = src.replace(OPEN, "").replace(DONE, "")
 BLOCK = {"p", "div", "br", "li", "ul", "ol", "tr", "table", "blockquote", "pre",
          "h1", "h2", "h3", "h4", "h5", "h6"}
+ATTR = re.compile(r"([^\s\"\x27<>/=]+)(?:\s*=\s*(\"[^\"]*\"|\x27[^\x27]*\x27|[^\s\"\x27<>=`]+))?")
 def tag(m):
-    name, attrs = m.group(2).lower(), m.group(3)
+    name = m.group(2).lower()
     if name == "input" and not m.group(1):
-        if re.search(r"type\s*=\s*[\"\x27]?checkbox", attrs, re.I):
-            ticked = re.search(r"(?<![\w-])checked(?![\w-])", attrs, re.I)
-            return "\n- [x] " if ticked else "\n- [ ] "
+        attrs = {}
+        for a in ATTR.finditer(m.group(3)):
+            attrs.setdefault(a.group(1).lower(), (a.group(2) or "").strip("\"\x27"))
+        if attrs.get("type", "").lower() == "checkbox":
+            return DONE if "checked" in attrs else OPEN
         return ""
     return "\n" if name in BLOCK else ""
 text = re.sub(r"<(/?)([A-Za-z][A-Za-z0-9]*)(?![A-Za-z0-9])([^<>]*)>", tag, src)
 text = html.unescape(text)
-for box, mark in (("\u2610", "- [ ] "), ("\u2611", "- [x] "), ("\u2612", "- [x] ")):
-    text = text.replace(box, "\n" + mark)
+text = text.replace("☐", OPEN).replace("☑", DONE).replace("☒", DONE)
+MARK = re.compile("([" + OPEN + DONE + "])")
 lines = []
 for line in text.splitlines():
-    line = line.strip()
-    if re.match(r"\[(?:\s|x|X)\]", line):
-        line = "- " + line
-    if line:
-        lines.append(line)
+    parts = MARK.split(line)
+    segs, marks = parts[0::2], parts[1::2]
+    if not marks:
+        line = line.strip()
+        if re.match(r"\[(?:\s|x|X)\]", line):
+            line = "- " + line
+        if line:
+            lines.append(line)
+        continue
+    if len(marks) == 1:
+        texts = [segs[0] + " " + segs[1]]
+    elif segs[-1].strip():
+        texts = segs[1:]
+    else:
+        texts = segs[:-1]
+    for mark, t in zip(marks, texts):
+        t = " ".join(t.split()) or "(checkbox without text)"
+        lines.append(("- [ ] " if mark == OPEN else "- [x] ") + t)
 print("\n".join(lines))
-sys.exit(3 if truncated else 0)
 ' "$_VCS_AZURE_SCAN_CAP"
 }
 
@@ -5788,14 +5811,17 @@ print("yes" if sys.argv[1] in {str(w["id"]) for w in json.load(sys.stdin)} else 
         exit 1; }
       _azcea_text="$(printf '%s' "$_azcea_json" | _ado_description_text 2>/dev/null)" || _azcea_rc=$?
       case "$_azcea_rc" in
-        0|3) ;;
+        0) ;;
+        3)
+          # Not scanned at all: one pending item on stdout, so the epic
+          # sweep's pending comment never lists nothing.
+          echo "pipeline-vcs: check-epic-acceptance: the description of work item #$n is longer than $_VCS_AZURE_SCAN_CAP characters -- not scanned, not closing" >&2
+          echo "(description exceeds $_VCS_AZURE_SCAN_CAP characters; not scanned — review manually)"
+          exit 1
+          ;;
         *) echo "pipeline-vcs: check-epic-acceptance: could not read the description of work item #$n -- not closing" >&2; exit 1 ;;
       esac
-      printf '%s' "$_azcea_text" | _epic_acceptance_scan || exit 1
-      if [ "$_azcea_rc" = 3 ]; then
-        echo "pipeline-vcs: check-epic-acceptance: the description of work item #$n is longer than $_VCS_AZURE_SCAN_CAP characters and only the first $_VCS_AZURE_SCAN_CAP were scanned -- not closing" >&2
-        exit 1
-      fi
+      printf '%s' "$_azcea_text" | _epic_acceptance_scan
       ;;
     rerun-ci)
       # rerun-ci <id> (#304): re-queue every failed build-validation policy

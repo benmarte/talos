@@ -164,8 +164,16 @@ out="$(_epic '<ul><li><input checked type=checkbox>A</li><li>☒ B</li></ul>- [X
 assert_eq "0" "$rc" "check-epic-acceptance: exits 0 when every box is ticked"
 assert_eq "" "$out" "check-epic-acceptance: prints nothing when every box is ticked"
 
-bash "$VCS" check-epic-acceptance 42 >/dev/null 2>&1; rc=$?
-assert_eq "0" "$rc" "check-epic-acceptance: a work item without a description has no unticked boxes"
+# Only a `checked` ATTRIBUTE ticks a box, never an attribute value (#304 review).
+out="$(_epic '<ul><li><input type="checkbox" value="checked">By value</li><li><input type=checkbox data-checked="true" aria-checked="true">By data</li><li><input type="checkbox" checked="">Empty</li><li><input type="checkbox" checked>Bare</li><li><input type="checkbox" CHECKED=checked>Upper</li><li><input checked=true type="checkbox">First</li></ul>')"; rc=$?
+assert_eq "1" "$rc" "check-epic-acceptance: value=\"checked\" does not tick a box"
+assert_eq "$(printf 'By value\nBy data')" "$out" "check-epic-acceptance: only the checked attribute ticks; values and data-checked do not"
+
+# The item text is the checkbox's own line or list item, on either side (#304 review).
+out="$(_epic '<ul><li>Box after <input type="checkbox"></li><li>Done after <input type="checkbox" checked></li></ul><p>Trailing ☐</p><p>Tasks: ☐ a ☐ b</p><p>c ☐ d ☐</p>')"; rc=$?
+assert_eq "1" "$rc" "check-epic-acceptance: a checkbox after its text still counts"
+assert_eq "$(printf 'Box after\nTrailing\na\nb\nc\nd')" "$out" \
+  "check-epic-acceptance: reports the text beside the box, whichever side it is on"
 
 STUB_AZURE_WORKITEM_SHOW_FAIL=1 bash "$VCS" check-epic-acceptance 42 >/dev/null 2>&1; rc=$?
 assert_eq "1" "$rc" "check-epic-acceptance: a fetch failure fails closed so the epic stays open"
@@ -180,7 +188,9 @@ assert_eq "1" "$rc" "check-epic-acceptance: a non-numeric id fails closed"
 python3 -c "print('<p>- [x] done</p>' + 'a' * 70000)" > "$SANDBOX/long.html"
 out="$(STUB_AZURE_WORKITEM_DESCRIPTION_FILE="$SANDBOX/long.html" bash "$VCS" check-epic-acceptance 42 2>&1)"; rc=$?
 assert_eq "1" "$rc" "check-epic-acceptance: a description over the 65536-character scan cap fails closed"
-assert_contains "$out" "only the first 65536" "check-epic-acceptance: says the description was truncated"
+out="$(STUB_AZURE_WORKITEM_DESCRIPTION_FILE="$SANDBOX/long.html" bash "$VCS" check-epic-acceptance 42 2>/dev/null)"
+assert_eq "(description exceeds 65536 characters; not scanned — review manually)" "$out" \
+  "check-epic-acceptance: an oversize description prints one pending item, never an empty list"
 
 # ── rerun-ci ──────────────────────────────────────────────────────────────────
 _build='"configuration":{"type":{"id":"0609b952-1397-4640-95ec-e00a01b2c241","displayName":"Build"}}'
@@ -233,6 +243,12 @@ bodies = {
     "dashes": "- " * (cap // 2),
     "boxes": "☐" * cap,
     "entities": "&#" * (cap // 2),
+    # closed tags reach the attribute parser and the in-line box split
+    "attrquote": '<input type=checkbox a="' + "b " * ((cap - 30) // 2) + ">",
+    "attreq": "<input " + "a= " * ((cap - 10) // 3) + ">",
+    "attrsq": "<input type=checkbox " + "a='" * ((cap - 30) // 3) + ">",
+    "inputs": "<input type=checkbox>" * (cap // 21),
+    "boxline": "☐ a " * (cap // 4),
     "big": "<li>" * (1048576 // 4),
 }
 for k, v in bodies.items():
@@ -248,7 +264,8 @@ except subprocess.TimeoutExpired:
     os.killpg(p.pid, signal.SIGKILL); p.wait(); rc = 124
 print("%d %.2f" % (rc, time.time() - t))' "$@"
 }
-for _case in lt:0 lta:0 tagname:0 input:0 attrs:0 newlines:0 dashes:0 boxes:1 entities:0 big:1; do
+for _case in lt:0 lta:0 tagname:0 input:0 attrs:0 newlines:0 dashes:0 boxes:1 entities:0 \
+    attrquote:1 attreq:0 attrsq:1 inputs:1 boxline:1 big:1; do
   read -r rc _secs <<<"$(STUB_AZURE_WORKITEM_DESCRIPTION_FILE="$SANDBOX/adv-${_case%%:*}.html" \
     _timed bash "$VCS" check-epic-acceptance 42)"
   assert_eq "${_case#*:}" "$rc" "linear scan: check-epic-acceptance on the '${_case%%:*}' body exits ${_case#*:}"
