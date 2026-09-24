@@ -144,6 +144,23 @@ print('\n'.join(out))
     [ "${STUB_ASSIGN_DROP:-}" != "1" ] && [ -n "${STUB_ASSIGNEE_FILE:-}" ] \
       && printf '%s\n' "$_as_new" > "$STUB_ASSIGNEE_FILE"
     exit 0 ;;
+  "api --paginate projects/"*"/merge_requests?"*)
+    # check-closing-keyword's sibling list (#319): STUB_GITLAB_MR_PAGES is
+    # the raw output, pages back-to-back as `glab api --paginate` prints
+    # them; otherwise STUB_GITLAB_MR_LIST (or the `mr list` default) is the
+    # single page. STUB_GITLAB_MR_LIST_FAIL=1 or STUB_GITLAB_API_FAIL=1 fails it.
+    if [ "${STUB_GITLAB_MR_LIST_FAIL:-}" = "1" ] || [ "${STUB_GITLAB_API_FAIL:-}" = "1" ]; then
+      echo "ERROR: 500 Internal Server Error" >&2
+      exit 1
+    fi
+    if [ -n "${STUB_GITLAB_MR_PAGES:-}" ]; then
+      printf '%s\n' "$STUB_GITLAB_MR_PAGES"
+    elif [ -n "${STUB_GITLAB_MR_LIST:-}" ]; then
+      printf '%s\n' "$STUB_GITLAB_MR_LIST"
+    else
+      printf '[{"iid":7,"title":"fix: guard","state":"opened","source_branch":"fix/issue-42-guard"}]\n'
+    fi
+    exit 0 ;;
   "api "*"merge_requests/"*"/diffs"*|"api "*"/pipelines/"*"/retry"*|"api projects/"*"/merge_requests/"*)
     # MR REST calls (#303): pr-files/check-pr-files read
     # STUB_GITLAB_MR_DIFFS, rerun-ci reads STUB_GITLAB_MR_API and POSTs the

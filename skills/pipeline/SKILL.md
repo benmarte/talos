@@ -1231,6 +1231,7 @@ Exit 2 (not supported by this provider) also means do NOT merge: siblings were n
 If the gate exits 0 but prints a `talos:closing-keyword-unverified` line on stdout, PR body
 or sibling data could not be fetched — the gate failed open. Log the line and continue; the
 existing CI and approval gates still apply.
+Exception: on `reason=siblings-capped` (the open-PR list hit a hard cap, so a sibling may be missing) do NOT merge: add `pipeline:blocked` to the PR, post the marker line as a PR comment, and send a `blocked` notification. A human checks the open siblings and clears the label.
 
 Note: this gate does NOT catch a lone PR that overclaims its deliverables (e.g., 4 of 7
 items with `Closes #N` and no siblings). Detecting that requires a ledger; nothing in the
