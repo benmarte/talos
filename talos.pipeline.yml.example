@@ -197,12 +197,14 @@ issues:
     - "pipeline:blocked"
     - "wontfix"
   max_parallel: 1                  # Max issues processed concurrently (start with 1)
-  # assignee: self                 # issues.assignee: who create-issue and the
+  # assignee: ""                   # issues.assignee: who create-issue and the
                                    # "In progress" claim assign an issue to.
-                                   # self (default) = the authenticated
-                                   # operator; any other value = that identity
-                                   # verbatim (login / username / UPN); none =
-                                   # never assign. An existing assignee is
+                                   # Use assignee: "" (quoted empty string) to
+                                   # disable assignment. A bare assignee: (YAML
+                                   # null) is unset and resolves to self. Other
+                                   # values: self (authenticated operator),
+                                   # identity verbatim (login/username/UPN), or
+                                   # none (never assign). Existing assignees are
                                    # never overwritten.
   # Priority: issues labeled p0 are dispatched before p1, before p2, before
   # unlabeled. Apply the labels by hand; bootstrap-labels.sh creates them.
