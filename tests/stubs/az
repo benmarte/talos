@@ -34,6 +34,11 @@ case "$args" in
   "rest "*"/pullRequests/"*"/iterations?"*)
     [ "${STUB_AZURE_PR_ITERATIONS_FAIL:-}" = "1" ] && _stub_fail "TF401180: The requested pull request was not found."
     if [ -n "${STUB_AZURE_PR_ITERATIONS:-}" ]; then printf '%s\n' "$STUB_AZURE_PR_ITERATIONS"; exit 0; fi ;;
+  "rest "*"/_apis/policy/evaluations?"*)
+    # pr-checks-required (#328): STUB_AZURE_PR_EVALUATIONS is the raw REST
+    # body ({"count": n, "value": [records...]}).
+    [ "${STUB_AZURE_PR_EVALUATIONS_FAIL:-}" = "1" ] && _stub_fail "TF401180: The requested pull request was not found."
+    if [ -n "${STUB_AZURE_PR_EVALUATIONS:-}" ]; then printf '%s\n' "$STUB_AZURE_PR_EVALUATIONS"; exit 0; fi ;;
   "repos pr work-item list "*)
     [ "${STUB_AZURE_PR_WORKITEMS_FAIL:-}" = "1" ] && _stub_fail "TF401180: The requested pull request was not found."
     if [ -n "${STUB_AZURE_PR_WORKITEMS:-}" ]; then printf '%s\n' "$STUB_AZURE_PR_WORKITEMS"; exit 0; fi ;;
