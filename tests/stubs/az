@@ -43,7 +43,26 @@ case "$args" in
   "repos pr policy queue "*)
     [ "${STUB_AZURE_POLICY_QUEUE_FAIL:-}" = "1" ] && _stub_fail "TF400898: An internal error occurred." ;;
   "repos pr list "*)
-    [ "${STUB_AZURE_PR_LIST_FAIL:-}" = "1" ] && _stub_fail "TF400813: The user is not authorized to access this resource." ;;
+    [ "${STUB_AZURE_PR_LIST_FAIL:-}" = "1" ] && _stub_fail "TF400813: The user is not authorized to access this resource."
+    # check-closing-keyword pages (#319): STUB_AZURE_PR_LIST_SKIP_<n> answers
+    # the page at --skip <n>; STUB_AZURE_PR_LIST_FULL=1 answers every page
+    # with --top active PRs on unrelated branches (a list that never ends).
+    _pl_skip="" _pl_top="" _pl_prev=""
+    for _a in "$@"; do
+      case "$_pl_prev" in --skip) _pl_skip="$_a" ;; --top) _pl_top="$_a" ;; esac
+      _pl_prev="$_a"
+    done
+    _page_var="STUB_AZURE_PR_LIST_SKIP_${_pl_skip:-0}"
+    if [ -n "$_pl_skip" ] && [ -n "${!_page_var:-}" ]; then printf '%s\n' "${!_page_var}"; exit 0; fi
+    if [ "${STUB_AZURE_PR_LIST_FULL:-}" = "1" ]; then
+      python3 -c '
+import json, sys
+skip, top = int(sys.argv[1] or 0), int(sys.argv[2] or 1)
+print(json.dumps([{"pullRequestId": 100000 + skip + i, "status": "active",
+                   "sourceRefName": "refs/heads/feature/other-%d" % (skip + i)} for i in range(top)]))
+' "$_pl_skip" "$_pl_top"
+      exit 0
+    fi ;;
   "repos pr show "*)
     [ "${STUB_AZURE_PR_SHOW_FAIL:-}" = "1" ] && _stub_fail "TF401180: The requested pull request was not found." ;;
   "boards work-item show "*"-o tsv") ;;

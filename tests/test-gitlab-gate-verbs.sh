@@ -159,7 +159,7 @@ cat > "$SANDBOX/bigglab/glab" <<EOF
 #!/bin/sh
 case "\$1 \$2" in
   "mr view") cat "\$BIG_VIEW" ;;
-  "mr list") cat "\$BIG_LIST" ;;
+  "mr list"|"api --paginate") cat "\$BIG_LIST" ;;
   *) exec "$STUBS_DIR/glab" "\$@" ;;
 esac
 EOF

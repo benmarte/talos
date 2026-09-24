@@ -2061,9 +2061,11 @@ _VCS_GITLAB_SCAN_CAP=65536
 #                                 no sibling-list API call when there is
 #                                 nothing to gate on). Must print a JSON
 #                                 array of open PRs, each with number, state,
-#                                 title, headRefName and body, and exit 0; or
-#                                 print nothing and exit non-zero on fetch
-#                                 failure.
+#                                 title, headRefName and body, and exit 0
+#                                 when that list is complete; exit
+#                                 $_VCS_SIBLINGS_CAPPED when it is only the
+#                                 part below a hard cap (#319); or exit any
+#                                 other non-zero on fetch failure.
 #           flavor            -- optional, default "github". "gitlab" (#303)
 #                                 widens the keywords to GitLab's default
 #                                 issue_closing_pattern (adds closing/fixing/
@@ -2085,7 +2087,9 @@ _VCS_GITLAB_SCAN_CAP=65536
 #                    open before calling this function) -- not shared logic.
 #   stdout: nothing on the common paths; a `talos:closing-keyword-unverified`
 #           marker when the sibling fetch fails or returns something this
-#           function cannot parse (fail open).
+#           function cannot parse (fail open), or when a capped list shows
+#           no sibling (reason=siblings-capped: a sibling may sit past the
+#           cap, so a human must check before merging).
 #   exit:   0 safe to merge (no closing keyword, no open siblings, or a
 #           fetch failure -- fail open); 1 blocked by an open sibling.
 #
@@ -2102,6 +2106,18 @@ _VCS_GITLAB_SCAN_CAP=65536
 #   wording cannot drift. <siblings> is already formatted ("11 #12").
 _vcs_shared_sibling_blocked() {
   echo "pipeline-vcs: check-closing-keyword: PR #$1 $3 but open sibling PR(s) still reference the same issue: #$2 — merge the siblings first, or $4" >&2
+}
+
+# A sibling fetch exits with this status when it printed only the part of
+# the open-PR list below a hard cap (#319). The gate still blocks on a
+# sibling it saw, but never reads "none seen" as "none open".
+_VCS_SIBLINGS_CAPPED=3
+
+# _vcs_shared_siblings_capped <pr> <issue> (#319): the capped-list outcome
+# (stderr warning + fixed-literal marker), shared with the azure gate.
+_vcs_shared_siblings_capped() {
+  echo "pipeline-vcs: check-closing-keyword: the open-PR list hit its cap, so a sibling of #$2 may be missing -- check the open PRs by hand before merging" >&2
+  echo "talos:closing-keyword-unverified pr=$1 issue=$2 reason=siblings-capped"
 }
 
 _vcs_shared_check_closing_keyword() {
@@ -2178,9 +2194,9 @@ else:
 
   # Closing keyword found. Fetch open PRs for this issue (lazily -- only now
   # that we know we need them) and filter out the current PR by number.
-  local siblings_json
-  siblings_json="$("$siblings_fetch_fn")"
-  if [ -z "$siblings_json" ]; then
+  local siblings_json fetch_rc=0
+  siblings_json="$("$siblings_fetch_fn")" || fetch_rc=$?
+  if [ -z "$siblings_json" ] || { [ "$fetch_rc" -ne 0 ] && [ "$fetch_rc" -ne "$_VCS_SIBLINGS_CAPPED" ]; }; then
     echo "pipeline-vcs: check-closing-keyword: could not fetch open PR list — skipping sibling check" >&2
     echo "talos:closing-keyword-unverified pr=${pr_number:-$pr_ref} issue=$issue_n reason=sibling-fetch-failed"
     return 0
@@ -2250,6 +2266,7 @@ else:
 
   case "$sibling_result" in
     ok)
+      [ "$fetch_rc" -eq "$_VCS_SIBLINGS_CAPPED" ] && _vcs_shared_siblings_capped "${pr_number:-$pr_ref}" "$issue_n"
       return 0
       ;;
     blocked:*)
@@ -2990,9 +3007,14 @@ for r in runs:
 
       # Lazily fetches the open-PR list -- only invoked by the shared
       # function when a closing keyword is actually present.
+      # gh pages through the list itself, up to --limit. A result that lands
+      # on the limit may be cut short, so it is reported as capped (#319).
       _github_fetch_closing_siblings() {
-        gh pr list --state open --limit 100 \
-          --json number,state,title,headRefName,body ${REPO:+--repo "$REPO"} 2>/dev/null
+        local _out _limit=1000
+        _out="$(gh pr list --state open --limit "$_limit" \
+          --json number,state,title,headRefName,body ${REPO:+--repo "$REPO"})" || return 1
+        printf '%s' "$_out"
+        [ "$(printf '%s' "$_out" | _json_array_count)" != "$_limit" ] || return "$_VCS_SIBLINGS_CAPPED"
       }
 
       printf '%s' "$pr_body" | REPO="$REPO" \
@@ -4511,9 +4533,10 @@ json.dump(out, sys.stdout)
       # Lazily fetches and normalises the open-PR list -- only invoked by the
       # shared function when a closing keyword is actually present. REST has
       # no headRefName field natively, so it's derived from head.ref here.
+      # Every page, no cap (#319): a sibling past the first 100 still counts.
       _github_api_fetch_closing_siblings() {
         local _open_prs_raw
-        _open_prs_raw="$(_ga_req GET "$_API/pulls?state=open&per_page=100")"
+        _open_prs_raw="$(_ga_fetch_all_pages "$_API/pulls?state=open&per_page=100")" || return 1
         [ -z "$_open_prs_raw" ] && return 1
         printf '%s' "$_open_prs_raw" | python3 -c "
 import json, sys
@@ -4922,12 +4945,13 @@ print(d.get('merge_status') or d.get('detailed_merge_status') or '')
         return 0
       fi
       _glck_body="$(printf '%s' "$_glck_json" | python3 -c "import json,sys; print(json.load(sys.stdin).get('description') or '')")"
-      # Opened MRs only (glab's default state); empty stdout on failure.
+      # Opened MRs only, every page (#319: `glab mr list` stopped at 100).
+      # Non-zero on failure.
       _gl_fetch_closing_siblings() {
         local _out
-        _out="$(glab mr list --per-page 100 --output json $RARG 2>/dev/null)" || return 1
-        _list_cap_warn check-closing-keyword 100 "$(printf '%s' "$_out" | _json_array_count)" "glab --per-page ceiling" MRs
-        printf '%s' "$_out" | _gl_mrs_to_prs
+        _out="$(glab api --paginate "projects/$(_gl_api_project)/merge_requests?state=opened&per_page=100")" || return 1
+        [ -n "$_out" ] || return 1
+        printf '%s' "$_out" | _gh_paginate_merge | _gl_mrs_to_prs
       }
       printf '%s' "$_glck_body" | REPO="$_glck_repo" \
         _vcs_shared_check_closing_keyword "$issue_n" "$_glck_number" "$pr_ref" _gl_fetch_closing_siblings gitlab "$(_gl_repo_host)"
@@ -5329,19 +5353,31 @@ for c in d["changeEntries"]:
   }
   # Active sibling PRs of PR <self> for work item <n> (#304): PRs linked to
   # the work item plus PRs on an issue-<n> branch, space-separated, <self>
-  # excluded. Returns non-zero on any fetch or parse failure.
+  # excluded. Returns non-zero on any fetch or parse failure, and
+  # $_VCS_SIBLINGS_CAPPED (with the siblings it did see) when the active-PR
+  # list is still full after _max pages (#319).
   _az_closing_siblings() {
     local _self="$1" _n="$2" _wi _ids _id _pr _linked="" _active _ra=""
+    local _page _raw="" _top=1000 _max=10 _pages=0 _capped=0
     [ -n "$REPO" ] && _ra="--repository $REPO"
-    _wi="$(az boards work-item show --id "$_n" --expand relations $ORG_ARG --output json 2>/dev/null)" || return 1
+    _wi="$(az boards work-item show --id "$_n" --expand relations $ORG_ARG --output json)" || return 1
     _ids="$(printf '%s' "$_wi" | _az_linked_pr_ids)" || return 1
     for _id in $_ids; do
       [ "$_id" = "$_self" ] && continue
-      _pr="$(az repos pr show --id "$_id" $ORG_ARG --output json 2>/dev/null)" || return 1
+      _pr="$(az repos pr show --id "$_id" $ORG_ARG --output json)" || return 1
       _linked="${_linked:+$_linked,}$_pr"
     done
-    _active="$(az repos pr list --status active --top 1000 $ORG_ARG $PROJ_ARG $_ra --output json 2>/dev/null)" || return 1
-    _list_cap_warn check-closing-keyword 1000 "$(printf '%s' "$_active" | _json_array_count)" "az repos pr list --top ceiling" PRs
+    # Every --top/--skip page until a short one (#319: one --top 1000 call
+    # missed a sibling past the first 1000).
+    while :; do
+      _page="$(az repos pr list --status active --top "$_top" --skip "$((_pages * _top))" \
+        $ORG_ARG $PROJ_ARG $_ra --output json)" || return 1
+      _raw="$_raw$_page"
+      _pages=$((_pages + 1))
+      [ "$(printf '%s' "$_page" | _json_array_count)" = "$_top" ] || break
+      [ "$_pages" -lt "$_max" ] || { _capped=1; break; }
+    done
+    _active="$(printf '%s' "$_raw" | _gh_paginate_merge 2>/dev/null)" || return 1
     printf '[[%s],%s]' "$_linked" "$_active" | python3 -c '
 import json, re, sys
 me, n, cap = sys.argv[1], sys.argv[2], int(sys.argv[3])
@@ -5351,7 +5387,8 @@ branch = re.compile(r"(?:^|/)issue-" + n + r"(?:-|$)")
 ids |= {int(p["pullRequestId"]) for p in active if branch.search((p.get("sourceRefName") or "")[:cap])}
 ids.discard(int(me))
 print(" ".join(str(i) for i in sorted(ids)))
-' "$_self" "$_n" "$_VCS_AZURE_SCAN_CAP" 2>/dev/null
+' "$_self" "$_n" "$_VCS_AZURE_SCAN_CAP" 2>/dev/null || return 1
+    [ "$_capped" = 0 ] || return "$_VCS_SIBLINGS_CAPPED"
   }
 
   local verb="$1"; shift
@@ -5797,12 +5834,17 @@ print("yes" if sys.argv[1] in {str(w["id"]) for w in json.load(sys.stdin)} else 
           return 0
           ;;
       esac
-      local _azck_siblings
-      _azck_siblings="$(_az_closing_siblings "$pr_ref" "$issue_n")" || {
+      local _azck_siblings _azck_rc=0
+      _azck_siblings="$(_az_closing_siblings "$pr_ref" "$issue_n")" || _azck_rc=$?
+      if [ "$_azck_rc" -ne 0 ] && [ "$_azck_rc" -ne "$_VCS_SIBLINGS_CAPPED" ]; then
         echo "pipeline-vcs: check-closing-keyword: could not fetch the active PRs for work item #$issue_n — skipping sibling check" >&2
         echo "talos:closing-keyword-unverified pr=$pr_ref issue=$issue_n reason=sibling-fetch-failed"
-        return 0; }
-      [ -z "$_azck_siblings" ] && return 0
+        return 0
+      fi
+      if [ -z "$_azck_siblings" ]; then
+        [ "$_azck_rc" -eq 0 ] || _vcs_shared_siblings_capped "$pr_ref" "$issue_n"
+        return 0
+      fi
       _vcs_shared_sibling_blocked "$pr_ref" "${_azck_siblings// / #}" \
         "is linked to work item #$issue_n, so completing it closes the item," "unlink work item #$issue_n from this PR"
       exit 1

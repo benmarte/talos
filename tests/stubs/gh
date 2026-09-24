@@ -121,6 +121,11 @@ case "$args" in
     printf '%s\n' "${STUB_PR_FILES:-src/auth.js
 tests/auth.test.js}" ;;
   "pr list --state "*)
+    # STUB_PR_LIST_FAIL=1 fails the list call alone (#319).
+    if [ "${STUB_PR_LIST_FAIL:-}" = "1" ]; then
+      echo "gh: HTTP 502: Bad Gateway (https://api.github.com/graphql)" >&2
+      exit 1
+    fi
     # NB: JSON braces can't live inside ${VAR:-default} — } ends the expansion
     if [ -n "${STUB_PR_LIST:-}" ]; then
       _pl_raw="$STUB_PR_LIST"
