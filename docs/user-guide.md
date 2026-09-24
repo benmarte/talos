@@ -849,6 +849,8 @@ and `azure`. The `file` provider has no assignee concept and is unaffected.
 | `none` | Never assign. Talos behaves as it did before this key existed. |
 | `assignee: ""` (quoted) | Disables assignment (same as `none`), and each `assign-issue` prints a one-line notice on stderr saying the empty value was read as `none`. A bare `assignee:` (YAML null) is dropped by the config reader and behaves as if unset, resolving to `self`. |
 
+The value is trimmed of leading and trailing whitespace before any of the above comparisons, so `" self "` is `self`, `"NONE "` is `none`, and a whitespace-only value (`"  "`) is `none` (with the same empty-value notice).
+
 ```yaml
 issues:
   assignee: "alice@example.com"
