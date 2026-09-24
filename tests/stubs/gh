@@ -121,11 +121,6 @@ case "$args" in
     printf '%s\n' "${STUB_PR_FILES:-src/auth.js
 tests/auth.test.js}" ;;
   "pr list --state "*)
-    # STUB_PR_LIST_FAIL=1 fails the list call alone (#319).
-    if [ "${STUB_PR_LIST_FAIL:-}" = "1" ]; then
-      echo "gh: HTTP 502: Bad Gateway (https://api.github.com/graphql)" >&2
-      exit 1
-    fi
     # NB: JSON braces can't live inside ${VAR:-default} — } ends the expansion
     if [ -n "${STUB_PR_LIST:-}" ]; then
       _pl_raw="$STUB_PR_LIST"
@@ -192,12 +187,22 @@ print(json.dumps(d[:int(os.environ['LIMIT'])]))
   "api --paginate repos/"*"/pulls?state=open"*)
     # Simulates `gh api --paginate` for the REST pulls endpoint (#171); see
     # the issues variant above for the page-concatenation rationale.
-    # STUB_GH_API_FAIL=prs simulates a failed page.
+    # STUB_GH_API_FAIL=prs simulates a failed page. With STUB_GH_PRS_RAW
+    # unset, a set STUB_PR_LIST (the `pr list` fixture) is served in REST
+    # shape, so check-closing-keyword's sibling fetch (#319) reads the same
+    # fixture it read through `gh pr list`.
     if [ "${STUB_GH_API_FAIL:-}" = "prs" ]; then
+      echo "gh: HTTP 502: Bad Gateway (https://api.github.com/repos/$REPO/pulls?page=2)" >&2
       exit 1
     fi
     if [ -n "${STUB_GH_PRS_RAW:-}" ]; then
       printf '%s' "$STUB_GH_PRS_RAW"
+    elif [ -n "${STUB_PR_LIST:-}" ]; then
+      printf '%s' "$STUB_PR_LIST" | python3 -c "
+import json, sys
+print(json.dumps([{'number': p.get('number'), 'state': str(p.get('state', 'OPEN')).lower(),
+                   'title': p.get('title', ''), 'head': {'ref': p.get('headRefName', '')},
+                   'body': p.get('body', '')} for p in json.load(sys.stdin)]))"
     else
       printf '[{"number":9,"title":"fix: guard null session","head":{"ref":"fix/issue-42-guard"},"base":{"ref":"main"},"labels":[]}]'
     fi ;;

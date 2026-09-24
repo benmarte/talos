@@ -226,12 +226,13 @@ EOF
 # and GREEN with the fix.
 
 # *.env — wildcard allow entry matching the literal .env deny pattern: REJECTED.
-# (Validation fails before the API call, so curl queue content is irrelevant.)
+# (Validation runs after the file-list fetch, so the queue holds a valid, empty
+# list: since #319 a non-array page is a failed fetch, not an empty one.)
 cat > talos.pipeline.json <<'EOF'
 {"vcs": {"provider": "github-api", "repo": "acme/widget"}, "merge": {"forbidden_files_allow": ["*.env"]}}
 EOF
 : > "$CURL_LOG"
-: > "$CURL_QUEUE"
+printf '%s\n' '[]' > "$CURL_QUEUE"
 out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
 assert_eq "1" "$rc" "#76 github-api *.env: validation exits 1 (wildcard defeats literal .env)"
 assert_contains "$out" "*.env" "#76 github-api *.env: offending entry named in error"
@@ -242,7 +243,7 @@ cat > talos.pipeline.json <<'EOF'
 {"vcs": {"provider": "github-api", "repo": "acme/widget"}, "merge": {"forbidden_files_allow": ["?env"]}}
 EOF
 : > "$CURL_LOG"
-: > "$CURL_QUEUE"
+printf '%s\n' '[]' > "$CURL_QUEUE"
 out="$(bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
 assert_eq "1" "$rc" "#76 github-api ?env: validation exits 1 (wildcard defeats literal .env)"
 assert_contains "$out" "?env" "#76 github-api ?env: offending entry named in error"

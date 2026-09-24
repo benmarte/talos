@@ -698,6 +698,22 @@ except Exception:
 "
 }
 
+# _json_array_len: like _json_array_count, but exits non-zero when stdin is
+# not a JSON array -- for callers where "unreadable" must not read as empty
+# (#319).
+_json_array_len() {
+  python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except ValueError:
+    d = None
+if not isinstance(d, list):
+    sys.exit("pipeline-vcs: expected a JSON array")
+print(len(d))
+'
+}
+
 # ── Cap-reached warning (shared by every provider that still caps list-issues
 # /list-prs instead of paginating: gitlab, azure — github/github-api now
 # paginate those fully; github's find-pr still caps at --limit, #302) ────────
@@ -3012,14 +3028,18 @@ for r in runs:
 
       # Lazily fetches the open-PR list -- only invoked by the shared
       # function when a closing keyword is actually present.
-      # gh pages through the list itself, up to --limit. A result that lands
-      # on the limit may be cut short, so it is reported as capped (#319).
+      # Every page, no cap (#319: `gh pr list --limit 100` missed a sibling
+      # past the first 100). $REPO is set: the repo-unresolved guard above.
       _github_fetch_closing_siblings() {
-        local _out _limit=1000
-        _out="$(gh pr list --state open --limit "$_limit" \
-          --json number,state,title,headRefName,body ${REPO:+--repo "$REPO"})" || return 1
-        printf '%s' "$_out"
-        [ "$(printf '%s' "$_out" | _json_array_count)" != "$_limit" ] || return "$_VCS_SIBLINGS_CAPPED"
+        local _raw
+        _raw="$(gh api --paginate "repos/${REPO}/pulls?state=open&per_page=100")" || return 1
+        [ -n "$_raw" ] || return 1
+        printf '%s' "$_raw" | _gh_paginate_merge | python3 -c "
+import json, sys
+print(json.dumps([{'number': p.get('number'), 'state': p.get('state'), 'title': p.get('title') or '',
+                   'headRefName': (p.get('head') or {}).get('ref', ''), 'body': p.get('body') or ''}
+                  for p in json.load(sys.stdin)]))
+"
       }
 
       printf '%s' "$pr_body" | REPO="$REPO" \
@@ -3472,18 +3492,24 @@ _github_api() {
         rm -f "$_gafp_next_file"
         return 1
       fi
-      _gafp_all="$(PREV="$_gafp_all" PAGE="$_gafp_body" python3 -c "
+      # A page that is not a JSON array is a failed page, never an empty
+      # one (#319: a truncated page silently dropped a merge-gate sibling).
+      # Both go in on stdin -- the merged list on the first line (json.dump
+      # writes no newline), then the page -- because an env var this size
+      # hits E2BIG (128 KB per string on Linux).
+      _gafp_all="$(printf '%s\n%s' "$_gafp_all" "$_gafp_body" | URL="$_gafp_url" python3 -c "
 import json, os, sys
-prev = json.loads(os.environ.get('PREV', '[]'))
+prev, _, page = sys.stdin.read().partition('\n')
+prev = json.loads(prev)
 try:
-    page = json.loads(os.environ.get('PAGE', '[]'))
-    if not isinstance(page, list):
-        page = []
-except Exception:
-    page = []
+    page = json.loads(page)
+except ValueError:
+    page = None
+if not isinstance(page, list):
+    sys.exit('github-api: page is not a JSON array: ' + os.environ['URL'])
 prev.extend(page)
 json.dump(prev, sys.stdout)
-")"
+")" || { rm -f "$_gafp_next_file"; return 1; }
       _gafp_url="$(cat "$_gafp_next_file")"
       _gafp_pages=$((_gafp_pages + 1))
       if [ -n "$_gafp_max" ] && [ -n "$_gafp_url" ] && [ "$_gafp_pages" -ge "$_gafp_max" ]; then
@@ -4538,11 +4564,18 @@ json.dump(out, sys.stdout)
       # Lazily fetches and normalises the open-PR list -- only invoked by the
       # shared function when a closing keyword is actually present. REST has
       # no headRefName field natively, so it's derived from head.ref here.
-      # Every page, no cap (#319): a sibling past the first 100 still counts.
+      # Every page up to _max (#319): a sibling past the first 100 still
+      # counts. A list that fills all _max pages is capped only if one probe
+      # past the cap finds more PRs.
       _github_api_fetch_closing_siblings() {
-        local _open_prs_raw
-        _open_prs_raw="$(_ga_fetch_all_pages "$_API/pulls?state=open&per_page=100")" || return 1
+        local _open_prs_raw _probe _max=100 _capped=0
+        _open_prs_raw="$(_ga_fetch_all_pages "$_API/pulls?state=open&per_page=100" "$_max" PRs)" || return 1
         [ -z "$_open_prs_raw" ] && return 1
+        if [ "$(printf '%s' "$_open_prs_raw" | _json_array_len)" = "$((_max * 100))" ]; then
+          _probe="$(_with_retry "$_VERB" _ga_req_once GET "$_API/pulls?state=open&per_page=100&page=$((_max + 1))")" || return 1
+          _probe="$(printf '%s' "$_probe" | _json_array_len)" || return 1
+          [ "$_probe" = 0 ] || _capped=1
+        fi
         printf '%s' "$_open_prs_raw" | python3 -c "
 import json, sys
 prs = json.load(sys.stdin)
@@ -4554,7 +4587,8 @@ for pr in prs:
     p['headRefName'] = pr.get('head', {}).get('ref', '')
     normalized.append(p)
 json.dump(normalized, sys.stdout)
-"
+" || return 1
+        [ "$_capped" = 0 ] || return "$_VCS_SIBLINGS_CAPPED"
       }
 
       printf '%s' "$_pr_body" | REPO="$_REPO" \
@@ -5360,10 +5394,10 @@ for c in d["changeEntries"]:
   # the work item plus PRs on an issue-<n> branch, space-separated, <self>
   # excluded. Returns non-zero on any fetch or parse failure, and
   # $_VCS_SIBLINGS_CAPPED (with the siblings it did see) when the active-PR
-  # list is still full after _max pages (#319).
+  # list is still full after _max pages and a probe finds more (#319).
   _az_closing_siblings() {
     local _self="$1" _n="$2" _wi _ids _id _pr _linked="" _active _ra=""
-    local _page _raw="" _top=1000 _max=10 _pages=0 _capped=0
+    local _page _len _raw="" _top=1000 _max=10 _pages=0 _capped=0
     [ -n "$REPO" ] && _ra="--repository $REPO"
     _wi="$(az boards work-item show --id "$_n" --expand relations $ORG_ARG --output json)" || return 1
     _ids="$(printf '%s' "$_wi" | _az_linked_pr_ids)" || return 1
@@ -5373,15 +5407,22 @@ for c in d["changeEntries"]:
       _linked="${_linked:+$_linked,}$_pr"
     done
     # Every --top/--skip page until a short one (#319: one --top 1000 call
-    # missed a sibling past the first 1000).
+    # missed a sibling past the first 1000). After _max full pages, one
+    # --top 1 probe tells a capped list from one that is exactly full.
     while :; do
       _page="$(az repos pr list --status active --top "$_top" --skip "$((_pages * _top))" \
         $ORG_ARG $PROJ_ARG $_ra --output json)" || return 1
       _raw="$_raw$_page"
       _pages=$((_pages + 1))
-      [ "$(printf '%s' "$_page" | _json_array_count)" = "$_top" ] || break
-      [ "$_pages" -lt "$_max" ] || { _capped=1; break; }
+      _len="$(printf '%s' "$_page" | _json_array_len)" || return 1
+      [ "$_len" = "$_top" ] && [ "$_pages" -lt "$_max" ] || break
     done
+    if [ "$_len" = "$_top" ]; then
+      _page="$(az repos pr list --status active --top 1 --skip "$((_pages * _top))" \
+        $ORG_ARG $PROJ_ARG $_ra --output json)" || return 1
+      _len="$(printf '%s' "$_page" | _json_array_len)" || return 1
+      [ "$_len" = 0 ] || _capped=1
+    fi
     _active="$(printf '%s' "$_raw" | _gh_paginate_merge 2>/dev/null)" || return 1
     printf '[[%s],%s]' "$_linked" "$_active" | python3 -c '
 import json, re, sys
