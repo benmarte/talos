@@ -476,6 +476,10 @@ The `talos:forbidden-files-defaults-replaced` marker is also emitted as a stderr
 
 Prior to this release the `github-api` provider ignored `merge.forbidden_files_allow` entirely — it performed no allow-list validation. As of v0.14 the `github-api` provider performs the same allow-list canary validation as the `github` provider. **If you are using the `github-api` provider with `merge.forbidden_files_allow` set, an overly-broad allow entry (such as `*`) that previously passed silently will now be rejected at validation time and will block the merge.**
 
+### Upgrade note: `github-api` list endpoints must return JSON arrays (#319, #329)
+
+Every `github-api` list endpoint (paginated through `_ga_fetch_all_pages`) must return a JSON array on each page. A non-array page — for example a test stub returning `{}` — now fails the verb outright instead of being read as an empty list. Update any test stub that serves a `github-api` list endpoint to return `[]`, not `{}`, when it has nothing to return.
+
 ### Upgrade note: `merge.forbidden_files` union semantics (v0.14+)
 
 **If you have `merge.forbidden_files` set in your `talos.pipeline.yml` before upgrading to v0.14+, your configuration now means something different.**
