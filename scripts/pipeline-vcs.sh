@@ -5136,16 +5136,25 @@ _azure_post_comment() {
   return $rc
 }
 
+# Echo the ADO organization URL without a trailing "/": vcs.azure.org_url,
+# else `az devops configure`'s default. Returns non-zero when neither is set.
+_azure_org() {
+  local base_org="$AZURE_ORG"
+  [ -z "$base_org" ] && base_org="$(az devops configure --list 2>/dev/null | awk -F'= *' '/^organization/{print $2}' | tr -d '[:space:]')"
+  [ -z "$base_org" ] && return 1
+  echo "${base_org%/}"
+}
+
 # Echo the ADO Git REST base URL ({org}/{project}/_apis/git/repositories/{repo}).
 # Returns non-zero if org/project/repo can't be resolved. Used by the PR verbs
 # that az has no command for (labels, comment threads) — reached via `az rest`.
 _azure_git_base() {
-  local base_org="$AZURE_ORG" proj="$AZURE_PROJECT" repo="$REPO"
-  [ -z "$base_org" ] && base_org="$(az devops configure --list 2>/dev/null | awk -F'= *' '/^organization/{print $2}' | tr -d '[:space:]')"
+  local base_org proj="$AZURE_PROJECT" repo="$REPO"
   [ -z "$proj" ]     && proj="$(az devops configure --list 2>/dev/null | awk -F'= *' '/^project/{print $2}' | tr -d '[:space:]')"
   [ -z "$repo" ] && return 1
-  [ -z "$base_org" ] || [ -z "$proj" ] && return 1
-  echo "${base_org%/}/$proj/_apis/git/repositories/$repo"
+  base_org="$(_azure_org)" || return 1
+  [ -z "$proj" ] && return 1
+  echo "$base_org/$proj/_apis/git/repositories/$repo"
 }
 ADO_RESOURCE="499b84ac-1321-427f-aa17-267ca6975798"  # Azure DevOps AAD app id (az rest --resource)
 
@@ -5379,12 +5388,13 @@ elif v:
       ''|*[!0-9]*) echo "pipeline-vcs: $1: expected a numeric id, got '$2'" >&2; return 1 ;;
     esac
   }
-  # PR <id>'s policy evaluation records, a JSON array (rerun-ci, #304;
-  # pr-checks-required, #318): `az repos pr policy list --id <id>`, which
-  # calls GET _apis/policy/evaluations?artifactId=vstfs:///CodeReview/
-  # CodeReviewId/<projectId>/<id> without includeNotApplicable, so a policy
-  # that does not apply to the PR has no record. Returns non-zero with no
-  # stdout when the fetch fails or the response is not a list of objects.
+  # PR <id>'s policy evaluation records, a JSON array (rerun-ci, #304):
+  # `az repos pr policy list --id <id>`, which calls GET _apis/policy/
+  # evaluations?artifactId=vstfs:///CodeReview/CodeReviewId/<projectId>/<id>
+  # without includeNotApplicable, so a policy that does not apply to the PR
+  # has no record (rerun-ci only re-queues failed builds, so it needs none).
+  # Returns non-zero with no stdout when the fetch fails or the response is
+  # not a list of objects.
   _az_pr_policies() {
     local _azpp_json
     _azpp_json="$(az repos pr policy list --id "$1" $ORG_ARG --output json)" || {
@@ -5397,6 +5407,50 @@ if not isinstance(d, list) or not all(isinstance(r, dict) for r in d):
 ' 2>/dev/null || {
       echo "pipeline-vcs: $VERB: could not parse the policies of PR #$1" >&2; return 1; }
     printf '%s' "$_azpp_json"
+  }
+  # PR <id>'s policy evaluations for pr-checks-required (#328), printed as
+  # {"source": <the PR's lastMergeSourceCommit id, or "">, "records": [...]}.
+  # `az repos pr policy list` has no includeNotApplicable flag, so this is
+  # the REST call (Policy - Evaluations - List, api-version 7.1-preview.1):
+  # GET {org}/{projectId}/_apis/policy/evaluations?artifactId=vstfs:///
+  # CodeReview/CodeReviewId/{projectId}/{id}&includeNotApplicable=true,
+  # with the project id taken from `az repos pr show` (repository.project.
+  # id), as az builds it. One $top=1000 page: a full page may be truncated,
+  # so it fails like an unparseable one. Returns non-zero with no stdout on
+  # any fetch or parse failure, before any REST call when the project id
+  # is not a GUID.
+  _az_pr_evaluations() {
+    local _azpe_org _azpe_pr _azpe_meta _azpe_proj _azpe_raw
+    _azpe_org="$(_azure_org)" || {
+      echo "pipeline-vcs: $VERB: needs the organization (vcs.azure.org_url)" >&2; return 1; }
+    _azpe_pr="$(az repos pr show --id "$1" $ORG_ARG --output json)" || {
+      echo "pipeline-vcs: $VERB: could not read PR #$1" >&2; return 1; }
+    # "<projectId> <sourceCommit>"; the commit may be empty.
+    _azpe_meta="$(printf '%s' "$_azpe_pr" | python3 -c '
+import json, re, sys
+d = json.load(sys.stdin)
+proj = ((d.get("repository") or {}).get("project") or {}).get("id")
+src = (d.get("lastMergeSourceCommit") or {}).get("commitId") or ""
+if not isinstance(proj, str) or not re.fullmatch(r"[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", proj):
+    sys.exit(1)
+if not isinstance(src, str) or not re.fullmatch(r"(?:[0-9a-fA-F]{40})?", src):
+    sys.exit(1)
+print(proj + " " + src)
+' 2>/dev/null)" || {
+      echo "pipeline-vcs: $VERB: could not read the project id of PR #$1" >&2; return 1; }
+    _azpe_proj="${_azpe_meta%% *}"
+    _azpe_raw="$(az rest --method get --resource "$ADO_RESOURCE" \
+      --url "$_azpe_org/$_azpe_proj/_apis/policy/evaluations?artifactId=vstfs%3A%2F%2F%2FCodeReview%2FCodeReviewId%2F$_azpe_proj%2F$1&includeNotApplicable=true&\$top=1000&api-version=7.1-preview.1")" || {
+      echo "pipeline-vcs: $VERB: could not list the policies of PR #$1" >&2; return 1; }
+    printf '%s' "$_azpe_raw" | python3 -c '
+import json, sys
+v = json.load(sys.stdin)["value"]
+if not isinstance(v, list) or not all(isinstance(r, dict) for r in v) or len(v) >= 1000:
+    sys.exit(1)
+print(json.dumps({"source": sys.argv[1], "records": v}))
+' "${_azpe_meta#* }" 2>/dev/null || {
+      echo "pipeline-vcs: $VERB: could not parse the policies of PR #$1 (not a list of evaluations, or a full page of 1000 that may be truncated)" >&2
+      return 1; }
   }
   # stdin: `work-item show --expand relations` JSON. Prints the id of each
   # linked PR, one per line; links look like
@@ -6035,33 +6089,52 @@ for r in builds:
       # PolicyEvaluationStatus: approved and notApplicable ("the policy does
       # not apply to this pull request", so it does not block completion)
       # pass, rejected and broken fail, queued and running are pending, and
-      # anything else fails. The exit contract and summary lines are
-      # github's, via _eval_required_checks. Any fetch or parse failure
-      # exits 1.
+      # anything else fails. The records come from _az_pr_evaluations, with
+      # includeNotApplicable=true, so a policy whose path filter excludes the
+      # PR has a notApplicable record instead of none (#328); a name with no
+      # record is still missing (exit 2), never passed. An approved record
+      # whose context says it is out of date is pending (#328): the REST
+      # reference gives context no schema ("Internal context data"), so
+      # context.isExpired true, or a context.lastMergeSourceCommitId other
+      # than the PR's lastMergeSourceCommit, is read when present. The exit
+      # contract and summary lines are github's, via _eval_required_checks.
+      # Any fetch or parse failure exits 1.
       local n="${1:-}" _required _azpc_json _azpc_norm
       _az_require_id pr-checks-required "$n" || exit 1
       _required="$(cfg merge.required_checks "")"
       if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] az repos pr policy list --id $n $ORG_ARG; evaluate against merge.required_checks"
+        echo "[dry-run] az rest --method get --url <org>/<projectId>/_apis/policy/evaluations?artifactId=vstfs:///CodeReview/CodeReviewId/<projectId>/$n&includeNotApplicable=true; evaluate against merge.required_checks"
         return 0
       fi
       # Empty config never passes vacuously and needs no CI data to say so.
       [ -z "$_required" ] && { printf '' | _eval_required_checks "$_required"; return; }
-      _azpc_json="$(_az_pr_policies "$n")" || exit 1
+      _azpc_json="$(_az_pr_evaluations "$n")" || exit 1
       _azpc_norm="$(printf '%s' "$_azpc_json" | python3 -c '
 import json, sys
 STATUS = {"approved": "pass", "notapplicable": "pass", "rejected": "fail",
           "broken": "fail", "queued": "pending", "running": "pending"}
 RANK = {"pass": 0, "pending": 1, "fail": 2}
+def out_of_date(r, source):
+    ctx = r.get("context")
+    if not isinstance(ctx, dict):
+        return False
+    if str(ctx.get("isExpired")).lower() == "true":
+        return True
+    seen = ctx.get("lastMergeSourceCommitId")
+    return seen is not None and str(seen).lower() != source.lower()
+d = json.load(sys.stdin)
 worst = {}
-for r in json.load(sys.stdin):
+for r in d["records"]:
     conf = r.get("configuration") or {}
     name = (conf.get("settings") or {}).get("displayName") \
         or (conf.get("type") or {}).get("displayName")
     if not isinstance(name, str):
         continue
     key = name.strip().casefold()
-    status = STATUS.get(str(r.get("status")).lower(), "fail")
+    raw = str(r.get("status")).lower()
+    status = STATUS.get(raw, "fail")
+    if raw == "approved" and out_of_date(r, d["source"]):
+        status = "pending"
     if RANK[status] >= RANK[worst.get(key, "pass")]:
         worst[key] = status
 for req in sys.argv[1].splitlines():
