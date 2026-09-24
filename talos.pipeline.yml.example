@@ -197,7 +197,7 @@ issues:
     - "pipeline:blocked"
     - "wontfix"
   max_parallel: 1                  # Max issues processed concurrently (start with 1)
-  # assignee: ""                   # issues.assignee: who create-issue and the
+  # assignee: self                # issues.assignee: who create-issue and the
                                    # "In progress" claim assign an issue to.
                                    # Use assignee: "" (quoted empty string) to
                                    # disable assignment. A bare assignee: (YAML
