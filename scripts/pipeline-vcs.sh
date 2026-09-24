@@ -5321,6 +5321,25 @@ elif v:
       ''|*[!0-9]*) echo "pipeline-vcs: $1: expected a numeric id, got '$2'" >&2; return 1 ;;
     esac
   }
+  # PR <id>'s policy evaluation records, a JSON array (rerun-ci, #304;
+  # pr-checks-required, #318): `az repos pr policy list --id <id>`, which
+  # calls GET _apis/policy/evaluations?artifactId=vstfs:///CodeReview/
+  # CodeReviewId/<projectId>/<id> without includeNotApplicable, so a policy
+  # that does not apply to the PR has no record. Returns non-zero with no
+  # stdout when the fetch fails or the response is not a list of objects.
+  _az_pr_policies() {
+    local _azpp_json
+    _azpp_json="$(az repos pr policy list --id "$1" $ORG_ARG --output json)" || {
+      echo "pipeline-vcs: $VERB: could not list the policies of PR #$1" >&2; return 1; }
+    printf '%s' "$_azpp_json" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+if not isinstance(d, list) or not all(isinstance(r, dict) for r in d):
+    sys.exit(1)
+' 2>/dev/null || {
+      echo "pipeline-vcs: $VERB: could not parse the policies of PR #$1" >&2; return 1; }
+    printf '%s' "$_azpp_json"
+  }
   # stdin: `work-item show --expand relations` JSON. Prints the id of each
   # linked PR, one per line; links look like
   # vstfs:///Git/PullRequestId/<project>%2F<repo>%2F<pr-id>. Exits 1 on
@@ -5896,8 +5915,7 @@ print("yes" if sys.argv[1] in {str(w["id"]) for w in json.load(sys.stdin)} else 
         return 0
       fi
       local _azrc_json _azrc_ids _azrc_id _azrc_count=0
-      _azrc_json="$(az repos pr policy list --id "$n" $ORG_ARG --output json)" || {
-        echo "pipeline-vcs: rerun-ci: could not list the policies of PR #$n" >&2; exit 1; }
+      _azrc_json="$(_az_pr_policies "$n")" || exit 1
       _azrc_ids="$(printf '%s' "$_azrc_json" | python3 -c '
 import json, re, sys
 BUILD = "0609b952-1397-4640-95ec-e00a01b2c241"
@@ -5927,9 +5945,49 @@ for r in builds:
       fi
       ;;
     pr-checks-required)
-      # Fail closed, not open (#205) -- see the matching comment in _gitlab.
-      echo "pipeline-vcs: pr-checks-required not implemented for azure -- falls back to failing closed, not a vacuous pass" >&2
-      return 1
+      # pr-checks-required <id> (#318): each merge.required_checks name maps,
+      # case-insensitively, to the PR's policy evaluations whose display name
+      # (configuration.settings.displayName, else configuration.type.
+      # displayName) matches it; several matches take the worst status.
+      # PolicyEvaluationStatus: approved and notApplicable ("the policy does
+      # not apply to this pull request", so it does not block completion)
+      # pass, rejected and broken fail, queued and running are pending, and
+      # anything else fails. The exit contract and summary lines are
+      # github's, via _eval_required_checks. Any fetch or parse failure
+      # exits 1.
+      local n="${1:-}" _required _azpc_json _azpc_norm
+      _az_require_id pr-checks-required "$n" || exit 1
+      _required="$(cfg merge.required_checks "")"
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] az repos pr policy list --id $n $ORG_ARG; evaluate against merge.required_checks"
+        return 0
+      fi
+      # Empty config never passes vacuously and needs no CI data to say so.
+      [ -z "$_required" ] && { printf '' | _eval_required_checks "$_required"; return; }
+      _azpc_json="$(_az_pr_policies "$n")" || exit 1
+      _azpc_norm="$(printf '%s' "$_azpc_json" | python3 -c '
+import json, sys
+STATUS = {"approved": "pass", "notapplicable": "pass", "rejected": "fail",
+          "broken": "fail", "queued": "pending", "running": "pending"}
+RANK = {"pass": 0, "pending": 1, "fail": 2}
+worst = {}
+for r in json.load(sys.stdin):
+    conf = r.get("configuration") or {}
+    name = (conf.get("settings") or {}).get("displayName") \
+        or (conf.get("type") or {}).get("displayName")
+    if not isinstance(name, str):
+        continue
+    key = name.strip().casefold()
+    status = STATUS.get(str(r.get("status")).lower(), "fail")
+    if RANK[status] >= RANK[worst.get(key, "pass")]:
+        worst[key] = status
+for req in sys.argv[1].splitlines():
+    req = req.strip()
+    if req and req.casefold() in worst:
+        print(req + "\t" + worst[req.casefold()])
+' "$_required" 2>/dev/null)" || {
+        echo "pipeline-vcs: pr-checks-required: could not parse the policies of PR #$n" >&2; exit 1; }
+      printf '%s\n' "$_azpc_norm" | _eval_required_checks "$_required"
       ;;
     *) echo "pipeline-vcs: unknown verb: $verb" >&2; exit 1 ;;
   esac
