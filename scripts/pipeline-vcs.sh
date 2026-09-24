@@ -131,11 +131,16 @@
 #                                             gate (#200) to decide whether the docs
 #                                             stage needs to run at all. github,
 #                                             github-api, gitlab (#303, MR diffs
-#                                             API); a failed fetch exits 1. azure
-#                                             and file mode fail open (empty stdout).
+#                                             API), azure (#304, last iteration's
+#                                             changes); a failed fetch exits 1.
+#                                             file mode fails open (empty stdout).
 #   check-closing-keyword <n|branch> <issue>  Exit 1 if the PR body has a closing
 #                                             keyword for <issue> while other PRs
 #                                             for that issue are still open.
+#                                             azure (#304) is link-based: the PR is
+#                                             linked to work item <issue> and
+#                                             another active PR is linked to it or
+#                                             on an issue-<issue> branch.
 #                                             Fail-open: exits 0 + stdout marker
 #                                             if data cannot be fetched.
 #   rerun-ci <n>                              Re-run failed CI for the PR head SHA
@@ -2082,6 +2087,14 @@ _VCS_GITLAB_SCAN_CAP=65536
 # sibling-scan block below (or wrapping it in a `closing_or_part_of` check)
 # is the entire fix. This slice intentionally leaves that behaviour
 # unchanged; it only stops _github and _github_api from hand-duplicating it.
+# _vcs_shared_sibling_blocked <pr> <siblings> <claim> <remedy> (#304)
+#   The one sibling-gate diagnostic (stderr), shared by
+#   _vcs_shared_check_closing_keyword and the link-based azure gate so the
+#   wording cannot drift. <siblings> is already formatted ("11 #12").
+_vcs_shared_sibling_blocked() {
+  echo "pipeline-vcs: check-closing-keyword: PR #$1 $3 but open sibling PR(s) still reference the same issue: #$2 — merge the siblings first, or $4" >&2
+}
+
 _vcs_shared_check_closing_keyword() {
   local issue_n="$1" pr_number="$2" pr_ref="$3" siblings_fetch_fn="$4" flavor="${5:-github}" host="${6:-}"
   local pr_body
@@ -2232,7 +2245,8 @@ else:
       ;;
     blocked:*)
       local sibling_list="${sibling_result#blocked:}"
-      echo "pipeline-vcs: check-closing-keyword: PR #${pr_number:-$pr_ref} carries 'Closes #${issue_n}' but open sibling PR(s) still reference the same issue: #${sibling_list/,/ #} — merge the siblings first, or change this PR body to 'Part of #${issue_n}'" >&2
+      _vcs_shared_sibling_blocked "${pr_number:-$pr_ref}" "${sibling_list/,/ #}" \
+        "carries 'Closes #${issue_n}'" "change this PR body to 'Part of #${issue_n}'"
       return 1
       ;;
     *)
@@ -5111,6 +5125,63 @@ sys.stdout.write('\n'.join(out))
 PYEOF
 }
 
+# Untrusted ADO text (work-item HTML, branch names) is cut to this many
+# characters before any regex runs over it (#304), as gitlab does.
+_VCS_AZURE_SCAN_CAP=65536
+
+# _ado_description_text (#304)
+#   stdin:  an `az boards work-item show` JSON document.
+#   stdout: its System.Description (HTML) as text, one non-empty stripped
+#           line each, every checkbox rewritten as a `- [ ] ` / `- [x] ` line
+#           for _epic_acceptance_scan: an <input type="checkbox"> (ticked
+#           when it has a `checked` attribute), ☐ (unticked), ☑/☒ (ticked),
+#           and a line starting with [ ] or [x], e.g. <li>[ ] text</li>.
+#   exit:   0; 1 when the document is not a work item (no `fields` object);
+#           3 when the description was longer than _VCS_AZURE_SCAN_CAP and
+#           only its first _VCS_AZURE_SCAN_CAP characters were converted.
+#   A missing System.Description is an empty one: ADO omits empty fields.
+#   Linear: a tag match starts only at `<` and its [^<>]* stops at the next
+#   `<`, the lookahead after the name stops name/attribute backtracking, and
+#   blank lines are dropped so the scan's leading \s* never spans lines.
+_ado_description_text() {
+  python3 -c '
+import html, json, re, sys
+cap = int(sys.argv[1])
+d = json.load(sys.stdin)
+fields = d.get("fields") if isinstance(d, dict) else None
+if not isinstance(fields, dict):
+    sys.exit(1)
+src = fields.get("System.Description") or ""
+if not isinstance(src, str):
+    sys.exit(1)
+truncated = len(src) > cap
+src = src[:cap]
+BLOCK = {"p", "div", "br", "li", "ul", "ol", "tr", "table", "blockquote", "pre",
+         "h1", "h2", "h3", "h4", "h5", "h6"}
+def tag(m):
+    name, attrs = m.group(2).lower(), m.group(3)
+    if name == "input" and not m.group(1):
+        if re.search(r"type\s*=\s*[\"\x27]?checkbox", attrs, re.I):
+            ticked = re.search(r"(?<![\w-])checked(?![\w-])", attrs, re.I)
+            return "\n- [x] " if ticked else "\n- [ ] "
+        return ""
+    return "\n" if name in BLOCK else ""
+text = re.sub(r"<(/?)([A-Za-z][A-Za-z0-9]*)(?![A-Za-z0-9])([^<>]*)>", tag, src)
+text = html.unescape(text)
+for box, mark in (("\u2610", "- [ ] "), ("\u2611", "- [x] "), ("\u2612", "- [x] ")):
+    text = text.replace(box, "\n" + mark)
+lines = []
+for line in text.splitlines():
+    line = line.strip()
+    if re.match(r"\[(?:\s|x|X)\]", line):
+        line = "- " + line
+    if line:
+        lines.append(line)
+print("\n".join(lines))
+sys.exit(3 if truncated else 0)
+' "$_VCS_AZURE_SCAN_CAP"
+}
+
 _azure() {
   if ! command -v az >/dev/null 2>&1; then
     echo "pipeline-vcs: 'az' (Azure CLI) not found. Install from https://aka.ms/installazurecli" >&2
@@ -5160,6 +5231,91 @@ elif v:
   }
   _az_assignee_set() {
     az boards work-item update --id "$1" --assigned-to "$2" $ORG_ARG --output none
+  }
+
+  # PR and work-item ids go into REST paths and az --id: digits only (#304).
+  _az_require_id() {
+    case "$2" in
+      ''|*[!0-9]*) echo "pipeline-vcs: $1: expected a numeric id, got '$2'" >&2; return 1 ;;
+    esac
+  }
+  # stdin: `work-item show --expand relations` JSON. Prints the id of each
+  # linked PR, one per line; links look like
+  # vstfs:///Git/PullRequestId/<project>%2F<repo>%2F<pr-id>. Exits 1 on
+  # JSON that does not parse; a non-numeric id is dropped.
+  _az_linked_pr_ids() {
+    python3 -c '
+import json, sys
+for r in json.load(sys.stdin).get("relations") or []:
+    url = r.get("url", "")
+    if r.get("rel") == "ArtifactLink" and url.startswith("vstfs:///Git/PullRequestId/"):
+        pid = url.replace("%2F", "/").replace("%2f", "/").rsplit("/", 1)[-1]
+        if pid.isdigit():
+            print(pid)
+' 2>/dev/null
+  }
+  # PR <id>'s changed paths, one per line without ADO's leading "/" (#304):
+  # the last iteration's changes against the common commit ($compareTo
+  # defaults to 0), every $top/$skip page. REST, api-version 7.1:
+  # GET .../pullRequests/{id}/iterations, then
+  # GET .../pullRequests/{id}/iterations/{last}/changes. Returns non-zero
+  # with no stdout on any fetch or parse failure -- never a short list.
+  _az_pr_files() {
+    local _gb _raw _it _page _next _skip=0 _paths=""
+    _gb="$(_azure_git_base)" || {
+      echo "pipeline-vcs: $VERB: needs org/project/repo (vcs.azure.org_url, vcs.azure.project, vcs.repo)" >&2
+      return 1; }
+    _raw="$(az rest --method get --url "$_gb/pullRequests/$1/iterations?api-version=7.1" --resource "$ADO_RESOURCE")" || return 1
+    _it="$(printf '%s' "$_raw" | python3 -c '
+import json, sys
+print(max(int(i["id"]) for i in json.load(sys.stdin)["value"]))
+' 2>/dev/null)" || return 1
+    while :; do
+      _raw="$(az rest --method get --resource "$ADO_RESOURCE" \
+        --url "$_gb/pullRequests/$1/iterations/$_it/changes?\$top=2000&\$skip=$_skip&api-version=7.1")" || return 1
+      # First line: nextSkip (0 on the last page); then one path per line.
+      _page="$(printf '%s' "$_raw" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+print(int(d.get("nextSkip") or 0))
+for c in d["changeEntries"]:
+    item = c["item"]
+    if not item.get("isFolder"):
+        p = item["path"]
+        print(p[1:] if p.startswith("/") else p)
+' 2>/dev/null)" || return 1
+      _next="${_page%%$'\n'*}"
+      [ "$_page" = "$_next" ] || _paths="$_paths${_page#*$'\n'}"$'\n'
+      [ "$_next" -gt "$_skip" ] || break
+      _skip="$_next"
+    done
+    printf '%s' "$_paths"
+  }
+  # Active sibling PRs of PR <self> for work item <n> (#304): PRs linked to
+  # the work item plus PRs on an issue-<n> branch, space-separated, <self>
+  # excluded. Returns non-zero on any fetch or parse failure.
+  _az_closing_siblings() {
+    local _self="$1" _n="$2" _wi _ids _id _pr _linked="" _active _ra=""
+    [ -n "$REPO" ] && _ra="--repository $REPO"
+    _wi="$(az boards work-item show --id "$_n" --expand relations $ORG_ARG --output json 2>/dev/null)" || return 1
+    _ids="$(printf '%s' "$_wi" | _az_linked_pr_ids)" || return 1
+    for _id in $_ids; do
+      [ "$_id" = "$_self" ] && continue
+      _pr="$(az repos pr show --id "$_id" $ORG_ARG --output json 2>/dev/null)" || return 1
+      _linked="${_linked:+$_linked,}$_pr"
+    done
+    _active="$(az repos pr list --status active --top 1000 $ORG_ARG $PROJ_ARG $_ra --output json 2>/dev/null)" || return 1
+    _list_cap_warn check-closing-keyword 1000 "$(printf '%s' "$_active" | _json_array_count)" "az repos pr list --top ceiling" PRs
+    printf '[[%s],%s]' "$_linked" "$_active" | python3 -c '
+import json, re, sys
+me, n, cap = sys.argv[1], sys.argv[2], int(sys.argv[3])
+linked, active = json.load(sys.stdin)
+ids = {int(p["pullRequestId"]) for p in linked if p.get("status") == "active"}
+branch = re.compile(r"(?:^|/)issue-" + n + r"(?:-|$)")
+ids |= {int(p["pullRequestId"]) for p in active if branch.search((p.get("sourceRefName") or "")[:cap])}
+ids.discard(int(me))
+print(" ".join(str(i) for i in sorted(ids)))
+' "$_self" "$_n" "$_VCS_AZURE_SCAN_CAP" 2>/dev/null
   }
 
   local verb="$1"; shift
@@ -5522,16 +5678,7 @@ def norm(p):
       local _azfp_wi _azfp_ids _azfp_id _azfp_pr _azfp_linked=""
       _azfp_wi="$(az boards work-item show --id "$n" --expand relations $ORG_ARG --output json 2>/dev/null)" || {
         echo "pipeline-vcs: find-pr: could not read work item #$n relations" >&2; exit 1; }
-      # PR links look like vstfs:///Git/PullRequestId/<project>%2F<repo>%2F<pr-id>.
-      _azfp_ids="$(printf '%s' "$_azfp_wi" | python3 -c '
-import json, sys
-try: rels = json.load(sys.stdin).get("relations") or []
-except Exception: rels = []
-for r in rels:
-    url = r.get("url", "")
-    if r.get("rel") == "ArtifactLink" and url.startswith("vstfs:///Git/PullRequestId/"):
-        print(url.replace("%2F", "/").replace("%2f", "/").rsplit("/", 1)[-1])
-')"
+      _azfp_ids="$(printf '%s' "$_azfp_wi" | _az_linked_pr_ids)"
       for _azfp_id in $_azfp_ids; do
         _azfp_pr="$(az repos pr show --id "$_azfp_id" $ORG_ARG --output json 2>/dev/null)" || continue
         [ -n "$_azfp_pr" ] && _azfp_linked="${_azfp_linked:+$_azfp_linked,}$_azfp_pr"
@@ -5559,9 +5706,140 @@ except Exception: prs = []
 json.dump([norm(p) for p in prs], sys.stdout)
 ' | _vcs_shared_find_pr "$n" "$state"
       ;;
-    check-pr-files|pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
-      echo "pipeline-vcs: $verb not implemented for azure — verify manually" >&2
-      return 0
+    pr-files)
+      # pr-files <id> (#304) -- same contract as github: one changed path
+      # per line; a failed fetch exits 1 with no stdout.
+      local n="${1:-}"
+      _az_require_id pr-files "$n" || exit 1
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] az rest GET .../pullRequests/$n/iterations, then .../iterations/<last>/changes (every page)"
+        return 0
+      fi
+      _az_pr_files "$n" || { echo "pipeline-vcs: pr-files: could not fetch the changed files of PR #$n" >&2; exit 1; }
+      ;;
+    check-pr-files)
+      # Forbidden-files merge gate (#304): pr-files output through the same
+      # shared matcher github uses. Fails closed on any fetch failure.
+      local n="${1:-}"
+      _az_require_id check-pr-files "$n" || exit 1
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] pr-files $n | match against forbidden patterns"
+        return 0
+      fi
+      local _azcpf_paths
+      _azcpf_paths="$(_az_pr_files "$n")" || {
+        echo "pipeline-vcs: check-pr-files: could not fetch the changed files of PR #$n -- failing closed, do not merge" >&2
+        exit 1; }
+      printf '%s\n' "$_azcpf_paths" | CONFIGURED="$(cfg merge.forbidden_files "")" REPLACE="$(cfg merge.forbidden_files_replace "")" ALLOW="$(cfg merge.forbidden_files_allow "")" _vcs_shared_check_pr_files
+      ;;
+    check-closing-keyword)
+      # check-closing-keyword <pr-id> <work-item-id> (#304). ADO closes a
+      # work item through the PR's work-item link plus transitionWorkItems
+      # (#298), not a keyword, so this gate is link-based: exit 1 when this
+      # PR is linked to work item N and another ACTIVE PR is linked to N too
+      # or sits on an issue-N branch. A fetch failure fails open with the
+      # talos:closing-keyword-unverified marker (fixed-literal reason), as on
+      # github.
+      local pr_ref="${1:-}" issue_n="${2:-}"
+      _az_require_id check-closing-keyword "$pr_ref" || exit 1
+      _az_require_id check-closing-keyword "$issue_n" || exit 1
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] check-closing-keyword $pr_ref $issue_n: az repos pr work-item list, then work item $issue_n's linked PRs and az repos pr list --status active"
+        return 0
+      fi
+      local _azck_linked
+      _azck_linked="$(az repos pr work-item list --id "$pr_ref" $ORG_ARG --output json 2>/dev/null | python3 -c '
+import json, sys
+print("yes" if sys.argv[1] in {str(w["id"]) for w in json.load(sys.stdin)} else "no")
+' "$issue_n" 2>/dev/null)"
+      case "$_azck_linked" in
+        no) return 0 ;;
+        yes) ;;
+        *)
+          echo "pipeline-vcs: check-closing-keyword: could not read the work items linked to PR #$pr_ref — skipping check" >&2
+          echo "talos:closing-keyword-unverified pr=$pr_ref issue=$issue_n reason=pr-fetch-failed"
+          return 0
+          ;;
+      esac
+      local _azck_siblings
+      _azck_siblings="$(_az_closing_siblings "$pr_ref" "$issue_n")" || {
+        echo "pipeline-vcs: check-closing-keyword: could not fetch the active PRs for work item #$issue_n — skipping sibling check" >&2
+        echo "talos:closing-keyword-unverified pr=$pr_ref issue=$issue_n reason=sibling-fetch-failed"
+        return 0; }
+      [ -z "$_azck_siblings" ] && return 0
+      _vcs_shared_sibling_blocked "$pr_ref" "${_azck_siblings// / #}" \
+        "is linked to work item #$issue_n, so completing it closes the item," "unlink work item #$issue_n from this PR"
+      exit 1
+      ;;
+    check-epic-acceptance)
+      # check-epic-acceptance <id> (#304): the work item's System.Description
+      # (HTML) as text through the shared unticked-box scan. A failed fetch,
+      # a response that is not a work item, or a description longer than the
+      # scan cap exits 1 so the epic sweep never closes the epic.
+      local n="${1:-}"
+      _az_require_id check-epic-acceptance "$n" || exit 1
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] az boards work-item show --id $n $ORG_ARG | System.Description | scan for unticked checkboxes"
+        return 0
+      fi
+      local _azcea_json _azcea_text _azcea_rc=0
+      _azcea_json="$(az boards work-item show --id "$n" $ORG_ARG --output json)" || {
+        echo "pipeline-vcs: check-epic-acceptance: could not fetch work item #$n -- not closing" >&2
+        exit 1; }
+      _azcea_text="$(printf '%s' "$_azcea_json" | _ado_description_text 2>/dev/null)" || _azcea_rc=$?
+      case "$_azcea_rc" in
+        0|3) ;;
+        *) echo "pipeline-vcs: check-epic-acceptance: could not read the description of work item #$n -- not closing" >&2; exit 1 ;;
+      esac
+      printf '%s' "$_azcea_text" | _epic_acceptance_scan || exit 1
+      if [ "$_azcea_rc" = 3 ]; then
+        echo "pipeline-vcs: check-epic-acceptance: the description of work item #$n is longer than $_VCS_AZURE_SCAN_CAP characters and only the first $_VCS_AZURE_SCAN_CAP were scanned -- not closing" >&2
+        exit 1
+      fi
+      ;;
+    rerun-ci)
+      # rerun-ci <id> (#304): re-queue every failed build-validation policy
+      # evaluation -- `az repos pr policy list --id <id>`, then `az repos pr
+      # policy queue --id <id> --evaluation-id <eval>` for each Build-type
+      # record (policy type 0609b952-1397-4640-95ec-e00a01b2c241) whose
+      # status is rejected or broken. A PR with no build policy has no CI to
+      # re-queue: exit 2, wait for a human. Any failure exits 1.
+      local n="${1:-}"
+      _az_require_id rerun-ci "$n" || exit 1
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] az repos pr policy queue --id $n --evaluation-id <each failed build policy of PR #$n> $ORG_ARG"
+        return 0
+      fi
+      local _azrc_json _azrc_ids _azrc_id _azrc_count=0
+      _azrc_json="$(az repos pr policy list --id "$n" $ORG_ARG --output json)" || {
+        echo "pipeline-vcs: rerun-ci: could not list the policies of PR #$n" >&2; exit 1; }
+      _azrc_ids="$(printf '%s' "$_azrc_json" | python3 -c '
+import json, re, sys
+BUILD = "0609b952-1397-4640-95ec-e00a01b2c241"
+builds = [r for r in json.load(sys.stdin)
+          if ((r.get("configuration") or {}).get("type") or {}).get("id") == BUILD]
+if not builds:
+    print("none")
+for r in builds:
+    if r.get("status") in ("rejected", "broken"):
+        if not re.fullmatch(r"[0-9a-fA-F-]{36}", r.get("evaluationId") or ""):
+            sys.exit(1)
+        print(r["evaluationId"])
+' 2>/dev/null)" || { echo "pipeline-vcs: rerun-ci: could not parse the policies of PR #$n" >&2; exit 1; }
+      if [ "$_azrc_ids" = "none" ]; then
+        echo "pipeline-vcs: rerun-ci: PR #$n has no build-validation policy to re-queue -- not supported, wait for a human" >&2
+        exit 2
+      fi
+      for _azrc_id in $_azrc_ids; do
+        az repos pr policy queue --id "$n" --evaluation-id "$_azrc_id" $ORG_ARG --output none || {
+          echo "pipeline-vcs: rerun-ci: re-queue of policy evaluation $_azrc_id failed" >&2; exit 1; }
+        _azrc_count=$((_azrc_count + 1))
+      done
+      if [ "$_azrc_count" -eq 0 ]; then
+        echo "rerun-ci: no failed build policies found for PR #$n"
+      else
+        echo "rerun-ci: re-queued $_azrc_count failed build policy evaluation(s) for PR #$n"
+      fi
       ;;
     pr-checks-required)
       # Fail closed, not open (#205) -- see the matching comment in _gitlab.

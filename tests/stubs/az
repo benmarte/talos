@@ -18,6 +18,53 @@ if [ "${AZ_STUB_NO_EXT:-0}" = "1" ]; then
   esac
 fi
 
+# Gate verbs (#304): env-driven responses. Each arm answers only when its
+# variable is set and otherwise falls through to the responses below, so
+# every older response is unchanged.
+_stub_fail() { echo "ERROR: $1" >&2; exit 1; }
+case "$args" in
+  "rest "*"/pullRequests/"*"/iterations/"*"/changes"*)
+    # pr-files: STUB_AZURE_PR_CHANGES_SKIP_<n> answers the page at $skip=<n>,
+    # STUB_AZURE_PR_CHANGES any page.
+    [ "${STUB_AZURE_PR_CHANGES_FAIL:-}" = "1" ] && _stub_fail "TF401180: The requested pull request was not found."
+    _skip="${args##*\$skip=}"; _skip="${_skip%%[!0-9]*}"
+    _page_var="STUB_AZURE_PR_CHANGES_SKIP_${_skip:-0}"
+    if [ -n "${!_page_var:-}" ]; then printf '%s\n' "${!_page_var}"; exit 0; fi
+    if [ -n "${STUB_AZURE_PR_CHANGES:-}" ]; then printf '%s\n' "$STUB_AZURE_PR_CHANGES"; exit 0; fi ;;
+  "rest "*"/pullRequests/"*"/iterations?"*)
+    [ "${STUB_AZURE_PR_ITERATIONS_FAIL:-}" = "1" ] && _stub_fail "TF401180: The requested pull request was not found."
+    if [ -n "${STUB_AZURE_PR_ITERATIONS:-}" ]; then printf '%s\n' "$STUB_AZURE_PR_ITERATIONS"; exit 0; fi ;;
+  "repos pr work-item list "*)
+    [ "${STUB_AZURE_PR_WORKITEMS_FAIL:-}" = "1" ] && _stub_fail "TF401180: The requested pull request was not found."
+    if [ -n "${STUB_AZURE_PR_WORKITEMS:-}" ]; then printf '%s\n' "$STUB_AZURE_PR_WORKITEMS"; exit 0; fi ;;
+  "repos pr policy list "*)
+    [ "${STUB_AZURE_PR_POLICIES_FAIL:-}" = "1" ] && _stub_fail "TF401180: The requested pull request was not found."
+    if [ -n "${STUB_AZURE_PR_POLICIES:-}" ]; then printf '%s\n' "$STUB_AZURE_PR_POLICIES"; exit 0; fi ;;
+  "repos pr policy queue "*)
+    [ "${STUB_AZURE_POLICY_QUEUE_FAIL:-}" = "1" ] && _stub_fail "TF400898: An internal error occurred." ;;
+  "repos pr list "*)
+    [ "${STUB_AZURE_PR_LIST_FAIL:-}" = "1" ] && _stub_fail "TF400813: The user is not authorized to access this resource." ;;
+  "repos pr show "*)
+    [ "${STUB_AZURE_PR_SHOW_FAIL:-}" = "1" ] && _stub_fail "TF401180: The requested pull request was not found." ;;
+  "boards work-item show "*"-o tsv") ;;
+  "boards work-item show "*"--expand relations"*)
+    [ "${STUB_AZURE_WORKITEM_RELATIONS_FAIL:-}" = "1" ] && _stub_fail "TF401232: Work item does not exist." ;;
+  "boards work-item show "*)
+    # check-epic-acceptance: STUB_AZURE_WORKITEM_JSON is the raw response;
+    # STUB_AZURE_WORKITEM_DESCRIPTION(_FILE) sets fields.System.Description.
+    [ "${STUB_AZURE_WORKITEM_SHOW_FAIL:-}" = "1" ] && _stub_fail "TF401232: Work item does not exist."
+    if [ -n "${STUB_AZURE_WORKITEM_JSON:-}" ]; then printf '%s\n' "$STUB_AZURE_WORKITEM_JSON"; exit 0; fi
+    if [ -n "${STUB_AZURE_WORKITEM_DESCRIPTION:-}${STUB_AZURE_WORKITEM_DESCRIPTION_FILE:-}" ]; then
+      python3 -c "
+import json, os
+f = os.environ.get('STUB_AZURE_WORKITEM_DESCRIPTION_FILE')
+desc = open(f).read() if f else os.environ['STUB_AZURE_WORKITEM_DESCRIPTION']
+print(json.dumps({'id': 42, 'fields': {'System.Title': 'Epic', 'System.Description': desc}}))
+"
+      exit 0
+    fi ;;
+esac
+
 case "$args" in
   "extension list "*)
     # Return a line containing azure-devops so the extension check passes
