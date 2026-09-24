@@ -267,7 +267,8 @@
 #   base_branch           PR target branch
 #   merge.method          squash | merge | rebase   (default: squash)
 #   issues.assignee       self | <identity> | none   (default: self) -- who
-#                         create-issue / assign-issue assign an issue to (#299)
+#                         create-issue / assign-issue assign an issue to (#299);
+#                         "" = none, with a stderr notice (#305)
 #   limits.max_fix_attempts     max consecutive per-stage failures before
 #                               pipeline:blocked (default: 3)
 #   limits.max_total_dispatches absolute ceiling on total developer dispatches
@@ -1134,8 +1135,9 @@ _vcs_shared_current_user() {
 #     <self-resolver...>  print the operator's identity (issues.assignee:
 #                         self), cached via _vcs_shared_current_user
 #   issues.assignee (default "self"): "none" returns before any provider
-#   call, so it is exactly the pre-#299 behaviour; any other value is the
-#   identity assigned literally. The current assignee is read first and a
+#   call, so it is exactly the pre-#299 behaviour; "" (key present but
+#   empty) is "none" plus a one-line stderr notice (#305); any other value
+#   is the identity assigned literally. The current assignee is read first and a
 #   non-empty one is never touched -- a person who picked up the card keeps
 #   it. After the write the field is read back, and success is reported only
 #   when the identity is actually there (GitHub silently drops
@@ -1149,7 +1151,14 @@ _vcs_shared_assign_issue() {
   local want want_lc
   want="$(cfg issues.assignee "self")"
   want_lc="$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]')"
-  case "$want_lc" in none|'') return 0 ;; esac
+  # An explicit empty value means "none" (#305), never "self": clearing the
+  # key is read as switching assignment off, and assigning is a visible
+  # write. It is no longer silent -- one notice, then the "none" path.
+  if [ -z "$want" ]; then
+    echo "pipeline-vcs: assign-issue: issues.assignee is empty -- treating it as 'none' (not assigning); remove the key for 'self'" >&2
+    return 0
+  fi
+  [ "$want_lc" = "none" ] && return 0
 
   case "$n" in
     ''|*[!0-9]*)
@@ -4538,7 +4547,11 @@ _gitlab() {
   local RARG=""
   [ -n "$REPO" ] && RARG="-R $REPO"
 
-  # Provider calls for _vcs_shared_assign_issue (#299).
+  # Provider calls for _vcs_shared_assign_issue (#299). Flags and output
+  # shapes checked against upstream glab source in #305: `-F/--output json`
+  # prints the client-go Issue, whose `assignees` is [{username, ...}];
+  # update's "+" prefix goes to ToAdd and keeps the current assignees;
+  # `glab api user` is GET /user, which returns `username`.
   _gl_assignees_get() {
     local _ag_json
     _ag_json="$(glab issue view "$1" --output json $RARG)" || return 1

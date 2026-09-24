@@ -847,6 +847,7 @@ and `azure`. The `file` provider has no assignee concept and is unaffected.
 | `self` | The authenticated operator: `gh api user` (github), `GET /user` (github-api), `glab api user` (gitlab), `az account show --query user.name` (azure). |
 | any other string | That identity, assigned verbatim: a GitHub login, a GitLab username, an Azure DevOps UPN or display name. |
 | `none` | Never assign. Talos behaves as it did before this key existed. |
+| `assignee: ""` (quoted) | Disables assignment (same as `none`), and each `assign-issue` prints a one-line notice on stderr saying the empty value was read as `none`. A bare `assignee:` (YAML null) is dropped by the config reader and behaves as if unset, resolving to `self`. |
 
 ```yaml
 issues:
