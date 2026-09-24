@@ -409,7 +409,8 @@ bash scripts/pipeline-vcs.sh list-issues
        `bash scripts/pipeline-vcs.sh close-issue <E> "All sub-issues resolved."`
        If the epic currently carries `pipeline:epic-children-done` (flagged on an earlier sweep), also remove it:
        `bash scripts/pipeline-vcs.sh label-issue <E> --remove pipeline:epic-children-done`
-     - **`$RC` != 0** (unticked boxes remain — `$ITEMS` holds each one, one per line) → do NOT close. The decomposition dropped or under-scoped a criterion.
+     - **`$RC` = 2** (not supported by this provider) → do NOT close the epic; skip the label/comment below and note `check-epic-acceptance not supported — epic #<E> left open` in the run summary.
+     - **Any other non-zero `$RC`** (unticked boxes remain — `$ITEMS` holds each one, one per line) → do NOT close. The decomposition dropped or under-scoped a criterion.
        **Idempotency guard:** only label and comment if the epic does NOT yet carry `pipeline:epic-children-done` (mirror the "does NOT yet carry `pipeline:ready`" idiom in Step 1.7 below) — this makes the label+comment action fire exactly once per epic instead of re-firing on every sweep while the epic sits unresolved. Keep calling `check-epic-acceptance` every sweep regardless (that's how a later-ticked epic gets picked up by the `$RC` = 0 branch above). When the guard passes:
        `bash scripts/pipeline-vcs.sh label-issue <E> --add pipeline:epic-children-done`
        Render the comment — **never** splice `$ITEMS` (checklist text taken from the epic body; untrusted, reporter-controlled) directly into a shell command string. Capture it into a variable first (already done above) and pass it through the standard template rendering recipe (see "Stage comment convention"), then hand the orchestrator the fully-rendered `$COMMENT_BODY` variable — never the raw item text — as the argument to `comment-issue`:
@@ -919,7 +920,7 @@ needs to run at all:
    during pagination), treat the gate as **not matching** and fall through to
    step 4 below — dispatch the docs subagent with the full diff. Fail-safe:
    a fetch failure must never be mistaken for "nothing to check" and silently
-   skip docs.
+   skip docs. Exit 2 (not supported by this provider) is the same: not matching.
 2. The gate matches (no docs subagent needed) when EITHER:
    - `CHANGELOG.md` is among `CHANGED_PATHS` AND (`README.md` is also among
      them, OR at least one path starts with `docs/`), OR
@@ -1217,6 +1218,7 @@ If it exits non-zero the PR touches secret-like files (`merge.forbidden_files`
 patterns; defaults cover `.env`, `*.pem`, `*.key`, …). Do NOT merge: add
 `pipeline:blocked` to the PR, post the check output as a PR comment, send a
 `blocked` notification, and move on. Only a human may clear this.
+Exit 2 (not supported by this provider) also means do NOT merge: the files were never checked.
 
 **Closing-keyword gate (VCS mode only):** `bash scripts/pipeline-vcs.sh check-closing-keyword <PR_NUMBER> <N>`
 If it exits non-zero, the PR body carries a closing keyword (`Closes/Fixes/Resolves #N`)
@@ -1224,6 +1226,7 @@ while other PRs referencing the same issue are still OPEN — merging would clos
 tracker and orphan in-flight sibling work. Do NOT merge: add `pipeline:blocked` to the PR,
 post the diagnostic (from stderr) as a PR comment, send a `blocked` notification, and move
 on. Only a human may clear this after resolving the sibling situation.
+Exit 2 (not supported by this provider) also means do NOT merge: siblings were never checked.
 
 If the gate exits 0 but prints a `talos:closing-keyword-unverified` line on stdout, PR body
 or sibling data could not be fetched — the gate failed open. Log the line and continue; the
@@ -1243,7 +1246,8 @@ If failing (non-zero exit): CI may be flaky — retry it, bounded to 2 re-runs p
 1. Count existing `<!-- talos:ci-rerun <HEAD_SHA> -->` marker comments on the PR.
 2. If fewer than 2: `bash scripts/pipeline-vcs.sh rerun-ci <PR_NUMBER>`, then post
    a PR comment containing the marker `<!-- talos:ci-rerun <HEAD_SHA> -->` and a
-   one-line note. Re-check on the next pass.
+   one-line note. Re-check on the next pass. If `rerun-ci` exits 2 (not supported by
+   this provider), post no marker, do NOT merge, and wait for a human.
 3. If 2 re-runs already happened for this SHA: post a comment listing the failing
    checks, do NOT merge. Not blocked — just waiting for a human or a new commit.
 
