@@ -362,7 +362,8 @@
 #                                             unparseable fetch is exit 1 with EMPTY
 #                                             stdout and nothing cleared, never an empty
 #                                             list. No labelled item: exit 0, empty
-#                                             stdout. --clear-answered removes the label
+#                                             stdout (`[]` with --json, so a JSON reader
+#                                             always gets an array). --clear-answered removes the label
 #                                             from every answered=yes item and prints
 #                                             `cleared n=<n>` for each removal that
 #                                             succeeded (after the listing; on stderr
