@@ -293,7 +293,7 @@ When the gate auto-stamps (step 3, no subagent), no line is needed; if the
 flag is on, mention the fragment convention in the stamp body so the thread
 records why CHANGELOG.md was not edited.
 
-**Status fragment line (#333):** on either dispatch path above (draft stage order included), `STATUS_ENABLED = true` substitutes `<STATUS_FRAGMENT_LINE>` with the literal line `STATUS FRAGMENT: <STATUS_FRAGMENTS_DIR>/<issue>-<pr>.md`; otherwise omit the line. A fix round passes the same path, so a PR never gets a second entry. No line is needed when the gate auto-stamps: the post-merge fallback entry (PR title) supplies the bullet.
+**Status fragment line (#333):** on either dispatch path above (draft stage order included), `STATUS_ENABLED = true` substitutes `<STATUS_FRAGMENT_LINE>` with the literal line `STATUS FRAGMENT: <STATUS_FRAGMENTS_DIR>/<issue>-<pr>.md`; otherwise leave the placeholder line empty. A fix round passes the same path, so a PR never gets a second entry. No line is needed when the gate auto-stamps: the post-merge fallback entry (PR title) supplies the bullet.
 
 Either way (subagent dispatched or gate auto-stamped), wait for docs to reach
 `docs:done` before continuing to phase 2.
@@ -387,7 +387,7 @@ Comment templates dir: <COMMENTS_TMPL_DIR>
 Comments enabled: <COMMENTS_ENABLED>
 
 Changelog mode: <CHANGELOG_MODE_LINE>
-Status fragment: <STATUS_FRAGMENT_LINE>
+<STATUS_FRAGMENT_LINE>
 
 Read diff: <DOCS_DIFF_INSTRUCTION> — under `docs_mode: auto` this is the
 changed doc-relevant paths plus the CHANGELOG hunk, not the full PR diff.
