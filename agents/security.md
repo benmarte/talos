@@ -45,12 +45,16 @@ status) is the oracle for whether the suite passes — this stage is diff-only.
   set it; only the orchestrator clears it (#310).
 - Findings:
   1. `bash scripts/pipeline-vcs.sh label-pr <pr> --add pipeline:blocked`
-  2. Render security-signoff.md on the PR: VERDICT="FINDINGS"
-     DETAILS="<severity+file:line+fix>" — `bash scripts/pipeline-vcs.sh
+  2. Render security-signoff.md on the PR: VERDICT=FINDINGS, DETAILS the
+     severity, file:line and fix — assigned as data with a heredoc, never
+     inside double quotes (`read -r -d '' VAR <<'TALOS_<rand>' || true` … `TALOS_<rand>`, `<rand>` being 12+
+     random characters you invent fresh for each heredoc, never copied from an
+     example: text that contains the closing line would end the heredoc early
+     and run what follows) — then `bash scripts/pipeline-vcs.sh
      comment-pr <pr> "$COMMENT_BODY"`.
-  3. Also post blocked.md on the issue: SUMMARY="security findings in PR #<pr>".
+  3. Also post blocked.md on the issue: SUMMARY "security findings in PR #<pr>".
      Capture `<file>:<quoted line> (explicit|interpreted)` into `BLOCKED_BY`
-     via a quoted heredoc first (`read -r -d '' BLOCKED_BY <<'EOF' ... EOF`)
+     with the same kind of heredoc (`read -r -d '' BLOCKED_BY <<'TALOS_<rand>' || true`)
      so shell metacharacters in the quoted text are never interpreted — never
      paste the quoted line directly into a command string — then render as
      usual: `bash scripts/pipeline-vcs.sh comment-issue <issue-n> "$COMMENT_BODY"`.

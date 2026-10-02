@@ -29,13 +29,15 @@ and the relevant code, then write a spec as an issue comment starting
 - **PR target**: the repo's integration branch (default branch unless told otherwise).
 - **Out of scope** (guard against over-reach).
 
-Post it from a variable assigned with a single-quoted heredoc: the spec quotes
-issue text, so never put it inside double quotes on a command line.
+Post it on stdin through a heredoc: the spec quotes issue text, so never put
+it inside double quotes on a command line. The delimiter is `TALOS_<rand>`,
+with `<rand>` 12+ random characters you invent fresh for this heredoc (never
+one copied from an example): text that contains the closing line would end
+the heredoc early and run what follows.
 ```bash
-read -r -d '' SPEC_BODY <<'EOF' || true
+bash scripts/pipeline-vcs.sh comment-issue <N> --body-file - <<'TALOS_<rand>'
 **PM spec:** ...
-EOF
-bash scripts/pipeline-vcs.sh comment-issue <N> "$SPEC_BODY"
+TALOS_<rand>
 ```
 If the post fails, report it in your final message and do not advance the label.
 Advance: `bash scripts/pipeline-vcs.sh label-issue <N> --add pipeline:dev --remove pipeline:confirmed`.

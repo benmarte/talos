@@ -71,10 +71,14 @@ Never run `verify:`; QA and CI already did. This stage is diff-only.
   1. `bash scripts/pipeline-vcs.sh label-pr <pr> --add pipeline:blocked`
   2. Comment on the PR with each finding's file:line and repro —
      `bash scripts/pipeline-vcs.sh comment-pr <pr> "$COMMENT_BODY"`.
-  3. Also post blocked.md on the issue: SUMMARY="adversarial findings in PR
-     #<pr>". Capture `<file>:<quoted line> (explicit|interpreted)` into
-     `BLOCKED_BY` via a quoted heredoc first (`read -r -d '' BLOCKED_BY
-     <<'EOF' ... EOF`) so shell metacharacters in the quoted text are never
+  3. Also post blocked.md on the issue: SUMMARY "adversarial findings in PR
+     #<pr>". Free text (SUMMARY, DETAILS, BLOCKED_BY) is assigned as data with
+     a heredoc, never inside double quotes (`read -r -d '' VAR <<'TALOS_<rand>' || true` … `TALOS_<rand>`, `<rand>`
+     being 12+ random characters you invent fresh for each heredoc, never
+     copied from an example: text that contains the closing line would end the
+     heredoc early and run what follows). Capture
+     `<file>:<quoted line> (explicit|interpreted)` into
+     `BLOCKED_BY` that way so shell metacharacters in the quoted text are never
      interpreted — never paste the quoted line directly into a command
      string — then render as usual: `bash scripts/pipeline-vcs.sh
      comment-issue <issue-n> "$COMMENT_BODY"`.

@@ -13,8 +13,10 @@ issue body itself is the spec — substitute `<SPEC_SOURCE>` below with
 
 `<slug>` throughout this stage (branch `fix/issue-<N>-<slug>` / `feat/issue-<N>-<slug>`)
 is `bash scripts/pipeline-vcs.sh slug-for "$ISSUE_TITLE"` (assign `ISSUE_TITLE`
-with `read -r ISSUE_TITLE <<'EOF'` … the issue title … `EOF`, never inside double
-quotes: the title is reporter-controlled); prefix is `feat/` when the
+in the same command with `read -r ISSUE_TITLE <<'TALOS_<rand>'` … the issue
+title … `TALOS_<rand>`, `<rand>` being 12+ random characters you invent fresh for
+each heredoc, never one copied from an example; never inside double quotes: the
+title is reporter-controlled); prefix is `feat/` when the
 title starts with `feat`, else `fix/` (#199).
 
 Dispatch according to `ISOLATION`:
@@ -82,8 +84,8 @@ pass/fail assertion total — QA's run is the authoritative count.
 After developer returns:
 - **PR opened:**
   1. Board → "In review": `bash scripts/pipeline-status.sh <N> "In review"`
-  2. Relay findings: `bash scripts/pipeline-notify.sh developer "#<N>" "<subagent's 2-3 line summary: what was implemented + PR URL>" <N>`
-  3. Lifecycle event: `bash scripts/pipeline-notify.sh pr-opened "#<N>" "PR <URL> opened" <N>`
+  2. Relay findings: `bash scripts/pipeline-notify.sh developer "#<N>" - <N>` (stdin: `<subagent's 2-3 line summary: what was implemented + PR URL>`)
+  3. Lifecycle event: `bash scripts/pipeline-notify.sh pr-opened "#<N>" - <N>` (stdin: `PR <URL> opened`)
   4. **Mergeability gate (#214), before dispatching QA (Step 3d):** `bash
      scripts/pipeline-vcs.sh pr-mergeable <PR>`.
      - Exit 0 (`MERGEABLE`) or exit 2 (`UNKNOWN`, still unresolved after
@@ -153,7 +155,7 @@ After developer returns:
   below.
 - **Blocked:**
   1. Board → "Blocked": `bash scripts/pipeline-status.sh <N> "Blocked"`
-  2. Relay findings: `bash scripts/pipeline-notify.sh developer "#<N>" "<what failed>" <N>`
+  2. Relay findings: `bash scripts/pipeline-notify.sh developer "#<N>" - <N>` (stdin: `<what failed>`)
   3. Lifecycle event: `bash scripts/pipeline-notify.sh blocked "#<N>" "developer blocked" <N>`
   4. Stop.
 
@@ -206,10 +208,10 @@ Final message (2-3 lines): PASS/FAIL + criteria outcome the orchestrator can rel
 
 After QA returns:
 - **Pass:**
-  1. Relay findings: `bash scripts/pipeline-notify.sh qa "#<N>" "<subagent's 2-3 line summary: criteria verified>" <N>`
+  1. Relay findings: `bash scripts/pipeline-notify.sh qa "#<N>" - <N>` (stdin: `<subagent's 2-3 line summary: criteria verified>`)
 - **Fail:**
-  1. Relay findings: `bash scripts/pipeline-notify.sh qa "#<N>" "<FAIL: failing criterion + repro>" <N>`
-  2. Lifecycle event: `bash scripts/pipeline-notify.sh blocked "#<N>" "QA failed: <criterion>" <N>`
+  1. Relay findings: `bash scripts/pipeline-notify.sh qa "#<N>" - <N>` (stdin: `<FAIL: failing criterion + repro>`)
+  2. Lifecycle event: `bash scripts/pipeline-notify.sh blocked "#<N>" - <N>` (stdin: `QA failed: <criterion>`)
   3. Record attempt and check ceilings (PR already exists, so pass --pr as in Step 3):
      ```bash
      bash scripts/pipeline-vcs.sh record-attempt <N> qa --pr <PR_NUMBER>
@@ -410,22 +412,22 @@ Final (2-3 lines): "docs posted: <files updated>" or "no docs changes required".
 After docs completes (phase 1):
 
 **Docs returned:**
-- Subagent dispatched: `bash scripts/pipeline-notify.sh docs "#<N>" "<subagent's 2-3 line outcome>" <N>`
+- Subagent dispatched: `bash scripts/pipeline-notify.sh docs "#<N>" - <N>` (stdin: `<subagent's 2-3 line outcome>`)
 - Gate auto-stamped (`docs_mode: auto`, no subagent dispatched): `bash scripts/pipeline-notify.sh docs "#<N>" "docs verified by developer diff (docs_mode: auto) — no subagent dispatched" <N>`
 
 After reviewer and security complete (phase 2):
 
 **Reviewer returned:**
-- Approved: `bash scripts/pipeline-notify.sh reviewer "#<N>" "<subagent's 2-3 line outcome, including the top 1-2 human-attention report items (#294)>" <N>`
-- Changes needed: `bash scripts/pipeline-notify.sh reviewer "#<N>" "CHANGES: <findings>" <N>` then `bash scripts/pipeline-notify.sh blocked "#<N>" "reviewer: changes required" <N>`; record attempt (PR already exists, so pass --pr as in Step 3):
+- Approved: `bash scripts/pipeline-notify.sh reviewer "#<N>" - <N>` (stdin: `<subagent's 2-3 line outcome, including the top 1-2 human-attention report items (#294)>`)
+- Changes needed: `bash scripts/pipeline-notify.sh reviewer "#<N>" - <N>` (stdin: `CHANGES: <findings>`) then `bash scripts/pipeline-notify.sh blocked "#<N>" "reviewer: changes required" <N>`; record attempt (PR already exists, so pass --pr as in Step 3):
   ```bash
   bash scripts/pipeline-vcs.sh record-attempt <N> reviewer --pr <PR_NUMBER>
   ```
   Exit 0 → clear `pipeline:blocked` (Step 3, "Clearing `pipeline:blocked`"), then re-dispatch developer. Exit non-zero → set `pipeline:blocked`, stop.
 
 **Security returned:**
-- Clear: `bash scripts/pipeline-notify.sh security "#<N>" "<subagent's 2-3 line outcome>" <N>`
-- Findings: `bash scripts/pipeline-notify.sh security "#<N>" "FINDINGS: <severity + fix>" <N>` then `bash scripts/pipeline-notify.sh blocked "#<N>" "security: findings in PR #<PR_NUMBER>" <N>`; record attempt (PR already exists, so pass --pr as in Step 3):
+- Clear: `bash scripts/pipeline-notify.sh security "#<N>" - <N>` (stdin: `<subagent's 2-3 line outcome>`)
+- Findings: `bash scripts/pipeline-notify.sh security "#<N>" - <N>` (stdin: `FINDINGS: <severity + fix>`) then `bash scripts/pipeline-notify.sh blocked "#<N>" "security: findings in PR #<PR_NUMBER>" <N>`; record attempt (PR already exists, so pass --pr as in Step 3):
   ```bash
   bash scripts/pipeline-vcs.sh record-attempt <N> security --pr <PR_NUMBER>
   ```
@@ -467,8 +469,8 @@ Final (2-3 lines): CLEAR/FINDINGS outcome + areas covered.
 After adversarial completes:
 
 **Adversarial returned:**
-- Clear: `bash scripts/pipeline-notify.sh adversarial "#<N>" "<subagent's 2-3 line outcome>" <N>`
-- Findings: `bash scripts/pipeline-notify.sh adversarial "#<N>" "FINDINGS: <count + summary>" <N>` then `bash scripts/pipeline-notify.sh blocked "#<N>" "adversarial: findings in PR #<PR_NUMBER>" <N>`; record attempt (PR already exists, so pass --pr as in Step 3):
+- Clear: `bash scripts/pipeline-notify.sh adversarial "#<N>" - <N>` (stdin: `<subagent's 2-3 line outcome>`)
+- Findings: `bash scripts/pipeline-notify.sh adversarial "#<N>" - <N>` (stdin: `FINDINGS: <count + summary>`) then `bash scripts/pipeline-notify.sh blocked "#<N>" "adversarial: findings in PR #<PR_NUMBER>" <N>`; record attempt (PR already exists, so pass --pr as in Step 3):
   ```bash
   bash scripts/pipeline-vcs.sh record-attempt <N> adversarial --pr <PR_NUMBER>
   ```
@@ -629,8 +631,7 @@ accumulating until each PR's own merge time:
      `pr-mergeable` between each.
 3. Every sync action (mergebase push, update-branch, developer dispatch) is
    relayed so the thread shows why an approval may have gone stale:
-   `bash scripts/pipeline-notify.sh info "merge-base" "#<N> sibling PR #<PR>
-   synced with new base (<mechanism>)" <N>`.
+   `bash scripts/pipeline-notify.sh info "merge-base" - <N>` (stdin: `#<N> sibling PR #<PR> synced with new base (<mechanism>)`).
 4. Approval impact: an `update-branch`/`pipeline-mergebase.sh` push that only
    changes the PR's relationship to its base does not invalidate approval
    markers (#102/#256 — base-branch-only changes and `CHANGELOG.md` are

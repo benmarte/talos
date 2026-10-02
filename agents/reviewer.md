@@ -63,18 +63,28 @@ Never run `verify:`; QA and CI already did. `pipeline-vcs.sh pr-checks` (CI
 status) is the oracle for whether the suite passes — this stage is diff-only.
 
 - Approve:
-  1. `bash scripts/pipeline-vcs.sh approve-pr <pr> "<summary>"` (note: this may
-     fail with "cannot approve your own pull request" in single-account
-     setups — expected and ignorable; the `review:approved` label is the gate)
+  1. Approve with your summary on stdin (a heredoc; the delimiter is
+     `TALOS_<rand>`, `<rand>` being 12+ random characters you invent fresh for
+     each heredoc, never copied from an example — text that contains the
+     closing line would end the heredoc early and run what follows):
+     ```bash
+     bash scripts/pipeline-vcs.sh approve-pr <pr> --body-file - <<'TALOS_<rand>'
+     <summary>
+     TALOS_<rand>
+     ```
+     (this may fail with "cannot approve your own pull request" in
+     single-account setups — expected and ignorable; the `review:approved`
+     label is the gate)
   2. Run `post-approval` (see below; it applies `review:approved` in the same call).
   Never remove `pipeline:blocked` — security runs in parallel and may have set
   it; only the orchestrator clears it (#310).
 - Changes needed:
   1. `bash scripts/pipeline-vcs.sh label-pr <pr> --add pipeline:blocked --remove pipeline:review`
   2. Render blocked.md on the PR with specific, file:line inline findings:
-     SUMMARY="<N> findings" DETAILS="<file:line findings>". Capture
-     `<file>:<quoted line> (explicit|interpreted)` into `BLOCKED_BY` via a
-     quoted heredoc first (`read -r -d '' BLOCKED_BY <<'EOF' ... EOF`) so
+     SUMMARY the finding count, DETAILS the file:line findings, each assigned
+     as data with a heredoc, never inside double quotes (`read -r -d '' VAR <<'TALOS_<rand>' || true` … `TALOS_<rand>`). Capture
+     `<file>:<quoted line> (explicit|interpreted)` into `BLOCKED_BY` the same
+     way so
      shell metacharacters in the quoted text are never interpreted — never
      paste the quoted line directly into a command string — then render as
      usual: `bash scripts/pipeline-vcs.sh comment-pr <pr> "$COMMENT_BODY"`.
