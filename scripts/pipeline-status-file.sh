@@ -9,7 +9,8 @@
 # Nothing calls this script yet; default behaviour is unchanged.
 #
 # Usage: pipeline-status-file.sh init
-#        pipeline-status-file.sh assemble [--pr <pr> --issue <n>]
+#        pipeline-status-file.sh assemble [--pr <pr> --issue <n>] [--refresh]
+#        pipeline-status-file.sh refresh [--print]
 #
 #   init      Create status.file in the current working tree with a title, a
 #             one-line "resume with any LLM" note, the status.resume_heading
@@ -19,7 +20,67 @@
 #   assemble  Fold fragments <issue>-<pr>.md from status.fragments_dir on
 #             origin/<base> into the log section of status.file on the base
 #             branch. Checks status.enabled first (false -> exit 0, no
-#             commit), then validates the paths.
+#             commit), then validates the paths. With --refresh the Resume
+#             block (below) is regenerated in the SAME commit, so a merge costs
+#             one status commit; if the GitHub read fails the log is still
+#             assembled and pushed and stderr carries one line saying the
+#             Resume block was not refreshed.
+#   refresh   Regenerate the Resume block and push it (subject `docs(status):
+#             refresh resume block [skip ci]`); a block identical to the base's
+#             is a no-op (exit 0, no commit). Checks status.enabled first.
+#   refresh --print
+#             The block on stdout (heading, blank line, lines). Ignores
+#             status.enabled. Creates no worktree, commit or push and calls no
+#             write verb; it does run `git fetch origin <base>`, which only
+#             moves origin/<base>, so Base matches what refresh computes.
+#
+# The Resume block (everything from status.resume_heading up to the next `## `
+# heading). A pure function of the GitHub state and of origin/<base>: no
+# timestamp, no hostname, explicit sorting, so concurrent runs converge on the
+# same bytes. Lines, in this order (a group with nothing in it is omitted):
+#   - Base: <base_branch> @ <sha>      newest commit on origin/<base> touching a
+#                                      path outside status.file, status.fragments_dir
+#                                      and status.archive_dir (`none` if there is none)
+#   - Next: <action>                   see below
+#   - PR #<M> (#<N>) head <sha> next: <stage>
+#                                      one per open PR whose head branch matches
+#                                      ^(fix|feat)/issue-<digits>(-|$), ascending
+#   - Blocked: <issue|PR> #<n>: <q>    pipeline:blocked; <q> is the needs-owner
+#                                      question, else `see comments`
+#   - Owner: #<n> <question>[ (answered)]   one per `list-needs-owner --json` item
+#   - Queued: #a, #b, ...              open issues labelled pipeline:ready in p0,
+#                                      p1, p2, unlabelled order, then by number
+#   - Note: ...                        only when list-prs or list-issues reported
+#                                      a cap; always the last line
+# Next, first match wins: `merge #M` (lowest-numbered PR at stage merge);
+# `resume #M at <stage>` (lowest-numbered PR at any other stage except blocked
+# and human-merge; `unverified` renders `resume #M at unverified`); `start #n`
+# (first queued issue); `waiting on owner` (no PR is actionable, nothing is
+# queued, and at least one Owner or Blocked line exists); `nothing queued`.
+# Stage of a PR, first match wins, counting only enabled roles (roles.qa,
+# docs, reviewer, security default true; roles.adversarial defaults false) and
+# treating an approval label as missing when check-approval-sha --stale-list
+# names its role: `blocked` (the PR or its issue carries pipeline:blocked);
+# when pr.draft is true and pr-is-draft exits 0: docs, reviewer, security,
+# adversarial, `ready` (exit 2: `unverified`; exit 1 uses the default order);
+# otherwise qa, docs, reviewer, security, adversarial; `ci` when
+# merge.required_checks is set and pr-checks-required is not exit 0; then
+# `merge` (merge.auto, default true) or `human-merge`.
+# The block is capped at status.resume_max_lines (default 40, never fewer than
+# 3 lines): Base and Next are kept, the rest is cut and the last line says
+# `- +<K> more`. Text of the other sections is never touched.
+#
+# Reads (GitHub, once, before the retry loop; read verbs only, nothing is
+# written to GitHub): list-prs, list-issues, pr-head, check-approval-sha
+# --stale-list (only `stale role=` lines count; exit 1 without one is a failed
+# read), pr-checks-required, pr-is-draft, list-needs-owner --json (never
+# --clear-answered). Fail closed: list-prs, list-issues, pr-head,
+# check-approval-sha or list-needs-owner exiting non-zero (list-needs-owner
+# exit 2, an unsupported provider, excepted: no Owner lines) makes `refresh`
+# exit 1 with nothing pushed. `talos:marker-authors-unverified` on
+# list-needs-owner's stderr means `answered` is unverified: no ` (answered)`.
+# Every rendered line is one line: control characters removed, Markdown
+# escaped (no heading, list item, code fence, link or `<!--`), 160 characters.
 #
 # Log entries (one per PR, keyed by the prefix `PR #<n> `, trailing space
 # included, so #4 never matches #41):
@@ -81,7 +142,8 @@
 #
 # Exit codes:
 #   0  done, or nothing to do (including status.enabled false).
-#   1  usage, config, path, git or push error. Nothing pushed.
+#   1  usage, config, path, git or push error, or (refresh) a failed GitHub
+#      read. Nothing pushed.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -109,24 +171,34 @@ fi
 
 _sf_err() { echo "pipeline-status-file: $*" >&2; }
 
-USAGE="usage: pipeline-status-file.sh init | assemble [--pr <pr> --issue <n>]"
+USAGE="usage: pipeline-status-file.sh init | assemble [--pr <pr> --issue <n>] [--refresh] | refresh [--print]"
 
 verb="${1:-}"
 case "$verb" in
-  init|assemble) shift ;;
+  init|assemble|refresh) shift ;;
   *) echo "$USAGE" >&2; exit 1 ;;
 esac
 
 PR=""
 ISSUE=""
 ARG_ERR=""
+PRINT=""    # refresh --print: block on stdout, no writes
+REFRESH=""  # assemble --refresh: regenerate the block in the same commit
 if [ "$verb" = "init" ]; then
   [ "$#" -eq 0 ] || ARG_ERR="init takes no arguments"
+elif [ "$verb" = "refresh" ]; then
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --print) [ -z "$PRINT" ] || { ARG_ERR="--print given twice"; break; }; PRINT=1; shift ;;
+      *) ARG_ERR="unknown argument: $1"; break ;;
+    esac
+  done
 else
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --pr)    PR="${2:-}"; shift 2 2>/dev/null || { ARG_ERR="--pr needs a value"; break; } ;;
       --issue) ISSUE="${2:-}"; shift 2 2>/dev/null || { ARG_ERR="--issue needs a value"; break; } ;;
+      --refresh) [ -z "$REFRESH" ] || { ARG_ERR="--refresh given twice"; break; }; REFRESH=1; shift ;;
       *) ARG_ERR="unknown argument: $1"; break ;;
     esac
   done
@@ -139,8 +211,9 @@ else
   fi
 fi
 
-# ── status.enabled gates assemble only (init must work with the key unset) ──
-if [ "$verb" = "assemble" ]; then
+# ── status.enabled gates assemble and refresh (init and refresh --print must
+#    work with the key unset) ──
+if [ "$verb" = "assemble" ] || { [ "$verb" = "refresh" ] && [ -z "$PRINT" ]; }; then
   _sf_enabled="$(cfg status.enabled false | tr '[:upper:]' '[:lower:]')"
   if [ "$_sf_enabled" != "true" ]; then
     echo "pipeline-status-file: status.enabled is false — nothing to do"
@@ -244,6 +317,16 @@ HEADING_RE = re.compile(r'^(#{1,6})(\s|$)')
 
 
 log_h, resume_h = log_h.strip(), resume_h.strip()
+
+# Named options (`--name value` pairs after the 14 positionals) belong to the
+# refresh modes, so the positional list does not grow with them.
+opts = {}
+_extra = sys.argv[15:]
+if len(_extra) % 2 or any(not k.startswith('--') for k in _extra[0::2]):
+    sys.stderr.write('pipeline-status-file: bad named arguments\n')
+    sys.exit(1)
+for _i in range(0, len(_extra), 2):
+    opts[_extra[_i][2:]] = _extra[_i + 1]
 
 
 def die(msg):
@@ -388,6 +471,266 @@ if mode == 'verify':
     missing = sorted(set(want) - set(p for _, p in staged))
     if missing:
         die('refusing to commit: expected change not staged: %s' % ', '.join(missing))
+    sys.exit(0)
+
+# ── collect / refresh / print: the generated Resume block ────────────────────
+# `collect` reads GitHub through the read verbs of pipeline-vcs.sh and writes
+# the normalised state to --out. `refresh` (throwaway worktree) and `print`
+# (the caller's checkout) turn that state plus the Base commit into the block;
+# `refresh` splices it into the status file and lists the file in the manifest.
+BLOCKED_LABEL = 'pipeline:blocked'
+READY_LABEL = 'pipeline:ready'
+BRANCH_RE = re.compile(r'^(?:fix|feat)/issue-([0-9]{1,9})(?:-|\Z)')
+STALE_RE = re.compile(r'^stale role=([a-z]+) label=')
+SHA_RE = re.compile(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})\Z')
+CAP_RE = re.compile(r'result capped at')
+APPROVALS = (('qa', 'qa:pass'), ('docs', 'docs:done'), ('reviewer', 'review:approved'),
+             ('security', 'security:approved'), ('adversarial', 'adversarial:approved'))
+PRIORITY = {'p0': 0, 'p1': 1, 'p2': 2}
+LINE_CAP = 160       # characters of untrusted text per rendered line
+QUEUE_SHOW = 50      # issue numbers named on the Queued line
+MIN_BLOCK_LINES = 3  # Base, Next and the `more` marker are never dropped
+
+
+def _num(item, key='number'):
+    n = item.get(key) if isinstance(item, dict) else None
+    return n if isinstance(n, int) and not isinstance(n, bool) and n > 0 else None
+
+
+def _label_set(item):
+    out = set()
+    for l in item.get('labels') or []:
+        name = l.get('name') if isinstance(l, dict) else l
+        if isinstance(name, str):
+            out.add(name)
+    return out
+
+
+def md_text(s):
+    """Untrusted text as one escaped, length-capped line: no control character,
+    no newline, and nothing that Markdown could read as a heading, a list item,
+    a code fence, a link or an HTML comment."""
+    s = re.sub(r'[\r\n\t\v\f\x85  ]+', ' ', str(s))
+    s = clean_line(s)
+    if len(s) > LINE_CAP:
+        s = s[:LINE_CAP - 1].rstrip() + '…'
+    # `<` and `>` become entities, so no `<!--` survives in the raw file text.
+    s = s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    return re.sub(r'([\\`*_\[\]|~])', r'\\\1', s)
+
+
+def vcs(*args):
+    try:
+        p = subprocess.run(['bash', opts['vcs']] + list(args), stdin=subprocess.DEVNULL,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
+    except (OSError, subprocess.SubprocessError):
+        return 1, '', ''
+    return p.returncode, p.stdout.decode('utf-8', 'replace'), p.stderr.decode('utf-8', 'replace')
+
+
+def parse_array(text, what):
+    try:
+        d = json.loads(text)
+    except ValueError:
+        die('%s did not return JSON' % what)
+    if not isinstance(d, list):
+        die('%s did not return a JSON array' % what)
+    return d
+
+
+def next_stage(n, labels, issue_labels, enabled):
+    """First match wins: blocked, then the draft or default order, counting only
+    enabled roles; an approval label that is missing or stale means that role."""
+    if BLOCKED_LABEL in labels or BLOCKED_LABEL in issue_labels:
+        return 'blocked'
+    draft = False
+    if opts.get('pr-draft') == 'true':
+        rc, _, _ = vcs('pr-is-draft', str(n))
+        if rc == 0:
+            draft = True
+        elif rc != 1:
+            return 'unverified'
+    stale = set()
+    if any(label in labels for _, label in APPROVALS):
+        rc, out, _ = vcs('check-approval-sha', str(n), '--stale-list')
+        stale = set(m.group(1) for m in map(STALE_RE.match, out.splitlines()) if m)
+        # exit 1 is both "stale approvals" (stale lines on stdout) and a failed read.
+        if rc not in (0, 1) or (rc == 1 and not stale):
+            die('check-approval-sha failed for PR #%d (rc=%d)' % (n, rc))
+    for role, label in APPROVALS:
+        if draft and role == 'qa':
+            continue
+        if role in enabled and (label not in labels or role in stale):
+            return role
+    if draft:
+        return 'ready'
+    if opts.get('required-checks') == 'yes':
+        rc, _, _ = vcs('pr-checks-required', str(n))
+        if rc != 0:
+            return 'ci'
+    return 'merge' if opts.get('merge-auto') == 'true' else 'human-merge'
+
+
+def collect():
+    rc, out, err = vcs('list-prs')
+    if rc != 0:
+        die('list-prs failed (rc=%d)' % rc)
+    raw_prs = parse_array(out, 'list-prs')
+    capped = ['list-prs'] if CAP_RE.search(err) else []
+    rc, out, err = vcs('list-issues')
+    if rc != 0:
+        die('list-issues failed (rc=%d)' % rc)
+    raw_issues = parse_array(out, 'list-issues')
+    if CAP_RE.search(err):
+        capped.append('list-issues')
+    issues = dict((_num(i), _label_set(i)) for i in raw_issues if _num(i))
+
+    # list-needs-owner: exit 2 is an unsupported provider (no Owner lines); any
+    # other failure is a failed read and fails the run like list-prs does.
+    owners, unverified = None, False
+    rc, out, err = vcs('list-needs-owner', '--json')
+    if rc != 2:
+        if rc != 0:
+            die('list-needs-owner failed (rc=%d)' % rc)
+        owners = []
+        for r in parse_array(out, 'list-needs-owner --json'):
+            if not _num(r, 'n') or not isinstance(r.get('question', ''), str):
+                die('list-needs-owner --json returned an item that is not {n, question, ...}')
+            owners.append({'n': r['n'], 'answered': r.get('answered') == 'yes',
+                           'question': r.get('question', '')})
+        unverified = 'talos:marker-authors-unverified' in err
+        if unverified:  # the trust set was not resolved: answered is unverified
+            for o in owners:
+                o['answered'] = False
+        owners.sort(key=lambda o: o['n'])
+
+    enabled = set(x for x in opts.get('roles', '').split(',') if x)
+    prs, blocked = [], []
+    for it in sorted((i for i in raw_prs if _num(i)), key=lambda i: i['number']):
+        n, labels = it['number'], _label_set(it)
+        if BLOCKED_LABEL in labels:
+            blocked.append(('PR', n))
+        branch = it.get('headRefName')
+        m = BRANCH_RE.match(branch) if isinstance(branch, str) else None
+        if not m:
+            continue
+        issue = int(m.group(1))
+        rc, out, _ = vcs('pr-head', str(n))
+        head = out.strip()
+        if rc != 0 or not SHA_RE.match(head):
+            die('pr-head failed for PR #%d' % n)
+        prs.append({'n': n, 'issue': issue, 'head': head,
+                    'stage': next_stage(n, labels, issues.get(issue, set()), enabled)})
+    blocked += [('issue', n) for n in issues if BLOCKED_LABEL in issues[n]]
+    blocked.sort(key=lambda b: (b[1], b[0]))
+    queued = sorted((n for n in issues if READY_LABEL in issues[n]),
+                    key=lambda n: (min([PRIORITY[l] for l in issues[n] if l in PRIORITY] or [3]), n))
+    write_text(opts['out'], json.dumps({'prs': prs, 'blocked': blocked, 'queued': queued,
+                                        'owners': owners, 'capped': capped}))
+
+
+def base_sha(branch):
+    """Newest commit on origin/<branch> that touches a path outside the status
+    paths, so the block is stable across its own commits (`none` if there is
+    none). Computed from whatever origin/<branch> is when this runs."""
+    excl = [':(exclude,literal)%s' % p for p in (status_rel, frag_rel, archive_rel)]
+    p = subprocess.run(['git', '--no-literal-pathspecs', '-C', root_real, 'log', '-1',
+                        '--format=%H', 'origin/%s' % branch, '--', '.'] + excl,
+                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+    sha = p.stdout.decode('ascii', 'replace').strip()
+    if p.returncode != 0 or (sha and not SHA_RE.match(sha)):
+        die('could not resolve the Base commit on origin/%s' % branch)
+    return sha or 'none'
+
+
+def build_block(data, branch, base, max_lines):
+    prs, queued, owners, blocked = data['prs'], data['queued'], data['owners'], data['blocked']
+    by_owner = dict((o['n'], o) for o in owners or [])
+
+    merge = [p for p in prs if p['stage'] == 'merge']
+    actionable = [p for p in prs if p['stage'] not in ('blocked', 'human-merge')]
+    if merge:
+        nxt = 'merge #%d' % merge[0]['n']
+    elif actionable:
+        nxt = 'resume #%d at %s' % (actionable[0]['n'], actionable[0]['stage'])
+    elif queued:
+        nxt = 'start #%d' % queued[0]
+    elif blocked or owners:
+        nxt = 'waiting on owner'
+    else:
+        nxt = 'nothing queued'
+
+    lines = ['- Base: %s @ %s' % (branch, base), '- Next: %s' % nxt]
+    for p in prs:
+        lines.append('- PR #%d (#%d) head %s next: %s' % (p['n'], p['issue'], p['head'], p['stage']))
+    for kind, n in blocked:
+        q = md_text(by_owner[n]['question']) if n in by_owner else ''
+        lines.append('- Blocked: %s #%d: %s' % (kind, n, q or 'see comments'))
+    for o in owners or []:
+        lines.append('- Owner: #%d %s%s' % (o['n'], md_text(o['question']) or '(no question text)',
+                                            ' (answered)' if o['answered'] else ''))
+    if queued:
+        shown = ', '.join('#%d' % n for n in queued[:QUEUE_SHOW])
+        more = len(queued) - QUEUE_SHOW
+        lines.append('- Queued: %s%s' % (shown, ' (+%d more)' % more if more > 0 else ''))
+
+    # A capped listing is never rendered as complete: the note stays last.
+    note = None
+    if data['capped']:
+        note = '- Note: %s result capped; PR, Blocked and Queued lines may be incomplete' % \
+               ' and '.join(data['capped'])
+    budget = max(max_lines - (1 if note else 0), MIN_BLOCK_LINES)
+    if len(lines) > budget:
+        keep = lines[:budget - 1]
+        lines = keep + ['- +%d more' % (len(lines) - len(keep))]
+    return lines + ([note] if note else [])
+
+
+def splice_block(text, block):
+    """Replace everything under the resume heading, up to the next heading of
+    the same or a higher level, by the block; nothing else changes."""
+    lines = ensure_headings(text).split('\n')
+    if lines and lines[-1] == '':
+        lines.pop()
+    idx = next(i for i, l in enumerate(lines) if l.rstrip() == resume_h)
+    level = len(resume_h) - len(resume_h.lstrip('#'))
+    end = len(lines)
+    for j in range(idx + 1, len(lines)):
+        m = HEADING_RE.match(lines[j])
+        if m and len(m.group(1)) <= level:
+            end = j
+            break
+    out = lines[:idx + 1] + [''] + block
+    if end < len(lines):
+        out += [''] + lines[end:]
+    return '\n'.join(out) + '\n'
+
+
+if mode == 'collect':
+    collect()
+    sys.exit(0)
+
+if mode in ('refresh', 'print'):
+    status_path = check_inside(status_rel, 'status.file')
+    check_inside(frag_rel, 'status.fragments_dir')
+    check_inside(archive_rel, 'status.archive_dir')
+    with open(opts['data']) as f:
+        data = json.load(f)
+    block = build_block(data, opts['base-branch'], base_sha(opts['base-branch']), int(opts['max-lines']))
+    if mode == 'print':
+        sys.stdout.write('%s\n\n%s\n' % (resume_h, '\n'.join(block)))
+        sys.exit(0)
+    if os.path.isdir(status_path):
+        die('status.file is a directory: %s' % status_rel)
+    cur = read_text(status_path) if os.path.exists(status_path) else ''
+    new_text = splice_block(cur or HEADER, block)
+    if new_text != cur:
+        write_text(status_path, new_text)
+        # The manifest may already hold assemble's changes (assemble --refresh).
+        have = read_text(manifest_file) if os.path.exists(manifest_file) else ''
+        if 'A\t%s\n' % status_rel not in have:
+            with open(manifest_file, 'a') as mf:
+                mf.write('A\t%s\n' % status_rel)
     sys.exit(0)
 
 # ── assemble (root is the throwaway worktree) ───────────────────────────────
@@ -687,7 +1030,7 @@ _sf_stage_commit() {
   if ! git --literal-pathspecs -C "$_SF_TMP/wt" diff --cached --name-status -z --no-renames \
       | python3 -I -c "$SF_PY" verify "$_SF_TMP/wt" "$STATUS_FILE" "$FRAG_DIR" "$ARCHIVE_DIR" \
           "$LOG_HEADING" "$RESUME_HEADING" "$LOG_DAYS" "$LOG_MAX" "$TODAY" "" "" "" "$_SF_MANIFEST"; then
-    _sf_err "staged changes differ from what $VERB wrote — nothing committed or pushed"
+    _sf_err "staged changes differ from what $verb wrote — nothing committed or pushed"
     return 1
   fi
   if ! git -C "$_SF_TMP/wt" -c user.email=talos@local -c user.name=talos-status \
@@ -698,26 +1041,85 @@ _sf_stage_commit() {
   return 0
 }
 
+# ── The Resume block (refresh, refresh --print, assemble --refresh) ──────────
+# The GitHub state is read ONCE, before the retry loop (the block is a pure
+# function of that state and of origin/<base>, which each attempt refetches).
+# The reads go through pipeline-vcs.sh read verbs only; python does the calls
+# and writes the normalised state to $_SF_TMP/gh.json.
+_sf_role_on() {  # KEY DEFAULT(true|false): enabled when not false (default true) / true (default false)
+  local v
+  v="$(cfg "$1" "$2" | tr '[:upper:]' '[:lower:]')"
+  if [ "$2" = "true" ]; then [ "$v" != "false" ]; else [ "$v" = "true" ]; fi
+}
+MAX_LINES="$(_sf_posint status.resume_max_lines 40 1000)"
+# Named arguments of the python refresh and print modes (not more positionals).
+_SF_RARGS=(--data "$_SF_TMP/gh.json" --base-branch "$BASE_BRANCH" --max-lines "$MAX_LINES")
+_sf_collect() {
+  local roles="" auto="true" checks="no" draft="false"
+  _sf_role_on roles.qa true && roles="${roles}qa,"
+  _sf_role_on roles.docs true && roles="${roles}docs,"
+  _sf_role_on roles.reviewer true && roles="${roles}reviewer,"
+  _sf_role_on roles.security true && roles="${roles}security,"
+  _sf_role_on roles.adversarial false && roles="${roles}adversarial,"
+  [ "$(cfg merge.auto true | tr '[:upper:]' '[:lower:]')" = "false" ] && auto="false"
+  [ -n "$(cfg merge.required_checks "" | tr -d '[:space:]')" ] && checks="yes"
+  [ "$(cfg pr.draft false | tr '[:upper:]' '[:lower:]')" = "true" ] && draft="true"
+  python3 -I -c "$SF_PY" collect "$PWD" "$STATUS_FILE" "$FRAG_DIR" "$ARCHIVE_DIR" \
+    "$LOG_HEADING" "$RESUME_HEADING" "$LOG_DAYS" "$LOG_MAX" "$TODAY" "" "" "" "" \
+    --vcs "$SCRIPT_DIR/pipeline-vcs.sh" --out "$_SF_TMP/gh.json" --roles "$roles" \
+    --merge-auto "$auto" --required-checks "$checks" --pr-draft "$draft" </dev/null
+}
+# _sf_fetch_base: refresh origin/<base> (this only moves the remote-tracking ref).
+_sf_fetch_base() {
+  if ! git fetch -q -- origin "$BASE_BRANCH" 2>/dev/null; then
+    _sf_err "git fetch origin $BASE_BRANCH failed"
+    return 1
+  fi
+  if ! git rev-parse -q --verify "origin/$BASE_BRANCH" >/dev/null 2>&1; then
+    _sf_err "origin/$BASE_BRANCH does not resolve after fetch"
+    return 1
+  fi
+}
+REFRESH_ON=""
+if [ "$verb" = "refresh" ] || [ -n "$REFRESH" ]; then
+  if _sf_collect; then
+    REFRESH_ON=1
+  elif [ "$verb" = "refresh" ]; then
+    _sf_err "could not read the GitHub state for the Resume block — nothing pushed"
+    exit 1
+  else
+    _sf_err "Resume block was not refreshed (the GitHub read failed); assembling the log only"
+  fi
+fi
+
+# refresh --print: the block on stdout. It runs git fetch (which only moves
+# origin/<base>, so Base matches what refresh computes) and nothing else that
+# writes: no worktree, no commit, no push, no label or comment.
+if [ "$verb" = "refresh" ] && [ -n "$PRINT" ]; then
+  _sf_fetch_base || exit 1
+  ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)"
+  python3 -I -c "$SF_PY" print "$ROOT" "$STATUS_FILE" "$FRAG_DIR" "$ARCHIVE_DIR" \
+    "$LOG_HEADING" "$RESUME_HEADING" "$LOG_DAYS" "$LOG_MAX" "$TODAY" "" "" "" "" \
+    "${_SF_RARGS[@]}" </dev/null
+  exit $?
+fi
+
 TITLE_TRIED=""
 MAX_ATTEMPTS=3
 attempt=1
 while :; do
-  if ! git fetch -q -- origin "$BASE_BRANCH" 2>/dev/null; then
-    _sf_err "git fetch origin $BASE_BRANCH failed"
-    exit 1
-  fi
-  if ! git rev-parse -q --verify "origin/$BASE_BRANCH" >/dev/null 2>&1; then
-    _sf_err "origin/$BASE_BRANCH does not resolve after fetch"
-    exit 1
-  fi
+  _sf_fetch_base || exit 1
 
-  FRAG_LIST="$(_sf_list_fragments)" || {
-    _sf_err "could not list $FRAG_DIR on origin/$BASE_BRANCH"
-    exit 1
-  }
-  if [ -z "$FRAG_LIST" ] && [ -z "$PR" ]; then
-    echo "pipeline-status-file: no fragments under $FRAG_DIR on origin/$BASE_BRANCH — nothing to assemble"
-    exit 0
+  FRAG_LIST=""
+  if [ "$verb" = "assemble" ]; then
+    FRAG_LIST="$(_sf_list_fragments)" || {
+      _sf_err "could not list $FRAG_DIR on origin/$BASE_BRANCH"
+      exit 1
+    }
+    if [ -z "$FRAG_LIST" ] && [ -z "$PR" ] && [ -z "$REFRESH_ON" ]; then
+      echo "pipeline-status-file: no fragments under $FRAG_DIR on origin/$BASE_BRANCH — nothing to assemble"
+      exit 0
+    fi
   fi
 
   # The fallback title is fetched once, and only when no fragment names the pair.
@@ -736,33 +1138,65 @@ while :; do
 
   _SF_MANIFEST="$_SF_TMP/manifest"
   rm -f "$_SF_MANIFEST"
-  printf '%s\n' "$FRAG_LIST" | python3 -I -c "$SF_PY" assemble "$_SF_TMP/wt" \
-    "$STATUS_FILE" "$FRAG_DIR" "$ARCHIVE_DIR" "$LOG_HEADING" "$RESUME_HEADING" \
-    "$LOG_DAYS" "$LOG_MAX" "$TODAY" "$PR" "$ISSUE" "$_SF_TMP/title.json" "$_SF_MANIFEST"
-  _SF_RC=$?
-  if [ "$_SF_RC" -ne 0 ]; then
-    _sf_err "assembly failed (rc=$_SF_RC) — fragments left in place"
-    exit 1
+  SUBJECT="docs(status): refresh resume block [skip ci]"
+  if [ "$verb" = "assemble" ]; then
+    printf '%s\n' "$FRAG_LIST" | python3 -I -c "$SF_PY" assemble "$_SF_TMP/wt" \
+      "$STATUS_FILE" "$FRAG_DIR" "$ARCHIVE_DIR" "$LOG_HEADING" "$RESUME_HEADING" \
+      "$LOG_DAYS" "$LOG_MAX" "$TODAY" "$PR" "$ISSUE" "$_SF_TMP/title.json" "$_SF_MANIFEST"
+    _SF_RC=$?
+    if [ "$_SF_RC" -ne 0 ]; then
+      _sf_err "assembly failed (rc=$_SF_RC) — fragments left in place"
+      exit 1
+    fi
+    if [ -s "$_SF_MANIFEST" ]; then
+      SUBJECT="docs(status): assemble status log [skip ci]"
+      [ -n "$REFRESH_ON" ] && SUBJECT="docs(status): assemble status log and refresh resume block [skip ci]"
+    fi
   fi
 
-  # Nothing changed (no new entry, no rotation, no fragment): a no-op. This is
-  # what makes a repeated fallback quiet.
+  # The block is regenerated from the freshly fetched base on every attempt, so
+  # a push that lost a race re-derives it and finds it already there.
+  if [ -n "$REFRESH_ON" ]; then
+    python3 -I -c "$SF_PY" refresh "$_SF_TMP/wt" "$STATUS_FILE" "$FRAG_DIR" "$ARCHIVE_DIR" \
+      "$LOG_HEADING" "$RESUME_HEADING" "$LOG_DAYS" "$LOG_MAX" "$TODAY" "" "" "" "$_SF_MANIFEST" \
+      "${_SF_RARGS[@]}" </dev/null
+    _SF_RC=$?
+    if [ "$_SF_RC" -ne 0 ]; then
+      _sf_err "could not regenerate the Resume block (rc=$_SF_RC) — nothing pushed"
+      exit 1
+    fi
+  fi
+
+  # Nothing changed (no new entry, no rotation, no fragment, block identical):
+  # a no-op. This is what makes a repeated fallback or refresh quiet.
   if [ ! -s "$_SF_MANIFEST" ]; then
-    echo "pipeline-status-file: nothing to assemble"
+    if [ "$verb" = "refresh" ]; then
+      echo "pipeline-status-file: resume block already up to date — nothing to do"
+    else
+      echo "pipeline-status-file: nothing to assemble"
+    fi
     exit 0
   fi
 
-  _sf_stage_commit "docs(status): assemble status log [skip ci]" || exit 1
+  _sf_stage_commit "$SUBJECT" || exit 1
 
   if _SF_PUSH_ERR="$(git -C "$_SF_TMP/wt" push -q origin "HEAD:refs/heads/$BASE_BRANCH" 2>&1)"; then
-    echo "pipeline-status-file: assembled the status log into $STATUS_FILE on $BASE_BRANCH and pushed"
+    case "$SUBJECT" in
+      "docs(status): refresh resume block"*) echo "pipeline-status-file: refreshed the resume block in $STATUS_FILE on $BASE_BRANCH and pushed" ;;
+      *"and refresh resume block"*) echo "pipeline-status-file: assembled the status log and refreshed the resume block in $STATUS_FILE on $BASE_BRANCH and pushed" ;;
+      *) echo "pipeline-status-file: assembled the status log into $STATUS_FILE on $BASE_BRANCH and pushed" ;;
+    esac
     exit 0
   fi
 
   _sf_err "push to $BASE_BRANCH failed (attempt $attempt of $MAX_ATTEMPTS)"
   if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
     _sf_err "${_SF_PUSH_ERR:-no output from git push}"
-    _sf_err "gave up after $MAX_ATTEMPTS attempts — fragments remain on $BASE_BRANCH, next assemble retries"
+    if [ "$verb" = "refresh" ]; then
+      _sf_err "gave up after $MAX_ATTEMPTS attempts — the base is unchanged, the next refresh retries"
+    else
+      _sf_err "gave up after $MAX_ATTEMPTS attempts — fragments remain on $BASE_BRANCH, next assemble retries"
+    fi
     exit 1
   fi
   _sf_drop_wt
