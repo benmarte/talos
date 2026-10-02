@@ -162,6 +162,21 @@ Store these for the run:
 - FILE_SOURCE_PATH (`vcs.file.source.path`, for file mode)
 - ISOLATION (`execution.isolation`, default `worktree`) — how each stage gets its working copy; validated immediately after config is read
 - WORKTREE_WARN_THRESHOLD (`execution.worktree_warn_threshold`, default `10`) — non-active worktree count above which Step 5 relays a warning
+<!-- pr-draft:start -->
+- PR_DRAFT (`pr.draft`, default `false`, #332) — opt-in. `true` switches Step 3
+  to the **Draft stage order** (see "Draft stage order" before Step 3d): the
+  developer opens a DRAFT PR, every stage that needs no CI runs while it is a
+  draft, and `ready-pr` triggers the one CI run. Read it with `bash
+  scripts/pipeline-config.sh pr.draft false`. Draft PRs exist only on `github`
+  (the `gh` adapter), `gitlab` and `azure`; when `pr.draft` is `true` and
+  VCS_PROVIDER is `github-api` or `file`, warn ONCE on stderr
+  (`pipeline: pr.draft ignored: provider <VCS_PROVIDER> cannot open draft PRs`)
+  and treat PR_DRAFT as `false` for the whole run — the stage order is then the
+  default one. Talos never edits CI config: the consuming repo's workflow must
+  include `ready_for_review` in `on.pull_request.types` and gate each job with
+  `if: github.event.pull_request.draft != true` (README, "Draft PRs"), or QA
+  waits for a run that never comes.
+<!-- pr-draft:end -->
 
 **File mode vs VCS mode:**
 - If `VCS_PROVIDER = file`: no PRs are opened; developer commits to branch; QA/reviewer/security/docs stages are skipped; board calls are skipped (the file IS the board). See the File Mode section.
@@ -190,6 +205,9 @@ Store these for the run:
 - `limits.max_fix_attempts`: 3
 - `execution.isolation`: worktree
 - `execution.worktree_warn_threshold`: 10
+<!-- pr-draft:start -->
+- `pr.draft`: false (#332)
+<!-- pr-draft:end -->
 
 #### Concurrency and verify: isolation
 
@@ -399,6 +417,9 @@ bash scripts/pipeline-vcs.sh list-issues
 2. **Heal merged-but-open issues.** For each open `pipeline:*` issue, `bash scripts/pipeline-vcs.sh find-pr <N> merged` — if a merged PR closes it, run the post-merge steps from Step 4 (comment, close, board → Done, notify) instead of doing any work. Pass `--allow-closed` to `comment-issue` in the post-merge steps here, since GitHub may have already auto-closed the issue at merge time via `Closes #N`. `find-pr ... merged` counts only the `issue-<N>` branch or a closing keyword — never a bare `Depends on #N` / `Part of #N` mention (#298).
    - **Exit 2 → not verified, not "no PR".** `find-pr` exits 2 when the provider cannot answer it. Do NOT treat that as "no merged PR": skip the heal for `#N` and add `find-pr not verified for #N — heal skipped, verify manually` to the run summary (Step 5). Any other non-zero exit is a fetch failure — report it the same way.
 3. **Resume in-flight PRs.** For each open pipeline PR (head branch `fix/issue-*` or `feat/issue-*`): all approval labels present → merge queue (when `merge.auto: false`, a PR already labeled `pipeline:approved` is waiting for a human — leave it alone); otherwise resume at the blocking stage. A PR that carries `pipeline:blocked` (on the PR or its issue) is not resumed — item 5 reports it and Step 5 lists it as `blocked`. If the blocking stage is QA, run the **Mergeability gate (#214)** (Step 3c, "After developer returns") first — do not resume straight into QA.
+<!-- pr-draft:start -->
+   With `PR_DRAFT = true` (resume routing): ask `bash scripts/pipeline-vcs.sh pr-is-draft <PR_NUMBER>` first. When it prints `draft` (exit 0), resume at the first missing draft-window stage (docs, then reviewer/security/adversarial) or at `ready-pr` when every approval is fresh, never at QA; exit 2 (unverified) stops and reports `pr-is-draft not verified for #<N>`. Only a ready PR (exit 1, stdout `ready`) resumes at QA, behind the Step 3d Draft guard.
+<!-- pr-draft:end -->
 4. **Sweep orphaned worktrees.** `bash scripts/pipeline-worktree.sh sweep <space-separated ids of every issue in this run's queue>` — removes every worktree (developer AND any Claude Code harness `agent-*` worktree QA/reviewer/security/docs tagged via `tag <N>`, #240) whose issue is not in the queue, regardless of dirty/unpushed state, plus stale local scratch branches (a backstop for runs that ended before the Step 4 post-merge removal). Pass no ids to reclaim all of them.
 5. **Report stale blocked work (#312).** List issues labeled `pipeline:blocked` (K) AND open pipeline PRs (head branch `fix/issue-*` or `feat/issue-*`) labeled `pipeline:blocked` (J). A PR can carry the block while its issue does not (the issue label was cleared, or never set); it then fails the Step 4 gate on every pass, and in human-merge mode never reaches the `pipeline:approved` hand-off, so without this report nobody is told. Send both in one Step 1 summary notification so humans see what's waiting on them:
    `bash scripts/pipeline-notify.sh info "backlog" "K blocked issues, J blocked PRs awaiting human action: #a, PR #b" backlog` (only when K + J > 0). To resume, a human removes `pipeline:blocked` from both the PR and its issue.
@@ -756,6 +777,14 @@ Never fabricate a PR number. Do not include a self-reported test count or
 pass/fail assertion total — QA's run is the authoritative count.
 ```
 
+<!-- pr-draft:start -->
+**Draft PR (`PR_DRAFT = true`, #332):** add one line to the prompt above, right
+after `Verify timeout:`: `Open the PR as a DRAFT: bash scripts/pipeline-vcs.sh
+create-pr <branch> "<title>" <body-file> --draft`. Every developer dispatch
+(first pass and each fix round) gets it; a fix round pushes to the existing PR
+and opens nothing. Nothing else in the developer prompt changes.
+
+<!-- pr-draft:end -->
 After developer returns:
 - **PR opened:**
   1. Board → "In review": `bash scripts/pipeline-status.sh <N> "In review"`
@@ -834,12 +863,109 @@ After developer returns:
   3. Lifecycle event: `bash scripts/pipeline-notify.sh blocked "#<N>" "developer blocked" <N>`
   4. Stop.
 
+<!-- pr-draft:start -->
+#### Draft stage order (`PR_DRAFT = true`, #332)
+
+Skip this section entirely when `PR_DRAFT` is `false`: nothing in it applies and
+Steps 3c-4 run exactly as written without the draft notes.
+
+With `pr.draft: true` the PR stays a DRAFT through every stage that needs no CI,
+and CI runs once, when the PR is marked ready. This replaces the default order
+(developer, QA, docs, reviewer + security, merge) for the issue; Steps 3a/3b and
+every Step 4 merge gate are unchanged.
+
+1. **Developer — open the DRAFT PR.** Step 3c with the Draft PR line. The
+   developer's local `verify:` run is the only gate before review. Run the
+   Mergeability gate (#214) as written under "After developer returns", but its
+   "proceed to Step 3d" means "proceed to step 2 below" (a conflicting PR gets no
+   run on `ready-pr` either, so resolve it while still a draft).
+2. **Docs — CHANGELOG now.** Step 3e Phase 1, so the docs commit lands before any
+   approval marker exists and never makes one stale. It is a push to a draft: no
+   CI run.
+3. **Review — reviewer, security and adversarial in parallel**, on the draft (Step
+   3e Phase 2 and Phase 3 as one batch; no CI and no QA needed). Wait for every
+   enabled role to return before continuing — never re-dispatch the developer on
+   a single role's verdict.
+4. **Developer — ONE fix round for every finding.** When any role returned
+   CHANGES or FINDINGS, collect the findings of ALL of them into one developer
+   dispatch (Step 3c, fix-round shape). Call `record-attempt` once for that
+   dispatch, naming the first blocking role in the order reviewer, security,
+   adversarial: `bash scripts/pipeline-vcs.sh record-attempt <N> <that-role> --pr
+   <PR_NUMBER>` (non-zero: board "Blocked", stop), then clear `pipeline:blocked`
+   (Step 3). After the push, the re-stamps review only the delta: run the
+   Re-stamp check of Step 3e (`check-approval-sha --stale-list`) and dispatch the
+   re-stamp variant for each role that had approved and the full stage for each
+   role that raised findings. When the fix changed documented behaviour (the
+   Phase 1 docs gate would not match the new diff), re-run docs (step 2) first,
+   inside this same draft window. A role that still has findings goes round again
+   only while `record-attempt` allows it (the Step 3 ceilings apply).
+5. **`ready-pr` — the ONE CI run.** Preconditions: `check-approval-sha
+   <PR_NUMBER> --stale-list` exits 0 with every enabled approval label present
+   (`docs:done`, `review:approved`, `security:approved`, and `adversarial:approved`
+   when `roles.adversarial` is on), no `pipeline:blocked`, and `pr-mergeable
+   <PR_NUMBER>` is not `CONFLICTING`. Then `bash scripts/pipeline-vcs.sh ready-pr
+   <PR_NUMBER>`. A non-zero exit means the PR is still a draft: stop this issue
+   for this pass and report `ready-pr failed for #<N>`; never dispatch QA. The
+   `ready_for_review` event is the only CI trigger in the whole flow, on the
+   final head.
+6. **QA — on a ready PR only.** Step 3d, preceded by its Draft guard. Under
+   `qa_mode: ci` QA trusts `pr-checks-required` (the one run) and exercises the
+   flow end to end.
+7. **Merge.** Step 4, unchanged: the approval SHAs and `ci-complete` on the final
+   head are still required. A PR being ready is not a bypass of any gate.
+
+The provider calls in that order, which `tests/test-draft-stage-order.sh`
+replays against a stub that counts CI runs:
+
+```text
+happy path:     create-pr --draft -> ready-pr -> QA, merge
+failure round:  draft-pr -> developer fix + re-stamps -> ready-pr -> QA, merge
+```
+
+**QA failure or CI failure** (QA returned FAIL, QA's CI wait failed closed, or
+Step 4's `pr-checks-required` still fails after its re-run budget): convert the PR
+back FIRST with `bash scripts/pipeline-vcs.sh draft-pr <PR_NUMBER>` (non-zero:
+stop and report `draft-pr failed for #<N>`; never push a fix to a ready PR, each
+push would spend a run). Then `record-attempt <N> qa --pr <PR_NUMBER>`, clear
+`pipeline:blocked`, one developer fix round, the re-stamps on the delta (step 4),
+and `ready-pr` (step 5) again. A round costs exactly one CI run however many
+commits the fix took.
+
+**Where a PR is in this order** (resume, Step 1 item 3, and Step 4) comes from the
+PR's own state, never from memory: ask `pr-is-draft` (Step 3d, Draft guard). A
+draft resumes at the first missing or stale approval among docs, reviewer,
+security and adversarial (steps 2-4), or at step 5 when every one is fresh; a
+ready PR resumes at QA when `qa:pass` is absent (step 6), else at Step 4.
+
+<!-- pr-draft:end -->
 ### 3d. QA (if `roles.qa = true`)
 
 Compute header: `HEADER="${COMMENTS_HEADER_TPL//\{role\}/qa}"`
 
 Reminder: run `hooks.pre_dispatch` (see Harness compatibility above) before building this stage's prompt.
 
+<!-- pr-draft:start -->
+**Draft guard (`PR_DRAFT = true`, #332).** Before EVERY QA dispatch — the first
+one, a retry after a fix round, and a Step 4 re-stamp — and before any CI wait,
+ask the PR itself, never memory:
+
+```bash
+STATE="$(bash scripts/pipeline-vcs.sh pr-is-draft <PR_NUMBER>)"; RC=$?
+```
+
+Dispatch QA (and start the CI wait) ONLY when `RC` is 1 AND `STATE` is exactly
+`ready`. Anything else starts nothing:
+- `RC` 0 (`draft`): the PR is still in its draft window. QA and the CI wait
+  would wait for a run that never comes. Do not start QA; continue the Draft
+  stage order at the first missing step (docs, review, fix round, then
+  `ready-pr`).
+- `RC` 2 (unverified: fetch failed, bad id, unparseable response, unsupported
+  provider), or any other `RC`/`STATE` pair: neither draft nor ready is known.
+  Stop this issue for this pass and report `pr-is-draft not verified for #<N>`.
+  Never read it as `ready` and never read it as `draft` (do not call `ready-pr`
+  or `draft-pr` on it either).
+
+<!-- pr-draft:end -->
 Spawn:
 
 ```
@@ -892,11 +1018,23 @@ After QA returns:
      bash scripts/pipeline-vcs.sh record-attempt <N> qa --pr <PR_NUMBER>
      ```
      If exit 0: clear `pipeline:blocked` (Step 3, "Clearing `pipeline:blocked`"), then re-dispatch the developer. If exit non-zero (ceiling reached): board "Blocked", stop.
+<!-- pr-draft:start -->
+  4. With `PR_DRAFT = true`, the Fail path starts with `draft-pr` and its fix
+     round ends with `ready-pr`: see "QA failure or CI failure" in the Draft
+     stage order above. Do it before step 3's re-dispatch.
+<!-- pr-draft:end -->
 
 ### 3e. Review stages
 
 Only after `qa:pass` is on the PR.
 
+<!-- pr-draft:start -->
+**With `PR_DRAFT = true` this stage runs BEFORE QA**, on the draft PR (Draft stage
+order, steps 2-4), so the "only after `qa:pass`" rule above does not apply to it,
+and in the prompts below "QA passed" reads "The PR is a DRAFT: QA and CI have not
+run (draft review, #332)". Do not run tests or wait for CI in any role here.
+
+<!-- pr-draft:end -->
 <!-- Ordering rationale: docs commits and pushes to the branch; reviewer and security
 are read-only. On PRs #80 and #87, docs pushed while a developer fix was in flight
 after a review block, causing a push race and invalidated approval markers. Running
@@ -992,6 +1130,18 @@ If exit non-zero: halt the current issue with the error output; do not dispatch 
 **Phase 2 — Reviewer and security in parallel:** After docs completes, dispatch
 reviewer and security concurrently — for either role named by the re-stamp check above, dispatch its re-stamp variant instead of the full prompt below.
 
+<!-- pr-draft:start -->
+**Draft review batch (`PR_DRAFT = true`).** Dispatch reviewer, security AND
+adversarial (when `roles.adversarial` is on) in this one parallel batch: Phase 3
+below does not wait for security, and its prompt's "QA, review, and security
+passed" reads "The PR is a DRAFT: QA and CI have not run". Wait for every
+dispatched role. The "returned" handling below changes for the batch: a CHANGES
+or FINDINGS verdict does NOT record an attempt or re-dispatch the developer by
+itself; after the whole batch returned, one fix round covers all of the findings
+(Draft stage order, step 4, which owns the single `record-attempt`). Each
+blocking role still gets its relay and `blocked` lifecycle notification.
+
+<!-- pr-draft:end -->
 **Reviewer** (if `roles.reviewer = true`; spawn per the usage-reporting spawn form above):
 ```
 You are the Reviewer. QA passed PR #<PR_NUMBER> for issue #<N>.
@@ -1240,6 +1390,17 @@ Note: this gate does NOT catch a lone PR that overclaims its deliverables (e.g.,
 items with `Closes #N` and no siblings). Detecting that requires a ledger; nothing in the
 pipeline ticks one in VCS mode today.
 
+<!-- pr-draft:start -->
+**Draft state at merge (`PR_DRAFT = true`).** No gate in this step is waived or
+changed for a draft-flow PR. As a last guard, `bash scripts/pipeline-vcs.sh
+pr-is-draft <PR_NUMBER>` must print `ready` with exit 1 before `merge-pr`: a draft
+(exit 0) was never CI-verified, so go back to the Draft stage order; exit 2 is
+unverified: do NOT merge, report it. A QA re-stamp from the stale-approval handling
+above passes the Step 3d Draft guard first. When `pr-checks-required` fails for
+good (the re-run budget below is spent), that is a CI failure in the Draft stage
+order sense: `draft-pr`, developer fix, re-stamps, `ready-pr`.
+
+<!-- pr-draft:end -->
 Check CI: `bash scripts/pipeline-vcs.sh pr-checks-required <PR_NUMBER>` -- scoped to
 `merge.required_checks` only (#205), so an unrelated non-required check does not
 block a merge that every required check has already cleared. Exit 0 means every
@@ -1277,6 +1438,26 @@ do NOT call `merge-pr`. Instead hand off to a human:
    closes when the human merges (the "heal merged-but-open issues" sweep in
    Step 0 completes the post-merge bookkeeping on a later run).
 
+<!-- pr-draft:start -->
+**Capture the CI-run count BEFORE `merge-pr` (`PR_DRAFT = true`, `MERGE_AUTO = true`).**
+`merge-pr` deletes the head branch, and GitHub then returns every run for that
+head with an empty `pull_requests[]`, so `pr-ci-runs` can no longer attribute them
+and exits 2. Immediately before `merge-pr`, while the PR is open:
+
+```bash
+CI_RUNS="$(bash scripts/pipeline-vcs.sh pr-ci-runs <PR_NUMBER>)"; CI_RC=$?
+```
+
+Keep `CI_RUNS` for the `merged` `post_stage` call in "After merging" item 8. When
+`CI_RC` is non-zero (exit 2: unverified, or not github), record no `ci_runs`, add
+`ci_runs not recorded for #<N>` to the run summary (Step 5), and merge anyway:
+never block or delay the merge on a metric.
+
+```text
+merge sequence:  pr-ci-runs -> merge-pr -> post_stage merged --ci-runs
+```
+
+<!-- pr-draft:end -->
 Otherwise (`MERGE_AUTO = true`), if green, merge: `bash scripts/pipeline-vcs.sh merge-pr <PR_NUMBER>`
 
 **Post-merge sibling sync (#289, when `merge.auto_sync` is `true` — default).**
@@ -1337,6 +1518,14 @@ After merging:
 5. Relay: `bash scripts/pipeline-notify.sh orchestrator "#<N>" "all stages passed — merged PR #<PR_NUMBER>, issue closed" <N>`
 6. Lifecycle: `bash scripts/pipeline-notify.sh merged "#<N>" "PR #<PR_NUMBER> merged" <N>`
 7. Lifecycle: `bash scripts/pipeline-notify.sh issue-closed "#<N>" "issue resolved" <N>`
+<!-- pr-draft:start -->
+   With `PR_DRAFT = true`, pass `--ci-runs "$CI_RUNS"` to the `merged` `post_stage`
+   call in item 8, using the `CI_RUNS` value captured BEFORE `merge-pr` (see
+   "Capture the CI-run count BEFORE `merge-pr`" above; the measurable saving: one
+   run per issue, plus one per QA/CI-failure round). Do NOT call `pr-ci-runs` here:
+   the branch is already deleted and it would exit 2. No captured value (it exited
+   2, human-merge mode, or a merged-but-open heal) → omit the flag; never guess.
+<!-- pr-draft:end -->
 8. Rule 3: also fire `hooks.post_stage` for both lifecycle events above (`merged` and `issue-closed`) — see Conversation stream protocol.
 
 ---

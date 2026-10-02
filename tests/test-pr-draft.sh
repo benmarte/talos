@@ -13,8 +13,9 @@
 #   (c) ready-pr / draft-pr: exact argv per provider (github with --undo)
 #   (d) pr-is-draft: draft(0) / ready(1) / fetch failure(2) / garbage(2) /
 #       non-numeric id(2) / github-api + file (2); stdout empty on every 2
-#   (e) pr-ci-runs: executed-run count (skipped runs excluded), failure,
-#       garbage, capped totals, non-github (2)
+#   (e) pr-ci-runs: executed-run count scoped to this PR (skipped runs and a
+#       reused branch name's other-PR runs excluded; one listing), failure,
+#       garbage, unattributable/truncated/capped listings, non-github (2)
 #   (f) setup errors (no token, unknown provider, missing CLI) on every draft
 #       verb are exit 2 with the gate-verb stdout contract intact
 set -u
@@ -47,9 +48,6 @@ case "$*" in
   "pr view "*"--json headRefName"*)
     [ "${STUB_FAIL:-}" = "1" ] && { echo "gh: HTTP 502" >&2; exit 1; }
     if [ -n "${STUB_HEAD+x}" ]; then printf '%s' "$STUB_HEAD"; else printf '{"headRefName":"feat/x"}'; fi ;;
-  "api "*"actions/runs"*"status=skipped"*)
-    [ "${STUB_RUNS_SKIPPED_FAIL:-}" = "1" ] && { echo "gh: HTTP 500" >&2; exit 1; }
-    if [ -n "${STUB_RUNS_SKIPPED+x}" ]; then printf '%s' "$STUB_RUNS_SKIPPED"; else printf '{"total_count":0}'; fi ;;
   "api "*"actions/runs"*)
     [ "${STUB_RUNS_FAIL:-}" = "1" ] && { echo "gh: HTTP 500" >&2; exit 1; }
     printf '%s' "${STUB_RUNS:-}" ;;
@@ -287,67 +285,93 @@ for prov in github-api file; do
 done
 
 # ── (e) pr-ci-runs ───────────────────────────────────────────────────────────
-# Runs that executed = pull_request runs for the head branch minus those whose
-# conclusion is "skipped" (a draft push whose jobs are all skipped by the
-# `draft != true` guard still creates a run).
+# Runs that executed FOR THIS PR = pull_request runs for the head branch whose
+# pull_requests[] names this PR, minus those whose conclusion is "skipped" (a
+# draft push whose jobs are all skipped by the `draft != true` guard still
+# creates a run). One listing, so the count is one consistent snapshot.
+run_json() {  # $1 = conclusion (or null) $2 = PR number
+  local c="\"$1\""; [ "$1" = null ] && c=null
+  printf '{"conclusion":%s,"pull_requests":[{"number":%s}]}' "$c" "$2"
+}
+runs_page() {  # $1 = total_count, rest = run objects
+  local total="$1" sep="" body="" r; shift
+  for r in "$@"; do body="$body$sep$r"; sep=","; done
+  printf '{"total_count":%s,"workflow_runs":[%s]}' "$total" "$body"
+}
+ok42="$(run_json success 42)"; fail42="$(run_json failure 42)"
+live42="$(run_json null 42)"; skip42="$(run_json skipped 42)"
+ok99="$(run_json success 99)"; skip99="$(run_json skipped 99)"
+
 set_provider github; : > "$DRAFT_LOG"
-out="$(STUB_RUNS='{"total_count":5,"workflow_runs":[]}' STUB_RUNS_SKIPPED='{"total_count":3}' bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
+out="$(STUB_RUNS="$(runs_page 6 "$ok42" "$fail42" "$live42" "$skip42" "$skip42" "$ok99")" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
 assert_eq "0" "$rc" "github: pr-ci-runs exits 0"
-assert_eq "2" "$out" "github: pr-ci-runs prints runs that executed (5 total - 3 skipped)"
-assert_contains "$(cat "$DRAFT_LOG")" "[api][-X][GET][repos/acme/widget/actions/runs][-f][event=pull_request][-f][branch=feat/x][-F][per_page=1]" \
-  "github: pr-ci-runs queries pull_request runs for the PR head branch"
-assert_contains "$(cat "$DRAFT_LOG")" "[api][-X][GET][repos/acme/widget/actions/runs][-f][event=pull_request][-f][branch=feat/x][-f][status=skipped][-F][per_page=1]" \
-  "github: pr-ci-runs also queries the skipped-conclusion total"
+assert_eq "3" "$out" "github: pr-ci-runs counts this PR's executed runs (6 listed - 1 other PR - 2 skipped; an in-progress run counts)"
+assert_contains "$(cat "$DRAFT_LOG")" "[api][--paginate][-X][GET][repos/acme/widget/actions/runs][-f][event=pull_request][-f][branch=feat/x][-F][per_page=100]" \
+  "github: pr-ci-runs lists pull_request runs for the PR head branch"
 assert_contains "$(cat "$DRAFT_LOG")" "[pr][view][42][--json][headRefName][--repo][acme/widget]" \
   "github: pr-ci-runs resolves the head branch from the PR"
+assert_eq "1" "$(grep -c 'actions/runs' "$DRAFT_LOG")" \
+  "github: pr-ci-runs makes ONE run listing (no total-then-skipped race)"
 
-out="$(STUB_RUNS='{"total_count":3}' bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
+# Regression: another PR that reused the same head branch name must not inflate
+# the count. Its runs name that PR, not this one.
+out="$(STUB_RUNS="$(runs_page 3 "$ok99" "$ok99" "$skip99")" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
+assert_eq "0" "$rc" "github: pr-ci-runs exits 0 when every listed run belongs to another PR"
+assert_eq "0" "$out" "github: pr-ci-runs does not count another PR's runs that reused the branch name"
+out="$(STUB_RUNS="$(runs_page 3 "$ok42" "$ok99" "$ok99")" bash "$VCS" pr-ci-runs 42 2>/dev/null)"
+assert_eq "1" "$out" "github: pr-ci-runs counts only this PR's run among a reused branch name's runs"
+
+out="$(STUB_RUNS="$(runs_page 2 "$ok42" "$fail42")" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
 assert_eq "0" "$rc" "github: pr-ci-runs exits 0 when nothing was skipped"
-assert_eq "3" "$out" "github: pr-ci-runs counts every run when none were skipped"
+assert_eq "2" "$out" "github: pr-ci-runs counts every run when none were skipped"
 
-out="$(STUB_RUNS='{"total_count":4}' STUB_RUNS_SKIPPED='{"total_count":4}' bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
+out="$(STUB_RUNS="$(runs_page 2 "$skip42" "$skip42")" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
 assert_eq "0" "$rc" "github: pr-ci-runs exits 0 when every run was skipped"
 assert_eq "0" "$out" "github: pr-ci-runs prints a real 0 when every run was skipped"
 
-out="$(STUB_RUNS='{"total_count":0}' bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
+out="$(STUB_RUNS="$(runs_page 0)" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
 assert_eq "0" "$rc" "github: pr-ci-runs exits 0 for zero runs"
 assert_eq "0" "$out" "github: pr-ci-runs prints a real 0"
 
-# more skipped than total is inconsistent data: unverified, never a negative count
-out="$(STUB_RUNS='{"total_count":2}' STUB_RUNS_SKIPPED='{"total_count":3}' bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
-assert_eq "2" "$rc" "github: pr-ci-runs exits 2 when skipped exceeds the total"
-assert_eq "" "$out" "github: pr-ci-runs prints nothing when skipped exceeds the total"
+# Pages arrive as concatenated JSON documents (gh api --paginate).
+out="$(STUB_RUNS="$(runs_page 3 "$ok42" "$skip42")$(runs_page 3 "$ok42")" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
+assert_eq "0" "$rc" "github: pr-ci-runs reads a multi-page listing"
+assert_eq "2" "$out" "github: pr-ci-runs sums runs across pages"
 
-for bad in '' 'not json' '[]' '{}' '{"total_count":"3"}' '{"total_count":-1}' '{"total_count":true}' '{"total_count":1.5}'; do
+# Fail closed on anything that cannot be attributed or verified.
+for bad in '' 'not json' '[]' '{}' '{"total_count":"3","workflow_runs":[]}' '{"total_count":-1,"workflow_runs":[]}' \
+           '{"total_count":true,"workflow_runs":[]}' '{"total_count":1.5,"workflow_runs":[]}' '{"total_count":1}' \
+           '{"total_count":1,"workflow_runs":{}}' '{"total_count":1,"workflow_runs":[1]}' \
+           '{"total_count":1,"workflow_runs":[{"conclusion":"success"}]}' \
+           '{"total_count":1,"workflow_runs":[{"conclusion":"success","pull_requests":{}}]}' \
+           '{"total_count":1,"workflow_runs":[{"conclusion":"success","pull_requests":[{"number":"42"}]}]}' \
+           '{"total_count":1,"workflow_runs":[{"conclusion":"success","pull_requests":[{}]}]}' \
+           '{"total_count":1,"workflow_runs":[{"conclusion":"success","pull_requests":[]}]}'; do
   out="$(STUB_RUNS="$bad" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
   assert_eq "2" "$rc" "github: pr-ci-runs exits 2 for runs response '${bad:-<empty>}'"
   assert_eq "" "$out" "github: pr-ci-runs prints nothing for runs response '${bad:-<empty>}'"
-  out="$(STUB_RUNS='{"total_count":5}' STUB_RUNS_SKIPPED="$bad" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
-  assert_eq "2" "$rc" "github: pr-ci-runs exits 2 for skipped response '${bad:-<empty>}'"
-  assert_eq "" "$out" "github: pr-ci-runs prints nothing for skipped response '${bad:-<empty>}'"
 done
 
-# GitHub caps filtered run searches at 1000 results: a total (either query)
-# that reaches the cap is unverified, never reported as a (short) count.
-out="$(STUB_RUNS='{"total_count":1000}' bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
+# A listing shorter than its own total_count (truncated pages) is unverified.
+out="$(STUB_RUNS="$(runs_page 5 "$ok42" "$ok42")" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
+assert_eq "2" "$rc" "github: pr-ci-runs exits 2 when the listing is shorter than total_count"
+assert_eq "" "$out" "github: pr-ci-runs prints no short count for a truncated listing"
+
+# GitHub caps filtered run searches at 1000 results: a total that reaches the
+# cap is unverified, never reported as a (short) count.
+out="$(STUB_RUNS="$(runs_page 1000 "$ok42")" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
 assert_eq "2" "$rc" "github: pr-ci-runs exits 2 when the total reaches the 1000-result cap"
 assert_eq "" "$out" "github: pr-ci-runs prints no short count at the cap"
-out="$(STUB_RUNS='{"total_count":999}' STUB_RUNS_SKIPPED='{"total_count":1000}' bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
-assert_eq "2" "$rc" "github: pr-ci-runs exits 2 when the skipped total reaches the cap"
-assert_eq "" "$out" "github: pr-ci-runs prints no short count when the skipped total is capped"
 
-out="$(STUB_RUNS_FAIL=1 STUB_RUNS='{"total_count":3}' bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
+out="$(STUB_RUNS_FAIL=1 STUB_RUNS="$(runs_page 1 "$ok42")" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
 assert_eq "2" "$rc" "github: pr-ci-runs exits 2 when the runs fetch fails"
 assert_eq "" "$out" "github: pr-ci-runs prints nothing when the runs fetch fails"
-out="$(STUB_RUNS_SKIPPED_FAIL=1 STUB_RUNS='{"total_count":3}' bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
-assert_eq "2" "$rc" "github: pr-ci-runs exits 2 when the skipped fetch fails"
-assert_eq "" "$out" "github: pr-ci-runs prints nothing when the skipped fetch fails"
 
-out="$(STUB_FAIL=1 STUB_RUNS='{"total_count":3}' bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
+out="$(STUB_FAIL=1 STUB_RUNS="$(runs_page 1 "$ok42")" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
 assert_eq "2" "$rc" "github: pr-ci-runs exits 2 when the head branch cannot be fetched"
 assert_eq "" "$out" "github: pr-ci-runs prints nothing when the head branch cannot be fetched"
 
-out="$(STUB_HEAD='{"headRefName":""}' STUB_RUNS='{"total_count":3}' bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
+out="$(STUB_HEAD='{"headRefName":""}' STUB_RUNS="$(runs_page 1 "$ok42")" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
 assert_eq "2" "$rc" "github: pr-ci-runs exits 2 for an empty head branch"
 assert_eq "" "$out" "github: pr-ci-runs prints nothing for an empty head branch"
 
@@ -389,7 +413,12 @@ check_setup_error() {  # $1 = label
 }
 
 set_provider github-api
-(unset GITHUB_TOKEN GH_TOKEN; check_setup_error "github-api without a token")
+# Run in THIS shell, not a subshell: an assertion inside ( ... ) bumps a copy of
+# the counters, so a failure would print FAIL but never reach `finish`.
+_saved_github_token="$GITHUB_TOKEN"
+unset GITHUB_TOKEN GH_TOKEN
+check_setup_error "github-api without a token"
+export GITHUB_TOKEN="$_saved_github_token"
 
 printf '{"vcs": {"provider": "bitbucket", "repo": "acme/widget"}, "base_branch": "main"}\n' > talos.pipeline.json
 check_setup_error "unknown provider"

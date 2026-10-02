@@ -335,7 +335,7 @@ All keys live in `talos.pipeline.json` (or `talos.pipeline.yml` if PyYAML is ins
 | `hooks.timeout_s` | `30` | Seconds `hooks.pre_dispatch` / `hooks.post_stage` may run before being killed. Must be a positive integer; a non-integer or non-positive value is rejected (stderr warning, falls back to the default). |
 | `events.enabled` | `true` | Whether every `hooks.post_stage` payload is also appended, as one JSON line, to the local events log — independently of whether `hooks.post_stage` itself is configured. See [Events log](#events-log) below. |
 | `events.path` | `.talos/events.jsonl` | Path to the events log, relative to the **main repository root** (resolved via `git rev-parse --git-common-dir`, so every linked worktree of the same repo appends to the one file) unless already absolute. |
-| `pr.draft` | `false` | Opt-in draft PRs (#332). Known key only so far: the draft verbs (`create-pr --draft`, `ready-pr`, `draft-pr`, `pr-is-draft`) exist, but the orchestrator does not consult `pr.draft` until the stage-order change lands, so setting it changes nothing yet. When wired, CI must pair with it: `on.pull_request.types` includes `ready_for_review` and each job has `if: github.event.pull_request.draft != true`. |
+| `pr.draft` | `false` | Opt-in draft PRs (#332): the developer opens a DRAFT PR, every stage that needs no CI runs while it is a draft, and `ready-pr` triggers the one CI run (see [Draft PRs](#draft-prs-prdraft-opt-in-332)). Off by default; with it unset the stage order and every VCS call are unchanged. Supported on `github`, `gitlab` and `azure`; `github-api` and `file` warn once and behave as `false`. Your CI must pair with it: `on.pull_request.types` includes `ready_for_review` and each job has `if: github.event.pull_request.draft != true`, or QA waits forever. |
 | `agents.runner` | `claude` | Agent harness for the whole pipeline: `claude` (native subagents), `pi`, `codex`, `gemini`, `antigravity`, or `custom` (with `agents.runner_cmd`). See [Other harnesses](#other-harnesses-pi-codex-cli-gemini-cli-antigravity-local-models). |
 | `agents.subagents` | `auto` | `auto` (true for `claude`, else false), `true`, or `false`. Chooses native parallel subagents vs. the headless `pipeline-agent.sh` adapter. |
 | `agents.runner_cmd` | — | Command for `agents.runner: custom` — the prompt arrives on stdin. Global-only; use `agents.roles.<role>.runner_cmd` to override a single role. |
@@ -549,6 +549,37 @@ rm -rf ~/.talos/templates/notifications/{slack,discord,teams,buzz}              
 
 **(f) `merge.required_checks` must only name checks that actually run on PRs, if you adopt the CI template (#260).** The new `templates/ci/github-tests.yml` splits the OS matrix by trigger — pull requests run `ubuntu-latest` only; pushes to the base branch run the full `ubuntu-latest` + `macos-latest` matrix. Naming a push-only check (e.g. `test (macos-latest)`) in `merge.required_checks` makes QA's CI-wait loop wait for a check that never appears on the PR, hanging until `verify.ci_wait_s` elapses. Keep `merge.required_checks` scoped to checks that run on every PR.
 
+### Draft PRs (`pr.draft`, opt-in, #332)
+
+CI runs on every push to an open PR, and a Talos PR gets several pushes before it is ready to verify: the developer's own, each fix round, the docs stage's CHANGELOG commit. With `pr.draft: true` the PR stays a **draft** through every stage that needs no CI, and CI runs once, when the PR is marked ready:
+
+```
+developer   code + local `verify:`, opens a DRAFT PR (create-pr --draft)
+docs        CHANGELOG commit now, before any approval marker
+reviewer + security + adversarial   review the draft in parallel
+developer   ONE fix round for every finding; re-stamps review only the delta
+ready-pr    the ONE CI run (ready_for_review)
+QA          trusts the run (qa_mode: ci) and exercises the flow end to end
+merge       approval SHAs and ci-complete on the final head, as always
+```
+
+A QA or CI failure costs exactly one more run however many commits the fix takes: `draft-pr`, developer fix, re-stamps, `ready-pr`. QA and the CI wait never start while the PR is a draft: the orchestrator asks `pipeline-vcs.sh pr-is-draft <pr>` first and dispatches only on exit 1 with stdout exactly `ready`; exit 0 (still a draft) starts nothing and exit 2 (unverified) stops and reports. `pipeline-events.sh cost` gains a trailing `ci_runs` column (from `pr-ci-runs`, recorded on the `merged` event) so the saving is measurable.
+
+**Pair it with your CI (Talos documents this, it never edits a workflow file).** Two things must be true of the workflow that runs your required checks:
+
+```yaml
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]   # ready_for_review is required
+jobs:
+  test:
+    if: github.event.pull_request.draft != true                 # on every job
+```
+
+Without `ready_for_review` in `types`, marking a PR ready fires no event, no run ever starts, and QA waits for it until `verify.ci_wait_s` expires. Without the per-job `draft != true` guard the draft pushes still run CI, so you pay for every push and gain nothing. Talos's own `.github/workflows/tests.yml` already does both (#145/#160). GitLab and Azure DevOps need the equivalent draft/ready trigger in their pipelines.
+
+**Trade-off.** Reviewers now see the code before CI has proven it; without `pr.draft` they are gated behind QA passing. The developer's local `verify:` run covers most of that risk. When CI catches something `verify:` missed, it costs one extra run, one step later than the default flow. `github-api` and `file` cannot open draft PRs: with `pr.draft: true` the orchestrator warns once and runs the default order.
+
 ### Comment templates
 
 Stage comments use `string.Template`-style `${PLACEHOLDER}` substitution. Templates live in `templates/comments/`:
@@ -743,6 +774,7 @@ Thread anchors are stored in `~/.talos/threads.json` keyed by `<repo-slug>:<issu
    - **Developer** spawns in an isolated git worktree. It implements, iterates with targeted tests (`verify.targeted`, default `true`), then runs your full `verify` commands exactly once before its final commit, and opens a PR. The worktree is removed (branch and all) right after the PR merges, via `pipeline-worktree.sh remove`; a startup sweep reclaims any orphaned worktree as a backstop.
    - **QA** checks out the PR branch and verifies each acceptance criterion. Under `verify.qa_mode: ci` (the default once `merge.required_checks` is set) it does not re-run `verify:` — it waits for CI to go green and fails closed if it doesn't; under `local` it runs `verify:` once itself.
    - **Docs** runs first after QA passes (phase 1); **Reviewer + Security** run in parallel after docs completes (phase 2). Reviewer and security run no tests at all — CI and QA already own that, and neither stage re-runs `verify:` or `run-tests.sh`.
+   - With `pr.draft: true` the order above changes (developer opens a draft, docs and review run before QA, `ready-pr` starts the one CI run): see [Draft PRs](#draft-prs-prdraft-opt-in-332).
 5. Once all stage labels are on the PR and required CI checks are green, the orchestrator squash-merges, closes the issue, sets the board status to Done, and sends a notification.
 6. If any stage returns a blocking outcome, the issue gets `pipeline:blocked` and a comment explaining what a human must do. The orchestrator moves on to the next issue.
 
@@ -801,7 +833,7 @@ The pipeline deliberately preserves three gates that only a human should act on:
 | `ready-pr` | `<pr-number>` | Mark a draft PR ready for review (#332): `gh pr ready`, `glab mr update --ready`, `az repos pr update --draft false`. Exit 0 only on success; every failure (non-numeric id, setup error, `github-api`, `file`) is exit 2. |
 | `draft-pr` | `<pr-number>` | Convert a PR back to a draft (#332): `gh pr ready --undo`, `glab mr update --draft`, `az repos pr update --draft true`. Same exit contract as `ready-pr`. |
 | `pr-is-draft` | `<pr-number>` | Print `draft` or `ready` (#332). Exit 0 = draft (stdout exactly `draft`), 1 = ready (stdout exactly `ready`), 2 = unverified (failed fetch, non-numeric id, unparseable response, `github-api`/`file`, or a setup error such as a missing token, unknown provider or missing CLI); stdout is empty on every exit 2, so it never degrades to `ready`. Callers start QA or the CI wait only on exit 1. Reads `isDraft` (`gh`, `az`) or `draft` (`glab`). |
-| `pr-ci-runs` | `<pr-number>` | Print the number of `pull_request`-triggered workflow runs for the PR's head branch that executed (#332; skipped runs excluded): the Actions `total_count` minus the runs whose conclusion is `skipped`, so a draft push whose jobs are all skipped by `if: github.event.pull_request.draft != true` is not counted. `github` only; every other provider exits 2, as does a setup error, a failed or unparseable fetch and a total (either query) that reaches GitHub's 1000-result search cap (never a short count). Feeds `post_stage --ci-runs`. |
+| `pr-ci-runs` | `<pr-number>` | Print the number of `pull_request`-triggered workflow runs of this PR that executed (#332): one paginated listing for the head branch, keeping runs whose `pull_requests[]` names this PR (another PR that reused the branch name does not inflate the count) and dropping those whose conclusion is `skipped`, so a draft push whose jobs are all skipped by `if: github.event.pull_request.draft != true` is not counted. One listing means one snapshot; there is no total-then-skipped window for a run to slip into. `github` only; every other provider exits 2, as does a setup error, a failed, truncated or unparseable listing, a run that cannot be attributed to a PR (empty `pull_requests[]`, e.g. a fork) and a total that reaches GitHub's 1000-result search cap (never a short count). Call it while the PR is **open**: `merge-pr` deletes the head branch, GitHub then returns every run for it with an empty `pull_requests[]`, and a merged PR reads as unverified (exit 2), so the orchestrator captures the count just before `merge-pr`. Feeds `post_stage --ci-runs`. |
 | `view-pr` | `<branch>` | Show PR number, URL, status |
 | `list-prs` | | List open PRs |
 | `diff-pr` | `<pr-number> [--stat]` | Show PR diff (Azure: via `git diff` between refs). `--stat` (#201) prints a `git diff --stat`-style per-file additions/deletions summary instead, derived from the same paginated PR-files endpoint `pr-files` (#200) uses -- no new fetch. `github`/`github-api` only (parity); other providers print the full diff (flag ignored). |

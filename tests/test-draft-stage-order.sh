@@ -1,0 +1,434 @@
+#!/usr/bin/env bash
+# test-draft-stage-order.sh -- opt-in draft-PR stage order (#332, PR 2 of 2).
+#
+# Every draft-specific instruction in skills/pipeline/SKILL.md sits inside
+# <!-- pr-draft:start --> ... <!-- pr-draft:end --> blocks, so the default flow
+# can be proven unchanged and the draft flow can be pinned on its own.
+#
+# Covers:
+#   (a) default byte-identical: SKILL.md Steps 3c-4 with every pr-draft block
+#       stripped equal tests/fixtures/skill-steps-3c-4.md (extracted from main
+#       at 803cc7d, before this change); no new verb outside a block
+#   (b) stage order with pr.draft: developer opens a DRAFT PR, docs before any
+#       approval marker, reviewer + security + adversarial in parallel, ONE fix
+#       round, ready-pr, QA, merge; QA/CI failure = draft-pr -> fix -> ready-pr
+#   (c) the QA draft guard: dispatch only when pr-is-draft exits 1 AND prints
+#       exactly "ready"; exit 0 (draft) and exit 2 (unverified) never dispatch
+#   (d) run-count model: a stub gh tracks draft state and emulates the
+#       tests.yml trigger rule; the documented verb sequence yields exactly 1
+#       run on the happy path and exactly 1 added run per QA-failure round
+#   (e) positive controls: removing the ready-pr step, or the QA draft guard,
+#       from a copy of SKILL.md turns the named checks red
+#
+# SKILL_FILE=<path> points every check at another copy of SKILL.md (used to
+# show the positive controls red against a mutated copy).
+set -u
+. "$(dirname "$0")/helpers.sh"
+make_sandbox
+use_stubs
+
+SKILL="${SKILL_FILE:-$TALOS_ROOT/skills/pipeline/SKILL.md}"
+FIXTURE="$TALOS_ROOT/tests/fixtures/skill-steps-3c-4.md"
+FIXTURE_STEP1="$TALOS_ROOT/tests/fixtures/skill-step-1.md"
+VCS="$TALOS_ROOT/scripts/pipeline-vcs.sh"
+export TALOS_RETRY_SLEEP_SCALE=0
+
+# ── SKILL.md helpers (all take the file as $1) ───────────────────────────────
+START='<!-- pr-draft:start -->'
+END='<!-- pr-draft:end -->'
+
+# strip_draft: the file with every pr-draft block (markers included) removed.
+strip_draft() {
+  awk -v s="$START" -v e="$END" '
+    { t = $0; gsub(/^[ \t]+|[ \t]+$/, "", t) }
+    t == s { skip = 1; next }
+    t == e { skip = 0; next }
+    !skip' "$1"
+}
+
+# draft_text: only the lines inside pr-draft blocks.
+draft_text() {
+  awk -v s="$START" -v e="$END" '
+    { t = $0; gsub(/^[ \t]+|[ \t]+$/, "", t) }
+    t == s { inb = 1; next }
+    t == e { inb = 0; next }
+    inb' "$1"
+}
+
+# markers_ok: markers alternate start/end, none nested, none left open.
+markers_ok() {
+  awk -v s="$START" -v e="$END" '
+    { t = $0; gsub(/^[ \t]+|[ \t]+$/, "", t) }
+    t == s { if (open) bad = 1; open = 1; n++ }
+    t == e { if (!open) bad = 1; open = 0 }
+    END { exit (bad || open || n == 0) }' "$1"
+}
+
+# steps_3c_4: Steps 3c through 4 (from "### 3c." up to "## Step 5").
+steps_3c_4() { awk '/^### 3c\. /{p=1} /^## Step 5 /{p=0} p'; }
+
+# norm: collapse whitespace so a pattern can span a wrapped line.
+norm() { tr '\n' ' ' | tr -s ' '; }
+
+# in_order TEXT ERE... : success when every pattern matches, each after the end
+# of the previous match.
+in_order() {
+  printf '%s' "$1" | python3 -c '
+import re, sys
+text = " ".join(sys.stdin.read().split())
+pos = 0
+for pat in sys.argv[1:]:
+    m = re.compile(pat).search(text, pos)
+    if not m:
+        sys.exit(1)
+    pos = m.end()
+' "${@:2}"
+}
+
+# ── (a) default byte-identical ───────────────────────────────────────────────
+check_default_unchanged() {  # $1 = SKILL.md
+  [ "$(strip_draft "$1" | steps_3c_4)" = "$(cat "$FIXTURE")" ]
+}
+
+# Step 1 (reconcile / resume) with the blocks stripped equals its fixture too.
+check_step1_unchanged() {  # $1 = SKILL.md
+  [ "$(strip_draft "$1" | awk '/^## Step 1 — /{p=1} /^## Step 2 — /{p=0} p')" = "$(cat "$FIXTURE_STEP1")" ]
+}
+
+check_no_new_verb_when_unset() {  # $1 = SKILL.md
+  ! strip_draft "$1" | grep -qE 'ready-pr|draft-pr|pr-is-draft|pr-ci-runs|--ci-runs|--draft'
+}
+
+[ "$(wc -l < "$FIXTURE" | tr -d ' ')" -gt 400 ]; assert_eq "0" "$?" "fixture: Steps 3c-4 fixture is the full section, not a stub"
+markers_ok "$SKILL"; assert_eq "0" "$?" "default unchanged: pr-draft markers are paired, un-nested and present"
+check_default_unchanged "$SKILL"; assert_eq "0" "$?" "default unchanged: Steps 3c-4 with pr-draft blocks stripped equal the main@803cc7d fixture"
+check_step1_unchanged "$SKILL"; assert_eq "0" "$?" "default unchanged: Step 1 with pr-draft blocks stripped equals the main@803cc7d fixture"
+check_no_new_verb_when_unset "$SKILL"; assert_eq "0" "$?" "default unchanged: no draft verb, --draft or --ci-runs outside a pr-draft block (pr.draft unset calls no new verb)"
+
+# ── Prose pins (all inside pr-draft blocks) ──────────────────────────────────
+DT="$(draft_text "$SKILL" | norm)"
+
+assert_contains "$DT" 'PR_DRAFT (`pr.draft`, default `false`, #332)' "Step 0: PR_DRAFT is read from pr.draft, default false"
+in_order "$DT" 'when `pr.draft` is `true` and VCS_PROVIDER is `github-api` or `file`, warn ONCE on stderr' 'treat PR_DRAFT as `false` for the whole run' 'the stage order is then the default one'
+assert_eq "0" "$?" "Step 0: github-api/file with pr.draft true warns once and falls back to the default order"
+in_order "$DT" 'ready_for_review' 'if: github.event.pull_request.draft != true' 'QA waits for a run that never comes'
+assert_eq "0" "$?" "Step 0: names the CI-side pairing and the QA-waits-forever failure mode"
+
+in_order "$DT" 'Open the PR as a DRAFT: bash scripts/pipeline-vcs.sh create-pr <branch> "<title>" <body-file> --draft'
+assert_eq "0" "$?" "developer prompt: opens the PR with create-pr ... --draft"
+
+# ── (b) stage order ──────────────────────────────────────────────────────────
+check_stage_order() {  # $1 = SKILL.md
+  local dt; dt="$(draft_text "$1" | norm)"
+  in_order "$dt" \
+    '1\. \*\*Developer — open the DRAFT PR' \
+    '2\. \*\*Docs — CHANGELOG now' \
+    '3\. \*\*Review — reviewer, security and adversarial in parallel' \
+    '4\. \*\*Developer — ONE fix round for every finding' \
+    '5\. \*\*`ready-pr` — the ONE CI run' \
+    '6\. \*\*QA — on a ready PR only' \
+    '7\. \*\*Merge'
+}
+
+check_ready_pr_step() {  # $1 = SKILL.md
+  local dt; dt="$(draft_text "$1" | norm)"
+  in_order "$dt" \
+    '5\. \*\*`ready-pr` — the ONE CI run' \
+    'bash scripts/pipeline-vcs\.sh ready-pr <PR_NUMBER>' \
+    'The `ready_for_review` event is the only CI trigger in the whole flow' \
+    '6\. \*\*QA — on a ready PR only'
+}
+
+check_stage_order "$SKILL"; assert_eq "0" "$?" "stage order: developer (draft) -> docs -> review -> fix round -> ready-pr -> QA -> merge"
+check_ready_pr_step "$SKILL"; assert_eq "0" "$?" "ready-pr step: the Draft stage order calls ready-pr after review and before QA"
+
+in_order "$DT" '2\. \*\*Docs — CHANGELOG now' 'lands before any approval marker exists and never makes one stale' 'a push to a draft: no CI run' '3\. \*\*Review'
+assert_eq "0" "$?" "stage order: the docs commit lands before any approval marker (no docs-induced stale approval, no CI run)"
+in_order "$DT" '3\. \*\*Review — reviewer, security and adversarial in parallel' 'on the draft' 'never re-dispatch the developer on a single role.s verdict'
+assert_eq "0" "$?" "stage order: reviewer + security + adversarial review the draft in parallel, no per-role developer dispatch"
+in_order "$DT" 'Dispatch reviewer, security AND adversarial' 'one parallel batch' 'one fix round covers all of the findings'
+assert_eq "0" "$?" "stage order: adversarial joins the same parallel batch; one fix round covers every role"
+in_order "$DT" '4\. \*\*Developer — ONE fix round for every finding' 'collect the findings of ALL of them into one developer dispatch' 'Call `record-attempt` once for that dispatch' 'the re-stamps review only the delta' 're-run docs \(step 2\) first, inside this same draft window' '5\. \*\*`ready-pr`'
+assert_eq "0" "$?" "stage order: one fix round, one record-attempt, re-stamps on the delta, docs re-runs in the draft window before ready-pr"
+in_order "$DT" '\*\*QA failure or CI failure\*\*' 'convert the PR back FIRST with `bash scripts/pipeline-vcs.sh draft-pr <PR_NUMBER>`' 'one developer fix round' 'the re-stamps on the delta' '`ready-pr` \(step 5\) again' 'exactly one CI run however many commits'
+assert_eq "0" "$?" "stage order: QA/CI failure is draft-pr -> developer fix -> re-stamps -> ready-pr, one run per round"
+in_order "$DT" 'this stage runs BEFORE QA' 'the "only after `qa:pass`" rule above does not apply to it'
+assert_eq "0" "$?" "stage order: Step 3e review stages run before QA in draft mode"
+in_order "$DT" '7\. \*\*Merge\.\*\* Step 4, unchanged' 'approval SHAs and `ci-complete` on the final head are still required' 'not a bypass of any gate'
+assert_eq "0" "$?" "merge gate: approval SHAs and ci-complete on the final head still required, no draft bypass"
+in_order "$DT" 'No gate in this step is waived or changed for a draft-flow PR' 'pr-is-draft <PR_NUMBER>` must print `ready` with exit 1 before `merge-pr`' 'exit 2 is unverified: do NOT merge'
+assert_eq "0" "$?" "merge gate: Step 4 only adds a pr-is-draft last guard; exit 2 never merges"
+in_order "$DT" 'pass `--ci-runs "\$CI_RUNS"` to the `merged` `post_stage`' 'captured BEFORE `merge-pr`' 'Do NOT call `pr-ci-runs` here' 'omit the flag; never guess'
+assert_eq "0" "$?" "metric: Step 4 records pr-ci-runs on the merged event via post_stage --ci-runs, omitted when unverified"
+
+# ── (c) the QA draft guard ───────────────────────────────────────────────────
+check_qa_draft_guard() {  # $1 = SKILL.md
+  local dt s; dt="$(draft_text "$1" | norm)"
+  # The guard sits in Step 3d, before QA is spawned.
+  s="$(awk '/^### 3d\. /{p=1} /^Spawn:/{p=0} p' "$1")"
+  case "$s" in *pr-is-draft*) ;; *) return 1 ;; esac
+  in_order "$dt" \
+    'Draft guard \(`PR_DRAFT = true`, #332\)' \
+    'Before EVERY QA dispatch' \
+    'and before any CI wait' \
+    'STATE="\$\(bash scripts/pipeline-vcs\.sh pr-is-draft <PR_NUMBER>\)"; RC=\$\?' \
+    'Dispatch QA \(and start the CI wait\) ONLY when `RC` is 1 AND `STATE` is exactly `ready`' \
+    '`RC` 0 \(`draft`\)' 'Do not start QA' \
+    '`RC` 2 \(unverified' 'Stop this issue for this pass and report `pr-is-draft not verified' \
+    'Never read it as `ready` and never read it as `draft`'
+}
+
+check_qa_draft_guard "$SKILL"; assert_eq "0" "$?" "QA draft guard: QA and the CI wait dispatch only on pr-is-draft exit 1 AND stdout exactly ready; exit 0 and exit 2 start nothing"
+
+# ── Provider stub: a PR with draft state and the tests.yml trigger rule ──────
+# Emulates .github/workflows/tests.yml: a run is created on opened /
+# synchronize / reopened / ready_for_review, and its jobs are skipped (run
+# conclusion `skipped`) while the PR is a draft (`draft != true`). Anything
+# else (converted_to_draft, labeled, ...) creates no run.
+BIN="$SANDBOX/modelbin"
+mkdir -p "$BIN"
+export MODEL_STATE="$SANDBOX/model-state"
+mkdir -p "$MODEL_STATE"
+export PATH="$BIN:$PATH"
+
+cat > "$BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+S="${MODEL_STATE:?}"
+PRN=42
+emit() {  # $1 = pull_request event type
+  case "$1" in
+    opened|synchronize|reopened|ready_for_review)
+      if [ "$(cat "$S/draft")" = true ]; then c=skipped; else c=success; fi
+      printf '%s %s\n' "$c" "$PRN" >> "$S/runs" ;;
+  esac
+}
+case "$*" in
+  "repo view"*) printf 'acme/widget\n'; exit 0 ;;
+  "__event "*) emit "$2"; exit 0 ;;
+  "pr create "*)
+    case " $* " in *" --draft "*) echo true > "$S/draft" ;; *) echo false > "$S/draft" ;; esac
+    emit opened
+    printf 'https://github.com/acme/widget/pull/%s\n' "$PRN" ;;
+  "pr ready "*)
+    case "$*" in
+      *--undo*) echo true > "$S/draft"; emit converted_to_draft ;;
+      *) echo false > "$S/draft"; emit ready_for_review ;;
+    esac ;;
+  "pr view "*"--json isDraft"*)
+    [ -n "${MODEL_FETCH_FAIL:-}" ] && { echo "gh: HTTP 502" >&2; exit 1; }
+    if [ -n "${MODEL_GARBAGE:-}" ]; then printf 'nope'; else printf '{"isDraft":%s}' "$(cat "$S/draft")"; fi ;;
+  "pr merge "*)
+    # Like GitHub: --delete-branch removes the head branch, after which every
+    # run for that head comes back with an empty pull_requests[].
+    awk '{ print $1, "-" }' "$S/runs" > "$S/runs.tmp" && mv "$S/runs.tmp" "$S/runs" ;;
+  "pr view "*"--json headRefName"*) printf '{"headRefName":"feat/issue-332-x"}' ;;
+  "api "*"actions/runs"*)
+    awk 'BEGIN { n = 0 } { n++; prs = ($2 == "-") ? "" : sprintf("{\"number\":%s}", $2)
+           r[n] = sprintf("{\"conclusion\":\"%s\",\"pull_requests\":[%s]}", $1, prs) }
+         END { printf "{\"total_count\":%d,\"workflow_runs\":[", n;
+               for (i = 1; i <= n; i++) printf "%s%s", (i > 1 ? "," : ""), r[i];
+               printf "]}" }' "$S/runs" ;;
+esac
+exit 0
+EOF
+chmod +x "$BIN/gh"
+
+printf '{"vcs": {"provider": "github", "repo": "acme/widget"}, "base_branch": "main"}\n' > talos.pipeline.json
+BODY="$SANDBOX/body.md"; printf 'the body\n' > "$BODY"
+
+# model_reset: a fresh repo state. One run from ANOTHER PR (#99) that reused
+# the same branch name is already on record: it must never be counted.
+model_reset() {
+  printf 'success 99\n' > "$MODEL_STATE/runs"
+  echo false > "$MODEL_STATE/draft"
+}
+push() {  # $1 = number of commits pushed (each is a `synchronize`)
+  local i=0; while [ "$i" -lt "$1" ]; do "$BIN/gh" __event synchronize; i=$((i + 1)); done
+}
+ci_runs() { bash "$VCS" pr-ci-runs 42 2>/dev/null; }
+
+# verb_sequence FILE LABEL -> the provider calls of that documented sequence,
+# one per line (`create-pr --draft`, `ready-pr`, `draft-pr`), in order.
+verb_sequence() {
+  draft_text "$1" > "$SANDBOX/dtext.txt"
+  python3 - "$SANDBOX/dtext.txt" "$2" <<'PY'
+import sys
+path, label = sys.argv[1], sys.argv[2] + ":"
+for line in open(path):
+    if line.startswith(label):
+        for tok in line[len(label):].split("->"):
+            words = tok.strip().split()
+            if words and words[0] in ("create-pr", "ready-pr", "draft-pr", "pr-ci-runs", "merge-pr", "post_stage"):
+                print(" ".join(words))
+        break
+PY
+}
+
+# replay_verbs FILE LABEL N : run the documented sequence against the stub.
+# Work (pushes) happens while the PR is a draft: after the PR is opened as a
+# draft (developer 3 commits, docs 1, one fix round 2) and after `draft-pr`
+# (the QA-failure fix round, N commits). `ready-pr` is followed by QA, which
+# pushes nothing. Prints the executed-run count seen just before each ready-pr.
+replay_verbs() {
+  local verb
+  while IFS= read -r verb; do
+    case "$verb" in
+      "create-pr --draft") bash "$VCS" create-pr feat/issue-332-x "T" "$BODY" --draft </dev/null >/dev/null 2>&1; push 6 ;;
+      "draft-pr") bash "$VCS" draft-pr 42 </dev/null >/dev/null 2>&1; push "$3" ;;
+      "ready-pr") echo "before-ready=$(ci_runs)"; bash "$VCS" ready-pr 42 </dev/null >/dev/null 2>&1 ;;
+    esac
+  done < <(verb_sequence "$1" "$2")
+}
+
+model_happy_runs() {  # $1 = SKILL.md -> executed runs after the happy path
+  model_reset
+  replay_verbs "$1" "happy path" 0 >/dev/null
+  ci_runs
+}
+
+model_failure_round_added() {  # $1 = SKILL.md $2 = N pushes -> runs added by one round
+  local before
+  model_reset
+  replay_verbs "$1" "happy path" 0 >/dev/null
+  before="$(ci_runs)"
+  replay_verbs "$1" "failure round" "$2" >/dev/null
+  echo "$(( $(ci_runs) - before ))"
+}
+
+# ── (d) run-count model ──────────────────────────────────────────────────────
+# The model's trigger rule is the repo's own workflow rule.
+WF="$TALOS_ROOT/.github/workflows/tests.yml"
+assert_contains "$(cat "$WF")" "types: [opened, synchronize, reopened, ready_for_review]" "model rule: tests.yml runs on opened/synchronize/reopened/ready_for_review"
+assert_contains "$(cat "$WF")" "github.event.pull_request.draft != true" "model rule: tests.yml jobs are skipped while the PR is a draft"
+
+# The model measures what it says: a plain (non-draft) flow spends a run on the
+# open and on every push.
+model_reset
+bash "$VCS" create-pr feat/issue-332-x "T" "$BODY" >/dev/null 2>&1; push 6
+assert_eq "7" "$(ci_runs)" "run-count model: control, a non-draft PR spends 1 + 6 runs and ignores the other PR's run"
+
+assert_eq "create-pr --draft ready-pr" "$(verb_sequence "$SKILL" "happy path" | tr '\n' ' ' | sed 's/ $//')" "run-count model: documented happy path is create-pr --draft -> ready-pr"
+assert_eq "draft-pr ready-pr" "$(verb_sequence "$SKILL" "failure round" | tr '\n' ' ' | sed 's/ $//')" "run-count model: documented failure round is draft-pr -> ready-pr"
+
+model_reset
+pre="$(replay_verbs "$SKILL" "happy path" 0)"
+assert_eq "before-ready=0" "$pre" "run-count model: no CI run executed during the developer, docs and review stages (6 pushes to a draft)"
+assert_eq "1" "$(ci_runs)" "run-count model: happy path is exactly ONE executed CI run, on ready-pr"
+assert_eq "1" "$(model_happy_runs "$SKILL")" "run-count model: happy path is exactly ONE executed CI run (fresh replay)"
+
+for n in 3 5 8; do
+  assert_eq "1" "$(model_failure_round_added "$SKILL" "$n")" "run-count model: a QA-failure fix round with $n pushes adds exactly ONE run"
+done
+
+# Control: the same N pushes without draft-pr spend one run each.
+model_reset
+bash "$VCS" create-pr feat/issue-332-x "T" "$BODY" --draft >/dev/null 2>&1; push 6
+bash "$VCS" ready-pr 42 >/dev/null 2>&1
+before="$(ci_runs)"; push 3
+assert_eq "3" "$(( $(ci_runs) - before ))" "run-count model: control, pushing a fix round to a READY PR spends 3 runs"
+
+# ── Step 1 resume routing ────────────────────────────────────────────────────
+check_step1_resume() {  # $1 = SKILL.md
+  local s dt
+  s="$(awk '/^## Step 1 — /{p=1} /^## Step 2 — /{p=0} p' "$1")"
+  case "$s" in *'pr-is-draft'*) ;; *) return 1 ;; esac
+  dt="$(printf '%s\n' "$s" | awk -v s="$START" -v e="$END" '{ t = $0; gsub(/^[ \t]+|[ \t]+$/, "", t) } t == s { inb = 1; next } t == e { inb = 0; next } inb' | norm)"
+  in_order "$dt" \
+    'resume routing' \
+    'pr-is-draft <PR_NUMBER>` first' 'prints `draft` \(exit 0\)' \
+    'resume at the first missing draft-window stage \(docs, then reviewer/security' \
+    'or at `ready-pr`' \
+    'never at QA' \
+    'exit 2 \(unverified\) stops and reports'
+}
+check_step1_resume "$SKILL"; assert_eq "0" "$?" "Step 1 resume: a draft PR resumes at the first missing draft-window stage or ready-pr, never QA; exit 2 stops and reports"
+
+# ── (d2) ci_runs is captured BEFORE merge-pr ─────────────────────────────────
+# merge-pr deletes the head branch; GitHub then returns every run for that head
+# with an empty pull_requests[], so pr-ci-runs can no longer attribute them and
+# fails closed (exit 2). The documented Step 4 order must capture the count
+# first and carry it to the `merged` post_stage call.
+check_ci_runs_before_merge() {  # $1 = SKILL.md
+  awk '
+    /^## Step 4 — /{p=1; next} /^## Step 5 — /{p=0}
+    p && /pipeline-vcs\.sh pr-ci-runs/ { if (!ci) ci = NR; if (merge) late = 1 }
+    p && /pipeline-vcs\.sh merge-pr <PR_NUMBER>/ { if (!merge) merge = NR }
+    END { exit !(ci && merge && ci < merge && !late) }' "$1"
+}
+
+# replay_merge FILE : run the documented merge sequence; prints the ci_runs
+# value that reaches the `merged` post_stage call ("" when none was captured).
+replay_merge() {
+  local tok ci="" recorded=""
+  while IFS= read -r tok; do
+    case "$tok" in
+      "pr-ci-runs") ci="$(ci_runs)" ;;
+      "merge-pr") bash "$VCS" merge-pr 42 </dev/null >/dev/null 2>&1 ;;
+      "post_stage merged --ci-runs") recorded="$ci" ;;
+    esac
+  done < <(verb_sequence "$1" "merge sequence")
+  printf '%s' "$recorded"
+}
+
+check_ci_runs_before_merge "$SKILL"; assert_eq "0" "$?" "ci_runs order: Step 4 captures pr-ci-runs BEFORE merge-pr and never calls it after"
+assert_eq "pr-ci-runs merge-pr post_stage merged --ci-runs" "$(verb_sequence "$SKILL" "merge sequence" | tr '\n' ' ' | sed 's/ $//')" "ci_runs order: documented merge sequence is pr-ci-runs -> merge-pr -> post_stage merged --ci-runs"
+in_order "$DT" 'Capture the CI-run count BEFORE `merge-pr`' 'empty `pull_requests\[\]`' 'exits 2' 'while the PR is open' 'record no `ci_runs`' 'run summary' 'never block or delay the merge on a metric'
+assert_eq "0" "$?" "ci_runs order: exit 2 records no ci_runs, is noted in the run summary, and never blocks the merge"
+
+model_reset
+replay_verbs "$SKILL" "happy path" 0 >/dev/null
+assert_eq "1" "$(replay_merge "$SKILL")" "ci_runs order: the count captured before merge-pr (1 run) reaches the merged event"
+# Realistic stub: after the merge the branch is gone and nothing attributes.
+out="$(ci_runs)"; rc=0; bash "$VCS" pr-ci-runs 42 >/dev/null 2>&1 || rc=$?
+assert_eq "2" "$rc" "ci_runs order: after merge-pr, pr-ci-runs is unverified (exit 2) because runs lose their pull_requests[]"
+assert_eq "" "$out" "ci_runs order: after merge-pr, pr-ci-runs prints no count"
+
+# ── (c) the guard against the real pr-is-draft verb ──────────────────────────
+# qa_may_dispatch is the documented rule: dispatch only when pr-is-draft exits 1
+# AND its stdout is exactly "ready".
+qa_may_dispatch() {
+  local state rc
+  state="$(bash "$VCS" pr-is-draft 42 2>/dev/null)"; rc=$?
+  [ "$rc" -eq 1 ] && [ "$state" = "ready" ]
+}
+model_reset; echo true > "$MODEL_STATE/draft"
+qa_may_dispatch; assert_eq "1" "$?" "QA draft guard: QA does NOT dispatch while the PR is a draft (pr-is-draft exit 0)"
+echo false > "$MODEL_STATE/draft"
+qa_may_dispatch; assert_eq "0" "$?" "QA draft guard: QA dispatches on a ready PR (pr-is-draft exit 1, stdout ready)"
+MODEL_FETCH_FAIL=1 qa_may_dispatch; assert_eq "1" "$?" "QA draft guard: QA does NOT dispatch when the draft state cannot be fetched (exit 2)"
+MODEL_GARBAGE=1 qa_may_dispatch; assert_eq "1" "$?" "QA draft guard: QA does NOT dispatch on an unparseable response (exit 2)"
+out="$(MODEL_FETCH_FAIL=1 bash "$VCS" pr-is-draft 42 2>/dev/null)"; rc=$?
+assert_eq "2" "$rc" "QA draft guard: an unverified draft state is exit 2, neither draft nor ready"
+assert_eq "" "$out" "QA draft guard: an unverified draft state prints nothing on stdout"
+
+# ── (e) positive controls ────────────────────────────────────────────────────
+# Mutate a copy of SKILL.md and show the named checks turn red.
+MUT="$SANDBOX/SKILL.mutated.md"
+
+# Control 1: remove the ready-pr step (every line that names ready-pr).
+grep -v 'ready-pr' "$SKILL" > "$MUT"
+check_ready_pr_step "$MUT"; assert_eq "1" "$?" "positive control: without the ready-pr step, 'ready-pr step' check goes red"
+check_stage_order "$MUT"; assert_eq "1" "$?" "positive control: without the ready-pr step, 'stage order' check goes red"
+[ "$(model_happy_runs "$MUT")" != "1" ]; assert_eq "0" "$?" "positive control: without the ready-pr step, 'run-count happy path' goes red (the PR never leaves draft, CI never runs)"
+
+# Control 2: remove the QA draft guard (every line that names pr-is-draft).
+grep -v 'pr-is-draft' "$SKILL" > "$MUT"
+check_qa_draft_guard "$MUT"; assert_eq "1" "$?" "positive control: without the QA draft guard, 'QA draft guard' check goes red"
+
+# Control 3: the default-unchanged check does detect a change to the default flow.
+awk '/^### 3d\. /{print; print "Dispatch QA without looking at the PR state."; next} 1' "$SKILL" > "$MUT"
+check_default_unchanged "$MUT"; assert_eq "1" "$?" "positive control: a line added to the default flow turns 'default unchanged' red"
+strip_draft "$SKILL" > "$MUT"; printf 'bash scripts/pipeline-vcs.sh ready-pr 42\n' >> "$MUT"
+check_no_new_verb_when_unset "$MUT"; assert_eq "1" "$?" "positive control: a draft verb outside a pr-draft block turns 'no new verb when unset' red"
+
+# Control 4: capture pr-ci-runs AFTER merge-pr (the defect QA found at 7562576).
+awk '
+  /^merge sequence:/ { print "merge sequence:  merge-pr -> pr-ci-runs -> post_stage merged --ci-runs"; next }
+  /pipeline-vcs\.sh pr-ci-runs <PR_NUMBER>\)"; CI_RC=/ { held = $0; next }
+  { print }
+  /^Otherwise \(`MERGE_AUTO = true`\), if green, merge:/ { print held }' "$SKILL" > "$MUT"
+check_ci_runs_before_merge "$MUT"; assert_eq "1" "$?" "positive control: pr-ci-runs after merge-pr turns the 'ci_runs order' check red"
+model_reset; replay_verbs "$MUT" "happy path" 0 >/dev/null
+assert_eq "" "$(replay_merge "$MUT")" "positive control: pr-ci-runs after merge-pr records no ci_runs (runs lost their pull_requests[]), so the replay goes red"
+
+finish
