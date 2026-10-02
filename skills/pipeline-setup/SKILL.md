@@ -473,6 +473,36 @@ before setup started.
 
 If no: skip, no file is written.
 
+**Draft PRs (`pr.draft`, optional, #332).** Offer this only after the workflow
+question above is settled. Explain in two lines: with `pr.draft: true` the
+developer opens a DRAFT PR, docs and review run on the draft, and CI runs once,
+when the PR is marked ready (one run per issue instead of one per push). The
+trade-off: reviewers see the code before CI has proven it; the developer's
+local `verify:` run covers most of that risk, and a CI failure the local run
+missed costs one extra run.
+
+It only works when the repo's CI pairs with it. Talos documents this and
+**never edits a workflow file**, so check the workflow that runs the required
+checks and report what is missing:
+
+```bash
+grep -L "ready_for_review" .github/workflows/*.yml 2>/dev/null
+grep -L "github.event.pull_request.draft != true" .github/workflows/*.yml 2>/dev/null
+```
+
+- `on.pull_request.types` must include `ready_for_review`. Without it, marking
+  a PR ready fires no event, no run ever starts, and QA waits for one until
+  `verify.ci_wait_s` expires.
+- Each job needs `if: github.event.pull_request.draft != true`. Without it,
+  every push to the draft still runs CI and nothing is saved.
+
+If either is missing, print the two requirements above and do NOT write
+`pr.draft`; the user fixes the workflow first. If both are present and the user
+says yes, add `pr:\n  draft: true` to the config written in Step 7. If the
+provider is `github-api` or `file`, say draft PRs are unsupported there and do
+not write the key. `templates/ci/github-tests.yml` already has both
+(`ready_for_review` in `types`, `draft != true` on the job).
+
 ---
 
 ## Step 9 — GitHub Project setup (optional, github only)
