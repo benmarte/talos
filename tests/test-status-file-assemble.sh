@@ -25,6 +25,7 @@ export TALOS_STATUS_TODAY="2026-09-20"
 
 git config user.email "test@talos.invalid"
 git config user.name "talos-test"
+git config commit.gpgsign false
 
 PARENT="$(mktemp -d "${TMPDIR:-/tmp}/talos-sf-origin.XXXXXX")"
 UPSTREAM="$PARENT/upstream.git"
@@ -46,16 +47,26 @@ cfg_status() {  # $1 = extra JSON members for the status block (optional)
 
 reset_fixture() {  # fresh bare origin holding only the seed commit, fresh WORK clone
   rm -rf "$UPSTREAM" "$WORK"
+  # Nothing here may rely on ambient git config (init.defaultBranch, identity,
+  # pull.rebase, commit.gpgsign): a CI runner has none, and a developer machine
+  # with init.defaultBranch=main would hide the difference. So the bare origin's
+  # HEAD is pointed at main explicitly (older git has no `init -b`) and the
+  # clone names its branch.
   git init -q --bare "$UPSTREAM"
+  git --git-dir="$UPSTREAM" symbolic-ref HEAD refs/heads/main
   git remote set-url origin "$UPSTREAM"
   git push -q -f origin main
   git fetch -q origin main
-  git clone -q "$UPSTREAM" "$WORK"
+  git clone -q -b main "$UPSTREAM" "$WORK"
   git -C "$WORK" config user.email "pr@talos.invalid"
   git -C "$WORK" config user.name "pr-author"
+  git -C "$WORK" config commit.gpgsign false
+  git -C "$WORK" config pull.rebase false
 }
 
-wk_sync() { git -C "$WORK" fetch -q origin main && git -C "$WORK" reset -q --hard origin/main; }
+wk_sync() {
+  git -C "$WORK" fetch -q origin main && git -C "$WORK" checkout -q -B main origin/main
+}
 
 wk_add() {  # path content date  (commit one file on WORK with a fixed committer date)
   mkdir -p "$WORK/$(dirname "$1")"
@@ -534,18 +545,29 @@ assert_eq "$wt_before" "$(wt_count)" "race always: no worktree left behind"
 assert_eq "" "$(git worktree list | grep talos-status)" "race always: no talos-status worktree registered"
 
 # ── SIGTERM mid-run: the trap removes the worktree and the script exits ────
-# A PATH shim named git sends TERM to the status script (the grandparent of
-# the push, which runs inside a command substitution) when the push starts.
+# A PATH shim named git sends TERM to the status script when the push starts
+# (the push runs inside a command substitution, so the script is the
+# grandparent of the shim). The push starts after the temp worktree is created
+# and committed in, so the signal always lands while the worktree exists. The
+# shim proves it rather than assuming it: before signalling it records the
+# target's command line and the worktree list, and the test asserts the target
+# was the status script and that the list held the temp worktree.
 reset_fixture
 wk_add docs/status.d/72-402.md "interrupted" 2026-09-10
 wk_push; ofetch
 REAL_GIT="$(command -v git)"
 SHIM="$PARENT/shim"
+SIGLOG="$PARENT/signal.log"
 mkdir -p "$SHIM"
+: > "$SIGLOG"
 cat > "$SHIM/git" <<EOF
 #!/bin/sh
 if [ "\$1" = "-C" ] && [ "\$3" = "push" ]; then
-  kill -TERM "\$(ps -o ppid= -p \$PPID | tr -d ' ')"
+  target="\$(ps -o ppid= -p \$PPID | tr -d ' ')"
+  ps -o command= -p "\$target" > "$SIGLOG.target"
+  "$REAL_GIT" worktree list > "$SIGLOG.worktrees"
+  kill -TERM "\$target"
+  echo sent > "$SIGLOG"
 fi
 exec "$REAL_GIT" "\$@"
 EOF
@@ -553,8 +575,13 @@ chmod +x "$SHIM/git"
 wt_before="$(wt_count)"
 mkdir -p "$PARENT/tmp"
 out="$(TMPDIR="$PARENT/tmp" PATH="$SHIM:$PATH" run_sf assemble)"; rc=$?
+assert_eq "sent" "$(cat "$SIGLOG")" "signal: the shim sent SIGTERM"
+assert_contains "$(cat "$SIGLOG.target")" "pipeline-status-file.sh" "signal: the target was the status script"
+assert_eq "$((wt_before + 1))" "$(wc -l < "$SIGLOG.worktrees" | tr -d ' ')" "signal: the temp worktree existed when the signal was sent"
+assert_contains "$(cat "$SIGLOG.worktrees")" "/tmp/talos-status." "signal: that worktree is the script's temp worktree"
 assert_eq "143" "$rc" "signal: SIGTERM exits 143"
-assert_eq "$wt_before" "$(wt_count)" "signal: the worktree is removed"
+assert_eq "$wt_before" "$(wt_count)" "signal: git worktree list shows only the caller's worktree afterwards"
+assert_eq "" "$(git worktree list | grep talos-status)" "signal: no talos-status worktree registered afterwards"
 assert_eq "" "$(ls "$PARENT/tmp")" "signal: the temp dir is removed"
 
 rm -f talos.pipeline.json
