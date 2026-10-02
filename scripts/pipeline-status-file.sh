@@ -189,17 +189,17 @@ if [ "$LOG_HEADING" = "$RESUME_HEADING" ]; then
 fi
 
 # Positive integers with an upper clamp (the config has no upper bound).
-_sf_posint() {  # NAME DEFAULT MAX
+_sf_posint() {  # KEY DEFAULT MAX
   local v
-  v="$(cfg "status.$1" "$2")"
+  v="$(cfg "$1" "$2")"
   case "$v" in ''|*[!0-9]*) v="$2" ;; esac
   [ "${#v}" -le 6 ] || v="$3"
   [ "$v" -ge 1 ] 2>/dev/null || v="$2"
   [ "$v" -le "$3" ] || v="$3"
   printf '%s' "$v"
 }
-LOG_DAYS="$(_sf_posint log_days 30 36500)"
-LOG_MAX="$(_sf_posint log_max 50 10000)"
+LOG_DAYS="$(_sf_posint status.log_days 30 36500)"
+LOG_MAX="$(_sf_posint status.log_max 50 10000)"
 
 # ── Python: one implementation of the skeleton, the entry format and the
 #    window, shared by init and assemble. Large inputs arrive on stdin
