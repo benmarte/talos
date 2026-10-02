@@ -41,7 +41,8 @@ set -u
 # YAML-then-JSON precedence, and the same "verify" (dict-form → commands
 # list) / "verify.qa_mode" (merge.required_checks-derived default, fail-
 # closed downgrade) / "verify.timeout_ms" / "verify.ci_wait_s" /
-# "hooks.timeout_s" / "notifications.cmd_timeout_s" (positive-integer
+# "hooks.timeout_s" / "notifications.cmd_timeout_s" / "status.log_days" /
+# "status.log_max" / "status.resume_max_lines" (positive-integer
 # validation, fail-closed to the caller's default) special cases as the
 # single-key path, so a lookup
 # against this dump is byte-identical to calling this script for that key
@@ -91,6 +92,9 @@ _KNOWN_CONFIG_KEYS_JSON='[
   "limits.max_fix_attempts", "limits.max_total_dispatches",
   "limits.max_retries",
   "pr.draft",
+  "status.enabled", "status.file", "status.log_heading",
+  "status.resume_heading", "status.fragments_dir", "status.archive_dir",
+  "status.log_days", "status.log_max", "status.resume_max_lines",
   "markers.trusted_authors", "markers.verify_authors",
   "hooks.pre_dispatch", "hooks.post_stage", "hooks.timeout_s",
   "events.enabled", "events.path"
@@ -413,7 +417,7 @@ flat["verify.qa_mode"] = _qa_mode
 # one-line stderr warning) so the two paths stay byte-identical for these
 # keys.
 def _validate_int_key(key, value):
-    unit = {"verify.timeout_ms": "milliseconds", "verify.ci_wait_s": "seconds", "hooks.timeout_s": "seconds", "notifications.cmd_timeout_s": "seconds"}.get(key)
+    unit = {"verify.timeout_ms": "milliseconds", "verify.ci_wait_s": "seconds", "hooks.timeout_s": "seconds", "notifications.cmd_timeout_s": "seconds", "status.log_days": "days", "status.log_max": "entries", "status.resume_max_lines": "lines"}.get(key)
     if unit is None or value is None:
         return value
     try:
@@ -428,7 +432,7 @@ def _validate_int_key(key, value):
         )
         return None
 
-for _int_key in ("verify.timeout_ms", "verify.ci_wait_s", "hooks.timeout_s", "notifications.cmd_timeout_s"):
+for _int_key in ("verify.timeout_ms", "verify.ci_wait_s", "hooks.timeout_s", "notifications.cmd_timeout_s", "status.log_days", "status.log_max", "status.resume_max_lines"):
     if _int_key in flat:
         _validated = _validate_int_key(_int_key, flat[_int_key])
         if _validated is None:
@@ -716,7 +720,7 @@ if key == "verify.qa_mode":
 # fail-closed-to-absent behaviour, same one-line stderr warning) so the
 # two paths stay byte-identical for these keys.
 def _validate_int_key(key, value):
-    unit = {"verify.timeout_ms": "milliseconds", "verify.ci_wait_s": "seconds", "hooks.timeout_s": "seconds", "notifications.cmd_timeout_s": "seconds"}.get(key)
+    unit = {"verify.timeout_ms": "milliseconds", "verify.ci_wait_s": "seconds", "hooks.timeout_s": "seconds", "notifications.cmd_timeout_s": "seconds", "status.log_days": "days", "status.log_max": "entries", "status.resume_max_lines": "lines"}.get(key)
     if unit is None or value is None:
         return value
     try:
