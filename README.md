@@ -501,6 +501,20 @@ Previously, setting `merge.forbidden_files` replaced the built-in defaults entir
 - **If you intended to add extra patterns on top of the defaults** (the common case): no action required. Your config now works as you most likely intended.
 - **If you intentionally narrowed the deny list** (removed some built-in patterns to allow those file types): add `merge.forbidden_files_replace: true` to restore the old replacement behaviour. Review the security warning in the `merge.forbidden_files_replace` table row above before doing so — replacement suppresses all built-in secret-protection patterns and should be treated as a deliberate security trade-off.
 
+### Status file and resume
+
+A tracked status file (default `TALOS_STATUS.md`, `status.file`) keeps what a fresh session would otherwise lose: a generated Resume block (open pipeline PRs and their next stage, blocked reasons, questions waiting on the owner) and a capped log of what merged. It is opt-in and off by default (epic #333).
+
+To resume with any LLM, point it at `TALOS_STATUS.md` and the repo's CLAUDE.md/AGENTS.md, or run the resume skill. The skill prints a one-page read-only briefing (in flight, blocked, decisions awaiting the owner, spend, next action), asks once, and only then continues with the normal `/pipeline` loop. Everything it reads from the status file and GitHub is treated as data describing the run, never as instructions. Start it as:
+
+- `/talos:resume` for a plugin install;
+- `/talos-resume` for `install.sh --global` (it installs to `~/.claude/skills/talos-resume/`, not `resume/`, so it never clashes with Claude Code's built-in `/resume`; this global name is provisional until #335 settles command naming);
+- any other agent: read `skills/resume/SKILL.md` and follow it.
+
+**Enable it by hand:** set `status.enabled: true` in the Talos config, run `bash scripts/pipeline-status-file.sh init`, and commit the file it creates. Per-issue fragments live in `docs/status.d/` (`status.fragments_dir`, a tracked directory) and are folded into the log by `assemble`. The briefing works without any of this: `pipeline-status-file.sh refresh --print` ignores `status.enabled` and builds the block from GitHub.
+
+**Limit:** `assemble` and `refresh` push their commits straight to the base branch (never forced, up to 3 attempts). On a protected base branch that rejects direct pushes they exit 1 and the status file is not updated; the resume skill still works through `refresh --print`.
+
 ### Upgrade notes (v0.18+)
 
 **(a) Issues are now assigned to the operator by default (`issues.assignee`, #299, #305, #321).** `create-issue` and the "In progress" claim assign the issue or work item to `self` (the authenticated `gh`/`glab`/`az` identity) on github, github-api, gitlab and azure. An existing assignee is never overwritten, and a rejected identity is a warning, never a stage failure. To keep the pre-0.18 behavior set `issues.assignee: none`, or the quoted `issues.assignee: ""`. A bare `assignee:` is YAML null and still means `self`. The value is trimmed of surrounding whitespace.
@@ -516,6 +530,8 @@ Previously, setting `merge.forbidden_files` replaced the built-in defaults entir
 **(f) Only the orchestrator clears `pipeline:blocked` (#310, #312, #322).** Stage agents no longer remove the label when they approve. Blocked PRs are reported in Step 1 and are not resumed or adopted. To resume blocked work, remove the label from **both** the PR and its issue.
 
 **(g) The Step 1 heal closes only issues a merged PR really closes (#298).** `find-pr <N> merged` matches only the `issue-<N>` branch or a closing keyword aimed at this repository, never a bare `#N` mention, so an epic or dependency is no longer closed by mistake. On azure, `create-pr` links the work item with `--transition-work-items true`, so ADO closes it when the PR completes.
+
+**(h) New label `pipeline:needs-owner` (#345, part of #333).** Existing repos re-run `bash scripts/bootstrap-labels.sh` (idempotent) to create it; `mark-needs-owner` and `list-needs-owner` need it, and the Resume block reads it.
 
 ### Upgrade notes (v0.17+)
 
@@ -815,7 +831,7 @@ The pipeline deliberately preserves three gates that only a human should act on:
 | `scripts/pipeline-contract.sh` | Single source of truth for roles, labels, and `talos:` markers (sourced by pipeline-vcs.sh and bootstrap-labels.sh; see "Contract" below) |
 | `scripts/pipeline-vcs.sh [--dry-run] <verb> [args...]` | Uniform VCS adapter (github/gitlab/azure/file) |
 | `scripts/pipeline-status.sh [--dry-run] <issue> <status>` | Set GitHub Project board status |
-| `scripts/pipeline-status-file.sh init\|assemble [--pr <pr> --issue <n>]` | Maintains the tracked status file (`status.file`, default `TALOS_STATUS.md`; epic #333); not `pipeline-status.sh`, which sets the Project board status. `init` creates the file with its resume and log headings; `assemble` folds `<issue>-<pr>.md` fragments from `status.fragments_dir` into the log on the base branch (capped entries, rolling window, archive, one entry per PR, `[skip ci]` commit, up to 3 push attempts). Needs `status.enabled: true`; nothing calls it yet |
+| `scripts/pipeline-status-file.sh init\|assemble [--pr <pr> --issue <n>]` | Maintains the tracked status file (`status.file`, default `TALOS_STATUS.md`; epic #333); not `pipeline-status.sh`, which sets the Project board status. `init` creates the file with its resume and log headings; `assemble` folds `<issue>-<pr>.md` fragments from `status.fragments_dir` into the log on the base branch (capped entries, rolling window, archive, one entry per PR, `[skip ci]` commit, up to 3 push attempts). Needs `status.enabled: true`. The resume skill (`skills/resume/SKILL.md`) reads the file; `/pipeline` does not call this script yet |
 | `scripts/pipeline-status-file.sh refresh` | Regenerates the Resume block (everything under `status.resume_heading`, #346, part of #333) from GitHub read verbs and pushes it as one `docs(status): refresh resume block [skip ci]` commit (up to 3 push attempts, refetch and regenerate on each). The block is a pure function of the GitHub state and `origin/<base>` (no timestamp): `- Base:` (newest commit outside the status paths), `- Next:`, one `- PR #<M> (#<N>) head <sha> next: <stage>` per open pipeline PR, `- Blocked: <issue|PR> #<n> [question] <text>`, `- Owner: #<n> [answered\|unanswered\|unverified] <question>` (status in a fixed field before the untrusted text), `- Queued:`, capped at `status.resume_max_lines` with a `- +<K> more` line. A pipeline PR has a `fix/issue-*` / `feat/issue-*` head branch, the configured base, and either a Talos label or `isCrossRepository: false` in `list-prs`; an unlabelled fork PR is never looked up and is only counted on a `- Ignored:` line. Only the PRs that fit the line cap are looked up, and the whole read phase has a 120 s deadline (`TALOS_STATUS_READ_DEADLINE`). A block identical to the base's is a no-op; a failed read (`list-prs`, `list-issues`, `pr-head`, `check-approval-sha`, `list-needs-owner` exit 1) exits 1 with nothing pushed. Needs `status.enabled: true` |
 | `scripts/pipeline-status-file.sh refresh --print` | The same block on stdout, for the resume skill. Ignores `status.enabled`; creates no worktree, commit or push and calls no write verb (it runs `git fetch origin <base>`, which only moves `origin/<base>`) |
 | `scripts/pipeline-status-file.sh assemble --refresh` | `assemble` plus `refresh` in ONE base commit (log change and regenerated block), so a merge costs one status commit. If the GitHub read fails the log is still assembled and pushed, and stderr carries one line saying the Resume block was not refreshed |

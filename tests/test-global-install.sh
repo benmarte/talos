@@ -170,6 +170,12 @@ src_tmpl="$(ls "$TALOS_ROOT/templates/notifications/"*.md 2>/dev/null | wc -l | 
 assert_eq "$src_tmpl" "$n_tmpl" "--global writes all notification templates"
 assert_file_exists "$T6_CLAUDE/skills/pipeline/SKILL.md" \
   "--global writes skill to ~/.claude/skills/"
+# The resume skill installs as talos-resume, never resume: Claude Code has a
+# built-in /resume and the global name is provisional until #335 (#348).
+assert_file_exists "$T6_CLAUDE/skills/talos-resume/SKILL.md" \
+  "--global installs the resume skill to ~/.claude/skills/talos-resume/ (#348)"
+assert_file_absent "$T6_CLAUDE/skills/resume" \
+  "--global creates no ~/.claude/skills/resume/ (would clash with the built-in /resume, #348)"
 
 # #166: --global ALSO writes every role profile to ~/.claude/agents/ (the path
 # Claude Code's native subagent discovery actually reads), not just
@@ -284,6 +290,7 @@ cp -R "$TALOS_ROOT/agents" "$T10_SRC/agents"
 cp -R "$TALOS_ROOT/templates" "$T10_SRC/templates"
 cp -R "$TALOS_ROOT/skills/pipeline" "$T10_SRC/skills/pipeline"
 cp -R "$TALOS_ROOT/skills/pipeline-setup" "$T10_SRC/skills/pipeline-setup"
+cp -R "$TALOS_ROOT/skills/resume" "$T10_SRC/skills/resume"
 printf '#!/usr/bin/env bash\necho new\n' > "$T10_SRC/scripts/pipeline-newthing.sh"
 chmod +x "$T10_SRC/scripts/pipeline-newthing.sh"
 
@@ -295,5 +302,10 @@ HOME="$T10_HOME" CLAUDE_CONFIG_DIR="$T10_CLAUDE" \
 
 assert_file_exists "$T10_HOME/.talos/scripts/pipeline-newthing.sh" \
   "a newly added scripts/*.sh is installed by --global with no install.sh edit (#276)"
+# install.sh runs under set -e: a skill missing from the fixture would abort the
+# install after the scripts are copied and the assertion above would still pass.
+# Asserting the last skill line's output makes a missing fixture file fail here (#348).
+assert_file_exists "$T10_CLAUDE/skills/talos-resume/SKILL.md" \
+  "the partial-source install ran through the skill lines (#348)"
 
 finish
