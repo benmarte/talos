@@ -239,7 +239,7 @@ tokens per PR for no change).
 `always` — dispatch the docs stage exactly as before, no gate, full diff. Skip
 straight to the Docs prompt below with `<DOCS_DIFF_INSTRUCTION>` = `` `bash
 scripts/pipeline-vcs.sh diff-pr <PR_NUMBER>` `` and the `<CHANGELOG_MODE_LINE>`
-per the fragment rule below.
+per the fragment rule below, plus `<STATUS_FRAGMENT_LINE>` per the status rule.
 
 `auto` (default) — check the developer's own diff before deciding whether docs
 needs to run at all:
@@ -249,6 +249,7 @@ needs to run at all:
    step 4 below — dispatch the docs subagent with the full diff. Fail-safe:
    a fetch failure must never be mistaken for "nothing to check" and silently
    skip docs. Exit 2 (not supported by this provider) is the same: not matching.
+1a. When `STATUS_ENABLED = true`, remove from `CHANGED_PATHS` every path equal to `STATUS_FRAGMENTS_DIR` or under it, before steps 2 and 4: a status fragment (default `docs/status.d/`, which starts with `docs/`) must never satisfy the "at least one path starts with `docs/`" test, and a missing fragment never dispatches docs by itself.
 2. The gate matches (no docs subagent needed) when EITHER:
    - `CHANGELOG.md` is among `CHANGED_PATHS` AND (`README.md` is also among
      them, OR at least one path starts with `docs/`), OR
@@ -291,6 +292,8 @@ CHANGELOG.md edits. When dispatching the docs subagent on either path above:
 When the gate auto-stamps (step 3, no subagent), no line is needed; if the
 flag is on, mention the fragment convention in the stamp body so the thread
 records why CHANGELOG.md was not edited.
+
+**Status fragment line (#333):** on either dispatch path above (draft stage order included), `STATUS_ENABLED = true` substitutes `<STATUS_FRAGMENT_LINE>` with the literal line `STATUS FRAGMENT: <STATUS_FRAGMENTS_DIR>/<issue>-<pr>.md`; otherwise omit the line. A fix round passes the same path, so a PR never gets a second entry. No line is needed when the gate auto-stamps: the post-merge fallback entry (PR title) supplies the bullet.
 
 Either way (subagent dispatched or gate auto-stamped), wait for docs to reach
 `docs:done` before continuing to phase 2.
@@ -384,6 +387,7 @@ Comment templates dir: <COMMENTS_TMPL_DIR>
 Comments enabled: <COMMENTS_ENABLED>
 
 Changelog mode: <CHANGELOG_MODE_LINE>
+Status fragment: <STATUS_FRAGMENT_LINE>
 
 Read diff: <DOCS_DIFF_INSTRUCTION> — under `docs_mode: auto` this is the
 changed doc-relevant paths plus the CHANGELOG hunk, not the full PR diff.
@@ -637,7 +641,9 @@ accumulating until each PR's own merge time:
    markers (#102/#256 — base-branch-only changes and `CHANGELOG.md` are
    waived by `check-approval-sha`). If a sync modifies a file the PR also
    touched, the existing `check-approval-sha --stale-list` path at Step 4
-   re-stamps as usual.
+   re-stamps as usual. Status-file commits (`STATUS_ENABLED = true`) touch only
+   `STATUS_FILE`, the archive and fragment deletions, which are waiver paths
+   (`*.md`) or outside every PR's diff, so they do not invalidate approvals.
 5. When `merge.auto_sync` is `false`, skip this block entirely — conflicts
    surface at each PR's own mergeability gate as before #289.
 
@@ -657,7 +663,8 @@ After merging:
    20 seconds before this step runs — `--allow-closed` is required here.)
 2. `bash scripts/pipeline-vcs.sh close-issue <N> "closed by PR #<PR_NUMBER>"`
 3. `bash scripts/pipeline-status.sh <N> "Done"`
-4. **Remove the developer worktree.** `bash scripts/pipeline-worktree.sh remove <N>` — deletes the `fix/issue-<N>-*` developer worktree AND any Claude Code harness `agent-*` worktree QA/reviewer/security/docs tagged to <N> (#240), plus their now-merged local branches, so worktrees don't accumulate on disk. Idempotent: a no-op if no worktree matches. Do this on every merge, including when healing a merged-but-open issue in Step 0.
+3a. **Status log (`STATUS_ENABLED = true`, #333).** `bash scripts/pipeline-status-file.sh assemble --refresh --pr <PR_NUMBER> --issue <N>` — after item 3, so the refresh no longer lists the issue as queued. Also runs when healing a merged-but-open issue in Step 1; it is idempotent (an entry for that PR is replaced, never duplicated), so every merge path adds exactly one log bullet. Non-fatal: on exit 1 put its stderr line in the run summary; when only the "not refreshed" line printed (exit 0), put `status log assembled, resume block not refreshed for #<N>` there. It pushes a `[skip ci]` commit to the base (Rule 21); fast-forward the orchestrator's checkout afterwards.
+4. **Remove the developer worktree.** `bash scripts/pipeline-worktree.sh remove <N>` — deletes the `fix/issue-<N>-*` developer worktree AND any Claude Code harness `agent-*` worktree QA/reviewer/security/docs tagged to <N> (#240), plus their now-merged local branches, so worktrees don't accumulate on disk. Idempotent: a no-op if no worktree matches. Do this on every merge, including when healing a merged-but-open issue in Step 1.
 5. Relay: `bash scripts/pipeline-notify.sh orchestrator "#<N>" "all stages passed — merged PR #<PR_NUMBER>, issue closed" <N>`
 6. Lifecycle: `bash scripts/pipeline-notify.sh merged "#<N>" "PR #<PR_NUMBER> merged" <N>`
 7. Lifecycle: `bash scripts/pipeline-notify.sh issue-closed "#<N>" "issue resolved" <N>`
