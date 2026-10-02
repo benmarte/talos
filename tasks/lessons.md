@@ -4,7 +4,7 @@
 
 - Ben asked that work be delegated to cheaper subagents. The orchestrating session should only plan, decide, and synthesise.
 - Rule: spawn Sonnet for implementation and research, Haiku for read-only lookups and docs. Never do bulk file reading in the main session.
-- Talos routing lives in `talos.pipeline.json` under `agents.model` (Haiku) and `agents.roles.<role>.model` (Sonnet for developer, pm, qa, reviewer, security). Escalate one role at a time if it fails, never the global default.
+- Talos routing lives in `talos.pipeline.json` under `agents.model` (Sonnet) and `agents.roles.<role>.model` (as of 2026-10-02: Sonnet for validator, pm, developer, qa, reviewer, docs; Opus for planner, security, adversarial). Escalate one role at a time if it fails, never the global default.
 
 ## 2026-09-07: Talos over-tests and over-reads by design; make it lean
 
@@ -140,3 +140,37 @@ Three ideas taken from an agent-fleet guide (done-in-one-line per stage, per-rol
 - **Fix-round developer when a worktree still holds the PR branch:** `git checkout --detach FETCH_HEAD`, commit, `git push origin HEAD:<branch>` — works whether or not the branch name is free. Cheaper than removing worktrees first, though `pipeline-worktree.sh remove <N>` only catches worktrees tagged via `tag <N>`; untagged developer worktrees need `git worktree remove --force <path>` by hand after confirming `status --porcelain` is empty and HEAD == PR head.
 - **Reviewer/security/validator spawned without a worktree report through the mailbox with no usage**, so `pipeline-events.sh cost` shows `unrecorded` for them (this run: 11 of 17 events on #280). Known SKILL.md gap (#259); only worktree spawns carry usage.
 - Re-stamp flow worked end to end on #283: `check-approval-sha --stale-list` → Sonnet re-stamps for qa/reviewer with the approved SHA, current head, `--stat` and prior-comment URL → `post-approval`. Two re-stamp rounds cost ~93k QA tokens total vs ~77k for the original full QA pass — re-stamps are not free; avoid needing them by scoping security up front.
+
+## 2026-09-23: pipeline run #298/#299 — reread issue comments, escalate in-scope reviewer notes
+
+- **Correction from Ben:** "make sure to reread the issues comments as there were updates to both of these." I had queued both issues from the `list-issues` bodies only. Two human comments on #298 (a squash-merge caveat and a tag JSON-patch gotcha) were posted before the validator ran. The PM spec picked up most of them but dropped two points (transitionWorkItems closes on ANY target branch; unlinked folded items). Rule: before dispatching the developer, run `read-comments <N>` and check that every point in each non-talos comment appears in the PM spec. For anything missing, post a "PM spec addendum" comment on the issue and send it to the developer. `gh api graphql ... userContentEdits` shows whether the body was edited after the run started.
+- **A reviewer "non-blocking" note can be an in-scope correctness bug.** The #300 reviewer approved but noted that the new strict `merged` matcher accepted any `owner/repo#N` or issue URL, which is the same false-close class the issue was fixing. Verify such notes at the cited line, and send them back for a fix round when they contradict the issue's goal. Record the attempt as `record-attempt <N> reviewer --pr <PR>`.
+- **Security agents report "removed pipeline:blocked" even when it was never set.** Check the label timeline (`gh api repos/.../issues/<PR>/events`) before treating it as evidence of a block.
+- **Parallel PRs that each add tests to the same test file conflict**, even when their script regions are fenced. `update-branch` refuses, so a developer merge-base dispatch plus a full re-stamp round follows. Next time, also fence test files: have each developer put its tests in a separate section or file, or run such issues sequentially.
+
+## 2026-09-24: follow-up run #302–#314 — ReDoS keeps recurring, timing inputs must be systematic
+
+- **Every PR that added a regex over untrusted text needed a regex-complexity fix round** (#309 twice: exponential then quadratic; #308 once: quadratic across repeated keywords). Security's first timing pass used "obvious" inputs (`#12 ` runs) and missed the case where one substring both starts a keyword AND is a list item (`fix#1 fix#1 …`). Rule: brief developers up front to (a) cap scanned text at 65536 chars BEFORE any regex, (b) time adversarial inputs where the same substring can start a match at many offsets, (c) report a timing table. That brief on #304 made it land with zero complexity findings.
+- **A reviewer "non-blocking" note is worth verifying at the cited line**: #307's unguarded `gh pr list` capture (failed call = "no PR") and #308's quadratic regex were both in attention reports or CHANGES that a lighter touch would have waved through.
+- **Parallel reviewer+security both edited `pipeline:blocked`** — an approval erased the other role's block. Fixed in #310/#311: only the orchestrator clears it, right before a developer fix round.
+- **`git --work-tree=<dir> checkout <ref> -- <paths>` writes the index of the current checkout.** Use `git archive <ref> <paths> | tar -x -C <dir>` or `git show <ref>:<file>` to export a PR's files for timing. A `cd` into a worktree in a Bash call also rebinds the session cwd — use `git -C` / absolute paths.
+- **Transient API errors (spend limit 429, capacity 503) kill subagents mid-task.** Inspect the worktree (`git -C <wt> status`, compare `FETCH_HEAD`) before redoing work; resume the same agent with SendMessage when it has uncommitted edits, or re-route a small docs task to the docs role on a different model.
+
+## 2026-09-24: follow-up run #318–#322 — merge order for PRs that edit the same helper
+
+- **When two open PRs edit the same function, merge the smaller one first, then run the other's reviews once on the merged code.** #326 (link pinning) and #324 (parse-fail + stdin) both changed `_ga_fetch_all_pages`. Holding #324's reviews until #326 landed meant one review of the combined function instead of two.
+- **Before re-stamping after a merge of main, prove the PR's own delta is unchanged:** `diff <(git diff $(git merge-base origin/main OLD) OLD -- scripts tests) <(git diff $(git merge-base origin/main NEW) NEW -- scripts tests)`. Identical → re-stamps are a quick confirmation, not a re-review.
+- **Security fix rounds keep finding silent-empty coercions** (`except: page = []`, `2>/dev/null` on a gate fetch, `--limit N` with no cap warning). Brief developers up front: any fetch feeding a merge gate must fail or mark "unverified", never degrade to an empty result.
+- **Pass large payloads to python on stdin, not env vars:** Linux caps a single env string at 128 KB (E2BIG).
+- **`git show "$H:path"` with `H` set in a previous line of the same compound command printed the commit instead of the file** — use the explicit remote ref (`origin/<branch>:path`).
+
+## 2026-09-24: follow-up run #328–#329 — prove platform-specific claims in a container
+
+- **A regression test for a Linux-only failure can pass on macOS.** The E2BIG test (#329) passed on the Mac even with the bug reverted (macOS has no per-string env cap). QA proved the Linux failure by running the reverted code in `docker run ubuntu:24.04`. Rule: when a fix targets a Linux kernel limit, have QA reproduce the pre-fix failure in a Linux container, not just reason about it.
+- **Docs-only nits on an approved PR go to a Haiku docs agent** (CHANGELOG/README are waiver paths, so approvals stay current) — cheaper than a developer round and no re-stamps.
+
+## 2026-10-02: model routing must have one source of truth
+
+- Ben asked to change the per-stage models; I edited `talos.pipeline.json` and reported the agent frontmatter and re-stamp model as "left alone". He expected one place to set models and everything to follow it.
+- Rule: the Talos config is the intended single source of truth for models. When a model change leaves any other place disagreeing (agent `model:` frontmatter, `restamp_model`, the global install), either bring it in line or name it as a gap to close — never hand back a list of exceptions.
+- Do not copy the routing table into `agents/*.md` frontmatter by hand: that is a second copy that drifts, and it changes the shipped defaults for every Talos user. Close the gap in the product (spec → PR) instead.
