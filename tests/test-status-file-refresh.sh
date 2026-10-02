@@ -51,6 +51,7 @@ FX="${SF_FX:?}"
 verb="${1:-}"; shift
 printf '%s %s\n' "$verb" "$*" >> "$FX/calls.log"
 rc_of() { if [ -f "$FX/$1" ]; then cat "$FX/$1"; else echo "${2:-0}"; fi; }
+[ -f "$FX/sleep.$verb" ] && sleep "$(cat "$FX/sleep.$verb")"
 case "$verb" in
   list-prs)
     [ -f "$FX/prs.err" ] && cat "$FX/prs.err" >&2
@@ -135,8 +136,10 @@ labels_json() {  # "a,b" -> [{"name":"a"},{"name":"b"}]
   printf '[%s]' "$out"
 }
 sha40() { printf '%040d' "$1"; }
-add_pr() {  # number branch labels
-  PRS+=("{\"number\":$1,\"title\":\"PR $1\",\"headRefName\":\"$2\",\"baseRefName\":\"main\",\"labels\":$(labels_json "${3:-}")}")
+add_pr() {  # number branch labels [isCrossRepository: false|true|absent] [baseRefName]
+  local cross="\"isCrossRepository\":${4:-false},"
+  [ "${4:-}" = "absent" ] && cross=""
+  PRS+=("{\"number\":$1,\"title\":\"PR $1\",\"headRefName\":\"$2\",\"baseRefName\":\"${5:-main}\",${cross}\"labels\":$(labels_json "${3:-}")}")
   sha40 "$1" > "$FX/head.$1"
 }
 add_issue() {  # number labels
@@ -174,6 +177,10 @@ assert_contains "$hdr" "assemble [--pr <pr> --issue <n>] [--refresh]" "header: u
 assert_contains "$hdr" "waiting on owner" "header: states when Next is waiting on owner"
 assert_contains "$hdr" "list-needs-owner" "header: states what list-needs-owner exit codes do"
 assert_contains "$hdr" "resume #" "header: states the Next wording"
+assert_contains "$hdr" "waiting on human merge of #" "header: states the human-merge Next wording"
+assert_contains "$hdr" "[answered|unanswered|unverified]" "header: states the Owner status field"
+assert_contains "$hdr" "isCrossRepository" "header: states the fork rule"
+assert_contains "$hdr" "TALOS_STATUS_READ_DEADLINE" "header: states the read deadline"
 
 # ── status.enabled gates refresh, not refresh --print ───────────────────────
 reset_fixture
@@ -429,27 +436,28 @@ print(json.dumps([
 ]))' > "$FX/owners.json"
 out="$(bash "$SF" refresh --print 2>/dev/null)"
 assert_eq "- Queued: #3, #7, #8, #4, #9, #12" "$(line_of "$out" '^- Queued:')" "queued: p0, p1, p2, unlabelled, then by number"
-assert_eq "- Blocked: issue #20: Pick A or B?" "$(line_of "$out" '^- Blocked: issue')" "blocked: issue with an owner question"
-assert_eq "- Blocked: PR #40: see comments" "$(line_of "$out" '^- Blocked: PR')" "blocked: PR without a question says see comments"
-assert_eq "- Owner: #20 Pick A or B?" "$(line_of "$out" '^- Owner: #20')" "owner: unanswered item"
-assert_eq "- Owner: #21 Ship now? (answered)" "$(line_of "$out" '^- Owner: #21')" "owner: answered item"
+assert_eq "- Blocked: issue #20 [question] Pick A or B?" "$(line_of "$out" '^- Blocked: issue')" "blocked: issue with an owner question, fixed fields first"
+assert_eq "- Blocked: PR #40 [see comments]" "$(line_of "$out" '^- Blocked: PR')" "blocked: PR without a question says see comments"
+assert_eq "- Owner: #20 [unanswered] Pick A or B?" "$(line_of "$out" '^- Owner: #20')" "owner: unanswered item, status before the question"
+assert_eq "- Owner: #21 [answered] Ship now?" "$(line_of "$out" '^- Owner: #21')" "owner: answered item, status before the question"
 assert_eq "- Next: start #3" "$(line_of "$out" '^- Next:')" "next: the first queued issue is started when no PR is actionable"
 # order of lines: Base, Next, PR, Blocked, Owner, Queued
 kinds="$(block_of "$out" | sed -n 's/^- \([A-Za-z]*\).*/\1/p' | uniq | tr '\n' ' ')"
 assert_eq "Base Next PR Blocked Owner Queued " "$kinds" "order: Base, Next, PR, Blocked, Owner, Queued"
 assert_contains "$(calls)" "list-needs-owner --json" "owner: read through --json"
 assert_not_contains "$(calls)" "--clear-answered" "owner: never --clear-answered"
-# unverified trust set: no (answered)
+# unverified trust set: [unverified], never [answered]
 printf 'pipeline-vcs: talos:marker-authors-unverified reader=needs-owner\n' > "$FX/owners.err"
 out="$(bash "$SF" refresh --print 2>/dev/null)"
-assert_eq "- Owner: #21 Ship now?" "$(line_of "$out" '^- Owner: #21')" "owner: marker-authors-unverified renders without (answered)"
+assert_eq "- Owner: #21 [unverified] Ship now?" "$(line_of "$out" '^- Owner: #21')" "owner: marker-authors-unverified renders [unverified], not [answered]"
+assert_eq "- Owner: #20 [unverified] Pick A or B?" "$(line_of "$out" '^- Owner: #20')" "owner: marker-authors-unverified marks unanswered items [unverified] too"
 rm -f "$FX/owners.err"
 # exit 2: unsupported provider -> no Owner lines, exit 0, no Blocked question
 echo 2 > "$FX/owners.rc"; : > "$FX/owners.json"
 out="$(bash "$SF" refresh --print 2>/dev/null)"; rc=$?
 assert_eq "0" "$rc" "owner: list-needs-owner exit 2 still exits 0"
 assert_eq "0" "$(count_of "$out" '^- Owner:')" "owner: exit 2 omits the Owner lines"
-assert_eq "- Blocked: issue #20: see comments" "$(line_of "$out" '^- Blocked: issue')" "owner: exit 2 leaves Blocked at see comments"
+assert_eq "- Blocked: issue #20 [see comments]" "$(line_of "$out" '^- Blocked: issue')" "owner: exit 2 leaves Blocked at see comments"
 # exit 1: fail closed
 echo 1 > "$FX/owners.rc"
 before="$(osha)"
@@ -569,6 +577,7 @@ assert_eq "0" "$(status_tmp_dirs)" "print: no talos-status temp directory left b
 
 # the real gh stub: no POST/PATCH/PUT/DELETE and no label or comment call
 export STUB_PR_HEAD_SHA="$(sha40 9)"
+export STUB_GH_PRS_RAW='[{"number":9,"title":"fix: guard null session","head":{"ref":"fix/issue-42-guard","repo":{"full_name":"acme/widget"}},"base":{"ref":"main","repo":{"full_name":"acme/widget"}},"labels":[]}]'
 : > "$GH_LOG"
 out="$(bash "$SF_REAL" refresh --print 2>"$PARENT/err")"; rc=$?
 assert_eq "0" "$rc" "gh stub: refresh --print exits 0 against the real pipeline-vcs.sh (stderr: $(head -c 200 "$PARENT/err"))"
@@ -584,7 +593,7 @@ assert_not_contains "$log" "--method" "gh stub: no explicit write method"
 assert_eq "" "$(printf '%s\n' "$log" | grep -v -e '^api --paginate repos/[^ ]*$' -e '^api user --jq .login$' -e '^pr view [0-9]* --json headRefOid ' || true)" "gh stub: every call is a read (paginated list, current user, head SHA)"
 assert_not_contains "$log" "comment " "gh stub: no comment-writing call"
 assert_not_contains "$log" "--edit" "gh stub: no edit call"
-unset STUB_PR_HEAD_SHA
+unset STUB_PR_HEAD_SHA STUB_GH_PRS_RAW
 assert_eq "$before" "$(git rev-parse origin/main)" "gh stub: origin untouched"
 
 # ── push race: refetch, regenerate, retry; at most 3 attempts ───────────────
@@ -777,6 +786,173 @@ out="$(run_sf assemble)"; rc=$?
 assert_eq "0" "$rc" "plain assemble: exits 0"
 assert_eq "" "$(calls)" "plain assemble: makes no GitHub read"
 assert_not_contains "$(oshow TALOS_STATUS.md)" "- Base:" "plain assemble: does not write a block"
+
+# ── F1: a pipeline-style branch name alone does not make a pipeline PR ──────
+reset_fixture; cfg_rf
+fx_reset
+add_pr 77 fix/issue-3-evil "" true            # the security repro: unlabelled fork PR
+add_issue 3 "pipeline:ready"
+fx_flush
+out="$(bash "$SF" refresh --print 2>/dev/null)"
+assert_eq "0" "$(count_of "$out" '^- PR #77')" "fork: an unlabelled cross-repo PR gets no PR line"
+assert_eq "- Next: start #3" "$(line_of "$out" '^- Next:')" "fork: Next is unaffected by the fork PR"
+assert_eq "- Ignored: 1 open PR(s) with a pipeline-style branch name and no Talos label from a fork" "$(line_of "$out" '^- Ignored:')" "fork: one summary line, a count only"
+assert_not_contains "$out" "evil" "fork: no attacker-chosen text in the block"
+assert_not_contains "$(calls)" "pr-head 77" "fork: the excluded PR is not looked up (pr-head)"
+assert_not_contains "$(calls)" "check-approval-sha 77" "fork: the excluded PR is not looked up (check-approval-sha)"
+fx_reset
+add_pr 20 fix/issue-3-a "" false              # same repo, no label: a fix round in flight
+add_pr 21 fix/issue-4-b "qa:pass" true        # fork PR a maintainer labelled
+add_pr 22 fix/issue-5-c "pipeline:review" true
+add_pr 23 fix/issue-6-d "" absent             # field absent, no label: excluded
+add_pr 24 fix/issue-7-e "docs:done" absent    # field absent, label: listed
+add_pr 25 fix/issue-8-f "pipeline:review" false other   # wrong base: excluded
+add_pr 26 fix/issue-9-g "" true
+add_issue 3 ""; fx_flush
+out="$(bash "$SF" refresh --print 2>/dev/null)"
+assert_eq "20 21 22 24" "$(printf '%s\n' "$out" | sed -n 's/^- PR #\([0-9]*\) .*/\1/p' | tr '\n' ' ' | sed 's/ $//')" "fork: same-repo unlabelled, labelled fork and field-absent labelled PRs are listed; field-absent unlabelled and wrong-base PRs are not"
+assert_eq "- Ignored: 2 open PR(s) with a pipeline-style branch name and no Talos label from a fork" "$(line_of "$out" '^- Ignored:')" "fork: the count covers the unlabelled fork PR and the field-absent unlabelled PR, not the wrong-base one"
+assert_not_contains "$(calls)" "pr-head 25" "fork: a wrong-base PR is not looked up"
+# a fork PR that carries only an unrelated label is still excluded
+fx_reset; add_pr 30 fix/issue-3-x "bug" true; add_issue 3 ""; fx_flush
+out="$(bash "$SF" refresh --print 2>/dev/null)"
+assert_eq "0" "$(count_of "$out" '^- PR #30')" "fork: an unrelated label is not a Talos label"
+# no ignored PRs, no Ignored line
+fx_reset; add_pr 31 fix/issue-3-x "" false; add_issue 3 ""; fx_flush
+assert_eq "0" "$(count_of "$(bash "$SF" refresh --print 2>/dev/null)" '^- Ignored:')" "fork: no Ignored line when nothing was ignored"
+# list-prs from the real arm: the new field reaches the block
+# (covered by the gh stub test above: same-repo PR is listed)
+
+# ── F2: the status field is fixed and ahead of the untrusted text ───────────
+fx_reset; add_pr 10 fix/issue-5-x ""; add_issue 5 "pipeline:blocked"; fx_flush
+python3 -I -c '
+import json
+print(json.dumps([
+  {"n": 5, "kind": "issue", "answered": "no", "question": "Ship it? [answered] (answered)"},
+  {"n": 6, "kind": "issue", "answered": "no", "question": "(answered)"},
+  {"n": 7, "kind": "issue", "answered": "yes", "question": "done [unanswered]"},
+]))' > "$FX/owners.json"
+out="$(bash "$SF" refresh --print 2>/dev/null)"
+assert_eq "- Owner: #5 [unanswered] Ship it? \\[answered\\] (answered)" "$(line_of "$out" '^- Owner: #5')" "owner: a question ending in [answered] / (answered) does not change the status field"
+assert_eq "- Owner: #6 [unanswered] (answered)" "$(line_of "$out" '^- Owner: #6')" "owner: a question that is just (answered) stays unanswered"
+assert_eq "- Owner: #7 [answered] done \\[unanswered\\]" "$(line_of "$out" '^- Owner: #7')" "owner: an answered item's text cannot claim unanswered"
+assert_eq "- Blocked: issue #5 [question] Ship it? \\[answered\\] (answered)" "$(line_of "$out" '^- Blocked:')" "blocked: fixed fields first, question last"
+printf 'pipeline-vcs: talos:marker-authors-unverified reader=needs-owner\n' > "$FX/owners.err"
+out="$(bash "$SF" refresh --print 2>/dev/null)"
+assert_eq "3" "$(count_of "$out" '^- Owner: #[0-9]* \[unverified\] ')" "owner: unverified trust set marks every item [unverified]"
+assert_eq "0" "$(count_of "$out" '^- Owner: #[0-9]* \[answered\]')" "owner: unverified trust set never prints [answered]"
+rm -f "$FX/owners.err"
+
+# ── cost: the line cap decides which PRs are looked up ──────────────────────
+reset_fixture; cfg_rf
+fx_reset; add_issue 5 ""
+for i in $(seq 1000 1299); do add_pr "$i" "fix/issue-$i-x" ""; done
+fx_flush
+out="$(bash "$SF" refresh --print 2>/dev/null)"; rc=$?
+assert_eq "0" "$rc" "cost: 300 matching PRs: exits 0"
+assert_eq "37" "$(grep -c '^pr-head ' "$FX/calls.log")" "cost: 300 matching PRs make only 37 pr-head calls (the 37 PR lines shown)"
+assert_eq "40" "$(block_of "$out" | wc -l | tr -d ' ')" "cost: the block is still 40 lines"
+assert_eq "- +263 more" "$(block_of "$out" | tail -1)" "cost: the more line counts every omitted PR (2 + 300 - 39)"
+assert_eq "1000 1001" "$(printf '%s\n' "$out" | sed -n 's/^- PR #\([0-9]*\) .*/\1/p' | head -2 | tr '\n' ' ' | sed 's/ $//')" "cost: the lowest-numbered PRs are the ones shown"
+assert_eq "37" "$(grep -c '^check-approval-sha \|^pr-head ' "$FX/calls.log")" "cost: no other per-PR read for the omitted PRs"
+
+# ── deadline: a verb that outlasts it fails the read phase, no hang ─────────
+run_wd() {  # SECONDS cmd...: the command's output and exit code, or 124 after SECONDS
+  python3 -I -c '
+import subprocess, sys
+try:
+    p = subprocess.run(sys.argv[2:], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=int(sys.argv[1]))
+except subprocess.TimeoutExpired:
+    sys.stdout.write("WATCHDOG: still running\n")
+    sys.exit(124)
+sys.stdout.buffer.write(p.stdout)
+sys.exit(p.returncode)' "$@"
+}
+reset_fixture; cfg_rf
+wk_add docs/status.d/15-43.md "deadline fragment" 2026-09-10; wk_push; ofetch
+fx_reset; add_pr 10 fix/issue-5-x ""; add_issue 5 ""; fx_flush
+echo 20 > "$FX/sleep.pr-head"
+before="$(osha)"
+out="$(TALOS_STATUS_READ_DEADLINE=2 run_wd 40 bash "$SF" refresh)"; rc=$?
+assert_eq "1" "$rc" "deadline: refresh exits 1 when a read verb outlasts the deadline (output: $(printf '%s' "$out" | head -c 200))"
+assert_contains "$out" "deadline" "deadline: stderr names the deadline"
+ofetch
+assert_eq "$before" "$(osha)" "deadline: refresh pushed nothing"
+assert_eq "0" "$(status_tmp_dirs)" "deadline: no talos-status temp directory left behind"
+out="$(TALOS_STATUS_READ_DEADLINE=2 run_wd 40 bash "$SF" assemble --refresh)"; rc=$?
+assert_eq "0" "$rc" "deadline: assemble --refresh still exits 0 (output: $(printf '%s' "$out" | head -c 200))"
+assert_eq "1" "$(printf '%s\n' "$out" | grep -c 'not refreshed')" "deadline: assemble --refresh says once that the Resume block was not refreshed"
+ofetch
+assert_contains "$(oshow TALOS_STATUS.md)" "PR #43 (#15): deadline fragment" "deadline: assemble --refresh still assembled and pushed the log"
+assert_not_contains "$(oshow TALOS_STATUS.md)" "- PR #10 " "deadline: no block was written"
+# a deadline that is not a number falls back to the default and everything works
+rm -f "$FX/sleep.pr-head"
+out="$(TALOS_STATUS_READ_DEADLINE=abc run_wd 60 bash "$SF" refresh)"; rc=$?
+assert_eq "0" "$rc" "deadline: a bad TALOS_STATUS_READ_DEADLINE falls back to the default"
+
+# ── next: human-merge and needs-owner ───────────────────────────────────────
+reset_fixture; cfg_rf '"merge": {"auto": false}'
+fx_reset; add_pr 12 fix/issue-5-x "$ALL"; add_pr 11 fix/issue-6-x "$ALL"; add_issue 5 ""; add_issue 6 ""; fx_flush
+out="$(bash "$SF" refresh --print 2>/dev/null)"
+assert_eq "- Next: waiting on human merge of #11" "$(line_of "$out" '^- Next:')" "next: only human-merge PRs: waiting on human merge of the lowest"
+fx_reset; add_pr 12 fix/issue-5-x "$ALL"; add_issue 5 ""; add_issue 9 "pipeline:ready"; fx_flush
+assert_eq "- Next: start #9" "$(line_of "$(bash "$SF" refresh --print 2>/dev/null)" '^- Next:')" "next: a queued issue still comes before waiting on a human merge"
+cfg_rf
+fx_reset; add_pr 10 fix/issue-5-x "$ALL,pipeline:needs-owner"; add_issue 5 ""; fx_flush
+out="$(bash "$SF" refresh --print 2>/dev/null)"
+assert_eq "- Next: waiting on owner" "$(line_of "$out" '^- Next:')" "next: a needs-owner PR at merge is not offered as merge"
+assert_contains "$out" "- PR #10 (#5) head $(sha40 10) next: merge" "next: the needs-owner PR is still listed at its stage"
+fx_reset; add_pr 10 fix/issue-5-x "$ALL"; add_pr 11 fix/issue-6-x ""; add_issue 5 "pipeline:needs-owner"; add_issue 6 ""; fx_flush
+assert_eq "- Next: resume #11 at qa" "$(line_of "$(bash "$SF" refresh --print 2>/dev/null)" '^- Next:')" "next: a PR whose issue is needs-owner is skipped for resume too"
+
+# ── a resume heading above the log heading never swallows the log ───────────
+reset_fixture; cfg_rf '' '"resume_heading": "# Resume here"'
+orig="$(printf '# Resume here\n\nold block\n\n### a sub heading\n\nkeep this\n\n## Log\n\n- 2026-09-01 PR #1 (#1): first\n  continued\n')"
+wk_add TALOS_STATUS.md "$orig" 2026-09-01; wk_push; ofetch
+fx_reset; add_pr 10 fix/issue-5-x ""; add_issue 5 ""; fx_flush
+out="$(run_sf refresh)"; rc=$?
+assert_eq "0" "$rc" "heading: a level-1 resume heading: refresh exits 0"
+ofetch
+st="$(oshow TALOS_STATUS.md)"
+assert_contains "$st" "- 2026-09-01 PR #1 (#1): first" "heading: the log entry survives"
+assert_contains "$st" "## Log" "heading: the log heading survives"
+assert_contains "$st" "keep this" "heading: text after the next heading, of any level, is untouched"
+assert_not_contains "$st" "old block" "heading: the old block text is replaced"
+assert_eq "$(printf '%s\n' "$st" | sed -n '/^### a sub heading/,$p')" "$(printf '%s\n' "$orig" | sed -n '/^### a sub heading/,$p')" "heading: everything from the next heading on is byte-identical"
+assert_contains "$st" "- PR #10 (#5) head" "heading: the block was written under the level-1 heading"
+
+# ── the staged set must be the manifest, for the new verbs too ──────────────
+reset_fixture; cfg_rf
+wk_add docs/status.d/16-44.md "manifest fragment" 2026-09-10; wk_push; ofetch
+fx_reset; add_pr 10 fix/issue-5-x ""; add_issue 5 ""; fx_flush
+GITDIR="$(git rev-parse --git-common-dir)"
+mkdir -p "$GITDIR/hooks"
+cat > "$GITDIR/hooks/post-checkout" <<'TALOS_hookQ4v8Zr2LmWx'
+#!/bin/sh
+# Stage a file the verb never wrote, the moment the throwaway worktree exists.
+printf 'injected\n' > injected.txt
+git add -f injected.txt
+exit 0
+TALOS_hookQ4v8Zr2LmWx
+chmod +x "$GITDIR/hooks/post-checkout"
+before="$(osha)"; wt_before="$(wt_count)"
+out="$(run_sf refresh)"; rc=$?
+assert_eq "1" "$rc" "manifest: refresh refuses a hook-staged extra file"
+assert_contains "$out" "staged changes differ" "manifest: refresh says the staged set differs"
+ofetch
+assert_eq "$before" "$(osha)" "manifest: refresh pushed nothing"
+assert_eq "$wt_before" "$(wt_count)" "manifest: refresh left no worktree"
+out="$(run_sf assemble --refresh)"; rc=$?
+assert_eq "1" "$rc" "manifest: assemble --refresh refuses a hook-staged extra file"
+assert_contains "$out" "staged changes differ" "manifest: assemble --refresh says the staged set differs"
+ofetch
+assert_eq "$before" "$(osha)" "manifest: assemble --refresh pushed nothing"
+assert_contains "$(git ls-tree --name-only origin/main docs/status.d/)" "16-44.md" "manifest: the fragment is still on the base"
+rm -f "$GITDIR/hooks/post-checkout"
+out="$(run_sf refresh)"; rc=$?
+assert_eq "0" "$rc" "manifest: without the hook the same refresh succeeds"
+ofetch
+assert_eq "TALOS_STATUS.md" "$(git show --name-only --format= origin/main)" "manifest: the commit holds only the status file"
 
 # ── no stage left a temp directory behind ───────────────────────────────────
 assert_eq "0" "$(status_tmp_dirs)" "leak: no talos-status.* directory left in the test's TMPDIR after the whole file"

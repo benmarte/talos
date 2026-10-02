@@ -34,8 +34,9 @@
 #             write verb; it does run `git fetch origin <base>`, which only
 #             moves origin/<base>, so Base matches what refresh computes.
 #
-# The Resume block (everything from status.resume_heading up to the next `## `
-# heading). A pure function of the GitHub state and of origin/<base>: no
+# The Resume block (everything from status.resume_heading up to the next
+# Markdown heading of ANY level, so a `# Resume here` above `## Log` never
+# swallows the log). A pure function of the GitHub state and of origin/<base>: no
 # timestamp, no hostname, explicit sorting, so concurrent runs converge on the
 # same bytes. Lines, in this order (a group with nothing in it is omitted):
 #   - Base: <base_branch> @ <sha>      newest commit on origin/<base> touching a
@@ -43,20 +44,39 @@
 #                                      and status.archive_dir (`none` if there is none)
 #   - Next: <action>                   see below
 #   - PR #<M> (#<N>) head <sha> next: <stage>
-#                                      one per open PR whose head branch matches
-#                                      ^(fix|feat)/issue-<digits>(-|$), ascending
-#   - Blocked: <issue|PR> #<n>: <q>    pipeline:blocked; <q> is the needs-owner
-#                                      question, else `see comments`
-#   - Owner: #<n> <question>[ (answered)]   one per `list-needs-owner --json` item
+#                                      one per open PR of the pipeline, ascending.
+#                                      A pipeline PR has a head branch matching
+#                                      ^(fix|feat)/issue-<digits>(-|$), baseRefName
+#                                      equal to the base branch, and either a Talos
+#                                      label (pipeline:*, qa:pass, docs:done,
+#                                      review:approved, security:approved,
+#                                      adversarial:approved) or a listing that says
+#                                      isCrossRepository is false (absent means a
+#                                      label is needed): a fork PR cannot claim a
+#                                      pipeline slot by its branch name. Others are
+#                                      never looked up and get no PR line.
+#   - Blocked: <issue|PR> #<n> [question] <q>   pipeline:blocked; <q> is the
+#                                      needs-owner question; without one the line
+#                                      is `[see comments]`
+#   - Owner: #<n> [answered|unanswered|unverified] <question>   one per
+#                                      `list-needs-owner --json` item; the status
+#                                      is a fixed field BEFORE the untrusted
+#                                      question, `unverified` when
+#                                      talos:marker-authors-unverified was printed
 #   - Queued: #a, #b, ...              open issues labelled pipeline:ready in p0,
 #                                      p1, p2, unlabelled order, then by number
+#   - Ignored: <K> open PR(s) with a pipeline-style branch name and no Talos
+#                                      label from a fork   (count only; never cut)
 #   - Note: ...                        only when list-prs or list-issues reported
-#                                      a cap; always the last line
+#                                      a cap; always the last line (never cut)
 # Next, first match wins: `merge #M` (lowest-numbered PR at stage merge);
 # `resume #M at <stage>` (lowest-numbered PR at any other stage except blocked
 # and human-merge; `unverified` renders `resume #M at unverified`); `start #n`
-# (first queued issue); `waiting on owner` (no PR is actionable, nothing is
-# queued, and at least one Owner or Blocked line exists); `nothing queued`.
+# (first queued issue); `waiting on human merge of #M` (lowest PR at
+# human-merge); `waiting on owner` (no PR is actionable, nothing is queued, and
+# an Owner or Blocked line exists or a PR carries pipeline:needs-owner);
+# `nothing queued`. A PR (or its issue) labelled pipeline:needs-owner is never
+# offered as merge or resume. Next sees only the PRs that were looked up.
 # Stage of a PR, first match wins, counting only enabled roles (roles.qa,
 # docs, reviewer, security default true; roles.adversarial defaults false) and
 # treating an approval label as missing when check-approval-sha --stale-list
@@ -68,7 +88,15 @@
 # `merge` (merge.auto, default true) or `human-merge`.
 # The block is capped at status.resume_max_lines (default 40, never fewer than
 # 3 lines): Base and Next are kept, the rest is cut and the last line says
-# `- +<K> more`. Text of the other sections is never touched.
+# `- +<K> more`. The cap is applied BEFORE the per-PR reads: only the lowest-
+# numbered PRs that will be shown are looked up (pr-head, check-approval-sha,
+# pr-is-draft, pr-checks-required), the rest are counted in the `more` line, so
+# 300 PRs cost the same number of reads as 40. Text of the other sections is
+# never touched.
+# The whole read phase has a deadline (120 s, TALOS_STATUS_READ_DEADLINE
+# overrides it, in seconds): a read verb that is still running when it passes
+# is killed and counts as a failed read (`refresh` exits 1 and pushes nothing;
+# `assemble --refresh` assembles the log only).
 #
 # Reads (GitHub, once, before the retry loop; read verbs only, nothing is
 # written to GitHub): list-prs, list-issues, pr-head, check-approval-sha
@@ -78,7 +106,8 @@
 # check-approval-sha or list-needs-owner exiting non-zero (list-needs-owner
 # exit 2, an unsupported provider, excepted: no Owner lines) makes `refresh`
 # exit 1 with nothing pushed. `talos:marker-authors-unverified` on
-# list-needs-owner's stderr means `answered` is unverified: no ` (answered)`.
+# list-needs-owner's stderr means `answered` is unverified: every Owner line is
+# `[unverified]`, never `[answered]`.
 # Every rendered line is one line: control characters removed, Markdown
 # escaped (no heading, list item, code fence, link or `<!--`), 160 characters.
 #
@@ -298,7 +327,7 @@ LOG_MAX="$(_sf_posint status.log_max 50 10000)"
 #    window, shared by init and assemble. Large inputs arrive on stdin
 #    (assemble: "<sha> <name>" lines) or are read by python itself. ──────────
 IFS= read -r -d '' SF_PY <<'PYEOF' || true
-import datetime, json, os, re, subprocess, sys, unicodedata
+import datetime, json, os, re, signal, subprocess, sys, time, unicodedata
 
 MAX_LINES = 3
 MAX_CHARS = 400
@@ -490,6 +519,11 @@ PRIORITY = {'p0': 0, 'p1': 1, 'p2': 2}
 LINE_CAP = 160       # characters of untrusted text per rendered line
 QUEUE_SHOW = 50      # issue numbers named on the Queued line
 MIN_BLOCK_LINES = 3  # Base, Next and the `more` marker are never dropped
+READ_DEADLINE = 120  # seconds for the whole read phase; CALL_TIMEOUT for one verb
+CALL_TIMEOUT = 180
+NEEDS_OWNER_LABEL = 'pipeline:needs-owner'
+# A label only a maintainer can apply: a PR carrying one is the pipeline's own.
+TALOS_LABELS = frozenset(label for _, label in APPROVALS)
 
 
 def _num(item, key='number'):
@@ -519,13 +553,37 @@ def md_text(s):
     return re.sub(r'([\\`*_\[\]|~])', r'\\\1', s)
 
 
+def _read_deadline():
+    """Seconds the whole read phase may take (TALOS_STATUS_READ_DEADLINE, for tests)."""
+    v = os.environ.get('TALOS_STATUS_READ_DEADLINE', '')
+    return int(v) if v.isdigit() and 1 <= int(v) <= 3600 else READ_DEADLINE
+
+
+_deadline = time.monotonic() + _read_deadline()
+
+
 def vcs(*args):
+    """Run one read verb in its own session. The overall deadline and the
+    per-call timeout both END the run: a verb that timed out has no answer, and
+    must never read as `ready` (pr-is-draft exit 1) or `ci` (exit 1)."""
+    left = _deadline - time.monotonic()
+    if left <= 0:
+        die('the GitHub read phase passed its %ds deadline' % _read_deadline())
     try:
-        p = subprocess.run(['bash', opts['vcs']] + list(args), stdin=subprocess.DEVNULL,
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
-    except (OSError, subprocess.SubprocessError):
-        return 1, '', ''
-    return p.returncode, p.stdout.decode('utf-8', 'replace'), p.stderr.decode('utf-8', 'replace')
+        p = subprocess.Popen(['bash', opts['vcs']] + list(args), stdin=subprocess.DEVNULL,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+    except OSError:
+        die('could not run the read verb %s' % args[0])
+    try:
+        out, err = p.communicate(timeout=min(CALL_TIMEOUT, left))
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        p.communicate()
+        die('the read verb %s timed out (read deadline %ds)' % (args[0], _read_deadline()))
+    return p.returncode, out.decode('utf-8', 'replace'), err.decode('utf-8', 'replace')
 
 
 def parse_array(text, what):
@@ -587,45 +645,66 @@ def collect():
 
     # list-needs-owner: exit 2 is an unsupported provider (no Owner lines); any
     # other failure is a failed read and fails the run like list-prs does.
-    owners, unverified = None, False
+    owners = None
     rc, out, err = vcs('list-needs-owner', '--json')
     if rc != 2:
         if rc != 0:
             die('list-needs-owner failed (rc=%d)' % rc)
         owners = []
+        # The trust set was not resolved: every `answered` value is unverified.
+        unverified = 'talos:marker-authors-unverified' in err
         for r in parse_array(out, 'list-needs-owner --json'):
             if not _num(r, 'n') or not isinstance(r.get('question', ''), str):
                 die('list-needs-owner --json returned an item that is not {n, question, ...}')
-            owners.append({'n': r['n'], 'answered': r.get('answered') == 'yes',
-                           'question': r.get('question', '')})
-        unverified = 'talos:marker-authors-unverified' in err
-        if unverified:  # the trust set was not resolved: answered is unverified
-            for o in owners:
-                o['answered'] = False
+            # The status goes in a fixed field before the untrusted question.
+            status = 'unverified' if unverified else ('answered' if r.get('answered') == 'yes' else 'unanswered')
+            owners.append({'n': r['n'], 'status': status, 'question': r.get('question', '')})
         owners.sort(key=lambda o: o['n'])
 
-    enabled = set(x for x in opts.get('roles', '').split(',') if x)
-    prs, blocked = [], []
+    # Which PRs are the pipeline's: a pipeline-style head branch alone is not
+    # enough, anyone can open a PR named fix/issue-3-x from a fork. Same base, and
+    # either a Talos label (a maintainer applied it) or the listing says the PR
+    # is NOT from a fork. isCrossRepository absent means a label is required.
+    base = opts['base-branch']
+    eligible, ignored, blocked = [], 0, []
     for it in sorted((i for i in raw_prs if _num(i)), key=lambda i: i['number']):
         n, labels = it['number'], _label_set(it)
         if BLOCKED_LABEL in labels:
             blocked.append(('PR', n))
         branch = it.get('headRefName')
         m = BRANCH_RE.match(branch) if isinstance(branch, str) else None
-        if not m:
+        if not m or it.get('baseRefName') != base:
             continue
-        issue = int(m.group(1))
-        rc, out, _ = vcs('pr-head', str(n))
-        head = out.strip()
-        if rc != 0 or not SHA_RE.match(head):
-            die('pr-head failed for PR #%d' % n)
-        prs.append({'n': n, 'issue': issue, 'head': head,
-                    'stage': next_stage(n, labels, issues.get(issue, set()), enabled)})
+        if not (any(l.startswith('pipeline:') or l in TALOS_LABELS for l in labels)
+                or it.get('isCrossRepository') is False):
+            ignored += 1
+            continue
+        eligible.append((n, labels, int(m.group(1))))
     blocked += [('issue', n) for n in issues if BLOCKED_LABEL in issues[n]]
     blocked.sort(key=lambda b: (b[1], b[0]))
     queued = sorted((n for n in issues if READY_LABEL in issues[n]),
                     key=lambda n: (min([PRIORITY[l] for l in issues[n] if l in PRIORITY] or [3]), n))
-    write_text(opts['out'], json.dumps({'prs': prs, 'blocked': blocked, 'queued': queued,
+
+    # Look up only the PRs the block will show (lowest numbers): the line cap
+    # decides this BEFORE the per-PR reads, so 300 PRs cost the same as 40.
+    # The rest are counted by the `- +<K> more` line. Next sees rendered PRs only.
+    max_lines = int(opts['max-lines'])
+    budget = max(max_lines - (1 if ignored else 0) - (1 if capped else 0), MIN_BLOCK_LINES)
+    others = len(blocked) + len(owners or []) + (1 if queued else 0)
+    shown = len(eligible) if 2 + len(eligible) + others <= budget else budget - 3
+    enabled = set(x for x in opts.get('roles', '').split(',') if x)
+    prs = []
+    for n, labels, issue in eligible[:shown]:
+        rc, out, _ = vcs('pr-head', str(n))
+        head = out.strip()
+        if rc != 0 or not SHA_RE.match(head):
+            die('pr-head failed for PR #%d' % n)
+        issue_labels = issues.get(issue, set())
+        prs.append({'n': n, 'issue': issue, 'head': head,
+                    'owner': NEEDS_OWNER_LABEL in labels or NEEDS_OWNER_LABEL in issue_labels,
+                    'stage': next_stage(n, labels, issue_labels, enabled)})
+    write_text(opts['out'], json.dumps({'prs': prs, 'pr_total': len(eligible), 'ignored': ignored,
+                                        'blocked': blocked, 'queued': queued,
                                         'owners': owners, 'capped': capped}))
 
 
@@ -647,57 +726,70 @@ def build_block(data, branch, base, max_lines):
     prs, queued, owners, blocked = data['prs'], data['queued'], data['owners'], data['blocked']
     by_owner = dict((o['n'], o) for o in owners or [])
 
-    merge = [p for p in prs if p['stage'] == 'merge']
-    actionable = [p for p in prs if p['stage'] not in ('blocked', 'human-merge')]
+    # A PR waiting on an owner decision is never offered as the next action.
+    live = [p for p in prs if not p['owner']]
+    merge = [p for p in live if p['stage'] == 'merge']
+    actionable = [p for p in live if p['stage'] not in ('blocked', 'human-merge')]
+    human = [p for p in live if p['stage'] == 'human-merge']
     if merge:
         nxt = 'merge #%d' % merge[0]['n']
     elif actionable:
         nxt = 'resume #%d at %s' % (actionable[0]['n'], actionable[0]['stage'])
     elif queued:
         nxt = 'start #%d' % queued[0]
-    elif blocked or owners:
+    elif human:
+        nxt = 'waiting on human merge of #%d' % human[0]['n']
+    elif blocked or owners or len(live) < len(prs):
         nxt = 'waiting on owner'
     else:
         nxt = 'nothing queued'
 
+    # Fixed fields first, untrusted text last: nothing in a question can
+    # change the status or kind that precedes it.
     lines = ['- Base: %s @ %s' % (branch, base), '- Next: %s' % nxt]
     for p in prs:
         lines.append('- PR #%d (#%d) head %s next: %s' % (p['n'], p['issue'], p['head'], p['stage']))
     for kind, n in blocked:
         q = md_text(by_owner[n]['question']) if n in by_owner else ''
-        lines.append('- Blocked: %s #%d: %s' % (kind, n, q or 'see comments'))
+        lines.append('- Blocked: %s #%d %s' % (kind, n, '[question] ' + q if q else '[see comments]'))
     for o in owners or []:
-        lines.append('- Owner: #%d %s%s' % (o['n'], md_text(o['question']) or '(no question text)',
-                                            ' (answered)' if o['answered'] else ''))
+        lines.append('- Owner: #%d [%s] %s' % (o['n'], o['status'], md_text(o['question']) or '(no question text)'))
     if queued:
         shown = ', '.join('#%d' % n for n in queued[:QUEUE_SHOW])
         more = len(queued) - QUEUE_SHOW
         lines.append('- Queued: %s%s' % (shown, ' (+%d more)' % more if more > 0 else ''))
 
-    # A capped listing is never rendered as complete: the note stays last.
-    note = None
+    # Never cut: what was left out of the listing (an ignored fork PR count, a
+    # capped listing), so a truncated view is not shown as complete. The cap
+    # note stays last.
+    trailer = []
+    if data['ignored']:
+        trailer.append('- Ignored: %d open PR(s) with a pipeline-style branch name and no Talos label '
+                       'from a fork' % data['ignored'])
     if data['capped']:
-        note = '- Note: %s result capped; PR, Blocked and Queued lines may be incomplete' % \
-               ' and '.join(data['capped'])
-    budget = max(max_lines - (1 if note else 0), MIN_BLOCK_LINES)
-    if len(lines) > budget:
+        trailer.append('- Note: %s result capped; PR, Blocked and Queued lines may be incomplete' %
+                       ' and '.join(data['capped']))
+    budget = max(max_lines - len(trailer), MIN_BLOCK_LINES)
+    # PRs past the line cap were never looked up: their lines count as omitted.
+    total = len(lines) + data['pr_total'] - len(prs)
+    if total > budget:
         keep = lines[:budget - 1]
-        lines = keep + ['- +%d more' % (len(lines) - len(keep))]
-    return lines + ([note] if note else [])
+        lines = keep + ['- +%d more' % (total - len(keep))]
+    return lines + trailer
 
 
 def splice_block(text, block):
-    """Replace everything under the resume heading, up to the next heading of
-    the same or a higher level, by the block; nothing else changes."""
+    """Replace everything under the resume heading, up to the next Markdown
+    heading of ANY level, by the block; nothing else changes. Any level, so a
+    resume heading above the log heading (`# Resume here`, `## Log`) can never
+    swallow the log section."""
     lines = ensure_headings(text).split('\n')
     if lines and lines[-1] == '':
         lines.pop()
     idx = next(i for i, l in enumerate(lines) if l.rstrip() == resume_h)
-    level = len(resume_h) - len(resume_h.lstrip('#'))
     end = len(lines)
     for j in range(idx + 1, len(lines)):
-        m = HEADING_RE.match(lines[j])
-        if m and len(m.group(1)) <= level:
+        if HEADING_RE.match(lines[j]):
             end = j
             break
     out = lines[:idx + 1] + [''] + block
@@ -1067,7 +1159,8 @@ _sf_collect() {
   python3 -I -c "$SF_PY" collect "$PWD" "$STATUS_FILE" "$FRAG_DIR" "$ARCHIVE_DIR" \
     "$LOG_HEADING" "$RESUME_HEADING" "$LOG_DAYS" "$LOG_MAX" "$TODAY" "" "" "" "" \
     --vcs "$SCRIPT_DIR/pipeline-vcs.sh" --out "$_SF_TMP/gh.json" --roles "$roles" \
-    --merge-auto "$auto" --required-checks "$checks" --pr-draft "$draft" </dev/null
+    --merge-auto "$auto" --required-checks "$checks" --pr-draft "$draft" \
+    --base-branch "$BASE_BRANCH" --max-lines "$MAX_LINES" </dev/null
 }
 # _sf_fetch_base: refresh origin/<base> (this only moves the remote-tracking ref).
 _sf_fetch_base() {
@@ -1139,6 +1232,7 @@ while :; do
   _SF_MANIFEST="$_SF_TMP/manifest"
   rm -f "$_SF_MANIFEST"
   SUBJECT="docs(status): refresh resume block [skip ci]"
+  DONE_MSG="refreshed the resume block in $STATUS_FILE on $BASE_BRANCH and pushed"
   if [ "$verb" = "assemble" ]; then
     printf '%s\n' "$FRAG_LIST" | python3 -I -c "$SF_PY" assemble "$_SF_TMP/wt" \
       "$STATUS_FILE" "$FRAG_DIR" "$ARCHIVE_DIR" "$LOG_HEADING" "$RESUME_HEADING" \
@@ -1150,7 +1244,11 @@ while :; do
     fi
     if [ -s "$_SF_MANIFEST" ]; then
       SUBJECT="docs(status): assemble status log [skip ci]"
-      [ -n "$REFRESH_ON" ] && SUBJECT="docs(status): assemble status log and refresh resume block [skip ci]"
+      DONE_MSG="assembled the status log into $STATUS_FILE on $BASE_BRANCH and pushed"
+      if [ -n "$REFRESH_ON" ]; then
+        SUBJECT="docs(status): assemble status log and refresh resume block [skip ci]"
+        DONE_MSG="assembled the status log and refreshed the resume block in $STATUS_FILE on $BASE_BRANCH and pushed"
+      fi
     fi
   fi
 
@@ -1181,11 +1279,7 @@ while :; do
   _sf_stage_commit "$SUBJECT" || exit 1
 
   if _SF_PUSH_ERR="$(git -C "$_SF_TMP/wt" push -q origin "HEAD:refs/heads/$BASE_BRANCH" 2>&1)"; then
-    case "$SUBJECT" in
-      "docs(status): refresh resume block"*) echo "pipeline-status-file: refreshed the resume block in $STATUS_FILE on $BASE_BRANCH and pushed" ;;
-      *"and refresh resume block"*) echo "pipeline-status-file: assembled the status log and refreshed the resume block in $STATUS_FILE on $BASE_BRANCH and pushed" ;;
-      *) echo "pipeline-status-file: assembled the status log into $STATUS_FILE on $BASE_BRANCH and pushed" ;;
-    esac
+    echo "pipeline-status-file: $DONE_MSG"
     exit 0
   fi
 

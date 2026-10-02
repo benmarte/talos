@@ -3394,10 +3394,15 @@ print(count)
       printf '%s' "$_lp_raw" | _gh_paginate_merge | python3 -c "
 import json, sys
 items = json.load(sys.stdin)
+def cross(i):
+    # A fork PR (#346): head and base repos differ; a deleted fork has no head repo.
+    h = ((i.get('head') or {}).get('repo') or {}).get('full_name')
+    return h is None or h != ((i.get('base') or {}).get('repo') or {}).get('full_name')
 out = [{'number': i.get('number'), 'title': i.get('title', ''),
         'headRefName': (i.get('head') or {}).get('ref', ''),
         'baseRefName': (i.get('base') or {}).get('ref', ''),
-        'labels': [{'name': l.get('name')} for l in (i.get('labels') or [])]}
+        'labels': [{'name': l.get('name')} for l in (i.get('labels') or [])],
+        'isCrossRepository': cross(i)}
        for i in items]
 print(json.dumps(out))
 "
@@ -4618,9 +4623,15 @@ print(json.dumps(result, indent=2))
       printf '%s' "$_raw" | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
+def cross(i):
+    # A fork PR (#346): head and base repos differ; a deleted fork has no head repo.
+    h = ((i.get('head') or {}).get('repo') or {}).get('full_name')
+    return h is None or h != ((i.get('base') or {}).get('repo') or {}).get('full_name')
 result = [{'number': i['number'], 'title': i.get('title',''),
            'headRefName': i.get('head',{}).get('ref',''),
-           'labels': [{'name': l['name']} for l in i.get('labels',[])]}
+           'labels': [{'name': l['name']} for l in i.get('labels',[])],
+           'baseRefName': (i.get('base') or {}).get('ref', ''),
+           'isCrossRepository': cross(i)}
           for i in data]
 print(json.dumps(result, indent=2))
 "
