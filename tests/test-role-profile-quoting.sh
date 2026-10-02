@@ -193,11 +193,13 @@ if [ -z "${TALOS_QUOTING_NESTED:-}" ]; then
   cp "$SELF" "$TALOS_ROOT/tests/helpers.sh" "$CK/tests/"
   cp "$TALOS_ROOT/tests/fixtures/pre-340-unsafe-recipes.md" "$CK/tests/fixtures/"
   cp "$TALOS_ROOT/scripts/pipeline-paths.sh" "$CK/scripts/"
-  (cd "$CK" && env -u ROLE_FILES -u ROLE_ROOT TALOS_QUOTING_NESTED=1 bash tests/test-role-profile-quoting.sh >"$SANDBOX/sp.out" 2>&1); sp_rc=$?
+  # TALOS_ROOT is unset so the copy finds its own files, not this checkout's
+  # (the runner exports it).
+  (cd "$CK" && env -u ROLE_FILES -u ROLE_ROOT -u TALOS_ROOT TALOS_QUOTING_NESTED=1 bash tests/test-role-profile-quoting.sh >"$SANDBOX/sp.out" 2>&1); sp_rc=$?
   assert_eq "0" "$sp_rc" "the guard passes from a checkout whose path contains a space"
   assert_contains "$(cat "$SANDBOX/sp.out")" "the scan has a non-empty file list" "...and it did scan the files there"
   printf '\nbash scripts/pipeline-vcs.sh slug-for "<title>"\n' >> "$CK/agents/pm.md"
-  (cd "$CK" && env -u ROLE_FILES -u ROLE_ROOT TALOS_QUOTING_NESTED=1 bash tests/test-role-profile-quoting.sh >"$SANDBOX/sp.out" 2>&1); sp_rc=$?
+  (cd "$CK" && env -u ROLE_FILES -u ROLE_ROOT -u TALOS_ROOT TALOS_QUOTING_NESTED=1 bash tests/test-role-profile-quoting.sh >"$SANDBOX/sp.out" 2>&1); sp_rc=$?
   assert_eq "1" "$sp_rc" "a planted unsafe line fails the guard from a path with a space"
 fi
 
