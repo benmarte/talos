@@ -93,6 +93,18 @@
     "threading": true
   },
 
+  "status": {
+    "enabled": false,
+    "file": "TALOS_STATUS.md",
+    "log_heading": "## Log",
+    "resume_heading": "## Resume here",
+    "fragments_dir": "docs/status.d",
+    "archive_dir": "status/archive",
+    "log_days": 30,
+    "log_max": 50,
+    "resume_max_lines": 40
+  },
+
   "limits": {
     "max_fix_attempts": 3,
     "max_total_dispatches": 8,

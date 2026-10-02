@@ -514,6 +514,22 @@ notifications:
 # pr:
 #   draft: false                     # default false
 
+# ── Built-in status file (#343, epic #333) ───────────────────────────────────
+# Known keys only so far: nothing reads status.* until the later sub-issues
+# land, and status.enabled defaults to false, so setting these changes nothing yet.
+# status.fragments_dir must be a TRACKED directory (hence docs/status.d, not
+# .talos/status.d: .talos/ is gitignored or untracked in a consumer repo).
+# status:
+#   enabled: false                   # default false (opt-in)
+#   file: "TALOS_STATUS.md"
+#   log_heading: "## Log"
+#   resume_heading: "## Resume here"
+#   fragments_dir: "docs/status.d"
+#   archive_dir: "status/archive"
+#   log_days: 30                     # positive integer
+#   log_max: 50                      # positive integer
+#   resume_max_lines: 40             # positive integer
+
 # ── Safety limits ─────────────────────────────────────────────────────────────
 limits:
   max_fix_attempts: 3        # Developer re-tries before escalating to pipeline:blocked
