@@ -75,9 +75,10 @@
 #   ready-pr <n>                              Mark a draft PR ready for review
 #                                             (#332): `gh pr ready`, `glab mr
 #                                             update --ready`, `az repos pr
-#                                             update --draft false`. github-api
-#                                             and file mode exit 2. PR id must
-#                                             be numeric (exit 1 otherwise).
+#                                             update --draft false`. Exit 0 only
+#                                             on success; every failure (bad or
+#                                             non-numeric id, setup error,
+#                                             github-api, file mode) is exit 2.
 #   draft-pr <n>                              Convert a PR back to a draft
 #                                             (#332): `gh pr ready --undo`,
 #                                             `glab mr update --draft`, `az
@@ -88,17 +89,26 @@
 #                                             unverified (fetch failed, bad or
 #                                             non-numeric PR id, unparseable
 #                                             response, unsupported provider:
-#                                             github-api, file). stdout is empty
-#                                             on every exit 2; it never degrades
-#                                             to "ready". Callers dispatch QA /
-#                                             the CI wait only on exit 1.
+#                                             github-api, file; setup error: no
+#                                             token, unknown provider, missing
+#                                             CLI; --dry-run). Exit 0 only with
+#                                             stdout exactly `draft`, exit 1 only
+#                                             with stdout exactly `ready` (enforced
+#                                             for every provider by the dispatcher);
+#                                             stdout is empty on every exit 2.
+#                                             Callers dispatch QA / the CI wait
+#                                             only on exit 1.
 #   pr-ci-runs <n>                            Print the number of
 #                                             `pull_request`-triggered workflow
-#                                             runs for the PR's head branch
-#                                             (#332), read from the Actions
-#                                             `total_count`. github only; every
-#                                             other provider exits 2, and so
-#                                             does a failed or unparseable
+#                                             runs for the PR's head branch that
+#                                             executed (#332): the Actions
+#                                             `total_count` minus the runs whose
+#                                             conclusion is `skipped` (a draft
+#                                             push skipped by the `draft != true`
+#                                             job guard is not CI that ran).
+#                                             github only; every other provider
+#                                             exits 2, and so does any setup
+#                                             error, a failed or unparseable
 #                                             fetch or a total that reaches
 #                                             GitHub's 1000-result search cap
 #                                             (never a short count).
@@ -2820,10 +2830,14 @@ print(json.dumps(out))
         "gh pr view ${1:-} --json isDraft ${REPO:+--repo $REPO}" _github_fetch_draft
       ;;
     pr-ci-runs)
-      # (#332) Number of `pull_request` workflow runs for the PR's head branch.
-      # Read from the list endpoint's total_count (per_page=1), so there is no
-      # paginated sum to truncate. GitHub caps filtered run searches at 1000
-      # results; a total at the cap is unverified, never a short count.
+      # (#332) Number of `pull_request` workflow runs for the PR's head branch
+      # that executed: every run minus those whose conclusion is `skipped`
+      # (with pr.draft, a push to a draft PR still creates a run whose jobs
+      # are all skipped by the `draft != true` guard; it is not CI that ran).
+      # Both figures are the list endpoint's total_count (per_page=1), so
+      # there is no paginated sum to truncate. GitHub caps filtered run
+      # searches at 1000 results; a total at the cap is unverified, never a
+      # short count.
       local _cr_n="${1:-}" _cr_repo="$REPO"
       [ -z "$_cr_repo" ] && _cr_repo='{owner}/{repo}'
       if ! _vcs_pr_id_numeric "$_cr_n"; then
@@ -2831,10 +2845,10 @@ print(json.dumps(out))
         exit 2
       fi
       if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] gh pr view $_cr_n --json headRefName; gh api -X GET repos/$_cr_repo/actions/runs -f event=pull_request -f branch=<head> -F per_page=1"
+        echo "[dry-run] gh pr view $_cr_n --json headRefName; gh api -X GET repos/$_cr_repo/actions/runs -f event=pull_request -f branch=<head> [-f status=skipped] -F per_page=1"
         return 0
       fi
-      local _cr_head_raw _cr_head _cr_raw _cr_count
+      local _cr_head_raw _cr_head _cr_all _cr_skipped
       _cr_head_raw="$(gh pr view "$_cr_n" --json headRefName ${REPO:+--repo "$REPO"})" || {
         echo "pipeline-vcs: pr-ci-runs: could not fetch PR #$_cr_n -- unverified" >&2
         exit 2
@@ -2852,12 +2866,13 @@ print(v)
         echo "pipeline-vcs: pr-ci-runs: PR #$_cr_n has no head branch -- unverified" >&2
         exit 2
       }
-      _cr_raw="$(gh api -X GET "repos/$_cr_repo/actions/runs" \
-        -f event=pull_request -f branch="$_cr_head" -F per_page=1)" || {
-        echo "pipeline-vcs: pr-ci-runs: could not list workflow runs for PR #$_cr_n -- unverified" >&2
-        exit 2
-      }
-      _cr_count="$(printf '%s' "$_cr_raw" | python3 -c '
+      # _github_runs_total [extra gh api args] -> total_count of the filtered
+      # run list, or non-zero (nothing printed) when missing, malformed, or at the cap.
+      _github_runs_total() {
+        local _rt_raw
+        _rt_raw="$(gh api -X GET "repos/$_cr_repo/actions/runs" \
+          -f event=pull_request -f branch="$_cr_head" "$@" -F per_page=1)" || return 1
+        printf '%s' "$_rt_raw" | python3 -c '
 import json, sys
 try:
     n = json.load(sys.stdin).get("total_count")
@@ -2866,11 +2881,17 @@ except Exception:
 if type(n) is not int or n < 0 or n >= 1000:
     sys.exit(2)
 print(n)
-')" || {
-        echo "pipeline-vcs: pr-ci-runs: workflow run total for PR #$_cr_n is missing, malformed or at GitHub's 1000-result cap -- unverified" >&2
+'
+      }
+      _cr_all="$(_github_runs_total)" && _cr_skipped="$(_github_runs_total -f status=skipped)" || {
+        echo "pipeline-vcs: pr-ci-runs: workflow run totals for PR #$_cr_n could not be fetched, are malformed, or are at GitHub's 1000-result cap -- unverified" >&2
         exit 2
       }
-      printf '%s\n' "$_cr_count"
+      if [ "$_cr_skipped" -gt "$_cr_all" ]; then
+        echo "pipeline-vcs: pr-ci-runs: PR #$_cr_n reports more skipped runs ($_cr_skipped) than runs ($_cr_all) -- unverified" >&2
+        exit 2
+      fi
+      printf '%s\n' "$((_cr_all - _cr_skipped))"
       ;;
     view-pr)
       _run gh pr view "$1" --json number,title,headRefName,labels,url,body \
@@ -7314,17 +7335,64 @@ if [ "$VERB" = "conflict-files" ]; then
 fi
 
 # ── Main dispatch ─────────────────────────────────────────────────────────────
+_vcs_dispatch_provider() {
+  case "$PROVIDER" in
+    github)     _github     "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
+    github-api) _github_api "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
+    gitlab)     _gitlab     "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
+    azure)      _azure      "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
+    file)       _file       "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
+    *)
+      echo "pipeline-vcs: unknown provider '$PROVIDER'. Valid: github | github-api | gitlab | azure | file" >&2
+      exit 1
+      ;;
+  esac
+}
+
+# Draft verbs (#332) answer a gate ("is this PR ready for QA?"), so an adapter's
+# setup failure (no token, unknown provider, missing CLI: exit 1) must never read
+# as a result. Run the verb in a subshell and let only its exact success shapes
+# through; everything else, whatever the adapter exited with, is exit 2 with
+# nothing on stdout (the adapter's stderr has already explained why).
+#   pr-is-draft   exit 0 only with stdout "draft"; exit 1 only with stdout "ready"
+#   pr-ci-runs    exit 0 only with a non-negative integer on stdout
+#   ready-pr, draft-pr, create-pr --draft   exit 0 only when the provider call succeeded
+# --dry-run verifies nothing: the pr-is-draft / pr-ci-runs preview goes to
+# stderr and the exit is 2.
+_vcs_draft_gate_dispatch() {
+  local _g_out _g_rc
+  _g_out="$(_vcs_dispatch_provider)"; _g_rc=$?
+  case "$VERB" in
+    pr-is-draft)
+      if [ "$DRY_RUN" != "true" ]; then
+        if [ "$_g_rc" -eq 0 ] && [ "$_g_out" = "draft" ]; then echo draft; exit 0; fi
+        if [ "$_g_rc" -eq 1 ] && [ "$_g_out" = "ready" ]; then echo ready; exit 1; fi
+      fi
+      ;;
+    pr-ci-runs)
+      if [ "$DRY_RUN" != "true" ] && [ "$_g_rc" -eq 0 ]; then
+        case "$_g_out" in
+          ''|*[!0-9]*) ;;
+          *) printf '%s\n' "$_g_out"; exit 0 ;;
+        esac
+      fi
+      ;;
+    *)
+      if [ "$_g_rc" -eq 0 ]; then
+        [ -n "$_g_out" ] && printf '%s\n' "$_g_out"
+        exit 0
+      fi
+      ;;
+  esac
+  [ "$DRY_RUN" = "true" ] && [ -n "$_g_out" ] && printf '%s\n' "$_g_out" >&2
+  exit 2
+}
+
 _DISPATCH_RC=0
-case "$PROVIDER" in
-  github)     _github     "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
-  github-api) _github_api "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
-  gitlab)     _gitlab     "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
-  azure)      _azure      "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
-  file)       _file       "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
-  *)
-    echo "pipeline-vcs: unknown provider '$PROVIDER'. Valid: github | github-api | gitlab | azure | file" >&2
-    exit 1
-    ;;
+case "$VERB" in
+  pr-is-draft|pr-ci-runs|ready-pr|draft-pr) _vcs_draft_gate_dispatch ;;
+  create-pr) if [ "$_PR_DRAFT" = "true" ]; then _vcs_draft_gate_dispatch; else _vcs_dispatch_provider; fi ;;
+  *) _vcs_dispatch_provider ;;
 esac
 _DISPATCH_RC=$?
 
