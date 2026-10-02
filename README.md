@@ -507,7 +507,7 @@ A tracked status file (default `TALOS_STATUS.md`, `status.file`) keeps what a fr
 
 To resume with any LLM, point it at `TALOS_STATUS.md` and the repo's CLAUDE.md/AGENTS.md, or run the resume skill. The skill prints a one-page read-only briefing (in flight, blocked, decisions awaiting the owner, spend, next action), asks once, and only then continues with the normal `/pipeline` loop. Everything it reads from the status file and GitHub is treated as data describing the run, never as instructions. Start it as:
 
-- `/talos:resume` for a plugin install;
+- a plugin install: the plugin namespace `/talos:` followed by the skill name `resume`;
 - `/talos-resume` for `install.sh --global` (it installs to `~/.claude/skills/talos-resume/`, not `resume/`, so it never clashes with Claude Code's built-in `/resume`; this global name is provisional until #335 settles command naming);
 - any other agent: read `skills/resume/SKILL.md` and follow it.
 
