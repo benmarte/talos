@@ -815,6 +815,7 @@ The pipeline deliberately preserves three gates that only a human should act on:
 | `scripts/pipeline-contract.sh` | Single source of truth for roles, labels, and `talos:` markers (sourced by pipeline-vcs.sh and bootstrap-labels.sh; see "Contract" below) |
 | `scripts/pipeline-vcs.sh [--dry-run] <verb> [args...]` | Uniform VCS adapter (github/gitlab/azure/file) |
 | `scripts/pipeline-status.sh [--dry-run] <issue> <status>` | Set GitHub Project board status |
+| `scripts/pipeline-status-file.sh init\|assemble [--pr <pr> --issue <n>]` | Maintains the tracked status file (`status.file`, default `TALOS_STATUS.md`; epic #333); not `pipeline-status.sh`, which sets the Project board status. `init` creates the file with its resume and log headings; `assemble` folds `<issue>-<pr>.md` fragments from `status.fragments_dir` into the log on the base branch (capped entries, rolling window, archive, one entry per PR, `[skip ci]` commit, up to 3 push attempts). Needs `status.enabled: true`; nothing calls it yet |
 | `scripts/pipeline-board-shared.sh` | Owner/project-id resolution + curl-GraphQL helpers shared by pipeline-status.sh and bootstrap-board.sh (sourced, not run directly) |
 | `scripts/pipeline-notify.sh <event> <ref> <message> [thread_key]` | Post event to Slack/Discord/Teams |
 | `scripts/bootstrap-labels.sh [owner/repo]` | Create `pipeline:*` labels (idempotent) |
