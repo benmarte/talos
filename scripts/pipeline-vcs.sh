@@ -118,6 +118,12 @@
 #                                             e.g. a fork) or a total that
 #                                             reaches GitHub's 1000-result
 #                                             search cap (never a short count).
+#                                             Call it while the PR is OPEN:
+#                                             `merge-pr` deletes the head
+#                                             branch and GitHub then returns
+#                                             every run for it with an empty
+#                                             pull_requests[], so a merged PR
+#                                             reads as unverified (exit 2).
 #   view-pr <n|branch>                        View PR details
 #   list-prs                                  List open PRs
 #   diff-pr <n>                               Show PR diff

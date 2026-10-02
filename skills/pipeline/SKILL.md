@@ -417,6 +417,9 @@ bash scripts/pipeline-vcs.sh list-issues
 2. **Heal merged-but-open issues.** For each open `pipeline:*` issue, `bash scripts/pipeline-vcs.sh find-pr <N> merged` — if a merged PR closes it, run the post-merge steps from Step 4 (comment, close, board → Done, notify) instead of doing any work. Pass `--allow-closed` to `comment-issue` in the post-merge steps here, since GitHub may have already auto-closed the issue at merge time via `Closes #N`. `find-pr ... merged` counts only the `issue-<N>` branch or a closing keyword — never a bare `Depends on #N` / `Part of #N` mention (#298).
    - **Exit 2 → not verified, not "no PR".** `find-pr` exits 2 when the provider cannot answer it. Do NOT treat that as "no merged PR": skip the heal for `#N` and add `find-pr not verified for #N — heal skipped, verify manually` to the run summary (Step 5). Any other non-zero exit is a fetch failure — report it the same way.
 3. **Resume in-flight PRs.** For each open pipeline PR (head branch `fix/issue-*` or `feat/issue-*`): all approval labels present → merge queue (when `merge.auto: false`, a PR already labeled `pipeline:approved` is waiting for a human — leave it alone); otherwise resume at the blocking stage. A PR that carries `pipeline:blocked` (on the PR or its issue) is not resumed — item 5 reports it and Step 5 lists it as `blocked`. If the blocking stage is QA, run the **Mergeability gate (#214)** (Step 3c, "After developer returns") first — do not resume straight into QA.
+<!-- pr-draft:start -->
+   With `PR_DRAFT = true` (resume routing): ask `bash scripts/pipeline-vcs.sh pr-is-draft <PR_NUMBER>` first. When it prints `draft` (exit 0), resume at the first missing draft-window stage (docs, then reviewer/security/adversarial) or at `ready-pr` when every approval is fresh, never at QA; exit 2 (unverified) stops and reports `pr-is-draft not verified for #<N>`. Only a ready PR (exit 1, stdout `ready`) resumes at QA, behind the Step 3d Draft guard.
+<!-- pr-draft:end -->
 4. **Sweep orphaned worktrees.** `bash scripts/pipeline-worktree.sh sweep <space-separated ids of every issue in this run's queue>` — removes every worktree (developer AND any Claude Code harness `agent-*` worktree QA/reviewer/security/docs tagged via `tag <N>`, #240) whose issue is not in the queue, regardless of dirty/unpushed state, plus stale local scratch branches (a backstop for runs that ended before the Step 4 post-merge removal). Pass no ids to reclaim all of them.
 5. **Report stale blocked work (#312).** List issues labeled `pipeline:blocked` (K) AND open pipeline PRs (head branch `fix/issue-*` or `feat/issue-*`) labeled `pipeline:blocked` (J). A PR can carry the block while its issue does not (the issue label was cleared, or never set); it then fails the Step 4 gate on every pass, and in human-merge mode never reaches the `pipeline:approved` hand-off, so without this report nobody is told. Send both in one Step 1 summary notification so humans see what's waiting on them:
    `bash scripts/pipeline-notify.sh info "backlog" "K blocked issues, J blocked PRs awaiting human action: #a, PR #b" backlog` (only when K + J > 0). To resume, a human removes `pipeline:blocked` from both the PR and its issue.
@@ -1435,6 +1438,26 @@ do NOT call `merge-pr`. Instead hand off to a human:
    closes when the human merges (the "heal merged-but-open issues" sweep in
    Step 0 completes the post-merge bookkeeping on a later run).
 
+<!-- pr-draft:start -->
+**Capture the CI-run count BEFORE `merge-pr` (`PR_DRAFT = true`, `MERGE_AUTO = true`).**
+`merge-pr` deletes the head branch, and GitHub then returns every run for that
+head with an empty `pull_requests[]`, so `pr-ci-runs` can no longer attribute them
+and exits 2. Immediately before `merge-pr`, while the PR is open:
+
+```bash
+CI_RUNS="$(bash scripts/pipeline-vcs.sh pr-ci-runs <PR_NUMBER>)"; CI_RC=$?
+```
+
+Keep `CI_RUNS` for the `merged` `post_stage` call in "After merging" item 8. When
+`CI_RC` is non-zero (exit 2: unverified, or not github), record no `ci_runs`, add
+`ci_runs not recorded for #<N>` to the run summary (Step 5), and merge anyway:
+never block or delay the merge on a metric.
+
+```text
+merge sequence:  pr-ci-runs -> merge-pr -> post_stage merged --ci-runs
+```
+
+<!-- pr-draft:end -->
 Otherwise (`MERGE_AUTO = true`), if green, merge: `bash scripts/pipeline-vcs.sh merge-pr <PR_NUMBER>`
 
 **Post-merge sibling sync (#289, when `merge.auto_sync` is `true` — default).**
@@ -1496,11 +1519,12 @@ After merging:
 6. Lifecycle: `bash scripts/pipeline-notify.sh merged "#<N>" "PR #<PR_NUMBER> merged" <N>`
 7. Lifecycle: `bash scripts/pipeline-notify.sh issue-closed "#<N>" "issue resolved" <N>`
 <!-- pr-draft:start -->
-   With `PR_DRAFT = true`, before item 8 count the CI runs this PR consumed:
-   `CI_RUNS="$(bash scripts/pipeline-vcs.sh pr-ci-runs <PR_NUMBER>)"`. Exit 0 →
-   pass `--ci-runs "$CI_RUNS"` to the `merged` `post_stage` call in item 8 (the
-   measurable saving: one run per issue, plus one per QA/CI-failure round). Exit 2
-   (unverified, or not github) → omit the flag; never guess a count.
+   With `PR_DRAFT = true`, pass `--ci-runs "$CI_RUNS"` to the `merged` `post_stage`
+   call in item 8, using the `CI_RUNS` value captured BEFORE `merge-pr` (see
+   "Capture the CI-run count BEFORE `merge-pr`" above; the measurable saving: one
+   run per issue, plus one per QA/CI-failure round). Do NOT call `pr-ci-runs` here:
+   the branch is already deleted and it would exit 2. No captured value (it exited
+   2, human-merge mode, or a merged-but-open heal) → omit the flag; never guess.
 <!-- pr-draft:end -->
 8. Rule 3: also fire `hooks.post_stage` for both lifecycle events above (`merged` and `issue-closed`) — see Conversation stream protocol.
 

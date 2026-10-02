@@ -29,6 +29,7 @@ use_stubs
 
 SKILL="${SKILL_FILE:-$TALOS_ROOT/skills/pipeline/SKILL.md}"
 FIXTURE="$TALOS_ROOT/tests/fixtures/skill-steps-3c-4.md"
+FIXTURE_STEP1="$TALOS_ROOT/tests/fixtures/skill-step-1.md"
 VCS="$TALOS_ROOT/scripts/pipeline-vcs.sh"
 export TALOS_RETRY_SLEEP_SCALE=0
 
@@ -89,6 +90,11 @@ check_default_unchanged() {  # $1 = SKILL.md
   [ "$(strip_draft "$1" | steps_3c_4)" = "$(cat "$FIXTURE")" ]
 }
 
+# Step 1 (reconcile / resume) with the blocks stripped equals its fixture too.
+check_step1_unchanged() {  # $1 = SKILL.md
+  [ "$(strip_draft "$1" | awk '/^## Step 1 — /{p=1} /^## Step 2 — /{p=0} p')" = "$(cat "$FIXTURE_STEP1")" ]
+}
+
 check_no_new_verb_when_unset() {  # $1 = SKILL.md
   ! strip_draft "$1" | grep -qE 'ready-pr|draft-pr|pr-is-draft|pr-ci-runs|--ci-runs|--draft'
 }
@@ -96,6 +102,7 @@ check_no_new_verb_when_unset() {  # $1 = SKILL.md
 [ "$(wc -l < "$FIXTURE" | tr -d ' ')" -gt 400 ]; assert_eq "0" "$?" "fixture: Steps 3c-4 fixture is the full section, not a stub"
 markers_ok "$SKILL"; assert_eq "0" "$?" "default unchanged: pr-draft markers are paired, un-nested and present"
 check_default_unchanged "$SKILL"; assert_eq "0" "$?" "default unchanged: Steps 3c-4 with pr-draft blocks stripped equal the main@803cc7d fixture"
+check_step1_unchanged "$SKILL"; assert_eq "0" "$?" "default unchanged: Step 1 with pr-draft blocks stripped equals the main@803cc7d fixture"
 check_no_new_verb_when_unset "$SKILL"; assert_eq "0" "$?" "default unchanged: no draft verb, --draft or --ci-runs outside a pr-draft block (pr.draft unset calls no new verb)"
 
 # ── Prose pins (all inside pr-draft blocks) ──────────────────────────────────
@@ -151,7 +158,7 @@ in_order "$DT" '7\. \*\*Merge\.\*\* Step 4, unchanged' 'approval SHAs and `ci-co
 assert_eq "0" "$?" "merge gate: approval SHAs and ci-complete on the final head still required, no draft bypass"
 in_order "$DT" 'No gate in this step is waived or changed for a draft-flow PR' 'pr-is-draft <PR_NUMBER>` must print `ready` with exit 1 before `merge-pr`' 'exit 2 is unverified: do NOT merge'
 assert_eq "0" "$?" "merge gate: Step 4 only adds a pr-is-draft last guard; exit 2 never merges"
-in_order "$DT" 'before item 8 count the CI runs' 'pipeline-vcs.sh pr-ci-runs <PR_NUMBER>' '--ci-runs "\$CI_RUNS"' 'Exit 2' 'omit the flag; never guess a count'
+in_order "$DT" 'pass `--ci-runs "\$CI_RUNS"` to the `merged` `post_stage`' 'captured BEFORE `merge-pr`' 'Do NOT call `pr-ci-runs` here' 'omit the flag; never guess'
 assert_eq "0" "$?" "metric: Step 4 records pr-ci-runs on the merged event via post_stage --ci-runs, omitted when unverified"
 
 # ── (c) the QA draft guard ───────────────────────────────────────────────────
@@ -210,9 +217,14 @@ case "$*" in
   "pr view "*"--json isDraft"*)
     [ -n "${MODEL_FETCH_FAIL:-}" ] && { echo "gh: HTTP 502" >&2; exit 1; }
     if [ -n "${MODEL_GARBAGE:-}" ]; then printf 'nope'; else printf '{"isDraft":%s}' "$(cat "$S/draft")"; fi ;;
+  "pr merge "*)
+    # Like GitHub: --delete-branch removes the head branch, after which every
+    # run for that head comes back with an empty pull_requests[].
+    awk '{ print $1, "-" }' "$S/runs" > "$S/runs.tmp" && mv "$S/runs.tmp" "$S/runs" ;;
   "pr view "*"--json headRefName"*) printf '{"headRefName":"feat/issue-332-x"}' ;;
   "api "*"actions/runs"*)
-    awk 'BEGIN { n = 0 } { n++; r[n] = sprintf("{\"conclusion\":\"%s\",\"pull_requests\":[{\"number\":%s}]}", $1, $2) }
+    awk 'BEGIN { n = 0 } { n++; prs = ($2 == "-") ? "" : sprintf("{\"number\":%s}", $2)
+           r[n] = sprintf("{\"conclusion\":\"%s\",\"pull_requests\":[%s]}", $1, prs) }
          END { printf "{\"total_count\":%d,\"workflow_runs\":[", n;
                for (i = 1; i <= n; i++) printf "%s%s", (i > 1 ? "," : ""), r[i];
                printf "]}" }' "$S/runs" ;;
@@ -246,7 +258,7 @@ for line in open(path):
     if line.startswith(label):
         for tok in line[len(label):].split("->"):
             words = tok.strip().split()
-            if words and words[0] in ("create-pr", "ready-pr", "draft-pr"):
+            if words and words[0] in ("create-pr", "ready-pr", "draft-pr", "pr-ci-runs", "merge-pr", "post_stage"):
                 print(" ".join(words))
         break
 PY
@@ -315,6 +327,62 @@ bash "$VCS" ready-pr 42 >/dev/null 2>&1
 before="$(ci_runs)"; push 3
 assert_eq "3" "$(( $(ci_runs) - before ))" "run-count model: control, pushing a fix round to a READY PR spends 3 runs"
 
+# ── Step 1 resume routing ────────────────────────────────────────────────────
+check_step1_resume() {  # $1 = SKILL.md
+  local s dt
+  s="$(awk '/^## Step 1 — /{p=1} /^## Step 2 — /{p=0} p' "$1")"
+  case "$s" in *'pr-is-draft'*) ;; *) return 1 ;; esac
+  dt="$(printf '%s\n' "$s" | awk -v s="$START" -v e="$END" '{ t = $0; gsub(/^[ \t]+|[ \t]+$/, "", t) } t == s { inb = 1; next } t == e { inb = 0; next } inb' | norm)"
+  in_order "$dt" \
+    'resume routing' \
+    'pr-is-draft <PR_NUMBER>` first' 'prints `draft` \(exit 0\)' \
+    'resume at the first missing draft-window stage \(docs, then reviewer/security' \
+    'or at `ready-pr`' \
+    'never at QA' \
+    'exit 2 \(unverified\) stops and reports'
+}
+check_step1_resume "$SKILL"; assert_eq "0" "$?" "Step 1 resume: a draft PR resumes at the first missing draft-window stage or ready-pr, never QA; exit 2 stops and reports"
+
+# ── (d2) ci_runs is captured BEFORE merge-pr ─────────────────────────────────
+# merge-pr deletes the head branch; GitHub then returns every run for that head
+# with an empty pull_requests[], so pr-ci-runs can no longer attribute them and
+# fails closed (exit 2). The documented Step 4 order must capture the count
+# first and carry it to the `merged` post_stage call.
+check_ci_runs_before_merge() {  # $1 = SKILL.md
+  awk '
+    /^## Step 4 — /{p=1; next} /^## Step 5 — /{p=0}
+    p && /pipeline-vcs\.sh pr-ci-runs/ { if (!ci) ci = NR; if (merge) late = 1 }
+    p && /pipeline-vcs\.sh merge-pr <PR_NUMBER>/ { if (!merge) merge = NR }
+    END { exit !(ci && merge && ci < merge && !late) }' "$1"
+}
+
+# replay_merge FILE : run the documented merge sequence; prints the ci_runs
+# value that reaches the `merged` post_stage call ("" when none was captured).
+replay_merge() {
+  local tok ci="" recorded=""
+  while IFS= read -r tok; do
+    case "$tok" in
+      "pr-ci-runs") ci="$(ci_runs)" ;;
+      "merge-pr") bash "$VCS" merge-pr 42 </dev/null >/dev/null 2>&1 ;;
+      "post_stage merged --ci-runs") recorded="$ci" ;;
+    esac
+  done < <(verb_sequence "$1" "merge sequence")
+  printf '%s' "$recorded"
+}
+
+check_ci_runs_before_merge "$SKILL"; assert_eq "0" "$?" "ci_runs order: Step 4 captures pr-ci-runs BEFORE merge-pr and never calls it after"
+assert_eq "pr-ci-runs merge-pr post_stage merged --ci-runs" "$(verb_sequence "$SKILL" "merge sequence" | tr '\n' ' ' | sed 's/ $//')" "ci_runs order: documented merge sequence is pr-ci-runs -> merge-pr -> post_stage merged --ci-runs"
+in_order "$DT" 'Capture the CI-run count BEFORE `merge-pr`' 'empty `pull_requests\[\]`' 'exits 2' 'while the PR is open' 'record no `ci_runs`' 'run summary' 'never block or delay the merge on a metric'
+assert_eq "0" "$?" "ci_runs order: exit 2 records no ci_runs, is noted in the run summary, and never blocks the merge"
+
+model_reset
+replay_verbs "$SKILL" "happy path" 0 >/dev/null
+assert_eq "1" "$(replay_merge "$SKILL")" "ci_runs order: the count captured before merge-pr (1 run) reaches the merged event"
+# Realistic stub: after the merge the branch is gone and nothing attributes.
+out="$(ci_runs)"; rc=0; bash "$VCS" pr-ci-runs 42 >/dev/null 2>&1 || rc=$?
+assert_eq "2" "$rc" "ci_runs order: after merge-pr, pr-ci-runs is unverified (exit 2) because runs lose their pull_requests[]"
+assert_eq "" "$out" "ci_runs order: after merge-pr, pr-ci-runs prints no count"
+
 # ── (c) the guard against the real pr-is-draft verb ──────────────────────────
 # qa_may_dispatch is the documented rule: dispatch only when pr-is-draft exits 1
 # AND its stdout is exactly "ready".
@@ -352,5 +420,15 @@ awk '/^### 3d\. /{print; print "Dispatch QA without looking at the PR state."; n
 check_default_unchanged "$MUT"; assert_eq "1" "$?" "positive control: a line added to the default flow turns 'default unchanged' red"
 strip_draft "$SKILL" > "$MUT"; printf 'bash scripts/pipeline-vcs.sh ready-pr 42\n' >> "$MUT"
 check_no_new_verb_when_unset "$MUT"; assert_eq "1" "$?" "positive control: a draft verb outside a pr-draft block turns 'no new verb when unset' red"
+
+# Control 4: capture pr-ci-runs AFTER merge-pr (the defect QA found at 7562576).
+awk '
+  /^merge sequence:/ { print "merge sequence:  merge-pr -> pr-ci-runs -> post_stage merged --ci-runs"; next }
+  /pipeline-vcs\.sh pr-ci-runs <PR_NUMBER>\)"; CI_RC=/ { held = $0; next }
+  { print }
+  /^Otherwise \(`MERGE_AUTO = true`\), if green, merge:/ { print held }' "$SKILL" > "$MUT"
+check_ci_runs_before_merge "$MUT"; assert_eq "1" "$?" "positive control: pr-ci-runs after merge-pr turns the 'ci_runs order' check red"
+model_reset; replay_verbs "$MUT" "happy path" 0 >/dev/null
+assert_eq "" "$(replay_merge "$MUT")" "positive control: pr-ci-runs after merge-pr records no ci_runs (runs lost their pull_requests[]), so the replay goes red"
 
 finish
