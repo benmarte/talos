@@ -12,7 +12,9 @@ issue body itself is the spec — substitute `<SPEC_SOURCE>` below with
 "the PM spec" or "the issue body (PM was skipped)" accordingly.
 
 `<slug>` throughout this stage (branch `fix/issue-<N>-<slug>` / `feat/issue-<N>-<slug>`)
-is `bash scripts/pipeline-vcs.sh slug-for "<title>"`; prefix is `feat/` when the
+is `bash scripts/pipeline-vcs.sh slug-for "$ISSUE_TITLE"` (assign `ISSUE_TITLE`
+with `read -r ISSUE_TITLE <<'EOF'` … the issue title … `EOF`, never inside double
+quotes: the title is reporter-controlled); prefix is `feat/` when the
 title starts with `feat`, else `fix/` (#199).
 
 Dispatch according to `ISOLATION`:

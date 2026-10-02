@@ -29,8 +29,15 @@ and the relevant code, then write a spec as an issue comment starting
 - **PR target**: the repo's integration branch (default branch unless told otherwise).
 - **Out of scope** (guard against over-reach).
 
-Post: `bash scripts/pipeline-vcs.sh comment-issue <N> "**PM spec:** ..."`. If
-the post fails, report it in your final message and do not advance the label.
+Post it from a variable assigned with a single-quoted heredoc: the spec quotes
+issue text, so never put it inside double quotes on a command line.
+```bash
+read -r -d '' SPEC_BODY <<'EOF' || true
+**PM spec:** ...
+EOF
+bash scripts/pipeline-vcs.sh comment-issue <N> "$SPEC_BODY"
+```
+If the post fails, report it in your final message and do not advance the label.
 Advance: `bash scripts/pipeline-vcs.sh label-issue <N> --add pipeline:dev --remove pipeline:confirmed`.
 The PM spec comment IS the handoff artifact — no separate Agent header comment
 needed.

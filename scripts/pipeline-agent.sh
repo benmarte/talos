@@ -258,13 +258,20 @@ sys.stdout.buffer.write(re.sub(rb"[\x00-\x1f\x7f]|\xc2[\x80-\x9f]", b"", sys.std
     # to every repo, so say which layer supplied it. Same role-first chain as
     # _resolve_runner / _resolve_runner_cmd.
     _extra=""
-    for _k in runner runner_cmd; do
-      if [ -n "$(cfg "agents.roles.$_r.$_k" "")" ]; then _src="agents.roles.$_r.$_k"
-      elif [ -n "$(cfg "agents.$_k" "")" ]; then _src="agents.$_k"
-      else continue
-      fi
-      _extra="$_extra $_k=$(_plain "$(cfg "$_src" "")") ${_k}_origin=$(_layer_of "$_src")"
-    done
+    _rv="$(cfg "agents.roles.$_r.runner" "")"
+    if [ -n "$_rv" ]; then
+      _extra="$_extra runner=$(_plain "$_rv") runner_origin=$(_layer_of "agents.roles.$_r.runner")"
+    else
+      _rv="$(cfg agents.runner "")"
+      [ -z "$_rv" ] || _extra="$_extra runner=$(_plain "$_rv") runner_origin=$(_layer_of agents.runner)"
+    fi
+    _rv="$(cfg "agents.roles.$_r.runner_cmd" "")"
+    if [ -n "$_rv" ]; then
+      _extra="$_extra runner_cmd=$(_plain "$_rv") runner_cmd_origin=$(_layer_of "agents.roles.$_r.runner_cmd")"
+    else
+      _rv="$(cfg agents.runner_cmd "")"
+      [ -z "$_rv" ] || _extra="$_extra runner_cmd=$(_plain "$_rv") runner_cmd_origin=$(_layer_of agents.runner_cmd)"
+    fi
     printf 'role=%s model=%s restamp_model=%s origin=%s%s\n' "$_r" "$_m" "$(_plain "$_rs")" "$_origin" "$_extra"
     for _dir in "$PWD/.claude/agents" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/agents"; do
       _f="$_dir/$_r.md"

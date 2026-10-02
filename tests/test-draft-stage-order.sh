@@ -19,9 +19,19 @@
 #       run on the happy path and exactly 1 added run per QA-failure round
 #   (e) positive controls: removing the ready-pr step, or the QA draft guard,
 #       from a copy of SKILL.md turns the named checks red
+#   (f) liveness (#340): "QA passed, CI failed at Step 4, fix round" replayed
+#       against the real SKILL.md text reaches ready-pr; without the qa:pass
+#       strip a stale approval makes step 5's precondition impossible
 #
 # SKILL_FILE=<path> points every check at another copy of SKILL.md (used to
 # show the positive controls red against a mutated copy).
+#
+# Fixtures (tests/fixtures/skill-step-0-lists.md, skill-step-1.md,
+# skill-steps-3c-4.md) hold the DEFAULT text of those sections, pr-draft blocks
+# stripped. When you edit that default text on purpose, regenerate them with
+#   bash tests/test-draft-stage-order.sh --regen-fixtures
+# and review the fixture diff: only the lines you changed may differ. A
+# mismatch prints a unified diff and this command.
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox
@@ -30,6 +40,7 @@ use_stubs
 SKILL="${SKILL_FILE:-$TALOS_ROOT/skills/pipeline/SKILL.md}"
 FIXTURE="$TALOS_ROOT/tests/fixtures/skill-steps-3c-4.md"
 FIXTURE_STEP1="$TALOS_ROOT/tests/fixtures/skill-step-1.md"
+FIXTURE_STEP0="$TALOS_ROOT/tests/fixtures/skill-step-0-lists.md"
 VCS="$TALOS_ROOT/scripts/pipeline-vcs.sh"
 export TALOS_RETRY_SLEEP_SCALE=0
 
@@ -67,6 +78,30 @@ markers_ok() {
 # steps_3c_4: Steps 3c through 4 (from "### 3c." up to "## Step 5").
 steps_3c_4() { awk '/^### 3c\. /{p=1} /^## Step 5 /{p=0} p'; }
 
+# step1_text: Step 1 (reconcile / resume), up to "## Step 2 —".
+step1_text() { awk '/^## Step 1 — /{p=1} /^## Step 2 — /{p=0} p'; }
+
+# step0_lists: Step 0's two lists -- "Store these for the run:" (the config
+# values) up to "**File mode vs VCS mode:**", and "**Config defaults:**" up to
+# "#### Concurrency and verify". The pr-draft blocks inside them (PR_DRAFT and
+# the `pr.draft: false` default) are stripped before comparing.
+step0_lists() {
+  awk '/^Store these for the run:/{p=1} /^\*\*File mode vs VCS mode:\*\*/{p=0}
+       /^\*\*Config defaults:\*\*/{p=1} /^#### Concurrency and verify/{p=0} p'
+}
+
+# regen_fixtures: rewrite the three fixtures from $SKILL with blocks stripped.
+regen_fixtures() {
+  strip_draft "$SKILL" | steps_3c_4 > "$FIXTURE"
+  strip_draft "$SKILL" | step1_text > "$FIXTURE_STEP1"
+  strip_draft "$SKILL" | step0_lists > "$FIXTURE_STEP0"
+}
+if [ "${1:-}" = "--regen-fixtures" ]; then
+  regen_fixtures
+  printf 'regenerated tests/fixtures/{skill-step-0-lists,skill-step-1,skill-steps-3c-4}.md from %s\n' "$SKILL"
+  exit 0
+fi
+
 # norm: collapse whitespace so a pattern can span a wrapped line.
 norm() { tr '\n' ' ' | tr -s ' '; }
 
@@ -92,7 +127,22 @@ check_default_unchanged() {  # $1 = SKILL.md
 
 # Step 1 (reconcile / resume) with the blocks stripped equals its fixture too.
 check_step1_unchanged() {  # $1 = SKILL.md
-  [ "$(strip_draft "$1" | awk '/^## Step 1 — /{p=1} /^## Step 2 — /{p=0} p')" = "$(cat "$FIXTURE_STEP1")" ]
+  [ "$(strip_draft "$1" | step1_text)" = "$(cat "$FIXTURE_STEP1")" ]
+}
+
+# Step 0's config list and defaults list (the two otherwise unguarded blocks).
+check_step0_unchanged() {  # $1 = SKILL.md
+  [ "$(strip_draft "$1" | step0_lists)" = "$(cat "$FIXTURE_STEP0")" ]
+}
+
+# assert_fixture LABEL CHECK_FN FIXTURE EXTRACT_FN: pass, or fail with a unified
+# diff (fixture -> current default text) and the exact regeneration command.
+assert_fixture() {
+  if "$2" "$SKILL"; then pass "$1"; return; fi
+  fail "$1" "the default text of this section changed relative to $(basename "$3")"
+  strip_draft "$SKILL" | "$4" > "$SANDBOX/fixture-actual.md"
+  diff -u --label "fixture $(basename "$3")" --label "SKILL.md, pr-draft blocks stripped" "$3" "$SANDBOX/fixture-actual.md" | head -80 >&2
+  printf '      If the change is intended, regenerate the fixtures and review the diff:\n        bash tests/test-draft-stage-order.sh --regen-fixtures\n' >&2
 }
 
 check_no_new_verb_when_unset() {  # $1 = SKILL.md
@@ -101,8 +151,9 @@ check_no_new_verb_when_unset() {  # $1 = SKILL.md
 
 [ "$(wc -l < "$FIXTURE" | tr -d ' ')" -gt 400 ]; assert_eq "0" "$?" "fixture: Steps 3c-4 fixture is the full section, not a stub"
 markers_ok "$SKILL"; assert_eq "0" "$?" "default unchanged: pr-draft markers are paired, un-nested and present"
-check_default_unchanged "$SKILL"; assert_eq "0" "$?" "default unchanged: Steps 3c-4 with pr-draft blocks stripped equal the main@803cc7d fixture"
-check_step1_unchanged "$SKILL"; assert_eq "0" "$?" "default unchanged: Step 1 with pr-draft blocks stripped equals the main@803cc7d fixture"
+assert_fixture "default unchanged: Steps 3c-4 with pr-draft blocks stripped equal the fixture" check_default_unchanged "$FIXTURE" steps_3c_4
+assert_fixture "default unchanged: Step 1 with pr-draft blocks stripped equals the fixture" check_step1_unchanged "$FIXTURE_STEP1" step1_text
+assert_fixture "default unchanged: Step 0 config list and defaults list with pr-draft blocks stripped equal the fixture" check_step0_unchanged "$FIXTURE_STEP0" step0_lists
 check_no_new_verb_when_unset "$SKILL"; assert_eq "0" "$?" "default unchanged: no draft verb, --draft or --ci-runs outside a pr-draft block (pr.draft unset calls no new verb)"
 
 # ── Prose pins (all inside pr-draft blocks) ──────────────────────────────────
@@ -114,7 +165,7 @@ assert_eq "0" "$?" "Step 0: github-api/file with pr.draft true warns once and fa
 in_order "$DT" 'ready_for_review' 'if: github.event.pull_request.draft != true' 'QA waits for a run that never comes'
 assert_eq "0" "$?" "Step 0: names the CI-side pairing and the QA-waits-forever failure mode"
 
-in_order "$DT" 'Open the PR as a DRAFT: bash scripts/pipeline-vcs.sh create-pr <branch> "<title>" <body-file> --draft'
+in_order "$DT" 'Open the PR as a DRAFT: bash scripts/pipeline-vcs.sh create-pr <branch> "\$PR_TITLE" <body-file> --draft'
 assert_eq "0" "$?" "developer prompt: opens the PR with create-pr ... --draft"
 
 # ── (b) stage order ──────────────────────────────────────────────────────────
@@ -154,6 +205,12 @@ in_order "$DT" '\*\*QA failure or CI failure\*\*' 'convert the PR back FIRST wit
 assert_eq "0" "$?" "stage order: QA/CI failure is draft-pr -> developer fix -> re-stamps -> ready-pr, one run per round"
 in_order "$DT" 'this stage runs BEFORE QA' 'the "only after `qa:pass`" rule above does not apply to it'
 assert_eq "0" "$?" "stage order: Step 3e review stages run before QA in draft mode"
+# Step 3d Pass path (#340): the draft note says 3e is not re-entered after QA passes.
+in_order "$DT" 'With `PR_DRAFT = true`, QA passing ends the QA stage and Step 3e is NOT entered again' 'already ran on the draft, before QA' 'Go to Step 4' 'the approval SHAs and `ci-complete` are still checked there'
+assert_eq "0" "$?" "Step 3d Pass: draft note says Step 3e is not re-entered once QA passes (#340)"
+pass_path="$(awk '/^### 3d\. /{p=1} /^### 3e\. /{p=0} p' "$SKILL" | awk '/^- \*\*Pass:\*\*/{p=1} /^- \*\*Fail:\*\*/{p=0} p')"
+case "$(printf '%s' "$pass_path" | norm)" in *'Step 3e is NOT entered again'*) r=0 ;; *) r=1 ;; esac
+assert_eq "0" "$r" "Step 3d Pass: the note sits inside the Pass path, before the Fail path (#340)"
 in_order "$DT" '7\. \*\*Merge\.\*\* Step 4, unchanged' 'approval SHAs and `ci-complete` on the final head are still required' 'not a bypass of any gate'
 assert_eq "0" "$?" "merge gate: approval SHAs and ci-complete on the final head still required, no draft bypass"
 in_order "$DT" 'No gate in this step is waived or changed for a draft-flow PR' 'pr-is-draft <PR_NUMBER>` must print `ready` with exit 1 before `merge-pr`' 'exit 2 is unverified: do NOT merge'
@@ -222,6 +279,33 @@ case "$*" in
     # run for that head comes back with an empty pull_requests[].
     awk '{ print $1, "-" }' "$S/runs" > "$S/runs.tmp" && mv "$S/runs.tmp" "$S/runs" ;;
   "pr view "*"--json headRefName"*) printf '{"headRefName":"feat/issue-332-x"}' ;;
+  "pr view "*"--json headRefOid"*)
+    # check-approval-sha input: head SHA, labels, and a QA approval marker.
+    python3 - "$S" <<'PY'
+import json, os, sys
+s = sys.argv[1]
+def rd(n):
+    f = os.path.join(s, n)
+    return open(f).read().strip() if os.path.exists(f) else ""
+comments = []
+if rd("qa_sha"):
+    comments.append({"author": {"login": "model-bot"},
+                     "body": "QA passed\n\n<!-- talos:approval sha=%s role=qa -->" % rd("qa_sha")})
+print(json.dumps({"headRefOid": rd("head"), "baseRefName": "main",
+                  "labels": [{"name": l} for l in rd("labels").splitlines() if l],
+                  "comments": comments}))
+PY
+    ;;
+  "pr edit "*)
+    prev=""
+    for a in "$@"; do
+      case "$prev" in
+        --remove-label) grep -vxF "$a" "$S/labels" > "$S/labels.tmp"; mv "$S/labels.tmp" "$S/labels" ;;
+        --add-label) printf '%s\n' "$a" >> "$S/labels" ;;
+      esac
+      prev="$a"
+    done ;;
+  "api user"*) printf 'model-bot\n' ;;
   "api "*"actions/runs"*)
     awk 'BEGIN { n = 0 } { n++; prs = ($2 == "-") ? "" : sprintf("{\"number\":%s}", $2)
            r[n] = sprintf("{\"conclusion\":\"%s\",\"pull_requests\":[%s]}", $1, prs) }
@@ -241,6 +325,8 @@ BODY="$SANDBOX/body.md"; printf 'the body\n' > "$BODY"
 model_reset() {
   printf 'success 99\n' > "$MODEL_STATE/runs"
   echo false > "$MODEL_STATE/draft"
+  : > "$MODEL_STATE/labels"
+  rm -f "$MODEL_STATE/qa_sha" "$MODEL_STATE/head"
 }
 push() {  # $1 = number of commits pushed (each is a `synchronize`)
   local i=0; while [ "$i" -lt "$1" ]; do "$BIN/gh" __event synchronize; i=$((i + 1)); done
@@ -258,7 +344,7 @@ for line in open(path):
     if line.startswith(label):
         for tok in line[len(label):].split("->"):
             words = tok.strip().split()
-            if words and words[0] in ("create-pr", "ready-pr", "draft-pr", "pr-ci-runs", "merge-pr", "post_stage"):
+            if words and words[0] in ("create-pr", "ready-pr", "draft-pr", "label-pr", "pr-ci-runs", "merge-pr", "post_stage"):
                 print(" ".join(words))
         break
 PY
@@ -275,6 +361,7 @@ replay_verbs() {
     case "$verb" in
       "create-pr --draft") bash "$VCS" create-pr feat/issue-332-x "T" "$BODY" --draft </dev/null >/dev/null 2>&1; push 6 ;;
       "draft-pr") bash "$VCS" draft-pr 42 </dev/null >/dev/null 2>&1; push "$3" ;;
+      "label-pr --remove qa:pass") bash "$VCS" label-pr 42 --remove qa:pass </dev/null >/dev/null 2>&1 ;;
       "ready-pr") echo "before-ready=$(ci_runs)"; bash "$VCS" ready-pr 42 </dev/null >/dev/null 2>&1 ;;
     esac
   done < <(verb_sequence "$1" "$2")
@@ -308,7 +395,7 @@ bash "$VCS" create-pr feat/issue-332-x "T" "$BODY" >/dev/null 2>&1; push 6
 assert_eq "7" "$(ci_runs)" "run-count model: control, a non-draft PR spends 1 + 6 runs and ignores the other PR's run"
 
 assert_eq "create-pr --draft ready-pr" "$(verb_sequence "$SKILL" "happy path" | tr '\n' ' ' | sed 's/ $//')" "run-count model: documented happy path is create-pr --draft -> ready-pr"
-assert_eq "draft-pr ready-pr" "$(verb_sequence "$SKILL" "failure round" | tr '\n' ' ' | sed 's/ $//')" "run-count model: documented failure round is draft-pr -> ready-pr"
+assert_eq "draft-pr label-pr --remove qa:pass ready-pr" "$(verb_sequence "$SKILL" "failure round" | tr '\n' ' ' | sed 's/ $//')" "run-count model: documented failure round is draft-pr -> label-pr --remove qa:pass -> ready-pr (#340)"
 
 model_reset
 pre="$(replay_verbs "$SKILL" "happy path" 0)"
@@ -326,6 +413,63 @@ bash "$VCS" create-pr feat/issue-332-x "T" "$BODY" --draft >/dev/null 2>&1; push
 bash "$VCS" ready-pr 42 >/dev/null 2>&1
 before="$(ci_runs)"; push 3
 assert_eq "3" "$(( $(ci_runs) - before ))" "run-count model: control, pushing a fix round to a READY PR spends 3 runs"
+
+# ── (f) liveness: QA passed, CI failed at Step 4, fix round (#340) ───────────
+# QA passes on C1, then Step 4's pr-checks-required fails past its re-run budget.
+# The failure round converts the PR to a draft and a developer fix moves the head
+# to C2 (a tests/ path, so no approval waiver applies). Step 5 requires
+# `check-approval-sha --stale-list` to exit 0 before `ready-pr`. A present-but-
+# stale qa:pass makes that impossible: QA is forbidden on a draft, so nothing can
+# re-stamp it. The documented failure round must get past that precondition.
+git_commit() { git -c user.name=t -c user.email=t@t "$@" >/dev/null 2>&1; }
+mkdir -p tests
+echo one > tests/a; git add tests/a; git_commit commit -m c1
+C1="$(git rev-parse HEAD)"
+echo two > tests/a; git_commit commit -am c2
+C2="$(git rev-parse HEAD)"
+
+# replay_qa_passed_ci_failed FILE -> "ready-pr" when the documented round reaches
+# ready-pr, else "blocked: <stale lines>". Replays the real documented sequence:
+# the verbs come from FILE's "failure round:" line, the fix lands before step 5.
+replay_qa_passed_ci_failed() {
+  local verb out
+  model_reset
+  printf 'qa:pass\n' > "$MODEL_STATE/labels"
+  echo "$C1" > "$MODEL_STATE/qa_sha"; echo "$C1" > "$MODEL_STATE/head"
+  while IFS= read -r verb; do
+    case "$verb" in
+      "draft-pr") bash "$VCS" draft-pr 42 </dev/null >/dev/null 2>&1 ;;
+      "label-pr --remove qa:pass") bash "$VCS" label-pr 42 --remove qa:pass </dev/null >/dev/null 2>&1 ;;
+      "ready-pr")
+        echo "$C2" > "$MODEL_STATE/head"   # the developer fix round has landed
+        if out="$(bash "$VCS" check-approval-sha 42 --stale-list 2>&1 </dev/null)"; then
+          bash "$VCS" ready-pr 42 </dev/null >/dev/null 2>&1; echo "ready-pr"
+        else
+          printf 'blocked: %s\n' "$(printf '%s' "$out" | grep '^stale' | tr '\n' ' ')"
+        fi ;;
+    esac
+  done < <(verb_sequence "$1" "failure round")
+}
+
+# Control: the stale approval really does fail step 5's precondition.
+model_reset
+printf 'qa:pass\n' > "$MODEL_STATE/labels"; echo "$C1" > "$MODEL_STATE/qa_sha"; echo "$C2" > "$MODEL_STATE/head"
+out="$(bash "$VCS" check-approval-sha 42 --stale-list 2>&1)"; rc=$?
+assert_eq "1" "$rc" "liveness model: control, a stale qa:pass on a moved head fails check-approval-sha (exit 1)"
+assert_contains "$out" "stale role=qa label=qa:pass" "liveness model: control, the stale line names qa:pass"
+
+assert_eq "ready-pr" "$(replay_qa_passed_ci_failed "$SKILL")" "liveness: QA passed, CI failed at Step 4, fix round: the documented sequence reaches ready-pr"
+assert_eq "false" "$(cat "$MODEL_STATE/draft")" "liveness: the PR is ready after the round"
+assert_eq "0" "$(grep -c 'qa:pass' "$MODEL_STATE/labels")" "liveness: qa:pass is gone, so QA (step 6, qa:pass absent) runs in full on the ready PR"
+in_order "$DT" 'QA then runs in full on the ready PR' 'qa:pass. absent'
+assert_eq "0" "$?" "liveness: the failure round text says QA runs in full on the ready PR"
+# A QA FAIL leaves no qa:pass; stripping it must be a harmless no-op.
+model_reset; echo "$C1" > "$MODEL_STATE/head"
+bash "$VCS" label-pr 42 --remove qa:pass >/dev/null 2>&1; assert_eq "0" "$?" "liveness: stripping an absent qa:pass is a no-op (exit 0)"
+# The strip removes only qa:pass: the other approvals stay for the delta re-stamps.
+model_reset; printf 'qa:pass\nreview:approved\n' > "$MODEL_STATE/labels"
+bash "$VCS" label-pr 42 --remove qa:pass >/dev/null 2>&1
+assert_eq "review:approved" "$(cat "$MODEL_STATE/labels")" "liveness: only qa:pass is removed, review:approved stays"
 
 # ── Step 1 resume routing ────────────────────────────────────────────────────
 check_step1_resume() {  # $1 = SKILL.md
@@ -372,8 +516,9 @@ replay_merge() {
 
 check_ci_runs_before_merge "$SKILL"; assert_eq "0" "$?" "ci_runs order: Step 4 captures pr-ci-runs BEFORE merge-pr and never calls it after"
 assert_eq "pr-ci-runs merge-pr post_stage merged --ci-runs" "$(verb_sequence "$SKILL" "merge sequence" | tr '\n' ' ' | sed 's/ $//')" "ci_runs order: documented merge sequence is pr-ci-runs -> merge-pr -> post_stage merged --ci-runs"
-in_order "$DT" 'Capture the CI-run count BEFORE `merge-pr`' 'empty `pull_requests\[\]`' 'exits 2' 'while the PR is open' 'record no `ci_runs`' 'run summary' 'never block or delay the merge on a metric'
-assert_eq "0" "$?" "ci_runs order: exit 2 records no ci_runs, is noted in the run summary, and never blocks the merge"
+in_order "$DT" 'Capture the CI-run count BEFORE `merge-pr`' 'empty `pull_requests\[\]`' 'exits 2' 'while the PR is open' 'record no `ci_runs`' 'run summary' 'every gate above and the green-checks test below still apply' 'nothing here lets a merge skip them' 'never blocks or delays an otherwise green merge'
+assert_eq "0" "$?" "ci_runs order: exit 2 records no ci_runs, is noted in the run summary, and neither blocks the merge nor waives any gate (#340)"
+assert_not_contains "$DT" 'merge anyway' "ci_runs order: no sentence reads as merging without the required checks (#340)"
 
 model_reset
 replay_verbs "$SKILL" "happy path" 0 >/dev/null
@@ -415,9 +560,20 @@ check_stage_order "$MUT"; assert_eq "1" "$?" "positive control: without the read
 grep -v 'pr-is-draft' "$SKILL" > "$MUT"
 check_qa_draft_guard "$MUT"; assert_eq "1" "$?" "positive control: without the QA draft guard, 'QA draft guard' check goes red"
 
+# Control 5 (#340): without the qa:pass strip the replay dead-ends before ready-pr.
+sed 's/ -> label-pr --remove qa:pass//' "$SKILL" > "$MUT"
+case "$(replay_qa_passed_ci_failed "$MUT")" in "blocked: stale role=qa label=qa:pass"*) r=0 ;; *) r=1 ;; esac
+assert_eq "0" "$r" "positive control: without the qa:pass strip the failure round is blocked at step 5 (stale role=qa label=qa:pass)"
+
 # Control 3: the default-unchanged check does detect a change to the default flow.
 awk '/^### 3d\. /{print; print "Dispatch QA without looking at the PR state."; next} 1' "$SKILL" > "$MUT"
 check_default_unchanged "$MUT"; assert_eq "1" "$?" "positive control: a line added to the default flow turns 'default unchanged' red"
+awk '/^- COMMENTS_ENABLED, COMMENTS_HEADER_TPL/{print "- A_NEW_DEFAULT_VALUE (added outside a pr-draft block)"} 1' "$SKILL" > "$MUT"
+check_step0_unchanged "$MUT"; assert_eq "1" "$?" "positive control: a line added to Step 0's config list turns 'Step 0 unchanged' red (#340)"
+awk '/^- `execution.worktree_warn_threshold`: 10/{print; print "- `a.new.default`: 1"; next} 1' "$SKILL" > "$MUT"
+check_step0_unchanged "$MUT"; assert_eq "1" "$?" "positive control: a line added to Step 0's defaults list turns 'Step 0 unchanged' red (#340)"
+sed 's/^- `pr.draft`: false (#332)$/- `pr.draft`: true (#332)/' "$SKILL" > "$MUT"
+check_step0_unchanged "$MUT"; assert_eq "0" "$?" "control: a change inside a pr-draft block in Step 0 is not a default-text change (#340)"
 strip_draft "$SKILL" > "$MUT"; printf 'bash scripts/pipeline-vcs.sh ready-pr 42\n' >> "$MUT"
 check_no_new_verb_when_unset "$MUT"; assert_eq "1" "$?" "positive control: a draft verb outside a pr-draft block turns 'no new verb when unset' red"
 
