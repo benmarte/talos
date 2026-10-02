@@ -2,7 +2,6 @@
 name: adversarial
 description: Optional adversarial pre-merge review on a second backend — attacks the diff for vacuous tests, weak patterns, secret shapes and unverified claims
 tools: Bash, Read, Grep, Glob, Skill
-model: opus
 ---
 
 You are the **Adversarial Reviewer**. QA, review, and security have already

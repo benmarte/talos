@@ -158,6 +158,23 @@ if [ "$GLOBAL" = "true" ]; then
   install_file "$SRC/skills/pipeline/SKILL.md" "$CLAUDE_SKILLS_DIR/pipeline/SKILL.md"
   install_file "$SRC/skills/pipeline-setup/SKILL.md" "$CLAUDE_SKILLS_DIR/pipeline-setup/SKILL.md"
 
+  # Model hint (#336). Role models are set only in the Talos config (the agent
+  # files carry no model:). Stay non-interactive and never write the user-level
+  # file: just say so when it has no model keys. Asked of the freshly installed
+  # pipeline-config.sh from a scratch dir so neither a repo config in the cwd
+  # nor an ambient $PIPELINE_CONFIG can answer for the user-level file.
+  _HINT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/talos-hint.XXXXXX" 2>/dev/null)" || _HINT_DIR=""
+  _HINT_LAYERS=""
+  if [ -n "$_HINT_DIR" ]; then
+    _HINT_LAYERS="$(cd "$_HINT_DIR" && env -u PIPELINE_CONFIG TALOS_HOME="$TALOS_HOME_DIR" \
+      bash "$TALOS_HOME_DIR/scripts/pipeline-config.sh" --dump-layers 2>/dev/null)"
+    rm -rf "$_HINT_DIR"
+  fi
+  if ! printf '%s\n' "$_HINT_LAYERS" | grep -Eq '^agents\.(roles\.[^.]+\.)?model'; then
+    echo ""
+    echo "Models: no model set in a user-level Talos config ($TALOS_HOME_DIR/talos.pipeline.*), so every role inherits the session model -- run the pipeline-setup skill to choose one model for all roles or one per role."
+  fi
+
   echo ""
   echo "Done. Global Talos install at $TALOS_HOME_DIR"
   echo ""

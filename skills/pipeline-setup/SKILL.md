@@ -204,6 +204,50 @@ Wait for the `runner_cmd` value.
 
 ---
 
+## Step 6c — Ask: models
+
+A role's model is set in exactly one kind of place: the Talos config. The shipped agent files carry no `model:` line, so a role you do not configure inherits the session model. Ask once, and write the answer where it applies to every repo.
+
+First look at what is already routed:
+
+```bash
+bash scripts/pipeline-agent.sh --resolve-all
+```
+
+It prints one line per role: `role=<r> model=<m> restamp_model=<m> origin=<project|global|session default>`. `global` is the user-level file `${TALOS_HOME:-$HOME/.talos}/talos.pipeline.{yml,yaml,json}`; `project` is this repo's config.
+
+**When a routing already exists** (any role with `origin=global` or `origin=project`), show the table and ask:
+
+> "Models are already routed (table above). What would you like to do?
+> 1. **Keep** it [default]
+> 2. **Change** it (in the user-level file, for every repo)
+> 3. **Override for this repo only** (written to this repo's `agents:` block)"
+
+On Keep, skip the rest of this step and write nothing. On Override for this repo only, ask the question below and record the answer for Step 7's `agents:` block instead of the user-level file.
+
+**When nothing is routed yet, or the user chose Change or Override**, ask:
+
+> "How do you want models assigned to roles?
+> 1. **One model for every role** — you name one model.
+> 2. **Per role** — you name a model for each role enabled in this setup; anything you skip uses the one-model fallback if you also name one.
+> 3. **Leave unset** — every role inherits the session model.
+>
+> A model is the alias opus, sonnet or haiku, or a full model ID; it is stored exactly as typed."
+
+Record the answer:
+- **One model for every role** — `agents.model: <model>`.
+- **Per role** — walk the roles enabled in this setup (Step 4's answers, plus `developer`, which always runs) one at a time and write `agents.roles.<role>.model: <model>` for each. Offer an `agents.model` fallback for the rest; write it if the user names one.
+- **Leave unset** — writes nothing, no `agents.model` and no role keys. Every role inherits the session model. An existing user-level file is left as it is.
+
+**Where it is written.** By default into the user-level file, `${TALOS_HOME:-$HOME/.talos}/talos.pipeline.yml` (or `.json` when PyYAML is not importable, or whichever extension already exists there), so the question is asked once and applies to every repo. Only `agents.*` keys are read from that file; never put board, merge, issue or verify settings in it.
+
+- **No user-level file yet** — create it with just the `agents:` keys recorded above.
+- **A user-level file exists** — never overwrite it blindly. Build the new content in a scratch file (keep every key already there; change only `agents.model` and `agents.roles.<role>.model`), show `diff -u <existing> <new>`, and write only after an explicit yes. On anything but yes, leave the file untouched and say so. Never overwrite an existing user-level file without showing the diff and getting that yes.
+
+Afterwards run `bash scripts/pipeline-agent.sh --resolve-all` again and show the table so the user can see what each role resolves to and which file decided it.
+
+---
+
 ## Step 7 — Write talos.pipeline.yml
 
 Based on the collected answers, write `talos.pipeline.yml` in the current directory using this template (fill in the collected values, comment out sections not configured):
@@ -332,6 +376,7 @@ agents:
 
 When writing the file:
 - If harness = `claude`: omit the `agents:` block entirely (Claude Code spawns native subagents and ignores it).
+- Models: a per-repo override chosen in Step 6c goes into this repo's `agents:` block (`model:` and `roles.<role>.model`), even when harness = `claude`. A user-level answer is written by Step 6c itself, not here.
 - If harness = `codex` or `gemini`: write the active `agents:` block with the chosen `runner` value; omit `runner_cmd`.
 - If harness = `custom`: write the active `agents:` block with `runner: custom` and `runner_cmd: "<value the user provided>"`.
 - If `roles.adversarial: true` AND the user asked for a different backend for it (Step 4): write (or extend) the `agents:` block with a `roles: { adversarial: { runner: ..., runner_cmd: ... } }` sub-block — same shape as the `docs/user-guide.md` "Second opinion on a local model" example — even when the top-level harness is `claude`, since only `adversarial` is opting out of the native default.
