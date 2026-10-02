@@ -30,7 +30,7 @@ If a config **exists**:
 - Read it with `bash scripts/pipeline-config.sh <key> <default>` to show current values.
 - Tell the user: "Found an existing config. Here's what's set: ..."
 - Ask: "Would you like to update any of these settings, or is this just a re-run to bootstrap labels?"
-- If no changes needed: jump to Step 7 (bootstrap + test).
+- If no changes needed: check `bash scripts/pipeline-config.sh status.enabled unset`. If it prints `unset` (no `status:` block yet), ask Step 4b's question once; on yes add ONLY the `status:` block to the existing file (show the lines to add and write only after an explicit yes; never rewrite the rest of the file, per the Idempotency rules), then run Step 7b. Then jump to Step 8 (bootstrap labels) and Step 10 (test notification).
 
 If **no config**: continue to Step 1.
 
@@ -125,6 +125,17 @@ Also ask (2 more questions, defaults shown, only if the user wants to change the
 >   when the developer's diff already covers CHANGELOG + README/docs, or is
 >   scripts/tests-only with a CHANGELOG entry) or `always` (docs subagent always
 >   runs and reads the full diff)? [auto — `roles.docs_mode`]"
+
+---
+
+## Step 4b — Ask: status file
+
+When `vcs.provider: file`, skip this question with one line ("No status file: file mode has no PRs to log.") and record it as declined. Otherwise ask once:
+
+> "Keep a status file in this repo? It is a short page, `TALOS_STATUS.md`, that records what merged and what is waiting on you, so a stopped run can be resumed later, with any LLM. Note: Talos commits updates to it straight to your base branch, so a protected base branch will not work.
+> [default: **yes**]"
+
+On yes: `status.enabled: true` in Step 7, then Step 7b creates the file. On no: the block is written declined, and Step 7b is skipped.
 
 ---
 
@@ -331,6 +342,15 @@ roles:
   # pm_skip_when_spec_present: true  # default; set false to always run PM
   # docs_mode: auto                  # auto (default) | always
 
+# ── Status file (Step 4b) ─────────────────────────────────────────────────────
+status:
+  enabled: <true|false>
+  # file: "TALOS_STATUS.md"
+  # fragments_dir: "docs/status.d"   # must be a tracked directory
+  # log_days: 30
+  # log_max: 50
+  # resume_max_lines: 40
+
 # ── Comments ──────────────────────────────────────────────────────────────────
 comments:
   enabled: true
@@ -375,6 +395,7 @@ agents:
 ```
 
 When writing the file:
+- Status file (Step 4b): accepted writes the block above with `enabled: true`; declined (or skipped for `vcs.provider: file`) writes the whole block commented out, `# status:` with `#   enabled: false` under it, so the keys stay visible. A JSON config has no comments: accepted writes `"status": { "enabled": true }` (the other keys keep their defaults), declined and skipped omit the `status` key. The status file is NOT added to `merge.union_paths` (fragments replace union merging).
 - If harness = `claude`: omit the `agents:` block entirely (Claude Code spawns native subagents and ignores it).
 - Models: a per-repo override chosen in Step 6c goes into this repo's `agents:` block (`model:` and `roles.<role>.model`), even when harness = `claude`. A user-level answer is written by Step 6c itself, not here.
 - If harness = `codex` or `gemini`: write the active `agents:` block with the chosen `runner` value; omit `runner_cmd`.
@@ -391,6 +412,18 @@ Tell the user: "Written `talos.pipeline.yml`. Here's a summary of what's configu
 
 ---
 
+## Step 7b — Create the status file (only if Step 4b was accepted)
+
+Skip when Step 4b was declined or skipped (`vcs.provider: file`). Otherwise, from the repo root:
+
+```bash
+bash scripts/pipeline-status-file.sh init
+```
+
+It prints `created`, `appended` (an existing file was missing a heading) or `already has both headings`, and exits 0; it never overwrites an existing file and it does not commit. Tell the user: "Commit `talos.pipeline.yml` and the status file together, so the first run starts from a base that has both." If it exits non-zero, show its message and carry on without the file (`status.enabled` stays true; `init` is safe to re-run).
+
+---
+
 ## Step 8 — Bootstrap labels (non-file providers)
 
 If provider is NOT "file":
@@ -398,7 +431,7 @@ If provider is NOT "file":
 bash scripts/bootstrap-labels.sh
 ```
 
-Report which labels were created vs already existed.
+Report which labels were created vs already existed. It is safe to re-run, and a repo that already has Talos labels needs the re-run to get `pipeline:needs-owner`.
 
 If provider is "file": skip labels, tell the user "File mode uses checkboxes for state — no repo labels needed."
 
@@ -573,6 +606,7 @@ Roles:        validator pm developer qa reviewer security docs [adversarial]
 Board:        <enabled/disabled>
 Notifications: <configured platforms or "none">
 Harness:      <claude (native subagents) | codex | gemini | custom>
+Status file:  <status.file path, e.g. TALOS_STATUS.md, or "disabled">
 
 Control labels (created by bootstrap-labels.sh in Step 8):
   p0        — dispatched first (highest priority)
@@ -580,6 +614,8 @@ Control labels (created by bootstrap-labels.sh in Step 8):
   p2        — low priority (dispatched after p1; unlabeled issues are dispatched last, after p2)
   skip-qa   — bypasses the QA, reviewer, security, and docs gates for this issue
               (CI checks and forbidden-files protection are ALWAYS enforced)
+  pipeline:needs-owner — parked waiting on your decision; reply on the issue or PR and the next run clears it
+              (never clears pipeline:blocked)
 
 Next steps:
   1. Add the 'pipeline:ready' label to a GitHub issue (or a '- [ ] task' in plan.md for file mode)
@@ -596,6 +632,7 @@ Next steps:
 ## Idempotency rules
 
 - Never overwrite an existing `talos.pipeline.yml` without the user's explicit confirmation.
+- An existing status file is never overwritten: `init` leaves it alone and appends only a missing heading.
 - If `bootstrap-labels.sh` reports a label already exists, that is not an error — say "already up to date".
 - Running setup a second time on a configured repo should be safe and produce no surprises.
 
