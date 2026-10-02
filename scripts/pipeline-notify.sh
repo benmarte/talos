@@ -5,7 +5,14 @@
 #        pipeline-notify.sh --render <platform> <event> [ref] [message]
 #   event       pr-opened | merged | blocked | issue-closed | info
 #   ref         issue/PR identifier shown in the message (e.g. "#42")
-#   message     free text describing the event
+#   message     free text describing the event. A message of exactly "-" is
+#               read from stdin instead (#342), so text a subagent or reporter
+#               wrote never has to be typed inside shell quotes:
+#                 pipeline-notify.sh qa "#42" - 42 <<'TALOS_<rand>'
+#                 PASS: 3 criteria verified
+#                 TALOS_<rand>
+#               Trailing newlines are trimmed, as for a "$(...)" argument. The
+#               argv form is unchanged.
 #   thread_key  optional; used to group all events for one issue into a single
 #               platform thread. Pass the issue number (e.g. "42"). Defaults to
 #               <ref>. Orchestrator should always pass the issue number so PR
@@ -134,6 +141,22 @@ REF="${2:-}"
 MSG="${3:-}"
 THREAD_KEY="${4:-$REF}"
 
+# "-" as the message reads it from stdin (#342). A closed fd 0 would make
+# "$(cat)" read its own pipe and hang, and a terminal would wait for a human, so
+# both are refused up front: one stderr line, nothing sent, exit 0 (this script
+# never fails the pipeline). An open pipe or file is read to EOF.
+_read_message() { cat; }
+# (`: <&0` would be a no-op dup, so probe with a dup onto fd 3.)
+_stdin_unusable() { [ -t 0 ] || ! { : 3<&0; } 2>/dev/null; }
+_refuse_stdin() {
+  echo "pipeline-notify: message '-' needs text on stdin (a heredoc), but stdin is closed or a terminal; nothing sent" >&2
+  exit 0
+}
+if [ "$MSG" = "-" ] && [ "$EVENT" != "--render" ]; then
+  _stdin_unusable && _refuse_stdin
+  MSG="$(_read_message)"
+fi
+
 # ── --render: preview a template without posting (#280) ──────────────────────
 # `pipeline-notify.sh --render <platform> <event> [ref] [message]` resolves the
 # template the given platform would use, renders it, and prints the payload
@@ -146,8 +169,37 @@ if [ "$EVENT" = "--render" ]; then
   EVENT="${3:-info}"
   REF="${4:-#0}"
   MSG="${5:-Sample message body for template preview.}"
+  if [ "$MSG" = "-" ]; then
+    _stdin_unusable && _refuse_stdin
+    MSG="$(_read_message)"
+  fi
   THREAD_KEY="$REF"
 fi
+
+# ── Cap the message BEFORE any exec (#342) ────────────────────────────────────
+# The message travels to python helpers in environment variables and to curl as
+# one -d argument, JSON-escaped (up to 6x for control characters). Linux caps a
+# single environment/argv string at 128 KiB (MAX_ARG_STRLEN) and fails the exec
+# with "Argument list too long"; macOS has no such cap, so a long message works
+# there and silently sends nothing on Linux. Every sink limits a message far
+# below this anyway (Slack ~40 KB, Discord 2 KB), so a message over
+# _NOTIFY_MSG_MAX bytes is cut to that many bytes, never inside a multi-byte
+# character, a marker is appended, and one stderr line says so. Shorter
+# messages are untouched.
+_NOTIFY_MSG_MAX=16384
+_msg_bytes="$(printf '%s' "$MSG" | wc -c | tr -d ' ')"
+if [ "${_msg_bytes:-0}" -gt "$_NOTIFY_MSG_MAX" ]; then
+  MSG="$(printf '%s' "$MSG" | python3 -c '
+import sys
+b = sys.stdin.buffer.read()
+n = int(sys.argv[1])
+while n > 0 and (b[n] & 0xC0) == 0x80:  # never split a UTF-8 character
+    n -= 1
+sys.stdout.buffer.write(b[:n] + ("\n[message truncated to %d bytes]" % n).encode())
+' "$_NOTIFY_MSG_MAX")"
+  echo "pipeline-notify: message was $_msg_bytes bytes; truncated to at most $_NOTIFY_MSG_MAX bytes" >&2
+fi
+unset _msg_bytes
 
 # ── Load repo .env if present ─────────────────────────────────────────────────
 # NOTE: REPO_ROOT keeps its current meaning (script-relative install dir)
@@ -304,7 +356,7 @@ if [ -n "$TITLE" ]; then REF_TITLE="$REF_DISP $TITLE"; else REF_TITLE="$REF_DISP
 
 # PR number + title. Prefer PIPELINE_PR/PIPELINE_PR_TITLE; else parse MSG, then fetch.
 PR="${PIPELINE_PR:-}"
-[ -z "$PR" ] && PR="$(printf '%s' "$MSG" | grep -oE '(pull/|PR #?)[0-9]+' | grep -oE '[0-9]+' | head -1)"
+[ -z "$PR" ] && PR="$(printf '%s' "$MSG" | grep -oE '(pull/|PR #?)[0-9]+' | grep -oE '[0-9]+' | sed -n 1p)"
 PR_TITLE="${PIPELINE_PR_TITLE:-}"
 if [ -z "$PR_TITLE" ] && [ -n "$PR" ]; then
   if command -v gh >/dev/null 2>&1; then
@@ -450,7 +502,7 @@ print(verdict)
 print(summary)
 PY
 )"
-VERDICT="$(printf '%s\n' "$_VERDICT_SPLIT" | head -1)"
+VERDICT="$(printf '%s\n' "$_VERDICT_SPLIT" | sed -n 1p)"
 SUMMARY="$(printf '%s\n' "$_VERDICT_SPLIT" | tail -n +2)"
 unset _VERDICT_SPLIT
 
@@ -468,7 +520,7 @@ print(m.group(1).lower() if m else '')
 print(m.group(2).strip() if m else os.environ.get('SUMMARY', ''))
 PY
 )"
-  _BLOCKER_STAGE="$(printf '%s\n' "$_BLOCKER" | head -1)"
+  _BLOCKER_STAGE="$(printf '%s\n' "$_BLOCKER" | sed -n 1p)"
   if [ -n "$_BLOCKER_STAGE" ]; then
     NACTION="blocked by $_BLOCKER_STAGE"
     SUMMARY="$(printf '%s\n' "$_BLOCKER" | tail -n +2)"
@@ -913,7 +965,7 @@ PY
 _prepare_sink() {
   _render_template "${1:-}"
   NTEXT="$(_neutral_to_platform "${1:-}" "$NTEXT")"
-  NTITLE="$(printf '%s\n' "$NTEXT" | head -1)"
+  NTITLE="$(printf '%s\n' "$NTEXT" | sed -n 1p)"
   NBODY="$(printf '%s\n' "$NTEXT" | tail -n +2 | sed '/./,$!d')"
   [ -z "$NBODY" ] && NBODY="$NTITLE"
   # Thread replies drop the title line: the root already carries it. The line
@@ -1434,7 +1486,7 @@ if [ -n "${BUZZ_RELAY_URL:-}" ] && [ -n "${BUZZ_BOT_PRIVATE_KEY:-}" ] && [ -n "$
   }
 
   _buzz_event_id() {  # $1=nak stdout — event JSON on the first line
-    _extract_json_field "$(printf '%s' "$1" | head -1)" id
+    _extract_json_field "$(printf '%s' "$1" | sed -n 1p)" id
   }
 
   if [ "${PIPELINE_NOTIFY_DEBUG:-}" = "1" ]; then

@@ -75,46 +75,52 @@ Workflow (do ALL of it — the publish step is not optional):
    and if you skipped a type, say why.
 4. Commit with a conventional message (`fix:`/`feat:` … `(#<N>)`).
 5. `git push -u origin <branch>`.
-6. Write the PR body to a temp file with a single-quoted heredoc (multi-line
-   OK). The spec summary is issue-derived text: never put it inside double
-   quotes on a command line, where `$(...)` or backticks in it would be run.
+6. Compose the PR body: the spec summary, the test types, and the closing
+   line (`Closes #<N>`, or `Part of #<N>` for all but the last PR on
+   multi-PR issues). It and the title are issue-derived text, so they go in
+   as data, never inside double quotes on a command line, where `$(...)` or
+   backticks in them would be run. Use heredocs whose delimiter is
+   `TALOS_<rand>`, with `<rand>` 12+ random characters you invent fresh for
+   each heredoc, never one copied from an example and never reused: text that
+   contains the closing line would end the heredoc early and run what follows.
+7. **Open the PR** — this is the completion signal. One command, with a
+   `mktemp` body file (never a fixed `/tmp/...` name):
    ```bash
-   cat > /tmp/pr-body-<N>.md <<'EOF'
+   BODY_FILE="$(mktemp)"
+   cat > "$BODY_FILE" <<'TALOS_<rand>'
    <spec summary>
 
    Test types: <unit / regression / e2e — list what you added; for any type
    skipped, say why>
 
    Closes #<N>
-   EOF
-   ```
-   Use "Part of #<N>" instead of "Closes #<N>" for all but the last PR on
-   multi-PR issues.
-7. **Open the PR** — this is the completion signal. The title is issue-derived
-   too, so assign it with a single-quoted heredoc and pass the variable:
-   ```bash
-   read -r PR_TITLE <<'EOF'
+   TALOS_<rand>
+   read -r PR_TITLE <<'TALOS_<rand>'
    <title>
-   EOF
-   bash scripts/pipeline-vcs.sh create-pr <branch> "$PR_TITLE" /tmp/pr-body-<N>.md
+   TALOS_<rand>
+   bash scripts/pipeline-vcs.sh create-pr <branch> "$PR_TITLE" "$BODY_FILE" && rm -f "$BODY_FILE"
    ```
    If this exits non-zero: stop immediately, set `pipeline:blocked`, post
    blocked.md with the exact error. Capture `<file>:<quoted line>
-   (explicit|interpreted)` into `BLOCKED_BY` via a quoted heredoc first
-   (`read -r -d '' BLOCKED_BY <<'EOF' ... EOF`) so shell metacharacters in
-   the quoted text are never interpreted — never paste the quoted line
-   directly into a command string — do not guess a PR number.
+   (explicit|interpreted)` into `BLOCKED_BY` with the same kind of heredoc
+   (`read -r -d '' BLOCKED_BY <<'TALOS_<rand>' || true` … `TALOS_<rand>`) so
+   shell metacharacters in the quoted text are never interpreted — never
+   paste the quoted line directly into a command string — do not guess a PR
+   number.
 8. Confirm the PR exists: `bash scripts/pipeline-vcs.sh view-pr <branch>`.
 9. On success:
    a. `bash scripts/pipeline-vcs.sh label-pr <PR> --add pipeline:review`
    b. `bash scripts/pipeline-vcs.sh label-issue <N> --remove pipeline:dev`
-   c. Render and post pr-opened.md on the issue: VERDICT="OPENED"
-      SUMMARY="<PR title>" DETAILS="<2-5 bullets: what changed, files touched,
-      verify results>". If the post fails, report it in your final message.
+   c. Render and post pr-opened.md on the issue: VERDICT=OPENED, SUMMARY the
+      PR title, DETAILS 2-5 bullets (what changed, files touched, verify
+      results). Assign SUMMARY and DETAILS with the same kind of heredoc
+      (`read -r -d '' SUMMARY <<'TALOS_<rand>' || true`), never inside double
+      quotes. If the post fails, report it in your final message.
 10. On failure: `label-issue <N> --add pipeline:blocked`, post blocked.md
     with the exact error. Capture `<file>:<quoted line>
-    (explicit|interpreted)` into `BLOCKED_BY` via a quoted heredoc first
-    (`read -r -d '' BLOCKED_BY <<'EOF' ... EOF`) so shell metacharacters in
+    (explicit|interpreted)` into `BLOCKED_BY` with a heredoc first
+    (`read -r -d '' BLOCKED_BY <<'TALOS_<rand>' || true` … `TALOS_<rand>`,
+    `<rand>` fresh random characters as in step 6) so shell metacharacters in
     the quoted text are never interpreted — never paste the quoted line
     directly into a command string — do NOT claim success.
 

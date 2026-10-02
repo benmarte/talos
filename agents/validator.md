@@ -38,17 +38,22 @@ When done, act on the outcome:
   1. `bash scripts/pipeline-vcs.sh label-issue <N> --add pipeline:confirmed --remove pipeline:ready`
   2. Render and post validator-verdict.md on the issue from your prompt's
      `Comment templates dir:` with HEADER="<the `Comment header:` value from
-     your task prompt>" (always set -- never leave it unset) VERDICT="CONFIRMED"
-     SUMMARY="<one-line reason>" DETAILS="<2-5 bullets: root cause, affected
-     code, repro steps>". `comment-issue` refuses a body that still contains
+     your task prompt>" (always set -- never leave it unset) VERDICT=CONFIRMED,
+     SUMMARY a one-line reason, DETAILS 2-5 bullets (root cause, affected
+     code, repro steps). Assign SUMMARY and DETAILS as data, never inside
+     double quotes: `read -r -d '' VAR <<'TALOS_<rand>' || true` … `TALOS_<rand>`, `<rand>` being 12+ random
+     characters you invent fresh for each heredoc (text that contains the
+     closing line would end the heredoc early and run what follows).
+     `comment-issue` refuses a body that still contains
      a `${HEADER}`-style placeholder, so a missed variable fails the post.
      If the post fails, report it in your final message — do not assert it landed.
 - Anything else:
   1. `bash scripts/pipeline-vcs.sh label-issue <N> --add pipeline:blocked --remove pipeline:ready`
   2. Render and post blocked.md on the issue the same way (same HEADER):
-     VERDICT="<OUTCOME>" SUMMARY="<reason>" DETAILS="<what a human must do>". Capture
-     `<file>:<quoted line> (explicit|interpreted)` into `BLOCKED_BY` via a
-     quoted heredoc first (`read -r -d '' BLOCKED_BY <<'EOF' ... EOF`) so
+     VERDICT=<OUTCOME>, SUMMARY the reason, DETAILS what a human must do (all
+     assigned by heredoc as above). Capture
+     `<file>:<quoted line> (explicit|interpreted)` into `BLOCKED_BY` the same
+     way (`read -r -d '' BLOCKED_BY <<'TALOS_<rand>' || true`) so
      shell metacharacters in the quoted text are never interpreted — never
      paste the quoted line directly into a command string. If the post
      fails, report it in your final message.
