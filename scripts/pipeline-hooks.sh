@@ -15,6 +15,7 @@
 #        pipeline-hooks.sh post_stage <event> <role> <issue> [--pr N] [--sha S]
 #          [--verdict V] [--summary "..."] [--details-file F]
 #          [--attempt stage:count:total] [--duration-s N] [--tokens N] [--tool-uses N]
+#          [--ci-runs N]
 #
 # Config (talos.pipeline.yml via pipeline-config.sh, read through the cfg()
 # cache — see pipeline-cfg-cache.sh):
@@ -63,6 +64,10 @@
 # invalid or missing value is null in the payload, with one stderr note for
 # an invalid (non-empty, non-numeric) value. Schema field order is stable:
 # tokens and tool_uses are appended after duration_s, never inserted earlier.
+# --ci-runs N (#332) records how many pull_request CI runs the PR consumed
+# (pipeline-vcs.sh pr-ci-runs); the merged event carries it. Unlike the fields
+# above it adds a "ci_runs" key (after tool_uses) only when supplied and valid,
+# so every payload without it is unchanged.
 # model comes from agents.roles.<role>.model, falling back to agents.model;
 # runner from agents.runner. ts is UTC ISO-8601.
 #
@@ -343,13 +348,13 @@ json.dump(payload, sys.stdout)
 
 # post_stage EVENT ROLE ISSUE [--pr N] [--sha S] [--verdict V] [--summary S]
 #            [--details-file F] [--attempt stage:count:total] [--duration-s N]
-#            [--tokens N] [--tool-uses N]
+#            [--tokens N] [--tool-uses N] [--ci-runs N]
 post_stage() {
   local event="${1:-}" role="${2:-}" issue="${3:-}"
   local _shift_n=$(( $# >= 3 ? 3 : $# ))
   shift "$_shift_n" 2>/dev/null || true
 
-  local pr="" sha="" verdict="" summary="" details_file="" attempt="" duration_s="" tokens="" tool_uses=""
+  local pr="" sha="" verdict="" summary="" details_file="" attempt="" duration_s="" tokens="" tool_uses="" ci_runs=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --pr) pr="${2:-}"; shift 2 ;;
@@ -361,6 +366,7 @@ post_stage() {
       --duration-s) duration_s="${2:-}"; shift 2 ;;
       --tokens) tokens="${2:-}"; shift 2 ;;
       --tool-uses) tool_uses="${2:-}"; shift 2 ;;
+      --ci-runs) ci_runs="${2:-}"; shift 2 ;;
       *) shift ;;
     esac
   done
@@ -370,6 +376,7 @@ post_stage() {
   # stderr note; missing (never supplied) is already empty and silent.
   tokens="$(_validate_nonneg_int tokens "$tokens")"
   tool_uses="$(_validate_nonneg_int tool-uses "$tool_uses")"
+  ci_runs="$(_validate_nonneg_int ci-runs "$ci_runs")"
 
   local hook_cmd
   hook_cmd="$(cfg hooks.post_stage "")"
@@ -404,7 +411,7 @@ post_stage() {
     TALOS_HOOK_ATTEMPT_STAGE="$attempt_stage" TALOS_HOOK_ATTEMPT_COUNT="$attempt_count" \
     TALOS_HOOK_ATTEMPT_TOTAL="$attempt_total" TALOS_HOOK_MODEL="$model" TALOS_HOOK_RUNNER="$runner" \
     TALOS_HOOK_DURATION="$duration_s" TALOS_HOOK_TOKENS="$tokens" TALOS_HOOK_TOOL_USES="$tool_uses" \
-    TALOS_HOOK_TS="$ts" \
+    TALOS_HOOK_CI_RUNS="$ci_runs" TALOS_HOOK_TS="$ts" \
     python3 -c '
 import json
 import os
@@ -446,8 +453,12 @@ payload = {
     "duration_s": _int_or_none(os.environ.get("TALOS_HOOK_DURATION")),
     "tokens": _int_or_none(os.environ.get("TALOS_HOOK_TOKENS")),
     "tool_uses": _int_or_none(os.environ.get("TALOS_HOOK_TOOL_USES")),
-    "ts": os.environ.get("TALOS_HOOK_TS", ""),
 }
+# #332: ci_runs only when supplied, so a payload without it is unchanged.
+_ci_runs = _int_or_none(os.environ.get("TALOS_HOOK_CI_RUNS"))
+if _ci_runs is not None:
+    payload["ci_runs"] = _ci_runs
+payload["ts"] = os.environ.get("TALOS_HOOK_TS", "")
 json.dump(payload, sys.stdout)
 ')"
 
@@ -483,7 +494,7 @@ case "$VERB" in
     ;;
   *)
     echo "Usage: pipeline-hooks.sh pre_dispatch <role> <issue> [<pr>] [<worktree_path>] [files_hint...]" >&2
-    echo "       pipeline-hooks.sh post_stage <event> <role> <issue> [--pr N] [--sha S] [--verdict V] [--summary \"...\"] [--details-file F] [--attempt stage:count:total] [--duration-s N] [--tokens N] [--tool-uses N]" >&2
+    echo "       pipeline-hooks.sh post_stage <event> <role> <issue> [--pr N] [--sha S] [--verdict V] [--summary \"...\"] [--details-file F] [--attempt stage:count:total] [--duration-s N] [--tokens N] [--tool-uses N] [--ci-runs N]" >&2
     exit 2
     ;;
 esac

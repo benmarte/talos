@@ -34,6 +34,11 @@
 #          --json prints the same data as one JSON object:
 #          {"rows": [...], "total": {...}}. --issue filters to
 #          one issue.
+#          ci_runs (#332): when at least one matched event carries a ci_runs
+#          value (post_stage --ci-runs, recorded on the merged event), the
+#          table gains a trailing ci_runs column and every --json row and the
+#          total gain a trailing ci_runs field, summing those values. With no
+#          such event the output is exactly the shape described above.
 #
 # A malformed line (not valid JSON, or not a JSON object) is skipped rather
 # than aborting the read; the count of skipped lines is reported once on
@@ -195,6 +200,7 @@ def matches(rec):
 groups = {}
 order = []
 skipped = 0
+have_ci_runs = False
 with open(log_path, "r", errors="replace") as f:
     for line in f:
         line = line.strip()
@@ -211,7 +217,7 @@ with open(log_path, "r", errors="replace") as f:
             continue
         key = (rec.get("issue"), rec.get("role"))
         if key not in groups:
-            groups[key] = {"events": 0, "tokens": 0, "tool_uses": 0, "duration_s": 0, "unrecorded": 0, "restamp": 0}
+            groups[key] = {"events": 0, "tokens": 0, "tool_uses": 0, "duration_s": 0, "unrecorded": 0, "restamp": 0, "ci_runs": 0}
             order.append(key)
         g = groups[key]
         g["events"] += 1
@@ -222,16 +228,25 @@ with open(log_path, "r", errors="replace") as f:
             g["unrecorded"] += 1
         if rec.get("verdict") in ("RESTAMP_PASS", "RESTAMP_FAIL"):
             g["restamp"] += 1
+        ci_runs = rec.get("ci_runs")
+        if type(ci_runs) is int and ci_runs >= 0:
+            have_ci_runs = True
+            g["ci_runs"] += ci_runs
 
 order.sort(key=lambda k: (str(k[0]), str(k[1])))
 
 rows = []
-total = {"events": 0, "tokens": 0, "tool_uses": 0, "duration_s": 0, "unrecorded": 0, "restamp": 0}
+total = {"events": 0, "tokens": 0, "tool_uses": 0, "duration_s": 0, "unrecorded": 0, "restamp": 0, "ci_runs": 0}
 for key in order:
     g = groups[key]
+    if not have_ci_runs:
+        g.pop("ci_runs")
     rows.append({"issue": key[0], "role": key[1], **g})
-    for field in total:
+    for field in g:
         total[field] += g[field]
+
+if not have_ci_runs:
+    total.pop("ci_runs")
 
 if json_mode == "1":
     print(json.dumps({"rows": rows, "total": total}))
@@ -239,16 +254,17 @@ else:
     def _s(v):
         return "" if v is None else str(v)
 
-    print("	".join(["issue", "role", "events", "tokens", "tool_uses", "duration_s", "unrecorded", "restamp"]))
+    extra = ["ci_runs"] if have_ci_runs else []
+    print("	".join(["issue", "role", "events", "tokens", "tool_uses", "duration_s", "unrecorded", "restamp"] + extra))
     for row in rows:
         print("	".join(_s(x) for x in [
             row["issue"], row["role"], row["events"], row["tokens"],
             row["tool_uses"], row["duration_s"], row["unrecorded"], row["restamp"],
-        ]))
+        ] + [row[f] for f in extra]))
     print("	".join(_s(x) for x in [
         "TOTAL", "", total["events"], total["tokens"],
         total["tool_uses"], total["duration_s"], total["unrecorded"], total["restamp"],
-    ]))
+    ] + [total[f] for f in extra]))
 
 if skipped:
     print(f"pipeline-events: skipped {skipped} malformed line(s)", file=sys.stderr)

@@ -66,6 +66,52 @@
 #                                             single '-', trimmed. Provider-agnostic
 #                                             (#199).
 #   create-pr <branch> <title> <body-file>    Open a pull / merge request
+#             [--draft]                       ...as a DRAFT (#332): gh `--draft`,
+#                                             glab `--draft`, az `--draft true`;
+#                                             `--draft` goes after the three
+#                                             positionals. github-api exits 2
+#                                             (never silently opens a non-draft
+#                                             PR); file mode stays a no-op.
+#   ready-pr <n>                              Mark a draft PR ready for review
+#                                             (#332): `gh pr ready`, `glab mr
+#                                             update --ready`, `az repos pr
+#                                             update --draft false`. Exit 0 only
+#                                             on success; every failure (bad or
+#                                             non-numeric id, setup error,
+#                                             github-api, file mode) is exit 2.
+#   draft-pr <n>                              Convert a PR back to a draft
+#                                             (#332): `gh pr ready --undo`,
+#                                             `glab mr update --draft`, `az
+#                                             repos pr update --draft true`.
+#                                             Same exit contract as ready-pr.
+#   pr-is-draft <n>                           Print `draft` or `ready` (#332).
+#                                             Exit 0 = draft, 1 = ready, 2 =
+#                                             unverified (fetch failed, bad or
+#                                             non-numeric PR id, unparseable
+#                                             response, unsupported provider:
+#                                             github-api, file; setup error: no
+#                                             token, unknown provider, missing
+#                                             CLI; --dry-run). Exit 0 only with
+#                                             stdout exactly `draft`, exit 1 only
+#                                             with stdout exactly `ready` (enforced
+#                                             for every provider by the dispatcher);
+#                                             stdout is empty on every exit 2.
+#                                             Callers dispatch QA / the CI wait
+#                                             only on exit 1.
+#   pr-ci-runs <n>                            Print the number of
+#                                             `pull_request`-triggered workflow
+#                                             runs for the PR's head branch that
+#                                             executed (#332): the Actions
+#                                             `total_count` minus the runs whose
+#                                             conclusion is `skipped` (a draft
+#                                             push skipped by the `draft != true`
+#                                             job guard is not CI that ran).
+#                                             github only; every other provider
+#                                             exits 2, and so does any setup
+#                                             error, a failed or unparseable
+#                                             fetch or a total that reaches
+#                                             GitHub's 1000-result search cap
+#                                             (never a short count).
 #   view-pr <n|branch>                        View PR details
 #   list-prs                                  List open PRs
 #   diff-pr <n>                               Show PR diff
@@ -414,6 +460,18 @@ if [ -z "$VERB" ]; then
   exit 1
 fi
 
+# create-pr --draft (#332): a flag after the three positionals. Pulled out of
+# ARGS here so every adapter sees the same positionals; _PR_DRAFT carries it.
+_PR_DRAFT=false
+if [ "$VERB" = "create-pr" ] && [ "${#ARGS[@]}" -gt 3 ]; then
+  _cp_args=("${ARGS[@]:0:3}")
+  for _cp_a in "${ARGS[@]:3}"; do
+    if [ "$_cp_a" = "--draft" ]; then _PR_DRAFT=true; else _cp_args+=("$_cp_a"); fi
+  done
+  ARGS=("${_cp_args[@]}")
+  unset _cp_args _cp_a
+fi
+
 # ── Config ────────────────────────────────────────────────────────────────────
 PROVIDER="$(cfg vcs.provider "github")"
 REPO="$(cfg vcs.repo "")"
@@ -444,6 +502,70 @@ _run() {
     return 0
   fi
   "$@"
+}
+
+# ── Draft PR helpers (#332) ───────────────────────────────────────────────────
+# `pr-is-draft` and `pr-ci-runs` feed gates, so they fail closed: any fetch
+# failure, bad id or unparseable response is exit 2 with nothing on stdout --
+# never an empty result and never "ready".
+
+# _vcs_draft_unsupported <verb> <provider> -> exit 2, nothing on stdout.
+_vcs_draft_unsupported() {
+  echo "pipeline-vcs: $1: not supported for provider $2 (exit 2, unverified)" >&2
+  exit 2
+}
+
+# _vcs_pr_id_numeric <id> -> 0 only for a non-empty all-digit id.
+_vcs_pr_id_numeric() {
+  case "${1:-}" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  return 0
+}
+
+# _vcs_require_pr_id <verb> <id> -> exit 1 (usage error) unless numeric.
+_vcs_require_pr_id() {
+  _vcs_pr_id_numeric "$2" && return 0
+  echo "pipeline-vcs: $1: PR id must be numeric (got '${2:-}')" >&2
+  exit 1
+}
+
+# _vcs_shared_pr_is_draft <n> <json-field> <dry-run-text> <fetch-fn>
+# <fetch-fn> is called with <n> and prints the provider's PR JSON.
+_vcs_shared_pr_is_draft() {
+  local _n="${1:-}" _field="$2" _dry="$3" _fetch="$4" _raw _state
+  if ! _vcs_pr_id_numeric "$_n"; then
+    echo "pipeline-vcs: pr-is-draft: PR id must be numeric (got '$_n') -- unverified" >&2
+    exit 2
+  fi
+  if [ "$DRY_RUN" = "true" ]; then
+    echo "[dry-run] $_dry"
+    return 0
+  fi
+  _raw="$("$_fetch" "$_n")" || {
+    echo "pipeline-vcs: pr-is-draft: could not fetch PR #$_n -- unverified" >&2
+    exit 2
+  }
+  _state="$(printf '%s' "$_raw" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(2)
+v = d.get(sys.argv[1]) if isinstance(d, dict) else None
+if v is True:
+    print("draft")
+elif v is False:
+    print("ready")
+else:
+    sys.exit(2)
+' "$_field")" || {
+    echo "pipeline-vcs: pr-is-draft: PR #$_n response has no boolean '$_field' -- unverified" >&2
+    exit 2
+  }
+  printf '%s\n' "$_state"
+  [ "$_state" = "draft" ] && exit 0
+  exit 1
 }
 
 # ── Shared: evaluate a set of required checks against their current status ────
@@ -2688,8 +2810,88 @@ print(json.dumps(out))
     create-pr)
       local branch="$1" title="$2" body_file="$3"
       [ -z "$BASE_BRANCH" ] && BASE_BRANCH="$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null)"
+      local _draft_arg=""; [ "$_PR_DRAFT" = "true" ] && _draft_arg="--draft"
       _run gh pr create --base "$BASE_BRANCH" --head "$branch" \
-        --title "$title" --body-file "$body_file" ${REPO:+--repo "$REPO"}
+        --title "$title" --body-file "$body_file" ${REPO:+--repo "$REPO"} $_draft_arg
+      ;;
+    ready-pr|draft-pr)
+      # (#332) `gh pr ready <n>` marks a draft ready; `--undo` converts back.
+      local _rd_n="${1:-}" _rd_undo=""
+      _vcs_require_pr_id "$VERB" "$_rd_n"
+      [ "$VERB" = "draft-pr" ] && _rd_undo="--undo"
+      _run gh pr ready "$_rd_n" $_rd_undo ${REPO:+--repo "$REPO"}
+      ;;
+    pr-is-draft)
+      # (#332) Fail closed: see _vcs_shared_pr_is_draft.
+      _github_fetch_draft() {
+        gh pr view "$1" --json isDraft ${REPO:+--repo "$REPO"}
+      }
+      _vcs_shared_pr_is_draft "${1:-}" isDraft \
+        "gh pr view ${1:-} --json isDraft ${REPO:+--repo $REPO}" _github_fetch_draft
+      ;;
+    pr-ci-runs)
+      # (#332) Number of `pull_request` workflow runs for the PR's head branch
+      # that executed: every run minus those whose conclusion is `skipped`
+      # (with pr.draft, a push to a draft PR still creates a run whose jobs
+      # are all skipped by the `draft != true` guard; it is not CI that ran).
+      # Both figures are the list endpoint's total_count (per_page=1), so
+      # there is no paginated sum to truncate. GitHub caps filtered run
+      # searches at 1000 results; a total at the cap is unverified, never a
+      # short count.
+      local _cr_n="${1:-}" _cr_repo="$REPO"
+      [ -z "$_cr_repo" ] && _cr_repo='{owner}/{repo}'
+      if ! _vcs_pr_id_numeric "$_cr_n"; then
+        echo "pipeline-vcs: pr-ci-runs: PR id must be numeric (got '$_cr_n') -- unverified" >&2
+        exit 2
+      fi
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] gh pr view $_cr_n --json headRefName; gh api -X GET repos/$_cr_repo/actions/runs -f event=pull_request -f branch=<head> [-f status=skipped] -F per_page=1"
+        return 0
+      fi
+      local _cr_head_raw _cr_head _cr_all _cr_skipped
+      _cr_head_raw="$(gh pr view "$_cr_n" --json headRefName ${REPO:+--repo "$REPO"})" || {
+        echo "pipeline-vcs: pr-ci-runs: could not fetch PR #$_cr_n -- unverified" >&2
+        exit 2
+      }
+      _cr_head="$(printf '%s' "$_cr_head_raw" | python3 -c '
+import json, sys
+try:
+    v = json.load(sys.stdin).get("headRefName")
+except Exception:
+    sys.exit(2)
+if not isinstance(v, str) or not v:
+    sys.exit(2)
+print(v)
+')" || {
+        echo "pipeline-vcs: pr-ci-runs: PR #$_cr_n has no head branch -- unverified" >&2
+        exit 2
+      }
+      # _github_runs_total [extra gh api args] -> total_count of the filtered
+      # run list, or non-zero (nothing printed) when missing, malformed, or at the cap.
+      _github_runs_total() {
+        local _rt_raw
+        _rt_raw="$(gh api -X GET "repos/$_cr_repo/actions/runs" \
+          -f event=pull_request -f branch="$_cr_head" "$@" -F per_page=1)" || return 1
+        printf '%s' "$_rt_raw" | python3 -c '
+import json, sys
+try:
+    n = json.load(sys.stdin).get("total_count")
+except Exception:
+    sys.exit(2)
+if type(n) is not int or n < 0 or n >= 1000:
+    sys.exit(2)
+print(n)
+'
+      }
+      _cr_all="$(_github_runs_total)" && _cr_skipped="$(_github_runs_total -f status=skipped)" || {
+        echo "pipeline-vcs: pr-ci-runs: workflow run totals for PR #$_cr_n could not be fetched, are malformed, or are at GitHub's 1000-result cap -- unverified" >&2
+        exit 2
+      }
+      if [ "$_cr_skipped" -gt "$_cr_all" ]; then
+        echo "pipeline-vcs: pr-ci-runs: PR #$_cr_n reports more skipped runs ($_cr_skipped) than runs ($_cr_all) -- unverified" >&2
+        exit 2
+      fi
+      printf '%s\n' "$((_cr_all - _cr_skipped))"
       ;;
     view-pr)
       _run gh pr view "$1" --json number,title,headRefName,labels,url,body \
@@ -3833,8 +4035,22 @@ else:
         _ga_assignees_get _ga_assignee_add _ga_current_user_login >&2
       ;;
 
+    # (#332) Draft support is gh/glab/az only; exit 2, no HTTP call. pr-is-draft
+    # and pr-ci-runs get their own arms so the verb-parity test sees them.
+    ready-pr|draft-pr)
+      _vcs_draft_unsupported "$_VERB" github-api
+      ;;
+    pr-is-draft)
+      _vcs_draft_unsupported pr-is-draft github-api
+      ;;
+    pr-ci-runs)
+      _vcs_draft_unsupported pr-ci-runs github-api
+      ;;
+
     create-pr)
       local _branch="$1" _title="$2" _body_file="$3"
+      # (#332) Never silently open a non-draft PR when a draft was asked for.
+      [ "$_PR_DRAFT" = "true" ] && _vcs_draft_unsupported "create-pr --draft" github-api
       if [ "$DRY_RUN" = "true" ]; then
         echo "[dry-run] github-api: POST $_API/pulls (head=$_branch)"
         return 0
@@ -4853,8 +5069,27 @@ for p in paths:
     create-pr)
       local branch="$1" title="$2" body_file="$3"
       [ -z "$BASE_BRANCH" ] && BASE_BRANCH="$(glab repo view --format='%{default_branch}' 2>/dev/null || echo main)"
+      local _draft_arg=""; [ "$_PR_DRAFT" = "true" ] && _draft_arg="--draft"
       _run glab mr create --head "$branch" --target-branch "$BASE_BRANCH" \
-        --title "$title" --description "$(cat "$body_file")" $RARG
+        --title "$title" --description "$(cat "$body_file")" $RARG $_draft_arg
+      ;;
+    ready-pr|draft-pr)
+      # (#332) `glab mr update <n> --ready|--draft`.
+      local _rd_n="${1:-}" _rd_flag="--ready"
+      _vcs_require_pr_id "$VERB" "$_rd_n"
+      [ "$VERB" = "draft-pr" ] && _rd_flag="--draft"
+      _run glab mr update "$_rd_n" "$_rd_flag" $RARG
+      ;;
+    pr-is-draft)
+      # (#332) glab's MR JSON carries a boolean `draft`. Fail closed.
+      _gitlab_fetch_draft() {
+        glab mr view "$1" --output json $RARG
+      }
+      _vcs_shared_pr_is_draft "${1:-}" draft \
+        "glab mr view ${1:-} --output json $RARG" _gitlab_fetch_draft
+      ;;
+    pr-ci-runs)
+      _vcs_draft_unsupported pr-ci-runs gitlab
       ;;
     view-pr)
       _run glab mr view "$1" $RARG
@@ -5725,10 +5960,29 @@ PYEOF
       local wi_args=""
       [[ "$branch" =~ (^|/)issue-([0-9]+)(-|$) ]] \
         && wi_args="--work-items ${BASH_REMATCH[2]} --transition-work-items true"
+      local draft_args=""; [ "$_PR_DRAFT" = "true" ] && draft_args="--draft true"
       _run az repos pr create \
         --source-branch "$branch" --target-branch "$BASE_BRANCH" \
         --title "$title" --description "$(cat "$body_file")" \
-        $wi_args $ORG_ARG $PROJ_ARG $repo_arg --output json
+        $wi_args $ORG_ARG $PROJ_ARG $repo_arg --output json $draft_args
+      ;;
+    ready-pr|draft-pr)
+      # (#332) `az repos pr update --draft false|true`.
+      local _rd_n="${1:-}" _rd_state="false"
+      _vcs_require_pr_id "$VERB" "$_rd_n"
+      [ "$VERB" = "draft-pr" ] && _rd_state="true"
+      _run az repos pr update --id "$_rd_n" --draft "$_rd_state" $ORG_ARG --output json
+      ;;
+    pr-is-draft)
+      # (#332) `az repos pr show` carries a boolean `isDraft`. Fail closed.
+      _azure_fetch_draft() {
+        az repos pr show --id "$1" $ORG_ARG --output json
+      }
+      _vcs_shared_pr_is_draft "${1:-}" isDraft \
+        "az repos pr show --id ${1:-} $ORG_ARG --output json" _azure_fetch_draft
+      ;;
+    pr-ci-runs)
+      _vcs_draft_unsupported pr-ci-runs azure
       ;;
     view-pr)
       _run az repos pr show --id "$1" $ORG_ARG --output json
@@ -6177,6 +6431,10 @@ _file() {
     merge-pr)
       echo "file mode: no PR to merge — orchestrator should close-issue directly after verifying the branch" >&2
       return 0
+      ;;
+    ready-pr|draft-pr|pr-is-draft|pr-ci-runs)
+      # (#332) No PR concept in file mode: exit 2 (unverified), nothing on stdout.
+      _vcs_draft_unsupported "$verb" file
       ;;
     update-branch)
       # update-branch (#289) — no PR concept in file mode. Exit 2; caller skips.
@@ -7077,17 +7335,64 @@ if [ "$VERB" = "conflict-files" ]; then
 fi
 
 # ── Main dispatch ─────────────────────────────────────────────────────────────
+_vcs_dispatch_provider() {
+  case "$PROVIDER" in
+    github)     _github     "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
+    github-api) _github_api "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
+    gitlab)     _gitlab     "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
+    azure)      _azure      "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
+    file)       _file       "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
+    *)
+      echo "pipeline-vcs: unknown provider '$PROVIDER'. Valid: github | github-api | gitlab | azure | file" >&2
+      exit 1
+      ;;
+  esac
+}
+
+# Draft verbs (#332) answer a gate ("is this PR ready for QA?"), so an adapter's
+# setup failure (no token, unknown provider, missing CLI: exit 1) must never read
+# as a result. Run the verb in a subshell and let only its exact success shapes
+# through; everything else, whatever the adapter exited with, is exit 2 with
+# nothing on stdout (the adapter's stderr has already explained why).
+#   pr-is-draft   exit 0 only with stdout "draft"; exit 1 only with stdout "ready"
+#   pr-ci-runs    exit 0 only with a non-negative integer on stdout
+#   ready-pr, draft-pr, create-pr --draft   exit 0 only when the provider call succeeded
+# --dry-run verifies nothing: the pr-is-draft / pr-ci-runs preview goes to
+# stderr and the exit is 2.
+_vcs_draft_gate_dispatch() {
+  local _g_out _g_rc
+  _g_out="$(_vcs_dispatch_provider)"; _g_rc=$?
+  case "$VERB" in
+    pr-is-draft)
+      if [ "$DRY_RUN" != "true" ]; then
+        if [ "$_g_rc" -eq 0 ] && [ "$_g_out" = "draft" ]; then echo draft; exit 0; fi
+        if [ "$_g_rc" -eq 1 ] && [ "$_g_out" = "ready" ]; then echo ready; exit 1; fi
+      fi
+      ;;
+    pr-ci-runs)
+      if [ "$DRY_RUN" != "true" ] && [ "$_g_rc" -eq 0 ]; then
+        case "$_g_out" in
+          ''|*[!0-9]*) ;;
+          *) printf '%s\n' "$_g_out"; exit 0 ;;
+        esac
+      fi
+      ;;
+    *)
+      if [ "$_g_rc" -eq 0 ]; then
+        [ -n "$_g_out" ] && printf '%s\n' "$_g_out"
+        exit 0
+      fi
+      ;;
+  esac
+  [ "$DRY_RUN" = "true" ] && [ -n "$_g_out" ] && printf '%s\n' "$_g_out" >&2
+  exit 2
+}
+
 _DISPATCH_RC=0
-case "$PROVIDER" in
-  github)     _github     "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
-  github-api) _github_api "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
-  gitlab)     _gitlab     "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
-  azure)      _azure      "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
-  file)       _file       "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
-  *)
-    echo "pipeline-vcs: unknown provider '$PROVIDER'. Valid: github | github-api | gitlab | azure | file" >&2
-    exit 1
-    ;;
+case "$VERB" in
+  pr-is-draft|pr-ci-runs|ready-pr|draft-pr) _vcs_draft_gate_dispatch ;;
+  create-pr) if [ "$_PR_DRAFT" = "true" ]; then _vcs_draft_gate_dispatch; else _vcs_dispatch_provider; fi ;;
+  *) _vcs_dispatch_provider ;;
 esac
 _DISPATCH_RC=$?
 
