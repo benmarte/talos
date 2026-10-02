@@ -100,18 +100,24 @@
 #                                             only on exit 1.
 #   pr-ci-runs <n>                            Print the number of
 #                                             `pull_request`-triggered workflow
-#                                             runs for the PR's head branch that
-#                                             executed (#332): the Actions
-#                                             `total_count` minus the runs whose
-#                                             conclusion is `skipped` (a draft
-#                                             push skipped by the `draft != true`
-#                                             job guard is not CI that ran).
-#                                             github only; every other provider
-#                                             exits 2, and so does any setup
-#                                             error, a failed or unparseable
-#                                             fetch or a total that reaches
-#                                             GitHub's 1000-result search cap
-#                                             (never a short count).
+#                                             runs of THIS PR that executed
+#                                             (#332): one listing for the head
+#                                             branch, keeping runs whose
+#                                             pull_requests[] names this PR (a
+#                                             reused branch name does not
+#                                             inflate it) and dropping those
+#                                             whose conclusion is `skipped` (a
+#                                             draft push skipped by the
+#                                             `draft != true` job guard is not
+#                                             CI that ran). github only; every
+#                                             other provider exits 2, and so
+#                                             does any setup error, a failed,
+#                                             truncated or unparseable listing,
+#                                             a run that cannot be attributed
+#                                             to a PR (empty pull_requests[],
+#                                             e.g. a fork) or a total that
+#                                             reaches GitHub's 1000-result
+#                                             search cap (never a short count).
 #   view-pr <n|branch>                        View PR details
 #   list-prs                                  List open PRs
 #   diff-pr <n>                               Show PR diff
@@ -2830,14 +2836,19 @@ print(json.dumps(out))
         "gh pr view ${1:-} --json isDraft ${REPO:+--repo $REPO}" _github_fetch_draft
       ;;
     pr-ci-runs)
-      # (#332) Number of `pull_request` workflow runs for the PR's head branch
-      # that executed: every run minus those whose conclusion is `skipped`
-      # (with pr.draft, a push to a draft PR still creates a run whose jobs
-      # are all skipped by the `draft != true` guard; it is not CI that ran).
-      # Both figures are the list endpoint's total_count (per_page=1), so
-      # there is no paginated sum to truncate. GitHub caps filtered run
-      # searches at 1000 results; a total at the cap is unverified, never a
-      # short count.
+      # (#332) Number of `pull_request` workflow runs that executed for THIS PR:
+      # the runs listed for its head branch whose pull_requests[] names this PR
+      # (so another PR that reused the branch name does not inflate the count),
+      # minus those whose conclusion is `skipped` (with pr.draft, a push to a
+      # draft PR still creates a run whose jobs are all skipped by the
+      # `draft != true` guard; it is not CI that ran).
+      # ONE paginated listing, so the count is a single snapshot: a run that
+      # appears while we count is either in it or not, never half-counted
+      # between a total query and a skipped query. Fail closed: a run whose
+      # pull_requests[] is empty (a fork's run, or one GitHub never linked)
+      # cannot be attributed, a listing shorter than its total_count is
+      # truncated, and GitHub caps filtered run searches at 1000 results; each
+      # is unverified (exit 2), never a short count.
       local _cr_n="${1:-}" _cr_repo="$REPO"
       [ -z "$_cr_repo" ] && _cr_repo='{owner}/{repo}'
       if ! _vcs_pr_id_numeric "$_cr_n"; then
@@ -2845,10 +2856,10 @@ print(json.dumps(out))
         exit 2
       fi
       if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] gh pr view $_cr_n --json headRefName; gh api -X GET repos/$_cr_repo/actions/runs -f event=pull_request -f branch=<head> [-f status=skipped] -F per_page=1"
+        echo "[dry-run] gh pr view $_cr_n --json headRefName; gh api --paginate -X GET repos/$_cr_repo/actions/runs -f event=pull_request -f branch=<head> -F per_page=100"
         return 0
       fi
-      local _cr_head_raw _cr_head _cr_all _cr_skipped
+      local _cr_head_raw _cr_head _cr_listing
       _cr_head_raw="$(gh pr view "$_cr_n" --json headRefName ${REPO:+--repo "$REPO"})" || {
         echo "pipeline-vcs: pr-ci-runs: could not fetch PR #$_cr_n -- unverified" >&2
         exit 2
@@ -2866,32 +2877,63 @@ print(v)
         echo "pipeline-vcs: pr-ci-runs: PR #$_cr_n has no head branch -- unverified" >&2
         exit 2
       }
-      # _github_runs_total [extra gh api args] -> total_count of the filtered
-      # run list, or non-zero (nothing printed) when missing, malformed, or at the cap.
-      _github_runs_total() {
-        local _rt_raw
-        _rt_raw="$(gh api -X GET "repos/$_cr_repo/actions/runs" \
-          -f event=pull_request -f branch="$_cr_head" "$@" -F per_page=1)" || return 1
-        printf '%s' "$_rt_raw" | python3 -c '
-import json, sys
+      _cr_listing="$(gh api --paginate -X GET "repos/$_cr_repo/actions/runs" \
+        -f event=pull_request -f branch="$_cr_head" -F per_page=100)" || {
+        echo "pipeline-vcs: pr-ci-runs: could not list workflow runs for PR #$_cr_n -- unverified" >&2
+        exit 2
+      }
+      # `gh api --paginate` prints the pages as concatenated JSON documents.
+      printf '%s' "$_cr_listing" | PR_N="$_cr_n" python3 -c '
+import json, os, sys
+n = int(os.environ["PR_N"])
+text = sys.stdin.read()
+dec = json.JSONDecoder()
+pos, pages = 0, []
 try:
-    n = json.load(sys.stdin).get("total_count")
+    while True:
+        while pos < len(text) and text[pos].isspace():
+            pos += 1
+        if pos >= len(text):
+            break
+        doc, pos = dec.raw_decode(text, pos)
+        pages.append(doc)
 except Exception:
     sys.exit(2)
-if type(n) is not int or n < 0 or n >= 1000:
+if not pages:
     sys.exit(2)
-print(n)
-'
-      }
-      _cr_all="$(_github_runs_total)" && _cr_skipped="$(_github_runs_total -f status=skipped)" || {
-        echo "pipeline-vcs: pr-ci-runs: workflow run totals for PR #$_cr_n could not be fetched, are malformed, or are at GitHub's 1000-result cap -- unverified" >&2
+total = pages[0].get("total_count") if isinstance(pages[0], dict) else None
+if type(total) is not int or total < 0 or total >= 1000:
+    sys.exit(2)
+runs = []
+for page in pages:
+    if not isinstance(page, dict) or type(page.get("total_count")) is not int:
+        sys.exit(2)
+    wr = page.get("workflow_runs")
+    if not isinstance(wr, list):
+        sys.exit(2)
+    runs.extend(wr)
+if len(runs) != total:
+    sys.exit(2)
+count = 0
+for run in runs:
+    if not isinstance(run, dict):
+        sys.exit(2)
+    prs = run.get("pull_requests")
+    if not isinstance(prs, list) or not prs:
+        sys.exit(2)
+    nums = []
+    for p in prs:
+        num = p.get("number") if isinstance(p, dict) else None
+        if type(num) is not int:
+            sys.exit(2)
+        nums.append(num)
+    if n in nums and run.get("conclusion") != "skipped":
+        count += 1
+print(count)
+' || {
+        echo "pipeline-vcs: pr-ci-runs: workflow runs for PR #$_cr_n are malformed, truncated, cannot be attributed to a PR, or are at GitHub's 1000-result cap -- unverified" >&2
         exit 2
       }
-      if [ "$_cr_skipped" -gt "$_cr_all" ]; then
-        echo "pipeline-vcs: pr-ci-runs: PR #$_cr_n reports more skipped runs ($_cr_skipped) than runs ($_cr_all) -- unverified" >&2
-        exit 2
-      fi
-      printf '%s\n' "$((_cr_all - _cr_skipped))"
       ;;
     view-pr)
       _run gh pr view "$1" --json number,title,headRefName,labels,url,body \
