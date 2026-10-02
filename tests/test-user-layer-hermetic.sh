@@ -11,7 +11,18 @@
 # UNSANDBOXED tests directly, exactly as a developer would.
 set -u
 . "$(dirname "$0")/helpers.sh"
+HELPERS_TALOS_HOME="$TALOS_HOME"  # what helpers.sh set, before make_sandbox replaces it
 make_sandbox
+
+# #340: the guard path must be one no local user can create. Anything under
+# $TMPDIR or /tmp can be pre-created by another account on a shared host; a
+# path below /dev/null can never exist (it is a character device, not a
+# directory), on macOS and Linux alike.
+case "$HELPERS_TALOS_HOME" in
+  /dev/null/*) pass "helpers.sh points TALOS_HOME below /dev/null" ;;
+  *) fail "helpers.sh points TALOS_HOME below /dev/null" "got: $HELPERS_TALOS_HOME" ;;
+esac
+mkdir -p "$HELPERS_TALOS_HOME" 2>/dev/null; assert_eq "0" "$([ -d "$HELPERS_TALOS_HOME" ] && echo 1 || echo 0)" "helpers.sh guard path: mkdir -p cannot create it (so no account can plant a config there)"
 
 HOSTILE_HOME="$SANDBOX/hostile-home"
 mkdir -p "$HOSTILE_HOME/.talos"

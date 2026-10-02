@@ -15,11 +15,15 @@ STUBS_DIR="$TALOS_ROOT/tests/stubs"
 # ${TALOS_HOME:-$HOME/.talos}/talos.pipeline.* under every project config, so a
 # developer's real ~/.talos (or an ambient TALOS_HOME) would otherwise answer
 # lookups in any test that does not call make_sandbox. Point it at a path that
-# never exists -- every test file sources this helper, so the fix holds for
-# `bash tests/<file>.sh` as well as for the runner. make_sandbox replaces this
-# with a clean sandbox HOME (and unsets TALOS_HOME); a test that exercises a
-# user-level file does so inside its own sandbox.
-export TALOS_HOME="${TMPDIR:-/tmp}/talos-test-no-user-config.$$"
+# no local user can create -- every test file sources this helper, so the fix
+# holds for `bash tests/<file>.sh` as well as for the runner. make_sandbox
+# replaces this with a clean sandbox HOME (and unsets TALOS_HOME); a test that
+# exercises a user-level file does so inside its own sandbox. The path sits
+# below /dev/null (a character device, never a directory) rather than under
+# $TMPDIR, where another account on a shared host could pre-create it with a
+# config (#340). pipeline-config.sh only tests `[ -f "$dir/talos.pipeline.*" ]`,
+# so a non-directory parent reads as "no user-level file" on macOS and Linux.
+export TALOS_HOME="/dev/null/talos-test-no-user-config"
 
 _PASS=0
 _FAIL=0
