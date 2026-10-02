@@ -605,7 +605,11 @@ After the planner returns (its output begins with `PLAN:`):
      Part of #<N>
      [Depends on: #<PREV-SUB-ISSUE-NUMBER>  ← only if planner listed a dependency]
      ```
-   - Write the body to a temp file: `printf '%s' "<body>" > /tmp/sub-issue-<i>.md`
+   - Write the body to a temp file with a single-quoted heredoc (planner output
+     quotes issue text: never put it inside double quotes on a command line):
+     `cat > /tmp/sub-issue-<i>.md <<'EOF'` … the body … `EOF`
+   - Assign the title the same way, then pass the variable:
+     `read -r SUB_TITLE <<'EOF'` … the sub-task title … `EOF`
    - Every sub-issue also carries `--label epic:<N>` (the epic's own number) so a human
      can filter the board to the whole epic and review its sub-tasks as a group. (The
      `Part of #<N>` body line above is what the epic auto-close sweep keys on; the tag is
@@ -613,14 +617,14 @@ After the planner returns (its output begins with `PLAN:`):
    - **Independent sub-task** (no `Depends on:` in planner output) — label `pipeline:ready`
      so it enters the queue immediately:
      ```bash
-     bash scripts/pipeline-vcs.sh create-issue "<sub-task title>" /tmp/sub-issue-<i>.md \
+     bash scripts/pipeline-vcs.sh create-issue "$SUB_TITLE" /tmp/sub-issue-<i>.md \
        --label pipeline:ready --label epic:<N>
      ```
      If exit non-zero, report the failure, set `pipeline:blocked`, and do not record a sub-issue number.
    - **Dependent sub-task** (planner listed `Depends on: <j>`) — do NOT add `pipeline:ready`;
      it stays out of the queue until Step 1 unblocks it, but is still tagged to the epic:
      ```bash
-     bash scripts/pipeline-vcs.sh create-issue "<sub-task title>" /tmp/sub-issue-<i>.md \
+     bash scripts/pipeline-vcs.sh create-issue "$SUB_TITLE" /tmp/sub-issue-<i>.md \
        --label epic:<N>
      ```
      If exit non-zero, report the failure, set `pipeline:blocked`, and do not record a sub-issue number.
@@ -639,8 +643,9 @@ After the planner returns (its output begins with `PLAN:`):
 3. The epic issue is now done for this run — skip Stages 3b (PM) and 3c (Developer).
    Add a comment on the epic summarising the sub-issues created:
    ```bash
+   SUB_LIST="<list of #SUB_N>"   # issue numbers only
    bash scripts/pipeline-vcs.sh comment-issue <N> \
-     "**Planner:** decomposed into sub-issues: <list of #SUB_N>"
+     "**Planner:** decomposed into sub-issues: $SUB_LIST"
    ```
    If exit non-zero, report the failure in the relay message; do not assert the comment was posted.
 
@@ -712,7 +717,9 @@ issue body itself is the spec — substitute `<SPEC_SOURCE>` below with
 "the PM spec" or "the issue body (PM was skipped)" accordingly.
 
 `<slug>` throughout this stage (branch `fix/issue-<N>-<slug>` / `feat/issue-<N>-<slug>`)
-is `bash scripts/pipeline-vcs.sh slug-for "<title>"`; prefix is `feat/` when the
+is `bash scripts/pipeline-vcs.sh slug-for "$ISSUE_TITLE"` (assign `ISSUE_TITLE`
+with `read -r ISSUE_TITLE <<'EOF'` … the issue title … `EOF`, never inside double
+quotes: the title is reporter-controlled); prefix is `feat/` when the
 title starts with `feat`, else `fix/` (#199).
 
 Dispatch according to `ISOLATION`:
@@ -780,7 +787,8 @@ pass/fail assertion total — QA's run is the authoritative count.
 <!-- pr-draft:start -->
 **Draft PR (`PR_DRAFT = true`, #332):** add one line to the prompt above, right
 after `Verify timeout:`: `Open the PR as a DRAFT: bash scripts/pipeline-vcs.sh
-create-pr <branch> "<title>" <body-file> --draft`. Every developer dispatch
+create-pr <branch> "$PR_TITLE" <body-file> --draft` (the developer assigns
+`PR_TITLE` from a single-quoted heredoc, role profile step 7). Every developer dispatch
 (first pass and each fix round) gets it; a fix round pushes to the existing PR
 and opens nothing. Nothing else in the developer prompt changes.
 
@@ -919,14 +927,21 @@ replays against a stub that counts CI runs:
 
 ```text
 happy path:     create-pr --draft -> ready-pr -> QA, merge
-failure round:  draft-pr -> developer fix + re-stamps -> ready-pr -> QA, merge
+failure round:  draft-pr -> label-pr --remove qa:pass -> developer fix + re-stamps -> ready-pr -> QA, merge
 ```
 
 **QA failure or CI failure** (QA returned FAIL, QA's CI wait failed closed, or
 Step 4's `pr-checks-required` still fails after its re-run budget): convert the PR
 back FIRST with `bash scripts/pipeline-vcs.sh draft-pr <PR_NUMBER>` (non-zero:
 stop and report `draft-pr failed for #<N>`; never push a fix to a ready PR, each
-push would spend a run). Then `record-attempt <N> qa --pr <PR_NUMBER>`, clear
+push would spend a run). Then strip the QA approval, right after the conversion:
+`bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --remove qa:pass` (a no-op when
+QA itself failed and `qa:pass` is absent; non-zero: stop and report `label-pr
+failed for #<N>`). Without it, a `qa:pass` earned before a Step 4 CI failure stays
+on the PR, goes stale when the fix moves the head, makes step 5's `check-approval-sha
+--stale-list` exit 1, and QA cannot re-stamp it on a draft: the PR could never reach
+`ready-pr`. QA then runs in full on the ready PR (step 6, `qa:pass` absent), so no
+verification is skipped. Then `record-attempt <N> qa --pr <PR_NUMBER>`, clear
 `pipeline:blocked`, one developer fix round, the re-stamps on the delta (step 4),
 and `ready-pr` (step 5) again. A round costs exactly one CI run however many
 commits the fix took.
@@ -1010,6 +1025,12 @@ Final message (2-3 lines): PASS/FAIL + criteria outcome the orchestrator can rel
 After QA returns:
 - **Pass:**
   1. Relay findings: `bash scripts/pipeline-notify.sh qa "#<N>" "<subagent's 2-3 line summary: criteria verified>" <N>`
+<!-- pr-draft:start -->
+  2. With `PR_DRAFT = true`, QA passing ends the QA stage and Step 3e is NOT
+     entered again: its review stages already ran on the draft, before QA (Draft
+     stage order, steps 2-4). Go to Step 4 (step 7, Merge); the approval SHAs and
+     `ci-complete` are still checked there.
+<!-- pr-draft:end -->
 - **Fail:**
   1. Relay findings: `bash scripts/pipeline-notify.sh qa "#<N>" "<FAIL: failing criterion + repro>" <N>`
   2. Lifecycle event: `bash scripts/pipeline-notify.sh blocked "#<N>" "QA failed: <criterion>" <N>`
@@ -1449,9 +1470,11 @@ CI_RUNS="$(bash scripts/pipeline-vcs.sh pr-ci-runs <PR_NUMBER>)"; CI_RC=$?
 ```
 
 Keep `CI_RUNS` for the `merged` `post_stage` call in "After merging" item 8. When
-`CI_RC` is non-zero (exit 2: unverified, or not github), record no `ci_runs`, add
-`ci_runs not recorded for #<N>` to the run summary (Step 5), and merge anyway:
-never block or delay the merge on a metric.
+`CI_RC` is non-zero (exit 2: unverified, or not github), record no `ci_runs` and
+add `ci_runs not recorded for #<N>` to the run summary (Step 5). That is the only
+thing a failed capture changes: every gate above and the green-checks test below
+still apply, and nothing here lets a merge skip them. A missing metric never
+blocks or delays an otherwise green merge.
 
 ```text
 merge sequence:  pr-ci-runs -> merge-pr -> post_stage merged --ci-runs

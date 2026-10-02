@@ -576,7 +576,14 @@ jobs:
     if: github.event.pull_request.draft != true                 # on every job
 ```
 
-Without `ready_for_review` in `types`, marking a PR ready fires no event, no run ever starts, and QA waits for it until `verify.ci_wait_s` expires. Without the per-job `draft != true` guard the draft pushes still run CI, so you pay for every push and gain nothing. Talos's own `.github/workflows/tests.yml` already does both (#145/#160). GitLab and Azure DevOps need the equivalent draft/ready trigger in their pipelines.
+Without `ready_for_review` in `types`, marking a PR ready fires no event, no run ever starts, and QA waits for it until `verify.ci_wait_s` expires. Without the per-job `draft != true` guard the draft pushes still run CI, so you pay for every push and gain nothing. Talos's own `.github/workflows/tests.yml` already does both (#145/#160).
+
+**A draft-time run must never report success for a required check.** Skipping the jobs on a draft is not enough on its own, because a skipped check can still read as passing:
+
+- **A skipped job counted as success.** GitHub branch protection counts a skipped required check as success (the job's `if:` was false, so it never ran). A draft push that skips `test` therefore does not hold the PR back for anything that merges on branch protection alone.
+- **An `always()` aggregate job.** The common "all checks passed" job that has `needs: [test]` and `if: always()` runs even when `test` was skipped, and goes green on a draft push. Give it the same `if: github.event.pull_request.draft != true` guard instead of `always()`, or make it fail unless `needs.test.result == 'success'`, so a draft run is skipped or red, never green.
+
+GitLab and Azure DevOps: Talos documents only the principle there (the required pipeline or build policy must not pass on a draft/WIP merge request or pull request, and must start when it is marked ready). The exact trigger and policy settings for those two providers are **unverified**; check them against your own pipeline before you set `pr.draft: true`.
 
 **Trade-off.** Reviewers now see the code before CI has proven it; without `pr.draft` they are gated behind QA passing. The developer's local `verify:` run covers most of that risk. When CI catches something `verify:` missed, it costs one extra run, one step later than the default flow. `github-api` and `file` cannot open draft PRs: with `pr.draft: true` the orchestrator warns once and runs the default order.
 
@@ -1036,7 +1043,7 @@ agents:
     qa: {model: haiku}
 ```
 
-Run the `pipeline-setup` skill to be asked once how you want models assigned (one model for every role, one per role, or leave unset) and have the answer written to the user-level file. `bash scripts/pipeline-agent.sh --resolve-all` prints one line per role — model, re-stamp model, and which layer decided it (`project`, `global` for the user-level file, or `session default`) — and warns when a role file Claude Code would load still carries a `model:` frontmatter line. `--resolve <role>` keeps its one-line `runner=… model=… effort=…` output.
+Run the `pipeline-setup` skill to be asked once how you want models assigned (one model for every role, one per role, or leave unset) and have the answer written to the user-level file. `bash scripts/pipeline-agent.sh --resolve-all` prints one line per role — model, re-stamp model, and which layer decided it (`project`, `global` for the user-level file, or `session default`) — and, when a `runner` / `runner_cmd` is set for a role (a user-level one applies to every repo), appends `runner=… runner_origin=…` / `runner_cmd=… runner_cmd_origin=…` with the layer that supplied it. It also warns when a role file Claude Code would load still carries a `model:` frontmatter line. `--resolve <role>` keeps its one-line `runner=… model=… effort=…` output.
 
 **Model names.** A value is a full model ID or one of the aliases `opus`, `sonnet`, `haiku`, stored and passed through as typed. If your harness's Agent tool accepts only aliases, the orchestrator maps a full ID to its family alias at spawn time; the config value is never rewritten.
 

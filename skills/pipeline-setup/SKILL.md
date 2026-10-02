@@ -486,17 +486,40 @@ It only works when the repo's CI pairs with it. Talos documents this and
 checks and report what is missing:
 
 ```bash
-grep -L "ready_for_review" .github/workflows/*.yml 2>/dev/null
-grep -L "github.event.pull_request.draft != true" .github/workflows/*.yml 2>/dev/null
+FOUND=0
+for f in .github/workflows/*.yml .github/workflows/*.yaml; do
+  [ -f "$f" ] || continue   # an unmatched glob stays literal: skip it
+  FOUND=1
+  grep -q "ready_for_review" "$f" || echo "missing ready_for_review: $f"
+  grep -q "github.event.pull_request.draft != true" "$f" || echo "missing draft != true guard: $f"
+done
+[ "$FOUND" = 1 ] || echo "no workflow files found in .github/workflows"
 ```
+
+`no workflow files found` is its own outcome, never "nothing missing": an empty
+or absent workflows directory gives no output from a bare `grep -L`, which reads
+as a pass. Report it plainly and do NOT write `pr.draft`: with no workflow there
+is no pairing to check.
 
 - `on.pull_request.types` must include `ready_for_review`. Without it, marking
   a PR ready fires no event, no run ever starts, and QA waits for one until
   `verify.ci_wait_s` expires.
 - Each job needs `if: github.event.pull_request.draft != true`. Without it,
   every push to the draft still runs CI and nothing is saved.
+- A draft-time run must never report success for a required check. On GitHub
+  two cases break this: a required job that is merely skipped (branch
+  protection counts a skipped required check as success), and an `always()`
+  aggregate "all checks passed" job (it runs when `test` was skipped and goes
+  green on a draft push). Give the aggregate job the same `draft != true`
+  guard instead of `always()`, or make it fail unless `needs.test.result ==
+  'success'`. Ask the user to confirm their required checks cannot go green on a
+  draft.
+- GitLab and Azure DevOps: the pairing is unverified. The principle is the
+  same (the required pipeline or build policy must not pass on a draft, and must
+  start when the PR is marked ready); say plainly that Talos has not checked
+  those providers' trigger and policy settings, and leave it to the user.
 
-If either is missing, print the two requirements above and do NOT write
+If any of the above is missing, print the requirements and do NOT write
 `pr.draft`; the user fixes the workflow first. If both are present and the user
 says yes, add `pr:\n  draft: true` to the config written in Step 7. If the
 provider is `github-api` or `file`, say draft PRs are unsupported there and do

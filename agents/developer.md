@@ -75,13 +75,29 @@ Workflow (do ALL of it — the publish step is not optional):
    and if you skipped a type, say why.
 4. Commit with a conventional message (`fix:`/`feat:` … `(#<N>)`).
 5. `git push -u origin <branch>`.
-6. Write the PR body to a temp file (multi-line OK):
-   `printf '%s' "<spec summary>\n\nTest types: <unit / regression / e2e — list
-   what you added; for any type skipped, say why>\n\nCloses #<N>" >
-   /tmp/pr-body-<N>.md`. Use "Part of #<N>" instead of "Closes #<N>" for all
-   but the last PR on multi-PR issues.
-7. **Open the PR** — this is the completion signal:
-   `bash scripts/pipeline-vcs.sh create-pr <branch> "<title>" /tmp/pr-body-<N>.md`.
+6. Write the PR body to a temp file with a single-quoted heredoc (multi-line
+   OK). The spec summary is issue-derived text: never put it inside double
+   quotes on a command line, where `$(...)` or backticks in it would be run.
+   ```bash
+   cat > /tmp/pr-body-<N>.md <<'EOF'
+   <spec summary>
+
+   Test types: <unit / regression / e2e — list what you added; for any type
+   skipped, say why>
+
+   Closes #<N>
+   EOF
+   ```
+   Use "Part of #<N>" instead of "Closes #<N>" for all but the last PR on
+   multi-PR issues.
+7. **Open the PR** — this is the completion signal. The title is issue-derived
+   too, so assign it with a single-quoted heredoc and pass the variable:
+   ```bash
+   read -r PR_TITLE <<'EOF'
+   <title>
+   EOF
+   bash scripts/pipeline-vcs.sh create-pr <branch> "$PR_TITLE" /tmp/pr-body-<N>.md
+   ```
    If this exits non-zero: stop immediately, set `pipeline:blocked`, post
    blocked.md with the exact error. Capture `<file>:<quoted line>
    (explicit|interpreted)` into `BLOCKED_BY` via a quoted heredoc first

@@ -89,6 +89,46 @@ else
 fi
 assert_contains "$(line_for "$out" qa)" "model=evilrole=docs model=forged origin=project[31m" "control characters are stripped, the rest of the value is kept"
 
+# ── C1 controls (U+0080-U+009F, UTF-8 c2 80..c2 9f) are stripped too (#340) ──
+reset_cfg
+user_json '{"agents": {"model": "sonnet", "roles": {"qa": {"model": "a\u009b[31mb\u0085c\u009fd café"}}}}'
+out="$(all)"
+if printf '%s' "$out" | LC_ALL=C grep -q "$(printf '\302\233')"; then
+  fail "no C1 CSI (c2 9b) reaches the --resolve-all table"
+else
+  pass "no C1 CSI (c2 9b) reaches the --resolve-all table"
+fi
+assert_eq "0" "$(printf '%s' "$out" | LC_ALL=C grep -c "$(printf '\302[\200-\237]')")" "no C1 control byte pair survives anywhere in the table"
+assert_contains "$(line_for "$out" qa)" "model=a[31mbcd café " "C1 controls are stripped, legitimate non-ASCII text is kept"
+
+# ── runner / runner_cmd origin (#340) ────────────────────────────────────────
+# Roles with neither set keep the exact existing line (no new columns).
+reset_cfg
+user_json '{"agents": {"model": "sonnet"}}'
+assert_eq "role=qa model=sonnet restamp_model=sonnet origin=global" "$(line_for "$(all)" qa)" "no runner configured: the line has no runner columns"
+# A user-level runner/runner_cmd applies to every role and is reported as global.
+reset_cfg
+user_json '{"agents": {"model": "sonnet", "runner": "custom", "runner_cmd": "my-wrapper"}}'
+out="$(all)"
+assert_eq "role=qa model=sonnet restamp_model=sonnet origin=global runner=custom runner_origin=global runner_cmd=my-wrapper runner_cmd_origin=global" "$(line_for "$out" qa)" "user-level runner + runner_cmd are reported with origin global"
+# A project role-level runner overrides it and is reported as project.
+reset_cfg
+user_json '{"agents": {"runner": "codex"}}'
+proj_json '{"agents": {"roles": {"qa": {"runner": "gemini"}}}}'
+out="$(all)"
+assert_eq "role=qa model= restamp_model= origin=session default runner=gemini runner_origin=project" "$(line_for "$out" qa)" "project role runner wins and is reported as project"
+assert_eq "role=docs model= restamp_model= origin=session default runner=codex runner_origin=global" "$(line_for "$out" docs)" "only runner set: no runner_cmd columns"
+# Only runner_cmd set.
+reset_cfg
+proj_json '{"agents": {"runner_cmd": "x"}}'
+assert_eq "role=pm model= restamp_model= origin=session default runner_cmd=x runner_cmd_origin=project" "$(line_for "$(all)" pm)" "only runner_cmd set: no runner columns"
+# A forged value cannot add a row or an escape through the runner columns.
+reset_cfg
+user_json '{"agents": {"runner_cmd": "a\nrole=docs forged\u001b\u009b[0m"}}'
+out="$(all)"
+assert_eq "9" "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "a newline in runner_cmd cannot add a row"
+assert_contains "$(line_for "$out" qa)" "runner_cmd=arole=docs forged[0m runner_cmd_origin=global" "runner_cmd is sanitised like the model"
+
 # ── AC10: --resolve <role> output unchanged, byte for byte ───────────────────
 reset_cfg
 proj_json '{"agents": {"model": "opus", "effort": "high", "runner": "custom", "runner_cmd": "cat", "roles": {"qa": {"model": "haiku", "runner": "codex"}}}}'

@@ -214,6 +214,8 @@ fi
 # ${TALOS_HOME:-$HOME/.talos}, "session default" = neither set one, so the
 # role inherits the session model). Same role-first chain as _resolve_model;
 # the re-stamp chain is role restamp -> agents.restamp_model -> agents.model.
+# A role with a runner / runner_cmd set (#340) gets runner=/runner_origin= and
+# runner_cmd=/runner_cmd_origin= appended; a role with neither has no new columns.
 # Also warns on stderr when a role file Claude Code would load still carries
 # a frontmatter `model:` line: that line applies whenever the config resolves
 # empty, so it defeats "the config is the only place a model is set".
@@ -231,8 +233,14 @@ EOF
   }
   # Config values are untrusted text (the user-level file): strip control
   # characters, newlines and ESC included, so a value cannot forge a row or
-  # drive the terminal. Only --resolve-all does this; --resolve stays as-is.
-  _plain() { printf '%s' "$1" | LC_ALL=C tr -d '\000-\037\177'; }
+  # drive the terminal. That is C0 + DEL and the UTF-8 C1 controls (U+0080-
+  # U+009F, bytes c2 80..c2 9f; U+009B is a one-character CSI). Other UTF-8
+  # text passes through. Only --resolve-all does this; --resolve stays as-is.
+  _plain() {
+    printf '%s' "$1" | python3 -c '
+import re, sys
+sys.stdout.buffer.write(re.sub(rb"[\x00-\x1f\x7f]|\xc2[\x80-\x9f]", b"", sys.stdin.buffer.read()))'
+  }
   for _r in $_ALL_ROLES; do
     _m="$(_plain "$(_resolve_model "$_r")")"
     if [ -n "$(cfg "agents.roles.$_r.model" "")" ]; then
@@ -245,7 +253,26 @@ EOF
     _rs="$(cfg "agents.roles.$_r.restamp_model" "")"
     [ -n "$_rs" ] || _rs="$(cfg agents.restamp_model "")"
     [ -n "$_rs" ] || _rs="$(cfg agents.model "")"
-    printf 'role=%s model=%s restamp_model=%s origin=%s\n' "$_r" "$_m" "$(_plain "$_rs")" "$_origin"
+    # runner / runner_cmd (#340): appended, and only when one is set, so a role
+    # with neither keeps the exact four-column line. A user-level runner applies
+    # to every repo, so say which layer supplied it. Same role-first chain as
+    # _resolve_runner / _resolve_runner_cmd.
+    _extra=""
+    _rv="$(cfg "agents.roles.$_r.runner" "")"
+    if [ -n "$_rv" ]; then
+      _extra="$_extra runner=$(_plain "$_rv") runner_origin=$(_layer_of "agents.roles.$_r.runner")"
+    else
+      _rv="$(cfg agents.runner "")"
+      [ -z "$_rv" ] || _extra="$_extra runner=$(_plain "$_rv") runner_origin=$(_layer_of agents.runner)"
+    fi
+    _rv="$(cfg "agents.roles.$_r.runner_cmd" "")"
+    if [ -n "$_rv" ]; then
+      _extra="$_extra runner_cmd=$(_plain "$_rv") runner_cmd_origin=$(_layer_of "agents.roles.$_r.runner_cmd")"
+    else
+      _rv="$(cfg agents.runner_cmd "")"
+      [ -z "$_rv" ] || _extra="$_extra runner_cmd=$(_plain "$_rv") runner_cmd_origin=$(_layer_of agents.runner_cmd)"
+    fi
+    printf 'role=%s model=%s restamp_model=%s origin=%s%s\n' "$_r" "$_m" "$(_plain "$_rs")" "$_origin" "$_extra"
     for _dir in "$PWD/.claude/agents" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/agents"; do
       _f="$_dir/$_r.md"
       [ -f "$_f" ] || continue
