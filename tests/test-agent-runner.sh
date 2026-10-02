@@ -24,7 +24,7 @@ assert_contains "$log" "CLAUDE ARGS: [-p] [--setting-sources] [project]" \
   "claude runner isolates from user-global settings"
 assert_contains "$log" "You are the **Validator**" "role definition body included in prompt"
 assert_contains "$log" "Issue #7 is assigned to you." "task prompt appended"
-assert_not_contains "$log" "model: opus" "YAML frontmatter stripped from role file"
+assert_not_contains "$log" "tools: Bash, Read, Grep, Glob, WebFetch, Skill" "YAML frontmatter stripped from role file"
 
 # ── Codex runner via config ──────────────────────────────────────────────────
 cat > talos.pipeline.json <<'EOF'
