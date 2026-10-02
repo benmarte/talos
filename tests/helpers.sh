@@ -11,6 +11,16 @@ STUBS_DIR="$TALOS_ROOT/tests/stubs"
 # re-sourcing it per call.
 . "$TALOS_ROOT/scripts/pipeline-paths.sh"
 
+# Hermetic user-level config (#336). pipeline-config.sh layers
+# ${TALOS_HOME:-$HOME/.talos}/talos.pipeline.* under every project config, so a
+# developer's real ~/.talos (or an ambient TALOS_HOME) would otherwise answer
+# lookups in any test that does not call make_sandbox. Point it at a path that
+# never exists -- every test file sources this helper, so the fix holds for
+# `bash tests/<file>.sh` as well as for the runner. make_sandbox replaces this
+# with a clean sandbox HOME (and unsets TALOS_HOME); a test that exercises a
+# user-level file does so inside its own sandbox.
+export TALOS_HOME="${TMPDIR:-/tmp}/talos-test-no-user-config.$$"
+
 _PASS=0
 _FAIL=0
 

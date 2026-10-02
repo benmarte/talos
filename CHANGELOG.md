@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- **User-level model config and one source of truth for per-role models (#336).** A role's model is now set only in the Talos config. `pipeline-config.sh` reads a user-level file, `${TALOS_HOME:-$HOME/.talos}/talos.pipeline.{yml,yaml,json}`, and merges the repo's own config over it key by key (project wins), so you can write your routing once for every repo and still override a single role per repo. Only the `agents.*` subtree is read there; any other key is ignored with one warning. A missing, empty, unreadable, malformed or non-mapping file behaves as absent (parsed as data only, never executed), and every chain (`restamp_model`, `effort`, `restamp_effort`, per-role `runner`) is evaluated on the merged config. The `--dump` and single-key paths now share one loader, and `cfg()` still costs one `python3` spawn per script invocation.
+- **`pipeline-agent.sh --resolve-all` (#336).** One line per role (`role=<r> model=<m> restamp_model=<m> origin=<project|global|session default>`) showing what each of the nine roles runs on and which config layer decided it, plus a stderr warning when `.claude/agents/<role>.md` or `~/.claude/agents/<role>.md` still carries a `model:` frontmatter line. `--resolve <role>` output is unchanged.
+- **`/pipeline-setup` asks how models are assigned (#336).** One model for every role (`agents.model`), a model per enabled role (`agents.roles.<role>.model`, with `agents.model` as the fallback), or leave unset. The answer is written to the user-level file by default; when a routing already exists the wizard shows the `--resolve-all` table and offers keep (default), change, or override for this repo only, and never changes an existing user-level file without showing the diff and getting a yes. `install.sh --global` stays non-interactive, leaves an existing user-level file untouched, and prints one hint line pointing at setup when no user-level config sets a model.
+- **Alias rule in the orchestrator playbook (#336).** When the harness's Agent tool accepts only aliases, `skills/pipeline/SKILL.md` maps a configured full model ID to its family alias (`opus`, `sonnet`, `haiku`) before spawning. Config values themselves pass through unchanged, and the playbook's examples no longer pass full IDs.
+
+### Changed
+
+- **Upgrade note (#336): the agent frontmatter no longer carries `model:`.** All nine `agents/*.md` shipped `model: opus` (docs: `haiku`), which won whenever the config resolved empty, so a repo with no `agents` block silently ran eight roles on Opus. The line is removed. A user who never configured models moves from that routing (Opus x8, Haiku for docs) to the session model until they run `/pipeline-setup` or set `agents.model` / `agents.roles.<role>.model`. Re-run `bash install.sh --global` to refresh `~/.claude/agents/` and `~/.talos/agents/`, then check the result with `bash scripts/pipeline-agent.sh --resolve-all`. `effort:` stays in the frontmatter, because the Agent tool has no per-spawn effort parameter.
+
 ## [0.18.0] - 2026-09-24
 
 ### Fixed

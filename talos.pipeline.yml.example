@@ -399,11 +399,20 @@ notifications:
 #
 # Per-role model selection (native path only): agents.model sets a global
 # default; agents.roles.<role>.model overrides a single role, else falls
-# back to agents.model, else the session default.
-#   model: claude-haiku-4-5-20251001   # volume stages: developer, qa, docs, ...
+# back to agents.model, else the session model (the shipped agents/*.md carry
+# no model: line, so this config is the only place a model is set).
+# Values are a full model ID or the aliases opus | sonnet | haiku.
+#   model: haiku                       # volume stages: developer, qa, docs, ...
 #   roles:
 #     reviewer:
-#       model: claude-opus-5           # judgement stages
+#       model: opus                    # judgement stages
+#
+# Set it once for every repo: put the same agents.* keys in the user-level
+# file ${TALOS_HOME:-$HOME/.talos}/talos.pipeline.{yml,yaml,json}. Only
+# agents.* is read there (any other key is ignored with a warning); this
+# repo's file is merged over it key by key and wins. /pipeline-setup writes it
+# for you; `bash scripts/pipeline-agent.sh --resolve-all` shows each role's
+# model and which layer (project | global | session default) decided it.
 #
 # Re-stamp model (agents.restamp_model / agents.roles.<role>.restamp_model,
 # #258): when a role's approval goes stale (check-approval-sha --stale-list)

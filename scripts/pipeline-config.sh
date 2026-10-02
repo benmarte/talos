@@ -12,6 +12,14 @@
 #   3. Legacy names: ./.claude-pipeline.yaml, ./pipeline.yaml (+ .json variants)
 #   4. No config found — returns the default (or empty string)
 #
+# User-level layer (#336): ${TALOS_HOME:-$HOME/.talos}/talos.pipeline.{yml,yaml,
+# json} is loaded under whichever project config was found (or alone when there
+# is none); the project config is merged over it key by key. Only its agents.*
+# subtree is read -- see the shared loader below.
+#
+#   --dump          every resolved key as NUL-delimited pairs (one python3 spawn)
+#   --dump-layers   "agents.* key<TAB>project|global" lines (--resolve-all origin)
+#
 # YAML parsing:
 #   Uses PyYAML (python3 -c "import yaml") if importable.
 #   Falls back to JSON parsing for .json config files (rename yours to
@@ -87,28 +95,182 @@ _KNOWN_CONFIG_KEYS_JSON='[
   "events.enabled", "events.path"
 ]'
 
-if [ "${1:-}" = "--dump" ]; then
-  _DCFG="${PIPELINE_CONFIG:-}"
-  if [ -z "$_DCFG" ]; then
-    for _dcandidate in "talos.pipeline.yml" "talos.pipeline.yaml" "talos.pipeline.json" \
-                     ".claude-pipeline.yaml" "pipeline.yaml" \
-                     ".claude-pipeline.json" "pipeline.json"; do
-      if [ -f "$_dcandidate" ]; then
-        _DCFG="$_dcandidate"
-        break
-      fi
+# ── Shared config loader (#336) ───────────────────────────────────────────────
+# One place that finds the config files and one that parses + merges them,
+# used by both --dump and the single-key lookup below (they used to each carry
+# their own copy of the file-lookup loop and the parse block).
+#
+# Two layers, project wins per leaf key:
+#   1. user-level  ${TALOS_HOME:-$HOME/.talos}/talos.pipeline.{yml,yaml,json}
+#                  Only its agents.* subtree is read -- board/merge/issue/
+#                  verify settings describe a repo, not a user. Untrusted
+#                  input: parsed as data only (JSON / yaml.safe_load), never
+#                  sourced or evaluated; missing, unreadable, empty,
+#                  malformed or non-mapping content behaves as absent
+#                  (malformed/empty/non-mapping/unreadable prints one stderr
+#                  warning; the lookup and its exit status are unaffected).
+#   2. project     $PIPELINE_CONFIG, else the first existing ./talos.pipeline.*
+#                  / legacy name. The user-level layer sits under whichever
+#                  one is found.
+# Names tried, in order, for the project file; the first three also bound the
+# user-level lookup (same extension order, no legacy names).
+_CFG_NAMES=("talos.pipeline.yml" "talos.pipeline.yaml" "talos.pipeline.json"
+            ".claude-pipeline.yaml" "pipeline.yaml"
+            ".claude-pipeline.json" "pipeline.json")
+
+# Prints the project config path, or nothing when there is none.
+_locate_project_cfg() {
+  local _p="${PIPELINE_CONFIG:-}" _n
+  if [ -z "$_p" ]; then
+    for _n in "${_CFG_NAMES[@]}"; do
+      if [ -f "$_n" ]; then _p="$_n"; break; fi
     done
   fi
-  # No config present (or unreadable) — nothing to dump; every lookup falls
-  # back to its caller's default, same as "no config found" below.
-  if [ -z "$_DCFG" ] || [ ! -f "$_DCFG" ]; then
-    exit 0
+  if [ -n "$_p" ] && [ -f "$_p" ]; then printf '%s' "$_p"; fi
+}
+
+# Prints the user-level config path, or nothing when there is none.
+_locate_user_cfg() {
+  local _dir _n
+  if [ -n "${TALOS_HOME:-}" ]; then _dir="$TALOS_HOME"
+  elif [ -n "${HOME:-}" ]; then _dir="$HOME/.talos"
+  else return 0
   fi
-  python3 - "$_DCFG" "$_KNOWN_CONFIG_KEYS_JSON" <<'PYEOF'
+  for _n in "${_CFG_NAMES[@]:0:3}"; do
+    if [ -f "$_dir/$_n" ]; then printf '%s' "$_dir/$_n"; return 0; fi
+  done
+}
+
+# Python half of the loader. Handed to each python3 process as an argv string
+# and exec()'d at the top, so the --dump and single-key processes share one
+# definition (they are separate processes and cannot import a shared module
+# without a new installed file). Defines load_layers(project_path, user_path)
+# -> (project, user, merged) and layer_map(project, user).
+read -r -d '' _CFG_LOADER_PY <<'PYLOADER' || true
+import os
 import sys
 
-cfg_path = sys.argv[1]
+def _warn(msg):
+    sys.stderr.write("pipeline-config: [warn] %s\n" % msg)
+
+def _parse_cfg_file(path):
+    # Prefer PyYAML (safe_load only); fall back to json without it.
+    try:
+        import yaml
+    except ImportError:
+        yaml = None
+    with open(path) as f:
+        if yaml is not None:
+            return yaml.safe_load(f)
+        import json
+        return json.load(f)
+
+def _load_user_layer(user_path, project_path):
+    if not user_path:
+        return {}
+    try:
+        if project_path and os.path.realpath(user_path) == os.path.realpath(project_path):
+            return {}  # the project file IS the user-level file: one layer only
+    except Exception:
+        pass
+    # repr() of every name below: a key or path from the file can never carry
+    # a newline or terminal control sequence into the message.
+    shown = repr(user_path)
+    try:
+        raw = _parse_cfg_file(user_path)
+    except Exception as e:
+        # Type name only: a parser's message may echo file content.
+        _warn("user-level config %s unreadable or malformed (%s) -- ignoring it"
+              % (shown, type(e).__name__))
+        return {}
+    if raw is None:
+        _warn("user-level config %s is empty -- ignoring it" % shown)
+        return {}
+    if not isinstance(raw, dict):
+        _warn("user-level config %s must be a mapping -- ignoring it" % shown)
+        return {}
+    for k in raw:
+        if k != "agents":
+            _warn("user-level config %s: ignoring key %s (only agents.* is read "
+                  "from the user-level file)" % (shown, repr(str(k))[:80]))
+    agents = raw.get("agents")
+    if agents is None:
+        return {}
+    if not isinstance(agents, dict):
+        _warn("user-level config %s: agents must be a mapping -- ignoring it" % shown)
+        return {}
+    return {"agents": agents}
+
+def _deep_merge(base, over):
+    out = dict(base)
+    for k, v in over.items():
+        if v is None and k in out:
+            continue  # an empty project leaf does not erase the user-level one
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+def load_layers(project_path, user_path):
+    project = {}
+    if project_path:
+        try:
+            project = _parse_cfg_file(project_path) or {}
+        except Exception:
+            # Unparseable project config: treated as absent (the warning is
+            # emitted once in-process by pipeline-vcs.sh at startup). Every
+            # key falls back to the user-level layer or the caller default.
+            project = {}
+    if not isinstance(project, dict):
+        project = {}
+    user = _load_user_layer(user_path, project_path)
+    return project, user, _deep_merge(user, project)
+
+def layer_map(project, user):
+    # dotted agents.* leaf key -> "project" | "global" (the file that supplied
+    # the winning value). Keys with control characters are skipped.
+    out = {}
+    def leaves(obj, prefix, label):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                leaves(v, "%s.%s" % (prefix, k) if prefix else str(k), label)
+        elif obj is not None:
+            out[prefix] = label
+    leaves(user.get("agents"), "agents", "global")
+    leaves(project.get("agents"), "agents", "project")
+    return {k: v for k, v in out.items() if all(32 <= ord(c) != 127 for c in k)}
+PYLOADER
+
+# --dump-layers (#336): one "key<TAB>layer" line per agents.* leaf, for
+# pipeline-agent.sh --resolve-all's origin column. One python3 spawn.
+if [ "${1:-}" = "--dump-layers" ]; then
+  _LPROJ="$(_locate_project_cfg)"
+  _LUSER="$(_locate_user_cfg)"
+  if [ -z "$_LPROJ" ] && [ -z "$_LUSER" ]; then exit 0; fi
+  python3 - "$_LPROJ" "$_LUSER" "$_CFG_LOADER_PY" <<'PYEOF'
+import sys
+exec(sys.argv[3])
+_project, _user, _merged = load_layers(sys.argv[1], sys.argv[2])
+for _k, _l in layer_map(_project, _user).items():
+    sys.stdout.write("%s\t%s\n" % (_k, _l))
+PYEOF
+  exit 0
+fi
+
+if [ "${1:-}" = "--dump" ]; then
+  _DCFG="$(_locate_project_cfg)"
+  _DUSER="$(_locate_user_cfg)"
+  # No config present (or unreadable) — nothing to dump; every lookup falls
+  # back to its caller's default, same as "no config found" below.
+  if [ -z "$_DCFG" ] && [ -z "$_DUSER" ]; then
+    exit 0
+  fi
+  python3 - "$_DCFG" "$_KNOWN_CONFIG_KEYS_JSON" "$_DUSER" "$_CFG_LOADER_PY" <<'PYEOF'
+import sys
+
 known_keys_json = sys.argv[2]
+exec(sys.argv[4])
 
 def walk(obj, parts):
     for part in parts:
@@ -118,22 +280,10 @@ def walk(obj, parts):
             return None
     return obj
 
-try:
-    try:
-        import yaml
-        with open(cfg_path) as f:
-            cfg = yaml.safe_load(f) or {}
-    except ImportError:
-        import json
-        with open(cfg_path) as f:
-            cfg = json.load(f)
-except Exception:
-    # Unparseable config -- dump nothing; every key falls back to its
-    # caller-supplied default, same as the single-key path's behaviour.
-    cfg = {}
-
-if not isinstance(cfg, dict):
-    cfg = {}
+# Merged project-over-user-level config (see the shared loader above).
+# Unparseable project config -- treated as absent; every key falls back to
+# the user-level layer or its caller-supplied default.
+_project_cfg, _user_cfg, cfg = load_layers(sys.argv[1], sys.argv[3])
 
 # ── Unknown-key warning (#176) ──────────────────────────────────────────────
 # This dump is what cfg() (pipeline-cfg-cache.sh) answers every lookup from,
@@ -396,36 +546,27 @@ DEFAULT="${2:-}"
 
 [ -z "$KEY" ] && { printf '%s' "$DEFAULT"; exit 0; }
 
-# ── Locate config file ────────────────────────────────────────────────────────
-CFG="${PIPELINE_CONFIG:-}"
-if [ -z "$CFG" ]; then
-  # talos.* names win; .claude-pipeline.* / pipeline.* honored as legacy
-  for candidate in "talos.pipeline.yml" "talos.pipeline.yaml" "talos.pipeline.json" \
-                   ".claude-pipeline.yaml" "pipeline.yaml" \
-                   ".claude-pipeline.json" "pipeline.json"; do
-    if [ -f "$candidate" ]; then
-      CFG="$candidate"
-      break
-    fi
-  done
-fi
+# ── Locate config files (shared loader, see above) ───────────────────────────
+CFG="$(_locate_project_cfg)"
+USER_CFG="$(_locate_user_cfg)"
 
 # No config present — return default
-if [ -z "$CFG" ] || [ ! -f "$CFG" ]; then
+if [ -z "$CFG" ] && [ -z "$USER_CFG" ]; then
   printf '%s' "$DEFAULT"
   exit 0
 fi
 
 # ── Parse and extract with Python ────────────────────────────────────────────
-# The heredoc passes file path, key, default, and the known-keys JSON as
-# argv to avoid shell quoting issues with special characters in values.
-python3 - "$CFG" "$KEY" "$DEFAULT" "$_KNOWN_CONFIG_KEYS_JSON" <<'PYEOF'
+# The heredoc passes file paths, key, default, the known-keys JSON and the
+# shared loader source as argv to avoid shell quoting issues with special
+# characters in values.
+python3 - "$CFG" "$KEY" "$DEFAULT" "$_KNOWN_CONFIG_KEYS_JSON" "$USER_CFG" "$_CFG_LOADER_PY" <<'PYEOF'
 import sys
 
-cfg_path = sys.argv[1]
 key      = sys.argv[2]
 default  = sys.argv[3] if len(sys.argv) > 3 else ""
 known_keys_json = sys.argv[4] if len(sys.argv) > 4 else "[]"
+exec(sys.argv[6])
 
 def walk(obj, parts):
     for part in parts:
@@ -435,23 +576,10 @@ def walk(obj, parts):
             return None
     return obj
 
-try:
-    # Prefer PyYAML for .yaml files; fall back to json for everything else.
-    try:
-        import yaml
-        with open(cfg_path) as f:
-            cfg = yaml.safe_load(f) or {}
-    except ImportError:
-        import json
-        with open(cfg_path) as f:
-            cfg = json.load(f)
-except Exception:
-    # Config file present but unparseable. Return the caller-supplied default.
-    # The warning is emitted once in-process by pipeline-vcs.sh at startup.
-    # Direct invocations of pipeline-config.sh degrade silently -- not a crash,
-    # not permanent silence, and nothing an external process can suppress.
-    print(default, end='')
-    sys.exit(0)
+# Merged project-over-user-level config (see the shared loader above). An
+# unparseable project file is treated as absent, so the lookup degrades to
+# the user-level layer or the caller-supplied default -- not a crash.
+_project_cfg, _user_cfg, cfg = load_layers(sys.argv[1], sys.argv[5])
 
 # ── Unknown-key warning (#176) ──────────────────────────────────────────────
 # This path parses the config file independently of the --dump path above

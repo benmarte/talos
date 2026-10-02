@@ -2,7 +2,6 @@
 name: docs
 description: Terminal stage. Updates docs/CHANGELOG for the change. No fix loop — docs posted then done.
 tools: Bash, Read, Edit, Write, Grep, Glob, Skill
-model: haiku
 ---
 
 You are **Documentation** — the terminal stage. QA passed for the PR. Docs runs

@@ -339,7 +339,7 @@ All keys live in `talos.pipeline.json` (or `talos.pipeline.yml` if PyYAML is ins
 | `agents.subagents` | `auto` | `auto` (true for `claude`, else false), `true`, or `false`. Chooses native parallel subagents vs. the headless `pipeline-agent.sh` adapter. |
 | `agents.runner_cmd` | — | Command for `agents.runner: custom` — the prompt arrives on stdin. Global-only; use `agents.roles.<role>.runner_cmd` to override a single role. |
 | `agents.runner_args` | — | Extra CLI args passed to the `claude`/`codex`/`gemini` runner. Global-only — there is no `agents.roles.<role>.runner_args`. |
-| `agents.model` | session default | Model for all stages not explicitly overridden (native path only). See [Per-role model selection](#per-role-model-selection-agentsmodel-and-agentsrolesrolemodel). |
+| `agents.model` | session default | Model for all stages not explicitly overridden (native path only). Also settable once for every repo in the user-level `${TALOS_HOME:-$HOME/.talos}/talos.pipeline.*`; the repo config wins per key. See [Per-role model selection](#per-role-model-selection-agentsmodel-and-agentsrolesrolemodel). |
 | `agents.roles.<role>.model` | falls back to `agents.model` | Role-specific model override (native path only), e.g. a cheaper model for volume stages and a stronger one for judgement stages (reviewer, security). |
 | `agents.roles.<role>.runner` | falls back to `agents.runner` | Role-specific backend override, on both the native and adapter execution paths — e.g. routing just `security` or `adversarial` through a different (often local) model while the rest of the pipeline stays on the default runner. See [Per-role runner override](#per-role-runner-override-agentsrolesrolerunner--runner_cmd). |
 | `agents.roles.<role>.runner_cmd` | falls back to `agents.runner_cmd` | Role-specific command, read only when that role's resolved runner is `custom`. |
@@ -976,33 +976,56 @@ agents:
 
 **Applies to the native path (`subagents: true`) only.** The adapter path (`subagents: false`) routes by role using `$TALOS_ROLE` in `runner_cmd` — see below.
 
-When spawning each subagent the orchestrator resolves the model in three steps:
+**The Talos config is the only place a role's model is set.** The shipped `agents/*.md` files carry no `model:` line, so there is no second source that can disagree with your config. When spawning each subagent the orchestrator resolves the model in three steps:
 
 1. `agents.roles.<role>.model` — role-specific override.
 2. `agents.model` — global model for all stages not explicitly overridden.
-3. Neither present — omit `model:` entirely; the Agent SDK inherits the session default (current behaviour, fully backwards compatible).
+3. Neither present — omit `model:` entirely; the subagent inherits the session model.
+
+**Two config layers.** Set your routing once for every repo in a user-level file, `${TALOS_HOME:-$HOME/.talos}/talos.pipeline.{yml,yaml,json}`; a repo's own `talos.pipeline.*` is merged over it, key by key, and wins where both set the same key. Only the `agents.*` subtree is read from the user-level file (board, merge, issue and verify settings describe a repo, not a user); any other key there is ignored with one warning. **Every `agents.*` key in the user-level file applies to every repo you run Talos in** -- not just models but `agents.runner`, `agents.runner_args` and `agents.roles.<role>.runner_cmd` too, and the adapter path executes `runner_cmd` as a shell command. Put only settings and commands you trust in every repo there; a repo's own config can override a key but cannot remove the file's other keys. A missing, unreadable or malformed user-level file behaves as absent. The layer sits under whichever project config is found, including one named by `$PIPELINE_CONFIG`, and every chain below (`restamp_model`, `effort`, per-role `runner`) is evaluated on the merged config.
+
+```yaml
+# ~/.talos/talos.pipeline.yml  -- applies to every repo
+agents:
+  model: sonnet
+  roles:
+    security: {model: opus}
+```
+
+```yaml
+# <repo>/talos.pipeline.yml  -- this repo only: qa runs on haiku, everything else follows the user-level file
+agents:
+  roles:
+    qa: {model: haiku}
+```
+
+Run the `pipeline-setup` skill to be asked once how you want models assigned (one model for every role, one per role, or leave unset) and have the answer written to the user-level file. `bash scripts/pipeline-agent.sh --resolve-all` prints one line per role — model, re-stamp model, and which layer decided it (`project`, `global` for the user-level file, or `session default`) — and warns when a role file Claude Code would load still carries a `model:` frontmatter line. `--resolve <role>` keeps its one-line `runner=… model=… effort=…` output.
+
+**Model names.** A value is a full model ID or one of the aliases `opus`, `sonnet`, `haiku`, stored and passed through as typed. If your harness's Agent tool accepts only aliases, the orchestrator maps a full ID to its family alias at spawn time; the config value is never rewritten.
+
+**Upgrading from 0.18.x.** Earlier versions shipped `model: opus` (and `model: haiku` for docs) in the agent frontmatter, so a repo with no `agents` block ran eight roles on Opus. That line is gone: if you never configured models, every role now runs on the session model until you run `pipeline-setup` (or add `agents.model` / `agents.roles.<role>.model` yourself). `install.sh --global` stays non-interactive and prints one hint line when no user-level config sets a model. Re-run it after upgrading so `~/.claude/agents/` and `~/.talos/agents/` lose the old line.
 
 **Judgement vs. volume (the primary use case):** implementation work is high-volume and verifiable; review work requires judgement. Set a cheap model globally and a quality model for the stages that matter:
 
 ```yaml
 agents:
   runner: claude
-  model: claude-haiku-4-5-20251001      # volume stages: developer, QA, docs, …
+  model: haiku                          # volume stages: developer, QA, docs, …
   roles:
-    reviewer: {model: claude-opus-5}    # judgement stages
-    security: {model: claude-opus-5}
+    reviewer: {model: opus}             # judgement stages
+    security: {model: opus}
 ```
 
-Two overrides rather than eight entries. A new role added later automatically inherits `agents.model` rather than silently reverting to the session default.
+Two overrides rather than eight entries. A new role added later automatically inherits `agents.model` rather than silently falling back to the session model.
 
 **Global override (all stages, one model):**
 
 ```yaml
 agents:
-  model: claude-sonnet-5    # all stages; no roles: block needed
+  model: sonnet    # all stages; no roles: block needed
 ```
 
-**Backwards compatibility:** a config with no `model:` key at either level behaves byte-identically to earlier versions — `model:` is omitted from each Agent spawn call.
+**Backwards compatibility:** a config with no model key at either level omits `model:` from each Agent spawn call, so every role inherits the session model.
 
 ### Per-role reasoning effort (`agents.effort` and `agents.roles.<role>.effort`)
 

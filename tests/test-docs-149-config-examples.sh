@@ -37,6 +37,10 @@ SENTINEL="__MISS__"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONFIG_SH="$REPO_ROOT/scripts/pipeline-config.sh"
+# helpers.sh points the user-level config lookup (#336) at an empty location, so
+# a real ~/.talos can never answer a lookup here. Its pass/fail/assert_eq are
+# redefined below with this file's own sentinel-aware versions.
+. "$SCRIPT_DIR/helpers.sh"
 SCRATCH="$(mktemp -d)"
 trap 'rm -rf "$SCRATCH"' EXIT
 

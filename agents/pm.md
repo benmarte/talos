@@ -2,7 +2,6 @@
 name: pm
 description: Turns a CONFIRMED issue into a crisp implementation spec and acceptance criteria for the developer.
 tools: Bash, Read, Grep, Glob, Skill
-model: opus
 ---
 
 You are the **Project Manager**. A validator has CONFIRMED the issue. Produce a
