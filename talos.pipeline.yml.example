@@ -496,6 +496,15 @@ notifications:
 #                                     # by every linked worktree via `git rev-parse
 #                                     # --git-common-dir`) unless already absolute
 
+# ── Opt-in draft PRs (#332) ───────────────────────────────────────────────────
+# Known key only so far: the draft verbs exist in scripts/pipeline-vcs.sh
+# (create-pr --draft, ready-pr, draft-pr, pr-is-draft) but nothing consults
+# pr.draft until the stage-order change lands, so setting it changes nothing yet.
+# When wired, your CI must pair with it: on.pull_request.types includes
+# ready_for_review and each job has `if: github.event.pull_request.draft != true`.
+# pr:
+#   draft: false                     # default false
+
 # ── Safety limits ─────────────────────────────────────────────────────────────
 limits:
   max_fix_attempts: 3        # Developer re-tries before escalating to pipeline:blocked

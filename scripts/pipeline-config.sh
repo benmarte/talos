@@ -82,6 +82,7 @@ _KNOWN_CONFIG_KEYS_JSON='[
   "agents.roles.*.effort", "agents.roles.*.restamp_effort",
   "limits.max_fix_attempts", "limits.max_total_dispatches",
   "limits.max_retries",
+  "pr.draft",
   "markers.trusted_authors", "markers.verify_authors",
   "hooks.pre_dispatch", "hooks.post_stage", "hooks.timeout_s",
   "events.enabled", "events.path"

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Draft-PR plumbing for opt-in `pr.draft` (#332, part 1 of 2).** `pipeline-vcs.sh create-pr <branch> <title> <body-file> --draft` opens a draft PR (`gh pr create --draft`, `glab mr create --draft`, `az repos pr create --draft true`); `ready-pr <n>` and `draft-pr <n>` flip it (`gh pr ready [--undo]`, `glab mr update --ready|--draft`, `az repos pr update --draft false|true`); `pr-is-draft <n>` prints `draft`/`ready` and exits 0/1, or 2 when unverified (failed fetch, bad id, unparseable response, `github-api`, `file`), never degrading to `ready`; `pr-ci-runs <n>` prints the `pull_request` workflow-run count for the PR's head branch (github only, exit 2 elsewhere or at GitHub's 1000-result cap). `github-api` exits 2 for `create-pr --draft` instead of silently opening a non-draft PR. `post_stage --ci-runs N` records the count on the `merged` event, and `pipeline-events.sh cost` adds a trailing `ci_runs` column/field only when an event carries it, so existing output is unchanged. `pr.draft` is now a known config key (no unknown-key warning). Nothing calls these yet and default behaviour is unchanged; the stage order that uses them follows in part 2. Pinned by `tests/test-pr-draft.sh` and `tests/test-ci-runs-metric.sh`.
+
 ## [0.18.0] - 2026-09-24
 
 ### Fixed
