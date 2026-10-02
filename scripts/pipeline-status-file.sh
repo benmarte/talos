@@ -656,6 +656,48 @@ if [ -z "$_SF_TMP" ]; then
   exit 1
 fi
 
+# _sf_stage_commit SUBJECT: stage exactly what python wrote (the manifest in
+# $_SF_MANIFEST) in the throwaway worktree, check the staged set against the
+# manifest, and commit it with SUBJECT. Returns 1 with a stderr line on any
+# failure; nothing is pushed. Shared by every verb that commits.
+_sf_stage_commit() {
+  local subject="$1" k p
+  # Stage exactly what python wrote, nothing else (never `add -A`: a dirty
+  # fresh checkout must not be swept in, and a status path matching .gitignore
+  # must still land, hence -f). Paths follow `--` and are literal, not pathspecs.
+  _SF_ADDS=()
+  _SF_DELS=()
+  while IFS=$'\t' read -r k p; do
+    case "$k" in
+      A) _SF_ADDS+=("$p") ;;
+      D) _SF_DELS+=("$p") ;;
+    esac
+  done < "$_SF_MANIFEST"
+  if [ "${#_SF_ADDS[@]}" -gt 0 ] && \
+     ! git --literal-pathspecs -C "$_SF_TMP/wt" add -f -- "${_SF_ADDS[@]}"; then
+    _sf_err "git add failed"
+    return 1
+  fi
+  if [ "${#_SF_DELS[@]}" -gt 0 ] && \
+     ! git --literal-pathspecs -C "$_SF_TMP/wt" rm -q -f -- "${_SF_DELS[@]}"; then
+    _sf_err "git rm failed"
+    return 1
+  fi
+  # The staged name list must be exactly the manifest; anything else aborts.
+  if ! git --literal-pathspecs -C "$_SF_TMP/wt" diff --cached --name-status -z --no-renames \
+      | python3 -I -c "$SF_PY" verify "$_SF_TMP/wt" "$STATUS_FILE" "$FRAG_DIR" "$ARCHIVE_DIR" \
+          "$LOG_HEADING" "$RESUME_HEADING" "$LOG_DAYS" "$LOG_MAX" "$TODAY" "" "" "" "$_SF_MANIFEST"; then
+    _sf_err "staged changes differ from what $VERB wrote — nothing committed or pushed"
+    return 1
+  fi
+  if ! git -C "$_SF_TMP/wt" -c user.email=talos@local -c user.name=talos-status \
+      -c commit.gpgsign=false commit -q --no-verify -m "$subject"; then
+    _sf_err "commit failed"
+    return 1
+  fi
+  return 0
+}
+
 TITLE_TRIED=""
 MAX_ATTEMPTS=3
 attempt=1
@@ -710,40 +752,7 @@ while :; do
     exit 0
   fi
 
-  # Stage exactly what python wrote, nothing else (never `add -A`: a dirty
-  # fresh checkout must not be swept in, and a status path matching .gitignore
-  # must still land, hence -f). Paths follow `--` and are literal, not pathspecs.
-  _SF_ADDS=()
-  _SF_DELS=()
-  while IFS=$'\t' read -r _sf_k _sf_p; do
-    case "$_sf_k" in
-      A) _SF_ADDS+=("$_sf_p") ;;
-      D) _SF_DELS+=("$_sf_p") ;;
-    esac
-  done < "$_SF_MANIFEST"
-  if [ "${#_SF_ADDS[@]}" -gt 0 ] && \
-     ! git --literal-pathspecs -C "$_SF_TMP/wt" add -f -- "${_SF_ADDS[@]}"; then
-    _sf_err "git add failed"
-    exit 1
-  fi
-  if [ "${#_SF_DELS[@]}" -gt 0 ] && \
-     ! git --literal-pathspecs -C "$_SF_TMP/wt" rm -q -f -- "${_SF_DELS[@]}"; then
-    _sf_err "git rm failed"
-    exit 1
-  fi
-  # The staged name list must be exactly the manifest; anything else aborts.
-  if ! git --literal-pathspecs -C "$_SF_TMP/wt" diff --cached --name-status -z --no-renames \
-      | python3 -I -c "$SF_PY" verify "$_SF_TMP/wt" "$STATUS_FILE" "$FRAG_DIR" "$ARCHIVE_DIR" \
-          "$LOG_HEADING" "$RESUME_HEADING" "$LOG_DAYS" "$LOG_MAX" "$TODAY" "" "" "" "$_SF_MANIFEST"; then
-    _sf_err "staged changes differ from what assemble wrote — nothing committed or pushed"
-    exit 1
-  fi
-  if ! git -C "$_SF_TMP/wt" -c user.email=talos@local -c user.name=talos-status \
-      -c commit.gpgsign=false commit -q --no-verify \
-      -m "docs(status): assemble status log [skip ci]"; then
-    _sf_err "commit failed"
-    exit 1
-  fi
+  _sf_stage_commit "docs(status): assemble status log [skip ci]" || exit 1
 
   if _SF_PUSH_ERR="$(git -C "$_SF_TMP/wt" push -q origin "HEAD:refs/heads/$BASE_BRANCH" 2>&1)"; then
     echo "pipeline-status-file: assembled the status log into $STATUS_FILE on $BASE_BRANCH and pushed"
