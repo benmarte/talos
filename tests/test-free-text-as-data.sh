@@ -126,6 +126,82 @@ rm -f "$GH_BODY_OUT"; PATH="$FAKE:$PATH" bash "$VCS" approve-pr 5 --body-file "$
 assert_eq "1" "$rc" "approve-pr --body-file <missing>: exits 1, nothing posted"
 assert_file_absent "$GH_BODY_OUT" "approve-pr --body-file <missing>: nothing reached the provider"
 
+# ── The stdin routes never hang, whatever fd 0 is ────────────────────────────
+# A closed fd 0 would make "$(cat)" read its own pipe; a terminal would wait for
+# a human. Each case runs under a watchdog (exit 124 = it hung) so a regression
+# fails the test instead of hanging the suite.
+cat > "$SANDBOX/runfd.py" <<'PY'
+import os, pty, subprocess, sys
+
+mode, limit, errfile = sys.argv[1], float(sys.argv[2]), sys.argv[3]
+cmd = sys.argv[4:]
+kw, feed, master = {}, None, None
+if mode == "closed":
+    kw["preexec_fn"] = lambda: os.close(0)
+elif mode == "tty":
+    master, slave = pty.openpty()
+    kw["stdin"] = slave
+elif mode == "empty":
+    kw["stdin"], feed = subprocess.PIPE, b""
+elif mode == "spaces":
+    kw["stdin"], feed = subprocess.PIPE, b"   \n \t \n"
+else:
+    sys.exit("bad mode")
+with open(errfile, "wb") as err:
+    p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=err, **kw)
+    try:
+        if feed is not None:
+            p.stdin.write(feed)
+            p.stdin.close()
+        sys.exit(p.wait(timeout=limit))
+    except subprocess.TimeoutExpired:
+        p.kill()
+        sys.exit(124)
+PY
+fd_run() { python3 "$SANDBOX/runfd.py" "$1" 20 "$SANDBOX/fd.err" "${@:2}"; }
+
+cat > talos.pipeline.json <<EOF
+{"notifications": {"cmd": "cat > $CMD_OUT", "cmd_timeout_s": 5}}
+EOF
+for mode in closed tty empty spaces; do
+  rm -f "$CMD_OUT"
+  fd_run "$mode" bash "$NOTIFY" qa "#42" - 42; rc=$?
+  assert_eq "0" "$rc" "notify - with $mode stdin: exits 0, no hang"
+  case "$mode" in
+    closed|tty)
+      assert_contains "$(cat "$SANDBOX/fd.err")" "stdin is closed or a terminal" "notify - with $mode stdin: one stderr line says why"
+      assert_file_absent "$CMD_OUT" "notify - with $mode stdin: nothing was sent" ;;
+  esac
+done
+rm -f talos.pipeline.json
+for verb in comment-issue approve-pr; do
+  for mode in closed tty empty spaces; do
+    rm -f "$GH_BODY_OUT"
+    PATH="$FAKE:$PATH" fd_run "$mode" bash "$VCS" "$verb" 5 --body-file -; rc=$?
+    case "$mode" in
+      closed|tty)
+        assert_eq "1" "$rc" "$verb --body-file - with $mode stdin: exits 1, no hang"
+        assert_contains "$(cat "$SANDBOX/fd.err")" "stdin is closed or a terminal" "$verb --body-file - with $mode stdin: one stderr line says why"
+        assert_eq "1" "$(wc -l < "$SANDBOX/fd.err" | tr -d ' ')" "$verb --body-file - with $mode stdin: that is a single line"
+        assert_file_absent "$GH_BODY_OUT" "$verb --body-file - with $mode stdin: nothing reached the provider" ;;
+      *)
+        [ "$rc" -ne 124 ]; assert_eq "0" "$?" "$verb --body-file - with $mode stdin: does not hang (rc=$rc)" ;;
+    esac
+  done
+done
+
+# ── A 200 KB message is delivered whole, with a quiet stderr ─────────────────
+cat > talos.pipeline.json <<EOF
+{"notifications": {"cmd": "cat > $CMD_OUT", "cmd_timeout_s": 5}}
+EOF
+python3 -c 'import sys; sys.stdout.write("see PR #12 " + "x" * 200000 + "\n")' > "$SANDBOX/big.txt"
+rm -f "$CMD_OUT"
+bash "$NOTIFY" qa "#42" - 42 < "$SANDBOX/big.txt" >/dev/null 2>"$SANDBOX/big.err"; rc=$?
+assert_eq "0" "$rc" "notify - with a 200 KB message: exits 0"
+assert_eq "" "$(cat "$SANDBOX/big.err")" "notify - with a 200 KB message: stderr is empty (no Broken pipe)"
+assert_eq "1" "$(python3 -c 'import json,sys; print(int(len(json.load(open(sys.argv[1]))["message"]) >= 200000))' "$CMD_OUT")" "notify - with a 200 KB message: delivered whole"
+rm -f talos.pipeline.json
+
 # ══ Part 2: the recipes in the role profiles and the playbook ═════════════════
 # recipe.py <out.sh> <body-file> <md> <needle> [<needle> ...]
 #   For each needle, takes the fenced code block of <md> that contains it
@@ -195,7 +271,8 @@ cp "$TALOS_ROOT"/templates/comments/*.md "$SANDBOX/tmpl/"
 for s in pipeline-vcs.sh pipeline-notify.sh pipeline-agent.sh; do
   cat > "$STUBROOT/scripts/$s" <<'STUB'
 #!/usr/bin/env bash
-base="$(mktemp "$REC/call.XXXXXX")"
+# Counter-named, so the order of calls is the order they were made.
+base="$REC/call.$(printf '%03d' "$(( $(ls "$REC" | grep -c '\.argv$') + 1 ))")"
 printf '%s\0' "$(basename "$0")" "$@" > "$base.argv"
 cat > "$base.stdin"
 for a in "$@"; do [ -f "$a" ] && cp "$a" "$base.file"; done
@@ -207,7 +284,18 @@ export REC SANDBOX
 
 calls() { ls "$REC"/call.*.argv 2>/dev/null | wc -l | tr -d ' '; }
 argv_of() { python3 -c 'import sys; print("|".join(open(sys.argv[1],"rb").read().decode().split("\0")[:-1]))' "$1"; }
-first_call() { ls "$REC"/call.*.argv | head -1 | sed 's/\.argv$//'; }
+# call_of <name>: the first recorded call whose script or verb is <name>, found
+# by content, never by position or directory order.
+call_of() {
+  python3 - "$REC" "$1" <<'PYC'
+import glob, sys
+for f in sorted(glob.glob(sys.argv[1] + "/call.*.argv")):
+    argv = open(f, "rb").read().decode().split("\0")[:-1]
+    if sys.argv[2] in argv[:2]:
+        print(f[:-len(".argv")])
+        break
+PYC
+}
 run_recipe() {  # $1=md $2...=needles; leaves the script in $SANDBOX/r.sh, runs it, resets $REC
   local md="$1"; shift
   rm -rf "$REC"/* "$SANDBOX/r.sh.bodies"
@@ -218,7 +306,7 @@ run_recipe() {  # $1=md $2...=needles; leaves the script in $SANDBOX/r.sh, runs 
 # ── agents/pm.md: comment-issue <N> --body-file - ────────────────────────────
 run_recipe "$TALOS_ROOT/agents/pm.md" 'comment-issue <N> --body-file -'; rc=$?
 assert_eq "0" "$rc" "pm.md recipe: runs ($(head -c 200 "$SANDBOX/r.err"))"
-c="$(first_call)"
+c="$(call_of comment-issue)"
 assert_eq "pipeline-vcs.sh|comment-issue|7|--body-file|-" "$(argv_of "$c.argv")" "pm.md recipe: the spec goes in via --body-file -"
 assert_eq "$(cat "$SANDBOX/r.sh.bodies/1")" "$(cat "$c.stdin")" "pm.md recipe: the stub received the spec byte for byte (hostile body + trailing newline)"
 cmp -s "$SANDBOX/r.sh.bodies/1" "$c.stdin"; assert_eq "0" "$?" "pm.md recipe: byte-identical, trailing newline included (cmp)"
@@ -227,7 +315,7 @@ assert_no_pwned "pm.md recipe"
 # ── agents/developer.md: mktemp body file + title heredoc + create-pr ────────
 run_recipe "$TALOS_ROOT/agents/developer.md" 'create-pr <branch>'; rc=$?
 assert_eq "0" "$rc" "developer.md recipe: runs ($(head -c 200 "$SANDBOX/r.err"))"
-c="$(first_call)"
+c="$(call_of create-pr)"
 argv="$(argv_of "$c.argv")"
 assert_contains "$argv" "pipeline-vcs.sh|create-pr|fix/issue-7-x|first line|" "developer.md recipe: the title is the first line of the title heredoc, as one argument"
 cmp -s "$SANDBOX/r.sh.bodies/1" "$c.file"; assert_eq "0" "$?" "developer.md recipe: the body file the stub read is byte-identical to the hostile body"
@@ -239,7 +327,7 @@ assert_no_pwned "developer.md recipe"
 # ── agents/reviewer.md: approve-pr <pr> --body-file - ────────────────────────
 run_recipe "$TALOS_ROOT/agents/reviewer.md" 'approve-pr <pr> --body-file -'; rc=$?
 assert_eq "0" "$rc" "reviewer.md recipe: runs"
-c="$(first_call)"
+c="$(call_of approve-pr)"
 assert_eq "pipeline-vcs.sh|approve-pr|8|--body-file|-" "$(argv_of "$c.argv")" "reviewer.md recipe: the summary goes in via --body-file -"
 cmp -s "$SANDBOX/r.sh.bodies/1" "$c.stdin"; assert_eq "0" "$?" "reviewer.md recipe: the stub received the summary byte for byte"
 assert_no_pwned "reviewer.md recipe"
@@ -250,9 +338,9 @@ assert_no_pwned "reviewer.md recipe"
 # without its trailing newline.
 run_recipe "$TALOS_ROOT/skills/pipeline/SKILL.md" 'TMPL="<TMPL_DIR>'; rc=$?
 assert_eq "0" "$rc" "playbook rendering recipe: runs ($(head -c 200 "$SANDBOX/r.err"))"
-posted="$(argv_of "$(first_call).argv")"
+posted="$(argv_of "$(call_of comment-issue).argv")"
 assert_contains "$posted" "comment-issue|7|**Agent:** test (talos)" "playbook rendering recipe: the comment is rendered and posted"
-python3 - "$(first_call).argv" "$SANDBOX/r.sh.bodies/1" "$SANDBOX/r.sh.bodies/2" <<'PY'
+python3 - "$(call_of comment-issue).argv" "$SANDBOX/r.sh.bodies/1" "$SANDBOX/r.sh.bodies/2" <<'PY'
 import sys
 argv = open(sys.argv[1], "rb").read().decode().split("\0")[:-1]
 body = argv[3]
@@ -265,7 +353,7 @@ assert_no_pwned "playbook rendering recipe"
 # ── skills/pipeline/SKILL.md: the Rule 2 relay ───────────────────────────────
 run_recipe "$TALOS_ROOT/skills/pipeline/SKILL.md" 'pipeline-notify.sh <role> "#<N>" - <N> <<'; rc=$?
 assert_eq "0" "$rc" "playbook relay recipe: runs ($(head -c 200 "$SANDBOX/r.err"))"
-c="$(first_call)"
+c="$(call_of pipeline-notify.sh)"
 assert_eq 'pipeline-notify.sh|qa|#7|-|7' "$(argv_of "$c.argv")" "playbook relay recipe: ONE command, message passed as -"
 cmp -s "$SANDBOX/r.sh.bodies/1" "$c.stdin"; assert_eq "0" "$?" "playbook relay recipe: the stub received the summary byte for byte"
 assert_eq "1" "$(calls)" "playbook relay recipe: one relay is one command"
@@ -275,7 +363,7 @@ assert_no_pwned "playbook relay recipe"
 run_recipe "$TALOS_ROOT/skills/pipeline/SKILL.md" 'BODY_FILE="$(mktemp)"' 'create-issue "$SUB_TITLE" "$BODY_FILE" \
   --label pipeline:ready'; rc=$?
 assert_eq "0" "$rc" "playbook sub-issue recipe: runs ($(head -c 200 "$SANDBOX/r.err"))"
-c="$(first_call)"
+c="$(call_of create-issue)"
 argv="$(argv_of "$c.argv")"
 assert_contains "$argv" "pipeline-vcs.sh|create-issue|first line|" "playbook sub-issue recipe: the title is one argument"
 cmp -s "$SANDBOX/r.sh.bodies/1" "$c.file"; assert_eq "0" "$?" "playbook sub-issue recipe: the body file is byte-identical to the hostile body"
@@ -284,7 +372,7 @@ assert_no_pwned "playbook sub-issue recipe"
 # ── skills/pipeline/SKILL.md: the adapter prompt ─────────────────────────────
 run_recipe "$TALOS_ROOT/skills/pipeline/SKILL.md" 'pipeline-agent.sh <role> - <<'; rc=$?
 assert_eq "0" "$rc" "playbook adapter-prompt recipe: runs"
-c="$(first_call)"
+c="$(call_of pipeline-agent.sh)"
 cmp -s "$SANDBOX/r.sh.bodies/1" "$c.stdin"; assert_eq "0" "$?" "playbook adapter-prompt recipe: the stub received the prompt byte for byte"
 assert_no_pwned "playbook adapter-prompt recipe"
 

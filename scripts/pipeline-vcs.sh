@@ -6745,6 +6745,16 @@ PYEOF
 #
 # So accept both spellings, and refuse a body that is still a bare flag instead
 # of posting it. Applied before dispatch, so every provider inherits it.
+# Body text for `--body-file -` (#342). A closed fd 0 would make "$(cat)" read its
+# own pipe and hang, and a terminal would wait for a human: both are an error.
+_TALOS_STDIN_BODY=""
+_read_stdin_body() {
+  if [ -t 0 ] || ! { : 3<&0; } 2>/dev/null; then
+    echo "pipeline-vcs: $VERB --body-file -: stdin is closed or a terminal; pipe the text in (heredoc)" >&2
+    exit 1
+  fi
+  _TALOS_STDIN_BODY="$(cat)"
+}
 _TALOS_COMMENT_MAX=65536   # GitHub rejects longer comment bodies; cap every provider
 case "$VERB" in
   comment-issue|comment-pr)
@@ -6755,7 +6765,8 @@ case "$VERB" in
           # that must never sit inside shell quotes (heredoc on stdin). Same
           # trailing-newline trimming as a file read below.
           if [ "${ARGS[2]}" = "-" ]; then
-            ARGS=("${ARGS[0]}" "$(cat)")
+            _read_stdin_body
+            ARGS=("${ARGS[0]}" "$_TALOS_STDIN_BODY")
           # A UTF-8 character is at most 4 bytes, so a file over 4x the
           # character cap cannot fit; refuse it without reading it (#306).
           elif [ -r "${ARGS[2]}" ] && [ "$(wc -c < "${ARGS[2]}")" -gt $((4 * _TALOS_COMMENT_MAX)) ]; then
@@ -6895,7 +6906,8 @@ case "$VERB" in
   approve-pr|close-issue)
     if [ "${#ARGS[@]}" -ge 3 ] && [ "${ARGS[1]}" = "--body-file" ]; then
       if [ "${ARGS[2]}" = "-" ]; then
-        ARGS=("${ARGS[0]}" "$(cat)")
+        _read_stdin_body
+        ARGS=("${ARGS[0]}" "$_TALOS_STDIN_BODY")
       elif [ -r "${ARGS[2]}" ]; then
         ARGS=("${ARGS[0]}" "$(cat "${ARGS[2]}")")
       else

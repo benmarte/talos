@@ -43,7 +43,7 @@ cat > "$SCANNER" <<'PY'
 import re, sys
 
 NUMERIC = re.compile(r"<(N|PR|PR_NUMBER|id|K|J|E|i|n|pr|issue-n)>")
-PLACEHOLDER = re.compile(r"<[^<>\n]+>|(?<!\$)\{[A-Za-z_][^{}\n]*\}|…|\.\.\.")
+PLACEHOLDER = re.compile(r"<[^<>]+>|(?<!\$)\{[A-Za-z_][^{}\n]*\}|…|\.\.\.")
 NAMES = r"SUMMARY|DETAILS|BLOCKED_BY|ATTENTION_REPORT|SPEC_BODY|COMMENT_BODY|PR_TITLE|ISSUE_TITLE|SUB_TITLE"
 
 # verb -> index of the free-text positional argument after the verb
@@ -236,6 +236,8 @@ flagged 'run `bash scripts/pipeline-vcs.sh\ncreate-pr <branch> "<title>" <body-f
 assert_eq "0" "$?" "positive control: a command wrapped across prose lines (no backslash) is flagged"
 flagged "use \`printf '%s' \"<spec summary>\\\\n\\\\nTest types: <unit>\n  say why>\" >\n  f.md\`\n"
 assert_eq "0" "$?" "positive control: a printf body wrapped across prose lines is flagged"
+flagged 'bash scripts/pipeline-vcs.sh comment-issue <N> "done <the\n   findings list>"\n'
+assert_eq "0" "$?" "positive control: a quoted argument whose placeholder itself spans a line break is flagged"
 flagged 'bash scripts/pipeline-notify.sh info "merge-base" "#<N> sibling PR #<PR>\n   synced (<mechanism>)" <N>\n'
 assert_eq "0" "$?" "positive control: a notify message wrapped across lines is flagged"
 
