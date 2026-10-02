@@ -18,6 +18,12 @@
 #                                             # both the adapter path and the
 #                                             # native-path per-role dispatch
 #                                             # decision use one resolution.
+#        pipeline-agent.sh --resolve-all     # (#336) one line per role:
+#                                             #   role=<r> model=<m> restamp_model=<m> origin=<project|global|session default>
+#                                             # origin names the config layer
+#                                             # that decided the model. Warns on
+#                                             # stderr for a role file whose
+#                                             # frontmatter still has model:.
 #
 # The executed prompt = role definition body (.claude/agents/<role>.md with
 # its YAML frontmatter stripped — the frontmatter is Claude Code metadata)
@@ -199,6 +205,51 @@ if [ "${1:-}" = "--resolve" ]; then
     "$(_resolve_runner_cmd "$_RESOLVE_ROLE")" \
     "$(_resolve_model "$_RESOLVE_ROLE")" \
     "$(_resolve_effort "$_RESOLVE_ROLE")"
+  exit 0
+fi
+
+# --resolve-all (#336): one line per role -- the model it will run on, its
+# re-stamp model, and which config layer decided the model ("project" = the
+# repo's talos.pipeline.*, "global" = the user-level file under
+# ${TALOS_HOME:-$HOME/.talos}, "session default" = neither set one, so the
+# role inherits the session model). Same role-first chain as _resolve_model;
+# the re-stamp chain is role restamp -> agents.restamp_model -> agents.model.
+# Also warns on stderr when a role file Claude Code would load still carries
+# a frontmatter `model:` line: that line applies whenever the config resolves
+# empty, so it defeats "the config is the only place a model is set".
+if [ "${1:-}" = "--resolve-all" ]; then
+  _ALL_ROLES="validator pm developer qa reviewer security adversarial docs planner"
+  # key<TAB>layer for every agents.* leaf; one python3 spawn.
+  _LAYERS="$(bash "$SCRIPT_DIR/pipeline-config.sh" --dump-layers 2>/dev/null)"
+  _layer_of() {
+    local _k _l
+    while IFS="$(printf '\t')" read -r _k _l; do
+      if [ "$_k" = "$1" ]; then printf '%s' "$_l"; return 0; fi
+    done <<EOF
+$_LAYERS
+EOF
+  }
+  for _r in $_ALL_ROLES; do
+    _m="$(_resolve_model "$_r")"
+    if [ -n "$(cfg "agents.roles.$_r.model" "")" ]; then
+      _origin="$(_layer_of "agents.roles.$_r.model")"
+    elif [ -n "$(cfg agents.model "")" ]; then
+      _origin="$(_layer_of agents.model)"
+    else
+      _origin="session default"
+    fi
+    _rs="$(cfg "agents.roles.$_r.restamp_model" "")"
+    [ -n "$_rs" ] || _rs="$(cfg agents.restamp_model "")"
+    [ -n "$_rs" ] || _rs="$(cfg agents.model "")"
+    printf 'role=%s model=%s restamp_model=%s origin=%s\n' "$_r" "$_m" "$_rs" "$_origin"
+    for _dir in "$PWD/.claude/agents" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/agents"; do
+      _f="$_dir/$_r.md"
+      [ -f "$_f" ] || continue
+      if awk 'NR==1 && /^---$/ {fm=1; next} fm && /^---$/ {exit} fm && /^model:/ {found=1} END {exit !found}' "$_f"; then
+        echo "pipeline-agent: [warn] $_f still sets model: in its frontmatter; it applies whenever the config resolves empty -- remove the line so the Talos config is the only source" >&2
+      fi
+    done
+  done
   exit 0
 fi
 
