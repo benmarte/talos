@@ -228,6 +228,7 @@ assert_contains "$out_with" "/pipeline" \
 #        scripts/pipeline-paths.sh (canonical definition)
 #        skills/pipeline/SKILL.md
 #        skills/pipeline-setup/SKILL.md
+#        skills/resume/SKILL.md
 #        install.sh (AGENTS.md heredoc -- executed as shell by codex/antigravity)
 #
 # RED when any site drifts: A catches dropped delegation; B catches literal divergence.
@@ -257,6 +258,7 @@ for probe_str in '${TALOS_HOME:+' ".talos/scripts" '${CLAUDE_PLUGIN_ROOT:+' ".cl
     "$TALOS_ROOT/scripts/pipeline-paths.sh" \
     "$TALOS_ROOT/skills/pipeline/SKILL.md" \
     "$TALOS_ROOT/skills/pipeline-setup/SKILL.md" \
+    "$TALOS_ROOT/skills/resume/SKILL.md" \
     "$TALOS_ROOT/install.sh"; do
     if grep -qF "$probe_str" "$pf"; then
       pass "$(basename "$pf") contains probe string: $probe_str"

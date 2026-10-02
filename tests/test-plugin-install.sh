@@ -224,10 +224,13 @@ else
   fail "plugin.json carries no no-op scripts field"
 fi
 
-for s in pipeline pipeline-setup; do
+for s in pipeline pipeline-setup resume; do
   assert_file_exists "$TALOS_ROOT/skills/$s/SKILL.md" \
     "$s skill sits in the default skills/ scan path"
 done
+
+assert_file_exists "$PLUGIN_ROOT/skills/resume/SKILL.md" \
+  "the plugin cache holds skills/resume/SKILL.md (exposed as /talos:resume, #348)"
 
 # NOTE: `claude plugin validate` is asserted in test-install.sh, not here —
 # use_stubs puts tests/stubs/claude first on PATH, so running it in this file

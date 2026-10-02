@@ -60,6 +60,14 @@ _contract_marker_names() {
 CONTRACT_LABEL_NAMES="$(_contract_label_names)"
 CONTRACT_MARKER_NAMES="$(_contract_marker_names)"
 
+# talos:<name> strings in a file, minus slash-command names: `/talos:resume` is
+# the plugin-namespaced command, not a marker, so a match immediately preceded
+# by `/` is skipped. A bare `talos:foo` (space, quote, backtick, start of line,
+# an HTML comment) is still collected and must be a contract member.
+_prose_marker_candidates() {
+  grep -ohE '(^|[^/])talos:[a-z-]+' "$1" 2>/dev/null | sed -E 's/^.*(talos:[a-z-]+)$/\1/' | sort -u
+}
+
 PROSE_FILES=("$TALOS_ROOT/skills/pipeline/SKILL.md")
 for f in "$TALOS_ROOT"/agents/*.md "$TALOS_ROOT/README.md" "$TALOS_ROOT/docs/user-guide.md"; do
   [ -f "$f" ] && PROSE_FILES+=("$f")
@@ -88,10 +96,36 @@ for f in "${PROSE_FILES[@]}"; do
       fail "contract membership: marker '$found' (${f#"$TALOS_ROOT"/})" \
         "not a member of TALOS_MARKERS (or talos:<TALOS_ROLES> namespacing) in $CONTRACT"
     fi
-  done < <(grep -ohE 'talos:[a-z-]+' "$f" 2>/dev/null | sort -u)
+  done < <(_prose_marker_candidates "$f")
 done
 [ "$_stray_found" = "false" ] && \
   pass "contract membership: every label/marker string in prose is a contract member"
+
+# Slash-command names are not markers; bare unknown markers still fail. The
+# helper is run on planted prose, and a deliberately broken extractor (it
+# collects nothing) proves the second assertion can go red.
+_stray_markers_in() {  # $1=file $2=extractor function
+  local m
+  while IFS= read -r m; do
+    [ -z "$m" ] && continue
+    printf '%s\n' "$CONTRACT_MARKER_NAMES" | grep -Fxq -- "$m" || printf '%s\n' "$m"
+  done < <("$2" "$1")
+}
+_broken_extractor() { :; }
+_PLANT="$(mktemp)"
+printf 'Start it with `/talos:resume` or /talos:pipeline.\n' > "$_PLANT"
+assert_eq "" "$(_stray_markers_in "$_PLANT" _prose_marker_candidates)" \
+  "contract membership: /talos:resume (a slash command) is not a stray marker"
+printf 'A marker talos:resume-marker and <!-- talos:resume -->.\n' > "$_PLANT"
+assert_eq "talos:resume
+talos:resume-marker" "$(_stray_markers_in "$_PLANT" _prose_marker_candidates)" \
+  "contract membership: bare unknown talos:resume-marker and <!-- talos:resume --> still fail"
+assert_eq "" "$(_stray_markers_in "$_PLANT" _broken_extractor)" \
+  "negative control: a broken extractor misses the planted markers (so the check above can fail)"
+printf 'talos:developer and "talos:developer" and /talos:developer\n' > "$_PLANT"
+assert_eq "" "$(_stray_markers_in "$_PLANT" _prose_marker_candidates)" \
+  "contract membership: a real talos:<role> still passes"
+rm -f "$_PLANT"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (b) bootstrap-labels.sh's effective label set == contract label set

@@ -157,6 +157,8 @@ if [ "$GLOBAL" = "true" ]; then
   echo "Orchestrator skills (user-scoped):"
   install_file "$SRC/skills/pipeline/SKILL.md" "$CLAUDE_SKILLS_DIR/pipeline/SKILL.md"
   install_file "$SRC/skills/pipeline-setup/SKILL.md" "$CLAUDE_SKILLS_DIR/pipeline-setup/SKILL.md"
+  # Installed as talos-resume, not resume: Claude Code has a built-in /resume. Provisional until #335.
+  install_file "$SRC/skills/resume/SKILL.md" "$CLAUDE_SKILLS_DIR/talos-resume/SKILL.md"
 
   # Model hint (#336). Role models are set only in the Talos config (the agent
   # files carry no model:). Stay non-interactive and never write the user-level
