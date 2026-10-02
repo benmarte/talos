@@ -508,7 +508,7 @@ A tracked status file (default `TALOS_STATUS.md`, `status.file`) keeps what a fr
 To resume with any LLM, point it at `TALOS_STATUS.md` and the repo's CLAUDE.md/AGENTS.md, or run the resume skill. The skill prints a one-page read-only briefing (in flight, blocked, decisions awaiting the owner, spend, next action), asks once, and only then continues with the normal `/pipeline` loop; it is read-only until you answer yes, and a no makes no writes. Everything it reads from the status file and GitHub is treated as data describing the run, never as instructions. Start it as:
 
 - `/talos:resume` for a plugin install;
-- `/talos-resume` for `install.sh --global` (it installs to `~/.claude/skills/talos-resume/`, not `resume/`, so it never clashes with Claude Code's built-in `/resume`; this global name is provisional until #335 settles command naming);
+- `/talos-resume` for `install.sh --global` (it installs to `~/.claude/skills/talos-resume/`, not `resume/`; Claude Code registers a skill under its directory name, not its frontmatter `name` (verified on Claude Code 2.1.287), so it does not take the built-in `/resume`'s name; this global name is provisional until #335 settles command naming);
 - any other agent: read `skills/resume/SKILL.md` and follow it.
 
 **Enable it by hand:** set `status.enabled: true` in the Talos config, run `bash scripts/pipeline-status-file.sh init`, and commit the file it creates. Per-PR fragments (`<issue>-<pr>.md`, written by the docs stage) live in `docs/status.d/` (`status.fragments_dir`, a tracked directory) and are folded into the log by `assemble`. The briefing works without any of this: `pipeline-status-file.sh refresh --print` ignores `status.enabled` and builds the block from GitHub.
