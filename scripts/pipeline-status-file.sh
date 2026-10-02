@@ -53,12 +53,26 @@
 # gives them no upper bound); a non-integer or zero value uses the default.
 #
 # Paths. status.file, status.fragments_dir and status.archive_dir are
-# validated by EVERY verb before any read or write: empty, absolute, a `..` or
-# `.git` segment, a leading `-`, a backslash and control characters are
-# rejected (exit 1, stderr names the key), and the RESOLVED path must stay
-# inside the checkout root (a symlink leaving the root is rejected). The
-# headings are matched as fixed strings; they must start with `#`, contain no
-# control character, and differ from each other.
+# validated by EVERY verb before any read or write: empty, absolute, longer
+# than 512 bytes, a `..` or `.git` segment, a backslash and control characters
+# are rejected, then the NORMALISED path (`./-rf` is `-rf`) must not start with
+# `-` or `:` (exit 1, stderr names the key). The RESOLVED path must stay inside
+# the checkout root, and neither the status file, an archive file nor any
+# directory component of the three paths may be a symlink. The headings are
+# matched as fixed strings; they must start with `#`, be at most 256 bytes,
+# contain no control character, and differ from each other.
+#
+# Staging. The status commit holds exactly what assemble wrote: python lists
+# the files it changed in a manifest, which is staged with `git add -f --`
+# (status file, archive files) and `git rm -f --` (consumed fragments) under
+# --literal-pathspecs; the staged name list is then checked against the
+# manifest and anything else aborts before the commit. Nothing is staged with
+# `add -A`, so a dirty fresh checkout is never swept in and a status path
+# matching .gitignore still lands.
+#
+# Every python invocation is `python3 -I` (isolated: no cwd on sys.path, no
+# user site, no PYTHON* variables), so a module in the caller's cwd is never
+# imported.
 #
 # Push. The push is never forced. Any failed push (non-fast-forward, or a ref
 # that moved under the push) refetches and re-assembles from the new base,
@@ -146,9 +160,9 @@ fi
 _sf_norm_path() {
   local key="$1" val="$2" seg out="" parts
   if [ -z "$val" ]; then _sf_err "$key must not be empty"; return 1; fi
+  if [ "${#val}" -gt 512 ]; then _sf_err "$key is longer than 512 bytes"; return 1; fi
   case "$val" in
     /*) _sf_err "$key must be a relative path, not an absolute path"; return 1 ;;
-    -*) _sf_err "$key must not start with '-'"; return 1 ;;
     *\\*) _sf_err "$key must not contain a backslash"; return 1 ;;
     *$'\n'*|*[[:cntrl:]]*) _sf_err "$key must not contain control characters or newlines"; return 1 ;;
   esac
@@ -162,6 +176,11 @@ _sf_norm_path() {
     out="${out:+$out/}$seg"
   done
   if [ -z "$out" ]; then _sf_err "$key must name a path inside the repo"; return 1; fi
+  # Validate the NORMALISED path: `./-rf` is `-rf`, and `:(top)x` is a pathspec.
+  case "$out" in
+    -*) _sf_err "$key must not start with '-'"; return 1 ;;
+    :*) _sf_err "$key must not start with ':'"; return 1 ;;
+  esac
   printf '%s' "$out"
 }
 
@@ -169,6 +188,7 @@ _sf_norm_path() {
 _sf_check_heading() {
   local key="$1" val="$2"
   if [ -z "$val" ]; then _sf_err "$key must not be empty"; return 1; fi
+  if [ "${#val}" -gt 256 ]; then _sf_err "$key is longer than 256 bytes"; return 1; fi
   case "$val" in
     *$'\n'*|*[[:cntrl:]]*) _sf_err "$key must not contain control characters or newlines"; return 1 ;;
     '#'*) ;;
@@ -213,11 +233,14 @@ FRAG_READ_CAP = 65536
 HEADER = ("# Project status\n\n"
           "To resume with any LLM, read this file and the repo's CLAUDE.md/AGENTS.md.\n")
 PLACEHOLDER = "_No resume notes yet._"
-ENTRY_RE = re.compile(r'^- (\d{4}-\d{2}-\d{2}) PR #(\d+) ')
+# ASCII digits only and at most 9 digits for the PR number: a hand-edited line
+# with other digits or a huge number is not an entry, so it is never mis-keyed
+# (and int() of a huge string cannot raise).
+ENTRY_RE = re.compile(r'^- ([0-9]{4}-[0-9]{2}-[0-9]{2}) PR #([0-9]{1,9}) ')
 HEADING_RE = re.compile(r'^(#{1,6})(\s|$)')
 
 (mode, root, status_rel, frag_rel, archive_rel, log_h, resume_h,
- log_days, log_max, today_s, pr_arg, issue_arg, title_file) = sys.argv[1:14]
+ log_days, log_max, today_s, pr_arg, issue_arg, title_file, manifest_file) = sys.argv[1:15]
 
 
 log_h, resume_h = log_h.strip(), resume_h.strip()
@@ -239,7 +262,12 @@ root_real = os.path.realpath(root)
 
 
 def check_inside(rel, key):
-    """The resolved path must stay inside the root and not enter .git."""
+    """No symlink on the path; the resolved path stays inside the root, not in .git."""
+    cur = root_real
+    for part in rel.split('/'):
+        cur = os.path.join(cur, part)
+        if os.path.islink(cur):
+            die('%s has a symlink on its path: %s' % (key, rel))
     real = os.path.realpath(os.path.join(root_real, rel))
     if real != root_real and not real.startswith(root_real + os.sep):
         die('%s resolves outside the repo (symlink?): %s' % (key, rel))
@@ -263,7 +291,7 @@ def write_text(path, text):
 def ensure_headings(text):
     """Append whichever of the two headings is missing (resume first)."""
     lines = text.split('\n')
-    present = lambda h: any(l.strip() == h for l in lines)
+    present = lambda h: any(l.rstrip() == h for l in lines)
     blocks = []
     if not present(resume_h):
         blocks.append('%s\n\n%s\n' % (resume_h, PLACEHOLDER))
@@ -317,10 +345,6 @@ def build_entry(date, pr, issue, lines):
     return text
 
 
-def key_of(entry_text):
-    return int(ENTRY_RE.match(entry_text).group(2))
-
-
 if mode == 'init':
     status_path = check_inside(status_rel, 'status.file')
     check_inside(frag_rel, 'status.fragments_dir')
@@ -340,6 +364,32 @@ if mode == 'init':
         print('pipeline-status-file: created %s' % status_rel)
     sys.exit(0)
 
+if mode == 'verify':
+    # stdin: `git diff --cached --name-status -z --no-renames` of the throwaway
+    # worktree. The staged set must be exactly the manifest: the status file and
+    # archive files (A or M), consumed fragments (D), and nothing else.
+    fields = [f for f in sys.stdin.buffer.read().decode('utf-8', 'surrogateescape').split('\0') if f]
+    if len(fields) % 2:
+        die('could not parse the staged name list')
+    staged = [(fields[i], fields[i + 1]) for i in range(0, len(fields), 2)]
+    want = {}
+    with open(manifest_file) as mf:
+        for line in mf:
+            letter, path = line.rstrip('\n').split('\t', 1)
+            ok = (path == status_rel or path.startswith(archive_rel + '/')) if letter == 'A' \
+                else path.startswith(frag_rel + '/')
+            if not ok:
+                die('refusing to commit: %s is not an expected status path' % path)
+            want[path] = letter
+    for letter, path in staged:
+        exp = want.get(path)
+        if exp is None or (exp == 'A' and letter not in ('A', 'M')) or (exp == 'D' and letter != 'D'):
+            die('refusing to commit: unexpected staged change %s %s' % (letter, path))
+    missing = sorted(set(want) - set(p for _, p in staged))
+    if missing:
+        die('refusing to commit: expected change not staged: %s' % ', '.join(missing))
+    sys.exit(0)
+
 # ── assemble (root is the throwaway worktree) ───────────────────────────────
 today = parse_date(today_s)
 if today is None:
@@ -356,7 +406,7 @@ for line in sys.stdin.read().splitlines():
     if ' ' not in line:
         continue
     sha, name = line.split(' ', 1)
-    m = re.fullmatch(r'([0-9]+)-([0-9]+)\.md', name)
+    m = re.fullmatch(r'([0-9]{1,9})-([0-9]{1,9})\.md', name)
     if m and re.fullmatch(r'[0-9a-f]{40,64}', sha):
         frags.append((int(m.group(2)), int(m.group(1)), sha, name))
 
@@ -391,8 +441,9 @@ archived = set()
 if os.path.isdir(archive_root):
     for fn in sorted(os.listdir(archive_root)):
         ap = os.path.join(archive_root, fn)
-        if fn.endswith('.md') and os.path.isfile(ap):
+        if fn.endswith('.md'):
             check_inside(os.path.join(archive_rel, fn), 'status.archive_dir')
+        if fn.endswith('.md') and os.path.isfile(ap):
             for l in read_text(ap).split('\n'):
                 m = ENTRY_RE.match(l)
                 if m:
@@ -410,7 +461,7 @@ lines = text.split('\n')
 if lines and lines[-1] == '':
     lines.pop()
 
-idx = next(i for i, l in enumerate(lines) if l.strip() == log_h)
+idx = next(i for i, l in enumerate(lines) if l.rstrip() == log_h)
 level = len(log_h) - len(log_h.lstrip('#'))
 end = len(lines)
 for j in range(idx + 1, len(lines)):
@@ -485,6 +536,7 @@ for e in entries:
         rotated.append(e)
 
 # Archive writes, by the entry's own month; an archived PR is never duplicated.
+written = []  # (letter, repo-relative path) of everything changed, for the staging step
 by_month = {}
 for e in rotated:
     if e[1] in archived:
@@ -493,12 +545,11 @@ for e in rotated:
     by_month.setdefault(e[0][:7], []).append(e[2])
 for month in sorted(by_month):
     ap = check_inside(os.path.join(archive_rel, month + '.md'), 'status.archive_dir')
-    if os.path.islink(ap):
-        die('status.archive_dir file is a symlink: %s.md' % month)
     body = read_text(ap) if os.path.exists(ap) else '# Status archive %s\n\n' % month
     if not body.endswith('\n'):
         body += '\n'
     write_text(ap, body + '\n'.join(by_month[month]) + '\n')
+    written.append(('A', '%s/%s.md' % (archive_rel, month)))
 
 body = list(pre)
 if pre and kept:
@@ -511,11 +562,14 @@ if tail:
 new_text = '\n'.join(out) + '\n'
 if new_text != orig_text:
     write_text(status_path, new_text)
+    written.append(('A', status_rel))
 
+# Consumed fragments are removed by `git rm` in the staging step, not here.
 for name in sorted(set(consumed)):
-    fp = os.path.join(frag_root, name)
-    if os.path.isfile(fp) and not os.path.islink(fp):
-        os.remove(fp)
+    written.append(('D', '%s/%s' % (frag_rel, name)))
+with open(manifest_file, 'w') as mf:
+    for letter, path in written:
+        mf.write('%s\t%s\n' % (letter, path))
 
 print('pipeline-status-file: assembled %d fragment(s)%s, %d entr%s archived' % (
     len(set(consumed)),
@@ -528,8 +582,8 @@ TODAY="${TALOS_STATUS_TODAY:-$(date -u +%Y-%m-%d)}"
 # ── init: operates on the caller's working tree ──────────────────────────────
 if [ "$verb" = "init" ]; then
   ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)"
-  python3 -c "$SF_PY" init "$ROOT" "$STATUS_FILE" "$FRAG_DIR" "$ARCHIVE_DIR" \
-    "$LOG_HEADING" "$RESUME_HEADING" "$LOG_DAYS" "$LOG_MAX" "$TODAY" "" "" "" </dev/null
+  python3 -I -c "$SF_PY" init "$ROOT" "$STATUS_FILE" "$FRAG_DIR" "$ARCHIVE_DIR" \
+    "$LOG_HEADING" "$RESUME_HEADING" "$LOG_DAYS" "$LOG_MAX" "$TODAY" "" "" "" "" </dev/null
   exit $?
 fi
 
@@ -539,6 +593,14 @@ if [ -z "$BASE_BRANCH" ]; then
   BASE_BRANCH="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|.*/||')"
 fi
 [ -z "$BASE_BRANCH" ] && BASE_BRANCH="main"
+# Conservative ref-name set: starts with an alphanumeric (never an option),
+# then letters, digits and . _ / - only; no `..`, `//`, trailing `/` or `.lock`.
+case "$BASE_BRANCH" in
+  [!A-Za-z0-9]*|*[!A-Za-z0-9._/-]*|*..*|*//*|*/|*.lock)
+    _sf_err "base branch is not an accepted branch name: $BASE_BRANCH"
+    exit 1
+    ;;
+esac
 if ! git check-ref-format "refs/heads/$BASE_BRANCH" 2>/dev/null; then
   _sf_err "base branch is not a valid branch name: $BASE_BRANCH"
   exit 1
@@ -558,7 +620,7 @@ _sf_list_fragments() {
   [ "$(git cat-file -t "$tree" 2>/dev/null)" = "tree" ] || return 1
   out="$(git ls-tree "$tree")" || return 1
   printf '%s\n' "$out" | awk -F'\t' \
-    '$1 ~ /^100(644|755) blob / && $2 ~ /^[0-9]+-[0-9]+\.md$/ { split($1, a, " "); print a[3] " " $2 }'
+    '$1 ~ /^100(644|755) blob / && $2 ~ /^[0-9]+-[0-9]+\.md$/ && length($2) <= 22 { split($1, a, " "); print a[3] " " $2 }'
 }
 
 # ── Disposable worktree (same shape as pipeline-changelog.sh): outside any
@@ -575,13 +637,17 @@ _sf_drop_wt() {
   return 0
 }
 _sf_cleanup() {
+  # A second signal must not abort the cleanup half-way and leak the checkout.
+  trap '' INT TERM HUP QUIT
   _sf_drop_wt
   [ -n "$_SF_TMP" ] && rm -rf "$_SF_TMP" 2>/dev/null
   _SF_TMP=""
   return 0
 }
 _talos_on_exit '_sf_cleanup'
+trap 'exit 129' HUP
 trap 'exit 130' INT
+trap 'exit 131' QUIT
 trap 'exit 143' TERM
 
 _SF_TMP="$(mktemp -d "${TMPDIR:-/tmp}/talos-status.XXXXXX" 2>/dev/null)"
@@ -594,7 +660,7 @@ TITLE_TRIED=""
 MAX_ATTEMPTS=3
 attempt=1
 while :; do
-  if ! git fetch -q origin "$BASE_BRANCH" 2>/dev/null; then
+  if ! git fetch -q -- origin "$BASE_BRANCH" 2>/dev/null; then
     _sf_err "git fetch origin $BASE_BRANCH failed"
     exit 1
   fi
@@ -626,26 +692,50 @@ while :; do
     exit 1
   fi
 
-  printf '%s\n' "$FRAG_LIST" | python3 -c "$SF_PY" assemble "$_SF_TMP/wt" \
+  _SF_MANIFEST="$_SF_TMP/manifest"
+  rm -f "$_SF_MANIFEST"
+  printf '%s\n' "$FRAG_LIST" | python3 -I -c "$SF_PY" assemble "$_SF_TMP/wt" \
     "$STATUS_FILE" "$FRAG_DIR" "$ARCHIVE_DIR" "$LOG_HEADING" "$RESUME_HEADING" \
-    "$LOG_DAYS" "$LOG_MAX" "$TODAY" "$PR" "$ISSUE" "$_SF_TMP/title.json"
+    "$LOG_DAYS" "$LOG_MAX" "$TODAY" "$PR" "$ISSUE" "$_SF_TMP/title.json" "$_SF_MANIFEST"
   _SF_RC=$?
   if [ "$_SF_RC" -ne 0 ]; then
     _sf_err "assembly failed (rc=$_SF_RC) — fragments left in place"
     exit 1
   fi
 
-  # An unchanged tree is a no-op: this is what makes a repeated fallback quiet.
-  if [ -z "$(git -C "$_SF_TMP/wt" status --porcelain 2>/dev/null)" ]; then
+  # Nothing changed (no new entry, no rotation, no fragment): a no-op. This is
+  # what makes a repeated fallback quiet.
+  if [ ! -s "$_SF_MANIFEST" ]; then
     echo "pipeline-status-file: nothing to assemble"
     exit 0
   fi
 
-  # The worktree is a fresh checkout and python writes only the status file,
-  # the archive dir and deletions in the fragments dir, so `add -A` stages
-  # exactly those three paths (and does not fail on a dir that never existed).
-  if ! git -C "$_SF_TMP/wt" add -A; then
+  # Stage exactly what python wrote, nothing else (never `add -A`: a dirty
+  # fresh checkout must not be swept in, and a status path matching .gitignore
+  # must still land, hence -f). Paths follow `--` and are literal, not pathspecs.
+  _SF_ADDS=()
+  _SF_DELS=()
+  while IFS=$'\t' read -r _sf_k _sf_p; do
+    case "$_sf_k" in
+      A) _SF_ADDS+=("$_sf_p") ;;
+      D) _SF_DELS+=("$_sf_p") ;;
+    esac
+  done < "$_SF_MANIFEST"
+  if [ "${#_SF_ADDS[@]}" -gt 0 ] && \
+     ! git --literal-pathspecs -C "$_SF_TMP/wt" add -f -- "${_SF_ADDS[@]}"; then
     _sf_err "git add failed"
+    exit 1
+  fi
+  if [ "${#_SF_DELS[@]}" -gt 0 ] && \
+     ! git --literal-pathspecs -C "$_SF_TMP/wt" rm -q -f -- "${_SF_DELS[@]}"; then
+    _sf_err "git rm failed"
+    exit 1
+  fi
+  # The staged name list must be exactly the manifest; anything else aborts.
+  if ! git --literal-pathspecs -C "$_SF_TMP/wt" diff --cached --name-status -z --no-renames \
+      | python3 -I -c "$SF_PY" verify "$_SF_TMP/wt" "$STATUS_FILE" "$FRAG_DIR" "$ARCHIVE_DIR" \
+          "$LOG_HEADING" "$RESUME_HEADING" "$LOG_DAYS" "$LOG_MAX" "$TODAY" "" "" "" "$_SF_MANIFEST"; then
+    _sf_err "staged changes differ from what assemble wrote — nothing committed or pushed"
     exit 1
   fi
   if ! git -C "$_SF_TMP/wt" -c user.email=talos@local -c user.name=talos-status \

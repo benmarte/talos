@@ -33,6 +33,10 @@ WORK="$PARENT/work"
 OUTSIDE="$PARENT/outside"
 mkdir -p "$OUTSIDE"
 trap 'rm -rf "$SANDBOX" "$PARENT"' EXIT
+# Hermetic temp dir: every mktemp the script makes lands here, so the leak
+# assertion at the end counts only this run's talos-status.* directories.
+mkdir -p "$PARENT/tmp"
+export TMPDIR="$PARENT/tmp"
 
 echo "seed" > README.md
 printf 'talos.pipeline.json\n' >> .git/info/exclude
@@ -90,7 +94,18 @@ archive_entries() {  # total entries under status/archive on origin/main
   echo "$n"
 }
 run_sf() { bash "$SF" "$@" 2>&1; }
+# Like run_sf, but INT and QUIT are reset to their defaults first: a test run in
+# the background (run-tests.sh runs files in parallel) inherits them as ignored,
+# and a signal that is ignored on entry cannot be trapped. exec keeps the
+# command line `bash <script> <args>`.
+run_sf_dfl() {
+  python3 -I -c 'import os, signal, sys
+for s in (signal.SIGINT, signal.SIGQUIT, signal.SIGHUP, signal.SIGTERM):
+    signal.signal(s, signal.SIG_DFL)
+os.execvp(sys.argv[1], sys.argv[1:])' bash "$SF" "$@" 2>&1
+}
 wt_count() { git worktree list | wc -l | tr -d ' '; }
+status_tmp_dirs() { ls -d "$PARENT"/tmp/talos-status.* 2>/dev/null | wc -l | tr -d ' '; }
 
 # ── line 2 header ────────────────────────────────────────────────────────────
 line2="$(sed -n 2p "$SF")"
@@ -160,7 +175,7 @@ wk_add docs/status.d/12-40.md "x" 2026-09-10; wk_push; ofetch
 before="$(osha)"
 git status --porcelain > "$PARENT/porcelain.before"
 for key in file fragments_dir archive_dir; do
-  for bad in '/etc/x' '../x' 'a/../b' '..' '-rf' ''; do
+  for bad in '/etc/x' '../x' 'a/../b' '..' '-rf' './-rf' 'a/./-x/..' ':(top)x' ''; do
     cfg_status "\"$key\": \"$bad\""
     for verb in init assemble; do
       out="$(run_sf $verb)"; rc=$?
@@ -544,6 +559,140 @@ assert_eq "$(cat "$PARENT/porcelain.before")" "$(cat "$PARENT/porcelain.after")"
 assert_eq "$wt_before" "$(wt_count)" "race always: no worktree left behind"
 assert_eq "" "$(git worktree list | grep talos-status)" "race always: no talos-status worktree registered"
 
+# ── F1: the status commit stages only what assemble wrote ───────────────────
+changed_files() { git diff --name-only origin/main~1 origin/main | LC_ALL=C sort | tr '\n' ' '; }
+
+# (a) a fresh checkout that is already dirty (line-ending drift) is not swept in
+reset_fixture
+cfg_status
+printf 'a\r\nb\r\n' > "$WORK/x.dat"
+git -C "$WORK" add x.dat
+git -C "$WORK" commit -q -m "crlf blob"
+printf '*.dat text eol=lf\n' > "$WORK/.gitattributes"
+git -C "$WORK" add .gitattributes
+git -C "$WORK" commit -q -m "attributes"
+wk_add docs/status.d/80-500.md "dirty tree" 2026-09-10
+wk_push
+git clone -q -b main "$UPSTREAM" "$PARENT/probe"
+assert_contains "$(git -C "$PARENT/probe" status --porcelain)" "x.dat" "stage (a): precondition, a fresh checkout of the base is dirty"
+rm -rf "$PARENT/probe"
+out="$(run_sf assemble)"; rc=$?
+assert_eq "0" "$rc" "stage (a): exits 0"
+ofetch
+assert_eq "TALOS_STATUS.md docs/status.d/80-500.md " "$(changed_files)" "stage (a): the commit holds only the status file and the fragment deletion"
+assert_eq "$(printf 'a\r\nb\r\n' | cksum)" "$(git show origin/main:x.dat | cksum)" "stage (a): the unrelated dirty file is untouched on the base"
+
+# (b) status.file is a symlink to another tracked file: refused, nothing written
+reset_fixture
+cfg_status
+mkdir -p "$WORK/scripts"
+printf '#!/bin/sh\necho deploy\n' > "$WORK/scripts/deploy.sh"
+git -C "$WORK" add scripts/deploy.sh
+git -C "$WORK" commit -q -m "deploy script"
+ln -s scripts/deploy.sh "$WORK/TALOS_STATUS.md"
+git -C "$WORK" add TALOS_STATUS.md
+git -C "$WORK" commit -q -m "status file is a symlink"
+wk_add docs/status.d/81-501.md "must not land in deploy.sh" 2026-09-10
+wk_push; ofetch
+before="$(osha)"
+out="$(run_sf assemble)"; rc=$?
+assert_eq "1" "$rc" "stage (b): a symlinked status.file exits 1"
+assert_contains "$out" "status.file" "stage (b): names the key"
+ofetch
+assert_eq "$before" "$(osha)" "stage (b): nothing pushed"
+assert_not_contains "$(oshow scripts/deploy.sh)" "PR #" "stage (b): the symlink target is untouched"
+assert_contains "$(git ls-tree --name-only origin/main docs/status.d/)" "81-501.md" "stage (b): the fragment remains"
+
+# (b2) a symlinked directory component of status.file or status.archive_dir
+reset_fixture
+mkdir -p "$WORK/real"
+echo keep > "$WORK/real/keep"
+ln -s real "$WORK/link"
+git -C "$WORK" add real link
+git -C "$WORK" commit -q -m "a directory symlink inside the repo"
+wk_add docs/status.d/82-502.md "x" 2026-09-10
+wk_push; ofetch
+before="$(osha)"
+cfg_status '"file": "link/S.md"'
+out="$(run_sf assemble)"; rc=$?
+assert_eq "1" "$rc" "stage (b2): status.file under a symlinked directory exits 1"
+assert_contains "$out" "status.file" "stage (b2): names status.file"
+cfg_status '"archive_dir": "link/arch"'
+out="$(run_sf assemble)"; rc=$?
+assert_eq "1" "$rc" "stage (b2): status.archive_dir under a symlinked directory exits 1"
+assert_contains "$out" "status.archive_dir" "stage (b2): names status.archive_dir"
+cfg_status '"fragments_dir": "link/frags"'
+out="$(run_sf assemble --pr 9 --issue 9)"; rc=$?
+assert_eq "1" "$rc" "stage (b2): status.fragments_dir under a symlinked directory exits 1"
+assert_contains "$out" "status.fragments_dir" "stage (b2): names status.fragments_dir"
+ofetch
+assert_eq "$before" "$(osha)" "stage (b2): nothing pushed"
+assert_eq "0" "$(git ls-tree -r --name-only origin/main real | grep -c 'S.md\|arch')" "stage (b2): nothing written through the symlink"
+
+# (c) a new status file and a new archive path that match .gitignore still land
+reset_fixture
+printf 'TALOS_STATUS.md\nstatus/\n' > "$WORK/.gitignore"
+git -C "$WORK" add .gitignore
+git -C "$WORK" commit -q -m "ignore the status paths"
+cfg_status '"log_max": 1'
+wk_add docs/status.d/83-503.md "older" 2026-09-10
+wk_add docs/status.d/84-504.md "newer" 2026-09-11
+wk_push; ofetch
+out="$(run_sf assemble)"; rc=$?
+assert_eq "0" "$rc" "stage (c): exits 0"
+ofetch
+assert_contains "$(oshow TALOS_STATUS.md)" "PR #504 " "stage (c): the ignored new status file was committed with its entry"
+assert_contains "$(oshow status/archive/2026-09.md)" "PR #503 " "stage (c): the ignored new archive file was committed"
+assert_eq "" "$(git ls-tree --name-only origin/main docs/status.d/)" "stage (c): fragments deleted in the same commit"
+
+# ── F2: a base branch that looks like an option is refused ──────────────────
+reset_fixture
+wk_add docs/status.d/85-505.md "x" 2026-09-10
+wk_push; ofetch
+before="$(osha)"
+for bb in "--upload-pack=touch $PARENT/pwned" "-x" "a b" "x..y" "x;y" "x/"; do
+  printf '{"vcs": {"provider": "github", "repo": "acme/widget"}, "base_branch": "%s", "status": {"enabled": true}}\n' "$bb" > talos.pipeline.json
+  out="$(run_sf assemble)"; rc=$?
+  assert_eq "1" "$rc" "base branch '$bb': exits 1"
+  assert_contains "$out" "base branch" "base branch '$bb': says why"
+done
+assert_file_absent "$PARENT/pwned" "base branch: --upload-pack was never run"
+ofetch
+assert_eq "$before" "$(osha)" "base branch: nothing pushed"
+
+# ── F3: python runs isolated, a module in the cwd is never imported ─────────
+reset_fixture
+cfg_status
+printf 'open("%s", "w").write("pwned")\n' "$PARENT/pwned-py" > unicodedata.py
+out="$(run_sf init)"; rc=$?
+assert_eq "0" "$rc" "isolated: init exits 0 with a hostile module in the cwd"
+wk_add docs/status.d/86-506.md "x" 2026-09-10; wk_push
+out="$(run_sf assemble --pr 87 --issue 7)"; rc=$?
+assert_eq "0" "$rc" "isolated: assemble exits 0 with a hostile module in the cwd"
+assert_file_absent "$PARENT/pwned-py" "isolated: the cwd module was never imported by this script's python"
+rm -f unicodedata.py TALOS_STATUS.md
+rm -rf __pycache__
+
+# ── hand-edited log: odd digits, a huge number, a heading with trailing blanks
+reset_fixture
+cfg_status
+printf '# Mine\n\n## Resume here\n\nr\n\n## Log   \n\nhand note\n- 2026-09-01 PR #\xd9\xa4\xd9\xa1 (#1): arabic-indic digits\n- 2026-09-02 PR #99999999999999999999999 (#1): huge number\n- 2026-09-03 PR #7 (#1): fine entry\n' > "$WORK/TALOS_STATUS.md"
+git -C "$WORK" add TALOS_STATUS.md
+GIT_AUTHOR_DATE="2026-09-03T12:00:00" GIT_COMMITTER_DATE="2026-09-03T12:00:00" git -C "$WORK" commit -q -m "hand-edited status file"
+wk_add docs/status.d/88-508.md "new entry" 2026-09-10
+wk_add docs/status.d/99999999999999999999-509.md "a fragment name with a huge issue number" 2026-09-10
+wk_push; ofetch
+out="$(run_sf assemble)"; rc=$?
+assert_eq "0" "$rc" "hand-edited: exits 0, no crash"
+ofetch
+st="$(oshow TALOS_STATUS.md)"
+assert_contains "$st" "hand note" "hand-edited: the hand-written line is preserved"
+assert_contains "$st" "arabic-indic digits" "hand-edited: the non-ASCII-digit line is preserved, not parsed as an entry"
+assert_contains "$st" "huge number" "hand-edited: the huge-number line is preserved"
+assert_contains "$st" "- 2026-09-10 PR #508 (#88): new entry" "hand-edited: the new entry landed"
+assert_eq "1" "$(printf '%s\n' "$st" | grep -c 'PR #7 ')" "hand-edited: the valid entry is keyed once"
+assert_eq "1" "$(printf '%s\n' "$st" | grep -c '^## Log')" "hand-edited: the log heading was matched despite trailing blanks"
+
 # ── SIGTERM mid-run: the trap removes the worktree and the script exits ────
 # A PATH shim named git sends TERM to the status script when the push starts
 # (the push runs inside a command substitution, so the script is the
@@ -563,18 +712,28 @@ mkdir -p "$SHIM"
 cat > "$SHIM/git" <<EOF
 #!/bin/sh
 if [ "\$1" = "-C" ] && [ "\$3" = "push" ]; then
-  target="\$(ps -o ppid= -p \$PPID | tr -d ' ')"
+  # Walk up from the shim to the OUTERMOST process running the status script
+  # (a command-substitution subshell shows the same command line, and how many
+  # of them sit in between depends on the bash version).
+  p="\$PPID"
+  target=""
+  n=0
+  while [ \$n -lt 8 ] && [ -n "\$p" ] && [ "\$p" != 1 ]; do
+    # Match the exact command line run_sf produces: a looser pattern could hit a
+    # parent shell that merely mentions the script, and send it the signal.
+    case "\$(ps -o command= -p "\$p")" in "bash $SF assemble") target="\$p" ;; esac
+    p="\$(ps -o ppid= -p "\$p" | tr -d ' ')"
+    n=\$((n + 1))
+  done
   ps -o command= -p "\$target" > "$SIGLOG.target"
   "$REAL_GIT" worktree list > "$SIGLOG.worktrees"
-  kill -TERM "\$target"
-  echo sent > "$SIGLOG"
+  [ -n "\$target" ] && kill -TERM "\$target" && echo sent > "$SIGLOG"
 fi
 exec "$REAL_GIT" "\$@"
 EOF
 chmod +x "$SHIM/git"
 wt_before="$(wt_count)"
-mkdir -p "$PARENT/tmp"
-out="$(TMPDIR="$PARENT/tmp" PATH="$SHIM:$PATH" run_sf assemble)"; rc=$?
+out="$(PATH="$SHIM:$PATH" run_sf_dfl assemble)"; rc=$?
 assert_eq "sent" "$(cat "$SIGLOG")" "signal: the shim sent SIGTERM"
 assert_contains "$(cat "$SIGLOG.target")" "pipeline-status-file.sh" "signal: the target was the status script"
 assert_eq "$((wt_before + 1))" "$(wc -l < "$SIGLOG.worktrees" | tr -d ' ')" "signal: the temp worktree existed when the signal was sent"
@@ -582,7 +741,27 @@ assert_contains "$(cat "$SIGLOG.worktrees")" "/tmp/talos-status." "signal: that 
 assert_eq "143" "$rc" "signal: SIGTERM exits 143"
 assert_eq "$wt_before" "$(wt_count)" "signal: git worktree list shows only the caller's worktree afterwards"
 assert_eq "" "$(git worktree list | grep talos-status)" "signal: no talos-status worktree registered afterwards"
-assert_eq "" "$(ls "$PARENT/tmp")" "signal: the temp dir is removed"
+assert_eq "0" "$(status_tmp_dirs)" "signal: the temp dir is removed"
+
+# SIGHUP, SIGINT and SIGQUIT take the same cleanup path.
+for sig in HUP INT QUIT; do
+  # (the TERM run above let the push through, so each signal gets a new fragment)
+  reset_fixture
+  wk_add docs/status.d/73-403.md "interrupted again" 2026-09-10
+  wk_push; ofetch
+  : > "$SIGLOG"
+  sed -i.bak "s/kill -TERM/kill -$sig/" "$SHIM/git" && rm -f "$SHIM/git.bak"
+  case "$sig" in HUP) want=129 ;; INT) want=130 ;; QUIT) want=131 ;; esac
+  out="$(PATH="$SHIM:$PATH" run_sf_dfl assemble)"; rc=$?
+  assert_eq "sent" "$(cat "$SIGLOG")" "signal: the shim sent SIG$sig"
+  assert_eq "$want" "$rc" "signal: SIG$sig exits $want"
+  assert_eq "$wt_before" "$(wt_count)" "signal: SIG$sig leaves only the caller's worktree"
+  assert_eq "0" "$(status_tmp_dirs)" "signal: SIG$sig removes the temp dir"
+  sed -i.bak "s/kill -$sig/kill -TERM/" "$SHIM/git" && rm -f "$SHIM/git.bak"
+done
+
+# ── no leak across the whole file ───────────────────────────────────────────
+assert_eq "0" "$(status_tmp_dirs)" "leak: no talos-status.* directory left in the test's TMPDIR after the whole file"
 
 rm -f talos.pipeline.json
 finish
