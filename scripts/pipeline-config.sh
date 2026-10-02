@@ -12,6 +12,14 @@
 #   3. Legacy names: ./.claude-pipeline.yaml, ./pipeline.yaml (+ .json variants)
 #   4. No config found — returns the default (or empty string)
 #
+# User-level layer (#336): ${TALOS_HOME:-$HOME/.talos}/talos.pipeline.{yml,yaml,
+# json} is loaded under whichever project config was found (or alone when there
+# is none); the project config is merged over it key by key. Only its agents.*
+# subtree is read -- see the shared loader below.
+#
+#   --dump          every resolved key as NUL-delimited pairs (one python3 spawn)
+#   --dump-layers   "agents.* key<TAB>project|global" lines (--resolve-all origin)
+#
 # YAML parsing:
 #   Uses PyYAML (python3 -c "import yaml") if importable.
 #   Falls back to JSON parsing for .json config files (rename yours to

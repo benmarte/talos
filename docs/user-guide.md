@@ -1557,8 +1557,11 @@ skills:                                 # preloads full skill content at startup
   their instructions reference the built-in `verify`/`code-review`/
   `security-review` skills.
 
-Other useful frontmatter fields: `model` (per-role model override),
-`disallowedTools`, `maxTurns`, `memory`. See the
+Other useful frontmatter fields: `disallowedTools`, `maxTurns`, `memory`.
+Do not add `model:` to a role file: Talos agents ship without it so the Talos
+config (see [Per-role model selection](#per-role-model-selection-agentsrolesrolemodel))
+is the only place a model is set, and `pipeline-agent.sh --resolve-all` warns
+about a role file that still carries one. See the
 [Claude Code sub-agents docs](https://code.claude.com/docs/en/sub-agents) for
 the full list.
 
@@ -1587,8 +1590,76 @@ high-volume, machine-verifiable work (implementation, docs) while routing
 judgement-heavy roles (reviewer, security) to a higher-quality model.
 
 **Default.** Each role inherits `agents.model`. If `agents.model` is also
-absent, the Agent SDK inherits the session default. You only need to set
+absent, the subagent inherits the session model. You only need to set
 `agents.roles` for roles where you want to deviate from the global default.
+
+**Set it once for every repo (user-level config).** The Talos config is the
+only place a role's model is set (the shipped agent files carry no `model:`
+line). Besides the repo's own `talos.pipeline.*`, Talos reads a user-level file,
+`${TALOS_HOME:-$HOME/.talos}/talos.pipeline.{yml,yaml,json}`, and merges the
+repo config over it key by key, so the repo wins wherever both set the same key.
+
+- Only the `agents.*` subtree is read from the user-level file. Any other key
+  there (board, merge, issues, verify, ...) is ignored with one warning naming
+  it, because those settings describe a repo, not a user.
+- A missing, unreadable, empty, malformed or non-mapping user-level file
+  behaves as absent; malformed content prints one warning and never changes a
+  lookup's exit status. The file is parsed as data only, never executed.
+- The layer sits under whichever project config is found, including one named
+  by `$PIPELINE_CONFIG`.
+- Every chain (`restamp_model`, `effort`, `restamp_effort`, per-role `runner`)
+  is evaluated on the merged config, so a user-level `agents.model` is also the
+  bottom of a repo's re-stamp chain.
+
+```yaml
+# ~/.talos/talos.pipeline.yml  (every repo)
+agents:
+  model: sonnet
+  roles:
+    security: {model: opus}
+```
+
+```yaml
+# <repo>/talos.pipeline.yml  (this repo only: qa on haiku, the rest follow the user-level file)
+agents:
+  roles:
+    qa: {model: haiku}
+```
+
+`/pipeline-setup` asks once how you want models assigned (one model for every
+role, one per role, or leave unset) and writes the answer to the user-level
+file, showing a diff and asking for a yes before it changes an existing one.
+`install.sh --global` never touches that file; it prints one hint line when no
+user-level config sets a model.
+
+**See what every role runs on.**
+
+```
+$ bash scripts/pipeline-agent.sh --resolve-all
+role=validator model=sonnet restamp_model=sonnet origin=global
+...
+role=qa model=haiku restamp_model=sonnet origin=project
+role=security model=opus restamp_model=sonnet origin=global
+```
+
+One line per role: the model, the re-stamp model, and the layer that decided the
+model (`project`, `global` for the user-level file, or `session default` when
+nothing sets one). It also warns on stderr when `.claude/agents/<role>.md` or
+`~/.claude/agents/<role>.md` still carries a `model:` frontmatter line, since
+that line would apply whenever the config resolves empty. `--resolve <role>`
+keeps its one-line `runner=... model=... effort=...` output.
+
+**Model names.** A value is a full model ID or one of the aliases `opus`,
+`sonnet`, `haiku`, passed through as typed. When the harness's Agent tool
+accepts only aliases, the orchestrator maps a full ID to its family alias when
+it spawns; the config value is never rewritten.
+
+**Upgrading from 0.18.x.** Earlier versions shipped `model: opus` (and `haiku`
+for docs) in the agent frontmatter, so a repo with no `agents` block ran eight
+roles on Opus. That line is removed: if you never configured models, roles now
+run on the session model until you run `/pipeline-setup` or set
+`agents.model` / `agents.roles.<role>.model`. Re-run `install.sh --global` to
+refresh the copies under `~/.claude/agents/` and `~/.talos/agents/`.
 
 **Worked config example:**
 
