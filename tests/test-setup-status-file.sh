@@ -41,7 +41,7 @@ for k in file fragments_dir log_days log_max resume_max_lines; do
 done
 assert_contains "$T" '"status": { "enabled": true }' "a JSON config gets a status key when accepted"
 assert_contains "$T" 'omit the `status` key' "declined in JSON omits the status key (JSON has no comments)"
-assert_contains "$T" "written commented out" "declined in YAML writes the whole block commented out"
+assert_contains "$T" "the whole block commented out" "declined in YAML writes the whole block commented out"
 
 # ── The step that runs init, and what it tells the user ──────────────────────
 S="$(step '## Step 7b')"
@@ -103,7 +103,7 @@ assert_eq "$before" "$(cat TALOS_STATUS.md)" "a second run never overwrites an e
 # ── User guide, example config, changelog ────────────────────────────────────
 G="$(flat "$GUIDE")"
 assert_contains "$G" "### The status file and resume" "user guide has the status file section"
-for needle in "TALOS_STATUS.md" "docs/status.d/" "log_days" "log_max" "status/archive" "pipeline:needs-owner" "trusted author" "pipeline:blocked" "/talos:resume" "/talos-resume" "skills/resume/SKILL.md" "protected" "is data" "pipeline-setup"; do
+for needle in "TALOS_STATUS.md" "docs/status.d/" "log_days" "log_max" "status/archive" "pipeline:needs-owner" "trusted author" "pipeline:blocked" "/talos:resume" "/talos-resume" "skills/resume/SKILL.md" "protected" "data describing a run" "pipeline-setup"; do
   assert_contains "$G" "$needle" "user guide mentions: $needle"
 done
 assert_eq "1" "$(awk '/^## Running the pipeline/{r=1; next} /^## /{r=0} r&&/^### The status file and resume/{f=1} END{print f+0}' "$GUIDE")" "the status section is a ### under Running the pipeline"

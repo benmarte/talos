@@ -515,8 +515,9 @@ notifications:
 #   draft: false                     # default false
 
 # ── Built-in status file (#343, epic #333) ───────────────────────────────────
-# Known keys only so far: nothing reads status.* until the later sub-issues
-# land, and status.enabled defaults to false, so setting these changes nothing yet.
+# /pipeline reads these since #347, but only when status.enabled is true; it
+# defaults to false, so setting the other keys changes nothing until you opt in.
+# /pipeline-setup writes this block for you (#349).
 # status.fragments_dir must be a TRACKED directory (hence docs/status.d, not
 # .talos/status.d: .talos/ is gitignored or untracked in a consumer repo).
 # status:

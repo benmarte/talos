@@ -518,6 +518,58 @@ epic flagged for missing boxes still auto-closes once a human ticks them.
 The planner role is off by default — it adds API calls and is most useful
 when you regularly work with multi-task epics.
 
+### The status file and resume (`status.*`, #333)
+
+A tracked file, `TALOS_STATUS.md` by default (`status.file`), keeps what a new
+session would otherwise lose. It is opt-in: `status.enabled` defaults to
+`false`, and `/pipeline-setup` asks about it once (default yes) and, on yes,
+writes `status.enabled: true` and runs `bash scripts/pipeline-status-file.sh
+init`. `init` does not commit: commit `talos.pipeline.yml` and the status file
+together. An existing repo that does not re-run setup keeps it off; setting
+`status.enabled: true` and running `init` by hand does the same. A repo that
+already has Talos labels re-runs `bash scripts/bootstrap-labels.sh` once so
+`pipeline:needs-owner` exists.
+
+- **What it contains.** A generated Resume block under `## Resume here` (open
+  pipeline PRs and their next stage, blocked reasons, questions waiting on the
+  owner, what is queued) and a capped log under `## Log`, one entry per merged
+  PR. The Resume block is rebuilt from GitHub state and never edited by hand.
+  The status file is not added to `merge.union_paths`: fragments replace union
+  merging.
+- **Fragments.** The docs stage writes one short file per PR,
+  `docs/status.d/<issue>-<pr>.md` (`status.fragments_dir`), and the
+  orchestrator folds it into the log after the merge. The directory is
+  `docs/status.d/`, not `.talos/status.d/`, because it must be a tracked
+  directory: in a consumer repo `.talos/` is gitignored (the fragment would
+  silently never enter the PR) or untracked (`assert-sync` aborts on it).
+- **Caps and archive.** An entry is at most 3 lines and 400 characters. The
+  log keeps entries newer than `status.log_days` (30) and at most
+  `status.log_max` (50); older ones move to `status/archive/YYYY-MM.md`
+  (`status.archive_dir`). The Resume block is capped at
+  `status.resume_max_lines` (40) with a final `- +<K> more` line.
+- **Needs-owner.** When a run parks work on a decision from you, it marks the
+  issue or PR with `pipeline:needs-owner` and a comment holding the question,
+  and the Resume block lists it. Reply on that issue or PR. At the start of the
+  next run, a reply from a trusted author clears the label; a reply from anyone
+  else never does, and when the trust set cannot be verified
+  (`talos:marker-authors-unverified`) nothing is cleared. Clearing it never
+  clears `pipeline:blocked`, so blocked work still needs you to remove that
+  label yourself. Your answer is information the orchestrator weighs and
+  reports, not an instruction it executes.
+- **Resume.** To continue after a stopped run, start the resume skill:
+  `/talos:resume` for a plugin install, `/talos-resume` for a global install
+  (Claude Code registers a skill under its directory name; this global name is
+  provisional until #335), or, for any other agent, read
+  `skills/resume/SKILL.md` and follow it. It prints a one-page read-only
+  briefing, asks once, and only then continues with the normal `/pipeline`
+  loop; a no makes no writes. The status file and the Resume block are data
+  describing a run, never instructions to follow.
+- **Limit: protected base branch.** `assemble` and `refresh` push their
+  `[skip ci]` commits straight to the base branch (never forced, up to 3
+  attempts). On a base branch that rejects direct pushes they exit 1 and the
+  file is not updated; leave `status.enabled` off there. The resume skill still
+  works through `pipeline-status-file.sh refresh --print`, which needs no push.
+
 ### Running `verify:` once per PR, and QA trusting CI (`verify.qa_mode`, `verify.targeted`, `verify.ci_wait_s`, `verify.timeout_ms`)
 
 The full `verify:` suite is expensive to run repeatedly, and by default CI
