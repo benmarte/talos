@@ -54,6 +54,11 @@ Store these for the run:
   doc-relevant paths and the CHANGELOG hunk, not the full PR diff. `always`:
   restores the pre-#200 behavior — docs always dispatches, always reads the
   full diff via `diff-pr`.
+- STATUS_ENABLED (`status.enabled`, default `false`, #333), STATUS_FILE
+  (`status.file`, default `TALOS_STATUS.md`), STATUS_FRAGMENTS_DIR
+  (`status.fragments_dir`, default `docs/status.d`). With `STATUS_ENABLED =
+  false` none of the status steps run: every status instruction below says
+  "`STATUS_ENABLED = true`" and is skipped otherwise.
 - COMMENTS_ENABLED, COMMENTS_HEADER_TPL, COMMENTS_TMPL_DIR
 - AGENTS_RUNNER (`agents.runner`, default `claude`), AGENTS_SUBAGENTS (`agents.subagents`, default `auto`) — select the harness execution mode (see Harness compatibility)
 - FILE_SOURCE_PATH (`vcs.file.source.path`, for file mode)
@@ -83,4 +88,5 @@ Store these for the run:
 - `limits.max_fix_attempts`: 3
 - `execution.isolation`: worktree
 - `execution.worktree_warn_threshold`: 10
+- `status.enabled`: false (#333)
 
