@@ -176,6 +176,31 @@ if [ "$EVENT" = "--render" ]; then
   THREAD_KEY="$REF"
 fi
 
+# ── Cap the message BEFORE any exec (#342) ────────────────────────────────────
+# The message travels to python helpers in environment variables and to curl as
+# one -d argument, JSON-escaped (up to 6x for control characters). Linux caps a
+# single environment/argv string at 128 KiB (MAX_ARG_STRLEN) and fails the exec
+# with "Argument list too long"; macOS has no such cap, so a long message works
+# there and silently sends nothing on Linux. Every sink limits a message far
+# below this anyway (Slack ~40 KB, Discord 2 KB), so a message over
+# _NOTIFY_MSG_MAX bytes is cut to that many bytes, never inside a multi-byte
+# character, a marker is appended, and one stderr line says so. Shorter
+# messages are untouched.
+_NOTIFY_MSG_MAX=16384
+_msg_bytes="$(printf '%s' "$MSG" | wc -c | tr -d ' ')"
+if [ "${_msg_bytes:-0}" -gt "$_NOTIFY_MSG_MAX" ]; then
+  MSG="$(printf '%s' "$MSG" | python3 -c '
+import sys
+b = sys.stdin.buffer.read()
+n = int(sys.argv[1])
+while n > 0 and (b[n] & 0xC0) == 0x80:  # never split a UTF-8 character
+    n -= 1
+sys.stdout.buffer.write(b[:n] + ("\n[message truncated to %d bytes]" % n).encode())
+' "$_NOTIFY_MSG_MAX")"
+  echo "pipeline-notify: message was $_msg_bytes bytes; truncated to at most $_NOTIFY_MSG_MAX bytes" >&2
+fi
+unset _msg_bytes
+
 # ── Load repo .env if present ─────────────────────────────────────────────────
 # NOTE: REPO_ROOT keeps its current meaning (script-relative install dir)
 # because line 152 uses it for the bundled template fallback path.

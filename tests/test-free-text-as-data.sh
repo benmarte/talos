@@ -190,17 +190,64 @@ for verb in comment-issue approve-pr; do
   done
 done
 
-# ── A 200 KB message is delivered whole, with a quiet stderr ─────────────────
+# ── Long messages: no "Argument list too long", no silent drop (#342) ────────
+# Linux fails an exec when ONE environment/argv string exceeds 128 KiB; macOS
+# does not, so this only fails on Linux unless the script caps the message
+# before it reaches any python helper or curl. A message over 16384 bytes is
+# cut (never inside a character), marked, announced on stderr, and still sent.
 cat > talos.pipeline.json <<EOF
 {"notifications": {"cmd": "cat > $CMD_OUT", "cmd_timeout_s": 5}}
 EOF
+msg_len() { python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["message"].encode()))' "$CMD_OUT"; }
 python3 -c 'import sys; sys.stdout.write("see PR #12 " + "x" * 200000 + "\n")' > "$SANDBOX/big.txt"
 rm -f "$CMD_OUT"
 bash "$NOTIFY" qa "#42" - 42 < "$SANDBOX/big.txt" >/dev/null 2>"$SANDBOX/big.err"; rc=$?
 assert_eq "0" "$rc" "notify - with a 200 KB message: exits 0"
-assert_eq "" "$(cat "$SANDBOX/big.err")" "notify - with a 200 KB message: stderr is empty (no Broken pipe)"
-assert_eq "1" "$(python3 -c 'import json,sys; print(int(len(json.load(open(sys.argv[1]))["message"]) >= 200000))' "$CMD_OUT")" "notify - with a 200 KB message: delivered whole"
+assert_eq "pipeline-notify: message was 200011 bytes; truncated to at most 16384 bytes" "$(cat "$SANDBOX/big.err")" "notify - with a 200 KB message: stderr is exactly the one truncation line (no Broken pipe, no Argument list too long)"
+assert_file_exists "$CMD_OUT" "notify - with a 200 KB message: something WAS sent"
+assert_contains "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["message"])' "$CMD_OUT")" "[message truncated to 16384 bytes]" "notify - with a 200 KB message: the delivered message says it was truncated"
+[ "$(msg_len)" -le 17500 ] && [ "$(msg_len)" -ge 16384 ]; assert_eq "0" "$?" "notify - with a 200 KB message: the delivered message is cut to the cap ($(msg_len) bytes)"
+# The argv form is capped the same way (one place, before any exec).
+rm -f "$CMD_OUT"
+bash "$NOTIFY" qa "#42" "$(python3 -c 'print("y" * 100000)')" 42 >/dev/null 2>"$SANDBOX/big.err"
+assert_contains "$(cat "$SANDBOX/big.err")" "truncated to at most 16384 bytes" "notify with a 100 KB argv message: truncated and announced"
+assert_file_exists "$CMD_OUT" "notify with a 100 KB argv message: still sent"
+# Multi-byte text: the cut never splits a character, so the payload stays valid UTF-8.
+python3 -c 'import sys; sys.stdout.write("€" * 20000 + "\n")' > "$SANDBOX/euro.txt"
+rm -f "$CMD_OUT"
+bash "$NOTIFY" qa "#42" - 42 < "$SANDBOX/euro.txt" >/dev/null 2>"$SANDBOX/big.err"
+assert_eq "1" "$(python3 -c 'import json,sys; m=json.load(open(sys.argv[1]))["message"]; n=m.count("\u20ac"); print(int(0 < 16384 - n * 3 < 4 and "\u20ac\n[message truncated" in m))' "$CMD_OUT" 2>/dev/null)" "notify - multi-byte message: cut on a character boundary (whole characters only, within 3 bytes of the cap), valid UTF-8"
+# Under the cap: untouched, silent.
+python3 -c 'import sys; sys.stdout.write("z" * 10000 + "\n")' > "$SANDBOX/mid.txt"
+rm -f "$CMD_OUT"
+bash "$NOTIFY" qa "#42" - 42 < "$SANDBOX/mid.txt" >/dev/null 2>"$SANDBOX/big.err"
+assert_eq "" "$(cat "$SANDBOX/big.err")" "notify - a 10 KB message: stderr is empty"
+assert_contains "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["message"])' "$CMD_OUT")" "$(python3 -c 'print("z" * 10000)')" "notify - a 10 KB message: delivered whole"
 rm -f talos.pipeline.json
+
+# ── The vcs stdin verbs with a body above 128 KB, and just under the caps ────
+# GitHub's own comment limit is 65536 characters; Linux's per-argument limit is
+# 128 KiB. A 200 KB body is refused up front (exit 1, one line, nothing
+# posted, no exec of gh); 50000 three-byte characters are under GitHub's
+# character limit but over the byte cap, so they are refused on bytes; 60000
+# ASCII characters are delivered whole.
+python3 -c 'import sys; sys.stdout.write("w" * 200000 + "\n")' > "$SANDBOX/b200k.txt"
+python3 -c 'import sys; sys.stdout.write("€" * 50000 + "\n")' > "$SANDBOX/bcjk.txt"
+python3 -c 'import sys; sys.stdout.write("v" * 60000 + "\n")' > "$SANDBOX/b60k.txt"
+for verb in comment-issue comment-pr approve-pr close-issue; do
+  for size in b200k bcjk; do
+    rm -f "$GH_BODY_OUT"
+    PATH="$FAKE:$PATH" bash "$VCS" "$verb" 5 --body-file - < "$SANDBOX/$size.txt" >/dev/null 2>"$SANDBOX/big.err"; rc=$?
+    assert_eq "1" "$rc" "$verb --body-file - with $size: refused, exit 1"
+    assert_contains "$(cat "$SANDBOX/big.err")" "nothing posted" "$verb --body-file - with $size: the refusal says nothing was posted"
+    assert_not_contains "$(cat "$SANDBOX/big.err")" "Argument list too long" "$verb --body-file - with $size: no exec failure"
+    assert_file_absent "$GH_BODY_OUT" "$verb --body-file - with $size: the provider was never called"
+  done
+  rm -f "$GH_BODY_OUT"
+  PATH="$FAKE:$PATH" bash "$VCS" "$verb" 5 --body-file - < "$SANDBOX/b60k.txt" >/dev/null 2>"$SANDBOX/big.err"; rc=$?
+  assert_eq "0" "$rc" "$verb --body-file - with 60000 characters: exits 0"
+  assert_eq "$(python3 -c 'print("v" * 60000)')" "$(cat "$GH_BODY_OUT" 2>/dev/null)" "$verb --body-file - with 60000 characters: delivered whole"
+done
 
 # ══ Part 2: the recipes in the role profiles and the playbook ═════════════════
 # recipe.py <out.sh> <body-file> <md> <needle> [<needle> ...]

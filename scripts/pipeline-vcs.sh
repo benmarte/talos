@@ -6756,6 +6756,12 @@ _read_stdin_body() {
   _TALOS_STDIN_BODY="$(cat)"
 }
 _TALOS_COMMENT_MAX=65536   # GitHub rejects longer comment bodies; cap every provider
+# The body reaches `gh` / curl as ONE argument, and Linux caps a single argument
+# (or environment string) at 128 KiB = 131072 bytes (MAX_ARG_STRLEN), failing the
+# exec with "Argument list too long" where macOS has no such cap. 65536
+# characters can be 262144 bytes of UTF-8, so the body is also capped by bytes,
+# below that limit. Both caps are checked on stdin/file text, before any exec.
+_TALOS_BODY_MAX_BYTES=120000
 case "$VERB" in
   comment-issue|comment-pr)
     if [ "${#ARGS[@]}" -ge 3 ]; then
@@ -6825,7 +6831,7 @@ case "$VERB" in
     # scan (exit 3), and the scan is a single linear pass: no regex backtracks
     # across backticks, and inline code is found by walking backtick runs once.
     if [ "${#ARGS[@]}" -ge 2 ]; then
-      _ph_left="$(printf '%s' "${ARGS[1]}" | _TALOS_COMMENT_MAX="$_TALOS_COMMENT_MAX" python3 -c '
+      _ph_left="$(printf '%s' "${ARGS[1]}" | _TALOS_COMMENT_MAX="$_TALOS_COMMENT_MAX" _TALOS_BODY_MAX_BYTES="$_TALOS_BODY_MAX_BYTES" python3 -c '
 import glob, os, re, sys
 TOKEN = re.compile(r"\$(?:(\$)|\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
 FENCE = re.compile(r"\s{0,3}(`{3,}|~{3,})")
@@ -6854,9 +6860,12 @@ def strip_code(line):
             i += 1
     out.append(line[pos:])
     return "".join(out)
-body = sys.stdin.buffer.read().decode("utf-8", errors="replace")
+raw = sys.stdin.buffer.read()
+body = raw.decode("utf-8", errors="replace")
 if len(body) > int(os.environ["_TALOS_COMMENT_MAX"]):
     sys.exit(3)
+if len(raw) > int(os.environ["_TALOS_BODY_MAX_BYTES"]):
+    sys.exit(4)
 # Variables of the shipped templates/comments/*.md (#306 fallback).
 known = {"ATTENTION_REPORT", "BLOCKED_BY", "DETAILS", "HEADER", "PR", "SUMMARY", "VERDICT"}
 for d in sys.argv[1:]:
@@ -6886,6 +6895,9 @@ print(" ".join(sorted(names("\n".join(strip_code(l) for l in prose)) & known)))
       if [ "$_ph_rc" -eq 3 ]; then
         echo "pipeline-vcs: $VERB: body is longer than $_TALOS_COMMENT_MAX characters (GitHub's comment limit); nothing posted." >&2
         exit 1
+      elif [ "$_ph_rc" -eq 4 ]; then
+        echo "pipeline-vcs: $VERB: body is longer than $_TALOS_BODY_MAX_BYTES bytes (Linux caps one argument at 128 KiB); nothing posted." >&2
+        exit 1
       elif [ "$_ph_rc" -ne 0 ]; then
         echo "pipeline-vcs: $VERB: could not check the body for unsubstituted template placeholders; nothing posted." >&2
         exit 1
@@ -6908,12 +6920,32 @@ case "$VERB" in
       if [ "${ARGS[2]}" = "-" ]; then
         _read_stdin_body
         ARGS=("${ARGS[0]}" "$_TALOS_STDIN_BODY")
+      elif [ -r "${ARGS[2]}" ] && [ "$(wc -c < "${ARGS[2]}")" -gt $((4 * _TALOS_COMMENT_MAX)) ]; then
+        echo "pipeline-vcs: $VERB: body is longer than $_TALOS_COMMENT_MAX characters (GitHub's limit); nothing posted." >&2
+        exit 1
       elif [ -r "${ARGS[2]}" ]; then
         ARGS=("${ARGS[0]}" "$(cat "${ARGS[2]}")")
       else
         echo "pipeline-vcs: $VERB --body-file: cannot read '${ARGS[2]}'" >&2
         exit 1
       fi
+      # Same two caps as comment-issue / comment-pr: characters (GitHub's own
+      # limit) and bytes (Linux's single-argument limit); text already in a
+      # variable goes to python on stdin, never through env or argv.
+      _ob_rc=0
+      printf '%s' "${ARGS[1]}" | python3 -c '
+import sys
+raw = sys.stdin.buffer.read()
+if len(raw.decode("utf-8", errors="replace")) > int(sys.argv[1]):
+    sys.exit(3)
+sys.exit(4 if len(raw) > int(sys.argv[2]) else 0)
+' "$_TALOS_COMMENT_MAX" "$_TALOS_BODY_MAX_BYTES" || _ob_rc=$?
+      case "$_ob_rc" in
+        0) ;;
+        3) echo "pipeline-vcs: $VERB: body is longer than $_TALOS_COMMENT_MAX characters (GitHub's limit); nothing posted." >&2; exit 1 ;;
+        4) echo "pipeline-vcs: $VERB: body is longer than $_TALOS_BODY_MAX_BYTES bytes (Linux caps one argument at 128 KiB); nothing posted." >&2; exit 1 ;;
+        *) echo "pipeline-vcs: $VERB: could not check the body size; nothing posted." >&2; exit 1 ;;
+      esac
     fi
     ;;
 esac
