@@ -49,25 +49,33 @@
     "restamp_model": "claude-sonnet-5",
     "roles": {
       "validator": {
-        "model": "claude-haiku-4-5-20251001"
+        "model": "claude-sonnet-5"
       },
       "pm": {
         "model": "claude-sonnet-5"
       },
+      "planner": {
+        "model": "claude-opus-5-5"
+      },
       "developer": {
-        "model": "claude-opus-5"
+        "model": "claude-sonnet-5"
       },
       "qa": {
         "model": "claude-sonnet-5"
       },
       "reviewer": {
-        "model": "claude-opus-5"
-      },
-      "security": {
         "model": "claude-sonnet-5"
       },
+      "security": {
+        "model": "claude-opus-5-5",
+        "restamp_model": "claude-opus-5-5"
+      },
+      "adversarial": {
+        "model": "claude-opus-5-5",
+        "restamp_model": "claude-opus-5-5"
+      },
       "docs": {
-        "model": "claude-haiku-4-5-20251001"
+        "model": "claude-sonnet-5"
       }
     }
   }
