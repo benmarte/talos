@@ -165,7 +165,7 @@ assert_eq "0" "$?" "Step 0: github-api/file with pr.draft true warns once and fa
 in_order "$DT" 'ready_for_review' 'if: github.event.pull_request.draft != true' 'QA waits for a run that never comes'
 assert_eq "0" "$?" "Step 0: names the CI-side pairing and the QA-waits-forever failure mode"
 
-in_order "$DT" 'Open the PR as a DRAFT: bash scripts/pipeline-vcs.sh create-pr <branch> "\$PR_TITLE" <body-file> --draft'
+in_order "$DT" 'Open the PR as a DRAFT: bash scripts/pipeline-vcs.sh create-pr <branch> "\$PR_TITLE" "\$BODY_FILE" --draft'
 assert_eq "0" "$?" "developer prompt: opens the PR with create-pr ... --draft"
 
 # ── (b) stage order ──────────────────────────────────────────────────────────

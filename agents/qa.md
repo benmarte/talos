@@ -83,10 +83,14 @@ Outcome:
 - Fail:
   1. `bash scripts/pipeline-vcs.sh label-pr <pr> --add pipeline:blocked --remove pipeline:review`
   2. `bash scripts/pipeline-vcs.sh label-issue <issue-n> --add pipeline:blocked`
-  3. Render and post qa-verdict.md on the PR: VERDICT="FAIL" SUMMARY="<failing
-     criterion>" DETAILS="<repro + suggested fix>" — `bash
-     scripts/pipeline-vcs.sh comment-pr <pr> "$COMMENT_BODY"`. If the post
-     fails, report it in your final message.
+  3. Render and post qa-verdict.md on the PR: VERDICT=FAIL, SUMMARY the
+     failing criterion, DETAILS the repro and suggested fix. Assign SUMMARY and
+     DETAILS as data with a heredoc, never inside double quotes
+     (`read -r -d '' VAR <<'TALOS_<rand>' || true` … `TALOS_<rand>`, `<rand>` being 12+ random characters you invent
+     fresh for each heredoc, never copied from an example: text that contains
+     the closing line would end the heredoc early and run what follows). Then
+     `bash scripts/pipeline-vcs.sh comment-pr <pr> "$COMMENT_BODY"`. If the
+     post fails, report it in your final message.
 
 **Approval marker (required on pass):**
 Use `post-approval` — it fetches the head SHA from the PR, constructs the wrapped marker, posts it, and applies the label in one operation (#146):

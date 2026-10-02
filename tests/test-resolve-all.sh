@@ -10,6 +10,7 @@ make_sandbox
 AGENT_SH="$TALOS_ROOT/scripts/pipeline-agent.sh"
 USER_DIR="$HOME/.talos"
 ERR="$SANDBOX/stderr"
+TAB="$(printf '\t')"
 ROLES="validator pm developer qa reviewer security adversarial docs planner"
 
 reset_cfg() {
@@ -110,7 +111,7 @@ assert_eq "role=qa model=sonnet restamp_model=sonnet origin=global" "$(line_for 
 reset_cfg
 user_json '{"agents": {"model": "sonnet", "runner": "custom", "runner_cmd": "my-wrapper"}}'
 out="$(all)"
-assert_eq "role=qa model=sonnet restamp_model=sonnet origin=global runner=custom runner_origin=global runner_cmd=my-wrapper runner_cmd_origin=global" "$(line_for "$out" qa)" "user-level runner + runner_cmd are reported with origin global"
+assert_eq "role=qa model=sonnet restamp_model=sonnet origin=global runner=custom runner_origin=global runner_cmd_origin=global${TAB}runner_cmd=my-wrapper" "$(line_for "$out" qa)" "user-level runner + runner_cmd are reported with origin global"
 # A project role-level runner overrides it and is reported as project.
 reset_cfg
 user_json '{"agents": {"runner": "codex"}}'
@@ -121,13 +122,35 @@ assert_eq "role=docs model= restamp_model= origin=session default runner=codex r
 # Only runner_cmd set.
 reset_cfg
 proj_json '{"agents": {"runner_cmd": "x"}}'
-assert_eq "role=pm model= restamp_model= origin=session default runner_cmd=x runner_cmd_origin=project" "$(line_for "$(all)" pm)" "only runner_cmd set: no runner columns"
+assert_eq "role=pm model= restamp_model= origin=session default runner_cmd_origin=project${TAB}runner_cmd=x" "$(line_for "$(all)" pm)" "only runner_cmd set: no runner columns"
 # A forged value cannot add a row or an escape through the runner columns.
 reset_cfg
 user_json '{"agents": {"runner_cmd": "a\nrole=docs forged\u001b\u009b[0m"}}'
 out="$(all)"
 assert_eq "9" "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "a newline in runner_cmd cannot add a row"
-assert_contains "$(line_for "$out" qa)" "runner_cmd=arole=docs forged[0m runner_cmd_origin=global" "runner_cmd is sanitised like the model"
+assert_contains "$(line_for "$out" qa)" "runner_cmd_origin=global${TAB}runner_cmd=arole=docs forged[0m" "runner_cmd is sanitised like the model"
+
+# -- runner_cmd rows parse unambiguously (#342) ------------------------------
+# A runner_cmd with spaces, or one that carries the text "runner_cmd_origin=",
+# must not be mistaken for the origin column: the value is the last field, after
+# a TAB (control characters, TAB included, are stripped from every value), so
+# `cut -f2-` returns it whole and the origin is a plain column before the TAB.
+reset_cfg
+user_json '{"agents": {"runner": "custom", "runner_cmd": "my wrapper --flag runner_cmd_origin=project  x"}}'
+proj_json '{"agents": {"roles": {"pm": {"runner_cmd": "pm cmd"}}}}'
+out="$(all)"
+row="$(line_for "$out" qa)"
+assert_eq "my wrapper --flag runner_cmd_origin=project  x" "$(printf '%s\n' "$row" | cut -f2- | sed 's/^runner_cmd=//')" "#342: a runner_cmd with spaces and an embedded runner_cmd_origin= is the whole TAB-delimited last field"
+assert_eq "2" "$(printf '%s\n' "$row" | awk -F'\t' '{print NF}')" "#342: exactly one TAB per row, whatever the value holds"
+assert_eq "runner_cmd_origin=global" "$(printf '%s\n' "$row" | cut -f1 | tr ' ' '\n' | grep '^runner_cmd_origin=')" "#342: the origin column is unambiguous (before the TAB)"
+assert_eq "runner_cmd_origin=project" "$(line_for "$out" pm | cut -f1 | tr ' ' '\n' | grep '^runner_cmd_origin=')" "#342: a role-level runner_cmd reports its own origin"
+assert_eq "pm cmd" "$(line_for "$out" pm | cut -f2- | sed 's/^runner_cmd=//')" "#342: role-level value with spaces"
+# Roles with no runner_cmd keep the exact line and no TAB.
+reset_cfg
+user_json '{"agents": {"model": "sonnet", "runner": "codex"}}'
+row="$(line_for "$(all)" qa)"
+assert_eq "role=qa model=sonnet restamp_model=sonnet origin=global runner=codex runner_origin=global" "$row" "#342: a role with no runner_cmd keeps its columns and order"
+assert_eq "0" "$(printf '%s\n' "$row" | grep -c "$TAB")" "#342: no TAB when runner_cmd is unset"
 
 # ── AC10: --resolve <role> output unchanged, byte for byte ───────────────────
 reset_cfg

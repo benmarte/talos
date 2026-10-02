@@ -216,6 +216,7 @@ fi
 # the re-stamp chain is role restamp -> agents.restamp_model -> agents.model.
 # A role with a runner / runner_cmd set (#340) gets runner=/runner_origin= and
 # runner_cmd=/runner_cmd_origin= appended; a role with neither has no new columns.
+# The runner_cmd value is the last field, after a TAB (#342).
 # Also warns on stderr when a role file Claude Code would load still carries
 # a frontmatter `model:` line: that line applies whenever the config resolves
 # empty, so it defeats "the config is the only place a model is set".
@@ -265,14 +266,23 @@ sys.stdout.buffer.write(re.sub(rb"[\x00-\x1f\x7f]|\xc2[\x80-\x9f]", b"", sys.std
       _rv="$(cfg agents.runner "")"
       [ -z "$_rv" ] || _extra="$_extra runner=$(_plain "$_rv") runner_origin=$(_layer_of agents.runner)"
     fi
+    # runner_cmd is free text (spaces, even the words "runner_cmd_origin="), so it
+    # goes LAST and after a TAB, which _plain strips from every value: its origin
+    # comes first as an ordinary column, and `cut -f2-` on the TAB yields the
+    # whole `runner_cmd=<value>` field no matter what the value holds (#342).
+    _cmd=""
     _rv="$(cfg "agents.roles.$_r.runner_cmd" "")"
     if [ -n "$_rv" ]; then
-      _extra="$_extra runner_cmd=$(_plain "$_rv") runner_cmd_origin=$(_layer_of "agents.roles.$_r.runner_cmd")"
+      _extra="$_extra runner_cmd_origin=$(_layer_of "agents.roles.$_r.runner_cmd")"
+      _cmd="$(printf '\trunner_cmd=%s' "$(_plain "$_rv")")"
     else
       _rv="$(cfg agents.runner_cmd "")"
-      [ -z "$_rv" ] || _extra="$_extra runner_cmd=$(_plain "$_rv") runner_cmd_origin=$(_layer_of agents.runner_cmd)"
+      if [ -n "$_rv" ]; then
+        _extra="$_extra runner_cmd_origin=$(_layer_of agents.runner_cmd)"
+        _cmd="$(printf '\trunner_cmd=%s' "$(_plain "$_rv")")"
+      fi
     fi
-    printf 'role=%s model=%s restamp_model=%s origin=%s%s\n' "$_r" "$_m" "$(_plain "$_rs")" "$_origin" "$_extra"
+    printf 'role=%s model=%s restamp_model=%s origin=%s%s%s\n' "$_r" "$_m" "$(_plain "$_rs")" "$_origin" "$_extra" "$_cmd"
     for _dir in "$PWD/.claude/agents" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/agents"; do
       _f="$_dir/$_r.md"
       [ -f "$_f" ] || continue

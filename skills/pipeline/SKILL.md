@@ -47,7 +47,7 @@ echo "talos: scripts=<resolved scripts dir>  agents=$agent_source"
 
 **Harness compatibility** — driven by config `agents.subagents` (`auto` | `true` | `false`) and `agents.runner` (`claude` | `pi` | `codex` | `gemini` | `antigravity` | `custom`). `auto` = `true` when the *global* runner is `claude`, otherwise `false`; if `agents.subagents` is unset, behave as `auto`.
 
-**Per-role runner override (#167):** the runner is resolved per role, not once for the whole pipeline. Before every spawn, on every harness path, resolve that role's effective runner: `agents.roles.<role>.runner` if set, else `agents.runner` (default `claude`) — run `bash scripts/pipeline-agent.sh --resolve <role>` for the one-line `runner=<r> runner_cmd=<c> model=<m> effort=<e>` answer instead of separate `pipeline-config.sh` lookups. On the native path (`subagents: true`), a role whose effective runner is `claude` spawns natively as below; a role whose effective runner is anything else spawns via `bash scripts/pipeline-agent.sh <role> - <<'PROMPT' ... PROMPT` instead, even while the rest of the pipeline stays native — this is a per-spawn decision, so two roles in the same run can take different paths. On that adapter path, `pipeline-agent.sh` exports the resolved effort as `TALOS_EFFORT` (empty when unset) alongside `TALOS_ROLE`, for a `runner_cmd` to map onto its own flag — no further orchestrator action needed for effort on this path.
+**Per-role runner override (#167):** the runner is resolved per role, not once for the whole pipeline. Before every spawn, on every harness path, resolve that role's effective runner: `agents.roles.<role>.runner` if set, else `agents.runner` (default `claude`) — run `bash scripts/pipeline-agent.sh --resolve <role>` for the one-line `runner=<r> runner_cmd=<c> model=<m> effort=<e>` answer instead of separate `pipeline-config.sh` lookups. On the native path (`subagents: true`), a role whose effective runner is `claude` spawns natively as below; a role whose effective runner is anything else spawns via `bash scripts/pipeline-agent.sh <role> - <<'TALOS_<rand>' ... TALOS_<rand>` instead, even while the rest of the pipeline stays native — this is a per-spawn decision, so two roles in the same run can take different paths. On that adapter path, `pipeline-agent.sh` exports the resolved effort as `TALOS_EFFORT` (empty when unset) alongside `TALOS_ROLE`, for a `runner_cmd` to map onto its own flag — no further orchestrator action needed for effort on this path.
 
 - **`subagents: true`** (native subagents, e.g. Claude Code) — spawn them as each stage instructs, after the per-role runner check above sends it here. **Per-role model selection (native path, `claude`-routed roles only):** The Talos config is the only place a role's model is set — the shipped `agents/*.md` files carry no `model:` line. `pipeline-config.sh` answers from the layered config: the repo's own config sits over the user-level file (`${TALOS_HOME:-$HOME/.talos}/talos.pipeline.*`, `agents.*` keys only), and where both set a key the project config wins. Before spawning each subagent, resolve its model in three steps:
   1. Read `agents.roles.<role>.model` via `bash scripts/pipeline-config.sh agents.roles.<role>.model` (substitute the actual role name, e.g. `agents.roles.developer.model`).
@@ -79,10 +79,12 @@ echo "talos: scripts=<resolved scripts dir>  agents=$agent_source"
 - **`subagents: false` + any other runner** (codex / gemini / antigravity / custom) — replace every "spawn a subagent with this prompt" step with:
 
   ```bash
-  bash scripts/pipeline-agent.sh <role> - <<'PROMPT'
+  bash scripts/pipeline-agent.sh <role> - <<'TALOS_<rand>'
   <the stage prompt, placeholders substituted>
-  PROMPT
+  TALOS_<rand>
   ```
+
+  The stage prompt carries issue-derived and subagent-authored text (the spec, the `Prior stage summary`), so the delimiter is `TALOS_<rand>` with `<rand>` 12+ random characters you invent fresh for each spawn, never one copied from an example: text that contains the closing line would end the heredoc early and run what follows.
 
   The adapter finds the role definition itself (plugin root, then `.claude/agents/`), combines it with the stage prompt, and runs it through the CLI configured for that role (`pipeline-agent.sh` does the same per-role resolution above internally, so you never need to pass an override in). Everything else in this playbook is identical. Note: without native subagents, developer stages run sequentially in the working tree — set `issues.max_parallel: 1`.
 
@@ -276,9 +278,21 @@ Example: `"**Agent:** {role} (talos)"` → `"**Agent:** validator (talos)"`
 # Template lookup: configured dir first, then the installed copy under .claude/talos/
 TMPL="<TMPL_DIR>/<template>.md"
 [ -f "$TMPL" ] || TMPL=".claude/talos/templates/comments/<template>.md"
+# Free text is assigned as data from a heredoc, never typed inside double quotes
+# (#342): "$(...)" or backticks in it would be run. <rand> is 12+ random
+# characters you invent fresh for EACH heredoc -- never one copied from an
+# example -- so the text cannot contain the closing line. BLOCKED_BY and
+# ATTENTION_REPORT are assigned the same way (read -r -d '' NAME ...).
+read -r -d '' SUMMARY <<'TALOS_<rand>' || true
+<one-line>
+TALOS_<rand>
+read -r -d '' DETAILS <<'TALOS_<rand>' || true
+<bullet list>
+TALOS_<rand>
+export SUMMARY DETAILS
 COMMENT_BODY="$(
   HEADER="<HEADER>" ISSUE="#<N>" PR="<PR_or_empty>" \
-  VERDICT="<VERDICT>" SUMMARY="<one-line>" DETAILS="<bullet list>" \
+  VERDICT="<VERDICT>" \
   python3 -c "
 import os, string, sys
 if not os.environ.get('HEADER'):
@@ -309,7 +323,7 @@ COMMENT_URL="$(bash scripts/pipeline-vcs.sh comment-pr <PR> "$COMMENT_BODY")" ||
 
 The findings comment carries: a verdict line + 2–5 detail bullets. It is non-optional when `comments.enabled = true`. Fall back to inline text only if the template file is missing.
 
-`HEADER` is required on every render (set it from the prompt's `Comment header:` line); with it empty the recipe exits 1 and posts nothing, so no comment goes out without its `**Agent:**` line. Every variable the template uses must be set — export `BLOCKED_BY` for blocked.md and `ATTENTION_REPORT` for review-signoff.md; an unset one drops the render to the inline fallback. As a backstop, `comment-issue` / `comment-pr` refuse (exit 1, nothing posted) any body still containing a `${NAME}` / `$NAME` placeholder whose NAME appears in the comment templates (#306).
+`HEADER` is required on every render (set it from the prompt's `Comment header:` line); with it empty the recipe exits 1 and posts nothing, so no comment goes out without its `**Agent:**` line. Every variable the template uses must be set — assign and `export` `BLOCKED_BY` for blocked.md and `ATTENTION_REPORT` for review-signoff.md the same way as `SUMMARY` / `DETAILS` (heredoc, never double quotes); an unset one drops the render to the inline fallback. As a backstop, `comment-issue` / `comment-pr` refuse (exit 1, nothing posted) any body still containing a `${NAME}` / `$NAME` placeholder whose NAME appears in the comment templates (#306).
 
 **Prior stage summary handoff (#201):** the developer (fix-round re-dispatch),
 QA, reviewer, and security prompt blocks each carry a
@@ -333,8 +347,12 @@ Three rules apply for every stage, in this order:
 **Rule 2 — Orchestrator relay (always):** After each subagent returns, the orchestrator immediately sends a role-event notification to the channel thread:
 
 ```bash
-bash scripts/pipeline-notify.sh <role> "#<N>" "<2-3 line findings summary>" <N>
+bash scripts/pipeline-notify.sh <role> "#<N>" - <N> <<'TALOS_<rand>'
+<2-3 line findings summary>
+TALOS_<rand>
 ```
+
+The summary is subagent-authored text, so it goes in as data and never inside double quotes on a command line, where `$(...)` or backticks in it would be run: `-` as the message argument makes the script read the message from stdin, here from a heredoc. `<rand>` is 12+ random characters you invent fresh for each relay, never one copied from an example and never reused: text that contains the closing line would end the heredoc early and run what follows. It stays ONE shell command per relay. Wherever this playbook writes a relay as `... - <N>` followed by `stdin:` and a message, run exactly this form with that message as the heredoc body; a message with no free text in it (fixed words, or only an issue/PR number) stays an ordinary quoted argument.
 
 The `<role>` argument is the exact role name (validator / pm / developer / qa / reviewer / security / docs / orchestrator). `pipeline-notify.sh` uses `templates/notifications/<role>.md` to render the message; if that template exists it controls the format, otherwise the summary is posted verbatim. This relay call is separate from lifecycle events (pr-opened, merged, blocked, issue-closed) — both are sent when applicable.
 
@@ -386,10 +404,10 @@ Returns JSON array `[{"id": "1", "title": "..."}, ...]`.
 **Per-item flow (simplified — no PRs):**
 
 1. Validator (if enabled): reads the item via `view-issue <id>`, decides if it's actionable. If CONFIRMED: comments on item, continues. If blocked: comments with reason, skips.
-2. PM (if enabled): reads item, posts spec as a comment via `comment-issue <id> "**PM spec:** ..."`.
-3. Developer: creates a branch, implements, runs verify commands, commits and pushes, comments the branch name on the item: `comment-issue <id> "Branch: fix/item-<id>-<slug>"`.
+2. PM (if enabled): reads item, posts spec as a comment via `comment-issue <id> --body-file -` (body on stdin from a heredoc, as in Rule 2: `**PM spec:** ...`).
+3. Developer: creates a branch, implements, runs verify commands, commits and pushes, comments the branch name on the item: `comment-issue <id> --body-file -` (stdin: `Branch: fix/item-<id>-<slug>`).
 4. QA/Reviewer/Security/Docs: **skipped in file mode** (no PR to review). If you need these, use a VCS provider instead.
-5. Close: `bash scripts/pipeline-vcs.sh close-issue <id> "implemented on branch <branch>"`.
+5. Close: `bash scripts/pipeline-vcs.sh close-issue <id> --body-file -` (stdin: `implemented on branch <branch>`).
 6. Notify: `bash scripts/pipeline-notify.sh issue-closed "#<id>" "item resolved" <id>`.
 
 Board calls (`pipeline-status.sh`) are **skipped in file mode**. The file's checkbox IS the state.
@@ -552,11 +570,11 @@ Your role profile carries the full procedure.
 After validator returns:
 - **CONFIRMED:**
   1. Board → "In progress": `bash scripts/pipeline-status.sh <N> "In progress"`
-  2. Relay findings: `bash scripts/pipeline-notify.sh validator "#<N>" "<subagent's 2-3 line findings summary>" <N>`
+  2. Relay findings: `bash scripts/pipeline-notify.sh validator "#<N>" - <N>` (stdin: `<subagent's 2-3 line findings summary>`)
 - **Blocked:**
   1. Board → "Blocked": `bash scripts/pipeline-status.sh <N> "Blocked"`
-  2. Relay findings: `bash scripts/pipeline-notify.sh validator "#<N>" "<outcome + what's missing>" <N>`
-  3. Lifecycle event: `bash scripts/pipeline-notify.sh blocked "#<N>" "Validator: <outcome>" <N>`
+  2. Relay findings: `bash scripts/pipeline-notify.sh validator "#<N>" - <N>` (stdin: `<outcome + what's missing>`)
+  3. Lifecycle event: `bash scripts/pipeline-notify.sh blocked "#<N>" - <N>` (stdin: `Validator: <outcome>`)
   4. Move to next issue.
 
 ### 3a-bis. Planner (if `roles.planner = true`)
@@ -605,11 +623,21 @@ After the planner returns (its output begins with `PLAN:`):
      Part of #<N>
      [Depends on: #<PREV-SUB-ISSUE-NUMBER>  ← only if planner listed a dependency]
      ```
-   - Write the body to a temp file with a single-quoted heredoc (planner output
-     quotes issue text: never put it inside double quotes on a command line):
-     `cat > /tmp/sub-issue-<i>.md <<'EOF'` … the body … `EOF`
-   - Assign the title the same way, then pass the variable:
-     `read -r SUB_TITLE <<'EOF'` … the sub-task title … `EOF`
+   - Write the body to a `mktemp` file and assign the title, both as data from
+     heredocs (planner output quotes issue text: never put it inside double
+     quotes on a command line; `<rand>` is 12+ random characters you invent
+     fresh for each heredoc, never one copied from an example). Run them in
+     the SAME command as the `create-issue` below, since shell variables do
+     not survive between tool calls:
+     ```bash
+     BODY_FILE="$(mktemp)"
+     cat > "$BODY_FILE" <<'TALOS_<rand>'
+     … the body …
+     TALOS_<rand>
+     read -r SUB_TITLE <<'TALOS_<rand>'
+     … the sub-task title …
+     TALOS_<rand>
+     ```
    - Every sub-issue also carries `--label epic:<N>` (the epic's own number) so a human
      can filter the board to the whole epic and review its sub-tasks as a group. (The
      `Part of #<N>` body line above is what the epic auto-close sweep keys on; the tag is
@@ -617,15 +645,15 @@ After the planner returns (its output begins with `PLAN:`):
    - **Independent sub-task** (no `Depends on:` in planner output) — label `pipeline:ready`
      so it enters the queue immediately:
      ```bash
-     bash scripts/pipeline-vcs.sh create-issue "$SUB_TITLE" /tmp/sub-issue-<i>.md \
-       --label pipeline:ready --label epic:<N>
+     bash scripts/pipeline-vcs.sh create-issue "$SUB_TITLE" "$BODY_FILE" \
+       --label pipeline:ready --label epic:<N> && rm -f "$BODY_FILE"
      ```
      If exit non-zero, report the failure, set `pipeline:blocked`, and do not record a sub-issue number.
    - **Dependent sub-task** (planner listed `Depends on: <j>`) — do NOT add `pipeline:ready`;
      it stays out of the queue until Step 1 unblocks it, but is still tagged to the epic:
      ```bash
-     bash scripts/pipeline-vcs.sh create-issue "$SUB_TITLE" /tmp/sub-issue-<i>.md \
-       --label epic:<N>
+     bash scripts/pipeline-vcs.sh create-issue "$SUB_TITLE" "$BODY_FILE" \
+       --label epic:<N> && rm -f "$BODY_FILE"
      ```
      If exit non-zero, report the failure, set `pipeline:blocked`, and do not record a sub-issue number.
      The body already carries the `Depends on: #<PREV>` line so Step 1 reconciliation can
@@ -692,7 +720,7 @@ your interpretation.
 Your role profile carries the full procedure.
 ```
 
-Relay: `bash scripts/pipeline-notify.sh pm "#<N>" "<goal line> — <K> acceptance criteria, branch <branch-name>" <N>`
+Relay: `bash scripts/pipeline-notify.sh pm "#<N>" - <N>` (stdin: `<goal line> — <K> acceptance criteria, branch <branch-name>`)
 
 The PM spec comment on the issue remains the handoff artifact; this relay is a
 pointer to it, not a summary of it. Keep the message to the goal line, the
@@ -718,8 +746,10 @@ issue body itself is the spec — substitute `<SPEC_SOURCE>` below with
 
 `<slug>` throughout this stage (branch `fix/issue-<N>-<slug>` / `feat/issue-<N>-<slug>`)
 is `bash scripts/pipeline-vcs.sh slug-for "$ISSUE_TITLE"` (assign `ISSUE_TITLE`
-with `read -r ISSUE_TITLE <<'EOF'` … the issue title … `EOF`, never inside double
-quotes: the title is reporter-controlled); prefix is `feat/` when the
+in the same command with `read -r ISSUE_TITLE <<'TALOS_<rand>'` … the issue
+title … `TALOS_<rand>`, `<rand>` being 12+ random characters you invent fresh for
+each heredoc, never one copied from an example; never inside double quotes: the
+title is reporter-controlled); prefix is `feat/` when the
 title starts with `feat`, else `fix/` (#199).
 
 Dispatch according to `ISOLATION`:
@@ -787,8 +817,8 @@ pass/fail assertion total — QA's run is the authoritative count.
 <!-- pr-draft:start -->
 **Draft PR (`PR_DRAFT = true`, #332):** add one line to the prompt above, right
 after `Verify timeout:`: `Open the PR as a DRAFT: bash scripts/pipeline-vcs.sh
-create-pr <branch> "$PR_TITLE" <body-file> --draft` (the developer assigns
-`PR_TITLE` from a single-quoted heredoc, role profile step 7). Every developer dispatch
+create-pr <branch> "$PR_TITLE" "$BODY_FILE" --draft` (the developer assigns
+`PR_TITLE` and `BODY_FILE` from heredocs, role profile step 7). Every developer dispatch
 (first pass and each fix round) gets it; a fix round pushes to the existing PR
 and opens nothing. Nothing else in the developer prompt changes.
 
@@ -796,8 +826,8 @@ and opens nothing. Nothing else in the developer prompt changes.
 After developer returns:
 - **PR opened:**
   1. Board → "In review": `bash scripts/pipeline-status.sh <N> "In review"`
-  2. Relay findings: `bash scripts/pipeline-notify.sh developer "#<N>" "<subagent's 2-3 line summary: what was implemented + PR URL>" <N>`
-  3. Lifecycle event: `bash scripts/pipeline-notify.sh pr-opened "#<N>" "PR <URL> opened" <N>`
+  2. Relay findings: `bash scripts/pipeline-notify.sh developer "#<N>" - <N>` (stdin: `<subagent's 2-3 line summary: what was implemented + PR URL>`)
+  3. Lifecycle event: `bash scripts/pipeline-notify.sh pr-opened "#<N>" - <N>` (stdin: `PR <URL> opened`)
   4. **Mergeability gate (#214), before dispatching QA (Step 3d):** `bash
      scripts/pipeline-vcs.sh pr-mergeable <PR>`.
      - Exit 0 (`MERGEABLE`) or exit 2 (`UNKNOWN`, still unresolved after
@@ -867,7 +897,7 @@ After developer returns:
   below.
 - **Blocked:**
   1. Board → "Blocked": `bash scripts/pipeline-status.sh <N> "Blocked"`
-  2. Relay findings: `bash scripts/pipeline-notify.sh developer "#<N>" "<what failed>" <N>`
+  2. Relay findings: `bash scripts/pipeline-notify.sh developer "#<N>" - <N>` (stdin: `<what failed>`)
   3. Lifecycle event: `bash scripts/pipeline-notify.sh blocked "#<N>" "developer blocked" <N>`
   4. Stop.
 
@@ -1024,7 +1054,7 @@ Final message (2-3 lines): PASS/FAIL + criteria outcome the orchestrator can rel
 
 After QA returns:
 - **Pass:**
-  1. Relay findings: `bash scripts/pipeline-notify.sh qa "#<N>" "<subagent's 2-3 line summary: criteria verified>" <N>`
+  1. Relay findings: `bash scripts/pipeline-notify.sh qa "#<N>" - <N>` (stdin: `<subagent's 2-3 line summary: criteria verified>`)
 <!-- pr-draft:start -->
   2. With `PR_DRAFT = true`, QA passing ends the QA stage and Step 3e is NOT
      entered again: its review stages already ran on the draft, before QA (Draft
@@ -1032,8 +1062,8 @@ After QA returns:
      `ci-complete` are still checked there.
 <!-- pr-draft:end -->
 - **Fail:**
-  1. Relay findings: `bash scripts/pipeline-notify.sh qa "#<N>" "<FAIL: failing criterion + repro>" <N>`
-  2. Lifecycle event: `bash scripts/pipeline-notify.sh blocked "#<N>" "QA failed: <criterion>" <N>`
+  1. Relay findings: `bash scripts/pipeline-notify.sh qa "#<N>" - <N>` (stdin: `<FAIL: failing criterion + repro>`)
+  2. Lifecycle event: `bash scripts/pipeline-notify.sh blocked "#<N>" - <N>` (stdin: `QA failed: <criterion>`)
   3. Record attempt and check ceilings (PR already exists, so pass --pr as in Step 3):
      ```bash
      bash scripts/pipeline-vcs.sh record-attempt <N> qa --pr <PR_NUMBER>
@@ -1258,22 +1288,22 @@ Final (2-3 lines): "docs posted: <files updated>" or "no docs changes required".
 After docs completes (phase 1):
 
 **Docs returned:**
-- Subagent dispatched: `bash scripts/pipeline-notify.sh docs "#<N>" "<subagent's 2-3 line outcome>" <N>`
+- Subagent dispatched: `bash scripts/pipeline-notify.sh docs "#<N>" - <N>` (stdin: `<subagent's 2-3 line outcome>`)
 - Gate auto-stamped (`docs_mode: auto`, no subagent dispatched): `bash scripts/pipeline-notify.sh docs "#<N>" "docs verified by developer diff (docs_mode: auto) — no subagent dispatched" <N>`
 
 After reviewer and security complete (phase 2):
 
 **Reviewer returned:**
-- Approved: `bash scripts/pipeline-notify.sh reviewer "#<N>" "<subagent's 2-3 line outcome, including the top 1-2 human-attention report items (#294)>" <N>`
-- Changes needed: `bash scripts/pipeline-notify.sh reviewer "#<N>" "CHANGES: <findings>" <N>` then `bash scripts/pipeline-notify.sh blocked "#<N>" "reviewer: changes required" <N>`; record attempt (PR already exists, so pass --pr as in Step 3):
+- Approved: `bash scripts/pipeline-notify.sh reviewer "#<N>" - <N>` (stdin: `<subagent's 2-3 line outcome, including the top 1-2 human-attention report items (#294)>`)
+- Changes needed: `bash scripts/pipeline-notify.sh reviewer "#<N>" - <N>` (stdin: `CHANGES: <findings>`) then `bash scripts/pipeline-notify.sh blocked "#<N>" "reviewer: changes required" <N>`; record attempt (PR already exists, so pass --pr as in Step 3):
   ```bash
   bash scripts/pipeline-vcs.sh record-attempt <N> reviewer --pr <PR_NUMBER>
   ```
   Exit 0 → clear `pipeline:blocked` (Step 3, "Clearing `pipeline:blocked`"), then re-dispatch developer. Exit non-zero → set `pipeline:blocked`, stop.
 
 **Security returned:**
-- Clear: `bash scripts/pipeline-notify.sh security "#<N>" "<subagent's 2-3 line outcome>" <N>`
-- Findings: `bash scripts/pipeline-notify.sh security "#<N>" "FINDINGS: <severity + fix>" <N>` then `bash scripts/pipeline-notify.sh blocked "#<N>" "security: findings in PR #<PR_NUMBER>" <N>`; record attempt (PR already exists, so pass --pr as in Step 3):
+- Clear: `bash scripts/pipeline-notify.sh security "#<N>" - <N>` (stdin: `<subagent's 2-3 line outcome>`)
+- Findings: `bash scripts/pipeline-notify.sh security "#<N>" - <N>` (stdin: `FINDINGS: <severity + fix>`) then `bash scripts/pipeline-notify.sh blocked "#<N>" "security: findings in PR #<PR_NUMBER>" <N>`; record attempt (PR already exists, so pass --pr as in Step 3):
   ```bash
   bash scripts/pipeline-vcs.sh record-attempt <N> security --pr <PR_NUMBER>
   ```
@@ -1315,8 +1345,8 @@ Final (2-3 lines): CLEAR/FINDINGS outcome + areas covered.
 After adversarial completes:
 
 **Adversarial returned:**
-- Clear: `bash scripts/pipeline-notify.sh adversarial "#<N>" "<subagent's 2-3 line outcome>" <N>`
-- Findings: `bash scripts/pipeline-notify.sh adversarial "#<N>" "FINDINGS: <count + summary>" <N>` then `bash scripts/pipeline-notify.sh blocked "#<N>" "adversarial: findings in PR #<PR_NUMBER>" <N>`; record attempt (PR already exists, so pass --pr as in Step 3):
+- Clear: `bash scripts/pipeline-notify.sh adversarial "#<N>" - <N>` (stdin: `<subagent's 2-3 line outcome>`)
+- Findings: `bash scripts/pipeline-notify.sh adversarial "#<N>" - <N>` (stdin: `FINDINGS: <count + summary>`) then `bash scripts/pipeline-notify.sh blocked "#<N>" "adversarial: findings in PR #<PR_NUMBER>" <N>`; record attempt (PR already exists, so pass --pr as in Step 3):
   ```bash
   bash scripts/pipeline-vcs.sh record-attempt <N> adversarial --pr <PR_NUMBER>
   ```
@@ -1510,8 +1540,7 @@ accumulating until each PR's own merge time:
      `pr-mergeable` between each.
 3. Every sync action (mergebase push, update-branch, developer dispatch) is
    relayed so the thread shows why an approval may have gone stale:
-   `bash scripts/pipeline-notify.sh info "merge-base" "#<N> sibling PR #<PR>
-   synced with new base (<mechanism>)" <N>`.
+   `bash scripts/pipeline-notify.sh info "merge-base" - <N>` (stdin: `#<N> sibling PR #<PR> synced with new base (<mechanism>)`).
 4. Approval impact: an `update-branch`/`pipeline-mergebase.sh` push that only
    changes the PR's relationship to its base does not invalidate approval
    markers (#102/#256 — base-branch-only changes and `CHANGELOG.md` are
@@ -1556,7 +1585,7 @@ After merging:
 ## Step 5 — End of run summary
 
 1. **Sweep worktrees unconditionally.** `bash scripts/pipeline-worktree.sh sweep <space-separated ids of every issue in this run's queue, PLUS the issue id of every PR still open>` — this runs at the end of EVERY run, not only as the Step 1 startup backstop (use `list-prs`/`find-pr` to resolve open-PR issue ids so a PR that's still awaiting review after this run doesn't lose its worktree). It removes every worktree — developer AND any Claude Code harness `agent-*` worktree tagged via `tag <N>` (#240) — whose issue is not in that combined list, regardless of dirty/unpushed state, plus stale local scratch branches (not main/master/base, not tracking a live remote, not the head of an open PR). Preserves ONLY worktrees identified with an id in that list. Relay the `talos:worktree-sweep removed=<n> kept=<n> freed=<size>` summary line it prints. (Step 4 post-merge item 4, `remove <N>` per issue, is unchanged and still runs on every merge.)
-2. **Warn above the worktree threshold.** `bash scripts/pipeline-worktree.sh list` — if its output includes a `pipeline-worktree: WARNING:` line, relay it verbatim: `bash scripts/pipeline-notify.sh info "worktrees" "<the WARNING line>" ""`. Say nothing when no warning line is present (count at or under `execution.worktree_warn_threshold`, default `10`).
+2. **Warn above the worktree threshold.** `bash scripts/pipeline-worktree.sh list` — if its output includes a `pipeline-worktree: WARNING:` line, relay it verbatim: `bash scripts/pipeline-notify.sh info "worktrees" - ""` (stdin: `<the WARNING line>`). Say nothing when no warning line is present (count at or under `execution.worktree_warn_threshold`, default `10`).
 
 After processing all issues, print a summary table:
 
@@ -1587,7 +1616,7 @@ A PR skipped because it carries `pipeline:blocked` (on the PR or its issue) is `
 8. Stage comments are mandatory when `comments.enabled = true`; fall back to inline text if template missing.
 9. Role-event notifications are mandatory after each subagent (conversation stream protocol). PM is exempt.
 10. Notification failures never block the pipeline (pipeline-notify.sh always exits 0).
-    Always pass the issue number as the 4th arg: `pipeline-notify.sh <event> "#<N>" "<msg>" <N>`
+    Always pass the issue number as the 4th arg: `pipeline-notify.sh <event> "#<N>" - <N>` (message on stdin, Rule 2)
 11. Board update failures are warnings — the pipeline continues.
 12. Attempt counting is durable and enforced by `record-attempt`: call `bash scripts/pipeline-vcs.sh record-attempt <N> <stage> --pr <PR_NUMBER>` (or, before a PR exists, with no key at all) before each developer re-dispatch, exactly as in Step 3.  When it exits non-zero (either `max_fix_attempts` consecutive same-stage failures OR `max_total_dispatches` total dispatches reached): set `pipeline:blocked`, notify, move on.  Never count attempts in orchestrator memory — the helper is the source of truth.
 13. In file mode: skip board calls, skip QA/reviewer/security/docs, developer commits to branch directly.

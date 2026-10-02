@@ -39,8 +39,10 @@
 #                                             gitlab, azure, and file mode fall back
 #                                             to plain view-issue with a stderr note.
 #   comment-issue <n> <body>                  Post comment on issue <n>
-#                 <n> --body-file <path>      ...or read the body from a file
+#                 <n> --body-file <path|->    ...or read the body from a file, or from
+#                                             stdin with "-" (heredoc; #342)
 #   close-issue <n> <body>                    Close issue with a comment
+#               <n> --body-file <path|->      ...or read the comment from a file / stdin
 #   label-issue <n> [--add <l>] [--remove <l>]  Add/remove labels
 #   check-epic-acceptance <n>                 Scan issue <n>'s body for unticked
 #                                             "- [ ] " checklist boxes. Exits 0
@@ -140,6 +142,7 @@
 #                                             ignored).
 #   checkout-pr <n>                           Check out PR branch locally
 #   approve-pr <n> <body>                     Approve a PR with a comment
+#              <n> --body-file <path|->       ...or read the comment from a file / stdin
 #   label-pr <n> [--add <l>] [--remove <l>]   Add/remove labels on PR
 #   pr-checks <n>                             Show CI check status
 #   pr-checks-required <n>                    Exit 0 only when every check in
@@ -6748,9 +6751,14 @@ case "$VERB" in
     if [ "${#ARGS[@]}" -ge 3 ]; then
       case "${ARGS[1]}" in
         --body-file)
+          # "--body-file -" reads the body from stdin (#342): the route for text
+          # that must never sit inside shell quotes (heredoc on stdin). Same
+          # trailing-newline trimming as a file read below.
+          if [ "${ARGS[2]}" = "-" ]; then
+            ARGS=("${ARGS[0]}" "$(cat)")
           # A UTF-8 character is at most 4 bytes, so a file over 4x the
           # character cap cannot fit; refuse it without reading it (#306).
-          if [ -r "${ARGS[2]}" ] && [ "$(wc -c < "${ARGS[2]}")" -gt $((4 * _TALOS_COMMENT_MAX)) ]; then
+          elif [ -r "${ARGS[2]}" ] && [ "$(wc -c < "${ARGS[2]}")" -gt $((4 * _TALOS_COMMENT_MAX)) ]; then
             echo "pipeline-vcs: $VERB: body is longer than $_TALOS_COMMENT_MAX characters (GitHub's comment limit); nothing posted." >&2
             exit 1
           elif [ -r "${ARGS[2]}" ]; then
@@ -6873,6 +6881,25 @@ print(" ".join(sorted(names("\n".join(strip_code(l) for l in prose)) & known)))
       elif [ -n "$_ph_left" ]; then
         echo "pipeline-vcs: $VERB: body still contains unsubstituted template placeholder(s): $_ph_left -- nothing posted." >&2
         echo "              Export each variable before rendering the template (see SKILL.md \"Stage comment convention\")." >&2
+        exit 1
+      fi
+    fi
+    ;;
+esac
+
+# approve-pr / close-issue take free text too (a reviewer summary, a resolution
+# note). Accept `<n> --body-file <path|->` here, before dispatch, so every
+# provider inherits it and the text never has to be typed inside shell quotes
+# (#342). The positional `<n> <body>` form is unchanged.
+case "$VERB" in
+  approve-pr|close-issue)
+    if [ "${#ARGS[@]}" -ge 3 ] && [ "${ARGS[1]}" = "--body-file" ]; then
+      if [ "${ARGS[2]}" = "-" ]; then
+        ARGS=("${ARGS[0]}" "$(cat)")
+      elif [ -r "${ARGS[2]}" ]; then
+        ARGS=("${ARGS[0]}" "$(cat "${ARGS[2]}")")
+      else
+        echo "pipeline-vcs: $VERB --body-file: cannot read '${ARGS[2]}'" >&2
         exit 1
       fi
     fi

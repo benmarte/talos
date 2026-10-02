@@ -5,7 +5,14 @@
 #        pipeline-notify.sh --render <platform> <event> [ref] [message]
 #   event       pr-opened | merged | blocked | issue-closed | info
 #   ref         issue/PR identifier shown in the message (e.g. "#42")
-#   message     free text describing the event
+#   message     free text describing the event. A message of exactly "-" is
+#               read from stdin instead (#342), so text a subagent or reporter
+#               wrote never has to be typed inside shell quotes:
+#                 pipeline-notify.sh qa "#42" - 42 <<'TALOS_<rand>'
+#                 PASS: 3 criteria verified
+#                 TALOS_<rand>
+#               Trailing newlines are trimmed, as for a "$(...)" argument. The
+#               argv form is unchanged.
 #   thread_key  optional; used to group all events for one issue into a single
 #               platform thread. Pass the issue number (e.g. "42"). Defaults to
 #               <ref>. Orchestrator should always pass the issue number so PR
@@ -134,6 +141,10 @@ REF="${2:-}"
 MSG="${3:-}"
 THREAD_KEY="${4:-$REF}"
 
+# "-" as the message reads it from stdin (#342). Never blocks on a terminal.
+_read_message() { if [ -t 0 ]; then printf ''; else cat; fi; }
+[ "$MSG" = "-" ] && [ "$EVENT" != "--render" ] && MSG="$(_read_message)"
+
 # ── --render: preview a template without posting (#280) ──────────────────────
 # `pipeline-notify.sh --render <platform> <event> [ref] [message]` resolves the
 # template the given platform would use, renders it, and prints the payload
@@ -146,6 +157,7 @@ if [ "$EVENT" = "--render" ]; then
   EVENT="${3:-info}"
   REF="${4:-#0}"
   MSG="${5:-Sample message body for template preview.}"
+  [ "$MSG" = "-" ] && MSG="$(_read_message)"
   THREAD_KEY="$REF"
 fi
 
