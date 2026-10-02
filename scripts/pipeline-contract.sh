@@ -64,6 +64,7 @@ TALOS_STAGE_LABELS=(
   "pipeline:review|fbca04|PR open — QA then reviewer/security/docs"
   "pipeline:approved|0e8a16|All stages passed — orchestrator merges when CI is green"
   "pipeline:blocked|b60205|Halted — a human needs to act (see comments)"
+  "pipeline:needs-owner|d93f0b|Waiting on an owner decision — the marker comment holds the question"
   "pipeline:epic-decomposed|c5def5|Epic split into sub-issues — never routed to developer"
   "pipeline:epic-children-done|c5def5|All sub-issues closed but the epic's own acceptance boxes are still unticked — human review needed"
 )
@@ -102,6 +103,7 @@ TALOS_MISC_LABELS=(
 TALOS_MARKERS=(
   talos:approval
   talos:attempt
+  talos:needs-owner
   talos:ci-rerun
   talos:forbidden-files-active
   talos:forbidden-files-defaults-replaced

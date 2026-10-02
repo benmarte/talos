@@ -294,6 +294,82 @@
 #                                             read-attempt and post-approval's duplicate-
 #                                             marker check (#172). Fail-closed: prints
 #                                             nothing and exits 1 on any page failure.
+#   mark-needs-owner <n> <text>               Park a pending owner decision on GitHub
+#                    <n> --body-file <path|->  (#345, epic #333): post ONE comment on issue
+#                                             or PR <n> -- <text>, a blank line, then
+#                                             `<!-- talos:needs-owner -->` as the last
+#                                             line (no header; a text that already ends
+#                                             in that marker line is not marked twice) --
+#                                             and then add the label pipeline:needs-
+#                                             owner. The text may come from a file or
+#                                             from stdin with "-" (a closed or terminal
+#                                             stdin exits 1); a text over 65536
+#                                             characters or 120000 bytes, an empty text,
+#                                             a text that looks like a flag, extra
+#                                             arguments and a non-numeric <n> are all
+#                                             refused with exit 1 before any call.
+#                                             Idempotent only while the item is still
+#                                             unanswered: when the newest TRUSTED marker
+#                                             comment already has the same body (marker
+#                                             line and surrounding whitespace ignored)
+#                                             and no trusted human reply is newer, no
+#                                             second comment is posted, the label is
+#                                             still ensured and the exit is 0. Once the
+#                                             item is answered the same text posts a new
+#                                             comment. The existing comments are read
+#                                             first; a failed read is exit 1, nothing
+#                                             posted. Exit 0 only when the comment (or the
+#                                             existing one) AND the label both succeed;
+#                                             a failed comment POST is exit 1 and no label
+#                                             call is made. stdout: `marked n=<n>
+#                                             comment=<posted|existing>`. Both comment
+#                                             and label use the issues REST endpoints,
+#                                             which serve issues and PRs alike. Works on
+#                                             an issue in any state. github, github-api;
+#                                             gitlab, azure and file exit 2 with
+#                                             "not implemented for provider '<p>'".
+#   list-needs-owner [--json] [--clear-answered]
+#                                             One line per OPEN issue or PR carrying
+#                                             pipeline:needs-owner, sorted by number:
+#                                               needs-owner n=<n> kind=<issue|pr> answered=<yes|no> question=<text>
+#                                             `question=` is ALWAYS THE LAST field and
+#                                             runs to the end of the line: it is the first
+#                                             non-blank line of the newest trusted marker
+#                                             comment (an `**Agent:**` line and the marker
+#                                             line skipped), whitespace collapsed to
+#                                             single spaces, control characters removed,
+#                                             at most 200 characters, so it can never
+#                                             forge another field. Parse with --json (one
+#                                             array of {n, kind, answered, question};
+#                                             n is a number, answered is "yes" or "no")
+#                                             rather than splitting lines. An item with
+#                                             the label but no trusted marker comment
+#                                             prints `question=(no marker comment)` and
+#                                             `answered=no`. A marker comment counts only
+#                                             when its last non-blank line is the marker;
+#                                             with markers.verify_authors (default true)
+#                                             it and every reply must be written by
+#                                             markers.trusted_authors or the
+#                                             authenticated identity -- an outsider's
+#                                             comment neither supplies the question nor
+#                                             answers it; unresolvable trust fails open
+#                                             with `talos:marker-authors-unverified` on
+#                                             stderr. answered=yes means a trusted
+#                                             comment newer than that marker comment is
+#                                             neither a Talos comment (`<!-- talos:` or a
+#                                             leading `**Agent:**`) nor empty. Reads every
+#                                             page of issues and comments; a failed or
+#                                             unparseable fetch is exit 1 with EMPTY
+#                                             stdout and nothing cleared, never an empty
+#                                             list. No labelled item: exit 0, empty
+#                                             stdout. --clear-answered removes the label
+#                                             from every answered=yes item and prints
+#                                             `cleared n=<n>` for each removal that
+#                                             succeeded (after the listing; on stderr
+#                                             with --json so stdout stays one JSON
+#                                             array); a failed removal is exit 1. Without
+#                                             the flag no label is changed. github,
+#                                             github-api; other providers exit 2 as above.
 #   check-attempt <issue-n>                   Exit 1 (and print reason) when EITHER
 #                                             ceiling is already reached for the issue;
 #                                             exit 0 otherwise. Does NOT record a new
@@ -1282,6 +1358,311 @@ _vcs_shared_current_user() {
   _VCS_CURRENT_USER_RESOLVED=1
   [ -n "$_cu_cache_file" ] && printf '%s' "$_cu_login" > "$_cu_cache_file" 2>/dev/null
   printf '%s' "$_cu_login"
+}
+
+# ── Needs-owner label + marker verbs (#345, epic #333) ──────────────────────
+# `mark-needs-owner` / `list-needs-owner`: park a pending owner decision on
+# GitHub as the label pipeline:needs-owner plus a marker comment whose last
+# line is `<!-- talos:needs-owner -->`, and read it back from any later
+# session. One shared implementation for github and github-api: each adapter
+# supplies only its provider calls (see _gh_no_* in _github, _ga_no_* in
+# _github_api); the comment reader is this script's own `read-comments`, so
+# both providers share it.
+#
+# Everything read from GitHub (comment bodies, logins, the question text) is
+# untrusted data. It is parsed by python3 -I from stdin or a file, never
+# reaches a shell, eval, a regex built from it or a format string, and the
+# only text printed is the sanitised `question` (one line, no control
+# characters, at most 200 characters).
+_TALOS_NEEDS_OWNER_LABEL="pipeline:needs-owner"
+_TALOS_NEEDS_OWNER_LABEL_URL="pipeline%3Aneeds-owner"   # the label as a URL path segment
+
+# _vcs_needs_owner_py <mode> <verb> [args...]   (payload on stdin)
+#   render    stdin: the text. Prints the comment body: text, blank line, the
+#             marker (a text already ending in the marker line is not marked
+#             twice). Exit 3 when the text is empty.
+#   mark-check <file>   stdin: read-comments JSON; <file>: the rendered body.
+#             Prints `same` when the newest trusted marker comment has the same
+#             body and is still unanswered, else `new`.
+#   collect <script> <label>   stdin: a REST issues array. For each open item
+#             carrying <label> it runs `bash <script> read-comments <n>`
+#             (argv list, no shell) and prints one JSON array of
+#             {n, kind, answered, question} sorted by n. Any failure exits 1
+#             with nothing on stdout.
+#   format <text|json>   stdin: the collect array. Prints the listing.
+#   answered  stdin: the collect array. Prints the n of every answered item.
+# The trust set is the one _vcs_shared_read_attempt builds (markers.trusted_
+# authors plus the authenticated identity, markers.verify_authors); keep the
+# two in step. TRUSTED_AUTHORS, VERIFY_AUTHORS and CURRENT_USER come from env.
+_vcs_needs_owner_py() {
+  python3 -I -c '
+import json, os, re, subprocess, sys, unicodedata
+
+MARKER = "<!-- talos:needs-owner -->"
+MARKER_RE = re.compile(r"^<!--\s*talos:needs-owner\s*-->$")
+mode, verb = sys.argv[1], sys.argv[2]
+
+def emit(text):
+    sys.stdout.buffer.write(text.encode("utf-8", errors="replace"))
+
+def read_stdin():
+    return sys.stdin.buffer.read().decode("utf-8", errors="replace")
+
+def die(msg):
+    sys.stderr.write("pipeline-vcs: " + verb + ": " + msg + "\n")
+    sys.exit(1)
+
+def clean(text, limit):
+    out = []
+    for ch in text:
+        cat = unicodedata.category(ch)
+        if ch.isspace() or cat in ("Zs", "Zl", "Zp"):
+            out.append(" ")
+        elif cat[0] != "C":
+            out.append(ch)
+    return " ".join("".join(out).split())[:limit].strip()
+
+def strip_marker(text):
+    lines = [l.rstrip("\r") for l in text.rstrip().split("\n")]
+    if lines and MARKER_RE.match(lines[-1].strip()):
+        lines.pop()
+    return "\n".join(lines).strip()
+
+def trust():
+    raw = os.environ.get("TRUSTED_AUTHORS", "").strip()
+    trusted = []
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if not isinstance(parsed, list):
+                raise ValueError("not a list")
+            trusted = [str(a).strip() for a in parsed if str(a).strip()]
+        except Exception:
+            trusted = [a.strip() for a in raw.splitlines() if a.strip()]
+    verify = os.environ.get("VERIFY_AUTHORS", "true").strip().lower() not in ("false", "0", "no", "off")
+    cur = os.environ.get("CURRENT_USER", "").strip()
+    if verify and cur and cur not in trusted:
+        trusted.append(cur)
+    return verify, trusted
+
+def body_of(c):
+    b = c.get("body")
+    return b if isinstance(b, str) else ""
+
+def login_of(c):
+    a = c.get("author")
+    l = a.get("login") if isinstance(a, dict) else ""
+    return l if isinstance(l, str) else ""
+
+def is_reply(c):
+    b = body_of(c)
+    return bool(b.strip()) and "<!-- talos:" not in b and not b.lstrip().startswith("**Agent:**")
+
+def analyze(comments):
+    verify, trusted = trust()
+    active = verify and bool(trusted)
+    def ok(c):
+        return (not active) or login_of(c) in trusted
+    res = {"marker": False, "body": "", "answered": False,
+           "question": "(no marker comment)",
+           "unverified": verify and not trusted, "rejected": []}
+    idx = None
+    for i in range(len(comments) - 1, -1, -1):
+        c = comments[i]
+        if not MARKER_RE.match(body_of(c).rstrip().split("\n")[-1].strip()):
+            continue
+        if not ok(c):
+            a = re.sub(r"[^A-Za-z0-9_.\[\]-]", "", login_of(c))
+            if a not in res["rejected"]:
+                res["rejected"].append(a)
+            continue
+        idx = i
+        break
+    if idx is None:
+        return res
+    res["marker"] = True
+    res["body"] = strip_marker(body_of(comments[idx]))
+    res["answered"] = any(is_reply(c) and ok(c) for c in comments[idx + 1:])
+    res["question"] = "(empty marker comment)"
+    for line in res["body"].split("\n"):
+        s = line.strip()
+        if s.startswith("**Agent:**"):
+            continue
+        q = clean(s, 200)
+        if q:
+            res["question"] = q
+            break
+    return res
+
+def warn(unverified, rejected):
+    if unverified:
+        sys.stderr.write("talos:marker-authors-unverified reader=needs-owner\n")
+        sys.stderr.write("pipeline-vcs: " + verb + ": [warn] markers.trusted_authors not configured and no authenticated identity resolved -- author check skipped\n")
+    if rejected:
+        sys.stderr.write("talos:marker-authors-rejected authors=" + ",".join(rejected) + "\n")
+
+def comments_of(doc):
+    cs = doc.get("comments") if isinstance(doc, dict) else None
+    if not isinstance(cs, list):
+        die("comments are not a list")
+    return [c for c in cs if isinstance(c, dict)]
+
+if mode == "render":
+    text = strip_marker(read_stdin())
+    if not text:
+        sys.exit(3)
+    emit(text + "\n\n" + MARKER + "\n")
+elif mode == "mark-check":
+    try:
+        comments = comments_of(json.loads(read_stdin()))
+        with open(sys.argv[3], "rb") as f:
+            new_body = strip_marker(f.read().decode("utf-8", errors="replace"))
+    except (ValueError, OSError):
+        die("could not parse the comments")
+    res = analyze(comments)
+    warn(res["unverified"], res["rejected"])
+    emit("same" if res["marker"] and not res["answered"] and res["body"] == new_body else "new")
+elif mode == "collect":
+    script, label = sys.argv[3], sys.argv[4]
+    try:
+        items = json.loads(read_stdin())
+        if not isinstance(items, list):
+            raise ValueError("not a list")
+    except ValueError:
+        die("could not parse the issue listing; nothing listed")
+    found = {}
+    for it in items:
+        if not isinstance(it, dict):
+            die("unexpected entry in the issue listing; nothing listed")
+        n = it.get("number")
+        if isinstance(n, bool) or not isinstance(n, int):
+            die("an issue listing entry has no number; nothing listed")
+        names = [l.get("name") for l in (it.get("labels") or []) if isinstance(l, dict)]
+        if label in names and str(it.get("state", "open")).lower() != "closed":
+            found[n] = "pr" if it.get("pull_request") is not None else "issue"
+    records, unverified, rejected = [], False, []
+    for n in sorted(found):
+        r = subprocess.run(["bash", script, "read-comments", str(n)], stdin=subprocess.DEVNULL,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if r.returncode != 0:
+            die("could not fetch the comments of #%d (%s); nothing listed" % (n, clean(r.stderr.decode("utf-8", errors="replace"), 200)))
+        try:
+            comments = comments_of(json.loads(r.stdout.decode("utf-8", errors="replace")))
+        except ValueError:
+            die("could not parse the comments of #%d; nothing listed" % n)
+        res = analyze(comments)
+        unverified = unverified or res["unverified"]
+        rejected += [a for a in res["rejected"] if a not in rejected]
+        records.append({"n": n, "kind": found[n], "answered": "yes" if res["answered"] else "no",
+                        "question": res["question"]})
+    warn(unverified, rejected)
+    emit(json.dumps(records))
+else:
+    try:
+        records = json.loads(read_stdin())
+    except ValueError:
+        die("could not parse the listing")
+    if mode == "format" and sys.argv[3] == "json":
+        emit(json.dumps(records) + "\n")
+    elif mode == "format":
+        for r in records:
+            emit("needs-owner n=%d kind=%s answered=%s question=%s\n" % (r["n"], r["kind"], r["answered"], r["question"]))
+    elif mode == "answered":
+        for r in records:
+            if r["answered"] == "yes":
+                emit("%d\n" % r["n"])
+' "$@"
+}
+
+# _vcs_shared_trust_env <user-fn> -> sets _NO_TRUSTED / _NO_VERIFY / _NO_CURRENT
+# for _vcs_needs_owner_py (same lookups read-attempt does).
+_vcs_shared_trust_env() {
+  _NO_TRUSTED="$(cfg markers.trusted_authors "")"
+  _NO_VERIFY="$(cfg markers.verify_authors true)"
+  _NO_CURRENT=""
+  [ "$_NO_VERIFY" = "true" ] && _NO_CURRENT="$("$1")"
+  return 0
+}
+
+# _vcs_shared_mark_needs_owner <n> <text> <post-fn> <label-fn> <user-fn>
+#   <post-fn> <n> <body> posts the comment, <label-fn> <n> adds the label,
+#   <user-fn> prints the authenticated login. Each returns non-zero on failure.
+_vcs_shared_mark_needs_owner() {
+  local _mn_n="$1" _mn_text="$2" _mn_post="$3" _mn_label="$4" _mn_user="$5"
+  local _mn_body _mn_comments _mn_tmp _mn_verdict _mn_how=posted
+  _mn_body="$(printf '%s' "$_mn_text" | _vcs_needs_owner_py render mark-needs-owner)" || {
+    echo "pipeline-vcs: mark-needs-owner: the text is empty; nothing posted" >&2
+    exit 1
+  }
+  _mn_comments="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" read-comments "$_mn_n")" || {
+    echo "pipeline-vcs: mark-needs-owner: could not read the comments of #$_mn_n; nothing posted" >&2
+    exit 1
+  }
+  _vcs_shared_trust_env "$_mn_user"
+  _mn_tmp="$(mktemp)" || exit 1
+  printf '%s' "$_mn_body" > "$_mn_tmp"
+  _mn_verdict="$(printf '%s' "$_mn_comments" \
+    | TRUSTED_AUTHORS="$_NO_TRUSTED" VERIFY_AUTHORS="$_NO_VERIFY" CURRENT_USER="$_NO_CURRENT" \
+      _vcs_needs_owner_py mark-check mark-needs-owner "$_mn_tmp")" || {
+    rm -f "$_mn_tmp"
+    echo "pipeline-vcs: mark-needs-owner: could not check the existing comments of #$_mn_n; nothing posted" >&2
+    exit 1
+  }
+  rm -f "$_mn_tmp"
+  if [ "$_mn_verdict" = "same" ]; then
+    _mn_how=existing
+  else
+    "$_mn_post" "$_mn_n" "$_mn_body" || {
+      echo "pipeline-vcs: mark-needs-owner: could not post the comment on #$_mn_n; label not added" >&2
+      exit 1
+    }
+  fi
+  "$_mn_label" "$_mn_n" || {
+    echo "pipeline-vcs: mark-needs-owner: could not add the label $_TALOS_NEEDS_OWNER_LABEL to #$_mn_n" >&2
+    exit 1
+  }
+  printf 'marked n=%s comment=%s\n' "$_mn_n" "$_mn_how"
+}
+
+# _vcs_shared_list_needs_owner <items-fn> <remove-fn> <user-fn> [--json] [--clear-answered]
+#   <items-fn> prints the REST issues array of the open items carrying the
+#   label (PRs included, marked by a pull_request key), all pages, and returns
+#   non-zero on any failure; <remove-fn> <n> removes the label. Fail-closed:
+#   nothing is printed or cleared unless every fetch succeeded.
+_vcs_shared_list_needs_owner() {
+  local _ln_items="$1" _ln_remove="$2" _ln_user="$3"; shift 3
+  local _ln_json=false _ln_clear=false _ln_a _ln_raw _ln_records _ln_n _ln_rc=0
+  for _ln_a in "$@"; do
+    case "$_ln_a" in
+      --json) _ln_json=true ;;
+      --clear-answered) _ln_clear=true ;;
+    esac
+  done
+  _ln_raw="$("$_ln_items")" || {
+    echo "pipeline-vcs: list-needs-owner: could not list the open items; nothing listed" >&2
+    exit 1
+  }
+  _vcs_shared_trust_env "$_ln_user"
+  _ln_records="$(printf '%s' "$_ln_raw" \
+    | TRUSTED_AUTHORS="$_NO_TRUSTED" VERIFY_AUTHORS="$_NO_VERIFY" CURRENT_USER="$_NO_CURRENT" \
+      _vcs_needs_owner_py collect list-needs-owner "$SCRIPT_DIR/pipeline-vcs.sh" "$_TALOS_NEEDS_OWNER_LABEL")" || exit 1
+  if [ "$_ln_json" = "true" ]; then
+    printf '%s' "$_ln_records" | _vcs_needs_owner_py format list-needs-owner json || exit 1
+  else
+    printf '%s' "$_ln_records" | _vcs_needs_owner_py format list-needs-owner text || exit 1
+  fi
+  [ "$_ln_clear" = "true" ] || return 0
+  local _ln_answered
+  _ln_answered="$(printf '%s' "$_ln_records" | _vcs_needs_owner_py answered list-needs-owner)" || exit 1
+  for _ln_n in $_ln_answered; do
+    if "$_ln_remove" "$_ln_n"; then
+      if [ "$_ln_json" = "true" ]; then printf 'cleared n=%s\n' "$_ln_n" >&2; else printf 'cleared n=%s\n' "$_ln_n"; fi
+    else
+      echo "pipeline-vcs: list-needs-owner: could not remove the label from #$_ln_n" >&2
+      _ln_rc=1
+    fi
+  done
+  [ "$_ln_rc" -eq 0 ] || exit 1
 }
 
 # _vcs_shared_assign_issue <n> <get-fn> <add-fn> <self-resolver-cmd> [args...]
@@ -2679,10 +3060,46 @@ _github() {
     gh issue edit "$1" --add-assignee "$2" ${REPO:+--repo "$REPO"}
   }
 
+  # Provider calls for the needs-owner verbs (#345). The issues REST endpoints
+  # serve issues and PRs alike, so one route covers both kinds.
+  _gh_no_repo() { if [ -n "${REPO:-}" ]; then printf '%s' "$REPO"; else printf '%s' '{owner}/{repo}'; fi; }
+  _gh_no_user() { _vcs_shared_current_user gh api user --jq .login; }
+  _gh_no_items() {
+    local _gno_raw
+    _gno_raw="$(gh api --paginate "repos/$(_gh_no_repo)/issues?state=open&labels=$_TALOS_NEEDS_OWNER_LABEL_URL&per_page=100")" || return 1
+    printf '%s' "$_gno_raw" | _gh_paginate_merge
+  }
+  _gh_no_post_comment() {
+    gh api --method POST "repos/$(_gh_no_repo)/issues/$1/comments" -f "body=$2" >/dev/null
+  }
+  _gh_no_label_add() {
+    gh api --method POST "repos/$(_gh_no_repo)/issues/$1/labels" -f "labels[]=$_TALOS_NEEDS_OWNER_LABEL" >/dev/null
+  }
+  _gh_no_label_remove() {
+    gh api --method DELETE "repos/$(_gh_no_repo)/issues/$1/labels/$_TALOS_NEEDS_OWNER_LABEL_URL" >/dev/null
+  }
+
   local verb="$1"; shift
   case "$verb" in
     assign-issue)
       _vcs_shared_assign_issue "${1:-}" _gh_assignees_get _gh_assignee_add gh api user --jq .login
+      ;;
+    mark-needs-owner)
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] gh api --paginate repos/$(_gh_no_repo)/issues/$1/comments (read-comments); unless the newest trusted marker comment already has this body and is unanswered: gh api --method POST repos/$(_gh_no_repo)/issues/$1/comments -f body=<text + marker>; gh api --method POST repos/$(_gh_no_repo)/issues/$1/labels -f labels[]=$_TALOS_NEEDS_OWNER_LABEL"
+        return 0
+      fi
+      _vcs_shared_mark_needs_owner "${1:-}" "${2-}" _gh_no_post_comment _gh_no_label_add _gh_no_user
+      ;;
+    list-needs-owner)
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] gh api --paginate repos/$(_gh_no_repo)/issues?state=open&labels=$_TALOS_NEEDS_OWNER_LABEL_URL&per_page=100; read-comments per item"
+        case " $* " in
+          *" --clear-answered "*) echo "[dry-run] for each answered item: gh api --method DELETE repos/$(_gh_no_repo)/issues/<n>/labels/$_TALOS_NEEDS_OWNER_LABEL_URL" ;;
+        esac
+        return 0
+      fi
+      _vcs_shared_list_needs_owner _gh_no_items _gh_no_label_remove _gh_no_user "$@"
       ;;
     list-issues)
       # `gh issue list --limit N` is a single request capped at N (1000 was
@@ -3861,11 +4278,49 @@ for a in json.load(sys.stdin).get('assignees') or []:
       -H "Content-Type: application/json" -d "$_aa_payload"
   }
 
+  # Provider calls for the needs-owner verbs (#345). _ga_req_once under
+  # _with_retry (not _ga_req) so a failure returns to the shared helper, which
+  # owns the exit code. The issues endpoints serve issues and PRs alike.
+  _ga_no_items() { _ga_fetch_all_pages "$_API/issues?state=open&labels=$_TALOS_NEEDS_OWNER_LABEL_URL&per_page=100"; }
+  _ga_no_post_comment() {
+    local _gnp_payload
+    _gnp_payload="$(printf '%s' "$2" | python3 -I -c '
+import json, sys
+sys.stdout.write(json.dumps({"body": sys.stdin.buffer.read().decode("utf-8", errors="replace")}, ensure_ascii=False))
+')" || return 1
+    _with_retry "$_VERB" _ga_req_once POST "$_API/issues/$1/comments" \
+      -H "Content-Type: application/json" -d "$_gnp_payload" >/dev/null
+  }
+  _ga_no_label_add() {
+    _with_retry "$_VERB" _ga_req_once POST "$_API/issues/$1/labels" \
+      -H "Content-Type: application/json" -d "{\"labels\":[\"$_TALOS_NEEDS_OWNER_LABEL\"]}" >/dev/null
+  }
+  _ga_no_label_remove() {
+    _with_retry "$_VERB" _ga_req_once DELETE "$_API/issues/$1/labels/$_TALOS_NEEDS_OWNER_LABEL_URL" >/dev/null
+  }
+
   # ── Verb dispatch ───────────────────────────────────────────────────────────
   case "$_VERB" in
 
     assign-issue)
       _vcs_shared_assign_issue "${1:-}" _ga_assignees_get _ga_assignee_add _ga_current_user_login
+      ;;
+    mark-needs-owner)
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: GET $_API/issues/$1/comments (read-comments); unless the newest trusted marker comment already has this body and is unanswered: POST $_API/issues/$1/comments; POST $_API/issues/$1/labels ($_TALOS_NEEDS_OWNER_LABEL)"
+        return 0
+      fi
+      _vcs_shared_mark_needs_owner "${1:-}" "${2-}" _ga_no_post_comment _ga_no_label_add _ga_current_user_login
+      ;;
+    list-needs-owner)
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: GET $_API/issues?state=open&labels=$_TALOS_NEEDS_OWNER_LABEL_URL&per_page=100 (paginated); read-comments per item"
+        case " $* " in
+          *" --clear-answered "*) echo "[dry-run] github-api: for each answered item: DELETE $_API/issues/<n>/labels/$_TALOS_NEEDS_OWNER_LABEL_URL" ;;
+        esac
+        return 0
+      fi
+      _vcs_shared_list_needs_owner _ga_no_items _ga_no_label_remove _ga_current_user_login "$@"
       ;;
 
     list-issues)
@@ -6910,12 +7365,48 @@ print(" ".join(sorted(names("\n".join(strip_code(l) for l in prose)) & known)))
     ;;
 esac
 
-# approve-pr / close-issue take free text too (a reviewer summary, a resolution
-# note). Accept `<n> --body-file <path|->` here, before dispatch, so every
-# provider inherits it and the text never has to be typed inside shell quotes
-# (#342). The positional `<n> <body>` form is unchanged.
+# mark-needs-owner / list-needs-owner (#345) are GitHub only; the label and
+# marker verbs have no gitlab, azure or file implementation. Exit 2, before any
+# body is read from stdin or a file, so a caller reads it as "unsupported, skip"
+# and not as the exit 1 of a failed call.
 case "$VERB" in
-  approve-pr|close-issue)
+  mark-needs-owner|list-needs-owner)
+    if [ "$PROVIDER" != "github" ] && [ "$PROVIDER" != "github-api" ]; then
+      echo "pipeline-vcs: $VERB: not implemented for provider '$PROVIDER'" >&2
+      exit 2
+    fi
+    ;;
+esac
+
+# Both size caps on a body that is already in a variable: characters (GitHub's
+# own limit) and bytes (Linux's single-argument limit). The text goes to python
+# on stdin, never through env or argv. Over either cap: exit 1, nothing posted.
+_check_body_caps() {
+  local _cb_rc=0
+  printf '%s' "$1" | python3 -c '
+import sys
+raw = sys.stdin.buffer.read()
+if len(raw.decode("utf-8", errors="replace")) > int(sys.argv[1]):
+    sys.exit(3)
+sys.exit(4 if len(raw) > int(sys.argv[2]) else 0)
+' "$_TALOS_COMMENT_MAX" "$_TALOS_BODY_MAX_BYTES" || _cb_rc=$?
+  case "$_cb_rc" in
+    0) ;;
+    3) echo "pipeline-vcs: $VERB: body is longer than $_TALOS_COMMENT_MAX characters (GitHub's limit); nothing posted." >&2; exit 1 ;;
+    4) echo "pipeline-vcs: $VERB: body is longer than $_TALOS_BODY_MAX_BYTES bytes (Linux caps one argument at 128 KiB); nothing posted." >&2; exit 1 ;;
+    *) echo "pipeline-vcs: $VERB: could not check the body size; nothing posted." >&2; exit 1 ;;
+  esac
+}
+
+# approve-pr / close-issue / mark-needs-owner take free text too (a reviewer
+# summary, a resolution note, the question for the owner). Accept `<n>
+# --body-file <path|->` here, before dispatch, so every provider inherits it and
+# the text never has to be typed inside shell quotes (#342). The positional
+# `<n> <body>` form is unchanged. The comment-issue / comment-pr block above is
+# not folded into this one: it interleaves the same caps with the placeholder
+# scan.
+case "$VERB" in
+  approve-pr|close-issue|mark-needs-owner)
     if [ "${#ARGS[@]}" -ge 3 ] && [ "${ARGS[1]}" = "--body-file" ]; then
       if [ "${ARGS[2]}" = "-" ]; then
         _read_stdin_body
@@ -6929,24 +7420,46 @@ case "$VERB" in
         echo "pipeline-vcs: $VERB --body-file: cannot read '${ARGS[2]}'" >&2
         exit 1
       fi
-      # Same two caps as comment-issue / comment-pr: characters (GitHub's own
-      # limit) and bytes (Linux's single-argument limit); text already in a
-      # variable goes to python on stdin, never through env or argv.
-      _ob_rc=0
-      printf '%s' "${ARGS[1]}" | python3 -c '
-import sys
-raw = sys.stdin.buffer.read()
-if len(raw.decode("utf-8", errors="replace")) > int(sys.argv[1]):
-    sys.exit(3)
-sys.exit(4 if len(raw) > int(sys.argv[2]) else 0)
-' "$_TALOS_COMMENT_MAX" "$_TALOS_BODY_MAX_BYTES" || _ob_rc=$?
-      case "$_ob_rc" in
-        0) ;;
-        3) echo "pipeline-vcs: $VERB: body is longer than $_TALOS_COMMENT_MAX characters (GitHub's limit); nothing posted." >&2; exit 1 ;;
-        4) echo "pipeline-vcs: $VERB: body is longer than $_TALOS_BODY_MAX_BYTES bytes (Linux caps one argument at 128 KiB); nothing posted." >&2; exit 1 ;;
-        *) echo "pipeline-vcs: $VERB: could not check the body size; nothing posted." >&2; exit 1 ;;
-      esac
+      _check_body_caps "${ARGS[1]}"
     fi
+    ;;
+esac
+
+# Argument checks for the needs-owner verbs (#345), once for every provider.
+case "$VERB" in
+  mark-needs-owner)
+    case "${ARGS[0]-}" in
+      ''|*[!0-9]*)
+        echo "pipeline-vcs: mark-needs-owner: <n> must be a number (got '${ARGS[0]-}')" >&2
+        exit 1
+        ;;
+    esac
+    if [ "${#ARGS[@]}" -ne 2 ]; then
+      echo "pipeline-vcs: mark-needs-owner: Usage: mark-needs-owner <n> <text> | <n> --body-file <path|->" >&2
+      exit 1
+    fi
+    case "${ARGS[1]}" in
+      --*)
+        echo "pipeline-vcs: mark-needs-owner: text looks like a flag ('${ARGS[1]}'); Usage: mark-needs-owner <n> <text> | <n> --body-file <path|->" >&2
+        exit 1
+        ;;
+    esac
+    if [ -z "$(printf '%s' "${ARGS[1]}" | tr -d '[:space:]')" ]; then
+      echo "pipeline-vcs: mark-needs-owner: the text is empty; nothing posted" >&2
+      exit 1
+    fi
+    _check_body_caps "${ARGS[1]}"
+    ;;
+  list-needs-owner)
+    for _ln_flag in ${ARGS[@]+"${ARGS[@]}"}; do
+      case "$_ln_flag" in
+        --json|--clear-answered) ;;
+        *)
+          echo "pipeline-vcs: list-needs-owner: unknown argument '$_ln_flag'; Usage: list-needs-owner [--json] [--clear-answered]" >&2
+          exit 1
+          ;;
+      esac
+    done
     ;;
 esac
 
