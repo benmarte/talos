@@ -1602,6 +1602,12 @@ repo config over it key by key, so the repo wins wherever both set the same key.
 - Only the `agents.*` subtree is read from the user-level file. Any other key
   there (board, merge, issues, verify, ...) is ignored with one warning naming
   it, because those settings describe a repo, not a user.
+- **Every `agents.*` key in the user-level file applies to every repo**, not
+  just models: `agents.runner`, `agents.runner_args` and
+  `agents.roles.<role>.runner_cmd` are layered the same way, and the adapter
+  path executes `runner_cmd` as a shell command. Keep only settings and
+  commands you trust in every repo in that file; a repo's own config can
+  override a key but cannot remove the file's other keys.
 - A missing, unreadable, empty, malformed or non-mapping user-level file
   behaves as absent; malformed content prints one warning and never changes a
   lookup's exit status. The file is parsed as data only, never executed.

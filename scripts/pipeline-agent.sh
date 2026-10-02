@@ -229,8 +229,12 @@ if [ "${1:-}" = "--resolve-all" ]; then
 $_LAYERS
 EOF
   }
+  # Config values are untrusted text (the user-level file): strip control
+  # characters, newlines and ESC included, so a value cannot forge a row or
+  # drive the terminal. Only --resolve-all does this; --resolve stays as-is.
+  _plain() { printf '%s' "$1" | LC_ALL=C tr -d '\000-\037\177'; }
   for _r in $_ALL_ROLES; do
-    _m="$(_resolve_model "$_r")"
+    _m="$(_plain "$(_resolve_model "$_r")")"
     if [ -n "$(cfg "agents.roles.$_r.model" "")" ]; then
       _origin="$(_layer_of "agents.roles.$_r.model")"
     elif [ -n "$(cfg agents.model "")" ]; then
@@ -241,7 +245,7 @@ EOF
     _rs="$(cfg "agents.roles.$_r.restamp_model" "")"
     [ -n "$_rs" ] || _rs="$(cfg agents.restamp_model "")"
     [ -n "$_rs" ] || _rs="$(cfg agents.model "")"
-    printf 'role=%s model=%s restamp_model=%s origin=%s\n' "$_r" "$_m" "$_rs" "$_origin"
+    printf 'role=%s model=%s restamp_model=%s origin=%s\n' "$_r" "$_m" "$(_plain "$_rs")" "$_origin"
     for _dir in "$PWD/.claude/agents" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/agents"; do
       _f="$_dir/$_r.md"
       [ -f "$_f" ] || continue
