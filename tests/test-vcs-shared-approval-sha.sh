@@ -165,4 +165,55 @@ assert_contains "$err_only" "STALE qa:pass (qa)" "--stale-list: stderr prose unc
 out_noflag="$(run_check "$HEAD_SHA" "" "$_entries" 2>/dev/null)"
 assert_not_contains "$out_noflag" "stale role=" "no --stale-list: no stdout stale-list line"
 
+# ═══════════════════════════════════════════════════════════════════════════
+# agent instructions are non-waivable (#428): each path gets its own isolated
+# one-file delta off SHA_BASE, so a stale verdict cannot come from scripts/.
+# README.md, docs/ and templates/comments/ are the positive controls (waived),
+# as are a nested AGENTS.md and a near-miss prefix (agentsx/).
+# ═══════════════════════════════════════════════════════════════════════════
+delta_head() {  # <path> -- one-file commit off SHA_BASE; prints the new SHA
+  git checkout -q --detach "$SHA_BASE"
+  mkdir -p "$(dirname "$1")"
+  printf 'edit %s\n' "$1" > "$1"
+  git add "$1"
+  git commit -q -m "edit $1"
+  git rev-parse HEAD
+}
+
+_entries="$(entries_json "qa:pass" "qa" "$SHA_BASE")"
+for _p in agents/qa.md skills/pipeline/SKILL.md templates/prompts/qa-evidence.md AGENTS.md CLAUDE.md; do
+  _h="$(delta_head "$_p")"
+  out="$(run_check "$_h" "" "$_entries" 2>&1)"; rc=$?
+  assert_eq "1" "$rc" "non-waivable instruction path $_p: exits 1 under the default waiver"
+  assert_contains "$out" "STALE qa:pass (qa)" "non-waivable instruction path $_p: approval is stale"
+  assert_contains "$out" "$_p" "non-waivable instruction path $_p: names the file"
+done
+
+for _p in README.md docs/user-guide.md CHANGELOG.md templates/comments/qa-verdict.md sub/AGENTS.md agentsx/note.md; do
+  _h="$(delta_head "$_p")"
+  out="$(run_check "$_h" "" "$_entries" 2>&1)"; rc=$?
+  assert_eq "0" "$rc" "waivable path $_p: exits 0 under the default waiver"
+  assert_not_contains "$out" "note:" "waivable path $_p: no note on the default waiver"
+done
+git checkout -q main
+
+# A config that lists an instruction path as waivable is ignored for it, with
+# a stderr note; a docs-only delta alongside it is still waived.
+_h="$(delta_head skills/pipeline/SKILL.md)"
+out="$(WAIVER_PATHS='["skills/**","*.md"]' run_check "$_h" "" "$_entries" 2>&1)"; rc=$?
+assert_eq "1" "$rc" "config lists skills/**: still stale for a skills/ delta"
+assert_contains "$out" "note: merge.approval_waiver_paths entry 'skills/**' ignored for agent-instruction paths" "config lists skills/**: stderr note names the entry"
+assert_not_contains "$out" "entry '*.md'" "config lists skills/**: no note for the *.md entry"
+
+_h="$(delta_head AGENTS.md)"
+out="$(WAIVER_PATHS='["AGENTS.md","*.md"]' run_check "$_h" "" "$_entries" 2>&1)"; rc=$?
+assert_eq "1" "$rc" "config lists AGENTS.md: still stale for a root AGENTS.md delta"
+assert_contains "$out" "entry 'AGENTS.md' ignored" "config lists AGENTS.md: stderr note names the entry"
+
+_h="$(delta_head docs/user-guide.md)"
+out="$(WAIVER_PATHS='["agents/**","docs/**"]' run_check "$_h" "" "$_entries" 2>&1)"; rc=$?
+assert_eq "0" "$rc" "config lists agents/**: a docs-only delta stays waived"
+assert_contains "$out" "entry 'agents/**' ignored" "config lists agents/**: note still printed on success"
+git checkout -q main
+
 finish

@@ -212,6 +212,40 @@ out="$(vcs_check "$SHA_B" '[{"name":"qa:pass"}]' "$_c")"; rc=$?
 assert_exit_code 0 "$rc" "custom waiver includes *.md: exits 0"
 printf '{}' > test-approval-config.json   # restore
 
+# ── [test] issue #428: agent instructions are non-waivable ────────────────────
+# One isolated one-file delta per path, each branched off SHA_A, so a stale
+# verdict cannot be caused by scripts/ or any other path in the shared history.
+_orig_branch="$(git symbolic-ref --short HEAD)"
+_delta_428() {  # <path> -- one-file commit off SHA_A on a throwaway branch; prints SHA
+  git checkout -q -B tmp-428 "$SHA_A"
+  mkdir -p "$(dirname "$1")"
+  printf 'edit\n' > "$1"
+  git add "$1"
+  git commit -q -m "edit $1"
+  git rev-parse HEAD
+}
+_c="$(mk_comment_with_marker "$SHA_A" qa)"
+for _p in agents/qa.md skills/pipeline/SKILL.md templates/prompts/qa-evidence.md AGENTS.md CLAUDE.md; do
+  _h="$(_delta_428 "$_p")"
+  out="$(vcs_check "$_h" '[{"name":"qa:pass"}]' "$_c")"; rc=$?
+  assert_exit_code 1 "$rc" "#428 $_p only: default waiver does not cover it, exits 1"
+  assert_contains "$out" "STALE qa:pass (qa)" "#428 $_p only: qa approval stale"
+done
+for _p in README.md docs/user-guide.md templates/comments/qa-verdict.md; do
+  _h="$(_delta_428 "$_p")"
+  out="$(vcs_check "$_h" '[{"name":"qa:pass"}]' "$_c")"; rc=$?
+  assert_exit_code 0 "$rc" "#428 $_p only: stays waived by default, exits 0"
+done
+
+# A config that lists skills/** as waivable is ignored for those paths, with a stderr note.
+printf '{"merge": {"approval_waiver_paths": ["skills/**", "*.md"]}}\n' > test-approval-config.json
+_h="$(_delta_428 skills/pipeline/SKILL.md)"
+out="$(vcs_check "$_h" '[{"name":"qa:pass"}]' "$_c")"; rc=$?
+assert_exit_code 1 "$rc" "#428 config lists skills/**: skills/ delta still stale, exits 1"
+assert_contains "$out" "entry 'skills/**' ignored for agent-instruction paths" "#428 config lists skills/**: stderr note"
+printf '{}' > test-approval-config.json   # restore
+git checkout -q "$_orig_branch"
+
 # ── [test] git diff failure → treat as non-waivable → exit 1 ─────────────────
 # Use a bogus current head SHA that git cannot find → diff fails → fail-closed
 _c="$(mk_comment_with_marker "$SHA_A" qa)"
