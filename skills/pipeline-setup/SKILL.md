@@ -1,9 +1,11 @@
 ---
 name: pipeline-setup
-description: Interactive onboarding for Talos. Detects the repo, asks a few questions, writes talos.pipeline.yml, bootstraps labels, fires a test notification, and leaves the repo ready to run /pipeline.
+description: Interactive onboarding for Talos. Detects the repo, asks a few questions, writes talos.pipeline.yml, bootstraps labels, fires a test notification, and leaves the repo ready to run the pipeline (`/pipeline` in Claude Code, or in any other agent Read ~/.talos/skills/pipeline/SKILL.md and follow it).
 ---
 
 You are the **pipeline setup wizard**. Walk the user through configuring Talos for this repo. Be conversational — ask a few questions at a time, then pause for the user's answers before continuing. Do not ask all questions in a wall of text.
+
+Any agent can run this wizard: `Read ~/.talos/skills/pipeline-setup/SKILL.md and follow it` (Claude Code also has `/pipeline-setup`). Where a step says to ask, ask in plain text and wait for the answer; use a question tool only if your harness has one.
 
 **Script location:** resolve once before anything else, and reuse the answer — every `bash scripts/<name>.sh` below means the directory you resolve here:
 
@@ -30,7 +32,8 @@ If a config **exists**:
 - Read it with `bash scripts/pipeline-config.sh <key> <default>` to show current values.
 - Tell the user: "Found an existing config. Here's what's set: ..."
 - Ask: "Would you like to update any of these settings, or is this just a re-run to bootstrap labels?"
-- If no changes needed: check `bash scripts/pipeline-config.sh status.enabled unset`. If it prints `unset` (no `status:` block yet), ask Step 4b's question once; on yes add ONLY the `status:` block to the existing file (show the lines to add and write only after an explicit yes; never rewrite the rest of the file, per the Idempotency rules), then run Step 7b. Then jump to Step 8 (bootstrap labels) and Step 10 (test notification).
+- If no changes needed: check `bash scripts/pipeline-config.sh status.enabled unset`. If it prints `unset` (no `status:` block yet), ask Step 4b's question once; on yes add ONLY the `status:` block to the existing file (show the lines to add and write only after an explicit yes; never rewrite the rest of the file, per the Idempotency rules), then run Step 7b.
+- If no changes needed, in every case (whatever the check above printed): run Step 7c with the harness from `bash scripts/pipeline-config.sh agents.runner claude`, then jump to Step 8 (bootstrap labels) and Step 10 (test notification).
 
 If **no config**: continue to Step 1.
 
@@ -195,18 +198,20 @@ If none/no config: omit the `events:` key entirely (all events fire; disabling h
 ## Step 6b — Ask: agent harness
 
 > "Which agent harness will run the pipeline?
-> - **claude** (default) — Claude Code spawns native subagents; no extra config needed
+> - **claude** — Claude Code spawns native subagents; no extra config needed
+> - **pi** — pi runs the stages inline in one session (no subagents)
 > - **codex** — Codex CLI executes each role stage via scripts/pipeline-agent.sh
 > - **gemini** — Gemini CLI executes each role stage via scripts/pipeline-agent.sh
+> - **antigravity** — Antigravity executes each role stage via scripts/pipeline-agent.sh
 > - **custom** — a custom agentic CLI; you'll be asked for the command
 >
-> [default: **claude**]"
+> [default in Claude Code: **claude**; no default for any other agent]"
 
-Wait for the answer.
+Wait for the answer. If you are Claude Code, an empty answer means `claude`. Any other agent has no default: ask again until the user names one of the six. A runner id is the `agents.runner` value, not an `install.sh --harness` value.
 
-If the user answers **claude** (or presses Enter): record harness = `claude`. No `agents:` block will be written.
+If the user answers **claude** (or, in Claude Code, presses Enter): record harness = `claude`. No `agents:` block will be written.
 
-If the user answers **codex** or **gemini**: record harness = that value.
+If the user answers **pi**, **codex**, **gemini** or **antigravity**: record harness = that value.
 
 If the user answers **custom**:
 > "What command should the pipeline call? The prompt will arrive on stdin.
@@ -245,6 +250,8 @@ On Keep, skip the rest of this step and write nothing. On Override for this repo
 >
 > A model is the alias opus, sonnet or haiku, or a full model ID; it is stored exactly as typed."
 
+When Step 6b did not answer `claude`, say that a model applies only to roles whose effective runner is `claude` (`agents.roles.<role>.runner: claude`); for the others the model is chosen in that CLI or its `runner_cmd`. Offer **Leave unset** as the default.
+
 Record the answer:
 - **One model for every role** — `agents.model: <model>`.
 - **Per role** — walk the roles enabled in this setup (Step 4's answers, plus `developer`, which always runs) one at a time and write `agents.roles.<role>.model: <model>` for each. Offer an `agents.model` fallback for the rest; write it if the user names one.
@@ -265,6 +272,7 @@ Based on the collected answers, write `talos.pipeline.yml` in the current direct
 
 ```yaml
 # Generated by /pipeline-setup on <date>
+# Start the pipeline with `/pipeline` in Claude Code; in any other agent: Read ~/.talos/skills/pipeline/SKILL.md and follow it
 base_branch: <BASE_BRANCH>
 release_branch: main
 
@@ -382,8 +390,8 @@ limits:
 # without subagents (Codex CLI, headless runners) execute role stages through
 # scripts/pipeline-agent.sh, which uses:
 agents:
-  runner: <HARNESS>            # claude (default) | codex | gemini | custom
-  # runner_args:               # extra CLI args for the claude/codex/gemini runner
+  runner: <HARNESS>            # claude (default) | pi | codex | gemini | antigravity | custom
+  # runner_args:               # extra CLI args for the claude/pi/codex/gemini/antigravity runner
   #   - --full-auto
 <IF_CUSTOM_HARNESS>
   runner_cmd: "<RUNNER_CMD>"   # runner: custom — prompt arrives on stdin.
@@ -398,7 +406,8 @@ When writing the file:
 - Status file (Step 4b): accepted writes the block above with `enabled: true`; declined (or skipped for `vcs.provider: file`) writes the whole block commented out, `# status:` with `#   enabled: false` under it, so the keys stay visible. A JSON config has no comments: accepted writes `"status": { "enabled": true }` (the other keys keep their defaults), declined and skipped omit the `status` key. The status file is NOT added to `merge.union_paths` (fragments replace union merging).
 - If harness = `claude`: omit the `agents:` block entirely (Claude Code spawns native subagents and ignores it).
 - Models: a per-repo override chosen in Step 6c goes into this repo's `agents:` block (`model:` and `roles.<role>.model`), even when harness = `claude`. A user-level answer is written by Step 6c itself, not here.
-- If harness = `codex` or `gemini`: write the active `agents:` block with the chosen `runner` value; omit `runner_cmd`.
+- If harness = `pi`: write the active `agents:` block with `runner: pi` and `subagents: false` (`agents.subagents: false`: pi runs the stages inline).
+- If harness = `codex`, `gemini` or `antigravity`: write the active `agents:` block with the chosen `runner` value (for example `runner: antigravity`); omit `runner_cmd`.
 - If harness = `custom`: write the active `agents:` block with `runner: custom` and `runner_cmd: "<value the user provided>"`.
 - If `roles.adversarial: true` AND the user asked for a different backend for it (Step 4): write (or extend) the `agents:` block with a `roles: { adversarial: { runner: ..., runner_cmd: ... } }` sub-block — same shape as the `docs/user-guide.md` "Second opinion on a local model" example — even when the top-level harness is `claude`, since only `adversarial` is opting out of the native default.
 
@@ -421,6 +430,27 @@ bash scripts/pipeline-status-file.sh init
 ```
 
 It prints `created`, `appended` (an existing file was missing a heading) or `already has both headings`, and exits 0; it never overwrites an existing file and it does not commit. Tell the user: "Commit `talos.pipeline.yml` and the status file together, so the first run starts from a base that has both." If it exits non-zero, show its message and carry on without the file (`status.enabled` stays true; `init` is safe to re-run).
+
+---
+
+## Step 7c — Offer the AGENTS.md block
+
+`<harness>` must be exactly one of `claude`, `pi`, `codex`, `gemini`, `antigravity`, `custom`: the Step 6b answer or, on the re-run path, the `agents.runner` value read in Step 0. Compare it with those six, character for character; never put any other value on a command line. If it is not exactly one of them (or is empty), ask Step 6b's question again, or skip Step 7c and say why. Show the block:
+
+```bash
+bash scripts/pipeline-instructions.sh print
+```
+
+Ask once: "Add this to `AGENTS.md` so any agent in this repo finds the Talos playbooks? An existing `AGENTS.md` keeps all its other text: the block is appended, or replaced only between its two markers. (yes/no)" On anything but an explicit yes, write nothing and go to Step 8. On yes:
+
+```bash
+bash scripts/pipeline-instructions.sh write . --harness <harness>
+```
+
+`write` exits 0 even when it skips, so read its output before saying it worked:
+- A stderr line ending `left unchanged`, or a line saying `symlink` or `not a regular file`: nothing was written. Say so, relay the line, and do not claim success.
+- Otherwise it prints `created`, `added`, `updated` or `up to date`. Tell the user to commit `AGENTS.md`.
+- Relay any Claude Code or Gemini notice. The Talos block is never written into `CLAUDE.md` or `GEMINI.md`. Ask a second question only when `./CLAUDE.md` or `./GEMINI.md` exists and the notice offers `--import-agents-md`: "Add a one-line `@AGENTS.md` import to it? (yes/no)". On yes, re-run the same `write` command with `--import-agents-md` appended (not `install.sh`, whatever the notice says; never on the first run); only a fenced one-line `@AGENTS.md` import is added, and the user commits that file too. For `.claude/CLAUDE.md`, `CLAUDE.local.md`, a file above the repo, or the Gemini notice with no `GEMINI.md`, relay the line to add by hand and ask nothing.
 
 ---
 
@@ -605,7 +635,7 @@ Verify:       <commands or "none">
 Roles:        validator pm developer qa reviewer security docs [adversarial]
 Board:        <enabled/disabled>
 Notifications: <configured platforms or "none">
-Harness:      <claude (native subagents) | codex | gemini | custom>
+Harness:      <claude (native subagents) | pi | codex | gemini | antigravity | custom>
 Status file:  <status.file path, e.g. TALOS_STATUS.md, or "disabled">
 
 Control labels (created by bootstrap-labels.sh in Step 8):
@@ -619,7 +649,7 @@ Control labels (created by bootstrap-labels.sh in Step 8):
 
 Next steps:
   1. Add the 'pipeline:ready' label to a GitHub issue (or a '- [ ] task' in plan.md for file mode)
-  2. Run /pipeline to process the backlog
+  2. Start the pipeline with `/pipeline` in Claude Code; in any other agent: Read ~/.talos/skills/pipeline/SKILL.md and follow it
   3. For GitHub Projects, make sure the Status field has: Ready, In progress, In review, Done, Blocked
      (if your board uses different column names, configure board.status_map to remap them — see the
      example in the config template above; pipeline-status.sh will emit talos:board-unverified on
