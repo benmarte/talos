@@ -294,6 +294,29 @@
 #                                             read-attempt and post-approval's duplicate-
 #                                             marker check (#172). Fail-closed: prints
 #                                             nothing and exits 1 on any page failure.
+#   upsert-pr-comment <pr> --marker <name> --body-file <path|->
+#                                             Keep ONE marker comment on PR <pr> up to date
+#                                             (#381, epic #334; github and github-api only,
+#                                             gitlab, azure and file exit 2 with `not
+#                                             implemented for provider '<p>'`). <name> is a
+#                                             TALOS_MARKERS member without `talos:` (e.g.
+#                                             spend), else exit 2; a bare `-` argument exits
+#                                             2. The body (a file, or stdin with `-`) gets a
+#                                             blank line and `<!-- talos:<name> -->` as its
+#                                             last line. The newest comment by the
+#                                             authenticated user whose last non-blank line is
+#                                             that marker is PATCHed in place, else a new one
+#                                             is POSTed; an identical body writes nothing.
+#                                             Prints the comment URL, then `upserted pr=<n>
+#                                             comment=created|updated|unchanged`. The body
+#                                             reaches the API on stdin, never argv; the same
+#                                             caps as approve-pr apply to the final body (over
+#                                             either, an empty body, an unreadable file or a
+#                                             closed stdin: exit 1). An unresolved login (GET
+#                                             /user is 403 for an Actions GITHUB_TOKEN), an
+#                                             unreadable comment list or a failed write is exit
+#                                             1 and never a blind duplicate. Works on a merged
+#                                             PR. --dry-run prints the planned calls, exit 0.
 #   mark-needs-owner <n> <text>               Park a pending owner decision on GitHub
 #                    <n> --body-file <path|->  (#345, epic #333): post ONE comment on issue
 #                                             or PR <n> -- <text>, a blank line, then
@@ -1583,6 +1606,105 @@ _vcs_shared_trust_env() {
   _NO_CURRENT=""
   [ "$_NO_VERIFY" = "true" ] && _NO_CURRENT="$("$1")"
   return 0
+}
+
+# _vcs_shared_upsert_pr_comment <pr> <marker-name> <body-file> <read-fn> <write-fn> <user-cmd> [args...]
+#   `upsert-pr-comment` (#381), once for both GitHub adapters. <body-file> holds
+#   the FINAL body (text, a blank line, `<!-- talos:<name> -->`), already
+#   size-checked by the pre-dispatch block. <read-fn> <pr> prints the REST
+#   comments array (every page) and returns non-zero on any failure;
+#   <write-fn> <METHOD> <issues-relative-path> <payload-file> sends the file as
+#   the request body on STDIN, inside the retried command (a retry would
+#   otherwise read an already consumed stdin), and prints the response;
+#   <user-cmd> [args...] prints the authenticated login.
+#   Finds the newest comment by that login whose last non-blank line is the
+#   marker and PATCHes it, else POSTs; an identical body makes no write.
+#   Fail-closed: an unresolved login, an unreadable comment list or a failed
+#   write is exit 1, and nothing is posted unless the read succeeded.
+_vcs_shared_upsert_pr_comment() {
+  local _uc_n="$1" _uc_name="$2" _uc_file="$3" _uc_read="$4" _uc_write="$5"; shift 5
+  local _uc_marker="<!-- talos:$_uc_name -->" _uc_user _uc_raw _uc_found
+  local _uc_state _uc_id _uc_url _uc_resp _uc_method _uc_path
+  # Not _vcs_shared_current_user: it drops the exit status and caches whatever
+  # was printed, and `gh api --jq` prints the raw error JSON to stdout when the
+  # request is refused (an Actions GITHUB_TOKEN, a GitHub App token). So the
+  # lookup must exit 0 AND print something shaped like a GitHub login (up to 39
+  # letters/digits with single inner hyphens, plus an optional [bot] suffix).
+  local _uc_login_re='^[A-Za-z0-9](-?[A-Za-z0-9])*$' _uc_base
+  _uc_user="$("$@" 2>/dev/null)" || _uc_user=""
+  _uc_base="${_uc_user%"[bot]"}"
+  if [ -z "$_uc_user" ] || [ "${#_uc_base}" -gt 39 ] || ! [[ "$_uc_base" =~ $_uc_login_re ]]; then
+    echo "pipeline-vcs: upsert-pr-comment: could not resolve the authenticated user (GET /user fails for an Actions GITHUB_TOKEN or a GitHub App token); nothing posted" >&2
+    exit 1
+  fi
+  _uc_raw="$("$_uc_read" "$_uc_n")" || {
+    echo "pipeline-vcs: upsert-pr-comment: could not read the comments of #$_uc_n; nothing posted" >&2
+    exit 1
+  }
+  _uc_found="$(printf '%s' "$_uc_raw" | python3 -I -c '
+import json, sys
+user, marker, path = sys.argv[1:4]
+try:
+    items = json.load(sys.stdin)
+except ValueError:
+    items = None
+if not isinstance(items, list):
+    sys.exit("the comments are not a JSON array")
+def norm(s):
+    return (s or "").replace("\r\n", "\n").rstrip()
+new = norm(open(path, encoding="utf-8", errors="replace").read())
+hit = None
+for c in items:
+    if not isinstance(c, dict):
+        continue
+    login = (c.get("user") or c.get("author") or {}).get("login") or ""
+    body = norm(c.get("body"))
+    if login.lower() == user.lower() and body.rsplit("\n", 1)[-1].strip() == marker:
+        hit = c
+if hit is None:
+    print("created")
+else:
+    print("unchanged" if norm(hit.get("body")) == new else "updated",
+          int(hit["id"]), hit.get("html_url") or "", sep="\t")
+' "$_uc_user" "$_uc_marker" "$_uc_file")" || {
+    echo "pipeline-vcs: upsert-pr-comment: could not parse the comments of #$_uc_n; nothing posted" >&2
+    exit 1
+  }
+  IFS=$'\t' read -r _uc_state _uc_id _uc_url <<EOF
+$_uc_found
+EOF
+  if [ "$_uc_state" != "unchanged" ]; then
+    # JSON for the body, staged in a file the writer redirects to stdin: never argv.
+    _TALOS_UPSERT_PAYLOAD_FILE="$(mktemp)"
+    _talos_on_exit 'rm -f "$_TALOS_UPSERT_PAYLOAD_FILE"'
+    python3 -I -c '
+import json, sys
+sys.stdout.write(json.dumps({"body": open(sys.argv[1], encoding="utf-8", errors="replace").read()}))
+' "$_uc_file" > "$_TALOS_UPSERT_PAYLOAD_FILE" || {
+      echo "pipeline-vcs: upsert-pr-comment: could not build the request body; nothing posted" >&2
+      exit 1
+    }
+    if [ "$_uc_state" = "updated" ]; then
+      _uc_method=PATCH; _uc_path="issues/comments/$_uc_id"
+    else
+      _uc_method=POST; _uc_path="issues/$_uc_n/comments"
+    fi
+    _uc_resp="$("$_uc_write" "$_uc_method" "$_uc_path" "$_TALOS_UPSERT_PAYLOAD_FILE")" || {
+      echo "pipeline-vcs: upsert-pr-comment: $_uc_method $_uc_path failed; the comment on #$_uc_n was not changed" >&2
+      exit 1
+    }
+    rm -f "$_TALOS_UPSERT_PAYLOAD_FILE"
+    _uc_resp="$(printf '%s' "$_uc_resp" | python3 -I -c '
+import json, sys
+try:
+    print(json.load(sys.stdin).get("html_url") or "")
+except Exception:
+    print("")
+' 2>/dev/null)"
+    [ -n "$_uc_resp" ] && _uc_url="$_uc_resp"
+  fi
+  [ -n "${_uc_url:-}" ] && printf '%s\n' "$_uc_url"
+  printf 'upserted pr=%s comment=%s\n' "$_uc_n" "$_uc_state"
 }
 
 # _vcs_shared_mark_needs_owner <n> <text> <post-fn> <label-fn> <user-fn>
@@ -3080,10 +3202,29 @@ _github() {
     gh api --method DELETE "repos/$(_gh_no_repo)/issues/$1/labels/$_TALOS_NEEDS_OWNER_LABEL_URL" >/dev/null
   }
 
+  # Provider calls for upsert-pr-comment (#381). The body goes to `gh api` on
+  # stdin (`--input -`) from the staged JSON file. The redirect is inside
+  # _gh_upc_once, the function _with_retry reruns, so every attempt re-opens the
+  # file; a redirect on the outer call would be consumed by the first attempt.
+  _gh_upc_read() {
+    local _gur_raw
+    _gur_raw="$(gh api --paginate "repos/$(_gh_no_repo)/issues/$1/comments?per_page=100")" || return 1
+    printf '%s' "$_gur_raw" | _gh_paginate_merge
+  }
+  _gh_upc_once() { command gh api --method "$1" "$2" --input - < "$3"; }
+  _gh_upc_write() { _with_retry "$VERB" _gh_upc_once "$1" "repos/$(_gh_no_repo)/$2" "$3"; }
+
   local verb="$1"; shift
   case "$verb" in
     assign-issue)
       _vcs_shared_assign_issue "${1:-}" _gh_assignees_get _gh_assignee_add gh api user --jq .login
+      ;;
+    upsert-pr-comment)
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] gh api --paginate repos/$(_gh_no_repo)/issues/$1/comments?per_page=100 (newest own comment ending in <!-- talos:$2 -->); then gh api --method PATCH repos/$(_gh_no_repo)/issues/comments/<id> --input - (body on stdin), or gh api --method POST repos/$(_gh_no_repo)/issues/$1/comments --input - when there is none; no write when the body is unchanged"
+        return 0
+      fi
+      _vcs_shared_upsert_pr_comment "${1:-}" "${2:-}" "${3:-}" _gh_upc_read _gh_upc_write gh api user --jq .login
       ;;
     mark-needs-owner)
       if [ "$DRY_RUN" = "true" ]; then
@@ -4305,11 +4446,28 @@ sys.stdout.write(json.dumps({"body": sys.stdin.buffer.read().decode("utf-8", err
     _with_retry "$_VERB" _ga_req_once DELETE "$_API/issues/$1/labels/$_TALOS_NEEDS_OWNER_LABEL_URL" >/dev/null
   }
 
+  # Provider calls for upsert-pr-comment (#381). The body goes to curl on stdin
+  # (`--data-binary @-`) from the staged JSON file; the redirect sits on the
+  # function _with_retry reruns, so a retry re-reads the file instead of an
+  # already consumed stdin. curl inherits the redirect through _ga_req_once.
+  _ga_upc_read() { _ga_fetch_all_comments "$1"; }
+  _ga_upc_once() {
+    _ga_req_once "$1" "$_API/$2" -H "Content-Type: application/json" --data-binary @- < "$3"
+  }
+  _ga_upc_write() { _with_retry "$_VERB" _ga_upc_once "$1" "$2" "$3"; }
+
   # ── Verb dispatch ───────────────────────────────────────────────────────────
   case "$_VERB" in
 
     assign-issue)
       _vcs_shared_assign_issue "${1:-}" _ga_assignees_get _ga_assignee_add _ga_current_user_login
+      ;;
+    upsert-pr-comment)
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: GET $_API/issues/$1/comments?per_page=100 (paginated; newest own comment ending in <!-- talos:$2 -->); then PATCH $_API/issues/comments/<id> (body on stdin), or POST $_API/issues/$1/comments when there is none; no write when the body is unchanged"
+        return 0
+      fi
+      _vcs_shared_upsert_pr_comment "${1:-}" "${2:-}" "${3:-}" _ga_upc_read _ga_upc_write _ga_current_user_login
       ;;
     mark-needs-owner)
       if [ "$DRY_RUN" = "true" ]; then
@@ -7377,12 +7535,12 @@ print(" ".join(sorted(names("\n".join(strip_code(l) for l in prose)) & known)))
     ;;
 esac
 
-# mark-needs-owner / list-needs-owner (#345) are GitHub only; the label and
-# marker verbs have no gitlab, azure or file implementation. Exit 2, before any
-# body is read from stdin or a file, so a caller reads it as "unsupported, skip"
-# and not as the exit 1 of a failed call.
+# mark-needs-owner / list-needs-owner (#345) and upsert-pr-comment (#381) are
+# GitHub only; the label and marker verbs have no gitlab, azure or file
+# implementation. Exit 2, before any body is read from stdin or a file, so a
+# caller reads it as "unsupported, skip" and not as the exit 1 of a failed call.
 case "$VERB" in
-  mark-needs-owner|list-needs-owner)
+  mark-needs-owner|list-needs-owner|upsert-pr-comment)
     if [ "$PROVIDER" != "github" ] && [ "$PROVIDER" != "github-api" ]; then
       echo "pipeline-vcs: $VERB: not implemented for provider '$PROVIDER'" >&2
       exit 2
@@ -7474,6 +7632,83 @@ case "$VERB" in
     done
     ;;
 esac
+
+# upsert-pr-comment <pr> --marker <name> --body-file <path|-> (#381). Its own
+# block: the `--body-file` block above only matches `<n> --body-file <x>`, and
+# this verb's body is not a positional. Validates everything and stages the
+# FINAL body (text, a blank line, the marker) in a temp file, then rewrites ARGS
+# to `<pr> <name> <file>` for the adapters; the body never travels as an argument
+# to a command. Usage errors exit 2, a body that cannot be read, is empty or
+# is over the caps exits 1, all before any call.
+_TALOS_UPSERT_BODY_FILE=""
+_TALOS_UPSERT_PAYLOAD_FILE=""
+if [ "$VERB" = "upsert-pr-comment" ]; then
+  _uc_usage="Usage: upsert-pr-comment <pr> --marker <name> --body-file <path|->"
+  _uc_pr="${ARGS[0]-}"
+  _uc_marker=""; _uc_src=""; _uc_have_marker=false; _uc_have_src=false
+  _uc_i=1
+  while [ "$_uc_i" -lt "${#ARGS[@]}" ]; do
+    case "${ARGS[$_uc_i]}" in
+      --marker|--body-file)
+        if [ $((_uc_i + 1)) -ge "${#ARGS[@]}" ]; then
+          echo "pipeline-vcs: upsert-pr-comment: ${ARGS[$_uc_i]} needs a value; $_uc_usage" >&2
+          exit 2
+        fi
+        if [ "${ARGS[$_uc_i]}" = "--marker" ]; then
+          _uc_marker="${ARGS[$((_uc_i + 1))]}"; _uc_have_marker=true
+        else
+          _uc_src="${ARGS[$((_uc_i + 1))]}"; _uc_have_src=true
+        fi
+        _uc_i=$((_uc_i + 2))
+        ;;
+      *)
+        echo "pipeline-vcs: upsert-pr-comment: unexpected argument '${ARGS[$_uc_i]}' (the body comes only from --body-file <path|->); $_uc_usage" >&2
+        exit 2
+        ;;
+    esac
+  done
+  case "$_uc_pr" in
+    ''|*[!0-9]*)
+      echo "pipeline-vcs: upsert-pr-comment: <pr> must be a number (got '$_uc_pr'); $_uc_usage" >&2
+      exit 2
+      ;;
+  esac
+  if [ "$_uc_have_marker" != true ] || [ "$_uc_have_src" != true ]; then
+    echo "pipeline-vcs: upsert-pr-comment: --marker and --body-file are both required; $_uc_usage" >&2
+    exit 2
+  fi
+  _uc_known=false
+  for _uc_m in "${TALOS_MARKERS[@]:-}"; do
+    [ -n "$_uc_marker" ] && [ "$_uc_m" = "talos:$_uc_marker" ] && _uc_known=true
+  done
+  if [ "$_uc_known" != true ]; then
+    echo "pipeline-vcs: upsert-pr-comment: --marker '$_uc_marker' is not a TALOS_MARKERS member (give the name without the talos: prefix, e.g. spend)" >&2
+    exit 2
+  fi
+  if [ "$_uc_src" = "-" ]; then
+    _read_stdin_body
+    _uc_body="$_TALOS_STDIN_BODY"
+  elif [ ! -r "$_uc_src" ]; then
+    echo "pipeline-vcs: upsert-pr-comment --body-file: cannot read '$_uc_src'" >&2
+    exit 1
+  elif [ "$(wc -c < "$_uc_src")" -gt $((4 * _TALOS_COMMENT_MAX)) ]; then
+    echo "pipeline-vcs: upsert-pr-comment: body is longer than $_TALOS_COMMENT_MAX characters (GitHub's comment limit); nothing posted." >&2
+    exit 1
+  else
+    _uc_body="$(cat "$_uc_src")"
+  fi
+  if [ -z "$(printf '%s' "$_uc_body" | tr -d '[:space:]')" ]; then
+    echo "pipeline-vcs: upsert-pr-comment: the body is empty; nothing posted" >&2
+    exit 1
+  fi
+  _uc_body="$_uc_body"$'\n\n'"<!-- talos:$_uc_marker -->"
+  _check_body_caps "$_uc_body"
+  _TALOS_UPSERT_BODY_FILE="$(mktemp)"
+  _talos_on_exit 'rm -f "$_TALOS_UPSERT_BODY_FILE"'
+  printf '%s' "$_uc_body" > "$_TALOS_UPSERT_BODY_FILE"
+  ARGS=("$_uc_pr" "$_uc_marker" "$_TALOS_UPSERT_BODY_FILE")
+  unset _uc_usage _uc_pr _uc_marker _uc_src _uc_have_marker _uc_have_src _uc_i _uc_known _uc_m _uc_body
+fi
 
 # ── assert-sync: working-tree precondition (provider-agnostic) ───────────────
 # Called by the orchestrator before dispatching non-worktree-isolated stages.
