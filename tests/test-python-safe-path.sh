@@ -8,7 +8,8 @@
 # yaml.py, subprocess.py, ...) used to execute inside Talos as the Talos user.
 #
 # THE PATTERN (stated once, here and in docs/user-guide.md): every embedded
-# Python call in scripts/*.sh and install.sh is the literal `python3 -I`.
+# Python call in scripts/*.sh, install.sh and the fenced recipes in the
+# playbook, agent profiles, templates, docs and README is `python3 -I`.
 #   * -I (isolated mode) drops the script/cwd entry, PYTHON* env vars and user
 #     site. It exists since Python 3.4; Python 3.9+ is the supported floor.
 #   * -P / PYTHONSAFEPATH are not used: 3.9 (the macOS system python3) does not
@@ -22,7 +23,8 @@
 #   1. a behavioural run: planted json/yaml/subprocess/datetime/pathlib/re
 #      modules (they only write marker files inside the sandbox) sit in the cwd
 #      of a representative set of scripts, and no marker may appear;
-#   2. a static guard: no non-comment python call with -c, - or << lacks -I.
+#   2. a static guard: no non-comment python call with -c, - or << lacks -I
+#      (scripts and install.sh line by line, markdown inside code fences).
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox
@@ -39,19 +41,43 @@ MB="$TALOS_ROOT/scripts/pipeline-mergebase.sh"
 EV="$TALOS_ROOT/scripts/pipeline-events.sh"
 
 # ---- static guard ----------------------------------------------------------
-# unsafe_py_calls <file>...: print file:line:text for every non-comment line
-# that runs python (python, python3, /usr/bin/env python3, "$PYTHON") with -c,
-# - (stdin) or a heredoc and no -I in the option group before it.
+# unsafe_py_calls [--fenced] <file>...: print file:line:text for every
+# non-comment python call (python, python3, python3.N, /usr/bin/env python3,
+# $PY, "$PYTHON", "${PY:-python3}") that reaches -c (also inside a combined
+# short-flag cluster such as -Bc), - (stdin) or a heredoc without an I in the
+# option group before it. Options that take a separate argument (-X dev,
+# -W error) are skipped over, and a backslash continuation is joined first
+# (the report names the line the call starts on). With --fenced only lines
+# inside a ``` fence are scanned, so prose in a .md file never trips it.
 unsafe_py_calls() {
   perl -e '
-    while (<>) {
-      if (!/^\s*#/
-          && /(?:\bpython3?|"?\$PYTHON\b"?)((?:\s+-[A-Za-z]+)*)\s+(?:-c\b|-(?:\s|$)|<<)/
-          && $1 !~ /-[A-Za-z]*I/) {
-        print "$ARGV:$.:$_";
+    my $fenced = @ARGV && $ARGV[0] eq "--fenced" ? shift(@ARGV) : 0;
+    my $interp = qr/\bpython(?:3(?:\.\d+)?)?\b|"?\$\{?(?:PY|PYTHON)\b(?::-[^}]*)?\}?"?/;
+    my $opt    = qr/\s+-(?:[XW]\s+\S+|-?[A-Za-z][\w-]*)/;
+    my $trig   = qr/\s+(?:-[A-Za-z]*c\b|-(?:\s|$)|<<)/;
+    my ($in, $buf, $start) = (0, "", 0);
+    my $check = sub {
+      my ($file) = @_;
+      my $text = $buf; $buf = "";
+      return if $text =~ /^\s*#/;
+      while ($text =~ /($interp(?:$opt)*$trig)/g) {
+        next if $1 =~ /(?:^|\s)-[A-Za-z]*I[A-Za-z]*(?=\s|$)/;
+        print "$file:$start:$text\n";
+        last;
       }
-    } continue { close ARGV if eof }
-  ' "$@"
+    };
+    while (<>) {
+      if ($fenced && /^\s*```/) { $in = !$in; $buf = ""; next; }
+      next if $fenced && !$in;
+      $start = $. if $buf eq "";
+      chomp(my $l = $_);
+      if ($l =~ s/\\$/ /) { $buf .= $l; next; }
+      $buf .= $l;
+      $check->($ARGV);
+    } continue {
+      if (eof) { $check->($ARGV) if $buf ne ""; $in = 0; close ARGV; }
+    }
+  ' -- "$@"
 }
 
 # The guard itself: it must flag the bypass forms and pass the safe ones.
@@ -76,14 +102,82 @@ python3 -B -I -c 'x'
   # python3 -c 'a commented example'
 echo "python3 is required"
 python3 /some/script.py
+python3 -Bc 'x'
+python3 -X dev -c 'x'
+python3 -W error -c 'x'
+python3.12 -c 'x'
+$PY -c 'x'
+"${PY:-python3}" -c 'x'
+x="$(echo hi | "${PY:-python3}" -c 'x')"
+PYTHONPATH=a \
+  python3 \
+  -c 'x'
+python3 -BI -c 'x'
+python3 -I -Bc 'x'
+python3 -I -X dev -c 'x'
+python3 -I -W error -c 'x'
+python3.12 -I -c 'x'
+$PY -I -c 'x'
+"${PY:-python3}" -I -c 'x'
+PYTHONPATH=a \
+  python3 -I \
+  -c 'x'
+python3 -m json.tool
+python3 -m pytest -c cfg
+python3 script.py -c 'x'
 EOF_GUARD_FIXTURE_Zq7wKd3nVx91
+# Lines 1-10 are the original forms; 20-29 the blind spots (combined flags,
+# options with an argument, versioned binary, variable interpreters, and a
+# continuation, reported at the line the call starts on).
 _flagged="$(unsafe_py_calls "$_g" | cut -d: -f2 | tr '\n' ' ')"
-assert_eq "1 2 3 4 5 6 7 8 9 10 " "$_flagged" \
+assert_eq "1 2 3 4 5 6 7 8 9 10 20 21 22 23 24 25 26 27 " "$_flagged" \
   "guard: flags every unsafe python form and nothing else"
+
+# Fenced mode: only code inside a ``` fence (indented or not) counts; prose,
+# -I calls and python -m are not flagged.
+_gm="$SANDBOX/guard-fixture.md"
+cat > "$_gm" <<'EOF_GUARD_FIXTURE_MD_Bn4Yt8pQ2c'
+Prose: run python3 -c to see it, or python3 - <<EOF here.
+
+```bash
+python3 -c 'x'
+python3 -I -c 'x'
+```
+
+- list item
+
+  ```bash
+         python3 -c "
+  print(1)
+  "
+  ```
+
+Prose again: python3 -c 'x'
+
+```
+x="$(printf y | python3 -c 'x')"
+python3 -m json.tool
+```
+EOF_GUARD_FIXTURE_MD_Bn4Yt8pQ2c
+_flagged="$(unsafe_py_calls --fenced "$_gm" | cut -d: -f2 | tr '\n' ' ')"
+assert_eq "4 11 19 " "$_flagged" \
+  "guard --fenced: flags unsafe calls inside fences only, indented fences included"
 
 _guard_files=("$TALOS_ROOT"/scripts/*.sh "$TALOS_ROOT/install.sh")
 _unsafe="$(unsafe_py_calls "${_guard_files[@]}")"
 assert_eq "" "$_unsafe" "guard: no embedded python call in scripts/*.sh or install.sh lacks -I"
+[ -z "$_unsafe" ] || printf "%s\n" "$_unsafe" | head -20 | cut -c1-200 >&2
+
+# The playbook, agent profiles, templates, docs and README: fenced code only.
+_md_files=()
+while IFS= read -r _f; do _md_files+=("$_f"); done < <(
+  { find "$TALOS_ROOT/skills" "$TALOS_ROOT/docs" -type f -name '*.md'
+    find "$TALOS_ROOT/agents" -maxdepth 1 -type f -name '*.md'
+    find "$TALOS_ROOT/templates" -type f
+    printf '%s\n' "$TALOS_ROOT/README.md"; } | sort)
+_unsafe="$(unsafe_py_calls --fenced "${_md_files[@]}")"
+assert_eq "" "$_unsafe" \
+  "guard: no fenced python call in skills, agents, templates, docs or README lacks -I"
 [ -z "$_unsafe" ] || printf "%s\n" "$_unsafe" | head -20 | cut -c1-200 >&2
 
 # ---- planted-module run ----------------------------------------------------

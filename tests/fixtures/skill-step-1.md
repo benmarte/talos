@@ -36,7 +36,7 @@ bash scripts/pipeline-vcs.sh list-issues
        [ -f "$TMPL" ] || TMPL=".claude/talos/templates/comments/epic-acceptance-pending.md"
        COMMENT_BODY="$(
          HEADER="<HEADER>" DETAILS="$ITEMS" \
-         python3 -c "
+         python3 -I -c "
        import os, string, sys
        with open(sys.argv[1]) as f:
            t = string.Template(f.read())

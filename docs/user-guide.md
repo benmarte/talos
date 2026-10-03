@@ -1401,7 +1401,7 @@ stdout for `pre_dispatch`, and appends the outcome to a local log for
 set -euo pipefail
 
 payload="$(cat)"
-kind="$(printf '%s' "$payload" | python3 -c '
+kind="$(printf '%s' "$payload" | python3 -I -c '
 import json, sys
 data = json.load(sys.stdin)
 print("post_stage" if "event" in data else "pre_dispatch")
@@ -1409,8 +1409,8 @@ print("post_stage" if "event" in data else "pre_dispatch")
 
 if [ "$kind" = "pre_dispatch" ]; then
   # pre_dispatch: stdout is prepended to the stage prompt under "## Context".
-  role="$(printf '%s' "$payload" | python3 -c 'import json,sys; print(json.load(sys.stdin)["role"])')"
-  issue="$(printf '%s' "$payload" | python3 -c 'import json,sys; print(json.load(sys.stdin)["issue"])')"
+  role="$(printf '%s' "$payload" | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["role"])')"
+  issue="$(printf '%s' "$payload" | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["issue"])')"
   echo "Stage: $role, issue #$issue -- see docs/adr/ for prior decisions."
 else
   # post_stage: no stdout contract -- append the outcome to a local log.
@@ -1688,7 +1688,7 @@ notification):
 ```bash
 #!/usr/bin/env bash
 payload="$(cat)"
-msg="$(printf '%s' "$payload" | python3 -c 'import json,sys; print(json.load(sys.stdin)["message"])')"
+msg="$(printf '%s' "$payload" | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["message"])')"
 terminal-notifier -message "$msg" -title "Talos"
 ```
 
