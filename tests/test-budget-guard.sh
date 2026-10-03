@@ -214,6 +214,29 @@ else
   pass "chmod 000 check skipped (running as root)"
 fi
 
+# ── (i) a crash or malformed data never blocks (exit 0, unknown line) ───────
+# stub_cost <json> -- the copied events script answers `cost` with <json> and
+# `list` with nothing, so the guard sees structurally odd data.
+stub_cost() {
+  printf '%s\n' '#!/usr/bin/env bash' \
+    'if [ "$1" = cost ]; then cat <<'"'"'COSTJSON'"'"'' "$1" 'COSTJSON' 'fi' 'exit 0' \
+    > "$STUBDIR/pipeline-events.sh"
+}
+set_cfg '{"limits": {"tokens_per_issue": 4000000, "warn_at": 0.8}}'
+stub_cost '{"rows": [{"role": "dev", "events": "many", "tokens": 5, "unrecorded": 0}]}'
+OUT="$(bash "$STUBDIR/pipeline-budget.sh" check --issue 7 2>"$ERR")"; RC=$?
+assert_eq "0" "$RC" "internal crash (bad events field): exit 0, not exceeded"
+assert_eq "talos:budget unknown issue=7 reason=error" "$OUT" "internal crash: unknown line with reason=error"
+OUT="$(bash "$STUBDIR/pipeline-budget.sh" check --issue 7 --json 2>"$ERR")"; RC=$?
+assert_eq "0" "$RC" "internal crash with --json: exit 0"
+assert_eq "unknown error" "$(printf '%s' "$OUT" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["status"], d["reason"])')" "internal crash with --json: unknown object"
+
+# Negative or non-finite token counts are never added; they read as unrecorded.
+stub_cost '{"rows": [{"role": "dev", "events": 1, "tokens": 1000, "unrecorded": 0}, {"role": "qa", "events": 2, "tokens": -999999999, "unrecorded": 0}, {"role": "reviewer", "events": 1, "tokens": NaN, "unrecorded": 0}]}'
+OUT="$(bash "$STUBDIR/pipeline-budget.sh" check --issue 7 2>"$ERR")"; RC=$?
+assert_eq "talos:budget ok issue=7 used=1000 limit=4000000 effective=4000000 pct=0 unrecorded=3" "$OUT" "negative and non-finite tokens: not added, counted as unrecorded"
+assert_eq "0" "$RC" "negative tokens: exit 0"
+
 # ── (g) read-only, no vcs calls, python -I ──────────────────────────────────
 set_cfg '{"limits": {"tokens_per_issue": 4000000, "warn_at": 0.8}}'
 reset_log; seed 7 dev 3300000; seed 7 orchestrator null budget-blocked

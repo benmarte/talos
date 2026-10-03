@@ -9,7 +9,7 @@
 #            talos:budget <ok|warn|exceeded> issue=N used=<int> limit=<L> \
 #                         effective=<E> pct=<int> unrecorded=<K>
 #          or, when there is nothing to judge,
-#            talos:budget unknown issue=N reason=<no-events|events-unavailable>
+#            talos:budget unknown issue=N reason=<no-events|events-unavailable|error>
 #          --json prints the same fields as one object ({"status": ..., "issue":
 #          ..., "used": ..., "limit": ..., "effective": ..., "pct": ...,
 #          "unrecorded": ...}; unknown carries "status", "issue", "reason").
@@ -40,7 +40,13 @@
 #   unrecorded events for N whose tokens field is null, counted from the
 #              `cost` rows with role `orchestrator` excluded: the
 #              `budget-blocked` marker (role orchestrator, tokens null) is not a
-#              stage run, so it is neither an event nor unrecorded here.
+#              stage run, so it is neither an event nor unrecorded here. A
+#              `cost` row whose tokens value is negative or not an integer is
+#              never added to used; its events count as unrecorded instead.
+#   error      an internal failure (malformed data from the events tool, a
+#              Python crash) is reported as `talos:budget unknown ...
+#              reason=error` with exit 0. Python signals exceeded with exit 10,
+#              which is mapped to exit 1, so a crash can never read as exceeded.
 #
 # Missing data never blocks: no log, no events for N (a lone budget-blocked
 # marker is no events), or a failing/empty events tool all give `unknown` and
@@ -101,7 +107,10 @@ cost_out="" blocked_out="" tool_ok=1
 cost_out="$(bash "$SCRIPT_DIR/pipeline-events.sh" cost --issue "$issue" --json 2>/dev/null)" || tool_ok=0
 blocked_out="$(bash "$SCRIPT_DIR/pipeline-events.sh" list --issue "$issue" --event budget-blocked --json 2>/dev/null)" || tool_ok=0
 
-python3 -I - "$issue" "$limit" "$warn_at" "$json_mode" "$tool_ok" "$cost_out" "$blocked_out" <<'PYEOF'
+# The Python block exits 10 for exceeded, 0 for everything else it decides. An
+# uncaught exception also exits 1, so a crash is told apart from "exceeded" by
+# using a code Python never produces on its own.
+out="$(python3 -I - "$issue" "$limit" "$warn_at" "$json_mode" "$tool_ok" "$cost_out" "$blocked_out" <<'PYEOF'
 import json
 import sys
 from fractions import Fraction
@@ -141,13 +150,19 @@ unrecorded = 0
 for row in rows:
     if not isinstance(row, dict):
         continue
-    tokens = row.get("tokens")
-    if isinstance(tokens, int) and not isinstance(tokens, bool):
-        used += tokens
     if row.get("role") == "orchestrator":
         continue  # budget-blocked markers are not stage runs
-    events += int(row.get("events") or 0)
-    unrecorded += int(row.get("unrecorded") or 0)
+    row_events = int(row.get("events") or 0)
+    events += row_events
+    tokens = row.get("tokens")
+    if isinstance(tokens, int) and not isinstance(tokens, bool) and tokens >= 0:
+        used += tokens
+        unrecorded += int(row.get("unrecorded") or 0)
+    else:
+        # Negative, non-finite or non-integer tokens cannot be trusted: never
+        # add them (a negative would lower the total), count the events of that row
+        # as unrecorded instead.
+        unrecorded += row_events
 if events == 0:
     unknown("no-events")
 
@@ -167,7 +182,7 @@ except ValueError:
 warn_line = Fraction(repr(threshold)) * effective
 
 if used >= effective:
-    status, rc = "exceeded", 1
+    status, rc = "exceeded", 10
 elif used >= warn_line:
     status, rc = "warn", 0
 else:
@@ -175,8 +190,15 @@ else:
 emit(status, [("used", used), ("limit", limit), ("effective", effective),
               ("pct", used * 100 // effective), ("unrecorded", unrecorded)], rc)
 PYEOF
+)"
 rc=$?
-# Exit 1 (exceeded) passes through; anything else unexpected (a Python crash)
-# must not block -- missing data never blocks.
-[ "$rc" -eq 1 ] && exit 1
+case "$rc" in
+  0|10) printf '%s\n' "$out"; [ "$rc" -eq 10 ] && exit 1; exit 0 ;;
+esac
+# Anything else is a crash: say so on the same channel and never block.
+if [ "$json_mode" = "1" ]; then
+  printf '{"status": "unknown", "issue": %s, "reason": "error"}\n' "$issue"
+else
+  printf 'talos:budget unknown issue=%s reason=error\n' "$issue"
+fi
 exit 0
