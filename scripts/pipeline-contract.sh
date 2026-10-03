@@ -40,6 +40,21 @@ TALOS_ROLES=(
   developer qa reviewer security adversarial docs validator pm orchestrator planner
 )
 
+# ── Runners ────────────────────────────────────────────────────────────────
+# Every value `agents.runner` accepts, as "id|Display name". The id is what
+# pipeline-agent.sh's case arms match; the display name is the column header
+# in the docs/user-guide.md "Harness feature matrix". tests/
+# test-runner-conformance.sh drives one stage through each entry and checks
+# this list against both of those places.
+TALOS_RUNNERS=(
+  "claude|Claude Code"
+  "pi|pi"
+  "codex|Codex CLI"
+  "gemini|Gemini CLI"
+  "antigravity|Antigravity"
+  "custom|Custom/local"
+)
+
 # The subset of TALOS_ROLES that carries an approval label (gated by
 # check-approval-sha / post-approval), in the same order as
 # TALOS_APPROVAL_LABELS below -- index i's role owns index i's label.
