@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# pipeline-evidence.sh -- run the repo's evidence command and choose which of
-# the files it wrote may leave the machine (#406, part of epic #352).
+# pipeline-evidence.sh -- run the repo's evidence command, choose which of the
+# files it wrote may leave the machine, and attach them to a PR (#406, #415,
+# part of epic #352).
 #
 # Usage:
 #   pipeline-evidence.sh capture
-#   pipeline-evidence.sh collect <dir> [--since <epoch>]
+#   pipeline-evidence.sh collect <dir> [--since <epoch>] [--stage <dir>]
+#   pipeline-evidence.sh upload <pr> [--since <epoch>] [--dry-run]
 #
-# Everything here is local: no network call, no git write. Uploading the
-# manifest is a later step (#415, `gh pr comment --attach`).
+# capture and collect are local: no network call, no git write. upload is the
+# only subcommand that talks to GitHub (`gh pr comment --attach`).
 #
 # capture
 #   Takes NO command text on argv (any argument is a usage error): the command
@@ -28,9 +30,12 @@
 #   non-zero rc is reported, not a failure: capture is evidence, not a gate.
 #   An empty or absent evidence.command prints `evidence-capture mode=agent`
 #   and runs nothing. capture does not check evidence.enabled; that gating is
-#   the caller's.
+#   the caller's (the stage wiring, #409). Exit codes:
+#     0  a line was printed (whatever the command's own rc)
+#     1  the log could not be created, or the runner failed
+#     2  usage (any argument) or not inside a worktree
 #
-# collect <dir> [--since <epoch>]
+# collect <dir> [--since <epoch>] [--stage <dir>]
 #   <dir> is relative to the worktree toplevel (an absolute path is refused).
 #   It prints the manifest of files that are safe to publish: sorted TSV lines
 #   `<relpath>\t<bytes>\t<image|video>` on stdout, relpath relative to <dir>.
@@ -77,17 +82,98 @@
 #   Caps: evidence.max_files (default 10) and evidence.max_mb (default 20, MiB,
 #   a total), plus a fixed 10 MiB per file (GitHub's free-plan image and video
 #   limit). Over any of them is exit 4, never a partial selection.
+#   --stage <dir> (#415): <dir> must be an existing, EMPTY directory outside
+#   the evidence dir. Each selected file's bytes are copied from the file
+#   descriptor that was already opened and judged (never reopened by name, so a
+#   file swapped for a symlink afterwards cannot redirect the copy) into
+#   <dir>/<relpath>: subdirectories 0700, files 0600. The size caps are
+#   re-checked against the bytes actually copied (the manifest's byte count is
+#   then the copied size). A refusal, exit 3 or exit 4 removes what was staged.
+#   stdout stays the same manifest; without --stage nothing is written.
+#
+# upload <pr> [--since <epoch>] [--dry-run]
+#   Posts ONE evidence comment on PR <pr> (digits only) with
+#   `gh pr comment --attach`, then deletes the author's older evidence
+#   comments. It takes no manifest and no directory: it reads evidence.dir
+#   (default .talos/evidence), makes its own 0700 `mktemp -d` staging dir
+#   outside the worktree (removed on exit), runs `collect --stage` into it and
+#   attaches ONLY from there. `gh --attach` opens paths again by name and
+#   follows symlinks, so attaching from the evidence dir would let a file
+#   swapped after selection leave the machine; a private copy cannot be
+#   swapped. --since is passed to collect (the epoch `capture` printed) so a
+#   stale earlier capture is never republished.
+#   Order: provider check, collect, the capability probe, the login lookup, the
+#   comment list, the post, the deletes. Nothing is posted unless every earlier
+#   step succeeded.
+#   - provider: `github`, or `github-api` when a `gh` binary exists; anything
+#     else is exit 2 `not implemented for provider '<p>'`.
+#   - capability: `gh pr comment --help` (stdout, no network) must list
+#     `--attach` (gh v2.99.0 or newer), else exit 2 and no other gh call.
+#   - login: `gh api user --jq .login` must exit 0 AND print a GitHub login
+#     (the check upsert-pr-comment uses, #381/#392); anything else is exit 1
+#     and nothing is posted. A comment is only ever deleted when that login
+#     wrote it AND its last non-blank line is `<!-- talos:evidence -->`.
+#   - strategy: create-then-delete. gh uploads inside the comment write, and
+#     `--edit-last` edits "the current user's last comment" of any kind (every
+#     stage comment shares one login), so editing is never used. The new
+#     comment is posted first (a failed post leaves the old evidence in place);
+#     older own evidence comments are deleted only after a good post.
+#   - gh runs with cwd = the staging dir and `--repo <owner>/<repo>`; the body
+#     and every `--attach` value use the same `./<relpath>` (gh matches them as
+#     absolute paths from its cwd; `--repo` only selects the PR, it does not
+#     change how attachments are read). The body goes on stdin (`--body-file
+#     -`) and every path is its own argv element.
+#   Output, one line on stdout:
+#     evidence-upload pr=<n> images=<i> videos=<v> comment=<url> mode=<new|replace|skip>
+#   new = no older evidence comment was deleted, replace = at least one was,
+#   skip = nothing to attach (comment= empty, exit 3, no gh call).
+#   Exit codes:
+#     0  posted, and older evidence comments deleted
+#     1  a collect, staging or gh failure, one line naming the reason; a failed
+#        delete after a good post names the comment id and still prints the
+#        line with the new URL
+#     2  usage, unsupported provider, no gh binary, or gh without --attach
+#     3  nothing to attach (collect exit 3)
+#   Not supported by gh: GitHub Enterprise Server, and an Actions GITHUB_TOKEN
+#   (gh refuses it; that is exit 1 with gh's own reason). Needs write access
+#   to the repository. Gating on evidence.enabled is the caller's.
+#   --dry-run prints the planned gh calls and makes none (no probe, no login
+#   lookup); collect still runs, locally.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CFG_SH="$SCRIPT_DIR/pipeline-config.sh"
 
 usage() {
-  echo "Usage: pipeline-evidence.sh capture | collect <dir> [--since <epoch>]" >&2
+  echo "Usage: pipeline-evidence.sh capture | collect <dir> [--since <epoch>] [--stage <dir>] | upload <pr> [--since <epoch>] [--dry-run]" >&2
   exit 2
 }
 
 cfg() { bash "$CFG_SH" "$@"; }
+
+# The one way every subcommand runs its embedded python: isolated mode (no
+# PYTHON* env, no cwd on sys.path, so a planted re.py in the worktree is never
+# imported), the source handed in as argv and exec'd, and an unexpected
+# exception turned into one `<prefix>: internal error (<Type>)` line and exit 1
+# instead of a traceback. Inside the source sys.argv[1:] are the arguments.
+read -r -d '' _RUN_PY_WRAPPER <<'TALOS_RUN_PY_Wd4Hs6Nb2Yc' || true
+import sys
+label, src = sys.argv[1:3]
+sys.argv = sys.argv[2:]
+try:
+    exec(compile(src, "pipeline-evidence", "exec"))
+except SystemExit:
+    raise
+except Exception as exc:
+    sys.stderr.write("%s: internal error (%s)\n" % (label, type(exc).__name__))
+    sys.exit(1)
+TALOS_RUN_PY_Wd4Hs6Nb2Yc
+
+# _run_py <error-prefix> <python-source> [args...]
+_run_py() {
+  local label="$1" src="$2"; shift 2
+  python3 -I -c "$_RUN_PY_WRAPPER" "$label" "$src" "$@"
+}
 
 # _digits_or DEFAULT VALUE -- VALUE when it is all digits and not empty.
 _digits_or() {
@@ -162,7 +248,7 @@ cmd_capture() {
     return 1
   }
   since="$(date +%s)"
-  rc="$(python3 -I -c "$_CAPTURE_PY" "$TOPLEVEL" "$timeout_ms" "$log" "$command")" || rc=""
+  rc="$(_run_py "pipeline-evidence capture" "$_CAPTURE_PY" "$TOPLEVEL" "$timeout_ms" "$log" "$command")" || rc=""
   case "$rc" in
     ''|*[!0-9]*)
       echo "pipeline-evidence: could not run evidence.command (log: $log)" >&2
@@ -188,18 +274,35 @@ NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
 MAX_DEPTH = 3
 MAX_ENTRIES = 5000
 
-top, dir_arg, since_s, max_files_s, max_mb_s, include_s = sys.argv[1:7]
+top, dir_arg, since_s, max_files_s, max_mb_s, include_s, stage_arg = sys.argv[1:8]
 max_files = int(max_files_s)
 max_mb = int(max_mb_s)
 since = int(since_s) if since_s else None
 includes = [g for g in include_s.split("\n") if g] or ["*." + e for e in EXTS]
+stage = None            # the real path of the staging dir, when --stage is given
+staged_files = []       # what this run wrote there, removed again on any failure
+staged_dirs = []
 
 
 def say(msg):
     sys.stderr.write("evidence-collect " + msg + "\n")
 
 
+def unstage():
+    for p in staged_files:
+        try:
+            os.unlink(p)
+        except OSError:
+            pass
+    for d in reversed(staged_dirs):
+        try:
+            os.rmdir(d)
+        except OSError:
+            pass
+
+
 def refuse(reason):
+    unstage()
     say("refused: " + reason)
     sys.exit(1)
 
@@ -261,6 +364,57 @@ if ls.returncode != 0:
     refuse("git ls-files failed (rc=%d)" % ls.returncode)
 if ls.stdout:
     refuse("dir holds tracked files")
+
+# 3b. --stage: an absolute, existing, empty directory that is not inside <dir>.
+if stage_arg:
+    if not stage_arg.startswith("/"):
+        refuse("stage must be an absolute path")
+    stage = os.path.realpath(stage_arg)
+    if not os.path.isdir(stage):
+        refuse("stage is not a directory")
+    if os.listdir(stage):
+        refuse("stage is not empty")
+    if os.path.commonpath([stage, joined]) == joined:
+        refuse("stage is inside the evidence dir")
+
+
+def stage_copy(fd, head, relpath):
+    """Copy the opened file (its first bytes already read as head) to
+    <stage>/<relpath>, at most FILE_CAP_MIB + 1 byte. Returns the byte count."""
+    parts = relpath.split("/")
+    cur = stage
+    for p in parts[:-1]:
+        cur = os.path.join(cur, p)
+        try:
+            os.mkdir(cur, 0o700)
+            staged_dirs.append(cur)
+        except FileExistsError:
+            pass
+        st = os.lstat(cur)
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+            raise OSError("stage path is not a directory")
+    dst = os.path.join(cur, parts[-1])
+    out = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    staged_files.append(dst)
+    limit = FILE_CAP_MIB * MIB + 1
+    try:
+        with os.fdopen(out, "wb") as f:
+            f.write(head)
+            total = len(head)
+            while total < limit:
+                chunk = os.read(fd, min(MIB, limit - total))
+                if not chunk:
+                    break
+                f.write(chunk)
+                total += len(chunk)
+    except OSError:
+        staged_files.remove(dst)
+        try:
+            os.unlink(dst)
+        except OSError:
+            pass
+        raise
+    return total
 
 
 # 4. selection
@@ -326,20 +480,26 @@ def walk(path, prefix, depth):
         except OSError:
             skipped += 1
             continue
+        size = 0
         try:
             st = os.fstat(fd)
             ok = stat.S_ISREG(st.st_mode) and st.st_nlink == 1
             if ok and since is not None and int(st.st_mtime) < since:
                 ok = False
             head = os.read(fd, 64) if ok else b""
+            ok = ok and magic_ok(ext, head)
+            size = st.st_size
+            if ok and stage is not None:
+                # the copy reads this same descriptor: no reopen by name
+                size = stage_copy(fd, head, prefix + name)
         except OSError:
-            ok, head = False, b""
+            ok = False
         finally:
             os.close(fd)
-        if not ok or not magic_ok(ext, head):
+        if not ok:
             skipped += 1
             continue
-        chosen.append((prefix + name, st.st_size, EXTS[ext]))
+        chosen.append((prefix + name, size, EXTS[ext]))
 
 
 walk(joined, "", 1)
@@ -351,6 +511,7 @@ if not chosen:
 total = sum(c[1] for c in chosen)
 largest = max(c[1] for c in chosen)
 if len(chosen) > max_files or total > max_mb * MIB or largest > FILE_CAP_MIB * MIB:
+    unstage()
     say("over-cap files=%d/%d mb=%.2f/%d file-mb=%.2f/%d" % (
         len(chosen), max_files, total / MIB, max_mb, largest / MIB, FILE_CAP_MIB))
     sys.exit(4)
@@ -361,13 +522,16 @@ say("selected=%d skipped=%d" % (len(chosen), skipped))
 TALOS_COLLECT_PY_Kd5Jb7Ye1Pz
 
 cmd_collect() {
-  local dir="" have_dir=0 since=""
+  local dir="" have_dir=0 since="" stage=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --since)
         [ $# -ge 2 ] || usage
         case "$2" in ''|*[!0-9]*) echo "pipeline-evidence: --since must be digits only" >&2; usage ;; esac
         since="$2"; shift 2 ;;
+      --stage)
+        [ $# -ge 2 ] && [ -n "$2" ] || usage
+        stage="$2"; shift 2 ;;
       --*) usage ;;
       *)
         [ "$have_dir" = 0 ] || usage
@@ -380,22 +544,317 @@ cmd_collect() {
   max_files="$(_digits_or 10 "$(cfg evidence.max_files 10)")"
   max_mb="$(_digits_or 20 "$(cfg evidence.max_mb 20)")"
   include="$(cfg evidence.include "")"
-  python3 -I -c "
+  _run_py "evidence-collect refused" "$_COLLECT_PY" \
+    "$TOPLEVEL" "$dir" "$since" "$max_files" "$max_mb" "$include" "$stage"
+}
+
+# ── upload ───────────────────────────────────────────────────────────────────
+# Two modes, `body` and `select`, one source so both run through _run_py.
+#   body <stage-dir> <body-file>   stdin: the collect manifest (TSV). Re-checks
+#       every row against the staged tree (plain names, at most 3 components,
+#       allowlisted extension that matches the kind, a regular single-link file
+#       reached through no symlink, not empty, not over the per-file cap, at
+#       most 50 rows), writes the comment body to <body-file> and prints
+#       `<images> <videos>` and then one relpath per line in body order.
+#       The body is a fixed template plus those names, never PR or issue text.
+#       Every file is referenced in it (gh appends an unreferenced attachment
+#       at the END of the body, after the marker); one paragraph per file, so
+#       a video renders as a player.
+#   select <login> <marker>        stdin: read-comments JSON. Prints the id of
+#       every comment written by <login> (case-insensitive) whose LAST
+#       non-blank line is <marker>, one per line. Nobody else's comment is ever
+#       listed.
+read -r -d '' _UPLOAD_PY <<'TALOS_UPLOAD_PY_Fm7Rc1Gk9Ts' || true
+import json
+import os
+import re
+import stat
 import sys
-src = sys.argv[1]
-sys.argv = sys.argv[1:]
-try:
-    exec(compile(src, 'pipeline-evidence-collect', 'exec'))
-except SystemExit:
-    raise
-except Exception as exc:
-    sys.stderr.write('evidence-collect refused: internal error (%s)\n' % type(exc).__name__)
+
+MIB = 1024 * 1024
+FILE_CAP = 10 * MIB
+MAX_FILES = 50
+EXTS = {"png": "image", "jpg": "image", "jpeg": "image", "gif": "image",
+        "webm": "video", "mp4": "video", "mov": "video"}
+NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
+MARKER = "<!-- talos:evidence -->"
+FOOTER = (
+    "On a public repository these attachments are public: anyone with the "
+    "link can open them. Screenshots and recordings can show on-screen "
+    "secrets, so check them before relying on them."
+)
+
+
+def refuse(reason):
+    sys.stderr.write("evidence-upload refused: %s\n" % reason)
     sys.exit(1)
-" "$_COLLECT_PY" "$TOPLEVEL" "$dir" "$since" "$max_files" "$max_mb" "$include"
+
+
+def check_row(stage, rel, kind):
+    parts = rel.split("/")
+    if not 1 <= len(parts) <= 3:
+        refuse("bad path depth: " + rel)
+    for p in parts:
+        if NAME_RE.fullmatch(p) is None or p[0] in "-.":
+            refuse("unsafe name: " + rel)
+    stem, dot, ext = parts[-1].rpartition(".")
+    if not dot or EXTS.get(ext.lower()) != kind:
+        refuse("extension does not match the kind: " + rel)
+    cur = stage
+    for i, p in enumerate(parts):
+        cur = os.path.join(cur, p)
+        try:
+            st = os.lstat(cur)
+        except OSError:
+            refuse("staged file is missing: " + rel)
+        if stat.S_ISLNK(st.st_mode):
+            refuse("symlink in the staged tree: " + rel)
+        if i < len(parts) - 1:
+            if not stat.S_ISDIR(st.st_mode):
+                refuse("not a directory in the staged tree: " + rel)
+        elif not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+            refuse("not a regular single-link file: " + rel)
+    if st.st_size == 0 or st.st_size > FILE_CAP:
+        refuse("empty or over the per-file cap: " + rel)
+
+
+def mode_body(stage, body_path):
+    rows = []
+    for line in sys.stdin.read().split("\n"):
+        if not line:
+            continue
+        cols = line.split("\t")
+        if len(cols) != 3:
+            refuse("malformed manifest row")
+        rows.append((cols[0], cols[2]))
+    if not 1 <= len(rows) <= MAX_FILES:
+        refuse("expected 1-%d files, got %d" % (MAX_FILES, len(rows)))
+    if len({r[0] for r in rows}) != len(rows):
+        refuse("duplicate path in the manifest")
+    for rel, kind in rows:
+        check_row(stage, rel, kind)
+    ordered = [r for r in rows if r[1] == "image"] + [r for r in rows if r[1] == "video"]
+    paras = ["### Evidence", "Screenshots and recordings captured for this change."]
+    paras += ["![%s](./%s)" % (rel, rel) for rel, _ in ordered]
+    paras += [FOOTER, MARKER]
+    with open(body_path, "w", encoding="utf-8") as f:
+        f.write("\n\n".join(paras) + "\n")
+    images = sum(1 for r in rows if r[1] == "image")
+    sys.stdout.write("%d %d\n" % (images, len(rows) - images))
+    sys.stdout.write("".join(rel + "\n" for rel, _ in ordered))
+
+
+def mode_select(login, marker):
+    try:
+        data = json.load(sys.stdin)
+    except ValueError:
+        data = None
+    items = data.get("comments") if isinstance(data, dict) else data
+    if not isinstance(items, list):
+        sys.exit("the comments are not a JSON array")
+    ids = []
+    for c in items:
+        if not isinstance(c, dict):
+            continue
+        who = (c.get("user") or c.get("author") or {}).get("login") or ""
+        body = (c.get("body") or "").replace("\r\n", "\n").rstrip()
+        if who.lower() == login.lower() and body.rsplit("\n", 1)[-1].strip() == marker:
+            ids.append(int(c["id"]))
+    sys.stdout.write("".join("%d\n" % i for i in sorted(ids)))
+
+
+if sys.argv[1] == "body":
+    mode_body(sys.argv[2], sys.argv[3])
+else:
+    mode_select(sys.argv[2], sys.argv[3])
+TALOS_UPLOAD_PY_Fm7Rc1Gk9Ts
+
+# _one_line <text> -- the first line of <text>, printable ASCII only, at most
+# 200 characters: gh's own stderr, made safe to echo as a reason.
+_one_line() {
+  local first
+  first="$(printf '%s\n' "$1" | head -n 1 | LC_ALL=C tr -c '[:print:]' '?')"
+  printf '%s' "${first:0:200}"
+}
+
+# _upload_cleanup -- removes the private staging dir (set by cmd_upload).
+_upload_cleanup() {
+  case "${_UP_ROOT:-}" in
+    */talos-evidence-stage.*) rm -rf -- "$_UP_ROOT" ;;
+  esac
+}
+
+cmd_upload() {
+  local pr="" since="" dry=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --since)
+        [ $# -ge 2 ] || usage
+        case "$2" in ''|*[!0-9]*) echo "pipeline-evidence: --since must be digits only" >&2; usage ;; esac
+        since="$2"; shift 2 ;;
+      --dry-run) dry=1; shift ;;
+      --*) usage ;;
+      *)
+        [ -z "$pr" ] || usage
+        pr="$1"; shift ;;
+    esac
+  done
+  case "$pr" in ''|*[!0-9]*) echo "pipeline-evidence: upload needs a PR number (digits only)" >&2; usage ;; esac
+  _enter_toplevel
+
+  local provider
+  provider="$(cfg vcs.provider github)"
+  case "$provider" in
+    github) ;;
+    github-api) ;;
+    *) echo "pipeline-evidence: upload: not implemented for provider '$provider'" >&2; return 2 ;;
+  esac
+  command -v gh >/dev/null 2>&1 || {
+    echo "evidence-upload unsupported: no gh binary on PATH (gh v2.99.0 or newer required)" >&2
+    return 2
+  }
+
+  # The private staging dir: outside the worktree, 0700, removed on exit.
+  local root files body
+  root="$(mktemp -d "${TMPDIR:-/tmp}/talos-evidence-stage.XXXXXX")" || {
+    echo "evidence-upload: cannot create a staging dir in ${TMPDIR:-/tmp}" >&2
+    return 1
+  }
+  _UP_ROOT="$(cd "$root" && pwd -P)" || { rm -rf -- "$root"; return 1; }
+  trap _upload_cleanup EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  case "$_UP_ROOT/" in
+    "$TOPLEVEL"/*)
+      echo "evidence-upload: the staging dir is inside the worktree (TMPDIR=${TMPDIR:-/tmp}); refusing" >&2
+      return 1 ;;
+  esac
+  files="$_UP_ROOT/files"
+  body="$_UP_ROOT/body.md"
+  mkdir -m 700 "$files" || return 1
+
+  local dir manifest crc=0
+  dir="$(cfg evidence.dir ".talos/evidence")"
+  local collect_args=(collect "$dir" --stage "$files")
+  [ -z "$since" ] || collect_args+=(--since "$since")
+  manifest="$(bash "$SCRIPT_DIR/pipeline-evidence.sh" "${collect_args[@]}" 2>"$_UP_ROOT/collect.err")" || crc=$?
+  if [ "$crc" = 3 ]; then
+    echo "evidence-upload pr=$pr images=0 videos=0 comment= mode=skip"
+    return 3
+  fi
+  if [ "$crc" != 0 ]; then
+    echo "evidence-upload: collect failed (rc=$crc): $(_one_line "$(cat "$_UP_ROOT/collect.err" 2>/dev/null)"); nothing posted" >&2
+    return 1
+  fi
+
+  local built images videos rel
+  built="$(printf '%s\n' "$manifest" | _run_py "evidence-upload refused" "$_UPLOAD_PY" body "$files" "$body")" || {
+    echo "evidence-upload: could not build the comment; nothing posted" >&2
+    return 1
+  }
+  read -r images videos <<EOF
+$(printf '%s\n' "$built" | head -n 1)
+EOF
+  local attach=()
+  while IFS= read -r rel; do
+    [ -n "$rel" ] && attach+=(--attach "./$rel")
+  done <<EOF
+$(printf '%s\n' "$built" | tail -n +2)
+EOF
+  [ "${#attach[@]}" -gt 0 ] || { echo "evidence-upload: nothing to attach after the re-check" >&2; return 1; }
+
+  local marker="<!-- talos:evidence -->"
+
+  if [ "$dry" = 1 ]; then
+    local repo_shown
+    repo_shown="$(cfg vcs.repo "")"
+    [ -n "$repo_shown" ] || repo_shown="<owner>/<repo>"
+    echo "[dry-run] gh pr comment --help (must list --attach)"
+    echo "[dry-run] gh api user --jq .login"
+    echo "[dry-run] gh api --paginate repos/$repo_shown/issues/$pr/comments (read-comments): own comments whose last line is $marker"
+    echo "[dry-run] (cd <staging-dir> && gh pr comment $pr --repo $repo_shown --body-file - ${attach[*]})  # body on stdin"
+    echo "[dry-run] gh api --method DELETE repos/$repo_shown/issues/comments/<id>  # each older own evidence comment, after a good post"
+    return 0
+  fi
+
+  # 1. capability: gh's own help, stdout, no network
+  local help ver
+  help="$(gh pr comment --help 2>/dev/null)" || help=""
+  if ! printf '%s\n' "$help" | grep -Eq '^[[:space:]]+--attach[[:space:]]'; then
+    ver="$(gh --version 2>/dev/null | head -n 1 | awk '{print $3}')"
+    case "$ver" in ''|*[!A-Za-z0-9._+-]*) ver="unknown" ;; esac
+    echo "evidence-upload unsupported: gh $ver has no --attach (gh v2.99.0 or newer required)" >&2
+    return 2
+  fi
+
+  # 2. own login, fail closed (same check as upsert-pr-comment, #381/#392): the
+  # lookup must exit 0 AND print a login, because `gh api --jq` prints the raw
+  # error JSON to stdout when a token is refused.
+  local user base login_re='^[A-Za-z0-9](-?[A-Za-z0-9])*$'
+  user="$(gh api user --jq .login 2>/dev/null)" || user=""
+  base="${user%"[bot]"}"
+  if [ -z "$user" ] || [ "${#base}" -gt 39 ] || ! [[ "$base" =~ $login_re ]]; then
+    echo "evidence-upload: could not resolve the authenticated user; nothing posted" >&2
+    return 1
+  fi
+
+  # 3. repo, for --repo (gh runs outside the worktree) and the delete path
+  local repo
+  repo="$(cfg vcs.repo "")"
+  [ -n "$repo" ] || repo="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)" || repo=""
+  if ! [[ "$repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+    echo "evidence-upload: could not resolve the repository (set vcs.repo); nothing posted" >&2
+    return 1
+  fi
+
+  # 4. the author's existing evidence comments (read-comments pages and merges)
+  local comments old
+  comments="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" read-comments "$pr" 2>/dev/null)" || {
+    echo "evidence-upload: could not read the comments of #$pr; nothing posted" >&2
+    return 1
+  }
+  old="$(printf '%s' "$comments" | _run_py "evidence-upload" "$_UPLOAD_PY" select "$user" "$marker")" || {
+    echo "evidence-upload: could not parse the comments of #$pr; nothing posted" >&2
+    return 1
+  }
+
+  # 5. post once (no retry: a retried post can double-post), body on stdin
+  local gh_cmd=(gh pr comment "$pr" --repo "$repo" --body-file - "${attach[@]}")
+  local out errf url newid
+  errf="$_UP_ROOT/gh.err"
+  if ! out="$(cd "$files" && "${gh_cmd[@]}" < "$body" 2>"$errf")"; then
+    echo "evidence-upload: gh pr comment failed: $(_one_line "$(cat "$errf" 2>/dev/null)"); older evidence comments kept" >&2
+    return 1
+  fi
+  url="$(printf '%s\n' "$out" | grep -E '^https://[^[:space:]]+#issuecomment-[0-9]+$' | tail -n 1)"
+  newid="${url##*#issuecomment-}"
+  if [ -z "$url" ]; then
+    echo "evidence-upload: gh posted but printed no comment URL; older evidence comments kept" >&2
+    return 1
+  fi
+
+  # 6. delete the older own evidence comments, only now
+  local id deleted=0 failed="" mode=new
+  for id in $old; do
+    [ "$id" = "$newid" ] && continue
+    case "$id" in ''|*[!0-9]*) continue ;; esac
+    if gh api --method DELETE "repos/$repo/issues/comments/$id" >/dev/null 2>"$errf"; then
+      deleted=$((deleted + 1))
+    else
+      failed="$failed $id"
+    fi
+  done
+  [ "$deleted" -gt 0 ] && mode=replace
+  echo "evidence-upload pr=$pr images=$images videos=$videos comment=$url mode=$mode"
+  if [ -n "$failed" ]; then
+    echo "evidence-upload: posted, but could not delete the older evidence comment(s):$failed" >&2
+    return 1
+  fi
 }
 
 case "${1:-}" in
   capture) shift; cmd_capture "$@" ;;
   collect) shift; cmd_collect "$@" ;;
+  upload) shift; cmd_upload "$@" ;;
   *) usage ;;
 esac
