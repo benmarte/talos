@@ -924,7 +924,21 @@ git add sub/claude.md
 git commit -q -m "428 sub/claude.md"
 _NESTED428="$(git rev-parse HEAD)"
 
-for _case in "agents/qa.md:$_AGENTS428:1" "sub/claude.md:$_NESTED428:1" "README.md:$_README428:0"; do
+_UE428="$(printf '\303\274')"
+git checkout -q --detach "$_A428"
+mkdir -p "skills/$_UE428"
+printf 'edit\n' > "skills/$_UE428/SKILL.md"
+git add "skills/$_UE428/SKILL.md"
+git commit -q -m "428 non-ASCII skills path"
+_UTF428="$(git rev-parse HEAD)"
+git checkout -q --detach "$_A428"
+mkdir -p docs
+printf 'edit\n' > "docs/$_UE428.md"
+git add "docs/$_UE428.md"
+git commit -q -m "428 non-ASCII docs path"
+_UDOC428="$(git rev-parse HEAD)"
+
+for _case in "agents/qa.md:$_AGENTS428:1" "sub/claude.md:$_NESTED428:1" "skills/ue/SKILL.md:$_UTF428:1" "docs/ue.md:$_UDOC428:0" "README.md:$_README428:0"; do
   IFS=: read -r _f _h _want <<< "$_case"
   : > "$CURL_LOG"
   printf '%s\n' \

@@ -202,6 +202,37 @@ for _p in README.md docs/user-guide.md CHANGELOG.md templates/comments/qa-verdic
 done
 git checkout -q main
 
+# Non-ASCII and control characters in paths: without `-z` git quotes them
+# ("skills/\303\274/SKILL.md") and the quoted string misses the non-waivable
+# check, so a broad config waiver such as *.md* would waive an instruction
+# file. Real paths must be compared, under the default waiver AND *.md*.
+_NA_UE="$(printf '\303\274')"
+for _p in "skills/$_NA_UE/SKILL.md" "Skills/$_NA_UE/x.md"; do
+  _h="$(delta_head "$_p")"
+  for _w in '' '["*.md*"]'; do
+    if [ -n "$_w" ]; then
+      out="$(WAIVER_PATHS="$_w" run_check "$_h" "" "$_entries" 2>&1)"; rc=$?
+    else
+      out="$(run_check "$_h" "" "$_entries" 2>&1)"; rc=$?
+    fi
+    assert_eq "1" "$rc" "non-ASCII instruction path $_p (waiver ${_w:-default}): exits 1"
+    assert_contains "$out" "STALE qa:pass (qa)" "non-ASCII instruction path $_p (waiver ${_w:-default}): stale"
+  done
+done
+
+# Waivable docs with a non-ASCII name, a tab or a newline stay waived (the
+# quoted form of a non-ASCII name used to be a false stale). git can create
+# all of these in the sandbox, so none is skipped.
+_TAB="$(printf '\t')"
+_NL='
+'
+for _p in "docs/$_NA_UE.md" "docs/a${_TAB}b.md" "docs/a${_NL}b.md"; do
+  _h="$(delta_head "$_p")"
+  out="$(run_check "$_h" "" "$_entries" 2>&1)"; rc=$?
+  assert_eq "0" "$rc" "waivable docs path with special characters: exits 0 under the default waiver"
+done
+git checkout -q main
+
 # Rename out of an instruction path: git mv skills/x/SKILL.md docs/x.md. With
 # rename detection only docs/x.md would be reported (waived); --no-renames
 # reports the deleted old path as well, so the approval goes stale.

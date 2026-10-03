@@ -2363,6 +2363,12 @@ def is_hardcoded_nonwaivable(path):
         return True
     return os.path.basename(low) in HARDCODED_NONWAIVABLE_BASENAMES
 
+# git diff --name-only -z: real paths, NUL-separated. Without -z git quotes
+# non-ASCII, tab, newline and quote characters (core.quotePath), so
+# skills/ü/SKILL.md would arrive as a quoted string and miss the prefix check.
+def split_nul(out):
+    return [f for f in out.split('\x00') if f]
+
 def path_matches(path, patterns):
     base = os.path.basename(path)
     return any(fnmatch.fnmatch(base, p) or fnmatch.fnmatch(path, p) for p in patterns)
@@ -2434,15 +2440,13 @@ if base_ref_name:
     _own_root = os.environ.get('REPO_ROOT', '').strip() or None
     try:
         _pr_own = subprocess.run(
-            ['git', 'diff', '--name-only', '--no-renames',
+            ['git', 'diff', '--name-only', '-z', '--no-renames',
              'origin/' + base_ref_name + '...' + head_sha],
             capture_output=True, text=True,
             cwd=_own_root, timeout=30
         )
         if _pr_own.returncode == 0:
-            pr_own_files = set(
-                f.strip() for f in _pr_own.stdout.splitlines() if f.strip()
-            )
+            pr_own_files = set(split_nul(_pr_own.stdout))
         # else: diff failed -- fail-open, pr_own_files stays None
     except Exception:
         pr_own_files = None  # fail-open
@@ -2486,13 +2490,13 @@ for entry in entries:
                 f're-post its marker using a SHA read from git, not reconstructed'))
             continue
         result = subprocess.run(
-            ['git', 'diff', '--name-only', '--no-renames', f'{found_sha}..{head_sha}'],
+            ['git', 'diff', '--name-only', '-z', '--no-renames', f'{found_sha}..{head_sha}'],
             capture_output=True, text=True,
             cwd=repo_root, timeout=30
         )
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or 'non-zero exit')
-        changed = [f.strip() for f in result.stdout.splitlines() if f.strip()]
+        changed = split_nul(result.stdout)
     except Exception as exc:
         # git diff failure -> treat delta as non-waivable (fail-closed)
         print(f'pipeline-vcs: check-approval-sha: git diff failed: {exc}', file=sys.stderr)

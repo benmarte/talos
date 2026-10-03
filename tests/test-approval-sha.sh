@@ -240,6 +240,24 @@ for _p in README.md docs/user-guide.md templates/comments/qa-verdict.md; do
   assert_exit_code 0 "$rc" "#428 $_p only: stays waived by default, exits 0"
 done
 
+# Non-ASCII paths: git would quote them without -z, hiding the prefix. Stale
+# under the default waiver and under a broad *.md* config waiver; a non-ASCII
+# docs name stays waived.
+_UE="$(printf '\303\274')"
+for _p in "skills/$_UE/SKILL.md" "Skills/$_UE/x.md"; do
+  _h="$(_delta_428 "$_p")"
+  for _cfg in '{}' '{"merge": {"approval_waiver_paths": ["*.md*"]}}'; do
+    printf '%s\n' "$_cfg" > test-approval-config.json
+    out="$(vcs_check "$_h" '[{"name":"qa:pass"}]' "$_c")"; rc=$?
+    assert_exit_code 1 "$rc" "#428 non-ASCII $_p (config $_cfg): exits 1"
+    assert_contains "$out" "STALE qa:pass (qa)" "#428 non-ASCII $_p (config $_cfg): stale"
+  done
+done
+printf '{}' > test-approval-config.json
+_h="$(_delta_428 "docs/$_UE.md")"
+out="$(vcs_check "$_h" '[{"name":"qa:pass"}]' "$_c")"; rc=$?
+assert_exit_code 0 "$rc" "#428 docs/<non-ASCII>.md only: stays waived, exits 0"
+
 # A rename out of skills/ into docs/ reports the old path too (--no-renames).
 git checkout -q -B tmp-428 "$SHA_A"
 mkdir -p skills/x
