@@ -5,7 +5,7 @@
 # ~/.talos and ~/.claude are never read or written.
 set -u
 . "$(dirname "$0")/helpers.sh"
-make_sandbox
+make_sandbox || exit 1
 # Fixture paths must match what the script prints: it prints `pwd` paths, which
 # collapse the `//` a TMPDIR ending in `/` leaves in $SANDBOX.
 SBX="$(cd "$SANDBOX" && pwd)"
@@ -66,6 +66,7 @@ out="$(bash "$INSTR" write "$R" 2>&1)"
 assert_not_contains "$out" "install.sh --global" "no warning when the global playbook exists"
 out="$(TALOS_HOME="$SBX/elsewhere" bash "$INSTR" write "$R" 2>&1)"
 assert_contains "$out" "install.sh --global" "the warning follows \$TALOS_HOME"
+case "$HOME" in "$SANDBOX"/*) ;; *) echo "refusing: HOME=$HOME is not the sandbox" >&2; exit 1 ;; esac
 rm -rf "$HOME/.talos"
 
 R="$(new_repo append)"
@@ -201,6 +202,24 @@ mkdir -p "$R/.claude"; printf '@AGENTS.md\n' > "$R/.claude/CLAUDE.md"
 out="$(bash "$INSTR" write "$R" 2>&1)"
 assert_contains "$out" "@../AGENTS.md" "@AGENTS.md in .claude/CLAUDE.md does not resolve to the repo file"
 
+# Import paths are never glob-expanded: `@A*` run from a cwd holding AGENTS.md
+# must not resolve to AGENTS.md and hide the notice.
+R="$(new_repo claude-glob)"
+printf '# rules\n@A*\n' > "$R/CLAUDE.md"
+out="$(cd "$R" && bash "$INSTR" write "$R" 2>&1)"
+assert_contains "$out" "2.1.277" "an @A* import line is not glob-expanded into AGENTS.md"
+
+# A CLAUDE.md that is not a regular file is never opened: a FIFO would hang the
+# read. Needs timeout(1); skipped (with a note) where it is absent.
+R="$(new_repo claude-fifo)"
+if command -v timeout >/dev/null 2>&1 && mkfifo "$R/CLAUDE.md" 2>/dev/null; then
+  out="$(timeout 10 bash "$INSTR" write "$R" 2>&1)"; rc=$?
+  assert_eq "0" "$rc" "a FIFO named CLAUDE.md does not hang or fail write"
+  assert_contains "$out" "$R/CLAUDE.md" "a FIFO CLAUDE.md is still reported by the notice"
+else
+  echo "  skip  FIFO CLAUDE.md check: timeout(1) or mkfifo not available"
+fi
+
 # An ancestor up to the git top-level counts; the line is the path from that file.
 mkdir -p "$SBX/mono/pkg/app"; git -C "$SBX/mono" init -q -b main
 printf '# root rules\n' > "$SBX/mono/CLAUDE.md"
@@ -216,7 +235,7 @@ out="$(bash "$INSTR" write "$R" 2>&1)"
 assert_not_contains "$out" "2.1.277" "a CLAUDE.md above the git top-level is not considered"
 
 # Outside a git work tree only <repo-dir> itself is checked.
-NOGIT="$(mktemp -d "${TMPDIR:-/tmp}/talos-nogit.XXXXXX")"
+NOGIT="$(mktemp -d "${TMPDIR:-/tmp}/talos-nogit.XXXXXX")" || exit 1
 mkdir -p "$NOGIT/sub"; printf '# up\n' > "$NOGIT/CLAUDE.md"
 out="$(bash "$INSTR" write "$NOGIT/sub" 2>&1)"
 assert_not_contains "$out" "2.1.277" "outside a git work tree, ancestors are not walked"

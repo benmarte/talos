@@ -5,7 +5,7 @@
 # install runs in the make_sandbox HOME (TALOS_HOME / CLAUDE_CONFIG_DIR unset).
 set -u
 . "$(dirname "$0")/helpers.sh"
-make_sandbox
+make_sandbox || exit 1
 
 INSTALL="$TALOS_ROOT/install.sh"
 
@@ -90,6 +90,7 @@ assert_file_absent "$R/GEMINI.md" "install.sh never creates GEMINI.md"
 
 # ── epic bullet: sandbox HOME starts empty; global install, then per-repo ───
 # with no --harness. Every ~/.talos/skills path the block names must exist.
+case "$HOME" in "$SANDBOX"/*) ;; *) echo "refusing: HOME=$HOME is not the sandbox" >&2; exit 1 ;; esac
 rm -rf "$HOME/.talos" "$HOME/.claude"
 bash "$INSTALL" --global --no-agent-skills >/dev/null 2>&1
 R="$(new_repo epic)"

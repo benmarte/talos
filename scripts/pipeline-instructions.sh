@@ -62,7 +62,10 @@ _count() {
 
 # _normalize <abs-path>: collapse . and .. textually (the target may not exist).
 _normalize() {
-  local IFS=/ part out=() n
+  local IFS=/ part out=() n had_f=""
+  # The path comes from a repo file: never let * ? [ expand against the cwd.
+  case $- in *f*) had_f=1 ;; esac
+  set -f
   for part in $1; do
     case "$part" in
       ''|.) ;;
@@ -70,6 +73,7 @@ _normalize() {
       *) out[${#out[@]}]="$part" ;;
     esac
   done
+  [ -n "$had_f" ] || set +f
   echo "/${out[*]:-}"
 }
 
@@ -86,6 +90,8 @@ _rel() {
 # Relative imports resolve from the importing file's directory, not the cwd.
 _imports_agents() {
   local file="$1" fdir line p abs
+  # Only a regular, non-symlink file is opened: a FIFO or /dev/zero would hang.
+  [ -f "$file" ] && [ ! -L "$file" ] || return 1
   fdir="$(cd "$(dirname "$file")" 2>/dev/null && pwd -P)" || return 1
   while IFS= read -r line || [ -n "$line" ]; do
     line="${line%$'\r'}"
