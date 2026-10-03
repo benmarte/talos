@@ -32,6 +32,21 @@
 #   ~/.claude tree; the installer says so. --global prints one line saying
 #   whether the adapter ran and why.
 #
+#   Pointer skills for ~/.agents/skills are written by one function,
+#   install_agents_pointers, which runs (--global only) iff the --harness list
+#   contains codex, pi, cursor or opencode, the harnesses that read that
+#   user-level directory. There is no detection: no --harness, claude,
+#   antigravity, gemini, generic and unknown names write nothing under
+#   ~/.agents, and per-repo mode never does. For each entry of TALOS_COMMANDS it
+#   writes ${TALOS_AGENTS_HOME:-$HOME/.agents}/skills/talos-<command>/SKILL.md, a
+#   thin pointer (marker <!-- talos:pointer -->) telling the agent to read
+#   ~/.talos/skills/<command>/SKILL.md, so there is no second playbook to drift.
+#   A SKILL.md there without the marker is never overwritten, even though
+#   --global overwrites by default; a symlink anywhere on the path is skipped
+#   with a notice. TALOS_AGENTS_HOME is a developer/QA-only override (like
+#   TALOS_HOME and CLAUDE_CONFIG_DIR) so a manual run never touches the real
+#   ~/.agents.
+#
 # Per-repo config (after global install):
 #   bash install.sh [target-repo-path] [--harness <list>]
 #                   [--no-agents-md] [--import-agents-md]
@@ -164,6 +179,13 @@ claude_decide() {
 }
 claude_decide
 
+# Harnesses that read user-level skills from ~/.agents/skills (no detection; the
+# list must name one of them). Gemini CLI is deliberately absent: its file tools
+# are confined to the workspace, so a skill cannot make it read ~/.talos.
+AGENTS_POINTER_HARNESSES="codex pi cursor opencode"
+AGENTS_DIR="${TALOS_AGENTS_HOME:-$HOME/.agents}"
+AGENTS_POINTER_MARKER='<!-- talos:pointer -->'
+
 # ── install_file helper ───────────────────────────────────────────────────────
 install_file() {
   local src="$1" dest="$2"
@@ -206,6 +228,82 @@ install_claude_adapter() {
   for cmd in "${TALOS_COMMANDS[@]}"; do
     install_file "$SRC/skills/$cmd/SKILL.md" "$CLAUDE_DIR/skills/$(talos_claude_skill_name "$cmd")/SKILL.md"
   done
+}
+
+# install_agents_pointers -- the ONLY place --global writes under
+# ${TALOS_AGENTS_HOME:-$HOME/.agents}: one thin pointer skill per TALOS_COMMANDS
+# entry at <dir>/skills/talos-<command>/SKILL.md. Needs pipeline-contract.sh
+# sourced and the ~/.talos/skills copies installed (the pointers name them).
+# Not install_file: --global overwrites by default and a pointer must never
+# replace a file that does not carry the marker. Never aborts the install.
+AGENTS_POINTERS_WRITTEN=false
+install_agents_pointers() {
+  local h want="" skills="$AGENTS_DIR/skills" cmd name src dest desc
+  for h in $AGENTS_POINTER_HARNESSES; do
+    if has_harness "$h"; then want="${want:+$want, }$h"; fi
+  done
+  if [ -z "$want" ]; then
+    echo "Agents pointer skills skipped (not selected: --harness has none of ${AGENTS_POINTER_HARNESSES// /, }; nothing is written under $AGENTS_DIR)."
+    return 0
+  fi
+  echo ""
+  echo "Agents pointer skills ($skills; selected: $want):"
+  # Links and non-directories first, before any mkdir (a dangling link too).
+  if [ -L "$AGENTS_DIR" ] || [ -L "$skills" ]; then
+    [ -L "$AGENTS_DIR" ] && echo "  notice: $AGENTS_DIR is a symlink; nothing was written through it." \
+                         || echo "  notice: $skills is a symlink; nothing was written through it."
+    return 0
+  fi
+  if { [ -e "$AGENTS_DIR" ] && [ ! -d "$AGENTS_DIR" ]; } || { [ -e "$skills" ] && [ ! -d "$skills" ]; }; then
+    echo "  notice: $AGENTS_DIR or $skills is not a directory; nothing was written."
+    return 0
+  fi
+  for cmd in "${TALOS_COMMANDS[@]}"; do
+    name="talos-$cmd"
+    src="$SRC/skills/$cmd/SKILL.md"
+    dest="$skills/$name/SKILL.md"
+    desc="$(awk 'NR>1 && /^---$/{exit} /^description:/{print; exit}' "$src")"
+    if [ -z "$desc" ]; then
+      echo "  notice: $src has no description line; $name was not written."
+      continue
+    fi
+    if [ -L "$skills/$name" ] || [ -L "$dest" ]; then
+      [ -L "$skills/$name" ] && echo "  notice: $skills/$name is a symlink; nothing was written through it." \
+                             || echo "  notice: $dest is a symlink; nothing was written through it."
+      continue
+    fi
+    if { [ -e "$skills/$name" ] && [ ! -d "$skills/$name" ]; } || { [ -e "$dest" ] && [ ! -f "$dest" ]; }; then
+      echo "  notice: $skills/$name is not a plain directory with a plain SKILL.md; nothing was written."
+      continue
+    fi
+    if [ -f "$dest" ]; then
+      if ! grep -qxF "$AGENTS_POINTER_MARKER" "$dest"; then
+        echo "  warning: $dest exists and is not a Talos pointer; left untouched."
+        continue
+      fi
+      if [ "$FORCE" = "false" ]; then
+        echo "  skip (exists): $dest  (pass --force to overwrite)"
+        continue
+      fi
+    fi
+    if ! mkdir -p "$skills/$name" 2>/dev/null; then
+      echo "  notice: could not create $skills/$name; $name was not written."
+      continue
+    fi
+    {
+      printf -- '---\nname: %s\n%s\n---\n%s\n' "$name" "$desc" "$AGENTS_POINTER_MARKER"
+      cat <<'TALOS_POINTER_BODY' | sed "s/@CMD@/$cmd/g"
+This is a thin Talos pointer; the playbook is not copied here, so it cannot drift.
+Read `~/.talos/skills/@CMD@/SKILL.md` (or `$TALOS_HOME/skills/@CMD@/SKILL.md` when TALOS_HOME is set) with your file-read tool, then follow it exactly.
+If that file does not exist, tell the user to run `bash install.sh --global` from the Talos repo, and stop.
+TALOS_POINTER_BODY
+    } > "$dest" 2>/dev/null || { echo "  notice: could not write $dest."; continue; }
+    echo "  installed: $dest"
+    AGENTS_POINTERS_WRITTEN=true
+  done
+  if has_harness claude; then
+    echo "  note: with claude selected too, cursor and opencode also scan ~/.claude/skills and will see both sets (pipeline and talos-pipeline; talos-resume exists in both with different content). Whether Claude Code reads ~/.agents/skills is unverified."
+  fi
 }
 
 # ── GLOBAL INSTALL ────────────────────────────────────────────────────────────
@@ -289,6 +387,8 @@ if [ "$GLOBAL" = "true" ]; then
     install_file "$SRC/skills/$cmd/SKILL.md" "$TALOS_HOME_DIR/skills/$cmd/SKILL.md"
   done
 
+  install_agents_pointers
+
   if [ "$CLAUDE_ADAPTER" = "true" ]; then
     install_claude_adapter
   elif [ -f "$CLAUDE_DIR/skills/pipeline/SKILL.md" ]; then
@@ -325,6 +425,9 @@ if [ "$GLOBAL" = "true" ]; then
     echo "        Registered at: $CLAUDE_DIR/skills/pipeline/SKILL.md"
   fi
   echo "        Playbooks for any other agent: $TALOS_HOME_DIR/skills/<command>/SKILL.md"
+  if [ "$AGENTS_POINTERS_WRITTEN" = "true" ]; then
+    echo "        Pointer skills registered at: $AGENTS_DIR/skills/talos-<command>/SKILL.md"
+  fi
   if [ "$CLAUDE_ADAPTER" = "true" ]; then
     echo "        Role profiles registered at: $CLAUDE_DIR/agents/<role>.md"
   fi

@@ -123,7 +123,7 @@ make_sandbox() {
   # sentinel to that *real*, shared location instead of the sandboxed HOME
   # set below -- exactly how the real ~/.cache/talos got poisoned with a
   # stale cross-owner cache in the first place.
-  unset TALOS_HOME CLAUDE_PLUGIN_ROOT CLAUDE_CONFIG_DIR XDG_RUNTIME_DIR \
+  unset TALOS_HOME CLAUDE_PLUGIN_ROOT CLAUDE_CONFIG_DIR TALOS_AGENTS_HOME XDG_RUNTIME_DIR \
         TALOS_ISSUE TALOS_ISSUE_NUMBER TALOS_ROLE TALOS_WORKTREE_PATH
 
   SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/talos-test.XXXXXX")"
