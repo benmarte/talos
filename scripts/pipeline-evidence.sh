@@ -9,8 +9,10 @@
 #   pipeline-evidence.sh upload <pr> [--since <epoch>] [--dry-run]
 #   pipeline-evidence.sh attach <pr> [--since <epoch>] [--dry-run]
 #   pipeline-evidence.sh dir
+#   pipeline-evidence.sh enabled
+#   pipeline-evidence.sh check-url <pr>   (the URL on stdin)
 #
-# capture, collect and dir are local: no network call, no git write. upload
+# capture, collect, dir and enabled are local: no network call, no git write. upload
 # (and attach, which runs it) is the only subcommand that talks to GitHub
 # (`gh pr comment --attach`).
 #
@@ -60,7 +62,7 @@
 #     2  usage
 #     3  nothing selected (also when <dir> does not exist)
 #     4  over a cap: `evidence-collect over-cap files=<n>/<max> mb=<x>/<max>
-#        file-mb=<largest>/10`, nothing selected
+#        file-mb=<largest>/<per-file cap>`, nothing selected
 #   Selection (everything else is skipped and counted):
 #   - the walk uses os.scandir and never follows a symlink; files are opened
 #     with O_NOFOLLOW|O_NONBLOCK and judged by fstat: regular files with a
@@ -83,8 +85,8 @@
 #     file written in the same second the capture started is kept and a stale
 #     earlier capture is never republished. Nothing is ever deleted.
 #   Caps: evidence.max_files (default 10) and evidence.max_mb (default 20, MiB,
-#   a total), plus a fixed 10 MiB per file (GitHub's free-plan image and video
-#   limit). Over any of them is exit 4, never a partial selection.
+#   a total), plus a fixed per-file cap (`_EVIDENCE_FILE_MB`, in MiB, GitHub's
+#   free-plan image and video limit; the one place the number is written). Over any of them is exit 4, never a partial selection.
 #   --stage <dir> (#415): <dir> must be an existing, EMPTY directory outside
 #   the evidence dir. Each selected file's bytes are copied from the file
 #   descriptor that was already opened and judged (never reopened by name, so a
@@ -193,6 +195,32 @@
 #   --dry-run` (collect runs locally, no gh call) and exits with the same map
 #   (no status line is printed).
 #
+# enabled   (#410)
+#   The one call Step 0 of the playbook makes: is evidence on for this run?
+#   Takes no argument. Reads config and `gh pr comment --help` (stdout, no
+#   network); it runs no evidence.command and makes no provider call. Order:
+#   1. `evidence.enabled` (the gate `attach` shares, `_evidence_enabled`) must
+#      be `true`, else exit 1 with no output at all.
+#   2. provider `github`, or `github-api`, with a `gh` binary that lists
+#      `--attach` (the probe `upload` shares, `_gh_has_attach`); otherwise
+#      exit 1 with ONE stderr line `pipeline: evidence ignored: <reason>`
+#      (the reason is one of a fixed set, never issue or PR text): warn once,
+#      treat evidence as off, like `pr.draft`.
+#   3. on: exit 0 and, on stdout, exactly
+#        evidence on when=<user-facing|always> mode=<command|agent>
+#      both words fixed enums (an unknown or absent evidence.when is
+#      `user-facing`); mode=agent means evidence.command is empty.
+#
+# check-url <pr>   (#410)
+#   Gate for the reviewer handoff: stdin is QA's `comment=` value (subagent
+#   text, so it comes through a heredoc, never argv). Exit 0 and the URL on
+#   stdout only when stdin is exactly one line (one trailing newline allowed)
+#   equal to `https://github.com/<owner>/<repo>/pull/<pr>#issuecomment-<digits>`
+#   (at most 20 digits), where <owner>/<repo> is the slug `upload` uses
+#   (vcs.repo, else gh), checked against [A-Za-z0-9._-]. The expected prefix is
+#   compared as a literal, in the C locale. Any other host, PR, repo, extra
+#   text or extra line is exit 1 with no output.
+#
 # dir
 #   Prints the evidence dir, relative to the worktree toplevel: evidence.dir or
 #   `.talos/evidence`. Exit 0. This is the only place the default is written
@@ -203,7 +231,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CFG_SH="$SCRIPT_DIR/pipeline-config.sh"
 
 usage() {
-  echo "Usage: pipeline-evidence.sh capture | collect <dir> [--since <epoch>] [--stage <dir>] | upload <pr> [--since <epoch>] [--dry-run] | attach <pr> [--since <epoch>] [--dry-run] | dir" >&2
+  echo "Usage: pipeline-evidence.sh capture | collect <dir> [--since <epoch>] [--stage <dir>] | upload <pr> [--since <epoch>] [--dry-run] | attach <pr> [--since <epoch>] [--dry-run] | dir | enabled | check-url <pr>" >&2
   exit 2
 }
 
@@ -248,7 +276,7 @@ _digits_or() {
 _EVIDENCE_DEFAULT_DIR=".talos/evidence"
 _EVIDENCE_DEFAULT_MAX_FILES=10
 _EVIDENCE_DEFAULT_MAX_MB=20
-_EVIDENCE_FILE_MB=10   # the fixed per-file cap inside collect's python
+_EVIDENCE_FILE_MB=10   # MiB: the fixed per-file cap, passed to collect's and upload's python
 
 _evidence_dir() { cfg evidence.dir "$_EVIDENCE_DEFAULT_DIR"; }
 _evidence_max_files() {
@@ -256,6 +284,28 @@ _evidence_max_files() {
 }
 _evidence_max_mb() {
   _digits_or "$_EVIDENCE_DEFAULT_MAX_MB" "$(cfg evidence.max_mb "$_EVIDENCE_DEFAULT_MAX_MB")"
+}
+
+# _evidence_enabled -- true only when evidence.enabled is exactly `true` (an
+# absent key, `false` and any other value are off). The one gate `attach` and
+# `enabled` share; needs the toplevel as cwd (reads the config).
+_evidence_enabled() { [ "$(cfg evidence.enabled false)" = "true" ]; }
+
+# _evidence_repo -- prints the `<owner>/<repo>` slug (vcs.repo, else gh's own
+# answer), only when both halves are plain `[A-Za-z0-9._-]+`; returns 1 and
+# prints nothing otherwise. The one resolver `upload` and `check-url` share.
+_evidence_repo() {
+  local repo
+  repo="$(cfg vcs.repo "")"
+  [ -n "$repo" ] || repo="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)" || repo=""
+  [[ "$repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || return 1
+  printf '%s' "$repo"
+}
+
+# _gh_has_attach -- true when `gh pr comment --help` (stdout, no network) lists
+# `--attach` (gh v2.99.0 or newer). The one probe `upload` and `enabled` share.
+_gh_has_attach() {
+  gh pr comment --help 2>/dev/null | grep -Eq '^[[:space:]]+--attach[[:space:]]'
 }
 
 # pipeline-config.sh reads ./talos.pipeline.*, so everything runs at the toplevel.
@@ -342,14 +392,14 @@ import subprocess
 import sys
 
 MIB = 1024 * 1024
-FILE_CAP_MIB = 10
 EXTS = {"png": "image", "jpg": "image", "jpeg": "image", "gif": "image",
         "webm": "video", "mp4": "video", "mov": "video"}
 NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
 MAX_DEPTH = 3
 MAX_ENTRIES = 5000
 
-top, dir_arg, since_s, max_files_s, max_mb_s, include_s, stage_arg = sys.argv[1:8]
+top, dir_arg, since_s, max_files_s, max_mb_s, include_s, stage_arg, file_mb_s = sys.argv[1:9]
+FILE_CAP_MIB = int(file_mb_s)
 max_files = int(max_files_s)
 max_mb = int(max_mb_s)
 since = int(since_s) if since_s else None
@@ -620,12 +670,12 @@ cmd_collect() {
   max_mb="$(_evidence_max_mb)"
   include="$(cfg evidence.include "")"
   _run_py "evidence-collect refused" "$_COLLECT_PY" \
-    "$TOPLEVEL" "$dir" "$since" "$max_files" "$max_mb" "$include" "$stage"
+    "$TOPLEVEL" "$dir" "$since" "$max_files" "$max_mb" "$include" "$stage" "$_EVIDENCE_FILE_MB"
 }
 
 # ── upload ───────────────────────────────────────────────────────────────────
 # Two modes, `body` and `select`, one source so both run through _run_py.
-#   body <stage-dir> <body-file>   stdin: the collect manifest (TSV). Re-checks
+#   body <stage-dir> <body-file> <file-mb>   stdin: the collect manifest (TSV). Re-checks
 #       every row against the staged tree (plain names, at most 3 components,
 #       allowlisted extension that matches the kind, a regular single-link file
 #       reached through no symlink, not empty, not over the per-file cap, at
@@ -647,7 +697,7 @@ import stat
 import sys
 
 MIB = 1024 * 1024
-FILE_CAP = 10 * MIB
+FILE_CAP = None         # bytes; set from argv by the `body` dispatch below
 MAX_FILES = 50
 EXTS = {"png": "image", "jpg": "image", "jpeg": "image", "gif": "image",
         "webm": "video", "mp4": "video", "mov": "video"}
@@ -739,6 +789,7 @@ def mode_select(login, marker):
 
 
 if sys.argv[1] == "body":
+    FILE_CAP = int(sys.argv[4]) * MIB
     mode_body(sys.argv[2], sys.argv[3])
 else:
     mode_select(sys.argv[2], sys.argv[3])
@@ -830,7 +881,7 @@ cmd_upload() {
   fi
 
   local built images videos rel
-  built="$(printf '%s\n' "$manifest" | _run_py "evidence-upload refused" "$_UPLOAD_PY" body "$files" "$body")" || {
+  built="$(printf '%s\n' "$manifest" | _run_py "evidence-upload refused" "$_UPLOAD_PY" body "$files" "$body" "$_EVIDENCE_FILE_MB")" || {
     echo "evidence-upload: could not build the comment; nothing posted" >&2
     return 1
   }
@@ -860,9 +911,8 @@ EOF
   fi
 
   # 1. capability: gh's own help, stdout, no network
-  local help ver
-  help="$(gh pr comment --help 2>/dev/null)" || help=""
-  if ! printf '%s\n' "$help" | grep -Eq '^[[:space:]]+--attach[[:space:]]'; then
+  local ver
+  if ! _gh_has_attach; then
     ver="$(gh --version 2>/dev/null | head -n 1 | awk '{print $3}')"
     case "$ver" in ''|*[!A-Za-z0-9._+-]*) ver="unknown" ;; esac
     echo "evidence-upload unsupported: gh $ver has no --attach (gh v2.99.0 or newer required)" >&2
@@ -882,9 +932,7 @@ EOF
 
   # 3. repo, for --repo (gh runs outside the worktree) and the delete path
   local repo
-  repo="$(cfg vcs.repo "")"
-  [ -n "$repo" ] || repo="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)" || repo=""
-  if ! [[ "$repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+  if ! repo="$(_evidence_repo)"; then
     echo "evidence-upload: could not resolve the repository (set vcs.repo); nothing posted" >&2
     return 1
   fi
@@ -975,7 +1023,7 @@ cmd_attach() {
   _enter_toplevel
 
   # 1. gate, before anything that can run a command or call a provider
-  [ "$(cfg evidence.enabled false)" = "true" ] || {
+  _evidence_enabled || {
     echo "evidence-attach: evidence disabled" >&2
     return 2
   }
@@ -1029,7 +1077,6 @@ cmd_attach() {
   fi
   local status
   status="$(_attach_status "$up_rc" "$comment" "$_AT_ERR")"
-  [ "$dry" = 1 ] && [ "$up_rc" = 0 ] && status=planned
 
   if [ "$dry" = 1 ]; then
     echo "[dry-run] gate: evidence.enabled=true, provider ok"
@@ -1037,6 +1084,7 @@ cmd_attach() {
     echo "[dry-run] caps: files<=$(_evidence_max_files) mb<=$(_evidence_max_mb) per-file<=$_EVIDENCE_FILE_MB (dir: $(_evidence_dir))"
     echo "[dry-run] upload $pr --dry-run:"
     printf '%s\n' "$up_out"
+    [ "$up_rc" = 0 ] && return 0
   else
     [ "$status" = posted ] || comment=""
     echo "evidence-attach pr=$pr status=$status images=$images videos=$videos capture=$cap_status comment=$comment"
@@ -1045,6 +1093,55 @@ cmd_attach() {
     refused|failed) return 1 ;;
   esac
   return 0
+}
+
+# ── enabled ──────────────────────────────────────────────────────────────────
+# One call for Step 0 of the playbook: is evidence on for this run, and how.
+cmd_enabled() {
+  [ $# -eq 0 ] || usage
+  _enter_toplevel
+  _evidence_enabled || return 1
+  local provider reason=""
+  provider="$(cfg vcs.provider github)"
+  case "$provider" in
+    github|github-api)
+      if ! command -v gh >/dev/null 2>&1; then
+        reason="no gh binary on PATH"
+      elif ! _gh_has_attach; then
+        reason="gh has no --attach (gh v2.99.0 or newer required)"
+      fi ;;
+    *) reason="provider '$provider' is not supported" ;;
+  esac
+  if [ -n "$reason" ]; then
+    echo "pipeline: evidence ignored: $reason" >&2
+    return 1
+  fi
+  local when mode command
+  when="$(cfg evidence.when user-facing)"
+  case "$when" in always) ;; *) when="user-facing" ;; esac
+  command="$(cfg evidence.command "")"
+  case "$command" in *[![:space:]]*) mode=command ;; *) mode=agent ;; esac
+  echo "evidence on when=$when mode=$mode"
+}
+
+# ── check-url ────────────────────────────────────────────────────────────────
+# The reviewer handoff's gate on QA's (subagent-authored) `comment=` value. The
+# expected URL is built from the orchestrator's own values and compared as a
+# literal string, never as a pattern, so the slug needs no escaping.
+cmd_check_url() {
+  [ $# -eq 1 ] || usage
+  case "$1" in ''|*[!0-9]*) echo "pipeline-evidence: check-url needs a PR number (digits only)" >&2; usage ;; esac
+  LC_ALL=C; export LC_ALL
+  _enter_toplevel
+  local pr="$1" repo all prefix tail
+  repo="$(_evidence_repo)" || return 1
+  IFS= read -r -d '' all || true       # all of stdin, newlines included
+  all="${all%$'\n'}"                    # the one terminator a heredoc adds
+  prefix="https://github.com/$repo/pull/$pr#issuecomment-"
+  case "$all" in "$prefix"*) tail="${all#"$prefix"}" ;; *) return 1 ;; esac
+  case "$tail" in ''|*[!0-9]*) return 1 ;; esac
+  [ "${#tail}" -le 20 ] || return 1
+  printf '%s\n' "$all"
 }
 
 # ── dir ──────────────────────────────────────────────────────────────────────
@@ -1060,5 +1157,7 @@ case "${1:-}" in
   upload) shift; cmd_upload "$@" ;;
   attach) shift; cmd_attach "$@" ;;
   dir) shift; cmd_dir "$@" ;;
+  enabled) shift; cmd_enabled "$@" ;;
+  check-url) shift; cmd_check_url "$@" ;;
   *) usage ;;
 esac

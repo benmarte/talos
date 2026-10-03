@@ -14,12 +14,15 @@
 #   - relpath in the manifest is relative to <dir>.
 #   - an absolute <dir> is refused (the config key is relative).
 #   - mov needs the `qt  ` brand, mp4 any other brand.
-#   - the per-file cap is 10 MiB, max_mb is MiB.
+#   - the per-file cap is _EVIDENCE_FILE_MB (read from the script), max_mb is MiB.
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox || exit 1
 
 EV="$TALOS_ROOT/scripts/pipeline-evidence.sh"
+# the fixed per-file cap is ONE constant in the script (MiB): read it, never hard-code it
+FILE_MB="$(sed -n 's/^_EVIDENCE_FILE_MB=\([0-9][0-9]*\).*/\1/p' "$EV")"
+FILE_BYTES=$((FILE_MB * 1048576))
 assert_file_exists "$EV" "pipeline-evidence.sh exists"
 
 # TMPDIR inside the scratch dir: the capture log lands here, never in the repo.
@@ -418,7 +421,7 @@ cfg_ev '"max_files": 2'
 collect ev
 assert_eq "4" "$RC" "max_files: 3 files over 2 -> exit 4"
 assert_eq "" "$(out)" "max_files: empty manifest (nothing partial)"
-assert_contains "$(err)" "evidence-collect over-cap files=3/2 mb=0.00/20 file-mb=0.00/10" "max_files: over-cap line (max_mb default 20, per-file 10)"
+assert_contains "$(err)" "evidence-collect over-cap files=3/2 mb=0.00/20 file-mb=0.00/$FILE_MB" "max_files: over-cap line (max_mb default 20, per-file cap)"
 assert_eq "1" "$(errlines)" "max_files: one line"
 cfg_ev '"max_files": 3'
 collect ev
@@ -438,7 +441,7 @@ cfg_ev '"max_mb": 1'
 collect ev
 assert_eq "4" "$RC" "max_mb: 1.5 MiB over 1 -> exit 4"
 assert_eq "" "$(out)" "max_mb: empty manifest"
-assert_contains "$(err)" "evidence-collect over-cap files=2/10 mb=1.50/1 file-mb=0.75/10" "max_mb: over-cap line"
+assert_contains "$(err)" "evidence-collect over-cap files=2/10 mb=1.50/1 file-mb=0.75/$FILE_MB" "max_mb: over-cap line"
 cfg_ev '"max_mb": 2'
 collect ev;                          assert_eq "0" "$RC" "max_mb: under the cap is fine"
 new_repo; bigfile ev/a.png 524288; bigfile ev/b.png 524288
@@ -453,16 +456,16 @@ collect ev --since 1500000000
 assert_eq "0" "$RC" "caps count only files that pass --since"
 assert_eq "$(tsv ev new.png image)" "$(out)" "caps count only files that pass --since: manifest"
 
-# the fixed per-file cap: 10 MiB
-new_repo; bigfile ev/big.png 10485761; png ev/small.png
+# the fixed per-file cap (FILE_MB, read from the script)
+new_repo; bigfile ev/big.png $((FILE_BYTES + 1)); png ev/small.png
 cfg_ev '"max_mb": 100'
 collect ev
-assert_eq "4" "$RC" "per-file cap: a file over 10 MiB -> exit 4 even under max_mb"
+assert_eq "4" "$RC" "per-file cap: a file over the cap -> exit 4 even under max_mb"
 assert_eq "" "$(out)" "per-file cap: nothing selected (small.png not listed either)"
-assert_contains "$(err)" "evidence-collect over-cap files=2/10 mb=10.00/100 file-mb=10.00/10" "per-file cap: line carries file-mb"
-new_repo; bigfile ev/big.png 10485760
+assert_contains "$(err)" "evidence-collect over-cap files=2/10 mb=$FILE_MB.00/100 file-mb=$FILE_MB.00/$FILE_MB" "per-file cap: line carries file-mb"
+new_repo; bigfile ev/big.png "$FILE_BYTES"
 collect ev
-assert_eq "0" "$RC" "per-file cap: exactly 10 MiB is fine (max_mb default 20)"
+assert_eq "0" "$RC" "per-file cap: exactly the cap is fine (max_mb default 20)"
 
 # =============================================================================
 # collect --stage (#415): the bytes come from the descriptor collect judged
@@ -520,7 +523,7 @@ if cmp -s "$STAGE/a.png" "$SANDBOX/judged.png"; then pass "stage: the staged cop
 assert_eq "" "$(grep -l TOP-SECRET "$STAGE/a.png" || true)" "stage: nothing was read through the link"
 
 # the caps are re-checked on the staged bytes; a failure leaves the stage empty
-new_repo; new_stage; bigfile ev/big.png 10485761; png ev/small.png
+new_repo; new_stage; bigfile ev/big.png $((FILE_BYTES + 1)); png ev/small.png
 cfg_ev '"max_mb": 100'
 collect ev --stage "$STAGE"
 assert_eq "4" "$RC" "stage: over the per-file cap -> exit 4"
