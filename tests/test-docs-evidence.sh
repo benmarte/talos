@@ -226,6 +226,17 @@ for needle in '.talos/evidence' '.gitignore' 'git check-ignore -q -- <dir>/probe
   esac
 done
 
+# No advice to put a token into CI for evidence, and no overclaim that capture
+# is local (it runs evidence.command, which can do anything that command does).
+check_has "$section" 'Do not add a long-lived token to CI just for evidence' "guide: no token in CI for evidence"
+check_has "$section" 'in GitHub Actions leave `evidence.enabled` at `false`' "guide: leave evidence off in Actions"
+check_has "$section" '`gh auth login`' "guide: a user token comes from gh auth login"
+for term in 'personal access token' 'Personal access token' 'give it a PAT' 'add a PAT'; do
+  check_lacks "$section" "$term" "guide does not advise a token in CI: $term"
+done
+check_has "$section" '`capture` makes no network call of its own, but it runs `evidence.command`' "guide: capture is not called local"
+check_lacks "$section" '`capture`, `collect`, `dir` and `enabled` are local' "guide: no overclaim that capture is local"
+
 # UNVERIFIED must sit on the private-repo claim itself.
 if contains "$section" 'UNVERIFIED:** whether files attached to a **private** repo'; then
   pass "guide marks the private-repo visibility claim UNVERIFIED"

@@ -1811,7 +1811,7 @@ The default `.talos/evidence` is not something you want tracked, and whatever `d
 
 #### Commands
 
-All are verbs of `scripts/pipeline-evidence.sh`. `capture`, `collect`, `dir` and `enabled` are local: no network call and no git write. `upload` and `attach` are the only ones that talk to GitHub.
+All are verbs of `scripts/pipeline-evidence.sh`. `collect`, `dir` and `enabled` make no network call and no git write. `capture` makes no network call of its own, but it runs `evidence.command`, which can do anything that command does (for example `npx playwright test` can download packages). `upload` and `attach` are the only verbs that talk to GitHub.
 
 | Verb | What it does | Exit codes |
 |------|--------------|-----------|
@@ -1859,7 +1859,7 @@ QA never opens, Reads or describes an image or video, and never fetches the comm
 - **`gh` v2.99.0 or newer.** Talos probes the capability, not the version: `gh pr comment --help` must list `--attach`. (v2.102.0 is the version whose source the upload design was checked against.)
 - **Write access** to the repository.
 - **Not GitHub Enterprise Server.** `gh --attach` does not support it.
-- **Not the Actions `GITHUB_TOKEN`.** `gh` refuses it (exit 1 with `gh`'s own reason). Run the pipeline on a dev machine, or give it a personal access token; the default token in a workflow does not work.
+- **Not the Actions `GITHUB_TOKEN`.** `gh` refuses it (exit 1 with `gh`'s own reason). Evidence upload needs a user token, which on a dev machine is `gh auth login`. Do not add a long-lived token to CI just for evidence: in GitHub Actions leave `evidence.enabled` at `false`. With the default `GITHUB_TOKEN` the upload is refused by `gh` and nothing is posted (status `failed`).
 - **Uploads cannot be deleted.** Deleting a comment, including the older evidence comment `upload` removes after a good post, does not delete the uploaded files.
 - **Caps.** 10 files, 20 MiB in total and 10 MiB per file (`evidence.max_files`, `evidence.max_mb` and a fixed per-file cap). Over any of them is exit 4 and nothing is selected, never a partial upload.
 - **Allowlisted types only.** `png`, `jpg`, `jpeg`, `gif`, `webm`, `mp4` and `mov`, each checked against the file's first bytes (a renamed file is skipped). `svg` and `html` are never published, even when `evidence.include` names them. At most 3 path components below `dir`, counting the file name (so at most two subdirectory levels), names only from `[A-Za-z0-9._-]`, no hidden files, no symlinks, no hard links.
