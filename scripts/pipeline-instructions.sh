@@ -107,7 +107,7 @@ _imports_agents() {
 
 # write_agents_md: create / append / replace the block. Sets nothing; prints.
 write_agents_md() {
-  local f="$REPO/AGENTS.md" blockf newf nb ne ab ae lb le problem=""
+  local f="$REPO/AGENTS.md" blockf newf nb ne ab ae lb le problem="" verb=updated
   if [ -L "$f" ]; then
     echo "AGENTS.md: $f is a symlink; not writing through it. Add the Talos block to the real file yourself (bash $SCRIPT_DIR/pipeline-instructions.sh print)."
     return 0
@@ -128,6 +128,7 @@ write_agents_md() {
     if [ "$nb" != "$ab" ] || [ "$ne" != "$ae" ]; then
       problem="a talos marker is not on a line of its own"
     elif [ "$nb" -eq 0 ] && [ "$ne" -eq 0 ]; then
+      verb=added
       { cat "$f"
         if [ -s "$f" ]; then
           [ -n "$(tail -c 1 "$f")" ] && printf '\n'
@@ -155,7 +156,9 @@ write_agents_md() {
   elif [ -e "$f" ] && cmp -s "$newf" "$f"; then
     echo "AGENTS.md: up to date: $f"
   else
-    if [ -e "$f" ]; then echo "AGENTS.md: updated the Talos block in $f"; else echo "AGENTS.md: created $f"; fi
+    if [ ! -e "$f" ]; then echo "AGENTS.md: created $f"
+    elif [ "$verb" = added ]; then echo "AGENTS.md: added the Talos block to $f"
+    else echo "AGENTS.md: updated the Talos block in $f"; fi
     cat "$newf" > "$f"
     echo "Next: commit AGENTS.md so every clone and every agent sees it."
   fi
@@ -201,7 +204,10 @@ claude_notice() {
   echo "Claude Code: found $found. Claude Code 2.1.277+ reads AGENTS.md only when no CLAUDE.md exists, so it will not read AGENTS.md there."
   echo "  The registered pipeline skill needs nothing. To make Claude read AGENTS.md as well, add this line to $found:"
   echo "    @${rel}AGENTS.md"
-  echo "  (or re-run install.sh with --import-agents-md for $REPO/CLAUDE.md)"
+  # --import-agents-md only edits a regular <repo>/CLAUDE.md; hint it only then.
+  if [ "$found" = "$REPO/CLAUDE.md" ] && [ ! -L "$found" ]; then
+    echo "  (or re-run install.sh with --import-agents-md to add it for you)"
+  fi
 }
 
 gemini_notice() {

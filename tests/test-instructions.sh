@@ -6,15 +6,18 @@
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox
+# Fixture paths must match what the script prints: it prints `pwd` paths, which
+# collapse the `//` a TMPDIR ending in `/` leaves in $SANDBOX.
+SBX="$(cd "$SANDBOX" && pwd)"
 
 INSTR="$TALOS_ROOT/scripts/pipeline-instructions.sh"
 . "$TALOS_ROOT/scripts/pipeline-contract.sh"
 
 # new_repo <name> -- a fresh git repo of its own under the sandbox.
 new_repo() {
-  mkdir -p "$SANDBOX/$1"
-  git -C "$SANDBOX/$1" init -q -b main
-  printf '%s' "$SANDBOX/$1"
+  mkdir -p "$SBX/$1"
+  git -C "$SBX/$1" init -q -b main
+  printf '%s' "$SBX/$1"
 }
 sum() { cksum < "$1"; }
 
@@ -61,18 +64,20 @@ assert_not_contains "$out" "commit AGENTS.md" "an unchanged file prints no commi
 mkdir -p "$HOME/.talos/skills/pipeline" && : > "$HOME/.talos/skills/pipeline/SKILL.md"
 out="$(bash "$INSTR" write "$R" 2>&1)"
 assert_not_contains "$out" "install.sh --global" "no warning when the global playbook exists"
-out="$(TALOS_HOME="$SANDBOX/elsewhere" bash "$INSTR" write "$R" 2>&1)"
+out="$(TALOS_HOME="$SBX/elsewhere" bash "$INSTR" write "$R" 2>&1)"
 assert_contains "$out" "install.sh --global" "the warning follows \$TALOS_HOME"
 rm -rf "$HOME/.talos"
 
 R="$(new_repo append)"
 printf '# Project notes\n\nkeep me' > "$R/AGENTS.md"
 orig_size="$(wc -c < "$R/AGENTS.md" | tr -d ' ')"
-cp "$R/AGENTS.md" "$SANDBOX/append.orig"
+cp "$R/AGENTS.md" "$SBX/append.orig"
 out="$(bash "$INSTR" write "$R" 2>&1)"
-assert_eq "$(cat "$SANDBOX/append.orig")" "$(head -c "$orig_size" "$R/AGENTS.md")" "append keeps the existing bytes as an unchanged prefix"
+assert_eq "$(cat "$SBX/append.orig")" "$(head -c "$orig_size" "$R/AGENTS.md")" "append keeps the existing bytes as an unchanged prefix"
 assert_eq "1" "$(grep -c 'talos:begin' "$R/AGENTS.md")" "append adds exactly one block"
 assert_contains "$out" "commit AGENTS.md" "append prints the commit line"
+assert_contains "$out" "added the Talos block" "appending to a file without a block says 'added'"
+assert_not_contains "$out" "updated" "appending to a file without a block does not say 'updated'"
 
 # The block `install.sh` wrote on main (codex/antigravity), pre-#364.
 R="$(new_repo old)"
@@ -90,8 +95,10 @@ This harness has no native subagents.
 TALOS_OLDBLOCK_k3v9x2q7wzm1
   printf '\n# Notes below\n'
 } > "$R/AGENTS.md"
-cp "$R/AGENTS.md" "$SANDBOX/old.orig"
-bash "$INSTR" write "$R" >/dev/null 2>&1
+cp "$R/AGENTS.md" "$SBX/old.orig"
+out="$(bash "$INSTR" write "$R" 2>&1)"
+assert_contains "$out" "updated the Talos block" "replacing a stale block says 'updated'"
+assert_not_contains "$out" "added the Talos block" "replacing a stale block does not say 'added'"
 agents="$(cat "$R/AGENTS.md")"
 assert_eq "1" "$(grep -c 'talos:begin' "$R/AGENTS.md")" "repair leaves exactly one block"
 assert_contains "$agents" "~/.talos/skills/pipeline/SKILL.md" "repaired block names the ~/.talos playbook"
@@ -99,7 +106,7 @@ assert_not_contains "$agents" ".claude/skills/pipeline/SKILL.md" "repaired file 
 assert_not_contains "$agents" "no native subagents" "repaired file drops the old claim"
 # Bytes outside the old begin..end are unchanged: strip both blocks and compare.
 strip() { awk '/^<!-- talos:begin -->$/{skip=1} !skip{print} /^<!-- talos:end -->$/{skip=0}' "$1"; }
-assert_eq "$(strip "$SANDBOX/old.orig")" "$(strip "$R/AGENTS.md")" "repair changes only the text from begin to end"
+assert_eq "$(strip "$SBX/old.orig")" "$(strip "$R/AGENTS.md")" "repair changes only the text from begin to end"
 before="$(sum "$R/AGENTS.md")"
 bash "$INSTR" write "$R" >/dev/null 2>&1
 assert_eq "$before" "$(sum "$R/AGENTS.md")" "write after a repair is a no-op"
@@ -132,20 +139,20 @@ assert_eq "real.md" "$(readlink "$R/AGENTS.md")" "symlink itself is untouched"
 assert_contains "$out" "symlink" "symlinked AGENTS.md prints a notice"
 
 R="$(new_repo link-out)"
-printf 'outside text\n' > "$SANDBOX/outside.md"
-ln -s "$SANDBOX/outside.md" "$R/AGENTS.md"
-before_t="$(sum "$SANDBOX/outside.md")"
+printf 'outside text\n' > "$SBX/outside.md"
+ln -s "$SBX/outside.md" "$R/AGENTS.md"
+before_t="$(sum "$SBX/outside.md")"
 out="$(bash "$INSTR" write "$R" 2>&1)"; rc=$?
 assert_eq "0" "$rc" "symlinked AGENTS.md (outside the repo) exits 0"
-assert_eq "$before_t" "$(sum "$SANDBOX/outside.md")" "symlink target outside the repo is untouched"
+assert_eq "$before_t" "$(sum "$SBX/outside.md")" "symlink target outside the repo is untouched"
 assert_contains "$out" "symlink" "outside symlink prints a notice"
-ln -sf "$SANDBOX/missing-target.md" "$R/AGENTS.md"
+ln -sf "$SBX/missing-target.md" "$R/AGENTS.md"
 bash "$INSTR" write "$R" >/dev/null 2>&1
-assert_file_absent "$SANDBOX/missing-target.md" "a dangling AGENTS.md symlink is not written through"
+assert_file_absent "$SBX/missing-target.md" "a dangling AGENTS.md symlink is not written through"
 
-bash "$INSTR" write "$SANDBOX/no-such-dir" >/dev/null 2>&1; rc=$?
+bash "$INSTR" write "$SBX/no-such-dir" >/dev/null 2>&1; rc=$?
 assert_eq "2" "$rc" "missing <repo-dir> exits 2"
-assert_file_absent "$SANDBOX/no-such-dir" "missing <repo-dir> is not created"
+assert_file_absent "$SBX/no-such-dir" "missing <repo-dir> is not created"
 bash "$INSTR" write >/dev/null 2>&1; rc=$?
 assert_eq "2" "$rc" "write without <repo-dir> exits 2"
 bash "$INSTR" bogus >/dev/null 2>&1; rc=$?
@@ -164,18 +171,21 @@ assert_contains "$out" "$R/CLAUDE.md" "Claude notice names the file found"
 assert_contains "$out" "2.1.277" "Claude notice names the version"
 assert_contains "$out" "registered pipeline skill needs nothing" "Claude notice says the registered skill needs nothing"
 assert_contains "$out" "@AGENTS.md" "Claude notice prints the import line"
+assert_contains "$out" "--import-agents-md" "Claude notice offers --import-agents-md for <repo>/CLAUDE.md"
 assert_eq "$before" "$(sum "$R/CLAUDE.md")" "CLAUDE.md is byte-identical without --import-agents-md"
 
 R="$(new_repo claude-nested)"
 mkdir -p "$R/.claude"; printf '# rules\n' > "$R/.claude/CLAUDE.md"
 out="$(bash "$INSTR" write "$R" 2>&1)"
 assert_contains "$out" "$R/.claude/CLAUDE.md" "notice names .claude/CLAUDE.md"
+assert_not_contains "$out" "--import-agents-md" "no --import-agents-md hint for .claude/CLAUDE.md (the flag does not touch it)"
 assert_contains "$out" "@../AGENTS.md" "the .claude/CLAUDE.md import is relative to that file"
 
 R="$(new_repo claude-local)"
 printf '# mine\n' > "$R/CLAUDE.local.md"
 out="$(bash "$INSTR" write "$R" 2>&1)"
 assert_contains "$out" "$R/CLAUDE.local.md" "notice names CLAUDE.local.md"
+assert_not_contains "$out" "--import-agents-md" "no --import-agents-md hint for CLAUDE.local.md (the flag does not touch it)"
 
 # A line that already resolves to <repo>/AGENTS.md suppresses the notice.
 R="$(new_repo claude-imported)"
@@ -192,14 +202,15 @@ out="$(bash "$INSTR" write "$R" 2>&1)"
 assert_contains "$out" "@../AGENTS.md" "@AGENTS.md in .claude/CLAUDE.md does not resolve to the repo file"
 
 # An ancestor up to the git top-level counts; the line is the path from that file.
-mkdir -p "$SANDBOX/mono/pkg/app"; git -C "$SANDBOX/mono" init -q -b main
-printf '# root rules\n' > "$SANDBOX/mono/CLAUDE.md"
-out="$(bash "$INSTR" write "$SANDBOX/mono/pkg/app" 2>&1)"
-assert_contains "$out" "$SANDBOX/mono/CLAUDE.md" "notice names a CLAUDE.md in an ancestor within the repo"
+mkdir -p "$SBX/mono/pkg/app"; git -C "$SBX/mono" init -q -b main
+printf '# root rules\n' > "$SBX/mono/CLAUDE.md"
+out="$(bash "$INSTR" write "$SBX/mono/pkg/app" 2>&1)"
+assert_contains "$out" "$SBX/mono/CLAUDE.md" "notice names a CLAUDE.md in an ancestor within the repo"
 assert_contains "$out" "@pkg/app/AGENTS.md" "ancestor notice gives the path from that file to AGENTS.md"
+assert_not_contains "$out" "--import-agents-md" "no --import-agents-md hint for an ancestor CLAUDE.md"
 
 # No walk above the git top-level.
-mkdir -p "$SANDBOX/outer"; printf '# outer\n' > "$SANDBOX/outer/CLAUDE.md"
+mkdir -p "$SBX/outer"; printf '# outer\n' > "$SBX/outer/CLAUDE.md"
 R="$(new_repo outer/inner)"
 out="$(bash "$INSTR" write "$R" 2>&1)"
 assert_not_contains "$out" "2.1.277" "a CLAUDE.md above the git top-level is not considered"
@@ -244,12 +255,12 @@ assert_eq "0" "$rc" "write does not validate the --harness value"
 R="$(new_repo import)"
 printf '# claude rules' > "$R/CLAUDE.md"          # no trailing newline
 printf '# gemini rules\n' > "$R/GEMINI.md"
-cp "$R/CLAUDE.md" "$SANDBOX/c.orig"; cp "$R/GEMINI.md" "$SANDBOX/g.orig"
+cp "$R/CLAUDE.md" "$SBX/c.orig"; cp "$R/GEMINI.md" "$SBX/g.orig"
 csize="$(wc -c < "$R/CLAUDE.md" | tr -d ' ')"; gsize="$(wc -c < "$R/GEMINI.md" | tr -d ' ')"
 out="$(bash "$INSTR" write "$R" --import-agents-md 2>&1)"; rc=$?
 assert_eq "0" "$rc" "--import-agents-md exits 0"
-assert_eq "$(cat "$SANDBOX/c.orig")" "$(head -c "$csize" "$R/CLAUDE.md")" "CLAUDE.md keeps its bytes as a prefix"
-assert_eq "$(cat "$SANDBOX/g.orig")" "$(head -c "$gsize" "$R/GEMINI.md")" "GEMINI.md keeps its bytes as a prefix"
+assert_eq "$(cat "$SBX/c.orig")" "$(head -c "$csize" "$R/CLAUDE.md")" "CLAUDE.md keeps its bytes as a prefix"
+assert_eq "$(cat "$SBX/g.orig")" "$(head -c "$gsize" "$R/GEMINI.md")" "GEMINI.md keeps its bytes as a prefix"
 for f in CLAUDE.md GEMINI.md; do
   tail_text="$(tail -n 3 "$R/$f")"
   assert_eq "<!-- talos:import:begin -->
