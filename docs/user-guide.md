@@ -804,8 +804,9 @@ for the same suite run more than it needs to:
   non-empty, else `local`): before either mode runs, the orchestrator checks
   `pipeline-vcs.sh pr-mergeable <pr>` — a `CONFLICTING` PR gets no
   `pull_request` CI run to wait for, so QA is not dispatched into a poll
-  that would never resolve. Under `ci`, QA additionally polls
-  `pipeline-vcs.sh pr-checks-required` in the foreground, bounded by
+  that would never resolve. Under `ci`, QA additionally waits on
+  `pipeline-vcs.sh pr-checks-required <pr> --wait <seconds>` in the foreground
+  (one call that polls internally; no inline loop), bounded by
   `verify.ci_wait_s` (default `900` seconds; must be a positive integer,
   rejected otherwise with a one-line stderr warning and a fallback to the
   default -- it is interpolated unquoted into the CI-wait loop's shell test,
@@ -836,6 +837,17 @@ for the same suite run more than it needs to:
   for zero required checks would let QA pass vacuously, without ever
   observing a real CI signal, so that combination fails closed to `local`
   instead of passing silently.
+- **`--wait` and the CI gate before QA** (#355): `pr-checks-required <pr>
+  --wait <seconds>` takes digits only, at most `3600`; anything else exits 2
+  with usage. On `github` and `github-api` it polls inside the one call; other
+  providers answer once. When `merge.required_checks` is set, the developer
+  also waits for required CI before handing off, with `--wait` set to the
+  smaller of `verify.ci_wait_s` and `verify.timeout_ms / 1000 - 30`. It fixes a
+  red build in the same dispatch (at most 2 rounds) and reports `CI: green`,
+  `CI: red` or `CI: pending` with the head SHA. Under `qa_mode: ci` the
+  orchestrator does not dispatch QA while `pr-checks-required` exits 1 with
+  `pr-checks-required: failed:`: it records a developer attempt and
+  re-dispatches the developer instead. Draft PRs are skipped.
 - **Reviewer, security, and docs never run `verify:`.** They only ever read
   the diff (`pipeline-vcs.sh diff-pr`) and CI status
   (`pipeline-vcs.sh pr-checks`) — this was already true in practice and is
