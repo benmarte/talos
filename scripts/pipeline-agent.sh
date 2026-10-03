@@ -24,10 +24,37 @@
 #                                             # that decided the model. Warns on
 #                                             # stderr for a role file whose
 #                                             # frontmatter still has model:.
+#        pipeline-agent.sh --resolve-profile <role>
+#                                             # (#367) print the one absolute
+#                                             # path of the role definition a
+#                                             # stage run would use, exit 0.
+#                                             # Exit 1 (stderr lists the
+#                                             # locations searched) when there
+#                                             # is none, 2 on a missing or
+#                                             # invalid <role>. pi inline mode
+#                                             # (skills/pipeline/SKILL.md) uses
+#                                             # it: same order as a stage run.
 #
-# The executed prompt = role definition body (.claude/agents/<role>.md with
-# its YAML frontmatter stripped — the frontmatter is Claude Code metadata)
-# + a separator + the task prompt.
+# The executed prompt = role definition body (the profile found by the order
+# below, with its YAML frontmatter stripped — the frontmatter is Claude Code
+# metadata) + a separator + the task prompt.
+#
+# Role definition lookup order (#367; _resolve_role_profile, one function for a
+# stage run and --resolve-profile). The first file that exists wins:
+#   1. $PWD/.claude/agents/<role>.md          repo override, always first
+#   2. $PWD/.agents/talos/agents/<role>.md    harness-neutral repo override;
+#                                              read here (adapter and pi inline
+#                                              paths) and NEVER by the native
+#                                              Claude path, which resolves
+#                                              subagents from its own dirs.
+#                                              A symlink (the file or a
+#                                              directory on the way) is skipped.
+#   3. the install's agents/ (via _resolve_talos_dir: $TALOS_HOME, ~/.talos,
+#      $CLAUDE_PLUGIN_ROOT, .claude/talos, scripts)
+#   4. self-relative fallbacks: <scripts>/../agents, <scripts>/../../agents,
+#      <scripts>/../.claude/agents
+# <role> must be lowercase letters and '-' (not leading); anything else exits 2
+# before any path is built.
 #
 # Config keys (talos.pipeline.yml via pipeline-config.sh):
 #   agents.runner       claude (default) | pi | codex | gemini | antigravity | custom
@@ -183,6 +210,58 @@ _resolve_effort() {
   printf '%s' "$_e"
 }
 
+# ── Role definition lookup (#367) ─────────────────────────────────────────────
+# One function decides the order for a stage run and for --resolve-profile (see
+# the header). The role name reaches a path, so it is validated first: lowercase
+# letters and '-', not starting with '-' (no '/', no '..', no control chars).
+# A glob range like [a-z] is locale-dependent in bash 3.2, so list the letters.
+_valid_role_name() {
+  case "$1" in
+    "" | -* | *[!abcdefghijklmnopqrstuvwxyz-]*) return 1 ;;
+  esac
+  return 0
+}
+
+# _neutral_profile <role>: print $PWD/.agents/talos/agents/<role>.md when it is
+# a regular file reached without crossing a symlink (the file, or .agents,
+# .agents/talos, .agents/talos/agents), else print nothing and return 1. A
+# symlink is refused outright rather than checked for where it points: a
+# committed link that resolves outside the repo must never be read as a profile.
+_neutral_profile() {
+  local _p="$PWD/.agents/talos/agents/$1.md" _x
+  for _x in "$PWD/.agents" "$PWD/.agents/talos" "$PWD/.agents/talos/agents" "$_p"; do
+    [ ! -L "$_x" ] || return 1
+  done
+  [ -f "$_p" ] || return 1
+  printf '%s\n' "$_p"
+}
+
+# _resolve_role_profile <role>: print the profile path (0), or explain on
+# stderr and return 1 (not found) / 2 (invalid role name).
+_resolve_role_profile() {
+  local _role="$1" _scripts _agents _neutral _c
+  if ! _valid_role_name "$_role"; then
+    echo "pipeline-agent: invalid role name '$(printf '%s' "$_role" | tr -d '[:cntrl:]')' (lowercase letters and '-' only, not starting with '-')" >&2
+    return 2
+  fi
+  _scripts="$(_resolve_talos_dir pipeline-vcs.sh 2>/dev/null || true)"
+  _agents="${_scripts:+$(cd "$_scripts/.." && pwd)/agents}"
+  _neutral="$(_neutral_profile "$_role" || true)"
+  for _c in \
+    "$PWD/.claude/agents/$_role.md" \
+    "$_neutral" \
+    "${_agents:+$_agents/$_role.md}" \
+    "$SCRIPT_DIR/../agents/$_role.md" \
+    "$SCRIPT_DIR/../../agents/$_role.md" \
+    "$SCRIPT_DIR/../.claude/agents/$_role.md"; do
+    [ -n "$_c" ] || continue
+    if [ -f "$_c" ]; then printf '%s\n' "$_c"; return 0; fi
+  done
+  echo "pipeline-agent: role definition not found: $_role" >&2
+  echo "  looked in: $PWD/.claude/agents/, $PWD/.agents/talos/agents/, ${_agents:-<no Talos install found>}/ (the install, via _resolve_talos_dir: \$TALOS_HOME, ~/.talos, \$CLAUDE_PLUGIN_ROOT, .claude/talos), $SCRIPT_DIR/../agents/, $SCRIPT_DIR/../../agents/, $SCRIPT_DIR/../.claude/agents/" >&2
+  return 1
+}
+
 # --resolve <role>: print the resolved runner/runner_cmd/model/effort and
 # exit, without running anything. Shared resolution for the orchestrator's
 # native-path per-role dispatch decision (skills/pipeline/SKILL.md).
@@ -290,8 +369,34 @@ sys.stdout.buffer.write(re.sub(rb"[\x00-\x1f\x7f]|\xc2[\x80-\x9f]", b"", sys.std
         echo "pipeline-agent: [warn] $_f still sets model: in its frontmatter; it applies whenever the config resolves empty -- remove the line so the Talos config is the only source" >&2
       fi
     done
+    # (#367) The scan above covers only the two directories Claude Code loads:
+    # the adapter strips frontmatter, so a model: line in the neutral file
+    # $PWD/.agents/talos/agents/<role>.md never applies and is not warned about.
+    # The neutral file itself is warned about when it is shadowed, or when the
+    # native Claude path (which never reads it) would be the one running the
+    # role: one stderr line per role, stdout untouched.
+    _np="$(_neutral_profile "$_r" || true)"
+    if [ -n "$_np" ]; then
+      if [ -f "$PWD/.claude/agents/$_r.md" ]; then
+        echo "pipeline-agent: [warn] $_np is shadowed by $PWD/.claude/agents/$_r.md; the adapter and pi inline paths read the .claude/agents file" >&2
+      elif [ "$(_resolve_runner "$_r")" = "claude" ] && [ "$(cfg agents.subagents auto)" != "false" ]; then
+        echo "pipeline-agent: [warn] $_np is read only by the adapter and pi inline paths; the native Claude path does not read it -- put the profile in $PWD/.claude/agents/$_r.md for role $_r" >&2
+      fi
+    fi
   done
   exit 0
+fi
+
+# --resolve-profile <role> (#367): print the role definition a stage run would
+# use, from the same _resolve_role_profile. pi inline mode finds its profile
+# with this instead of re-deriving the order in prose.
+if [ "${1:-}" = "--resolve-profile" ]; then
+  if [ -z "${2:-}" ]; then
+    echo "Usage: pipeline-agent.sh --resolve-profile <role>" >&2
+    exit 2
+  fi
+  _resolve_role_profile "$2"
+  exit $?
 fi
 
 ROLE="${1:-}"
@@ -339,37 +444,13 @@ fi
 [ "$TASK" = "-" ] && TASK="$(cat)"
 
 # ── Locate the role definition ────────────────────────────────────────────────
-# Priority order:
-#   0. Repo override — $PWD/.claude/agents/<role>.md. Always wins. Also covers
-#      vendored-install back-compat: install.sh has always written agents to
-#      .claude/agents/, so the repo override position is the vendored position.
-#      Cannot be replaced by _resolve_talos_dir because that returns a scripts
-#      directory; the repo override is a CWD-relative agents path that is
-#      structurally different from all install-location paths.
-#   1. Canonical install — resolved by _resolve_talos_dir() (sourced from
-#      pipeline-paths.sh): implements the 5-location probe ($TALOS_HOME,
-#      ~/.talos, $CLAUDE_PLUGIN_ROOT, .claude/talos, scripts) and returns the
-#      matching scripts dir. Agents live at <scripts>/../agents/.
-#   2-N. Self-relative fallbacks — cover harnesses that run this script without
-#      exporting CLAUDE_PLUGIN_ROOT, and legacy layouts (pre-0.6.0).
-_talos_scripts="$(_resolve_talos_dir pipeline-vcs.sh 2>/dev/null || true)"
-_talos_agents="${_talos_scripts:+$(cd "$_talos_scripts/.." && pwd)/agents}"
-
-ROLE_FILE=""
-for candidate in \
-  "$PWD/.claude/agents/$ROLE.md" \
-  "${_talos_agents:+$_talos_agents/$ROLE.md}" \
-  "$SCRIPT_DIR/../agents/$ROLE.md" \
-  "$SCRIPT_DIR/../../agents/$ROLE.md" \
-  "$SCRIPT_DIR/../.claude/agents/$ROLE.md"; do
-  [ -n "$candidate" ] || continue
-  if [ -f "$candidate" ]; then ROLE_FILE="$candidate"; break; fi
-done
-if [ -z "$ROLE_FILE" ]; then
-  echo "pipeline-agent: role definition not found: $ROLE" >&2
-  echo "  looked in: \$CLAUDE_PLUGIN_ROOT/agents/ (via _resolve_talos_dir), $SCRIPT_DIR/../agents/, $PWD/.claude/agents/" >&2
-  exit 1
-fi
+# _resolve_role_profile (above) holds the order, shared with --resolve-profile:
+# $PWD/.claude/agents, $PWD/.agents/talos/agents, the install's agents/, then
+# the self-relative fallbacks (see the header). The repo overrides are $PWD
+# relative, $PWD being the worktree root at invocation time; .claude/agents
+# also covers vendored-install back-compat (install.sh has always written
+# agents there).
+ROLE_FILE="$(_resolve_role_profile "$ROLE")" || exit $?
 
 # Strip YAML frontmatter (--- ... --- at the top) — Claude Code metadata only.
 ROLE_BODY="$(awk 'NR==1 && /^---$/ {fm=1; next} fm && /^---$/ {fm=0; next} !fm' "$ROLE_FILE")"
