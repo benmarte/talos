@@ -161,6 +161,13 @@ def _warn(msg):
 
 def _parse_cfg_file(path):
     # Prefer PyYAML (safe_load only); fall back to json without it.
+    # -I drops the user site; append it back (never insert: cwd and the
+    # stdlib must keep winning) so a pip --user PyYAML still parses YAML config (#395).
+    try:
+        import site, sys
+        sys.path.append(site.getusersitepackages())
+    except Exception:
+        pass
     try:
         import yaml
     except ImportError:
@@ -254,7 +261,7 @@ if [ "${1:-}" = "--dump-layers" ]; then
   _LPROJ="$(_locate_project_cfg)"
   _LUSER="$(_locate_user_cfg)"
   if [ -z "$_LPROJ" ] && [ -z "$_LUSER" ]; then exit 0; fi
-  python3 - "$_LPROJ" "$_LUSER" "$_CFG_LOADER_PY" <<'PYEOF'
+  python3 -I - "$_LPROJ" "$_LUSER" "$_CFG_LOADER_PY" <<'PYEOF'
 import sys
 exec(sys.argv[3])
 _project, _user, _merged = load_layers(sys.argv[1], sys.argv[2])
@@ -272,7 +279,7 @@ if [ "${1:-}" = "--dump" ]; then
   if [ -z "$_DCFG" ] && [ -z "$_DUSER" ]; then
     exit 0
   fi
-  python3 - "$_DCFG" "$_KNOWN_CONFIG_KEYS_JSON" "$_DUSER" "$_CFG_LOADER_PY" <<'PYEOF'
+  python3 -I - "$_DCFG" "$_KNOWN_CONFIG_KEYS_JSON" "$_DUSER" "$_CFG_LOADER_PY" <<'PYEOF'
 import sys
 
 known_keys_json = sys.argv[2]
@@ -627,7 +634,7 @@ fi
 # The heredoc passes file paths, key, default, the known-keys JSON and the
 # shared loader source as argv to avoid shell quoting issues with special
 # characters in values.
-python3 - "$CFG" "$KEY" "$DEFAULT" "$_KNOWN_CONFIG_KEYS_JSON" "$USER_CFG" "$_CFG_LOADER_PY" <<'PYEOF'
+python3 -I - "$CFG" "$KEY" "$DEFAULT" "$_KNOWN_CONFIG_KEYS_JSON" "$USER_CFG" "$_CFG_LOADER_PY" <<'PYEOF'
 import sys
 
 key      = sys.argv[2]

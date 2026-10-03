@@ -115,7 +115,7 @@ Core (all setups):
 |------|-----------|-------|
 | `bash` | everything | macOS/Linux; Windows via WSL or Git Bash |
 | `git` | everything | |
-| `python3` | config parsing, notify payloads | stdlib only; JSON config (`talos.pipeline.json`) needs no extra dependency — recommended for new projects. YAML config requires PyYAML (`pip install pyyaml`); not installable on some platforms (PEP 668). |
+| `python3` (3.9+) | config parsing, notify payloads | stdlib only; every embedded call runs as `python3 -I` (isolated mode, so a file in the target repo named like a module, such as `json.py`, can never run inside Talos); JSON config (`talos.pipeline.json`) needs no extra dependency — recommended for new projects. YAML config requires PyYAML (`pip install pyyaml`; a `pip install --user` copy is found too); not installable on some platforms (PEP 668). |
 | `curl` | notifications | skip if you don't use notifications |
 | `nak` | Buzz notifications only | `brew install nak`; signs/publishes Nostr events — skip unless you use Buzz |
 

@@ -29,7 +29,7 @@ _board_gql() {
 # 100 records); prints nothing when there is none. Never fails the caller's
 # shell.
 _board_gql_error_message() {
-  printf '%s' "$1" | python3 -c "
+  printf '%s' "$1" | python3 -I -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -67,7 +67,7 @@ _board_resolve_owner() {
 _board_resolve_project_id_gh() {
   local _proj_num="$1" _owner="$2"
   gh project list --owner "$_owner" --format json --limit 50 2>/dev/null \
-    | python3 -c "
+    | python3 -I -c "
 import sys, json
 try:
     d = json.load(sys.stdin)
@@ -100,7 +100,7 @@ _board_resolve_project_id_token() {
     printf ''
     return 0
   fi
-  _id="$(printf '%s' "$_raw" | python3 -c "
+  _id="$(printf '%s' "$_raw" | python3 -I -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -111,7 +111,7 @@ except Exception:
   if [ -z "$_id" ]; then
     _raw="$(_board_gql "$_token" "{\"query\":\"query{organization(login:\\\"$_owner\\\"){projectV2(number:$_proj_num){id}}}\"}")"
     _BOARD_LAST_GQL_RAW="$_raw"
-    _id="$(printf '%s' "$_raw" | python3 -c "
+    _id="$(printf '%s' "$_raw" | python3 -I -c "
 import json, sys
 try:
     d = json.load(sys.stdin)

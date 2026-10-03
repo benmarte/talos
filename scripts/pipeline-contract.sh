@@ -196,7 +196,7 @@ talos_contract_json() {
   TALOS_APPROVAL_LABELS_ENV="$(printf '%s\n' "${TALOS_APPROVAL_LABELS[@]}")" \
   TALOS_MISC_LABELS_ENV="$(printf '%s\n' "${TALOS_MISC_LABELS[@]}")" \
   TALOS_MARKERS_ENV="${TALOS_MARKERS[*]}" \
-  python3 -c "
+  python3 -I -c "
 import json, os
 
 def parse_labels(env_name):

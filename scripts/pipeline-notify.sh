@@ -189,7 +189,7 @@ fi
 _NOTIFY_MSG_MAX=16384
 _msg_bytes="$(printf '%s' "$MSG" | wc -c | tr -d ' ')"
 if [ "${_msg_bytes:-0}" -gt "$_NOTIFY_MSG_MAX" ]; then
-  MSG="$(printf '%s' "$MSG" | python3 -c '
+  MSG="$(printf '%s' "$MSG" | python3 -I -c '
 import sys
 b = sys.stdin.buffer.read()
 n = int(sys.argv[1])
@@ -280,7 +280,7 @@ _api_lookup_gh_metadata() {
   curl -sS -m 5 \
     -H "Authorization: Bearer $_API_TOKEN" \
     -H "Accept: application/vnd.github+json" \
-    "$_url" 2>/dev/null | python3 -c "
+    "$_url" 2>/dev/null | python3 -I -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -319,7 +319,7 @@ fi
 # the fallback for ${REPO} when the owner/name lookup finds nothing. Derived
 # here rather than further down because the template layer (#284) needs it.
 REPO_SLUG="$(git -C "$PWD" remote get-url origin 2>/dev/null \
-  | python3 -c "
+  | python3 -I -c "
 import sys, re
 url = sys.stdin.read().strip()
 url = re.sub(r'\.git$', '', url)
@@ -429,7 +429,7 @@ TEXT_PLAIN="$ICON [talos] $EVENT $REF — $MSG${PRIMARY_URL:+ ($PRIMARY_URL)}"
 # the run with zero-width spaces: it reads the same and no longer delimits.
 # Written \x60 because a literal backtick inside $( … ) is command
 # substitution to bash and breaks the parse of the whole file.
-TEXT_PLAIN="$(TP="$TEXT_PLAIN" python3 -c 'import os,re,sys; sys.stdout.write(re.sub(r"\x60{3,}", lambda m: chr(0x200b).join(m.group(0)), os.environ["TP"]))' 2>/dev/null || printf '%s' "$TEXT_PLAIN")"
+TEXT_PLAIN="$(TP="$TEXT_PLAIN" python3 -I -c 'import os,re,sys; sys.stdout.write(re.sub(r"\x60{3,}", lambda m: chr(0x200b).join(m.group(0)), os.environ["TP"]))' 2>/dev/null || printf '%s' "$TEXT_PLAIN")"
 
 # ── Verdict-first headline (#284) ────────────────────────────────────────────
 # Agents open their message with a verdict token ("PASS: 9/9 criteria…",
@@ -470,7 +470,7 @@ esac
 
 # Emits the verdict on line 1 and the summary (which may itself be multi-line)
 # from line 2 on.
-_VERDICT_SPLIT="$(MSG="$MSG" python3 - <<'PY'
+_VERDICT_SPLIT="$(MSG="$MSG" python3 -I - <<'PY'
 import os, re
 
 TOKENS = (
@@ -510,7 +510,7 @@ unset _VERDICT_SPLIT
 # and that stage is the single most useful word in the message. The convention
 # is a leading "<stage>: " in MSG; lift it into the headline and out of the body.
 if [ "$EVENT" = "blocked" ] && [ -z "$VERDICT" ]; then
-  _BLOCKER="$(SUMMARY="$SUMMARY" python3 - <<'PY'
+  _BLOCKER="$(SUMMARY="$SUMMARY" python3 -I - <<'PY'
 import os, re
 STAGES = ('validator', 'pm', 'developer', 'qa', 'reviewer', 'security',
           'docs', 'planner', 'adversarial', 'orchestrator')
@@ -619,7 +619,7 @@ _tmpl_render() {  # $1=template path; prints the rendered text
     REF_LINK="$REF_LINK" PR_LINK="$PR_LINK" \
     VERDICT="$VERDICT" SUMMARY="$SUMMARY" HEADLINE="$HEADLINE" \
     ROLE_ICON="$ROLE_ICON" ROLE_LABEL="$ROLE_LABEL" REPO="$REPO" \
-    python3 -c "
+    python3 -I -c "
 import os, re, string, sys
 # Only the documented variables (README 'Notification templates' table) are
 # substituted. Handing safe_substitute() the whole of os.environ would render
@@ -689,7 +689,7 @@ _render_template() {  # $1=platform ("" = neutral)
 # no conditionals: "[PR ${PR}](${PR_URL})" simply disappears when there is no
 # PR, and "${REF_LINK}" degrades to plain text when no URL was detectable.
 _neutral_to_platform() {  # $1=platform ("" = neutral pass-through), $2=text
-  NP_PLATFORM="${1:-}" NP_TEXT="$2" python3 - <<'PY'
+  NP_PLATFORM="${1:-}" NP_TEXT="$2" python3 -I - <<'PY'
 import os
 import re
 
@@ -735,7 +735,7 @@ PY
 _render_template ""
 TEXT="$(_neutral_to_platform "" "$NTEXT")"
 
-json_escape() { python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"; }
+json_escape() { python3 -I -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"; }
 PAYLOAD_TEXT="$(json_escape "$TEXT")"
 
 # ── Threading setup ───────────────────────────────────────────────────────────
@@ -755,7 +755,7 @@ STATE_KEY="${REPO_SLUG}:${THREAD_KEY}"
 # file); on timeout it proceeds unlocked with a warning rather than block
 # the pipeline.
 _thread_state() {
-  STATE_FILE="$STATE_FILE" STATE_KEY="$STATE_KEY" with_lock "$STATE_FILE" 5 -- python3 - "$@" <<'PYEOF'
+  STATE_FILE="$STATE_FILE" STATE_KEY="$STATE_KEY" with_lock "$STATE_FILE" 5 -- python3 -I - "$@" <<'PYEOF'
 import json, sys, os
 
 cmd   = sys.argv[1]          # get | set | clear
@@ -797,7 +797,7 @@ PYEOF
 }
 
 _extract_json_field() {  # $1=json-string $2=field-name
-  python3 -c "
+  python3 -I -c "
 import json, sys
 try: print(json.loads(sys.argv[1]).get(sys.argv[2], ''), end='')
 except: pass
@@ -838,7 +838,7 @@ NCONTEXT="${REPO_SLUG} · ${EVENT}${REF:+ · $REF}"
 NFIELDS="$(
   NF_PR="${PR:-}" NF_PR_URL="${PR_URL:-}" NF_NUM="${_num:-}" \
   NF_ISSUE_URL="${ISSUE_URL:-}" NF_EVENT="${EVENT:-}" \
-  NF_REPO="${_NOTIFY_REPO:-${REPO_SLUG:-}}" python3 - <<'PY'
+  NF_REPO="${_NOTIFY_REPO:-${REPO_SLUG:-}}" python3 -I - <<'PY'
 import json, os
 e = os.environ
 f = []
@@ -876,7 +876,7 @@ PY
 # NOT put in here — no platform makes a URL clickable inside a code block — so
 # each sink appends its own link line underneath in its own syntax.
 _build_grid() {
-  NGRID="$(NFIELDS="$NFIELDS" NBODY_REPLY="$NBODY_REPLY" NPRIMARY_URL="$PRIMARY_URL" python3 - <<'PY'
+  NGRID="$(NFIELDS="$NFIELDS" NBODY_REPLY="$NBODY_REPLY" NPRIMARY_URL="$PRIMARY_URL" python3 -I - <<'PY'
 import json, os, re, textwrap
 
 
@@ -936,7 +936,7 @@ PY
 # neutralised exactly as the table's cell() did — GFM is still GFM.
 _buzz_footer() {
   NF_REPO="$REPO" NF_PR="${PR:-}" NF_PR_URL="${PR_URL:-}" \
-    python3 - <<'PY'
+    python3 -I - <<'PY'
 import os
 import re
 
@@ -994,7 +994,7 @@ _prepare_sink ""
 _slack_payload() {  # $1=thread_ts (may be empty) $2=mode: bot|webhook
   NTITLE="$NTITLE" NBODY="$NBODY" NBODY_REPLY="$NBODY_REPLY" NCTX="$NCONTEXT" NCOLOR="$NCOLOR" \
   NFIELDS="$NFIELDS" NGRID="$NGRID" NRICH="$NRICH" \
-  NCHANNEL="$SLACK_CHANNEL" NTHREAD="$1" NMODE="$2" python3 - <<'PY'
+  NCHANNEL="$SLACK_CHANNEL" NTHREAD="$1" NMODE="$2" python3 -I - <<'PY'
 import json, os, re
 raw_title = os.environ['NTITLE']
 # Plain text for the notification preview and the attachment fallback. The
@@ -1064,7 +1064,7 @@ PY
 _discord_payload() {  # $1=anchor msg id (may be empty) $2=mode: bot|webhook
   NTITLE="$NTITLE" NBODY="$NBODY" NBODY_REPLY="$NBODY_REPLY" NCTX="$NCONTEXT" NCOLOR_INT="$NCOLOR_INT" \
   NFIELDS="$NFIELDS" NGRID="$NGRID" NRICH="$NRICH" \
-  NURL="$PRIMARY_URL" NANCHOR="$1" NMODE="$2" python3 - <<'PY'
+  NURL="$PRIMARY_URL" NANCHOR="$1" NMODE="$2" python3 -I - <<'PY'
 import json, os, re
 # A Discord embed `title` is plain text -- it renders neither bold nor links --
 # so unwrap [text](url) to text before stripping emphasis, or the linked ref
@@ -1126,7 +1126,7 @@ PY
 # is a root card.
 _teams_payload() {
   NTITLE="$NTITLE" NBODY="$NBODY" NGRID="$NGRID" NRICH="$NRICH" \
-  NCTX="$NCONTEXT" NFIELDS="$NFIELDS" python3 - <<'PY'
+  NCTX="$NCONTEXT" NFIELDS="$NFIELDS" python3 -I - <<'PY'
 import json, os
 # With a teams/ template (#280): title, body, then the metadata as a native
 # FactSet. Without one: the same monospace grid every other fallback sink
@@ -1197,7 +1197,7 @@ _buzz_text() {  # $1=anchor event id (may be empty)
     [ -n "$_bt_footer" ] && printf '\n%s\n' "$_bt_footer"
     return 0
   fi
-  _bt_links="$(NFIELDS="$NFIELDS" python3 - <<'PY'
+  _bt_links="$(NFIELDS="$NFIELDS" python3 -I - <<'PY'
 import json, os
 print(" · ".join(
     "[{} {}]({})".format(f["label"], f["text"], f["url"])
@@ -1366,7 +1366,7 @@ elif [ -n "${DISCORD_BOT_TOKEN:-}" ] && [ -n "$DISCORD_CHANNEL" ]; then
             # not on the URL.
             _dc_title="$(printf '%s' "$NTITLE" | sed -E 's/\[([^]]*)\]\([^)]*\)/\1/g')"
             _dc_name="$(printf '%s' "${REF:-$EVENT}${_dc_title:+ — $_dc_title}" | tr '\n' ' ' | cut -c1-95)"
-            _dc_body="$(NAME="$_dc_name" python3 -c 'import json,os; print(json.dumps({"name": os.environ["NAME"], "auto_archive_duration": 1440}))')"
+            _dc_body="$(NAME="$_dc_name" python3 -I -c 'import json,os; print(json.dumps({"name": os.environ["NAME"], "auto_archive_duration": 1440}))')"
             tresp="$(post "https://discord.com/api/v10/channels/$DISCORD_CHANNEL/messages/$NEW_ID/threads" \
               "$_dc_body" discord "Authorization: Bot $DISCORD_BOT_TOKEN" 2>/dev/null)"
             case "$tresp" in
@@ -1546,7 +1546,7 @@ if [ -n "$CMD_SINK" ]; then
   CMD_PAYLOAD="$(
     NC_EVENT="$EVENT" NC_REF="$REF" NC_MSG="$TEXT" NC_THREAD="$THREAD_KEY" \
     NC_FIELDS="$NFIELDS" NC_REPO="${_NOTIFY_REPO:-}" NC_ISSUE="${_num:-}" \
-    python3 -c '
+    python3 -I -c '
 import json
 import os
 import sys

@@ -536,10 +536,17 @@ fi
 # Direct callers of pipeline-config.sh receive silent default-fallback behaviour;
 # that is the intended degradation path for non-pipeline invocations.
 if [ -n "$_TALOS_CFG" ] && [ -f "$_TALOS_CFG" ]; then
-  if ! python3 - "$_TALOS_CFG" 2>/dev/null <<'_CFG_PARSE_CHECK'
+  if ! python3 -I - "$_TALOS_CFG" 2>/dev/null <<'_CFG_PARSE_CHECK'
 import sys
 p = sys.argv[1]
 try:
+    # -I drops the user site; append it back (never insert: cwd and the
+    # stdlib must keep winning) so a pip --user PyYAML still parses YAML config (#395).
+    try:
+        import site, sys
+        sys.path.append(site.getusersitepackages())
+    except Exception:
+        pass
     try:
         import yaml
         yaml.safe_load(open(p))
@@ -661,7 +668,7 @@ _vcs_shared_pr_is_draft() {
     echo "pipeline-vcs: pr-is-draft: could not fetch PR #$_n -- unverified" >&2
     exit 2
   }
-  _state="$(printf '%s' "$_raw" | python3 -c '
+  _state="$(printf '%s' "$_raw" | python3 -I -c '
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -700,7 +707,7 @@ else:
 # Prints a one-line summary to stderr either way.
 _eval_required_checks() {
   local _required="$1"
-  python3 -c "
+  python3 -I -c "
 import sys
 
 required = [l.strip() for l in sys.argv[1].splitlines() if l.strip()]
@@ -862,7 +869,7 @@ _parse_label_args() {
 # that exist (option 2 in issue #168). Exits 1 and prints each unticked box's
 # text, one per line, when any remain.
 _epic_acceptance_scan() {
-  python3 -c "
+  python3 -I -c "
 import re, sys
 body = sys.stdin.read()
 unticked = [m.group(1).strip() for m in re.finditer(r'^\s*-\s*\[\s\]\s*(.*)\$', body, re.MULTILINE)]
@@ -885,7 +892,7 @@ sys.exit(0)
 #     the next `#`-heading, if any — by at least one `- [ ]` / `- [x]` item.
 # Exits 1 (PM should still run) otherwise. Prints nothing either way.
 _has_spec_scan() {
-  python3 -c "
+  python3 -I -c "
 import json, re, sys
 
 d = json.load(sys.stdin)
@@ -925,7 +932,7 @@ sys.exit(1)
 # degrades to "0" (no cap warning fires), which is the safe default for
 # providers whose list output isn't guaranteed to be JSON (#171).
 _json_array_count() {
-  python3 -c "
+  python3 -I -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -939,7 +946,7 @@ except Exception:
 # not a JSON array -- for callers where "unreadable" must not read as empty
 # (#319).
 _json_array_len() {
-  python3 -c '
+  python3 -I -c '
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -975,7 +982,7 @@ _list_cap_warn() {
 # array. Reads that raw concatenated stdout on stdin and prints a single
 # flattened JSON array containing every item from every page, in order.
 _gh_paginate_merge() {
-  python3 -c "
+  python3 -I -c "
 import json, sys
 data = sys.stdin.read()
 dec = json.JSONDecoder()
@@ -1001,7 +1008,7 @@ print(json.dumps(items))
 # Both adapters hand-duplicated this exact python block in their own
 # read-comments arm before this slice; extracted here so it is defined once.
 _vcs_shared_normalize_comments() {
-  python3 -c "
+  python3 -I -c "
 import json, sys
 
 def _login(c):
@@ -1037,7 +1044,7 @@ json.dump({'comments': comments}, sys.stdout)
 # starts with "**PM spec:**" -- since the spec comment is the contract each
 # stage implements against, not the discussion around it.
 _vi_spec_filter() {
-  python3 -c "
+  python3 -I -c "
 import json, sys
 
 meta = json.loads(sys.argv[1])
@@ -1079,7 +1086,7 @@ print(json.dumps(result))
 # " <path> | +<additions> -<deletions>" line per file, then a
 # "<n> files changed, <a> insertions(+), <d> deletions(-)" total line.
 _diff_stat_format() {
-  python3 -c "
+  python3 -I -c "
 import json, sys
 
 try:
@@ -1144,7 +1151,7 @@ print('\n'.join(lines))
 #           corrupt markers never silently fall through to zero attempts).
 _vcs_shared_read_attempt() {
   _vcs_shared_contract_env
-  python3 -c "
+  python3 -I -c "
 import json, os, re, sys
 
 # Stage-1 permissive detector: matches any HTML comment that looks like it
@@ -1200,6 +1207,13 @@ import pathlib as _pathlib_ra
 _talos_cfg_ra = os.environ.get('TALOS_CFG', '')
 _config_parse_failed_ra = False
 if _talos_cfg_ra and _pathlib_ra.Path(_talos_cfg_ra).exists():
+    # -I drops the user site; append it back (never insert: cwd and the
+    # stdlib must keep winning) so a pip --user PyYAML still parses YAML config (#395).
+    try:
+        import site, sys
+        sys.path.append(site.getusersitepackages())
+    except Exception:
+        pass
     try:
         try:
             import yaml as _yaml_ra; _yaml_ra.safe_load(open(_talos_cfg_ra))
@@ -2060,7 +2074,7 @@ _vcs_shared_record_attempt() {
 #           and exit 0; 1 when stdin is unparseable.
 _vcs_shared_check_approval_marker() {
   _vcs_shared_contract_env
-  python3 -c "
+  python3 -I -c "
 import json, os, re, sys
 
 # Single source of truth: scripts/pipeline-contract.sh's TALOS_APPROVAL_LABELS
@@ -2111,6 +2125,13 @@ import pathlib as _pathlib_cas
 _talos_cfg_cas = os.environ.get('TALOS_CFG', '')
 _config_parse_failed_cas = False
 if _talos_cfg_cas and _pathlib_cas.Path(_talos_cfg_cas).exists():
+    # -I drops the user site; append it back (never insert: cwd and the
+    # stdlib must keep winning) so a pip --user PyYAML still parses YAML config (#395).
+    try:
+        import site, sys
+        sys.path.append(site.getusersitepackages())
+    except Exception:
+        pass
     try:
         try:
             import yaml as _yaml_cas; _yaml_cas.safe_load(open(_talos_cfg_cas))
@@ -2286,7 +2307,7 @@ sys.exit(0)
 # to cover them. Files that only arrived via a base-branch sync (absent from
 # the PR's own three-dot diff, #102) are excluded from consideration.
 _vcs_shared_check_approval_sha() {
-  python3 -c "
+  python3 -I -c "
 import fnmatch, json, os, subprocess, sys
 
 # Hard-coded non-waivable: applied AFTER the config waiver check.
@@ -2578,7 +2599,7 @@ _vcs_shared_check_pr_files() {
   # SAME fnmatch rule the gate uses is the only complete fix. Fail closed: any
   # validation error or unexpected exception must exit non-zero.
   if [ -n "$ALLOW" ]; then
-    PATTERNS="$_patterns" ALLOW="$ALLOW" python3 -c "
+    PATTERNS="$_patterns" ALLOW="$ALLOW" python3 -I -c "
 import fnmatch, os, re, sys
 
 patterns = [p.strip() for p in os.environ['PATTERNS'].splitlines() if p.strip()]
@@ -2645,7 +2666,7 @@ if errors:
     sys.exit(1)
 " || return 1  # Fail closed: validation error or unexpected exception must block, not pass
   fi
-  PATTERNS="$_patterns" ALLOW="$ALLOW" PAT_COUNT="$_pat_count" DEFAULTS_ACTIVE="$_defaults_active" python3 -c "
+  PATTERNS="$_patterns" ALLOW="$ALLOW" PAT_COUNT="$_pat_count" DEFAULTS_ACTIVE="$_defaults_active" python3 -I -c "
 import fnmatch, os, sys
 patterns = [p.strip() for p in os.environ['PATTERNS'].splitlines() if p.strip()]
 allow = [a.strip() for a in os.environ.get('ALLOW','').splitlines() if a.strip()]
@@ -2797,7 +2818,7 @@ _vcs_shared_check_closing_keyword() {
   #     GH-N            — case-insensitive; left-guard prevents digit-prefix collision
   #     https://github.com/<owner>/<repo>/issues/N  — scoped to current repo
   local has_closing
-  has_closing="$(printf '%s' "$pr_body" | python3 -c "
+  has_closing="$(printf '%s' "$pr_body" | python3 -I -c "
 import re, sys
 body = sys.stdin.read()
 n    = sys.argv[1]
@@ -2866,7 +2887,7 @@ else:
 
   # Find open siblings (any PR referencing #N in branch/title/body, excluding this PR).
   local sibling_result
-  sibling_result="$(printf '%s' "$siblings_json" | python3 -c "
+  sibling_result="$(printf '%s' "$siblings_json" | python3 -I -c "
 import json, re, sys
 n    = sys.argv[1]
 self = sys.argv[2]
@@ -2986,7 +3007,7 @@ else:
 #   stdout: one JSON object per matching PR: {number, state, title, headRefName}.
 _vcs_shared_find_pr() {
   local n="$1" state="${2:-open}" repo="${3:-}" flavor="${4:-github}" host="${5:-}"
-  python3 -c "
+  python3 -I -c "
 import json, re, sys
 n, state, repo = sys.argv[1], sys.argv[2], sys.argv[3]
 n_esc = re.escape(n)
@@ -3262,7 +3283,7 @@ _github() {
       fi
       local _li_raw
       _li_raw="$(gh api --paginate "$_li_endpoint")" || exit 1
-      printf '%s' "$_li_raw" | _gh_paginate_merge | python3 -c "
+      printf '%s' "$_li_raw" | _gh_paginate_merge | python3 -I -c "
 import json, sys
 items = json.load(sys.stdin)
 out = [{'number': i.get('number'), 'title': i.get('title', ''),
@@ -3432,7 +3453,7 @@ print(json.dumps(out))
         echo "pipeline-vcs: pr-ci-runs: could not fetch PR #$_cr_n -- unverified" >&2
         exit 2
       }
-      _cr_head="$(printf '%s' "$_cr_head_raw" | python3 -c '
+      _cr_head="$(printf '%s' "$_cr_head_raw" | python3 -I -c '
 import json, sys
 try:
     v = json.load(sys.stdin).get("headRefName")
@@ -3451,7 +3472,7 @@ print(v)
         exit 2
       }
       # `gh api --paginate` prints the pages as concatenated JSON documents.
-      printf '%s' "$_cr_listing" | PR_N="$_cr_n" python3 -c '
+      printf '%s' "$_cr_listing" | PR_N="$_cr_n" python3 -I -c '
 import json, os, sys
 n = int(os.environ["PR_N"])
 text = sys.stdin.read()
@@ -3532,7 +3553,7 @@ print(count)
       fi
       local _lp_raw
       _lp_raw="$(gh api --paginate "$_lp_endpoint")" || exit 1
-      printf '%s' "$_lp_raw" | _gh_paginate_merge | python3 -c "
+      printf '%s' "$_lp_raw" | _gh_paginate_merge | python3 -I -c "
 import json, sys
 items = json.load(sys.stdin)
 def cross(i):
@@ -3611,7 +3632,7 @@ print(json.dumps(out))
       [ -z "$_required" ] && { printf '' | _eval_required_checks "$_required"; return; }
       local _raw _norm
       _raw="$(gh pr checks "$_n" ${REPO:+--repo "$REPO"} 2>/dev/null)"
-      _norm="$(printf '%s\n' "$_raw" | python3 -c "
+      _norm="$(printf '%s\n' "$_raw" | python3 -I -c "
 import sys
 for line in sys.stdin:
     parts = line.rstrip('\n').split('\t')
@@ -3704,7 +3725,7 @@ for line in sys.stdin:
       fi
       local _cpf_raw
       _cpf_raw="$(gh api --paginate "$_cpf_endpoint")" || exit 1
-      printf '%s' "$_cpf_raw" | _gh_paginate_merge | python3 -c "
+      printf '%s' "$_cpf_raw" | _gh_paginate_merge | python3 -I -c "
 import json, sys
 items = json.load(sys.stdin)
 for i in items:
@@ -3733,7 +3754,7 @@ for i in items:
       fi
       local _pf_raw
       _pf_raw="$(gh api --paginate "$_pf_endpoint")" || exit 1
-      printf '%s' "$_pf_raw" | _gh_paginate_merge | python3 -c "
+      printf '%s' "$_pf_raw" | _gh_paginate_merge | python3 -I -c "
 import json, sys
 items = json.load(sys.stdin)
 for i in items:
@@ -3752,7 +3773,7 @@ for i in items:
       sha="$(gh pr view "$n" --json headRefOid -q .headRefOid ${REPO:+--repo "$REPO"} 2>/dev/null)"
       [ -z "$sha" ] && { echo "pipeline-vcs: could not resolve head SHA for PR #$n" >&2; exit 1; }
       gh run list --commit "$sha" --json databaseId,conclusion ${REPO:+--repo "$REPO"} 2>/dev/null \
-        | python3 -c "
+        | python3 -I -c "
 import json, sys
 try: runs = json.load(sys.stdin)
 except Exception: runs = []
@@ -3840,8 +3861,8 @@ for r in runs:
 
       # Extract PR number and body via Python (safe JSON parse).
       local pr_number pr_body
-      pr_number="$(printf '%s' "$pr_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('number',''))")"
-      pr_body="$(printf '%s' "$pr_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('body',''))")"
+      pr_number="$(printf '%s' "$pr_json" | python3 -I -c "import json,sys; d=json.load(sys.stdin); print(d.get('number',''))")"
+      pr_body="$(printf '%s' "$pr_json" | python3 -I -c "import json,sys; d=json.load(sys.stdin); print(d.get('body',''))")"
 
       # Lazily fetches the open-PR list -- only invoked by the shared
       # function when a closing keyword is actually present.
@@ -3851,7 +3872,7 @@ for r in runs:
         local _raw
         _raw="$(gh api --paginate "repos/${REPO}/pulls?state=open&per_page=100")" || return 1
         [ -n "$_raw" ] || return 1
-        printf '%s' "$_raw" | _gh_paginate_merge | python3 -c "
+        printf '%s' "$_raw" | _gh_paginate_merge | python3 -I -c "
 import json, sys
 print(json.dumps([{'number': p.get('number'), 'state': p.get('state'), 'title': p.get('title') or '',
                    'headRefName': (p.get('head') or {}).get('ref', ''), 'body': p.get('body') or ''}
@@ -4299,7 +4320,7 @@ _github_api() {
   # control characters are refused outright, so curl cannot read a different
   # host out of the same string.
   _ga_refused_origin() {
-    python3 -c '
+    python3 -I -c '
 import sys
 from urllib.parse import urlsplit
 
@@ -4355,7 +4376,7 @@ if odd or p.username is not None or got[0] != "https" or got != origin(sys.argv[
       # Both go in on stdin -- the merged list on the first line (json.dump
       # writes no newline), then the page -- because an env var this size
       # hits E2BIG (128 KB per string on Linux).
-      _gafp_all="$(printf '%s\n%s' "$_gafp_all" "$_gafp_body" | URL="$_gafp_url" python3 -c "
+      _gafp_all="$(printf '%s\n%s' "$_gafp_all" "$_gafp_body" | URL="$_gafp_url" python3 -I -c "
 import json, os, sys
 prev, _, page = sys.stdin.read().partition('\n')
 prev = json.loads(prev)
@@ -4396,7 +4417,7 @@ json.dump(prev, sys.stdout)
   _ga_current_user_login() {
     local _cul_body
     _cul_body="$(_ga_req_once GET "${_API%%/repos/*}/user" 2>/dev/null)" || return 0
-    printf '%s' "$_cul_body" | python3 -c "
+    printf '%s' "$_cul_body" | python3 -I -c "
 import json, sys
 try:
     print(json.load(sys.stdin).get('login', ''))
@@ -4411,7 +4432,7 @@ except Exception:
   _ga_assignees_get() {
     local _ag_body
     _ag_body="$(_with_retry "$_VERB" _ga_req_once GET "$_API/issues/$1")" || return 1
-    printf '%s' "$_ag_body" | python3 -c "
+    printf '%s' "$_ag_body" | python3 -I -c "
 import json, sys
 for a in json.load(sys.stdin).get('assignees') or []:
     print(a.get('login', ''))
@@ -4420,7 +4441,7 @@ for a in json.load(sys.stdin).get('assignees') or []:
   # POST .../assignees ADDS to the list (PATCH .../issues/{n} would replace it).
   _ga_assignee_add() {
     local _aa_payload
-    _aa_payload="$(python3 -c "import json, sys; print(json.dumps({'assignees': [sys.argv[1]]}))" "$2")"
+    _aa_payload="$(python3 -I -c "import json, sys; print(json.dumps({'assignees': [sys.argv[1]]}))" "$2")"
     _with_retry "$_VERB" _ga_req_once POST "$_API/issues/$1/assignees" \
       -H "Content-Type: application/json" -d "$_aa_payload"
   }
@@ -4494,7 +4515,7 @@ sys.stdout.write(json.dumps({"body": sys.stdin.buffer.read().decode("utf-8", err
       fi
       local _raw
       _raw="$(_ga_fetch_all_pages "$_API/issues?state=open&per_page=100")" || exit 1
-      printf '%s' "$_raw" | python3 -c "
+      printf '%s' "$_raw" | python3 -I -c "
 import json, sys
 data = json.load(sys.stdin)
 result = [{'number': i['number'], 'title': i.get('title',''),
@@ -4522,7 +4543,7 @@ print(json.dumps(result, indent=2))
         local _issue _comments _meta
         _issue="$(_ga_req GET "$_API/issues/$_n")"
         _comments="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" read-comments "$_n" ${REPO:+--repo "$REPO"})" || exit 1
-        _meta="$(printf '%s' "$_issue" | python3 -c "
+        _meta="$(printf '%s' "$_issue" | python3 -I -c "
 import json, sys
 data = json.load(sys.stdin)
 print(json.dumps({'title': data.get('title',''), 'body': data.get('body') or '',
@@ -4538,7 +4559,7 @@ print(json.dumps({'title': data.get('title',''), 'body': data.get('body') or '',
       local _issue _comments
       _issue="$(_ga_req GET "$_API/issues/$_n")"
       _comments="$(_ga_req GET "$_API/issues/$_n/comments?per_page=100")"
-      printf '%s' "$_issue" | COMMENTS="$_comments" python3 -c "
+      printf '%s' "$_issue" | COMMENTS="$_comments" python3 -I -c "
 import json, re, sys, os
 data = json.load(sys.stdin)
 try:
@@ -4565,7 +4586,7 @@ print(json.dumps(result, indent=2))
       if [ "$ALLOW_CLOSED" != "true" ]; then
         local _gaci_state_raw _gaci_state
         if _gaci_state_raw="$(_ga_req GET "$_API/issues/$_n" 2>/dev/null)"; then
-          _gaci_state="$(printf '%s' "$_gaci_state_raw" | python3 -c "
+          _gaci_state="$(printf '%s' "$_gaci_state_raw" | python3 -I -c "
 import json, sys
 d = json.load(sys.stdin)
 print(d.get('state', ''))
@@ -4580,11 +4601,11 @@ print(d.get('state', ''))
         fi
       fi
       local _payload
-      _payload="$(python3 -c "import json,sys; print(json.dumps({'body':sys.argv[1]}))" "$_body")"
+      _payload="$(python3 -I -c "import json,sys; print(json.dumps({'body':sys.argv[1]}))" "$_body")"
       local _gaci_resp
       _gaci_resp="$(_ga_req POST "$_API/issues/$_n/comments" \
         -H "Content-Type: application/json" -d "$_payload")" || exit 1
-      printf '%s' "$_gaci_resp" | python3 -c "
+      printf '%s' "$_gaci_resp" | python3 -I -c "
 import json, sys
 d = json.load(sys.stdin)
 print(d.get('html_url', ''))
@@ -4601,7 +4622,7 @@ print(d.get('html_url', ''))
         return 0
       fi
       local _cpayload _spayload
-      _cpayload="$(python3 -c "import json,sys; print(json.dumps({'body':sys.argv[1]}))" "$_body")"
+      _cpayload="$(python3 -I -c "import json,sys; print(json.dumps({'body':sys.argv[1]}))" "$_body")"
       _ga_req POST "$_API/issues/$_n/comments" \
         -H "Content-Type: application/json" -d "$_cpayload" >/dev/null
       _spayload='{"state":"closed"}'
@@ -4621,7 +4642,7 @@ print(d.get('html_url', ''))
       _cur_labels="$(_ga_req GET "$_API/issues/$_n/labels")"
       local _new_payload
       _new_payload="$(printf '%s' "$_cur_labels" | \
-        ADD_LABELS="$ADD_LABELS" REMOVE_LABELS="$REMOVE_LABELS" python3 -c "
+        ADD_LABELS="$ADD_LABELS" REMOVE_LABELS="$REMOVE_LABELS" python3 -I -c "
 import json, sys, os
 labels = [l['name'] for l in json.load(sys.stdin)]
 add = os.environ.get('ADD_LABELS','').split()
@@ -4648,7 +4669,7 @@ print(json.dumps({'labels': labels}))
       fi
       local _cea_issue _cea_body
       _cea_issue="$(_ga_req GET "$_API/issues/$_n")" || exit 1
-      _cea_body="$(printf '%s' "$_cea_issue" | python3 -c "
+      _cea_body="$(printf '%s' "$_cea_issue" | python3 -I -c "
 import json, sys
 d = json.load(sys.stdin)
 print(d.get('body','') or '')
@@ -4673,12 +4694,12 @@ print(d.get('body','') or '')
       _ci_body_content="$(cat "$_ci_body_file")"
       local _ci_labels_json
       if [ ${#_ci_labels[@]} -gt 0 ]; then
-        _ci_labels_json="$(python3 -c "import json,sys; print(json.dumps(sys.argv[1:]))" "${_ci_labels[@]}")"
+        _ci_labels_json="$(python3 -I -c "import json,sys; print(json.dumps(sys.argv[1:]))" "${_ci_labels[@]}")"
       else
         _ci_labels_json="[]"
       fi
       local _ci_payload
-      _ci_payload="$(CI_TITLE="$_ci_title" CI_BODY="$_ci_body_content" CI_LABELS="$_ci_labels_json" python3 -c "
+      _ci_payload="$(CI_TITLE="$_ci_title" CI_BODY="$_ci_body_content" CI_LABELS="$_ci_labels_json" python3 -I -c "
 import json, os
 print(json.dumps({
     'title':  os.environ['CI_TITLE'],
@@ -4689,7 +4710,7 @@ print(json.dumps({
       local _ci_resp
       _ci_resp="$(_ga_req POST "$_API/issues" \
         -H "Content-Type: application/json" -d "$_ci_payload")" || exit 1
-      printf '%s' "$_ci_resp" | python3 -c "
+      printf '%s' "$_ci_resp" | python3 -I -c "
 import json, sys
 d = json.load(sys.stdin)
 url = d.get('html_url', d.get('url', ''))
@@ -4701,7 +4722,7 @@ else:
 "
       # Assign the new issue (#299) -- stdout stays the URL alone.
       _vcs_shared_assign_issue "$(printf '%s' "$_ci_resp" \
-          | python3 -c "import json, sys; print(json.load(sys.stdin).get('number', ''))" 2>/dev/null)" \
+          | python3 -I -c "import json, sys; print(json.load(sys.stdin).get('number', ''))" 2>/dev/null)" \
         _ga_assignees_get _ga_assignee_add _ga_current_user_login >&2
       ;;
 
@@ -4730,7 +4751,7 @@ else:
       _body_content="$(cat "$_body_file")"
       local _pr_payload
       _pr_payload="$(BASE="$BASE_BRANCH" HEAD="$_branch" TITLE="$_title" \
-        BODY="$_body_content" python3 -c "
+        BODY="$_body_content" python3 -I -c "
 import json, os
 print(json.dumps({
     'title': os.environ['TITLE'],
@@ -4742,7 +4763,7 @@ print(json.dumps({
       local _pr_resp
       _pr_resp="$(_ga_req POST "$_API/pulls" \
         -H "Content-Type: application/json" -d "$_pr_payload")" || exit 1
-      printf '%s' "$_pr_resp" | python3 -c "
+      printf '%s' "$_pr_resp" | python3 -I -c "
 import json, sys
 d = json.load(sys.stdin)
 print(d.get('html_url', d.get('url', '')))
@@ -4757,7 +4778,7 @@ print(d.get('html_url', d.get('url', '')))
       fi
       local _pr
       _pr="$(_ga_req GET "$_API/pulls/$_n")"
-      printf '%s' "$_pr" | python3 -c "
+      printf '%s' "$_pr" | python3 -I -c "
 import json, sys
 d = json.load(sys.stdin)
 result = {
@@ -4778,7 +4799,7 @@ print(json.dumps(result, indent=2))
       fi
       local _raw
       _raw="$(_ga_fetch_all_pages "$_API/pulls?state=open&per_page=100")" || exit 1
-      printf '%s' "$_raw" | python3 -c "
+      printf '%s' "$_raw" | python3 -I -c "
 import json, sys
 data = json.load(sys.stdin)
 def cross(i):
@@ -4831,7 +4852,7 @@ print(json.dumps(result, indent=2))
       fi
       local _pr_data _branch
       _pr_data="$(_ga_req GET "$_API/pulls/$_n")"
-      _branch="$(printf '%s' "$_pr_data" | python3 -c "
+      _branch="$(printf '%s' "$_pr_data" | python3 -I -c "
 import json, sys
 print(json.load(sys.stdin).get('head',{}).get('ref',''))
 ")"
@@ -4847,7 +4868,7 @@ print(json.load(sys.stdin).get('head',{}).get('ref',''))
         return 0
       fi
       local _rev_payload
-      _rev_payload="$(python3 -c "import json,sys; print(json.dumps({'body':sys.argv[1],'event':'APPROVE'}))" "$_rbody")"
+      _rev_payload="$(python3 -I -c "import json,sys; print(json.dumps({'body':sys.argv[1],'event':'APPROVE'}))" "$_rbody")"
       _ga_req POST "$_API/pulls/$_n/reviews" \
         -H "Content-Type: application/json" -d "$_rev_payload" >/dev/null
       echo "Approved PR #$_n"
@@ -4865,7 +4886,7 @@ print(json.load(sys.stdin).get('head',{}).get('ref',''))
       _cur_labels="$(_ga_req GET "$_API/issues/$_n/labels")"
       local _new_payload
       _new_payload="$(printf '%s' "$_cur_labels" | \
-        ADD_LABELS="$ADD_LABELS" REMOVE_LABELS="$REMOVE_LABELS" python3 -c "
+        ADD_LABELS="$ADD_LABELS" REMOVE_LABELS="$REMOVE_LABELS" python3 -I -c "
 import json, sys, os
 labels = [l['name'] for l in json.load(sys.stdin)]
 add = os.environ.get('ADD_LABELS','').split()
@@ -4889,7 +4910,7 @@ print(json.dumps({'labels': labels}))
       fi
       local _pr_data _sha
       _pr_data="$(_ga_req GET "$_API/pulls/$_n")"
-      _sha="$(printf '%s' "$_pr_data" | python3 -c "
+      _sha="$(printf '%s' "$_pr_data" | python3 -I -c "
 import json, sys
 print(json.load(sys.stdin).get('head',{}).get('sha',''))
 ")"
@@ -4910,14 +4931,14 @@ print(json.load(sys.stdin).get('head',{}).get('sha',''))
       [ -z "$_required" ] && { printf '' | _eval_required_checks "$_required"; return; }
       local _pr_data _sha
       _pr_data="$(_ga_req GET "$_API/pulls/$_n")"
-      _sha="$(printf '%s' "$_pr_data" | python3 -c "
+      _sha="$(printf '%s' "$_pr_data" | python3 -I -c "
 import json, sys
 print(json.load(sys.stdin).get('head',{}).get('sha',''))
 ")"
       [ -z "$_sha" ] && { echo "github-api: could not resolve head SHA for PR #$_n" >&2; exit 1; }
       local _cr_data _norm
       _cr_data="$(_ga_req GET "$_API/commits/$_sha/check-runs")"
-      _norm="$(printf '%s' "$_cr_data" | python3 -c "
+      _norm="$(printf '%s' "$_cr_data" | python3 -I -c "
 import json, sys
 data = json.load(sys.stdin)
 for c in data.get('check_runs', []):
@@ -4946,7 +4967,7 @@ for c in data.get('check_runs', []):
         squash) _mm="squash" ;; rebase) _mm="rebase" ;; *) _mm="merge" ;;
       esac
       local _merge_payload
-      _merge_payload="$(python3 -c "import json,sys; print(json.dumps({'merge_method':sys.argv[1],'delete_branch':True}))" "$_mm")"
+      _merge_payload="$(python3 -I -c "import json,sys; print(json.dumps({'merge_method':sys.argv[1],'delete_branch':True}))" "$_mm")"
       _ga_req PUT "$_API/pulls/$_n/merge" \
         -H "Content-Type: application/json" -d "$_merge_payload" >/dev/null
       echo "Merged PR #$_n"
@@ -4964,7 +4985,7 @@ for c in data.get('check_runs', []):
       fi
       local _ub_sha_json _ub_sha
       _ub_sha_json="$(_ga_req GET "$_API/pulls/$_ub_n" 2>/dev/null)" || exit 1
-      _ub_sha="$(printf '%s' "$_ub_sha_json" | python3 -c "
+      _ub_sha="$(printf '%s' "$_ub_sha_json" | python3 -I -c "
 import json, sys
 try: print(json.load(sys.stdin).get('head', {}).get('sha', ''))
 except Exception: print('')
@@ -4987,12 +5008,12 @@ except Exception: print('')
       if [ "$ALLOW_CLOSED" != "true" ]; then
         local _gacp_state_raw _gacp_state _gacp_merged_at
         if _gacp_state_raw="$(_ga_req GET "$_API/pulls/$_n" 2>/dev/null)"; then
-          _gacp_state="$(printf '%s' "$_gacp_state_raw" | python3 -c "
+          _gacp_state="$(printf '%s' "$_gacp_state_raw" | python3 -I -c "
 import json, sys
 d = json.load(sys.stdin)
 print(d.get('state', ''))
 " 2>/dev/null)"
-          _gacp_merged_at="$(printf '%s' "$_gacp_state_raw" | python3 -c "
+          _gacp_merged_at="$(printf '%s' "$_gacp_state_raw" | python3 -I -c "
 import json, sys
 d = json.load(sys.stdin)
 print(d.get('merged_at') or '')
@@ -5007,11 +5028,11 @@ print(d.get('merged_at') or '')
         fi
       fi
       local _payload
-      _payload="$(python3 -c "import json,sys; print(json.dumps({'body':sys.argv[1]}))" "$_body")"
+      _payload="$(python3 -I -c "import json,sys; print(json.dumps({'body':sys.argv[1]}))" "$_body")"
       local _gacp_resp
       _gacp_resp="$(_ga_req POST "$_API/issues/$_n/comments" \
         -H "Content-Type: application/json" -d "$_payload")" || exit 1
-      printf '%s' "$_gacp_resp" | python3 -c "
+      printf '%s' "$_gacp_resp" | python3 -I -c "
 import json, sys
 d = json.load(sys.stdin)
 print(d.get('html_url', ''))
@@ -5048,7 +5069,7 @@ print(d.get('html_url', ''))
       fi
       local _raw
       _raw="$(_ga_fetch_all_pages "$_API/pulls?state=$_api_state&per_page=100" "$_fp_max_pages" PRs)" || exit 1
-      printf '%s' "$_raw" | STATE_FILTER="$_state" python3 -c "
+      printf '%s' "$_raw" | STATE_FILTER="$_state" python3 -I -c "
 import json, sys, os
 state_filter = os.environ.get('STATE_FILTER','open')
 try: prs = json.load(sys.stdin)
@@ -5089,7 +5110,7 @@ json.dump(out, sys.stdout)
       fi
       local _cpf_raw
       _cpf_raw="$(_ga_fetch_all_pages "$_API/pulls/$_n/files?per_page=100")" || exit 1
-      printf '%s' "$_cpf_raw" | python3 -c "
+      printf '%s' "$_cpf_raw" | python3 -I -c "
 import json, sys
 try:
     files = json.load(sys.stdin)
@@ -5118,7 +5139,7 @@ for f in files:
       fi
       local _pf_raw
       _pf_raw="$(_ga_fetch_all_pages "$_API/pulls/$_n/files?per_page=100")" || exit 1
-      printf '%s' "$_pf_raw" | python3 -c "
+      printf '%s' "$_pf_raw" | python3 -I -c "
 import json, sys
 try:
     files = json.load(sys.stdin)
@@ -5139,7 +5160,7 @@ for f in files:
       fi
       local _pr_data _sha
       _pr_data="$(_ga_req GET "$_API/pulls/$_n")"
-      _sha="$(printf '%s' "$_pr_data" | python3 -c "
+      _sha="$(printf '%s' "$_pr_data" | python3 -I -c "
 import json, sys
 print(json.load(sys.stdin).get('head',{}).get('sha',''))
 ")"
@@ -5147,7 +5168,7 @@ print(json.load(sys.stdin).get('head',{}).get('sha',''))
       local _runs_raw
       _runs_raw="$(_ga_req GET "$_API/actions/runs?head_sha=$_sha")"
       local _failed_ids
-      _failed_ids="$(printf '%s' "$_runs_raw" | python3 -c "
+      _failed_ids="$(printf '%s' "$_runs_raw" | python3 -I -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -5185,7 +5206,7 @@ except Exception:
         echo "pipeline-vcs: pr-head: could not resolve head SHA for PR #$_n" >&2; exit 1
       fi
       local _sha
-      _sha="$(printf '%s' "$_pr_data" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('head',{}).get('sha',''))")"
+      _sha="$(printf '%s' "$_pr_data" | python3 -I -c "import json,sys; d=json.load(sys.stdin); print(d.get('head',{}).get('sha',''))")"
       [ -z "$_sha" ] && { echo "pipeline-vcs: pr-head: could not resolve head SHA for PR #$_n" >&2; exit 1; }
       printf '%s\n' "$_sha"
       ;;
@@ -5205,7 +5226,7 @@ except Exception:
       _github_api_fetch_mergeable() {
         local _pm_data _pm_v
         _pm_data="$(_ga_req GET "$_API/pulls/$_n")"
-        _pm_v="$(printf '%s' "$_pm_data" | python3 -c "
+        _pm_v="$(printf '%s' "$_pm_data" | python3 -I -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -5272,7 +5293,7 @@ print('true' if v is True else 'false' if v is False else 'null')
       # (object with comments array where author.login replaces user.login).
       # Guard: (c.get('user') or {}) handles "user": null (deleted account).
       local _normalized
-      _normalized="$(printf '%s' "$_raw_comments" | python3 -c "
+      _normalized="$(printf '%s' "$_raw_comments" | python3 -I -c "
 import json, sys
 raw = json.load(sys.stdin)
 if not isinstance(raw, list):
@@ -5336,14 +5357,14 @@ json.dump({'comments': comments}, sys.stdout)
       # on success), and exit non-zero only when the write itself failed.
       _github_api_post_attempt_marker() {
         local _json_body
-        _json_body="$(python3 -c "import json,sys; print(json.dumps({'body': sys.argv[1]}))" "$2")"
+        _json_body="$(python3 -I -c "import json,sys; print(json.dumps({'body': sys.argv[1]}))" "$2")"
         local _resp
         _resp="$(_ga_req POST "$_API/issues/$1/comments" \
           -H "Content-Type: application/json" -d "$_json_body")"
         if [ -z "$_resp" ]; then
           return 1
         fi
-        printf '%s' "$_resp" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('html_url',''))" 2>/dev/null
+        printf '%s' "$_resp" | python3 -I -c "import json,sys; d=json.load(sys.stdin); print(d.get('html_url',''))" 2>/dev/null
         return 0
       }
       shift 2 2>/dev/null || shift "$#"
@@ -5389,7 +5410,7 @@ json.dump({'comments': comments}, sys.stdout)
       # just '{'), while tests/stubs/curl returns compact single-line JSON --
       # raw_decode is format-agnostic and handles both (#244).
       local _pr_data
-      _pr_data="$(printf '%s\n%s' "$_pr_raw" "$_comments_raw" | python3 -c "
+      _pr_data="$(printf '%s\n%s' "$_pr_raw" "$_comments_raw" | python3 -I -c "
 import json, sys
 
 data = sys.stdin.read()
@@ -5477,7 +5498,7 @@ json.dump(out, sys.stdout)
       else
         local _found_pr
         _found_pr="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" find-pr "$_pr_ref" open ${REPO:+--repo "$REPO"} 2>/dev/null)"
-        _pr_num="$(printf '%s' "$_found_pr" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('number',''))" 2>/dev/null)"
+        _pr_num="$(printf '%s' "$_found_pr" | python3 -I -c "import json,sys; d=json.load(sys.stdin); print(d.get('number',''))" 2>/dev/null)"
         if [ -z "$_pr_num" ]; then
           echo "pipeline-vcs: check-closing-keyword: could not fetch PR '$_pr_ref' -- skipping check" >&2
           echo "talos:closing-keyword-unverified pr=$_pr_ref issue=$_issue_n reason=pr-fetch-failed"
@@ -5492,7 +5513,7 @@ json.dump(out, sys.stdout)
         return 0
       fi
       local _pr_body
-      _pr_body="$(printf '%s' "$_pr_raw" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('body',''))")"
+      _pr_body="$(printf '%s' "$_pr_raw" | python3 -I -c "import json,sys; d=json.load(sys.stdin); print(d.get('body',''))")"
 
       # Lazily fetches and normalises the open-PR list -- only invoked by the
       # shared function when a closing keyword is actually present. REST has
@@ -5509,7 +5530,7 @@ json.dump(out, sys.stdout)
           _probe="$(printf '%s' "$_probe" | _json_array_len)" || return 1
           [ "$_probe" = 0 ] || _capped=1
         fi
-        printf '%s' "$_open_prs_raw" | python3 -c "
+        printf '%s' "$_open_prs_raw" | python3 -I -c "
 import json, sys
 prs = json.load(sys.stdin)
 if not isinstance(prs, list):
@@ -5564,7 +5585,7 @@ _gitlab() {
   _gl_assignees_get() {
     local _ag_json
     _ag_json="$(glab issue view "$1" --output json $RARG)" || return 1
-    printf '%s' "$_ag_json" | python3 -c "
+    printf '%s' "$_ag_json" | python3 -I -c "
 import json, sys
 for a in json.load(sys.stdin).get('assignees') or []:
     print(a.get('username', ''))
@@ -5575,7 +5596,7 @@ for a in json.load(sys.stdin).get('assignees') or []:
     glab issue update "$1" --assignee "+$2" $RARG
   }
   _gl_current_user() {
-    glab api user | python3 -c "import json, sys; print(json.load(sys.stdin).get('username', ''))"
+    glab api user | python3 -I -c "import json, sys; print(json.load(sys.stdin).get('username', ''))"
   }
 
   # <remote-or-path> -> "<host><TAB><group/sub/project>" (#303). With
@@ -5585,7 +5606,7 @@ for a in json.load(sys.stdin).get('assignees') or []:
   # paths and reference matching see the bare project path. A plain
   # "group/project" has no host.
   _gl_split_repo() {
-    python3 -c '
+    python3 -I -c '
 import re, sys
 r, host = sys.argv[1].strip(), ""
 m = re.match(r"^[A-Za-z][\w+.-]*://(?:[^@/]*@)?([^/:]*)(?::\d*)?(?:/(.*))?$", r)
@@ -5621,7 +5642,7 @@ print(host.lower() + "\t" + path)
     local _p
     _p="$(_gl_repo_path)"
     if [ -n "$_p" ]; then
-      python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$_p"
+      python3 -I -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$_p"
     else
       echo ":id"
     fi
@@ -5635,7 +5656,7 @@ print(host.lower() + "\t" + path)
   # glab MR list JSON on stdin -> the shared {number,state,title,
   # headRefName,body} PR shape (find-pr, check-closing-keyword).
   _gl_mrs_to_prs() {
-    python3 -c '
+    python3 -I -c '
 import json, sys
 try: mrs = json.load(sys.stdin)
 except Exception: mrs = []
@@ -5657,7 +5678,7 @@ json.dump([{"number": m.get("iid"),
     [ -n "$_raw" ] || return 1
     # Strict parse: an entry without new_path (e.g. an error object) is a
     # failure, not an MR with no files -- raises before anything is printed.
-    printf '%s' "$_raw" | _gh_paginate_merge | python3 -c '
+    printf '%s' "$_raw" | _gh_paginate_merge | python3 -I -c '
 import json, sys
 paths = [d["new_path"] for d in json.load(sys.stdin)]
 for p in paths:
@@ -5842,7 +5863,7 @@ for p in paths:
       fi
       local _pm_json _pm_status
       _pm_json="$(glab mr view "$n" --output json $RARG 2>/dev/null)"
-      _pm_status="$(printf '%s' "$_pm_json" | python3 -c "
+      _pm_status="$(printf '%s' "$_pm_json" | python3 -I -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -5929,13 +5950,13 @@ print(d.get('merge_status') or d.get('detailed_merge_status') or '')
         return 0
       fi
       _glck_json="$(glab mr view "$pr_ref" --output json $RARG 2>/dev/null)"
-      _glck_number="$(printf '%s' "$_glck_json" | python3 -c "import json,sys; print(json.load(sys.stdin).get('iid',''))" 2>/dev/null)"
+      _glck_number="$(printf '%s' "$_glck_json" | python3 -I -c "import json,sys; print(json.load(sys.stdin).get('iid',''))" 2>/dev/null)"
       if [ -z "$_glck_number" ]; then
         echo "pipeline-vcs: check-closing-keyword: could not fetch MR '$pr_ref' — skipping check" >&2
         echo "talos:closing-keyword-unverified pr=$pr_ref issue=$issue_n reason=pr-fetch-failed"
         return 0
       fi
-      _glck_body="$(printf '%s' "$_glck_json" | python3 -c "import json,sys; print(json.load(sys.stdin).get('description') or '')")"
+      _glck_body="$(printf '%s' "$_glck_json" | python3 -I -c "import json,sys; print(json.load(sys.stdin).get('description') or '')")"
       # Opened MRs only, every page (#319: `glab mr list` stopped at 100).
       # Non-zero on failure.
       _gl_fetch_closing_siblings() {
@@ -5960,7 +5981,7 @@ print(d.get('merge_status') or d.get('detailed_merge_status') or '')
       fi
       local _glcea_json _glcea_body
       _glcea_json="$(glab issue view "$n" --output json $RARG)" || exit 1
-      _glcea_body="$(printf '%s' "$_glcea_json" | python3 -c '
+      _glcea_body="$(printf '%s' "$_glcea_json" | python3 -I -c '
 import json, sys
 d = json.load(sys.stdin)
 if not isinstance(d, dict) or "description" not in d:
@@ -5985,7 +6006,7 @@ print(d["description"] or "")
         return 0
       fi
       local _glrc_pid
-      _glrc_pid="$(glab api "projects/$_glrc_proj/merge_requests/$n" | python3 -c '
+      _glrc_pid="$(glab api "projects/$_glrc_proj/merge_requests/$n" | python3 -I -c '
 import json, sys
 d = json.load(sys.stdin)
 p = d.get("head_pipeline") or d.get("pipeline") or {}
@@ -6038,7 +6059,7 @@ _azure_post_comment() {
     return 0
   fi
   local tmp; tmp="$(mktemp)"
-  python3 -c 'import json,sys; open(sys.argv[1],"w").write(json.dumps({"text": sys.argv[2]}))' "$tmp" "$body"
+  python3 -I -c 'import json,sys; open(sys.argv[1],"w").write(json.dumps({"text": sys.argv[2]}))' "$tmp" "$body"
   az rest --method post --url "$url" \
     --resource "499b84ac-1321-427f-aa17-267ca6975798" \
     --headers "Content-Type=application/json" --body "@$tmp" >/dev/null
@@ -6087,7 +6108,7 @@ _md_to_html() {
   if command -v pandoc >/dev/null 2>&1; then
     printf '%s' "$md" | pandoc -f gfm -t html 2>/dev/null && return 0
   fi
-  python3 - "$md" <<'PYEOF'
+  python3 -I - "$md" <<'PYEOF'
 import sys, html, re
 src = sys.argv[1]
 try:
@@ -6187,7 +6208,7 @@ _VCS_AZURE_SCAN_CAP=65536
 #   the next matching quote; blank lines are dropped so the scan's leading
 #   \s* never spans lines.
 _ado_description_text() {
-  python3 -c '
+  python3 -I -c '
 import html, json, re, sys
 cap = int(sys.argv[1])
 d = json.load(sys.stdin)
@@ -6275,7 +6296,7 @@ _azure() {
   _az_assignee_get() {
     local _ag_json
     _ag_json="$(az boards work-item show --id "$1" $ORG_ARG --output json)" || return 1
-    printf '%s' "$_ag_json" | python3 -c "
+    printf '%s' "$_ag_json" | python3 -I -c "
 import json, re, sys
 v = (json.load(sys.stdin).get('fields') or {}).get('System.AssignedTo')
 if isinstance(v, dict):
@@ -6310,7 +6331,7 @@ elif v:
     local _azpp_json
     _azpp_json="$(az repos pr policy list --id "$1" $ORG_ARG --output json)" || {
       echo "pipeline-vcs: $VERB: could not list the policies of PR #$1" >&2; return 1; }
-    printf '%s' "$_azpp_json" | python3 -c '
+    printf '%s' "$_azpp_json" | python3 -I -c '
 import json, sys
 d = json.load(sys.stdin)
 if not isinstance(d, list) or not all(isinstance(r, dict) for r in d):
@@ -6337,7 +6358,7 @@ if not isinstance(d, list) or not all(isinstance(r, dict) for r in d):
     _azpe_pr="$(az repos pr show --id "$1" $ORG_ARG --output json)" || {
       echo "pipeline-vcs: $VERB: could not read PR #$1" >&2; return 1; }
     # "<projectId> <sourceCommit>"; the commit may be empty.
-    _azpe_meta="$(printf '%s' "$_azpe_pr" | python3 -c '
+    _azpe_meta="$(printf '%s' "$_azpe_pr" | python3 -I -c '
 import json, re, sys
 d = json.load(sys.stdin)
 proj = ((d.get("repository") or {}).get("project") or {}).get("id")
@@ -6353,7 +6374,7 @@ print(proj + " " + src)
     _azpe_raw="$(az rest --method get --resource "$ADO_RESOURCE" \
       --url "$_azpe_org/$_azpe_proj/_apis/policy/evaluations?artifactId=vstfs%3A%2F%2F%2FCodeReview%2FCodeReviewId%2F$_azpe_proj%2F$1&includeNotApplicable=true&\$top=1000&api-version=7.1-preview.1")" || {
       echo "pipeline-vcs: $VERB: could not list the policies of PR #$1" >&2; return 1; }
-    printf '%s' "$_azpe_raw" | python3 -c '
+    printf '%s' "$_azpe_raw" | python3 -I -c '
 import json, sys
 v = json.load(sys.stdin)["value"]
 if not isinstance(v, list) or not all(isinstance(r, dict) for r in v) or len(v) >= 1000:
@@ -6368,7 +6389,7 @@ print(json.dumps({"source": sys.argv[1], "records": v}))
   # vstfs:///Git/PullRequestId/<project>%2F<repo>%2F<pr-id>. Exits 1 on
   # JSON that does not parse; a non-numeric id is dropped.
   _az_linked_pr_ids() {
-    python3 -c '
+    python3 -I -c '
 import json, sys
 for r in json.load(sys.stdin).get("relations") or []:
     url = r.get("url", "")
@@ -6390,7 +6411,7 @@ for r in json.load(sys.stdin).get("relations") or []:
       echo "pipeline-vcs: $VERB: needs org/project/repo (vcs.azure.org_url, vcs.azure.project, vcs.repo)" >&2
       return 1; }
     _raw="$(az rest --method get --url "$_gb/pullRequests/$1/iterations?api-version=7.1" --resource "$ADO_RESOURCE")" || return 1
-    _it="$(printf '%s' "$_raw" | python3 -c '
+    _it="$(printf '%s' "$_raw" | python3 -I -c '
 import json, sys
 print(max(int(i["id"]) for i in json.load(sys.stdin)["value"]))
 ' 2>/dev/null)" || return 1
@@ -6398,7 +6419,7 @@ print(max(int(i["id"]) for i in json.load(sys.stdin)["value"]))
       _raw="$(az rest --method get --resource "$ADO_RESOURCE" \
         --url "$_gb/pullRequests/$1/iterations/$_it/changes?\$top=2000&\$skip=$_skip&api-version=7.1")" || return 1
       # First line: nextSkip (0 on the last page); then one path per line.
-      _page="$(printf '%s' "$_raw" | python3 -c '
+      _page="$(printf '%s' "$_raw" | python3 -I -c '
 import json, sys
 d = json.load(sys.stdin)
 print(int(d.get("nextSkip") or 0))
@@ -6449,7 +6470,7 @@ for c in d["changeEntries"]:
       [ "$_len" = 0 ] || _capped=1
     fi
     _active="$(printf '%s' "$_raw" | _gh_paginate_merge 2>/dev/null)" || return 1
-    printf '[[%s],%s]' "$_linked" "$_active" | python3 -c '
+    printf '[[%s],%s]' "$_linked" "$_active" | python3 -I -c '
 import json, re, sys
 me, n, cap = sys.argv[1], sys.argv[2], int(sys.argv[3])
 linked, active = json.load(sys.stdin)
@@ -6555,7 +6576,7 @@ print(" ".join(str(i) for i in sorted(ids)))
       local current_tags
       current_tags="$(az boards work-item show --id "$n" $ORG_ARG \
         --query fields.\"System.Tags\" -o tsv 2>/dev/null || echo "")"
-      python3 - "$n" "$current_tags" "$ADD_LABELS" "$REMOVE_LABELS" \
+      python3 -I - "$n" "$current_tags" "$ADD_LABELS" "$REMOVE_LABELS" \
         "$DRY_RUN" "$base_org" <<'PYEOF'
 import json, os, subprocess, sys, tempfile
 n, cur, add_s, rem_s = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
@@ -6620,7 +6641,7 @@ PYEOF
       [ -n "$_ci_out" ] && printf '%s\n' "$_ci_out"
       # Assign the new work item (#299) -- stdout stays az's JSON alone.
       _vcs_shared_assign_issue "$(printf '%s' "$_ci_out" \
-          | python3 -c "import json, sys; print(json.load(sys.stdin).get('id', ''))" 2>/dev/null)" \
+          | python3 -I -c "import json, sys; print(json.load(sys.stdin).get('id', ''))" 2>/dev/null)" \
         _az_assignee_get _az_assignee_set az account show --query user.name --output tsv >&2
       ;;
     create-pr)
@@ -6715,7 +6736,7 @@ PYEOF
         if [ -n "$body" ]; then
           local gitbase; if gitbase="$(_azure_git_base)"; then
             local tf; tf="$(mktemp)"
-            python3 -c 'import json,sys;open(sys.argv[1],"w").write(json.dumps({"comments":[{"parentCommentId":0,"content":sys.argv[2],"commentType":1}],"status":1}))' "$tf" "$body"
+            python3 -I -c 'import json,sys;open(sys.argv[1],"w").write(json.dumps({"comments":[{"parentCommentId":0,"content":sys.argv[2],"commentType":1}],"status":1}))' "$tf" "$body"
             az rest --method post --url "$gitbase/pullRequests/$n/threads?api-version=7.1-preview.1" \
               --resource "$ADO_RESOURCE" --headers "Content-Type=application/json" --body "@$tf" >/dev/null 2>&1 || true
             rm -f "$tf"
@@ -6731,7 +6752,7 @@ PYEOF
       local l tf
       for l in $ADD_LABELS; do
         if [ "$DRY_RUN" = "true" ]; then echo "[dry-run] az rest POST $gitbase/pullRequests/$n/labels {\"name\":\"$l\"}"; continue; fi
-        tf="$(mktemp)"; python3 -c 'import json,sys;open(sys.argv[1],"w").write(json.dumps({"name":sys.argv[2]}))' "$tf" "$l"
+        tf="$(mktemp)"; python3 -I -c 'import json,sys;open(sys.argv[1],"w").write(json.dumps({"name":sys.argv[2]}))' "$tf" "$l"
         az rest --method post --url "$gitbase/pullRequests/$n/labels?api-version=7.1-preview.1" \
           --resource "$ADO_RESOURCE" --headers "Content-Type=application/json" --body "@$tf" >/dev/null 2>&1 \
           || echo "pipeline-vcs: label-pr add '$l' failed on PR #$n" >&2
@@ -6747,7 +6768,7 @@ PYEOF
             --url "$gitbase/pullRequests/$n/labels?api-version=7.1-preview.1" \
             --resource "$ADO_RESOURCE" 2>/dev/null)"
           for l in $REMOVE_LABELS; do
-            local lid; lid="$(printf '%s' "$labels_json" | python3 -c "import sys,json;d=json.load(sys.stdin);print(next((x['id'] for x in d.get('value',[]) if x.get('name')==sys.argv[1]),''))" "$l" 2>/dev/null)"
+            local lid; lid="$(printf '%s' "$labels_json" | python3 -I -c "import sys,json;d=json.load(sys.stdin);print(next((x['id'] for x in d.get('value',[]) if x.get('name')==sys.argv[1]),''))" "$l" 2>/dev/null)"
             [ -z "$lid" ] && continue
             az rest --method delete --url "$gitbase/pullRequests/$n/labels/$lid?api-version=7.1-preview.1" \
               --resource "$ADO_RESOURCE" >/dev/null 2>&1 || true
@@ -6777,7 +6798,7 @@ PYEOF
       local url="$gitbase/pullRequests/$n/threads?api-version=7.1-preview.1"
       if [ "$DRY_RUN" = "true" ]; then echo "[dry-run] az rest POST $url {\"comments\":[{\"content\":<body>}]}"; return 0; fi
       local tf; tf="$(mktemp)"
-      python3 -c 'import json,sys;open(sys.argv[1],"w").write(json.dumps({"comments":[{"parentCommentId":0,"content":sys.argv[2],"commentType":1}],"status":1}))' "$tf" "$body"
+      python3 -I -c 'import json,sys;open(sys.argv[1],"w").write(json.dumps({"comments":[{"parentCommentId":0,"content":sys.argv[2],"commentType":1}],"status":1}))' "$tf" "$body"
       az rest --method post --url "$url" --resource "$ADO_RESOURCE" \
         --headers "Content-Type=application/json" --body "@$tf" >/dev/null
       local rc=$?; rm -f "$tf"; return $rc
@@ -6846,7 +6867,7 @@ def norm(p):
         _azfp_pr="$(az repos pr show --id "$_azfp_id" $ORG_ARG --output json 2>/dev/null)" || continue
         [ -n "$_azfp_pr" ] && _azfp_linked="${_azfp_linked:+$_azfp_linked,}$_azfp_pr"
       done
-      _azfp_linked="$(printf '[%s]' "$_azfp_linked" | STATE="$state" python3 -c "$_azfp_norm"'
+      _azfp_linked="$(printf '[%s]' "$_azfp_linked" | STATE="$state" python3 -I -c "$_azfp_norm"'
 import os
 want = {"open": "OPEN", "merged": "MERGED", "closed": "CLOSED"}.get(os.environ["STATE"])
 try: prs = json.load(sys.stdin)
@@ -6863,7 +6884,7 @@ for p in map(norm, prs):
       _azfp_list="$(az repos pr list --status "$az_status" --top 1000 $ORG_ARG $PROJ_ARG $repo_arg --output json)" || {
         echo "pipeline-vcs: find-pr: az repos pr list failed" >&2; exit 1; }
       _list_cap_warn find-pr 1000 "$(printf '%s' "$_azfp_list" | _json_array_count)" "az repos pr list --top ceiling" PRs
-      printf '%s' "$_azfp_list" | python3 -c "$_azfp_norm"'
+      printf '%s' "$_azfp_list" | python3 -I -c "$_azfp_norm"'
 try: prs = json.load(sys.stdin)
 except Exception: prs = []
 json.dump([norm(p) for p in prs], sys.stdout)
@@ -6911,7 +6932,7 @@ json.dump([norm(p) for p in prs], sys.stdout)
         return 0
       fi
       local _azck_linked
-      _azck_linked="$(az repos pr work-item list --id "$pr_ref" $ORG_ARG --output json 2>/dev/null | python3 -c '
+      _azck_linked="$(az repos pr work-item list --id "$pr_ref" $ORG_ARG --output json 2>/dev/null | python3 -I -c '
 import json, sys
 print("yes" if sys.argv[1] in {str(w["id"]) for w in json.load(sys.stdin)} else "no")
 ' "$issue_n" 2>/dev/null)"
@@ -6983,7 +7004,7 @@ print("yes" if sys.argv[1] in {str(w["id"]) for w in json.load(sys.stdin)} else 
       fi
       local _azrc_json _azrc_ids _azrc_id _azrc_count=0
       _azrc_json="$(_az_pr_policies "$n")" || exit 1
-      _azrc_ids="$(printf '%s' "$_azrc_json" | python3 -c '
+      _azrc_ids="$(printf '%s' "$_azrc_json" | python3 -I -c '
 import json, re, sys
 BUILD = "0609b952-1397-4640-95ec-e00a01b2c241"
 builds = [r for r in json.load(sys.stdin)
@@ -7039,7 +7060,7 @@ for r in builds:
       # Empty config never passes vacuously and needs no CI data to say so.
       [ -z "$_required" ] && { printf '' | _eval_required_checks "$_required"; return; }
       _azpc_json="$(_az_pr_evaluations "$n")" || exit 1
-      _azpc_norm="$(printf '%s' "$_azpc_json" | python3 -c '
+      _azpc_norm="$(printf '%s' "$_azpc_json" | python3 -I -c '
 import json, sys
 STATUS = {"approved": "pass", "notapplicable": "pass", "rejected": "fail",
           "broken": "fail", "queued": "pending", "running": "pending"}
@@ -7155,7 +7176,7 @@ _file() {
         return 0
       fi
       touch "$FILE_PATH"
-      FILE_PATH="$FILE_PATH" python3 - "$ci_title" <<'PYEOF'
+      FILE_PATH="$FILE_PATH" python3 -I - "$ci_title" <<'PYEOF'
 import sys, re, os
 
 title = sys.argv[1]
@@ -7179,7 +7200,7 @@ PYEOF
       ;;
     *)
       # Delegate to Python for all file-mutation verbs
-      FILE_PATH="$FILE_PATH" python3 - "$verb" $DRY_RUN_FLAG "$@" <<'PYEOF'
+      FILE_PATH="$FILE_PATH" python3 -I - "$verb" $DRY_RUN_FLAG "$@" <<'PYEOF'
 import sys, re, os, json
 
 verb = sys.argv[1]
@@ -7456,7 +7477,7 @@ case "$VERB" in
     # scan (exit 3), and the scan is a single linear pass: no regex backtracks
     # across backticks, and inline code is found by walking backtick runs once.
     if [ "${#ARGS[@]}" -ge 2 ]; then
-      _ph_left="$(printf '%s' "${ARGS[1]}" | _TALOS_COMMENT_MAX="$_TALOS_COMMENT_MAX" _TALOS_BODY_MAX_BYTES="$_TALOS_BODY_MAX_BYTES" python3 -c '
+      _ph_left="$(printf '%s' "${ARGS[1]}" | _TALOS_COMMENT_MAX="$_TALOS_COMMENT_MAX" _TALOS_BODY_MAX_BYTES="$_TALOS_BODY_MAX_BYTES" python3 -I -c '
 import glob, os, re, sys
 TOKEN = re.compile(r"\$(?:(\$)|\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
 FENCE = re.compile(r"\s{0,3}(`{3,}|~{3,})")
@@ -7553,7 +7574,7 @@ esac
 # on stdin, never through env or argv. Over either cap: exit 1, nothing posted.
 _check_body_caps() {
   local _cb_rc=0
-  printf '%s' "$1" | python3 -c '
+  printf '%s' "$1" | python3 -I -c '
 import sys
 raw = sys.stdin.buffer.read()
 if len(raw.decode("utf-8", errors="replace")) > int(sys.argv[1]):
@@ -7841,7 +7862,7 @@ if [ "$VERB" = "slug-for" ]; then
     echo "[dry-run] slug-for: would derive a <=40-char slug from title '$_sf_title'"
     exit 0
   fi
-  python3 -c "
+  python3 -I -c "
 import re, sys
 title = sys.argv[1] if len(sys.argv) > 1 else ''
 slug = re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')
@@ -7924,9 +7945,9 @@ if [ "$VERB" = "label-pr" ] && [ "${#ARGS[@]}" -ge 1 ]; then
     _lp_comments=""
     if [ -n "$_lp_pr_data" ]; then
       _lp_head_sha="$(printf '%s' "$_lp_pr_data" \
-        | python3 -c "import json,sys; print(json.load(sys.stdin).get('headRefOid',''))" \
+        | python3 -I -c "import json,sys; print(json.load(sys.stdin).get('headRefOid',''))" \
         2>/dev/null)" || true
-      _lp_comments="$(printf '%s' "$_lp_pr_data" | python3 -c "
+      _lp_comments="$(printf '%s' "$_lp_pr_data" | python3 -I -c "
 import json, sys
 data = json.load(sys.stdin)
 for c in data.get('comments', []):
@@ -8096,7 +8117,7 @@ if [ "$VERB" = "post-approval" ]; then
     echo "pipeline-vcs: post-approval: could not fetch PR #$_pa_n comments for duplicate check" >&2
     exit 1
   fi
-  _pa_dup="$(printf '%s' "$_pa_comments_json" | PA_MARKER="$_pa_marker" python3 -c "
+  _pa_dup="$(printf '%s' "$_pa_comments_json" | PA_MARKER="$_pa_marker" python3 -I -c "
 import json, os, sys
 marker = os.environ.get('PA_MARKER', '')
 try:
@@ -8296,9 +8317,9 @@ if [ "$VERB" = "label-pr" ] && [ -n "${_ADDING_APPROVAL_LABELS:-}" ] \
   _pd_comments=""
   if [ -n "$_pd_pr_data" ]; then
     _pd_head_sha="$(printf '%s' "$_pd_pr_data" \
-      | python3 -c "import json,sys; print(json.load(sys.stdin).get('headRefOid',''))" \
+      | python3 -I -c "import json,sys; print(json.load(sys.stdin).get('headRefOid',''))" \
       2>/dev/null)" || true
-    _pd_comments="$(printf '%s' "$_pd_pr_data" | python3 -c "
+    _pd_comments="$(printf '%s' "$_pd_pr_data" | python3 -I -c "
 import json, sys
 data = json.load(sys.stdin)
 for c in data.get('comments', []):
@@ -8350,7 +8371,7 @@ if [ "$VERB" = "comment-pr" ] && [ "$_DISPATCH_RC" -eq 0 ] \
     && { [ "$PROVIDER" = "github" ] || [ "$PROVIDER" = "github-api" ]; }; then
   _cp_warn_body="${ARGS[1]-}"
   if [ -n "$_cp_warn_body" ]; then
-    printf '%s' "$_cp_warn_body" | python3 -c "
+    printf '%s' "$_cp_warn_body" | python3 -I -c "
 import re, sys
 body = sys.stdin.read()
 stripped = body.rstrip()
