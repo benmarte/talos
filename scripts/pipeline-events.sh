@@ -79,9 +79,11 @@
 #          prints nothing, exit 0.
 #   cost --summary --issue A [--issue B ...] (#383) prints the end-of-run
 #          report: one row per (issue, PR) and a `pre-PR` row per issue for
-#          events with pr null (issue, PR, tokens, unrecorded, models), `Top
-#          PRs:` (up to 3), `Per issue:` totals and a `Total:` line, at most 20
-#          lines (the smallest rows fold into one `+K more rows` line).
+#          events with pr null (issue, PR, tokens, unrecorded, stage models:
+#          each stage's model in one cell, `dev sonnet · qa sonnet ×1,
+#          session default ×1 · sec opus`), `Top PRs:` (up to 3), `Per issue:` totals and a `Total:`
+#          line, at most 20 lines (the smallest rows fold into one `+K more
+#          rows` line).
 #          Orchestrator events are left out. No events: `no events recorded
 #          for this run`.
 #          --line, --markdown and --summary are exclusive (exit 2).
@@ -454,17 +456,17 @@ def render_summary(fmt):
     # one row per (issue, PR), a pre-PR row per issue for the null-pr events
     rows_by = {}
     row_order = []
-    for iss, p, _, tokens, model in stage_events:
+    for iss, p, role, tokens, model in stage_events:
         k = (safe(iss), None if p is None else safe(p))
         if k not in rows_by:
-            rows_by[k] = {"tokens": 0, "unrecorded": 0, "models": []}
+            rows_by[k] = {"tokens": 0, "unrecorded": 0, "models": {}}
             row_order.append(k)
         r = rows_by[k]
         if tokens is None:
             r["unrecorded"] += 1
         else:
             r["tokens"] = _add(r["tokens"], tokens)
-        r["models"].append(model)
+        r["models"].setdefault(role, []).append(model)
 
     def num_key(s):
         return (0, int(s)) if (s or "").isdigit() else (1, 0)
@@ -501,11 +503,15 @@ def render_summary(fmt):
         if rest_unrecorded:
             folded += " (+%d unrecorded)" % rest_unrecorded
 
-    table = [("issue", "PR", "tokens", "unrecorded", "models")]
+    def stage_models(by_role):
+        """One cell: each stage and the models it ran with, first-seen order."""
+        return " · ".join("%s %s" % (fmt.role_abbrev(role), fmt.model_summary(ms)) for role, ms in by_role.items())
+
+    table = [("issue", "PR", "tokens", "unrecorded", "stage models")]
     for k in shown:
         r = rows_by[k]
         table.append(("#" + k[0], "pre-PR" if k[1] is None else "#" + k[1], num(r["tokens"]),
-                      str(r["unrecorded"]), fmt.model_summary(r["models"])))
+                      str(r["unrecorded"]), stage_models(r["models"])))
     widths = [max(len(t[i]) for t in table) for i in range(4)]
     lines = ["Token spend — run summary"]
     for t in table:
