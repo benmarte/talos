@@ -7,7 +7,8 @@
 # Usage: pipeline-events.sh path
 #        pipeline-events.sh list [--issue N] [--role R] [--event E] [--last K] [--json]
 #        pipeline-events.sh tail [--issue N]
-#        pipeline-events.sh cost [--issue N] [--json]
+#        pipeline-events.sh cost [--issue N] [--pr M] [--json]
+#        pipeline-events.sh cost --issue N [--pr M] --line
 #
 #   path   Prints the resolved absolute path to the events log (does not
 #          require the file to exist).
@@ -39,6 +40,22 @@
 #          table gains a trailing ci_runs column and every --json row and the
 #          total gain a trailing ci_runs field, summing those values. With no
 #          such event the output is exactly the shape described above.
+#          --pr M keeps only events whose pr is M (an event with pr null never
+#          matches), in the table, --json and --line alike.
+#          --line (needs --issue; wins over --json) prints one summary line
+#          for the issue (#380), from the newest non-orchestrator event in
+#          scope (last in file order), identically on every runner path:
+#            talos: #764 security done — 56k tokens, 14 tools, 2m05s · PR total 3.41M (dev 1.57M, adv 596k, ...)
+#          The reference is #<pr> with --pr (label `PR total`), else
+#          #<issue> (label `issue total`). Events with role orchestrator are
+#          left out of the stage, the totals and the unrecorded count. A null
+#          tokens/tool_uses/duration_s is never printed as 0: the newest
+#          event reads `tokens unrecorded`, a null tool count or duration is
+#          dropped, `(+K unrecorded)` follows the total, and a scope with no
+#          recorded tokens prints `total unrecorded`. The breakdown is sorted
+#          by tokens descending and cut with `…` so the line stays <= 200
+#          characters. Missing log or no matching events prints nothing.
+#          A value-taking option with no value exits 2 with usage.
 #
 # A malformed line (not valid JSON, or not a JSON object) is skipped rather
 # than aborting the read; the count of skipped lines is reported once on
@@ -175,8 +192,9 @@ PYEOF
 # skills/pipeline/SKILL.md's re-stamp dispatch) -- so a group's re-stamp
 # cost is visible next to its full-stage cost instead of being folded into
 # the same "events"/"tokens" totals with no way to tell them apart.
+# PR (#380) keeps only events whose pr matches; "" means every event.
 cmd_cost() {
-  local issue="$1" json_mode="$2"
+  local issue="$1" json_mode="$2" pr="${3:-}"
   local log_path
   log_path="$(_events_log_path)" || {
     echo "pipeline-events: could not resolve the events log path (not a git repo?)" >&2
@@ -186,14 +204,16 @@ cmd_cost() {
     return 0
   fi
 
-  python3 - "$log_path" "$issue" "$json_mode" <<'PYEOF'
+  python3 - "$log_path" "$issue" "$json_mode" "$pr" <<'PYEOF'
 import json
 import sys
 
-log_path, issue, json_mode = sys.argv[1:4]
+log_path, issue, json_mode, pr = sys.argv[1:5]
 
 def matches(rec):
     if issue and str(rec.get("issue")) != issue:
+        return False
+    if pr and (rec.get("pr") is None or str(rec.get("pr")) != pr):
         return False
     return True
 
@@ -271,6 +291,175 @@ if skipped:
 PYEOF
 }
 
+# Python formatters for the one-line spend summary (#380), kept as one source
+# so a later command that prints a spend figure can prepend it to its own
+# python block instead of copying it: fmt_num (tokens), fmt_dur (seconds),
+# role_label / role_abbrev (head word and breakdown), as_count (null-safe
+# number). Integer arithmetic only: round half up, never round() (banker's)
+# or '%.2f' (float artefacts).
+IFS= read -r -d '' _EVENTS_PY_FORMAT <<'PYEOF' || true
+_ABBREV = {
+    "developer": "dev", "adversarial": "adv", "security": "sec",
+    "reviewer": "rev", "validator": "val", "planner": "plan",
+}
+
+def fmt_num(n):
+    """999 -> '999', 1499 -> '1k', 999500 -> '1.00M', 3411000 -> '3.41M'."""
+    n = int(n)
+    if n < 1000:
+        return str(n)
+    k = (n + 500) // 1000
+    if k < 1000:
+        return "%dk" % k
+    hundredths = (n + 5000) // 10000
+    return "%d.%02dM" % (hundredths // 100, hundredths % 100)
+
+def fmt_dur(secs):
+    """45 -> '45s', 125 -> '2m05s', 3720 -> '1h02m'."""
+    secs = int(secs)
+    if secs < 60:
+        return "%ds" % secs
+    if secs < 3600:
+        return "%dm%02ds" % (secs // 60, secs % 60)
+    return "%dh%02dm" % (secs // 3600, (secs % 3600) // 60)
+
+def role_label(role):
+    """The role as one safe token ([A-Za-z0-9_-] only), so a role name from
+    the log cannot add a line break or a talos:<word> marker."""
+    text = "".join(c if (c.isascii() and (c.isalnum() or c in "-_")) else "_" for c in str(role))
+    return text or "unknown"
+
+def role_abbrev(role):
+    label = role_label(role)
+    return _ABBREV.get(label, label)
+
+def as_count(v):
+    """A recorded non-negative number, or None (null and junk are unrecorded)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
+        return None
+    return int(v)
+PYEOF
+
+# cmd_cost_line ISSUE PR -- one summary line (#380): the newest
+# non-orchestrator event in scope (last in file order, since ts has only
+# second resolution) plus the scope's total and per-role breakdown. See the
+# file header for the exact shape. Prints nothing when the log is missing or
+# no event is in scope.
+cmd_cost_line() {
+  local issue="$1" pr="$2"
+  local log_path
+  log_path="$(_events_log_path)" || {
+    echo "pipeline-events: could not resolve the events log path (not a git repo?)" >&2
+    return 1
+  }
+  if [ ! -f "$log_path" ]; then
+    return 0
+  fi
+
+  local src
+  IFS= read -r -d '' src <<'PYEOF' || true
+
+MAX_LEN = 200
+
+log_path, issue, pr = sys.argv[1:4]
+sys.stdout.reconfigure(encoding="utf-8")
+
+newest = None
+recorded = {}
+unrecorded = 0
+total = 0
+skipped = 0
+with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+            if not isinstance(rec, dict):
+                raise ValueError("not an object")
+        except (ValueError, TypeError):
+            skipped += 1
+            continue
+        if str(rec.get("issue")) != issue:
+            continue
+        if pr and (rec.get("pr") is None or str(rec.get("pr")) != pr):
+            continue
+        if rec.get("role") == "orchestrator":
+            continue
+        newest = rec
+        tokens = as_count(rec.get("tokens"))
+        if tokens is None:
+            unrecorded += 1
+        else:
+            total += tokens
+            label = role_label(rec.get("role"))
+            recorded[label] = recorded.get(label, 0) + tokens
+
+if skipped:
+    print(f"pipeline-events: skipped {skipped} malformed line(s)", file=sys.stderr)
+if newest is None:
+    sys.exit(0)
+
+parts = []
+tokens = as_count(newest.get("tokens"))
+parts.append("tokens unrecorded" if tokens is None else "%s tokens" % fmt_num(tokens))
+tools = as_count(newest.get("tool_uses"))
+if tools is not None:
+    parts.append("%d tools" % tools)
+dur = as_count(newest.get("duration_s"))
+if dur is not None:
+    parts.append(fmt_dur(dur))
+
+head = "talos: #%s %s done — %s · %s total" % (
+    pr or issue, role_label(newest.get("role")), ", ".join(parts),
+    "PR" if pr else "issue")
+
+if not recorded:
+    print(head + " unrecorded")
+    sys.exit(0)
+
+head += " " + fmt_num(total)
+if unrecorded:
+    head += " (+%d unrecorded)" % unrecorded
+ordered = sorted(recorded.items(), key=lambda kv: -kv[1])  # stable: ties keep first-seen order
+entries = ["%s %s" % (role_abbrev(r), fmt_num(n)) for r, n in ordered]
+out = head + " (" + ", ".join(entries) + ")"
+if len(out) > MAX_LEN:
+    keep = len(entries)
+    while keep > 0 and len(head + " (" + ", ".join(entries[:keep]) + ", …)") > MAX_LEN:
+        keep -= 1
+    out = head + " (" + "".join(e + ", " for e in entries[:keep]) + "…)"
+    if len(out) > MAX_LEN:  # only a pathological role name gets here
+        out = out[:MAX_LEN - 1] + "…"
+print(out)
+PYEOF
+
+  python3 -c "import json, sys
+$_EVENTS_PY_FORMAT
+$src" "$log_path" "$issue" "$pr"
+}
+
+# _usage -- the usage text, shared by the unknown-verb and bad-option exits.
+_usage() {
+  echo "Usage: pipeline-events.sh path" >&2
+  echo "       pipeline-events.sh list [--issue N] [--role R] [--event E] [--last K] [--json]" >&2
+  echo "       pipeline-events.sh tail [--issue N]" >&2
+  echo "       pipeline-events.sh cost [--issue N] [--pr M] [--json]" >&2
+  echo "       pipeline-events.sh cost --issue N [--pr M] --line" >&2
+}
+
+# _need_value OPTION ARGC -- exit 2 with usage when a value-taking option is
+# the last argument (`shift 2` with one argument left shifts nothing, which
+# used to loop forever).
+_need_value() {
+  if [ "$2" -lt 2 ]; then
+    echo "pipeline-events: $1 needs a value" >&2
+    _usage
+    exit 2
+  fi
+}
+
 VERB="${1:-}"
 case "$VERB" in
   path)
@@ -304,21 +493,29 @@ case "$VERB" in
     ;;
   cost)
     shift
-    issue="" json_mode="0"
+    issue="" pr="" json_mode="0" line_mode="0"
     while [ $# -gt 0 ]; do
       case "$1" in
-        --issue) issue="${2:-}"; shift 2 ;;
+        --issue) _need_value "$1" $#; issue="$2"; shift 2 ;;
+        --pr) _need_value "$1" $#; pr="$2"; shift 2 ;;
         --json) json_mode="1"; shift ;;
+        --line) line_mode="1"; shift ;;
         *) shift ;;
       esac
     done
-    cmd_cost "$issue" "$json_mode"
+    if [ "$line_mode" = "1" ]; then
+      if [ -z "$issue" ]; then
+        echo "pipeline-events: --line needs --issue" >&2
+        _usage
+        exit 2
+      fi
+      cmd_cost_line "$issue" "$pr"
+    else
+      cmd_cost "$issue" "$json_mode" "$pr"
+    fi
     ;;
   *)
-    echo "Usage: pipeline-events.sh path" >&2
-    echo "       pipeline-events.sh list [--issue N] [--role R] [--event E] [--last K] [--json]" >&2
-    echo "       pipeline-events.sh tail [--issue N]" >&2
-    echo "       pipeline-events.sh cost [--issue N] [--json]" >&2
+    _usage
     exit 2
     ;;
 esac
