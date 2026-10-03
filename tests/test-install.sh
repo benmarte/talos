@@ -213,7 +213,8 @@ assert_contains "$out_with" "/pipeline" \
 # Design: pipeline-paths.sh is the single source of truth for the 5-location
 # probe order. Bash scripts that can source shell delegate to _resolve_talos_dir().
 # Sites that cannot source shell (the two SKILL.md files) and sites that ship an
-# executable probe loop to third-party harnesses (install.sh AGENTS.md heredoc)
+# executable probe loop to third-party harnesses (none left: install.sh's
+# AGENTS.md heredoc moved to scripts/pipeline-instructions.sh, #364)
 # must match pipeline-paths.sh literally.
 #
 # Tree-wide grep (grep -rn TALOS_HOME --include=*.sh --include=*.md, excl tests/.git)
@@ -229,7 +230,6 @@ assert_contains "$out_with" "/pipeline" \
 #        skills/pipeline/SKILL.md
 #        skills/pipeline-setup/SKILL.md
 #        skills/resume/SKILL.md
-#        install.sh (AGENTS.md heredoc -- executed as shell by codex/antigravity)
 #
 # RED when any site drifts: A catches dropped delegation; B catches literal divergence.
 
@@ -245,9 +245,7 @@ for sh_file in \
 done
 
 # B. Literal sites must contain each probe string.
-# install.sh is included because its AGENTS.md heredoc is executed as shell by
-# codex and antigravity harnesses -- a drift here means those harnesses resolve
-# to the wrong install, the exact failure #164 exists to eliminate.
+# install.sh is not one: it no longer ships a probe loop (#364).
 #
 # Probe strings use the conditional expansion form (${VAR:+...}) so they are
 # specific to probe loops rather than general variable uses. "TALOS_HOME" alone
@@ -258,8 +256,7 @@ for probe_str in '${TALOS_HOME:+' ".talos/scripts" '${CLAUDE_PLUGIN_ROOT:+' ".cl
     "$TALOS_ROOT/scripts/pipeline-paths.sh" \
     "$TALOS_ROOT/skills/pipeline/SKILL.md" \
     "$TALOS_ROOT/skills/pipeline-setup/SKILL.md" \
-    "$TALOS_ROOT/skills/resume/SKILL.md" \
-    "$TALOS_ROOT/install.sh"; do
+    "$TALOS_ROOT/skills/resume/SKILL.md"; do
     if grep -qF "$probe_str" "$pf"; then
       pass "$(basename "$pf") contains probe string: $probe_str"
     else

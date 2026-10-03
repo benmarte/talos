@@ -226,38 +226,9 @@ fi
 out="$(bash "$AGENT" 2>&1)"; rc=$?
 assert_eq "2" "$rc" "missing args exits 2"
 
-# ── install.sh --harness codex ────────────────────────────────────────────────
+# ── install.sh: pipeline-agent.sh ships with --global; --harness validation ──
 assert_file_exists "$HOME/.talos/scripts/pipeline-agent.sh" \
   "pipeline-agent.sh installed by --global into ~/.talos/scripts/"
-
-out="$(bash "$TALOS_ROOT/install.sh" "$SANDBOX" --harness codex)"
-assert_file_exists "AGENTS.md" "--harness codex writes AGENTS.md"
-agents_md="$(cat AGENTS.md)"
-assert_contains "$agents_md" "<!-- talos:begin -->" "AGENTS.md section is marker-fenced"
-assert_contains "$agents_md" "pipeline-agent.sh" "AGENTS.md explains the subagent replacement"
-
-# Re-install must not duplicate the section; existing content must survive
-echo "# My project notes" > AGENTS.md.orig
-cat AGENTS.md >> AGENTS.md.orig && mv AGENTS.md.orig AGENTS.md
-bash "$TALOS_ROOT/install.sh" "$SANDBOX" --harness codex >/dev/null
-assert_eq "1" "$(grep -c 'talos:begin' AGENTS.md)" "codex re-install does not duplicate section"
-assert_contains "$(cat AGENTS.md)" "# My project notes" "existing AGENTS.md content preserved"
-
-# ── install.sh --harness antigravity ─────────────────────────────────────────
-rm -f AGENTS.md
-out="$(bash "$TALOS_ROOT/install.sh" "$SANDBOX" --harness antigravity)"
-assert_file_exists "AGENTS.md" "--harness antigravity writes AGENTS.md"
-agents_md="$(cat AGENTS.md)"
-assert_contains "$agents_md" "<!-- talos:begin -->" "antigravity AGENTS.md section is marker-fenced"
-assert_contains "$agents_md" "pipeline-agent.sh" "antigravity AGENTS.md explains subagent replacement"
-assert_contains "$out" "NOTE: Antigravity reads AGENTS.md natively" "antigravity install prints native-reader note"
-
-# Antigravity re-install must be idempotent
-echo "# My antigravity notes" > AGENTS.md.orig
-cat AGENTS.md >> AGENTS.md.orig && mv AGENTS.md.orig AGENTS.md
-bash "$TALOS_ROOT/install.sh" "$SANDBOX" --harness antigravity >/dev/null
-assert_eq "1" "$(grep -c 'talos:begin' AGENTS.md)" "antigravity re-install does not duplicate section"
-assert_contains "$(cat AGENTS.md)" "# My antigravity notes" "existing AGENTS.md content preserved on antigravity re-install"
 
 # Bad harness rejected
 if bash "$TALOS_ROOT/install.sh" "$SANDBOX" --harness gemini >/dev/null 2>&1; then

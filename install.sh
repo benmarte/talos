@@ -14,11 +14,15 @@
 #
 # Per-repo config (after global install):
 #   bash install.sh [target-repo-path] [--harness claude|codex|antigravity]
-#   Writes only talos.pipeline.* config and, for non-Claude harnesses, AGENTS.md glue.
-#   No scripts are copied into the repo. Relies on the global install at ~/.talos/.
-#   --harness codex or --harness antigravity additionally writes a Talos section
-#   into <target>/AGENTS.md so the harness can orchestrate the pipeline, running
-#   role stages via ~/.talos/scripts/pipeline-agent.sh.
+#                   [--no-agents-md] [--import-agents-md]
+#   Writes talos.pipeline.* config and, for every harness, the Talos block in
+#   <target>/AGENTS.md (scripts/pipeline-instructions.sh: created, appended or
+#   repaired between its markers; commit the file). No scripts are copied into
+#   the repo. Relies on the global install at ~/.talos/.
+#   --no-agents-md      write no AGENTS.md.
+#   --import-agents-md  also append an `@AGENTS.md` import to <target>/CLAUDE.md
+#                       and <target>/GEMINI.md when they exist (never creates
+#                       them, never writes the block into them).
 #
 # Vendored (legacy, back-compat):
 #   Existing .claude/talos/ installs keep working with zero user action.
@@ -44,6 +48,8 @@ FORCE_MODE=""       # "overwrite" | "no-overwrite" | "" (default varies by mode)
 HARNESS="claude"
 WITH_SKILLS=true
 GLOBAL=false
+WRITE_AGENTS_MD=true
+IMPORT_AGENTS_MD=false
 AGENT_SKILLS_REPO="${TALOS_AGENT_SKILLS_REPO:-https://github.com/addyosmani/agent-skills}"
 
 expect_harness=false
@@ -56,6 +62,8 @@ for arg in "$@"; do
     --force)           FORCE_MODE="overwrite" ;;
     --no-overwrite)    FORCE_MODE="no-overwrite" ;;
     --no-agent-skills) WITH_SKILLS=false ;;
+    --no-agents-md)    WRITE_AGENTS_MD=false ;;
+    --import-agents-md) IMPORT_AGENTS_MD=true ;;
     --harness)         expect_harness=true ;;
     --harness=*)       HARNESS="${arg#*=}" ;;
     *)                 [ -z "$TARGET" ] && TARGET="$arg" ;;
@@ -280,52 +288,17 @@ else
   echo "  them each stage falls back to its embedded instructions."
 fi
 
-# Codex / Antigravity / AGENTS.md harness: add a marker-fenced Talos section so
-# the harness knows the pipeline exists and how to run stages without native
-# subagents. Antigravity reads AGENTS.md natively since v1.20.3 -- the same
-# section written for Codex works for Antigravity without modification.
-if [ "$HARNESS" = "codex" ] || [ "$HARNESS" = "antigravity" ]; then
+# AGENTS.md: one marker-fenced Talos block for every harness, written by
+# scripts/pipeline-instructions.sh from this source tree (so it works before a
+# global install). It creates, appends or repairs the block and prints any
+# CLAUDE.md / GEMINI.md import notice; it never fails the install.
+if [ "$WRITE_AGENTS_MD" = "true" ]; then
   echo ""
-  echo "$HARNESS harness (AGENTS.md):"
-  AGENTS_MD="$TARGET/AGENTS.md"
-  if [ -f "$AGENTS_MD" ] && grep -q "<!-- talos:begin -->" "$AGENTS_MD"; then
-    echo "  skip (talos section already present): $AGENTS_MD"
-  else
-    cat >> "$AGENTS_MD" <<'AGENTSEOF'
-
-<!-- talos:begin -->
-## Talos pipeline
-
-This repo uses the Talos issue->PR pipeline. When asked to run the pipeline, act
-as the orchestrator: follow the playbook in .claude/skills/pipeline/SKILL.md exactly.
-
-This harness has no native subagents. Wherever the playbook says "spawn a
-subagent with this prompt", instead run the stage headlessly using the script
-resolved via the pipeline's probe order (global install at ~/.talos/scripts/ wins
-over vendored at .claude/talos/scripts/):
-
-    # Resolve the scripts directory first:
-    for d in "${TALOS_HOME:+$TALOS_HOME/scripts}" "$HOME/.talos/scripts" \
-              "${CLAUDE_PLUGIN_ROOT:+$CLAUDE_PLUGIN_ROOT/scripts}" \
-              ".claude/talos/scripts" "scripts"; do
-      [ -n "$d" ] && [ -f "$d/pipeline-agent.sh" ] && { SCRIPTS="$d"; break; }
-    done
-
-    bash "$SCRIPTS/pipeline-agent.sh" <role> - <<'PROMPT'
-    <the stage prompt from the playbook>
-    PROMPT
-
-Role definitions live in .claude/agents/*.md (or ~/.talos/agents/ for a global
-install). Set the runner in talos.pipeline.yml (agents.runner: codex). All VCS
-operations go through the resolved scripts/pipeline-vcs.sh -- never call gh
-directly.
-<!-- talos:end -->
-AGENTSEOF
-    echo "  installed: talos section in $AGENTS_MD"
-    if [ "$HARNESS" = "antigravity" ]; then
-      echo "  NOTE: Antigravity reads AGENTS.md natively (v1.20.3+); no separate config file needed."
-    fi
-  fi
+  echo "AGENTS.md (Talos block):"
+  _INSTR_ARGS=(--harness "$HARNESS")
+  [ "$IMPORT_AGENTS_MD" = "true" ] && _INSTR_ARGS+=(--import-agents-md)
+  bash "$SRC/scripts/pipeline-instructions.sh" write "$TARGET" "${_INSTR_ARGS[@]}" \
+    || echo "  warning: could not write the Talos block into $TARGET/AGENTS.md"
 fi
 
 # Offer to copy config example. talos.pipeline.* is NEVER overwritten.
