@@ -10,7 +10,9 @@
 #   (b) the Step 3c developer prompt carries `Required checks:` and `CI wait
 #       budget:`; local mode omits them; the draft block sends `none`
 #   (c) agents/developer.md: the CI-wait step after step 9, the `none` skip,
-#       the budget formula, the sleep-poll exception in step 3, both standing lines
+#       the budget formula, the final-verify exception in step 3, both standing lines
+#   (e) `pr-checks-required <n> --wait <seconds>` (the one-call CI wait the
+#       developer and QA profiles use): 0/1/2 results, bad values, no-flag baseline
 #   (d) the exit-code/stderr contract the routing table depends on, against the
 #       real `pr-checks-required` verb and a stubbed `gh`
 set -u
@@ -67,14 +69,16 @@ assert_contains "$DEV_TEXT" '9. On success:' "step 9 is unchanged and precedes t
 assert_contains "$DEV_TEXT" '11. On failure:' "the failure step follows the CI wait"
 assert_contains "$STEP_10" 'is present and not' "CI wait is skipped when Required checks: is none"
 assert_contains "$STEP_10" 'pr-checks-required <PR>' "CI wait uses pr-checks-required"
-assert_contains "$STEP_10" 'pipeline-verify.sh --issue <N>' "CI wait goes through pipeline-verify.sh"
+assert_contains "$STEP_10" 'pr-checks-required <PR> --wait <budget>' "CI wait is one --wait call"
 assert_contains "$STEP_10" 'min(CI wait budget, Verify timeout/1000 - 30)' "CI wait budget is capped under the verify timeout"
 assert_contains "$STEP_10" 'pr-checks-required: failed:' "only the failed: line triggers a fix"
 assert_contains "$STEP_10" 'at most 2 rounds' "CI fix rounds are bounded"
 assert_contains "$STEP_10" 'CI: green|red|pending on <head sha>' "final message carries the CI result"
 assert_contains "$DEV_TEXT" 'The
-   only exceptions are step 10: its one bounded CI wait, and one targeted
-   re-run on a CI-fix commit.' "step 3 carries the sleep-poll and final-verify exception"
+   only exception is step 10: one targeted re-run on a CI-fix commit.' "step 3 carries the final-verify exception"
+assert_not_contains "$STEP_10" 'until' "CI wait carries no inline poll loop"
+assert_not_contains "$(cat "$TALOS_ROOT/agents/qa.md")" 'until bash scripts/pipeline-vcs.sh' "qa.md carries no inline poll loop"
+assert_contains "$(cat "$TALOS_ROOT/agents/qa.md")" 'pr-checks-required <pr> --wait <verify.ci_wait_s, default 900>' "qa.md waits with --wait"
 assert_contains "$DEV_TEXT" '`init.defaultBranch`' "standing line: fixtures must not depend on ambient git config"
 assert_contains "$DEV_TEXT" 'Text over 128 KB reaches' "standing line: 128 KB text goes on stdin or in a file"
 
@@ -104,5 +108,68 @@ rm -f talos.pipeline.json
 res="$(run_gate)"
 assert_eq "1" "${res%%|*}" "no checks configured: rc 1"
 assert_not_contains "$res" 'pr-checks-required: failed:' "no checks configured: rc 1 without the failed: line (routes to QA)"
+
+# ── (e) pr-checks-required --wait <seconds> ──────────────────────────────────
+# A counting gh stub: pending for the first $GH_PENDING_READS `pr checks`
+# reads, then $GH_FINAL. TALOS_RETRY_SLEEP_SCALE=0 makes every sleep instant;
+# the verb's deadline still counts the nominal 30s steps.
+mkdir -p "$SANDBOX/bin"
+cat > "$SANDBOX/bin/gh" <<'TALOS_u8Rk2VxN5pQeW'
+#!/usr/bin/env bash
+case "$*" in
+  "pr checks"*)
+    n="$(cat "$GH_CNT" 2>/dev/null || echo 0)"; n=$((n + 1)); printf '%s' "$n" > "$GH_CNT"
+    if [ "$n" -le "${GH_PENDING_READS:-0}" ]; then st=pending; else st="${GH_FINAL:-pass}"; fi
+    printf 'test\t%s\t1m\thttps://x\n' "$st" ;;
+  *) exit 0 ;;
+esac
+TALOS_u8Rk2VxN5pQeW
+chmod +x "$SANDBOX/bin/gh"
+export PATH="$SANDBOX/bin:$PATH" GH_CNT="$SANDBOX/gh.cnt" TALOS_RETRY_SLEEP_SCALE=0
+printf '{"merge": {"required_checks": ["test"]}}\n' > talos.pipeline.json
+
+wait_run() {  # $1=pending reads, $2=final state, rest=verb args; sets out, rc, reads
+  export GH_PENDING_READS="$1" GH_FINAL="$2"; shift 2
+  rm -f "$GH_CNT"
+  out="$(bash "$VCS" pr-checks-required "$@" 2>&1)"; rc=$?
+  reads="$(cat "$GH_CNT" 2>/dev/null || echo 0)"
+}
+
+wait_run 2 pass 9 --wait 300
+assert_eq "0" "$rc" "--wait: pending twice then pass returns 0"
+assert_eq "3" "$reads" "--wait: read until the result stopped being pending"
+wait_run 2 fail 9 --wait 300
+assert_eq "1" "$rc" "--wait: pending twice then fail returns 1"
+assert_contains "$out" 'pr-checks-required: failed: test' "--wait: the failed: line is the same"
+wait_run 99 pass 9 --wait 100
+assert_eq "2" "$rc" "--wait: still pending at the deadline returns 2"
+assert_eq "5" "$reads" "--wait: 100s is four sleeps (30, 30, 30, 10), so five reads"
+wait_run 99 pass 9 --wait 0
+assert_eq "2" "$rc" "--wait 0: one read, still pending returns 2"
+assert_eq "1" "$reads" "--wait 0: exactly one read"
+wait_run 99 pass --wait 100 9
+assert_eq "5" "$reads" "--wait before the PR number is accepted too"
+
+for bad in abc 3601 -5 1.5 ''; do
+  wait_run 0 pass 9 --wait "$bad"
+  assert_eq "2" "$rc" "--wait '$bad' is a usage error (exit 2)"
+  assert_contains "$out" 'Usage: pipeline-vcs.sh pr-checks-required' "--wait '$bad' prints usage"
+  assert_eq "0" "$reads" "--wait '$bad' makes no gh call"
+done
+wait_run 0 pass 9 --wait
+assert_eq "2" "$rc" "--wait without a value is a usage error (exit 2)"
+wait_run 0 pass 9 --wait 3600
+assert_eq "0" "$rc" "--wait 3600 is accepted"
+
+wait_run 99 pass 9
+assert_eq "2" "$rc" "no --wait: pending returns 2 as before"
+assert_eq "1" "$reads" "no --wait: one read, no polling"
+wait_run 0 pass 9
+assert_eq "0" "$rc" "no --wait: green returns 0 as before"
+
+printf '{"vcs": {"provider": "gitlab"}, "merge": {"required_checks": ["test"]}}\n' > talos.pipeline.json
+wait_run 0 pass 9 --wait 60
+assert_eq "1" "$rc" "gitlab: --wait is dropped and the verb still fails closed (exit 1)"
+assert_contains "$out" 'not implemented for gitlab' "gitlab: same not-implemented line with --wait"
 
 finish

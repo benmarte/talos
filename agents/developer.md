@@ -68,8 +68,7 @@ Workflow (do ALL of it — the publish step is not optional):
      commit and push.
    In both modes: no verify runs after that final run, never run it in the
    background, and never sleep-poll for results. Never zero local runs. The
-   only exceptions are step 10: its one bounded CI wait, and one targeted
-   re-run on a CI-fix commit.
+   only exception is step 10: one targeted re-run on a CI-fix commit.
    Prefer summary output for verify commands (e.g. `--quiet` for Talos's own
    suite, or the project's equivalent) -- quote only failures, never paste
    full green output into comments or final messages.
@@ -120,9 +119,10 @@ Workflow (do ALL of it — the publish step is not optional):
       quotes. If the post fails, report it in your final message.
 10. **CI wait** — only when the brief's `Required checks:` is present and not
     `none` (the orchestrator sends `none` under `pr.draft`, where CI has not
-    started). After step 9, wait once in the foreground for required CI on the
-    pushed head: `bash scripts/pipeline-verify.sh --issue <N> [--worktree <path>] -- bash -c 'SECONDS=0; until bash scripts/pipeline-vcs.sh pr-checks-required <PR>; rc=$?; [ "$rc" -ne 2 ] || [ "$SECONDS" -ge <budget> ]; do sleep 30; done; test "$rc" -eq 0'`,
-    with `<budget>` = `min(CI wait budget, Verify timeout/1000 - 30)` seconds.
+    started). After step 9, wait once in the foreground, with the explicit
+    `Verify timeout`, for required CI on the pushed head:
+    `bash scripts/pipeline-vcs.sh pr-checks-required <PR> --wait <budget>`,
+    `<budget>` = `min(CI wait budget, Verify timeout/1000 - 30)` seconds.
     Exit 0: green. Output holding `pr-checks-required: failed:` (the one real
     red build; a bare exit 1 is an unsupported provider or no checks): fix it
     in this dispatch, re-run only the tests covering the fix, commit, push

@@ -56,12 +56,12 @@ sleep-polling; never end your turn while a verify command is running.
      checks: it exits 2 while any of them is pending or missing (keep
      polling), exits 1 the moment one has definitively failed (stop early),
      and exits 0 only once every one of them passes:
-     `SECONDS=0; until bash scripts/pipeline-vcs.sh pr-checks-required <pr>; rc=$?; [ "$rc" -ne 2 ] || [ "$SECONDS" -ge <verify.ci_wait_s, default 900> ]; do sleep 30; done; test "$rc" -eq 0`
-     Your Bash call's exit status is that final `test "$rc" -eq 0`: FAIL
-     whenever the loop stopped for any reason other than every required
-     check passing -- an explicit failure or the wait budget elapsing while a
-     check was still pending or missing; fail closed. Put the time this saves
-     into acceptance criteria and edge cases instead.
+     `bash scripts/pipeline-vcs.sh pr-checks-required <pr> --wait <verify.ci_wait_s, default 900>`
+     It polls inside the one call (30s steps). Its exit status is the
+     result: FAIL whenever it is not 0 -- an explicit failure or the wait
+     budget elapsing while a check was still pending or missing; fail
+     closed. Put the time this saves into acceptance criteria and edge
+     cases instead.
    - `local` (including the empty-`required_checks` fallback above) — there is
      no CI to trust, but the developer already ran the full `verify:` list
      once before opening the PR (#195), so the targeted-tests-only rule above
