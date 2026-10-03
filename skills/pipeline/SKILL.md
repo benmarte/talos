@@ -821,7 +821,8 @@ Comment header: <HEADER>
 Comment templates dir: <COMMENTS_TMPL_DIR>
 Comments enabled: <COMMENTS_ENABLED>
 Targeted iteration: <VERIFY_TARGETED>
-Verify timeout: <VERIFY_TIMEOUT_MS> ms
+Required checks: <MERGE_REQUIRED_CHECKS — one per line, or "none">
+Verify timeout: <VERIFY_TIMEOUT_MS> ms; CI wait budget: <VERIFY_CI_WAIT_S> seconds
 Prior stage summary: <PRIOR_STAGE_SUMMARY>
 
 Run verify: commands through `bash scripts/pipeline-verify.sh` — it exports
@@ -851,13 +852,16 @@ Never fabricate a PR number. Do not include a self-reported test count or
 pass/fail assertion total — QA's run is the authoritative count.
 ```
 
+Under `VERIFY_QA_MODE` `local`, omit the `Required checks:` line and the `CI wait budget:` part.
+
 <!-- pr-draft:start -->
 **Draft PR (`PR_DRAFT = true`, #332):** add one line to the prompt above, right
 after `Verify timeout:`: `Open the PR as a DRAFT: bash scripts/pipeline-vcs.sh
 create-pr <branch> "$PR_TITLE" "$BODY_FILE" --draft` (the developer assigns
 `PR_TITLE` and `BODY_FILE` from heredocs, role profile step 7). Every developer dispatch
 (first pass and each fix round) gets it; a fix round pushes to the existing PR
-and opens nothing. Nothing else in the developer prompt changes.
+and opens nothing. Set `Required checks: none` (CI does not run until `ready-pr`).
+Nothing else in the developer prompt changes.
 
 <!-- pr-draft:end -->
 After developer returns:
@@ -1047,6 +1051,32 @@ Dispatch QA (and start the CI wait) ONLY when `RC` is 1 AND `STATE` is exactly
   Stop this issue for this pass and report `pr-is-draft not verified for #<N>`.
   Never read it as `ready` and never read it as `draft` (do not call `ready-pr`
   or `draft-pr` on it either).
+
+<!-- pr-draft:end -->
+**CI gate (#355).** Only when `VERIFY_QA_MODE` is `ci`, on the first QA dispatch
+or a retry after a fix round (never a Step 4 re-stamp), after the Draft guard and
+before Spawn, ask required CI first so QA is never dispatched on a red build:
+
+```bash
+out="$(bash scripts/pipeline-vcs.sh pr-checks-required <PR_NUMBER> 2>&1)"; rc=$?
+```
+
+| `rc` | `out` | Action |
+|---|---|---|
+| 0 or 2 | any | Spawn QA (2 is pending: QA waits) |
+| 1 | holds `pr-checks-required: failed:` | No QA: developer re-dispatch, below |
+| 1 | no such line (unsupported provider, no checks) | Spawn QA as today |
+
+Developer re-dispatch. Run the Step 3 budget check ("Budget stop") first.
+Then `bash scripts/pipeline-vcs.sh record-attempt <N> developer --pr <PR_NUMBER>`
+(non-zero: board "Blocked", stop), clear `pipeline:blocked` (Step 3), and
+re-dispatch the developer (Step 3c, fix-round shape) with the failing check names
+from `out` and the run URL from `pr-checks <PR_NUMBER>`. QA waits for its push.
+
+<!-- pr-draft:start -->
+With `PR_DRAFT = true`, first `draft-pr` and `label-pr --remove qa:pass`, and
+end the fix round with `ready-pr`, as in "QA failure or CI failure" in the Draft
+stage order.
 
 <!-- pr-draft:end -->
 Spawn:

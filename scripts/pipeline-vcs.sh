@@ -151,7 +151,10 @@
 #                                             any is pending/missing, exit 1
 #                                             on failure or an empty
 #                                             merge.required_checks (#205)
-#   merge-pr <n>                              Merge the PR
+#              <n> --wait <seconds>           ...poll (30s steps) until not 2 or
+#                                             <seconds> (digits, <= 3600) pass;
+#                                             github/github-api only (#355)
+#   merge-pr <n>                             Merge the PR
 #   update-branch <n>                         Update the PR's head branch by
 #                                             merging its base into it
 #                                             server-side (#289): GitHub
@@ -8325,8 +8328,59 @@ _vcs_draft_gate_dispatch() {
   exit 2
 }
 
+# pr-checks-required <n> --wait <seconds> (#355): poll the verb in one call, so
+# a worktree-isolated stage needs no inline `until ... sleep` loop. Same exit
+# codes and stderr lines as a single read; 2 only when still pending at the
+# deadline. The flag is validated for every provider (digits, at most 3600,
+# else exit 2 with usage); only github and github-api poll, the others drop it
+# and answer once, exactly as before. Without --wait nothing here runs. The
+# deadline is the larger of wall time and the summed nominal sleeps, so
+# TALOS_RETRY_SLEEP_SCALE=0 makes a test instant and still deterministic.
+_vcs_pr_checks_required_dispatch() {
+  local _w="" _keep=() _i=0 _a _start _slept=0 _el _left _step _scale _rc
+  while [ "$_i" -lt "${#ARGS[@]}" ]; do
+    _a="${ARGS[$_i]}"
+    if [ "$_a" = "--wait" ]; then
+      _i=$((_i + 1))
+      _w="${ARGS[$_i]-}"
+      case "$_w" in
+        ''|*[!0-9]*) _w="bad" ;;
+        *) [ "${#_w}" -gt 4 ] || [ "$_w" -gt 3600 ] && _w="bad" ;;
+      esac
+      if [ "$_w" = "bad" ]; then
+        echo "pipeline-vcs: pr-checks-required: --wait needs <seconds>, digits, at most 3600" >&2
+        echo "Usage: pipeline-vcs.sh pr-checks-required <n> [--wait <seconds>]" >&2
+        exit 2
+      fi
+    else
+      _keep+=("$_a")
+    fi
+    _i=$((_i + 1))
+  done
+  [ -z "$_w" ] && { _vcs_dispatch_provider; return; }
+  ARGS=("${_keep[@]+"${_keep[@]}"}")
+  if [ "$DRY_RUN" = "true" ] || { [ "$PROVIDER" != "github" ] && [ "$PROVIDER" != "github-api" ]; }; then
+    _vcs_dispatch_provider; return
+  fi
+  _scale="${TALOS_RETRY_SLEEP_SCALE:-1}"
+  case "$_scale" in ''|*[!0-9.]*) _scale=1 ;; esac
+  _start=$SECONDS
+  while :; do
+    ( _vcs_dispatch_provider ); _rc=$?
+    [ "$_rc" -ne 2 ] && break
+    _el=$((SECONDS - _start)); [ "$_slept" -gt "$_el" ] && _el=$_slept
+    _left=$((_w - _el))
+    [ "$_left" -le 0 ] && break
+    _step=30; [ "$_left" -lt 30 ] && _step=$_left
+    sleep "$(awk -v s="$_step" -v k="$_scale" 'BEGIN { print s * k }')"
+    _slept=$((_slept + _step))
+  done
+  return "$_rc"
+}
+
 _DISPATCH_RC=0
 case "$VERB" in
+  pr-checks-required) _vcs_pr_checks_required_dispatch ;;
   pr-is-draft|pr-ci-runs|ready-pr|draft-pr) _vcs_draft_gate_dispatch ;;
   create-pr) if [ "$_PR_DRAFT" = "true" ]; then _vcs_draft_gate_dispatch; else _vcs_dispatch_provider; fi ;;
   *) _vcs_dispatch_provider ;;

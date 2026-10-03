@@ -58,12 +58,13 @@ assert_contains "$skill_flat" 'tail -1' "spend block: only the last upsert line 
 # ── (b) wiring sites ───────────────────────────────────────────────────────
 # One canonical sentence, word for word, before each developer fix-round
 # record-attempt: the merge-base task, the draft round, the draft QA/CI failure
-# round, QA, reviewer, security and adversarial. Counted, and each site must
-# have it within the 6 lines up to its own record-attempt line.
+# round, QA, reviewer, security, adversarial and the Step 3d CI gate (#355).
+# Counted, and each site must have it within the 6 lines up to its own
+# record-attempt line.
 CANON='Run the Step 3 budget check ("Budget stop") first.'
-assert_eq "7" "$(grep -cF -- "$CANON" "$SKILL_MD")" "the canonical budget-check sentence appears exactly 7 times"
+assert_eq "8" "$(grep -cF -- "$CANON" "$SKILL_MD")" "the canonical budget-check sentence appears exactly 8 times"
 sites="$(grep -nE 'record-attempt <N> (developer|<that-role>|qa|reviewer|security|adversarial)' "$SKILL_MD" | cut -d: -f1)"
-assert_eq "7" "$(printf '%s\n' "$sites" | wc -l | tr -d ' ')" "seven fix-round record-attempt sites"
+assert_eq "8" "$(printf '%s\n' "$sites" | wc -l | tr -d ' ')" "eight fix-round record-attempt sites"
 for n in $sites; do
   window="$(sed -n "$((n > 6 ? n - 6 : 1)),${n}p" "$SKILL_MD")"
   assert_contains "$window" "$CANON" "SKILL.md:$n record-attempt is preceded by the canonical budget-check sentence"

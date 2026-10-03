@@ -51,7 +51,8 @@ Comment header: <HEADER>
 Comment templates dir: <COMMENTS_TMPL_DIR>
 Comments enabled: <COMMENTS_ENABLED>
 Targeted iteration: <VERIFY_TARGETED>
-Verify timeout: <VERIFY_TIMEOUT_MS> ms
+Required checks: <MERGE_REQUIRED_CHECKS — one per line, or "none">
+Verify timeout: <VERIFY_TIMEOUT_MS> ms; CI wait budget: <VERIFY_CI_WAIT_S> seconds
 Prior stage summary: <PRIOR_STAGE_SUMMARY>
 
 Run verify: commands through `bash scripts/pipeline-verify.sh` — it exports
@@ -80,6 +81,8 @@ Final message (2-3 lines): PR URL + what was implemented + verify outcome.
 Never fabricate a PR number. Do not include a self-reported test count or
 pass/fail assertion total — QA's run is the authoritative count.
 ```
+
+Under `VERIFY_QA_MODE` `local`, omit the `Required checks:` line and the `CI wait budget:` part.
 
 After developer returns:
 - **PR opened:**
@@ -165,6 +168,26 @@ After developer returns:
 Compute header: `HEADER="${COMMENTS_HEADER_TPL//\{role\}/qa}"`
 
 Reminder: run `hooks.pre_dispatch` (see Harness compatibility above) before building this stage's prompt.
+
+**CI gate (#355).** Only when `VERIFY_QA_MODE` is `ci`, on the first QA dispatch
+or a retry after a fix round (never a Step 4 re-stamp), after the Draft guard and
+before Spawn, ask required CI first so QA is never dispatched on a red build:
+
+```bash
+out="$(bash scripts/pipeline-vcs.sh pr-checks-required <PR_NUMBER> 2>&1)"; rc=$?
+```
+
+| `rc` | `out` | Action |
+|---|---|---|
+| 0 or 2 | any | Spawn QA (2 is pending: QA waits) |
+| 1 | holds `pr-checks-required: failed:` | No QA: developer re-dispatch, below |
+| 1 | no such line (unsupported provider, no checks) | Spawn QA as today |
+
+Developer re-dispatch. Run the Step 3 budget check ("Budget stop") first.
+Then `bash scripts/pipeline-vcs.sh record-attempt <N> developer --pr <PR_NUMBER>`
+(non-zero: board "Blocked", stop), clear `pipeline:blocked` (Step 3), and
+re-dispatch the developer (Step 3c, fix-round shape) with the failing check names
+from `out` and the run URL from `pr-checks <PR_NUMBER>`. QA waits for its push.
 
 Spawn:
 

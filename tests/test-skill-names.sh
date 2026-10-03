@@ -126,15 +126,16 @@ assert_rule_before_all "$TALOS_ROOT/agents/developer.md" \
 assert_rule_before_all "$TALOS_ROOT/agents/qa.md" 'Check `verify.qa_mode`' \
   "agents/qa.md: foreground rule precedes verify/CI-wait instruction"
 
-# The QA prompt's CI-wait poll must be a literal, single foreground command
-# (an `until ... do sleep N; done` loop with a deadline) -- not left for the
-# agent to improvise, per the #205 scope addition after PR #206 stalled.
-# This procedure lives in agents/qa.md (#179); SKILL.md's QA task prompt no
-# longer restates it.
-assert_contains "$(cat "$TALOS_ROOT/agents/qa.md")" "until" \
-  "agents/qa.md writes the CI-wait loop out literally"
-assert_contains "$(cat "$TALOS_ROOT/agents/qa.md")" "sleep 30" \
-  "agents/qa.md CI-wait loop has a literal sleep interval"
+# The QA prompt's CI-wait poll must be a literal, single foreground command --
+# not left for the agent to improvise, per the #205 scope addition after PR
+# #206 stalled. Since #355 it is one `pr-checks-required <pr> --wait <s>` call
+# (the verb polls in 30s steps itself), because worktree-isolated stages could
+# not run an inline `until ... sleep` loop. This procedure lives in
+# agents/qa.md (#179); SKILL.md's QA task prompt no longer restates it.
+assert_contains "$(cat "$TALOS_ROOT/agents/qa.md")" "pr-checks-required <pr> --wait" \
+  "agents/qa.md writes the CI-wait call out literally"
+assert_contains "$(cat "$TALOS_ROOT/agents/qa.md")" "30s steps" \
+  "agents/qa.md CI-wait call states its poll interval"
 
 # ── Mergeability pre-CI check before QA waits on CI (#214) ─────────────────
 # A CONFLICTING PR gets no `pull_request` CI run scheduled; QA must check
