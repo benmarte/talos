@@ -91,6 +91,7 @@ _KNOWN_CONFIG_KEYS_JSON='[
   "agents.roles.*.effort", "agents.roles.*.restamp_effort",
   "limits.max_fix_attempts", "limits.max_total_dispatches",
   "limits.max_retries",
+  "limits.tokens_per_issue", "limits.warn_at", "spend.comment",
   "pr.draft",
   "status.enabled", "status.file", "status.log_heading",
   "status.resume_heading", "status.fragments_dir", "status.archive_dir",
@@ -441,6 +442,67 @@ for _int_key in ("verify.timeout_ms", "verify.ci_wait_s", "hooks.timeout_s", "no
         else:
             flat[_int_key] = _validated
 
+# limits.tokens_per_issue / limits.warn_at / spend.comment (#378): the
+# per-issue spend guard's config. Same fail-closed-to-absent shape as
+# _validate_int_key (an invalid value warns once on stderr and returns None,
+# so the caller's default applies), but none of these fits it: 0 is the
+# silent "guard off" value for tokens_per_issue, warn_at is a decimal in
+# (0, 1], and spend.comment is a strict bool. The defaults (empty / 0.8 /
+# true) are the CALLER's -- the dump never injects them. Defined identically
+# in the --dump process and the single-key process (separate python3 spawns,
+# like _validate_int_key).
+def _validate_spend_key(key, value):
+    if value is None:
+        return value
+    if key == "limits.tokens_per_issue":
+        try:
+            if isinstance(value, bool) or (isinstance(value, float) and value != int(value)):
+                raise ValueError
+            iv = int(value)
+            if iv == 0:
+                return None  # explicit off: silent, same as unset
+            if iv < 0:
+                raise ValueError
+            return iv
+        except (TypeError, ValueError, OverflowError):
+            sys.stderr.write(
+                "pipeline-config: %s must be a positive integer (tokens) -- "
+                "got: %r -- treating the guard as off\n" % (key, value)
+            )
+            return None
+    if key == "limits.warn_at":
+        try:
+            if isinstance(value, bool):
+                raise ValueError
+            fv = float(value)
+            if not (0 < fv <= 1):  # also rejects nan; inf is > 1
+                raise ValueError
+            return fv
+        except (TypeError, ValueError, OverflowError):
+            sys.stderr.write(
+                "pipeline-config: %s must be a number greater than 0 and at "
+                "most 1 -- got: %r -- using default\n" % (key, value)
+            )
+            return None
+    if key == "spend.comment":
+        if not isinstance(value, bool):
+            sys.stderr.write(
+                "pipeline-config: %s must be true or false -- got: %r -- "
+                "using default\n" % (key, value)
+            )
+            return None
+        return value
+    return value
+
+for _spend_key in ("limits.tokens_per_issue", "limits.warn_at", "spend.comment"):
+    if _spend_key in flat:
+        _validated = _validate_spend_key(_spend_key, flat[_spend_key])
+        if _validated is None:
+            # Same as an absent key: the caller applies its own default.
+            del flat[_spend_key]
+        else:
+            flat[_spend_key] = _validated
+
 # agents.restamp_model / agents.roles.<role>.restamp_model derived default
 # (#258): role restamp -> global restamp -> agents.model, mirroring
 # verify.qa_mode's derived-default pattern above -- a re-stamp dispatch
@@ -735,6 +797,58 @@ def _validate_int_key(key, value):
         )
         return None
 
+# limits.tokens_per_issue / limits.warn_at / spend.comment (#378): the
+# per-issue spend guard's config. Same fail-closed-to-absent shape as
+# _validate_int_key (an invalid value warns once on stderr and returns None,
+# so the caller's default applies), but none of these fits it: 0 is the
+# silent "guard off" value for tokens_per_issue, warn_at is a decimal in
+# (0, 1], and spend.comment is a strict bool. The defaults (empty / 0.8 /
+# true) are the CALLER's -- the dump never injects them. Defined identically
+# in the --dump process and the single-key process (separate python3 spawns,
+# like _validate_int_key).
+def _validate_spend_key(key, value):
+    if value is None:
+        return value
+    if key == "limits.tokens_per_issue":
+        try:
+            if isinstance(value, bool) or (isinstance(value, float) and value != int(value)):
+                raise ValueError
+            iv = int(value)
+            if iv == 0:
+                return None  # explicit off: silent, same as unset
+            if iv < 0:
+                raise ValueError
+            return iv
+        except (TypeError, ValueError, OverflowError):
+            sys.stderr.write(
+                "pipeline-config: %s must be a positive integer (tokens) -- "
+                "got: %r -- treating the guard as off\n" % (key, value)
+            )
+            return None
+    if key == "limits.warn_at":
+        try:
+            if isinstance(value, bool):
+                raise ValueError
+            fv = float(value)
+            if not (0 < fv <= 1):  # also rejects nan; inf is > 1
+                raise ValueError
+            return fv
+        except (TypeError, ValueError, OverflowError):
+            sys.stderr.write(
+                "pipeline-config: %s must be a number greater than 0 and at "
+                "most 1 -- got: %r -- using default\n" % (key, value)
+            )
+            return None
+    if key == "spend.comment":
+        if not isinstance(value, bool):
+            sys.stderr.write(
+                "pipeline-config: %s must be true or false -- got: %r -- "
+                "using default\n" % (key, value)
+            )
+            return None
+        return value
+    return value
+
 # agents.restamp_model / agents.roles.<role>.restamp_model derived default
 # (#258): role restamp -> global restamp -> agents.model. Mirrors the
 # --dump path's identical block above -- see that copy's comment for why
@@ -779,6 +893,7 @@ elif key.startswith("agents.roles.") and key.endswith(".restamp_effort"):
     )
 
 value = _validate_int_key(key, value)
+value = _validate_spend_key(key, value)
 
 if value is None:
     print(default, end="")
