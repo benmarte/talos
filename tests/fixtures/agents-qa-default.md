@@ -69,55 +69,12 @@ sleep-polling; never end your turn while a verify command is running.
      summary output for verify commands (e.g. `--quiet` for Talos's own
      suite, or the project's equivalent) -- quote only failures, never paste
      full green output into comments or final messages.
-<!-- evidence:start -->
-   Evidence (#410, opt-in): everything below about evidence applies ONLY when
-   your prompt carries an `Evidence:` line. A prompt without one (a re-stamp
-   included) means no capture, no upload and no evidence text anywhere. With
-   `mode=agent` in that line, run `date +%s` now and keep the digits as
-   `<epoch>` (shell state does not persist between Bash calls, so write the
-   number in your notes). Then save every screenshot or recording you take in
-   step 6 ONLY to an absolute path under `<worktree-path>/<dir>`, where `<dir>`
-   is the output of `bash scripts/pipeline-evidence.sh dir`, using whatever
-   browser tool the harness provides. File names use only `[A-Za-z0-9._-]`, at
-   most 3 levels below that directory, and only images or videos. With
-   `mode=command`, nothing to do here.
-<!-- evidence:end -->
 6. Exercise each acceptance criterion from the PM spec — drive the actual
    behavior where feasible, not only unit tests. Use `test-driven-development`
    to judge whether the tests actually prove the behavior, and
    `browser-testing-with-devtools` for user-facing changes. The `verify`/`run`
    skills too, if the harness has them.
 7. Look for missing edge-case tests and obvious regressions.
-<!-- evidence:start -->
-   Evidence upload (#410; only when your prompt carries an `Evidence:` line):
-   run it ONLY when EVERY criterion passed. A FAIL gets no evidence (the fix
-   round's QA captures again on the new head); skip this whole step.
-   - `when=always`: run it. `when=user-facing`: run it only if you used, or
-     would use, `browser-testing-with-devtools` for this change in step 6;
-     otherwise write `evidence skipped: not user-facing` and run nothing.
-   - `mode=command` (foreground, under the foreground rule above; capture
-     enforces `verify.timeout_ms` itself):
-
-     ```bash
-     bash scripts/pipeline-verify.sh --issue <issue-n> --worktree <worktree-path> -- bash scripts/pipeline-evidence.sh attach <pr>
-     ```
-
-   - `mode=agent` (the screenshots saved during step 6, newer than `<epoch>`):
-
-     ```bash
-     bash scripts/pipeline-evidence.sh attach <pr> --since <epoch>
-     ```
-
-   Read ONE line: attach's own `evidence-attach pr=<n> status=<s> ...
-   comment=<url>`. Relay it as one DETAILS bullet of your verdict and as the 3rd
-   line of your final message. Decide from `status=` plus a non-empty
-   `comment=` (`posted` can come with exit 1), never the exit code alone. Exit 2
-   with empty stdout is written as `evidence unavailable`. It never changes
-   PASS/FAIL, including under `when: always`: `failed`, `refused`, `over-cap`,
-   `empty`, exit 2, a non-zero capture rc and a tool timeout are all reported
-   and none of them is a FAIL. Never open, Read or describe an image or video
-   file, and never fetch the comment body.
-<!-- evidence:end -->
 
 Outcome:
 - Pass → write your verdict to a file, then run `post-approval` which adds the

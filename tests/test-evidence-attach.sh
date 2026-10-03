@@ -12,6 +12,8 @@ make_sandbox || exit 1
 
 EV="$TALOS_ROOT/scripts/pipeline-evidence.sh"
 assert_file_exists "$EV" "pipeline-evidence.sh exists"
+# the per-file cap is ONE constant in the script (MiB): read it, never hard-code it
+FILE_MB="$(sed -n 's/^_EVIDENCE_FILE_MB=\([0-9][0-9]*\).*/\1/p' "$EV")"
 
 export TMPDIR="$SANDBOX/tmp"
 mkdir -p "$TMPDIR"
@@ -293,7 +295,7 @@ assert_eq "0" "$RC" "dry-run: exit 0"
 assert_eq "" "$(gh_log)" "dry-run: no gh call"
 assert_file_absent "$REPO/SENTINEL" "dry-run: evidence.command did not run"
 assert_contains "$(out)" "[dry-run] capture: skipped" "dry-run: capture is skipped"
-assert_contains "$(out)" "caps: files<=10 mb<=20 per-file<=10 (dir: ev)" "dry-run: the caps line uses the shared defaults"
+assert_contains "$(out)" "caps: files<=10 mb<=20 per-file<=$FILE_MB (dir: ev)" "dry-run: the caps line uses the shared defaults"
 assert_contains "$(out)" "gh pr comment 7 --repo" "dry-run: plans the post"
 assert_contains "$(out)" "--attach ./shot-a.png --attach ./shot-b.png --attach ./0-run.webm" "dry-run: the --attach list"
 assert_not_contains "$(out)" "evidence-attach pr=" "dry-run: no status line"
