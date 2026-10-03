@@ -168,6 +168,12 @@ TALOS_PY_Gp4tR7mX1Ca
   assert_eq "0" "$RC" "$L: --marker budget is accepted"
   assert_eq "Spend so far: 10${NL}${NL}<!-- talos:budget -->" "$(store_body 5001)" "$L: the budget marker is appended"
 
+  # evidence is a TALOS_MARKERS member too (#405)
+  reset
+  run upsert-pr-comment 7 --marker evidence --body-file "$B"
+  assert_eq "0" "$RC" "$L: --marker evidence is accepted"
+  assert_eq "Spend so far: 10${NL}${NL}<!-- talos:evidence -->" "$(store_body 5001)" "$L: the evidence marker is appended"
+
   # ── pagination: the match is on a later page ──────────────────────────────
   reset
   if [ "$P" = "github" ]; then

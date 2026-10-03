@@ -153,6 +153,7 @@ TALOS_MARKERS=(
   talos:worktree-sweep
   talos:spend
   talos:budget
+  talos:evidence
 )
 
 # ── talos_contract_check_label_length ────────────────────────────────────
