@@ -552,7 +552,7 @@ catch bad stage output, but nothing gates the orchestrator itself.
 | Notifications / comments / board / file mode | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Native AGENTS.md orchestration | only without a `CLAUDE.md`, or via `@AGENTS.md` | native | native | via `context.fileName` or an import | native (cumulative with `GEMINI.md`) | depends on the CLI |
 
-(The notifications / comments / board / file mode row is harness-independent — plain bash. In the wizard row, any agent starts the wizard by reading its playbook; Claude Code also has the `/pipeline-setup` command. The wizard offers all six runner ids, with no default outside Claude Code, and writes the `AGENTS.md` block on its first run and on every re-run.)
+(The notifications / comments / board / file mode row is harness-independent — plain bash. In the wizard row, any agent starts the wizard by reading its playbook; Claude Code also has the `/pipeline-setup` command. The wizard offers all six runner ids, with no default outside Claude Code, and offers to add the `AGENTS.md` block on its first run and on every re-run, writing it only when you say yes; `install.sh <repo>` writes it unconditionally unless `--no-agents-md`.)
 
 ### Install and start, per harness
 

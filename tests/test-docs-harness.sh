@@ -3,7 +3,8 @@
 # part of #353). Structural checks only: stale phrases are gone, every
 # `## Setup:` section holds an install command and a start line, the feature
 # matrix has no "manual config" cell, and the per-harness facts the epic's
-# sub-tasks merged are written down. The tests only read files.
+# sub-tasks merged are written down. The tests only read files (the negative
+# controls feed planted text to the same helpers through pipes).
 #
 # Every phrase check runs on whitespace-flattened text: a claim wrapped over
 # two lines (`GEMINI.md takes` / `precedence`) would otherwise pass a
@@ -17,13 +18,43 @@ GUIDE="$TALOS_ROOT/docs/user-guide.md"
 
 flat() { tr '\n' ' ' | tr -s ' '; }
 
-# The text of the `## Setup: <name>` section: from its heading to the next `## `.
-setup_section() {  # $1=file $2=name after "## Setup: "
-  awk -v h="## Setup: $2" '
+# The text of the `## Setup: <name>` section, read from stdin: from its heading
+# to the next `## `.
+setup_section() {  # $1=name after "## Setup: "
+  awk -v h="## Setup: $1" '
     index($0, h) == 1 { s = 1; next }
     s && /^## / { exit }
     s { print }
-  ' "$1"
+  '
+}
+
+# Predicates shared by the real checks and the negative controls at the bottom:
+# a control that planted text no longer trips one of these goes red.
+contains() { case "$1" in *"$2"*) return 0 ;; esac; return 1; }  # $1=text $2=literal
+
+check_has() {  # $1=text $2=literal $3=label
+  if contains "$1" "$2"; then pass "$3"; else fail "$3" "missing: $2"; fi
+}
+
+# True when the stale phrase is in the (already flattened) text, as written or
+# with backticks removed, so a claim written as `GEMINI.md` takes precedence is
+# found too. (tr, not ${var//x/}: bash 3.2 is quadratic on a file-sized string.)
+stale_in() {  # $1=flattened text $2=literal phrase
+  contains "$1" "$2" && return 0
+  contains "$(printf '%s' "$1" | tr -d '`')" "$2"
+}
+
+# True when the (unflattened) text has a table row for the harness: the name
+# is the whole first cell, or starts it ("generic or any unknown name"). A plain
+# substring check is vacuous for short names: "pipeline" contains "pi".
+has_row() {  # $1=text $2=harness name
+  printf '%s\n' "$1" | grep -Eq "^\| $2( |\|)"
+}
+
+# True when the flattened text names the `/pipeline` command itself: not
+# `/pipeline-setup`, and not the `.../skills/pipeline/SKILL.md` path.
+has_pipeline_command() {  # $1=flattened text
+  printf '%s' "$1" | grep -Eq '(^|[^a-z.])/pipeline([^-a-z/]|$)'
 }
 
 # The first table after `## Harness feature matrix` (the one
@@ -48,17 +79,16 @@ per_harness_section() {  # $1=file
 
 readme_flat="$(flat < "$README")"
 guide_flat="$(flat < "$GUIDE")"
-readme_nobt="$(printf '%s' "$readme_flat" | tr -d '`')"
-guide_nobt="$(printf '%s' "$guide_flat" | tr -d '`')"
 
 # ── Stale claims are gone (both files) ──────────────────────────────────────
-# Searched both as written and with backticks removed, so a claim written as
-# `GEMINI.md` takes precedence is found too.
 check_absent() {  # $1=label $2=literal phrase
-  assert_not_contains "$readme_flat" "$2" "README.md has no '$1'"
-  assert_not_contains "$guide_flat" "$2" "docs/user-guide.md has no '$1'"
-  assert_not_contains "${readme_nobt}" "$2" "README.md has no '$1' (backticks removed)"
-  assert_not_contains "${guide_nobt}" "$2" "docs/user-guide.md has no '$1' (backticks removed)"
+  for pair in "README.md|$readme_flat" "docs/user-guide.md|$guide_flat"; do
+    if stale_in "${pair#*|}" "$2"; then
+      fail "${pair%%|*} has no '$1'" "unexpected: $2"
+    else
+      pass "${pair%%|*} has no '$1'"
+    fi
+  done
 }
 check_absent 'follow .claude/skills/pipeline/SKILL.md' 'follow .claude/skills/pipeline/SKILL.md'
 check_absent 'manual config' 'manual config'
@@ -84,15 +114,16 @@ SETUP_SECTIONS=(
 START_LINE='Read ~/.talos/skills/pipeline/SKILL.md and follow it'
 for entry in "${SETUP_SECTIONS[@]}"; do
   name="${entry%%|*}"; harness="${entry##*|}"
-  sec="$(setup_section "$GUIDE" "$name" | flat)"
+  sec="$(setup_section "$name" < "$GUIDE" | flat)"
   if [ -z "$sec" ]; then fail "guide has a '## Setup: $name' section"; continue; fi
-  assert_contains "$sec" 'install.sh' "Setup: $name holds an install command"
-  assert_contains "$sec" "install.sh --global --harness $harness" \
+  check_has "$sec" 'install.sh' "Setup: $name holds an install command"
+  check_has "$sec" "install.sh --global --harness $harness" \
     "Setup: $name uses install.sh --global --harness $harness"
   if [ "$harness" = "claude" ]; then
-    assert_contains "$sec" '/pipeline' "Setup: $name has a start line (/pipeline)"
+    if has_pipeline_command "$sec"; then pass "Setup: $name has a start line (/pipeline)"
+    else fail "Setup: $name has a start line (/pipeline)" "no /pipeline command"; fi
   else
-    assert_contains "$sec" "$START_LINE" "Setup: $name has the start line"
+    check_has "$sec" "$START_LINE" "Setup: $name has the start line"
   fi
 done
 
@@ -131,13 +162,15 @@ assert_contains "$agents_row" '@AGENTS.md' "AGENTS.md row: Claude Code needs an 
 assert_contains "$agents_row" 'context.fileName' "AGENTS.md row: Gemini CLI uses context.fileName or an import"
 
 # ── The per-harness subsection of the guide ─────────────────────────────────
-per="$(per_harness_section "$GUIDE" | flat)"
+per_raw="$(per_harness_section "$GUIDE")"
+per="$(printf '%s' "$per_raw" | flat)"
 if [ -z "$per" ]; then
   fail "guide has a '### Install and start, per harness' subsection"
 else
   pass "guide has a '### Install and start, per harness' subsection"
   for h in 'Claude Code' 'Codex CLI' 'Gemini CLI' 'Antigravity' 'pi' 'Cursor' 'OpenCode' 'generic'; do
-    assert_contains "$per" "$h" "per-harness section covers $h"
+    if has_row "$per_raw" "$h"; then pass "per-harness table has a row for $h"
+    else fail "per-harness table has a row for $h"; fi
   done
   assert_contains "$per" 'VERIFIED' "per-harness section lists verified facts"
   assert_contains "$per" 'UNVERIFIED' "per-harness section lists unverified facts"
@@ -155,12 +188,12 @@ assert_not_contains "$guide_claims" 'Claude Code reads ~/.agents/skills' "guide 
 assert_not_contains "$guide_claims" 'Claude Code reads `~/.agents/skills`' "guide never claims Claude Code reads ~/.agents/skills (code span)"
 
 # ── Antigravity and pi text ─────────────────────────────────────────────────
-ag="$(setup_section "$GUIDE" 'Google Antigravity' | flat)"
+ag="$(setup_section 'Google Antigravity' < "$GUIDE" | flat)"
 assert_contains "$ag" 'both read' "Antigravity: AGENTS.md and GEMINI.md are both read"
 assert_contains "$ag" 'cumulative' "Antigravity: cumulative"
 ag_readme="$(awk '/^\*\*Google Antigravity:\*\*/ {s=1} s && /^\*\*Local models:\*\*/ {exit} s' "$README" | flat)"
 assert_contains "$ag_readme" 'cumulative' "README Antigravity paragraph says cumulative"
-pi_sec="$(setup_section "$GUIDE" 'pi' | flat)"
+pi_sec="$(setup_section 'pi' < "$GUIDE" | flat)"
 assert_contains "$pi_sec" '~/.agents/skills' "Setup: pi relies on the pointer skills in ~/.agents/skills"
 
 # ── Detection rule, override, writes ────────────────────────────────────────
@@ -180,18 +213,38 @@ assert_contains "$guide_flat" 'skills/resume/SKILL.md' "guide keeps the skills/r
 assert_contains "$readme_flat" '~/.talos/skills/resume/SKILL.md' "README points other agents at ~/.talos/skills/resume/SKILL.md"
 assert_contains "$readme_flat" 'TALOS_<rand>' "README adapter example points at the TALOS_<rand> heredoc form"
 
-# ── Negative control: the checks above can go red ───────────────────────────
-planted="$(printf 'Run it: follow .claude/skills/pipeline/SKILL.md\nGEMINI.md takes\nprecedence in Antigravity\n' | flat)"
-case "$planted" in
-  *'follow .claude/skills/pipeline/SKILL.md'*) pass "negative control: planted stale start line is detected" ;;
-  *) fail "negative control: planted stale start line is detected" ;;
-esac
-case "$planted" in
-  *'GEMINI.md takes precedence'*) pass "negative control: a wrapped precedence claim is detected after flattening" ;;
-  *) fail "negative control: a wrapped precedence claim is detected after flattening" ;;
-esac
-planted_sec="$(printf '## Setup: x\nno install here\n## Next\ninstall.sh\n' > "${TMPDIR:-/tmp}/docs-harness-planted.$$"; setup_section "${TMPDIR:-/tmp}/docs-harness-planted.$$" x | flat)"
-rm -f "${TMPDIR:-/tmp}/docs-harness-planted.$$"
-assert_not_contains "$planted_sec" 'install.sh' "negative control: a section without install.sh is detected"
+# ── Negative controls: the helpers above go red on planted text ─────────────
+# Each runs the same function the real checks use. Break the function and the
+# control fails with it.
+planted="$(printf 'Run it: follow .claude/skills/pipeline/SKILL.md\nThe `GEMINI.md` takes\nprecedence in Antigravity\n' | flat)"
+if stale_in "$planted" 'follow .claude/skills/pipeline/SKILL.md'; then
+  pass "negative control: stale_in finds a planted stale start line"
+else fail "negative control: stale_in finds a planted stale start line"; fi
+if stale_in "$planted" 'GEMINI.md takes precedence'; then
+  pass "negative control: stale_in finds a wrapped, backticked precedence claim"
+else fail "negative control: stale_in finds a wrapped, backticked precedence claim"; fi
+if stale_in "$planted" 'v1.20.3'; then
+  fail "negative control: stale_in stays quiet on text without the phrase"
+else pass "negative control: stale_in stays quiet on text without the phrase"; fi
+
+planted_sec="$(printf '## Setup: x\nno install here\n## Setup: y\ninstall.sh\n' | setup_section x | flat)"
+if contains "$planted_sec" 'install.sh'; then
+  fail "negative control: setup_section stops at the next section" "leaked: $planted_sec"
+else pass "negative control: setup_section stops at the next section"; fi
+
+planted_table="$(printf '| Harness | x |\n|---|---|\n| Claude Code | a |\n| pipeline note | b |\n')"
+if has_row "$planted_table" 'pi'; then
+  fail "negative control: has_row does not match pi inside pipeline"
+else pass "negative control: has_row does not match pi inside pipeline"; fi
+if has_row "$planted_table" 'Claude Code'; then
+  pass "negative control: has_row finds a real row"
+else fail "negative control: has_row finds a real row"; fi
+
+if has_pipeline_command 'run ~/.talos/skills/pipeline/SKILL.md or /pipeline-setup'; then
+  fail "negative control: has_pipeline_command ignores the playbook path and /pipeline-setup"
+else pass "negative control: has_pipeline_command ignores the playbook path and /pipeline-setup"; fi
+if has_pipeline_command 'then run `/pipeline`.'; then
+  pass "negative control: has_pipeline_command finds /pipeline"
+else fail "negative control: has_pipeline_command finds /pipeline"; fi
 
 finish
