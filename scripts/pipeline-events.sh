@@ -55,7 +55,14 @@
 #          recorded tokens prints `total unrecorded`. The breakdown is sorted
 #          by tokens descending and cut with `…` so the line stays <= 200
 #          characters. Missing log or no matching events prints nothing.
-#          A value-taking option with no value exits 2 with usage.
+#          A value-taking option with no value exits 2 with usage, and so
+#          does an --issue or --pr value that is not digits only (#393).
+#          The number, duration and role formatters --line uses live in
+#          scripts/pipeline-spend-format.py, imported by explicit path; a
+#          missing module prints one stderr note and an empty stdout, exit 0.
+#          A token count that is not a finite non-negative number (a string,
+#          boolean, negative, Infinity, NaN) is unrecorded in every cost form,
+#          and --json is always strict JSON.
 #
 # A malformed line (not valid JSON, or not a JSON object) is skipped rather
 # than aborting the read; the count of skipped lines is reported once on
@@ -206,9 +213,21 @@ cmd_cost() {
 
   python3 - "$log_path" "$issue" "$json_mode" "$pr" <<'PYEOF'
 import json
+import math
 import sys
 
 log_path, issue, json_mode, pr = sys.argv[1:5]
+
+def _number(v):
+    """v when it is a finite non-negative number, else None (unrecorded): a
+    string, bool, negative, Infinity or NaN must neither crash the sums nor
+    reach --json as a bare NaN/Infinity (#393). Values stay as recorded, so a
+    valid log prints exactly as before."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
+        return None
+    if isinstance(v, float) and not math.isfinite(v):
+        return None
+    return v
 
 def matches(rec):
     if issue and str(rec.get("issue")) != issue:
@@ -241,10 +260,11 @@ with open(log_path, "r", errors="replace") as f:
             order.append(key)
         g = groups[key]
         g["events"] += 1
-        g["tokens"] += rec.get("tokens") or 0
-        g["tool_uses"] += rec.get("tool_uses") or 0
-        g["duration_s"] += rec.get("duration_s") or 0
-        if rec.get("tokens") is None:
+        tokens = _number(rec.get("tokens"))
+        g["tokens"] += tokens or 0
+        g["tool_uses"] += _number(rec.get("tool_uses")) or 0
+        g["duration_s"] += _number(rec.get("duration_s")) or 0
+        if tokens is None:
             g["unrecorded"] += 1
         if rec.get("verdict") in ("RESTAMP_PASS", "RESTAMP_FAIL"):
             g["restamp"] += 1
@@ -290,55 +310,6 @@ if skipped:
     print(f"pipeline-events: skipped {skipped} malformed line(s)", file=sys.stderr)
 PYEOF
 }
-
-# Python formatters for the one-line spend summary (#380), kept as one source
-# so a later command that prints a spend figure can prepend it to its own
-# python block instead of copying it: fmt_num (tokens), fmt_dur (seconds),
-# role_label / role_abbrev (head word and breakdown), as_count (null-safe
-# number). Integer arithmetic only: round half up, never round() (banker's)
-# or '%.2f' (float artefacts).
-IFS= read -r -d '' _EVENTS_PY_FORMAT <<'PYEOF' || true
-_ABBREV = {
-    "developer": "dev", "adversarial": "adv", "security": "sec",
-    "reviewer": "rev", "validator": "val", "planner": "plan",
-}
-
-def fmt_num(n):
-    """999 -> '999', 1499 -> '1k', 999500 -> '1.00M', 3411000 -> '3.41M'."""
-    n = int(n)
-    if n < 1000:
-        return str(n)
-    k = (n + 500) // 1000
-    if k < 1000:
-        return "%dk" % k
-    hundredths = (n + 5000) // 10000
-    return "%d.%02dM" % (hundredths // 100, hundredths % 100)
-
-def fmt_dur(secs):
-    """45 -> '45s', 125 -> '2m05s', 3720 -> '1h02m'."""
-    secs = int(secs)
-    if secs < 60:
-        return "%ds" % secs
-    if secs < 3600:
-        return "%dm%02ds" % (secs // 60, secs % 60)
-    return "%dh%02dm" % (secs // 3600, (secs % 3600) // 60)
-
-def role_label(role):
-    """The role as one safe token ([A-Za-z0-9_-] only), so a role name from
-    the log cannot add a line break or a talos:<word> marker."""
-    text = "".join(c if (c.isascii() and (c.isalnum() or c in "-_")) else "_" for c in str(role))
-    return text or "unknown"
-
-def role_abbrev(role):
-    label = role_label(role)
-    return _ABBREV.get(label, label)
-
-def as_count(v):
-    """A recorded non-negative number, or None (null and junk are unrecorded)."""
-    if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
-        return None
-    return int(v)
-PYEOF
 
 # cmd_cost_line ISSUE PR -- one summary line (#380): the newest
 # non-orchestrator event in scope (last in file order, since ts has only
@@ -435,9 +406,21 @@ if len(out) > MAX_LEN:
 print(out)
 PYEOF
 
-  python3 -c "import json, sys
-$_EVENTS_PY_FORMAT
-$src" "$log_path" "$issue" "$pr"
+  # The formatters live in pipeline-spend-format.py next to this script,
+  # imported lazily by explicit path (-I ignores PYTHONPATH and the script
+  # dir; -B writes no __pycache__ into the install). A missing or broken
+  # module prints one note and exits 0 with nothing on stdout: this verb
+  # feeds notifications and must never fail one.
+  python3 -I -B -c "import importlib, json, sys
+sys.path.insert(0, sys.argv[4])
+try:
+    _m = importlib.import_module('pipeline-spend-format')
+    fmt_num, fmt_dur, role_label, role_abbrev, as_count = (
+        _m.fmt_num, _m.fmt_dur, _m.role_label, _m.role_abbrev, _m.as_count)
+except Exception as e:
+    print('pipeline-events: pipeline-spend-format.py unavailable (%s); no spend line' % type(e).__name__, file=sys.stderr)
+    sys.exit(0)
+$src" "$log_path" "$issue" "$pr" "$SCRIPT_DIR"
 }
 
 # _usage -- the usage text, shared by the unknown-verb and bad-option exits.
@@ -458,6 +441,19 @@ _need_value() {
     _usage
     exit 2
   fi
+}
+
+# _need_digits OPTION VALUE -- exit 2 with usage unless VALUE is one or more
+# ASCII digits, so a hand-typed or hostile value never reaches a filter or a
+# printed line (#393).
+_need_digits() {
+  case "$2" in
+    ''|*[!0123456789]*)
+      echo "pipeline-events: $1 must be digits only" >&2
+      _usage
+      exit 2
+      ;;
+  esac
 }
 
 VERB="${1:-}"
@@ -496,8 +492,8 @@ case "$VERB" in
     issue="" pr="" json_mode="0" line_mode="0"
     while [ $# -gt 0 ]; do
       case "$1" in
-        --issue) _need_value "$1" $#; issue="$2"; shift 2 ;;
-        --pr) _need_value "$1" $#; pr="$2"; shift 2 ;;
+        --issue) _need_value "$1" $#; _need_digits "$1" "$2"; issue="$2"; shift 2 ;;
+        --pr) _need_value "$1" $#; _need_digits "$1" "$2"; pr="$2"; shift 2 ;;
         --json) json_mode="1"; shift ;;
         --line) line_mode="1"; shift ;;
         *) shift ;;
