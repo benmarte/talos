@@ -81,14 +81,14 @@ if [ "$PROVIDER" = "azure" ]; then
     echo "bootstrap-board: az CLI not found; cannot validate work item type states" >&2
     exit 1
   fi
-  _WTYPE_URLENC="$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$WTYPE")"
+  _WTYPE_URLENC="$(python3 -I -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$WTYPE")"
   _AZ_URI="${AZ_ORG%/}/$AZ_PROJECT/_apis/wit/workitemtypes/${_WTYPE_URLENC}?api-version=7.1"
   _AZ_RAW="$(az rest --method get --uri "$_AZ_URI" -o json 2>/dev/null)"
   if [ -z "$_AZ_RAW" ]; then
     echo "bootstrap-board: could not query states for work item type '$WTYPE' (az rest failed -- check vcs.azure.org_url/project and az login)" >&2
     exit 1
   fi
-  _AZ_STATES="$(printf '%s' "$_AZ_RAW" | python3 -c "
+  _AZ_STATES="$(printf '%s' "$_AZ_RAW" | python3 -I -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -129,7 +129,7 @@ if [ "$PROVIDER" = "gitlab" ]; then
     exit 1
   fi
   _GL_RAW="$(glab label list --output json 2>/dev/null)"
-  _GL_NAMES="$(printf '%s' "$_GL_RAW" | python3 -c "
+  _GL_NAMES="$(printf '%s' "$_GL_RAW" | python3 -I -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -186,7 +186,7 @@ echo "Bootstrapping board Status options for $OWNER project #$PROJECT_NUM"
 # matching field name client-side, same as pipeline-status.sh does.
 _board_fields_query_text() {
   local _proj_id_json
-  _proj_id_json="$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$1")"
+  _proj_id_json="$(python3 -I -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$1")"
   printf 'query{node(id:%s){... on ProjectV2{fields(first:50){nodes{... on ProjectV2SingleSelectField{id name options{id name color description}}}}}}}' \
     "$_proj_id_json"
 }
@@ -194,7 +194,7 @@ _board_fields_query_text() {
 # _board_query_body QUERY_TEXT -- wraps QUERY_TEXT as the {"query": ...} JSON
 # body curl needs, safely escaped via Python's json.dumps.
 _board_query_body() {
-  python3 -c "
+  python3 -I -c "
 import json, sys
 print(json.dumps({'query': sys.argv[1]}))
 " "$1"
@@ -220,7 +220,7 @@ _board_run_query() {
     _out="$(gh api graphql -f query="$_qtext" 2>"$_errfile")"
     _rc=$?
     if [ "$_rc" -ne 0 ]; then
-      python3 -c "
+      python3 -I -c "
 import json, sys
 print(json.dumps({'errors': [{'message': sys.argv[1] or 'gh api graphql failed'}]}))
 " "$(cat "$_errfile" 2>/dev/null)"
@@ -251,7 +251,7 @@ fi
 # on success (options JSON array element: {id,name,color,description}), or
 # nothing if the field isn't present.
 _board_parse_field() {
-  FNAME="$2" python3 -c "
+  FNAME="$2" python3 -I -c "
 import json, sys, os
 try:
     d = json.loads(sys.argv[1])
@@ -294,7 +294,7 @@ done
 
 _MISSING_JSON="$(EXISTING_JSON="$EXISTING_OPTIONS_JSON" \
   REQUIRED_NAMES="$(printf '%s\n' "${REQUIRED_MAPPED[@]}")" \
-  REQUIRED_COLORS="$(printf '%s\n' "${REQUIRED_COLORS[@]}")" python3 -c "
+  REQUIRED_COLORS="$(printf '%s\n' "${REQUIRED_COLORS[@]}")" python3 -I -c "
 import json, os
 existing = json.loads(os.environ['EXISTING_JSON'] or '[]')
 existing_names = {o.get('name') for o in existing}
@@ -304,7 +304,7 @@ missing = [{'name': n, 'color': c, 'description': ''}
            for n, c in zip(names, colors) if n not in existing_names]
 print(json.dumps(missing))
 ")"
-_MISSING_NAMES="$(printf '%s' "$_MISSING_JSON" | python3 -c "
+_MISSING_NAMES="$(printf '%s' "$_MISSING_JSON" | python3 -I -c "
 import json, sys
 for o in json.load(sys.stdin):
     print(o['name'])
@@ -329,7 +329,7 @@ fi
 #    ones are left for GitHub to assign. The re-fetch + compare below (step
 #    5) is the safety net for this working as intended, not a substitute for
 #    it.
-_DESIRED_OPTIONS_JSON="$(EXISTING_JSON="$EXISTING_OPTIONS_JSON" MISSING_JSON="$_MISSING_JSON" python3 -c "
+_DESIRED_OPTIONS_JSON="$(EXISTING_JSON="$EXISTING_OPTIONS_JSON" MISSING_JSON="$_MISSING_JSON" python3 -I -c "
 import json, os
 existing = json.loads(os.environ['EXISTING_JSON'] or '[]')
 missing = json.loads(os.environ['MISSING_JSON'] or '[]')
@@ -339,7 +339,7 @@ desired += missing
 print(json.dumps(desired))
 ")"
 
-_OPTIONS_LITERAL="$(printf '%s' "$_DESIRED_OPTIONS_JSON" | python3 -c "
+_OPTIONS_LITERAL="$(printf '%s' "$_DESIRED_OPTIONS_JSON" | python3 -I -c "
 import json, sys
 opts = json.load(sys.stdin)
 parts = []
@@ -353,7 +353,7 @@ for o in opts:
 print('[' + ','.join(parts) + ']')
 ")"
 
-_FIELD_ID_JSON="$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$FIELD_ID")"
+_FIELD_ID_JSON="$(python3 -I -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$FIELD_ID")"
 _MUTATION="mutation{updateProjectV2Field(input:{fieldId:$_FIELD_ID_JSON singleSelectOptions:$_OPTIONS_LITERAL}){projectV2Field{... on ProjectV2SingleSelectField{id}}}}"
 
 _MUT_RAW="$(_board_run_query "$_MUTATION")"
@@ -377,7 +377,7 @@ fi
 _VERIFY_DATA="$(_board_parse_field "$_VERIFY_RAW" "$STATUS_FIELD")"
 _VERIFY_OPTIONS_JSON="$(printf '%s' "$_VERIFY_DATA" | sed -n '2p')"
 
-_DRIFT="$(BEFORE_JSON="$EXISTING_OPTIONS_JSON" AFTER_JSON="$_VERIFY_OPTIONS_JSON" python3 -c "
+_DRIFT="$(BEFORE_JSON="$EXISTING_OPTIONS_JSON" AFTER_JSON="$_VERIFY_OPTIONS_JSON" python3 -I -c "
 import json, os
 before = json.loads(os.environ['BEFORE_JSON'] or '[]')
 after = json.loads(os.environ['AFTER_JSON'] or '[]')

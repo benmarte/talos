@@ -121,13 +121,18 @@ rm talos.pipeline.json
 # installs PyYAML) does not permanently lose coverage of this code path.
 # Without this test, a future regression in the json-fallback silently ships.
 printf 'merge:\n  method: rebase\n' > talos.pipeline.yml
-# Shadow 'yaml' with a stub module that raises ImportError on import.
-_fake_py="$SANDBOX/fake_yaml_modules"
+# Simulate PyYAML absent with a PATH shim: a python3 that runs with -S (no
+# site-packages), so `import yaml` fails while the stdlib (json) still works.
+# PYTHONPATH cannot do this any more: every embedded call is `python3 -I`,
+# which ignores PYTHON* env vars and the cwd (#395). PYTHONUSERBASE points the
+# user-site append at an empty dir so a developer's `pip --user` PyYAML cannot answer.
+_fake_py="$SANDBOX/no_site_bin"
 mkdir -p "$_fake_py"
-printf 'raise ImportError("yaml absent (simulated for test A6)")\n' > "$_fake_py/yaml.py"
+printf '#!/bin/sh\nexec "%s" -S "$@"\n' "$(command -v python3)" > "$_fake_py/python3"
+chmod +x "$_fake_py/python3"
 err_a6="$(PIPELINE_CONFIG="$SANDBOX/talos.pipeline.yml" \
           STUB_ISSUE_COMMENTS_JSON="$_attempt_json" \
-          PYTHONPATH="$_fake_py" \
+          PATH="$_fake_py:$PATH" PYTHONUSERBASE="$_fake_py/ub" \
           bash "$VCS" read-attempt 42 2>&1 >/dev/null)"
 assert_contains "$err_a6" "WARNING" \
   "A6(pyyaml-absent): YAML config without PyYAML triggers WARNING"

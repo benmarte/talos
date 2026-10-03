@@ -303,7 +303,7 @@ pre_dispatch() {
   local stdin_json
   stdin_json="$(TALOS_HOOK_ROLE="$role" TALOS_HOOK_ISSUE="$issue" TALOS_HOOK_PR="$pr" \
     TALOS_HOOK_REPO="$repo" TALOS_HOOK_BASE="$base_branch" TALOS_HOOK_WT="$worktree" \
-    python3 -c '
+    python3 -I -c '
 import json
 import os
 import sys
@@ -410,7 +410,7 @@ post_stage() {
   [ -n "$details_file" ] && [ -f "$details_file" ] && details="$(cat "$details_file")"
 
   local ts
-  ts="$(python3 -c 'import datetime; print(datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
+  ts="$(python3 -I -c 'import datetime; print(datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
 
   local attempt_stage="" attempt_count="" attempt_total=""
   if [ -n "$attempt" ]; then
@@ -429,7 +429,7 @@ post_stage() {
     TALOS_HOOK_ATTEMPT_TOTAL="$attempt_total" TALOS_HOOK_MODEL="$model" TALOS_HOOK_RUNNER="$runner" \
     TALOS_HOOK_DURATION="$duration_s" TALOS_HOOK_TOKENS="$tokens" TALOS_HOOK_TOOL_USES="$tool_uses" \
     TALOS_HOOK_CI_RUNS="$ci_runs" TALOS_HOOK_TS="$ts" \
-    python3 -c '
+    python3 -I -c '
 import json
 import os
 import sys

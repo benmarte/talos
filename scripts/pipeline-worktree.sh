@@ -145,7 +145,7 @@ verb="${1:-}"; shift || true
 # Emit "path<TAB>branch<TAB>id" for every worktree whose checked-out branch is
 # (fix|feat)/issue-<id>-...  Parses `git worktree list --porcelain`.
 _issue_worktrees() {
-  git worktree list --porcelain 2>/dev/null | python3 -c '
+  git worktree list --porcelain 2>/dev/null | python3 -I -c '
 import re, sys
 
 def emit(path, branch):
@@ -174,7 +174,7 @@ emit(path, branch)  # final block may have no trailing blank line
 # worktree-agent-<hash> — the naming the Claude Code harness uses for its own
 # agent-session worktrees. Same porcelain-parsing shape as _issue_worktrees.
 _harness_worktrees() {
-  git worktree list --porcelain 2>/dev/null | python3 -c '
+  git worktree list --porcelain 2>/dev/null | python3 -I -c '
 import re, sys
 
 def emit(path, branch):
@@ -609,7 +609,7 @@ _wt_open_pr_heads() {
   local raw
   raw="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" list-prs 2>/dev/null)" || return 1
   [ -z "$raw" ] && return 0
-  printf '%s' "$raw" | python3 -c '
+  printf '%s' "$raw" | python3 -I -c '
 import json, sys
 try:
     items = json.load(sys.stdin)
@@ -633,7 +633,7 @@ _wt_dir_size_kb() {
 
 # Human-readable size for a KB count (e.g. "512K", "3.4M", "1.2G").
 _wt_format_kb() {
-  python3 -c "
+  python3 -I -c "
 kb = $1
 units = ['K', 'M', 'G', 'T']
 f = float(kb)

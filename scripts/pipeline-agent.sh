@@ -317,7 +317,7 @@ EOF
   # U+009F, bytes c2 80..c2 9f; U+009B is a one-character CSI). Other UTF-8
   # text passes through. Only --resolve-all does this; --resolve stays as-is.
   _plain() {
-    printf '%s' "$1" | python3 -c '
+    printf '%s' "$1" | python3 -I -c '
 import re, sys
 sys.stdout.buffer.write(re.sub(rb"[\x00-\x1f\x7f]|\xc2[\x80-\x9f]", b"", sys.stdin.buffer.read()))'
   }

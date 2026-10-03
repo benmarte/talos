@@ -107,7 +107,7 @@ if [ -z "$_MB_FORBIDDEN_PATTERNS" ]; then
   exit 1
 fi
 
-_MB_UNION_PATHS="$(FORBIDDEN_PATTERNS="$_MB_FORBIDDEN_PATTERNS" python3 -c "
+_MB_UNION_PATHS="$(FORBIDDEN_PATTERNS="$_MB_FORBIDDEN_PATTERNS" python3 -I -c "
 import fnmatch, json, os, sys
 
 HARDCODED_NONUNIONABLE_PREFIXES = ('scripts/', 'tests/')
@@ -219,7 +219,7 @@ if [ -z "$_MB_VIEW_JSON" ]; then
   echo "pipeline-mergebase: could not fetch PR #$PR_N" >&2
   exit 1
 fi
-HEAD_REF="$(printf '%s' "$_MB_VIEW_JSON" | python3 -c "
+HEAD_REF="$(printf '%s' "$_MB_VIEW_JSON" | python3 -I -c "
 import json, sys
 try:
     print(json.load(sys.stdin).get('headRefName', ''))
@@ -297,7 +297,7 @@ if [ "$_MB_MERGE_RC" -eq 1 ]; then
   # validation and this point) can never let forbidden-shaped content
   # actually get union-merged. Caps the loop at the actual conflict count
   # (no unbounded input; comes straight from git).
-  _MB_NONUNION="$(CONFLICTS="$_MB_CONFLICTS" UNION_JSON="$_MB_UNION_PATHS" FORBIDDEN_PATTERNS="$_MB_FORBIDDEN_PATTERNS" python3 -c "
+  _MB_NONUNION="$(CONFLICTS="$_MB_CONFLICTS" UNION_JSON="$_MB_UNION_PATHS" FORBIDDEN_PATTERNS="$_MB_FORBIDDEN_PATTERNS" python3 -I -c "
 import fnmatch, json, os
 conflicts = [c for c in os.environ.get('CONFLICTS', '').splitlines() if c.strip()]
 patterns = json.loads(os.environ.get('UNION_JSON', '[]'))
@@ -349,7 +349,7 @@ if [ -n "$(git -C "$_MB_TMPDIR" diff --name-only --diff-filter=U 2>/dev/null)" ]
   exit 1
 fi
 
-_MB_MSG_PATHS="$(printf '%s' "$_MB_UNION_PATHS" | python3 -c "import json,sys; print(', '.join(json.load(sys.stdin)))")"
+_MB_MSG_PATHS="$(printf '%s' "$_MB_UNION_PATHS" | python3 -I -c "import json,sys; print(', '.join(json.load(sys.stdin)))")"
 if ! git -C "$_MB_TMPDIR" -c user.email=talos@local -c user.name=talos-mergebase \
     commit -q -m "chore: merge $BASE_BRANCH into $HEAD_REF (mechanical union: $_MB_MSG_PATHS)"; then
   echo "pipeline-mergebase: commit failed" >&2
