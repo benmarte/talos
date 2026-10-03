@@ -80,7 +80,7 @@ assert_eq "$SORTED" "$ORDER" "markdown: sections appear in the specified order"
 assert_eq "6" "$(printf '%s' "$ORDER" | wc -w | tr -d ' ')" "markdown: all six sections present once"
 # rows are sorted like cost --json (by role)
 assert_eq "developer qa reviewer validator" \
-  "$(printf '%s\n' "$OUT" | awk -F' [|] ' '/^[|] [a-z]/ && $1 !~ /stage|TOTAL/ {gsub(/^[|] /, "", $1); printf "%s ", $1}' | sed 's/ $//')" \
+  "$(printf '%s\n' "$OUT" | grep '^| .[a-z]' | grep -v '^| stage' | sed 's/^| .\([a-z]*\).*/\1/' | tr '\n' ' ' | sed 's/ $//')" \
   "markdown: one row per stage role, sorted"
 assert_contains "$OUT" "This PR (#9): 1.80M (1800000 tokens) (+1 unrecorded)" "markdown: This PR is the PR-scoped sum, with its unrecorded runs"
 # without --pr there is no This PR line
@@ -90,62 +90,102 @@ assert_eq "0" "$(printf '%s' "$OUT_NOPR" | grep -c '^This PR')" "markdown: no --
 assert_contains "$(md 7 99)" "This PR (#99): no events recorded" "markdown: a PR with no events says so"
 
 # ── (b) numbers equal cost --json ──────────────────────────────────────────
+# Tokens and duration cells are compact (fmt_num / fmt_dur), computed from the
+# very integers `cost --json` reports: each cell must equal the module's
+# formatter applied to the json value; the other columns are exact.
 bash "$EVENTS" cost --issue 7 --json > "$SANDBOX/cost.json" 2>/dev/null
 printf '%s\n' "$OUT" > "$SANDBOX/md.txt"
-CMP="$(python3 -I - "$SANDBOX/cost.json" "$SANDBOX/md.txt" <<'PYEOF'
-import json, sys
+CMP="$(python3 -I -B - "$SANDBOX/cost.json" "$SANDBOX/md.txt" "$TALOS_ROOT/scripts" <<'PYEOF'
+import importlib, json, sys
+sys.path.insert(0, sys.argv[3])
+m = importlib.import_module("pipeline-spend-format")
 data = json.load(open(sys.argv[1]))
 cells = {}
 for line in open(sys.argv[2], encoding="utf-8"):
     if line.startswith("| ") and not line.startswith("| stage") and not line.startswith("|---"):
         c = [x.strip() for x in line.strip().strip("|").split(" | ")]
-        cells[c[0]] = c
-def row(c):
-    return [int(c[2]), int(c[3]), int(c[4]), int(c[5].rstrip("s")), int(c[6]), int(c[7])]
+        cells[c[0].strip(chr(96))] = c
+def want(events, tokens, tools, dur, restamp, unrecorded):
+    return [str(events), m.fmt_num(m.as_count(tokens)), str(tools), m.fmt_dur(m.as_count(dur)), str(restamp), str(unrecorded)]
 bad = []
-tot = [0] * 6
+sums = [0] * 6
 for r in data["rows"]:
     if r["role"] == "orchestrator":
         if "orchestrator" in cells:
             bad.append("orchestrator row present")
         continue
-    want = [r["events"], r["tokens"], r["tool_uses"], r["duration_s"], r["restamp"], r["unrecorded"]]
-    got = row(cells[r["role"]])
-    if got != want:
-        bad.append("%s: %s != %s" % (r["role"], got, want))
-    tot = [a + b for a, b in zip(tot, want)]
-if row(cells["TOTAL"]) != tot:
-    bad.append("TOTAL %s != %s" % (row(cells["TOTAL"]), tot))
+    exp = want(r["events"], r["tokens"], r["tool_uses"], r["duration_s"], r["restamp"], r["unrecorded"])
+    if cells[r["role"]][2:] != exp:
+        bad.append("%s: %s != %s" % (r["role"], cells[r["role"]][2:], exp))
+    sums = [a + b for a, b in zip(sums, [r["events"], r["tokens"], r["tool_uses"], r["duration_s"], r["restamp"], r["unrecorded"]])]
+if cells["TOTAL"][2:] != want(*sums):
+    bad.append("TOTAL %s != %s" % (cells["TOTAL"][2:], want(*sums)))
 t = data["total"]
-if row(cells["TOTAL"])[1:4] != [t["tokens"], t["tool_uses"], t["duration_s"]]:
-    bad.append("TOTAL tokens/tools/duration differ from --json total")
+if [cells["TOTAL"][i] for i in (3, 4, 5)] != [m.fmt_num(m.as_count(t["tokens"])), str(t["tool_uses"]), m.fmt_dur(m.as_count(t["duration_s"]))]:
+    bad.append("TOTAL tokens/tools/duration differ from the --json total")
 print("OK" if not bad else "; ".join(bad))
 PYEOF
 )"
-assert_eq "OK" "$CMP" "numbers: every role row and TOTAL equal cost --json (orchestrator excluded)"
+assert_eq "OK" "$CMP" "numbers: every role row and TOTAL equal cost --json through the formatters (orchestrator excluded)"
+# a few cells, literally
+assert_contains "$OUT" '| `developer` | `sonnet ×3, opus ×1` | 4 | 1.50M | 37 | 17m30s | 0 | 0 |' "cells: the developer row, compact tokens and duration"
+assert_contains "$OUT" '| `reviewer` | `sonnet ×2, session default ×1` | 3 | 200k | 5 | 2m20s | 1 | 1 |' "cells: the reviewer row (re-stamp and unrecorded stay integers)"
+assert_contains "$OUT" '| TOTAL |  | 9 | 1.90M | 50 | 21m35s | 1 | 1 |' "cells: TOTAL, compact"
 
 # ── (c) the model column ───────────────────────────────────────────────────
-assert_contains "$OUT" "| developer | sonnet ×3, opus ×1 | 4 | 1500000 |" "model: mixed families, count descending"
-assert_contains "$OUT" "| reviewer | sonnet ×2, session default ×1 | 3 |" "model: a missing model key reads session default"
-assert_contains "$OUT" "| validator | sonnet | 1 |" "model: one family, no count"
-assert_contains "$OUT" "| qa | gpt-5-turbo-experimental-long- | 1 |" "model: an unknown value is cut at 30 characters"
+assert_contains "$OUT" '| `developer` | `sonnet ×3, opus ×1` | 4 |' "model: mixed families, count descending"
+assert_contains "$OUT" '| `reviewer` | `sonnet ×2, session default ×1` | 3 |' "model: a missing model key reads session default"
+assert_contains "$OUT" '| `validator` | `sonnet` | 1 |' "model: one family, no count"
+assert_contains "$OUT" '| `qa` | `gpt-5-turbo-experimental-long-` | 1 |' "model: an unknown value is cut at 30 characters"
 reset_log
 ev developer 7 9 10 1 1 'null'
 ev qa 7 9 10 1 1 '"haiku"'
 ev security 7 9 10 1 1 '"CLAUDE-OPUS-4"'
 OUT2="$(md 7 9)"
-assert_contains "$OUT2" "| developer | session default | 1 |" "model: null is session default"
-assert_contains "$OUT2" "| qa | haiku | 1 |" "model: haiku"
-assert_contains "$OUT2" "| security | opus | 1 |" "model: matched case-insensitively"
+assert_contains "$OUT2" '| `developer` | `session default` | 1 |' "model: null is session default"
+assert_contains "$OUT2" '| `qa` | `haiku` | 1 |' "model: haiku"
+assert_contains "$OUT2" '| `security` | `opus` | 1 |' "model: matched case-insensitively"
 # escaping: a pipe, a newline and control characters in a role / model
 reset_log
 printf '%s\n' '{"event":"x","role":"a|b\nc\u0007d","issue":7,"pr":9,"verdict":"PASS","model":"m|x\ny\u001bz","tokens":5,"tool_uses":1,"duration_s":1,"ts":"2026-10-03T00:00:00Z"}' >> "$LOG"
 OUT3="$(md 7 9)"
-assert_contains "$OUT3" '| a\|b cd | m\|xyz | 1 | 5 |' "escape: pipe escaped, newline a space, control characters stripped (role and model)"
+assert_contains "$OUT3" '| `a\|b cd` | `m\|xyz` | 1 | 5 | 1 | 1s | 0 | 0 |' "escape: pipe escaped, newline a space, control characters stripped (role and model)"
 assert_eq "0" "$(printf '%s' "$OUT3" | LC_ALL=C grep -c "$(printf '\007')")" "escape: no BEL in the output"
 assert_eq "0" "$(printf '%s' "$OUT3" | LC_ALL=C grep -c "$(printf '\033')")" "escape: no ESC in the output"
 # every table row has the same number of unescaped pipes
-assert_eq "9" "$(printf '%s\n' "$OUT3" | grep '^| a' | sed 's/\\|//g' | tr -cd '|' | wc -c | tr -d ' ')" "escape: the row keeps its 9 column separators"
+assert_eq "9" "$(printf '%s\n' "$OUT3" | grep '^| .a' | sed 's/\\|//g' | tr -cd '|' | wc -c | tr -d ' ')" "escape: the row keeps its 9 column separators"
+
+# inert.py ROW -- yes when ROW has 8 cells and its first two are each exactly one
+# code span (the fence longer than any backtick run inside), no text outside.
+cat > "$SANDBOX/inert.py" <<'PYEOF'
+import re, sys
+cells = [c.strip() for c in re.split(r"(?<!\\)\|", sys.argv[1].strip())[1:-1]]
+def inert(cell):
+    m = re.fullmatch(r"(`+)( ?)(.*?)\2\1", cell)
+    if not m:
+        return False
+    if m.group(2) and not (m.group(3).startswith("`") or m.group(3).endswith("`")):
+        return False
+    return all(len(r) != len(m.group(1)) for r in re.findall(r"`+", m.group(3)))
+print("yes" if len(cells) == 8 and inert(cells[0]) and inert(cells[1]) else "no")
+PYEOF
+# ── (c1) no Markdown from the log: values render as inert code ─────────────
+for evil in '@octocat' '[x](http://e)' '![i](http://e/p.png)' '<!-- talos:spend -->' '<img src=x>' 'a`b' '``' '`'; do
+  reset_log
+  python3 -I - "$LOG" "$evil" <<'PYEOF'
+import json, sys
+with open(sys.argv[1], "w") as f:
+    f.write(json.dumps({"event": "x", "role": sys.argv[2], "issue": 7, "pr": 9, "verdict": "PASS",
+                        "model": sys.argv[2], "tokens": 5, "tool_uses": 1, "duration_s": 1,
+                        "ts": "2026-10-03T00:00:00Z"}) + "\n")
+PYEOF
+  EV_OUT="$(md 7 9)"
+  EV_ROW="$(printf '%s\n' "$EV_OUT" | sed -n '/^|---/{n;p;}')"
+  # the row must be: | <code span> | <code span> | 1 | 5 | ... with the value only inside the spans
+  CODE_OK="$(python3 -I "$SANDBOX/inert.py" "$EV_ROW")"
+  assert_eq "yes" "$CODE_OK" "inert: role and model '$evil' render as one code span each, 8 cells"
+  assert_eq "0" "$(printf '%s\n' "$EV_OUT" | grep -c '^<!--')" "inert: '$evil' never starts a body line"
+done
 
 # ── (c2) a marker-looking role cannot form a marker line ───────────────────
 reset_log

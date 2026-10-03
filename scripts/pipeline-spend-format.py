@@ -82,7 +82,7 @@ def fmt_compact(n):
 _FAMILIES = ("opus", "sonnet", "haiku")
 
 
-def _strip_controls(text):
+def strip_controls(text):
     """text without control, format (bidi overrides, zero-width) and line or
     paragraph separator characters."""
     return "".join(c for c in str(text) if unicodedata.category(c) not in ("Cc", "Cf", "Zl", "Zp"))
@@ -94,7 +94,7 @@ def model_family(model):
     and cut at 30 characters; null or nothing left is 'session default'."""
     if model is None:
         return "session default"
-    text = _strip_controls(model).strip()
+    text = strip_controls(model).strip()
     if not text:
         return "session default"
     low = text.lower()
@@ -116,11 +116,25 @@ def model_summary(models):
     return ", ".join("%s \u00d7%d" % kv for kv in ordered)
 
 
-def md_cell(text):
-    """text as one markdown table cell: newlines become a space, control
-    characters are stripped, a backslash and a pipe are escaped."""
+def md_code(text):
+    """text as one inert markdown table cell: a code span, so a value from the
+    log (`@octocat`, `[x](http://e)`, `![i](http://e/p.png)`, `<!-- talos:spend
+    -->`) is shown, never rendered. Newlines become a space, control characters
+    are stripped, a backslash becomes '/' (a code span has no escapes, and a
+    backslash before a pipe would unescape it), a pipe is escaped for the table,
+    and the span's fence is one backtick longer than any run inside the value.
+    Nothing left gives ''."""
     flat = str(text).replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
-    return _strip_controls(flat).replace("\\", "\\\\").replace("|", "\\|")
+    flat = strip_controls(flat).strip().replace("\\", "/").replace("|", "\\|")
+    if not flat:
+        return ""
+    longest = run = 0
+    for c in flat:
+        run = run + 1 if c == "`" else 0
+        longest = max(longest, run)
+    fence = "`" * (longest + 1)
+    pad = " " if flat.startswith("`") or flat.endswith("`") else ""
+    return fence + pad + flat + pad + fence
 
 
 def warn_percent(text):

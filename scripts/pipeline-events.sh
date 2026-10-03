@@ -69,11 +69,14 @@
 #          (events whose pr is M), the budget line when the guard is on
 #          (`Budget: 82% of 4M (warn at 80%)`, a warning mark at warn, a pause
 #          notice at exceeded), the harness note and an orchestrator footnote.
-#          No marker: `pipeline-vcs.sh upsert-pr-comment` adds it. Per-role
-#          numbers equal `cost --json`; TOTAL is the sum of the non-orchestrator
-#          rows. Role and model text is stripped of control characters and
-#          escaped for a table cell. No log, or no stage event for N: prints
-#          nothing, exit 0.
+#          No marker: `pipeline-vcs.sh upsert-pr-comment` adds it. Tokens and
+#          duration cells are compact (`1.57M`, `2m05s`, the same formatters as
+#          --line) and come from the integers `cost --json` reports; runs, tool
+#          uses, re-stamps and unrecorded are exact. TOTAL is the sum of the
+#          non-orchestrator rows. Role and model text from the log is stripped
+#          of control characters and shown as a code span (inert: no mention,
+#          link, image or comment renders). No log, or no stage event for N:
+#          prints nothing, exit 0.
 #   cost --summary --issue A [--issue B ...] (#383) prints the end-of-run
 #          report: one row per (issue, PR) and a `pre-PR` row per issue for
 #          events with pr null (issue, PR, tokens, unrecorded, models), `Top
@@ -380,10 +383,6 @@ def load_format():
         print("pipeline-events: pipeline-spend-format.py unavailable (%s); no spend report" % type(e).__name__, file=sys.stderr)
         return None
 
-def safe(v):
-    """A log value as one short printable token for a report line."""
-    return "".join(c for c in str(v) if c.isprintable() and c not in "  ")[:20]
-
 def render_markdown(fmt):
     stage_events = [e for e in events if e[2] != "orchestrator"]
     if not stage_events:
@@ -406,10 +405,17 @@ def render_markdown(fmt):
     out += ["### Token spend — #%s" % issue, "",
             cells("stage", "model", "runs", "tokens", "tool uses", "duration", "re-stamps", "unrecorded"),
             "|---|---|---:|---:|---:|---:|---:|---:|"]
+    def tokens(v):
+        return fmt.fmt_num(fmt.as_count(v))
+
+    def duration(v):
+        return fmt.fmt_dur(fmt.as_count(v))
+
+    # role and model come from the log: shown as code, never rendered.
     for r in stage_rows:
-        out.append(cells(fmt.md_cell(r["role"]), fmt.md_cell(fmt.model_summary(models[r["role"]])), r["events"],
-                         r["tokens"], r["tool_uses"], "%ss" % r["duration_s"], r["restamp"], r["unrecorded"]))
-    out.append(cells("TOTAL", "", tot["events"], tot["tokens"], tot["tool_uses"], "%ss" % tot["duration_s"],
+        out.append(cells(fmt.md_code(r["role"]), fmt.md_code(fmt.model_summary(models[r["role"]])), r["events"],
+                         tokens(r["tokens"]), r["tool_uses"], duration(r["duration_s"]), r["restamp"], r["unrecorded"]))
+    out.append(cells("TOTAL", "", tot["events"], tokens(tot["tokens"]), tot["tool_uses"], duration(tot["duration_s"]),
                      tot["restamp"], tot["unrecorded"]))
     if pr:
         in_pr = [e for e in stage_events if e[1] is not None and str(e[1]) == pr]
@@ -424,7 +430,7 @@ def render_markdown(fmt):
         elif pr_unrecorded == len(in_pr):
             text = "unrecorded"
         else:
-            text = "%s (%d tokens)" % (fmt.fmt_num(fmt.as_count(pr_tokens)), fmt.as_count(pr_tokens))
+            text = "%s (%d tokens)" % (tokens(pr_tokens), fmt.as_count(pr_tokens))
             if pr_unrecorded:
                 text += " (+%d unrecorded)" % pr_unrecorded
         out += ["", "This PR (#%s): %s" % (pr, text)]
@@ -441,6 +447,10 @@ def render_summary(fmt):
     if not stage_events:
         print("no events recorded for this run")
         return
+    def safe(v):
+        """A log value as one short token for a report line."""
+        return fmt.strip_controls(str(v))[:20]
+
     # one row per (issue, PR), a pre-PR row per issue for the null-pr events
     rows_by = {}
     row_order = []

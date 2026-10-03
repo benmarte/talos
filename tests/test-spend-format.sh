@@ -9,7 +9,7 @@
 #   (d) `list --json` is still one JSON object per line
 #   (e) a missing module degrades silently: `cost --line` prints nothing, exits 0
 #   (f) the import writes no __pycache__ next to the module
-#   (#383) fmt_compact, model_family / model_summary, md_cell, warn_percent,
+#   (#383) fmt_compact, model_family / model_summary, md_code, strip_controls, warn_percent,
 #   parse_budget and fmt_budget / fmt_budget_suffix, at their boundaries
 set -u
 . "$(dirname "$0")/helpers.sh"
@@ -88,13 +88,27 @@ assert_eq "sonnet ×2, session default ×1" "$(fmt 'm.model_summary([None, "sonn
 assert_eq "session default" "$(fmt 'm.model_summary([None, None])')" "model_summary: all null"
 assert_eq "" "$(fmt 'm.model_summary([])')" "model_summary: no events is empty"
 
-# ── (a4) md_cell, warn_percent (#383) ──────────────────────────────────────
-assert_eq 'a\|b' "$(fmt 'm.md_cell("a|b")')" "md_cell: a pipe is escaped"
-assert_eq 'a\\\|b' "$(fmt 'm.md_cell("a\\|b")')" "md_cell: a backslash before a pipe cannot unescape it"
-assert_eq "a b" "$(fmt 'm.md_cell("a\nb")')" "md_cell: a newline becomes a space"
-assert_eq "a b" "$(fmt 'm.md_cell("a\r\nb")')" "md_cell: CRLF becomes one space"
-assert_eq "ab" "$(fmt 'm.md_cell("a\x00\x1b\x7fb")')" "md_cell: control characters are stripped"
-assert_eq "ab" "$(fmt 'm.md_cell("a‮b")')" "md_cell: a bidi override is stripped"
+# ── (a4) md_code, strip_controls, warn_percent (#383) ──────────────────────
+assert_eq '`abc`' "$(fmt 'm.md_code("abc")')" "md_code: a code span"
+assert_eq '`a\|b`' "$(fmt 'm.md_code("a|b")')" "md_code: a pipe is escaped"
+assert_eq '`a/\|b`' "$(fmt 'm.md_code("a\\|b")')" "md_code: a backslash cannot unescape a pipe"
+assert_eq '`a b`' "$(fmt 'm.md_code("a\nb")')" "md_code: a newline becomes a space"
+assert_eq '`a b`' "$(fmt 'm.md_code("a\r\nb")')" "md_code: CRLF becomes one space"
+assert_eq '`ab`' "$(fmt 'm.md_code("a\x00\x1b\x7fb")')" "md_code: control characters are stripped"
+assert_eq '`ab`' "$(fmt 'm.md_code("a‮b")')" "md_code: a bidi override is stripped"
+assert_eq '`x`' "$(fmt 'm.md_code("  x  ")')" "md_code: surrounding spaces are dropped"
+assert_eq '``a`b``' "$(fmt 'm.md_code("a`b")')" "md_code: a backtick inside gets a longer fence"
+assert_eq '```a``b```' "$(fmt 'm.md_code("a``b")')" "md_code: a double backtick gets a triple fence"
+assert_eq '`` `a ``' "$(fmt 'm.md_code("`a")')" "md_code: a leading backtick is padded"
+assert_eq '`` ` ``' "$(fmt 'm.md_code("`")')" "md_code: a lone backtick"
+assert_eq '`@octocat`' "$(fmt 'm.md_code("@octocat")')" "md_code: a mention is inert"
+assert_eq '`[x](http://e)`' "$(fmt 'm.md_code("[x](http://e)")')" "md_code: a link is inert"
+assert_eq '`![i](http://e/p.png)`' "$(fmt 'm.md_code("![i](http://e/p.png)")')" "md_code: an image is inert"
+assert_eq '`<!-- talos:spend -->`' "$(fmt 'm.md_code("<!-- talos:spend -->")')" "md_code: a marker comment is inert"
+assert_eq "" "$(fmt 'm.md_code("")')" "md_code: empty stays empty"
+assert_eq "" "$(fmt 'm.md_code("\x00")')" "md_code: only control characters stays empty"
+assert_eq "ab" "$(fmt 'm.strip_controls("a\x00b")')" "strip_controls: removes control characters"
+assert_eq "abc" "$(fmt 'm.strip_controls("a b​c")')" "strip_controls: removes line separators and zero-width characters"
 assert_eq "80" "$(fmt 'm.warn_percent("0.8")')" "warn_percent: 0.8 -> 80"
 assert_eq "100" "$(fmt 'm.warn_percent("1.0")')" "warn_percent: 1.0 -> 100"
 assert_eq "100" "$(fmt 'm.warn_percent("1")')" "warn_percent: 1 -> 100"
