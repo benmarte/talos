@@ -9,6 +9,8 @@
 #        pipeline-events.sh tail [--issue N]
 #        pipeline-events.sh cost [--issue N] [--pr M] [--json]
 #        pipeline-events.sh cost --issue N [--pr M] --line
+#        pipeline-events.sh cost --issue N [--pr M] --markdown
+#        pipeline-events.sh cost --summary --issue A [--issue B ...]
 #
 #   path   Prints the resolved absolute path to the events log (does not
 #          require the file to exist).
@@ -55,6 +57,36 @@
 #          recorded tokens prints `total unrecorded`. The breakdown is sorted
 #          by tokens descending and cut with `…` so the line stays <= 200
 #          characters. Missing log or no matching events prints nothing.
+#          With limits.tokens_per_issue set, ` · budget 82% of 4M` ends the line
+#          at status warn or exceeded only (#383), read from `pipeline-budget.sh
+#          check --issue N --json`; an empty, unparseable or `unknown` answer
+#          adds nothing and never fails the line.
+#   cost --issue N [--pr M] --markdown (#383) prints the body of the PR spend
+#          comment: the comments.header value if set ({role} -> orchestrator),
+#          `### Token spend — #N`, one table row per stage role (stage, model
+#          family, runs, tokens, tool uses, duration, re-stamps, unrecorded)
+#          over every event of the issue, a TOTAL row, `This PR (#M): ...`
+#          (events whose pr is M), the budget line when the guard is on
+#          (`Budget: 82% of 4M (warn at 80%)`, a warning mark at warn, a pause
+#          notice at exceeded), the harness note and an orchestrator footnote.
+#          No marker: `pipeline-vcs.sh upsert-pr-comment` adds it. Per-role
+#          numbers equal `cost --json`; TOTAL is the sum of the non-orchestrator
+#          rows. Role and model text is stripped of control characters and
+#          escaped for a table cell. No log, or no stage event for N: prints
+#          nothing, exit 0.
+#   cost --summary --issue A [--issue B ...] (#383) prints the end-of-run
+#          report: one row per (issue, PR) and a `pre-PR` row per issue for
+#          events with pr null (issue, PR, tokens, unrecorded, models), `Top
+#          PRs:` (up to 3), `Per issue:` totals and a `Total:` line, at most 20
+#          lines (the smallest rows fold into one `+K more rows` line).
+#          Orchestrator events are left out. No events: `no events recorded
+#          for this run`.
+#          --line, --markdown and --summary are exclusive (exit 2).
+#          Both report forms need scripts/pipeline-spend-format.py; a missing
+#          module prints one stderr note and nothing on stdout, exit 0.
+#          Every embedded python3 here runs with -I, so a file planted in the
+#          working directory (json.py) is never imported (#383). A sum that
+#          overflows a float is clamped to the largest float, never Infinity.
 #          A value-taking option with no value exits 2 with usage, and so
 #          does an --issue or --pr value that is not digits only (#393).
 #          The number, duration and role formatters --line uses live in
@@ -123,7 +155,7 @@ cmd_list() {
     return 0
   fi
 
-  python3 - "$log_path" "$issue" "$role" "$event" "$last" "$json_mode" <<'PYEOF'
+  python3 -I - "$log_path" "$issue" "$role" "$event" "$last" "$json_mode" <<'PYEOF'
 import json
 import sys
 
@@ -187,6 +219,19 @@ if skipped:
 PYEOF
 }
 
+# _budget_json ISSUE -- the `pipeline-budget.sh check --issue ISSUE --json`
+# object, or nothing (#383). The guard being off, a missing script, a crash
+# and the exit code (1 = exceeded) all read as "no answer": the caller shows
+# no budget, and a budget problem never fails a spend report. The budget
+# script reads `cost --json` and `list --json`, never --markdown or --line,
+# so this cannot recurse.
+_budget_json() {
+  local out
+  [ -f "$SCRIPT_DIR/pipeline-budget.sh" ] || return 0
+  out="$(bash "$SCRIPT_DIR/pipeline-budget.sh" check --issue "$1" --json 2>/dev/null)" || true
+  printf '%s' "$out"
+}
+
 # cmd_cost ISSUE JSON_MODE -- per-(issue, role) cost summary (#202, #258,
 # #259): sums tokens, tool_uses, duration_s and counts events, treating a
 # null numeric field as 0 for the sum but tallying it separately in the
@@ -200,23 +245,40 @@ PYEOF
 # cost is visible next to its full-stage cost instead of being folded into
 # the same "events"/"tokens" totals with no way to tell them apart.
 # PR (#380) keeps only events whose pr matches; "" means every event.
+# MODE (#383) is "" (table / --json), "markdown" (the PR spend comment body:
+# the table covers every event of ISSUE, PR only scopes the `This PR` line) or
+# "summary" (the multi-issue run report over the comma-separated ISSUES). Both
+# render through scripts/pipeline-spend-format.py, imported lazily.
 cmd_cost() {
-  local issue="$1" json_mode="$2" pr="${3:-}"
-  local log_path
+  local issue="$1" json_mode="$2" pr="${3:-}" mode="${4:-}" issues="${5:-}"
+  local log_path budget="" header="" warn_at="0.8"
   log_path="$(_events_log_path)" || {
     echo "pipeline-events: could not resolve the events log path (not a git repo?)" >&2
     return 1
   }
   if [ ! -f "$log_path" ]; then
+    [ "$mode" = "summary" ] && echo "no events recorded for this run"
     return 0
   fi
+  if [ "$mode" = "markdown" ]; then
+    budget="$(_budget_json "$issue")"
+    header="$(cfg comments.header "")"
+    warn_at="$(cfg limits.warn_at "0.8")"
+  fi
 
-  python3 - "$log_path" "$issue" "$json_mode" "$pr" <<'PYEOF'
+  # -I: no cwd, PYTHONPATH or user site on sys.path, so a file planted in the
+  # target repo (json.py) is never imported. -B: the lazily imported format
+  # module leaves no __pycache__ in the install.
+  python3 -I -B - "$log_path" "$issue" "$json_mode" "$pr" "$mode" "$issues" "$budget" "$header" "$warn_at" "$SCRIPT_DIR" <<'PYEOF'
 import json
 import math
 import sys
 
-log_path, issue, json_mode, pr = sys.argv[1:5]
+log_path, issue, json_mode, pr, mode, issues, budget_json, header, warn_at, scripts_dir = sys.argv[1:11]
+report = mode in ("markdown", "summary")
+issue_set = set(issues.split(",")) if issues else set()
+
+_MAX = sys.float_info.max
 
 def _number(v):
     """v when it is a finite non-negative number, else None (unrecorded): a
@@ -229,15 +291,31 @@ def _number(v):
         return None
     return v
 
+def _add(a, b):
+    """a + b, clamped to the largest float when the sum overflows: two valid
+    1e308 values must not make --json print Infinity, and an int too big for a
+    float must not crash the sum with an OverflowError (#383)."""
+    try:
+        s = a + b
+    except OverflowError:
+        return _MAX
+    if isinstance(s, float) and not math.isfinite(s):
+        return _MAX
+    return s
+
 def matches(rec):
+    if mode == "summary":
+        return str(rec.get("issue")) in issue_set
     if issue and str(rec.get("issue")) != issue:
         return False
-    if pr and (rec.get("pr") is None or str(rec.get("pr")) != pr):
+    # markdown scopes only its `This PR` line to --pr, never the table
+    if pr and mode != "markdown" and (rec.get("pr") is None or str(rec.get("pr")) != pr):
         return False
     return True
 
 groups = {}
 order = []
+events = []   # (issue, pr, role, tokens or None, model) -- report modes only
 skipped = 0
 have_ci_runs = False
 with open(log_path, "r", errors="replace") as f:
@@ -261,9 +339,9 @@ with open(log_path, "r", errors="replace") as f:
         g = groups[key]
         g["events"] += 1
         tokens = _number(rec.get("tokens"))
-        g["tokens"] += tokens or 0
-        g["tool_uses"] += _number(rec.get("tool_uses")) or 0
-        g["duration_s"] += _number(rec.get("duration_s")) or 0
+        g["tokens"] = _add(g["tokens"], tokens or 0)
+        g["tool_uses"] = _add(g["tool_uses"], _number(rec.get("tool_uses")) or 0)
+        g["duration_s"] = _add(g["duration_s"], _number(rec.get("duration_s")) or 0)
         if tokens is None:
             g["unrecorded"] += 1
         if rec.get("verdict") in ("RESTAMP_PASS", "RESTAMP_FAIL"):
@@ -272,6 +350,8 @@ with open(log_path, "r", errors="replace") as f:
         if type(ci_runs) is int and ci_runs >= 0:
             have_ci_runs = True
             g["ci_runs"] += ci_runs
+        if report:
+            events.append((rec.get("issue"), rec.get("pr"), rec.get("role"), tokens, rec.get("model")))
 
 order.sort(key=lambda k: (str(k[0]), str(k[1])))
 
@@ -283,12 +363,160 @@ for key in order:
         g.pop("ci_runs")
     rows.append({"issue": key[0], "role": key[1], **g})
     for field in g:
-        total[field] += g[field]
+        total[field] = _add(total[field], g[field])
 
 if not have_ci_runs:
     total.pop("ci_runs")
 
-if json_mode == "1":
+def load_format():
+    """The shared formatter module, imported by explicit path; None (and one
+    stderr note) when it is missing or broken: these verbs feed notifications
+    and a PR comment, so they print nothing rather than fail."""
+    import importlib
+    sys.path.insert(0, scripts_dir)
+    try:
+        return importlib.import_module("pipeline-spend-format")
+    except Exception as e:
+        print("pipeline-events: pipeline-spend-format.py unavailable (%s); no spend report" % type(e).__name__, file=sys.stderr)
+        return None
+
+def safe(v):
+    """A log value as one short printable token for a report line."""
+    return "".join(c for c in str(v) if c.isprintable() and c not in "  ")[:20]
+
+def render_markdown(fmt):
+    stage_events = [e for e in events if e[2] != "orchestrator"]
+    if not stage_events:
+        return
+    stage_rows = [r for r in rows if r["role"] != "orchestrator"]
+    models = {}
+    for _, _, role, _, model in stage_events:
+        models.setdefault(role, []).append(model)
+    tot = {"events": 0, "tokens": 0, "tool_uses": 0, "duration_s": 0, "unrecorded": 0, "restamp": 0}
+    for r in stage_rows:
+        for field in tot:
+            tot[field] = _add(tot[field], r[field])
+
+    def cells(*c):
+        return "| " + " | ".join(str(x) for x in c) + " |"
+
+    out = []
+    if header:
+        out += [header.replace("{role}", "orchestrator"), ""]
+    out += ["### Token spend — #%s" % issue, "",
+            cells("stage", "model", "runs", "tokens", "tool uses", "duration", "re-stamps", "unrecorded"),
+            "|---|---|---:|---:|---:|---:|---:|---:|"]
+    for r in stage_rows:
+        out.append(cells(fmt.md_cell(r["role"]), fmt.md_cell(fmt.model_summary(models[r["role"]])), r["events"],
+                         r["tokens"], r["tool_uses"], "%ss" % r["duration_s"], r["restamp"], r["unrecorded"]))
+    out.append(cells("TOTAL", "", tot["events"], tot["tokens"], tot["tool_uses"], "%ss" % tot["duration_s"],
+                     tot["restamp"], tot["unrecorded"]))
+    if pr:
+        in_pr = [e for e in stage_events if e[1] is not None and str(e[1]) == pr]
+        pr_tokens, pr_unrecorded = 0, 0
+        for e in in_pr:
+            if e[3] is None:
+                pr_unrecorded += 1
+            else:
+                pr_tokens = _add(pr_tokens, e[3])
+        if not in_pr:
+            text = "no events recorded"
+        elif pr_unrecorded == len(in_pr):
+            text = "unrecorded"
+        else:
+            text = "%s (%d tokens)" % (fmt.fmt_num(fmt.as_count(pr_tokens)), fmt.as_count(pr_tokens))
+            if pr_unrecorded:
+                text += " (+%d unrecorded)" % pr_unrecorded
+        out += ["", "This PR (#%s): %s" % (pr, text)]
+    budget_line = fmt.fmt_budget(fmt.parse_budget(budget_json), warn_at)
+    if budget_line:
+        out += ["", budget_line]
+    out += ["", "Tokens as reported by the harness: one total per run, no input/output split, no dollar cost; "
+                "unrecorded = runs with no usage reported (adapter and pi paths)",
+            "", "Orchestrator lifecycle rows (such as spend-guard blocks) are not counted in the rows or the total."]
+    print("\n".join(out))
+
+def render_summary(fmt):
+    stage_events = [e for e in events if e[2] != "orchestrator"]
+    if not stage_events:
+        print("no events recorded for this run")
+        return
+    # one row per (issue, PR), a pre-PR row per issue for the null-pr events
+    rows_by = {}
+    row_order = []
+    for iss, p, _, tokens, model in stage_events:
+        k = (safe(iss), None if p is None else safe(p))
+        if k not in rows_by:
+            rows_by[k] = {"tokens": 0, "unrecorded": 0, "models": []}
+            row_order.append(k)
+        r = rows_by[k]
+        if tokens is None:
+            r["unrecorded"] += 1
+        else:
+            r["tokens"] = _add(r["tokens"], tokens)
+        r["models"].append(model)
+
+    def num_key(s):
+        return (0, int(s)) if (s or "").isdigit() else (1, 0)
+
+    # issue ascending, its PR rows in PR order, its pre-PR row last
+    row_order.sort(key=lambda k: (num_key(k[0]), k[0], k[1] is None, num_key(k[1]), k[1] or ""))
+
+    def num(v):
+        return fmt.fmt_num(fmt.as_count(v))
+
+    per_issue = {}
+    grand, grand_unrecorded = 0, 0
+    for k in row_order:
+        r = rows_by[k]
+        per_issue[k[0]] = _add(per_issue.get(k[0], 0), r["tokens"])
+        grand = _add(grand, r["tokens"])
+        grand_unrecorded += r["unrecorded"]
+
+    # 5 fixed lines (title, column header, Top PRs, Per issue, Total) leave 15
+    # for rows; past that the smallest rows fold into one line.
+    cap = 15
+    shown = row_order
+    folded = ""
+    if len(row_order) > cap:
+        by_size = sorted(row_order, key=lambda k: -rows_by[k]["tokens"])  # stable
+        keep = set(by_size[:cap - 1])
+        rest = [k for k in row_order if k not in keep]
+        shown = [k for k in row_order if k in keep]
+        rest_tokens, rest_unrecorded = 0, 0
+        for k in rest:
+            rest_tokens = _add(rest_tokens, rows_by[k]["tokens"])
+            rest_unrecorded += rows_by[k]["unrecorded"]
+        folded = "+%d more rows: %s" % (len(rest), num(rest_tokens))
+        if rest_unrecorded:
+            folded += " (+%d unrecorded)" % rest_unrecorded
+
+    table = [("issue", "PR", "tokens", "unrecorded", "models")]
+    for k in shown:
+        r = rows_by[k]
+        table.append(("#" + k[0], "pre-PR" if k[1] is None else "#" + k[1], num(r["tokens"]),
+                      str(r["unrecorded"]), fmt.model_summary(r["models"])))
+    widths = [max(len(t[i]) for t in table) for i in range(4)]
+    lines = ["Token spend — run summary"]
+    for t in table:
+        lines.append(("  ".join(t[i].ljust(widths[i]) for i in range(4)) + "  " + t[4]).rstrip())
+    if folded:
+        lines.append(folded)
+    pr_rows = sorted((k for k in row_order if k[1] is not None), key=lambda k: -rows_by[k]["tokens"])
+    lines.append("Top PRs: " + (", ".join("#%s %s" % (k[1], num(rows_by[k]["tokens"])) for k in pr_rows[:3]) or "none"))
+    lines.append("Per issue: " + ", ".join("#%s %s" % (i, num(v)) for i, v in per_issue.items()))
+    total_line = "Total: " + num(grand)
+    if grand_unrecorded:
+        total_line += " (+%d unrecorded)" % grand_unrecorded
+    lines.append(total_line)
+    print("\n".join(lines))
+
+if report:
+    fmt = load_format()
+    if fmt is not None:
+        sys.stdout.reconfigure(encoding="utf-8")
+        (render_markdown if mode == "markdown" else render_summary)(fmt)
+elif json_mode == "1":
     print(json.dumps({"rows": rows, "total": total}))
 else:
     def _s(v):
@@ -327,13 +555,18 @@ cmd_cost_line() {
     return 0
   fi
 
+  # The budget verdict (#383) adds ` · budget 82% of 4M` at warn / exceeded,
+  # nothing otherwise; only called once the log exists.
+  local budget
+  budget="$(_budget_json "$issue")"
+
   local src
   IFS= read -r -d '' src <<'PYEOF' || true
 
-MAX_LEN = 200
-
 log_path, issue, pr = sys.argv[1:4]
 sys.stdout.reconfigure(encoding="utf-8")
+suffix = fmt_budget_suffix(parse_budget(sys.argv[5]))
+MAX_LEN = 200 - len(suffix)  # the suffix counts toward the 200
 
 newest = None
 recorded = {}
@@ -387,7 +620,7 @@ head = "talos: #%s %s done — %s · %s total" % (
     "PR" if pr else "issue")
 
 if not recorded:
-    print(head + " unrecorded")
+    print(head + " unrecorded" + suffix)
     sys.exit(0)
 
 head += " " + fmt_num(total)
@@ -403,7 +636,7 @@ if len(out) > MAX_LEN:
     out = head + " (" + "".join(e + ", " for e in entries[:keep]) + "…)"
     if len(out) > MAX_LEN:  # only a pathological role name gets here
         out = out[:MAX_LEN - 1] + "…"
-print(out)
+print(out + suffix)
 PYEOF
 
   # The formatters live in pipeline-spend-format.py next to this script,
@@ -415,12 +648,13 @@ PYEOF
 sys.path.insert(0, sys.argv[4])
 try:
     _m = importlib.import_module('pipeline-spend-format')
-    fmt_num, fmt_dur, role_label, role_abbrev, as_count = (
-        _m.fmt_num, _m.fmt_dur, _m.role_label, _m.role_abbrev, _m.as_count)
+    fmt_num, fmt_dur, role_label, role_abbrev, as_count, parse_budget, fmt_budget_suffix = (
+        _m.fmt_num, _m.fmt_dur, _m.role_label, _m.role_abbrev, _m.as_count,
+        _m.parse_budget, _m.fmt_budget_suffix)
 except Exception as e:
     print('pipeline-events: pipeline-spend-format.py unavailable (%s); no spend line' % type(e).__name__, file=sys.stderr)
     sys.exit(0)
-$src" "$log_path" "$issue" "$pr" "$SCRIPT_DIR"
+$src" "$log_path" "$issue" "$pr" "$SCRIPT_DIR" "$budget"
 }
 
 # _usage -- the usage text, shared by the unknown-verb and bad-option exits.
@@ -430,6 +664,8 @@ _usage() {
   echo "       pipeline-events.sh tail [--issue N]" >&2
   echo "       pipeline-events.sh cost [--issue N] [--pr M] [--json]" >&2
   echo "       pipeline-events.sh cost --issue N [--pr M] --line" >&2
+  echo "       pipeline-events.sh cost --issue N [--pr M] --markdown" >&2
+  echo "       pipeline-events.sh cost --summary --issue A [--issue B ...]" >&2
 }
 
 # _need_value OPTION ARGC -- exit 2 with usage when a value-taking option is
@@ -489,16 +725,23 @@ case "$VERB" in
     ;;
   cost)
     shift
-    issue="" pr="" json_mode="0" line_mode="0"
+    issue="" pr="" json_mode="0" line_mode="0" md_mode="0" summary_mode="0" issues=""
     while [ $# -gt 0 ]; do
       case "$1" in
-        --issue) _need_value "$1" $#; _need_digits "$1" "$2"; issue="$2"; shift 2 ;;
+        --issue) _need_value "$1" $#; _need_digits "$1" "$2"; issue="$2"; issues="${issues:+$issues,}$2"; shift 2 ;;
         --pr) _need_value "$1" $#; _need_digits "$1" "$2"; pr="$2"; shift 2 ;;
         --json) json_mode="1"; shift ;;
         --line) line_mode="1"; shift ;;
+        --markdown) md_mode="1"; shift ;;
+        --summary) summary_mode="1"; shift ;;
         *) shift ;;
       esac
     done
+    if [ "$((line_mode + md_mode + summary_mode))" -gt 1 ]; then
+      echo "pipeline-events: --line, --markdown and --summary are exclusive" >&2
+      _usage
+      exit 2
+    fi
     if [ "$line_mode" = "1" ]; then
       if [ -z "$issue" ]; then
         echo "pipeline-events: --line needs --issue" >&2
@@ -506,6 +749,20 @@ case "$VERB" in
         exit 2
       fi
       cmd_cost_line "$issue" "$pr"
+    elif [ "$md_mode" = "1" ]; then
+      if [ -z "$issue" ]; then
+        echo "pipeline-events: --markdown needs --issue" >&2
+        _usage
+        exit 2
+      fi
+      cmd_cost "$issue" "0" "$pr" markdown
+    elif [ "$summary_mode" = "1" ]; then
+      if [ -z "$issues" ]; then
+        echo "pipeline-events: --summary needs at least one --issue" >&2
+        _usage
+        exit 2
+      fi
+      cmd_cost "" "0" "" summary "$issues"
     else
       cmd_cost "$issue" "$json_mode" "$pr"
     fi
