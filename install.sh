@@ -5,15 +5,35 @@
 #   bash install.sh --global
 #   Writes scripts, agents, templates and the playbooks (skills/<command>/SKILL.md,
 #   one per entry of TALOS_COMMANDS in scripts/pipeline-contract.sh) to ~/.talos/
-#   (the playbooks to ~/.talos/skills/), the same skills also to ~/.claude/skills/,
-#   and role profiles ALSO to ~/.claude/agents/ so Claude Code's native subagent
-#   discovery finds the current profiles instead of a stale plugin copy.
+#   (the playbooks to ~/.talos/skills/). When the Claude adapter runs (see
+#   --harness below) the same skills also go to ~/.claude/skills/ and the role
+#   profiles to ~/.claude/agents/, so Claude Code's native subagent discovery
+#   finds the current profiles instead of a stale plugin copy.
 #   A single update (git pull + install.sh --global) reaches every repo and harness.
-#   Re-runs overwrite existing ~/.talos/ and ~/.claude/agents/ files by default.
+#   Re-runs overwrite existing ~/.talos/ and ~/.claude/ files by default.
 #   Pass --no-overwrite to skip.
 #
+# --harness <list>  (both modes; the installer glue, NOT agents.runner, which
+#   picks the CLI that runs stages)
+#   A comma-separated list. Known names: claude, codex, gemini, antigravity,
+#   pi, cursor, opencode, generic. Any other name matching [a-z0-9-]+ is
+#   treated as generic (one line says so and points at agents.runner: custom
+#   with agents.runner_cmd); an empty item, a name with other characters
+#   (names are lower-case) or a missing value exits 1.
+#   Everything under ${CLAUDE_CONFIG_DIR:-$HOME/.claude} is written by one
+#   function, install_claude_adapter, which runs:
+#     - with --harness: if and only if the list contains claude;
+#     - without --harness: if and only if Claude is detected, i.e. any of
+#       CLAUDE_CONFIG_DIR is set and non-empty; ${CLAUDE_CONFIG_DIR:-$HOME/.claude}
+#       is a directory (a dangling symlink there is NOT detected); or
+#       claude is on PATH.
+#   Override: --harness claude forces the adapter; a list without claude
+#   skips it. A skipped adapter never deletes or refreshes an existing
+#   ~/.claude tree; the installer says so. --global prints one line saying
+#   whether the adapter ran and why.
+#
 # Per-repo config (after global install):
-#   bash install.sh [target-repo-path] [--harness claude|codex|antigravity]
+#   bash install.sh [target-repo-path] [--harness <list>]
 #                   [--no-agents-md] [--import-agents-md]
 #   Writes talos.pipeline.* config and, for every harness, the Talos block in
 #   <target>/AGENTS.md (scripts/pipeline-instructions.sh: created, appended or
@@ -45,7 +65,12 @@ set -euo pipefail
 SRC="$(cd "$(dirname "$0")" && pwd)"
 TARGET=""
 FORCE_MODE=""       # "overwrite" | "no-overwrite" | "" (default varies by mode)
-HARNESS="claude"
+# --harness: raw value, whether it was given (an empty value is an error, so it
+# cannot double as "not given"), and the normalized comma-separated list.
+HARNESS_RAW=""
+HARNESS_GIVEN=false
+HARNESSES=""
+KNOWN_HARNESSES="claude codex gemini antigravity pi cursor opencode generic"
 WITH_SKILLS=true
 GLOBAL=false
 WRITE_AGENTS_MD=true
@@ -55,7 +80,10 @@ AGENT_SKILLS_REPO="${TALOS_AGENT_SKILLS_REPO:-https://github.com/addyosmani/agen
 expect_harness=false
 for arg in "$@"; do
   if [ "$expect_harness" = "true" ]; then
-    HARNESS="$arg"; expect_harness=false; continue
+    case "$arg" in
+      -*) echo "error: --harness needs a value (got '$arg')" >&2; exit 1 ;;
+    esac
+    HARNESS_RAW="$arg"; HARNESS_GIVEN=true; expect_harness=false; continue
   fi
   case "$arg" in
     --global)          GLOBAL=true ;;
@@ -65,10 +93,13 @@ for arg in "$@"; do
     --no-agents-md)    WRITE_AGENTS_MD=false ;;
     --import-agents-md) IMPORT_AGENTS_MD=true ;;
     --harness)         expect_harness=true ;;
-    --harness=*)       HARNESS="${arg#*=}" ;;
+    --harness=*)       HARNESS_RAW="${arg#*=}"; HARNESS_GIVEN=true ;;
     *)                 [ -z "$TARGET" ] && TARGET="$arg" ;;
   esac
 done
+if [ "$expect_harness" = "true" ]; then
+  echo "error: --harness needs a value" >&2; exit 1
+fi
 
 # Default overwrite semantics:
 #   --global:   overwrite by default (re-run = update); --no-overwrite opts out.
@@ -81,10 +112,57 @@ fi
 FORCE=false
 [ "$FORCE_MODE" = "overwrite" ] && FORCE=true
 
-case "$HARNESS" in
-  claude|codex|antigravity) ;;
-  *) echo "error: unknown --harness '$HARNESS'. Valid: claude | codex | antigravity" >&2; exit 1 ;;
-esac
+# Validate and normalize --harness before anything is written. Unknown names
+# that match [a-z0-9-]+ become "generic" (the normalized list is what is passed
+# on, so an unknown name can never trigger a harness-specific notice downstream).
+if [ "$HARNESS_GIVEN" = "true" ]; then
+  case ",$HARNESS_RAW," in
+    *,,*) echo "error: --harness has an empty item in '$HARNESS_RAW'. Known: ${KNOWN_HARNESSES// /, }" >&2; exit 1 ;;
+  esac
+  _rest="$HARNESS_RAW"
+  while :; do
+    _h="${_rest%%,*}"
+    case "$_h" in
+      *[!abcdefghijklmnopqrstuvwxyz0123456789-]*) echo "error: invalid --harness name '$_h' (lower-case letters, digits and - only). Known: ${KNOWN_HARNESSES// /, }" >&2; exit 1 ;;
+    esac
+    case " $KNOWN_HARNESSES " in
+      *" $_h "*) ;;
+      *) echo "note: unknown harness '$_h' treated as generic; set agents.runner: custom with agents.runner_cmd to drive it."
+         _h="generic" ;;
+    esac
+    case ",$HARNESSES," in
+      *",$_h,"*) ;;
+      *) HARNESSES="${HARNESSES:+$HARNESSES,}$_h" ;;
+    esac
+    case "$_rest" in *,*) _rest="${_rest#*,}" ;; *) break ;; esac
+  done
+fi
+
+has_harness() { case ",$HARNESSES," in *",$1,"*) return 0 ;; esac; return 1; }
+
+# Decide whether the Claude adapter runs, and why (CLAUDE_ADAPTER, CLAUDE_WHY).
+# Explicit list: runs iff it contains claude. No list: runs iff Claude is
+# detected by any one of three signals (never `claude` on PATH alone: an
+# existing ~/.claude, which every earlier --global created, must keep updating).
+CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+claude_decide() {
+  if [ "$HARNESS_GIVEN" = "true" ]; then
+    if has_harness claude; then
+      CLAUDE_ADAPTER=true;  CLAUDE_WHY="selected: --harness includes claude"
+    else
+      CLAUDE_ADAPTER=false; CLAUDE_WHY="not selected: --harness list has no claude"
+    fi
+  elif [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+    CLAUDE_ADAPTER=true;  CLAUDE_WHY="detected: CLAUDE_CONFIG_DIR is set"
+  elif [ -d "$CLAUDE_DIR" ]; then
+    CLAUDE_ADAPTER=true;  CLAUDE_WHY="detected: $CLAUDE_DIR exists"
+  elif command -v claude >/dev/null 2>&1; then
+    CLAUDE_ADAPTER=true;  CLAUDE_WHY="detected: claude is on PATH"
+  else
+    CLAUDE_ADAPTER=false; CLAUDE_WHY="not detected: no CLAUDE_CONFIG_DIR, no $CLAUDE_DIR, no claude on PATH"
+  fi
+}
+claude_decide
 
 # ── install_file helper ───────────────────────────────────────────────────────
 install_file() {
@@ -98,13 +176,50 @@ install_file() {
   echo "  installed: $dest"
 }
 
+# ── Claude adapter ────────────────────────────────────────────────────────────
+# Role profiles, in install order (--global copies each to ~/.talos/agents/ and,
+# with the Claude adapter, to the Claude agents dir).
+TALOS_AGENT_ROLES="validator pm developer qa reviewer security adversarial docs planner"
+
+# agent_source <role> -- the profile source: $SRC/agents first, then $SRC/.claude/agents.
+agent_source() {
+  local f
+  for f in "$SRC/agents/$1.md" "$SRC/.claude/agents/$1.md"; do
+    if [ -f "$f" ]; then printf '%s\n' "$f"; return 0; fi
+  done
+  return 1
+}
+
+# install_claude_adapter -- the ONLY place --global writes under
+# ${CLAUDE_CONFIG_DIR:-$HOME/.claude}: role profiles to <dir>/agents/ (Claude
+# Code's native subagent discovery) and the skills to <dir>/skills/ (user-scoped;
+# Claude Code scans this path). Needs scripts/pipeline-contract.sh sourced.
+install_claude_adapter() {
+  local agent src_agent cmd
+  echo ""
+  echo "Claude Code adapter ($CLAUDE_DIR):"
+  for agent in $TALOS_AGENT_ROLES; do
+    if src_agent="$(agent_source "$agent")"; then
+      install_file "$src_agent" "$CLAUDE_DIR/agents/$agent.md"
+    fi
+  done
+  for cmd in "${TALOS_COMMANDS[@]}"; do
+    install_file "$SRC/skills/$cmd/SKILL.md" "$CLAUDE_DIR/skills/$(talos_claude_skill_name "$cmd")/SKILL.md"
+  done
+}
+
 # ── GLOBAL INSTALL ────────────────────────────────────────────────────────────
 if [ "$GLOBAL" = "true" ]; then
   TALOS_HOME_DIR="${TALOS_HOME:-$HOME/.talos}"
-  CLAUDE_SKILLS_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills"
-  CLAUDE_AGENTS_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/agents"
   echo "Installing Talos globally into: $TALOS_HOME_DIR"
-  echo "(Skills -> $TALOS_HOME_DIR/skills and $CLAUDE_SKILLS_DIR, Agents -> $TALOS_HOME_DIR/agents and $CLAUDE_AGENTS_DIR)"
+  if [ "$CLAUDE_ADAPTER" = "true" ]; then
+    echo "(Skills -> $TALOS_HOME_DIR/skills and $CLAUDE_DIR/skills, Agents -> $TALOS_HOME_DIR/agents and $CLAUDE_DIR/agents)"
+    _adapter_state="ran"
+  else
+    echo "(Skills -> $TALOS_HOME_DIR/skills, Agents -> $TALOS_HOME_DIR/agents)"
+    _adapter_state="skipped"
+  fi
+  echo "Claude Code adapter $_adapter_state ($CLAUDE_WHY). Override: --harness claude forces it; a --harness list without claude skips it."
   echo ""
 
   # Scripts -- glob every *.sh in $SRC/scripts so a new script is picked up
@@ -118,20 +233,16 @@ if [ "$GLOBAL" = "true" ]; then
     chmod +x "$TALOS_HOME_DIR/scripts/$script"
   done
 
-  # Agents -> both ~/.talos/agents/ (read by pipeline-agent.sh for pi/codex/
-  # gemini/antigravity) and ~/.claude/agents/ (read by Claude Code's native
-  # subagent discovery). A repo-level .claude/agents/<role>.md still wins over
-  # either -- see SKILL.md's subagent-name resolution rules.
+  # Agents -> ~/.talos/agents/ (read by pipeline-agent.sh for pi/codex/gemini/
+  # antigravity). The Claude copy (~/.claude/agents/) is install_claude_adapter's.
+  # A repo-level .claude/agents/<role>.md still wins over either -- see
+  # SKILL.md's subagent-name resolution rules.
   echo ""
   echo "Agents:"
-  for agent in validator pm developer qa reviewer security adversarial docs planner; do
-    for src_agent in "$SRC/agents/$agent.md" "$SRC/.claude/agents/$agent.md"; do
-      if [ -f "$src_agent" ]; then
-        install_file "$src_agent" "$TALOS_HOME_DIR/agents/$agent.md"
-        install_file "$src_agent" "$CLAUDE_AGENTS_DIR/$agent.md"
-        break
-      fi
-    done
+  for agent in $TALOS_AGENT_ROLES; do
+    if src_agent="$(agent_source "$agent")"; then
+      install_file "$src_agent" "$TALOS_HOME_DIR/agents/$agent.md"
+    fi
   done
 
   # Templates -- glob every subdirectory of $SRC/templates so a new template
@@ -164,8 +275,8 @@ if [ "$GLOBAL" = "true" ]; then
 
   # Skills: every command in TALOS_COMMANDS (scripts/pipeline-contract.sh) goes
   # to ~/.talos/skills/<command>/ (harness-neutral: any agent can be pointed at
-  # it) and to ~/.claude/skills/<claude name>/ (user-scoped; Claude Code scans
-  # this path). A new playbook needs a manifest entry, not an installer edit.
+  # it). The user-scoped Claude copy is install_claude_adapter's. A new playbook
+  # needs a manifest entry, not an installer edit.
   _CONTRACT="$SRC/scripts/pipeline-contract.sh"
   if [ ! -f "$_CONTRACT" ]; then
     echo "error: $_CONTRACT not found; cannot read the command manifest" >&2
@@ -173,11 +284,17 @@ if [ "$GLOBAL" = "true" ]; then
   fi
   . "$_CONTRACT"
   echo ""
-  echo "Orchestrator skills (~/.talos/skills and user-scoped Claude skills):"
+  echo "Orchestrator skills (~/.talos/skills):"
   for cmd in "${TALOS_COMMANDS[@]}"; do
     install_file "$SRC/skills/$cmd/SKILL.md" "$TALOS_HOME_DIR/skills/$cmd/SKILL.md"
-    install_file "$SRC/skills/$cmd/SKILL.md" "$CLAUDE_SKILLS_DIR/$(talos_claude_skill_name "$cmd")/SKILL.md"
   done
+
+  if [ "$CLAUDE_ADAPTER" = "true" ]; then
+    install_claude_adapter
+  elif [ -f "$CLAUDE_DIR/skills/pipeline/SKILL.md" ]; then
+    echo ""
+    echo "Claude Code adapter skipped: $CLAUDE_DIR was not refreshed (nothing was changed or deleted). To refresh it, re-run with --harness claude (or --harness claude,<others>)."
+  fi
 
   # Model hint (#336). Role models are set only in the Talos config (the agent
   # files carry no model:). Stay non-interactive and never write the user-level
@@ -202,11 +319,15 @@ if [ "$GLOBAL" = "true" ]; then
   echo "Next: run per-repo config in each repository:"
   echo "  bash $SRC/install.sh /path/to/your-repo"
   echo ""
-  echo "  NOTE: skills are discovered when a session starts. Restart any open"
-  echo "        Claude Code session to pick up the newly installed skills."
-  echo "        Registered at: $CLAUDE_SKILLS_DIR/pipeline/SKILL.md"
+  if [ "$CLAUDE_ADAPTER" = "true" ]; then
+    echo "  NOTE: skills are discovered when a session starts. Restart any open"
+    echo "        Claude Code session to pick up the newly installed skills."
+    echo "        Registered at: $CLAUDE_DIR/skills/pipeline/SKILL.md"
+  fi
   echo "        Playbooks for any other agent: $TALOS_HOME_DIR/skills/<command>/SKILL.md"
-  echo "        Role profiles registered at: $CLAUDE_AGENTS_DIR/<role>.md"
+  if [ "$CLAUDE_ADAPTER" = "true" ]; then
+    echo "        Role profiles registered at: $CLAUDE_DIR/agents/<role>.md"
+  fi
   exit 0
 fi
 
@@ -295,9 +416,10 @@ fi
 if [ "$WRITE_AGENTS_MD" = "true" ]; then
   echo ""
   echo "AGENTS.md (Talos block):"
-  _INSTR_ARGS=(--harness "$HARNESS")
+  _INSTR_ARGS=()
+  [ "$HARNESS_GIVEN" = "true" ] && _INSTR_ARGS+=(--harness "$HARNESSES")
   [ "$IMPORT_AGENTS_MD" = "true" ] && _INSTR_ARGS+=(--import-agents-md)
-  bash "$SRC/scripts/pipeline-instructions.sh" write "$TARGET" "${_INSTR_ARGS[@]}" \
+  bash "$SRC/scripts/pipeline-instructions.sh" write "$TARGET" ${_INSTR_ARGS[@]+"${_INSTR_ARGS[@]}"} \
     || echo "  warning: could not write the Talos block into $TARGET/AGENTS.md"
 fi
 
@@ -332,9 +454,44 @@ else
   echo "     (run 'bash $SRC/install.sh --global' first to install scripts globally)"
 fi
 echo "  3. Add 'pipeline:ready' to a GitHub issue"
-echo "  4. Open a Claude Code session in $TARGET and run: /pipeline"
-echo ""
-echo "  NOTE: /pipeline requires the skill to be installed. If you have not run"
-echo "        'bash install.sh --global' yet, do so now -- or install the plugin:"
-echo "        /plugin marketplace add benmarte/talos"
-echo "        Skills are discovered at session start; restart any open session."
+echo "  4. Start the pipeline (--harness picks installer glue; agents.runner picks the CLI that runs stages):"
+
+# Harnesses the next steps cover: the explicit list, else claude when detected,
+# else generic.
+if [ "$HARNESS_GIVEN" = "true" ]; then
+  _NEXT="$HARNESSES"
+elif [ "$CLAUDE_ADAPTER" = "true" ]; then
+  _NEXT="claude"
+else
+  _NEXT="generic"
+fi
+
+_START_PHRASE="Read ~/.talos/skills/pipeline/SKILL.md and follow it"
+for _h in ${_NEXT//,/ }; do
+  case "$_h" in
+    claude)
+      echo "     [claude] Open a Claude Code session in $TARGET and run: /pipeline"
+      continue ;;
+    pi)
+      echo "     [pi] in talos.pipeline.yml set agents.runner: pi and agents.subagents: false"
+      _start="$_START_PHRASE" ;;
+    codex|gemini)
+      echo "     [$_h] in talos.pipeline.yml set agents.runner: $_h"
+      _start="$_h \"$_START_PHRASE\"" ;;
+    antigravity)
+      echo "     [antigravity] in talos.pipeline.yml set agents.runner: antigravity"
+      _start="agy \"$_START_PHRASE\"" ;;
+    *)
+      echo "     [$_h] in talos.pipeline.yml set agents.runner: custom and agents.runner_cmd"
+      _start="$_START_PHRASE" ;;
+  esac
+  echo "          start: $_start"
+done
+
+if [ "$CLAUDE_ADAPTER" = "true" ]; then
+  echo ""
+  echo "  NOTE: /pipeline requires the skill to be installed. If you have not run"
+  echo "        'bash install.sh --global' yet, do so now -- or install the plugin:"
+  echo "        /plugin marketplace add benmarte/talos"
+  echo "        Skills are discovered at session start; restart any open session."
+fi

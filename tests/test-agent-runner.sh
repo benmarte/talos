@@ -230,11 +230,13 @@ assert_eq "2" "$rc" "missing args exits 2"
 assert_file_exists "$HOME/.talos/scripts/pipeline-agent.sh" \
   "pipeline-agent.sh installed by --global into ~/.talos/scripts/"
 
-# Bad harness rejected
-if bash "$TALOS_ROOT/install.sh" "$SANDBOX" --harness gemini >/dev/null 2>&1; then
-  fail "unknown harness exits non-zero"
+# --harness is an open list since #365: gemini is a known name, not an error.
+# --no-agent-skills / --no-agents-md keep this call from cloning agent-skills or
+# writing AGENTS.md into the sandbox repo.
+if bash "$TALOS_ROOT/install.sh" "$SANDBOX" --harness gemini --no-agent-skills --no-agents-md >/dev/null 2>&1; then
+  pass "--harness gemini exits 0"
 else
-  pass "unknown harness exits non-zero"
+  fail "--harness gemini exits 0"
 fi
 
 # ── TALOS_ROLE is exported to runner_cmd ──────────────────────────────────────
