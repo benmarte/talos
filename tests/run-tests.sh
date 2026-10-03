@@ -32,6 +32,7 @@
 #                                                        (a fixed-string
 #                                                        grep -l over
 #                                                        tests/test-*.sh)
+#                         scripts/talos-status.sh    -> tests/test-talos-status-line.sh
 #                         tests/test-*.sh            -> itself
 #                         agents/*.md, skills/**, templates/**
 #                                                     -> tests/test-skill-names.sh
@@ -429,6 +430,10 @@ _map_changed_path() {
       if [ "${#SELECTED_SET[@]}" -eq "$before" ]; then
         _fail_open "no tests map to '$p'"
       fi
+      ;;
+    scripts/talos-status.sh)
+      # Not a scripts/pipeline-*.sh name (#385): its one test file by name.
+      _add_selected "test-talos-status-line.sh"
       ;;
     scripts/bootstrap-*.sh)
       # Same convention as scripts/pipeline-*.sh above, just a different
