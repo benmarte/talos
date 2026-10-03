@@ -243,7 +243,9 @@
 #   check-approval-sha <n> [--stale-list]     Exit 1 if any approval label was earned
 #                                             against a non-current head SHA (stale
 #                                             approvals); respects
-#                                             merge.approval_waiver_paths config.
+#                                             merge.approval_waiver_paths config
+#                                             (code, tests, agent instructions and
+#                                             pipeline config are never waivable).
 #                                             --stale-list additionally prints one
 #                                             stdout line per stale role:
 #                                             "stale role=<role> label=<label>"
@@ -2050,7 +2052,7 @@ _vcs_shared_record_attempt() {
 #           check-approval-sha: {"headRefOid", "baseRefName",
 #           "labels":[{"name":...}], "comments":[...]}. Only "labels" and
 #           "comments" are read here -- headRefOid/baseRefName stay with the
-#           (still per-adapter, until #177 slice 2) SHA/waiver comparison.
+#           SHA/waiver comparison (_vcs_shared_check_approval_sha, #177 slice 2).
 #   env:    TRUSTED_AUTHORS, TALOS_CFG -- same contract check-approval-sha
 #           has always used. VERIFY_AUTHORS, CURRENT_USER (#187) -- effective
 #           trust set is TRUSTED_AUTHORS ∪ {CURRENT_USER} when
@@ -2302,7 +2304,9 @@ sys.exit(0)
 # Waiver rules: a SHA-mismatched approval is stale unless every file changed
 # between the marker SHA and head is covered by merge.approval_waiver_paths
 # (default: *.md docs/** CHANGELOG.md *.example) AND none of the hard-coded
-# non-waivable paths (scripts/**, tests/**, pipeline config filenames) --
+# non-waivable paths (scripts/**, tests/**, agents/**, skills/**,
+# templates/prompts/**, .claude/{agents,skills,commands,talos}/**, .agents/**,
+# any AGENTS.md or CLAUDE.md, pipeline config filenames; all casefolded) --
 # checked FIRST, before the config waiver, so config can never widen a waiver
 # to cover them. Files that only arrived via a base-branch sync (absent from
 # the PR's own three-dot diff, #102) are excluded from consideration.
@@ -2310,14 +2314,27 @@ _vcs_shared_check_approval_sha() {
   python3 -I -c "
 import fnmatch, json, os, subprocess, sys
 
-# Hard-coded non-waivable: applied AFTER the config waiver check.
+# Hard-coded non-waivable: checked BEFORE the config waiver.
 # The config can NEVER widen a waiver to cover these paths.
-HARDCODED_NONWAIVABLE_PREFIXES = ('scripts/', 'tests/')
+# Code (scripts/, tests/) and agent instructions (agents/, skills/,
+# templates/prompts/, the repo-level .claude/{agents,skills,commands,talos}/
+# and .agents/ trees, and any AGENTS.md or CLAUDE.md at any depth, #428) --
+# the instruction files are Markdown, so the default *.md waiver would
+# otherwise cover them. templates/comments/** (rendered output text) stays
+# waivable. Every comparison is casefolded: on a case-insensitive checkout
+# (macOS, Windows) Skills/x lands in the real skills/ folder.
+HARDCODED_NONWAIVABLE_PREFIXES = (
+    'scripts/', 'tests/',
+    'agents/', 'skills/', 'templates/prompts/',
+    '.claude/agents/', '.claude/skills/', '.claude/commands/',
+    '.claude/talos/', '.agents/',
+)
 HARDCODED_NONWAIVABLE_EXACT    = (
     'talos.pipeline.yml', 'talos.pipeline.yaml', 'talos.pipeline.json',
     '.claude-pipeline.yaml', '.claude-pipeline.json',
     'pipeline.yaml', 'pipeline.json',
 )
+HARDCODED_NONWAIVABLE_BASENAMES = ('agents.md', 'claude.md')
 
 # Default waiver paths -- used when the config key is absent or unparseable.
 DEFAULT_WAIVER = ['*.md', 'docs/**', 'CHANGELOG.md', '*.example']
@@ -2338,10 +2355,19 @@ VALIDATION_CANARIES = [
 ]
 
 def is_hardcoded_nonwaivable(path):
+    low = path.casefold()
     for prefix in HARDCODED_NONWAIVABLE_PREFIXES:
-        if path == prefix.rstrip('/') or path.startswith(prefix):
+        if low == prefix.rstrip('/') or low.startswith(prefix):
             return True
-    return path in HARDCODED_NONWAIVABLE_EXACT
+    if low in HARDCODED_NONWAIVABLE_EXACT:
+        return True
+    return os.path.basename(low) in HARDCODED_NONWAIVABLE_BASENAMES
+
+# git diff --name-only -z: real paths, NUL-separated. Without -z git quotes
+# non-ASCII, tab, newline and quote characters (core.quotePath), so
+# skills/ü/SKILL.md would arrive as a quoted string and miss the prefix check.
+def split_nul(out):
+    return [f for f in out.split('\x00') if f]
 
 def path_matches(path, patterns):
     base = os.path.basename(path)
@@ -2381,6 +2407,16 @@ if errors:
         print(e, file=sys.stderr)
     sys.exit(1)
 
+# An explicit entry under a non-waivable prefix (or naming a non-waivable
+# file) is harmless -- is_hardcoded_nonwaivable wins -- but say so (#428).
+for entry in waiver_entries:
+    if is_hardcoded_nonwaivable(entry):
+        print(
+            f\"pipeline-vcs: check-approval-sha: note: merge.approval_waiver_paths entry '{entry}'\"
+            ' ignored for agent-instruction paths',
+            file=sys.stderr,
+        )
+
 # Parse PR data
 try:
     data = json.load(sys.stdin)
@@ -2404,15 +2440,13 @@ if base_ref_name:
     _own_root = os.environ.get('REPO_ROOT', '').strip() or None
     try:
         _pr_own = subprocess.run(
-            ['git', 'diff', '--name-only',
+            ['git', 'diff', '--name-only', '-z', '--no-renames',
              'origin/' + base_ref_name + '...' + head_sha],
             capture_output=True, text=True,
             cwd=_own_root, timeout=30
         )
         if _pr_own.returncode == 0:
-            pr_own_files = set(
-                f.strip() for f in _pr_own.stdout.splitlines() if f.strip()
-            )
+            pr_own_files = set(split_nul(_pr_own.stdout))
         # else: diff failed -- fail-open, pr_own_files stays None
     except Exception:
         pr_own_files = None  # fail-open
@@ -2456,13 +2490,13 @@ for entry in entries:
                 f're-post its marker using a SHA read from git, not reconstructed'))
             continue
         result = subprocess.run(
-            ['git', 'diff', '--name-only', f'{found_sha}..{head_sha}'],
+            ['git', 'diff', '--name-only', '-z', '--no-renames', f'{found_sha}..{head_sha}'],
             capture_output=True, text=True,
             cwd=repo_root, timeout=30
         )
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or 'non-zero exit')
-        changed = [f.strip() for f in result.stdout.splitlines() if f.strip()]
+        changed = split_nul(result.stdout)
     except Exception as exc:
         # git diff failure -> treat delta as non-waivable (fail-closed)
         print(f'pipeline-vcs: check-approval-sha: git diff failed: {exc}', file=sys.stderr)
@@ -2476,7 +2510,7 @@ for entry in entries:
     if pr_own_files is not None:
         changed = [f for f in changed if f in pr_own_files]
 
-    # First check hard-coded non-waivable paths (structurally enforced -- config cannot override)
+    # First check hard-coded non-waivable paths (checked before the config waiver -- config cannot override)
     blocked = [p for p in changed if is_hardcoded_nonwaivable(p)]
     if not blocked:
         # Then check config waiver list for remaining paths
@@ -4042,8 +4076,11 @@ print(json.dumps([{'number': p.get('number'), 'state': p.get('state'), 'title': 
       # the current head SHA.  If a SHA differs, check whether all changed files
       # since the approval SHA are covered by the configured waiver list
       # (merge.approval_waiver_paths; default: *.md docs/** CHANGELOG.md *.example).
-      # Hard-coded non-waivable: scripts/**, tests/**, and all pipeline config
-      # filenames (talos.pipeline.{yml,yaml,json}, .claude-pipeline.{yaml,json},
+      # Hard-coded non-waivable: scripts/**, tests/**, agent instructions
+      # (agents/**, skills/**, templates/prompts/**, .claude/{agents,skills,
+      # commands,talos}/**, .agents/**, any AGENTS.md or CLAUDE.md; all
+      # casefolded), and all pipeline config filenames
+      # (talos.pipeline.{yml,yaml,json}, .claude-pipeline.{yaml,json},
       # pipeline.{yaml,json}) -- enforced FIRST (before the config waiver) so
       # the config waiver can never be widened to cover them.
       # Fail-closed: unresolvable head SHA, missing marker, or git diff failure

@@ -1470,7 +1470,11 @@ exits non-zero:
 since an approval, do not invalidate that approval. `*.example` covers generated
 pipeline-config examples (e.g. `talos.pipeline.json.example`), which are never
 executed. Hard-coded non-waivable regardless of config: paths under `scripts/`,
-paths under `tests/`, `talos.pipeline.yml`, `pipeline.yaml`. With
+paths under `tests/`, agent instructions (`agents/`, `skills/`,
+`templates/prompts/`, `.claude/{agents,skills,commands,talos}/`, `.agents/`, and
+any `AGENTS.md` or `CLAUDE.md` at any depth, matched case-insensitively),
+`talos.pipeline.yml`, `pipeline.yaml`. A config entry under an agent-instruction
+path is accepted but ignored for those paths (stderr note). With
 `roles.changelog_fragments: true` (#290), fragment files under
 `docs/CHANGELOG.d/**` are already covered by the `docs/**` and `*.md` default
 patterns — adding fragments to a PR never invalidates an approval.

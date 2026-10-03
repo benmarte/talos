@@ -2571,7 +2571,7 @@ pack installed.
     or failing the pipeline (board failures are warnings by design).
 - **Preview any VCS action** without executing:
   `bash ~/.talos/scripts/pipeline-vcs.sh --dry-run <verb> ...`.
-- **Approval label lost after a new commit** — when a non-waived file (source code, tests, protected config) is pushed after an approval, that approval is marked stale; only the affected stages are re-run, and docs approvals whose delta touches only `*.example` or other waived paths are re-stamped without re-dispatch (see `merge.approval_waiver_paths` in README).
+- **Approval label lost after a new commit** — when a non-waived file (source code, tests, agent instructions such as `agents/`, `skills/`, `templates/prompts/`, `.claude/agents/` or any `AGENTS.md`/`CLAUDE.md`, protected config) is pushed after an approval, that approval is marked stale; only the affected stages are re-run, and docs approvals whose delta touches only `*.example` or other waived paths are re-stamped without re-dispatch (see `merge.approval_waiver_paths` in README).
 - **`pipeline-config: [warn] unknown config key '...'`** — a key in your
   `talos.pipeline.yml`/`talos.pipeline.json` doesn't match anything Talos
   reads; the warning names the nearest known key it thinks you meant (e.g.

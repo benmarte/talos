@@ -898,6 +898,60 @@ out="$(bash "$VCS" check-approval-sha 7)"; rc=$?
 assert_eq "0" "$rc"                                                      "check-approval-sha: exits 0 for pretty-printed multi-line JSON (#244)"
 assert_contains "$out" "all approval labels are current"                 "check-approval-sha: current message for pretty-printed JSON (#244)"
 
+# check-approval-sha: agent instructions are non-waivable on the REST arm too
+# (#428 parity with the gh arm; both call _vcs_shared_check_approval_sha).
+# Real one-file commits so the delta is genuinely computed, not a fail-closed
+# "missing commit" stale.
+printf 'base\n' > approval428-base.txt
+git add approval428-base.txt
+git commit -q -m "428 base"
+_A428="$(git rev-parse HEAD)"
+mkdir -p agents
+printf 'edit\n' > agents/qa.md
+git add agents/qa.md
+git commit -q -m "428 agents/qa.md"
+_AGENTS428="$(git rev-parse HEAD)"
+git checkout -q --detach "$_A428"
+printf 'edit\n' > README.md
+git add README.md
+git commit -q -m "428 README.md"
+_README428="$(git rev-parse HEAD)"
+
+git checkout -q --detach "$_A428"
+mkdir -p sub
+printf 'edit\n' > sub/claude.md
+git add sub/claude.md
+git commit -q -m "428 sub/claude.md"
+_NESTED428="$(git rev-parse HEAD)"
+
+_UE428="$(printf '\303\274')"
+git checkout -q --detach "$_A428"
+mkdir -p "skills/$_UE428"
+printf 'edit\n' > "skills/$_UE428/SKILL.md"
+git add "skills/$_UE428/SKILL.md"
+git commit -q -m "428 non-ASCII skills path"
+_UTF428="$(git rev-parse HEAD)"
+git checkout -q --detach "$_A428"
+mkdir -p docs
+printf 'edit\n' > "docs/$_UE428.md"
+git add "docs/$_UE428.md"
+git commit -q -m "428 non-ASCII docs path"
+_UDOC428="$(git rev-parse HEAD)"
+
+for _case in "agents/qa.md:$_AGENTS428:1" "sub/claude.md:$_NESTED428:1" "skills/ue/SKILL.md:$_UTF428:1" "docs/ue.md:$_UDOC428:0" "README.md:$_README428:0"; do
+  IFS=: read -r _f _h _want <<< "$_case"
+  : > "$CURL_LOG"
+  printf '%s\n' \
+    "{\"number\":7,\"head\":{\"sha\":\"$_h\"},\"base\":{\"ref\":\"main\"},\"labels\":[{\"name\":\"qa:pass\"}]}" \
+    "[{\"body\":\"<!-- talos:approval sha=${_A428} role=qa -->\",\"user\":{\"login\":\"bot\"}}]" \
+    > "$CURL_QUEUE"
+  out="$(bash "$VCS" check-approval-sha 7 2>&1)"; rc=$?
+  assert_eq "$_want" "$rc" "check-approval-sha: $_f-only delta exits $_want (#428)"
+  if [ "$_want" = 1 ]; then
+    assert_contains "$out" "STALE qa:pass" "check-approval-sha: $_f-only delta reports STALE (#428)"
+  fi
+done
+
 # ── check-closing-keyword ─────────────────────────────────────────────────────
 : > "$CURL_LOG"
 # No closing keyword: should exit 0, one API call only
