@@ -561,7 +561,7 @@ limits:
 # ── Spend reporting (#378) ─────────────────────────────────────────────────────
 # spend:
 #   comment: true            # spend.comment: post the per-stage spend comment on the
-#                            # issue (talos:spend marker). true or false; default
+#                            # PR (talos:spend marker). true or false; default
 #                            # true; anything else warns once and uses true.
 
 # ── Approval-marker author trust (#187) ────────────────────────────────────────
