@@ -122,7 +122,7 @@ if ! with_lock "$_CL_LOCK_RESOURCE" 10 -- \
 fi
 
 # ── Assemble: insert fragments under [Unreleased], newest first ──────────────
-python3 - "$_CL_TMPDIR" "$FRAGMENT_FILES" <<'EOF'
+python3 -I - "$_CL_TMPDIR" "$FRAGMENT_FILES" <<'EOF'
 import os, sys
 
 wt = sys.argv[1]

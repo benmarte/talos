@@ -79,7 +79,7 @@ else
       -d "$_query" "https://api.github.com/graphql"
   }
   _board_gql_error_message() {
-    printf '%s' "$1" | python3 -c "
+    printf '%s' "$1" | python3 -I -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -108,7 +108,7 @@ except Exception:
   _board_resolve_project_id_gh() {
     local _proj_num="$1" _owner="$2"
     gh project list --owner "$_owner" --format json --limit 50 2>/dev/null \
-      | python3 -c "
+      | python3 -I -c "
 import sys, json
 try:
     d = json.load(sys.stdin)
@@ -131,7 +131,7 @@ except Exception:
       printf ''
       return 0
     fi
-    _id="$(printf '%s' "$_raw" | python3 -c "
+    _id="$(printf '%s' "$_raw" | python3 -I -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -142,7 +142,7 @@ except Exception:
     if [ -z "$_id" ]; then
       _raw="$(_board_gql "$_token" "{\"query\":\"query{organization(login:\\\"$_owner\\\"){projectV2(number:$_proj_num){id}}}\"}")"
       _BOARD_LAST_GQL_RAW="$_raw"
-      _id="$(printf '%s' "$_raw" | python3 -c "
+      _id="$(printf '%s' "$_raw" | python3 -I -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -242,7 +242,7 @@ _graphql_token_update() {
   local _field_data _field_id _opt_id
   _raw="$(_gql "{\"query\":\"query{node(id:\\\"$_proj_id\\\"){...on ProjectV2{fields(first:50){nodes{...on ProjectV2SingleSelectField{id name options{id name}}}}}}}\"}")"
   _bail_on_gql_error "$_raw"
-  _field_data="$(printf '%s' "$_raw" | SFIELD="$_sfield" SSTATUS="$_mapped_status" python3 -c "
+  _field_data="$(printf '%s' "$_raw" | SFIELD="$_sfield" SSTATUS="$_mapped_status" python3 -I -c "
 import json, sys, os
 try:
     d = json.load(sys.stdin)
@@ -296,7 +296,7 @@ except Exception:
     [ -n "$_cursor" ] && _after_clause=" after:\\\"$_cursor\\\""
     _raw="$(_gql "{\"query\":\"query{node(id:\\\"$_proj_id\\\"){...on ProjectV2{items(first:100$_after_clause){nodes{id content{...on Issue{number}}} pageInfo{hasNextPage endCursor}}}}}\"}")"
     _bail_on_gql_error "$_raw"
-    _page_data="$(printf '%s' "$_raw" | ISSUE_NUM="$_issue" python3 -c "
+    _page_data="$(printf '%s' "$_raw" | ISSUE_NUM="$_issue" python3 -I -c "
 import json, sys, os
 try:
     d = json.load(sys.stdin)
@@ -333,10 +333,10 @@ except Exception:
       _item_id="<item-id>"
     else
       local _node_id
-      _node_id="$(curl -sS -H "Authorization: Bearer $_STATUS_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$_repo/issues/$_issue" 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('node_id',''))" 2>/dev/null)"
+      _node_id="$(curl -sS -H "Authorization: Bearer $_STATUS_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$_repo/issues/$_issue" 2>/dev/null | python3 -I -c "import json,sys; print(json.load(sys.stdin).get('node_id',''))" 2>/dev/null)"
       _raw="$(_gql "{\"query\":\"mutation{addProjectV2ItemByContentId(input:{projectId:\\\"$_proj_id\\\" contentId:\\\"$_node_id\\\"}) {item{id}}}\"}")"
       _bail_on_gql_error "$_raw"
-      _item_id="$(printf '%s' "$_raw" | python3 -c "
+      _item_id="$(printf '%s' "$_raw" | python3 -I -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -567,18 +567,18 @@ _read_sentinel() {
 
   # Must be owned by the current user.
   # Use python3 for portability (stat flags differ between BSD and GNU).
-  _owner_uid="$(python3 -c "import os,sys; st=os.stat(sys.argv[1]); print(st.st_uid)" "$_f" 2>/dev/null)" || return 1
+  _owner_uid="$(python3 -I -c "import os,sys; st=os.stat(sys.argv[1]); print(st.st_uid)" "$_f" 2>/dev/null)" || return 1
   _my_uid="$(id -u)" || return 1
   [ "$_owner_uid" = "$_my_uid" ] || return 1
 
   # Must not be group- or world-writable (mode bits 0g22 → 0022 mask)
-  _file_mode="$(python3 -c "import os,sys,stat; st=os.stat(sys.argv[1]); print(oct(stat.S_IMODE(st.st_mode)))" "$_f" 2>/dev/null)" || return 1
+  _file_mode="$(python3 -I -c "import os,sys,stat; st=os.stat(sys.argv[1]); print(oct(stat.S_IMODE(st.st_mode)))" "$_f" 2>/dev/null)" || return 1
   case "$_file_mode" in
     *[2367])   # group- or world-writable bit set
       return 1 ;;
   esac
   # More thorough: check write bits using python
-  python3 -c "
+  python3 -I -c "
 import os, sys, stat
 st = os.stat(sys.argv[1])
 mode = stat.S_IMODE(st.st_mode)
@@ -593,7 +593,7 @@ sys.exit(0)
   # left over from a different owner's identically-numbered project) and must
   # be discarded rather than silently reused.
   _cached="$(cat "$_f")"
-  EXPECTED_PROJ_ID="$_expected_proj_id" python3 -c "
+  EXPECTED_PROJ_ID="$_expected_proj_id" python3 -I -c "
 import sys, json, os
 try:
     d = json.loads(sys.argv[1])
@@ -629,7 +629,7 @@ else
   # Tag the field data with the project node id it was fetched for (#252),
   # so a future read can detect and discard a stale/foreign cache instead of
   # trusting a cache keyed only by (owner, project number).
-  FIELD_DATA="$(PROJ_ID_TAG="$PROJ_ID" python3 -c "
+  FIELD_DATA="$(PROJ_ID_TAG="$PROJ_ID" python3 -I -c "
 import sys, json, os
 try:
     d = json.loads(sys.argv[1])
@@ -647,7 +647,7 @@ print(json.dumps(d))
   _MISSING_OPTIONS=""
   for _req_status in "In progress" "In review" "Done" "Blocked"; do
     _req_mapped="$(cfg "board.status_map.$_req_status" "$_req_status")"
-    if ! SF="$STATUS_FIELD" SM="$_req_mapped" python3 -c "
+    if ! SF="$STATUS_FIELD" SM="$_req_mapped" python3 -I -c "
 import sys, json, os
 try:
     import sys
@@ -688,7 +688,7 @@ except Exception:
   fi
 fi
 
-FIELD_ID="$(printf '%s' "$FIELD_DATA" | python3 -c "
+FIELD_ID="$(printf '%s' "$FIELD_DATA" | python3 -I -c "
 import sys, json
 try:
     d = json.load(sys.stdin)
@@ -710,7 +710,7 @@ if [ -z "$FIELD_ID" ]; then
 fi
 
 # Look up option ID using the mapped status name
-OPT_ID="$(printf '%s' "$FIELD_DATA" | SM="$MAPPED_STATUS" python3 -c "
+OPT_ID="$(printf '%s' "$FIELD_DATA" | SM="$MAPPED_STATUS" python3 -I -c "
 import sys, json, os
 try:
     d = json.load(sys.stdin)
@@ -730,7 +730,7 @@ except Exception:
 # board even when the status option is missing (a wrong column is far more useful
 # than an absent item).
 ITEM="$(_gh_safe gh project item-list "$PROJECT_NUM" --owner "$OWNER" --limit 400 --format json \
-  | python3 -c "
+  | python3 -I -c "
 import sys, json
 try:
     d = json.load(sys.stdin)
@@ -760,7 +760,7 @@ if [ -z "$ITEM" ]; then
     if [ "$_ITEM_ADD_RC" -ne 0 ]; then
       _gh_fail_board "gh project item-add failed: $_ITEM_ADD_STDERR"
     fi
-    ITEM="$(printf '%s' "$ITEM_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)"
+    ITEM="$(printf '%s' "$ITEM_JSON" | python3 -I -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)"
     [ -z "$ITEM" ] && { echo "pipeline-status: could not add #$ISSUE to project" >&2; exit 1; }
   fi
 fi
