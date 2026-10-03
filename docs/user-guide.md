@@ -22,9 +22,10 @@ progress as issue/PR comments and threaded Slack/Discord messages along the way.
 8. [Setup: Google Antigravity](#setup-google-antigravity)
 9. [Setup: local models (llama.cpp, Ollama)](#setup-local-models-llamacpp-ollama)
 10. [Harness feature matrix](#harness-feature-matrix)
-10. [Running the pipeline](#running-the-pipeline)
-11. [Troubleshooting](#troubleshooting)
-12. [FAQ](#faq)
+    ([Install and start, per harness](#install-and-start-per-harness))
+11. [Running the pipeline](#running-the-pipeline)
+12. [Troubleshooting](#troubleshooting)
+13. [FAQ](#faq)
 
 ---
 
@@ -219,20 +220,21 @@ templates. The repo gets one file: `talos.pipeline.yml`. Nothing is vendored,
 and upgrading is `/plugin update talos@talos` rather than a re-install per repo.
 
 **Alternative: vendor into the repo.** Use this when the pipeline is driven by a
-harness that cannot load a Claude Code plugin (Codex, Gemini, Antigravity — see
+harness that cannot load a Claude Code plugin (pi, Codex, Gemini, Antigravity — see
 the sections below), or when you want the pipeline pinned in-tree and reviewed
 alongside your code.
 
 ```bash
 # 1. Global install (once per machine -- all repos share this copy)
 git clone https://github.com/benmarte/talos
-bash talos/install.sh --global          # installs to ~/.talos/, ~/.claude/skills/, and role profiles to ~/.claude/agents/
+bash talos/install.sh --global --harness claude   # ~/.talos/ always; ~/.claude/{skills,agents} too, because claude is in the list
 
 # 2. Per-repo config (once per repo -- writes config; no scripts copied into repo)
 bash talos/install.sh /path/to/your-repo
 # also writes the Talos block into your-repo/AGENTS.md for every harness (commit it)
 # --no-agents-md skips that; --import-agents-md adds an @AGENTS.md import to an existing CLAUDE.md / GEMINI.md
-# --harness claude|codex|antigravity names the harness (default claude); the AGENTS.md block is the same for all
+# --harness <list> picks the installer glue (optional, no default): claude codex gemini antigravity pi cursor opencode generic;
+#   the AGENTS.md block is the same for all
 
 # 3. Configure (interactive -- or copy talos.pipeline.yml.example manually)
 cd /path/to/your-repo
@@ -246,17 +248,57 @@ gh issue edit 42 --add-label pipeline:ready
 # in a Claude Code session:  /pipeline
 ```
 
-What the global install writes: `~/.talos/{scripts,agents,templates,skills}/`
-(`skills/<command>/SKILL.md` holds the pipeline, pipeline-setup and resume
-playbooks, so a non-Claude agent can be pointed at a path under `~/.talos`),
-`~/.claude/skills/pipeline/SKILL.md` (the command), and role profiles
-ALSO to `~/.claude/agents/<role>.md` -- that second copy is what Claude
-Code's native subagent discovery actually reads, so a global install no
-longer leaves Claude Code sessions pinned to a stale plugin profile. A
-repo-level `.claude/agents/<role>.md` still wins over both. Per-repo
-installs write only `talos.pipeline.*` config (plus agent-skills to
-`.claude/skills/`); no Talos scripts are copied into repos. To update
-every repo at once:
+`--harness` selects installer glue (what is written where); `agents.runner`
+selects the CLI that runs stages. The two are independent: `--harness codex`
+does not set `agents.runner`, and `agents.runner: codex` does not install
+anything. An unknown tool needs no installer support: pass any `--harness`
+name (any other `[a-z0-9-]+` name is treated as `generic`, with a printed
+hint), set `agents.runner: custom`, and give `agents.runner_cmd` (the prompt
+arrives on stdin).
+
+What the global install writes. `~/.talos/{scripts,agents,templates,skills}/`
+always (`skills/<command>/SKILL.md` holds the `pipeline`, `pipeline-setup` and
+`resume` playbooks, so any agent can be pointed at a path under `~/.talos`; see
+"Playbooks for any other agent" below). `~/.claude/skills/` (`pipeline`,
+`pipeline-setup`, and `talos-resume`, the provisional name until #335) and role
+profiles ALSO to `~/.claude/agents/<role>.md` only when the Claude adapter
+runs -- that second copy is what Claude Code's native subagent discovery
+actually reads, so a global install no longer leaves Claude Code sessions
+pinned to a stale plugin profile. A repo-level `.claude/agents/<role>.md` still
+wins over both. Per-repo installs write only `talos.pipeline.*` config (never
+overwritten), the `AGENTS.md` block, and agent-skills to `.claude/skills/`
+(skip with `--no-agent-skills`); no Talos scripts are copied into repos.
+
+**When the Claude adapter runs.** With `--harness`, exactly when the list
+contains `claude`. Without it, when Claude is detected: `CLAUDE_CONFIG_DIR` is
+set and non-empty, or `${CLAUDE_CONFIG_DIR:-~/.claude}` is a directory (a
+dangling symlink is not detected), or `claude` is on PATH. Override:
+`--harness claude` forces it; a list without `claude` skips it (so
+`--harness claude,codex` does both). A skipped adapter never refreshes or
+deletes an existing `~/.claude`, and `--global` prints one line saying whether
+the adapter ran and why. With no `--harness` and no Claude, `~/.claude` is not
+created. This is a change from earlier versions, where
+`--global --harness codex` still refreshed `~/.claude`.
+
+**Playbooks for any other agent.** Every agent can be pointed at the
+playbooks by path: `Read ~/.talos/skills/pipeline/SKILL.md and follow it`
+(the setup wizard is `~/.talos/skills/pipeline-setup/SKILL.md`, the resume
+briefing `~/.talos/skills/resume/SKILL.md`). `install.sh <repo>` prints that
+line, and the `AGENTS.md` block names the three paths.
+
+**Pointer skills in `~/.agents/skills`.** With `codex`, `pi`, `cursor` or
+`opencode` in the `--harness` list, `--global` also writes
+`${TALOS_AGENTS_HOME:-~/.agents}/skills/talos-<command>/SKILL.md` for the three
+commands: thin pointers to `~/.talos/skills/<command>/SKILL.md`, so there is no
+second playbook to drift. There is no detection (no `--harness`, `claude`,
+`antigravity`, `gemini` or `generic` write nothing under `~/.agents`), and
+per-repo mode writes none. A `SKILL.md` already at one of those paths that is
+not a Talos pointer is never overwritten, even though `--global` overwrites by
+default, and a symlink on the path is skipped with a notice.
+`TALOS_AGENTS_HOME` is an installer-only override, like `TALOS_HOME` and
+`CLAUDE_CONFIG_DIR`: no harness reads it, so set it only to point a trial run at
+a scratch directory. Gemini CLI gets no pointers, because its file tools are
+confined to the workspace (see the table below). To update every repo at once:
 
 ```bash
 git -C path/to/talos pull && bash path/to/talos/install.sh --global
@@ -300,8 +342,9 @@ pipeline — no remote, no `gh`/`glab`/`az`, no auth, no network. `plan.md`
 on a local LLM.
 
 ```bash
-# 1. Install Talos into the repo
-bash talos/install.sh /path/to/your-repo
+# 1. Install: once per machine, then once per repo
+bash talos/install.sh --global --harness pi   # ~/.talos, plus pointer skills in ~/.agents/skills
+bash talos/install.sh /path/to/your-repo      # talos.pipeline.* and the AGENTS.md block (commit it)
 
 # 2. Config — inline pi mode
 # talos.pipeline.yml:
@@ -311,20 +354,15 @@ agents:
 
 # 3. Queue work and run the pipeline in a pi session
 #    Add 'pipeline:ready' to a GitHub issue (or '- [ ]' to plan.md in file mode),
-#    then in the repo start pi and say: run the talos pipeline
+#    then in the repo start pi and say:
+#      Read ~/.talos/skills/pipeline/SKILL.md and follow it
 ```
 
-Register the `pipeline` skill so pi loads it — add this repo's `skills/` (and
-`agent-skills`) to pi's skill locations, e.g. in `~/.pi/settings.json`:
-
-```json
-{
-  "skills": [
-    "~/.claude/skills",
-    "~/path/to/talos/skills"
-  ]
-}
-```
+pi loads the pipeline from the pointer skills `talos-pipeline`,
+`talos-pipeline-setup` and `talos-resume` that `--harness pi` writes into
+`~/.agents/skills` (a directory pi scans), or from the `AGENTS.md` block, which
+names the same playbooks. No pi settings file needs editing, and this guide makes
+no claim about where pi keeps its settings or its default agent directory.
 
 The canonical playbook's Harness-compatibility section selects inline mode from
 `agents.subagents: false` / `agents.runner: pi`. The role profiles'
@@ -337,9 +375,14 @@ Codex has no native subagents, so role stages run headlessly through
 `pipeline-agent.sh`.
 
 ```bash
-# 1. Install with the codex harness flag
-bash talos/install.sh /path/to/your-repo --harness codex
+# 1. Install: once per machine (pointer skills in ~/.agents/skills), then once per repo
+bash talos/install.sh --global --harness codex
+bash talos/install.sh /path/to/your-repo
 ```
+
+Per-repo `--harness` only shapes the "Next steps" that `install.sh <repo>`
+prints and the Gemini import notice; the `AGENTS.md` block is the same for
+every harness.
 
 Every install writes a marker-fenced Talos block in your repo's `AGENTS.md`
 (not only `--harness codex`) that teaches Codex to act as the orchestrator and
@@ -367,8 +410,12 @@ agents:
 
 ```bash
 # 3. Bootstrap labels, queue an issue (same as Claude Code), then:
-codex "Run the Talos pipeline: follow .claude/skills/pipeline/SKILL.md"
+codex "Read ~/.talos/skills/pipeline/SKILL.md and follow it"
 ```
+
+Codex scans `~/.agents/skills` and reads `AGENTS.md`. Whether it can read
+`~/.talos` from outside the workspace under its default sandbox is UNVERIFIED
+(its docs are silent); see the table under the feature matrix.
 
 Set `issues.max_parallel: 1` — without native subagents, stages run
 sequentially in the working tree.
@@ -384,15 +431,29 @@ agents:
   runner: gemini        # stages run via: gemini -p "<prompt>"
 ```
 
+```bash
+# 1. Install: once per machine (~/.talos only, no pointer skills), then once per repo
+bash talos/install.sh --global --harness gemini
+bash talos/install.sh /path/to/your-repo
+```
+
 `install.sh <repo>` writes the `AGENTS.md` block for every harness. Gemini CLI
 reads `GEMINI.md` by default: either set `context.fileName` to
-`["AGENTS.md","GEMINI.md"]` in your Gemini settings, or re-run the install with
-`--import-agents-md` to add an `@AGENTS.md` import to an existing `GEMINI.md`.
-Then:
+`["AGENTS.md","GEMINI.md"]` in your Gemini settings (Talos prints this and never
+edits Gemini settings), or re-run the install with `--import-agents-md` to add
+an `@AGENTS.md` import to an existing `GEMINI.md`. Then:
 
 ```bash
-gemini "Run the Talos pipeline: follow .claude/skills/pipeline/SKILL.md"
+# 2. Bootstrap labels, queue an issue (same as Claude Code), then:
+gemini "Read ~/.talos/skills/pipeline/SKILL.md and follow it"
 ```
+
+**Caveat: that start line probably fails under Gemini's defaults.** Gemini's
+file tools are confined to the workspace (checked against the docs and the
+v0.62.0 source), so a model-initiated read of `~/.talos/skills/...` is refused.
+`install.sh` still prints this start line, and it is not presented here as
+working end to end. For that reason `--harness gemini` writes no pointer skills.
+Whether a workaround such as `/directory add ~/.talos` helps is UNVERIFIED.
 
 ## Setup: Google Antigravity
 
@@ -401,14 +462,16 @@ playbook; role stages run through the adapter.
 
 **Orchestrator:** `install.sh <repo>` writes a marker-fenced Talos block into
 your repo's `AGENTS.md` (every harness gets it; `--harness antigravity` is not
-required for that). Antigravity reads `AGENTS.md`
-natively since v1.20.3 — no separate config file is needed. Note: if both
-`GEMINI.md` and `AGENTS.md` exist in your project, `GEMINI.md` takes
-precedence in Antigravity's context loading.
+required for that). Per Antigravity's documentation (not run by Talos),
+`AGENTS.md` and `GEMINI.md` are both read and cumulative, with no stated
+precedence; no separate config file is needed. Antigravity has its own skill
+directories (`~/.gemini/config/skills`, `~/.gemini/antigravity-cli/skills`) and
+Talos writes nothing there.
 
 ```bash
-# 1. Install with the antigravity harness flag
-bash talos/install.sh /path/to/your-repo --harness antigravity
+# 1. Install: once per machine (~/.talos only), then once per repo
+bash talos/install.sh --global --harness antigravity
+bash talos/install.sh /path/to/your-repo
 ```
 
 **Runner config:** set `agents.runner: antigravity` in `talos.pipeline.yml`
@@ -426,7 +489,7 @@ agents:
 
 ```bash
 # 2. Bootstrap labels, queue an issue (same as Claude Code), then:
-agy "Run the Talos pipeline: follow .claude/skills/pipeline/SKILL.md"
+agy "Read ~/.talos/skills/pipeline/SKILL.md and follow it"
 ```
 
 Set `issues.max_parallel: 1` — without native subagents, stages run
@@ -458,6 +521,16 @@ agents:
 The `custom` runner pipes the assembled role prompt to `runner_cmd` on stdin.
 Any agentic CLI works the same way (Ollama-backed agents, Goose, OpenCode, …).
 
+Install Talos with the generic glue (or the CLI's own name when it is `cursor`
+or `opencode`), then start the playbook from the CLI:
+
+```bash
+bash talos/install.sh --global --harness generic   # ~/.talos only; "--harness opencode" or "cursor" also writes pointer skills
+bash talos/install.sh /path/to/your-repo
+# in your agentic CLI, in the repo:
+#   Read ~/.talos/skills/pipeline/SKILL.md and follow it
+```
+
 **Fully offline:** combine a local runner with `vcs.provider: file` — work
 items are checklist entries in `plan.md`, no `gh`, no network at all (skip
 notification credentials and nothing is posted).
@@ -474,12 +547,101 @@ catch bad stage output, but nothing gates the orchestrator itself.
 | Full pipeline (all roles/gates) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Parallel issues (`max_parallel > 1`) | ✅ | ❌ sequential | ❌ sequential | ❌ sequential | ❌ sequential | ❌ sequential |
 | Developer worktree isolation | ✅ | ❌ working tree | ❌ working tree | ❌ working tree | ❌ working tree | ❌ working tree |
-| Interactive setup wizard (`/pipeline-setup`) | ✅ | manual config | manual config | manual config | manual config | manual config |
+| Interactive setup wizard (`/pipeline-setup`) | ✅ `/pipeline-setup` | read `~/.talos/skills/pipeline-setup/SKILL.md` | read `~/.talos/skills/pipeline-setup/SKILL.md` | read `~/.talos/skills/pipeline-setup/SKILL.md` | read `~/.talos/skills/pipeline-setup/SKILL.md` | read `~/.talos/skills/pipeline-setup/SKILL.md` |
 | Optional review/verify skill enrichment | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Notifications / comments / board / file mode | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Native AGENTS.md orchestration | via CLAUDE.md | skill | ✅ | via GEMINI.md | ✅ (v1.20.3+) | N/A |
+| Native AGENTS.md orchestration | only without a `CLAUDE.md`, or via `@AGENTS.md` | native | native | via `context.fileName` or an import | native (cumulative with `GEMINI.md`) | depends on the CLI |
 
-(The notifications / comments / board / file mode row is harness-independent — plain bash.)
+(The notifications / comments / board / file mode row is harness-independent — plain bash. In the wizard row, any agent starts the wizard by reading its playbook; Claude Code also has the `/pipeline-setup` command. The wizard offers all six runner ids, with no default outside Claude Code, and writes the `AGENTS.md` block on its first run and on every re-run.)
+
+### Install and start, per harness
+
+Two axes, kept apart: `--harness` selects installer glue (what is written
+where) and `agents.runner` selects the CLI that runs stages. An unknown tool
+uses any `--harness` name, `agents.runner: custom`, and `agents.runner_cmd`
+(the prompt arrives on stdin).
+
+For every harness:
+
+- `bash talos/install.sh --global [--harness <list>]`, once per machine, writes
+  `${TALOS_HOME:-~/.talos}/{scripts,agents,templates,skills}`. `skills/<command>/SKILL.md`
+  holds `pipeline`, `pipeline-setup` and `resume`.
+- `bash talos/install.sh <repo> [--harness <list>] [--no-agents-md] [--import-agents-md]`
+  writes `talos.pipeline.*` (never overwritten), the one marker-fenced block in
+  `<repo>/AGENTS.md` (the same for every harness; it never writes the block into
+  `CLAUDE.md` or `GEMINI.md`), and agent-skills into `<repo>/.claude/skills` unless
+  `--no-agent-skills`. `--harness=x` is accepted too. Commit `AGENTS.md`: untracked,
+  it makes `assert-sync` abort on a dirty tree.
+- Role override for the adapter and pi inline paths:
+  `<repo>/.agents/talos/agents/<role>.md`, after `.claude/agents/<role>.md` and
+  before the install. The native Claude path never reads it.
+- Start line for any agent: `Read ~/.talos/skills/pipeline/SKILL.md and follow it`
+  (setup: `Read ~/.talos/skills/pipeline-setup/SKILL.md and follow it`; resume:
+  `Read ~/.talos/skills/resume/SKILL.md and follow it`). Claude Code has `/pipeline`,
+  `/pipeline-setup` and `/talos-resume` (global install; provisional until #335)
+  or `/talos:resume` (plugin).
+
+| Harness | `--global --harness` writes | `agents.runner` | Start line |
+|---------|-----------------------------|-----------------|------------|
+| Claude Code | `~/.talos` plus `~/.claude/{skills,agents}` (`pipeline`, `pipeline-setup`, `talos-resume`; role profiles) only when `claude` is listed, or with no `--harness` and Claude is detected | `claude` | `/pipeline` |
+| Codex CLI | `~/.talos` plus pointer skills | `codex` | `codex "Read ~/.talos/skills/pipeline/SKILL.md and follow it"` |
+| Gemini CLI | `~/.talos` only, no pointer skills | `gemini` | `gemini "Read ~/.talos/skills/pipeline/SKILL.md and follow it"` (probably fails under Gemini's defaults, see below) |
+| Antigravity | `~/.talos` only | `antigravity` (`agy -p`) | `agy "Read ~/.talos/skills/pipeline/SKILL.md and follow it"` |
+| pi | `~/.talos` plus pointer skills | `pi`, with `agents.subagents: false` (inline, no `pipeline-agent.sh`) | `Read ~/.talos/skills/pipeline/SKILL.md and follow it`, said in the pi session |
+| Cursor | `~/.talos` plus pointer skills | none: `custom` with `runner_cmd` | the plain-text line above |
+| OpenCode | `~/.talos` plus pointer skills | none: `custom` with `runner_cmd` | the plain-text line above |
+| generic or any unknown name | `~/.talos` only | `custom` with `runner_cmd` | the plain-text line above |
+
+"Pointer skills" are `${TALOS_AGENTS_HOME:-~/.agents}/skills/talos-<command>/SKILL.md`,
+written only by `--global` and only when `codex`, `pi`, `cursor` or `opencode`
+is in the list. Each is a thin pointer to `~/.talos/skills/<command>/SKILL.md`, so no
+second playbook can drift. An existing `SKILL.md` there that is not a Talos pointer
+is never overwritten, and a symlink on the path is skipped with a notice.
+`TALOS_AGENTS_HOME` is an installer-only override (like `TALOS_HOME` and
+`CLAUDE_CONFIG_DIR`); no harness reads it, so use it only to send a trial run to a
+scratch directory.
+
+**VERIFIED** (docs or source, as recorded when each piece landed):
+
+- Claude Code reads `AGENTS.md` only when there is no `CLAUDE.md`,
+  `.claude/CLAUDE.md` or `CLAUDE.local.md` in the working directory or above
+  (v2.1.277+), or through an `@AGENTS.md` import (code.claude.com/docs/en/memory).
+- Codex reads `AGENTS.md` and scans `$HOME/.agents/skills`.
+- Gemini CLI reads `GEMINI.md` by default and `AGENTS.md` only through
+  `context.fileName` (`["AGENTS.md","GEMINI.md"]`) or an `@AGENTS.md` import
+  (`--import-agents-md`). Its file tools are confined to the workspace (docs and
+  source v0.62.0), so a model-initiated read of `~/.talos/skills/...` fails under
+  the defaults. The start line is still the one `install.sh` prints; do not read
+  it as working end to end.
+- pi (0.85.1 source) scans `~/.agents/skills`, reads `AGENTS.md` (or `CLAUDE.md`),
+  and has no permission gate. Its resource loader does not load `.agents/talos/`;
+  Talos reads that override itself (`pipeline-agent.sh --resolve-profile <role>`).
+- Cursor (docs) reads `AGENTS.md` and scans `~/.agents/skills`; a skill's `name`
+  must equal its folder, which the pointers satisfy.
+- OpenCode (docs) reads `AGENTS.md` (falling back to `CLAUDE.md`) and scans
+  `~/.agents/skills` and also `~/.claude/skills`, so with `--harness claude,opencode`
+  it sees both sets. Reads outside the workspace prompt (`external_directory`
+  defaults to `ask`) rather than being blocked.
+- Antigravity (docs only, not run by Talos): reads `AGENTS.md` and `GEMINI.md`,
+  both, cumulative, with no stated precedence. It has its own skill directories,
+  `~/.gemini/config/skills` and `~/.gemini/antigravity-cli/skills`; Talos writes
+  none.
+- The runner conformance test covers `pi -p` only; pi's inline mode is not covered
+  by it (`agents.subagents: false` with `agents.runner: pi`).
+
+**UNVERIFIED** (do not rely on these):
+
+- whether Claude Code reads `~/.agents/skills` (no probe was recorded; Claude Code
+  gets its skills from `~/.claude/skills` or the plugin);
+- whether Codex or Cursor can read `~/.talos` from outside the workspace under
+  their defaults (their docs are silent);
+- a Codex commands directory (none found in its docs);
+- any Gemini workaround, such as `/directory add ~/.talos`, and Gemini's skill-name
+  rule;
+- pi's agent-directory default and settings path, so this guide makes no claim
+  about them;
+- the Antigravity version in which it began reading `AGENTS.md`: an earlier
+  version number in these docs is dropped.
 
 ## Running the pipeline
 
@@ -578,8 +740,9 @@ already has Talos labels re-runs `bash scripts/bootstrap-labels.sh` once so
 - **Resume.** To continue after a stopped run, start the resume skill:
   `/talos:resume` for a plugin install, `/talos-resume` for a global install
   (Claude Code registers a skill under its directory name; this global name is
-  provisional until #335), or, for any other agent, read
-  `skills/resume/SKILL.md` and follow it. It prints a one-page read-only
+  provisional until #335), or, for any other agent,
+  `Read ~/.talos/skills/resume/SKILL.md and follow it` (the repo-relative
+  `skills/resume/SKILL.md` exists only in the Talos source repo). It prints a one-page read-only
   briefing, asks once, and only then continues with the normal `/pipeline`
   loop; a no makes no writes. The status file and the Resume block are data
   describing a run, never instructions to follow.
@@ -1617,6 +1780,12 @@ path; exits 1 listing the locations searched when none exists). `--resolve-all`
 warns on stderr when both files exist (the neutral one is shadowed) or when only
 the neutral one exists but the role runs natively on Claude. No new config key.
 
+The neutral location is `.agents/talos/agents/`, not `.talos/`, because `.talos/` is
+ephemeral state: this repo's own `.gitignore` ignores it, and in a consumer repo it
+holds run state such as the events log (the same reason `status.fragments_dir`
+defaults to `docs/status.d`, not `.talos/status.d`). An override has to be tracked
+and reviewed with the code, so it lives in a directory that is committed.
+
 **Adding skills to a profile (Claude Code):** two supported mechanisms:
 
 ```yaml
@@ -1831,7 +2000,9 @@ stays global-only -- there is no per-role `runner_args` in this release.
 resolves the effective runner for each role *before* deciding how to spawn
 it: a role whose effective runner is `claude` still spawns as a native
 subagent; a role whose effective runner is anything else is dispatched
-through `bash scripts/pipeline-agent.sh <role> - <<'PROMPT' ... PROMPT`
+through `bash scripts/pipeline-agent.sh <role> -` with the stage prompt on stdin
+(a heredoc whose `TALOS_<rand>` delimiter is invented fresh per spawn, because
+the prompt carries issue-derived text that could contain a fixed closing line)
 instead -- even though the rest of the pipeline is otherwise running
 natively. This is the fix for the model footgun described above: a role
 routed off `claude` no longer silently keeps using the native path at
@@ -2075,13 +2246,14 @@ Skills are still referenced by **bare name**, never by plugin id, so Claude
 Code's built-in `code-review` / `security-review` and your own `.claude/skills/`
 satisfy the same references.
 
-**Vendored installs do not pull agent-skills.** The dependency belongs to the
-plugin; `install.sh` copies files and installs nothing. agent-skills is not
-Claude-Code-only — it ships `.gemini/`, `.opencode/`, `.codex-plugin/` and an
-`AGENTS.md` covering Antigravity — so install it separately on those harnesses to
-get the full behaviour. Every profile carries a fallback either way: use the
-skills where they are present, otherwise follow the embedded steps. The pipeline
-runs regardless.
+**agent-skills and the installer.** The plugin declares agent-skills as a
+dependency. `install.sh <repo>` fetches it for you into `<repo>/.claude/skills/`
+(it needs network and the `git` binary; skip it with `--no-agent-skills`; a failed
+fetch never aborts the install). That directory is read by Claude Code (and, per
+its docs, Cursor and OpenCode), but not by Codex, Gemini CLI or pi, which read
+`.agents/skills`; on those harnesses the roles use their embedded steps. Every
+profile carries that fallback: use the skills where they are present, otherwise
+follow the embedded steps. The pipeline runs regardless.
 
 **If you already use agent-skills from Addy's marketplace**, you will end up with
 it registered twice — `agent-skills@addy-agent-skills` and `agent-skills@talos`.
