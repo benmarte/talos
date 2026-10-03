@@ -414,10 +414,10 @@ _map_changed_path() {
     tests/test-*.sh)
       _add_selected "$(basename "$p")"
       ;;
-    scripts/pipeline-*.sh)
+    scripts/pipeline-*.sh|scripts/pipeline-*.py)
       base="$(basename "$p")"
       name="${base#pipeline-}"
-      name="${name%.sh}"
+      name="${name%.*}"
       before="${#SELECTED_SET[@]}"
       _add_glob_matches "test-${name}*.sh"
       _add_referencing "$base"

@@ -320,7 +320,7 @@ if [ "$GLOBAL" = "true" ]; then
   echo "Claude Code adapter $_adapter_state ($CLAUDE_WHY). Override: --harness claude forces it; a --harness list without claude skips it."
   echo ""
 
-  # Scripts -- glob every *.sh in $SRC/scripts so a new script is picked up
+  # Scripts -- glob every *.sh (and *.py, below) in $SRC/scripts so a new script is picked up
   # automatically; a hardcoded list drifts from the repo (#276).
   echo "Scripts:"
   mkdir -p "$TALOS_HOME_DIR/scripts"
@@ -329,6 +329,12 @@ if [ "$GLOBAL" = "true" ]; then
     script="$(basename "$script_src")"
     install_file "$script_src" "$TALOS_HOME_DIR/scripts/$script"
     chmod +x "$TALOS_HOME_DIR/scripts/$script"
+  done
+  # Python helpers imported by the scripts (pipeline-spend-format.py, #393):
+  # same install_file / --force rules, no chmod -- they are imported, not run.
+  for script_src in "$SRC"/scripts/*.py; do
+    [ -f "$script_src" ] || continue
+    install_file "$script_src" "$TALOS_HOME_DIR/scripts/$(basename "$script_src")"
   done
 
   # Agents -> ~/.talos/agents/ (read by pipeline-agent.sh for pi/codex/gemini/

@@ -278,6 +278,19 @@ templates_diff="$(diff -rq "$TALOS_ROOT/templates" "$T9_HOME/.talos/templates" 2
 [ -z "$templates_diff" ] && pass "--global templates/ matches repo templates/ structurally (#276)" \
   || fail "--global templates/ matches repo templates/ structurally (#276)" "$templates_diff"
 
+# ── Test 9b: scripts/*.py ships with --global, and cost --line works from it ─
+# (#393) install.sh used to copy *.sh only, so pipeline-spend-format.py never
+# reached ~/.talos/scripts and `cost --line` printed nothing on a global install.
+assert_file_exists "$T9_HOME/.talos/scripts/pipeline-spend-format.py" \
+  "--global installs scripts/pipeline-spend-format.py next to the .sh scripts (#393)"
+mkdir -p "$SANDBOX/.talos"
+printf '%s\n' '{"event":"developer","role":"developer","issue":7,"pr":null,"verdict":"PASS","tokens":1500,"tool_uses":3,"duration_s":60,"ts":"2026-10-03T00:00:00Z"}' \
+  > "$SANDBOX/.talos/events.jsonl"
+t9_line="$(cd "$SANDBOX" && bash "$T9_HOME/.talos/scripts/pipeline-events.sh" cost --issue 7 --line 2>/dev/null)"
+assert_eq "talos: #7 developer done — 2k tokens, 3 tools, 1m00s · issue total 2k (dev 2k)" "$t9_line" \
+  "cost --line works from the installed copy (#393)"
+rm -f "$SANDBOX/.talos/events.jsonl"
+
 # ── Test 10: a NEW scripts/*.sh is installed with zero install.sh edits ─────
 # Build a scratch copy of just what install.sh reads from $SRC, add a brand
 # new script, and prove --global installs it -- covering "adding a new
