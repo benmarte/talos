@@ -133,6 +133,18 @@
 #     in the fragments, the log or any archive file, one entry is written from
 #     the PR title (`pipeline-vcs.sh view-pr <pr>`; the text `merged` when the
 #     title cannot be read), dated today.
+#   * Spend (#384): an entry whose (issue, PR) pair has stage events in the
+#     events log reads `- DATE PR #P (#I): [3.41M tokens] <text>` (or
+#     `[PR 3.41M · issue 3.52M tokens]` when the issue total differs, `, +K
+#     unrecorded`, or `[tokens unrecorded]`). The figures come from
+#     `pipeline-events.sh cost --json` run in the caller's checkout before the
+#     temporary worktree exists, orchestrator rows dropped, and reach python as
+#     files, formatted by pipeline-spend-format.py (loaded by explicit path
+#     from this script's directory). No log, no events for the pair, an
+#     unusable result or a missing module: the entry is untagged. The tag leads
+#     the text, so the cap above only cuts the text. Only a new fragment for
+#     the same PR replaces an entry (and retags it); a second --pr fallback
+#     run is a no-op.
 #
 # Rolling window: "today" is UTC, or TALOS_STATUS_TODAY=YYYY-MM-DD. Entries
 # are sorted newest first (date, then PR number, descending); an entry is
@@ -327,7 +339,7 @@ LOG_MAX="$(_sf_posint status.log_max 50 10000)"
 #    window, shared by init and assemble. Large inputs arrive on stdin
 #    (assemble: "<sha> <name>" lines) or are read by python itself. ──────────
 IFS= read -r -d '' SF_PY <<'PYEOF' || true
-import datetime, json, os, re, signal, subprocess, sys, time, unicodedata
+import datetime, importlib, json, os, re, signal, subprocess, sys, time, unicodedata
 
 MAX_LINES = 3
 MAX_CHARS = 400
@@ -444,8 +456,70 @@ def escape_cont(l):
     return l
 
 
+_fmt = []  # [module or None], filled by the first spend_tag that needs it
+
+
+def load_fmt():
+    """The shared formatter module (#393), loaded by explicit path from the
+    script's own directory (never the cwd). Missing or broken: one stderr
+    note, no tags, and assemble carries on."""
+    if not _fmt:
+        try:
+            sys.path.insert(0, opts['script-dir'])
+            _fmt.append(importlib.import_module('pipeline-spend-format'))
+        except Exception as e:
+            sys.stderr.write('pipeline-status-file: pipeline-spend-format.py '
+                             'unavailable (%s); entries untagged\n' % type(e).__name__)
+            _fmt.append(None)
+    return _fmt[0]
+
+
+def spend_scope(fmt, issue, pr, kind):
+    """(events, tokens, unrecorded) from one saved `cost --json` result with
+    the orchestrator row dropped, or None for anything unusable."""
+    try:
+        with open(os.path.join(opts['spend-dir'], '%d-%d.%s' % (issue, pr, kind)), 'rb') as f:
+            obj = json.loads(f.read(1048576).decode('utf-8', 'replace'))
+        sums = [0, 0, 0]
+        for row in obj['rows']:
+            if row['role'] == 'orchestrator':
+                continue
+            vals = [fmt.as_count(row[k]) for k in ('events', 'tokens', 'unrecorded')]
+            if None in vals:
+                return None
+            sums = [a + b for a, b in zip(sums, vals)]
+        return tuple(sums)
+    except Exception:
+        return None
+
+
+def spend_tag(issue, pr):
+    """'[3.41M tokens]' for the merged PR, or '' when there is nothing to say
+    (no saved figures, no events for the pair, or any figure unusable)."""
+    if 'spend-dir' not in opts or not os.path.isfile(
+            os.path.join(opts['spend-dir'], '%d-%d.pr' % (issue, pr))):
+        return ''
+    fmt = load_fmt()
+    if fmt is None:
+        return ''
+    on_pr = spend_scope(fmt, issue, pr, 'pr')
+    on_issue = spend_scope(fmt, issue, pr, 'issue')
+    if on_pr is None or on_issue is None or on_pr[0] == 0:
+        return ''
+    events, tokens, unrecorded = on_pr
+    if unrecorded >= events:
+        return '[tokens unrecorded]'
+    shown = fmt.fmt_num(tokens)
+    if on_issue[1] != tokens:
+        shown = 'PR %s · issue %s' % (shown, fmt.fmt_num(on_issue[1]))
+    return '[%s tokens%s]' % (shown, ', +%d unrecorded' % unrecorded if unrecorded else '')
+
+
 def build_entry(date, pr, issue, lines):
-    out = ['- %s PR #%s (#%s): %s' % (date, pr, issue, lines[0])]
+    # The tag leads the first line, so the caps below only ever cut the text.
+    tag = spend_tag(int(issue), pr) if str(issue).isdigit() else ''
+    first = ('%s %s' % (tag, lines[0])) if tag and lines[0] else (tag or lines[0])
+    out = ['- %s PR #%s (#%s): %s' % (date, pr, issue, first)]
     out += ['  ' + escape_cont(l) for l in lines[1:]]
     cut = len(out) > MAX_LINES
     out = out[:MAX_LINES]
@@ -1058,6 +1132,27 @@ _sf_list_fragments() {
     '$1 ~ /^100(644|755) blob / && $2 ~ /^[0-9]+-[0-9]+\.md$/ && length($2) <= 22 { split($1, a, " "); print a[3] " " $2 }'
 }
 
+# _sf_spend_fetch ISSUE PR: save `pipeline-events.sh cost --json` for the issue
+# and for the (issue, PR) pair as $_SF_TMP/spend/<issue>-<pr>.{issue,pr} (ints,
+# so 012-040.md and 12-40 are one pair). Python reads the files; the figures
+# never ride in code or argv. Any failure leaves no file, so the entry stays
+# untagged. A pair already fetched is kept: the log does not change with a push.
+_sf_spend_fetch() {
+  local i="$1" p="$2" base
+  case "$i$p" in ''|*[!0-9]*) return 0 ;; esac
+  [ "${#i}" -le 9 ] && [ "${#p}" -le 9 ] || return 0
+  i=$((10#$i)) p=$((10#$p))
+  base="$_SF_TMP/spend/$i-$p"
+  [ ! -e "$base.pr" ] || return 0
+  bash "$SCRIPT_DIR/pipeline-events.sh" cost --issue "$i" --json </dev/null \
+      >"$base.issue.part" 2>/dev/null \
+    && bash "$SCRIPT_DIR/pipeline-events.sh" cost --issue "$i" --pr "$p" --json </dev/null \
+      >"$base.pr.part" 2>/dev/null \
+    && mv "$base.issue.part" "$base.issue" && mv "$base.pr.part" "$base.pr"
+  rm -f "$base.issue.part" "$base.pr.part"
+  return 0
+}
+
 # ── Disposable worktree (same shape as pipeline-changelog.sh): outside any
 # checkout, serialized with with_lock on the key pipeline-worktree.sh uses,
 # removed on every exit path including INT/TERM. ─────────────────────────────
@@ -1223,6 +1318,19 @@ while :; do
       | head -c 65536 > "$_SF_TMP/title.json" || true
   fi
 
+  # Spend figures (#384) are read here, in the caller's checkout, before the
+  # temporary worktree exists (the events log is found from this cwd).
+  if [ "$verb" = "assemble" ]; then
+    mkdir -p "$_SF_TMP/spend"
+    [ -z "$PR" ] || _sf_spend_fetch "$ISSUE" "$PR"
+    while read -r _sf_sha _sf_name; do
+      _sf_name="${_sf_name%.md}"  # <issue>-<pr>
+      case "$_sf_name" in
+        *-*) _sf_spend_fetch "${_sf_name%%-*}" "${_sf_name#*-}" ;;
+      esac
+    done <<< "$FRAG_LIST"
+  fi
+
   if ! with_lock "$_SF_LOCK" 10 -- \
       git worktree add -q --detach "$_SF_TMP/wt" "origin/$BASE_BRANCH" >/dev/null 2>&1; then
     _sf_err "could not create temp worktree for origin/$BASE_BRANCH"
@@ -1234,9 +1342,10 @@ while :; do
   SUBJECT="docs(status): refresh resume block [skip ci]"
   DONE_MSG="refreshed the resume block in $STATUS_FILE on $BASE_BRANCH and pushed"
   if [ "$verb" = "assemble" ]; then
-    printf '%s\n' "$FRAG_LIST" | python3 -I -c "$SF_PY" assemble "$_SF_TMP/wt" \
+    printf '%s\n' "$FRAG_LIST" | python3 -I -B -c "$SF_PY" assemble "$_SF_TMP/wt" \
       "$STATUS_FILE" "$FRAG_DIR" "$ARCHIVE_DIR" "$LOG_HEADING" "$RESUME_HEADING" \
-      "$LOG_DAYS" "$LOG_MAX" "$TODAY" "$PR" "$ISSUE" "$_SF_TMP/title.json" "$_SF_MANIFEST"
+      "$LOG_DAYS" "$LOG_MAX" "$TODAY" "$PR" "$ISSUE" "$_SF_TMP/title.json" "$_SF_MANIFEST" \
+      --spend-dir "$_SF_TMP/spend" --script-dir "$SCRIPT_DIR"
     _SF_RC=$?
     if [ "$_SF_RC" -ne 0 ]; then
       _sf_err "assembly failed (rc=$_SF_RC) — fragments left in place"
