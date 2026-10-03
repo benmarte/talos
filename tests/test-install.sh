@@ -36,7 +36,7 @@ else
 fi
 
 # ── Global install mode ───────────────────────────────────────────────────────
-# --global writes scripts, agents, templates to ~/.talos/ and skills to ~/.claude/skills/.
+# --global writes scripts, agents, templates and skills to ~/.talos/ and skills to ~/.claude/skills/.
 GLOBAL_HOME="$SANDBOX/.global-home"
 FAKE_CLAUDE_HOME="$SANDBOX/.fake-claude"
 mkdir -p "$GLOBAL_HOME" "$FAKE_CLAUDE_HOME"

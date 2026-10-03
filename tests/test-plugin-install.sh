@@ -224,7 +224,8 @@ else
   fail "plugin.json carries no no-op scripts field"
 fi
 
-for s in pipeline pipeline-setup resume; do
+. "$TALOS_ROOT/scripts/pipeline-contract.sh"
+for s in "${TALOS_COMMANDS[@]}"; do
   assert_file_exists "$TALOS_ROOT/skills/$s/SKILL.md" \
     "$s skill sits in the default skills/ scan path"
 done

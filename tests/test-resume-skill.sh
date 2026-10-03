@@ -105,7 +105,9 @@ assert_eq "1" "$([ -n "$p1" ] && [ -n "$p2" ] && [ -n "$p3" ] && [ "$p1" -lt "$p
 assert_contains "$POST" 'After a no' "after no: has a no branch"
 assert_contains "$POST" 'no writes' "after no: no writes"
 assert_contains "$POST" 'skills/pipeline/SKILL.md' "pipeline playbook: repo location"
-assert_contains "$POST" '.claude/skills/pipeline/SKILL.md' "pipeline playbook: global install location"
+assert_contains "$POST" '~/.talos/skills/pipeline/SKILL.md' "pipeline playbook: global install location"
+assert_contains "$POST" '$TALOS_HOME/skills/pipeline/SKILL.md' "pipeline playbook: global install location when TALOS_HOME is set"
+assert_contains "$POST" '~/.claude/skills/pipeline/SKILL.md' "pipeline playbook: older-install fallback"
 assert_contains "$POST" 'talos:pipeline' "pipeline playbook: plugin name"
 
 # ── Fix round 1 (#360): the path after a yes, and the data rules ─────────────
