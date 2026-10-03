@@ -466,7 +466,8 @@ def render_summary(fmt):
             r["unrecorded"] += 1
         else:
             r["tokens"] = _add(r["tokens"], tokens)
-        r["models"].setdefault(role, []).append(model)
+        # the role comes from the log: cut to 20 chars, then reduced to [A-Za-z0-9_-]
+        r["models"].setdefault(fmt.role_abbrev(safe(role)), []).append(model)
 
     def num_key(s):
         return (0, int(s)) if (s or "").isdigit() else (1, 0)
@@ -504,8 +505,12 @@ def render_summary(fmt):
             folded += " (+%d unrecorded)" % rest_unrecorded
 
     def stage_models(by_role):
-        """One cell: each stage and the models it ran with, first-seen order."""
-        return " · ".join("%s %s" % (fmt.role_abbrev(role), fmt.model_summary(ms)) for role, ms in by_role.items())
+        """One cell: each stage and the models it ran with, first-seen order;
+        past 8 stages the rest fold into `+K more`."""
+        parts = ["%s %s" % (role, fmt.model_summary(ms)) for role, ms in by_role.items()]
+        if len(parts) > 8:
+            parts = parts[:8] + ["+%d more" % (len(parts) - 8)]
+        return " · ".join(parts)
 
     table = [("issue", "PR", "tokens", "unrecorded", "stage models")]
     for k in shown:
