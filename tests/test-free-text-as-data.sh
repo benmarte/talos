@@ -281,7 +281,7 @@ SUBS = {
 def fill(line):
     for a, b in SUBS.items():
         line = line.replace(a, b)
-    return re.sub(r"<[A-Za-z][^<>\n]*>", "x", line) if "python3 -c" not in line else line
+    return re.sub(r"<[A-Za-z][^<>\n]*>", "x", line) if not re.search(r"python3 (-I )?-c", line) else line
 
 
 lines, res, k = script.split("\n"), [], 0

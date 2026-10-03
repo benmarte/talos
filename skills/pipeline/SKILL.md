@@ -309,7 +309,7 @@ export SUMMARY DETAILS
 COMMENT_BODY="$(
   HEADER="<HEADER>" ISSUE="#<N>" PR="<PR_or_empty>" \
   VERDICT="<VERDICT>" \
-  python3 -c "
+  python3 -I -c "
 import os, string, sys
 if not os.environ.get('HEADER'):
     sys.exit('HEADER is unset or empty -- set it from the prompt Comment header: line; nothing posted')
@@ -488,7 +488,7 @@ bash scripts/pipeline-vcs.sh list-issues
        [ -f "$TMPL" ] || TMPL=".claude/talos/templates/comments/epic-acceptance-pending.md"
        COMMENT_BODY="$(
          HEADER="<HEADER>" DETAILS="$ITEMS" \
-         python3 -c "
+         python3 -I -c "
        import os, string, sys
        with open(sys.argv[1]) as f:
            t = string.Template(f.read())
