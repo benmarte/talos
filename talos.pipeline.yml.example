@@ -582,8 +582,8 @@ limits:
 #   when: user-facing        # evidence.when: user-facing | always. Default: user-facing.
 #   store: attach            # evidence.store: attach (uploaded with gh pr comment
 #                            # --attach). Default: attach.
-#   max_files: 12            # evidence.max_files: integer 1-100. Default: 12.
-#   max_mb: 25               # evidence.max_mb: integer 1-100. Default: 25.
+#   max_files: 10            # evidence.max_files: integer 1-100. Default: 10.
+#   max_mb: 20               # evidence.max_mb: integer 1-100. Default: 20.
 
 # ── Approval-marker author trust (#187) ────────────────────────────────────────
 # check-approval-sha / read-attempt only trust talos:approval / talos:attempt

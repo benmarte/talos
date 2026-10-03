@@ -266,7 +266,7 @@ PYLOADER
 # _validate_evidence_key(key, value) -> the validated value, or None after one
 # stderr warning (callers treat None as absent), and _evidence_apply(flat) for
 # the --dump dict. A key outside evidence.* passes through untouched. Defaults
-# (false, 12, 25, attach, user-facing) belong to the CALLER; nothing here
+# (false, 10, 20, attach, user-facing) belong to the CALLER; nothing here
 # injects one. Evidence is uploaded with `gh pr comment --attach` only (owner
 # decision on #352).
 read -r -d '' _CFG_EVIDENCE_PY <<'PYEVIDENCE' || true

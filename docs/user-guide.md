@@ -1768,6 +1768,120 @@ where noted:
 - fixing the default `cost` table's orchestrator `unrecorded` count;
 - honouring `placement`.
 
+### Attaching evidence to the PR (`evidence.*`, #352)
+
+Evidence capture lets QA attach screenshots or recordings of a user-facing change to its PR, as one comment, so a human reviewer can see the change without checking the branch out. It is **off by default** and strictly opt-in. The files go up with `gh pr comment --attach`; there is no other store (`evidence.store` has one value, `attach`).
+
+QA captures only after it has passed every acceptance criterion, once per QA run. Evidence never changes QA's verdict: `failed`, `refused`, `over-cap`, `empty`, a non-zero capture rc and a tool timeout are reported, and none of them is a FAIL, including under `when: always`. A re-stamp never captures. There is no step after the merge.
+
+#### Turning it on
+
+`/pipeline-setup` asks in Step 4c, after the status-file question:
+
+- It is skipped with one line for `vcs.provider` `gitlab`, `azure` and `file` (see the provider matrix below). On `github` it first checks that `gh pr comment --help` lists `--attach`; if not, it says evidence needs gh 2.99.0 or newer and offers only "off". That checks the machine running setup; the machine running the pipeline needs the same.
+- It detects Playwright (`playwright.config.*`), Cypress (`cypress.config.*`) and an e2e harness (`tests/e2e/` or a `test:e2e` script) and proposes a `command` and a `dir`. With neither Playwright nor Cypress, it offers agent capture (no `command`: QA's browser skill saves screenshots into `dir`, best effort, no recordings) or off. A command you type is written to the config as text; setup never runs it.
+- It names the costs (public attachments, on-screen secrets, size limits) and the default is **off**. "Ask me later" writes nothing, so the next run of `/pipeline-setup` asks again. "Off" writes an active `evidence:` block with `enabled: false`, so it is not asked again. The Step 0 re-run of an existing setup asks once when `evidence.enabled` is unset.
+- On "on" it offers to append `<dir>/` to `.gitignore` (see below).
+
+Or write the block yourself:
+
+```yaml
+evidence:
+  enabled: true
+  dir: .talos/evidence
+  command: "npx playwright test --grep @evidence"   # omit for agent capture
+```
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `evidence.enabled` | `false` | The gate. Must be exactly `true`; `attach` runs nothing otherwise. |
+| `evidence.command` | unset (empty means agent capture) | Shell command that writes the files. At most 2000 characters. |
+| `evidence.dir` | `.talos/evidence` | Where the files are written, relative to the repo root. 1-200 characters from `[A-Za-z0-9._/-]`, no leading `-` or `/`, no `..` or `.git` component. |
+| `evidence.include` | unset (png, jpg, jpeg, gif, webm, mp4, mov) | 1-20 basename globs of 1-64 characters. Narrows the selection; never adds a type. |
+| `evidence.when` | `user-facing` | `user-facing` or `always`. |
+| `evidence.store` | `attach` | The only value. |
+| `evidence.max_files` | `10` | Integer 1-100. |
+| `evidence.max_mb` | `20` | Integer 1-100, MiB, a total. A fixed 10 MiB per-file cap applies on top. |
+
+An invalid value warns once and reads as absent, so the default applies. `evidence.*` in the user-level file (`~/.talos/talos.pipeline.*`) is ignored: only `agents.*` is read from there, so evidence is always chosen per repo.
+
+#### `.gitignore` is required
+
+The default `.talos/evidence` is not something you want tracked, and whatever `dir` you choose must be git-ignored. `collect` refuses a directory git does not ignore (it checks `git check-ignore -q -- <dir>/probe.png`, a child path, because a rule such as `ev/*` ignores the children and not the directory) and refuses a directory that holds any tracked file. Step 4c offers to append `<dir>/` to `.gitignore`; commit that change with the config. Cypress's default `cypress/` holds tracked tests, so point `screenshotsFolder` and `videosFolder` at a separate directory such as `cypress/evidence`.
+
+#### Commands
+
+All are verbs of `scripts/pipeline-evidence.sh`. `capture`, `collect`, `dir` and `enabled` are local: no network call and no git write. `upload` and `attach` are the only ones that talk to GitHub.
+
+| Verb | What it does | Exit codes |
+|------|--------------|-----------|
+| `capture` | Runs `evidence.command` with `bash -c` at the repo root, stdin on `/dev/null`, output in a private log. Takes no argument. Prints `evidence-capture rc=<n> log=<path> since=<epoch>`, or `evidence-capture mode=agent` (and runs nothing) when `evidence.command` is empty. `verify.timeout_ms` is a hard limit on the command's process group. A non-zero `rc` is reported, not a failure. | 0 a line was printed; 1 the log or runner failed; 2 usage |
+| `collect <dir> [--since <epoch>] [--stage <dir>]` | Prints the files that are safe to publish, one TSV line each (`<relpath>`, bytes, `image` or `video`). `--since` drops files older than the capture; `--stage` copies the selection into an empty directory outside the evidence dir. | 0 manifest; 1 refused (reason on stderr); 2 usage; 3 nothing selected; 4 over a cap |
+| `upload <pr> [--since <epoch>] [--dry-run]` | Posts ONE evidence comment with the selected files, then deletes the author's older evidence comments (create, then delete, so a failed post keeps the old one). `--dry-run` prints the planned `gh` calls and makes none. | 0 posted; 1 collect, staging or `gh` failure; 2 usage, unsupported provider or `gh` without `--attach`; 3 nothing to attach |
+| `attach <pr> [--since <epoch>] [--dry-run]` | The one call a stage makes: the `evidence.enabled` gate, then `capture`, then `upload`, then one status line. | 0 posted, empty, over-cap; 1 refused, failed; 2 usage, evidence disabled, unsupported provider, no `gh`, or `gh` without `--attach` |
+| `dir` | Prints the evidence dir (`evidence.dir` or `.talos/evidence`). Agent capture saves its files there. | 0 |
+| `enabled` | The Step 0 check. Exit 1 with no output when `evidence.enabled` is not `true`; exit 1 with one `pipeline: evidence ignored: <reason>` line on stderr when the provider or `gh` cannot do it (warn once, treat evidence as off, like `pr.draft`); otherwise exit 0 and print `evidence on when=<user-facing\|always> mode=<command\|agent>`. Runs no command and makes no provider call. | 0 on; 1 off |
+
+`attach` prints exactly one line on stdout:
+
+```text
+evidence-attach pr=<n> status=<s> images=<i> videos=<v> capture=<c> comment=<url>
+```
+
+`capture` is the command's rc (124 on timeout), `agent`, or `skipped` (`--dry-run`). `comment` is empty unless a comment was posted. `status` is one of:
+
+| Status | Meaning |
+|--------|---------|
+| `posted` | The comment is up and `comment=` holds its URL. This can come with exit 1 when only deleting an older comment failed. Decide from `status=` plus a non-empty `comment=`, not the exit code. |
+| `empty` | Nothing in the evidence dir was selected (nothing new since the capture, or nothing of an allowed type). Nothing is posted. |
+| `over-cap` | More than 10 files, 20 MiB in total or 10 MiB in one file. `collect` exits 4, so nothing is selected. Nothing is posted. |
+| `refused` | `collect` refused (a directory git does not ignore, a tracked file, a symlink, a bad path). The reason is on stderr. |
+| `failed` | Any other `collect`, staging or `gh` failure. |
+
+`attach` exiting 2 with empty stdout (disabled, unsupported provider, old `gh`) is shown by QA as `evidence unavailable`. No status-only comment is ever posted: `empty`, `over-cap` and `refused` are this one line. After an `over-cap` or `empty` later round, the earlier evidence comment stays; the line is the signal.
+
+#### What each stage does
+
+- **Orchestrator, Step 0.** Runs `enabled`. On exit 0 evidence is on for the run; on anything else nothing evidence-related happens.
+- **QA.** On a first QA dispatch, or a retry after a fix round, the orchestrator appends QA's evidence procedure (`templates/prompts/qa-evidence.md`) to its prompt; with evidence off, QA's prompt has no evidence text at all. In `mode=agent` QA notes `date +%s` before it takes screenshots and saves them only under `dir`, then passes that epoch as `--since`. In `mode=command` it runs `attach <pr>` under `pipeline-verify.sh`, in the foreground. With `when: user-facing`, QA runs it only when the PR touches a UI path or the criteria describe a UI; otherwise it writes `evidence skipped: not user-facing`. A FAIL gets no evidence: the fix round's QA captures again on the new head. QA relays the `evidence-attach` line as one bullet of its verdict.
+- **Reviewer.** Gets one extra line, `Evidence: <url>`, only when QA's status is `posted` and `check-url <pr>` accepts the `comment=` value: it must be exactly one line, this repository's own `https://github.com/<owner>/<repo>/pull/<pr>#issuecomment-<digits>`. Any other host, PR, repo or extra text is dropped. The line is also omitted under `pr.draft` (review runs before QA there). The reviewer is told not to open, fetch or read the link.
+
+QA never opens, Reads or describes an image or video, and never fetches the comment body, so evidence adds no image tokens to any stage. The reviewer is given a URL, not the image.
+
+#### Requirements and limits
+
+| `vcs.provider` | Evidence |
+|----------------|----------|
+| `github` | supported |
+| `github-api` | supported when a `gh` binary is installed; otherwise exit 2 |
+| `gitlab`, `azure`, `file` | not supported (exit 2); the run goes on without evidence |
+
+- **`gh` v2.99.0 or newer.** Talos probes the capability, not the version: `gh pr comment --help` must list `--attach`. (v2.102.0 is the version whose source the upload design was checked against.)
+- **Write access** to the repository.
+- **Not GitHub Enterprise Server.** `gh --attach` does not support it.
+- **Not the Actions `GITHUB_TOKEN`.** `gh` refuses it (exit 1 with `gh`'s own reason). Run the pipeline on a dev machine, or give it a personal access token; the default token in a workflow does not work.
+- **Uploads cannot be deleted.** Deleting a comment, including the older evidence comment `upload` removes after a good post, does not delete the uploaded files.
+- **Caps.** 10 files, 20 MiB in total and 10 MiB per file (`evidence.max_files`, `evidence.max_mb` and a fixed per-file cap). Over any of them is exit 4 and nothing is selected, never a partial upload.
+- **Allowlisted types only.** `png`, `jpg`, `jpeg`, `gif`, `webm`, `mp4` and `mov`, each checked against the file's first bytes (a renamed file is skipped). `svg` and `html` are never published, even when `evidence.include` names them. At most 3 directory levels below `dir`, names only from `[A-Za-z0-9._-]`, no hidden files, no symlinks, no hard links.
+
+#### Rendering
+
+Images render inline in the comment. A video renders as a player only when it is the sole content of its paragraph, which is how `upload` writes the body (one paragraph per file). That comes from reading `gh`'s source, not from rendering a comment on github.com.
+
+#### Security
+
+- **Screenshots and recordings can hold on-screen secrets** (tokens, emails, internal URLs). Magic bytes prove a file's type, not that the picture is clean. The real boundary is the evidence dir, the allowlist and `--since`: only files written by this capture, in that directory, are considered.
+- **Attachments are public on public repos**, and uploads cannot be deleted. A leaked secret needs GitHub support, not a comment delete.
+- **Only allowlisted types are published**, as above.
+- **Files are copied to a private staging directory** (mode 0700, outside the worktree) and only that copy is attached. `gh --attach` opens each path again by name and follows symlinks, so attaching from the evidence dir would let a file swapped after selection leave the machine.
+- **`capture` runs `evidence.command` as arbitrary shell**, with the same trust and reach as `verify:`, and only when `evidence.enabled` is `true`. Its log is a 0600 temp file outside the worktree; it is never published.
+- Nothing is ever deleted from the evidence dir.
+
+#### Not verified
+
+- **UNVERIFIED:** whether files attached to a **private** repo's PR are readable by an unauthenticated viewer. Treat private-repo attachments as readable by anyone holding the link until you have checked.
+- **UNVERIFIED:** whether `gh --attach` and GitHub accept `.webm` (Playwright's video format). Talos does not promise it; `.mp4` and `.mov` are allowed too.
+
 ### Notification templates, transpiled per platform
 
 **What it does.** There is **one neutral template per event** -- 14 shipped
