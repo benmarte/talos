@@ -167,7 +167,9 @@ use_stubs() {
 # reference installed scripts.
 install_talos() {
   bash "$TALOS_ROOT/install.sh" --global --no-agent-skills >/dev/null
-  bash "$TALOS_ROOT/install.sh" "$SANDBOX" --no-agent-skills >/dev/null
+  # --no-agents-md: the AGENTS.md block is covered by test-install-agents-md.sh;
+  # keeping it out of the sandbox leaves every other test file's repo unchanged.
+  bash "$TALOS_ROOT/install.sh" "$SANDBOX" --no-agent-skills --no-agents-md >/dev/null
 
   # Hardening (#208): confirm the "global" install actually landed under the
   # sandboxed $HOME by running the same probe pipeline-agent.sh uses. If any
