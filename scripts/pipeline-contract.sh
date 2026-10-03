@@ -55,6 +55,26 @@ TALOS_RUNNERS=(
   "custom|Custom/local"
 )
 
+# ── Commands ───────────────────────────────────────────────────────────────
+# Every Talos command, i.e. every playbook at skills/<command>/SKILL.md.
+# install.sh --global copies each one to ${TALOS_HOME:-$HOME/.talos}/skills/
+# <command>/SKILL.md (where any harness can be pointed at it) and to the Claude
+# skills dir under talos_claude_skill_name. tests/test-commands-manifest.sh
+# checks this list against the skills/ tree, so a playbook and its entry land
+# together.
+TALOS_COMMANDS=(pipeline pipeline-setup resume)
+
+# talos_claude_skill_name <command> -- the directory name under the Claude
+# skills dir (~/.claude/skills/). `resume` installs as talos-resume because
+# Claude Code has a built-in /resume; every other command keeps its own name.
+# Provisional until #335.
+talos_claude_skill_name() {
+  case "$1" in
+    resume) echo "talos-resume" ;;
+    *)      echo "$1" ;;
+  esac
+}
+
 # The subset of TALOS_ROLES that carries an approval label (gated by
 # check-approval-sha / post-approval), in the same order as
 # TALOS_APPROVAL_LABELS below -- index i's role owns index i's label.
