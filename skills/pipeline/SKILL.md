@@ -905,8 +905,9 @@ After developer returns:
        `git checkout`/`git fetch`/`git merge`/commit/push here — rule 15
        reserves moving HEAD in the orchestrator's checkout for the developer
        stage, and the orchestrator is not the developer stage. Instead,
-       ALWAYS run the Step 3 budget check ("Budget stop"), record the attempt
-       and dispatch a worktree-isolated developer "merge base" task, exactly like any other developer re-dispatch:
+       Run the Step 3 budget check ("Budget stop") first.
+       ALWAYS record the attempt and dispatch a worktree-isolated developer
+       "merge base" task, exactly like any other developer re-dispatch:
        `bash scripts/pipeline-vcs.sh record-attempt <N> developer --pr
        <PR>`; exit non-zero (ceiling reached) → board "Blocked", stop. On
        success, spawn the developer with `isolation: "worktree"` (same
@@ -960,7 +961,7 @@ every Step 4 merge gate are unchanged.
    a single role's verdict.
 4. **Developer — ONE fix round for every finding.** When any role returned
    CHANGES or FINDINGS, collect the findings of ALL of them into one developer
-   dispatch (Step 3c, fix-round shape). Budget check first (Step 3, "Budget stop").
+   dispatch (Step 3c, fix-round shape). Run the Step 3 budget check ("Budget stop") first.
    Call `record-attempt` once for that dispatch, naming the first blocking role in the order reviewer, security,
    adversarial: `bash scripts/pipeline-vcs.sh record-attempt <N> <that-role> --pr
    <PR_NUMBER>` (non-zero: board "Blocked", stop), then clear `pipeline:blocked`
@@ -1005,8 +1006,8 @@ failed for #<N>`). Without it, a `qa:pass` earned before a Step 4 CI failure sta
 on the PR, goes stale when the fix moves the head, makes step 5's `check-approval-sha
 --stale-list` exit 1, and QA cannot re-stamp it on a draft: the PR could never reach
 `ready-pr`. QA then runs in full on the ready PR (step 6, `qa:pass` absent), so no
-verification is skipped. Then run the budget check (Step 3, "Budget stop") first,
-then `record-attempt <N> qa --pr <PR_NUMBER>`, clear `pipeline:blocked`, one developer fix round, the re-stamps on the delta (step 4),
+verification is skipped. Run the Step 3 budget check ("Budget stop") first.
+Then `record-attempt <N> qa --pr <PR_NUMBER>`, clear `pipeline:blocked`, one developer fix round, the re-stamps on the delta (step 4),
 and `ready-pr` (step 5) again. A round costs exactly one CI run however many
 commits the fix took.
 
@@ -1098,7 +1099,7 @@ After QA returns:
 - **Fail:**
   1. Relay findings: `bash scripts/pipeline-notify.sh qa "#<N>" - <N>` (stdin: `<FAIL: failing criterion + repro>`)
   2. Lifecycle event: `bash scripts/pipeline-notify.sh blocked "#<N>" - <N>` (stdin: `QA failed: <criterion>`)
-  3. Run the Step 3 budget check ("Budget stop"), then record attempt and check ceilings (PR already exists, so pass --pr as in Step 3):
+  3. Run the Step 3 budget check ("Budget stop") first. Record attempt and check ceilings (PR already exists, so pass --pr as in Step 3):
      ```bash
      bash scripts/pipeline-vcs.sh record-attempt <N> qa --pr <PR_NUMBER>
      ```
@@ -1333,7 +1334,7 @@ After reviewer and security complete (phase 2):
 
 **Reviewer returned:**
 - Approved: `bash scripts/pipeline-notify.sh reviewer "#<N>" - <N>` (stdin: `<subagent's 2-3 line outcome, including the top 1-2 human-attention report items (#294)>`)
-- Changes needed: `bash scripts/pipeline-notify.sh reviewer "#<N>" - <N>` (stdin: `CHANGES: <findings>`) then `bash scripts/pipeline-notify.sh blocked "#<N>" "reviewer: changes required" <N>`; run the Step 3 budget check ("Budget stop"), then record attempt (PR already exists, so pass --pr as in Step 3):
+- Changes needed: `bash scripts/pipeline-notify.sh reviewer "#<N>" - <N>` (stdin: `CHANGES: <findings>`) then `bash scripts/pipeline-notify.sh blocked "#<N>" "reviewer: changes required" <N>`; Run the Step 3 budget check ("Budget stop") first. Record attempt (PR already exists, so pass --pr as in Step 3):
   ```bash
   bash scripts/pipeline-vcs.sh record-attempt <N> reviewer --pr <PR_NUMBER>
   ```
@@ -1341,7 +1342,7 @@ After reviewer and security complete (phase 2):
 
 **Security returned:**
 - Clear: `bash scripts/pipeline-notify.sh security "#<N>" - <N>` (stdin: `<subagent's 2-3 line outcome>`)
-- Findings: `bash scripts/pipeline-notify.sh security "#<N>" - <N>` (stdin: `FINDINGS: <severity + fix>`) then `bash scripts/pipeline-notify.sh blocked "#<N>" "security: findings in PR #<PR_NUMBER>" <N>`; run the Step 3 budget check ("Budget stop"), then record attempt (PR already exists, so pass --pr as in Step 3):
+- Findings: `bash scripts/pipeline-notify.sh security "#<N>" - <N>` (stdin: `FINDINGS: <severity + fix>`) then `bash scripts/pipeline-notify.sh blocked "#<N>" "security: findings in PR #<PR_NUMBER>" <N>`; Run the Step 3 budget check ("Budget stop") first. Record attempt (PR already exists, so pass --pr as in Step 3):
   ```bash
   bash scripts/pipeline-vcs.sh record-attempt <N> security --pr <PR_NUMBER>
   ```
@@ -1384,7 +1385,7 @@ After adversarial completes:
 
 **Adversarial returned:**
 - Clear: `bash scripts/pipeline-notify.sh adversarial "#<N>" - <N>` (stdin: `<subagent's 2-3 line outcome>`)
-- Findings: `bash scripts/pipeline-notify.sh adversarial "#<N>" - <N>` (stdin: `FINDINGS: <count + summary>`) then `bash scripts/pipeline-notify.sh blocked "#<N>" "adversarial: findings in PR #<PR_NUMBER>" <N>`; run the Step 3 budget check ("Budget stop"), then record attempt (PR already exists, so pass --pr as in Step 3):
+- Findings: `bash scripts/pipeline-notify.sh adversarial "#<N>" - <N>` (stdin: `FINDINGS: <count + summary>`) then `bash scripts/pipeline-notify.sh blocked "#<N>" "adversarial: findings in PR #<PR_NUMBER>" <N>`; Run the Step 3 budget check ("Budget stop") first. Record attempt (PR already exists, so pass --pr as in Step 3):
   ```bash
   bash scripts/pipeline-vcs.sh record-attempt <N> adversarial --pr <PR_NUMBER>
   ```

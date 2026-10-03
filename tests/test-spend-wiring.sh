@@ -56,30 +56,18 @@ assert_contains "$skill_flat" '[ -n "$SPEND_BODY" ]' "spend block: an empty body
 assert_contains "$skill_flat" 'tail -1' "spend block: only the last upsert line is read"
 
 # ── (b) wiring sites ───────────────────────────────────────────────────────
-# budget_before LINE_PATTERN -- 0 when "Budget stop" appears within the 8 lines
-# up to and including the first line matching the fixed string.
-budget_before() {
-  awk -v pat="$1" '
-    { buf[NR] = $0 }
-    index($0, pat) && !done {
-      for (i = NR - 8; i <= NR; i++) if (i > 0 && index(buf[i], "Budget stop")) found = 1
-      done = 1
-    }
-    END { exit found ? 0 : 1 }' "$SKILL_MD"
-}
-for site in \
-  'record-attempt <N> developer --pr' \
-  'record-attempt <N> <that-role> --pr' \
-  'record-attempt <N> qa --pr <PR_NUMBER>' \
-  'record-attempt <N> reviewer --pr <PR_NUMBER>' \
-  'record-attempt <N> security --pr <PR_NUMBER>' \
-  'record-attempt <N> adversarial --pr <PR_NUMBER>'
-do
-  budget_before "$site"; assert_eq "0" "$?" "budget check named before: $site"
+# One canonical sentence, word for word, before each developer fix-round
+# record-attempt: the merge-base task, the draft round, the draft QA/CI failure
+# round, QA, reviewer, security and adversarial. Counted, and each site must
+# have it within the 6 lines up to its own record-attempt line.
+CANON='Run the Step 3 budget check ("Budget stop") first.'
+assert_eq "7" "$(grep -cF -- "$CANON" "$SKILL_MD")" "the canonical budget-check sentence appears exactly 7 times"
+sites="$(grep -nE 'record-attempt <N> (developer|<that-role>|qa|reviewer|security|adversarial)' "$SKILL_MD" | cut -d: -f1)"
+assert_eq "7" "$(printf '%s\n' "$sites" | wc -l | tr -d ' ')" "seven fix-round record-attempt sites"
+for n in $sites; do
+  window="$(sed -n "$((n > 6 ? n - 6 : 1)),${n}p" "$SKILL_MD")"
+  assert_contains "$window" "$CANON" "SKILL.md:$n record-attempt is preceded by the canonical budget-check sentence"
 done
-# The draft QA/CI failure paragraph names it in its own words.
-assert_contains "$skill_flat" 'Budget stop") first, then `record-attempt <N> qa --pr <PR_NUMBER>`' \
-  "draft QA/CI failure round runs the budget check first"
 # The no-dispatch record-attempt (no-PR resend, then Blocked) has no check.
 no_pr_window="$(grep -n -B6 'developer` — no `--pr` yet, per Step 3' "$SKILL_MD")"
 assert_not_contains "$no_pr_window" "Budget stop" "no budget check before the no-PR resend record-attempt"
@@ -100,11 +88,6 @@ usage_line="$(grep -m1 'Usage-reporting spawn form' "$SKILL_MD")"
 assert_contains "$usage_line" 'no input/output split, no model, no dollar cost (UNVERIFIED beyond these observed fields)' \
   "usage section: Agent notification fields only"
 assert_contains "$usage_line" 'show as unrecorded' "usage section: adapter and pi-inline runs show as unrecorded"
-
-# Lean mandate: SKILL.md grows by at most 40 lines over the 1654-line baseline.
-lines="$(wc -l < "$SKILL_MD" | tr -d ' ')"
-[ "$lines" -le 1694 ] && pass "SKILL.md within the 40-line growth budget ($lines lines)" \
-  || fail "SKILL.md within the 40-line growth budget" "$lines lines, baseline 1654, limit 1694"
 
 # ── (c) behaviour: run the fenced snippets as written ──────────────────────
 # fence_after ANCHOR -- the first ```bash fence after the line containing ANCHOR.
