@@ -72,10 +72,8 @@
 #     placement: prepend    # installer-side, ignored here
 # Missing or malformed -> the defaults above. The file is read as DATA: at most
 # 64 KB, regular files only, a built-in reader for exactly this subset (scalars,
-# `[a, b]` and `- item` lists, comments; anchors, aliases and tags are refused),
-# JSON also accepted, and PyYAML's safe_load (never load) only for YAML the
-# built-in reader refuses, when PyYAML is importable (`python3 -I` skips the
-# user site, so a `pip install --user` PyYAML is not seen). Only whitelisted
+# `[a, b]` and `- item` lists, comments; anchors, aliases and tags are refused)
+# or JSON; there is no PyYAML dependency. Only whitelisted
 # segment/style/color values and a clamped width are taken; ANSI escapes come
 # only from this script's own table, never from config or the log.
 #
@@ -86,10 +84,25 @@
 # Colour: always (config), or auto when stdout is a TTY and NO_COLOR is unset
 # or empty. Only the stage mark and the budget segment are coloured.
 #
-# Log: <main repo root>/.talos/events.jsonl, found through `git rev-parse
-# --git-common-dir` (so a linked worktree and a subdirectory both work). A
-# custom `events.path` is NOT honoured: reading it would need a config process
-# per call. Install: `install.sh --global` copies this file and
+# Log: <main repo root>/<events.path>, default .talos/events.jsonl, the root
+# found through `git rev-parse --git-common-dir` (so a linked worktree and a
+# subdirectory both work). `events.path` is read in-process from the project
+# config (the file pipeline-config.sh would use: $PIPELINE_CONFIG, else the first
+# of talos.pipeline.yml/.yaml/.json ... in the git toplevel), and only when that
+# file mentions `events`; JSON, or a top-level `events:` section with a `path:`
+# line in YAML. The path comes from a possibly untrusted repo, so an absolute
+# path, a `..` that leaves the root, a log that is a symlink, or one whose real
+# location leaves the root means no log: nothing is printed.
+#
+# Bounded work (a status line redraws constantly and the repo is untrusted):
+# the log is opened with O_NOFOLLOW and O_NONBLOCK, must be a regular file of
+# at most 32 MB (about 100x a large real log) and is read with a byte budget;
+# a bigger one is NOT read at all (printing wrong totals from a partial read
+# would be worse than printing nothing). The whole run has a hard time limit
+# (TALOS_STATUS_TIMEOUT_S, default 3, 1..10): on expiry nothing is printed and
+# it exits 0. The budget call runs in its own process group with a 2 s
+# timeout, and the whole group is killed on timeout.
+# Install: `install.sh --global` copies this file and
 # pipeline-spend-format.py into ${TALOS_HOME:-$HOME/.talos}/scripts.
 
 [ "${TALOS_STATUS_DEBUG:-}" = "1" ] || exec 2>/dev/null
@@ -124,6 +137,7 @@ python3 -I -B - "$SCRIPT_DIR" "$_common" "$_top" "$_branch" "$@" <<'PYEOF'
 import json
 import os
 import re
+import signal
 import stat
 import sys
 
@@ -283,20 +297,11 @@ def mini_yaml(text):
 
 
 def parse_text(text):
-    """A JSON object first, then the documented subset, then PyYAML's
-    safe_load when it is importable; None when none of them reads it."""
+    """JSON first, then the documented YAML subset; None when neither reads it."""
     try:
         return json.loads(text)
     except ValueError:
-        pass
-    data = mini_yaml(text)
-    if data is not None:
-        return data
-    try:
-        import yaml
-    except Exception:
-        return None
-    return yaml.safe_load(text)
+        return mini_yaml(text)
 
 
 def read_config_file(path):
@@ -368,29 +373,126 @@ def load_config(fmt):
 
 
 # ── events ───────────────────────────────────────────────────────────────
+
+MAX_LOG_BYTES = 32 * 1024 * 1024
+PROJECT_CONFIG_NAMES = ("talos.pipeline.yml", "talos.pipeline.yaml", "talos.pipeline.json",
+                        ".claude-pipeline.yaml", "pipeline.yaml", ".claude-pipeline.json",
+                        "pipeline.json")  # the names pipeline-config.sh tries, in order
+
+
+def project_config(base):
+    """The bytes of the project config pipeline-config.sh would use ($PIPELINE_CONFIG,
+    else the first existing name in `base`), at most 1 MB, or None."""
+    override = os.environ.get("PIPELINE_CONFIG")
+    for name in ([override] if override else PROJECT_CONFIG_NAMES):
+        path = os.path.join(base, name)
+        if regular_file(path):
+            try:
+                with open(path, "rb") as f:
+                    return f.read(1 << 20)
+            except OSError:
+                return None
+    return None
+
+
+def yaml_events_path(text):
+    """`path:` of the top-level `events:` section of a YAML config; the rest of
+    the file is not parsed, so unrelated syntax cannot hide it."""
+    in_events = False
+    for raw in text.splitlines():
+        line = _strip_comment(raw)
+        if not line.strip():
+            continue
+        if not line.startswith(" "):
+            in_events = line.strip() == "events:"
+        elif in_events:
+            key, _, val = line.strip().partition(":")
+            if key.strip() == "path":
+                return _scalar(val)
+    return None
+
+
+def configured_events_path(data):
+    """events.path from config bytes (JSON or YAML), or None."""
+    try:
+        text = data.decode("utf-8")
+        try:
+            obj = json.loads(text)
+            section = obj.get("events") if isinstance(obj, dict) else None
+            value = section.get("path") if isinstance(section, dict) else None
+        except ValueError:
+            value = yaml_events_path(text)
+    except Exception:  # includes RecursionError
+        return None
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def events_log_path(base):
+    """The log path under the main repo root, or None. `events.path` (default
+    .talos/events.jsonl) is relative to the root; it comes from the repo's
+    config, so an absolute path, a `..` that leaves the root and a real location
+    outside the root are all refused."""
+    root = os.path.dirname(common_dir)
+    rel = ".talos/events.jsonl"
+    data = project_config(base)
+    if data is not None and b"events" in data:
+        rel = configured_events_path(data) or rel
+    if "\0" in rel or os.path.isabs(rel):
+        dbg("events.path must be relative to the repository root")
+        return None
+    norm = os.path.normpath(rel)
+    if norm == ".." or norm.startswith(".." + os.sep):
+        dbg("events.path leaves the repository root")
+        return None
+    path = os.path.join(root, norm)
+    if not os.path.realpath(path).startswith(os.path.realpath(root) + os.sep):
+        dbg("the events log resolves outside the repository root")
+        return None
+    return path
+
+
+def read_log(path):
+    """The log's bytes, or None. Never follows a symlink, never blocks on a
+    FIFO, only reads a regular file of at most MAX_LOG_BYTES, and the read has a
+    byte budget too, so a file that grows after the check cannot get around it.
+    A log over the cap is not read at all: totals from a partial read would be
+    wrong, and nothing is better than wrong."""
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    except OSError:
+        return None
+    with os.fdopen(fd, "rb") as f:
+        st = os.fstat(f.fileno())
+        if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_LOG_BYTES:
+            dbg("the events log is not a regular file within %d bytes" % MAX_LOG_BYTES)
+            return None
+        data = f.read(MAX_LOG_BYTES + 1)
+    if len(data) > MAX_LOG_BYTES:
+        dbg("the events log grew past %d bytes" % MAX_LOG_BYTES)
+        return None
+    return data
+
+
 # One tuple per well-formed log line: (issue, role, pr, verdict, tokens, model,
 # day), tokens already through as_count (int, or None for unrecorded).
 
-def load_events(path, fmt):
+def load_events(data, fmt):
     events = []
-    if not path or not regular_file(path):
-        return events
     as_count = fmt.as_count
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except (ValueError, RecursionError):
-                continue
-            if not isinstance(rec, dict):
-                continue
-            ts = rec.get("ts")
-            events.append((str(rec.get("issue")), rec.get("role"), rec.get("pr"),
-                           rec.get("verdict"), as_count(rec.get("tokens")), rec.get("model"),
-                           ts[:10] if isinstance(ts, str) else None))
+    for line in data.split(b"\n"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except (ValueError, RecursionError):
+            continue
+        if not isinstance(rec, dict):
+            continue
+        ts = rec.get("ts")
+        events.append((str(rec.get("issue")), rec.get("role"), rec.get("pr"),
+                       rec.get("verdict"), as_count(rec.get("tokens")), rec.get("model"),
+                       ts[:10] if isinstance(ts, str) else None))
     return events
 
 
@@ -548,51 +650,57 @@ def render(d, names, style, sep, width, color_on, fmt):
 
 # ── budget ───────────────────────────────────────────────────────────────
 
-PROJECT_CONFIG_NAMES = ("talos.pipeline.yml", "talos.pipeline.yaml", "talos.pipeline.json",
-                        ".claude-pipeline.yaml", "pipeline.yaml", ".claude-pipeline.json",
-                        "pipeline.json")  # the names pipeline-config.sh tries
+BUDGET_TIMEOUT_S = 2
+_budget_pgid = None  # the budget process group while it runs, for the alarm handler
+
+
+def kill_group(pgid):
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except OSError:
+        pass
 
 
 def guard_may_be_on(base):
-    """False only when no project config file in `base` mentions
-    limits.tokens_per_issue, so the common guard-off case skips the ~30 ms
-    budget process. A pre-filter, never the decision: any doubt (an unreadable
-    file) says True and pipeline-budget.sh answers."""
-    override = os.environ.get("PIPELINE_CONFIG")
-    for name in ([override] if override else PROJECT_CONFIG_NAMES):
-        path = os.path.join(base, name)
-        if not os.path.exists(path):
-            continue
-        try:
-            if not regular_file(path):
-                return True
-            with open(path, "rb") as f:
-                if b"tokens_per_issue" in f.read(1 << 20):
-                    return True
-        except OSError:
-            return True
-    return False
+    """False unless the project config mentions limits.tokens_per_issue, so the
+    common guard-off case skips the ~30 ms budget process. A pre-filter, never
+    the decision: pipeline-budget.sh answers when the key is named."""
+    data = project_config(base)
+    return data is not None and b"tokens_per_issue" in data
 
 
 def get_budget(issue, fmt):
     """parse_budget of `pipeline-budget.sh check --issue N --json` or None. The
     script prints nothing when limits.tokens_per_issue is off; exit 1 means
     exceeded, a signal and never a failure of the line. It runs in the git
-    toplevel, where it finds talos.pipeline.* even when the status line was
-    started from a subdirectory."""
+    toplevel (where it finds talos.pipeline.* from a subdirectory too), in its
+    own process group, with a short timeout; on timeout the whole group is
+    killed, children included."""
+    global _budget_pgid
     script = os.path.join(scripts_dir, "pipeline-budget.sh")
     base = toplevel or os.getcwd()
     if not issue or not regular_file(script) or not guard_may_be_on(base):
         return None
+    proc = None
     try:
         import subprocess
-        r = subprocess.run(["bash", script, "check", "--issue", issue, "--json"],
-                           stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, cwd=base,
-                           stderr=subprocess.DEVNULL, timeout=15, check=False)
-        return fmt.parse_budget(r.stdout.decode("utf-8", "replace"))
-    except Exception as e:
+        proc = subprocess.Popen(["bash", script, "check", "--issue", issue, "--json"],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, cwd=base, start_new_session=True)
+        _budget_pgid = proc.pid
+        out, _ = proc.communicate(timeout=BUDGET_TIMEOUT_S)
+        return fmt.parse_budget(out.decode("utf-8", "replace"))
+    except Exception as e:  # includes subprocess.TimeoutExpired
         dbg("budget unavailable (%s)" % type(e).__name__)
+        if proc is not None:
+            kill_group(proc.pid)
+            try:
+                proc.wait(timeout=1)
+            except Exception:
+                pass
         return None
+    finally:
+        _budget_pgid = None
 
 
 # ── sample data for --preview ────────────────────────────────────────────
@@ -611,6 +719,23 @@ def sample(today):
 
 
 # ── main ─────────────────────────────────────────────────────────────────
+
+def _on_alarm(signum, frame):
+    dbg("timed out")
+    if _budget_pgid:
+        kill_group(_budget_pgid)
+    os._exit(0)
+
+
+def start_timer():
+    """A hard limit on the whole run (TALOS_STATUS_TIMEOUT_S, 1..10, default 3):
+    when it expires nothing more is printed and the exit status is 0."""
+    raw = os.environ.get("TALOS_STATUS_TIMEOUT_S", "")
+    secs = int(raw) if re.fullmatch(r"[0-9]{1,2}", raw) and 1 <= int(raw) <= 10 else 3
+    if hasattr(signal, "SIGALRM"):
+        signal.signal(signal.SIGALRM, _on_alarm)
+        signal.alarm(secs)
+
 
 def emit(text):
     sys.stdout.flush()
@@ -631,6 +756,7 @@ def main():
              "       talos-status.sh --preview [--format a,b,c] [--width N]\n"
              "Segments: " + ", ".join(SEGMENTS) + "\n")
         return
+    start_timer()
     fmt = load_format()
     if fmt is None:
         return
@@ -648,7 +774,10 @@ def main():
         width = int(cols) if re.fullmatch(r"[0-9]{1,4}", cols) and int(cols) >= 1 else DEFAULT_WIDTH
     events = []
     if common_dir:
-        events = load_events(os.path.join(os.path.dirname(common_dir), ".talos", "events.jsonl"), fmt)
+        path = events_log_path(toplevel or os.getcwd())
+        data = read_log(path) if path else None
+        if data is not None:
+            events = load_events(data, fmt)
 
     if opts["mode"] == "line":
         if not events:

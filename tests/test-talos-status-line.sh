@@ -15,6 +15,9 @@
 #   (h) --preview, sample data labelled (sample)
 #   (i) ANSI colour rules (always / auto + TTY + NO_COLOR / never)
 #   (j) a 10k-event log answers within CI headroom (budget off)
+#   (k) bounded work: oversized, symlinked and FIFO logs, a budget process that
+#       never finishes, the hard time limit
+#   (l) events.path from the project config, and what it may not point at
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox || exit 1
@@ -299,9 +302,8 @@ python3 -I -c 'import sys; sys.stdout.write("[" * 30000)' > "$TALOS_HOME/statusl
 check_defaults "config: deeply nested JSON (recursion) -> defaults"
 printf '\000\001\377\376garbage' > "$TALOS_HOME/statusline.yml"
 check_defaults "config: binary garbage -> defaults"
-# Aliases: the built-in reader refuses them; PyYAML (when importable) safe_loads
-# them as data and only whitelisted values survive. Either way: one line or
-# nothing, no escapes, no failure.
+# Aliases are refused by the built-in reader and there is no PyYAML fallback,
+# so an alias bomb is just an unreadable file -> defaults.
 python3 -I -c '
 print("statusline:")
 print("  segments: &a [issue, issue]")
@@ -309,11 +311,11 @@ for i in range(1, 30):
     print("  k%d: &b%d [%s]" % (i, i, ", ".join(["*a" if i == 1 else "*b%d" % (i - 1)] * 9)))
 print("  separator: *b29")
 ' > "$TALOS_HOME/statusline.yml"
-run_status --line
-assert_eq "0" "$RC" "config: an alias bomb -> exit 0"
-assert_eq "" "$(cat "$ERR")" "config: an alias bomb -> stderr silent"
-assert_not_contains "$OUT" "$ESC" "config: an alias bomb -> no escapes"
-assert_eq "1" "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')" "config: an alias bomb -> one line"
+check_defaults "config: an alias bomb -> defaults"
+set_user_cfg 'statusline:
+  segments: !!python/object/apply:os.system ["touch PWNED_TAG"]'
+check_defaults "config: a YAML tag is refused (nothing is constructed or run)"
+assert_file_absent "$SANDBOX/PWNED_TAG" "config: a YAML tag never runs anything"
 set_user_cfg 'statusline:
   separator: *a'
 check_defaults "config: a bare alias -> defaults"
@@ -347,7 +349,7 @@ clear_user_cfg
 for mod in json yaml; do
   printf 'import os\nopen(os.path.join(os.path.dirname(__file__), "PLANTED_%s"), "w").close()\n' "$mod" > "$SANDBOX/$mod.py"
 done
-set_user_cfg 'statusline: ['      # forces the YAML fallback
+set_user_cfg 'statusline: ['      # not JSON, not the YAML subset
 run_status --line
 assert_eq "$DEFAULT_LINE" "$OUT" "planted modules: the line is unaffected"
 assert_file_absent "$SANDBOX/PLANTED_json" "planted json.py is never imported"
@@ -639,6 +641,176 @@ run_status --line --format issue,pr,stage,issue_tokens,today_tokens
 # newest event i=9999: issue 200, PR 1199, role reviewer; issue 200 sums
 # 548,725 tokens; every event is today and the whole log sums 59,995,000.
 assert_eq "#200 · PR #1199 · rev ✓ · 549k · today 60.00M" "$OUT" "10k events: the right figures from a large log"
+
+# ── (k) bounded work: oversized / symlinked / special logs, slow budget ────
+# The repo is untrusted and the status line redraws constantly: it must never
+# hang, whatever .talos/events.jsonl is.
+STUBS="$SANDBOX/stubscripts"
+# run_timed SCRIPT ARGS... -- run `bash SCRIPT ARGS` from the sandbox; sets OUT,
+# RC and ELAPSED_MS (stderr dropped).
+run_timed() {
+  local res rest
+  res="$(cd "$SANDBOX" && python3 -I - "$@" <<'PY'
+import subprocess, sys, time
+t = time.perf_counter()
+p = subprocess.run(["bash"] + sys.argv[1:], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+print(int((time.perf_counter() - t) * 1000), p.returncode, p.stdout.decode().strip())
+PY
+)"
+  ELAPSED_MS="${res%% *}"; rest="${res#* }"; RC="${rest%% *}"; OUT="${rest#* }"
+}
+
+reset_log; ev developer 752 764 1000 PASS
+run_timed "$STATUS" --line --format issue
+assert_eq "#752" "$OUT" "bounded: the sane log prints (control)"
+
+# a log over the 32 MB cap is not read at all (sparse file: no real I/O)
+python3 -I -c 'import sys
+line = b"{\"event\":\"developer\",\"role\":\"developer\",\"issue\":752,\"tokens\":1}\n"
+f = open(sys.argv[1], "wb"); f.write(line); f.truncate(33 * 1024 * 1024); f.close()' "$LOG"
+run_timed "$STATUS" --line --format issue
+assert_eq "" "$OUT" "bounded: a log over the cap prints nothing"
+assert_eq "0" "$RC" "bounded: a log over the cap -> exit 0"
+[ "$ELAPSED_MS" -lt 2000 ] && pass "bounded: a log over the cap returns promptly (${ELAPSED_MS} ms)" || fail "bounded: oversized log was slow" "${ELAPSED_MS} ms"
+# exactly at the cap is still read
+python3 -I -c 'import sys
+line = b"{\"event\":\"developer\",\"role\":\"developer\",\"issue\":752,\"tokens\":1}\n"
+f = open(sys.argv[1], "wb"); f.write(line); f.write(b"\n" * (32 * 1024 * 1024 - len(line))); f.close()' "$LOG"
+run_timed "$STATUS" --line --format issue
+assert_eq "#752" "$OUT" "bounded: a log of exactly the cap is read"
+
+# a symlinked log is refused, inside or outside the repository
+mkdir -p "$NOGIT/outside"
+reset_log; ev developer 752 764 1000 PASS
+mv "$LOG" "$NOGIT/outside/real.jsonl"
+ln -s "$NOGIT/outside/real.jsonl" "$LOG"
+run_timed "$STATUS" --line --format issue
+assert_eq "" "$OUT" "symlink: a log symlinked to a file outside the repo prints nothing"
+assert_eq "0" "$RC" "symlink: exit 0"
+rm -f "$LOG"
+ev developer 752 764 1000 PASS
+mv "$LOG" "$SANDBOX/real-inside.jsonl"
+ln -s "$SANDBOX/real-inside.jsonl" "$LOG"
+run_timed "$STATUS" --line --format issue
+assert_eq "" "$OUT" "symlink: a log symlinked within the repo is refused too"
+rm -f "$LOG" "$SANDBOX/real-inside.jsonl"
+# a symlinked .talos directory leading outside the repo
+reset_log; ev developer 752 764 1000 PASS
+mv "$SANDBOX/.talos" "$NOGIT/outside/dottalos"
+ln -s "$NOGIT/outside/dottalos" "$SANDBOX/.talos"
+run_timed "$STATUS" --line --format issue
+assert_eq "" "$OUT" "symlink: a .talos directory symlinked outside the repo prints nothing"
+rm -f "$SANDBOX/.talos"
+mv "$NOGIT/outside/dottalos" "$SANDBOX/.talos"
+# a FIFO in place of the log: no block
+rm -f "$LOG"; mkfifo "$LOG"
+run_timed "$STATUS" --line --format issue
+assert_eq "" "$OUT" "special file: a FIFO log prints nothing"
+[ "$ELAPSED_MS" -lt 2000 ] && pass "special file: a FIFO log does not block (${ELAPSED_MS} ms)" || fail "special file: FIFO blocked" "${ELAPSED_MS} ms"
+rm -f "$LOG"
+
+# a budget process that never finishes: killed with its children, the line still prints
+mkdir -p "$STUBS"
+cp "$STATUS" "$TALOS_ROOT/scripts/pipeline-spend-format.py" "$STUBS/"
+cat > "$STUBS/pipeline-budget.sh" <<'STUB'
+#!/usr/bin/env bash
+sleep 30 &
+printf '%s\n' "$!" > "${BUDGET_SLEEP_PID:?}"
+wait
+STUB
+export BUDGET_SLEEP_PID="$SANDBOX/sleeper.pid"
+reset_log; ev developer 900 70 1000 PASS
+set_budget_cfg 4000000
+alive() { kill -0 "$1" 2>/dev/null; }
+wait_dead() {  # $1=pid; bounded: up to ~3 s
+  local i=0
+  while alive "$1" && [ "$i" -lt 30 ]; do i=$((i + 1)); python3 -I -c 'import time; time.sleep(0.1)'; done
+  alive "$1" && return 1 || return 0
+}
+rm -f "$BUDGET_SLEEP_PID"
+run_timed "$STUBS/talos-status.sh" --line --format issue,budget
+assert_eq "#900" "$OUT" "slow budget: the line prints without the budget segment"
+assert_eq "0" "$RC" "slow budget: exit 0"
+[ "$ELAPSED_MS" -lt 6000 ] && pass "slow budget: gave up promptly (${ELAPSED_MS} ms)" || fail "slow budget: took too long" "${ELAPSED_MS} ms"
+SLEEPER="$(cat "$BUDGET_SLEEP_PID" 2>/dev/null)"
+[ -n "$SLEEPER" ] && wait_dead "$SLEEPER" && pass "slow budget: the whole process group was killed (no leftover child)" \
+  || fail "slow budget: a child of the budget script is still running" "pid ${SLEEPER:-none}"
+[ -n "$SLEEPER" ] && alive "$SLEEPER" && kill "$SLEEPER" 2>/dev/null
+
+# the hard time limit: nothing printed, exit 0, the budget group killed too
+rm -f "$BUDGET_SLEEP_PID"
+OUT="$(cd "$SANDBOX" && TALOS_STATUS_TIMEOUT_S=1 python3 -I - "$STUBS/talos-status.sh" <<'PY'
+import subprocess, sys, time
+t = time.perf_counter()
+p = subprocess.run(["bash", sys.argv[1], "--line", "--format", "issue,budget"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+print(int((time.perf_counter() - t) * 1000), p.returncode, repr(p.stdout.decode()))
+PY
+)"
+set -- $OUT
+assert_eq "0" "$2" "time limit: exit 0 when the alarm fires"
+assert_eq "''" "$3" "time limit: nothing printed when the alarm fires"
+[ "$1" -lt 1900 ] && pass "time limit: stopped at the 1 s limit (${1} ms)" || fail "time limit: ran past the limit" "${1} ms"
+SLEEPER="$(cat "$BUDGET_SLEEP_PID" 2>/dev/null)"
+[ -n "$SLEEPER" ] && wait_dead "$SLEEPER" && pass "time limit: the budget process group was killed" \
+  || fail "time limit: a child of the budget script is still running" "pid ${SLEEPER:-none}"
+[ -n "$SLEEPER" ] && alive "$SLEEPER" && kill "$SLEEPER" 2>/dev/null
+clear_budget_cfg
+unset BUDGET_SLEEP_PID
+
+# ── (l) events.path ────────────────────────────────────────────────────────
+mkdir -p "$SANDBOX/data" "$NOGIT/outside"
+DEFAULT_LOG="$LOG"
+reset_log; ev developer 111 1 1000 PASS                    # the default log: a decoy
+LOG="$SANDBOX/data/ev.jsonl"; : > "$LOG"; ev developer 752 764 56000 PASS
+cp "$LOG" "$NOGIT/outside/ev.jsonl"
+set_ep_json() { printf '%s\n' "{\"events\": {\"path\": \"$1\"}, \"agents\": {\"model\": \"x\"}}" > "$SANDBOX/talos.pipeline.json"; }
+rm -f "$SANDBOX/talos.pipeline.json" "$SANDBOX/talos.pipeline.yml"
+run_status --line --format issue
+assert_eq "#111" "$OUT" "events.path: no config -> the default log"
+set_ep_json "data/ev.jsonl"
+run_status --line --format issue,issue_tokens
+assert_eq "#752 · 56k" "$OUT" "events.path: a relocated log (JSON config)"
+RUN_DIR="$SANDBOX/sub/dir" run_status --line --format issue
+assert_eq "#752" "$OUT" "events.path: found from a subdirectory (config at the git toplevel)"
+set_ep_json "data/../data/ev.jsonl"
+run_status --line --format issue
+assert_eq "#752" "$OUT" "events.path: a .. that stays inside the root is normalised"
+for bad in "$NOGIT/outside/ev.jsonl" "../outside/ev.jsonl" "data/../../outside/ev.jsonl" ".."; do
+  set_ep_json "$bad"
+  run_status --line --format issue
+  assert_eq "" "$OUT" "events.path: '$bad' is refused (absolute or leaves the repo) -> nothing"
+done
+ln -s "$NOGIT/outside" "$SANDBOX/linkdir"
+set_ep_json "linkdir/ev.jsonl"
+run_status --line --format issue
+assert_eq "" "$OUT" "events.path: a directory symlink that leads outside the repo is refused"
+rm -f "$SANDBOX/linkdir" "$SANDBOX/talos.pipeline.json"
+set_ep_json "data/ev.jsonl"
+printf '%s\n' '{"agents": {"model": "x"}}' > "$SANDBOX/talos.pipeline.json"
+run_status --line --format issue
+assert_eq "#111" "$OUT" "events.path: a config that does not mention events -> the default log"
+rm -f "$SANDBOX/talos.pipeline.json"
+printf '%s\n' \
+  'board:' \
+  '  labels: {a: b}' \
+  'agents:' \
+  '  note: |' \
+  '    text' \
+  'events:' \
+  '  other: 1' \
+  '  path: data/ev.jsonl   # relocated' \
+  'limits:' \
+  '  path: nonsense' > "$SANDBOX/talos.pipeline.yml"
+run_status --line --format issue
+assert_eq "#752" "$OUT" "events.path: a YAML config, unrelated syntax around it does not matter"
+printf '%s\n' 'events:' '  path: /etc/passwd' > "$SANDBOX/talos.pipeline.yml"
+run_status --line --format issue
+assert_eq "" "$OUT" "events.path: an absolute path in YAML is refused"
+printf '%s\n' 'events:' '  path: 5' > "$SANDBOX/talos.pipeline.yml"
+run_status --line --format issue
+assert_eq "#111" "$OUT" "events.path: a non-string value -> the default log"
+rm -f "$SANDBOX/talos.pipeline.yml"
+LOG="$DEFAULT_LOG"
 
 # ── static guards ──────────────────────────────────────────────────────────
 assert_file_exists "$STATUS" "script exists"
