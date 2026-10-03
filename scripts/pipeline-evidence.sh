@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 # pipeline-evidence.sh -- run the repo's evidence command, choose which of the
 # files it wrote may leave the machine, and attach them to a PR (#406, #415,
-# part of epic #352).
+# #409, part of epic #352).
 #
 # Usage:
 #   pipeline-evidence.sh capture
 #   pipeline-evidence.sh collect <dir> [--since <epoch>] [--stage <dir>]
 #   pipeline-evidence.sh upload <pr> [--since <epoch>] [--dry-run]
+#   pipeline-evidence.sh attach <pr> [--since <epoch>] [--dry-run]
+#   pipeline-evidence.sh dir
 #
-# capture and collect are local: no network call, no git write. upload is the
-# only subcommand that talks to GitHub (`gh pr comment --attach`).
+# capture, collect and dir are local: no network call, no git write. upload
+# (and attach, which runs it) is the only subcommand that talks to GitHub
+# (`gh pr comment --attach`).
 #
 # capture
 #   Takes NO command text on argv (any argument is a usage error): the command
@@ -30,7 +33,7 @@
 #   non-zero rc is reported, not a failure: capture is evidence, not a gate.
 #   An empty or absent evidence.command prints `evidence-capture mode=agent`
 #   and runs nothing. capture does not check evidence.enabled; that gating is
-#   the caller's (the stage wiring, #409). Exit codes:
+#   the caller's (`attach` does it). Exit codes:
 #     0  a line was printed (whatever the command's own rc)
 #     1  the log could not be created, or the runner failed
 #     2  usage (any argument) or not inside a worktree
@@ -139,13 +142,68 @@
 #   to the repository. Gating on evidence.enabled is the caller's.
 #   --dry-run prints the planned gh calls and makes none (no probe, no login
 #   lookup); collect still runs, locally.
+#
+# attach <pr> [--since <epoch>] [--dry-run]   (#409)
+#   The one call a stage makes: gate, capture, upload, one status line. <pr> and
+#   --since are digits only (anything else is usage, exit 2). Order:
+#   1. gate: `evidence.enabled` (default false) must be `true`, else exit 2,
+#      `evidence-attach: evidence disabled` on stderr, empty stdout, and
+#      nothing runs: no gh/git/curl call and no `evidence.command`, because
+#      capture runs arbitrary shell.
+#   2. provider: the same check as upload (one shared function): `github`, or
+#      `github-api` with a `gh` binary; anything else is exit 2.
+#   3. capture (the function, run in-process, so the caller's stage identity
+#      applies when this script is wrapped in pipeline-verify.sh), then
+#      `upload <pr> --since <epoch>`. A non-zero capture rc never stops the
+#      upload. In command mode --since is the `since=` capture printed (the
+#      caller's --since is ignored); in agent mode (`evidence-capture
+#      mode=agent`, no evidence.command) it is the caller's --since, if given:
+#      the stage notes `date +%s` before saving screenshots.
+#   Output, ONE line on stdout (no PR or issue text is ever in it):
+#     evidence-attach pr=<n> status=<s> images=<i> videos=<v> capture=<c> comment=<url>
+#   capture is the command's rc (124 on timeout), `agent`, or `skipped`
+#   (--dry-run); when capture itself failed to run it is capture's own exit
+#   code. comment is empty unless a comment was posted.
+#   upload's stderr is forwarded untouched (over-cap numbers, the refusal
+#   reason, a delete warning). Status from upload's exit code and stderr:
+#     upload 0                                  posted
+#     upload 3                                  empty
+#     upload 1, `evidence-upload: collect failed (rc=4)` at a line start
+#                                               over-cap
+#     upload 1, `evidence-upload: collect failed (rc=1)` at a line start
+#                                               refused
+#     upload 1, any other                       failed
+#     upload 1 AND a non-empty comment= URL     posted (the post succeeded and
+#                                               only deleting the older comment
+#                                               failed; the warning naming the
+#                                               undeleted id is on stderr)
+#     upload 2                                  exit 2, its stderr, no stdout
+#   `posted` always carries a URL: a caller decides from status= and a non-empty
+#   comment=, never from the exit code alone. No status-only comment is ever
+#   posted: over-cap, empty and refused are this one line. Known limitation:
+#   upload deletes older evidence only after a good post, so after an over-cap
+#   or empty later round the earlier evidence comment stays; the line is the
+#   signal. Exit codes:
+#     0  posted, empty, over-cap
+#     1  refused, failed
+#     2  usage, evidence disabled, unsupported provider, no gh binary, or gh
+#        without --attach
+#   --dry-run runs the gate and the provider check, skips capture (it would run
+#   evidence.command), prints the plan and the caps, then `upload <pr>
+#   --dry-run` (collect runs locally, no gh call) and exits with the same map
+#   (no status line is printed).
+#
+# dir
+#   Prints the evidence dir, relative to the worktree toplevel: evidence.dir or
+#   `.talos/evidence`. Exit 0. This is the only place the default is written
+#   (see _evidence_dir), and where an agent that captures by itself looks.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CFG_SH="$SCRIPT_DIR/pipeline-config.sh"
 
 usage() {
-  echo "Usage: pipeline-evidence.sh capture | collect <dir> [--since <epoch>] [--stage <dir>] | upload <pr> [--since <epoch>] [--dry-run]" >&2
+  echo "Usage: pipeline-evidence.sh capture | collect <dir> [--since <epoch>] [--stage <dir>] | upload <pr> [--since <epoch>] [--dry-run] | attach <pr> [--since <epoch>] [--dry-run] | dir" >&2
   exit 2
 }
 
@@ -181,6 +239,23 @@ _digits_or() {
     ''|*[!0-9]*) printf '%s' "$1" ;;
     *) printf '%s' "$2" ;;
   esac
+}
+
+# The evidence defaults, written once. `collect` and `attach` (its dry-run
+# caps line) read the caps through these helpers, `upload`, `attach` and `dir`
+# the directory through _evidence_dir. The config layer (#405) never injects a
+# default.
+_EVIDENCE_DEFAULT_DIR=".talos/evidence"
+_EVIDENCE_DEFAULT_MAX_FILES=10
+_EVIDENCE_DEFAULT_MAX_MB=20
+_EVIDENCE_FILE_MB=10   # the fixed per-file cap inside collect's python
+
+_evidence_dir() { cfg evidence.dir "$_EVIDENCE_DEFAULT_DIR"; }
+_evidence_max_files() {
+  _digits_or "$_EVIDENCE_DEFAULT_MAX_FILES" "$(cfg evidence.max_files "$_EVIDENCE_DEFAULT_MAX_FILES")"
+}
+_evidence_max_mb() {
+  _digits_or "$_EVIDENCE_DEFAULT_MAX_MB" "$(cfg evidence.max_mb "$_EVIDENCE_DEFAULT_MAX_MB")"
 }
 
 # pipeline-config.sh reads ./talos.pipeline.*, so everything runs at the toplevel.
@@ -541,8 +616,8 @@ cmd_collect() {
   [ "$have_dir" = 1 ] || usage
   _enter_toplevel
   local max_files max_mb include
-  max_files="$(_digits_or 10 "$(cfg evidence.max_files 10)")"
-  max_mb="$(_digits_or 20 "$(cfg evidence.max_mb 20)")"
+  max_files="$(_evidence_max_files)"
+  max_mb="$(_evidence_max_mb)"
   include="$(cfg evidence.include "")"
   _run_py "evidence-collect refused" "$_COLLECT_PY" \
     "$TOPLEVEL" "$dir" "$since" "$max_files" "$max_mb" "$include" "$stage"
@@ -669,6 +744,23 @@ else:
     mode_select(sys.argv[2], sys.argv[3])
 TALOS_UPLOAD_PY_Fm7Rc1Gk9Ts
 
+# _require_gh_provider <verb> -- the provider check upload and attach share:
+# `github`, or `github-api` with a `gh` binary on PATH; returns 2 with one
+# stderr line otherwise. Needs the toplevel as cwd (reads the config).
+_require_gh_provider() {
+  local verb="$1" provider
+  provider="$(cfg vcs.provider github)"
+  case "$provider" in
+    github) ;;
+    github-api) ;;
+    *) echo "pipeline-evidence: $verb: not implemented for provider '$provider'" >&2; return 2 ;;
+  esac
+  command -v gh >/dev/null 2>&1 || {
+    echo "evidence-$verb unsupported: no gh binary on PATH (gh v2.99.0 or newer required)" >&2
+    return 2
+  }
+}
+
 # _one_line <text> -- the first line of <text>, printable ASCII only, at most
 # 200 characters: gh's own stderr, made safe to echo as a reason.
 _one_line() {
@@ -702,17 +794,7 @@ cmd_upload() {
   case "$pr" in ''|*[!0-9]*) echo "pipeline-evidence: upload needs a PR number (digits only)" >&2; usage ;; esac
   _enter_toplevel
 
-  local provider
-  provider="$(cfg vcs.provider github)"
-  case "$provider" in
-    github) ;;
-    github-api) ;;
-    *) echo "pipeline-evidence: upload: not implemented for provider '$provider'" >&2; return 2 ;;
-  esac
-  command -v gh >/dev/null 2>&1 || {
-    echo "evidence-upload unsupported: no gh binary on PATH (gh v2.99.0 or newer required)" >&2
-    return 2
-  }
+  _require_gh_provider upload || return 2
 
   # The private staging dir: outside the worktree, 0700, removed on exit.
   local root files body
@@ -734,7 +816,7 @@ cmd_upload() {
   mkdir -m 700 "$files" || return 1
 
   local dir manifest crc=0
-  dir="$(cfg evidence.dir ".talos/evidence")"
+  dir="$(_evidence_dir)"
   local collect_args=(collect "$dir" --stage "$files")
   [ -z "$since" ] || collect_args+=(--since "$since")
   manifest="$(bash "$SCRIPT_DIR/pipeline-evidence.sh" "${collect_args[@]}" 2>"$_UP_ROOT/collect.err")" || crc=$?
@@ -852,9 +934,131 @@ EOF
   fi
 }
 
+# ── attach ───────────────────────────────────────────────────────────────────
+# _attach_cleanup -- removes attach's stderr capture file.
+_attach_cleanup() { [ -z "${_AT_ERR:-}" ] || rm -f -- "$_AT_ERR"; }
+
+# _attach_status <upload-rc> <comment-url> <stderr-file> -- the status word for
+# upload's exit code (see the header's mapping). The `collect failed` lines are
+# matched at a line start: upload writes them itself, and every line that
+# carries gh's own text is prefixed by a different reason.
+_attach_status() {
+  case "$1" in
+    0) if [ -n "$2" ]; then echo posted; else echo failed; fi ;;
+    3) echo empty ;;
+    1)
+      if [ -n "$2" ]; then echo posted
+      elif grep -Eq '^evidence-upload: collect failed \(rc=4\):' "$3" 2>/dev/null; then echo over-cap
+      elif grep -Eq '^evidence-upload: collect failed \(rc=1\):' "$3" 2>/dev/null; then echo refused
+      else echo failed
+      fi ;;
+    *) echo failed ;;
+  esac
+}
+
+cmd_attach() {
+  local pr="" since="" dry=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --since)
+        [ $# -ge 2 ] || usage
+        case "$2" in ''|*[!0-9]*) echo "pipeline-evidence: --since must be digits only" >&2; usage ;; esac
+        since="$2"; shift 2 ;;
+      --dry-run) dry=1; shift ;;
+      --*) usage ;;
+      *)
+        [ -z "$pr" ] || usage
+        pr="$1"; shift ;;
+    esac
+  done
+  case "$pr" in ''|*[!0-9]*) echo "pipeline-evidence: attach needs a PR number (digits only)" >&2; usage ;; esac
+  _enter_toplevel
+
+  # 1. gate, before anything that can run a command or call a provider
+  [ "$(cfg evidence.enabled false)" = "true" ] || {
+    echo "evidence-attach: evidence disabled" >&2
+    return 2
+  }
+  # 2. provider
+  _require_gh_provider attach || return 2
+
+  # 3. capture: in-process, and it never gates the upload
+  local cap_out="" cap_rc=0 cap_status="" cap_val="" cap_since=""
+  if [ "$dry" = 1 ]; then
+    cap_status=skipped
+  else
+    cap_out="$(cmd_capture)" || cap_rc=$?
+    case "$cap_out" in
+      "evidence-capture mode=agent") cap_status=agent ;;
+      "evidence-capture rc="*" log="*" since="*)
+        cap_val="${cap_out#evidence-capture rc=}"; cap_val="${cap_val%% *}"
+        cap_since="${cap_out##* since=}"
+        case "$cap_val$cap_since" in
+          ''|*[!0-9]*) cap_val=""; cap_since="" ;;
+        esac
+        [ -z "$cap_val" ] || cap_status="$cap_val"
+        if [ "${cap_val:-0}" != 0 ]; then
+          echo "evidence-attach: evidence.command exited $cap_val (log: ${cap_out#* log=})" >&2
+        fi ;;
+    esac
+    [ -n "$cap_status" ] || cap_status="$cap_rc"
+    [ -z "$cap_since" ] || since="$cap_since"
+  fi
+
+  # 4. upload: the function, in a subshell so its exit and traps stay its own
+  local up_args=("$pr") up_out="" up_rc=0
+  [ -z "$since" ] || up_args+=(--since "$since")
+  [ "$dry" = 0 ] || up_args+=(--dry-run)
+  _AT_ERR="$(mktemp "${TMPDIR:-/tmp}/talos-evidence-attach.XXXXXX")" || {
+    echo "evidence-attach: cannot create a temp file in ${TMPDIR:-/tmp}" >&2
+    return 1
+  }
+  trap _attach_cleanup EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  up_out="$(cmd_upload "${up_args[@]}" 2>"$_AT_ERR")" || up_rc=$?
+  cat "$_AT_ERR" >&2
+  [ "$up_rc" != 2 ] || return 2
+
+  # the one line upload prints in a real run: digits and a github URL only
+  local line="" images=0 videos=0 comment="" re
+  re='^evidence-upload pr=[0-9]+ images=([0-9]+) videos=([0-9]+) comment=(https://[^[:space:]]+#issuecomment-[0-9]+)? mode='
+  line="$(printf '%s\n' "$up_out" | grep '^evidence-upload pr=' | tail -n 1)"
+  if [[ "$line" =~ $re ]]; then
+    images="${BASH_REMATCH[1]}"; videos="${BASH_REMATCH[2]}"; comment="${BASH_REMATCH[3]}"
+  fi
+  local status
+  status="$(_attach_status "$up_rc" "$comment" "$_AT_ERR")"
+  [ "$dry" = 1 ] && [ "$up_rc" = 0 ] && status=planned
+
+  if [ "$dry" = 1 ]; then
+    echo "[dry-run] gate: evidence.enabled=true, provider ok"
+    echo "[dry-run] capture: skipped (a real run would run evidence.command, if set)"
+    echo "[dry-run] caps: files<=$(_evidence_max_files) mb<=$(_evidence_max_mb) per-file<=$_EVIDENCE_FILE_MB (dir: $(_evidence_dir))"
+    echo "[dry-run] upload $pr --dry-run:"
+    printf '%s\n' "$up_out"
+  else
+    [ "$status" = posted ] || comment=""
+    echo "evidence-attach pr=$pr status=$status images=$images videos=$videos capture=$cap_status comment=$comment"
+  fi
+  case "$status" in
+    refused|failed) return 1 ;;
+  esac
+  return 0
+}
+
+# ── dir ──────────────────────────────────────────────────────────────────────
+cmd_dir() {
+  [ $# -eq 0 ] || usage
+  _enter_toplevel
+  printf '%s\n' "$(_evidence_dir)"
+}
+
 case "${1:-}" in
   capture) shift; cmd_capture "$@" ;;
   collect) shift; cmd_collect "$@" ;;
   upload) shift; cmd_upload "$@" ;;
+  attach) shift; cmd_attach "$@" ;;
+  dir) shift; cmd_dir "$@" ;;
   *) usage ;;
 esac
