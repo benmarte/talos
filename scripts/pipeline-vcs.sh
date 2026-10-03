@@ -540,6 +540,13 @@ if [ -n "$_TALOS_CFG" ] && [ -f "$_TALOS_CFG" ]; then
 import sys
 p = sys.argv[1]
 try:
+    # -I drops the user site; append it back (never insert: cwd and the
+    # stdlib must keep winning) so a pip --user PyYAML still parses YAML config (#395).
+    try:
+        import site, sys
+        sys.path.append(site.getusersitepackages())
+    except Exception:
+        pass
     try:
         import yaml
         yaml.safe_load(open(p))
@@ -1200,6 +1207,13 @@ import pathlib as _pathlib_ra
 _talos_cfg_ra = os.environ.get('TALOS_CFG', '')
 _config_parse_failed_ra = False
 if _talos_cfg_ra and _pathlib_ra.Path(_talos_cfg_ra).exists():
+    # -I drops the user site; append it back (never insert: cwd and the
+    # stdlib must keep winning) so a pip --user PyYAML still parses YAML config (#395).
+    try:
+        import site, sys
+        sys.path.append(site.getusersitepackages())
+    except Exception:
+        pass
     try:
         try:
             import yaml as _yaml_ra; _yaml_ra.safe_load(open(_talos_cfg_ra))
@@ -2111,6 +2125,13 @@ import pathlib as _pathlib_cas
 _talos_cfg_cas = os.environ.get('TALOS_CFG', '')
 _config_parse_failed_cas = False
 if _talos_cfg_cas and _pathlib_cas.Path(_talos_cfg_cas).exists():
+    # -I drops the user site; append it back (never insert: cwd and the
+    # stdlib must keep winning) so a pip --user PyYAML still parses YAML config (#395).
+    try:
+        import site, sys
+        sys.path.append(site.getusersitepackages())
+    except Exception:
+        pass
     try:
         try:
             import yaml as _yaml_cas; _yaml_cas.safe_load(open(_talos_cfg_cas))

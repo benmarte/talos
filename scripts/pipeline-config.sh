@@ -161,6 +161,13 @@ def _warn(msg):
 
 def _parse_cfg_file(path):
     # Prefer PyYAML (safe_load only); fall back to json without it.
+    # -I drops the user site; append it back (never insert: cwd and the
+    # stdlib must keep winning) so a pip --user PyYAML still parses YAML config (#395).
+    try:
+        import site, sys
+        sys.path.append(site.getusersitepackages())
+    except Exception:
+        pass
     try:
         import yaml
     except ImportError:
