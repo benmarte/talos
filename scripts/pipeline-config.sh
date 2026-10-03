@@ -98,7 +98,10 @@ _KNOWN_CONFIG_KEYS_JSON='[
   "status.log_days", "status.log_max", "status.resume_max_lines",
   "markers.trusted_authors", "markers.verify_authors",
   "hooks.pre_dispatch", "hooks.post_stage", "hooks.timeout_s",
-  "events.enabled", "events.path"
+  "events.enabled", "events.path",
+  "evidence.enabled", "evidence.command", "evidence.dir", "evidence.include",
+  "evidence.when", "evidence.store",
+  "evidence.max_files", "evidence.max_mb"
 ]'
 
 # ── Shared config loader (#336) ───────────────────────────────────────────────
@@ -255,6 +258,117 @@ def layer_map(project, user):
     return {k: v for k, v in out.items() if all(32 <= ord(c) != 127 for c in k)}
 PYLOADER
 
+# ── Evidence-key validator (#405, part of #352) ──────────────────────────────
+# Python half of the evidence.* validation. Like _CFG_LOADER_PY it is handed to
+# each python3 process as an argv string and exec()'d (inside the existing
+# `python3 -I` process), so --dump and the single-key lookup share ONE
+# definition instead of a third pair of copies. Defines
+# _validate_evidence_key(key, value) -> the validated value, or None after one
+# stderr warning (callers treat None as absent), and _evidence_apply(flat) for
+# the --dump dict. A key outside evidence.* passes through untouched. Defaults
+# (false, 12, 25, attach, user-facing) belong to the CALLER; nothing here
+# injects one. Evidence is uploaded with `gh pr comment --attach` only (owner
+# decision on #352).
+read -r -d '' _CFG_EVIDENCE_PY <<'PYEVIDENCE' || true
+import re
+
+# Enum keys as a table so a new value (e.g. "pr" for evidence.store) is a
+# one-word edit; the warning text is built from the tuple.
+_EVIDENCE_ENUMS = {
+    "evidence.when": ("user-facing", "always"),
+    "evidence.store": ("attach",),
+}
+_EVIDENCE_KEYS = (
+    "evidence.enabled", "evidence.command", "evidence.dir",
+    "evidence.include", "evidence.when", "evidence.store",
+    "evidence.max_files", "evidence.max_mb",
+)
+
+def _ev_reject(key, want, value):
+    shown = repr(value)
+    if len(shown) > 80:
+        shown = shown[:77] + "..."
+    sys.stderr.write(
+        "pipeline-config: %s must be %s -- got: %s -- using default\n"
+        % (key, want, shown)
+    )
+    return None
+
+def _validate_evidence_key(key, value):
+    if value is None or key not in _EVIDENCE_KEYS:
+        return value
+    if key == "evidence.enabled":
+        if not isinstance(value, bool):
+            return _ev_reject(key, "true or false", value)
+        return value
+    if key in _EVIDENCE_ENUMS:
+        allowed = _EVIDENCE_ENUMS[key]
+        if not isinstance(value, str) or value not in allowed:
+            return _ev_reject(key, "one of " + "|".join(allowed), value)
+        return value
+    if key in ("evidence.max_files", "evidence.max_mb"):
+        # Strict: a real int or a 1-4 digit string, never a bool, a float
+        # (12.0), padding (" 12 ") or underscores ("1_0").
+        iv = None
+        if isinstance(value, bool):
+            pass
+        elif isinstance(value, int):
+            iv = value
+        elif isinstance(value, str) and re.fullmatch(r"[0-9]{1,4}", value):
+            iv = int(value)
+        if iv is None or not 1 <= iv <= 100:
+            return _ev_reject(key, "an integer from 1 to 100", value)
+        return iv
+    if key == "evidence.dir":
+        # Value-only checks: a relative path of at most 200 characters from
+        # [A-Za-z0-9._/-] that does not start with "-" or "/" (so no space,
+        # shell metacharacter, glob, control character or backslash), with no
+        # ".." component, not ".", and no ".git" component at any depth (any
+        # case; "." and empty components are dropped first). realpath /
+        # tracked-file checks are run time.
+        ok = isinstance(value, str) and re.fullmatch(
+            r"[A-Za-z0-9._][A-Za-z0-9._/-]{0,199}", value) is not None
+        if ok:
+            parts = [p for p in value.split("/") if p not in ("", ".")]
+            ok = (
+                bool(parts) and ".." not in parts
+                and ".git" not in [p.lower() for p in parts]
+            )
+        if not ok:
+            return _ev_reject(
+                key, "a relative path of at most 200 characters from "
+                "A-Z a-z 0-9 . _ / - (no leading - or /, no .. component, "
+                "not . and no .git component)", value)
+        return value
+    if key == "evidence.include":
+        # A list of 1-20 basename globs of at most 64 characters; a bare
+        # string, [], too many items or ONE bad item makes the whole value
+        # absent (fail closed).
+        if not (isinstance(value, list) and 1 <= len(value) <= 20 and all(
+                isinstance(x, str) and re.fullmatch(r"[A-Za-z0-9*?._-]{1,64}", x)
+                for x in value)):
+            return _ev_reject(
+                key, "a list of 1-20 basename globs of 1-64 characters "
+                "matching [A-Za-z0-9*?._-] (no /)", value)
+        return value
+    if key == "evidence.command":
+        if not (isinstance(value, str) and len(value) <= 2000
+                and "\0" not in value):
+            return _ev_reject(
+                key, "a string of at most 2000 characters with no NUL", value)
+        return value
+    return value
+
+def _evidence_apply(flat):
+    for _ev_key in _EVIDENCE_KEYS:
+        if _ev_key in flat:
+            _ev_val = _validate_evidence_key(_ev_key, flat[_ev_key])
+            if _ev_val is None:
+                del flat[_ev_key]
+            else:
+                flat[_ev_key] = _ev_val
+PYEVIDENCE
+
 # --dump-layers (#336): one "key<TAB>layer" line per agents.* leaf, for
 # pipeline-agent.sh --resolve-all's origin column. One python3 spawn.
 if [ "${1:-}" = "--dump-layers" ]; then
@@ -279,11 +393,12 @@ if [ "${1:-}" = "--dump" ]; then
   if [ -z "$_DCFG" ] && [ -z "$_DUSER" ]; then
     exit 0
   fi
-  python3 -I - "$_DCFG" "$_KNOWN_CONFIG_KEYS_JSON" "$_DUSER" "$_CFG_LOADER_PY" <<'PYEOF'
+  python3 -I - "$_DCFG" "$_KNOWN_CONFIG_KEYS_JSON" "$_DUSER" "$_CFG_LOADER_PY" "$_CFG_EVIDENCE_PY" <<'PYEOF'
 import sys
 
 known_keys_json = sys.argv[2]
 exec(sys.argv[4])
+exec(sys.argv[5])
 
 def walk(obj, parts):
     for part in parts:
@@ -510,6 +625,10 @@ for _spend_key in ("limits.tokens_per_issue", "limits.warn_at", "spend.comment")
         else:
             flat[_spend_key] = _validated
 
+# evidence.* (#405): validated by the shared snippet (_CFG_EVIDENCE_PY); an
+# invalid value warns once and is dropped, like the spend keys above.
+_evidence_apply(flat)
+
 # agents.restamp_model / agents.roles.<role>.restamp_model derived default
 # (#258): role restamp -> global restamp -> agents.model, mirroring
 # verify.qa_mode's derived-default pattern above -- a re-stamp dispatch
@@ -634,13 +753,14 @@ fi
 # The heredoc passes file paths, key, default, the known-keys JSON and the
 # shared loader source as argv to avoid shell quoting issues with special
 # characters in values.
-python3 -I - "$CFG" "$KEY" "$DEFAULT" "$_KNOWN_CONFIG_KEYS_JSON" "$USER_CFG" "$_CFG_LOADER_PY" <<'PYEOF'
+python3 -I - "$CFG" "$KEY" "$DEFAULT" "$_KNOWN_CONFIG_KEYS_JSON" "$USER_CFG" "$_CFG_LOADER_PY" "$_CFG_EVIDENCE_PY" <<'PYEOF'
 import sys
 
 key      = sys.argv[2]
 default  = sys.argv[3] if len(sys.argv) > 3 else ""
 known_keys_json = sys.argv[4] if len(sys.argv) > 4 else "[]"
 exec(sys.argv[6])
+exec(sys.argv[7])
 
 def walk(obj, parts):
     for part in parts:
@@ -901,6 +1021,7 @@ elif key.startswith("agents.roles.") and key.endswith(".restamp_effort"):
 
 value = _validate_int_key(key, value)
 value = _validate_spend_key(key, value)
+value = _validate_evidence_key(key, value)
 
 if value is None:
     print(default, end="")

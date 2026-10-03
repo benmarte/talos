@@ -564,6 +564,27 @@ limits:
 #                            # PR (talos:spend marker). true or false; default
 #                            # true; anything else warns once and uses true.
 
+# ── Evidence capture (#405, part of #352) ──────────────────────────────────────
+# Optional screenshots / recordings attached to a user-facing PR. Off by
+# default; every key is validated, and an invalid value warns once on stderr
+# and reads as absent (the caller's default applies). Nothing here is injected.
+# evidence:
+#   enabled: false           # evidence.enabled: strict true/false. Default: false.
+#   command: ""              # evidence.command: shell command that produces the files
+#                            # (string, at most 2000 characters, no NUL). Default: unset.
+#   dir: ".talos/evidence"   # evidence.dir: where the command writes its files.
+#                            # Relative path, at most 200 characters from [A-Za-z0-9._/-]
+#                            # (no spaces or shell characters), no leading - or /, no ..
+#                            # component, not ".", no .git component.
+#   include: ["*.png", "*.webm"]  # evidence.include: 1-20 basename globs of 1-64
+#                            # characters matching [A-Za-z0-9*?._-] (no /); one bad
+#                            # item rejects the whole list.
+#   when: user-facing        # evidence.when: user-facing | always. Default: user-facing.
+#   store: attach            # evidence.store: attach (uploaded with gh pr comment
+#                            # --attach). Default: attach.
+#   max_files: 12            # evidence.max_files: integer 1-100. Default: 12.
+#   max_mb: 25               # evidence.max_mb: integer 1-100. Default: 25.
+
 # ── Approval-marker author trust (#187) ────────────────────────────────────────
 # check-approval-sha / read-attempt only trust talos:approval / talos:attempt
 # markers from an effective trust set. As of #187 that defaults ON:
