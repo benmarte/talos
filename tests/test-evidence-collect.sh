@@ -465,6 +465,84 @@ collect ev
 assert_eq "0" "$RC" "per-file cap: exactly 10 MiB is fine (max_mb default 20)"
 
 # =============================================================================
+# collect --stage (#415): the bytes come from the descriptor collect judged
+# =============================================================================
+modeof() { python3 -I -c 'import os,stat,sys; print(oct(stat.S_IMODE(os.stat(sys.argv[1]).st_mode)))' "$1"; }
+new_stage() { STAGE="$(mktemp -d "$SANDBOX/stage.XXXXXX")"; }
+stage_empty() { [ -z "$(ls -A "$STAGE")" ]; }
+
+new_repo; new_stage; png ev/a.png
+collect ev --stage;                  assert_eq "2" "$RC" "stage: --stage without a value -> exit 2"
+collect ev --stage "";               assert_eq "2" "$RC" "stage: --stage '' -> exit 2"
+
+new_repo; png ev/a.png; mkdir -p ev/stg
+collect ev --stage rel/dir;          refused "stage: relative path" "absolute"
+collect ev --stage "$SANDBOX/nope-$$"; refused "stage: missing dir" "not a directory"
+new_stage; : > "$STAGE/junk"
+collect ev --stage "$STAGE";         refused "stage: non-empty dir" "not empty"
+collect ev --stage "$REPO/ev/stg";   refused "stage: inside the evidence dir" "inside the evidence dir"
+: > "$SANDBOX/afile"
+collect ev --stage "$SANDBOX/afile"; refused "stage: a file, not a dir" "not a directory"
+
+# staged bytes equal the source; manifest identical to a run without --stage;
+# directories 0700 and files 0600
+new_repo; new_stage
+png ev/a.png "alpha"; webm ev/run.webm "clip"; png ev/l1/l2/deep.png "deeper"
+collect ev
+PLAIN="$(out)"
+collect ev --stage "$STAGE"
+assert_eq "0" "$RC" "stage: exit 0"
+assert_eq "$PLAIN" "$(out)" "stage: stdout is the same manifest as without --stage"
+for f in a.png run.webm l1/l2/deep.png; do
+  if cmp -s "ev/$f" "$STAGE/$f"; then pass "stage: $f copied byte for byte"; else fail "stage: $f copied byte for byte"; fi
+  assert_eq "0o600" "$(modeof "$STAGE/$f")" "stage: $f is 0600"
+done
+assert_eq "0o700" "$(modeof "$STAGE/l1")" "stage: subdirectory l1 is 0700"
+assert_eq "0o700" "$(modeof "$STAGE/l1/l2")" "stage: subdirectory l1/l2 is 0700"
+assert_eq "3" "$(find "$STAGE" -type f | wc -l | tr -d ' ')" "stage: exactly the selected files, nothing else"
+assert_eq "$(fsize ev/a.png)" "$(awk -F'\t' '$1 == "a.png" {print $2}' "$OUT")" "stage: manifest byte count is the copied size"
+
+# an entry that is a symlink at collect time is never staged
+new_repo; new_stage; png ev/real.png
+printf 'TOP-SECRET' > "$SANDBOX/secret-$$.png"
+ln -s "$SANDBOX/secret-$$.png" ev/x.png
+collect ev --stage "$STAGE"
+assert_eq "$(tsv ev real.png image)" "$(out)" "stage: a symlinked entry is not selected"
+assert_eq "1" "$(find "$STAGE" -type f | wc -l | tr -d ' ')" "stage: only the regular file was staged"
+assert_eq "" "$(grep -rl TOP-SECRET "$STAGE" || true)" "stage: the link target's bytes are nowhere in the stage"
+
+# a file swapped for a symlink AFTER selection: the stage keeps the judged bytes
+new_repo; new_stage; png ev/a.png "original-bytes"
+collect ev --stage "$STAGE"
+cp "$STAGE/a.png" "$SANDBOX/judged.png"
+rm ev/a.png; ln -s "$SANDBOX/secret-$$.png" ev/a.png
+if cmp -s "$STAGE/a.png" "$SANDBOX/judged.png"; then pass "stage: the staged copy is unaffected by a later swap for a symlink"; else fail "stage: the staged copy is unaffected by a later swap"; fi
+assert_eq "" "$(grep -l TOP-SECRET "$STAGE/a.png" || true)" "stage: nothing was read through the link"
+
+# the caps are re-checked on the staged bytes; a failure leaves the stage empty
+new_repo; new_stage; bigfile ev/big.png 10485761; png ev/small.png
+cfg_ev '"max_mb": 100'
+collect ev --stage "$STAGE"
+assert_eq "4" "$RC" "stage: over the per-file cap -> exit 4"
+assert_eq "" "$(out)" "stage: over-cap leaves an empty manifest"
+stage_empty && pass "stage: over-cap removes what was staged" || fail "stage: over-cap removes what was staged" "$(ls -A "$STAGE")"
+new_repo; new_stage; png ev/a.png; png ev/b.png; cfg_ev '"max_files": 1'
+collect ev --stage "$STAGE"
+assert_eq "4" "$RC" "stage: over max_files -> exit 4"
+stage_empty && pass "stage: max_files over-cap removes what was staged" || fail "stage: max_files over-cap removes what was staged"
+new_repo; new_stage; mk ev/notes.txt hi
+collect ev --stage "$STAGE"
+assert_eq "3" "$RC" "stage: nothing selected -> exit 3"
+stage_empty && pass "stage: exit 3 leaves the stage empty" || fail "stage: exit 3 leaves the stage empty"
+new_repo; new_stage; png ev/a.png
+collect nope --stage "$STAGE"
+assert_eq "3" "$RC" "stage: missing dir -> exit 3"
+new_repo; new_stage; png ev/a.png; ln -s ev evlink; printf 'evlink\n' >> .gitignore
+collect evlink --stage "$STAGE"
+refused "stage: a refusal" "symlink"
+stage_empty && pass "stage: a refusal leaves the stage empty" || fail "stage: a refusal leaves the stage empty"
+
+# =============================================================================
 # hygiene: no repo code on python's path, no git writes, no network
 # =============================================================================
 new_repo; png ev/a.png
