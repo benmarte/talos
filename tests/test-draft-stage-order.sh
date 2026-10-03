@@ -27,8 +27,8 @@
 # show the positive controls red against a mutated copy).
 #
 # Fixtures (tests/fixtures/skill-step-0-lists.md, skill-step-1.md,
-# skill-steps-3c-4.md) hold the DEFAULT text of those sections, pr-draft blocks
-# stripped. When you edit that default text on purpose, regenerate them with
+# skill-steps-3c-4.md) hold the DEFAULT text of those sections, pr-draft and
+# evidence blocks stripped. When you edit that default text on purpose, regenerate them with
 #   bash tests/test-draft-stage-order.sh --regen-fixtures
 # and review the fixture diff: only the lines you changed may differ. A
 # mismatch prints a unified diff and this command.
@@ -48,12 +48,16 @@ export TALOS_RETRY_SLEEP_SCALE=0
 START='<!-- pr-draft:start -->'
 END='<!-- pr-draft:end -->'
 
-# strip_draft: the file with every pr-draft block (markers included) removed.
+# strip_draft: the file with every pr-draft block AND every opt-in evidence
+# block (#410, markers included) removed: both are default-off, so what is left
+# is the default text the fixtures hold.
+EV_START='<!-- evidence:start -->'
+EV_END='<!-- evidence:end -->'
 strip_draft() {
-  awk -v s="$START" -v e="$END" '
+  awk -v s="$START" -v e="$END" -v es="$EV_START" -v ee="$EV_END" '
     { t = $0; gsub(/^[ \t]+|[ \t]+$/, "", t) }
-    t == s { skip = 1; next }
-    t == e { skip = 0; next }
+    t == s || t == es { skip = 1; next }
+    t == e || t == ee { skip = 0; next }
     !skip' "$1"
 }
 
