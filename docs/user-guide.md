@@ -1585,9 +1585,20 @@ namespaced `talos:<role>`, so your file wins for that role while the other seven
 keep coming from the plugin. Override only what you need, and it stays
 version-controlled with the code it reviews.
 
-`pipeline-agent.sh` (the non-Claude harness adapter) resolves in the same order,
-so Codex and Claude pick the same profile: `<repo>/.claude/agents/` first, then
-`$CLAUDE_PLUGIN_ROOT/agents/`, then the plugin's own layout.
+`pipeline-agent.sh` (the non-Claude harness adapter) resolves a role profile in
+this order: `<repo>/.claude/agents/<role>.md`, then the harness-neutral
+`<repo>/.agents/talos/agents/<role>.md`, then the install (`~/.talos/agents/`,
+or `$TALOS_HOME/agents/`), then the plugin's own layout. The neutral path is for
+non-Claude harnesses (the adapter path, `agents.subagents: false`, and pi inline
+mode): commit a role override there and it is picked up without a `.claude/`
+directory. Native Claude Code subagents still load `.claude/agents/` only, so
+`.claude/agents/<role>.md` stays first and the neutral file is never read on that
+path. A symlinked neutral file or directory is skipped, and a role name is
+lowercase letters and `-`, otherwise the script exits 2. To see which file a role
+resolves to, run `pipeline-agent.sh --resolve-profile <role>` (prints one absolute
+path; exits 1 listing the locations searched when none exists). `--resolve-all`
+warns on stderr when both files exist (the neutral one is shadowed) or when only
+the neutral one exists but the role runs natively on Claude. No new config key.
 
 **Adding skills to a profile (Claude Code):** two supported mechanisms:
 
