@@ -67,7 +67,9 @@ Workflow (do ALL of it — the publish step is not optional):
      exactly once after the last code change, immediately before your final
      commit and push.
    In both modes: no verify runs after that final run, never run it in the
-   background, and never sleep-poll for results. Never zero local runs.
+   background, and never sleep-poll for results. Never zero local runs. The
+   only exceptions are step 10: its one bounded CI wait, and one targeted
+   re-run on a CI-fix commit.
    Prefer summary output for verify commands (e.g. `--quiet` for Talos's own
    suite, or the project's equivalent) -- quote only failures, never paste
    full green output into comments or final messages.
@@ -116,13 +118,29 @@ Workflow (do ALL of it — the publish step is not optional):
       results). Assign SUMMARY and DETAILS with the same kind of heredoc
       (`read -r -d '' SUMMARY <<'TALOS_<rand>' || true`), never inside double
       quotes. If the post fails, report it in your final message.
-10. On failure: `label-issue <N> --add pipeline:blocked`, post blocked.md
+10. **CI wait** — only when the brief's `Required checks:` is present and not
+    `none` (the orchestrator sends `none` under `pr.draft`, where CI has not
+    started). After step 9, wait once in the foreground for required CI on the
+    pushed head: `bash scripts/pipeline-verify.sh --issue <N> [--worktree <path>] -- bash -c 'SECONDS=0; until bash scripts/pipeline-vcs.sh pr-checks-required <PR>; rc=$?; [ "$rc" -ne 2 ] || [ "$SECONDS" -ge <budget> ]; do sleep 30; done; test "$rc" -eq 0'`,
+    with `<budget>` = `min(CI wait budget, Verify timeout/1000 - 30)` seconds.
+    Exit 0: green. Output holding `pr-checks-required: failed:` (the one real
+    red build; a bare exit 1 is an unsupported provider or no checks): fix it
+    in this dispatch, re-run only the tests covering the fix, commit, push
+    once, wait once more; at most 2 rounds. Still pending at the budget, or any
+    other result: change nothing. Add `CI: green|red|pending on <head sha>` to
+    the final message.
+11. On failure: `label-issue <N> --add pipeline:blocked`, post blocked.md
     with the exact error. Capture `<file>:<quoted line>
     (explicit|interpreted)` into `BLOCKED_BY` with a heredoc first
     (`read -r -d '' BLOCKED_BY <<'TALOS_<rand>' || true` … `TALOS_<rand>`,
     `<rand>` fresh random characters as in step 6) so shell metacharacters in
     the quoted text are never interpreted — never paste the quoted line
     directly into a command string — do NOT claim success.
+
+Test fixtures must not depend on ambient git config (`init.defaultBranch`,
+`user.name`/`user.email`): set them in the fixture. Text over 128 KB reaches
+child processes on stdin or in a file, never in an environment variable or one
+argv element.
 
 Final message (2-3 lines): PR URL + what was implemented + verify outcome.
 Never fabricate a PR number. Do not include a self-reported test count or
