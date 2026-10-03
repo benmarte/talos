@@ -360,6 +360,14 @@ All keys live in `talos.pipeline.json` (or `talos.pipeline.yml` if PyYAML is ins
 | `status.log_days` | `30` | Age limit, in days, for log entries kept in the status file. Must be a positive integer; an invalid value warns once on stderr and the default is used. |
 | `status.log_max` | `50` | Maximum number of log entries kept in the status file. Must be a positive integer; an invalid value warns once and the default is used. |
 | `status.resume_max_lines` | `40` | Maximum number of lines in the resume section. Must be a positive integer; an invalid value warns once and the default is used. |
+| `evidence.enabled` | `false` | Opt-in switch for evidence capture (#352): QA attaches screenshots or recordings of a user-facing change to the PR. Strict `true`/`false`; anything else warns once and reads as absent. `/pipeline-setup` asks once and writes it. See [Evidence capture](#evidence-capture-opt-in). |
+| `evidence.command` | unset (empty means agent capture) | Shell command that writes the files, run as `bash -c` at the repo root, only when `evidence.enabled` is `true`. Empty or absent: QA's browser skill saves screenshots itself. At most 2000 characters. |
+| `evidence.dir` | `.talos/evidence` | Directory the files are written to, relative to the repo root. It must be git-ignored. |
+| `evidence.include` | unset (png, jpg, jpeg, gif, webm, mp4, mov) | 1-20 basename globs narrowing which files are attached. Never widens the allowlist: svg and html are never published. |
+| `evidence.when` | `user-facing` | `user-facing` or `always`. |
+| `evidence.store` | `attach` | `attach` is the only value: files go up with `gh pr comment --attach`. |
+| `evidence.max_files` | `10` | Most files in one upload, integer 1-100. |
+| `evidence.max_mb` | `20` | Most MiB in one upload (a total), integer 1-100. A fixed 10 MiB per-file cap applies on top. An invalid value warns once and reads as absent. `evidence.*` in the user-level file is ignored. |
 | `agents.runner` | `claude` | Agent harness for the whole pipeline: `claude` (native subagents), `pi`, `codex`, `gemini`, `antigravity`, or `custom` (with `agents.runner_cmd`). See [Other harnesses](#other-harnesses-pi-codex-cli-gemini-cli-antigravity-local-models). |
 | `agents.subagents` | `auto` | `auto` (true for `claude`, else false), `true`, or `false`. Chooses native parallel subagents vs. the headless `pipeline-agent.sh` adapter. |
 | `agents.runner_cmd` | — | Command for `agents.runner: custom` — the prompt arrives on stdin. Global-only; use `agents.roles.<role>.runner_cmd` to override a single role. |
@@ -814,6 +822,14 @@ Thread anchors are stored in `~/.talos/threads.json` keyed by `<repo-slug>:<issu
 
 ---
 
+## Evidence capture (opt-in)
+
+When QA passes every criterion of a user-facing change, it can attach screenshots or recordings to the PR as one comment, using `gh pr comment --attach`. It is **off by default**. Turn it on with the `/pipeline-setup` question (default off), or add an `evidence:` block (`enabled: true`, plus `command` and `dir`) to `talos.pipeline.json`. Evidence never changes QA's verdict, and QA never opens the images: the reviewer is only handed a link.
+
+Three hard limits: it needs `gh` v2.99.0 or newer with write access to the repo (no GitHub Enterprise Server, and not the Actions `GITHUB_TOKEN`); attachments are public on public repos and cannot be deleted; screenshots can show secrets. Only the `github` and `github-api` providers are supported. Keys, commands, status values and security notes: [Attaching evidence to the PR](docs/user-guide.md#attaching-evidence-to-the-pr-evidence-352) in the user guide.
+
+---
+
 ## How a run works end-to-end
 
 1. You run `/pipeline` in a Claude Code session.
@@ -863,6 +879,7 @@ The pipeline deliberately preserves three gates that only a human should act on:
 | `scripts/pipeline-events.sh path\|list [--issue N] [--role R] [--event E] [--last K] [--json]\|cost [--issue N] [--pr M] [--json\|--line\|--markdown\|--summary]` | Reader for the local `.talos/events.jsonl` audit log; see [Events log](#events-log) and [Cost accounting](#cost-accounting) |
 | `scripts/pipeline-budget.sh check --issue N [--json]` | The token budget guard (#334): prints `talos:budget <ok\|warn\|exceeded> ...` (nothing when `limits.tokens_per_issue` is off); exit 0 for ok, warn, unknown and off, 1 for exceeded only, 2 for usage; see [Seeing token spend](docs/user-guide.md#seeing-token-spend-334) |
 | `scripts/talos-status.sh --line\|--preview [--format a,b,c] [--style S] [--width N]` | Offline status-line renderer for harness status bars (#334); reads `.talos/events.jsonl`, exits 0 on every input; installed by `install.sh --global` next to `pipeline-spend-format.py`, a shared module and not a command; see [Seeing token spend](docs/user-guide.md#seeing-token-spend-334) |
+| `scripts/pipeline-evidence.sh capture\|collect\|upload\|attach\|dir\|enabled` | Evidence capture (#352, opt-in): runs `evidence.command`, picks the files that may leave the machine and attaches them to the PR with `gh pr comment --attach`; see [Evidence capture](#evidence-capture-opt-in) |
 | `scripts/pipeline-hooks.sh` | Run `hooks.pre_dispatch`/`hooks.post_stage` external commands at fixed pipeline points; see [Hooks](#hooks) |
 | `scripts/pipeline-isolation.sh validate` | Startup gate for `execution.isolation` + `issues.max_parallel` combinations; see the `execution.isolation` row in [Config reference](#config-reference) |
 | `scripts/pipeline-lock.sh` | Portable `mkdir`-based advisory locking for shared local state (threads.json, worktree metadata, test cache) under `issues.max_parallel > 1`; see the `issues.max_parallel` row in [Config reference](#config-reference) |
