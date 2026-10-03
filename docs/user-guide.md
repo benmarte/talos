@@ -1815,9 +1815,9 @@ All are verbs of `scripts/pipeline-evidence.sh`. `capture`, `collect`, `dir` and
 
 | Verb | What it does | Exit codes |
 |------|--------------|-----------|
-| `capture` | Runs `evidence.command` with `bash -c` at the repo root, stdin on `/dev/null`, output in a private log. Takes no argument. Prints `evidence-capture rc=<n> log=<path> since=<epoch>`, or `evidence-capture mode=agent` (and runs nothing) when `evidence.command` is empty. `verify.timeout_ms` is a hard limit on the command's process group. A non-zero `rc` is reported, not a failure. | 0 a line was printed; 1 the log or runner failed; 2 usage |
+| `capture` | Runs `evidence.command` with `bash -c` at the repo root, stdin on `/dev/null`, output in a private log. Takes no argument. Prints `evidence-capture rc=<n> log=<path> since=<epoch>`, or `evidence-capture mode=agent` (and runs nothing) when `evidence.command` is empty. `verify.timeout_ms` is a hard limit on the command's process group. A non-zero `rc` is reported, not a failure. | 0 a line was printed; 1 the log or runner failed; 2 usage (any argument) or not inside a worktree |
 | `collect <dir> [--since <epoch>] [--stage <dir>]` | Prints the files that are safe to publish, one TSV line each (`<relpath>`, bytes, `image` or `video`). `--since` drops files older than the capture; `--stage` copies the selection into an empty directory outside the evidence dir. | 0 manifest; 1 refused (reason on stderr); 2 usage; 3 nothing selected; 4 over a cap |
-| `upload <pr> [--since <epoch>] [--dry-run]` | Posts ONE evidence comment with the selected files, then deletes the author's older evidence comments (create, then delete, so a failed post keeps the old one). `--dry-run` prints the planned `gh` calls and makes none. | 0 posted; 1 collect, staging or `gh` failure; 2 usage, unsupported provider or `gh` without `--attach`; 3 nothing to attach |
+| `upload <pr> [--since <epoch>] [--dry-run]` | Posts ONE evidence comment with the selected files, then deletes the author's older evidence comments (create, then delete, so a failed post keeps the old one). `--dry-run` prints the planned `gh` calls and makes none. | 0 posted; 1 collect, staging or `gh` failure; 2 usage, unsupported provider, no `gh` binary, or `gh` without `--attach`; 3 nothing to attach |
 | `attach <pr> [--since <epoch>] [--dry-run]` | The one call a stage makes: the `evidence.enabled` gate, then `capture`, then `upload`, then one status line. | 0 posted, empty, over-cap; 1 refused, failed; 2 usage, evidence disabled, unsupported provider, no `gh`, or `gh` without `--attach` |
 | `dir` | Prints the evidence dir (`evidence.dir` or `.talos/evidence`). Agent capture saves its files there. | 0 |
 | `enabled` | The Step 0 check. Exit 1 with no output when `evidence.enabled` is not `true`; exit 1 with one `pipeline: evidence ignored: <reason>` line on stderr when the provider or `gh` cannot do it (warn once, treat evidence as off, like `pr.draft`); otherwise exit 0 and print `evidence on when=<user-facing\|always> mode=<command\|agent>`. Runs no command and makes no provider call. | 0 on; 1 off |
@@ -1862,7 +1862,7 @@ QA never opens, Reads or describes an image or video, and never fetches the comm
 - **Not the Actions `GITHUB_TOKEN`.** `gh` refuses it (exit 1 with `gh`'s own reason). Run the pipeline on a dev machine, or give it a personal access token; the default token in a workflow does not work.
 - **Uploads cannot be deleted.** Deleting a comment, including the older evidence comment `upload` removes after a good post, does not delete the uploaded files.
 - **Caps.** 10 files, 20 MiB in total and 10 MiB per file (`evidence.max_files`, `evidence.max_mb` and a fixed per-file cap). Over any of them is exit 4 and nothing is selected, never a partial upload.
-- **Allowlisted types only.** `png`, `jpg`, `jpeg`, `gif`, `webm`, `mp4` and `mov`, each checked against the file's first bytes (a renamed file is skipped). `svg` and `html` are never published, even when `evidence.include` names them. At most 3 directory levels below `dir`, names only from `[A-Za-z0-9._-]`, no hidden files, no symlinks, no hard links.
+- **Allowlisted types only.** `png`, `jpg`, `jpeg`, `gif`, `webm`, `mp4` and `mov`, each checked against the file's first bytes (a renamed file is skipped). `svg` and `html` are never published, even when `evidence.include` names them. At most 3 path components below `dir`, counting the file name (so at most two subdirectory levels), names only from `[A-Za-z0-9._-]`, no hidden files, no symlinks, no hard links.
 
 #### Rendering
 
@@ -1880,6 +1880,7 @@ Images render inline in the comment. A video renders as a player only when it is
 #### Not verified
 
 - **UNVERIFIED:** whether files attached to a **private** repo's PR are readable by an unauthenticated viewer. Treat private-repo attachments as readable by anyone holding the link until you have checked.
+- **UNVERIFIED:** a real upload. Talos has not yet made a real `gh pr comment --attach` run: the tests use a stub, and the first real upload happens on the first PR with evidence enabled.
 - **UNVERIFIED:** whether `gh --attach` and GitHub accept `.webm` (Playwright's video format). Talos does not promise it; `.mp4` and `.mov` are allowed too.
 
 ### Notification templates, transpiled per platform

@@ -133,6 +133,31 @@ for word in $(printf '%s\n%s\n' "$guide_text" "$readme_text" \
     *) fail "docs name a real verb: pipeline-evidence.sh $word" "not a verb of $EVIDENCE_SH" ;;
   esac
 done
+# ... and a verb that appears only as the first cell of a Commands table row
+# (no `pipeline-evidence.sh` in front of it) is checked too, both ways: every
+# row is a real verb and every verb has a row.
+commands_text="$(printf '%s\n' "$section_text" | awk '
+  /^#### Commands/ { s = 1; next }
+  s && /^\|/ { t = 1; print; next }
+  s && t { exit }')"
+table_verbs() {  # stdin: markdown text; prints the first word of each row's first cell
+  awk -F'|' '
+    $2 ~ /^ *`[a-z]/ { c = $2; sub(/^ *`/, "", c); sub(/[ `].*$/, "", c); print c }
+  '
+}
+row_verbs="$(printf '%s\n' "$commands_text" | table_verbs)"
+for word in $row_verbs; do
+  case " $VERBS " in
+    *" $word "*) pass "Commands table row is a real verb: $word" ;;
+    *) fail "Commands table row is a real verb: $word" "not a verb of $EVIDENCE_SH" ;;
+  esac
+done
+for verb in capture collect upload attach dir enabled; do
+  case " $(printf '%s' "$row_verbs" | tr '\n' ' ') " in
+    *" $verb "*) pass "Commands table has a row for $verb" ;;
+    *) fail "Commands table has a row for $verb" ;;
+  esac
+done
 
 # Every flag the guide section names exists in scripts/.
 # `--grep` is the user's own Playwright flag in the example command, not Talos's.
@@ -280,6 +305,11 @@ bogus="$(printf 'run pipeline-evidence.sh frobnicate now\n' | words_like 'pipeli
 case " $VERBS " in
   *" $bogus "*) fail "negative control: a made-up verb is not accepted" ;;
   *) pass "negative control: a made-up verb is not accepted" ;;
+esac
+bogus="$(printf '| `frobnicate <pr>` | text | 0 |\n| `capture` | text | 0 |\n' | table_verbs | head -n 1)"
+case " $VERBS " in
+  *" $bogus "*) fail "negative control: a bare table-cell verb is read and rejected" ;;
+  *) assert_eq "frobnicate" "$bogus" "negative control: a bare table-cell verb is read and rejected" ;;
 esac
 if grep -rqF -- '--frobnicate' "$SCRIPTS"; then
   fail "negative control: a made-up flag is not found in scripts/"
