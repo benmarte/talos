@@ -60,6 +60,7 @@ Store these for the run:
   false` none of the status steps run: every status instruction below says
   "`STATUS_ENABLED = true`" and is skipped otherwise.
 - COMMENTS_ENABLED, COMMENTS_HEADER_TPL, COMMENTS_TMPL_DIR
+- SPEND_COMMENT (`spend.comment`, default `true`, #334) — `false` skips the PR spend comment (Rule 3 spend block); `limits.tokens_per_issue` is read by `pipeline-budget.sh` itself
 - AGENTS_RUNNER (`agents.runner`, default `claude`), AGENTS_SUBAGENTS (`agents.subagents`, default `auto`) — select the harness execution mode (see Harness compatibility)
 - FILE_SOURCE_PATH (`vcs.file.source.path`, for file mode)
 - ISOLATION (`execution.isolation`, default `worktree`) — how each stage gets its working copy; validated immediately after config is read
