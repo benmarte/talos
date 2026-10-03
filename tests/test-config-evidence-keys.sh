@@ -22,6 +22,12 @@ make_sandbox || exit 1
 
 CFG_SH="$TALOS_ROOT/scripts/pipeline-config.sh"
 ERR="$SANDBOX/err.txt"
+D200="$(printf 'd%.0s' $(seq 1 200))"
+D201="$(printf 'd%.0s' $(seq 1 201))"
+G64="$(printf 'g%.0s' $(seq 1 64))"
+G65="$(printf 'g%.0s' $(seq 1 65))"
+# json_list <n> <item> -- a JSON list of <n> copies of <item>.
+json_list() { local i out="" ; for ((i = 0; i < $1; i++)); do out="$out${out:+, }\"$2\""; done; printf '[%s]' "$out"; }
 CMD2000="$(printf 'x%.0s' $(seq 1 2000))"
 CMD2001="$(printf 'x%.0s' $(seq 1 2001))"
 
@@ -126,13 +132,15 @@ for ekey in evidence.max_files evidence.max_mb; do
 done
 
 # ---- 6: dir ----------------------------------------------------------------
-for ok in "docs/shots" "evidence" "a/b/c" "./shots" ".talos/evidence" "my shots" ".github/x" "a..b" "gitx/y" ".gitignore.d"; do
-  ev_ok evidence.dir "\"$ok\"" "$ok" "6: dir=$ok"
+for ok in "docs/shots" "evidence" "a/b/c" "./shots" ".talos/evidence" "test-results/qa" ".github/x" "a..b" "gitx/y" ".gitignore.d" "$D200"; do
+  ev_ok evidence.dir "\"$ok\"" "$ok" "6: dir=${ok:0:20}"
 done
 for bad in '""' '"."' '"./"' '"/"' '"/abs"' '"/etc"' '".."' '"../x"' '"a/../b"' '"a/.."' '"a/./../b"' \
            '".git"' '".git/x"' '".GIT/x"' '".Git"' '"./.git/x"' '".//.git/x"' '"./.git"' \
-           '"a\\b"' '"a\nb"' '"a\tb"' '"a\u0000b"' '"a\u007fb"' '"a\u001bb"' '"shots\n"' 5 true '["a"]'; do
-  ev_bad evidence.dir "$bad" "6: dir=$bad"
+           '"a/.git/x"' '"a/b/.GIT"' '"a/./.git"' \
+           '"my shots"' '"-delete"' '"*"' '"!x"' '"#x"' '"[ab]"' '"a;b"' '"$HOME"' '"a b"' '"a$(x)"' '"a`x`"' '"a|b"' '"a&b"' '"a>b"' '"~"' \
+           '"a\\b"' '"a\nb"' '"a\tb"' '"a\u0000b"' '"a\u007fb"' '"a\u001bb"' '"shots\n"' "\"$D201\"" 5 true '["a"]'; do
+  ev_bad evidence.dir "$bad" "6: dir=${bad:0:30}"
 done
 
 # ---- 7: there is no evidence.branch (owner decision on #352: gh --attach only)
@@ -151,9 +159,12 @@ ev_ok evidence.include '["*.png", "shot-?.webm", "a_b.c-d"]' "$(printf '*.png\ns
 # The whole value reads as absent (fail closed) for each of these:
 for bad in '"*.png"' '[]' '[""]' '[1]' '[null]' '[["a"]]' '["*.png", "a/b.png"]' '["*.png", "../x"]' \
            '["a.png\n"]' '["a b.png"]' '["*.png", 5]' '["*.png", ""]' '["a;b"]' '["$(x)"]' '["*.png", "/etc"]' \
-           5 true; do
-  ev_bad evidence.include "$bad" "8: include=$bad"
+           "[\"$G65\"]" "$(json_list 21 a.png)" 5 true; do
+  ev_bad evidence.include "$bad" "8: include=${bad:0:30}"
 done
+# Bounds: exactly 20 items and exactly 64 characters are accepted.
+ev_ok evidence.include "$(json_list 20 a.png)" "$(for _i in $(seq 1 20); do echo a.png; done)" "8: 20 items"
+ev_ok evidence.include "[\"$G64\"]" "$G64" "8: 64-character item"
 
 # ---- 9: command ------------------------------------------------------------
 ev_ok evidence.command '"npm run shots -- --out \"$DIR\""' 'npm run shots -- --out "$DIR"' "9: ordinary command"

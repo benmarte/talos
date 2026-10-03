@@ -573,11 +573,12 @@ limits:
 #   command: ""              # evidence.command: shell command that produces the files
 #                            # (string, at most 2000 characters, no NUL). Default: unset.
 #   dir: ".talos/evidence"   # evidence.dir: where the command writes its files.
-#                            # Non-empty RELATIVE path: no leading /, no .. component,
-#                            # no control characters, not ".", not under .git.
-#   include: ["*.png", "*.webm"]  # evidence.include: non-empty list of basename globs
-#                            # matching [A-Za-z0-9*?._-]+ (no /); one bad item rejects
-#                            # the whole list.
+#                            # Relative path, at most 200 characters from [A-Za-z0-9._/-]
+#                            # (no spaces or shell characters), no leading - or /, no ..
+#                            # component, not ".", no .git component.
+#   include: ["*.png", "*.webm"]  # evidence.include: 1-20 basename globs of 1-64
+#                            # characters matching [A-Za-z0-9*?._-] (no /); one bad
+#                            # item rejects the whole list.
 #   when: user-facing        # evidence.when: user-facing | always. Default: user-facing.
 #   store: attach            # evidence.store: attach (uploaded with gh pr comment
 #                            # --attach). Default: attach.

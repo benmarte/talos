@@ -294,9 +294,6 @@ def _ev_reject(key, want, value):
     )
     return None
 
-def _ev_has_control(s):
-    return any(ord(c) < 32 or ord(c) == 127 for c in s)
-
 def _validate_evidence_key(key, value):
     if value is None or key not in _EVIDENCE_KEYS:
         return value
@@ -323,33 +320,36 @@ def _validate_evidence_key(key, value):
             return _ev_reject(key, "an integer from 1 to 100", value)
         return iv
     if key == "evidence.dir":
-        # Value-only checks: non-empty relative path, no control characters
-        # (NUL and newline included), no backslash, no ".." component, not "."
-        # and not under .git (first component, any case, after dropping "."
-        # and empty components). realpath / tracked-file checks are run time.
-        ok = isinstance(value, str) and value != "" and not value.startswith("/")
+        # Value-only checks: a relative path of at most 200 characters from
+        # [A-Za-z0-9._/-] that does not start with "-" or "/" (so no space,
+        # shell metacharacter, glob, control character or backslash), with no
+        # ".." component, not ".", and no ".git" component at any depth (any
+        # case; "." and empty components are dropped first). realpath /
+        # tracked-file checks are run time.
+        ok = isinstance(value, str) and re.fullmatch(
+            r"[A-Za-z0-9._][A-Za-z0-9._/-]{0,199}", value) is not None
         if ok:
             parts = [p for p in value.split("/") if p not in ("", ".")]
             ok = (
-                not _ev_has_control(value) and "\\" not in value
-                and bool(parts) and ".." not in parts
-                and parts[0].lower() != ".git"
+                bool(parts) and ".." not in parts
+                and ".git" not in [p.lower() for p in parts]
             )
         if not ok:
             return _ev_reject(
-                key, "a non-empty relative path (no leading /, no .. "
-                "component, no control characters, not . and not under .git)",
-                value)
+                key, "a relative path of at most 200 characters from "
+                "A-Z a-z 0-9 . _ / - (no leading - or /, no .. component, "
+                "not . and no .git component)", value)
         return value
     if key == "evidence.include":
-        # A non-empty list of basename globs; a bare string, [] or ONE bad
-        # item makes the whole value absent (fail closed).
-        if not (isinstance(value, list) and value and all(
-                isinstance(x, str) and re.fullmatch(r"[A-Za-z0-9*?._-]+", x)
+        # A list of 1-20 basename globs of at most 64 characters; a bare
+        # string, [], too many items or ONE bad item makes the whole value
+        # absent (fail closed).
+        if not (isinstance(value, list) and 1 <= len(value) <= 20 and all(
+                isinstance(x, str) and re.fullmatch(r"[A-Za-z0-9*?._-]{1,64}", x)
                 for x in value)):
             return _ev_reject(
-                key, "a non-empty list of basename globs matching "
-                "[A-Za-z0-9*?._-]+ (no /)", value)
+                key, "a list of 1-20 basename globs of 1-64 characters "
+                "matching [A-Za-z0-9*?._-] (no /)", value)
         return value
     if key == "evidence.command":
         if not (isinstance(value, str) and len(value) <= 2000
