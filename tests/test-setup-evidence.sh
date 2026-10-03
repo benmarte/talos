@@ -120,9 +120,10 @@ assert_contains "$(cat "$GI")" "<dir>" "the .gitignore block takes the directory
 
 # Run the fenced block with <dir> replaced by $2, at repo $1.
 run_gi() {
-  local repo="$1" value="$2" txt
+  local repo="$1" value="$2" mode="${3:-write}" txt
   txt="$(cat "$GI")"
   txt="${txt//<rand>/k3v9xq7mzp2w}"
+  txt="${txt//<mode>/$mode}"
   printf '%s\n' "${txt//<dir>/$value}" > "$SANDBOX/gi-run.sh"
   ( cd "$repo" && bash "$SANDBOX/gi-run.sh" 2>&1 )
 }
@@ -158,6 +159,47 @@ mkrepo "$SANDBOX/gi6"; mkdir -p "$SANDBOX/gi6/out"; : > "$SANDBOX/gi6/out/a.png"
 out="$(run_gi "$SANDBOX/gi6" "out")"
 assert_contains "$out" "tracked" "a tracked directory is warned about"
 
+# a symlinked .gitignore (committed by the repo) is never followed
+mkrepo "$SANDBOX/gi7"
+printf 'KEEP\n' > "$SANDBOX/gi7-target"
+ln -s "$SANDBOX/gi7-target" "$SANDBOX/gi7/.gitignore"
+out="$(run_gi "$SANDBOX/gi7" "test-results")"
+assert_contains "$out" "rejected:" "a symlinked .gitignore is refused"
+assert_contains "$out" "by hand" "the refusal tells the operator to add the line by hand"
+assert_eq "KEEP" "$(cat "$SANDBOX/gi7-target")" "the symlink target stays byte-identical"
+assert_eq "1" "$([ -L "$SANDBOX/gi7/.gitignore" ] && echo 1 || echo 0)" "the symlink is left in place"
+# a dangling symlink too
+mkrepo "$SANDBOX/gi8"
+ln -s "$SANDBOX/gi8-missing" "$SANDBOX/gi8/.gitignore"
+out="$(run_gi "$SANDBOX/gi8" "test-results")"
+assert_contains "$out" "rejected:" "a dangling symlinked .gitignore is refused"
+assert_file_absent "$SANDBOX/gi8-missing" "nothing is created through a dangling symlink"
+# a directory named .gitignore is not a regular file
+mkrepo "$SANDBOX/gi9"; mkdir "$SANDBOX/gi9/.gitignore"
+out="$(run_gi "$SANDBOX/gi9" "test-results")"
+assert_contains "$out" "rejected:" "a .gitignore that is not a regular file is refused"
+# a regular file still works, and a missing one is created as a regular file
+mkrepo "$SANDBOX/gi10"; printf 'dist/\n' > "$SANDBOX/gi10/.gitignore"
+run_gi "$SANDBOX/gi10" "test-results" >/dev/null
+assert_eq "dist/
+test-results/" "$(cat "$SANDBOX/gi10/.gitignore")" "a regular .gitignore still gets the line appended"
+assert_eq "1" "$([ -f "$SANDBOX/gi1/.gitignore" ] && [ ! -L "$SANDBOX/gi1/.gitignore" ] && echo 1 || echo 0)" "a missing .gitignore is created as a regular file"
+
+# check mode (the user said no to the .gitignore edit): nothing written, dir= printed
+mkrepo "$SANDBOX/gi11"
+out="$(run_gi "$SANDBOX/gi11" "./cypress//evidence/" check)"
+assert_contains "$out" "dir=cypress/evidence" "check mode prints the normalised dir"
+assert_file_absent "$SANDBOX/gi11/.gitignore" "check mode never writes .gitignore"
+
+# the config value is the same normalised dir the .gitignore line uses (round trip)
+mkrepo "$SANDBOX/rt"
+out="$(run_gi "$SANDBOX/rt" "./cypress//evidence/")"
+norm="$(printf '%s\n' "$out" | sed -n 's/^dir=//p')"
+printf 'evidence:\n  enabled: true\n  dir: %s\n' "$norm" > "$SANDBOX/rt-config.yml"
+got="$(cd "$SANDBOX/rt" && PIPELINE_CONFIG="$SANDBOX/rt-config.yml" bash "$TALOS_ROOT/scripts/pipeline-config.sh" evidence.dir unset 2>&1)"
+assert_eq "cypress/evidence" "$got" "the written evidence.dir round-trips through pipeline-config.sh"
+assert_eq "$got/" "$(cat "$SANDBOX/rt/.gitignore")" "and it matches the .gitignore line (plus the trailing /)"
+
 # bad directories: rejected, nothing written
 for bad in ".." "../x" "a/../b" "a b" "a;b" ".git" "a/.git/b" ".GIT" "/abs" "-x" "." "./" 'a$b'; do
   rm -rf "$SANDBOX/bad"
@@ -189,6 +231,7 @@ assert_contains "$T" "- Evidence (Step 4c):" "Step 7 has an Evidence bullet"
 assert_contains "$T" "enabled: false" "a declined question writes enabled: false"
 assert_contains "$T" "a commented block reads as unset" "the skill says why a commented block is not used"
 assert_contains "$T" '"evidence": { "enabled": false }' "a declined JSON config gets an active evidence key"
+assert_contains "$T" 'the normalised `dir=` value Step 4c printed, never the typed text' "Step 7 writes the same normalised dir the .gitignore line uses"
 assert_contains "$T" "Ask me later" "an ask-me-later choice is handled"
 assert_contains "$T" "store" "the store key is mentioned"
 assert_contains "$T" "attach" "store is attach only"

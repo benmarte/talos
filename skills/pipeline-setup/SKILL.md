@@ -178,10 +178,10 @@ A command the user types goes into the config as text only; setup never runs it.
 
 On "ask me later" write nothing; the Step 0 re-run asks again. On "off" write the declined block. On "on": use the proposed or a typed `dir`, which is one repo-relative path. `<dir>` goes on a command line, so first check it character for character: 1 to 200 characters, only letters, digits, `.`, `_`, `/` and `-`, not starting with `-` or `/`, no `..` component, no `.git` component. If it fails, say why and ask again; never write it. The two proposed directories are constants and always pass.
 
-Then offer to keep it out of git: "Add `<dir>/` to `.gitignore`? (yes/no)". Only on an explicit yes, run this with the checked directory as the single quoted argument (replace `<dir>`, and give the heredoc a fresh `TALOS_<rand>` delimiter of 12+ random characters you invent). It re-checks the value and writes nothing if it fails, probes `<dir>/.probe` because a directory that does not exist yet reads as unignored when probed directly, appends one line (`./` stripped, `//` collapsed, one trailing `/`) only when git does not already ignore it, and warns when the directory already holds tracked files (the attach step refuses a tracked directory):
+Then offer to keep it out of git: "Add `<dir>/` to `.gitignore`? (yes/no)". Run the block below either way, with the checked directory as the first quoted argument (replace `<dir>`) and `<mode>` replaced by `write` on an explicit yes or `check` otherwise (give the heredoc a fresh `TALOS_<rand>` delimiter of 12+ random characters you invent). Only `write` touches `.gitignore`. Both modes re-check the value and write nothing if it fails, and print the normalised directory as `dir=<norm>` (`./` stripped, `//` collapsed, no trailing `/`): that printed value, never the typed text, is what Step 7 writes as `evidence.dir`, so the config and the `.gitignore` line cannot disagree. `write` probes `<dir>/.probe` because a directory that does not exist yet reads as unignored when probed directly, appends one line (`<norm>/`) only when git does not already ignore it, and refuses, writing nothing, when `.gitignore` is a symlink or not a regular file (it prints one line telling you to add `<norm>/` by hand; a missing `.gitignore` is created). Both warn when the directory already holds tracked files (the attach step refuses a tracked directory):
 
 ```bash
-bash -s -- '<dir>' <<'TALOS_<rand>'
+bash -s -- '<dir>' <mode> <<'TALOS_<rand>'
 export LC_ALL=C
 die() { echo "rejected: $1" >&2; exit 1; }
 d="$1"
@@ -195,11 +195,17 @@ for p in "${parts[@]}"; do
   norm="${norm:+$norm/}$p"
 done
 [ -n "$norm" ] || die "no directory left after normalising"
+echo "dir=$norm"
 cd "$(git rev-parse --show-toplevel)" || exit 1
 git check-ignore -q -- "$norm/.probe"; rc=$?
 if [ "$rc" -eq 0 ]; then
   echo "already ignored: $norm/"
+elif [ "$rc" -eq 1 ] && [ "${2:-}" != "write" ]; then
+  echo "not ignored: $norm/"
 elif [ "$rc" -eq 1 ]; then
+  if [ -L .gitignore ] || { [ -e .gitignore ] && [ ! -f .gitignore ]; }; then
+    die ".gitignore is a symlink or not a regular file; add $norm/ to it by hand"
+  fi
   if [ -s .gitignore ] && [ -n "$(tail -c1 .gitignore)" ]; then echo >> .gitignore; fi
   printf '%s/\n' "$norm" >> .gitignore
   echo "added $norm/ to .gitignore"
@@ -212,7 +218,7 @@ fi
 TALOS_<rand>
 ```
 
-On a decline, or when the block says `already ignored`, `.gitignore` is not touched. Tell the user to commit the `.gitignore` change with the config. On yes to evidence: Step 7 writes `evidence.enabled: true` with `dir` and `command`. The workflow files are never edited.
+On a decline (`check` mode), when the block says `already ignored` or when it refuses, `.gitignore` is not touched. Tell the user to commit the `.gitignore` change with the config. On yes to evidence: Step 7 writes `evidence.enabled: true` with `dir` (the `dir=` value above) and `command`. The workflow files are never edited.
 
 ---
 
@@ -437,7 +443,7 @@ status:
 evidence:
   enabled: <true|false>
 <IF_EVIDENCE_ACCEPTED>
-  dir: <EVIDENCE_DIR>
+  dir: <EVIDENCE_DIR>             # the normalised dir= value printed by Step 4c
   command: "<EVIDENCE_COMMAND>"   # omit this line on the agent-capture path
 </IF_EVIDENCE_ACCEPTED>
 
@@ -486,7 +492,7 @@ agents:
 
 When writing the file:
 - Status file (Step 4b): accepted writes the block above with `enabled: true`; declined (or skipped for `vcs.provider: file`) writes the whole block commented out, `# status:` with `#   enabled: false` under it, so the keys stay visible. A JSON config has no comments: accepted writes `"status": { "enabled": true }` (the other keys keep their defaults), declined and skipped omit the `status` key. The status file is NOT added to `merge.union_paths` (fragments replace union merging).
-- Evidence (Step 4c): accepted writes the block above with `enabled: true`, `dir` and `command` (a typed command is written as a YAML double-quoted string, escaping `\` and `"`; on the agent-capture path omit `command`); the other `evidence.*` keys keep their defaults and `store` is not written (`attach` is the only value). Declined, "off" and "off" after the newer-gh message write an ACTIVE block, `evidence:` with `enabled: false` and nothing else, never a commented one: a commented block reads as unset, so every re-run would ask again. A JSON config gets `"evidence": { "enabled": true, "dir": "<dir>", "command": "<command>" }` when accepted and `"evidence": { "enabled": false }` when declined. "Ask me later" and a skipped provider (`gitlab`, `azure`, `file`) write no `evidence` key.
+- Evidence (Step 4c): accepted writes the block above with `enabled: true`, `dir` (the normalised `dir=` value Step 4c printed, never the typed text) and `command` (a typed command is written as a YAML double-quoted string, escaping `\` and `"`; on the agent-capture path omit `command`); the other `evidence.*` keys keep their defaults and `store` is not written (`attach` is the only value). Declined, "off" and "off" after the newer-gh message write an ACTIVE block, `evidence:` with `enabled: false` and nothing else, never a commented one: a commented block reads as unset, so every re-run would ask again. A JSON config gets `"evidence": { "enabled": true, "dir": "<dir>", "command": "<command>" }` when accepted and `"evidence": { "enabled": false }` when declined. "Ask me later" and a skipped provider (`gitlab`, `azure`, `file`) write no `evidence` key.
 - If harness = `claude`: omit the `agents:` block entirely (Claude Code spawns native subagents and ignores it).
 - Models: a per-repo override chosen in Step 6c goes into this repo's `agents:` block (`model:` and `roles.<role>.model`), even when harness = `claude`. A user-level answer is written by Step 6c itself, not here.
 - If harness = `pi`: write the active `agents:` block with `runner: pi` and `subagents: false` (`agents.subagents: false`: pi runs the stages inline).
