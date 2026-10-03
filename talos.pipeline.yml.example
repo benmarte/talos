@@ -550,6 +550,19 @@ limits:
                              # capped at 60s. Must be a non-negative integer; non-numeric
                              # value warns and defaults to 5. Set
                              # TALOS_RETRY_SLEEP_SCALE=0 in tests for instant runs.
+  # tokens_per_issue: 1000000 # limits.tokens_per_issue: per-issue token budget for
+                             # the spend guard. Positive integer; unset or 0 = guard
+                             # off (the default). Non-integer or negative warns once
+                             # and is treated as off.
+  # warn_at: 0.8             # limits.warn_at: fraction of tokens_per_issue at which
+                             # a spend warning fires. Decimal, 0 < x <= 1. Default:
+                             # 0.8; an invalid value warns once and uses 0.8.
+
+# ── Spend reporting (#378) ─────────────────────────────────────────────────────
+# spend:
+#   comment: true            # spend.comment: post the per-stage spend comment on the
+#                            # issue (talos:spend marker). true or false; default
+#                            # true; anything else warns once and uses true.
 
 # ── Approval-marker author trust (#187) ────────────────────────────────────────
 # check-approval-sha / read-attempt only trust talos:approval / talos:attempt
