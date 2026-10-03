@@ -302,14 +302,62 @@ TALOS_PY_Vb6sT2nQe9Dy
   assert_eq "0" "$(wcount)" "$L: an unresolved login writes nothing"
   export STUB_CURRENT_USER="owner"
 
-  if [ "$P" = "github-api" ]; then
+  # GET /user refused (Actions GITHUB_TOKEN, GitHub App token): exit 1, no write.
+  # gh writes the raw error JSON to STDOUT and exits non-zero; curl gets a 403.
+  reset
+  if [ "$P" = "github" ]; then export STUB_CURRENT_USER_FAIL=1; else export STUB_CURRENT_USER_STATUS=403; fi
+  upsert "$B"
+  assert_eq "1" "$RC" "$L: GET /user refused (error JSON, non-zero) exits 1"
+  assert_eq "0" "$(wcount)" "$L: ...and writes nothing (no POST, no PATCH)"
+  assert_contains "$ERR" "could not resolve" "$L: ...and says why"
+  unset STUB_CURRENT_USER_FAIL STUB_CURRENT_USER_STATUS
+
+  # A "login" that is not a GitHub username is an unresolved login.
+  for badlogin in 'bad login' 'a{"message":"x"}' '-lead' 'trail-' 'dou--ble' 'a[bot]x' "$(printf 'a%.0s' $(seq 1 40))"; do
     reset
-    export STUB_CURRENT_USER_STATUS=403
+    export STUB_CURRENT_USER="$badlogin"
     upsert "$B"
-    assert_eq "1" "$RC" "$L: GET /user answering 403 (Actions GITHUB_TOKEN) exits 1"
+    assert_eq "1" "$RC" "$L: login '${badlogin:0:20}' is refused, exit 1"
     assert_eq "0" "$(wcount)" "$L: ...and writes nothing"
-    unset STUB_CURRENT_USER_STATUS
-  fi
+  done
+  for goodlogin in 'dependabot[bot]' 'a-b-c' 'A' "$(printf 'a%.0s' $(seq 1 39))"; do
+    reset
+    export STUB_CURRENT_USER="$goodlogin"
+    upsert "$B"
+    assert_eq "0" "$RC" "$L: login '${goodlogin:0:20}' is accepted"
+  done
+  export STUB_CURRENT_USER="owner"
+
+  # ── no temp file is left behind: success, failure, retry ──────────────────
+  TD="$SANDBOX/tmpcheck"
+  rm -rf "$TD"; mkdir -p "$TD"
+  reset
+  TMPDIR="$TD" upsert "$B"
+  assert_eq "0" "$RC" "$L: (tmp) a create exits 0"
+  TMPDIR="$TD" upsert "$B2"
+  assert_contains "$OUT" "comment=updated" "$L: (tmp) an update succeeds"
+  assert_eq "" "$(ls -A "$TD")" "$L: no temp file is left after a success"
+  reset
+  export STUB_COMMENT_WRITE_FAIL=1
+  TMPDIR="$TD" upsert "$B"
+  assert_eq "1" "$RC" "$L: (tmp) a failed write exits 1"
+  unset STUB_COMMENT_WRITE_FAIL
+  assert_eq "" "$(ls -A "$TD")" "$L: no temp file is left after a failed write"
+  reset
+  if [ "$P" = "github" ]; then export STUB_GH_API_FAIL=comments; else export STUB_COMMENT_READ_FAIL=1; fi
+  TMPDIR="$TD" upsert "$B"
+  unset STUB_GH_API_FAIL STUB_COMMENT_READ_FAIL
+  assert_eq "" "$(ls -A "$TD")" "$L: no temp file is left after a failed read"
+  reset
+  export STUB_COMMENT_WRITE_429=1
+  TMPDIR="$TD" upsert "$B"
+  assert_eq "0" "$RC" "$L: (tmp) a retried write exits 0"
+  unset STUB_COMMENT_WRITE_429
+  assert_eq "" "$(ls -A "$TD")" "$L: no temp file is left after a 429 retry"
+  reset
+  TMPDIR="$TD" upsert "$FIX/chars"
+  assert_eq "1" "$RC" "$L: (tmp) an oversized body exits 1"
+  assert_eq "" "$(ls -A "$TD")" "$L: no temp file is left after a refused body"
 
   reset
   export STUB_COMMENT_WRITE_FAIL=1

@@ -237,6 +237,14 @@ print(json.dumps([{'filename': p} for p in paths]))
     # identity -- same as any other unmatched command falling to the
     # catch-all -- so every pre-#187 test keeps its unconfigured/fail-open
     # behaviour without needing to set this.
+    # STUB_CURRENT_USER_FAIL=1 (#381) is GET /user refused (an Actions
+    # GITHUB_TOKEN, a GitHub App token): like the real `gh api --jq`, the raw
+    # error JSON goes to STDOUT (the filter is not applied) and the exit is 1.
+    if [ "${STUB_CURRENT_USER_FAIL:-}" = "1" ]; then
+      printf '%s\n' '{"message":"Resource not accessible by integration","documentation_url":"https://docs.github.com/rest","status":"403"}'
+      echo "gh: Resource not accessible by integration (HTTP 403)" >&2
+      exit 1
+    fi
     printf '%s\n' "${STUB_CURRENT_USER:-}" ;;
   "api --method POST repos/"*"/comments --input -"|"api --method PATCH repos/"*"/issues/comments/"*" --input -")
     # upsert-pr-comment's writes (#381): the JSON body arrives on STDIN
@@ -252,7 +260,13 @@ print(json.dumps([{'filename': p} for p in paths]))
     cat > "$_cw_payload"
     [ -n "${GH_STDIN_LOG:-}" ] && { cat "$_cw_payload"; printf '\n'; } >> "$GH_STDIN_LOG"
     if [ -n "${STUB_COMMENT_WRITE_429:-}" ]; then
-      _cw_counter="${GH_LOG:-/tmp/gh-stub-no-log}.w429"
+      # The counter lives next to the log, so parallel tests (each with its own
+      # sandbox log) never share state; without a log there is nowhere safe.
+      if [ -z "${GH_LOG:-}" ]; then
+        echo "gh stub: STUB_COMMENT_WRITE_429 needs GH_LOG set" >&2
+        exit 1
+      fi
+      _cw_counter="$GH_LOG.w429"
       _cw_count=0
       [ -f "$_cw_counter" ] && _cw_count="$(cat "$_cw_counter")"
       _cw_count=$((_cw_count + 1))

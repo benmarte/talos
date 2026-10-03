@@ -1625,9 +1625,16 @@ _vcs_shared_upsert_pr_comment() {
   local _uc_n="$1" _uc_name="$2" _uc_file="$3" _uc_read="$4" _uc_write="$5"; shift 5
   local _uc_marker="<!-- talos:$_uc_name -->" _uc_user _uc_raw _uc_found
   local _uc_state _uc_id _uc_url _uc_resp _uc_method _uc_path
-  _uc_user="$(_vcs_shared_current_user "$@")"
-  if [ -z "$_uc_user" ]; then
-    echo "pipeline-vcs: upsert-pr-comment: could not resolve the authenticated user (GET /user fails for an Actions GITHUB_TOKEN); nothing posted" >&2
+  # Not _vcs_shared_current_user: it drops the exit status and caches whatever
+  # was printed, and `gh api --jq` prints the raw error JSON to stdout when the
+  # request is refused (an Actions GITHUB_TOKEN, a GitHub App token). So the
+  # lookup must exit 0 AND print something shaped like a GitHub login (up to 39
+  # letters/digits with single inner hyphens, plus an optional [bot] suffix).
+  local _uc_login_re='^[A-Za-z0-9](-?[A-Za-z0-9])*$' _uc_base
+  _uc_user="$("$@" 2>/dev/null)" || _uc_user=""
+  _uc_base="${_uc_user%"[bot]"}"
+  if [ -z "$_uc_user" ] || [ "${#_uc_base}" -gt 39 ] || ! [[ "$_uc_base" =~ $_uc_login_re ]]; then
+    echo "pipeline-vcs: upsert-pr-comment: could not resolve the authenticated user (GET /user fails for an Actions GITHUB_TOKEN or a GitHub App token); nothing posted" >&2
     exit 1
   fi
   _uc_raw="$("$_uc_read" "$_uc_n")" || {
