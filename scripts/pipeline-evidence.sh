@@ -10,6 +10,7 @@
 #   pipeline-evidence.sh attach <pr> [--since <epoch>] [--dry-run]
 #   pipeline-evidence.sh dir
 #   pipeline-evidence.sh enabled
+#   pipeline-evidence.sh check-url <pr>   (the URL on stdin)
 #
 # capture, collect, dir and enabled are local: no network call, no git write. upload
 # (and attach, which runs it) is the only subcommand that talks to GitHub
@@ -210,6 +211,16 @@
 #      both words fixed enums (an unknown or absent evidence.when is
 #      `user-facing`); mode=agent means evidence.command is empty.
 #
+# check-url <pr>   (#410)
+#   Gate for the reviewer handoff: stdin is QA's `comment=` value (subagent
+#   text, so it comes through a heredoc, never argv). Exit 0 and the URL on
+#   stdout only when stdin is exactly one line (one trailing newline allowed)
+#   equal to `https://github.com/<owner>/<repo>/pull/<pr>#issuecomment-<digits>`
+#   (at most 20 digits), where <owner>/<repo> is the slug `upload` uses
+#   (vcs.repo, else gh), checked against [A-Za-z0-9._-]. The expected prefix is
+#   compared as a literal, in the C locale. Any other host, PR, repo, extra
+#   text or extra line is exit 1 with no output.
+#
 # dir
 #   Prints the evidence dir, relative to the worktree toplevel: evidence.dir or
 #   `.talos/evidence`. Exit 0. This is the only place the default is written
@@ -220,7 +231,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CFG_SH="$SCRIPT_DIR/pipeline-config.sh"
 
 usage() {
-  echo "Usage: pipeline-evidence.sh capture | collect <dir> [--since <epoch>] [--stage <dir>] | upload <pr> [--since <epoch>] [--dry-run] | attach <pr> [--since <epoch>] [--dry-run] | dir | enabled" >&2
+  echo "Usage: pipeline-evidence.sh capture | collect <dir> [--since <epoch>] [--stage <dir>] | upload <pr> [--since <epoch>] [--dry-run] | attach <pr> [--since <epoch>] [--dry-run] | dir | enabled | check-url <pr>" >&2
   exit 2
 }
 
@@ -279,6 +290,17 @@ _evidence_max_mb() {
 # absent key, `false` and any other value are off). The one gate `attach` and
 # `enabled` share; needs the toplevel as cwd (reads the config).
 _evidence_enabled() { [ "$(cfg evidence.enabled false)" = "true" ]; }
+
+# _evidence_repo -- prints the `<owner>/<repo>` slug (vcs.repo, else gh's own
+# answer), only when both halves are plain `[A-Za-z0-9._-]+`; returns 1 and
+# prints nothing otherwise. The one resolver `upload` and `check-url` share.
+_evidence_repo() {
+  local repo
+  repo="$(cfg vcs.repo "")"
+  [ -n "$repo" ] || repo="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)" || repo=""
+  [[ "$repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || return 1
+  printf '%s' "$repo"
+}
 
 # _gh_has_attach -- true when `gh pr comment --help` (stdout, no network) lists
 # `--attach` (gh v2.99.0 or newer). The one probe `upload` and `enabled` share.
@@ -910,9 +932,7 @@ EOF
 
   # 3. repo, for --repo (gh runs outside the worktree) and the delete path
   local repo
-  repo="$(cfg vcs.repo "")"
-  [ -n "$repo" ] || repo="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)" || repo=""
-  if ! [[ "$repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+  if ! repo="$(_evidence_repo)"; then
     echo "evidence-upload: could not resolve the repository (set vcs.repo); nothing posted" >&2
     return 1
   fi
@@ -1104,6 +1124,26 @@ cmd_enabled() {
   echo "evidence on when=$when mode=$mode"
 }
 
+# ── check-url ────────────────────────────────────────────────────────────────
+# The reviewer handoff's gate on QA's (subagent-authored) `comment=` value. The
+# expected URL is built from the orchestrator's own values and compared as a
+# literal string, never as a pattern, so the slug needs no escaping.
+cmd_check_url() {
+  [ $# -eq 1 ] || usage
+  case "$1" in ''|*[!0-9]*) echo "pipeline-evidence: check-url needs a PR number (digits only)" >&2; usage ;; esac
+  LC_ALL=C; export LC_ALL
+  _enter_toplevel
+  local pr="$1" repo all prefix tail
+  repo="$(_evidence_repo)" || return 1
+  IFS= read -r -d '' all || true       # all of stdin, newlines included
+  all="${all%$'\n'}"                    # the one terminator a heredoc adds
+  prefix="https://github.com/$repo/pull/$pr#issuecomment-"
+  case "$all" in "$prefix"*) tail="${all#"$prefix"}" ;; *) return 1 ;; esac
+  case "$tail" in ''|*[!0-9]*) return 1 ;; esac
+  [ "${#tail}" -le 20 ] || return 1
+  printf '%s\n' "$all"
+}
+
 # ── dir ──────────────────────────────────────────────────────────────────────
 cmd_dir() {
   [ $# -eq 0 ] || usage
@@ -1118,5 +1158,6 @@ case "${1:-}" in
   attach) shift; cmd_attach "$@" ;;
   dir) shift; cmd_dir "$@" ;;
   enabled) shift; cmd_enabled "$@" ;;
+  check-url) shift; cmd_check_url "$@" ;;
   *) usage ;;
 esac
