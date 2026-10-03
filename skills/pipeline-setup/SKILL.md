@@ -33,6 +33,7 @@ If a config **exists**:
 - Tell the user: "Found an existing config. Here's what's set: ..."
 - Ask: "Would you like to update any of these settings, or is this just a re-run to bootstrap labels?"
 - If no changes needed: check `bash scripts/pipeline-config.sh status.enabled unset`. If it prints `unset` (no `status:` block yet), ask Step 4b's question once; on yes add ONLY the `status:` block to the existing file (show the lines to add and write only after an explicit yes; never rewrite the rest of the file, per the Idempotency rules), then run Step 7b.
+- If no changes needed and `bash scripts/pipeline-config.sh vcs.provider github` prints `github`: check `bash scripts/pipeline-config.sh evidence.enabled unset`. If it prints `unset` (no `evidence:` block yet), ask Step 4c's question once; on anything but "ask me later" add ONLY the `evidence:` block to the existing file (show the lines to add and write only after an explicit yes; never rewrite the rest of the file, per the Idempotency rules). "Ask me later" writes nothing. A config that already has `enabled: false` is never re-asked.
 - If no changes needed, in every case (whatever the check above printed): run Step 7c with the harness from `bash scripts/pipeline-config.sh agents.runner claude`, then jump to Step 8 (bootstrap labels) and Step 10 (test notification).
 
 If **no config**: continue to Step 1.
@@ -139,6 +140,79 @@ When `vcs.provider: file`, skip this question with one line ("No status file: fi
 > [default: **yes**]"
 
 On yes: `status.enabled: true` in Step 7, then Step 7b creates the file. On no: the block is written declined, and Step 7b is skipped.
+
+---
+
+## Step 4c — Ask: evidence capture
+
+When `vcs.provider` is `gitlab`, `azure` or `file`, skip this question with one line ("No evidence capture: it posts screenshots to GitHub PRs.") and it writes no evidence: block. Otherwise (github) first check that `gh` can attach files. This tests the machine running setup; the machine running the pipeline needs the same.
+
+```bash
+gh pr comment --help 2>&1 | grep -q -- '--attach'
+```
+
+If it exits non-zero (no `--attach` in the help, or no `gh`), say "Evidence capture needs gh 2.99.0 or newer (`gh pr comment --attach`); this machine's gh does not have it", offer only "off", and on "off" write the declined block (Step 7). Otherwise detect the repo's test harness, from the repo root, with the same signals `agents/developer.md` uses:
+
+```bash
+pw=no; cy=no; e2e=no
+for f in playwright.config.*; do [ -e "$f" ] && pw=yes; done
+for f in cypress.config.*; do [ -e "$f" ] && cy=yes; done
+{ [ -d tests/e2e ] || grep -q '"test:e2e"' package.json 2>/dev/null; } && e2e=yes
+echo "playwright=$pw cypress=$cy e2e=$e2e"
+```
+
+Propose from the output:
+- `playwright=yes cypress=no`: `command: "npx playwright test --grep @evidence"` and `dir: test-results`. Tell the user to set `use: { screenshot: 'on', video: 'on' }` in the Playwright config and to tag the tests to capture `@evidence`.
+- `cypress=yes playwright=no`: `dir: cypress/evidence` (the default `cypress/` holds tracked tests), and tell the user to point `screenshotsFolder` and `videosFolder` there. Suggest `npx cypress run` as the command, an editable suggestion only.
+- Both: ask which one to use, then propose as above.
+- Neither (`e2e=yes` alone is neither: no command can be inferred, so ask for one): offer agent capture or off. Agent capture leaves `command` empty (omitted): QA's browser skill saves screenshots into `dir`, best effort, with no recordings.
+
+A command the user types goes into the config as text only; setup never runs it. Ask once, naming the costs:
+
+> "Attach screenshots or recordings of a user-facing change to its PR, as evidence? Before you say yes:
+> - Attachments are public on public repos: anyone can open the file without signing in. On private and internal repos the repo's access rules apply.
+> - Screenshots and recordings can contain on-screen secrets (tokens, emails, internal URLs).
+> - GitHub's attachment size limits apply: 10 MB images, 10 MB videos on free plans, 100 MB videos on paid plans. It is not verified that `gh --attach` accepts `.webm` recordings (Playwright's video format), so Talos does not promise it; images and videos only.
+>
+> Proposed: `<command>` into `<dir>`. [default: **off**] (on / off / ask me later)"
+
+On "ask me later" write nothing; the Step 0 re-run asks again. On "off" write the declined block. On "on": use the proposed or a typed `dir`, which is one repo-relative path. `<dir>` goes on a command line, so first check it character for character: 1 to 200 characters, only letters, digits, `.`, `_`, `/` and `-`, not starting with `-` or `/`, no `..` component, no `.git` component. If it fails, say why and ask again; never write it. The two proposed directories are constants and always pass.
+
+Then offer to keep it out of git: "Add `<dir>/` to `.gitignore`? (yes/no)". Only on an explicit yes, run this with the checked directory as the single quoted argument (replace `<dir>`, and give the heredoc a fresh `TALOS_<rand>` delimiter of 12+ random characters you invent). It re-checks the value and writes nothing if it fails, probes `<dir>/.probe` because a directory that does not exist yet reads as unignored when probed directly, appends one line (`./` stripped, `//` collapsed, one trailing `/`) only when git does not already ignore it, and warns when the directory already holds tracked files (the attach step refuses a tracked directory):
+
+```bash
+bash -s -- '<dir>' <<'TALOS_<rand>'
+export LC_ALL=C
+die() { echo "rejected: $1" >&2; exit 1; }
+d="$1"
+case "$d" in ''|-*|/*|*[!A-Za-z0-9._/-]*) die "not a valid evidence dir";; esac
+[ "${#d}" -le 200 ] || die "longer than 200 characters"
+norm=""
+IFS=/ read -ra parts <<< "$d"
+for p in "${parts[@]}"; do
+  case "$p" in ''|.) continue;; ..) die "a .. component";; esac
+  [ "$(printf '%s' "$p" | tr A-Z a-z)" = ".git" ] && die "a .git component"
+  norm="${norm:+$norm/}$p"
+done
+[ -n "$norm" ] || die "no directory left after normalising"
+cd "$(git rev-parse --show-toplevel)" || exit 1
+git check-ignore -q -- "$norm/.probe"; rc=$?
+if [ "$rc" -eq 0 ]; then
+  echo "already ignored: $norm/"
+elif [ "$rc" -eq 1 ]; then
+  if [ -s .gitignore ] && [ -n "$(tail -c1 .gitignore)" ]; then echo >> .gitignore; fi
+  printf '%s/\n' "$norm" >> .gitignore
+  echo "added $norm/ to .gitignore"
+else
+  die "git check-ignore failed (exit $rc)"
+fi
+if [ -n "$(git ls-files -- "$norm" | head -n 1)" ]; then
+  echo "warning: $norm already holds tracked files; evidence needs an untracked directory" >&2
+fi
+TALOS_<rand>
+```
+
+On a decline, or when the block says `already ignored`, `.gitignore` is not touched. Tell the user to commit the `.gitignore` change with the config. On yes to evidence: Step 7 writes `evidence.enabled: true` with `dir` and `command`. The workflow files are never edited.
 
 ---
 
@@ -359,6 +433,14 @@ status:
   # log_max: 50
   # resume_max_lines: 40
 
+# ── Evidence (Step 4c) ────────────────────────────────────────────────────────
+evidence:
+  enabled: <true|false>
+<IF_EVIDENCE_ACCEPTED>
+  dir: <EVIDENCE_DIR>
+  command: "<EVIDENCE_COMMAND>"   # omit this line on the agent-capture path
+</IF_EVIDENCE_ACCEPTED>
+
 # ── Comments ──────────────────────────────────────────────────────────────────
 comments:
   enabled: true
@@ -404,6 +486,7 @@ agents:
 
 When writing the file:
 - Status file (Step 4b): accepted writes the block above with `enabled: true`; declined (or skipped for `vcs.provider: file`) writes the whole block commented out, `# status:` with `#   enabled: false` under it, so the keys stay visible. A JSON config has no comments: accepted writes `"status": { "enabled": true }` (the other keys keep their defaults), declined and skipped omit the `status` key. The status file is NOT added to `merge.union_paths` (fragments replace union merging).
+- Evidence (Step 4c): accepted writes the block above with `enabled: true`, `dir` and `command` (a typed command is written as a YAML double-quoted string, escaping `\` and `"`; on the agent-capture path omit `command`); the other `evidence.*` keys keep their defaults and `store` is not written (`attach` is the only value). Declined, "off" and "off" after the newer-gh message write an ACTIVE block, `evidence:` with `enabled: false` and nothing else, never a commented one: a commented block reads as unset, so every re-run would ask again. A JSON config gets `"evidence": { "enabled": true, "dir": "<dir>", "command": "<command>" }` when accepted and `"evidence": { "enabled": false }` when declined. "Ask me later" and a skipped provider (`gitlab`, `azure`, `file`) write no `evidence` key.
 - If harness = `claude`: omit the `agents:` block entirely (Claude Code spawns native subagents and ignores it).
 - Models: a per-repo override chosen in Step 6c goes into this repo's `agents:` block (`model:` and `roles.<role>.model`), even when harness = `claude`. A user-level answer is written by Step 6c itself, not here.
 - If harness = `pi`: write the active `agents:` block with `runner: pi` and `subagents: false` (`agents.subagents: false`: pi runs the stages inline).
@@ -637,6 +720,7 @@ Board:        <enabled/disabled>
 Notifications: <configured platforms or "none">
 Harness:      <claude (native subagents) | pi | codex | gemini | antigravity | custom>
 Status file:  <status.file path, e.g. TALOS_STATUS.md, or "disabled">
+Evidence:     <evidence.dir, or "off" / "not asked">
 
 Control labels (created by bootstrap-labels.sh in Step 8):
   p0        — dispatched first (highest priority)
@@ -663,6 +747,7 @@ Next steps:
 
 - Never overwrite an existing `talos.pipeline.yml` without the user's explicit confirmation.
 - An existing status file is never overwritten: `init` leaves it alone and appends only a missing heading.
+- The evidence re-run adds only the `evidence:` block, after an explicit yes; the workflow files are never edited, and `.gitignore` gets one appended line only after its own explicit yes.
 - If `bootstrap-labels.sh` reports a label already exists, that is not an error — say "already up to date".
 - Running setup a second time on a configured repo should be safe and produce no surprises.
 
