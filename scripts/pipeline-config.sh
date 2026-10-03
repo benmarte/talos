@@ -100,7 +100,7 @@ _KNOWN_CONFIG_KEYS_JSON='[
   "hooks.pre_dispatch", "hooks.post_stage", "hooks.timeout_s",
   "events.enabled", "events.path",
   "evidence.enabled", "evidence.command", "evidence.dir", "evidence.include",
-  "evidence.when", "evidence.store", "evidence.branch",
+  "evidence.when", "evidence.store",
   "evidence.max_files", "evidence.max_mb"
 ]'
 
@@ -266,23 +266,22 @@ PYLOADER
 # _validate_evidence_key(key, value) -> the validated value, or None after one
 # stderr warning (callers treat None as absent), and _evidence_apply(flat) for
 # the --dump dict. A key outside evidence.* passes through untouched. Defaults
-# (false, 12, 25, branch, talos-evidence, user-facing) belong to the CALLER;
-# nothing here injects one. Cross-key checks (evidence.branch against the
-# resolved base / release branch / PR head) are NOT done here -- base_branch is
-# usually absent from the config -- pipeline-evidence.sh does them at run time.
+# (false, 12, 25, attach, user-facing) belong to the CALLER; nothing here
+# injects one. Evidence is uploaded with `gh pr comment --attach` only (owner
+# decision on #352).
 read -r -d '' _CFG_EVIDENCE_PY <<'PYEVIDENCE' || true
 import re
 
-# Enum keys as a table so a new value (e.g. "attach" for evidence.store) is a
+# Enum keys as a table so a new value (e.g. "pr" for evidence.store) is a
 # one-word edit; the warning text is built from the tuple.
 _EVIDENCE_ENUMS = {
     "evidence.when": ("user-facing", "always"),
-    "evidence.store": ("branch", "pr"),
+    "evidence.store": ("attach",),
 }
 _EVIDENCE_KEYS = (
     "evidence.enabled", "evidence.command", "evidence.dir",
     "evidence.include", "evidence.when", "evidence.store",
-    "evidence.branch", "evidence.max_files", "evidence.max_mb",
+    "evidence.max_files", "evidence.max_mb",
 )
 
 def _ev_reject(key, want, value):
@@ -341,18 +340,6 @@ def _validate_evidence_key(key, value):
                 key, "a non-empty relative path (no leading /, no .. "
                 "component, no control characters, not . and not under .git)",
                 value)
-        return value
-    if key == "evidence.branch":
-        # Shape only (fullmatch: "$" would let a trailing newline through) plus
-        # git's own ref bans (no "..", no trailing ".", no .lock suffix).
-        if not (isinstance(value, str)
-                and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", value)
-                and ".." not in value and not value.endswith(".")
-                and not value.lower().endswith(".lock")):
-            return _ev_reject(
-                key, "a branch name of 1-100 characters from A-Z a-z 0-9 . _ - "
-                "starting with a letter or digit (no /, no .., no .lock "
-                "suffix)", value)
         return value
     if key == "evidence.include":
         # A non-empty list of basename globs; a bare string, [] or ONE bad

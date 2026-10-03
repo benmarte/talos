@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # test-config-evidence-keys.sh -- covers issue #405 (sub-task 1 of epic #352):
 # the evidence.* config keys (enabled, command, dir, include, when, store,
-# branch, max_files, max_mb) are known keys (no unknown-key warning), validated
+# max_files, max_mb) are known keys (no unknown-key warning), validated
 # identically on the single-key path and the --dump path (fail closed to absent,
 # one stderr line), never get a default injected by --dump, are ignored in the
 # user-level file, and talos:evidence is a contract marker. JSON fixtures only
@@ -14,17 +14,14 @@
 #     or ONE bad item makes the whole value absent (fail closed).
 #   - dir: first component ".git" (any case, after dropping "." and empty
 #     components) is rejected; so are "..", a leading "/", control characters.
-#   - branch: shape only (plus git's own "..", trailing "." and ".lock" bans).
-#     base_branch / release_branch equality is checked at run time by
-#     pipeline-evidence.sh against the RESOLVED base, never here.
+#   - store: only "attach" (gh pr comment --attach; owner decision on #352).
+#     There is no evidence.branch key.
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox || exit 1
 
 CFG_SH="$TALOS_ROOT/scripts/pipeline-config.sh"
 ERR="$SANDBOX/err.txt"
-LONG100="$(printf 'a%.0s' $(seq 1 100))"
-LONG101="$(printf 'a%.0s' $(seq 1 101))"
 CMD2000="$(printf 'x%.0s' $(seq 1 2000))"
 CMD2001="$(printf 'x%.0s' $(seq 1 2001))"
 
@@ -69,7 +66,7 @@ ev_bad() {
 }
 
 # ---- 1: every key valid at once -> no unknown-key warning ------------------
-set_cfg '{"evidence": {"enabled": true, "command": "npm run shots", "dir": "docs/shots", "include": ["*.png", "*.webm"], "when": "always", "store": "pr", "branch": "talos-evidence", "max_files": 12, "max_mb": 25}}'
+set_cfg '{"evidence": {"enabled": true, "command": "npm run shots", "dir": "docs/shots", "include": ["*.png", "*.webm"], "when": "always", "store": "attach", "max_files": 12, "max_mb": 25}}'
 bash "$CFG_SH" --dump 2>"$ERR" >/dev/null
 assert_eq "0" "$(errlines)" "1: --dump: no stderr (no unknown-key warning)"
 assert_eq "true" "$(single evidence.enabled false)" "1: single-key enabled"
@@ -77,8 +74,7 @@ assert_eq "0" "$(errlines)" "1: single-key: no stderr"
 assert_eq "npm run shots" "$(dumped evidence.command)" "1: --dump command"
 assert_eq "docs/shots" "$(dumped evidence.dir)" "1: --dump dir"
 assert_eq "always" "$(dumped evidence.when)" "1: --dump when"
-assert_eq "pr" "$(dumped evidence.store)" "1: --dump store"
-assert_eq "talos-evidence" "$(dumped evidence.branch)" "1: --dump branch"
+assert_eq "attach" "$(dumped evidence.store)" "1: --dump store"
 assert_eq "12" "$(dumped evidence.max_files)" "1: --dump max_files"
 assert_eq "25" "$(dumped evidence.max_mb)" "1: --dump max_mb"
 assert_eq "$(printf '*.png\n*.webm')" "$(dumped evidence.include)" "1: --dump include is newline-joined"
@@ -91,7 +87,7 @@ assert_eq "true|25" "$cfg_out" "1: cfg() reads the keys"
 
 # ---- 2: absent -> caller defaults, --dump injects nothing ------------------
 set_cfg '{"base_branch": "main"}'
-for k in enabled command dir include when store branch max_files max_mb; do
+for k in enabled command dir include when store max_files max_mb; do
   assert_eq "DEF" "$(single evidence.$k DEF)" "2: evidence.$k unset -> caller default"
   assert_eq "0" "$(errlines)" "2: evidence.$k unset is silent"
 done
@@ -108,13 +104,13 @@ for bad in '"true"' '"yes"' 1 0 '"false"' '[]'; do
 done
 
 # ---- 4: when / store are enums (table-driven; adding attach = one word) ----
-ENUMS=("evidence.when|user-facing always" "evidence.store|branch pr")
+ENUMS=("evidence.when|user-facing always" "evidence.store|attach")
 for row in "${ENUMS[@]}"; do
   ekey="${row%%|*}"
   for v in ${row#*|}; do
     ev_ok "$ekey" "\"$v\"" "$v" "4: $ekey=$v"
   done
-  for bad in '""' '"ALWAYS"' '"Branch"' '"nope"' '" always"' '"always\n"' 1 true '["pr"]' '"branch; rm -rf x"'; do
+  for bad in '""' '"ALWAYS"' '"Attach"' '"nope"' '" always"' '"always\n"' '"attach\n"' 1 true '["attach"]' '"attach; rm -rf x"'; do
     ev_bad "$ekey" "$bad" "4: $ekey=$bad"
   done
 done
@@ -139,20 +135,15 @@ for bad in '""' '"."' '"./"' '"/"' '"/abs"' '"/etc"' '".."' '"../x"' '"a/../b"' 
   ev_bad evidence.dir "$bad" "6: dir=$bad"
 done
 
-# ---- 7: branch: shape only -------------------------------------------------
-for ok in talos-evidence a A0 a.b a_b a-b main release "$LONG100"; do
-  ev_ok evidence.branch "\"$ok\"" "$ok" "7: branch=${ok:0:20}"
+# ---- 7: there is no evidence.branch (owner decision on #352: gh --attach only)
+# store accepts only "attach"; the old "branch" / "pr" values are invalid.
+for bad in '"branch"' '"pr"'; do
+  ev_bad evidence.store "$bad" "7: store=$bad is no longer valid"
 done
-# "main" passes on purpose: base/release equality is not a config concern
-# (base_branch is usually absent from the config) -- the evidence script
-# refuses against the resolved base, release branch and PR head.
-set_cfg '{"base_branch": "main", "release_branch": "rel", "evidence": {"branch": "main"}}'
-assert_eq "main" "$(single evidence.branch DEF)" "7: branch equal to base_branch is NOT rejected here (run-time check)"
-for bad in '""' '"-a"' '".a"' '"_a"' '"a/b"' '"/a"' '"a b"' '"a:b"' '"a~1"' '"a^"' '"a*"' '"a?"' '"a[b"' '"a@{b"' \
-           '"x.lock"' '"x.LOCK"' '".lock"' '"a..b"' '"a."' '"a\n"' '"\na"' '"a\nb"' \
-           "\"$LONG101\"" 5 true '["a"]'; do
-  ev_bad evidence.branch "$bad" "7: branch=${bad:0:24}"
-done
+# evidence.branch is not a known key any more: the unknown-key check names it.
+set_cfg '{"evidence": {"branch": "talos-evidence"}}'
+bash "$CFG_SH" --dump 2>"$ERR" >/dev/null
+assert_contains "$(errtext)" "unknown config key 'evidence.branch'" "7: evidence.branch is an unknown key"
 
 # ---- 8: include ------------------------------------------------------------
 ev_ok evidence.include '["*.png"]' "*.png" "8: one glob"
@@ -209,7 +200,7 @@ assert_contains "$contract" "talos:evidence" "13: talos:evidence is a TALOS_MARK
 
 # ---- 14: the examples show the block, disabled -----------------------------
 assert_contains "$(cat "$TALOS_ROOT/talos.pipeline.yml.example")" "#   enabled: false" "14: YAML example shows evidence.enabled: false commented out"
-for k in enabled command dir include when store branch max_files max_mb; do
+for k in enabled command dir include when store max_files max_mb; do
   assert_contains "$(cat "$TALOS_ROOT/talos.pipeline.json.example")" "evidence.$k" "14: JSON example _note names evidence.$k"
 done
 

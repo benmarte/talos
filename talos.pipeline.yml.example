@@ -572,19 +572,15 @@ limits:
 #   enabled: false           # evidence.enabled: strict true/false. Default: false.
 #   command: ""              # evidence.command: shell command that produces the files
 #                            # (string, at most 2000 characters, no NUL). Default: unset.
-#   dir: "talos-evidence"    # evidence.dir: where the command writes its files.
+#   dir: ".talos/evidence"   # evidence.dir: where the command writes its files.
 #                            # Non-empty RELATIVE path: no leading /, no .. component,
 #                            # no control characters, not ".", not under .git.
 #   include: ["*.png", "*.webm"]  # evidence.include: non-empty list of basename globs
 #                            # matching [A-Za-z0-9*?._-]+ (no /); one bad item rejects
 #                            # the whole list.
 #   when: user-facing        # evidence.when: user-facing | always. Default: user-facing.
-#   store: branch            # evidence.store: branch | pr. Default: branch (pr is
-#                            # accepted but not built yet).
-#   branch: talos-evidence   # evidence.branch: branch evidence is pushed to. 1-100
-#                            # characters from A-Z a-z 0-9 . _ - (no /, no .lock
-#                            # suffix). It must not equal the base, release or PR
-#                            # branch; that is checked when evidence is attached.
+#   store: attach            # evidence.store: attach (uploaded with gh pr comment
+#                            # --attach). Default: attach.
 #   max_files: 12            # evidence.max_files: integer 1-100. Default: 12.
 #   max_mb: 25               # evidence.max_mb: integer 1-100. Default: 25.
 
