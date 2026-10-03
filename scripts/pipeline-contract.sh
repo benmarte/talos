@@ -151,6 +151,8 @@ TALOS_MARKERS=(
   talos:runner
   talos:canary-skipped
   talos:worktree-sweep
+  talos:spend
+  talos:budget
 )
 
 # ── talos_contract_check_label_length ────────────────────────────────────
