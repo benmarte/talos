@@ -34,6 +34,19 @@
 #     STUB_ASSIGN_FAIL=1 (HTTP 422) and STUB_ASSIGN_DROP=1 (201, but the
 #     assignee never lands -- GitHub's real behaviour for a non-collaborator).
 
+#   - upsert-pr-comment (#381): `--data-binary @-` reads the payload from STDIN
+#     and logs it as field 2, exactly like -d; the HTTP method (-X) is a 4th
+#     log field, after the auth field, so cut -f1..3 consumers are unaffected.
+#     $CURL_ARGV_LOG, when set, gets one line per call with the raw argv, so a
+#     test can prove a body never touched argv. With STUB_COMMENT_STORE (a JSON
+#     array file) GET .../issues/<n>/comments serves it, POST appends a comment
+#     by $STUB_CURRENT_USER and PATCH .../issues/comments/<id> edits one in
+#     place (all before the CURL_QUEUE pop). STUB_COMMENT_READ_FAIL=1 fails the
+#     read (500); STUB_COMMENT_WRITE_FAIL=1 fails every write (500);
+#     STUB_COMMENT_WRITE_429=<N> rate-limits the first N writes (429).
+#     STUB_CURRENT_USER_STATUS=<code> makes GET .../user answer with that HTTP
+#     status (403 is what an Actions GITHUB_TOKEN gets).
+
 payload=""
 url=""
 prev=""
@@ -43,6 +56,7 @@ auth_field=""
 hdr_file=""
 for arg in "$@"; do
   [ "$prev" = "-d" ] && payload="$arg"
+  [ "$prev" = "--data-binary" ] && [ "$arg" = "@-" ] && payload="$(cat)"
   [ "$prev" = "-w" ] && has_w=true
   [ "$prev" = "-D" ] && hdr_file="$arg"
   [ "$prev" = "-X" ] && method="$arg"
@@ -57,7 +71,8 @@ done
 for arg in "$@"; do url="$arg"; done
 
 # Log: one line per call — URL TAB payload TAB auth-field
-[ -n "${CURL_LOG:-}" ] && printf '%s\t%s\t%s\n' "$url" "$payload" "$auth_field" >> "$CURL_LOG"
+[ -n "${CURL_LOG:-}" ] && printf '%s\t%s\t%s\t%s\n' "$url" "$payload" "$auth_field" "$method" >> "$CURL_LOG"
+[ -n "${CURL_ARGV_LOG:-}" ] && printf '%s\n' "$*" >> "$CURL_ARGV_LOG"
 
 # HTTP status to emit when -w was requested (default 200).
 # If a CURL_QUEUE entry is a bare 3-digit number it is treated as a status
@@ -68,6 +83,63 @@ http_status=200
 resp=""
 if [[ "$url" == *"/user" && "$url" != *"/users/"* ]]; then
   resp="${STUB_CURRENT_USER_JSON:-$(printf '{"login":"%s"}' "${STUB_CURRENT_USER:-}")}"
+  if [ -n "${STUB_CURRENT_USER_STATUS:-}" ]; then
+    http_status="$STUB_CURRENT_USER_STATUS"
+    resp='{"message":"Resource not accessible by integration"}'
+  fi
+elif [ -n "${STUB_COMMENT_STORE:-}" ] && [ -e "$STUB_COMMENT_STORE" ] && { [[ "$url" =~ /issues/([0-9]+)/comments(\?.*)?$ ]] || [[ "$url" =~ /issues/comments/([0-9]+)$ ]]; }; then
+  _cs_n="${BASH_REMATCH[1]}"
+  if [ "$method" != "POST" ] && [ "$method" != "PATCH" ]; then
+    if [ "${STUB_COMMENT_READ_FAIL:-}" = "1" ]; then
+      http_status=500
+      resp='{"message":"Server Error"}'
+    elif [ -s "$STUB_COMMENT_STORE" ]; then
+      resp="$(cat "$STUB_COMMENT_STORE")"
+    else
+      resp='[]'
+    fi
+  else
+    _cs_fail=""
+    if [ -n "${STUB_COMMENT_WRITE_429:-}" ]; then
+      _cs_counter="${CURL_LOG:-/tmp/curl-stub-no-log}.w429"
+      _cs_count=0
+      [ -f "$_cs_counter" ] && _cs_count="$(cat "$_cs_counter")"
+      _cs_count=$((_cs_count + 1))
+      printf '%s' "$_cs_count" > "$_cs_counter"
+      if [ "$_cs_count" -le "$STUB_COMMENT_WRITE_429" ]; then
+        http_status=429
+        resp='{"message":"API rate limit exceeded"}'
+        _cs_fail=1
+      fi
+    fi
+    if [ -z "$_cs_fail" ] && [ "${STUB_COMMENT_WRITE_FAIL:-}" = "1" ]; then
+      http_status=500
+      resp='{"message":"Server Error"}'
+      _cs_fail=1
+    fi
+    if [ -z "$_cs_fail" ]; then
+      _cs_payload="$(mktemp)"
+      printf '%s' "$payload" > "$_cs_payload"
+      resp="$(python3 -c "
+import json, os, sys
+store, op, url, n, pfile, user = sys.argv[1:7]
+items = json.load(open(store)) if os.path.getsize(store) else []
+body = json.load(open(pfile))['body']
+if op == 'POST':
+    nid = max([c['id'] for c in items] + [5000]) + 1
+    c = {'id': nid, 'user': {'login': user}, 'body': body,
+         'created_at': '2026-10-03T00:%02d:00Z' % (len(items) % 60),
+         'html_url': 'https://github.com/acme/widget/pull/%s#issuecomment-%d' % (n, nid)}
+    items.append(c)
+else:
+    c = next(x for x in items if x['id'] == int(n))
+    c['body'] = body
+json.dump(items, open(store, 'w'))
+print(json.dumps(c))
+" "$STUB_COMMENT_STORE" "$method" "$url" "$_cs_n" "$_cs_payload" "${STUB_CURRENT_USER:-}")"
+      rm -f "$_cs_payload"
+    fi
+  fi
 elif [ -n "${STUB_ASSIGNEE_FILE:-}" ] && [[ "$url" =~ /issues/[0-9]+/assignees$ ]]; then
   if [ "${STUB_ASSIGN_FAIL:-}" = "1" ]; then
     http_status=422
