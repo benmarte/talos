@@ -207,7 +207,7 @@ If none/no config: omit the `events:` key entirely (all events fire; disabling h
 >
 > [default in Claude Code: **claude**; no default for any other agent]"
 
-Wait for the answer. If you are Claude Code, an empty answer means `claude`. Any other agent has no default: ask again until the user names one of the six.
+Wait for the answer. If you are Claude Code, an empty answer means `claude`. Any other agent has no default: ask again until the user names one of the six. A runner id is the `agents.runner` value, not an `install.sh --harness` value.
 
 If the user answers **claude** (or, in Claude Code, presses Enter): record harness = `claude`. No `agents:` block will be written.
 
@@ -435,7 +435,7 @@ It prints `created`, `appended` (an existing file was missing a heading) or `alr
 
 ## Step 7c — Offer the AGENTS.md block
 
-`<harness>` is the Step 6b answer, verbatim (on the re-run path, the `agents.runner` value read in Step 0). Show the block:
+`<harness>` must be exactly one of `claude`, `pi`, `codex`, `gemini`, `antigravity`, `custom`: the Step 6b answer or, on the re-run path, the `agents.runner` value read in Step 0. Compare it with those six, character for character; never put any other value on a command line. If it is not exactly one of them (or is empty), ask Step 6b's question again, or skip Step 7c and say why. Show the block:
 
 ```bash
 bash scripts/pipeline-instructions.sh print
@@ -450,7 +450,7 @@ bash scripts/pipeline-instructions.sh write . --harness <harness>
 `write` exits 0 even when it skips, so read its output before saying it worked:
 - A stderr line ending `left unchanged`, or a line saying `symlink` or `not a regular file`: nothing was written. Say so, relay the line, and do not claim success.
 - Otherwise it prints `created`, `added`, `updated` or `up to date`. Tell the user to commit `AGENTS.md`.
-- Relay any Claude Code or Gemini notice. The Talos block is never written into `CLAUDE.md` or `GEMINI.md`. Ask a second question only when `./CLAUDE.md` or `./GEMINI.md` exists and the notice offers `--import-agents-md`: "Add a one-line `@AGENTS.md` import to it? (yes/no)". On yes, re-run the same `write` command with `--import-agents-md` appended (never on the first run); only a fenced one-line `@AGENTS.md` import is added, and the user commits that file too. For `.claude/CLAUDE.md`, `CLAUDE.local.md`, a file above the repo, or the Gemini notice with no `GEMINI.md`, relay the line to add by hand and ask nothing.
+- Relay any Claude Code or Gemini notice. The Talos block is never written into `CLAUDE.md` or `GEMINI.md`. Ask a second question only when `./CLAUDE.md` or `./GEMINI.md` exists and the notice offers `--import-agents-md`: "Add a one-line `@AGENTS.md` import to it? (yes/no)". On yes, re-run the same `write` command with `--import-agents-md` appended (not `install.sh`, whatever the notice says; never on the first run); only a fenced one-line `@AGENTS.md` import is added, and the user commits that file too. For `.claude/CLAUDE.md`, `CLAUDE.local.md`, a file above the repo, or the Gemini notice with no `GEMINI.md`, relay the line to add by hand and ask nothing.
 
 ---
 

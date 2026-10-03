@@ -78,6 +78,16 @@ case "$cmds" in
   *'$('*|*'`'*|*'<'*|*'>'*) fail "7c fences hold nothing user-typed" "$cmds" ;;
   *) pass "7c fences hold nothing user-typed" ;;
 esac
+# The allow-list rule sits before the write fence: the six ids inline, "exactly one of".
+pre_write="$(printf '%s\n' "$step7c" | sed '/pipeline-instructions.sh write/,$d' | tr '\n' ' ' | tr -s ' ')"
+assert_contains "$pre_write" "exactly one of" "7c: <harness> must be exactly one of the listed ids, before the write command"
+for e in "${TALOS_RUNNERS[@]}"; do
+  assert_contains "$pre_write" "\`${e%%|*}\`" "7c allow-list names ${e%%|*} before the write command"
+done
+assert_contains "$pre_write" "never put any other value on a command line" "7c: no unlisted value goes on a command line"
+assert_contains "$pre_write" "ask Step 6b" "7c: an unlisted value re-asks Step 6b or skips"
+assert_contains "$flat6b" "not an \`install.sh --harness\` value" "6b: a runner id is not an install.sh --harness value"
+assert_contains "$flat7c" "not \`install.sh\`" "7c: the import re-run uses write, not install.sh"
 assert_not_contains "$fences" "--import-agents-md" "7c fences never pass --import-agents-md on the first run"
 
 # The re-run path (Step 0) reaches Step 7c and takes the harness from config.
@@ -107,6 +117,8 @@ assert_contains "$intro" "Read ~/.talos/skills/pipeline-setup/SKILL.md and follo
 assert_eq "pipeline-setup" "$(sed -n '2p' "$SETUP_MD" | sed 's/^name: //')" "frontmatter name stays pipeline-setup"
 
 # (7) Execute the fenced write command: one Talos block, CLAUDE.md untouched.
+# Guard: every write under $HOME must stay inside the sandbox.
+case "$HOME" in "$SANDBOX"/*) ;; *) echo "test-setup-harness: HOME is outside the sandbox; aborting" >&2; exit 1 ;; esac
 mkdir -p "$HOME/.talos/skills/pipeline" && : > "$HOME/.talos/skills/pipeline/SKILL.md"
 awk '/^```bash$/{buf=""; inb=1; next} /^```$/{ if (inb && buf ~ /pipeline-instructions\.sh write/) printf "%s", buf; inb=0; buf=""; next} inb{buf = buf $0 "\n"}' "$SETUP_MD" > "$SBX/write.tpl"
 assert_eq "1" "$([ -s "$SBX/write.tpl" ] && echo 1 || echo 0)" "the setup skill has a write block"
