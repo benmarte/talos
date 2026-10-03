@@ -32,7 +32,8 @@ If a config **exists**:
 - Read it with `bash scripts/pipeline-config.sh <key> <default>` to show current values.
 - Tell the user: "Found an existing config. Here's what's set: ..."
 - Ask: "Would you like to update any of these settings, or is this just a re-run to bootstrap labels?"
-- If no changes needed: check `bash scripts/pipeline-config.sh status.enabled unset`. If it prints `unset` (no `status:` block yet), ask Step 4b's question once; on yes add ONLY the `status:` block to the existing file (show the lines to add and write only after an explicit yes; never rewrite the rest of the file, per the Idempotency rules), then run Step 7b, then Step 7c with the harness from `bash scripts/pipeline-config.sh agents.runner claude`. Then jump to Step 8 (bootstrap labels) and Step 10 (test notification).
+- If no changes needed: check `bash scripts/pipeline-config.sh status.enabled unset`. If it prints `unset` (no `status:` block yet), ask Step 4b's question once; on yes add ONLY the `status:` block to the existing file (show the lines to add and write only after an explicit yes; never rewrite the rest of the file, per the Idempotency rules), then run Step 7b.
+- If no changes needed, in every case (whatever the check above printed): run Step 7c with the harness from `bash scripts/pipeline-config.sh agents.runner claude`, then jump to Step 8 (bootstrap labels) and Step 10 (test notification).
 
 If **no config**: continue to Step 1.
 

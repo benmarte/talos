@@ -84,6 +84,13 @@ assert_not_contains "$fences" "--import-agents-md" "7c fences never pass --impor
 flat0="$(printf '%s' "$step0" | tr '\n' ' ' | tr -s ' ')"
 assert_contains "$flat0" "Step 7c" "re-run path reaches Step 7c"
 assert_contains "$flat0" "agents.runner" "re-run path reads agents.runner from config"
+# Step 7c must be its own list item: inside the status.enabled-unset item it is
+# skipped on a config whose status block is already enabled.
+status_item="$(printf '%s\n' "$step0" | grep '^- .*status\.enabled')"
+c7_item="$(printf '%s\n' "$step0" | grep '^- .*Step 7c')"
+assert_not_contains "$status_item" "Step 7c" "re-run: Step 7c is not inside the status.enabled-unset item"
+assert_not_contains "$c7_item" "status.enabled" "re-run: the Step 7c item does not depend on status.enabled"
+assert_contains "$c7_item" "agents.runner" "re-run: the Step 7c item reads agents.runner from config"
 
 # (6) Both start forms, in the description, the template comment and Next steps.
 OTHER_FORM='Read ~/.talos/skills/pipeline/SKILL.md and follow it'
