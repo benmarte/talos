@@ -191,6 +191,8 @@ URL in `TEAMS_WEBHOOK_URL`.
 | Variable | Purpose |
 |----------|---------|
 | `TALOS_RETRY_SLEEP_SCALE` | Scale factor for retry backoff sleeps (default `1`; tests set to `0` for instant runs without delay). Scales every sleep uniformly — e.g. `TALOS_RETRY_SLEEP_SCALE=0.1` makes retries 10x faster for local testing, `TALOS_RETRY_SLEEP_SCALE=0` skips all sleeps entirely (network calls still retry, no delay between attempts). |
+| `TALOS_STATUS_DEBUG` | `1` makes `talos-status.sh` print stderr notes saying why it printed nothing (otherwise its stderr is silent); see [Seeing token spend](#seeing-token-spend-334) |
+| `TALOS_STATUS_TIMEOUT_S` | Hard alarm of `talos-status.sh` in seconds, an integer 1 to 10 (default `3`; anything else uses `3`); on expiry it prints nothing and exits 0 |
 
 Nothing is strictly *required*: with no credentials at all, notifications are
 a silent no-op and the pipeline still runs.
@@ -728,6 +730,9 @@ already has Talos labels re-runs `bash scripts/bootstrap-labels.sh` once so
   `status.log_max` (50); older ones move to `status/archive/YYYY-MM.md`
   (`status.archive_dir`). The Resume block is capped at
   `status.resume_max_lines` (40) with a final `- +<K> more` line.
+- **Spend tag.** A log entry for a merged PR carries its token total
+  (`[3.41M tokens]`), whenever the events log has stage events for it. The tag
+  has no off switch; see [Seeing token spend](#seeing-token-spend-334).
 - **Needs-owner.** When a run parks work on a decision from you, it marks the
   issue or PR with `pipeline:needs-owner` and a comment holding the question,
   and the Resume block lists it. Reply on that issue or PR. At the start of the
@@ -1459,7 +1464,7 @@ worktree of a repo shares one common dir (git-common-dir(5)), so a
 developer/QA/reviewer stage running from inside a per-issue worktree still
 appends to the single log file at the main checkout, never a worktree-local
 copy. A relative `events.path` is joined onto that resolved root; an
-absolute one is used as-is. `.talos/` is gitignored by default.
+absolute one is used as-is (the status line refuses it). `.talos/` is gitignored by default.
 
 **Concurrency.** Appends are a single `printf '%s\n' >>` -- one `O_APPEND`
 write syscall. A JSON event line is well under the POSIX `PIPE_BUF` atomic
@@ -1514,7 +1519,254 @@ synchronously with no completion notification, so `unrecorded` there is
 expected, not a bug. `restamp` counts events with verdict
 `RESTAMP_PASS`/`RESTAMP_FAIL` (#258) — a cheap delta re-review of a PR the
 same role already approved — separately from that group's full-stage
-events/tokens (see "Stale approvals — cheap delta re-stamp" above).
+events/tokens (see "Stale approvals — cheap delta re-stamp" above). The
+per-PR views of the same data (`cost --pr`, `--line`, `--markdown`,
+`--summary`), the PR spend comment and the budget guard are in
+[Seeing token spend](#seeing-token-spend-334).
+
+### Seeing token spend (#334)
+
+Talos records what each stage run cost (`--tokens`, see "Cost accounting"
+above) and shows it in four places while a run is going, plus a status line
+for your editor. Everything here reads the local events log, so it works
+offline, and none of it blocks the pipeline: every spend call fails open.
+
+**What the harness reports, and what it does not.** The Agent tool's
+completion notification carries three numbers: `subagent_tokens`,
+`tool_uses` and `duration_ms`, and only for a background or worktree spawn
+(see "Usage-reporting spawn form" in `skills/pipeline/SKILL.md`). There is no
+input/output split, no cache figure, no model and no dollar amount. UNVERIFIED
+beyond those observed fields: whether the one token total includes cache
+reads. For that reason Talos shows tokens, never a price, and the model it
+shows is the **requested model** (the `model:` the playbook passed when it
+spawned the stage, recorded with `post_stage ... --model M`), not one the
+harness reported back. Without the flag it falls back to the role's model,
+then `agents.model`; a stage with none of them shows as `session default`.
+
+**What "unrecorded" means.** A stage run is **unrecorded** when its `tokens`
+field is `null` or not a finite non-negative number (see "Cost accounting"
+above for when that is expected). It is shown as "unrecorded", never as 0, and
+a total carries it as `(+K unrecorded)`: the figure is a floor, not an exact
+sum. An explicit `--tokens 0` is a real zero, not unrecorded. Where nothing is
+recorded at all, the line says `tokens unrecorded` or `total unrecorded`. One
+known wrinkle: the `--markdown` table prints `0` in its tokens cell for a row
+that is entirely unrecorded (tracked on #357), so read its `unrecorded` column
+instead of the tokens cell.
+
+**1. The harness line.** After each role-relay `post_stage`, the playbook
+prints one line, from `bash scripts/pipeline-events.sh cost --issue N [--pr M]
+--line`:
+
+```
+talos: #770 reviewer done — tokens unrecorded, 1m00s · PR total 1.69M (+1 unrecorded) (dev 1.57M, qa 120k) · budget 84% of 2M
+```
+
+The reference is `PR total` when `--pr` is given, otherwise `issue total`. The
+` · budget 84% of 2M` tail appears only in the warn and exceeded states and
+only when the guard is on. The line is at most 200 characters. With no log or
+no events it prints nothing and exits 0.
+
+**2. The PR spend comment.** One comment per PR, edited in place on every
+refresh, so a PR never collects a pile of spend comments. It is on by
+default, and posted only when `comments.enabled` is true and `spend.comment`
+is not `false`; the provider must be `github` or `github-api` (any other
+provider silently skips it). The body is `cost --issue N [--pr M]
+--markdown`: the `comments.header` line, a per-stage table (stage, model,
+runs, tokens, tool uses, duration, re-stamps, unrecorded), a TOTAL row, a
+`This PR (#M)` subtotal, the budget line when the guard is on, and a note on
+what the harness reports. It covers the whole issue (it matches `cost
+--issue N`); a stage that ran before the PR existed counts only in the issue
+total. It is refreshed after each role-relay `post_stage` and once after
+`merged`, and it still works on a merged PR.
+
+It is written by `bash scripts/pipeline-vcs.sh upsert-pr-comment <pr>
+--marker spend --body-file <path>`: it edits the newest comment by the
+authenticated user whose last non-blank line is the marker, writes nothing
+when the body is unchanged, and prints `upserted pr=<n>
+comment=created|updated|unchanged`. Exit 0 is success; exit 2 is a usage
+error, an unknown marker name (a contract marker without the `talos:` prefix),
+a bare `-` as a positional argument, or a provider other than the two above
+(the playbook treats rc 2 as silent); exit 1 is an unreadable or empty body, a
+body over the 65536-character or byte cap, an unresolved authenticated user,
+an unreadable comment list or a failed write. It never posts a blind
+duplicate; `--dry-run` prints the planned calls.
+
+Two caveats. Under an Actions `GITHUB_TOKEN` or a GitHub App token the
+authenticated-user lookup (`GET /user`) fails, so the upsert exits 1: it is
+reported once as one line in the run summary, never retried, and never blocks.
+And a login that contains `_` (the Enterprise Managed User style, for example
+`name_corp`) currently fails closed at the same check and also exits 1; that
+is tracked on #357, so do not rely on it there.
+
+**3. The run summary.** Step 5 of the playbook makes one `cost --summary
+--issue A [--issue B ...]` call and prints the block: one row per issue and PR
+(plus `pre-PR` rows), `Top PRs:` (up to 3), `Per issue:` and `Total:`, at most
+20 lines. "A run" is just the set of issues you pass; there is no run id.
+
+**4. The status-log tag** (only with `status.enabled: true`).
+`pipeline-status-file.sh assemble` adds the merged PR's total to its log
+entry: `- DATE PR #P (#I): [3.41M tokens] text`, or `[PR 3.41M · issue 3.52M
+tokens]` when the two totals differ, with `, +K unrecorded` or
+`[tokens unrecorded]` as above. There is no off switch for the tag (a
+deliberate choice on #334), so these figures land in git history on the base
+branch; keep that in mind before enabling the status file in a public repo.
+
+**Which commands exit how.** `cost` exits 0 on success, with no log and when
+the formatter module is missing; it exits 2 (usage) for `--line`, `--markdown`
+and `--summary` used together, `--line` or `--markdown` without `--issue`,
+`--summary` without an `--issue`, an `--issue` or `--pr` that is not digits
+only, or a value-taking option with no value. The default `cost` table is
+unchanged and still lists the `orchestrator` rows (the budget-blocked marker),
+so its TOTAL `unrecorded` can be higher than the figure in the new outputs,
+which leave those rows out: the `--line`, `--markdown` and `--summary`
+outputs, the status line, the budget guard and the log tag.
+
+#### The budget guard
+
+The guard is **off by default**. It turns on only when
+`limits.tokens_per_issue` is set in the repo's config. Keys (all three are
+project config only: the user-level file under `~/.talos` honours only
+`agents.*`, so set them in the repo's `talos.pipeline.yml`):
+
+- `limits.tokens_per_issue`: unset or `0` means the guard is off, silently. A
+  positive integer is the per-issue token budget. A negative, boolean,
+  fractional or non-numeric value prints one stderr warning and is treated as
+  off, as is a value above 10^15.
+- `limits.warn_at`: default `0.8`; a number with `0 < x <= 1`. Anything else
+  prints one warning and uses `0.8`. At `1` the warn state never shows,
+  because exceeded wins first.
+- `spend.comment`: default `true`; a strict boolean, anything else warns once
+  and uses `true`.
+
+The playbook checks the budget once before each developer fix round: the
+merge-base task, the draft fix round, and the QA, reviewer, security and
+adversarial rounds, that is fix rounds only. It never checks before a
+first-pass stage, a re-stamp or a merge. Only recorded tokens count, so
+unrecorded runs are not added up, and the guard cannot trip on an adapter or
+pi run. It fails open: no log, no events, a tool error or a crash is
+`unknown` and exit 0.
+
+`bash scripts/pipeline-budget.sh check --issue N [--json]` prints one line,
+`talos:budget <ok|warn|exceeded> issue=N used=.. limit=.. effective=..
+pct=.. unrecorded=..`, or `talos:budget unknown issue=N
+reason=<no-events|events-unavailable|error>`; with the guard off it prints
+nothing. The exit code is **0** for ok, warn, unknown and guard-off, **1** for
+exceeded only, and **2** for a usage error (including a non-numeric `--issue`).
+A caller under `set -e` must capture the code rather than test it inline.
+
+- **warn** (at or above `limits.warn_at`) is relayed in the harness at the next
+  check and shown in the PR comment's budget line. It stops nothing.
+- **exceeded** makes the playbook set `pipeline:blocked` on the PR and the
+  issue, record a `budget-blocked` event, and either mark the issue needs-owner
+  (`status.enabled: true`) or post a blocked comment.
+
+To continue, the owner either removes `pipeline:blocked` or raises
+`limits.tokens_per_issue`. Removing the label works because each recorded
+`budget-blocked` event grants one more full limit: the effective limit is the
+limit times (1 + grants). The grant exists as soon as the block is recorded,
+so after one block the harness line, the PR comment and the status line show
+`of 8M` for a 4M key: each block grants one more limit, and the number shown
+is the effective limit, not the key.
+
+#### The status line
+
+`talos-status.sh` renders one line from the events log for a harness status
+bar. `install.sh --global` installs it to `~/.talos/scripts/talos-status.sh`
+(or `$TALOS_HOME/scripts/`), next to the shared `pipeline-spend-format.py`
+module it imports; that module is a library, not a command.
+
+```
+$ talos-status.sh --line
+#764 · PR #770 · rev done · 1.69M (+1 unrecorded) · today 1.69M (+1 unrecorded) · ⚠ 84% of 2M
+```
+
+- `--line [--format a,b,c] [--style compact|full|minimal] [--width N]` prints
+  the line; `--preview [--format a,b,c] [--width N]` prints compact, full and
+  minimal at the current width and at 60 columns (real events when there are
+  any, otherwise sample data headed `(sample)`; `--style` is ignored);
+  `--help` prints usage.
+- It exits 0 on every input, an unknown option, a bad value, no flag at all, no
+  log or not a git repo included. Stdout is then empty. There is no usage error
+  and no exit 2, because a status bar must never show an error.
+- Width order: `--width`, then `max_width` from `statusline.yml`, then
+  `COLUMNS`, then 80. Segments drop from the end and the line never wraps.
+- Colour only with `color: always`, or `auto` on a TTY with `NO_COLOR` unset or
+  empty. A status-line host is usually not a TTY, so colour needs `always`.
+- `stage` shows finished stages only, so a running stage never appears.
+
+**`statusline.yml`** is a separate file, not part of `talos.pipeline.*`:
+the unknown-key warning does not cover it, and a typo silently falls back to
+the defaults. Layers, later wins key by key: `~/.talos/statusline.yml`
+(`$TALOS_HOME`), then `<main repo root>/.talos/statusline.yml`, then
+`<git toplevel>/.talos/statusline.yml`. The format is JSON or a small YAML
+subset (scalars, `[a, b]` and `- item` lists, comments; anchors, aliases and
+tags are refused). PyYAML is not involved, the cap is 64 KB and it must be a
+regular file. This differs from `talos.pipeline.yml`, which needs PyYAML.
+Fields, under a top-level `statusline:` key:
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `segments` | `[issue, pr, stage, issue_tokens, today_tokens, budget]` | Any of `issue pr stage issue_tokens stage_tokens today_tokens budget model breakdown`; unknown names are dropped |
+| `separator` | ` · ` | Control characters removed, at most 10 characters |
+| `style` | `compact` | `compact`, `full` or `minimal` |
+| `color` | `auto` | `auto`, `always` or `never` |
+| `max_width` | unset | Clamped to 20..500 |
+| `placement` | unset | Parsed but ignored: nothing reads it yet |
+
+Environment: `TALOS_STATUS_DEBUG=1` prints stderr notes saying why nothing was
+printed (stderr is otherwise silent); `TALOS_STATUS_TIMEOUT_S` (an integer
+1..10, default 3) sets the hard alarm after which it prints nothing and exits
+0; `COLUMNS` and `NO_COLOR` are width and colour inputs.
+
+Limits to know about. A log over 32 MB is not read at all (the line prints
+nothing, never partial totals). The status line honours `events.path`, but
+stricter than the event writer: it reads it only from the project config,
+as JSON or block-style YAML (flow-style `events: {path: x}` silently falls
+back to the default log), and only inside the repo; an absolute path, a `..`
+that leaves the repo root, a symlinked log or a location outside the root
+prints nothing. The `budget` segment runs only when a project config file
+mentions `tokens_per_issue`; it calls `pipeline-budget.sh` with a 2 s timeout
+in its own process group. On a 10,000-event log the line takes about 72 ms on
+macOS and 39 ms on Linux with the budget off, and about 324 ms on macOS with it
+on, so it does not meet the 50 ms target the plan set; CI asserts under 500 ms
+with `budget` removed. For a short refresh interval, leave `budget` out of
+`--format`.
+
+**Claude Code snippet.** Add this to `~/.claude/settings.json` (or the
+project's settings) to show it in Claude Code's status bar:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "~/.talos/scripts/talos-status.sh --line"
+  }
+}
+```
+
+`padding` and `refreshInterval` (minimum 1 second) are optional. Claude Code
+sends a JSON object on stdin (it includes `cwd`); `talos-status.sh` ignores
+stdin and uses its **own** working directory to find the repo. UNVERIFIED:
+whether Claude Code starts the command in the session's directory; the docs do
+not say. If the line stays empty, run the command from your repo with
+`TALOS_STATUS_DEBUG=1` to see why. A `statusLine` key replaces an existing
+one, and chaining two needs a wrapper script of your own (`placement` does not
+do it).
+
+**Not built.** Deferred from the #334 plan, with no tracking issue yet except
+where noted:
+
+- `--configure` and `--uninstall`, and the setup flow around them (tool
+  detection, preview-and-customize, backups) for Claude Code, Codex, Gemini,
+  Cursor, VS Code and a terminal fallback;
+- the pi extension and omp plugin, and reading pi or omp usage (formats
+  UNVERIFIED);
+- the Claude Code mods panel (owner check pending);
+- `cost_estimate` and any price table (the harness gives no input/output or
+  cache split), and the `run_tokens` and `blocked` segments;
+- a spend command among the `/talos-*` skills, which waits on #335;
+- fixing the default `cost` table's orchestrator `unrecorded` count;
+- honouring `placement`.
 
 ### Notification templates, transpiled per platform
 
