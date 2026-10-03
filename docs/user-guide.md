@@ -230,7 +230,9 @@ bash talos/install.sh --global          # installs to ~/.talos/, ~/.claude/skill
 
 # 2. Per-repo config (once per repo -- writes config; no scripts copied into repo)
 bash talos/install.sh /path/to/your-repo
-# add --harness codex or --harness antigravity for non-Claude harnesses
+# also writes the Talos block into your-repo/AGENTS.md for every harness (commit it)
+# --no-agents-md skips that; --import-agents-md adds an @AGENTS.md import to an existing CLAUDE.md / GEMINI.md
+# --harness claude|codex|antigravity names the harness (default claude); the AGENTS.md block is the same for all
 
 # 3. Configure (interactive -- or copy talos.pipeline.yml.example manually)
 cd /path/to/your-repo
@@ -339,10 +341,22 @@ Codex has no native subagents, so role stages run headlessly through
 bash talos/install.sh /path/to/your-repo --harness codex
 ```
 
-This installs everything above **plus** a marker-fenced Talos section in your
-repo's `AGENTS.md` that teaches Codex to act as the orchestrator and run each
-stage via the adapter. Existing `AGENTS.md` content is preserved; re-installs
-don't duplicate the section.
+Every install writes a marker-fenced Talos block in your repo's `AGENTS.md`
+(not only `--harness codex`) that teaches Codex to act as the orchestrator and
+run each stage via the adapter. Existing `AGENTS.md` content is preserved;
+re-installs repair the block in place rather than duplicating it, and say
+`added the Talos block to`, `updated the Talos block in`, or `up to date`. A
+malformed fence or a symlinked `AGENTS.md` is left byte-identical with a notice.
+
+Two flags control it:
+
+- `--no-agents-md` writes no `AGENTS.md`.
+- `--import-agents-md` appends a fenced `@AGENTS.md` import to an existing
+  `<repo>/CLAUDE.md` and `<repo>/GEMINI.md`; it never creates them or writes the
+  block into them. Without it, the install prints a notice when a Claude
+  instructions file exists that does not import `AGENTS.md` (`@AGENTS.md` for a
+  root `CLAUDE.md`, `@../AGENTS.md` for `.claude/CLAUDE.md`), since Claude Code
+  2.1.277+ reads `AGENTS.md` only when no `CLAUDE.md` exists.
 
 ```yaml
 # 2. talos.pipeline.yml — route role stages through codex
@@ -370,9 +384,11 @@ agents:
   runner: gemini        # stages run via: gemini -p "<prompt>"
 ```
 
-Install with `--harness codex` to get the `AGENTS.md` section (Gemini CLI can
-be pointed at `AGENTS.md` via its `contextFileName` setting, or copy the
-fenced section into `GEMINI.md`). Then:
+`install.sh <repo>` writes the `AGENTS.md` block for every harness. Gemini CLI
+reads `GEMINI.md` by default: either set `context.fileName` to
+`["AGENTS.md","GEMINI.md"]` in your Gemini settings, or re-run the install with
+`--import-agents-md` to add an `@AGENTS.md` import to an existing `GEMINI.md`.
+Then:
 
 ```bash
 gemini "Run the Talos pipeline: follow .claude/skills/pipeline/SKILL.md"
@@ -383,8 +399,9 @@ gemini "Run the Talos pipeline: follow .claude/skills/pipeline/SKILL.md"
 Same model as Codex and Gemini: Antigravity orchestrates by following the
 playbook; role stages run through the adapter.
 
-**Orchestrator:** `talos install --harness antigravity` writes a marker-fenced
-Talos section into your repo's `AGENTS.md`. Antigravity reads `AGENTS.md`
+**Orchestrator:** `install.sh <repo>` writes a marker-fenced Talos block into
+your repo's `AGENTS.md` (every harness gets it; `--harness antigravity` is not
+required for that). Antigravity reads `AGENTS.md`
 natively since v1.20.3 — no separate config file is needed. Note: if both
 `GEMINI.md` and `AGENTS.md` exist in your project, `GEMINI.md` takes
 precedence in Antigravity's context loading.
@@ -2098,5 +2115,5 @@ notifications, the Slack/Discord/Teams HTTP APIs.
 the supported path is a local orchestrator session.
 
 **Is my repo modified?** Only `.claude/` (plus `talos.pipeline.yml` and,
-for the codex harness, a fenced section in `AGENTS.md`). All state lives in
+for every harness, a fenced block in `AGENTS.md`; `--no-agents-md` skips it). All state lives in
 labels, comments, and `~/.talos/threads.json`.

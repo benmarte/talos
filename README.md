@@ -141,8 +141,15 @@ agent-skills comes with it automatically (`+ 1 dependency: agent-skills`). If yo
 git clone https://github.com/benmarte/talos
 bash talos/install.sh --global          # installs to ~/.talos/, ~/.claude/skills/, and role profiles to ~/.claude/agents/
 bash talos/install.sh /path/to/your-repo  # writes config; no scripts copied into repo
-# add --harness codex or --harness antigravity to also write the AGENTS.md section
+# writes the Talos block into /path/to/your-repo/AGENTS.md for every harness (commit it);
+# --no-agents-md skips it, --import-agents-md also adds an @AGENTS.md import to an existing CLAUDE.md / GEMINI.md
+# --harness claude|codex|antigravity names the harness (default claude); the AGENTS.md block is the same for all
 ```
+
+`install.sh <repo>` writes one marker-fenced Talos block (between `<!-- talos:begin -->` and `<!-- talos:end -->`) into the repo's `AGENTS.md` for every harness, so a non-Claude agent finds the playbook paths under `~/.talos/skills/`. A missing file is created, a file without the markers gets the block appended, and a stale block is repaired in place (the output says `added the Talos block to`, `updated the Talos block in`, or `up to date`). A malformed fence or a symlinked `AGENTS.md` is left byte-identical with a notice. Text outside the markers is never touched. Commit the file.
+
+- `--no-agents-md` writes no `AGENTS.md`.
+- `--import-agents-md` appends a fenced `@AGENTS.md` import to an existing `<repo>/CLAUDE.md` and `<repo>/GEMINI.md`. It never creates either file and never writes the block into them. Without the flag, when a Claude instructions file exists that does not import `AGENTS.md`, the install prints a notice with the line to add (`@AGENTS.md` for a root `CLAUDE.md`, `@../AGENTS.md` for `.claude/CLAUDE.md`), because Claude Code 2.1.277+ reads `AGENTS.md` only when no `CLAUDE.md` exists.
 
 To update all repos at once:
 
@@ -1035,9 +1042,10 @@ agents:
   a fully offline pipeline, combine pi with `vcs.provider: file` — `plan.md`
   is the board, no remote/VCS/auth needed.
 - **Any other runner** (subagents: false) — headless per-stage via
-  `pipeline-agent.sh`, e.g. `bash install.sh /path/to/your/repo --harness codex`
-  to add a marker-fenced Talos section to `AGENTS.md` telling the harness to
-  follow the playbook and run role stages through the adapter:
+  `pipeline-agent.sh`. `bash install.sh /path/to/your/repo` writes a
+  marker-fenced Talos block into the repo's `AGENTS.md` (every harness gets it)
+  telling the harness to follow the playbook and run role stages through the
+  adapter:
 
   ```bash
   bash .claude/talos/scripts/pipeline-agent.sh <role> - <<'PROMPT'
@@ -1174,8 +1182,8 @@ pointing at this repo's `skills/`), set `agents.subagents: false` and
 Harness-compatibility section handles the inline mode. No `install.sh --harness pi`
 needed — pi reads the canonical skill directly.
 
-**Google Antigravity:** `--harness antigravity` writes the same `AGENTS.md`
-section (Antigravity reads `AGENTS.md` natively since v1.20.3; `GEMINI.md`
+**Google Antigravity:** `install.sh <repo>` writes the same `AGENTS.md`
+block as for every harness (Antigravity reads `AGENTS.md` natively since v1.20.3; `GEMINI.md`
 takes precedence when both exist). Set `agents.runner: antigravity` in
 `talos.pipeline.yml` to route role stages through `agy -p`.
 
