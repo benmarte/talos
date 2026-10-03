@@ -169,7 +169,9 @@ assert_not_contains "$out_noflag" "stale role=" "no --stale-list: no stdout stal
 # agent instructions are non-waivable (#428): each path gets its own isolated
 # one-file delta off SHA_BASE, so a stale verdict cannot come from scripts/.
 # README.md, docs/ and templates/comments/ are the positive controls (waived),
-# as are a nested AGENTS.md and a near-miss prefix (agentsx/).
+# as is a near-miss prefix (agentsx/). Matching is casefolded, covers the
+# repo-level .claude/ and .agents/ trees, and any AGENTS.md or CLAUDE.md at
+# any depth; a rename out of skills/ reports the old path too.
 # ═══════════════════════════════════════════════════════════════════════════
 delta_head() {  # <path> -- one-file commit off SHA_BASE; prints the new SHA
   git checkout -q --detach "$SHA_BASE"
@@ -181,7 +183,10 @@ delta_head() {  # <path> -- one-file commit off SHA_BASE; prints the new SHA
 }
 
 _entries="$(entries_json "qa:pass" "qa" "$SHA_BASE")"
-for _p in agents/qa.md skills/pipeline/SKILL.md templates/prompts/qa-evidence.md AGENTS.md CLAUDE.md; do
+for _p in agents/qa.md skills/pipeline/SKILL.md templates/prompts/qa-evidence.md AGENTS.md CLAUDE.md \
+          sub/AGENTS.md a/b/CLAUDE.md \
+          .claude/agents/developer.md .claude/skills/x/SKILL.md .claude/commands/pr.md .claude/talos/scripts/x.sh .agents/x.md \
+          Skills/pipeline/SKILL.md Agents/qa.md Templates/Prompts/qa-evidence.md AGENTS.MD Claude.md claude.md sub/agents.md .Claude/agents/x.md; do
   _h="$(delta_head "$_p")"
   out="$(run_check "$_h" "" "$_entries" 2>&1)"; rc=$?
   assert_eq "1" "$rc" "non-waivable instruction path $_p: exits 1 under the default waiver"
@@ -189,12 +194,30 @@ for _p in agents/qa.md skills/pipeline/SKILL.md templates/prompts/qa-evidence.md
   assert_contains "$out" "$_p" "non-waivable instruction path $_p: names the file"
 done
 
-for _p in README.md docs/user-guide.md CHANGELOG.md templates/comments/qa-verdict.md sub/AGENTS.md agentsx/note.md; do
+for _p in README.md docs/user-guide.md CHANGELOG.md templates/comments/qa-verdict.md agentsx/note.md .claude/notes.md Docs/guide.md; do
   _h="$(delta_head "$_p")"
   out="$(run_check "$_h" "" "$_entries" 2>&1)"; rc=$?
   assert_eq "0" "$rc" "waivable path $_p: exits 0 under the default waiver"
   assert_not_contains "$out" "note:" "waivable path $_p: no note on the default waiver"
 done
+git checkout -q main
+
+# Rename out of an instruction path: git mv skills/x/SKILL.md docs/x.md. With
+# rename detection only docs/x.md would be reported (waived); --no-renames
+# reports the deleted old path as well, so the approval goes stale.
+git checkout -q --detach "$SHA_BASE"
+mkdir -p skills/x
+printf 'instructions\n' > skills/x/SKILL.md
+git add skills/x/SKILL.md
+git commit -q -m "add skills/x/SKILL.md"
+_R0="$(git rev-parse HEAD)"
+mkdir -p docs
+git mv skills/x/SKILL.md docs/x.md
+git commit -q -m "mv skills/x/SKILL.md docs/x.md"
+_R1="$(git rev-parse HEAD)"
+out="$(run_check "$_R1" "" "$(entries_json "qa:pass" "qa" "$_R0")" 2>&1)"; rc=$?
+assert_eq "1" "$rc" "rename out of skills/ to docs/: exits 1"
+assert_contains "$out" "skills/x/SKILL.md" "rename out of skills/ to docs/: names the old path"
 git checkout -q main
 
 # A config that lists an instruction path as waivable is ignored for it, with
@@ -205,10 +228,15 @@ assert_eq "1" "$rc" "config lists skills/**: still stale for a skills/ delta"
 assert_contains "$out" "note: merge.approval_waiver_paths entry 'skills/**' ignored for agent-instruction paths" "config lists skills/**: stderr note names the entry"
 assert_not_contains "$out" "entry '*.md'" "config lists skills/**: no note for the *.md entry"
 
-_h="$(delta_head AGENTS.md)"
+_h="$(delta_head sub/CLAUDE.md)"
 out="$(WAIVER_PATHS='["AGENTS.md","*.md"]' run_check "$_h" "" "$_entries" 2>&1)"; rc=$?
-assert_eq "1" "$rc" "config lists AGENTS.md: still stale for a root AGENTS.md delta"
+assert_eq "1" "$rc" "config lists AGENTS.md: still stale for a nested CLAUDE.md delta"
 assert_contains "$out" "entry 'AGENTS.md' ignored" "config lists AGENTS.md: stderr note names the entry"
+
+# The note prints once per entry, and a differently-cased entry gets one too.
+out="$(WAIVER_PATHS='["skills/**","Agents/**","*.md"]' run_check "$_h" "" "$_entries" 2>&1)"
+assert_eq "1" "$(printf '%s\n' "$out" | grep -c "entry 'skills/\*\*' ignored")" "note prints once for the skills/** entry"
+assert_contains "$out" "entry 'Agents/**' ignored" "casefolded entry Agents/** also gets the note"
 
 _h="$(delta_head docs/user-guide.md)"
 out="$(WAIVER_PATHS='["agents/**","docs/**"]' run_check "$_h" "" "$_entries" 2>&1)"; rc=$?

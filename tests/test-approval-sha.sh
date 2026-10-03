@@ -225,7 +225,10 @@ _delta_428() {  # <path> -- one-file commit off SHA_A on a throwaway branch; pri
   git rev-parse HEAD
 }
 _c="$(mk_comment_with_marker "$SHA_A" qa)"
-for _p in agents/qa.md skills/pipeline/SKILL.md templates/prompts/qa-evidence.md AGENTS.md CLAUDE.md; do
+for _p in agents/qa.md skills/pipeline/SKILL.md templates/prompts/qa-evidence.md AGENTS.md CLAUDE.md \
+          sub/AGENTS.md a/b/CLAUDE.md .claude/agents/developer.md .claude/skills/x/SKILL.md \
+          .claude/commands/pr.md .claude/talos/scripts/x.sh .agents/x.md \
+          Skills/pipeline/SKILL.md Agents/qa.md AGENTS.MD claude.md .Claude/agents/x.md; do
   _h="$(_delta_428 "$_p")"
   out="$(vcs_check "$_h" '[{"name":"qa:pass"}]' "$_c")"; rc=$?
   assert_exit_code 1 "$rc" "#428 $_p only: default waiver does not cover it, exits 1"
@@ -236,6 +239,21 @@ for _p in README.md docs/user-guide.md templates/comments/qa-verdict.md; do
   out="$(vcs_check "$_h" '[{"name":"qa:pass"}]' "$_c")"; rc=$?
   assert_exit_code 0 "$rc" "#428 $_p only: stays waived by default, exits 0"
 done
+
+# A rename out of skills/ into docs/ reports the old path too (--no-renames).
+git checkout -q -B tmp-428 "$SHA_A"
+mkdir -p skills/x
+printf 'instructions\n' > skills/x/SKILL.md
+git add skills/x/SKILL.md
+git commit -q -m "428 add skills/x/SKILL.md"
+_R0="$(git rev-parse HEAD)"
+mkdir -p docs
+git mv skills/x/SKILL.md docs/x.md
+git commit -q -m "428 mv skills/x/SKILL.md docs/x.md"
+_R1="$(git rev-parse HEAD)"
+out="$(vcs_check "$_R1" '[{"name":"qa:pass"}]' "$(mk_comment_with_marker "$_R0" qa)")"; rc=$?
+assert_exit_code 1 "$rc" "#428 rename skills/x/SKILL.md -> docs/x.md: exits 1"
+assert_contains "$out" "skills/x/SKILL.md" "#428 rename out of skills/: old path named"
 
 # A config that lists skills/** as waivable is ignored for those paths, with a stderr note.
 printf '{"merge": {"approval_waiver_paths": ["skills/**", "*.md"]}}\n' > test-approval-config.json

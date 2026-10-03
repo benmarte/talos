@@ -917,7 +917,14 @@ git add README.md
 git commit -q -m "428 README.md"
 _README428="$(git rev-parse HEAD)"
 
-for _case in "agents/qa.md:$_AGENTS428:1" "README.md:$_README428:0"; do
+git checkout -q --detach "$_A428"
+mkdir -p sub
+printf 'edit\n' > sub/claude.md
+git add sub/claude.md
+git commit -q -m "428 sub/claude.md"
+_NESTED428="$(git rev-parse HEAD)"
+
+for _case in "agents/qa.md:$_AGENTS428:1" "sub/claude.md:$_NESTED428:1" "README.md:$_README428:0"; do
   IFS=: read -r _f _h _want <<< "$_case"
   : > "$CURL_LOG"
   printf '%s\n' \
