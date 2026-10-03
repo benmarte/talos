@@ -258,7 +258,7 @@ _resolve_role_profile() {
     if [ -f "$_c" ]; then printf '%s\n' "$_c"; return 0; fi
   done
   echo "pipeline-agent: role definition not found: $_role" >&2
-  echo "  looked in: $PWD/.claude/agents/, $PWD/.agents/talos/agents/, ${_agents:-<no Talos install found>}/ (via _resolve_talos_dir), $SCRIPT_DIR/../agents/, $SCRIPT_DIR/../../agents/, $SCRIPT_DIR/../.claude/agents/" >&2
+  echo "  looked in: $PWD/.claude/agents/, $PWD/.agents/talos/agents/, ${_agents:-<no Talos install found>}/ (the install, via _resolve_talos_dir: \$TALOS_HOME, ~/.talos, \$CLAUDE_PLUGIN_ROOT, .claude/talos), $SCRIPT_DIR/../agents/, $SCRIPT_DIR/../../agents/, $SCRIPT_DIR/../.claude/agents/" >&2
   return 1
 }
 

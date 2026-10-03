@@ -32,7 +32,16 @@ The global install (~/.talos) wins when present; the plugin falls back to its bu
 
 Check per role, not once for all eight — a repo may override only `developer` and take the other seven from the plugin.
 
-**Startup diagnostic:** once per run, print a single line naming the two resolved sources above — the scripts directory already resolved, and which of the three subagent-name cases applies. This is visibility only: it does not change which source is used, and does not alter the per-role decision logic above.
+**Role profile precedence (#367):** the adapter path (`pipeline-agent.sh <role> -`) and pi inline mode read the role profile from the first of these that exists, and `bash scripts/pipeline-agent.sh --resolve-profile <role>` prints that path:
+
+1. `$PWD/.claude/agents/<role>.md` — always first, on every path.
+2. `$PWD/.agents/talos/agents/<role>.md` — the harness-neutral repo override (tracked in the repo, for harnesses that have no `.claude/`). A symlink there is ignored.
+3. The install's `agents/` (the scripts directory resolved above, `../agents/`).
+4. The self-relative fallbacks next to the script.
+
+The neutral path (2) applies to the adapter and inline paths only. The native Claude path never reads it: Claude Code resolves `Agent(subagent_type: ...)` from its own directories, so a role that runs natively must be overridden in `.claude/agents/<role>.md`. `bash scripts/pipeline-agent.sh --resolve-all` warns on stderr when a neutral file exists but is shadowed by a `.claude/agents` file, or would be ignored because that role runs on the native path.
+
+**Startup diagnostic:** once per run, print a single line naming the two resolved sources above — the scripts directory already resolved, and which of the three subagent-name cases applies. This is visibility only: it does not change which source is used, and does not alter the per-role decision logic above. It describes the native path, so it only ever looks at `.claude/agents/`; the adapter and inline paths also read `.agents/talos/agents/` (see "Role profile precedence").
 
 ```bash
 if [ -f .claude/agents/developer.md ]; then
@@ -71,7 +80,7 @@ echo "talos: scripts=<resolved scripts dir>  agents=$agent_source"
 
   This keeps the working tree clean on every spawn — no file writes, nothing to revert, nothing for a later `git status --porcelain` check to trip on. It also means `agents.roles.<role>.effort` / `agents.effort` only take effect on the native path once the role's frontmatter is edited to match; see the adapter path above for the mechanism that always applies the config value (`TALOS_EFFORT`).
 - **`subagents: false` + `runner: pi`** — **inline mode**: you (the orchestrator) act as each stage role yourself, one role per turn. pi has no subagents and does NOT use `pipeline-agent.sh`. For every stage the playbook says "spawn a subagent with this prompt":
-  1. Read the role profile `AGENTS_DIR/<role>.md` (resolve via the subagent-name rules above; fall back to `scripts/../agents/<role>.md`). Strip the YAML frontmatter — it is Claude Code metadata. Use only the body.
+  1. Find the role profile with `bash scripts/pipeline-agent.sh --resolve-profile <role>` — it prints one absolute path (the same lookup a stage run uses: see "Subagent names"), and exits non-zero with the locations it searched when there is none. Read that file. Strip the YAML frontmatter — it is Claude Code metadata. Use only the body.
   2. Adopt the role: treat the role body + the stage prompt as your current instructions and carry them out **inline with your tools** (read/write/edit/bash). Do everything the role would do.
   3. Perform the post-stage orchestrator actions the playbook lists (board status via `pipeline-status.sh`, findings relay + lifecycle notify via `pipeline-notify.sh`), then continue directly to the next stage. The role's "final message (2-3 lines)" is your own summary to relay.
   4. Handoff artifact is still posted (stage comment + labels per role instructions) — read the prior stage's comment before starting the next (e.g. the developer reads the PM spec).
@@ -86,7 +95,7 @@ echo "talos: scripts=<resolved scripts dir>  agents=$agent_source"
 
   The stage prompt carries issue-derived and subagent-authored text (the spec, the `Prior stage summary`), so the delimiter is `TALOS_<rand>` with `<rand>` 12+ random characters you invent fresh for each spawn, never one copied from an example: text that contains the closing line would end the heredoc early and run what follows.
 
-  The adapter finds the role definition itself (plugin root, then `.claude/agents/`), combines it with the stage prompt, and runs it through the CLI configured for that role (`pipeline-agent.sh` does the same per-role resolution above internally, so you never need to pass an override in). Everything else in this playbook is identical. Note: without native subagents, developer stages run sequentially in the working tree — set `issues.max_parallel: 1`.
+  The adapter finds the role definition itself — `$PWD/.claude/agents/<role>.md`, then `$PWD/.agents/talos/agents/<role>.md`, then the install's `agents/`, then its self-relative fallbacks, the same order as `--resolve-profile` — combines it with the stage prompt, and runs it through the CLI configured for that role (`pipeline-agent.sh` does the same per-role resolution above internally, so you never need to pass an override in). Everything else in this playbook is identical. Note: without native subagents, developer stages run sequentially in the working tree — set `issues.max_parallel: 1`.
 
 **Usage-reporting spawn form (#259):** on the native subagent path (`subagents: true`), spawn every stage — developer, QA, reviewer, security, validator, docs, adversarial, planner — with the Agent tool's background form (the same call shape the developer/QA stages already use: `isolation: "worktree"` for stages that need a writable checkout, the `run_in_background`/async form without a worktree for read-only stages) so its completion notification carries usage (`subagent_tokens`/`tool_uses`/`duration_ms`) — the Agent tool exposes no other async trigger, so `isolation: "worktree"` (or, for a role with no checkout, the bare background/async spawn) is the concrete parameter to set. Observed in this repo, 2026-09-09 (Claude Code, native path): a stage spawned via the Agent tool with `isolation: "worktree"` (developer, QA) returned a completion notification carrying usage; a stage spawned as a named agent with no isolation (reviewer, security, validator, docs) instead reported through a mailbox message with no usage at all — that gap, not a `post_stage` bug, is why `.talos/events.jsonl` shows real token counts for developer/QA and `null` for the rest (see `pipeline-events.sh cost`'s `unrecorded` column). On the adapter path (`subagents: false` + a non-`pi` runner, via `pipeline-agent.sh`) and pi inline mode, stages run synchronously with no completion notification at all — usage is not available there, and `tokens` is recorded as null; that is expected, not a bug.
 
