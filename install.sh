@@ -3,7 +3,9 @@
 #
 # Global install (recommended for new setups):
 #   bash install.sh --global
-#   Writes scripts, agents, and templates to ~/.talos/, skills to ~/.claude/skills/,
+#   Writes scripts, agents, templates and the playbooks (skills/<command>/SKILL.md,
+#   one per entry of TALOS_COMMANDS in scripts/pipeline-contract.sh) to ~/.talos/
+#   (the playbooks to ~/.talos/skills/), the same skills also to ~/.claude/skills/,
 #   and role profiles ALSO to ~/.claude/agents/ so Claude Code's native subagent
 #   discovery finds the current profiles instead of a stale plugin copy.
 #   A single update (git pull + install.sh --global) reaches every repo and harness.
@@ -94,7 +96,7 @@ if [ "$GLOBAL" = "true" ]; then
   CLAUDE_SKILLS_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills"
   CLAUDE_AGENTS_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/agents"
   echo "Installing Talos globally into: $TALOS_HOME_DIR"
-  echo "(Skills -> $CLAUDE_SKILLS_DIR, Agents -> $TALOS_HOME_DIR/agents and $CLAUDE_AGENTS_DIR)"
+  echo "(Skills -> $TALOS_HOME_DIR/skills and $CLAUDE_SKILLS_DIR, Agents -> $TALOS_HOME_DIR/agents and $CLAUDE_AGENTS_DIR)"
   echo ""
 
   # Scripts -- glob every *.sh in $SRC/scripts so a new script is picked up
@@ -152,13 +154,22 @@ if [ "$GLOBAL" = "true" ]; then
     done
   done
 
-  # Skills -> ~/.claude/skills/ (user-scoped; Claude Code scans this path)
+  # Skills: every command in TALOS_COMMANDS (scripts/pipeline-contract.sh) goes
+  # to ~/.talos/skills/<command>/ (harness-neutral: any agent can be pointed at
+  # it) and to ~/.claude/skills/<claude name>/ (user-scoped; Claude Code scans
+  # this path). A new playbook needs a manifest entry, not an installer edit.
+  _CONTRACT="$SRC/scripts/pipeline-contract.sh"
+  if [ ! -f "$_CONTRACT" ]; then
+    echo "error: $_CONTRACT not found; cannot read the command manifest" >&2
+    exit 1
+  fi
+  . "$_CONTRACT"
   echo ""
-  echo "Orchestrator skills (user-scoped):"
-  install_file "$SRC/skills/pipeline/SKILL.md" "$CLAUDE_SKILLS_DIR/pipeline/SKILL.md"
-  install_file "$SRC/skills/pipeline-setup/SKILL.md" "$CLAUDE_SKILLS_DIR/pipeline-setup/SKILL.md"
-  # Installed as talos-resume, not resume: Claude Code has a built-in /resume. Provisional until #335.
-  install_file "$SRC/skills/resume/SKILL.md" "$CLAUDE_SKILLS_DIR/talos-resume/SKILL.md"
+  echo "Orchestrator skills (~/.talos/skills and user-scoped Claude skills):"
+  for cmd in "${TALOS_COMMANDS[@]}"; do
+    install_file "$SRC/skills/$cmd/SKILL.md" "$TALOS_HOME_DIR/skills/$cmd/SKILL.md"
+    install_file "$SRC/skills/$cmd/SKILL.md" "$CLAUDE_SKILLS_DIR/$(talos_claude_skill_name "$cmd")/SKILL.md"
+  done
 
   # Model hint (#336). Role models are set only in the Talos config (the agent
   # files carry no model:). Stay non-interactive and never write the user-level
@@ -186,6 +197,7 @@ if [ "$GLOBAL" = "true" ]; then
   echo "  NOTE: skills are discovered when a session starts. Restart any open"
   echo "        Claude Code session to pick up the newly installed skills."
   echo "        Registered at: $CLAUDE_SKILLS_DIR/pipeline/SKILL.md"
+  echo "        Playbooks for any other agent: $TALOS_HOME_DIR/skills/<command>/SKILL.md"
   echo "        Role profiles registered at: $CLAUDE_AGENTS_DIR/<role>.md"
   exit 0
 fi

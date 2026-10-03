@@ -244,7 +244,9 @@ gh issue edit 42 --add-label pipeline:ready
 # in a Claude Code session:  /pipeline
 ```
 
-What the global install writes: `~/.talos/{scripts,agents,templates}/`,
+What the global install writes: `~/.talos/{scripts,agents,templates,skills}/`
+(`skills/<command>/SKILL.md` holds the pipeline, pipeline-setup and resume
+playbooks, so a non-Claude agent can be pointed at a path under `~/.talos`),
 `~/.claude/skills/pipeline/SKILL.md` (the command), and role profiles
 ALSO to `~/.claude/agents/<role>.md` -- that second copy is what Claude
 Code's native subagent discovery actually reads, so a global install no

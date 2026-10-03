@@ -283,14 +283,17 @@ templates_diff="$(diff -rq "$TALOS_ROOT/templates" "$T9_HOME/.talos/templates" 2
 # new script, and prove --global installs it -- covering "adding a new
 # scripts/foo.sh requires no install.sh edit" (#276).
 T10_SRC="$SANDBOX/t10-src"
-mkdir -p "$T10_SRC/skills"
+mkdir -p "$T10_SRC"
 cp "$TALOS_ROOT/install.sh" "$T10_SRC/install.sh"
 cp -R "$TALOS_ROOT/scripts" "$T10_SRC/scripts"
 cp -R "$TALOS_ROOT/agents" "$T10_SRC/agents"
 cp -R "$TALOS_ROOT/templates" "$T10_SRC/templates"
-cp -R "$TALOS_ROOT/skills/pipeline" "$T10_SRC/skills/pipeline"
-cp -R "$TALOS_ROOT/skills/pipeline-setup" "$T10_SRC/skills/pipeline-setup"
-cp -R "$TALOS_ROOT/skills/resume" "$T10_SRC/skills/resume"
+cp -R "$TALOS_ROOT/skills" "$T10_SRC/skills"
+# A new command is one skills/<name>/SKILL.md plus one manifest entry in the
+# fixture's own copy of the contract (#363); install.sh is not edited.
+mkdir -p "$T10_SRC/skills/newcmd"
+printf '# newcmd playbook\n' > "$T10_SRC/skills/newcmd/SKILL.md"
+echo 'TALOS_COMMANDS+=(newcmd)' >> "$T10_SRC/scripts/pipeline-contract.sh"
 printf '#!/usr/bin/env bash\necho new\n' > "$T10_SRC/scripts/pipeline-newthing.sh"
 chmod +x "$T10_SRC/scripts/pipeline-newthing.sh"
 
@@ -307,5 +310,60 @@ assert_file_exists "$T10_HOME/.talos/scripts/pipeline-newthing.sh" \
 # Asserting the last skill line's output makes a missing fixture file fail here (#348).
 assert_file_exists "$T10_CLAUDE/skills/talos-resume/SKILL.md" \
   "the partial-source install ran through the skill lines (#348)"
+assert_file_exists "$T10_HOME/.talos/skills/newcmd/SKILL.md" \
+  "a new command in skills/ plus a manifest entry is installed to ~/.talos/skills/ with no install.sh edit (#363)"
+assert_file_exists "$T10_CLAUDE/skills/newcmd/SKILL.md" \
+  "a new command is installed to the Claude skills dir under its own name (#363)"
+
+# ── Test 11: playbooks land under ~/.talos/skills; ~/.claude copies unchanged ─
+# (#363) Every command in TALOS_COMMANDS is copied to <talos home>/skills/<command>/
+# SKILL.md. The Claude skills dir keeps what main wrote: pipeline/,
+# pipeline-setup/ and talos-resume/ (never resume/), each cmp-equal to its source.
+. "$TALOS_ROOT/scripts/pipeline-contract.sh"
+T11_HOME="$SANDBOX/t11-home"
+T11_CLAUDE="$SANDBOX/t11-claude"
+mkdir -p "$T11_HOME" "$T11_CLAUDE"
+t11_out="$(env -u TALOS_HOME HOME="$T11_HOME" CLAUDE_CONFIG_DIR="$T11_CLAUDE" \
+  bash "$TALOS_ROOT/install.sh" --global --no-agent-skills 2>&1)"
+assert_eq "0" "$?" "--global exits 0 with the command manifest (#363)"
+assert_contains "$t11_out" "$T11_HOME/.talos/skills" "the --global banner names ~/.talos/skills (#363)"
+
+for cmd in "${TALOS_COMMANDS[@]}"; do
+  assert_file_exists "$T11_HOME/.talos/skills/$cmd/SKILL.md" \
+    "--global installs $cmd to ~/.talos/skills/$cmd/SKILL.md (#363)"
+  cmp -s "$TALOS_ROOT/skills/$cmd/SKILL.md" "$T11_CLAUDE/skills/$(talos_claude_skill_name "$cmd")/SKILL.md" \
+    && pass "the Claude copy of $cmd is cmp-equal to its source (#363)" \
+    || fail "the Claude copy of $cmd is cmp-equal to its source (#363)"
+done
+skills_diff="$(diff -rq "$TALOS_ROOT/skills" "$T11_HOME/.talos/skills" 2>&1 || true)"
+[ -z "$skills_diff" ] && pass "~/.talos/skills matches repo skills/ structurally (#363)" \
+  || fail "~/.talos/skills matches repo skills/ structurally (#363)" "$skills_diff"
+assert_eq "pipeline
+pipeline-setup
+talos-resume" "$(ls "$T11_CLAUDE/skills")" \
+  "the Claude skills dir holds exactly pipeline, pipeline-setup, talos-resume (#363)"
+
+# TALOS_HOME redirects the copies.
+T11B_HOME="$SANDBOX/t11b-home"
+T11B_TALOS="$SANDBOX/t11b-talos"
+mkdir -p "$T11B_HOME"
+env HOME="$T11B_HOME" CLAUDE_CONFIG_DIR="$SANDBOX/t11b-claude" TALOS_HOME="$T11B_TALOS" \
+  bash "$TALOS_ROOT/install.sh" --global --no-agent-skills >/dev/null 2>&1
+skills_diff="$(diff -rq "$TALOS_ROOT/skills" "$T11B_TALOS/skills" 2>&1 || true)"
+[ -z "$skills_diff" ] && pass "TALOS_HOME=<dir> puts the playbooks in <dir>/skills (#363)" \
+  || fail "TALOS_HOME=<dir> puts the playbooks in <dir>/skills (#363)" "$skills_diff"
+assert_file_absent "$T11B_HOME/.talos" "TALOS_HOME=<dir> writes nothing to ~/.talos (#363)"
+
+# --no-overwrite keeps a local edit; the default re-run restores the source.
+echo "local edit" > "$T11_HOME/.talos/skills/pipeline/SKILL.md"
+env -u TALOS_HOME HOME="$T11_HOME" CLAUDE_CONFIG_DIR="$T11_CLAUDE" \
+  bash "$TALOS_ROOT/install.sh" --global --no-agent-skills --no-overwrite >/dev/null 2>&1
+assert_eq "local edit" "$(cat "$T11_HOME/.talos/skills/pipeline/SKILL.md")" \
+  "--no-overwrite leaves an edited ~/.talos/skills/pipeline/SKILL.md untouched (#363)"
+env -u TALOS_HOME HOME="$T11_HOME" CLAUDE_CONFIG_DIR="$T11_CLAUDE" \
+  bash "$TALOS_ROOT/install.sh" --global --no-agent-skills >/dev/null 2>&1
+cmp -s "$TALOS_ROOT/skills/pipeline/SKILL.md" "$T11_HOME/.talos/skills/pipeline/SKILL.md" \
+  && pass "the default re-run overwrites an edited ~/.talos/skills/pipeline/SKILL.md (#363)" \
+  || fail "the default re-run overwrites an edited ~/.talos/skills/pipeline/SKILL.md (#363)"
 
 finish
