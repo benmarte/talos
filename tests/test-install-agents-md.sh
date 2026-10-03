@@ -92,7 +92,10 @@ assert_file_absent "$R/GEMINI.md" "install.sh never creates GEMINI.md"
 # with no --harness. Every ~/.talos/skills path the block names must exist.
 case "$HOME" in "$SANDBOX"/*) ;; *) echo "refusing: HOME=$HOME is not the sandbox" >&2; exit 1 ;; esac
 rm -rf "$HOME/.talos" "$HOME/.claude"
-bash "$INSTALL" --global --no-agent-skills >/dev/null 2>&1
+# --harness codex: the outcome must not depend on whether the ambient PATH has
+# `claude` (#365), so the global call never creates ~/.claude.
+bash "$INSTALL" --global --no-agent-skills --harness codex >/dev/null 2>&1
+assert_file_absent "$HOME/.claude" "no ~/.claude is created by --global --harness codex"
 R="$(new_repo epic)"
 bash "$INSTALL" "$R" --no-agent-skills >/dev/null 2>&1
 paths="$(grep -o '~/\.talos/skills/[A-Za-z0-9_-]*/SKILL\.md' "$R/AGENTS.md")"
@@ -101,5 +104,6 @@ assert_eq "${#TALOS_COMMANDS[@]}" "$(printf '%s\n' "$paths" | grep -c .)" "the b
 for p in $paths; do
   assert_file_exists "$HOME/${p#\~/}" "named playbook exists after the documented install: $p"
 done
+assert_file_exists "$HOME/.talos/skills/pipeline/SKILL.md" "the block path exists although no ~/.claude was created"
 
 finish
