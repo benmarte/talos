@@ -97,7 +97,7 @@ echo "talos: scripts=<resolved scripts dir>  agents=$agent_source"
 
   The adapter finds the role definition itself — `$PWD/.claude/agents/<role>.md`, then `$PWD/.agents/talos/agents/<role>.md`, then the install's `agents/`, then its self-relative fallbacks, the same order as `--resolve-profile` — combines it with the stage prompt, and runs it through the CLI configured for that role (`pipeline-agent.sh` does the same per-role resolution above internally, so you never need to pass an override in). Everything else in this playbook is identical. Note: without native subagents, developer stages run sequentially in the working tree — set `issues.max_parallel: 1`.
 
-**Usage-reporting spawn form (#259):** on the native subagent path (`subagents: true`), spawn every stage — developer, QA, reviewer, security, validator, docs, adversarial, planner — with the Agent tool's background form (the same call shape the developer/QA stages already use: `isolation: "worktree"` for stages that need a writable checkout, the `run_in_background`/async form without a worktree for read-only stages) so its completion notification carries usage (`subagent_tokens`/`tool_uses`/`duration_ms`) — the Agent tool exposes no other async trigger, so `isolation: "worktree"` (or, for a role with no checkout, the bare background/async spawn) is the concrete parameter to set. Observed in this repo, 2026-09-09 (Claude Code, native path): a stage spawned via the Agent tool with `isolation: "worktree"` (developer, QA) returned a completion notification carrying usage; a stage spawned as a named agent with no isolation (reviewer, security, validator, docs) instead reported through a mailbox message with no usage at all — that gap, not a `post_stage` bug, is why `.talos/events.jsonl` shows real token counts for developer/QA and `null` for the rest (see `pipeline-events.sh cost`'s `unrecorded` column). On the adapter path (`subagents: false` + a non-`pi` runner, via `pipeline-agent.sh`) and pi inline mode, stages run synchronously with no completion notification at all — usage is not available there, and `tokens` is recorded as null; that is expected, not a bug.
+**Usage-reporting spawn form (#259):** on the native subagent path (`subagents: true`), spawn every stage — developer, QA, reviewer, security, validator, docs, adversarial, planner — with the Agent tool's background form (the same call shape the developer/QA stages already use: `isolation: "worktree"` for stages that need a writable checkout, the `run_in_background`/async form without a worktree for read-only stages) so its completion notification carries usage (`subagent_tokens`/`tool_uses`/`duration_ms`) — the Agent tool exposes no other async trigger, so `isolation: "worktree"` (or, for a role with no checkout, the bare background/async spawn) is the concrete parameter to set. Observed in this repo, 2026-09-09 (Claude Code, native path): a stage spawned via the Agent tool with `isolation: "worktree"` (developer, QA) returned a completion notification carrying usage; a stage spawned as a named agent with no isolation (reviewer, security, validator, docs) instead reported through a mailbox message with no usage at all — that gap, not a `post_stage` bug, is why `.talos/events.jsonl` shows real token counts for developer/QA and `null` for the rest (see `pipeline-events.sh cost`'s `unrecorded` column). On the adapter path (`subagents: false` + a non-`pi` runner, via `pipeline-agent.sh`) and pi inline mode, stages run synchronously with no completion notification at all — usage is not available there, and `tokens` is recorded as null; that is expected, not a bug. The Agent tool notification gives `subagent_tokens`, `tool_uses` and `duration_ms` only: no input/output split, no model, no dollar cost (UNVERIFIED beyond these observed fields); adapter and pi-inline runs show as unrecorded in `cost`.
 
 **`hooks.pre_dispatch` (#181):** before building ANY stage's prompt below — every "spawn a subagent" / "spawn" step, on every harness path — run `bash scripts/pipeline-hooks.sh pre_dispatch <role> <N> <PR> <worktree>` (role name; issue number; PR number if one exists yet, else omit it; worktree path if one exists yet, else omit it). This is always safe and never worth waiting on: disabled by default (empty `hooks.pre_dispatch` config), and any failure, timeout (`hooks.timeout_s`), or empty output is a silent no-op on its own, with a one-line stderr note — you never branch on it. If it prints anything, paste that output verbatim at the very top of the prompt you are about to send (before the role body on the adapter path, before the stage-specific instructions on the native path) — it already carries its own `## Context` / `---` framing, so add nothing else around it. This one rule covers every stage; it is not restated per stage below except as a one-line reminder on the developer and QA blocks.
 
@@ -174,6 +174,7 @@ Store these for the run:
   false` none of the status steps run: every status instruction below says
   "`STATUS_ENABLED = true`" and is skipped otherwise.
 - COMMENTS_ENABLED, COMMENTS_HEADER_TPL, COMMENTS_TMPL_DIR
+- SPEND_COMMENT (`spend.comment`, default `true`, #334) — `false` skips the PR spend comment (Rule 3 spend block); `limits.tokens_per_issue` is read by `pipeline-budget.sh` itself
 - AGENTS_RUNNER (`agents.runner`, default `claude`), AGENTS_SUBAGENTS (`agents.subagents`, default `auto`) — select the harness execution mode (see Harness compatibility)
 - FILE_SOURCE_PATH (`vcs.file.source.path`, for file mode)
 - ISOLATION (`execution.isolation`, default `worktree`) — how each stage gets its working copy; validated immediately after config is read
@@ -371,9 +372,20 @@ The summary is subagent-authored text, so it goes in as data and never inside do
 
 The `<role>` argument is the exact role name (validator / pm / developer / qa / reviewer / security / docs / orchestrator). `pipeline-notify.sh` uses `templates/notifications/<role>.md` to render the message; if that template exists it controls the format, otherwise the summary is posted verbatim. This relay call is separate from lifecycle events (pr-opened, merged, blocked, issue-closed) — both are sent when applicable.
 
-**Rule 3 — Post-stage hook (always, #182):** After every role relay (`pipeline-notify.sh <role> ...`) and every lifecycle event (pr-opened, merged, blocked, issue-closed), also run `bash scripts/pipeline-hooks.sh post_stage <event> <role> <N> [--pr] [--sha] [--verdict] [--summary] [--attempt ...]` — this is what lets an external tool (metrics, cost tracking, a project memory) subscribe to every structured outcome the moment it's known. When the harness completion notification carries usage (subagent_tokens, tool_uses, duration_ms), pass them as `--tokens`, `--tool-uses`, `--duration-s` (ms/1000, integer). Per the Usage-reporting spawn form above: on the native path, a completion without usage is a playbook bug — note it in the run summary rather than passing `--tokens 0`; on the adapter/pi-inline paths it is expected, so omit `--tokens`/`--tool-uses` there without comment. Disabled by default (empty `hooks.post_stage`); a failure, timeout, or missing config is a silent no-op with one stderr line, same as `hooks.pre_dispatch` — never worth waiting on or branching on. Example, right after the QA PASS relay:
+**Rule 3 — Post-stage hook (always, #182):** After every role relay (`pipeline-notify.sh <role> ...`) and every lifecycle event (pr-opened, merged, blocked, issue-closed), also run `bash scripts/pipeline-hooks.sh post_stage <event> <role> <N> [--pr] [--sha] [--verdict] [--summary] [--attempt ...] [--model]` — this is what lets an external tool (metrics, cost tracking, a project memory) subscribe to every structured outcome the moment it's known. When the harness completion notification carries usage (subagent_tokens, tool_uses, duration_ms), pass them as `--tokens`, `--tool-uses`, `--duration-s` (ms/1000, integer). Per the Usage-reporting spawn form above: on the native path, a completion without usage is a playbook bug — note it in the run summary rather than passing `--tokens 0`; on the adapter/pi-inline paths it is expected, so omit `--tokens`/`--tool-uses` there without comment. Disabled by default (empty `hooks.post_stage`); a failure, timeout, or missing config is a silent no-op with one stderr line, same as `hooks.pre_dispatch` — never worth waiting on or branching on. Example, right after the QA PASS relay:
 `bash scripts/pipeline-notify.sh qa "#42" "PASS: 3 criteria verified" 42`
 `bash scripts/pipeline-hooks.sh post_stage qa qa 42 --pr 57 --verdict PASS --summary "3 criteria verified"`
+
+**Spend block (#334):** pass `--model "<value passed as `model:` to the spawn>"` to `post_stage`, omitting the flag when the spawn had no model. In the same Bash call, right after each role-relay `post_stage` and after `post_stage merged` (not after `pr-opened`, `blocked`, `issue-closed`, `merge-base` or `budget-blocked`: no new tokens), run the block below. Before a PR exists, run only the `--line` command, without `--pr`. The rest runs only when a PR exists, `COMMENTS_ENABLED` is true and `SPEND_COMMENT` is not `false`. Capture the body first and upsert only when it is non-empty (never pipe `cost` straight into the upsert: an empty body makes it exit 1):
+```bash
+bash scripts/pipeline-events.sh cost --issue <N> --pr <M> --line
+SPEND_BODY="$(bash scripts/pipeline-events.sh cost --issue <N> --pr <M> --markdown)"
+if [ -n "$SPEND_BODY" ]; then SRC=0
+  OUT="$(printf '%s' "$SPEND_BODY" | bash scripts/pipeline-vcs.sh upsert-pr-comment <M> --marker spend --body-file -)" || SRC=$?
+  echo "spend-upsert rc=$SRC $(printf '%s\n' "$OUT" | tail -1)"
+fi
+```
+Print the `--line` output as is and read only the one `spend-upsert` line, never the comment body. `rc=2` (non-GitHub provider) is silent. `rc=1` (e.g. an Actions `GITHUB_TOKEN` cannot post as itself) adds ONE line to the Step 5 summary per run, is never retried and never blocks.
 
 **Example thread for issue #42:**
 ```
@@ -553,6 +565,12 @@ Two ceilings apply (both checked atomically by record-attempt):
 When `record-attempt` exits non-zero (either ceiling reached): set `pipeline:blocked`, post blocked.md with BLOCKED_BY="talos.pipeline.yml:limits.max_fix_attempts or limits.max_total_dispatches (explicit)" — whichever ceiling `record-attempt` reported — move on.  Do NOT re-dispatch the developer.
 
 **Clearing `pipeline:blocked` (#310):** only the orchestrator clears `pipeline:blocked` — no stage role removes it, because reviewer and security run in parallel and one role's approval would otherwise erase the other's block. When `record-attempt` exits 0, clear it right before re-dispatching the developer fix round: `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --remove pipeline:blocked` (skip when no PR exists yet) and `bash scripts/pipeline-vcs.sh label-issue <N> --remove pipeline:blocked`. The stages that re-run after that fix round start unblocked, and any block they set stays until the next fix round. Never clear a block that no fix round follows (a ceiling, forbidden-files, or closing-keyword block) — that one waits for a human.
+
+**Budget stop (#334, opt-in):** right before the `record-attempt` of every developer fix round (the merge-base task, the draft fix round, the QA, reviewer, security and adversarial rounds; never first-pass stages, re-stamps, merges or a block with no fix round), run the guard with its exit code captured, because exit 1 is the signal and must not abort the stage:
+```bash
+rc=0; out="$(bash scripts/pipeline-budget.sh check --issue <N>)" || rc=$?
+```
+Exit 0: proceed to `record-attempt`, relaying `$out` first when it is a `talos:budget warn` line. Exit 1 (exceeded): run no `record-attempt` and no fix round; set `pipeline:blocked` on the PR and the issue, relay the `talos:budget` line, run `bash scripts/pipeline-hooks.sh post_stage budget-blocked orchestrator <N> --pr <M> --summary "$out"` (the line captured above, in the same Bash call) once per stop, then mark needs-owner when `STATUS_ENABLED = true` (Rule 20), else post blocked.md with BLOCKED_BY="talos.pipeline.yml:limits.tokens_per_issue (explicit)". The owner resumes by removing `pipeline:blocked` (each block grants one more limit) or raising `limits.tokens_per_issue`. Any other exit: proceed and note it in the Step 5 summary. With `limits.tokens_per_issue` unset the check prints nothing and exits 0, so the fix-round flow is unchanged.
 
 **Idempotency limit:** `--pr` dedupes any retry at the same PR head, even across a fresh orchestrator process — it cannot distinguish two genuinely separate attempts that happen to land while the PR head is unchanged (e.g. two ambiguous-failure retries of the same stage before a new commit lands), which is treated as one attempt by design. Issue-side stages called with no key (no PR yet) are not deduped at all. That gap is by design, not a bug to chase; see README.md.
 
@@ -887,8 +905,8 @@ After developer returns:
        `git checkout`/`git fetch`/`git merge`/commit/push here — rule 15
        reserves moving HEAD in the orchestrator's checkout for the developer
        stage, and the orchestrator is not the developer stage. Instead,
-       ALWAYS record the attempt and dispatch a worktree-isolated developer
-       "merge base" task, exactly like any other developer re-dispatch:
+       ALWAYS run the Step 3 budget check ("Budget stop"), record the attempt
+       and dispatch a worktree-isolated developer "merge base" task, exactly like any other developer re-dispatch:
        `bash scripts/pipeline-vcs.sh record-attempt <N> developer --pr
        <PR>`; exit non-zero (ceiling reached) → board "Blocked", stop. On
        success, spawn the developer with `isolation: "worktree"` (same
@@ -942,8 +960,8 @@ every Step 4 merge gate are unchanged.
    a single role's verdict.
 4. **Developer — ONE fix round for every finding.** When any role returned
    CHANGES or FINDINGS, collect the findings of ALL of them into one developer
-   dispatch (Step 3c, fix-round shape). Call `record-attempt` once for that
-   dispatch, naming the first blocking role in the order reviewer, security,
+   dispatch (Step 3c, fix-round shape). Budget check first (Step 3, "Budget stop").
+   Call `record-attempt` once for that dispatch, naming the first blocking role in the order reviewer, security,
    adversarial: `bash scripts/pipeline-vcs.sh record-attempt <N> <that-role> --pr
    <PR_NUMBER>` (non-zero: board "Blocked", stop), then clear `pipeline:blocked`
    (Step 3). After the push, the re-stamps review only the delta: run the
@@ -987,8 +1005,8 @@ failed for #<N>`). Without it, a `qa:pass` earned before a Step 4 CI failure sta
 on the PR, goes stale when the fix moves the head, makes step 5's `check-approval-sha
 --stale-list` exit 1, and QA cannot re-stamp it on a draft: the PR could never reach
 `ready-pr`. QA then runs in full on the ready PR (step 6, `qa:pass` absent), so no
-verification is skipped. Then `record-attempt <N> qa --pr <PR_NUMBER>`, clear
-`pipeline:blocked`, one developer fix round, the re-stamps on the delta (step 4),
+verification is skipped. Then run the budget check (Step 3, "Budget stop") first,
+then `record-attempt <N> qa --pr <PR_NUMBER>`, clear `pipeline:blocked`, one developer fix round, the re-stamps on the delta (step 4),
 and `ready-pr` (step 5) again. A round costs exactly one CI run however many
 commits the fix took.
 
@@ -1080,7 +1098,7 @@ After QA returns:
 - **Fail:**
   1. Relay findings: `bash scripts/pipeline-notify.sh qa "#<N>" - <N>` (stdin: `<FAIL: failing criterion + repro>`)
   2. Lifecycle event: `bash scripts/pipeline-notify.sh blocked "#<N>" - <N>` (stdin: `QA failed: <criterion>`)
-  3. Record attempt and check ceilings (PR already exists, so pass --pr as in Step 3):
+  3. Run the Step 3 budget check ("Budget stop"), then record attempt and check ceilings (PR already exists, so pass --pr as in Step 3):
      ```bash
      bash scripts/pipeline-vcs.sh record-attempt <N> qa --pr <PR_NUMBER>
      ```
@@ -1315,7 +1333,7 @@ After reviewer and security complete (phase 2):
 
 **Reviewer returned:**
 - Approved: `bash scripts/pipeline-notify.sh reviewer "#<N>" - <N>` (stdin: `<subagent's 2-3 line outcome, including the top 1-2 human-attention report items (#294)>`)
-- Changes needed: `bash scripts/pipeline-notify.sh reviewer "#<N>" - <N>` (stdin: `CHANGES: <findings>`) then `bash scripts/pipeline-notify.sh blocked "#<N>" "reviewer: changes required" <N>`; record attempt (PR already exists, so pass --pr as in Step 3):
+- Changes needed: `bash scripts/pipeline-notify.sh reviewer "#<N>" - <N>` (stdin: `CHANGES: <findings>`) then `bash scripts/pipeline-notify.sh blocked "#<N>" "reviewer: changes required" <N>`; run the Step 3 budget check ("Budget stop"), then record attempt (PR already exists, so pass --pr as in Step 3):
   ```bash
   bash scripts/pipeline-vcs.sh record-attempt <N> reviewer --pr <PR_NUMBER>
   ```
@@ -1323,7 +1341,7 @@ After reviewer and security complete (phase 2):
 
 **Security returned:**
 - Clear: `bash scripts/pipeline-notify.sh security "#<N>" - <N>` (stdin: `<subagent's 2-3 line outcome>`)
-- Findings: `bash scripts/pipeline-notify.sh security "#<N>" - <N>` (stdin: `FINDINGS: <severity + fix>`) then `bash scripts/pipeline-notify.sh blocked "#<N>" "security: findings in PR #<PR_NUMBER>" <N>`; record attempt (PR already exists, so pass --pr as in Step 3):
+- Findings: `bash scripts/pipeline-notify.sh security "#<N>" - <N>` (stdin: `FINDINGS: <severity + fix>`) then `bash scripts/pipeline-notify.sh blocked "#<N>" "security: findings in PR #<PR_NUMBER>" <N>`; run the Step 3 budget check ("Budget stop"), then record attempt (PR already exists, so pass --pr as in Step 3):
   ```bash
   bash scripts/pipeline-vcs.sh record-attempt <N> security --pr <PR_NUMBER>
   ```
@@ -1366,7 +1384,7 @@ After adversarial completes:
 
 **Adversarial returned:**
 - Clear: `bash scripts/pipeline-notify.sh adversarial "#<N>" - <N>` (stdin: `<subagent's 2-3 line outcome>`)
-- Findings: `bash scripts/pipeline-notify.sh adversarial "#<N>" - <N>` (stdin: `FINDINGS: <count + summary>`) then `bash scripts/pipeline-notify.sh blocked "#<N>" "adversarial: findings in PR #<PR_NUMBER>" <N>`; record attempt (PR already exists, so pass --pr as in Step 3):
+- Findings: `bash scripts/pipeline-notify.sh adversarial "#<N>" - <N>` (stdin: `FINDINGS: <count + summary>`) then `bash scripts/pipeline-notify.sh blocked "#<N>" "adversarial: findings in PR #<PR_NUMBER>" <N>`; run the Step 3 budget check ("Budget stop"), then record attempt (PR already exists, so pass --pr as in Step 3):
   ```bash
   bash scripts/pipeline-vcs.sh record-attempt <N> adversarial --pr <PR_NUMBER>
   ```
@@ -1601,7 +1619,7 @@ After merging:
    the branch is already deleted and it would exit 2. No captured value (it exited
    2, human-merge mode, or a merged-but-open heal) → omit the flag; never guess.
 <!-- pr-draft:end -->
-8. Rule 3: also fire `hooks.post_stage` for both lifecycle events above (`merged` and `issue-closed`) — see Conversation stream protocol.
+8. Rule 3: also fire `hooks.post_stage` for both lifecycle events above (`merged` and `issue-closed`) — see Conversation stream protocol. Then run the Rule 3 spend block once, after `post_stage merged`, to refresh the PR spend comment.
 
 ---
 
@@ -1621,7 +1639,7 @@ After processing all issues, print a summary table:
 A PR skipped because it carries `pipeline:blocked` (on the PR or its issue) is `blocked`, not `in-flight` — give its PR number and the block reason. `in-flight` is only for a PR that is still moving (waiting on CI, a stage, or a human merge after `pipeline:approved`).
 
 3. **Unlinked folded work (azure only).** On `vcs.provider: azure` a work item closes natively only when it is **linked** to the PR that ships it (`create-pr` links the `issue-<N>` branch's item). List every issue this run whose code shipped inside another issue's PR (stacked or folded commits) without being linked to that PR, one row each, as `#N — unlinked — will not close natively (shipped in PR #M)`, so a human can link or close it. Do not auto-link `Depends on` items.
-4. **Cost column.** After the outcome table, print `bash scripts/pipeline-events.sh cost` output scoped to the issues processed in this run (loop `--issue N` per issue, or run it unscoped and read only the matching rows) — a compact per-issue, per-role tokens / tool uses / duration_s table, so a run's spend is visible without hand-tallying harness notifications (#202).
+4. **Cost column.** After the outcome table, print the output of ONE call, `bash scripts/pipeline-events.sh cost --summary --issue <N> [--issue <M> ...]`, with one `--issue` for each issue processed in this run, so a run's spend is visible without hand-tallying harness notifications (#202). Then add ONE line when any spend-block upsert reported `rc=1`, and any budget-check note from Step 3.
 5. **Status resume block (`STATUS_ENABLED = true`, #333).** `bash scripts/pipeline-status-file.sh refresh`, once, at the end of every run (not inside per-stage loops: each call costs 3+N to 3+4N `pipeline-vcs.sh` calls). On exit 1 or its 120 s read deadline (`TALOS_STATUS_READ_DEADLINE`) put `status resume block not refreshed: <reason>` in the summary; this does not fail the run. Then fast-forward the orchestrator's checkout (Rule 21).
 
 ---
@@ -1642,7 +1660,7 @@ A PR skipped because it carries `pipeline:blocked` (on the PR or its issue) is `
 10. Notification failures never block the pipeline (pipeline-notify.sh always exits 0).
     Always pass the issue number as the 4th arg: `pipeline-notify.sh <event> "#<N>" - <N>` (message on stdin, Rule 2)
 11. Board update failures are warnings — the pipeline continues.
-12. Attempt counting is durable and enforced by `record-attempt`: call `bash scripts/pipeline-vcs.sh record-attempt <N> <stage> --pr <PR_NUMBER>` (or, before a PR exists, with no key at all) before each developer re-dispatch, exactly as in Step 3.  When it exits non-zero (either `max_fix_attempts` consecutive same-stage failures OR `max_total_dispatches` total dispatches reached): set `pipeline:blocked`, notify, move on.  Never count attempts in orchestrator memory — the helper is the source of truth.
+12. Attempt counting is durable and enforced by `record-attempt`: call `bash scripts/pipeline-vcs.sh record-attempt <N> <stage> --pr <PR_NUMBER>` (or, before a PR exists, with no key at all) before each developer re-dispatch (after the Step 3 budget check), exactly as in Step 3.  When it exits non-zero (either `max_fix_attempts` consecutive same-stage failures OR `max_total_dispatches` total dispatches reached): set `pipeline:blocked`, notify, move on.  Never count attempts in orchestrator memory — the helper is the source of truth.
 13. In file mode: skip board calls, skip QA/reviewer/security/docs, developer commits to branch directly.
 14. Never merge a PR that fails `check-pr-files` — secret-like files require a human; `skip-qa` does not waive this gate (nor CI).
 15. Only the developer stage may move HEAD in the orchestrator's checkout (the orchestrator itself only fast-forwards it, Rule 21). All other stages (reviewer, security, docs, QA, validator, PM) must never run `git checkout`, `git switch`, or `git pull` in their working directory — read diffs via `diff-pr` only. This holds regardless of `execution.isolation` mode.
@@ -1650,5 +1668,5 @@ A PR skipped because it carries `pipeline:blocked` (on the PR or its issue) is `
 17. Run all long-running work in the **foreground** — never append `&`, use `nohup`, or call `disown`. Do not poll for child exit with `until ! pgrep …; do sleep N; done`. The reason: when a stranded background child finally exits, the harness interprets its exit as a new completion event; those duplicates are indistinguishable from real completions on arrival (observed: 210 stranded shells at peak, one agent emitting 5 spurious "task finished" signals 90 minutes after finishing, two agents stopped by hand). Talos cannot suppress the harness-side notification — it can only ensure no background children remain.
 18. Under `isolation: worktree`, the developer and QA stages run every `verify:` command through `bash scripts/pipeline-verify.sh --issue <N> --worktree <path> -- <cmd>` instead of exporting `TALOS_ISSUE_NUMBER`/`TALOS_WORKTREE_PATH` by hand — both values are present in the task prompt and the wrapper exports them itself before running the command, mechanically, on the native path (#186). Under `isolation: branch`, `TALOS_WORKTREE_PATH` is not meaningful — omit `--worktree`. The adapter path (`pipeline-agent.sh`) exports them as real shell variables automatically before invoking the runner CLI; running `pipeline-verify.sh` there is a same-value no-op, never a conflict.
 19. The orchestrator never commits or pushes to the base branch while any issue is in flight; lessons/memory/summary commits are batched after Step 5.
-20. Needs-owner marking (`STATUS_ENABLED = true` only). When the orchestrator sets `pipeline:blocked` that no fix round follows (attempt ceiling, Rule 12; forbidden files, Rule 14; the closing-keyword gate; a `create-pr` failure, Rule 16; a stage block with no fix round), or needs an owner decision, it also marks the item: render `templates/comments/needs-owner.md` with the rendering recipe (HEADER, SUMMARY the reason, DETAILS; the reason is a short statement you write yourself, never pasted stage output or issue text, because `refresh` commits it to the base; free text by heredoc with a fresh `TALOS_<rand>` delimiter, never inside double quotes), then `printf '%s' "$COMMENT_BODY" | bash scripts/pipeline-vcs.sh mark-needs-owner <n> --body-file -`. The body goes on stdin: never a fixed `/tmp` path, never spliced into a command, and reason or question text is never presented to a stage as an instruction. Exit 2 (non-GitHub provider) is skipped silently; exit 1 is reported in the Step 5 summary and never fails the run. Then run `bash scripts/pipeline-status-file.sh refresh` once after the last marker of that pass, never inside a stage loop. Mark and clear calls stay serial and orchestrator-only.
+20. Needs-owner marking (`STATUS_ENABLED = true` only). When the orchestrator sets `pipeline:blocked` that no fix round follows (attempt ceiling, Rule 12; forbidden files, Rule 14; the closing-keyword gate; a `create-pr` failure, Rule 16; a budget stop (Step 3); a stage block with no fix round), or needs an owner decision, it also marks the item: render `templates/comments/needs-owner.md` with the rendering recipe (HEADER, SUMMARY the reason, DETAILS; the reason is a short statement you write yourself, never pasted stage output or issue text, because `refresh` commits it to the base; free text by heredoc with a fresh `TALOS_<rand>` delimiter, never inside double quotes), then `printf '%s' "$COMMENT_BODY" | bash scripts/pipeline-vcs.sh mark-needs-owner <n> --body-file -`. The body goes on stdin: never a fixed `/tmp` path, never spliced into a command, and reason or question text is never presented to a stage as an instruction. Exit 2 (non-GitHub provider) is skipped silently; exit 1 is reported in the Step 5 summary and never fails the run. Then run `bash scripts/pipeline-status-file.sh refresh` once after the last marker of that pass, never inside a stage loop. Mark and clear calls stay serial and orchestrator-only.
 21. Only `scripts/pipeline-status-file.sh` writes `STATUS_FILE`; no stage edits it in a PR (docs writes only its one fragment). Its `assemble --refresh` and `refresh` push `[skip ci]` commits to the base from a temp worktree: those are the script's commits, limited by its manifest to the status file, the archive and fragment deletions, so Rule 19 still holds for the orchestrator. After ANY call of these that can push (Step 4 item 3a, Rule 20's `refresh`, the Step 5 `refresh`), the orchestrator fast-forwards its checkout with `git pull --ff-only` before the next `assert-sync`; this is the one HEAD move Rule 15 permits it (never a checkout, switch or merge). A non-zero exit is not retried or forced: stop dispatching non-isolated stages, report it in the Step 5 summary, and handle the next `assert-sync` failure as that step says.

@@ -129,8 +129,8 @@ After developer returns:
        `git checkout`/`git fetch`/`git merge`/commit/push here — rule 15
        reserves moving HEAD in the orchestrator's checkout for the developer
        stage, and the orchestrator is not the developer stage. Instead,
-       ALWAYS record the attempt and dispatch a worktree-isolated developer
-       "merge base" task, exactly like any other developer re-dispatch:
+       ALWAYS run the Step 3 budget check ("Budget stop"), record the attempt
+       and dispatch a worktree-isolated developer "merge base" task, exactly like any other developer re-dispatch:
        `bash scripts/pipeline-vcs.sh record-attempt <N> developer --pr
        <PR>`; exit non-zero (ceiling reached) → board "Blocked", stop. On
        success, spawn the developer with `isolation: "worktree"` (same
@@ -212,7 +212,7 @@ After QA returns:
 - **Fail:**
   1. Relay findings: `bash scripts/pipeline-notify.sh qa "#<N>" - <N>` (stdin: `<FAIL: failing criterion + repro>`)
   2. Lifecycle event: `bash scripts/pipeline-notify.sh blocked "#<N>" - <N>` (stdin: `QA failed: <criterion>`)
-  3. Record attempt and check ceilings (PR already exists, so pass --pr as in Step 3):
+  3. Run the Step 3 budget check ("Budget stop"), then record attempt and check ceilings (PR already exists, so pass --pr as in Step 3):
      ```bash
      bash scripts/pipeline-vcs.sh record-attempt <N> qa --pr <PR_NUMBER>
      ```
@@ -423,7 +423,7 @@ After reviewer and security complete (phase 2):
 
 **Reviewer returned:**
 - Approved: `bash scripts/pipeline-notify.sh reviewer "#<N>" - <N>` (stdin: `<subagent's 2-3 line outcome, including the top 1-2 human-attention report items (#294)>`)
-- Changes needed: `bash scripts/pipeline-notify.sh reviewer "#<N>" - <N>` (stdin: `CHANGES: <findings>`) then `bash scripts/pipeline-notify.sh blocked "#<N>" "reviewer: changes required" <N>`; record attempt (PR already exists, so pass --pr as in Step 3):
+- Changes needed: `bash scripts/pipeline-notify.sh reviewer "#<N>" - <N>` (stdin: `CHANGES: <findings>`) then `bash scripts/pipeline-notify.sh blocked "#<N>" "reviewer: changes required" <N>`; run the Step 3 budget check ("Budget stop"), then record attempt (PR already exists, so pass --pr as in Step 3):
   ```bash
   bash scripts/pipeline-vcs.sh record-attempt <N> reviewer --pr <PR_NUMBER>
   ```
@@ -431,7 +431,7 @@ After reviewer and security complete (phase 2):
 
 **Security returned:**
 - Clear: `bash scripts/pipeline-notify.sh security "#<N>" - <N>` (stdin: `<subagent's 2-3 line outcome>`)
-- Findings: `bash scripts/pipeline-notify.sh security "#<N>" - <N>` (stdin: `FINDINGS: <severity + fix>`) then `bash scripts/pipeline-notify.sh blocked "#<N>" "security: findings in PR #<PR_NUMBER>" <N>`; record attempt (PR already exists, so pass --pr as in Step 3):
+- Findings: `bash scripts/pipeline-notify.sh security "#<N>" - <N>` (stdin: `FINDINGS: <severity + fix>`) then `bash scripts/pipeline-notify.sh blocked "#<N>" "security: findings in PR #<PR_NUMBER>" <N>`; run the Step 3 budget check ("Budget stop"), then record attempt (PR already exists, so pass --pr as in Step 3):
   ```bash
   bash scripts/pipeline-vcs.sh record-attempt <N> security --pr <PR_NUMBER>
   ```
@@ -474,7 +474,7 @@ After adversarial completes:
 
 **Adversarial returned:**
 - Clear: `bash scripts/pipeline-notify.sh adversarial "#<N>" - <N>` (stdin: `<subagent's 2-3 line outcome>`)
-- Findings: `bash scripts/pipeline-notify.sh adversarial "#<N>" - <N>` (stdin: `FINDINGS: <count + summary>`) then `bash scripts/pipeline-notify.sh blocked "#<N>" "adversarial: findings in PR #<PR_NUMBER>" <N>`; record attempt (PR already exists, so pass --pr as in Step 3):
+- Findings: `bash scripts/pipeline-notify.sh adversarial "#<N>" - <N>` (stdin: `FINDINGS: <count + summary>`) then `bash scripts/pipeline-notify.sh blocked "#<N>" "adversarial: findings in PR #<PR_NUMBER>" <N>`; run the Step 3 budget check ("Budget stop"), then record attempt (PR already exists, so pass --pr as in Step 3):
   ```bash
   bash scripts/pipeline-vcs.sh record-attempt <N> adversarial --pr <PR_NUMBER>
   ```
@@ -668,7 +668,7 @@ After merging:
 5. Relay: `bash scripts/pipeline-notify.sh orchestrator "#<N>" "all stages passed — merged PR #<PR_NUMBER>, issue closed" <N>`
 6. Lifecycle: `bash scripts/pipeline-notify.sh merged "#<N>" "PR #<PR_NUMBER> merged" <N>`
 7. Lifecycle: `bash scripts/pipeline-notify.sh issue-closed "#<N>" "issue resolved" <N>`
-8. Rule 3: also fire `hooks.post_stage` for both lifecycle events above (`merged` and `issue-closed`) — see Conversation stream protocol.
+8. Rule 3: also fire `hooks.post_stage` for both lifecycle events above (`merged` and `issue-closed`) — see Conversation stream protocol. Then run the Rule 3 spend block once, after `post_stage merged`, to refresh the PR spend comment.
 
 ---
 
