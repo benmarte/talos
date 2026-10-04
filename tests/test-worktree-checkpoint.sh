@@ -424,9 +424,12 @@ assert_contains "$DRIFT" "caught slack-webhook" "drift: a Slack webhook URL with
 assert_contains "$DRIFT" "caught nostr-nsec" "drift: a short nsec1 value is caught"
 
 # ── Prose pins ───────────────────────────────────────────────────────────────
-PIPE="$(cat "$TALOS_ROOT/skills/pipeline/SKILL.md")"
-assert_contains "$PIPE" 'only when `bash scripts/pipeline-worktree.sh handoff <N>` exits 0' "pipeline skill: the handoff line is conditional on the verb's exit 0"
-assert_contains "$PIPE" 'git diff origin/<BASE_BRANCH>...' "pipeline skill: the handoff line names the branch diff"
+# The handoff line moved from the playbook into `talos.sh prompt` (#468); the verb runs
+# only on the exit status (output discarded) and tests/test-talos-prompt.sh renders both cases.
+PIPE="$(cat "$TALOS_ROOT/scripts/talos.sh")"
+assert_contains "$PIPE" 'if bash "$SCRIPT_DIR/pipeline-worktree.sh" handoff "$_issue" > /dev/null 2>&1; then' "prompt verb: the handoff line is conditional on the handoff verb's exit 0, its output discarded"
+assert_contains "$PIPE" 'git diff origin/$_base...' "prompt verb: the handoff line names the branch diff"
+assert_contains "$(cat "$TALOS_ROOT/skills/pipeline/SKILL.md")" 'the Handoff line when `pipeline-worktree.sh handoff <N>` exits 0' "pipeline skill: names the conditional handoff line"
 DEV="$(cat "$TALOS_ROOT/agents/developer.md")"
 assert_contains "$DEV" 'bash scripts/pipeline-worktree.sh checkpoint <N>' "developer profile: names the checkpoint verb"
 assert_contains "$DEV" '--local' "developer profile: --local in a fix round"

@@ -31,8 +31,17 @@ assert_contains "$restamp_block_flat" "check-approval-sha" \
   "Step 3e re-stamp block references check-approval-sha"
 assert_contains "$restamp_block_flat" "--stale-list" \
   "Step 3e re-stamp block references --stale-list"
-assert_contains "$restamp_block_flat" "--for" \
-  "Step 3e re-stamp block references --for (targeted tests)"
+# The delta-only instruction moved into templates/prompts/restamp.md (#468): the
+# playbook calls `talos.sh prompt ... --shape restamp`, the template carries the rest.
+restamp_tmpl_flat="$(tr '\n' ' ' < "$TALOS_ROOT/templates/prompts/restamp.md" | tr -s ' ')"
+assert_contains "$restamp_block_flat" "--shape restamp" \
+  "Step 3e re-stamp block renders the prompt with --shape restamp"
+assert_contains "$restamp_tmpl_flat" "--for" \
+  "re-stamp prompt template references --for (targeted tests)"
+assert_contains "$restamp_tmpl_flat" "--strict" \
+  "re-stamp prompt template runs targeted tests with --strict"
+assert_contains "$restamp_tmpl_flat" "Review only the delta since your prior approval" \
+  "re-stamp prompt template: delta-only review"
 assert_contains "$restamp_block_flat" "diff-pr" \
   "Step 3e re-stamp block references diff-pr --stat"
 assert_contains "$restamp_block_flat" "agents.restamp_model" \
@@ -41,8 +50,8 @@ assert_contains "$restamp_block_flat" "agents.roles.<role>.restamp_model" \
   "Step 3e re-stamp block references the per-role restamp_model override"
 assert_contains "$restamp_block_flat" "**Agent:** <role> (talos) — re-stamp" \
   "Step 3e re-stamp block states the re-stamp comment header format"
-assert_contains "$restamp_block_flat" "post-approval" \
-  "Step 3e re-stamp block instructs post-approval when the verdict is unchanged"
+assert_contains "$restamp_tmpl_flat" "post-approval {{PR}} {{ROLE}}" \
+  "re-stamp prompt template instructs post-approval when the verdict is unchanged"
 assert_contains "$restamp_block_flat" "RESTAMP_PASS" \
   "Step 3e re-stamp block names the RESTAMP_PASS verdict"
 assert_contains "$restamp_block_flat" "RESTAMP_FAIL" \

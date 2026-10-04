@@ -282,6 +282,17 @@ install_talos_vendored() {
 talos_env_key() { awk -F'\t' -v v="$1" '$1 == v && NF == 3 { print $2 }' "$TALOS_ROOT/scripts/talos.sh"; }
 # talos_env_default VAR -- VAR's value in the no-config golden of `talos.sh env`.
 talos_env_default() { sed -n "s/^$1=//p" "$TALOS_ROOT/tests/fixtures/talos-env-default.golden"; }
+# talos_prompt_text ARGS... -- the stage prompt `scripts/talos.sh prompt ARGS...`
+# renders (#468), on stdout, its file removed. Config comes from the cwd (the
+# sandbox); a stop line makes it fail with that line on stdout.
+talos_prompt_text() {
+  local _tpt_out _tpt_file
+  _tpt_out="$(bash "$TALOS_ROOT/scripts/talos.sh" prompt "$@")" || { printf '%s\n' "$_tpt_out"; return 1; }
+  _tpt_file="${_tpt_out#prompt_file=}"
+  [ -f "$_tpt_file" ] || return 1
+  cat "$_tpt_file"
+  rm -f "${_tpt_file:?}"
+}
 
 # finish — print summary for this file and exit non-zero on any failure.
 finish() {

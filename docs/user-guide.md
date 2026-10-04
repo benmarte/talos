@@ -941,8 +941,8 @@ for the same suite run more than it needs to:
   resulting selection is empty, the run exits 3 with `no targeted tests
   selected` rather than running anything — QA reports that in its verdict
   and relies on CI instead of running the full suite. This is stated
-  explicitly in both `skills/pipeline/SKILL.md`'s Step 3d prompt and
-  `agents/qa.md`, closing a gap where the orchestrator's stage prompt asked
+  explicitly in both the QA prompt template (`templates/prompts/qa.md`, rendered
+  by `scripts/talos.sh prompt`) and `agents/qa.md`, closing a gap where the orchestrator's stage prompt asked
   for verify commands generically and every QA dispatch ran the full suite
   anyway.
 - **QA** (`verify.qa_mode`, default `ci` when `merge.required_checks` is

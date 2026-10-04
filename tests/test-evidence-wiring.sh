@@ -337,13 +337,13 @@ case "$(ev_text "$SKILL" | grep 'qa-evidence.md' | head -n 1)" in
   *) fail "SKILL.md: the append sits in the EVIDENCE_ENABLED block" ;;
 esac
 assert_eq "" "$(ev_text "$SKILL" | grep -E '`(Skill|Agent|Task|Read)` tool|\bSkill tool\b|Agent tool')" "SKILL.md: no Claude-only tool is named in an evidence block"
-# the evidence blocks come after the prompt fences they extend, so no marker is ever sent to a subagent
-for pat in 'Final message (2-3 lines): PASS/FAIL' 'Final (2-3 lines): APPROVED/CHANGES'; do
+# the evidence blocks come right after the prompt call they extend (the fences moved to
+# `talos.sh prompt` + templates/prompts, #468), so no marker is ever sent to a subagent
+for pat in 'Spawn QA with the prompt of' '**Reviewer** (if `roles.reviewer = true`'; do
   ok="$(awk -v pat="$pat" -v s="$EV_START" '
     index($0, pat) { seen = 1; next }
-    seen && !closed && /^```[[:space:]]*$/ { closed = 1; next }
-    closed && NF { print (index($0, s) ? "after" : "no"); exit }' "$SKILL")"
-  [ "$ok" = after ] && pass "SKILL.md: the evidence block follows the prompt fence ($pat)" || fail "SKILL.md: the evidence block follows the prompt fence ($pat)"
+    seen && NF { print (index($0, s) ? "after" : "no"); exit }' "$SKILL")"
+  [ "$ok" = after ] && pass "SKILL.md: the evidence block follows the prompt call ($pat)" || fail "SKILL.md: the evidence block follows the prompt call ($pat)"
 done
 # the resolve path the playbook names works for the source layout (the global, plugin
 # and vendored layouts keep scripts/ and templates/ side by side the same way)

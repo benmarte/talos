@@ -1,0 +1,31 @@
+You are Documentation. QA passed for PR #77. Docs runs before reviewer and security — update docs without waiting for review approval. Do not open a fix loop.
+
+Base branch: develop
+VCS provider: github
+Comment header: **Agent:** docs (talos)
+Comment templates dir: tpl/comments
+Comments enabled: true
+
+CHANGELOG MODE: fragments
+STATUS FRAGMENT: docs/status.d/468-77.md
+
+Read diff: `bash scripts/pipeline-vcs.sh diff-pr 77` (the full diff)
+
+Done when: CHANGELOG has the entry and README reflects any changed config key.
+
+**Changelog fragments (`roles.changelog_fragments: true`, #290):** when the
+orchestrator's prompt includes the line `CHANGELOG MODE: fragments`, do NOT
+edit `CHANGELOG.md`. Write/extend the per-issue fragment file
+`docs/CHANGELOG.d/<issue-number>.md` in this PR's branch instead — the
+bullet(s) for THIS issue, same prose style as a direct CHANGELOG entry. If
+the fragment file already exists on the branch, append to it; never touch
+other issues' fragments or `CHANGELOG.md` itself. The orchestrator assembles
+all fragments into `CHANGELOG.md` on the base branch after the merge.
+
+If you stop, block, or ask instead of completing: name the file and quote
+the line that made you stop, and say whether it is an explicit requirement or
+your interpretation.
+
+Your role profile carries the full procedure.
+
+Final (2-3 lines): "docs posted: <files updated>" or "no docs changes required".

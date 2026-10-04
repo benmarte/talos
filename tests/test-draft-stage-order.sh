@@ -156,7 +156,7 @@ check_no_new_verb_when_unset() {  # $1 = SKILL.md
   ! strip_draft "$1" | grep -qE 'ready-pr|draft-pr|pr-is-draft|pr-ci-runs|--ci-runs|--draft'
 }
 
-[ "$(wc -l < "$FIXTURE" | tr -d ' ')" -gt 400 ]; assert_eq "0" "$?" "fixture: Steps 3c-4 fixture is the full section, not a stub"
+[ "$(wc -l < "$FIXTURE" | tr -d ' ')" -gt 250 ]; assert_eq "0" "$?" "fixture: Steps 3c-4 fixture is the full section, not a stub (the dispatch fences moved to templates/prompts, #468)"
 markers_ok "$SKILL"; assert_eq "0" "$?" "default unchanged: pr-draft markers are paired, un-nested and present"
 assert_fixture "default unchanged: Steps 3c-4 with pr-draft blocks stripped equal the fixture" check_default_unchanged "$FIXTURE" steps_3c_4
 assert_fixture "default unchanged: Step 1 with pr-draft blocks stripped equals the fixture" check_step1_unchanged "$FIXTURE_STEP1" step1_text
@@ -173,8 +173,10 @@ assert_not_contains "$DT" 'pipeline-config.sh pr.draft' "Step 0: no call site re
 in_order "$DT" 'Under `VERIFY_QA_MODE` `ci` the PR was just marked ready' 'run the gate below with `--wait <B>`' '`B` = `min\(VERIFY_CI_WAIT_S, VERIFY_TIMEOUT_MS/1000 - 30\)`' 'the Bash call.s timeout `VERIFY_TIMEOUT_MS`' '2, still pending at `B`, spawns QA'
 assert_eq "0" "$?" "Step 3d: after ready-pr, under qa_mode ci, the gate is one pr-checks-required --wait call capped under the Bash timeout (#435)"
 
-in_order "$DT" 'Open the PR as a DRAFT: bash scripts/pipeline-vcs.sh create-pr <branch> "\$PR_TITLE" "\$BODY_FILE" --draft'
-assert_eq "0" "$?" "developer prompt: opens the PR with create-pr ... --draft"
+# The line moved from the playbook into the verb (#468): --draft renders it, the default prompt has none.
+assert_contains "$(talos_prompt_text developer --issue 5 --draft)" 'Open the PR as a DRAFT: bash scripts/pipeline-vcs.sh create-pr <branch> "$PR_TITLE" "$BODY_FILE" --draft' "developer prompt: --draft opens the PR with create-pr ... --draft"
+assert_not_contains "$(talos_prompt_text developer --issue 5)" 'create-pr' "developer prompt: no create-pr line without --draft"
+assert_contains "$DT" 'pass `--draft` on every developer dispatch' "the pr-draft block sends --draft on every developer dispatch"
 
 # ── (b) stage order ──────────────────────────────────────────────────────────
 check_stage_order() {  # $1 = SKILL.md

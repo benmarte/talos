@@ -37,8 +37,11 @@ extract_window() {  # $1=file $2=anchor substring
   sed -n "${start},$((end - 1))p" "$file"
 }
 
-dev_blocks="$(extract_window "$SKILL_MD" "You are the Developer. Implement")"
-qa_block="$(extract_window "$SKILL_MD" "You are QA. A developer opened a PR for issue")"
+# The stage prompts moved out of SKILL.md into templates/prompts/<role>.md (#468): the
+# block of a role is its whole template.
+PROMPTS="$TALOS_ROOT/templates/prompts"
+dev_blocks="$(cat "$PROMPTS/developer.md")"
+qa_block="$(cat "$PROMPTS/qa.md")"
 
 # quiet-verify guidance is role methodology (#179): it now lives once in each
 # role's agent profile rather than being restated in the SKILL.md task prompt.
@@ -75,17 +78,17 @@ assert_contains "$harness_section" "even while the rest of the pipeline stays na
 # that ignored a hand-export instruction silently ran verify without the
 # identity vars.
 assert_contains "$dev_blocks" "pipeline-verify.sh" \
-  "skills/pipeline/SKILL.md developer prompt block(s) run verify through pipeline-verify.sh"
+  "templates/prompts developer prompt template run verify through pipeline-verify.sh"
 assert_contains "$qa_block" "pipeline-verify.sh" \
-  "skills/pipeline/SKILL.md QA prompt block runs verify through pipeline-verify.sh"
+  "templates/prompts QA prompt template runs verify through pipeline-verify.sh"
 assert_contains "$(cat "$TALOS_ROOT/agents/developer.md")" "pipeline-verify.sh" \
   "agents/developer.md runs verify through pipeline-verify.sh"
 assert_contains "$(cat "$TALOS_ROOT/agents/qa.md")" "pipeline-verify.sh" \
   "agents/qa.md runs verify through pipeline-verify.sh"
 assert_not_contains "$dev_blocks" "export TALOS_ISSUE_NUMBER=" \
-  "skills/pipeline/SKILL.md developer prompt block(s) no longer instruct a hand-written export"
+  "templates/prompts developer prompt template no longer instruct a hand-written export"
 assert_not_contains "$qa_block" "export TALOS_ISSUE_NUMBER=" \
-  "skills/pipeline/SKILL.md QA prompt block no longer instructs a hand-written export"
+  "templates/prompts QA prompt template no longer instructs a hand-written export"
 
 # ── Foreground rule adjacent to every verify instruction (#205) ────────────
 # Rule 17 already forbade backgrounding verify, but as prose ~400 lines away
@@ -151,11 +154,11 @@ assert_contains "$(cat "$TALOS_ROOT/agents/qa.md")" "CONFLICTING" \
 # isolation mode); they are now a single block with a two-line isolation
 # note as the only difference the orchestrator substitutes. Guard against
 # the duplication creeping back.
-_dev_block_count="$(grep -c 'You are the Developer\. Implement' "$SKILL_MD")"
+_dev_block_count="$(grep -h 'You are the Developer\. Implement' "$PROMPTS"/*.md | grep -c '')"
 assert_eq "1" "$_dev_block_count" \
-  "skills/pipeline/SKILL.md carries exactly one developer prompt block (worktree/branch merged)"
+  "templates/prompts carries exactly one developer prompt (worktree/branch merged)"
 assert_contains "$dev_blocks" "ISOLATION_NOTE" \
-  "skills/pipeline/SKILL.md developer prompt block carries the isolation-note placeholder"
+  "templates/prompts developer prompt template carries the isolation-note placeholder"
 
 # ── Compact stage handoff: every role's first view-issue call uses --spec,
 # reviewer/security read diff-pr --stat first (#201) ────────────────────────
@@ -187,20 +190,20 @@ assert_first_view_issue_uses_spec() {  # $1=text $2=label
   esac
 }
 
-reviewer_block="$(extract_window "$SKILL_MD" "You are the Reviewer. QA passed PR")"
-security_block="$(extract_window "$SKILL_MD" "You are the Security Analyst. QA passed PR")"
-docs_block="$(extract_window "$SKILL_MD" "You are Documentation. QA passed for PR")"
+reviewer_block="$(cat "$PROMPTS/reviewer.md")"
+security_block="$(cat "$PROMPTS/security.md")"
+docs_block="$(cat "$PROMPTS/docs.md")"
 
 assert_first_view_issue_uses_spec "$dev_blocks" \
-  "skills/pipeline/SKILL.md developer prompt block(s): first view-issue call uses --spec"
+  "templates/prompts developer prompt template: first view-issue call uses --spec"
 assert_first_view_issue_uses_spec "$qa_block" \
-  "skills/pipeline/SKILL.md QA prompt block: first view-issue call uses --spec"
+  "templates/prompts QA prompt template: first view-issue call uses --spec"
 assert_first_view_issue_uses_spec "$reviewer_block" \
-  "skills/pipeline/SKILL.md reviewer prompt block: first view-issue call uses --spec"
+  "templates/prompts reviewer prompt template: first view-issue call uses --spec"
 assert_first_view_issue_uses_spec "$security_block" \
-  "skills/pipeline/SKILL.md security prompt block: first view-issue call uses --spec"
+  "templates/prompts security prompt template: first view-issue call uses --spec"
 assert_first_view_issue_uses_spec "$docs_block" \
-  "skills/pipeline/SKILL.md docs prompt block: first view-issue call uses --spec"
+  "templates/prompts docs prompt template: first view-issue call uses --spec"
 
 for _role in developer qa reviewer security docs; do
   assert_first_view_issue_uses_spec "$(cat "$TALOS_ROOT/agents/$_role.md")" \
@@ -219,8 +222,8 @@ assert_contains "$(cat "$TALOS_ROOT/agents/security.md")" "diff-pr <pr> --stat" 
 # Each role's SKILL.md block is now per-issue values + a pointer to the role
 # profile, not a full workflow. Cap each block's line count so the
 # duplication this issue removed cannot silently creep back in.
-validator_block="$(extract_window "$SKILL_MD" "You are the Validator. Issue")"
-pm_block="$(extract_window "$SKILL_MD" "You are the Project Manager. Issue")"
+validator_block="$(cat "$PROMPTS/validator.md")"
+pm_block="$(cat "$PROMPTS/pm.md")"
 
 _assert_block_max_lines() {  # $1=block-text $2=label $3=max-lines (default 40)
   local text="$1" label="$2" max="${3:-40}" n
@@ -232,13 +235,13 @@ _assert_block_max_lines() {  # $1=block-text $2=label $3=max-lines (default 40)
   fi
 }
 
-_assert_block_max_lines "$validator_block" "skills/pipeline/SKILL.md validator prompt block is <= 40 lines"
-_assert_block_max_lines "$pm_block" "skills/pipeline/SKILL.md PM prompt block is <= 40 lines"
-_assert_block_max_lines "$dev_blocks" "skills/pipeline/SKILL.md developer prompt block is <= 40 lines"
-_assert_block_max_lines "$qa_block" "skills/pipeline/SKILL.md QA prompt block is <= 40 lines"
-_assert_block_max_lines "$reviewer_block" "skills/pipeline/SKILL.md reviewer prompt block is <= 40 lines"
-_assert_block_max_lines "$security_block" "skills/pipeline/SKILL.md security prompt block is <= 40 lines"
-_assert_block_max_lines "$docs_block" "skills/pipeline/SKILL.md docs prompt block is <= 40 lines"
+_assert_block_max_lines "$validator_block" "templates/prompts validator prompt template is <= 40 lines"
+_assert_block_max_lines "$pm_block" "templates/prompts PM prompt template is <= 40 lines"
+_assert_block_max_lines "$dev_blocks" "templates/prompts developer prompt template is <= 40 lines"
+_assert_block_max_lines "$qa_block" "templates/prompts QA prompt template is <= 40 lines"
+_assert_block_max_lines "$reviewer_block" "templates/prompts reviewer prompt template is <= 40 lines"
+_assert_block_max_lines "$security_block" "templates/prompts security prompt template is <= 40 lines"
+_assert_block_max_lines "$docs_block" "templates/prompts docs prompt template is <= 40 lines"
 
 # ── Adversarial pre-merge stage (#237) ──────────────────────────────────────
 # Optional stage: Step 3e Phase 3 (after security) and Step 4's merge gate
@@ -362,7 +365,7 @@ for anchor in \
   '**Reviewer** (if `roles.reviewer = true`' \
   '**Security** (if `roles.security = true`' \
   '**Docs** (if `roles.docs = true`' \
-  'Spawn a subagent with this prompt (substitute <PLACEHOLDERS> before spawning)'; do
+  'Spawn a subagent with the prompt of `bash scripts/talos.sh prompt validator'; do
   line="$(grep -n -F -- "$anchor" "$SKILL_MD" | head -1 | cut -d: -f1)"
   if [ -z "$line" ]; then
     fail "skills/pipeline/SKILL.md: spawn-rule pointer anchor found" "not found: $anchor"
