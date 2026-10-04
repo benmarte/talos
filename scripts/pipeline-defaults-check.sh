@@ -44,7 +44,7 @@ _talos_security_key() {
 }
 
 _talos_load_defaults() {
-  local _f="${1:-}" _k
+  local _f="${1:-}" _k _row _need
   _TALOS_DEFAULTS_END=""
   [ -f "$_f" ] && [ -r "$_f" ] || return 1
   # Sourced for real (the table is small); a failed source leaves partial
@@ -54,8 +54,18 @@ _talos_load_defaults() {
   [ "${_TALOS_DEFAULTS_END:-}" = "1" ] || return 1
   [ "$(type -t _talos_default)" = "function" ] || return 1
   [ "$(type -t _talos_defaults_row)" = "function" ] || return 1
-  for _k in $_TALOS_SECURITY_KEYS; do
-    _talos_defaults_row "$_k" || return 1
+  [ "$(type -t _talos_defaults_split)" = "function" ] || return 1
+  # One pass over the table's rows, striking each security key off a pending
+  # list as its own row goes by; any key still pending means a missing row. (It
+  # used to look each of the 17 keys up in the ~16 KB table string, ~7 ms apiece:
+  # 125 ms in every config-reading process, #483.) An EXACT row is required, as
+  # it always effectively was: no security key is covered by a "*" template.
+  _need=" ${_TALOS_SECURITY_KEYS//$'\n'/ } "
+  _talos_defaults_split
+  for _row in ${_TD_ROWS[@]+"${_TD_ROWS[@]}"}; do
+    _k="${_row%%$'\t'*}"
+    case "$_need" in *" $_k "*) _need="${_need/ $_k / }" ;; esac
   done
+  [ -z "${_need// /}" ] || return 1
   return 0
 }

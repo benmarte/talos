@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # run-tests.sh -- run every tests/test-*.sh file and report a summary.
-# Usage: bash tests/run-tests.sh [--base-ref <ref>] [-j N] [--quiet] [--no-cache] [pattern]
+# Usage: bash tests/run-tests.sh [--base-ref <ref>] [-j N] [--quiet] [--timings] [--no-cache] [pattern]
 #        bash tests/run-tests.sh --for <path> [<path> ...] [--for <path> ...] [--quiet] ...
 #        bash tests/run-tests.sh --changed [<base-ref>] [--quiet] ...
 #   --base-ref  override the auto-detected base ref for count comparison
@@ -12,6 +12,12 @@
 #               Either mode ends a failing run with one "FAILED: tests/<name>"
 #               line per failing file just before the RESULT line; --quiet
 #               adds the first failing assertion under each (#448).
+#   --timings   after the per-file report, print "TIMINGS (seconds, slowest
+#               first)" with one "<secs>  tests/<name>" line per file (whole
+#               seconds of that file's own wall time; a cached file shows
+#               "cached"), so a slow suite can be traced to its files (#483;
+#               also: TALOS_TEST_TIMINGS=1). Off by default: the output is
+#               unchanged without it.
 #   --no-cache  ignore and do not write the per-file result cache
 #   --repeat N  run the selected files N times, stopping at the first
 #               iteration that fails (its full log is printed; also implies
@@ -112,6 +118,7 @@ BASE_REF_OVERRIDE=""
 PATTERN=""
 JOBS_OVERRIDE=""
 QUIET=0
+TIMINGS=0
 NO_CACHE=0
 REPEAT=1
 FOR_PATHS=()
@@ -130,6 +137,10 @@ while [ $# -gt 0 ]; do
       ;;
     --quiet)
       QUIET=1
+      shift
+      ;;
+    --timings)
+      TIMINGS=1
       shift
       ;;
     --no-cache)
@@ -178,6 +189,9 @@ while [ $# -gt 0 ]; do
 done
 if [ "${TALOS_TEST_QUIET:-0}" = "1" ]; then
   QUIET=1
+fi
+if [ "${TALOS_TEST_TIMINGS:-0}" = "1" ]; then
+  TIMINGS=1
 fi
 
 # --repeat validation: fall back to 1 (a no-op) on anything non-numeric,
@@ -561,9 +575,10 @@ trap 'rm -rf "$RUN_TMP"' EXIT
 # run_test_file TESTFILE LOGFILE EXITFILE STATUSFILE -- runs (or serves from
 # cache) a single test file. Safe to background: writes results to files
 # instead of returning them, since a backgrounded function's exit status and
-# variables are invisible to the parent shell.
+# variables are invisible to the parent shell. The file's own wall time in
+# whole seconds goes to <STATUSFILE minus .status>.secs for --timings.
 run_test_file() {
-  local t="$1" logfile="$2" exitfile="$3" statusfile="$4" key=""
+  local t="$1" logfile="$2" exitfile="$3" statusfile="$4" key="" _t0="$SECONDS"
   if [ "$CACHE_ENABLED" -eq 1 ]; then
     key="$(cache_key_for "$t")"
     if [ -f "$CACHE_DIR/$key" ]; then
@@ -575,6 +590,7 @@ run_test_file() {
   fi
   printf 'RAN' > "$statusfile"
   if bash "$t" > "$logfile" 2>&1; then
+    printf '%s' "$((SECONDS - _t0))" > "${statusfile%.status}.secs"
     printf '0' > "$exitfile"
     if [ "$CACHE_ENABLED" -eq 1 ]; then
       # (#180) Write-then-rename instead of writing "$CACHE_DIR/$key"
@@ -590,6 +606,7 @@ run_test_file() {
       fi
     fi
   else
+    printf '%s' "$((SECONDS - _t0))" > "${statusfile%.status}.secs"
     printf '1' > "$exitfile"
   fi
 }
@@ -645,6 +662,7 @@ while [ "$_repeat_iter" -le "$REPEAT" ]; do
   total_files=0
   failed_files=0
   FAILED_SUMMARY=""   # one "FAILED: tests/<name>" per failing file (#448)
+  TIMING_ROWS=""      # "<secs> tests/<name>" per file, for --timings (#483)
   i=0
   while [ "$i" -lt "$TOTAL_COUNT" ]; do
     t="${COMBINED[$i]}"
@@ -686,8 +704,27 @@ while [ "$_repeat_iter" -le "$REPEAT" ]; do
       fi
       echo ""
     fi
+    if [ "$TIMINGS" -eq 1 ]; then
+      if [ "$status" = "CACHED" ]; then
+        TIMING_ROWS="${TIMING_ROWS}-1 tests/$name
+"
+      else
+        TIMING_ROWS="${TIMING_ROWS}$(cat "$RUN_TMP/$i.secs" 2>/dev/null || echo 0) tests/$name
+"
+      fi
+    fi
     i=$((i + 1))
   done
+
+  # --timings: one line per file, slowest first (numeric descending on the
+  # seconds; a cached file, -1, sorts last and prints as "cached").
+  if [ "$TIMINGS" -eq 1 ]; then
+    echo "TIMINGS (seconds, slowest first):"
+    printf '%s' "$TIMING_ROWS" | sort -k1,1nr -k2,2 | while read -r _secs _file; do
+      if [ "$_secs" = "-1" ]; then _secs="cached"; fi
+      printf '%6s  %s\n' "$_secs" "$_file"
+    done
+  fi
 
   rm -rf "$RUN_TMP"
 
