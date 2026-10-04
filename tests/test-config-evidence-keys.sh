@@ -189,20 +189,23 @@ else
   fail "11: --dump without evidence keys is byte-identical to main" "$(cat "$SANDBOX/dump-now.txt")"
 fi
 
-# ---- 12: user-level file does not layer the keys ---------------------------
+# ---- 12: the user-level (global) file layers the keys (#441) ---------------
 case "$HOME" in
   "$SANDBOX"/*) ;;
   *) echo "FATAL: HOME is outside the sandbox" >&2; exit 1 ;;
 esac
 USER_DIR="$HOME/.talos"
 mkdir -p "$USER_DIR"
-printf '%s\n' '{"evidence": {"enabled": true, "max_files": 3, "include": ["*.png"]}}' > "$USER_DIR/talos.pipeline.json"
+printf '%s\n' '{"evidence": {"enabled": true, "max_files": 3, "include": ["*.png"], "command": "make shots"}}' > "$USER_DIR/talos.pipeline.json"
 rm -f talos.pipeline.json
-assert_eq "DEF" "$(single evidence.enabled DEF)" "12: user-level enabled ignored (single-key)"
-assert_eq "DEF" "$(single evidence.max_files DEF)" "12: user-level max_files ignored (single-key)"
-assert_eq "DEF" "$(single evidence.include DEF)" "12: user-level include ignored (single-key)"
+assert_eq "true" "$(single evidence.enabled DEF)" "12: user-level enabled applies (single-key)"
+assert_eq "3" "$(single evidence.max_files DEF)" "12: user-level max_files applies (single-key)"
+assert_eq "*.png" "$(single evidence.include DEF)" "12: user-level include applies (single-key)"
+assert_eq "DEF" "$(single evidence.command DEF)" "12: evidence.command is repo-only: the user-level value is dropped"
 set_cfg '{"base_branch": "main"}'
-assert_not_contains "$(bash "$CFG_SH" --dump 2>/dev/null | tr '\0' '\n')" "evidence" "12: user-level evidence keys absent from --dump"
+_dump12="$(bash "$CFG_SH" --dump 2>/dev/null | tr '\0' '\n')"
+assert_contains "$_dump12" "evidence.max_files" "12: user-level evidence keys present in --dump"
+assert_not_contains "$_dump12" "evidence.command" "12: the repo-only evidence.command is absent from --dump"
 rm -rf "$USER_DIR"
 
 # ---- 13: contract marker ---------------------------------------------------

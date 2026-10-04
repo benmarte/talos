@@ -2,8 +2,9 @@
 # Tests for the user-level config layer (#336): ${TALOS_HOME:-$HOME/.talos}/
 # talos.pipeline.{yml,yaml,json} is loaded by pipeline-config.sh and the
 # project config is deep-merged over it, leaf by leaf. Only the agents.*
-# subtree is read from the user-level file; it is untrusted input (parsed as
-# data only, never sourced or evaluated).
+# subtree was read from the user-level file at first; since #441 every key is
+# read except the repo-only ones (tests/test-config-global-layer.sh covers that).
+# It is untrusted input (parsed as data only, never sourced or evaluated).
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox
@@ -86,13 +87,13 @@ assert_eq "haiku" "$(get agents.roles.qa.model "")" "AC3: \$PIPELINE_CONFIG file
 assert_eq "sonnet" "$(get agents.model "")" "AC3: the user-level layer sits under a \$PIPELINE_CONFIG file"
 unset PIPELINE_CONFIG
 
-# ── AC4: non-agents key in the user-level file is ignored, one warning ───────
+# ── AC4: a repo-only key in the user-level file is ignored, one warning ──────
 reset_cfg
 user_json '{"agents": {"model": "sonnet"}, "board": {"project_number": 7}}'
-assert_eq "none" "$(get board.project_number none)" "AC4: a non-agents key in the user-level file is ignored"
+assert_eq "none" "$(get board.project_number none)" "AC4: a repo-only key in the user-level file is ignored"
 assert_eq "sonnet" "$(get agents.model "")" "AC4: agents.* still applies alongside the ignored key"
 assert_eq "1" "$(errlines)" "AC4: exactly one stderr line for one ignored key"
-assert_contains "$(cat "$ERR")" "board" "AC4: the warning names the ignored key"
+assert_contains "$(cat "$ERR")" "board.project_number" "AC4: the warning names the ignored key"
 dump >/dev/null
 assert_eq "1" "$(errlines)" "AC4: --dump also emits exactly one warning"
 assert_not_contains "$(dump)" "board" "AC4: --dump omits the ignored key"

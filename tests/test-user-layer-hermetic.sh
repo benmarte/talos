@@ -26,7 +26,7 @@ mkdir -p "$HELPERS_TALOS_HOME" 2>/dev/null; assert_eq "0" "$([ -d "$HELPERS_TALO
 
 HOSTILE_HOME="$SANDBOX/hostile-home"
 mkdir -p "$HOSTILE_HOME/.talos"
-printf '%s' '{"agents":{"model":"leaked-model","roles":{"reviewer":{"model":"claude-opus-5"}}}}' \
+printf '%s' '{"agents":{"model":"leaked-model","roles":{"reviewer":{"model":"claude-opus-5"}}},"pr":{"draft":true},"limits":{"warn_at":0.1}}' \
   > "$HOSTILE_HOME/.talos/talos.pipeline.json"
 HOSTILE_TH="$SANDBOX/hostile-talos-home"
 mkdir -p "$HOSTILE_TH"
@@ -43,22 +43,25 @@ cat > "$PROBE" <<EOF
 set -u
 . "$TALOS_ROOT/tests/helpers.sh"
 cd "$EMPTY_CWD"
-printf '%s|%s' "\$(bash "$TALOS_ROOT/scripts/pipeline-config.sh" agents.roles.reviewer.model SENTINEL)" \
-  "\$(bash "$TALOS_ROOT/scripts/pipeline-config.sh" agents.model SENTINEL)"
+printf '%s|%s|%s' "\$(bash "$TALOS_ROOT/scripts/pipeline-config.sh" agents.roles.reviewer.model SENTINEL)" \
+  "\$(bash "$TALOS_ROOT/scripts/pipeline-config.sh" agents.model SENTINEL)" \
+  "\$(bash "$TALOS_ROOT/scripts/pipeline-config.sh" pr.draft SENTINEL)"
 EOF
 
 # Sanity: the hostile file really does leak into a bare lookup (so the cases
 # below are not vacuous).
 bare="$(cd "$EMPTY_CWD" && env -u TALOS_HOME HOME="$HOSTILE_HOME" bash "$TALOS_ROOT/scripts/pipeline-config.sh" agents.model SENTINEL 2>/dev/null)"
 assert_eq "leaked-model" "$bare" "precondition: an ambient ~/.talos file is visible to a bare pipeline-config.sh lookup"
+bare="$(cd "$EMPTY_CWD" && env -u TALOS_HOME HOME="$HOSTILE_HOME" bash "$TALOS_ROOT/scripts/pipeline-config.sh" pr.draft SENTINEL 2>/dev/null)"
+assert_eq "true" "$bare" "precondition (#441): an ambient ~/.talos pr.draft (a non-agents key) is visible to a bare lookup too"
 
 # 1. Ambient HOME/.talos, directly-run unsandboxed test.
 got="$(env -u TALOS_HOME HOME="$HOSTILE_HOME" bash "$PROBE" 2>/dev/null)"
-assert_eq "SENTINEL|SENTINEL" "$got" "directly-run unsandboxed test sees no user-level values from ambient \$HOME/.talos"
+assert_eq "SENTINEL|SENTINEL|SENTINEL" "$got" "directly-run unsandboxed test sees no user-level values (agents.* or any other key) from ambient \$HOME/.talos"
 
 # 2. Ambient TALOS_HOME pointing at a hostile directory.
 got="$(env HOME="$SANDBOX/no-such-home" TALOS_HOME="$HOSTILE_TH" bash "$PROBE" 2>/dev/null)"
-assert_eq "SENTINEL|SENTINEL" "$got" "directly-run unsandboxed test sees no user-level values from an ambient \$TALOS_HOME"
+assert_eq "SENTINEL|SENTINEL|SENTINEL" "$got" "directly-run unsandboxed test sees no user-level values from an ambient \$TALOS_HOME"
 
 # 3. The real offender, run directly under a hostile ambient HOME.
 out="$(cd "$TALOS_ROOT" && env -u TALOS_HOME HOME="$HOSTILE_HOME" bash tests/test-docs-149-config-examples.sh 2>&1)"; rc=$?

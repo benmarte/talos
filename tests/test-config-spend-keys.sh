@@ -128,7 +128,7 @@ else
   fail "6: --dump without the new keys is byte-identical to main" "$(cat "$SANDBOX/dump-now.txt")"
 fi
 
-# ---- 7: user-level file does not layer the new keys ------------------------
+# ---- 7: the user-level (global) file layers the new keys (#441) ------------
 case "$HOME" in
   "$SANDBOX"/*) ;;
   *) echo "FATAL: HOME is outside the sandbox" >&2; exit 1 ;;
@@ -137,14 +137,14 @@ USER_DIR="$HOME/.talos"
 mkdir -p "$USER_DIR"
 printf '%s\n' '{"limits": {"tokens_per_issue": 5, "warn_at": 0.3}, "spend": {"comment": false}}' > "$USER_DIR/talos.pipeline.json"
 rm -f talos.pipeline.json
-assert_eq "" "$(single $TPI "")" "7: user-level tokens_per_issue ignored (single-key)"
-assert_eq "0.8" "$(single $WARN 0.8)" "7: user-level warn_at ignored (single-key)"
-assert_eq "true" "$(single $CMT true)" "7: user-level spend.comment ignored (single-key)"
+assert_eq "5" "$(single $TPI "")" "7: user-level tokens_per_issue applies (single-key)"
+assert_eq "0.3" "$(single $WARN 0.8)" "7: user-level warn_at applies (single-key)"
+assert_eq "false" "$(single $CMT true)" "7: user-level spend.comment applies (single-key)"
 set_cfg '{"base_branch": "main"}'
 dump_all="$(bash "$CFG_SH" --dump 2>/dev/null | tr '\0' '\n')"
-assert_not_contains "$dump_all" "tokens_per_issue" "7: user-level tokens_per_issue absent from --dump"
-assert_not_contains "$dump_all" "warn_at" "7: user-level warn_at absent from --dump"
-assert_not_contains "$dump_all" "spend.comment" "7: user-level spend.comment absent from --dump"
+assert_contains "$dump_all" "tokens_per_issue" "7: user-level tokens_per_issue present in --dump"
+assert_contains "$dump_all" "warn_at" "7: user-level warn_at present in --dump"
+assert_contains "$dump_all" "spend.comment" "7: user-level spend.comment present in --dump"
 rm -rf "$USER_DIR"
 
 # ---- 8: contract markers ---------------------------------------------------

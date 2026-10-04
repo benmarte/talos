@@ -19,10 +19,14 @@
 # schema table (pipeline-defaults.sh; empty for a derived key). With no config
 # file at all, none of this spawns python3.
 #
-# User-level layer (#336): ${TALOS_HOME:-$HOME/.talos}/talos.pipeline.{yml,yaml,
-# json} is loaded under whichever project config was found (or alone when there
-# is none); the project config is merged over it key by key. Only its agents.*
-# subtree is read -- see the shared loader below.
+# Layers (#336, #441), lowest to highest: the table default, the global file
+# ${TALOS_HOME:-$HOME/.talos}/talos.pipeline.{yml,yaml,json}, the repo's own
+# config, then the key's environment variable (the table's env column, e.g.
+# PIPELINE_SLACK_CHANNEL; set and non-empty). Each layer overrides the one below
+# it key by key; dicts merge, scalars replace, and a list in a higher layer
+# replaces the lower layer's list whole (no union). The global file may set any
+# key except the repo-only ones (the table's scope column), which are dropped
+# with one stderr note naming the key -- see the shared loader below.
 #
 #   --dump          every resolved key as NUL-delimited pairs (one python3 spawn)
 #   --dump-layers   "agents.* key<TAB>project|global" lines (--resolve-all origin)
@@ -76,6 +80,9 @@ else
   echo "pipeline-config: pipeline-defaults.sh missing next to $0 -- no table defaults, unknown-key check off" >&2
   _talos_default() { :; }
   _talos_known_keys_json() { printf '[]'; }
+  _talos_scope_env_json() { printf '[]'; }
+  _talos_env_dump() { :; }
+  _talos_env_value() { return 1; }
 fi
 
 # ── Shared config loader (#336) ───────────────────────────────────────────────
@@ -83,18 +90,25 @@ fi
 # used by both --dump and the single-key lookup below (they used to each carry
 # their own copy of the file-lookup loop and the parse block).
 #
-# Two layers, project wins per leaf key:
+# Three file/env layers, the higher one wins per leaf key (#441):
 #   1. user-level  ${TALOS_HOME:-$HOME/.talos}/talos.pipeline.{yml,yaml,json}
-#                  Only its agents.* subtree is read -- board/merge/issue/
-#                  verify settings describe a repo, not a user. Untrusted
-#                  input: parsed as data only (JSON / yaml.safe_load), never
-#                  sourced or evaluated; missing, unreadable, empty,
-#                  malformed or non-mapping content behaves as absent
-#                  (malformed/empty/non-mapping/unreadable prints one stderr
-#                  warning; the lookup and its exit status are unaffected).
+#                  Every key is read except the repo-only ones (the table's
+#                  scope column: keys that describe one repository -- board,
+#                  verify commands, merge file lists, ...). A repo-only key
+#                  found here is dropped and prints ONE stderr line that names
+#                  the key and never its value. Untrusted input: parsed as data
+#                  only (JSON / yaml.safe_load), never sourced or evaluated;
+#                  missing, unreadable, empty, malformed or non-mapping content
+#                  behaves as absent (malformed/empty/non-mapping/unreadable
+#                  prints one stderr warning; the lookup and its exit status
+#                  are unaffected).
 #   2. project     $PIPELINE_CONFIG, else the first existing ./talos.pipeline.*
 #                  / legacy name. The user-level layer sits under whichever
 #                  one is found.
+#   3. env         the variable in the table's env column, when set and not
+#                  empty. No generic TALOS_CFG_* scheme.
+# The validators below (positive integers, spend, evidence, fallback, effort)
+# run on the merged value, so they hold whichever layer supplied it.
 # Names tried, in order, for the project file; the first three also bound the
 # user-level lookup (same extension order, no legacy names).
 _CFG_NAMES=("talos.pipeline.yml" "talos.pipeline.yaml" "talos.pipeline.json"
@@ -127,8 +141,10 @@ _locate_user_cfg() {
 # Python half of the loader. Handed to each python3 process as an argv string
 # and exec()'d at the top, so the --dump and single-key processes share one
 # definition (they are separate processes and cannot import a shared module
-# without a new installed file). Defines load_layers(project_path, user_path)
-# -> (project, user, merged) and layer_map(project, user).
+# without a new installed file). Defines load_layers(project_path, user_path,
+# env=True) -> (project, user, merged) and layer_map(project, user).
+# The scope/env data comes from the table in pipeline-defaults.sh: use
+# _cfg_loader_src, which prepends it as _CFG_TABLE, never this variable raw.
 read -r -d '' _CFG_LOADER_PY <<'PYLOADER' || true
 import os
 import sys
@@ -155,6 +171,60 @@ def _parse_cfg_file(path):
         import json
         return json.load(f)
 
+# Repo-only scope (#441): the table's scope column, as key templates ("*" is
+# one dynamic segment). A leaf is repo-only when it equals a template, is a
+# shorter prefix of one (a scalar where a mapping belongs), or sits below a
+# template that ends in "*". The bare `verify:` list (the verify.commands alias)
+# is its own template, so it never captures the any-scope verify.* siblings.
+_REPO_ONLY = [k.split(".") for k, scope, _env in _CFG_TABLE if scope == "repo"]
+
+def _is_repo_only(parts):
+    return any(
+        all(t == "*" or t == p for t, p in zip(tmpl, parts))
+        and (len(parts) <= len(tmpl) or tmpl[-1] == "*")
+        for tmpl in _REPO_ONLY)
+
+def _drop_repo_only(obj, parts, shown):
+    # Copy of the user-level mapping without its repo-only leaves, one stderr
+    # note per dropped leaf. The note names the key (repr'd and cut, so a key
+    # can never carry a newline or control sequence) and never the value.
+    out = {}
+    for k, v in obj.items():
+        sub = parts + [str(k)]
+        if isinstance(v, dict):
+            kept = _drop_repo_only(v, sub, shown)
+            if kept or not v:  # a mapping emptied by the drops is not left behind
+                out[k] = kept
+        elif _is_repo_only(sub):
+            if v is not None:
+                _warn("user-level config %s: ignoring repo-only key %s (set it "
+                      "in the repo's config file, not the user-level one)"
+                      % (shown, repr(".".join(sub))[:80]))
+        else:
+            out[k] = v
+    return out
+
+def _apply_env(merged):
+    # Layer 4: each table key's environment variable, when set and non-empty.
+    # Works on a deep copy so the project/user dicts layer_map() reads stay as
+    # loaded. Wildcard keys never have an env variable.
+    import copy
+    out = copy.deepcopy(merged)
+    for key, _scope, var in _CFG_TABLE:
+        if var == "-" or "*" in key:
+            continue
+        val = os.environ.get(var)
+        if not val:
+            continue
+        node = out
+        parts = key.split(".")
+        for part in parts[:-1]:
+            if not isinstance(node.get(part), dict):
+                node[part] = {}
+            node = node[part]
+        node[parts[-1]] = val
+    return out
+
 def _load_user_layer(user_path, project_path):
     if not user_path:
         return {}
@@ -179,17 +249,7 @@ def _load_user_layer(user_path, project_path):
     if not isinstance(raw, dict):
         _warn("user-level config %s must be a mapping -- ignoring it" % shown)
         return {}
-    for k in raw:
-        if k != "agents":
-            _warn("user-level config %s: ignoring key %s (only agents.* is read "
-                  "from the user-level file)" % (shown, repr(str(k))[:80]))
-    agents = raw.get("agents")
-    if agents is None:
-        return {}
-    if not isinstance(agents, dict):
-        _warn("user-level config %s: agents must be a mapping -- ignoring it" % shown)
-        return {}
-    return {"agents": agents}
+    return _drop_repo_only(raw, [], shown)
 
 def _deep_merge(base, over):
     out = dict(base)
@@ -202,7 +262,8 @@ def _deep_merge(base, over):
             out[k] = v
     return out
 
-def load_layers(project_path, user_path):
+def load_layers(project_path, user_path, env=True):
+    # env=False: the file layers only (--has asks whether a config FILE sets a key).
     project = {}
     if project_path:
         try:
@@ -215,7 +276,8 @@ def load_layers(project_path, user_path):
     if not isinstance(project, dict):
         project = {}
     user = _load_user_layer(user_path, project_path)
-    return project, user, _deep_merge(user, project)
+    merged = _deep_merge(user, project)
+    return project, user, (_apply_env(merged) if env else merged)
 
 def layer_map(project, user):
     # dotted agents.* leaf key -> "project" | "global" (the file that supplied
@@ -231,6 +293,11 @@ def layer_map(project, user):
     leaves(project.get("agents"), "agents", "project")
     return {k: v for k, v in out.items() if all(32 <= ord(c) != 127 for c in k)}
 PYLOADER
+
+# The loader source handed to python: the table's scope/env rows as _CFG_TABLE,
+# then the loader itself. Every python3 call below passes this, never
+# $_CFG_LOADER_PY alone.
+_cfg_loader_src() { printf '_CFG_TABLE = %s\n%s' "$(_talos_scope_env_json)" "$_CFG_LOADER_PY"; }
 
 # ── Evidence-key validator (#405, part of #352) ──────────────────────────────
 # Python half of the evidence.* validation. Like _CFG_LOADER_PY it is handed to
@@ -413,7 +480,7 @@ if [ "${1:-}" = "--dump-layers" ]; then
   _LPROJ="$(_locate_project_cfg)"
   _LUSER="$(_locate_user_cfg)"
   if [ -z "$_LPROJ" ] && [ -z "$_LUSER" ]; then exit 0; fi
-  python3 -I - "$_LPROJ" "$_LUSER" "$_CFG_LOADER_PY" <<'PYEOF'
+  python3 -I - "$_LPROJ" "$_LUSER" "$(_cfg_loader_src)" <<'PYEOF'
 import sys
 exec(sys.argv[3])
 _project, _user, _merged = load_layers(sys.argv[1], sys.argv[2])
@@ -428,10 +495,12 @@ if [ "${1:-}" = "--dump" ]; then
   _DUSER="$(_locate_user_cfg)"
   # No config present (or unreadable) — nothing to dump; every lookup falls
   # back to its caller's default, same as "no config found" below.
+  # Env overrides still apply (pure shell, no python3 spawn).
   if [ -z "$_DCFG" ] && [ -z "$_DUSER" ]; then
+    _talos_env_dump
     exit 0
   fi
-  python3 -I - "$_DCFG" "$(_talos_known_keys_json)" "$_DUSER" "$_CFG_LOADER_PY" "$_CFG_EVIDENCE_PY" "$_CFG_FALLBACK_PY" <<'PYEOF'
+  python3 -I - "$_DCFG" "$(_talos_known_keys_json)" "$_DUSER" "$(_cfg_loader_src)" "$_CFG_EVIDENCE_PY" "$_CFG_FALLBACK_PY" <<'PYEOF'
 import sys
 
 known_keys_json = sys.argv[2]
@@ -789,10 +858,10 @@ if [ "${1:-}" = "--has" ]; then
   _HPROJ="$(_locate_project_cfg)"
   _HUSER="$(_locate_user_cfg)"
   if [ -z "$_HPROJ" ] && [ -z "$_HUSER" ]; then exit 1; fi
-  python3 -I - "$_HPROJ" "$_HKEY" "$_HUSER" "$_CFG_LOADER_PY" <<'PYEOF'
+  python3 -I - "$_HPROJ" "$_HKEY" "$_HUSER" "$(_cfg_loader_src)" <<'PYEOF'
 import sys
 exec(sys.argv[4])
-_project, _user, _merged = load_layers(sys.argv[1], sys.argv[3])
+_project, _user, _merged = load_layers(sys.argv[1], sys.argv[3], env=False)
 _obj = _merged
 for _part in sys.argv[2].split("."):
     if isinstance(_obj, dict) and _part in _obj:
@@ -819,7 +888,8 @@ USER_CFG="$(_locate_user_cfg)"
 
 # No config present — return default
 if [ -z "$CFG" ] && [ -z "$USER_CFG" ]; then
-  printf '%s' "$DEFAULT"
+  # The key's env override (#441) still applies: pure shell, no python3 spawn.
+  if _ENVV="$(_talos_env_value "$KEY")"; then printf '%s' "$_ENVV"; else printf '%s' "$DEFAULT"; fi
   exit 0
 fi
 
@@ -827,7 +897,7 @@ fi
 # The heredoc passes file paths, key, default, the known-keys JSON and the
 # shared loader source as argv to avoid shell quoting issues with special
 # characters in values.
-python3 -I - "$CFG" "$KEY" "$DEFAULT" "$(_talos_known_keys_json)" "$USER_CFG" "$_CFG_LOADER_PY" "$_CFG_EVIDENCE_PY" "$_CFG_FALLBACK_PY" <<'PYEOF'
+python3 -I - "$CFG" "$KEY" "$DEFAULT" "$(_talos_known_keys_json)" "$USER_CFG" "$(_cfg_loader_src)" "$_CFG_EVIDENCE_PY" "$_CFG_FALLBACK_PY" <<'PYEOF'
 import sys
 
 key      = sys.argv[2]
