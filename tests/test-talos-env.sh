@@ -108,7 +108,7 @@ reasons = sys.argv[2].split()
 data = open(sys.argv[1], "rb").read()
 if re.search(rb"[\x00-\x09\x0b-\x1f\x7f]|\xc2[\x80-\x9f]", data):
     sys.exit(1)
-if re.search("[\u200b-\u200d\u202a-\u202e\u2066-\u2069\ufeff]", data.decode("utf-8", "replace")):
+if re.search("[\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\u061c\u00ad\u2028\u2029\ufeff\U000e0000-\U000e007f]", data.decode("utf-8", "replace")):
     sys.exit(1)
 kv = re.compile(r"[A-Za-z][A-Za-z0-9_.]*=")
 sw = re.compile(r"(stop|warn) reason=([a-z-]+)( (role|key)=[A-Za-z0-9_.-]+)?\Z")
@@ -236,6 +236,31 @@ bidi="$(cat "$SANDBOX/out.bidi")"
 assert_contains "$bidi" 'agent.pm.model=a\u202eb\u2066c\u2069d\u200be\u200df\ufeffg' "sanitising: bidi controls and zero-width characters print as \\uXXXX"
 assert_contains "$bidi" 'COMMENTS_HEADER_TPL=x\u202ay\u202dz' "sanitising: the bidi range ends U+202A and U+202D are escaped"
 check_env_output "$SANDBOX/out.bidi"; assert_eq "0" "$?" "sanitising: escaped bidi output satisfies the line contract"
+
+# One test per further invisible character (#466, the slice 1 security review).
+# Each row is `<code>|<label>`; the JSON escape is a backslash, `u` and the code.
+BS='\'
+for _case in '2028|U+2028 line separator' '2029|U+2029 paragraph separator' '200e|U+200E left-to-right mark' \
+             '200f|U+200F right-to-left mark' '061c|U+061C Arabic letter mark' '2060|U+2060 word joiner' \
+             '00ad|U+00AD soft hyphen'; do
+  proj_json "{\"agents\": {\"model\": \"a${BS}u${_case%%|*}b\"}}"
+  env_run > "$SANDBOX/out.invisible"
+  assert_contains "$(cat "$SANDBOX/out.invisible")" "agent.pm.model=a${BS}u${_case%%|*}b" "sanitising: ${_case#*|} prints as \\uXXXX"
+  check_env_output "$SANDBOX/out.invisible"; assert_eq "0" "$?" "sanitising: ${_case#*|} output satisfies the line contract"
+done
+proj_json "{\"agents\": {\"model\": \"a$(printf '\363\240\201\201')b\"}}"
+env_run > "$SANDBOX/out.invisible"
+assert_contains "$(cat "$SANDBOX/out.invisible")" "agent.pm.model=a${BS}U000e0041b" "sanitising: a tag character (U+E0041) prints as \\UXXXXXXXX"
+check_env_output "$SANDBOX/out.invisible"; assert_eq "0" "$?" "sanitising: a tag character output satisfies the line contract"
+
+# A real "[truncated]" is never the cut marker: it prints as \x5btruncated], and
+# only a cut value ends in the marker (which the warn line also names).
+proj_json '{"agents": {"model": "ends [truncated]", "roles": {"qa": {"model": "[truncated] mid"}}}}'
+env_run > "$SANDBOX/out.marker"
+marker="$(cat "$SANDBOX/out.marker")"
+assert_eq 'ends \x5btruncated]' "$(env_value "$marker" agent.pm.model)" "sanitising: a value ending in the text [truncated] does not look cut"
+assert_eq '\x5btruncated] mid' "$(env_value "$marker" agent.qa.model)" "sanitising: [truncated] inside a value is escaped too"
+assert_eq "0" "$(printf '%s\n' "$marker" | grep -c 'warn reason=value-truncated')" "sanitising: no truncation warn line for a value that was not cut"
 
 # ── (d) the checker is not vacuous: mutations turn it red ────────────────────
 cp "$SANDBOX/out.rich" "$SANDBOX/mut.esc"

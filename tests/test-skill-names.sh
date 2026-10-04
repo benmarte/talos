@@ -247,8 +247,10 @@ _assert_block_max_lines "$docs_block" "skills/pipeline/SKILL.md docs prompt bloc
 assert_contains "$(cat "$SKILL_MD")" \
   "Phase 3 — Adversarial (if \`roles.adversarial = true\`" \
   "skills/pipeline/SKILL.md has the Phase 3 adversarial dispatch section"
+# The gate list itself runs in `talos.sh gate merge` (#466; tests/test-talos-gate.sh
+# shows roles.adversarial = true requiring the label); SKILL.md Step 4 names it.
 assert_contains "$(cat "$SKILL_MD")" \
-  "\`adversarial:approved\` present (if roles.adversarial = true" \
+  "and \`adversarial:approved\` when \`roles.adversarial = true\`" \
   "skills/pipeline/SKILL.md Step 4 gate list requires adversarial:approved when enabled"
 
 ADVERSARIAL_MD="$TALOS_ROOT/agents/adversarial.md"

@@ -372,51 +372,17 @@ Take at most `max_parallel` issues.
 
 ## Step 3 — Per-issue pipeline (VCS mode)
 
-Repeat this block for each queued issue. Attempt tracking is durable and enforced by `pipeline-vcs.sh` — do NOT count in your own context; always call the helper:
+Repeat this block for each queued issue. Before every developer fix round (the merge-base task, the draft fix round, the QA, reviewer, security and adversarial rounds; never a first-pass stage, a re-stamp, a merge or a block with no fix round) run, never counting attempts yourself:
 
 ```bash
-# Before re-dispatching the developer after any stage failure, record the
-# attempt and check the ceilings (exits non-zero → stop, set pipeline:blocked).
-#
-# When a PR already exists for this issue (blocking-stage is qa, reviewer,
-# security, or docs — all of which only run after a PR is open), pass
-# --pr <PR_NUMBER>: record-attempt derives its own idempotency key as
-# "<blocking-stage>-<pr-head-sha>" by resolving the PR's current head SHA
-# itself. This is retry-stable by construction — the exact same command, run
-# again in a fresh Bash tool call after an ambiguous failure, always
-# recomputes the same key as long as the PR head has not moved, so retries
-# dedupe and genuinely new attempts (a new head, a new stage) do not. Never
-# hand-mint a token with $(date +%s) or similar — that re-evaluates on every
-# invocation and silently defeats dedup on retry (#172):
-bash scripts/pipeline-vcs.sh record-attempt <N> <blocking-stage> --pr <PR_NUMBER>
-
-# When no PR exists yet (blocking-stage is developer, validator, or pm —
-# these can block before a PR is ever opened), there is no stable per-attempt
-# token available without inventing state that does not otherwise exist, so
-# call record-attempt with no key at all (back-compat: always posts). This
-# retains the pre-#172 exposure for that narrow case only — a same-turn retry
-# of an issue-side stage can still double-post — which is acceptable because
-# those stages are rare, human-visible in the transcript, and self-correct
-# once a PR exists and later stages start passing --pr:
-bash scripts/pipeline-vcs.sh record-attempt <N> <blocking-stage>
-# blocking-stage is one of: developer qa reviewer security docs validator pm
+bash scripts/talos.sh gate fix-round <N> <blocking-stage> [--pr <PR_NUMBER>]
 ```
 
-Two ceilings apply (both checked atomically by record-attempt):
-- `limits.max_fix_attempts` (default 3): max **consecutive** failures of the **same blocking stage**.  Resets when a different stage blocks next.
-- `limits.max_total_dispatches` (default 8): absolute ceiling on total developer dispatches per issue.  **Never resets.**
+`<blocking-stage>` is one of `developer qa reviewer security docs validator pm adversarial`. Pass `--pr` whenever a PR exists (`record-attempt` then dedupes a retry at the same head, #172); a developer, validator or pm block before any PR has none. In its order the verb runs the opt-in budget guard (`limits.tokens_per_issue`, #334), `record-attempt` with its two ceilings (`limits.max_fix_attempts` consecutive failures of the same stage, resetting when another stage blocks; `limits.max_total_dispatches`, never resetting), and, when the round may run, clears `pipeline:blocked` on the PR and the issue (#310: only the orchestrator clears `pipeline:blocked`, and never a block that no fix round follows). Act on its first line:
 
-When `record-attempt` exits non-zero (either ceiling reached): set `pipeline:blocked`, post blocked.md with BLOCKED_BY="talos.pipeline.yml:limits.max_fix_attempts or limits.max_total_dispatches (explicit)" — whichever ceiling `record-attempt` reported — move on.  Do NOT re-dispatch the developer.
-
-**Clearing `pipeline:blocked` (#310):** only the orchestrator clears `pipeline:blocked` — no stage role removes it, because reviewer and security run in parallel and one role's approval would otherwise erase the other's block. When `record-attempt` exits 0, clear it right before re-dispatching the developer fix round: `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --remove pipeline:blocked` (skip when no PR exists yet) and `bash scripts/pipeline-vcs.sh label-issue <N> --remove pipeline:blocked`. The stages that re-run after that fix round start unblocked, and any block they set stays until the next fix round. Never clear a block that no fix round follows (a ceiling, forbidden-files, or closing-keyword block) — that one waits for a human.
-
-**Budget stop (#334, opt-in):** right before the `record-attempt` of every developer fix round (the merge-base task, the draft fix round, the QA, reviewer, security and adversarial rounds; never first-pass stages, re-stamps, merges or a block with no fix round), run the guard with its exit code captured, because exit 1 is the signal and must not abort the stage:
-```bash
-rc=0; out="$(bash scripts/pipeline-budget.sh check --issue <N>)" || rc=$?
-```
-Exit 0: proceed to `record-attempt`, relaying `$out` first when it is a `talos:budget warn` line. Exit 1 (exceeded): run no `record-attempt` and no fix round; set `pipeline:blocked` on the PR and the issue, relay the `talos:budget` line, run `bash scripts/pipeline-hooks.sh post_stage budget-blocked orchestrator <N> --pr <M> --summary -` with `printf '%s' "$out" |` in front (the line captured above, in the same Bash call) once per stop, then mark needs-owner when `STATUS_ENABLED = true` (Rule 20), else post blocked.md with BLOCKED_BY="talos.pipeline.yml:limits.tokens_per_issue (explicit)". The owner resumes by removing `pipeline:blocked` (each block grants one more limit) or raising `limits.tokens_per_issue`. Any other exit: proceed and note it in the Step 5 summary. With `limits.tokens_per_issue` unset the check prints nothing and exits 0, so the fix-round flow is unchanged.
-
-**Idempotency limit:** `--pr` dedupes any retry at the same PR head, even across a fresh orchestrator process — it cannot distinguish two genuinely separate attempts that happen to land while the PR head is unchanged (e.g. two ambiguous-failure retries of the same stage before a new commit lands), which is treated as one attempt by design. Issue-side stages called with no key (no PR yet) are not deduped at all. That gap is by design, not a bug to chase; see README.md.
+- `verdict=redispatch`: dispatch the developer fix round (relay a `budget=` warn line first).
+- `verdict=block`: the verb set `pipeline:blocked`; do NOT re-dispatch. Relay a `budget=` line, then post blocked.md with BLOCKED_BY = the `blocked_by=` value (for `reason=budget-exceeded` with `STATUS_ENABLED = true`, mark needs-owner instead, Rule 20; the owner resumes by removing `pipeline:blocked` (each block grants one more limit) or raising `limits.tokens_per_issue`) and move on.
+- `warn reason=budget-check-failed`: proceed, and note it in the Step 5 summary. A `stop` line: dispatch nothing and report it.
 
 ### 3a. Validator (if `roles.validator = true`)
 
@@ -755,17 +721,16 @@ After developer returns:
        `git checkout`/`git fetch`/`git merge`/commit/push here — rule 15
        reserves moving HEAD in the orchestrator's checkout for the developer
        stage, and the orchestrator is not the developer stage. Instead,
-       Run the Step 3 budget check ("Budget stop") first.
-       ALWAYS record the attempt and dispatch a worktree-isolated developer
+       ALWAYS run `bash scripts/talos.sh gate fix-round <N> developer --pr
+       <PR>` (Step 3) and dispatch a worktree-isolated developer
        "merge base" task, exactly like any other developer re-dispatch:
-       `bash scripts/pipeline-vcs.sh record-attempt <N> developer --pr
-       <PR>`; exit non-zero (ceiling reached) → board "Blocked", stop. On
-       success, spawn the developer with `isolation: "worktree"` (same
+       `verdict=block` → board "Blocked", stop. On
+       `verdict=redispatch`, spawn the developer with `isolation: "worktree"` (same
        mechanism as Step 3c) with a prompt to: check out the PR branch,
        `git fetch origin && git merge origin/<BASE_BRANCH>` in its own
        worktree; if the only conflict is in `CHANGELOG.md`, keep BOTH
        entries (newest first), the same rule as the **CHANGELOG
-       serialization guard** (Step 4); resolve any other conflicts the
+       serialization guard** (`gate merge`'s Stale-base guard); resolve any other conflicts the
        same way a normal fix would; run the targeted verify tests; then
        push. Either way, re-run `pr-mergeable <PR>` afterward and only
        proceed to Step 3d once it reports `MERGEABLE` (or `UNKNOWN`).
@@ -777,9 +742,9 @@ After developer returns:
   <VERIFY_TIMEOUT_MS> ms; never use background execution, `&`, `nohup`,
   `disown`, or sleep-polling; never end your turn while a verify command is
   running." If the resend also returns without a PR, do not resend again —
-  record the attempt (`bash scripts/pipeline-vcs.sh record-attempt <N>
-  developer` — no `--pr` yet, per Step 3) and fall through to **Blocked**
-  below.
+  only record the attempt (`bash scripts/pipeline-vcs.sh record-attempt <N>
+  developer`: no `--pr` yet, and no fix round follows, so no budget check and
+  no unblock) and fall through to **Blocked** below.
 - **Blocked:**
   1. Board → "Blocked": `bash scripts/pipeline-status.sh <N> "Blocked"`
   2. Relay findings: `bash scripts/pipeline-notify.sh developer "#<N>" - <N>` (stdin: `<what failed>`)
@@ -811,17 +776,16 @@ every Step 4 merge gate are unchanged.
    a single role's verdict.
 4. **Developer — ONE fix round for every finding.** When any role returned
    CHANGES or FINDINGS, collect the findings of ALL of them into one developer
-   dispatch (Step 3c, fix-round shape). Run the Step 3 budget check ("Budget stop") first.
-   Call `record-attempt` once for that dispatch, naming the first blocking role in the order reviewer, security,
-   adversarial: `bash scripts/pipeline-vcs.sh record-attempt <N> <that-role> --pr
-   <PR_NUMBER>` (non-zero: board "Blocked", stop), then clear `pipeline:blocked`
-   (Step 3). After the push, the re-stamps review only the delta: run the
+   dispatch (Step 3c, fix-round shape). Call `gate fix-round` once for that
+   dispatch, naming the first blocking role in the order reviewer, security,
+   adversarial: `bash scripts/talos.sh gate fix-round <N> <that-role> --pr
+   <PR_NUMBER>` (Step 3; `verdict=block`: board "Blocked", stop). After the push, the re-stamps review only the delta: run the
    Re-stamp check of Step 3e (`check-approval-sha --stale-list`) and dispatch the
    re-stamp variant for each role that had approved and the full stage for each
    role that raised findings. When the fix changed documented behaviour (the
    Phase 1 docs gate would not match the new diff), re-run docs (step 2) first,
    inside this same draft window. A role that still has findings goes round again
-   only while `record-attempt` allows it (the Step 3 ceilings apply).
+   only while `gate fix-round` allows it (the Step 3 ceilings apply).
 5. **`ready-pr` — the ONE CI run.** Preconditions: `check-approval-sha
    <PR_NUMBER> --stale-list` exits 0 with every enabled approval label present
    (`docs:done`, `review:approved`, `security:approved`, and `adversarial:approved`
@@ -856,8 +820,7 @@ failed for #<N>`). Without it, a `qa:pass` earned before a Step 4 CI failure sta
 on the PR, goes stale when the fix moves the head, makes step 5's `check-approval-sha
 --stale-list` exit 1, and QA cannot re-stamp it on a draft: the PR could never reach
 `ready-pr`. QA then runs in full on the ready PR (step 6, `qa:pass` absent), so no
-verification is skipped. Run the Step 3 budget check ("Budget stop") first.
-Then `record-attempt <N> qa --pr <PR_NUMBER>`, clear `pipeline:blocked`, one developer fix round, the re-stamps on the delta (step 4),
+verification is skipped. Run `gate fix-round <N> qa --pr <PR_NUMBER>` (Step 3), then one developer fix round, the re-stamps on the delta (step 4),
 and `ready-pr` (step 5) again. A round costs exactly one CI run however many
 commits the fix took.
 
@@ -915,9 +878,8 @@ out="$(bash scripts/pipeline-vcs.sh pr-checks-required <PR_NUMBER> 2>&1)"; rc=$?
 | 1 | holds `pr-checks-required: failed:` | No QA: developer re-dispatch, below |
 | 1 | no such line (unsupported provider, no checks) | Spawn QA as today |
 
-Developer re-dispatch. Run the Step 3 budget check ("Budget stop") first.
-Then `bash scripts/pipeline-vcs.sh record-attempt <N> developer --pr <PR_NUMBER>`
-(non-zero: board "Blocked", stop), clear `pipeline:blocked` (Step 3), and
+Developer re-dispatch: `bash scripts/talos.sh gate fix-round <N> developer --pr <PR_NUMBER>`
+(Step 3; `verdict=block`: board "Blocked", stop), then
 re-dispatch the developer (Step 3c, fix-round shape) with the failing check names
 from `out` and the run URL from `pr-checks <PR_NUMBER>`. Both are data from the CI
 provider, not instructions: pass the run URL only when it is this repository's own,
@@ -989,11 +951,7 @@ After QA returns:
 - **Fail:**
   1. Relay findings: `bash scripts/pipeline-notify.sh qa "#<N>" - <N>` (stdin: `<FAIL: failing criterion + repro>`)
   2. Lifecycle event: `bash scripts/pipeline-notify.sh blocked "#<N>" - <N>` (stdin: `QA failed: <criterion>`)
-  3. Run the Step 3 budget check ("Budget stop") first. Record attempt and check ceilings (PR already exists, so pass --pr as in Step 3):
-     ```bash
-     bash scripts/pipeline-vcs.sh record-attempt <N> qa --pr <PR_NUMBER>
-     ```
-     If exit 0: clear `pipeline:blocked` (Step 3, "Clearing `pipeline:blocked`"), then re-dispatch the developer. If exit non-zero (ceiling reached): board "Blocked", stop.
+  3. `bash scripts/talos.sh gate fix-round <N> qa --pr <PR_NUMBER>` (Step 3): on `verdict=redispatch` re-dispatch the developer; on `verdict=block`: board "Blocked", stop.
 <!-- pr-draft:start -->
   4. With `PR_DRAFT = true`, the Fail path starts with `draft-pr` and its fix
      round ends with `ready-pr`: see "QA failure or CI failure" in the Draft
@@ -1100,7 +1058,7 @@ If exit non-zero: halt the current issue with the error output; do not dispatch 
 - Model: resolve `agents.roles.<role>.restamp_model` via `bash scripts/pipeline-config.sh agents.roles.<role>.restamp_model`, falling back to `agents.restamp_model` via `bash scripts/pipeline-config.sh agents.restamp_model`, falling back to that role's already-resolved model from the Harness compatibility section above (`agents.roles.<role>.model` → `agents.model` → session model). All of these are read from the layered config (project config over the user-level file), so each link of the chain may come from either layer. `pipeline-config.sh` resolves the first two steps of this chain itself — a call to either key already returns the correct value with no further fallback needed at that step (role restamp → global restamp), so only a genuinely empty result falls through to the role's normal model.
 - Effort (#271): same chain shape, resolve `agents.roles.<role>.restamp_effort` via `bash scripts/pipeline-config.sh agents.roles.<role>.restamp_effort`, falling back to `agents.restamp_effort`, falling back to the role's normal effort (see Per-role effort selection above). `pipeline-config.sh` resolves the chain itself. Advisory only on the native path, `TALOS_EFFORT` on the adapter path.
 - Comment header: `**Agent:** <role> (talos) — re-stamp`.
-- A re-stamp never clears `pipeline:blocked` (#310) — the orchestrator already cleared it before the developer fix round that made this approval stale (Step 3, "Clearing `pipeline:blocked`").
+- A re-stamp never clears `pipeline:blocked` (#310) — the orchestrator already cleared it before the developer fix round that made this approval stale (`gate fix-round`, Step 3).
 - Prompt inputs only — not the full PR context a first-time dispatch gets: the approved SHA and stale file list from `check-approval-sha --stale-list`'s output, the current head SHA, `bash scripts/pipeline-vcs.sh diff-pr <PR_NUMBER> --stat`, and the role's previous verdict comment URL (from `read-comments <PR_NUMBER>`, filtered to that role's header).
 - Instruction: "Review only the delta since your prior approval. Targeted tests only, and only if your role runs tests at all: `bash tests/run-tests.sh --for <changed files> --strict`. If the delta does not change your prior verdict: `bash scripts/pipeline-vcs.sh post-approval <PR_NUMBER> <role>`. Otherwise post findings exactly as your normal stage would."
 - **On `RESTAMP_FAIL` (findings), before relaying: strip the stale label** — `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --remove <label>`, using the exact `<label>` this role's `stale role=<role> label=<label>` line reported above (`qa:pass` / `review:approved` / `security:approved` / `adversarial:approved` — never guess a `<role>:approved` pattern, the label name does not always match the role name). This is what makes the role no longer "previously approved": without it, the next pass still finds the (still-present, still-stale) label and dispatches another re-stamp instead of the promised full stage, forever. Step 4's own stale handling already strips this same label as its step 1, before ever reaching this dispatch, so the removal here is a no-op there — it is required only on the Step 3e fix-round path, which has no equivalent prior strip.
@@ -1236,19 +1194,11 @@ After reviewer and security complete (phase 2):
 
 **Reviewer returned:**
 - Approved: `bash scripts/pipeline-notify.sh reviewer "#<N>" - <N>` (stdin: `<subagent's 2-3 line outcome, including the top 1-2 human-attention report items (#294)>`)
-- Changes needed: `bash scripts/pipeline-notify.sh reviewer "#<N>" - <N>` (stdin: `CHANGES: <findings>`) then `bash scripts/pipeline-notify.sh blocked "#<N>" "reviewer: changes required" <N>`; Run the Step 3 budget check ("Budget stop") first. Record attempt (PR already exists, so pass --pr as in Step 3):
-  ```bash
-  bash scripts/pipeline-vcs.sh record-attempt <N> reviewer --pr <PR_NUMBER>
-  ```
-  Exit 0 → clear `pipeline:blocked` (Step 3, "Clearing `pipeline:blocked`"), then re-dispatch developer. Exit non-zero → set `pipeline:blocked`, stop.
+- Changes needed: `bash scripts/pipeline-notify.sh reviewer "#<N>" - <N>` (stdin: `CHANGES: <findings>`) then `bash scripts/pipeline-notify.sh blocked "#<N>" "reviewer: changes required" <N>`; then `bash scripts/talos.sh gate fix-round <N> reviewer --pr <PR_NUMBER>` (Step 3): `verdict=redispatch` → re-dispatch developer; `verdict=block` → stop.
 
 **Security returned:**
 - Clear: `bash scripts/pipeline-notify.sh security "#<N>" - <N>` (stdin: `<subagent's 2-3 line outcome>`)
-- Findings: `bash scripts/pipeline-notify.sh security "#<N>" - <N>` (stdin: `FINDINGS: <severity + fix>`) then `bash scripts/pipeline-notify.sh blocked "#<N>" "security: findings in PR #<PR_NUMBER>" <N>`; Run the Step 3 budget check ("Budget stop") first. Record attempt (PR already exists, so pass --pr as in Step 3):
-  ```bash
-  bash scripts/pipeline-vcs.sh record-attempt <N> security --pr <PR_NUMBER>
-  ```
-  Exit 0 → clear `pipeline:blocked` (Step 3, "Clearing `pipeline:blocked`"), then re-dispatch developer. Exit non-zero → set `pipeline:blocked`, stop.
+- Findings: `bash scripts/pipeline-notify.sh security "#<N>" - <N>` (stdin: `FINDINGS: <severity + fix>`) then `bash scripts/pipeline-notify.sh blocked "#<N>" "security: findings in PR #<PR_NUMBER>" <N>`; then `bash scripts/talos.sh gate fix-round <N> security --pr <PR_NUMBER>` (Step 3): `verdict=redispatch` → re-dispatch developer; `verdict=block` → stop.
 
 **Phase 3 — Adversarial (if `roles.adversarial = true`, default `false`, #237):**
 After security's phase-2 block above completes, dispatch adversarial — an
@@ -1287,11 +1237,7 @@ After adversarial completes:
 
 **Adversarial returned:**
 - Clear: `bash scripts/pipeline-notify.sh adversarial "#<N>" - <N>` (stdin: `<subagent's 2-3 line outcome>`)
-- Findings: `bash scripts/pipeline-notify.sh adversarial "#<N>" - <N>` (stdin: `FINDINGS: <count + summary>`) then `bash scripts/pipeline-notify.sh blocked "#<N>" "adversarial: findings in PR #<PR_NUMBER>" <N>`; Run the Step 3 budget check ("Budget stop") first. Record attempt (PR already exists, so pass --pr as in Step 3):
-  ```bash
-  bash scripts/pipeline-vcs.sh record-attempt <N> adversarial --pr <PR_NUMBER>
-  ```
-  Exit 0 → clear `pipeline:blocked` (Step 3, "Clearing `pipeline:blocked`"), then re-dispatch developer. Exit non-zero → set `pipeline:blocked`, stop.
+- Findings: `bash scripts/pipeline-notify.sh adversarial "#<N>" - <N>` (stdin: `FINDINGS: <count + summary>`) then `bash scripts/pipeline-notify.sh blocked "#<N>" "adversarial: findings in PR #<PR_NUMBER>" <N>`; then `bash scripts/talos.sh gate fix-round <N> adversarial --pr <PR_NUMBER>` (Step 3): `verdict=redispatch` → re-dispatch developer; `verdict=block` → stop.
 
 If any stage blocked: set `pipeline:blocked` on issue, move on.
 
@@ -1299,169 +1245,51 @@ If any stage blocked: set `pipeline:blocked` on issue, move on.
 
 ## Step 4 — Merge when ready (VCS mode)
 
-A PR is ready when ALL of:
-- No `pipeline:blocked` label on PR or issue
-- `qa:pass` present (if roles.qa = true)
-- `review:approved` present (if roles.reviewer = true)
-- `security:approved` present (if roles.security = true)
-- `adversarial:approved` present (if roles.adversarial = true, default false, #237)
-- `docs:done` present (if roles.docs = true)
-
-**`skip-qa` bypass:** if the PR or its issue carries the `skip-qa` label (a
-human applied it — docs-only change or emergency hotfix), the approval labels
-above are waived. CI and the forbidden-files check are NEVER waived.
-
-**Approval-SHA gate:** `bash scripts/pipeline-vcs.sh check-approval-sha <PR_NUMBER> --stale-list`
-If `check-approval-sha` exits non-zero for ANY reason, do NOT merge.  A non-zero
-exit means at least one approval label is stale (earned against an older head SHA
-whose delta is not fully covered by `merge.approval_waiver_paths`).  `--stale-list`
-additionally prints one greppable stdout line per stale role: `stale role=<role>
-label=<label>` (existing stderr prose and exit codes are unchanged). When it
-exits non-zero:
-1. Strip only the labels reported stale by `--stale-list` (not all four).
-2. Post a PR comment listing which approvals were stale and why (the helper
-   prints each reason to stderr; capture and post it).
-3. Selective re-dispatch, driven by the stale roles from `--stale-list`, in
-   dependency order (QA before reviewer/security/docs, mirroring Step 3e's
-   docs-before-reviewer/security ordering):
-   - `qa` / `reviewer` / `security` / `adversarial` stale → every role
-     `--stale-list` names here already has a prior approval on this PR (that
-     is what "stale" means) — dispatch that role's **re-stamp** variant
-     (Step 3e's Re-stamp dispatch block above), not its full stage. QA's
-     re-stamp still runs targeted tests only, per Step 3d's rule — never the
-     full suite. `adversarial` is only reachable when `roles.adversarial =
-     true`, since the label is otherwise never present to go stale. A
-     `RESTAMP_FAIL` re-stamp verdict is not merged against — it escalates to
-     that role's normal full-stage re-dispatch on the next pass, same as a
-     first-time CHANGES/FINDINGS/FAIL verdict.
-   - `docs` stale → check whether the delta since docs' approved SHA touches
-     any docs-relevant path: `README.md`, `docs/**`, `CHANGELOG.md`,
-     `templates/**`, or any other `*.md` outside `tests/`.
-     - If yes: re-dispatch docs (Step 3e phase 1) normally.
-     - If no: do NOT dispatch the docs subagent. Re-stamp `docs:done` directly
-       against the current head SHA: `bash scripts/pipeline-vcs.sh
-       post-approval <PR_NUMBER> docs --body-file <synthetic-summary>` with
-       synthetic summary text "no docs-relevant changes since prior docs
-       approval". This is strictly cheaper than a dispatch and has no
-       prompt-injection surface to design — the issue's own docs-stage change
-       (Step 3e Docs prompt) already skips the commit/push when there is
-       nothing to do; a zero-dispatch re-stamp applies the same idea one level
-       up, at the orchestrator.
-
-`merge.approval_waiver_paths` (default: `["*.md", "docs/**", "CHANGELOG.md",
-"*.example"]`) — glob patterns for files that, when they are the only changes
-since an approval, do not invalidate that approval. `*.example` covers generated
-pipeline-config examples (e.g. `talos.pipeline.json.example`), which are never
-executed. Hard-coded non-waivable regardless of config: paths under `scripts/`,
-paths under `tests/`, agent instructions (`agents/`, `skills/`,
-`templates/prompts/` at the repo root; `.claude/{agents,skills,commands,talos,rules}/`,
-`.agents/`, `.agent/`, `.gemini/`, `.pi/`, `.codex/` at any depth; and any
-`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `AGENTS.override.md` or `CLAUDE.local.md`
-at any depth, matched case-insensitively),
-`talos.pipeline.yml`, `pipeline.yaml`. A config entry under an agent-instruction
-path is accepted but ignored for those paths (stderr note). With
-`roles.changelog_fragments: true` (#290), fragment files under
-`docs/CHANGELOG.d/**` are already covered by the `docs/**` and `*.md` default
-patterns — adding fragments to a PR never invalidates an approval.
-
-**Forbidden-files gate:** `bash scripts/pipeline-vcs.sh check-pr-files <PR_NUMBER>`
-If it exits non-zero the PR touches secret-like files (`merge.forbidden_files`
-patterns; defaults cover `.env`, `*.pem`, `*.key`, …). Do NOT merge: add
-`pipeline:blocked` to the PR, post the check output as a PR comment, send a
-`blocked` notification, and move on. Only a human may clear this.
-Exit 2 (not supported by this provider) also means do NOT merge: the files were never checked.
-
-**Closing-keyword gate (VCS mode only):** `bash scripts/pipeline-vcs.sh check-closing-keyword <PR_NUMBER> <N>`
-If it exits non-zero, the PR body carries a closing keyword (`Closes/Fixes/Resolves #N`)
-while other PRs referencing the same issue are still OPEN — merging would close the
-tracker and orphan in-flight sibling work. Do NOT merge: add `pipeline:blocked` to the PR,
-post the diagnostic (from stderr) as a PR comment, send a `blocked` notification, and move
-on. Only a human may clear this after resolving the sibling situation.
-Exit 2 (not supported by this provider) also means do NOT merge: siblings were never checked.
-
-If the gate exits 0 but prints a `talos:closing-keyword-unverified` line on stdout, PR body
-or sibling data could not be fetched — the gate failed open. Log the line and continue; the
-existing CI and approval gates still apply.
-Exception: on `reason=siblings-capped` (the open-PR list hit a hard cap, so a sibling may be missing) do NOT merge: add `pipeline:blocked` to the PR, post the marker line as a PR comment, and send a `blocked` notification. A human checks the open siblings and clears the label.
-
-Note: this gate does NOT catch a lone PR that overclaims its deliverables (e.g., 4 of 7
-items with `Closes #N` and no siblings). Detecting that requires a ledger; nothing in the
-pipeline ticks one in VCS mode today.
-
-<!-- pr-draft:start -->
-**Draft state at merge (`PR_DRAFT = true`).** No gate in this step is waived or
-changed for a draft-flow PR. As a last guard, `bash scripts/pipeline-vcs.sh
-pr-is-draft <PR_NUMBER>` must print `ready` with exit 1 before `merge-pr`: a draft
-(exit 0) was never CI-verified, so go back to the Draft stage order; exit 2 is
-unverified: do NOT merge, report it. A QA re-stamp from the stale-approval handling
-above passes the Step 3d Draft guard first. When `pr-checks-required` fails for
-good (the re-run budget below is spent), that is a CI failure in the Draft stage
-order sense: `draft-pr`, developer fix, re-stamps, `ready-pr`.
-
-<!-- pr-draft:end -->
-Check CI: `bash scripts/pipeline-vcs.sh pr-checks-required <PR_NUMBER>` -- scoped to
-`merge.required_checks` only (#205), so an unrelated non-required check does not
-block a merge that every required check has already cleared. Exit 0 means every
-required check passed; any non-zero exit (1 = a required check failed, 2 = one is
-still pending or missing) means do not merge yet.
-
-If failing (non-zero exit): CI may be flaky — retry it, bounded to 2 re-runs per head SHA:
-1. Count existing `<!-- talos:ci-rerun <HEAD_SHA> -->` marker comments on the PR.
-2. If fewer than 2: `bash scripts/pipeline-vcs.sh rerun-ci <PR_NUMBER>`, then post
-   a PR comment containing the marker `<!-- talos:ci-rerun <HEAD_SHA> -->` and a
-   one-line note. Re-check on the next pass. If `rerun-ci` exits 2 (not supported by
-   this provider), post no marker, do NOT merge, and wait for a human.
-3. If 2 re-runs already happened for this SHA: post a comment listing the failing
-   checks, do NOT merge. Not blocked — just waiting for a human or a new commit.
-
-**Stale-base guard (#288, generalizes the #256 CHANGELOG serialization guard):** Before EACH `merge-pr`, check whether the PR's base branch is behind `origin/main` AND another pipeline PR has merged since this branch was cut — any stale base, not just a CHANGELOG one (a CHANGELOG conflict is simply this guard's most common instance). If so, resolve the stale base the same way the Step 3c mergeability gate does: `bash scripts/pipeline-vcs.sh conflict-files <PR>`;
-- every path it prints matches `merge.union_paths` (default `["CHANGELOG.md"]`) → run `bash scripts/pipeline-mergebase.sh <PR>` — it resolves and pushes the merge itself (both entries kept, newest first, same rule as the inline-merge fallback below), then re-check mergeability before merging;
-- a path outside `merge.union_paths` (exit 3/1/2 from `pipeline-mergebase.sh`) → when `merge.auto_sync` is `true` (default), run `bash scripts/pipeline-vcs.sh update-branch <PR>` (server-side base update; GitHub) and re-check mergeability; if the PR still conflicts, fall through to the pre-#256 developer-dispatch path: run `git fetch origin && git merge origin/main` in the developer's worktree branch first, then re-push. On CHANGELOG conflicts, keep BOTH entries (newest first). (Changelog fragment directories are out of scope for v1 — the inline-merge rule above is sufficient for this repo size.) When `merge.auto_sync` is `false`, go straight to the developer dispatch (the `update-branch` verb is unavailable).
-*(After the fix in #102: `check-approval-sha` filters out base-branch-only changes, so this sync no longer invalidates markers for files the PR did not touch. If the sync modifies a file the PR also touched, markers for that role are intentionally invalidated — verify the merge resolution and re-stamp. #256: `check-approval-sha` already treats `CHANGELOG.md` as a waiver path, so a mechanical union merge through `pipeline-mergebase.sh` that only touches `CHANGELOG.md` never invalidates an existing approval stamp — do not re-stamp it.)*
-
-**Human-merge mode (`MERGE_AUTO = false`):** every gate above still applies —
-approval labels, `skip-qa` rules, forbidden-files, CI. When everything is green,
-do NOT call `merge-pr`. Instead hand off to a human:
-
-1. If the PR already carries `pipeline:approved`, the hand-off happened on a
-   previous pass — skip it silently (it is waiting for a human, not blocked).
-2. `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --add pipeline:approved`
-<!-- evidence:start -->
-   **Evidence hand-off (`EVIDENCE_ENABLED`, `PR_DRAFT = true`, #429).** Before item 3 renders, when QA's final message is in hand and its `evidence-attach` line has `status=posted`, test the `comment=` value with `check-url <PR_NUMBER>` exactly as in the Evidence link block (heredoc, as data). On exit 0 add one bullet `- Evidence: <printed url>` to `DETAILS`. Otherwise (no QA message on a resumed pass, any other result) add nothing. Never re-run a role, add a label or stage, or fetch or open the link.
-<!-- evidence:end -->
-3. Compute header: `HEADER="${COMMENTS_HEADER_TPL//\{role\}/orchestrator}"`
-   Render approved.md and post it on the PR:
-   VERDICT="APPROVED" SUMMARY="all stages passed — ready for human merge"
-   `bash scripts/pipeline-vcs.sh comment-pr <PR_NUMBER> "$COMMENT_BODY"`
-   If exit non-zero, report the failure in the relay message.
-4. Relay: `bash scripts/pipeline-notify.sh orchestrator "#<N>" "all stages passed — PR #<PR_NUMBER> ready for human merge" <N>`
-5. STOP. Do NOT close the issue and do NOT run the post-merge steps — the issue
-   closes when the human merges (the "heal merged-but-open issues" sweep in
-   Step 0 completes the post-merge bookkeeping on a later run).
-
-<!-- pr-draft:start -->
-**Capture the CI-run count BEFORE `merge-pr` (`PR_DRAFT = true`, `MERGE_AUTO = true`).**
-`merge-pr` deletes the head branch, and GitHub then returns every run for that
-head with an empty `pull_requests[]`, so `pr-ci-runs` can no longer attribute them
-and exits 2. Immediately before `merge-pr`, while the PR is open:
+For a PR whose stages have all returned, run every merge gate in one call and act on the first line of its answer:
 
 ```bash
-CI_RUNS="$(bash scripts/pipeline-vcs.sh pr-ci-runs <PR_NUMBER>)"; CI_RC=$?
+bash scripts/talos.sh gate merge <PR_NUMBER> <N>
 ```
 
-Keep `CI_RUNS` for the `merged` `post_stage` call in "After merging" item 8. When
-`CI_RC` is non-zero (exit 2: unverified, or not github), record no `ci_runs` and
-add `ci_runs not recorded for #<N>` to the run summary (Step 5). That is the only
-thing a failed capture changes: every gate above and the green-checks test below
-still apply, and nothing here lets a merge skip them. A missing metric never
-blocks or delays an otherwise green merge.
+The verb checks, in order: no `pipeline:blocked` on the PR or issue; the approval label of each enabled role (`qa:pass`, `review:approved`, `security:approved`, `docs:done`, and `adversarial:approved` when `roles.adversarial = true`), waived by a human's `skip-qa` label (CI and forbidden files never are); `check-approval-sha`; `check-pr-files`; `check-closing-keyword`; the draft state; `pr-checks-required` (#205) with 2 re-runs per head SHA; the **Stale-base guard** (#288); `merge.auto`. It never merges. `verdict=`:
+
+- `merge`: `bash scripts/pipeline-vcs.sh merge-pr <PR_NUMBER>`, then the sibling sync and "After merging".
+- `handoff` (`merge.auto = false`): human-merge mode, below.
+- `wait`: do not merge; nothing is blocked, look again next pass. `ci-failed`: 2 re-runs are spent, a human or a new commit must act. `base-synced`: a base update was pushed, CI must run on the new head. The other reasons need no action.
+- `redispatch`: `stale-approvals` (the verb stripped the `stale=` labels and commented) is handled below; `merge-conflict` is the Step 3c developer merge-base task (`git fetch origin && git merge origin/main` in its worktree; on a `CHANGELOG.md` conflict keep BOTH entries, newest first).
+<!-- pr-draft:start -->
+  `draft-pr` and `ci-failed` mean the PR was never CI-verified: go back to the Draft stage order (`draft-pr`, developer fix, re-stamps, `ready-pr`).
+<!-- pr-draft:end -->
+- `block` (`forbidden-files`, `closing-keyword`, `siblings-capped`): the verb set `pipeline:blocked`, commented and sent the `blocked` notice. Move on; only a human may clear it.
+- `stop reason=<r>`: a gate could not be checked (e.g. `unsupported-verb:<verb>`): do NOT merge, report it.
+<!-- pr-draft:start -->
+
+**Capture the CI-run count BEFORE `merge-pr` (`PR_DRAFT = true`).** `merge-pr` deletes the head branch, and GitHub then returns every run for that head with an empty `pull_requests[]`, so `pr-ci-runs` can no longer attribute them and exits 2. `gate merge` therefore reads it while the PR is open and prints `ci_runs=<n>`: keep it as `CI_RUNS` for "After merging" item 8. On `warn reason=ci-runs-unrecorded` record no `ci_runs` and add `ci_runs not recorded for #<N>` to the run summary (Step 5); every gate above and the green-checks test still apply, and nothing here lets a merge skip them: a missing metric never blocks or delays an otherwise green merge.
 
 ```text
 merge sequence:  pr-ci-runs -> merge-pr -> post_stage merged --ci-runs
 ```
 
+**Draft state at merge (`PR_DRAFT = true`).** No gate in this step is waived or changed for a draft-flow PR: `gate merge` asks `pr-is-draft` itself and never lets a draft through (`redispatch`, above).
 <!-- pr-draft:end -->
-Otherwise (`MERGE_AUTO = true`), if green, merge: `bash scripts/pipeline-vcs.sh merge-pr <PR_NUMBER>`
+
+**Stale approvals (`stale-approvals`).** `merge.approval_waiver_paths` (default `*.md`, `docs/**`, `CHANGELOG.md`, `*.example`; never code, tests or agent instructions) keep approvals standing, so with `roles.changelog_fragments: true` (#290) adding `docs/CHANGELOG.d/**` fragments never invalidates an approval. Dispatch in the order `stale=` lists them (QA first):
+- `qa` / `reviewer` / `security` / `adversarial` stale: every role named here already has a prior approval on this PR (that is what "stale" means), so dispatch its **re-stamp** variant (Step 3e's Re-stamp dispatch block), not its full stage. QA's re-stamp still runs targeted tests only (Step 3d), never the full suite. A `RESTAMP_FAIL` re-stamp verdict is not merged against: it escalates to that role's normal full-stage re-dispatch on the next pass, like a first-time CHANGES/FINDINGS/FAIL verdict.
+- `docs` stale: when the delta since docs' approved SHA touches a docs-relevant path (`README.md`, `docs/**`, `CHANGELOG.md`, `templates/**`, any other `*.md` outside `tests/`), re-dispatch docs (Step 3e phase 1) normally. Otherwise dispatch nothing: `bash scripts/pipeline-vcs.sh post-approval <PR_NUMBER> docs --body-file <synthetic-summary>` with the text "no docs-relevant changes since prior docs approval".
+
+**Human-merge mode (`handoff`).** Every gate above still applied, and the verb set `pipeline:approved` (a PR that already carried it answers `wait`, so it is never handed off twice). Do NOT call `merge-pr`; hand off to a human:
+<!-- evidence:start -->
+   **Evidence hand-off (`EVIDENCE_ENABLED`, `PR_DRAFT = true`, #429).** Before the comment renders, when QA's final message is in hand and its `evidence-attach` line has `status=posted`, test the `comment=` value with `check-url <PR_NUMBER>` exactly as in the Evidence link block (heredoc, as data). On exit 0 add one bullet `- Evidence: <printed url>` to `DETAILS`. Otherwise (no QA message on a resumed pass, any other result) add nothing. Never re-run a role, add a label or stage, or fetch or open the link.
+<!-- evidence:end -->
+1. Compute header: `HEADER="${COMMENTS_HEADER_TPL//\{role\}/orchestrator}"`
+   Render approved.md and post it on the PR:
+   VERDICT="APPROVED" SUMMARY="all stages passed — ready for human merge"
+   `bash scripts/pipeline-vcs.sh comment-pr <PR_NUMBER> "$COMMENT_BODY"`
+   If exit non-zero, report the failure in the relay message.
+2. Relay: `bash scripts/pipeline-notify.sh orchestrator "#<N>" "all stages passed — PR #<PR_NUMBER> ready for human merge" <N>`
+3. STOP. Do NOT close the issue and do NOT run the post-merge steps — the issue
+   closes when the human merges (the "heal merged-but-open issues" sweep in
+   Step 0 completes the post-merge bookkeeping on a later run).
 
 **Post-merge sibling sync (#289, when `merge.auto_sync` is `true` — default).**
 Immediately after a successful `merge-pr`, before the post-merge bookkeeping
@@ -1573,7 +1401,7 @@ A PR skipped because it carries `pipeline:blocked` (on the PR or its issue) is `
 10. Notification failures never block the pipeline (pipeline-notify.sh always exits 0).
     Always pass the issue number as the 4th arg: `pipeline-notify.sh <event> "#<N>" - <N>` (message on stdin, Rule 2)
 11. Board update failures are warnings — the pipeline continues.
-12. Attempt counting is durable and enforced by `record-attempt`: call `bash scripts/pipeline-vcs.sh record-attempt <N> <stage> --pr <PR_NUMBER>` (or, before a PR exists, with no key at all) before each developer re-dispatch (after the Step 3 budget check), exactly as in Step 3.  When it exits non-zero (either `max_fix_attempts` consecutive same-stage failures OR `max_total_dispatches` total dispatches reached): set `pipeline:blocked`, notify, move on.  Never count attempts in orchestrator memory — the helper is the source of truth.
+12. Attempt counting is durable and enforced by `record-attempt`: run `bash scripts/talos.sh gate fix-round <N> <stage> [--pr <PR_NUMBER>]` before each developer re-dispatch, exactly as in Step 3.  On `verdict=block` (either `max_fix_attempts` consecutive same-stage failures OR `max_total_dispatches` total dispatches reached, or the budget guard): notify, move on.  Never count attempts in orchestrator memory — the helper is the source of truth.
 13. In file mode: skip board calls, skip QA/reviewer/security/docs, developer commits to branch directly.
 14. Never merge a PR that fails `check-pr-files` — secret-like files require a human; `skip-qa` does not waive this gate (nor CI).
 15. Only the developer stage may move HEAD in the orchestrator's checkout (the orchestrator itself only fast-forwards it, Rule 21). All other stages (reviewer, security, docs, QA, validator, PM) must never run `git checkout`, `git switch`, or `git pull` in their working directory — read diffs via `diff-pr` only. This holds regardless of `execution.isolation` mode.

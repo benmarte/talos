@@ -47,9 +47,16 @@ assert_contains "$GATE" '| 1 | holds `pr-checks-required: failed:` | No QA: deve
   "rc 1 with the failed: line routes to a developer re-dispatch"
 assert_contains "$GATE" '| 1 | no such line (unsupported provider, no checks) | Spawn QA as today' \
   "rc 1 without the failed: line routes to QA"
-assert_contains "$GATE" 'record-attempt <N> developer --pr <PR_NUMBER>' "re-dispatch is recorded as a developer attempt"
-assert_contains "$GATE" 'Run the Step 3 budget check ("Budget stop") first.' "re-dispatch runs the budget check first"
-assert_contains "$GATE" 'clear `pipeline:blocked`' "re-dispatch clears pipeline:blocked"
+assert_contains "$GATE" 'gate fix-round <N> developer --pr <PR_NUMBER>' "re-dispatch is recorded as a developer attempt (gate fix-round, #466)"
+# The budget check and the unblock moved from this prose into the verb (#466):
+# the budget guard runs before record-attempt, the unblock after it.
+VERB_TEXT="$(sed -n '/^_talos_gate_fix_round() {/,/^}/p' "$TALOS_ROOT/scripts/talos.sh")"
+budget_at="$(printf '%s\n' "$VERB_TEXT" | grep -n -m1 -F 'pipeline-budget.sh" check' | cut -d: -f1)"
+record_at="$(printf '%s\n' "$VERB_TEXT" | grep -n -m1 -F '_vcs record-attempt' | cut -d: -f1)"
+unblock_at="$(printf '%s\n' "$VERB_TEXT" | grep -n -m1 -F -- '--remove pipeline:blocked' | cut -d: -f1)"
+[ -n "$budget_at" ] && [ -n "$record_at" ] && [ -n "$unblock_at" ] && [ "$budget_at" -lt "$record_at" ] && [ "$record_at" -lt "$unblock_at" ] \
+  && pass "re-dispatch runs the budget check first, then record-attempt, then clears pipeline:blocked (gate fix-round)" \
+  || fail "re-dispatch runs the budget check first, then record-attempt, then clears pipeline:blocked (gate fix-round)" "budget=$budget_at record=$record_at unblock=$unblock_at"
 assert_contains "$GATE" 'draft-pr` and `label-pr --remove qa:pass`' "draft mode reuses the QA/CI failure path"
 assert_contains "$GATE" 'ready-pr' "draft mode ends the fix round with ready-pr"
 

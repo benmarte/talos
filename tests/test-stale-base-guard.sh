@@ -16,16 +16,19 @@ SKILL="$TALOS_ROOT/skills/pipeline/SKILL.md"
 assert_file_exists "$SKILL" "skills/pipeline/SKILL.md exists"
 
 skill_text="$(cat "$SKILL")"
+# The guard's mechanics moved into `talos.sh gate merge` (#466): the prose keeps
+# the name and the developer fallback, the verb carries the rest.
+verb_text="$(cat "$TALOS_ROOT/scripts/talos.sh")"
 
 assert_contains "$skill_text" "**Stale-base guard" "skill: Step 4 names the guard stale-base guard"
 assert_not_contains "$skill_text" "**CHANGELOG serialization guard:**" "skill: the CHANGELOG-only guard heading is gone (not special-cased)"
-assert_contains "$skill_text" "most common instance" "skill: guard frames CHANGELOG as the common instance, not a special case"
-assert_contains "$skill_text" 'conflict-files <PR>`' "skill: guard runs conflict-files first"
-assert_contains "$skill_text" "merge.union_paths" "skill: guard gates the mechanical path on merge.union_paths"
-assert_contains "$skill_text" "pipeline-mergebase.sh <PR>" "skill: guard dispatches the mechanical union merge"
+assert_contains "$verb_text" "most common instance" "verb: guard frames CHANGELOG as the common instance, not a special case"
+assert_contains "$verb_text" 'conflict-files "$_pr"' "verb: guard runs conflict-files first"
+assert_contains "$verb_text" "merge.union_paths" "verb: guard gates the mechanical path on merge.union_paths"
+assert_contains "$verb_text" 'pipeline-mergebase.sh" "$_pr"' "verb: guard dispatches the mechanical union merge"
 assert_contains "$skill_text" "git merge origin/main" "skill: non-union fallback still the developer merge-base dispatch"
 assert_contains "$skill_text" "keep BOTH entries" "skill: CHANGELOG union keeps both entries, newest first"
-assert_contains "$skill_text" "Before EACH \`merge-pr\`" "skill: guard applies before every merge, not only CHANGELOG ones"
+assert_contains "$verb_text" "Before EACH merge verdict" "verb: guard applies before every merge verdict, not only CHANGELOG ones"
 
 # The Step 3c gate reference to the mechanical path is unchanged: it must
 # still be able to reach the same script.
