@@ -785,10 +785,11 @@ keep the ready flow, where every push runs CI.
   the worst state wins. `/pipeline` itself never edits a workflow.
   `/pipeline-setup` offers a minimal change: `pipeline-draft-check.sh edit
   <file>` prints the exact diff (`ready_for_review` appended to `types`, the
-  skip added to a job, an existing job `if: <cond>` rewritten as `(<cond>) &&
-  github.event.pull_request.draft != true`, nothing else, never `permissions:`),
+  skip added to a job that has no `if:`, nothing else, never `permissions:`),
   `edit <file> --write` applies it only after your explicit yes, and a symlink
-  or non-regular file is refused.
+  or non-regular file is refused. An existing job `if:` is never edited; it is
+  listed as `manual: job <name>` with the combined condition `(<existing>) &&
+  github.event.pull_request.draft != true` for you to apply by hand.
 - **A skipped check is pending, not red.** A draft push leaves the job skipped
   until the `ready_for_review` run replaces it. `pr-checks-required` reads a
   skipped check as pending (exit 2), never as `failed:` and never as a pass.

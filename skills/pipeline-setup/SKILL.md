@@ -655,17 +655,19 @@ bash scripts/pipeline-draft-check.sh
 
 For `no-skip` and `no-ready-trigger`, offer a minimal workflow change with
 `bash scripts/pipeline-draft-check.sh edit <file>` (`<file>` is a workflow the
-check read). It prints the exact diff and writes nothing: `ready_for_review`
-appended to `on.pull_request.types`, `if: github.event.pull_request.draft != true`
-on a job without an `if:`, and an existing `if: <cond>` rewritten as `(<cond>) &&
-github.event.pull_request.draft != true`. Nothing else changes, and it refuses a
-symlink or non-regular file (a line starting `refused:`: relay it and leave the
-file for the user). Show the user that diff verbatim and ask "Apply this to
-`<file>`? (y/n)". Only after an explicit yes run the same command with `--write`;
-never edit a workflow any other way, and leave every workflow you did not offer
-alone. If the user says no, ask whether to keep the draft flow anyway (it still
-works, it just saves nothing, and on `no-ready-trigger` Step 0 falls back to the
-ready flow while `pr.draft` is unset) or to use the ready flow.
+check read). It prints the exact diff and writes nothing. It only appends
+`ready_for_review` to `on.pull_request.types` and adds `if:
+github.event.pull_request.draft != true` to a job that has no `if:`. An existing
+job `if:` is never edited: the output lists `manual: job <name>: ...` with the
+combined condition `(<existing>) && github.event.pull_request.draft != true`, for
+the user to apply by hand. It refuses a symlink or non-regular file (a line
+starting `refused:`: relay it and leave the file for the user). Show the user
+the diff and the manual lines verbatim and ask "Apply this to `<file>`? (y/n)".
+Only after an explicit yes run the same command with `--write`; never edit a
+workflow any other way, and leave every workflow you did not offer alone. If the
+user says no, ask whether to keep the draft flow anyway (it still works, it just
+saves nothing, and on `no-ready-trigger` Step 0 falls back to the ready flow while
+`pr.draft` is unset) or to use the ready flow.
 
 - `on.pull_request.types` must include `ready_for_review`. Without it, marking
   a PR ready fires no event, no run ever starts, and QA waits for one until

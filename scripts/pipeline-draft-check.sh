@@ -50,20 +50,21 @@
 #             read the same value.
 #   edit      The minimal workflow change /pipeline-setup offers. Without
 #             --write it prints the unified diff and writes nothing; with
-#             --write it applies exactly that diff. Only these edits: append
-#             `ready_for_review` to `on.pull_request.types` (a missing `types`
-#             gets `[opened, synchronize, reopened, ready_for_review]`), give
-#             each job without an `if:` `if: github.event.pull_request.draft !=
-#             true`, and rewrite an existing job `if: <cond>` as `(<cond>) &&
-#             github.event.pull_request.draft != true`. Jobs gated to a
-#             non-PR event are left alone. Nothing else is touched (never
-#             `permissions:`, other events, secrets or steps); the result is
-#             checked line by line and refused if it would. It prints `refused:
-#             <why>` on stderr and exits 1, writing nothing, for a file that is
-#             not a regular non-symlink file directly under .github/workflows
-#             (no symlink on the path), over 1 MB, or in a shape it cannot edit
-#             minimally (`on:` as a list or scalar, a multi-line or quoted `if:`,
-#             flow-style `pull_request`).
+#             --write it applies exactly that diff. Only two kinds of change:
+#             append `ready_for_review` to `on.pull_request.types` (a missing
+#             `types` gets `[opened, synchronize, reopened, ready_for_review]`),
+#             and add `if: github.event.pull_request.draft != true` to a job
+#             that has no `if:`. An existing job `if:` (any form) is NEVER
+#             edited; it is listed after the diff as `manual: job <name>: ...`
+#             with the suggested combined condition, for the user to apply by
+#             hand. The result is checked line by line (`verify`) and refused
+#             if any pre-existing line, other than the one `types:` flow line,
+#             would change (never `permissions:`, other events, secrets or
+#             steps). It prints `refused: <why>` on stderr and exits 1, writing
+#             nothing, for a file that is not a regular non-symlink file
+#             directly under .github/workflows (no symlink on the path), over
+#             1 MB, or in a shape it cannot edit minimally (`on:` as a list or
+#             scalar, flow-style `pull_request`).
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -119,6 +120,33 @@ def real_skip(expr):
     return any(p in FORMS or (p.startswith("!") and _unwrap(p[1:]) == DRAFT)
                or (p.startswith("(") and real_skip(p)) for p in _split(e, "&&"))
 TALOS_p4Xr9Lw2Qn7B
+
+# ── The post-edit check: the only allowed changes are added `if:` lines (the
+# draft skip on a job that had none), the `types:` line and one added
+# `- ready_for_review` item. Any modified or removed pre-existing line, other
+# than that one `types:` flow line, is refused.
+read -r -d '' _DC_VERIFY_PY <<'TALOS_v6Yb2Kq8Zr4D' || true
+import difflib
+
+_ADDED = re.compile(r"^\s*(if: " + re.escape(DRAFT + " != true") +
+                    r"|types: \[opened, synchronize, reopened, ready_for_review\]|- ready_for_review)\s*$")
+_TYPES = re.compile(r"^\s*types:\s*\[")
+
+def verify(orig, new):
+    """None when new only adds the allowed lines to orig, else the reason."""
+    a = [x.rstrip("\r\n") for x in orig]
+    b = [x.rstrip("\r\n") for x in new]
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if tag == "equal":
+            continue
+        if tag == "insert" and all(_ADDED.match(x) for x in b[j1:j2]):
+            continue
+        if tag == "replace" and i2 - i1 == 1 and j2 - j1 == 1 and _TYPES.match(a[i1]) and _TYPES.match(b[j1]) \
+                and b[j1].startswith(a[i1].split("]")[0]):
+            continue
+        return "the edit would change a pre-existing line (%s, line %d)" % (tag, i1 + 1)
+    return None
+TALOS_v6Yb2Kq8Zr4D
 
 # ── check ─────────────────────────────────────────────────────────────────────
 # Per file, four 0/1 flags: trigger skip ready unknown.
@@ -185,6 +213,15 @@ _dc_flags_grep() {
         while (strip ~ /\([^()]*\)/) gsub(/\([^()]*\)/, "", strip)
         if (strip !~ /\|\|/) print "1"
       }')" ] && s=1
+    # A multi-line `if:` (`>-`, `|`, or a continued plain scalar) cannot be read
+    # line by line: doubtful, never ok.
+    if [ -n "$(printf '%s\n' "$txt" | awk '
+      /^[ ]*if:/ { match($0, /^ */); pind = RLENGTH; v = $0; sub(/^[ ]*if:[ ]*/, "", v)
+                   if (v == "" || v ~ /^[>|]/) print 1
+                   pend = 1; next }
+      pend && NF { match($0, /^ */); if (RLENGTH > pind) print 1; pend = 0 }')" ]; then
+      s=0; u=1
+    fi
     [ "$s" = 0 ] && printf '%s\n' "$txt" | grep -Eq '^[[:space:]]*uses:' && u=1
   elif printf '%s\n' "$txt" | grep -Eq 'pull_request_target|workflow_call'; then
     u=1
@@ -331,7 +368,8 @@ def body(l):
 if any("\t" in l[:len(l) - len(l.lstrip())] for l in lines):
     refuse("tab indentation")
 
-ops = []   # (index, "replace"|"after", new line without eol)
+ops = []     # (index, "replace"|"after", new line without eol)
+manual = []  # existing job conditions we report but never touch
 
 # ── on.pull_request.types
 i_on = next((i for i, l in enumerate(lines) if re.match(r"^(on|\"on\"|'on'):\s*(#.*)?$", body(l))), None)
@@ -400,28 +438,26 @@ for i in range(i_jobs + 1, j_end):
     if if_idx is None:
         ops.append((i, "after", " " * kk + "if: " + SKIP))
         continue
-    m = re.match(r"^(\s*if:\s*)(.*)$", body(lines[if_idx]))
-    val = m.group(2).rstrip()
-    if val == "" or val[0] in ">|\"'":
-        refuse("job `if:` at line %d is multi-line or quoted; edit it by hand" % (if_idx + 1))
-    comment = ""
-    cm = re.match(r"^(.*?)(\s+#.*)$", val)
-    if cm:
-        if "'" in val or '"' in val:
-            refuse("job `if:` at line %d has a trailing comment next to quotes; edit it by hand" % (if_idx + 1))
-        val, comment = cm.group(1), cm.group(2)
-    if real_skip(val):
+    # An existing if: is never edited (line-based YAML condition rewriting is
+    # where guards get lost). It is reported with a suggestion instead.
+    val = re.match(r"^\s*if:\s*(.*)$", body(lines[if_idx])).group(1).rstrip()
+    nxt = first_sig(if_idx + 1, job_end)
+    multiline = val == "" or val[0] in ">|" or (nxt is not None and indent(lines[nxt]) > kk)
+    if not multiline and real_skip(val):
         continue
-    if "github.event_name" in val and "pull_request" not in val:
-        continue   # gated to a non-PR event: leave it alone
-    w = re.fullmatch(r"\$\{\{\s*(.*?)\s*\}\}", val, re.S)
-    if w:
-        new = "${{ (" + w.group(1) + ") && " + SKIP + " }}"
-    elif "${{" in val:
-        refuse("job `if:` at line %d mixes text and `${{ }}`; edit it by hand" % (if_idx + 1))
-    else:
-        new = "(" + val + ") && " + SKIP
-    ops.append((if_idx, "replace", m.group(1) + new + comment))
+    sugg = "(<your existing condition>) && " + SKIP
+    if not multiline:
+        cm = re.match(r"^(.*?)(\s+#.*)?$", val)
+        plain = cm.group(1)
+        # A concrete suggestion only for a simple one-line condition.
+        if not (cm.group(2) and ("'" in val or '"' in val)) and plain[:1] not in ("'", '"'):
+            w = re.fullmatch(r"\$\{\{\s*(.*?)\s*\}\}", plain)
+            if w and "${{" not in w.group(1) and "}}" not in w.group(1):
+                sugg = "${{ (" + w.group(1) + ") && " + SKIP + " }}"
+            elif "${{" not in plain:
+                sugg = "(" + plain + ") && " + SKIP
+    manual.append("manual: job %s: existing condition left unchanged; combine manually: if: %s"
+                  % (body(lines[i]).strip().rstrip(":").strip("\"'"), sugg))
 
 for idx, kind, new in sorted(ops, key=lambda o: -o[0]):
     if kind == "replace":
@@ -431,15 +467,13 @@ for idx, kind, new in sorted(ops, key=lambda o: -o[0]):
 
 if lines == orig:
     print("no change needed")
+    if manual:
+        print("\n".join(manual))
     sys.exit(0)
 
-# ── only if:, types: and `- ready_for_review` lines may differ; never permissions
-a, b2 = [body(l) for l in orig], [body(l) for l in lines]
-for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b2, autojunk=False).get_opcodes():
-    if tag == "equal":
-        continue
-    if tag == "delete" or not all(re.match(r"^\s*(if:|types:|-\s*ready_for_review\s*$)", x) for x in a[i1:i2] + b2[j1:j2]):
-        refuse("internal check: the edit would touch more than if: and types:; nothing written")
+err = verify(orig, lines)
+if err:
+    refuse("internal check: " + err + "; nothing written")
 
 sys.stdout.write("".join(difflib.unified_diff(orig, lines, fromfile=rel, tofile=rel + " (proposed)", n=2)))
 if write:
@@ -450,13 +484,16 @@ if write:
     shutil.copymode(rel, tmp)
     os.replace(tmp, rel)
     print("written: " + rel)
+if manual:
+    print("\n".join(manual))
 TALOS_e7Zt3Hc8Vm5F
 
 _dc_edit() {
   [ -n "${1:-}" ] || { echo "refused: usage: pipeline-draft-check.sh edit <workflow-file> [--write]" >&2; return 1; }
-  python3 -I -c "$_DC_PRED"$'\n'"$_DC_EDIT_PY" "$@"
+  python3 -I -c "$_DC_PRED"$'\n'"$_DC_VERIFY_PY"$'\n'"$_DC_EDIT_PY" "$@"
 }
 
+[ "${BASH_SOURCE[0]}" = "$0" ] || return 0   # sourced (the tests read _DC_PRED and _DC_VERIFY_PY)
 case "${1:-check}" in
   check)   _dc_check "${2:-}"; exit 0 ;;
   resolve) _dc_resolve; exit 0 ;;

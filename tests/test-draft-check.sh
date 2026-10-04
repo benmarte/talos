@@ -272,6 +272,15 @@ for d in "$SANDBOX"/fx/*; do (cd "$d" && bash "$DC" >/dev/null 2>&1); done
 after="$(find "$SANDBOX/fx" -type f | sort | xargs cksum | cksum)"
 assert_eq "$before" "$after" "check never edits a workflow file"
 
+# A multi-line if: cannot be read line by line: the grep path says unknown, never
+# ok (PyYAML reads the folded string and can tell).
+printf 'on:\n  pull_request:\n    types: [ready_for_review]\njobs:\n  t:\n    if: >-\n      github.event.pull_request.draft != true\n    runs-on: x\n' | wf ml-folded
+printf 'on:\n  pull_request:\n    types: [ready_for_review]\njobs:\n  t:\n    if: github.actor != bot &&\n      github.event.pull_request.draft != true\n    runs-on: x\n' | wf ml-plain
+for name in ml-folded ml-plain; do
+  assert_eq "ok" "$(bash "$DC" check "$SANDBOX/fx/$name/.github/workflows")" "check (default parser): $name reads the condition and is ok"
+  assert_eq "unknown" "$(TALOS_DRAFT_CHECK_NO_YAML=1 bash "$DC" check "$SANDBOX/fx/$name/.github/workflows")" "check (grep fallback): $name is unknown, not ok"
+done
+
 # ── (b) the shipped examples qualify ─────────────────────────────────────────
 for how in yaml grep; do
   if [ "$how" = grep ]; then export TALOS_DRAFT_CHECK_NO_YAML=1; else unset TALOS_DRAFT_CHECK_NO_YAML; fi
@@ -281,6 +290,8 @@ done
 unset TALOS_DRAFT_CHECK_NO_YAML
 
 # ── (e) edit: the minimal, bounded workflow change /pipeline-setup offers ─────
+# It adds two kinds of line (the types item, an if: on a job that has none) and
+# NEVER rewrites an existing job if:, whatever its form; those are reported.
 EDIT="$SANDBOX/edit"; mkdir -p "$EDIT/.github/workflows"
 WFE="$EDIT/.github/workflows/ci.yml"
 cat > "$WFE" <<'TALOS_x5Jd8Rq3Mv1T'
@@ -304,17 +315,31 @@ jobs:
       pull-requests: write
     steps:
       - run: echo lint
+  multi:
+    if: github.ref == 'refs/heads/main' &&
+      !(github.actor == 'bot'
+      || github.run_attempt > 3)
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo multi
+  folded:
+    if: >-
+      github.actor != 'bot' &&
+      github.run_attempt < 3
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo folded
+  combo:
+    if: ${{ github.run_attempt > 1 }} && ${{ github.actor != 'bot' }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo combo
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     environment: production
     runs-on: ubuntu-latest
     steps:
       - run: echo deploy
-  wrapped:
-    if: ${{ github.run_attempt > 1 }} # keep me
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo wrapped
 TALOS_x5Jd8Rq3Mv1T
 cp "$WFE" "$SANDBOX/ci.orig"
 edit() { (cd "$EDIT" && bash "$DC" edit "$@" 2>"$SANDBOX/err"); }
@@ -323,25 +348,56 @@ diff_out="$(edit .github/workflows/ci.yml)"; rc=$?
 assert_eq "0" "$rc" "edit: a proposal exits 0"
 assert_eq "$(cksum < "$SANDBOX/ci.orig")" "$(cksum < "$WFE")" "edit: without --write nothing is written"
 assert_contains "$diff_out" "+    types: [opened, ready_for_review]" "edit: ready_for_review is appended to the existing types list"
-assert_contains "$diff_out" "+    if: (github.actor != 'dependabot[bot]') && github.event.pull_request.draft != true" "edit: an existing job if: is combined, never replaced"
-assert_contains "$diff_out" "-    if: github.actor != 'dependabot[bot]'" "edit: the old condition is the line being rewritten"
 assert_contains "$diff_out" "+    if: github.event.pull_request.draft != true" "edit: a job without an if: gets the skip"
-assert_contains "$diff_out" '+    if: ${{ (github.run_attempt > 1) && github.event.pull_request.draft != true }} # keep me' "edit: a wrapped if: stays wrapped and keeps its comment"
 changed_lines="$(printf '%s\n' "$diff_out" | grep -E '^[+-]' | grep -Ev '^(\+\+\+|---)')"
+assert_eq "3" "$(printf '%s\n' "$changed_lines" | wc -l | tr -d ' ')" "edit: exactly three lines change (types out and in, one added if:)"
 assert_not_contains "$changed_lines" "permissions" "edit: no changed line mentions permissions"
-assert_not_contains "$changed_lines" "event_name" "edit: a job gated to a push is left alone"
-assert_eq "7" "$(printf '%s\n' "$changed_lines" | wc -l | tr -d ' ')" "edit: exactly seven lines change (types, three ifs rewritten or added)"
+assert_not_contains "$(printf '%s\n' "$changed_lines" | grep '^-')" "if:" "edit: no existing if: line is removed or rewritten"
+for job in test multi folded combo deploy; do
+  assert_contains "$diff_out" "manual: job $job: existing condition left unchanged; combine manually: if: " "edit: the existing if: of job $job is reported, not edited"
+done
+assert_contains "$diff_out" "manual: job test: existing condition left unchanged; combine manually: if: (github.actor != 'dependabot[bot]') && github.event.pull_request.draft != true" "edit: a one-line condition gets the exact combined suggestion"
+for job in multi folded combo; do
+  assert_contains "$diff_out" "manual: job $job: existing condition left unchanged; combine manually: if: (<your existing condition>) && github.event.pull_request.draft != true" "edit: job $job (multi-line or compound) gets the generic suggestion"
+done
+assert_not_contains "$diff_out" "manual: job lint" "edit: a job that got the skip needs no manual note"
 
-edit .github/workflows/ci.yml --write >/dev/null; rc=$?
+edit .github/workflows/ci.yml --write >"$SANDBOX/write.out"; rc=$?
 assert_eq "0" "$rc" "edit --write: exits 0"
-assert_eq "ok" "$(cd "$EDIT" && bash "$DC" check)" "edit --write: the result is ok for the check"
-assert_eq "no change needed" "$(edit .github/workflows/ci.yml)" "edit: a second run has nothing to do"
-# Only if: and types: lines differ; permissions, events, environment, steps are byte-identical.
-changed="$(diff "$SANDBOX/ci.orig" "$WFE" | grep '^[<>]' | grep -Ev '^[<>] +(if:|types:)' | wc -l | tr -d ' ')"
-assert_eq "0" "$changed" "edit --write: no line other than if: and types: changed"
-assert_eq "$(grep -n -A1 '^permissions:' "$SANDBOX/ci.orig" | tail -2 | tr -d '0-9')" "$(grep -n -A1 '^permissions:' "$WFE" | tail -2 | tr -d '0-9')" "edit --write: permissions is untouched"
-assert_contains "$(cat "$WFE")" "    environment: production" "edit --write: the deploy job is byte-identical"
-assert_eq "1" "$(grep -c "github.event_name == 'push' && github.ref == 'refs/heads/main'" "$WFE")" "edit --write: the deploy condition is unchanged"
+assert_contains "$(cat "$SANDBOX/write.out")" "manual: job multi:" "edit --write: the manual notes are printed too"
+# Every pre-existing line is byte-identical except the one types: line; only two lines are new.
+removed="$(diff "$SANDBOX/ci.orig" "$WFE" | grep '^<' | wc -l | tr -d ' ')"
+added="$(diff "$SANDBOX/ci.orig" "$WFE" | grep '^>' | wc -l | tr -d ' ')"
+assert_eq "1" "$removed" "edit --write: only the types: line is replaced"
+assert_eq "2" "$added" "edit --write: the new types: line and one new if: are all that is added"
+for frag in "    if: github.actor != 'dependabot[bot]'" "    if: github.ref == 'refs/heads/main' &&" "      || github.run_attempt > 3)" "    if: >-" '    if: ${{ github.run_attempt > 1 }} && ${{ github.actor != '"'"'bot'"'"' }}' "    if: github.event_name == 'push' && github.ref == 'refs/heads/main'" "    environment: production"; do
+  assert_eq "$(grep -cxF -- "$frag" "$SANDBOX/ci.orig")" "$(grep -cxF -- "$frag" "$WFE")" "edit --write: kept byte-identical: $frag"
+done
+assert_eq "$(sed -n '/^permissions:/,/^jobs:/p' "$SANDBOX/ci.orig")" "$(sed -n '/^permissions:/,/^jobs:/p' "$WFE")" "edit --write: the top-level permissions block is untouched"
+assert_eq "$(grep -cxF '    permissions:' "$SANDBOX/ci.orig")" "$(grep -cxF '    permissions:' "$WFE")" "edit --write: the job-level permissions block is untouched"
+assert_eq "ok" "$(cd "$EDIT" && bash "$DC" check)" "edit --write: the file now skips drafts through the job that got the line"
+assert_contains "$(edit .github/workflows/ci.yml)" "no change needed" "edit: a second run has no diff to write"
+
+# The post-edit check refuses anything but the allowed additions (a bug that
+# modified, removed or inserted another line would stop here).
+read -r -d '' VERIFY_TEST_PY <<'TALOS_f3Hn6Qw9Zc2K' || true
+orig = ["on:", "  pull_request:", "    types: [opened]", "jobs:", "  t:", "    if: a && b", "    runs-on: x"]
+good = orig[:]
+good[2] = "    types: [opened, ready_for_review]"
+mod = orig[:]
+mod[5] = "    if: (a && b) && github.event.pull_request.draft != true"
+print("good", verify(orig, good) is None)
+print("modified-if", verify(orig, mod) is not None)
+print("deleted", verify(orig, orig[:5] + orig[6:]) is not None)
+print("extra-line", verify(orig, orig + ["permissions: write-all"]) is not None)
+print("types-rewrite", verify(orig, ["on:", "  pull_request:", "    types: [push]"] + orig[3:]) is not None)
+TALOS_f3Hn6Qw9Zc2K
+verify_out="$( . "$DC" >/dev/null 2>&1; python3 -I -c "$_DC_PRED"$'\n'"$_DC_VERIFY_PY"$'\n'"$VERIFY_TEST_PY" )"
+assert_contains "$verify_out" "good True" "verify: the allowed edit passes"
+assert_contains "$verify_out" "modified-if True" "verify: a modified pre-existing if: line is refused"
+assert_contains "$verify_out" "deleted True" "verify: a removed line is refused"
+assert_contains "$verify_out" "extra-line True" "verify: an added line that is not an if: or types: item is refused"
+assert_contains "$verify_out" "types-rewrite True" "verify: a types: line that loses its items is refused"
 
 # types shapes: missing, block list, empty flow list.
 mkedit() {  # $1 = name, stdin = workflow
@@ -411,16 +467,6 @@ refuse_case "a file with a path escape" "$SANDBOX/e/elsewhere" .github/workflows
 mkdir -p "$SANDBOX/e/hugefile/.github/workflows"
 cp "$SANDBOX/fx/huge/.github/workflows/w.yml" "$SANDBOX/e/hugefile/.github/workflows/w.yml"
 refuse_case "a file over 1 MB" "$SANDBOX/e/hugefile" .github/workflows/w.yml "over 1 MB"
-mkedit multiline <<'TALOS_c1Pj4Wv8Sa6Y'
-on:
-  pull_request:
-jobs:
-  t:
-    if: >
-      github.actor != 'bot'
-    runs-on: x
-TALOS_c1Pj4Wv8Sa6Y
-refuse_case "a multi-line job if:" "$SANDBOX/e/multiline" .github/workflows/w.yml "multi-line or quoted"
 mkedit onlist <<'TALOS_d2Qk5Xw9Tb7Z'
 on: [push, pull_request]
 jobs:
