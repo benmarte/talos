@@ -24,8 +24,8 @@
 #     CURL_QUEUE pop below, on the URL alone -- never consumes a queue slot --
 #     so every pre-#187 test's CURL_QUEUE sequencing for its own endpoint(s)
 #     is unaffected whether or not it ever anticipated this call. Override
-#     STUB_CURRENT_USER (bare login, default "" -- unresolved identity, same
-#     as no override) or STUB_CURRENT_USER_JSON (raw response body, for
+#     STUB_CURRENT_USER (bare login, default "talos-test-bot" when unset; set to
+#     "" for an answer with an empty login, which is refused (#455)) or STUB_CURRENT_USER_JSON (raw response body, for
 #     malformed-response tests).
 #   - Issue assignees (#299, assign-issue): when STUB_ASSIGNEE_FILE is set,
 #     GET .../issues/<n> and POST .../issues/<n>/assignees are intercepted
@@ -140,7 +140,7 @@ fi
 http_status=200
 resp=""
 if [[ "$url" == *"/user" && "$url" != *"/users/"* ]]; then
-  resp="${STUB_CURRENT_USER_JSON:-$(printf '{"login":"%s"}' "${STUB_CURRENT_USER:-}")}"
+  resp="${STUB_CURRENT_USER_JSON:-$(printf '{"login":"%s"}' "${STUB_CURRENT_USER-talos-test-bot}")}"
   if [ -n "${STUB_CURRENT_USER_STATUS:-}" ]; then
     http_status="$STUB_CURRENT_USER_STATUS"
     resp='{"message":"Resource not accessible by integration"}'

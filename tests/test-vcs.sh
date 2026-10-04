@@ -1055,6 +1055,20 @@ done
 out="$(bash "$VCS" --dry-run label-issue 5 --add "it's x")"
 assert_contains "$out" "--add-label 'it'\\''s x'" "#455 label-issue: the dry-run line quotes a label with a quote"
 
+# gitlab: the same, through glab's argv (a leading dash and a space included)
+printf '{"vcs": {"provider": "gitlab", "repo": "acme/widget"}}\n' > talos.pipeline.json
+_455_glabel="-it's \$(touch $_455_mark) x"
+for _v in label-issue label-pr; do
+  export STUB_GLAB_ARGV_LOG="$SANDBOX/glab.argv"; : > "$STUB_GLAB_ARGV_LOG"
+  bash "$VCS" "$_v" 5 --add "$_455_glabel" --remove "a b" >/dev/null 2>"$SANDBOX/err"; rc=$?
+  assert_eq "0" "$rc" "#455 gitlab $_v: a label with a leading dash, quote, \$( and a space is accepted (err: $(cat "$SANDBOX/err"))"
+  assert_eq "1" "$(grep -c -F -- "[--label] [$_455_glabel] [--unlabel] [a b]" "$STUB_GLAB_ARGV_LOG")" \
+    "#455 gitlab $_v: each label reaches glab as one argv element"
+  assert_eq "no" "$([ -e "$_455_mark" ] && echo yes || echo no)" "#455 gitlab $_v: label text is never executed"
+done
+unset STUB_GLAB_ARGV_LOG
+rm -f talos.pipeline.json
+
 # ── #455: edit-pr-body <pr> --body-file <path|-> ─────────────────────────────
 _epb_bin="$SANDBOX/epb-bin"; mkdir -p "$_epb_bin"
 cat > "$_epb_bin/gh" <<'TALOS_STUB_EPB455'

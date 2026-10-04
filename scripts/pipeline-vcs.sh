@@ -4679,16 +4679,16 @@ json.dump(prev, sys.stdout)
   _ga_current_user_login() {
     local _cul_body
     _cul_body="$(_ga_req_once GET "${_API%%/repos/*}/user" 2>/dev/null)" || return 1
-    # A 2xx answer with no `login` field, or a null one, is "refused" (exit 1),
-    # not "unavailable": it names no identity (#455). An empty string still
-    # prints nothing (unavailable), as before.
+    # A 2xx answer whose `login` is missing, null, empty or not a string (false,
+    # 0, ...) is "refused" (exit 1), not "unavailable": it names no identity
+    # (#455). A string that is not login-shaped is refused by the shared check.
     printf '%s' "$_cul_body" | python3 -I -c "
 import json, sys
 try:
     login = json.load(sys.stdin).get('login')
 except Exception:
     sys.exit(1)
-if login is None:
+if not isinstance(login, str) or not login.strip():
     sys.exit(1)
 print(login)
 " 2>/dev/null
@@ -5879,6 +5879,17 @@ _gitlab() {
   local RARG=""
   [ -n "$REPO" ] && RARG="-R $REPO"
 
+  # _gl_label_update <issue|mr> <n> -- label-issue / label-pr (#455). Labels come
+  # from _parse_label_args' arrays and go to glab as an argv array, never an eval'd
+  # string: a label with a quote, `$(`, a space or a leading dash is one argument.
+  _gl_label_update() {
+    local _glu_args=(glab "$1" update "$2") _glu_lbl
+    for _glu_lbl in ${ADD_LABEL_ARR[@]+"${ADD_LABEL_ARR[@]}"}; do _glu_args+=(--label "$_glu_lbl"); done
+    for _glu_lbl in ${REMOVE_LABEL_ARR[@]+"${REMOVE_LABEL_ARR[@]}"}; do _glu_args+=(--unlabel "$_glu_lbl"); done
+    [ -n "$REPO" ] && _glu_args+=(-R "$REPO")
+    _run "${_glu_args[@]}"
+  }
+
   # Provider calls for _vcs_shared_assign_issue (#299). Flags and output
   # shapes checked against upstream glab source in #305: `-F/--output json`
   # prints the client-go Issue, whose `assignees` is [{username, ...}];
@@ -6034,12 +6045,7 @@ for p in paths:
     label-issue)
       local n="$1"; shift
       _parse_label_args "$@"
-      local cmd="glab issue update $n"
-      for l in $ADD_LABELS;    do cmd="$cmd --label '$l'";   done
-      for l in $REMOVE_LABELS; do cmd="$cmd --unlabel '$l'"; done
-      [ -n "$RARG" ] && cmd="$cmd $RARG"
-      if [ "$DRY_RUN" = "true" ]; then echo "[dry-run] $cmd"; return 0; fi
-      eval "$cmd"
+      _gl_label_update issue "$n"
       ;;
     create-issue)
       local title="$1" body_file="$2"; shift 2
@@ -6127,12 +6133,7 @@ for p in paths:
     label-pr)
       local n="$1"; shift
       _parse_label_args "$@"
-      local cmd="glab mr update $n"
-      for l in $ADD_LABELS;    do cmd="$cmd --label '$l'";   done
-      for l in $REMOVE_LABELS; do cmd="$cmd --unlabel '$l'"; done
-      [ -n "$RARG" ] && cmd="$cmd $RARG"
-      if [ "$DRY_RUN" = "true" ]; then echo "[dry-run] $cmd"; return 0; fi
-      eval "$cmd"
+      _gl_label_update mr "$n"
       ;;
     pr-checks)
       _run glab mr ci status "$1" $RARG

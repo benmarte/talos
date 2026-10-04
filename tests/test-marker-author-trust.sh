@@ -217,13 +217,17 @@ assert_not_contains "$out" "talos:marker-authors-rejected" \
 # ── (d) identity lookup fails + no trusted_authors -> fail-open, unchanged ─
 set_cfg_api '{}'
 _c="$(mk_rest_approval "$HEAD_SHA" qa mallory)"
-out="$(api_check "$HEAD_SHA" '[{"name":"qa:pass"}]' "$_c")"  # no STUB_CURRENT_USER -> unresolved
-assert_contains "$out" "talos:marker-authors-unverified reader=check-approval-sha" \
-  "github-api (d): unresolved identity + unconfigured list -> fail-open warning (unchanged)"
-assert_contains "$out" "author check skipped" \
-  "github-api (d): fail-open warning text unchanged"
-assert_contains "$out" "all approval labels are current" \
-  "github-api (d): fail-open still accepts the marker"
+# REST: a 2xx /user answer with an empty login names no identity, so it is
+# refused (#455), not "unresolved": only markers.trusted_authors counts and it
+# is unset, so the marker is rejected (fail closed). gh still models the
+# fail-open case above.
+out="$(api_check "$HEAD_SHA" '[{"name":"qa:pass"}]' "$_c" STUB_CURRENT_USER=)"
+assert_contains "$out" "talos:marker-authors-rejected" \
+  "github-api (d): empty-login identity + unconfigured list -> refused, marker rejected"
+assert_not_contains "$out" "author check skipped" \
+  "github-api (d): refused identity is not the fail-open warning"
+assert_not_contains "$out" "all approval labels are current" \
+  "github-api (d): refused identity does not accept the marker"
 
 # ── (e) bot login rejected unless explicitly listed ────────────────────────
 set_cfg_api '{}'

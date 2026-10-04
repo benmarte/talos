@@ -18,6 +18,11 @@ export GITHUB_TOKEN="$TEST_TOKEN"
 # Instant retries (#173): no test in this file should wait out a real backoff.
 export TALOS_RETRY_SLEEP_SCALE=0
 
+# The marker fixtures below are authored by "bot". An empty GET /user login is
+# refused (#455), so the stub's authenticated user is that same login: the
+# operator's own markers count, as the tests here intend.
+export STUB_CURRENT_USER="bot"
+
 cat > talos.pipeline.json <<'EOF'
 {"vcs": {"provider": "github-api", "repo": "acme/widget"}}
 EOF
@@ -1161,7 +1166,7 @@ assert_contains "$out" "no SHA marker" \
 : > "$CURL_LOG"
 printf '%s\n' \
   "{\"number\":7,\"head\":{\"sha\":\"$_API_HEAD\"},\"base\":{\"ref\":\"main\"},\"labels\":[{\"name\":\"qa:pass\"},{\"name\":\"review:approved\"},{\"name\":\"security:approved\"},{\"name\":\"docs:done\"}]}" \
-  "[{\"body\":\"<!-- talos:approval sha=${_API_HEAD} role=qa -->\"},{\"body\":\"<!-- talos:approval sha=${_API_HEAD} role=reviewer -->\"},{\"body\":\"<!-- talos:approval sha=${_API_HEAD} role=security -->\"},{\"body\":\"<!-- talos:approval sha=${_API_HEAD} role=docs -->\"}]" \
+  "[{\"body\":\"<!-- talos:approval sha=${_API_HEAD} role=qa -->\",\"user\":{\"login\":\"bot\"}},{\"body\":\"<!-- talos:approval sha=${_API_HEAD} role=reviewer -->\",\"user\":{\"login\":\"bot\"}},{\"body\":\"<!-- talos:approval sha=${_API_HEAD} role=security -->\",\"user\":{\"login\":\"bot\"}},{\"body\":\"<!-- talos:approval sha=${_API_HEAD} role=docs -->\",\"user\":{\"login\":\"bot\"}}]" \
   > "$CURL_QUEUE"
 out="$(bash "$VCS" check-approval-sha 7 2>&1)"; rc=$?
 assert_eq "0" "$rc" \
@@ -1534,12 +1539,12 @@ out="$(_nc '[{"user":{"login":"alice"},"body":"hi","created_at":"2026-10-01T00:0
 assert_eq "0" "$rc" "#451 normalize_comments: a valid page exits 0"
 assert_contains "$out" '"login": "alice"' "#451 normalize_comments: a valid page keeps the author login"
 
-# ── #455: a 2xx GET /user answer with no (or a null) login is "refused" ──────
+# ── #455: a 2xx GET /user answer with a missing, null, empty or non-string login is "refused" ──────
 # Fail-open used to read it as "unavailable" and count an outsider's marker.
 # Refused: only markers.trusted_authors counts, and it is unset here.
 printf '%s\n' '{"vcs": {"provider": "github-api", "repo": "acme/widget"}}' > talos.pipeline.json
 export GITHUB_TOKEN="$TEST_TOKEN"
-for _u455 in '{}' '{"login":null}'; do
+for _u455 in '{}' '{"login":null}' '{"login":""}' '{"login":false}' '{"login":0}'; do
   export STUB_CURRENT_USER_JSON="$_u455"
   printf '%s\n' \
     '[{"id":1,"body":"<!-- talos:attempt stage=qa count=2 total=5 -->","user":{"login":"mallory"}}]' \
