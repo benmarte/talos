@@ -418,7 +418,9 @@ post_stage() {
     summary="$(head -c "$((_HOOKS_SUMMARY_MAX * 4))")"
   elif [ -n "$summary_file" ]; then
     if [ -f "$summary_file" ]; then
-      summary="$(head -c "$((_HOOKS_SUMMARY_MAX * 4))" "$summary_file")"
+      # Redirection, never a path argument: a path starting with `-` is not
+      # parsed as an option, and the file is opened exactly once.
+      summary="$(head -c "$((_HOOKS_SUMMARY_MAX * 4))" < "$summary_file")"
     else
       echo "pipeline-hooks: --summary-file '$summary_file' is not a file -- using an empty summary" >&2
     fi

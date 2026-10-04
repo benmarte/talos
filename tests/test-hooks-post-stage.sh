@@ -206,7 +206,7 @@ assert_eq "OK" "$_check" "adapter (failing runner): stage_complete event, verdic
 cat > talos.pipeline.json <<EOF
 {"agents": {"runner": "claude"}, "hooks": {"post_stage": "cat > $CAPTURE", "timeout_s": 5}}
 EOF
-summary_of() { python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('summary'))" "$CAPTURE"; }
+summary_of() { python3 -I -c "import json,sys; print(json.load(open(sys.argv[1])).get('summary'))" "$CAPTURE"; }
 
 : > "$CAPTURE"
 printf 'from stdin: $(touch %s/pwned) `x`\n' "$SANDBOX" | bash "$HOOKS" post_stage qa qa 42 --summary - --verdict PASS 2>"$SANDBOX/err.log"
@@ -219,6 +219,15 @@ printf 'from a file\n' > "$SUMMARY_FILE"
 : > "$CAPTURE"
 bash "$HOOKS" post_stage qa qa 42 --summary-file "$SUMMARY_FILE" --verdict PASS 2>"$SANDBOX/err.log"
 assert_eq "from a file" "$(summary_of)" "--summary-file: the summary is read from the file"
+
+# a path beginning with `-` is a file, not an option or stdin
+printf 'from a dash file\n' > "$SANDBOX/-name"
+: > "$CAPTURE"
+(cd "$SANDBOX" && echo 'from stdin' | bash "$HOOKS" post_stage qa qa 42 --summary-file ./-name --verdict PASS 2>/dev/null)
+assert_eq "from a dash file" "$(summary_of)" "--summary-file ./-name: reads that file, not stdin"
+: > "$CAPTURE"
+(cd "$SANDBOX" && echo 'from stdin' | bash "$HOOKS" post_stage qa qa 42 --summary-file -name --verdict PASS 2>/dev/null)
+assert_eq "from a dash file" "$(summary_of)" "--summary-file -name (bare): reads that file, not stdin"
 
 : > "$CAPTURE"
 bash "$HOOKS" post_stage qa qa 42 --summary-file "$SANDBOX/missing.txt" --verdict PASS 2>"$SANDBOX/err.log"; rc=$?
