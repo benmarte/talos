@@ -119,13 +119,22 @@ touch -t 203001010000 "$PROJ/talos.pipeline.yml"
 env PATH="$SHIM:$PATH" bash "$CFG_SH" pr.draft SENT >/dev/null 2>"$ERR"
 assert_eq "1" "$(nolines "$ERR")" "dedupe: a changed file (new mtime) warns again"
 stamp_dir="$TMPDIR/talos-yaml-warn-$(id -u)"
-assert_eq "700" "$(stat -f %Lp "$stamp_dir" 2>/dev/null || stat -c %a "$stamp_dir")" "dedupe: the stamp dir is private (0700)"
+assert_eq "700" "$(python3 -I -c 'import os, stat, sys; print(oct(stat.S_IMODE(os.lstat(sys.argv[1]).st_mode))[2:])' "$stamp_dir")" "dedupe: the stamp dir is private (0700)"
 # An unusable stamp location never hides the warning and never fails the lookup.
 rm -rf "${stamp_dir:?}"
 printf 'x' > "$stamp_dir"
 env PATH="$SHIM:$PATH" TALOS_HOME="$GHOME" bash "$CFG_SH" pr.draft SENT >/dev/null 2>"$ERR"; rc=$?
 assert_eq "0" "$rc" "dedupe: an unusable stamp dir does not fail the lookup"
 assert_eq "1" "$(nolines "$ERR")" "dedupe: an unusable stamp dir still warns"
+rm -f "$stamp_dir"
+# A symlinked stamp dir is refused (the warning shows, nothing is stamped through the link).
+mkdir -p "$SANDBOX/elsewhere" || exit 1
+ln -s "$SANDBOX/elsewhere" "$stamp_dir"
+env PATH="$SHIM:$PATH" bash "$CFG_SH" pr.draft SENT >/dev/null 2>"$ERR"
+assert_eq "1" "$(nolines "$ERR")" "dedupe: a symlinked stamp dir still warns"
+env PATH="$SHIM:$PATH" bash "$CFG_SH" pr.draft SENT >/dev/null 2>"$ERR"
+assert_eq "1" "$(nolines "$ERR")" "dedupe: a symlinked stamp dir never suppresses the warning"
+assert_eq "0" "$(ls "$SANDBOX/elsewhere" | wc -l | tr -d ' ')" "dedupe: nothing is stamped through a symlinked dir"
 rm -f "$stamp_dir" "$PROJ/talos.pipeline.yml"
 
 finish

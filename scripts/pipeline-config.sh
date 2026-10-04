@@ -219,34 +219,39 @@ def _yaml_warn_due(path):
     # would repeat for each lookup of a run. A stamp file keyed by the YAML
     # file's path and mtime, in a private dir under $TMPDIR, limits the note to
     # once per hour per file. TALOS_YAML_WARN_DEDUP=0 notes every process. Any
-    # problem with the stamp (dir not ours, not writable) means: warn.
+    # problem with the stamp dir means: warn. The dir is opened without
+    # following a symlink and must be a directory (O_NOFOLLOW | O_DIRECTORY);
+    # fchmod 0700 then succeeds only for its owner, so a dir that belongs to
+    # another user is refused, and a loose mode on our own dir is tightened.
     if os.environ.get("TALOS_YAML_WARN_DEDUP") == "0":
         return True
+    dfd = None
     try:
-        import hashlib, stat, time
-        uid = os.geteuid()
-        d = os.path.join(os.environ.get("TMPDIR") or "/tmp", "talos-yaml-warn-%d" % uid)
+        import hashlib, time
+        d = os.path.join(os.environ.get("TMPDIR") or "/tmp", "talos-yaml-warn-%d" % os.geteuid())
         try:
             os.mkdir(d, 0o700)
         except FileExistsError:
             pass
-        st = os.lstat(d)
-        if not stat.S_ISDIR(st.st_mode) or st.st_uid != uid or st.st_mode & 0o077:
-            return True
+        dfd = os.open(d, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        os.fchmod(dfd, 0o700)
         key = "%s\0%d" % (path, os.stat(path).st_mtime_ns)
-        stamp = os.path.join(d, hashlib.sha256(key.encode("utf-8", "surrogateescape")).hexdigest())
+        name = hashlib.sha256(key.encode("utf-8", "surrogateescape")).hexdigest()
         try:
-            if time.time() - os.lstat(stamp).st_mtime < 3600:
+            if time.time() - os.stat(name, dir_fd=dfd, follow_symlinks=False).st_mtime < 3600:
                 return False
-            os.unlink(stamp)
+            os.unlink(name, dir_fd=dfd)
         except FileNotFoundError:
             pass
         try:
-            os.close(os.open(stamp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600))
+            os.close(os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dfd))
         except FileExistsError:
             return False  # another process stamped it a moment ago
     except Exception:
         pass
+    finally:
+        if dfd is not None:
+            os.close(dfd)
     return True
 
 def _parse_cfg_file(path):
