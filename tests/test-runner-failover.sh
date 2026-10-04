@@ -165,7 +165,8 @@ for r in claude pi codex gemini antigravity; do
   set_cfg "{\"agents\": {\"runner\": \"$r\"}}"
   stage
   assert_eq "0" "$RC" "no chain ($r): exit 0"
-  assert_eq "talos:runner role=developer runner=$r" "$(errtxt)" "no chain ($r): stderr is the runner marker only"
+  assert_eq "talos:runner role=developer runner=$r
+talos:usage runner=$r tokens=null" "$(errtxt)" "no chain ($r): stderr is the runner and usage markers only (#420)"
   assert_contains "$OUT" "-stub-ok" "no chain ($r): stdout is the runner's"
   [ ! -e "$PROV" ] && pass "no chain ($r): providers.json never written" || fail "no chain ($r): providers.json never written"
 done

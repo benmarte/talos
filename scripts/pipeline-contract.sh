@@ -143,6 +143,7 @@ TALOS_MARKERS=(
   talos:runner
   talos:failover
   talos:failover-refused
+  talos:usage
   talos:canary-skipped
   talos:worktree-sweep
   talos:spend

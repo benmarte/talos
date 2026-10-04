@@ -23,6 +23,7 @@
 # against this list, so a wrong table row goes red before it can change
 # behaviour. Do not edit a golden value to make that test pass: a golden value
 # only changes when the documented default changes.
+agents.capture_usage	true	table	pipeline-agent.sh
 agents.effort		empty	pipeline-agent.sh
 agents.fallback		empty	pipeline-agent.sh
 agents.model		empty	pipeline-agent.sh,pipeline-hooks.sh
