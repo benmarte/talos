@@ -240,6 +240,80 @@ assert_contains "$out" "status.file" "symlink: names the key"
 assert_eq "0" "$(ls "$OUTSIDE" | wc -l | tr -d ' ')" "symlink: nothing written outside the root"
 rm -f docs
 
+# ── the three paths must be disjoint (#454) ─────────────────────────────────
+# Equal or nested, and assemble would write the log into its own fragments or
+# archive; every verb refuses before touching anything, naming both keys.
+before_porcelain="$(git status --porcelain)"
+overlap() {  # label file fragments_dir archive_dir key_a key_b
+  local verb
+  cfg_status "\"file\": \"$2\", \"fragments_dir\": \"$3\", \"archive_dir\": \"$4\""
+  for verb in init assemble; do
+    out="$(run_sf $verb)"; rc=$?
+    assert_eq "1" "$rc" "overlap: $1 ($verb) exits 1"
+    assert_contains "$out" "$5" "overlap: $1 ($verb) names $5"
+    assert_contains "$out" "$6" "overlap: $1 ($verb) names $6"
+  done
+}
+overlap "file = fragments_dir" S.md S.md docs/arch status.file status.fragments_dir
+overlap "file = archive_dir" S.md docs/frag S.md status.file status.archive_dir
+overlap "fragments_dir = archive_dir" S.md docs/d docs/d status.fragments_dir status.archive_dir
+overlap "equal after normalisation" ./S.md docs/frag ./S.md/ status.file status.archive_dir
+overlap "file inside fragments_dir" docs/status/S.md docs/status docs/arch status.file status.fragments_dir
+overlap "file inside archive_dir" docs/arch/S.md docs/frag docs/arch status.file status.archive_dir
+overlap "fragments_dir inside archive_dir" S.md docs/arch/frag docs/arch status.fragments_dir status.archive_dir
+overlap "archive_dir inside fragments_dir" S.md docs/status docs/status/archive status.fragments_dir status.archive_dir
+# case-insensitive filesystems (the macOS default): mixed case is the same path
+overlap "mixed-case nesting (Docs/status over docs/status/archive)" S.md Docs/status docs/status/archive status.fragments_dir status.archive_dir
+overlap "mixed-case equality" S.md docs/Frag DOCS/frag status.fragments_dir status.archive_dir
+assert_eq "$before_porcelain" "$(git status --porcelain)" "overlap: nothing was written to the checkout"
+assert_file_absent S.md "overlap: no status file was created"
+# a shared string prefix is not nesting: docs/status and docs/status-archive are siblings
+cfg_status '"file": "S.md", "fragments_dir": "docs/status", "archive_dir": "docs/status-archive"'
+out="$(run_sf init)"; rc=$?
+assert_eq "0" "$rc" "overlap: sibling directories that share a name prefix are accepted"
+rm_under "$SANDBOX" "$SANDBOX/S.md"
+
+# ── the 512 / 256 caps count bytes, not characters (#454) ───────────────────
+# `é` is two bytes. In a UTF-8 locale ${#v} counted it once, so a 601-byte path
+# and a 403-byte heading passed (and the path then died in an OSError).
+UTF8_LOCALE="$(locale -a 2>/dev/null | grep -i -m1 -E '^(en_US|C)\.utf-?8$')"
+e200="$(python3 -I -c 'print("é" * 200)')"
+e100="$(python3 -I -c 'print("é" * 100)')"
+e120="$(python3 -I -c 'print("é" * 120)')"
+for key in file fragments_dir archive_dir; do
+  cfg_status "\"$key\": \"$e200/$e100\""
+  out="$(LC_ALL="${UTF8_LOCALE:-C}" run_sf init)"; rc=$?
+  assert_eq "1" "$rc" "bytes: status.$key of 600 bytes (301 characters) exits 1"
+  assert_contains "$out" "status.$key is longer than 512 bytes" "bytes: status.$key names the key and the byte cap"
+  assert_not_contains "$out" "Traceback" "bytes: status.$key is refused before python sees it"
+done
+for hkey in log_heading resume_heading; do
+  cfg_status "\"$hkey\": \"## $e200\""
+  out="$(LC_ALL="${UTF8_LOCALE:-C}" run_sf init)"; rc=$?
+  assert_eq "1" "$rc" "bytes: status.$hkey of 403 bytes (203 characters) exits 1"
+  assert_contains "$out" "status.$hkey is longer than 256 bytes" "bytes: status.$hkey names the key and the byte cap"
+done
+cfg_status "\"log_heading\": \"## $e120\""
+out="$(LC_ALL="${UTF8_LOCALE:-C}" run_sf init)"; rc=$?
+assert_eq "0" "$rc" "bytes: a 243-byte multi-byte heading is under the cap and accepted"
+rm_under "$SANDBOX" "$SANDBOX/TALOS_STATUS.md"
+
+# ── a config that cannot be read is not "status.enabled is false" (#454) ────
+reset_fixture
+wk_add docs/status.d/12-40.md "unread config" 2026-09-10; wk_push; ofetch
+before="$(osha)"
+printf '{ not json\n' > talos.pipeline.json
+for verb in assemble refresh; do
+  out="$(run_sf $verb)"; rc=$?
+  assert_eq "1" "$rc" "unreadable config: $verb exits 1"
+  assert_contains "$out" "cannot read the config" "unreadable config: $verb says the config could not be read"
+  assert_not_contains "$out" "status.enabled is false" "unreadable config: $verb does not claim status.enabled is false"
+done
+ofetch
+assert_eq "$before" "$(osha)" "unreadable config: nothing was pushed"
+assert_contains "$(oshow docs/status.d/12-40.md)" "unread config" "unreadable config: the fragment is left in place"
+cfg_status
+
 # ── assemble: no fragments, no --pr ─────────────────────────────────────────
 reset_fixture
 cfg_status

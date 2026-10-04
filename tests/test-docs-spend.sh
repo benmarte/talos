@@ -101,6 +101,20 @@ check_has "$section" 'Not built' "guide section lists the deferred items"
 check_has "$section" '#335' "guide section names #335 for the deferred cost command"
 check_lacks "$section" '--configure`, `--uninstall` are available' "guide section does not offer --configure as available"
 
+# #456: the spend comment is public on a public repo, the run summary has its
+# stage models column, and the status-line example is real output that fits the
+# default 80 columns and shows the review mark.
+check_has "$section" 'On a public repo the comment is public' "guide section: the spend comment says outright it is public on a public repo"
+check_has "$section" '`stage models` column' "guide section: the run summary has a stage models column"
+if grep -q '"stage models"' "$TALOS_ROOT/scripts/pipeline-events.sh"; then pass "pipeline-events.sh prints the stage models column the guide names"
+else fail "pipeline-events.sh prints the stage models column the guide names"; fi
+example_line="$(printf '%s\n' "$guide_text" | awk '/^\$ talos-status.sh --line$/ {getline; print; exit}')"
+width="$(printf '%s' "$example_line" | python3 -I -c 'import sys; print(len(sys.stdin.read()))')"
+if [ "${width:-999}" -le 80 ]; then pass "guide status-line example fits 80 columns ($width)"
+else fail "guide status-line example fits 80 columns" "$width characters: $example_line"; fi
+check_has "$example_line" 'rev ✓' "guide status-line example shows rev ✓, the finished-stage mark"
+check_lacks "$example_line" 'rev done' "guide status-line example does not show the old rev done"
+
 guide_flat="$(printf '%s\n' "$guide_text" | flat)"
 check_has "$guide_flat" '(the status line refuses it)' "guide events.path text: the status line refuses an absolute path"
 check_has "$guide_flat" '| `TALOS_STATUS_DEBUG` |' "guide env table has TALOS_STATUS_DEBUG"
