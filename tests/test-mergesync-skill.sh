@@ -18,8 +18,10 @@ assert_file_exists "$VCS" "scripts/pipeline-vcs.sh exists"
 skill_text="$(cat "$SKILL")"
 
 # Step 0 reads the new config key.
-assert_contains "$skill_text" "merge.auto_sync" "skill: Step 0 reads merge.auto_sync"
-assert_contains "$skill_text" "MERGE_AUTO_SYNC" "skill: config variable named MERGE_AUTO_SYNC"
+# Step 0 is `talos.sh env` (#465): the variable and its default live in its table.
+assert_eq "merge.auto_sync" "$(talos_env_key MERGE_AUTO_SYNC)" "skill: Step 0 reads merge.auto_sync"
+assert_eq "true" "$(talos_env_default MERGE_AUTO_SYNC)" "skill: merge.auto_sync defaults to true"
+assert_contains "$skill_text" "merge.auto_sync" "skill: the sibling sync block names merge.auto_sync"
 
 # Step 4's post-merge block names the full ladder.
 assert_contains "$skill_text" "Post-merge sibling sync (#289" "skill: Step 4 has the post-merge sibling sync block"

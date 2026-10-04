@@ -30,11 +30,12 @@ line_of() { grep -nF -- "$1" "$SKILL" | head -1 | cut -d: -f1; }
 line_has_gate() { grep -F -- "$1" "$SKILL" | head -1 | grep -qF 'STATUS_ENABLED = true'; }
 
 # ── 1. Step 0 ────────────────────────────────────────────────────────────────
-assert_contains "$skill_text" 'STATUS_ENABLED (`status.enabled`, default `false`' "step 0: STATUS_ENABLED with its default"
-assert_contains "$skill_text" 'STATUS_FILE' "step 0: STATUS_FILE"
-assert_contains "$skill_text" 'STATUS_FRAGMENTS_DIR' "step 0: STATUS_FRAGMENTS_DIR"
+# Step 0 is `talos.sh env` (#465): the variables and their defaults live in its table.
+assert_eq "status.enabled" "$(talos_env_key STATUS_ENABLED)" "step 0: STATUS_ENABLED is read from status.enabled"
+assert_eq "status.file TALOS_STATUS.md" "$(talos_env_key STATUS_FILE) $(talos_env_default STATUS_FILE)" "step 0: STATUS_FILE and its default"
+assert_eq "status.fragments_dir docs/status.d" "$(talos_env_key STATUS_FRAGMENTS_DIR) $(talos_env_default STATUS_FRAGMENTS_DIR)" "step 0: STATUS_FRAGMENTS_DIR and its default"
 assert_contains "$skill_text" 'none of the status steps run' "step 0: disabled means no status step runs"
-assert_contains "$skill_text" '- `status.enabled`: false' "config defaults: status.enabled"
+assert_eq "false" "$(talos_env_default STATUS_ENABLED)" "config defaults: status.enabled"
 
 # ── 2. Step 3e ───────────────────────────────────────────────────────────────
 grep -qxF '<STATUS_FRAGMENT_LINE>' "$SKILL" && pass "docs prompt: STATUS_FRAGMENT_LINE placeholder alone on its line" || fail "docs prompt: STATUS_FRAGMENT_LINE placeholder alone on its line"

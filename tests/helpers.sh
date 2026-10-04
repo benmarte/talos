@@ -277,6 +277,12 @@ install_talos_vendored() {
   done
 }
 
+# talos_env_key VAR -- the config key `scripts/talos.sh env` reads for the Step 0
+# variable VAR (its table row, #465); empty when VAR has no row.
+talos_env_key() { awk -F'\t' -v v="$1" '$1 == v && NF == 3 { print $2 }' "$TALOS_ROOT/scripts/talos.sh"; }
+# talos_env_default VAR -- VAR's value in the no-config golden of `talos.sh env`.
+talos_env_default() { sed -n "s/^$1=//p" "$TALOS_ROOT/tests/fixtures/talos-env-default.golden"; }
+
 # finish — print summary for this file and exit non-zero on any failure.
 finish() {
   printf '%s: %d passed, %d failed\n' "$(basename "$0")" "$_PASS" "$_FAIL"

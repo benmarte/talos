@@ -22,8 +22,10 @@ skill_text="$(cat "$SKILL")"
 docs_text="$(cat "$DOCS_AGENT")"
 
 # Step 0 wires the flag.
-assert_contains "$skill_text" "roles.changelog_fragments" "skill: Step 0 reads roles.changelog_fragments"
-assert_contains "$skill_text" 'ROLE_CHANGELOG_FRAGMENTS (`roles.changelog_fragments`, default `false`)' "skill: flag documented default false"
+# Step 0 is `talos.sh env` (#465): the variable and its default live in its table.
+assert_eq "roles.changelog_fragments" "$(talos_env_key ROLE_CHANGELOG_FRAGMENTS)" "skill: Step 0 reads roles.changelog_fragments"
+assert_eq "false" "$(talos_env_default ROLE_CHANGELOG_FRAGMENTS)" "skill: flag documented default false"
+assert_contains "$skill_text" "ROLE_CHANGELOG_FRAGMENTS" "skill: the playbook names ROLE_CHANGELOG_FRAGMENTS"
 
 # Docs prompt carries the fragment mode.
 assert_contains "$docs_text" "CHANGELOG MODE: fragments" "docs profile: names the CHANGELOG MODE: fragments trigger"
