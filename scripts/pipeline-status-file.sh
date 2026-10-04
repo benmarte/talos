@@ -1378,11 +1378,20 @@ _sf_collect() {
     --talos-labels "$talos_labels" --base-branch "$BASE_BRANCH" --max-lines "$MAX_LINES" </dev/null
 }
 # _sf_fetch_base: refresh origin/<base> (this only moves the remote-tracking ref).
+# A concurrent refresh in the same checkout (or its push, which also updates the
+# tracking ref) can make this fetch lose the ref lock ("cannot lock ref
+# 'refs/remotes/origin/<base>': is at X but expected Y", #505). That is transient
+# and the next fetch succeeds, so it is retried a few times before it counts.
 _sf_fetch_base() {
-  if ! git fetch -q -- origin "$BASE_BRANCH" 2>/dev/null; then
-    _sf_err "git fetch origin $BASE_BRANCH failed"
-    return 1
-  fi
+  local _try=1 _fetch_err
+  until _fetch_err="$(git fetch -q -- origin "$BASE_BRANCH" 2>&1)"; do
+    if [ "$_try" -ge 5 ]; then
+      _sf_err "git fetch origin $BASE_BRANCH failed: ${_fetch_err:-no output from git fetch}"
+      return 1
+    fi
+    _try=$((_try + 1))
+    sleep 0.2
+  done
   if ! git rev-parse -q --verify "origin/$BASE_BRANCH" >/dev/null 2>&1; then
     _sf_err "origin/$BASE_BRANCH does not resolve after fetch"
     return 1
