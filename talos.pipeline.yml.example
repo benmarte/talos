@@ -6,6 +6,15 @@
 #   1. $PIPELINE_CONFIG env var (absolute path)
 #   2. ./talos.pipeline.yml  (recommended name)
 #   3. ./pipeline.yaml
+#
+# Layers, lowest to highest (a key in a higher layer overrides the lower one):
+#   built-in defaults (scripts/pipeline-defaults.sh, the one table of defaults)
+#   < the user-level file ${TALOS_HOME:-$HOME/.talos}/talos.pipeline.{yml,yaml,json}
+#     (every key except the repo-only ones)
+#   < this file < a key's environment variable (PIPELINE_SLACK_CHANNEL, ...).
+# `bash scripts/pipeline-config.sh --show` prints every key, its value and the
+# layer that decided it. Every default stated in the comments below is tested
+# against the table (tests/test-docs-defaults-vs-table.sh).
 
 # Optional: GitHub owner/repo. Auto-detected from `git remote get-url origin` if omitted.
 # repo: myorg/myrepo
@@ -271,12 +280,15 @@ comments:
   templates_dir: "templates/comments"    # relative to repo root
 
 # ── Notifications ─────────────────────────────────────────────────────────────
-# Priority: incoming webhook env vars > bot tokens from ~/.hermes/.env > silent.
-# Slack:   set SLACK_WEBHOOK_URL or use SLACK_BOT_TOKEN from ~/.hermes/.env
-# Discord: set DISCORD_WEBHOOK_URL or use DISCORD_BOT_TOKEN from ~/.hermes/.env
-# Teams:   set TEAMS_WEBHOOK_URL (webhook-only)
-# Buzz:    set BUZZ_RELAY_URL + BUZZ_BOT_PRIVATE_KEY (env, repo .env, or
-#          ~/.hermes/.env) and buzz_channel below. Buzz (github.com/block/buzz)
+# Secrets never go in this file. Each variable below is looked up in the exported
+# environment, then the repo's .env, then ~/.talos/.env (mode 0600, owned by you,
+# outside every git work tree), then the deprecated ~/.hermes/.env. A webhook
+# wins over a bot token; with none set, notifications are silent.
+# Slack:   set SLACK_WEBHOOK_URL, or SLACK_BOT_TOKEN for threaded messages
+# Discord: set DISCORD_WEBHOOK_URL, or DISCORD_BOT_TOKEN for threaded messages
+# Teams:   set TEAMS_WEBHOOK_URL (webhook-only; never threads)
+# Buzz:    set BUZZ_RELAY_URL + BUZZ_BOT_PRIVATE_KEY (same lookup) and
+#          buzz_channel below. Buzz (github.com/block/buzz)
 #          is a Nostr relay — delivery publishes a signed kind:9 event via the
 #          `nak` CLI (brew install nak); skipped with a warning if nak is absent.
 #
@@ -299,9 +311,10 @@ notifications:
   # Secrets (#443) are never written here. These keys hold a REFERENCE, env:NAME,
   # and the value comes from the exported environment, the repo .env, then
   # ~/.talos/.env (a 0600 file you own, outside every repo), then the deprecated
-  # ~/.hermes/.env. A literal value in any of them is refused. The documented
-  # variables (SLACK_WEBHOOK_URL, SLACK_BOT_TOKEN, ...) keep working with no
-  # reference at all.
+  # ~/.hermes/.env. A literal value in any of them is refused, and so is any
+  # secret-shaped value in this file (it is dropped on load, naming the key).
+  # The documented variables (SLACK_WEBHOOK_URL, SLACK_BOT_TOKEN, ...) keep
+  # working with no reference at all.
   # Nest each under its platform, e.g. `slack: {webhook: "env:SLACK_WEBHOOK_URL"}`:
   #   webhook: "env:SLACK_WEBHOOK_URL"    # notifications.<slack|discord|teams>.webhook
   #   bot_token: "env:SLACK_BOT_TOKEN"    # notifications.<slack|discord>.bot_token
@@ -418,9 +431,10 @@ notifications:
 #       model: opus                    # judgement stages
 #
 # Set it once for every repo: put the same agents.* keys in the user-level
-# file ${TALOS_HOME:-$HOME/.talos}/talos.pipeline.{yml,yaml,json}. Only
-# agents.* is read there (any other key is ignored with a warning); this
-# repo's file is merged over it key by key and wins. /talos:setup writes it
+# file ${TALOS_HOME:-$HOME/.talos}/talos.pipeline.{yml,yaml,json}. That file
+# accepts every key except the repo-only ones (a repo-only key there is dropped
+# with a stderr note naming it); this repo's file is merged over it key by key
+# and wins. /talos:setup writes it
 # for you; `bash scripts/pipeline-agent.sh --resolve-all` shows each role's
 # model and which layer (project | global | session default) decided it.
 #

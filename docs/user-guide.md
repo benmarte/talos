@@ -24,8 +24,9 @@ progress as issue/PR comments and threaded Slack/Discord messages along the way.
 10. [Harness feature matrix](#harness-feature-matrix)
     ([Install and start, per harness](#install-and-start-per-harness))
 11. [Running the pipeline](#running-the-pipeline)
-12. [Troubleshooting](#troubleshooting)
-13. [FAQ](#faq)
+12. [Config reference](#config-reference)
+13. [Troubleshooting](#troubleshooting)
+14. [FAQ](#faq)
 
 ---
 
@@ -87,7 +88,7 @@ progress as issue/PR comments and threaded Slack/Discord messages along the way.
   criteria" heading with a checklist item (or carries `spec:ready`), the
   orchestrator skips spawning a PM subagent entirely and advances straight to
   `pipeline:dev` (`roles.pm_skip_when_spec_present`, default `true` — see
-  [README](../README.md#config-reference)).
+  [Config reference](#config-reference)).
 - **Token-lean docs** — when the developer's own diff already touches
   `CHANGELOG.md` plus `README.md`/`docs/**`, or touches only
   `scripts/**`/`tests/**` with a CHANGELOG entry present, Step 3e Phase 1
@@ -95,7 +96,7 @@ progress as issue/PR comments and threaded Slack/Discord messages along the way.
   and stamps `docs:done` directly; otherwise docs still dispatches but reads
   only the changed doc paths and the CHANGELOG hunk instead of the full PR
   diff (`roles.docs_mode`, default `auto` — see
-  [README](../README.md#config-reference)).
+  [Config reference](#config-reference)).
 - **Compact stage handoff** — `pipeline-vcs.sh view-issue <n> --spec` prints
   the issue body plus only the latest `**PM spec:**` comment, dropping every
   `<!-- talos:` marker, stage-verdict, and other comment, so a busy thread
@@ -161,20 +162,24 @@ Per feature (optional):
 | `GITHUB_TOKEN` | GitHub API token for `github-api` provider (Personal Access Token or Actions token) |
 | `GH_TOKEN` | Alternative to `GITHUB_TOKEN`; also accepted by `gh` CLI (`github` provider) |
 
-Where to put them: your shell env (exported variables always win), or a `.env`
-file at the **repo root** (`<repo>/.env`). `SLACK_BOT_TOKEN`, `DISCORD_BOT_TOKEN`,
-`BUZZ_RELAY_URL`, and `BUZZ_BOT_PRIVATE_KEY` are also picked up from
-`~/.hermes/.env` if you run Daedalus/Hermes — `TEAMS_WEBHOOK_URL` is the one
-exception, read from the environment/repo `.env` only, so putting it in
-`~/.hermes/.env` silently does nothing. Note: the old `.claude/talos/.env`
-path is no longer read — move any credentials to the repo root.
+Where to put them, first match wins: your shell env (exported variables always
+win), a `.env` file at the **repo root** (`<repo>/.env`), then `~/.talos/.env`
+(`$TALOS_HOME/.env`), which is where secrets belong when you want them for every
+repo. `~/.talos/.env` must be a regular file you own with mode 0600 and sit
+outside every git work tree, or Talos refuses it with a `chmod 600` hint. The
+old `~/.hermes/.env` is **deprecated**: it is still the last fallback, with the
+same checks and one deprecation line, and `TALOS_HERMES_ENV=<path>` moves it
+(empty disables it). Note: the old `.claude/talos/.env` path is no longer read —
+move any credentials to `~/.talos/.env` or the repo root. A config key can also
+point at a differently named variable with an `env:NAME` reference. All of this,
+and what to do when a file is refused, is in [Secrets](#secrets).
 
 A `.env` is parsed, never sourced, and only the notification variables
 (`SLACK_*`, `DISCORD_*`, `TEAMS_WEBHOOK_URL`, `BUZZ_*`, `PIPELINE_*_CHANNEL`,
-`PIPELINE_BUZZ_RELAY`) are read from it (#476). `GITHUB_TOKEN` / `GH_TOKEN` and
-every other key are ignored there, with one stderr line naming the key: export
-them in your shell instead. `TALOS_HERMES_ENV=<path>` moves the legacy
-`~/.hermes/.env` fallback (empty disables it).
+`PIPELINE_BUZZ_RELAY`) are read from it (#476); a deny list (`BASH_ENV`, `PATH`,
+`LD_*`, `GH_*`, `GITHUB_*`, ...) wins over that allow list (#444). `GITHUB_TOKEN` /
+`GH_TOKEN` and every other key are ignored there, with one stderr line naming the
+key: export them in your shell instead.
 
 Also note: Microsoft retired the legacy Office 365 "Incoming Webhook"
 connector in May 2026. Provision a Power Automate **Workflows** webhook
@@ -835,6 +840,26 @@ already has Talos labels re-runs `bash scripts/bootstrap-labels.sh` once so
   attempts). On a base branch that rejects direct pushes they exit 1 and the
   file is not updated; leave `status.enabled` off there. The resume skill still
   works through `pipeline-status-file.sh refresh --print`, which needs no push.
+
+**The status keys.** Every key is optional; the full rows are in the [Config reference](#config-reference).
+
+| Key | Default | What it controls | Set in |
+|-----|---------|------------------|--------|
+| `status.enabled` | `false` | The opt-in switch. Off: nothing is written, read or committed. | repo or user-level file |
+| `status.file` | `TALOS_STATUS.md` | Path of the status file, relative to the repo root. | repo only |
+| `status.log_heading` | `## Log` | Heading of the log section. | repo or user-level file |
+| `status.resume_heading` | `## Resume here` | Heading of the Resume block. | repo or user-level file |
+| `status.fragments_dir` | `docs/status.d` | Where the docs stage writes per-PR fragments; must be tracked. | repo only |
+| `status.archive_dir` | `status/archive` | Where log entries rotated out are archived. | repo only |
+| `status.log_days` | `30` | Age limit of a log entry, in days. | repo or user-level file |
+| `status.log_max` | `50` | Most log entries kept. | repo or user-level file |
+| `status.resume_max_lines` | `40` | Most lines in the Resume block. | repo or user-level file |
+
+**Turning it off.**
+
+1. Set `status.enabled: false` in the repo's config, or delete the key (`false` is the default). From the next run `/talos:pipeline` never calls `pipeline-status-file.sh`: no log entry, no Resume refresh, and no more `[skip ci]` commits on your base branch. Re-running `/talos:setup` and answering no to the status-file question writes `enabled: false` for you.
+2. The files already there stay in place. Remove them in a normal commit when you no longer want them: the status file (`status.file`), the fragment directory (`status.fragments_dir`, `docs/status.d/` by default) and the archive (`status.archive_dir`). With the switch off the docs stage no longer writes fragments, so a leftover one is only history.
+3. The resume skill keeps working with the switch off: `pipeline-status-file.sh refresh --print` ignores `status.enabled` and builds the briefing from GitHub, with no push.
 
 ### Draft PRs: one CI run per PR (`pr.draft`, default `true`, #332, #435)
 
@@ -1777,8 +1802,8 @@ outputs, the status line, the budget guard and the log tag.
 
 The guard is **off by default**. It turns on only when
 `limits.tokens_per_issue` is set in the repo's config. Keys (all three are
-project config only: the user-level file under `~/.talos` honours only
-`agents.*`, so set them in the repo's `talos.pipeline.yml`):
+valid in the repo's `talos.pipeline.yml` and, to share one budget across
+repos, in the user-level file under `~/.talos`):
 
 - `limits.tokens_per_issue`: unset or `0` means the guard is off, silently. A
   positive integer is the per-issue token budget. A negative, boolean,
@@ -1959,7 +1984,7 @@ evidence:
 | `evidence.max_files` | `10` | Integer 1-100. |
 | `evidence.max_mb` | `20` | Integer 1-100, MiB, a total. A fixed 10 MiB per-file cap applies on top. |
 
-An invalid value warns once and reads as absent, so the default applies. `evidence.*` in the user-level file (`~/.talos/talos.pipeline.*`) is ignored: only `agents.*` is read from there, so evidence is always chosen per repo.
+An invalid value warns once and reads as absent, so the default applies. `evidence.command` is repo-only (a command to run belongs to one repo); the other `evidence.*` keys may also be set in the user-level file (`~/.talos/talos.pipeline.*`).
 
 #### `.gitignore` is required
 
@@ -2855,6 +2880,230 @@ Preload guarantees the skill shapes every run (at the cost of context);
 on-demand keeps stages lean and degrades gracefully on machines without the
 pack installed.
 
+## Config reference
+
+All keys live in `talos.pipeline.json` (or `talos.pipeline.yml` if PyYAML is installed) at your repo root, and most of them can also live in one user-level file shared by every repo (see [The user-level file](#the-user-level-file)). Every key is optional and falls back to a sensible default. An unrecognized key (typo, wrong section) prints a one-line `pipeline-config: [warn] unknown config key '...' (did you mean '...'?)` warning to stderr instead of silently doing nothing — set `TALOS_CONFIG_STRICT_KEYS=0` to disable it.
+
+To see what a repo actually resolves, run `bash scripts/pipeline-config.sh --show`. It prints one tab-separated line per key (`key`, `value`, `layer`) and never prints a secret (see [How config is layered](#how-config-is-layered)).
+
+### How config is layered
+
+Four layers, lowest to highest. Each overrides the one below it key by key: a mapping merges, a scalar replaces, and a list in a higher layer replaces the lower layer's list whole (no union).
+
+1. **Defaults.** One table in `scripts/pipeline-defaults.sh` (key, type, default, derived, env override, scope). It is the only place a default is written: no script passes a fallback of its own, and `tests/test-docs-defaults-vs-table.sh` fails when the key table below, `talos.pipeline.yml.example` or `talos.pipeline.json.example` states a different default.
+2. **The user-level file.** `${TALOS_HOME:-$HOME/.talos}/talos.pipeline.{yml,yaml,json}`, for personal preferences across repos.
+3. **The repo file.** `talos.pipeline.{yml,yaml,json}` (or a legacy name, or `$PIPELINE_CONFIG`), checked in, for repo-specific keys and overrides.
+4. **Environment variables.** A key's own variable, when it is set and not empty, for a one-off override. Only the variables already documented are read (`PIPELINE_REPO`, `PIPELINE_PROJECT_NUMBER`, `PIPELINE_BOARD_OWNER`, `PIPELINE_STATUS_FIELD`, `PIPELINE_SLACK_CHANNEL`, `PIPELINE_DISCORD_CHANNEL`, `PIPELINE_BUZZ_CHANNEL`, `PIPELINE_BUZZ_RELAY`); there is no generic `TALOS_CFG_*` mapping. See [Environment variables](#environment-variables).
+
+`bash scripts/pipeline-config.sh --show [--origin-only] [KEY-PREFIX]` lists every key of the table, plus any unknown key that is present, as `key<TAB>value<TAB>layer`, where the layer is `default`, `global`, `repo` or `env`. `--origin-only` drops the value column, and a prefix keeps the keys that start with it (`--show agents.`). A list prints its items joined by the two characters `\n`; a control character in a key or value prints as `\xNN`. A secret-typed key, an unknown key whose name reads like a secret, and any value that starts with `env:` print as `env:NAME (set)` or `env:NAME (unset)` (is `NAME` in the environment, the repo `.env` or `~/.talos/.env`) or, for a literal that is not a reference, `<masked>`: never the value. `--show` prints what the layers hold, so a derived default (the Keys table says "falls back to ...") shows empty with layer `default`. It replaces the old `--dump-layers` view of `agents.*`.
+
+`pipeline-config.sh --has KEY` answers a different question: does a config **file** set the key (exit 0 yes, 1 no)? It ignores the environment layer on purpose, because callers use it to decide whether a block exists to edit.
+
+### The user-level file
+
+`${TALOS_HOME:-$HOME/.talos}/talos.pipeline.yml` (or `.yaml`, or `.json`) accepts every key except the repo-only ones, so `pr.draft`, `limits.*`, `spend.*`, `verify.ci_wait_s`, `hooks.*`, `evidence.enabled`, `notifications.*` and `agents.*` can be set once for every repo. The repo file overrides it key by key, and a repo list replaces a global list whole.
+
+**Repo-only keys.** A key that describes one repository is honoured only in that repo's own file. A repo-only key found in the user-level file is dropped with one stderr line that names the key and never the value. The list is the table's scope column: `base_branch`, `release_branch`, `repo`, `vcs.provider`, `vcs.repo`, `vcs.azure.*`, `vcs.file.source.path`, `board.*` (all of them), `verify`, `verify.commands`, `verify.qa_mode`, `merge.required_checks`, `merge.forbidden_files`, `merge.forbidden_files_replace`, `merge.forbidden_files_allow`, `merge.approval_waiver_paths`, `merge.union_paths`, `issues.label_filter`, `issues.skip_labels`, `status.file`, `status.fragments_dir`, `status.archive_dir`, `markers.trusted_authors`, `markers.verify_authors` and `evidence.command`. The environment variable of a repo-only key still applies, because the environment is the last layer.
+
+**The file must be trusted.** It drives `hooks.*` and `notifications.cmd`, which run commands, so Talos reads it only when it is a regular file (or a symlink you own pointing at one), owned by you, and neither group- nor world-writable. Otherwise one stderr line names the file and the fix (`chmod go-w <file>`) and the layer is read as absent. A malformed, empty or non-mapping file also reads as absent, with one warning. The file is parsed as data only (`yaml.safe_load` or JSON), never sourced.
+
+`/talos:setup` writes `agents.model` and `agents.roles.<role>.model` here when you choose a model once for every repo; see [Per-role model selection](#per-role-model-selection-agentsrolesrolemodel).
+
+### Secrets
+
+A secret never lives in a config file. The six keys that hold one are typed `secret` in the table, and their value is a **reference**, `env:NAME`, never the secret itself:
+
+| Key | Documented variable |
+|-----|---------------------|
+| `notifications.slack.webhook` | `SLACK_WEBHOOK_URL` |
+| `notifications.discord.webhook` | `DISCORD_WEBHOOK_URL` |
+| `notifications.teams.webhook` | `TEAMS_WEBHOOK_URL` |
+| `notifications.slack.bot_token` | `SLACK_BOT_TOKEN` |
+| `notifications.discord.bot_token` | `DISCORD_BOT_TOKEN` |
+| `notifications.buzz.bot_key` | `BUZZ_BOT_PRIVATE_KEY` |
+
+You never have to write a reference: the documented variables keep working with no config key at all. A reference exists to read the value from a differently named variable, for example `notifications.slack.webhook: env:ACME_SLACK_HOOK`. A webhook reference must resolve to an `https://` URL. A reference that does not resolve ends the lookup (that platform is skipped, with one stderr line); it never falls back to the documented variable. A config value that is not `env:<valid name>` (a literal pasted into the file, `env:` with no name, a name with a space or a `$`) is refused with one stderr line that names the key and never the value.
+
+**Where the value comes from**, first match wins:
+
+1. the exported environment;
+2. the repo's `.env` (`<repo>/.env`);
+3. the config reference, which renames the variable looked up in steps 1, 2, 4 and 5;
+4. `~/.talos/.env` (`$TALOS_HOME/.env`);
+5. the legacy `~/.hermes/.env`, with one deprecation line per process.
+
+**`~/.talos/.env`** is a plain `NAME=value` file, one per line, with the notification variables (placeholders here, never a real value):
+
+```
+SLACK_WEBHOOK_URL=<your Slack webhook URL>
+SLACK_BOT_TOKEN=<your Slack bot token>
+TEAMS_WEBHOOK_URL=<your Teams webhook URL>
+BUZZ_RELAY_URL=<your relay URL>
+BUZZ_BOT_PRIVATE_KEY=<your bot key>
+```
+
+Create it with `mkdir -p ~/.talos && touch ~/.talos/.env && chmod 600 ~/.talos/.env`, then edit it. Talos refuses a `.env` that is not **mode 0600**, is not **owned by you**, is a symbolic link, or sits **inside any git work tree** (for example `$HOME` is a dotfiles repository): one stderr line names the file and the fix (`chmod 600 <file>`, or move it outside every repository), and the file is skipped, so the notifications it supplied stop until it is fixed.
+
+**`~/.hermes/.env` is deprecated.** It is still the last fallback, with the same ownership, mode and work-tree checks, and one stderr line says to move your Talos variables to `~/.talos/.env` (copy only the Talos ones; the file belongs to Hermes too). `TALOS_HERMES_ENV=<path>` points the fallback elsewhere, and an empty value switches it off; tests and sandboxed runs set it.
+
+**Which names a `.env` may set.** A `.env` is parsed, never sourced or evaluated: a value is taken literally, one pair of surrounding quotes is stripped, and `$(...)` and backticks stay plain text. The repo `.env` comes from the checkout, which can be a PR branch, so only the notification variables are read from it: `SLACK_WEBHOOK_URL`, `DISCORD_WEBHOOK_URL`, `TEAMS_WEBHOOK_URL`, `SLACK_BOT_TOKEN`, `DISCORD_BOT_TOKEN`, `BUZZ_BOT_PRIVATE_KEY`, `BUZZ_RELAY_URL`, `PIPELINE_SLACK_CHANNEL`, `PIPELINE_DISCORD_CHANNEL`, `PIPELINE_BUZZ_CHANNEL` and `PIPELINE_BUZZ_RELAY`. Every other key is ignored, with one stderr line naming it. A hard **deny list** wins even over the allow list: `BASH_ENV`, `ENV`, `PATH`, `IFS`, `HOME`, `SHELL`, `BASH_*`, `LD_*`, `DYLD_*`, `PYTHON*`, `GIT_*`, `TALOS_*`, `*_PROXY`, `GH_*`, `GITHUB_*`, `GITLAB_*`, `AZURE_*`, `ANTHROPIC_*` and `AWS_*` (and a few more shell and runtime variables). An `env:NAME` reference to a denied name is refused before the environment is read, so a config file cannot aim `GH_TOKEN` at a chat webhook. `GITHUB_TOKEN` and `GH_TOKEN` are therefore never read from a `.env`: export them in your shell.
+
+**Secret-shaped values are rejected in every config layer.** On load, a string value in the repo file or the user-level file that looks like a secret is dropped as absent, with one stderr line that names the key, says what it looks like and tells you to move the value to `~/.talos/.env` and reference it. The shapes are: Slack tokens (`xox[abposr]-`) and webhook URLs, Discord and Teams webhook URLs, GitHub tokens (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`), GitLab tokens (`glpat-`), `sk-` API keys, AWS access keys (`AKIA...`), private-key blocks and Nostr `nsec1` keys. A value that starts with `env:` is always allowed, and `TALOS_CONFIG_STRICT_KEYS` does not affect the check. An ordinary `#channel`, path or `https://hooks.example.com` never matches.
+
+`TEAMS_WEBHOOK_URL` is read from the same `.env` files and config reference as the other platforms. (It used to come from the environment and the repo `.env` only.) Teams has no bot-token path and never threads; see [Per-issue notification threading](../README.md#per-issue-notification-threading).
+
+### Safety rules
+
+The rules below hold for every part of the config and secrets code, and for every test of it. They are stated here once.
+
+- A secret appears in a config file only as `env:NAME`. A literal secret, or a value shaped like one, is refused or dropped on load.
+- A secret value is never printed: not by `--show`, not in a stderr note (a note names the key), not in a log, an events line or a test failure message.
+- A `.env` is parsed, never sourced. It is trusted only when it is a regular file you own, mode 0600, outside every git work tree. The user-level config is trusted only when it is a regular file you own that is not group- or world-writable.
+- A repo file cannot widen what a `.env` may set: the allow list is fixed, and the deny list wins.
+- Tests never set `HOME` and never touch the real `~/.talos`, `~/.claude` or `~/.hermes`: they sandbox `TALOS_HOME` and `TALOS_HERMES_ENV` (`tests/helpers.sh` does it), send no real webhook and make no real GitHub call, and run every `python3` as `python3 -I`.
+- A role prompt never contains a shell loop typed into it; a stage runs one plain command per step.
+
+### Upgrading from before v0.19
+
+If your setup predates the config and secrets work (epic #437), check these once. The full text of each is in the README's [Upgrade notes (v0.19+)](../README.md#upgrade-notes-v019).
+
+- A `.env` that is not mode 0600 and owned by you is refused (`chmod 600`), and so is one inside any git work tree: notifications that came from it stop. See [Secrets](#secrets).
+- A group- or world-writable global `talos.pipeline.yml` is read as absent: `chmod go-w` it. See [The user-level file](#the-user-level-file).
+- `TEAMS_WEBHOOK_URL` is now read from the `.env` files, and `~/.hermes/.env` is deprecated in favour of `~/.talos/.env`.
+- Secret keys take only `env:NAME`; a secret-shaped value in any config layer is dropped, naming the key.
+- Repo-only keys in the global file are dropped with a stderr note; the global file otherwise accepts every key.
+- The `.env` deny list (`BASH_ENV`, `PATH`, `LD_*`, `GH_*`, ...) wins over the allow list.
+- The environment is a fourth layer, and `pipeline-config.sh --show` prints the resolved result.
+- A GitHub Actions or App token logs in as a `[bot]` that is never trusted implicitly: set `markers.trusted_authors`. See [Approval-marker author verification](#approval-marker-author-verification-markersverify_authors).
+
+### Keys
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `base_branch` | repo default branch | Branch all PRs target |
+| `release_branch` | `main` | Production branch (changelog headers) |
+| `repo` | auto-detect | Legacy top-level alias for `vcs.repo` — checked first (before `vcs.repo`, before the git remote) by helpers that resolve `owner/repo` (e.g. `pipeline-hooks.sh`). Prefer `vcs.repo` in new configs; both are read for back-compat. |
+| `vcs.provider` | `github` | VCS backend: `github`, `gitlab`, `azure`, or `file` |
+| `vcs.repo` | auto-detect | `owner/repo` override (required when git remote unavailable) |
+| `vcs.token_env` | unset (falls back to `GITHUB_TOKEN`, then `GH_TOKEN`) | Name of the environment variable holding the GitHub token, for the `github-api` provider (token-only, no `gh` CLI). Lets you point Talos at a differently-named secret (e.g. `MY_BOT_TOKEN`) without renaming it to `GITHUB_TOKEN`/`GH_TOKEN`. Also read by `pipeline-status.sh` for Projects v2 board updates when `gh` is absent. No effect on the `github` provider (uses `gh auth`). |
+| `vcs.azure.org_url` | — | Azure DevOps org URL (`https://dev.azure.com/MYORG`) |
+| `vcs.azure.project` | — | Azure DevOps project name |
+| `vcs.azure.work_item_type` | `Product Backlog Item` | Type for `create-issue` (Azure) |
+| `vcs.azure.area_path` | project root | Area path new work items land in (Azure) |
+| `vcs.file.source.path` | `plan.md` | Markdown checklist file for file mode |
+| `board.enabled` | `true` | Enable board updates (GitHub Projects / Azure State). On by default, so with a `board.project_number` set the pipeline moves cards; set `false` to turn updates off (`bootstrap-board.sh` then prints "board disabled"). |
+| `board.project_number` | — | Your project board number (GitHub) |
+| `board.owner` | repo owner | GitHub org/user owning the board |
+| `board.status_field` | `Status` | Single-select field name (GitHub) |
+| `board.statuses.*` | see example | Display names for each status option (GitHub) |
+| `board.status_map.*` | unset | Optional flat mapping from pipeline status names to the board's actual column names. Example: `{Blocked: "Needs attention"}`. An absent key passes through unchanged; omitting the map entirely is a no-op. Validation and option-ID lookup both run against the mapped name, so a correctly mapped name is treated as present. |
+| `board.azure_states.ready` | `New` | ADO work-item State for a ready item (Azure) |
+| `board.azure_states.in_progress` | `Committed` | ADO work-item State while a stage works on the item (Azure) |
+| `board.azure_states.in_review` | `Committed` | ADO work-item State while the PR is in review (Azure) |
+| `board.azure_states.done` | `Done` | ADO work-item State once the PR merged (Azure) |
+| `board.azure_states.*` | unset | Any other pipeline status → ADO work-item State (Azure). Leave a value empty to keep the state unchanged. The four rows above are the Scrum defaults. |
+| `verify` | `[]` | Shell commands every code subagent must pass. Also accepts a dict form — `verify: {commands: [...], qa_mode: ..., targeted: ..., ci_wait_s: ..., timeout_ms: ...}` (`verify.commands` is then this dict's `commands` list) — so the sibling `verify.*` keys below can live under the same top-level key instead of alongside it. |
+| `verify.commands` | `[]` | The command list in the dict form of `verify` above: `verify: {commands: [...]}` is the same as the plain list. Repo-only. |
+| `verify.qa_mode` | `local` (`ci` when `merge.required_checks` is non-empty) | `ci`: QA trusts CI (`pr-checks`) as the suite oracle instead of re-running `verify:` locally — CI already runs it on every push. `local`: QA runs the full `verify:` list once itself, as before. An explicit value always wins over the `merge.required_checks`-derived default — **except** an explicit `ci` combined with an empty or absent `merge.required_checks` list, which resolves to `local` instead (with a one-line warning on stderr): trusting CI as the oracle for zero required checks would let QA pass vacuously, without ever running `verify:` or observing a real CI signal. |
+| `verify.targeted` | `true` | While iterating, the developer runs only the tests covering the files it changed (`tests/run-tests.sh --for <path>...` or `--changed [<base-ref>]`; see [Tests](../README.md#tests)), then runs the full `verify:` list exactly once, immediately before its final commit and push. Set `false` to run the full `verify:` list on every iteration instead — never zero local runs either way. |
+| `verify.ci_wait_s` | `900` | Seconds QA waits in the foreground (no background process, no sleep-polling) for every check named in `merge.required_checks` to go green under `qa_mode: ci`, via `pipeline-vcs.sh pr-checks-required` -- scoped to just those checks, so an unrelated non-required check cannot burn the budget or mask a required check GitHub hasn't scheduled yet. Any required check still failing, missing, or pending when the budget elapses is treated as FAIL (fail closed). Must be a positive integer; a non-integer or non-positive value is rejected (stderr warning, falls back to the default) -- it is interpolated unquoted into the CI-wait loop's shell test. |
+| `verify.timeout_ms` | `600000` | Milliseconds substituted as `<VERIFY_TIMEOUT_MS>` into the foreground rule placed next to every verify and CI-wait instruction in the developer and QA prompts — the explicit timeout a stage passes to its verify command instead of backgrounding it. Must be a positive integer; a non-integer or non-positive value is rejected (stderr warning, falls back to the default). |
+| `merge.auto` | `true` | `false` runs every stage and gate (approvals, forbidden-files check, green CI) but leaves the final merge to a human: the orchestrator labels the PR `pipeline:approved`, posts a "ready for human merge" comment, and stops instead of merging. The issue stays open and is closed by the reconciliation sweep after you merge. See [Human-merge mode](#running-the-pipeline) in the user guide. |
+| `merge.auto_sync` | `true` | After each successful `merge-pr`, update every OTHER open pipeline PR's branch with the new base (#289): a sibling whose conflicts are entirely covered by `merge.union_paths` resolves mechanically via `pipeline-mergebase.sh`; otherwise `update-branch` (server-side base update — GitHub `PUT .../pulls/{n}/update-branch` with `expected_head_sha`, GitLab `glab mr rebase`; unsupported on azure/file, exit 2) re-checks mergeability, and a still-conflicting sibling gets the developer merge-base dispatch immediately instead of at its own merge time. `false` skips the block entirely. |
+| `merge.method` | `squash` | `squash`, `merge`, or `rebase` |
+| `merge.required_checks` | `[]` | CI check names required before merge. If your workflow only runs some checks (e.g. a macOS job) on push and not on pull requests -- as `templates/ci/github-tests.yml` does by default -- do not name that check here, or QA's CI-wait loop will wait for a check that never appears on the PR; see [CI](../README.md#ci). |
+| `merge.delete_branch` | `true` | Delete feature branch after merge |
+| `merge.forbidden_files` | see defaults | Glob patterns (matched against filename and full path) for files that must not appear in a PR. Matching is **case-insensitive** (`.ENV` and `Credentials.JSON` are caught). Defaults (30 patterns): `.env`, `.env.*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.secrets`, `secrets.*`, `*id_rsa*`, `*id_ecdsa*`, `*id_ed25519*`, `*id_dsa*`, `*.ppk`, `*.jks`, `*.keystore`, `*.pkcs12`, `*.kdbx`, `*.ovpn`, `.netrc`, `_netrc`, `.npmrc`, `.pypirc`, `.git-credentials`, `credentials.json`, `*-credentials.json`, `*_credentials.json`, `.aws/credentials`, `*/.aws/credentials`, `.docker/config.json`, `*/.docker/config.json` (the last ten, credential files, were added in #436; `*credentials*.json` is deliberately not a default, so `credentials-schema.json` stays allowed). `pipeline-worktree.sh checkpoint` reads the same list through `pipeline-vcs.sh forbidden-files-patterns` and fails closed if it cannot resolve it. Setting this key **adds** to the defaults (union semantics) — the built-in patterns remain active alongside any configured patterns. To replace the defaults entirely, also set `merge.forbidden_files_replace: true` (see below). **Note:** `*id_rsa*` also matches `id_rsa.pub` (a harmless public key) — this is an accepted false positive. If you commit public keys, add `id_rsa.pub` (or the specific filename) to `merge.forbidden_files_allow`. **Note:** `*.keystore` may also block self-signed test keystores committed for CI use — `fnmatch` cannot distinguish a real keystore from a test one. This is expected behaviour; operators who legitimately commit test keystores should add the specific filename to `merge.forbidden_files_allow` (e.g. `["test.keystore", "debug.keystore"]`). **Note:** `.netrc` and `_netrc` are literal patterns (no glob characters). As of #76 (PR #90), literal deny patterns generate canaries and wildcard allow entries that match them are rejected — the deferral that kept `.netrc` out of the defaults is resolved (#78). **Note:** Three extensions were deliberately excluded from the defaults in #78: `*.gpg` (`pass`/SOPS/git-crypt workflows commit GPG-encrypted blobs intentionally — encryption-at-rest is a legitimate reason to put a secret in a repo), `*.asc` (detached signatures and public signing keys are routinely committed as release artifacts), and `*.der` (DER is an encoding used equally by public X.509 certificates and private keys — the extension alone is not a reliable signal). If one of these applies to files that should genuinely never appear in your PRs, add the pattern to `merge.forbidden_files`. **Note:** a `.npmrc` that holds no token (only a registry URL or `engine-strict`) is a common false positive for the `.npmrc` default. Add the exact filename to `merge.forbidden_files_allow` (`[".npmrc"]`); a wildcard entry is rejected. |
+| `merge.forbidden_files_replace` | `false` | Set to `true` to restore the pre-v0.13 replacement behaviour: `merge.forbidden_files` will then **replace** the built-in defaults entirely rather than unioning with them. **Security warning:** this suppresses the built-in secret-protection patterns for every PR until the key is removed. A `talos:forbidden-files-defaults-replaced` marker is emitted on stdout on every run so the suppressed state is auditable in the PR record. Keep this `false` unless you have a specific reason to narrow the deny list. |
+| `merge.forbidden_files_allow` | `[]` | Explicit exemptions for `merge.forbidden_files`. Globs matched against filename and full path, checked **before** deny patterns. Use this when a deny pattern over-matches a committed template (e.g. allow `.env.example` while keeping `.env.production` blocked). Example: `[".env.example"]`. **Security note:** each entry punches a hole in the secret-protection gate — if a real secret file matches an allow entry it will not be blocked. Keep the allow list minimal and specific. **Literal-override caveat:** the allow-list validation generates canaries from both wildcard and literal deny patterns. A wildcard allow entry (e.g. `*.env`) that matches a canary derived from any deny pattern is rejected. The one permitted exception is an allow entry that is an exact string match for a literal deny pattern (e.g. adding `.env` to allow when `.env` is a deny pattern) — this is treated as a deliberate operator decision to permit that specific file. Keep such overrides intentional and minimal. |
+| `merge.approval_waiver_paths` | `["*.md", "docs/**", "CHANGELOG.md", "*.example"]` | Glob patterns for files that, when they are the **only** changes between an approval SHA and the current head, do not invalidate that approval. A docs-only commit pushed after QA approval will therefore carry the approval forward rather than forcing a full re-run. `*.example` covers generated pipeline-config examples (e.g. `talos.pipeline.json.example`, `talos.pipeline.yml.example`) — they are never executed. **Hard-coded non-waivable (cannot be widened by this key):** any path under `scripts/` or `tests/`; agent instructions (a later edit changes what the agents do, and the default `*.md` would otherwise waive them): any path under `agents/`, `skills/` or `templates/prompts/` (Talos's own layout, anchored at the repo root, so `docs/agents/` stays waivable), any path under `.claude/agents/`, `.claude/skills/`, `.claude/commands/`, `.claude/talos/`, `.claude/rules/`, `.agents/`, `.agent/`, `.gemini/`, `.pi/` or `.codex/` at any depth (so `sub/.claude/rules/x.md` counts), and any file named `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `AGENTS.override.md` or `CLAUDE.local.md` at any depth; all matched case-insensitively, and a rename out of one of these paths counts as a change to the old path; and all pipeline config filenames: `talos.pipeline.yml`, `talos.pipeline.yaml`, `talos.pipeline.json`, `.claude-pipeline.yaml`, `.claude-pipeline.json`, `pipeline.yaml`, `pipeline.json` — these are checked first, before the config waiver. A config entry under one of the agent-instruction paths (for example `skills/**`) is accepted but has no effect on those paths, and prints a one-line stderr note. `README.md`, `docs/**`, `CHANGELOG.md` and `templates/comments/**` stay waivable. **Validation:** entries that are too broad (catch-all globs such as `*`, `**`, `*/*`, or any pattern that would match `scripts/`, `tests/` or the pipeline config filenames) are rejected at validation time (exit 1) and will **block the merge** (fail-closed), matching the behaviour of `merge.forbidden_files_allow`. Keep entries minimal and specific. |
+| `merge.union_paths` | `["CHANGELOG.md"]` | Glob patterns (matched against filename and full path) for files `pipeline-mergebase.sh` is allowed to resolve mechanically — both sides of the conflict are kept via `git merge-file --union` (PR side first), no developer dispatch (#256). Used by the Step 3c mergeability gate: when a `CONFLICTING` PR's `conflict-files` output is entirely covered by this list, `pipeline-mergebase.sh` resolves and pushes the merge itself; any other conflicting path falls back to the developer merge-base task as before. **Hard-coded non-unionable (cannot be widened by this key):** any path under `scripts/`, any path under `tests/`, and all pipeline config filenames — same enforced-after-config-check set as `merge.approval_waiver_paths`. **Validation:** catch-all or non-unionable-matching entries are rejected at validation time (exit 1, nothing merged), same rule as `merge.approval_waiver_paths`/`merge.forbidden_files_allow`. Keep entries minimal and specific — a union merge blindly concatenates both sides, which is safe for an additive changelog but would corrupt a source file. |
+| `issues.label_filter` | `pipeline:ready` | An issue enters the queue when it carries **both** `pipeline:ready` **and** this label. When `label_filter` is `pipeline:ready` (the default), the two conditions collapse to one — existing configs are byte-identical to today. When set to a custom value (e.g. `team:alice`), only issues carrying both labels are queued; issues that carry only the custom label are silently skipped. |
+| `issues.skip_labels` | `[pipeline:blocked, wontfix]` | Issues with these are skipped |
+| `issues.assignee` | `self` | Who `create-issue` and the "In progress" claim assign an issue to (github, github-api, gitlab, azure; not file). `self` = the authenticated operator; any other value = that identity verbatim; `none` = never assign; `assignee: ""` (QUOTED empty string) = `none`, plus a one-line stderr notice; a bare `assignee:` (YAML null) behaves as if unset, resolving to `self`. The value is trimmed of leading/trailing whitespace before any comparison, so `" self "` and whitespace-only values behave like `self`/`none` respectively. An existing assignee is never overwritten, and an identity the provider rejects is a stderr warning, never a stage failure. See [docs/user-guide.md](#who-issues-are-assigned-to-issuesassignee). |
+| `issues.max_parallel` | `1` | Max issues in-flight at once. **Concurrency warning:** raising this above `1` requires concurrency-safe `verify:` scripts. Under `isolation: worktree` (the default), Talos provides filesystem isolation (one worktree per issue) but does NOT manage Docker/compose project names, port allocations, or shared scratch directories. Two simultaneous verify runs against a shared compose stack will collide — observed failures include container-recreate races, script overwrites, and green transcripts that describe the wrong worktree. Consuming projects must derive their own isolation from `TALOS_ISSUE_NUMBER` (e.g. `COMPOSE_PROJECT_NAME=talos-$TALOS_ISSUE_NUMBER`). With the integer guard in place, `TALOS_ISSUE_NUMBER` is guaranteed to be digits or empty — never shell-unsafe. **Footgun:** when `TALOS_ISSUE` is not set, `TALOS_ISSUE_NUMBER` is empty and the example yields `COMPOSE_PROJECT_NAME=talos-`, a name shared across all agents; under `max_parallel > 1` this silently undoes isolation. Always set `TALOS_ISSUE=<N>` when running concurrent pipelines. The default (`1`) has no contention and requires no action. **Hard constraint under `isolation: branch`:** `max_parallel > 1` is refused at startup — `pipeline-isolation.sh validate` exits 1 with: `ERROR: isolation: branch requires issues.max_parallel: 1 — two agents cannot safely share one checkout. Set max_parallel: 1 or switch to isolation: worktree.` **Local state is locked, not your responsibility (#180):** the three shared local files/dirs concurrent stages touch — the notification thread map (`~/.talos/threads.json`), `git worktree add/remove` on the shared repo, and `tests/run-tests.sh`'s per-file result cache (`.talos/test-cache/`) — are each serialized with `scripts/pipeline-lock.sh`'s portable `mkdir`-based lock (no `flock(1)` dependency, so macOS works the same as Linux CI runners). A lock that can't be acquired within its timeout is skipped with one stderr warning rather than blocking the pipeline — a stuck lock never causes a deadlock. The board (`pipeline-status.sh`) is intentionally left unlocked: its updates are remote and idempotent. |
+| `execution.isolation` | `worktree` | Working-copy strategy for each issue. **Absent key is identical to `worktree` — all existing configs are unaffected.** Three values: `worktree` (default) — each developer and QA stage runs in its own `git worktree`; unchanged from all prior releases. `branch` — stages run in the orchestrator's checkout on a per-issue branch; the checkout is never duplicated. **Cost:** execution is serialized — `max_parallel > 1` is refused at startup (hard failure, not a warning). The orchestrator asserts a clean, level tree (`assert-sync`) before each developer dispatch; a dirty or stale tree blocks the issue. `checkout` — recognised but **refused**: exits 1 with `ERROR: isolation: checkout is not yet implemented. Use isolation: worktree (default) or isolation: branch.` Planned for a future release. Any other value is refused with `ERROR: Unknown isolation mode '<value>'. Valid values: worktree, branch, checkout (checkout not yet implemented).` **Why `branch` exists:** worktrees are not viable in all setups — submodules are not populated in a fresh worktree; ignored-but-required artifacts (`node_modules/`, `.venv/`, generated protobufs) are absent so every stage pays a full install; absolute paths in build configs and Docker bind-mounts point at the original checkout; large monorepos pay real disk and time cost. Use `branch` when your project has any of these constraints and serial execution is acceptable. |
+| `execution.worktree_warn_threshold` | `10` | Non-active worktree count (issue-pattern `fix\|feat/issue-*` plus Claude Code harness `worktree-agent-*`, excluding lane homes and the current checkout) above which `pipeline-worktree.sh list` prints a `pipeline-worktree: WARNING: <N> stale worktrees exceed threshold <T>` line. Step 5 (end of run) relays that line via `pipeline-notify.sh info` when present, and says nothing when the count is at or under the threshold. This is a visibility signal only — it does not change what `sweep` removes. |
+| `roles.validator` | `true` | Phase-1 gate: confirms issue is real |
+| `roles.pm` | `true` | Writes implementation spec |
+| `roles.pm_skip_when_spec_present` | `true` | Skips spawning a PM subagent for a `pipeline:confirmed` issue whose body already IS a usable spec — an "acceptance criteria" heading (`## Acceptance criteria` or `**Acceptance criteria**`, case-insensitive) followed by at least one `- [ ]`/`- [x]` item, or the `spec:ready` label. When it fires, the orchestrator posts `**PM:** skipped, issue body is the spec` and advances straight to `pipeline:dev`; the developer's prompt says the spec is the issue body instead of pointing at a PM comment. Set to `false` to always run PM on `pipeline:confirmed` issues, ignoring this shortcut. Has no effect when `roles.pm` is `false` (PM never runs either way). Detection is `pipeline-vcs.sh has-spec <n>` (GitHub only — `github`/`github-api`). |
+| `roles.qa` | `true` | Verifies PR satisfies acceptance criteria |
+| `roles.reviewer` | `true` | Code-quality review |
+| `roles.security` | `true` | Security review |
+| `roles.adversarial` | `false` | Optional pre-merge second opinion (#237), off by default — attacks the diff for vacuous tests, weak patterns, secret shapes and unverified claims. Runs after security. Typically paired with `agents.roles.adversarial.runner: custom` + `runner_cmd` pointing at a second, independent backend (e.g. a local model). Zero behaviour change when absent or `false`: no dispatch, and `adversarial:approved` is never required by the merge gate. |
+| `roles.docs` | `true` | Updates docs/CHANGELOG; terminal stage |
+| `roles.docs_mode` | `auto` | Only relevant when `roles.docs` is `true`. `auto`: Step 3e Phase 1 checks the PR's changed paths (`pipeline-vcs.sh pr-files <pr>`) before dispatching docs. No docs subagent is dispatched (the orchestrator stamps `docs:done` directly with "docs verified by developer diff (docs_mode: auto)") when `CHANGELOG.md` is changed AND (`README.md` or a `docs/**` path is also changed), OR every changed path other than `CHANGELOG.md` itself is under `scripts/**` or `tests/**` AND `CHANGELOG.md` is changed. When docs does dispatch under `auto` (the gate above didn't match), its prompt receives only the changed doc-relevant paths and the CHANGELOG hunk (`git diff origin/<base>...HEAD -- CHANGELOG.md`), not the full PR diff, and is told to read source only on demand. `always`: restores the pre-#200 behavior — docs always dispatches and always reads the full diff via `diff-pr`. Filed from a pipeline run where the docs stage spent 26k-108k tokens per PR concluding "no docs changes required" because the developer had already updated docs as part of its own acceptance criteria (#200). |
+| `roles.changelog_fragments` | `false` | Opt-in (#290, part of #287): docs writes one fragment per issue under `docs/CHANGELOG.d/<issue>.md` instead of editing `CHANGELOG.md`, so parallel PRs never touch the same file. After each merge the orchestrator runs `scripts/pipeline-changelog.sh assemble` to fold consumed fragments into `CHANGELOG.md`'s `## [Unreleased]` section on the base branch (newest first, fragments deleted, non-fatal on failure). Default `false` — docs edits `CHANGELOG.md` as before. |
+| `roles.planner` | `false` | Epic decomposition (optional, off by default) — detects epics (via `epic` label, ≥ 4 checklist items, or body ≥ 2000 chars) and creates dependency-ordered sub-issues; independent sub-issues enter the queue immediately, dependent sub-issues are unblocked automatically as predecessors close. The auto-close sweep does NOT close an epic once its sub-issues finish if the epic's own body still has unticked `- [ ]` acceptance boxes — it gets `pipeline:epic-children-done` and a comment naming what's outstanding instead, and stays open for a human |
+| `comments.enabled` | `true` | Post a stage comment at each handoff (Daedalus parity) |
+| `comments.header` | `**Agent:** {role} (talos)` | Header prepended to every stage comment; `{role}` is replaced at runtime |
+| `comments.templates_dir` | `templates/comments` | Path (relative to repo root) containing comment templates |
+| `notifications.slack_channel` | `""` | Slack channel ID fallback |
+| `notifications.discord_channel` | `""` | Discord channel ID fallback |
+| `notifications.buzz_channel` | `""` | Buzz channel UUID (Nostr `h` tag target) |
+| `notifications.buzz_relay` | `""` | Buzz (Nostr) relay URL. Not a secret — it identifies a deployment the same way `buzz_channel` does, so it belongs in the committed config. Precedence: `BUZZ_RELAY_URL` from the environment or a `.env` file, then `PIPELINE_BUZZ_RELAY`, then this config key. |
+| `notifications.slack.webhook` | unset | Secret reference, `env:NAME` (default variable `SLACK_WEBHOOK_URL`). Never a literal: see [Secrets](#secrets). Must resolve to an `https://` URL. |
+| `notifications.discord.webhook` | unset | Secret reference, `env:NAME` (default variable `DISCORD_WEBHOOK_URL`). Must resolve to an `https://` URL. |
+| `notifications.teams.webhook` | unset | Secret reference, `env:NAME` (default variable `TEAMS_WEBHOOK_URL`). Must resolve to an `https://` URL. Teams is webhook-only and never threads. |
+| `notifications.slack.bot_token` | unset | Secret reference, `env:NAME` (default variable `SLACK_BOT_TOKEN`). The bot-token mode threads per issue. |
+| `notifications.discord.bot_token` | unset | Secret reference, `env:NAME` (default variable `DISCORD_BOT_TOKEN`). The bot-token mode threads per issue. |
+| `notifications.buzz.bot_key` | unset | Secret reference, `env:NAME` (default variable `BUZZ_BOT_PRIVATE_KEY`): the Nostr key the Buzz bot signs with. |
+| `notifications.buzz_timeout_s` | `15` | Seconds a single `nak` publish may run before it is killed. Same validation as `notifications.cmd_timeout_s` below (positive integer; anything else falls back to the default). A relay that never answers logs one line on stderr, writes no thread anchor, and never blocks the pipeline. |
+| `notifications.templates_dir` | `templates/notifications` | Path to notification message templates; `""` disables templates |
+| `notifications.threading` | `true` | Thread all events per issue in one Slack/Discord thread (bot-token mode only) |
+| `notifications.events` | all (unset) | Events filter. **Leave unset** — when set, any unlisted event is silently dropped, including all role events that make up the conversation stream. See warning below. |
+| `notifications.cmd` | `""` (disabled) | Shell command run (via `sh -c`) for every event that passes `notifications.events`, after Slack/Discord/Teams/Buzz. Receives a JSON payload on stdin (`{event, ref, message, thread_key, fields, repo, issue}`); see [Optional: notifications](../README.md#5-optional-notifications) above for the schema. A missing command, non-zero exit, or timeout is a silent no-op with one line on stderr — never blocks the pipeline or the other sinks. |
+| `notifications.cmd_timeout_s` | `10` | Seconds `notifications.cmd` may run before being killed. Must be a positive integer; a non-integer or non-positive value is rejected (stderr warning, falls back to the default). |
+| `limits.max_fix_attempts` | `3` | Max **consecutive** failures of the **same blocking stage** before `pipeline:blocked` is set. Resets to 1 when a different stage blocks next. **Behaviour change from v0.13:** this key previously counted every developer dispatch; it now counts consecutive same-stage failures only. Operators with existing configs should audit: a value of `3` previously allowed 3 total dispatches; it now allows 2 re-dispatches for the same stage (the third recording exits non-zero and blocks). |
+| `limits.max_total_dispatches` | `8` | Absolute ceiling on total developer dispatches per issue, across all stage changes. **Never resets** — not even when the blocking stage changes. Prevents a QA→reviewer→QA ping-pong from exploiting per-stage resets to run indefinitely. When the total reaches this value, `record-attempt` exits non-zero regardless of which stage is blocking. |
+| `limits.max_retries` | `5` | Retries per network call after a rate-limit / transient error, on top of the original try — up to 6 total attempts by default (#173). Applies uniformly to every network verb in every provider: `gh`/`glab`/`az` CLI invocations (shadowed once per adapter so no call site needs editing) and the `github-api` provider's `curl` requests. **Retried:** HTTP 429; GitHub 403 responses whose body mentions a secondary rate limit or abuse detection; `gh`/`glab`/`az` errors whose stderr matches a rate-limit pattern. **Not retried (fails immediately, today's behaviour):** 401, 404, 422, and any other error that doesn't match those patterns. **Backoff:** honours a `Retry-After` value when the transport supplies one; otherwise exponential starting at 2s, doubling each attempt, capped at 60s. Each retry logs one line to stderr naming the attempt number and wait duration. `--dry-run` never sleeps or retries — every verb returns before its first network call. `TALOS_RETRY_SLEEP_SCALE` (default `1`) scales every sleep; set to `0` in tests for instant runs. |
+| `limits.tokens_per_issue` | unset (guard **off**) | Per-issue token budget for the spend guard (#334). Unset or `0` = off, silently; a negative, boolean, fractional or non-numeric value warns once on stderr and is treated as off. Checked once before each developer fix round (fix rounds only); recorded tokens only, so unrecorded runs are never counted; fails open. At the limit the playbook sets `pipeline:blocked` and records a `budget-blocked` event; the owner removes the label (each block grants one more limit) or raises the key. Valid in the repo file and in the user-level file. See [Seeing token spend](#seeing-token-spend-334). |
+| `limits.warn_at` | `0.8` | Fraction of `limits.tokens_per_issue` at which the guard reports `warn` (stops nothing). A number with `0 < x <= 1`; anything else warns once and uses `0.8`. Valid in the repo file and in the user-level file. |
+| `spend.comment` | `true` | Post the per-stage spend comment on the PR, one comment per PR edited in place. Only with `comments.enabled: true` and the `github` or `github-api` provider. A strict boolean; anything else warns once and uses `true`. Valid in the repo file and in the user-level file. |
+| `markers.verify_authors` | `true` | Whether `check-approval-sha` and `read-attempt` verify the author of every `talos:approval`/`talos:attempt` marker (#187). When `true` (the default), the *effective* trust set is `markers.trusted_authors` (below) **unioned with the currently-authenticated identity** — `gh api user --jq .login` for the `github` provider, `GET /user` for `github-api` — inferred automatically, no config required. Set to `false` to restore the pre-#187 behaviour: author checking is always skipped (fail-open), silently, regardless of `markers.trusted_authors`. See [Marker placement and trusted-author allow-list](#approval-marker-author-verification-markersverify_authors) below for the full enforcement matrix, including the CI-bot caveat. |
+| `markers.trusted_authors` | unset | Allowlist of GitHub login strings (YAML list) additionally trusted for `talos:approval`/`talos:attempt` markers, **on top of** the inferred current-user identity described above (union, not replacement) — set this when a second identity (e.g. a CI bot distinct from the one running Talos) also posts markers legitimately. Example: `["talos-bot", "gh-actions-bot"]`. A marker from any login outside the effective trust set is silently skipped — treated as absent by `read-attempt`, or as stale by `check-approval-sha` — and every such skip across an invocation is reported in one aggregated `talos:marker-authors-rejected authors=<comma list>` line on stderr. **Bot logins (`*[bot]`) are never trusted implicitly** — a bot must be the resolved current-user identity or be listed here explicitly. |
+| `hooks.pre_dispatch` | `""` (disabled) | Shell command run before every stage's prompt is built (all roles, both the native subagent and `pipeline-agent.sh` adapter paths). Non-empty stdout is prepended to the prompt under a `## Context` heading; a non-zero exit, a timeout, or empty stdout is a silent no-op with one line on stderr — it never blocks dispatch. See [Hooks](../README.md#hooks) below for the stdin JSON schema. |
+| `hooks.post_stage` | `""` (disabled) | Shell command run after every verdict, approval, block, and merge — fire-and-forget with the same never-block contract as `hooks.pre_dispatch`. Receives a JSON outcome event on stdin. See [Hooks](../README.md#hooks) below for the schema. |
+| `hooks.timeout_s` | `30` | Seconds `hooks.pre_dispatch` / `hooks.post_stage` may run before being killed. Must be a positive integer; a non-integer or non-positive value is rejected (stderr warning, falls back to the default). |
+| `events.enabled` | `true` | Whether every `hooks.post_stage` payload is also appended, as one JSON line, to the local events log — independently of whether `hooks.post_stage` itself is configured. See [Events log](../README.md#events-log) below. |
+| `events.path` | `.talos/events.jsonl` | Path to the events log, relative to the **main repository root** (resolved via `git rev-parse --git-common-dir`, so every linked worktree of the same repo appends to the one file) unless already absolute (`talos-status.sh` refuses an absolute path or one outside the repo). |
+| `pr.draft` | `true` | Draft PRs, the default since #435 (#332): the developer opens a DRAFT PR, every stage that needs no CI runs while it is a draft, and `ready-pr` triggers the one CI run (see [Draft PRs](../README.md#draft-prs-prdraft-default-332-435)). `false` keeps the ready flow, where every push runs CI. Supported on `github`, `gitlab` and `azure`; `github-api` and `file` cannot open draft PRs and always use the ready flow (`github-api` warns once). On `github`, Step 0 also checks your workflows with `scripts/pipeline-draft-check.sh` and warns when CI does not skip drafts; when a job skips drafts but `ready_for_review` is missing from `on.pull_request.types` and the key is unset, the run uses the ready flow instead, because QA would wait for a run that never starts. |
+| `status.enabled` | `false` | Opt-in switch for the built-in status file (epic #333). Off by default: with it unset or `false`, `/talos:pipeline` never calls `pipeline-status-file.sh` and changes no behaviour. With `true`, `/talos:pipeline` maintains the log and the Resume block (see "Status file and resume"). |
+| `status.file` | `TALOS_STATUS.md` | Path of the status file, relative to the repo root. |
+| `status.log_heading` | `## Log` | Heading of the log section in the status file. |
+| `status.resume_heading` | `## Resume here` | Heading of the resume section in the status file. |
+| `status.fragments_dir` | `docs/status.d` | Directory for per-issue status fragments. It must be a **tracked** directory: the default is `docs/status.d`, not `.talos/status.d`, because in a consumer repo `.talos/` is either gitignored (the fragment silently never enters the PR) or untracked (`pipeline-vcs.sh assert-sync` aborts on it). `docs/status.d` is tracked and already covered by the `docs/**` and `*.md` defaults of `merge.approval_waiver_paths`, so a fragment commit never makes an approval stale. Mirrors `docs/CHANGELOG.d/`. |
+| `status.archive_dir` | `status/archive` | Directory where log entries rotated out of the status file are archived. |
+| `status.log_days` | `30` | Age limit, in days, for log entries kept in the status file. Must be a positive integer; an invalid value warns once on stderr and the default is used. |
+| `status.log_max` | `50` | Maximum number of log entries kept in the status file. Must be a positive integer; an invalid value warns once and the default is used. |
+| `status.resume_max_lines` | `40` | Maximum number of lines in the resume section. Must be a positive integer; an invalid value warns once and the default is used. |
+| `evidence.enabled` | `false` | Opt-in switch for evidence capture (#352): QA attaches screenshots or recordings of a user-facing change to the PR. Strict `true`/`false`; anything else warns once and reads as absent. `/talos:setup` asks once and writes it. See [Evidence capture](../README.md#evidence-capture-opt-in). |
+| `evidence.command` | unset (empty means agent capture) | Shell command that writes the files, run as `bash -c` at the repo root, only when `evidence.enabled` is `true`. Empty or absent: QA's browser skill saves screenshots itself. At most 2000 characters. |
+| `evidence.dir` | `.talos/evidence` | Directory the files are written to, relative to the repo root. It must be git-ignored. |
+| `evidence.include` | unset (png, jpg, jpeg, gif, webm, mp4, mov) | 1-20 basename globs narrowing which files are attached. Never widens the allowlist: svg and html are never published. |
+| `evidence.when` | `user-facing` | `user-facing` or `always`. |
+| `evidence.store` | `attach` | `attach` is the only value: files go up with `gh pr comment --attach`. |
+| `evidence.max_files` | `10` | Most files in one upload, integer 1-100. |
+| `evidence.max_mb` | `20` | Most MiB in one upload (a total), integer 1-100. A fixed 10 MiB per-file cap applies on top. An invalid value warns once and reads as absent. `evidence.command` is repo-only; the other `evidence.*` keys may also be set in the user-level file. |
+| `agents.runner` | `claude` | Agent harness for the whole pipeline: `claude` (native subagents), `pi`, `codex`, `gemini`, `antigravity`, or `custom` (with `agents.runner_cmd`). See [Other harnesses](../README.md#other-harnesses-pi-codex-cli-gemini-cli-antigravity-local-models). |
+| `agents.subagents` | `auto` | `auto` (true for `claude`, else false), `true`, or `false`. Chooses native parallel subagents vs. the headless `pipeline-agent.sh` adapter. |
+| `agents.runner_cmd` | — | Command for `agents.runner: custom` — the prompt arrives on stdin. Global-only; use `agents.roles.<role>.runner_cmd` to override a single role. |
+| `agents.runner_args` | — | Extra CLI args passed to the `claude`/`codex`/`gemini` runner. Global-only — there is no `agents.roles.<role>.runner_args`. |
+| `agents.model` | session default | Model for all stages not explicitly overridden (native path only). Also settable once for every repo in the user-level `${TALOS_HOME:-$HOME/.talos}/talos.pipeline.*`; the repo config wins per key. See [Per-role model selection](../README.md#per-role-model-selection-agentsmodel-and-agentsrolesrolemodel). |
+| `agents.roles.<role>.model` | falls back to `agents.model` | Role-specific model override (native path only), e.g. a cheaper model for volume stages and a stronger one for judgement stages (reviewer, security). |
+| `agents.roles.<role>.runner` | falls back to `agents.runner` | Role-specific backend override, on both the native and adapter execution paths — e.g. routing just `security` or `adversarial` through a different (often local) model while the rest of the pipeline stays on the default runner. See [Per-role runner override](#per-role-runner-override-agentsrolesrolerunner--runner_cmd). |
+| `agents.roles.<role>.runner_cmd` | falls back to `agents.runner_cmd` | Role-specific command, read only when that role's resolved runner is `custom`. |
+| `agents.restamp_model` | falls back to `agents.model` | Model for **re-stamp** dispatches — a cheap delta re-review of a PR the same role already approved (#258). See "Stale approvals — cheap delta re-stamp" under [`pipeline-vcs.sh` verbs](../README.md#scripts-reference) below. |
+| `agents.roles.<role>.restamp_model` | falls back to `agents.restamp_model`, then `agents.model` | Role-specific re-stamp model override. Precedence: role restamp model → global restamp model → `agents.model`. |
+| `agents.effort` | unset (runner's own default) | Reasoning effort (`low` \| `medium` \| `high` \| `max`) for all stages not explicitly overridden (#271). Applied for real on every adapter-path runner; on the native `claude` path it is advisory only — see [Per-role reasoning effort](../README.md#per-role-reasoning-effort-agentseffort-and-agentsrolesroleeffort). An invalid value is rejected with a stderr warning and treated as unset. |
+| `agents.roles.<role>.effort` | falls back to `agents.effort` | Role-specific effort override, e.g. `high` for `developer`, `low` for cheap volume stages. |
+| `agents.restamp_effort` | falls back to `agents.effort` | Effort for **re-stamp** dispatches (#271), same chain shape as `agents.restamp_model`. |
+| `agents.roles.<role>.restamp_effort` | falls back to `agents.restamp_effort`, then `agents.effort` | Role-specific re-stamp effort override. Precedence: role restamp effort → global restamp effort → `agents.effort`. |
+| `agents.fallback` | unset (no chain) | Ordered list of 1-5 runner names (`claude`, `pi`, `codex`, `gemini`, `antigravity`, `custom`) tried in turn when a runner dies of a **provider** error (exit 75, or a recognised claude rate-limit, quota, overload, auth or network line). Names only: the fallback runner uses its own model and does not get `agents.runner_args`. An invalid value warns once and reads as absent. See [Runner failover](../README.md#runner-failover-agentsfallback). |
+| `agents.roles.<role>.fallback` | falls back to `agents.fallback` | Role-specific failover chain. |
+| `agents.provider_down_s` | `900` | Seconds a failed provider stays marked down in `.talos/providers.json` (integer 60-86400). |
+| `agents.capture_usage` | `true` | Record each `pipeline-agent.sh` attempt's token usage in its stage event (#420). `claude` is run with `--output-format json` (after `agents.runner_args`, before the prompt) and the message text alone is printed, as before; `false`, or an `--output-format` already in `agents.runner_args`, leaves the invocation alone and the event keeps `tokens: null`. Only a literal `false` turns it off. `custom` runners report usage through the `TALOS_USAGE_FILE` sidecar whatever this key says. See [Token usage on adapter runs](#token-usage-on-adapter-runs-420). |
+
 ## Troubleshooting
 
 - **Verify output is too noisy for the developer/QA agent's context** — pass
@@ -2884,7 +3133,11 @@ pack installed.
   every configured sink would post. To preview ONE platform's template with no
   credentials configured at all, use `--render`:
   `bash ~/.talos/scripts/pipeline-notify.sh --render buzz qa "#42" "PASS"`.
-- **YAML config ignored** — PyYAML not installed. JSON config (`talos.pipeline.json`)
+- **YAML config ignored** — PyYAML not installed. A YAML config (`talos.pipeline.yml`)
+  now prints one stderr warning naming the file and the fix (`pip install pyyaml` or the
+  `.json` form), at most once an hour per file across processes
+  (`TALOS_YAML_WARN_DEDUP=0` warns on every call); its keys read as the defaults until then.
+  JSON config (`talos.pipeline.json`)
   needs no dependency and works on every platform — recommended for new projects.
   To keep YAML: `pip install pyyaml` (may fail on macOS with PEP 668 / Homebrew
   Python; try `pip install --break-system-packages pyyaml` or use `talos.pipeline.json.example`
