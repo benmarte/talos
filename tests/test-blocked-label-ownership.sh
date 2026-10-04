@@ -63,10 +63,15 @@ for stage in qa reviewer security adversarial; do
 done
 
 # ── Blocked PRs are reported, not silent (#312) ────────────────────────────
-assert_contains "$skill_flat" 'K blocked issues, J blocked PRs awaiting human action: #a, PR #b' \
-  "SKILL.md Step 1 blocked-work report lists blocked PRs"
-assert_contains "$skill_flat" '(only when K + J > 0)' \
-  "SKILL.md Step 1 blocked-work report fires only when K + J > 0"
+# The report moved from the prose into `talos.sh sweep` (#467): the verb counts the
+# blocked issues and the blocked PRs and sends the one notice (tests/test-talos-postmerge.sh
+# runs it, with and without a blocked item); the playbook names the key and the rule.
+assert_contains "$verb_text" 'blocked PRs awaiting human action: ${_bi}' \
+  "talos.sh sweep's blocked-work report lists blocked PRs"
+assert_contains "$verb_text" '[ $((_ki + _kp)) -gt 0 ]' \
+  "talos.sh sweep's blocked-work report fires only when K + J > 0"
+assert_contains "$skill_flat" '`blocked_issues=K` / `blocked_prs=J` (item 5, #312): stale blocked work, one `info backlog` notice when K + J > 0' \
+  "SKILL.md Step 1 names the blocked-work report and its K + J > 0 rule"
 assert_contains "$skill_flat" 'A PR skipped because it carries `pipeline:blocked`' \
   "SKILL.md Step 5 summary reports a blocked PR as blocked"
 

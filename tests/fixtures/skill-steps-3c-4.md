@@ -505,7 +505,7 @@ bash scripts/talos.sh gate merge <PR_NUMBER> <N>
 
 The verb checks, in order: no `pipeline:blocked` on the PR or issue; the approval label of each enabled role (`qa:pass`, `review:approved`, `security:approved`, `docs:done`, and `adversarial:approved` when `roles.adversarial = true`), waived by a human's `skip-qa` label (CI and forbidden files never are); `check-approval-sha`; `check-pr-files`; `check-closing-keyword`; the draft state; `pr-checks-required` (#205) with 2 re-runs per head SHA; the **Stale-base guard** (#288); `merge.auto`. It never merges. `verdict=`:
 
-- `merge`: `bash scripts/pipeline-vcs.sh merge-pr <PR_NUMBER>`, then the sibling sync and "After merging".
+- `merge`: `bash scripts/pipeline-vcs.sh merge-pr <PR_NUMBER>`, then `post-merge` (below).
 - `handoff` (`merge.auto = false`): human-merge mode, below.
 - `wait`: do not merge; nothing is blocked, look again next pass. `ci-failed`: 2 re-runs are spent, a human or a new commit must act. `base-synced`: a base update was pushed, CI must run on the new head. The other reasons need no action.
 - `redispatch`: `stale-approvals` (the verb stripped the `stale=` labels and commented) is handled below; `merge-conflict` is the Step 3c developer merge-base task (`git fetch origin && git merge origin/main` in its worktree; on a `CHANGELOG.md` conflict keep BOTH entries, newest first).
@@ -517,78 +517,13 @@ The verb checks, in order: no `pipeline:blocked` on the PR or issue; the approva
 - `docs` stale: when the delta since docs' approved SHA touches a docs-relevant path (`README.md`, `docs/**`, `CHANGELOG.md`, `templates/**`, any other `*.md` outside `tests/`), re-dispatch docs (Step 3e phase 1) normally. Otherwise dispatch nothing: `bash scripts/pipeline-vcs.sh post-approval <PR_NUMBER> docs --body-file <synthetic-summary>` with the text "no docs-relevant changes since prior docs approval".
 
 **Human-merge mode (`handoff`).** Every gate above still applied, and the verb set `pipeline:approved` (a PR that already carried it answers `wait`, so it is never handed off twice). Do NOT call `merge-pr`; hand off to a human:
-1. Compute header: `HEADER="${COMMENTS_HEADER_TPL//\{role\}/orchestrator}"`
-   Render approved.md and post it on the PR:
-   VERDICT="APPROVED" SUMMARY="all stages passed — ready for human merge"
-   `bash scripts/pipeline-vcs.sh comment-pr <PR_NUMBER> "$COMMENT_BODY"`
-   If exit non-zero, report the failure in the relay message.
-2. Relay: `bash scripts/pipeline-notify.sh orchestrator "#<N>" "all stages passed — PR #<PR_NUMBER> ready for human merge" <N>`
-3. STOP. Do NOT close the issue and do NOT run the post-merge steps — the issue
-   closes when the human merges (the "heal merged-but-open issues" sweep in
-   Step 0 completes the post-merge bookkeeping on a later run).
+Run `bash scripts/talos.sh post-merge <PR_NUMBER> <N> --handoff [--details-file <file>]`: approved.md on the PR, then the relay, nothing else (a failed comment is `warn reason=comment-failed`: report it). STOP: do NOT close the issue or run the post-merge steps; the human's merge closes it, and `sweep`'s heal does the bookkeeping on a later run.
 
-**Post-merge sibling sync (#289, when `merge.auto_sync` is `true` — default).**
-Immediately after a successful `merge-pr`, before the post-merge bookkeeping
-below, bring every OTHER open pipeline PR's branch up to date with the new
-base so conflicts are resolved seconds after each merge instead of
-accumulating until each PR's own merge time:
-
-1. `bash scripts/pipeline-vcs.sh list-prs` — every open pipeline PR other than
-   the one just merged (lane-scoped to `base_branch`, same as Step 1).
-2. For each sibling PR, in PR-number order:
-   - `bash scripts/pipeline-vcs.sh conflict-files <PR>`:
-     - **no output** (the updated base merges clean) → nothing to do; continue.
-     - **output, every path in `merge.union_paths`** → `bash
-       scripts/pipeline-mergebase.sh <PR>` (mechanical union, already pushes),
-       then re-check `pr-mergeable <PR>`.
-     - **output with a non-union path** (exit 3/1/2 from
-       `pipeline-mergebase.sh`) → `bash scripts/pipeline-vcs.sh update-branch
-       <PR>` (server-side base update; GitHub/GitLab). Exit 0 → re-check
-       `pr-mergeable`. Exit 1 (409 — head moved or server-side conflicts) or
-       exit 2 (provider unsupported) → dispatch the developer merge-base task
-       (the existing Step 3c fallback prompt: check out the PR branch, `git
-       fetch origin && git merge origin/<BASE_BRANCH>`, resolve, verify,
-       push) **immediately**, not at that PR's merge time.
-   - Never dispatch more than one sibling sync developer task per merge; if
-     several siblings conflict, handle them one at a time and re-check
-     `pr-mergeable` between each.
-3. Every sync action (mergebase push, update-branch, developer dispatch) is
-   relayed so the thread shows why an approval may have gone stale:
-   `bash scripts/pipeline-notify.sh info "merge-base" - <N>` (stdin: `#<N> sibling PR #<PR> synced with new base (<mechanism>)`).
-4. Approval impact: an `update-branch`/`pipeline-mergebase.sh` push that only
-   changes the PR's relationship to its base does not invalidate approval
-   markers (#102/#256 — base-branch-only changes and `CHANGELOG.md` are
-   waived by `check-approval-sha`). If a sync modifies a file the PR also
-   touched, the existing `check-approval-sha --stale-list` path at Step 4
-   re-stamps as usual. Status-file commits (`STATUS_ENABLED = true`) touch only
-   `STATUS_FILE`, the archive and fragment deletions, which are waiver paths
-   (`*.md`) or outside every PR's diff, so they do not invalidate approvals.
-5. When `merge.auto_sync` is `false`, skip this block entirely — conflicts
-   surface at each PR's own mergeability gate as before #289.
-
-Compute header: `HEADER="${COMMENTS_HEADER_TPL//\{role\}/orchestrator}"`
-
-After merging:
-0. **Assemble changelog fragments (`ROLE_CHANGELOG_FRAGMENTS = true`, #290).**
-   Run `bash scripts/pipeline-changelog.sh assemble` (it pushes to the base, so
-   fast-forward the orchestrator's checkout afterwards, Rule 21) — it exits 0 with
-   "nothing to assemble" when no unconsumed fragments remain on the base, so
-   it is always safe to run while the flag is on. Non-fatal: a failed
-   assemble leaves fragments on the base and the next merge's assemble
-   retries.
-1. Render issue-closed.md on the ISSUE: VERDICT="CLOSED" SUMMARY="all stages passed"
-   `bash scripts/pipeline-vcs.sh comment-issue <N> "$COMMENT_BODY" --allow-closed`
-   If exit non-zero, report the failure in the relay message; do not skip the close-issue step.
-   (GitHub auto-closes the issue via the PR's `Closes #N` keyword at merge time, roughly
-   20 seconds before this step runs — `--allow-closed` is required here.)
-2. `bash scripts/pipeline-vcs.sh close-issue <N> "closed by PR #<PR_NUMBER>"`
-3. `bash scripts/pipeline-status.sh <N> "Done"`
-3a. **Status log (`STATUS_ENABLED = true`, #333).** `bash scripts/pipeline-status-file.sh assemble --refresh --pr <PR_NUMBER> --issue <N>` — after item 3, so the refresh no longer lists the issue as queued. Also runs when healing a merged-but-open issue in Step 1; it is idempotent (an entry for that PR is replaced, never duplicated), so every merge path adds exactly one log bullet. Non-fatal: on exit 1 put its stderr line in the run summary; when only the "not refreshed" line printed (exit 0), put `status log assembled, resume block not refreshed for #<N>` there. It pushes a `[skip ci]` commit to the base (Rule 21); fast-forward the orchestrator's checkout afterwards.
-4. **Remove the developer worktree.** `bash scripts/pipeline-worktree.sh remove <N>` — deletes the `fix/issue-<N>-*` developer worktree AND any Claude Code harness `agent-*` worktree QA/reviewer/security/docs tagged to <N> (#240), plus their now-merged local branches, so worktrees don't accumulate on disk. Idempotent: a no-op if no worktree matches. Do this on every merge, including when healing a merged-but-open issue in Step 1.
-5. Relay: `bash scripts/pipeline-notify.sh orchestrator "#<N>" "all stages passed — merged PR #<PR_NUMBER>, issue closed" <N>`
-6. Lifecycle: `bash scripts/pipeline-notify.sh merged "#<N>" "PR #<PR_NUMBER> merged" <N>`
-7. Lifecycle: `bash scripts/pipeline-notify.sh issue-closed "#<N>" "issue resolved" <N>`
-8. Rule 3: also fire `hooks.post_stage` for both lifecycle events above (`merged` and `issue-closed`) — see Conversation stream protocol. Then run the Rule 3 spend block once, after `post_stage merged`, to refresh the PR spend comment.
+**After a successful `merge-pr`:** `bash scripts/talos.sh post-merge <PR_NUMBER> <N>`, one call, in order: the sibling sync, the changelog assemble, the issue-closed comment, `close-issue`, board Done, the status log, the worktree removal, the notices, the `merged` and `issue-closed` `post_stage` events and the spend block. Each is non-fatal: a failure is a `warn reason=<r> issue=<N>` line for the run summary. Contract: the header of `scripts/talos.sh`.
+- `recorded=yes`: comment, notices, events and spend were skipped (done earlier); `close-issue` and board Done re-ran. Every item is idempotent: re-running is safe.
+- `spend=<line>`: print it. `warn reason=spend-upsert-failed` adds ONE Step 5 summary line; never retried.
+- The changelog and status log push `[skip ci]` commits to the base: afterwards fast-forward the orchestrator's checkout (Rule 21).
+- **Sibling sync (#289, `merge.auto_sync` true).** `sibling=<pr> action=clean|mergebase|update-branch|developer|unverified` per other open pipeline PR, in PR order; the verb relays each sync. `developer` (the mechanical sync did not hold): dispatch the developer merge-base task (the Step 3c fallback prompt: check out the PR branch, `git fetch origin && git merge origin/<BASE_BRANCH>`, resolve, verify, push) **immediately**, never more than one per merge: take the `developer` PRs one at a time, re-checking `pr-mergeable` between each, and relay each dispatch (`pipeline-notify.sh info "merge-base" - <N>`, stdin `#<N> sibling PR #<PR> synced with new base (developer)`). A base-only sync (#102/#256) and status-file commits do not invalidate approvals; a sync touching a file the PR also changed is re-stamped via `--stale-list`.
 
 ---
 

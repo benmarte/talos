@@ -35,8 +35,12 @@ assert_contains "$skill_text" "CHANGELOG MODE: fragments" "skill: docs prompt ca
 assert_contains "$skill_text" "docs/CHANGELOG.d/<issue-number>.md" "skill: docs prompt names the fragment path"
 
 # Step 4 hook + waiver note + gate note.
-assert_contains "$skill_text" "Assemble changelog fragments" "skill: Step 4 has the assemble hook"
-assert_contains "$skill_text" "pipeline-changelog.sh assemble" "skill: hook calls the assemble verb"
+# The hook moved from the prose into `talos.sh post-merge` (#467): the playbook names it,
+# the verb runs the assemble when the flag is on (tests/test-talos-postmerge.sh runs it).
+assert_contains "$skill_text" "the changelog assemble" "skill: Step 4's post-merge call has the assemble hook"
+verb_text="$(cat "$TALOS_ROOT/scripts/talos.sh")"
+assert_contains "$verb_text" 'cfg roles.changelog_fragments' "verb: the assemble is gated on roles.changelog_fragments"
+assert_contains "$verb_text" 'pipeline-changelog.sh" assemble' "verb: hook calls the assemble verb"
 assert_contains "$skill_text" "never invalidates an approval" "skill: waiver note covers fragment paths"
 
 # Config + examples.
