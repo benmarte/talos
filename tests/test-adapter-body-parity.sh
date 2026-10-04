@@ -37,6 +37,10 @@ VCS="$TALOS_ROOT/scripts/pipeline-vcs.sh"
 REPO_SLUG="acme/widget"
 TEST_TOKEN="test-secret-token-parity"
 export TALOS_RETRY_SLEEP_SCALE=0
+# Both adapters resolve the operator to the login that authors every marker
+# fixture below, so the comparison is between two resolved identities. (An empty
+# GET /user login is refused on github-api since #455, which gh does not model.)
+export STUB_CURRENT_USER="talos-bot"
 
 use_github() {
   cat > talos.pipeline.json <<CFG
@@ -119,7 +123,7 @@ use_github
 export STUB_PR_HEAD_SHA="$_HEAD"
 export STUB_PR_BASE_REF_NAME="main"
 export STUB_PR_LABELS_JSON='[{"name":"qa:pass"}]'
-export STUB_PR_COMMENTS_JSON="[{\"user\":{\"login\":\"talos-bot\"},\"body\":\"<!-- talos:approval sha=${_HEAD} role=qa -->\"}]"
+export STUB_PR_COMMENTS_JSON="[{\"author\":{\"login\":\"talos-bot\"},\"body\":\"<!-- talos:approval sha=${_HEAD} role=qa -->\"}]"
 out_gh="$(bash "$VCS" check-approval-sha 7 2>/dev/null)"; rc_gh=$?
 
 reset_stubs

@@ -69,15 +69,20 @@ export STUB_PR_COMMENTS_JSON="[{\"body\":\"<!-- talos:approval sha=${SHA_GH} rol
 # github-api provider (curl stub -- a strict FIFO; every call below must be
 # queued in the exact order pipeline-vcs.sh's _github_api arms issue them:
 # create-issue(POST + #299 assignee read; GET /user is intercepted, not
-# queued, and resolves empty so no assignee write follow) label-issue(GET+PUT)
+# queued, and resolves to the stub's default login, so the assignee write
+# follows: POST assignees + read-back, #455) label-issue(GET+PUT)
 # view-issue--spec(meta+comments)
 # create-pr(1) post-approval(pr-head, dup-check comments, comment-pr state
 # check, comment-pr POST, label-pr GET+PUT) check-approval-sha(PR+comments)
+# (the marker comment is authored by the stub's default login, which GET /user
+# resolves to, so the author-trust check accepts it)
 # pr-mergeable(1) check-pr-files(1) cleanup-close-issue(comment+PATCH).
 SHA_API="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 printf '%s\n' \
   '{"number":401,"html_url":"https://github.com/acme/widget-canary/issues/401"}' \
   '{"number":401,"assignees":[]}' \
+  '{}' \
+  '{"number":401,"assignees":[{"login":"talos-test-bot"}]}' \
   '[]' \
   '{}' \
   '{"title":"canary","body":"canary run body","labels":[]}' \
@@ -90,7 +95,7 @@ printf '%s\n' \
   '[]' \
   '{}' \
   "{\"number\":402,\"head\":{\"sha\":\"${SHA_API}\"},\"base\":{\"ref\":\"main\"},\"labels\":[{\"name\":\"qa:pass\"}]}" \
-  "[{\"body\":\"<!-- talos:approval sha=${SHA_API} role=qa -->\",\"user\":{\"login\":\"bot\"}}]" \
+  "[{\"body\":\"<!-- talos:approval sha=${SHA_API} role=qa -->\",\"user\":{\"login\":\"talos-test-bot\"}}]" \
   '{"number":402,"mergeable":true}' \
   '[{"filename":"CANARY.md","status":"added"}]' \
   '{"html_url":"https://github.com/acme/widget-canary/issues/401#issuecomment-901"}' \
