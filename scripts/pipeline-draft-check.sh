@@ -368,6 +368,16 @@ def body(l):
 if any("\t" in l[:len(l) - len(l.lstrip())] for l in lines):
     refuse("tab indentation")
 
+# A mapping this script adds a key to (a job, the pull_request trigger) is only
+# edited when every key on it is a strict plain key. Anything else at that level
+# (quoted, tagged, anchored, `? key`, escapes, a `<<:` merge key, flow style) could
+# be spelling `if` or `types`, so adding one would duplicate it: report it instead.
+_PLAIN_KEY = re.compile(r"^\s*[A-Za-z_][A-Za-z0-9_-]*:(\s|$)")
+def odd_key(l, level):
+    s = l.strip()
+    return (sig(l) and indent(l) == level and s != "-" and not s.startswith("- ")
+            and not _PLAIN_KEY.match(body(l)))
+
 ops = []     # (index, "replace"|"after", new line without eol)
 manual = []  # existing job conditions we report but never touch
 
@@ -388,12 +398,17 @@ pr_end = block_end(i_pr, ei)
 kids = [i for i in range(i_pr + 1, pr_end) if sig(lines[i])]
 ki = indent(lines[kids[0]]) if kids else ei + 2
 t_idx = next((i for i in kids if indent(lines[i]) == ki and re.match(r"^\s*types:", body(lines[i]))), None)
-if t_idx is None:
+trig_manual = ("manual: trigger pull_request: existing types left unchanged; add ready_for_review manually: types: " + TYPES)
+if any(odd_key(lines[i], ki) for i in kids):
+    manual.append(trig_manual)
+elif t_idx is None:
     ops.append((i_pr, "after", " " * ki + "types: " + TYPES))
 else:
     line = body(lines[t_idx])
     m = re.match(r"^(\s*types:\s*)\[([^\]]*)\](\s*(#.*)?)$", line)
-    if m:
+    if m and not m.group(2).strip():
+        manual.append(trig_manual)
+    elif m:
         items = [x.strip().strip("'\"") for x in m.group(2).split(",") if x.strip()]
         if "ready_for_review" not in items:
             inner = m.group(2).rstrip()
@@ -433,6 +448,11 @@ for i in range(i_jobs + 1, j_end):
     if b is None:
         continue
     kk = indent(lines[b])
+    job_name = body(lines[i]).strip().rstrip(":").strip("\"'")
+    if any(odd_key(lines[k], kk) for k in range(i + 1, job_end)):
+        manual.append("manual: job %s: existing condition left unchanged; combine manually: if: (<your existing condition>) && %s"
+                      % (job_name, SKIP))
+        continue
     if_idx = next((k for k in range(i + 1, job_end)
                    if sig(lines[k]) and indent(lines[k]) == kk and re.match(r"^\s*if:", body(lines[k]))), None)
     if if_idx is None:
@@ -457,7 +477,7 @@ for i in range(i_jobs + 1, j_end):
             elif "${{" not in plain:
                 sugg = "(" + plain + ") && " + SKIP
     manual.append("manual: job %s: existing condition left unchanged; combine manually: if: %s"
-                  % (body(lines[i]).strip().rstrip(":").strip("\"'"), sugg))
+                  % (job_name, sugg))
 
 for idx, kind, new in sorted(ops, key=lambda o: -o[0]):
     if kind == "replace":
