@@ -48,13 +48,16 @@
 #                                      A pipeline PR has a head branch matching
 #                                      ^(fix|feat)/issue-<digits>(-|$), baseRefName
 #                                      equal to the base branch, and either a Talos
-#                                      label (pipeline:*, qa:pass, docs:done,
-#                                      review:approved, security:approved,
-#                                      adversarial:approved) or a listing that says
-#                                      isCrossRepository is false (absent means a
-#                                      label is needed): a fork PR cannot claim a
-#                                      pipeline slot by its branch name. Others are
-#                                      never looked up and get no PR line.
+#                                      label (exactly a name in the stage or
+#                                      approval lists of pipeline-contract.sh:
+#                                      pipeline:ready ... pipeline:epic-children-done,
+#                                      qa:pass, docs:done, review:approved,
+#                                      security:approved, adversarial:approved; an
+#                                      unlisted `pipeline:x` is not one) or a listing
+#                                      that says isCrossRepository is false (absent
+#                                      means a label is needed): a fork PR cannot
+#                                      claim a pipeline slot by its branch name.
+#                                      Others are never looked up and get no PR line.
 #   - Blocked: <issue|PR> #<n> [question] <q>   pipeline:blocked; <q> is the
 #                                      needs-owner question; without one the line
 #                                      is `[see comments]`
@@ -76,7 +79,16 @@
 # human-merge); `waiting on owner` (no PR is actionable, nothing is queued, and
 # an Owner or Blocked line exists or a PR carries pipeline:needs-owner);
 # `nothing queued`. A PR (or its issue) labelled pipeline:needs-owner is never
-# offered as merge or resume. Next sees only the PRs that were looked up.
+# offered as merge or resume, and an issue labelled both pipeline:ready and
+# pipeline:needs-owner is never offered as `start #n` (it still counts as
+# waiting on owner, and still appears on the Queued line). Next sees only the PRs
+# that were looked up: the lowest-numbered ones the line cap shows, plus every
+# higher-numbered PR that carries the approval label of every enabled role (and
+# neither pipeline:blocked nor pipeline:needs-owner), so a merge-ready PR is never
+# hidden by the cap. Those extra PRs are looked up like the others; their lines
+# are cut by the cap like any other line, and `Next` still names them. At most as
+# many extra PRs are looked up as the cap shows (the lowest-numbered ones), so the
+# cost stays bounded even when no role is enabled and every PR qualifies.
 # Stage of a PR, first match wins, counting only enabled roles (roles.qa,
 # docs, reviewer, security default true; roles.adversarial defaults false) and
 # treating an approval label as missing when check-approval-sha --stale-list
@@ -94,9 +106,14 @@
 # 300 PRs cost the same number of reads as 40. Text of the other sections is
 # never touched.
 # The whole read phase has a deadline (120 s, TALOS_STATUS_READ_DEADLINE
-# overrides it, in seconds): a read verb that is still running when it passes
+# overrides it, in seconds; 1 to 4 ASCII digits, 1..3600, anything else is the
+# default): a read verb that is still running when it passes
 # is killed and counts as a failed read (`refresh` exits 1 and pushes nothing;
-# `assemble --refresh` assembles the log only).
+# `assemble --refresh` assembles the log only). INT, TERM or HUP that reaches the
+# read phase kills the running read verb (its whole process group) before the
+# script exits. A signal that reaches only the outer bash waits for the read
+# phase to finish (bash runs its trap after the foreground command), bounded by
+# the deadline.
 #
 # Reads (GitHub, once, before the retry loop; read verbs only, nothing is
 # written to GitHub): list-prs, list-issues, pr-head, check-approval-sha
@@ -156,13 +173,20 @@
 #
 # Paths. status.file, status.fragments_dir and status.archive_dir are
 # validated by EVERY verb before any read or write: empty, absolute, longer
-# than 512 bytes, a `..` or `.git` segment, a backslash and control characters
+# than 512 BYTES (not characters: `é` is two), a `..` or `.git` segment, a
+# backslash and control characters
 # are rejected, then the NORMALISED path (`./-rf` is `-rf`) must not start with
-# `-` or `:` (exit 1, stderr names the key). The RESOLVED path must stay inside
-# the checkout root, and neither the status file, an archive file nor any
+# `-` or `:` (exit 1, stderr names the key). The three normalised paths must not
+# be equal and none may sit inside another (`docs/status` over
+# `docs/status/archive`), compared casefolded (the macOS default filesystem is
+# case-insensitive): exit 1, stderr names both keys. The RESOLVED path must
+# stay inside the checkout root, and neither the status file, an archive file nor any
 # directory component of the three paths may be a symlink. The headings are
-# matched as fixed strings; they must start with `#`, be at most 256 bytes,
+# matched as fixed strings; they must start with `#`, be at most 256 BYTES,
 # contain no control character, and differ from each other.
+# A config file that cannot be read (malformed, or PyYAML missing for a YAML
+# file) while status.enabled is not set in another layer is an error, not
+# "disabled": assemble and refresh exit 1 with their own message.
 #
 # Staging. The status commit holds exactly what assemble wrote: python lists
 # the files it changed in a manifest, which is staged with `git add -f --`
@@ -180,6 +204,13 @@
 # that moved under the push) refetches and re-assembles from the new base,
 # up to 3 attempts. After the third the script exits 1: fragments remain on the
 # base, the next run retries, and the caller's checkout is untouched.
+# Accepted limits (the next run repairs both, by design):
+#   - A retry reuses the GitHub snapshot read before the loop; only origin/<base>
+#     is refetched. If GitHub changed meanwhile, the pushed block is one run
+#     old and the next refresh republishes the right one.
+#   - A signal that reaches only the outer bash while the push runs lets the
+#     push land, and the script then exits 128+signal (143 for TERM) although
+#     it pushed. A rerun finds the block up to date and the fragments consumed.
 #
 # Exit codes:
 #   0  done, or nothing to do (including status.enabled false).
@@ -207,6 +238,14 @@ if [ -f "$SCRIPT_DIR/pipeline-lock.sh" ]; then
   . "$SCRIPT_DIR/pipeline-lock.sh"
 else
   with_lock() { shift 3 2>/dev/null; "$@"; }  # unlocked fallback
+fi
+
+# The Talos label list (#454): `refresh` counts a PR as the pipeline's when it
+# carries a label named in the contract, not one that merely starts `pipeline:`.
+# A missing file leaves the arrays unset; _sf_collect then fails the read.
+if [ -f "$SCRIPT_DIR/pipeline-contract.sh" ]; then
+  # shellcheck disable=SC1091
+  . "$SCRIPT_DIR/pipeline-contract.sh"
 fi
 
 _sf_err() { echo "pipeline-status-file: $*" >&2; }
@@ -254,6 +293,14 @@ fi
 # ── status.enabled gates assemble and refresh (init and refresh --print must
 #    work with the key unset) ──
 if [ "$verb" = "assemble" ] || { [ "$verb" = "refresh" ] && [ -z "$PRINT" ]; }; then
+  # A config that cannot be read must not read as "disabled" (#454): --has exits
+  # 3 when the key is not found AND a config file failed to parse (0 set, 1 absent).
+  _sf_has_rc=0
+  bash "$SCRIPT_DIR/pipeline-config.sh" --has status.enabled >/dev/null 2>&1 || _sf_has_rc=$?
+  if [ "$_sf_has_rc" -ge 2 ]; then
+    _sf_err "cannot read the config (a config file could not be parsed, or pipeline-config.sh failed, rc=$_sf_has_rc): not treating status.enabled as false"
+    exit 1
+  fi
   _sf_enabled="$(cfg status.enabled | tr '[:upper:]' '[:lower:]')"
   if [ "$_sf_enabled" != "true" ]; then
     echo "pipeline-status-file: status.enabled is false — nothing to do"
@@ -270,10 +317,18 @@ fi
 # ── Config validation (every verb, before any read or write) ─────────────────
 # _sf_norm_path KEY VALUE: print the normalized relative path (no empty or `.`
 # segments); on a bad value print one stderr line naming KEY and return 1.
+# _sf_bytes VALUE: the length in BYTES (`${#v}` counts characters in a UTF-8
+# locale, so `é` is 1 there and 2 on disk).
+_sf_bytes() {
+  local n
+  n="$(printf '%s' "$1" | LC_ALL=C wc -c)"
+  printf '%s' "$((n))"
+}
+
 _sf_norm_path() {
   local key="$1" val="$2" seg out="" parts
   if [ -z "$val" ]; then _sf_err "$key must not be empty"; return 1; fi
-  if [ "${#val}" -gt 512 ]; then _sf_err "$key is longer than 512 bytes"; return 1; fi
+  if [ "$(_sf_bytes "$val")" -gt 512 ]; then _sf_err "$key is longer than 512 bytes"; return 1; fi
   case "$val" in
     /*) _sf_err "$key must be a relative path, not an absolute path"; return 1 ;;
     *\\*) _sf_err "$key must not contain a backslash"; return 1 ;;
@@ -301,7 +356,7 @@ _sf_norm_path() {
 _sf_check_heading() {
   local key="$1" val="$2"
   if [ -z "$val" ]; then _sf_err "$key must not be empty"; return 1; fi
-  if [ "${#val}" -gt 256 ]; then _sf_err "$key is longer than 256 bytes"; return 1; fi
+  if [ "$(_sf_bytes "$val")" -gt 256 ]; then _sf_err "$key is longer than 256 bytes"; return 1; fi
   case "$val" in
     *$'\n'*|*[[:cntrl:]]*) _sf_err "$key must not contain control characters or newlines"; return 1 ;;
     '#'*) ;;
@@ -312,6 +367,22 @@ _sf_check_heading() {
 STATUS_FILE="$(_sf_norm_path status.file "$(cfg status.file)")" || exit 1
 FRAG_DIR="$(_sf_norm_path status.fragments_dir "$(cfg status.fragments_dir)")" || exit 1
 ARCHIVE_DIR="$(_sf_norm_path status.archive_dir "$(cfg status.archive_dir)")" || exit 1
+# The three paths must be disjoint (#454): equal, or one inside another, and an
+# assemble would write the log into its own fragments or archive. Compared
+# CASEFOLDED, always: the macOS default filesystem is case-insensitive, so
+# `Docs/status` and `docs/status/archive` are nested there; on a case-sensitive
+# one the false "nested" only fails closed.
+_sf_folded="$(python3 -I -c 'import sys; print("\n".join(a.casefold() for a in sys.argv[1:]))' \
+  "$STATUS_FILE" "$FRAG_DIR" "$ARCHIVE_DIR")" || { _sf_err "python3 failed while comparing the status paths"; exit 1; }
+{ read -r _sf_f_file; read -r _sf_f_frag; read -r _sf_f_arch; } <<< "$_sf_folded"
+_sf_disjoint() {  # KEY_A PATH_A FOLDED_A KEY_B PATH_B FOLDED_B
+  if [ "$3" = "$6" ]; then _sf_err "$1 and $4 must differ: $2 and $5 are the same path"; return 1; fi
+  case "$3/" in "$6"/*) _sf_err "$1 ($2) must not be inside $4 ($5)"; return 1 ;; esac
+  case "$6/" in "$3"/*) _sf_err "$4 ($5) must not be inside $1 ($2)"; return 1 ;; esac
+}
+_sf_disjoint status.file "$STATUS_FILE" "$_sf_f_file" status.fragments_dir "$FRAG_DIR" "$_sf_f_frag" || exit 1
+_sf_disjoint status.file "$STATUS_FILE" "$_sf_f_file" status.archive_dir "$ARCHIVE_DIR" "$_sf_f_arch" || exit 1
+_sf_disjoint status.fragments_dir "$FRAG_DIR" "$_sf_f_frag" status.archive_dir "$ARCHIVE_DIR" "$_sf_f_arch" || exit 1
 LOG_HEADING="$(cfg status.log_heading)"
 RESUME_HEADING="$(cfg status.resume_heading)"
 _sf_check_heading status.log_heading "$LOG_HEADING" || exit 1
@@ -603,7 +674,8 @@ READ_DEADLINE = 120  # seconds for the whole read phase; CALL_TIMEOUT for one ve
 CALL_TIMEOUT = 180
 NEEDS_OWNER_LABEL = 'pipeline:needs-owner'
 # A label only a maintainer can apply: a PR carrying one is the pipeline's own.
-TALOS_LABELS = frozenset(label for _, label in APPROVALS)
+# The EXACT names of the contract's stage and approval lists (--talos-labels,
+# from pipeline-contract.sh), never a `pipeline:` prefix test.
 
 
 def _num(item, key='number'):
@@ -636,10 +708,25 @@ def md_text(s):
 def _read_deadline():
     """Seconds the whole read phase may take (TALOS_STATUS_READ_DEADLINE, for tests)."""
     v = os.environ.get('TALOS_STATUS_READ_DEADLINE', '')
-    return int(v) if v.isdigit() and 1 <= int(v) <= 3600 else READ_DEADLINE
+    # ASCII digits only, at most 4: str.isdigit() accepts `²`, which int() rejects.
+    return int(v) if re.fullmatch(r'[0-9]{1,4}', v) and 1 <= int(v) <= 3600 else READ_DEADLINE
 
 
 _deadline = time.monotonic() + _read_deadline()
+_running = None  # the read verb's Popen, so a signal can stop it
+
+
+def _stop_on_signal(signum, _frame):
+    """INT, TERM or HUP during the read phase: kill the running verb's process
+    group (it runs in its own session, so the terminal's signal never reaches it)
+    and exit 128+signum, instead of leaving it to outlive this script."""
+    p = _running
+    if p is not None:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except OSError:
+            pass
+    sys.exit(128 + signum)
 
 
 def vcs(*args):
@@ -654,6 +741,8 @@ def vcs(*args):
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
     except OSError:
         die('could not run the read verb %s' % args[0])
+    global _running
+    _running = p
     try:
         out, err = p.communicate(timeout=min(CALL_TIMEOUT, left))
     except subprocess.TimeoutExpired:
@@ -663,6 +752,8 @@ def vcs(*args):
             pass
         p.communicate()
         die('the read verb %s timed out (read deadline %ds)' % (args[0], _read_deadline()))
+    finally:
+        _running = None
     return p.returncode, out.decode('utf-8', 'replace'), err.decode('utf-8', 'replace')
 
 
@@ -710,6 +801,11 @@ def next_stage(n, labels, issue_labels, enabled):
 
 
 def collect():
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, _stop_on_signal)
+    talos_labels = frozenset(x for x in opts.get('talos-labels', '').split(',') if x)
+    if not talos_labels:
+        die('no Talos label list (pipeline-contract.sh missing or empty)')
     rc, out, err = vcs('list-prs')
     if rc != 0:
         die('list-prs failed (rc=%d)' % rc)
@@ -755,8 +851,7 @@ def collect():
         m = BRANCH_RE.match(branch) if isinstance(branch, str) else None
         if not m or it.get('baseRefName') != base:
             continue
-        if not (any(l.startswith('pipeline:') or l in TALOS_LABELS for l in labels)
-                or it.get('isCrossRepository') is False):
+        if not (labels & talos_labels or it.get('isCrossRepository') is False):
             ignored += 1
             continue
         eligible.append((n, labels, int(m.group(1))))
@@ -764,6 +859,8 @@ def collect():
     blocked.sort(key=lambda b: (b[1], b[0]))
     queued = sorted((n for n in issues if READY_LABEL in issues[n]),
                     key=lambda n: (min([PRIORITY[l] for l in issues[n] if l in PRIORITY] or [3]), n))
+    # Ready AND waiting on the owner: listed as queued, never offered as `start`.
+    held = [n for n in queued if NEEDS_OWNER_LABEL in issues[n]]
 
     # Look up only the PRs the block will show (lowest numbers): the line cap
     # decides this BEFORE the per-PR reads, so 300 PRs cost the same as 40.
@@ -773,8 +870,15 @@ def collect():
     others = len(blocked) + len(owners or []) + (1 if queued else 0)
     shown = len(eligible) if 2 + len(eligible) + others <= budget else budget - 3
     enabled = set(x for x in opts.get('roles', '').split(',') if x)
+    # `Next` must still see a merge-ready PR past the cap: any PR beyond it that
+    # carries the approval label of every enabled role (and no blocked or
+    # needs-owner label) is looked up as well, at most as many as the cap shows (with
+    # no role enabled every PR qualifies); only its line can be cut.
+    need = set(label for role, label in APPROVALS if role in enabled)
+    pending = [e for e in eligible[shown:]
+               if need <= e[1] and not ((e[1] | issues.get(e[2], set())) & {BLOCKED_LABEL, NEEDS_OWNER_LABEL})][:shown]
     prs = []
-    for n, labels, issue in eligible[:shown]:
+    for n, labels, issue in eligible[:shown] + pending:
         rc, out, _ = vcs('pr-head', str(n))
         head = out.strip()
         if rc != 0 or not SHA_RE.match(head):
@@ -784,7 +888,7 @@ def collect():
                     'owner': NEEDS_OWNER_LABEL in labels or NEEDS_OWNER_LABEL in issue_labels,
                     'stage': next_stage(n, labels, issue_labels, enabled)})
     write_text(opts['out'], json.dumps({'prs': prs, 'pr_total': len(eligible), 'ignored': ignored,
-                                        'blocked': blocked, 'queued': queued,
+                                        'blocked': blocked, 'queued': queued, 'held': held,
                                         'owners': owners, 'capped': capped}))
 
 
@@ -811,15 +915,16 @@ def build_block(data, branch, base, max_lines):
     merge = [p for p in live if p['stage'] == 'merge']
     actionable = [p for p in live if p['stage'] not in ('blocked', 'human-merge')]
     human = [p for p in live if p['stage'] == 'human-merge']
+    startable = [n for n in queued if n not in data['held']]
     if merge:
         nxt = 'merge #%d' % merge[0]['n']
     elif actionable:
         nxt = 'resume #%d at %s' % (actionable[0]['n'], actionable[0]['stage'])
-    elif queued:
-        nxt = 'start #%d' % queued[0]
+    elif startable:
+        nxt = 'start #%d' % startable[0]
     elif human:
         nxt = 'waiting on human merge of #%d' % human[0]['n']
-    elif blocked or owners or len(live) < len(prs):
+    elif blocked or owners or data['held'] or len(live) < len(prs):
         nxt = 'waiting on owner'
     else:
         nxt = 'nothing queued'
@@ -1248,7 +1353,15 @@ MAX_LINES="$(_sf_posint status.resume_max_lines)"
 # Named arguments of the python refresh and print modes (not more positionals).
 _SF_RARGS=(--data "$_SF_TMP/gh.json" --base-branch "$BASE_BRANCH" --max-lines "$MAX_LINES")
 _sf_collect() {
-  local roles="" auto="true" checks="no" draft="false"
+  local roles="" auto="true" checks="no" draft="false" talos_labels="" e
+  # Names only (entries are name|color|description), comma-joined; no name has a comma.
+  for e in ${TALOS_STAGE_LABELS[@]+"${TALOS_STAGE_LABELS[@]}"} ${TALOS_APPROVAL_LABELS[@]+"${TALOS_APPROVAL_LABELS[@]}"}; do
+    talos_labels="${talos_labels}${e%%|*},"
+  done
+  if [ -z "$talos_labels" ]; then
+    _sf_err "pipeline-contract.sh is missing or lists no labels; reinstall Talos"
+    return 1
+  fi
   _sf_role_on roles.qa && roles="${roles}qa,"
   _sf_role_on roles.docs && roles="${roles}docs,"
   _sf_role_on roles.reviewer && roles="${roles}reviewer,"
@@ -1262,7 +1375,7 @@ _sf_collect() {
     "$LOG_HEADING" "$RESUME_HEADING" "$LOG_DAYS" "$LOG_MAX" "$TODAY" "" "" "" "" \
     --vcs "$SCRIPT_DIR/pipeline-vcs.sh" --out "$_SF_TMP/gh.json" --roles "$roles" \
     --merge-auto "$auto" --required-checks "$checks" --pr-draft "$draft" \
-    --base-branch "$BASE_BRANCH" --max-lines "$MAX_LINES" </dev/null
+    --talos-labels "$talos_labels" --base-branch "$BASE_BRANCH" --max-lines "$MAX_LINES" </dev/null
 }
 # _sf_fetch_base: refresh origin/<base> (this only moves the remote-tracking ref).
 _sf_fetch_base() {
@@ -1277,8 +1390,12 @@ _sf_fetch_base() {
 }
 REFRESH_ON=""
 if [ "$verb" = "refresh" ] || [ -n "$REFRESH" ]; then
-  if _sf_collect; then
+  _sf_collect
+  _SF_RC=$?
+  if [ "$_SF_RC" -eq 0 ]; then
     REFRESH_ON=1
+  elif [ "$_SF_RC" -gt 128 ]; then
+    exit "$_SF_RC"  # the read phase was interrupted (128+signal): never go on to push
   elif [ "$verb" = "refresh" ]; then
     _sf_err "could not read the GitHub state for the Resume block — nothing pushed"
     exit 1
