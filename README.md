@@ -153,7 +153,7 @@ The global install always writes `~/.talos/`. It writes `~/.claude/agents`, regi
 
 **Command names (`/talos:<command>`).** Both Claude Code install paths give the same three commands: `/talos:pipeline`, `/talos:setup` and `/talos:resume`. Claude Code namespaces only plugin skills (`plugin:skill`); a skill copied into `~/.claude/skills` is invoked by its directory name and cannot take a colon. So the Claude adapter of `install.sh --global` registers this checkout as the `talos` plugin: `claude plugin marketplace add <checkout>` (a local directory marketplace) and `claude plugin install talos@talos`, both guarded, so a failure prints a notice and never aborts the install. Three things to know:
 
-- The plugin loads from the checkout in place. Moving or deleting the clone breaks `/talos:*`; re-run `install.sh --global` from the new location and it repoints the marketplace.
+- Claude Code copies the plugin into its own plugin cache when it installs it, so a `git pull` in the checkout reaches `/talos:*` only after you re-run `install.sh --global` (or update the plugin). The marketplace entry still points at the checkout: if you move or delete the clone, re-run `install.sh --global` from the new location and it repoints the marketplace.
 - Installing the plugin also installs its `agent-skills` dependency from `github.com/addyosmani/agent-skills`, which needs network.
 - If your Claude config already has a marketplace named `talos` from a non-directory source (for example you ran `/plugin marketplace add benmarte/talos`), the installer leaves it alone and says so; that source already provides the names. With no `claude` on PATH, or a Claude Code without `claude plugin`, it prints the two commands to run inside Claude Code and deletes nothing.
 
@@ -1315,6 +1315,8 @@ label → validator → PR → QA → merge → close lifecycle against stubbed
 bash tests/run-tests.sh            # everything
 bash tests/run-tests.sh notify     # only files matching "notify"
 ```
+
+**Contributor note: prompt files.** `agents/`, `.claude/agents/` and `.agents/talos/agents/` hold the role profiles, which are prompts that run with tool access, not documentation. A change under any of them needs prompt-level review (what the role is told to do, which commands it may run, what it treats as data), not only a diff read, and the test suite does not exercise them.
 
 Test files run concurrently by default, in a bash job pool sized to the CPU
 count (`nproc`, then `sysctl -n hw.ncpu`, then a fallback of 4). Override with

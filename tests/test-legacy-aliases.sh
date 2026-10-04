@@ -145,11 +145,21 @@ cmp -s "$CASE/foreign-setup.orig" "$SK/pipeline-setup/SKILL.md" && pass "foreign
 assert_contains "$OUT" "warning: $SK/pipeline/SKILL.md exists and is not a Talos alias; left untouched" "foreign: the installer warns about pipeline"
 assert_contains "$OUT" "warning: $SK/pipeline-setup/SKILL.md exists and is not a Talos alias; left untouched" "foreign: the installer warns about pipeline-setup"
 assert_file_exists "$CASE/talos/skills/pipeline/SKILL.md" "foreign: the rest of the install still ran"
+assert_contains "$OUT" "No legacy /pipeline or /pipeline-setup alias is active" "foreign: the closing note does not claim aliases that were blocked"
+assert_not_contains "$OUT" "still work as aliases" "foreign: no alias promise for either blocked name"
 inst --force
 cmp -s "$CASE/foreign-pipeline.orig" "$SK/pipeline/SKILL.md" && pass "foreign: --force does not overwrite it either" || fail "foreign: --force does not overwrite it either"
 inst --no-legacy-aliases
 cmp -s "$CASE/foreign-pipeline.orig" "$SK/pipeline/SKILL.md" && pass "foreign: --no-legacy-aliases does not delete it" || fail "foreign: --no-legacy-aliases does not delete it"
 assert_file_exists "$SK/pipeline-setup/SKILL.md" "foreign: --no-legacy-aliases keeps the other foreign file too"
+
+# Only one name blocked: the note names the one that is an alias.
+newcase foreign-one
+mkdir -p "$SK/pipeline"
+printf -- '---\nname: pipeline\ndescription: my own CI pipeline helper\n---\nBuilds the thing.\n' > "$SK/pipeline/SKILL.md"
+inst
+assert_contains "$OUT" "Old name /pipeline-setup still works as an alias until v0.20" "foreign, one name: the note names only the alias that exists"
+assert_not_contains "$OUT" "Old names /pipeline and" "foreign, one name: the blocked /pipeline is not promised"
 
 # A symlink on the path is skipped, nothing is written through it.
 newcase symlink

@@ -40,6 +40,18 @@ else
 fi
 
 # The manifest is not part of talos_contract_json.
-assert_not_contains "$(talos_contract_json)" "commands" "talos_contract_json does not carry the command manifest"
+# Structural, not a substring grep: no object key anywhere in the contract JSON
+# is "commands" (a label description may legitimately say the word).
+has_commands_key="$(talos_contract_json | python3 -I -c '
+import json, sys
+def walk(o):
+    if isinstance(o, dict):
+        return "commands" in o or any(walk(v) for v in o.values())
+    if isinstance(o, list):
+        return any(walk(v) for v in o)
+    return False
+print("yes" if walk(json.load(sys.stdin)) else "no")
+')"
+assert_eq "no" "$has_commands_key" "talos_contract_json does not carry the command manifest"
 
 finish

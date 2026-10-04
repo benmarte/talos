@@ -17,10 +17,13 @@
 #   points at another directory, with one line naming the old and new paths;
 #   --keep-marketplace leaves an existing talos marketplace untouched) and
 #   `claude plugin install talos@talos`, both guarded: a failure prints a
-#   notice and never aborts the install. The plugin
-#   loads from this checkout in place (moving or deleting it breaks /talos:*;
-#   re-run this installer from the new location) and installing it also installs
-#   its agent-skills dependency from GitHub, even with --no-agent-skills. No `claude` on PATH, or one without
+#   notice and never aborts the install. Claude Code copies the plugin into its
+#   own plugin cache when it installs it, so a later change to this checkout
+#   reaches /talos:* only after this installer is re-run (or the plugin is
+#   updated); the marketplace entry still points at this checkout, so re-run it
+#   from the new location if the checkout moves. Installing the plugin also
+#   installs its agent-skills dependency from GitHub, even with
+#   --no-agent-skills. No `claude` on PATH, or one without
 #   `claude plugin`: a notice with the two commands to run inside Claude Code,
 #   and nothing is deleted.
 #   Legacy aliases (until v0.20): ~/.claude/skills/pipeline and
@@ -100,6 +103,22 @@
 #   Git history is never modified. Nothing is committed.
 set -euo pipefail
 
+# printable <text> -- <text> with every control character replaced by `?`, for
+# paths, arguments and tool output echoed to the terminal: a path from the
+# environment, an argument, a marketplace JSON entry or `claude` output must not
+# be able to inject an escape sequence into the install log. That is C0 + DEL
+# and the UTF-8 C1 controls (U+0080-U+009F, bytes c2 80..c2 9f; U+009B is a
+# one-character CSI), the same set pipeline-agent.sh strips in _plain. They are
+# replaced, never deleted: deleting can join the bytes either side into a new
+# control (c2 c2 9b 9b -> c2 9b, c2 1b 9b -> c2 9b), a `?` cannot. tr takes the
+# single-byte ones, sed the two-byte ones (no python3 needed). Other UTF-8 text
+# passes through. Defined first: the argument parser below echoes with it.
+_P_C2=$'\xc2'; _P_LO=$'\x80'; _P_HI=$'\x9f'
+printable() {
+  printf '%s' "$1" | LC_ALL=C tr '\000-\037\177' '?' \
+    | LC_ALL=C sed "s/${_P_C2}[${_P_LO}-${_P_HI}]/?/g"
+}
+
 SRC="$(cd "$(dirname "$0")" && pwd)"
 TARGET=""
 FORCE_MODE=""       # "overwrite" | "no-overwrite" | "" (default varies by mode)
@@ -121,7 +140,7 @@ expect_harness=false
 for arg in "$@"; do
   if [ "$expect_harness" = "true" ]; then
     case "$arg" in
-      -*) echo "error: --harness needs a value (got '$arg')" >&2; exit 1 ;;
+      -*) echo "error: --harness needs a value (got '$(printable "$arg")')" >&2; exit 1 ;;
     esac
     HARNESS_RAW="$arg"; HARNESS_GIVEN=true; expect_harness=false; continue
   fi
@@ -159,17 +178,17 @@ FORCE=false
 # on, so an unknown name can never trigger a harness-specific notice downstream).
 if [ "$HARNESS_GIVEN" = "true" ]; then
   case ",$HARNESS_RAW," in
-    *,,*) echo "error: --harness has an empty item in '$HARNESS_RAW'. Known: ${KNOWN_HARNESSES// /, }" >&2; exit 1 ;;
+    *,,*) echo "error: --harness has an empty item in '$(printable "$HARNESS_RAW")'. Known: ${KNOWN_HARNESSES// /, }" >&2; exit 1 ;;
   esac
   _rest="$HARNESS_RAW"
   while :; do
     _h="${_rest%%,*}"
     case "$_h" in
-      *[!abcdefghijklmnopqrstuvwxyz0123456789-]*) echo "error: invalid --harness name '$_h' (lower-case letters, digits and - only). Known: ${KNOWN_HARNESSES// /, }" >&2; exit 1 ;;
+      *[!abcdefghijklmnopqrstuvwxyz0123456789-]*) echo "error: invalid --harness name '$(printable "$_h")' (lower-case letters, digits and - only). Known: ${KNOWN_HARNESSES// /, }" >&2; exit 1 ;;
     esac
     case " $KNOWN_HARNESSES " in
       *" $_h "*) ;;
-      *) echo "note: unknown harness '$_h' treated as generic; set agents.runner: custom with agents.runner_cmd to drive it."
+      *) echo "note: unknown harness '$(printable "$_h")' treated as generic; set agents.runner: custom with agents.runner_cmd to drive it."
          _h="generic" ;;
     esac
     case ",$HARNESSES," in
@@ -217,12 +236,12 @@ AGENTS_POINTER_MARKER='<!-- talos:pointer -->'
 install_file() {
   local src="$1" dest="$2"
   if [ -f "$dest" ] && [ "$FORCE" = "false" ]; then
-    echo "  skip (exists): $dest  (pass --force to overwrite)"
+    echo "  skip (exists): $(printable "$dest")  (pass --force to overwrite)"
     return
   fi
   mkdir -p "$(dirname "$dest")"
   cp "$src" "$dest"
-  echo "  installed: $dest"
+  echo "  installed: $(printable "$dest")"
 }
 
 # ── Claude adapter ────────────────────────────────────────────────────────────
@@ -276,12 +295,15 @@ else:
 # form to plugin skills only, so copying SKILL.md files cannot do it. Never
 # fatal: every step is guarded, and CLAUDE_PLUGIN_REGISTERED stays false unless
 # `claude plugin install` exited 0, which is what allows stale-copy deletions.
-# The plugin loads from $SRC in place, and installing it also installs its
-# agent-skills dependency from GitHub (network).
+# Claude Code copies the plugin into its own plugin cache, so the marketplace
+# entry (this checkout) is only read at install and update time; installing it
+# also installs its agent-skills dependency from GitHub (network).
 CLAUDE_PLUGIN_REGISTERED=false
+
 install_claude_plugin() {
-  local state kind val out here there
-  local manual="register it from inside Claude Code: /plugin marketplace add $SRC, then /plugin install talos@talos"
+  local state kind val out here there src_p val_p
+  src_p="$(printable "$SRC")"
+  local manual="register it from inside Claude Code: /plugin marketplace add $src_p, then /plugin install talos@talos"
   CLAUDE_PLUGIN_REGISTERED=false
   echo "  Plugin (/talos:<command>):"
   if ! command -v claude >/dev/null 2>&1; then
@@ -293,12 +315,13 @@ install_claude_plugin() {
     return 0
   fi
   if [ ! -f "$SRC/.claude-plugin/marketplace.json" ]; then
-    echo "    notice: $SRC/.claude-plugin/marketplace.json not found, so the talos plugin was not registered."
+    echo "    notice: $src_p/.claude-plugin/marketplace.json not found, so the talos plugin was not registered."
     return 0
   fi
   state="$(claude_marketplace_state)" || state="unknown"
   kind="${state%%$'\t'*}"; val=""
   case "$state" in *$'\t'*) val="${state#*$'\t'}" ;; esac
+  val_p="$(printable "$val")"
   case "$kind" in
     absent) ;;
     dir)
@@ -307,16 +330,16 @@ install_claude_plugin() {
       if [ "$here" = "$there" ]; then
         kind="same"
       elif [ "$KEEP_MARKETPLACE" = "true" ]; then
-        echo "    notice: the talos marketplace points at $val, not this checkout ($SRC); left as is (--keep-marketplace), so /talos:* loads from there."
+        echo "    notice: the talos marketplace points at $val_p, not this checkout ($src_p); left as is (--keep-marketplace), so /talos:* installs from there."
         kind="same"
       elif [ "$FORCE" = "false" ]; then
-        echo "    notice: the talos marketplace points at $val, not this checkout ($SRC); left as is (--no-overwrite), so /talos:* loads from there."
+        echo "    notice: the talos marketplace points at $val_p, not this checkout ($src_p); left as is (--no-overwrite), so /talos:* installs from there."
         kind="same"
       fi ;;
     other)
       # A github or other non-directory source already provides the namespace:
       # re-adding would silently repoint it at this checkout, so leave it.
-      echo "    notice: the talos marketplace is already registered from a non-directory source ($val); left as is."
+      echo "    notice: the talos marketplace is already registered from a non-directory source ($val_p); left as is."
       kind="same" ;;
     *)
       echo "    notice: could not read 'claude plugin marketplace list --json', so the talos plugin was not registered; $manual."
@@ -325,21 +348,21 @@ install_claude_plugin() {
   if [ "$kind" != "same" ]; then
     if out="$(claude plugin marketplace add "$SRC" --json </dev/null 2>&1)"; then
       if [ "$kind" = "dir" ]; then
-        echo "    marketplace: talos repointed from $val to $SRC (pass --keep-marketplace to leave an existing registration as it is)"
+        echo "    marketplace: talos repointed from $val_p to $src_p (pass --keep-marketplace to leave an existing registration as it is)"
       else
-        echo "    marketplace: talos added from $SRC"
+        echo "    marketplace: talos added from $src_p"
       fi
     else
-      echo "    notice: 'claude plugin marketplace add' failed, so the talos plugin was not registered: $(printf '%s' "$out" | tail -n 1 | cut -c1-200)"
+      echo "    notice: 'claude plugin marketplace add' failed, so the talos plugin was not registered: $(printable "$(printf '%s' "$out" | tail -n 1 | cut -c1-200)")"
       return 0
     fi
   fi
   echo "    note: installing the plugin also installs its agent-skills dependency (github.com/addyosmani/agent-skills, needs network), even with --no-agent-skills."
   if out="$(claude plugin install talos@talos --json </dev/null 2>&1)"; then
     CLAUDE_PLUGIN_REGISTERED=true
-    echo "    registered: talos@talos (user scope). It loads from $SRC in place: moving or deleting that checkout breaks /talos:*, and re-running install.sh --global from the new location repoints it."
+    echo "    registered: talos@talos (user scope). Claude Code copied the plugin into its plugin cache, so edits to $src_p reach /talos:* only after you re-run install.sh --global (or update the plugin); the marketplace entry points at that checkout, so re-run it from the new location if you move it."
   else
-    echo "    notice: 'claude plugin install talos@talos' failed: $(printf '%s' "$out" | tail -n 1 | cut -c1-200)"
+    echo "    notice: 'claude plugin install talos@talos' failed: $(printable "$(printf '%s' "$out" | tail -n 1 | cut -c1-200)")"
     echo "            Nothing was deleted. After fixing that, re-run this installer or $manual."
   fi
   return 0
@@ -348,6 +371,10 @@ install_claude_plugin() {
 # Legacy aliases (#335): the pre-namespace names, kept until v0.20. Each one is
 # a thin skill at ~/.claude/skills/<name>/SKILL.md carrying ALIAS_MARKER.
 ALIAS_MARKER='<!-- talos:alias -->'
+# The bare names that ended up as a Talos alias on this run (written, or already
+# a Talos alias and kept), in order. The closing note names only these: a foreign
+# ~/.claude/skills/pipeline that blocked the alias must not be reported as one.
+ALIASES_ACTIVE=""
 
 # alias_skill_text <name> <command> <what> -- the alias SKILL.md. The plugin's
 # own skills/pipeline-setup/SKILL.md (so /talos:pipeline-setup keeps working) is
@@ -388,12 +415,12 @@ handle_bare_skill() {
   local dir="$CLAUDE_DIR/skills/$1" dest owned=false
   dest="$dir/SKILL.md"
   if [ -L "$dir" ] || [ -L "$dest" ]; then
-    if [ -L "$dir" ]; then echo "    notice: $dir is a symlink; left untouched."
-    else echo "    notice: $dest is a symlink; left untouched."; fi
+    if [ -L "$dir" ]; then echo "    notice: $(printable "$dir") is a symlink; left untouched."
+    else echo "    notice: $(printable "$dest") is a symlink; left untouched."; fi
     return 0
   fi
   if { [ -e "$dir" ] && [ ! -d "$dir" ]; } || { [ -e "$dest" ] && [ ! -f "$dest" ]; }; then
-    echo "    notice: $dir is not a plain directory with a plain SKILL.md; left untouched."
+    echo "    notice: $(printable "$dir") is not a plain directory with a plain SKILL.md; left untouched."
     return 0
   fi
   if [ -f "$dest" ]; then
@@ -401,7 +428,7 @@ handle_bare_skill() {
       owned=true
     else
       if [ "$alias" = "yes" ]; then
-        echo "    warning: $dest exists and is not a Talos alias; left untouched (/$name is not Talos's here)."
+        echo "    warning: $(printable "$dest") exists and is not a Talos alias; left untouched (/$name is not Talos's here)."
       fi
       return 0
     fi
@@ -409,23 +436,25 @@ handle_bare_skill() {
   if [ "$alias" = "no" ]; then
     [ "$owned" = "true" ] || return 0
     if [ "$CLAUDE_PLUGIN_REGISTERED" != "true" ]; then
-      echo "    kept (the talos plugin is not registered, so this is still the only way to run it): $dest"
+      echo "    kept (the talos plugin is not registered, so this is still the only way to run it): $(printable "$dest")"
       return 0
     fi
     rm -f -- "${dest:?}"
     rmdir "$dir" 2>/dev/null || true
-    echo "    removed: $dest"
+    echo "    removed: $(printable "$dest")"
     return 0
   fi
   if [ "$owned" = "true" ] && [ "$FORCE" = "false" ]; then
-    echo "    skip (exists): $dest  (pass --force to overwrite)"
+    echo "    skip (exists): $(printable "$dest")  (pass --force to overwrite)"
+    if grep -qxF "$ALIAS_MARKER" "$dest"; then ALIASES_ACTIVE="${ALIASES_ACTIVE:+$ALIASES_ACTIVE }/$name"; fi
     return 0
   fi
   if ! mkdir -p "$dir" 2>/dev/null || ! alias_skill_text "$name" "$cmd" "$what" > "$dest" 2>/dev/null; then
-    echo "    notice: could not write $dest."
+    echo "    notice: could not write $(printable "$dest")."
     return 0
   fi
-  echo "    installed: $dest  (alias of /talos:$cmd)"
+  echo "    installed: $(printable "$dest")  (alias of /talos:$cmd)"
+  ALIASES_ACTIVE="${ALIASES_ACTIVE:+$ALIASES_ACTIVE }/$name"
 }
 
 # install_claude_adapter -- the ONLY place --global writes under
@@ -438,14 +467,14 @@ handle_bare_skill() {
 install_claude_adapter() {
   local agent src_agent
   echo ""
-  echo "Claude Code adapter ($CLAUDE_DIR):"
+  echo "Claude Code adapter ($(printable "$CLAUDE_DIR")):"
   for agent in $TALOS_AGENT_ROLES; do
     if src_agent="$(agent_source "$agent")"; then
       install_file "$src_agent" "$CLAUDE_DIR/agents/$agent.md"
     fi
   done
   install_claude_plugin
-  echo "  Legacy aliases ($CLAUDE_DIR/skills, removed in v0.20):"
+  echo "  Legacy aliases ($(printable "$CLAUDE_DIR")/skills, removed in v0.20):"
   if [ "$LEGACY_ALIASES" = "true" ]; then
     handle_bare_skill pipeline pipeline pipeline "pipeline orchestrator" yes
     handle_bare_skill pipeline-setup pipeline-setup setup "setup wizard" yes
@@ -471,19 +500,19 @@ install_agents_pointers() {
     if has_harness "$h"; then want="${want:+$want, }$h"; fi
   done
   if [ -z "$want" ]; then
-    echo "Agents pointer skills skipped (not selected: --harness has none of ${AGENTS_POINTER_HARNESSES// /, }; nothing is written under $AGENTS_DIR)."
+    echo "Agents pointer skills skipped (not selected: --harness has none of ${AGENTS_POINTER_HARNESSES// /, }; nothing is written under $(printable "$AGENTS_DIR"))."
     return 0
   fi
   echo ""
-  echo "Agents pointer skills ($skills; selected: $want):"
+  echo "Agents pointer skills ($(printable "$skills"); selected: $want):"
   # Links and non-directories first, before any mkdir (a dangling link too).
   if [ -L "$AGENTS_DIR" ] || [ -L "$skills" ]; then
-    [ -L "$AGENTS_DIR" ] && echo "  notice: $AGENTS_DIR is a symlink; nothing was written through it." \
-                         || echo "  notice: $skills is a symlink; nothing was written through it."
+    [ -L "$AGENTS_DIR" ] && echo "  notice: $(printable "$AGENTS_DIR") is a symlink; nothing was written through it." \
+                         || echo "  notice: $(printable "$skills") is a symlink; nothing was written through it."
     return 0
   fi
   if { [ -e "$AGENTS_DIR" ] && [ ! -d "$AGENTS_DIR" ]; } || { [ -e "$skills" ] && [ ! -d "$skills" ]; }; then
-    echo "  notice: $AGENTS_DIR or $skills is not a directory; nothing was written."
+    echo "  notice: $(printable "$AGENTS_DIR") or $(printable "$skills") is not a directory; nothing was written."
     return 0
   fi
   for cmd in "${TALOS_COMMANDS[@]}"; do
@@ -492,30 +521,30 @@ install_agents_pointers() {
     dest="$skills/$name/SKILL.md"
     desc="$(awk 'NR>1 && /^---$/{exit} /^description:/{print; exit}' "$src")"
     if [ -z "$desc" ]; then
-      echo "  notice: $src has no description line; $name was not written."
+      echo "  notice: $(printable "$src") has no description line; $name was not written."
       continue
     fi
     if [ -L "$skills/$name" ] || [ -L "$dest" ]; then
-      [ -L "$skills/$name" ] && echo "  notice: $skills/$name is a symlink; nothing was written through it." \
-                             || echo "  notice: $dest is a symlink; nothing was written through it."
+      [ -L "$skills/$name" ] && echo "  notice: $(printable "$skills")/$name is a symlink; nothing was written through it." \
+                             || echo "  notice: $(printable "$dest") is a symlink; nothing was written through it."
       continue
     fi
     if { [ -e "$skills/$name" ] && [ ! -d "$skills/$name" ]; } || { [ -e "$dest" ] && [ ! -f "$dest" ]; }; then
-      echo "  notice: $skills/$name is not a plain directory with a plain SKILL.md; nothing was written."
+      echo "  notice: $(printable "$skills")/$name is not a plain directory with a plain SKILL.md; nothing was written."
       continue
     fi
     if [ -f "$dest" ]; then
       if ! grep -qxF "$AGENTS_POINTER_MARKER" "$dest"; then
-        echo "  warning: $dest exists and is not a Talos pointer; left untouched."
+        echo "  warning: $(printable "$dest") exists and is not a Talos pointer; left untouched."
         continue
       fi
       if [ "$FORCE" = "false" ]; then
-        echo "  skip (exists): $dest  (pass --force to overwrite)"
+        echo "  skip (exists): $(printable "$dest")  (pass --force to overwrite)"
         continue
       fi
     fi
     if ! mkdir -p "$skills/$name" 2>/dev/null; then
-      echo "  notice: could not create $skills/$name; $name was not written."
+      echo "  notice: could not create $(printable "$skills")/$name; $name was not written."
       continue
     fi
     {
@@ -525,8 +554,8 @@ This is a thin Talos pointer; the playbook is not copied here, so it cannot drif
 Read `~/.talos/skills/@CMD@/SKILL.md` (or `$TALOS_HOME/skills/@CMD@/SKILL.md` when TALOS_HOME is set) with your file-read tool, then follow it exactly.
 If that file does not exist, tell the user to run `bash install.sh --global` from the Talos repo, and stop.
 TALOS_POINTER_BODY
-    } > "$dest" 2>/dev/null || { echo "  notice: could not write $dest."; continue; }
-    echo "  installed: $dest"
+    } > "$dest" 2>/dev/null || { echo "  notice: could not write $(printable "$dest")."; continue; }
+    echo "  installed: $(printable "$dest")"
     AGENTS_POINTERS_WRITTEN=true
   done
   if has_harness claude; then
@@ -537,15 +566,15 @@ TALOS_POINTER_BODY
 # ── GLOBAL INSTALL ────────────────────────────────────────────────────────────
 if [ "$GLOBAL" = "true" ]; then
   TALOS_HOME_DIR="${TALOS_HOME:-$HOME/.talos}"
-  echo "Installing Talos globally into: $TALOS_HOME_DIR"
+  echo "Installing Talos globally into: $(printable "$TALOS_HOME_DIR")"
   if [ "$CLAUDE_ADAPTER" = "true" ]; then
-    echo "(Skills -> $TALOS_HOME_DIR/skills, plus the talos plugin and the legacy aliases in $CLAUDE_DIR/skills; Agents -> $TALOS_HOME_DIR/agents and $CLAUDE_DIR/agents)"
+    echo "(Skills -> $(printable "$TALOS_HOME_DIR")/skills, plus the talos plugin and the legacy aliases in $(printable "$CLAUDE_DIR")/skills; Agents -> $(printable "$TALOS_HOME_DIR")/agents and $(printable "$CLAUDE_DIR")/agents)"
     _adapter_state="ran"
   else
-    echo "(Skills -> $TALOS_HOME_DIR/skills, Agents -> $TALOS_HOME_DIR/agents)"
+    echo "(Skills -> $(printable "$TALOS_HOME_DIR")/skills, Agents -> $(printable "$TALOS_HOME_DIR")/agents)"
     _adapter_state="skipped"
   fi
-  echo "Claude Code adapter $_adapter_state ($CLAUDE_WHY). Override: --harness claude forces it; a --harness list without claude skips it."
+  echo "Claude Code adapter $_adapter_state ($(printable "$CLAUDE_WHY")). Override: --harness claude forces it; a --harness list without claude skips it."
   echo ""
 
   # Scripts -- glob every *.sh (and *.py, below) in $SRC/scripts so a new script is picked up
@@ -612,7 +641,7 @@ if [ "$GLOBAL" = "true" ]; then
   # installer edit.
   _CONTRACT="$SRC/scripts/pipeline-contract.sh"
   if [ ! -f "$_CONTRACT" ]; then
-    echo "error: $_CONTRACT not found; cannot read the command manifest" >&2
+    echo "error: $(printable "$_CONTRACT") not found; cannot read the command manifest" >&2
     exit 1
   fi
   . "$_CONTRACT"
@@ -621,6 +650,15 @@ if [ "$GLOBAL" = "true" ]; then
   for cmd in "${TALOS_COMMANDS[@]}"; do
     install_file "$SRC/skills/$cmd/SKILL.md" "$TALOS_HOME_DIR/skills/$cmd/SKILL.md"
   done
+  # A command that left TALOS_COMMANDS keeps its old directory: say so, delete
+  # nothing (the directory may hold edits, and this installer did not create it
+  # as a unit it can prove is unmodified).
+  for stale_dir in "$TALOS_HOME_DIR"/skills/*/; do
+    [ -d "$stale_dir" ] || continue
+    stale="$(basename "$stale_dir")"
+    case " ${TALOS_COMMANDS[*]} " in *" $stale "*) continue ;; esac
+    echo "  notice: $(printable "${stale_dir%/}") is not a current Talos command (current: ${TALOS_COMMANDS[*]}); it is left in place, never deleted: remove it yourself if it is stale."
+  done
 
   install_agents_pointers
 
@@ -628,7 +666,7 @@ if [ "$GLOBAL" = "true" ]; then
     install_claude_adapter
   elif [ -f "$CLAUDE_DIR/skills/pipeline/SKILL.md" ]; then
     echo ""
-    echo "Claude Code adapter skipped: $CLAUDE_DIR was not refreshed (nothing was changed or deleted). To refresh it, re-run with --harness claude (or --harness claude,<others>)."
+    echo "Claude Code adapter skipped: $(printable "$CLAUDE_DIR") was not refreshed (nothing was changed or deleted). To refresh it, run: bash $(printable "$SRC")/install.sh --global --harness claude (or --harness claude,<others>)."
   fi
 
   # Model hint (#336). Role models are set only in the Talos config (the agent
@@ -645,34 +683,40 @@ if [ "$GLOBAL" = "true" ]; then
   fi
   if ! grep -Eq '^agents\.(roles\.[^.]+\.)?model' <<<"$_HINT_LAYERS"; then
     echo ""
-    echo "Models: no model set in a user-level Talos config ($TALOS_HOME_DIR/talos.pipeline.*), so every role inherits the session model -- run the setup skill (/talos:setup in Claude Code, or read $TALOS_HOME_DIR/skills/setup/SKILL.md) to choose one model for all roles or one per role."
+    echo "Models: no model set in a user-level Talos config ($(printable "$TALOS_HOME_DIR")/talos.pipeline.*), so every role inherits the session model -- run the setup skill (/talos:setup in Claude Code, or read $(printable "$TALOS_HOME_DIR")/skills/setup/SKILL.md) to choose one model for all roles or one per role."
   fi
 
   echo ""
-  echo "Done. Global Talos install at $TALOS_HOME_DIR"
+  echo "Done. Global Talos install at $(printable "$TALOS_HOME_DIR")"
   echo ""
   echo "Next: run per-repo config in each repository:"
-  echo "  bash $SRC/install.sh /path/to/your-repo"
+  echo "  bash $(printable "$SRC")/install.sh /path/to/your-repo"
   echo ""
   if [ "$CLAUDE_ADAPTER" = "true" ]; then
     echo "  NOTE: skills are discovered when a session starts. Restart any open"
     echo "        Claude Code session to pick up the newly installed skills."
     if [ "$CLAUDE_PLUGIN_REGISTERED" = "true" ]; then
       echo "        Commands: /talos:pipeline, /talos:setup, /talos:resume (plugin talos@talos,"
-      echo "        loaded from $SRC: keep that checkout where it is, or re-run this installer from its new location)."
+      echo "        installed from $(printable "$SRC"); Claude Code keeps its own copy, so re-run this installer after a git pull or if the checkout moves)."
     else
       echo "        The talos plugin is not registered, so /talos:* commands are missing (see the plugin notice above)."
     fi
     if [ "$LEGACY_ALIASES" = "true" ]; then
-      echo "        Old names /pipeline and /pipeline-setup still work as aliases until v0.20: $CLAUDE_DIR/skills/<name>/SKILL.md"
+      if [ -z "$ALIASES_ACTIVE" ]; then
+        echo "        No legacy /pipeline or /pipeline-setup alias is active (see the notices above): use /talos:pipeline and /talos:setup."
+      elif [ "$ALIASES_ACTIVE" = "/pipeline /pipeline-setup" ]; then
+        echo "        Old names /pipeline and /pipeline-setup still work as aliases until v0.20: $(printable "$CLAUDE_DIR")/skills/<name>/SKILL.md"
+      else
+        echo "        Old name $ALIASES_ACTIVE still works as an alias until v0.20: $(printable "$CLAUDE_DIR")/skills/<name>/SKILL.md (the other legacy name is not an alias here: see the notices above)."
+      fi
     fi
   fi
-  echo "        Playbooks for any other agent: $TALOS_HOME_DIR/skills/<command>/SKILL.md"
+  echo "        Playbooks for any other agent: $(printable "$TALOS_HOME_DIR")/skills/<command>/SKILL.md"
   if [ "$AGENTS_POINTERS_WRITTEN" = "true" ]; then
-    echo "        Pointer skills registered at: $AGENTS_DIR/skills/talos-<command>/SKILL.md"
+    echo "        Pointer skills registered at: $(printable "$AGENTS_DIR")/skills/talos-<command>/SKILL.md"
   fi
   if [ "$CLAUDE_ADAPTER" = "true" ]; then
-    echo "        Role profiles registered at: $CLAUDE_DIR/agents/<role>.md"
+    echo "        Role profiles registered at: $(printable "$CLAUDE_DIR")/agents/<role>.md"
   fi
   exit 0
 fi
@@ -682,19 +726,19 @@ fi
 
 # Ensure target looks like a repo
 if [ ! -d "$TARGET" ]; then
-  echo "error: target directory not found: $TARGET" >&2
+  echo "error: target directory not found: $(printable "$TARGET")" >&2
   exit 1
 fi
 
 # Legacy layout: Talos used to install into .claude/pipeline/
 if [ -d "$TARGET/.claude/pipeline" ]; then
-  echo "NOTE: legacy install detected at $TARGET/.claude/pipeline -- Talos now lives in .claude/talos/."
+  echo "NOTE: legacy install detected at $(printable "$TARGET")/.claude/pipeline -- Talos now lives in .claude/talos/."
   echo "      Move any customized templates or .env out of the old directory, then remove it:"
-  echo "        rm -rf $TARGET/.claude/pipeline"
+  echo "        rm -rf $(printable "$TARGET")/.claude/pipeline"
   echo ""
 fi
 
-echo "Configuring Talos for repo: $TARGET"
+echo "Configuring Talos for repo: $(printable "$TARGET")"
 echo "(scripts are NOT copied into repos -- run 'bash install.sh --global' once per machine)"
 echo ""
 
@@ -713,7 +757,7 @@ if [ "$WITH_SKILLS" = "true" ]; then
   echo "agent-skills (required by the role profiles -- Talos installs it for you):"
   if ! command -v git >/dev/null 2>&1; then
     echo "  SKIPPED: git not found. Install agent-skills manually:"
-    echo "    $AGENT_SKILLS_REPO"
+    echo "    $(printable "$AGENT_SKILLS_REPO")"
   else
     as_tmp="$(mktemp -d)"
     if git clone --depth 1 --quiet "$AGENT_SKILLS_REPO" "$as_tmp/agent-skills" 2>/dev/null \
@@ -724,7 +768,7 @@ if [ "$WITH_SKILLS" = "true" ]; then
         name="$(basename "$skill_dir")"
         dest="$TARGET/.claude/skills/$name/SKILL.md"
         if [ -f "$dest" ] && [ "$FORCE" = "false" ]; then
-          echo "  skip (exists): $dest"
+          echo "  skip (exists): $(printable "$dest")"
         else
           mkdir -p "$(dirname "$dest")"
           cp "$skill_dir/SKILL.md" "$dest"
@@ -739,11 +783,11 @@ if [ "$WITH_SKILLS" = "true" ]; then
           break
         fi
       done
-      echo "  installed: $as_n skill(s) into $TARGET/.claude/skills/"
-      echo "  source:    $AGENT_SKILLS_REPO (MIT, unmodified)"
+      echo "  installed: $as_n skill(s) into $(printable "$TARGET")/.claude/skills/"
+      echo "  source:    $(printable "$AGENT_SKILLS_REPO") (MIT, unmodified)"
       echo "  skip with: --no-agent-skills"
     else
-      echo "  SKIPPED: could not fetch $AGENT_SKILLS_REPO (offline?)."
+      echo "  SKIPPED: could not fetch $(printable "$AGENT_SKILLS_REPO") (offline?)."
       echo "           The pipeline still runs; roles fall back to their embedded"
       echo "           instructions. Re-run this installer when you have network."
     fi
@@ -766,7 +810,7 @@ if [ "$WRITE_AGENTS_MD" = "true" ]; then
   [ "$HARNESS_GIVEN" = "true" ] && _INSTR_ARGS+=(--harness "$HARNESSES")
   [ "$IMPORT_AGENTS_MD" = "true" ] && _INSTR_ARGS+=(--import-agents-md)
   bash "$SRC/scripts/pipeline-instructions.sh" write "$TARGET" ${_INSTR_ARGS[@]+"${_INSTR_ARGS[@]}"} \
-    || echo "  warning: could not write the Talos block into $TARGET/AGENTS.md"
+    || echo "  warning: could not write the Talos block into $(printable "$TARGET")/AGENTS.md"
 fi
 
 # Offer to copy config example. talos.pipeline.* is NEVER overwritten.
@@ -774,7 +818,7 @@ echo ""
 if [ ! -f "$TARGET/talos.pipeline.yml" ] && [ ! -f "$TARGET/talos.pipeline.json" ]; then
   echo "Config template:"
   echo "  Copy talos.pipeline.yml.example to talos.pipeline.yml and edit it:"
-  echo "    cp $SRC/talos.pipeline.yml.example $TARGET/talos.pipeline.yml"
+  echo "    cp $(printable "$SRC")/talos.pipeline.yml.example $(printable "$TARGET")/talos.pipeline.yml"
 else
   echo "Config: talos.pipeline.* already exists -- not overwriting."
 fi
@@ -789,15 +833,15 @@ fi
 # will not see the skill until it restarts.
 echo ""
 echo "Done. Next steps:"
-echo "  1. Edit $TARGET/talos.pipeline.yml for your project"
+echo "  1. Edit $(printable "$TARGET")/talos.pipeline.yml for your project"
 echo "  2. Bootstrap labels (if using GitHub/GitLab/Azure):"
 
 TALOS_HOME_DIR="${TALOS_HOME:-$HOME/.talos}"
 if [ -f "$TALOS_HOME_DIR/scripts/bootstrap-labels.sh" ]; then
-  echo "     bash $TALOS_HOME_DIR/scripts/bootstrap-labels.sh"
+  echo "     bash $(printable "$TALOS_HOME_DIR")/scripts/bootstrap-labels.sh"
 else
   echo "     bash <talos-scripts>/bootstrap-labels.sh"
-  echo "     (run 'bash $SRC/install.sh --global' first to install scripts globally)"
+  echo "     (run 'bash $(printable "$SRC")/install.sh --global' first to install scripts globally)"
 fi
 echo "  3. Add 'pipeline:ready' to a GitHub issue"
 echo "  4. Start the pipeline (--harness picks installer glue; agents.runner picks the CLI that runs stages):"
@@ -814,16 +858,21 @@ fi
 
 _START_PHRASE="Read ~/.talos/skills/pipeline/SKILL.md and follow it"
 for _h in ${_NEXT//,/ }; do
+  _caveat=""
   case "$_h" in
     claude)
-      echo "     [claude] Open a Claude Code session in $TARGET and run: /talos:pipeline"
+      echo "     [claude] Open a Claude Code session in $(printable "$TARGET") and run: /talos:pipeline"
       continue ;;
     pi)
       echo "     [pi] in talos.pipeline.yml set agents.runner: pi and agents.subagents: false"
       _start="$_START_PHRASE" ;;
-    codex|gemini)
-      echo "     [$_h] in talos.pipeline.yml set agents.runner: $_h"
-      _start="$_h \"$_START_PHRASE\"" ;;
+    codex)
+      echo "     [codex] in talos.pipeline.yml set agents.runner: codex"
+      _start="codex \"$_START_PHRASE\"" ;;
+    gemini)
+      echo "     [gemini] in talos.pipeline.yml set agents.runner: gemini"
+      _start="gemini \"$_START_PHRASE\""
+      _caveat="Gemini CLI confines its file tools to the workspace, so this start line probably fails (a read of ~/.talos/skills is refused); whether adding ~/.talos to its workspace (for example /directory add ~/.talos) helps is unverified." ;;
     antigravity)
       echo "     [antigravity] in talos.pipeline.yml set agents.runner: antigravity"
       _start="agy \"$_START_PHRASE\"" ;;
@@ -832,6 +881,7 @@ for _h in ${_NEXT//,/ }; do
       _start="$_START_PHRASE" ;;
   esac
   echo "          start: $_start"
+  if [ -n "$_caveat" ]; then echo "          caveat: $_caveat"; fi
 done
 
 if [ "$CLAUDE_ADAPTER" = "true" ]; then

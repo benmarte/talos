@@ -70,12 +70,17 @@ assert_contains "$err" "$HP/.talos/agents/" "exit 1 names the install location"
 # ── Role names reach a path: validated first ─────────────────────────────────
 reset_repo
 put_profile "$OUTSIDE" secret "$T_LINK"
-for bad in "../.outside/secret" "a/b" ".." "-x" "Developer" "dev1" "dev.md" "x y"; do
+for bad in "../.outside/secret" "a/b" ".." "-x" "Developer" "1dev" "dev.md" "x y" "dev_1"; do
   out="$(profile "$bad")"; rc=$?
   assert_eq "2" "$rc" "role '$bad' is rejected with exit 2"
   assert_eq "" "$out" "role '$bad': nothing printed"
 done
 assert_contains "$(cat "$ERR")" "invalid role" "rejection says why"
+# Digits and '-' after the first letter are valid role names ([a-z][a-z0-9-]*).
+put_profile "$CLAUDE_DIR" dev2-b "TOKEN-DIGIT-ROLE-$$"
+out="$(profile dev2-b)"; rc=$?
+assert_eq "0" "$rc" "role 'dev2-b' (digit and dash) is accepted"
+assert_eq "$CLAUDE_DIR/dev2-b.md" "$out" "role 'dev2-b' resolves to its profile"
 : > "$RUNNER_LOG"
 printf '{"agents": {"runner": "codex"}}\n' > talos.pipeline.json
 bash "$AGENT" "../.outside/secret" "task" >/dev/null 2>"$ERR"; rc=$?
@@ -217,6 +222,6 @@ assert_contains "$inline_step" 'bash scripts/pipeline-agent.sh --resolve-profile
 adapter_line="$(printf '%s\n' "$SKILL" | grep -F 'The adapter finds the role definition itself')"
 assert_contains "$adapter_line" '`$PWD/.claude/agents/<role>.md`, then `$PWD/.agents/talos/agents/<role>.md`' "adapter sentence states the order"
 assert_contains "$SKILL" 'The neutral path (2) applies to the adapter and inline paths only.' "Subagent names section limits the neutral path to adapter and inline"
-assert_contains "$(sed -n '1,45p' "$TALOS_ROOT/scripts/pipeline-agent.sh")" '.agents/talos/agents/<role>.md' "script header lists the neutral location"
+assert_contains "$(sed -n '1,60p' "$TALOS_ROOT/scripts/pipeline-agent.sh")" '.agents/talos/agents/<role>.md' "script header lists the neutral location"
 
 finish
