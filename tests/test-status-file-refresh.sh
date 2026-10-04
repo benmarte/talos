@@ -69,7 +69,7 @@ FX="${SF_FX:?}"
 verb="${1:-}"; shift
 printf '%s %s\n' "$verb" "$*" >> "$FX/calls.log"
 rc_of() { if [ -f "$FX/$1" ]; then cat "$FX/$1"; else echo "${2:-0}"; fi; }
-[ -f "$FX/sleep.$verb" ] && sleep "$(cat "$FX/sleep.$verb")"
+[ -f "$FX/sleep.$verb" ] && { echo $$ > "$FX/verbpid.$verb"; sleep "$(cat "$FX/sleep.$verb")"; }
 case "$verb" in
   list-prs)
     [ -f "$FX/prs.err" ] && cat "$FX/prs.err" >&2
@@ -931,6 +931,141 @@ assert_not_contains "$(oshow TALOS_STATUS.md)" "- PR #10 " "deadline: no block w
 rm -f "$FX/sleep.pr-head"
 out="$(TALOS_STATUS_READ_DEADLINE=abc run_wd 60 bash "$SF" refresh)"; rc=$?
 assert_eq "0" "$rc" "deadline: a bad TALOS_STATUS_READ_DEADLINE falls back to the default"
+
+# TALOS_STATUS_READ_DEADLINE takes 1 to 4 ASCII digits only (#454): `²` is a
+# digit to str.isdigit() and crashed int(); 5000 digits crashed it too; five
+# digits (here 00001, which is 1) are over the limit, so the default applies and
+# the 3 s verb below is NOT cut off.
+echo 3 > "$FX/sleep.pr-head"
+for dl in '²' "$(python3 -I -c 'print("9" * 5000)')" '00001'; do
+  out="$(TALOS_STATUS_READ_DEADLINE="$dl" run_wd 60 bash "$SF" refresh --print)"; rc=$?
+  assert_eq_ctx "0" "$rc" "deadline: a ${#dl}-char value starting '$(printf '%s' "$dl" | head -c 4)' is not an accepted deadline; the default applies" "$(printf '%s' "$out" | head -c 160)"
+  assert_not_contains "$out" "Traceback" "deadline: a bad deadline value never raises"
+done
+out="$(TALOS_STATUS_READ_DEADLINE=0002 run_wd 60 bash "$SF" refresh)"; rc=$?
+assert_eq "1" "$rc" "deadline: four ASCII digits are accepted (0002 is 2 s, shorter than the 3 s verb)"
+rm -f "$FX/sleep.pr-head"
+
+# ── a signal during the read phase stops the running read verb (#454) ───────
+# The verb runs in its own session, so the signal sent to the script's process
+# group (a terminal's Ctrl-C) never reached it and it outlived the script.
+run_sig() {  # SIG pidfile cmd...: run cmd in a new session, signal its group once the verb wrote pidfile, print the exit code
+  python3 -I -c '
+import os, signal, subprocess, sys, time
+sig = getattr(signal, "SIG" + sys.argv[1])
+def dfl():
+    for s in (signal.SIGINT, signal.SIGQUIT, signal.SIGHUP, signal.SIGTERM):
+        signal.signal(s, signal.SIG_DFL)
+p = subprocess.Popen(sys.argv[3:], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     stdin=subprocess.DEVNULL, start_new_session=True, preexec_fn=dfl)
+end = time.time() + 20
+while time.time() < end and not os.path.exists(sys.argv[2]):
+    time.sleep(0.05)
+time.sleep(0.2)
+os.killpg(p.pid, sig)
+try:
+    print(p.wait(timeout=15))
+except subprocess.TimeoutExpired:
+    os.killpg(p.pid, signal.SIGKILL)
+    print("WATCHDOG")' "$@"
+}
+reset_fixture; cfg_rf
+for sig in TERM INT; do
+  fx_reset; add_pr 10 fix/issue-5-x ""; add_issue 5 ""; fx_flush
+  echo 30 > "$FX/sleep.pr-head"
+  before="$(osha)"
+  rc="$(run_sig "$sig" "$FX/verbpid.pr-head" bash "$SF" refresh)"
+  case "$sig" in TERM) want=143 ;; INT) want=130 ;; esac
+  assert_eq "$want" "$rc" "signal: SIG$sig during a read exits $want"
+  vpid="$(cat "$FX/verbpid.pr-head" 2>/dev/null)"
+  if [ -n "$vpid" ] && kill -0 "$vpid" 2>/dev/null; then
+    kill "$vpid" 2>/dev/null
+    alive=yes
+  else
+    alive=no
+  fi
+  assert_eq "no" "$alive" "signal: SIG$sig during a read kills the running read verb"
+  ofetch
+  assert_eq "$before" "$(osha)" "signal: SIG$sig pushed nothing"
+  assert_eq "0" "$(status_tmp_dirs)" "signal: SIG$sig left no temp directory"
+done
+
+# ── #454 Next: a merge-ready PR past the line cap, held issues, exact labels ─
+# 6 pipeline PRs and a 5-line cap: only PRs 10 and 11 are shown (budget - 3).
+# PR 15 carries every approval label, so it is looked up too and Next names it.
+reset_fixture; cfg_rf '' '"resume_max_lines": 5'
+fx_reset
+add_pr 10 fix/issue-5-x ""; add_pr 11 fix/issue-5-x ""; add_pr 12 fix/issue-5-x ""
+add_pr 13 fix/issue-5-x ""; add_pr 14 fix/issue-5-x ""; add_pr 15 fix/issue-5-x "$ALL"
+add_issue 5 ""; fx_flush
+out="$(bash "$SF" refresh --print 2>/dev/null)"
+assert_eq "- Next: merge #15" "$(line_of "$out" '^- Next:')" "cap-next: a merge-ready PR past the line cap is still Next"
+assert_contains "$(calls)" "pr-head 15" "cap-next: the merge-ready PR past the cap is looked up"
+assert_not_contains "$(calls)" "pr-head 12" "cap-next: an unready PR past the cap is not looked up"
+assert_eq "5" "$(block_of "$out" | wc -l | tr -d ' ')" "cap-next: the block still honours the 5-line cap"
+# ...but not when it is waiting on the owner or blocked
+fx_reset
+add_pr 10 fix/issue-5-x ""; add_pr 11 fix/issue-5-x ""; add_pr 12 fix/issue-5-x ""
+add_pr 13 fix/issue-5-x ""; add_pr 14 fix/issue-5-x ""; add_pr 15 fix/issue-5-x "$ALL,pipeline:needs-owner"
+add_issue 5 ""; fx_flush
+out="$(bash "$SF" refresh --print 2>/dev/null)"
+assert_not_contains "$(calls)" "pr-head 15" "cap-next: a needs-owner PR past the cap is not looked up"
+assert_eq "- Next: resume #10 at qa" "$(line_of "$out" '^- Next:')" "cap-next: Next is then the lowest shown PR"
+
+cfg_rf
+# an issue that is ready AND needs the owner is never offered as `start`
+fx_reset; add_issue 9 "pipeline:ready,pipeline:needs-owner"; fx_flush
+out="$(bash "$SF" refresh --print 2>/dev/null)"
+assert_eq "- Next: waiting on owner" "$(line_of "$out" '^- Next:')" "held: only a ready+needs-owner issue -> waiting on owner, not start"
+assert_eq "- Queued: #9" "$(line_of "$out" '^- Queued:')" "held: the issue is still listed as queued"
+fx_reset; add_issue 7 "pipeline:ready,pipeline:needs-owner,p0"; add_issue 8 "pipeline:ready"; fx_flush
+assert_eq "- Next: start #8" "$(line_of "$(bash "$SF" refresh --print 2>/dev/null)" '^- Next:')" "held: the next ready issue without needs-owner is offered, even behind a higher priority"
+
+# a fork PR counts as the pipeline's only with an exact contract label
+fx_reset; add_pr 40 fix/issue-3-x "pipeline:bogus" true; add_pr 41 fix/issue-3-x "pipeline:review" true
+add_pr 42 fix/issue-3-x "pipeline:epic-children-done" true; add_pr 43 fix/issue-3-x "review:approved" true
+add_pr 44 fix/issue-3-x "Pipeline:review" true; add_issue 3 ""; fx_flush
+out="$(bash "$SF" refresh --print 2>/dev/null)"
+assert_eq "41 42 43" "$(printf '%s\n' "$out" | sed -n 's/^- PR #\([0-9]*\) .*/\1/p' | tr '\n' ' ' | sed 's/ $//')" "labels: only exact contract labels admit a fork PR (pipeline:bogus and Pipeline:review do not)"
+assert_eq "- Ignored: 2 open PR(s) with a pipeline-style branch name and no Talos label from a fork" "$(line_of "$out" '^- Ignored:')" "labels: the two non-contract fork PRs are counted as ignored"
+
+# ── the stage order refresh walks is the playbook's (#454) ──────────────────
+# Walk a PR through refresh: whatever stage it names, give it that role's label
+# and ask again. The sequence is what refresh believes the order to be.
+walk_stages() {  # default|draft -> "qa docs reviewer security adversarial merge"
+  local labels="" st out order=""
+  while :; do
+    fx_reset; add_pr 10 fix/issue-5-x "$labels"; add_issue 5 ""; fx_flush
+    [ "$1" = draft ] && echo 0 > "$FX/draft.10.rc"
+    out="$(bash "$SF" refresh --print 2>/dev/null)"
+    st="$(stage_of "$out" 10)"
+    order="$order $st"
+    case "$st" in
+      qa) l=qa:pass ;; docs) l=docs:done ;; reviewer) l=review:approved ;;
+      security) l=security:approved ;; adversarial) l=adversarial:approved ;;
+      *) break ;;
+    esac
+    labels="${labels:+$labels,}$l"
+  done
+  printf '%s' "${order# }"
+}
+reset_fixture; cfg_rf '"roles": {"adversarial": true}'
+default_order="$(walk_stages default)"
+RF_DRAFT=true cfg_rf '"roles": {"adversarial": true}'
+draft_order="$(walk_stages draft)"
+assert_eq "qa docs reviewer security adversarial merge" "$default_order" "order: refresh's default stage order"
+assert_eq "docs reviewer security adversarial ready" "$draft_order" "order: refresh's draft stage order (QA comes after ready-pr)"
+# The playbook's text: the draft section numbers Docs, then Review (reviewer,
+# security, adversarial), then ready-pr, then QA; its default order is given in
+# the sentence that the section replaces.
+skill="$TALOS_ROOT/skills/pipeline/SKILL.md"
+section="$(sed -n '/^#### Draft stage order/,/^<!-- pr-draft:end -->/p' "$skill")"
+assert_contains "$section" "#### Draft stage order" "order: the playbook has the draft stage order section"
+pos() { printf '%s\n' "$section" | grep -n -m1 -- "$1" | cut -d: -f1; }
+p_docs="$(pos '^2\. \*\*Docs')"; p_rev="$(pos '^3\. \*\*Review')"; p_ready="$(pos '^5\. \*\*`ready-pr`')"; p_qa="$(pos '^6\. \*\*QA')"
+assert_eq "yes" "$([ -n "$p_docs" ] && [ -n "$p_rev" ] && [ -n "$p_ready" ] && [ -n "$p_qa" ] && [ "$p_docs" -lt "$p_rev" ] && [ "$p_rev" -lt "$p_ready" ] && [ "$p_ready" -lt "$p_qa" ] && echo yes || echo "no ($p_docs $p_rev $p_ready $p_qa)")" "order: playbook draft order is docs, review, ready-pr, QA"
+assert_contains "$(printf '%s\n' "$section" | sed -n "${p_rev}p")" "reviewer, security and adversarial" "order: playbook review step lists reviewer, security, adversarial in that order"
+assert_contains "$section" "(developer, QA, docs, reviewer + security, merge)" "order: playbook default order is QA, docs, reviewer + security, merge"
 
 # ── next: human-merge and needs-owner ───────────────────────────────────────
 reset_fixture; cfg_rf '"merge": {"auto": false}'
