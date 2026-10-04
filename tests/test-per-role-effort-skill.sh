@@ -8,8 +8,9 @@
 # The native path must have NO working-tree side effects (#271 fix round):
 # the orchestrator never rewrites a role file's frontmatter at spawn time.
 # Effort on that path comes from whatever `effort:` is already committed in
-# the role file; config keys are advisory-only there, surfaced as a logged
-# notice when they disagree with the committed frontmatter.
+# the role file; config keys are advisory-only there, surfaced as a notice by
+# `pipeline-agent.sh --check-effort <role>` (#445; behaviour pinned in
+# tests/test-agent-runner.sh) when they disagree with the committed frontmatter.
 set -u
 . "$(dirname "$0")/helpers.sh"
 
@@ -35,28 +36,36 @@ fi
 
 effort_block_flat="$(printf '%s' "$effort_block" | tr '\n' ' ' | tr -s ' ')"
 
-assert_contains "$effort_block_flat" "agents.roles.<role>.effort" \
-  "Per-role effort selection block references agents.roles.<role>.effort"
-assert_contains "$effort_block_flat" "agents.effort" \
-  "Per-role effort selection block references the global agents.effort fallback"
-assert_contains "$effort_block_flat" "committed frontmatter" \
-  "Per-role effort selection block states effort comes from the role's committed frontmatter on the native path"
-assert_contains "$effort_block_flat" "do not invent a mutation mechanism" \
-  "Per-role effort selection block warns against inventing a file-mutation mechanism"
-assert_contains "$effort_block_flat" "never write to a tracked file at spawn time" \
-  "Per-role effort selection block states the orchestrator never writes to a tracked file at spawn time"
-assert_contains "$effort_block_flat" "notice" \
-  "Per-role effort selection block names the advisory-notice mechanism"
+assert_contains "$effort_block_flat" "pipeline-agent.sh --check-effort <role>" \
+  "Per-role effort selection block calls the --check-effort verb"
+assert_contains "$effort_block_flat" "never writes a tracked file" \
+  "Per-role effort selection block states the orchestrator never writes a tracked file"
 assert_contains "$effort_block_flat" "advisory" \
-  "Per-role effort selection block states the config keys are advisory on the native path"
-assert_contains "$effort_block_flat" "no file writes" \
-  "Per-role effort selection block confirms the working tree stays clean"
+  "Per-role effort selection block states config effort is advisory on the native path"
+assert_contains "$effort_block_flat" "TALOS_EFFORT" \
+  "Per-role effort selection block names TALOS_EFFORT for the adapter path"
 
-# ── Old file-mutation mechanism must be gone ────────────────────────────────
+# The resolution prose moved into the verb; it must not creep back (#445).
+assert_not_contains "$effort_block_flat" "pipeline-config.sh agents.roles" \
+  "Per-role effort selection block no longer spells out the config resolution steps"
 assert_not_contains "$effort_block_flat" "rewrite that file" \
   "Per-role effort selection block no longer rewrites the role file's frontmatter"
-assert_not_contains "$effort_block_flat" "Talos never mutates it" \
-  "Per-role effort selection block no longer describes a mutation it skips for plugin/global roles"
+
+# Byte-count ceilings (#445): SKILL.md was 134465 bytes before the effort prose
+# became a verb call. A ceiling just under that keeps it from growing back
+# without making every unrelated edit trip the test.
+skill_bytes="$(wc -c < "$SKILL_MD" | tr -d ' ')"
+effort_block_bytes="$(printf '%s' "$effort_block" | wc -c | tr -d ' ')"
+if [ "$skill_bytes" -lt 134465 ]; then
+  pass "SKILL.md is shorter than before the effort block became a verb call ($skill_bytes < 134465 bytes)"
+else
+  fail "SKILL.md is shorter than before the effort block became a verb call" "$skill_bytes bytes"
+fi
+if [ "$effort_block_bytes" -lt 900 ]; then
+  pass "Per-role effort selection block stays under 900 bytes ($effort_block_bytes)"
+else
+  fail "Per-role effort selection block stays under 900 bytes" "$effort_block_bytes bytes"
+fi
 
 # ── Step 3e re-stamp block references restamp_effort alongside restamp_model ──
 restamp_block="$(sed -n '/^\*\*Re-stamp check (fix-round path, #258):\*\*/,/^\*\*Phase 2 —/p' "$SKILL_MD")"
