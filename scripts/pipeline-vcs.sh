@@ -835,7 +835,7 @@ _with_retry() {
       ;;
   esac
   _wr_scale="${TALOS_RETRY_SLEEP_SCALE:-1}"
-  if ! printf '%s' "$_wr_scale" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
+  if ! grep -qE '^[0-9]+(\.[0-9]+)?$' <<<"$_wr_scale"; then
     printf 'pipeline-vcs: TALOS_RETRY_SLEEP_SCALE must be a non-negative number, got %s; using default 1\n' \
       "$_wr_scale" >&2
     _wr_scale=1
@@ -856,7 +856,7 @@ _with_retry() {
       return 0
     fi
 
-    if [ -n "$_WR_RETRYABLE" ] || printf '%s' "$_wr_err_text" | grep -qiE "$_RETRY_STDERR_PATTERN"; then
+    if [ -n "$_WR_RETRYABLE" ] || grep -qiE "$_RETRY_STDERR_PATTERN" <<<"$_wr_err_text"; then
       rm -f "$_wr_out" "$_wr_err"
       _wr_attempt=$((_wr_attempt + 1))
       if [ "$_wr_attempt" -gt "$_wr_max" ]; then
@@ -2790,7 +2790,7 @@ _vcs_shared_check_pr_files() {
   # config text (guards against marker-injection via a crafted config value).
   local _pat_count
   _pat_count="$(printf '%s\n' "$_patterns" | grep -c '[^[:space:]]')" || _pat_count=0
-  printf '%s' "$_pat_count" | grep -qE '^[0-9]+$' || _pat_count=0
+  grep -qE '^[0-9]+$' <<<"$_pat_count" || _pat_count=0
   printf 'talos:forbidden-files-active patterns=%d defaults=%s\n' "$_pat_count" "$_defaults_active"
   [ "$_defaults_active" = "replaced" ] && \
     printf 'talos:forbidden-files-defaults-replaced patterns=%d\n' "$_pat_count"
@@ -3268,7 +3268,7 @@ _vcs_shared_pr_mergeable() {
   local status_fetch_fn="$1"
   local scale
   scale="${TALOS_RETRY_SLEEP_SCALE:-1}"
-  if ! printf '%s' "$scale" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
+  if ! grep -qE '^[0-9]+(\.[0-9]+)?$' <<<"$scale"; then
     scale=1
   fi
   local attempt=0 pm_status
@@ -4397,7 +4397,7 @@ _github_api() {
   # with a secondary-rate-limit / abuse-detection body (retryable even though
   # the status is not 429).
   _ga_is_secondary_limit() {
-    [ "$1" = "403" ] && printf '%s' "$2" | grep -qiE 'secondary rate limit|abuse detection'
+    [ "$1" = "403" ] && grep -qiE 'secondary rate limit|abuse detection' <<<"$2"
   }
   # _ga_retry_after <header-file> — prints the Retry-After value in seconds
   # if the response carried one, else nothing (caller falls back to
@@ -5795,7 +5795,7 @@ json.dump(out, sys.stdout)
       fi
       # Resolve PR number if not numeric
       local _pr_num
-      if printf '%s' "$_pr_ref" | grep -qE '^[0-9]+$'; then
+      if grep -qE '^[0-9]+$' <<<"$_pr_ref"; then
         _pr_num="$_pr_ref"
       else
         local _found_pr
