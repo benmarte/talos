@@ -2717,6 +2717,10 @@ pack installed.
   instructed to quote only failures — never paste full green output into
   comments or final messages — so `--quiet` (or your own suite's equivalent
   summary flag) keeps that guidance cheap to follow.
+- **The suite is slow and you want to know which files make it so** — pass
+  `--timings` to `tests/run-tests.sh` (or set `TALOS_TEST_TIMINGS=1`). After
+  the per-file report it prints `TIMINGS (seconds, slowest first)`, one
+  `<secs>  tests/<name>` line per file (a cached file shows `cached`).
 - **Notifications are plain one-liners, not rich cards** — templates missing.
   Re-run `install.sh <repo> --force` (older installs didn't ship
   `templates/`; manual copies often omit them).
