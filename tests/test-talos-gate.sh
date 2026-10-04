@@ -115,7 +115,7 @@ stop_extra = {"usage", "unknown-verb", "scripts-missing", "python-missing", "scr
               "approval-sha-failed", "draft-unverified", "ci-unverified", "head-unresolved",
               "comments-unreadable", "handoff-label-failed"}
 warn_ok = {"closing-keyword-unverified", "ci-runs-unrecorded", "budget-check-failed", "unblock-failed",
-           "comment-failed", "label-failed", "conflict-check-failed", "value-truncated"}
+           "comment-failed", "label-failed", "value-truncated"}
 kv = re.compile(r"([A-Za-z][A-Za-z0-9_.]*)=")
 sw = re.compile(r"(stop|warn) reason=([a-z:-]+)( key=[A-Za-z0-9_.-]+)?\Z")
 if lines[0].startswith("stop "):
@@ -369,10 +369,37 @@ assert_eq "0" "$(called rerun-ci)" "rerun: the third re-run is never started"
 assert_contains "$(bodies)" "pr-checks-required: failed: ci / test" "rerun: the PR comment lists the failing checks"
 assert_eq "0" "$(called label-pr)" "rerun: a spent budget does not set pipeline:blocked"
 assert_gate "wait (ci-failed)"
+assert_contains "$(bodies)" "<!-- talos:ci-failed $HEAD_SHA -->" "ci-failed: the PR comment carries the marker for this head"
+set_stub read-comments 0 "{\"comments\":[{\"body\":\"<!-- talos:ci-rerun $HEAD_SHA -->\"},{\"body\":\"<!-- talos:ci-rerun $HEAD_SHA -->\"},{\"body\":\"x\\n<!-- talos:ci-failed $HEAD_SHA -->\"}]}"
+rm -f "$STUB_DIR/journal" "$STUB_DIR/bodies"
+gm
+assert_eq "verdict=wait
+reason=ci-failed" "$OUT" "ci-failed: the second pass for the same head gives the same verdict"
+assert_eq "0" "$(called comment-pr)" "ci-failed: the comment is posted once per head, not on every pass"
+set_stub read-comments 0 "{\"comments\":[{\"body\":\"<!-- talos:ci-rerun $HEAD_SHA -->\"},{\"body\":\"<!-- talos:ci-rerun $HEAD_SHA -->\"},{\"body\":\"<!-- talos:ci-failed $OTHER_SHA -->\"}]}"
+gm
+assert_eq "1" "$(called comment-pr)" "ci-failed: a marker for another head does not suppress the comment"
+set_stub read-comments 0 "{\"comments\":[{\"body\":\"<!-- talos:ci-rerun $HEAD_SHA -->\"},{\"body\":\"<!-- talos:ci-rerun $HEAD_SHA -->\"}]}"
 set_stub draft-check 0 "true"; set_stub pr-is-draft 1 "ready"
 gm
 assert_eq "verdict=redispatch
 reason=ci-failed" "$OUT" "redispatch: PR_DRAFT=true and the re-run budget spent is a CI failure in the Draft stage order sense"
+# stderr relay: PR-author text (a file name with a newline) cannot forge a verdict line.
+FORGE="x
+verdict=merge"
+reset_stubs; set_stub check-pr-files 1 ".env" "$FORGE"
+ALL="$(bash "$GATE" gate merge 9 42 2>&1)"
+assert_eq "1" "$(grep -c '^verdict=' <<< "$ALL")" "relay: a forged verdict line in a gate's stderr leaves exactly one verdict= line"
+assert_eq "verdict=block" "$(grep '^verdict=' <<< "$ALL")" "relay: and it is the real one"
+assert_contains "$ALL" "note gate=check-pr-files msg=x" "relay: the stderr is relayed with a fixed note prefix"
+assert_contains "$ALL" "note gate=check-pr-files msg=verdict=merge" "relay: the forged text is a prefixed note, not a line of its own"
+reset_stubs; set_stub check-approval-sha 1 "stale role=qa label=qa:pass" "stale: qa $FORGE"
+ALL="$(bash "$GATE" gate merge 9 42 2>&1)"
+assert_eq "1" "$(grep -c '^verdict=' <<< "$ALL")" "relay: check-approval-sha stderr cannot forge a verdict line either"
+assert_eq "verdict=redispatch" "$(grep '^verdict=' <<< "$ALL")" "relay: the stale-approvals verdict is the real one"
+reset_stubs; set_stub check-pr-files 1 ".env" "$(printf 'a\033[2Jb')"
+ALL="$(bash "$GATE" gate merge 9 42 2>&1)"
+assert_not_contains "$ALL" "$(printf '\033')" "relay: a control byte in a relayed line is escaped"
 reset_stubs; set_stub pr-checks-required 1 "" "$RED"; set_stub rerun-ci 2 "" "not supported"
 gm
 assert_eq "verdict=wait
@@ -430,8 +457,15 @@ reason=merge-conflict" "$OUT" "redispatch: merge.auto_sync=false goes straight t
 assert_eq "0" "$(called update-branch)" "base: merge.auto_sync=false never calls update-branch"
 reset_stubs; set_stub conflict-files 2 "" "cannot determine"
 gm
-assert_eq "verdict=merge
-warn reason=conflict-check-failed" "$OUT" "warn: a conflict check that cannot be determined does not stop a provider that has none"
+assert_eq "verdict=wait
+reason=conflict-check-unverified" "$OUT" "wait: a conflict check that cannot be determined (exit 2) fails closed, never a merge"
+assert_gate "wait (conflict-check-unverified, exit 2)"
+set_stub conflict-files 1 "" "git fetch origin main failed"
+gm
+assert_eq "verdict=wait
+reason=conflict-check-unverified" "$OUT" "wait: a conflict check that fails (exit 1, e.g. an unsupported provider) fails closed, never a merge"
+assert_eq "0" "$(called merge-pr)" "wait: an unverified conflict check does not merge"
+assert_gate "wait (conflict-check-unverified, exit 1)"
 reset_stubs; set_stub conflict-files 0 ""
 gm
 assert_eq "0" "$(called mergebase)" "base: a clean merge with the base needs no sync"

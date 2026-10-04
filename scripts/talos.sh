@@ -76,19 +76,28 @@
 #                                 | draft-pr | ci-failed (PR_DRAFT) | merge-conflict
 #            verdict=wait       reason=blocked-label | approvals-missing missing=<labels>
 #                                 | ci-pending | ci-rerun attempt=<k> | rerun-unsupported
-#                                 | ci-failed | base-synced | awaiting-human-merge
+#                                 | ci-failed | base-synced | conflict-check-unverified
+#                                 | awaiting-human-merge
 #            verdict=block      reason=forbidden-files | closing-keyword | siblings-capped
-#          A `stop` means a gate could not be checked (exit 1): do not merge.
+#          A `stop` means a gate could not be checked (exit 1): do not merge. A
+#          conflict check that cannot run (conflict-files exit 1 or 2) is
+#          `wait reason=conflict-check-unverified`, never a merge. The stderr of
+#          each gate call (it can hold PR-author text) is relayed on stderr only
+#          as `note gate=<verb> msg=<escaped>` lines, one per line, sanitised as
+#          above, so no relayed line can begin with `verdict=` or any other key.
+#          The ci-failed comment is posted once per head (<!-- talos:ci-failed
+#          <sha> --> marker). A required check that never starts stays
+#          `wait reason=ci-pending`: no head-age bound exists in the vcs verbs.
 #          Not added to the old order on purpose: pr-mergeable (Step 3c, and only
 #          after a base update here) and assert-sync (Step 0, before 3e).
 #
-# gate-reasons: budget-exceeded max-fix-attempts max-total-dispatches record-failed stale-approvals draft-pr ci-failed merge-conflict blocked-label approvals-missing ci-pending ci-rerun rerun-unsupported base-synced awaiting-human-merge forbidden-files closing-keyword siblings-capped
+# gate-reasons: budget-exceeded max-fix-attempts max-total-dispatches record-failed stale-approvals draft-pr ci-failed merge-conflict blocked-label approvals-missing ci-pending ci-rerun rerun-unsupported base-synced conflict-check-unverified awaiting-human-merge forbidden-files closing-keyword siblings-capped
 #   stop: usage unknown-verb scripts-missing python-missing scratch-unavailable config-unreadable
 #         draft-resolve-failed view-failed labels-unreadable approval-sha-failed
 #         unsupported-verb:<verb> draft-unverified ci-unverified head-unresolved
 #         comments-unreadable handoff-label-failed
 #   warn: closing-keyword-unverified ci-runs-unrecorded budget-check-failed
-#         unblock-failed comment-failed label-failed conflict-check-failed value-truncated
+#         unblock-failed comment-failed label-failed value-truncated
 #
 # Exit codes: 0 ok (for gate: a verdict was printed), 1 a `stop`, 2 usage.
 set -u
@@ -188,7 +197,7 @@ for i in range(0, len(parts) - 1, 2):
     val = "\\n".join(esc(x) for x in val.split("\n")) if is_list else esc(val)
     if cut:
         val += "[truncated]"
-    out.append(key + (" " if key in ("stop", "warn") else "=") + val)
+    out.append(key + (" " if key in ("stop", "warn", "note") else "=") + val)
 sys.stdout.buffer.write(("\n".join(out + warns) + "\n").encode("utf-8"))
 '
 
@@ -381,13 +390,26 @@ _talos_verdict() {
   exit 0
 }
 
-# _talos_cap <cmd>...: run it with stdout in _OUT, stderr in _ERR (also passed on
-# to stderr) and the exit status in _RC.
+# _talos_cap <cmd>...: run it with stdout in _OUT, stderr in _ERR (also relayed
+# to stderr, see _talos_relay) and the exit status in _RC.
 _talos_cap() {
   _OUT="$("$@" 2>"$_CFG_CACHE_DIR/err")"
   _RC=$?
   _ERR="$(cat "$_CFG_CACHE_DIR/err")"
-  [ -z "$_ERR" ] || printf '%s\n' "$_ERR" >&2
+  _talos_relay "${2:-}" "$_ERR"
+}
+
+# _talos_relay <verb> <text>: a gate's stderr can hold PR-author text (a file
+# name may contain a newline), so each line goes through the sanitiser as
+# `note gate=<verb> msg=<escaped>`: no relayed line starts with `verdict=` or
+# any other key the orchestrator reads.
+_talos_relay() {
+  local _l _tag=""
+  [[ "$1" =~ ^[a-z-]*$ ]] && _tag="$1"
+  [ -n "$2" ] || return 0
+  while IFS= read -r _l || [ -n "$_l" ]; do
+    [ -z "$_l" ] || printf 'note\0gate=%s msg=%s\0' "$_tag" "$_l"
+  done <<< "$2" | python3 -I -c "$_TALOS_SANITISER" >&2
 }
 
 # _talos_post <pr> <text>: a PR comment; the text reaches the verb in a file.
@@ -642,7 +664,12 @@ _talos_gate_merge() {
         fi
         _talos_verdict wait
       fi
-      _talos_post "$_pr" "CI still failing after 2 re-runs for this head; not merging."$'\n\n'"$_cierr"
+      # The comment is posted once per head: its marker is looked up first.
+      _cnt="$(python3 -I -c "$_TALOS_COUNT_PY" "<!-- talos:ci-failed $_sha -->" <<< "$_OUT")" || _talos_stop comments-unreadable
+      _talos_isnum "$_cnt" || _talos_stop comments-unreadable
+      if [ "$_cnt" -eq 0 ]; then
+        _talos_post "$_pr" "CI still failing after 2 re-runs for this head; not merging."$'\n\n'"$_cierr"$'\n'"<!-- talos:ci-failed $_sha -->"
+      fi
       _talos_emit reason ci-failed
       if [ "$_draft" = "true" ]; then _talos_verdict redispatch; fi
       _talos_verdict wait ;;
@@ -656,7 +683,9 @@ _talos_gate_merge() {
   # pushed head is not CI-verified, so it ends in `wait`.
   _talos_cap _vcs conflict-files "$_pr"
   if [ "$_RC" -ne 0 ]; then
-    _talos_emit warn "reason=conflict-check-failed"
+    # Fail closed: a conflict check that cannot run never ends in a merge.
+    _talos_emit reason conflict-check-unverified
+    _talos_verdict wait
   elif [ -n "$_OUT" ]; then
     if bash "$SCRIPT_DIR/pipeline-mergebase.sh" "$_pr" > /dev/null; then
       _synced=1
