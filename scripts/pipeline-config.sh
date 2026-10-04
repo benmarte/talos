@@ -76,24 +76,23 @@ set -u
 # empty and the unknown-key check is skipped (an empty list matches nothing).
 _CFG_SELF="${BASH_SOURCE[0]}"
 case "$_CFG_SELF" in */*) _CFG_SELF_DIR="${_CFG_SELF%/*}" ;; *) _CFG_SELF_DIR="." ;; esac
-if [ -f "$_CFG_SELF_DIR/pipeline-defaults.sh" ]; then
-  . "$_CFG_SELF_DIR/pipeline-defaults.sh"
+# The table is loaded only when it is intact (pipeline-defaults-check.sh, shared
+# with pipeline-cfg-cache.sh): readable, complete (it ends with its sentinel, so
+# a truncated copy is refused) and holding a row for every security-relevant key.
+if [ -f "$_CFG_SELF_DIR/pipeline-defaults-check.sh" ] \
+   && . "$_CFG_SELF_DIR/pipeline-defaults-check.sh" \
+   && _talos_load_defaults "$_CFG_SELF_DIR/pipeline-defaults.sh"; then
+  :
 else
-  echo "pipeline-config: pipeline-defaults.sh missing next to $0 -- no table defaults, unknown-key check off" >&2
-  # Fail closed (#440): with no table, a key that has no caller default reads
-  # empty -- fine for most keys, but not for the ones that gate a merge, a
+  echo "pipeline-config: pipeline-defaults.sh missing or unusable next to $0 -- no table defaults, unknown-key check off" >&2
+  # Fail closed (#440): with no usable table, a key that has no caller default
+  # reads empty -- fine for most keys, but not for the ones that gate a merge, a
   # dispatch budget or a hook. For those the lookup fails (status 1) instead of
   # guessing; the single-key path below turns that into exit 3 when the config
-  # does not set the key either. pipeline-cfg-cache.sh asks this script, so the
-  # list lives in this one place.
-  _talos_security_key() {
-    case "${1:-}" in
-      merge.forbidden_files|merge.forbidden_files_replace|merge.forbidden_files_allow) return 0 ;;
-      merge.approval_waiver_paths|merge.auto|markers.verify_authors|markers.trusted_authors) return 0 ;;
-      limits.*|hooks.*) return 0 ;;
-    esac
-    return 1
-  }
+  # does not set the key either. The key list is _talos_security_key in
+  # pipeline-defaults-check.sh; when that file is missing too nothing can say
+  # which keys are safe to guess, so every key is treated as security-relevant.
+  if ! [ "$(type -t _talos_security_key)" = "function" ]; then _talos_security_key() { return 0; }; fi
   _talos_default() { ! _talos_security_key "${1:-}"; }
   _talos_known_keys_json() { printf '[]'; }
   _talos_scope_env_json() { printf '[]'; }

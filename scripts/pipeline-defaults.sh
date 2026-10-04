@@ -313,3 +313,7 @@ _talos_env_dump() {
     case "$_rest" in *$'\n'*) _rest="${_rest#*$'\n'}" ;; *) _rest="" ;; esac
   done
 }
+
+# Last line of the file: pipeline-defaults-check.sh refuses a copy that lacks it
+# (a truncated install), so keep it at the very end.
+_TALOS_DEFAULTS_END=1
