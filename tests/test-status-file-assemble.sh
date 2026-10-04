@@ -17,7 +17,7 @@
 # plays the PRs that add fragments to the base.
 set -u
 . "$(dirname "$0")/helpers.sh"
-make_sandbox
+make_sandbox || exit 1
 use_stubs
 
 SF="$TALOS_ROOT/scripts/pipeline-status-file.sh"
@@ -27,12 +27,29 @@ git config user.email "test@talos.invalid"
 git config user.name "talos-test"
 git config commit.gpgsign false
 
-PARENT="$(mktemp -d "${TMPDIR:-/tmp}/talos-sf-origin.XXXXXX")"
+PARENT="$(mktemp -d "${TMPDIR:-/tmp}/talos-sf-origin.XXXXXX")" || exit 1
 UPSTREAM="$PARENT/upstream.git"
 WORK="$PARENT/work"
 OUTSIDE="$PARENT/outside"
-mkdir -p "$OUTSIDE"
+mkdir -p "$OUTSIDE" || exit 1
 trap 'rm -rf "$SANDBOX" "$PARENT"' EXIT
+
+# rm_under_parent: rm -rf that can only act on paths strictly under $PARENT
+# (the checked mktemp -d above). An empty/unset variable, a path outside
+# $PARENT, or a ".." component is refused instead of removed (#448).
+rm_under_parent() {
+  local d
+  for d in "$@"; do
+    case "$d" in
+      "$PARENT"/*) ;;
+      *) echo "rm_under_parent: refusing '$d' (not under \$PARENT)" >&2; exit 1 ;;
+    esac
+    case "$d" in
+      */../*|*/..) echo "rm_under_parent: refusing '$d' (.. component)" >&2; exit 1 ;;
+    esac
+    rm -rf "$d"
+  done
+}
 # Hermetic temp dir: every mktemp the script makes lands here, so the leak
 # assertion at the end counts only this run's talos-status.* directories.
 mkdir -p "$PARENT/tmp"
@@ -50,7 +67,7 @@ cfg_status() {  # $1 = extra JSON members for the status block (optional)
 }
 
 reset_fixture() {  # fresh bare origin holding only the seed commit, fresh WORK clone
-  rm -rf "$UPSTREAM" "$WORK"
+  rm_under_parent "$UPSTREAM" "$WORK"
   # Nothing here may rely on ambient git config (init.defaultBranch, identity,
   # pull.rebase, commit.gpgsign): a CI runner has none, and a developer machine
   # with init.defaultBranch=main would hide the difference. So the bare origin's
@@ -509,7 +526,7 @@ assert_eq "$before" "$(osha)" "listing: nothing pushed"
 # ── push race: refetch and retry, up to 3 attempts ──────────────────────────
 install_race_hook() {  # $1 = number of pushes to race
   local state="$PARENT/hook-state"
-  rm -rf "$state"; mkdir -p "$state"
+  rm_under_parent "$state"; mkdir -p "$state"
   echo 0 > "$state/n"; echo "$1" > "$state/max"
   cat > "$UPSTREAM/hooks/pre-receive" <<EOF
 #!/bin/sh
@@ -575,7 +592,7 @@ wk_add docs/status.d/80-500.md "dirty tree" 2026-09-10
 wk_push
 git clone -q -b main "$UPSTREAM" "$PARENT/probe"
 assert_contains "$(git -C "$PARENT/probe" status --porcelain)" "x.dat" "stage (a): precondition, a fresh checkout of the base is dirty"
-rm -rf "$PARENT/probe"
+rm_under_parent "$PARENT/probe"
 out="$(run_sf assemble)"; rc=$?
 assert_eq "0" "$rc" "stage (a): exits 0"
 ofetch

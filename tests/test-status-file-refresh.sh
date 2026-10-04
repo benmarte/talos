@@ -360,7 +360,14 @@ assert_eq "- Base: main @ $code_sha" "$(line_of "$(oshow TALOS_STATUS.md)" '^- B
 p1="$(bash "$SF" refresh --print 2>/dev/null)"; p2="$(bash "$SF" refresh --print 2>/dev/null)"
 assert_eq "$p1" "$p2" "determinism: two --print runs are byte-identical"
 assert_eq "$(block_of "$p1")" "$(block_of "$text1")" "determinism: --print equals the block refresh wrote"
-assert_not_contains "$p1" "202" "determinism: no date or timestamp in the block"
+# A date or time pattern, not the bare "202": a 40-hex SHA contains "202" in
+# about 1 run in 6, which made this assertion flaky (#448).
+_ts_re='[0-9]{4}-[0-9]{2}-[0-9]{2}|T[0-9]{2}:[0-9]{2}'
+has_timestamp() { printf '%s' "$1" | grep -Eq "$_ts_re" && echo yes || echo no; }
+assert_eq "no" "$(has_timestamp "$p1")" "determinism: no date or timestamp in the block"
+assert_eq "no" "$(has_timestamp '- Base: main @ 1202ab3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f90')" "determinism: a SHA containing 202 is not a timestamp"
+assert_eq "yes" "$(has_timestamp 'refreshed 2026-09-20')" "determinism: a date is caught"
+assert_eq "yes" "$(has_timestamp 'at 2026-09-20T10:15:00Z')" "determinism: a timestamp is caught"
 
 # a newer unrelated commit moves Base; a docs/status.d-only commit does not
 wk_sync() { git -C "$WORK" fetch -q origin main && git -C "$WORK" checkout -q -B main origin/main; }

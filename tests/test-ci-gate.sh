@@ -185,7 +185,10 @@ assert_eq "0" "$rc" "no --wait: green returns 0 as before"
 # A draft push leaves a skipped required check until the ready_for_review run
 # replaces it. Before: `skipping` read as failed: (exit 1) and re-dispatched the
 # developer. After: pending (exit 2); it never passes by itself.
-wait_run 99 skipping 9
+# The stub answers $GH_EARLY for the first reads and $GH_FINAL after, so the
+# skipping state must be $GH_EARLY: with the default (pending) the first three
+# assertions stayed green with the mapping reverted (#448).
+GH_EARLY=skipping wait_run 99 pass 9
 assert_eq "2" "$rc" "skipping required check: exit 2, not 1"
 assert_not_contains "$out" 'pr-checks-required: failed:' "skipping required check: no failed: line"
 assert_contains "$out" 'pending or missing: test' "skipping required check: reported as pending"

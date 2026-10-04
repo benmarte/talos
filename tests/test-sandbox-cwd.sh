@@ -13,8 +13,16 @@
 #   T4:    remove the BASH_SOURCE guard from run-tests.sh.
 set -u
 . "$(dirname "$0")/helpers.sh"
-make_sandbox
+make_sandbox || exit 1
 use_stubs
+
+# Private TMPDIR (#448): T1/T2 count talos-test.* directories, so a second suite
+# creating or removing its own sandbox in the shared TMPDIR between the two
+# counts made them flaky. Everything below sandboxes into a directory only this
+# run uses. The rm -rf is anchored on that checked mktemp -d path.
+PRIV_TMP="$(mktemp -d "${TMPDIR:-/tmp}/talos-sandbox-cwd.XXXXXX")" || exit 1
+trap 'rm -rf "$SANDBOX" "$PRIV_TMP"' EXIT
+export TMPDIR="$PRIV_TMP"
 
 # ═════════════════════════════════════════════════════════════════════════════
 # T1: Sandbox is removed after the subprocess exits
