@@ -643,7 +643,7 @@ if [ "$GLOBAL" = "true" ]; then
       bash "$TALOS_HOME_DIR/scripts/pipeline-config.sh" --dump-layers 2>/dev/null)"
     rm -rf "$_HINT_DIR"
   fi
-  if ! printf '%s\n' "$_HINT_LAYERS" | grep -Eq '^agents\.(roles\.[^.]+\.)?model'; then
+  if ! grep -Eq '^agents\.(roles\.[^.]+\.)?model' <<<"$_HINT_LAYERS"; then
     echo ""
     echo "Models: no model set in a user-level Talos config ($TALOS_HOME_DIR/talos.pipeline.*), so every role inherits the session model -- run the setup skill (/talos:setup in Claude Code, or read $TALOS_HOME_DIR/skills/setup/SKILL.md) to choose one model for all roles or one per role."
   fi

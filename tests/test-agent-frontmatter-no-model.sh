@@ -14,7 +14,7 @@ for role in $ROLES; do
   fm="$(awk 'NR==1 && /^---$/ {fm=1; next} fm && /^---$/ {exit} fm' "$f")"
   assert_contains "$fm" "name: $role" "AC7: agents/$role.md still has its name: frontmatter line"
   assert_contains "$fm" "tools:" "AC7: agents/$role.md still has its tools: frontmatter line"
-  if printf '%s\n' "$fm" | grep -q '^[[:space:]]*model:'; then
+  if grep -q '^[[:space:]]*model:' <<<"$fm"; then
     fail "AC7: agents/$role.md has no model: frontmatter line" "found a model: line in the frontmatter"
   else
     pass "AC7: agents/$role.md has no model: frontmatter line"

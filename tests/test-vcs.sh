@@ -873,7 +873,7 @@ new_id="$(bash "$VCS" create-issue "Add dark mode" "$SANDBOX/body.md")"
 assert_contains "$(cat plan.md)" "- [ ] Add dark mode <!-- id:" "file: create-issue appends checklist item"
 # ID should be a number
 assert_contains "$new_id" "" "file: create-issue prints the assigned id"
-if ! printf '%s' "$new_id" | grep -qE '^[0-9]+$'; then
+if ! grep -qE '^[0-9]+$' <<<"$new_id"; then
   fail "file: create-issue id is numeric"
 else
   pass "file: create-issue id is numeric"

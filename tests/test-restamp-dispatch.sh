@@ -92,7 +92,7 @@ assert_contains "$step4_block_flat" "RESTAMP_FAIL" \
 
 # A regression back to the pre-#258 wording ("re-dispatch reviewer (Step 3e
 # phase 2)" with no re-stamp mention at all) is exactly the bug #258 fixes.
-if printf '%s' "$step4_block" | grep -q 're-dispatch reviewer (Step 3e phase 2)\.$'; then
+if grep -q 're-dispatch reviewer (Step 3e phase 2)\.$' <<<"$step4_block"; then
   fail "Step 4 no longer describes a bare full-stage re-dispatch for a stale reviewer approval" \
     "found the pre-#258 bare re-dispatch wording"
 else

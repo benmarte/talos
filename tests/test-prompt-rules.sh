@@ -57,7 +57,7 @@ assert_contains "$qa_block_flat" "Exit 3" \
 
 # A regression back to a bare "run-tests.sh" instruction (no --for/--changed
 # scoping) is exactly the bug #257 fixes -- fail if that pattern reappears.
-if printf '%s' "$qa_block" | grep -Eq 'run-tests\.sh( --quiet)?\s*($|`)'; then
+if grep -Eq 'run-tests\.sh( --quiet)?\s*($|`)' <<<"$qa_block"; then
   fail "SKILL.md QA prompt block never instructs a bare run-tests.sh (no --for/--changed)" \
     "found a bare run-tests.sh invocation"
 else

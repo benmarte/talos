@@ -199,9 +199,9 @@ _dc_flags_grep() {
   local f="$1" t s r u txt skiplines
   txt="$(sed 's/[[:space:]]*#.*//' "$f" 2>/dev/null)" || { echo "0 0 0 1"; return; }
   t=0; s=0; r=0; u=0
-  if printf '%s\n' "$txt" | grep -Eq '^[[:space:]]*(-[[:space:]]*)?pull_request[[:space:]]*:?[[:space:]]*$|^[[:space:]]*(on|"on"|true)[[:space:]]*:[[:space:]]*(pull_request[[:space:]]*$|\[([^]]*[[:space:],])?pull_request[],[:space:]])'; then
+  if grep -Eq '^[[:space:]]*(-[[:space:]]*)?pull_request[[:space:]]*:?[[:space:]]*$|^[[:space:]]*(on|"on"|true)[[:space:]]*:[[:space:]]*(pull_request[[:space:]]*$|\[([^]]*[[:space:],])?pull_request[],[:space:]])' <<<"$txt"; then
     t=1
-    printf '%s\n' "$txt" | grep -q 'ready_for_review' && r=1
+    grep -q 'ready_for_review' <<<"$txt" && r=1
     # A real skip, per line: draft != true, == false or !draft (parentheses
     # read as blanks for the form), and no `||` once parenthesised groups are
     # removed (`(a || b) && draft != true` is still a skip).
@@ -222,8 +222,8 @@ _dc_flags_grep() {
       pend && NF { match($0, /^ */); if (RLENGTH > pind) print 1; pend = 0 }')" ]; then
       s=0; u=1
     fi
-    [ "$s" = 0 ] && printf '%s\n' "$txt" | grep -Eq '^[[:space:]]*uses:' && u=1
-  elif printf '%s\n' "$txt" | grep -Eq 'pull_request_target|workflow_call'; then
+    [ "$s" = 0 ] && grep -Eq '^[[:space:]]*uses:' <<<"$txt" && u=1
+  elif grep -Eq 'pull_request_target|workflow_call' <<<"$txt"; then
     u=1
   fi
   echo "$t $s $r $u"

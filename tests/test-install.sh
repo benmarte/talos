@@ -287,7 +287,7 @@ for sh_file in \
   "$TALOS_ROOT/scripts/pipeline-agent.sh" \
   "$TALOS_ROOT/scripts/pipeline-worktree.sh"; do
   _guard_block="$(grep -A9 -F "$_guard_marker" "$sh_file")"
-  if ! printf '%s\n' "$_guard_block" | grep -q '^fi$'; then
+  if ! grep -q '^fi$' <<<"$_guard_block"; then
     fail "$(basename "$sh_file") cfg-cache guard block does not end with 'fi' -- pattern drifted, update the marker/line count in this test"
     continue
   fi

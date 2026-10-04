@@ -48,13 +48,13 @@ stale_in() {  # $1=flattened text $2=literal phrase
 # is the whole first cell, or starts it ("generic or any unknown name"). A plain
 # substring check is vacuous for short names: "pipeline" contains "pi".
 has_row() {  # $1=text $2=harness name
-  printf '%s\n' "$1" | grep -Eq "^\| $2( |\|)"
+  grep -Eq "^\| $2( |\|)" <<<"$1"
 }
 
 # True when the flattened text names the `/pipeline` command itself: not
 # `/pipeline-setup`, and not the `.../skills/pipeline/SKILL.md` path.
 has_pipeline_command() {  # $1=flattened text
-  printf '%s' "$1" | grep -Eq '(^|[^a-z.])/pipeline([^-a-z/]|$)'
+  grep -Eq '(^|[^a-z.])/pipeline([^-a-z/]|$)' <<<"$1"
 }
 
 # The first table after `## Harness feature matrix` (the one

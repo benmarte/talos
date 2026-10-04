@@ -132,7 +132,7 @@ buzz_card() {  # $@ = notify args; prints the rendered kind:9 body
 }
 
 card="$(buzz_card qa "#80" "PASS: 9/9 criteria met" 80)"
-printf '%s' "$card" | grep -q '^### ' \
+grep -q '^### ' <<<"$card" \
   && fail "headline is bold, not a GFM heading" \
   || pass "headline is bold, not a GFM heading"
 assert_contains "$card" "🧪 **QA** — PASS · [#80](https://github.com/acme/widget/issues/80)" \
@@ -153,7 +153,7 @@ assert_not_contains "$card_nourl" "[#87]" \
 
 # Issue-only event: PR is not resolvable, so the footer is the repo alone —
 # no dangling "· [PR #n]" left behind by an empty variable.
-if printf '%s' "$card" | grep -qx 'acme/widget'; then
+if grep -qx 'acme/widget' <<<"$card"; then
   pass "footer degrades to a repo-only line when there is no PR"
 else
   fail "footer degrades to a repo-only line when there is no PR"
@@ -182,14 +182,14 @@ cat > talos.pipeline.json <<'EOF'
 {"notifications": {"templates_dir": "templates/notifications-missing"}}
 EOF
 fb="$(buzz_card info "#83" "kickoff" 83)"
-printf '%s' "$fb" | grep -q '^### ' \
+grep -q '^### ' <<<"$fb" \
   && pass "fallback card keeps the GFM heading (no template resolved)" \
   || fail "fallback card keeps the GFM heading (no template resolved)"
 assert_contains "$fb" "Stage    info" "fallback card emits the monospace grid"
 assert_contains "$fb" "Repo     acme/widget" \
   "fallback grid repo row uses owner/name, not the state-key slug"
 assert_contains "$fb" "[Issue #83](" "fallback link row appended below the grid"
-if printf '%s' "$fb" | grep -q '^PR '; then
+if grep -q '^PR ' <<<"$fb"; then
   fail "fallback grid omits the PR row when there is no PR"
 else
   pass "fallback grid omits the PR row when there is no PR"
@@ -208,7 +208,7 @@ fi
 # is the OLD grid's own wrapping (unchanged by #284), exercised here only
 # because the fallback path is what still uses it.
 long_grid="$(buzz_card info "#84" "$(printf 'x%.0s' $(seq 1 140))" 84)"
-if printf '%s' "$long_grid" | grep -qE '^ +x+$'; then
+if grep -qE '^ +x+$' <<<"$long_grid"; then
   pass "long comment wraps instead of truncating in the fallback grid"
 else
   fail "long comment wraps instead of truncating in the fallback grid"

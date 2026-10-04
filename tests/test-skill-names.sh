@@ -408,7 +408,7 @@ for f in "$TALOS_ROOT"/agents/*.md; do
     case " $BUILTINS " in *" $name "*) continue ;; esac
     # Only consider names that look like skills (multi-word, hyphenated).
     case "$name" in *-*-*) ;; *) continue ;; esac
-    if printf '%s\n' "$available" | grep -qx "$name"; then
+    if grep -qx "$name" <<<"$available"; then
       pass "$role: skill '$name' exists upstream"
     else
       fail "$role: skill '$name' exists upstream" "not found in agent-skills/skills/"

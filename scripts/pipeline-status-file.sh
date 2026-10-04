@@ -1436,7 +1436,7 @@ while :; do
 
   # The fallback title is fetched once, and only when no fragment names the pair.
   if [ -n "$PR" ] && [ -z "$TITLE_TRIED" ] && \
-     ! printf '%s\n' "$FRAG_LIST" | grep -q " ${ISSUE}-${PR}\.md\$"; then
+     ! grep -q " ${ISSUE}-${PR}\.md\$" <<<"$FRAG_LIST"; then
     TITLE_TRIED=1
     bash "$SCRIPT_DIR/pipeline-vcs.sh" view-pr "$PR" 2>/dev/null \
       | head -c 65536 > "$_SF_TMP/title.json" || true

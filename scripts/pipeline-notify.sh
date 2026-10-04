@@ -237,7 +237,7 @@ unset ENV_ROOT
 # ── Event filter (from config) ────────────────────────────────────────────────
 CONFIGURED_EVENTS="$(cfg notifications.events)"
 if [ -n "$CONFIGURED_EVENTS" ] && [ -z "$RENDER_ONLY" ]; then
-  if ! printf '%s' "$CONFIGURED_EVENTS" | grep -qxF "$EVENT"; then
+  if ! grep -qxF "$EVENT" <<<"$CONFIGURED_EVENTS"; then
     exit 0
   fi
 fi
@@ -1496,7 +1496,7 @@ if [ -n "${BUZZ_RELAY_URL:-}" ] && [ -n "${BUZZ_BOT_PRIVATE_KEY:-}" ] && [ -n "$
     # yields "auth error: msg: restricted: not a relay member. failed: msg:
     # auth-required: not authenticated" with rc=0. Success prints only
     # "connecting… ok." / "publishing… success.", neither of which matches.
-    if [ "$_buzz_rc" -ne 0 ] || printf '%s' "$_buzz_msg" | grep -qE 'auth error|failed:|CLOSED:'; then
+    if [ "$_buzz_rc" -ne 0 ] || grep -qE 'auth error|failed:|CLOSED:' <<<"$_buzz_msg"; then
       [ -n "$_buzz_msg" ] && printf 'pipeline-notify: buzz relay rejected publish: %s\n' "$_buzz_msg" >&2
       return 1
     fi

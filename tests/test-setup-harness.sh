@@ -40,8 +40,8 @@ runner_line="$(grep -F 'runner: <HARNESS>' "$SETUP_MD")"
 sum_line="$(grep '^Harness: ' "$SETUP_MD")"
 for e in "${TALOS_RUNNERS[@]}"; do
   id="${e%%|*}"
-  printf '%s\n' "$runner_line" | grep -qw -- "$id" && pass "template comment lists $id" || fail "template comment lists $id" "$runner_line"
-  printf '%s\n' "$sum_line" | grep -qw -- "$id" && pass "summary Harness: line lists $id" || fail "summary Harness: line lists $id" "$sum_line"
+  grep -qw -- "$id" <<<"$runner_line" && pass "template comment lists $id" || fail "template comment lists $id" "$runner_line"
+  grep -qw -- "$id" <<<"$sum_line" && pass "summary Harness: line lists $id" || fail "summary Harness: line lists $id" "$sum_line"
 done
 
 # (3) No Claude-only tool names anywhere in the playbook.

@@ -266,6 +266,21 @@ export TALOS_DRAFT_CHECK_NO_YAML=1
 check_all "grep fallback"
 unset TALOS_DRAFT_CHECK_NO_YAML
 
+# #494: the Actions runner ignores SIGPIPE. `printf "$txt" | grep -q` then makes
+# printf hit EPIPE when grep -q exits on its first match, and bash prints
+# "printf: write error: Broken pipe" on stderr (a timing-dependent flake). The
+# grep fallback reads the file through here-strings instead; prove it stays quiet
+# with SIGPIPE ignored and a large (just under the 1 MB cap) workflow.
+{
+  printf '%s\n' 'on:' '  pull_request:' '    types: [opened, synchronize, ready_for_review]' 'jobs:' '  t:' '    if: github.event.pull_request.draft != true' '    steps:'
+  awk 'BEGIN { for (i = 0; i < 15000; i++) print "      - run: echo " i " padding padding padding" }'
+} | wf big-pipe
+big_size="$(wc -c < "$SANDBOX/fx/big-pipe/.github/workflows/w.yml" | tr -d ' ')"
+if [ "$big_size" -gt 700000 ] && [ "$big_size" -le 1048576 ]; then pass "SIGPIPE: the fixture workflow is large but under the 1 MB cap"; else fail "SIGPIPE: the fixture workflow is large but under the 1 MB cap" "$big_size bytes"; fi
+pipe_out="$( ( trap '' PIPE; TALOS_DRAFT_CHECK_NO_YAML=1 bash "$DC" check "$SANDBOX/fx/big-pipe/.github/workflows" 2>"$SANDBOX/pipe-err" ) )"
+assert_eq "ok" "$pipe_out" "SIGPIPE ignored, large input (grep fallback): still ok"
+assert_eq "" "$(cat "$SANDBOX/pipe-err")" "SIGPIPE ignored, large input (grep fallback): nothing on stderr"
+
 # A directory argument, a missing directory and a junk verb all fail open.
 assert_eq "ok" "$(bash "$DC" check "$SANDBOX/fx/ok/.github/workflows")" "check <dir>: scans the given directory"
 assert_eq "none" "$(bash "$DC" check "$SANDBOX/fx/nope")" "check <dir>: a missing directory is none"
