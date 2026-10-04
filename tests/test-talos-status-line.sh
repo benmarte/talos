@@ -398,6 +398,10 @@ OUT="$(cd "$SANDBOX" && COLUMNS=abc bash "$STATUS" --line --style full 2>/dev/nu
 assert_eq "$WIDE" "$OUT" "precedence: a bad COLUMNS is ignored (default 80)"
 
 # ── (f) budget ─────────────────────────────────────────────────────────────
+# The real pipeline-budget.sh takes about 1 s on a fast machine and more than
+# the 2 s default call timeout on a loaded CI runner (it then reads as absent
+# and the segment vanishes), so these runs get the full 10 s hard limit.
+export TALOS_STATUS_TIMEOUT_S=10
 reset_log
 ev developer 900 70 3120000 PASS        # 78% of 4M
 set_budget_cfg 4000000
@@ -445,6 +449,7 @@ set_budget_cfg 4000000
 RUN_DIR="$SANDBOX/sub/dir" run_status --line --format budget
 assert_eq "78% of 4M" "$OUT" "budget: a status line started from a subdirectory still sees the limit"
 clear_budget_cfg
+unset TALOS_STATUS_TIMEOUT_S
 
 # the budget process is skipped (a pre-filter, ~30 ms) unless a project config names the limit
 STUBS="$SANDBOX/stubscripts"
@@ -754,6 +759,18 @@ SLEEPER="$(cat "$BUDGET_SLEEP_PID" 2>/dev/null)"
 [ -n "$SLEEPER" ] && wait_dead "$SLEEPER" && pass "time limit: the budget process group was killed" \
   || fail "time limit: a child of the budget script is still running" "pid ${SLEEPER:-none}"
 [ -n "$SLEEPER" ] && alive "$SLEEPER" && kill "$SLEEPER" 2>/dev/null
+
+# the budget call's timeout follows the hard limit (limit - 1 s, never under 2 s):
+# a 3 s budget answer is dropped at the default and shown when the limit is 5
+cat > "$STUBS/pipeline-budget.sh" <<'STUB'
+#!/usr/bin/env bash
+sleep 3
+printf '%s\n' '{"status":"ok","issue":900,"used":1,"limit":4000000,"effective":4000000,"pct":78,"unrecorded":0}'
+STUB
+OUT="$(cd "$SANDBOX" && bash "$STUBS/talos-status.sh" --line --format issue,budget 2>/dev/null)"
+assert_eq "#900" "$OUT" "budget timeout: a 3 s budget answer is dropped at the default limit"
+OUT="$(cd "$SANDBOX" && TALOS_STATUS_TIMEOUT_S=5 bash "$STUBS/talos-status.sh" --line --format issue,budget 2>/dev/null)"
+assert_eq "#900 · 78% of 4M" "$OUT" "budget timeout: raising TALOS_STATUS_TIMEOUT_S lets a slow budget answer through"
 clear_budget_cfg
 unset BUDGET_SLEEP_PID
 

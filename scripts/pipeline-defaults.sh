@@ -12,7 +12,10 @@
 #
 #   key           dot path; "*" stands for a dynamic segment
 #                 (board.status_map.*, agents.roles.*.model, ...)
-#   type          str | path | int | float | bool | enum | list
+#   type          str | path | int | float | bool | enum | list | secret
+#                 "secret" marks a key that holds a REFERENCE, `env:NAME`,
+#                 never a value (#443, scripts/pipeline-secrets.sh): its
+#                 default is always empty and a literal in the file is refused.
 #   default       the value used when the key is absent from every config
 #                 layer, as `cfg KEY` / `pipeline-config.sh KEY` print it:
 #                 bools are true/false, a list is its items joined by the
@@ -135,6 +138,12 @@ notifications.discord_channel	str		-	PIPELINE_DISCORD_CHANNEL	any
 notifications.buzz_channel	str		-	PIPELINE_BUZZ_CHANNEL	any
 notifications.buzz_relay	str		-	PIPELINE_BUZZ_RELAY	any
 notifications.buzz_timeout_s	int	15	-	-	any
+notifications.slack.webhook	secret		-	-	any
+notifications.discord.webhook	secret		-	-	any
+notifications.teams.webhook	secret		-	-	any
+notifications.slack.bot_token	secret		-	-	any
+notifications.discord.bot_token	secret		-	-	any
+notifications.buzz.bot_key	secret		-	-	any
 notifications.templates_dir	path	templates/notifications	-	-	any
 notifications.threading	bool	true	-	-	any
 notifications.events	list		-	-	any

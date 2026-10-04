@@ -25,6 +25,14 @@ STUBS_DIR="$TALOS_ROOT/tests/stubs"
 # so a non-directory parent reads as "no user-level file" on macOS and Linux.
 export TALOS_HOME="/dev/null/talos-test-no-user-config"
 
+# Hermetic file modes (#443). The global config is refused when it is group- or
+# world-writable (pipeline-secrets.sh, the config-file trust check), and a test
+# writes one with a plain redirect, so the mode it gets is the caller's umask: a
+# 002 umask (a Linux login shell, some CI runners) makes it 0664 and the loader
+# reads it as absent. Pin 022 for every test file; the trust check itself is
+# never weakened, and tests that want a bad mode chmod it explicitly.
+umask 022
+
 _PASS=0
 _FAIL=0
 
@@ -159,12 +167,17 @@ make_sandbox() {
   cd "$SANDBOX" || exit 1
   git init -q
   git remote add origin git@github.com:acme/widget.git
-  # Hermetic HOME. pipeline-notify.sh scrapes ~/.hermes/.env for bot
-  # credentials, so on a developer machine with Slack/Discord/Buzz configured
-  # the real values bleed into the sandbox and invert credential-absence
-  # assertions ("without private key produces no buzz output" starts finding a
-  # key). Kept as a subdirectory so HOME is never the repo root itself, and
-  # seeded with a gitconfig so suites that commit still resolve an identity.
+  # Hermetic HOME. pipeline-notify.sh reads webhooks and bot credentials from
+  # ${TALOS_HOME:-$HOME/.talos}/.env and the legacy ~/.hermes/.env (#443,
+  # scripts/pipeline-secrets.sh), so on a developer machine with Slack/Discord/
+  # Buzz configured the real values bleed into the sandbox and invert
+  # credential-absence assertions ("without private key produces no buzz output"
+  # starts finding a key). Kept as a subdirectory so HOME is never the repo root
+  # itself, and seeded with a gitconfig so suites that commit still resolve an
+  # identity. NOTE: this HOME sits inside the sandbox's own git work tree, and
+  # the .env trust check refuses a .env inside any work tree -- so a test that
+  # needs a user-level .env to be READ points TALOS_HOME at a directory outside
+  # it (see tests/test-secret-refs.sh, which drops the sandbox repo first).
   mkdir -p "$SANDBOX/.home"
   export HOME="$SANDBOX/.home"
   printf '[user]\n\tname = talos-test\n\temail = test@talos.invalid\n' > "$HOME/.gitconfig"

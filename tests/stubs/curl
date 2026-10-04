@@ -46,10 +46,17 @@
 #     STUB_COMMENT_WRITE_429=<N> rate-limits the first N writes (429).
 #     STUB_CURRENT_USER_STATUS=<code> makes GET .../user answer with that HTTP
 #     status (403 is what an Actions GITHUB_TOKEN gets).
+#   - Config on stdin (#443): `-K -` reads curl config lines from STDIN, the way
+#     pipeline-notify.sh's post() hands over a webhook URL or bot token so it
+#     never reaches argv. `url = "..."` is the request URL (instead of the last
+#     argument) and `header = "..."` is treated like -H (Bearer logged as the
+#     auth field); \\ and \" are unescaped. The config is not logged, except
+#     each header line to $CURL_HDR_LOG when a test sets it.
 
 payload=""
 url=""
 prev=""
+cfg_in=""
 has_w=false
 method=""
 auth_field=""
@@ -57,6 +64,7 @@ hdr_file=""
 for arg in "$@"; do
   [ "$prev" = "-d" ] && payload="$arg"
   [ "$prev" = "--data-binary" ] && [ "$arg" = "@-" ] && payload="$(cat)"
+  [ "$prev" = "-K" ] && [ "$arg" = "-" ] && cfg_in="$(cat)"
   [ "$prev" = "-w" ] && has_w=true
   [ "$prev" = "-D" ] && hdr_file="$arg"
   [ "$prev" = "-X" ] && method="$arg"
@@ -67,8 +75,30 @@ for arg in "$@"; do
   fi
   prev="$arg"
 done
-# URL = last argument
+# URL = last argument, unless a config on stdin (-K -) supplied one (#443)
 for arg in "$@"; do url="$arg"; done
+_cfg_unquote() {  # `key = "value"` -> value, with \" and \\ unescaped
+  local v="${1#*\"}"
+  v="${v%\"*}"
+  v="${v//\\\"/\"}"
+  printf '%s' "${v//\\\\/\\}"
+}
+if [ -n "$cfg_in" ]; then
+  while IFS= read -r _cfg_line; do
+    case "$_cfg_line" in
+      'url = "'*) url="$(_cfg_unquote "$_cfg_line")" ;;
+      'header = "'*)
+        # $CURL_HDR_LOG, when set, gets each config header, so a test can prove a
+        # token arrived (grep -q) without ever printing it.
+        [ -n "${CURL_HDR_LOG:-}" ] && printf '%s\n' "$(_cfg_unquote "$_cfg_line")" >> "$CURL_HDR_LOG"
+        case "$_cfg_line" in
+          'header = "Authorization: Bearer '*) auth_field="Authorization: Bearer" ;;
+        esac ;;
+    esac
+  done <<EOF_CFG
+$cfg_in
+EOF_CFG
+fi
 
 # Log: one line per call — URL TAB payload TAB auth-field
 [ -n "${CURL_LOG:-}" ] && printf '%s\t%s\t%s\t%s\n' "$url" "$payload" "$auth_field" "$method" >> "$CURL_LOG"

@@ -88,12 +88,18 @@ merge.required_checks		empty	pipeline-status-file.sh,pipeline-vcs.sh
 merge.union_paths		empty	pipeline-mergebase.sh
 notifications.buzz_channel		empty	pipeline-notify.sh
 notifications.buzz_relay		empty	pipeline-notify.sh
+notifications.buzz.bot_key		empty	pipeline-notify.sh (#443, new: an env:NAME reference, never a value)
 notifications.buzz_timeout_s	15	table	pipeline-notify.sh
 notifications.cmd		empty	pipeline-notify.sh
 notifications.cmd_timeout_s	10	table	pipeline-notify.sh
+notifications.discord.bot_token		empty	pipeline-notify.sh (#443, new)
+notifications.discord.webhook		empty	pipeline-notify.sh (#443, new)
 notifications.discord_channel		empty	pipeline-notify.sh
 notifications.events		empty	pipeline-notify.sh
+notifications.slack.bot_token		empty	pipeline-notify.sh (#443, new)
+notifications.slack.webhook		empty	pipeline-notify.sh (#443, new)
 notifications.slack_channel		empty	pipeline-notify.sh
+notifications.teams.webhook		empty	pipeline-notify.sh (#443, new)
 notifications.templates_dir	templates/notifications	table	pipeline-notify.sh
 notifications.threading	true	table	pipeline-notify.sh
 pr.draft		empty	pipeline-draft-check.sh:_dc_cfg

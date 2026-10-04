@@ -37,7 +37,7 @@ for r in rows:
     if key in seen:
         bad.append("%s: duplicate key" % key)
     seen.add(key)
-    if typ not in ("str", "path", "int", "float", "bool", "enum", "list"):
+    if typ not in ("str", "path", "int", "float", "bool", "enum", "list", "secret"):
         bad.append("%s: type %r" % (key, typ))
     if derived not in ("derived", "-"):
         bad.append("%s: derived column %r" % (key, derived))
@@ -45,6 +45,8 @@ for r in rows:
         bad.append("%s: env-override %r" % (key, env))
     if derived == "derived" and default != "":
         bad.append("%s: a derived key keeps an empty default" % key)
+    if typ == "secret" and default != "":
+        bad.append("%s: a secret key has no default (it holds an env:NAME reference)" % key)
     if typ == "bool" and default not in ("", "true", "false"):
         bad.append("%s: bool default %r" % (key, default))
     if typ == "int" and not re.fullmatch(r"[0-9]*", default):
@@ -57,7 +59,7 @@ print("\n".join(bad))
 print("ROWS=%d" % len(rows))
 TALOS_PYtab7Gw3Nd5Xk
 )"
-assert_eq "ROWS=116" "$(printf '%s\n' "$_out" | tail -n1)" "the table has one row per config key (116 rows)"
+assert_eq "ROWS=122" "$(printf '%s\n' "$_out" | tail -n1)" "the table has one row per config key (122 rows)"
 assert_eq "" "$(printf '%s\n' "$_out" | sed '$d')" \
   "every row has six fields, a unique key, a valid type/derived/env/scope column, and a default of the right shape"
 
@@ -78,7 +80,7 @@ roles.changelog_fragments comments.enabled comments.header comments.templates_di
 notifications.slack_channel notifications.discord_channel notifications.buzz_channel
 notifications.buzz_relay notifications.buzz_timeout_s notifications.templates_dir
 notifications.threading notifications.events notifications.cmd
-notifications.cmd_timeout_s agents.runner agents.subagents agents.runner_args
+notifications.cmd_timeout_s notifications.slack.webhook notifications.discord.webhook notifications.teams.webhook notifications.slack.bot_token notifications.discord.bot_token notifications.buzz.bot_key agents.runner agents.subagents agents.runner_args
 agents.runner_cmd agents.model agents.restamp_model agents.effort agents.restamp_effort
 agents.roles.*.model agents.roles.*.runner agents.roles.*.runner_cmd
 agents.roles.*.restamp_model agents.roles.*.effort agents.roles.*.restamp_effort
@@ -91,8 +93,8 @@ hooks.pre_dispatch hooks.post_stage hooks.timeout_s events.enabled events.path
 evidence.enabled evidence.command evidence.dir evidence.include evidence.when
 evidence.store evidence.max_files evidence.max_mb"
 
-_table_keys="$( . "$DEFAULTS_SH"; _talos_defaults_keys | sort )"
-_old_sorted="$(printf '%s\n' $OLD_KEYS | sort)"
+_table_keys="$( . "$DEFAULTS_SH"; _talos_defaults_keys | LC_ALL=C sort )"
+_old_sorted="$(printf '%s\n' $OLD_KEYS | LC_ALL=C sort)"
 assert_eq "$_old_sorted" "$_table_keys" "the table's key set equals the old _KNOWN_CONFIG_KEYS_JSON list"
 
 # The JSON handed to the unknown-key check is generated from the table.
