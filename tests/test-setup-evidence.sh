@@ -220,8 +220,8 @@ assert_file_absent "$SANDBOX/gi11/.gitignore" "check mode never writes .gitignor
 mkrepo "$SANDBOX/rt"
 out="$(run_gi "$SANDBOX/rt" "./cypress//evidence/")"
 norm="$(printf '%s\n' "$out" | sed -n 's/^dir=//p')"
-printf 'evidence:\n  enabled: true\n  dir: %s\n' "$norm" > "$SANDBOX/rt-config.yml"
-got="$(cd "$SANDBOX/rt" && PIPELINE_CONFIG="$SANDBOX/rt-config.yml" bash "$TALOS_ROOT/scripts/pipeline-config.sh" evidence.dir unset 2>&1)"
+printf '{"evidence": {"enabled": true, "dir": "%s"}}' "$norm" > "$SANDBOX/rt-config.json"
+got="$(cd "$SANDBOX/rt" && PIPELINE_CONFIG="$SANDBOX/rt-config.json" bash "$TALOS_ROOT/scripts/pipeline-config.sh" evidence.dir unset 2>&1)"
 assert_eq "cypress/evidence" "$got" "the written evidence.dir round-trips through pipeline-config.sh"
 assert_eq "$got/" "$(cat "$SANDBOX/rt/.gitignore")" "and it matches the .gitignore line (plus the trailing /)"
 

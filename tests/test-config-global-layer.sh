@@ -10,6 +10,9 @@
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox || exit 1
+# PyYAML probe, same lookup as the loader (-I drops the user site; it is appended back, #395).
+HAVE_YAML=0
+python3 -I -c 'import site, sys; sys.path.append(site.getusersitepackages()); import yaml' 2>/dev/null && HAVE_YAML=1
 
 CFG_SH="$TALOS_ROOT/scripts/pipeline-config.sh"
 DEFAULTS_SH="$TALOS_ROOT/scripts/pipeline-defaults.sh"
@@ -293,9 +296,13 @@ unset PIPELINE_SLACK_CHANNEL
 
 # ── YAML global file ─────────────────────────────────────────────────────────
 reset_cfg
-printf 'pr:\n  draft: false\nlimits:\n  warn_at: 0.6\nboard:\n  owner: yamlowner\n' > "$GHOME/talos.pipeline.yml"
-assert_eq "0.6" "$(get limits.warn_at)" "a YAML global file is read the same way"
-assert_eq "SENT" "$(get board.owner)" "a repo-only key in a YAML global file is dropped"
+if [ "$HAVE_YAML" = 1 ]; then
+  printf 'pr:\n  draft: false\nlimits:\n  warn_at: 0.6\nboard:\n  owner: yamlowner\n' > "$GHOME/talos.pipeline.yml"
+  assert_eq "0.6" "$(get limits.warn_at)" "a YAML global file is read the same way"
+  assert_eq "SENT" "$(get board.owner)" "a repo-only key in a YAML global file is dropped"
+else
+  echo "  skip: PyYAML not installed -- YAML global file cases"
+fi
 
 # ── Structure: one shared loader carries the new logic ───────────────────────
 assert_eq "1" "$(grep -c '^def _drop_repo_only' "$CFG_SH")" "the repo-only filter is defined once, in the shared loader"
