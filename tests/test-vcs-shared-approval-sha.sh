@@ -170,8 +170,10 @@ assert_not_contains "$out_noflag" "stale role=" "no --stale-list: no stdout stal
 # one-file delta off SHA_BASE, so a stale verdict cannot come from scripts/.
 # README.md, docs/ and templates/comments/ are the positive controls (waived),
 # as is a near-miss prefix (agentsx/). Matching is casefolded, covers the
-# repo-level .claude/ and .agents/ trees, and any AGENTS.md or CLAUDE.md at
-# any depth; a rename out of skills/ reports the old path too.
+# runner dot-directories (.claude/{agents,...,rules}/, .agents/, .agent/,
+# .gemini/, .pi/, .codex/) at any depth, and any AGENTS.md, CLAUDE.md,
+# GEMINI.md, AGENTS.override.md or CLAUDE.local.md at any depth;
+# docs/agents/ stays waived; a rename out of skills/ reports the old path too.
 # ═══════════════════════════════════════════════════════════════════════════
 delta_head() {  # <path> -- one-file commit off SHA_BASE; prints the new SHA
   git checkout -q --detach "$SHA_BASE"
@@ -186,7 +188,12 @@ _entries="$(entries_json "qa:pass" "qa" "$SHA_BASE")"
 for _p in agents/qa.md skills/pipeline/SKILL.md templates/prompts/qa-evidence.md AGENTS.md CLAUDE.md \
           sub/AGENTS.md a/b/CLAUDE.md \
           .claude/agents/developer.md .claude/skills/x/SKILL.md .claude/commands/pr.md .claude/talos/scripts/x.sh .agents/x.md \
-          Skills/pipeline/SKILL.md Agents/qa.md Templates/Prompts/qa-evidence.md AGENTS.MD Claude.md claude.md sub/agents.md .Claude/agents/x.md; do
+          Skills/pipeline/SKILL.md Agents/qa.md Templates/Prompts/qa-evidence.md AGENTS.MD Claude.md claude.md sub/agents.md .Claude/agents/x.md \
+          GEMINI.md sub/GEMINI.md .gemini/system.md .agent/rules/x.md .pi/SYSTEM.md AGENTS.override.md a/b/AGENTS.override.md \
+          .codex/config.toml .codex/notes.md .claude/rules/x.md CLAUDE.local.md sub/CLAUDE.local.md \
+          GEMINI.MD Gemini.md .Gemini/x.md .PI/x.md AGENTS.OVERRIDE.MD claude.LOCAL.md .Claude/Rules/x.md \
+          sub/.claude/rules/x.md sub/.agents/rules/x.md sub/.agent/rules/x.md sub/.gemini/system.md sub/.pi/SYSTEM.md sub/.codex/notes.md \
+          a/b/.claude/skills/x/SKILL.md a/.claude/agents/x.md a/.Claude/Commands/x.md a/.AGENTS/x.md; do
   _h="$(delta_head "$_p")"
   out="$(run_check "$_h" "" "$_entries" 2>&1)"; rc=$?
   assert_eq "1" "$rc" "non-waivable instruction path $_p: exits 1 under the default waiver"
@@ -194,12 +201,29 @@ for _p in agents/qa.md skills/pipeline/SKILL.md templates/prompts/qa-evidence.md
   assert_contains "$out" "$_p" "non-waivable instruction path $_p: names the file"
 done
 
-for _p in README.md docs/user-guide.md CHANGELOG.md templates/comments/qa-verdict.md agentsx/note.md .claude/notes.md Docs/guide.md; do
+for _p in README.md docs/user-guide.md CHANGELOG.md templates/comments/qa-verdict.md agentsx/note.md .claude/notes.md Docs/guide.md \
+          docs/agents/x.md docs/skills/x.md docs/gemini-notes.md .pip/x.md .agentx/x.md .gemini-notes/x.md .codexx/x.md \
+          GEMINI.md.example sub/.pip/x.md sub/.agentx/x.md sub/.claude/notes.md; do
   _h="$(delta_head "$_p")"
   out="$(run_check "$_h" "" "$_entries" 2>&1)"; rc=$?
   assert_eq "0" "$rc" "waivable path $_p: exits 0 under the default waiver"
   assert_not_contains "$out" "note:" "waivable path $_p: no note on the default waiver"
 done
+
+# A config waiver cannot widen the runner instruction paths, nested or not;
+# an entry under one of them is reported as ignored.
+for _p in GEMINI.md .pi/SYSTEM.md sub/.claude/rules/x.md sub/.agents/rules/x.md; do
+  _h="$(delta_head "$_p")"
+  for _w in '["*.md"]' '["*.md*"]'; do
+    out="$(WAIVER_PATHS="$_w" run_check "$_h" "" "$_entries" 2>&1)"; rc=$?
+    assert_eq "1" "$rc" "config waiver $_w cannot waive $_p"
+    assert_contains "$out" "STALE qa:pass (qa)" "config waiver $_w: $_p stays stale"
+  done
+done
+_h="$(delta_head ".gemini/system.md")"
+out="$(WAIVER_PATHS='[".gemini/**"]' run_check "$_h" "" "$_entries" 2>&1)"; rc=$?
+assert_eq "1" "$rc" "waiver .gemini/** cannot waive .gemini/system.md"
+assert_contains "$out" "entry '.gemini/**' ignored for agent-instruction paths" "waiver .gemini/**: ignored-entry note"
 git checkout -q main
 
 # Non-ASCII and control characters in paths: without `-z` git quotes them
