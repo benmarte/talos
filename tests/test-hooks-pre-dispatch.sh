@@ -134,8 +134,12 @@ assert_contains "$(cat "$ERRFILE")" "pipeline-hooks:" \
 # ── (b) Slow hook (exceeds hooks.timeout_s) -- no-op, byte-identical ─────────
 cat > talos.pipeline.json <<EOF
 {"agents": {"runner": "custom", "runner_cmd": "cat > $RECEIVED"},
- "hooks": {"pre_dispatch": "cat > /dev/null; sleep 3; echo too-late", "timeout_s": 1}}
+ "hooks": {"pre_dispatch": "cat > /dev/null; sleep 10; echo too-late", "timeout_s": 1}}
 EOF
+# The elapsed time below spans the whole pipeline-agent.sh run, whose own
+# config reads and process starts are not free on a loaded runner, so the hook
+# sleeps 10s and the check is "well short of that" (#483): a hook that was NOT
+# killed at timeout_s=1 takes at least 10s, a killed one about 1s plus overhead.
 : > "$RECEIVED"
 : > "$ERRFILE"
 _start=$(date +%s)
@@ -144,10 +148,10 @@ _elapsed=$(( $(date +%s) - _start ))
 assert_eq_ctx "0" "$rc" "slow hook: pipeline-agent.sh still exits 0" "$(cat "$ERRFILE")"
 assert_eq "$NOHOOK_PROMPT" "$(cat "$RECEIVED")" \
   "slow hook: prompt is byte-identical to the no-hook prompt"
-if [ "$_elapsed" -le 3 ]; then
-  pass "slow hook: killed at hooks.timeout_s (1s), not left to run its full 3s sleep"
+if [ "$_elapsed" -lt 8 ]; then
+  pass "slow hook: killed at hooks.timeout_s (1s), not left to run its full 10s sleep"
 else
-  fail "slow hook: killed at hooks.timeout_s (1s), not left to run its full 3s sleep" \
+  fail "slow hook: killed at hooks.timeout_s (1s), not left to run its full 10s sleep" \
     "elapsed: ${_elapsed}s"
 fi
 

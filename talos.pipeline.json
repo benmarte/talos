@@ -22,7 +22,8 @@
     "qa": true,
     "reviewer": true,
     "security": true,
-    "docs": true
+    "docs": true,
+    "changelog_fragments": true
   },
   "verify": [
     "bash tests/run-tests.sh --quiet"
