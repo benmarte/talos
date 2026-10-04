@@ -117,6 +117,13 @@ fi
 #                  behaves as absent (malformed/empty/non-mapping/unreadable
 #                  prints one stderr warning; the lookup and its exit status
 #                  are unaffected).
+#                  The file must also be trusted (#443): a regular file (or a
+#                  symlink you own to one), owned by the current user, not group-
+#                  or world-writable, since hooks.* and notifications.cmd run
+#                  commands. Otherwise ONE stderr line names it and the fix, and
+#                  the layer is read as absent. The check is the shared one in
+#                  pipeline-secrets.sh (the same stat helper as ~/.talos/.env),
+#                  run inside the loader's python3 process: no extra spawn.
 #   2. project     $PIPELINE_CONFIG, else the first existing ./talos.pipeline.*
 #                  / legacy name. The user-level layer sits under whichever
 #                  one is found.
@@ -255,6 +262,20 @@ def _load_user_layer(user_path, project_path):
     # repr() of every name below: a key or path from the file can never carry
     # a newline or terminal control sequence into the message.
     shown = repr(user_path)
+    # Trust check (#443): this file drives hooks.* and notifications.cmd, which
+    # run commands, so it must be ours and not writable by anyone else. A file
+    # that fails is refused with one line and read as absent: every key falls
+    # back to the repo file or the defaults, never a crash.
+    try:
+        problem = trust_problem(os.geteuid(), "config-file", user_path)
+    except NameError:
+        problem = ("the trust check is not installed (pipeline-secrets.sh is missing)",
+                   "reinstall Talos")
+    except Exception as e:
+        problem = ("the trust check failed (%s)" % type(e).__name__, "check the file")
+    if problem:
+        _warn("refusing global config %s: %s; %s -- using defaults" % (shown, problem[0], problem[1]))
+        return {}
     try:
         raw = _parse_cfg_file(user_path)
     except Exception as e:
@@ -318,7 +339,14 @@ PYLOADER
 # The loader source handed to python: the table's scope/env rows as _CFG_TABLE,
 # then the loader itself. Every python3 call below passes this, never
 # $_CFG_LOADER_PY alone.
-_cfg_loader_src() { printf '_CFG_TABLE = %s\n%s' "$(_talos_scope_env_json)" "$_CFG_LOADER_PY"; }
+#
+# The global file's trust check (#443) is the python function trust_problem from
+# pipeline-secrets.sh (_TALOS_TRUST_LIB), prepended here so the loader and the
+# .env check share one definition. Without that file the function is undefined
+# and _load_user_layer refuses the global file (fail closed).
+# shellcheck disable=SC1091
+[ -f "$_CFG_SELF_DIR/pipeline-secrets.sh" ] && . "$_CFG_SELF_DIR/pipeline-secrets.sh"
+_cfg_loader_src() { printf '_CFG_TABLE = %s\n%s\n%s' "$(_talos_scope_env_json)" "${_TALOS_TRUST_LIB:-}" "$_CFG_LOADER_PY"; }
 
 # ── Evidence-key validator (#405, part of #352) ──────────────────────────────
 # Python half of the evidence.* validation. Like _CFG_LOADER_PY it is handed to

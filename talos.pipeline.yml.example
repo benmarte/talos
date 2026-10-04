@@ -296,6 +296,16 @@ notifications:
                                # positive integer. A relay that never answers
                                # logs one stderr line and writes no thread
                                # anchor. Default: 15.
+  # Secrets (#443) are never written here. These keys hold a REFERENCE, env:NAME,
+  # and the value comes from the exported environment, the repo .env, then
+  # ~/.talos/.env (a 0600 file you own, outside every repo), then the deprecated
+  # ~/.hermes/.env. A literal value in any of them is refused. The documented
+  # variables (SLACK_WEBHOOK_URL, SLACK_BOT_TOKEN, ...) keep working with no
+  # reference at all.
+  # Nest each under its platform, e.g. `slack: {webhook: "env:SLACK_WEBHOOK_URL"}`:
+  #   webhook: "env:SLACK_WEBHOOK_URL"    # notifications.<slack|discord|teams>.webhook
+  #   bot_token: "env:SLACK_BOT_TOKEN"    # notifications.<slack|discord>.bot_token
+  #   bot_key: "env:BUZZ_BOT_PRIVATE_KEY" # notifications.buzz.bot_key
   templates_dir: "templates/notifications"  # relative to repo root; "" disables templates
   threading: true            # Thread all events per issue (bot-token mode only;
                              # silently skipped in webhook mode)

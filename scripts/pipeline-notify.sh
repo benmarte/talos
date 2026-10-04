@@ -57,17 +57,26 @@
 #   1. Incoming webhook env vars:
 #        SLACK_WEBHOOK_URL / DISCORD_WEBHOOK_URL / TEAMS_WEBHOOK_URL
 #        (set in env or in <repo>/.env)
-#   2. Config file channels + bot tokens from ~/.hermes/.env:
-#        SLACK_BOT_TOKEN / DISCORD_BOT_TOKEN posting to configured channels.
-#        Channels from talos.pipeline.yml notifications.slack_channel /
+#   2. Bot tokens: SLACK_BOT_TOKEN / DISCORD_BOT_TOKEN posting to configured
+#        channels. Channels from talos.pipeline.yml notifications.slack_channel /
 #        notifications.discord_channel, overrideable via env vars
 #        PIPELINE_SLACK_CHANNEL / PIPELINE_DISCORD_CHANNEL.
+#
+# Secrets (#443): every webhook, bot token and the Buzz key is resolved by
+# scripts/pipeline-secrets.sh, first match wins: exported env, repo .env, a
+# config reference (notifications.slack.webhook / discord.webhook / teams.webhook
+# / slack.bot_token / discord.bot_token / buzz.bot_key = env:NAME -- never the
+# value itself), ${TALOS_HOME:-~/.talos}/.env, then the legacy ~/.hermes/.env
+# (deprecated, one stderr line). A user-level .env is refused unless it is a
+# 0600 regular file you own, outside every git work tree. An unset reference
+# skips that platform with one stderr line. Values go to curl on stdin (-K -),
+# never argv, and are never printed, debug mode included.
 #
 # Buzz (https://github.com/block/buzz — Nostr/NIP-29 relay, no webhooks):
 #   Publishes a signed kind:9 event tagged ["h", <channel-uuid>] via the `nak`
 #   CLI (brew install nak), which also answers the relay's NIP-42 AUTH.
 #   Requires all three of: BUZZ_RELAY_URL (ws[s]://…), BUZZ_BOT_PRIVATE_KEY
-#   (hex or nsec; env, repo .env, or ~/.hermes/.env), and a channel UUID from
+#   (hex or nsec; see "Secrets" above), and a channel UUID from
 #   notifications.buzz_channel / PIPELINE_BUZZ_CHANNEL. Threading uses NIP-10
 #   reply tags ["e", <root-id>, "", "reply"] with the anchor persisted as
 #   buzz_event_id. The bot key reaches nak through NOSTR_SECRET_KEY, never on
@@ -245,20 +254,32 @@ SLACK_CHANNEL="${PIPELINE_SLACK_CHANNEL:-$(cfg notifications.slack_channel)}"
 DISCORD_CHANNEL="${PIPELINE_DISCORD_CHANNEL:-$(cfg notifications.discord_channel)}"
 BUZZ_CHANNEL="${PIPELINE_BUZZ_CHANNEL:-$(cfg notifications.buzz_channel)}"
 
-# ── Bot tokens from Hermes env (optional convenience) ─────────────────────────
-HERMES_ENV="$HOME/.hermes/.env"
-if [ -f "$HERMES_ENV" ]; then
-  [ -z "${SLACK_BOT_TOKEN:-}" ]   && SLACK_BOT_TOKEN="$(grep -m1 '^SLACK_BOT_TOKEN='   "$HERMES_ENV" | cut -d= -f2-)"
-  [ -z "${DISCORD_BOT_TOKEN:-}" ] && DISCORD_BOT_TOKEN="$(grep -m1 '^DISCORD_BOT_TOKEN=' "$HERMES_ENV" | cut -d= -f2-)"
-  [ -z "${BUZZ_RELAY_URL:-}" ]        && BUZZ_RELAY_URL="$(grep -m1 '^BUZZ_RELAY_URL='        "$HERMES_ENV" | cut -d= -f2-)"
-  [ -z "${BUZZ_BOT_PRIVATE_KEY:-}" ]  && BUZZ_BOT_PRIVATE_KEY="$(grep -m1 '^BUZZ_BOT_PRIVATE_KEY=' "$HERMES_ENV" | cut -d= -f2-)"
+# ── Secrets (#443) ────────────────────────────────────────────────────────────
+# Resolved by pipeline-secrets.sh (order and trust rules: see the header). Values
+# stay in shell variables; post() hands them to curl on stdin. --render posts
+# nothing, so it resolves nothing.
+if [ -f "$SCRIPT_DIR/pipeline-secrets.sh" ]; then
+  # shellcheck source=pipeline-secrets.sh
+  . "$SCRIPT_DIR/pipeline-secrets.sh"
+else
+  echo "pipeline-notify: pipeline-secrets.sh missing; reinstall Talos (secrets are read from the exported environment only)" >&2
+  talos_secret_load() { return 1; }
+fi
+if [ -z "$RENDER_ONLY" ]; then
+  talos_secret_load SLACK_WEBHOOK_URL    notifications.slack.webhook url
+  talos_secret_load DISCORD_WEBHOOK_URL  notifications.discord.webhook url
+  talos_secret_load TEAMS_WEBHOOK_URL    notifications.teams.webhook url
+  talos_secret_load SLACK_BOT_TOKEN      notifications.slack.bot_token
+  talos_secret_load DISCORD_BOT_TOKEN    notifications.discord.bot_token
+  talos_secret_load BUZZ_BOT_PRIVATE_KEY notifications.buzz.bot_key
+  talos_secret_load BUZZ_RELAY_URL
 fi
 
 # The Buzz relay URL is NOT a secret — it is a hostname, and it identifies a
 # deployment the same way buzz_channel does. Unlike the bot key (a full Nostr
 # signing identity, which must never enter a git-tracked file) it belongs in
 # the committed config, so a clone can describe its Buzz setup completely.
-# Precedence: exported env > repo/hermes .env > config file.
+# Precedence: exported env > repo/user-level .env > config file.
 [ -z "${BUZZ_RELAY_URL:-}" ] && BUZZ_RELAY_URL="${PIPELINE_BUZZ_RELAY:-$(cfg notifications.buzz_relay)}"
 
 # ── API fallback for gh metadata lookups ──────────────────────────────────────
@@ -804,12 +825,23 @@ except: pass
 " "$1" "$2" 2>/dev/null
 }
 
+# The URL (a webhook URL is a bearer credential) and the auth header (a bot
+# token) reach curl as a config file on stdin, `-K -`, never as argv, where `ps`
+# shows them to every local user (#443). A value holding a control character
+# could add lines to that file, so it is refused; backslash and double quote are
+# escaped, the two characters a curl config string treats specially.
+_curl_cfg_escape() {  # $1=value; sets _CURL_ESC
+  _CURL_ESC="${1//\\/\\\\}"
+  _CURL_ESC="${_CURL_ESC//\"/\\\"}"
+}
 post() {  # $1=url $2=json-body $3=platform [$4=auth-header]
-  if [ -n "${4:-}" ]; then
-    curl -sS -m 10 -H 'Content-Type: application/json' -H "$4" -d "$2" "$1"
-  else
-    curl -sS -m 10 -H 'Content-Type: application/json' -d "$2" "$1"
-  fi
+  case "$1${4:-}" in
+    *[[:cntrl:]]*) echo "pipeline-notify: $3 credential holds a control character; not posting" >&2; return 1 ;;
+  esac
+  {
+    _curl_cfg_escape "$1"; printf 'url = "%s"\n' "$_CURL_ESC"
+    if [ -n "${4:-}" ]; then _curl_cfg_escape "$4"; printf 'header = "%s"\n' "$_CURL_ESC"; fi
+  } | curl -sS -m 10 -K - -H 'Content-Type: application/json' -d "$2"
 }
 
 # ── Rich payload builders (Daedalus-style Block Kit / embeds) ─────────────────
