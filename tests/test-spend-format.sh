@@ -87,6 +87,8 @@ assert_eq "opus ×1, sonnet ×1" "$(fmt 'm.model_summary(["opus", "sonnet"])')" 
 assert_eq "sonnet ×2, session default ×1" "$(fmt 'm.model_summary([None, "sonnet", "sonnet"])')" "model_summary: null counts as session default"
 assert_eq "session default" "$(fmt 'm.model_summary([None, None])')" "model_summary: all null"
 assert_eq "" "$(fmt 'm.model_summary([])')" "model_summary: no events is empty"
+assert_eq "a ×1, b ×1, c ×1" "$(fmt 'm.model_summary(["a", "b", "c"])')" "model_summary: 3 distinct models are all listed"
+assert_eq "a ×3, b ×2, c ×1, +2 more" "$(fmt 'm.model_summary(["a", "a", "a", "b", "b", "c", "d", "e"])')" "model_summary: past 3 distinct models, the rest fold into +K more (count descending)"
 
 # ── (a4) md_code, strip_controls, warn_percent (#383) ──────────────────────
 assert_eq '`abc`' "$(fmt 'm.md_code("abc")')" "md_code: a code span"

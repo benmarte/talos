@@ -102,10 +102,14 @@ def model_family(model):
     return min(named)[1] if named else text[:30]
 
 
+_MAX_MODELS = 3
+
+
 def model_summary(models):
     """One label for a run list: 'sonnet' when every run is one family,
     'sonnet \u00d73, opus \u00d71' when mixed (count descending, ties in the
-    order first seen), '' for no runs."""
+    order first seen), '' for no runs. Past 3 distinct models the rest fold
+    into '+K more'."""
     counts = {}
     for model in models:
         key = model_family(model)
@@ -113,7 +117,10 @@ def model_summary(models):
     if len(counts) <= 1:
         return next(iter(counts), "")
     ordered = sorted(counts.items(), key=lambda kv: -kv[1])  # stable
-    return ", ".join("%s \u00d7%d" % kv for kv in ordered)
+    parts = ["%s \u00d7%d" % kv for kv in ordered[:_MAX_MODELS]]
+    if len(ordered) > _MAX_MODELS:
+        parts.append("+%d more" % (len(ordered) - _MAX_MODELS))
+    return ", ".join(parts)
 
 
 def md_code(text):

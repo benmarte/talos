@@ -509,6 +509,22 @@ assert_eq "same" "$(cmp -s "$SANDBOX/expected.jsonl" "$SANDBOX/actual.jsonl" && 
 # default / --json / --line output is unchanged for a valid log (--markdown and --summary add nothing to them)
 base_fixture
 assert_contains "$(bash "$EVENTS" cost --issue 7 2>/dev/null | head -1)" "issue	role	events	tokens	tool_uses	duration_s	unrecorded	restamp" "default table header unchanged"
-assert_eq "TOTAL		10	1900000	50	1295	2	1" "$(bash "$EVENTS" cost --issue 7 2>/dev/null | tail -1)" "default table total unchanged (orchestrator row included)"
+assert_eq "TOTAL		10	1900000	50	1295	1	1" "$(bash "$EVENTS" cost --issue 7 2>/dev/null | tail -1)" "default table total: the orchestrator row is excluded from the unrecorded total, like --markdown (#450)"
+
+# ── (n) unrecorded rows and the model cap (#450) ───────────────────────────
+reset_log
+ev qa 9 5 null null 30 ''
+ev developer 9 5 1000 1 10 '"opus"'
+ev developer 9 5 1000 1 10 '"sonnet"'
+ev developer 9 5 1000 1 10 '"haiku"'
+ev developer 9 5 1000 1 10 '"gpt-5"'
+ev developer 9 5 1000 1 10 '"llama-3"'
+blocked 9
+OUT="$(md 9 5)"
+assert_contains "$OUT" '| `qa` | `session default` | 1 | unrecorded | 0 | 30s | 0 | 1 |' "markdown: a fully unrecorded row shows unrecorded in the tokens cell"
+assert_contains "$OUT" '| `developer` | `opus ×1, sonnet ×1, haiku ×1, +2 more` | 5 | 5k | 5 | 50s | 0 | 0 |' "markdown: a cell lists 3 models then +K more"
+assert_not_contains "$OUT" "gpt-5" "markdown: models past the cap are not listed"
+assert_contains "$OUT" '| TOTAL |  | 6 | 5k | 5 | 1m20s | 0 | 1 |' "markdown: TOTAL keeps its numeric tokens cell"
+assert_eq "TOTAL		7	5000	5	80	1	0" "$(bash "$EVENTS" cost --issue 9 2>/dev/null | tail -1)" "default table: unrecorded total counts the qa row only, not the orchestrator row"
 
 finish
