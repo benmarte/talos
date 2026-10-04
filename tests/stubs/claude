@@ -3,4 +3,11 @@
 {
   printf 'CLAUDE ARGS:'; for a in "$@"; do printf ' [%s]' "$a"; done; printf '\n'
 } >> "${RUNNER_LOG:-/dev/null}"
-echo "claude-stub-ok"
+# Failover tests (#418), all default-off: STUB_CLAUDE_HOOK is eval'd (a stage
+# that writes before dying), _STDERR / _STDOUT replace the output, _EXIT is the
+# exit code, STUB_PROMPT_DIR keeps the last argv element (the prompt) per runner.
+[ -z "${STUB_PROMPT_DIR:-}" ] || printf '%s' "${@: -1}" > "$STUB_PROMPT_DIR/claude.prompt"
+[ -z "${STUB_CLAUDE_HOOK:-}" ] || eval "$STUB_CLAUDE_HOOK"
+[ -z "${STUB_CLAUDE_STDERR:-}" ] || printf '%s\n' "$STUB_CLAUDE_STDERR" >&2
+echo "${STUB_CLAUDE_STDOUT:-claude-stub-ok}"
+exit "${STUB_CLAUDE_EXIT:-0}"

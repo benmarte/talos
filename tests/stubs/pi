@@ -3,4 +3,11 @@
 {
   printf 'PI ARGS:'; for a in "$@"; do printf ' [%s]' "$a"; done; printf '\n'
 } >> "${RUNNER_LOG:-/dev/null}"
-echo "pi-stub-ok"
+# Failover tests (#418), all default-off: STUB_PI_HOOK is eval'd (a stage
+# that writes before dying), _STDERR / _STDOUT replace the output, _EXIT is the
+# exit code, STUB_PROMPT_DIR keeps the last argv element (the prompt) per runner.
+[ -z "${STUB_PROMPT_DIR:-}" ] || printf '%s' "${@: -1}" > "$STUB_PROMPT_DIR/pi.prompt"
+[ -z "${STUB_PI_HOOK:-}" ] || eval "$STUB_PI_HOOK"
+[ -z "${STUB_PI_STDERR:-}" ] || printf '%s\n' "$STUB_PI_STDERR" >&2
+echo "${STUB_PI_STDOUT:-pi-stub-ok}"
+exit "${STUB_PI_EXIT:-0}"

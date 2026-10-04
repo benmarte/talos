@@ -8387,6 +8387,17 @@ case "$VERB" in
 esac
 _DISPATCH_RC=$?
 
+# ── Write journal (#418) ──────────────────────────────────────────────────────
+# pipeline-agent.sh exports TALOS_WRITE_LOG to a runner when a failover chain is
+# configured; a successful non-idempotent verb appends its name (no body) so a
+# provider failure after a write is never rerun on another runner. Unset: no-op.
+if [ -n "${TALOS_WRITE_LOG:-}" ] && [ "$_DISPATCH_RC" -eq 0 ] && [ "$DRY_RUN" != "true" ]; then
+  case "$VERB" in
+    comment-issue|comment-pr|create-pr|create-issue|post-approval|approve-pr|merge-pr|close-issue|record-attempt)
+      printf '%s\n' "$VERB" >>"$TALOS_WRITE_LOG" 2>/dev/null || true ;;
+  esac
+fi
+
 # ── Post-dispatch: label-pr approval-marker warning (#94, #115) ──────────────
 # After label-pr successfully adds a recognised approval label, verify that a
 # matching marker comment exists at the current head.  Fetches headRefOid and

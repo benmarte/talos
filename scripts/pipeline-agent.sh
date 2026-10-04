@@ -56,6 +56,18 @@
 # <role> must be lowercase letters and '-' (not leading); anything else exits 2
 # before any path is built.
 #
+# Failover verbs (#418, see agents.fallback below):
+#   --resolve <role> appends " fallback=<a,b>" after effort= only when a chain
+#   resolves; --resolve-all appends fallback= / fallback_origin= the same way.
+#   --classify <runner> <rc> <file|->
+#       print ok | provider | task for a finished runner from its exit code and
+#       the last 20 lines of the text in <file> (- = stdin). Exit 0; 2 on a bad
+#       argument. The native Claude path uses it on the text a dead subagent
+#       returned (advisory).
+#   --mark-down <runner> <class:detail>
+#       record <runner> as down in .talos/providers.json for
+#       agents.provider_down_s seconds.
+#
 # Config keys (talos.pipeline.yml via pipeline-config.sh):
 #   agents.runner       claude (default) | pi | codex | gemini | antigravity | custom
 #   agents.runner_args  list of extra CLI args appended to claude/pi/codex/gemini/agy
@@ -97,6 +109,23 @@
 #                                resolves role-first below) — see
 #                                skills/pipeline/SKILL.md's Step 3e re-stamp
 #                                block for where it is used.
+#   agents.fallback     (#418) ordered list of runner names (same ids as
+#                       agents.runner), tried in turn when a runner dies with a
+#                       PROVIDER error (rate limit, quota, overload, auth,
+#                       network). Names only: a fallback runner uses its own
+#                       default model, agents.runner_args is not forwarded to
+#                       it, and a custom entry uses the role-first runner_cmd.
+#   agents.roles.<role>.fallback  per-role override, role-first like runner.
+#   agents.provider_down_s        seconds a provider stays marked down in
+#                       .talos/providers.json (60-86400, default 900).
+#                       Unset fallback = no chain: output, stderr and exit code
+#                       are exactly the runner's, and providers.json is never
+#                       touched. With a chain, stdout is buffered per attempt
+#                       and only the final attempt's reaches the caller.
+#   Exit codes with a chain: 75 from any runner is a provider error
+#   (EX_TEMPFAIL, the contract for a custom runner_cmd); 69 (EX_UNAVAILABLE)
+#   is ours: chain exhausted, every runner down, or failover refused because
+#   the failed attempt had already written (see the write guard below).
 #   hooks.pre_dispatch  command run before the prompt is built (#181); its
 #                       stdout, if non-empty, is prepended to the prompt
 #                       under a "## Context" heading. Default "" (disabled).
@@ -210,6 +239,32 @@ _resolve_effort() {
   printf '%s' "$_e"
 }
 
+# _resolve_fallback <role> (#418): role-first agents.fallback, one runner name
+# per line (the config reader already validated the list; invalid reads absent).
+_resolve_fallback() {
+  local _role="$1" _f
+  _f="$(cfg "agents.roles.$_role.fallback" "")"
+  [ -n "$_f" ] || _f="$(cfg agents.fallback "")"
+  printf '%s' "$_f"
+}
+
+# _fallback_chain <role> <primary>: the resolved chain, one runner per line,
+# without the primary (it varies by role, so config cannot check that). Notes
+# each dropped entry once on stderr.
+_fallback_chain() {
+  local _role="$1" _primary="$2" _e
+  while IFS= read -r _e; do
+    [ -n "$_e" ] || continue
+    if [ "$_e" = "$_primary" ]; then
+      echo "pipeline-agent: agents.fallback lists the primary runner '$_primary' (role=$_role) -- dropped" >&2
+    else
+      printf '%s\n' "$_e"
+    fi
+  done <<EOF
+$(_resolve_fallback "$_role")
+EOF
+}
+
 # ── Role definition lookup (#367) ─────────────────────────────────────────────
 # One function decides the order for a stage run and for --resolve-profile (see
 # the header). The role name reaches a path, so it is validated first: lowercase
@@ -279,11 +334,15 @@ if [ "${1:-}" = "--resolve" ]; then
       exit 1
       ;;
   esac
-  printf 'runner=%s runner_cmd=%s model=%s effort=%s\n' \
+  # fallback= (#418): appended only when a chain resolves, so a role without
+  # one keeps the exact line.
+  _RESOLVED_FB="$(_fallback_chain "$_RESOLVE_ROLE" "$_RESOLVED_RUNNER" 2>/dev/null | paste -sd, -)"
+  printf 'runner=%s runner_cmd=%s model=%s effort=%s%s\n' \
     "$_RESOLVED_RUNNER" \
     "$(_resolve_runner_cmd "$_RESOLVE_ROLE")" \
     "$(_resolve_model "$_RESOLVE_ROLE")" \
-    "$(_resolve_effort "$_RESOLVE_ROLE")"
+    "$(_resolve_effort "$_RESOLVE_ROLE")" \
+    "${_RESOLVED_FB:+ fallback=$_RESOLVED_FB}"
   exit 0
 fi
 
@@ -361,6 +420,16 @@ sys.stdout.buffer.write(re.sub(rb"[\x00-\x1f\x7f]|\xc2[\x80-\x9f]", b"", sys.std
         _cmd="$(printf '\trunner_cmd=%s' "$(_plain "$_rv")")"
       fi
     fi
+    # fallback / fallback_origin (#418): pre-TAB columns, only when a chain resolves.
+    _fb="$(_fallback_chain "$_r" "$(_resolve_runner "$_r")" 2>/dev/null | paste -sd, -)"
+    if [ -n "$_fb" ]; then
+      if [ -n "$(cfg "agents.roles.$_r.fallback" "")" ]; then
+        _fbo="$(_layer_of "agents.roles.$_r.fallback")"
+      else
+        _fbo="$(_layer_of agents.fallback)"
+      fi
+      _extra="$_extra fallback=$_fb fallback_origin=$_fbo"
+    fi
     printf 'role=%s model=%s restamp_model=%s origin=%s%s%s\n' "$_r" "$_m" "$(_plain "$_rs")" "$_origin" "$_extra" "$_cmd"
     for _dir in "$PWD/.claude/agents" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/agents"; do
       _f="$_dir/$_r.md"
@@ -397,6 +466,196 @@ if [ "${1:-}" = "--resolve-profile" ]; then
   fi
   _resolve_role_profile "$2"
   exit $?
+fi
+
+# ── Provider-error classification (#418) ──────────────────────────────────────
+# _classify_exit <runner> <rc> <file>... sets CLASS (ok | provider | task) and
+# CLASS_DETAIL (a short fixed token, e.g. 429) -- globals, not stdout, so the
+# detail survives without a subshell. ONE function holds the whole table.
+#   ok        rc 0.
+#   provider  rc 75 (EX_TEMPFAIL) from ANY runner or runner_cmd, the one signal
+#             that is stable and the documented contract for `custom`; else a
+#             runner-specific, LINE-ANCHORED error shape in the last 20 lines of
+#             each <file> (at most 64 KB). A bare "429" or "rate limit" in model
+#             prose never matches, because every shape starts at the line start.
+#   task      everything else, including any unrecognised non-zero exit. The
+#             failure mode is the existing behaviour, never a silent provider
+#             switch.
+# Per-runner patterns. UNVERIFIED: none of them were captured from a real CLI
+# run (the only observed signal is the spend-limit 429 in tasks/lessons.md);
+# they are candidates and a pattern that stops matching only means a provider
+# error falls back to `task`. A runner with no entry below (codex, gemini,
+# antigravity, pi, custom) ships exit-75-only until its patterns are captured.
+CLASS="" CLASS_DETAIL=""
+_classify_exit() {
+  local _runner="$1" _rc="$2" _f _txt=""
+  shift 2
+  CLASS="task"; CLASS_DETAIL=""
+  case "$_rc" in
+    0) CLASS="ok"; return 0 ;;
+    75) CLASS="provider"; CLASS_DETAIL="exit75"; return 0 ;;
+  esac
+  for _f in "$@"; do
+    [ -r "$_f" ] || continue
+    _txt="$_txt$(tail -n 20 "$_f" 2>/dev/null | tail -c 65536 | tr -d '\000')
+"
+  done
+  _cls_has() { printf '%s' "$_txt" | LC_ALL=C grep -Eq "$1"; }
+  case "$_runner" in
+    claude)
+      if _cls_has '^(API Error: [0-9]{3} .*)?([Cc]redit balance is too low|(Claude AI )?[Uu]sage limit reached)'; then
+        CLASS="provider"; CLASS_DETAIL="quota"
+      elif _cls_has '^(API Error: 401( |$)|Invalid API key|API Error: .*authentication_error)'; then
+        CLASS="provider"; CLASS_DETAIL="auth"
+      elif _cls_has '^API Error: 429( |$)'; then
+        CLASS="provider"; CLASS_DETAIL="429"
+      elif _cls_has '^API Error: (5[0-9]{2}( |$)|.*overloaded_error)'; then
+        CLASS="provider"; CLASS_DETAIL="overloaded"
+      elif _cls_has '^((API Error|Error): .*(ECONNRESET|ETIMEDOUT|ENOTFOUND)|getaddrinfo ENOTFOUND|connect ETIMEDOUT|read ECONNRESET)'; then
+        CLASS="provider"; CLASS_DETAIL="network"
+      fi
+      ;;
+  esac
+  unset -f _cls_has
+  return 0
+}
+
+# ── Provider down-tracking (#418) ─────────────────────────────────────────────
+# .talos/providers.json: {"<runner>": {"down_until", "reason", "since"}}, in the
+# repository's common git directory's parent (like pipeline-events.sh path), so a
+# worktree and the main checkout share it. Bookkeeping never blocks a stage: a
+# missing repo, an unreadable or corrupt file reads as "nothing is down" with one
+# warning, and a failed write only warns. Reads are lock-free; writes are atomic
+# (temp file + rename) under with_lock.
+if [ -f "$SCRIPT_DIR/pipeline-lock.sh" ]; then
+  # shellcheck source=pipeline-lock.sh
+  . "$SCRIPT_DIR/pipeline-lock.sh"
+fi
+
+_prov_path() {
+  local _cd
+  _cd="$(git rev-parse --git-common-dir 2>/dev/null)" || return 1
+  [ -n "$_cd" ] || return 1
+  case "$_cd" in
+    /*) : ;;
+    *) _cd="$(cd "$(dirname "$_cd")" 2>/dev/null && pwd)/$(basename "$_cd")" ;;
+  esac
+  printf '%s/.talos/providers.json' "$(dirname "$_cd")"
+}
+
+# _prov_down <file>: one runner name per line for every unexpired entry.
+_prov_down() {
+  [ -f "$1" ] || return 0
+  python3 -I - "$1" <<'PYEOF'
+import datetime, json, sys
+path = sys.argv[1]
+try:
+    with open(path) as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError("not a mapping")
+except Exception as e:
+    sys.stderr.write("pipeline-agent: [warn] %r unreadable or corrupt (%s) -- treating every runner as up\n" % (path, type(e).__name__))
+    sys.exit(0)
+now = datetime.datetime.now(datetime.timezone.utc)
+known = ("claude", "pi", "codex", "gemini", "antigravity", "custom")
+for name, ent in data.items():
+    try:
+        until = datetime.datetime.strptime(ent["down_until"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+    except Exception:
+        continue
+    if name in known and until > now:
+        print(name)
+PYEOF
+}
+
+# _prov_write <file> <runner> <reason> <seconds>: read-modify-write; expired
+# entries are pruned. Run under with_lock by _prov_mark_down.
+_prov_write() {
+  python3 -I - "$1" "$2" "$3" "$4" <<'PYEOF'
+import datetime, json, os, sys
+path, runner, reason, secs = sys.argv[1:5]
+fmt = "%Y-%m-%dT%H:%M:%SZ"
+utc = datetime.timezone.utc
+now = datetime.datetime.now(utc)
+try:
+    with open(path) as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        data = {}
+except Exception:
+    data = {}
+keep = {}
+for name, ent in data.items():
+    try:
+        if datetime.datetime.strptime(ent["down_until"], fmt).replace(tzinfo=utc) > now:
+            keep[name] = ent
+    except Exception:
+        pass
+reason = "".join(c for c in reason if 32 <= ord(c) != 127)[:200]
+keep[runner] = {
+    "down_until": (now + datetime.timedelta(seconds=int(secs))).strftime(fmt),
+    "reason": reason,
+    "since": now.strftime(fmt),
+}
+tmp = "%s.tmp.%d" % (path, os.getpid())
+with open(tmp, "w") as f:
+    json.dump(keep, f, indent=1, sort_keys=True)
+    f.write("\n")
+os.replace(tmp, path)
+PYEOF
+}
+
+# _prov_mark_down <runner> <class:detail>
+_prov_mark_down() {
+  local _file _secs
+  _file="$(_prov_path)" || { echo "pipeline-agent: [warn] not in a git repository -- cannot record $1 as down" >&2; return 0; }
+  _secs="$(cfg agents.provider_down_s 900)"
+  mkdir -p "$(dirname "$_file")" 2>/dev/null || { echo "pipeline-agent: [warn] cannot create $(dirname "$_file") -- $1 not recorded as down" >&2; return 0; }
+  if command -v with_lock >/dev/null 2>&1; then
+    with_lock "$_file" 5 -- _prov_write "$_file" "$1" "$2" "$_secs" \
+      || echo "pipeline-agent: [warn] could not write $_file" >&2
+  else
+    _prov_write "$_file" "$1" "$2" "$_secs" || echo "pipeline-agent: [warn] could not write $_file" >&2
+  fi
+  return 0
+}
+
+_is_runner_id() {
+  case "$1" in claude | pi | codex | gemini | antigravity | custom) return 0 ;; esac
+  return 1
+}
+
+# --classify <runner> <rc> <file|->: print the class on stdout, exit 0.
+if [ "${1:-}" = "--classify" ]; then
+  _CL_FILE="${4:-}"
+  if ! _is_runner_id "${2:-}" || [ -z "${3:-}" ] || [ -z "$_CL_FILE" ]; then
+    echo "Usage: pipeline-agent.sh --classify <runner> <rc> <file|->" >&2
+    exit 2
+  fi
+  case "$3" in *[!0-9]*) echo "pipeline-agent: --classify: <rc> must be an integer" >&2; exit 2 ;; esac
+  if [ "$_CL_FILE" = "-" ]; then
+    _CL_TMP="$(mktemp "${TMPDIR:-/tmp}/talos-classify.XXXXXX")" || exit 2
+    cat >"$_CL_TMP"
+    _CL_FILE="$_CL_TMP"
+  elif [ ! -r "$_CL_FILE" ]; then
+    echo "pipeline-agent: --classify: cannot read '$_CL_FILE'" >&2
+    exit 2
+  fi
+  _classify_exit "$2" "$3" "$_CL_FILE"
+  [ -z "${_CL_TMP:-}" ] || rm -f "$_CL_TMP"
+  printf '%s\n' "$CLASS"
+  exit 0
+fi
+
+# --mark-down <runner> <class:detail>: record the runner as down.
+if [ "${1:-}" = "--mark-down" ]; then
+  if ! _is_runner_id "${2:-}" || [ -z "${3:-}" ]; then
+    echo "Usage: pipeline-agent.sh --mark-down <runner> <class:detail>" >&2
+    exit 2
+  fi
+  _prov_mark_down "$2" "$3"
+  exit 0
 fi
 
 ROLE="${1:-}"
@@ -516,7 +775,14 @@ EOF
 # runs the runner as a normal foreground command and records its exit code
 # in RC instead — the post-`esac` block below fires the hook, then exits
 # with RC so callers still see exactly the runner's own exit status.
+#
+# _run_runner <runner> (#418): the one place a runner is invoked, so the
+# failover loop below reruns exactly the same invocation (same built prompt,
+# every argv shape unchanged). Without a chain it is called once, inline.
 RC=0
+_run_runner() {
+# (body not indented: tests/test-runner-conformance.sh finds the dispatch arms by column)
+local RUNNER="$1"
 case "$RUNNER" in
   claude)
     claude -p --setting-sources project \
@@ -561,17 +827,20 @@ case "$RUNNER" in
     # root CI container, with the EXIT trap's `rm -rf "$_PROMPT_DIR"` a
     # no-op since _PROMPT_DIR was never set. Mirrors the guard pattern in
     # pipeline-cfg-cache.sh: `mktemp -d ... || VAR=""` gated by `[ -n "$VAR" ]`.
-    _PROMPT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/talos-prompt.XXXXXX" 2>/dev/null)" || _PROMPT_DIR=""
-    if [ -z "$_PROMPT_DIR" ]; then
-      echo "pipeline-agent: custom runner: failed to create a temp directory for the prompt (mktemp -d)" >&2
-      exit 1
-    fi
-    _PROMPT_FILE="$_PROMPT_DIR/prompt"
-    (umask 077 && printf '%s' "$PROMPT" >"$_PROMPT_FILE")
-    if command -v _talos_on_exit >/dev/null 2>&1; then
-      _talos_on_exit 'rm -rf "$_PROMPT_DIR"'
-    else
-      trap 'rm -rf "$_PROMPT_DIR"' EXIT
+    # (#418: created once; a failover rerun reuses the same prompt file.)
+    if [ -z "${_PROMPT_FILE:-}" ]; then
+      _PROMPT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/talos-prompt.XXXXXX" 2>/dev/null)" || _PROMPT_DIR=""
+      if [ -z "$_PROMPT_DIR" ]; then
+        echo "pipeline-agent: custom runner: failed to create a temp directory for the prompt (mktemp -d)" >&2
+        exit 1
+      fi
+      _PROMPT_FILE="$_PROMPT_DIR/prompt"
+      (umask 077 && printf '%s' "$PROMPT" >"$_PROMPT_FILE")
+      if command -v _talos_on_exit >/dev/null 2>&1; then
+        _talos_on_exit 'rm -rf "$_PROMPT_DIR"'
+      else
+        trap 'rm -rf "$_PROMPT_DIR"' EXIT
+      fi
     fi
     sh -c "$RUNNER_CMD" <"$_PROMPT_FILE"
     RC=$?
@@ -580,6 +849,136 @@ case "$RUNNER" in
     # above, before the talos:runner marker is emitted -- an unknown value
     # exits there and never reaches this case.
 esac
+}
+
+# ── Runner failover (#418) ────────────────────────────────────────────────────
+# Only with a chain (agents.fallback / agents.roles.<role>.fallback). Each
+# attempt's stdout and stderr go to temp files (mode 600, removed on exit; no
+# process substitution); stderr is replayed after every attempt, stdout only for
+# the final one, so two runners' output is never concatenated. The rerun reuses
+# the prompt built once above (no second pre_dispatch) and the same invocation.
+#
+# Write guard: a failover never reruns a stage that already wrote. The runner
+# gets TALOS_WRITE_LOG; pipeline-vcs.sh appends each successful non-idempotent
+# verb to it. A non-empty journal, or a changed `git for-each-ref refs/remotes`
+# (a push moves a remote-tracking ref), after a provider exit means NO rerun:
+# the provider is marked down, talos:failover-refused is emitted, exit 69. KNOWN
+# GAP: a runner that calls raw `gh` instead of pipeline-vcs.sh is not seen (the
+# role profiles forbid it). Any other writer to refs/remotes (a parallel
+# `git fetch`) reads as a push: the failover is refused, never forced.
+_FO_FINAL="" _FO_PRIMARY="$RUNNER"
+_fo_event() {  # <from> <to> <reason>
+  [ -f "$SCRIPT_DIR/pipeline-hooks.sh" ] || return 0
+  bash "$SCRIPT_DIR/pipeline-hooks.sh" post_stage failover orchestrator "$TALOS_ISSUE_NUMBER" \
+    --summary "role=$ROLE from=$1 to=$2 reason=$3" || true
+}
+_fo_switch() {
+  echo "talos:failover role=$ROLE from=$1 to=$2 reason=$3" >&2
+  _fo_event "$1" "$2" "$3"
+}
+_fo_unavailable() {  # <runner>: 0 when a FALLBACK runner cannot be started
+  case "$1" in
+    custom) [ -z "$(_resolve_runner_cmd "$ROLE")" ] ;;
+    antigravity) ! command -v agy >/dev/null 2>&1 ;;
+    *) ! command -v "$1" >/dev/null 2>&1 ;;
+  esac
+}
+_fo_checkpoint() {
+  [ -n "$TALOS_ISSUE_NUMBER" ] || return 0
+  local _crc=0
+  if [ -f "$SCRIPT_DIR/pipeline-worktree.sh" ]; then
+    bash "$SCRIPT_DIR/pipeline-worktree.sh" checkpoint "$TALOS_ISSUE_NUMBER" >/dev/null 2>&1 || _crc=$?
+  else
+    _crc=127
+  fi
+  if [ "$_crc" -ne 0 ]; then
+    echo "talos:failover checkpoint-skipped role=$ROLE rc=$_crc (the files stay in the worktree)" >&2
+  fi
+  return 0
+}
+_run_chain() {
+  local _order _cands=() _down _r _i _n _nxt _snap _verbs _why _reasons="" _chain_txt
+  _order=("$RUNNER" "${CHAIN[@]}")
+  _chain_txt="$(printf '%s,' "${_order[@]}")"; _chain_txt="${_chain_txt%,}"
+  _FO_OUT="$(mktemp "${TMPDIR:-/tmp}/talos-fo-out.XXXXXX")" && _FO_ERR="$(mktemp "${TMPDIR:-/tmp}/talos-fo-err.XXXXXX")" \
+    && TALOS_WRITE_LOG="$(mktemp "${TMPDIR:-/tmp}/talos-fo-wr.XXXXXX")" || {
+    echo "pipeline-agent: failover: cannot create temp files (mktemp)" >&2
+    RC=1; return
+  }
+  export TALOS_WRITE_LOG
+  if command -v _talos_on_exit >/dev/null 2>&1; then
+    _talos_on_exit 'rm -f "$_FO_OUT" "$_FO_ERR" "$TALOS_WRITE_LOG"'
+  else
+    trap 'rm -f "$_FO_OUT" "$_FO_ERR" "$TALOS_WRITE_LOG"' EXIT
+  fi
+  _FO_PROV="$(_prov_path)" || { echo "pipeline-agent: [warn] not in a git repository -- provider down-tracking unavailable" >&2; _FO_PROV=""; }
+  _down="$(_prov_down "$_FO_PROV")"
+  for _r in "${_order[@]}"; do
+    if printf '%s\n' "$_down" | grep -Fxq -- "$_r"; then
+      _reasons="$_reasons $_r:down-cached"
+    else
+      _cands+=("$_r")
+    fi
+  done
+  _n="${#_cands[@]}"
+  if [ "$_n" -gt 0 ] && [ "${_cands[0]}" != "$RUNNER" ]; then
+    _fo_switch "$RUNNER" "${_cands[0]}" "down-cached"
+  fi
+  _i=0
+  while [ "$_i" -lt "$_n" ]; do
+    _r="${_cands[$_i]}"
+    _nxt=""; [ $((_i + 1)) -lt "$_n" ] && _nxt="${_cands[$((_i + 1))]}"
+    _i=$((_i + 1))
+    if [ "$_r" != "$_FO_PRIMARY" ] && _fo_unavailable "$_r"; then
+      _reasons="$_reasons $_r:unavailable"
+      _fo_switch "$_r" "${_nxt:-none}" "unavailable"
+      continue
+    fi
+    if [ "$_r" != "$_FO_PRIMARY" ]; then RUNNER_ARGS=(); fi
+    if [ "$_r" = "custom" ] && [ -z "$(_resolve_runner_cmd "$ROLE")" ]; then
+      echo "pipeline-agent: agents.runner=custom requires agents.runner_cmd (role=$ROLE)" >&2
+      exit 1
+    fi
+    : >"$TALOS_WRITE_LOG"
+    _snap="$(git for-each-ref refs/remotes 2>/dev/null)"
+    _FO_FINAL="$_r"
+    _run_runner "$_r" >"$_FO_OUT" 2>"$_FO_ERR"
+    _classify_exit "$_r" "$RC" "$_FO_ERR" "$_FO_OUT"
+    cat "$_FO_ERR" >&2
+    if [ "$CLASS" != "provider" ]; then
+      cat "$_FO_OUT"
+      return
+    fi
+    _why="provider:$CLASS_DETAIL"
+    _prov_mark_down "$_r" "$_why"
+    _verbs="$(sort -u "$TALOS_WRITE_LOG" 2>/dev/null | paste -sd, -)"
+    if [ "$_snap" != "$(git for-each-ref refs/remotes 2>/dev/null)" ]; then
+      _verbs="${_verbs:+$_verbs,}push"
+    fi
+    if [ -n "$_verbs" ]; then
+      echo "talos:failover-refused role=$ROLE runner=$_r reason=wrote:$_verbs" >&2
+      RC=69
+      return
+    fi
+    _reasons="$_reasons $_r:$_why"
+    _fo_checkpoint
+    [ -z "$_nxt" ] || _fo_switch "$_r" "$_nxt" "$_why"
+  done
+  echo "pipeline-agent: provider chain exhausted role=$ROLE chain=$_chain_txt reasons=${_reasons# } (agents.fallback)" >&2
+  RC=69
+}
+
+CHAIN=()
+while IFS= read -r _fb_entry; do
+  [ -n "$_fb_entry" ] && CHAIN+=("$_fb_entry")
+done <<EOF
+$(_fallback_chain "$ROLE" "$RUNNER")
+EOF
+if [ "${#CHAIN[@]}" -eq 0 ]; then
+  _run_runner "$RUNNER"
+else
+  _run_chain
+fi
 
 # hooks.post_stage (#182): fire once, here, the moment the stage runner has
 # exited -- this is the single adapter-path call site for the
@@ -595,6 +994,11 @@ if [ -f "$SCRIPT_DIR/pipeline-hooks.sh" ]; then
   # otherwise -- no timer plumbing added in this change.
   if [ -n "${TALOS_STAGE_DURATION_S:-}" ]; then
     _POST_STAGE_ARGS+=(--duration-s "$TALOS_STAGE_DURATION_S")
+  fi
+  # #418: a stage that ran on a failover-chain runner names that runner (and a
+  # null model); every other stage's event is unchanged.
+  if [ -n "$_FO_FINAL" ] && [ "$_FO_FINAL" != "$_FO_PRIMARY" ]; then
+    _POST_STAGE_ARGS+=(--runner "$_FO_FINAL")
   fi
   bash "$SCRIPT_DIR/pipeline-hooks.sh" "${_POST_STAGE_ARGS[@]}"
 fi
