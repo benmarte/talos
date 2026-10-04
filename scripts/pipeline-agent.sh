@@ -360,12 +360,22 @@ fi
 # empty, so it defeats "the config is the only place a model is set".
 if [ "${1:-}" = "--resolve-all" ]; then
   _ALL_ROLES="validator pm developer qa reviewer security adversarial docs planner"
-  # key<TAB>layer for every agents.* leaf; one python3 spawn.
-  _LAYERS="$(bash "$SCRIPT_DIR/pipeline-config.sh" --dump-layers 2>/dev/null)"
+  # key<TAB>value<TAB>layer for every agents.* key (#442); one python3 spawn.
+  # "repo" is the project file; a key set by neither file (default, env) has no
+  # origin to show here, so it stays empty.
+  _LAYERS="$(bash "$SCRIPT_DIR/pipeline-config.sh" --show agents. 2>/dev/null)"
   _layer_of() {
-    local _k _l
-    while IFS="$(printf '\t')" read -r _k _l; do
-      if [ "$_k" = "$1" ]; then printf '%s' "$_l"; return 0; fi
+    local _line _l
+    while IFS= read -r _line; do
+      case "$_line" in
+        "$1"$'\t'*)
+          _l="${_line##*$'\t'}"
+          case "$_l" in
+            repo) printf 'project' ;;
+            global) printf 'global' ;;
+          esac
+          return 0 ;;
+      esac
     done <<EOF
 $_LAYERS
 EOF
