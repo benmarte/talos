@@ -13,14 +13,15 @@
 # same way a reviewer would: grep for "pipeline-config\.sh [a-z_.]+" and
 # "cfg [a-z_.]+"), and asserting each one is covered by _KNOWN_CONFIG_KEYS.
 #
-# _KNOWN_CONFIG_KEYS itself is extracted from scripts/pipeline-config.sh's
-# module-level _KNOWN_CONFIG_KEYS_JSON (defined once, referenced by both the
-# --dump path and the single-key path -- see that script's top-of-file
-# comment) rather than hardcoded a third time here, so this guard tracks
-# the real list, not a copy that could itself drift.
+# _KNOWN_CONFIG_KEYS itself is the key column of the config schema table in
+# scripts/pipeline-defaults.sh (#439), as _talos_known_keys_json generates it
+# -- the same JSON pipeline-config.sh hands to both its --dump path and its
+# single-key path -- rather than hardcoded a third time here, so this guard
+# tracks the real list, not a copy that could itself drift. A cfg key missing
+# from the table therefore fails here.
 set -u
 . "$(dirname "$0")/helpers.sh"
-make_sandbox
+make_sandbox || exit 1
 
 HAVE_YAML=false
 python3 -c "import yaml" 2>/dev/null && HAVE_YAML=true
@@ -30,7 +31,8 @@ python3 -c "import yaml" 2>/dev/null && HAVE_YAML=true
 # Python comment further down (e.g. "reviewer's") as closing the heredoc's
 # quoted delimiter. A plain assignment (_out=$(...)) doesn't need the outer
 # quoting since there is no word-splitting/globbing risk on an RHS assignment.
-_out=$(python3 - "$TALOS_ROOT" "$HAVE_YAML" <<'PYEOF'
+_known_json="$( . "$TALOS_ROOT/scripts/pipeline-defaults.sh"; _talos_known_keys_json )"
+_out=$(python3 - "$TALOS_ROOT" "$HAVE_YAML" "$_known_json" <<'PYEOF'
 import glob
 import json
 import os
@@ -38,16 +40,17 @@ import re
 import sys
 
 root, have_yaml = sys.argv[1], sys.argv[2] == "True"
-cfg_sh = os.path.join(root, "scripts", "pipeline-config.sh")
 missing = []
 
-# ── Extract the real _KNOWN_CONFIG_KEYS list ────────────────────────────────
-src = open(cfg_sh).read()
-m = re.search(r"_KNOWN_CONFIG_KEYS_JSON='(\[.*?\])'", src, re.S)
-if not m:
-    print("could not find _KNOWN_CONFIG_KEYS_JSON in pipeline-config.sh")
+# ── The real _KNOWN_CONFIG_KEYS list: the table's key column ────────────────
+try:
+    known = json.loads(sys.argv[3])
+except ValueError:
+    print("pipeline-defaults.sh did not generate a JSON key list")
     sys.exit(0)
-known = json.loads(m.group(1))
+if not known:
+    print("pipeline-defaults.sh generated an empty key list")
+    sys.exit(0)
 known_templates = [k.split(".") for k in known]
 
 def key_covered(key):

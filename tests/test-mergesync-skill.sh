@@ -11,7 +11,7 @@ set -u
 
 SKILL="$TALOS_ROOT/skills/pipeline/SKILL.md"
 VCS="$TALOS_ROOT/scripts/pipeline-vcs.sh"
-CFG="$TALOS_ROOT/scripts/pipeline-config.sh"
+CFG="$TALOS_ROOT/scripts/pipeline-defaults.sh"  # the known-keys list is the table's key column (#439)
 assert_file_exists "$SKILL" "skills/pipeline/SKILL.md exists"
 assert_file_exists "$VCS" "scripts/pipeline-vcs.sh exists"
 
