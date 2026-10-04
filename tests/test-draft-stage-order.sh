@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test-draft-stage-order.sh -- opt-in draft-PR stage order (#332, PR 2 of 2).
+# test-draft-stage-order.sh -- draft-PR stage order (#332, PR 2 of 2; the default since #435).
 #
 # Every draft-specific instruction in skills/pipeline/SKILL.md sits inside
 # <!-- pr-draft:start --> ... <!-- pr-draft:end --> blocks, so the default flow
@@ -22,6 +22,9 @@
 #   (f) liveness (#340): "QA passed, CI failed at Step 4, fix round" replayed
 #       against the real SKILL.md text reaches ready-pr; without the qa:pass
 #       strip a stale approval makes step 5's precondition impossible
+#
+#   (g) the default path (#435): one resolver, `pr.draft` unset is true on github,
+#       gitlab and azure and false on github-api and file; explicit false wins
 #
 # SKILL_FILE=<path> points every check at another copy of SKILL.md (used to
 # show the positive controls red against a mutated copy).
@@ -163,11 +166,12 @@ check_no_new_verb_when_unset "$SKILL"; assert_eq "0" "$?" "default unchanged: no
 # ── Prose pins (all inside pr-draft blocks) ──────────────────────────────────
 DT="$(draft_text "$SKILL" | norm)"
 
-assert_contains "$DT" 'PR_DRAFT (`pr.draft`, default `false`, #332)' "Step 0: PR_DRAFT is read from pr.draft, default false"
-in_order "$DT" 'when `pr.draft` is `true` and VCS_PROVIDER is `github-api` or `file`, warn ONCE on stderr' 'treat PR_DRAFT as `false` for the whole run' 'the stage order is then the default one'
-assert_eq "0" "$?" "Step 0: github-api/file with pr.draft true warns once and falls back to the default order"
-in_order "$DT" 'ready_for_review' 'if: github.event.pull_request.draft != true' 'QA waits for a run that never comes'
-assert_eq "0" "$?" "Step 0: names the CI-side pairing and the QA-waits-forever failure mode"
+assert_contains "$DT" 'PR_DRAFT (`pr.draft`, default `true`, #332, #435)' "Step 0: PR_DRAFT is read from pr.draft, default true (#435)"
+in_order "$DT" 'Resolve it with' 'PR_DRAFT="\$\(bash scripts/pipeline-draft-check\.sh resolve\)"' 'show its one stderr warning line' 'Talos never edits CI config'
+assert_eq "0" "$?" "Step 0: PR_DRAFT comes from the one resolver call, which owns the provider fallback and the CI warning (#435)"
+assert_not_contains "$DT" 'pipeline-config.sh pr.draft' "Step 0: no call site reads pr.draft on its own (#435)"
+in_order "$DT" 'Under `VERIFY_QA_MODE` `ci` the PR was just marked ready' 'run the gate below with `--wait <B>`' '`B` = `min\(VERIFY_CI_WAIT_S, VERIFY_TIMEOUT_MS/1000 - 30\)`' 'the Bash call.s timeout `VERIFY_TIMEOUT_MS`' '2, still pending at `B`, spawns QA'
+assert_eq "0" "$?" "Step 3d: after ready-pr, under qa_mode ci, the gate is one pr-checks-required --wait call capped under the Bash timeout (#435)"
 
 in_order "$DT" 'Open the PR as a DRAFT: bash scripts/pipeline-vcs.sh create-pr <branch> "\$PR_TITLE" "\$BODY_FILE" --draft'
 assert_eq "0" "$?" "developer prompt: opens the PR with create-pr ... --draft"
@@ -576,7 +580,7 @@ awk '/^- COMMENTS_ENABLED, COMMENTS_HEADER_TPL/{print "- A_NEW_DEFAULT_VALUE (ad
 check_step0_unchanged "$MUT"; assert_eq "1" "$?" "positive control: a line added to Step 0's config list turns 'Step 0 unchanged' red (#340)"
 awk '/^- `execution.worktree_warn_threshold`: 10/{print; print "- `a.new.default`: 1"; next} 1' "$SKILL" > "$MUT"
 check_step0_unchanged "$MUT"; assert_eq "1" "$?" "positive control: a line added to Step 0's defaults list turns 'Step 0 unchanged' red (#340)"
-sed 's/^- `pr.draft`: false (#332)$/- `pr.draft`: true (#332)/' "$SKILL" > "$MUT"
+sed 's/^- `pr.draft`: true (#332, #435; /- `pr.draft`: false (#332; /' "$SKILL" > "$MUT"
 check_step0_unchanged "$MUT"; assert_eq "0" "$?" "control: a change inside a pr-draft block in Step 0 is not a default-text change (#340)"
 strip_draft "$SKILL" > "$MUT"; printf 'bash scripts/pipeline-vcs.sh ready-pr 42\n' >> "$MUT"
 check_no_new_verb_when_unset "$MUT"; assert_eq "1" "$?" "positive control: a draft verb outside a pr-draft block turns 'no new verb when unset' red"
@@ -590,5 +594,37 @@ awk '
 check_ci_runs_before_merge "$MUT"; assert_eq "1" "$?" "positive control: pr-ci-runs after merge-pr turns the 'ci_runs order' check red"
 model_reset; replay_verbs "$MUT" "happy path" 0 >/dev/null
 assert_eq "" "$(replay_merge "$MUT")" "positive control: pr-ci-runs after merge-pr records no ci_runs (runs lost their pull_requests[]), so the replay goes red"
+
+# ── (g) the default path: one resolver (#435) ────────────────────────────────
+# `pr.draft` unset is the draft flow on github, gitlab and azure and the ready
+# flow on github-api and file; an explicit false always wins. The resolver is
+# the one place that knows (Step 0 and pipeline-status-file.sh both call it).
+DC="$TALOS_ROOT/scripts/pipeline-draft-check.sh"
+RES="$SANDBOX/resolve"; mkdir -p "$RES"
+resolve_with() {  # $1 = JSON config; prints "<value>|<stderr>" from an empty repo dir
+  printf '%s\n' "$1" > "$RES/cfg.json"
+  ( cd "$RES" && PIPELINE_CONFIG="$RES/cfg.json" bash "$DC" resolve 2>"$RES/err" | tr -d '\n'; printf '|%s' "$(cat "$RES/err")" )
+}
+for prov in github gitlab azure; do
+  cfg_unset='{"vcs":{"provider":"'$prov'"}}'
+  cfg_true='{"vcs":{"provider":"'$prov'"},"pr":{"draft":true}}'
+  cfg_false='{"vcs":{"provider":"'$prov'"},"pr":{"draft":false}}'
+  assert_eq "true|" "$(resolve_with "$cfg_unset")" "default: pr.draft unset on $prov resolves to true, silently"
+  assert_eq "true|" "$(resolve_with "$cfg_true")" "default: explicit true on $prov resolves to true"
+  assert_eq "false|" "$(resolve_with "$cfg_false")" "default: explicit false on $prov wins, silently"
+done
+assert_eq "true|" "$(resolve_with '{}')" "default: no provider key is github, true"
+assert_eq "false|pipeline: pr.draft ignored: provider github-api cannot open draft PRs" "$(resolve_with '{"vcs":{"provider":"github-api"}}')" "default: unset on github-api resolves to false with the one-line warning"
+assert_eq "false|pipeline: pr.draft ignored: provider github-api cannot open draft PRs" "$(resolve_with '{"vcs":{"provider":"github-api"},"pr":{"draft":true}}')" "default: explicit true on github-api resolves to false with the one-line warning"
+assert_eq "false|" "$(resolve_with '{"vcs":{"provider":"github-api"},"pr":{"draft":false}}')" "default: explicit false on github-api is false, silently"
+assert_eq "false|" "$(resolve_with '{"vcs":{"provider":"file"}}')" "default: unset on file resolves to false, silently (no PRs exist there)"
+assert_eq "false|pipeline: pr.draft ignored: provider file cannot open draft PRs" "$(resolve_with '{"vcs":{"provider":"file"},"pr":{"draft":true}}')" "default: explicit true on file resolves to false with the one-line warning"
+assert_eq "false|" "$(resolve_with '{"vcs":{"provider":"file"},"pr":{"draft":false}}')" "default: explicit false on file is false, silently"
+assert_eq "true|" "$(resolve_with '{"pr":{"draft":"TRUE"}}')" "default: the key is case-insensitive"
+assert_eq "true|" "$(resolve_with '{"pr":{"draft":"banana"}}')" "default: a junk value reads as unset (the default)"
+
+# Step 0 and the status file share it: neither hard-codes the default any more.
+assert_contains "$(cat "$TALOS_ROOT/scripts/pipeline-status-file.sh")" 'pipeline-draft-check.sh" resolve' "status file: asks the same resolver as Step 0"
+assert_not_contains "$(cat "$TALOS_ROOT/scripts/pipeline-status-file.sh")" 'cfg pr.draft' "status file: no hard-coded pr.draft default"
 
 finish

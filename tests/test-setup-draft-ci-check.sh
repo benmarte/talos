@@ -1,61 +1,47 @@
 #!/usr/bin/env bash
-# test-setup-draft-ci-check.sh -- the /pipeline-setup pr.draft workflow check (#340).
+# test-setup-draft-ci-check.sh -- the /pipeline-setup pr.draft workflow check
+# (#340, reworked by #435).
 #
-# The check used to be `grep -L ... .github/workflows/*.yml 2>/dev/null`: with no
-# workflow file the glob stays literal, grep fails, the error is suppressed, and
-# the empty output reads as "nothing missing". The check now reports
-# "no workflow files found" as its own outcome. This test extracts the real
-# fenced block from skills/pipeline-setup/SKILL.md and runs it in sandboxes, so
-# it exercises the text the setup wizard actually shows. It also pins the
+# The check used to be a shell loop typed into the setup skill, and with no
+# workflow file its empty output read as "nothing missing". It is now one call,
+# `bash scripts/pipeline-draft-check.sh`, which prints `none` for "no workflow
+# with a pull_request trigger" as its own status, never `ok`. This test runs
+# that call in sandboxes (the statuses themselves are covered by
+# tests/test-draft-check.sh), checks the setup skill's text, and pins the
 # draft-time-success guidance in the README and the setup skill.
 set -u
 . "$(dirname "$0")/helpers.sh"
-make_sandbox
+make_sandbox || exit 1
 
 SETUP="${SETUP_FILE:-$TALOS_ROOT/skills/pipeline-setup/SKILL.md}"
 README="$TALOS_ROOT/README.md"
+DC="$TALOS_ROOT/scripts/pipeline-draft-check.sh"
 
-# The fenced bash block that scans .github/workflows (the one naming ready_for_review).
-awk '/^```bash$/{buf=""; inb=1; next} /^```$/{ if (inb && buf ~ /\.github\/workflows/ && buf ~ /ready_for_review/) printf "%s", buf; inb=0; buf=""; next} inb{buf = buf $0 "\n"}' "$SETUP" > "$SANDBOX/check.sh"
-assert_eq "1" "$([ -s "$SANDBOX/check.sh" ] && echo 1 || echo 0)" "the setup skill has a workflow-check block"
+run_check() { (cd "$1" && bash "$DC" 2>&1); }
 
-run_check() { (cd "$1" && bash "$SANDBOX/check.sh" 2>&1); }
-NOWF="no workflow files found in .github/workflows"
-
-# Empty workflows directory: its own outcome.
+# No workflow files is its own outcome (none), never ok.
 mkdir -p "$SANDBOX/empty/.github/workflows"
-assert_eq "$NOWF" "$(run_check "$SANDBOX/empty")" "empty workflows directory reports no workflow files found, not 'nothing missing'"
-# No .github at all.
-mkdir -p "$SANDBOX/none"
-assert_eq "$NOWF" "$(run_check "$SANDBOX/none")" "no .github/workflows directory reports no workflow files found"
-# A directory with no workflow files (only a non-yaml file).
+assert_eq "none" "$(run_check "$SANDBOX/empty")" "empty workflows directory reports none, not ok"
+mkdir -p "$SANDBOX/absent"
+assert_eq "none" "$(run_check "$SANDBOX/absent")" "no .github/workflows directory reports none"
 mkdir -p "$SANDBOX/other/.github/workflows"; printf 'x\n' > "$SANDBOX/other/.github/workflows/README.txt"
-assert_eq "$NOWF" "$(run_check "$SANDBOX/other")" "a workflows directory with no .yml/.yaml file reports no workflow files found"
+assert_eq "none" "$(run_check "$SANDBOX/other")" "a workflows directory with no .yml/.yaml file reports none"
 
-# A paired workflow: silent.
+# A paired workflow is ok; a half-paired one is named by status.
 mkdir -p "$SANDBOX/ok/.github/workflows"
 printf 'on:\n  pull_request:\n    types: [opened, ready_for_review]\njobs:\n  t:\n    if: github.event.pull_request.draft != true\n' > "$SANDBOX/ok/.github/workflows/tests.yml"
-assert_eq "" "$(run_check "$SANDBOX/ok")" "a workflow with ready_for_review and the draft guard reports nothing"
-
-# Missing pieces are named per file (.yml and .yaml both scanned).
+assert_eq "ok" "$(run_check "$SANDBOX/ok")" "a workflow with ready_for_review and the draft guard is ok"
 mkdir -p "$SANDBOX/bad/.github/workflows"
-printf 'on: [push]\n' > "$SANDBOX/bad/.github/workflows/a.yml"
-printf 'on:\n  pull_request:\n    types: [ready_for_review]\n' > "$SANDBOX/bad/.github/workflows/b.yaml"
-out="$(run_check "$SANDBOX/bad")"
-assert_contains "$out" "missing ready_for_review: .github/workflows/a.yml" "a workflow without ready_for_review is named"
-assert_contains "$out" "missing draft != true guard: .github/workflows/a.yml" "a workflow without the draft guard is named"
-assert_contains "$out" "missing draft != true guard: .github/workflows/b.yaml" "a .yaml workflow is scanned too"
-assert_not_contains "$out" "missing ready_for_review: .github/workflows/b.yaml" "a .yaml workflow that has ready_for_review is not flagged for it"
-assert_not_contains "$out" "$NOWF" "workflow files present: the no-workflow outcome is not printed"
+printf 'on:\n  pull_request:\n    types: [ready_for_review]\njobs:\n  t:\n    runs-on: x\n' > "$SANDBOX/bad/.github/workflows/b.yaml"
+assert_eq "no-skip" "$(run_check "$SANDBOX/bad")" "a .yaml workflow without the draft guard is no-skip"
 
-# Control: the old one-liner printed nothing for an empty directory (the false negative).
-old="$(cd "$SANDBOX/empty" && { grep -L "ready_for_review" .github/workflows/*.yml 2>/dev/null; grep -L "github.event.pull_request.draft != true" .github/workflows/*.yml 2>/dev/null; })"
-assert_eq "" "$old" "control: the old grep -L check is silent on an empty workflows directory"
-
-# The wizard text says to treat it as its own outcome and not write pr.draft.
+# The setup text calls the script, types no loop, and keeps its outcomes.
 SN="$(tr '\n' ' ' < "$SETUP" | tr -s ' ')"
-assert_contains "$SN" '`no workflow files found` is its own outcome, never "nothing missing"' "setup skill: the no-workflow outcome is spelled out"
-assert_contains "$SN" 'do NOT write `pr.draft`' "setup skill: no pr.draft is written without a workflow to check"
+assert_contains "$SN" 'bash scripts/pipeline-draft-check.sh' "setup skill: runs the check script"
+assert_not_contains "$SN" 'for f in .github/workflows' "setup skill: no shell loop over the workflows"
+assert_contains "$SN" 'ask the user to check the requirements below by hand' "setup skill: an unknown status goes to the user"
+assert_contains "$SN" 'Edit the file only after an explicit yes' "setup skill: a workflow is edited only after an explicit yes"
+assert_contains "$SN" 'only when the user picks the ready flow (the non-default); never write `draft: true`' "setup skill: only the non-default is written"
 
 # ── Draft-time-success guidance (README + setup skill) ────────────────────────
 RN="$(tr '\n' ' ' < "$README" | tr -s ' ')"

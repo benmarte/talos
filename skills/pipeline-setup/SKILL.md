@@ -625,33 +625,42 @@ before setup started.
 
 If no: skip, no file is written.
 
-**Draft PRs (`pr.draft`, optional, #332).** Offer this only after the workflow
-question above is settled. Explain in two lines: with `pr.draft: true` the
+**Draft PRs (`pr.draft`, on by default, #332, #435).** Offer this only after the
+workflow question above is settled. Explain in two lines: by default the
 developer opens a DRAFT PR, docs and review run on the draft, and CI runs once,
 when the PR is marked ready (one run per issue instead of one per push). The
 trade-off: reviewers see the code before CI has proven it; the developer's
 local `verify:` run covers most of that risk, and a CI failure the local run
 missed costs one extra run.
 
-It only works when the repo's CI pairs with it. Talos documents this and
-**never edits a workflow file**, so check the workflow that runs the required
-checks and report what is missing:
+It only saves anything when the repo's CI pairs with it. Check the workflows
+(this only reads; it always exits 0 and prints one status):
 
 ```bash
-FOUND=0
-for f in .github/workflows/*.yml .github/workflows/*.yaml; do
-  [ -f "$f" ] || continue   # an unmatched glob stays literal: skip it
-  FOUND=1
-  grep -q "ready_for_review" "$f" || echo "missing ready_for_review: $f"
-  grep -q "github.event.pull_request.draft != true" "$f" || echo "missing draft != true guard: $f"
-done
-[ "$FOUND" = 1 ] || echo "no workflow files found in .github/workflows"
+bash scripts/pipeline-draft-check.sh
 ```
 
-`no workflow files found` is its own outcome, never "nothing missing": an empty
-or absent workflows directory gives no output from a bare `grep -L`, which reads
-as a pass. Report it plainly and do NOT write `pr.draft`: with no workflow there
-is no pairing to check.
+- `ok`: a workflow runs on `pull_request`, lists `ready_for_review` in `types`
+  and skips drafts. Nothing to do.
+- `no-skip`: PR workflows exist but none skips drafts, so CI still runs on every
+  push and nothing is saved. Offer the change below.
+- `no-ready-trigger`: a job skips drafts but `ready_for_review` is not in
+  `on.pull_request.types`. Marking a PR ready then fires no event, no run ever
+  starts, and QA waits for one until `verify.ci_wait_s` expires. Say so plainly
+  and offer the change below.
+- `none`: no workflow has a `pull_request` trigger, so there is no pairing to
+  check. Report it; the workflow question above is the fix.
+- `unknown`: the workflows could not be read with confidence. Say so, and ask
+  the user to check the requirements below by hand.
+
+For `no-skip` and `no-ready-trigger`, ask: "Add `if: github.event.pull_request.draft
+!= true` to each job and `ready_for_review` to `on.pull_request.types` in
+`<file>`? (y/n)". Edit the file only after an explicit yes, mirroring
+`templates/ci/github-tests.yml` (which already has both); never edit silently, and
+leave every workflow you did not offer to change alone. If the user says no, ask
+whether to keep the draft flow anyway (it still works, it just saves nothing, and
+on `no-ready-trigger` Step 0 falls back to the ready flow while `pr.draft` is
+unset) or to use the ready flow.
 
 - `on.pull_request.types` must include `ready_for_review`. Without it, marking
   a PR ready fires no event, no run ever starts, and QA waits for one until
@@ -671,12 +680,10 @@ is no pairing to check.
   start when the PR is marked ready); say plainly that Talos has not checked
   those providers' trigger and policy settings, and leave it to the user.
 
-If any of the above is missing, print the requirements and do NOT write
-`pr.draft`; the user fixes the workflow first. If both are present and the user
-says yes, add `pr:\n  draft: true` to the config written in Step 7. If the
-provider is `github-api` or `file`, say draft PRs are unsupported there and do
-not write the key. `templates/ci/github-tests.yml` already has both
-(`ready_for_review` in `types`, `draft != true` on the job).
+Write `pr:\n  draft: false` to the config written in Step 7 only when the user picks
+the ready flow (the non-default); never write `draft: true`, it is the default.
+If the provider is `github-api` or `file`, say draft PRs are unsupported there
+(the ready flow is used whatever the key says) and write nothing.
 
 ---
 

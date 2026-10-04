@@ -150,7 +150,14 @@
 #                                             the current head; exit 2 while
 #                                             any is pending/missing, exit 1
 #                                             on failure or an empty
-#                                             merge.required_checks (#205)
+#                                             merge.required_checks (#205).
+#                                             A skipped check (github
+#                                             `skipping`, github-api `skipped`)
+#                                             is pending, not failed (#435): a
+#                                             draft push leaves one until the
+#                                             ready_for_review run replaces it.
+#                                             It never passes, so a persistent
+#                                             skip ends exit 2 at the deadline.
 #              <n> --wait <seconds>           ...poll (30s steps) until not 2 or
 #                                             <seconds> (digits, <= 3600) pass;
 #                                             github/github-api only (#355)
@@ -3678,7 +3685,7 @@ for line in sys.stdin:
     name, raw = parts[0], parts[1].strip().lower()
     if raw == 'pass':
         status = 'pass'
-    elif raw in ('pending', 'queued', 'in_progress', 'expected', 'requested', 'waiting'):
+    elif raw in ('pending', 'queued', 'in_progress', 'expected', 'requested', 'waiting', 'skipping'):
         status = 'pending'
     else:
         status = 'fail'
@@ -4989,6 +4996,8 @@ for c in data.get('check_runs', []):
         status = 'pending'
     elif c.get('conclusion') == 'success':
         status = 'pass'
+    elif c.get('conclusion') == 'skipped':
+        status = 'pending'
     else:
         status = 'fail'
     print(name + '\t' + status)

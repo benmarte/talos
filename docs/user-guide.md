@@ -757,6 +757,37 @@ already has Talos labels re-runs `bash scripts/bootstrap-labels.sh` once so
   file is not updated; leave `status.enabled` off there. The resume skill still
   works through `pipeline-status-file.sh refresh --print`, which needs no push.
 
+### Draft PRs: one CI run per PR (`pr.draft`, default `true`, #332, #435)
+
+By default Talos opens the developer's PR as a **draft**. Docs, reviewer,
+security and the fix round all run while it is a draft, so no push to it starts
+CI. Once every approval is in, the orchestrator marks the PR ready (`ready-pr`),
+CI runs once on the final head, and QA uses that run. Under `verify.qa_mode: ci`
+the orchestrator waits for it with one `pr-checks-required <pr> --wait <s>` call
+(`<s>` is `verify.ci_wait_s`, capped under `verify.timeout_ms`), so no QA agent
+sits idle on it. The developer's own CI wait is a no-op here: the brief says
+`Required checks: none` because CI has not started. Set `pr.draft: false` to
+keep the ready flow, where every push runs CI.
+
+- **Provider support.** `github`, `gitlab` and `azure` take the default.
+  `github-api` and `file` cannot open draft PRs and always use the ready flow
+  (`github-api` prints one warning line).
+- **Pair it with your CI.** Step 0 runs `scripts/pipeline-draft-check.sh` on
+  `github` and prints at most one warning. `ok` is silent. `no-skip` means no
+  workflow skips drafts, so CI still runs on every push (you lose the saving,
+  nothing hangs). `no-ready-trigger` means a job skips drafts but
+  `ready_for_review` is missing from `on.pull_request.types`: marking the PR
+  ready would start no run and QA would wait for nothing, so with `pr.draft`
+  unset that run uses the ready flow, and with `pr.draft: true` you get the
+  warning only. See `templates/ci/github-tests.yml` for a workflow that has both.
+  Talos never edits a workflow; `/pipeline-setup` offers the change after an
+  explicit yes.
+- **A skipped check is pending, not red.** A draft push leaves the job skipped
+  until the `ready_for_review` run replaces it. `pr-checks-required` reads a
+  skipped check as pending (exit 2), never as `failed:` and never as a pass.
+- **Trade-off.** Reviewers see the code before CI has proven it. Your local
+  `verify:` run covers most of that; a CI failure it missed costs one extra run.
+
 ### Running `verify:` once per PR, and QA trusting CI (`verify.qa_mode`, `verify.targeted`, `verify.ci_wait_s`, `verify.timeout_ms`)
 
 The full `verify:` suite is expensive to run repeatedly, and by default CI
