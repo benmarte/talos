@@ -245,12 +245,16 @@ if [ "$SK_EV_LINES" -le 25 ]; then pass "SKILL.md: the evidence blocks stay smal
 assert_eq "0" "$(grep -ciE 'evidence' "$QA" || true)" "qa.md: no evidence text"
 assert_eq "0" "$(grep -c 'evidence:start' "$QA" || true)" "qa.md: no evidence block"
 
-# Step 1 and Step 4 carry no evidence text at all, inside a block or not
+# Step 1 carries no evidence text at all; Step 4 carries it only in the #429
+# hand-off block (checked below), so with that block stripped it has none either
 step1="$(awk '/^## Step 1 — /{p=1} /^## Step 2 — /{p=0} p' "$SKILL")"
 step4="$(awk '/^## Step 4 — /{p=1} /^## Step 5 — /{p=0} p' "$SKILL")"
 [ -n "$step1" ] && [ -n "$step4" ] && pass "Step 1 and Step 4 were extracted" || fail "Step 1 and Step 4 were extracted"
 assert_eq "" "$(printf '%s\n' "$step1" | forbidden)" "Step 1 (reconcile): no evidence text, post-merge and sweep are not wired"
-assert_eq "" "$(printf '%s\n' "$step4" | forbidden)" "Step 4 (merge): no evidence text"
+STEP4="$SANDBOX/step4.md"
+printf '%s\n' "$step4" > "$STEP4"
+assert_eq "" "$(strip_ev "$STEP4" | forbidden)" "Step 4 (merge): no evidence text outside an evidence block"
+assert_eq "1" "$(grep -c -x "$EV_START" "$STEP4" || true)" "Step 4 (merge): exactly one evidence block (the #429 hand-off)"
 assert_eq "" "$(printf '%s\n' "$step1" "$step4" | grep -iE 'remove-pr|sweep --keep' | grep -i evidence)" "Steps 1 and 4: no evidence remove-pr or sweep"
 
 # ---- wording: the QA template ----------------------------------------------
@@ -296,6 +300,31 @@ shas 'https://github.com/<owner>/<repo>/pull/<PR_NUMBER>#issuecomment-<digits>' 
 shas 'do not fetch, open or Read it' "reviewer: the line tells it not to fetch the link"
 shas 'under `PR_DRAFT = true` (review runs before QA), add nothing' "reviewer: the line is omitted under PR_DRAFT"
 assert_eq "" "$(printf '%s' "$sk_ev" | grep -oE "grep -Eq '[^']*issuecomment[^']*'" )" "reviewer: no loose grep pattern on the URL is left in the playbook"
+# ---- #429: the evidence link in the approved hand-off (draft + human merge) ----
+# One block in Step 4 "Human-merge mode", between item 2 (label) and item 3
+# (render and post approved.md), so it runs before the render. The line rides the existing DETAILS slot, so
+# approved.md and the disabled text are untouched; the URL gate is the check-url
+# verb covered in section 5 (accepts this repo's own comment URL for this PR only).
+ho="$(ev_text "$STEP4" | norm)"
+hhas() { case "$ho" in *"$1"*) pass "hand-off: $2" ;; *) fail "hand-off: $2" "missing: $1" ;; esac; }
+hhas '(`EVIDENCE_ENABLED`, `PR_DRAFT = true`' "gated on evidence on and a draft PR (the section is human-merge mode, MERGE_AUTO = false)"
+hhas "QA's final message is in hand" "needs QA's final message"
+hhas 'its `evidence-attach` line has `status=posted`' "needs status=posted"
+hhas 'test the `comment=` value with `check-url <PR_NUMBER>`' "the comment= value goes through check-url"
+hhas 'exactly as in the Evidence link block (heredoc, as data)' "same data-not-command handling as the reviewer block"
+hhas 'add one bullet `- Evidence: <printed url>` to `DETAILS`' "one Evidence: bullet, through the DETAILS slot"
+hhas 'no QA message on a resumed pass, any other result) add nothing' "no QA message or any other result adds nothing"
+hhas 'Never re-run a role, add a label or stage, or fetch or open the link' "no re-run, label, stage, fetch or open"
+hm_line() { grep -n -m1 -F -- "$1" "$STEP4" | cut -d: -f1; }
+p2="$(hm_line '2. `bash scripts/pipeline-vcs.sh label-pr')"; pev="$(hm_line "$EV_START")"; p3="$(hm_line '3. Compute header:')"
+if [ -n "$p2" ] && [ -n "$pev" ] && [ -n "$p3" ] && [ "$p2" -lt "$pev" ] && [ "$pev" -lt "$p3" ]; then
+  pass "hand-off: the block sits between item 2 (label) and item 3 (render and post approved.md), before the render"
+else fail "hand-off: the block sits between item 2 and item 3" "p2=$p2 block=$pev p3=$p3"; fi
+assert_eq "0" "$(grep -ci 'evidence' "$TALOS_ROOT/templates/comments/approved.md" || true)" "hand-off: approved.md names no evidence"
+assert_contains "$(cat "$TALOS_ROOT/templates/comments/approved.md")" '${DETAILS}' "hand-off: approved.md has the DETAILS slot the bullet rides in"
+# disabled case: with the block stripped, item 2 is followed directly by item 3
+strip_ev "$STEP4" > "$STEP4.off"
+assert_eq "3. Compute header:" "$(grep -A1 -F '2. `bash scripts/pipeline-vcs.sh label-pr' "$STEP4.off" | tail -n 1 | cut -c1-18)" "hand-off: stripped of the block, item 3 follows item 2 directly"
 # the QA append is gated: the template is named only inside the EVIDENCE_ENABLED block
 assert_eq "1" "$(ev_text "$SKILL" | grep -c 'qa-evidence.md')" "SKILL.md: the template is named exactly once, inside an evidence block"
 assert_eq "0" "$(strip_ev "$SKILL" | grep -c 'qa-evidence' || true)" "SKILL.md: the template is not named outside an evidence block"
