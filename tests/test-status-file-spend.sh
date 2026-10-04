@@ -32,8 +32,8 @@ git config user.name "talos-test"
 git config commit.gpgsign false
 
 PARENT="$(safe_mktemp_dir "${TMPDIR:-/tmp}/talos-sf-spend.XXXXXX")" || exit 1
-UPSTREAM="$PARENT/upstream.git"
-WORK="$PARENT/work"
+UPSTREAM="${PARENT:?}/upstream.git"
+WORK="${PARENT:?}/work"
 trap 'rm -rf "$SANDBOX" "$PARENT"' EXIT
 mkdir -p "$PARENT/tmp"
 export TMPDIR="$PARENT/tmp"

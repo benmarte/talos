@@ -60,7 +60,7 @@ case "$args" in
     _page_var="STUB_AZURE_PR_LIST_SKIP_${_pl_skip:-0}"
     if [ -n "$_pl_skip" ] && [ -n "${!_page_var:-}" ]; then printf '%s\n' "${!_page_var}"; exit 0; fi
     if [ "${STUB_AZURE_PR_LIST_FULL:-}" = "1" ]; then
-      python3 -c '
+      python3 -I -c '
 import json, sys
 skip, top = int(sys.argv[1] or 0), int(sys.argv[2] or 1)
 print(json.dumps([{"pullRequestId": 100000 + skip + i, "status": "active",
@@ -79,7 +79,7 @@ print(json.dumps([{"pullRequestId": 100000 + skip + i, "status": "active",
     [ "${STUB_AZURE_WORKITEM_SHOW_FAIL:-}" = "1" ] && _stub_fail "TF401232: Work item does not exist."
     if [ -n "${STUB_AZURE_WORKITEM_JSON:-}" ]; then printf '%s\n' "$STUB_AZURE_WORKITEM_JSON"; exit 0; fi
     if [ -n "${STUB_AZURE_WORKITEM_DESCRIPTION:-}${STUB_AZURE_WORKITEM_DESCRIPTION_FILE:-}" ]; then
-      python3 -c "
+      python3 -I -c "
 import json, os
 f = os.environ.get('STUB_AZURE_WORKITEM_DESCRIPTION_FILE')
 desc = open(f).read() if f else os.environ['STUB_AZURE_WORKITEM_DESCRIPTION']
@@ -107,7 +107,7 @@ case "$args" in
     # assign-issue's write is visible to its read-back.
     _as_cur=""
     [ -n "${STUB_ASSIGNEE_FILE:-}" ] && [ -s "$STUB_ASSIGNEE_FILE" ] && _as_cur="$(cat "$STUB_ASSIGNEE_FILE")"
-    CUR="$_as_cur" python3 -c "
+    CUR="$_as_cur" python3 -I -c "
 import json, os
 cur = os.environ['CUR']
 fields = {'System.Title': 'Fix login crash', 'System.Tags': 'bug; ui'}

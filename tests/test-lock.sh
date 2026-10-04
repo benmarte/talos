@@ -57,7 +57,7 @@ printf '%s\n' "$_dead_pid" > "$STALE_DIR/pid"
 
 # ── AC: timeout path warns to stderr and proceeds without the lock ──────────
 BUSY_RESOURCE="$SANDBOX/busy-target"
-BUSY_DIR="$BUSY_RESOURCE.lock.d"
+BUSY_DIR="${BUSY_RESOURCE:?}.lock.d"
 mkdir -p "$BUSY_DIR"
 printf '%s\n' "$$" > "$BUSY_DIR/pid"   # held by THIS (alive) process -- never stale
 

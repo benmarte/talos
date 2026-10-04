@@ -86,7 +86,7 @@ case "$args" in
     _as_cur=""
     [ -n "${STUB_ASSIGNEE_FILE:-}" ] && [ -s "$STUB_ASSIGNEE_FILE" ] && _as_cur="$(cat "$STUB_ASSIGNEE_FILE")"
     CUR="$_as_cur" IID="${_iv_n:-42}" HAS_DESC="${STUB_GITLAB_ISSUE_DESCRIPTION+1}" \
-      DESC="${STUB_GITLAB_ISSUE_DESCRIPTION:-}" python3 -c "
+      DESC="${STUB_GITLAB_ISSUE_DESCRIPTION:-}" python3 -I -c "
 import json, os
 users = [u for u in os.environ['CUR'].splitlines() if u.strip()]
 iid = int(os.environ['IID'])
@@ -123,7 +123,7 @@ print(json.dumps(d))
     fi
     _as_cur=""
     [ -n "${STUB_ASSIGNEE_FILE:-}" ] && [ -s "$STUB_ASSIGNEE_FILE" ] && _as_cur="$(cat "$STUB_ASSIGNEE_FILE")"
-    _as_new="$(CUR="$_as_cur" VALS="$_as_vals" python3 -c "
+    _as_new="$(CUR="$_as_cur" VALS="$_as_vals" python3 -I -c "
 import os, sys
 cur = [u for u in os.environ['CUR'].splitlines() if u.strip()]
 add, rm, rep = [], [], []
