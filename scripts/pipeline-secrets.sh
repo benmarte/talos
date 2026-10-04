@@ -18,13 +18,15 @@
 # into the shell variable VAR, first match wins:
 #
 #   1. the exported environment
-#   2. the repo's .env (<git toplevel or $PWD>/.env; parsed, never sourced)
+#   2. the repo's .env (<git toplevel or $PWD>/.env; parsed, never sourced;
+#      talos_dotenv_load exports only the allow list below, #476)
 #   3. the config reference at CONFIG_KEY: `env:NAME` makes NAME the name that
 #      is looked up in steps 1, 2, 4 and 5; a reference that does not resolve
 #      ends the lookup (the caller skips the platform), so an explicit
 #      reference never silently falls back to another variable
 #   4. ${TALOS_HOME:-$HOME/.talos}/.env
 #   5. the legacy ~/.hermes/.env, with ONE deprecation line per process
+#      (TALOS_HERMES_ENV=<path> moves it, an empty value switches it off)
 #
 # Returns 0 and sets VAR when a value was found; returns 1 and leaves VAR as it
 # was when not (one stderr line says why when a reference was involved); 2 on a
@@ -151,6 +153,87 @@ talos_trust_check() {
   _talos_trust_py_run "$(id -u)" "$@"
 }
 
+# ── What a .env may set (#476) ───────────────────────────────────────────────
+# The repo .env comes from the checkout Talos is working in, which can be a PR
+# branch, so it must never be able to set BASH_ENV, PATH, LD_PRELOAD and the
+# like. ONE list says what a .env may export; everything else is ignored:
+#
+#   _TALOS_DOTENV_ALLOW   the notification variables Talos documents, exactly
+#                         the names pipeline-notify.sh reads from a .env (the
+#                         talos_secret_load calls plus the channel/relay
+#                         overrides). Add a name here, nowhere else.
+#   _talos_dotenv_denied  a hard deny list that wins even over the allow list.
+#
+# A .env is PARSED, never evaluated: no source, no eval, no export $(...). A
+# value is taken literally -- one pair of surrounding quotes is stripped, and
+# $(...) / backticks stay plain text. An env:NAME reference to a name outside
+# the allow list is still looked up (it is only read, never exported), except
+# for a denied name.
+_TALOS_DOTENV_ALLOW=" SLACK_WEBHOOK_URL DISCORD_WEBHOOK_URL TEAMS_WEBHOOK_URL SLACK_BOT_TOKEN DISCORD_BOT_TOKEN BUZZ_BOT_PRIVATE_KEY BUZZ_RELAY_URL PIPELINE_SLACK_CHANNEL PIPELINE_DISCORD_CHANNEL PIPELINE_BUZZ_CHANNEL PIPELINE_BUZZ_RELAY "
+
+# 0 when $1 is on the hard deny list: shell start-up files, the search path,
+# the dynamic linker, interpreters' module paths, git, proxies (a proxy would
+# route a webhook call elsewhere), and Talos's own control variables.
+_talos_dotenv_denied() {
+  case "$1" in
+    BASH_ENV|ENV|PATH|IFS|PROMPT_COMMAND|SHELLOPTS|BASHOPTS|HOME|TMPDIR|SHELL|CDPATH|GLOBIGNORE) return 0 ;;
+    BASH_*|LD_*|DYLD_*|PYTHON*|GIT_*|TALOS_*|PS[0-9]|NODE_*|PERL*|RUBY*|CURL_*|SSL_*) return 0 ;;
+    *_PROXY|*_proxy) return 0 ;;
+  esac
+  return 1
+}
+
+# 0 when a .env may export $1: a valid name, on the allow list, not denied.
+_talos_dotenv_allowed() {
+  _talos_secret_name_ok "$1" || return 1
+  _talos_dotenv_denied "$1" && return 1
+  case "$_TALOS_DOTENV_ALLOW" in *" $1 "*) return 0 ;; esac
+  return 1
+}
+
+# talos_dotenv_load FILE [LABEL] -- export the allow-listed keys of FILE that
+# are not already set in the environment (dotenv precedence: exported wins).
+# Every other key is ignored, with ONE stderr line per key per run that names
+# the key and never the value. A missing file is a no-op. Always returns 0.
+talos_dotenv_load() {
+  local _f="${1:-}" _label="${2:-.env}" _line _k _v _skipped=" "
+  [ -f "$_f" ] && [ -r "$_f" ] || return 0
+  while IFS= read -r _line || [ -n "$_line" ]; do
+    _line="${_line%$'\r'}"
+    case "$_line" in
+      ""|"#"*) continue ;;
+      "export "*) _line="${_line#export }" ;;
+    esac
+    case "$_line" in *=*) ;; *) continue ;; esac
+    _k="${_line%%=*}"
+    _v="${_line#*=}"
+    # A key that is not a plain name is never echoed: it is not a variable.
+    _talos_secret_name_ok "$_k" || continue
+    if ! _talos_dotenv_allowed "$_k"; then
+      case "$_skipped" in
+        *" $_k "*) ;;
+        *) _skipped="$_skipped$_k "
+           echo "pipeline-secrets: $_label: ignoring $_k (not a notification variable Talos reads from a .env)" >&2 ;;
+      esac
+      continue
+    fi
+    case "$_v" in
+      '"'*'"') _v="${_v#'"'}"; _v="${_v%'"'}" ;;
+      "'"*"'") _v="${_v#"'"}"; _v="${_v%"'"}" ;;
+    esac
+    case "$_v" in
+      *[[:cntrl:]]*)
+        echo "pipeline-secrets: $_label: the value for $_k holds a control character; ignoring it" >&2
+        continue ;;
+    esac
+    if [ -z "${!_k+x}" ]; then
+      printf -v "$_k" '%s' "$_v"
+      export "$_k"
+    fi
+  done < "$_f"
+  return 0
+}
+
 # ── Secret lookup ────────────────────────────────────────────────────────────
 
 # 0 when $1 is a valid variable name. Pure `case`; LC_ALL=C so a range cannot
@@ -176,6 +259,8 @@ _talos_dotenv_get() {
   local _f="$1" _n="$2" _line _v
   _TS_VAL=""
   [ -r "$_f" ] || return 1
+  # A name on the hard deny list is never looked up, even through env:NAME.
+  _talos_dotenv_denied "$_n" && return 1
   while IFS= read -r _line || [ -n "$_line" ]; do
     _line="${_line%$'\r'}"
     case "$_line" in
@@ -206,8 +291,15 @@ _talos_user_env_get() {
       else return 1; fi
       _state="$_TS_TALOS_STATE" ;;
     hermes)
-      [ -n "${HOME:-}" ] || return 1
-      _f="$HOME/.hermes/.env"
+      # TALOS_HERMES_ENV (#476) moves the legacy file, so a sandboxed test or
+      # QA run never reads the real one: empty switches the fallback off.
+      if [ -n "${TALOS_HERMES_ENV+x}" ]; then
+        [ -n "$TALOS_HERMES_ENV" ] || return 1
+        _f="$TALOS_HERMES_ENV"
+      else
+        [ -n "${HOME:-}" ] || return 1
+        _f="$HOME/.hermes/.env"
+      fi
       _state="$_TS_HERMES_STATE" ;;
     *) return 1 ;;
   esac
