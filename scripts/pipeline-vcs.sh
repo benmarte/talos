@@ -1170,9 +1170,12 @@ print('\n'.join(lines))
 #           always used. VERIFY_AUTHORS, CURRENT_USER (#187) -- effective
 #           trust set is TRUSTED_AUTHORS ∪ {CURRENT_USER} when
 #           VERIFY_AUTHORS is not "false" and CURRENT_USER is non-empty;
-#           VERIFY_AUTHORS defaults to "true" when unset. TALOS_CONTRACT_
-#           ROLES_ENV (#178) -- KNOWN_STAGES, derived from scripts/
-#           pipeline-contract.sh's TALOS_ROLES.
+#           VERIFY_AUTHORS defaults to "true" when unset. CURRENT_USER_REFUSED
+#           (#453) -- "1" when the GET /user lookup ran and was refused: only
+#           TRUSTED_AUTHORS counts then, and an empty list rejects every
+#           marker (fail closed) with one stderr line saying how to fix it.
+#           TALOS_CONTRACT_ROLES_ENV (#178) -- KNOWN_STAGES, derived from
+#           scripts/pipeline-contract.sh's TALOS_ROLES.
 #   stdout: "stage=<s> count=<k> total=<t>[ key=<tok>]" (or "stage= count=0
 #           total=0" when no marker exists), preceded by any
 #           `talos:marker-authors-unverified` passthrough line.
@@ -1184,7 +1187,7 @@ print('\n'.join(lines))
 #           corrupt markers never silently fall through to zero attempts).
 _vcs_shared_read_attempt() {
   _vcs_shared_contract_env
-  python3 -I -c "
+  python3 -I -c "$(_vcs_shared_trust_py)
 import json, os, re, sys
 
 # Stage-1 permissive detector: matches any HTML comment that looks like it
@@ -1205,55 +1208,18 @@ MARKER_RE = re.compile(
 # role list here.
 KNOWN_STAGES = set(os.environ.get('TALOS_CONTRACT_ROLES_ENV', '').split())
 
-# Author trust set (#187): markers.trusted_authors config (YAML/JSON list of
-# logins) unioned with the authenticated user (CURRENT_USER, resolved by
-# _vcs_shared_current_user in the calling adapter) when markers.verify_authors
-# is not explicitly false and that identity resolved. When neither an
-# explicit list nor a resolved identity is available: fail-open, once per
-# invocation, with the pre-#187 warning -- unless verify_authors is
-# explicitly false, which fails open silently (opt-out).
-raw_authors = os.environ.get('TRUSTED_AUTHORS', '').strip()
-if raw_authors:
-    try:
-        parsed_authors = json.loads(raw_authors)
-        if not isinstance(parsed_authors, list):
-            raise ValueError('not a list')
-        trusted_authors = [str(a).strip() for a in parsed_authors if str(a).strip()]
-    except Exception:
-        trusted_authors = [a.strip() for a in raw_authors.splitlines() if a.strip()]
-else:
-    trusted_authors = []
-
-verify_authors = os.environ.get('VERIFY_AUTHORS', 'true').strip().lower() not in ('false', '0', 'no', 'off')
-current_user = os.environ.get('CURRENT_USER', '').strip()
-
-effective_trusted = list(trusted_authors)
-if verify_authors and current_user and current_user not in effective_trusted:
-    effective_trusted.append(current_user)
-
-author_check_active = verify_authors and bool(effective_trusted)
+# Author trust set (#187), parsed by _vcs_shared_trust_py (one definition for
+# every reader): markers.trusted_authors unioned with the authenticated user
+# when markers.verify_authors is not explicitly false and that identity
+# resolved. When neither is available: fail-open, once per invocation, with
+# the pre-#187 warning -- unless verify_authors is explicitly false, which
+# fails open silently (opt-out).
+verify_authors, effective_trusted = load_trust()
+author_check_active = author_check_enforced(verify_authors, effective_trusted)
+warn_identity_refused('read-attempt', verify_authors, effective_trusted)
 fail_open_warned = False
 rejected_authors_seen = []
-
-# Config-parse-failed detection for improved marker-authors-unverified message (#116).
-import pathlib as _pathlib_ra
-_talos_cfg_ra = os.environ.get('TALOS_CFG', '')
-_config_parse_failed_ra = False
-if _talos_cfg_ra and _pathlib_ra.Path(_talos_cfg_ra).exists():
-    # -I drops the user site; append it back (never insert: cwd and the
-    # stdlib must keep winning) so a pip --user PyYAML still parses YAML config (#395).
-    try:
-        import site, sys
-        sys.path.append(site.getusersitepackages())
-    except Exception:
-        pass
-    try:
-        try:
-            import yaml as _yaml_ra; _yaml_ra.safe_load(open(_talos_cfg_ra))
-        except ImportError:
-            import json as _json_ra; _json_ra.load(open(_talos_cfg_ra))
-    except Exception:
-        _config_parse_failed_ra = True
+_config_parse_failed_ra = config_parse_failed()
 
 try:
     data = json.load(sys.stdin)
@@ -1271,8 +1237,7 @@ for c in reversed(raw_comments):
 
     # Require the marker to appear as the last non-whitespace line of the comment
     # body, so a quoted/fenced occurrence cannot win.
-    stripped  = body.rstrip()
-    last_line = stripped.rsplit('\n', 1)[-1].strip()
+    last_line = body_last_line(body)
 
     # INVARIANT (issue #79): last-line check is unconditional — MUST precede
     # author_check_active block. Reordering these two sections silently reopens
@@ -1386,19 +1351,142 @@ _vcs_shared_contract_env() {
   export TALOS_CONTRACT_ROLES_ENV TALOS_CONTRACT_APPROVAL_ENV
 }
 
-# _vcs_shared_current_user <resolver-cmd> [args...]
+# _vcs_shared_trust_py (#453)
+#   Prints the python source every marker reader runs first (read-attempt,
+#   check-approval-sha, the needs-owner reader): `python3 -I -c "$(_vcs_shared_trust_py)
+#   ...the reader..."`. It is the one definition of the author trust set and of
+#   what a Talos-written comment looks like, so the readers cannot drift apart.
+#     load_trust()           -> (verify_authors, effective_trusted): the
+#                               TRUSTED_AUTHORS list (JSON array, or one login
+#                               per line) plus the CURRENT_USER login, the
+#                               latter only when VERIFY_AUTHORS is not false.
+#                               VERIFY_AUTHORS defaults to true when unset.
+#     author_check_enforced(verify, trusted) -> whether the author check runs:
+#                               a non-empty set, or CURRENT_USER_REFUSED=1 (the
+#                               GET /user lookup ran and was refused; see
+#                               _vcs_shared_current_user), in which case only
+#                               markers.trusted_authors counts and an empty
+#                               list rejects every marker.
+#     warn_identity_refused(reader, verify, trusted) -> the one stderr line
+#                               for that empty-list case, saying how to fix it.
+#     config_parse_failed()  -> True when TALOS_CFG exists but does not parse.
+#     body_last_line(body)   -> the last non-whitespace line, stripped; a
+#                               marker only counts there, so a quoted or
+#                               fenced one cannot win.
+#     is_talos_comment(body) -> True for a comment Talos wrote or quoted: any
+#                               `<!-- talos:` marker text, or an `**Agent:**`
+#                               header. Such a comment is never a human reply.
+_vcs_shared_trust_py() {
+  cat <<'TALOS_PY_Vt4wQ9nHc2Rz'
+import json, os, pathlib, sys
+
+def load_trust():
+    raw = os.environ.get('TRUSTED_AUTHORS', '').strip()
+    trusted = []
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if not isinstance(parsed, list):
+                raise ValueError('not a list')
+            trusted = [str(a).strip() for a in parsed if str(a).strip()]
+        except Exception:
+            trusted = [a.strip() for a in raw.splitlines() if a.strip()]
+    verify = os.environ.get('VERIFY_AUTHORS', 'true').strip().lower() not in ('false', '0', 'no', 'off')
+    current = os.environ.get('CURRENT_USER', '').strip()
+    if verify and current and current not in trusted:
+        trusted.append(current)
+    return verify, trusted
+
+def identity_refused():
+    # CURRENT_USER_REFUSED=1: the GET /user lookup ran and was refused (an
+    # Actions GITHUB_TOKEN, a GitHub App token) or answered with no login.
+    return os.environ.get('CURRENT_USER_REFUSED', '') == '1'
+
+def author_check_enforced(verify, trusted):
+    # True when the author check must run: a non-empty trust set, or a refused
+    # identity lookup -- that is not "no identity check configured", so it
+    # trusts markers.trusted_authors ONLY and an empty list rejects everything.
+    return verify and (bool(trusted) or identity_refused())
+
+def warn_identity_refused(reader, verify, trusted):
+    if verify and not trusted and identity_refused():
+        print('pipeline-vcs: ' + reader + ': [warn] the authenticated-user lookup (GET /user) was refused and '
+              'markers.trusted_authors is not set -- every marker is rejected (fail closed). A GitHub Actions '
+              'GITHUB_TOKEN or a GitHub App token cannot call it: set markers.trusted_authors to the logins that '
+              'post Talos markers (e.g. github-actions[bot]).', file=sys.stderr)
+
+def config_parse_failed():
+    # Config-parse-failed detection for the marker-authors-unverified message (#116).
+    cfg = os.environ.get('TALOS_CFG', '')
+    if not cfg or not pathlib.Path(cfg).exists():
+        return False
+    # -I drops the user site; append it back (never insert: cwd and the
+    # stdlib must keep winning) so a pip --user PyYAML still parses YAML config (#395).
+    try:
+        import site
+        sys.path.append(site.getusersitepackages())
+    except Exception:
+        pass
+    try:
+        try:
+            import yaml
+            yaml.safe_load(open(cfg))
+        except ImportError:
+            json.load(open(cfg))
+    except Exception:
+        return True
+    return False
+
+def body_last_line(body):
+    return body.rstrip().rsplit('\n', 1)[-1].strip()
+
+def is_talos_comment(body):
+    return '<!-- talos:' in body or body.lstrip().startswith('**Agent:**')
+TALOS_PY_Vt4wQ9nHc2Rz
+}
+
+# _vcs_shared_valid_login <login>
+#   0 when <login> is shaped like a GitHub login: letters and digits with
+#   single inner hyphens (at most 39 before any underscore), then at most one
+#   `_<shortcode>` suffix (an Enterprise Managed User, e.g. `octocat_acme`),
+#   then an optional `[bot]` (an app). Anything else -- empty, spaces, the raw
+#   error JSON `gh api --jq` prints when GET /user is refused -- is not a login.
+_vcs_shared_valid_login() {
+  local _vl_re='^[A-Za-z0-9](-?[A-Za-z0-9])*(_[A-Za-z0-9]{1,39})?$' _vl_base="${1%"[bot]"}" _vl_handle
+  [[ "$_vl_base" =~ $_vl_re ]] || return 1
+  _vl_handle="${_vl_base%%_*}"
+  [ "${#_vl_handle}" -le 39 ]
+}
+
+# _vcs_shared_current_user <fail-open|fail-closed> <resolver-cmd> [args...]
 #   Resolves and caches, once per process, the authenticated user's login
 #   (#187) -- markers.verify_authors' "infer the current user as trusted"
 #   half. The two adapters keep owning their own fetch mechanics exactly as
 #   they already do for every other read: _github calls this as
-#   `_vcs_shared_current_user gh api user --jq .login`, _github_api as
-#   `_vcs_shared_current_user _ga_current_user_login` (a thin REST wrapper
-#   defined alongside that adapter's other _ga_* helpers). This function
-#   owns only the caching.
-#   stdout: the login, or the empty string when the resolver fails / prints
-#   nothing -- callers treat an empty result as "identity unresolved" and
-#   fail open exactly as an unset markers.trusted_authors already does,
-#   never as fatal.
+#   `_vcs_shared_current_user fail-open gh api user --jq .login`, _github_api as
+#   `_vcs_shared_current_user fail-open _ga_current_user_login` (a thin REST
+#   wrapper defined alongside that adapter's other _ga_* helpers). This
+#   function owns the caching and the check of what came back (#453), and
+#   tells three outcomes apart:
+#     ok           the resolver exited 0 and its first line passes
+#                  _vcs_shared_valid_login;
+#     unavailable  it was not looked up: exit 127 (the command is not there) or
+#                  exit 0 with nothing printed;
+#     refused      it ran and failed: any other non-zero exit (the 403/401 of an
+#                  Actions GITHUB_TOKEN or a GitHub App token), or exit 0 with a
+#                  first line that is not a login (the raw error JSON `gh api
+#                  --jq` prints). Never a trusted name.
+#   stdout: the login for `ok`, else the empty string.
+#   exit:   0 for `ok`. Otherwise by mode:
+#           fail-open   0 for `unavailable`, 3 for `refused`. A reader treats
+#                       `unavailable` as "identity unresolved" and degrades
+#                       exactly as an unset markers.trusted_authors already
+#                       does; on 3 it must trust markers.trusted_authors ONLY
+#                       (an empty list rejects every marker), because a refused
+#                       lookup is not the absence of an identity check.
+#                       Best-effort callers (assign-issue) ignore the code.
+#           fail-closed 1 for either (a write that must be made as that user,
+#                       e.g. upsert-pr-comment, refuses).
 #
 #   Caching mirrors pipeline-cfg-cache.sh's cfg(): most call sites run
 #   inside a `$(...)` command-substitution subshell, so a bare shell
@@ -1408,27 +1496,56 @@ _vcs_shared_contract_env() {
 #   Reuses the per-invocation cfg-cache directory (_CFG_CACHE_DIR, created
 #   once at script start by pipeline-cfg-cache.sh) for that file when
 #   available; the in-memory variable alone still makes repeat calls within
-#   the same subshell free even when it is not.
+#   the same subshell free even when it is not. Both hold `<outcome>:<login>`.
 _vcs_shared_current_user() {
-  if [ -n "${_VCS_CURRENT_USER_RESOLVED:-}" ]; then
-    printf '%s' "${_VCS_CURRENT_USER_VALUE:-}"
-    return 0
-  fi
-  local _cu_cache_file=""
+  local _cu_mode="${1:-}"
+  case "$_cu_mode" in
+    fail-open|fail-closed) shift ;;
+    *) echo "pipeline-vcs: internal error: _vcs_shared_current_user needs fail-open or fail-closed, got '$_cu_mode'" >&2; return 2 ;;
+  esac
+  local _cu_cache_file="" _cu_entry="" _cu_out _cu_rc
   [ -n "${_CFG_CACHE_DIR:-}" ] && _cu_cache_file="$_CFG_CACHE_DIR/current-user"
-  if [ -n "$_cu_cache_file" ] && [ -f "$_cu_cache_file" ]; then
-    _VCS_CURRENT_USER_VALUE="$(cat "$_cu_cache_file")"
-    _VCS_CURRENT_USER_RESOLVED=1
-    printf '%s' "$_VCS_CURRENT_USER_VALUE"
-    return 0
+  if [ -n "${_VCS_CURRENT_USER_RESOLVED:-}" ]; then
+    _cu_entry="${_VCS_CURRENT_USER_VALUE:-}"
+  elif [ -n "$_cu_cache_file" ] && [ -f "$_cu_cache_file" ]; then
+    _cu_entry="$(cat "$_cu_cache_file")"
+  else
+    _cu_out="$("$@" 2>/dev/null)"; _cu_rc=$?
+    # First line, ends trimmed; inner whitespace stays so "bad login" is refused, not repaired.
+    _cu_out="$(printf '%s\n' "$_cu_out" | head -1 | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    if [ "$_cu_rc" -eq 127 ]; then
+      _cu_entry="unavailable:"
+    elif [ "$_cu_rc" -ne 0 ]; then
+      _cu_entry="refused:"
+    elif [ -z "$_cu_out" ]; then
+      _cu_entry="unavailable:"
+    elif _vcs_shared_valid_login "$_cu_out"; then
+      _cu_entry="ok:$_cu_out"
+    else
+      _cu_entry="refused:"
+    fi
+    [ -n "$_cu_cache_file" ] && printf '%s' "$_cu_entry" > "$_cu_cache_file" 2>/dev/null
   fi
-  local _cu_login
-  _cu_login="$("$@" 2>/dev/null)"
-  _cu_login="$(printf '%s' "$_cu_login" | head -1 | tr -d '[:space:]')"
-  _VCS_CURRENT_USER_VALUE="$_cu_login"
+  _VCS_CURRENT_USER_VALUE="$_cu_entry"
   _VCS_CURRENT_USER_RESOLVED=1
-  [ -n "$_cu_cache_file" ] && printf '%s' "$_cu_login" > "$_cu_cache_file" 2>/dev/null
-  printf '%s' "$_cu_login"
+  case "$_cu_entry" in
+    ok:?*) printf '%s' "${_cu_entry#ok:}"; return 0 ;;
+    refused:*) [ "$_cu_mode" = "fail-open" ] && return 3; return 1 ;;
+    *) [ "$_cu_mode" = "fail-open" ] && return 0; return 1 ;;
+  esac
+}
+
+# _vcs_shared_reader_identity <verify_authors> <resolver-cmd> [args...]
+#   For the readers that take a trust set (read-attempt, check-approval-sha):
+#   sets _RID_USER (the login, or empty) and _RID_REFUSED (1 when the lookup
+#   ran and was refused or returned something that is not a login, else
+#   empty). Nothing is looked up unless <verify_authors> is "true".
+_vcs_shared_reader_identity() {
+  local _ri_verify="$1"; shift
+  _RID_USER=""; _RID_REFUSED=""
+  [ "$_ri_verify" = "true" ] || return 0
+  _RID_USER="$(_vcs_shared_current_user fail-open "$@")" || _RID_REFUSED=1
+  return 0
 }
 
 # ── Needs-owner label + marker verbs (#345, epic #333) ──────────────────────
@@ -1457,17 +1574,19 @@ _TALOS_NEEDS_OWNER_LABEL_URL="pipeline%3Aneeds-owner"   # the label as a URL pat
 #             body and is still unanswered, else `new`.
 #   collect <script> <label>   stdin: a REST issues array. For each open item
 #             carrying <label> it runs `bash <script> read-comments <n>`
-#             (argv list, no shell) and prints one JSON array of
-#             {n, kind, answered, question} sorted by n. Any failure exits 1
-#             with nothing on stdout.
-#   format <text|json>   stdin: the collect array. Prints the listing.
-#   answered  stdin: the collect array. Prints the n of every answered item.
-# The trust set is the one _vcs_shared_read_attempt builds (markers.trusted_
-# authors plus the authenticated identity, markers.verify_authors); keep the
-# two in step. TRUSTED_AUTHORS, VERIFY_AUTHORS and CURRENT_USER come from env.
+#             (argv list, no shell) and prints one JSON object
+#             {unverified, records: [{n, kind, answered, question}, ...]}
+#             sorted by n; `unverified` is true when any item was read with no
+#             resolved trust set. Any failure exits 1 with nothing on stdout.
+#   format <text|json>   stdin: the collect object. Prints the listing.
+#   answered  stdin: the collect object. Prints the n of every answered item;
+#             exits 1, printing nothing, when `unverified` (#453): a listing
+#             may fail open, a label removal may not.
+# The trust set is _vcs_shared_trust_py's load_trust(), the one every marker
+# reader uses. TRUSTED_AUTHORS, VERIFY_AUTHORS and CURRENT_USER come from env.
 _vcs_needs_owner_py() {
-  python3 -I -c '
-import json, os, re, subprocess, sys, unicodedata
+  python3 -I -c "$(_vcs_shared_trust_py)"'
+import re, subprocess, unicodedata
 
 MARKER = "<!-- talos:needs-owner -->"
 MARKER_RE = re.compile(r"^<!--\s*talos:needs-owner\s*-->$")
@@ -1499,23 +1618,6 @@ def strip_marker(text):
         lines.pop()
     return "\n".join(lines).strip()
 
-def trust():
-    raw = os.environ.get("TRUSTED_AUTHORS", "").strip()
-    trusted = []
-    if raw:
-        try:
-            parsed = json.loads(raw)
-            if not isinstance(parsed, list):
-                raise ValueError("not a list")
-            trusted = [str(a).strip() for a in parsed if str(a).strip()]
-        except Exception:
-            trusted = [a.strip() for a in raw.splitlines() if a.strip()]
-    verify = os.environ.get("VERIFY_AUTHORS", "true").strip().lower() not in ("false", "0", "no", "off")
-    cur = os.environ.get("CURRENT_USER", "").strip()
-    if verify and cur and cur not in trusted:
-        trusted.append(cur)
-    return verify, trusted
-
 def body_of(c):
     b = c.get("body")
     return b if isinstance(b, str) else ""
@@ -1527,10 +1629,10 @@ def login_of(c):
 
 def is_reply(c):
     b = body_of(c)
-    return bool(b.strip()) and "<!-- talos:" not in b and not b.lstrip().startswith("**Agent:**")
+    return bool(b.strip()) and not is_talos_comment(b)
 
 def analyze(comments):
-    verify, trusted = trust()
+    verify, trusted = load_trust()
     active = verify and bool(trusted)
     def ok(c):
         return (not active) or login_of(c) in trusted
@@ -1540,7 +1642,7 @@ def analyze(comments):
     idx = None
     for i in range(len(comments) - 1, -1, -1):
         c = comments[i]
-        if not MARKER_RE.match(body_of(c).rstrip().split("\n")[-1].strip()):
+        if not MARKER_RE.match(body_last_line(body_of(c))):
             continue
         if not ok(c):
             a = re.sub(r"[^A-Za-z0-9_.\[\]-]", "", login_of(c))
@@ -1627,11 +1729,13 @@ elif mode == "collect":
         records.append({"n": n, "kind": found[n], "answered": "yes" if res["answered"] else "no",
                         "question": res["question"]})
     warn(unverified, rejected)
-    emit(json.dumps(records))
+    emit(json.dumps({"unverified": unverified, "records": records}))
 else:
     try:
-        records = json.loads(read_stdin())
-    except ValueError:
+        listing = json.loads(read_stdin())
+        records = listing["records"]
+        unverified = bool(listing["unverified"])
+    except (ValueError, KeyError, TypeError):
         die("could not parse the listing")
     if mode == "format" and sys.argv[3] == "json":
         emit(json.dumps(records) + "\n")
@@ -1639,19 +1743,24 @@ else:
         for r in records:
             emit("needs-owner n=%d kind=%s answered=%s question=%s\n" % (r["n"], r["kind"], r["answered"], r["question"]))
     elif mode == "answered":
+        if unverified:
+            # The listing may fail open on an unresolved trust set; removing a
+            # label on the strength of "any commenter answered" may not.
+            die("the author trust set is unverified (no markers.trusted_authors and no authenticated identity resolved); no label removed")
         for r in records:
             if r["answered"] == "yes":
                 emit("%d\n" % r["n"])
 ' "$@"
 }
 
-# _vcs_shared_trust_env <user-fn> -> sets _NO_TRUSTED / _NO_VERIFY / _NO_CURRENT
-# for _vcs_needs_owner_py (same lookups read-attempt does).
+# _vcs_shared_trust_env <user-cmd> -> sets _NO_TRUSTED / _NO_VERIFY / _NO_CURRENT
+# for _vcs_needs_owner_py (same lookups read-attempt does; the login resolves
+# fail-open, so an unresolved one is the `unverified` state).
 _vcs_shared_trust_env() {
   _NO_TRUSTED="$(cfg markers.trusted_authors)"
   _NO_VERIFY="$(cfg markers.verify_authors)"
   _NO_CURRENT=""
-  [ "$_NO_VERIFY" = "true" ] && _NO_CURRENT="$("$1")"
+  [ "$_NO_VERIFY" = "true" ] && _NO_CURRENT="$(_vcs_shared_current_user fail-open "$1")"
   return 0
 }
 
@@ -1672,15 +1781,11 @@ _vcs_shared_upsert_pr_comment() {
   local _uc_n="$1" _uc_name="$2" _uc_file="$3" _uc_read="$4" _uc_write="$5"; shift 5
   local _uc_marker="<!-- talos:$_uc_name -->" _uc_user _uc_raw _uc_found
   local _uc_state _uc_id _uc_url _uc_resp _uc_method _uc_path
-  # Not _vcs_shared_current_user: it drops the exit status and caches whatever
-  # was printed, and `gh api --jq` prints the raw error JSON to stdout when the
-  # request is refused (an Actions GITHUB_TOKEN, a GitHub App token). So the
-  # lookup must exit 0 AND print something shaped like a GitHub login (up to 39
-  # letters/digits with single inner hyphens, plus an optional [bot] suffix).
-  local _uc_login_re='^[A-Za-z0-9](-?[A-Za-z0-9])*$' _uc_base
-  _uc_user="$("$@" 2>/dev/null)" || _uc_user=""
-  _uc_base="${_uc_user%"[bot]"}"
-  if [ -z "$_uc_user" ] || [ "${#_uc_base}" -gt 39 ] || ! [[ "$_uc_base" =~ $_uc_login_re ]]; then
+  # The login must be one we made: fail-closed, so a lookup that fails or prints
+  # something that is not a GitHub login (`gh api --jq` prints the raw error JSON
+  # to stdout when the request is refused: an Actions GITHUB_TOKEN, a GitHub App
+  # token) stops the verb before any write.
+  if ! _uc_user="$(_vcs_shared_current_user fail-closed "$@")"; then
     echo "pipeline-vcs: upsert-pr-comment: could not resolve the authenticated user (GET /user fails for an Actions GITHUB_TOKEN or a GitHub App token); nothing posted" >&2
     exit 1
   fi
@@ -1898,7 +2003,7 @@ _vcs_shared_assign_issue() {
 
   local id="$want"
   if [ "$want_lc" = "self" ]; then
-    id="$(_vcs_shared_current_user "$@")"
+    id="$(_vcs_shared_current_user fail-open "$@")"
     if [ -z "$id" ]; then
       echo "pipeline-vcs: assign-issue: WARNING -- could not resolve the operator identity (issues.assignee: self); #$n left unassigned" >&2
       return 0
@@ -2107,7 +2212,7 @@ _vcs_shared_record_attempt() {
 #           and exit 0; 1 when stdin is unparseable.
 _vcs_shared_check_approval_marker() {
   _vcs_shared_contract_env
-  python3 -I -c "
+  python3 -I -c "$(_vcs_shared_trust_py)
 import json, os, re, sys
 
 # Single source of truth: scripts/pipeline-contract.sh's TALOS_APPROVAL_LABELS
@@ -2127,51 +2232,14 @@ VALID_ROLES = set(APPROVAL_LABELS.values())
 # Strict extractor: marker must be a syntactically valid talos:approval HTML comment.
 MARKER_RE = re.compile(r'<!--\s*talos:approval\s+sha=([0-9a-f]+)\s+role=(\S+?)\s*-->')
 
-raw_authors = os.environ.get('TRUSTED_AUTHORS', '').strip()
-if raw_authors:
-    try:
-        parsed_authors = json.loads(raw_authors)
-        if not isinstance(parsed_authors, list):
-            raise ValueError('not a list')
-        trusted_authors = [str(a).strip() for a in parsed_authors if str(a).strip()]
-    except Exception:
-        trusted_authors = [a.strip() for a in raw_authors.splitlines() if a.strip()]
-else:
-    trusted_authors = []
-
-# Author trust set (#187) -- see _vcs_shared_read_attempt's identical block
-# for the full rationale; kept in lock-step here so the two readers cannot
-# drift on this logic again.
-verify_authors = os.environ.get('VERIFY_AUTHORS', 'true').strip().lower() not in ('false', '0', 'no', 'off')
-current_user = os.environ.get('CURRENT_USER', '').strip()
-
-effective_trusted = list(trusted_authors)
-if verify_authors and current_user and current_user not in effective_trusted:
-    effective_trusted.append(current_user)
-
-author_check_active = verify_authors and bool(effective_trusted)
+# Author trust set (#187): _vcs_shared_trust_py, the same definition
+# read-attempt and the needs-owner reader use (see there for the rationale).
+verify_authors, effective_trusted = load_trust()
+author_check_active = author_check_enforced(verify_authors, effective_trusted)
+warn_identity_refused('check-approval-sha', verify_authors, effective_trusted)
 fail_open_warned = False
 rejected_authors_seen = []
-
-# Config-parse-failed detection for improved marker-authors-unverified message (#116).
-import pathlib as _pathlib_cas
-_talos_cfg_cas = os.environ.get('TALOS_CFG', '')
-_config_parse_failed_cas = False
-if _talos_cfg_cas and _pathlib_cas.Path(_talos_cfg_cas).exists():
-    # -I drops the user site; append it back (never insert: cwd and the
-    # stdlib must keep winning) so a pip --user PyYAML still parses YAML config (#395).
-    try:
-        import site, sys
-        sys.path.append(site.getusersitepackages())
-    except Exception:
-        pass
-    try:
-        try:
-            import yaml as _yaml_cas; _yaml_cas.safe_load(open(_talos_cfg_cas))
-        except ImportError:
-            import json as _json_cas; _json_cas.load(open(_talos_cfg_cas))
-    except Exception:
-        _config_parse_failed_cas = True
+_config_parse_failed_cas = config_parse_failed()
 
 try:
     data = json.load(sys.stdin)
@@ -2224,8 +2292,7 @@ for label, role in present.items():
         # author_check_active block. Reordering these two sections silently reopens
         # the quoted-marker bypass. Do not move the lines below past author_check_active.
         # Last-line rule: strip trailing whitespace, take final newline-split segment.
-        stripped  = body.rstrip()
-        last_line = stripped.rsplit('\n', 1)[-1].strip()
+        last_line = body_last_line(body)
 
         m = MARKER_RE.match(last_line)
         if not m:
@@ -3314,7 +3381,7 @@ _github() {
   # Provider calls for the needs-owner verbs (#345). The issues REST endpoints
   # serve issues and PRs alike, so one route covers both kinds.
   _gh_no_repo() { if [ -n "${REPO:-}" ]; then printf '%s' "$REPO"; else printf '%s' '{owner}/{repo}'; fi; }
-  _gh_no_user() { _vcs_shared_current_user gh api user --jq .login; }
+  _gh_no_user() { gh api user --jq .login; }
   _gh_no_items() {
     local _gno_raw
     _gno_raw="$(gh api --paginate "repos/$(_gh_no_repo)/issues?state=open&labels=$_TALOS_NEEDS_OWNER_LABEL_URL&per_page=100")" || return 1
@@ -4072,12 +4139,11 @@ print(json.dumps([{'number': p.get('number'), 'state': p.get('state'), 'title': 
         echo "pipeline-vcs: read-attempt: could not fetch issue #$n data" >&2
         exit 1
       fi
-      local trusted_authors verify_authors current_user
+      local trusted_authors verify_authors
       trusted_authors="$(cfg markers.trusted_authors)"
       verify_authors="$(cfg markers.verify_authors)"
-      current_user=""
-      [ "$verify_authors" = "true" ] && current_user="$(_vcs_shared_current_user gh api user --jq .login)"
-      printf '%s' "$issue_data" | TRUSTED_AUTHORS="$trusted_authors" VERIFY_AUTHORS="$verify_authors" CURRENT_USER="$current_user" TALOS_CFG="$_TALOS_CFG" _vcs_shared_read_attempt
+      _vcs_shared_reader_identity "$verify_authors" gh api user --jq .login
+      printf '%s' "$issue_data" | TRUSTED_AUTHORS="$trusted_authors" VERIFY_AUTHORS="$verify_authors" CURRENT_USER="$_RID_USER" CURRENT_USER_REFUSED="$_RID_REFUSED" TALOS_CFG="$_TALOS_CFG" _vcs_shared_read_attempt
       ;;
 
 
@@ -4187,13 +4253,12 @@ print(json.dumps([{'number': p.get('number'), 'state': p.get('state'), 'title': 
         echo "pipeline-vcs: check-approval-sha: could not fetch PR #$n data" >&2
         exit 1
       fi
-      local trusted_authors_cas verify_authors_cas current_user_cas
+      local trusted_authors_cas verify_authors_cas
       trusted_authors_cas="$(cfg markers.trusted_authors)"
       verify_authors_cas="$(cfg markers.verify_authors)"
-      current_user_cas=""
-      [ "$verify_authors_cas" = "true" ] && current_user_cas="$(_vcs_shared_current_user gh api user --jq .login)"
+      _vcs_shared_reader_identity "$verify_authors_cas" gh api user --jq .login
       local marker_out marker_rc marker_json
-      marker_out="$(printf '%s' "$pr_data" | TRUSTED_AUTHORS="$trusted_authors_cas" VERIFY_AUTHORS="$verify_authors_cas" CURRENT_USER="$current_user_cas" TALOS_CFG="$_TALOS_CFG" _vcs_shared_check_approval_marker)"
+      marker_out="$(printf '%s' "$pr_data" | TRUSTED_AUTHORS="$trusted_authors_cas" VERIFY_AUTHORS="$verify_authors_cas" CURRENT_USER="$_RID_USER" CURRENT_USER_REFUSED="$_RID_REFUSED" TALOS_CFG="$_TALOS_CFG" _vcs_shared_check_approval_marker)"
       marker_rc=$?
       if [ "$marker_rc" -eq 1 ]; then
         exit 1
@@ -4539,21 +4604,23 @@ json.dump(prev, sys.stdout)
   }
 
   # _ga_current_user_login -- REST resolver for _vcs_shared_current_user
-  # (#187): GET /user and print the .login field, or nothing on any
-  # failure. Uses _ga_req_once (not _ga_req) deliberately -- this lookup is
-  # a best-effort trust signal, never a hard dependency, so a rate limit or
-  # missing token scope must degrade to "identity unresolved" (fail open,
-  # same as no markers.trusted_authors configured) rather than aborting the
-  # whole verb the way _ga_req's exit-1-on-failure would.
+  # (#187): GET /user and print the .login field. Exits non-zero when the
+  # request fails (a 403 for an Actions GITHUB_TOKEN or a GitHub App token, a
+  # rate limit) or the answer is not JSON: _vcs_shared_current_user reads that
+  # as "refused" (#453), which the marker readers answer by trusting only
+  # markers.trusted_authors. Uses _ga_req_once (not _ga_req) deliberately --
+  # this lookup is never a hard dependency, so a failure must not abort the
+  # whole verb the way _ga_req's exit-1-on-failure would; the helper turns it
+  # into a state, not an exit.
   _ga_current_user_login() {
     local _cul_body
-    _cul_body="$(_ga_req_once GET "${_API%%/repos/*}/user" 2>/dev/null)" || return 0
+    _cul_body="$(_ga_req_once GET "${_API%%/repos/*}/user" 2>/dev/null)" || return 1
     printf '%s' "$_cul_body" | python3 -I -c "
 import json, sys
 try:
-    print(json.load(sys.stdin).get('login', ''))
+    print(json.load(sys.stdin).get('login') or '')
 except Exception:
-    pass
+    sys.exit(1)
 " 2>/dev/null
   }
 
@@ -5451,12 +5518,11 @@ if not isinstance(raw, list):
 comments = [dict(c, author={'login': (c.get('user') or {}).get('login', '')}) for c in raw]
 json.dump({'comments': comments}, sys.stdout)
 ")"
-      local _trusted_authors _verify_authors _current_user
+      local _trusted_authors _verify_authors
       _trusted_authors="$(cfg markers.trusted_authors)"
       _verify_authors="$(cfg markers.verify_authors)"
-      _current_user=""
-      [ "$_verify_authors" = "true" ] && _current_user="$(_vcs_shared_current_user _ga_current_user_login)"
-      printf '%s' "$_normalized" | TRUSTED_AUTHORS="$_trusted_authors" VERIFY_AUTHORS="$_verify_authors" CURRENT_USER="$_current_user" TALOS_CFG="$_TALOS_CFG" _vcs_shared_read_attempt
+      _vcs_shared_reader_identity "$_verify_authors" _ga_current_user_login
+      printf '%s' "$_normalized" | TRUSTED_AUTHORS="$_trusted_authors" VERIFY_AUTHORS="$_verify_authors" CURRENT_USER="$_RID_USER" CURRENT_USER_REFUSED="$_RID_REFUSED" TALOS_CFG="$_TALOS_CFG" _vcs_shared_read_attempt
       ;;
 
     check-attempt)
@@ -5590,13 +5656,12 @@ out = {
 }
 json.dump(out, sys.stdout)
 ")"
-      local _trusted_authors_cas _verify_authors_cas _current_user_cas
+      local _trusted_authors_cas _verify_authors_cas
       _trusted_authors_cas="$(cfg markers.trusted_authors)"
       _verify_authors_cas="$(cfg markers.verify_authors)"
-      _current_user_cas=""
-      [ "$_verify_authors_cas" = "true" ] && _current_user_cas="$(_vcs_shared_current_user _ga_current_user_login)"
+      _vcs_shared_reader_identity "$_verify_authors_cas" _ga_current_user_login
       local _marker_out _marker_rc _marker_json
-      _marker_out="$(printf '%s' "$_pr_data" | TRUSTED_AUTHORS="$_trusted_authors_cas" VERIFY_AUTHORS="$_verify_authors_cas" CURRENT_USER="$_current_user_cas" TALOS_CFG="$_TALOS_CFG" _vcs_shared_check_approval_marker)"
+      _marker_out="$(printf '%s' "$_pr_data" | TRUSTED_AUTHORS="$_trusted_authors_cas" VERIFY_AUTHORS="$_verify_authors_cas" CURRENT_USER="$_RID_USER" CURRENT_USER_REFUSED="$_RID_REFUSED" TALOS_CFG="$_TALOS_CFG" _vcs_shared_check_approval_marker)"
       _marker_rc=$?
       if [ "$_marker_rc" -eq 1 ]; then
         exit 1
@@ -7350,7 +7415,7 @@ PYEOF
     *)
       # Delegate to Python for all file-mutation verbs
       FILE_PATH="$FILE_PATH" python3 -I - "$verb" $DRY_RUN_FLAG "$@" <<'PYEOF'
-import sys, re, os, json
+import sys, re, os, json, shutil, tempfile
 
 verb = sys.argv[1]
 dry_run = '--dry-run' in sys.argv
@@ -7378,8 +7443,32 @@ def save_file(content):
         for i, line in enumerate(content.splitlines()[:10], 1):
             print(f"  {i}: {line}")
     else:
-        with open(plan_path, 'w') as f:
-            f.write(content)
+        # Encode BEFORE anything is opened (#453): an argv byte that is not valid
+        # UTF-8 is a surrogate here, and writing it after open(..., 'w') used to
+        # leave the plan at 0 bytes. Then write a temp file beside the plan and
+        # replace it, so a failed write cannot leave a half-written plan either.
+        try:
+            data = content.encode('utf-8')
+        except UnicodeEncodeError:
+            print(f"pipeline-vcs: {verb}: the text is not valid UTF-8; {plan_path} left unchanged", file=sys.stderr)
+            sys.exit(1)
+        real_path = os.path.realpath(plan_path)
+        tmp_path = None
+        try:
+            # mkstemp: an unpredictable name, created O_EXCL with mode 0600.
+            fd, tmp_path = tempfile.mkstemp(prefix='.plan-', suffix='.tmp', dir=os.path.dirname(real_path))
+            with os.fdopen(fd, 'wb') as f:
+                f.write(data)
+            shutil.copymode(real_path, tmp_path)
+            os.replace(tmp_path, real_path)
+        except OSError as exc:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+            print(f"pipeline-vcs: {verb}: could not write {plan_path}: {exc}", file=sys.stderr)
+            sys.exit(1)
 
 def parse_items(content):
     """Return list of dicts: {id, title, checked, line_idx, detail_lines: [(idx, text)]}"""
