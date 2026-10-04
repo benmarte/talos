@@ -3133,7 +3133,11 @@ If your setup predates the config and secrets work (epic #437), check these once
   every configured sink would post. To preview ONE platform's template with no
   credentials configured at all, use `--render`:
   `bash ~/.talos/scripts/pipeline-notify.sh --render buzz qa "#42" "PASS"`.
-- **YAML config ignored** — PyYAML not installed. JSON config (`talos.pipeline.json`)
+- **YAML config ignored** — PyYAML not installed. A YAML config (`talos.pipeline.yml`)
+  now prints one stderr warning naming the file and the fix (`pip install pyyaml` or the
+  `.json` form), at most once an hour per file across processes
+  (`TALOS_YAML_WARN_DEDUP=0` warns on every call); its keys read as the defaults until then.
+  JSON config (`talos.pipeline.json`)
   needs no dependency and works on every platform — recommended for new projects.
   To keep YAML: `pip install pyyaml` (may fail on macOS with PEP 668 / Homebrew
   Python; try `pip install --break-system-packages pyyaml` or use `talos.pipeline.json.example`
