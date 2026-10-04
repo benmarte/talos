@@ -31,7 +31,7 @@ git config user.email "test@talos.invalid"
 git config user.name "talos-test"
 git config commit.gpgsign false
 
-PARENT="$(mktemp -d "${TMPDIR:-/tmp}/talos-sf-spend.XXXXXX")"
+PARENT="$(safe_mktemp_dir "${TMPDIR:-/tmp}/talos-sf-spend.XXXXXX")" || exit 1
 UPSTREAM="$PARENT/upstream.git"
 WORK="$PARENT/work"
 trap 'rm -rf "$SANDBOX" "$PARENT"' EXIT

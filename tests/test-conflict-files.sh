@@ -22,7 +22,7 @@ git config user.email "test@talos.invalid"
 git config user.name "talos-test"
 
 # ── Local bare-repo fixture (no network) ──────────────────────────────────────
-UPSTREAM_PARENT="$(mktemp -d "${TMPDIR:-/tmp}/talos-cf-origin.XXXXXX")"
+UPSTREAM_PARENT="$(safe_mktemp_dir "${TMPDIR:-/tmp}/talos-cf-origin.XXXXXX")" || exit 1
 UPSTREAM="$UPSTREAM_PARENT/upstream.git"
 git init -q --bare "$UPSTREAM"
 # make_sandbox's own EXIT trap only removes $SANDBOX -- extend it to also

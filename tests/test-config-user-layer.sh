@@ -15,7 +15,7 @@ ERR="$SANDBOX/stderr"
 OUT="$SANDBOX/out"
 
 reset_cfg() {
-  rm -rf "$USER_DIR" "$SANDBOX"/talos.pipeline.* "$SANDBOX/other"
+  rm -rf "$USER_DIR" "${SANDBOX:?}"/talos.pipeline.* "${SANDBOX:?}/other"
   unset PIPELINE_CONFIG TALOS_HOME
   mkdir -p "$USER_DIR"
 }

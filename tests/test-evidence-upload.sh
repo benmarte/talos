@@ -38,7 +38,7 @@ RC=0
 
 # ---- helpers ----------------------------------------------------------------
 new_repo() {
-  REPO="$(mktemp -d "$SANDBOX/repo.XXXXXX")"
+  REPO="$(safe_mktemp_dir "$SANDBOX/repo.XXXXXX")" || exit 1
   git -C "$REPO" init -q -b main
   git -C "$REPO" config user.name "talos test"
   git -C "$REPO" config user.email "test@talos.invalid"

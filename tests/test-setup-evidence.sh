@@ -202,7 +202,7 @@ assert_eq "$got/" "$(cat "$SANDBOX/rt/.gitignore")" "and it matches the .gitigno
 
 # bad directories: rejected, nothing written
 for bad in ".." "../x" "a/../b" "a b" "a;b" ".git" "a/.git/b" ".GIT" "/abs" "-x" "." "./" 'a$b'; do
-  rm -rf "$SANDBOX/bad"
+  rm -rf "${SANDBOX:?}/bad"
   mkrepo "$SANDBOX/bad"
   out="$(run_gi "$SANDBOX/bad" "$bad")"
   assert_contains "$out" "rejected:" "the block says it rejected [$bad]"

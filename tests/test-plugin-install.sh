@@ -177,7 +177,7 @@ out_other="$(CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
   bash "$PLUGIN_ROOT/scripts/pipeline-agent.sh" reviewer "TASK: z" 2>&1)"
 assert_not_contains "$out_other" "REPO OVERRIDE MARKER" \
   "non-overridden roles still come from the plugin"
-rm -rf "$REPO/.claude/agents"
+rm -rf "${REPO:?}/.claude/agents"
 
 # A genuinely missing role must still fail loudly, and name where it looked.
 out_missing="$(CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \

@@ -234,7 +234,7 @@ if [ "$CAN_STRIP" = true ]; then
   else
     fail "detected install writes the same ~/.claude tree as --harness claude"
   fi
-  rm -rf "$SANDBOX/tree-explicit"
+  rm -rf "${SANDBOX:?}/tree-explicit"
 
   # Skipped adapter + existing tree: byte-identical, one "not refreshed" line.
   newhome skip-existing
@@ -251,7 +251,7 @@ if [ "$CAN_STRIP" = true ]; then
   fi
   assert_eq "1" "$(printf '%s\n' "$OUT" | grep -c 'was not refreshed')" "exactly one line says the tree was not refreshed"
   assert_contains "$OUT" "re-run with --harness claude" "the not-refreshed line says how to refresh"
-  rm -rf "$SANDBOX/tree-before"
+  rm -rf "${SANDBOX:?}/tree-before"
 fi
 
 # ── per-repo ─────────────────────────────────────────────────────────────────

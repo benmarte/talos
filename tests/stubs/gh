@@ -256,7 +256,7 @@ print(json.dumps([{'filename': p} for p in paths]))
     # a POST appends a comment by $STUB_CURRENT_USER and a PATCH edits one in
     # place; either prints the comment. Without it the write is silent, as the
     # catch-all below always was.
-    _cw_payload="$(mktemp)"
+    _cw_payload="$(mktemp)" || exit 1
     cat > "$_cw_payload"
     [ -n "${GH_STDIN_LOG:-}" ] && { cat "$_cw_payload"; printf '\n'; } >> "$GH_STDIN_LOG"
     if [ -n "${STUB_COMMENT_WRITE_429:-}" ]; then
@@ -393,7 +393,7 @@ print(json.dumps(c))
     done
     [ -n "$_pc_repo" ] || { echo "gh stub: no --repo (gh runs outside a repository)" >&2; exit 1; }
     [ "$_pc_body" = "-" ] || { echo "gh stub: the body must come from --body-file -" >&2; exit 98; }
-    _pc_payload="$(mktemp)"
+    _pc_payload="$(mktemp)" || exit 1
     cat > "$_pc_payload"
     [ -n "${GH_STDIN_LOG:-}" ] && { cat "$_pc_payload"; printf '\n'; } >> "$GH_STDIN_LOG"
     for _pc_a in "${_pc_att[@]}"; do

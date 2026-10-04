@@ -91,7 +91,7 @@ assert_file_absent "$R/GEMINI.md" "install.sh never creates GEMINI.md"
 # ── epic bullet: sandbox HOME starts empty; global install, then per-repo ───
 # with no --harness. Every ~/.talos/skills path the block names must exist.
 case "$HOME" in "$SANDBOX"/*) ;; *) echo "refusing: HOME=$HOME is not the sandbox" >&2; exit 1 ;; esac
-rm -rf "$HOME/.talos" "$HOME/.claude"
+rm -rf "${HOME:?}/.talos" "${HOME:?}/.claude"
 # --harness codex: the outcome must not depend on whether the ambient PATH has
 # `claude` (#365), so the global call never creates ~/.claude.
 bash "$INSTALL" --global --no-agent-skills --harness codex >/dev/null 2>&1

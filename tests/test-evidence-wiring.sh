@@ -55,7 +55,7 @@ printf '\032\105\337\243\102\202\204webmclip' > ev/0-run.webm
 TALOS_MKEV_Hn4Zc8Rv2Qa
 
 new_repo() {   # new_repo <config-json> -- a repo whose ev/ dir is ignored
-  REPO="$(mktemp -d "$SANDBOX/repo.XXXXXX")"
+  REPO="$(safe_mktemp_dir "$SANDBOX/repo.XXXXXX")" || exit 1
   git -C "$REPO" init -q -b main
   git -C "$REPO" config user.name "talos test"
   git -C "$REPO" config user.email "test@talos.invalid"
@@ -392,7 +392,7 @@ fill() {   # fill <template> <worktree> <epoch>
 
 # a repo with a local bare origin, a tracked config and an ignored ev/
 new_walk_repo() {
-  REPO="$(mktemp -d "$SANDBOX/walk.XXXXXX")"
+  REPO="$(safe_mktemp_dir "$SANDBOX/walk.XXXXXX")" || exit 1
   git -C "$REPO" init -q -b main
   git -C "$REPO" config user.name "talos test"
   git -C "$REPO" config user.email "test@talos.invalid"

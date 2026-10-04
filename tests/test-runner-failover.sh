@@ -40,7 +40,7 @@ wt_stub() {  # absent | present | failing
 }
 
 reset() {
-  rm -rf "$SANDBOX/.talos" "$STUB_PROMPT_DIR"; mkdir -p "$STUB_PROMPT_DIR"
+  rm -rf "${SANDBOX:?}/.talos" "$STUB_PROMPT_DIR"; mkdir -p "$STUB_PROMPT_DIR"
   : > "$RUNNER_LOG"; : > "$GH_LOG"; : > "$WT_LOG"
   unset STUB_CLAUDE_EXIT STUB_CLAUDE_STDERR STUB_CLAUDE_STDOUT STUB_CLAUDE_HOOK \
         STUB_CODEX_EXIT STUB_CODEX_STDERR STUB_CODEX_STDOUT STUB_CODEX_HOOK \

@@ -150,6 +150,8 @@ Test fixtures must not depend on ambient git config (`init.defaultBranch`,
 child processes on stdin or in a file, never in an environment variable or one
 argv element.
 
+Scratch scripts: check every `mktemp`/`create` result is a non-empty directory before use, delete only via `"${VAR:?}"/...`, and never use a command's output after hiding its stderr unless you checked it.
+
 Final message (2-3 lines): PR URL + what was implemented + verify outcome.
 Never fabricate a PR number. Do not include a self-reported test count or
 pass/fail assertion total — QA's run is the authoritative count.

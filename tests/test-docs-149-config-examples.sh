@@ -41,7 +41,7 @@ CONFIG_SH="$REPO_ROOT/scripts/pipeline-config.sh"
 # a real ~/.talos can never answer a lookup here. Its pass/fail/assert_eq are
 # redefined below with this file's own sentinel-aware versions.
 . "$SCRIPT_DIR/helpers.sh"
-SCRATCH="$(mktemp -d)"
+SCRATCH="$(safe_mktemp_dir)" || exit 1
 trap 'rm -rf "$SCRATCH"' EXIT
 
 HAVE_YAML=false

@@ -1,0 +1,227 @@
+#!/usr/bin/env bash
+# test-unsafe-cleanup-guard.sh -- a test or stub must not turn an empty path
+# variable into `rm -rf /<name>` (#459, follow-up to #448 and the #436 QA
+# incident), and the role profiles carry the standing scratch-script rule.
+#
+# Two rules scan tests/*.sh, tests/helpers.sh, tests/stubs/* and tests/canary/*:
+#
+#   R1 mktemp: a `$(mktemp ...)` / backtick mktemp / `$(safe_mktemp_dir ...)`
+#      substitution must be followed on the same line by `|| <handler>` (not
+#      `|| true` or `|| :`). An unchecked `X="$(mktemp -d)"` leaves X empty when
+#      mktemp fails. Prefer `safe_mktemp_dir` from helpers.sh, which also checks
+#      the result is a non-empty directory. A substitution inside single quotes
+#      is recipe text handed to another shell (tests/test-free-text-as-data.sh),
+#      not run here, and is skipped.
+#   R2 rm -rf: in a recursive `rm` (`-r`, `-R`, `-rf`, `-fr`, `--recursive`) an
+#      unguarded variable may only be the WHOLE operand ("$X" or "${X}": empty,
+#      it is `rm -rf ""`, a harmless error). Anywhere else -- "$X/sub", "$X"/*,
+#      "/tmp/$X" -- it must be "${X:?}" so an empty X aborts instead of
+#      deleting from `/`. A `$(...)` operand is refused (unverifiable).
+#
+# Matching is per line: comment lines are skipped, and a heredoc body that
+# merely contains such text is scanned like code (reword it, or put the file
+# on ALLOW). The scan FAILS when it scans zero files. A fixture tree (GUARD_ROOT
+# with a tests/ dir) proves each rule bites, so the guard cannot rot to a no-op.
+#
+# ALLOW: files another in-flight change owns. Remove an entry once the file is
+# fixed.
+#   tests/test-config-cache.sh     (#439 edits it; line 128 `_other_tmp="$(mktemp)"`
+#   tests/test-config-known-keys-guard.sh                is unchecked: fix after
+#   tests/test-config-defaults-table.sh                  #439 merges)
+#   tests/test-callsite-literal-defaults.sh
+#
+# Also pins the one standing scratch-script line in agents/qa.md and
+# agents/developer.md (#459).
+set -u
+. "$(dirname "$0")/helpers.sh"
+make_sandbox
+
+ALLOW="tests/test-config-cache.sh tests/test-config-known-keys-guard.sh tests/test-config-defaults-table.sh tests/test-callsite-literal-defaults.sh"
+SELF_REL="tests/test-unsafe-cleanup-guard.sh"
+
+SCANNER="$SANDBOX/scan.py"
+cat > "$SCANNER" <<'TALOS_Qm7Vd3pLx9aZc'
+import os, re, sys
+
+root = sys.argv[1]
+allow = set(sys.argv[2].split())
+self_rel = sys.argv[3]
+
+SUBST = re.compile(r'\$\(\s*(?:command\s+)?(?:mktemp|safe_mktemp_dir)\b|`\s*mktemp\b')
+BAD_HANDLER = re.compile(r'\|\|\s*(?:true|:)\s*(?:$|[;)&|}])')
+RM = re.compile(r'(?<![\w./-])rm((?:\s+-[A-Za-z-]+)+)\s')
+VAR = re.compile(r'\$\{(\w+)([^}]*)\}|\$(\w+)')
+BARE = re.compile(r'''^["']?\$(?:\{\w+\}|\w+)["']?$''')
+
+
+def files():
+    t = os.path.join(root, "tests")
+    for d, dirs, names in os.walk(t):
+        rel = os.path.relpath(d, root)
+        if rel.startswith(os.path.join("tests", "fixtures")):
+            continue
+        for n in sorted(names):
+            p = os.path.join(rel, n)
+            if p in allow or p == self_rel:
+                continue
+            if n.endswith(".sh") or rel.startswith(os.path.join("tests", "stubs")):
+                yield p
+
+
+def operands(rest, in_sq):
+    # split on whitespace outside quotes; stop at an unquoted ; & | newline, or
+    # (when the rm sits inside a single-quoted trap string) at the closing quote
+    toks, cur, q = [], "", ""
+    i = 0
+    while i < len(rest):
+        c = rest[i]
+        if q:
+            cur += c
+            if c == q:
+                q = ""
+        elif in_sq and c == "'":
+            break
+        elif c in "\"'":
+            q = c
+            cur += c
+        elif c in ";&|":
+            break
+        elif c == ")" and not cur.count("("):
+            break
+        elif c.isspace():
+            if cur:
+                toks.append(cur)
+                cur = ""
+        else:
+            cur += c
+        i += 1
+    if cur:
+        toks.append(cur)
+    return toks
+
+
+def unsafe_operand(tok):
+    if tok.startswith("'"):
+        return False
+    if "$(" in tok or "`" in tok:
+        return True
+    if BARE.match(tok):
+        return False
+    for m in VAR.finditer(tok):
+        mod = m.group(2) or ""
+        if m.group(1) is not None and mod.startswith(":?"):
+            continue
+        return True
+    return False
+
+
+bad = []
+n = 0
+for rel in files():
+    n += 1
+    for ln, line in enumerate(open(os.path.join(root, rel), errors="replace"), 1):
+        s = line.strip()
+        if s.startswith("#"):
+            continue
+        for m in SUBST.finditer(line):
+            if line[:m.start()].count("'") % 2:
+                continue  # inside a single-quoted string: data, not code
+            tail = line[m.end():]
+            j = tail.find("||")
+            if j < 0 or BAD_HANDLER.match(tail[j:]):
+                bad.append("%s:%d: R1 unchecked mktemp: %s" % (rel, ln, s))
+                break
+        for m in RM.finditer(line):
+            flags = m.group(1)
+            if not re.search(r'-[A-Za-z]*[rR]|--recursive', flags):
+                continue
+            for tok in operands(line[m.end():], line[:m.start()].count("'") % 2 == 1):
+                if unsafe_operand(tok):
+                    bad.append("%s:%d: R2 unguarded rm -r operand %s: %s" % (rel, ln, tok, s))
+                    break
+print("scanned=%d" % n)
+for b in bad:
+    print(b)
+sys.exit(1 if bad else 0)
+TALOS_Qm7Vd3pLx9aZc
+
+# --- the real tree --------------------------------------------------------
+out="$(python3 -I "$SCANNER" "$TALOS_ROOT" "$ALLOW" "$SELF_REL" 2>&1)"; rc=$?
+scanned="$(printf '%s\n' "$out" | sed -n 's/^scanned=//p')"
+case "$scanned" in ''|*[!0-9]*) scanned=0 ;; esac
+if [ "$scanned" -gt 0 ]; then pass "scan: read $scanned test file(s)"; else fail "scan: read zero test files" "$out"; fi
+assert_eq_ctx "0" "$rc" "tests/ has no unchecked mktemp and no unguarded rm -r operand" "$out"
+
+# --- fixtures: each rule bites, each safe form passes ---------------------
+FIX="$SANDBOX/fix"
+mkdir -p "$FIX/tests/stubs" || exit 1
+
+scan_fixture() {  # $1=file body; sets FOUT and FRC
+  printf '%s\n' "$1" > "$FIX/tests/test-fixture.sh"
+  FOUT="$(python3 -I "$SCANNER" "$FIX" "" "$SELF_REL" 2>&1)"; FRC=$?
+}
+expect_flag() {  # $1=label $2=line $3=rule
+  scan_fixture "$2"; local o="$FOUT"
+  assert_eq "1" "$FRC" "fixture: flagged -- $1"
+  assert_contains "$o" "$3" "fixture: names $3 -- $1"
+}
+expect_ok() {  # $1=label $2=line
+  scan_fixture "$2"; local o="$FOUT"
+  assert_eq "0" "$FRC" "fixture: accepted -- $1$( [ "$FRC" -ne 0 ] && printf ': %s' "$o" )"
+}
+
+expect_flag "bare mktemp -d" 'D="$(mktemp -d)"' R1
+expect_flag "mktemp with template" 'D="$(mktemp -d "${TMPDIR:-/tmp}/x.XXXXXX")"' R1
+expect_flag "mktemp file" 'F="$(mktemp)"' R1
+expect_flag "backtick mktemp" 'F=`mktemp`' R1
+expect_flag "helper without a handler" 'D="$(safe_mktemp_dir)"' R1
+expect_flag "|| true is no handler" 'D="$(mktemp -d)" || true' R1
+expect_flag "|| : is no handler" 'D="$(mktemp -d)" || :' R1
+expect_ok "mktemp || exit 1" 'D="$(mktemp -d)" || exit 1'
+expect_ok "helper || exit 1" 'D="$(safe_mktemp_dir "$SANDBOX/x.XXXXXX")" || exit 1'
+expect_ok "mktemp || fallback assignment" 'T="$(mktemp "$C/.tmp.XXXXXX" 2>/dev/null)" || T=""'
+expect_ok "mktemp named in a comment" '# D="$(mktemp -d)" is the unsafe form'
+expect_ok "mktemp inside single quotes (recipe text)" "run_recipe 'F=\"\$(mktemp)\"'"
+expect_ok "mktemp as a word, not a substitution" 'for t in bash mktemp rm; do :; done'
+
+expect_flag "rm -rf var/sub" 'rm -rf "$X/sub"' R2
+expect_flag "rm -rf var glob" 'rm -rf "$X"/*' R2
+expect_flag "rm -rf braces var/sub" 'rm -rf "${X}/sub"' R2
+expect_flag "rm -rf /prefix/var" 'rm -rf "/tmp/$X"' R2
+expect_flag "rm -fr second operand" 'rm -fr "${A:?}" "$B/x"' R2
+expect_flag "rm -r (no f)" 'rm -r "$X/sub"' R2
+expect_flag "rm -R" 'rm -R "$X/sub"' R2
+expect_flag "rm --recursive" 'rm --recursive "$X/sub"' R2
+expect_flag "after && in a function body" '[ -d "$X" ] && rm -rf "$X/sub"' R2
+expect_flag "command substitution operand" 'rm -rf "$(cmd)/sub"' R2
+expect_flag "unquoted var/sub" 'rm -rf $X/sub' R2
+expect_ok "rm -rf bare var" 'rm -rf "$X"'
+expect_ok "rm -rf bare braces var, two operands" 'rm -rf "${X}" "$Y"'
+expect_ok "rm -rf with a :? guard before /sub" 'rm -rf "${X:?}/sub"'
+expect_ok "rm -rf with a :? guard before a glob" 'rm -rf "${X:?}"/*'
+expect_ok "rm -rf literal path" 'rm -rf .claude templates'
+expect_ok "rm -f (not recursive) var/sub" 'rm -f "$X/sub"'
+expect_flag "inside a single-quoted trap string (scanned like code)" "trap 'rm -rf \"\$X/sub\"' EXIT" R2
+expect_ok "trap string with a bare variable" "trap 'rm -rf \"\$X\"' EXIT"
+expect_ok "rm -rf then a harmless pipe" 'rm -rf "${X:?}/a" | cat'
+expect_ok "rm word in a path, not a command" 'cd "$X/form-rm -r/y"'
+
+# an allow-listed file and a stub are covered; a clean tree passes
+printf '%s\n' 'D="$(mktemp -d)"' > "$FIX/tests/stubs/gh"
+printf '%s\n' 'echo ok' > "$FIX/tests/test-fixture.sh"
+o="$(python3 -I "$SCANNER" "$FIX" "" "$SELF_REL" 2>&1)"; frc=$?
+assert_eq "1" "$frc" "fixture: tests/stubs/* is scanned"
+o="$(python3 -I "$SCANNER" "$FIX" "tests/stubs/gh" "$SELF_REL" 2>&1)"; frc=$?
+assert_eq "0" "$frc" "fixture: an allow-listed path is skipped"
+EMPTY="$SANDBOX/empty"; mkdir -p "$EMPTY/tests" || exit 1
+o="$(python3 -I "$SCANNER" "$EMPTY" "" "$SELF_REL" 2>&1)"
+assert_contains "$o" "scanned=0" "fixture: an empty tests/ reports scanned=0 (the real run fails on it)"
+
+# --- the standing scratch-script line in the role profiles (#459) ---------
+LINE_RE='Scratch scripts: check every `mktemp`/`create` result is a non-empty directory before use, delete only via `"${VAR:?}"/...`, and never use a command'"'"'s output after hiding its stderr unless you checked it'
+for role in qa developer; do
+  f="$TALOS_ROOT/agents/$role.md"
+  assert_eq "1" "$(grep -cF -- "$LINE_RE" "$f")" "agents/$role.md carries the standing scratch-script line exactly once"
+done
+
+finish

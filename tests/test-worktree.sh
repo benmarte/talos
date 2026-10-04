@@ -181,7 +181,7 @@ assert_file_absent "$SANDBOX/wt/h4" "sweep drops the now-unkept tagged harness w
 
 # A prunable harness worktree (directory already gone) is always reclaimed.
 git worktree add -q -b agent-h5-prunable "$SANDBOX/wt/h5" >/dev/null 2>&1
-rm -rf "$SANDBOX/wt/h5"
+rm -rf "${SANDBOX:?}/wt/h5"
 out="$(TALOS_SWEEP_ALL_LANES=1 bash "$WT" sweep)"; rc=$?
 assert_eq "0" "$rc" "sweep with a prunable harness worktree exits 0"
 assert_contains "$out" "reclaimed prunable worktree" "sweep reports reclaiming the prunable harness worktree"
@@ -284,7 +284,7 @@ out="$(bash "$WT" remove 604)"; rc=$?
 assert_eq "0" "$rc" "remove on a broken tagged harness worktree exits 0"
 assert_contains "$out" "preserving worktree for issue #604" "remove preserves a tagged harness worktree whose git status itself fails"
 assert_contains "$out" "status failed" "remove names the reason as a status failure, not a guessed clean tree"
-rm -rf "$SANDBOX/wt/r4"
+rm -rf "${SANDBOX:?}/wt/r4"
 git worktree prune 2>/dev/null || true
 git branch -D agent-r4-broken >/dev/null 2>&1
 
@@ -317,7 +317,7 @@ assert_eq "" "$(git branch --list agent-405-tagged)" "remove deletes the tagged 
 # unconditional `git worktree prune` remains as a backstop for anything that
 # slips past it (e.g. a worktree git itself already considers prunable).
 git worktree add -q -b scratch/not-managed "$SANDBOX/wt/scratch1" >/dev/null 2>&1
-rm -rf "$SANDBOX/wt/scratch1"
+rm -rf "${SANDBOX:?}/wt/scratch1"
 assert_contains "$(git worktree list --porcelain)" "prunable" "the unmanaged worktree is prunable before sweep"
 out="$(TALOS_SWEEP_ALL_LANES=1 bash "$WT" sweep)"; rc=$?
 assert_eq "0" "$rc" "sweep with only lane-home/self worktrees present exits 0"
@@ -481,7 +481,7 @@ mkdir -p "$SANDBOX/.claude/worktrees"
 dd if=/dev/zero of="$SANDBOX/.claude/worktrees/dummy.bin" bs=1024 count=100 >/dev/null 2>&1
 size_out="$(bash "$WT" status)"
 assert_not_contains "$size_out" "size=0K" "status reports a non-zero size once .claude/worktrees has content"
-rm -rf "$SANDBOX/.claude/worktrees"
+rm -rf "${SANDBOX:?}/.claude/worktrees"
 
 git worktree remove --force "$SANDBOX/wt/911" 2>/dev/null
 git worktree remove --force "$SANDBOX/wt/910" 2>/dev/null

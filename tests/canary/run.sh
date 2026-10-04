@@ -60,7 +60,8 @@ fi
 export GH_TOKEN="$TOKEN"
 export GITHUB_TOKEN="$TOKEN"
 
-WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/talos-canary.XXXXXX")"
+WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/talos-canary.XXXXXX")" || exit 1
+[ -n "$WORKDIR" ] && [ -d "$WORKDIR" ] || { echo "canary: mktemp -d returned no usable directory" >&2; exit 1; }
 CLONE_URL="${TALOS_CANARY_CLONE_URL:-https://github.com/${TALOS_CANARY_REPO}.git}"
 PROVIDERS="${TALOS_CANARY_PROVIDERS:-github github-api}"
 

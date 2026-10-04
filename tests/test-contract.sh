@@ -112,7 +112,7 @@ _stray_markers_in() {  # $1=file $2=extractor function
   done < <("$2" "$1")
 }
 _broken_extractor() { :; }
-_PLANT="$(mktemp)"
+_PLANT="$(mktemp)" || exit 1
 printf 'Start it with `/talos:resume` or /talos:pipeline.\n' > "$_PLANT"
 assert_eq "" "$(_stray_markers_in "$_PLANT" _prose_marker_candidates)" \
   "contract membership: /talos:resume (a slash command) is not a stray marker"

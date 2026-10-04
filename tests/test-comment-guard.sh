@@ -122,7 +122,7 @@ assert_contains "$out" "/comments/" \
 # We'll use a custom stub wrapper via STUB_ISSUE_STATE_FAIL=true.
 # The simplest way: override gh stub for this test to exit 1 on state check.
 # Use a temp stub directory.
-_tmp_stubs="$(mktemp -d)"
+_tmp_stubs="$(safe_mktemp_dir)" || exit 1
 cat > "$_tmp_stubs/gh" <<'GHSTUB'
 #!/usr/bin/env bash
 [ -n "${GH_LOG:-}" ] && printf '%s\n' "$*" >> "$GH_LOG"

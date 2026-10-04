@@ -106,4 +106,6 @@ Rules:
 - After posting, confirm: `bash scripts/pipeline-vcs.sh check-approval-sha <PR_NUMBER>; echo rc=$?` must print `rc=0`.
 - GitHub-only (github and github-api providers).
 
+Scratch scripts: check every `mktemp`/`create` result is a non-empty directory before use, delete only via `"${VAR:?}"/...`, and never use a command's output after hiding its stderr unless you checked it.
+
 Final message: `PASS: ...` or `FAIL: ...`.

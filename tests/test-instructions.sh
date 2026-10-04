@@ -67,7 +67,7 @@ assert_not_contains "$out" "install.sh --global" "no warning when the global pla
 out="$(TALOS_HOME="$SBX/elsewhere" bash "$INSTR" write "$R" 2>&1)"
 assert_contains "$out" "install.sh --global" "the warning follows \$TALOS_HOME"
 case "$HOME" in "$SANDBOX"/*) ;; *) echo "refusing: HOME=$HOME is not the sandbox" >&2; exit 1 ;; esac
-rm -rf "$HOME/.talos"
+rm -rf "${HOME:?}/.talos"
 
 R="$(new_repo append)"
 printf '# Project notes\n\nkeep me' > "$R/AGENTS.md"

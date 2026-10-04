@@ -72,7 +72,7 @@ rm -rf .talos
 # ── (d) Path resolves to the MAIN repo root from inside a linked worktree ────
 # Independent scratch repo (not the sandbox repo above), so the worktree
 # machinery under test is exercised in isolation.
-WT_MAIN="$(mktemp -d "${TMPDIR:-/tmp}/talos-events-main.XXXXXX")"
+WT_MAIN="$(safe_mktemp_dir "${TMPDIR:-/tmp}/talos-events-main.XXXXXX")" || exit 1
 (
   cd "$WT_MAIN"
   git init -q

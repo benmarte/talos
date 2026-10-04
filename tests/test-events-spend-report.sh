@@ -407,7 +407,7 @@ assert_eq "" "$(bash "$EVENTS" cost --issue 99 --pr 9 --markdown 2>/dev/null)" "
 assert_eq "no events recorded for this run" "$(bash "$EVENTS" cost --summary --issue 99 2>/dev/null)" "no event for the issue: --summary says so"
 
 # a missing / broken module: one note on stderr, empty stdout, exit 0; cost and list still work
-rm -rf "$SANDBOX/scripts-nomod"; cp -R "$TALOS_ROOT/scripts" "$SANDBOX/scripts-nomod"
+rm -rf "${SANDBOX:?}/scripts-nomod"; cp -R "$TALOS_ROOT/scripts" "$SANDBOX/scripts-nomod"
 rm -f "$SANDBOX/scripts-nomod"/*.py
 for mode in "--issue 7 --pr 9 --markdown" "--summary --issue 7"; do
   # shellcheck disable=SC2086
