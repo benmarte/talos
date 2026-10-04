@@ -100,8 +100,9 @@
 # a bigger one is NOT read at all (printing wrong totals from a partial read
 # would be worse than printing nothing). The whole run has a hard time limit
 # (TALOS_STATUS_TIMEOUT_S, default 3, 1..10): on expiry nothing is printed and
-# it exits 0. The budget call runs in its own process group with a 2 s
-# timeout, and the whole group is killed on timeout.
+# it exits 0. The budget call runs in its own process group with a timeout of
+# 2 s (more when TALOS_STATUS_TIMEOUT_S is raised: the limit minus 1 s), and
+# the whole group is killed on timeout.
 # Install: `install.sh --global` copies this file and
 # pipeline-spend-format.py into ${TALOS_HOME:-$HOME/.talos}/scripts.
 
@@ -650,7 +651,7 @@ def render(d, names, style, sep, width, color_on, fmt):
 
 # ── budget ───────────────────────────────────────────────────────────────
 
-BUDGET_TIMEOUT_S = 2
+BUDGET_TIMEOUT_S = 2  # the floor; start_timer raises it with TALOS_STATUS_TIMEOUT_S
 _budget_pgid = None  # the budget process group while it runs, for the alarm handler
 
 
@@ -732,6 +733,11 @@ def start_timer():
     when it expires nothing more is printed and the exit status is 0."""
     raw = os.environ.get("TALOS_STATUS_TIMEOUT_S", "")
     secs = int(raw) if re.fullmatch(r"[0-9]{1,2}", raw) and 1 <= int(raw) <= 10 else 3
+    # The budget call gets what the hard limit leaves it (1 s for the rest of
+    # the line), never less than the default 2 s: a slow or loaded machine
+    # raises TALOS_STATUS_TIMEOUT_S instead of silently losing the segment.
+    global BUDGET_TIMEOUT_S
+    BUDGET_TIMEOUT_S = max(BUDGET_TIMEOUT_S, secs - 1)
     if hasattr(signal, "SIGALRM"):
         signal.signal(signal.SIGALRM, _on_alarm)
         signal.alarm(secs)

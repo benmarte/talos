@@ -25,6 +25,14 @@ STUBS_DIR="$TALOS_ROOT/tests/stubs"
 # so a non-directory parent reads as "no user-level file" on macOS and Linux.
 export TALOS_HOME="/dev/null/talos-test-no-user-config"
 
+# Hermetic file modes (#443). The global config is refused when it is group- or
+# world-writable (pipeline-secrets.sh, the config-file trust check), and a test
+# writes one with a plain redirect, so the mode it gets is the caller's umask: a
+# 002 umask (a Linux login shell, some CI runners) makes it 0664 and the loader
+# reads it as absent. Pin 022 for every test file; the trust check itself is
+# never weakened, and tests that want a bad mode chmod it explicitly.
+umask 022
+
 _PASS=0
 _FAIL=0
 

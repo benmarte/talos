@@ -1796,7 +1796,7 @@ back to the default log), and only inside the repo; an absolute path, a `..`
 that leaves the repo root, a symlinked log or a location outside the root
 prints nothing. The `budget` segment runs only when a project config file
 mentions `tokens_per_issue`; it calls `pipeline-budget.sh` with a 2 s timeout
-in its own process group. On a 10,000-event log the line takes about 72 ms on
+(`TALOS_STATUS_TIMEOUT_S` minus 1 s when that is raised) in its own process group. On a 10,000-event log the line takes about 72 ms on
 macOS and 39 ms on Linux with the budget off, and about 324 ms on macOS with it
 on, so it does not meet the 50 ms target the plan set; CI asserts under 500 ms
 with `budget` removed. For a short refresh interval, leave `budget` out of
