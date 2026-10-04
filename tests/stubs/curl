@@ -155,7 +155,7 @@ elif [ -n "${STUB_COMMENT_STORE:-}" ] && [ -e "$STUB_COMMENT_STORE" ] && { [[ "$
     if [ -z "$_cs_fail" ]; then
       _cs_payload="$(mktemp)" || exit 1
       printf '%s' "$payload" > "$_cs_payload"
-      resp="$(python3 -c "
+      resp="$(python3 -I -c "
 import json, os, sys
 store, op, url, n, pfile, user = sys.argv[1:7]
 items = json.load(open(store)) if os.path.getsize(store) else []
@@ -181,14 +181,14 @@ elif [ -n "${STUB_ASSIGNEE_FILE:-}" ] && [[ "$url" =~ /issues/[0-9]+/assignees$ 
     resp='{"message":"Validation Failed"}'
   else
     [ "${STUB_ASSIGN_DROP:-}" != "1" ] && printf '%s' "$payload" \
-      | python3 -c "import json,sys; print(json.load(sys.stdin)['assignees'][0])" > "$STUB_ASSIGNEE_FILE"
+      | python3 -I -c "import json,sys; print(json.load(sys.stdin)['assignees'][0])" > "$STUB_ASSIGNEE_FILE"
     http_status=201
     resp='{}'
   fi
 elif [ -n "${STUB_ASSIGNEE_FILE:-}" ] && [ "$method" = "GET" ] && [[ "$url" =~ /issues/[0-9]+$ ]]; then
   _as_cur=""
   [ -s "$STUB_ASSIGNEE_FILE" ] && _as_cur="$(cat "$STUB_ASSIGNEE_FILE")"
-  resp="$(CUR="$_as_cur" python3 -c "
+  resp="$(CUR="$_as_cur" python3 -I -c "
 import json, os
 cur = os.environ['CUR']
 print(json.dumps({'number': 42, 'assignees': [{'login': cur}] if cur else []}))

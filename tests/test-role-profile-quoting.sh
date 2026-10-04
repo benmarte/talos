@@ -28,6 +28,46 @@
 #   (d) a fixed /tmp/<name> path appears (use mktemp).
 # "$VAR", `-`, and a fixed string with no placeholder are fine.
 #
+# The 14 unsafe forms the PR #351 security verdict (item 7 and 14) listed, and
+# what happens to each (#452). A positive control below proves every FLAGGED one.
+#   1  here-strings `<<< "<summary>"`                        FLAGGED
+#   2  `echo`/`printf "<summary>" | pipeline-*.sh ...`       FLAGGED
+#   3  unquoted `<<TALOS_<rand>` / `<<-TALOS_<rand>`         FLAGGED
+#   4  `<<\EOF`, multi-word `<<'END OF BODY'`                FLAGGED
+#   5  `comment-issue <N> <summary>`, `SUMMARY=<one-line>`,
+#      `$'<summary>'`                                         FLAGGED
+#   6  free-text variables other than the fixed list          FLAGGED by name
+#      (MSG, *_TITLE, *_TEXT, ...). ACCEPTED: any other name and HEADER/VERDICT,
+#      which hold a config or enumerated value, never issue text.
+#   7  free text in a slot other than the indexed one (the
+#      notify ref, an earlier positional)                     FLAGGED
+#   8  commands outside vcs/notify: `pipeline-status.sh <N>
+#      "<text>"`, `gh pr comment --body "<...>"`              FLAGGED
+#      ACCEPTED: `pipeline-agent.sh <role> "<prompt>"` (the playbook documents
+#      the adapter call; the prompt is built by the orchestrator, and the stage
+#      text reaches it through the same heredoc recipes), `git commit -m` (no
+#      recipe in agents/ or the playbook builds a commit message from issue
+#      text; the playbook names conventional prefixes only), and any vcs verb
+#      not in the VCS map (a new verb is added to the map with its recipe).
+#   9  `--summary="<...>"`, `--verdict "<...>"`               FLAGGED
+#  10  placeholders not written as <...>, {...} or an ellipsis ("[summary here]",
+#      SUMMARY_TEXT_HERE)                                     ACCEPTED: the set of
+#      ways to write "fill me in" cannot be enumerated; the three forms in use
+#      are covered and a new recipe is reviewed.
+#  11  `${TMPDIR:-/tmp}/name`, `/tmp/$N-body.md`, `mktemp -u` FLAGGED
+#      ACCEPTED: a fixed name in the working directory (it is not under /tmp and
+#      a recipe that writes one is a code-review matter, not a pattern).
+#  12  a command split across two inline code spans           ACCEPTED: each span
+#      is one command to the scanner and to a reader; an agent that joins two
+#      spans into one command is not detectable from the text.
+#  13  files outside agents/*.md and skills/*/SKILL.md        ACCEPTED: README,
+#      docs and templates are read by people; the files an agent loads as its
+#      instructions are the two globs scanned.
+#  14  the concrete `--summary "3 criteria verified"` in playbook Rule 3
+#      ACCEPTED in this PR, pending #481 (the `post_stage` stdin /
+#      `--summary-file` route); the positive control below keeps the quoted form
+#      flagged, and the negative controls pin the stdin and file forms safe.
+#
 # The scan FAILS when it scans zero files, a file is unreadable, or a path
 # contains a space and so was split (the file list is an array, always quoted).
 #
@@ -42,9 +82,13 @@ SCANNER="$SANDBOX/scan.py"
 cat > "$SCANNER" <<'PY'
 import re, sys
 
-NUMERIC = re.compile(r"<(N|PR|PR_NUMBER|id|K|J|E|i|n|pr|issue-n)>")
+NUMERIC = re.compile(r"<(N|PR|PR_NUMBER|id|K|J|E|i|n|M|pr|issue-n)>")
 PLACEHOLDER = re.compile(r"<[^<>]+>|(?<!\$)\{[A-Za-z_][^{}\n]*\}|…|\.\.\.")
-NAMES = r"SUMMARY|DETAILS|BLOCKED_BY|ATTENTION_REPORT|SPEC_BODY|COMMENT_BODY|PR_TITLE|ISSUE_TITLE|SUB_TITLE"
+# form 6: a variable that names free text, whatever its prefix (MSG, PR_TITLE,
+# FINDINGS_TEXT). HEADER and VERDICT hold a config or an enumerated value, so
+# they stay out of the list (accepted, see the end of the header).
+NAMES = (r"(?:[A-Z][A-Z0-9]*_)*(?:SUMMARY|DETAILS|BLOCKED_BY|ATTENTION_REPORT|SPEC_BODY|COMMENT_BODY"
+         r"|TITLE|MSG|MESSAGE|TEXT|REPORT|FINDINGS|REASON|DESCRIPTION|PROMPT)")
 
 # verb -> index of the free-text positional argument after the verb
 VCS = {"create-pr": 1, "create-issue": 0, "slug-for": 0, "comment-issue": 1,
@@ -117,23 +161,49 @@ def scan(path):
             idx = NOTIFY_MESSAGE
         if idx < len(toks) and toks[idx][0] in ("dq", "sq") and free(toks[idx][1]):
             hit(m.start(), "quoted free text")
+        elif idx < len(toks) and toks[idx][0] == "bare" and free(toks[idx][1]) and not toks[idx][1].startswith("-"):
+            hit(m.start(), "unquoted free text")  # form 5: `comment-issue <N> <summary>`
+        else:
+            # form 7: a quoted placeholder in another positional slot (notify ref, ...)
+            span = toks[:idx + 1]
+            if any(t[0] in ("dq", "sq") and free(t[1]) for t in span):
+                hit(m.start(), "quoted free text")
     # (b) --summary, printf '%s' "...", NAME="..."
-    for m in re.finditer(r"--summary\s+(\"(?:[^\"\\]|\\.)*\"|'[^']*')", text, re.S):
+    # forms 9 (--summary= / --verdict) and 2 (printf or echo piped into a stdin route)
+    for m in re.finditer(r"--(?:summary|verdict)(?:=|\s+)(\"(?:[^\"\\]|\\.)*\"|'[^']*')", text, re.S):
         if free(m.group(1)):
             hit(m.start(), "quoted free text")
+    for m in re.finditer(r"(?:printf\s+'[^']*'|echo(?:\s+-[a-zA-Z]+)?)\s+(\"(?:[^\"\\]|\\.)*\"|'[^']*')\s*\|\s*(?:bash\s+)?\S*pipeline-", text, re.S):
+        if free(m.group(1)):
+            hit(m.start(), "quoted free text (piped into a stdin route)")
     for m in re.finditer(r"printf\s+'%s'\s+(\"(?:[^\"\\]|\\.)*\")", text, re.S):
         if free(m.group(1)):
             hit(m.start(), "quoted free text")
-    for m in re.finditer(r"\b(?:%s)=(\"(?:[^\"\\]|\\.)*\"|'[^']*')" % NAMES, text, re.S):
+    # forms 1 (here-string) and 5 (ANSI-C $'...' and a bare placeholder assignment)
+    for m in re.finditer(r"<<<\s*(\"(?:[^\"\\]|\\.)*\"|'[^']*'|\$'[^']*')", text, re.S):
+        if free(m.group(1)):
+            hit(m.start(), "quoted free text (here-string)")
+    for m in re.finditer(r"\b(?:%s)=(\"(?:[^\"\\]|\\.)*\"|'[^']*'|\$'[^']*'|<[^<>\s]+>)" % NAMES, text, re.S):
         if free(m.group(1)):
             hit(m.start(), "quoted free text")
     # (c) heredoc delimiters
-    for m in re.finditer(r"(?<!<)<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_<>.-]*)\1", text):
-        if m.group(2) != "TALOS_<rand>":
-            hit(m.start(), "heredoc delimiter %r is not the TALOS_<rand> placeholder" % m.group(2))
-    # (d) fixed temp paths
-    for m in re.finditer(r"/tmp/[A-Za-z0-9_<-]", text):
+    # forms 3 and 4: the delimiter must be QUOTED (else the body is expanded) and
+    # be exactly the placeholder; \EOF and a multi-word 'END OF BODY' are fixed words
+    for m in re.finditer(r"(?<!<)<<(?!<)-?[ \t]*(?:'([^'\n]*)'|\"([^\"\n]*)\"|(\\?[A-Za-z_][A-Za-z0-9_<>.-]*))", text):
+        quoted = m.group(1) if m.group(1) is not None else m.group(2)
+        if quoted is None:
+            hit(m.start(), "heredoc delimiter %r is unquoted (the body would be expanded)" % m.group(3))
+        elif quoted != "TALOS_<rand>":
+            hit(m.start(), "heredoc delimiter %r is not the TALOS_<rand> placeholder" % quoted)
+    # (d) fixed temp paths; form 11 adds ${TMPDIR:-/tmp}/<name>, /tmp/$VAR and mktemp -u
+    for m in re.finditer(r"/tmp/[A-Za-z0-9_<$-]|/tmp\}/[A-Za-z0-9_<$-]", text):
         hit(m.start(), "fixed /tmp path (use mktemp)")
+    for m in re.finditer(r"mktemp\s+(?:-\w+\s+)*-u\b", text):
+        hit(m.start(), "mktemp -u names a path without creating it (use mktemp)")
+    # form 8: commands outside pipeline-vcs.sh / pipeline-notify.sh that take free text
+    for m in re.finditer(r"pipeline-status\.sh\s+\S+\s+(\"(?:[^\"\\]|\\.)*\")|\bgh\s+pr\s+comment\b[^\n`]*?--body\s+(\"(?:[^\"\\]|\\.)*\")", text):
+        if free(m.group(1) or m.group(2) or ""):
+            hit(m.start(), "quoted free text")
     return hits
 
 
@@ -227,7 +297,29 @@ for bad in \
   "cat > f <<'TALOS_EOF'" \
   'cat > f <<EOF' \
   "read -r -d '' X <<\"EOF\" || true" \
-  'body in /tmp/pr-body-<N>.md'; do
+  'body in /tmp/pr-body-<N>.md' \
+  'bash scripts/pipeline-vcs.sh comment-issue <N> - <<< "<summary>"' \
+  'bash scripts/pipeline-vcs.sh comment-issue <N> --body-file - <<< "<summary>"' \
+  'echo "<summary>" | bash scripts/pipeline-notify.sh qa "#<N>" - <N>' \
+  "printf '%s\\n' \"<summary>\" | bash scripts/pipeline-vcs.sh comment-pr <PR> --body-file -" \
+  'cat > f <<TALOS_<rand>' \
+  'cat > f <<-TALOS_<rand>' \
+  'cat > f <<\\EOF' \
+  "cat > f <<'END OF BODY'" \
+  'bash scripts/pipeline-vcs.sh comment-issue <N> <summary>' \
+  'bash scripts/pipeline-notify.sh qa "#<N>" <summary> <N>' \
+  'SUMMARY=<one-line>' \
+  "SUMMARY=\$'<one-line>'" \
+  'MSG="<summary>"' \
+  'TITLE="<issue title>"' \
+  'bash scripts/pipeline-notify.sh info "<issue title>" - <N>' \
+  'bash scripts/pipeline-status.sh <N> "<text>"' \
+  'gh pr comment <PR> --body "<findings>"' \
+  'bash scripts/pipeline-hooks.sh post_stage qa qa 42 --summary="<what happened>"' \
+  'bash scripts/pipeline-hooks.sh post_stage qa qa 42 --verdict "<verdict>"' \
+  'F="${TMPDIR:-/tmp}/pr-body-<N>.md"' \
+  'F=/tmp/$N-body.md' \
+  'F="$(mktemp -u)"'; do
   flagged "$bad\n"; assert_eq "0" "$?" "positive control: flagged -- $bad"
 done
 flagged 'bash scripts/pipeline-vcs.sh comment-issue <N> \\\n  "**Planner:** done <list>"\n'
@@ -256,7 +348,15 @@ for good in \
   'bash scripts/pipeline-notify.sh info "backlog" "K blocked issues, J blocked PRs: #a, PR #b" backlog' \
   'bash scripts/pipeline-notify.sh --render slack qa "#42" "<sample>"' \
   'BODY_FILE="$(mktemp)"' \
-  'DETAILS="$ITEMS"'; do
+  'DETAILS="$ITEMS"' \
+  'HEADER="<HEADER>" VERDICT="<VERDICT>"' \
+  'bash scripts/pipeline-hooks.sh post_stage qa qa 42 --summary - <<'"'"'TALOS_<rand>'"'"'' \
+  'bash scripts/pipeline-hooks.sh post_stage qa qa 42 --summary-file "$SUMMARY_FILE"' \
+  'bash scripts/pipeline-vcs.sh comment-issue <N> - <<'"'"'TALOS_<rand>'"'"'' \
+  'bash scripts/pipeline-notify.sh qa "#<N>" - <N> <<-'"'"'TALOS_<rand>'"'"'' \
+  'printf "%s\n" "$SUMMARY" | bash scripts/pipeline-notify.sh qa "#<N>" - <N>' \
+  "cat > f <<\"TALOS_<rand>\"" \
+  'F="$(mktemp)"'; do
   if flagged "$good\n"; then fail "control: safe form not flagged -- $good" "$(scan_files "$CTL" 2>&1)"; else pass "control: safe form not flagged -- $good"; fi
 done
 

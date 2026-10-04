@@ -66,7 +66,8 @@ status) is the oracle for whether the suite passes — this stage is diff-only.
   1. Approve with your summary on stdin (a heredoc; the delimiter is
      `TALOS_<rand>`, `<rand>` being 12+ random characters you invent fresh for
      each heredoc, never copied from an example — text that contains the
-     closing line would end the heredoc early and run what follows):
+     closing line would end the heredoc early and run what follows; a
+     literal `<rand>` in your command means you did not substitute it):
      ```bash
      bash scripts/pipeline-vcs.sh approve-pr <pr> --body-file - <<'TALOS_<rand>'
      <summary>
