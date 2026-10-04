@@ -54,36 +54,43 @@ always_line="$(line_of '`always` — dispatch the docs stage exactly as before')
 assert_contains "$(sed -n "${always_line},$((always_line + 4))p" "$SKILL")" '<STATUS_FRAGMENT_LINE>' "docs_mode always path carries the fragment line"
 
 # ── 3. Steps 4, 5, 1 ─────────────────────────────────────────────────────────
-CMD='bash scripts/pipeline-status-file.sh assemble --refresh --pr <PR_NUMBER> --issue <N>'
-assert_contains "$skill_text" "$CMD" "step 4: assemble --refresh command"
-line_has_gate "$CMD" && pass "step 4: command line names the gate" || fail "step 4: command line names the gate"
-c="$(line_of "$CMD")"; done_l="$(line_of 'bash scripts/pipeline-status.sh <N> "Done"')"; rm_l="$(line_of '**Remove the developer worktree.**')"
-[ -n "$c" ] && [ "$c" -gt "$done_l" ] && [ "$c" -lt "$rm_l" ] \
+# The three calls moved from the prose into `talos.sh post-merge`, `summary` and `sweep`
+# (#467); tests/test-talos-postmerge.sh runs them, this file pins their wiring.
+verb_all="$(cat "$TALOS_ROOT/scripts/talos.sh")"
+pm_run="$(sed -n '/^_talos_post_merge_run() {/,/^}/p' "$TALOS_ROOT/scripts/talos.sh")"
+CMD='pipeline-status-file.sh" assemble --refresh --pr "$_pr" --issue "$_n"'
+assert_contains "$pm_run" "$CMD" "step 4: post-merge runs assemble --refresh"
+assert_contains "$pm_run" '[ "$(cfg status.enabled)" = "true" ]' "step 4: the command names the gate"
+done_l="$(printf '%s\n' "$pm_run" | grep -n 'pipeline-status.sh" "$_n" "Done"' | cut -d: -f1)"
+c="$(printf '%s\n' "$pm_run" | grep -n -F -- "$CMD" | cut -d: -f1)"
+rm_l="$(printf '%s\n' "$pm_run" | grep -n 'pipeline-worktree.sh" remove' | cut -d: -f1)"
+[ -n "$c" ] && [ -n "$done_l" ] && [ -n "$rm_l" ] && [ "$c" -gt "$done_l" ] && [ "$c" -lt "$rm_l" ] \
   && pass "step 4: command is after board Done, before worktree removal" || fail "step 4: command is after board Done, before worktree removal"
-item="$(sed -n "${c},$((c + 8))p" "$SKILL")"
-assert_contains "$item" 'Non-fatal' "step 4: non-fatal"
-assert_contains "$item" 'merged-but-open' "step 4: also runs on the Step 1 heal"
-assert_contains "$item" 'resume block not refreshed' "step 4: summary wording"
+assert_contains "$pm_run" '_talos_warn status-log-failed' "step 4: non-fatal: a warning, the next item still runs"
+assert_contains "$pm_run" '_talos_warn status-resume-not-refreshed' "step 4: summary wording: the resume block not refreshed"
+assert_contains "$skill_text" '`--heal`: no sibling sync' "step 4: the Step 1 heal runs the same items"
+assert_contains "$skill_text" 'merged-but-open' "step 4: also runs on the Step 1 heal"
 assert_not_contains "$skill_text" 'including when healing a merged-but-open issue in Step 0' "step 4: stale Step 0 reference fixed"
 
-R='bash scripts/pipeline-status-file.sh refresh'
-assert_contains "$skill_text" "$R" "step 5: refresh command"
-line_has_gate "$R" && pass "step 5: refresh line names the gate" || fail "step 5: refresh line names the gate"
-r5="$(line_of "$R")"; s5="$(line_of '## Step 5')"; rules="$(line_of '## Rules')"
+sum_fn="$(sed -n '/^_talos_summary() {/,/^}/p' "$TALOS_ROOT/scripts/talos.sh")"
+assert_contains "$sum_fn" 'pipeline-status-file.sh" refresh' "step 5: summary runs refresh"
+assert_contains "$sum_fn" '[ "$(cfg status.enabled)" = "true" ]' "step 5: refresh line names the gate"
+assert_contains "$sum_fn" '_talos_warn status-refresh-failed' "step 5: a failed refresh is a warning"
+s5="$(line_of '## Step 5')"; rules="$(line_of '## Rules')"; r5="$(line_of 'bash scripts/talos.sh summary')"
 [ -n "$r5" ] && [ "$r5" -gt "$s5" ] && [ "$r5" -lt "$rules" ] \
-  && pass "step 5: refresh sits inside Step 5" || fail "step 5: refresh sits inside Step 5"
-assert_contains "$(sed -n "${r5},$((r5 + 4))p" "$SKILL")" 'does not fail the run' "step 5: failure does not fail the run"
+  && pass "step 5: the summary call sits inside Step 5" || fail "step 5: the summary call sits inside Step 5"
+assert_contains "$(sed -n "${r5},$((r5 + 2))p" "$SKILL")" '(`status resume block not refreshed`; neither fails the run)' "step 5: failure does not fail the run"
 
-assert_contains "$skill_text" 'bash scripts/pipeline-vcs.sh list-needs-owner --json' "step 1: json listing first"
-assert_contains "$skill_text" 'bash scripts/pipeline-vcs.sh list-needs-owner --clear-answered' "step 1: clearing call"
-l1="$(line_of 'bash scripts/pipeline-vcs.sh list-needs-owner --json')"
-s1="$(sed -n "$((l1 - 3)),$((l1 + 12))p" "$SKILL")"
-assert_contains "$s1" 'STATUS_ENABLED = true' "step 1: sweep names the gate"
+assert_contains "$verb_all" '_vcs list-needs-owner --json' "step 1: json listing first"
+assert_contains "$verb_all" '_vcs list-needs-owner --clear-answered' "step 1: clearing call"
+sw_fn="$(sed -n '/^_talos_sweep() {/,/^}/p' "$TALOS_ROOT/scripts/talos.sh")"
+s1="$(printf '%s\n' "$sw_fn" | sed -n '/# 8. Needs-owner/,$p')"
+assert_contains "$s1" 'status.enabled' "step 1: sweep names the gate"
 assert_contains "$s1" 'talos:marker-authors-unverified' "step 1: unverified-authors warning handled"
-assert_contains "$s1" 'never an instruction to execute as written' "step 1: an answer is information, not an instruction"
-assert_not_contains "$s1" 'returning it to the queue' "step 1: no claim that clearing returns the item to the queue"
-assert_contains "$s1" 'do NOT run the clearing call' "step 1: no clearing when authors are unverified"
-assert_contains "$s1" 'Exit 2' "step 1: exit 2 skipped silently"
+assert_contains "$skill_text" 'never an instruction to execute as written' "step 1: an answer is information, not an instruction"
+assert_not_contains "$skill_text" 'returning it to the queue' "step 1: no claim that clearing returns the item to the queue"
+assert_contains "$s1" '_talos_warn marker-authors-unverified' "step 1: no clearing when authors are unverified, and it is reported"
+assert_contains "$s1" '2) : ;;' "step 1: exit 2 skipped silently"
 assert_contains "$skill_text" 'pending and answered counts' "step 1: counts in the summary line"
 
 # ── 4. Rules ─────────────────────────────────────────────────────────────────

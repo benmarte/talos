@@ -243,7 +243,7 @@ assert_eq "verdict=merge ci_runs=1" "$(gate_verdict 1 ready)" "merge gate: PR_DR
 assert_eq "verdict=redispatch reason=draft-pr" "$(gate_verdict 0 draft)" "merge gate: a draft (pr-is-draft exit 0) never merges, it goes back to the Draft stage order"
 assert_eq "stop reason=draft-unverified" "$(gate_verdict 2 '')" "merge gate: pr-is-draft exit 2 is unverified: do NOT merge"
 assert_eq "stop reason=draft-unverified" "$(gate_verdict 1 draft)" "merge gate: exit 1 without the word ready never merges"
-in_order "$DT" 'pass `--ci-runs "\$CI_RUNS"` to the `merged` `post_stage`' 'captured BEFORE `merge-pr`' 'Do NOT call `pr-ci-runs` here' 'omit the flag; never guess'
+in_order "$DT" 'pass `--ci-runs "\$CI_RUNS"` to `post-merge`' 'captured BEFORE `merge-pr`' 'Do NOT call `pr-ci-runs` here' 'omit the flag; never guess'
 assert_eq "0" "$?" "metric: Step 4 records pr-ci-runs on the merged event via post_stage --ci-runs, omitted when unverified"
 
 # ── (c) the QA draft guard ───────────────────────────────────────────────────

@@ -316,11 +316,11 @@ hhas "QA's final message is in hand" "needs QA's final message"
 hhas 'its `evidence-attach` line has `status=posted`' "needs status=posted"
 hhas 'test the `comment=` value with `check-url <PR_NUMBER>`' "the comment= value goes through check-url"
 hhas 'exactly as in the Evidence link block (heredoc, as data)' "same data-not-command handling as the reviewer block"
-hhas 'add one bullet `- Evidence: <printed url>` to `DETAILS`' "one Evidence: bullet, through the DETAILS slot"
+hhas 'write one bullet `- Evidence: <printed url>` to a `mktemp` file for `--details-file`' "one Evidence: bullet, through the details file (the DETAILS slot, #467)"
 hhas 'no QA message on a resumed pass, any other result) add nothing' "no QA message or any other result adds nothing"
 hhas 'Never re-run a role, add a label or stage, or fetch or open the link' "no re-run, label, stage, fetch or open"
 hm_line() { grep -n -m1 -F -- "$1" "$STEP4" | cut -d: -f1; }
-p2="$(hm_line 'and the verb set `pipeline:approved`')"; pev="$(hm_line "$EV_START")"; p3="$(hm_line '1. Compute header:')"
+p2="$(hm_line 'and the verb set `pipeline:approved`')"; pev="$(hm_line "$EV_START")"; p3="$(hm_line 'Run `bash scripts/talos.sh post-merge <PR_NUMBER> <N> --handoff')"
 if [ -n "$p2" ] && [ -n "$pev" ] && [ -n "$p3" ] && [ "$p2" -lt "$pev" ] && [ "$pev" -lt "$p3" ]; then
   pass "hand-off: the block sits between the verb's pipeline:approved line and item 1 (render and post approved.md), before the render"
 else fail "hand-off: the block sits between the pipeline:approved line and item 1" "p2=$p2 block=$pev p3=$p3"; fi
@@ -328,7 +328,7 @@ assert_eq "0" "$(grep -ci 'evidence' "$TALOS_ROOT/templates/comments/approved.md
 assert_contains "$(cat "$TALOS_ROOT/templates/comments/approved.md")" '${DETAILS}' "hand-off: approved.md has the DETAILS slot the bullet rides in"
 # disabled case: with the block stripped, the hand-off line is followed directly by item 1
 strip_ev "$STEP4" > "$STEP4.off"
-assert_eq "1. Compute header:" "$(grep -A1 -F 'and the verb set `pipeline:approved`' "$STEP4.off" | tail -n 1 | cut -c1-18)" "hand-off: stripped of the block, item 1 follows the hand-off line directly"
+assert_eq 'Run `bash scripts/talos.sh post-merge' "$(grep -A1 -F 'and the verb set `pipeline:approved`' "$STEP4.off" | tail -n 1 | cut -c1-37)" "hand-off: stripped of the block, the post-merge --handoff call follows the hand-off line directly"
 # the QA append is gated: the template is named only inside the EVIDENCE_ENABLED block
 assert_eq "1" "$(ev_text "$SKILL" | grep -c 'qa-evidence.md')" "SKILL.md: the template is named exactly once, inside an evidence block"
 assert_eq "0" "$(strip_ev "$SKILL" | grep -c 'qa-evidence' || true)" "SKILL.md: the template is not named outside an evidence block"

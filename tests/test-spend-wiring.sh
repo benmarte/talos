@@ -42,7 +42,10 @@ assert_contains "$verb_fr" '|| _brc=$?' "budget stop: the exit code is captured 
 assert_contains "$verb_fr" 'post_stage budget-blocked orchestrator "$_n"' "budget stop: gate fix-round fires post_stage budget-blocked orchestrator"
 assert_contains "$verb_fr" 'printf '"'"'%s'"'"' "$_bout" | bash "$SCRIPT_DIR/pipeline-hooks.sh"' "budget stop: the budget line is the hook's stdin (printf '%s' piped)"
 assert_contains "$verb_fr" '--summary -' "budget stop: the hook summary comes from stdin"
-assert_contains "$skill_flat" 'pipeline-events.sh cost --summary --issue' "Step 5: cost --summary --issue"
+# The cost table moved into `talos.sh summary` (#467): one call, one --issue per id.
+assert_contains "$verb_all" 'pipeline-events.sh" cost --summary "${_a[@]}"' "Step 5: summary runs the one cost --summary call"
+assert_contains "$verb_all" 'for _i in "${_IDS[@]}"; do _a+=(--issue "$_i"); done' "Step 5: summary passes one --issue per processed issue"
+assert_contains "$skill_flat" 'the one `cost --summary` call' "Step 5: the playbook names the one cost --summary call"
 assert_contains "$verb_all" 'With limits.tokens_per_issue unset' \
   "budget stop: talos.sh states the unset flow is unchanged"
 assert_contains "$verb_all" 'so the fix-round flow is unchanged' "budget stop: unchanged wording present"
@@ -85,12 +88,18 @@ restamp="$(grep -n 'RESTAMP_FAIL' "$SKILL_MD" | grep -i 'budget' || true)"
 assert_eq "" "$restamp" "RESTAMP_FAIL lines carry no budget check"
 
 assert_contains "$skill_flat" 'a budget stop (Step 3)' "Rule 20 lists a budget stop"
-assert_contains "$skill_flat" 'once, after `post_stage merged`' "Step 4 item 8: spend refresh once, after post_stage merged"
+# The post-merge items moved into `talos.sh post-merge` (#467): the spend block runs
+# once, after the merged event, and only for a first run (tests/test-talos-postmerge.sh).
+pm_run="$(sed -n '/^_talos_post_merge_run() {/,/^}/p' "$TALOS_ROOT/scripts/talos.sh")"
+assert_eq "1" "$(printf '%s\n' "$pm_run" | grep -c 'cost --issue "$_n" --pr "$_pr" --line')" "post-merge: the spend --line runs once"
+assert_eq "1" "$(printf '%s\n' "$pm_run" | grep -c 'upsert-pr-comment "$_pr" --marker spend --body-file -')" "post-merge: the spend upsert runs once"
+assert_eq "1" "$(printf '%s\n' "$pm_run" | awk '/post_stage merged/{m=NR} /cost --issue/ && !c{c=NR} END{print (m && c && m < c) ? 1 : 0}')" "post-merge: the spend block is after post_stage merged"
+assert_contains "$skill_flat" 'the `merged` and `issue-closed` `post_stage` events and the spend block' "Step 4: the post-merge call includes the spend block"
 merge_seq="$(grep -n 'merge sequence:  pr-ci-runs -> merge-pr -> post_stage merged --ci-runs' "$SKILL_MD" | wc -l | tr -d ' ')"
 assert_eq "1" "$merge_seq" "the merge sequence: line is unchanged"
-item4="$(grep -n '4\. \*\*Cost column' "$SKILL_MD")"
-assert_contains "$item4" 'pipeline-events.sh cost --summary --issue' "Step 5 item 4 is the one --summary call"
-assert_not_contains "$item4" 'loop `--issue N`' "Step 5 item 4: the per-issue loop is gone"
+item4="$(grep -n '3\. \*\*Cost column' "$SKILL_MD")"
+assert_contains "$item4" 'print item 1'"'"'s `cost=` lines' "Step 5 item 3 prints the one --summary call's lines"
+assert_not_contains "$item4" 'loop `--issue N`' "Step 5 item 3: the per-issue loop is gone"
 usage_line="$(grep -m1 'Usage-reporting spawn form' "$SKILL_MD")"
 assert_contains "$usage_line" 'no input/output split, no model, no dollar cost (UNVERIFIED beyond these observed fields)' \
   "usage section: Agent notification fields only"
