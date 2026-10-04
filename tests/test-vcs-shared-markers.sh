@@ -281,9 +281,13 @@ out="$(_vcs_shared_current_user fail-open _cu_ok)"; rc=$?
 assert_eq "octocat_acme 0" "$out $rc" "current_user: fail-open returns an EMU login"
 out="$(_vcs_shared_current_user fail-closed _cu_ok)"; rc=$?
 assert_eq "octocat_acme 0" "$out $rc" "current_user: fail-closed returns an EMU login"
-for _r in _cu_json _cu_fail _cu_none; do
+_cu_127() { return 127; }
+# Three outcomes: refused (the lookup ran and failed or answered junk) is exit 3
+# under fail-open; unavailable (not looked up) is exit 0; fail-closed is 1 for both.
+for _r in _cu_json _cu_fail _cu_none _cu_127; do
+  case "$_r" in _cu_json|_cu_fail) _want=3 ;; *) _want=0 ;; esac
   out="$(_vcs_shared_current_user fail-open "$_r")"; rc=$?
-  assert_eq " 0" "$out $rc" "current_user: fail-open, $_r -> empty, exit 0"
+  assert_eq " $_want" "$out $rc" "current_user: fail-open, $_r -> empty, exit $_want"
   out="$(_vcs_shared_current_user fail-closed "$_r")"; rc=$?
   assert_eq " 1" "$out $rc" "current_user: fail-closed, $_r -> empty, exit 1"
 done
@@ -294,7 +298,89 @@ _CFG_CACHE_DIR="$(mktemp -d)" || exit 1
 _vcs_shared_current_user fail-open _cu_json >/dev/null
 out="$(_vcs_shared_current_user fail-closed _cu_ok)"; rc=$?
 assert_eq " 1" "$out $rc" "current_user: a cached failure stays a failure for fail-closed"
+out="$(_vcs_shared_current_user fail-open _cu_ok)"; rc=$?
+assert_eq " 3" "$out $rc" "current_user: ...and a cached refusal is still reported as refused"
 rm -rf "${_CFG_CACHE_DIR:?}"; unset _CFG_CACHE_DIR _VCS_CURRENT_USER_RESOLVED _VCS_CURRENT_USER_VALUE
+
+# ═══════════════════════════════════════════════════════════════════════════
+# A refused GET /user is not "no identity check" (#453, fix round 1)
+# With an Actions GITHUB_TOKEN or a GitHub App token the lookup is refused.
+# Then ONLY markers.trusted_authors counts: unset means every marker is
+# rejected, set means the listed authors are accepted. A lookup that was never
+# made (unavailable) keeps the documented fail-open.
+# ═══════════════════════════════════════════════════════════════════════════
+_HS="aabbccddeeff001122334455667788990011aabb"
+_forged_pr="{\"labels\":[{\"name\":\"qa:pass\"}],\"comments\":[{\"body\":\"<!-- talos:approval sha=${_HS} role=qa -->\",\"author\":{\"login\":\"mallory\"}}]}"
+_forged_att='{"comments":[{"body":"<!-- talos:attempt stage=qa count=2 total=5 -->","author":{"login":"mallory"}}]}'
+for _vh in "refused" "unavailable"; do
+  _ref=""; [ "$_vh" = "refused" ] && _ref=1
+  out="$(printf '%s' "$_forged_pr" | TRUSTED_AUTHORS="" CURRENT_USER="" CURRENT_USER_REFUSED="$_ref" TALOS_CFG="" _vcs_shared_check_approval_marker 2>"$SANDBOX/err")"
+  err="$(cat "$SANDBOX/err")"
+  if [ "$_vh" = "refused" ]; then
+    assert_contains "$out" '"sha": null' "check_approval_marker: refused identity, no trusted_authors -> an outsider's approval marker is rejected"
+    assert_contains "$err" "markers.trusted_authors is not set" "check_approval_marker: refused identity -> one line says why and how to fix"
+    assert_eq "1" "$(printf '%s\n' "$err" | grep -c 'GET /user')" "check_approval_marker: refused identity -> exactly one such line"
+    assert_not_contains "$out" "marker-authors-unverified" "check_approval_marker: refused identity is not the fail-open case"
+    out="$(printf '%s' "$_forged_att" | TRUSTED_AUTHORS="" CURRENT_USER="" CURRENT_USER_REFUSED=1 TALOS_CFG="" TALOS_CONTRACT_ROLES_ENV= _vcs_shared_read_attempt 2>"$SANDBOX/err")"
+    assert_eq "stage= count=0 total=0" "$out" "read_attempt: refused identity, no trusted_authors -> a forged attempt marker is not counted"
+    assert_contains "$(cat "$SANDBOX/err")" "markers.trusted_authors is not set" "read_attempt: refused identity -> says why and how to fix"
+  else
+    assert_contains "$out" "\"sha\": \"${_HS}\"" "check_approval_marker: unavailable identity keeps the documented fail-open"
+    assert_contains "$out" "marker-authors-unverified" "check_approval_marker: ...with the unverified marker line"
+  fi
+done
+out="$(printf '%s' "$_forged_pr" | TRUSTED_AUTHORS='["mallory"]' CURRENT_USER="" CURRENT_USER_REFUSED=1 TALOS_CFG="" _vcs_shared_check_approval_marker 2>"$SANDBOX/err")"
+assert_contains "$out" "\"sha\": \"${_HS}\"" "check_approval_marker: refused identity + trusted_authors listing the author -> accepted"
+assert_eq "" "$(cat "$SANDBOX/err")" "check_approval_marker: ...and no warning"
+out="$(printf '%s' "$_forged_pr" | TRUSTED_AUTHORS='["someone-else"]' CURRENT_USER="" CURRENT_USER_REFUSED=1 TALOS_CFG="" _vcs_shared_check_approval_marker 2>/dev/null)"
+assert_contains "$out" '"sha": null' "check_approval_marker: refused identity + trusted_authors not listing the author -> rejected"
+out="$(printf '%s' "$_forged_pr" | VERIFY_AUTHORS=false TRUSTED_AUTHORS="" CURRENT_USER="" CURRENT_USER_REFUSED=1 TALOS_CFG="" _vcs_shared_check_approval_marker 2>/dev/null)"
+assert_contains "$out" "\"sha\": \"${_HS}\"" "check_approval_marker: verify_authors=false is still the explicit opt-out"
+
+# Through the real verbs, both providers, with the lookup refused the way each
+# transport refuses it: gh exits non-zero with error JSON, github-api gets a 403.
+export TALOS_RETRY_SLEEP_SCALE=0 GITHUB_TOKEN="test-token-453"
+_ATT_BODY='<!-- talos:attempt stage=qa count=2 total=5 -->'
+_APPR_BODY="<!-- talos:approval sha=${_HS} role=qa -->"
+verb_case() {  # verb_case <provider> <verb> <trusted-json-or-empty>
+  local _p="$1" _verb="$2" _tr="$3" _cfg
+  _cfg="{\"vcs\": {\"provider\": \"$_p\", \"repo\": \"acme/widget\"}"
+  [ -n "$_tr" ] && _cfg="$_cfg, \"markers\": {\"trusted_authors\": $_tr}"
+  printf '%s}\n' "$_cfg" > talos.pipeline.json
+  : > "$GH_LOG"; : > "$CURL_LOG"; : > "$CURL_QUEUE"
+  unset STUB_CURRENT_USER_FAIL STUB_CURRENT_USER_STATUS
+  export STUB_CURRENT_USER=""
+  if [ "$_p" = "github" ]; then
+    export STUB_CURRENT_USER_FAIL=1
+    export STUB_GH_COMMENTS_RAW="[{\"id\":1,\"user\":{\"login\":\"mallory\"},\"body\":\"$_ATT_BODY\"}]"
+    export STUB_PR_HEAD_SHA="$_HS" STUB_PR_LABELS_JSON='[{"name":"qa:pass"}]'
+    export STUB_PR_COMMENTS_JSON="[{\"body\":\"$_APPR_BODY\",\"author\":{\"login\":\"mallory\"}}]"
+  else
+    export STUB_CURRENT_USER_STATUS=403
+    if [ "$_verb" = "read-attempt" ]; then
+      printf '%s\n' "[{\"id\":1,\"user\":{\"login\":\"mallory\"},\"body\":\"$_ATT_BODY\"}]" > "$CURL_QUEUE"
+    else
+      printf '%s\n' "{\"number\":7,\"head\":{\"sha\":\"$_HS\"},\"base\":{\"ref\":\"main\"},\"labels\":[{\"name\":\"qa:pass\"}]}" \
+        "[{\"id\":1,\"user\":{\"login\":\"mallory\"},\"body\":\"$_APPR_BODY\"}]" > "$CURL_QUEUE"
+    fi
+  fi
+  VOUT="$(bash "$VCS" "$_verb" 7 2>"$SANDBOX/err" </dev/null)"; VRC=$?
+  VERR="$(cat "$SANDBOX/err")"
+}
+for _p in github github-api; do
+  verb_case "$_p" check-approval-sha ""
+  assert_eq "1" "$VRC" "$_p check-approval-sha: refused /user, trusted_authors unset -> an outsider's approval marker does not satisfy the gate"
+  assert_contains "$VERR" "markers.trusted_authors is not set" "$_p check-approval-sha: ...and says why and how to fix"
+  verb_case "$_p" check-approval-sha '["mallory"]'
+  assert_eq "0" "$VRC" "$_p check-approval-sha: refused /user, trusted_authors lists the author -> accepted"
+  verb_case "$_p" read-attempt ""
+  assert_eq "0 stage= count=0 total=0" "$VRC $VOUT" "$_p read-attempt: refused /user, trusted_authors unset -> the forged attempt marker is not counted"
+  assert_contains "$VERR" "markers.trusted_authors is not set" "$_p read-attempt: ...and says why and how to fix"
+  verb_case "$_p" read-attempt '["mallory"]'
+  assert_eq "0 stage=qa count=2 total=5" "$VRC $VOUT" "$_p read-attempt: refused /user, trusted_authors lists the author -> counted"
+done
+unset STUB_CURRENT_USER_FAIL STUB_CURRENT_USER_STATUS STUB_GH_COMMENTS_RAW STUB_PR_HEAD_SHA STUB_PR_LABELS_JSON STUB_PR_COMMENTS_JSON STUB_CURRENT_USER
+rm -f talos.pipeline.json
 
 # ═══════════════════════════════════════════════════════════════════════════
 # needs-owner reader: quoted marker, unverified clearing (#453)
