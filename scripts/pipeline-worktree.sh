@@ -959,47 +959,28 @@ except (OSError, ValueError):
 '
 }
 
-# Built-in defaults copied from _vcs_shared_forbidden_patterns in
-# pipeline-vcs.sh (tests/test-worktree-checkpoint.sh asserts they are equal).
+# The effective forbidden-files patterns (#436): ONE definition, owned by
+# `pipeline-vcs.sh forbidden-files-patterns` (built-in defaults unioned with
+# merge.forbidden_files, honouring merge.forbidden_files_replace). Fails closed:
+# empty output or a failing verb returns 1 so checkpoint never pushes unfiltered.
 _wt_forbidden_patterns() {
-  local _BUILTIN_DEFAULTS='.env
-.env.*
-*.pem
-*.key
-*.p12
-*.pfx
-*.secrets
-secrets.*
-*id_rsa*
-*id_ecdsa*
-*id_ed25519*
-*id_dsa*
-*.ppk
-*.jks
-*.keystore
-*.pkcs12
-*.kdbx
-*.ovpn
-.netrc
-_netrc'
-  local conf rep
-  conf="$(cfg merge.forbidden_files "")"
-  rep="$(cfg merge.forbidden_files_replace "")"
-  if [ -n "$conf" ] && [ "$rep" = "true" ]; then
-    printf '%s\n' "$conf"
-  elif [ -n "$conf" ]; then
-    printf '%s\n%s\n' "$_BUILTIN_DEFAULTS" "$conf"
-  else
-    printf '%s\n' "$_BUILTIN_DEFAULTS"
-  fi
+  local pats
+  pats="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" forbidden-files-patterns 2>/dev/null)" || return 1
+  [ -n "$(printf '%s' "$pats" | tr -d '[:space:]')" ] || return 1
+  printf '%s\n' "$pats"
 }
 
 # Unstage every staged path under .talos/ or .claude/worktrees/ (Talos-internal,
-# never work) or matching a forbidden-files pattern (check-pr-files rule: fnmatch
-# on basename or path), naming each on stderr.
+# never work) or matching a forbidden-files pattern (check-pr-files rule: case-insensitive
+# fnmatch on basename or path), naming each on stderr.
 _wt_unstage_forbidden() {
   local pats p
-  pats="$(_wt_forbidden_patterns)"
+  if ! pats="$(_wt_forbidden_patterns)"; then
+    # Fail closed: nothing may be committed or pushed without the deny list.
+    git reset -q 2>/dev/null || true
+    echo "pipeline-worktree: checkpoint: could not resolve the forbidden-files patterns -- nothing staged" >&2
+    exit 1
+  fi
   while IFS= read -r -d '' p; do
     GIT_LITERAL_PATHSPECS=1 git reset -q HEAD -- "$p" 2>/dev/null || GIT_LITERAL_PATHSPECS=1 git rm -q --cached -- "$p" 2>/dev/null
     echo "pipeline-worktree: checkpoint: not staging path: $p (forbidden-file pattern or Talos-internal)" >&2
@@ -1007,7 +988,7 @@ _wt_unstage_forbidden() {
 import fnmatch, os, sys
 pats = [p.strip() for p in os.environ["PATTERNS"].splitlines() if p.strip()]
 for path in sys.stdin.buffer.read().decode("utf-8", "surrogateescape").split("\0"):
-    if path and (path.startswith((".talos/", ".claude/worktrees/")) or any(fnmatch.fnmatch(os.path.basename(path), p) or fnmatch.fnmatch(path, p) for p in pats)):
+    if path and (path.startswith((".talos/", ".claude/worktrees/")) or any(fnmatch.fnmatchcase(os.path.basename(path).lower(), p.lower()) or fnmatch.fnmatchcase(path.lower(), p.lower()) for p in pats)):
         sys.stdout.buffer.write(path.encode("utf-8", "surrogateescape") + b"\0")
 ')
 }

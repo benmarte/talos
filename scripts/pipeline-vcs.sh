@@ -2561,8 +2561,9 @@ sys.exit(0)
 #   merge.forbidden_files default list -- factored out of
 #   _vcs_shared_check_pr_files so pipeline-mergebase.sh's merge.union_paths
 #   cross-check (exposed via the forbidden-files-patterns verb below) reuses
-#   the SAME 20-pattern list rather than hand-duplicating it. Behaviour
-#   unchanged from before this refactor.
+#   the SAME list rather than hand-duplicating it. pipeline-worktree.sh's
+#   checkpoint reads it through the forbidden-files-patterns verb too (#436),
+#   so there is exactly one definition.
 #   env:    CONFIGURED -- merge.forbidden_files config value (raw string).
 #           REPLACE    -- merge.forbidden_files_replace config value.
 #   stdout: the effective forbidden-files patterns, one per line -- built-in
@@ -2575,6 +2576,19 @@ sys.exit(0)
 # .netrc and _netrc are LITERAL patterns (no glob chars); they generate
 # canaries as of #76 (PR #90, commit b1d3199), so wildcard allow entries
 # that match them are rejected. Deferral from issue #78 is resolved.
+# #436 credential-file defaults, each matched at any depth (basename or path):
+#   .npmrc, .pypirc          package-registry auth tokens
+#   .git-credentials         plaintext git credential-store file
+#   credentials.json, *-credentials.json, *_credentials.json
+#                            cloud/service-account key files; deliberately NOT
+#                            *credentials*.json, which would also refuse
+#                            credentials-schema.json
+#   .aws/credentials         AWS shared credentials (bare + nested: fnmatch's
+#   */.aws/credentials       '*' crosses '/', so the second form is the nested one)
+#   .docker/config.json      registry auth in the Docker client config
+#   */.docker/config.json    (nested form, same reason)
+# Every consumer matches case-insensitively (fnmatchcase on lowercased text), so
+# .ENV and Credentials.JSON are caught too.
 _vcs_shared_forbidden_patterns() {
   local _BUILTIN_DEFAULTS='.env
 .env.*
@@ -2595,7 +2609,17 @@ secrets.*
 *.kdbx
 *.ovpn
 .netrc
-_netrc'
+_netrc
+.npmrc
+.pypirc
+.git-credentials
+credentials.json
+*-credentials.json
+*_credentials.json
+.aws/credentials
+*/.aws/credentials
+.docker/config.json
+*/.docker/config.json'
   if [ -n "$CONFIGURED" ] && [ "$REPLACE" = "true" ]; then
     printf '%s\n' "$CONFIGURED"
   elif [ -n "$CONFIGURED" ]; then
@@ -2691,7 +2715,7 @@ for entry in allow:
         if src_literal is not None and entry == src_literal:
             continue
         base = os.path.basename(canary)
-        if fnmatch.fnmatch(base, entry) or fnmatch.fnmatch(canary, entry):
+        if fnmatch.fnmatchcase(base.lower(), entry.lower()) or fnmatch.fnmatchcase(canary.lower(), entry.lower()):
             errors.append(
                 'pipeline-vcs: ERROR: merge.forbidden_files_allow entry \'' + entry +
                 '\' would exempt \'' + canary + '\' — rejected'
@@ -2712,9 +2736,11 @@ defaults_active = os.environ.get('DEFAULTS_ACTIVE', 'in-force')
 bad = []
 for path in (l.strip() for l in sys.stdin if l.strip()):
     base = os.path.basename(path)
-    if any(fnmatch.fnmatch(base, a) or fnmatch.fnmatch(path, a) for a in allow):
+    # Case-insensitive (#436): .ENV and Credentials.JSON are as secret as the lowercase forms.
+    base_l, path_l = base.lower(), path.lower()
+    if any(fnmatch.fnmatchcase(base_l, a.lower()) or fnmatch.fnmatchcase(path_l, a.lower()) for a in allow):
         continue
-    if any(fnmatch.fnmatch(base, p) or fnmatch.fnmatch(path, p) for p in patterns):
+    if any(fnmatch.fnmatchcase(base_l, p.lower()) or fnmatch.fnmatchcase(path_l, p.lower()) for p in patterns):
         bad.append(path)
 if bad:
     print('FORBIDDEN FILES in PR — human review required before merge:')

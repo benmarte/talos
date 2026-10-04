@@ -155,7 +155,8 @@ def matches_forbidden(entry):
     # legitimate operator override; it is always rejected.
     for canary in forbidden_canaries:
         base = canary.rsplit('/', 1)[-1]
-        if fnmatch.fnmatch(base, entry) or fnmatch.fnmatch(canary, entry):
+        # Case-insensitive, like check-pr-files (#436).
+        if fnmatch.fnmatchcase(base.lower(), entry.lower()) or fnmatch.fnmatchcase(canary.lower(), entry.lower()):
             return canary
     return None
 
@@ -305,10 +306,14 @@ forbidden = [p.strip() for p in os.environ.get('FORBIDDEN_PATTERNS', '').splitli
 def matches_any(path, pats):
     base = path.rsplit('/', 1)[-1]
     return any(fnmatch.fnmatch(base, p) or fnmatch.fnmatch(path, p) for p in pats)
+def matches_forbidden_ci(path, pats):
+    # Case-insensitive, like check-pr-files (#436).
+    base = path.rsplit('/', 1)[-1].lower()
+    return any(fnmatch.fnmatchcase(base, p.lower()) or fnmatch.fnmatchcase(path.lower(), p.lower()) for p in pats)
 for c in conflicts:
     if not matches_any(c, patterns):
         print(c)
-    elif matches_any(c, forbidden):
+    elif matches_forbidden_ci(c, forbidden):
         print(c)
 ")"
   if [ -n "$_MB_NONUNION" ]; then

@@ -132,9 +132,74 @@ W49="$(new_wt 49 noignore)"
 assert_contains "$(git -C "$W49" show --name-only --format= HEAD)" "e.txt" "un-ignored .talos: the work is committed"
 assert_eq "" "$(git -C "$W49" ls-tree -r --name-only HEAD | grep '^\.talos' || true)" "un-ignored .talos: nothing under .talos/ is committed"
 bash "$WT" remove 49 >/dev/null
-# The copied default list equals the one pipeline-vcs.sh enforces.
-extract() { python3 -I -c 'import re,sys; print(re.search(r"_BUILTIN_DEFAULTS=\x27([^\x27]*)\x27", open(sys.argv[1]).read()).group(1))' "$1"; }
-assert_eq "$(extract "$TALOS_ROOT/scripts/pipeline-vcs.sh")" "$(extract "$WT")" "the default forbidden-file list equals _vcs_shared_forbidden_patterns in pipeline-vcs.sh"
+# ── #436: checkpoint and check-pr-files read ONE list; both refuse each credential file ──
+# Paths sit in separate directories so a case-insensitive filesystem cannot merge two of them.
+CRED_PATHS=".npmrc
+.pypirc
+.git-credentials
+credentials.json
+deploy-credentials.json
+deploy_credentials.json
+.aws/credentials
+.docker/config.json
+n1/sub/.npmrc
+n2/.pypirc
+n3/.git-credentials
+n4/credentials.json
+n5/gcp-credentials.json
+n6/gcp_credentials.json
+home/.aws/credentials
+home/.docker/config.json
+up1/.ENV
+up2/Credentials.JSON
+up3/.AWS/Credentials
+up4/.Docker/Config.JSON
+up5/.NPMRC"
+OK_PATHS="docs/credentials.md
+src/key.ts
+credentials-schema.json
+test/fixtures/x.json
+src/aws/credentials.ts"
+W36="$(new_wt 36 creds)"
+while IFS= read -r f; do
+  mkdir -p "$W36/$(dirname "$f")"; printf 'secret\n' > "$W36/$f"
+done <<< "$CRED_PATHS"
+while IFS= read -r f; do
+  mkdir -p "$W36/$(dirname "$f")"; printf 'fine\n' > "$W36/$f"
+done <<< "$OK_PATHS"
+(cd "$W36" && bash "$WT" checkpoint 36 </dev/null >/dev/null 2>"$SANDBOX/err")
+COMMITTED="$(git -C "$W36" ls-tree -r --name-only HEAD)"
+PUSHED="$(git -C "$ORIGIN" ls-tree -r --name-only refs/heads/fix/issue-36-creds)"
+GATE="$(STUB_PR_FILES="$CRED_PATHS" bash "$TALOS_ROOT/scripts/pipeline-vcs.sh" check-pr-files 9 2>&1)"; GATE_RC=$?
+assert_eq "1" "$GATE_RC" "check-pr-files refuses the whole credential list"
+GATE_OK="$(STUB_PR_FILES="$OK_PATHS" bash "$TALOS_ROOT/scripts/pipeline-vcs.sh" check-pr-files 9 2>&1)"; GATE_OK_RC=$?
+assert_eq "0" "$GATE_OK_RC" "check-pr-files allows the ordinary look-alikes"
+while IFS= read -r f; do
+  assert_not_contains "$COMMITTED" "$f" "checkpoint does not commit $f"
+  assert_not_contains "$PUSHED" "$f" "checkpoint does not push $f"
+  assert_contains "$GATE" "  $f" "check-pr-files refuses $f"
+  assert_eq "1" "$([ -f "$W36/$f" ] && echo 1 || echo 0)" "the file stays on disk: $f"
+done <<< "$CRED_PATHS"
+while IFS= read -r f; do
+  assert_contains "$COMMITTED" "$f" "checkpoint commits the ordinary file $f"
+done <<< "$OK_PATHS"
+bash "$WT" remove 36 >/dev/null
+
+# ── #436: an empty pattern list fails checkpoint closed (nothing staged, committed or pushed) ──
+# A copy of scripts/ whose pipeline-vcs.sh prints no patterns stands in for a broken verb.
+STUB_SCRIPTS="$SANDBOX/scripts-no-patterns"
+cp -R "$TALOS_ROOT/scripts" "$STUB_SCRIPTS"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB_SCRIPTS/pipeline-vcs.sh"
+W37="$(new_wt 37 closed)"
+printf 'S=1\n' > "$W37/.env"; printf 'ok\n' > "$W37/fine.txt"
+HEAD37="$(git -C "$W37" rev-parse HEAD)"
+(cd "$W37" && bash "$STUB_SCRIPTS/pipeline-worktree.sh" checkpoint 37 </dev/null >/dev/null 2>"$SANDBOX/err"); rc=$?
+assert_eq "1" "$rc" "empty forbidden-files patterns: checkpoint exits 1"
+assert_contains "$(cat "$SANDBOX/err")" "could not resolve the forbidden-files patterns" "empty forbidden-files patterns: the reason is named on stderr"
+assert_eq "$HEAD37" "$(git -C "$W37" rev-parse HEAD)" "empty forbidden-files patterns: nothing is committed"
+assert_eq "" "$(git -C "$W37" diff --cached --name-only)" "empty forbidden-files patterns: nothing stays staged"
+assert_eq "none" "$(origin_ref fix/issue-37-closed)" "empty forbidden-files patterns: nothing is pushed"
+bash "$WT" remove 37 >/dev/null
 
 # ── Rejected handoffs: nothing reaches the file, commit and push still done ──
 ck() {  # <json>: run checkpoint 42 in W42 with that stdin; sets RC and ERR
