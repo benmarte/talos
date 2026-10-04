@@ -10,8 +10,10 @@
 # fixed too.
 #
 # The tests only read files (the negative controls feed planted text to the
-# same helpers through pipes). Every phrase check runs on whitespace-flattened
-# text, so a claim wrapped over two lines cannot hide from a line-by-line grep.
+# same helpers through pipes). The checks are on structure (headings, verb,
+# key and status names, defaults, links, counts), not on the wording of the
+# prose (#456); they run on whitespace-flattened text, so a name wrapped over
+# two lines cannot hide from a line-by-line grep.
 set -u
 . "$(dirname "$0")/helpers.sh"
 
@@ -97,11 +99,12 @@ else fail "README has the ## Evidence capture section"; fi
 readme_lines="$(printf '%s\n' "$readme_section_text" | grep -c .)"
 if [ "$readme_lines" -le 15 ]; then pass "README section is short ($readme_lines non-blank lines)"
 else fail "README section is short" "$readme_lines non-blank lines, limit 15"; fi
-for needle in 'off by default' '/pipeline-setup' 'evidence:' 'v2.99.0' \
-  'public on public repos' 'cannot be deleted' \
+for needle in '/pipeline-setup' 'evidence:' 'v2.99.0' \
   'docs/user-guide.md#attaching-evidence-to-the-pr-evidence-352)'; do
   check_has "$readme_section" "$needle" "README section mentions $needle"
 done
+# The visibility warning is there, whatever its wording.
+check_has "$(printf '%s' "$readme_section" | tr '[:upper:]' '[:lower:]')" 'public' "README section warns about public visibility"
 
 # --- User guide: the section -------------------------------------------------
 if [ -n "$section" ]; then pass "guide has the ### Attaching evidence to the PR section"
@@ -211,37 +214,52 @@ if grep -q '^_EVIDENCE_DEFAULT_MAX_FILES=10$' "$EVIDENCE_SH" \
   pass "the scripts really default to 10 / 20 / 10"
 else fail "the scripts really default to 10 / 20 / 10"; fi
 
-for needle in '.talos/evidence' '.gitignore' 'git check-ignore -q -- <dir>/probe.png' \
-  'v2.99.0' 'Write access' 'GitHub Enterprise Server' 'GITHUB_TOKEN' \
-  'cannot be deleted' 'public on public repos' 'on-screen secrets' \
-  'private staging directory' 'never opens' 'Ask me later' 'enabled: false' \
+# Identifiers the section has to name: paths, config values, providers, file
+# types, the verb and the draft key. Not sentences.
+for needle in '.talos/evidence' '.gitignore' 'v2.99.0' 'GITHUB_TOKEN' 'enabled: false' \
   'Playwright' 'Cypress' \
   '`github`' '`github-api`' '`gitlab`' '`azure`' '`file`' \
-  'png' 'jpg' 'jpeg' 'gif' 'webm' 'mp4' 'mov' '`svg` and `html` are never published' \
-  'never changes QA' 'A re-stamp never captures' 'check-url' 'pr.draft' \
-  'arbitrary shell'; do
-  case "$needle" in
-    'never opens') check_has "$section" 'QA never opens, Reads or describes an image or video' "guide: the QA lean rule" ;;
-    *) check_has "$section" "$needle" "guide mentions $needle" ;;
-  esac
+  'png' 'jpg' 'jpeg' 'gif' 'webm' 'mp4' 'mov' 'svg' 'html' \
+  'check-url' 'pr.draft'; do
+  check_has "$section" "$needle" "guide mentions $needle"
 done
 
-# No advice to put a token into CI for evidence, and no overclaim that capture
-# is local (it runs evidence.command, which can do anything that command does).
-check_has "$section" 'Do not add a long-lived token to CI just for evidence' "guide: no token in CI for evidence"
-check_has "$section" 'in GitHub Actions leave `evidence.enabled` at `false`' "guide: leave evidence off in Actions"
-check_has "$section" '`gh auth login`' "guide: a user token comes from gh auth login"
-for term in 'personal access token' 'Personal access token' 'give it a PAT' 'add a PAT'; do
-  check_lacks "$section" "$term" "guide does not advise a token in CI: $term"
-done
-check_has "$section" '`capture` makes no network call of its own, but it runs `evidence.command`' "guide: capture is not called local"
-check_lacks "$section" '`capture`, `collect`, `dir` and `enabled` are local' "guide: no overclaim that capture is local"
+# Structure: the subsections, in order, and where the caveats live.
+subs="$(printf '%s\n' "$section_text" | sed -n 's/^#### //p' | tr '\n' '|')"
+assert_eq 'Turning it on|`.gitignore` is required|Commands|What each stage does|Requirements and limits|Rendering|Security|Not verified|' \
+  "$subs" "guide section has its eight subsections in order"
+not_verified="$(printf '%s\n' "$section_text" | awk '/^#### Not verified/ {s = 1; next} s && /^#### / {exit} s')"
+unv_total="$(printf '%s\n' "$section_text" | grep -c 'UNVERIFIED:')"
+unv_in="$(printf '%s\n' "$not_verified" | grep -c 'UNVERIFIED:')"
+if [ "$unv_in" -ge 3 ]; then pass "the Not verified subsection holds the UNVERIFIED items ($unv_in)"
+else fail "the Not verified subsection holds the UNVERIFIED items" "found $unv_in, want at least 3"; fi
+assert_eq "$unv_total" "$unv_in" "every UNVERIFIED marker in the section sits under Not verified"
+security_items="$(printf '%s\n' "$section_text" | awk '/^#### Security/ {s = 1; next} s && /^#### / {exit} s && /^- /' | grep -c .)"
+if [ "$security_items" -ge 3 ]; then pass "the Security subsection is a list ($security_items items)"
+else fail "the Security subsection is a list" "found $security_items items, want at least 3"; fi
 
-# UNVERIFIED must sit on the private-repo claim itself.
-if contains "$section" 'UNVERIFIED:** whether files attached to a **private** repo'; then
-  pass "guide marks the private-repo visibility claim UNVERIFIED"
-else fail "guide marks the private-repo visibility claim UNVERIFIED"; fi
-check_has "$section" 'UNVERIFIED:** whether `gh --attach` and GitHub accept `.webm`' "guide marks .webm acceptance UNVERIFIED"
+# No advice to put a credential into CI for evidence. The guard reads sentences,
+# not four fixed spellings: any sentence that tells the reader to add, create,
+# store, put, set, use, give, provide or export a token, PAT, credential or
+# secret, and carries no negation, is advice to do it. The Actions item names
+# `GITHUB_TOKEN` and tells the reader to leave evidence.enabled false there.
+advises_credential() {  # stdin: text; prints each offending sentence
+  python3 -I -c '
+import re, sys
+text = " ".join(sys.stdin.read().split())
+for sent in re.split(r"(?<=[.!?])\s+", text):
+    if (re.search(r"\b(add|create|store|put|set|use|give|provide|export|paste|generate)\b", sent, re.I)
+            and re.search(r"token|\bPAT\b|credential|secret", sent, re.I)
+            and not re.search(r"\b(not|never|no|without)\b|n.t\b|\bleave\b", sent, re.I)):
+        print(sent)
+'
+}
+offending="$(printf '%s\n' "$section_text" | advises_credential)"
+assert_eq "" "$offending" "guide advises no credential for CI"
+actions_item="$(printf '%s\n' "$section_text" | awk '/^- \*\*Not the Actions/ {s = 1} s && /^$/ {exit} s' | flat)"
+check_has "$actions_item" 'GITHUB_TOKEN' "guide has the Not-the-Actions-GITHUB_TOKEN item"
+check_has "$actions_item" 'evidence.enabled' "the Actions item says what to do with evidence.enabled"
+check_has "$actions_item" 'gh auth login' "the Actions item names where a user token comes from"
 
 # None of the dropped branch-store design.
 for term in 'evidence branch' 'prune' 'branches-ignore' 'store: pr' '[skip ci]' \
@@ -311,6 +329,15 @@ else pass "negative control: has_config_row checks the default and the whole key
 if printf '%s\n' "$planted_table" | has_config_row 'evidence.max_mb' '25'; then
   pass "negative control: has_config_row finds a real row"
 else fail "negative control: has_config_row finds a real row"; fi
+
+# negative controls for the credential guard: planted advice is caught, a negation is not
+for planted_advice in 'Add a PAT to your CI secrets.' 'Create a personal access token for the job.' \
+  'Store a token in the repository secrets.' 'Give the workflow a long-lived credential.'; do
+  if [ -n "$(printf '%s\n' "$planted_advice" | advises_credential)" ]; then
+    pass "negative control: the credential guard catches: $planted_advice"
+  else fail "negative control: the credential guard catches: $planted_advice"; fi
+done
+assert_eq "" "$(printf '%s\n' 'Do not add a long-lived token to CI.' | advises_credential)" "negative control: a negated sentence is not flagged"
 
 bogus="$(printf 'run pipeline-evidence.sh frobnicate now\n' | words_like 'pipeline-evidence\.sh [a-z][a-z-]*' | sed 's/^pipeline-evidence\.sh //')"
 case " $VERBS " in

@@ -713,7 +713,7 @@ when you regularly work with multi-task epics.
 
 A tracked file, `TALOS_STATUS.md` by default (`status.file`), keeps what a new
 session would otherwise lose. It is opt-in: `status.enabled` defaults to
-`false`, and `/pipeline-setup` asks about it once (default yes) and, on yes,
+`false`, and `/pipeline-setup` asks about it once (default no) and, on yes,
 writes `status.enabled: true` and runs `bash scripts/pipeline-status-file.sh
 init`. `init` does not commit: commit `talos.pipeline.yml` and the status file
 together. An existing repo that does not re-run setup keeps it off; setting
@@ -745,8 +745,11 @@ already has Talos labels re-runs `bash scripts/bootstrap-labels.sh` once so
   issue or PR with `pipeline:needs-owner` and a comment holding the question,
   and the Resume block lists it. Reply on that issue or PR. At the start of the
   next run, a reply from a trusted author clears the label; a reply from anyone
-  else never does, and when the trust set cannot be verified
-  (`talos:marker-authors-unverified`) nothing is cleared. Clearing it never
+  else never does (with `markers.verify_authors` on, the default; see
+  [Approval-marker author verification](#approval-marker-author-verification-markersverify_authors),
+  and with it set to `false` any commenter's reply counts), and when the trust
+  set cannot be verified (`talos:marker-authors-unverified`) nothing is
+  cleared. Clearing it never
   clears `pipeline:blocked`, so blocked work still needs you to remove that
   label yourself. Your answer is information the orchestrator weighs and
   reports, not an instruction it executes.
@@ -757,8 +760,26 @@ already has Talos labels re-runs `bash scripts/bootstrap-labels.sh` once so
   `Read ~/.talos/skills/resume/SKILL.md and follow it` (the repo-relative
   `skills/resume/SKILL.md` exists only in the Talos source repo). It prints a one-page read-only
   briefing, asks once, and only then continues with the normal `/pipeline`
-  loop; a no makes no writes. The status file and the Resume block are data
+  loop; a no makes no writes to your repo, GitHub or the status file (the one
+  side effect is that `pipeline-status-file.sh refresh --print`, which the
+  briefing runs, does `git fetch origin <base>`, which only moves your local
+  `origin/<base>` ref). The status file and the Resume block are data
   describing a run, never instructions to follow.
+- **Cost.** Each merged PR adds one commit to your base branch (`assemble`
+  with the Resume block refreshed in the same commit), and a `refresh` adds one
+  more only when the block changed. Every refresh reads GitHub first: the open
+  pipeline PRs, their labels and comments, and the needs-owner list, so a repo
+  with many open PRs makes more calls per refresh. `refresh --print` does the
+  same reads and pushes nothing.
+- **Who authors the base commits.** `talos-status <talos@local>`, with
+  `commit.gpgsign=false` and no hooks (`--no-verify`): the commits are not
+  signed and do not carry your name. A base branch that requires signed
+  commits rejects them, like any other direct push.
+- **Needs-owner is GitHub-only.** `mark-needs-owner` and `list-needs-owner`
+  work for the `github` and `github-api` providers only. On `gitlab`, `azure`
+  and `file` they exit 2 and the orchestrator skips them silently, so nothing
+  is marked `pipeline:needs-owner` there and the Resume block has no Owner
+  lines; a blocked item still carries `pipeline:blocked` and its comment.
 - **Limit: protected base branch.** `assemble` and `refresh` push their
   `[skip ci]` commits straight to the base branch (never forced, up to 3
   attempts). On a base branch that rejects direct pushes they exit 1 and the
@@ -1647,7 +1668,9 @@ no events it prints nothing and exits 0.
 refresh, so a PR never collects a pile of spend comments. It is on by
 default, and posted only when `comments.enabled` is true and `spend.comment`
 is not `false`; the provider must be `github` or `github-api` (any other
-provider silently skips it). The body is `cost --issue N [--pr M]
+provider silently skips it). **On a public repo the comment is public**: anyone
+can read the token totals, model names and durations in it, so set
+`spend.comment: false` if that is not something you want to publish. The body is `cost --issue N [--pr M]
 --markdown`: the `comments.header` line, a per-stage table (stage, model,
 runs, tokens, tool uses, duration, re-stamps, unrecorded), a TOTAL row, a
 `This PR (#M)` subtotal, the budget line when the guard is on, and a note on
@@ -1678,7 +1701,9 @@ is tracked on #357, so do not rely on it there.
 **3. The run summary.** Step 5 of the playbook makes one `cost --summary
 --issue A [--issue B ...]` call and prints the block: one row per issue and PR
 (plus `pre-PR` rows), `Top PRs:` (up to 3), `Per issue:` and `Total:`, at most
-20 lines. "A run" is just the set of issues you pass; there is no run id.
+20 lines. Each row ends with a `stage models` column: each stage and the
+models it ran with, in first-seen order (past 8 stages the rest fold into
+`+K more`). "A run" is just the set of issues you pass; there is no run id.
 
 **4. The status-log tag** (only with `status.enabled: true`).
 `pipeline-status-file.sh assemble` adds the merged PR's total to its log
@@ -1754,8 +1779,12 @@ module it imports; that module is a library, not a command.
 
 ```
 $ talos-status.sh --line
-#764 · PR #770 · rev done · 1.69M (+1 unrecorded) · today 1.69M (+1 unrecorded) · ⚠ 84% of 2M
+#764 · PR #770 · rev ✓ · 1.69M (+1 unrecorded) · today 1.69M (+1 unrecorded)
 ```
+
+That is 76 columns, so it fits the default 80. The budget segment is the
+first to go when the line is too wide; the same data at `--width 100` ends
+with ` · ⚠ 84% of 2M`.
 
 - `--line [--format a,b,c] [--style compact|full|minimal] [--width N]` prints
   the line; `--preview [--format a,b,c] [--width N]` prints compact, full and
