@@ -479,6 +479,14 @@ Config and secrets (epic #437: #439-#446). The full rules are in the user guide'
 
 **(j) A GitHub Actions or App token authenticates as a `[bot]` login that is never trusted implicitly (#453).** A run under such a token needs `markers.trusted_authors`; see the CI-bot caveat under *Marker placement and trusted-author allow-list* in the [Scripts reference](#scripts-reference) and [Approval-marker author verification](docs/user-guide.md#approval-marker-author-verification-markersverify_authors), which are not repeated here.
 
+Also merged with v0.19 and visible to users:
+
+**(k) `agents.capture_usage` defaults to `true` (#420).** On the adapter path (`pipeline-agent.sh`), `claude` stages now run with `--output-format json`, so token usage reaches the stage event; the printed message text is unchanged. Set `agents.capture_usage: false` to restore plain text mode; native subagents are unaffected. See [Token usage on adapter runs](#token-usage-on-adapter-runs-420).
+
+**(l) Commands are `/talos:pipeline`, `/talos:setup` and `/talos:resume` (#335).** The legacy `/pipeline` and `/pipeline-setup` aliases print a rename line and keep working until v0.20. `install.sh --global` now registers a local `talos` plugin; pass `--keep-marketplace` to leave an existing registration alone and `--no-legacy-aliases` to skip the aliases. See [1. Install](#1-install).
+
+**(m) A YAML config without PyYAML now warns instead of being ignored silently (#490).** One stderr line per YAML file names the file and the fix (`pip install pyyaml`, or use the `.json` form); until you apply it, that file's settings still do not take effect.
+
 ### Upgrade notes (v0.18+)
 
 **(a) Issues are now assigned to the operator by default (`issues.assignee`, #299, #305, #321).** `create-issue` and the "In progress" claim assign the issue or work item to `self` (the authenticated `gh`/`glab`/`az` identity) on github, github-api, gitlab and azure. An existing assignee is never overwritten, and a rejected identity is a warning, never a stage failure. To keep the pre-0.18 behavior set `issues.assignee: none`, or the quoted `issues.assignee: ""`. A bare `assignee:` is YAML null and still means `self`. The value is trimmed of surrounding whitespace.
