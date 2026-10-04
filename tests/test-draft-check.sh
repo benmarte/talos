@@ -435,6 +435,58 @@ TALOS_a8Mg2Ut6Qy4W
 out="$(cd "$SANDBOX/e/bare" && bash "$DC" edit .github/workflows/w.yml --write)"
 assert_eq "ok" "$(cd "$SANDBOX/e/bare" && bash "$DC" check)" "edit --write: a bare pull_request trigger ends ok"
 
+# A job `if:` or the trigger's `types:` written in a non-plain form (quoted key,
+# `key :`, `? key`, an escaped spelling, a `<<:` merge key, `types: []`) must
+# get nothing added (a second key is invalid YAML): the job or trigger is
+# reported as manual, exit 0, and --write leaves the file byte-identical.
+np_case() {  # $1 = label, $2 = job body line(s) for job `guarded`, $3 = pull_request body line(s), $4 = expected manual text
+  local d="$SANDBOX/e/np-$1" out before after rc
+  mkdir -p "$d/.github/workflows"
+  printf 'on:\n  pull_request:\n%s\njobs:\n  guarded:\n%s\n    runs-on: x\n' "$3" "$2" > "$d/.github/workflows/w.yml"
+  before="$(cksum < "$d/.github/workflows/w.yml")"
+  out="$(cd "$d" && bash "$DC" edit .github/workflows/w.yml --write)"; rc=$?
+  after="$(cksum < "$d/.github/workflows/w.yml")"
+  assert_eq "0" "$rc" "edit non-plain $1: exits 0 (the manual path)"
+  assert_eq "$before" "$after" "edit non-plain $1: no line was added"
+  assert_not_contains "$out" "written:" "edit non-plain $1: nothing is written"
+  assert_contains "$out" "$4" "edit non-plain $1: reported as manual"
+}
+PLAIN_T='    types: [opened, ready_for_review]'
+PLAIN_IF='    if: github.event.pull_request.draft != true'
+JOB_MANUAL="manual: job guarded: existing condition left unchanged; combine manually: if: "
+TRIG_MANUAL="manual: trigger pull_request: existing types left unchanged; add ready_for_review manually: types: "
+np_case dq-if "    \"if\": github.actor != 'bot'" "$PLAIN_T" "$JOB_MANUAL"
+np_case sq-if "    'if': github.actor != 'bot'" "$PLAIN_T" "$JOB_MANUAL"
+np_case space-if "    if : github.actor != 'bot'" "$PLAIN_T" "$JOB_MANUAL"
+np_case complex-if "    ? if
+    : github.actor != 'bot'" "$PLAIN_T" "$JOB_MANUAL"
+np_case escaped-if "    \"\\x69f\": github.actor != 'bot'" "$PLAIN_T" "$JOB_MANUAL"
+np_case merge-if '    <<: *defaults' "$PLAIN_T" "$JOB_MANUAL"
+np_case dq-types "$PLAIN_IF" '    "types": [opened]' "$TRIG_MANUAL"
+np_case sq-types "$PLAIN_IF" "    'types': [opened]" "$TRIG_MANUAL"
+np_case space-types "$PLAIN_IF" '    types : [opened]' "$TRIG_MANUAL"
+np_case complex-types "$PLAIN_IF" '    ? types
+    : [opened]' "$TRIG_MANUAL"
+np_case merge-types "$PLAIN_IF" '    <<: *trigger' "$TRIG_MANUAL"
+np_case empty-types "$PLAIN_IF" '    types: []' "$TRIG_MANUAL"
+np_case empty-types-spaced "$PLAIN_IF" '    types: [ ]  # none' "$TRIG_MANUAL"
+# The non-plain job is left alone while a sibling job with no if: still gets the skip.
+mkedit mixed <<'TALOS_Vn4Qd7Ls2Ymx'
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+jobs:
+  quoted:
+    "if": github.actor != 'bot'
+    runs-on: x
+  bare:
+    runs-on: x
+TALOS_Vn4Qd7Ls2Ymx
+out="$(cd "$SANDBOX/e/mixed" && bash "$DC" edit .github/workflows/w.yml)"
+assert_contains "$out" "manual: job quoted: " "edit non-plain: the quoted-if job is reported"
+assert_contains "$out" "+    if: github.event.pull_request.draft != true" "edit non-plain: a sibling job without an if: still gets the skip"
+assert_eq "1" "$(printf '%s\n' "$out" | grep -c '^+    if:')" "edit non-plain: only the sibling gets an added if:"
+
 # Refusals write nothing and exit 1 with `refused:`.
 refuse_case() {  # $1 = label, $2 = fixture dir, $3 = path, $4 = text expected on stderr
   local before after

@@ -368,6 +368,36 @@ def body(l):
 if any("\t" in l[:len(l) - len(l.lstrip())] for l in lines):
     refuse("tab indentation")
 
+_KEY = re.compile(r"\"((?:[^\"\\]|\\.)*)\"|'((?:[^']|'')*)'|([^\s:#'\"]+)")
+def _unescape(s):
+    return re.sub(r"\\(?:x([0-9a-fA-F]{2})|u([0-9a-fA-F]{4}))",
+                  lambda m: chr(int(m.group(1) or m.group(2), 16)), s)
+def key_form(l, key):
+    """How `key` is written on line l: "plain" (`key:`, the form this script
+    edits around), "other" (quoted, `key :`, `? key`, an escaped spelling) or None."""
+    s = body(l).strip()
+    if s.startswith(key + ":"):
+        return "plain"
+    complex_key = s.startswith("?")
+    if complex_key:
+        s = s[1:].lstrip()
+    m = _KEY.match(s)
+    if not m:
+        return None
+    if m.group(1) is not None:
+        name = _unescape(m.group(1))
+    elif m.group(2) is not None:
+        name = m.group(2).replace("''", "'")
+    else:
+        name = m.group(3)
+    rest = s[m.end():]
+    if not re.match(r"^\s*(:(\s|$).*|(#.*)?)$" if complex_key else r"^\s*:(\s|$)", rest):
+        return None
+    return "other" if name == key else None
+def nonplain(l, key):
+    """True when line l spells `key`, or a `<<:` merge key (which may carry it), in a form this script does not edit around."""
+    return key_form(l, key) == "other" or key_form(l, "<<") is not None
+
 ops = []     # (index, "replace"|"after", new line without eol)
 manual = []  # existing job conditions we report but never touch
 
@@ -388,12 +418,17 @@ pr_end = block_end(i_pr, ei)
 kids = [i for i in range(i_pr + 1, pr_end) if sig(lines[i])]
 ki = indent(lines[kids[0]]) if kids else ei + 2
 t_idx = next((i for i in kids if indent(lines[i]) == ki and re.match(r"^\s*types:", body(lines[i]))), None)
-if t_idx is None:
+trig_manual = ("manual: trigger pull_request: existing types left unchanged; add ready_for_review manually: types: " + TYPES)
+if any(indent(lines[i]) == ki and nonplain(lines[i], "types") for i in kids):
+    manual.append(trig_manual)
+elif t_idx is None:
     ops.append((i_pr, "after", " " * ki + "types: " + TYPES))
 else:
     line = body(lines[t_idx])
     m = re.match(r"^(\s*types:\s*)\[([^\]]*)\](\s*(#.*)?)$", line)
-    if m:
+    if m and not m.group(2).strip():
+        manual.append(trig_manual)
+    elif m:
         items = [x.strip().strip("'\"") for x in m.group(2).split(",") if x.strip()]
         if "ready_for_review" not in items:
             inner = m.group(2).rstrip()
@@ -433,6 +468,11 @@ for i in range(i_jobs + 1, j_end):
     if b is None:
         continue
     kk = indent(lines[b])
+    job_name = body(lines[i]).strip().rstrip(":").strip("\"'")
+    if any(sig(lines[k]) and indent(lines[k]) == kk and nonplain(lines[k], "if") for k in range(i + 1, job_end)):
+        manual.append("manual: job %s: existing condition left unchanged; combine manually: if: (<your existing condition>) && %s"
+                      % (job_name, SKIP))
+        continue
     if_idx = next((k for k in range(i + 1, job_end)
                    if sig(lines[k]) and indent(lines[k]) == kk and re.match(r"^\s*if:", body(lines[k]))), None)
     if if_idx is None:
@@ -457,7 +497,7 @@ for i in range(i_jobs + 1, j_end):
             elif "${{" not in plain:
                 sugg = "(" + plain + ") && " + SKIP
     manual.append("manual: job %s: existing condition left unchanged; combine manually: if: %s"
-                  % (body(lines[i]).strip().rstrip(":").strip("\"'"), sugg))
+                  % (job_name, sugg))
 
 for idx, kind, new in sorted(ops, key=lambda o: -o[0]):
     if kind == "replace":
