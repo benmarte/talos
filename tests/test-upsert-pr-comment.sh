@@ -319,19 +319,30 @@ TALOS_PY_Vb6sT2nQe9Dy
   unset STUB_CURRENT_USER_FAIL STUB_CURRENT_USER_STATUS
 
   # A "login" that is not a GitHub username is an unresolved login.
-  for badlogin in 'bad login' 'a{"message":"x"}' '-lead' 'trail-' 'dou--ble' 'a[bot]x' "$(printf 'a%.0s' $(seq 1 40))"; do
+  for badlogin in 'bad login' 'a{"message":"x"}' '-lead' 'trail-' 'dou--ble' 'a[bot]x' 'a_' '_a' 'a__b' 'a_b_c' 'a_b-c' "$(printf 'a%.0s' $(seq 1 40))" "$(printf 'a%.0s' $(seq 1 40))_acme"; do
     reset
     export STUB_CURRENT_USER="$badlogin"
     upsert "$B"
     assert_eq "1" "$RC" "$L: login '${badlogin:0:20}' is refused, exit 1"
     assert_eq "0" "$(wcount)" "$L: ...and writes nothing"
   done
-  for goodlogin in 'dependabot[bot]' 'a-b-c' 'A' "$(printf 'a%.0s' $(seq 1 39))"; do
+  for goodlogin in 'dependabot[bot]' 'a-b-c' 'A' 'octocat_acme' 'a-b_Acme1' "$(printf 'a%.0s' $(seq 1 39))" "$(printf 'a%.0s' $(seq 1 39))_acme"; do
     reset
     export STUB_CURRENT_USER="$goodlogin"
     upsert "$B"
     assert_eq "0" "$RC" "$L: login '${goodlogin:0:20}' is accepted"
   done
+  export STUB_CURRENT_USER="owner"
+
+  # An Enterprise Managed User login (<handle>_<shortcode>) owns its marker
+  # comment: it is found and edited in place, not posted again (#453).
+  reset
+  export STUB_CURRENT_USER="octocat_acme"
+  seed "octocat_acme|Spend so far: 1\n\n$MARK"
+  upsert "$B"
+  assert_eq "0" "$RC" "$L: an EMU login (octocat_acme) is accepted"
+  assert_contains "$OUT" "comment=updated" "$L: ...and finds its own marker comment"
+  assert_eq "PATCH issues/comments/100" "$(writes)" "$L: ...which is edited in place, never re-posted"
   export STUB_CURRENT_USER="owner"
 
   # ── no temp file is left behind: success, failure, retry ──────────────────

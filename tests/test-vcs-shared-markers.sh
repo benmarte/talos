@@ -239,4 +239,143 @@ assert_contains "$out" "talos:marker-authors-unverified reader=check-approval-sh
 rc="$(printf 'not json' | _vcs_shared_check_approval_marker >/dev/null 2>&1; echo $?)"
 assert_eq "1" "$rc" "check_approval_marker: unparseable stdin exits 1"
 
+# ═══════════════════════════════════════════════════════════════════════════
+# One trust set for every reader (#453): _vcs_shared_trust_py
+# ═══════════════════════════════════════════════════════════════════════════
+assert_eq "function" "$(type -t _vcs_shared_trust_py)" "trust_py: the shared helper is loaded"
+tp() {  # tp <python expr>: evaluate it after the shared helper source
+  python3 -I -c "$(_vcs_shared_trust_py)
+print($1)"
+}
+assert_eq "(True, ['a', 'b', 'me'])" "$(TRUSTED_AUTHORS='["a","b"]' CURRENT_USER=me tp 'load_trust()')" \
+  "trust_py: JSON list plus the current user"
+assert_eq "(True, ['a', 'b', 'me'])" "$(TRUSTED_AUTHORS=$'a\nb' CURRENT_USER=me tp 'load_trust()')" \
+  "trust_py: newline list plus the current user"
+assert_eq "(True, ['a', 'b'])" "$(TRUSTED_AUTHORS='["a","b"]' CURRENT_USER=b tp 'load_trust()')" \
+  "trust_py: the current user is not listed twice"
+assert_eq "(True, [])" "$(TRUSTED_AUTHORS='' CURRENT_USER='' tp 'load_trust()')" \
+  "trust_py: nothing configured, nothing resolved -> empty set (the unverified state)"
+assert_eq "(True, ['me'])" "$(unset VERIFY_AUTHORS; TRUSTED_AUTHORS='' CURRENT_USER=me tp 'load_trust()')" \
+  "trust_py: VERIFY_AUTHORS unset means true"
+assert_eq "(False, ['a'])" "$(VERIFY_AUTHORS=false TRUSTED_AUTHORS='["a"]' CURRENT_USER=me tp 'load_trust()')" \
+  "trust_py: verify_authors false never adds the current user"
+assert_eq "x" "$(tp "body_last_line('q\n<!-- a -->\n  x  \n\n')")" "trust_py: body_last_line is the last non-blank line, stripped"
+assert_eq "True" "$(tp "is_talos_comment('> <!-- talos:needs-owner -->\nmy answer')")" "trust_py: a quoted marker makes it a Talos comment"
+assert_eq "True" "$(tp "is_talos_comment('  **Agent:** qa\nok')")" "trust_py: an Agent header makes it a Talos comment"
+assert_eq "False" "$(tp "is_talos_comment('Use option B')")" "trust_py: a plain human reply is not"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Login resolution (#453): _vcs_shared_valid_login, _vcs_shared_current_user
+# ═══════════════════════════════════════════════════════════════════════════
+for _l in octocat a-b octocat_acme 'dependabot[bot]' a-b_Acme1; do
+  _vcs_shared_valid_login "$_l"; assert_eq "0" "$?" "valid_login: '$_l' is a login"
+done
+for _l in '' 'bad login' -a a- a--b _a a_ a__b a_b_c 'a[bot]x' '{"message":"Not Found"}' "$(printf 'a%.0s' $(seq 1 40))"; do
+  _vcs_shared_valid_login "$_l"; assert_eq "1" "$?" "valid_login: '${_l:0:20}' is not"
+done
+_cu_ok() { printf 'octocat_acme\n'; }
+_cu_json() { printf '{"message":"Not Found"}\n'; return 0; }
+_cu_fail() { printf 'octocat\n'; return 1; }
+_cu_none() { return 0; }
+out="$(_vcs_shared_current_user fail-open _cu_ok)"; rc=$?
+assert_eq "octocat_acme 0" "$out $rc" "current_user: fail-open returns an EMU login"
+out="$(_vcs_shared_current_user fail-closed _cu_ok)"; rc=$?
+assert_eq "octocat_acme 0" "$out $rc" "current_user: fail-closed returns an EMU login"
+for _r in _cu_json _cu_fail _cu_none; do
+  out="$(_vcs_shared_current_user fail-open "$_r")"; rc=$?
+  assert_eq " 0" "$out $rc" "current_user: fail-open, $_r -> empty, exit 0"
+  out="$(_vcs_shared_current_user fail-closed "$_r")"; rc=$?
+  assert_eq " 1" "$out $rc" "current_user: fail-closed, $_r -> empty, exit 1"
+done
+out="$(_vcs_shared_current_user 2>/dev/null)"; rc=$?
+assert_eq "2" "$rc" "current_user: no fail-open/fail-closed argument is a usage error"
+# The cache keeps the checked result: a failed lookup is not retried, and fail-closed sees it.
+_CFG_CACHE_DIR="$(mktemp -d)" || exit 1
+_vcs_shared_current_user fail-open _cu_json >/dev/null
+out="$(_vcs_shared_current_user fail-closed _cu_ok)"; rc=$?
+assert_eq " 1" "$out $rc" "current_user: a cached failure stays a failure for fail-closed"
+rm -rf "${_CFG_CACHE_DIR:?}"; unset _CFG_CACHE_DIR _VCS_CURRENT_USER_RESOLVED _VCS_CURRENT_USER_VALUE
+
+# ═══════════════════════════════════════════════════════════════════════════
+# needs-owner reader: quoted marker, unverified clearing (#453)
+# ═══════════════════════════════════════════════════════════════════════════
+NO_DIR="$(mktemp -d)" || exit 1
+printf '%s\n' '#!/usr/bin/env bash' 'cat "$(dirname "$0")/comments.json"' > "$NO_DIR/pipeline-vcs.sh"
+ISSUES='[{"number":5,"state":"open","labels":[{"name":"pipeline:needs-owner"}]}]'
+OWNER_Q='{"body":"Which db?\n\n<!-- talos:needs-owner -->","author":{"login":"owner"}}'
+no_collect() {  # no_collect <comments> -> the collect object for the one labelled item
+  printf '{"comments":[%s]}' "$1" > "$NO_DIR/comments.json"
+  printf '%s' "$ISSUES" | _vcs_needs_owner_py collect list-needs-owner "$NO_DIR/pipeline-vcs.sh" pipeline:needs-owner 2>/dev/null
+}
+no_field() { python3 -I -c 'import json,sys; d=json.load(sys.stdin); print(d["records"][0]["answered"] if sys.argv[1]=="answered" else d["unverified"])' "$1"; }
+
+# A trusted human reply that QUOTES the needs-owner marker is not an answer.
+quoted='{"body":"> Which db?\n> <!-- talos:needs-owner -->\n\nUse postgres","author":{"login":"owner"}}'
+res="$(TRUSTED_AUTHORS='["owner"]' VERIFY_AUTHORS=true CURRENT_USER=owner no_collect "$OWNER_Q,$quoted")"
+assert_eq "no" "$(printf '%s' "$res" | no_field answered)" "needs_owner: a trusted reply that quotes the marker stays answered=no"
+plain='{"body":"Use postgres","author":{"login":"owner"}}'
+res="$(TRUSTED_AUTHORS='["owner"]' VERIFY_AUTHORS=true CURRENT_USER=owner no_collect "$OWNER_Q,$plain")"
+assert_eq "yes" "$(printf '%s' "$res" | no_field answered)" "needs_owner: a trusted plain reply is answered=yes"
+assert_eq "False" "$(printf '%s' "$res" | no_field unverified)" "needs_owner: a resolved trust set is not unverified"
+
+# Unresolved trust set: the listing still fails open, the clearing step refuses.
+outsider='{"body":"Use mysql","author":{"login":"mallory"}}'
+res="$(TRUSTED_AUTHORS='' VERIFY_AUTHORS=true CURRENT_USER='' no_collect "$OWNER_Q,$outsider")"
+assert_eq "True" "$(printf '%s' "$res" | no_field unverified)" "needs_owner: no list and no identity -> unverified"
+assert_eq "yes" "$(printf '%s' "$res" | no_field answered)" "needs_owner: ...the listing itself still fails open (answered=yes)"
+out="$(printf '%s' "$res" | _vcs_needs_owner_py answered list-needs-owner 2>"$NO_DIR/err")"; rc=$?
+assert_eq "1" "$rc" "needs_owner: answered refuses when unverified"
+assert_eq "" "$out" "needs_owner: ...and names no item to clear"
+assert_contains "$(cat "$NO_DIR/err")" "trust set is unverified" "needs_owner: ...with a one-line reason"
+res="$(TRUSTED_AUTHORS='' VERIFY_AUTHORS=true CURRENT_USER=owner no_collect "$OWNER_Q,$outsider")"
+assert_eq "no" "$(printf '%s' "$res" | no_field answered)" "needs_owner: an outsider's reply does not answer once the identity resolves"
+res="$(TRUSTED_AUTHORS='' VERIFY_AUTHORS=false CURRENT_USER='' no_collect "$OWNER_Q,$outsider")"
+out="$(printf '%s' "$res" | _vcs_needs_owner_py answered list-needs-owner)"; rc=$?
+assert_eq "0 5" "$rc $out" "needs_owner: verify_authors=false is the explicit opt-out and still clears"
+
+# End to end through _vcs_shared_list_needs_owner: the listing works, the
+# clearing step is refused, nothing is removed.
+printf '{"markers":{"verify_authors":true}}\n' > talos.pipeline.json
+printf '{"comments":[%s,%s]}' "$OWNER_Q" "$outsider" > "$NO_DIR/comments.json"
+RM_LOG="$NO_DIR/removed"; : > "$RM_LOG"
+_ln_items() { printf '%s' "$ISSUES"; }
+_ln_remove() { echo "$1" >> "$RM_LOG"; }
+_ln_user_none() { return 0; }
+_ln_user_owner() { printf 'owner\n'; }
+out="$( SCRIPT_DIR="$NO_DIR"; _vcs_shared_list_needs_owner _ln_items _ln_remove _ln_user_none --clear-answered 2>/dev/null )"; rc=$?
+assert_eq "1" "$rc" "list_needs_owner: --clear-answered with an unresolved identity exits 1"
+assert_contains "$out" "needs-owner n=5 kind=issue answered=yes" "list_needs_owner: ...after the listing was printed"
+assert_not_contains "$out" "cleared" "list_needs_owner: ...and cleared nothing"
+assert_eq "0" "$(grep -c . "$RM_LOG")" "list_needs_owner: ...no label removal call was made"
+out="$( SCRIPT_DIR="$NO_DIR"; _vcs_shared_list_needs_owner _ln_items _ln_remove _ln_user_owner --clear-answered 2>/dev/null )"; rc=$?
+assert_eq "0" "$rc" "list_needs_owner: with the identity resolved the same listing exits 0"
+assert_contains "$out" "answered=no" "list_needs_owner: ...and the outsider does not answer"
+assert_eq "0" "$(grep -c . "$RM_LOG")" "list_needs_owner: ...so still nothing is removed"
+printf '{"comments":[%s,%s]}' "$OWNER_Q" "$plain" > "$NO_DIR/comments.json"
+out="$( SCRIPT_DIR="$NO_DIR"; _vcs_shared_list_needs_owner _ln_items _ln_remove _ln_user_owner --clear-answered 2>/dev/null )"; rc=$?
+assert_eq "0 5" "$rc $(cat "$RM_LOG")" "list_needs_owner: a trusted reply is cleared"
+assert_contains "$out" "cleared n=5" "list_needs_owner: ...and reported"
+rm -rf "${NO_DIR:?}"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# File mode: a body that is not valid UTF-8 never touches plan.md (#453)
+# ═══════════════════════════════════════════════════════════════════════════
+PLAN_DIR="$(mktemp -d)" || exit 1
+printf '{"vcs": {"provider": "file", "file": {"source": {"path": "%s/plan.md"}}}}\n' "$PLAN_DIR" > talos.pipeline.json
+printf '# Plan\n\n- [ ] First item <!-- id: 1 -->\n' > "$PLAN_DIR/plan.md"
+before="$(cat "$PLAN_DIR/plan.md")"
+for _v in comment-issue close-issue; do
+  out="$(bash "$VCS" "$_v" 1 $'bad \xff byte' 2>&1)"; rc=$?
+  assert_eq "1" "$rc" "file $_v: a non-UTF-8 byte fails"
+  assert_contains "$out" "not valid UTF-8" "file $_v: ...with a reason"
+  assert_eq "$before" "$(cat "$PLAN_DIR/plan.md")" "file $_v: ...and plan.md is unchanged"
+done
+assert_eq "plan.md" "$(ls "$PLAN_DIR")" "file: no temp file is left beside the plan"
+bash "$VCS" comment-issue 1 "fine" >/dev/null; rc=$?
+assert_eq "0" "$rc" "file comment-issue: a valid body still succeeds"
+assert_contains "$(cat "$PLAN_DIR/plan.md")" "fine" "file comment-issue: ...and lands in plan.md"
+assert_eq "plan.md" "$(ls "$PLAN_DIR")" "file comment-issue: ...through a replace, leaving no temp file"
+rm -rf "${PLAN_DIR:?}"
+rm -f talos.pipeline.json
+
 finish
