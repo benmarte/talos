@@ -6,9 +6,12 @@
 # Two rules scan tests/*.sh, tests/helpers.sh, tests/stubs/* and tests/canary/*:
 #
 #   R1 mktemp: a `$(mktemp ...)` / backtick mktemp / `$(safe_mktemp_dir ...)`
-#      substitution must be followed on the same line by `|| <handler>` (not
-#      `|| true` or `|| :`). An unchecked `X="$(mktemp -d)"` leaves X empty when
-#      mktemp fails. Prefer `safe_mktemp_dir` from helpers.sh, which also checks
+#      substitution must be followed DIRECTLY (after its closing quote) by
+#      `|| <handler>` (not `|| true` or `|| :`); an unrelated `||` later on the
+#      line does not count. An unchecked `X="$(mktemp -d)"` leaves X empty when
+#      mktemp fails. `local X="$(mktemp -d)" || exit 1` is refused too: `local`
+#      (also `export`, `declare`, `typeset`, `readonly`) returns 0, so the
+#      handler never fires. Declare first, then assign. Prefer `safe_mktemp_dir` from helpers.sh, which also checks
 #      the result is a non-empty directory. A substitution inside single quotes
 #      is recipe text handed to another shell (tests/test-free-text-as-data.sh),
 #      not run here, and is skipped.
@@ -16,7 +19,14 @@
 #      unguarded variable may only be the WHOLE operand ("$X" or "${X}": empty,
 #      it is `rm -rf ""`, a harmless error). Anywhere else -- "$X/sub", "$X"/*,
 #      "/tmp/$X" -- it must be "${X:?}" so an empty X aborts instead of
-#      deleting from `/`. A `$(...)` operand is refused (unverifiable).
+#      deleting from `/`. A `$(...)` operand is refused (unverifiable). A bare
+#      "$T" is refused too when T was assigned from an unguarded variable plus
+#      other text (`T="$W/$f"`): T is never empty, so the guard on `rm` cannot
+#      catch an empty W. Guard the base where T is built: `T="${W:?}/$f"`.
+#      $SANDBOX and $HOME are exempt bases (make_sandbox sets them or exits).
+#      A `/bin/rm` command is matched like `rm`.
+#   R4 find -delete: the root operand of `find ... -delete` follows the R2 rule
+#      (`find "$X"/ -delete` is `find / -delete` when X is empty).
 #
 # A third rule scans tests/ and scripts/ (#479):
 #
@@ -31,26 +41,24 @@
 #
 # A fourth rule scans tests/, scripts/ and install.sh (#494):
 #
-#   R4 printf/echo into grep -q: `printf '%s\n' "$v" | grep -q PAT` must not be
+#   R5 printf/echo into grep -q: `printf '%s\n' "$v" | grep -q PAT` must not be
 #      used. grep -q exits on its first match, printf is still writing, and with
 #      SIGPIPE ignored (the Actions runner does that) printf gets EPIPE and bash
 #      prints "printf: write error: Broken pipe" on stderr (a timing-dependent
 #      flake that failed PR #491's CI). Use a here-string (`grep -q PAT <<<"$v"`),
-#      `[[ $v =~ RE ]]` or `case`. R4_ALLOW lists the files another in-flight PR
+#      `[[ $v =~ RE ]]` or `case`. R5_ALLOW lists the files another in-flight PR
 #      still edits; every entry must still hold a site (a stale entry fails), so
 #      the PR that fixes the last site in a file removes its entry.
 #
-# Matching is per line: comment lines are skipped, and a heredoc body that
-# merely contains such text is scanned like code (reword it, or put the file
-# on ALLOW). The scan FAILS when it scans zero files. A fixture tree (GUARD_ROOT
+# Matching is per logical line (a backslash continuation is joined, and the
+# finding names the line it starts on): comment lines are skipped, and a heredoc
+# body that merely contains such text is scanned like code (reword it, or put
+# the file on ALLOW). Variable tracking for the derived-path check is per file
+# and in source order. The scan FAILS when it scans zero files. A fixture tree (GUARD_ROOT
 # with a tests/ dir) proves each rule bites, so the guard cannot rot to a no-op.
 #
-# ALLOW: files another in-flight change owns. Remove an entry once the file is
-# fixed.
-#   tests/test-config-cache.sh     (line 128 `_other_tmp="$(mktemp)"` is unchecked;
-#   tests/test-config-known-keys-guard.sh   fix both when #437 next edits them.
-#   test-config-defaults-table.sh and test-callsite-literal-defaults.sh left this
-#   list in #440: they were edited there and are clean.)
+# ALLOW: files another in-flight change owns. It is empty; add a file only while
+# another change owns it, and remove the entry once the file is fixed.
 #
 # Also pins the one standing scratch-script line in agents/qa.md and
 # agents/developer.md (#459).
@@ -58,10 +66,10 @@ set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox
 
-ALLOW="tests/test-config-cache.sh tests/test-config-known-keys-guard.sh"
-# R4_ALLOW: files with a printf|grep -q site that an open PR also edits; fixed
+ALLOW=""
+# R5_ALLOW: files with a printf|grep -q site that an open PR also edits (#455, #499); fixed
 # after those PRs merge (#494). Empty this list as each file is fixed.
-R4_ALLOW="scripts/pipeline-vcs.sh scripts/pipeline-agent.sh install.sh tests/test-setup-harness.sh tests/test-docs-evidence.sh tests/test-docs-harness.sh tests/test-install.sh"
+R5_ALLOW="scripts/pipeline-vcs.sh scripts/pipeline-agent.sh"
 SELF_REL="tests/test-unsafe-cleanup-guard.sh"
 
 SCANNER="$SANDBOX/scan.py"
@@ -71,11 +79,15 @@ import os, re, sys
 root = sys.argv[1]
 allow = set(sys.argv[2].split())
 self_rel = sys.argv[3]
-r4_allow = set(sys.argv[4].split()) if len(sys.argv) > 4 else set()
+r5_allow = set(sys.argv[4].split()) if len(sys.argv) > 4 else set()
 
 SUBST = re.compile(r'\$\(\s*(?:command\s+)?(?:mktemp|safe_mktemp_dir)\b|`\s*mktemp\b')
 BAD_HANDLER = re.compile(r'\|\|\s*(?:true|:)\s*(?:$|[;)&|}])')
-RM = re.compile(r'(?<![\w./-])rm((?:\s+-[A-Za-z-]+)+)\s')
+RM = re.compile(r'(?:(?<![\w./-])|(?<=bin/))rm((?:\s+-[A-Za-z-]+)+)\s')
+FIND = re.compile(r'(?<![\w./-])find\s')
+DECL = r'(?:(?:local|export|declare|typeset|readonly)\s+(?:-\w+\s+)*)'
+MASKED = re.compile(r'\b' + DECL + r'\w+=\S*(?:\$\(\s*(?:command\s+)?(?:mktemp|safe_mktemp_dir)\b|`\s*mktemp\b)')
+ASSIGN = re.compile(r'(?:^|[\s;&|({])(?:' + DECL + r')?(\w+)=("(?:[^"\\]|\\.)*"|\'[^\']*\'|[^\s;&|)]*)')
 VAR = re.compile(r'\$\{(\w+)([^}]*)\}|\$(\w+)')
 PIPE = re.compile(r'(?<!\|)\|(?!\|)')
 DEVICE = re.compile(r'/dev/(?:urandom|zero)\b')
@@ -83,7 +95,7 @@ BOUNDED = re.compile(r'\bhead\s+(?:-[A-Za-z]*c|--bytes)|\bod\b.*\s(?:-[A-Za-z]*N
 YES = re.compile(r'^[\s({]*(?:\S+=\S*\s+)*(?:command\s+)?yes\b')
 # a printf/echo stage feeding `grep -q` (-q anywhere in a flag cluster, or --quiet/--silent);
 # quoted text may hold a `|`
-R4 = re.compile(
+R5 = re.compile(
     r"""\b(?:printf|echo)\b(?:[^|'"]|'[^']*'|"[^"]*")*\|\s*(?:command\s+)?grep\s+(?:-\S+\s+)*?"""
     r"""(?:-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)(?=\s|$)""")
 BARE = re.compile(r'''^["']?\$(?:\{\w+\}|\w+)["']?$''')
@@ -105,7 +117,7 @@ def files():
 
 def files_r3():
     # every file under tests/ (not fixtures) and scripts/; the guard itself holds the fixtures
-    # (install.sh is read by R4 only: it has no R3 sites and is not a test or script dir file)
+    # (install.sh is read by R5 only: it has no R3 sites and is not a test or script dir file)
     for top in ("tests", "scripts"):
         for d, dirs, names in os.walk(os.path.join(root, top)):
             rel = os.path.relpath(d, root)
@@ -117,10 +129,74 @@ def files_r3():
                     yield p
 
 
-def files_r4():
+def files_r5():
     yield from files_r3()
     if os.path.isfile(os.path.join(root, "install.sh")):
         yield "install.sh"
+
+
+def logical_lines(path):
+    # (line number, text) with a backslash continuation joined, so an `rm` or a
+    # mktemp split across lines is one statement; the number is the first line
+    buf, start = "", 0
+    for ln, line in enumerate(open(path, errors="replace"), 1):
+        if not buf:
+            start = ln
+        body = line.rstrip("\n")
+        if not buf and body.lstrip().startswith("#"):
+            yield ln, body  # a comment never continues, even when it ends in a backslash
+            continue
+        if body.endswith("\\"):
+            buf += body[:-1] + " "
+            continue
+        yield start, buf + body
+        buf = ""
+    if buf:
+        yield start, buf
+
+
+def subst_end(line, i):
+    # index just past the substitution that opens at line[i] ($( ... ) or `...`)
+    if line[i] == "`":
+        j = line.find("`", i + 1)
+        return len(line) if j < 0 else j + 1
+    depth, q, j = 0, "", i + 1
+    while j < len(line):
+        c = line[j]
+        if q:
+            if c == q:
+                q = ""
+        elif c in "\"'":
+            q = c
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return j + 1
+        j += 1
+    return len(line)
+
+
+# make_sandbox sets both and exits the test when it cannot, so they are never empty
+SAFE_BASES = ("SANDBOX", "HOME")
+
+
+def risky_value(val):
+    # a path built from unguarded variables plus other text: never empty, even
+    # when the variables are, so `rm -rf "$T"` on it deletes from the wrong place.
+    # One guarded base (${W:?} or $SANDBOX) anchors the whole path.
+    v = val.strip("\"'")
+    if "$(" in v or "`" in v or BARE.match(val):
+        return False
+    risky = False
+    for m in VAR.finditer(v):
+        mod = m.group(2) or ""
+        if (m.group(1) or m.group(3)) in SAFE_BASES or mod.startswith(":?"):
+            return False
+        if m.group(3) is not None or not mod.startswith((":-", ":=", ":+")):
+            risky = True
+    return risky
 
 
 def infinite_producer(line):
@@ -184,18 +260,26 @@ bad = []
 n = 0
 for rel in files():
     n += 1
-    for ln, line in enumerate(open(os.path.join(root, rel), errors="replace"), 1):
+    derived = set()
+    for ln, line in logical_lines(os.path.join(root, rel)):
         s = line.strip()
         if s.startswith("#"):
             continue
         for m in SUBST.finditer(line):
             if line[:m.start()].count("'") % 2:
                 continue  # inside a single-quoted string: data, not code
-            tail = line[m.end():]
-            j = tail.find("||")
-            if j < 0 or BAD_HANDLER.match(tail[j:]):
+            tail = line[subst_end(line, m.start()):]
+            tail = tail.lstrip('"').lstrip()  # the closing quote, then the handler
+            if not tail.startswith("||") or BAD_HANDLER.match(tail):
                 bad.append("%s:%d: R1 unchecked mktemp: %s" % (rel, ln, s))
                 break
+        if MASKED.search(line):
+            bad.append("%s:%d: R1 mktemp behind local/export/declare (its status is masked): %s" % (rel, ln, s))
+        for m in ASSIGN.finditer(line):
+            if risky_value(m.group(2)):
+                derived.add(m.group(1))
+            else:
+                derived.discard(m.group(1))
         for m in RM.finditer(line):
             flags = m.group(1)
             if not re.search(r'-[A-Za-z]*[rR]|--recursive', flags):
@@ -204,6 +288,19 @@ for rel in files():
                 if unsafe_operand(tok):
                     bad.append("%s:%d: R2 unguarded rm -r operand %s: %s" % (rel, ln, tok, s))
                     break
+                v = VAR.fullmatch(tok.strip("\"'"))
+                if v and not (v.group(2) or "").startswith(":?") and (v.group(1) or v.group(3)) in derived:
+                    bad.append("%s:%d: R2 rm -r operand %s is built from an unguarded variable (use \"${BASE:?}/...\"): %s" % (rel, ln, tok, s))
+                    break
+        for m in FIND.finditer(line):
+            if "-delete" not in line[m.end():] or line[:m.start()].count("'") % 2:
+                continue
+            for tok in operands(line[m.end():], False):
+                if tok.startswith(("-", "(", "!")):
+                    break
+                if unsafe_operand(tok):
+                    bad.append("%s:%d: R4 unguarded find ... -delete root %s: %s" % (rel, ln, tok, s))
+                    break
 for rel in files_r3():
     for ln, line in enumerate(open(os.path.join(root, rel), errors="replace"), 1):
         if line.strip().startswith("#"):
@@ -211,16 +308,16 @@ for rel in files_r3():
         why = infinite_producer(line)
         if why:
             bad.append("%s:%d: R3 unbounded producer in a pipe (%s): %s" % (rel, ln, why, line.strip()))
-r4_hit = set()
-for rel in files_r4():
+r5_hit = set()
+for rel in files_r5():
     for ln, line in enumerate(open(os.path.join(root, rel), errors="replace"), 1):
-        if line.strip().startswith("#") or not R4.search(line):
+        if line.strip().startswith("#") or not R5.search(line):
             continue
-        r4_hit.add(rel)
-        if rel not in r4_allow:
-            bad.append("%s:%d: R4 printf/echo piped into grep -q (EPIPE flake with SIGPIPE ignored; use grep -q PAT <<<\"$v\"): %s" % (rel, ln, line.strip()))
-for rel in sorted(r4_allow - r4_hit):
-    bad.append("%s: R4 allow entry is stale (no printf/echo | grep -q site left); remove it from R4_ALLOW" % rel)
+        r5_hit.add(rel)
+        if rel not in r5_allow:
+            bad.append("%s:%d: R5 printf/echo piped into grep -q (EPIPE flake with SIGPIPE ignored; use grep -q PAT <<<\"$v\"): %s" % (rel, ln, line.strip()))
+for rel in sorted(r5_allow - r5_hit):
+    bad.append("%s: R5 allow entry is stale (no printf/echo | grep -q site left); remove it from R5_ALLOW" % rel)
 print("scanned=%d" % n)
 for b in bad:
     print(b)
@@ -228,7 +325,7 @@ sys.exit(1 if bad else 0)
 TALOS_Qm7Vd3pLx9aZc
 
 # --- the real tree --------------------------------------------------------
-out="$(python3 -I "$SCANNER" "$TALOS_ROOT" "$ALLOW" "$SELF_REL" "$R4_ALLOW" 2>&1)"; rc=$?
+out="$(python3 -I "$SCANNER" "$TALOS_ROOT" "$ALLOW" "$SELF_REL" "$R5_ALLOW" 2>&1)"; rc=$?
 scanned="$(printf '%s\n' "$out" | sed -n 's/^scanned=//p')"
 case "$scanned" in ''|*[!0-9]*) scanned=0 ;; esac
 if [ "$scanned" -gt 0 ]; then pass "scan: read $scanned test file(s)"; else fail "scan: read zero test files" "$out"; fi
@@ -288,6 +385,46 @@ expect_ok "trap string with a bare variable" "trap 'rm -rf \"\$X\"' EXIT"
 expect_ok "rm -rf then a harmless pipe" 'rm -rf "${X:?}/a" | cat'
 expect_ok "rm word in a path, not a command" 'cd "$X/form-rm -r/y"'
 
+expect_flag "mktemp with an unrelated || later on the line" 'D="$(mktemp -d)"; [ -d "$D" ] || echo x' R1
+expect_flag "mktemp then && ... || (handler not adjacent)" 'D="$(mktemp -d)" && cd "$D" || exit 1' R1
+expect_flag "local masks the mktemp status" 'local X="$(mktemp -d)" || exit 1' R1
+expect_flag "local -r masks the mktemp status" 'local -r X="$(mktemp -d)" || exit 1' R1
+expect_flag "export masks the mktemp status" 'export X="$(mktemp)" || exit 1' R1
+expect_flag "declare masks the mktemp status" 'declare X=$(mktemp) || exit 1' R1
+expect_ok "declare first, assign second" 'local X; X="$(mktemp -d)" || exit 1'
+expect_ok "handler on a continuation line" 'D="$(mktemp -d)" \
+  || exit 1'
+expect_flag "mktemp split across lines, no handler" 'D="$(mktemp -d \
+  "$T/x.XXXXXX")"' R1
+
+expect_flag "a comment ending in a backslash does not swallow the next line" '# note \
+rm -rf "$X/sub"' R2
+expect_flag "rm -rf continued across lines" 'rm -rf \
+  "$X/sub"' R2
+expect_flag "/bin/rm -rf var/sub" '/bin/rm -rf "$X/sub"' R2
+expect_flag "derived path: T built from W, then rm of T" 'T="$W/$f"
+rm -rf "$T"' R2
+expect_flag "derived path via local" 'local T="$W/$f"
+rm -rf "$T"' R2
+expect_flag "derived path on one line" 'T="$W/$f"; rm -rf "$T"' R2
+expect_ok "derived path, base guarded where it is built" 'T="${W:?}/$f"
+rm -rf "$T"'
+expect_ok "derived path from \$SANDBOX (make_sandbox guarantees it)" 'T="$SANDBOX/$f"
+rm -rf "$T"'
+expect_ok "a bare alias of W is not derived" 'T="$W"
+rm -rf "$T"'
+expect_ok "derived path later reassigned to a guarded value" 'T="$W/$f"
+T="${W:?}/$f"
+rm -rf "$T"'
+expect_ok "rm of a variable never assigned a path" 'rm -rf "$T"'
+
+expect_flag "find root var/ then -delete" 'find "$X"/ -delete' R4
+expect_flag "find root var/sub with tests" 'find "$X/sub" -type f -name "*.tmp" -delete' R4
+expect_ok "find root guarded with :?" 'find "${X:?}"/ -delete'
+expect_ok "find whole-operand var" 'find "$X" -delete'
+expect_ok "find literal root" 'find . -name x -delete'
+expect_ok "find without -delete" 'find "$X"/ -name x'
+
 expect_flag "tr from urandom into head (the #479 hang)" "rand() { LC_ALL=C tr -dc 'a-f0-9' < /dev/urandom | head -c 16; }" R3
 expect_flag "cat urandom into head" 'cat /dev/urandom | head -c 8' R3
 expect_flag "urandom as an operand, piped on" 'tr -dc a-z /dev/urandom | head -c 8' R3
@@ -318,16 +455,16 @@ assert_eq "1" "$frc" "fixture: scripts/ is scanned for an unbounded producer"
 assert_contains "$o" "scripts/pipeline-fixture.sh:1: R3" "fixture: names the scripts/ file and line"
 rm -f "$FIX/scripts/pipeline-fixture.sh"
 
-# R4: printf/echo into grep -q (#494)
-expect_flag "printf into grep -q" "if printf '%s\\n' \"\$v\" | grep -q x; then" R4
-expect_flag "printf (no newline) into grep -qE" "printf '%s' \"\$v\" | grep -qE '^[0-9]+\$' || n=0" R4
-expect_flag "echo into grep -q" 'echo "$v" | grep -q x' R4
-expect_flag "grep -Eq (q last in the cluster)" "printf '%s\\n' \"\$v\" | grep -Eq 'a|b'" R4
-expect_flag "grep -Fxq with --" "printf '%s\\n' \"\$v\" | grep -Fxq -- \"\$m\"" R4
-expect_flag "grep -E -q (separate flags)" 'echo "$v" | grep -E -q x' R4
-expect_flag "grep --quiet" 'echo "$v" | grep --quiet x' R4
-expect_flag "inside a command substitution" 'r="$(printf %s "$v" | grep -q x && echo y)"' R4
-expect_flag "a | inside the printf text" "printf 'a|b' | grep -q a" R4
+# R5: printf/echo into grep -q (#494)
+expect_flag "printf into grep -q" "if printf '%s\\n' \"\$v\" | grep -q x; then" R5
+expect_flag "printf (no newline) into grep -qE" "printf '%s' \"\$v\" | grep -qE '^[0-9]+\$' || n=0" R5
+expect_flag "echo into grep -q" 'echo "$v" | grep -q x' R5
+expect_flag "grep -Eq (q last in the cluster)" "printf '%s\\n' \"\$v\" | grep -Eq 'a|b'" R5
+expect_flag "grep -Fxq with --" "printf '%s\\n' \"\$v\" | grep -Fxq -- \"\$m\"" R5
+expect_flag "grep -E -q (separate flags)" 'echo "$v" | grep -E -q x' R5
+expect_flag "grep --quiet" 'echo "$v" | grep --quiet x' R5
+expect_flag "inside a command substitution" 'r="$(printf %s "$v" | grep -q x && echo y)"' R5
+expect_flag "a | inside the printf text" "printf 'a|b' | grep -q a" R5
 expect_ok "the here-string form" 'grep -q x <<<"$v"'
 expect_ok "printf into grep without -q" "printf '%s\\n' \"\$v\" | grep -c x"
 expect_ok "printf into grep -o" "printf '%s' \"\$v\" | grep -oE '[0-9]+'"
@@ -335,25 +472,25 @@ expect_ok "printf into something else" "printf '%s\\n' \"\$v\" | sed -n 1p | gre
 expect_ok "a q in a grep pattern, not a flag" "printf '%s\\n' \"\$v\" | grep quit"
 expect_ok "echo | grep -q named in a comment" '# printf x | grep -q y is the flaky form'
 expect_ok "printf as a word, grep -q on a file" 'grep -q x file; printf done'
-# an R4 allow entry exempts the file; a stale entry (no site left) fails
+# an R5 allow entry exempts the file; a stale entry (no site left) fails
 printf '%s\n' 'echo "$v" | grep -q x' > "$FIX/tests/test-fixture.sh"
 o="$(python3 -I "$SCANNER" "$FIX" "" "$SELF_REL" "tests/test-fixture.sh" 2>&1)"; frc=$?
-assert_eq "0" "$frc" "fixture: an R4 allow-listed file is skipped"
+assert_eq "0" "$frc" "fixture: an R5 allow-listed file is skipped"
 printf '%s\n' 'grep -q x <<<"$v"' > "$FIX/tests/test-fixture.sh"
 o="$(python3 -I "$SCANNER" "$FIX" "" "$SELF_REL" "tests/test-fixture.sh" 2>&1)"; frc=$?
-assert_eq "1" "$frc" "fixture: a stale R4 allow entry fails"
-assert_contains "$o" "R4 allow entry is stale" "fixture: names the stale entry"
-# R4 also scans scripts/ and install.sh
+assert_eq "1" "$frc" "fixture: a stale R5 allow entry fails"
+assert_contains "$o" "R5 allow entry is stale" "fixture: names the stale entry"
+# R5 also scans scripts/ and install.sh
 printf '%s\n' 'echo ok' > "$FIX/tests/test-fixture.sh"
 printf '%s\n' 'echo "$v" | grep -q x' > "$FIX/scripts/pipeline-fixture.sh"
 o="$(python3 -I "$SCANNER" "$FIX" "" "$SELF_REL" 2>&1)"; frc=$?
 assert_eq "1" "$frc" "fixture: scripts/ is scanned for printf|grep -q"
-assert_contains "$o" "scripts/pipeline-fixture.sh:1: R4" "fixture: names the scripts/ file and line for R4"
+assert_contains "$o" "scripts/pipeline-fixture.sh:1: R5" "fixture: names the scripts/ file and line for R5"
 rm -f "$FIX/scripts/pipeline-fixture.sh"
 printf '%s\n' 'echo "$v" | grep -q x' > "$FIX/install.sh"
 o="$(python3 -I "$SCANNER" "$FIX" "" "$SELF_REL" 2>&1)"; frc=$?
 assert_eq "1" "$frc" "fixture: install.sh is scanned for printf|grep -q"
-assert_contains "$o" "install.sh:1: R4" "fixture: names install.sh for R4"
+assert_contains "$o" "install.sh:1: R5" "fixture: names install.sh for R5"
 rm -f "$FIX/install.sh"
 
 # an allow-listed file and a stub are covered; a clean tree passes

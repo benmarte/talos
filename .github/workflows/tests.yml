@@ -45,5 +45,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      # The macOS runner's python3 has no PyYAML, so the YAML-config tests would
+      # skip there (#490). Homebrew Python is externally managed (PEP 668), hence
+      # --break-system-packages; no --user, because python3 -I does not see it.
+      - name: Install PyYAML (macOS)
+        if: runner.os == 'macOS'
+        run: "python3 -m pip install --break-system-packages --only-binary :all: 'pyyaml==6.0.3'"
       - name: Run test suite
         run: bash tests/run-tests.sh --no-cache

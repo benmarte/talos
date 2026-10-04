@@ -13,7 +13,7 @@ set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox || exit 1
 
-SETUP="${SETUP_FILE:-$TALOS_ROOT/skills/pipeline-setup/SKILL.md}"
+SETUP="${SETUP_FILE:-$TALOS_ROOT/skills/setup/SKILL.md}"
 README="$TALOS_ROOT/README.md"
 DC="$TALOS_ROOT/scripts/pipeline-draft-check.sh"
 

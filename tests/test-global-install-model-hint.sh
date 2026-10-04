@@ -5,6 +5,9 @@
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox
+# PyYAML probe, same lookup as the loader (-I drops the user site; it is appended back, #395).
+HAVE_YAML=0
+python3 -I -c 'import site, sys; sys.path.append(site.getusersitepackages()); import yaml' 2>/dev/null && HAVE_YAML=1
 
 USER_DIR="$HOME/.talos"
 USER_CFG="$USER_DIR/talos.pipeline.json"
@@ -16,7 +19,7 @@ count_hint() { printf '%s\n' "$1" | grep -c "$HINT"; }
 # 1. No user-level file at all -> hint, exactly once, naming the setup skill.
 out="$(install_out)"
 assert_eq "1" "$(count_hint "$out")" "AC8: hint printed once when no user-level config exists"
-assert_contains "$(printf '%s\n' "$out" | grep "$HINT")" "pipeline-setup" "AC8: hint points at the setup wizard"
+assert_contains "$(printf '%s\n' "$out" | grep "$HINT")" "/talos:setup" "AC8: hint points at the setup wizard"
 assert_file_absent "$USER_CFG" "AC8: install --global does not create a user-level config"
 
 # 2. User-level file without model keys -> hint, file byte-identical.
@@ -40,12 +43,16 @@ assert_eq "0" "$(count_hint "$out")" "AC8: no hint when only agents.roles.<role>
 
 # 5. A YAML user-level file counts too.
 rm -f "$USER_CFG"
-printf 'agents:\n  model: sonnet\n' > "$USER_DIR/talos.pipeline.yml"
-before="$(cksum < "$USER_DIR/talos.pipeline.yml")"
-out="$(install_out)"
-assert_eq "0" "$(count_hint "$out")" "AC8: no hint for a user-level .yml with agents.model"
-assert_eq "$before" "$(cksum < "$USER_DIR/talos.pipeline.yml")" "AC8: user-level .yml is byte-identical after install --global"
-rm -f "$USER_DIR/talos.pipeline.yml"
+if [ "$HAVE_YAML" = 1 ]; then
+  printf 'agents:\n  model: sonnet\n' > "$USER_DIR/talos.pipeline.yml"
+  before="$(cksum < "$USER_DIR/talos.pipeline.yml")"
+  out="$(install_out)"
+  assert_eq "0" "$(count_hint "$out")" "AC8: no hint for a user-level .yml with agents.model"
+  assert_eq "$before" "$(cksum < "$USER_DIR/talos.pipeline.yml")" "AC8: user-level .yml is byte-identical after install --global"
+  rm -f "$USER_DIR/talos.pipeline.yml"
+else
+  echo "  skip: PyYAML not installed -- user-level .yml hint case"
+fi
 
 # 6. $TALOS_HOME is honoured when looking for the user-level file.
 mkdir -p "$SANDBOX/alt"

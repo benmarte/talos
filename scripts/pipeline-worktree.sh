@@ -799,9 +799,10 @@ CONTENT = ("stage", "criteria_done", "criteria_remaining", "last_verify", "decis
 FILEKEYS = ("v", "issue", "branch", "head") + CONTENT + ("runner", "model", "ts")
 REQUIRED = ("v", "issue", "branch", "head", "stage", "criteria_done", "criteria_remaining", "decisions", "next_step", "ts")
 CRED = [re.compile(p) for p in (
-    r"ghp_", r"gho_", r"github_pat_", r"glpat-", r"(?<![A-Za-z0-9])sk-", r"xox[abp]-",
+    r"gh[pousr]_", r"github_pat_", r"glpat-", r"(?<![A-Za-z0-9])sk-", r"xox[abposr]-",
     r"AKIA[0-9A-Z]{16}", r"-----BEGIN", r"eyJ[\w-]+\.[\w-]+\.[\w-]+",
-    r"://[^/\s:@]*:[^/\s@]*@", r"[A-Za-z0-9_-]{32,}")]
+    r"://[^/\s:@]*:[^/\s@]*@", r"[A-Za-z0-9_-]{32,}",
+    r"hooks\.slack\.com/services/", r"/api/(v\d+/)?webhooks/", r"office(365)?\.com/webhook", r"nsec1")]
 CRED += [re.compile(p, re.I) for p in (r"bearer ", r"(token|secret|password|api[_-]?key)\s*[=:]")]
 ENVVALS = [v for k, v in os.environ.items() if len(v) >= 8 and re.search("TOKEN|KEY|SECRET|PASSWORD", k, re.I)]
 

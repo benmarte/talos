@@ -125,7 +125,7 @@ SCRIPT_DIR="$1"
 CAPTURE_TO="$2"
 . "$SCRIPT_DIR/pipeline-cfg-cache.sh"
 cfg merge.method "" >/dev/null
-_other_tmp="$(mktemp)"
+_other_tmp="$(mktemp)" || exit 1
 _talos_on_exit "rm -f \"$_other_tmp\""
 printf '%s\n%s\n' "$_CFG_CACHE_FILE" "$_other_tmp" > "$CAPTURE_TO"
 PROBE

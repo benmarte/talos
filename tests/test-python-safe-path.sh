@@ -17,14 +17,17 @@
 #   * The four PyYAML import sites append the user site back (APPEND, so stdlib
 #     and system packages win and cwd never enters) so a `pip install --user
 #     pyyaml` keeps reading YAML config.
-#   * Test doubles in tests/stubs/ are not product code and are not guarded.
+#   * Test doubles in tests/stubs/ are guarded too (#452): they run with the
+#     scratch repo as cwd, so a bare `python3 -c` there would run a planted
+#     module just the same.
 #
 # This file checks the pattern two ways:
 #   1. a behavioural run: planted json/yaml/subprocess/datetime/pathlib/re
 #      modules (they only write marker files inside the sandbox) sit in the cwd
 #      of a representative set of scripts, and no marker may appear;
 #   2. a static guard: no non-comment python call with -c, - or << lacks -I
-#      (scripts and install.sh line by line, markdown inside code fences).
+#      (scripts, install.sh and tests/stubs/* line by line, markdown inside
+#      code fences).
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox
@@ -46,16 +49,20 @@ EV="$TALOS_ROOT/scripts/pipeline-events.sh"
 # $PY, "$PYTHON", "${PY:-python3}") that reaches -c (also inside a combined
 # short-flag cluster such as -Bc), - (stdin) or a heredoc without an I in the
 # option group before it. Options that take a separate argument (-X dev,
-# -W error) are skipped over, and a backslash continuation is joined first
-# (the report names the line the call starts on). With --fenced only lines
-# inside a ``` fence are scanned, so prose in a .md file never trips it.
+# -W error, --check-hash-based-pycs always) are skipped over, and a backslash
+# continuation is joined first (the report names the line the call starts on).
+# With --fenced only lines inside a ``` or ~~~ fence are scanned (a fence closes
+# on its own marker), so prose in a .md file never trips it. Interpreters also
+# cover "$PYBIN", "$(command -v python3)" and "$(which python3)".
+# The perl reads each file with 3-arg open (<<>>), never <>: a file named
+# "x|" would otherwise be run as a pipe by the 2-arg open that <> uses.
 unsafe_py_calls() {
   perl -e '
     my $fenced = @ARGV && $ARGV[0] eq "--fenced" ? shift(@ARGV) : 0;
-    my $interp = qr/\bpython(?:3(?:\.\d+)?)?\b|"?\$\{?(?:PY|PYTHON)\b(?::-[^}]*)?\}?"?/;
-    my $opt    = qr/\s+-(?:[XW]\s+\S+|-?[A-Za-z][\w-]*)/;
+    my $interp = qr/\bpython(?:3(?:\.\d+)?)?\b|"?\$\{?(?:PY|PYTHON|PYBIN)\b(?::-[^}]*)?\}?"?|"?\$\(\s*(?:command\s+-v|which)\s+python3?\s*\)"?/;
+    my $opt    = qr/\s+-(?:[XW]\s+\S+|-check-hash-based-pycs\s+\S+|-?[A-Za-z][\w-]*)/;
     my $trig   = qr/\s+(?:-[A-Za-z]*c\b|-(?:\s|$)|<<)/;
-    my ($in, $buf, $start) = (0, "", 0);
+    my ($in, $mark, $buf, $start) = (0, "", "", 0);
     my $check = sub {
       my ($file) = @_;
       my $text = $buf; $buf = "";
@@ -66,8 +73,11 @@ unsafe_py_calls() {
         last;
       }
     };
-    while (<>) {
-      if ($fenced && /^\s*```/) { $in = !$in; $buf = ""; next; }
+    while (<<>>) {
+      if ($fenced && /^\s*(```|~~~)/) {
+        if (!$in) { ($in, $mark) = (1, $1); } elsif ($1 eq $mark) { $in = 0; }
+        $buf = ""; next;
+      }
       next if $fenced && !$in;
       $start = $. if $buf eq "";
       chomp(my $l = $_);
@@ -125,12 +135,21 @@ PYTHONPATH=a \
 python3 -m json.tool
 python3 -m pytest -c cfg
 python3 script.py -c 'x'
+"$PYBIN" -c 'x'
+"$(command -v python3)" -c 'x'
+x="$("$(command -v python3)" - <<PY)"
+python3 --check-hash-based-pycs always -c 'x'
+"$PYBIN" -I -c 'x'
+"$(command -v python3)" -I -c 'x'
+python3 -I --check-hash-based-pycs always -c 'x'
 EOF_GUARD_FIXTURE_Zq7wKd3nVx91
 # Lines 1-10 are the original forms; 20-29 the blind spots (combined flags,
 # options with an argument, versioned binary, variable interpreters, and a
 # continuation, reported at the line the call starts on).
 _flagged="$(unsafe_py_calls "$_g" | cut -d: -f2 | tr '\n' ' ')"
-assert_eq "1 2 3 4 5 6 7 8 9 10 20 21 22 23 24 25 26 27 " "$_flagged" \
+# Lines 43-46 are the #452 forms: "$PYBIN", "$(command -v python3)" and a long
+# option (with its argument) before -c; 47-49 are their -I counterparts.
+assert_eq "1 2 3 4 5 6 7 8 9 10 20 21 22 23 24 25 26 27 43 44 45 46 " "$_flagged" \
   "guard: flags every unsafe python form and nothing else"
 
 # Fenced mode: only code inside a ``` fence (indented or not) counts; prose,
@@ -158,14 +177,36 @@ Prose again: python3 -c 'x'
 x="$(printf y | python3 -c 'x')"
 python3 -m json.tool
 ```
+
+~~~bash
+python3 -c 'tilde fence'
+~~~
+
+~~~
+```
+python3 -c 'a backtick line inside a tilde fence stays inside it'
+```
+~~~
+
+Prose after: python3 -c 'x'
 EOF_GUARD_FIXTURE_MD_Bn4Yt8pQ2c
 _flagged="$(unsafe_py_calls --fenced "$_gm" | cut -d: -f2 | tr '\n' ' ')"
-assert_eq "4 11 19 " "$_flagged" \
-  "guard --fenced: flags unsafe calls inside fences only, indented fences included"
+# 24 is a ~~~ fence; 29 sits in a ~~~ fence whose body holds a ``` line (a fence
+# only closes on its own marker); the prose line after it is not flagged.
+assert_eq "4 11 19 24 29 " "$_flagged" \
+  "guard --fenced: flags unsafe calls inside backtick and tilde fences only, indented fences included"
 
-_guard_files=("$TALOS_ROOT"/scripts/*.sh "$TALOS_ROOT/install.sh")
+# A file whose name ends in "|" must be read as a file, not run as a pipe.
+_pipe_dir="$SANDBOX/pipe-name"
+mkdir -p "$_pipe_dir" || exit 1
+printf 'python3 -c x\n' > "$_pipe_dir/echo hi|"
+_pipe_out="$(cd "$_pipe_dir" && unsafe_py_calls "echo hi|" 2>&1)"
+assert_eq "echo hi|:1:python3 -c x" "$_pipe_out" \
+  "guard: a filename ending in | is read as a file (3-arg open), not run as a pipe"
+
+_guard_files=("$TALOS_ROOT"/scripts/*.sh "$TALOS_ROOT/install.sh" "$TALOS_ROOT"/tests/stubs/*)
 _unsafe="$(unsafe_py_calls "${_guard_files[@]}")"
-assert_eq "" "$_unsafe" "guard: no embedded python call in scripts/*.sh or install.sh lacks -I"
+assert_eq "" "$_unsafe" "guard: no embedded python call in scripts/*.sh, install.sh or tests/stubs/* lacks -I"
 [ -z "$_unsafe" ] || printf "%s\n" "$_unsafe" | head -20 | cut -c1-200 >&2
 
 # The playbook, agent profiles, templates, docs and README: fenced code only.
@@ -192,17 +233,6 @@ for _m in json yaml subprocess datetime pathlib re; do
   printf 'open(%s, "w").write("ran")\nraise ImportError("planted %s (test #395)")\n' \
     "\"$MARK/$_m\"" "$_m" > "$SANDBOX/$_m.py"
 done
-
-# The gh/curl/az/glab doubles use bare `python3 -c` themselves. They are test
-# doubles, not product code, so run Talos against -I copies: a marker can then
-# only come from Talos.
-ISO_STUBS="$SANDBOX/stubs-iso"
-mkdir -p "$ISO_STUBS"
-for _s in "$STUBS_DIR"/*; do
-  perl -pe 's/\bpython3 (?=-c |- |-$|<<)/python3 -I /g' "$_s" > "$ISO_STUBS/$(basename "$_s")"
-  chmod +x "$ISO_STUBS/$(basename "$_s")"
-done
-export PATH="$ISO_STUBS:${PATH#"$STUBS_DIR":}"
 
 git config user.email "test@talos.invalid"
 git config user.name "talos-test"

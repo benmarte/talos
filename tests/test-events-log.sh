@@ -86,7 +86,7 @@ WT_MAIN="$(safe_mktemp_dir "${TMPDIR:-/tmp}/talos-events-main.XXXXXX")" || exit 
 EOF
   git worktree add -q -b events-linked "$WT_MAIN.linked" >/dev/null 2>&1
 )
-LINKED="$WT_MAIN.linked"
+LINKED="${WT_MAIN:?}.linked"
 ( cd "$LINKED" && bash "$HOOKS" post_stage qa qa 99 --verdict PASS 2>"$SANDBOX/wt-err.log" )
 rc=$?
 assert_eq "0" "$rc" "linked worktree: post_stage exits 0"

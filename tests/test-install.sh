@@ -86,9 +86,9 @@ src_notif="$(ls "$TALOS_ROOT/templates/notifications/"*.md | wc -l | tr -d ' ')"
 assert_eq "$src_notif" "$n_notif" "--global installs all notification templates ($src_notif)"
 
 assert_file_exists "$FAKE_CLAUDE_HOME/skills/pipeline/SKILL.md" \
-  "--global installs skill to ~/.claude/skills/pipeline/SKILL.md"
+  "--global installs the /pipeline alias to ~/.claude/skills/pipeline/SKILL.md (#335)"
 assert_file_exists "$FAKE_CLAUDE_HOME/skills/pipeline-setup/SKILL.md" \
-  "--global installs pipeline-setup skill to ~/.claude/skills/"
+  "--global installs the /pipeline-setup alias to ~/.claude/skills/ (#335)"
 
 assert_contains "$gout" "Installing Talos globally" "--global output says 'Installing Talos globally'"
 
@@ -180,9 +180,12 @@ else
   fail "unreachable agent-skills does not abort the install (exit 0)"
 fi
 
-# The shipped manifests must pass the real schema check.
-if command -v claude >/dev/null 2>&1; then
-  val_out="$(cd "$TALOS_ROOT" && claude plugin validate . 2>&1)"
+# The shipped manifests must pass the real schema check. This is the one place
+# the real `claude` is wanted (read-only, HOME is the sandbox), so look past the
+# plugin stub make_sandbox put first on PATH (#335).
+REAL_PATH="$(printf '%s' "$PATH" | tr ':' '\n' | grep -vxF "$STUBS_DIR/plugin-claude" | paste -sd: -)"
+if PATH="$REAL_PATH" command -v claude >/dev/null 2>&1; then
+  val_out="$(cd "$TALOS_ROOT" && PATH="$REAL_PATH" claude plugin validate . 2>&1)"
   assert_contains "$val_out" "Validation passed" \
     "claude plugin validate passes on the shipped manifests"
   assert_not_contains "$val_out" "Invalid input" \
@@ -228,7 +231,7 @@ assert_contains "$out_with" "/pipeline" \
 #   B. Literal sites contain each canonical probe string:
 #        scripts/pipeline-paths.sh (canonical definition)
 #        skills/pipeline/SKILL.md
-#        skills/pipeline-setup/SKILL.md
+#        skills/setup/SKILL.md
 #        skills/resume/SKILL.md
 #
 # RED when any site drifts: A catches dropped delegation; B catches literal divergence.
@@ -255,7 +258,7 @@ for probe_str in '${TALOS_HOME:+' ".talos/scripts" '${CLAUDE_PLUGIN_ROOT:+' ".cl
   for pf in \
     "$TALOS_ROOT/scripts/pipeline-paths.sh" \
     "$TALOS_ROOT/skills/pipeline/SKILL.md" \
-    "$TALOS_ROOT/skills/pipeline-setup/SKILL.md" \
+    "$TALOS_ROOT/skills/setup/SKILL.md" \
     "$TALOS_ROOT/skills/resume/SKILL.md"; do
     if grep -qF "$probe_str" "$pf"; then
       pass "$(basename "$pf") contains probe string: $probe_str"
@@ -284,7 +287,7 @@ for sh_file in \
   "$TALOS_ROOT/scripts/pipeline-agent.sh" \
   "$TALOS_ROOT/scripts/pipeline-worktree.sh"; do
   _guard_block="$(grep -A9 -F "$_guard_marker" "$sh_file")"
-  if ! printf '%s\n' "$_guard_block" | grep -q '^fi$'; then
+  if ! grep -q '^fi$' <<<"$_guard_block"; then
     fail "$(basename "$sh_file") cfg-cache guard block does not end with 'fi' -- pattern drifted, update the marker/line count in this test"
     continue
   fi

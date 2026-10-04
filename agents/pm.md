@@ -33,7 +33,8 @@ Post it on stdin through a heredoc: the spec quotes issue text, so never put
 it inside double quotes on a command line. The delimiter is `TALOS_<rand>`,
 with `<rand>` 12+ random characters you invent fresh for this heredoc (never
 one copied from an example): text that contains the closing line would end
-the heredoc early and run what follows.
+the heredoc early and run what follows. A literal `<rand>` in your command
+means you did not substitute it.
 ```bash
 bash scripts/pipeline-vcs.sh comment-issue <N> --body-file - <<'TALOS_<rand>'
 **PM spec:** ...

@@ -168,16 +168,20 @@ talos_trust_check() {
 # value is taken literally -- one pair of surrounding quotes is stripped, and
 # $(...) / backticks stay plain text. An env:NAME reference to a name outside
 # the allow list is still looked up (it is only read, never exported), except
-# for a denied name.
+# for a denied name: talos_secret_load refuses one before it reads the exported
+# environment, the repo .env or a user-level .env.
 _TALOS_DOTENV_ALLOW=" SLACK_WEBHOOK_URL DISCORD_WEBHOOK_URL TEAMS_WEBHOOK_URL SLACK_BOT_TOKEN DISCORD_BOT_TOKEN BUZZ_BOT_PRIVATE_KEY BUZZ_RELAY_URL PIPELINE_SLACK_CHANNEL PIPELINE_DISCORD_CHANNEL PIPELINE_BUZZ_CHANNEL PIPELINE_BUZZ_RELAY "
 
 # 0 when $1 is on the hard deny list: shell start-up files, the search path,
 # the dynamic linker, interpreters' module paths, git, proxies (a proxy would
-# route a webhook call elsewhere), and Talos's own control variables.
+# route a webhook call elsewhere), Talos's own control variables, and the forge
+# and model credentials Talos itself holds (a config file must not be able to
+# aim GH_TOKEN at a chat webhook).
 _talos_dotenv_denied() {
   case "$1" in
     BASH_ENV|ENV|PATH|IFS|PROMPT_COMMAND|SHELLOPTS|BASHOPTS|HOME|TMPDIR|SHELL|CDPATH|GLOBIGNORE) return 0 ;;
     BASH_*|LD_*|DYLD_*|PYTHON*|GIT_*|TALOS_*|PS[0-9]|NODE_*|PERL*|RUBY*|CURL_*|SSL_*) return 0 ;;
+    GH_*|GITHUB_*|GITLAB_*|AZURE_*|ANTHROPIC_*|AWS_*) return 0 ;;
     *_PROXY|*_proxy) return 0 ;;
   esac
   return 1
@@ -259,7 +263,8 @@ _talos_dotenv_get() {
   local _f="$1" _n="$2" _line _v
   _TS_VAL=""
   [ -r "$_f" ] || return 1
-  # A name on the hard deny list is never looked up, even through env:NAME.
+  # A name on the hard deny list is never read from a .env file. (The exported
+  # environment is guarded separately, in talos_secret_load, before it is read.)
   _talos_dotenv_denied "$_n" && return 1
   while IFS= read -r _line || [ -n "$_line" ]; do
     _line="${_line%$'\r'}"
@@ -371,6 +376,12 @@ talos_secret_load() {
     if ! _talos_secret_name_ok "$_name"; then
       # Never echo the value: a literal secret pasted into the file lands here.
       echo "pipeline-secrets: $_key is not an env:NAME reference (NAME is letters, digits and underscore); a secret is never read from the config file itself -- ignoring it" >&2
+      return 1
+    fi
+    # A denied name is refused before ANY source is read, the exported
+    # environment included (env:GIT_ASKPASS would otherwise resolve from it).
+    if _talos_dotenv_denied "$_name"; then
+      echo "pipeline-secrets: $_key references $_name, which a config file may not point at (shell, search-path, git and Talos control variables are never read through env:NAME) -- ignoring it" >&2
       return 1
     fi
     if _talos_secret_env_layers "$_name" \

@@ -12,7 +12,7 @@ PRIV_TMP="$(mktemp -d "${TMPDIR:-/tmp}/talos-setup-sf.XXXXXX")" || exit 1
 trap 'rm -rf "$SANDBOX" "$PRIV_TMP"' EXIT
 export TMPDIR="$PRIV_TMP"
 
-SETUP="${SETUP_FILE:-$TALOS_ROOT/skills/pipeline-setup/SKILL.md}"
+SETUP="${SETUP_FILE:-$TALOS_ROOT/skills/setup/SKILL.md}"
 GUIDE="$TALOS_ROOT/docs/user-guide.md"
 EXAMPLE="$TALOS_ROOT/talos.pipeline.yml.example"
 CHANGELOG="$TALOS_ROOT/CHANGELOG.md"

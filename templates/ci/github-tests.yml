@@ -3,7 +3,7 @@
 #
 # This is a TEMPLATE, not something Talos enforces at runtime -- CI cadence
 # and cost are the consuming repo's policy. Copy this file to
-# .github/workflows/tests.yml (or let `/pipeline-setup` write it for you when
+# .github/workflows/tests.yml (or let `/talos:setup` write it for you when
 # no existing workflow runs your test suite -- it never edits a workflow that
 # already exists), then adjust the paths, job name, and test command for your
 # project. Talos dogfoods this exact template in its own repo.
@@ -104,5 +104,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      # The macOS runner's python3 has no PyYAML, so the YAML-config tests would
+      # skip there (#490). Homebrew Python is externally managed (PEP 668), hence
+      # --break-system-packages; no --user, because python3 -I does not see it.
+      # This step assumes a throwaway GitHub-hosted runner: on a self-hosted
+      # macOS runner, install PyYAML yourself instead of --break-system-packages.
+      - name: Install PyYAML (macOS)
+        if: runner.os == 'macOS'
+        run: "python3 -m pip install --break-system-packages --only-binary :all: 'pyyaml==6.0.3'"
       - name: Run test suite
         run: bash tests/run-tests.sh --no-cache

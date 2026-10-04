@@ -6,7 +6,7 @@
 #   2. This repo's own .github/workflows/tests.yml (dogfooding) matches --
 #      same structure, same "test" job id so "test (ubuntu-latest)" stays a
 #      stable required-check name across PR and push runs.
-#   3. skills/pipeline-setup/SKILL.md's CI step: offers the template only
+#   3. skills/setup/SKILL.md's CI step: offers the template only
 #      when no existing workflow runs the test suite, and never edits an
 #      existing workflow (prompt text assertions).
 #   4. talos.pipeline.json's merge.required_checks is a subset of the job
@@ -123,8 +123,8 @@ assert_not_contains "$repo_content" "cancel-in-progress: true" \
 # 3. Setup skill: offers the template only when absent, never edits an
 #    existing workflow.
 # ─────────────────────────────────────────────────────────────────────────────
-SETUP_SKILL="$TALOS_ROOT/skills/pipeline-setup/SKILL.md"
-assert_file_exists "$SETUP_SKILL" "skills/pipeline-setup/SKILL.md exists"
+SETUP_SKILL="$TALOS_ROOT/skills/setup/SKILL.md"
+assert_file_exists "$SETUP_SKILL" "skills/setup/SKILL.md exists"
 
 setup_content="$(cat "$SETUP_SKILL")"
 assert_contains "$setup_content" "templates/ci/github-tests.yml" \

@@ -251,6 +251,14 @@ try:
 except SystemExit:
     raise
 except Exception as exc:
+    # exec ran at module level, so a source that defines cleanup_on_error()
+    # (collect --stage, which owns files in the stage dir) gets it run here.
+    cleanup = globals().get("cleanup_on_error")
+    if callable(cleanup):
+        try:
+            cleanup()
+        except Exception:
+            pass
     sys.stderr.write("%s: internal error (%s)\n" % (label, type(exc).__name__))
     sys.exit(1)
 TALOS_RUN_PY_Wd4Hs6Nb2Yc
@@ -426,6 +434,9 @@ def unstage():
             pass
 
 
+cleanup_on_error = unstage     # run by _run_py on an unexpected exception
+
+
 def refuse(reason):
     unstage()
     say("refused: " + reason)
@@ -559,7 +570,7 @@ def magic_ok(ext, h):
     return False
 
 
-chosen = []          # (relpath, bytes, kind)
+cands = []           # (relpath, bytes, kind, dev, ino, path): judged, not yet copied
 skipped = 0
 scanned = 0
 
@@ -614,9 +625,6 @@ def walk(path, prefix, depth):
             head = os.read(fd, 64) if ok else b""
             ok = ok and magic_ok(ext, head)
             size = st.st_size
-            if ok and stage is not None:
-                # the copy reads this same descriptor: no reopen by name
-                size = stage_copy(fd, head, prefix + name)
         except OSError:
             ok = False
         finally:
@@ -624,22 +632,69 @@ def walk(path, prefix, depth):
         if not ok:
             skipped += 1
             continue
-        chosen.append((prefix + name, size, EXTS[ext]))
+        cands.append((prefix + name, size, EXTS[ext], st.st_dev, st.st_ino, e.path))
+
+
+def over_cap(rows):
+    """Print the over-cap line and exit 4 when the rows break a cap."""
+    total = sum(c[1] for c in rows)
+    largest = max(c[1] for c in rows)
+    if len(rows) > max_files or total > max_mb * MIB or largest > FILE_CAP_MIB * MIB:
+        unstage()
+        say("over-cap files=%d/%d mb=%.2f/%d file-mb=%.2f/%d" % (
+            len(rows), max_files, total / MIB, max_mb, largest / MIB, FILE_CAP_MIB))
+        sys.exit(4)
+
+
+def stage_candidate(cand):
+    """Copy one judged file. It is reopened by name without following a symlink
+    and must still be the same regular single-link file (dev, ino); the copy then
+    reads that descriptor. Returns the copied byte count, or None to skip it."""
+    relpath, _size, _kind, dev, ino, path = cand
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or (st.st_dev, st.st_ino) != (dev, ino):
+            return None
+        head = os.read(fd, 64)
+        if not magic_ok(relpath.rpartition(".")[2].lower(), head):
+            return None
+        return stage_copy(fd, head, relpath)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
 
 
 walk(joined, "", 1)
 
-if not chosen:
+if not cands:
     say("none selected=0 skipped=%d" % skipped)
     sys.exit(3)
 
-total = sum(c[1] for c in chosen)
-largest = max(c[1] for c in chosen)
-if len(chosen) > max_files or total > max_mb * MIB or largest > FILE_CAP_MIB * MIB:
-    unstage()
-    say("over-cap files=%d/%d mb=%.2f/%d file-mb=%.2f/%d" % (
-        len(chosen), max_files, total / MIB, max_mb, largest / MIB, FILE_CAP_MIB))
-    sys.exit(4)
+# The caps are checked on the judged sizes BEFORE any byte is copied, so an
+# over-cap run never writes into the stage (#457).
+over_cap(cands)
+
+if stage is None:
+    chosen = [c[:3] for c in cands]
+else:
+    chosen = []
+    for cand in cands:
+        size = stage_candidate(cand)
+        if size is None:
+            skipped += 1
+        else:
+            chosen.append((cand[0], size, cand[2]))
+    if not chosen:
+        unstage()
+        say("none selected=0 skipped=%d" % skipped)
+        sys.exit(3)
+    # a file that grew between the judgement and the copy is caught here
+    over_cap(chosen)
 
 chosen.sort()
 sys.stdout.write("".join("%s\t%d\t%s\n" % c for c in chosen))
@@ -919,7 +974,8 @@ EOF
     return 2
   fi
 
-  # 2. own login, fail closed (same check as upsert-pr-comment, #381/#392): the
+  # 2. own login, fail closed (same check as _vcs_shared_upsert_pr_comment in
+  # pipeline-vcs.sh, the upsert-pr-comment core, #381/#392): the
   # lookup must exit 0 AND print a login, because `gh api --jq` prints the raw
   # error JSON to stdout when a token is refused.
   local user base login_re='^[A-Za-z0-9](-?[A-Za-z0-9])*$'

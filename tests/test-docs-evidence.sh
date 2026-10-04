@@ -90,7 +90,7 @@ for pair in 'enabled|false' 'command|unset' 'dir|.talos/evidence' 'include|unset
   else fail "README config table: evidence.$key ($def)"; fi
 done
 
-if printf '%s\n' "$readme_text" | grep -q '^| `scripts/pipeline-evidence.sh '; then
+if grep -q '^| `scripts/pipeline-evidence.sh ' <<<"$readme_text"; then
   pass "README Scripts reference has a pipeline-evidence.sh row"
 else fail "README Scripts reference has a pipeline-evidence.sh row"; fi
 
@@ -99,7 +99,7 @@ else fail "README has the ## Evidence capture section"; fi
 readme_lines="$(printf '%s\n' "$readme_section_text" | grep -c .)"
 if [ "$readme_lines" -le 15 ]; then pass "README section is short ($readme_lines non-blank lines)"
 else fail "README section is short" "$readme_lines non-blank lines, limit 15"; fi
-for needle in '/pipeline-setup' 'evidence:' 'v2.99.0' \
+for needle in '/talos:setup' 'evidence:' 'v2.99.0' \
   'docs/user-guide.md#attaching-evidence-to-the-pr-evidence-352)'; do
   check_has "$readme_section" "$needle" "README section mentions $needle"
 done
@@ -299,7 +299,7 @@ check_lacks "$readme_section" 'store: pr' "README section has no dropped term: s
 
 # README names no marker or label string (tests/test-contract.sh enforces
 # membership; the evidence section keeps out of it altogether).
-if printf '%s\n' "$readme_section_text" | grep -Eq '(^|[^/])talos:[a-z-]+|pipeline:[a-z-]+'; then
+if grep -Eq '(^|[^/])talos:[a-z-]+|pipeline:[a-z-]+' <<<"$readme_section_text"; then
   fail "README evidence section names no marker or label string"
 else pass "README evidence section names no marker or label string"; fi
 

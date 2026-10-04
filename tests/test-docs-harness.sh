@@ -48,13 +48,13 @@ stale_in() {  # $1=flattened text $2=literal phrase
 # is the whole first cell, or starts it ("generic or any unknown name"). A plain
 # substring check is vacuous for short names: "pipeline" contains "pi".
 has_row() {  # $1=text $2=harness name
-  printf '%s\n' "$1" | grep -Eq "^\| $2( |\|)"
+  grep -Eq "^\| $2( |\|)" <<<"$1"
 }
 
 # True when the flattened text names the `/pipeline` command itself: not
 # `/pipeline-setup`, and not the `.../skills/pipeline/SKILL.md` path.
 has_pipeline_command() {  # $1=flattened text
-  printf '%s' "$1" | grep -Eq '(^|[^a-z.])/pipeline([^-a-z/]|$)'
+  grep -Eq '(^|[^a-z.])/pipeline([^-a-z/]|$)' <<<"$1"
 }
 
 # The first table after `## Harness feature matrix` (the one
@@ -155,8 +155,8 @@ assert_contains "$matrix" '| Feature | Claude Code | pi | Codex CLI | Gemini CLI
 assert_not_contains "$matrix_flat" 'manual config' "matrix has no manual config cell"
 assert_not_contains "$matrix_flat" 'v1.20.3' "matrix has no v1.20.3"
 wizard_row="$(printf '%s\n' "$matrix" | grep -F 'Interactive setup wizard' | flat)"
-assert_contains "$wizard_row" '/pipeline-setup' "wizard row keeps Claude Code's /pipeline-setup"
-assert_contains "$wizard_row" '~/.talos/skills/pipeline-setup/SKILL.md' "wizard row says how the other harnesses start it"
+assert_contains "$wizard_row" '/talos:setup' "wizard row names Claude Code's /talos:setup"
+assert_contains "$wizard_row" '~/.talos/skills/setup/SKILL.md' "wizard row says how the other harnesses start it"
 agents_row="$(printf '%s\n' "$matrix" | grep -F 'Native AGENTS.md orchestration' | flat)"
 assert_contains "$agents_row" '@AGENTS.md' "AGENTS.md row: Claude Code needs an @AGENTS.md import or no CLAUDE.md"
 assert_contains "$agents_row" 'context.fileName' "AGENTS.md row: Gemini CLI uses context.fileName or an import"

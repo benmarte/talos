@@ -8,6 +8,9 @@
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox
+# PyYAML probe, same lookup as the loader (-I drops the user site; it is appended back, #395).
+HAVE_YAML=0
+python3 -I -c 'import site, sys; sys.path.append(site.getusersitepackages()); import yaml' 2>/dev/null && HAVE_YAML=1
 
 CFG_SH="$TALOS_ROOT/scripts/pipeline-config.sh"
 AGENT_SH="$TALOS_ROOT/scripts/pipeline-agent.sh"
@@ -45,13 +48,18 @@ assert_contains "$(dump)" "agents.model" "AC1: --dump carries the user-level lay
 
 # yml / yaml / json lookup order among user-level extensions (same as project)
 reset_cfg
-printf 'agents:\n  model: fromyml\n' > "$USER_DIR/talos.pipeline.yml"
-printf 'agents:\n  model: fromyaml\n' > "$USER_DIR/talos.pipeline.yaml"
-user_json '{"agents": {"model": "fromjson"}}'
-assert_eq "fromyml" "$(get agents.model "")" "AC3: user-level .yml wins over .yaml and .json"
-rm "$USER_DIR/talos.pipeline.yml"
-assert_eq "fromyaml" "$(get agents.model "")" "AC3: user-level .yaml wins over .json"
-rm "$USER_DIR/talos.pipeline.yaml"
+if [ "$HAVE_YAML" = 1 ]; then
+  printf 'agents:\n  model: fromyml\n' > "$USER_DIR/talos.pipeline.yml"
+  printf 'agents:\n  model: fromyaml\n' > "$USER_DIR/talos.pipeline.yaml"
+  user_json '{"agents": {"model": "fromjson"}}'
+  assert_eq "fromyml" "$(get agents.model "")" "AC3: user-level .yml wins over .yaml and .json"
+  rm "$USER_DIR/talos.pipeline.yml"
+  assert_eq "fromyaml" "$(get agents.model "")" "AC3: user-level .yaml wins over .json"
+  rm "$USER_DIR/talos.pipeline.yaml"
+else
+  echo "  skip: PyYAML not installed -- user-level .yml/.yaml precedence cases"
+  user_json '{"agents": {"model": "fromjson"}}'
+fi
 assert_eq "fromjson" "$(get agents.model "")" "AC3: user-level .json is read"
 
 # ── AC2: project overrides one role, per leaf ────────────────────────────────
@@ -180,10 +188,14 @@ assert_contains "$(bash "$AGENT_SH" --resolve qa 2>/dev/null)" '$(touch ' "AC5: 
 assert_file_absent "$SANDBOX/PWNED" "AC5: --dump/--resolve never execute the value"
 # YAML user-level file: unsafe tags are not constructed
 reset_cfg
-printf 'agents:\n  model: !!python/object/apply:os.system ["touch %s/PWNED3"]\n' "$SANDBOX" > "$USER_DIR/talos.pipeline.yml"
-bash "$CFG_SH" agents.model "" >"$OUT" 2>"$ERR"; rc=$?
-assert_eq "0" "$rc" "AC5: an unsafe YAML tag does not crash the lookup"
-assert_file_absent "$SANDBOX/PWNED3" "AC5: an unsafe YAML tag is never constructed (safe load)"
+if [ "$HAVE_YAML" = 1 ]; then
+  printf 'agents:\n  model: !!python/object/apply:os.system ["touch %s/PWNED3"]\n' "$SANDBOX" > "$USER_DIR/talos.pipeline.yml"
+  bash "$CFG_SH" agents.model "" >"$OUT" 2>"$ERR"; rc=$?
+  assert_eq "0" "$rc" "AC5: an unsafe YAML tag does not crash the lookup"
+  assert_file_absent "$SANDBOX/PWNED3" "AC5: an unsafe YAML tag is never constructed (safe load)"
+else
+  echo "  skip: PyYAML not installed -- unsafe YAML tag case"
+fi
 
 # ── AC6: re-stamp chain across both layers; effort/runner layering ───────────
 reset_cfg
