@@ -13,8 +13,8 @@
 #
 # Usage: pipeline-hooks.sh pre_dispatch <role> <issue> [<pr>] [<worktree_path>] [files_hint...]
 #        pipeline-hooks.sh post_stage <event> <role> <issue> [--pr N] [--sha S]
-#          [--verdict V] [--summary "..."] [--details-file F]
-#          [--attempt stage:count:total] [--duration-s N] [--tokens N] [--tool-uses N]
+#          [--verdict V] [--summary "..." | --summary - | --summary-file F]
+#          [--details-file F] [--attempt stage:count:total] [--duration-s N] [--tokens N] [--tool-uses N]
 #          [--ci-runs N] [--model M] [--runner R]
 #
 # Config (talos.pipeline.yml via pipeline-config.sh, read through the cfg()
@@ -346,8 +346,27 @@ json.dump(payload, sys.stdout)
   return 0
 }
 
+# Length cap (characters) shared by --summary, --summary - and --summary-file.
+_HOOKS_SUMMARY_MAX=4096
+
+# _hooks_usage -- the usage text, shared by the bad-verb and missing-value exits.
+_hooks_usage() {
+  echo "Usage: pipeline-hooks.sh pre_dispatch <role> <issue> [<pr>] [<worktree_path>] [files_hint...]" >&2
+  echo "       pipeline-hooks.sh post_stage <event> <role> <issue> [--pr N] [--sha S] [--verdict V] [--summary \"...\" | --summary - | --summary-file F] [--details-file F] [--attempt stage:count:total] [--duration-s N] [--tokens N] [--tool-uses N] [--ci-runs N] [--model M] [--runner R]" >&2
+}
+
+# _hooks_need_value OPTION ARGC -- exit 2 with usage when a value-taking
+# option is the last argument.
+_hooks_need_value() {
+  if [ "$2" -lt 2 ]; then
+    echo "pipeline-hooks: $1 needs a value" >&2
+    _hooks_usage
+    exit 2
+  fi
+}
+
 # post_stage EVENT ROLE ISSUE [--pr N] [--sha S] [--verdict V] [--summary S]
-#            [--details-file F] [--attempt stage:count:total] [--duration-s N]
+#            [--summary-file F] [--details-file F] [--attempt stage:count:total] [--duration-s N]
 #            [--tokens N] [--tool-uses N] [--ci-runs N] [--model M] [--runner R]
 # --runner R (#418): the runner the stage actually ran on. pipeline-agent.sh
 # passes it only for a stage that ran on a failover-chain runner; the event's
@@ -361,23 +380,50 @@ post_stage() {
   shift "$_shift_n" 2>/dev/null || true
 
   local pr="" sha="" verdict="" summary="" details_file="" attempt="" duration_s="" tokens="" tool_uses="" ci_runs="" model_arg="" runner_arg=""
+  local summary_file="" summary_stdin=0
   while [ $# -gt 0 ]; do
     case "$1" in
-      --pr) pr="${2:-}"; shift 2 ;;
-      --sha) sha="${2:-}"; shift 2 ;;
-      --verdict) verdict="${2:-}"; shift 2 ;;
-      --summary) summary="${2:-}"; shift 2 ;;
-      --details-file) details_file="${2:-}"; shift 2 ;;
-      --attempt) attempt="${2:-}"; shift 2 ;;
-      --duration-s) duration_s="${2:-}"; shift 2 ;;
-      --tokens) tokens="${2:-}"; shift 2 ;;
-      --tool-uses) tool_uses="${2:-}"; shift 2 ;;
-      --ci-runs) ci_runs="${2:-}"; shift 2 ;;
-      --model) model_arg="${2:-}"; shift 2 ;;
-      --runner) runner_arg="${2:-}"; shift 2 ;;
+      --pr|--sha|--verdict|--summary|--summary-file|--details-file|--attempt|--duration-s|--tokens|--tool-uses|--ci-runs|--model|--runner)
+        # A value flag as the last argument used to loop forever (`shift 2`
+        # with one argument left shifts nothing): exit 2 with usage instead.
+        _hooks_need_value "$1" $#
+        ;;
+    esac
+    case "$1" in
+      --pr) pr="$2"; shift 2 ;;
+      --sha) sha="$2"; shift 2 ;;
+      --verdict) verdict="$2"; shift 2 ;;
+      --summary)
+        # `--summary -` reads the summary from stdin (never put free text
+        # in a command line); a later --summary / --summary-file wins.
+        summary="$2"; summary_file=""; summary_stdin=0
+        [ "$2" != "-" ] || summary_stdin=1
+        shift 2 ;;
+      --summary-file) summary_file="$2"; summary=""; summary_stdin=0; shift 2 ;;
+      --details-file) details_file="$2"; shift 2 ;;
+      --attempt) attempt="$2"; shift 2 ;;
+      --duration-s) duration_s="$2"; shift 2 ;;
+      --tokens) tokens="$2"; shift 2 ;;
+      --tool-uses) tool_uses="$2"; shift 2 ;;
+      --ci-runs) ci_runs="$2"; shift 2 ;;
+      --model) model_arg="$2"; shift 2 ;;
+      --runner) runner_arg="$2"; shift 2 ;;
       *) shift ;;
     esac
   done
+
+  # --summary - / --summary-file: read at most the cap in bytes, then cap the
+  # characters, so every summary source shares one length limit.
+  if [ "$summary_stdin" = "1" ]; then
+    summary="$(head -c "$((_HOOKS_SUMMARY_MAX * 4))")"
+  elif [ -n "$summary_file" ]; then
+    if [ -f "$summary_file" ]; then
+      summary="$(head -c "$((_HOOKS_SUMMARY_MAX * 4))" "$summary_file")"
+    else
+      echo "pipeline-hooks: --summary-file '$summary_file' is not a file -- using an empty summary" >&2
+    fi
+  fi
+  summary="${summary:0:_HOOKS_SUMMARY_MAX}"
 
   # #202: --tokens/--tool-uses are validated non-negative integers -- an
   # invalid value becomes empty here (-> null in the payload below) with one
@@ -404,6 +450,14 @@ post_stage() {
   # empty, which the payload records as null ("session default").
   model="$(printf '%s' "$model_arg" | LC_ALL=C tr -d '\000-\037\177')"
   model="${model:0:100}"
+  # A model outside [A-Za-z0-9._:-]+ is dropped (one stderr line); the hook
+  # still fires, with the configured model chain below as the fallback.
+  case "$model" in
+    *[!A-Za-z0-9._:-]*)
+      echo "pipeline-hooks: --model value is outside [A-Za-z0-9._:-] -- ignoring it" >&2
+      model=""
+      ;;
+  esac
   if [ -z "$model" ]; then
     case "$verdict" in
       RESTAMP_PASS|RESTAMP_FAIL)
@@ -521,8 +575,7 @@ case "$VERB" in
     post_stage "$@"
     ;;
   *)
-    echo "Usage: pipeline-hooks.sh pre_dispatch <role> <issue> [<pr>] [<worktree_path>] [files_hint...]" >&2
-    echo "       pipeline-hooks.sh post_stage <event> <role> <issue> [--pr N] [--sha S] [--verdict V] [--summary \"...\"] [--details-file F] [--attempt stage:count:total] [--duration-s N] [--tokens N] [--tool-uses N] [--ci-runs N] [--model M] [--runner R]" >&2
+    _hooks_usage
     exit 2
     ;;
 esac

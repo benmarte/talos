@@ -98,9 +98,10 @@
 # the log is opened with O_NOFOLLOW and O_NONBLOCK, must be a regular file of
 # at most 32 MB (about 100x a large real log) and is read with a byte budget;
 # a bigger one is NOT read at all (printing wrong totals from a partial read
-# would be worse than printing nothing). The whole run has a hard time limit
-# (TALOS_STATUS_TIMEOUT_S, default 3, 1..10): on expiry nothing is printed and
-# it exits 0. The budget call runs in its own process group with a timeout of
+# would be worse than printing nothing); of a log within the cap, only the
+# newest 200,000 lines are read, one at a time from the end. The whole run has
+# a hard time limit (TALOS_STATUS_TIMEOUT_S, default 3, 1..10): on expiry
+# nothing is printed and it exits 0. The budget call runs in its own process group with a timeout of
 # 2 s (more when TALOS_STATUS_TIMEOUT_S is raised: the limit minus 1 s), and
 # the whole group is killed on timeout.
 # Install: `install.sh --global` copies this file and
@@ -376,6 +377,7 @@ def load_config(fmt):
 # ── events ───────────────────────────────────────────────────────────────
 
 MAX_LOG_BYTES = 32 * 1024 * 1024
+MAX_LOG_LINES = 200000  # the newest lines read from a log
 PROJECT_CONFIG_NAMES = ("talos.pipeline.yml", "talos.pipeline.yaml", "talos.pipeline.json",
                         ".claude-pipeline.yaml", "pipeline.yaml", ".claude-pipeline.json",
                         "pipeline.json")  # the names pipeline-config.sh tries, in order
@@ -477,13 +479,26 @@ def read_log(path):
 # One tuple per well-formed log line: (issue, role, pr, verdict, tokens, model,
 # day), tokens already through as_count (int, or None for unrecorded).
 
+def iter_lines_newest_first(data):
+    """The non-empty lines of data, newest (last) first, one at a time: the
+    log is never split into a list of all its lines."""
+    end = len(data)
+    while end > 0:
+        start = data.rfind(b"\n", 0, end) + 1
+        line = data[start:end].strip()
+        end = start - 1
+        if line:
+            yield line
+
+
 def load_events(data, fmt):
+    """The well-formed events of the newest MAX_LOG_LINES lines, oldest first."""
     events = []
     as_count = fmt.as_count
-    for line in data.split(b"\n"):
-        line = line.strip()
-        if not line:
-            continue
+    for n, line in enumerate(iter_lines_newest_first(data)):
+        if n >= MAX_LOG_LINES:
+            dbg("the events log has more than %d lines; only the newest are read" % MAX_LOG_LINES)
+            break
         try:
             rec = json.loads(line)
         except (ValueError, RecursionError):
@@ -494,6 +509,7 @@ def load_events(data, fmt):
         events.append((str(rec.get("issue")), rec.get("role"), rec.get("pr"),
                        rec.get("verdict"), as_count(rec.get("tokens")), rec.get("model"),
                        ts[:10] if isinstance(ts, str) else None))
+    events.reverse()
     return events
 
 

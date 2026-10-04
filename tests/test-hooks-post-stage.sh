@@ -202,4 +202,44 @@ print('OK' if d.get('event') == 'stage_complete' and d.get('verdict') == 'FAIL' 
 ")"
 assert_eq "OK" "$_check" "adapter (failing runner): stage_complete event, verdict FAIL"
 
+# ── (f) --summary - (stdin) and --summary-file, same length cap (#450) ──────
+cat > talos.pipeline.json <<EOF
+{"agents": {"runner": "claude"}, "hooks": {"post_stage": "cat > $CAPTURE", "timeout_s": 5}}
+EOF
+summary_of() { python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('summary'))" "$CAPTURE"; }
+
+: > "$CAPTURE"
+printf 'from stdin: $(touch %s/pwned) `x`\n' "$SANDBOX" | bash "$HOOKS" post_stage qa qa 42 --summary - --verdict PASS 2>"$SANDBOX/err.log"
+assert_eq "from stdin: \$(touch $SANDBOX/pwned) \`x\`" "$(summary_of)" "--summary -: the summary is read from stdin, as data"
+assert_file_absent "$SANDBOX/pwned" "--summary -: nothing in stdin is run"
+assert_eq "" "$(cat "$SANDBOX/err.log")" "--summary -: no stderr"
+
+SUMMARY_FILE="$SANDBOX/summary.txt"
+printf 'from a file\n' > "$SUMMARY_FILE"
+: > "$CAPTURE"
+bash "$HOOKS" post_stage qa qa 42 --summary-file "$SUMMARY_FILE" --verdict PASS 2>"$SANDBOX/err.log"
+assert_eq "from a file" "$(summary_of)" "--summary-file: the summary is read from the file"
+
+: > "$CAPTURE"
+bash "$HOOKS" post_stage qa qa 42 --summary-file "$SANDBOX/missing.txt" --verdict PASS 2>"$SANDBOX/err.log"; rc=$?
+assert_eq "0" "$rc" "--summary-file missing: exits 0, the hook still fires"
+assert_eq "" "$(summary_of)" "--summary-file missing: empty summary"
+assert_contains "$(cat "$SANDBOX/err.log")" "--summary-file" "--summary-file missing: one stderr note names the flag"
+
+# all three sources share one cap (4096 characters)
+BIG="$(python3 -I -c 'print("s" * 6000)')"
+printf '%s' "$BIG" > "$SUMMARY_FILE"
+: > "$CAPTURE"
+bash "$HOOKS" post_stage qa qa 42 --summary "$BIG" --verdict PASS 2>/dev/null
+assert_eq "4096" "$(summary_of | tr -d '\n' | wc -c | tr -d ' ')" "--summary: capped at 4096 characters"
+: > "$CAPTURE"
+printf '%s' "$BIG" | bash "$HOOKS" post_stage qa qa 42 --summary - --verdict PASS 2>/dev/null
+assert_eq "4096" "$(summary_of | tr -d '\n' | wc -c | tr -d ' ')" "--summary -: capped at 4096 characters"
+: > "$CAPTURE"
+bash "$HOOKS" post_stage qa qa 42 --summary-file "$SUMMARY_FILE" --verdict PASS 2>/dev/null
+assert_eq "4096" "$(summary_of | tr -d '\n' | wc -c | tr -d ' ')" "--summary-file: capped at 4096 characters"
+
+# the usage text documents both new forms
+assert_contains "$(bash "$HOOKS" bogus 2>&1)" "--summary - | --summary-file F" "usage documents --summary - and --summary-file"
+
 finish

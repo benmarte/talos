@@ -101,6 +101,18 @@ assert_eq "\"$X100\"" "$(model_of --verdict PASS --model "$X100")" "--model: exa
 # Control characters are stripped before the cap, so they do not eat into it.
 assert_eq "\"${X98}yy\"" "$(model_of --verdict PASS --model "$(printf '%s\n\n\t\033yyyyy' "$X98")")" "--model: control characters stripped before the 100-char cap"
 
+# A value outside [A-Za-z0-9._:-]+ is dropped with one stderr line and the hook
+# still fires (the chain answers instead) (#450).
+: > "$CAPTURE"
+bash "$HOOKS" post_stage stage_complete qa 42 --verdict PASS --model 'bad model;x' >/dev/null 2>"$SANDBOX/err.log"; rc=$?
+assert_eq "0" "$rc" "--model with a bad character: exits 0"
+assert_eq '"r-model"' "$(payload_field model)" "--model with a bad character: dropped, the hook still fires with the chain's model"
+assert_eq "1" "$(grep -c . "$SANDBOX/err.log")" "--model with a bad character: exactly one stderr line"
+assert_contains "$(cat "$SANDBOX/err.log")" "--model" "--model with a bad character: the line names --model"
+assert_eq '"claude-opus-4.5:beta_1"' "$(model_of --verdict PASS --model 'claude-opus-4.5:beta_1')" "--model: letters digits . _ : - are kept"
+assert_eq '"r-model"' "$(model_of --verdict PASS --model 'a b')" "--model: a space is outside the charset"
+assert_eq '"r-model"' "$(model_of --verdict PASS --model 'a/b')" "--model: a slash is outside the charset"
+
 # ── (e) payload shape: key order, exit code, stdout ───────────────────────────
 KEYS='["event", "role", "issue", "pr", "repo", "sha", "verdict", "summary", "details", "attempt", "model", "runner", "duration_s", "tokens", "tool_uses", "ts"]'
 KEYS_CI='["event", "role", "issue", "pr", "repo", "sha", "verdict", "summary", "details", "attempt", "model", "runner", "duration_s", "tokens", "tool_uses", "ci_runs", "ts"]'
