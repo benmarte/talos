@@ -57,7 +57,7 @@ print("\n".join(bad))
 print("ROWS=%d" % len(rows))
 TALOS_PYtab7Gw3Nd5Xk
 )"
-assert_eq "ROWS=112" "$(printf '%s\n' "$_out" | tail -n1)" "the table has one row per config key (112 rows)"
+assert_eq "ROWS=116" "$(printf '%s\n' "$_out" | tail -n1)" "the table has one row per config key (116 rows)"
 assert_eq "" "$(printf '%s\n' "$_out" | sed '$d')" \
   "every row has six fields, a unique key, a valid type/derived/env/scope column, and a default of the right shape"
 
@@ -65,7 +65,8 @@ assert_eq "" "$(printf '%s\n' "$_out" | sed '$d')" \
 OLD_KEYS="base_branch release_branch repo vcs.provider vcs.repo vcs.token_env vcs.azure.org_url
 vcs.azure.project vcs.azure.work_item_type vcs.azure.area_path vcs.file.source.path
 board.enabled board.project_number board.owner board.status_field board.statuses.*
-board.status_map.* board.azure_states.* verify verify.commands verify.qa_mode
+board.status_map.* board.azure_states.* board.azure_states.ready board.azure_states.in_progress
+board.azure_states.in_review board.azure_states.done verify verify.commands verify.qa_mode
 verify.targeted verify.ci_wait_s verify.timeout_ms merge.auto merge.method
 merge.required_checks merge.delete_branch merge.forbidden_files
 merge.forbidden_files_replace merge.forbidden_files_allow merge.approval_waiver_paths
@@ -115,11 +116,19 @@ assert_eq "" "$(bash "$CFG_SH" no.such.key)" "an unknown key with no default pri
 assert_eq "x" "$(bash "$CFG_SH" no.such.key x)" "an unknown key with a default prints the default"
 
 # Derived keys: the table has no default, the caller's fallback stays in charge.
-for _k in base_branch vcs.repo board.owner verify.qa_mode agents.restamp_model merge.forbidden_files pr.draft; do
+for _k in base_branch vcs.repo board.owner agents.restamp_model merge.forbidden_files pr.draft; do
   assert_eq "" "$(bash "$CFG_SH" "$_k")" "derived key $_k: no default argument prints nothing"
   assert_eq "caller" "$(bash "$CFG_SH" "$_k" caller)" "derived key $_k: the caller's fallback is kept"
 done
 assert_eq "dev" "$(bash "$CFG_SH" agents.roles.dev.model dev)" "a wildcard derived key keeps the caller's fallback"
+# verify.qa_mode (#440): with no config there is no check list, so the derived
+# value is "local"; the table states it so the playbook needs no `local` literal.
+assert_eq "local" "$(bash "$CFG_SH" verify.qa_mode)" "verify.qa_mode with no config prints the table value (local)"
+assert_eq "caller" "$(bash "$CFG_SH" verify.qa_mode caller)" "verify.qa_mode: the caller's fallback is kept"
+# board.azure_states.<state> (#440): the four states with a default have a row.
+assert_eq "New Committed Committed Done" "$(for _s in ready in_progress in_review done; do printf '%s ' "$(bash "$CFG_SH" board.azure_states.$_s)"; done | sed 's/ $//')" \
+  "board.azure_states.<state> falls back to the table for the four states with a default"
+assert_eq "" "$(bash "$CFG_SH" board.azure_states.blocked)" "board.azure_states.blocked has no default"
 
 # ── (h) pr.draft: no second copy of #435's resolver ──────────────────────────
 _row="$( . "$DEFAULTS_SH"; _talos_defaults_row pr.draft; printf '%s|%s' "$_TD_DERIVED" "$_TD_DEFAULT" )"

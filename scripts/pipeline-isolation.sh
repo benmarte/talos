@@ -31,8 +31,8 @@ verb="${1:-}"; shift || true
 
 case "$verb" in
   validate)
-    ISOLATION="$(bash "$CFG" execution.isolation worktree)"
-    MAX_PARALLEL="$(bash "$CFG" issues.max_parallel 1)"
+    ISOLATION="$(bash "$CFG" execution.isolation)"
+    MAX_PARALLEL="$(bash "$CFG" issues.max_parallel)"
 
     # Guard: refuse non-numeric or empty max_parallel before mode dispatch.
     # An absent key returns "1" via the default argument above, so this cannot

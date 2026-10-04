@@ -49,7 +49,7 @@ print("\n".join(bad))
 print("REPO=" + " ".join(repo))
 TALOS_PYscp4Hq8Wn2Zt
 )"
-EXPECTED_REPO="base_branch board.azure_states.* board.enabled board.owner board.project_number board.status_field board.status_map.* board.statuses.* evidence.command issues.label_filter issues.skip_labels markers.trusted_authors markers.verify_authors merge.approval_waiver_paths merge.forbidden_files merge.forbidden_files_allow merge.forbidden_files_replace merge.required_checks merge.union_paths release_branch repo status.archive_dir status.file status.fragments_dir vcs.azure.area_path vcs.azure.org_url vcs.azure.project vcs.azure.work_item_type vcs.file.source.path vcs.provider vcs.repo verify verify.commands verify.qa_mode"
+EXPECTED_REPO="base_branch board.azure_states.* board.azure_states.done board.azure_states.in_progress board.azure_states.in_review board.azure_states.ready board.enabled board.owner board.project_number board.status_field board.status_map.* board.statuses.* evidence.command issues.label_filter issues.skip_labels markers.trusted_authors markers.verify_authors merge.approval_waiver_paths merge.forbidden_files merge.forbidden_files_allow merge.forbidden_files_replace merge.required_checks merge.union_paths release_branch repo status.archive_dir status.file status.fragments_dir vcs.azure.area_path vcs.azure.org_url vcs.azure.project vcs.azure.work_item_type vcs.file.source.path vcs.provider vcs.repo verify verify.commands verify.qa_mode"
 assert_eq "REPO=$EXPECTED_REPO" "$(printf '%s\n' "$_scope_out" | tail -n1)" "the repo-only set is exactly the owner-approved list (hooks.* and notifications.cmd stay global)"
 assert_eq "" "$(printf '%s\n' "$_scope_out" | sed '$d')" "every table row's scope is any or repo"
 

@@ -110,7 +110,7 @@ fi
 # cfg()).
 _hooks_timeout_s() {
   local timeout_s
-  timeout_s="$(cfg hooks.timeout_s "30")"
+  timeout_s="$(cfg hooks.timeout_s)"
   case "$timeout_s" in
     ''|*[!0-9]*) timeout_s=30 ;;
   esac
@@ -141,7 +141,7 @@ _events_log_path() {
   [ -n "$common_dir" ] || return 1
   root="$(dirname "$common_dir")"
 
-  path_cfg="$(cfg events.path ".talos/events.jsonl")"
+  path_cfg="$(cfg events.path)"
   case "$path_cfg" in
     /*) printf '%s' "$path_cfg" ;;
     *) printf '%s/%s' "$root" "$path_cfg" ;;
@@ -162,7 +162,7 @@ _events_log_path() {
 _events_append() {
   local json_line="$1"
   local enabled log_path log_dir
-  enabled="$(cfg events.enabled "true")"
+  enabled="$(cfg events.enabled)"
   [ "$enabled" = "false" ] && return 0
 
   log_path="$(_events_log_path)"
@@ -203,8 +203,8 @@ _validate_nonneg_int() {
 # _hooks_repo -> prints "owner/name", resolved from config or the origin remote.
 _hooks_repo() {
   local repo
-  repo="$(cfg repo "")"
-  [ -n "$repo" ] || repo="$(cfg vcs.repo "")"
+  repo="$(cfg repo)"
+  [ -n "$repo" ] || repo="$(cfg vcs.repo)"
   if [ -z "$repo" ]; then
     repo="$(git remote get-url origin 2>/dev/null \
       | sed -E 's#^git@([^:/]+)[:/]#https://\1/#; s#\.git$##' \
@@ -287,7 +287,7 @@ pre_dispatch() {
   local files_hint=("$@")
 
   local hook_cmd
-  hook_cmd="$(cfg hooks.pre_dispatch "")"
+  hook_cmd="$(cfg hooks.pre_dispatch)"
   if [ -z "$hook_cmd" ]; then
     return 0
   fi
@@ -297,7 +297,7 @@ pre_dispatch() {
 
   local repo base_branch
   repo="$(_hooks_repo)"
-  base_branch="$(cfg base_branch "")"
+  base_branch="$(cfg base_branch)"
 
   # ── Build the stdin JSON via python3 json.dumps (never string-concat) ──────
   local stdin_json
@@ -387,13 +387,13 @@ post_stage() {
   ci_runs="$(_validate_nonneg_int ci-runs "$ci_runs")"
 
   local hook_cmd
-  hook_cmd="$(cfg hooks.post_stage "")"
+  hook_cmd="$(cfg hooks.post_stage)"
 
   local repo
   repo="$(_hooks_repo)"
 
   local model runner
-  runner="$(cfg agents.runner "claude")"
+  runner="$(cfg agents.runner)"
   # #418: a stage that ran on a failover-chain runner names that runner.
   [ -z "$runner_arg" ] || runner="$(printf '%s' "$runner_arg" | LC_ALL=C tr -d '\000-\037\177')"
   # #379: the model the stage ran with. --model (the spawn `model:` the
@@ -407,14 +407,14 @@ post_stage() {
   if [ -z "$model" ]; then
     case "$verdict" in
       RESTAMP_PASS|RESTAMP_FAIL)
-        model="$(cfg "agents.roles.$role.restamp_model" "")"
-        [ -n "$model" ] || model="$(cfg agents.restamp_model "")"
+        model="$(cfg "agents.roles.$role.restamp_model")"
+        [ -n "$model" ] || model="$(cfg agents.restamp_model)"
         ;;
     esac
   fi
   if [ -z "$runner_arg" ]; then
-    [ -n "$model" ] || model="$(cfg "agents.roles.$role.model" "")"
-    [ -n "$model" ] || model="$(cfg agents.model "")"
+    [ -n "$model" ] || model="$(cfg "agents.roles.$role.model")"
+    [ -n "$model" ] || model="$(cfg agents.model)"
   fi
 
   local details=""

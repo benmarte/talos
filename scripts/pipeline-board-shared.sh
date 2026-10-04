@@ -56,7 +56,7 @@ _board_resolve_owner() {
   fi
   if [ -z "$_default_owner" ]; then
     local _vcs_repo
-    _vcs_repo="$(cfg vcs.repo "")"
+    _vcs_repo="$(cfg vcs.repo)"
     [ -n "$_vcs_repo" ] && _default_owner="${_vcs_repo%%/*}"
   fi
   printf '%s' "${_env_override:-$(cfg board.owner "$_default_owner")}"

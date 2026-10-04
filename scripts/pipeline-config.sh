@@ -3,7 +3,9 @@
 #
 # Usage:   pipeline-config.sh KEY [default]
 #          pipeline-config.sh --has KEY     exit 0 when KEY is set in a config
-#                                           file, 1 when it is not
+#                                           file, 1 when it is not, 3 when it
+#                                           is not found and a config file
+#                                           could not be parsed
 # Example: pipeline-config.sh board.project_number 1
 #          pipeline-config.sh notifications.slack_channel ""
 #          pipeline-config.sh merge.method squash
@@ -78,7 +80,21 @@ if [ -f "$_CFG_SELF_DIR/pipeline-defaults.sh" ]; then
   . "$_CFG_SELF_DIR/pipeline-defaults.sh"
 else
   echo "pipeline-config: pipeline-defaults.sh missing next to $0 -- no table defaults, unknown-key check off" >&2
-  _talos_default() { :; }
+  # Fail closed (#440): with no table, a key that has no caller default reads
+  # empty -- fine for most keys, but not for the ones that gate a merge, a
+  # dispatch budget or a hook. For those the lookup fails (status 1) instead of
+  # guessing; the single-key path below turns that into exit 3 when the config
+  # does not set the key either. pipeline-cfg-cache.sh asks this script, so the
+  # list lives in this one place.
+  _talos_security_key() {
+    case "${1:-}" in
+      merge.forbidden_files|merge.forbidden_files_replace|merge.forbidden_files_allow) return 0 ;;
+      merge.approval_waiver_paths|merge.auto|markers.verify_authors|markers.trusted_authors) return 0 ;;
+      limits.*|hooks.*) return 0 ;;
+    esac
+    return 1
+  }
+  _talos_default() { ! _talos_security_key "${1:-}"; }
   _talos_known_keys_json() { printf '[]'; }
   _talos_scope_env_json() { printf '[]'; }
   _talos_env_dump() { :; }
@@ -148,6 +164,10 @@ _locate_user_cfg() {
 read -r -d '' _CFG_LOADER_PY <<'PYLOADER' || true
 import os
 import sys
+
+# Which file layers failed to parse ("project" / "user"): --has reads it so a
+# parse error is not mistaken for "the key is absent" (#440).
+_LOAD_ERRORS = []
 
 def _warn(msg):
     sys.stderr.write("pipeline-config: [warn] %s\n" % msg)
@@ -240,6 +260,7 @@ def _load_user_layer(user_path, project_path):
         raw = _parse_cfg_file(user_path)
     except Exception as e:
         # Type name only: a parser's message may echo file content.
+        _LOAD_ERRORS.append("user")
         _warn("user-level config %s unreadable or malformed (%s) -- ignoring it"
               % (shown, type(e).__name__))
         return {}
@@ -273,6 +294,7 @@ def load_layers(project_path, user_path, env=True):
             # emitted once in-process by pipeline-vcs.sh at startup). Every
             # key falls back to the user-level layer or the caller default.
             project = {}
+            _LOAD_ERRORS.append("project")
     if not isinstance(project, dict):
         project = {}
     user = _load_user_layer(user_path, project_path)
@@ -474,6 +496,76 @@ def _fallback_apply(flat):
             flat[_fb_key] = _fb_val
 PYFALLBACK
 
+# ── Integer-key validator (#440, part of #437) ───────────────────────────────
+# Same shape as the snippets above: one definition exec()'d by both the --dump
+# and the single-key python3 processes. Every int row of the table is either
+# listed in _INT_KEYS (unit, lowest, highest accepted value) or has its own
+# validator above (limits.tokens_per_issue, evidence.max_files/max_mb,
+# agents.provider_down_s), or is left to a consumer that already refuses or
+# falls back with its own message (issues.max_parallel, #120; limits.max_retries,
+# #194). tests/test-config-int-validators.sh checks that split row by row.
+# _validate_int_key(key, value) -> the value as an int, or None after one stderr
+# warning (callers read None as absent, so the table default applies).
+# Accepted: an int, a whole float (12.0) or a string of digits; never a bool.
+# Negative numbers, "abc", 1.5, and values above the key's highest are rejected.
+read -r -d '' _CFG_INT_PY <<'PYINT' || true
+import math
+import re
+
+_INT_KEYS = {
+    "verify.timeout_ms": ("milliseconds", 1, 86400000),
+    "verify.ci_wait_s": ("seconds", 1, 86400),
+    "hooks.timeout_s": ("seconds", 1, 86400),
+    "notifications.cmd_timeout_s": ("seconds", 1, 86400),
+    "notifications.buzz_timeout_s": ("seconds", 1, 3600),
+    "status.log_days": ("days", 1, 999999),
+    "status.log_max": ("entries", 1, 999999),
+    "status.resume_max_lines": ("lines", 1, 999999),
+    "limits.max_fix_attempts": ("attempts", 1, 100),
+    "limits.max_total_dispatches": ("dispatches", 1, 1000),
+    "execution.worktree_warn_threshold": ("worktrees", 0, 10000),
+    "board.project_number": ("project number", 1, 2147483647),
+}
+
+def _validate_int_key(key, value):
+    spec = _INT_KEYS.get(key)
+    if spec is None or value is None:
+        return value
+    unit, lo, hi = spec
+    iv = None
+    if isinstance(value, bool):
+        pass
+    elif isinstance(value, int):
+        iv = value
+    elif isinstance(value, float):
+        if math.isfinite(value) and value == int(value):
+            iv = int(value)
+    elif isinstance(value, str) and re.fullmatch(r"\s*[0-9]{1,18}\s*", value):
+        iv = int(value)
+    if iv is not None and lo <= iv <= hi:
+        return iv
+    what = "a positive integer" if lo >= 1 else "a non-negative integer"
+    if iv is not None and iv > hi:
+        sys.stderr.write(
+            "pipeline-config: %s must be at most %d (%s) -- got: %r -- using default\n"
+            % (key, hi, unit, value))
+    else:
+        sys.stderr.write(
+            "pipeline-config: %s must be %s (%s) -- got: %r -- using default\n"
+            % (key, what, unit, value))
+    return None
+
+def _int_apply(flat):
+    for _int_key in _INT_KEYS:
+        if _int_key in flat:
+            _validated = _validate_int_key(_int_key, flat[_int_key])
+            if _validated is None:
+                # Same as an absent key: the caller gets the table default.
+                del flat[_int_key]
+            else:
+                flat[_int_key] = _validated
+PYINT
+
 # --dump-layers (#336): one "key<TAB>layer" line per agents.* leaf, for
 # pipeline-agent.sh --resolve-all's origin column. One python3 spawn.
 if [ "${1:-}" = "--dump-layers" ]; then
@@ -500,13 +592,14 @@ if [ "${1:-}" = "--dump" ]; then
     _talos_env_dump
     exit 0
   fi
-  python3 -I - "$_DCFG" "$(_talos_known_keys_json)" "$_DUSER" "$(_cfg_loader_src)" "$_CFG_EVIDENCE_PY" "$_CFG_FALLBACK_PY" <<'PYEOF'
+  python3 -I - "$_DCFG" "$(_talos_known_keys_json)" "$_DUSER" "$(_cfg_loader_src)" "$_CFG_EVIDENCE_PY" "$_CFG_FALLBACK_PY" "$_CFG_INT_PY" <<'PYEOF'
 import sys
 
 known_keys_json = sys.argv[2]
 exec(sys.argv[4])
 exec(sys.argv[5])
 exec(sys.argv[6])
+exec(sys.argv[7])
 
 def walk(obj, parts):
     for part in parts:
@@ -636,41 +729,13 @@ if _qa_mode == "ci" and not _has_required_checks:
     _qa_mode = "local"
 flat["verify.qa_mode"] = _qa_mode
 
-# verify.timeout_ms / verify.ci_wait_s (#205 review follow-up): this dump is
-# what cfg() answers every lookup from (pipeline-cfg-cache.sh), so it must
-# mirror the single-key path's positive-integer validation below or a
-# non-integer/injectable config value would reach a caller unvalidated,
-# reopening the shell-injection surface that validation closed on the
-# direct path. This block and the single-key path below run as separate
-# python3 processes, so the validation can't literally be one shared
-# function call -- instead both define the identical _validate_int_key(key,
-# value) helper (same units, same fail-closed-to-absent behaviour, same
-# one-line stderr warning) so the two paths stay byte-identical for these
-# keys.
-def _validate_int_key(key, value):
-    unit = {"verify.timeout_ms": "milliseconds", "verify.ci_wait_s": "seconds", "hooks.timeout_s": "seconds", "notifications.cmd_timeout_s": "seconds", "status.log_days": "days", "status.log_max": "entries", "status.resume_max_lines": "lines"}.get(key)
-    if unit is None or value is None:
-        return value
-    try:
-        iv = int(value)
-        if iv <= 0:
-            raise ValueError
-        return iv
-    except (TypeError, ValueError):
-        sys.stderr.write(
-            "pipeline-config: %s must be a positive integer (%s) -- got: %r "
-            "-- using default\n" % (key, unit, value)
-        )
-        return None
-
-for _int_key in ("verify.timeout_ms", "verify.ci_wait_s", "hooks.timeout_s", "notifications.cmd_timeout_s", "status.log_days", "status.log_max", "status.resume_max_lines"):
-    if _int_key in flat:
-        _validated = _validate_int_key(_int_key, flat[_int_key])
-        if _validated is None:
-            # Same as an absent key: the caller applies its own default.
-            del flat[_int_key]
-        else:
-            flat[_int_key] = _validated
+# Positive-integer keys (verify.timeout_ms, hooks.timeout_s, limits.max_fix_attempts,
+# ...): validated by the shared snippet (_CFG_INT_PY), the same one the
+# single-key path below runs, so this dump (what cfg() answers every lookup
+# from, pipeline-cfg-cache.sh) and a direct call stay byte-identical for these
+# keys. An invalid value warns once on stderr and is dropped: the caller then
+# gets the key's table default.
+_int_apply(flat)
 
 # limits.tokens_per_issue / limits.warn_at / spend.comment (#378): the
 # per-issue spend guard's config. Same fail-closed-to-absent shape as
@@ -846,12 +911,15 @@ PYEOF
   exit 0
 fi
 
-# ── --has KEY (#439) ──────────────────────────────────────────────────────────
+# ── --has KEY (#439, #440) ────────────────────────────────────────────────────
 # Exit 0 when KEY is set (a non-null value, a subtree counts) in any file layer,
 # exit 1 when it is absent -- for the "is it configured at all" probes that used
 # to pass a sentinel default (`pipeline-config.sh status.enabled unset`). Never
 # consults the table: a key that only has a table default is NOT set. No config
-# file means exit 1 with no python3 spawn.
+# file means exit 1 with no python3 spawn. Exit 3 when KEY was not found AND a
+# config file could not be parsed (malformed, or PyYAML missing for a YAML file):
+# the answer is unknown, and "absent" would send a caller to write a block over
+# a config it could not read. A key found in the layer that did parse is still 0.
 if [ "${1:-}" = "--has" ]; then
   _HKEY="${2:-}"
   [ -n "$_HKEY" ] || exit 1
@@ -863,12 +931,18 @@ import sys
 exec(sys.argv[4])
 _project, _user, _merged = load_layers(sys.argv[1], sys.argv[3], env=False)
 _obj = _merged
+def _absent():
+    if not _LOAD_ERRORS:
+        return 1
+    sys.stderr.write("pipeline-config: --has: a config file could not be parsed; "
+                     "cannot tell whether the key is set\n")
+    return 3
 for _part in sys.argv[2].split("."):
     if isinstance(_obj, dict) and _part in _obj:
         _obj = _obj[_part]
     else:
-        sys.exit(1)
-sys.exit(0 if _obj is not None else 1)
+        sys.exit(_absent())
+sys.exit(0 if _obj is not None else _absent())
 PYEOF
   exit $?
 fi
@@ -878,7 +952,15 @@ KEY="${1:-}"
 # fallback and wins over the table, so every `KEY "literal"` call keeps its
 # behaviour. With no second argument the table default answers (empty for an
 # unknown or derived key).
-if [ "$#" -ge 2 ]; then DEFAULT="$2"; else DEFAULT="$(_talos_default "$KEY")"; fi
+_NODEFAULT=""
+if [ "$#" -ge 2 ]; then DEFAULT="$2"; else DEFAULT="$(_talos_default "$KEY")" || _NODEFAULT=1; fi
+
+# Fail closed (#440): no caller default, no table (pipeline-defaults.sh missing)
+# and the key is security-relevant -- stop rather than print a made-up value.
+_cfg_fail_closed() {
+  echo "pipeline-config: $KEY is not set in any config and pipeline-defaults.sh is missing, so its default is unknown; refusing to guess for a security-relevant key" >&2
+  exit 3
+}
 
 [ -z "$KEY" ] && { printf '%s' "$DEFAULT"; exit 0; }
 
@@ -889,7 +971,10 @@ USER_CFG="$(_locate_user_cfg)"
 # No config present — return default
 if [ -z "$CFG" ] && [ -z "$USER_CFG" ]; then
   # The key's env override (#441) still applies: pure shell, no python3 spawn.
-  if _ENVV="$(_talos_env_value "$KEY")"; then printf '%s' "$_ENVV"; else printf '%s' "$DEFAULT"; fi
+  if _ENVV="$(_talos_env_value "$KEY")"; then printf '%s' "$_ENVV"; else
+    [ -z "$_NODEFAULT" ] || _cfg_fail_closed
+    printf '%s' "$DEFAULT"
+  fi
   exit 0
 fi
 
@@ -897,7 +982,7 @@ fi
 # The heredoc passes file paths, key, default, the known-keys JSON and the
 # shared loader source as argv to avoid shell quoting issues with special
 # characters in values.
-python3 -I - "$CFG" "$KEY" "$DEFAULT" "$(_talos_known_keys_json)" "$USER_CFG" "$(_cfg_loader_src)" "$_CFG_EVIDENCE_PY" "$_CFG_FALLBACK_PY" <<'PYEOF'
+python3 -I - "$CFG" "$KEY" "$DEFAULT" "$(_talos_known_keys_json)" "$USER_CFG" "$(_cfg_loader_src)" "$_CFG_EVIDENCE_PY" "$_CFG_FALLBACK_PY" "$_CFG_INT_PY" "$_NODEFAULT" <<'PYEOF'
 import sys
 
 key      = sys.argv[2]
@@ -906,6 +991,7 @@ known_keys_json = sys.argv[4] if len(sys.argv) > 4 else "[]"
 exec(sys.argv[6])
 exec(sys.argv[7])
 exec(sys.argv[8])
+exec(sys.argv[9])
 
 def walk(obj, parts):
     for part in parts:
@@ -1033,41 +1119,13 @@ if key == "verify.qa_mode":
         )
         value = "local"
 
-# verify.timeout_ms (#205) is the explicit foreground timeout, in
-# milliseconds, that developer/QA prompts substitute into their verify and
-# CI-wait instructions. verify.ci_wait_s (#205 security follow-up) is
-# interpolated unquoted into a literal, agent-executed shell test
-# (`[ "$SECONDS" -ge <VERIFY_CI_WAIT_S> ]`) in the QA CI-wait loop.
-# hooks.timeout_s (#181, shared with hooks.post_stage per #182) bounds how
-# long a hooks.pre_dispatch or hooks.post_stage command may run before
-# pipeline-hooks.sh kills it. notifications.cmd_timeout_s (#184) bounds how
-# long a notifications.cmd command may run before pipeline-notify.sh kills
-# it. All four must be a positive
-# integer -- a non-integer or non-positive config value (or one carrying
-# shell metacharacters) is a config error, not a value an agent (or
-# pipeline-hooks.sh/pipeline-notify.sh) can act on, so fail closed to the
-# caller-supplied default (600000 / 900 / 30 / 10 respectively) and warn
-# once on stderr rather than handing a subagent a garbage timeout or an
-# injectable string.
-# Mirrors the --dump path above: both define the identical
-# _validate_int_key(key, value) helper (same units, same
-# fail-closed-to-absent behaviour, same one-line stderr warning) so the
-# two paths stay byte-identical for these keys.
-def _validate_int_key(key, value):
-    unit = {"verify.timeout_ms": "milliseconds", "verify.ci_wait_s": "seconds", "hooks.timeout_s": "seconds", "notifications.cmd_timeout_s": "seconds", "status.log_days": "days", "status.log_max": "entries", "status.resume_max_lines": "lines"}.get(key)
-    if unit is None or value is None:
-        return value
-    try:
-        iv = int(value)
-        if iv <= 0:
-            raise ValueError
-        return iv
-    except (TypeError, ValueError):
-        sys.stderr.write(
-            "pipeline-config: %s must be a positive integer (%s) -- got: %r "
-            "-- using default\n" % (key, unit, value)
-        )
-        return None
+# Positive-integer keys (verify.timeout_ms and verify.ci_wait_s, which a stage
+# interpolates unquoted into an agent-run shell test; hooks.timeout_s and
+# notifications.cmd_timeout_s, which bound a hook or sink command; the limits
+# and status integers): a non-integer, out-of-range value, or one carrying shell
+# metacharacters is a config error, not something a caller can act on, so it
+# falls back to the key's table default with one stderr warning. Defined once,
+# in _CFG_INT_PY, and run by this path and the --dump path above alike.
 
 # limits.tokens_per_issue / limits.warn_at / spend.comment (#378): the
 # per-issue spend guard's config. Same fail-closed-to-absent shape as
@@ -1170,6 +1228,14 @@ value = _validate_evidence_key(key, value)
 value = _validate_fallback_key(key, value)
 
 if value is None:
+    if len(sys.argv) > 10 and sys.argv[10] == "1":
+        # No caller default and no table (pipeline-defaults.sh missing) for a
+        # security-relevant key: fail closed (#440), same as _cfg_fail_closed.
+        sys.stderr.write(
+            "pipeline-config: %s is not set in any config and pipeline-defaults.sh "
+            "is missing, so its default is unknown; refusing to guess for a "
+            "security-relevant key\n" % key)
+        sys.exit(3)
     print(default, end="")
 elif isinstance(value, bool):
     # Normalise Python True/False to lowercase strings ("true"/"false") so

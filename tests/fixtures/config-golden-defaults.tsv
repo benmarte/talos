@@ -40,10 +40,10 @@ agents.runner_cmd		empty	pipeline-agent.sh
 agents.subagents	auto	table	pipeline-agent.sh
 base_branch		empty	pipeline-changelog.sh,pipeline-hooks.sh,pipeline-mergebase.sh,pipeline-status-file.sh,pipeline-vcs.sh,pipeline-worktree.sh
 board.azure_states.blocked		empty	pipeline-status.sh
-board.azure_states.done	Done	GAP	pipeline-status.sh,pipeline-vcs.sh
-board.azure_states.in_progress	Committed	GAP	pipeline-status.sh
-board.azure_states.in_review	Committed	GAP	pipeline-status.sh
-board.azure_states.ready	New	GAP	pipeline-status.sh
+board.azure_states.done	Done	table	pipeline-status.sh,pipeline-vcs.sh
+board.azure_states.in_progress	Committed	table	pipeline-status.sh
+board.azure_states.in_review	Committed	table	pipeline-status.sh
+board.azure_states.ready	New	table	pipeline-status.sh
 board.enabled	true	table	bootstrap-board.sh,pipeline-status.sh
 board.project_number		empty	bootstrap-board.sh,pipeline-status.sh
 board.status_field	Status	table	bootstrap-board.sh,pipeline-status.sh
@@ -130,6 +130,6 @@ vcs.repo		empty	pipeline-board-shared.sh,pipeline-evidence.sh,pipeline-hooks.sh,
 vcs.token_env		empty	bootstrap-board.sh,pipeline-status.sh,pipeline-vcs.sh
 verify		empty	pipeline-verify.sh
 verify.ci_wait_s	900	table	docs
-verify.qa_mode	local	GAP	pipeline/SKILL.md
+verify.qa_mode	local	table	pipeline/SKILL.md
 verify.targeted	true	table	docs
 verify.timeout_ms	600000	table	pipeline-evidence.sh

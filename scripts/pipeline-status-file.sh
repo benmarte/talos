@@ -196,8 +196,11 @@ if [ -f "$SCRIPT_DIR/pipeline-cfg-cache.sh" ]; then
   . "$SCRIPT_DIR/pipeline-cfg-cache.sh"
 else
   cfg() {
-    bash "$SCRIPT_DIR/pipeline-config.sh" "$1" "${2:-}" 2>/dev/null
+    bash "$SCRIPT_DIR/pipeline-config.sh" "$@" 2>/dev/null
   }
+  # _talos_default (the table lookup _sf_posint and _sf_role_on use)
+  # shellcheck disable=SC1091
+  if [ -f "$SCRIPT_DIR/pipeline-defaults.sh" ]; then . "$SCRIPT_DIR/pipeline-defaults.sh"; else _talos_default() { :; }; fi
   # shellcheck disable=SC2064
   _talos_on_exit() { trap "$1" EXIT; }
 fi
@@ -255,7 +258,7 @@ fi
 # ── status.enabled gates assemble and refresh (init and refresh --print must
 #    work with the key unset) ──
 if [ "$verb" = "assemble" ] || { [ "$verb" = "refresh" ] && [ -z "$PRINT" ]; }; then
-  _sf_enabled="$(cfg status.enabled false | tr '[:upper:]' '[:lower:]')"
+  _sf_enabled="$(cfg status.enabled | tr '[:upper:]' '[:lower:]')"
   if [ "$_sf_enabled" != "true" ]; then
     echo "pipeline-status-file: status.enabled is false — nothing to do"
     exit 0
@@ -310,11 +313,11 @@ _sf_check_heading() {
   esac
 }
 
-STATUS_FILE="$(_sf_norm_path status.file "$(cfg status.file TALOS_STATUS.md)")" || exit 1
-FRAG_DIR="$(_sf_norm_path status.fragments_dir "$(cfg status.fragments_dir docs/status.d)")" || exit 1
-ARCHIVE_DIR="$(_sf_norm_path status.archive_dir "$(cfg status.archive_dir status/archive)")" || exit 1
-LOG_HEADING="$(cfg status.log_heading '## Log')"
-RESUME_HEADING="$(cfg status.resume_heading '## Resume here')"
+STATUS_FILE="$(_sf_norm_path status.file "$(cfg status.file)")" || exit 1
+FRAG_DIR="$(_sf_norm_path status.fragments_dir "$(cfg status.fragments_dir)")" || exit 1
+ARCHIVE_DIR="$(_sf_norm_path status.archive_dir "$(cfg status.archive_dir)")" || exit 1
+LOG_HEADING="$(cfg status.log_heading)"
+RESUME_HEADING="$(cfg status.resume_heading)"
 _sf_check_heading status.log_heading "$LOG_HEADING" || exit 1
 _sf_check_heading status.resume_heading "$RESUME_HEADING" || exit 1
 if [ "$LOG_HEADING" = "$RESUME_HEADING" ]; then
@@ -322,18 +325,25 @@ if [ "$LOG_HEADING" = "$RESUME_HEADING" ]; then
   exit 1
 fi
 
-# Positive integers with an upper clamp (the config has no upper bound).
-_sf_posint() {  # KEY DEFAULT MAX
-  local v
-  v="$(cfg "$1" "$2")"
-  case "$v" in ''|*[!0-9]*) v="$2" ;; esac
-  [ "${#v}" -le 6 ] || v="$3"
-  [ "$v" -ge 1 ] 2>/dev/null || v="$2"
-  [ "$v" -le "$3" ] || v="$3"
+# Positive integers with an upper clamp (the config has no upper bound). The
+# default is the table's (#440); only the clamp is stated here.
+_sf_posint() {  # KEY
+  local v d max
+  case "$1" in
+    status.log_days) max=36500 ;;
+    status.log_max) max=10000 ;;
+    *) max=1000 ;;  # status.resume_max_lines
+  esac
+  d="$(_talos_default "$1")"
+  v="$(cfg "$1")"
+  case "$v" in ''|*[!0-9]*) v="$d" ;; esac
+  [ "${#v}" -le 6 ] || v="$max"
+  [ "$v" -ge 1 ] 2>/dev/null || v="$d"
+  [ "$v" -le "$max" ] || v="$max"
   printf '%s' "$v"
 }
-LOG_DAYS="$(_sf_posint status.log_days 30 36500)"
-LOG_MAX="$(_sf_posint status.log_max 50 10000)"
+LOG_DAYS="$(_sf_posint status.log_days)"
+LOG_MAX="$(_sf_posint status.log_max)"
 
 # ── Python: one implementation of the skeleton, the entry format and the
 #    window, shared by init and assemble. Large inputs arrive on stdin
@@ -1097,7 +1107,7 @@ if [ "$verb" = "init" ]; then
 fi
 
 # ── assemble ─────────────────────────────────────────────────────────────────
-BASE_BRANCH="$(cfg base_branch "" 2>/dev/null)"
+BASE_BRANCH="$(cfg base_branch 2>/dev/null)"
 if [ -z "$BASE_BRANCH" ]; then
   BASE_BRANCH="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|.*/||')"
 fi
@@ -1233,23 +1243,23 @@ _sf_stage_commit() {
 # function of that state and of origin/<base>, which each attempt refetches).
 # The reads go through pipeline-vcs.sh read verbs only; python does the calls
 # and writes the normalised state to $_SF_TMP/gh.json.
-_sf_role_on() {  # KEY DEFAULT(true|false): enabled when not false (default true) / true (default false)
+_sf_role_on() {  # KEY: the table default decides: enabled when not false (default true) / true (default false)
   local v
-  v="$(cfg "$1" "$2" | tr '[:upper:]' '[:lower:]')"
-  if [ "$2" = "true" ]; then [ "$v" != "false" ]; else [ "$v" = "true" ]; fi
+  v="$(cfg "$1" | tr '[:upper:]' '[:lower:]')"
+  if [ "$(_talos_default "$1")" = "true" ]; then [ "$v" != "false" ]; else [ "$v" = "true" ]; fi
 }
-MAX_LINES="$(_sf_posint status.resume_max_lines 40 1000)"
+MAX_LINES="$(_sf_posint status.resume_max_lines)"
 # Named arguments of the python refresh and print modes (not more positionals).
 _SF_RARGS=(--data "$_SF_TMP/gh.json" --base-branch "$BASE_BRANCH" --max-lines "$MAX_LINES")
 _sf_collect() {
   local roles="" auto="true" checks="no" draft="false"
-  _sf_role_on roles.qa true && roles="${roles}qa,"
-  _sf_role_on roles.docs true && roles="${roles}docs,"
-  _sf_role_on roles.reviewer true && roles="${roles}reviewer,"
-  _sf_role_on roles.security true && roles="${roles}security,"
-  _sf_role_on roles.adversarial false && roles="${roles}adversarial,"
-  [ "$(cfg merge.auto true | tr '[:upper:]' '[:lower:]')" = "false" ] && auto="false"
-  [ -n "$(cfg merge.required_checks "" | tr -d '[:space:]')" ] && checks="yes"
+  _sf_role_on roles.qa && roles="${roles}qa,"
+  _sf_role_on roles.docs && roles="${roles}docs,"
+  _sf_role_on roles.reviewer && roles="${roles}reviewer,"
+  _sf_role_on roles.security && roles="${roles}security,"
+  _sf_role_on roles.adversarial && roles="${roles}adversarial,"
+  [ "$(cfg merge.auto | tr '[:upper:]' '[:lower:]')" = "false" ] && auto="false"
+  [ -n "$(cfg merge.required_checks | tr -d '[:space:]')" ] && checks="yes"
   # The same effective value Step 0 uses (#435): default true, false on github-api/file.
   [ "$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" resolve 2>/dev/null)" = "true" ] && draft="true"
   python3 -I -c "$SF_PY" collect "$PWD" "$STATUS_FILE" "$FRAG_DIR" "$ARCHIVE_DIR" \

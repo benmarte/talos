@@ -46,12 +46,26 @@
 # arrays.
 
 # The config schema table (#439): the fallback for a cfg call with no default.
-# A partial install may not ship it yet; then such a call prints nothing, as
-# an unknown key always did.
+# A partial install may not ship it; then such a call prints nothing, as an
+# unknown key always did -- EXCEPT for a security-relevant key (merge.auto,
+# limits.*, hooks.*, the forbidden-files and approval-waiver lists,
+# markers.*_authors), which fails closed (#440): pipeline-config.sh owns the
+# list and exits non-zero for those, and this stub then ends the whole script
+# with SIGTERM. A `$(cfg ...)` runs in a subshell, where `exit` would only end
+# the subshell and let the caller carry on with an empty value; $$ is always
+# the main script, so the kill reaches it from anywhere (its EXIT hooks run).
 if [ -f "$SCRIPT_DIR/pipeline-defaults.sh" ]; then
   . "$SCRIPT_DIR/pipeline-defaults.sh"
 else
-  _talos_default() { :; }
+  _talos_default() {
+    local _v
+    if ! _v="$("$SCRIPT_DIR/pipeline-config.sh" "${1:-}")"; then
+      echo "pipeline: pipeline-defaults.sh is missing; stopping rather than guess the default of ${1:-}" >&2
+      kill -s TERM "$$"
+      return 1
+    fi
+    printf '%s' "$_v"
+  }
 fi
 
 _TALOS_EXIT_HOOKS=()
@@ -112,6 +126,6 @@ cfg() {
       done < "$_CFG_CACHE_FILE"
     fi
   fi
-  if [ "$#" -lt 2 ]; then _talos_default "$_key"; return 0; fi
+  if [ "$#" -lt 2 ]; then _talos_default "$_key"; return $?; fi
   printf '%s' "$_default"
 }

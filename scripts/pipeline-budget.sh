@@ -89,7 +89,7 @@ issue="$(printf '%s' "$issue" | sed 's/^0*//')"
 [ -n "$issue" ] || issue="0"
 
 # ── Guard off? Decide from config alone, before reading any log ─────────────
-limit="$(cfg limits.tokens_per_issue "")"
+limit="$(cfg limits.tokens_per_issue)"
 case "$limit" in
   ''|*[!0-9]*) exit 0 ;;   # unset, 0 -> unset, or invalid (config already warned)
 esac
@@ -100,7 +100,7 @@ if [ "${#limit}" -gt 16 ] || { [ "${#limit}" -eq 16 ] && [ "$limit" != "10000000
   echo "pipeline-budget: limits.tokens_per_issue is out of range (above 10^15 tokens) -- treating the guard as off" >&2
   exit 0
 fi
-warn_at="$(cfg limits.warn_at "0.8")"
+warn_at="$(cfg limits.warn_at)"
 
 # ── Read the events (read-only, through pipeline-events.sh) ─────────────────
 cost_out="" blocked_out="" tool_ok=1

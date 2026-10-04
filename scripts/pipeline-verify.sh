@@ -166,7 +166,7 @@ while IFS= read -r _line; do
     exit "$_rc"
   fi
 done <<EOF
-$(cfg verify "")
+$(cfg verify)
 EOF
 
 exit 0

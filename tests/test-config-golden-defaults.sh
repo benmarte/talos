@@ -91,11 +91,6 @@ while IFS= read -r _line; do
       assert_eq "$golden" "$(printf '%s\n' "$CACHED_NOCFG" | awk -F'\t' -v k="$key" '$1 == k { print $2 }')" \
         "$key: cfg() with no config prints the golden value"
       ;;
-    GAP)
-      # main kept this default in the call sites, not the table (derived rows):
-      # the table is empty until the row is made concrete. Removed once it is.
-      assert_eq "" "$(_talos_default "$key")" "$key: still derived in the table (golden '$golden')"
-      ;;
     equiv)
       # merge.forbidden_files_replace: main passed "" and the table says false.
       # The only consumer compares the value with the word true, so the two are
@@ -126,6 +121,16 @@ done <<EOF
 $(_talos_defaults_keys)
 EOF
 assert_eq "" "$_unpinned" "every table row with a default has a golden row"
+
+# ── pipeline-evidence.sh keeps its own safety-net fallbacks for evidence.dir,
+# evidence.max_files, evidence.max_mb and verify.timeout_ms (variables and a
+# first argument, not config-call literals). They must equal the table. ────────
+_ev="$SCRIPTS/pipeline-evidence.sh"
+assert_eq ".talos/evidence" "$(sed -n 's/^_EVIDENCE_DEFAULT_DIR="\(.*\)"$/\1/p' "$_ev")" "evidence.dir fallback equals the table"
+assert_eq "$(_talos_default evidence.dir)" "$(sed -n 's/^_EVIDENCE_DEFAULT_DIR="\(.*\)"$/\1/p' "$_ev")" "evidence.dir fallback is the table default"
+assert_eq "$(_talos_default evidence.max_files)" "$(sed -n 's/^_EVIDENCE_DEFAULT_MAX_FILES=\([0-9]*\)$/\1/p' "$_ev")" "evidence.max_files fallback is the table default"
+assert_eq "$(_talos_default evidence.max_mb)" "$(sed -n 's/^_EVIDENCE_DEFAULT_MAX_MB=\([0-9]*\)$/\1/p' "$_ev")" "evidence.max_mb fallback is the table default"
+assert_eq "$(_talos_default verify.timeout_ms)" "$(sed -n 's/.*_digits_or \([0-9]*\) "\$(cfg verify.timeout_ms)".*/\1/p' "$_ev")" "verify.timeout_ms fallback is the table default"
 
 # ── comments.header: the events spend report keeps its no-header behaviour ───
 mkdir -p "$SANDBOX/.talos" || exit 1

@@ -38,7 +38,6 @@
 #
 # Derived keys and where their default really comes from:
 #   base_branch, repo, vcs.repo, board.owner   git remote / gh / other keys
-#   verify.qa_mode                             merge.required_checks
 #   agents.restamp_model, agents.restamp_effort, agents.roles.*.*
 #                                              the chain role -> global ->
 #                                              agents.model / agents.effort
@@ -46,17 +45,26 @@
 #                                              pipeline-vcs.sh
 #   merge.approval_waiver_paths, merge.union_paths
 #                                              built-in lists in the consumer
-#   board.statuses.*, board.status_map.*, board.azure_states.*
-#                                              per-status values in the caller
+#   board.statuses.*, board.status_map.*      per-status values in the caller
+#                                              (board.azure_states.<state> has
+#                                              its own row for the four states
+#                                              with a default; any other
+#                                              state is empty)
 #   pr.draft                                   scripts/pipeline-draft-check.sh
 #                                              resolve (the one resolver, #435;
 #                                              no second copy here)
 #
+# verify.qa_mode is NOT derived here: pipeline-config.sh derives "ci" from
+# merge.required_checks whenever a config file exists, so the table value
+# (local) only answers when there is no config at all, where no check list
+# exists and "local" is the derived value too.
+#
 # Lookup rule (see cfg in pipeline-cfg-cache.sh and pipeline-config.sh): a key
 # that is set in a config layer wins; otherwise a caller-supplied default (even
 # an empty one) wins; only a call with NO default argument falls back to this
-# table. That keeps every existing `cfg KEY "literal"` call site exactly as it
-# was while the call sites are migrated to the table (#440).
+# table. No script passes a literal default any more (#440,
+# tests/test-callsite-literal-defaults.sh): a default is stated once, here, and
+# tests/test-config-golden-defaults.sh pins every row.
 #
 # Bash 3.2 safe (no associative arrays, no ${var,,}); the lookups are plain
 # parameter expansion, so a lookup spawns no process, python3 included.
@@ -81,10 +89,14 @@ board.owner	str		derived	PIPELINE_BOARD_OWNER	repo
 board.status_field	str	Status	-	PIPELINE_STATUS_FIELD	repo
 board.statuses.*	str		derived	-	repo
 board.status_map.*	str		derived	-	repo
+board.azure_states.ready	str	New	-	-	repo
+board.azure_states.in_progress	str	Committed	-	-	repo
+board.azure_states.in_review	str	Committed	-	-	repo
+board.azure_states.done	str	Done	-	-	repo
 board.azure_states.*	str		derived	-	repo
 verify	list		-	-	repo
 verify.commands	list		-	-	repo
-verify.qa_mode	enum		derived	-	repo
+verify.qa_mode	enum	local	-	-	repo
 verify.targeted	bool	true	-	-	any
 verify.ci_wait_s	int	900	-	-	any
 verify.timeout_ms	int	600000	-	-	any

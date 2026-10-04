@@ -8,9 +8,9 @@ Store these for the run:
 - MERGE_REQUIRED_CHECKS (`merge.required_checks`, default `[]`, newline-separated)
 - VERIFY_COMMANDS (newline-separated list from `verify`)
 - VERIFY_QA_MODE (`verify.qa_mode`, default `ci` when `merge.required_checks` is
-  non-empty, else `local`): `bash scripts/pipeline-config.sh verify.qa_mode local`
+  non-empty, else `local`): `bash scripts/pipeline-config.sh verify.qa_mode`
   — `pipeline-config.sh` applies the `merge.required_checks`-derived default
-  itself, so passing `local` as the fallback here is correct for both branches.
+  itself.
   `ci` means QA trusts CI (`pr-checks`) instead of re-running `verify:` locally;
   `local` means QA runs the full `verify:` list once, as before. An explicit
   `verify.qa_mode: ci` with an empty or absent `merge.required_checks` list is
