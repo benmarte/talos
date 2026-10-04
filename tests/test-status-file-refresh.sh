@@ -31,7 +31,8 @@ git config user.email "test@talos.invalid"
 git config user.name "talos-test"
 git config commit.gpgsign false
 
-PARENT="$(mktemp -d "${TMPDIR:-/tmp}/talos-sf-refresh.XXXXXX")"
+PARENT="$(mktemp -d "${TMPDIR:-/tmp}/talos-sf-refresh.XXXXXX")" || exit 1
+{ [ -n "$PARENT" ] && [ -d "$PARENT" ]; } || exit 1
 UPSTREAM="$PARENT/upstream.git"
 WORK="$PARENT/work"
 FX="$PARENT/fx"
@@ -40,6 +41,23 @@ trap 'rm -rf "$SANDBOX" "$PARENT"' EXIT
 mkdir -p "$PARENT/tmp"
 export TMPDIR="$PARENT/tmp"
 export SF_FX="$FX"
+
+# rm_under_parent <path>...: rm -rf that only acts on paths strictly under
+# $PARENT (the checked mktemp -d above); anything else, or a ".." component, is
+# refused instead of removed (#448).
+rm_under_parent() {
+  local d
+  for d in "$@"; do
+    case "$d" in
+      "$PARENT"/*) ;;
+      *) echo "rm_under_parent: refusing '$d' (not under \$PARENT)" >&2; exit 1 ;;
+    esac
+    case "$d" in
+      */../*|*/..) echo "rm_under_parent: refusing '$d' (.. component)" >&2; exit 1 ;;
+    esac
+    rm -rf "$d"
+  done
+}
 
 # ── copied scripts dir with a verb-level pipeline-vcs.sh stub ───────────────
 cp -R "$TALOS_ROOT/scripts" "$SCR"
@@ -99,7 +117,7 @@ cfg_rf() {  # $1 = extra top-level JSON members, $2 = extra status members
 }
 
 reset_fixture() {
-  rm -rf "$UPSTREAM" "$WORK"
+  rm_under_parent "$UPSTREAM" "$WORK"
   git init -q --bare "$UPSTREAM"
   git --git-dir="$UPSTREAM" symbolic-ref HEAD refs/heads/main
   git remote set-url origin "$UPSTREAM"
@@ -130,7 +148,7 @@ run_sf() { bash "$SF" "$@" 2>&1; }
 
 # ── fixtures for the verb stub ───────────────────────────────────────────────
 PRS=(); ISS=()
-fx_reset() { rm -rf "$FX"; mkdir -p "$FX"; : > "$FX/calls.log"; PRS=(); ISS=(); }
+fx_reset() { rm_under_parent "$FX"; mkdir -p "$FX"; : > "$FX/calls.log"; PRS=(); ISS=(); }
 labels_json() {  # "a,b" -> [{"name":"a"},{"name":"b"}]
   local out="" l
   local IFS=,
@@ -360,7 +378,14 @@ assert_eq "- Base: main @ $code_sha" "$(line_of "$(oshow TALOS_STATUS.md)" '^- B
 p1="$(bash "$SF" refresh --print 2>/dev/null)"; p2="$(bash "$SF" refresh --print 2>/dev/null)"
 assert_eq "$p1" "$p2" "determinism: two --print runs are byte-identical"
 assert_eq "$(block_of "$p1")" "$(block_of "$text1")" "determinism: --print equals the block refresh wrote"
-assert_not_contains "$p1" "202" "determinism: no date or timestamp in the block"
+# A date or time pattern, not the bare "202": a 40-hex SHA contains "202" in
+# about 1 run in 6, which made this assertion flaky (#448).
+_ts_re='[0-9]{4}-[0-9]{2}-[0-9]{2}|T[0-9]{2}:[0-9]{2}'
+has_timestamp() { printf '%s' "$1" | grep -Eq "$_ts_re" && echo yes || echo no; }
+assert_eq "no" "$(has_timestamp "$p1")" "determinism: no date or timestamp in the block"
+assert_eq "no" "$(has_timestamp '- Base: main @ 1202ab3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f90')" "determinism: a SHA containing 202 is not a timestamp"
+assert_eq "yes" "$(has_timestamp 'refreshed 2026-09-20')" "determinism: a date is caught"
+assert_eq "yes" "$(has_timestamp 'at 2026-09-20T10:15:00Z')" "determinism: a timestamp is caught"
 
 # a newer unrelated commit moves Base; a docs/status.d-only commit does not
 wk_sync() { git -C "$WORK" fetch -q origin main && git -C "$WORK" checkout -q -B main origin/main; }
@@ -372,7 +397,7 @@ wk_add src/more.txt "more" 2026-09-12; wk_push; ofetch
 assert_eq "- Base: main @ $(osha)" "$(line_of "$(bash "$SF" refresh --print 2>/dev/null)" '^- Base:')" "base: a code commit moves Base"
 
 # no commit outside the status paths at all
-rm -rf "$PARENT/solo" "$PARENT/solo.git"
+rm_under_parent "$PARENT/solo" "$PARENT/solo.git"
 git init -q --bare "$PARENT/solo.git"; git --git-dir="$PARENT/solo.git" symbolic-ref HEAD refs/heads/main
 git init -q -b main "$PARENT/solo" 2>/dev/null || { git init -q "$PARENT/solo"; git -C "$PARENT/solo" checkout -q -b main; }
 printf '# s\n\n## Resume here\n\nx\n\n## Log\n' > "$PARENT/solo/TALOS_STATUS.md"
@@ -616,7 +641,7 @@ assert_eq "$before" "$(git rev-parse origin/main)" "gh stub: origin untouched"
 # ── push race: refetch, regenerate, retry; at most 3 attempts ───────────────
 install_race_hook() {  # $1 = number of pushes to race (racer adds an empty commit)
   local state="$PARENT/hook-state"
-  rm -rf "$state"; mkdir -p "$state"
+  rm_under_parent "$state"; mkdir -p "$state"
   echo 0 > "$state/n"; echo "$1" > "$state/max"
   cat > "$UPSTREAM/hooks/pre-receive" <<EOF
 #!/bin/sh
@@ -636,7 +661,7 @@ EOF
 # A racer that lands the very tree being pushed: a concurrent refresh that won.
 install_twin_hook() {
   local state="$PARENT/hook-state"
-  rm -rf "$state"; mkdir -p "$state"
+  rm_under_parent "$state"; mkdir -p "$state"
   echo 0 > "$state/n"
   cat > "$UPSTREAM/hooks/pre-receive" <<EOF
 #!/bin/sh
@@ -691,7 +716,7 @@ assert_eq "$wt_before" "$(wt_count)" "race always: no worktree left behind"
 reset_fixture; cfg_rf
 wk_add src/code.txt "code" 2026-09-10; wk_push
 fx_reset; add_pr 10 fix/issue-5-x ""; add_pr 11 feat/issue-6-y "qa:pass,docs:done"; add_issue 5 ""; add_issue 6 "pipeline:ready"; fx_flush
-rm -rf "$PARENT/copy.git"; cp -R "$UPSTREAM" "$PARENT/copy.git"
+rm_under_parent "$PARENT/copy.git"; cp -R "$UPSTREAM" "$PARENT/copy.git"
 git remote set-url origin "$PARENT/copy.git"
 out="$(run_sf refresh)"; rc=$?
 assert_eq "0" "$rc" "twin: the sequential reference refresh exits 0"

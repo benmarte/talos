@@ -126,9 +126,20 @@ make_sandbox() {
   unset TALOS_HOME CLAUDE_PLUGIN_ROOT CLAUDE_CONFIG_DIR TALOS_AGENTS_HOME XDG_RUNTIME_DIR \
         TALOS_ISSUE TALOS_ISSUE_NUMBER TALOS_ROLE TALOS_WORKTREE_PATH
 
+  # Fail closed (#448): a failed mktemp must not leave SANDBOX empty with the
+  # EXIT trap armed and the caller still in its own directory (every later
+  # `git init` or write would land in the cwd). About 100 callers do not write
+  # `|| exit 1`, so the helper exits itself: this point is only reachable from a
+  # directly executed test file (the sourced case returned above), so exiting
+  # ends that test, never an interactive shell.
   SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/talos-test.XXXXXX")"
+  if [ -z "$SANDBOX" ] || [ ! -d "$SANDBOX" ]; then
+    printf 'make_sandbox: ERROR: mktemp -d failed under %s -- not continuing\n' "${TMPDIR:-/tmp}" >&2
+    SANDBOX=""
+    exit 1
+  fi
   trap 'rm -rf "$SANDBOX"' EXIT
-  cd "$SANDBOX"
+  cd "$SANDBOX" || exit 1
   git init -q
   git remote add origin git@github.com:acme/widget.git
   # Hermetic HOME. pipeline-notify.sh scrapes ~/.hermes/.env for bot

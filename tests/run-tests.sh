@@ -9,6 +9,9 @@
 #               default: CPU count (nproc, then sysctl -n hw.ncpu, then 4)
 #   --quiet     print one line per file (pass/fail/cached) plus full output
 #               only for failing files (also: TALOS_TEST_QUIET=1)
+#               Either mode ends a failing run with one "FAILED: tests/<name>"
+#               line per failing file just before the RESULT line; --quiet
+#               adds the first failing assertion under each (#448).
 #   --no-cache  ignore and do not write the per-file result cache
 #   --repeat N  run the selected files N times, stopping at the first
 #               iteration that fails (its full log is printed; also implies
@@ -640,6 +643,7 @@ while [ "$_repeat_iter" -le "$REPEAT" ]; do
   # ── Report, in stable (original file-list) order ──────────────────────────────
   total_files=0
   failed_files=0
+  FAILED_SUMMARY=""   # one "FAILED: tests/<name>" per failing file (#448)
   i=0
   while [ "$i" -lt "$TOTAL_COUNT" ]; do
     t="${COMBINED[$i]}"
@@ -648,7 +652,20 @@ while [ "$_repeat_iter" -le "$REPEAT" ]; do
     rc="$(cat "$RUN_TMP/$i.exit" 2>/dev/null || echo 1)"
     log="$RUN_TMP/$i.log"
     total_files=$((total_files + 1))
-    [ "$rc" != "0" ] && failed_files=$((failed_files + 1))
+    if [ "$rc" != "0" ]; then
+      failed_files=$((failed_files + 1))
+      FAILED_SUMMARY="${FAILED_SUMMARY}FAILED: tests/$name
+"
+      # Under --quiet the summary is all a `tail` shows, so carry the first
+      # failing assertion (helpers.sh prints it as "FAIL  <label>"), or the
+      # last log line when the file died before any assertion failed.
+      if [ "$QUIET" -eq 1 ]; then
+        _first="$(grep -m1 '^FAIL  ' "$log" 2>/dev/null)"
+        [ -z "$_first" ] && _first="$(grep -v '^[[:space:]]*$' "$log" 2>/dev/null | tail -n 1)"
+        [ -n "$_first" ] && FAILED_SUMMARY="${FAILED_SUMMARY}  first failure: $_first
+"
+      fi
+    fi
 
     if [ "$QUIET" -eq 1 ]; then
       if [ "$status" = "CACHED" ]; then
@@ -699,6 +716,7 @@ EOF
   fi
 
   if [ "$failed_files" -gt 0 ]; then
+    printf '%s' "$FAILED_SUMMARY"
     if [ "$REPEAT" -gt 1 ]; then
       echo "RESULT: repeat $_repeat_iter/$REPEAT FAILED -- $failed_files of $total_files test file(s) FAILED"
     else

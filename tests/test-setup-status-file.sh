@@ -5,7 +5,12 @@
 # test runs the command the wizard actually shows.
 set -u
 . "$(dirname "$0")/helpers.sh"
-make_sandbox
+make_sandbox || exit 1
+# Private TMPDIR (#448): the init run below, and anything it mktemp's, lands in
+# a directory only this run uses. The rm -rf is anchored on that checked path.
+PRIV_TMP="$(mktemp -d "${TMPDIR:-/tmp}/talos-setup-sf.XXXXXX")" || exit 1
+trap 'rm -rf "$SANDBOX" "$PRIV_TMP"' EXIT
+export TMPDIR="$PRIV_TMP"
 
 SETUP="${SETUP_FILE:-$TALOS_ROOT/skills/pipeline-setup/SKILL.md}"
 GUIDE="$TALOS_ROOT/docs/user-guide.md"
@@ -77,6 +82,10 @@ assert_contains "$IDEM" "existing status file is never overwritten" "Idempotency
 awk '/^```bash$/{buf=""; inb=1; next} /^```$/{ if (inb && buf ~ /pipeline-status-file\.sh init/) printf "%s", buf; inb=0; buf=""; next} inb{buf = buf $0 "\n"}' "$SETUP" > "$SANDBOX/init.sh"
 assert_eq "1" "$([ -s "$SANDBOX/init.sh" ] && echo 1 || echo 0)" "the skill has a fenced init block"
 assert_eq "1" "$(grep -c . "$SANDBOX/init.sh")" "the init block is the one command"
+# Run only the init line, never the rest of the fenced block (#448): a block
+# that ever grows another command must not execute it in the test.
+grep 'pipeline-status-file\.sh init' "$SANDBOX/init.sh" > "$SANDBOX/init-only.sh"
+assert_eq "1" "$(grep -c . "$SANDBOX/init-only.sh")" "exactly one line runs init"
 
 REPO="$SANDBOX/fresh"
 mkdir -p "$REPO" && cd "$REPO" || exit 1
@@ -84,7 +93,7 @@ git init -q -b main
 git config user.email t@example.com; git config user.name t
 ln -s "$TALOS_ROOT/scripts" scripts
 printf 'base_branch: main\nvcs:\n  provider: github\nstatus:\n  enabled: true\n' > talos.pipeline.yml
-out="$(bash "$SANDBOX/init.sh" 2>&1)"; rc=$?
+out="$(bash "$SANDBOX/init-only.sh" 2>&1)"; rc=$?
 assert_eq "0" "$rc" "the skill's init command exits 0 in a sandbox repo"
 assert_contains "$out" "created TALOS_STATUS.md" "init reports it created the file"
 assert_file_exists "$REPO/TALOS_STATUS.md" "init creates TALOS_STATUS.md"
@@ -96,7 +105,7 @@ assert_eq "" "$(git log --oneline 2>/dev/null)" "init does not commit"
 # Never overwritten: a second run leaves an edited file byte for byte alone.
 printf 'KEEP ME\n' >> TALOS_STATUS.md
 before="$(cat TALOS_STATUS.md)"
-out2="$(bash "$SANDBOX/init.sh" 2>&1)"
+out2="$(bash "$SANDBOX/init-only.sh" 2>&1)"
 assert_contains "$out2" "already has both headings" "a second run reports the file already has both headings"
 assert_eq "$before" "$(cat TALOS_STATUS.md)" "a second run never overwrites an existing status file"
 
