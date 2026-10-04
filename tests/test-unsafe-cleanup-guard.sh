@@ -18,6 +18,17 @@
 #      "/tmp/$X" -- it must be "${X:?}" so an empty X aborts instead of
 #      deleting from `/`. A `$(...)` operand is refused (unverifiable).
 #
+# A third rule scans tests/ and scripts/ (#479):
+#
+#   R3 infinite producer: a pipeline must not feed `head` (or anything else)
+#      from an unbounded source. `/dev/urandom` or `/dev/zero` read in a
+#      pipeline stage that is followed by a `|` needs a byte count in that
+#      stage (`head -c N`, `od -N N`, `dd count=N`), and `yes |` is refused.
+#      With SIGPIPE ignored (the Actions runner does that) the producer gets
+#      EPIPE instead of dying, and BSD `tr`/`yes` ignore it and run forever:
+#      that hung every macOS main job for six hours. Use a bounded read, for
+#      example `od -An -N8 -tx1 /dev/urandom | tr -d ' \n'`.
+#
 # Matching is per line: comment lines are skipped, and a heredoc body that
 # merely contains such text is scanned like code (reword it, or put the file
 # on ALLOW). The scan FAILS when it scans zero files. A fixture tree (GUARD_ROOT
@@ -51,6 +62,10 @@ SUBST = re.compile(r'\$\(\s*(?:command\s+)?(?:mktemp|safe_mktemp_dir)\b|`\s*mkte
 BAD_HANDLER = re.compile(r'\|\|\s*(?:true|:)\s*(?:$|[;)&|}])')
 RM = re.compile(r'(?<![\w./-])rm((?:\s+-[A-Za-z-]+)+)\s')
 VAR = re.compile(r'\$\{(\w+)([^}]*)\}|\$(\w+)')
+PIPE = re.compile(r'(?<!\|)\|(?!\|)')
+DEVICE = re.compile(r'/dev/(?:urandom|zero)\b')
+BOUNDED = re.compile(r'\bhead\s+(?:-[A-Za-z]*c|--bytes)|\bod\b.*\s(?:-[A-Za-z]*N|--read-bytes)|\bdd\b.*\bcount=')
+YES = re.compile(r'^[\s({]*(?:\S+=\S*\s+)*(?:command\s+)?yes\b')
 BARE = re.compile(r'''^["']?\$(?:\{\w+\}|\w+)["']?$''')
 
 
@@ -66,6 +81,29 @@ def files():
                 continue
             if n.endswith(".sh") or rel.startswith(os.path.join("tests", "stubs")):
                 yield p
+
+
+def files_r3():
+    # every file under tests/ (not fixtures) and scripts/; the guard itself holds the fixtures
+    for top in ("tests", "scripts"):
+        for d, dirs, names in os.walk(os.path.join(root, top)):
+            rel = os.path.relpath(d, root)
+            if rel.startswith(os.path.join("tests", "fixtures")):
+                continue
+            for n in sorted(names):
+                p = os.path.join(rel, n)
+                if p != self_rel and not n.endswith((".pyc", ".json")):
+                    yield p
+
+
+def infinite_producer(line):
+    for seg in PIPE.split(line)[:-1]:  # a stage that feeds a later one
+        if YES.match(seg):
+            return "yes |"
+        m = DEVICE.search(seg)
+        if m and not BOUNDED.search(seg):
+            return m.group(0) + " without a byte count"
+    return None
 
 
 def operands(rest, in_sq):
@@ -139,6 +177,13 @@ for rel in files():
                 if unsafe_operand(tok):
                     bad.append("%s:%d: R2 unguarded rm -r operand %s: %s" % (rel, ln, tok, s))
                     break
+for rel in files_r3():
+    for ln, line in enumerate(open(os.path.join(root, rel), errors="replace"), 1):
+        if line.strip().startswith("#"):
+            continue
+        why = infinite_producer(line)
+        if why:
+            bad.append("%s:%d: R3 unbounded producer in a pipe (%s): %s" % (rel, ln, why, line.strip()))
 print("scanned=%d" % n)
 for b in bad:
     print(b)
@@ -150,7 +195,7 @@ out="$(python3 -I "$SCANNER" "$TALOS_ROOT" "$ALLOW" "$SELF_REL" 2>&1)"; rc=$?
 scanned="$(printf '%s\n' "$out" | sed -n 's/^scanned=//p')"
 case "$scanned" in ''|*[!0-9]*) scanned=0 ;; esac
 if [ "$scanned" -gt 0 ]; then pass "scan: read $scanned test file(s)"; else fail "scan: read zero test files" "$out"; fi
-assert_eq_ctx "0" "$rc" "tests/ has no unchecked mktemp and no unguarded rm -r operand" "$out"
+assert_eq_ctx "0" "$rc" "tests/ and scripts/ have no unchecked mktemp, no unguarded rm -r operand, no unbounded producer in a pipe" "$out"
 
 # --- fixtures: each rule bites, each safe form passes ---------------------
 FIX="$SANDBOX/fix"
@@ -205,6 +250,36 @@ expect_flag "inside a single-quoted trap string (scanned like code)" "trap 'rm -
 expect_ok "trap string with a bare variable" "trap 'rm -rf \"\$X\"' EXIT"
 expect_ok "rm -rf then a harmless pipe" 'rm -rf "${X:?}/a" | cat'
 expect_ok "rm word in a path, not a command" 'cd "$X/form-rm -r/y"'
+
+expect_flag "tr from urandom into head (the #479 hang)" "rand() { LC_ALL=C tr -dc 'a-f0-9' < /dev/urandom | head -c 16; }" R3
+expect_flag "cat urandom into head" 'cat /dev/urandom | head -c 8' R3
+expect_flag "urandom as an operand, piped on" 'tr -dc a-z /dev/urandom | head -c 8' R3
+expect_flag "zero into head" 'cat /dev/zero | head -c 8' R3
+expect_flag "yes into head" 'yes | head -n 3' R3
+expect_flag "yes with an argument into a pipe" 'yes y | cmd' R3
+expect_flag "yes after a subshell paren" '( yes | head -n 1 )' R3
+expect_flag "urandom with a trailing pipe (continued line)" 'tr -dc a-z < /dev/urandom |' R3
+expect_flag "dd from zero without a count" 'dd if=/dev/zero bs=1k | tr x y' R3
+expect_ok "head -c on the read side" 'head -c 64 /dev/urandom | od -An -tx1'
+expect_ok "od -N on the read side" "LC_ALL=C od -An -N8 -tx1 /dev/urandom | tr -d ' \\n'"
+expect_ok "od --read-bytes" 'od -An --read-bytes=8 /dev/urandom | cmd'
+expect_ok "dd with a count" 'dd if=/dev/zero bs=1024 count=1100 2>/dev/null | tr x y'
+expect_ok "head -c on zero" "head -c 65537 /dev/zero | tr '\\0' a > f"
+expect_ok "zero as stdin with no pipe" 'bash x.sh >o 2>e < /dev/zero'
+expect_ok "urandom last in the pipeline" 'cmd | cat /dev/urandom'
+expect_ok "yes as a word in text" 'echo yes | cat'
+expect_ok "yes inside a pattern" "grep -E 'yes|no' f | cat"
+expect_ok "|| after a producer is not a pipe" 'head -c 4 /dev/urandom || exit 1'
+expect_ok "urandom named in a comment" '# tr </dev/urandom | head is the hang'
+
+# R3 also scans scripts/
+mkdir -p "$FIX/scripts" || exit 1
+printf '%s\n' 'x="$(tr -dc a-z </dev/urandom | head -c 4)"' > "$FIX/scripts/pipeline-fixture.sh"
+printf '%s\n' 'echo ok' > "$FIX/tests/test-fixture.sh"
+o="$(python3 -I "$SCANNER" "$FIX" "" "$SELF_REL" 2>&1)"; frc=$?
+assert_eq "1" "$frc" "fixture: scripts/ is scanned for an unbounded producer"
+assert_contains "$o" "scripts/pipeline-fixture.sh:1: R3" "fixture: names the scripts/ file and line"
+rm -f "$FIX/scripts/pipeline-fixture.sh"
 
 # an allow-listed file and a stub are covered; a clean tree passes
 printf '%s\n' 'D="$(mktemp -d)"' > "$FIX/tests/stubs/gh"

@@ -40,6 +40,8 @@ jobs:
         # templates/ci/github-tests.yml's header for the merge.required_checks
         # caveat this implies (only "test (ubuntu-latest)" is PR-safe to name).
         os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "macos-latest"]') }}
+    # A hung test must cost an hour, not GitHub's 6-hour default (#479). The suite currently takes about 35-40 minutes on a PR runner.
+    timeout-minutes: 60
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

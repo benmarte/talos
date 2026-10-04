@@ -6,6 +6,9 @@
 #                                           file, 1 when it is not, 3 when it
 #                                           is not found and a config file
 #                                           could not be parsed
+#          pipeline-config.sh --show [--origin-only] [KEY-PREFIX]
+#                                           every key with its value and the
+#                                           layer that decided it (see below)
 # Example: pipeline-config.sh board.project_number 1
 #          pipeline-config.sh notifications.slack_channel ""
 #          pipeline-config.sh merge.method squash
@@ -31,7 +34,30 @@
 # with one stderr note naming the key -- see the shared loader below.
 #
 #   --dump          every resolved key as NUL-delimited pairs (one python3 spawn)
-#   --dump-layers   "agents.* key<TAB>project|global" lines (--resolve-all origin)
+#   --show          one line per key: key<TAB>value<TAB>layer, layer being
+#                   default|global|repo|env (the table default, the global file,
+#                   the repo file, the key's environment variable). Lists every
+#                   table key (a "*" row only for the keys present) plus any
+#                   unknown key present. A list prints its items joined by the
+#                   two characters \n; a control character in a key or value
+#                   prints as \xNN. A secret never prints: a secret-typed key,
+#                   or any value that starts with env:, prints as `env:NAME
+#                   (set|unset)` (set: NAME is in the environment, the repo
+#                   .env or ~/.talos/.env, the lookup a webhook send does) or,
+#                   when it is a literal and not a reference, `<masked>`.
+#                   --origin-only prints key<TAB>layer (no value column);
+#                   KEY-PREFIX keeps the keys that start with it. Values are
+#                   what the layers hold: the range validators of the single-key
+#                   path are not applied, and a derived default is not computed
+#                   (it shows empty, layer default). One python3 spawn.
+#   --dump-layers   deprecated: `--show --origin-only agents.` limited to the file
+#                   layers and printed with the old names (project|global), the
+#                   format install.sh still reads. Removed after one release.
+#
+# --has asks whether a config FILE sets a key; it ignores the env layer on
+# purpose (callers use it to decide whether a block exists to edit, and an
+# environment variable is not something to write a block over). Use --show to
+# see the env layer.
 #
 # YAML parsing:
 #   Uses PyYAML (python3 -c "import yaml") if importable.
@@ -98,6 +124,7 @@ else
   _talos_scope_env_json() { printf '[]'; }
   _talos_env_dump() { :; }
   _talos_env_value() { return 1; }
+  _TALOS_DEFAULTS_TSV=""
 fi
 
 # ── Shared config loader (#336) ───────────────────────────────────────────────
@@ -164,7 +191,7 @@ _locate_user_cfg() {
 # and exec()'d at the top, so the --dump and single-key processes share one
 # definition (they are separate processes and cannot import a shared module
 # without a new installed file). Defines load_layers(project_path, user_path,
-# env=True) -> (project, user, merged) and layer_map(project, user).
+# env=True) -> (project, user, merged).
 # The scope/env data comes from the table in pipeline-defaults.sh: use
 # _cfg_loader_src, which prepends it as _CFG_TABLE, never this variable raw.
 read -r -d '' _CFG_LOADER_PY <<'PYLOADER' || true
@@ -251,6 +278,15 @@ def _apply_env(merged):
         node[parts[-1]] = val
     return out
 
+def _check_agents(obj, what):
+    # agents: must be a mapping in either file (it was warned about before #441
+    # dropped the check). A scalar or list there is ignored, so it cannot erase
+    # the other layer's agents.* keys.
+    if obj.get("agents") is not None and not isinstance(obj["agents"], dict):
+        _warn("%s: agents must be a mapping -- ignoring it" % what)
+        return {k: v for k, v in obj.items() if k != "agents"}
+    return obj
+
 def _load_user_layer(user_path, project_path):
     if not user_path:
         return {}
@@ -290,7 +326,7 @@ def _load_user_layer(user_path, project_path):
     if not isinstance(raw, dict):
         _warn("user-level config %s must be a mapping -- ignoring it" % shown)
         return {}
-    return _drop_repo_only(raw, [], shown)
+    return _drop_repo_only(_check_agents(raw, "user-level config %s" % shown), [], shown)
 
 def _deep_merge(base, over):
     out = dict(base)
@@ -317,23 +353,10 @@ def load_layers(project_path, user_path, env=True):
             _LOAD_ERRORS.append("project")
     if not isinstance(project, dict):
         project = {}
+    project = _check_agents(project, "config %s" % repr(project_path))
     user = _load_user_layer(user_path, project_path)
     merged = _deep_merge(user, project)
     return project, user, (_apply_env(merged) if env else merged)
-
-def layer_map(project, user):
-    # dotted agents.* leaf key -> "project" | "global" (the file that supplied
-    # the winning value). Keys with control characters are skipped.
-    out = {}
-    def leaves(obj, prefix, label):
-        if isinstance(obj, dict):
-            for k, v in obj.items():
-                leaves(v, "%s.%s" % (prefix, k) if prefix else str(k), label)
-        elif obj is not None:
-            out[prefix] = label
-    leaves(user.get("agents"), "agents", "global")
-    leaves(project.get("agents"), "agents", "project")
-    return {k: v for k, v in out.items() if all(32 <= ord(c) != 127 for c in k)}
 PYLOADER
 
 # The loader source handed to python: the table's scope/env rows as _CFG_TABLE,
@@ -593,20 +616,172 @@ def _int_apply(flat):
                 flat[_int_key] = _validated
 PYINT
 
-# --dump-layers (#336): one "key<TAB>layer" line per agents.* leaf, for
-# pipeline-agent.sh --resolve-all's origin column. One python3 spawn.
-if [ "${1:-}" = "--dump-layers" ]; then
-  _LPROJ="$(_locate_project_cfg)"
-  _LUSER="$(_locate_user_cfg)"
-  if [ -z "$_LPROJ" ] && [ -z "$_LUSER" ]; then exit 0; fi
-  python3 -I - "$_LPROJ" "$_LUSER" "$(_cfg_loader_src)" <<'PYEOF'
+# ── --show (#442, part of #437) ───────────────────────────────────────────────
+# One line per key, `key<TAB>value<TAB>layer`: every key of the table (a "*" row
+# only for the keys that are present) and any unknown key present, with the layer
+# that decided it. One python3 spawn does the loading and the layering; the shell
+# only decides whether an `env:NAME` reference resolves (the lookup a webhook
+# send makes, from pipeline-secrets.sh) and never holds, or prints, the value.
+# Handed to python3 as argv, like the loader and the validators above.
+read -r -d '' _CFG_SHOW_PY <<'PYSHOW' || true
+import os
+import re
 import sys
-exec(sys.argv[3])
+exec(sys.argv[4])
+_prefix = sys.argv[5]
+_origin_only = sys.argv[6] == "1"
+
+# The table rows: key, type, default, derived, env, scope.
+_rows = [f for f in (ln.split("\t") for ln in sys.argv[3].split("\n"))
+         if len(f) == 6 and f[0]]
 _project, _user, _merged = load_layers(sys.argv[1], sys.argv[2])
-for _k, _l in layer_map(_project, _user).items():
-    sys.stdout.write("%s\t%s\n" % (_k, _l))
-PYEOF
-  exit 0
+_env_keys = set(k for k, _scope, var in _CFG_TABLE
+                if var != "-" and "*" not in k and os.environ.get(var))
+
+# Every leaf the merged config holds. A mapping with no leaf (an `{}` left by
+# the repo-only drop, or written empty) has nothing in it, so it is not "set".
+_present = {}
+def _leaves(obj, path):
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            _leaves(v, path + (k,))
+    elif obj is not None:
+        _present[".".join(str(p) for p in path)] = (path, obj)
+_leaves(_merged, ())
+_parents = set()
+for _d in _present:
+    _parts = _d.split(".")
+    for _i in range(1, len(_parts)):
+        _parents.add(".".join(_parts[:_i]))
+
+def _matches(tmpl, parts):
+    return len(tmpl) == len(parts) and all(t == "*" or t == p for t, p in zip(tmpl, parts))
+
+# Listing order: the table's, a "*" row expanded to the present keys under it,
+# then the unknown keys. A key that is the parent of a present key (the bare
+# `verify` row of a verify: mapping) is not listed as a value of its own.
+_order = []   # (dotted key, table row or None)
+_seen = set()
+for _row in _rows:
+    _key = _row[0]
+    if "*" in _key:
+        for _d in sorted(_present):
+            if _d not in _seen and _matches(_key.split("."), _d.split(".")):
+                _seen.add(_d)
+                _order.append((_d, _row))
+    elif _key not in _seen and _key not in _parents:
+        _seen.add(_key)
+        _order.append((_key, _row))
+for _d in sorted(_present):
+    if _d not in _seen and _d.split(".")[-1] != "_note":
+        _order.append((_d, None))
+
+def _walk(obj, path):
+    for p in path:
+        if isinstance(obj, dict) and p in obj:
+            obj = obj[p]
+        else:
+            return None
+    return obj
+
+def _layer(dotted, path):
+    if dotted in _env_keys:
+        return "env"
+    if _walk(_project, path) is not None:
+        return "repo"
+    if _walk(_user, path) is not None:
+        return "global"
+    return "default"
+
+_CTRL = re.compile("[\x00-\x1f\x7f-\x9f]")
+_ESC = {"\t": "\\t", "\n": "\\n", "\r": "\\r"}
+def _esc(text):
+    # Config text is untrusted: a control character cannot forge a row or drive
+    # the terminal. (A backslash is left alone, so a list's `\n` joiner and a
+    # newline inside an item read the same; the output is for people.)
+    return _CTRL.sub(lambda m: _ESC.get(m.group(0), "\\x%02x" % ord(m.group(0))), text)
+
+def _scalar(v):
+    return ("true" if v else "false") if isinstance(v, bool) else str(v)
+
+_REF = re.compile(r"env:[A-Za-z_][A-Za-z0-9_]*\Z")
+_SECRETISH = re.compile(r"token|secret|passw|webhook|api_?key|bot_?key|credential|private", re.I)
+def _shown(typ, dotted, value):
+    # The one place a value becomes text. A secret-typed key, an unknown key whose
+    # name reads like a secret, and anything starting `env:` never print a value:
+    # a well-formed reference prints as itself (the shell adds set|unset),
+    # everything else as <masked>. A literal pasted in place of a reference lands
+    # here, which is why the check is on the key's type, not on the value's shape.
+    items = value if isinstance(value, list) else [value]
+    texts = [_scalar(x) for x in items]
+    secret = typ == "secret" or (typ is None and _SECRETISH.search(dotted))
+    if secret or any(t.startswith("env:") for t in texts):
+        if isinstance(value, str) and _REF.match(value):
+            return value
+        return "<masked>"
+    return "\\n".join(_esc(t) for t in texts)
+
+out = sys.stdout.buffer
+for _dotted, _row in _order:
+    if not _dotted.startswith(_prefix):
+        continue
+    if _dotted in _present:
+        _path, _value = _present[_dotted]
+        _lay = _layer(_dotted, _path)
+        _text = _shown(_row[1] if _row else None, _dotted, _value)
+    else:
+        _lay = "default"
+        _text = _esc(_row[2])
+    _line = _esc(_dotted) + "\t" + (_lay if _origin_only else _text + "\t" + _lay) + "\n"
+    out.write(_line.encode("utf-8", "replace"))
+PYSHOW
+
+# --dump-layers is the old verb for the agents.* origins, kept one release as an
+# alias: the same rows, file layers only, with the old layer names (install.sh's
+# model hint reads it, and a default row would always satisfy that hint).
+_SHOW_LEGACY=""
+if [ "${1:-}" = "--dump-layers" ]; then _SHOW_LEGACY=1; set -- --show --origin-only agents.; fi
+if [ "${1:-}" = "--show" ]; then
+  shift
+  _SHOW_ORIGIN="" _SHOW_PREFIX=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --origin-only) _SHOW_ORIGIN=1 ;;
+      -*) echo "pipeline-config: --show: unknown option (usage: --show [--origin-only] [KEY-PREFIX])" >&2; exit 2 ;;
+      *) _SHOW_PREFIX="$1" ;;
+    esac
+    shift
+  done
+  # Sets _SS to set|unset for the variable NAME; the value is discarded at once.
+  _show_ref_state() {
+    _SS="unset"
+    if [ "$(type -t _talos_secret_env_layers)" = "function" ] \
+       && { _talos_secret_env_layers "$1" || _talos_user_env_get talos "$1" \
+            || _talos_user_env_get hermes "$1"; }; then
+      _SS="set"
+    fi
+    _TS_VAL=""
+  }
+  python3 -I -c "$_CFG_SHOW_PY" "$(_locate_project_cfg)" "$(_locate_user_cfg)" \
+      "${_TALOS_DEFAULTS_TSV:-}" "$(_cfg_loader_src)" "$_SHOW_PREFIX" "$_SHOW_ORIGIN" \
+    | while IFS= read -r _SL || [ -n "$_SL" ]; do
+        if [ -n "$_SHOW_LEGACY" ]; then
+          case "${_SL##*$'\t'}" in
+            global) ;;
+            repo) _SL="${_SL%$'\t'*}"$'\t'project ;;
+            *) continue ;;
+          esac
+        fi
+        _SR="${_SL#*$'\t'}"
+        case "$_SR" in
+          env:*$'\t'*)
+            _SV="${_SR%%$'\t'*}"
+            _show_ref_state "${_SV#env:}"
+            printf '%s\t%s (%s)\t%s\n' "${_SL%%$'\t'*}" "$_SV" "$_SS" "${_SR#*$'\t'}" ;;
+          *) printf '%s\n' "$_SL" ;;
+        esac
+      done
+  exit "${PIPESTATUS[0]}"
 fi
 
 if [ "${1:-}" = "--dump" ]; then
