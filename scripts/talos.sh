@@ -137,9 +137,12 @@
 #          trusted author (markers.trusted_authors plus the current user, as for
 #          approval markers) already has it, `recorded=yes` and the comment, the
 #          notices, both events and the spend block are skipped, so a re-run gives
-#          one comment and one merged event. close-issue and board Done always run
-#          (idempotent), so a close that failed after the marker was posted is
-#          retried by the next heal. The comment is not gated by comments.enabled
+#          one comment and one merged event. close-issue runs only while the issue
+#          is open (list-issues; the github verb comments on every call, so an
+#          already-closed issue gets no second comment, and a state that cannot be
+#          read is `warn reason=issue-state-unverified`, never a blind close), so a
+#          close that failed after the marker was posted is retried by the next
+#          heal; board Done always runs (idempotent). The comment is not gated by comments.enabled
 #          (as before; only the spend comment is). A trust set that cannot be
 #          resolved (no trusted_authors and the identity refused or unavailable),
 #          or unreadable comments, count no marker (the repeat is the lesser
@@ -173,7 +176,7 @@
 #          item 4 `cost=<line>` per line of the one cost --summary call, item 5 the
 #          status resume refresh (status.enabled).
 #
-# post-merge-reasons: changelog-failed comments-unreadable trust-unverified comment-failed close-failed board-failed status-log-failed status-resume-not-refreshed worktree-remove-failed notify-failed spend-upsert-failed siblings-unlisted value-truncated
+# post-merge-reasons: changelog-failed comments-unreadable trust-unverified comment-failed close-failed issue-state-unverified board-failed status-log-failed status-resume-not-refreshed worktree-remove-failed notify-failed spend-upsert-failed siblings-unlisted value-truncated
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
 #   warn: all the others
 # sweep-reasons: issues-unlisted prs-unlisted find-pr-unverified find-pr-failed worktree-sweep-failed epic-close-failed epic-label-failed epic-comment-failed epic-acceptance-unsupported unblock-failed marker-authors-unverified needs-owner-clear-failed needs-owner-list-failed notify-failed
@@ -1067,12 +1070,34 @@ _talos_siblings() {
   done 3<<< "$_prs"
 }
 
-# _talos_post_merge_run <pr> <issue> <heal 0|1> <ci-runs or empty>: the items,
-# in order. Siblings (a merge, not a heal), changelog, the issue-closed comment,
-# close-issue, board Done, status log, worktree remove, the notices, the merged
-# and issue-closed events and the spend block.
+# The numbers of the open issues in a list-issues array, one per line (`number`,
+# or the file provider's `id`).
+_TALOS_OPEN_PY='
+import json, sys
+for i in json.load(sys.stdin):
+    n = i.get("number", i.get("id"))
+    if n is not None:
+        print(n)
+'
+
+# _talos_issue_open <issue>: 0 when the issue is open, 1 when it is not, 2 when
+# that cannot be read. The state comes from list-issues, the one read verb whose
+# open-only result every provider shares (view-issue has no state on github).
+_talos_issue_open() {
+  local _o
+  _talos_cap _vcs list-issues
+  [ "$_RC" -eq 0 ] && _o="$(python3 -I -c "$_TALOS_OPEN_PY" <<< "$_OUT")" || return 2
+  _talos_has "$_o" "$1"
+}
+
+# _talos_post_merge_run <pr> <issue> <heal 0|1> <ci-runs or empty> [known-open]:
+# the items, in order. Siblings (a merge, not a heal), changelog, the issue-closed
+# comment, close-issue (only while the issue is open: the github verb comments
+# on every call), board Done, status log, worktree remove, the notices, the
+# merged and issue-closed events and the spend block. A 5th argument of 1 says
+# the caller just listed the issue as open (the sweep heal).
 _talos_post_merge_run() {
-  local _pr="$1" _n="$2" _heal="$3" _ci="$4" _rec=0 _mk _cnt _body _sp _rc
+  local _pr="$1" _n="$2" _heal="$3" _ci="$4" _known="${5:-0}" _rec=0 _mk _cnt _body _sp _rc
   _PM_ISSUE="$_n"
   _mk="<!-- talos:issue-closed pr=$_pr -->"
   [ "$_heal" -eq 1 ] || _talos_siblings "$_n" "$_pr"
@@ -1084,8 +1109,9 @@ _talos_post_merge_run() {
 
   # The marker of an earlier run (a trusted author's) means the comment and
   # everything that tells someone it happened were done: skip those. close-issue
-  # and board Done always run: a close that failed after the marker was posted is
-  # retried by the next heal, and both are idempotent.
+  # runs while the issue is still open (a close that failed after the marker was
+  # posted is retried by the next heal; the verb comments on every call, so a
+  # closed or unverifiable state never reaches it) and board Done always runs.
   _TALOS_TRUST_SOFT=1
   _talos_trust
   _talos_cap _vcs read-comments "$_n"
@@ -1102,8 +1128,15 @@ _talos_post_merge_run() {
       _talos_warn comment-failed "issue=$_n"
     fi
   fi
-  _talos_run close-issue _vcs close-issue "$_n" "closed by PR #$_pr"
-  [ "$_RC" -eq 0 ] || _talos_warn close-failed "issue=$_n"
+  if [ "$_known" = "1" ]; then _rc=0; else _talos_issue_open "$_n"; _rc=$?; fi
+  case "$_rc" in
+    0)
+      _talos_run close-issue _vcs close-issue "$_n" "closed by PR #$_pr"
+      [ "$_RC" -eq 0 ] || _talos_warn close-failed "issue=$_n"
+      ;;
+    1) : ;;
+    *) _talos_warn issue-state-unverified "issue=$_n" ;;
+  esac
   _talos_emit recorded "$([ "$_rec" -eq 1 ] && echo yes || echo no)"
 
   _talos_run board bash "$SCRIPT_DIR/pipeline-status.sh" "$_n" "Done"
@@ -1245,7 +1278,7 @@ _talos_sweep() {
     fi
     _healed="${_healed:+$_healed,}$_n"
     _talos_emit heal "$_n pr=$_pr"
-    _talos_post_merge_run "$_pr" "$_n" 1 ""
+    _talos_post_merge_run "$_pr" "$_n" 1 "" 1
   done 3<<< "$_list"
 
   _PM_ISSUE=""

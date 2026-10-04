@@ -86,7 +86,7 @@ reset_stubs() {
   set_stub current-user 0 "bot"
   set_stub list-prs 0 "[]"
   set_stub read-comments 0 '{"comments":[]}'
-  set_stub list-issues 0 "[]"
+  set_stub list-issues 0 "[$(issue_json 42 "")]"
 }
 journal() { cat "$STUB_DIR/journal" 2>/dev/null; }
 # jr: the journal with the temp body path normalised.
@@ -162,6 +162,7 @@ changelog assemble
 vcs current-user
 vcs read-comments 42
 vcs comment-issue 42 --body-file F --allow-closed
+vcs list-issues
 vcs close-issue 42 closed by PR #9
 status 42 Done
 status-file assemble --refresh --pr 9 --issue 42
@@ -287,6 +288,43 @@ pm 9 42
 assert_eq "1" "$(called comment-issue)" "comments off: the issue-closed comment is posted as before"
 assert_eq "1" "$(called close-issue)" "comments off: close-issue runs"
 assert_eq "0" "$(called upsert-pr-comment)" "comments off: no spend comment"
+
+# close-issue is called only while the issue is open: the github verb posts a
+# "closed by PR" comment on every call, so a closed issue must never reach it.
+reset_stubs
+set_stub list-issues 0 "[$(issue_json 7 ""),$(issue_json 8 "")]"
+pm 9 42
+assert_eq "0" "$(called close-issue)" "state: an issue that is not open (already closed) gets no close-issue call"
+assert_not_contains "$OUT" "issue-state-unverified" "state: closed is not a warning"
+assert_eq "1" "$(called status)" "state: board Done still runs for a closed issue"
+assert_out "state: closed" "$PM_FIRST"
+reset_stubs
+pm 9 42
+assert_eq "1" "$(called close-issue)" "state: an open issue is closed once"
+assert_not_contains "$OUT" "issue-state-unverified" "state: open is not a warning"
+reset_stubs; set_stub list-issues 1 "" "boom"
+pm 9 42
+assert_eq "0" "$(called close-issue)" "state: an unreadable state never closes blind (list-issues fails)"
+assert_contains "$OUT" "warn reason=issue-state-unverified issue=42" "state: an unreadable state warns"
+assert_eq "1" "$(called status)" "state: the other items still run"
+assert_out "state: unreadable" "$PM_FIRST"
+reset_stubs; set_stub list-issues 0 "not json"
+pm 9 42
+assert_eq "0" "$(called close-issue)" "state: an unparseable list never closes blind"
+assert_contains "$OUT" "warn reason=issue-state-unverified issue=42" "state: an unparseable list warns"
+# Run twice on the same merged issue: the first closes it, the second sees it closed.
+reset_stubs
+pm 9 42
+set_stub list-issues 0 "[]"
+pm 9 42
+assert_eq "1" "$(called close-issue)" "state: two runs on one merged issue close it, and comment, once overall"
+# The sweep heal knows the issue is open from its own list: close-issue, no second list call.
+reset_stubs
+set_stub list-issues 0 "[$(issue_json 31 "pipeline:dev")]"
+set_stub find-pr 0 '{"number":9}'
+sw
+assert_eq "1" "$(called close-issue)" "state: the sweep heal closes the open issue it listed"
+assert_eq "1" "$(journal | grep -c "^vcs list-issues")" "state: the sweep heal reuses its own list"
 
 # ── (a) post-merge: every item is non-fatal ──────────────────────────────────
 reset_stubs
