@@ -140,7 +140,8 @@
 #          one comment and one merged event. close-issue runs only while the issue
 #          is open (list-issues; the github verb comments on every call, so an
 #          already-closed issue gets no second comment, and a state that cannot be
-#          read is `warn reason=issue-state-unverified`, never a blind close), so a
+#          read is `warn reason=issue-state-unverified`, never a blind close; on any
+#          other provider the list is not trusted and close-issue always runs), so a
 #          close that failed after the marker was posted is retried by the next
 #          heal; board Done always runs (idempotent). The comment is not gated by comments.enabled
 #          (as before; only the spend comment is). A trust set that cannot be
@@ -1081,10 +1082,13 @@ for i in json.load(sys.stdin):
 '
 
 # _talos_issue_open <issue>: 0 when the issue is open, 1 when it is not, 2 when
-# that cannot be read. The state comes from list-issues, the one read verb whose
-# open-only result every provider shares (view-issue has no state on github).
+# that cannot be read. On github and github-api the state comes from list-issues
+# (complete: paginated, open only; view-issue has no state). Every other provider
+# is always 0: its list is capped (gitlab: 100) or keyed differently (iid), so
+# absence would not mean closed; close-issue is attempted, as before this verb.
 _talos_issue_open() {
   local _o
+  case "$(cfg vcs.provider)" in github | github-api) ;; *) return 0 ;; esac
   _talos_cap _vcs list-issues
   [ "$_RC" -eq 0 ] && _o="$(python3 -I -c "$_TALOS_OPEN_PY" <<< "$_OUT")" || return 2
   _talos_has "$_o" "$1"

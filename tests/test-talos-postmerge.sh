@@ -312,6 +312,17 @@ reset_stubs; set_stub list-issues 0 "not json"
 pm 9 42
 assert_eq "0" "$(called close-issue)" "state: an unparseable list never closes blind"
 assert_contains "$OUT" "warn reason=issue-state-unverified issue=42" "state: an unparseable list warns"
+# Another provider (gitlab: capped list, items carry iid): the list is not trusted, so
+# close-issue runs even when the issue is absent from list-issues (main's behaviour).
+reset_stubs; cfg_json '{"vcs": {"provider": "gitlab"}}'
+set_stub list-issues 0 "[$(issue_json 7 "")]"
+pm 9 42
+assert_eq "1" "$(called close-issue)" "state: gitlab closes even when the issue is absent from list-issues"
+assert_not_contains "$OUT" "issue-state-unverified" "state: gitlab never warns about the state"
+reset_stubs; cfg_json '{"vcs": {"provider": "gitlab"}}'
+set_stub list-issues 1 "" "boom"
+pm 9 42
+assert_eq "1" "$(called close-issue)" "state: gitlab closes without reading the list at all"
 # Run twice on the same merged issue: the first closes it, the second sees it closed.
 reset_stubs
 pm 9 42
