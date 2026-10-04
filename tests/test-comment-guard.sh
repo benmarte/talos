@@ -303,4 +303,39 @@ assert_eq "0" "$rc" \
 assert_contains "$out_reg" "/comments/" \
   "regression/post-merge: --allow-closed on closed issue returns URL"
 
+# ═════════════════════════════════════════════════════════════════════════════
+# #449: a positional body of exactly "-" is refused before provider dispatch.
+# "-" is not stdin for a positional (only `--body-file -` is); it used to post a
+# one-character comment and exit 0, losing the hand-off text (#349).
+# ═════════════════════════════════════════════════════════════════════════════
+printf '# plan\n\n- [ ] Item one <!-- id: 1 -->\n' > plan.md
+for _449_p in github github-api gitlab azure file; do
+  case "$_449_p" in
+    github-api) printf '{"vcs": {"provider": "github-api", "repo": "acme/widget"}}\n' > talos.pipeline.json ;;
+    azure)      printf '{"vcs": {"provider": "azure", "repo": "myrepo"}}\n' > talos.pipeline.json ;;
+    file)       printf '{"vcs": {"provider": "file", "file": {"source": {"path": "plan.md"}}}}\n' > talos.pipeline.json ;;
+    *)          printf '{"vcs": {"provider": "%s", "repo": "acme/widget"}}\n' "$_449_p" > talos.pipeline.json ;;
+  esac
+  export GITHUB_TOKEN="test-token-449"
+  for _449_v in comment-issue comment-pr; do
+    : > "$GH_LOG"; : > "$CURL_LOG"; _449_plan="$(cat plan.md)"
+    out="$(bash "$VCS" "$_449_v" 7 - 2>&1)"; rc=$?
+    assert_eq "1" "$rc" "#449 $_449_p/$_449_v: a positional '-' body exits 1"
+    assert_contains "$out" "--body-file -" "#449 $_449_p/$_449_v: the hint names the stdin form"
+    assert_eq "" "$(cat "$GH_LOG")$(cat "$CURL_LOG")" "#449 $_449_p/$_449_v: nothing reached the provider"
+    assert_eq "$_449_plan" "$(cat plan.md)" "#449 $_449_p/$_449_v: nothing was written to the plan file"
+    out="$(bash "$VCS" "$_449_v" 7 --body - 2>&1)"; rc=$?
+    assert_eq "1" "$rc" "#449 $_449_p/$_449_v: '--body -' is refused the same way"
+  done
+done
+unset GITHUB_TOKEN
+# The stdin form is untouched, even when the text on stdin is itself "-".
+printf '{"vcs": {"provider": "github", "repo": "acme/widget"}}\n' > talos.pipeline.json
+out="$(printf 'from stdin\n' | bash "$VCS" --dry-run comment-issue 7 --body-file - 2>&1)"; rc=$?
+assert_eq "0" "$rc" "#449 control: --body-file - still reads stdin"
+assert_contains "$out" "--body from stdin" "#449 control: the stdin text is the body"
+out="$(printf -- '-\n' | bash "$VCS" --dry-run comment-pr 7 --body-file - 2>&1)"; rc=$?
+assert_eq "0" "$rc" "#449 control: a stdin body that is exactly '-' is not refused"
+rm -f talos.pipeline.json plan.md
+
 finish

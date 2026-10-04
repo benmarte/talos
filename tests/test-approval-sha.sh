@@ -275,6 +275,23 @@ _h="$(_delta_428 "docs/$_UE.md")"
 out="$(vcs_check "$_h" '[{"name":"qa:pass"}]' "$_c")"; rc=$?
 assert_exit_code 0 "$rc" "#428 docs/<non-ASCII>.md only: stays waived, exits 0"
 
+# #449 (C33): a changed path that is not valid UTF-8 cannot be decoded, so it
+# cannot be judged waivable: fail closed. Name it `\377.md` (waivable by *.md if
+# it could be read) and write the commit with plumbing, because some file systems
+# (APFS) refuse to create such a file.
+_BADNAME="$(printf '\377.md')"
+_bad_tree="$( { git ls-tree -z "$SHA_A"; printf '100644 blob %s\t%s\0' "$(printf 'x\n' | git hash-object -w --stdin)" "$_BADNAME"; } | git mktree -z)"
+_bad_head="$(git commit-tree "$_bad_tree" -p "$SHA_A" -m "449 invalid UTF-8 path")"
+assert_eq "ff2e6d6400" "$(git diff --name-only -z "$SHA_A" "$_bad_head" | od -An -tx1 | tr -d ' \n')" \
+  "#449 control: the fixture commit carries the raw invalid-UTF-8 path"
+out="$(vcs_check "$_bad_head" '[{"name":"qa:pass"}]' "$_c")"; rc=$?
+assert_exit_code 1 "$rc" "#449 invalid UTF-8 path in the delta: exits 1 (fail closed)"
+assert_contains "$out" "STALE qa:pass (qa): git diff failed" "#449 invalid UTF-8 path in the delta: qa approval stale, path unreadable"
+printf '%s\n' '{"merge": {"approval_waiver_paths": ["*.md*"]}}' > test-approval-config.json
+out="$(vcs_check "$_bad_head" '[{"name":"qa:pass"}]' "$_c")"; rc=$?
+printf '{}' > test-approval-config.json
+assert_exit_code 1 "$rc" "#449 invalid UTF-8 path with a broad config waiver: still exits 1"
+
 # A rename out of skills/ into docs/ reports the old path too (--no-renames).
 git checkout -q -B tmp-428 "$SHA_A"
 mkdir -p skills/x

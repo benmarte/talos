@@ -311,4 +311,47 @@ assert_eq "0" "$rc12" "github/label-pr: --require-marker with marker exits 0"
 assert_contains "$(cat "$GH_LOG")" "pr edit" \
   "github/label-pr: --require-marker with marker applies label"
 
+# ═════════════════════════════════════════════════════════════════════════════
+# #449: both marker matches (the label-pr warning and --require-marker) anchor on
+# the whole marker comment. A comment that QUOTES the marker mid-line (a
+# quote-reply, or prose about the format) used to satisfy a substring match.
+# ═════════════════════════════════════════════════════════════════════════════
+_449_sha="abc123sha000000000000000000000000000000"
+_449_mk="<!-- talos:approval sha=$_449_sha role=qa -->"
+for _449_body in \
+    "> $_449_mk" \
+    "see $_449_mk for the format" \
+    "$_449_mk trailing prose" \
+    "<!-- talos:approval sha=$_449_sha role=qa --> and more"; do
+  _449_json="$(_B="$_449_body" python3 -I -c 'import json,os; print(json.dumps([{"body": os.environ["_B"]}]))')"
+  : > "$GH_LOG"
+  err="$(STUB_PR_STATE=OPEN STUB_PR_HEAD_SHA="$_449_sha" STUB_PR_LABELS_JSON='[]' \
+          STUB_PR_COMMENTS_JSON="$_449_json" \
+          bash "$VCS" label-pr 9 --add qa:pass 2>&1 >/dev/null)"; rc=$?
+  assert_eq "0" "$rc" "#449 quoted marker ($_449_body): label-pr still exits 0"
+  assert_contains "$err" "WARNING" "#449 quoted marker ($_449_body): the missing-marker WARNING fires"
+  : > "$GH_LOG"
+  err="$(STUB_PR_STATE=OPEN STUB_PR_HEAD_SHA="$_449_sha" STUB_PR_LABELS_JSON='[]' \
+          STUB_PR_COMMENTS_JSON="$_449_json" \
+          bash "$VCS" label-pr 9 --add qa:pass --require-marker 2>&1 >/dev/null)"; rc=$?
+  assert_eq "1" "$rc" "#449 quoted marker ($_449_body): --require-marker refuses"
+  assert_not_contains "$(cat "$GH_LOG")" "pr edit" "#449 quoted marker ($_449_body): no label applied"
+done
+# The real marker still counts: on its own line in a longer body, with stray
+# indentation, or with CRLF line endings.
+for _449_body in \
+    "$(printf 'Verdict: pass\n\n%s' "$_449_mk")" \
+    "  $_449_mk  " \
+    "$(printf 'Verdict\r\n%s\r\n' "$_449_mk")"; do
+  _449_json="$(_B="$_449_body" python3 -I -c 'import json,os; print(json.dumps([{"body": os.environ["_B"]}]))')"
+  err="$(STUB_PR_STATE=OPEN STUB_PR_HEAD_SHA="$_449_sha" STUB_PR_LABELS_JSON='[]' \
+          STUB_PR_COMMENTS_JSON="$_449_json" \
+          bash "$VCS" label-pr 9 --add qa:pass 2>&1 >/dev/null)"
+  assert_not_contains "$err" "WARNING" "#449 whole-line marker still satisfies the warning check"
+  err="$(STUB_PR_STATE=OPEN STUB_PR_HEAD_SHA="$_449_sha" STUB_PR_LABELS_JSON='[]' \
+          STUB_PR_COMMENTS_JSON="$_449_json" \
+          bash "$VCS" label-pr 9 --add qa:pass --require-marker 2>&1 >/dev/null)"; rc=$?
+  assert_eq "0" "$rc" "#449 whole-line marker still satisfies --require-marker"
+done
+
 finish

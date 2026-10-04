@@ -352,6 +352,26 @@ TALOS_WRITE_LOG="$J" bash "$VCS" read-comments 5 >/dev/null 2>&1
 TALOS_WRITE_LOG="$J" bash "$VCS" --dry-run comment-issue 5 'hello' >/dev/null 2>&1
 assert_eq "comment-issue" "$(cat "$J")" "journal: read verbs and --dry-run append nothing"
 
+# #449: `create-pr --draft` returns through the draft-gate dispatcher, which exits
+# itself, and used to skip the journal: a failover after the PR was opened as a
+# draft would open a second one.
+: > "$J"
+printf 'pr body\n' > "$SANDBOX/pr-body.md"
+TALOS_WRITE_LOG="$J" bash "$VCS" create-pr feat/x "title" "$SANDBOX/pr-body.md" >/dev/null 2>&1
+assert_eq "create-pr" "$(cat "$J")" "journal: a successful create-pr appends its verb name"
+: > "$J"
+TALOS_WRITE_LOG="$J" bash "$VCS" create-pr feat/x "title" "$SANDBOX/pr-body.md" --draft >/dev/null 2>&1
+assert_eq "create-pr" "$(cat "$J")" "journal: a successful create-pr --draft appends its verb name (#449)"
+: > "$J"
+TALOS_WRITE_LOG="$J" bash "$VCS" --dry-run create-pr feat/x "title" "$SANDBOX/pr-body.md" --draft >/dev/null 2>&1
+assert_eq "0" "$(wc -c < "$J" | tr -d ' ')" "journal: create-pr --draft --dry-run appends nothing"
+# github-api refuses --draft (exit 2): a failed create-pr --draft journals nothing.
+set_cfg '{"vcs": {"provider": "github-api", "repo": "acme/widget"}}'
+GITHUB_TOKEN=t TALOS_WRITE_LOG="$J" bash "$VCS" create-pr feat/x "title" "$SANDBOX/pr-body.md" --draft >/dev/null 2>&1; _449_rc=$?
+assert_eq "2" "$_449_rc" "journal: control, github-api create-pr --draft is exit 2"
+assert_eq "0" "$(wc -c < "$J" | tr -d ' ')" "journal: a failed create-pr --draft appends nothing"
+set_cfg '{"agents": {"fallback": ["codex"]}}'
+
 # ═══ 9. Checkpoint ══════════════════════════════════════════════════════════
 reset
 set_cfg '{"agents": {"fallback": ["codex"]}}'
