@@ -161,6 +161,20 @@ grep -v "^markers.verify_authors$(printf '\t')" "$SCRIPTS/pipeline-defaults.sh" 
 assert_eq "0" "$(grep -c "^markers.verify_authors$(printf '\t')" "$D/pipeline-defaults.sh" || true)" "the missing-row variant has no markers.verify_authors row"
 check_closed "$D" "table missing a security row"
 
+# one row whose key is every security key joined by spaces (the real rows gone)
+# must not satisfy the check (#483)
+D="$(variant_dir joined)" || exit 1
+awk -F'\t' -v keys="$(echo $SEC_KEYS)" 'BEGIN { n = split(keys, a, " "); for (i = 1; i <= n; i++) s[a[i]] = 1 }
+  ($1 in s) { if (!done) { printf "%s\ts\tx\t-\t-\tany\n", keys; done = 1 } next } { print }' \
+  "$SCRIPTS/pipeline-defaults.sh" > "$D/pipeline-defaults.sh" || exit 1
+assert_eq "1" "$(grep -c '^merge.forbidden_files merge.forbidden_files_replace ' "$D/pipeline-defaults.sh" || true)" "the joined-keys variant has the joined row"
+assert_eq "0" "$(grep -c "^merge.auto$(printf '\t')" "$D/pipeline-defaults.sh" || true)" "the joined-keys variant has no merge.auto row"
+check_closed "$D" "table with one joined-keys row"
+
+# a split cache preset by an inherited environment is dropped when the table is sourced
+assert_eq "unset|unset" "$(_TD_ROWS_SRC=forged _TD_ROWS=forged bash -c '. "$1"; echo "${_TD_ROWS_SRC-unset}|${_TD_ROWS-unset}"' _ "$SCRIPTS/pipeline-defaults.sh")" \
+  "a preset _TD_ROWS / _TD_ROWS_SRC from the environment is unset by the table"
+
 # the check helper itself missing: nothing can say which keys are safe
 D="$(variant_dir nocheck)" || exit 1
 rm -f "$D/pipeline-defaults-check.sh"

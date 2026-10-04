@@ -74,6 +74,10 @@
 # Tabs matter: keep a real tab between columns. tests/test-config-defaults-table.sh
 # checks that every row has six fields.
 
+# The split cache (_talos_defaults_split) is this process's own: drop anything
+# an inherited environment preset, before any use (#483).
+unset _TD_ROWS _TD_ROWS_SRC
+
 IFS= read -r -d '' _TALOS_DEFAULTS_RAW <<'TALOS_Qz7vK2mXr9Lp' || true
 base_branch	str		derived	-	repo
 release_branch	str	main	-	-	repo
@@ -253,12 +257,29 @@ _talos_default() {
   printf '%s' "${_TD_DEFAULT//\\n/$'\n'}"
 }
 
+# _talos_defaults_split -- split the table into one array element per row
+# (_TD_ROWS), once per process. The walkers below used to peel one row at a time
+# off the front of the whole ~16 KB string (copying what was left on every step);
+# word-splitting it once and looping over the array is linear, and cut each walk
+# from ~30 ms to a few (#483). Newline is the only separator, so a row's empty
+# columns (tab-separated) are untouched; a "*" in a key is never globbed.
+_talos_defaults_split() {
+  [ "${_TD_ROWS_SRC-x}" = "$_TALOS_DEFAULTS_TSV" ] && return 0
+  local IFS=$'\n' _noglob=1
+  case "$-" in *f*) _noglob=0 ;; esac
+  set -f
+  # shellcheck disable=SC2206  # the word-splitting is the point
+  _TD_ROWS=($_TALOS_DEFAULTS_TSV)
+  [ "$_noglob" -eq 0 ] || set +f
+  _TD_ROWS_SRC="$_TALOS_DEFAULTS_TSV"
+}
+
 # _talos_defaults_keys -- print every table key, one per line, in table order.
 _talos_defaults_keys() {
-  local _rest="${_TALOS_DEFAULTS_TSV#$'\n'}"
-  while [ -n "$_rest" ]; do
-    printf '%s\n' "${_rest%%$'\t'*}"
-    case "$_rest" in *$'\n'*) _rest="${_rest#*$'\n'}" ;; *) _rest="" ;; esac
+  local _row
+  _talos_defaults_split
+  for _row in ${_TD_ROWS[@]+"${_TD_ROWS[@]}"}; do
+    printf '%s\n' "${_row%%$'\t'*}"
   done
 }
 
@@ -266,11 +287,11 @@ _talos_defaults_keys() {
 # known-config-keys list pipeline-config.sh hands to its unknown-key check.
 # Generated here so the list can never drift from the table.
 _talos_known_keys_json() {
-  local _rest="${_TALOS_DEFAULTS_TSV#$'\n'}" _out="[" _sep=$'\n  '
-  while [ -n "$_rest" ]; do
-    _out="$_out$_sep\"${_rest%%$'\t'*}\""
+  local _row _out="[" _sep=$'\n  '
+  _talos_defaults_split
+  for _row in ${_TD_ROWS[@]+"${_TD_ROWS[@]}"}; do
+    _out="$_out$_sep\"${_row%%$'\t'*}\""
     _sep=$',\n  '
-    case "$_rest" in *$'\n'*) _rest="${_rest#*$'\n'}" ;; *) _rest="" ;; esac
   done
   printf '%s\n]' "$_out"
 }
@@ -280,18 +301,16 @@ _talos_known_keys_json() {
 # that has an env override. pipeline-config.sh prepends it to the shared loader
 # (_CFG_LOADER_PY) so the python side never carries its own copy of either list.
 _talos_scope_env_json() {
-  local _rest="${_TALOS_DEFAULTS_TSV#$'\n'}" _out="[" _sep=$'\n  ' _line _f
-  local _key _scope _env
-  while [ -n "$_rest" ]; do
-    _line="${_rest%%$'\n'*}"
-    _key="${_line%%$'\t'*}"; _f="${_line#*$'\t'}"        # type default derived env scope
+  local _row _out="[" _sep=$'\n  ' _f _key _scope _env
+  _talos_defaults_split
+  for _row in ${_TD_ROWS[@]+"${_TD_ROWS[@]}"}; do
+    _key="${_row%%$'\t'*}"; _f="${_row#*$'\t'}"          # type default derived env scope
     _f="${_f#*$'\t'}"; _f="${_f#*$'\t'}"; _f="${_f#*$'\t'}"  # env scope
     _env="${_f%%$'\t'*}"; _scope="${_f#*$'\t'}"
     if [ "$_scope" = "repo" ] || [ "$_env" != "-" ]; then
       _out="$_out$_sep[\"$_key\", \"$_scope\", \"$_env\"]"
       _sep=$',\n  '
     fi
-    case "$_rest" in *$'\n'*) _rest="${_rest#*$'\n'}" ;; *) _rest="" ;; esac
   done
   printf '%s\n]' "$_out"
 }
@@ -310,16 +329,15 @@ _talos_env_value() {
 # NUL-delimited key/value pairs, the --dump format. Wildcard keys never carry
 # an env override, so no key is expanded.
 _talos_env_dump() {
-  local _rest="${_TALOS_DEFAULTS_TSV#$'\n'}" _line _key _f _env
-  while [ -n "$_rest" ]; do
-    _line="${_rest%%$'\n'*}"
-    _key="${_line%%$'\t'*}"; _f="${_line#*$'\t'}"
+  local _row _key _f _env
+  _talos_defaults_split
+  for _row in ${_TD_ROWS[@]+"${_TD_ROWS[@]}"}; do
+    _key="${_row%%$'\t'*}"; _f="${_row#*$'\t'}"
     _f="${_f#*$'\t'}"; _f="${_f#*$'\t'}"; _f="${_f#*$'\t'}"
     _env="${_f%%$'\t'*}"
     if [ "$_env" != "-" ] && [ -n "${!_env:-}" ]; then
       printf '%s\0%s\0' "$_key" "${!_env}"
     fi
-    case "$_rest" in *$'\n'*) _rest="${_rest#*$'\n'}" ;; *) _rest="" ;; esac
   done
 }
 
