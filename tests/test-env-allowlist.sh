@@ -128,25 +128,24 @@ printf 'export SLACK_WEBHOOK_URL=%s\n' "$URL1" >> "$ENVF"
 PROBE='
 . "$1"
 [ "${2:-}" = widen ] && _TALOS_DOTENV_ALLOW="$_TALOS_DOTENV_ALLOW $3 "
-p0="$PATH"; h0="$HOME"; t0="${TMPDIR:-}"; i0="$IFS"; so0="$SHELLOPTS"
-for _v in BASH_ENV ENV LD_PRELOAD LD_LIBRARY_PATH DYLD_INSERT_LIBRARIES DYLD_LIBRARY_PATH PYTHONPATH PYTHONSTARTUP GIT_DIR GIT_SSH_COMMAND PROMPT_COMMAND BASHOPTS TALOS_ROLE TALOS_HERMES_ENV HTTPS_PROXY https_proxy; do
-  [ -z "${!_v+x}" ] || echo "BAD $_v"
-done
+# Snapshot every denied name (set or not, and its value) around the load and flag
+# any that changed. "Is it unset" is not portable: bash 4.1+ always sets
+# BASHOPTS and SHELLOPTS (macOS bash 3.2 sets neither), and a CI runner exports
+# GIT_*, PYTHON*, RUNNER_* and the like itself.
+snap() {
+  for _v in $DENIED_NAMES; do
+    if [ -n "${!_v+x}" ]; then printf "%s=set:%s\n" "$_v" "${!_v}"; else printf "%s=unset\n" "$_v"; fi
+  done
+}
+s0="$(snap)"
 talos_dotenv_load "$4" "repo .env"
-for _v in BASH_ENV ENV LD_PRELOAD LD_LIBRARY_PATH DYLD_INSERT_LIBRARIES DYLD_LIBRARY_PATH PYTHONPATH PYTHONSTARTUP GIT_DIR GIT_SSH_COMMAND PROMPT_COMMAND BASHOPTS TALOS_ROLE TALOS_HERMES_ENV HTTPS_PROXY https_proxy; do
-  [ -z "${!_v+x}" ] || echo "BAD $_v"
-done
-[ "$PATH" = "$p0" ] || echo "BAD PATH"
-[ "$HOME" = "$h0" ] || echo "BAD HOME"
-[ "${TMPDIR:-}" = "$t0" ] || echo "BAD TMPDIR"
-[ "$IFS" = "$i0" ] || echo "BAD IFS"
-[ "$SHELLOPTS" = "$so0" ] || echo "BAD SHELLOPTS"
-[ "${TALOS_HOME:-}" = "${TH0:-}" ] || echo "BAD TALOS_HOME"
+s1="$(snap)"
+[ "$s0" = "$s1" ] || echo "BAD a denied name changed"
 printf "slack=%s\n" "${SLACK_WEBHOOK_URL:-}"
 echo done
 '
 
-RES="$(env $UNSETS TH0="${TALOS_HOME:-}" bash -c "$PROBE" probe "$SECRETS" narrow x "$ENVF" 2>"$ERR")"
+RES="$(env $UNSETS DENIED_NAMES="$DENIED" bash -c "$PROBE" probe "$SECRETS" narrow x "$ENVF" 2>"$ERR")"
 assert_not_contains "$RES" "BAD" "(c) no denied name is exported or changed by the loader"
 assert_contains "$RES" "slack=$URL1" "(c) the allow-listed key in the same file (export prefix) is exported"
 for n in $DENIED; do
@@ -156,7 +155,7 @@ check_not "(c) stderr never holds a value" grep -q '/evil/' "$ERR"
 assert_eq "1" "$(grep -c 'ignoring PATH (' "$ERR")" "(c) one line per ignored key"
 
 # The deny list wins even if a name were ever added to the allow list.
-RES="$(env $UNSETS TH0="${TALOS_HOME:-}" bash -c "$PROBE" probe "$SECRETS" widen "BASH_ENV PATH LD_PRELOAD GIT_DIR HOME TMPDIR TALOS_ROLE IFS PYTHONPATH DYLD_INSERT_LIBRARIES PROMPT_COMMAND" "$ENVF" 2>/dev/null)"
+RES="$(env $UNSETS DENIED_NAMES="$DENIED" bash -c "$PROBE" probe "$SECRETS" widen "BASH_ENV PATH LD_PRELOAD GIT_DIR HOME TMPDIR TALOS_ROLE IFS PYTHONPATH DYLD_INSERT_LIBRARIES PROMPT_COMMAND" "$ENVF" 2>/dev/null)"
 assert_not_contains "$RES" "BAD" "(c) widening the allow list does not export a denied name (the deny list wins)"
 
 # ═════════════════════════════════════════════════════════════════════════════
