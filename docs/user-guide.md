@@ -2575,8 +2575,9 @@ A provider outage (HTTP 429, a spent quota or credit balance, an overloaded
 API, an auth failure, a dropped network) is not the model's fault, and a fix
 round or a `pipeline:blocked` is the wrong answer to it. With a failover chain
 configured, `pipeline-agent.sh` reruns the same stage, with the same prompt,
-on the next runner. Without one, nothing changes: output, stderr and exit code
-are exactly the runner's, and `.talos/providers.json` is never read or written.
+on the next runner. Without one, nothing changes: output and exit code are
+exactly the runner's, stderr is the runner's plus the `talos:runner` and
+`talos:usage` marker lines, and `.talos/providers.json` is never read or written.
 
 ```yaml
 agents:
@@ -2676,6 +2677,75 @@ sets `pipeline:blocked` with a resume note naming the provider, and stops.
 `bash scripts/pipeline-agent.sh --resolve <role>` appends `fallback=<a,b>`
 only when a chain resolves (so a role without one keeps the exact line);
 `--resolve-all` adds `fallback=` and `fallback_origin=` columns the same way.
+
+### Token usage on adapter runs (#420)
+
+Runs through `pipeline-agent.sh` (every runner except the native Claude Code
+subagent path and pi inline mode) used to record `tokens: null`, so
+`pipeline-events.sh cost` listed them as `unrecorded` and
+`limits.tokens_per_issue` never saw them. Each runner attempt now reports its
+usage to the stage event.
+
+**Definition.** `tokens` is **input + output + cache-creation tokens, excluding
+cache reads**, for every runner, so figures are comparable and re-read context
+does not trip the budget guard. A runner that reports input and output
+separately is summed into the one integer. Values are integers of at most 15
+digits; anything else is `null`, and unknown is never `0`. (The native path's
+`subagent_tokens` is composed by the Agent tool and is not guaranteed to match.)
+
+| Runner | Source | `tokens` |
+|---|---|---|
+| `claude` | `claude -p --output-format json`, added after `agents.runner_args` and before the prompt; the message text is the `result` field and is printed as text mode prints it | `modelUsage` summed over every model (subagents included): `inputTokens + outputTokens + cacheCreationInputTokens`. A run with no `modelUsage` falls back to the top-level `usage`: `input_tokens + output_tokens + cache_creation_input_tokens` (which omits subagent tokens). |
+| `custom` | the `TALOS_USAGE_FILE` sidecar | the file's `tokens`, as the runner computed it |
+| `codex`, `gemini`, `antigravity`, `pi` | none | `null` (no flag is added; the invocation is unchanged) |
+
+The claude shapes above were taken from Anthropic's documented headless and
+cost-tracking output formats, not captured from a live run; the test fixtures in
+`tests/fixtures/runner-usage/` follow the same documented shape. If a future CLI
+version changes a field name the parse reads as unusable: the raw stdout is
+printed, the event records `null`, and the exit code is the runner's.
+
+**Switches.** `agents.capture_usage` (default `true`): `false` leaves the claude
+invocation exactly as before. An `--output-format` already in
+`agents.runner_args` also skips the capture, so your own choice is never
+overridden. Stdout and the exit code are the runner's either way; a failover
+classifier reads the extracted message text, so a JSON-mode rate-limit error
+still fails over.
+
+**`custom` sidecar.** `TALOS_USAGE_FILE` is exported to `runner_cmd` alongside
+`TALOS_ROLE`, `TALOS_ISSUE_NUMBER`, `TALOS_WORKTREE_PATH` and `TALOS_EFFORT`. It
+is a path in a fresh `mktemp -d` directory, created per attempt (so one
+failover attempt's file is never read as the next one's) and removed when the
+attempt ends, including on failure. Write one JSON object; every key is
+optional:
+
+```bash
+# in the runner_cmd wrapper, after the local model finished
+printf '{"tokens": %s, "tool_uses": %s, "model": "qwen2.5-coder"}\n' \
+  "$TOTAL_TOKENS" "$TOOL_CALLS" > "$TALOS_USAGE_FILE"
+```
+
+`tokens` and `tool_uses` must be JSON integers from 0 to 15 digits (a string,
+float, boolean or negative number reads as `null`); `model` must match
+`[A-Za-z0-9._:-]{1,100}`. An absent, empty or unparseable file records no usage.
+Tokens are never gated on a price: a local model with zero cost records its
+count like any other runner.
+
+**Attribution and attempts.** The event names the runner that ran: a role routed
+with `agents.roles.<role>.runner`, or the failover runner that finished the
+stage. The model is the config-resolved one for the primary runner, and only
+what the runner's own output reported for a fallback runner (else `null`). When a
+failover happens, a failed attempt that reported usage is recorded as one
+`stage_attempt` event (verdict `FAIL`, its own runner and tokens); the final
+attempt keeps `stage_complete`. A failed attempt with no usage adds no event.
+The `events` count in `pipeline-events.sh cost` includes `stage_attempt` events.
+Every attempt prints `talos:usage runner=<r> tokens=<N|null>` on stderr.
+
+**Behaviour change.** Because adapter and failover runs now record tokens,
+`pipeline-budget.sh check` counts them toward `limits.tokens_per_issue`; before,
+the guard was blind to them. `pipeline-spend-format.py` is unchanged. Relay
+events the orchestrator writes for an adapter stage (Rule 3) still carry what the
+orchestrator passes; coordinating a single writer is tracked in #422.
 
 ### Adversarial pre-merge stage (`roles.adversarial`, #237)
 

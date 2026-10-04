@@ -80,6 +80,13 @@
 #   agents.runner_args  list of extra CLI args appended to claude/pi/codex/gemini/agy
 #   agents.runner_cmd   full shell command for runner=custom;
 #                       receives the prompt on stdin
+#   agents.capture_usage  (#420) bool, default true. Records each attempt's token
+#                       usage in the stage event. claude gets `--output-format
+#                       json` (after agents.runner_args, before the prompt) and
+#                       the script prints the message text only; `false`, or an
+#                       --output-format already in agents.runner_args, leaves
+#                       the invocation alone and tokens stay null. See the
+#                       "Usage capture" block below.
 #   agents.roles.<role>.runner      per-role override of agents.runner (#167).
 #                                    Resolved role-first: this key wins when
 #                                    set, else agents.runner, else "claude".
@@ -159,6 +166,14 @@
 # TALOS_ISSUE_NUMBER is the issue number passed via TALOS_ISSUE=<N> in the caller's
 # environment; empty string when the caller does not set TALOS_ISSUE.
 # TALOS_WORKTREE_PATH is the $PWD at the time pipeline-agent.sh was invoked.
+# TALOS_USAGE_FILE (#420) is the path of the usage sidecar for THIS attempt, in a
+# fresh mktemp -d directory that is removed when the attempt ends. A runner_cmd
+# may write ONE JSON object there: {"tokens": N, "tool_uses": N, "model": "..."},
+# every key optional. tokens/tool_uses must be integers 0..999999999999999 (no
+# booleans, floats, strings or negatives); model must match [A-Za-z0-9._:-]{1,100}.
+# Each field that is absent or invalid reads as null (never 0); a missing, empty
+# or unparseable file records no usage. Local models count: tokens are never
+# gated on a price.
 # TALOS_EFFORT is the role's resolved agents.effort (#271, see the config-keys
 # block above) — empty string when neither agents.roles.<role>.effort nor
 # agents.effort is set. A runner_cmd maps it to its own CLI's effort/reasoning
@@ -167,7 +182,8 @@
 #   if [ "${TALOS_ISSUE_NUMBER:-}" != "$EXPECTED" ]; then exit 1; fi
 #
 # Runner invocations:
-#   claude       claude -p --setting-sources project [args] <prompt>
+#   claude       claude -p --setting-sources project [args] [--output-format json] <prompt>
+#                (the --output-format json capture flag is agents.capture_usage, #420)
 #                (--setting-sources project keeps user-global CLAUDE.md
 #                 instructions out of pipeline workers)
 #   pi           pi -p [args] <prompt>     # pi print mode, one-shot headless stage
@@ -826,6 +842,210 @@ done <<EOF
 $(cfg agents.runner_args)
 EOF
 
+# ── Usage capture (#420) ──────────────────────────────────────────────────────
+# One attempt = one _run_runner call. Its usage lands in _AT_TOKENS / _AT_TOOLS /
+# _AT_MODEL (empty = unknown: the event then carries null, never 0, and no
+# --tokens flag is passed). Sources, per runner:
+#   claude   `--output-format json` (agents.capture_usage): one result object; the
+#            message text is its `result`, printed as text mode would print it.
+#            tokens = input + output + cache-creation, EXCLUDING cache reads (D1),
+#            summed over modelUsage (subagents included); a run with no
+#            modelUsage falls back to the top-level usage object. Output that is
+#            not a result object (or has no `result` string) is printed raw and
+#            records nothing.
+#   custom   the TALOS_USAGE_FILE sidecar (see the header).
+#   other    nothing: no flag is added and tokens stay null (codex, gemini,
+#            antigravity and pi have no committed, verified capture).
+# Each attempt gets a fresh mktemp -d (_UDIR), removed when the attempt ends and
+# again on exit, so one attempt's sidecar is never read as the next one's.
+_AT_TOKENS="" _AT_TOOLS="" _AT_MODEL="" _AT_RUNNER="" _UDIR="" _UDIR_TRAP=""
+_usage_end() {
+  [ -z "$_UDIR" ] || rm -rf "${_UDIR:?}"
+  _UDIR=""
+}
+_usage_begin() {
+  _usage_end
+  _UDIR="$(mktemp -d "${TMPDIR:-/tmp}/talos-usage.XXXXXX" 2>/dev/null)" || _UDIR=""
+  if [ -z "$_UDIR" ] || [ ! -d "$_UDIR" ]; then
+    _UDIR=""
+    return 0
+  fi
+  if [ -z "$_UDIR_TRAP" ]; then
+    _UDIR_TRAP=1
+    if command -v _talos_on_exit >/dev/null 2>&1; then
+      _talos_on_exit '[ -z "${_UDIR:-}" ] || rm -rf "${_UDIR:?}"'
+    else
+      trap '[ -z "${_UDIR:-}" ] || rm -rf "${_UDIR:?}"' EXIT
+    fi
+  fi
+}
+# _usage_capture_wanted: 0 when claude should be asked for JSON output.
+_usage_capture_wanted() {
+  local _a
+  [ "$(cfg agents.capture_usage)" != "false" ] || return 1
+  for _a in ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"}; do
+    case "$_a" in --output-format | --output-format=*) return 1 ;; esac
+  done
+  return 0
+}
+# _usage_py <claude|sidecar> <input-file> <kv-out-file>: the one parser. Writes
+# `tokens=` / `tool_uses=` / `model=` lines for the fields that validate to
+# <kv-out-file>; for `claude` it also prints the message text on stdout. Exit 1
+# (nothing printed) when the input is not usable as that source.
+_usage_py() {
+  python3 -I - "$1" "$2" "$3" <<'TALOS_USAGE_PY'
+import json
+import re
+import sys
+
+mode, src, out = sys.argv[1:4]
+CAP = 10 ** 15
+MODEL_RE = re.compile(r"[A-Za-z0-9._:-]{1,100}\Z")
+
+
+def count(v):
+    """A real integer in 0..CAP-1; never a bool, float, string or negative."""
+    return v if type(v) is int and 0 <= v < CAP else None
+
+
+def write_kv(tokens, tool_uses, model):
+    lines = []
+    if tokens is not None and tokens < CAP:
+        lines.append("tokens=%d" % tokens)
+    if tool_uses is not None:
+        lines.append("tool_uses=%d" % tool_uses)
+    if isinstance(model, str) and MODEL_RE.match(model):
+        lines.append("model=" + model)
+    with open(out, "w") as f:
+        f.write("".join(l + "\n" for l in lines))
+
+
+def claude_tokens(obj):
+    """(tokens, model): D1 = input + output + cache creation, no cache reads."""
+    mu = obj.get("modelUsage")
+    if isinstance(mu, dict) and mu:
+        total, best, model = 0, -1, None
+        for name, u in mu.items():
+            if not isinstance(u, dict):
+                return None, None
+            i, o = count(u.get("inputTokens")), count(u.get("outputTokens"))
+            c = count(u.get("cacheCreationInputTokens", 0))
+            if i is None or o is None or c is None:
+                return None, None
+            n = i + o + c
+            total += n
+            if n > best:
+                best, model = n, name
+        return total, model
+    u = obj.get("usage")
+    if isinstance(u, dict):
+        i, o = count(u.get("input_tokens")), count(u.get("output_tokens"))
+        c = count(u.get("cache_creation_input_tokens", 0))
+        if i is not None and o is not None and c is not None:
+            return i + o + c, None
+    return None, None
+
+
+try:
+    with open(src, "rb") as f:
+        raw = f.read(64 * 1024 * 1024 if mode == "claude" else 65536)
+    obj = json.loads(raw.decode("utf-8"))
+except Exception:
+    sys.exit(1)
+
+if mode == "sidecar":
+    if not isinstance(obj, dict):
+        sys.exit(1)
+    write_kv(count(obj.get("tokens")), count(obj.get("tool_uses")), obj.get("model"))
+    sys.exit(0)
+
+if isinstance(obj, list):
+    results = [o for o in obj if isinstance(o, dict) and o.get("type") == "result"]
+    obj = results[-1] if results else None
+if not isinstance(obj, dict) or not isinstance(obj.get("result"), str):
+    sys.exit(1)
+tokens, model = claude_tokens(obj)
+write_kv(tokens, None, model)
+sys.stdout.buffer.write((obj["result"] + "\n").encode("utf-8", "replace"))
+TALOS_USAGE_PY
+}
+# _usage_load <kv-file>: read the validated fields into _AT_*; every value is
+# re-checked here (digits only, at most 15) so a bad line is simply ignored.
+_usage_load() {
+  local _k _v
+  while IFS='=' read -r _k _v; do
+    case "$_k" in
+      tokens)
+        case "$_v" in "" | *[!0-9]*) : ;; *) [ "${#_v}" -le 15 ] && _AT_TOKENS="$_v" ;; esac ;;
+      tool_uses)
+        case "$_v" in "" | *[!0-9]*) : ;; *) [ "${#_v}" -le 15 ] && _AT_TOOLS="$_v" ;; esac ;;
+      model)
+        case "$_v" in "" | *[!A-Za-z0-9._:-]*) : ;; *) _AT_MODEL="$_v" ;; esac ;;
+    esac
+  done <"$1"
+}
+# _usage_finish_claude <raw-stdout-file>: print the message text (or, when the
+# output is not a usable result object, the raw stdout) and load the usage.
+_usage_finish_claude() {
+  if _usage_py claude "$1" "$_UDIR/usage.kv" >"$_UDIR/text"; then
+    cat "$_UDIR/text"
+    _usage_load "$_UDIR/usage.kv"
+  else
+    cat "$1"
+  fi
+  _usage_end
+}
+# _usage_finish_sidecar <file>: load the custom runner's sidecar, if usable.
+_usage_finish_sidecar() {
+  if [ -f "$1" ] && [ ! -L "$1" ] && _usage_py sidecar "$1" "$_UDIR/usage.kv"; then
+    _usage_load "$_UDIR/usage.kv"
+  fi
+  _usage_end
+}
+# _attempt_model <runner>: the model for this attempt's event. The primary runner
+# names its config-resolved model (when it passes the event's charset); a
+# fallback runner names only what its own output reported. Empty = null.
+_attempt_model() {
+  local _m=""
+  if [ "$1" = "$_FO_PRIMARY" ]; then
+    _m="$(_resolve_model "$ROLE")"
+    case "$_m" in "" | *[!A-Za-z0-9._:-]*) _m="" ;; esac
+    [ "${#_m}" -le 100 ] || _m=""
+  fi
+  [ -n "$_m" ] || _m="$_AT_MODEL"
+  printf '%s' "$_m"
+}
+# _usage_args <runner>: the --tokens/--tool-uses/--model flags for this attempt,
+# one per line (empty when nothing is known), appended to an event's argv.
+_usage_args() {
+  local _m
+  [ -z "$_AT_TOKENS" ] || printf '%s\n%s\n' --tokens "$_AT_TOKENS"
+  [ -z "$_AT_TOOLS" ] || printf '%s\n%s\n' --tool-uses "$_AT_TOOLS"
+  _m="$(_attempt_model "$1")"
+  [ -z "$_m" ] || printf '%s\n%s\n' --model "$_m"
+}
+# _attempt_flush: a failed attempt that reported usage, once another attempt is
+# about to start, gets its own stage_attempt event under its own runner so cost
+# totals stay true. The last attempt is never flushed: it is the stage_complete.
+_attempt_flush() {
+  local _arg _args=()
+  [ -n "$_AT_TOKENS" ] && [ -n "$_AT_RUNNER" ] || return 0
+  [ -f "$SCRIPT_DIR/pipeline-hooks.sh" ] || return 0
+  while IFS= read -r _arg; do
+    [ -z "$_arg" ] || _args+=("$_arg")
+  done <<EOF
+$(_usage_args "$_AT_RUNNER")
+EOF
+  bash "$SCRIPT_DIR/pipeline-hooks.sh" post_stage stage_attempt "$ROLE" "$TALOS_ISSUE_NUMBER" \
+    --verdict FAIL --runner "$_AT_RUNNER" ${_args[@]+"${_args[@]}"} || true
+  _AT_TOKENS="" _AT_TOOLS="" _AT_MODEL=""
+}
+# _usage_marker <runner>: one stderr line per attempt, so a caller that writes
+# its own event (talos run, #422) can see what was recorded.
+_usage_marker() {
+  echo "talos:usage runner=$1 tokens=${_AT_TOKENS:-null}" >&2
+}
+
 # RC (#182): every branch below used to `exec` straight into the runner, so
 # the runner's exit code WAS this script's exit code and nothing ran after
 # it. hooks.post_stage needs to fire once the runner exits (event
@@ -841,11 +1061,22 @@ RC=0
 _run_runner() {
 # (body not indented: tests/test-runner-conformance.sh finds the dispatch arms by column)
 local RUNNER="$1"
+_AT_TOKENS="" _AT_TOOLS="" _AT_MODEL="" _AT_RUNNER="$RUNNER"
 case "$RUNNER" in
   claude)
-    claude -p --setting-sources project \
-      ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} "$PROMPT"
-    RC=$?
+    _usage_end
+    if _usage_capture_wanted; then _usage_begin; fi
+    if [ -n "$_UDIR" ]; then
+      # #420: JSON output; its message text is printed below, as text mode would.
+      claude -p --setting-sources project \
+        ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} --output-format json "$PROMPT" >"$_UDIR/raw"
+      RC=$?
+      _usage_finish_claude "$_UDIR/raw"
+    else
+      claude -p --setting-sources project \
+        ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} "$PROMPT"
+      RC=$?
+    fi
     ;;
   codex)
     codex exec ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} "$PROMPT"
@@ -900,8 +1131,20 @@ case "$RUNNER" in
         trap 'rm -rf "$_PROMPT_DIR"' EXIT
       fi
     fi
+    # #420: the usage sidecar (see the header). A fresh directory per attempt;
+    # an inherited TALOS_USAGE_FILE never reaches the runner.
+    unset TALOS_USAGE_FILE
+    _usage_begin
+    if [ -n "$_UDIR" ]; then
+      TALOS_USAGE_FILE="$_UDIR/usage.json"
+      export TALOS_USAGE_FILE
+    fi
     sh -c "$RUNNER_CMD" <"$_PROMPT_FILE"
     RC=$?
+    if [ -n "$_UDIR" ]; then
+      _usage_finish_sidecar "$TALOS_USAGE_FILE"
+    fi
+    unset TALOS_USAGE_FILE
     ;;
     # No *) arm: RUNNER is already validated against the supported set
     # above, before the talos:runner marker is emitted -- an unknown value
@@ -1000,9 +1243,13 @@ _run_chain() {
     : >"$TALOS_WRITE_LOG"
     _snap="$(git for-each-ref refs/remotes 2>/dev/null)"
     _FO_FINAL="$_r"
+    _attempt_flush
     _run_runner "$_r" >"$_FO_OUT" 2>"$_FO_ERR"
+    # The classifier reads what _run_runner printed: for claude in JSON mode that
+    # is the extracted message text, so its line-anchored patterns still match.
     _classify_exit "$_r" "$RC" "$_FO_ERR" "$_FO_OUT"
     cat "$_FO_ERR" >&2
+    _usage_marker "$_r"
     if [ "$CLASS" != "provider" ]; then
       cat "$_FO_OUT"
       return
@@ -1034,6 +1281,7 @@ $(_fallback_chain "$ROLE" "$RUNNER")
 EOF
 if [ "${#CHAIN[@]}" -eq 0 ]; then
   _run_runner "$RUNNER"
+  _usage_marker "$RUNNER"
 else
   _run_chain
 fi
@@ -1053,11 +1301,18 @@ if [ -f "$SCRIPT_DIR/pipeline-hooks.sh" ]; then
   if [ -n "${TALOS_STAGE_DURATION_S:-}" ]; then
     _POST_STAGE_ARGS+=(--duration-s "$TALOS_STAGE_DURATION_S")
   fi
-  # #418: a stage that ran on a failover-chain runner names that runner (and a
-  # null model); every other stage's event is unchanged.
-  if [ -n "$_FO_FINAL" ] && [ "$_FO_FINAL" != "$_FO_PRIMARY" ]; then
-    _POST_STAGE_ARGS+=(--runner "$_FO_FINAL")
-  fi
+  # #418 / #420: the event names the runner that ran (a role-routed primary, or
+  # the failover runner that finished the stage), its model, and the usage the
+  # attempt reported. Passing --runner makes post_stage skip its own config-model
+  # fallback, so --model is passed here; --tokens / --tool-uses only when known
+  # (a flag with no value is an error, and unknown must stay null, never 0).
+  _PS_RUNNER="${_FO_FINAL:-$_FO_PRIMARY}"
+  _POST_STAGE_ARGS+=(--runner "$_PS_RUNNER")
+  while IFS= read -r _ps_arg; do
+    [ -z "$_ps_arg" ] || _POST_STAGE_ARGS+=("$_ps_arg")
+  done <<EOF
+$(_usage_args "$_PS_RUNNER")
+EOF
   bash "$SCRIPT_DIR/pipeline-hooks.sh" "${_POST_STAGE_ARGS[@]}"
 fi
 exit "$RC"
