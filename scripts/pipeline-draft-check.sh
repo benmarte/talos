@@ -368,35 +368,15 @@ def body(l):
 if any("\t" in l[:len(l) - len(l.lstrip())] for l in lines):
     refuse("tab indentation")
 
-_KEY = re.compile(r"\"((?:[^\"\\]|\\.)*)\"|'((?:[^']|'')*)'|([^\s:#'\"]+)")
-def _unescape(s):
-    return re.sub(r"\\(?:x([0-9a-fA-F]{2})|u([0-9a-fA-F]{4}))",
-                  lambda m: chr(int(m.group(1) or m.group(2), 16)), s)
-def key_form(l, key):
-    """How `key` is written on line l: "plain" (`key:`, the form this script
-    edits around), "other" (quoted, `key :`, `? key`, an escaped spelling) or None."""
-    s = body(l).strip()
-    if s.startswith(key + ":"):
-        return "plain"
-    complex_key = s.startswith("?")
-    if complex_key:
-        s = s[1:].lstrip()
-    m = _KEY.match(s)
-    if not m:
-        return None
-    if m.group(1) is not None:
-        name = _unescape(m.group(1))
-    elif m.group(2) is not None:
-        name = m.group(2).replace("''", "'")
-    else:
-        name = m.group(3)
-    rest = s[m.end():]
-    if not re.match(r"^\s*(:(\s|$).*|(#.*)?)$" if complex_key else r"^\s*:(\s|$)", rest):
-        return None
-    return "other" if name == key else None
-def nonplain(l, key):
-    """True when line l spells `key`, or a `<<:` merge key (which may carry it), in a form this script does not edit around."""
-    return key_form(l, key) == "other" or key_form(l, "<<") is not None
+# A mapping this script adds a key to (a job, the pull_request trigger) is only
+# edited when every key on it is a strict plain key. Anything else at that level
+# (quoted, tagged, anchored, `? key`, escapes, a `<<:` merge key, flow style) could
+# be spelling `if` or `types`, so adding one would duplicate it: report it instead.
+_PLAIN_KEY = re.compile(r"^\s*[A-Za-z_][A-Za-z0-9_-]*:(\s|$)")
+def odd_key(l, level):
+    s = l.strip()
+    return (sig(l) and indent(l) == level and s != "-" and not s.startswith("- ")
+            and not _PLAIN_KEY.match(body(l)))
 
 ops = []     # (index, "replace"|"after", new line without eol)
 manual = []  # existing job conditions we report but never touch
@@ -419,7 +399,7 @@ kids = [i for i in range(i_pr + 1, pr_end) if sig(lines[i])]
 ki = indent(lines[kids[0]]) if kids else ei + 2
 t_idx = next((i for i in kids if indent(lines[i]) == ki and re.match(r"^\s*types:", body(lines[i]))), None)
 trig_manual = ("manual: trigger pull_request: existing types left unchanged; add ready_for_review manually: types: " + TYPES)
-if any(indent(lines[i]) == ki and nonplain(lines[i], "types") for i in kids):
+if any(odd_key(lines[i], ki) for i in kids):
     manual.append(trig_manual)
 elif t_idx is None:
     ops.append((i_pr, "after", " " * ki + "types: " + TYPES))
@@ -469,7 +449,7 @@ for i in range(i_jobs + 1, j_end):
         continue
     kk = indent(lines[b])
     job_name = body(lines[i]).strip().rstrip(":").strip("\"'")
-    if any(sig(lines[k]) and indent(lines[k]) == kk and nonplain(lines[k], "if") for k in range(i + 1, job_end)):
+    if any(odd_key(lines[k], kk) for k in range(i + 1, job_end)):
         manual.append("manual: job %s: existing condition left unchanged; combine manually: if: (<your existing condition>) && %s"
                       % (job_name, SKIP))
         continue

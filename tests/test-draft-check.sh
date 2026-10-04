@@ -462,6 +462,20 @@ np_case complex-if "    ? if
     : github.actor != 'bot'" "$PLAIN_T" "$JOB_MANUAL"
 np_case escaped-if "    \"\\x69f\": github.actor != 'bot'" "$PLAIN_T" "$JOB_MANUAL"
 np_case merge-if '    <<: *defaults' "$PLAIN_T" "$JOB_MANUAL"
+np_case tagged-if "    !!str if: github.actor != 'bot'" "$PLAIN_T" "$JOB_MANUAL"
+np_case anchored-if "    &a if: github.actor != 'bot'" "$PLAIN_T" "$JOB_MANUAL"
+np_case wide-escape-if "    \"\\U00000069f\": github.actor != 'bot'" "$PLAIN_T" "$JOB_MANUAL"
+np_case block-complex-if '    ? |
+      if
+    : github.actor' "$PLAIN_T" "$JOB_MANUAL"
+np_case merge-beside-plain-if "    if: github.event.pull_request.draft != true
+    <<: *defaults" "$PLAIN_T" "$JOB_MANUAL"
+np_case tagged-types "$PLAIN_IF" '    !!str types: [opened]' "$TRIG_MANUAL"
+np_case anchored-types "$PLAIN_IF" '    &a types: [opened]' "$TRIG_MANUAL"
+np_case wide-escape-types "$PLAIN_IF" '    "\U00000074ypes": [opened]' "$TRIG_MANUAL"
+np_case block-complex-types "$PLAIN_IF" '    ? |
+      types
+    : [opened]' "$TRIG_MANUAL"
 np_case dq-types "$PLAIN_IF" '    "types": [opened]' "$TRIG_MANUAL"
 np_case sq-types "$PLAIN_IF" "    'types': [opened]" "$TRIG_MANUAL"
 np_case space-types "$PLAIN_IF" '    types : [opened]' "$TRIG_MANUAL"
