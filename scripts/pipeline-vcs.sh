@@ -7387,6 +7387,9 @@ _BODY_BOX_RE = re.compile(r'^(\s*[-*+]\s+)\[([ xX])\]')
 
 def detail_lines_for(indent, text):
     """Indent every line of a free-text body into an item's detail block."""
+    # The plan file is read back with universal newlines, so a lone \r (or \r\n)
+    # in the body becomes a line break there: split on every one of them.
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
     return [indent + _BODY_BOX_RE.sub(r'\1\\[\2]', ln) for ln in text.split('\n')]
 
 def ensure_ids(content):

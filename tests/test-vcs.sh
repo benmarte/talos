@@ -875,6 +875,25 @@ else
   pass "file: create-issue id is numeric"
 fi
 
+# #449 (security round): the plan file is read back with universal newlines, so a
+# lone \r (or \r\n) in a body is a line break there. Each must stay escaped.
+# $new_id is an open item; count box lines the way the reader sees them.
+_449_cr_boxes() { python3 -I -c "import re; print(len(re.findall(r'^\s*- \[[ xX]\] ', open('plan.md').read(), re.M)))"; }
+_449_cr_before="$(_449_cr_boxes)"; _449_cr_open="$(bash "$VCS" list-issues)"
+bash "$VCS" comment-issue 3 "$(printf 'note\r- [ ] smuggled new item\r- [x] smuggled done item')" >/dev/null
+assert_eq "$_449_cr_before" "$(_449_cr_boxes)" "#449 file: a lone CR in a comment adds no plan item"
+assert_eq "$_449_cr_open" "$(bash "$VCS" list-issues)" "#449 file: a lone CR in a comment leaves the open list unchanged"
+assert_contains "$(cat plan.md)" '- \[ ] smuggled new item' "#449 file: the lone-CR line is kept, escaped"
+bash "$VCS" comment-issue 3 "$(printf 'note\r- [x] Add dark mode <!-- id: %s -->' "$new_id")" >/dev/null
+assert_eq "$_449_cr_before" "$(_449_cr_boxes)" "#449 file: a lone CR cannot tick an existing item"
+assert_eq "$_449_cr_open" "$(bash "$VCS" list-issues)" "#449 file: the targeted item is still open after the lone-CR tick attempt"
+bash "$VCS" comment-issue 3 "$(printf 'crlf\r\n- [ ] smuggled crlf item\r\n- [x] smuggled crlf done')" >/dev/null
+assert_eq "$_449_cr_before" "$(_449_cr_boxes)" "#449 file: a CRLF comment adds no plan item"
+assert_eq "$_449_cr_open" "$(bash "$VCS" list-issues)" "#449 file: a CRLF comment leaves the open list unchanged"
+bash "$VCS" close-issue 3 "$(printf 'done\r- [ ] cr follow-up\r- [x] cr tick')" >/dev/null
+assert_eq "$_449_cr_before" "$(_449_cr_boxes)" "#449 file: a lone CR in a close-issue note adds no plan item"
+assert_contains "$(cat plan.md)" '- \[ ] cr follow-up' "#449 file: the close note's lone-CR line is kept, escaped"
+
 out="$(bash "$VCS" create-pr branch t body 2>&1)"; rc=$?
 assert_eq "0" "$rc" "file: create-pr is a safe no-op"
 
