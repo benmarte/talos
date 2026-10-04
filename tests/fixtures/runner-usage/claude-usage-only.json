@@ -1,0 +1,1 @@
+{"type":"result","subtype":"success","is_error":false,"duration_ms":4210,"num_turns":1,"result":"Stage complete.\nVERDICT: PASS","session_id":"00000000-0000-0000-0000-000000000000","total_cost_usd":0.0123,"usage":{"input_tokens":12,"cache_creation_input_tokens":2500,"cache_read_input_tokens":14000,"output_tokens":210,"service_tier":"standard"}}

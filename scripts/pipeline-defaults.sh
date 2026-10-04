@@ -170,6 +170,7 @@ agents.roles.*.restamp_effort	enum		derived	-	any
 agents.fallback	list		-	-	any
 agents.roles.*.fallback	list		derived	-	any
 agents.provider_down_s	int	900	-	-	any
+agents.capture_usage	bool	true	-	-	any
 limits.max_fix_attempts	int	3	-	-	any
 limits.max_total_dispatches	int	8	-	-	any
 limits.max_retries	int	5	-	-	any

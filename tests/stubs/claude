@@ -9,5 +9,16 @@
 [ -z "${STUB_PROMPT_DIR:-}" ] || printf '%s' "${@: -1}" > "$STUB_PROMPT_DIR/claude.prompt"
 [ -z "${STUB_CLAUDE_HOOK:-}" ] || eval "$STUB_CLAUDE_HOOK"
 [ -z "${STUB_CLAUDE_STDERR:-}" ] || printf '%s\n' "$STUB_CLAUDE_STDERR" >&2
-echo "${STUB_CLAUDE_STDOUT:-claude-stub-ok}"
+# Usage-capture tests (#420), default-off: a real CLI prints one result object
+# under `--output-format json` and plain text otherwise. STUB_CLAUDE_JSON_FILE /
+# STUB_CLAUDE_TEXT_FILE replay a fixture pair, picked by that flag in argv.
+_json=0
+for a in "$@"; do [ "$a" = "json" ] && _json=1; done
+if [ "$_json" = 1 ] && [ -n "${STUB_CLAUDE_JSON_FILE:-}" ]; then
+  cat "$STUB_CLAUDE_JSON_FILE"
+elif [ -n "${STUB_CLAUDE_TEXT_FILE:-}" ]; then
+  cat "$STUB_CLAUDE_TEXT_FILE"
+else
+  echo "${STUB_CLAUDE_STDOUT:-claude-stub-ok}"
+fi
 exit "${STUB_CLAUDE_EXIT:-0}"
