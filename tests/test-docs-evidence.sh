@@ -238,27 +238,55 @@ security_items="$(printf '%s\n' "$section_text" | awk '/^#### Security/ {s = 1; 
 if [ "$security_items" -ge 3 ]; then pass "the Security subsection is a list ($security_items items)"
 else fail "the Security subsection is a list" "found $security_items items, want at least 3"; fi
 
-# No advice to put a credential into CI for evidence. The guard reads sentences,
-# not four fixed spellings: any sentence that tells the reader to add, create,
-# store, put, set, use, give, provide or export a token, PAT, credential or
-# secret, and carries no negation, is advice to do it. The Actions item names
-# `GITHUB_TOKEN` and tells the reader to leave evidence.enabled false there.
-advises_credential() {  # stdin: text; prints each offending sentence
-  python3 -I -c '
+# No advice to put a credential into CI for evidence, and no overclaim that
+# capture is local (it runs evidence.command, which can do anything that
+# command does). Two layers. The floor is the original four fixed spellings
+# plus the claims the section has to keep making: it catches everything the
+# first version of this guard caught. On top of it, advises_credential reads
+# clauses, so a rewording the floor does not know is still caught.
+check_has "$section" 'Do not add a long-lived token to CI just for evidence' "guide: no token in CI for evidence"
+check_has "$section" 'in GitHub Actions leave `evidence.enabled` at `false`' "guide: leave evidence off in Actions"
+check_has "$section" '`gh auth login`' "guide: a user token comes from gh auth login"
+for term in 'personal access token' 'Personal access token' 'give it a PAT' 'add a PAT'; do
+  check_lacks "$section" "$term" "guide does not advise a token in CI: $term"
+done
+check_has "$section" '`capture` makes no network call of its own, but it runs `evidence.command`' "guide: capture is not called local"
+check_lacks "$section" '`capture`, `collect`, `dir` and `enabled` are local' "guide: no overclaim that capture is local"
+
+# The clause guard. The text is cut into clauses at sentence ends, `;`, `:`,
+# commas and a joining but/and/then/instead/otherwise, so a negation in one
+# clause cannot excuse an instruction in the next. A clause is flagged when
+#   - it names a personal access token, a PAT or GH_TOKEN at all, or
+#   - it has a credential word (token, credential, secret) and an instruction
+#     verb (add, create, store, put, set, use, give, provide, export, paste,
+#     generate, pass, configure, supply, inject),
+# unless the verb itself is negated: the clause has `do not` / `never` /
+# `must not` / `should not` straight in front of the verb (only `ever`, `also`
+# or `just` may sit between), as in "Do not add a long-lived token". A
+# negation anywhere else in the clause excuses nothing.
+CRED_GUARD_PY='
 import re, sys
+VERBS = r"(?:add|create|store|put|set|give|provide|export|paste|generate|use|pass|configure|supply|inject)"
+NEG_DIRECT = re.compile(r"\b(?:do not|don.t|never|must not|should not|shouldn.t)\s+(?:(?:ever|also|just)\s+)?" + VERBS + r"\b", re.I)
+VERB = re.compile(r"\b" + VERBS + r"\b", re.I)
+CRED = re.compile(r"token|credential|secret", re.I)
+NAMED = re.compile(r"personal access token|\bPAT\b|\bGH_TOKEN\b", re.I)
 text = " ".join(sys.stdin.read().split())
 for sent in re.split(r"(?<=[.!?])\s+", text):
-    if (re.search(r"\b(add|create|store|put|set|use|give|provide|export|paste|generate)\b", sent, re.I)
-            and re.search(r"token|\bPAT\b|credential|secret", sent, re.I)
-            and not re.search(r"\b(not|never|no|without)\b|n.t\b|\bleave\b", sent, re.I)):
-        print(sent)
+    for clause in re.split(r"[;:]\s+|,\s*|\s+(?:but|and|then|instead|otherwise)\s+", sent):
+        if NEG_DIRECT.search(clause):
+            continue
+        if NAMED.search(clause) or (CRED.search(clause) and VERB.search(clause)):
+            print(clause)
 '
+advises_credential() {  # stdin: text; prints each offending clause
+  python3 -I -c "$CRED_GUARD_PY"
 }
 offending="$(printf '%s\n' "$section_text" | advises_credential)"
-assert_eq "" "$offending" "guide advises no credential for CI"
+assert_eq "" "$offending" "guide advises no credential for CI (clause guard)"
 actions_item="$(printf '%s\n' "$section_text" | awk '/^- \*\*Not the Actions/ {s = 1} s && /^$/ {exit} s' | flat)"
 check_has "$actions_item" 'GITHUB_TOKEN' "guide has the Not-the-Actions-GITHUB_TOKEN item"
-check_has "$actions_item" 'evidence.enabled' "the Actions item says what to do with evidence.enabled"
+check_has "$actions_item" 'leave `evidence.enabled` at `false`' "the Actions item tells the reader to leave evidence off"
 check_has "$actions_item" 'gh auth login' "the Actions item names where a user token comes from"
 
 # None of the dropped branch-store design.
@@ -330,14 +358,30 @@ if printf '%s\n' "$planted_table" | has_config_row 'evidence.max_mb' '25'; then
   pass "negative control: has_config_row finds a real row"
 else fail "negative control: has_config_row finds a real row"; fi
 
-# negative controls for the credential guard: planted advice is caught, a negation is not
-for planted_advice in 'Add a PAT to your CI secrets.' 'Create a personal access token for the job.' \
-  'Store a token in the repository secrets.' 'Give the workflow a long-lived credential.'; do
-  if [ -n "$(printf '%s\n' "$planted_advice" | advises_credential)" ]; then
-    pass "negative control: the credential guard catches: $planted_advice"
-  else fail "negative control: the credential guard catches: $planted_advice"; fi
+# Self-test of the clause guard: hostile sentences of each kind are flagged, the
+# sentences the guide really uses are not.
+for hostile in \
+  'If `gh auth login` is not an option, add a PAT to your CI secrets.' \
+  'Add a PAT to your CI secrets.' \
+  'Create a personal access token for the job.' \
+  'A personal access token works in CI.' \
+  'Store a token in the repository secrets.' \
+  'Give the workflow a long-lived credential.' \
+  'Do not worry about the cost, store a token in the repository secrets.' \
+  'Never mind the warning: put the credential in your CI environment.' \
+  'Do not hesitate to add a PAT.' \
+  'Export GH_TOKEN in the workflow.' \
+  'Set GITHUB_TOKEN to a token with repo scope.' \
+  'You may init the job and use a secret for it.'; do
+  if [ -n "$(printf '%s\n' "$hostile" | advises_credential)" ]; then
+    pass "negative control: the credential guard flags: $hostile"
+  else fail "negative control: the credential guard flags: $hostile"; fi
 done
-assert_eq "" "$(printf '%s\n' 'Do not add a long-lived token to CI.' | advises_credential)" "negative control: a negated sentence is not flagged"
+for fine in 'Do not add a long-lived token to CI just for evidence: in GitHub Actions leave `evidence.enabled` at `false`.' \
+  'Never put a token in CI.' 'Evidence upload needs a user token, which on a dev machine is `gh auth login`.' \
+  'Initialise the directory.'; do
+  assert_eq "" "$(printf '%s\n' "$fine" | advises_credential)" "negative control: the credential guard accepts: $fine"
+done
 
 bogus="$(printf 'run pipeline-evidence.sh frobnicate now\n' | words_like 'pipeline-evidence\.sh [a-z][a-z-]*' | sed 's/^pipeline-evidence\.sh //')"
 case " $VERBS " in
