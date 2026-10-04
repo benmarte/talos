@@ -308,11 +308,15 @@ aborts the install or deletes anything.
   --global` from the new location repoints the marketplace.
 - *Side effect.* Installing the plugin also installs its `agent-skills`
   dependency from GitHub, which needs network and adds a second plugin to your
-  Claude config.
+  Claude config, even with `--no-agent-skills` (the installer says so just before
+  it installs).
 - *An existing `talos` marketplace.* Re-adding a marketplace with the same name
   silently replaces its source, so the installer reads `claude plugin
   marketplace list --json` first. The same directory: nothing to do. Another
-  directory (you moved the clone): it repoints. Any other source, such as a
+  directory (you moved the clone, or you ran the installer from a second
+  checkout): it repoints and prints one line naming the old and new paths; pass
+  `--keep-marketplace` to leave the existing registration untouched (`--no-overwrite`
+  does too). Any other source, such as a
   GitHub marketplace you added by hand: left alone, with a notice, because that
   source already provides the names. A list it cannot read: no registration.
 - *Legacy aliases, until v0.20.* `/pipeline`, `/pipeline-setup` (written to
@@ -322,7 +326,9 @@ aborts the install or deletes anything.
   v0.20`, then reads `$TALOS_HOME/skills/<command>/SKILL.md` or
   `~/.talos/skills/<command>/SKILL.md` and follows it. A repo whose `CLAUDE.md`
   still says `/pipeline` therefore keeps working; `/talos:setup` offers to
-  rewrite those references. They run without `CLAUDE_PLUGIN_ROOT`, so the
+  rewrite those references. `$TALOS_HOME` is read from the Claude Code session
+  environment, so a custom `TALOS_HOME` is found only when it is exported before
+  Claude Code starts. They run without `CLAUDE_PLUGIN_ROOT`, so the
   pipeline playbook resolves subagent names to the bare ones from
   `~/.claude/agents/`.
 - `--no-legacy-aliases` installs no bare names and removes the Talos-owned ones:

@@ -82,6 +82,24 @@ assert_eq "0" "$(calls '\[add\]')" "other directory with --no-overwrite: no repo
 assert_eq "dir	$SANDBOX/moved-checkout" "$(cat "$CLAUDE_STUB_STATE/marketplace")" "other directory with --no-overwrite: source unchanged"
 assert_contains "$OUT" "left as is (--no-overwrite)" "other directory with --no-overwrite: output says so"
 
+# --keep-marketplace leaves a registration that points elsewhere untouched, but
+# the plugin install still runs against it.
+newcase other-dir-keep
+seed_marketplace dir "$SANDBOX/moved-checkout"
+inst --keep-marketplace
+assert_eq "0" "$RC" "other directory with --keep-marketplace: exits 0"
+assert_eq "0" "$(calls '\[add\]')" "other directory with --keep-marketplace: no repoint"
+assert_eq "dir	$SANDBOX/moved-checkout" "$(cat "$CLAUDE_STUB_STATE/marketplace")" "other directory with --keep-marketplace: source unchanged"
+assert_contains "$OUT" "points at $SANDBOX/moved-checkout, not this checkout ($TALOS_ROOT); left as is (--keep-marketplace)" "other directory with --keep-marketplace: output names both paths"
+assert_eq "1" "$(calls '\[install\] \[talos@talos\]')" "other directory with --keep-marketplace: install still runs"
+
+newcase keep-fresh
+inst --keep-marketplace
+assert_eq "1" "$(calls "\[add\] \[$TALOS_ROOT\]")" "--keep-marketplace on a fresh config: still registers the checkout"
+
+# The agent-skills note says it happens even with --no-agent-skills (inst passes it).
+assert_contains "$OUT" "even with --no-agent-skills" "agent-skills note: says it applies even with --no-agent-skills"
+
 # ── 3. a github source is never replaced ─────────────────────────────────────
 newcase github
 seed_marketplace github "benmarte/talos"
