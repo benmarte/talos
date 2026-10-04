@@ -312,4 +312,35 @@ before="$(sum "$R/.claude/CLAUDE.md")"
 bash "$INSTR" write "$R" --import-agents-md >/dev/null 2>&1
 assert_eq "$before" "$(sum "$R/.claude/CLAUDE.md")" "--import-agents-md never edits .claude/CLAUDE.md"
 
+# ── writes go through a same-directory temp file and a rename (#457) ─────────
+mode_of() { ls -l "$1" | cut -c1-10; }
+leftovers() { find "$1" -maxdepth 1 -name '.talos-instr.*' | wc -l | tr -d ' '; }
+
+R="$(new_repo atomic-mode)"
+printf '# notes\n' > "$R/AGENTS.md"; printf '# claude rules\n' > "$R/CLAUDE.md"
+chmod 640 "$R/AGENTS.md" "$R/CLAUDE.md"
+want_mode="$(mode_of "$R/AGENTS.md")"
+bash "$INSTR" write "$R" --import-agents-md >/dev/null 2>&1
+assert_contains "$(cat "$R/AGENTS.md")" "talos:begin" "an appended AGENTS.md carries the block"
+assert_contains "$(cat "$R/CLAUDE.md")" "@AGENTS.md" "an imported CLAUDE.md carries the import"
+assert_eq "$want_mode" "$(mode_of "$R/AGENTS.md")" "an updated AGENTS.md keeps its mode"
+assert_eq "$want_mode" "$(mode_of "$R/CLAUDE.md")" "an imported CLAUDE.md keeps its mode"
+assert_eq "0" "$(leftovers "$R")" "no temp file is left next to the instruction files"
+
+# A write that cannot create its temp file fails closed: the original is
+# byte-identical, the reason is on stderr, and nothing claims success.
+R="$(new_repo atomic-fail)"
+printf '# notes\n' > "$R/AGENTS.md"; printf '# claude rules\n' > "$R/CLAUDE.md"
+before_a="$(sum "$R/AGENTS.md")"; before_c="$(sum "$R/CLAUDE.md")"
+chmod 555 "$R"
+out="$(bash "$INSTR" write "$R" --import-agents-md 2>&1)"; rc=$?
+chmod 755 "$R"
+assert_eq "0" "$rc" "a failed instruction-file write is best-effort (exit 0)"
+assert_eq "$before_a" "$(sum "$R/AGENTS.md")" "a failed AGENTS.md write leaves the original intact"
+assert_eq "$before_c" "$(sum "$R/CLAUDE.md")" "a failed CLAUDE.md import leaves the original intact"
+assert_contains "$out" "left unchanged" "a failed write says it left the file unchanged"
+assert_not_contains "$out" "Next: commit AGENTS.md" "a failed AGENTS.md write does not print the commit hint"
+assert_not_contains "$out" "import: added" "a failed import does not claim success"
+assert_eq "0" "$(leftovers "$R")" "a failed write leaves no temp file"
+
 finish

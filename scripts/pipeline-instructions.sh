@@ -111,6 +111,31 @@ _imports_agents() {
   return 1
 }
 
+# _replace_file <new-content-file> <dest> (#457): replace <dest> through a temp
+# file in the SAME directory, then rename, so a failed write (disk full, killed
+# mid-copy) leaves the original intact instead of truncated. An existing file
+# keeps its mode (cp -p); a new one gets the umask default. A read-only
+# destination is refused, as the old in-place write refused it. On failure it
+# says so on stderr and returns 1; <dest> is untouched.
+_replace_file() {
+  local src="$1" dest="$2" tmp
+  if [ -e "$dest" ] && [ ! -w "$dest" ]; then
+    echo "pipeline-instructions: $dest is not writable; left unchanged" >&2
+    return 1
+  fi
+  tmp="$(mktemp "$(dirname "$dest")/.talos-instr.XXXXXX" 2>/dev/null)" || {
+    echo "pipeline-instructions: cannot create a temp file next to $dest; left unchanged" >&2
+    return 1
+  }
+  if { if [ -e "$dest" ]; then cp -p "$dest" "$tmp"; else chmod "$(printf '%o' $((0666 & ~$(umask))))" "$tmp"; fi; } \
+     && cat "$src" > "$tmp" && mv -f "$tmp" "$dest"; then
+    return 0
+  fi
+  rm -f "$tmp"
+  echo "pipeline-instructions: writing $dest failed; left unchanged" >&2
+  return 1
+}
+
 # write_agents_md: create / append / replace the block. Sets nothing; prints.
 write_agents_md() {
   local f="$REPO/AGENTS.md" blockf newf nb ne ab ae lb le problem="" verb=updated
@@ -162,11 +187,15 @@ write_agents_md() {
   elif [ -e "$f" ] && cmp -s "$newf" "$f"; then
     echo "AGENTS.md: up to date: $f"
   else
-    if [ ! -e "$f" ]; then echo "AGENTS.md: created $f"
-    elif [ "$verb" = added ]; then echo "AGENTS.md: added the Talos block to $f"
-    else echo "AGENTS.md: updated the Talos block in $f"; fi
-    cat "$newf" > "$f"
-    echo "Next: commit AGENTS.md so every clone and every agent sees it."
+    [ -e "$f" ] || verb=created
+    if _replace_file "$newf" "$f"; then
+      case "$verb" in
+        created) echo "AGENTS.md: created $f" ;;
+        added) echo "AGENTS.md: added the Talos block to $f" ;;
+        *) echo "AGENTS.md: updated the Talos block in $f" ;;
+      esac
+      echo "Next: commit AGENTS.md so every clone and every agent sees it."
+    fi
   fi
   rm -f "$blockf" "$newf"
 }
@@ -181,9 +210,15 @@ import_into() {
   fi
   [ -f "$f" ] || return 0
   _imports_agents "$f" && return 0
-  { [ -s "$f" ] && [ -n "$(tail -c 1 "$f")" ] && printf '\n'
-    printf '%s\n@AGENTS.md\n%s\n' "$IMPORT_BEGIN" "$IMPORT_END"; } >> "$f"
-  echo "import: added @AGENTS.md to $f (commit it with AGENTS.md)."
+  local newf
+  newf="$(mktemp "${TMPDIR:-/tmp}/talos-import.XXXXXX")" || return 0
+  { cat "$f"
+    [ -s "$f" ] && [ -n "$(tail -c 1 "$f")" ] && printf '\n'
+    printf '%s\n@AGENTS.md\n%s\n' "$IMPORT_BEGIN" "$IMPORT_END"; } > "$newf"
+  if _replace_file "$newf" "$f"; then
+    echo "import: added @AGENTS.md to $f (commit it with AGENTS.md)."
+  fi
+  rm -f "$newf"
 }
 
 # claude_notice: Claude Code 2.1.277+ reads AGENTS.md only when no CLAUDE.md,

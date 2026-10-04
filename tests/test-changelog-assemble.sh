@@ -150,5 +150,20 @@ cat > talos.pipeline.json <<'EOF'
 {"vcs": {"provider": "github", "repo": "acme/widget"}, "base_branch": "main"}
 EOF
 
+# ── (g) option-injection base_branch is refused before any git call (#457) ──
+# A value starting with `-` would be read by `git fetch` as an option; the
+# marker file proves no command ran. JSON config (not YAML, see #490).
+MARKER="$SANDBOX/PWNED"
+for bad in "--upload-pack=touch $MARKER;" "-x" "a..b" "main.lock" "a b"; do
+  BAD="$bad" python3 -I -c "
+import json, os
+json.dump({'vcs': {'provider': 'github', 'repo': 'acme/widget'}, 'base_branch': os.environ['BAD']}, open('talos.pipeline.json', 'w'))
+"
+  out="$(bash "$CL" assemble 2>&1)"; rc=$?
+  assert_eq "1" "$rc" "assemble: rejects base_branch '$bad' (rc)"
+  assert_contains "$out" "not an accepted branch name" "assemble: names the refused base_branch '$bad'"
+  assert_file_absent "$MARKER" "assemble: base_branch '$bad' ran no command"
+done
+
 rm -f talos.pipeline.json
 finish

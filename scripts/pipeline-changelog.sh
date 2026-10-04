@@ -64,7 +64,23 @@ if [ -z "$BASE_BRANCH" ]; then
 fi
 [ -z "$BASE_BRANCH" ] && BASE_BRANCH="main"
 
-if ! git fetch -q origin "$BASE_BRANCH" 2>/dev/null; then
+# The value comes from config and reaches git as an argument (#457): a name
+# starting with `-` would be read as an option (`--upload-pack=...` runs a
+# command during fetch). Same plain-ref rule as pipeline-status-file.sh:
+# starts with an alphanumeric, then letters, digits and . _ / - only; no `..`,
+# `//`, trailing `/` or `.lock`. Checked before any git call.
+case "$BASE_BRANCH" in
+  [!A-Za-z0-9]*|*[!A-Za-z0-9._/-]*|*..*|*//*|*/|*.lock)
+    echo "pipeline-changelog: base branch is not an accepted branch name: $BASE_BRANCH" >&2
+    exit 1
+    ;;
+esac
+if ! git check-ref-format "refs/heads/$BASE_BRANCH" 2>/dev/null; then
+  echo "pipeline-changelog: base branch is not a valid branch name: $BASE_BRANCH" >&2
+  exit 1
+fi
+
+if ! git fetch -q -- origin "$BASE_BRANCH" 2>/dev/null; then
   echo "pipeline-changelog: git fetch origin $BASE_BRANCH failed" >&2
   exit 1
 fi

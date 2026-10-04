@@ -545,6 +545,29 @@ collect evlink --stage "$STAGE"
 refused "stage: a refusal" "symlink"
 stage_empty && pass "stage: a refusal leaves the stage empty" || fail "stage: a refusal leaves the stage empty"
 
+# the count and total caps are checked BEFORE anything is copied (#457): with
+# an unwritable stage a copy would fail and the files would be skipped (exit 3);
+# the caps verdict (exit 4) shows no copy was attempted.
+new_repo; new_stage; png ev/a.png; png ev/b.png; cfg_ev '"max_files": 1'
+chmod 500 "$STAGE"
+collect ev --stage "$STAGE"
+chmod 700 "$STAGE"
+assert_eq "4" "$RC" "stage: over max_files is decided before any copy -> exit 4"
+assert_contains "$(err)" "over-cap files=2/1" "stage: the pre-copy over-cap line names the counts"
+new_repo; new_stage; bigfile ev/a.png 786432; bigfile ev/b.png 786432; cfg_ev '"max_mb": 1'
+chmod 500 "$STAGE"
+collect ev --stage "$STAGE"
+chmod 700 "$STAGE"
+assert_eq "4" "$RC" "stage: over max_mb is decided before any copy -> exit 4"
+
+# an unexpected python error in a standalone collect --stage still cleans the
+# stage: with stdout closed the final manifest write raises after the copy.
+new_repo; new_stage; png ev/a.png; png ev/sub/b.png
+bash "$EV" collect ev --stage "$STAGE" >&- 2>"$ERR"; RC=$?
+assert_eq "1" "$RC" "stage: a python error exits 1"
+assert_contains "$(err)" "internal error" "stage: a python error says so"
+stage_empty && pass "stage: a python error removes what was staged" || fail "stage: a python error removes what was staged" "$(ls -A "$STAGE")"
+
 # =============================================================================
 # hygiene: no repo code on python's path, no git writes, no network
 # =============================================================================
