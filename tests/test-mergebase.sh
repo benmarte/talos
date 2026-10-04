@@ -230,6 +230,15 @@ out="$(bash "$MB" 51 --union-paths '.env' 2>&1)"; rc=$?
 assert_eq "3" "$rc" "mergebase: rejects a .env union-paths override (exact forbidden-files match)"
 assert_contains "$out" "forbidden" "mergebase: names the forbidden-files rejection reason (.env)"
 
+# #436: the cross-check sees the credential-file defaults and matches case-insensitively.
+out="$(bash "$MB" 51 --union-paths 'credentials.json' 2>&1)"; rc=$?
+assert_eq "3" "$rc" "mergebase: rejects a credentials.json union-paths override (new #436 default)"
+out="$(bash "$MB" 51 --union-paths 'Credentials.JSON' 2>&1)"; rc=$?
+assert_eq "3" "$rc" "mergebase: rejects a Credentials.JSON union-paths override (case-insensitive)"
+out="$(bash "$MB" 51 --union-paths '.ENV' 2>&1)"; rc=$?
+assert_eq "3" "$rc" "mergebase: rejects a .ENV union-paths override (case-insensitive)"
+assert_contains "$out" "forbidden" "mergebase: names the forbidden-files rejection reason (.ENV)"
+
 # End-to-end: a PR that actually conflicts on .env, widened to allow it.
 git fetch -q origin main
 git checkout -q -b pr-53 origin/main

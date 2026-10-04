@@ -116,6 +116,35 @@ assert_eq "1" "$rc" "bad allow entry '*': exits 1 (fail-closed on config, not ju
 assert_contains "$out" "ERROR: merge.forbidden_files_allow entry" "bad allow entry '*': error message printed"
 
 # ═══════════════════════════════════════════════════════════════════════════
+# #436 credential-file defaults: 30 patterns, matched at any depth and
+# case-insensitively; ordinary look-alikes stay allowed
+# ═══════════════════════════════════════════════════════════════════════════
+out="$(run_check 'src/app.js' 2>&1)"
+assert_contains "$out" "talos:forbidden-files-active patterns=30 defaults=in-force" "#436: exactly 30 default patterns (20 old + 10 credential files)"
+assert_eq "30" "$(bash "$VCS" forbidden-files-patterns | grep -c '[^[:space:]]')" "#436: the forbidden-files-patterns verb lists the same 30"
+for f in .npmrc .pypirc .git-credentials credentials.json deploy-credentials.json deploy_credentials.json \
+         .aws/credentials .docker/config.json sub/dir/.npmrc pkg/.pypirc a/.git-credentials \
+         cfg/credentials.json cfg/gcp-credentials.json cfg/gcp_credentials.json home/.aws/credentials \
+         home/.docker/config.json .ENV Credentials.JSON sub/.NPMRC .AWS/Credentials .Docker/Config.JSON; do
+  out="$(run_check "$f" 2>&1)"; rc=$?
+  assert_eq "1" "$rc" "#436: $f is refused"
+  assert_contains "$out" "  $f" "#436: $f is listed"
+done
+out="$(run_check $'docs/credentials.md\nsrc/key.ts\ncredentials-schema.json\ntest/fixtures/x.json\nsrc/aws/credentials.ts\nconfig.json\n.docker/other.json' 2>&1)"; rc=$?
+assert_eq "0" "$rc" "#436: look-alike ordinary files are allowed"
+assert_contains "$out" "no forbidden files" "#436: look-alikes report no forbidden files"
+# Upgrade note: a broad allow entry now exempts a new default's canary, so it is rejected (fail closed).
+out="$(run_check 'src/app.js' "" "" "*.json" 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#436: allow '*.json' is rejected (it would exempt credentials.json)"
+assert_contains "$out" "ERROR: merge.forbidden_files_allow entry '*.json'" "#436: allow '*.json' names the entry"
+# The allow-list validator is case-insensitive too.
+out="$(run_check 'src/app.js' "" "" "*.JSON" 2>&1)"; rc=$?
+assert_eq "1" "$rc" "#436: allow '*.JSON' is rejected case-insensitively"
+# The allow list itself matches case-insensitively: an exact override still works.
+out="$(run_check '.ENV.Example' "" "" ".env.example" 2>&1)"; rc=$?
+assert_eq "0" "$rc" "#436: an allow entry matches case-insensitively"
+
+# ═══════════════════════════════════════════════════════════════════════════
 # fetch failure -> fail closed (CLI level, gh adapter)
 # The shared function only ever sees an already-fetched file list; the
 # fetch-failure contract lives in the case arm that calls it. Before #177
