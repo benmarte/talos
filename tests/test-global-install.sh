@@ -283,6 +283,18 @@ templates_diff="$(diff -rq "$TALOS_ROOT/templates" "$T9_HOME/.talos/templates" 2
 [ -z "$templates_diff" ] && pass "--global templates/ matches repo templates/ structurally (#276)" \
   || fail "--global templates/ matches repo templates/ structurally (#276)" "$templates_diff"
 
+# #468: the stage prompt templates ship with --global, and the installed verb renders
+# from the copy next to it (<scripts dir>/../templates/prompts).
+for t9_tpl in validator planner pm developer qa reviewer security docs adversarial restamp _stop-rule; do
+  assert_file_exists "$T9_HOME/.talos/templates/prompts/$t9_tpl.md" \
+    "--global installs templates/prompts/$t9_tpl.md (#468)"
+done
+t9_out="$(cd "$SANDBOX" && bash "$T9_HOME/.talos/scripts/talos.sh" prompt pm --issue 9)"
+t9_file="${t9_out#prompt_file=}"
+assert_contains "$(cat "$t9_file" 2>/dev/null)" "You are the Project Manager. Issue #9 has been CONFIRMED." \
+  "the installed talos.sh renders a stage prompt from the installed templates (#468)"
+[ -f "$t9_file" ] && rm -f "${t9_file:?}"
+
 # ── Test 9b: scripts/*.py ships with --global, and cost --line works from it ─
 # (#393) install.sh used to copy *.sh only, so pipeline-spend-format.py never
 # reached ~/.talos/scripts and `cost --line` printed nothing on a global install.

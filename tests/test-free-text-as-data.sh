@@ -454,11 +454,22 @@ cmp -s "$SANDBOX/r.sh.bodies/1" "$c.file"; assert_eq "0" "$?" "playbook sub-issu
 assert_no_pwned "playbook sub-issue recipe"
 
 # ── skills/pipeline/SKILL.md: the adapter prompt ─────────────────────────────
-run_recipe "$TALOS_ROOT/skills/pipeline/SKILL.md" 'pipeline-agent.sh <role> - <<'; rc=$?
+# The prompt text reaches the runner from a file (#468): `talos.sh prompt` writes the
+# hostile prior summary into it as data (it is read from a file and never evaluated),
+# and the playbook's adapter recipe pipes that file to the runner on stdin.
+PF_OUT="$(bash "$TALOS_ROOT/scripts/talos.sh" prompt developer --issue 7 --prior-file "$BODY")"
+export PROMPT_FILE="${PF_OUT#prompt_file=}"
+assert_file_exists "$PROMPT_FILE" "the prompt verb rendered the hostile prior summary into a file"
+assert_no_pwned "the prompt verb"
+run_recipe "$TALOS_ROOT/skills/pipeline/SKILL.md" 'pipeline-agent.sh <role> - < "$PROMPT_FILE"'; rc=$?
 assert_eq "0" "$rc" "playbook adapter-prompt recipe: runs"
 c="$(call_of pipeline-agent.sh)"
-cmp -s "$SANDBOX/r.sh.bodies/1" "$c.stdin"; assert_eq "0" "$?" "playbook adapter-prompt recipe: the stub received the prompt byte for byte"
+cmp -s "$PROMPT_FILE" "$c.stdin"; assert_eq "0" "$?" "playbook adapter-prompt recipe: the stub received the prompt byte for byte"
+python3 -I -c 'import sys; b = open(sys.argv[1], encoding="utf-8").read().rstrip("\n"); p = open(sys.argv[2], encoding="utf-8").read(); sys.exit(0 if b in p else 1)' "$BODY" "$c.stdin"
+assert_eq "0" "$?" "playbook adapter-prompt recipe: the prompt carries the hostile summary verbatim"
 assert_no_pwned "playbook adapter-prompt recipe"
+rm -f "${PROMPT_FILE:?}"
+unset PROMPT_FILE
 
 # ── Control: a fixed EOF delimiter IS exploitable, a fresh one is not ────────
 # The shape the recipes had before #342, run on the same hostile body.

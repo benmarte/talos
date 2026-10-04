@@ -2,7 +2,7 @@
 # Skill-text assertions for the reviewer human-attention report (#294):
 #   1. agents/reviewer.md carries the report contract (2-5 bullets, file:line,
 #      priority order, empty-list literal).
-#   2. SKILL.md's reviewer prompt instructs the report and the
+#   2. The reviewer prompt template (templates/prompts/reviewer.md) instructs the report and the
 #      ATTENTION_REPORT placeholder in templates/comments/review-signoff.md.
 #   3. templates/comments/review-signoff.md carries the ATTENTION_REPORT
 #      placeholder and the human-attention section.
@@ -31,9 +31,10 @@ assert_contains "$reviewer_text" "2-5 bullets" "reviewer: report bounded to 2-5 
 
 # SKILL reviewer prompt: instruction present (and only in the REVIEWER block,
 # not the security one — the report is a reviewer-stage artifact).
-assert_contains "$skill_text" "Human-attention report (#294" "skill: reviewer prompt instructs the report"
-security_block="$(awk '/You are the Security Analyst/,/^```$/' "$SKILL")"
-assert_not_contains "$security_block" "human-attention" "skill: security prompt unchanged"
+# The prompts moved out of SKILL.md into templates/prompts/<role>.md (#468).
+assert_contains "$(cat "$TALOS_ROOT/templates/prompts/reviewer.md")" "Human-attention report (#294" "template: reviewer prompt instructs the report"
+security_block="$(cat "$TALOS_ROOT/templates/prompts/security.md")"
+assert_not_contains "$security_block" "human-attention" "template: security prompt unchanged"
 
 # Template: the section renders the placeholder.
 assert_contains "$signoff_text" "Human-attention report" "template: verdict comment carries the attention section"

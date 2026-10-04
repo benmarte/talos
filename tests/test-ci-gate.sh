@@ -27,13 +27,13 @@ VCS="$TALOS_ROOT/scripts/pipeline-vcs.sh"
 
 # ── (a) Step 3d gate ─────────────────────────────────────────────────────────
 STEP_3D="$(awk '/^### 3d\. QA/{f=1} /^### 3e\./{f=0} f' "$SKILL")"
-GATE="$(printf '%s\n' "$STEP_3D" | awk '/^\*\*CI gate \(#355\)/{f=1} /^Spawn:$/{f=0} f')"
+GATE="$(printf '%s\n' "$STEP_3D" | awk '/^\*\*CI gate \(#355\)/{f=1} /^Spawn QA with the prompt/{f=0} f')"
 [ -n "$GATE" ] && pass "Step 3d carries a CI gate section" || fail "Step 3d carries a CI gate section"
 
 line_of() { printf '%s\n' "$STEP_3D" | grep -n -m1 -F -- "$1" | cut -d: -f1; }
 GUARD_END="$(printf '%s\n' "$STEP_3D" | grep -n -F '<!-- pr-draft:end -->' | head -1 | cut -d: -f1)"
 GATE_AT="$(line_of '**CI gate (#355)')"
-SPAWN_AT="$(line_of 'Spawn:')"
+SPAWN_AT="$(line_of 'Spawn QA with the prompt')"
 [ -n "$GUARD_END" ] && [ "$GUARD_END" -lt "$GATE_AT" ] && [ "$GATE_AT" -lt "$SPAWN_AT" ] \
   && pass "the gate follows the Draft guard and precedes Spawn" \
   || fail "the gate follows the Draft guard and precedes Spawn" "guard-end=$GUARD_END gate=$GATE_AT spawn=$SPAWN_AT"
@@ -61,20 +61,25 @@ assert_contains "$GATE" 'draft-pr` and `label-pr --remove qa:pass`' "draft mode 
 assert_contains "$GATE" 'ready-pr' "draft mode ends the fix round with ready-pr"
 
 # ── (b) Step 3c developer prompt ─────────────────────────────────────────────
-STEP_3C_PROMPT="$(awk '/^You are the Developer\. Implement/{f=1} f; /^Never fabricate a PR number/{if(f)exit}' "$SKILL")"
-assert_contains "$STEP_3C_PROMPT" 'Required checks: <MERGE_REQUIRED_CHECKS' "developer prompt carries Required checks:"
-assert_contains "$STEP_3C_PROMPT" 'CI wait budget: <VERIFY_CI_WAIT_S> seconds' "developer prompt carries CI wait budget:"
-assert_contains "$(cat "$SKILL")" 'Under `VERIFY_QA_MODE` `local`, omit the `Required checks:` line and the `CI wait budget:` part.' \
-  "local mode omits both developer prompt items"
-assert_contains "$(cat "$SKILL")" 'Set `Required checks: none` (CI does not run until `ready-pr`)' \
-  "the pr-draft block sends Required checks: none"
+# The dispatch block moved to templates/prompts/developer.md (#468): this renders it
+# with `talos.sh prompt` under each config and pins what the old prose pinned.
+make_sandbox || exit 1
+printf '{"merge": {"required_checks": ["test (ubuntu-latest)"]}, "verify": {"qa_mode": "ci", "ci_wait_s": 600, "timeout_ms": 300000}}' > "$SANDBOX/talos.pipeline.json"
+CI_PROMPT="$(talos_prompt_text developer --issue 5)"
+assert_contains "$CI_PROMPT" 'Required checks: test (ubuntu-latest)' "developer prompt carries Required checks:"
+assert_contains "$CI_PROMPT" 'CI wait budget: 600 seconds' "developer prompt carries CI wait budget:"
+printf '{"merge": {"required_checks": ["test (ubuntu-latest)"]}, "verify": {"qa_mode": "local"}}' > "$SANDBOX/talos.pipeline.json"
+LOCAL_PROMPT="$(talos_prompt_text developer --issue 5)"
+assert_not_contains "$LOCAL_PROMPT" 'Required checks:' "local mode omits the developer prompt's Required checks line"
+assert_not_contains "$LOCAL_PROMPT" 'CI wait budget' "local mode omits the developer prompt's CI wait budget"
+assert_contains "$(cat "$SKILL")" 'pass `--draft` on every developer dispatch' "the pr-draft block sends --draft on every developer dispatch"
 
-# Behavioural (#435): render the developer brief's `Required checks:` line the
-# way Step 3c says to (the pr-draft block overrides it to `none`), then apply the
-# developer profile's step 10 rule to the rendered brief. Under PR_DRAFT = true no
-# CI wait runs (no pr-checks-required call); the ready flow still waits.
-DRAFT_BLOCK="$(awk '/^\*\*Draft PR \(`PR_DRAFT = true`, #332\):\*\*/{f=1} /^<!-- pr-draft:end -->/{f=0} f' "$SKILL" | tr '\n' ' ' | tr -s ' ')"
-DRAFT_CHECKS="$(printf '%s' "$DRAFT_BLOCK" | grep -o 'Set `Required checks: none`' | sed 's/Set `//; s/`$//')"
+# Behavioural (#435): render the developer brief the way Step 3c says to (--draft
+# makes its `Required checks:` line `none`), then apply the developer profile's
+# step 10 rule to the rendered brief. Under PR_DRAFT = true no CI wait runs (no
+# pr-checks-required call); the ready flow still waits.
+printf '{"merge": {"required_checks": ["test (ubuntu-latest)"]}, "verify": {"qa_mode": "ci"}}' > "$SANDBOX/talos.pipeline.json"
+DRAFT_CHECKS="$(talos_prompt_text developer --issue 5 --draft | grep '^Required checks:')"
 assert_eq "Required checks: none" "$DRAFT_CHECKS" "PR_DRAFT = true: the rendered brief line is Required checks: none"
 ci_wait_runs() {  # $1 = rendered brief line; step 10: only when present and not none
   case "$1" in "Required checks: none"|"") return 1 ;; "Required checks: "*) return 0 ;; *) return 1 ;; esac

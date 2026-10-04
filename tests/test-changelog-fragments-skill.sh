@@ -32,7 +32,7 @@ assert_contains "$docs_text" "CHANGELOG MODE: fragments" "docs profile: names th
 
 # SKILL docs prompt carries the fragment instructions too.
 assert_contains "$skill_text" "CHANGELOG MODE: fragments" "skill: docs prompt carries the fragment trigger"
-assert_contains "$skill_text" "docs/CHANGELOG.d/<issue-number>.md" "skill: docs prompt names the fragment path"
+assert_contains "$(cat "$TALOS_ROOT/templates/prompts/docs.md")" "docs/CHANGELOG.d/<issue-number>.md" "template: docs prompt names the fragment path (the block moved to templates/prompts/docs.md, #468)"
 
 # Step 4 hook + waiver note + gate note.
 # The hook moved from the prose into `talos.sh post-merge` (#467): the playbook names it,

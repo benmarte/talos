@@ -70,8 +70,9 @@ exactly one `Done when: ...` line, placed right after the role's opening task
 statement and before the "Skills" paragraph/procedure — a concrete, checkable
 condition for when that stage is finished, so the agent stops instead of
 deciding for itself when to keep testing, re-reading, or polishing. The
-matching dispatch block for that stage in `skills/pipeline/SKILL.md` carries
-the identical line. If you edit a role's prompt, keep both copies in sync.
+matching dispatch prompt for that stage, `templates/prompts/<role>.md` (rendered
+by `scripts/talos.sh prompt`, #468), carries the identical line. If you edit a
+role's prompt, keep both copies in sync.
 
 ---
 
@@ -1035,7 +1036,7 @@ agents:
   TALOS_<rand>
   ```
 
-  There is no fixed heredoc delimiter: the stage prompt carries issue-derived text that could contain the closing line, so the playbook (`skills/pipeline/SKILL.md`) uses `TALOS_<rand>` with `<rand>` 12+ random characters invented fresh for each spawn. The path is what the `AGENTS.md` block resolves (`.claude/talos/scripts` is the legacy vendored location).
+  There is no fixed heredoc delimiter: the stage prompt carries issue-derived text that could contain the closing line, so the playbook (`skills/pipeline/SKILL.md`) uses `TALOS_<rand>` with `<rand>` 12+ random characters invented fresh for each spawn; the playbook renders the prompt to a file with `scripts/talos.sh prompt` and pipes it in (`bash scripts/pipeline-agent.sh <role> - < "$PROMPT_FILE"`, #468). The path is what the `AGENTS.md` block resolves (`.claude/talos/scripts` is the legacy vendored location).
 
   The adapter merges the role profile (frontmatter stripped) with the
   stage prompt and executes it via the runner configured in `talos.pipeline.yml`

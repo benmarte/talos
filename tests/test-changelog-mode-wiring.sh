@@ -17,16 +17,22 @@ assert_file_exists "$DOCS" "agents/docs.md exists"
 skill_text="$(cat "$SKILL")"
 docs_text="$(cat "$DOCS")"
 
-# The prompt placeholder exists.
-assert_contains "$skill_text" "Changelog mode: <CHANGELOG_MODE_LINE>" "skill: docs prompt carries the CHANGELOG_MODE_LINE placeholder"
+# The prompt line is a marker of the docs template (the dispatch block moved out of
+# the playbook into templates/prompts/docs.md, #468) and the rule is the verb's.
+tmpl_text="$(cat "$TALOS_ROOT/templates/prompts/docs.md")"
+assert_contains "$tmpl_text" "{{CHANGELOG_MODE_LINE}}" "template: docs prompt carries the CHANGELOG_MODE_LINE marker"
+assert_contains "$skill_text" 'CHANGELOG MODE: fragments|direct` (#296)' "skill: the docs prompt's changelog-mode line is named"
 
-# The substitution rule exists and explains activation.
-assert_contains "$skill_text" "Changelog mode line (#296" "skill: the fragment rule block exists"
-assert_contains "$skill_text" 'prompt MUST include the literal line' "skill: flag-on mandates the literal fragments line"
-assert_contains "$skill_text" 'silently degrades to direct' "skill: rule names the silent-degradation failure"
+# Rendered: flag on mandates the literal fragments line (without it fragment mode would
+# silently degrade to direct CHANGELOG.md edits); flag off gives the direct line.
+make_sandbox || exit 1
+printf '{"roles": {"changelog_fragments": true}}' > "$SANDBOX/talos.pipeline.json"
+assert_contains "$(talos_prompt_text docs --issue 7 --pr 9)" $'\nCHANGELOG MODE: fragments\n' "docs prompt: flag on carries the literal CHANGELOG MODE: fragments line"
+printf '{"roles": {"changelog_fragments": false}}' > "$SANDBOX/talos.pipeline.json"
+assert_contains "$(talos_prompt_text docs --issue 7 --pr 9)" $'\nCHANGELOG MODE: direct\n' "docs prompt: flag off carries CHANGELOG MODE: direct"
 
-# Both dispatch paths reference the line.
-assert_contains "$skill_text" "per the fragment rule below" "skill: docs_mode always path references the rule"
+# Both dispatch paths (docs_mode always: the full diff; auto: the filtered one) go through the one prompt.
+assert_contains "$skill_text" 'straight to the docs prompt with no `--docs-paths-file`' "skill: docs_mode always path uses the docs prompt with the full diff"
 
 # Auto-stamp body records the fragment convention.
 assert_contains "$skill_text" "CHANGELOG handled via fragments" "skill: auto-stamp mentions fragment handling"

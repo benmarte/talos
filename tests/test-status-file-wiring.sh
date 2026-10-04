@@ -38,9 +38,16 @@ assert_contains "$skill_text" 'none of the status steps run' "step 0: disabled m
 assert_eq "false" "$(talos_env_default STATUS_ENABLED)" "config defaults: status.enabled"
 
 # ── 2. Step 3e ───────────────────────────────────────────────────────────────
-grep -qxF '<STATUS_FRAGMENT_LINE>' "$SKILL" && pass "docs prompt: STATUS_FRAGMENT_LINE placeholder alone on its line" || fail "docs prompt: STATUS_FRAGMENT_LINE placeholder alone on its line"
-assert_contains "$skill_text" 'STATUS FRAGMENT: <STATUS_FRAGMENTS_DIR>/<issue>-<pr>.md' "docs prompt: literal fragment line"
-assert_contains "$skill_text" 'otherwise leave the placeholder line empty' "docs prompt: line omitted when disabled"
+# The docs prompt moved to templates/prompts/docs.md and the line is the verb's (#468).
+grep -qxF '{{STATUS_FRAGMENT_LINE}}' "$TALOS_ROOT/templates/prompts/docs.md" && pass "docs prompt template: STATUS_FRAGMENT_LINE marker alone on its line" || fail "docs prompt template: STATUS_FRAGMENT_LINE marker alone on its line"
+assert_contains "$skill_text" 'STATUS FRAGMENT: <STATUS_FRAGMENTS_DIR>/<issue>-<pr>.md' "docs prompt: literal fragment line named in the playbook"
+make_sandbox || exit 1
+printf '{"status": {"enabled": true}}' > "$SANDBOX/talos.pipeline.json"
+printf 'README.md\n' > "$SANDBOX/paths.txt"
+assert_contains "$(talos_prompt_text docs --issue 7 --pr 9)" $'\nSTATUS FRAGMENT: docs/status.d/7-9.md\n' "docs prompt: the literal fragment line, docs_mode always path (full diff)"
+assert_contains "$(talos_prompt_text docs --issue 7 --pr 9 --docs-paths-file "$SANDBOX/paths.txt")" $'\nSTATUS FRAGMENT: docs/status.d/7-9.md\n' "docs prompt: the literal fragment line, docs_mode auto path (filtered)"
+printf '{"status": {"enabled": false}}' > "$SANDBOX/talos.pipeline.json"
+assert_not_contains "$(talos_prompt_text docs --issue 7 --pr 9)" 'STATUS FRAGMENT' "docs prompt: line omitted when disabled"
 assert_contains "$skill_text" 'remove from `CHANGED_PATHS` every path equal to `STATUS_FRAGMENTS_DIR` or under it' "gate 1a: fragment paths leave CHANGED_PATHS"
 assert_contains "$skill_text" 'never dispatches docs by itself' "gate: missing fragment never dispatches docs"
 g1="$(line_of 'remove from `CHANGED_PATHS` every path equal')"
@@ -50,9 +57,6 @@ g4="$(line_of '4. Gate does not match: dispatch the docs subagent')"
   && pass "gate 1a sits before the matches test (step 2)" || fail "gate 1a sits before the matches test (step 2)"
 [ -n "$g1" ] && [ -n "$g4" ] && [ "$g1" -lt "$g4" ] \
   && pass "gate 1a sits before the filtered subset (step 4)" || fail "gate 1a sits before the filtered subset (step 4)"
-always_line="$(line_of '`always` — dispatch the docs stage exactly as before')"
-assert_contains "$(sed -n "${always_line},$((always_line + 4))p" "$SKILL")" '<STATUS_FRAGMENT_LINE>' "docs_mode always path carries the fragment line"
-
 # ── 3. Steps 4, 5, 1 ─────────────────────────────────────────────────────────
 # The three calls moved from the prose into `talos.sh post-merge`, `summary` and `sweep`
 # (#467); tests/test-talos-postmerge.sh runs them, this file pins their wiring.
