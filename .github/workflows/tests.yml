@@ -50,6 +50,6 @@ jobs:
       # --break-system-packages; no --user, because python3 -I does not see it.
       - name: Install PyYAML (macOS)
         if: runner.os == 'macOS'
-        run: "python3 -m pip install --break-system-packages --only-binary :all: 'pyyaml==6.0.2'"
+        run: "python3 -m pip install --break-system-packages --only-binary :all: 'pyyaml==6.0.3'"
       - name: Run test suite
         run: bash tests/run-tests.sh --no-cache
