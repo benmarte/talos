@@ -420,7 +420,7 @@ notifications:
 # Set it once for every repo: put the same agents.* keys in the user-level
 # file ${TALOS_HOME:-$HOME/.talos}/talos.pipeline.{yml,yaml,json}. Only
 # agents.* is read there (any other key is ignored with a warning); this
-# repo's file is merged over it key by key and wins. /pipeline-setup writes it
+# repo's file is merged over it key by key and wins. /talos:setup writes it
 # for you; `bash scripts/pipeline-agent.sh --resolve-all` shows each role's
 # model and which layer (project | global | session default) decided it.
 #
@@ -540,7 +540,7 @@ notifications:
 # and `ready-pr` triggers the one CI run (one run per PR instead of one per
 # push). Your CI must pair with it: on.pull_request.types includes
 # ready_for_review and each job has `if: github.event.pull_request.draft != true`
-# (templates/ci/github-tests.yml). On `github`, /pipeline checks this at the
+# (templates/ci/github-tests.yml). On `github`, /talos:pipeline checks this at the
 # start with scripts/pipeline-draft-check.sh and warns; it never edits a
 # workflow. github-api and file cannot open draft PRs and use the ready flow
 # whatever this says. Uncomment to opt out and keep the ready flow:
@@ -548,9 +548,9 @@ notifications:
 #   draft: true                      # default true; false = ready PRs, CI on every push
 
 # ── Built-in status file (#343, epic #333) ───────────────────────────────────
-# /pipeline reads these since #347, but only when status.enabled is true; it
+# /talos:pipeline reads these since #347, but only when status.enabled is true; it
 # defaults to false, so setting the other keys changes nothing until you opt in.
-# /pipeline-setup writes this block for you (#349).
+# /talos:setup writes this block for you (#349).
 # status.fragments_dir must be a TRACKED directory (hence docs/status.d, not
 # .talos/status.d: .talos/ is gitignored or untracked in a consumer repo).
 # status:

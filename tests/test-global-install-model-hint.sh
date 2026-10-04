@@ -16,7 +16,7 @@ count_hint() { printf '%s\n' "$1" | grep -c "$HINT"; }
 # 1. No user-level file at all -> hint, exactly once, naming the setup skill.
 out="$(install_out)"
 assert_eq "1" "$(count_hint "$out")" "AC8: hint printed once when no user-level config exists"
-assert_contains "$(printf '%s\n' "$out" | grep "$HINT")" "pipeline-setup" "AC8: hint points at the setup wizard"
+assert_contains "$(printf '%s\n' "$out" | grep "$HINT")" "/talos:setup" "AC8: hint points at the setup wizard"
 assert_file_absent "$USER_CFG" "AC8: install --global does not create a user-level config"
 
 # 2. User-level file without model keys -> hint, file byte-identical.

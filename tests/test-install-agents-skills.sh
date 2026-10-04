@@ -32,7 +32,7 @@ inst() {
 }
 
 # src_desc <command> -- the description line of the source skill, read at run
-# time (another change rewrites the pipeline-setup one).
+# time (another change rewrites the setup one).
 src_desc() {
   awk 'NR>1 && /^---$/{exit} /^description:/{print; exit}' "$TALOS_ROOT/skills/$1/SKILL.md"
 }
@@ -120,7 +120,7 @@ cmp -s "$SANDBOX/foreign-pipeline.orig" "$HOME/.agents/skills/talos-pipeline/SKI
 assert_eq "1" "$(printf '%s\n' "$OUT" | grep -c 'talos-resume/SKILL.md' )" "one line names the foreign talos-resume file"
 assert_contains "$(printf '%s\n' "$OUT" | grep 'talos-resume/SKILL.md')" "warning" "the line about the foreign file is a warning"
 assert_eq "graphify" "$(cat "$HOME/.agents/skills/graphify/SKILL.md")" "an unrelated skill in ~/.agents/skills is untouched"
-assert_file_exists "$HOME/.agents/skills/talos-pipeline-setup/SKILL.md" "the non-colliding pointer is still written"
+assert_file_exists "$HOME/.agents/skills/talos-setup/SKILL.md" "the non-colliding pointer is still written"
 # a pointer (marker present) is overwritten; --no-overwrite skips it
 newhome overwrite
 inst --harness codex
@@ -197,11 +197,8 @@ inst --harness codex
 newhome only-claude
 inst --harness claude
 for cmd in "${TALOS_COMMANDS[@]}"; do
-  n="$(talos_claude_skill_name "$cmd")"
   cmp -s "$SANDBOX/home-both/.agents/skills/talos-$cmd/SKILL.md" "$SANDBOX/home-only-codex/.agents/skills/talos-$cmd/SKILL.md" \
     && pass "codex,claude writes the same talos-$cmd pointer as codex alone" || fail "codex,claude writes the same talos-$cmd pointer as codex alone"
-  cmp -s "$TALOS_ROOT/skills/$cmd/SKILL.md" "$SANDBOX/home-both/.claude/skills/$n/SKILL.md" \
-    && pass "codex,claude writes the same Claude skill $n as the source" || fail "codex,claude writes the same Claude skill $n as the source"
 done
 assert_eq "$(fileset "$SANDBOX/home-only-claude/.claude")" "$(fileset "$SANDBOX/home-both/.claude")" \
   "codex,claude writes the same ~/.claude file set as claude alone"

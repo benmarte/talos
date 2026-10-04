@@ -3,7 +3,7 @@
 #
 # This is a TEMPLATE, not something Talos enforces at runtime -- CI cadence
 # and cost are the consuming repo's policy. Copy this file to
-# .github/workflows/tests.yml (or let `/pipeline-setup` write it for you when
+# .github/workflows/tests.yml (or let `/talos:setup` write it for you when
 # no existing workflow runs your test suite -- it never edits a workflow that
 # already exists), then adjust the paths, job name, and test command for your
 # project. Talos dogfoods this exact template in its own repo.

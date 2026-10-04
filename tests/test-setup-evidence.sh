@@ -8,7 +8,7 @@ set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox
 
-SETUP="${SETUP_FILE:-$TALOS_ROOT/skills/pipeline-setup/SKILL.md}"
+SETUP="${SETUP_FILE:-$TALOS_ROOT/skills/setup/SKILL.md}"
 CHANGELOG="$TALOS_ROOT/CHANGELOG.md"
 flat() { tr '\n' ' ' < "$1" | tr -s ' '; }
 SN="$(flat "$SETUP")"

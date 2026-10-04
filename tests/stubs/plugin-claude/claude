@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Stub `claude` for the install tests (#335): the `claude plugin ...` surface
+# install.sh --global drives, and nothing else. make_sandbox puts this
+# directory first on PATH so no test can reach the real binary, the real Claude
+# config, or the network. It keeps its state under $CLAUDE_STUB_STATE and logs
+# every call (with the CLAUDE_CONFIG_DIR it saw) to $CLAUDE_PLUGIN_LOG.
+#
+# State: $CLAUDE_STUB_STATE/marketplace holds one line, "dir<TAB><path>" or
+# "github<TAB><owner/repo>", or is absent (no `talos` marketplace).
+# Knobs (all default off): CLAUDE_STUB_NO_PLUGIN=1 (no `plugin` subcommand),
+# CLAUDE_STUB_LIST_RAW=<text> (print this for `marketplace list --json`),
+# CLAUDE_STUB_ADD_FAIL=1, CLAUDE_STUB_INSTALL_FAIL=1.
+STATE="${CLAUDE_STUB_STATE:-}"
+LOG="${CLAUDE_PLUGIN_LOG:-/dev/null}"
+{
+  printf 'CLAUDE ARGS:'; for a in "$@"; do printf ' [%s]' "$a"; done
+  printf ' | CLAUDE_CONFIG_DIR=%s\n' "${CLAUDE_CONFIG_DIR:-}"
+} >> "$LOG"
+
+[ "${1:-}" = "plugin" ] || exit 0
+shift
+if [ -n "${CLAUDE_STUB_NO_PLUGIN:-}" ]; then
+  echo "error: unknown command 'plugin'" >&2
+  exit 1
+fi
+case "${1:-}" in
+  --help|-h) echo "Usage: claude plugin [options] [command]"; exit 0 ;;
+  install)
+    if [ -n "${CLAUDE_STUB_INSTALL_FAIL:-}" ]; then
+      echo '{"command":"install","outcome":"failed","message":"could not fetch dependency agent-skills"}'
+      exit 1
+    fi
+    echo '{"command":"install","outcome":"ok","message":"Successfully installed plugin: talos@talos (scope: user)"}'
+    exit 0 ;;
+  marketplace)
+    shift
+    case "${1:-}" in
+      list)
+        if [ -n "${CLAUDE_STUB_LIST_RAW:-}" ]; then printf '%s\n' "$CLAUDE_STUB_LIST_RAW"; exit 0; fi
+        if [ -n "$STATE" ] && [ -f "$STATE/marketplace" ]; then
+          IFS=$'\t' read -r kind val < "$STATE/marketplace"
+          if [ "$kind" = "dir" ]; then
+            printf '[\n  {"name": "talos", "source": "directory", "path": "%s", "installLocation": "%s"}\n]\n' "$val" "$val"
+          else
+            printf '[\n  {"name": "talos", "source": "%s", "repo": "%s"}\n]\n' "$kind" "$val"
+          fi
+        else
+          echo '[]'
+        fi
+        exit 0 ;;
+      add)
+        if [ -n "${CLAUDE_STUB_ADD_FAIL:-}" ]; then
+          echo '{"command":"marketplace-add","outcome":"failed","message":"no such directory"}'
+          exit 1
+        fi
+        if [ -n "$STATE" ]; then
+          mkdir -p "$STATE"
+          printf 'dir\t%s\n' "${2:-}" > "$STATE/marketplace"
+        fi
+        echo '{"command":"marketplace-add","outcome":"ok","marketplace":"talos","message":"Successfully added marketplace: talos"}'
+        exit 0 ;;
+    esac ;;
+esac
+exit 0

@@ -66,16 +66,17 @@ inst_err() {
 }
 
 assert_claude_tree() {  # $1=config dir $2=label -- cmp-equal to the sources
-  local d="$1" label="$2" role cmd
+  local d="$1" label="$2" role name
   for role in validator pm developer qa reviewer security adversarial docs planner; do
     src="$TALOS_ROOT/agents/$role.md"; [ -f "$src" ] || src="$TALOS_ROOT/.claude/agents/$role.md"
     if cmp -s "$src" "$d/agents/$role.md"; then pass "$label: agents/$role.md is cmp-equal"
     else fail "$label: agents/$role.md is cmp-equal"; fi
   done
-  for cmd in "${TALOS_COMMANDS[@]}"; do
-    n="$(talos_claude_skill_name "$cmd")"
-    if cmp -s "$TALOS_ROOT/skills/$cmd/SKILL.md" "$d/skills/$n/SKILL.md"; then pass "$label: skills/$n/SKILL.md is cmp-equal"
-    else fail "$label: skills/$n/SKILL.md is cmp-equal"; fi
+  # The commands come from the plugin (#335); the adapter's own skills are the
+  # two legacy aliases, thin files carrying the alias marker.
+  for name in pipeline pipeline-setup; do
+    if grep -qxF '<!-- talos:alias -->' "$d/skills/$name/SKILL.md" 2>/dev/null; then pass "$label: skills/$name/SKILL.md is a legacy alias"
+    else fail "$label: skills/$name/SKILL.md is a legacy alias"; fi
   done
 }
 
@@ -294,7 +295,7 @@ assert_contains "$OUT" "[pi]" "a list prints a block per harness: pi"
 
 R="$(new_repo repo-claude)"
 inst "$PATH" "$R" --no-agent-skills --no-agents-md --harness claude
-assert_contains "$OUT" "Open a Claude Code session in $R and run: /pipeline" "claude: /pipeline start line"
+assert_contains "$OUT" "Open a Claude Code session in $R and run: /talos:pipeline" "claude: /talos:pipeline start line"
 assert_contains "$OUT" "install.sh --global" "claude: the --global guidance still prints"
 R="$(new_repo repo-codex-noclaude)"
 inst "$PATH" "$R" --no-agent-skills --no-agents-md --harness codex
@@ -303,7 +304,7 @@ assert_not_contains "$OUT" "Claude Code session" "--harness codex: no Claude sta
 # The Claude start line follows detection when there is no --harness.
 R="$(new_repo repo-detected-env)"
 OUT="$(env -u TALOS_HOME CLAUDE_CONFIG_DIR="$SANDBOX/plugin-less" PATH="$PATH" "$BASH_BIN" "$INSTALL" "$R" --no-agent-skills --no-agents-md 2>&1)"
-assert_contains "$OUT" "run: /pipeline" "no --harness, CLAUDE_CONFIG_DIR set: /pipeline start line prints"
+assert_contains "$OUT" "run: /talos:pipeline" "no --harness, CLAUDE_CONFIG_DIR set: /talos:pipeline start line prints"
 assert_contains "$OUT" "install.sh --global" "no --harness, CLAUDE_CONFIG_DIR set: --global guidance prints"
 if [ "$CAN_STRIP" = true ]; then
   newhome repo-nosignal
