@@ -28,9 +28,8 @@ Verify commands (run once, immediately before your final commit):
 Use "Part of #{{ISSUE}}" instead of "Closes #{{ISSUE}}" in the PR body for all but the
 last PR on multi-PR issues.
 
-Done when: every acceptance criterion in the PM spec has a code change, each
-`(test)` one with its failing test committed first, and a PR is open. Do not
-add tests beyond what the spec's criteria require.
+Done when: every acceptance criterion in the PM spec has a code change and a
+PR is open. Do not add tests beyond what the spec's criteria require.
 
 {{STOP_RULE}}
 

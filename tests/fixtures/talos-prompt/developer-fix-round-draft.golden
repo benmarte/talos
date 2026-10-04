@@ -35,9 +35,8 @@ bash lint.sh
 Use "Part of #468" instead of "Closes #468" in the PR body for all but the
 last PR on multi-PR issues.
 
-Done when: every acceptance criterion in the PM spec has a code change, each
-`(test)` one with its failing test committed first, and a PR is open. Do not
-add tests beyond what the spec's criteria require.
+Done when: every acceptance criterion in the PM spec has a code change and a
+PR is open. Do not add tests beyond what the spec's criteria require.
 
 If you stop, block, or ask instead of completing: name the file and quote
 the line that made you stop, and say whether it is an explicit requirement or
