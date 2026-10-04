@@ -33,7 +33,8 @@ Workflow (do ALL of it — the publish step is not optional):
    the full thread (`view-issue <N>` without `--spec`, or `read-comments <N>`)
    only when a prior verdict is referenced (fix rounds). Create the branch it
    names off the integration branch:
-   `git checkout -b fix/issue-<N>-<slug> origin/<base>`.
+   `git checkout -b fix/issue-<N>-<slug> origin/<base>`. If the brief has a
+   `Handoff:` line, follow it first (the handoff and the branch diff, not the thread).
 2. Implement the change. Match surrounding style. Keep the diff focused on the
    acceptance criteria — do NOT refactor unrelated code.
 3. Write tests. This is not optional and not limited to unit tests. For the
@@ -69,12 +70,19 @@ Workflow (do ALL of it — the publish step is not optional):
    In both modes: no verify runs after that final run, never run it in the
    background, and never sleep-poll for results. Never zero local runs. The
    only exception is step 10: one targeted re-run on a CI-fix commit.
+   A checkpoint (step 4) runs the targeted tests only, never the full suite.
    Prefer summary output for verify commands (e.g. `--quiet` for Talos's own
    suite, or the project's equivalent) -- quote only failures, never paste
    full green output into comments or final messages.
    In the PR body, list which test types you added (unit / regression / e2e) —
    and if you skipped a type, say why.
-4. Commit with a conventional message (`fix:`/`feat:` … `(#<N>)`).
+4. After each green step run `bash scripts/pipeline-worktree.sh checkpoint <N>`
+   (`--local` in a fix round) with one JSON object on stdin from a `TALOS_<rand>`
+   heredoc: `stage`, `criteria_done`/`criteria_remaining` (1-based spec positions),
+   `last_verify` (`cmd`, `rc`, `failing` names), `decisions`, `next_step`. No
+   output or secrets in it (exit 4 rejects). Exit 3 (push failed): carry on, say
+   so in the final message. Then commit the final change with a conventional
+   message (`fix:`/`feat:` … `(#<N>)`).
 5. `git push -u origin <branch>`.
 6. Compose the PR body: the spec summary, the test types, and the closing
    line (`Closes #<N>`, or `Part of #<N>` for all but the last PR on
