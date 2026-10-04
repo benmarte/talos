@@ -100,7 +100,7 @@ newcase esc-path
 export CLAUDE_STUB_LIST_RAW='[{"name":"talos","source":"directory","path":"/moved\u001b[31m-checkout"}]'
 inst --keep-marketplace
 assert_eq "0" "$RC" "ESC in a marketplace path: exits 0"
-assert_contains "$OUT" "points at /moved[31m-checkout, not this checkout" "ESC in a marketplace path: printed with the ESC removed"
+assert_contains "$OUT" "points at /moved?[31m-checkout, not this checkout" "ESC in a marketplace path: printed with the ESC replaced by ?"
 assert_eq "0" "$(printf '%s' "$OUT" | LC_ALL=C grep -c "$(printf '\033')" || true)" "ESC in a marketplace path: no ESC byte in the installer output"
 
 # ESC and a C1 control (U+009B, bytes c2 9b, a one-character CSI) in a path the
@@ -113,12 +113,87 @@ mkdir -p "$CASE/claude-$ESC_C1" "$CASE/repo-$ESC_C1"
 OUT="$(env CLAUDE_CONFIG_DIR="$CASE/claude-$ESC_C1" TALOS_HOME="$CASE/talos" TALOS_AGENTS_HOME="$CASE/agents" \
   "$BASH_BIN" "$INSTALL" --global --no-agent-skills --harness claude 2>&1)"; RC=$?
 assert_eq "0" "$RC" "control characters in CLAUDE_CONFIG_DIR: exits 0"
-assert_contains "$OUT" "Claude Code adapter ($CASE/claude-[31m-x):" "control characters in CLAUDE_CONFIG_DIR: path printed with them removed"
+assert_contains "$OUT" "Claude Code adapter ($CASE/claude-?[31m-?x):" "control characters in CLAUDE_CONFIG_DIR: path printed with them replaced by ?"
 assert_eq "0" "$(printf '%s' "$OUT" | LC_ALL=C grep -c -e "$(printf '\033')" -e "$(printf '\302\233')" || true)" "control characters in CLAUDE_CONFIG_DIR: no ESC or C1 byte in the output"
 OUT="$(env CLAUDE_CONFIG_DIR="$CASE/claude" TALOS_HOME="$CASE/talos" TALOS_AGENTS_HOME="$CASE/agents" \
   "$BASH_BIN" "$INSTALL" "$CASE/repo-$ESC_C1" --no-agent-skills --harness claude 2>&1)"; RC=$?
-assert_contains "$OUT" "Configuring Talos for repo: $CASE/repo-[31m-x" "control characters in the target repo: path printed with them removed"
+assert_contains "$OUT" "Configuring Talos for repo: $CASE/repo-?[31m-?x" "control characters in the target repo: path printed with them replaced by ?"
 assert_eq "0" "$(printf '%s' "$OUT" | LC_ALL=C grep -c -e "$(printf '\033')" -e "$(printf '\302\233')" || true)" "control characters in the target repo: no ESC or C1 byte in the output"
+
+# has_ctl <text> -- 1 when <text> holds an ESC or a UTF-8 C1 control (bytes
+# c2 80..c2 9f), else 0. Byte-wise (LC_ALL=C), whatever the ambient locale.
+C1_RE="$(printf '\302')[$(printf '\200')-$(printf '\237')]"
+has_ctl() {
+  if LC_ALL=C grep -q -E -e "$C1_RE" -e "$(printf '\033')" <<<"$1"; then echo 1; else echo 0; fi
+}
+
+# The sanitisers themselves. Deleting a control can join its neighbours into a
+# new one (c2 c2 9b 9b -> c2 9b, c2 1b 9b -> c2 9b), so no output may hold an
+# ESC or a c2 80..c2 9f pair, whatever the input; other UTF-8 passes through.
+eval "$(awk '/^_P_C2=/{p=1} p{print} p&&/^}/{exit}' "$INSTALL")"
+eval "$(awk '/^_P_C2=/{p=1} p{print} p&&/^}/{exit}' "$TALOS_ROOT/scripts/pipeline-instructions.sh")"
+for _in in "$(printf '\302\302\233\233')" "$(printf '\302\033\233')" "$(printf '\302\302\302\200\200\200')" \
+           "$(printf '\033\302\033\233\233')" "$(printf '\302\t\233\177')" "$(printf 'a\033[31mb\302\233c')"; do
+  assert_eq "0" "$(has_ctl "$(printable "$_in")")" "printable: no ESC or C1 control survives input $(printf '%s' "$_in" | od -An -tx1 | tr -d '\n')"
+  assert_eq "0" "$(has_ctl "$(_printable "$_in")")" "_printable: no ESC or C1 control survives input $(printf '%s' "$_in" | od -An -tx1 | tr -d '\n')"
+done
+_ok="$(printf 'caf\303\251 \303\204 \342\202\254 \342\202\233 \302\240x')"
+assert_eq "$_ok" "$(printable "$_ok")" "printable: e-acute, A-umlaut, euro, e2 82 9b and c2 a0 pass through"
+assert_eq "$_ok" "$(_printable "$_ok")" "_printable: e-acute, A-umlaut, euro, e2 82 9b and c2 a0 pass through"
+
+# A repo path holding ESC and c2 9b, with an existing CLAUDE.md and GEMINI.md
+# (so the Claude and Gemini notices print the repo-derived paths), and a hostile
+# TALOS_HOME (the missing-skill warning): none of it reaches the output raw,
+# from pipeline-instructions.sh itself or through install.sh.
+newcase hostile-repo
+HOSTILE="$(printf 'r\033[31m-\302\233x')"
+# The scripts print `pwd` paths, which collapse a doubled slash in $TMPDIR.
+CASE_P="$(cd "$CASE" && pwd)"
+HREPO="$CASE_P/$HOSTILE"
+mkdir -p "$HREPO"
+git -C "$HREPO" init -q -b main
+printf '# claude rules\n' > "$HREPO/CLAUDE.md"
+printf '# gemini rules\n' > "$HREPO/GEMINI.md"
+OUT="$(env TALOS_HOME="$CASE/talos-$HOSTILE" "$BASH_BIN" "$TALOS_ROOT/scripts/pipeline-instructions.sh" write "$HREPO" 2>&1)"; RC=$?
+assert_eq "0" "$RC" "hostile repo path: pipeline-instructions write exits 0"
+assert_contains "$OUT" "Claude Code: found $CASE_P/r?[31m-?x/CLAUDE.md." "hostile repo path: the Claude notice prints the path with controls replaced"
+assert_contains "$OUT" "add the line @AGENTS.md to $CASE_P/r?[31m-?x/GEMINI.md" "hostile repo path: the Gemini notice prints the path with controls replaced"
+assert_contains "$OUT" "warning: $CASE/talos-r?[31m-?x/skills/pipeline/SKILL.md is missing" "hostile TALOS_HOME: the missing-skill warning prints the path with controls replaced"
+assert_eq "0" "$(has_ctl "$OUT")" "hostile repo path: no ESC or C1 byte anywhere in pipeline-instructions write output"
+OUT="$(env TALOS_HOME="$CASE/talos" "$BASH_BIN" "$TALOS_ROOT/scripts/pipeline-instructions.sh" write "$HREPO" --import-agents-md 2>&1)"; RC=$?
+assert_eq "0" "$RC" "hostile repo path: write --import-agents-md exits 0"
+assert_contains "$OUT" "import: added @AGENTS.md to $CASE_P/r?[31m-?x/CLAUDE.md" "hostile repo path: the import line prints the path with controls replaced"
+assert_eq "0" "$(has_ctl "$OUT")" "hostile repo path: no ESC or C1 byte anywhere in write --import-agents-md output"
+OUT="$(env TALOS_HOME="$CASE/talos" "$BASH_BIN" "$TALOS_ROOT/scripts/pipeline-instructions.sh" write "$HREPO" "--bad$HOSTILE" 2>&1)"; RC=$?
+assert_eq "2" "$RC" "hostile option: pipeline-instructions write exits 2"
+assert_eq "0" "$(has_ctl "$OUT")" "hostile option: no ESC or C1 byte in the error"
+OUT="$(env TALOS_HOME="$CASE/talos" "$BASH_BIN" "$TALOS_ROOT/scripts/pipeline-instructions.sh" write "$CASE/missing-$HOSTILE" 2>&1)"; RC=$?
+assert_eq "2" "$RC" "hostile missing repo: pipeline-instructions write exits 2"
+assert_eq "0" "$(has_ctl "$OUT")" "hostile missing repo: no ESC or C1 byte in the error"
+# Back to the plain fixture (the --import-agents-md run above edited both files).
+rm -f "${HREPO:?}/AGENTS.md"
+printf '# claude rules\n' > "$HREPO/CLAUDE.md"
+printf '# gemini rules\n' > "$HREPO/GEMINI.md"
+OUT="$(env CLAUDE_CONFIG_DIR="$CASE/claude" TALOS_HOME="$CASE/talos" TALOS_AGENTS_HOME="$CASE/agents" \
+  "$BASH_BIN" "$INSTALL" "$HREPO" --no-agent-skills --harness claude,gemini 2>&1)"; RC=$?
+assert_eq "0" "$RC" "hostile repo path: install.sh on the repo exits 0"
+assert_contains "$OUT" "Claude Code: found $CASE_P/r?[31m-?x/CLAUDE.md." "hostile repo path: install.sh prints the Claude notice path with controls replaced"
+assert_contains "$OUT" "add the line @AGENTS.md to $CASE_P/r?[31m-?x/GEMINI.md" "hostile repo path: install.sh prints the Gemini notice path with controls replaced"
+assert_eq "0" "$(has_ctl "$OUT")" "hostile repo path: no ESC or C1 byte anywhere in install.sh output"
+OUT="$(env CLAUDE_CONFIG_DIR="$CASE/claude" TALOS_HOME="$CASE/talos" TALOS_AGENTS_HOME="$CASE/agents-$HOSTILE" \
+  "$BASH_BIN" "$INSTALL" --global --no-agent-skills --harness codex,claude 2>&1)"; RC=$?
+assert_eq "0" "$RC" "hostile TALOS_AGENTS_HOME: global install exits 0"
+assert_eq "0" "$(has_ctl "$OUT")" "hostile TALOS_AGENTS_HOME: no ESC or C1 byte anywhere in the output"
+for _h in "$(printf 'a\033b')" "$(printf 'a\302\233b')" "$(printf ',\033')" ; do
+  OUT="$(env CLAUDE_CONFIG_DIR="$CASE/claude" TALOS_HOME="$CASE/talos" TALOS_AGENTS_HOME="$CASE/agents" \
+    "$BASH_BIN" "$INSTALL" --global --no-agent-skills "--harness=$_h" 2>&1)"; RC=$?
+  assert_eq "1" "$RC" "hostile --harness value: install.sh exits 1"
+  assert_eq "0" "$(has_ctl "$OUT")" "hostile --harness value: no ESC or C1 byte in the error"
+done
+OUT="$(env CLAUDE_CONFIG_DIR="$CASE/claude" TALOS_HOME="$CASE/talos" TALOS_AGENTS_HOME="$CASE/agents" \
+  "$BASH_BIN" "$INSTALL" --global --no-agent-skills --harness "$(printf -- '-\033x')" 2>&1)"; RC=$?
+assert_eq "1" "$RC" "hostile --harness next-argument: install.sh exits 1"
+assert_eq "0" "$(has_ctl "$OUT")" "hostile --harness next-argument: no ESC or C1 byte in the error"
 
 newcase keep-fresh
 inst --keep-marketplace

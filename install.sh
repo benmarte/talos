@@ -103,6 +103,22 @@
 #   Git history is never modified. Nothing is committed.
 set -euo pipefail
 
+# printable <text> -- <text> with every control character replaced by `?`, for
+# paths, arguments and tool output echoed to the terminal: a path from the
+# environment, an argument, a marketplace JSON entry or `claude` output must not
+# be able to inject an escape sequence into the install log. That is C0 + DEL
+# and the UTF-8 C1 controls (U+0080-U+009F, bytes c2 80..c2 9f; U+009B is a
+# one-character CSI), the same set pipeline-agent.sh strips in _plain. They are
+# replaced, never deleted: deleting can join the bytes either side into a new
+# control (c2 c2 9b 9b -> c2 9b, c2 1b 9b -> c2 9b), a `?` cannot. tr takes the
+# single-byte ones, sed the two-byte ones (no python3 needed). Other UTF-8 text
+# passes through. Defined first: the argument parser below echoes with it.
+_P_C2=$'\xc2'; _P_LO=$'\x80'; _P_HI=$'\x9f'
+printable() {
+  printf '%s' "$1" | LC_ALL=C tr '\000-\037\177' '?' \
+    | LC_ALL=C sed "s/${_P_C2}[${_P_LO}-${_P_HI}]/?/g"
+}
+
 SRC="$(cd "$(dirname "$0")" && pwd)"
 TARGET=""
 FORCE_MODE=""       # "overwrite" | "no-overwrite" | "" (default varies by mode)
@@ -124,7 +140,7 @@ expect_harness=false
 for arg in "$@"; do
   if [ "$expect_harness" = "true" ]; then
     case "$arg" in
-      -*) echo "error: --harness needs a value (got '$arg')" >&2; exit 1 ;;
+      -*) echo "error: --harness needs a value (got '$(printable "$arg")')" >&2; exit 1 ;;
     esac
     HARNESS_RAW="$arg"; HARNESS_GIVEN=true; expect_harness=false; continue
   fi
@@ -162,17 +178,17 @@ FORCE=false
 # on, so an unknown name can never trigger a harness-specific notice downstream).
 if [ "$HARNESS_GIVEN" = "true" ]; then
   case ",$HARNESS_RAW," in
-    *,,*) echo "error: --harness has an empty item in '$HARNESS_RAW'. Known: ${KNOWN_HARNESSES// /, }" >&2; exit 1 ;;
+    *,,*) echo "error: --harness has an empty item in '$(printable "$HARNESS_RAW")'. Known: ${KNOWN_HARNESSES// /, }" >&2; exit 1 ;;
   esac
   _rest="$HARNESS_RAW"
   while :; do
     _h="${_rest%%,*}"
     case "$_h" in
-      *[!abcdefghijklmnopqrstuvwxyz0123456789-]*) echo "error: invalid --harness name '$_h' (lower-case letters, digits and - only). Known: ${KNOWN_HARNESSES// /, }" >&2; exit 1 ;;
+      *[!abcdefghijklmnopqrstuvwxyz0123456789-]*) echo "error: invalid --harness name '$(printable "$_h")' (lower-case letters, digits and - only). Known: ${KNOWN_HARNESSES// /, }" >&2; exit 1 ;;
     esac
     case " $KNOWN_HARNESSES " in
       *" $_h "*) ;;
-      *) echo "note: unknown harness '$_h' treated as generic; set agents.runner: custom with agents.runner_cmd to drive it."
+      *) echo "note: unknown harness '$(printable "$_h")' treated as generic; set agents.runner: custom with agents.runner_cmd to drive it."
          _h="generic" ;;
     esac
     case ",$HARNESSES," in
@@ -284,19 +300,6 @@ else:
 # also installs its agent-skills dependency from GitHub (network).
 CLAUDE_PLUGIN_REGISTERED=false
 
-# printable <text> -- <text> with ESC and every other control character
-# removed, for paths and tool output that are echoed to the terminal: a path
-# from the environment, a marketplace JSON entry or `claude` output must not
-# be able to inject an escape sequence into the install log. That is C0 + DEL
-# and the UTF-8 C1 controls (U+0080-U+009F, bytes c2 80..c2 9f; U+009B is a
-# one-character CSI), the same set pipeline-agent.sh strips in _plain. tr
-# takes the single-byte ones, sed the two-byte ones (no python3 needed). Other
-# UTF-8 text passes through.
-_P_C2=$'\xc2'; _P_LO=$'\x80'; _P_HI=$'\x9f'
-printable() {
-  printf '%s' "$1" | LC_ALL=C tr -d '\000-\037\177' \
-    | LC_ALL=C sed "s/${_P_C2}[${_P_LO}-${_P_HI}]//g"
-}
 install_claude_plugin() {
   local state kind val out here there src_p val_p
   src_p="$(printable "$SRC")"
@@ -518,7 +521,7 @@ install_agents_pointers() {
     dest="$skills/$name/SKILL.md"
     desc="$(awk 'NR>1 && /^---$/{exit} /^description:/{print; exit}' "$src")"
     if [ -z "$desc" ]; then
-      echo "  notice: $src has no description line; $name was not written."
+      echo "  notice: $(printable "$src") has no description line; $name was not written."
       continue
     fi
     if [ -L "$skills/$name" ] || [ -L "$dest" ]; then
@@ -571,7 +574,7 @@ if [ "$GLOBAL" = "true" ]; then
     echo "(Skills -> $(printable "$TALOS_HOME_DIR")/skills, Agents -> $(printable "$TALOS_HOME_DIR")/agents)"
     _adapter_state="skipped"
   fi
-  echo "Claude Code adapter $_adapter_state ($CLAUDE_WHY). Override: --harness claude forces it; a --harness list without claude skips it."
+  echo "Claude Code adapter $_adapter_state ($(printable "$CLAUDE_WHY")). Override: --harness claude forces it; a --harness list without claude skips it."
   echo ""
 
   # Scripts -- glob every *.sh (and *.py, below) in $SRC/scripts so a new script is picked up
@@ -638,7 +641,7 @@ if [ "$GLOBAL" = "true" ]; then
   # installer edit.
   _CONTRACT="$SRC/scripts/pipeline-contract.sh"
   if [ ! -f "$_CONTRACT" ]; then
-    echo "error: $_CONTRACT not found; cannot read the command manifest" >&2
+    echo "error: $(printable "$_CONTRACT") not found; cannot read the command manifest" >&2
     exit 1
   fi
   . "$_CONTRACT"
@@ -754,7 +757,7 @@ if [ "$WITH_SKILLS" = "true" ]; then
   echo "agent-skills (required by the role profiles -- Talos installs it for you):"
   if ! command -v git >/dev/null 2>&1; then
     echo "  SKIPPED: git not found. Install agent-skills manually:"
-    echo "    $AGENT_SKILLS_REPO"
+    echo "    $(printable "$AGENT_SKILLS_REPO")"
   else
     as_tmp="$(mktemp -d)"
     if git clone --depth 1 --quiet "$AGENT_SKILLS_REPO" "$as_tmp/agent-skills" 2>/dev/null \
@@ -781,10 +784,10 @@ if [ "$WITH_SKILLS" = "true" ]; then
         fi
       done
       echo "  installed: $as_n skill(s) into $(printable "$TARGET")/.claude/skills/"
-      echo "  source:    $AGENT_SKILLS_REPO (MIT, unmodified)"
+      echo "  source:    $(printable "$AGENT_SKILLS_REPO") (MIT, unmodified)"
       echo "  skip with: --no-agent-skills"
     else
-      echo "  SKIPPED: could not fetch $AGENT_SKILLS_REPO (offline?)."
+      echo "  SKIPPED: could not fetch $(printable "$AGENT_SKILLS_REPO") (offline?)."
       echo "           The pipeline still runs; roles fall back to their embedded"
       echo "           instructions. Re-run this installer when you have network."
     fi
