@@ -23,8 +23,11 @@ SECRET_SHAPES = tuple((name, re.compile(rx)) for name, rx in (
     ("slack-webhook", r"hooks\.slack\.com/services/[A-Za-z0-9]+/[A-Za-z0-9]+/[A-Za-z0-9]{20,}"),
     ("discord-webhook", r"discord(?:app)?\.com/api/(?:v\d+/)?webhooks/\d+/[A-Za-z0-9_-]{20,}"),
     ("teams-webhook", r"office(?:365)?\.com/webhook(?:b2)?/[0-9A-Fa-f]{8}-[0-9A-Fa-f-]{20,}"),
-    ("github-token", r"gh[po]_[A-Za-z0-9]{20,}"),
+    ("github-token", r"gh[pousr]_[A-Za-z0-9]{20,}"),
     ("github-pat", r"github_pat_[A-Za-z0-9_]{20,}"),
+    ("gitlab-pat", r"glpat-[A-Za-z0-9_-]{20,}"),
+    # Anchored so a word that merely ends in "sk" (task-, risk-) never matches.
+    ("openai-key", r"(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])"),
     ("aws-access-key", r"AKIA[0-9A-Z]{16}"),
     ("private-key", r"-----BEGIN [A-Z ]*PRIVATE KEY"),
     ("nostr-nsec", r"nsec1[02-9ac-hj-np-z]{16,}"),

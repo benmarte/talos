@@ -28,8 +28,13 @@ fixture() {
     github-token) case "$2" in
         1) printf '%s%s' "gh" "p_abcdEFGH12345678abcdEFGH12345678abcd" ;;
         2) printf '%s%s' "gh" "o_abcdEFGH12345678abcdEFGH12345678abcd" ;;
+        3) printf '%s%s' "gh" "s_abcdEFGH12345678abcdEFGH" ;;
+        4) printf '%s%s' "gh" "u_abcdEFGH12345678abcdEFGH" ;;
+        5) printf '%s%s' "gh" "r_abcdEFGH12345678abcdEFGH" ;;
       esac ;;
     github-pat) printf '%s%s' "github_" "pat_abcdEFGH12345678abcdEFGH12" ;;
+    gitlab-pat) printf '%s%s' "glp" "at-abcdEFGH12345678abcd" ;;
+    openai-key) printf '%s%s' "s" "k-abcdEFGH12345678abcdEFGH" ;;
     aws-access-key) printf '%s%s' "AK" "IAABCDEFGH12345678" ;;
     private-key) printf '%s%s' "-----BE" "GIN OPENSSH PRIVATE KEY-----" ;;
     nostr-nsec) printf '%s%s' "ns" "ec1qpzry9x8gf2tvdw0s3jn" ;;
@@ -38,8 +43,8 @@ fixture() {
 fixtures() {  # every fixture, as name<TAB>value
   local _n _i _v
   for _n in slack-token slack-webhook discord-webhook teams-webhook github-token \
-            github-pat aws-access-key private-key nostr-nsec; do
-    for _i in 1 2 3 4; do
+            github-pat gitlab-pat openai-key aws-access-key private-key nostr-nsec; do
+    for _i in 1 2 3 4 5; do
       _v="$(fixture "$_n" "$_i")"
       [ -n "$_v" ] && printf '%s\t%s\n' "$_n" "$_v"
     done
@@ -108,7 +113,7 @@ assert_contains "$(cat "$ERR")" "'yy[0].b'" "(a) a key inside a mapping inside a
 
 # ── (b) ordinary values pass untouched ───────────────────────────────────────
 reset_cfg
-for v in '#eng-alerts' 'L2Vuby9wYXRoL3RvL2ZpbGU/a+b/c==' 'https://hooks.example.com' 'https://hooks.example.com/services/team' 'plain words with spaces'; do
+for v in '#eng-alerts' 'L2Vuby9wYXRoL3RvL2ZpbGU/a+b/c==' 'https://hooks.example.com' 'https://hooks.example.com/services/team' 'plain words with spaces' 'task-management-planning-queue-review' 'sk-learn-pipeline'; do
   proj_json "{\"notifications\":{\"slack_channel\":\"$v\"}}"
   assert_eq "$v" "$(get notifications.slack_channel)" "(b) ordinary value passes: $v"
   assert_eq "0" "$(errcount)" "(b) ... with no stderr: $v"
@@ -183,6 +188,53 @@ BS=$(printf "\134"); proj_json "{\"zz\":\"a${BS}u202eb${BS}u2066c\"}"
 out="$(bash "$CFG_SH" --show zz 2>"$ERR")"
 assert_contains "$out" "a${BS}u202eb${BS}u2066c" "(show) bidi override characters print escaped"
 case "$out" in *$'\xe2\x80\xae'*|*$'\xe2\x81\xa6'*) fail "(show) no raw bidi character reaches stdout" ;; *) pass "(show) no raw bidi character reaches stdout" ;; esac
+
+# --show applies the same deny check as the secrets path and never says whether
+# a denied name is set.
+reset_cfg
+proj_json '{"notifications":{"slack":{"bot_token":"env:GH_TOKEN"}}}'
+out="$(GH_TOKEN=PLANTEDDENIED41 bash "$CFG_SH" --show notifications.slack.bot_token 2>"$ERR")"
+assert_eq "notifications.slack.bot_token${TAB}env:GH_TOKEN (denied)${TAB}repo" "$out" "(show) a reference to a denied name prints (denied), set or not"
+
+# ── YAML aliases: a cycle and a billion-laughs config load, no traceback ─────
+if python3 -I -c 'import site, sys; sys.path.append(site.getusersitepackages()); import yaml' 2>/dev/null; then
+  reset_cfg
+  printf 'notifications:\n  slack_channel: "#from-yaml"\nzz: &r\n  self: *r\n  keep: ok\nll: &l [*l, fine]\n' > "$PROJ/talos.pipeline.yml"
+  out="$(get notifications.slack_channel)"; rc=$?
+  assert_eq "0" "$rc" "(alias) a self-referencing alias: the lookup exits 0"
+  assert_eq "#from-yaml" "$out" "(alias) ... and the rest of the file still loads"
+  assert_not_contains "$(cat "$ERR")" "Traceback" "(alias) ... with no traceback"
+  assert_contains "$(cat "$ERR")" "'zz.self' refers to itself" "(alias) the cycle is dropped with one line naming the key path"
+  assert_contains "$(bash "$CFG_SH" --show zz.keep 2>/dev/null)" "zz.keep${TAB}ok${TAB}repo" "(alias) the sibling of a dropped cycle key stays"
+  # the same cycle in the global file (it is walked before the repo-only drop)
+  reset_cfg
+  printf 'notifications:\n  slack_channel: "#from-global"\nzz: &r\n  self: *r\n' > "$GHOME/talos.pipeline.yml"
+  assert_eq "#from-global" "$(get notifications.slack_channel)" "(alias) a cycle in the global file loads too"
+  assert_not_contains "$(cat "$ERR")" "Traceback" "(alias) ... with no traceback (global)"
+
+  reset_cfg
+  {
+    printf 'notifications:\n  slack_channel: "#from-yaml"\n'
+    printf 'a: &a [x, x, x, x, x, x, x, x, x]\n'
+    _prev=a
+    for _l in b c d e f g h i; do
+      printf '%s: &%s [*%s, *%s, *%s, *%s, *%s, *%s, *%s, *%s, *%s]\n' "$_l" "$_l" "$_prev" "$_prev" "$_prev" "$_prev" "$_prev" "$_prev" "$_prev" "$_prev" "$_prev"
+      _prev="$_l"
+    done
+    printf 'zz: *i\n'
+  } > "$PROJ/talos.pipeline.yml"
+  _t0=$SECONDS
+  out="$(get notifications.slack_channel)"; rc=$?
+  _dt=$((SECONDS - _t0))
+  assert_eq "#from-yaml" "$out" "(alias) a nested-alias config still yields the value"
+  if [ "$_dt" -lt 20 ]; then pass "(alias) ... and completes quickly"; else fail "(alias) ... and completes quickly" "took ${_dt}s"; fi
+  assert_not_contains "$(cat "$ERR")" "Traceback" "(alias) ... with no traceback"
+  assert_contains "$(cat "$ERR")" "expands to too many values" "(alias) the blown-up value is dropped with one line naming the key"
+  unset _prev _l _t0 _dt
+else
+  pass "(alias) PyYAML is not installed here: the alias cases need a YAML parser and are skipped"
+fi
+reset_cfg
 
 # ── env:NAME may not point at a denied variable, even from the environment ───
 CURL_URL1="https://hooks.example.invalid/one-$RANDOM"

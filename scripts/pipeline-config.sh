@@ -287,10 +287,13 @@ _SHAPE_LABELS = {
     "slack-token": "a Slack token", "slack-webhook": "a Slack webhook URL",
     "discord-webhook": "a Discord webhook URL", "teams-webhook": "a Teams webhook URL",
     "github-token": "a GitHub token", "github-pat": "a GitHub token",
+    "gitlab-pat": "a GitLab token", "openai-key": "an API key",
     "aws-access-key": "an AWS access key", "private-key": "a private key",
     "nostr-nsec": "a Nostr secret key",
 }
 _GONE = object()
+_MAX_NODES = 100000   # expanded values per layer value; real config is a few hundred
+_MAX_DEPTH = 64
 _SHAPES_WARNED = []
 
 def _drop_secret_shaped(obj, what):
@@ -309,25 +312,58 @@ def _drop_secret_shaped(obj, what):
             _warn("the secret-shape check is not installed (pipeline-secret-shapes.py "
                   "is missing) -- config values are not checked; reinstall Talos")
         return obj
-    def walk(node, where):
-        if isinstance(node, dict):
-            out = {}
-            for k, v in node.items():
-                kept = walk(v, where + "." + str(k) if where else str(k))
-                if kept is not _GONE:
-                    out[k] = kept
-            return out
-        if isinstance(node, list):
-            kept = [walk(v, "%s[%d]" % (where, i)) for i, v in enumerate(node)]
-            return [v for v in kept if v is not _GONE]
+    # YAML aliases make the parsed layer a graph, not a tree: a node can be
+    # reached many times (nested aliases expand exponentially) or from itself.
+    # So each container is scanned ONCE (memo by id), a node met again while it
+    # is still being walked is a cycle, and a value whose expanded size passes
+    # _MAX_NODES or whose depth passes _MAX_DEPTH is dropped. Each is the same
+    # one-line form as a shape hit: the key, never the value.
+    memo = {}
+    active = set()
+    def drop(where, why):
+        _warn("%s: key %s %s -- ignoring it" % (what, repr(where)[:80], why))
+        return _GONE, 0
+    def walk(node, where, depth):
+        # -> (cleaned node or _GONE, expanded size)
+        if isinstance(node, (dict, list)):
+            nid = id(node)
+            if nid in memo:
+                return memo[nid]
+            if nid in active:
+                return drop(where, "refers to itself (a YAML alias cycle)")
+            if depth >= _MAX_DEPTH:
+                return drop(where, "is nested too deeply")
+            active.add(nid)
+            size = 1
+            if isinstance(node, dict):
+                out = {}
+                for k, v in node.items():
+                    kept, n = walk(v, where + "." + str(k) if where else str(k), depth + 1)
+                    size += n
+                    if kept is not _GONE:
+                        out[k] = kept
+            else:
+                out = []
+                for i, v in enumerate(node):
+                    kept, n = walk(v, "%s[%d]" % (where, i), depth + 1)
+                    size += n
+                    if kept is not _GONE:
+                        out.append(kept)
+            active.discard(nid)
+            if size > _MAX_NODES:
+                memo[nid] = drop(where, "expands to too many values (nested YAML aliases)")
+            else:
+                memo[nid] = (out, size)
+            return memo[nid]
         shape = secret_shape(node)
         if shape is None:
-            return node
+            return node, 1
         _warn("%s: key %s holds %s; move the value to ~/.talos/.env and "
               "reference it as env:NAME -- ignoring it"
               % (what, repr(where)[:80], _SHAPE_LABELS.get(shape, "a secret")))
-        return _GONE
-    return walk(obj, "")
+        return _GONE, 0
+    kept = walk(obj, "", 0)[0]
+    return {} if kept is _GONE else kept
 
 def _check_agents(obj, what):
     # agents: must be a mapping in either file (it was warned about before #441
@@ -377,8 +413,10 @@ def _load_user_layer(user_path, project_path):
     if not isinstance(raw, dict):
         _warn("user-level config %s must be a mapping -- ignoring it" % shown)
         return {}
-    kept = _drop_repo_only(_check_agents(raw, "user-level config %s" % shown), [], shown)
-    return _drop_secret_shaped(kept, "user-level config %s" % shown)
+    # Scanned first: it also breaks alias cycles and bounds alias blow-up, which
+    # the recursive drops below would otherwise walk (#444).
+    raw = _drop_secret_shaped(raw, "user-level config %s" % shown)
+    return _drop_repo_only(_check_agents(raw, "user-level config %s" % shown), [], shown)
 
 def _deep_merge(base, over):
     out = dict(base)
@@ -405,8 +443,8 @@ def load_layers(project_path, user_path, env=True):
             _LOAD_ERRORS.append("project")
     if not isinstance(project, dict):
         project = {}
-    project = _check_agents(project, "config %s" % repr(project_path))
     project = _drop_secret_shaped(project, "config %s" % repr(project_path))
+    project = _check_agents(project, "config %s" % repr(project_path))
     user = _load_user_layer(user_path, project_path)
     merged = _deep_merge(user, project)
     return project, user, (_apply_env(merged) if env else merged)
@@ -825,9 +863,15 @@ if [ "${1:-}" = "--show" ]; then
     esac
     shift
   done
-  # Sets _SS to set|unset for the variable NAME; the value is discarded at once.
+  # Sets _SS to set|unset|denied for the variable NAME; the value is discarded
+  # at once. A denied name (the secrets path refuses it, #444) is never looked up,
+  # so it never reports whether it is set.
   _show_ref_state() {
     _SS="unset"
+    if [ "$(type -t _talos_dotenv_denied)" = "function" ] && _talos_dotenv_denied "$1"; then
+      _SS="denied"
+      return 0
+    fi
     if [ "$(type -t _talos_secret_env_layers)" = "function" ] \
        && { _talos_secret_env_layers "$1" || _talos_user_env_get talos "$1" \
             || _talos_user_env_get hermes "$1"; }; then

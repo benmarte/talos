@@ -799,7 +799,7 @@ CONTENT = ("stage", "criteria_done", "criteria_remaining", "last_verify", "decis
 FILEKEYS = ("v", "issue", "branch", "head") + CONTENT + ("runner", "model", "ts")
 REQUIRED = ("v", "issue", "branch", "head", "stage", "criteria_done", "criteria_remaining", "decisions", "next_step", "ts")
 CRED = [re.compile(p) for p in (
-    r"ghp_", r"gho_", r"github_pat_", r"glpat-", r"(?<![A-Za-z0-9])sk-", r"xox[abposr]-",
+    r"gh[pousr]_", r"github_pat_", r"glpat-", r"(?<![A-Za-z0-9])sk-", r"xox[abposr]-",
     r"AKIA[0-9A-Z]{16}", r"-----BEGIN", r"eyJ[\w-]+\.[\w-]+\.[\w-]+",
     r"://[^/\s:@]*:[^/\s@]*@", r"[A-Za-z0-9_-]{32,}",
     r"hooks\.slack\.com/services/", r"/api/(v\d+/)?webhooks/", r"office(365)?\.com/webhook", r"nsec1")]
