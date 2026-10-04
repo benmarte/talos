@@ -1534,4 +1534,20 @@ out="$(_nc '[{"user":{"login":"alice"},"body":"hi","created_at":"2026-10-01T00:0
 assert_eq "0" "$rc" "#451 normalize_comments: a valid page exits 0"
 assert_contains "$out" '"login": "alice"' "#451 normalize_comments: a valid page keeps the author login"
 
+# ── #455: a 2xx GET /user answer with no (or a null) login is "refused" ──────
+# Fail-open used to read it as "unavailable" and count an outsider's marker.
+# Refused: only markers.trusted_authors counts, and it is unset here.
+printf '%s\n' '{"vcs": {"provider": "github-api", "repo": "acme/widget"}}' > talos.pipeline.json
+export GITHUB_TOKEN="$TEST_TOKEN"
+for _u455 in '{}' '{"login":null}'; do
+  export STUB_CURRENT_USER_JSON="$_u455"
+  printf '%s\n' \
+    '[{"id":1,"body":"<!-- talos:attempt stage=qa count=2 total=5 -->","user":{"login":"mallory"}}]' \
+    > "$CURL_QUEUE"
+  out="$(bash "$VCS" read-attempt 9 2>"$SANDBOX/err455")"; rc=$?
+  assert_eq "0 stage= count=0 total=0" "$rc $out" "#455 GET /user answer $_u455: an outsider's attempt marker is not counted"
+  assert_contains "$(cat "$SANDBOX/err455")" "markers.trusted_authors is not set" "#455 GET /user answer $_u455: refused, not unavailable"
+done
+unset STUB_CURRENT_USER_JSON
+
 finish

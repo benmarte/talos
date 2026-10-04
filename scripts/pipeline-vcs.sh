@@ -342,7 +342,21 @@
 #                                             unreadable comment list or a failed write is exit
 #                                             1 and never a blind duplicate. Works on a merged
 #                                             PR. --dry-run prints the planned calls, exit 0.
-#   mark-needs-owner <n> <text>               Park a pending owner decision on GitHub
+#   edit-pr-body <pr> --body-file <path|->    Replace the description of PR <pr> (#455;
+#                                             github: `gh pr edit --body-file -`,
+#                                             github-api: PATCH pulls/<n>; gitlab, azure
+#                                             and file exit 2 `not implemented for
+#                                             provider '<p>'`). The body comes ONLY from
+#                                             a file or stdin with `-`, never argv or a
+#                                             positional (exit 2); a non-numeric <pr> or
+#                                             a flag with no value is exit 2. The same
+#                                             character and byte caps and the unsubstituted-
+#                                             placeholder guard as comment-pr apply, and an
+#                                             empty body, an unreadable file or a closed
+#                                             stdin is exit 1, all before any call.
+#                                             Prints `edited pr=<n> body`. Journaled in the
+#                                             write log. --dry-run prints the planned call.
+#   mark-needs-owner <n> <text>              Park a pending owner decision on GitHub
 #                    <n> --body-file <path|->  (#345, epic #333): post ONE comment on issue
 #                                             or PR <n> -- <text>, a blank line, then
 #                                             `<!-- talos:needs-owner -->` as the last
@@ -869,17 +883,38 @@ _with_retry() {
   done
 }
 
+# ── Flag-value guard (#455) ──────────────────────────────────────────────────
+# A value flag given as the LAST argument used to die on an unbound `$2` (a bash
+# error, exit 1). `_vcs_flag_needs_value <flag> <usage>` is exit 2 with a usage
+# line instead, as the other verbs' argument checks answer.
+_vcs_flag_needs_value() {
+  echo "pipeline-vcs: ${VERB:-${_VERB:-?}}: $1 needs a value; Usage: $2" >&2
+  exit 2
+}
+
 # ── Label arg parser (shared by label-issue / label-pr) ──────────────────────
 # Parses [--add <label>]... [--remove <label>]... from $@
-# Outputs: ADD_LABELS (space-separated), REMOVE_LABELS (space-separated)
+# Outputs: ADD_LABELS (space-separated), REMOVE_LABELS (space-separated), and
+# the same labels as the arrays ADD_LABEL_ARR / REMOVE_LABEL_ARR, one element per
+# label, so a label with a space or a quote survives (the github arm builds its
+# argv from these, never an eval'd string). --add / --remove with no value: exit 2.
 _parse_label_args() {
   ADD_LABELS=""
   REMOVE_LABELS=""
+  ADD_LABEL_ARR=()
+  REMOVE_LABEL_ARR=()
+  local _pl_usage="${VERB:-${_VERB:-label-issue}} <n> [--add <label>]... [--remove <label>]..."
   while [ $# -gt 0 ]; do
     case "$1" in
-      --add)    ADD_LABELS="$ADD_LABELS $2";    shift 2 ;;
-      --remove) REMOVE_LABELS="$REMOVE_LABELS $2"; shift 2 ;;
-      *)        ADD_LABELS="$ADD_LABELS $1";    shift ;;
+      --add|--remove)
+        [ $# -ge 2 ] || _vcs_flag_needs_value "$1" "$_pl_usage"
+        if [ "$1" = "--add" ]; then
+          ADD_LABELS="$ADD_LABELS $2"; ADD_LABEL_ARR+=("$2")
+        else
+          REMOVE_LABELS="$REMOVE_LABELS $2"; REMOVE_LABEL_ARR+=("$2")
+        fi
+        shift 2 ;;
+      *) ADD_LABELS="$ADD_LABELS $1"; ADD_LABEL_ARR+=("$1"); shift ;;
     esac
   done
   ADD_LABELS="${ADD_LABELS# }"
@@ -3370,6 +3405,34 @@ _github() {
   # which runs before any adapter function is invoked.
   gh() { _with_retry "$VERB" command gh "$@"; }
 
+  # _gh_label_edit <issue|pr> <n> -- label-issue / label-pr (#455). The labels
+  # come from _parse_label_args' arrays and go to gh as an argv array: label text
+  # with a `'`, `$(` or a space is one argument, never re-parsed by a shell. The
+  # dry-run line is display only (labels shown single-quoted).
+  _gh_label_edit() {
+    local _gle_args=(gh "$1" edit "$2") _gle_disp="gh $1 edit $2" _gle_lbl
+    local _gle_q="'" _gle_qe="'\\''"
+    for _gle_lbl in ${ADD_LABEL_ARR[@]+"${ADD_LABEL_ARR[@]}"}; do
+      _gle_args+=(--add-label "$_gle_lbl")
+      _gle_disp="$_gle_disp --add-label '${_gle_lbl//$_gle_q/$_gle_qe}'"
+    done
+    for _gle_lbl in ${REMOVE_LABEL_ARR[@]+"${REMOVE_LABEL_ARR[@]}"}; do
+      _gle_args+=(--remove-label "$_gle_lbl")
+      _gle_disp="$_gle_disp --remove-label '${_gle_lbl//$_gle_q/$_gle_qe}'"
+    done
+    if [ -n "$REPO" ]; then
+      _gle_args+=(--repo "$REPO")
+      _gle_disp="$_gle_disp --repo '$REPO'"
+    fi
+    if [ "$DRY_RUN" = "true" ]; then echo "[dry-run] $_gle_disp"; return 0; fi
+    "${_gle_args[@]}"
+  }
+
+  # edit-pr-body <n> <body> (#455): the body is staged on gh's stdin
+  # (`--body-file -`), never an argument. The here-string sits on the function
+  # _with_retry reruns, so every attempt re-opens it.
+  _gh_epb_once() { command gh pr edit "$1" --body-file - ${REPO:+--repo "$REPO"} <<<"$2"; }
+
   # Provider calls for _vcs_shared_assign_issue (#299).
   _gh_assignees_get() {
     gh issue view "$1" --json assignees -q '.assignees[].login' ${REPO:+--repo "$REPO"}
@@ -3540,12 +3603,7 @@ print(json.dumps(out))
     label-issue)
       local n="$1"; shift
       _parse_label_args "$@"
-      local cmd="gh issue edit $n"
-      for l in $ADD_LABELS;    do cmd="$cmd --add-label '$l'";    done
-      for l in $REMOVE_LABELS; do cmd="$cmd --remove-label '$l'"; done
-      [ -n "$REPO" ] && cmd="$cmd --repo '$REPO'"
-      if [ "$DRY_RUN" = "true" ]; then echo "[dry-run] $cmd"; return 0; fi
-      eval "$cmd"
+      _gh_label_edit issue "$n"
       ;;
     check-epic-acceptance)
       # check-epic-acceptance <epic-n> — see header comment. Fetches the
@@ -3565,7 +3623,7 @@ print(json.dumps(out))
       local label_args=()
       while [ $# -gt 0 ]; do
         case "$1" in
-          --label) label_args+=("--label" "$2"); shift 2 ;;
+          --label) [ $# -ge 2 ] || _vcs_flag_needs_value --label "create-issue <title> <body-file> [--label <label>]..."; label_args+=("--label" "$2"); shift 2 ;;
           *) shift ;;
         esac
       done
@@ -3785,12 +3843,7 @@ print(json.dumps(out))
     label-pr)
       local n="$1"; shift
       _parse_label_args "$@"
-      local cmd="gh pr edit $n"
-      for l in $ADD_LABELS;    do cmd="$cmd --add-label '$l'";    done
-      for l in $REMOVE_LABELS; do cmd="$cmd --remove-label '$l'"; done
-      [ -n "$REPO" ] && cmd="$cmd --repo '$REPO'"
-      if [ "$DRY_RUN" = "true" ]; then echo "[dry-run] $cmd"; return 0; fi
-      eval "$cmd"
+      _gh_label_edit pr "$n"
       ;;
     pr-checks)
       _run gh pr checks "$1" ${REPO:+--repo "$REPO"}
@@ -3868,6 +3921,16 @@ for line in sys.stdin:
       if [ "$_cp_state_unverified" = "true" ]; then
         echo "talos:comment-state-unverified target=pr#$n reason=state-check-failed"
       fi
+      ;;
+    edit-pr-body)
+      # Replace the PR's description (#455). ARGS is `<n> <body>` here: the
+      # pre-dispatch block validated the flags, the caps and the placeholders.
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] gh pr edit $1 --body-file - (body on stdin)${REPO:+ --repo $REPO}"
+        return 0
+      fi
+      _with_retry "$VERB" _gh_epb_once "$1" "$2" || exit 1
+      echo "edited pr=$1 body"
       ;;
     find-pr)
       # Issue-reference matching is _vcs_shared_find_pr (#177 slice 4). This
@@ -4606,7 +4669,8 @@ json.dump(prev, sys.stdout)
   # _ga_current_user_login -- REST resolver for _vcs_shared_current_user
   # (#187): GET /user and print the .login field. Exits non-zero when the
   # request fails (a 403 for an Actions GITHUB_TOKEN or a GitHub App token, a
-  # rate limit) or the answer is not JSON: _vcs_shared_current_user reads that
+  # rate limit) or the answer is not JSON or has no (or a null) login:
+  # _vcs_shared_current_user reads that
   # as "refused" (#453), which the marker readers answer by trusting only
   # markers.trusted_authors. Uses _ga_req_once (not _ga_req) deliberately --
   # this lookup is never a hard dependency, so a failure must not abort the
@@ -4615,12 +4679,18 @@ json.dump(prev, sys.stdout)
   _ga_current_user_login() {
     local _cul_body
     _cul_body="$(_ga_req_once GET "${_API%%/repos/*}/user" 2>/dev/null)" || return 1
+    # A 2xx answer with no `login` field, or a null one, is "refused" (exit 1),
+    # not "unavailable": it names no identity (#455). An empty string still
+    # prints nothing (unavailable), as before.
     printf '%s' "$_cul_body" | python3 -I -c "
 import json, sys
 try:
-    print(json.load(sys.stdin).get('login') or '')
+    login = json.load(sys.stdin).get('login')
 except Exception:
     sys.exit(1)
+if login is None:
+    sys.exit(1)
+print(login)
 " 2>/dev/null
   }
 
@@ -4906,7 +4976,7 @@ print(d.get('body','') or '')
       local _ci_labels=()
       while [ $# -gt 0 ]; do
         case "$1" in
-          --label) _ci_labels+=("$2"); shift 2 ;;
+          --label) [ $# -ge 2 ] || _vcs_flag_needs_value --label "create-issue <title> <body-file> [--label <label>]..."; _ci_labels+=("$2"); shift 2 ;;
           *) shift ;;
         esac
       done
@@ -5258,6 +5328,24 @@ print(d.get('html_url', ''))
       if [ "$_gacp_state_unverified" = "true" ]; then
         echo "talos:comment-state-unverified target=pr#$_n reason=state-check-failed"
       fi
+      ;;
+
+    edit-pr-body)
+      # Replace the PR's description (#455): PATCH pulls/<n>. ARGS is `<n> <body>`
+      # (the pre-dispatch block validated flags, caps and placeholders). The body
+      # reaches python on stdin and curl on stdin (_ga_json stages the payload in
+      # a file), never as an argument.
+      local _n="$1" _epb_payload
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: PATCH $_API/pulls/$_n (body on stdin)"
+        return 0
+      fi
+      _epb_payload="$(printf '%s' "$2" | python3 -I -c '
+import json, sys
+sys.stdout.write(json.dumps({"body": sys.stdin.buffer.read().decode("utf-8", errors="replace")}))
+')" || { echo "pipeline-vcs: edit-pr-body: could not build the request body; nothing changed" >&2; exit 1; }
+      _ga_json PATCH "$_API/pulls/$_n" "$_epb_payload" >/dev/null
+      echo "edited pr=$_n body"
       ;;
 
     find-pr)
@@ -5958,7 +6046,7 @@ for p in paths:
       local label_args=()
       while [ $# -gt 0 ]; do
         case "$1" in
-          --label) label_args+=("--label" "$2"); shift 2 ;;
+          --label) [ $# -ge 2 ] || _vcs_flag_needs_value --label "create-issue <title> <body-file> [--label <label>]..."; label_args+=("--label" "$2"); shift 2 ;;
           *) shift ;;
         esac
       done
@@ -6828,7 +6916,7 @@ PYEOF
       local ci_tags=""
       while [ $# -gt 0 ]; do
         case "$1" in
-          --label) ci_tags="${ci_tags:+$ci_tags; }$2"; shift 2 ;;
+          --label) [ $# -ge 2 ] || _vcs_flag_needs_value --label "create-issue <title> <body-file> [--label <label>]..."; ci_tags="${ci_tags:+$ci_tags; }$2"; shift 2 ;;
           *) shift ;;
         esac
       done
@@ -7660,8 +7748,37 @@ _TALOS_COMMENT_MAX=65536   # GitHub rejects longer comment bodies; cap every pro
 # characters can be 262144 bytes of UTF-8, so the body is also capped by bytes,
 # below that limit. Both caps are checked on stdin/file text, before any exec.
 _TALOS_BODY_MAX_BYTES=120000
+
+# edit-pr-body <pr> --body-file <path|-> (#455). github and github-api only (the
+# rest exit 2 `not implemented`, as upsert-pr-comment does); the body comes ONLY
+# from --body-file (a path, or stdin with `-`), never a positional, so it never
+# sits inside shell quotes. Usage errors exit 2 before any body is read. The
+# comment block below then reads the file, applies both size caps and the
+# placeholder guard, and rewrites ARGS to `<pr> <body>` for the adapters.
+if [ "$VERB" = "edit-pr-body" ]; then
+  _epb_usage="Usage: edit-pr-body <pr> --body-file <path|->"
+  if [ "$PROVIDER" != "github" ] && [ "$PROVIDER" != "github-api" ]; then
+    echo "pipeline-vcs: edit-pr-body: not implemented for provider '$PROVIDER'" >&2
+    exit 2
+  fi
+  case "${ARGS[0]-}" in
+    ''|*[!0-9]*)
+      echo "pipeline-vcs: edit-pr-body: <pr> must be a number (got '${ARGS[0]-}'); $_epb_usage" >&2
+      exit 2
+      ;;
+  esac
+  if [ "${#ARGS[@]}" -eq 2 ] && [ "${ARGS[1]}" = "--body-file" ]; then
+    echo "pipeline-vcs: edit-pr-body: --body-file needs a value; $_epb_usage" >&2
+    exit 2
+  fi
+  if [ "${#ARGS[@]}" -ne 3 ] || [ "${ARGS[1]}" != "--body-file" ]; then
+    echo "pipeline-vcs: edit-pr-body: the body comes only from --body-file <path|->; $_epb_usage" >&2
+    exit 2
+  fi
+  unset _epb_usage
+fi
 case "$VERB" in
-  comment-issue|comment-pr)
+  comment-issue|comment-pr|edit-pr-body)
     # A positional "-" is NOT stdin (#449): it would post a one-character
     # comment, exit 0 and lose the hand-off text (it happened on #349). The
     # stdin form is `--body-file -`. Checked on the raw arguments, before the
@@ -7815,6 +7932,11 @@ print(" ".join(sorted(names("\n".join(strip_code(l) for l in prose)) & known)))
     fi
     ;;
 esac
+# An empty body would blank the PR description; refuse it before any call.
+if [ "$VERB" = "edit-pr-body" ] && [ -z "$(tr -d '[:space:]' <<<"${ARGS[1]-}")" ]; then
+  echo "pipeline-vcs: edit-pr-body: the body is empty; nothing changed" >&2
+  exit 1
+fi
 
 # mark-needs-owner / list-needs-owner (#345) and upsert-pr-comment (#381) are
 # GitHub only; the label and marker verbs have no gitlab, azure or file
@@ -8185,6 +8307,8 @@ if [ "$VERB" = "label-pr" ] && [ "${#ARGS[@]}" -ge 1 ]; then
         _REQUIRE_MARKER=true ;;
       --add)
         _lp_ni=$((_lp_i + 1))
+        [ "$_lp_ni" -lt "${#ARGS[@]}" ] \
+          || _vcs_flag_needs_value --add "label-pr <n> [--add <label>]... [--remove <label>]... [--require-marker]"
         _lp_lbl="${ARGS[$_lp_ni]:-}"
         _lp_filtered+=("$_lp_arg" "$_lp_lbl")
         case "$_lp_lbl" in
@@ -8523,7 +8647,7 @@ _vcs_dispatch_provider() {
 _vcs_journal_write() {
   { [ -n "${TALOS_WRITE_LOG:-}" ] && [ "$DRY_RUN" != "true" ]; } || return 0
   case "$VERB" in
-    comment-issue|comment-pr|create-pr|create-issue|post-approval|approve-pr|merge-pr|close-issue|record-attempt)
+    comment-issue|comment-pr|edit-pr-body|create-pr|create-issue|post-approval|approve-pr|merge-pr|close-issue|record-attempt)
       printf '%s\n' "$VERB" >>"$TALOS_WRITE_LOG" 2>/dev/null || true ;;
   esac
 }

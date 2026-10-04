@@ -92,6 +92,11 @@ Workflow (do ALL of it — the publish step is not optional):
    `TALOS_<rand>`, with `<rand>` 12+ random characters you invent fresh for
    each heredoc, never one copied from an example and never reused: text that
    contains the closing line would end the heredoc early and run what follows.
+   In a fix round, when the change makes the summary or test types stale,
+   refresh the PR body at the end with
+   `bash scripts/pipeline-vcs.sh edit-pr-body <PR> --body-file "$BODY_FILE"`
+   (the body from a `mktemp` file written by such a heredoc); never
+   `gh pr edit`.
 7. **Open the PR** — this is the completion signal. One command, with a
    `mktemp` body file (never a fixed `/tmp/...` name):
    ```bash

@@ -1027,4 +1027,111 @@ done
 unset STUB_CURRENT_USER STUB_ASSIGNEE_FILE
 rm -f talos.pipeline.json
 
+# ── #455: a value flag as the last argument is exit 2 with usage ─────────────
+for _p in github github-api gitlab azure; do
+  printf '{"vcs": {"provider": "%s", "repo": "acme/widget"}}\n' "$_p" > talos.pipeline.json
+  for _c in "label-issue 1 --add" "label-issue 1 --remove" "label-pr 1 --add" "label-pr 1 --remove" \
+            "create-issue t /dev/null --label"; do
+    # shellcheck disable=SC2086
+    out="$(bash "$VCS" --dry-run $_c 2>&1)"; rc=$?
+    assert_eq "2" "$rc" "#455 $_p: '$_c' exits 2"
+    assert_contains "$out" "needs a value" "#455 $_p: '$_c' prints a usage line"
+    assert_not_contains "$out" "unbound" "#455 $_p: '$_c' is not a bash unbound-variable error"
+  done
+done
+rm -f talos.pipeline.json
+
+# ── #455: label text reaches gh as argv, never through eval ──────────────────
+_455_mark="$SANDBOX/pwned-455"
+_455_label="it's \$(touch $_455_mark) x"
+for _v in label-issue label-pr; do
+  : > "$GH_LOG"
+  bash "$VCS" "$_v" 5 --add "$_455_label" --remove "a b" >/dev/null 2>"$SANDBOX/err"; rc=$?
+  assert_eq "0" "$rc" "#455 $_v: a label with a quote, \$( and a space is accepted (err: $(cat "$SANDBOX/err"))"
+  assert_eq "1" "$(grep -c -F -- "edit 5 --add-label $_455_label --remove-label a b" "$GH_LOG")" \
+    "#455 $_v: the label reaches gh as one argument, remove label with a space intact"
+  assert_eq "no" "$([ -e "$_455_mark" ] && echo yes || echo no)" "#455 $_v: label text is never executed"
+done
+out="$(bash "$VCS" --dry-run label-issue 5 --add "it's x")"
+assert_contains "$out" "--add-label 'it'\\''s x'" "#455 label-issue: the dry-run line quotes a label with a quote"
+
+# ── #455: edit-pr-body <pr> --body-file <path|-> ─────────────────────────────
+_epb_bin="$SANDBOX/epb-bin"; mkdir -p "$_epb_bin"
+cat > "$_epb_bin/gh" <<'TALOS_STUB_EPB455'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_LOG"
+case "$*" in "pr edit"*) cat > "$EPB_STDIN" ;; esac
+exit 0
+TALOS_STUB_EPB455
+chmod +x "$_epb_bin/gh"
+export EPB_STDIN="$SANDBOX/epb.stdin"
+_epb_body="$SANDBOX/epb-body.md"
+printf '%s\n' "Summary with it's \$(touch $_455_mark) and \`ticks\`" "" "Closes #455" > "$_epb_body"
+_epb_cfg() { printf '{"vcs": {"provider": "%s", "repo": "acme/widget"}}\n' "$1" > talos.pipeline.json; }
+_epb_run() { OUT="$(bash "$VCS" "$@" 2>"$SANDBOX/err")"; RC=$?; ERR="$(cat "$SANDBOX/err")"; }
+
+# github: gh pr edit --body-file -, body on stdin only
+_epb_cfg github
+: > "$GH_LOG"; : > "$EPB_STDIN"
+export TALOS_WRITE_LOG="$SANDBOX/epb-writes.log"; : > "$TALOS_WRITE_LOG"
+PATH="$_epb_bin:$PATH" _epb_run edit-pr-body 7 --body-file "$_epb_body"
+assert_eq "0" "$RC" "#455 github: edit-pr-body exits 0 (err: $ERR)"
+assert_eq "edited pr=7 body" "$OUT" "#455 github: edit-pr-body prints one line"
+assert_eq "1" "$(grep -c -F -- 'pr edit 7 --body-file - --repo acme/widget' "$GH_LOG")" "#455 github: gh pr edit --body-file -"
+assert_eq "$(cat "$_epb_body")" "$(cat "$EPB_STDIN")" "#455 github: the body arrives on stdin intact"
+assert_not_contains "$(cat "$GH_LOG")" "Summary with" "#455 github: the body is never an argument"
+assert_eq "edit-pr-body" "$(cat "$TALOS_WRITE_LOG")" "#455 github: edit-pr-body is journaled in the write log"
+assert_eq "no" "$([ -e "$_455_mark" ] && echo yes || echo no)" "#455 github: the body is never executed"
+
+# --body-file - reads stdin
+: > "$GH_LOG"; : > "$EPB_STDIN"
+OUT="$(printf 'from stdin\n' | PATH="$_epb_bin:$PATH" bash "$VCS" edit-pr-body 7 --body-file - 2>"$SANDBOX/err")"; RC=$?
+assert_eq "0" "$RC" "#455 github: --body-file - exits 0"
+assert_eq "from stdin" "$(cat "$EPB_STDIN")" "#455 github: --body-file - passes stdin through"
+
+# github-api: PATCH pulls/<n>, payload on stdin
+_epb_cfg github-api
+export GITHUB_TOKEN="test-token-455" TALOS_RETRY_SLEEP_SCALE=0
+: > "$CURL_LOG"; printf '%s\n' '{"number":7}' > "$CURL_QUEUE"
+_epb_run edit-pr-body 7 --body-file "$_epb_body"
+assert_eq "0" "$RC" "#455 github-api: edit-pr-body exits 0 (err: $ERR)"
+assert_eq "edited pr=7 body" "$OUT" "#455 github-api: edit-pr-body prints one line"
+assert_eq "PATCH" "$(cut -f4 "$CURL_LOG" | head -1)" "#455 github-api: PATCH"
+assert_contains "$(cut -f1 "$CURL_LOG" | head -1)" "/repos/acme/widget/pulls/7" "#455 github-api: pulls/<n> endpoint"
+assert_contains "$(cut -f2 "$CURL_LOG" | head -1)" '"body": "Summary with' "#455 github-api: the JSON payload carries the body"
+
+# usage and guards: exit 2 usage, exit 1 bad body, nothing sent
+_epb_long="$SANDBOX/epb-long.md"
+python3 -I -c "import sys; sys.stdout.write('x' * 70000)" > "$_epb_long"
+_epb_ph="$SANDBOX/epb-ph.md"; printf 'Header is ${HEADER} here\n' > "$_epb_ph"
+_epb_empty="$SANDBOX/epb-empty.md"; printf '  \n\n' > "$_epb_empty"
+for _p in github github-api; do
+  _epb_cfg "$_p"
+  : > "$GH_LOG"; : > "$CURL_LOG"
+  _epb_run edit-pr-body 7 "positional body";            assert_eq "2" "$RC" "#455 $_p: a positional body exits 2"
+  _epb_run edit-pr-body 7 --body-file;                  assert_eq "2" "$RC" "#455 $_p: --body-file with no value exits 2"
+  assert_contains "$ERR" "needs a value" "#455 $_p: ...with a usage line"
+  _epb_run edit-pr-body x --body-file "$_epb_body";     assert_eq "2" "$RC" "#455 $_p: a non-numeric PR exits 2"
+  _epb_run edit-pr-body 7 --body-file "$SANDBOX/nope";  assert_eq "1" "$RC" "#455 $_p: an unreadable file exits 1"
+  _epb_run edit-pr-body 7 --body-file "$_epb_long";     assert_eq "1" "$RC" "#455 $_p: a body over the character cap exits 1"
+  _epb_run edit-pr-body 7 --body-file "$_epb_ph";       assert_eq "1" "$RC" "#455 $_p: an unsubstituted placeholder exits 1"
+  assert_contains "$ERR" "placeholder" "#455 $_p: ...and names the placeholder"
+  _epb_run edit-pr-body 7 --body-file "$_epb_empty";    assert_eq "1" "$RC" "#455 $_p: an empty body exits 1"
+  assert_eq "" "$(cat "$GH_LOG" "$CURL_LOG")" "#455 $_p: a refused body makes no call"
+  _epb_run --dry-run edit-pr-body 7 --body-file "$_epb_body"
+  assert_eq "0" "$RC" "#455 $_p: --dry-run exits 0"
+  assert_contains "$OUT" "[dry-run]" "#455 $_p: --dry-run prints the planned call"
+  assert_eq "" "$(cat "$GH_LOG" "$CURL_LOG")" "#455 $_p: --dry-run makes no call"
+done
+
+# other providers: exit 2, before any body is read
+for _p in gitlab azure file; do
+  _epb_cfg "$_p"
+  _epb_run edit-pr-body 7 --body-file "$SANDBOX/nope"
+  assert_eq "2" "$RC" "#455 $_p: edit-pr-body exits 2"
+  assert_contains "$ERR" "not implemented for provider '$_p'" "#455 $_p: says it is not implemented"
+done
+unset TALOS_WRITE_LOG EPB_STDIN
+rm -f talos.pipeline.json
+
 finish
