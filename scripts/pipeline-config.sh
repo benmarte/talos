@@ -64,7 +64,9 @@
 #   Falls back to JSON parsing for .json config files (rename yours to
 #   talos.pipeline.json or pipeline.json).
 #   Never crashes — missing keys, absent files, or parse errors all return
-#   the default silently.
+#   the default. Without PyYAML a YAML file (.yml/.yaml) is not read at all:
+#   one stderr line per file names it and the fix (pip install pyyaml, or the
+#   .json form), then its keys fall back to the defaults (#490).
 #
 set -u
 
@@ -201,6 +203,7 @@ import sys
 # Which file layers failed to parse ("project" / "user"): --has reads it so a
 # parse error is not mistaken for "the key is absent" (#440).
 _LOAD_ERRORS = []
+_YAML_WARNED = set()  # YAML files already reported as unreadable without PyYAML (#490)
 
 def _warn(msg):
     sys.stderr.write("pipeline-config: [warn] %s\n" % msg)
@@ -222,7 +225,17 @@ def _parse_cfg_file(path):
         if yaml is not None:
             return yaml.safe_load(f)
         import json
-        return json.load(f)
+        try:
+            return json.load(f)
+        except ValueError:
+            # A YAML file that is not also JSON cannot be read without PyYAML
+            # (#490). Say so once per file instead of silently using defaults.
+            if path.lower().endswith((".yml", ".yaml")) and path not in _YAML_WARNED:
+                _YAML_WARNED.add(path)
+                _warn("%s is a YAML config but PyYAML is not installed, so it is "
+                      "ignored -- run `pip install pyyaml` or use the .json form"
+                      % repr(path))
+            raise
 
 # Repo-only scope (#441): the table's scope column, as key templates ("*" is
 # one dynamic segment). A leaf is repo-only when it equals a template, is a

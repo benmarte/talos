@@ -19,6 +19,9 @@
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox || exit 1
+# The default parser needs PyYAML; the script probes it exactly like this (#490).
+HAVE_YAML=0
+python3 -I -c 'import yaml' 2>/dev/null && HAVE_YAML=1
 
 DC="$TALOS_ROOT/scripts/pipeline-draft-check.sh"
 SETUP="$TALOS_ROOT/skills/pipeline-setup/SKILL.md"
@@ -254,7 +257,11 @@ check_all() {  # $1 = label suffix
 
 # ── (a) both parse paths, same answers ───────────────────────────────────────
 unset TALOS_DRAFT_CHECK_NO_YAML
-check_all "default parser"
+if [ "$HAVE_YAML" = 1 ]; then
+  check_all "default parser"
+else
+  echo "  skip: PyYAML not installed -- default parser cases"
+fi
 export TALOS_DRAFT_CHECK_NO_YAML=1
 check_all "grep fallback"
 unset TALOS_DRAFT_CHECK_NO_YAML
@@ -277,12 +284,17 @@ assert_eq "$before" "$after" "check never edits a workflow file"
 printf 'on:\n  pull_request:\n    types: [ready_for_review]\njobs:\n  t:\n    if: >-\n      github.event.pull_request.draft != true\n    runs-on: x\n' | wf ml-folded
 printf 'on:\n  pull_request:\n    types: [ready_for_review]\njobs:\n  t:\n    if: github.actor != bot &&\n      github.event.pull_request.draft != true\n    runs-on: x\n' | wf ml-plain
 for name in ml-folded ml-plain; do
-  assert_eq "ok" "$(bash "$DC" check "$SANDBOX/fx/$name/.github/workflows")" "check (default parser): $name reads the condition and is ok"
+  if [ "$HAVE_YAML" = 1 ]; then
+    assert_eq "ok" "$(bash "$DC" check "$SANDBOX/fx/$name/.github/workflows")" "check (default parser): $name reads the condition and is ok"
+  else
+    echo "  skip: PyYAML not installed -- $name default parser case"
+  fi
   assert_eq "unknown" "$(TALOS_DRAFT_CHECK_NO_YAML=1 bash "$DC" check "$SANDBOX/fx/$name/.github/workflows")" "check (grep fallback): $name is unknown, not ok"
 done
 
 # ── (b) the shipped examples qualify ─────────────────────────────────────────
 for how in yaml grep; do
+  if [ "$how" = yaml ] && [ "$HAVE_YAML" != 1 ]; then echo "  skip: PyYAML not installed -- shipped examples via the default parser"; continue; fi
   if [ "$how" = grep ]; then export TALOS_DRAFT_CHECK_NO_YAML=1; else unset TALOS_DRAFT_CHECK_NO_YAML; fi
   assert_eq "ok" "$(bash "$DC" check "$TALOS_ROOT/templates/ci")" "templates/ci/github-tests.yml is ok ($how)"
   assert_eq "ok" "$(bash "$DC" check "$TALOS_ROOT/.github/workflows")" "this repo's .github/workflows is ok ($how)"
@@ -375,7 +387,11 @@ for frag in "    if: github.actor != 'dependabot[bot]'" "    if: github.ref == '
 done
 assert_eq "$(sed -n '/^permissions:/,/^jobs:/p' "$SANDBOX/ci.orig")" "$(sed -n '/^permissions:/,/^jobs:/p' "$WFE")" "edit --write: the top-level permissions block is untouched"
 assert_eq "$(grep -cxF '    permissions:' "$SANDBOX/ci.orig")" "$(grep -cxF '    permissions:' "$WFE")" "edit --write: the job-level permissions block is untouched"
-assert_eq "ok" "$(cd "$EDIT" && bash "$DC" check)" "edit --write: the file now skips drafts through the job that got the line"
+if [ "$HAVE_YAML" = 1 ]; then
+  assert_eq "ok" "$(cd "$EDIT" && bash "$DC" check)" "edit --write: the file now skips drafts through the job that got the line"
+else
+  echo "  skip: PyYAML not installed -- edit --write re-check via the default parser"
+fi
 assert_contains "$(edit .github/workflows/ci.yml)" "no change needed" "edit: a second run has no diff to write"
 
 # The post-edit check refuses anything but the allowed additions (a bug that
