@@ -426,6 +426,26 @@ notifications:
 #     security:
 #       restamp_model: claude-haiku-4-5-20251001   # even if security itself runs opus
 #
+# Runner failover (#418, default: unset = no chain, behaviour unchanged).
+# agents.fallback is an ordered list of 1-5 runner names (same ids as
+# agents.runner, no duplicates). When pipeline-agent.sh's runner dies with a
+# PROVIDER error -- exit 75 from any runner, or a recognised claude rate-limit /
+# quota / overload / auth / network line -- the same stage (same prompt) reruns
+# on the next runner that is not marked down in .talos/providers.json. A task
+# failure never fails over; a stage that already wrote (a comment, a push) is
+# never rerun: exit 69. Entries are runner names only: the fallback runner uses
+# its own default model, agents.runner_args is not forwarded to it, and custom
+# uses the role-first runner_cmd. agents.roles.<role>.fallback overrides the
+# list for one role. agents.provider_down_s (integer 60-86400, default 900) is
+# how long a failed provider stays marked down. An invalid value warns once and
+# reads as absent. `bash scripts/pipeline-agent.sh --resolve <role>` appends
+# fallback=<a,b> when a chain is set.
+#   fallback: [codex, gemini]
+#   provider_down_s: 900
+#   roles:
+#     docs:
+#       fallback: [gemini]
+#
 # Per-role reasoning effort (agents.effort / agents.roles.<role>.effort,
 # #271): a finer lever than model swap alone -- low | medium | high | max.
 # Precedence: role effort → global effort → the runner's own default (unset

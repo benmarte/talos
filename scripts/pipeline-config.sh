@@ -89,6 +89,7 @@ _KNOWN_CONFIG_KEYS_JSON='[
   "agents.roles.*.model", "agents.roles.*.runner",
   "agents.roles.*.runner_cmd", "agents.roles.*.restamp_model",
   "agents.roles.*.effort", "agents.roles.*.restamp_effort",
+  "agents.fallback", "agents.roles.*.fallback", "agents.provider_down_s",
   "limits.max_fix_attempts", "limits.max_total_dispatches",
   "limits.max_retries",
   "limits.tokens_per_issue", "limits.warn_at", "spend.comment",
@@ -369,6 +370,70 @@ def _evidence_apply(flat):
                 flat[_ev_key] = _ev_val
 PYEVIDENCE
 
+# ── Runner-failover validators (#418) ────────────────────────────────────────
+# Same shape as _CFG_EVIDENCE_PY: one snippet exec()'d by both the --dump and
+# the single-key python3 processes. _validate_fallback_key(key, value) returns
+# the value, or None after one stderr warning (callers read None as absent).
+#   agents.fallback, agents.roles.<role>.fallback: a list of 1-5 runner ids, no
+#     duplicates inside the list. "Not the primary" depends on the role, so
+#     pipeline-agent.sh checks that at resolve time.
+#   agents.provider_down_s: an integer 60-86400; the default (900) is the
+#     caller's.
+# _FALLBACK_RUNNERS restates TALOS_RUNNERS (scripts/pipeline-contract.sh);
+# tests/test-runner-failover.sh asserts the two sets are equal.
+read -r -d '' _CFG_FALLBACK_PY <<'PYFALLBACK' || true
+import re
+
+_FALLBACK_RUNNERS = ("claude", "pi", "codex", "gemini", "antigravity", "custom")
+
+def _fb_reject(key, want, value):
+    shown = repr(value)
+    if len(shown) > 80:
+        shown = shown[:77] + "..."
+    sys.stderr.write(
+        "pipeline-config: %s must be %s -- got: %s -- ignoring it\n"
+        % (key, want, shown)
+    )
+    return None
+
+def _is_fallback_key(key):
+    parts = key.split(".")
+    return key == "agents.fallback" or (
+        len(parts) == 4 and parts[:2] == ["agents", "roles"] and parts[3] == "fallback")
+
+def _validate_fallback_key(key, value):
+    if value is None:
+        return value
+    if key == "agents.provider_down_s":
+        iv = None
+        if isinstance(value, bool):
+            pass
+        elif isinstance(value, int):
+            iv = value
+        elif isinstance(value, str) and re.fullmatch(r"[0-9]{1,6}", value):
+            iv = int(value)
+        if iv is None or not 60 <= iv <= 86400:
+            return _fb_reject(key, "an integer from 60 to 86400 (seconds)", value)
+        return iv
+    if not _is_fallback_key(key):
+        return value
+    if not (isinstance(value, list) and 1 <= len(value) <= 5
+            and all(isinstance(x, str) and x in _FALLBACK_RUNNERS for x in value)
+            and len(set(value)) == len(value)):
+        return _fb_reject(
+            key, "a list of 1-5 distinct runners from " + "|".join(_FALLBACK_RUNNERS),
+            value)
+    return value
+
+def _fallback_apply(flat):
+    for _fb_key in [k for k in flat if _is_fallback_key(k) or k == "agents.provider_down_s"]:
+        _fb_val = _validate_fallback_key(_fb_key, flat[_fb_key])
+        if _fb_val is None:
+            del flat[_fb_key]
+        else:
+            flat[_fb_key] = _fb_val
+PYFALLBACK
+
 # --dump-layers (#336): one "key<TAB>layer" line per agents.* leaf, for
 # pipeline-agent.sh --resolve-all's origin column. One python3 spawn.
 if [ "${1:-}" = "--dump-layers" ]; then
@@ -393,12 +458,13 @@ if [ "${1:-}" = "--dump" ]; then
   if [ -z "$_DCFG" ] && [ -z "$_DUSER" ]; then
     exit 0
   fi
-  python3 -I - "$_DCFG" "$_KNOWN_CONFIG_KEYS_JSON" "$_DUSER" "$_CFG_LOADER_PY" "$_CFG_EVIDENCE_PY" <<'PYEOF'
+  python3 -I - "$_DCFG" "$_KNOWN_CONFIG_KEYS_JSON" "$_DUSER" "$_CFG_LOADER_PY" "$_CFG_EVIDENCE_PY" "$_CFG_FALLBACK_PY" <<'PYEOF'
 import sys
 
 known_keys_json = sys.argv[2]
 exec(sys.argv[4])
 exec(sys.argv[5])
+exec(sys.argv[6])
 
 def walk(obj, parts):
     for part in parts:
@@ -629,6 +695,10 @@ for _spend_key in ("limits.tokens_per_issue", "limits.warn_at", "spend.comment")
 # invalid value warns once and is dropped, like the spend keys above.
 _evidence_apply(flat)
 
+# agents.fallback / agents.roles.<role>.fallback / agents.provider_down_s
+# (#418): validated by the shared snippet (_CFG_FALLBACK_PY), same shape.
+_fallback_apply(flat)
+
 # agents.restamp_model / agents.roles.<role>.restamp_model derived default
 # (#258): role restamp -> global restamp -> agents.model, mirroring
 # verify.qa_mode's derived-default pattern above -- a re-stamp dispatch
@@ -753,7 +823,7 @@ fi
 # The heredoc passes file paths, key, default, the known-keys JSON and the
 # shared loader source as argv to avoid shell quoting issues with special
 # characters in values.
-python3 -I - "$CFG" "$KEY" "$DEFAULT" "$_KNOWN_CONFIG_KEYS_JSON" "$USER_CFG" "$_CFG_LOADER_PY" "$_CFG_EVIDENCE_PY" <<'PYEOF'
+python3 -I - "$CFG" "$KEY" "$DEFAULT" "$_KNOWN_CONFIG_KEYS_JSON" "$USER_CFG" "$_CFG_LOADER_PY" "$_CFG_EVIDENCE_PY" "$_CFG_FALLBACK_PY" <<'PYEOF'
 import sys
 
 key      = sys.argv[2]
@@ -761,6 +831,7 @@ default  = sys.argv[3] if len(sys.argv) > 3 else ""
 known_keys_json = sys.argv[4] if len(sys.argv) > 4 else "[]"
 exec(sys.argv[6])
 exec(sys.argv[7])
+exec(sys.argv[8])
 
 def walk(obj, parts):
     for part in parts:
@@ -1022,6 +1093,7 @@ elif key.startswith("agents.roles.") and key.endswith(".restamp_effort"):
 value = _validate_int_key(key, value)
 value = _validate_spend_key(key, value)
 value = _validate_evidence_key(key, value)
+value = _validate_fallback_key(key, value)
 
 if value is None:
     print(default, end="")

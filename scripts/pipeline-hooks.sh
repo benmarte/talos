@@ -15,7 +15,7 @@
 #        pipeline-hooks.sh post_stage <event> <role> <issue> [--pr N] [--sha S]
 #          [--verdict V] [--summary "..."] [--details-file F]
 #          [--attempt stage:count:total] [--duration-s N] [--tokens N] [--tool-uses N]
-#          [--ci-runs N] [--model M]
+#          [--ci-runs N] [--model M] [--runner R]
 #
 # Config (talos.pipeline.yml via pipeline-config.sh, read through the cfg()
 # cache — see pipeline-cfg-cache.sh):
@@ -348,13 +348,19 @@ json.dump(payload, sys.stdout)
 
 # post_stage EVENT ROLE ISSUE [--pr N] [--sha S] [--verdict V] [--summary S]
 #            [--details-file F] [--attempt stage:count:total] [--duration-s N]
-#            [--tokens N] [--tool-uses N] [--ci-runs N] [--model M]
+#            [--tokens N] [--tool-uses N] [--ci-runs N] [--model M] [--runner R]
+# --runner R (#418): the runner the stage actually ran on. pipeline-agent.sh
+# passes it only for a stage that ran on a failover-chain runner; the event's
+# runner is then R and its model is null (a fallback runner uses its own
+# default model) unless --model is given. Without the flag nothing changes.
+# Event "failover" (#418) is recorded under role "orchestrator", like
+# "budget-blocked", so it never counts as an unrecorded stage run.
 post_stage() {
   local event="${1:-}" role="${2:-}" issue="${3:-}"
   local _shift_n=$(( $# >= 3 ? 3 : $# ))
   shift "$_shift_n" 2>/dev/null || true
 
-  local pr="" sha="" verdict="" summary="" details_file="" attempt="" duration_s="" tokens="" tool_uses="" ci_runs="" model_arg=""
+  local pr="" sha="" verdict="" summary="" details_file="" attempt="" duration_s="" tokens="" tool_uses="" ci_runs="" model_arg="" runner_arg=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --pr) pr="${2:-}"; shift 2 ;;
@@ -368,6 +374,7 @@ post_stage() {
       --tool-uses) tool_uses="${2:-}"; shift 2 ;;
       --ci-runs) ci_runs="${2:-}"; shift 2 ;;
       --model) model_arg="${2:-}"; shift 2 ;;
+      --runner) runner_arg="${2:-}"; shift 2 ;;
       *) shift ;;
     esac
   done
@@ -387,6 +394,8 @@ post_stage() {
 
   local model runner
   runner="$(cfg agents.runner "claude")"
+  # #418: a stage that ran on a failover-chain runner names that runner.
+  [ -z "$runner_arg" ] || runner="$(printf '%s' "$runner_arg" | LC_ALL=C tr -d '\000-\037\177')"
   # #379: the model the stage ran with. --model (the spawn `model:` the
   # orchestrator passed) wins. Otherwise a re-stamp verdict follows the
   # restamp_model chain the orchestrator spawned with (skills/pipeline/SKILL.md
@@ -403,8 +412,10 @@ post_stage() {
         ;;
     esac
   fi
-  [ -n "$model" ] || model="$(cfg "agents.roles.$role.model" "")"
-  [ -n "$model" ] || model="$(cfg agents.model "")"
+  if [ -z "$runner_arg" ]; then
+    [ -n "$model" ] || model="$(cfg "agents.roles.$role.model" "")"
+    [ -n "$model" ] || model="$(cfg agents.model "")"
+  fi
 
   local details=""
   [ -n "$details_file" ] && [ -f "$details_file" ] && details="$(cat "$details_file")"
@@ -511,7 +522,7 @@ case "$VERB" in
     ;;
   *)
     echo "Usage: pipeline-hooks.sh pre_dispatch <role> <issue> [<pr>] [<worktree_path>] [files_hint...]" >&2
-    echo "       pipeline-hooks.sh post_stage <event> <role> <issue> [--pr N] [--sha S] [--verdict V] [--summary \"...\"] [--details-file F] [--attempt stage:count:total] [--duration-s N] [--tokens N] [--tool-uses N] [--ci-runs N] [--model M]" >&2
+    echo "       pipeline-hooks.sh post_stage <event> <role> <issue> [--pr N] [--sha S] [--verdict V] [--summary \"...\"] [--details-file F] [--attempt stage:count:total] [--duration-s N] [--tokens N] [--tool-uses N] [--ci-runs N] [--model M] [--runner R]" >&2
     exit 2
     ;;
 esac

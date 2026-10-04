@@ -382,6 +382,9 @@ All keys live in `talos.pipeline.json` (or `talos.pipeline.yml` if PyYAML is ins
 | `agents.roles.<role>.effort` | falls back to `agents.effort` | Role-specific effort override, e.g. `high` for `developer`, `low` for cheap volume stages. |
 | `agents.restamp_effort` | falls back to `agents.effort` | Effort for **re-stamp** dispatches (#271), same chain shape as `agents.restamp_model`. |
 | `agents.roles.<role>.restamp_effort` | falls back to `agents.restamp_effort`, then `agents.effort` | Role-specific re-stamp effort override. Precedence: role restamp effort → global restamp effort → `agents.effort`. |
+| `agents.fallback` | unset (no chain) | Ordered list of 1-5 runner names (`claude`, `pi`, `codex`, `gemini`, `antigravity`, `custom`) tried in turn when a runner dies of a **provider** error (exit 75, or a recognised claude rate-limit, quota, overload, auth or network line). Names only: the fallback runner uses its own model and does not get `agents.runner_args`. An invalid value warns once and reads as absent. See [Runner failover](#runner-failover-agentsfallback). |
+| `agents.roles.<role>.fallback` | falls back to `agents.fallback` | Role-specific failover chain. |
+| `agents.provider_down_s` | `900` | Seconds a failed provider stays marked down in `.talos/providers.json` (integer 60-86400). |
 
 ### Hooks
 
@@ -1307,6 +1310,10 @@ models without it will chat about the task instead of executing it. For a
 fully offline pipeline, combine a local runner with `vcs.provider: file`.
 
 ---
+
+### Runner failover (`agents.fallback`)
+
+With `agents.fallback` set, `pipeline-agent.sh` reruns a stage that died of a provider error on the next runner in the chain, with the same prompt. Every runner exit is `ok` (exit 0), `provider` (exit 75 from any runner, or a recognised, line-anchored claude 429, quota, overload, auth or network error; **UNVERIFIED** patterns, every other runner ships exit-75-only) or `task` (anything else, including a bare `429` in the model's prose). Only `provider` fails over; it never counts toward `limits.max_fix_attempts` or `limits.max_total_dispatches`. A failed provider is recorded in `.talos/providers.json` (the repository's common git directory, shared by worktrees; atomic, under `with_lock`; unreadable means nothing is down) for `agents.provider_down_s` seconds, `talos:failover role=<r> from=<a> to=<b> reason=<class:detail>` goes to stderr, and a `failover` event (role `orchestrator`) is logged. A stage that already wrote (a successful `pipeline-vcs.sh` comment, PR or approval verb, or a moved `refs/remotes` ref) is never rerun: exit `69`. Exit `69` is also chain exhausted or every runner down; the orchestrator then sets `pipeline:blocked` and posts blocked.md naming `agents.fallback`. On the native Claude path nothing re-dispatches automatically: `pipeline-agent.sh --classify <runner> <rc> <file|->` and `--mark-down <runner> <class:detail>` let the orchestrator block with a resume note. Details, the classification table and the write guard are in [docs/user-guide.md](docs/user-guide.md#runner-failover-agentsfallback-418).
 
 ## Worktree lifecycle
 

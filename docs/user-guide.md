@@ -2425,6 +2425,114 @@ unaffected. This is the enabling piece for a second, independent review pass
 on a different backend, which the dedicated `adversarial` stage below
 actually uses.
 
+### Runner failover (`agents.fallback`, #418)
+
+A provider outage (HTTP 429, a spent quota or credit balance, an overloaded
+API, an auth failure, a dropped network) is not the model's fault, and a fix
+round or a `pipeline:blocked` is the wrong answer to it. With a failover chain
+configured, `pipeline-agent.sh` reruns the same stage, with the same prompt,
+on the next runner. Without one, nothing changes: output, stderr and exit code
+are exactly the runner's, and `.talos/providers.json` is never read or written.
+
+```yaml
+agents:
+  runner: claude
+  fallback: [codex, gemini]     # 1-5 runner names, tried in order
+  provider_down_s: 900          # 60-86400, how long a failed provider stays down
+  roles:
+    docs:
+      fallback: [gemini]        # per-role override, role-first like runner
+```
+
+Entries are runner names only (`claude | pi | codex | gemini | antigravity |
+custom`, no duplicates). A fallback runner uses **its own default model**,
+`agents.runner_args` is **not** forwarded to it (those flags were written for
+the primary), and a `custom` entry uses the role-first `runner_cmd`. An entry
+that cannot start (a `custom` with no `runner_cmd`, or a binary not on `PATH`)
+is skipped with one `talos:failover ... reason=unavailable` line and never
+marked down. The primary is dropped from its own chain with one stderr note.
+
+**Classes.** Every runner exit is one of three classes:
+
+| Signal | Class | Action |
+| --- | --- | --- |
+| exit 0 | `ok` | pass through |
+| exit 75 (`EX_TEMPFAIL`) from any runner or `runner_cmd` | `provider` | fail over |
+| a recognised, **line-anchored** claude error in the last 20 lines of stderr or stdout: `API Error: 429`, `API Error: 5xx` / `overloaded_error`, `Credit balance is too low`, `usage limit reached`, `Invalid API key` / `API Error: 401`, a `getaddrinfo ENOTFOUND` / `ETIMEDOUT` / `ECONNRESET` error line | `provider` | fail over |
+| anything else non-zero, including a bare `429` or "rate limit" in the model's prose | `task` | unchanged: exit with the runner's code; the attempt and ceiling logic decides |
+
+A `provider` exit is never recorded as an attempt: it does not call
+`record-attempt` and does not count toward `limits.max_fix_attempts` or
+`limits.max_total_dispatches`. Unmatched output is always `task` (fail toward
+today's behaviour, never toward silently switching providers).
+
+**The stderr patterns are UNVERIFIED.** They are candidates, not captured
+from real CLI output. Only claude has any; codex, gemini, antigravity, pi and
+`custom` ship **exit-75-only** until patterns are captured from real output.
+For a `custom` runner, `exit 75` is the documented contract: have the
+wrapper exit 75 when its endpoint is down.
+
+**What happens on a provider exit.** The failed runner is marked down in
+`.talos/providers.json` for `agents.provider_down_s` seconds
+(`{"<runner>": {"down_until", "reason", "since"}}`), the work is checkpointed
+when `pipeline-worktree.sh checkpoint` exists (skipped with one
+`talos:failover checkpoint-skipped` note otherwise; the files stay in the
+worktree), `talos:failover role=<r> from=<a> to=<b> reason=<class:detail>` is
+printed on stderr, and a `failover` event (role `orchestrator`, so it never
+counts as an unrecorded stage run) is appended to `.talos/events.jsonl`. The
+next stage, in this checkout or any worktree of it, skips a runner whose entry
+has not expired; after `down_until` it is tried again. The file lives next to
+`events.jsonl` (the repository's common git directory), is written atomically
+under `with_lock`, and a missing, corrupt or unreadable file reads as "nothing
+is down" with one warning: bookkeeping never blocks a stage. The stage's
+`stage_complete` event names the runner that actually ran (and a null model)
+only when it ran on a chain runner.
+
+With a chain, stdout is buffered per attempt: a failed provider attempt's
+stdout is discarded and only the final attempt's stdout reaches the caller;
+stderr is replayed after every attempt.
+
+**Write guard.** A failover never reruns a stage that already wrote.
+`pipeline-agent.sh` exports `TALOS_WRITE_LOG` to the runner; `pipeline-vcs.sh`
+appends the verb name (never the body) of each successful `comment-issue`,
+`comment-pr`, `create-pr`, `create-issue`, `post-approval`, `approve-pr`,
+`merge-pr`, `close-issue` and `record-attempt`. It also snapshots
+`git for-each-ref refs/remotes` before the attempt (a push moves a
+remote-tracking ref). After a `provider` exit, a non-empty journal or a
+changed snapshot means **no rerun**: the provider is marked down,
+`talos:failover-refused role=<r> runner=<x> reason=wrote:<verbs|push>` is
+printed and the script exits 69. Known gap: a runner that calls raw `gh`
+instead of `pipeline-vcs.sh` is not seen (the role profiles forbid it). A
+parallel `git fetch` in the same repository also moves `refs/remotes` and reads
+as a push, so the failover is refused, never forced.
+
+**Exit codes.** `75` from a runner means provider error. `69` (`EX_UNAVAILABLE`)
+is the script's own: the chain is exhausted (one stderr line names the chain
+and every reason, bounded by the chain length), every runner is marked down
+(nothing is run), or the failover was refused after a write. The orchestrator
+then runs no `record-attempt` and no fix round, sets `pipeline:blocked` on the
+issue and the PR, and posts blocked.md naming `agents.fallback`. The owner
+resumes by removing `pipeline:blocked`; expired `providers.json` entries are
+retried. A runner that itself exits 69 is indistinguishable from this code
+when no chain is configured.
+
+**Native Claude path.** There `pipeline-agent.sh` is not in the loop, so there
+is no automatic re-dispatch. Two verbs help the orchestrator:
+
+```bash
+# class of a dead subagent, from the text it returned (advisory, same table)
+bash scripts/pipeline-agent.sh --classify claude 1 returned-text.txt   # ok | provider | task
+# record the provider as down (agents.provider_down_s)
+bash scripts/pipeline-agent.sh --mark-down claude provider:429
+```
+
+On `provider` the orchestrator calls no `record-attempt`, runs `--mark-down`,
+sets `pipeline:blocked` with a resume note naming the provider, and stops.
+
+`bash scripts/pipeline-agent.sh --resolve <role>` appends `fallback=<a,b>`
+only when a chain resolves (so a role without one keeps the exact line);
+`--resolve-all` adds `fallback=` and `fallback_origin=` columns the same way.
+
 ### Adversarial pre-merge stage (`roles.adversarial`, #237)
 
 Optional, off by default. When `roles.adversarial: true`, a new stage runs

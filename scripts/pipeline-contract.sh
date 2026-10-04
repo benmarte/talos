@@ -149,6 +149,8 @@ TALOS_MARKERS=(
   talos:board-unverified
   talos:verify
   talos:runner
+  talos:failover
+  talos:failover-refused
   talos:canary-skipped
   talos:worktree-sweep
   talos:spend
