@@ -352,7 +352,8 @@ fi
 # keys (previously missing entirely) are real JSON structure -- not merely
 # mentioned in prose -- and appear in both example configs (#268 fix round).
 #
-# _KNOWN_CONFIG_KEYS_JSON in pipeline-config.sh is the single source of truth
+# _KNOWN_CONFIG_KEYS_JSON (generated from the table in pipeline-defaults.sh,
+# #439) is the single source of truth
 # for the unknown-key warning (#176); this reads that same list so a key
 # added there later without a matching example fails here instead of
 # drifting silently.
@@ -374,12 +375,15 @@ fi
 #     same shape: a `leaf in yml` OR-fallback).
 KEY_CHECK_PY="$SCRATCH/check_known_keys.py"
 cat > "$KEY_CHECK_PY" <<'PYEOF'
-import re, sys, json
+import os, re, subprocess, sys, json
 
 cfg_path, yml_path, json_path = sys.argv[1], sys.argv[2], sys.argv[3]
-content = open(cfg_path).read()
-m = re.search(r"_KNOWN_CONFIG_KEYS_JSON='(\[.*?\])'", content, re.S)
-keys = json.loads(m.group(1))
+# The known-keys list is generated from the config schema table (#439), which
+# sits next to pipeline-config.sh.
+defaults_sh = os.path.join(os.path.dirname(cfg_path), "pipeline-defaults.sh")
+keys = json.loads(subprocess.run(
+    ["bash", "-c", '. "$1"; _talos_known_keys_json', "_", defaults_sh],
+    capture_output=True, text=True, check=True).stdout)
 yml_text = open(yml_path).read()
 json_text = open(json_path).read()
 json_data = json.load(open(json_path))

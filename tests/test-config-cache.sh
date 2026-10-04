@@ -5,7 +5,7 @@
 # lookups from that cache.
 set -u
 . "$(dirname "$0")/helpers.sh"
-make_sandbox
+make_sandbox || exit 1
 use_stubs
 
 cat > talos.pipeline.json <<'EOF'
@@ -159,5 +159,38 @@ assert_contains "$_nh_stdout" "--squash" \
 _nh_warn_count="$(grep -c "^pipeline: config cache helper missing, falling back to per-call parsing$" "$_nh_stderr")"
 assert_eq "1" "$_nh_warn_count" \
   "missing-helper fallback prints exactly one stderr warning (#169 fallback)"
+
+# ── Table fallback spawns no python3 (#439): none with no config, one with ──
+# one. A python3 shim on PATH counts every spawn; the real interpreter is
+# resolved before PATH is changed.
+_REAL_PY="$(command -v python3)"
+if [ -z "$_REAL_PY" ]; then fail "python3 not found for the spawn-count shim"; finish; fi
+PYSHIM="$SANDBOX/pyshim"
+mkdir -p "$PYSHIM" || exit 1
+PY_LOG="$SANDBOX/python-spawns.log"
+cat > "$PYSHIM/python3" <<SHIM
+#!/usr/bin/env bash
+printf 'x\n' >> "$PY_LOG"
+exec "$_REAL_PY" "\$@"
+SHIM
+chmod +x "$PYSHIM/python3"
+cat > "$SANDBOX/probe-table.sh" <<'PROBE'
+#!/usr/bin/env bash
+set -u
+SCRIPT_DIR="$1"
+. "$SCRIPT_DIR/pipeline-cfg-cache.sh"
+printf '%s|%s|%s|%s' "$(cfg board.enabled)" "$(cfg limits.warn_at)" "$(cfg limits.warn_at 0.5)" "$(cfg merge.method)"
+PROBE
+[ "$PWD" -ef "$SANDBOX" ] || { fail "cwd is not the sandbox: $PWD"; finish; exit 1; }
+rm -f "${SANDBOX:?}/talos.pipeline.json"
+: > "$PY_LOG"
+_val="$(PATH="$PYSHIM:$PATH" bash "$SANDBOX/probe-table.sh" "$TALOS_ROOT/scripts")"
+assert_eq "true|0.8|0.5|squash" "$_val" "no config: cfg answers from the table (and a caller default)"
+assert_eq "0" "$(wc -l < "$PY_LOG" | tr -d ' ')" "no config: cfg with table fallbacks spawns 0 python3 processes (#439)"
+printf '{"merge": {"method": "rebase"}}\n' > talos.pipeline.json
+: > "$PY_LOG"
+_val="$(PATH="$PYSHIM:$PATH" bash "$SANDBOX/probe-table.sh" "$TALOS_ROOT/scripts")"
+assert_eq "true|0.8|0.5|rebase" "$_val" "with a config: table fallback for absent keys, config value for present ones"
+assert_eq "1" "$(wc -l < "$PY_LOG" | tr -d ' ')" "with a config: four cfg calls, table fallbacks included, spawn exactly 1 python3 (#439)"
 
 finish

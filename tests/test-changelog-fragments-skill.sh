@@ -11,7 +11,7 @@ set -u
 
 SKILL="$TALOS_ROOT/skills/pipeline/SKILL.md"
 DOCS_AGENT="$TALOS_ROOT/agents/docs.md"
-CFG="$TALOS_ROOT/scripts/pipeline-config.sh"
+CFG="$TALOS_ROOT/scripts/pipeline-defaults.sh"  # the known-keys list is the table's key column (#439)
 CL="$TALOS_ROOT/scripts/pipeline-changelog.sh"
 
 assert_file_exists "$SKILL" "skills/pipeline/SKILL.md exists"

@@ -2,6 +2,8 @@
 # pipeline-config.sh — read a dot-path key from the project pipeline config.
 #
 # Usage:   pipeline-config.sh KEY [default]
+#          pipeline-config.sh --has KEY     exit 0 when KEY is set in a config
+#                                           file, 1 when it is not
 # Example: pipeline-config.sh board.project_number 1
 #          pipeline-config.sh notifications.slack_channel ""
 #          pipeline-config.sh merge.method squash
@@ -11,6 +13,11 @@
 #   2. ./talos.pipeline.yml (.yaml / .json variants)
 #   3. Legacy names: ./.claude-pipeline.yaml, ./pipeline.yaml (+ .json variants)
 #   4. No config found — returns the default (or empty string)
+#
+# Defaults (#439): a key absent from every config layer prints the default
+# argument when one is given (even ""), else the key's default from the config
+# schema table (pipeline-defaults.sh; empty for a derived key). With no config
+# file at all, none of this spawns python3.
 #
 # User-level layer (#336): ${TALOS_HOME:-$HOME/.talos}/talos.pipeline.{yml,yaml,
 # json} is loaded under whichever project config was found (or alone when there
@@ -48,62 +55,28 @@ set -u
 # against this dump is byte-identical to calling this script for that key
 # directly. Purely additive: an early exit, does not touch anything below.
 
-# ── Known config keys (#176) ────────────────────────────────────────────────
+# ── Known config keys (#176, #439) ──────────────────────────────────────────
 # Every documented config key, "*" standing in for a dynamic segment
-# (board.status_map.*, agents.roles.*.model, etc.). Defined once, here, at
-# module level, as JSON -- the --dump path and the single-key path below
-# each parse the config file in their own separate python3 process (so the
-# unknown-key check itself can't literally be one shared function call, see
+# (board.status_map.*, agents.roles.*.model, etc.). The list is the key column
+# of the config schema table in pipeline-defaults.sh (#439); it is generated
+# from there (_talos_known_keys_json) at the two places that hand it to python3,
+# so it can never drift from the table. The --dump path and the single-key path
+# below each parse the config file in their own separate python3 process (so
+# the unknown-key check itself can't literally be one shared function call, see
 # both copies' comments), but both are handed this exact same JSON via argv
 # instead of each embedding their own copy of the list as a Python literal.
-_KNOWN_CONFIG_KEYS_JSON='[
-  "base_branch", "release_branch", "repo",
-  "vcs.provider", "vcs.repo", "vcs.token_env",
-  "vcs.azure.org_url", "vcs.azure.project", "vcs.azure.work_item_type",
-  "vcs.azure.area_path", "vcs.file.source.path",
-  "board.enabled", "board.project_number", "board.owner",
-  "board.status_field", "board.statuses.*", "board.status_map.*",
-  "board.azure_states.*",
-  "verify", "verify.commands", "verify.qa_mode", "verify.targeted",
-  "verify.ci_wait_s", "verify.timeout_ms",
-  "merge.auto", "merge.method", "merge.required_checks",
-  "merge.delete_branch", "merge.forbidden_files",
-  "merge.forbidden_files_replace", "merge.forbidden_files_allow",
-  "merge.approval_waiver_paths", "merge.union_paths",
-  "merge.auto_sync",
-  "issues.label_filter", "issues.skip_labels", "issues.max_parallel",
-  "issues.assignee",
-  "execution.isolation", "execution.worktree_warn_threshold",
-  "roles.validator", "roles.pm", "roles.pm_skip_when_spec_present",
-  "roles.qa", "roles.reviewer", "roles.security", "roles.adversarial",
-  "roles.docs", "roles.docs_mode", "roles.planner", "roles.changelog_fragments",
-  "comments.enabled", "comments.header", "comments.templates_dir",
-  "notifications.slack_channel", "notifications.discord_channel",
-  "notifications.buzz_channel", "notifications.buzz_relay",
-  "notifications.buzz_timeout_s",
-  "notifications.templates_dir", "notifications.threading",
-  "notifications.events", "notifications.cmd", "notifications.cmd_timeout_s",
-  "agents.runner", "agents.subagents", "agents.runner_args",
-  "agents.runner_cmd", "agents.model", "agents.restamp_model",
-  "agents.effort", "agents.restamp_effort",
-  "agents.roles.*.model", "agents.roles.*.runner",
-  "agents.roles.*.runner_cmd", "agents.roles.*.restamp_model",
-  "agents.roles.*.effort", "agents.roles.*.restamp_effort",
-  "agents.fallback", "agents.roles.*.fallback", "agents.provider_down_s",
-  "limits.max_fix_attempts", "limits.max_total_dispatches",
-  "limits.max_retries",
-  "limits.tokens_per_issue", "limits.warn_at", "spend.comment",
-  "pr.draft",
-  "status.enabled", "status.file", "status.log_heading",
-  "status.resume_heading", "status.fragments_dir", "status.archive_dir",
-  "status.log_days", "status.log_max", "status.resume_max_lines",
-  "markers.trusted_authors", "markers.verify_authors",
-  "hooks.pre_dispatch", "hooks.post_stage", "hooks.timeout_s",
-  "events.enabled", "events.path",
-  "evidence.enabled", "evidence.command", "evidence.dir", "evidence.include",
-  "evidence.when", "evidence.store",
-  "evidence.max_files", "evidence.max_mb"
-]'
+#
+# A partial install may not ship pipeline-defaults.sh yet: then the table is
+# empty and the unknown-key check is skipped (an empty list matches nothing).
+_CFG_SELF="${BASH_SOURCE[0]}"
+case "$_CFG_SELF" in */*) _CFG_SELF_DIR="${_CFG_SELF%/*}" ;; *) _CFG_SELF_DIR="." ;; esac
+if [ -f "$_CFG_SELF_DIR/pipeline-defaults.sh" ]; then
+  . "$_CFG_SELF_DIR/pipeline-defaults.sh"
+else
+  echo "pipeline-config: pipeline-defaults.sh missing next to $0 -- no table defaults, unknown-key check off" >&2
+  _talos_default() { :; }
+  _talos_known_keys_json() { printf '[]'; }
+fi
 
 # ── Shared config loader (#336) ───────────────────────────────────────────────
 # One place that finds the config files and one that parses + merges them,
@@ -458,7 +431,7 @@ if [ "${1:-}" = "--dump" ]; then
   if [ -z "$_DCFG" ] && [ -z "$_DUSER" ]; then
     exit 0
   fi
-  python3 -I - "$_DCFG" "$_KNOWN_CONFIG_KEYS_JSON" "$_DUSER" "$_CFG_LOADER_PY" "$_CFG_EVIDENCE_PY" "$_CFG_FALLBACK_PY" <<'PYEOF'
+  python3 -I - "$_DCFG" "$(_talos_known_keys_json)" "$_DUSER" "$_CFG_LOADER_PY" "$_CFG_EVIDENCE_PY" "$_CFG_FALLBACK_PY" <<'PYEOF'
 import sys
 
 known_keys_json = sys.argv[2]
@@ -518,7 +491,7 @@ def _key_matches(parts, template_parts):
 def _warn_unknown_keys(cfg_obj):
     if os.environ.get("TALOS_CONFIG_STRICT_KEYS", "1") == "0":
         return
-    if not isinstance(cfg_obj, dict):
+    if not isinstance(cfg_obj, dict) or not _KNOWN_CONFIG_KEYS:
         return
     present = []
     _present_leaf_keys(cfg_obj, "", present)
@@ -804,8 +777,39 @@ PYEOF
   exit 0
 fi
 
+# ── --has KEY (#439) ──────────────────────────────────────────────────────────
+# Exit 0 when KEY is set (a non-null value, a subtree counts) in any file layer,
+# exit 1 when it is absent -- for the "is it configured at all" probes that used
+# to pass a sentinel default (`pipeline-config.sh status.enabled unset`). Never
+# consults the table: a key that only has a table default is NOT set. No config
+# file means exit 1 with no python3 spawn.
+if [ "${1:-}" = "--has" ]; then
+  _HKEY="${2:-}"
+  [ -n "$_HKEY" ] || exit 1
+  _HPROJ="$(_locate_project_cfg)"
+  _HUSER="$(_locate_user_cfg)"
+  if [ -z "$_HPROJ" ] && [ -z "$_HUSER" ]; then exit 1; fi
+  python3 -I - "$_HPROJ" "$_HKEY" "$_HUSER" "$_CFG_LOADER_PY" <<'PYEOF'
+import sys
+exec(sys.argv[4])
+_project, _user, _merged = load_layers(sys.argv[1], sys.argv[3])
+_obj = _merged
+for _part in sys.argv[2].split("."):
+    if isinstance(_obj, dict) and _part in _obj:
+        _obj = _obj[_part]
+    else:
+        sys.exit(1)
+sys.exit(0 if _obj is not None else 1)
+PYEOF
+  exit $?
+fi
+
 KEY="${1:-}"
-DEFAULT="${2:-}"
+# Default (#439): an explicit second argument -- even "" -- is the caller's own
+# fallback and wins over the table, so every `KEY "literal"` call keeps its
+# behaviour. With no second argument the table default answers (empty for an
+# unknown or derived key).
+if [ "$#" -ge 2 ]; then DEFAULT="$2"; else DEFAULT="$(_talos_default "$KEY")"; fi
 
 [ -z "$KEY" ] && { printf '%s' "$DEFAULT"; exit 0; }
 
@@ -823,7 +827,7 @@ fi
 # The heredoc passes file paths, key, default, the known-keys JSON and the
 # shared loader source as argv to avoid shell quoting issues with special
 # characters in values.
-python3 -I - "$CFG" "$KEY" "$DEFAULT" "$_KNOWN_CONFIG_KEYS_JSON" "$USER_CFG" "$_CFG_LOADER_PY" "$_CFG_EVIDENCE_PY" "$_CFG_FALLBACK_PY" <<'PYEOF'
+python3 -I - "$CFG" "$KEY" "$DEFAULT" "$(_talos_known_keys_json)" "$USER_CFG" "$_CFG_LOADER_PY" "$_CFG_EVIDENCE_PY" "$_CFG_FALLBACK_PY" <<'PYEOF'
 import sys
 
 key      = sys.argv[2]
@@ -882,7 +886,7 @@ def _key_matches(parts, template_parts):
 def _warn_unknown_keys(cfg_obj):
     if os.environ.get("TALOS_CONFIG_STRICT_KEYS", "1") == "0":
         return
-    if not isinstance(cfg_obj, dict):
+    if not isinstance(cfg_obj, dict) or not _KNOWN_CONFIG_KEYS:
         return
     present = []
     _present_leaf_keys(cfg_obj, "", present)

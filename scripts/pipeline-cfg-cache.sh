@@ -45,6 +45,15 @@
 # Bash 3.2 (macOS) compatible: a plain indexed array, no associative
 # arrays.
 
+# The config schema table (#439): the fallback for a cfg call with no default.
+# A partial install may not ship it yet; then such a call prints nothing, as
+# an unknown key always did.
+if [ -f "$SCRIPT_DIR/pipeline-defaults.sh" ]; then
+  . "$SCRIPT_DIR/pipeline-defaults.sh"
+else
+  _talos_default() { :; }
+fi
+
 _TALOS_EXIT_HOOKS=()
 
 # _talos_on_exit CMD -- register a shell command string to run at exit,
@@ -68,7 +77,11 @@ _CFG_CACHE_FILE="$_CFG_CACHE_DIR/dump"
 _CFG_CACHE_DONE="$_CFG_CACHE_DIR/done"
 
 # cfg KEY [DEFAULT] -- same contract as `pipeline-config.sh KEY [DEFAULT]`:
-# prints the resolved value, or DEFAULT (default "") when KEY is absent.
+# prints the resolved value when KEY is set in a config layer; else DEFAULT
+# when a second argument was given (even ""); else (#439) KEY's default from
+# the config schema table in pipeline-defaults.sh -- empty for a derived or
+# unknown key. The table lookup is pure shell: a call that falls back to it
+# spawns nothing, and with no config file the dump spawns nothing either.
 # Safe to call from any number of command-substitution subshells; the
 # first call anywhere (in this process) to actually need the dump
 # populates it, every other call just reads it.
@@ -99,5 +112,6 @@ cfg() {
       done < "$_CFG_CACHE_FILE"
     fi
   fi
+  if [ "$#" -lt 2 ]; then _talos_default "$_key"; return 0; fi
   printf '%s' "$_default"
 }
