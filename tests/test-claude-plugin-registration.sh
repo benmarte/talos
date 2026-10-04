@@ -103,6 +103,23 @@ assert_eq "0" "$RC" "ESC in a marketplace path: exits 0"
 assert_contains "$OUT" "points at /moved[31m-checkout, not this checkout" "ESC in a marketplace path: printed with the ESC removed"
 assert_eq "0" "$(printf '%s' "$OUT" | LC_ALL=C grep -c "$(printf '\033')" || true)" "ESC in a marketplace path: no ESC byte in the installer output"
 
+# ESC and a C1 control (U+009B, bytes c2 9b, a one-character CSI) in a path the
+# installer prints -- CLAUDE_CONFIG_DIR on a global install, the target repo on
+# a per-repo install -- never reach the output. The directories really carry
+# the control characters, so the installer and the sandbox both handle them.
+newcase ctl-path
+ESC_C1="$(printf '\033[31m-\302\233x')"
+mkdir -p "$CASE/claude-$ESC_C1" "$CASE/repo-$ESC_C1"
+OUT="$(env CLAUDE_CONFIG_DIR="$CASE/claude-$ESC_C1" TALOS_HOME="$CASE/talos" TALOS_AGENTS_HOME="$CASE/agents" \
+  "$BASH_BIN" "$INSTALL" --global --no-agent-skills --harness claude 2>&1)"; RC=$?
+assert_eq "0" "$RC" "control characters in CLAUDE_CONFIG_DIR: exits 0"
+assert_contains "$OUT" "Claude Code adapter ($CASE/claude-[31m-x):" "control characters in CLAUDE_CONFIG_DIR: path printed with them removed"
+assert_eq "0" "$(printf '%s' "$OUT" | LC_ALL=C grep -c -e "$(printf '\033')" -e "$(printf '\302\233')" || true)" "control characters in CLAUDE_CONFIG_DIR: no ESC or C1 byte in the output"
+OUT="$(env CLAUDE_CONFIG_DIR="$CASE/claude" TALOS_HOME="$CASE/talos" TALOS_AGENTS_HOME="$CASE/agents" \
+  "$BASH_BIN" "$INSTALL" "$CASE/repo-$ESC_C1" --no-agent-skills --harness claude 2>&1)"; RC=$?
+assert_contains "$OUT" "Configuring Talos for repo: $CASE/repo-[31m-x" "control characters in the target repo: path printed with them removed"
+assert_eq "0" "$(printf '%s' "$OUT" | LC_ALL=C grep -c -e "$(printf '\033')" -e "$(printf '\302\233')" || true)" "control characters in the target repo: no ESC or C1 byte in the output"
+
 newcase keep-fresh
 inst --keep-marketplace
 assert_eq "1" "$(calls "\[add\] \[$TALOS_ROOT\]")" "--keep-marketplace on a fresh config: still registers the checkout"

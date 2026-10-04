@@ -36,6 +36,15 @@ END='<!-- talos:end -->'
 IMPORT_BEGIN='<!-- talos:import:begin -->'
 IMPORT_END='<!-- talos:import:end -->'
 
+# _printable <text>: <text> without control characters (C0, DEL and the UTF-8
+# C1 controls U+0080-U+009F), for a path echoed to the terminal. Same set as
+# install.sh's printable.
+_P_C2=$'\xc2'; _P_LO=$'\x80'; _P_HI=$'\x9f'
+_printable() {
+  printf '%s' "$1" | LC_ALL=C tr -d '\000-\037\177' \
+    | LC_ALL=C sed "s/${_P_C2}[${_P_LO}-${_P_HI}]//g"
+}
+
 print_block() {
   local cmd
   echo "$BEGIN"
@@ -146,11 +155,11 @@ _replace_file() {
 write_agents_md() {
   local f="$REPO/AGENTS.md" blockf newf nb ne ab ae lb le problem="" verb=updated
   if [ -L "$f" ]; then
-    echo "AGENTS.md: $f is a symlink; not writing through it. Add the Talos block to the real file yourself (bash $SCRIPT_DIR/pipeline-instructions.sh print)."
+    echo "AGENTS.md: $(_printable "$f") is a symlink; not writing through it. Add the Talos block to the real file yourself (bash $SCRIPT_DIR/pipeline-instructions.sh print)."
     return 0
   fi
   if [ -e "$f" ] && [ ! -f "$f" ]; then
-    echo "AGENTS.md: $f is not a regular file; leaving it alone."
+    echo "AGENTS.md: $(_printable "$f") is not a regular file; leaving it alone."
     return 0
   fi
   blockf="$(mktemp "${TMPDIR:-/tmp}/talos-block.XXXXXX")" || return 0
@@ -189,16 +198,16 @@ write_agents_md() {
   fi
 
   if [ -n "$problem" ]; then
-    echo "pipeline-instructions: $f: $problem; left unchanged" >&2
+    echo "pipeline-instructions: $(_printable "$f"): $problem; left unchanged" >&2
   elif [ -e "$f" ] && cmp -s "$newf" "$f"; then
-    echo "AGENTS.md: up to date: $f"
+    echo "AGENTS.md: up to date: $(_printable "$f")"
   else
     [ -e "$f" ] || verb=created
     if _replace_file "$newf" "$f"; then
       case "$verb" in
-        created) echo "AGENTS.md: created $f" ;;
-        added) echo "AGENTS.md: added the Talos block to $f" ;;
-        *) echo "AGENTS.md: updated the Talos block in $f" ;;
+        created) echo "AGENTS.md: created $(_printable "$f")" ;;
+        added) echo "AGENTS.md: added the Talos block to $(_printable "$f")" ;;
+        *) echo "AGENTS.md: updated the Talos block in $(_printable "$f")" ;;
       esac
       echo "Next: commit AGENTS.md so every clone and every agent sees it."
     fi
@@ -211,7 +220,7 @@ import_into() {
   local f="$1"
   [ -e "$f" ] || [ -L "$f" ] || return 0
   if [ -L "$f" ]; then
-    echo "import: $f is a symlink; skipped. Add the line @AGENTS.md to the real file yourself."
+    echo "import: $(_printable "$f") is a symlink; skipped. Add the line @AGENTS.md to the real file yourself."
     return 0
   fi
   [ -f "$f" ] || return 0
@@ -222,7 +231,7 @@ import_into() {
     [ -s "$f" ] && [ -n "$(tail -c 1 "$f")" ] && printf '\n'
     printf '%s\n@AGENTS.md\n%s\n' "$IMPORT_BEGIN" "$IMPORT_END"; } > "$newf"
   if _replace_file "$newf" "$f"; then
-    echo "import: added @AGENTS.md to $f (commit it with AGENTS.md)."
+    echo "import: added @AGENTS.md to $(_printable "$f") (commit it with AGENTS.md)."
   fi
   rm -f "$newf"
 }
