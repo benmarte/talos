@@ -2424,7 +2424,7 @@ no per-spawn Agent tool parameter for effort, and the orchestrator never
 writes to a role file at spawn time, so the value that actually runs is
 whatever `effort:` (if any) is already committed in the role's frontmatter.
 A resolved config value that disagrees with the committed frontmatter just
-gets a logged notice, not a rewrite. See the README's
+gets a one-line notice from `pipeline-agent.sh --check-effort <role>`, not a rewrite. See the README's
 [Per-role reasoning effort](../README.md#per-role-reasoning-effort-agentseffort-and-agentsrolesroleeffort)
 section for the full precedence chain, the re-stamp variant
 (`agents.restamp_effort`), and a worked config example.

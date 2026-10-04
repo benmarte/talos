@@ -56,6 +56,13 @@
 # <role> must be lowercase letters and '-' (not leading); anything else exits 2
 # before any path is built.
 #
+# --check-effort <role> (#445): native claude path only. Prints ONE notice line
+#   when the resolved effort (agents.roles.<role>.effort, else agents.effort) is
+#   non-empty and differs from the role file's effort: frontmatter (absent
+#   counts as different); nothing on a match, an empty config, or an
+#   adapter-path role (TALOS_EFFORT applies it there). Exit 0 (2 on a
+#   missing/invalid <role>); writes no file.
+#
 # Failover verbs (#418, see agents.fallback below):
 #   --resolve <role> appends " fallback=<a,b>" after effort= only when a chain
 #   resolves; --resolve-all appends fallback= / fallback_origin= the same way.
@@ -479,6 +486,34 @@ if [ "${1:-}" = "--resolve-profile" ]; then
   fi
   _resolve_role_profile "$2"
   exit $?
+fi
+
+# --check-effort <role> (#445): the native-path effort notice, as a verb so the
+# orchestrator playbook carries one call instead of the resolution prose. Config
+# is advisory there (no per-spawn effort parameter; the orchestrator never writes
+# a tracked file), so this only compares the resolved value with the role file's
+# committed `effort:` frontmatter and names both on one stdout line.
+if [ "${1:-}" = "--check-effort" ]; then
+  if [ -z "${2:-}" ]; then
+    echo "Usage: pipeline-agent.sh --check-effort <role>" >&2
+    exit 2
+  fi
+  _valid_role_name "$2" || { _resolve_role_profile "$2" >/dev/null; exit $?; }
+  [ "$(_resolve_runner "$2")" = "claude" ] || exit 0
+  _CE_CFG="$(_resolve_effort "$2")"
+  [ -n "$_CE_CFG" ] || exit 0
+  _CE_FILE="$(_resolve_role_profile "$2" 2>/dev/null || true)"
+  _CE_FM=""
+  if [ -n "$_CE_FILE" ]; then
+    _CE_FM="$(awk 'NR==1 { if ($0 !~ /^---[ \t\r]*$/) exit; next }
+      /^---[ \t\r]*$/ { exit }
+      /^effort:/ { sub(/^effort:[ \t]*/, ""); gsub(/[\r"'"'"' \t]/, ""); print; exit }' "$_CE_FILE")"
+  fi
+  [ "$_CE_CFG" != "$_CE_FM" ] || exit 0
+  _CE_SHOW="${_CE_FM:+effort=$_CE_FM}"
+  printf "talos: notice: role '%s' has effort=%s in config but its frontmatter has %s -- native path uses the committed frontmatter; config effort is advisory here\n" \
+    "$2" "$_CE_CFG" "${_CE_SHOW:-no effort:}"
+  exit 0
 fi
 
 # ── Provider-error classification (#418) ──────────────────────────────────────
