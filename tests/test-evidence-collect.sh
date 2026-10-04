@@ -37,7 +37,7 @@ RC=0
 # ---- helpers ----------------------------------------------------------------
 # new_repo -- a fresh repo (ev/ ignored, one commit), cd into it; sets REPO.
 new_repo() {
-  REPO="$(mktemp -d "$SANDBOX/repo.XXXXXX")"
+  REPO="$(safe_mktemp_dir "$SANDBOX/repo.XXXXXX")" || exit 1
   git -C "$REPO" init -q -b main
   git -C "$REPO" config user.name "talos test"
   git -C "$REPO" config user.email "test@talos.invalid"
@@ -210,7 +210,7 @@ done
 assert_eq "0" "$ALIVE" "leftover child: killed when the command ends"
 
 # outside a git repo: usage-level failure, nothing runs
-NOGIT="$(mktemp -d "$SANDBOX/nogit.XXXXXX")"
+NOGIT="$(safe_mktemp_dir "$SANDBOX/nogit.XXXXXX")" || exit 1
 ( cd "$NOGIT" && GIT_CEILING_DIRECTORIES="$SANDBOX" bash "$EV" capture >"$OUT" 2>"$ERR" ); RC=$?
 assert_eq "2" "$RC" "capture outside a git repo: exit 2"
 assert_contains "$(err)" "not inside a git" "capture outside a git repo: says why"
@@ -471,7 +471,7 @@ assert_eq "0" "$RC" "per-file cap: exactly the cap is fine (max_mb default 20)"
 # collect --stage (#415): the bytes come from the descriptor collect judged
 # =============================================================================
 modeof() { python3 -I -c 'import os,stat,sys; print(oct(stat.S_IMODE(os.stat(sys.argv[1]).st_mode)))' "$1"; }
-new_stage() { STAGE="$(mktemp -d "$SANDBOX/stage.XXXXXX")"; }
+new_stage() { STAGE="$(safe_mktemp_dir "$SANDBOX/stage.XXXXXX")" || exit 1; }
 stage_empty() { [ -z "$(ls -A "$STAGE")" ]; }
 
 new_repo; new_stage; png ev/a.png

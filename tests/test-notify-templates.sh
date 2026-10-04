@@ -84,7 +84,7 @@ assert_contains "$out" "PROJECT-NEUTRAL #42 Fix login crash" \
 assert_not_contains "$out" "PROJECT-SLACK" \
   "discord never sees another platform's override"
 
-rm -rf "$SANDBOX/templates"
+rm -rf "${SANDBOX:?}/templates"
 
 # ── (b) Every shipped neutral template exists; no shipped platform files ─────
 for _ev in blocked developer dispatched docs info issue-closed merged \
@@ -168,7 +168,7 @@ assert_contains "$buzz_out" "**Bold text**" "buzz: bold passes through unchanged
 assert_contains "$buzz_out" "[a link](https://example.com/x)" "buzz: links pass through unchanged"
 assert_contains "$buzz_out" "- bullet one" "buzz: bullets pass through unchanged"
 
-rm -rf "$SANDBOX/templates"
+rm -rf "${SANDBOX:?}/templates"
 
 # ── (f) ${HEADLINE}: per-role icon/label, and lifecycle events speak as Talos ─
 # Rendered via buzz, which passes the neutral dialect through unchanged, so the
@@ -308,7 +308,7 @@ assert_contains "$out" '${SLACK_WEBHOOK_URL}' \
   "an undocumented variable renders as the literal \${NAME} the docs promise"
 assert_contains "$out" "Fix login crash" \
   "documented variables still substitute"
-rm -rf "$SANDBOX/templates"
+rm -rf "${SANDBOX:?}/templates"
 
 # ── (j) The fallback monospace grid still defuses a triple-backtick run ──────
 # Slack/Discord/Buzz wrap the fallback grid in a literal ``` fence, used when

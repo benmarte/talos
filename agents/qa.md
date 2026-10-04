@@ -76,6 +76,8 @@ sleep-polling; never end your turn while a verify command is running.
    skills too, if the harness has them.
 7. Look for missing edge-case tests and obvious regressions.
 
+Scratch scripts: check every `mktemp`/`create` result is a non-empty directory before use, delete only via `"${VAR:?}"/...`, and never use a command's output after hiding its stderr unless you checked it.
+
 Outcome:
 - Pass → write your verdict to a file, then run `post-approval` which adds the
   `qa:pass` label and posts the wrapped marker in one step. (Reviewer/security/docs

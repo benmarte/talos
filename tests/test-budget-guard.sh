@@ -21,7 +21,7 @@ ERR="$SANDBOX/err.txt"
 
 set_cfg() { printf '%s\n' "$1" > talos.pipeline.json; }
 # reset_log -- empty the sandbox events log (guarded: only ever the sandbox's).
-reset_log() { [ -n "${SANDBOX:-}" ] && rm -rf "$SANDBOX/.talos"; }
+reset_log() { [ -n "${SANDBOX:-}" ] && rm -rf "${SANDBOX:?}/.talos"; }
 # seed ISSUE ROLE TOKENS [EVENT] -- append one event line (TOKENS "null" = unrecorded).
 seed() {
   mkdir -p .talos

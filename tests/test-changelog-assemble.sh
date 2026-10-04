@@ -23,7 +23,7 @@ CL="$TALOS_ROOT/scripts/pipeline-changelog.sh"
 git config user.email "test@talos.invalid"
 git config user.name "talos-test"
 
-UPSTREAM_PARENT="$(mktemp -d "${TMPDIR:-/tmp}/talos-cl-origin.XXXXXX")"
+UPSTREAM_PARENT="$(safe_mktemp_dir "${TMPDIR:-/tmp}/talos-cl-origin.XXXXXX")" || exit 1
 UPSTREAM="$UPSTREAM_PARENT/upstream.git"
 git init -q --bare "$UPSTREAM"
 trap 'rm -rf "$SANDBOX" "$UPSTREAM_PARENT"' EXIT

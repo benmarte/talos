@@ -52,7 +52,7 @@ GHSTUB
 # (This is the acceptance criterion the current code fails before the fix.)
 # ═════════════════════════════════════════════════════════════════════════════
 
-_stub1="$(mktemp -d)"
+_stub1="$(safe_mktemp_dir)" || exit 1
 make_failing_post_stub "$_stub1"
 
 : > "$GH_LOG"
@@ -67,7 +67,7 @@ assert_eq "1" "$rc1" \
 # CRITERION 2: gh POST fails → comment-pr exits non-zero
 # ═════════════════════════════════════════════════════════════════════════════
 
-_stub2="$(mktemp -d)"
+_stub2="$(safe_mktemp_dir)" || exit 1
 make_failing_post_stub "$_stub2"
 
 : > "$GH_LOG"
@@ -82,7 +82,7 @@ assert_eq "1" "$rc2" \
 # CRITERION 3: gh POST fails → talos:comment-state-unverified NOT emitted
 # ═════════════════════════════════════════════════════════════════════════════
 
-_stub3="$(mktemp -d)"
+_stub3="$(safe_mktemp_dir)" || exit 1
 make_failing_post_stub "$_stub3"
 
 : > "$GH_LOG"
@@ -100,7 +100,7 @@ assert_not_contains "$out3" "talos:comment-state-unverified" \
 # CRITERION 4: gh POST fails → no stdout output (no URL, no empty line)
 # ═════════════════════════════════════════════════════════════════════════════
 
-_stub4="$(mktemp -d)"
+_stub4="$(safe_mktemp_dir)" || exit 1
 make_failing_post_stub "$_stub4"
 
 : > "$GH_LOG"
@@ -143,7 +143,7 @@ assert_contains "$out6" "/comments/" \
 # ═════════════════════════════════════════════════════════════════════════════
 
 # Stub: state check fails (exit 1), but comment POST succeeds.
-_stub7="$(mktemp -d)"
+_stub7="$(safe_mktemp_dir)" || exit 1
 mkdir -p "$_stub7"
 cat > "$_stub7/gh" <<'GHSTUB7'
 #!/usr/bin/env bash

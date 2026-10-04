@@ -47,7 +47,7 @@ put_profile() {
 NEUTRAL_DIR="$REPO/.agents/talos/agents"
 CLAUDE_DIR="$REPO/.claude/agents"
 reset_repo() {
-  rm -rf "$SANDBOX/.agents" "$SANDBOX/.claude" "$SANDBOX/.talos" "$SANDBOX"/talos.pipeline.*
+  rm -rf "${SANDBOX:?}/.agents" "${SANDBOX:?}/.claude" "${SANDBOX:?}/.talos" "${SANDBOX:?}"/talos.pipeline.*
   put_profile "$HOME/.talos/agents" developer "$T_INSTALL"
 }
 profile() { bash "$AGENT" --resolve-profile "$@" 2>"$ERR"; }

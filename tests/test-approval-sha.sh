@@ -394,7 +394,7 @@ assert_eq "$SHA_B" "$(printf '%s' "$out" | tr -d '[:space:]')" "pr-head: returns
 # We can simulate this with a stub variant that returns empty.
 # Since the stub uses ${STUB_PR_HEAD_SHA:-abc123sha} which fills in abc123sha
 # when empty, we need to test the real empty-output path via a custom mini-stub.
-_mini_stub_dir="$(mktemp -d "${TMPDIR:-/tmp}/talos-stub-mini.XXXXXX")"
+_mini_stub_dir="$(safe_mktemp_dir "${TMPDIR:-/tmp}/talos-stub-mini.XXXXXX")" || exit 1
 cat > "$_mini_stub_dir/gh" <<'GHEOF'
 #!/usr/bin/env bash
 # Mini stub that returns empty for pr view --json headRefOid
@@ -413,7 +413,7 @@ rm -rf "$_mini_stub_dir"
 
 # Also test check-approval-sha fail-closed on unresolvable head SHA using the
 # same mini-stub approach (combined json returns empty headRefOid):
-_mini_stub_dir2="$(mktemp -d "${TMPDIR:-/tmp}/talos-stub-mini2.XXXXXX")"
+_mini_stub_dir2="$(safe_mktemp_dir "${TMPDIR:-/tmp}/talos-stub-mini2.XXXXXX")" || exit 1
 cat > "$_mini_stub_dir2/gh" <<'GHEOF'
 #!/usr/bin/env bash
 case "$*" in

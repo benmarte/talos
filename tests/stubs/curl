@@ -123,7 +123,7 @@ elif [ -n "${STUB_COMMENT_STORE:-}" ] && [ -e "$STUB_COMMENT_STORE" ] && { [[ "$
       _cs_fail=1
     fi
     if [ -z "$_cs_fail" ]; then
-      _cs_payload="$(mktemp)"
+      _cs_payload="$(mktemp)" || exit 1
       printf '%s' "$payload" > "$_cs_payload"
       resp="$(python3 -c "
 import json, os, sys

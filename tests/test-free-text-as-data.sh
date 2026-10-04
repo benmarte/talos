@@ -345,7 +345,7 @@ PYC
 }
 run_recipe() {  # $1=md $2...=needles; leaves the script in $SANDBOX/r.sh, runs it, resets $REC
   local md="$1"; shift
-  rm -rf "$REC"/* "$SANDBOX/r.sh.bodies"
+  rm -rf "${REC:?}"/* "${SANDBOX:?}/r.sh.bodies"
   python3 "$SANDBOX/recipe.py" "$SANDBOX/r.sh" "$BODY" "$md" "$@" || return 99
   (cd "$STUBROOT" && bash "$SANDBOX/r.sh" </dev/null >"$SANDBOX/r.out" 2>"$SANDBOX/r.err"); return $?
 }

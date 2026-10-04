@@ -79,6 +79,24 @@ assert_eq_ctx() {  # $1=expected $2=actual $3=label $4=context
   fi
 }
 
+# safe_mktemp_dir [template] — `mktemp -d` that fails closed (#459). Prints the
+# new directory, or returns 1 with nothing on stdout when mktemp fails or the
+# result is empty or not a directory. An unchecked `X="$(mktemp -d)"` leaves X
+# empty, and a later `rm -rf "$X/..."` then deletes from `/`. Use it as
+#   X="$(safe_mktemp_dir "${TMPDIR:-/tmp}/talos-foo.XXXXXX")" || exit 1
+# (`exit`, not `return`, at file level: inside `$(...)` the helper can only
+# return, so the caller has to stop the test). tests/test-unsafe-cleanup-guard.sh
+# fails on a `$(mktemp` assignment with no `||` after it.
+safe_mktemp_dir() {
+  local _smd_dir
+  _smd_dir="$(mktemp -d "$@")" || return 1
+  if [ -z "$_smd_dir" ] || [ ! -d "$_smd_dir" ]; then
+    printf 'safe_mktemp_dir: ERROR: mktemp -d returned %s\n' "${_smd_dir:-an empty path}" >&2
+    return 1
+  fi
+  printf '%s\n' "$_smd_dir"
+}
+
 # make_sandbox — create an isolated temp dir with a git repo + fake origin.
 # Sets SANDBOX and cds into it. Cleaned up automatically on exit.
 #
@@ -132,12 +150,11 @@ make_sandbox() {
   # `|| exit 1`, so the helper exits itself: this point is only reachable from a
   # directly executed test file (the sourced case returned above), so exiting
   # ends that test, never an interactive shell.
-  SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/talos-test.XXXXXX")"
-  if [ -z "$SANDBOX" ] || [ ! -d "$SANDBOX" ]; then
+  SANDBOX="$(safe_mktemp_dir "${TMPDIR:-/tmp}/talos-test.XXXXXX")" || {
     printf 'make_sandbox: ERROR: mktemp -d failed under %s -- not continuing\n' "${TMPDIR:-/tmp}" >&2
     SANDBOX=""
     exit 1
-  fi
+  }
   trap 'rm -rf "$SANDBOX"' EXIT
   cd "$SANDBOX" || exit 1
   git init -q

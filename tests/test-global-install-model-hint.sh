@@ -54,7 +54,7 @@ out="$(TALOS_HOME="$SANDBOX/alt" bash "$TALOS_ROOT/install.sh" --global --no-age
 assert_eq "0" "$(count_hint "$out")" "AC8: \$TALOS_HOME user-level config with a model suppresses the hint"
 
 # 7. A project config in the cwd does not stand in for the user-level file.
-rm -rf "$USER_DIR/talos.pipeline.json" "$SANDBOX/alt"
+rm -rf "${USER_DIR:?}/talos.pipeline.json" "${SANDBOX:?}/alt"
 printf '%s' '{"agents": {"model": "haiku"}}' > "$SANDBOX/talos.pipeline.json"
 out="$(install_out)"
 assert_eq "1" "$(count_hint "$out")" "AC8: a repo-level model does not suppress the user-level hint"

@@ -84,7 +84,7 @@ token3="$(bash "$got3/pipeline-vcs.sh" 2>/dev/null)"
 assert_eq "TOKEN-VENDORED" "$token3" "vendored wins over source when global and plugin absent (level 4 > 5)"
 
 # Level 5 (source) used when only source exists.
-rm -rf "$SANDBOX/.claude/talos/scripts"
+rm -rf "${SANDBOX:?}/.claude/talos/scripts"
 got4="$(HOME="$T1_HOME/absent" \
   bash -c 'for d in "${TALOS_HOME:+$TALOS_HOME/scripts}" "$HOME/.talos/scripts" "${CLAUDE_PLUGIN_ROOT:+$CLAUDE_PLUGIN_ROOT/scripts}" ".claude/talos/scripts" "scripts"; do [ -n "$d" ] && [ -f "$d/pipeline-vcs.sh" ] && { echo "$d"; break; }; done')"
 token4="$(bash "$got4/pipeline-vcs.sh" 2>/dev/null)"
@@ -121,7 +121,7 @@ T4_HOME="$SANDBOX/t4-home-absent"
 mkdir -p "$T4_HOME"   # HOME exists but no .talos/ inside
 
 # Ensure only vendored is present.
-rm -rf "$SANDBOX/scripts"   # no source dir
+rm -rf "${SANDBOX:?}/scripts"   # no source dir
 got7="$(HOME="$T4_HOME" \
   bash -c 'for d in "${TALOS_HOME:+$TALOS_HOME/scripts}" "$HOME/.talos/scripts" "${CLAUDE_PLUGIN_ROOT:+$CLAUDE_PLUGIN_ROOT/scripts}" ".claude/talos/scripts" "scripts"; do [ -n "$d" ] && [ -f "$d/pipeline-vcs.sh" ] && { echo "$d"; break; }; done')"
 token7="$(bash "$got7/pipeline-vcs.sh" 2>/dev/null)"
@@ -142,7 +142,7 @@ assert_eq "TOKEN-PATHS-GLOBAL" "$token_resolved" \
   "_resolve_talos_dir() returns ~/.talos/scripts when global install present"
 
 # _resolve_talos_dir() returns 1 and prints nothing when nothing resolves.
-rm -rf "$SANDBOX/scripts" "$SANDBOX/.claude/talos/scripts"
+rm -rf "${SANDBOX:?}/scripts" "${SANDBOX:?}/.claude/talos/scripts"
 rc_empty=0
 empty="$(HOME="$T4_HOME" bash -c '. '"$TALOS_ROOT"'/scripts/pipeline-paths.sh
 _resolve_talos_dir pipeline-vcs.sh' 2>/dev/null)" || rc_empty=$?

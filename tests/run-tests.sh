@@ -629,7 +629,8 @@ _repeat_iter=1
 while [ "$_repeat_iter" -le "$REPEAT" ]; do
   [ "$REPEAT" -gt 1 ] && echo "===== repeat $_repeat_iter/$REPEAT ====="
 
-  RUN_TMP="$(mktemp -d "${TMPDIR:-/tmp}/talos-run-tests.XXXXXX")"
+  RUN_TMP="$(mktemp -d "${TMPDIR:-/tmp}/talos-run-tests.XXXXXX")" || { RUN_TMP=""; echo "run-tests: mktemp -d failed" >&2; exit 1; }
+  [ -n "$RUN_TMP" ] && [ -d "$RUN_TMP" ] || { echo "run-tests: mktemp -d returned no usable directory" >&2; exit 1; }
 
   run_parallel_batch
 

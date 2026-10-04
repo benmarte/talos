@@ -14,7 +14,7 @@ TAB="$(printf '\t')"
 ROLES="validator pm developer qa reviewer security adversarial docs planner"
 
 reset_cfg() {
-  rm -rf "$USER_DIR" "$SANDBOX"/talos.pipeline.* "$SANDBOX/.claude" "$HOME/.claude"
+  rm -rf "$USER_DIR" "${SANDBOX:?}"/talos.pipeline.* "${SANDBOX:?}/.claude" "${HOME:?}/.claude"
   unset PIPELINE_CONFIG TALOS_HOME CLAUDE_CONFIG_DIR
   mkdir -p "$USER_DIR"
 }
