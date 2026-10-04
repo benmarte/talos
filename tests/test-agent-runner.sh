@@ -314,4 +314,74 @@ assert_eq "0" "$rc" "unknown role name exits 0"
 
 rm talos.pipeline.json
 
+# ── --check-effort (#445): native-path effort notice, from config vs frontmatter
+CE_DIR="$PWD/.claude/agents"
+mkdir -p "$CE_DIR"
+printf -- '---\nname: effortfix\neffort: low\n---\nbody\n' > "$CE_DIR/effortfix.md"
+printf -- '---\nname: noeffort\n---\nbody\n' > "$CE_DIR/noeffort.md"
+
+echo '{"agents": {"effort": "high"}}' > talos.pipeline.json
+out="$(bash "$AGENT" --check-effort effortfix 2>"$ERRFILE")"; rc=$?
+assert_eq "0" "$rc" "--check-effort exits 0 on a mismatch"
+assert_contains "$out" "role 'effortfix'" "--check-effort notice names the role"
+assert_contains "$out" "effort=high" "--check-effort notice names the config value"
+assert_contains "$out" "effort=low" "--check-effort notice names the frontmatter value"
+assert_eq "1" "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "--check-effort prints exactly one line"
+
+out="$(bash "$AGENT" --check-effort noeffort 2>"$ERRFILE")"
+assert_contains "$out" "no effort:" "--check-effort notice says the frontmatter has no effort: when absent"
+
+echo '{"agents": {"effort": "high", "roles": {"effortfix": {"effort": "low"}}}}' > talos.pipeline.json
+out="$(bash "$AGENT" --check-effort effortfix 2>"$ERRFILE")"
+assert_eq "" "$out" "--check-effort prints nothing when the role override matches the frontmatter"
+
+echo '{"agents": {"roles": {"effortfix": {"effort": "high"}}}}' > talos.pipeline.json
+out="$(bash "$AGENT" --check-effort effortfix 2>"$ERRFILE")"
+assert_contains "$out" "effort=high" "--check-effort resolves the role-level effort"
+
+echo '{"agents": {"model": "haiku"}}' > talos.pipeline.json
+out="$(bash "$AGENT" --check-effort effortfix 2>"$ERRFILE")"
+assert_eq "" "$out" "--check-effort prints nothing when no effort is configured"
+
+echo '{"agents": {"effort": "high", "roles": {"effortfix": {"runner": "codex"}}}}' > talos.pipeline.json
+out="$(bash "$AGENT" --check-effort effortfix 2>"$ERRFILE")"
+assert_eq "" "$out" "--check-effort prints nothing for an adapter-path role (TALOS_EFFORT applies there)"
+
+# Frontmatter hardening: only low|medium|high|max is ever echoed.
+echo '{"agents": {"effort": "high"}}' > talos.pipeline.json
+printf -- '---\nname: escfix\neffort: lo\033[31mw\n---\nbody\n' > "$CE_DIR/escfix.md"
+out="$(bash "$AGENT" --check-effort escfix 2>"$ERRFILE")"
+assert_contains "$out" "effort=<invalid>" "--check-effort prints <invalid> for an ESC byte in the value"
+case "$out" in *$'\033'*) fail "--check-effort output carries no ESC byte" "ESC found" ;; *) pass "--check-effort output carries no ESC byte" ;; esac
+
+long="$(head -c 5000 /dev/zero | tr '\0' 'a')"
+printf -- '---\nname: longfix\neffort: %s\n---\nbody\n' "$long" > "$CE_DIR/longfix.md"
+out="$(bash "$AGENT" --check-effort longfix 2>"$ERRFILE")"
+assert_contains "$out" "effort=<invalid>" "--check-effort prints <invalid> for a 5000-char value"
+assert_eq "1" "$(printf '%s' "$out" | wc -c | awk '{ print ($1 < 400) }')" "--check-effort output stays short for a 5000-char value"
+
+printf -- '---\r\nname: crlf\r\neffort: "high"\r\n---\r\nbody\r\n' > "$CE_DIR/crlf.md"
+out="$(bash "$AGENT" --check-effort crlf 2>"$ERRFILE")"
+assert_eq "" "$out" "--check-effort parses a quoted CRLF value that matches config"
+printf -- "---\nname: sq\neffort: 'high'\n---\nbody\n" > "$CE_DIR/sq.md"
+out="$(bash "$AGENT" --check-effort sq 2>"$ERRFILE")"
+assert_eq "" "$out" "--check-effort parses a single-quoted value"
+
+printf -- '---\nname: cmt\neffort: high   # tuned for review\n---\nbody\n' > "$CE_DIR/cmt.md"
+out="$(bash "$AGENT" --check-effort cmt 2>"$ERRFILE")"
+assert_eq "" "$out" "--check-effort strips an inline YAML comment before comparing"
+
+out="$(bash "$AGENT" --check-effort nosuchrole 2>"$ERRFILE")"
+assert_contains "$out" "role file not found" "--check-effort says so when the role file does not exist"
+assert_not_contains "$out" "no effort:" "--check-effort does not call a missing role file 'no effort:'"
+
+rm -f "$CE_DIR/escfix.md" "$CE_DIR/longfix.md" "$CE_DIR/crlf.md" "$CE_DIR/sq.md" "$CE_DIR/cmt.md"
+
+bash "$AGENT" --check-effort 'bad/role' >/dev/null 2>"$ERRFILE"; rc=$?
+assert_eq "2" "$rc" "--check-effort rejects an invalid role name with exit 2"
+bash "$AGENT" --check-effort >/dev/null 2>"$ERRFILE"; rc=$?
+assert_eq "2" "$rc" "--check-effort with no role exits 2"
+
+rm -f "$CE_DIR/effortfix.md" "$CE_DIR/noeffort.md" talos.pipeline.json
+
 finish
