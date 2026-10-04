@@ -342,6 +342,17 @@ assert_eq "0" "$RC" "write guard: read verbs and --dry-run do not block a failov
 assert_eq "1" "$(runner_calls CODEX)" "write guard: the fallback ran after read-only verbs"
 unset STUB_CLAUDE_HOOK
 
+# Fail closed: a runner that deletes the journal (so "no writes" cannot be told
+# from "wrote and hid it") gets no rerun.
+reset
+set_cfg '{"agents": {"fallback": ["codex"]}}'
+export STUB_CLAUDE_HOOK='rm -f "$TALOS_WRITE_LOG"'
+STUB_CLAUDE_EXIT=75 stage
+assert_eq "69" "$RC" "write guard: a deleted journal exits 69"
+assert_eq "0" "$(runner_calls CODEX)" "write guard: no rerun when the journal is missing"
+assert_contains "$(errtxt)" "talos:failover-refused role=developer runner=claude reason=write-log-unreadable" "write guard: a missing journal is refused, with the reason"
+unset STUB_CLAUDE_HOOK
+
 # The journal itself: only with TALOS_WRITE_LOG, only successful write verbs.
 J="$SANDBOX/journal"
 : > "$J"
@@ -510,6 +521,18 @@ assert_eq "runner_cmd=echo hi" "$(printf '%s\n' "$line" | cut -f2-)" "resolve-al
 assert_contains "$(printf '%s\n' "$line" | cut -f1)" "fallback=codex fallback_origin=project" "resolve-all: the new columns sit before the TAB"
 set_cfg '{"agents": {"model": "m"}}'
 assert_eq "" "$(bash "$AGENT" --resolve-all 2>/dev/null | grep -c fallback | grep -v '^0$')" "resolve-all: no chain, no new columns"
+
+# The one runner-id list in pipeline-agent.sh (read by _is_runner_id and
+# _prov_down) equals TALOS_RUNNERS, and both functions read it, not a copy.
+have="$(sed -n 's/^_RUNNER_IDS="\(.*\)"$/\1/p' "$AGENT" | tr ' ' '\n' | sort)"
+assert_eq "$want" "$have" "agent: _RUNNER_IDS equals TALOS_RUNNERS"
+assert_eq "2" "$(grep -c '\$_RUNNER_IDS' "$AGENT")" "agent: _is_runner_id and _prov_down both read _RUNNER_IDS"
+for e in "${TALOS_RUNNERS[@]}"; do
+  bash "$AGENT" --classify "${e%%|*}" 0 /dev/null >/dev/null 2>&1; rc=$?
+  assert_eq "0" "$rc" "agent: --classify accepts runner id ${e%%|*}"
+done
+bash "$AGENT" --classify "claude pi" 0 /dev/null >/dev/null 2>&1; rc=$?
+assert_eq "2" "$rc" "agent: --classify rejects a space-joined pair of ids"
 
 # ═══ 14. Markers and the events / budget scripts are unaffected ═════════════
 m=0; for e in "${TALOS_MARKERS[@]}"; do [ "$e" = "talos:failover" ] && m=1; done

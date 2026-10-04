@@ -88,7 +88,17 @@ if printf '%s' "$out" | LC_ALL=C grep -q "$(printf '\033')"; then
 else
   pass "no ESC byte reaches the --resolve-all table"
 fi
-assert_contains "$(line_for "$out" qa)" "model=evilrole=docs model=forged origin=project[31m" "control characters are stripped, the rest of the value is kept"
+assert_contains "$(line_for "$out" qa)" "model=evilrole=docs%20model=forged%20origin=project[31m" "control characters are stripped, the rest of the value is kept (spaces percent-encoded)"
+
+# ── A space or % in a value is percent-encoded: it cannot forge a column (#457) ──
+reset_cfg
+user_json '{"agents": {"model": "sonnet", "roles": {"qa": {"model": "x runner_origin=project 100%", "restamp_model": "r origin=global", "runner": "codex fb runner_origin=project"}}}}'
+row="$(line_for "$(all)" qa)"
+assert_contains "$row" "model=x%20runner_origin=project%20100%25 " "a model value with spaces and % is one encoded token"
+assert_contains "$row" "restamp_model=r%20origin=global " "a restamp_model value with spaces is one encoded token"
+assert_contains "$row" "runner=codex%20fb%20runner_origin=project runner_origin=global" "a runner value with spaces is one encoded token, and the real origin column follows"
+assert_eq "1" "$(printf '%s\n' "$row" | tr ' ' '\n' | grep -c '^runner_origin=')" "exactly one runner_origin= column per row, whatever the values hold"
+assert_eq "1" "$(printf '%s\n' "$row" | tr ' ' '\n' | grep -c '^origin=')" "exactly one origin= column per row, whatever the values hold"
 
 # ── C1 controls (U+0080-U+009F, UTF-8 c2 80..c2 9f) are stripped too (#340) ──
 reset_cfg
@@ -100,7 +110,7 @@ else
   pass "no C1 CSI (c2 9b) reaches the --resolve-all table"
 fi
 assert_eq "0" "$(printf '%s' "$out" | LC_ALL=C grep -c "$(printf '\302[\200-\237]')")" "no C1 control byte pair survives anywhere in the table"
-assert_contains "$(line_for "$out" qa)" "model=a[31mbcd café " "C1 controls are stripped, legitimate non-ASCII text is kept"
+assert_contains "$(line_for "$out" qa)" "model=a[31mbcd%20café " "C1 controls are stripped, legitimate non-ASCII text is kept"
 
 # ── runner / runner_cmd origin (#340) ────────────────────────────────────────
 # Roles with neither set keep the exact existing line (no new columns).

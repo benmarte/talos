@@ -69,7 +69,7 @@ make_sandbox
 ALLOW=""
 # R5_ALLOW: files with a printf|grep -q site that an open PR also edits (#455, #499); fixed
 # after those PRs merge (#494). Empty this list as each file is fixed.
-R5_ALLOW="scripts/pipeline-vcs.sh scripts/pipeline-agent.sh"
+R5_ALLOW="scripts/pipeline-vcs.sh"
 SELF_REL="tests/test-unsafe-cleanup-guard.sh"
 
 SCANNER="$SANDBOX/scan.py"

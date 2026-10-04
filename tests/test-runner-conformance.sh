@@ -103,7 +103,17 @@ arm_ids() { sed 's/).*//' | tr '|' '\n' | tr -d ' '; }
 
 RESOLVE_ARM="$(awk '/case "\$_RESOLVED_RUNNER" in/ {n=1; next} n {print; exit}' "$AGENT" | arm_ids)"
 VALID_ARM="$(awk '/^RC=0$/ {exit} /^case "\$RUNNER" in$/ {n=1; next} n {print; exit}' "$AGENT" | arm_ids)"
-DISPATCH_ARMS="$(awk '/^RC=0$/ {r=1; next} r && /^case "\$RUNNER" in$/ {d=1; next} d && /^esac$/ {exit} d && /^  [a-z]+\)$/ {sub(/\)$/, ""); gsub(/ /, ""); print}' "$AGENT")"
+# Dispatch arms are found by pattern (a bare `name)` line at the dispatch case's
+# own nesting depth), not by indentation or column: the function body may be
+# indented or not, and a nested case inside an arm must not count.
+DISPATCH_ARMS="$(awk '
+  /^RC=0$/ { r = 1; next }
+  r && !d && /^[[:space:]]*case "\$RUNNER" in[[:space:]]*$/ { d = 1; depth = 1; next }
+  d {
+    if ($0 ~ /^[[:space:]]*case .* in[[:space:]]*$/) depth++
+    else if ($0 ~ /^[[:space:]]*esac[[:space:]]*$/) { depth--; if (depth == 0) exit }
+    else if (depth == 1 && $0 ~ /^[[:space:]]*[a-z]+\)[[:space:]]*$/) { l = $0; gsub(/[[:space:]]|\)/, "", l); print l }
+  }' "$AGENT")"
 
 assert_same_ids "TALOS_RUNNERS ids == --resolve validation arm" "$RUNNER_IDS" "$RESOLVE_ARM"
 assert_same_ids "TALOS_RUNNERS ids == validation arm" "$RUNNER_IDS" "$VALID_ARM"

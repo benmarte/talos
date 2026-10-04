@@ -2299,7 +2299,7 @@ mode): commit a role override there and it is picked up without a `.claude/`
 directory. Native Claude Code subagents still load `.claude/agents/` only, so
 `.claude/agents/<role>.md` stays first and the neutral file is never read on that
 path. A symlinked neutral file or directory is skipped, and a role name is
-lowercase letters and `-`, otherwise the script exits 2. To see which file a role
+`[a-z][a-z0-9-]*` (lowercase, starting with a letter), otherwise the script exits 2. To see which file a role
 resolves to, run `pipeline-agent.sh --resolve-profile <role>` (prints one absolute
 path; exits 1 listing the locations searched when none exists). `--resolve-all`
 warns on stderr when both files exist (the neutral one is shadowed) or when only
@@ -2428,7 +2428,10 @@ One line per role: the model, the re-stamp model, and the layer that decided the
 model (`project`, `global` for the user-level file, or `session default` when
 nothing sets one). It also warns on stderr when `.claude/agents/<role>.md` or
 `~/.claude/agents/<role>.md` still carries a `model:` frontmatter line, since
-that line would apply whenever the config resolves empty. `--resolve <role>`
+that line would apply whenever the config resolves empty. The columns are
+separated by spaces, so a space or `%` inside a value is percent-encoded
+(`%20`, `%25`) and a value cannot add a column; a `runner_cmd=` field comes
+last, after a TAB, and is printed as is. `--resolve <role>`
 keeps its one-line `runner=... model=... effort=...` output.
 
 **Model names.** A value is a full model ID or one of the aliases `opus`,

@@ -24,6 +24,12 @@
 #                                             # that decided the model. Warns on
 #                                             # stderr for a role file whose
 #                                             # frontmatter still has model:.
+#                                             # Columns are space-separated, so a
+#                                             # value is percent-encoded: a space
+#                                             # is %20 and a literal % is %25
+#                                             # (a value cannot add a column).
+#                                             # runner_cmd= is the last field,
+#                                             # after a TAB, and is not encoded.
 #        pipeline-agent.sh --resolve-profile <role>
 #                                             # (#367) print the one absolute
 #                                             # path of the role definition a
@@ -53,8 +59,8 @@
 #      $CLAUDE_PLUGIN_ROOT, .claude/talos, scripts)
 #   4. self-relative fallbacks: <scripts>/../agents, <scripts>/../../agents,
 #      <scripts>/../.claude/agents
-# <role> must be lowercase letters and '-' (not leading); anything else exits 2
-# before any path is built.
+# <role> must match [a-z][a-z0-9-]* (lowercase, starts with a letter); anything
+# else exits 2 before any path is built.
 #
 # --check-effort <role> (#445): native claude path only. Prints ONE notice line
 #   when the resolved effort (agents.roles.<role>.effort, else agents.effort) is
@@ -291,11 +297,12 @@ EOF
 # ── Role definition lookup (#367) ─────────────────────────────────────────────
 # One function decides the order for a stage run and for --resolve-profile (see
 # the header). The role name reaches a path, so it is validated first: lowercase
-# letters and '-', not starting with '-' (no '/', no '..', no control chars).
-# A glob range like [a-z] is locale-dependent in bash 3.2, so list the letters.
+# letters, digits and '-', starting with a letter: [a-z][a-z0-9-]* (no '/', no
+# '..', no control chars). A glob range like [a-z] is locale-dependent in bash
+# 3.2, so list the characters.
 _valid_role_name() {
   case "$1" in
-    "" | -* | *[!abcdefghijklmnopqrstuvwxyz-]*) return 1 ;;
+    "" | [!abcdefghijklmnopqrstuvwxyz]* | *[!abcdefghijklmnopqrstuvwxyz0123456789-]*) return 1 ;;
   esac
   return 0
 }
@@ -319,7 +326,7 @@ _neutral_profile() {
 _resolve_role_profile() {
   local _role="$1" _scripts _agents _neutral _c
   if ! _valid_role_name "$_role"; then
-    echo "pipeline-agent: invalid role name '$(printf '%s' "$_role" | tr -d '[:cntrl:]')' (lowercase letters and '-' only, not starting with '-')" >&2
+    echo "pipeline-agent: invalid role name '$(printf '%s' "$_role" | tr -d '[:cntrl:]')' (lowercase letters, digits and '-' only, starting with a letter)" >&2
     return 2
   fi
   _scripts="$(_resolve_talos_dir pipeline-vcs.sh 2>/dev/null || true)"
@@ -377,7 +384,8 @@ fi
 # the re-stamp chain is role restamp -> agents.restamp_model -> agents.model.
 # A role with a runner / runner_cmd set (#340) gets runner=/runner_origin= and
 # runner_cmd=/runner_cmd_origin= appended; a role with neither has no new columns.
-# The runner_cmd value is the last field, after a TAB (#342).
+# The runner_cmd value is the last field, after a TAB (#342). Every other value
+# is percent-encoded (space -> %20, % -> %25) by _col, so it stays one column.
 # Also warns on stderr when a role file Claude Code would load still carries
 # a frontmatter `model:` line: that line applies whenever the config resolves
 # empty, so it defeats "the config is the only place a model is set".
@@ -413,8 +421,18 @@ EOF
 import re, sys
 sys.stdout.buffer.write(re.sub(rb"[\x00-\x1f\x7f]|\xc2[\x80-\x9f]", b"", sys.stdin.buffer.read()))'
   }
+  # A value in a space-separated column: _plain, then percent-encoded (% -> %25,
+  # space -> %20) so it cannot end its column or start another (a model value
+  # `x runner_origin=project` stays one token). Values without a space or a %
+  # are unchanged. runner_cmd, the TAB-delimited last field, uses _plain alone.
+  _col() {
+    local _v _pct='%'
+    _v="$(_plain "$1")"
+    _v="${_v//"$_pct"/%25}"
+    printf '%s' "${_v// /%20}"
+  }
   for _r in $_ALL_ROLES; do
-    _m="$(_plain "$(_resolve_model "$_r")")"
+    _m="$(_col "$(_resolve_model "$_r")")"
     if [ -n "$(cfg "agents.roles.$_r.model")" ]; then
       _origin="$(_layer_of "agents.roles.$_r.model")"
     elif [ -n "$(cfg agents.model)" ]; then
@@ -432,13 +450,13 @@ sys.stdout.buffer.write(re.sub(rb"[\x00-\x1f\x7f]|\xc2[\x80-\x9f]", b"", sys.std
     _extra=""
     _rv="$(cfg "agents.roles.$_r.runner")"
     if [ -n "$_rv" ]; then
-      _extra="$_extra runner=$(_plain "$_rv") runner_origin=$(_layer_of "agents.roles.$_r.runner")"
+      _extra="$_extra runner=$(_col "$_rv") runner_origin=$(_layer_of "agents.roles.$_r.runner")"
     else
       # Only an explicitly set agents.runner is shown: a table default (claude)
       # is not a configured value, so ask the layer map whether a file set it.
       _rv=""
       [ -z "$(_layer_of agents.runner)" ] || _rv="$(cfg agents.runner)"
-      [ -z "$_rv" ] || _extra="$_extra runner=$(_plain "$_rv") runner_origin=$(_layer_of agents.runner)"
+      [ -z "$_rv" ] || _extra="$_extra runner=$(_col "$_rv") runner_origin=$(_layer_of agents.runner)"
     fi
     # runner_cmd is free text (spaces, even the words "runner_cmd_origin="), so it
     # goes LAST and after a TAB, which _plain strips from every value: its origin
@@ -464,9 +482,9 @@ sys.stdout.buffer.write(re.sub(rb"[\x00-\x1f\x7f]|\xc2[\x80-\x9f]", b"", sys.std
       else
         _fbo="$(_layer_of agents.fallback)"
       fi
-      _extra="$_extra fallback=$_fb fallback_origin=$_fbo"
+      _extra="$_extra fallback=$(_col "$_fb") fallback_origin=$_fbo"
     fi
-    printf 'role=%s model=%s restamp_model=%s origin=%s%s%s\n' "$_r" "$_m" "$(_plain "$_rs")" "$_origin" "$_extra" "$_cmd"
+    printf 'role=%s model=%s restamp_model=%s origin=%s%s%s\n' "$_r" "$_m" "$(_col "$_rs")" "$_origin" "$_extra" "$_cmd"
     for _dir in "$PWD/.claude/agents" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/agents"; do
       _f="$_dir/$_r.md"
       [ -f "$_f" ] || continue
@@ -574,7 +592,7 @@ _classify_exit() {
     _txt="$_txt$(tail -n 20 "$_f" 2>/dev/null | tail -c 65536 | tr -d '\000')
 "
   done
-  _cls_has() { printf '%s' "$_txt" | LC_ALL=C grep -Eq "$1"; }
+  _cls_has() { LC_ALL=C grep -Eq "$1" <<<"$_txt"; }
   case "$_runner" in
     claude)
       if _cls_has '^(API Error: [0-9]{3} .*)?([Cc]redit balance is too low|(Claude AI )?[Uu]sage limit reached)'; then
@@ -617,10 +635,15 @@ _prov_path() {
   printf '%s/.talos/providers.json' "$(dirname "$_cd")"
 }
 
+# The runner ids this script accepts for --classify, --mark-down and the
+# providers.json filter: ONE list, read by _is_runner_id and _prov_down.
+# tests/test-runner-failover.sh pins it to TALOS_RUNNERS.
+_RUNNER_IDS="claude pi codex gemini antigravity custom"
+
 # _prov_down <file>: one runner name per line for every unexpired entry.
 _prov_down() {
   [ -f "$1" ] || return 0
-  python3 -I - "$1" <<'PYEOF'
+  python3 -I - "$1" "$_RUNNER_IDS" <<'PYEOF'
 import datetime, json, sys
 path = sys.argv[1]
 try:
@@ -632,7 +655,7 @@ except Exception as e:
     sys.stderr.write("pipeline-agent: [warn] %r unreadable or corrupt (%s) -- treating every runner as up\n" % (path, type(e).__name__))
     sys.exit(0)
 now = datetime.datetime.now(datetime.timezone.utc)
-known = ("claude", "pi", "codex", "gemini", "antigravity", "custom")
+known = sys.argv[2].split()
 for name, ent in data.items():
     try:
         until = datetime.datetime.strptime(ent["down_until"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
@@ -696,7 +719,10 @@ _prov_mark_down() {
 }
 
 _is_runner_id() {
-  case "$1" in claude | pi | codex | gemini | antigravity | custom) return 0 ;; esac
+  local _id
+  for _id in $_RUNNER_IDS; do
+    [ "$_id" != "$1" ] || return 0
+  done
   return 1
 }
 
@@ -1059,7 +1085,7 @@ _usage_marker() {
 # every argv shape unchanged). Without a chain it is called once, inline.
 RC=0
 _run_runner() {
-# (body not indented: tests/test-runner-conformance.sh finds the dispatch arms by column)
+# (body not indented, to keep the #420 diff small; tests/test-runner-conformance.sh finds the dispatch arms by pattern)
 local RUNNER="$1"
 _AT_TOKENS="" _AT_TOOLS="" _AT_MODEL="" _AT_RUNNER="$RUNNER"
 case "$RUNNER" in
@@ -1161,9 +1187,11 @@ esac
 #
 # Write guard: a failover never reruns a stage that already wrote. The runner
 # gets TALOS_WRITE_LOG; pipeline-vcs.sh appends each successful non-idempotent
-# verb to it. A non-empty journal, or a changed `git for-each-ref refs/remotes`
-# (a push moves a remote-tracking ref), after a provider exit means NO rerun:
-# the provider is marked down, talos:failover-refused is emitted, exit 69. KNOWN
+# verb to it. A non-empty journal, a journal that is missing or unreadable (the
+# runner deleted it, or it could not be emptied: fail closed), or a changed
+# `git for-each-ref refs/remotes` (a push moves a remote-tracking ref), after a
+# provider exit means NO rerun: the provider is marked down,
+# talos:failover-refused is emitted, exit 69. KNOWN
 # GAP: a runner that calls raw `gh` instead of pipeline-vcs.sh is not seen (the
 # role profiles forbid it). Any other writer to refs/remotes (a parallel
 # `git fetch`) reads as a push: the failover is refused, never forced.
@@ -1198,7 +1226,7 @@ _fo_checkpoint() {
   return 0
 }
 _run_chain() {
-  local _order _cands=() _down _r _i _n _nxt _snap _verbs _why _reasons="" _chain_txt
+  local _order _cands=() _down _r _i _n _nxt _snap _verbs _why _reasons="" _chain_txt _wl_ok
   _order=("$RUNNER" "${CHAIN[@]}")
   _chain_txt="$(printf '%s,' "${_order[@]}")"; _chain_txt="${_chain_txt%,}"
   _FO_OUT="$(mktemp "${TMPDIR:-/tmp}/talos-fo-out.XXXXXX")" && _FO_ERR="$(mktemp "${TMPDIR:-/tmp}/talos-fo-err.XXXXXX")" \
@@ -1215,7 +1243,7 @@ _run_chain() {
   _FO_PROV="$(_prov_path)" || { echo "pipeline-agent: [warn] not in a git repository -- provider down-tracking unavailable" >&2; _FO_PROV=""; }
   _down="$(_prov_down "$_FO_PROV")"
   for _r in "${_order[@]}"; do
-    if printf '%s\n' "$_down" | grep -Fxq -- "$_r"; then
+    if grep -Fxq -- "$_r" <<<"$_down"; then
       _reasons="$_reasons $_r:down-cached"
     else
       _cands+=("$_r")
@@ -1240,7 +1268,8 @@ _run_chain() {
       echo "pipeline-agent: agents.runner=custom requires agents.runner_cmd (role=$ROLE)" >&2
       exit 1
     fi
-    : >"$TALOS_WRITE_LOG"
+    _wl_ok=true
+    : >"$TALOS_WRITE_LOG" 2>/dev/null || _wl_ok=false
     _snap="$(git for-each-ref refs/remotes 2>/dev/null)"
     _FO_FINAL="$_r"
     _attempt_flush
@@ -1256,7 +1285,14 @@ _run_chain() {
     fi
     _why="provider:$CLASS_DETAIL"
     _prov_mark_down "$_r" "$_why"
-    _verbs="$(sort -u "$TALOS_WRITE_LOG" 2>/dev/null | paste -sd, -)"
+    # Fail closed: a journal that could not be emptied, was deleted, or cannot be
+    # read means "unknown", never "no writes" -- no rerun.
+    if [ "$_wl_ok" != true ] || [ ! -f "$TALOS_WRITE_LOG" ] || ! _verbs="$(sort -u "$TALOS_WRITE_LOG" 2>/dev/null)"; then
+      echo "talos:failover-refused role=$ROLE runner=$_r reason=write-log-unreadable" >&2
+      RC=69
+      return
+    fi
+    _verbs="$(paste -sd, - <<<"$_verbs")"
     if [ "$_snap" != "$(git for-each-ref refs/remotes 2>/dev/null)" ]; then
       _verbs="${_verbs:+$_verbs,}push"
     fi
