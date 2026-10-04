@@ -119,6 +119,12 @@ _imports_agents() {
 # says so on stderr and returns 1; <dest> is untouched.
 _replace_file() {
   local src="$1" dest="$2" tmp
+  # Callers already skip a symlink (#364); this keeps a rename from ever
+  # replacing a link with a regular file if a future caller forgets.
+  if [ -L "$dest" ]; then
+    echo "pipeline-instructions: $dest is a symlink; left unchanged" >&2
+    return 1
+  fi
   if [ -e "$dest" ] && [ ! -w "$dest" ]; then
     echo "pipeline-instructions: $dest is not writable; left unchanged" >&2
     return 1

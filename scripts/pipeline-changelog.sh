@@ -91,7 +91,22 @@ fi
 
 # ── Read fragments from origin/<base> WITHOUT any worktree: git ls-tree is a
 #    read-only object lookup, safe from any checkout. ──────────────────────────
-FRAGMENTS="$(git ls-tree --name-only "origin/$BASE_BRANCH:docs/CHANGELOG.d" 2>/dev/null || true)"
+# A fragment that is a symlink (mode 120000) or any other non-regular entry is
+# never read: the checkout would follow it to a file outside the repo. It is
+# skipped with one stderr line and left in place.
+LISTING="$(git ls-tree "origin/$BASE_BRANCH:docs/CHANGELOG.d" 2>/dev/null || true)"
+FRAGMENTS=""
+while IFS=$'\t' read -r _cl_meta _cl_name; do
+  [ -n "$_cl_name" ] || continue
+  case "$_cl_meta" in
+    "100644 blob "*|"100755 blob "*) FRAGMENTS="${FRAGMENTS}${_cl_name}"$'\n' ;;
+    *)
+      if grep -qE '^[0-9]+\.md$' <<< "$_cl_name"; then
+        echo "pipeline-changelog: docs/CHANGELOG.d/$_cl_name is not a regular file (mode ${_cl_meta%% *}); skipped" >&2
+      fi
+      ;;
+  esac
+done <<< "$LISTING"
 if [ -z "$FRAGMENTS" ]; then
   echo "pipeline-changelog: no fragments under docs/CHANGELOG.d on origin/$BASE_BRANCH — nothing to assemble"
   exit 0
@@ -104,11 +119,19 @@ if [ -z "$FRAGMENT_FILES" ]; then
   exit 0
 fi
 
-# CHANGELOG.md must exist with the [Unreleased] heading.
+# CHANGELOG.md must exist, as a regular file (a symlink would be read and
+# rewritten through), with the [Unreleased] heading.
 if ! git cat-file -e "origin/$BASE_BRANCH:CHANGELOG.md" 2>/dev/null; then
   echo "pipeline-changelog: CHANGELOG.md missing on origin/$BASE_BRANCH" >&2
   exit 1
 fi
+case "$(git ls-tree "origin/$BASE_BRANCH" -- CHANGELOG.md 2>/dev/null)" in
+  "100644 blob "*|"100755 blob "*) ;;
+  *)
+    echo "pipeline-changelog: CHANGELOG.md on origin/$BASE_BRANCH is not a regular file (a symlink?); refusing" >&2
+    exit 1
+    ;;
+esac
 
 # ── Disposable worktree (same shape as pipeline-mergebase.sh #256): created
 # OUTSIDE any repo checkout, removed on every exit path via trap, and both
