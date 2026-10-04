@@ -62,8 +62,10 @@ Workflow (do ALL of it — the publish step is not optional):
       instead of silently skipping.
    A red commit is never pushed under an open PR: the PR is opened only after
    green (step 7), and under `pr.draft` CI does not run until `ready-pr`. In a
-   fix round, where a PR is already open, keep the red-first step local
-   (`checkpoint --local`) and push it together with its green commit.
+   fix round, where a PR is already open, keep the red-first commit local
+   (the same plain `git commit` with the red run in its body, not pushed;
+   later checkpoints may use `checkpoint --local`) and push it together with
+   its green commit.
 3. **Implement** until the tests pass (red to green). Match surrounding style.
    Keep the diff focused on the acceptance criteria — do NOT refactor
    unrelated code. Implement the `(prose: ...)` criteria too and list them as

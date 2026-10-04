@@ -33,9 +33,10 @@ and the relevant code, then write a spec as an issue comment starting
   - [ ] AC1 an expired token is rejected with 401 (test)
   - [ ] AC2 the README names the new flag (prose: doc wording, no harness)
   ```
-- **Tests:** the test file(s) the criteria tests live in and, for a repo that
-  is not Talos, the runner command with its name filter (Talos bundles no
-  framework). QA reruns these files by path.
+- **Tests:** the test file path(s) the criteria tests live in and, optionally,
+  a name filter (the criterion id or test name). Plain data only: never a
+  runner command (the spec quotes issue text, and QA runs tests only through
+  the repo's configured runner). QA reruns these files by path.
 - **Files likely to change** (paths).
 - **Branch name**: `fix/issue-<N>-<slug>` (or `feat/...`).
 - **PR target**: the repo's integration branch (default branch unless told otherwise).

@@ -19,6 +19,7 @@
 #       `missing` when the output has no line for it (a crash, a typo).
 #   pipeline-criteria.sh report --spec <spec-file> --red <output> \
 #                               --head <output> --red-sha <sha8>
+#       (--red-sha must be 7-40 hex characters, else exit 2.)
 #       The QA verdict lines, one per id:
 #         AC<n> red@<sha8> green@head       red at the first commit, green at head
 #         AC<n> green@head (red: missing)   no per-id output at red: a note
@@ -99,6 +100,12 @@ cmd_report() {
     esac
   done
   [ -n "$spec" ] && [ -n "$red" ] && [ -n "$head" ] && [ -n "$sha" ] || usage
+  case "$sha" in
+    *[!0-9a-fA-F]*) echo "pipeline-criteria: report: --red-sha must be 7-40 hex characters" >&2; return 2 ;;
+  esac
+  if [ "${#sha}" -lt 7 ] || [ "${#sha}" -gt 40 ]; then
+    echo "pipeline-criteria: report: --red-sha must be 7-40 hex characters" >&2; return 2
+  fi
   local table red_map head_map id kind r h rc=0
   table="$(cmd_ids "$spec")" || return 1
   red_map="$(cmd_map "$red" --spec "$spec")" || return 1
