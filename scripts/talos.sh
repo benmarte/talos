@@ -27,18 +27,22 @@
 #                              the run can go on; the line says what is missing.
 #   stop reason=<enum>         the run must not start (exit non-zero).
 # A list value (verify commands, required checks, skip labels) is its items
-# joined by the two characters \n. Every value is config or script text, so it is
-# sanitised in one python3 -I pass: a control character, DEL and a C1 control
-# print as \xNN, an invalid UTF-8 byte as \xNN, and a value over 8192 characters
-# is cut (with `warn reason=value-truncated key=<KEY>`). Free text never travels
-# on argv: values go to the sanitiser on stdin, a file carries them there.
+# joined by the two characters \n; inside an item a backslash prints as \\, so
+# the text \n in a config value (printed \\n) is never a list separator. Every
+# value is config or script text, so it is sanitised in one python3 -I pass: a
+# control character, DEL and a C1 control print as \xNN, an invalid UTF-8 byte as
+# \xNN, a bidi control (U+202A-U+202E, U+2066-U+2069) or zero-width character
+# (U+200B-U+200D, U+FEFF) as \uXXXX, and a value over 8192 characters is cut,
+# ends in the marker [truncated] and is followed by `warn reason=value-truncated
+# key=<KEY>`. Free text never travels on argv: values go to the sanitiser on
+# stdin, a file carries them there.
 # A child's stderr line (config, draft or evidence warning, an isolation error)
 # is passed through on stderr, unchanged.
 #
-# env-reasons: scripts-missing python-missing scratch-unavailable config-unreadable isolation-invalid usage unknown-verb resolve-failed effort-check-failed draft-resolve-failed value-truncated
+# env-reasons: scripts-missing python-missing scratch-unavailable config-unreadable isolation-invalid usage unknown-verb draft-resolve-failed resolve-failed effort-check-failed value-truncated
 #   stop: scripts-missing python-missing scratch-unavailable config-unreadable
-#         isolation-invalid usage unknown-verb
-#   warn: resolve-failed effort-check-failed draft-resolve-failed value-truncated
+#         isolation-invalid usage unknown-verb draft-resolve-failed
+#   warn: resolve-failed effort-check-failed value-truncated
 #
 # Exit codes: 0 ok, 1 a `stop` (env), 2 usage.
 set -u
@@ -97,29 +101,46 @@ TABLE
 
 # The sanitiser: NUL-delimited KEY, VALUE pairs on stdin, one line each on
 # stdout. `stop` and `warn` pairs print as `<key> <value>`, the rest as
-# `KEY=value`. Runs as `python3 -I` with the program on argv and the data on stdin.
+# `KEY=value`. A key written `@KEY` carries a list: its items are the
+# newline-separated lines of the value, joined by the two characters \n. Runs as
+# `python3 -I` with the program on argv and the data on stdin.
 _TALOS_SANITISER='
 import re, sys
 CAP = 8192
 KEY = re.compile(r"[A-Za-z][A-Za-z0-9_.]*\Z")
+HIDDEN = set(range(0x202A, 0x202F)) | set(range(0x2066, 0x206A)) | {0x200B, 0x200C, 0x200D, 0xFEFF}
 parts = sys.stdin.buffer.read().split(b"\0")
 if parts and parts[-1] == b"":
     parts.pop()
+def one(c):
+    n = ord(c)
+    if c == "\\":
+        return "\\\\"
+    if 0xDC80 <= n <= 0xDCFF:
+        return "\\x%02x" % (n - 0xDC00)
+    if n < 32 or 0x7F <= n <= 0x9F or n in (0x2028, 0x2029):
+        return "\\x%02x" % n
+    if n in HIDDEN:
+        return "\\u%04x" % n
+    return c
 def esc(s):
-    return "".join(
-        "\\x%02x" % ord(c) if ord(c) < 32 or 0x7F <= ord(c) <= 0x9F or ord(c) in (0x2028, 0x2029) else c
-        for c in s)
+    return "".join(one(c) for c in s)
 out = []
 warns = []
 for i in range(0, len(parts) - 1, 2):
     key = parts[i].decode("ascii", "replace")
+    is_list = key.startswith("@")
+    key = key.lstrip("@")
     if not KEY.match(key):
         continue
-    val = parts[i + 1].decode("utf-8", "backslashreplace")
-    if len(val) > CAP:
+    val = parts[i + 1].decode("utf-8", "surrogateescape")
+    cut = len(val) > CAP
+    if cut:
         val = val[:CAP]
         warns.append("warn reason=value-truncated key=" + key)
-    val = esc(val)
+    val = "\\n".join(esc(x) for x in val.split("\n")) if is_list else esc(val)
+    if cut:
+        val += "[truncated]"
     out.append(key + (" " if key in ("stop", "warn") else "=") + val)
 sys.stdout.buffer.write(("\n".join(out + warns) + "\n").encode("utf-8"))
 '
@@ -248,24 +269,22 @@ _talos_env() {
 
   while IFS="$(printf '\t')" read -r _var _key _kind; do
     _val="$(cfg "$_key")"
-    # The two characters \n, the config table's list convention.
-    if [ "$_kind" = "l" ]; then
-      _val="$(printf '%s' "$_val" | awk 'BEGIN { ORS = "" } NR > 1 { printf "\\n" } { print }')"
-    fi
+    # A list's items are its lines; the sanitiser joins them with the two
+    # characters \n (the `@` marks the key).
+    [ "$_kind" = "l" ] && _var="@$_var"
     _talos_emit "$_var" "$_val"
   done <<EOF
 $(_talos_env_table)
 EOF
 
   # PR_DRAFT: pipeline-draft-check.sh is the one resolver (#435). Its stderr
-  # warning line passes through.
-  _val="$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" resolve)"
+  # warning line passes through. The old prose defined no fallback for a failed
+  # resolve, so none is made up here: a draft default of false would run QA on a
+  # PR that was meant to stay a draft.
+  _val="$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" resolve)" || _talos_stop draft-resolve-failed
   case "$_val" in
     true | false) : ;;
-    *)
-      _talos_emit warn "reason=draft-resolve-failed"
-      _val="false"
-      ;;
+    *) _talos_stop draft-resolve-failed ;;
   esac
   _talos_emit PR_DRAFT "$_val"
 

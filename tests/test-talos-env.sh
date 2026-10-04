@@ -11,12 +11,14 @@
 #       equals `pipeline-draft-check.sh resolve`, and every role's fields equal
 #       the `pipeline-agent.sh --resolve` line
 #   (c) sanitising: control bytes, C1 bytes and a newline in a config value print
-#       as \xNN and cannot forge a line; an over-long value is cut and warned about
+#       as \xNN and cannot forge a line; a backslash prints as \\ so the text \n
+#       is never a list separator; bidi and zero-width characters print as \uXXXX;
+#       an over-long value is cut, ends in [truncated] and is warned about
 #   (d) the contract: every line is KEY=value or `stop|warn reason=<enum>`; the
-#       checker itself is shown red by an unsanitised ESC byte and by an
-#       out-of-enum reason
+#       checker itself is shown red by an unsanitised ESC byte, a bidi control
+#       and by an out-of-enum reason
 #   (e) stop and warn cases: isolation invalid, scripts missing, unknown verb,
-#       usage, an unusable runner
+#       usage, a failed PR_DRAFT resolve, an unusable runner
 #
 # Regenerate the fixtures after an intended change, and review the diff:
 #   bash tests/test-talos-env.sh --regen-fixtures
@@ -105,6 +107,8 @@ import re, sys
 reasons = sys.argv[2].split()
 data = open(sys.argv[1], "rb").read()
 if re.search(rb"[\x00-\x09\x0b-\x1f\x7f]|\xc2[\x80-\x9f]", data):
+    sys.exit(1)
+if re.search("[\u200b-\u200d\u202a-\u202e\u2066-\u2069\ufeff]", data.decode("utf-8", "replace")):
     sys.exit(1)
 kv = re.compile(r"[A-Za-z][A-Za-z0-9_.]*=")
 sw = re.compile(r"(stop|warn) reason=([a-z-]+)( (role|key)=[A-Za-z0-9_.-]+)?\Z")
@@ -212,8 +216,26 @@ print(json.dumps({"agents": {"model": "a" * 9000}}))' > "$SANDBOX/talos.pipeline
 env_run > "$SANDBOX/out.long"
 long="$(cat "$SANDBOX/out.long")"
 assert_contains "$long" "warn reason=value-truncated key=agent.pm.model" "sanitising: an over-long value is cut with a warn line naming the key"
-assert_eq "8192" "$(env_value "$long" agent.pm.model | wc -c | tr -d ' ' | awk '{ print $1 - 1 }')" "sanitising: the value is cut at 8192 characters"
+assert_eq "$(python3 -I -c 'print("a" * 8192 + "[truncated]")')" "$(env_value "$long" agent.pm.model)" "sanitising: the value is cut at 8192 characters and ends in the [truncated] marker"
+assert_eq "0" "$(env_value "$rich" agent.pm.model | grep -c 'truncated')" "sanitising: a value within the cap carries no marker"
 check_env_output "$SANDBOX/out.long"; assert_eq "0" "$?" "sanitising: a truncation warn line satisfies the line contract"
+
+# A backslash prints as \\: the text \n inside a list item is not the separator.
+setup_default
+proj_json '{"issues": {"skip_labels": ["a\\nb", "c"]}, "agents": {"model": "x\\y\\u202e"}}'
+env_run > "$SANDBOX/out.bs"
+bs="$(cat "$SANDBOX/out.bs")"
+assert_contains "$bs" 'SKIP_LABELS=a\\nb\nc' "sanitising: the text \\n inside a list item prints as \\\\n, apart from the \\n separator"
+assert_contains "$bs" 'agent.pm.model=x\\y\\u202e' "sanitising: a backslash in a scalar prints as \\\\, so literal text like \\u202e is not an escape"
+check_env_output "$SANDBOX/out.bs"; assert_eq "0" "$?" "sanitising: a backslash value satisfies the line contract"
+
+# Bidi controls and zero-width characters print as \uXXXX.
+proj_json '{"agents": {"model": "a\u202eb\u2066c\u2069d\u200be\u200df\ufeffg"}, "comments": {"header": "x\u202ay\u202dz"}}'
+env_run > "$SANDBOX/out.bidi"
+bidi="$(cat "$SANDBOX/out.bidi")"
+assert_contains "$bidi" 'agent.pm.model=a\u202eb\u2066c\u2069d\u200be\u200df\ufeffg' "sanitising: bidi controls and zero-width characters print as \\uXXXX"
+assert_contains "$bidi" 'COMMENTS_HEADER_TPL=x\u202ay\u202dz' "sanitising: the bidi range ends U+202A and U+202D are escaped"
+check_env_output "$SANDBOX/out.bidi"; assert_eq "0" "$?" "sanitising: escaped bidi output satisfies the line contract"
 
 # ── (d) the checker is not vacuous: mutations turn it red ────────────────────
 cp "$SANDBOX/out.rich" "$SANDBOX/mut.esc"
@@ -222,6 +244,9 @@ check_env_output "$SANDBOX/mut.esc"; assert_eq "1" "$?" "mutation: an unsanitise
 cp "$SANDBOX/out.rich" "$SANDBOX/mut.c1"
 printf 'EVIL=a\302\233b\n' >> "$SANDBOX/mut.c1"
 check_env_output "$SANDBOX/mut.c1"; assert_eq "1" "$?" "mutation: an unsanitised C1 control (U+009B) turns the checker red"
+cp "$SANDBOX/out.rich" "$SANDBOX/mut.bidi"
+printf 'EVIL=a\342\200\256b\n' >> "$SANDBOX/mut.bidi"
+check_env_output "$SANDBOX/mut.bidi"; assert_eq "1" "$?" "mutation: an unsanitised bidi control (U+202E) turns the checker red"
 cp "$SANDBOX/out.rich" "$SANDBOX/mut.reason"
 printf 'stop reason=bogus-reason\n' >> "$SANDBOX/mut.reason"
 check_env_output "$SANDBOX/mut.reason"; assert_eq "1" "$?" "mutation: an out-of-enum reason turns the checker red"
@@ -256,6 +281,21 @@ out="$(bash "$TALOS" env extra 2>/dev/null)"; rc=$?
 assert_eq "2" "$rc" "stop: env with an argument exits 2"
 assert_eq "stop reason=usage" "$out" "stop: env with an argument is usage"
 assert_contains "$(bash "$TALOS" help 2>&1)" "usage: talos.sh <verb>" "help: prints the usage"
+
+# A PR_DRAFT resolve that fails must stop the run, never default to false.
+setup_default
+mkdir -p "$SANDBOX/badroot/scripts"
+cp "$TALOS_ROOT"/scripts/* "$SANDBOX/badroot/scripts/"
+printf '#!/usr/bin/env bash\nprintf "maybe\\n"\n' > "$SANDBOX/badroot/scripts/pipeline-draft-check.sh"
+out="$(bash "$SANDBOX/badroot/scripts/talos.sh" env 2>/dev/null)"; rc=$?
+assert_eq "1" "$rc" "stop: a PR_DRAFT resolve that prints neither true nor false exits 1"
+assert_eq "stop reason=draft-resolve-failed" "$out" "stop: stdout is exactly the draft-resolve-failed stop line, no PR_DRAFT=false"
+printf '#!/usr/bin/env bash\nexit 3\n' > "$SANDBOX/badroot/scripts/pipeline-draft-check.sh"
+out="$(bash "$SANDBOX/badroot/scripts/talos.sh" env 2>/dev/null)"; rc=$?
+assert_eq "1" "$rc" "stop: a PR_DRAFT resolve that exits non-zero exits 1"
+assert_eq "stop reason=draft-resolve-failed" "$out" "stop: a failing resolver is draft-resolve-failed"
+printf '%s\n' "$out" > "$SANDBOX/out.draftstop"
+check_env_output "$SANDBOX/out.draftstop"; assert_eq "0" "$?" "stop: the draft-resolve-failed line satisfies the line contract"
 
 proj_json '{"agents": {"runner": "bogus"}}'
 out="$(env_run)"; rc=$?
