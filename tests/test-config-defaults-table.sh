@@ -28,10 +28,12 @@ bad = []
 seen = set()
 for r in rows:
     key = r[0]
-    if len(r) != 5:
-        bad.append("%s: %d fields, want 5" % (key, len(r)))
+    if len(r) != 6:
+        bad.append("%s: %d fields, want 6" % (key, len(r)))
         continue
-    _, typ, default, derived, env = r
+    _, typ, default, derived, env, scope = r
+    if scope not in ("any", "repo"):
+        bad.append("%s: scope column %r" % (key, scope))
     if key in seen:
         bad.append("%s: duplicate key" % key)
     seen.add(key)
@@ -57,7 +59,7 @@ TALOS_PYtab7Gw3Nd5Xk
 )"
 assert_eq "ROWS=112" "$(printf '%s\n' "$_out" | tail -n1)" "the table has one row per config key (112 rows)"
 assert_eq "" "$(printf '%s\n' "$_out" | sed '$d')" \
-  "every row has five fields, a unique key, a valid type/derived/env column, and a default of the right shape"
+  "every row has six fields, a unique key, a valid type/derived/env/scope column, and a default of the right shape"
 
 # ── (d) the table's key set is the old known-keys list: no key lost ──────────
 OLD_KEYS="base_branch release_branch repo vcs.provider vcs.repo vcs.token_env vcs.azure.org_url
