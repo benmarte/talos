@@ -150,5 +150,66 @@ cat > talos.pipeline.json <<'EOF'
 {"vcs": {"provider": "github", "repo": "acme/widget"}, "base_branch": "main"}
 EOF
 
+# ── (g) option-injection base_branch is refused before any git call (#457) ──
+# A value starting with `-` would be read by `git fetch` as an option; the
+# marker file proves no command ran. JSON config (not YAML, see #490).
+MARKER="$SANDBOX/PWNED"
+for bad in "--upload-pack=touch $MARKER;" "-x" "a..b" "main.lock" "a b"; do
+  BAD="$bad" python3 -I -c "
+import json, os
+json.dump({'vcs': {'provider': 'github', 'repo': 'acme/widget'}, 'base_branch': os.environ['BAD']}, open('talos.pipeline.json', 'w'))
+"
+  out="$(bash "$CL" assemble 2>&1)"; rc=$?
+  assert_eq "1" "$rc" "assemble: rejects base_branch '$bad' (rc)"
+  assert_contains "$out" "not an accepted branch name" "assemble: names the refused base_branch '$bad'"
+  assert_file_absent "$MARKER" "assemble: base_branch '$bad' ran no command"
+done
+
+# ── (h) a symlinked fragment is never read through; the rest still assemble ─
+cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "github", "repo": "acme/widget"}, "base_branch": "main"}
+EOF
+printf 'SECRET-VIA-FRAGMENT-LINK\n' > "$SANDBOX/outside-secret.txt"
+git fetch -q origin main
+git checkout -q -b frag3 origin/main
+mkdir -p docs/CHANGELOG.d
+printf -- '- **Real fragment 300.** Body for issue 300.\n' > docs/CHANGELOG.d/300.md
+ln -s "$SANDBOX/outside-secret.txt" docs/CHANGELOG.d/301.md
+git add docs/CHANGELOG.d
+git commit -qm "pr: real fragment plus a symlinked one"
+git push -q origin frag3:main --force
+git checkout -q main
+git branch -D frag3 >/dev/null 2>&1 || true
+git reset -q --hard origin/main
+
+out="$(bash "$CL" assemble 2>&1)"; rc=$?
+assert_eq "0" "$rc" "assemble: a symlinked fragment does not fail the run"
+assert_contains "$out" "301.md is not a regular file" "assemble: names the skipped symlinked fragment"
+git fetch -q origin main
+merged="$(git show origin/main:CHANGELOG.md)"
+assert_contains "$merged" "Real fragment 300" "assemble: the regular fragment beside a symlink is folded in"
+assert_not_contains "$merged" "SECRET-VIA-FRAGMENT-LINK" "assemble: a symlinked fragment is never read through"
+assert_eq "120000" "$(git ls-tree origin/main docs/CHANGELOG.d/301.md | cut -c1-6)" "assemble: the symlinked fragment is left in place"
+
+# ── (i) a symlinked CHANGELOG.md on the base is refused ─────────────────────
+git checkout -q -b frag4 origin/main
+printf -- '- **Fragment 302.** Body for issue 302.\n' > docs/CHANGELOG.d/302.md
+git rm -q --cached CHANGELOG.md
+mv CHANGELOG.md "$SANDBOX/real-changelog.md"
+ln -s "$SANDBOX/real-changelog.md" CHANGELOG.md
+git add CHANGELOG.md docs/CHANGELOG.d/302.md
+git commit -qm "pr: CHANGELOG.md as a symlink"
+git push -q origin frag4:main --force
+git checkout -q main
+git branch -D frag4 >/dev/null 2>&1 || true
+git reset -q --hard origin/main
+main_sha_before="$(git rev-parse origin/main)"
+out="$(bash "$CL" assemble 2>&1)"; rc=$?
+assert_eq "1" "$rc" "assemble: a symlinked CHANGELOG.md exits 1"
+assert_contains "$out" "CHANGELOG.md on origin/main is not a regular file" "assemble: names the refused CHANGELOG.md"
+git fetch -q origin main
+assert_eq "$main_sha_before" "$(git rev-parse origin/main)" "assemble: nothing pushed for a symlinked CHANGELOG.md"
+assert_not_contains "$(cat "$SANDBOX/real-changelog.md")" "Fragment 302" "assemble: the symlink target was not written through"
+
 rm -f talos.pipeline.json
 finish
