@@ -25,6 +25,13 @@ STUBS_DIR="$TALOS_ROOT/tests/stubs"
 # so a non-directory parent reads as "no user-level file" on macOS and Linux.
 export TALOS_HOME="/dev/null/talos-test-no-user-config"
 
+# Hermetic legacy secrets file (#476). pipeline-secrets.sh falls back to
+# $HOME/.hermes/.env, and a test must never read the real one. An empty
+# TALOS_HERMES_ENV switches the fallback off for every test file; make_sandbox
+# points it at a path inside the sandbox, where a test that exercises the
+# fallback writes its file (an ambient TALOS_HERMES_ENV is overwritten here).
+export TALOS_HERMES_ENV=""
+
 # Hermetic file modes (#443). The global config is refused when it is group- or
 # world-writable (pipeline-secrets.sh, the config-file trust check), and a test
 # writes one with a plain redirect, so the mode it gets is the caller's umask: a
@@ -180,6 +187,7 @@ make_sandbox() {
   # it (see tests/test-secret-refs.sh, which drops the sandbox repo first).
   mkdir -p "$SANDBOX/.home"
   export HOME="$SANDBOX/.home"
+  export TALOS_HERMES_ENV="$HOME/.hermes/.env"
   printf '[user]\n\tname = talos-test\n\temail = test@talos.invalid\n' > "$HOME/.gitconfig"
 }
 

@@ -231,6 +231,8 @@ DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 TEAMS_WEBHOOK_URL=https://...
 ```
 
+A repo `.env` is parsed, never sourced, and only the notification variables above (plus `BUZZ_*`, `PIPELINE_SLACK_CHANNEL`, `PIPELINE_DISCORD_CHANNEL`, `PIPELINE_BUZZ_CHANNEL`, `PIPELINE_BUZZ_RELAY`) are read from it: the checkout can be a PR branch, so any other key (`BASH_ENV`, `PATH`, `LD_PRELOAD`, …) is ignored with one stderr line naming it. `TALOS_HERMES_ENV=<path>` points the legacy `~/.hermes/.env` fallback elsewhere (empty disables it); tests and sandboxed runs set it.
+
 Alternatively, set `notifications.slack_channel` / `notifications.discord_channel` in your config and put `SLACK_BOT_TOKEN` / `DISCORD_BOT_TOKEN` in `~/.hermes/.env` (Hermes platform credential store — optional convenience, not required).
 
 **Teams has no bot-token path and no Hermes convenience.** `TEAMS_WEBHOOK_URL` is Talos's only way to deliver to Teams — there is no bot-token/channel-ID alternative like Slack and Discord have — and `pipeline-notify.sh` reads it from the environment or repo `.env` only; unlike `SLACK_BOT_TOKEN`, `DISCORD_BOT_TOKEN`, `BUZZ_RELAY_URL`, and `BUZZ_BOT_PRIVATE_KEY`, it is **not** sourced from `~/.hermes/.env`, so putting it there silently does nothing. Because delivery is always webhook-only, Teams also never threads (see [Per-issue notification threading](#per-issue-notification-threading)). Microsoft retired the legacy Office 365 "Incoming Webhook" connector in May 2026; provision a Power Automate **Workflows** webhook instead ("Post to a channel when a webhook request is received") and put its URL in `TEAMS_WEBHOOK_URL`.

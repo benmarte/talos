@@ -56,7 +56,9 @@
 # Delivery order (first match wins per platform):
 #   1. Incoming webhook env vars:
 #        SLACK_WEBHOOK_URL / DISCORD_WEBHOOK_URL / TEAMS_WEBHOOK_URL
-#        (set in env or in <repo>/.env)
+#        (set in env or in <repo>/.env -- a .env is parsed, never sourced, and
+#        only the notification variables listed in pipeline-secrets.sh
+#        (_TALOS_DOTENV_ALLOW) are exported from it, #476)
 #   2. Bot tokens: SLACK_BOT_TOKEN / DISCORD_BOT_TOKEN posting to configured
 #        channels. Channels from talos.pipeline.yml notifications.slack_channel /
 #        notifications.discord_channel, overrideable via env vars
@@ -214,32 +216,23 @@ unset _msg_bytes
 # NOTE: REPO_ROOT keeps its current meaning (script-relative install dir)
 # because line 152 uses it for the bundled template fallback path.
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# pipeline-secrets.sh parses the repo .env (never sources it) and exports ONLY
+# the allow-listed notification variables, with dotenv precedence (exported env
+# wins). Every other key -- BASH_ENV, PATH, LD_PRELOAD, ... -- is ignored with
+# one stderr line naming it (#476): the checkout can be a PR branch, so its
+# .env is not trusted to set arbitrary variables.
+if [ -f "$SCRIPT_DIR/pipeline-secrets.sh" ]; then
+  # shellcheck source=pipeline-secrets.sh
+  . "$SCRIPT_DIR/pipeline-secrets.sh"
+else
+  echo "pipeline-notify: pipeline-secrets.sh missing; reinstall Talos (secrets are read from the exported environment only)" >&2
+  talos_secret_load() { return 1; }
+  talos_dotenv_load() { return 0; }
+fi
 ENV_ROOT="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)"
 [ -z "$ENV_ROOT" ] && ENV_ROOT="$PWD"
-REPO_ENV="$ENV_ROOT/.env"
-# Load repo .env with dotenv precedence: exported env vars win over .env values.
-# Bash 3.2-compatible — no namerefs, no associative arrays.
-if [ -f "$REPO_ENV" ]; then
-  while IFS= read -r _line || [ -n "$_line" ]; do
-    case "$_line" in
-      ""|"#"*) continue ;;  # skip blanks and comments
-    esac
-    _key="${_line%%=*}"
-    _val="${_line#*=}"
-    # Strip a single pair of matching surrounding quotes (double or single)
-    case "$_val" in
-      '"'*'"') _val="${_val#'"'}"; _val="${_val%'"'}" ;;
-      "'"*"'") _val="${_val#"'"}"; _val="${_val%"'"}" ;;
-    esac
-    # Only set if the variable is currently unset
-    if [ -z "${!_key+x}" ]; then
-      # shellcheck disable=SC2163
-      export "$_key=$_val"
-    fi
-  done < "$REPO_ENV"
-  unset _line _key
-fi
-unset REPO_ENV ENV_ROOT
+talos_dotenv_load "$ENV_ROOT/.env" "repo .env"
+unset ENV_ROOT
 
 # ── Event filter (from config) ────────────────────────────────────────────────
 CONFIGURED_EVENTS="$(cfg notifications.events)"
@@ -258,13 +251,6 @@ BUZZ_CHANNEL="${PIPELINE_BUZZ_CHANNEL:-$(cfg notifications.buzz_channel)}"
 # Resolved by pipeline-secrets.sh (order and trust rules: see the header). Values
 # stay in shell variables; post() hands them to curl on stdin. --render posts
 # nothing, so it resolves nothing.
-if [ -f "$SCRIPT_DIR/pipeline-secrets.sh" ]; then
-  # shellcheck source=pipeline-secrets.sh
-  . "$SCRIPT_DIR/pipeline-secrets.sh"
-else
-  echo "pipeline-notify: pipeline-secrets.sh missing; reinstall Talos (secrets are read from the exported environment only)" >&2
-  talos_secret_load() { return 1; }
-fi
 if [ -z "$RENDER_ONLY" ]; then
   talos_secret_load SLACK_WEBHOOK_URL    notifications.slack.webhook url
   talos_secret_load DISCORD_WEBHOOK_URL  notifications.discord.webhook url

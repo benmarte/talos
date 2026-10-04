@@ -169,6 +169,13 @@ exception, read from the environment/repo `.env` only, so putting it in
 `~/.hermes/.env` silently does nothing. Note: the old `.claude/talos/.env`
 path is no longer read — move any credentials to the repo root.
 
+A `.env` is parsed, never sourced, and only the notification variables
+(`SLACK_*`, `DISCORD_*`, `TEAMS_WEBHOOK_URL`, `BUZZ_*`, `PIPELINE_*_CHANNEL`,
+`PIPELINE_BUZZ_RELAY`) are read from it (#476). `GITHUB_TOKEN` / `GH_TOKEN` and
+every other key are ignored there, with one stderr line naming the key: export
+them in your shell instead. `TALOS_HERMES_ENV=<path>` moves the legacy
+`~/.hermes/.env` fallback (empty disables it).
+
 Also note: Microsoft retired the legacy Office 365 "Incoming Webhook"
 connector in May 2026. Provision a Power Automate **Workflows** webhook
 instead ("Post to a channel when a webhook request is received") and put its
