@@ -99,7 +99,7 @@
 # at most 32 MB (about 100x a large real log) and is read with a byte budget;
 # a bigger one is NOT read at all (printing wrong totals from a partial read
 # would be worse than printing nothing); of a log within the cap, only the
-# newest 200,000 lines are read, one at a time from the end. The whole run has
+# newest 200,000 lines are kept, from one pass over the bytes. The whole run has
 # a hard time limit (TALOS_STATUS_TIMEOUT_S, default 3, 1..10): on expiry
 # nothing is printed and it exits 0. The budget call runs in its own process group with a timeout of
 # 2 s (more when TALOS_STATUS_TIMEOUT_S is raised: the limit minus 1 s), and
@@ -136,6 +136,7 @@ if [ -n "$_git" ]; then
 fi
 
 python3 -I -B - "$SCRIPT_DIR" "$_common" "$_top" "$_branch" "$@" <<'PYEOF'
+import collections
 import json
 import os
 import re
@@ -479,26 +480,29 @@ def read_log(path):
 # One tuple per well-formed log line: (issue, role, pr, verdict, tokens, model,
 # day), tokens already through as_count (int, or None for unrecorded).
 
-def iter_lines_newest_first(data):
-    """The non-empty lines of data, newest (last) first, one at a time: the
-    log is never split into a list of all its lines."""
-    end = len(data)
-    while end > 0:
-        start = data.rfind(b"\n", 0, end) + 1
-        line = data[start:end].strip()
-        end = start - 1
+def newest_lines(data):
+    """The newest MAX_LOG_LINES non-empty lines of data, oldest first, from one
+    pass that keeps only a bounded window: a regex walks the non-newline runs
+    (a long stretch of blank lines costs nothing per line) and the deque drops
+    the oldest line past the cap. The log is never split into a list of all its
+    lines."""
+    window = collections.deque(maxlen=MAX_LOG_LINES)
+    seen = 0
+    for m in re.finditer(rb"[^\n]+", data):
+        line = m.group().strip()
         if line:
-            yield line
+            window.append(line)
+            seen += 1
+    if seen > MAX_LOG_LINES:
+        dbg("the events log has more than %d lines; only the newest are read" % MAX_LOG_LINES)
+    return window
 
 
 def load_events(data, fmt):
     """The well-formed events of the newest MAX_LOG_LINES lines, oldest first."""
     events = []
     as_count = fmt.as_count
-    for n, line in enumerate(iter_lines_newest_first(data)):
-        if n >= MAX_LOG_LINES:
-            dbg("the events log has more than %d lines; only the newest are read" % MAX_LOG_LINES)
-            break
+    for line in newest_lines(data):
         try:
             rec = json.loads(line)
         except (ValueError, RecursionError):
@@ -509,7 +513,6 @@ def load_events(data, fmt):
         events.append((str(rec.get("issue")), rec.get("role"), rec.get("pr"),
                        rec.get("verdict"), as_count(rec.get("tokens")), rec.get("model"),
                        ts[:10] if isinstance(ts, str) else None))
-    events.reverse()
     return events
 
 
