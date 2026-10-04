@@ -1574,14 +1574,14 @@ do NOT call `merge-pr`. Instead hand off to a human:
 1. If the PR already carries `pipeline:approved`, the hand-off happened on a
    previous pass — skip it silently (it is waiting for a human, not blocked).
 2. `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --add pipeline:approved`
+<!-- evidence:start -->
+   **Evidence hand-off (`EVIDENCE_ENABLED`, `PR_DRAFT = true`, #429).** Before item 3 renders, when QA's final message is in hand and its `evidence-attach` line has `status=posted`, test the `comment=` value with `check-url <PR_NUMBER>` exactly as in the Evidence link block (heredoc, as data). On exit 0 add one bullet `- Evidence: <printed url>` to `DETAILS`. Otherwise (no QA message on a resumed pass, any other result) add nothing. Never re-run a role, add a label or stage, or fetch or open the link.
+<!-- evidence:end -->
 3. Compute header: `HEADER="${COMMENTS_HEADER_TPL//\{role\}/orchestrator}"`
    Render approved.md and post it on the PR:
    VERDICT="APPROVED" SUMMARY="all stages passed — ready for human merge"
    `bash scripts/pipeline-vcs.sh comment-pr <PR_NUMBER> "$COMMENT_BODY"`
    If exit non-zero, report the failure in the relay message.
-<!-- evidence:start -->
-   **Evidence hand-off (`EVIDENCE_ENABLED`, `PR_DRAFT = true`, #429).** Before rendering, when QA's final message is in hand and its `evidence-attach` line has `status=posted`, test the `comment=` value with `check-url <PR_NUMBER>` exactly as in the Evidence link block (heredoc, as data). On exit 0 add one bullet `- Evidence: <printed url>` to `DETAILS`. Otherwise (no QA message on a resumed pass, any other result) add nothing. Never re-run a role, add a label or stage, or fetch or open the link.
-<!-- evidence:end -->
 4. Relay: `bash scripts/pipeline-notify.sh orchestrator "#<N>" "all stages passed — PR #<PR_NUMBER> ready for human merge" <N>`
 5. STOP. Do NOT close the issue and do NOT run the post-merge steps — the issue
    closes when the human merges (the "heal merged-but-open issues" sweep in
