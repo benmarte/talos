@@ -498,13 +498,13 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # cfg() (#169): dumps the config once per invocation and answers lookups
 # from that cache instead of re-parsing on every call. Guarded (#169 review):
-# a partial install/sync may not yet ship pipeline-cfg-cache.sh, so fall back
-# to the old per-call cfg() instead of leaving cfg undefined.
+# a partial install/sync may not yet ship pipeline-cfg-cache.sh: that is fatal
+# (no per-call fallback: it would hide the fail-closed exit of a broken table).
 if [ -f "$SCRIPT_DIR/pipeline-cfg-cache.sh" ]; then
   . "$SCRIPT_DIR/pipeline-cfg-cache.sh"
 else
-  cfg() { bash "$SCRIPT_DIR/pipeline-config.sh" "$@"; }
-  echo "pipeline: config cache helper missing, falling back to per-call parsing" >&2
+  echo "talos: pipeline-cfg-cache.sh missing; reinstall Talos" >&2
+  exit 1
 fi
 
 # with_lock (#180 pattern, #262 review follow-up): `_vcs_shared_conflict_files`'s
@@ -609,13 +609,13 @@ if [ "$VERB" = "create-pr" ] && [ "${#ARGS[@]}" -gt 3 ]; then
 fi
 
 # ── Config ────────────────────────────────────────────────────────────────────
-PROVIDER="$(cfg vcs.provider "github")"
-REPO="$(cfg vcs.repo "")"
-BASE_BRANCH="$(cfg base_branch "")"
-MERGE_METHOD="$(cfg merge.method "squash")"
-AZURE_ORG="$(cfg vcs.azure.org_url "")"
-AZURE_PROJECT="$(cfg vcs.azure.project "")"
-FILE_PATH="$(cfg vcs.file.source.path "plan.md")"
+PROVIDER="$(cfg vcs.provider)"
+REPO="$(cfg vcs.repo)"
+BASE_BRANCH="$(cfg base_branch)"
+MERGE_METHOD="$(cfg merge.method)"
+AZURE_ORG="$(cfg vcs.azure.org_url)"
+AZURE_PROJECT="$(cfg vcs.azure.project)"
+FILE_PATH="$(cfg vcs.file.source.path)"
 
 # Auto-detect repo for github/gitlab if not set.
 # github-api uses only git remote (no gh call) to avoid CLI dependency.
@@ -801,7 +801,7 @@ _RETRY_STDERR_PATTERN='HTTP 429|API rate limit exceeded|secondary rate limit|abu
 _with_retry() {
   local _wr_verb="$1"; shift
   local _wr_max _wr_scale _wr_attempt=0 _wr_wait _wr_out _wr_err _wr_rc _wr_err_text
-  _wr_max="$(cfg limits.max_retries 5)"
+  _wr_max="$(cfg limits.max_retries)"
   case "$_wr_max" in
     ''|*[!0-9]*)
       printf 'pipeline-vcs: limits.max_retries must be a non-negative integer, got %s; using default 5\n' \
@@ -1629,8 +1629,8 @@ else:
 # _vcs_shared_trust_env <user-fn> -> sets _NO_TRUSTED / _NO_VERIFY / _NO_CURRENT
 # for _vcs_needs_owner_py (same lookups read-attempt does).
 _vcs_shared_trust_env() {
-  _NO_TRUSTED="$(cfg markers.trusted_authors "")"
-  _NO_VERIFY="$(cfg markers.verify_authors true)"
+  _NO_TRUSTED="$(cfg markers.trusted_authors)"
+  _NO_VERIFY="$(cfg markers.verify_authors)"
   _NO_CURRENT=""
   [ "$_NO_VERIFY" = "true" ] && _NO_CURRENT="$("$1")"
   return 0
@@ -1839,7 +1839,7 @@ _vcs_shared_list_needs_owner() {
 _vcs_shared_assign_issue() {
   local n="$1" get_fn="$2" add_fn="$3"; shift 3
   local want want_lc
-  want="$(cfg issues.assignee "self")"
+  want="$(cfg issues.assignee)"
   # Trim leading/trailing whitespace (spaces, tabs, newlines) once, up
   # front, so "  " is "none" (not a literal identity), "self " is "self",
   # and a literal identity is never passed to the provider with surrounding
@@ -1991,8 +1991,8 @@ _vcs_shared_record_attempt() {
     esac
   fi
   local max_stage max_total
-  max_stage="$(cfg limits.max_fix_attempts 3)"
-  max_total="$(cfg limits.max_total_dispatches 8)"
+  max_stage="$(cfg limits.max_fix_attempts)"
+  max_total="$(cfg limits.max_total_dispatches)"
   # Read current state (fail-closed on parse error)
   local state
   state="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" read-attempt "$n" ${REPO:+--repo "$REPO"} 2>&1)"
@@ -3711,7 +3711,7 @@ print(json.dumps(out))
       # hadn't scheduled yet was invisible (every *reported* check could read
       # "pass" while the required one was simply absent -- a false PASS).
       local _n="$1" _required
-      _required="$(cfg merge.required_checks "")"
+      _required="$(cfg merge.required_checks)"
       if [ "$DRY_RUN" = "true" ]; then
         echo "[dry-run] gh pr checks $_n ${REPO:+--repo $REPO}; evaluate against merge.required_checks"
         return 0
@@ -3820,7 +3820,7 @@ for i in items:
     path = i.get('filename', '')
     if path:
         print(path)
-" | CONFIGURED="$(cfg merge.forbidden_files "")" REPLACE="$(cfg merge.forbidden_files_replace "")" ALLOW="$(cfg merge.forbidden_files_allow "")" _vcs_shared_check_pr_files
+" | CONFIGURED="$(cfg merge.forbidden_files)" REPLACE="$(cfg merge.forbidden_files_replace)" ALLOW="$(cfg merge.forbidden_files_allow)" _vcs_shared_check_pr_files
       ;;
     pr-files)
       # #211 review fix: `gh pr view --json files` (used until PR #211) never
@@ -4048,8 +4048,8 @@ print(json.dumps([{'number': p.get('number'), 'state': p.get('state'), 'title': 
         exit 1
       fi
       local trusted_authors verify_authors current_user
-      trusted_authors="$(cfg markers.trusted_authors "")"
-      verify_authors="$(cfg markers.verify_authors true)"
+      trusted_authors="$(cfg markers.trusted_authors)"
+      verify_authors="$(cfg markers.verify_authors)"
       current_user=""
       [ "$verify_authors" = "true" ] && current_user="$(_vcs_shared_current_user gh api user --jq .login)"
       printf '%s' "$issue_data" | TRUSTED_AUTHORS="$trusted_authors" VERIFY_AUTHORS="$verify_authors" CURRENT_USER="$current_user" TALOS_CFG="$_TALOS_CFG" _vcs_shared_read_attempt
@@ -4069,8 +4069,8 @@ print(json.dumps([{'number': p.get('number'), 'state': p.get('state'), 'title': 
         return 0
       fi
       local max_stage max_total
-      max_stage="$(cfg limits.max_fix_attempts 3)"
-      max_total="$(cfg limits.max_total_dispatches 8)"
+      max_stage="$(cfg limits.max_fix_attempts)"
+      max_total="$(cfg limits.max_total_dispatches)"
       local state
       state="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" read-attempt "$n" ${REPO:+--repo "$REPO"} 2>&1)"
       local rc=$?
@@ -4163,8 +4163,8 @@ print(json.dumps([{'number': p.get('number'), 'state': p.get('state'), 'title': 
         exit 1
       fi
       local trusted_authors_cas verify_authors_cas current_user_cas
-      trusted_authors_cas="$(cfg markers.trusted_authors "")"
-      verify_authors_cas="$(cfg markers.verify_authors true)"
+      trusted_authors_cas="$(cfg markers.trusted_authors)"
+      verify_authors_cas="$(cfg markers.verify_authors)"
       current_user_cas=""
       [ "$verify_authors_cas" = "true" ] && current_user_cas="$(_vcs_shared_current_user gh api user --jq .login)"
       local marker_out marker_rc marker_json
@@ -4186,7 +4186,7 @@ print(json.dumps([{'number': p.get('number'), 'state': p.get('state'), 'title': 
       printf '%s\n' "$marker_out" | grep '^talos:' || true
       marker_json="$(printf '%s\n' "$marker_out" | grep -v '^talos:')"
       local waiver_paths repo_root
-      waiver_paths="$(cfg merge.approval_waiver_paths "")"
+      waiver_paths="$(cfg merge.approval_waiver_paths)"
       repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
       printf '%s' "$pr_data" \
         | WAIVER_PATHS="$waiver_paths" REPO_ROOT="${repo_root:-}" MARKER_ENTRIES="$marker_json" STALE_LIST="$stale_list_flag" _vcs_shared_check_approval_sha
@@ -4211,7 +4211,7 @@ print(json.dumps([{'number': p.get('number'), 'state': p.get('state'), 'title': 
 _github_api() {
   # ── Token resolution ────────────────────────────────────────────────────────
   local _TOKEN_ENV
-  _TOKEN_ENV="$(cfg vcs.token_env "")"
+  _TOKEN_ENV="$(cfg vcs.token_env)"
   local _TOKEN=""
   if [ -n "$_TOKEN_ENV" ]; then
     _TOKEN="${!_TOKEN_ENV:-}"
@@ -5013,7 +5013,7 @@ print(json.load(sys.stdin).get('head',{}).get('sha',''))
       # (#205 review follow-up) Scoped to merge.required_checks only -- see
       # the matching comment on _github's pr-checks-required for why.
       local _n="$1" _required
-      _required="$(cfg merge.required_checks "")"
+      _required="$(cfg merge.required_checks)"
       if [ "$DRY_RUN" = "true" ]; then
         echo "[dry-run] github-api: GET $_API/pulls/$_n, GET $_API/commits/<sha>/check-runs for PR #$_n; evaluate against merge.required_checks"
         return 0
@@ -5213,7 +5213,7 @@ for f in files:
     path = f.get('filename', '')
     if path:
         print(path)
-" | CONFIGURED="$(cfg merge.forbidden_files "")" REPLACE="$(cfg merge.forbidden_files_replace "")" ALLOW="$(cfg merge.forbidden_files_allow "")" _vcs_shared_check_pr_files
+" | CONFIGURED="$(cfg merge.forbidden_files)" REPLACE="$(cfg merge.forbidden_files_replace)" ALLOW="$(cfg merge.forbidden_files_allow)" _vcs_shared_check_pr_files
       ;;
 
     pr-files)
@@ -5395,8 +5395,8 @@ comments = [dict(c, author={'login': (c.get('user') or {}).get('login', '')}) fo
 json.dump({'comments': comments}, sys.stdout)
 ")"
       local _trusted_authors _verify_authors _current_user
-      _trusted_authors="$(cfg markers.trusted_authors "")"
-      _verify_authors="$(cfg markers.verify_authors true)"
+      _trusted_authors="$(cfg markers.trusted_authors)"
+      _verify_authors="$(cfg markers.verify_authors)"
       _current_user=""
       [ "$_verify_authors" = "true" ] && _current_user="$(_vcs_shared_current_user _ga_current_user_login)"
       printf '%s' "$_normalized" | TRUSTED_AUTHORS="$_trusted_authors" VERIFY_AUTHORS="$_verify_authors" CURRENT_USER="$_current_user" TALOS_CFG="$_TALOS_CFG" _vcs_shared_read_attempt
@@ -5412,8 +5412,8 @@ json.dump({'comments': comments}, sys.stdout)
         return 0
       fi
       local _max_stage _max_total
-      _max_stage="$(cfg limits.max_fix_attempts 3)"
-      _max_total="$(cfg limits.max_total_dispatches 8)"
+      _max_stage="$(cfg limits.max_fix_attempts)"
+      _max_total="$(cfg limits.max_total_dispatches)"
       local _state
       _state="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" read-attempt "$_n" ${REPO:+--repo "$REPO"} 2>&1)"
       local _rc=$?
@@ -5535,8 +5535,8 @@ out = {
 json.dump(out, sys.stdout)
 ")"
       local _trusted_authors_cas _verify_authors_cas _current_user_cas
-      _trusted_authors_cas="$(cfg markers.trusted_authors "")"
-      _verify_authors_cas="$(cfg markers.verify_authors true)"
+      _trusted_authors_cas="$(cfg markers.trusted_authors)"
+      _verify_authors_cas="$(cfg markers.verify_authors)"
       _current_user_cas=""
       [ "$_verify_authors_cas" = "true" ] && _current_user_cas="$(_vcs_shared_current_user _ga_current_user_login)"
       local _marker_out _marker_rc _marker_json
@@ -5558,7 +5558,7 @@ json.dump(out, sys.stdout)
       printf '%s\n' "$_marker_out" | grep '^talos:' || true
       _marker_json="$(printf '%s\n' "$_marker_out" | grep -v '^talos:')"
       local _waiver_paths _repo_root
-      _waiver_paths="$(cfg merge.approval_waiver_paths "")"
+      _waiver_paths="$(cfg merge.approval_waiver_paths)"
       _repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
       printf '%s' "$_pr_data" \
         | WAIVER_PATHS="$_waiver_paths" REPO_ROOT="${_repo_root:-}" MARKER_ENTRIES="$_marker_json" STALE_LIST="$_stale_list_flag" _vcs_shared_check_approval_sha
@@ -6020,7 +6020,7 @@ print(d.get('merge_status') or d.get('detailed_merge_status') or '')
       _glcpf_paths="$(_gl_pr_files "$n")" || {
         echo "pipeline-vcs: check-pr-files: could not fetch the changed files of MR !$n -- failing closed, do not merge" >&2
         exit 1; }
-      printf '%s\n' "$_glcpf_paths" | CONFIGURED="$(cfg merge.forbidden_files "")" REPLACE="$(cfg merge.forbidden_files_replace "")" ALLOW="$(cfg merge.forbidden_files_allow "")" _vcs_shared_check_pr_files
+      printf '%s\n' "$_glcpf_paths" | CONFIGURED="$(cfg merge.forbidden_files)" REPLACE="$(cfg merge.forbidden_files_replace)" ALLOW="$(cfg merge.forbidden_files_allow)" _vcs_shared_check_pr_files
       ;;
     check-closing-keyword)
       # check-closing-keyword <iid|branch> <issue_N> (#303) -- github
@@ -6627,7 +6627,7 @@ print(" ".join(str(i) for i in sorted(ids)))
       # #298: honour the process's terminal state (e.g. "Closed" on Agile/
       # CMMI), same key and default pipeline-status.sh uses for "Done".
       local done_state
-      done_state="$(cfg board.azure_states.done "Done")"
+      done_state="$(cfg board.azure_states.done)"
       if [ "$DRY_RUN" = "true" ]; then
         echo "[dry-run] az boards work-item update --id $n --state $done_state $ORG_ARG"
       else
@@ -6712,8 +6712,8 @@ PYEOF
         esac
       done
       local wtype ci_area ci_desc
-      wtype="$(cfg vcs.azure.work_item_type 'Product Backlog Item')"
-      ci_area="$(cfg vcs.azure.area_path '')"
+      wtype="$(cfg vcs.azure.work_item_type)"
+      ci_area="$(cfg vcs.azure.area_path)"
       ci_desc=""; [ -f "$body_file" ] && ci_desc="$(cat "$body_file")"
       # ADO's Description is an HTML field — convert the markdown body so it
       # renders instead of showing raw '#'/'**'/'- [ ]' text.
@@ -7007,7 +7007,7 @@ json.dump([norm(p) for p in prs], sys.stdout)
       _azcpf_paths="$(_az_pr_files "$n")" || {
         echo "pipeline-vcs: check-pr-files: could not fetch the changed files of PR #$n -- failing closed, do not merge" >&2
         exit 1; }
-      printf '%s\n' "$_azcpf_paths" | CONFIGURED="$(cfg merge.forbidden_files "")" REPLACE="$(cfg merge.forbidden_files_replace "")" ALLOW="$(cfg merge.forbidden_files_allow "")" _vcs_shared_check_pr_files
+      printf '%s\n' "$_azcpf_paths" | CONFIGURED="$(cfg merge.forbidden_files)" REPLACE="$(cfg merge.forbidden_files_replace)" ALLOW="$(cfg merge.forbidden_files_allow)" _vcs_shared_check_pr_files
       ;;
     check-closing-keyword)
       # check-closing-keyword <pr-id> <work-item-id> (#304). ADO closes a
@@ -7145,7 +7145,7 @@ for r in builds:
       # Any fetch or parse failure exits 1.
       local n="${1:-}" _required _azpc_json _azpc_norm
       _az_require_id pr-checks-required "$n" || exit 1
-      _required="$(cfg merge.required_checks "")"
+      _required="$(cfg merge.required_checks)"
       if [ "$DRY_RUN" = "true" ]; then
         echo "[dry-run] az rest --method get --url <org>/<projectId>/_apis/policy/evaluations?artifactId=vstfs:///CodeReview/CodeReviewId/<projectId>/$n&includeNotApplicable=true; evaluate against merge.required_checks"
         return 0
@@ -7629,7 +7629,7 @@ for line in body.splitlines():
             fence, held = None, []
 prose += held
 print(" ".join(sorted(names("\n".join(strip_code(l) for l in prose)) & known)))
-' "$SCRIPT_DIR/../templates/comments" "$(cfg comments.templates_dir "templates/comments")")"
+' "$SCRIPT_DIR/../templates/comments" "$(cfg comments.templates_dir)")"
       _ph_rc=$?
       if [ "$_ph_rc" -eq 3 ]; then
         echo "pipeline-vcs: $VERB: body is longer than $_TALOS_COMMENT_MAX characters (GitHub's comment limit); nothing posted." >&2
@@ -7980,7 +7980,7 @@ if [ "$VERB" = "forbidden-files-patterns" ]; then
     echo "[dry-run] forbidden-files-patterns: print the effective merge.forbidden_files pattern list"
     exit 0
   fi
-  CONFIGURED="$(cfg merge.forbidden_files "")" REPLACE="$(cfg merge.forbidden_files_replace "")" \
+  CONFIGURED="$(cfg merge.forbidden_files)" REPLACE="$(cfg merge.forbidden_files_replace)" \
     _vcs_shared_forbidden_patterns
   exit 0
 fi

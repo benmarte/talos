@@ -214,11 +214,11 @@ assert_file_absent "$SANDBOX/bad2/PWNED" "a shell-metacharacter directory never 
 
 # ── Step 0 re-run path: asks once when evidence.enabled is unset ─────────────
 Z="$(step '## Step 0')"
-assert_contains "$Z" "evidence.enabled unset" "Step 0 reads evidence.enabled with a default of unset"
+assert_contains "$Z" "--has evidence.enabled" "Step 0 asks whether evidence.enabled is set with --has (no sentinel default)"
 assert_contains "$Z" "Step 4c" "Step 0's re-run path offers the evidence question"
 assert_contains "$Z" 'ONLY the `evidence:` block' "the re-run path adds only the evidence: block"
 assert_contains "$Z" "Idempotency rules" "the evidence re-run bullet defers to the Idempotency rules"
-Z_ev_line="$(grep -n 'evidence.enabled unset' "$SETUP" | head -1 | cut -d: -f1)"
+Z_ev_line="$(grep -n -e "--has evidence.enabled" "$SETUP" | head -1 | cut -d: -f1)"
 Z_7c_line="$(grep -n 'run Step 7c with the harness' "$SETUP" | head -1 | cut -d: -f1)"
 assert_eq "1" "$([ -n "$Z_ev_line" ] && [ -n "$Z_7c_line" ] && [ "$Z_ev_line" -lt "$Z_7c_line" ] && echo 1 || echo 0)" "the evidence bullet comes before the Step 7c / Step 8 jump"
 assert_contains "$Z" "Step 8" "Step 0 still jumps to Step 8"

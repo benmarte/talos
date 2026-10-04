@@ -25,10 +25,10 @@
 #
 # ALLOW: files another in-flight change owns. Remove an entry once the file is
 # fixed.
-#   tests/test-config-cache.sh     (#439 edits it; line 128 `_other_tmp="$(mktemp)"`
-#   tests/test-config-known-keys-guard.sh                is unchecked: fix after
-#   tests/test-config-defaults-table.sh                  #439 merges)
-#   tests/test-callsite-literal-defaults.sh
+#   tests/test-config-cache.sh     (line 128 `_other_tmp="$(mktemp)"` is unchecked;
+#   tests/test-config-known-keys-guard.sh   fix both when #437 next edits them.
+#   test-config-defaults-table.sh and test-callsite-literal-defaults.sh left this
+#   list in #440: they were edited there and are clean.)
 #
 # Also pins the one standing scratch-script line in agents/qa.md and
 # agents/developer.md (#459).
@@ -36,7 +36,7 @@ set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox
 
-ALLOW="tests/test-config-cache.sh tests/test-config-known-keys-guard.sh tests/test-config-defaults-table.sh tests/test-callsite-literal-defaults.sh"
+ALLOW="tests/test-config-cache.sh tests/test-config-known-keys-guard.sh"
 SELF_REL="tests/test-unsafe-cleanup-guard.sh"
 
 SCANNER="$SANDBOX/scan.py"

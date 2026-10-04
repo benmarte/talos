@@ -36,9 +36,8 @@ if [ -f "$SCRIPT_DIR/pipeline-cfg-cache.sh" ]; then
   # shellcheck disable=SC1091
   . "$SCRIPT_DIR/pipeline-cfg-cache.sh"
 else
-  cfg() {
-    bash "$SCRIPT_DIR/pipeline-config.sh" "$1" "${2:-}" 2>/dev/null
-  }
+  echo "talos: pipeline-cfg-cache.sh missing; reinstall Talos" >&2
+  exit 1
 fi
 
 if [ -f "$SCRIPT_DIR/pipeline-lock.sh" ]; then
@@ -59,7 +58,7 @@ case "$verb" in
 esac
 
 # ── Base branch (same fallback chain as pipeline-mergebase.sh) ───────────────
-BASE_BRANCH="$(cfg base_branch "" 2>/dev/null)"
+BASE_BRANCH="$(cfg base_branch 2>/dev/null)"
 if [ -z "$BASE_BRANCH" ]; then
   BASE_BRANCH="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|.*/||')"
 fi

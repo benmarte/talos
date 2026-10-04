@@ -113,7 +113,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [ -f "$SCRIPT_DIR/pipeline-cfg-cache.sh" ]; then
   . "$SCRIPT_DIR/pipeline-cfg-cache.sh"
 else
-  cfg() { bash "$SCRIPT_DIR/pipeline-config.sh" "$@"; }
+  echo "talos: pipeline-cfg-cache.sh missing; reinstall Talos" >&2
+  exit 1
 fi
 
 # _events_log_path -> prints the absolute path to the events log, or nothing
@@ -131,7 +132,7 @@ _events_log_path() {
   [ -n "$common_dir" ] || return 1
   root="$(dirname "$common_dir")"
 
-  path_cfg="$(cfg events.path ".talos/events.jsonl")"
+  path_cfg="$(cfg events.path)"
   case "$path_cfg" in
     /*) printf '%s' "$path_cfg" ;;
     *) printf '%s/%s' "$root" "$path_cfg" ;;
@@ -267,8 +268,12 @@ cmd_cost() {
   fi
   if [ "$mode" = "markdown" ]; then
     budget="$(_budget_json "$issue")"
-    header="$(cfg comments.header "")"
-    warn_at="$(cfg limits.warn_at "0.8")"
+    # The spend report adds a header line only when comments.header is set.
+    # The table's default (the `**Agent:** {role} (talos)` stage-comment
+    # template) is NOT wanted here, so the unset case passes its own empty
+    # fallback on purpose: the one call that keeps an explicit default (#440).
+    header="$(cfg comments.header "$header")"
+    warn_at="$(cfg limits.warn_at)"
   fi
 
   # -I: no cwd, PYTHONPATH or user site on sys.path, so a file planted in the

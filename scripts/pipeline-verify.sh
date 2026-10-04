@@ -57,7 +57,8 @@ if [ -f "$SCRIPT_DIR/pipeline-cfg-cache.sh" ]; then
   # shellcheck source=pipeline-cfg-cache.sh
   . "$SCRIPT_DIR/pipeline-cfg-cache.sh"
 else
-  cfg() { bash "$SCRIPT_DIR/pipeline-config.sh" "$@"; }
+  echo "talos: pipeline-cfg-cache.sh missing; reinstall Talos" >&2
+  exit 1
 fi
 
 _issue=""
@@ -166,7 +167,7 @@ while IFS= read -r _line; do
     exit "$_rc"
   fi
 done <<EOF
-$(cfg verify "")
+$(cfg verify)
 EOF
 
 exit 0

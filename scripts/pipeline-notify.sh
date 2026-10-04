@@ -116,13 +116,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/pipeline-paths.sh"
 # cfg() (#169): dumps the config once per invocation and answers lookups
 # from that cache instead of re-parsing on every call. Guarded (#169 review):
-# a partial install/sync may not yet ship pipeline-cfg-cache.sh, so fall back
-# to the old per-call cfg() instead of leaving cfg undefined.
+# a partial install/sync may not yet ship pipeline-cfg-cache.sh: that is fatal
+# (no per-call fallback: it would hide the fail-closed exit of a broken table).
 if [ -f "$SCRIPT_DIR/pipeline-cfg-cache.sh" ]; then
   . "$SCRIPT_DIR/pipeline-cfg-cache.sh"
 else
-  cfg() { bash "$SCRIPT_DIR/pipeline-config.sh" "$@"; }
-  echo "pipeline: config cache helper missing, falling back to per-call parsing" >&2
+  echo "talos: pipeline-cfg-cache.sh missing; reinstall Talos" >&2
+  exit 1
 fi
 # pipeline-lock.sh (#180): portable mkdir-based locking so concurrent
 # stages (issues.max_parallel > 1) don't lose entries doing a
@@ -233,7 +233,7 @@ fi
 unset REPO_ENV ENV_ROOT
 
 # ── Event filter (from config) ────────────────────────────────────────────────
-CONFIGURED_EVENTS="$(cfg notifications.events "")"
+CONFIGURED_EVENTS="$(cfg notifications.events)"
 if [ -n "$CONFIGURED_EVENTS" ] && [ -z "$RENDER_ONLY" ]; then
   if ! printf '%s' "$CONFIGURED_EVENTS" | grep -qxF "$EVENT"; then
     exit 0
@@ -241,9 +241,9 @@ if [ -n "$CONFIGURED_EVENTS" ] && [ -z "$RENDER_ONLY" ]; then
 fi
 
 # ── Channel config with env var overrides ─────────────────────────────────────
-SLACK_CHANNEL="${PIPELINE_SLACK_CHANNEL:-$(cfg notifications.slack_channel "")}"
-DISCORD_CHANNEL="${PIPELINE_DISCORD_CHANNEL:-$(cfg notifications.discord_channel "")}"
-BUZZ_CHANNEL="${PIPELINE_BUZZ_CHANNEL:-$(cfg notifications.buzz_channel "")}"
+SLACK_CHANNEL="${PIPELINE_SLACK_CHANNEL:-$(cfg notifications.slack_channel)}"
+DISCORD_CHANNEL="${PIPELINE_DISCORD_CHANNEL:-$(cfg notifications.discord_channel)}"
+BUZZ_CHANNEL="${PIPELINE_BUZZ_CHANNEL:-$(cfg notifications.buzz_channel)}"
 
 # ── Bot tokens from Hermes env (optional convenience) ─────────────────────────
 HERMES_ENV="$HOME/.hermes/.env"
@@ -259,7 +259,7 @@ fi
 # signing identity, which must never enter a git-tracked file) it belongs in
 # the committed config, so a clone can describe its Buzz setup completely.
 # Precedence: exported env > repo/hermes .env > config file.
-[ -z "${BUZZ_RELAY_URL:-}" ] && BUZZ_RELAY_URL="${PIPELINE_BUZZ_RELAY:-$(cfg notifications.buzz_relay "")}"
+[ -z "${BUZZ_RELAY_URL:-}" ] && BUZZ_RELAY_URL="${PIPELINE_BUZZ_RELAY:-$(cfg notifications.buzz_relay)}"
 
 # ── API fallback for gh metadata lookups ──────────────────────────────────────
 # When gh is absent and a GitHub token is available, fetch issue/PR titles and
@@ -567,7 +567,7 @@ HEADLINE="$ROLE_ICON **$ROLE_LABEL** — ${VERDICT:-$NACTION}${REF:+ · $HEADLIN
 # <templates_dir>/<event>.md keeps winning over a shipped platform file — the
 # pre-#280 single-level layout must not break when Talos starts shipping
 # <platform>/ dirs underneath it.
-TMPL_DIR_CFG="$(cfg notifications.templates_dir "templates/notifications")"
+TMPL_DIR_CFG="$(cfg notifications.templates_dir)"
 TMPL_ROOTS=""
 if [ -n "$TMPL_DIR_CFG" ]; then
   case "$TMPL_DIR_CFG" in
@@ -739,7 +739,7 @@ json_escape() { python3 -I -c 'import json,sys; print(json.dumps(sys.argv[1]))' 
 PAYLOAD_TEXT="$(json_escape "$TEXT")"
 
 # ── Threading setup ───────────────────────────────────────────────────────────
-THREADING_ENABLED="$(cfg notifications.threading "true")"
+THREADING_ENABLED="$(cfg notifications.threading)"
 STATE_FILE="${PIPELINE_THREAD_STATE:-$HOME/.talos/threads.json}"
 
 STATE_KEY="${REPO_SLUG}:${THREAD_KEY}"
@@ -1410,7 +1410,7 @@ if [ -n "${BUZZ_RELAY_URL:-}" ] && [ -n "${BUZZ_BOT_PRIVATE_KEY:-}" ] && [ -n "$
   # never answers sends no RST, never closes, and never issues the NIP-42 AUTH
   # challenge, so an unbounded nak hangs this script — and with it the
   # orchestrator's whole post-merge chain — indefinitely.
-  BUZZ_TIMEOUT_S="$(cfg notifications.buzz_timeout_s "15")"
+  BUZZ_TIMEOUT_S="$(cfg notifications.buzz_timeout_s)"
   case "$BUZZ_TIMEOUT_S" in
     ''|*[!0-9]*) BUZZ_TIMEOUT_S=15 ;;
   esac
@@ -1532,9 +1532,9 @@ fi
 # always-exit-0 contract as every sink above -- a missing command, a
 # non-zero exit, or a timeout logs one line to stderr and this script still
 # exits 0; it never blocks the sinks above (it runs last) or the caller.
-CMD_SINK="$(cfg notifications.cmd "")"
+CMD_SINK="$(cfg notifications.cmd)"
 if [ -n "$CMD_SINK" ]; then
-  CMD_TIMEOUT_S="$(cfg notifications.cmd_timeout_s "10")"
+  CMD_TIMEOUT_S="$(cfg notifications.cmd_timeout_s)"
   case "$CMD_TIMEOUT_S" in
     ''|*[!0-9]*) CMD_TIMEOUT_S=10 ;;
   esac

@@ -270,7 +270,7 @@ EOF
 }
 
 # ── resolve ───────────────────────────────────────────────────────────────────
-_dc_cfg() { bash "$SCRIPT_DIR/pipeline-config.sh" "$1" "" 2>/dev/null | tr '[:upper:]' '[:lower:]'; }
+_dc_cfg() { bash "$SCRIPT_DIR/pipeline-config.sh" "$1" 2>/dev/null | tr '[:upper:]' '[:lower:]'; }
 
 _dc_resolve() {
   local key provider status

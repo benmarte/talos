@@ -38,8 +38,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [ -f "$SCRIPT_DIR/pipeline-cfg-cache.sh" ]; then
   . "$SCRIPT_DIR/pipeline-cfg-cache.sh"
 else
-  cfg() { bash "$SCRIPT_DIR/pipeline-config.sh" "$@"; }
-  echo "pipeline-mergebase: config cache helper missing, falling back to per-call parsing" >&2
+  echo "talos: pipeline-cfg-cache.sh missing; reinstall Talos" >&2
+  exit 1
 fi
 
 if [ -f "$SCRIPT_DIR/pipeline-lock.sh" ]; then
@@ -95,7 +95,7 @@ esac
 #      3 (not mechanically resolvable this time), same code as any other
 #      conflicting path merge.union_paths doesn't cover -- not exit 1, since
 #      nothing about the SCRIPT's own config is structurally broken.
-_MB_UNION_JSON="$(cfg merge.union_paths "" 2>/dev/null)"
+_MB_UNION_JSON="$(cfg merge.union_paths 2>/dev/null)"
 _MB_UNION_PATHS_RAW="$UNION_PATHS_OVERRIDE"
 if [ -z "$_MB_UNION_PATHS_RAW" ] && [ -n "$_MB_UNION_JSON" ]; then
   _MB_UNION_PATHS_RAW="$_MB_UNION_JSON"
@@ -206,7 +206,7 @@ if [ "$_MB_UNION_RC" -ne 0 ]; then
 fi
 
 # ── Resolve base branch (same fallback chain as assert-sync) ────────────────
-BASE_BRANCH="$(cfg base_branch "" 2>/dev/null)"
+BASE_BRANCH="$(cfg base_branch 2>/dev/null)"
 if [ -z "$BASE_BRANCH" ]; then
   BASE_BRANCH="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|.*/||')"
 fi

@@ -55,13 +55,13 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # cfg() (#169): dumps the config once per invocation and answers lookups
 # from that cache instead of re-parsing on every call. Guarded (#169 review):
-# a partial install/sync may not yet ship pipeline-cfg-cache.sh, so fall back
-# to the old per-call cfg() instead of leaving cfg undefined.
+# a partial install/sync may not yet ship pipeline-cfg-cache.sh: that is fatal
+# (no per-call fallback: it would hide the fail-closed exit of a broken table).
 if [ -f "$SCRIPT_DIR/pipeline-cfg-cache.sh" ]; then
   . "$SCRIPT_DIR/pipeline-cfg-cache.sh"
 else
-  cfg() { bash "$SCRIPT_DIR/pipeline-config.sh" "$@"; }
-  echo "pipeline: config cache helper missing, falling back to per-call parsing" >&2
+  echo "talos: pipeline-cfg-cache.sh missing; reinstall Talos" >&2
+  exit 1
 fi
 
 # Owner/project-id resolution and the curl-GraphQL + error-parsing helpers
@@ -100,7 +100,7 @@ except Exception:
     fi
     if [ -z "$_default_owner" ]; then
       local _vcs_repo
-      _vcs_repo="$(cfg vcs.repo "")"
+      _vcs_repo="$(cfg vcs.repo)"
       [ -n "$_vcs_repo" ] && _default_owner="${_vcs_repo%%/*}"
     fi
     printf '%s' "${_env_override:-$(cfg board.owner "$_default_owner")}"
@@ -175,11 +175,11 @@ esac
 
 _resolve_token_path() {
   local provider
-  provider="$(cfg vcs.provider "github")"
+  provider="$(cfg vcs.provider)"
   if [ "$provider" = "github-api" ] || ! command -v gh >/dev/null 2>&1; then
     _USE_TOKEN_PATH=true
     local token_env
-    token_env="$(cfg vcs.token_env "")"
+    token_env="$(cfg vcs.token_env)"
     if [ -n "$token_env" ]; then
       _STATUS_TOKEN="${!token_env:-}"
     fi
@@ -396,15 +396,15 @@ fi
 # script's stdout contract ("#N → status", talos:board-unverified) is
 # unchanged. issues.assignee: none skips it without spawning anything.
 if [ "$(printf '%s' "$STATUS" | tr '[:upper:]' '[:lower:]')" = "in progress" ] \
-    && [ "$(cfg vcs.provider "github")" != "file" ] \
-    && [ "$(cfg issues.assignee "self" | tr '[:upper:]' '[:lower:]')" != "none" ]; then
+    && [ "$(cfg vcs.provider)" != "file" ] \
+    && [ "$(cfg issues.assignee | tr '[:upper:]' '[:lower:]')" != "none" ]; then
   _claim_flags=()
   [ "$DRY_RUN" = "true" ] && _claim_flags=(--dry-run)
   bash "$SCRIPT_DIR/pipeline-vcs.sh" "${_claim_flags[@]+"${_claim_flags[@]}"}" assign-issue "$ISSUE" >&2 || true
 fi
 
 # ── Board enabled? ────────────────────────────────────────────────────────────
-BOARD_ENABLED="$(cfg board.enabled "true")"
+BOARD_ENABLED="$(cfg board.enabled)"
 if [ "$BOARD_ENABLED" = "false" ]; then
   echo "board disabled; skipping status update for #$ISSUE" >&2
   exit 0
@@ -415,21 +415,21 @@ fi
 # System.State drives its board column. Map the pipeline's status name to an ADO
 # state. States are process-specific (Scrum defaults shown); override any of them
 # via board.azure_states.{ready,in_progress,in_review,done,blocked} in the config.
-PROVIDER="$(cfg vcs.provider "github")"
+PROVIDER="$(cfg vcs.provider)"
 if [ "$PROVIDER" = "azure" ]; then
   case "$(printf '%s' "$STATUS" | tr '[:upper:]' '[:lower:]')" in
-    ready|"to do")   AZ_STATE="$(cfg board.azure_states.ready "New")" ;;
-    "in progress")   AZ_STATE="$(cfg board.azure_states.in_progress "Committed")" ;;
-    "in review")     AZ_STATE="$(cfg board.azure_states.in_review "Committed")" ;;
-    done)            AZ_STATE="$(cfg board.azure_states.done "Done")" ;;
-    blocked)         AZ_STATE="$(cfg board.azure_states.blocked "")" ;;
+    ready|"to do")   AZ_STATE="$(cfg board.azure_states.ready)" ;;
+    "in progress")   AZ_STATE="$(cfg board.azure_states.in_progress)" ;;
+    "in review")     AZ_STATE="$(cfg board.azure_states.in_review)" ;;
+    done)            AZ_STATE="$(cfg board.azure_states.done)" ;;
+    blocked)         AZ_STATE="$(cfg board.azure_states.blocked)" ;;
     *)               AZ_STATE="" ;;
   esac
   if [ -z "$AZ_STATE" ]; then
     echo "#$ISSUE → $STATUS (no ADO state mapping; leaving work-item state unchanged)" >&2
     exit 0
   fi
-  AZ_ORG="$(cfg vcs.azure.org_url "")"
+  AZ_ORG="$(cfg vcs.azure.org_url)"
   if [ "$DRY_RUN" = "true" ]; then
     echo "[dry-run] az boards work-item update --id $ISSUE --state $AZ_STATE${AZ_ORG:+ --org $AZ_ORG}"
     echo "#$ISSUE → $STATUS (ADO state: $AZ_STATE, dry-run)"
@@ -452,13 +452,13 @@ if [ "$PROVIDER" = "gitlab" ]; then
 fi
 
 # ── Read config with env var overrides ───────────────────────────────────────
-PROJECT_NUM="${PIPELINE_PROJECT_NUMBER:-$(cfg board.project_number "")}"
+PROJECT_NUM="${PIPELINE_PROJECT_NUMBER:-$(cfg board.project_number)}"
 if [ -z "$PROJECT_NUM" ]; then
   echo "pipeline-status: board.project_number not configured; skipping" >&2
   exit 0
 fi
 
-STATUS_FIELD="${PIPELINE_STATUS_FIELD:-$(cfg board.status_field "Status")}"
+STATUS_FIELD="${PIPELINE_STATUS_FIELD:-$(cfg board.status_field)}"
 
 # ── Apply board.status_map ────────────────────────────────────────────────────
 # Map the pipeline status name to the operator's board column name.
@@ -479,7 +479,7 @@ fi
 
 # Repo: for issue URL construction
 if [ "$_USE_TOKEN_PATH" = "true" ]; then
-  REPO="${PIPELINE_REPO:-$(cfg vcs.repo "")}"
+  REPO="${PIPELINE_REPO:-$(cfg vcs.repo)}"
   if [ -z "$REPO" ]; then
     REPO="$(git remote get-url origin 2>/dev/null \
       | sed 's|.*github\.com[:/]||; s|\.git$||' || echo "$OWNER/REPO")"

@@ -138,10 +138,10 @@ assert_eq "0" "$( [ -e "$_two_cfg" ] && echo 1 || echo 0 )" \
 assert_eq "0" "$( [ -e "$_two_other" ] && echo 1 || echo 0 )" \
   "a second site's own exit hook (e.g. post-approval's tempfile) also runs -- hooks compose, not clobber (#169)"
 
-# ── Missing-helper fallback: a partial install/sync that has every script ───
-# except pipeline-cfg-cache.sh must not silently lose cfg() (#169 review
-# finding on PR #213). Reuse the AC1 WRAP dir but drop the cache-helper
-# symlink to simulate the helper being absent from $SCRIPT_DIR.
+# ── Missing helper is fatal (#440, replaces the #169 per-call fallback) ─────
+# A partial install/sync without pipeline-cfg-cache.sh used to fall back to a
+# per-call cfg(); that hid the fail-closed exit of a broken defaults table (the
+# call sits inside $(...)). Now the script stops with one line and exit 1.
 WRAP_NO_HELPER="$SANDBOX/wrapped-no-helper"
 mkdir -p "$WRAP_NO_HELPER"
 for f in "$TALOS_ROOT"/scripts/*.sh; do
@@ -153,12 +153,11 @@ cat > talos.pipeline.json <<'EOF'
 {"merge": {"method": "squash"}}
 EOF
 _nh_stderr="$SANDBOX/no-helper.stderr"
-_nh_stdout="$(bash "$WRAP_NO_HELPER/pipeline-vcs.sh" --dry-run merge-pr 9 2>"$_nh_stderr")"
-assert_contains "$_nh_stdout" "--squash" \
-  "cfg() still resolves merge.method correctly when pipeline-cfg-cache.sh is missing (#169 fallback)"
-_nh_warn_count="$(grep -c "^pipeline: config cache helper missing, falling back to per-call parsing$" "$_nh_stderr")"
-assert_eq "1" "$_nh_warn_count" \
-  "missing-helper fallback prints exactly one stderr warning (#169 fallback)"
+_nh_stdout="$(bash "$WRAP_NO_HELPER/pipeline-vcs.sh" --dry-run merge-pr 9 2>"$_nh_stderr")"; _nh_rc=$?
+assert_eq "1" "$_nh_rc" "pipeline-vcs.sh exits 1 when pipeline-cfg-cache.sh is missing (#440)"
+assert_eq "" "$_nh_stdout" "nothing runs when pipeline-cfg-cache.sh is missing (#440)"
+assert_eq "talos: pipeline-cfg-cache.sh missing; reinstall Talos" "$(cat "$_nh_stderr")" \
+  "missing helper prints exactly the one stderr line (#440)"
 
 # ── Table fallback spawns no python3 (#439): none with no config, one with ──
 # one. A python3 shim on PATH counts every spawn; the real interpreter is

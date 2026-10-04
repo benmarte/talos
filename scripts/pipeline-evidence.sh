@@ -289,14 +289,14 @@ _evidence_max_mb() {
 # _evidence_enabled -- true only when evidence.enabled is exactly `true` (an
 # absent key, `false` and any other value are off). The one gate `attach` and
 # `enabled` share; needs the toplevel as cwd (reads the config).
-_evidence_enabled() { [ "$(cfg evidence.enabled false)" = "true" ]; }
+_evidence_enabled() { [ "$(cfg evidence.enabled)" = "true" ]; }
 
 # _evidence_repo -- prints the `<owner>/<repo>` slug (vcs.repo, else gh's own
 # answer), only when both halves are plain `[A-Za-z0-9._-]+`; returns 1 and
 # prints nothing otherwise. The one resolver `upload` and `check-url` share.
 _evidence_repo() {
   local repo
-  repo="$(cfg vcs.repo "")"
+  repo="$(cfg vcs.repo)"
   [ -n "$repo" ] || repo="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)" || repo=""
   [[ "$repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || return 1
   printf '%s' "$repo"
@@ -361,12 +361,12 @@ cmd_capture() {
   [ $# -eq 0 ] || usage
   _enter_toplevel
   local command timeout_ms since log rc
-  command="$(cfg evidence.command "")"
+  command="$(cfg evidence.command)"
   case "$command" in
     *[![:space:]]*) ;;
     *) echo "evidence-capture mode=agent"; return 0 ;;
   esac
-  timeout_ms="$(_digits_or 600000 "$(cfg verify.timeout_ms 600000)")"
+  timeout_ms="$(_digits_or 600000 "$(cfg verify.timeout_ms)")"
   [ "$timeout_ms" -gt 0 ] 2>/dev/null || timeout_ms=600000
   log="$(mktemp "${TMPDIR:-/tmp}/talos-evidence.XXXXXX")" || {
     echo "pipeline-evidence: cannot create the capture log in ${TMPDIR:-/tmp}" >&2
@@ -668,7 +668,7 @@ cmd_collect() {
   local max_files max_mb include
   max_files="$(_evidence_max_files)"
   max_mb="$(_evidence_max_mb)"
-  include="$(cfg evidence.include "")"
+  include="$(cfg evidence.include)"
   _run_py "evidence-collect refused" "$_COLLECT_PY" \
     "$TOPLEVEL" "$dir" "$since" "$max_files" "$max_mb" "$include" "$stage" "$_EVIDENCE_FILE_MB"
 }
@@ -800,7 +800,7 @@ TALOS_UPLOAD_PY_Fm7Rc1Gk9Ts
 # stderr line otherwise. Needs the toplevel as cwd (reads the config).
 _require_gh_provider() {
   local verb="$1" provider
-  provider="$(cfg vcs.provider github)"
+  provider="$(cfg vcs.provider)"
   case "$provider" in
     github) ;;
     github-api) ;;
@@ -900,7 +900,7 @@ EOF
 
   if [ "$dry" = 1 ]; then
     local repo_shown
-    repo_shown="$(cfg vcs.repo "")"
+    repo_shown="$(cfg vcs.repo)"
     [ -n "$repo_shown" ] || repo_shown="<owner>/<repo>"
     echo "[dry-run] gh pr comment --help (must list --attach)"
     echo "[dry-run] gh api user --jq .login"
@@ -1102,7 +1102,7 @@ cmd_enabled() {
   _enter_toplevel
   _evidence_enabled || return 1
   local provider reason=""
-  provider="$(cfg vcs.provider github)"
+  provider="$(cfg vcs.provider)"
   case "$provider" in
     github|github-api)
       if ! command -v gh >/dev/null 2>&1; then
@@ -1117,9 +1117,9 @@ cmd_enabled() {
     return 1
   fi
   local when mode command
-  when="$(cfg evidence.when user-facing)"
+  when="$(cfg evidence.when)"
   case "$when" in always) ;; *) when="user-facing" ;; esac
-  command="$(cfg evidence.command "")"
+  command="$(cfg evidence.command)"
   case "$command" in *[![:space:]]*) mode=command ;; *) mode=agent ;; esac
   echo "evidence on when=$when mode=$mode"
 }

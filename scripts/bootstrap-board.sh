@@ -35,8 +35,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [ -f "$SCRIPT_DIR/pipeline-cfg-cache.sh" ]; then
   . "$SCRIPT_DIR/pipeline-cfg-cache.sh"
 else
-  cfg() { bash "$SCRIPT_DIR/pipeline-config.sh" "$@"; }
-  echo "bootstrap-board: config cache helper missing, falling back to per-call parsing" >&2
+  echo "talos: pipeline-cfg-cache.sh missing; reinstall Talos" >&2
+  exit 1
 fi
 
 # The whole point of this script is the logic in pipeline-board-shared.sh
@@ -60,8 +60,8 @@ if [ -n "$ARG" ]; then
   ARG_PROJECT_NUM="${ARG##*/}"
 fi
 
-PROVIDER="$(cfg vcs.provider "github")"
-BOARD_ENABLED="$(cfg board.enabled "true")"
+PROVIDER="$(cfg vcs.provider)"
+BOARD_ENABLED="$(cfg board.enabled)"
 
 if [ "$BOARD_ENABLED" = "false" ] || [ "$PROVIDER" = "file" ]; then
   echo "board disabled"
@@ -70,9 +70,9 @@ fi
 
 # ── Azure DevOps: validate configured states exist on the work item type ────
 if [ "$PROVIDER" = "azure" ]; then
-  WTYPE="$(cfg vcs.azure.work_item_type "Product Backlog Item")"
-  AZ_ORG="$(cfg vcs.azure.org_url "")"
-  AZ_PROJECT="$(cfg vcs.azure.project "")"
+  WTYPE="$(cfg vcs.azure.work_item_type)"
+  AZ_ORG="$(cfg vcs.azure.org_url)"
+  AZ_PROJECT="$(cfg vcs.azure.project)"
   if [ -z "$AZ_ORG" ] || [ -z "$AZ_PROJECT" ]; then
     echo "bootstrap-board: vcs.azure.org_url and vcs.azure.project must be set to validate states" >&2
     exit 1
@@ -99,15 +99,10 @@ except Exception:
 " 2>/dev/null)"
   echo "Validating Azure DevOps states for work item type '$WTYPE'"
   _AZ_MISSING=0
-  for _entry in \
-    "ready|board.azure_states.ready|New" \
-    "in_progress|board.azure_states.in_progress|Committed" \
-    "in_review|board.azure_states.in_review|Committed" \
-    "done|board.azure_states.done|Done" \
-    "blocked|board.azure_states.blocked|"
+  for _key in ready in_progress in_review done blocked
   do
-    _key="${_entry%%|*}"; _rest="${_entry#*|}"; _cfgkey="${_rest%%|*}"; _default="${_rest#*|}"
-    _val="$(cfg "$_cfgkey" "$_default")"
+    _cfgkey="board.azure_states.$_key"
+    _val="$(cfg "$_cfgkey")"
     if [ -z "$_val" ]; then
       continue
     fi
@@ -150,19 +145,19 @@ except Exception:
 fi
 
 # ── GitHub / github-api: provision the Status field's options ───────────────
-PROJECT_NUM="${ARG_PROJECT_NUM:-$(cfg board.project_number "")}"
+PROJECT_NUM="${ARG_PROJECT_NUM:-$(cfg board.project_number)}"
 if [ -z "$PROJECT_NUM" ]; then
   echo "bootstrap-board: board.project_number not configured; nothing to do" >&2
   exit 0
 fi
 
-STATUS_FIELD="$(cfg board.status_field "Status")"
+STATUS_FIELD="$(cfg board.status_field)"
 
 USE_TOKEN_PATH=false
 TOKEN=""
 if [ "$PROVIDER" = "github-api" ] || ! command -v gh >/dev/null 2>&1; then
   USE_TOKEN_PATH=true
-  _TOKEN_ENV="$(cfg vcs.token_env "")"
+  _TOKEN_ENV="$(cfg vcs.token_env)"
   [ -n "$_TOKEN_ENV" ] && TOKEN="${!_TOKEN_ENV:-}"
   [ -z "$TOKEN" ] && TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
   if [ -z "$TOKEN" ]; then

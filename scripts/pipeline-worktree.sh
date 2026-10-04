@@ -142,13 +142,13 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # cfg() (#169): dumps the config once per invocation and answers lookups
 # from that cache instead of re-parsing on every call. Guarded (#169 review):
-# a partial install/sync may not yet ship pipeline-cfg-cache.sh, so fall back
-# to the old per-call cfg() instead of leaving cfg undefined.
+# a partial install/sync may not yet ship pipeline-cfg-cache.sh: that is fatal
+# (no per-call fallback: it would hide the fail-closed exit of a broken table).
 if [ -f "$SCRIPT_DIR/pipeline-cfg-cache.sh" ]; then
   . "$SCRIPT_DIR/pipeline-cfg-cache.sh"
 else
-  cfg() { bash "$SCRIPT_DIR/pipeline-config.sh" "$@"; }
-  echo "pipeline: config cache helper missing, falling back to per-call parsing" >&2
+  echo "talos: pipeline-cfg-cache.sh missing; reinstall Talos" >&2
+  exit 1
 fi
 # pipeline-lock.sh (#180): `git worktree add/remove` races on the same
 # repo's shared .git metadata when two stages run concurrently
@@ -631,7 +631,7 @@ _wt_sweep_branches() {
 # branch (stripped of its "origin/" prefix) when unconfigured.
 _wt_configured_base_branch() {
   local b
-  b="$(cfg base_branch '' 2>/dev/null)"
+  b="$(cfg base_branch 2>/dev/null)"
   if [ -z "$b" ]; then
     b="$(_default_branch_ref 2>/dev/null)"
     b="${b#origin/}"
@@ -1068,7 +1068,7 @@ case "$verb" in
     [ -n "$issue_listing" ] && printf '%s\n' "$issue_listing" | awk -F'\t' '{print $3"\t"$1"\t"$2}'
     [ -n "$harness_listing" ] && printf '%s\n' "$harness_listing" | awk -F'\t' '{print "-\t"$1"\t"$2}'
     count="$(_stale_worktree_count "$issue_listing" "$harness_listing")"
-    threshold="$(cfg execution.worktree_warn_threshold 10)"
+    threshold="$(cfg execution.worktree_warn_threshold)"
     if [ "$count" -gt "$threshold" ] 2>/dev/null; then
       echo "pipeline-worktree: WARNING: $count stale worktrees exceed threshold $threshold"
     fi

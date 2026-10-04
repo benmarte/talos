@@ -1,0 +1,135 @@
+# Golden defaults (#440, epic #437): the effective default of every config key
+# the call sites relied on, taken from main at c086a81 BEFORE any call site was
+# migrated to the table in scripts/pipeline-defaults.sh.
+#
+# One row per key, four TAB-separated columns:
+#
+#   key  golden  kind  sites
+#
+#   key     the config key ("agents.roles.developer.*" stands for any role)
+#   golden  the value a lookup printed on main when no config layer set the key:
+#           the literal the call sites passed, or the playbook/README default
+#           for a key no script reads. A newline is the two characters \n.
+#   kind    table     the table default must equal golden, exactly
+#           empty     golden is empty: the key is derived or has no default
+#           explicit  the call site keeps passing its own value on purpose
+#                     (comments.header in pipeline-events.sh: no header);
+#                     the test pins that behaviour, not a table row
+#           equiv     the table differs from the old literal but every
+#                     consumer treats both alike (checked in the test)
+#   sites   where main read the key ("docs" = no script reads it)
+#
+# tests/test-config-golden-defaults.sh checks every non-empty table default
+# against this list, so a wrong table row goes red before it can change
+# behaviour. Do not edit a golden value to make that test pass: a golden value
+# only changes when the documented default changes.
+agents.effort		empty	pipeline-agent.sh
+agents.fallback		empty	pipeline-agent.sh
+agents.model		empty	pipeline-agent.sh,pipeline-hooks.sh
+agents.provider_down_s	900	table	pipeline-agent.sh
+agents.restamp_model		empty	pipeline-agent.sh,pipeline-hooks.sh
+agents.roles.developer.effort		empty	pipeline-agent.sh
+agents.roles.developer.fallback		empty	pipeline-agent.sh
+agents.roles.developer.model		empty	pipeline-agent.sh,pipeline-hooks.sh
+agents.roles.developer.restamp_model		empty	pipeline-agent.sh,pipeline-hooks.sh
+agents.roles.developer.runner		empty	pipeline-agent.sh
+agents.roles.developer.runner_cmd		empty	pipeline-agent.sh
+agents.runner	claude	table	pipeline-agent.sh,pipeline-hooks.sh,pipeline-setup/SKILL.md
+agents.runner_args		empty	pipeline-agent.sh
+agents.runner_cmd		empty	pipeline-agent.sh
+agents.subagents	auto	table	pipeline-agent.sh
+base_branch		empty	pipeline-changelog.sh,pipeline-hooks.sh,pipeline-mergebase.sh,pipeline-status-file.sh,pipeline-vcs.sh,pipeline-worktree.sh
+board.azure_states.blocked		empty	pipeline-status.sh
+board.azure_states.done	Done	table	pipeline-status.sh,pipeline-vcs.sh
+board.azure_states.in_progress	Committed	table	pipeline-status.sh
+board.azure_states.in_review	Committed	table	pipeline-status.sh
+board.azure_states.ready	New	table	pipeline-status.sh
+board.enabled	true	table	bootstrap-board.sh,pipeline-status.sh
+board.project_number		empty	bootstrap-board.sh,pipeline-status.sh
+board.status_field	Status	table	bootstrap-board.sh,pipeline-status.sh
+comments.enabled	true	table	docs
+comments.header		explicit	pipeline-events.sh
+comments.templates_dir	templates/comments	table	pipeline-vcs.sh
+events.enabled	true	table	pipeline-hooks.sh
+events.path	.talos/events.jsonl	table	pipeline-events.sh,pipeline-hooks.sh
+evidence.command		empty	pipeline-evidence.sh
+evidence.dir	.talos/evidence	table	pipeline-evidence.sh:_EVIDENCE_DEFAULT_DIR
+evidence.enabled	false	table	pipeline-evidence.sh
+evidence.include		empty	pipeline-evidence.sh
+evidence.max_files	10	table	pipeline-evidence.sh:_EVIDENCE_DEFAULT_MAX_FILES
+evidence.max_mb	20	table	pipeline-evidence.sh:_EVIDENCE_DEFAULT_MAX_MB
+evidence.store	attach	table	docs
+evidence.when	user-facing	table	pipeline-evidence.sh
+execution.isolation	worktree	table	pipeline-isolation.sh
+execution.worktree_warn_threshold	10	table	pipeline-worktree.sh
+hooks.post_stage		empty	pipeline-hooks.sh
+hooks.pre_dispatch		empty	pipeline-hooks.sh
+hooks.timeout_s	30	table	pipeline-hooks.sh
+issues.assignee	self	table	pipeline-status.sh,pipeline-vcs.sh
+issues.label_filter	pipeline:ready	table	docs
+issues.max_parallel	1	table	pipeline-isolation.sh
+issues.skip_labels	pipeline:blocked\nwontfix	table	docs
+limits.max_fix_attempts	3	table	pipeline-vcs.sh
+limits.max_retries	5	table	pipeline-vcs.sh
+limits.max_total_dispatches	8	table	pipeline-vcs.sh
+limits.tokens_per_issue		empty	pipeline-budget.sh
+limits.warn_at	0.8	table	pipeline-budget.sh,pipeline-events.sh
+markers.trusted_authors		empty	pipeline-vcs.sh
+markers.verify_authors	true	table	pipeline-vcs.sh
+merge.approval_waiver_paths		empty	pipeline-vcs.sh
+merge.auto	true	table	pipeline-status-file.sh
+merge.auto_sync	true	table	docs
+merge.delete_branch	true	table	docs
+merge.forbidden_files		empty	pipeline-vcs.sh
+merge.forbidden_files_allow		empty	pipeline-vcs.sh
+merge.forbidden_files_replace		equiv	pipeline-vcs.sh
+merge.method	squash	table	pipeline-vcs.sh
+merge.required_checks		empty	pipeline-status-file.sh,pipeline-vcs.sh
+merge.union_paths		empty	pipeline-mergebase.sh
+notifications.buzz_channel		empty	pipeline-notify.sh
+notifications.buzz_relay		empty	pipeline-notify.sh
+notifications.buzz_timeout_s	15	table	pipeline-notify.sh
+notifications.cmd		empty	pipeline-notify.sh
+notifications.cmd_timeout_s	10	table	pipeline-notify.sh
+notifications.discord_channel		empty	pipeline-notify.sh
+notifications.events		empty	pipeline-notify.sh
+notifications.slack_channel		empty	pipeline-notify.sh
+notifications.templates_dir	templates/notifications	table	pipeline-notify.sh
+notifications.threading	true	table	pipeline-notify.sh
+pr.draft		empty	pipeline-draft-check.sh:_dc_cfg
+release_branch	main	table	docs
+repo		empty	pipeline-hooks.sh
+roles.adversarial	false	table	pipeline-status-file.sh:_sf_role_on
+roles.changelog_fragments	false	table	docs
+roles.docs	true	table	pipeline-status-file.sh:_sf_role_on
+roles.docs_mode	auto	table	docs
+roles.planner	false	table	docs
+roles.pm	true	table	docs
+roles.pm_skip_when_spec_present	true	table	docs
+roles.qa	true	table	pipeline-status-file.sh:_sf_role_on
+roles.reviewer	true	table	pipeline-status-file.sh:_sf_role_on
+roles.security	true	table	pipeline-status-file.sh:_sf_role_on
+roles.validator	true	table	docs
+spend.comment	true	table	docs
+status.archive_dir	status/archive	table	pipeline-status-file.sh
+status.enabled	false	table	pipeline-status-file.sh,resume/SKILL.md
+status.file	TALOS_STATUS.md	table	pipeline-status-file.sh,resume/SKILL.md
+status.fragments_dir	docs/status.d	table	pipeline-status-file.sh
+status.log_days	30	table	pipeline-status-file.sh:_sf_posint
+status.log_heading	## Log	table	pipeline-status-file.sh
+status.log_max	50	table	pipeline-status-file.sh:_sf_posint
+status.resume_heading	## Resume here	table	pipeline-status-file.sh
+status.resume_max_lines	40	table	pipeline-status-file.sh:_sf_posint
+vcs.azure.area_path		empty	pipeline-vcs.sh
+vcs.azure.org_url		empty	bootstrap-board.sh,pipeline-status.sh,pipeline-vcs.sh
+vcs.azure.project		empty	bootstrap-board.sh,pipeline-vcs.sh
+vcs.azure.work_item_type	Product Backlog Item	table	bootstrap-board.sh,pipeline-vcs.sh
+vcs.file.source.path	plan.md	table	pipeline-vcs.sh
+vcs.provider	github	table	bootstrap-board.sh,pipeline-evidence.sh,pipeline-setup/SKILL.md,pipeline-status.sh,pipeline-vcs.sh
+vcs.repo		empty	pipeline-board-shared.sh,pipeline-evidence.sh,pipeline-hooks.sh,pipeline-status.sh,pipeline-vcs.sh
+vcs.token_env		empty	bootstrap-board.sh,pipeline-status.sh,pipeline-vcs.sh
+verify		empty	pipeline-verify.sh
+verify.ci_wait_s	900	table	docs
+verify.qa_mode	local	table	pipeline/SKILL.md
+verify.targeted	true	table	docs
+verify.timeout_ms	600000	table	pipeline-evidence.sh

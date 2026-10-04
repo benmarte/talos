@@ -29,12 +29,12 @@ Five cases, in priority order: explicit override ($TALOS_HOME), global install (
 Check whether `talos.pipeline.yml` or `pipeline.yaml` already exists in the current directory.
 
 If a config **exists**:
-- Read it with `bash scripts/pipeline-config.sh <key> <default>` to show current values.
+- Read it with `bash scripts/pipeline-config.sh <key>` to show current values (a key that is not set prints its documented default).
 - Tell the user: "Found an existing config. Here's what's set: ..."
 - Ask: "Would you like to update any of these settings, or is this just a re-run to bootstrap labels?"
-- If no changes needed: check `bash scripts/pipeline-config.sh status.enabled unset`. If it prints `unset` (no `status:` block yet), ask Step 4b's question once; on yes add ONLY the `status:` block to the existing file (show the lines to add and write only after an explicit yes; never rewrite the rest of the file, per the Idempotency rules), then run Step 7b.
-- If no changes needed and `bash scripts/pipeline-config.sh vcs.provider github` prints `github`: check `bash scripts/pipeline-config.sh evidence.enabled unset`. If it prints `unset` (no `evidence:` block yet), ask Step 4c's question once; on anything but "ask me later" add ONLY the `evidence:` block to the existing file (show the lines to add and write only after an explicit yes; never rewrite the rest of the file, per the Idempotency rules). "Ask me later" writes nothing. A config that already has `enabled: false` is never re-asked.
-- If no changes needed, in every case (whatever the check above printed): run Step 7c with the harness from `bash scripts/pipeline-config.sh agents.runner claude`, then jump to Step 8 (bootstrap labels) and Step 10 (test notification).
+- If no changes needed: run `bash scripts/pipeline-config.sh --has status.enabled` (exit 0 set, 1 not set, 3 the config does not parse: tell the user and skip this check). On exit 1 (no `status:` block yet), ask Step 4b's question once; on yes add ONLY the `status:` block to the existing file (show the lines to add and write only after an explicit yes; never rewrite the rest of the file, per the Idempotency rules), then run Step 7b.
+- If no changes needed and `bash scripts/pipeline-config.sh vcs.provider` prints `github`: run `bash scripts/pipeline-config.sh --has evidence.enabled` (same exit codes). On exit 1 (no `evidence:` block yet), ask Step 4c's question once; on anything but "ask me later" add ONLY the `evidence:` block to the existing file (show the lines to add and write only after an explicit yes; never rewrite the rest of the file, per the Idempotency rules). "Ask me later" writes nothing. A config that already has `enabled: false` is never re-asked.
+- If no changes needed, in every case (whatever the check above printed): run Step 7c with the harness from `bash scripts/pipeline-config.sh agents.runner`, then jump to Step 8 (bootstrap labels) and Step 10 (test notification).
 
 If **no config**: continue to Step 1.
 

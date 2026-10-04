@@ -191,13 +191,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/pipeline-paths.sh"
 # cfg() (#169): dumps the config once per invocation and answers lookups
 # from that cache instead of re-parsing on every call. Guarded (#169 review):
-# a partial install/sync may not yet ship pipeline-cfg-cache.sh, so fall back
-# to the old per-call cfg() instead of leaving cfg undefined.
+# a partial install/sync may not yet ship pipeline-cfg-cache.sh: that is fatal
+# (no per-call fallback: it would hide the fail-closed exit of a broken table).
 if [ -f "$SCRIPT_DIR/pipeline-cfg-cache.sh" ]; then
   . "$SCRIPT_DIR/pipeline-cfg-cache.sh"
 else
-  cfg() { bash "$SCRIPT_DIR/pipeline-config.sh" "$@"; }
-  echo "pipeline: config cache helper missing, falling back to per-call parsing" >&2
+  echo "talos: pipeline-cfg-cache.sh missing; reinstall Talos" >&2
+  exit 1
 fi
 
 # ── Per-role runner resolution (#167) ─────────────────────────────────────────
@@ -207,22 +207,22 @@ fi
 # one place this precedence is decided.
 _resolve_runner() {
   local _role="$1" _r
-  _r="$(cfg "agents.roles.$_role.runner" "")"
-  [ -n "$_r" ] || _r="$(cfg agents.runner "claude")"
+  _r="$(cfg "agents.roles.$_role.runner")"
+  [ -n "$_r" ] || _r="$(cfg agents.runner)"
   printf '%s' "$_r"
 }
 
 _resolve_runner_cmd() {
   local _role="$1" _c
-  _c="$(cfg "agents.roles.$_role.runner_cmd" "")"
-  [ -n "$_c" ] || _c="$(cfg agents.runner_cmd "")"
+  _c="$(cfg "agents.roles.$_role.runner_cmd")"
+  [ -n "$_c" ] || _c="$(cfg agents.runner_cmd)"
   printf '%s' "$_c"
 }
 
 _resolve_model() {
   local _role="$1" _m
-  _m="$(cfg "agents.roles.$_role.model" "")"
-  [ -n "$_m" ] || _m="$(cfg agents.model "")"
+  _m="$(cfg "agents.roles.$_role.model")"
+  [ -n "$_m" ] || _m="$(cfg agents.model)"
   printf '%s' "$_m"
 }
 
@@ -234,8 +234,8 @@ _resolve_model() {
 # pipeline-config.sh, exactly like _resolve_model.
 _resolve_effort() {
   local _role="$1" _e
-  _e="$(cfg "agents.roles.$_role.effort" "")"
-  [ -n "$_e" ] || _e="$(cfg agents.effort "")"
+  _e="$(cfg "agents.roles.$_role.effort")"
+  [ -n "$_e" ] || _e="$(cfg agents.effort)"
   printf '%s' "$_e"
 }
 
@@ -243,8 +243,8 @@ _resolve_effort() {
 # per line (the config reader already validated the list; invalid reads absent).
 _resolve_fallback() {
   local _role="$1" _f
-  _f="$(cfg "agents.roles.$_role.fallback" "")"
-  [ -n "$_f" ] || _f="$(cfg agents.fallback "")"
+  _f="$(cfg "agents.roles.$_role.fallback")"
+  [ -n "$_f" ] || _f="$(cfg agents.fallback)"
   printf '%s' "$_f"
 }
 
@@ -382,26 +382,29 @@ sys.stdout.buffer.write(re.sub(rb"[\x00-\x1f\x7f]|\xc2[\x80-\x9f]", b"", sys.std
   }
   for _r in $_ALL_ROLES; do
     _m="$(_plain "$(_resolve_model "$_r")")"
-    if [ -n "$(cfg "agents.roles.$_r.model" "")" ]; then
+    if [ -n "$(cfg "agents.roles.$_r.model")" ]; then
       _origin="$(_layer_of "agents.roles.$_r.model")"
-    elif [ -n "$(cfg agents.model "")" ]; then
+    elif [ -n "$(cfg agents.model)" ]; then
       _origin="$(_layer_of agents.model)"
     else
       _origin="session default"
     fi
-    _rs="$(cfg "agents.roles.$_r.restamp_model" "")"
-    [ -n "$_rs" ] || _rs="$(cfg agents.restamp_model "")"
-    [ -n "$_rs" ] || _rs="$(cfg agents.model "")"
+    _rs="$(cfg "agents.roles.$_r.restamp_model")"
+    [ -n "$_rs" ] || _rs="$(cfg agents.restamp_model)"
+    [ -n "$_rs" ] || _rs="$(cfg agents.model)"
     # runner / runner_cmd (#340): appended, and only when one is set, so a role
     # with neither keeps the exact four-column line. A user-level runner applies
     # to every repo, so say which layer supplied it. Same role-first chain as
     # _resolve_runner / _resolve_runner_cmd.
     _extra=""
-    _rv="$(cfg "agents.roles.$_r.runner" "")"
+    _rv="$(cfg "agents.roles.$_r.runner")"
     if [ -n "$_rv" ]; then
       _extra="$_extra runner=$(_plain "$_rv") runner_origin=$(_layer_of "agents.roles.$_r.runner")"
     else
-      _rv="$(cfg agents.runner "")"
+      # Only an explicitly set agents.runner is shown: a table default (claude)
+      # is not a configured value, so ask the layer map whether a file set it.
+      _rv=""
+      [ -z "$(_layer_of agents.runner)" ] || _rv="$(cfg agents.runner)"
       [ -z "$_rv" ] || _extra="$_extra runner=$(_plain "$_rv") runner_origin=$(_layer_of agents.runner)"
     fi
     # runner_cmd is free text (spaces, even the words "runner_cmd_origin="), so it
@@ -409,12 +412,12 @@ sys.stdout.buffer.write(re.sub(rb"[\x00-\x1f\x7f]|\xc2[\x80-\x9f]", b"", sys.std
     # comes first as an ordinary column, and `cut -f2-` on the TAB yields the
     # whole `runner_cmd=<value>` field no matter what the value holds (#342).
     _cmd=""
-    _rv="$(cfg "agents.roles.$_r.runner_cmd" "")"
+    _rv="$(cfg "agents.roles.$_r.runner_cmd")"
     if [ -n "$_rv" ]; then
       _extra="$_extra runner_cmd_origin=$(_layer_of "agents.roles.$_r.runner_cmd")"
       _cmd="$(printf '\trunner_cmd=%s' "$(_plain "$_rv")")"
     else
-      _rv="$(cfg agents.runner_cmd "")"
+      _rv="$(cfg agents.runner_cmd)"
       if [ -n "$_rv" ]; then
         _extra="$_extra runner_cmd_origin=$(_layer_of agents.runner_cmd)"
         _cmd="$(printf '\trunner_cmd=%s' "$(_plain "$_rv")")"
@@ -423,7 +426,7 @@ sys.stdout.buffer.write(re.sub(rb"[\x00-\x1f\x7f]|\xc2[\x80-\x9f]", b"", sys.std
     # fallback / fallback_origin (#418): pre-TAB columns, only when a chain resolves.
     _fb="$(_fallback_chain "$_r" "$(_resolve_runner "$_r")" 2>/dev/null | paste -sd, -)"
     if [ -n "$_fb" ]; then
-      if [ -n "$(cfg "agents.roles.$_r.fallback" "")" ]; then
+      if [ -n "$(cfg "agents.roles.$_r.fallback")" ]; then
         _fbo="$(_layer_of "agents.roles.$_r.fallback")"
       else
         _fbo="$(_layer_of agents.fallback)"
@@ -448,7 +451,7 @@ sys.stdout.buffer.write(re.sub(rb"[\x00-\x1f\x7f]|\xc2[\x80-\x9f]", b"", sys.std
     if [ -n "$_np" ]; then
       if [ -f "$PWD/.claude/agents/$_r.md" ]; then
         echo "pipeline-agent: [warn] $_np is shadowed by $PWD/.claude/agents/$_r.md; the adapter and pi inline paths read the .claude/agents file" >&2
-      elif [ "$(_resolve_runner "$_r")" = "claude" ] && [ "$(cfg agents.subagents auto)" != "false" ]; then
+      elif [ "$(_resolve_runner "$_r")" = "claude" ] && [ "$(cfg agents.subagents)" != "false" ]; then
         echo "pipeline-agent: [warn] $_np is read only by the adapter and pi inline paths; the native Claude path does not read it -- put the profile in $PWD/.claude/agents/$_r.md for role $_r" >&2
       fi
     fi
@@ -610,7 +613,7 @@ PYEOF
 _prov_mark_down() {
   local _file _secs
   _file="$(_prov_path)" || { echo "pipeline-agent: [warn] not in a git repository -- cannot record $1 as down" >&2; return 0; }
-  _secs="$(cfg agents.provider_down_s 900)"
+  _secs="$(cfg agents.provider_down_s)"
   mkdir -p "$(dirname "$_file")" 2>/dev/null || { echo "pipeline-agent: [warn] cannot create $(dirname "$_file") -- $1 not recorded as down" >&2; return 0; }
   if command -v with_lock >/dev/null 2>&1; then
     with_lock "$_file" 5 -- _prov_write "$_file" "$1" "$2" "$_secs" \
@@ -765,7 +768,7 @@ RUNNER_ARGS=()
 while IFS= read -r line; do
   [ -n "$line" ] && RUNNER_ARGS+=("$line")
 done <<EOF
-$(cfg agents.runner_args "")
+$(cfg agents.runner_args)
 EOF
 
 # RC (#182): every branch below used to `exec` straight into the runner, so

@@ -46,12 +46,29 @@
 # arrays.
 
 # The config schema table (#439): the fallback for a cfg call with no default.
-# A partial install may not ship it yet; then such a call prints nothing, as
-# an unknown key always did.
-if [ -f "$SCRIPT_DIR/pipeline-defaults.sh" ]; then
-  . "$SCRIPT_DIR/pipeline-defaults.sh"
+# It is loaded only when intact (pipeline-defaults-check.sh, shared with
+# pipeline-config.sh): readable, complete (a truncated copy lacks its final
+# sentinel) and holding a row for every security-relevant key. When it is not,
+# such a call prints nothing, as an unknown key always did -- EXCEPT for a
+# security-relevant key (merge.auto, limits.*, hooks.*, roles.qa/reviewer/security, the forbidden-files and
+# approval-waiver lists, markers.*_authors), which fails closed (#440): one
+# stderr line, then SIGTERM to the whole script. A `$(cfg ...)` runs in a
+# subshell, where `exit` would only end the subshell and let the caller carry on
+# with an empty value; $$ is always the main script, so the kill reaches it from
+# anywhere (its EXIT hooks run). If the check helper itself is missing nothing
+# can say which keys are safe, so every no-default lookup fails closed.
+if [ -f "$SCRIPT_DIR/pipeline-defaults-check.sh" ] \
+   && . "$SCRIPT_DIR/pipeline-defaults-check.sh" \
+   && _talos_load_defaults "$SCRIPT_DIR/pipeline-defaults.sh"; then
+  :
 else
-  _talos_default() { :; }
+  if ! [ "$(type -t _talos_security_key)" = "function" ]; then _talos_security_key() { return 0; }; fi
+  _talos_default() {
+    _talos_security_key "${1:-}" || return 0
+    echo "pipeline: pipeline-defaults.sh is missing or unusable; stopping rather than guess the default of ${1:-}" >&2
+    kill -s TERM "$$"
+    return 1
+  }
 fi
 
 _TALOS_EXIT_HOOKS=()
@@ -112,6 +129,6 @@ cfg() {
       done < "$_CFG_CACHE_FILE"
     fi
   fi
-  if [ "$#" -lt 2 ]; then _talos_default "$_key"; return 0; fi
+  if [ "$#" -lt 2 ]; then _talos_default "$_key"; return $?; fi
   printf '%s' "$_default"
 }
