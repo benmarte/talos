@@ -101,6 +101,36 @@
 #                           shared git-common-dir metadata. `tag` (#240)
 #                           writes the very same per-worktree file from
 #                           inside an already-created worktree instead.
+#   checkpoint <issue-number> [--local] [--runner R] [--model M]
+#                           WIP-commit and push the issue branch, then refresh
+#                           the handoff file (#419). The current branch must
+#                           match (fix|feat)/issue-<N>- (exit 1 otherwise), so
+#                           it works in a worktree and in the orchestrator's own
+#                           checkout, and can never commit on main. Stages with
+#                           `git add -A` (never .talos/ or .claude/worktrees/)
+#                           and unstages paths matching the check-pr-files
+#                           default patterns plus merge.forbidden_files. Commit
+#                           `wip(#<N>): checkpoint` (no [skip ci]); nothing to
+#                           commit is fine. Pushes `HEAD:refs/heads/<branch>`
+#                           (never forced, outside the repo-wide lock) unless
+#                           --local. The handoff fields come as one JSON object
+#                           on stdin (stage, criteria_done, criteria_remaining,
+#                           last_verify, decisions, next_step); omitted fields
+#                           keep their previous value. Exit: 0 ok; 1 refused or
+#                           git failure; 2 usage; 3 push failed (commit kept,
+#                           handoff written); 4 handoff rejected (commit and
+#                           push done, previous handoff kept).
+#   handoff <issue-number>  Print the validated handoff JSON; exit 1 with one
+#                           line when it is absent, invalid or stale. Read-only,
+#                           works from any directory of the repo.
+#
+# The handoff lives at <repo-root>/.talos/handoff/<N>.json (repo-root is the
+# parent of the git-common-dir, like the events log): mode 0600 in a 0700
+# directory, outside every git tree, never staged or pushed, this machine only.
+# It is size-capped (8 KiB) and schema-checked, and a value that looks like a
+# credential, or contains the value of a *TOKEN*/*KEY*/*SECRET*/*PASSWORD*
+# environment variable, is rejected, never redacted. `sweep` leaves it;
+# `remove <N>` deletes it along with the worktree.
 #
 
 # `remove` and `sweep` act on the repository containing the current working
@@ -478,6 +508,13 @@ _wt_remove_body() {
   done < <(_wt_all_worktrees)
   git worktree prune 2>/dev/null || true
   [ "$removed" -eq 0 ] && echo "pipeline-worktree: no worktree for issue #$n (already clean)"
+  # #419: the handoff goes with the worktree it described (a preserved
+  # worktree keeps it).
+  if [ "$removed" -gt 0 ]; then
+    hf_dir="$(_wt_handoff_dir)" && [ -n "$hf_dir" ] \
+      && rm -f "$hf_dir/$n.json" \
+      || echo "pipeline-worktree: could not resolve the handoff directory; handoff for #$n left in place"
+  fi
   exit 0
 }
 
@@ -740,6 +777,309 @@ _wt_create_body() {
   exit 0
 }
 
+# ── #419: checkpoint / handoff ───────────────────────────────────────────────
+# <repo-root>/.talos/handoff, from any directory of the repo. Outside every git
+# tree and shared by all worktrees; `sweep` deletes worktrees, never this.
+_wt_handoff_dir() {
+  local root
+  root="$(_wt_main_worktree_path_for '.')" || return 1
+  printf '%s/.talos/handoff' "$root"
+}
+
+# The one validator for a handoff, used on write AND on read. Never echoes a
+# rejected value (it may be a secret), only the field name. Args: <mode>
+# <issue> <dir> [<branch> <head> <runner> <model>]; `write` reads the optional
+# JSON object from stdin.
+_WT_HF_PY='
+import datetime, json, os, re, stat, subprocess, sys
+
+mode, issue, hdir = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+MAXB = 8192
+CONTENT = ("stage", "criteria_done", "criteria_remaining", "last_verify", "decisions", "next_step")
+FILEKEYS = ("v", "issue", "branch", "head") + CONTENT + ("runner", "model", "ts")
+REQUIRED = ("v", "issue", "branch", "head", "stage", "criteria_done", "criteria_remaining", "decisions", "next_step", "ts")
+CRED = [re.compile(p) for p in (
+    r"ghp_", r"gho_", r"github_pat_", r"glpat-", r"(?<![A-Za-z0-9])sk-", r"xox[abp]-",
+    r"AKIA[0-9A-Z]{16}", r"-----BEGIN", r"eyJ[\w-]+\.[\w-]+\.[\w-]+",
+    r"://[^/\s:@]*:[^/\s@]*@", r"[A-Za-z0-9_-]{32,}")]
+CRED += [re.compile(p, re.I) for p in (r"bearer ", r"(token|secret|password|api[_-]?key)\s*[=:]")]
+ENVVALS = [v for k, v in os.environ.items() if len(v) >= 8 and re.search("TOKEN|KEY|SECRET|PASSWORD", k, re.I)]
+
+
+class Bad(Exception):
+    pass
+
+
+def text(name, v, maxlen, charset=None, scan=True):
+    if not isinstance(v, str) or len(v) > maxlen or (charset and not v):
+        raise Bad(name)
+    if re.search(r"[\x00-\x1f\x7f]", v) or (charset and not re.fullmatch(charset, v)):
+        raise Bad(name)
+    if scan and (any(c.search(v) for c in CRED) or any(e in v for e in ENVVALS)):
+        raise Bad(name + " (looks like a credential)")
+
+
+def ints(name, v):
+    if not isinstance(v, list) or len(v) > 100 or not all(type(i) is int and 0 < i < 10000 for i in v):
+        raise Bad(name)
+
+
+def content(c):
+    text("stage", c["stage"], 40, r"[a-z0-9 :_-]+")
+    ints("criteria_done", c["criteria_done"])
+    ints("criteria_remaining", c["criteria_remaining"])
+    lv = c.get("last_verify")
+    if lv is not None:
+        if not isinstance(lv, dict) or set(lv) - {"cmd", "rc", "failing"} or not {"cmd", "rc"} <= set(lv):
+            raise Bad("last_verify")
+        text("last_verify.cmd", lv["cmd"], 200)
+        if type(lv["rc"]) is not int:
+            raise Bad("last_verify.rc")
+        f = lv.setdefault("failing", [])
+        if not isinstance(f, list) or len(f) > 20:
+            raise Bad("last_verify.failing")
+        for x in f:
+            text("last_verify.failing", x, 120, r"[A-Za-z0-9_./:\[\]-]+")
+    d = c["decisions"]
+    if not isinstance(d, list) or len(d) > 8:
+        raise Bad("decisions")
+    for x in d:
+        text("decisions", x, 200)
+    text("next_step", c["next_step"], 200)
+
+
+def whole(d):
+    if not isinstance(d, dict) or set(d) - set(FILEKEYS) or any(k not in d for k in REQUIRED):
+        raise Bad("keys")
+    if type(d["v"]) is not int or d["v"] != 1 or type(d["issue"]) is not int or d["issue"] != issue:
+        raise Bad("v/issue")
+    text("branch", d["branch"], 200, r"(fix|feat)/issue-%d-[A-Za-z0-9._/-]*" % issue, False)
+    text("head", d["head"], 64, r"[0-9a-f]{40}|[0-9a-f]{64}", False)
+    text("ts", d["ts"], 20, r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", False)
+    for k in ("runner", "model"):
+        if k in d:
+            text(k, d[k], 80, r"[A-Za-z0-9._:/@+-]+")
+    content(d)
+    if len(json.dumps(d, separators=(",", ":"))) + 1 > MAXB:
+        raise Bad("size")
+
+
+def load(path):
+    st = os.lstat(path)
+    if not stat.S_ISREG(st.st_mode) or st.st_size > MAXB:
+        raise Bad("file")
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(fd, "rb") as fh:
+        d = json.loads(fh.read(MAXB + 1).decode("utf-8"))
+    whole(d)
+    return d
+
+
+target = os.path.join(hdir, "%d.json" % issue)
+if mode == "read":
+    try:
+        d = load(target)
+    except FileNotFoundError:
+        sys.exit("pipeline-worktree: handoff: no handoff for #%d" % issue)
+    except (Bad, ValueError, OSError) as e:
+        sys.exit("pipeline-worktree: handoff: invalid handoff for #%d (%s)" % (issue, e))
+
+    def git(*a):
+        return subprocess.run(("git",) + a, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+
+    ref = next((r for r in ("refs/heads/" + d["branch"], "refs/remotes/origin/" + d["branch"])
+                if git("rev-parse", "--verify", "--quiet", r + "^{commit}") == 0), None)
+    if ref is None or git("merge-base", "--is-ancestor", d["head"], ref) != 0:
+        sys.exit("pipeline-worktree: handoff: stale handoff for #%d (branch gone or head not on it)" % issue)
+    print(json.dumps(d, separators=(",", ":")))
+    sys.exit(0)
+
+# mode == write
+branch, head, runner, model = sys.argv[4:8]
+tmp = None
+try:
+    raw = sys.stdin.read()
+    new = {}
+    if raw.strip():
+        if len(raw) > MAXB:
+            raise Bad("input too large")
+        new = json.loads(raw)
+        if not isinstance(new, dict) or set(new) - set(CONTENT):
+            raise Bad("input keys")
+    try:
+        prev = load(target)
+        if prev["branch"] != branch:
+            prev = {}
+    except (OSError, ValueError, Bad):
+        prev = {}
+    doc = {"v": 1, "issue": issue, "branch": branch, "head": head, "stage": "checkpoint",
+           "criteria_done": [], "criteria_remaining": [], "decisions": [], "next_step": ""}
+    for k in CONTENT:
+        if k in prev:
+            doc[k] = prev[k]
+    doc.update(new)
+    for k, v in (("runner", runner or os.environ.get("TALOS_RUNNER", "")), ("model", model or os.environ.get("TALOS_MODEL", ""))):
+        if v:
+            doc[k] = v
+    doc["ts"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    whole(doc)
+    if any(os.path.islink(p) for p in (os.path.dirname(hdir), hdir, target)):
+        raise Bad("symlink")
+    os.umask(0o077)
+    os.makedirs(hdir, mode=0o700, exist_ok=True)
+    os.chmod(hdir, 0o700)
+    tmp = os.path.join(hdir, ".%d.%d.tmp" % (issue, os.getpid()))
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(json.dumps(doc, separators=(",", ":")) + "\n")
+    os.replace(tmp, target)
+    tmp = None
+except (Bad, ValueError, OSError) as e:
+    sys.stderr.write("pipeline-worktree: checkpoint: handoff rejected, previous kept: %s\n" % e)
+    sys.exit(4)
+finally:
+    if tmp:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+'
+
+# stdin as text, only when something is actually piped in: a terminal, or a
+# pipe that stays silent for 2 s, counts as "no handoff fields" (a caller that
+# inherits an idle stdin, like the failover path, must not hang). Capped.
+_wt_read_stdin() {
+  python3 -I -c '
+import os, select, sys
+try:
+    if not os.isatty(0) and select.select([0], [], [], 2.0)[0]:
+        sys.stdout.buffer.write(sys.stdin.buffer.read(16385))
+except (OSError, ValueError):
+    pass
+'
+}
+
+# Built-in defaults copied from _vcs_shared_forbidden_patterns in
+# pipeline-vcs.sh (tests/test-worktree-checkpoint.sh asserts they are equal).
+_wt_forbidden_patterns() {
+  local _BUILTIN_DEFAULTS='.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.secrets
+secrets.*
+*id_rsa*
+*id_ecdsa*
+*id_ed25519*
+*id_dsa*
+*.ppk
+*.jks
+*.keystore
+*.pkcs12
+*.kdbx
+*.ovpn
+.netrc
+_netrc'
+  local conf rep
+  conf="$(cfg merge.forbidden_files "")"
+  rep="$(cfg merge.forbidden_files_replace "")"
+  if [ -n "$conf" ] && [ "$rep" = "true" ]; then
+    printf '%s\n' "$conf"
+  elif [ -n "$conf" ]; then
+    printf '%s\n%s\n' "$_BUILTIN_DEFAULTS" "$conf"
+  else
+    printf '%s\n' "$_BUILTIN_DEFAULTS"
+  fi
+}
+
+# Unstage every staged path under .talos/ or .claude/worktrees/ (Talos-internal,
+# never work) or matching a forbidden-files pattern (check-pr-files rule: fnmatch
+# on basename or path), naming each on stderr.
+_wt_unstage_forbidden() {
+  local pats p
+  pats="$(_wt_forbidden_patterns)"
+  while IFS= read -r -d '' p; do
+    GIT_LITERAL_PATHSPECS=1 git reset -q HEAD -- "$p" 2>/dev/null || GIT_LITERAL_PATHSPECS=1 git rm -q --cached -- "$p" 2>/dev/null
+    echo "pipeline-worktree: checkpoint: not staging path: $p (forbidden-file pattern or Talos-internal)" >&2
+  done < <(git diff --cached --name-only --no-renames -z | PATTERNS="$pats" python3 -I -c '
+import fnmatch, os, sys
+pats = [p.strip() for p in os.environ["PATTERNS"].splitlines() if p.strip()]
+for path in sys.stdin.buffer.read().decode("utf-8", "surrogateescape").split("\0"):
+    if path and (path.startswith((".talos/", ".claude/worktrees/")) or any(fnmatch.fnmatch(os.path.basename(path), p) or fnmatch.fnmatch(path, p) for p in pats)):
+        sys.stdout.buffer.write(path.encode("utf-8", "surrogateescape") + b"\0")
+')
+}
+
+# Lock-guarded handoff write; the commit and the push stay outside it (a push
+# inside the repo-wide lock would starve create/remove/sweep for its 10 s wait).
+_wt_hf_write() {
+  printf '%s' "$_WT_CP_INPUT" | python3 -I -c "$_WT_HF_PY" write "$1" "$2" "$3" "$4" "$5" "$6"
+}
+
+_wt_checkpoint_body() {
+  local n="${1:-}" local_only=0 runner="" model="" branch top hdir head rc rc_push=0 rc_hf=0 state
+  shift || true
+  case "$n" in
+    ''|*[!0-9]*) echo "usage: pipeline-worktree.sh checkpoint <issue-number> [--local] [--runner R] [--model M]" >&2; exit 2 ;;
+  esac
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --local) local_only=1 ;;
+      --runner|--model)
+        [ $# -ge 2 ] || { echo "pipeline-worktree: checkpoint: $1 needs a value" >&2; exit 2; }
+        if [ "$1" = "--runner" ]; then runner="$2"; else model="$2"; fi
+        shift ;;
+      *) echo "usage: pipeline-worktree.sh checkpoint <issue-number> [--local] [--runner R] [--model M]" >&2; exit 2 ;;
+    esac
+    shift
+  done
+  branch="$(git symbolic-ref -q --short HEAD 2>/dev/null)" || branch=""
+  if ! [[ "$branch" =~ ^(fix|feat)/issue-${n}- ]]; then
+    echo "pipeline-worktree: checkpoint: current branch '${branch:-<detached>}' is not (fix|feat)/issue-$n-... -- nothing staged" >&2
+    exit 1
+  fi
+  top="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "pipeline-worktree: checkpoint: not inside a git worktree" >&2; exit 1; }
+  hdir="$(_wt_handoff_dir)" || { echo "pipeline-worktree: checkpoint: cannot resolve the repo root" >&2; exit 1; }
+  _WT_CP_INPUT="$(_wt_read_stdin)"
+  cd "$top" || exit 1
+  git add -A || { echo "pipeline-worktree: checkpoint: git add failed" >&2; exit 1; }
+  _wt_unstage_forbidden
+  git diff --cached --quiet; rc=$?
+  if [ "$rc" -eq 1 ]; then
+    git commit -q -m "wip(#$n): checkpoint" || { echo "pipeline-worktree: checkpoint: git commit failed" >&2; exit 1; }
+  elif [ "$rc" -ne 0 ]; then
+    echo "pipeline-worktree: checkpoint: git diff --cached failed" >&2
+    exit 1
+  fi
+  head="$(git rev-parse HEAD 2>/dev/null)" || exit 1
+  state=local
+  if [ "$local_only" -eq 0 ]; then
+    if GIT_TERMINAL_PROMPT=0 git push -q -u origin "HEAD:refs/heads/$branch" >&2; then
+      state=pushed
+    else
+      rc_push=3
+      state=push-failed
+      echo "pipeline-worktree: checkpoint: push failed; the commit is kept locally" >&2
+    fi
+  fi
+  with_lock "$_WT_LOCK_RESOURCE" 10 -- _wt_hf_write "$n" "$hdir" "$branch" "$head" "$runner" "$model" || rc_hf=$?
+  echo "pipeline-worktree: checkpoint #$n ${head:0:8} $state"
+  [ "$rc_hf" -eq 0 ] || exit 4
+  exit "$rc_push"
+}
+
+_wt_handoff_body() {
+  local n="${1:-}" hdir
+  case "$n" in
+    ''|*[!0-9]*) echo "usage: pipeline-worktree.sh handoff <issue-number>" >&2; exit 2 ;;
+  esac
+  hdir="$(_wt_handoff_dir)" || { echo "pipeline-worktree: handoff: not inside a git repository" >&2; exit 1; }
+  python3 -I -c "$_WT_HF_PY" read "$n" "$hdir" || exit 1
+  exit 0
+}
+
 case "$verb" in
   list)
     issue_listing="$(_issue_worktrees)"
@@ -785,8 +1125,16 @@ case "$verb" in
     _wt_status_body
     ;;
 
+  checkpoint)
+    _wt_checkpoint_body "$@"
+    ;;
+
+  handoff)
+    _wt_handoff_body "$@"
+    ;;
+
   *)
-    echo "usage: pipeline-worktree.sh <remove <n> | sweep [<open-id>...] | list | create <n> <branch> | tag <n> | status>" >&2
+    echo "usage: pipeline-worktree.sh <remove <n> | sweep [<open-id>...] | list | create <n> <branch> | tag <n> | checkpoint <n> [--local] [--runner R] [--model M] | handoff <n> | status>" >&2
     exit 2
     ;;
 esac
