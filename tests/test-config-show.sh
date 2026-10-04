@@ -23,7 +23,7 @@ cd "$PROJ" || exit 1
 ENV_VARS="PIPELINE_REPO PIPELINE_PROJECT_NUMBER PIPELINE_BOARD_OWNER PIPELINE_STATUS_FIELD PIPELINE_SLACK_CHANNEL PIPELINE_DISCORD_CHANNEL PIPELINE_BUZZ_CHANNEL PIPELINE_BUZZ_RELAY"
 reset_cfg() {
   rm -f "${PROJ:?}"/talos.pipeline.* "${GHOME:?}"/talos.pipeline.* "${SANDBOX:?}/.env"
-  unset PIPELINE_CONFIG $ENV_VARS TALOS_T_SET TALOS_T_UNSET TALOS_T_DOTENV
+  unset PIPELINE_CONFIG $ENV_VARS TALOS_T_SET TALOS_T_UNSET T442_DOTENV
   export TALOS_HOME="$GHOME"
 }
 glob_json() { printf '%s' "$1" > "$GHOME/talos.pipeline.json"; }
@@ -110,16 +110,16 @@ assert_eq "board.owner${TAB}${TAB}default" "$(line_for "$out" board.owner)" "a r
 # ── (c) a secret never prints ────────────────────────────────────────────────
 reset_cfg
 PLANTED_WEBHOOK='https://hooks.example.test/services/PLANTEDWEBHOOK9f2'
-glob_json '{"notifications":{"slack":{"webhook":"'"$PLANTED_WEBHOOK"'"},"discord":{"bot_token":"env:TALOS_T_SET"},"teams":{"webhook":"env:TALOS_T_UNSET"},"buzz":{"bot_key":"env:TALOS_T_DOTENV"},"slack_api_token":"PLANTEDUNKNOWN77"},"agents":{"runner_cmd":"env:BAD NAME PLANTEDENVSHAPE55"}}'
+glob_json '{"notifications":{"slack":{"webhook":"'"$PLANTED_WEBHOOK"'"},"discord":{"bot_token":"env:TALOS_T_SET"},"teams":{"webhook":"env:TALOS_T_UNSET"},"buzz":{"bot_key":"env:T442_DOTENV"},"slack_api_token":"PLANTEDUNKNOWN77"},"agents":{"runner_cmd":"env:BAD NAME PLANTEDENVSHAPE55"}}'
 export TALOS_T_SET=PLANTEDVALUE31
-printf 'TALOS_T_DOTENV=PLANTEDDOTENV42\n' > "$SANDBOX/.env"
+printf 'T442_DOTENV=PLANTEDDOTENV42\n' > "$SANDBOX/.env"
 chmod 600 "$SANDBOX/.env"
 out="$(show)"
 errtxt="$(cat "$ERR")"
 assert_eq "notifications.slack.webhook${TAB}<masked>${TAB}global" "$(line_for "$out" notifications.slack.webhook)" "(c) a literal in a secret-typed key prints <masked>"
 assert_eq "notifications.discord.bot_token${TAB}env:TALOS_T_SET (set)${TAB}global" "$(line_for "$out" notifications.discord.bot_token)" "(c) a reference to a variable in the environment prints (set)"
 assert_eq "notifications.teams.webhook${TAB}env:TALOS_T_UNSET (unset)${TAB}global" "$(line_for "$out" notifications.teams.webhook)" "(c) a reference to a variable that is nowhere prints (unset)"
-assert_eq "notifications.buzz.bot_key${TAB}env:TALOS_T_DOTENV (set)${TAB}global" "$(line_for "$out" notifications.buzz.bot_key)" "(c) a reference the repo .env answers prints (set)"
+assert_eq "notifications.buzz.bot_key${TAB}env:T442_DOTENV (set)${TAB}global" "$(line_for "$out" notifications.buzz.bot_key)" "(c) a reference the repo .env answers prints (set)"
 assert_eq "notifications.slack_api_token${TAB}<masked>${TAB}global" "$(line_for "$out" notifications.slack_api_token)" "(c) an unknown key that reads like a secret is masked"
 assert_eq "agents.runner_cmd${TAB}<masked>${TAB}global" "$(line_for "$out" agents.runner_cmd)" "(c) a malformed env: value in an ordinary key is masked"
 all="$out
