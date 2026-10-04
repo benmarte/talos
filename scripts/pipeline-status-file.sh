@@ -195,21 +195,10 @@ if [ -f "$SCRIPT_DIR/pipeline-cfg-cache.sh" ]; then
   # shellcheck disable=SC1091
   . "$SCRIPT_DIR/pipeline-cfg-cache.sh"
 else
-  cfg() {
-    bash "$SCRIPT_DIR/pipeline-config.sh" "$@" 2>/dev/null
-  }
-  # _talos_default (the table lookup _sf_posint and _sf_role_on use) needs an
-  # intact table. Without one every role would read as off and every count as
-  # empty, so stop with one clear line instead.
-  # shellcheck disable=SC1091
-  if ! { [ -f "$SCRIPT_DIR/pipeline-defaults-check.sh" ] \
-         && . "$SCRIPT_DIR/pipeline-defaults-check.sh" \
-         && _talos_load_defaults "$SCRIPT_DIR/pipeline-defaults.sh"; }; then
-    echo "pipeline-status-file: defaults table unavailable (pipeline-defaults.sh missing or unusable next to $0); reinstall Talos" >&2
-    exit 1
-  fi
-  # shellcheck disable=SC2064
-  _talos_on_exit() { trap "$1" EXIT; }
+  # No per-call fallback (#440): it ran pipeline-config.sh under 2>/dev/null
+  # inside $(...), so a broken defaults table (exit 3) would read as "role off".
+  echo "talos: pipeline-cfg-cache.sh missing; reinstall Talos" >&2
+  exit 1
 fi
 
 if [ -f "$SCRIPT_DIR/pipeline-lock.sh" ]; then

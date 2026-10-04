@@ -50,7 +50,7 @@
 # pipeline-config.sh): readable, complete (a truncated copy lacks its final
 # sentinel) and holding a row for every security-relevant key. When it is not,
 # such a call prints nothing, as an unknown key always did -- EXCEPT for a
-# security-relevant key (merge.auto, limits.*, hooks.*, the forbidden-files and
+# security-relevant key (merge.auto, limits.*, hooks.*, roles.qa/reviewer/security, the forbidden-files and
 # approval-waiver lists, markers.*_authors), which fails closed (#440): one
 # stderr line, then SIGTERM to the whole script. A `$(cfg ...)` runs in a
 # subshell, where `exit` would only end the subshell and let the caller carry on

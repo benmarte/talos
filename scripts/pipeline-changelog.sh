@@ -36,9 +36,8 @@ if [ -f "$SCRIPT_DIR/pipeline-cfg-cache.sh" ]; then
   # shellcheck disable=SC1091
   . "$SCRIPT_DIR/pipeline-cfg-cache.sh"
 else
-  cfg() {
-    bash "$SCRIPT_DIR/pipeline-config.sh" "$@" 2>/dev/null
-  }
+  echo "talos: pipeline-cfg-cache.sh missing; reinstall Talos" >&2
+  exit 1
 fi
 
 if [ -f "$SCRIPT_DIR/pipeline-lock.sh" ]; then
