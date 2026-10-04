@@ -207,8 +207,8 @@ in_order "$DT" '3\. \*\*Review — reviewer, security and adversarial in paralle
 assert_eq "0" "$?" "stage order: reviewer + security + adversarial review the draft in parallel, no per-role developer dispatch"
 in_order "$DT" 'Dispatch reviewer, security AND adversarial' 'one parallel batch' 'one fix round covers all of the findings'
 assert_eq "0" "$?" "stage order: adversarial joins the same parallel batch; one fix round covers every role"
-in_order "$DT" '4\. \*\*Developer — ONE fix round for every finding' 'collect the findings of ALL of them into one developer dispatch' 'Call `record-attempt` once for that dispatch' 'the re-stamps review only the delta' 're-run docs \(step 2\) first, inside this same draft window' '5\. \*\*`ready-pr`'
-assert_eq "0" "$?" "stage order: one fix round, one record-attempt, re-stamps on the delta, docs re-runs in the draft window before ready-pr"
+in_order "$DT" '4\. \*\*Developer — ONE fix round for every finding' 'collect the findings of ALL of them into one developer dispatch' 'Call `gate fix-round` once for that dispatch' 'the re-stamps review only the delta' 're-run docs \(step 2\) first, inside this same draft window' '5\. \*\*`ready-pr`'
+assert_eq "0" "$?" "stage order: one fix round, one gate fix-round, re-stamps on the delta, docs re-runs in the draft window before ready-pr"
 in_order "$DT" '\*\*QA failure or CI failure\*\*' 'convert the PR back FIRST with `bash scripts/pipeline-vcs.sh draft-pr <PR_NUMBER>`' 'one developer fix round' 'the re-stamps on the delta' '`ready-pr` \(step 5\) again' 'exactly one CI run however many commits'
 assert_eq "0" "$?" "stage order: QA/CI failure is draft-pr -> developer fix -> re-stamps -> ready-pr, one run per round"
 in_order "$DT" 'this stage runs BEFORE QA' 'the "only after `qa:pass`" rule above does not apply to it'
@@ -221,8 +221,28 @@ case "$(printf '%s' "$pass_path" | norm)" in *'Step 3e is NOT entered again'*) r
 assert_eq "0" "$r" "Step 3d Pass: the note sits inside the Pass path, before the Fail path (#340)"
 in_order "$DT" '7\. \*\*Merge\.\*\* Step 4, unchanged' 'approval SHAs and `ci-complete` on the final head are still required' 'not a bypass of any gate'
 assert_eq "0" "$?" "merge gate: approval SHAs and ci-complete on the final head still required, no draft bypass"
-in_order "$DT" 'No gate in this step is waived or changed for a draft-flow PR' 'pr-is-draft <PR_NUMBER>` must print `ready` with exit 1 before `merge-pr`' 'exit 2 is unverified: do NOT merge'
-assert_eq "0" "$?" "merge gate: Step 4 only adds a pr-is-draft last guard; exit 2 never merges"
+in_order "$DT" 'No gate in this step is waived or changed for a draft-flow PR' 'gate merge. asks .pr-is-draft. itself and never lets a draft through'
+assert_eq "0" "$?" "merge gate: Step 4 waives no gate for a draft-flow PR and leaves the pr-is-draft guard to gate merge"
+# The guard itself runs inside `talos.sh gate merge` (#466): the real verb, every
+# other gate stubbed green, PR_DRAFT = true. Only a ready PR (pr-is-draft exit 1,
+# stdout exactly ready) reaches the merge verdict; exit 2 (unverified) never merges.
+GATE_DIR="$SANDBOX/gate-scripts"
+mkdir -p "$GATE_DIR"
+cp "$TALOS_ROOT"/scripts/* "$GATE_DIR/"
+printf '%s\n' '#!/usr/bin/env bash' \
+  'case "$1" in' \
+  '  view-pr|view-issue) printf "{\"labels\":[{\"name\":\"qa:pass\"},{\"name\":\"review:approved\"},{\"name\":\"security:approved\"},{\"name\":\"docs:done\"}]}\n" ;;' \
+  '  pr-is-draft) printf "%s" "${STUB_DRAFT_OUT:-}"; exit "${STUB_DRAFT_RC:-0}" ;;' \
+  '  pr-ci-runs) echo 1 ;;' \
+  'esac' 'exit 0' > "$GATE_DIR/pipeline-vcs.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'echo true' > "$GATE_DIR/pipeline-draft-check.sh"
+gate_verdict() {  # $1 = pr-is-draft exit code, $2 = its stdout
+  STUB_DRAFT_RC="$1" STUB_DRAFT_OUT="$2" bash "$GATE_DIR/talos.sh" gate merge 9 42 2>/dev/null | tr '\n' ' ' | sed 's/ $//'
+}
+assert_eq "verdict=merge ci_runs=1" "$(gate_verdict 1 ready)" "merge gate: PR_DRAFT = true, pr-is-draft exit 1 and ready: gate merge reaches the merge verdict"
+assert_eq "verdict=redispatch reason=draft-pr" "$(gate_verdict 0 draft)" "merge gate: a draft (pr-is-draft exit 0) never merges, it goes back to the Draft stage order"
+assert_eq "stop reason=draft-unverified" "$(gate_verdict 2 '')" "merge gate: pr-is-draft exit 2 is unverified: do NOT merge"
+assert_eq "stop reason=draft-unverified" "$(gate_verdict 1 draft)" "merge gate: exit 1 without the word ready never merges"
 in_order "$DT" 'pass `--ci-runs "\$CI_RUNS"` to the `merged` `post_stage`' 'captured BEFORE `merge-pr`' 'Do NOT call `pr-ci-runs` here' 'omit the flag; never guess'
 assert_eq "0" "$?" "metric: Step 4 records pr-ci-runs on the merged event via post_stage --ci-runs, omitted when unverified"
 
@@ -501,11 +521,20 @@ check_step1_resume "$SKILL"; assert_eq "0" "$?" "Step 1 resume: a draft PR resum
 # fails closed (exit 2). The documented Step 4 order must capture the count
 # first and carry it to the `merged` post_stage call.
 check_ci_runs_before_merge() {  # $1 = SKILL.md
+  # The documented sequence reads pr-ci-runs before merge-pr, `gate merge` really
+  # reads it before it answers `merge` (pr-ci-runs is called, then the verdict),
+  # and Step 4 never calls pr-ci-runs itself after merge-pr.
+  local seq verb ci verdict
+  seq="$(verb_sequence "$1" "merge sequence" | tr '\n' ' ')"
+  case "$seq" in "pr-ci-runs merge-pr "*) ;; *) return 1 ;; esac
+  verb="$(sed -n '/^_talos_gate_merge() {/,/^}/p' "$TALOS_ROOT/scripts/talos.sh")"
+  ci="$(printf '%s\n' "$verb" | grep -n -m1 -F '_vcs pr-ci-runs' | cut -d: -f1)"
+  verdict="$(printf '%s\n' "$verb" | grep -n -F '_talos_verdict merge' | tail -n 1 | cut -d: -f1)"
+  [ -n "$ci" ] && [ -n "$verdict" ] && [ "$ci" -lt "$verdict" ] || return 1
   awk '
     /^## Step 4 — /{p=1; next} /^## Step 5 — /{p=0}
-    p && /pipeline-vcs\.sh pr-ci-runs/ { if (!ci) ci = NR; if (merge) late = 1 }
-    p && /pipeline-vcs\.sh merge-pr <PR_NUMBER>/ { if (!merge) merge = NR }
-    END { exit !(ci && merge && ci < merge && !late) }' "$1"
+    p && /pipeline-vcs\.sh pr-ci-runs/ { late = 1 }
+    END { exit late }' "$1"
 }
 
 # replay_merge FILE : run the documented merge sequence; prints the ci_runs
@@ -522,9 +551,9 @@ replay_merge() {
   printf '%s' "$recorded"
 }
 
-check_ci_runs_before_merge "$SKILL"; assert_eq "0" "$?" "ci_runs order: Step 4 captures pr-ci-runs BEFORE merge-pr and never calls it after"
+check_ci_runs_before_merge "$SKILL"; assert_eq "0" "$?" "ci_runs order: gate merge captures pr-ci-runs BEFORE its merge verdict, the sequence has it before merge-pr, and Step 4 never calls it after"
 assert_eq "pr-ci-runs merge-pr post_stage merged --ci-runs" "$(verb_sequence "$SKILL" "merge sequence" | tr '\n' ' ' | sed 's/ $//')" "ci_runs order: documented merge sequence is pr-ci-runs -> merge-pr -> post_stage merged --ci-runs"
-in_order "$DT" 'Capture the CI-run count BEFORE `merge-pr`' 'empty `pull_requests\[\]`' 'exits 2' 'while the PR is open' 'record no `ci_runs`' 'run summary' 'every gate above and the green-checks test below still apply' 'nothing here lets a merge skip them' 'never blocks or delays an otherwise green merge'
+in_order "$DT" 'Capture the CI-run count BEFORE `merge-pr`' 'empty `pull_requests\[\]`' 'exits 2' 'while the PR is open' 'record no `ci_runs`' 'run summary' 'every gate above and the green-checks test still apply' 'nothing here lets a merge skip them' 'never blocks or delays an otherwise green merge'
 assert_eq "0" "$?" "ci_runs order: exit 2 records no ci_runs, is noted in the run summary, and neither blocks the merge nor waives any gate (#340)"
 assert_not_contains "$DT" 'merge anyway' "ci_runs order: no sentence reads as merging without the required checks (#340)"
 

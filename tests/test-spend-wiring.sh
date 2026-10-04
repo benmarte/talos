@@ -6,13 +6,14 @@
 #       --marker spend --body-file -, pipeline-budget.sh check, budget-blocked,
 #       cost --summary; no positional-body upsert; no pipe from cost straight
 #       into the upsert (an empty body would make the verb exit 1)
-#   (b) the budget check sits before every developer fix-round record-attempt
-#       (merge-base task, draft round, QA, reviewer, security, adversarial)
-#       and not before the no-dispatch record-attempt, the Step 4 CI path or a
-#       re-stamp; Rule 20, item 8, Step 5 item 4 and the usage section carry
-#       their pieces
-#   (c) behaviour: the fenced snippets, run as written against the real
-#       pipeline-events.sh / pipeline-budget.sh and a recording stub for
+#   (b) every developer fix round goes through `talos.sh gate fix-round`, whose
+#       first step is the budget check (#466 moved it out of the prose; the
+#       merge-base task, draft round, QA, reviewer, security, adversarial and
+#       the Step 3d CI gate are the eight sites), and the no-dispatch
+#       record-attempt, the Step 4 CI path and a re-stamp have none; Rule 20,
+#       item 8, Step 5 item 4 and the usage section carry their pieces
+#   (c) behaviour: the spend snippet as written, and `gate fix-round` against the
+#       real pipeline-events.sh / pipeline-budget.sh and a recording stub for
 #       pipeline-vcs.sh (never a GitHub call)
 set -u
 . "$(dirname "$0")/helpers.sh"
@@ -32,18 +33,24 @@ assert_contains "$skill_flat" 'pipeline-events.sh cost --issue <N> --pr <M> --li
   "spend block: cost --line"
 assert_contains "$skill_flat" 'upsert-pr-comment <M> --marker spend --body-file -' \
   "spend block: upsert-pr-comment --marker spend --body-file -"
-assert_contains "$skill_flat" 'pipeline-budget.sh check --issue <N>' "budget stop: pipeline-budget.sh check"
-assert_contains "$skill_flat" '|| rc=$?' "budget stop: exit code captured with || rc=\$?"
-assert_contains "$skill_flat" 'post_stage budget-blocked orchestrator <N> --pr <M> --summary -` with `printf '"'"'%s'"'"' "$out" |` in front' \
-  "budget stop: post_stage budget-blocked orchestrator"
+# The budget guard runs inside `gate fix-round` (#466); its mechanics are pinned
+# in talos.sh, the owner-facing parts stay in SKILL.md Step 3.
+verb_fr="$(sed -n '/^_talos_gate_fix_round() {/,/^}/p' "$TALOS_ROOT/scripts/talos.sh")"
+verb_all="$(cat "$TALOS_ROOT/scripts/talos.sh")"
+assert_contains "$verb_fr" 'pipeline-budget.sh" check --issue "$_n"' "budget stop: gate fix-round runs pipeline-budget.sh check --issue <N>"
+assert_contains "$verb_fr" '|| _brc=$?' "budget stop: the exit code is captured with || _brc=\$?"
+assert_contains "$verb_fr" 'post_stage budget-blocked orchestrator "$_n"' "budget stop: gate fix-round fires post_stage budget-blocked orchestrator"
+assert_contains "$verb_fr" 'printf '"'"'%s'"'"' "$_bout" | bash "$SCRIPT_DIR/pipeline-hooks.sh"' "budget stop: the budget line is the hook's stdin (printf '%s' piped)"
+assert_contains "$verb_fr" '--summary -' "budget stop: the hook summary comes from stdin"
 assert_contains "$skill_flat" 'pipeline-events.sh cost --summary --issue' "Step 5: cost --summary --issue"
-assert_contains "$skill_flat" 'With `limits.tokens_per_issue` unset' \
-  "budget stop: states the unset flow is unchanged"
-assert_contains "$skill_flat" 'is unchanged' "budget stop: unchanged wording present"
+assert_contains "$verb_all" 'With limits.tokens_per_issue unset' \
+  "budget stop: talos.sh states the unset flow is unchanged"
+assert_contains "$verb_all" 'so the fix-round flow is unchanged' "budget stop: unchanged wording present"
 assert_contains "$skill_flat" 'removing `pipeline:blocked` (each block grants one more limit) or raising `limits.tokens_per_issue`' \
   "budget stop: how the owner resumes"
-assert_contains "$skill_flat" 'BLOCKED_BY="talos.pipeline.yml:limits.tokens_per_issue (explicit)"' \
-  "budget stop: blocked comment BLOCKED_BY"
+assert_contains "$verb_fr" 'blocked_by "talos.pipeline.yml:limits.tokens_per_issue (explicit)"' \
+  "budget stop: BLOCKED_BY of the blocked comment (the blocked_by= line)"
+assert_contains "$skill_flat" 'post blocked.md with BLOCKED_BY = the `blocked_by=` value' "budget stop: SKILL.md posts blocked.md with that BLOCKED_BY"
 assert_eq "spend.comment true" "$(talos_env_key SPEND_COMMENT) $(talos_env_default SPEND_COMMENT)" "Step 0: spend.comment variable (read by talos.sh env, default true)"
 assert_contains "$skill_flat" 'SPEND_COMMENT' "Step 3 names SPEND_COMMENT"
 
@@ -57,25 +64,23 @@ assert_contains "$skill_flat" '[ -n "$SPEND_BODY" ]' "spend block: an empty body
 assert_contains "$skill_flat" 'tail -1' "spend block: only the last upsert line is read"
 
 # ── (b) wiring sites ───────────────────────────────────────────────────────
-# One canonical sentence, word for word, before each developer fix-round
-# record-attempt: the merge-base task, the draft round, the draft QA/CI failure
-# round, QA, reviewer, security, adversarial and the Step 3d CI gate (#355).
-# Counted, and each site must have it within the 6 lines up to its own
-# record-attempt line.
+# Every developer fix-round site is a `gate fix-round` call (the verb's first step
+# is the budget check, in front of record-attempt: tests/test-ci-gate.sh pins the
+# order): the merge-base task, the draft round, the draft QA/CI failure round, QA,
+# reviewer, security, adversarial and the Step 3d CI gate (#355). No raw
+# record-attempt of a fix round is left to skip the check.
 CANON='Run the Step 3 budget check ("Budget stop") first.'
-assert_eq "8" "$(grep -cF -- "$CANON" "$SKILL_MD")" "the canonical budget-check sentence appears exactly 8 times"
-sites="$(grep -nE 'record-attempt <N> (developer|<that-role>|qa|reviewer|security|adversarial)' "$SKILL_MD" | cut -d: -f1)"
-assert_eq "8" "$(printf '%s\n' "$sites" | wc -l | tr -d ' ')" "eight fix-round record-attempt sites"
-for n in $sites; do
-  window="$(sed -n "$((n > 6 ? n - 6 : 1)),${n}p" "$SKILL_MD")"
-  assert_contains "$window" "$CANON" "SKILL.md:$n record-attempt is preceded by the canonical budget-check sentence"
-done
+assert_eq "0" "$(grep -cF -- "$CANON" "$SKILL_MD")" "the old budget-check sentence is gone (the verb runs the check)"
+assert_eq "8" "$(grep -cE 'gate fix-round <N> (developer|<that-role>|qa|reviewer|security|adversarial) --pr' "$SKILL_MD")" "eight fix-round gate fix-round sites"
+raw="$(grep -nE 'record-attempt <N> (developer|<that-role>|qa|reviewer|security|adversarial)' "$SKILL_MD" | grep -v 'no fix round follows' || true)"
+assert_eq "" "$raw" "no fix round calls record-attempt directly (only the no-dispatch resend does)"
 # The no-dispatch record-attempt (no-PR resend, then Blocked) has no check.
-no_pr_window="$(grep -n -B6 'developer` — no `--pr` yet, per Step 3' "$SKILL_MD")"
-assert_not_contains "$no_pr_window" "Budget stop" "no budget check before the no-PR resend record-attempt"
+no_pr_window="$(grep -n -B6 'no fix round follows, so no budget check' "$SKILL_MD")"
+assert_not_contains "$no_pr_window" "gate fix-round" "no budget check before the no-PR resend record-attempt"
 # The Step 4 CI failure path and the re-stamp path never mention the check.
 step4_ci="$(awk '/^## Step 4 /{p=1} /^## Step 5 /{p=0} p' "$SKILL_MD")"
 assert_not_contains "$step4_ci" "pipeline-budget.sh" "Step 4 never runs the budget check"
+assert_not_contains "$step4_ci" "gate fix-round" "Step 4 never runs gate fix-round"
 restamp="$(grep -n 'RESTAMP_FAIL' "$SKILL_MD" | grep -i 'budget' || true)"
 assert_eq "" "$restamp" "RESTAMP_FAIL lines carry no budget check"
 
@@ -97,11 +102,8 @@ fence_after() {
   awk -v a="$1" 'index($0, a) { f = 1 } f && /^```bash$/ { p = 1; next } p && /^```$/ { exit } p' "$SKILL_MD"
 }
 SPEND_SNIPPET="$(fence_after '**Spend block')"
-BUDGET_SNIPPET="$(fence_after '**Budget stop')"
 [ -n "$SPEND_SNIPPET" ] && pass "spend block fence found" || fail "spend block fence found"
-[ -n "$BUDGET_SNIPPET" ] && pass "budget stop fence found" || fail "budget stop fence found"
 SPEND_SNIPPET="$(printf '%s\n' "$SPEND_SNIPPET" | sed -e 's/<N>/7/g' -e 's/<M>/9/g')"
-BUDGET_SNIPPET="$(printf '%s\n' "$BUDGET_SNIPPET" | sed -e 's/<N>/7/g' -e 's/<M>/9/g')"
 
 # The sandbox's scripts/: the real ones, except pipeline-vcs.sh is a recorder.
 mkdir -p scripts .talos
@@ -155,26 +157,33 @@ assert_eq "0" "$rc" "spend block: no events, exit 0"
 assert_eq "" "$out" "spend block: no events, no output"
 assert_file_absent vcs-calls.log "spend block: an empty body skips the upsert"
 
-# The budget snippet under `set -e`: exit 1 is captured, never aborts.
-run_budget() { bash -ec "$BUDGET_SNIPPET
-echo \"rc=\$rc\"
-echo \"out=\$out\"" 2>/dev/null; }
+# The budget guard through `gate fix-round`, under `set -e`: exit 1 is captured,
+# never aborts; the real pipeline-budget.sh answers, the vcs stub records.
+run_budget() { rm -f vcs-calls.log; bash -e scripts/talos.sh gate fix-round 7 qa --pr 9 2>/dev/null < /dev/null; echo "rc=$?"; }
 printf '%s\n' '{"limits": {"tokens_per_issue": 1000000}}' > talos.pipeline.json
 out="$(run_budget)"
 assert_contains "$out" 'rc=0' "budget stop: under the limit, rc 0"
-assert_contains "$out" 'talos:budget ok issue=7' "budget stop: ok line captured"
+assert_contains "$out" 'verdict=redispatch' "budget stop: under the limit, the fix round proceeds"
+assert_not_contains "$out" 'budget=' "budget stop: an ok line is not relayed"
 printf '%s\n' '{"limits": {"tokens_per_issue": 50000}}' > talos.pipeline.json
 out="$(run_budget)"
 assert_contains "$out" 'rc=0' "budget stop: warn is rc 0"
-assert_contains "$out" 'talos:budget warn issue=7' "budget stop: warn line captured"
+assert_contains "$out" 'budget=talos:budget warn issue=7' "budget stop: warn line relayed"
+assert_contains "$out" 'verdict=redispatch' "budget stop: a warn still proceeds"
 printf '%s\n' '{"limits": {"tokens_per_issue": 40000}}' > talos.pipeline.json
 out="$(run_budget)"
-assert_contains "$out" 'rc=1' "budget stop: exceeded is rc 1, captured under set -e"
-assert_contains "$out" 'talos:budget exceeded issue=7' "budget stop: exceeded line captured"
+assert_contains "$out" 'rc=0' "budget stop: exceeded is a verdict, the verb exits 0 and never aborts under set -e"
+assert_contains "$out" 'budget=talos:budget exceeded issue=7' "budget stop: exceeded line relayed"
+assert_contains "$out" 'verdict=block' "budget stop: exceeded blocks"
+assert_contains "$out" 'reason=budget-exceeded' "budget stop: exceeded reason"
+assert_not_contains "$(cat vcs-calls.log)" 'record-attempt' "budget stop: exceeded records no attempt and starts no fix round"
+assert_contains "$(cat vcs-calls.log)" 'label-pr 9 --add pipeline:blocked' "budget stop: exceeded sets pipeline:blocked on the PR"
+assert_contains "$(cat vcs-calls.log)" 'label-issue 7 --add pipeline:blocked' "budget stop: exceeded sets pipeline:blocked on the issue"
 printf '%s\n' '{}' > talos.pipeline.json
 out="$(run_budget)"
 assert_contains "$out" 'rc=0' "budget stop: limit unset, rc 0"
-assert_contains "$out" 'out=' "budget stop: limit unset, output empty"
+assert_contains "$out" 'verdict=redispatch' "budget stop: limit unset, the fix round proceeds"
 assert_not_contains "$out" 'talos:budget' "budget stop: limit unset prints nothing (flow unchanged)"
+assert_contains "$(cat vcs-calls.log)" 'record-attempt 7 qa --pr 9' "budget stop: limit unset goes on to record-attempt"
 
 finish

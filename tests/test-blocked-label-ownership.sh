@@ -41,19 +41,25 @@ assert_eq "" "$offenders" "no agents/*.md profile removes pipeline:blocked"
 skill_flat="$(tr '\n' ' ' < "$SKILL_MD" | tr -s ' ')"
 assert_contains "$skill_flat" 'only the orchestrator clears `pipeline:blocked`' \
   "SKILL.md names the orchestrator as the one who clears pipeline:blocked"
-assert_contains "$skill_flat" 'label-pr <PR_NUMBER> --remove pipeline:blocked' \
-  "SKILL.md gives the orchestrator's PR clear command"
-assert_contains "$skill_flat" 'label-issue <N> --remove pipeline:blocked' \
-  "SKILL.md gives the orchestrator's issue clear command"
+# The clear commands moved from the prose into `talos.sh gate fix-round` (#466):
+# the verb runs them, on the PR (only when one exists) and on the issue, after
+# record-attempt allows the round (tests/test-talos-gate.sh runs it).
+verb_text="$(cat "$TALOS_ROOT/scripts/talos.sh")"
+assert_contains "$verb_text" 'label-pr "$_pr" --remove pipeline:blocked' \
+  "talos.sh gate fix-round runs the orchestrator's PR clear command"
+assert_contains "$verb_text" 'label-issue "$_n" --remove pipeline:blocked' \
+  "talos.sh gate fix-round runs the orchestrator's issue clear command"
+assert_contains "$verb_text" 'Only the orchestrator clears pipeline:blocked' \
+  "talos.sh gate fix-round says only the orchestrator clears the block"
 
 # ── The four fix-round clear points (#312) ─────────────────────────────────
-# Each blocking stage's record-attempt step must clear the block before the
-# developer fix round; losing one leaves that stage's fix round blocked.
-CLEAR_PHRASE='clear `pipeline:blocked` (Step 3, "Clearing `pipeline:blocked`"), then re-dispatch'
+# Each blocking stage's fix round must go through `gate fix-round`, which clears
+# the block before the developer fix round and only on verdict=redispatch;
+# losing one call site leaves that stage's fix round blocked.
 for stage in qa reviewer security adversarial; do
-  after="$(grep -F -A3 -- "record-attempt <N> $stage --pr <PR_NUMBER>" "$SKILL_MD")"
-  assert_contains "$after" "$CLEAR_PHRASE" \
-    "SKILL.md clears pipeline:blocked after the $stage record-attempt"
+  after="$(grep -F -A3 -- "gate fix-round <N> $stage --pr <PR_NUMBER>" "$SKILL_MD")"
+  assert_contains "$after" 'verdict=redispatch' \
+    "SKILL.md re-dispatches the developer only on verdict=redispatch after the $stage gate fix-round"
 done
 
 # ── Blocked PRs are reported, not silent (#312) ────────────────────────────
