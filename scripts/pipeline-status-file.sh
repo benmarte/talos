@@ -86,7 +86,9 @@
 # higher-numbered PR that carries the approval label of every enabled role (and
 # neither pipeline:blocked nor pipeline:needs-owner), so a merge-ready PR is never
 # hidden by the cap. Those extra PRs are looked up like the others; their lines
-# are cut by the cap like any other line, and `Next` still names them.
+# are cut by the cap like any other line, and `Next` still names them. At most as
+# many extra PRs are looked up as the cap shows (the lowest-numbered ones), so the
+# cost stays bounded even when no role is enabled and every PR qualifies.
 # Stage of a PR, first match wins, counting only enabled roles (roles.qa,
 # docs, reviewer, security default true; roles.adversarial defaults false) and
 # treating an approval label as missing when check-approval-sha --stale-list
@@ -176,7 +178,8 @@
 # are rejected, then the NORMALISED path (`./-rf` is `-rf`) must not start with
 # `-` or `:` (exit 1, stderr names the key). The three normalised paths must not
 # be equal and none may sit inside another (`docs/status` over
-# `docs/status/archive`): exit 1, stderr names both keys. The RESOLVED path must
+# `docs/status/archive`), compared casefolded (the macOS default filesystem is
+# case-insensitive): exit 1, stderr names both keys. The RESOLVED path must
 # stay inside the checkout root, and neither the status file, an archive file nor any
 # directory component of the three paths may be a symlink. The headings are
 # matched as fixed strings; they must start with `#`, be at most 256 BYTES,
@@ -365,15 +368,21 @@ STATUS_FILE="$(_sf_norm_path status.file "$(cfg status.file)")" || exit 1
 FRAG_DIR="$(_sf_norm_path status.fragments_dir "$(cfg status.fragments_dir)")" || exit 1
 ARCHIVE_DIR="$(_sf_norm_path status.archive_dir "$(cfg status.archive_dir)")" || exit 1
 # The three paths must be disjoint (#454): equal, or one inside another, and an
-# assemble would write the log into its own fragments or archive.
-_sf_disjoint() {  # KEY_A PATH_A KEY_B PATH_B
-  if [ "$2" = "$4" ]; then _sf_err "$1 and $3 must differ: both are $2"; return 1; fi
-  case "$2/" in "$4"/*) _sf_err "$1 ($2) must not be inside $3 ($4)"; return 1 ;; esac
-  case "$4/" in "$2"/*) _sf_err "$3 ($4) must not be inside $1 ($2)"; return 1 ;; esac
+# assemble would write the log into its own fragments or archive. Compared
+# CASEFOLDED, always: the macOS default filesystem is case-insensitive, so
+# `Docs/status` and `docs/status/archive` are nested there; on a case-sensitive
+# one the false "nested" only fails closed.
+_sf_folded="$(python3 -I -c 'import sys; print("\n".join(a.casefold() for a in sys.argv[1:]))' \
+  "$STATUS_FILE" "$FRAG_DIR" "$ARCHIVE_DIR")" || { _sf_err "python3 failed while comparing the status paths"; exit 1; }
+{ read -r _sf_f_file; read -r _sf_f_frag; read -r _sf_f_arch; } <<< "$_sf_folded"
+_sf_disjoint() {  # KEY_A PATH_A FOLDED_A KEY_B PATH_B FOLDED_B
+  if [ "$3" = "$6" ]; then _sf_err "$1 and $4 must differ: $2 and $5 are the same path"; return 1; fi
+  case "$3/" in "$6"/*) _sf_err "$1 ($2) must not be inside $4 ($5)"; return 1 ;; esac
+  case "$6/" in "$3"/*) _sf_err "$4 ($5) must not be inside $1 ($2)"; return 1 ;; esac
 }
-_sf_disjoint status.file "$STATUS_FILE" status.fragments_dir "$FRAG_DIR" || exit 1
-_sf_disjoint status.file "$STATUS_FILE" status.archive_dir "$ARCHIVE_DIR" || exit 1
-_sf_disjoint status.fragments_dir "$FRAG_DIR" status.archive_dir "$ARCHIVE_DIR" || exit 1
+_sf_disjoint status.file "$STATUS_FILE" "$_sf_f_file" status.fragments_dir "$FRAG_DIR" "$_sf_f_frag" || exit 1
+_sf_disjoint status.file "$STATUS_FILE" "$_sf_f_file" status.archive_dir "$ARCHIVE_DIR" "$_sf_f_arch" || exit 1
+_sf_disjoint status.fragments_dir "$FRAG_DIR" "$_sf_f_frag" status.archive_dir "$ARCHIVE_DIR" "$_sf_f_arch" || exit 1
 LOG_HEADING="$(cfg status.log_heading)"
 RESUME_HEADING="$(cfg status.resume_heading)"
 _sf_check_heading status.log_heading "$LOG_HEADING" || exit 1
@@ -863,10 +872,11 @@ def collect():
     enabled = set(x for x in opts.get('roles', '').split(',') if x)
     # `Next` must still see a merge-ready PR past the cap: any PR beyond it that
     # carries the approval label of every enabled role (and no blocked or
-    # needs-owner label) is looked up as well; only its line can be cut.
+    # needs-owner label) is looked up as well, at most as many as the cap shows (with
+    # no role enabled every PR qualifies); only its line can be cut.
     need = set(label for role, label in APPROVALS if role in enabled)
     pending = [e for e in eligible[shown:]
-               if need <= e[1] and not ((e[1] | issues.get(e[2], set())) & {BLOCKED_LABEL, NEEDS_OWNER_LABEL})]
+               if need <= e[1] and not ((e[1] | issues.get(e[2], set())) & {BLOCKED_LABEL, NEEDS_OWNER_LABEL})][:shown]
     prs = []
     for n, labels, issue in eligible[:shown] + pending:
         rc, out, _ = vcs('pr-head', str(n))

@@ -1012,6 +1012,16 @@ out="$(bash "$SF" refresh --print 2>/dev/null)"
 assert_not_contains "$(calls)" "pr-head 15" "cap-next: a needs-owner PR past the cap is not looked up"
 assert_eq "- Next: resume #10 at qa" "$(line_of "$out" '^- Next:')" "cap-next: Next is then the lowest shown PR"
 
+# with no role enabled every PR qualifies as merge-ready: the extra lookups past
+# the cap are bounded by the number of PRs the cap shows (here 2), not by the PR count
+cfg_rf '"roles": {"qa": false, "docs": false, "reviewer": false, "security": false}' '"resume_max_lines": 5'
+fx_reset
+for i in $(seq 10 39); do add_pr "$i" fix/issue-5-x ""; done
+add_issue 5 ""; fx_flush
+out="$(bash "$SF" refresh --print 2>/dev/null)"
+assert_eq "4" "$(grep -c '^pr-head ' "$FX/calls.log")" "cap-next: no roles enabled, 30 PRs, 5-line cap: 2 shown + at most 2 extra lookups"
+assert_eq "- Next: merge #10" "$(line_of "$out" '^- Next:')" "cap-next: no roles enabled: Next is still the lowest merge-ready PR"
+
 cfg_rf
 # an issue that is ready AND needs the owner is never offered as `start`
 fx_reset; add_issue 9 "pipeline:ready,pipeline:needs-owner"; fx_flush

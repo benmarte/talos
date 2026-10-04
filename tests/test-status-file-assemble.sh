@@ -262,6 +262,9 @@ overlap "file inside fragments_dir" docs/status/S.md docs/status docs/arch statu
 overlap "file inside archive_dir" docs/arch/S.md docs/frag docs/arch status.file status.archive_dir
 overlap "fragments_dir inside archive_dir" S.md docs/arch/frag docs/arch status.fragments_dir status.archive_dir
 overlap "archive_dir inside fragments_dir" S.md docs/status docs/status/archive status.fragments_dir status.archive_dir
+# case-insensitive filesystems (the macOS default): mixed case is the same path
+overlap "mixed-case nesting (Docs/status over docs/status/archive)" S.md Docs/status docs/status/archive status.fragments_dir status.archive_dir
+overlap "mixed-case equality" S.md docs/Frag DOCS/frag status.fragments_dir status.archive_dir
 assert_eq "$before_porcelain" "$(git status --porcelain)" "overlap: nothing was written to the checkout"
 assert_file_absent S.md "overlap: no status file was created"
 # a shared string prefix is not nesting: docs/status and docs/status-archive are siblings
