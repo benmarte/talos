@@ -13,6 +13,7 @@
 #       the budget formula, the final-verify exception in step 3, both standing lines
 #   (e) `pr-checks-required <n> --wait <seconds>` (the one-call CI wait the
 #       developer and QA profiles use): 0/1/2 results, bad values, no-flag baseline
+#   (f) a skipped required check is pending, not failed (#435)
 #   (d) the exit-code/stderr contract the routing table depends on, against the
 #       real `pr-checks-required` verb and a stubbed `gh`
 set -u
@@ -60,6 +61,19 @@ assert_contains "$(cat "$SKILL")" 'Under `VERIFY_QA_MODE` `local`, omit the `Req
   "local mode omits both developer prompt items"
 assert_contains "$(cat "$SKILL")" 'Set `Required checks: none` (CI does not run until `ready-pr`)' \
   "the pr-draft block sends Required checks: none"
+
+# Behavioural (#435): render the developer brief's `Required checks:` line the
+# way Step 3c says to (the pr-draft block overrides it to `none`), then apply the
+# developer profile's step 10 rule to the rendered brief. Under PR_DRAFT = true no
+# CI wait runs (no pr-checks-required call); the ready flow still waits.
+DRAFT_BLOCK="$(awk '/^\*\*Draft PR \(`PR_DRAFT = true`, #332\):\*\*/{f=1} /^<!-- pr-draft:end -->/{f=0} f' "$SKILL" | tr '\n' ' ' | tr -s ' ')"
+DRAFT_CHECKS="$(printf '%s' "$DRAFT_BLOCK" | grep -o 'Set `Required checks: none`' | sed 's/Set `//; s/`$//')"
+assert_eq "Required checks: none" "$DRAFT_CHECKS" "PR_DRAFT = true: the rendered brief line is Required checks: none"
+ci_wait_runs() {  # $1 = rendered brief line; step 10: only when present and not none
+  case "$1" in "Required checks: none"|"") return 1 ;; "Required checks: "*) return 0 ;; *) return 1 ;; esac
+}
+ci_wait_runs "$DRAFT_CHECKS" && fail "PR_DRAFT = true: the developer CI wait is a no-op" || pass "PR_DRAFT = true: the developer CI wait is a no-op"
+ci_wait_runs "Required checks: test (ubuntu-latest)" && pass "ready flow: the developer CI wait still runs" || fail "ready flow: the developer CI wait still runs"
 
 # ── (c) developer profile ────────────────────────────────────────────────────
 DEV_TEXT="$(cat "$DEV")"
@@ -111,7 +125,7 @@ assert_not_contains "$res" 'pr-checks-required: failed:' "no checks configured: 
 
 # ── (e) pr-checks-required --wait <seconds> ──────────────────────────────────
 # A counting gh stub: pending for the first $GH_PENDING_READS `pr checks`
-# reads, then $GH_FINAL. TALOS_RETRY_SLEEP_SCALE=0 makes every sleep instant;
+# reads (state $GH_EARLY, default pending), then $GH_FINAL. TALOS_RETRY_SLEEP_SCALE=0 makes every sleep instant;
 # the verb's deadline still counts the nominal 30s steps.
 mkdir -p "$SANDBOX/bin"
 cat > "$SANDBOX/bin/gh" <<'TALOS_u8Rk2VxN5pQeW'
@@ -119,7 +133,7 @@ cat > "$SANDBOX/bin/gh" <<'TALOS_u8Rk2VxN5pQeW'
 case "$*" in
   "pr checks"*)
     n="$(cat "$GH_CNT" 2>/dev/null || echo 0)"; n=$((n + 1)); printf '%s' "$n" > "$GH_CNT"
-    if [ "$n" -le "${GH_PENDING_READS:-0}" ]; then st=pending; else st="${GH_FINAL:-pass}"; fi
+    if [ "$n" -le "${GH_PENDING_READS:-0}" ]; then st="${GH_EARLY:-pending}"; else st="${GH_FINAL:-pass}"; fi
     printf 'test\t%s\t1m\thttps://x\n' "$st" ;;
   *) exit 0 ;;
 esac
@@ -166,6 +180,41 @@ assert_eq "2" "$rc" "no --wait: pending returns 2 as before"
 assert_eq "1" "$reads" "no --wait: one read, no polling"
 wait_run 0 pass 9
 assert_eq "0" "$rc" "no --wait: green returns 0 as before"
+
+# ── (f) a skipped required check is pending, never a failure (#435) ──────────
+# A draft push leaves a skipped required check until the ready_for_review run
+# replaces it. Before: `skipping` read as failed: (exit 1) and re-dispatched the
+# developer. After: pending (exit 2); it never passes by itself.
+wait_run 99 skipping 9
+assert_eq "2" "$rc" "skipping required check: exit 2, not 1"
+assert_not_contains "$out" 'pr-checks-required: failed:' "skipping required check: no failed: line"
+assert_contains "$out" 'pending or missing: test' "skipping required check: reported as pending"
+GH_EARLY=skipping wait_run 2 pass 9 --wait 300
+assert_eq "0" "$rc" "--wait: skipping twice then the replacing run goes green returns 0"
+assert_eq "3" "$reads" "--wait: kept polling through the skipped reads"
+GH_EARLY=skipping wait_run 99 pass 9 --wait 100
+assert_eq "2" "$rc" "--wait: a persistent skip ends exit 2 at the deadline, never a pass"
+assert_not_contains "$out" 'pr-checks-required: failed:' "--wait: a persistent skip never reads as failed:"
+wait_run 0 cancelled 9
+assert_eq "1" "$rc" "control: another non-pass state (cancelled) still fails"
+
+printf '{"vcs": {"provider": "github-api", "repo": "acme/widget"}, "merge": {"required_checks": ["test"]}}\n' > talos.pipeline.json
+export GITHUB_TOKEN="test-token-435"
+ga_run() {  # $1 = check-runs JSON
+  : > "$CURL_LOG"; : > "$CURL_LINK_QUEUE"
+  printf '%s\n' '{"head":{"sha":"dd11223344556677889900aabbccddeeff11223"}}' "$1" > "$CURL_QUEUE"
+  out="$(bash "$VCS" pr-checks-required 9 2>&1)"; rc=$?
+}
+ga_run '{"check_runs":[{"name":"test","status":"completed","conclusion":"skipped"}]}'
+assert_eq "2" "$rc" "github-api: a skipped conclusion is pending (exit 2)"
+assert_not_contains "$out" 'pr-checks-required: failed:' "github-api: a skipped conclusion is not failed:"
+ga_run '{"check_runs":[{"name":"test","status":"completed","conclusion":"neutral"}]}'
+assert_eq "2" "$rc" "github-api: a neutral conclusion is pending like gh's skipping bucket (exit 2)"
+assert_not_contains "$out" 'pr-checks-required: failed:' "github-api: a neutral conclusion is not failed:"
+ga_run '{"check_runs":[{"name":"test","status":"completed","conclusion":"cancelled"}]}'
+assert_eq "1" "$rc" "github-api control: a cancelled conclusion still fails"
+ga_run '{"check_runs":[{"name":"test","status":"completed","conclusion":"success"}]}'
+assert_eq "0" "$rc" "github-api control: success still passes"
 
 printf '{"vcs": {"provider": "gitlab"}, "merge": {"required_checks": ["test"]}}\n' > talos.pipeline.json
 wait_run 0 pass 9 --wait 60
