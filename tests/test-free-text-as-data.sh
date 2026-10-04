@@ -48,7 +48,35 @@ assert_no_pwned() {  # $1=label
   for f in "$SANDBOX"/pwned*; do [ -e "$f" ] && leaked="$leaked $f"; done
   assert_eq "" "$leaked" "$1: nothing in the body ran (no pwned file)"
 }
-rand() { LC_ALL=C tr -dc 'a-f0-9' < /dev/urandom | head -c 16; }
+# Bounded read (#479): `tr </dev/urandom | head` never ends when SIGPIPE is
+# ignored (the Actions runner does that) and tr is BSD tr, which ignores EPIPE.
+rand() { LC_ALL=C od -An -N8 -tx1 /dev/urandom | tr -d ' \n'; }
+
+# A hung tr is a grandchild of the job that started it, so a kill takes the tree.
+kill_tree() {  # $1=pid
+  local p="${1:-}" kids c
+  [ -n "$p" ] || return 0
+  kids="$(pgrep -P "$p" 2>/dev/null)"
+  kill "$p" 2>/dev/null
+  for c in $kids; do kill_tree "$c"; done
+  return 0
+}
+WPID=""
+trap 'kill_tree "$WPID"; rm -rf "$SANDBOX"' EXIT
+
+# rand() returns with SIGPIPE ignored. A watchdog (no `timeout` on macOS) kills
+# the job's tree after 20 s; the watchdog is itself killed on every path.
+RAND_OUT="$SANDBOX/rand-ignored-pipe.txt"
+( trap '' PIPE; printf '%s' "$(rand)" > "$RAND_OUT" ) &
+RPID=$!
+( sleep 20; kill_tree "$RPID" ) &
+WPID=$!
+wait "$RPID"; rrc=$?
+kill_tree "$WPID"; wait "$WPID" 2>/dev/null
+WPID=""
+assert_eq "0" "$rrc" "rand: returns with SIGPIPE ignored (a watchdog kill would be 143)"
+assert_eq "16" "$(wc -c < "$RAND_OUT" | tr -d ' ')" "rand: 16 characters"
+case "$(cat "$RAND_OUT")" in *[!a-f0-9]*|'') fail "rand: lowercase hex only" "$(cat "$RAND_OUT")" ;; *) pass "rand: lowercase hex only" ;; esac
 
 # ══ Part 1: the real scripts take the text from stdin ═════════════════════════
 
