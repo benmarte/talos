@@ -66,7 +66,9 @@
 #   Never crashes — missing keys, absent files, or parse errors all return
 #   the default. Without PyYAML a YAML file (.yml/.yaml) is not read at all:
 #   one stderr line per file names it and the fix (pip install pyyaml, or the
-#   .json form), then its keys fall back to the defaults (#490).
+#   .json form), then its keys fall back to the defaults (#490). Each call is its
+#   own process, so the note is stamped under $TMPDIR/talos-yaml-warn-<uid>/ and
+#   repeats at most once an hour per file (TALOS_YAML_WARN_DEDUP=0: every call).
 #
 set -u
 
@@ -208,6 +210,45 @@ _YAML_WARNED = set()  # YAML files already reported as unreadable without PyYAML
 def _warn(msg):
     sys.stderr.write("pipeline-config: [warn] %s\n" % msg)
 
+class _NoYamlError(ValueError):
+    # A YAML config file that cannot be read because PyYAML is missing (#490).
+    pass
+
+def _yaml_warn_due(path):
+    # Every pipeline-config.sh call is its own process, so a per-process note
+    # would repeat for each lookup of a run. A stamp file keyed by the YAML
+    # file's path and mtime, in a private dir under $TMPDIR, limits the note to
+    # once per hour per file. TALOS_YAML_WARN_DEDUP=0 notes every process. Any
+    # problem with the stamp (dir not ours, not writable) means: warn.
+    if os.environ.get("TALOS_YAML_WARN_DEDUP") == "0":
+        return True
+    try:
+        import hashlib, stat, time
+        uid = os.geteuid()
+        d = os.path.join(os.environ.get("TMPDIR") or "/tmp", "talos-yaml-warn-%d" % uid)
+        try:
+            os.mkdir(d, 0o700)
+        except FileExistsError:
+            pass
+        st = os.lstat(d)
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid != uid or st.st_mode & 0o077:
+            return True
+        key = "%s\0%d" % (path, os.stat(path).st_mtime_ns)
+        stamp = os.path.join(d, hashlib.sha256(key.encode("utf-8", "surrogateescape")).hexdigest())
+        try:
+            if time.time() - os.lstat(stamp).st_mtime < 3600:
+                return False
+            os.unlink(stamp)
+        except FileNotFoundError:
+            pass
+        try:
+            os.close(os.open(stamp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600))
+        except FileExistsError:
+            return False  # another process stamped it a moment ago
+    except Exception:
+        pass
+    return True
+
 def _parse_cfg_file(path):
     # Prefer PyYAML (safe_load only); fall back to json without it.
     # -I drops the user site; append it back (never insert: cwd and the
@@ -229,13 +270,17 @@ def _parse_cfg_file(path):
             return json.load(f)
         except ValueError:
             # A YAML file that is not also JSON cannot be read without PyYAML
-            # (#490). Say so once per file instead of silently using defaults.
-            if path.lower().endswith((".yml", ".yaml")) and path not in _YAML_WARNED:
+            # (#490). Say so (at most once an hour per file, see _yaml_warn_due)
+            # instead of silently using defaults.
+            if not path.lower().endswith((".yml", ".yaml")):
+                raise
+            if path not in _YAML_WARNED:
                 _YAML_WARNED.add(path)
-                _warn("%s is a YAML config but PyYAML is not installed, so it is "
-                      "ignored -- run `pip install pyyaml` or use the .json form"
-                      % repr(path))
-            raise
+                if _yaml_warn_due(path):
+                    _warn("%s is a YAML config but PyYAML is not installed, so it is "
+                          "ignored -- run `pip install pyyaml` or use the .json form"
+                          % repr(path))
+            raise _NoYamlError("PyYAML is not installed")
 
 # Repo-only scope (#441): the table's scope column, as key templates ("*" is
 # one dynamic segment). A leaf is repo-only when it equals a template, is a
@@ -330,6 +375,8 @@ def _load_user_layer(user_path, project_path):
     except Exception as e:
         # Type name only: a parser's message may echo file content.
         _LOAD_ERRORS.append("user")
+        if isinstance(e, _NoYamlError):
+            return {}  # already reported by _parse_cfg_file: one note per file
         _warn("user-level config %s unreadable or malformed (%s) -- ignoring it"
               % (shown, type(e).__name__))
         return {}

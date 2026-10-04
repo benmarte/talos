@@ -107,8 +107,10 @@ jobs:
       # The macOS runner's python3 has no PyYAML, so the YAML-config tests would
       # skip there (#490). Homebrew Python is externally managed (PEP 668), hence
       # --break-system-packages; no --user, because python3 -I does not see it.
+      # This step assumes a throwaway GitHub-hosted runner: on a self-hosted
+      # macOS runner, install PyYAML yourself instead of --break-system-packages.
       - name: Install PyYAML (macOS)
         if: runner.os == 'macOS'
-        run: python3 -m pip install --break-system-packages pyyaml
+        run: "python3 -m pip install --break-system-packages --only-binary :all: 'pyyaml==6.0.2'"
       - name: Run test suite
         run: bash tests/run-tests.sh --no-cache
