@@ -182,19 +182,13 @@ Store these for the run:
 - ISOLATION (`execution.isolation`, default `worktree`) — how each stage gets its working copy; validated immediately after config is read
 - WORKTREE_WARN_THRESHOLD (`execution.worktree_warn_threshold`, default `10`) — non-active worktree count above which Step 5 relays a warning
 <!-- pr-draft:start -->
-- PR_DRAFT (`pr.draft`, default `false`, #332) — opt-in. `true` switches Step 3
-  to the **Draft stage order** (see "Draft stage order" before Step 3d): the
+- PR_DRAFT (`pr.draft`, default `true`, #332, #435) — `true` switches Step 3 to
+  the **Draft stage order** (see "Draft stage order" before Step 3d): the
   developer opens a DRAFT PR, every stage that needs no CI runs while it is a
-  draft, and `ready-pr` triggers the one CI run. Read it with `bash
-  scripts/pipeline-config.sh pr.draft false`. Draft PRs exist only on `github`
-  (the `gh` adapter), `gitlab` and `azure`; when `pr.draft` is `true` and
-  VCS_PROVIDER is `github-api` or `file`, warn ONCE on stderr
-  (`pipeline: pr.draft ignored: provider <VCS_PROVIDER> cannot open draft PRs`)
-  and treat PR_DRAFT as `false` for the whole run — the stage order is then the
-  default one. Talos never edits CI config: the consuming repo's workflow must
-  include `ready_for_review` in `on.pull_request.types` and gate each job with
-  `if: github.event.pull_request.draft != true` (README, "Draft PRs"), or QA
-  waits for a run that never comes.
+  draft, and `ready-pr` triggers the one CI run. Resolve it with
+  `PR_DRAFT="$(bash scripts/pipeline-draft-check.sh resolve)"` (`true` or
+  `false`; show its one stderr warning line, if any, once). Talos never edits CI
+  config.
 <!-- pr-draft:end -->
 <!-- evidence:start -->
 - EVIDENCE_ENABLED, EVIDENCE_LINE (`evidence.*`, default off, #352): `EVIDENCE_LINE="$(bash scripts/pipeline-evidence.sh enabled)"; EVIDENCE_RC=$?`. EVIDENCE_ENABLED is true only when `EVIDENCE_RC` is 0 (then `EVIDENCE_LINE` is `evidence on when=<user-facing|always> mode=<command|agent>`); otherwise nothing evidence-related happens. A stderr line `pipeline: evidence ignored: <reason>` is left as is: warn once, evidence off.
@@ -229,7 +223,7 @@ Store these for the run:
 - `execution.worktree_warn_threshold`: 10
 - `status.enabled`: false (#333)
 <!-- pr-draft:start -->
-- `pr.draft`: false (#332)
+- `pr.draft`: true (#332, #435; resolved by the PR_DRAFT call above)
 <!-- pr-draft:end -->
 
 #### Concurrency and verify: isolation
@@ -1053,6 +1047,11 @@ Dispatch QA (and start the CI wait) ONLY when `RC` is 1 AND `STATE` is exactly
   Stop this issue for this pass and report `pr-is-draft not verified for #<N>`.
   Never read it as `ready` and never read it as `draft` (do not call `ready-pr`
   or `draft-pr` on it either).
+
+Under `VERIFY_QA_MODE` `ci` the PR was just marked ready: run the gate below with
+`--wait <B>`, `B` = `min(VERIFY_CI_WAIT_S, VERIFY_TIMEOUT_MS/1000 - 30)`, the Bash
+call's timeout `VERIFY_TIMEOUT_MS`. The table is unchanged (2, still pending at
+`B`, spawns QA).
 
 <!-- pr-draft:end -->
 **CI gate (#355).** Only when `VERIFY_QA_MODE` is `ci`, on the first QA dispatch

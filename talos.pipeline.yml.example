@@ -525,14 +525,17 @@ notifications:
 #                                     # by every linked worktree via `git rev-parse
 #                                     # --git-common-dir`) unless already absolute
 
-# ── Opt-in draft PRs (#332) ───────────────────────────────────────────────────
-# Known key only so far: the draft verbs exist in scripts/pipeline-vcs.sh
-# (create-pr --draft, ready-pr, draft-pr, pr-is-draft) but nothing consults
-# pr.draft until the stage-order change lands, so setting it changes nothing yet.
-# When wired, your CI must pair with it: on.pull_request.types includes
-# ready_for_review and each job has `if: github.event.pull_request.draft != true`.
+# ── Draft PRs, the default (#332, #435) ──────────────────────────────────────
+# By default the developer opens a DRAFT PR, docs and review run on the draft,
+# and `ready-pr` triggers the one CI run (one run per PR instead of one per
+# push). Your CI must pair with it: on.pull_request.types includes
+# ready_for_review and each job has `if: github.event.pull_request.draft != true`
+# (templates/ci/github-tests.yml). On `github`, /pipeline checks this at the
+# start with scripts/pipeline-draft-check.sh and warns; it never edits a
+# workflow. github-api and file cannot open draft PRs and use the ready flow
+# whatever this says. Uncomment to opt out and keep the ready flow:
 # pr:
-#   draft: false                     # default false
+#   draft: true                      # default true; false = ready PRs, CI on every push
 
 # ── Built-in status file (#343, epic #333) ───────────────────────────────────
 # /pipeline reads these since #347, but only when status.enabled is true; it

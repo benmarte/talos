@@ -1250,7 +1250,8 @@ _sf_collect() {
   _sf_role_on roles.adversarial false && roles="${roles}adversarial,"
   [ "$(cfg merge.auto true | tr '[:upper:]' '[:lower:]')" = "false" ] && auto="false"
   [ -n "$(cfg merge.required_checks "" | tr -d '[:space:]')" ] && checks="yes"
-  [ "$(cfg pr.draft false | tr '[:upper:]' '[:lower:]')" = "true" ] && draft="true"
+  # The same effective value Step 0 uses (#435): default true, false on github-api/file.
+  [ "$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" resolve 2>/dev/null)" = "true" ] && draft="true"
   python3 -I -c "$SF_PY" collect "$PWD" "$STATUS_FILE" "$FRAG_DIR" "$ARCHIVE_DIR" \
     "$LOG_HEADING" "$RESUME_HEADING" "$LOG_DAYS" "$LOG_MAX" "$TODAY" "" "" "" "" \
     --vcs "$SCRIPT_DIR/pipeline-vcs.sh" --out "$_SF_TMP/gh.json" --roles "$roles" \

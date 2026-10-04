@@ -91,9 +91,11 @@ git add README.md
 git commit -q -m "seed"
 git branch -M main
 
+# pr.draft is explicit (#435: the draft flow is the default, so a table that
+# assumes the ready order must say so). RF_DRAFT=true overrides it.
 cfg_rf() {  # $1 = extra top-level JSON members, $2 = extra status members
-  printf '{"vcs": {"provider": "github", "repo": "acme/widget"}, "base_branch": "main"%s, "status": {"enabled": true%s}}\n' \
-    "${1:+, $1}" "${2:+, $2}" > talos.pipeline.json
+  printf '{"vcs": {"provider": "github", "repo": "acme/widget"}, "base_branch": "main", "pr": {"draft": %s}%s, "status": {"enabled": true%s}}\n' \
+    "${RF_DRAFT:-false}" "${1:+, $1}" "${2:+, $2}" > talos.pipeline.json
 }
 
 reset_fixture() {
@@ -276,7 +278,7 @@ assert_stage "table: required check passing -> merge" merge
 cfg_rf '"merge": {"auto": false}'
 fx_reset; add_pr 10 fix/issue-5-x "$ALL"; add_issue 5 ""
 assert_stage "table: merge.auto false -> human-merge" human-merge
-cfg_rf '"pr": {"draft": true}'
+RF_DRAFT=true cfg_rf
 fx_reset; add_pr 10 fix/issue-5-x "docs:done,review:approved,security:approved"; add_issue 5 ""; echo 0 > "$FX/draft.10.rc"
 assert_stage "table: draft PR with docs/review/security done -> ready" ready
 fx_reset; add_pr 10 fix/issue-5-x ""; add_issue 5 ""; echo 0 > "$FX/draft.10.rc"
@@ -289,6 +291,21 @@ cfg_rf
 fx_reset; add_pr 10 fix/issue-5-x "$ALL"; add_issue 5 ""; echo 0 > "$FX/draft.10.rc"
 assert_stage "table: pr.draft false never asks pr-is-draft" merge
 assert_not_contains "$(calls)" "pr-is-draft" "table: pr.draft false makes no pr-is-draft call"
+# pr.draft unset (#435): the default is the draft flow on github, and the ready
+# flow on github-api (it cannot open draft PRs, so pr-is-draft would exit 2 and
+# every PR would read `unverified`).
+printf '{"vcs": {"provider": "github", "repo": "acme/widget"}, "base_branch": "main", "status": {"enabled": true}}\n' > talos.pipeline.json
+fx_reset; add_pr 10 fix/issue-5-x ""; add_issue 5 ""; echo 0 > "$FX/draft.10.rc"
+assert_stage "default: pr.draft unset on github is the draft flow (draft PR skips qa -> docs)" docs
+assert_contains "$(calls)" "pr-is-draft 10" "default: pr.draft unset on github asks pr-is-draft"
+printf '{"vcs": {"provider": "github-api", "repo": "acme/widget"}, "base_branch": "main", "status": {"enabled": true}}\n' > talos.pipeline.json
+fx_reset; add_pr 10 fix/issue-5-x ""; add_issue 5 ""; echo 2 > "$FX/draft.10.rc"
+assert_stage "default: pr.draft unset on github-api is the ready flow, never unverified (qa)" qa
+assert_not_contains "$(calls)" "pr-is-draft" "default: pr.draft unset on github-api makes no pr-is-draft call"
+printf '{"vcs": {"provider": "github", "repo": "acme/widget"}, "base_branch": "main", "pr": {"draft": false}, "status": {"enabled": true}}\n' > talos.pipeline.json
+fx_reset; add_pr 10 fix/issue-5-x ""; add_issue 5 ""; echo 0 > "$FX/draft.10.rc"
+assert_stage "default: an explicit pr.draft false on github keeps the ready flow (qa)" qa
+cfg_rf
 fx_reset; add_pr 10 fix/issue-5-x "$ALL"; add_issue 5 ""
 printf 'stale role=qa label=qa:pass\n' > "$FX/stale.10"; echo 1 > "$FX/stale.10.rc"
 assert_stage "table: present but stale qa:pass -> qa" qa

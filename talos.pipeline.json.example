@@ -109,5 +109,9 @@
     "max_fix_attempts": 3,
     "max_total_dispatches": 8,
     "max_retries": 5
+  },
+
+  "pr": {
+    "draft": true
   }
 }
