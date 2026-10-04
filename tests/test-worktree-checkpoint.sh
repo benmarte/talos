@@ -379,6 +379,50 @@ assert_contains "$SEEN" "\"head\":\"$(git -C "$W48" rev-parse HEAD)\"" "stub run
 assert_contains "$(git -C "$W48" show --name-only --format= HEAD)" "unsaved.txt" "the failover checkpoint saved the killed stage's unsaved file"
 assert_eq "$(git -C "$W48" rev-parse HEAD)" "$(origin_ref fix/issue-48-killed)" "and pushed it"
 
+# ── Drift (#444): every shape the config loader rejects, the handoff validator catches ──
+# The fixtures come from test-config-secret-shapes.sh (assembled from fragments,
+# so no secret-shaped literal is in this file). Each goes through the real
+# validator, extracted from pipeline-worktree.sh, as a handoff field; only names
+# are printed, never a value. The validator's list is broader on purpose; this
+# fails only when a shape in pipeline-secret-shapes.py is NOT also in it.
+cat > "$SANDBOX/drift.py" <<'TALOS_q7v2m9xk4hpd'
+import json, os, re, subprocess, sys, tempfile
+
+src = open(os.environ["WT_FILE"]).read()
+m = re.search(r"^_WT_HF_PY='\n(.*?)\n'$", src, re.S | re.M)
+if not m:
+    print("NO-VALIDATOR")
+    sys.exit(0)
+validator = m.group(1)
+ns = {}
+exec(open(os.environ["SHAPES_FILE"]).read(), ns)
+shape_names = {name for name, _rx in ns["SECRET_SHAPES"]}
+fixtures = [ln.split("\t", 1) for ln in os.environ["FIXTURES"].split("\n") if ln]
+
+def verdict(field_value, hdir):
+    p = subprocess.run(
+        [sys.executable, "-I", "-c", validator, "write", "7", hdir, "fix/issue-7-x", "a" * 40, "", ""],
+        input=json.dumps({"next_step": field_value}), capture_output=True, text=True)
+    return p.returncode, p.stderr
+
+with tempfile.TemporaryDirectory() as d:
+    rc, _ = verdict("write the second test", d)
+    print("control-ok" if rc == 0 else "control-BAD")
+    print("shapes-covered" if {n for n, _v in fixtures} == shape_names else "fixtures-vs-shapes-DRIFT")
+    for name, value in fixtures:
+        rc, err = verdict(value, d)
+        print(("caught " if rc == 4 and "looks like a credential" in err else "MISSED ") + name)
+TALOS_q7v2m9xk4hpd
+DRIFT="$(WT_FILE="$WT" SHAPES_FILE="$TALOS_ROOT/scripts/pipeline-secret-shapes.py" \
+  FIXTURES="$(bash "$TALOS_ROOT/tests/test-config-secret-shapes.sh" --print-fixtures)" python3 -I "$SANDBOX/drift.py")"
+assert_contains "$DRIFT" "control-ok" "drift: the validator accepts an ordinary next_step (so a rejection below is the shape)"
+assert_contains "$DRIFT" "shapes-covered" "drift: the fixtures cover exactly the shapes in pipeline-secret-shapes.py"
+assert_not_contains "$DRIFT" "MISSED" "drift: the handoff validator catches every fixture the config loader rejects"
+assert_not_contains "$DRIFT" "NO-VALIDATOR" "drift: the validator source was found in pipeline-worktree.sh"
+assert_contains "$DRIFT" "caught slack-token" "drift: a Slack token variant is caught (xoxo / xoxs / xoxr are in the validator list)"
+assert_contains "$DRIFT" "caught slack-webhook" "drift: a Slack webhook URL with a 24-character secret is caught"
+assert_contains "$DRIFT" "caught nostr-nsec" "drift: a short nsec1 value is caught"
+
 # ── Prose pins ───────────────────────────────────────────────────────────────
 PIPE="$(cat "$TALOS_ROOT/skills/pipeline/SKILL.md")"
 assert_contains "$PIPE" 'only when `bash scripts/pipeline-worktree.sh handoff <N>` exits 0' "pipeline skill: the handoff line is conditional on the verb's exit 0"

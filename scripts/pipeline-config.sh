@@ -158,6 +158,11 @@ fi
 #                  empty. No generic TALOS_CFG_* scheme.
 # The validators below (positive integers, spend, evidence, fallback, effort)
 # run on the merged value, so they hold whichever layer supplied it.
+# Secret shapes (#444): a string leaf of either FILE layer that looks like a
+# secret (scripts/pipeline-secret-shapes.py: Slack/Discord/Teams webhooks and
+# tokens, GitHub, AWS, private keys, Nostr nsec) is dropped as absent on load,
+# with one stderr line that names the key and never the value; a value that
+# starts `env:` is always allowed. TALOS_CONFIG_STRICT_KEYS does not affect it.
 # Names tried, in order, for the project file; the first three also bound the
 # user-level lookup (same extension order, no legacy names).
 _CFG_NAMES=("talos.pipeline.yml" "talos.pipeline.yaml" "talos.pipeline.json"
@@ -278,6 +283,88 @@ def _apply_env(merged):
         node[parts[-1]] = val
     return out
 
+_SHAPE_LABELS = {
+    "slack-token": "a Slack token", "slack-webhook": "a Slack webhook URL",
+    "discord-webhook": "a Discord webhook URL", "teams-webhook": "a Teams webhook URL",
+    "github-token": "a GitHub token", "github-pat": "a GitHub token",
+    "gitlab-pat": "a GitLab token", "openai-key": "an API key",
+    "aws-access-key": "an AWS access key", "private-key": "a private key",
+    "nostr-nsec": "a Nostr secret key",
+}
+_GONE = object()
+_MAX_NODES = 100000   # expanded values per layer value; real config is a few hundred
+_MAX_DEPTH = 64
+_SHAPES_WARNED = []
+
+def _drop_secret_shaped(obj, what):
+    # Copy of a file layer without its secret-shaped leaves (#444): a string, at
+    # any depth of a mapping or list, that matches a shape from
+    # pipeline-secret-shapes.py. Each is dropped as absent with ONE stderr line
+    # naming the key (repr'd and cut) and the shape, never the value. A value
+    # that starts `env:` is a reference and is never checked. Both file layers
+    # go through here, so every reader of load_layers (the lookup, --has, --show)
+    # sees the same thing, and TALOS_CONFIG_STRICT_KEYS cannot turn it off.
+    try:
+        secret_shape
+    except NameError:
+        if not _SHAPES_WARNED:
+            _SHAPES_WARNED.append(1)
+            _warn("the secret-shape check is not installed (pipeline-secret-shapes.py "
+                  "is missing) -- config values are not checked; reinstall Talos")
+        return obj
+    # YAML aliases make the parsed layer a graph, not a tree: a node can be
+    # reached many times (nested aliases expand exponentially) or from itself.
+    # So each container is scanned ONCE (memo by id), a node met again while it
+    # is still being walked is a cycle, and a value whose expanded size passes
+    # _MAX_NODES or whose depth passes _MAX_DEPTH is dropped. Each is the same
+    # one-line form as a shape hit: the key, never the value.
+    memo = {}
+    active = set()
+    def drop(where, why):
+        _warn("%s: key %s %s -- ignoring it" % (what, repr(where)[:80], why))
+        return _GONE, 0
+    def walk(node, where, depth):
+        # -> (cleaned node or _GONE, expanded size)
+        if isinstance(node, (dict, list)):
+            nid = id(node)
+            if nid in memo:
+                return memo[nid]
+            if nid in active:
+                return drop(where, "refers to itself (a YAML alias cycle)")
+            if depth >= _MAX_DEPTH:
+                return drop(where, "is nested too deeply")
+            active.add(nid)
+            size = 1
+            if isinstance(node, dict):
+                out = {}
+                for k, v in node.items():
+                    kept, n = walk(v, where + "." + str(k) if where else str(k), depth + 1)
+                    size += n
+                    if kept is not _GONE:
+                        out[k] = kept
+            else:
+                out = []
+                for i, v in enumerate(node):
+                    kept, n = walk(v, "%s[%d]" % (where, i), depth + 1)
+                    size += n
+                    if kept is not _GONE:
+                        out.append(kept)
+            active.discard(nid)
+            if size > _MAX_NODES:
+                memo[nid] = drop(where, "expands to too many values (nested YAML aliases)")
+            else:
+                memo[nid] = (out, size)
+            return memo[nid]
+        shape = secret_shape(node)
+        if shape is None:
+            return node, 1
+        _warn("%s: key %s holds %s; move the value to ~/.talos/.env and "
+              "reference it as env:NAME -- ignoring it"
+              % (what, repr(where)[:80], _SHAPE_LABELS.get(shape, "a secret")))
+        return _GONE, 0
+    kept = walk(obj, "", 0)[0]
+    return {} if kept is _GONE else kept
+
 def _check_agents(obj, what):
     # agents: must be a mapping in either file (it was warned about before #441
     # dropped the check). A scalar or list there is ignored, so it cannot erase
@@ -326,6 +413,9 @@ def _load_user_layer(user_path, project_path):
     if not isinstance(raw, dict):
         _warn("user-level config %s must be a mapping -- ignoring it" % shown)
         return {}
+    # Scanned first: it also breaks alias cycles and bounds alias blow-up, which
+    # the recursive drops below would otherwise walk (#444).
+    raw = _drop_secret_shaped(raw, "user-level config %s" % shown)
     return _drop_repo_only(_check_agents(raw, "user-level config %s" % shown), [], shown)
 
 def _deep_merge(base, over):
@@ -353,6 +443,7 @@ def load_layers(project_path, user_path, env=True):
             _LOAD_ERRORS.append("project")
     if not isinstance(project, dict):
         project = {}
+    project = _drop_secret_shaped(project, "config %s" % repr(project_path))
     project = _check_agents(project, "config %s" % repr(project_path))
     user = _load_user_layer(user_path, project_path)
     merged = _deep_merge(user, project)
@@ -369,7 +460,16 @@ PYLOADER
 # and _load_user_layer refuses the global file (fail closed).
 # shellcheck disable=SC1091
 [ -f "$_CFG_SELF_DIR/pipeline-secrets.sh" ] && . "$_CFG_SELF_DIR/pipeline-secrets.sh"
-_cfg_loader_src() { printf '_CFG_TABLE = %s\n%s\n%s' "$(_talos_scope_env_json)" "${_TALOS_TRUST_LIB:-}" "$_CFG_LOADER_PY"; }
+#
+# The secret-shape list (#444) is pipeline-secret-shapes.py, read here into
+# _CFG_SHAPES_PY (a builtin read, no fork) and prepended too, so the loader scans
+# both layers in the process that already parses them: no extra python3 spawn.
+# Without the file secret_shape is undefined and the loader says so once.
+_CFG_SHAPES_PY=""
+if [ -r "$_CFG_SELF_DIR/pipeline-secret-shapes.py" ]; then
+  read -r -d '' _CFG_SHAPES_PY < "$_CFG_SELF_DIR/pipeline-secret-shapes.py" || true
+fi
+_cfg_loader_src() { printf '_CFG_TABLE = %s\n%s\n%s\n%s' "$(_talos_scope_env_json)" "${_TALOS_TRUST_LIB:-}" "$_CFG_SHAPES_PY" "$_CFG_LOADER_PY"; }
 
 # ── Evidence-key validator (#405, part of #352) ──────────────────────────────
 # Python half of the evidence.* validation. Like _CFG_LOADER_PY it is handed to
@@ -693,19 +793,27 @@ def _layer(dotted, path):
         return "global"
     return "default"
 
-_CTRL = re.compile("[\x00-\x1f\x7f-\x9f]")
+_CTRL = re.compile("[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
 _ESC = {"\t": "\\t", "\n": "\\n", "\r": "\\r"}
 def _esc(text):
     # Config text is untrusted: a control character cannot forge a row or drive
-    # the terminal. (A backslash is left alone, so a list's `\n` joiner and a
-    # newline inside an item read the same; the output is for people.)
-    return _CTRL.sub(lambda m: _ESC.get(m.group(0), "\\x%02x" % ord(m.group(0))), text)
+    # the terminal, and a Unicode bidi override (U+202A-202E, U+2066-2069) cannot
+    # reorder what a person reads. (A backslash is left alone, so a list's `\n`
+    # joiner and a newline inside an item read the same; the output is for people.)
+    return _CTRL.sub(lambda m: _ESC.get(m.group(0), ("\\x%02x" if ord(m.group(0)) < 256 else "\\u%04x") % ord(m.group(0))), text)
 
 def _scalar(v):
     return ("true" if v else "false") if isinstance(v, bool) else str(v)
 
 _REF = re.compile(r"env:[A-Za-z_][A-Za-z0-9_]*\Z")
 _SECRETISH = re.compile(r"token|secret|passw|webhook|api_?key|bot_?key|credential|private", re.I)
+def _nested_secretish(x):
+    if isinstance(x, dict):
+        return any(_SECRETISH.search(str(k)) or _nested_secretish(v) for k, v in x.items())
+    if isinstance(x, list):
+        return any(_nested_secretish(v) for v in x)
+    return False
+
 def _shown(typ, dotted, value):
     # The one place a value becomes text. A secret-typed key, an unknown key whose
     # name reads like a secret, and anything starting `env:` never print a value:
@@ -715,6 +823,9 @@ def _shown(typ, dotted, value):
     items = value if isinstance(value, list) else [value]
     texts = [_scalar(x) for x in items]
     secret = typ == "secret" or (typ is None and _SECRETISH.search(dotted))
+    # A mapping inside a list is printed by str(): its own keys decide, so a
+    # `token:` item under a harmless-sounding key cannot print in full.
+    secret = secret or any(_nested_secretish(x) for x in items)
     if secret or any(t.startswith("env:") for t in texts):
         if isinstance(value, str) and _REF.match(value):
             return value
@@ -752,9 +863,15 @@ if [ "${1:-}" = "--show" ]; then
     esac
     shift
   done
-  # Sets _SS to set|unset for the variable NAME; the value is discarded at once.
+  # Sets _SS to set|unset|denied for the variable NAME; the value is discarded
+  # at once. A denied name (the secrets path refuses it, #444) is never looked up,
+  # so it never reports whether it is set.
   _show_ref_state() {
     _SS="unset"
+    if [ "$(type -t _talos_dotenv_denied)" = "function" ] && _talos_dotenv_denied "$1"; then
+      _SS="denied"
+      return 0
+    fi
     if [ "$(type -t _talos_secret_env_layers)" = "function" ] \
        && { _talos_secret_env_layers "$1" || _talos_user_env_get talos "$1" \
             || _talos_user_env_get hermes "$1"; }; then
