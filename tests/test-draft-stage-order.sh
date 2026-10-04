@@ -213,6 +213,13 @@ in_order "$DT" '4\. \*\*Developer — ONE fix round for every finding' 'collect 
 assert_eq "0" "$?" "stage order: one fix round, one gate fix-round, re-stamps on the delta, docs re-runs in the draft window before ready-pr"
 in_order "$DT" '\*\*QA failure or CI failure\*\*' 'convert the PR back FIRST with `bash scripts/pipeline-vcs.sh draft-pr <PR_NUMBER>`' 'one developer fix round' 'the re-stamps on the delta' '`ready-pr` \(step 5\) again' 'exactly one CI run however many commits'
 assert_eq "0" "$?" "stage order: QA/CI failure is draft-pr -> developer fix -> re-stamps -> ready-pr, one run per round"
+# The stage-return call (#469) carries the draft choreography: a failed QA is converted
+# back first, and a draft review batch is one fix round (`done` never calls `gate
+# fix-round`; tests/test-talos-done.sh runs it, and `done` is default-text free of --draft).
+in_order "$DT" 'pass `--draft` to every `done` call' 'a QA `FAIL` is converted back first \(`draft-pr`, drop `qa:pass`\)' 'CHANGES/FINDINGS answers `next=batch`'
+assert_eq "0" "$?" "stage return: done --draft converts a failed QA back first and batches review findings"
+in_order "$DT" 'Draft review batch' '`done --draft` answers `next=batch`' 'no attempt is recorded' 'one fix round covers all of the findings'
+assert_eq "0" "$?" "stage return: a draft review batch records no attempt per role; one fix round covers every finding"
 in_order "$DT" 'this stage runs BEFORE QA' 'the "only after `qa:pass`" rule above does not apply to it'
 assert_eq "0" "$?" "stage order: Step 3e review stages run before QA in draft mode"
 # Step 3d Pass path (#340): the draft note says 3e is not re-entered after QA passes.

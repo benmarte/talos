@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # test-spend-wiring.sh -- covers issue #386 (sub-task 9 of epic #334): the
 # playbook wiring of the spend line, the PR spend comment, the budget stop and
-# the run summary in skills/pipeline/SKILL.md.
+# the run summary in skills/pipeline/SKILL.md. The spend block and the role
+# post_stage moved into `talos.sh done` (#469); they are pinned in scripts/talos.sh.
 #   (a) presence: --model on post_stage, cost --line, the upsert with
 #       --marker spend --body-file -, pipeline-budget.sh check, budget-blocked,
 #       cost --summary; no positional-body upsert; no pipe from cost straight
@@ -23,15 +24,18 @@ SKILL_MD="$TALOS_ROOT/skills/pipeline/SKILL.md"
 skill_flat="$(tr '\n' ' ' < "$SKILL_MD" | tr -s ' ')"
 
 # ── (a) presence ───────────────────────────────────────────────────────────
-assert_contains "$skill_flat" 'post_stage <event> <role> <N> [--pr] [--sha] [--verdict] [--summary] [--attempt ...] [--model]' \
-  "Rule 3: post_stage lists --model"
+done_fn="$(sed -n '/^_talos_done() {/,/^}/p' "$TALOS_ROOT/scripts/talos.sh")"
+spend_fn="$(sed -n '/^_talos_spend() {/,/^}/p' "$TALOS_ROOT/scripts/talos.sh")"
 assert_contains "$skill_flat" '--model <value passed as `model:` to the spawn>' \
   "Rule 3: --model carries the value passed as model: to the spawn"
-assert_contains "$skill_flat" 'omitting the flag when the spawn had no model' \
-  "Rule 3: --model is omitted when the spawn had no model"
-assert_contains "$skill_flat" 'pipeline-events.sh cost --issue <N> --pr <M> --line' \
-  "spend block: cost --line"
-assert_contains "$skill_flat" 'upsert-pr-comment <M> --marker spend --body-file -' \
+assert_contains "$skill_flat" 'only when the spawn had one' \
+  "Rule 3: --model is passed only when the spawn had a model"
+assert_contains "$done_fn" '${_model:+--model "$_model"}' "done: --model is omitted when the spawn had no model"
+assert_contains "$done_fn" '[[ "$_model" =~ ^[A-Za-z0-9._:-]+$ ]]' "done: --model passes only when it matches [A-Za-z0-9._:-]+"
+assert_contains "$done_fn" '_talos_post_stage "$_role" "$_role" "$_n"' "done: post_stage follows the role relay"
+assert_contains "$spend_fn" 'pipeline-events.sh" cost --issue "$_n" ${_pr:+--pr "$_pr"} --line' \
+  "spend block: cost --line (without --pr before a PR exists)"
+assert_contains "$spend_fn" 'upsert-pr-comment "$_pr" --marker spend --body-file -' \
   "spend block: upsert-pr-comment --marker spend --body-file -"
 # The budget guard runs inside `gate fix-round` (#466); its mechanics are pinned
 # in talos.sh, the owner-facing parts stay in SKILL.md Step 3.
@@ -39,8 +43,9 @@ verb_fr="$(sed -n '/^_talos_gate_fix_round() {/,/^}/p' "$TALOS_ROOT/scripts/talo
 verb_all="$(cat "$TALOS_ROOT/scripts/talos.sh")"
 assert_contains "$verb_fr" 'pipeline-budget.sh" check --issue "$_n"' "budget stop: gate fix-round runs pipeline-budget.sh check --issue <N>"
 assert_contains "$verb_fr" '|| _brc=$?' "budget stop: the exit code is captured with || _brc=\$?"
-assert_contains "$verb_fr" 'post_stage budget-blocked orchestrator "$_n"' "budget stop: gate fix-round fires post_stage budget-blocked orchestrator"
-assert_contains "$verb_fr" 'printf '"'"'%s'"'"' "$_bout" | bash "$SCRIPT_DIR/pipeline-hooks.sh"' "budget stop: the budget line is the hook's stdin (printf '%s' piped)"
+assert_contains "$verb_fr" '_talos_post_stage budget-blocked orchestrator "$_n"' "budget stop: gate fix-round fires post_stage budget-blocked orchestrator"
+assert_contains "$verb_fr" 'printf '"'"'%s'"'"' "$_bout" | _talos_post_stage budget-blocked' "budget stop: the budget line is the hook's stdin (printf '%s' piped into the one post_stage writer)"
+assert_contains "$(sed -n '/^_talos_post_stage() {/,/^}/p' "$TALOS_ROOT/scripts/talos.sh")" 'pipeline-hooks.sh" post_stage "$@"' "post_stage: the helper is the one place that runs pipeline-hooks.sh post_stage"
 assert_contains "$verb_fr" '--summary -' "budget stop: the hook summary comes from stdin"
 # The cost table moved into `talos.sh summary` (#467): one call, one --issue per id.
 assert_contains "$verb_all" 'pipeline-events.sh" cost --summary "${_a[@]}"' "Step 5: summary runs the one cost --summary call"
@@ -55,7 +60,8 @@ assert_contains "$verb_fr" 'blocked_by "talos.pipeline.yml:limits.tokens_per_iss
   "budget stop: BLOCKED_BY of the blocked comment (the blocked_by= line)"
 assert_contains "$skill_flat" 'post blocked.md with BLOCKED_BY = the `blocked_by=` value' "budget stop: SKILL.md posts blocked.md with that BLOCKED_BY"
 assert_eq "spend.comment true" "$(talos_env_key SPEND_COMMENT) $(talos_env_default SPEND_COMMENT)" "Step 0: spend.comment variable (read by talos.sh env, default true)"
-assert_contains "$skill_flat" 'SPEND_COMMENT' "Step 3 names SPEND_COMMENT"
+assert_contains "$spend_fn" 'cfg spend.comment' "spend block: the comment honours spend.comment"
+assert_contains "$spend_fn" 'cfg comments.enabled' "spend block: the comment honours comments.enabled"
 
 # No upsert-pr-comment use without a stdin body file; no cost output piped
 # straight into it (the empty-body case would exit 1 on every event-less stage).
@@ -63,8 +69,9 @@ bad_upsert="$(grep -n 'upsert-pr-comment' "$SKILL_MD" | grep -v -e '--marker spe
 assert_eq "" "$bad_upsert" "no upsert-pr-comment line without --marker spend --body-file -"
 direct_pipe="$(grep -nE 'cost .*--markdown *\|' "$SKILL_MD" || true)"
 assert_eq "" "$direct_pipe" "cost --markdown is captured first, never piped straight into the upsert"
-assert_contains "$skill_flat" '[ -n "$SPEND_BODY" ]' "spend block: an empty body skips the upsert"
-assert_contains "$skill_flat" 'tail -1' "spend block: only the last upsert line is read"
+assert_contains "$spend_fn" '[ -n "$_body" ]' "spend block: an empty body skips the upsert"
+assert_eq "" "$(grep -nE 'cost .*--markdown *\|' "$TALOS_ROOT/scripts/talos.sh" || true)" "spend block: talos.sh never pipes cost straight into the upsert"
+assert_not_contains "$spend_fn" 'cat "$_CFG_CACHE_DIR/spend"' "spend block: the upsert's own output is never read, only its exit status"
 
 # ── (b) wiring sites ───────────────────────────────────────────────────────
 # Every developer fix-round site is a `gate fix-round` call (the verb's first step
@@ -74,8 +81,10 @@ assert_contains "$skill_flat" 'tail -1' "spend block: only the last upsert line 
 # record-attempt of a fix round is left to skip the check.
 CANON='Run the Step 3 budget check ("Budget stop") first.'
 assert_eq "0" "$(grep -cF -- "$CANON" "$SKILL_MD")" "the old budget-check sentence is gone (the verb runs the check)"
-assert_eq "8" "$(grep -cE 'gate fix-round <N> (developer|<that-role>|qa|reviewer|security|adversarial) --pr' "$SKILL_MD")" "eight fix-round gate fix-round sites"
-raw="$(grep -nE 'record-attempt <N> (developer|<that-role>|qa|reviewer|security|adversarial)' "$SKILL_MD" | grep -v 'no fix round follows' || true)"
+# Six sites since #469: the reviewer, security and adversarial rounds share one `<role>` site
+# (`done` answers next=fix-round stage=<role>), the other five are as before.
+assert_eq "6" "$(grep -cE 'gate fix-round <N> (developer|<that-role>|<role>|qa|reviewer|security|adversarial) --pr' "$SKILL_MD")" "six fix-round gate fix-round sites"
+raw="$(grep -nE 'record-attempt <N> (developer|<that-role>|<role>|qa|reviewer|security|adversarial)' "$SKILL_MD" | grep -v 'no fix round follows' || true)"
 assert_eq "" "$raw" "no fix round calls record-attempt directly (only the no-dispatch resend does)"
 # The no-dispatch record-attempt (no-PR resend, then Blocked) has no check.
 no_pr_window="$(grep -n -B6 'no fix round follows, so no budget check' "$SKILL_MD")"
@@ -91,9 +100,12 @@ assert_contains "$skill_flat" 'a budget stop (Step 3)' "Rule 20 lists a budget s
 # The post-merge items moved into `talos.sh post-merge` (#467): the spend block runs
 # once, after the merged event, and only for a first run (tests/test-talos-postmerge.sh).
 pm_run="$(sed -n '/^_talos_post_merge_run() {/,/^}/p' "$TALOS_ROOT/scripts/talos.sh")"
-assert_eq "1" "$(printf '%s\n' "$pm_run" | grep -c 'cost --issue "$_n" --pr "$_pr" --line')" "post-merge: the spend --line runs once"
-assert_eq "1" "$(printf '%s\n' "$pm_run" | grep -c 'upsert-pr-comment "$_pr" --marker spend --body-file -')" "post-merge: the spend upsert runs once"
-assert_eq "1" "$(printf '%s\n' "$pm_run" | awk '/post_stage merged/{m=NR} /cost --issue/ && !c{c=NR} END{print (m && c && m < c) ? 1 : 0}')" "post-merge: the spend block is after post_stage merged"
+spend_fn="$(sed -n '/^_talos_spend() {/,/^}/p' "$TALOS_ROOT/scripts/talos.sh")"
+assert_eq "1" "$(printf '%s\n' "$spend_fn" | grep -c 'cost --issue "$_n" ${_pr:+--pr "$_pr"} --line')" "spend helper: the spend --line runs once"
+assert_eq "1" "$(printf '%s\n' "$spend_fn" | grep -c 'upsert-pr-comment "$_pr" --marker spend --body-file -')" "spend helper: the spend upsert runs once"
+assert_eq "1" "$(printf '%s\n' "$pm_run" | grep -c '_talos_spend "$_n" "$_pr"')" "post-merge: the spend block is the one _talos_spend call"
+assert_eq "1" "$(printf '%s\n' "$pm_run" | awk '/_talos_post_stage merged/{m=NR} /_talos_spend/ && !c{c=NR} END{print (m && c && m < c) ? 1 : 0}')" "post-merge: the spend block is after post_stage merged"
+assert_eq "0" "$(grep -c 'pipeline-hooks.sh" post_stage\|pipeline-events.sh" cost --issue' <<< "$pm_run")" "post-merge: no direct post_stage or spend writer is left (the helpers own them)"
 assert_contains "$skill_flat" 'the `merged` and `issue-closed` `post_stage` events and the spend block' "Step 4: the post-merge call includes the spend block"
 merge_seq="$(grep -n 'merge sequence:  pr-ci-runs -> merge-pr -> post_stage merged --ci-runs' "$SKILL_MD" | wc -l | tr -d ' ')"
 assert_eq "1" "$merge_seq" "the merge sequence: line is unchanged"
@@ -105,19 +117,12 @@ assert_contains "$usage_line" 'no input/output split, no model, no dollar cost (
   "usage section: Agent notification fields only"
 assert_contains "$usage_line" 'show as unrecorded' "usage section: adapter and pi-inline runs show as unrecorded"
 
-# ── (c) behaviour: run the fenced snippets as written ──────────────────────
-# fence_after ANCHOR -- the first ```bash fence after the line containing ANCHOR.
-fence_after() {
-  awk -v a="$1" 'index($0, a) { f = 1 } f && /^```bash$/ { p = 1; next } p && /^```$/ { exit } p' "$SKILL_MD"
-}
-SPEND_SNIPPET="$(fence_after '**Spend block')"
-[ -n "$SPEND_SNIPPET" ] && pass "spend block fence found" || fail "spend block fence found"
-SPEND_SNIPPET="$(printf '%s\n' "$SPEND_SNIPPET" | sed -e 's/<N>/7/g' -e 's/<M>/9/g')"
-
-# The sandbox's scripts/: the real ones, except pipeline-vcs.sh is a recorder.
+# ── (c) behaviour: `talos.sh done` against the real pipeline-events.sh ────────
+# The sandbox's scripts/: the real ones, except pipeline-vcs.sh is a recorder and the
+# notify and hook scripts do nothing (the real hook would add events to the log).
 mkdir -p scripts .talos
 for s in "$TALOS_ROOT"/scripts/*; do ln -s "$s" "scripts/$(basename "$s")"; done
-rm -f scripts/pipeline-vcs.sh
+rm -f scripts/pipeline-vcs.sh scripts/pipeline-notify.sh scripts/pipeline-hooks.sh
 cat > scripts/pipeline-vcs.sh <<'STUB'
 #!/usr/bin/env bash
 # Recording stub: one call per line in vcs-calls.log, stdin body in vcs-body.txt.
@@ -127,6 +132,8 @@ echo "https://example.invalid/pull/9#issuecomment-1"
 echo "upserted pr=9 comment=created"
 exit "${SPEND_STUB_RC:-0}"
 STUB
+printf '#!/usr/bin/env bash\ncat > /dev/null\nexit 0\n' > scripts/pipeline-notify.sh
+printf '#!/usr/bin/env bash\nexit 0\n' > scripts/pipeline-hooks.sh
 export SPEND_STUB_DIR="$SANDBOX"
 LOG=".talos/events.jsonl"
 ev() {  # ROLE ISSUE PR TOKENS
@@ -136,35 +143,44 @@ ev() {  # ROLE ISSUE PR TOKENS
 : > "$LOG"
 ev developer 7 9 30000
 ev qa 7 9 15000
+printf 'PASS: 3 criteria verified\n' > "$SANDBOX/sum.txt"
+# run_done RC ISSUE PR: a QA PASS through `done`; prints its stdout, then rc=<exit status>.
+run_done() {
+  rm -f vcs-calls.log vcs-body.txt
+  SPEND_STUB_RC="$1" bash scripts/talos.sh done qa --issue "$2" --pr "$3" --verdict PASS --summary-file "$SANDBOX/sum.txt" 2>/dev/null < /dev/null
+  echo "rc=$?"
+}
 
-# Events exist: the line is printed, the body is upserted, one result line.
-rm -f vcs-calls.log vcs-body.txt
-out="$(SPEND_STUB_RC=0 bash -c "$SPEND_SNIPPET" 2>"$SANDBOX/err.txt")"; rc=$?
-assert_eq "0" "$rc" "spend block: exit 0 with events"
-assert_contains "$out" 'talos: #9 qa done' "spend block: --line printed as is"
-assert_contains "$out" 'spend-upsert rc=0 upserted pr=9 comment=created' "spend block: one result line, last upsert line only"
+# Events exist: the line is printed, the body is upserted, nothing else is read.
+out="$(run_done 0 7 9)"
+assert_contains "$out" 'rc=0' "spend block: exit 0 with events"
+assert_contains "$out" 'spend=talos: #9 qa done' "spend block: --line printed as is"
 assert_eq "upsert-pr-comment 9 --marker spend --body-file -" "$(cat vcs-calls.log)" "spend block: the stub saw exactly the documented upsert call"
 assert_eq "$(bash scripts/pipeline-events.sh cost --issue 7 --pr 9 --markdown)" "$(cat vcs-body.txt)" "spend block: stdin body is the cost --markdown body"
 assert_not_contains "$out" 'issuecomment' "spend block: the comment URL line is not relayed"
+assert_not_contains "$out" 'warn' "spend block: no warning when the upsert works"
 
-# Exit 1 from the upsert: reported on one line, never retried, block still exits 0.
-rm -f vcs-calls.log
-out="$(SPEND_STUB_RC=1 bash -c "$SPEND_SNIPPET" 2>/dev/null)"; rc=$?
-assert_eq "0" "$rc" "spend block: an upsert exit 1 does not fail the Bash call"
-assert_contains "$out" 'spend-upsert rc=1' "spend block: upsert exit 1 surfaces as rc=1"
+# Exit 1 from the upsert: reported once, never retried, `done` still exits 0.
+out="$(run_done 1 7 9)"
+assert_contains "$out" 'rc=0' "spend block: an upsert exit 1 does not fail the call"
+assert_contains "$out" 'warn reason=spend-upsert-failed issue=7' "spend block: upsert exit 1 is warn reason=spend-upsert-failed"
 assert_eq "1" "$(wc -l < vcs-calls.log | tr -d ' ')" "spend block: upsert exit 1 is not retried"
 
-# Exit 2 (non-GitHub provider) is reported as rc=2 for the orchestrator to ignore.
-out="$(SPEND_STUB_RC=2 bash -c "$SPEND_SNIPPET" 2>/dev/null)"
-assert_contains "$out" 'spend-upsert rc=2' "spend block: upsert exit 2 surfaces as rc=2 (silent for the orchestrator)"
+# Exit 2 (non-GitHub provider) is silent.
+out="$(run_done 2 7 9)"
+assert_not_contains "$out" 'warn' "spend block: upsert exit 2 is silent"
 
 # No events for the issue: empty body, the upsert never runs.
-rm -f vcs-calls.log
-NOEV_SNIPPET="$(printf '%s\n' "$SPEND_SNIPPET" | sed -e 's/--issue 7/--issue 8/g' -e 's/--pr 9/--pr 10/g')"
-out="$(bash -c "$NOEV_SNIPPET" 2>/dev/null)"; rc=$?
-assert_eq "0" "$rc" "spend block: no events, exit 0"
-assert_eq "" "$out" "spend block: no events, no output"
+out="$(run_done 0 8 10)"
+assert_contains "$out" 'rc=0' "spend block: no events, exit 0"
+assert_not_contains "$out" 'spend=' "spend block: no events, no spend line"
 assert_file_absent vcs-calls.log "spend block: an empty body skips the upsert"
+
+# Before a PR exists (a PM return): the --line only, no comment.
+rm -f vcs-calls.log
+out="$(bash scripts/talos.sh done pm --issue 7 --summary-file "$SANDBOX/sum.txt" 2>/dev/null < /dev/null)"
+assert_contains "$out" 'spend=' "spend block: before a PR exists the --line is printed"
+assert_file_absent vcs-calls.log "spend block: before a PR exists nothing is upserted"
 
 # The budget guard through `gate fix-round`, under `set -e`: exit 1 is captured,
 # never aborts; the real pipeline-budget.sh answers, the vcs stub records.

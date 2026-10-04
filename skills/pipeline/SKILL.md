@@ -55,7 +55,7 @@ The neutral path (2) applies to the adapter and inline paths only. The native Cl
 - **`subagents: false` + `runner: pi`** — **inline mode**: you (the orchestrator) act as each stage role yourself, one role per turn. pi has no subagents and does NOT use `pipeline-agent.sh`. For every stage the playbook says "spawn a subagent with this prompt":
   1. Find the role profile with `bash scripts/pipeline-agent.sh --resolve-profile <role>` — it prints one absolute path (the same lookup a stage run uses: see "Subagent names"), and exits non-zero with the locations it searched when there is none. Read that file. Strip the YAML frontmatter — it is Claude Code metadata. Use only the body.
   2. Adopt the role: treat the role body + the stage prompt as your current instructions and carry them out **inline with your tools** (read/write/edit/bash). Do everything the role would do.
-  3. Perform the post-stage orchestrator actions the playbook lists (board status via `pipeline-status.sh`, findings relay + lifecycle notify via `pipeline-notify.sh`), then continue directly to the next stage. The role's "final message (2-3 lines)" is your own summary to relay.
+  3. Run `talos.sh done` (Rule 2) as after any stage, then continue directly to the next stage. The role's "final message (2-3 lines)" is your own summary.
   4. Handoff artifact is still posted (stage comment + labels per role instructions) — read the prior stage's comment before starting the next (e.g. the developer reads the PM spec).
   5. Worktree note: pi runs in the orchestrator's checkout. If the working tree is clean, the developer creates its branch inline (`git checkout -b fix/issue-<N>-<slug> origin/<BASE>`); if dirty, tell the user before the developer stage. Works on any provider backing pi (Claude account, local LLM).
 - **`subagents: false` + any other runner** (codex / gemini / antigravity / custom) — replace every "spawn a subagent with this prompt" step with:
@@ -72,7 +72,7 @@ The neutral path (2) applies to the adapter and inline paths only. The native Cl
 
 **Usage-reporting spawn form (#259):** on the native subagent path (`subagents: true`), spawn every stage — developer, QA, reviewer, security, validator, docs, adversarial, planner — with the Agent tool's background form (the same call shape the developer/QA stages already use: `isolation: "worktree"` for stages that need a writable checkout, the `run_in_background`/async form without a worktree for read-only stages) so its completion notification carries usage (`subagent_tokens`/`tool_uses`/`duration_ms`) — the Agent tool exposes no other async trigger, so `isolation: "worktree"` (or, for a role with no checkout, the bare background/async spawn) is the concrete parameter to set. Observed in this repo, 2026-09-09 (Claude Code, native path): a stage spawned via the Agent tool with `isolation: "worktree"` (developer, QA) returned a completion notification carrying usage; a stage spawned as a named agent with no isolation (reviewer, security, validator, docs) instead reported through a mailbox message with no usage at all — that gap, not a `post_stage` bug, is why `.talos/events.jsonl` shows real token counts for developer/QA and `null` for the rest (see `pipeline-events.sh cost`'s `unrecorded` column). On the adapter path (`subagents: false` + a non-`pi` runner, via `pipeline-agent.sh`) and pi inline mode, stages run synchronously with no completion notification at all — usage is not available there, and `tokens` is recorded as null; that is expected, not a bug. The Agent tool notification gives `subagent_tokens`, `tool_uses` and `duration_ms` only: no input/output split, no model, no dollar cost (UNVERIFIED beyond these observed fields); adapter and pi-inline runs show as unrecorded in `cost`.
 
-**`hooks.pre_dispatch` (#181):** before building ANY stage's prompt below — every "spawn a subagent" / "spawn" step, on every harness path — run `bash scripts/pipeline-hooks.sh pre_dispatch <role> <N> <PR> <worktree>` (role name; issue number; PR number if one exists yet, else omit it; worktree path if one exists yet, else omit it). This is always safe and never worth waiting on: disabled by default (empty `hooks.pre_dispatch` config), and any failure, timeout (`hooks.timeout_s`), or empty output is a silent no-op on its own, with a one-line stderr note — you never branch on it. If it prints anything, paste that output verbatim at the very top of the prompt you are about to send (before the role body on the adapter path, before the stage-specific instructions on the native path) — it already carries its own `## Context` / `---` framing, so add nothing else around it. This one rule covers every stage; it is not restated per stage below except as a one-line reminder on the developer and QA blocks.
+**`hooks.pre_dispatch` (#181):** before building ANY stage's prompt below, on every harness path, run `bash scripts/pipeline-hooks.sh pre_dispatch <role> <N> <PR> <worktree> > "$PRE"` (`PRE` a `mktemp` file, removed after the spawn; PR and worktree omitted while none exist) and pass `--preamble-file "$PRE"` to `talos.sh prompt`: a non-empty file goes verbatim at the very top of the rendered stage prompt (on the adapter path the adapter puts the role body before that file), already framed by its own `## Context` / `---`. A prompt `talos.sh prompt` does not render (the merge-base task) gets the file's text at its top. Disabled by default; any failure, timeout (`hooks.timeout_s`) or empty output is a silent no-op with a one-line stderr note, never branched on.
 
 ---
 
@@ -174,7 +174,7 @@ COMMENT_URL="$(bash scripts/pipeline-vcs.sh comment-pr <PR> "$COMMENT_BODY")" ||
 # line "talos:comment-state-unverified target=…" is also printed — capture and relay it.
 ```
 
-The findings comment carries: a verdict line + 2–5 detail bullets. It is non-optional when `comments.enabled = true`. Fall back to inline text only if the template file is missing.
+The findings comment carries a verdict line + 2–5 detail bullets; inline text only if the template file is missing.
 
 `HEADER` is required on every render (set it from the prompt's `Comment header:` line); with it empty the recipe exits 1 and posts nothing, so no comment goes out without its `**Agent:**` line. Every variable the template uses must be set — assign and `export` `BLOCKED_BY` for blocked.md and `ATTENTION_REPORT` for review-signoff.md the same way as `SUMMARY` / `DETAILS` (heredoc, never double quotes); an unset one drops the render to the inline fallback. As a backstop, `comment-issue` / `comment-pr` refuse (exit 1, nothing posted) any body still containing a `${NAME}` / `$NAME` placeholder whose NAME appears in the comment templates (#306).
 
@@ -182,60 +182,18 @@ The findings comment carries: a verdict line + 2–5 detail bullets. It is non-o
 
 ## Conversation stream protocol
 
-The Slack/Discord thread for each issue reads as a **conversation between agents**: validator speaks first, then developer, QA, docs, reviewer, security, and finally orchestrator announces the merge. This mirrors how Daedalus threads issues.
+The thread for each issue reads as a **conversation between agents**: validator first, then developer, QA, docs, reviewer, security, and finally the orchestrator announcing the merge. Three rules apply to every stage:
 
-Three rules apply for every stage, in this order:
+**Rule 1 — Findings comment (always):** each subagent posts its verdict/findings on its VCS target (table above) with the `templates/comments/` template, mandatory when `comments.enabled = true`.
 
-**Rule 1 — Findings comment (always):** Each subagent posts its verdict/findings on the correct VCS target (issue or PR per the table above) using the `templates/comments/` template. This is mandatory when `comments.enabled = true`.
+**Rule 2 — Stage return (always):** when a subagent returns, run `bash scripts/talos.sh done <role> --issue <N> [--pr <PR>] [--verdict <V>] --summary-file <F>`. `<F>` is the stage's 2-3 line summary, a file written as in "Stage prompts" (Step 3) or `-` for stdin: subagent text is data, never an argument. After a docs auto-stamp, run it with the stamp's text. `<V>` is a fixed word: validator `CONFIRMED|ALREADY_FIXED|DUPLICATE|NEEDS_MORE_INFO|SECURITY_THREAT`, developer `PR_OPENED|BLOCKED`, qa `PASS|FAIL`, reviewer `APPROVED|CHANGES`, security and adversarial `CLEAR|FINDINGS`, pm and docs none. In order the verb: strips a `RESTAMP_FAIL` role's stale label first, sets the board status, relays the summary, writes the role's `post_stage` event, prints the spend block, and sends the lifecycle event (`pr-opened`, or `blocked` for a failing verdict).
 
-**Rule 2 — Orchestrator relay (always):** After each subagent returns, the orchestrator immediately sends a role-event notification to the channel thread:
+**Rule 3 — Usage and model (#182, #202, #334):** When the harness completion notification carries usage (subagent_tokens, tool_uses, duration_ms), pass them as `--tokens`, `--tool-uses`, `--duration-s` (ms/1000, integer). Per the Usage-reporting spawn form above: on the native path, a completion without usage is a playbook bug — note it in the run summary rather than passing `--tokens 0`; on the adapter/pi-inline paths it is expected, so omit `--tokens`/`--tool-uses` there without comment. Pass `--model <value passed as `model:` to the spawn>` only when the spawn had one.
 
-```bash
-bash scripts/pipeline-notify.sh <role> "#<N>" - <N> <<'TALOS_<rand>'
-<2-3 line findings summary>
-TALOS_<rand>
-```
-
-The summary is subagent-authored text, so it goes in as data and never inside double quotes on a command line, where `$(...)` or backticks in it would be run: `-` as the message argument makes the script read the message from stdin, here from a heredoc. `<rand>` is 12+ random characters you invent fresh for each relay, never one copied from an example and never reused: text that contains the closing line would end the heredoc early and run what follows. It stays ONE shell command per relay. Wherever this playbook writes a relay as `... - <N>` followed by `stdin:` and a message, run exactly this form with that message as the heredoc body; a message with no free text in it (fixed words, or only an issue/PR number) stays an ordinary quoted argument.
-
-The `<role>` argument is the exact role name (validator / pm / developer / qa / reviewer / security / docs / orchestrator). `pipeline-notify.sh` uses `templates/notifications/<role>.md` to render the message; if that template exists it controls the format, otherwise the summary is posted verbatim. This relay call is separate from lifecycle events (pr-opened, merged, blocked, issue-closed) — both are sent when applicable.
-
-**Rule 3 — Post-stage hook (always, #182):** After every role relay (`pipeline-notify.sh <role> ...`) and every lifecycle event (pr-opened, merged, blocked, issue-closed), also run `bash scripts/pipeline-hooks.sh post_stage <event> <role> <N> [--pr] [--sha] [--verdict] [--summary] [--attempt ...] [--model]` — this is what lets an external tool (metrics, cost tracking, a project memory) subscribe to every structured outcome the moment it's known. When the harness completion notification carries usage (subagent_tokens, tool_uses, duration_ms), pass them as `--tokens`, `--tool-uses`, `--duration-s` (ms/1000, integer). Per the Usage-reporting spawn form above: on the native path, a completion without usage is a playbook bug — note it in the run summary rather than passing `--tokens 0`; on the adapter/pi-inline paths it is expected, so omit `--tokens`/`--tool-uses` there without comment. Disabled by default (empty `hooks.post_stage`); a failure, timeout, or missing config is a silent no-op with one stderr line, same as `hooks.pre_dispatch` — never worth waiting on or branching on. Example, right after the QA PASS relay:
-`bash scripts/pipeline-notify.sh qa "#42" "PASS: 3 criteria verified" 42`
-The summary is subagent-authored text, so it goes in as data and never inside double quotes on a command line (`$(...)` or backticks in it would be run): `--summary -` reads it from stdin (a heredoc with a fresh `TALOS_<rand>` delimiter, as above), or `--summary-file <path>` reads a `mktemp` file. Both are capped at 4096 characters:
-```bash
-bash scripts/pipeline-hooks.sh post_stage qa qa 42 --pr 57 --verdict PASS --summary - <<'TALOS_<rand>'
-3 criteria verified
-TALOS_<rand>
-```
-
-**Spend block (#334):** pass `--model <value passed as `model:` to the spawn>` to `post_stage` only when the value matches `[A-Za-z0-9._:-]+`, omitting the flag when the spawn had no model or the value has any other character (never inside double quotes). In the same Bash call, right after each role-relay `post_stage` and after `post_stage merged` (not after `pr-opened`, `blocked`, `issue-closed`, `merge-base` or `budget-blocked`: no new tokens), run the block below. Before a PR exists, run only the `--line` command, without `--pr`. The rest runs only when a PR exists, `COMMENTS_ENABLED` is true and `SPEND_COMMENT` is not `false`. Capture the body first and upsert only when it is non-empty (never pipe `cost` straight into the upsert: an empty body makes it exit 1):
-```bash
-bash scripts/pipeline-events.sh cost --issue <N> --pr <M> --line
-SPEND_BODY="$(bash scripts/pipeline-events.sh cost --issue <N> --pr <M> --markdown)"
-if [ -n "$SPEND_BODY" ]; then SRC=0
-  OUT="$(printf '%s' "$SPEND_BODY" | bash scripts/pipeline-vcs.sh upsert-pr-comment <M> --marker spend --body-file -)" || SRC=$?
-  echo "spend-upsert rc=$SRC $(printf '%s\n' "$OUT" | tail -1)"
-fi
-```
-Print the `--line` output as is and read only the one `spend-upsert` line, never the comment body. `rc=2` (non-GitHub provider) is silent. `rc=1` (e.g. an Actions `GITHUB_TOKEN` cannot post as itself) adds ONE line to the Step 5 summary per run, is never retried and never blocks.
-
-**Example thread for issue #42:**
-```
-validator  → "CONFIRMED: login crash is reproducible on Safari 17, root cause in auth.js:88"
-pm         → "stop parseToken() dereferencing a null claim — 3 acceptance criteria, branch fix/issue-42-parsetoken-null"
-developer  → "PR #31 opened — fixed null deref in parseToken(), all tests pass"
-pr-opened  → [lifecycle: PR #31 opened]
-qa         → "PASS: 3 criteria verified, regression test added"
-reviewer   → "APPROVED: clean fix, no behaviour change outside auth flow"
-security   → "CLEAR: no injection or token-leak risk in changed lines"
-docs       → "docs posted: CHANGELOG + auth.md updated"
-orchestrator → "all stages passed — merged PR #31, issue closed"
-merged     → [lifecycle: PR merged]
-issue-closed → [lifecycle: issue closed]
-```
-
-Lifecycle events (pr-opened / merged / blocked / issue-closed) travel in the same thread and remain unchanged. Role events layer on top to carry the actual findings.
+Output: `done=ok`, `spend=<line>` (print it; `warn reason=spend-upsert-failed` adds ONE Step 5 summary line, never retried), other `warn` lines for the summary, and `next=` last: `continue`; `stop` (validator not CONFIRMED, developer BLOCKED: next issue); `fix-round stage=<role>` (`gate fix-round`, Step 3, then the developer). A `stop reason=<r>` line: nothing was announced.
+<!-- pr-draft:start -->
+With `PR_DRAFT = true` pass `--draft` to every `done` call: a QA `FAIL` is converted back first (`draft-pr`, drop `qa:pass`), and a reviewer, security or adversarial CHANGES/FINDINGS answers `next=batch` (Step 3e, Draft review batch).
+<!-- pr-draft:end -->
 
 ---
 
@@ -264,7 +222,7 @@ Returns JSON array `[{"id": "1", "title": "..."}, ...]`.
 **Per-item flow (simplified — no PRs):**
 
 1. Validator (if enabled): reads the item via `view-issue <id>`, decides if it's actionable. If CONFIRMED: comments on item, continues. If blocked: comments with reason, skips.
-2. PM (if enabled): reads item, posts spec as a comment via `comment-issue <id> --body-file -` (body on stdin from a heredoc, as in Rule 2: `**PM spec:** ...`).
+2. PM (if enabled): reads item, posts spec as a comment via `comment-issue <id> --body-file -` (body on stdin from a heredoc with a fresh `TALOS_<rand>` delimiter: `**PM spec:** ...`).
 3. Developer: creates a branch, implements, runs verify commands, commits and pushes, comments the branch name on the item: `comment-issue <id> --body-file -` (stdin: `Branch: fix/item-<id>-<slug>`).
 4. QA/Reviewer/Security/Docs: **skipped in file mode** (no PR to review). If you need these, use a VCS provider instead.
 5. Close: `bash scripts/pipeline-vcs.sh close-issue <id> --body-file -` (stdin: `implemented on branch <branch>`).
@@ -337,7 +295,7 @@ bash scripts/talos.sh gate fix-round <N> <blocking-stage> [--pr <PR_NUMBER>]
 - `verdict=block`: the verb set `pipeline:blocked`; do NOT re-dispatch. Relay a `budget=` line, then post blocked.md with BLOCKED_BY = the `blocked_by=` value (for `reason=budget-exceeded` with `STATUS_ENABLED = true`, mark needs-owner instead, Rule 20; the owner resumes by removing `pipeline:blocked` (each block grants one more limit) or raising `limits.tokens_per_issue`) and move on.
 - `warn reason=budget-check-failed`: proceed, and note it in the Step 5 summary. A `stop` line: dispatch nothing and report it.
 
-**Stage prompts.** Every stage prompt below is rendered, never typed: `bash scripts/talos.sh prompt <role> --issue <N> [--pr <PR>] [--shape first|fix-round|restamp] [--prior-file F]`, plus the `--*-file` options a stage names below, prints `prompt_file=<path>` (from `templates/prompts/<role>.md` and the Step 0 config; a `stop reason=` line: dispatch nothing, report it). Free text goes in only as a file written from a heredoc (`TALOS_<rand>`, 12+ random characters you invent fresh, never one copied from an example) into a `mktemp` file, never on a command line. `--prior-file` is the `Prior stage summary`: the last `pipeline-notify.sh` relay for this issue/PR (a re-dispatched developer gets the failing stage's relay; omit it on the first developer dispatch). Native spawn: pass the file's text as the prompt; adapter path: `bash scripts/pipeline-agent.sh <role> - < "$PROMPT_FILE"`; pi inline: read it and adopt it. Remove the files after the spawn. Paste any `hooks.pre_dispatch` output at the very top of the prompt. Shapes: `first` (default), `fix-round` (the developer's re-dispatch: `--pr`, `--prior-file`), `restamp` (the delta re-review by qa, reviewer, security or adversarial). `<ABSOLUTE_PATH_OF_THIS_WORKTREE>` stays for the stage to fill in.
+**Stage prompts.** Every stage prompt below is rendered, never typed: `bash scripts/talos.sh prompt <role> --issue <N> [--pr <PR>] [--shape first|fix-round|restamp] [--prior-file F]`, plus the `--*-file` options a stage names below, prints `prompt_file=<path>` (from `templates/prompts/<role>.md` and the Step 0 config; a `stop reason=` line: dispatch nothing, report it). Free text goes in only as a file written from a heredoc (`TALOS_<rand>`, 12+ random characters you invent fresh, never one copied from an example) into a `mktemp` file, never on a command line. `--prior-file` is the `Prior stage summary`: the last `pipeline-notify.sh` relay for this issue/PR (a re-dispatched developer gets the failing stage's relay; omit it on the first developer dispatch). Native spawn: pass the file's text as the prompt; adapter path: `bash scripts/pipeline-agent.sh <role> - < "$PROMPT_FILE"`; pi inline: read it and adopt it. Remove the files after the spawn. `--preamble-file F` carries the `hooks.pre_dispatch` output. Shapes: `first` (default), `fix-round` (the developer's re-dispatch: `--pr`, `--prior-file`), `restamp` (the delta re-review by qa, reviewer, security or adversarial). `<ABSOLUTE_PATH_OF_THIS_WORKTREE>` stays for the stage to fill in.
 
 <!-- pr-draft:start -->
 With `PR_DRAFT = true` every prompt takes `--draft`.
@@ -349,15 +307,7 @@ Only run if the issue still has `pipeline:ready` (not `pipeline:confirmed`).
 
 Spawn a subagent with the prompt of `bash scripts/talos.sh prompt validator --issue <N>`, per the usage-reporting spawn form above.
 
-After validator returns:
-- **CONFIRMED:**
-  1. Board → "In progress": `bash scripts/pipeline-status.sh <N> "In progress"`
-  2. Relay findings: `bash scripts/pipeline-notify.sh validator "#<N>" - <N>` (stdin: `<subagent's 2-3 line findings summary>`)
-- **Blocked:**
-  1. Board → "Blocked": `bash scripts/pipeline-status.sh <N> "Blocked"`
-  2. Relay findings: `bash scripts/pipeline-notify.sh validator "#<N>" - <N>` (stdin: `<outcome + what's missing>`)
-  3. Lifecycle event: `bash scripts/pipeline-notify.sh blocked "#<N>" - <N>` (stdin: `Validator: <outcome>`)
-  4. Move to next issue.
+After validator returns: `bash scripts/talos.sh done validator --issue <N> --verdict <V> --summary-file F` (Rule 2). `next=stop` (not CONFIRMED): move to the next issue.
 
 ### 3a-bis. Planner (if `roles.planner = true`)
 
@@ -453,7 +403,7 @@ Exit 0 means issue #<N>'s body already IS a usable spec — an "acceptance
 criteria" heading (`## Acceptance criteria` or `**Acceptance criteria**`,
 case-insensitive) followed by at least one `- [ ]`/`- [x]` item, or the issue
 carries the `spec:ready` label. When it exits 0, skip straight to developer —
-no PM subagent, no `pipeline-notify.sh pm` relay:
+no PM subagent, no `done pm` call:
 1. Post the one-line skip comment: `bash scripts/pipeline-vcs.sh comment-issue <N> "**PM:** skipped, issue body is the spec"`
 2. Advance directly: `bash scripts/pipeline-vcs.sh label-issue <N> --add pipeline:dev --remove pipeline:confirmed`
 3. Continue to developer (Stage 3c) — its prompt says "the spec is the issue body" instead of pointing at a PM spec comment.
@@ -463,22 +413,13 @@ proceed with the PM subagent below exactly as before.
 
 Spawn a subagent with the prompt of `bash scripts/talos.sh prompt pm --issue <N>`.
 
-Relay: `bash scripts/pipeline-notify.sh pm "#<N>" - <N>` (stdin: `<goal line> — <K> acceptance criteria, branch <branch-name>`)
-
-The PM spec comment on the issue remains the handoff artifact; this relay is a
-pointer to it, not a summary of it. Keep the message to the goal line, the
-acceptance-criteria count, and the branch name — PM produces a document, not a
-verdict, so do not editorialise it into a pass/fail. Without this relay the
-thread shows `validator → [silence] → developer`, and a long spec is
-indistinguishable from a dead pipeline.
+After PM returns: `bash scripts/talos.sh done pm --issue <N> --summary-file F` (Rule 2), the summary being `<goal line> — <K> acceptance criteria, branch <branch-name>`: a pointer to the spec comment, not a summary of it, and no pass/fail wording.
 
 Continue to developer.
 
 ### 3c. Developer (always runs)
 
 Only run if the issue has `pipeline:dev` but no open PR yet.
-
-Reminder: run `hooks.pre_dispatch` (see Harness compatibility above) before building this stage's prompt.
 
 `<slug>` throughout this stage (branch `fix/issue-<N>-<slug>` / `feat/issue-<N>-<slug>`)
 is `bash scripts/pipeline-vcs.sh slug-for "$ISSUE_TITLE"` (assign `ISSUE_TITLE`
@@ -507,12 +448,9 @@ Prompt: `bash scripts/talos.sh prompt developer --issue <N> --prior-file F`; `--
 **Draft PR (`PR_DRAFT = true`, #332):** pass `--draft` on every developer dispatch, first pass and each fix round (the prompt then opens the PR as a DRAFT with `Required checks: none`: CI does not run until `ready-pr`).
 
 <!-- pr-draft:end -->
-After developer returns:
-- **PR opened:**
-  1. Board → "In review": `bash scripts/pipeline-status.sh <N> "In review"`
-  2. Relay findings: `bash scripts/pipeline-notify.sh developer "#<N>" - <N>` (stdin: `<subagent's 2-3 line summary: what was implemented + PR URL>`)
-  3. Lifecycle event: `bash scripts/pipeline-notify.sh pr-opened "#<N>" - <N>` (stdin: `PR <URL> opened`)
-  4. **Mergeability gate (#214), before dispatching QA (Step 3d):** `bash
+After developer returns: `bash scripts/talos.sh done developer --issue <N> [--pr <PR>] --verdict PR_OPENED|BLOCKED --summary-file F` (Rule 2; the summary is what was implemented plus the PR URL, or what failed). Then:
+- **PR opened** (the verb set board "In review" and sent the `pr-opened` event):
+  1. **Mergeability gate (#214), before dispatching QA (Step 3d):** `bash
      scripts/pipeline-vcs.sh pr-mergeable <PR>`.
      - Exit 0 (`MERGEABLE`) or exit 2 (`UNKNOWN`, still unresolved after
        retries — fail open, the same as every other best-effort gate in this
@@ -579,11 +517,7 @@ After developer returns:
   only record the attempt (`bash scripts/pipeline-vcs.sh record-attempt <N>
   developer`: no `--pr` yet, and no fix round follows, so no budget check and
   no unblock) and fall through to **Blocked** below.
-- **Blocked:**
-  1. Board → "Blocked": `bash scripts/pipeline-status.sh <N> "Blocked"`
-  2. Relay findings: `bash scripts/pipeline-notify.sh developer "#<N>" - <N>` (stdin: `<what failed>`)
-  3. Lifecycle event: `bash scripts/pipeline-notify.sh blocked "#<N>" "developer blocked" <N>`
-  4. Stop.
+- **Blocked** (`--verdict BLOCKED`, `next=stop`): stop.
 
 <!-- pr-draft:start -->
 #### Draft stage order (`PR_DRAFT = true`, #332)
@@ -667,8 +601,6 @@ ready PR resumes at QA when `qa:pass` is absent (step 6), else at Step 4.
 <!-- pr-draft:end -->
 ### 3d. QA (if `roles.qa = true`)
 
-Reminder: run `hooks.pre_dispatch` (see Harness compatibility above) before building this stage's prompt.
-
 <!-- pr-draft:start -->
 **Draft guard (`PR_DRAFT = true`, #332).** Before EVERY QA dispatch — the first
 one, a retry after a fix round, and a Step 4 re-stamp — and before any CI wait,
@@ -732,23 +664,18 @@ Spawn QA with the prompt of `bash scripts/talos.sh prompt qa --issue <N> --pr <P
 **Evidence (`EVIDENCE_ENABLED`, #410).** On a first QA dispatch or a retry after a fix round, never a re-stamp: add `Evidence: <EVIDENCE_LINE>` after `Prior stage summary:`, then append the content of `<scripts dir>/../templates/prompts/qa-evidence.md` to the prompt (it holds the whole procedure). If that file is missing, skip evidence with a one-line note and never fail the run. Keep QA's final message for Step 3e.
 
 <!-- evidence:end -->
-After QA returns:
-- **Pass:**
-  1. Relay findings: `bash scripts/pipeline-notify.sh qa "#<N>" - <N>` (stdin: `<subagent's 2-3 line summary: criteria verified>`)
+After QA returns: `bash scripts/talos.sh done qa --issue <N> --pr <PR_NUMBER> --verdict PASS|FAIL --summary-file F` (Rule 2).
+- **Pass:** `next=continue`.
 <!-- pr-draft:start -->
-  2. With `PR_DRAFT = true`, QA passing ends the QA stage and Step 3e is NOT
-     entered again: its review stages already ran on the draft, before QA (Draft
-     stage order, steps 2-4). Go to Step 4 (step 7, Merge); the approval SHAs and
-     `ci-complete` are still checked there.
+  With `PR_DRAFT = true`, QA passing ends the QA stage and Step 3e is NOT
+  entered again: its review stages already ran on the draft, before QA (Draft
+  stage order, steps 2-4). Go to Step 4 (step 7, Merge); the approval SHAs and
+  `ci-complete` are still checked there.
 <!-- pr-draft:end -->
-- **Fail:**
-  1. Relay findings: `bash scripts/pipeline-notify.sh qa "#<N>" - <N>` (stdin: `<FAIL: failing criterion + repro>`)
-  2. Lifecycle event: `bash scripts/pipeline-notify.sh blocked "#<N>" - <N>` (stdin: `QA failed: <criterion>`)
-  3. `bash scripts/talos.sh gate fix-round <N> qa --pr <PR_NUMBER>` (Step 3): on `verdict=redispatch` re-dispatch the developer; on `verdict=block`: board "Blocked", stop.
+- **Fail** (`next=fix-round stage=qa`): `bash scripts/talos.sh gate fix-round <N> qa --pr <PR_NUMBER>` (Step 3): on `verdict=redispatch` re-dispatch the developer; on `verdict=block`: board "Blocked", stop.
 <!-- pr-draft:start -->
-  4. With `PR_DRAFT = true`, the Fail path starts with `draft-pr` and its fix
-     round ends with `ready-pr`: see "QA failure or CI failure" in the Draft
-     stage order above. Do it before step 3's re-dispatch.
+  With `PR_DRAFT = true` (`--draft`) the verb already ran `draft-pr` and dropped `qa:pass`; the fix
+  round ends with `ready-pr` ("QA failure or CI failure", Draft stage order).
 <!-- pr-draft:end -->
 
 ### 3e. Review stages
@@ -808,8 +735,8 @@ needs to run at all:
    `ROLE_CHANGELOG_FRAGMENTS = true`, " — CHANGELOG handled via fragments,
    not direct edits (#296)") to a body file and:
    `bash scripts/pipeline-vcs.sh post-approval <PR_NUMBER> docs --body-file <body-file>`
-   If exit non-zero, report the failure in your final message. Then relay
-   (see "After docs completes" below, using this stamp as the outcome) and
+   If exit non-zero, report the failure in your final message. Then run
+   `done docs` with the stamp's text as the summary (Rule 2) and
    continue straight to phase 2 — do not wait on a subagent that was never
    dispatched.
 4. Gate does not match: dispatch the docs subagent with filtered
@@ -829,7 +756,7 @@ bash scripts/pipeline-vcs.sh assert-sync
 ```
 If exit non-zero: halt the current issue with the error output; do not dispatch any of the three stages. Main can advance between run-start and this point — the Step 0 check does not cover mid-run drift.
 
-**Re-stamp check (fix-round path, #258):** Before dispatching reviewer/security below (and adversarial in phase 3), check whether either role already carries a stale approval from an earlier pass through this step: `bash scripts/pipeline-vcs.sh check-approval-sha <PR_NUMBER> --stale-list`. This is the same helper Step 4 uses before merge; capture its `stale role=<role> label=<label>` lines — the re-stamp dispatch below needs the exact `<label>` per role. This is the same list a normal Step 4 run would also strip and re-dispatch off of, so nothing here duplicates work Step 4 would otherwise do first. **Trigger, explicit:** dispatch the re-stamp variant for a role only when that role's approval label is present on the PR AND `--stale-list` reports it stale. A role whose label is absent — first pass through this step, or its own previous verdict was CHANGES/FINDINGS and left no approval label — always gets the normal full dispatch below instead; a re-stamp is only ever a cheap reconfirmation of a review that already happened, never a substitute for a role's first look. On a PR's first pass through this step no approval labels exist yet, so the list is empty and every role gets its full dispatch, unchanged.
+**Re-stamp check (fix-round path, #258):** Before dispatching reviewer/security below (and adversarial in phase 3), check whether either role already carries a stale approval from an earlier pass through this step: `bash scripts/pipeline-vcs.sh check-approval-sha <PR_NUMBER> --stale-list`. This is the same helper Step 4 uses before merge; capture its `stale role=<role> label=<label>` lines. This is the same list a normal Step 4 run would also strip and re-dispatch off of, so nothing here duplicates work Step 4 would otherwise do first. **Trigger, explicit:** dispatch the re-stamp variant for a role only when that role's approval label is present on the PR AND `--stale-list` reports it stale. A role whose label is absent — first pass through this step, or its own previous verdict was CHANGES/FINDINGS and left no approval label — always gets the normal full dispatch below instead; a re-stamp is only ever a cheap reconfirmation of a review that already happened, never a substitute for a role's first look. On a PR's first pass through this step no approval labels exist yet, so the list is empty and every role gets its full dispatch, unchanged.
 
 **Re-stamp dispatch** (shared by this check and Step 4's stale-approval handling below — same shape for `qa`, `reviewer`, `security`, `adversarial`; spawn per the usage-reporting spawn form above):
 - Same role and role profile as the role's full stage — never a different agent, never a different role prompt.
@@ -837,8 +764,7 @@ If exit non-zero: halt the current issue with the error output; do not dispatch 
 - Effort (#271): same chain shape, resolve `agents.roles.<role>.restamp_effort` via `bash scripts/pipeline-config.sh agents.roles.<role>.restamp_effort`, falling back to `agents.restamp_effort`, falling back to the role's normal effort (see Per-role effort selection above). `pipeline-config.sh` resolves the chain itself. Advisory only on the native path, `TALOS_EFFORT` on the adapter path.
 - A re-stamp never clears `pipeline:blocked` (#310) — the orchestrator already cleared it before the developer fix round that made this approval stale (`gate fix-round`, Step 3).
 - Prompt: `bash scripts/talos.sh prompt <role> --issue <N> --pr <PR_NUMBER> --shape restamp --restamp-file F`, not the full PR context a first-time dispatch gets. `F` (a heredoc) holds the approved SHA and stale file list from `check-approval-sha --stale-list`'s output, the current head SHA, `diff-pr <PR_NUMBER> --stat`, and the role's previous verdict comment URL (`read-comments <PR_NUMBER>`, filtered to that role's header). The verb sets the header `**Agent:** <role> (talos) — re-stamp` and the delta-only instruction.
-- **On `RESTAMP_FAIL` (findings), before relaying: strip the stale label** — `bash scripts/pipeline-vcs.sh label-pr <PR_NUMBER> --remove <label>`, using the exact `<label>` this role's `stale role=<role> label=<label>` line reported above (`qa:pass` / `review:approved` / `security:approved` / `adversarial:approved` — never guess a `<role>:approved` pattern, the label name does not always match the role name). This is what makes the role no longer "previously approved": without it, the next pass still finds the (still-present, still-stale) label and dispatches another re-stamp instead of the promised full stage, forever. Step 4's own stale handling already strips this same label as its step 1, before ever reaching this dispatch, so the removal here is a no-op there — it is required only on the Step 3e fix-round path, which has no equivalent prior strip.
-- Relay and `hooks.post_stage` (Rule 3) use the role's normal verdict wording, except the verdict value passed to `post_stage` is `RESTAMP_PASS` (re-confirmed) or `RESTAMP_FAIL` (findings) instead of the role's usual PASS/CHANGES/FINDINGS value — this is what lets `pipeline-events.sh cost` separate re-stamp cost from full-stage cost. A `RESTAMP_FAIL` outcome is not a special case from here on: with its label already stripped above, it escalates to that role's normal full-stage re-dispatch on the next round exactly like a first-time CHANGES/FINDINGS verdict (see that role's "returned" handling below).
+- Report it with `done <role> ... --verdict RESTAMP_PASS` (re-confirmed) or `RESTAMP_FAIL` (findings), so `pipeline-events.sh cost` separates re-stamp cost. On `RESTAMP_FAIL` the verb first strips the stale label (`qa:pass` / `review:approved` / `security:approved` / `adversarial:approved`): otherwise the next pass dispatches another re-stamp instead of the full stage, forever. Step 4's own stale handling strips it first, so there it is a no-op. `next=fix-round` is the role's normal full-stage re-dispatch, like a first-time CHANGES/FINDINGS verdict.
 
 **Phase 2 — Reviewer and security in parallel:** After docs completes, dispatch
 reviewer and security concurrently — for either role named by the re-stamp check above, dispatch its re-stamp variant instead of the full prompt below.
@@ -846,11 +772,11 @@ reviewer and security concurrently — for either role named by the re-stamp che
 <!-- pr-draft:start -->
 **Draft review batch (`PR_DRAFT = true`).** Dispatch reviewer, security AND
 adversarial (when `roles.adversarial` is on) in this one parallel batch: Phase 3
-below does not wait for security. Wait for every dispatched role. The "returned" handling below changes for the batch: a CHANGES
-or FINDINGS verdict does NOT record an attempt or re-dispatch the developer by
-itself; after the whole batch returned, one fix round covers all of the findings
-(Draft stage order, step 4, which owns the single `record-attempt`). Each
-blocking role still gets its relay and `blocked` lifecycle notification.
+below does not wait for security. Wait for every dispatched role. `done --draft` answers
+`next=batch` to a CHANGES or FINDINGS verdict: no attempt is recorded and the
+developer is not re-dispatched by it; after the whole batch returned, one fix
+round covers all of the findings (Draft stage order, step 4, which owns the single
+`record-attempt`).
 
 <!-- pr-draft:end -->
 **Reviewer** (if `roles.reviewer = true`; spawn per the usage-reporting spawn form above): `bash scripts/talos.sh prompt reviewer --issue <N> --pr <PR_NUMBER> --prior-file F`.
@@ -871,21 +797,9 @@ Exit 0 prints the URL, and only for this repository's own `https://github.com/<o
 
 **Docs** (if `roles.docs = true`; spawn per the usage-reporting spawn form above): `bash scripts/talos.sh prompt docs --issue <N> --pr <PR_NUMBER> [--docs-paths-file F]`.
 
-After docs completes (phase 1):
+After docs completes (phase 1): `bash scripts/talos.sh done docs --issue <N> --pr <PR_NUMBER> --summary-file F`; for an auto-stamp (`docs_mode: auto`, nothing dispatched) the summary is `docs verified by developer diff (docs_mode: auto) — no subagent dispatched`.
 
-**Docs returned:**
-- Subagent dispatched: `bash scripts/pipeline-notify.sh docs "#<N>" - <N>` (stdin: `<subagent's 2-3 line outcome>`)
-- Gate auto-stamped (`docs_mode: auto`, no subagent dispatched): `bash scripts/pipeline-notify.sh docs "#<N>" "docs verified by developer diff (docs_mode: auto) — no subagent dispatched" <N>`
-
-After reviewer and security complete (phase 2):
-
-**Reviewer returned:**
-- Approved: `bash scripts/pipeline-notify.sh reviewer "#<N>" - <N>` (stdin: `<subagent's 2-3 line outcome, including the top 1-2 human-attention report items (#294)>`)
-- Changes needed: `bash scripts/pipeline-notify.sh reviewer "#<N>" - <N>` (stdin: `CHANGES: <findings>`) then `bash scripts/pipeline-notify.sh blocked "#<N>" "reviewer: changes required" <N>`; then `bash scripts/talos.sh gate fix-round <N> reviewer --pr <PR_NUMBER>` (Step 3): `verdict=redispatch` → re-dispatch developer; `verdict=block` → stop.
-
-**Security returned:**
-- Clear: `bash scripts/pipeline-notify.sh security "#<N>" - <N>` (stdin: `<subagent's 2-3 line outcome>`)
-- Findings: `bash scripts/pipeline-notify.sh security "#<N>" - <N>` (stdin: `FINDINGS: <severity + fix>`) then `bash scripts/pipeline-notify.sh blocked "#<N>" "security: findings in PR #<PR_NUMBER>" <N>`; then `bash scripts/talos.sh gate fix-round <N> security --pr <PR_NUMBER>` (Step 3): `verdict=redispatch` → re-dispatch developer; `verdict=block` → stop.
+After reviewer and security complete (phase 2), and adversarial (phase 3): for each, `bash scripts/talos.sh done <role> --issue <N> --pr <PR_NUMBER> --verdict <V> --summary-file F` (Rule 2; the reviewer's summary includes the top 1-2 human-attention report items, #294). On `next=fix-round stage=<role>`: `bash scripts/talos.sh gate fix-round <N> <role> --pr <PR_NUMBER>` (Step 3): `verdict=redispatch` → re-dispatch developer; `verdict=block` → stop.
 
 **Phase 3 — Adversarial (if `roles.adversarial = true`, default `false`, #237):**
 After security's phase-2 block above completes, dispatch adversarial — an
@@ -899,12 +813,6 @@ absent or `false`: zero dispatches, and `adversarial:approved` is never
 required by Step 4.
 
 **Adversarial** (if `roles.adversarial = true`): `bash scripts/talos.sh prompt adversarial --issue <N> --pr <PR_NUMBER> --prior-file F`.
-
-After adversarial completes:
-
-**Adversarial returned:**
-- Clear: `bash scripts/pipeline-notify.sh adversarial "#<N>" - <N>` (stdin: `<subagent's 2-3 line outcome>`)
-- Findings: `bash scripts/pipeline-notify.sh adversarial "#<N>" - <N>` (stdin: `FINDINGS: <count + summary>`) then `bash scripts/pipeline-notify.sh blocked "#<N>" "adversarial: findings in PR #<PR_NUMBER>" <N>`; then `bash scripts/talos.sh gate fix-round <N> adversarial --pr <PR_NUMBER>` (Step 3): `verdict=redispatch` → re-dispatch developer; `verdict=block` → stop.
 
 If any stage blocked: set `pipeline:blocked` on issue, move on.
 
@@ -991,10 +899,9 @@ A PR skipped because it carries `pipeline:blocked` (on the PR or its issue) is `
    The pipeline enforces this — a `Closes #N` PR is blocked at merge time if any other PRs
    for that issue are still open.
 7. Never guess a PR number — always read it from `pipeline-vcs.sh view-pr <branch>`.
-8. Stage comments are mandatory when `comments.enabled = true`; fall back to inline text if template missing.
-9. Role-event notifications are mandatory after each subagent (conversation stream protocol). PM is exempt.
-10. Notification failures never block the pipeline (pipeline-notify.sh always exits 0).
-    Always pass the issue number as the 4th arg: `pipeline-notify.sh <event> "#<N>" - <N>` (message on stdin, Rule 2)
+8. Stage comments are mandatory when `comments.enabled = true`.
+9. `talos.sh done` runs after every subagent returns (Rule 2).
+10. Notification failures never block the pipeline (pipeline-notify.sh always exits 0); pass the issue number as the 4th arg: `pipeline-notify.sh <event> "#<N>" - <N>` (message on stdin).
 11. Board update failures are warnings — the pipeline continues.
 12. Attempt counting is durable and enforced by `record-attempt`: run `bash scripts/talos.sh gate fix-round <N> <stage> [--pr <PR_NUMBER>]` before each developer re-dispatch, exactly as in Step 3.  On `verdict=block` (either `max_fix_attempts` consecutive same-stage failures OR `max_total_dispatches` total dispatches reached, or the budget guard): notify, move on.  Never count attempts in orchestrator memory — the helper is the source of truth.
 13. In file mode: skip board calls, skip QA/reviewer/security/docs, developer commits to branch directly.

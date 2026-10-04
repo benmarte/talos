@@ -2774,7 +2774,7 @@ Every attempt prints `talos:usage runner=<r> tokens=<N|null>` on stderr.
 **Behaviour change.** Because adapter and failover runs now record tokens,
 `pipeline-budget.sh check` counts them toward `limits.tokens_per_issue`; before,
 the guard was blind to them. `pipeline-spend-format.py` is unchanged. Relay
-events the orchestrator writes for an adapter stage (Rule 3) still carry what the
+events the orchestrator writes for an adapter stage (`talos.sh done`, Rule 2) still carry what the
 orchestrator passes; coordinating a single writer is tracked in #422.
 
 ### Adversarial pre-merge stage (`roles.adversarial`, #237)

@@ -58,15 +58,22 @@ assert_contains "$restamp_block_flat" "RESTAMP_FAIL" \
   "Step 3e re-stamp block names the RESTAMP_FAIL verdict"
 
 # ── Review finding (PR #265): a RESTAMP_FAIL must strip the stale label,
-# or the next pass finds the role stale again and re-stamps forever ────────
-assert_contains "$restamp_block_flat" "label-pr <PR_NUMBER> --remove <label>" \
-  "Step 3e re-stamp block strips the stale label on RESTAMP_FAIL"
-assert_contains "$restamp_block_flat" "before relaying" \
-  "Step 3e re-stamp block strips the label before relaying, not after"
+# or the next pass finds the role stale again and re-stamps forever. The strip
+# moved from the playbook's prose into `talos.sh done` (#469): the playbook says
+# the verb does it first, and the verb takes the label from the contract ────
+assert_contains "$restamp_block_flat" "On \`RESTAMP_FAIL\` the verb first strips the stale label" \
+  "Step 3e re-stamp block: on RESTAMP_FAIL the verb strips the stale label first"
+assert_contains "$restamp_block_flat" "done <role> ... --verdict RESTAMP_PASS" \
+  "Step 3e re-stamp block reports through talos.sh done"
+done_fn="$(sed -n '/^_talos_done() {/,/^}/p' "$TALOS_ROOT/scripts/talos.sh")"
+strip_line="$(grep -n 'label-pr "$_pr" --remove "$_label"' <<< "$done_fn" | head -n 1 | cut -d: -f1)"
+relay_line="$(grep -n '_talos_notify "$_role"' <<< "$done_fn" | head -n 1 | cut -d: -f1)"
+[ -n "$strip_line" ] && [ -n "$relay_line" ] && [ "$strip_line" -lt "$relay_line" ]
+assert_eq "0" "$?" "talos.sh done strips the stale label before it relays, not after"
+assert_contains "$done_fn" '_label="$(_talos_label_of "$_role")"' \
+  "talos.sh done takes the label from the contract, never a guessed <role>:approved pattern"
 assert_contains "$restamp_block_flat" "stale role=<role> label=<label>" \
-  "Step 3e re-stamp block sources the exact label from --stale-list's own output"
-assert_contains "$restamp_block_flat" "never guess a \`<role>:approved\` pattern" \
-  "Step 3e re-stamp block warns against guessing a <role>:approved label name"
+  "Step 3e re-stamp block still names --stale-list's own output"
 
 # ── Trigger condition is explicit: label present AND stale, absent -> full
 # stage (review finding: make this unambiguous, not implied) ───────────────
