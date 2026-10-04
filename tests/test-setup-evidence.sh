@@ -177,7 +177,32 @@ assert_file_absent "$SANDBOX/gi8-missing" "nothing is created through a dangling
 # a directory named .gitignore is not a regular file
 mkrepo "$SANDBOX/gi9"; mkdir "$SANDBOX/gi9/.gitignore"
 out="$(run_gi "$SANDBOX/gi9" "test-results")"
-assert_contains "$out" "rejected:" "a .gitignore that is not a regular file is refused"
+assert_contains "$out" "rejected: .gitignore is a symlink or not a regular file; add test-results/ to it by hand" "a .gitignore that is not a regular file is refused with the full reason (#456)"
+assert_file_absent "$SANDBOX/gi9/.gitignore/test-results" "nothing is written into it"
+# check mode never reaches git check-ignore on an odd .gitignore: no git noise, no write
+out="$(run_gi "$SANDBOX/gi9" "test-results" check)"
+assert_contains "$out" "not checked: .gitignore is a symlink or not a regular file" "check mode says it did not check an odd .gitignore (#456)"
+mkrepo "$SANDBOX/gi12"; ln -s "$SANDBOX/gi7-target" "$SANDBOX/gi12/.gitignore"
+out="$(run_gi "$SANDBOX/gi12" "test-results" check)"
+assert_not_contains "$out" "warning" "a symlinked .gitignore in check mode prints no git warning (#456)"
+assert_not_contains "$out" "unable to" "a symlinked .gitignore in check mode prints no git error (#456)"
+assert_eq "KEEP" "$(cat "$SANDBOX/gi7-target")" "check mode leaves the symlink target alone"
+# a FIFO .gitignore would block git check-ignore: the regular-file check must come first.
+# The run is bounded (own process group, killed after 20 s) so a regression fails instead of hanging.
+mkrepo "$SANDBOX/gi13"; mkfifo "$SANDBOX/gi13/.gitignore"
+txt="$(cat "$GI")"; txt="${txt//<rand>/k3v9xq7mzp2w}"; txt="${txt//<mode>/write}"
+printf '%s
+' "${txt//<dir>/test-results}" > "$SANDBOX/gi-run.sh"
+out="$(python3 -I -c 'import os, signal, subprocess, sys
+p = subprocess.Popen(["bash", sys.argv[1]], cwd=sys.argv[2], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+try:
+    sys.stdout.write(p.communicate(timeout=20)[0].decode())
+except subprocess.TimeoutExpired:
+    os.killpg(p.pid, signal.SIGKILL)
+    p.communicate()
+    print("TIMEOUT")' "$SANDBOX/gi-run.sh" "$SANDBOX/gi13" 2>&1 < /dev/null)"
+assert_not_contains "$out" "TIMEOUT" "a FIFO .gitignore does not hang: the regular-file check runs before git check-ignore (#456)"
+assert_contains "$out" "rejected: .gitignore is a symlink or not a regular file" "a FIFO .gitignore is refused (#456)"
 # a regular file still works, and a missing one is created as a regular file
 mkrepo "$SANDBOX/gi10"; printf 'dist/\n' > "$SANDBOX/gi10/.gitignore"
 run_gi "$SANDBOX/gi10" "test-results" >/dev/null
@@ -235,6 +260,23 @@ assert_contains "$T" 'the normalised `dir=` value Step 4c printed, never the typ
 assert_contains "$T" "Ask me later" "an ask-me-later choice is handled"
 assert_contains "$T" "store" "the store key is mentioned"
 assert_contains "$T" "attach" "store is attach only"
+
+# JSON form (#456): the agent-capture path omits command, dir/command only when accepted
+assert_contains "$T" 'omit the `"command"` key: `"evidence": { "enabled": true, "dir": "<dir>" }`' "the JSON form has an omit-command rule for the agent-capture path (#456)"
+assert_contains "$T" '<IF_EVIDENCE_ACCEPTED>' "Step 7 names the <IF_EVIDENCE_ACCEPTED> gate (#456)"
+assert_contains "$T" "are written only when accepted" "the JSON dir/command keys are gated like the YAML ones (#456)"
+assert_eq "1" "$(awk '/^<IF_EVIDENCE_ACCEPTED>$/{o=1} /^<\/IF_EVIDENCE_ACCEPTED>$/{c=o} END{print c+0}' "$SETUP")" "the YAML template gates dir and command in an <IF_EVIDENCE_ACCEPTED> pair (#456)"
+assert_contains "$Q" 'on every setup re-run' "ask me later re-asks on every re-run, said outright (#456, J9)"
+
+# ── Board owner (#456): checked before it reaches gh, passed quoted via a variable ──
+B="$(step '## Step 5 ')"
+assert_contains "$B" "check it character for character" "Step 5 checks the typed owner (#456)"
+assert_contains "$B" "1 to 39 characters, only letters, digits and \`-\`, not starting or ending with \`-\`" "Step 5 states the GitHub login charset (#456)"
+assert_contains "$B" "never write it to the config" "an owner that fails the check is never written (#456)"
+P9="$(step '## Step 9 ')"
+assert_contains "$P9" "owner='<OWNER>'" "Step 9 holds the checked owner in a variable (#456)"
+assert_contains "$P9" 'gh project create --owner "$owner"' "Step 9 passes the owner quoted via the variable (#456)"
+assert_not_contains "$P9" "--owner <OWNER>" "Step 9 never puts the owner bare on the command line (#456)"
 
 # ── Idempotency, summary, changelog ──────────────────────────────────────────
 assert_contains "$(step '## Idempotency rules')" "evidence:" "Idempotency: the evidence re-run is covered"

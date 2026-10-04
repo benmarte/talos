@@ -647,6 +647,30 @@ run_status --line --format issue,pr,stage,issue_tokens,today_tokens
 # 548,725 tokens; every event is today and the whole log sums 59,995,000.
 assert_eq "#200 · PR #1199 · rev ✓ · 549k · today 60.00M" "$OUT" "10k events: the right figures from a large log"
 
+# Line cap (#450): only the newest 200,000 lines are read. 5 old events of
+# 1M tokens each, then 200,000 newest events of 1 token each, all issue 222:
+# a capped read sums 200k, an uncapped one 5.2M.
+python3 -I - "$LOG" "$NOW" <<'PY'
+import json, sys
+with open(sys.argv[1], "w") as f:
+    for i in range(200005):
+        tokens = 1000000 if i < 5 else 1
+        f.write(json.dumps({"event": "developer", "role": "developer", "issue": 222, "pr": 5,
+                            "verdict": "PASS", "tokens": tokens, "ts": sys.argv[2]}) + "\n")
+PY
+run_status --line --format issue,issue_tokens
+assert_eq "#222 · 200k" "$OUT" "line cap: only the newest 200,000 lines count"
+python3 -I - "$LOG" "$NOW" <<'PY'
+import json, sys
+with open(sys.argv[1], "w") as f:
+    for i in range(200000):
+        tokens = 1000000 if i < 5 else 1
+        f.write(json.dumps({"event": "developer", "role": "developer", "issue": 222, "pr": 5,
+                            "verdict": "PASS", "tokens": tokens, "ts": sys.argv[2]}) + "\n")
+PY
+run_status --line --format issue,issue_tokens
+assert_eq "#222 · 5.20M" "$OUT" "line cap: a log of exactly 200,000 lines is read whole"
+
 # ── (k) bounded work: oversized / symlinked / special logs, slow budget ────
 # The repo is untrusted and the status line redraws constantly: it must never
 # hang, whatever .talos/events.jsonl is.

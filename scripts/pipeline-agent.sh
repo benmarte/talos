@@ -56,6 +56,13 @@
 # <role> must be lowercase letters and '-' (not leading); anything else exits 2
 # before any path is built.
 #
+# --check-effort <role> (#445): native claude path only. Prints ONE notice line
+#   when the resolved effort (agents.roles.<role>.effort, else agents.effort) is
+#   non-empty and differs from the role file's effort: frontmatter (absent
+#   counts as different); nothing on a match, an empty config, or an
+#   adapter-path role (TALOS_EFFORT applies it there). Exit 0 (2 on a
+#   missing/invalid <role>); writes no file.
+#
 # Failover verbs (#418, see agents.fallback below):
 #   --resolve <role> appends " fallback=<a,b>" after effort= only when a chain
 #   resolves; --resolve-all appends fallback= / fallback_origin= the same way.
@@ -360,12 +367,22 @@ fi
 # empty, so it defeats "the config is the only place a model is set".
 if [ "${1:-}" = "--resolve-all" ]; then
   _ALL_ROLES="validator pm developer qa reviewer security adversarial docs planner"
-  # key<TAB>layer for every agents.* leaf; one python3 spawn.
-  _LAYERS="$(bash "$SCRIPT_DIR/pipeline-config.sh" --dump-layers 2>/dev/null)"
+  # key<TAB>value<TAB>layer for every agents.* key (#442); one python3 spawn.
+  # "repo" is the project file; a key set by neither file (default, env) has no
+  # origin to show here, so it stays empty.
+  _LAYERS="$(bash "$SCRIPT_DIR/pipeline-config.sh" --show agents. 2>/dev/null)"
   _layer_of() {
-    local _k _l
-    while IFS="$(printf '\t')" read -r _k _l; do
-      if [ "$_k" = "$1" ]; then printf '%s' "$_l"; return 0; fi
+    local _line _l
+    while IFS= read -r _line; do
+      case "$_line" in
+        "$1"$'\t'*)
+          _l="${_line##*$'\t'}"
+          case "$_l" in
+            repo) printf 'project' ;;
+            global) printf 'global' ;;
+          esac
+          return 0 ;;
+      esac
     done <<EOF
 $_LAYERS
 EOF
@@ -469,6 +486,44 @@ if [ "${1:-}" = "--resolve-profile" ]; then
   fi
   _resolve_role_profile "$2"
   exit $?
+fi
+
+# --check-effort <role> (#445): the native-path effort notice, as a verb so the
+# orchestrator playbook carries one call instead of the resolution prose. Config
+# is advisory there (no per-spawn effort parameter; the orchestrator never writes
+# a tracked file), so this only compares the resolved value with the role file's
+# committed `effort:` frontmatter and names both on one stdout line.
+if [ "${1:-}" = "--check-effort" ]; then
+  if [ -z "${2:-}" ]; then
+    echo "Usage: pipeline-agent.sh --check-effort <role>" >&2
+    exit 2
+  fi
+  _valid_role_name "$2" || { _resolve_role_profile "$2" >/dev/null; exit $?; }
+  [ "$(_resolve_runner "$2")" = "claude" ] || exit 0
+  _CE_CFG="$(_resolve_effort "$2")"
+  # Same enum the config reader enforces (an invalid value reads as unset).
+  case "$_CE_CFG" in low | medium | high | max) : ;; *) exit 0 ;; esac
+  _CE_FILE="$(_resolve_role_profile "$2" 2>/dev/null || true)"
+  _CE_FM=""
+  if [ -n "$_CE_FILE" ]; then
+    # The raw value never reaches the output: CR, an inline YAML comment and one
+    # pair of surrounding quotes are stripped, then only the four effort names
+    # are accepted; anything else (control bytes, long text) prints <invalid>.
+    _CE_FM="$(awk 'NR==1 { if ($0 !~ /^---[ \t\r]*$/) exit; next }
+      /^---[ \t\r]*$/ { exit }
+      /^effort:/ { v = $0; sub(/^effort:[ \t]*/, "", v); sub(/\r$/, "", v)
+        sub(/^#.*$/, "", v); sub(/[ \t]+#.*$/, "", v); sub(/[ \t]+$/, "", v)
+        if (v ~ /^".*"$/ || v ~ /^\047.*\047$/) v = substr(v, 2, length(v) - 2)
+        print v; exit }' "$_CE_FILE" | head -c 64)"
+    case "$_CE_FM" in "" | low | medium | high | max) : ;; *) _CE_FM="<invalid>" ;; esac
+  fi
+  [ -n "$_CE_FILE" ] && [ "$_CE_CFG" = "$_CE_FM" ] && exit 0
+  if [ -z "$_CE_FILE" ]; then _CE_SHOW="role file not found"
+  elif [ -z "$_CE_FM" ]; then _CE_SHOW="its frontmatter has no effort:"
+  else _CE_SHOW="its frontmatter has effort=$_CE_FM"; fi
+  printf "talos: notice: role '%s' has effort=%s in config but %s -- native path uses the committed frontmatter; config effort is advisory here\n" \
+    "$2" "$_CE_CFG" "$_CE_SHOW"
+  exit 0
 fi
 
 # ── Provider-error classification (#418) ──────────────────────────────────────
