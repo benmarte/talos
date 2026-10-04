@@ -135,14 +135,15 @@
 #          remove and a clean sibling are idempotent in their scripts. The issue-closed
 #          comment carries <!-- talos:issue-closed pr=<M> -->: when a comment by a
 #          trusted author (markers.trusted_authors plus the current user, as for
-#          approval markers) already has it, `recorded=yes` and the comment,
-#          close-issue, the notices, both events and the spend block are skipped, so a
-#          re-run gives one comment, one close, one merged event. With
-#          comments.enabled false there is no marker, so they repeat. A trust set
-#          that cannot be resolved, or unreadable comments, count no marker (the
-#          repeat is the lesser harm): `warn reason=trust-unverified|comments-
-#          unreadable`. A close-issue that failed after the marker was posted
-#          is not retried: close it by hand.
+#          approval markers) already has it, `recorded=yes` and the comment, the
+#          notices, both events and the spend block are skipped, so a re-run gives
+#          one comment and one merged event. close-issue and board Done always run
+#          (idempotent), so a close that failed after the marker was posted is
+#          retried by the next heal. The comment is not gated by comments.enabled
+#          (as before; only the spend comment is). A trust set that cannot be
+#          resolved (no trusted_authors and the identity refused or unavailable),
+#          or unreadable comments, count no marker (the repeat is the lesser
+#          harm): `warn reason=trust-unverified|comments-unreadable`.
 #   post-merge <pr> <issue> --handoff [--details-file <file>]
 #          merge.auto is off: approved.md on the PR (the file's text, if given,
 #          is DETAILS), then the orchestrator relay. Nothing else runs.
@@ -155,8 +156,9 @@
 #          worktree sweep (`worktree_sweep=<summary line>`). Item 5: `blocked_issues=<K>`,
 #          `blocked_prs=<J>` and, when K+J > 0, the one `info backlog` notice.
 #          With roles.planner: item 6 `epic=<n> action=closed|pending|waiting`
-#          (closed: check-epic-acceptance exit 0; pending: the label and the comment
-#          just posted, once per epic; waiting: already flagged; exit 2 is
+#          (closed: check-epic-acceptance exit 0 and the close succeeded; a failed
+#          close is only `warn reason=epic-close-failed issue=<n>`, no `epic=` line;
+#          pending: the label and the comment just posted, once per epic; waiting: already flagged; exit 2 is
 #          `warn reason=epic-acceptance-unsupported epic=<n>`, the epic left open)
 #          and item 7 `unblocked=<n>` (every issue named on its `Depends on:` lines
 #          is no longer open). With status.enabled, item 8 `needs_owner_pending=<p>`,
@@ -164,8 +166,9 @@
 #          under `warn reason=marker-authors-unverified` (all pending, no clear).
 #   summary [<issue-id>...]
 #          The ids are the issues processed in this run. Step 5 item 1: the worktree
-#          sweep keeping those and every open pipeline PR's issue (the PR list
-#          unreadable: `warn reason=prs-unlisted`, nothing swept), item 2
+#          sweep keeping those and the issue of every PR still open (any base, label
+#          or fork, as the old Step 5 said; the head must be fix|feat/issue-<n>; the
+#          PR list unreadable: `warn reason=prs-unlisted`, nothing swept), item 2
 #          `worktree_warning=<line>` (relayed once as an `info worktrees` notice),
 #          item 4 `cost=<line>` per line of the one cost --summary call, item 5 the
 #          status resume refresh (status.enabled).
@@ -555,8 +558,9 @@ print(sum(1 for c in json.load(sys.stdin).get("comments", [])
 # (check-approval-sha and read-attempt): markers.trusted_authors plus the
 # authenticated login, unless markers.verify_authors is false. Sets _TRUST_ON
 # (1 or 0) and _TRUST_SET. An identity that cannot be looked up and no
-# trusted_authors is the same fail-open as those readers (every marker counts);
-# one that was refused and no trusted_authors stops, as nothing could be counted.
+# trusted_authors is the same fail-open as those readers (every marker counts),
+# except under _TALOS_TRUST_SOFT (post-merge), where it counts none; one that
+# was refused and no trusted_authors stops, as nothing could be counted.
 _talos_trust() {
   _TRUST_ON=0; _TRUST_SET=""
   [ "$(cfg markers.verify_authors)" != "false" ] || return 0
@@ -566,7 +570,7 @@ _talos_trust() {
   _rc="$_RC"; _u="$_OUT"
   case "$_rc" in
     0) [ -z "$_u" ] || _t="${_t:+$_t$'\n'}$_u" ;;
-    1) : ;;
+    1) [ -z "${_TALOS_TRUST_SOFT:-}" ] || _TRUST_ON=1 ;;
     *) _TRUST_ON=1 ;;
   esac
   [ -z "$_t" ] || _TRUST_ON=1
@@ -902,19 +906,20 @@ sys.stdout.write(out + "\n")
 # The open pipeline PRs of a list-prs array, one line each `<pr> <issue> <blocked>`
 # (blocked is 1 or 0), ascending: the rule pipeline-status-file.sh applies (a
 # fix|feat/issue-<N> head, the base branch, and a Talos label or a PR that is not
-# from a fork). argv: the base branch, the Talos label names joined by commas.
+# from a fork). argv: the base branch, the Talos label names joined by commas, and
+# optionally `any`: no base, label or fork test (every open PR with an issue head).
 _TALOS_PRS_PY='
 import json, re, sys
-base, talos = sys.argv[1], set(sys.argv[2].split(","))
+base, talos, anyp = sys.argv[1], set(sys.argv[2].split(",")), len(sys.argv) > 3
 rx = re.compile(r"^(?:fix|feat)/issue-([0-9]{1,9})(?:-|\Z)")
 rows = []
 for p in json.load(sys.stdin):
     n, b = p.get("number"), p.get("headRefName")
     m = rx.match(b) if isinstance(b, str) else None
-    if not isinstance(n, int) or not m or p.get("baseRefName") != base:
+    if not isinstance(n, int) or not m or (not anyp and p.get("baseRefName") != base):
         continue
     names = set(l.get("name") if isinstance(l, dict) else l for l in p.get("labels") or [])
-    if not (names & talos or p.get("isCrossRepository") is False):
+    if not (anyp or names & talos or p.get("isCrossRepository") is False):
         continue
     rows.append((n, int(m.group(1)), 1 if "pipeline:blocked" in names else 0))
 for r in sorted(rows):
@@ -994,13 +999,13 @@ _talos_notify() {
   [ "$_RC" -eq 0 ] || _talos_warn notify-failed "${_PM_ISSUE:+issue=$_PM_ISSUE}"
 }
 
-# _talos_pipeline_prs <list-prs json>: `<pr> <issue> <blocked>` lines.
+# _talos_pipeline_prs <list-prs json> [any]: `<pr> <issue> <blocked>` lines.
 _talos_pipeline_prs() {
   local _l="" _e
   for _e in ${TALOS_STAGE_LABELS[@]+"${TALOS_STAGE_LABELS[@]}"} ${TALOS_APPROVAL_LABELS[@]+"${TALOS_APPROVAL_LABELS[@]}"}; do
     _l="$_l${_e%%|*},"
   done
-  python3 -I -c "$_TALOS_PRS_PY" "$(_talos_base_branch)" "$_l" <<< "$1"
+  python3 -I -c "$_TALOS_PRS_PY" "$(_talos_base_branch)" "$_l" ${2:+"$2"} <<< "$1"
 }
 
 # _talos_sibling <merged-issue> <pr>: bring one sibling PR's branch up to date
@@ -1077,30 +1082,28 @@ _talos_post_merge_run() {
     [ "$_RC" -eq 0 ] || _talos_warn changelog-failed "issue=$_n"
   fi
 
-  # The marker of an earlier run (a trusted author's) means the comment, the
-  # close and everything that tells someone it happened were done: skip them.
-  if [ "$(cfg comments.enabled)" = "true" ]; then
-    _TALOS_TRUST_SOFT=1
-    _talos_trust
-    _talos_cap _vcs read-comments "$_n"
-    if [ "$_RC" -eq 0 ] && _cnt="$(_talos_count_marker "$_mk" "$_OUT")" && _talos_isnum "$_cnt"; then
-      [ "$_cnt" -eq 0 ] || _rec=1
-    else
-      _talos_warn comments-unreadable "issue=$_n"
-    fi
-    if [ "$_rec" -eq 0 ]; then
-      if _talos_render issue-closed "#$_n" "PR #$_pr" CLOSED "all stages passed" /dev/null; then
-        _BODY="$_BODY"$'\n'"$_mk"
-        _talos_say comment-issue "$_n" --allow-closed || _talos_warn comment-failed "issue=$_n"
-      else
-        _talos_warn comment-failed "issue=$_n"
-      fi
-    fi
+  # The marker of an earlier run (a trusted author's) means the comment and
+  # everything that tells someone it happened were done: skip those. close-issue
+  # and board Done always run: a close that failed after the marker was posted is
+  # retried by the next heal, and both are idempotent.
+  _TALOS_TRUST_SOFT=1
+  _talos_trust
+  _talos_cap _vcs read-comments "$_n"
+  if [ "$_RC" -eq 0 ] && _cnt="$(_talos_count_marker "$_mk" "$_OUT")" && _talos_isnum "$_cnt"; then
+    [ "$_cnt" -eq 0 ] || _rec=1
+  else
+    _talos_warn comments-unreadable "issue=$_n"
   fi
   if [ "$_rec" -eq 0 ]; then
-    _talos_run close-issue _vcs close-issue "$_n" "closed by PR #$_pr"
-    [ "$_RC" -eq 0 ] || _talos_warn close-failed "issue=$_n"
+    if _talos_render issue-closed "#$_n" "PR #$_pr" CLOSED "all stages passed" /dev/null; then
+      _BODY="$_BODY"$'\n'"$_mk"
+      _talos_say comment-issue "$_n" --allow-closed || _talos_warn comment-failed "issue=$_n"
+    else
+      _talos_warn comment-failed "issue=$_n"
+    fi
   fi
+  _talos_run close-issue _vcs close-issue "$_n" "closed by PR #$_pr"
+  [ "$_RC" -eq 0 ] || _talos_warn close-failed "issue=$_n"
   _talos_emit recorded "$([ "$_rec" -eq 1 ] && echo yes || echo no)"
 
   _talos_run board bash "$SCRIPT_DIR/pipeline-status.sh" "$_n" "Done"
@@ -1290,12 +1293,15 @@ _talos_sweep() {
       case "$_RC" in
         0)
           _talos_run epic _vcs close-issue "$_n" "All sub-issues resolved."
-          [ "$_RC" -eq 0 ] || _talos_warn epic-close-failed "issue=$_n"
-          if [ "$_carried" = 1 ]; then
-            _talos_run epic _vcs label-issue "$_n" --remove pipeline:epic-children-done
-            [ "$_RC" -eq 0 ] || _talos_warn epic-label-failed "issue=$_n"
-          fi
-          _talos_emit epic "$_n action=closed" ;;
+          if [ "$_RC" -ne 0 ]; then
+            _talos_warn epic-close-failed "issue=$_n"
+          else
+            if [ "$_carried" = 1 ]; then
+              _talos_run epic _vcs label-issue "$_n" --remove pipeline:epic-children-done
+              [ "$_RC" -eq 0 ] || _talos_warn epic-label-failed "issue=$_n"
+            fi
+            _talos_emit epic "$_n action=closed"
+          fi ;;
         2) _talos_warn epic-acceptance-unsupported "epic=$_n" ;;
         *)
           # The label and the comment fire once per epic; the check runs every sweep.
@@ -1371,11 +1377,12 @@ _talos_summary() {
   _TALOS_NOTE_KEY=summary
   _talos_emit summary done
 
-  # 1. The worktrees to keep: this run's issues and every open PR's issue. With
-  # the PR list unknown nothing is swept: a worktree awaiting review is not lost.
+  # 1. The worktrees to keep: this run's issues and the issue of every PR still
+  # open (any base, label or fork: the old Step 5 said "every PR still open", and
+  # a sweep deletes dirty worktrees). With the PR list unknown nothing is swept.
   _keep=(${_IDS[@]+"${_IDS[@]}"})
   _talos_cap _vcs list-prs
-  if [ "$_RC" -eq 0 ] && _prs="$(_talos_pipeline_prs "$_OUT")"; then
+  if [ "$_RC" -eq 0 ] && _prs="$(_talos_pipeline_prs "$_OUT" any)"; then
     while read -r _s _i _b <&3; do
       [ -z "$_i" ] || _keep+=("$_i")
     done 3<<< "$_prs"

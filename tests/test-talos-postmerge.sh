@@ -202,7 +202,8 @@ assert_out "post-merge --heal" "$PM_FIRST"
 
 # ── (a) post-merge: idempotency ──────────────────────────────────────────────
 # A second run, after the first one's comment is on the issue, repeats nothing that
-# tells someone: one comment, one close, one merged event.
+# tells someone: one comment, one merged event. close-issue is not one of them: a
+# close that failed after the comment must be retried by the next heal.
 reset_stubs
 cfg_json '{"vcs": {"provider": "github"}, "roles": {"changelog_fragments": true}, "status": {"enabled": true}}'
 pm 9 42 --ci-runs 3
@@ -213,7 +214,7 @@ rm -f "$STUB_DIR/journal" "$STUB_DIR/bodies"
 pm 9 42 --ci-runs 3
 assert_contains "$OUT" "recorded=yes" "idempotent: the marker of the first run is seen"
 assert_eq "0" "$(called comment-issue)" "idempotent: no second close comment"
-assert_eq "0" "$(called close-issue)" "idempotent: no second close"
+assert_eq "1" "$(called close-issue)" "idempotent: close-issue runs again with the marker present (retry of a failed close)"
 assert_eq "0" "$(called notify)" "idempotent: no second notice"
 assert_eq "0" "$(called hooks)" "idempotent: no second merged event"
 assert_eq "0" "$(called events)" "idempotent: no second spend block"
@@ -222,6 +223,18 @@ assert_eq "1" "$(called status-file)" "idempotent: the status log replaces its e
 assert_eq "1" "$(called worktree)" "idempotent: worktree remove is a no-op when gone and still runs"
 assert_eq "1" "$(called changelog)" "idempotent: changelog assemble is a no-op when empty and still runs"
 assert_out "idempotent" "$PM_FIRST"
+# A close that failed after the marker was posted is retried, and succeeds the next time.
+set_stub close-issue 1 "" "boom"
+rm -f "$STUB_DIR/journal"
+pm 9 42 --heal
+assert_contains "$OUT" "recorded=yes" "retry: the marker is still seen"
+assert_contains "$OUT" "warn reason=close-failed issue=42" "retry: a failing close warns again"
+set_stub close-issue 0
+rm -f "$STUB_DIR/journal"
+pm 9 42 --heal
+assert_contains "$(journal)" "vcs close-issue 42 closed by PR #9" "retry: the heal calls close-issue again with the marker present"
+assert_not_contains "$OUT" "close-failed" "retry: and it goes through"
+assert_eq "0" "$(called comment-issue)" "retry: the comment is still not repeated"
 # Another PR's marker does not count.
 python3 -I -c 'import json, sys; print(json.dumps({"comments": [{"author": {"login": "bot"}, "body": sys.stdin.read().replace("pr=9", "pr=8")}]}))' <<< "$POSTED" > "$SANDBOX/c.json"
 set_stub read-comments 0 "$(cat "$SANDBOX/c.json")"
@@ -246,17 +259,33 @@ assert_contains "$OUT" "warn reason=trust-unverified issue=42" "idempotent: a re
 assert_contains "$OUT" "recorded=no" "idempotent: and counts no marker"
 assert_eq "1" "$(called close-issue)" "idempotent: the bookkeeping still runs"
 assert_out "trust-unverified" "$PM_FIRST"
+# An identity that cannot be looked up (exit 1) with no trusted_authors is the same: an
+# outsider's marker is not counted, the comment is posted, the warning is printed.
+set_stub current-user 1 "" "no identity"
+set_stub read-comments 0 "$(cat "$SANDBOX/c.json")"
+rm -f "$STUB_DIR/journal"
+pm 9 42
+assert_contains "$OUT" "warn reason=trust-unverified issue=42" "trust: an unresolvable identity warns"
+assert_contains "$OUT" "recorded=no" "trust: and a marker by any author does not count (no fail-open)"
+assert_eq "1" "$(called comment-issue)" "trust: so the comment is posted"
+assert_out "trust-unverified (exit 1)" "$PM_FIRST"
+# The same identity failure with trusted_authors set counts that author's marker.
+cfg_json '{"vcs": {"provider": "github"}, "markers": {"trusted_authors": ["mallory"]}}'
+pm 9 42
+assert_contains "$OUT" "recorded=yes" "trust: an unresolvable identity with trusted_authors uses the set"
+assert_not_contains "$OUT" "trust-unverified" "trust: and does not warn"
 # Unreadable comments: the same.
 reset_stubs; set_stub read-comments 1 "" "boom"
 pm 9 42
 assert_contains "$OUT" "warn reason=comments-unreadable issue=42" "idempotent: unreadable comments warn"
 assert_eq "1" "$(called comment-issue)" "idempotent: and the comment is posted"
-# Comments off: no marker, no read, no comment; the close still runs.
+# Comments off: only the spend comment is gated, as in the old playbook (its issue-closed
+# comment, like approved.md and the epic comment, was not).
 reset_stubs; cfg_json '{"vcs": {"provider": "github"}, "comments": {"enabled": false}}'
+set_stub events.cost.md 0 "spend-comment-body"
 pm 9 42
-assert_eq "0" "$(called read-comments)" "comments off: no read-comments"
-assert_eq "0" "$(called comment-issue)" "comments off: no comment"
-assert_eq "1" "$(called close-issue)" "comments off: close-issue still runs"
+assert_eq "1" "$(called comment-issue)" "comments off: the issue-closed comment is posted as before"
+assert_eq "1" "$(called close-issue)" "comments off: close-issue runs"
 assert_eq "0" "$(called upsert-pr-comment)" "comments off: no spend comment"
 
 # ── (a) post-merge: every item is non-fatal ──────────────────────────────────
@@ -407,7 +436,7 @@ set_stub read-comments 0 "$(cat "$SANDBOX/c.json")"
 rm -f "$STUB_DIR/journal"
 sw 1 2
 assert_eq "0" "$(called comment-issue)" "heal: a second sweep posts no second close comment"
-assert_eq "0" "$(called close-issue)" "heal: nor a second close"
+assert_eq "1" "$(called close-issue)" "heal: the issue is still open, so close-issue is retried with the marker present"
 # list-issues failing: the heal and the issue sweeps are skipped, the worktree sweep is not.
 reset_stubs; set_stub list-issues 1 "" "boom"
 sw 1
@@ -485,6 +514,18 @@ set_stub list-issues 0 "[$(issue_json 100 pipeline:epic-decomposed)]"
 set_stub check-epic-acceptance 1 "- [ ] x"
 sw
 assert_contains "$OUT" "epic=100 action=pending" "epics: the pending report is a fixed line"
+# A failed epic close is a warning and no `epic=` line (the epic is still open).
+reset_stubs
+cfg_json '{"vcs": {"provider": "github"}, "roles": {"planner": true}}'
+set_stub list-issues 0 "[$(issue_json 100 pipeline:epic-decomposed,pipeline:epic-children-done)]"
+set_stub check-epic-acceptance 0 ""
+set_stub close-issue 1 "" "boom"
+sw
+assert_contains "$OUT" "warn reason=epic-close-failed issue=100" "epics: a failed close warns"
+assert_not_contains "$OUT" "epic=100 action=closed" "epics: and is not reported as closed"
+assert_eq "0" "$(printf '%s\n' "$OUT" | grep -c '^epic=')" "epics: no epic= line at all after a failed close"
+assert_eq "0" "$(journal | grep -c 'label-issue 100 --remove')" "epics: the flag label stays so the next sweep retries"
+assert_out "epics (close failed)" "sweep=done"
 
 # Dependency unblocking.
 reset_stubs
@@ -541,15 +582,15 @@ assert_eq "0" "$(called list-needs-owner)" "needs-owner: status.enabled off: ski
 
 # ── (c) summary ──────────────────────────────────────────────────────────────
 reset_stubs
-set_stub list-prs 0 "[$(pr_json 21 fix/issue-8-x main pipeline:review),$(pr_json 22 feat/issue-9-y main pipeline:review),$(pr_json 23 fix/issue-12-z main '' true)]"
+set_stub list-prs 0 "[$(pr_json 21 fix/issue-8-x main pipeline:review),$(pr_json 22 feat/issue-9-y main pipeline:review),$(pr_json 23 fix/issue-12-z main '' true),$(pr_json 24 fix/issue-13-w other pipeline:review),$(pr_json 25 chore/x main pipeline:review)]"
 set_stub worktree.sweep 0 "talos:worktree-sweep removed=1 kept=2 freed=1M"
 sm 4 5
 assert_eq "0" "$RC" "summary: exits 0"
-assert_contains "$(journal)" "worktree sweep 4 5 8 9" "summary: the run's issues plus every open pipeline PR's issue are kept (a fork lookalike is not)"
+assert_contains "$(journal)" "worktree sweep 4 5 8 9 12 13" "summary: the run's issues plus the issue of every open PR are kept (any base, label or fork, as the old Step 5 said; a non-issue branch has no id)"
 assert_contains "$OUT" "worktree_sweep=talos:worktree-sweep removed=1 kept=2 freed=1M" "summary: the sweep line is reported"
 assert_contains "$(journal)" "events cost --summary --issue 4 --issue 5" "summary: one cost call, one --issue each"
 assert_eq "1" "$(called events)" "summary: exactly one cost call"
-assert_eq "worktree sweep 4 5 8 9
+assert_eq "worktree sweep 4 5 8 9 12 13
 worktree list
 events cost --summary --issue 4 --issue 5" "$(journal | grep -v '^vcs')" "summary: sweep, then the threshold check, then the cost table"
 assert_out "summary" "summary=done"
