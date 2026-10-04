@@ -1502,8 +1502,10 @@ since an approval, do not invalidate that approval. `*.example` covers generated
 pipeline-config examples (e.g. `talos.pipeline.json.example`), which are never
 executed. Hard-coded non-waivable regardless of config: paths under `scripts/`,
 paths under `tests/`, agent instructions (`agents/`, `skills/`,
-`templates/prompts/`, `.claude/{agents,skills,commands,talos}/`, `.agents/`, and
-any `AGENTS.md` or `CLAUDE.md` at any depth, matched case-insensitively),
+`templates/prompts/` at the repo root; `.claude/{agents,skills,commands,talos,rules}/`,
+`.agents/`, `.agent/`, `.gemini/`, `.pi/`, `.codex/` at any depth; and any
+`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `AGENTS.override.md` or `CLAUDE.local.md`
+at any depth, matched case-insensitively),
 `talos.pipeline.yml`, `pipeline.yaml`. A config entry under an agent-instruction
 path is accepted but ignored for those paths (stderr note). With
 `roles.changelog_fragments: true` (#290), fragment files under

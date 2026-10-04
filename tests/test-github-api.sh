@@ -938,7 +938,23 @@ git add "docs/$_UE428.md"
 git commit -q -m "428 non-ASCII docs path"
 _UDOC428="$(git rev-parse HEAD)"
 
-for _case in "agents/qa.md:$_AGENTS428:1" "sub/claude.md:$_NESTED428:1" "skills/ue/SKILL.md:$_UTF428:1" "docs/ue.md:$_UDOC428:0" "README.md:$_README428:0"; do
+# #431: the other runners' instruction files, one commit each off _A428
+# (docs/agents/ is not Talos's agents/ and stays waived).
+_CASES431=()
+for _p431 in GEMINI.md .gemini/system.md .pi/SYSTEM.md AGENTS.override.md CLAUDE.local.md .claude/rules/x.md \
+             .agent/rules/x.md .codex/config.toml GEMINI.MD .Claude/Rules/x.md \
+             sub/.claude/rules/x.md sub/.agents/rules/x.md sub/.codex/notes.md sub/.pi/SYSTEM.md \
+             docs/agents/x.md; do
+  git checkout -q --detach "$_A428"
+  mkdir -p "$(dirname "$_p431")"
+  printf 'edit\n' > "$_p431"
+  git add "$_p431"
+  git commit -q -m "431 $_p431"
+  case "$_p431" in docs/agents/*) _w431=0 ;; *) _w431=1 ;; esac
+  _CASES431+=("$_p431:$(git rev-parse HEAD):$_w431")
+done
+
+for _case in "agents/qa.md:$_AGENTS428:1" "sub/claude.md:$_NESTED428:1" "skills/ue/SKILL.md:$_UTF428:1" "docs/ue.md:$_UDOC428:0" "README.md:$_README428:0" "${_CASES431[@]}"; do
   IFS=: read -r _f _h _want <<< "$_case"
   : > "$CURL_LOG"
   printf '%s\n' \

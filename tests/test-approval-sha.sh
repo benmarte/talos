@@ -228,17 +228,34 @@ _c="$(mk_comment_with_marker "$SHA_A" qa)"
 for _p in agents/qa.md skills/pipeline/SKILL.md templates/prompts/qa-evidence.md AGENTS.md CLAUDE.md \
           sub/AGENTS.md a/b/CLAUDE.md .claude/agents/developer.md .claude/skills/x/SKILL.md \
           .claude/commands/pr.md .claude/talos/scripts/x.sh .agents/x.md \
-          Skills/pipeline/SKILL.md Agents/qa.md AGENTS.MD claude.md .Claude/agents/x.md; do
+          Skills/pipeline/SKILL.md Agents/qa.md AGENTS.MD claude.md .Claude/agents/x.md \
+          GEMINI.md sub/GEMINI.md .gemini/system.md .agent/rules/x.md .pi/SYSTEM.md AGENTS.override.md a/b/AGENTS.override.md \
+          .codex/config.toml .codex/notes.md .claude/rules/x.md CLAUDE.local.md sub/CLAUDE.local.md \
+          GEMINI.MD Gemini.md .Gemini/x.md .PI/x.md AGENTS.OVERRIDE.MD claude.LOCAL.md .Claude/Rules/x.md \
+          sub/.claude/rules/x.md sub/.agents/rules/x.md sub/.agent/rules/x.md sub/.gemini/system.md sub/.pi/SYSTEM.md sub/.codex/notes.md \
+          a/b/.claude/skills/x/SKILL.md a/.claude/agents/x.md a/.Claude/Commands/x.md a/.AGENTS/x.md; do
   _h="$(_delta_428 "$_p")"
   out="$(vcs_check "$_h" '[{"name":"qa:pass"}]' "$_c")"; rc=$?
   assert_exit_code 1 "$rc" "#428 $_p only: default waiver does not cover it, exits 1"
   assert_contains "$out" "STALE qa:pass (qa)" "#428 $_p only: qa approval stale"
 done
-for _p in README.md docs/user-guide.md templates/comments/qa-verdict.md; do
+for _p in README.md docs/user-guide.md templates/comments/qa-verdict.md \
+          docs/agents/x.md docs/skills/x.md .pip/x.md .agentx/x.md .gemini-notes/x.md .codexx/x.md \
+          GEMINI.md.example sub/.pip/x.md sub/.claude/notes.md; do
   _h="$(_delta_428 "$_p")"
   out="$(vcs_check "$_h" '[{"name":"qa:pass"}]' "$_c")"; rc=$?
   assert_exit_code 0 "$rc" "#428 $_p only: stays waived by default, exits 0"
 done
+
+# #431: a broad config waiver cannot widen the runner instruction paths.
+for _p in GEMINI.md .pi/SYSTEM.md sub/.claude/rules/x.md sub/.agents/rules/x.md; do
+  _h="$(_delta_428 "$_p")"
+  printf '%s\n' '{"merge": {"approval_waiver_paths": ["*.md*"]}}' > test-approval-config.json
+  out="$(vcs_check "$_h" '[{"name":"qa:pass"}]' "$_c")"; rc=$?
+  assert_exit_code 1 "$rc" "#431 $_p with *.md* config waiver: exits 1"
+  assert_contains "$out" "STALE qa:pass (qa)" "#431 $_p with *.md* config waiver: stale"
+done
+printf '{}' > test-approval-config.json
 
 # Non-ASCII paths: git would quote them without -z, hiding the prefix. Stale
 # under the default waiver and under a broad *.md* config waiver; a non-ASCII

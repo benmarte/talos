@@ -2317,8 +2317,10 @@ sys.exit(0)
 # between the marker SHA and head is covered by merge.approval_waiver_paths
 # (default: *.md docs/** CHANGELOG.md *.example) AND none of the hard-coded
 # non-waivable paths (scripts/**, tests/**, agents/**, skills/**,
-# templates/prompts/**, .claude/{agents,skills,commands,talos}/**, .agents/**,
-# any AGENTS.md or CLAUDE.md, pipeline config filenames; all casefolded) --
+# templates/prompts/**; at any depth: .claude/{agents,skills,commands,talos,
+# rules}/**, .agents/**, .agent/**, .gemini/**, .pi/**, .codex/**, and any
+# AGENTS.md, CLAUDE.md, GEMINI.md, AGENTS.override.md or CLAUDE.local.md;
+# plus pipeline config filenames; all casefolded) --
 # checked FIRST, before the config waiver, so config can never widen a waiver
 # to cover them. Files that only arrived via a base-branch sync (absent from
 # the PR's own three-dot diff, #102) are excluded from consideration.
@@ -2329,24 +2331,34 @@ import fnmatch, json, os, subprocess, sys
 # Hard-coded non-waivable: checked BEFORE the config waiver.
 # The config can NEVER widen a waiver to cover these paths.
 # Code (scripts/, tests/) and agent instructions (agents/, skills/,
-# templates/prompts/, the repo-level .claude/{agents,skills,commands,talos}/
-# and .agents/ trees, and any AGENTS.md or CLAUDE.md at any depth, #428) --
-# the instruction files are Markdown, so the default *.md waiver would
-# otherwise cover them. templates/comments/** (rendered output text) stays
-# waivable. Every comparison is casefolded: on a case-insensitive checkout
-# (macOS, Windows) Skills/x lands in the real skills/ folder.
+# templates/prompts/ -- Talos's own layout, root-anchored), the runners'
+# dot-directories (.claude/{agents,skills,commands,talos,rules}/, .agents/,
+# .agent/, .gemini/, .pi/, .codex/ -- matched at ANY path-component boundary,
+# so sub/.claude/rules/x.md counts, #431), and instruction files matched by
+# basename at any depth (AGENTS.md, CLAUDE.md, GEMINI.md, AGENTS.override.md,
+# CLAUDE.local.md, #428/#431) -- the instruction files are Markdown, so the
+# default *.md waiver would otherwise cover them. docs/agents/ (not Talos's
+# agents/) and templates/comments/** (rendered output text) stay waivable.
+# Every comparison is casefolded: on a case-insensitive checkout (macOS,
+# Windows) Skills/x lands in the real skills/ folder.
 HARDCODED_NONWAIVABLE_PREFIXES = (
     'scripts/', 'tests/',
     'agents/', 'skills/', 'templates/prompts/',
+)
+HARDCODED_NONWAIVABLE_DOTDIRS = (
     '.claude/agents/', '.claude/skills/', '.claude/commands/',
-    '.claude/talos/', '.agents/',
+    '.claude/talos/', '.claude/rules/', '.agents/',
+    '.agent/', '.gemini/', '.pi/', '.codex/',
 )
 HARDCODED_NONWAIVABLE_EXACT    = (
     'talos.pipeline.yml', 'talos.pipeline.yaml', 'talos.pipeline.json',
     '.claude-pipeline.yaml', '.claude-pipeline.json',
     'pipeline.yaml', 'pipeline.json',
 )
-HARDCODED_NONWAIVABLE_BASENAMES = ('agents.md', 'claude.md')
+HARDCODED_NONWAIVABLE_BASENAMES = (
+    'agents.md', 'claude.md', 'gemini.md',
+    'agents.override.md', 'claude.local.md',
+)
 
 # Default waiver paths -- used when the config key is absent or unparseable.
 DEFAULT_WAIVER = ['*.md', 'docs/**', 'CHANGELOG.md', '*.example']
@@ -2370,6 +2382,10 @@ def is_hardcoded_nonwaivable(path):
     low = path.casefold()
     for prefix in HARDCODED_NONWAIVABLE_PREFIXES:
         if low == prefix.rstrip('/') or low.startswith(prefix):
+            return True
+    for prefix in HARDCODED_NONWAIVABLE_DOTDIRS:
+        # '/' + low + '/' so the prefix matches at the start or after any '/'.
+        if '/' + prefix in '/' + low + '/':
             return True
     if low in HARDCODED_NONWAIVABLE_EXACT:
         return True
