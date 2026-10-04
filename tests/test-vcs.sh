@@ -750,7 +750,11 @@ for _449_v in 08 09; do
   assert_eq "2" "$rc" "#449 --wait $_449_v is accepted (pending at the deadline: exit 2)"
   assert_not_contains "$out" "Usage:" "#449 --wait $_449_v is not a usage error"
   assert_not_contains "$out" "value too great" "#449 --wait $_449_v is not read as octal"
-  assert_eq "2" "$reads" "#449 --wait $_449_v waits one step (two reads)"
+  # The deadline counts wall seconds ($SECONDS, whole-second resolution) as well as
+  # the nominal sleeps, so a first read that crosses a clock-second boundary can add
+  # one more short step: two or three reads, never one (not polled) or more than three.
+  case "$reads" in 2|3) _449_ok=yes ;; *) _449_ok="$reads" ;; esac
+  assert_eq "yes" "$_449_ok" "#449 --wait $_449_v polls (two reads, or three across a second boundary)"
 done
 _449_wait 0031
 assert_eq "3" "$reads" "#449 --wait 0031 waits 31 s (30 + 1: three reads), not octal 25"
