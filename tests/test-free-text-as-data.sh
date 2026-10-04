@@ -343,7 +343,7 @@ PY
 REC="$SANDBOX/rec"; STUBROOT="$SANDBOX/recipe-cwd"
 mkdir -p "$STUBROOT/scripts" "$REC" "$SANDBOX/tmpl"
 cp "$TALOS_ROOT"/templates/comments/*.md "$SANDBOX/tmpl/"
-for s in pipeline-vcs.sh pipeline-notify.sh pipeline-agent.sh; do
+for s in pipeline-vcs.sh pipeline-notify.sh pipeline-agent.sh pipeline-hooks.sh; do
   cat > "$STUBROOT/scripts/$s" <<'STUB'
 #!/usr/bin/env bash
 # Counter-named, so the order of calls is the order they were made.
@@ -433,6 +433,15 @@ assert_eq 'pipeline-notify.sh|qa|#7|-|7' "$(argv_of "$c.argv")" "playbook relay 
 cmp -s "$SANDBOX/r.sh.bodies/1" "$c.stdin"; assert_eq "0" "$?" "playbook relay recipe: the stub received the summary byte for byte"
 assert_eq "1" "$(calls)" "playbook relay recipe: one relay is one command"
 assert_no_pwned "playbook relay recipe"
+
+# ── skills/pipeline/SKILL.md: Rule 3 post_stage with a subagent-authored summary ─
+run_recipe "$TALOS_ROOT/skills/pipeline/SKILL.md" 'post_stage qa qa 42'; rc=$?
+assert_eq "0" "$rc" "playbook Rule 3 recipe: runs ($(head -c 200 "$SANDBOX/r.err"))"
+c="$(call_of pipeline-hooks.sh)"
+assert_eq 'pipeline-hooks.sh|post_stage|qa|qa|42|--pr|57|--verdict|PASS|--summary|-' "$(argv_of "$c.argv")" "playbook Rule 3 recipe: ONE command, the summary passed as -, never as an argument"
+cmp -s "$SANDBOX/r.sh.bodies/1" "$c.stdin"; assert_eq "0" "$?" "playbook Rule 3 recipe: the stub received the summary byte for byte"
+assert_eq "1" "$(calls)" "playbook Rule 3 recipe: one post_stage is one command"
+assert_no_pwned "playbook Rule 3 recipe"
 
 # ── skills/pipeline/SKILL.md: sub-issue body + title + create-issue ──────────
 run_recipe "$TALOS_ROOT/skills/pipeline/SKILL.md" 'BODY_FILE="$(mktemp)"' 'create-issue "$SUB_TITLE" "$BODY_FILE" \

@@ -90,7 +90,8 @@ Outcome:
      DETAILS as data with a heredoc, never inside double quotes
      (`read -r -d '' VAR <<'TALOS_<rand>' || true` … `TALOS_<rand>`, `<rand>` being 12+ random characters you invent
      fresh for each heredoc, never copied from an example: text that contains
-     the closing line would end the heredoc early and run what follows). Then
+     the closing line would end the heredoc early and run what follows; a
+     literal `<rand>` in your command means you did not substitute it). Then
      `bash scripts/pipeline-vcs.sh comment-pr <pr> "$COMMENT_BODY"`. If the
      post fails, report it in your final message.
 

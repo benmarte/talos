@@ -95,12 +95,16 @@ Workflow (do ALL of it — the publish step is not optional):
    In a fix round, when the change makes the summary or test types stale,
    refresh the PR body at the end with
    `bash scripts/pipeline-vcs.sh edit-pr-body <PR> --body-file "$BODY_FILE"`
-   (the body from a `mktemp` file written by such a heredoc); never
+   (the body in a `mktemp` file written by such a heredoc, removed by a `trap`
+   as in step 7); never
    `gh pr edit`.
+   If `<rand>` appears literally in your command, you did not substitute it:
+   the command is wrong.
 7. **Open the PR** — this is the completion signal. One command, with a
    `mktemp` body file (never a fixed `/tmp/...` name):
    ```bash
-   BODY_FILE="$(mktemp)"
+   BODY_FILE="$(mktemp)" || exit 1
+   trap 'rm -f "$BODY_FILE"' EXIT
    cat > "$BODY_FILE" <<'TALOS_<rand>'
    <spec summary>
 
@@ -112,8 +116,10 @@ Workflow (do ALL of it — the publish step is not optional):
    read -r PR_TITLE <<'TALOS_<rand>'
    <title>
    TALOS_<rand>
-   bash scripts/pipeline-vcs.sh create-pr <branch> "$PR_TITLE" "$BODY_FILE" && rm -f "$BODY_FILE"
+   bash scripts/pipeline-vcs.sh create-pr <branch> "$PR_TITLE" "$BODY_FILE"
    ```
+   The `trap` removes the body file on every exit path, a failed `create-pr`
+   included.
    If this exits non-zero: stop immediately, set `pipeline:blocked`, post
    blocked.md with the exact error. Capture `<file>:<quoted line>
    (explicit|interpreted)` into `BLOCKED_BY` with the same kind of heredoc
@@ -146,7 +152,7 @@ Workflow (do ALL of it — the publish step is not optional):
     with the exact error. Capture `<file>:<quoted line>
     (explicit|interpreted)` into `BLOCKED_BY` with a heredoc first
     (`read -r -d '' BLOCKED_BY <<'TALOS_<rand>' || true` … `TALOS_<rand>`,
-    `<rand>` fresh random characters as in step 6) so shell metacharacters in
+    `<rand>` fresh random characters as in step 6, substituted, never literal) so shell metacharacters in
     the quoted text are never interpreted — never paste the quoted line
     directly into a command string — do NOT claim success.
 

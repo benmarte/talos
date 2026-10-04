@@ -134,7 +134,7 @@ tests/auth.test.js}" ;;
     # on the old hardcoded-cap implementation.
     _limit="$(_stub_limit "$@")"
     if [ -n "$_limit" ]; then
-      _pl_raw="$(printf '%s' "$_pl_raw" | LIMIT="$_limit" python3 -c "
+      _pl_raw="$(printf '%s' "$_pl_raw" | LIMIT="$_limit" python3 -I -c "
 import json, os, sys
 d = json.load(sys.stdin)
 print(json.dumps(d[:int(os.environ['LIMIT'])]))
@@ -162,7 +162,7 @@ print(json.dumps(d[:int(os.environ['LIMIT'])]))
     # Honor --limit N faithfully (#171) — see rationale on "pr list" above.
     _limit="$(_stub_limit "$@")"
     if [ -n "$_limit" ]; then
-      _il_raw="$(printf '%s' "$_il_raw" | LIMIT="$_limit" python3 -c "
+      _il_raw="$(printf '%s' "$_il_raw" | LIMIT="$_limit" python3 -I -c "
 import json, os, sys
 d = json.load(sys.stdin)
 print(json.dumps(d[:int(os.environ['LIMIT'])]))
@@ -198,7 +198,7 @@ print(json.dumps(d[:int(os.environ['LIMIT'])]))
     if [ -n "${STUB_GH_PRS_RAW:-}" ]; then
       printf '%s' "$STUB_GH_PRS_RAW"
     elif [ -n "${STUB_PR_LIST:-}" ]; then
-      printf '%s' "$STUB_PR_LIST" | python3 -c "
+      printf '%s' "$STUB_PR_LIST" | python3 -I -c "
 import json, sys
 print(json.dumps([{'number': p.get('number'), 'state': str(p.get('state', 'OPEN')).lower(),
                    'title': p.get('title', ''), 'head': {'ref': p.get('headRefName', '')},
@@ -224,7 +224,7 @@ print(json.dumps([{'number': p.get('number'), 'state': str(p.get('state', 'OPEN'
       printf '%s' "$STUB_GH_PR_FILES_RAW"
     else
       FILES="${STUB_PR_FILES:-src/auth.js
-tests/auth.test.js}" python3 -c "
+tests/auth.test.js}" python3 -I -c "
 import json, os
 paths = [p for p in os.environ['FILES'].splitlines() if p]
 print(json.dumps([{'filename': p} for p in paths]))
@@ -283,7 +283,7 @@ print(json.dumps([{'filename': p} for p in paths]))
       exit 1
     fi
     if [ -n "${STUB_COMMENT_STORE:-}" ] && [ -e "$STUB_COMMENT_STORE" ]; then
-      python3 -c "
+      python3 -I -c "
 import json, os, sys
 store, op, target, pfile, user, repo = sys.argv[1:7]
 items = json.load(open(store)) if os.path.getsize(store) else []
@@ -403,7 +403,7 @@ print(json.dumps(c))
         exit 1
       fi
       [ -n "${STUB_ATTACH_LOG:-}" ] && printf '%s\t%s\t%s\t%s\n' "$(pwd)" "$_pc_a" \
-        "$(python3 -c 'import os,stat,sys; print(oct(stat.S_IMODE(os.stat(sys.argv[1]).st_mode)))' "$_pc_a")" \
+        "$(python3 -I -c 'import os,stat,sys; print(oct(stat.S_IMODE(os.stat(sys.argv[1]).st_mode)))' "$_pc_a")" \
         "$(wc -c < "$_pc_a" | tr -d ' ')" >> "$STUB_ATTACH_LOG"
     done
     if [ "${STUB_ATTACH_FAIL:-}" = "1" ]; then
@@ -411,7 +411,7 @@ print(json.dumps(c))
       echo "gh: unsupported authentication type for attachments" >&2
       exit 1
     fi
-    _pc_url="$(python3 -c "
+    _pc_url="$(python3 -I -c "
 import json, os, sys, uuid
 store, pfile, user, repo, pr = sys.argv[1:6]
 paths = sys.argv[6:]
@@ -447,7 +447,7 @@ print(html)
       exit 1
     fi
     if [ -n "${STUB_COMMENT_STORE:-}" ] && [ -s "$STUB_COMMENT_STORE" ]; then
-      python3 -c "
+      python3 -I -c "
 import json, sys
 store, cid = sys.argv[1], int(sys.argv[2])
 items = [c for c in json.load(open(store)) if c['id'] != cid]
@@ -489,7 +489,7 @@ json.dump(items, open(store, 'w'))
     BODY="${STUB_ISSUE_BODY:-stub body}" \
     LABELS_JSON="${STUB_ISSUE_LABELS_JSON:-[]}" \
     COMMENTS_JSON="${STUB_ISSUE_COMMENTS_JSON:-[]}" \
-    python3 -c "
+    python3 -I -c "
 import json, os
 labels = json.loads(os.environ['LABELS_JSON'])
 comments = json.loads(os.environ['COMMENTS_JSON'])
@@ -505,7 +505,7 @@ print(json.dumps({'title': os.environ['TITLE'], 'body': os.environ['BODY'],
     TITLE="${STUB_ISSUE_TITLE:-Fix login crash}" \
     BODY="${STUB_ISSUE_BODY:-stub body}" \
     LABELS_JSON="${STUB_ISSUE_LABELS_JSON:-[]}" \
-    python3 -c "
+    python3 -I -c "
 import json, os
 labels = json.loads(os.environ['LABELS_JSON'])
 print(json.dumps({'title': os.environ['TITLE'], 'body': os.environ['BODY'],

@@ -156,7 +156,7 @@ assert_eq "$wt_before" "$(git worktree list | wc -l | tr -d ' ')" "conflict-file
 # holder releases (a plain unlocked `git worktree add` would ignore the
 # directory entirely and return almost instantly).
 _lock_resource="$(git rev-parse --git-common-dir 2>/dev/null || echo .git)/talos-worktree"
-_lock_dir="${_lock_resource}.lock.d"
+_lock_dir="${_lock_resource:?}.lock.d"
 rm -rf "$_lock_dir"
 mkdir -p "$_lock_dir"
 printf '%s:1\n' "$$" > "$_lock_dir/pid"
