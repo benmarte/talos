@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test-setup-harness.sh -- skills/pipeline-setup/SKILL.md runs under any agent (#368, part of #353).
+# test-setup-harness.sh -- skills/setup/SKILL.md runs under any agent (#368, part of #353).
 #
 # Structural checks on the playbook text (Step 6b offers every runner id,
 # Step 7 records pi and antigravity, the new Step 7c drives
@@ -13,13 +13,13 @@ set -u
 make_sandbox || exit 1
 . "$TALOS_ROOT/scripts/pipeline-contract.sh"
 
-SETUP_MD="$TALOS_ROOT/skills/pipeline-setup/SKILL.md"
+SETUP_MD="$TALOS_ROOT/skills/setup/SKILL.md"
 SBX="$(cd "$SANDBOX" && pwd)"
 
 step6b="$(sed -n '/^## Step 6b/,/^## Step 6c/p' "$SETUP_MD")"
 step6c="$(sed -n '/^## Step 6c/,/^## Step 7 /p' "$SETUP_MD")"
 step7="$(sed -n '/^## Step 7 /,/^## Step 7b/p' "$SETUP_MD")"
-step7c="$(sed -n '/^## Step 7c/,/^## Step 8 /p' "$SETUP_MD")"
+step7c="$(sed -n '/^## Step 7c/,/^## Step 7d/p' "$SETUP_MD")"
 step0="$(sed -n '/^## Step 0/,/^## Step 1 /p' "$SETUP_MD")"
 [ -n "$step6b" ] && [ -n "$step7" ] && pass "setup skill carries Steps 6b and 7" || fail "setup skill carries Steps 6b and 7" "section not found"
 [ -n "$step7c" ] && pass "setup skill carries a Step 7c" || fail "setup skill carries a Step 7c" "section not found"
@@ -109,12 +109,12 @@ tmpl="$(grep -n '^# .*Read ~/.talos/skills/pipeline/SKILL.md' "$SETUP_MD")"
 next="$(grep -E '^  2\. ' "$SETUP_MD")"
 for pair in "description:$desc" "template comment:$tmpl" "Next steps item 2:$next"; do
   label="${pair%%:*}"; text="${pair#*:}"
-  case "$text" in *"/pipeline"*"in Claude Code"*) pass "$label gives the Claude Code start form" ;; *) fail "$label gives the Claude Code start form" "$text" ;; esac
+  case "$text" in *"/talos:pipeline"*"in Claude Code"*) pass "$label gives the Claude Code start form" ;; *) fail "$label gives the Claude Code start form" "$text" ;; esac
   assert_contains "$text" "$OTHER_FORM" "$label gives the any-agent start form"
 done
 intro="$(sed -n '5,9p' "$SETUP_MD")"
-assert_contains "$intro" "Read ~/.talos/skills/pipeline-setup/SKILL.md and follow it" "opening paragraph says any agent can run the wizard"
-assert_eq "pipeline-setup" "$(sed -n '2p' "$SETUP_MD" | sed 's/^name: //')" "frontmatter name stays pipeline-setup"
+assert_contains "$intro" "Read ~/.talos/skills/setup/SKILL.md and follow it" "opening paragraph says any agent can run the wizard"
+assert_eq "setup" "$(sed -n '2p' "$SETUP_MD" | sed 's/^name: //')" "frontmatter name is setup (/talos:setup, #335)"
 
 # (7) Execute the fenced write command: one Talos block, CLAUDE.md untouched.
 # Guard: every write under $HOME must stay inside the sandbox.

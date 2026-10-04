@@ -169,13 +169,18 @@ n_tmpl="$(ls "$T6_HOME/.talos/templates/notifications/"*.md 2>/dev/null | wc -l 
 src_tmpl="$(ls "$TALOS_ROOT/templates/notifications/"*.md 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "$src_tmpl" "$n_tmpl" "--global writes all notification templates"
 assert_file_exists "$T6_CLAUDE/skills/pipeline/SKILL.md" \
-  "--global writes skill to ~/.claude/skills/"
-# The resume skill installs as talos-resume, never resume: Claude Code has a
-# built-in /resume and the global name is provisional until #335 (#348).
-assert_file_exists "$T6_CLAUDE/skills/talos-resume/SKILL.md" \
-  "--global installs the resume skill to ~/.claude/skills/talos-resume/ (#348)"
+  "--global writes the /pipeline alias to ~/.claude/skills/ (#335)"
+assert_file_exists "$T6_CLAUDE/skills/pipeline-setup/SKILL.md" \
+  "--global writes the /pipeline-setup alias to ~/.claude/skills/ (#335)"
+# /talos:resume comes from the plugin; there is no bare copy of resume at all
+# (neither resume/, which would clash with the built-in /resume, nor the old
+# provisional talos-resume/, #335).
+assert_file_absent "$T6_CLAUDE/skills/talos-resume" \
+  "--global creates no ~/.claude/skills/talos-resume/ (#335)"
 assert_file_absent "$T6_CLAUDE/skills/resume" \
   "--global creates no ~/.claude/skills/resume/ (would clash with the built-in /resume, #348)"
+assert_file_absent "$T6_CLAUDE/skills/setup" \
+  "--global creates no ~/.claude/skills/setup/ (/talos:setup comes from the plugin, #335)"
 
 # #166: --global ALSO writes every role profile to ~/.claude/agents/ (the path
 # Claude Code's native subagent discovery actually reads), not just
@@ -321,17 +326,17 @@ assert_file_exists "$T10_HOME/.talos/scripts/pipeline-newthing.sh" \
 # install.sh runs under set -e: a skill missing from the fixture would abort the
 # install after the scripts are copied and the assertion above would still pass.
 # Asserting the last skill line's output makes a missing fixture file fail here (#348).
-assert_file_exists "$T10_CLAUDE/skills/talos-resume/SKILL.md" \
-  "the partial-source install ran through the skill lines (#348)"
+assert_file_exists "$T10_CLAUDE/skills/pipeline-setup/SKILL.md" \
+  "the partial-source install ran through the adapter's last alias (#348, #335)"
 assert_file_exists "$T10_HOME/.talos/skills/newcmd/SKILL.md" \
   "a new command in skills/ plus a manifest entry is installed to ~/.talos/skills/ with no install.sh edit (#363)"
-assert_file_exists "$T10_CLAUDE/skills/newcmd/SKILL.md" \
-  "a new command is installed to the Claude skills dir under its own name (#363)"
+assert_file_absent "$T10_CLAUDE/skills/newcmd" \
+  "a new command gets no bare Claude copy: /talos:<command> comes from the plugin (#335)"
 
 # ── Test 11: playbooks land under ~/.talos/skills; ~/.claude copies unchanged ─
 # (#363) Every command in TALOS_COMMANDS is copied to <talos home>/skills/<command>/
-# SKILL.md. The Claude skills dir keeps what main wrote: pipeline/,
-# pipeline-setup/ and talos-resume/ (never resume/), each cmp-equal to its source.
+# SKILL.md. The Claude skills dir holds only the two legacy aliases, pipeline/
+# and pipeline-setup/ (#335); the commands themselves come from the plugin.
 . "$TALOS_ROOT/scripts/pipeline-contract.sh"
 T11_HOME="$SANDBOX/t11-home"
 T11_CLAUDE="$SANDBOX/t11-claude"
@@ -344,17 +349,15 @@ assert_contains "$t11_out" "$T11_HOME/.talos/skills" "the --global banner names 
 for cmd in "${TALOS_COMMANDS[@]}"; do
   assert_file_exists "$T11_HOME/.talos/skills/$cmd/SKILL.md" \
     "--global installs $cmd to ~/.talos/skills/$cmd/SKILL.md (#363)"
-  cmp -s "$TALOS_ROOT/skills/$cmd/SKILL.md" "$T11_CLAUDE/skills/$(talos_claude_skill_name "$cmd")/SKILL.md" \
-    && pass "the Claude copy of $cmd is cmp-equal to its source (#363)" \
-    || fail "the Claude copy of $cmd is cmp-equal to its source (#363)"
 done
-skills_diff="$(diff -rq "$TALOS_ROOT/skills" "$T11_HOME/.talos/skills" 2>&1 || true)"
+# skills/pipeline-setup/ is the plugin's /talos:pipeline-setup alias, not a
+# command, so it is the one directory ~/.talos/skills does not mirror (#335).
+skills_diff="$(diff -rq -x pipeline-setup "$TALOS_ROOT/skills" "$T11_HOME/.talos/skills" 2>&1 || true)"
 [ -z "$skills_diff" ] && pass "~/.talos/skills matches repo skills/ structurally (#363)" \
   || fail "~/.talos/skills matches repo skills/ structurally (#363)" "$skills_diff"
 assert_eq "pipeline
-pipeline-setup
-talos-resume" "$(ls "$T11_CLAUDE/skills")" \
-  "the Claude skills dir holds exactly pipeline, pipeline-setup, talos-resume (#363)"
+pipeline-setup" "$(ls "$T11_CLAUDE/skills")" \
+  "the Claude skills dir holds exactly the pipeline and pipeline-setup aliases (#363, #335)"
 
 # TALOS_HOME redirects the copies.
 T11B_HOME="$SANDBOX/t11b-home"
@@ -362,7 +365,7 @@ T11B_TALOS="$SANDBOX/t11b-talos"
 mkdir -p "$T11B_HOME"
 env HOME="$T11B_HOME" CLAUDE_CONFIG_DIR="$SANDBOX/t11b-claude" TALOS_HOME="$T11B_TALOS" \
   bash "$TALOS_ROOT/install.sh" --global --no-agent-skills >/dev/null 2>&1
-skills_diff="$(diff -rq "$TALOS_ROOT/skills" "$T11B_TALOS/skills" 2>&1 || true)"
+skills_diff="$(diff -rq -x pipeline-setup "$TALOS_ROOT/skills" "$T11B_TALOS/skills" 2>&1 || true)"
 [ -z "$skills_diff" ] && pass "TALOS_HOME=<dir> puts the playbooks in <dir>/skills (#363)" \
   || fail "TALOS_HOME=<dir> puts the playbooks in <dir>/skills (#363)" "$skills_diff"
 assert_file_absent "$T11B_HOME/.talos" "TALOS_HOME=<dir> writes nothing to ~/.talos (#363)"

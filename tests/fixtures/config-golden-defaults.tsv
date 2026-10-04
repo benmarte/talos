@@ -34,7 +34,7 @@ agents.roles.developer.model		empty	pipeline-agent.sh,pipeline-hooks.sh
 agents.roles.developer.restamp_model		empty	pipeline-agent.sh,pipeline-hooks.sh
 agents.roles.developer.runner		empty	pipeline-agent.sh
 agents.roles.developer.runner_cmd		empty	pipeline-agent.sh
-agents.runner	claude	table	pipeline-agent.sh,pipeline-hooks.sh,pipeline-setup/SKILL.md
+agents.runner	claude	table	pipeline-agent.sh,pipeline-hooks.sh,setup/SKILL.md
 agents.runner_args		empty	pipeline-agent.sh
 agents.runner_cmd		empty	pipeline-agent.sh
 agents.subagents	auto	table	pipeline-agent.sh
@@ -131,7 +131,7 @@ vcs.azure.org_url		empty	bootstrap-board.sh,pipeline-status.sh,pipeline-vcs.sh
 vcs.azure.project		empty	bootstrap-board.sh,pipeline-vcs.sh
 vcs.azure.work_item_type	Product Backlog Item	table	bootstrap-board.sh,pipeline-vcs.sh
 vcs.file.source.path	plan.md	table	pipeline-vcs.sh
-vcs.provider	github	table	bootstrap-board.sh,pipeline-evidence.sh,pipeline-setup/SKILL.md,pipeline-status.sh,pipeline-vcs.sh
+vcs.provider	github	table	bootstrap-board.sh,pipeline-evidence.sh,setup/SKILL.md,pipeline-status.sh,pipeline-vcs.sh
 vcs.repo		empty	pipeline-board-shared.sh,pipeline-evidence.sh,pipeline-hooks.sh,pipeline-status.sh,pipeline-vcs.sh
 vcs.token_env		empty	bootstrap-board.sh,pipeline-status.sh,pipeline-vcs.sh
 verify		empty	pipeline-verify.sh

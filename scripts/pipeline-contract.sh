@@ -56,24 +56,16 @@ TALOS_RUNNERS=(
 )
 
 # ── Commands ───────────────────────────────────────────────────────────────
-# Every Talos command, i.e. every playbook at skills/<command>/SKILL.md.
+# Every Talos command, i.e. every playbook at skills/<command>/SKILL.md. The
+# canonical Claude Code form is /talos:<command> (the plugin namespaces it).
 # install.sh --global copies each one to ${TALOS_HOME:-$HOME/.talos}/skills/
-# <command>/SKILL.md (where any harness can be pointed at it) and to the Claude
-# skills dir under talos_claude_skill_name. tests/test-commands-manifest.sh
-# checks this list against the skills/ tree, so a playbook and its entry land
-# together.
-TALOS_COMMANDS=(pipeline pipeline-setup resume)
-
-# talos_claude_skill_name <command> -- the directory name under the Claude
-# skills dir (~/.claude/skills/). `resume` installs as talos-resume because
-# Claude Code has a built-in /resume; every other command keeps its own name.
-# Provisional until #335.
-talos_claude_skill_name() {
-  case "$1" in
-    resume) echo "talos-resume" ;;
-    *)      echo "$1" ;;
-  esac
-}
+# <command>/SKILL.md, where any harness can be pointed at it, and registers the
+# checkout as the `talos` plugin so Claude Code gets /talos:<command>.
+# tests/test-commands-manifest.sh checks this list against the skills/ tree, so
+# a playbook and its entry land together. skills/pipeline-setup/ is NOT a
+# command: it is the deprecated /talos:pipeline-setup alias (#335), removed in
+# v0.20.
+TALOS_COMMANDS=(pipeline setup resume)
 
 # The subset of TALOS_ROLES that carries an approval label (gated by
 # check-approval-sha / post-approval), in the same order as

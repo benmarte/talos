@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # test-setup-prompt-rules.sh -- pins the setup wizard's board-bootstrap
-# prompt (skills/pipeline-setup/SKILL.md Step 8a, #266) in place: it must
+# prompt (skills/setup/SKILL.md Step 8a, #266) in place: it must
 # offer bootstrap-board.sh with an explicit y/n, gate on board.enabled, and
 # state it never runs silently / never touches a real board without the
 # answer -- a future edit that drops any of those must fail here.
 #
 # Same fenced-block extraction convention as test-prompt-rules.sh (which is
 # scoped to skills/pipeline/SKILL.md, the orchestrator skill -- this file
-# covers skills/pipeline-setup/SKILL.md, the setup wizard, instead).
+# covers skills/setup/SKILL.md, the setup wizard, instead).
 set -u
 . "$(dirname "$0")/helpers.sh"
 
-SETUP_MD="$TALOS_ROOT/skills/pipeline-setup/SKILL.md"
+SETUP_MD="$TALOS_ROOT/skills/setup/SKILL.md"
 
 extract_window() {  # $1=file $2=anchor substring
   local file="$1" anchor="$2" start end

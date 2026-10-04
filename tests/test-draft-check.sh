@@ -21,7 +21,7 @@ set -u
 make_sandbox || exit 1
 
 DC="$TALOS_ROOT/scripts/pipeline-draft-check.sh"
-SETUP="$TALOS_ROOT/skills/pipeline-setup/SKILL.md"
+SETUP="$TALOS_ROOT/skills/setup/SKILL.md"
 WARN_NOSKIP="pipeline: CI does not skip draft PRs; CI will still run on every push. See templates/ci/github-tests.yml"
 
 # wf <name> : a fixture repo; reads the workflow YAML from stdin into <name>/.github/workflows/w.yml

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# AC8 (#336): skills/pipeline-setup/SKILL.md asks how models are assigned
+# AC8 (#336): skills/setup/SKILL.md asks how models are assigned
 # (one model for every role / per role / leave unset), writes the answer to the
 # user-level Talos config by default, shows the current routing when one
 # exists (keep / change / override for this repo only) and never overwrites an
@@ -8,7 +8,7 @@
 set -u
 . "$(dirname "$0")/helpers.sh"
 
-SETUP_MD="$TALOS_ROOT/skills/pipeline-setup/SKILL.md"
+SETUP_MD="$TALOS_ROOT/skills/setup/SKILL.md"
 
 section="$(sed -n '/^## Step 6c/,/^## Step 7/p' "$SETUP_MD")"
 if [ -z "$section" ]; then

@@ -46,9 +46,9 @@
 #                                                      false (the ready flow, so
 #                                                      QA cannot hang); explicit
 #                                                      true: warn, stay true
-#             Used by /pipeline Step 0 and pipeline-status-file.sh, so both
+#             Used by /talos:pipeline Step 0 and pipeline-status-file.sh, so both
 #             read the same value.
-#   edit      The minimal workflow change /pipeline-setup offers. Without
+#   edit      The minimal workflow change /talos:setup offers. Without
 #             --write it prints the unified diff and writes nothing; with
 #             --write it applies exactly that diff. Only two kinds of change:
 #             append `ready_for_review` to `on.pull_request.types` (a missing

@@ -189,6 +189,18 @@ make_sandbox() {
   export HOME="$SANDBOX/.home"
   export TALOS_HERMES_ENV="$HOME/.hermes/.env"
   printf '[user]\n\tname = talos-test\n\temail = test@talos.invalid\n' > "$HOME/.gitconfig"
+  # Hermetic `claude` (#335). install.sh --global registers the talos plugin
+  # through `claude plugin ...`, which on a machine with Claude Code would write
+  # that user's Claude config and fetch the agent-skills dependency over the
+  # network. Put a stub first on PATH so no test reaches the real binary; it
+  # keeps its state and log under the sandbox HOME (inside the already-untracked
+  # .home, so the sandbox repo's `git status` is unchanged). A test of the
+  # "no claude on PATH" cases builds its own stripped PATH, as it always did.
+  export CLAUDE_STUB_STATE="$HOME/.claude-stub/state"
+  export CLAUDE_PLUGIN_LOG="$HOME/.claude-stub/plugin.log"
+  unset CLAUDE_STUB_NO_PLUGIN CLAUDE_STUB_LIST_RAW CLAUDE_STUB_ADD_FAIL CLAUDE_STUB_INSTALL_FAIL
+  mkdir -p "$HOME/.claude-stub"
+  export PATH="$STUBS_DIR/plugin-claude:$PATH"
 }
 
 # use_stubs — put the gh/curl/nak stubs first on PATH and reset their logs.

@@ -220,9 +220,9 @@ the developer role.
 Restart the session, then in any repo:
 
 ```bash
-# in a Claude Code session:  /pipeline-setup     — writes talos.pipeline.yml, bootstraps labels
+# in a Claude Code session:  /talos:setup     — writes talos.pipeline.yml, bootstraps labels
 gh issue edit 42 --add-label pipeline:ready
-# in a Claude Code session:  /pipeline
+# in a Claude Code session:  /talos:pipeline
 ```
 
 The plugin carries the skills, the eight role agents, the scripts and the
@@ -248,14 +248,14 @@ bash talos/install.sh /path/to/your-repo
 
 # 3. Configure (interactive -- or copy talos.pipeline.yml.example manually)
 cd /path/to/your-repo
-# in a Claude Code session:  /pipeline-setup
+# in a Claude Code session:  /talos:setup
 
 # 4. Bootstrap the label state machine (GitHub/GitLab/Azure only)
 bash ~/.talos/scripts/bootstrap-labels.sh
 
 # 5. Queue work and run
 gh issue edit 42 --add-label pipeline:ready
-# in a Claude Code session:  /pipeline
+# in a Claude Code session:  /talos:pipeline
 ```
 
 `--harness` selects installer glue (what is written where); `agents.runner`
@@ -267,14 +267,15 @@ hint), set `agents.runner: custom`, and give `agents.runner_cmd` (the prompt
 arrives on stdin).
 
 What the global install writes. `~/.talos/{scripts,agents,templates,skills}/`
-always (`skills/<command>/SKILL.md` holds the `pipeline`, `pipeline-setup` and
+always (`skills/<command>/SKILL.md` holds the `pipeline`, `setup` and
 `resume` playbooks, so any agent can be pointed at a path under `~/.talos`; see
-"Playbooks for any other agent" below). `~/.claude/skills/` (`pipeline`,
-`pipeline-setup`, and `talos-resume`, the provisional name until #335) and role
-profiles ALSO to `~/.claude/agents/<role>.md` only when the Claude adapter
-runs -- that second copy is what Claude Code's native subagent discovery
-actually reads, so a global install no longer leaves Claude Code sessions
-pinned to a stale plugin profile. A repo-level `.claude/agents/<role>.md` still
+"Playbooks for any other agent" below). Only when the Claude adapter runs, it
+ALSO writes the role profiles to `~/.claude/agents/<role>.md` -- that second
+copy is what Claude Code's native subagent discovery actually reads, so a
+global install no longer leaves Claude Code sessions pinned to a stale plugin
+profile -- registers the checkout as the `talos` plugin (see "Command names"
+below), and writes the two legacy alias skills `~/.claude/skills/pipeline` and
+`~/.claude/skills/pipeline-setup`. A repo-level `.claude/agents/<role>.md` still
 wins over both. Per-repo installs write only `talos.pipeline.*` config (never
 overwritten), the `AGENTS.md` block, and agent-skills to `.claude/skills/`
 (skip with `--no-agent-skills`); no Talos scripts are copied into repos.
@@ -290,9 +291,53 @@ the adapter ran and why. With no `--harness` and no Claude, `~/.claude` is not
 created. This is a change from earlier versions, where
 `--global --harness codex` still refreshed `~/.claude`.
 
+**Command names (`/talos:<command>`).** A marketplace install and
+`install.sh --global` both give Claude Code `/talos:pipeline`, `/talos:setup`
+and `/talos:resume`. Claude Code applies the `plugin:skill` form to plugin
+skills only (a skill under `~/.claude/skills` is invoked by its directory name,
+and a `name:` with a colon or a nested directory does not change that), so the
+Claude adapter registers this checkout as a plugin: `claude plugin marketplace
+add <checkout>` (a local directory marketplace, which `.claude-plugin/
+marketplace.json` already is) and `claude plugin install talos@talos`. Both are
+guarded: a failure, a missing `claude`, or a Claude Code without `claude plugin`
+prints a notice (with the two commands to run inside Claude Code) and never
+aborts the install or deletes anything.
+
+- *In place.* The plugin loads from the checkout itself, not from a copy.
+  Moving or deleting the clone breaks `/talos:*`; re-running `install.sh
+  --global` from the new location repoints the marketplace.
+- *Side effect.* Installing the plugin also installs its `agent-skills`
+  dependency from GitHub, which needs network and adds a second plugin to your
+  Claude config.
+- *An existing `talos` marketplace.* Re-adding a marketplace with the same name
+  silently replaces its source, so the installer reads `claude plugin
+  marketplace list --json` first. The same directory: nothing to do. Another
+  directory (you moved the clone): it repoints. Any other source, such as a
+  GitHub marketplace you added by hand: left alone, with a notice, because that
+  source already provides the names. A list it cannot read: no registration.
+- *Legacy aliases, until v0.20.* `/pipeline`, `/pipeline-setup` (written to
+  `~/.claude/skills/<name>/SKILL.md`, each carrying an alias-ownership comment line) and
+  `/talos:pipeline-setup` (the plugin's `skills/pipeline-setup`) are thin
+  aliases. Each prints `renamed to /talos:<command>; this alias is removed in
+  v0.20`, then reads `$TALOS_HOME/skills/<command>/SKILL.md` or
+  `~/.talos/skills/<command>/SKILL.md` and follows it. A repo whose `CLAUDE.md`
+  still says `/pipeline` therefore keeps working; `/talos:setup` offers to
+  rewrite those references. They run without `CLAUDE_PLUGIN_ROOT`, so the
+  pipeline playbook resolves subagent names to the bare ones from
+  `~/.claude/agents/`.
+- `--no-legacy-aliases` installs no bare names and removes the Talos-owned ones:
+  an alias, a pre-alias full copy (frontmatter `name:` plus a Talos script or
+  config name in the text), and the old `~/.claude/skills/talos-resume`. It
+  deletes only once the plugin is registered; until then the old copy is still
+  the only way to run the command, so it is kept. A skill at
+  `~/.claude/skills/pipeline` or `pipeline-setup` that is not Talos's is never
+  overwritten or deleted (the installer warns), and a symlink on the path is
+  skipped. Removing the aliases is planned after two minor releases, with a
+  CHANGELOG entry in each.
+
 **Playbooks for any other agent.** Every agent can be pointed at the
 playbooks by path: `Read ~/.talos/skills/pipeline/SKILL.md and follow it`
-(the setup wizard is `~/.talos/skills/pipeline-setup/SKILL.md`, the resume
+(the setup wizard is `~/.talos/skills/setup/SKILL.md`, the resume
 briefing `~/.talos/skills/resume/SKILL.md`). `install.sh <repo>` prints that
 line, and the `AGENTS.md` block names the three paths.
 
@@ -369,7 +414,7 @@ agents:
 ```
 
 pi loads the pipeline from the pointer skills `talos-pipeline`,
-`talos-pipeline-setup` and `talos-resume` that `--harness pi` writes into
+`talos-setup` and `talos-resume` that `--harness pi` writes into
 `~/.agents/skills` (a directory pi scans), or from the `AGENTS.md` block, which
 names the same playbooks. No pi settings file needs editing, and this guide makes
 no claim about where pi keeps its settings or its default agent directory.
@@ -557,12 +602,12 @@ catch bad stage output, but nothing gates the orchestrator itself.
 | Full pipeline (all roles/gates) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Parallel issues (`max_parallel > 1`) | ✅ | ❌ sequential | ❌ sequential | ❌ sequential | ❌ sequential | ❌ sequential |
 | Developer worktree isolation | ✅ | ❌ working tree | ❌ working tree | ❌ working tree | ❌ working tree | ❌ working tree |
-| Interactive setup wizard (`/pipeline-setup`) | ✅ `/pipeline-setup` | read `~/.talos/skills/pipeline-setup/SKILL.md` | read `~/.talos/skills/pipeline-setup/SKILL.md` | read `~/.talos/skills/pipeline-setup/SKILL.md` | read `~/.talos/skills/pipeline-setup/SKILL.md` | read `~/.talos/skills/pipeline-setup/SKILL.md` |
+| Interactive setup wizard (`/talos:setup`) | ✅ `/talos:setup` | read `~/.talos/skills/setup/SKILL.md` | read `~/.talos/skills/setup/SKILL.md` | read `~/.talos/skills/setup/SKILL.md` | read `~/.talos/skills/setup/SKILL.md` | read `~/.talos/skills/setup/SKILL.md` |
 | Optional review/verify skill enrichment | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Notifications / comments / board / file mode | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Native AGENTS.md orchestration | only without a `CLAUDE.md`, or via `@AGENTS.md` | native | native | via `context.fileName` or an import | native (cumulative with `GEMINI.md`) | depends on the CLI |
 
-(The notifications / comments / board / file mode row is harness-independent — plain bash. In the wizard row, any agent starts the wizard by reading its playbook; Claude Code also has the `/pipeline-setup` command. The wizard offers all six runner ids, with no default outside Claude Code, and offers to add the `AGENTS.md` block on its first run and on every re-run, writing it only when you say yes; `install.sh <repo>` writes it unconditionally unless `--no-agents-md`.)
+(The notifications / comments / board / file mode row is harness-independent — plain bash. In the wizard row, any agent starts the wizard by reading its playbook; Claude Code also has the `/talos:setup` command. The wizard offers all six runner ids, with no default outside Claude Code, and offers to add the `AGENTS.md` block on its first run and on every re-run, writing it only when you say yes; `install.sh <repo>` writes it unconditionally unless `--no-agents-md`.)
 
 ### Install and start, per harness
 
@@ -575,7 +620,7 @@ For every harness:
 
 - `bash talos/install.sh --global [--harness <list>]`, once per machine, writes
   `${TALOS_HOME:-~/.talos}/{scripts,agents,templates,skills}`. `skills/<command>/SKILL.md`
-  holds `pipeline`, `pipeline-setup` and `resume`.
+  holds `pipeline`, `setup` and `resume`.
 - `bash talos/install.sh <repo> [--harness <list>] [--no-agents-md] [--import-agents-md]`
   writes `talos.pipeline.*` (never overwritten), the one marker-fenced block in
   `<repo>/AGENTS.md` (the same for every harness; it never writes the block into
@@ -586,14 +631,14 @@ For every harness:
   `<repo>/.agents/talos/agents/<role>.md`, after `.claude/agents/<role>.md` and
   before the install. The native Claude path never reads it.
 - Start line for any agent: `Read ~/.talos/skills/pipeline/SKILL.md and follow it`
-  (setup: `Read ~/.talos/skills/pipeline-setup/SKILL.md and follow it`; resume:
-  `Read ~/.talos/skills/resume/SKILL.md and follow it`). Claude Code has `/pipeline`,
-  `/pipeline-setup` and `/talos-resume` (global install; provisional until #335)
-  or `/talos:resume` (plugin).
+  (setup: `Read ~/.talos/skills/setup/SKILL.md and follow it`; resume:
+  `Read ~/.talos/skills/resume/SKILL.md and follow it`). Claude Code has `/talos:pipeline`,
+  `/talos:setup` and `/talos:resume`, from either install path (the old `/pipeline`
+  and `/pipeline-setup` work as aliases until v0.20).
 
 | Harness | `--global --harness` writes | `agents.runner` | Start line |
 |---------|-----------------------------|-----------------|------------|
-| Claude Code | `~/.talos` plus `~/.claude/{skills,agents}` (`pipeline`, `pipeline-setup`, `talos-resume`; role profiles) only when `claude` is listed, or with no `--harness` and Claude is detected | `claude` | `/pipeline` |
+| Claude Code | `~/.talos` plus, only when `claude` is listed, or with no `--harness` and Claude is detected: `~/.claude/agents` (role profiles), the `talos` plugin (`/talos:*`) and the `pipeline` / `pipeline-setup` aliases in `~/.claude/skills` | `claude` | `/talos:pipeline` |
 | Codex CLI | `~/.talos` plus pointer skills | `codex` | `codex "Read ~/.talos/skills/pipeline/SKILL.md and follow it"` |
 | Gemini CLI | `~/.talos` only, no pointer skills | `gemini` | `gemini "Read ~/.talos/skills/pipeline/SKILL.md and follow it"` (probably fails under Gemini's defaults, see below) |
 | Antigravity | `~/.talos` only | `antigravity` (`agy -p`) | `agy "Read ~/.talos/skills/pipeline/SKILL.md and follow it"` |
@@ -657,7 +702,7 @@ scratch directory.
 
 1. Add `pipeline:ready` to an issue (or add a `- [ ]` item to `plan.md` in
    file mode).
-2. Start the orchestrator in your harness (`/pipeline` in Claude Code; the
+2. Start the orchestrator in your harness (`/talos:pipeline` in Claude Code; the
    playbook prompt shown above elsewhere).
 3. The pipeline advances the label state machine:
    `pipeline:ready` → `pipeline:confirmed` (validator) → `pipeline:dev`
@@ -713,7 +758,7 @@ when you regularly work with multi-task epics.
 
 A tracked file, `TALOS_STATUS.md` by default (`status.file`), keeps what a new
 session would otherwise lose. It is opt-in: `status.enabled` defaults to
-`false`, and `/pipeline-setup` asks about it once (default no) and, on yes,
+`false`, and `/talos:setup` asks about it once (default no) and, on yes,
 writes `status.enabled: true` and runs `bash scripts/pipeline-status-file.sh
 init`. `init` does not commit: commit `talos.pipeline.yml` and the status file
 together. An existing repo that does not re-run setup keeps it off; setting
@@ -754,12 +799,11 @@ already has Talos labels re-runs `bash scripts/bootstrap-labels.sh` once so
   label yourself. Your answer is information the orchestrator weighs and
   reports, not an instruction it executes.
 - **Resume.** To continue after a stopped run, start the resume skill:
-  `/talos:resume` for a plugin install, `/talos-resume` for a global install
-  (Claude Code registers a skill under its directory name; this global name is
-  provisional until #335), or, for any other agent,
+  `/talos:resume` in Claude Code (plugin install and global install alike), or,
+  for any other agent,
   `Read ~/.talos/skills/resume/SKILL.md and follow it` (the repo-relative
   `skills/resume/SKILL.md` exists only in the Talos source repo). It prints a one-page read-only
-  briefing, asks once, and only then continues with the normal `/pipeline`
+  briefing, asks once, and only then continues with the normal `/talos:pipeline`
   loop; a no makes no writes to your repo, GitHub or the status file (the one
   side effect is that `pipeline-status-file.sh refresh --print`, which the
   briefing runs, does `git fetch origin <base>`, which only moves your local
@@ -811,8 +855,8 @@ keep the ready flow, where every push runs CI.
   warning only. See `templates/ci/github-tests.yml` for a workflow that has both.
   Only a real skip counts (`draft != true`, `== false` or `!draft`, alone or
   `&&`-combined; not `== true` or an `||` branch), and when workflows disagree
-  the worst state wins. `/pipeline` itself never edits a workflow.
-  `/pipeline-setup` offers a minimal change: `pipeline-draft-check.sh edit
+  the worst state wins. `/talos:pipeline` itself never edits a workflow.
+  `/talos:setup` offers a minimal change: `pipeline-draft-check.sh edit
   <file>` prints the exact diff (`ready_for_review` appended to `types`, the
   skip added to a job that has no `if:`, nothing else, never `permissions:`),
   `edit <file> --write` applies it only after your explicit yes, and a symlink
@@ -1882,11 +1926,11 @@ QA captures only after it has passed every acceptance criterion, once per QA run
 
 #### Turning it on
 
-`/pipeline-setup` asks in Step 4c, after the status-file question:
+`/talos:setup` asks in Step 4c, after the status-file question:
 
 - It is skipped with one line for `vcs.provider` `gitlab`, `azure` and `file` (see the provider matrix below). On `github` it first checks that `gh pr comment --help` lists `--attach`; if not, it says evidence needs gh 2.99.0 or newer and offers only "off". That checks the machine running setup; the machine running the pipeline needs the same.
 - It detects Playwright (`playwright.config.*`), Cypress (`cypress.config.*`) and an e2e harness (`tests/e2e/` or a `test:e2e` script) and proposes a `command` and a `dir`. With neither Playwright nor Cypress, it offers agent capture (no `command`: QA's browser skill saves screenshots into `dir`, best effort, no recordings) or off. A command you type is written to the config as text; setup never runs it.
-- It names the costs (public attachments, on-screen secrets, size limits) and the default is **off**. "Ask me later" writes nothing, so the next run of `/pipeline-setup` asks again. "Off" writes an active `evidence:` block with `enabled: false`, so it is not asked again. The Step 0 re-run of an existing setup asks once when `evidence.enabled` is unset.
+- It names the costs (public attachments, on-screen secrets, size limits) and the default is **off**. "Ask me later" writes nothing, so the next run of `/talos:setup` asks again. "Off" writes an active `evidence:` block with `enabled: false`, so it is not asked again. The Step 0 re-run of an existing setup asks once when `evidence.enabled` is unset.
 - On "on" it offers to append `<dir>/` to `.gitignore` (see below).
 
 Or write the block yourself:
@@ -2195,7 +2239,7 @@ canary's two jobs (`base-currency`, `real-api`) checks.
 enforces -- your repo's CI cadence and cost are your call. It skips
 docs-only pushes, cancels superseded runs on the same branch, runs pull
 requests on `ubuntu-latest` only, and runs the full OS matrix on pushes to
-the base branch. `/pipeline-setup` offers to write it to
+the base branch. `/talos:setup` offers to write it to
 `.github/workflows/tests.yml` when no existing workflow already runs your
 test suite, and it never edits a workflow that already exists -- if one is
 already running your tests, it only prints a one-line note about the
@@ -2356,7 +2400,7 @@ agents:
     qa: {model: haiku}
 ```
 
-`/pipeline-setup` asks once how you want models assigned (one model for every
+`/talos:setup` asks once how you want models assigned (one model for every
 role, one per role, or leave unset) and writes the answer to the user-level
 file, showing a diff and asking for a yes before it changes an existing one.
 `install.sh --global` never touches that file; it prints one hint line when no
@@ -2387,7 +2431,7 @@ it spawns; the config value is never rewritten.
 **Upgrading from 0.18.x.** Earlier versions shipped `model: opus` (and `haiku`
 for docs) in the agent frontmatter, so a repo with no `agents` block ran eight
 roles on Opus. That line is removed: if you never configured models, roles now
-run on the session model until you run `/pipeline-setup` or set
+run on the session model until you run `/talos:setup` or set
 `agents.model` / `agents.roles.<role>.model`. Re-run `install.sh --global` to
 refresh the copies under `~/.claude/agents/` and `~/.talos/agents/`.
 

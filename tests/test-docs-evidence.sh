@@ -99,7 +99,7 @@ else fail "README has the ## Evidence capture section"; fi
 readme_lines="$(printf '%s\n' "$readme_section_text" | grep -c .)"
 if [ "$readme_lines" -le 15 ]; then pass "README section is short ($readme_lines non-blank lines)"
 else fail "README section is short" "$readme_lines non-blank lines, limit 15"; fi
-for needle in '/pipeline-setup' 'evidence:' 'v2.99.0' \
+for needle in '/talos:setup' 'evidence:' 'v2.99.0' \
   'docs/user-guide.md#attaching-evidence-to-the-pr-evidence-352)'; do
   check_has "$readme_section" "$needle" "README section mentions $needle"
 done
