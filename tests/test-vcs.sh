@@ -577,6 +577,18 @@ out="$(STUB_GH_API_FAIL=issues bash "$VCS" list-issues 2>/dev/null)"; rc=$?
 assert_eq "1" "$rc" "#171 github: list-issues exits non-zero when gh api --paginate fails"
 assert_eq "" "$out" "#171 github: list-issues prints no partial list on a failed page"
 
+# #449: list-issues --no-body drops `body` from every item; the default output keeps it.
+_449_raw='[{"number":3,"title":"t3","body":"Body text","labels":[{"name":"p1"}]},{"number":4,"title":"t4","body":null,"labels":[]}]'
+out="$(STUB_GH_ISSUES_RAW="$_449_raw" bash "$VCS" list-issues --no-body)"; rc=$?
+assert_eq "0" "$rc" "#449 github: list-issues --no-body exits 0"
+assert_eq "number,title,labels|2" "$(printf '%s' "$out" | python3 -I -c "import json,sys; d=json.load(sys.stdin); print(','.join(d[0].keys()) + '|' + str(len(d)))")" \
+  "#449 github: --no-body keeps number/title/labels and omits body on every item"
+assert_not_contains "$out" "Body text" "#449 github: --no-body output carries no body text"
+out="$(STUB_GH_ISSUES_RAW="$_449_raw" bash "$VCS" list-issues)"
+assert_eq "number,title,labels,body" "$(printf '%s' "$out" | python3 -I -c "import json,sys; print(','.join(json.load(sys.stdin)[0].keys()))")" \
+  "#449 github: the default list-issues output is unchanged (body still last)"
+assert_contains "$out" "Body text" "#449 github: the default output still carries the body"
+
 # ── #173: gh CLI rate-limit retry ─────────────────────────────────────────────
 # The `gh` shadow function in _github() routes every bare `gh ...` call
 # through _with_retry. GH_RATE_LIMIT_UNTIL_CALL=1 makes the gh stub emit a
@@ -720,6 +732,35 @@ assert_contains "$out" "[dry-run]" "pr-checks-required: --dry-run prints a dry-r
 assert_not_contains "$(grep -v "repo view" "$GH_LOG")" "pr " "pr-checks-required: --dry-run makes no gh pr calls"
 rm talos.pipeline.json
 
+# ── #449: --wait is digits, read in base 10 (a leading zero is not octal) ────
+# `08`/`09` used to die in bash arithmetic ("value too great for base"), and
+# `0031` read as octal 25, so it waited one step too few. Read count with a
+# constant pending result: one read, plus one per sleep step (30 s, then rest).
+cat > talos.pipeline.json <<'EOF'
+{"merge": {"required_checks": ["test"]}}
+EOF
+_449_wait() {  # $1=--wait value; sets out, rc, reads (gh `pr checks` calls)
+  : > "$GH_LOG"
+  out="$(STUB_PR_CHECKS="$(printf 'test\tpending\t0m1s\thttps://x')" TALOS_RETRY_SLEEP_SCALE=0 \
+    bash "$VCS" pr-checks-required 9 --wait "$1" 2>&1)"; rc=$?
+  reads="$(grep -c '^pr checks' "$GH_LOG")"
+}
+for _449_v in 08 09; do
+  _449_wait "$_449_v"
+  assert_eq "2" "$rc" "#449 --wait $_449_v is accepted (pending at the deadline: exit 2)"
+  assert_not_contains "$out" "Usage:" "#449 --wait $_449_v is not a usage error"
+  assert_not_contains "$out" "value too great" "#449 --wait $_449_v is not read as octal"
+  assert_eq "2" "$reads" "#449 --wait $_449_v waits one step (two reads)"
+done
+_449_wait 0031
+assert_eq "3" "$reads" "#449 --wait 0031 waits 31 s (30 + 1: three reads), not octal 25"
+_449_wait 0000
+assert_eq "1" "$reads" "#449 --wait 0000 is zero: one read"
+_449_wait 3601
+assert_eq "2" "$rc" "#449 --wait 3601 is still a usage error"
+assert_contains "$out" "Usage: pipeline-vcs.sh pr-checks-required" "#449 --wait 3601 prints usage"
+rm talos.pipeline.json
+
 # ── GitLab adapter (gate verbs: tests/test-gitlab-gate-verbs.sh, #303) ───────
 cat > talos.pipeline.json <<'EOF'
 {"vcs": {"provider": "gitlab"}}
@@ -805,6 +846,24 @@ assert_contains "$(cat plan.md)" "validator: CONFIRMED" "file: comment lands in 
 bash "$VCS" close-issue 2 "merged branch fix/login" >/dev/null
 assert_contains "$(cat plan.md)" "- [x] Add login page" "file: close-issue checks the box"
 assert_contains "$(cat plan.md)" "resolved: merged branch fix/login" "file: resolution note appended"
+
+# ── #449: a file-mode comment can never add, tick or untick a plan item ──────
+# The body lines are indented into the item's detail block, where a `- [ ]` /
+# `- [x]` line used to parse as a plan item of its own (and got an id).
+_449_boxes() { grep -cE '^[[:space:]]*- \[[ x]\] ' plan.md; }
+_449_before_boxes="$(_449_boxes)"; _449_before_open="$(bash "$VCS" list-issues)"
+bash "$VCS" comment-issue 3 "$(printf 'Plan update:\n- [ ] sneaky new item\n- [x] sneaky finished item\n  - [ ] nested new item\n- [x] Add login page\n- [ ] Add login page')" >/dev/null
+assert_eq "$_449_before_boxes" "$(_449_boxes)" "#449 file: a comment adds no checkbox line to the plan"
+assert_eq "$_449_before_open" "$(bash "$VCS" list-issues)" "#449 file: a comment adds or ticks no plan item (open list unchanged)"
+assert_contains "$(cat plan.md)" '- \[ ] sneaky new item' "#449 file: the comment text is kept, with the box escaped"
+assert_contains "$(cat plan.md)" "Plan update:" "#449 file: the rest of the multi-line body is kept"
+assert_contains "$(bash "$VCS" view-issue 3)" "sneaky finished item" "#449 file: the escaped lines stay in the item's detail block"
+assert_not_contains "$(cat plan.md)" "- [x] sneaky" "#449 file: no ticked item came from the comment"
+assert_not_contains "$(cat plan.md)" "<!-- id: 5 -->" "#449 file: the comment created no new id"
+bash "$VCS" close-issue 3 "$(printf 'done\n- [ ] follow-up smuggled in')" >/dev/null
+assert_eq "$((_449_before_boxes))" "$(_449_boxes)" "#449 file: a multi-line close-issue note adds no checkbox line either"
+assert_contains "$(cat plan.md)" '- \[ ] follow-up smuggled in' "#449 file: the close note's second line is kept, escaped"
+assert_contains "$(cat plan.md)" "- [x] Fix logout bug" "#449 file: close-issue still ticks its own item"
 
 new_id="$(bash "$VCS" create-issue "Add dark mode" "$SANDBOX/body.md")"
 assert_contains "$(cat plan.md)" "- [ ] Add dark mode <!-- id:" "file: create-issue appends checklist item"

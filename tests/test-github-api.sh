@@ -41,6 +41,20 @@ assert_not_contains "$log" "$TEST_TOKEN"         "list-issues: token value not i
 # Token must NOT appear in stdout
 assert_not_contains "$out" "$TEST_TOKEN"         "list-issues: token not in output"
 
+# #449: --no-body drops `body` from every item; the default keeps it.
+_449_issues='[{"number":3,"title":"Fix login bug","body":"Body text","labels":[{"name":"p1"}]},{"number":7,"title":"Add dark mode","body":"","labels":[]}]'
+printf '%s\n' "$_449_issues" > "$CURL_QUEUE"
+out="$(bash "$VCS" list-issues --no-body)"; rc=$?
+assert_eq "0" "$rc" "#449 list-issues --no-body exits 0"
+assert_eq "number,title,labels|2" "$(printf '%s' "$out" | python3 -I -c "import json,sys; d=json.load(sys.stdin); print(','.join(d[0].keys()) + '|' + str(len(d)))")" \
+  "#449 list-issues --no-body keeps number/title/labels and omits body on every item"
+assert_not_contains "$out" "Body text" "#449 list-issues --no-body output carries no body text"
+printf '%s\n' "$_449_issues" > "$CURL_QUEUE"
+out="$(bash "$VCS" list-issues)"
+assert_eq "number,title,body,labels" "$(printf '%s' "$out" | python3 -I -c "import json,sys; print(','.join(json.load(sys.stdin)[0].keys()))")" \
+  "#449 the default list-issues output is unchanged (body still present)"
+assert_contains "$out" "Body text" "#449 the default output still carries the body"
+
 # ── comment-issue ─────────────────────────────────────────────────────────────
 : > "$CURL_LOG"
 printf '%s\n' \

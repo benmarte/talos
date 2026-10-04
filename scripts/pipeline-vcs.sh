@@ -9,6 +9,9 @@
 #
 # Verbs:
 #   list-issues                               List open issues / work items
+#               [--no-body]                   github, github-api: leave `body` out of
+#                                             every item (number, title, labels
+#                                             only; #449). Default output unchanged.
 #   create-issue <title> <body-file> [--label l]  Create a new issue; --label
 #                                             may be repeated (used by planner
 #                                             to create sub-issues). Exits
@@ -41,6 +44,9 @@
 #   comment-issue <n> <body>                  Post comment on issue <n>
 #                 <n> --body-file <path|->    ...or read the body from a file, or from
 #                                             stdin with "-" (heredoc; #342)
+#                                             A positional <body> of exactly "-" is
+#                                             refused (exit 1, nothing posted): it is
+#                                             NOT stdin. Use `--body-file -` (#449).
 #   close-issue <n> <body>                    Close issue with a comment
 #               <n> --body-file <path|->      ...or read the comment from a file / stdin
 #   label-issue <n> [--add <l>] [--remove <l>]  Add/remove labels
@@ -161,9 +167,11 @@
 #                                             It never passes, so a persistent
 #                                             skip ends exit 2 at the deadline.
 #              <n> --wait <seconds>           ...poll (30s steps) until not 2 or
-#                                             <seconds> (digits, <= 3600) pass;
+#                                             <seconds> (digits, <= 3600, read in
+#                                             base 10: 08 and 09 are valid, 0010
+#                                             is 10; #449) pass;
 #                                             github/github-api only (#355)
-#   merge-pr <n>                             Merge the PR
+#   merge-pr <n>                              Merge the PR
 #   update-branch <n>                         Update the PR's head branch by
 #                                             merging its base into it
 #                                             server-side (#289): GitHub
@@ -183,7 +191,10 @@
 #                                             the caller must dispatch the
 #                                             developer merge-base task.
 #   comment-pr <n> <body>                     Post comment on PR <n>
-#              <n> --body-file <path>         ...or read the body from a file
+#              <n> --body-file <path|->       ...or read the body from a file, or from
+#                                             stdin with "-". A positional <body> of
+#                                             exactly "-" is refused like
+#                                             comment-issue (#449).
 #   find-pr <issue-n> [state]                 Find PRs for an issue (branch has
 #                                             issue-<n> or title/body has #<n>).
 #                                             state: open (default) | merged | all
@@ -3362,7 +3373,10 @@ _github() {
       # out and reshape to the historical
       # `gh issue list --json number,title,labels,body` field set so callers
       # see no schema change.
-      local _li_repo="$REPO"
+      # --no-body (#449) leaves the `body` key out of every item, for callers that
+      # only need number/title/labels. The default output is unchanged.
+      local _li_repo="$REPO" _li_nobody=0
+      [ "${1:-}" = "--no-body" ] && _li_nobody=1
       [ -z "$_li_repo" ] && _li_repo='{owner}/{repo}'
       local _li_endpoint="repos/${_li_repo}/issues?state=open&per_page=100"
       if [ "$DRY_RUN" = "true" ]; then
@@ -3371,13 +3385,16 @@ _github() {
       fi
       local _li_raw
       _li_raw="$(gh api --paginate "$_li_endpoint")" || exit 1
-      printf '%s' "$_li_raw" | _gh_paginate_merge | python3 -I -c "
-import json, sys
+      printf '%s' "$_li_raw" | _gh_paginate_merge | NO_BODY="$_li_nobody" python3 -I -c "
+import json, os, sys
 items = json.load(sys.stdin)
 out = [{'number': i.get('number'), 'title': i.get('title', ''),
         'labels': [{'name': l.get('name')} for l in (i.get('labels') or [])],
         'body': i.get('body') or ''}
        for i in items if 'pull_request' not in i]
+if os.environ.get('NO_BODY') == '1':
+    for i in out:
+        del i['body']
 print(json.dumps(out))
 "
       ;;
@@ -4600,19 +4617,25 @@ sys.stdout.write(json.dumps({"body": sys.stdin.buffer.read().decode("utf-8", err
       ;;
 
     list-issues)
+      # --no-body (#449): omit `body` from every item; default output unchanged.
+      local _li_nobody=0
+      [ "${1:-}" = "--no-body" ] && _li_nobody=1
       if [ "$DRY_RUN" = "true" ]; then
         echo "[dry-run] github-api: GET $_API/issues?state=open&per_page=100 (paginated via Link headers until exhausted)"
         return 0
       fi
       local _raw
       _raw="$(_ga_fetch_all_pages "$_API/issues?state=open&per_page=100")" || exit 1
-      printf '%s' "$_raw" | python3 -I -c "
-import json, sys
+      printf '%s' "$_raw" | NO_BODY="$_li_nobody" python3 -I -c "
+import json, os, sys
 data = json.load(sys.stdin)
 result = [{'number': i['number'], 'title': i.get('title',''),
            'body': i.get('body','') or '',
            'labels': [{'name': l['name']} for l in i.get('labels',[])]}
           for i in data]
+if os.environ.get('NO_BODY') == '1':
+    for i in result:
+        del i['body']
 print(json.dumps(result, indent=2))
 "
       ;;
@@ -7356,6 +7379,16 @@ def parse_items(content):
             i += 1
     return items
 
+# A comment/resolution body is free text from an agent. A body line shaped like
+# a checklist item would parse as a plan item -- adding one (`- [ ]`) or making
+# a finished one (`- [x]`) -- so its `[` is escaped (`- \[ ] x`, which markdown
+# still renders as a box) before it is written (#449).
+_BODY_BOX_RE = re.compile(r'^(\s*[-*+]\s+)\[([ xX])\]')
+
+def detail_lines_for(indent, text):
+    """Indent every line of a free-text body into an item's detail block."""
+    return [indent + _BODY_BOX_RE.sub(r'\1\\[\2]', ln) for ln in text.split('\n')]
+
 def ensure_ids(content):
     """Assign <!-- id: N --> to any item that lacks one. Returns updated content."""
     lines = content.split('\n')
@@ -7427,7 +7460,7 @@ elif verb == 'comment-issue':
     # Insert comment lines after the last detail line (or right after item)
     insert_after = item['detail_lines'][-1][0] if item['detail_lines'] else item['line_idx']
     # Format body lines with detail indent
-    comment_lines = [detail_indent + line for line in body.split('\n')]
+    comment_lines = detail_lines_for(detail_indent, body)
     for offset, cl in enumerate(comment_lines):
         lines.insert(insert_after + 1 + offset, cl)
     if dry_run:
@@ -7450,9 +7483,10 @@ elif verb == 'close-issue':
     lines[item['line_idx']] = lines[item['line_idx']].replace('- [ ]', '- [x]', 1)
     # Append resolution note
     item_indent = len(lines[item['line_idx']]) - len(lines[item['line_idx']].lstrip())
-    note_line = ' ' * (item_indent + 2) + f'resolved: {body}'
+    note_lines = detail_lines_for(' ' * (item_indent + 2), f'resolved: {body}')
+    note_line = note_lines[0]
     insert_after = item['detail_lines'][-1][0] if item['detail_lines'] else item['line_idx']
-    lines.insert(insert_after + 1, note_line)
+    lines[insert_after + 1:insert_after + 1] = note_lines
     if dry_run:
         print(f"[dry-run] would close item #{n} in {plan_path} and append: {note_line}")
     else:
@@ -7503,6 +7537,14 @@ _TALOS_COMMENT_MAX=65536   # GitHub rejects longer comment bodies; cap every pro
 _TALOS_BODY_MAX_BYTES=120000
 case "$VERB" in
   comment-issue|comment-pr)
+    # A positional "-" is NOT stdin (#449): it would post a one-character
+    # comment, exit 0 and lose the hand-off text (it happened on #349). The
+    # stdin form is `--body-file -`. Checked on the raw arguments, before the
+    # `--body-file -` rewrite below, so a stdin body that is itself "-" is fine.
+    if [ "${ARGS[1]-}" = "-" ] || { [ "${ARGS[1]-}" = "--body" ] && [ "${ARGS[2]-}" = "-" ]; }; then
+      echo "pipeline-vcs: $VERB: a body of exactly '-' is not stdin; use: $VERB <number> --body-file - (text on stdin). Nothing posted." >&2
+      exit 1
+    fi
     if [ "${#ARGS[@]}" -ge 3 ]; then
       case "${ARGS[1]}" in
         --body-file)
@@ -7995,6 +8037,14 @@ fi
 #     comment exists for the role being labelled; exit 1 if absent (label not applied).
 #
 # --require-marker is stripped from ARGS so provider functions never see it.
+# _has_whole_approval_marker <sha> <role> -- comment text on stdin. Exit 0 only
+# when some line, trimmed, IS the whole marker comment (#449). A substring match
+# also counted a comment that merely quoted the marker mid-line (`> <!-- talos:
+# approval ... -->`, or prose about it), so the warning stayed silent.
+_has_whole_approval_marker() {
+  sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+    | grep -qxF "<!-- talos:approval sha=$1 role=$2 -->"
+}
 # _ADDING_APPROVAL_LABELS and _REQUIRE_MARKER are consumed by the post-dispatch block.
 _REQUIRE_MARKER=false
 _ADDING_APPROVAL_LABELS=""
@@ -8057,9 +8107,8 @@ for c in data.get('comments', []):
           docs:done)         _lp_role=docs ;;
           *)                 continue ;;
         esac
-        if printf '%s
-' "$_lp_comments" \
-            | grep -qF "talos:approval sha=$_lp_head_sha role=$_lp_role"; then
+        if printf '%s\n' "$_lp_comments" \
+            | _has_whole_approval_marker "$_lp_head_sha" "$_lp_role"; then
           _lp_marker_found=true
           break
         fi
@@ -8342,6 +8391,18 @@ _vcs_dispatch_provider() {
   esac
 }
 
+# Write journal (#418): append the verb name (no body) to $TALOS_WRITE_LOG after
+# a successful non-idempotent verb. Callers pass only a success (rc 0). Reached
+# from the main flow below and from _vcs_draft_gate_dispatch, which exits itself
+# and so skipped the journal for `create-pr --draft` (#449). Unset: no-op.
+_vcs_journal_write() {
+  { [ -n "${TALOS_WRITE_LOG:-}" ] && [ "$DRY_RUN" != "true" ]; } || return 0
+  case "$VERB" in
+    comment-issue|comment-pr|create-pr|create-issue|post-approval|approve-pr|merge-pr|close-issue|record-attempt)
+      printf '%s\n' "$VERB" >>"$TALOS_WRITE_LOG" 2>/dev/null || true ;;
+  esac
+}
+
 # Draft verbs (#332) answer a gate ("is this PR ready for QA?"), so an adapter's
 # setup failure (no token, unknown provider, missing CLI: exit 1) must never read
 # as a result. Run the verb in a subshell and let only its exact success shapes
@@ -8373,6 +8434,7 @@ _vcs_draft_gate_dispatch() {
     *)
       if [ "$_g_rc" -eq 0 ]; then
         [ -n "$_g_out" ] && printf '%s\n' "$_g_out"
+        _vcs_journal_write
         exit 0
       fi
       ;;
@@ -8398,8 +8460,14 @@ _vcs_pr_checks_required_dispatch() {
       _w="${ARGS[$_i]-}"
       case "$_w" in
         ''|*[!0-9]*) _w="bad" ;;
-        *) [ "${#_w}" -gt 4 ] || [ "$_w" -gt 3600 ] && _w="bad" ;;
+        *) [ "${#_w}" -gt 4 ] && _w="bad" ;;
       esac
+      # Digits only, so force base 10: `[ 08 -gt 3600 ]` and `$((_w - ...))` read
+      # a leading zero as octal and fail on 08/09 (#449). `0010` waits 10 s.
+      if [ "$_w" != "bad" ]; then
+        _w=$((10#$_w))
+        [ "$_w" -gt 3600 ] && _w="bad"
+      fi
       if [ "$_w" = "bad" ]; then
         echo "pipeline-vcs: pr-checks-required: --wait needs <seconds>, digits, at most 3600" >&2
         echo "Usage: pipeline-vcs.sh pr-checks-required <n> [--wait <seconds>]" >&2
@@ -8444,12 +8512,7 @@ _DISPATCH_RC=$?
 # pipeline-agent.sh exports TALOS_WRITE_LOG to a runner when a failover chain is
 # configured; a successful non-idempotent verb appends its name (no body) so a
 # provider failure after a write is never rerun on another runner. Unset: no-op.
-if [ -n "${TALOS_WRITE_LOG:-}" ] && [ "$_DISPATCH_RC" -eq 0 ] && [ "$DRY_RUN" != "true" ]; then
-  case "$VERB" in
-    comment-issue|comment-pr|create-pr|create-issue|post-approval|approve-pr|merge-pr|close-issue|record-attempt)
-      printf '%s\n' "$VERB" >>"$TALOS_WRITE_LOG" 2>/dev/null || true ;;
-  esac
-fi
+[ "$_DISPATCH_RC" -eq 0 ] && _vcs_journal_write
 
 # ── Post-dispatch: label-pr approval-marker warning (#94, #115) ──────────────
 # After label-pr successfully adds a recognised approval label, verify that a
@@ -8492,7 +8555,7 @@ for c in data.get('comments', []):
         *) continue ;;
       esac
       if ! printf '%s\n' "$_pd_comments" \
-          | grep -qF "talos:approval sha=$_pd_head_sha role=$_pd_role"; then
+          | _has_whole_approval_marker "$_pd_head_sha" "$_pd_role"; then
         _pd_missing=true
         break
       fi
