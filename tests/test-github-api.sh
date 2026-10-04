@@ -1497,4 +1497,41 @@ rm talos.pipeline.json
 
 unset GITHUB_TOKEN
 
+# ── #451: no JSON body on argv in the github-api arm ─────────────────────────
+# A `-d "$payload"` hands the whole body to curl as one argv element, which
+# Linux caps at 128 KiB (a body under the raw 120,000-byte cap can escape past
+# it). Bodies go through --data-binary @- from a staged file instead
+# (_ga_json). The arm runs from `_github_api()` to the next top-level function.
+_ga_arm="$(awk '/^_github_api\(\) \{/ { on = 1 } on { print } on && /^\}/ { exit }' "$VCS")"
+[ -n "$_ga_arm" ] && pass "#451 guard: located the github-api arm" \
+  || fail "#451 guard: located the github-api arm" "no _github_api() function found in pipeline-vcs.sh"
+assert_eq "0" "$(printf '%s\n' "$_ga_arm" | grep -cE -- '(^|[[:space:]])-d[[:space:]]+"|--data(-raw|-urlencode)?[[:space:]]')" \
+  "#451 guard: no -d/--data body argument remains in the github-api arm"
+assert_contains "$_ga_arm" 'data-binary @-' \
+  "#451 guard: the arm sends bodies with --data-binary @-"
+
+# ── #451: _vcs_shared_normalize_comments rejects a bad page ──────────────────
+# The function body is cut out of the script (sourcing it would run the CLI).
+_nc_fn="$SANDBOX/normalize-comments.sh"
+awk '/^_vcs_shared_normalize_comments\(\) \{/ { on = 1 } on { print } on && /^\}/ { exit }' "$VCS" > "$_nc_fn"
+_nc() { printf '%s' "$1" | bash -c '. "$1"; _vcs_shared_normalize_comments' _ "$_nc_fn" 2>"$SANDBOX/nc.err"; }
+
+out="$(_nc '{"message":"Bad credentials"}')"; rc=$?
+assert_eq "1" "$rc" "#451 normalize_comments: an error object exits 1"
+assert_eq "" "$out" "#451 normalize_comments: an error object prints no comment list"
+out="$(_nc '[1,"x",{"user":{"login":"a"},"body":"b"}]')"; rc=$?
+assert_eq "1" "$rc" "#451 normalize_comments: a non-object entry exits 1"
+assert_not_contains "$(cat "$SANDBOX/nc.err")" "Traceback" \
+  "#451 normalize_comments: a non-object entry leaves no traceback"
+out="$(_nc 'not json')"; rc=$?
+assert_eq "1" "$rc" "#451 normalize_comments: unparseable input exits 1"
+assert_not_contains "$(cat "$SANDBOX/nc.err")" "Traceback" \
+  "#451 normalize_comments: unparseable input leaves no traceback"
+out="$(_nc '[]')"; rc=$?
+assert_eq "0" "$rc" "#451 normalize_comments: an empty array still exits 0"
+assert_eq '{"comments": []}' "$out" "#451 normalize_comments: an empty array is an empty list"
+out="$(_nc '[{"user":{"login":"alice"},"body":"hi","created_at":"2026-10-01T00:00:00Z"}]')"; rc=$?
+assert_eq "0" "$rc" "#451 normalize_comments: a valid page exits 0"
+assert_contains "$out" '"login": "alice"' "#451 normalize_comments: a valid page keeps the author login"
+
 finish
