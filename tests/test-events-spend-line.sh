@@ -58,7 +58,7 @@ assert_eq "0" "$rc" "line: exit 0"
 assert_eq "$EXPECTED" "$out" "line: the issue's example line, exactly"
 assert_eq "" "$(cat "$SANDBOX/err.log")" "line: nothing on stderr"
 assert_eq "1" "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "line: exactly one line"
-if printf '%s' "$out" | grep -Eq 'talos:[a-z-]+'; then
+if grep -Eq 'talos:[a-z-]+' <<<"$out"; then
   fail "line: no talos:<word> token in the output" "$out"
 else
   pass "line: no talos:<word> token in the output"
@@ -291,7 +291,7 @@ assert_eq "" "$(cat "$SANDBOX/err.log")" "LC_ALL=C: no encoding error on stderr"
 # A role name from the log cannot smuggle a talos:<word> token into the line.
 reset_log; ev 'x talos:evil' 23 null 1000 1 5
 out="$(line_for --issue 23)"
-if printf '%s' "$out" | grep -Eq 'talos:[a-z-]+'; then
+if grep -Eq 'talos:[a-z-]+' <<<"$out"; then
   fail "role name: no talos:<word> token even from a hostile role" "$out"
 else
   pass "role name: no talos:<word> token even from a hostile role"

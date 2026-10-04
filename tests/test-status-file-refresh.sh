@@ -381,7 +381,7 @@ assert_eq "$(block_of "$p1")" "$(block_of "$text1")" "determinism: --print equal
 # A date or time pattern, not the bare "202": a 40-hex SHA contains "202" in
 # about 1 run in 6, which made this assertion flaky (#448).
 _ts_re='[0-9]{4}-[0-9]{2}-[0-9]{2}|T[0-9]{2}:[0-9]{2}'
-has_timestamp() { printf '%s' "$1" | grep -Eq "$_ts_re" && echo yes || echo no; }
+has_timestamp() { grep -Eq "$_ts_re" <<<"$1" && echo yes || echo no; }
 assert_eq "no" "$(has_timestamp "$p1")" "determinism: no date or timestamp in the block"
 assert_eq "no" "$(has_timestamp '- Base: main @ 1202ab3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f90')" "determinism: a SHA containing 202 is not a timestamp"
 assert_eq "yes" "$(has_timestamp 'refreshed 2026-09-20')" "determinism: a date is caught"

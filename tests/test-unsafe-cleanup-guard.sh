@@ -29,6 +29,17 @@
 #      that hung every macOS main job for six hours. Use a bounded read, for
 #      example `od -An -N8 -tx1 /dev/urandom | tr -d ' \n'`.
 #
+# A fourth rule scans tests/, scripts/ and install.sh (#494):
+#
+#   R4 printf/echo into grep -q: `printf '%s\n' "$v" | grep -q PAT` must not be
+#      used. grep -q exits on its first match, printf is still writing, and with
+#      SIGPIPE ignored (the Actions runner does that) printf gets EPIPE and bash
+#      prints "printf: write error: Broken pipe" on stderr (a timing-dependent
+#      flake that failed PR #491's CI). Use a here-string (`grep -q PAT <<<"$v"`),
+#      `[[ $v =~ RE ]]` or `case`. R4_ALLOW lists the files another in-flight PR
+#      still edits; every entry must still hold a site (a stale entry fails), so
+#      the PR that fixes the last site in a file removes its entry.
+#
 # Matching is per line: comment lines are skipped, and a heredoc body that
 # merely contains such text is scanned like code (reword it, or put the file
 # on ALLOW). The scan FAILS when it scans zero files. A fixture tree (GUARD_ROOT
@@ -48,6 +59,9 @@ set -u
 make_sandbox
 
 ALLOW="tests/test-config-cache.sh tests/test-config-known-keys-guard.sh"
+# R4_ALLOW: files with a printf|grep -q site that an open PR also edits; fixed
+# after those PRs merge (#494). Empty this list as each file is fixed.
+R4_ALLOW="scripts/pipeline-vcs.sh scripts/pipeline-agent.sh install.sh tests/test-setup-harness.sh tests/test-docs-evidence.sh tests/test-docs-harness.sh tests/test-install.sh"
 SELF_REL="tests/test-unsafe-cleanup-guard.sh"
 
 SCANNER="$SANDBOX/scan.py"
@@ -57,6 +71,7 @@ import os, re, sys
 root = sys.argv[1]
 allow = set(sys.argv[2].split())
 self_rel = sys.argv[3]
+r4_allow = set(sys.argv[4].split()) if len(sys.argv) > 4 else set()
 
 SUBST = re.compile(r'\$\(\s*(?:command\s+)?(?:mktemp|safe_mktemp_dir)\b|`\s*mktemp\b')
 BAD_HANDLER = re.compile(r'\|\|\s*(?:true|:)\s*(?:$|[;)&|}])')
@@ -66,6 +81,11 @@ PIPE = re.compile(r'(?<!\|)\|(?!\|)')
 DEVICE = re.compile(r'/dev/(?:urandom|zero)\b')
 BOUNDED = re.compile(r'\bhead\s+(?:-[A-Za-z]*c|--bytes)|\bod\b.*\s(?:-[A-Za-z]*N|--read-bytes)|\bdd\b.*\bcount=')
 YES = re.compile(r'^[\s({]*(?:\S+=\S*\s+)*(?:command\s+)?yes\b')
+# a printf/echo stage feeding `grep -q` (-q anywhere in a flag cluster, or --quiet/--silent);
+# quoted text may hold a `|`
+R4 = re.compile(
+    r"""\b(?:printf|echo)\b(?:[^|'"]|'[^']*'|"[^"]*")*\|\s*(?:command\s+)?grep\s+(?:-\S+\s+)*?"""
+    r"""(?:-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)(?=\s|$)""")
 BARE = re.compile(r'''^["']?\$(?:\{\w+\}|\w+)["']?$''')
 
 
@@ -85,6 +105,7 @@ def files():
 
 def files_r3():
     # every file under tests/ (not fixtures) and scripts/; the guard itself holds the fixtures
+    # (install.sh is read by R4 only: it has no R3 sites and is not a test or script dir file)
     for top in ("tests", "scripts"):
         for d, dirs, names in os.walk(os.path.join(root, top)):
             rel = os.path.relpath(d, root)
@@ -94,6 +115,12 @@ def files_r3():
                 p = os.path.join(rel, n)
                 if p != self_rel and not n.endswith((".pyc", ".json")):
                     yield p
+
+
+def files_r4():
+    yield from files_r3()
+    if os.path.isfile(os.path.join(root, "install.sh")):
+        yield "install.sh"
 
 
 def infinite_producer(line):
@@ -184,6 +211,16 @@ for rel in files_r3():
         why = infinite_producer(line)
         if why:
             bad.append("%s:%d: R3 unbounded producer in a pipe (%s): %s" % (rel, ln, why, line.strip()))
+r4_hit = set()
+for rel in files_r4():
+    for ln, line in enumerate(open(os.path.join(root, rel), errors="replace"), 1):
+        if line.strip().startswith("#") or not R4.search(line):
+            continue
+        r4_hit.add(rel)
+        if rel not in r4_allow:
+            bad.append("%s:%d: R4 printf/echo piped into grep -q (EPIPE flake with SIGPIPE ignored; use grep -q PAT <<<\"$v\"): %s" % (rel, ln, line.strip()))
+for rel in sorted(r4_allow - r4_hit):
+    bad.append("%s: R4 allow entry is stale (no printf/echo | grep -q site left); remove it from R4_ALLOW" % rel)
 print("scanned=%d" % n)
 for b in bad:
     print(b)
@@ -191,11 +228,11 @@ sys.exit(1 if bad else 0)
 TALOS_Qm7Vd3pLx9aZc
 
 # --- the real tree --------------------------------------------------------
-out="$(python3 -I "$SCANNER" "$TALOS_ROOT" "$ALLOW" "$SELF_REL" 2>&1)"; rc=$?
+out="$(python3 -I "$SCANNER" "$TALOS_ROOT" "$ALLOW" "$SELF_REL" "$R4_ALLOW" 2>&1)"; rc=$?
 scanned="$(printf '%s\n' "$out" | sed -n 's/^scanned=//p')"
 case "$scanned" in ''|*[!0-9]*) scanned=0 ;; esac
 if [ "$scanned" -gt 0 ]; then pass "scan: read $scanned test file(s)"; else fail "scan: read zero test files" "$out"; fi
-assert_eq_ctx "0" "$rc" "tests/ and scripts/ have no unchecked mktemp, no unguarded rm -r operand, no unbounded producer in a pipe" "$out"
+assert_eq_ctx "0" "$rc" "tests/ and scripts/ have no unchecked mktemp, no unguarded rm -r operand, no unbounded producer in a pipe, no printf|grep -q" "$out"
 
 # --- fixtures: each rule bites, each safe form passes ---------------------
 FIX="$SANDBOX/fix"
@@ -280,6 +317,44 @@ o="$(python3 -I "$SCANNER" "$FIX" "" "$SELF_REL" 2>&1)"; frc=$?
 assert_eq "1" "$frc" "fixture: scripts/ is scanned for an unbounded producer"
 assert_contains "$o" "scripts/pipeline-fixture.sh:1: R3" "fixture: names the scripts/ file and line"
 rm -f "$FIX/scripts/pipeline-fixture.sh"
+
+# R4: printf/echo into grep -q (#494)
+expect_flag "printf into grep -q" "if printf '%s\\n' \"\$v\" | grep -q x; then" R4
+expect_flag "printf (no newline) into grep -qE" "printf '%s' \"\$v\" | grep -qE '^[0-9]+\$' || n=0" R4
+expect_flag "echo into grep -q" 'echo "$v" | grep -q x' R4
+expect_flag "grep -Eq (q last in the cluster)" "printf '%s\\n' \"\$v\" | grep -Eq 'a|b'" R4
+expect_flag "grep -Fxq with --" "printf '%s\\n' \"\$v\" | grep -Fxq -- \"\$m\"" R4
+expect_flag "grep -E -q (separate flags)" 'echo "$v" | grep -E -q x' R4
+expect_flag "grep --quiet" 'echo "$v" | grep --quiet x' R4
+expect_flag "inside a command substitution" 'r="$(printf %s "$v" | grep -q x && echo y)"' R4
+expect_flag "a | inside the printf text" "printf 'a|b' | grep -q a" R4
+expect_ok "the here-string form" 'grep -q x <<<"$v"'
+expect_ok "printf into grep without -q" "printf '%s\\n' \"\$v\" | grep -c x"
+expect_ok "printf into grep -o" "printf '%s' \"\$v\" | grep -oE '[0-9]+'"
+expect_ok "printf into something else" "printf '%s\\n' \"\$v\" | sed -n 1p | grep x"
+expect_ok "a q in a grep pattern, not a flag" "printf '%s\\n' \"\$v\" | grep quit"
+expect_ok "echo | grep -q named in a comment" '# printf x | grep -q y is the flaky form'
+expect_ok "printf as a word, grep -q on a file" 'grep -q x file; printf done'
+# an R4 allow entry exempts the file; a stale entry (no site left) fails
+printf '%s\n' 'echo "$v" | grep -q x' > "$FIX/tests/test-fixture.sh"
+o="$(python3 -I "$SCANNER" "$FIX" "" "$SELF_REL" "tests/test-fixture.sh" 2>&1)"; frc=$?
+assert_eq "0" "$frc" "fixture: an R4 allow-listed file is skipped"
+printf '%s\n' 'grep -q x <<<"$v"' > "$FIX/tests/test-fixture.sh"
+o="$(python3 -I "$SCANNER" "$FIX" "" "$SELF_REL" "tests/test-fixture.sh" 2>&1)"; frc=$?
+assert_eq "1" "$frc" "fixture: a stale R4 allow entry fails"
+assert_contains "$o" "R4 allow entry is stale" "fixture: names the stale entry"
+# R4 also scans scripts/ and install.sh
+printf '%s\n' 'echo ok' > "$FIX/tests/test-fixture.sh"
+printf '%s\n' 'echo "$v" | grep -q x' > "$FIX/scripts/pipeline-fixture.sh"
+o="$(python3 -I "$SCANNER" "$FIX" "" "$SELF_REL" 2>&1)"; frc=$?
+assert_eq "1" "$frc" "fixture: scripts/ is scanned for printf|grep -q"
+assert_contains "$o" "scripts/pipeline-fixture.sh:1: R4" "fixture: names the scripts/ file and line for R4"
+rm -f "$FIX/scripts/pipeline-fixture.sh"
+printf '%s\n' 'echo "$v" | grep -q x' > "$FIX/install.sh"
+o="$(python3 -I "$SCANNER" "$FIX" "" "$SELF_REL" 2>&1)"; frc=$?
+assert_eq "1" "$frc" "fixture: install.sh is scanned for printf|grep -q"
+assert_contains "$o" "install.sh:1: R4" "fixture: names install.sh for R4"
+rm -f "$FIX/install.sh"
 
 # an allow-listed file and a stub are covered; a clean tree passes
 printf '%s\n' 'D="$(mktemp -d)"' > "$FIX/tests/stubs/gh"

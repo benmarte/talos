@@ -106,7 +106,7 @@ except Exception:
     if [ -z "$_val" ]; then
       continue
     fi
-    if printf '%s\n' "$_AZ_STATES" | grep -qxF "$_val"; then
+    if grep -qxF "$_val" <<<"$_AZ_STATES"; then
       echo "  = $_key ($_val)"
     else
       echo "  ! $_key ($_val) missing from '$WTYPE' -- fix: $_cfgkey (states are org-level; this script never creates them)" >&2
@@ -135,7 +135,7 @@ except Exception:
 " 2>/dev/null)"
   echo "note: GitLab boards are label-driven -- no Status field to provision"
   for _lbl in "pipeline:blocked"; do
-    if printf '%s\n' "$_GL_NAMES" | grep -qxF "$_lbl"; then
+    if grep -qxF "$_lbl" <<<"$_GL_NAMES"; then
       echo "  = $_lbl"
     else
       echo "  ! $_lbl missing -- run: bash $SCRIPT_DIR/bootstrap-labels.sh"
@@ -397,7 +397,7 @@ fi
 # before verification would misleadingly claim success ahead of the id-drift
 # check above.
 for _m in "${REQUIRED_MAPPED[@]}"; do
-  if printf '%s\n' "$_MISSING_NAMES" | grep -qxF "$_m"; then
+  if grep -qxF "$_m" <<<"$_MISSING_NAMES"; then
     echo "  + $_m"
   else
     echo "  = $_m"

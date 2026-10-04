@@ -64,7 +64,7 @@ assert_contains "$plan_content" "Sub-task 2: Add planner agent" "file: second su
 assert_contains "$plan_content" "Sub-task 3: Add SKILL stage" "file: third sub-task appended"
 
 # IDs must be sequential and numeric, starting after existing id 3
-if printf '%s' "$id1" | grep -qE '^[0-9]+$'; then
+if grep -qE '^[0-9]+$' <<<"$id1"; then
   pass "file: create-issue id1 is numeric"
 else
   fail "file: create-issue id1 is numeric" "got: $id1"
@@ -151,12 +151,12 @@ cat > talos.pipeline.json <<'EOF'
 {"vcs": {"provider": "azure", "repo": "r", "azure": {"org_url": "https://dev.azure.com/o", "project": "p", "work_item_type": "Product Backlog Item", "area_path": "TeamArea"}}}
 EOF
 out="$(bash "$VCS" --dry-run create-issue "New issue" /dev/null --label pipeline:ready 2>&1)"; rc=$?
-if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q "boards work-item create"; then
+if [ "$rc" -eq 0 ] && grep -q "boards work-item create" <<<"$out"; then
   pass "azure: create-issue invokes az boards work-item create"
 else
   fail "azure: create-issue invokes az boards work-item create" "got: $out"
 fi
-printf '%s' "$out" | grep -q "System.Tags=pipeline:ready" \
+grep -q "System.Tags=pipeline:ready" <<<"$out" \
   && pass "azure: create-issue maps --label to a tag" \
   || fail "azure: create-issue maps --label to a tag" "got: $out"
 rm talos.pipeline.json

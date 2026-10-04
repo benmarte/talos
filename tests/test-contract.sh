@@ -82,7 +82,7 @@ for f in "${PROSE_FILES[@]}"; do
 
   while IFS= read -r found; do
     [ -z "$found" ] && continue
-    if ! printf '%s\n' "$CONTRACT_LABEL_NAMES" | grep -Fxq -- "$found"; then
+    if ! grep -Fxq -- "$found" <<<"$CONTRACT_LABEL_NAMES"; then
       _stray_found=true
       fail "contract membership: label '$found' (${f#"$TALOS_ROOT"/})" \
         "not a member of TALOS_STAGE_LABELS/TALOS_APPROVAL_LABELS/TALOS_MISC_LABELS in $CONTRACT"
@@ -91,7 +91,7 @@ for f in "${PROSE_FILES[@]}"; do
 
   while IFS= read -r found; do
     [ -z "$found" ] && continue
-    if ! printf '%s\n' "$CONTRACT_MARKER_NAMES" | grep -Fxq -- "$found"; then
+    if ! grep -Fxq -- "$found" <<<"$CONTRACT_MARKER_NAMES"; then
       _stray_found=true
       fail "contract membership: marker '$found' (${f#"$TALOS_ROOT"/})" \
         "not a member of TALOS_MARKERS (or talos:<TALOS_ROLES> namespacing) in $CONTRACT"
@@ -108,7 +108,7 @@ _stray_markers_in() {  # $1=file $2=extractor function
   local m
   while IFS= read -r m; do
     [ -z "$m" ] && continue
-    printf '%s\n' "$CONTRACT_MARKER_NAMES" | grep -Fxq -- "$m" || printf '%s\n' "$m"
+    grep -Fxq -- "$m" <<<"$CONTRACT_MARKER_NAMES" || printf '%s\n' "$m"
   done < <("$2" "$1")
 }
 _broken_extractor() { :; }
