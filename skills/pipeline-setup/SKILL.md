@@ -32,7 +32,7 @@ If a config **exists**:
 - Read it with `bash scripts/pipeline-config.sh <key>` to show current values (a key that is not set prints its documented default).
 - Tell the user: "Found an existing config. Here's what's set: ..."
 - Ask: "Would you like to update any of these settings, or is this just a re-run to bootstrap labels?"
-- If no changes needed: run `bash scripts/pipeline-config.sh --has status.enabled` (exit 0 set, 1 not set, 3 the config does not parse: tell the user and skip this check). On exit 1 (no `status:` block yet), ask Step 4b's question once; on yes add ONLY the `status:` block to the existing file (show the lines to add and write only after an explicit yes; never rewrite the rest of the file, per the Idempotency rules), then run Step 7b.
+- If no changes needed: run `bash scripts/pipeline-config.sh --has status.enabled` (exit 0 set, 1 not set, 3 the config does not parse: tell the user and skip this check). On exit 1 (no `status:` block yet), ask Step 4b's question once; on yes add ONLY the `status:` block to the existing file (show the lines to add and write only after an explicit yes; never rewrite the rest of the file, per the Idempotency rules), then run Step 7b. A no adds `status:` with `enabled: false` the same way (no Step 7b), so the question is not asked again. A JSON config cannot be re-serialised without losing its formatting and key order, so never parse and re-write it: show the single line `"status": { "enabled": true },` (`false` on a no) and add it as a new line directly after the file's opening `{`, leaving every other byte alone. If the object is empty (`{}`), drop the trailing comma.
 - If no changes needed and `bash scripts/pipeline-config.sh vcs.provider` prints `github`: run `bash scripts/pipeline-config.sh --has evidence.enabled` (same exit codes). On exit 1 (no `evidence:` block yet), ask Step 4c's question once; on anything but "ask me later" add ONLY the `evidence:` block to the existing file (show the lines to add and write only after an explicit yes; never rewrite the rest of the file, per the Idempotency rules). "Ask me later" writes nothing. A config that already has `enabled: false` is never re-asked.
 - If no changes needed, in every case (whatever the check above printed): run Step 7c with the harness from `bash scripts/pipeline-config.sh agents.runner`, then jump to Step 8 (bootstrap labels) and Step 10 (test notification).
 
@@ -136,10 +136,14 @@ Also ask (2 more questions, defaults shown, only if the user wants to change the
 
 When `vcs.provider: file`, skip this question with one line ("No status file: file mode has no PRs to log.") and record it as declined. Otherwise ask once:
 
-> "Keep a status file in this repo? It is a short page, `TALOS_STATUS.md`, that records what merged and what is waiting on you, so a stopped run can be resumed later, with any LLM. Note: Talos commits updates to it straight to your base branch, so a protected base branch will not work.
-> [default: **yes**]"
+> "Keep a status file in this repo? It is a short page, `TALOS_STATUS.md`, that records what merged and what is waiting on you, so a stopped run can be resumed later, with any LLM. What it costs:
+> - Talos commits updates to it straight to your base branch, as `[skip ci]` commits: one per merged PR, and one each time the Resume block is refreshed.
+> - The docs stage adds one small file per PR under `docs/status.d/`.
+> - Heads up: a protected base branch needs an admin or bypass token, otherwise the pushes are rejected and the file is not updated.
+>
+> [default: **no**]"
 
-On yes: `status.enabled: true` in Step 7, then Step 7b creates the file. On no: the block is written declined, and Step 7b is skipped.
+On yes: `status.enabled: true` in Step 7, then Step 7b creates the file. On no (and on an empty answer, since the default is no): the block is written with `enabled: false` (an active block, so Step 0 never asks again), and Step 7b is skipped.
 
 ---
 
@@ -176,9 +180,9 @@ A command the user types goes into the config as text only; setup never runs it.
 >
 > Proposed: `<command>` into `<dir>`. [default: **off**] (on / off / ask me later)"
 
-On "ask me later" write nothing; the Step 0 re-run asks again. On "off" write the declined block. On "on": use the proposed or a typed `dir`, which is one repo-relative path. `<dir>` goes on a command line, so first check it character for character: 1 to 200 characters, only letters, digits, `.`, `_`, `/` and `-`, not starting with `-` or `/`, no `..` component, no `.git` component. If it fails, say why and ask again; never write it. The two proposed directories are constants and always pass.
+On "ask me later" write nothing; the Step 0 re-run asks again, on every setup re-run until it gets a yes or an "off" (this is by design). On "off" write the declined block. On "on": use the proposed or a typed `dir`, which is one repo-relative path. `<dir>` goes on a command line, so first check it character for character: 1 to 200 characters, only letters, digits, `.`, `_`, `/` and `-`, not starting with `-` or `/`, no `..` component, no `.git` component. If it fails, say why and ask again; never write it. The two proposed directories are constants and always pass.
 
-Then offer to keep it out of git: "Add `<dir>/` to `.gitignore`? (yes/no)". Run the block below either way, with the checked directory as the first quoted argument (replace `<dir>`) and `<mode>` replaced by `write` on an explicit yes or `check` otherwise (give the heredoc a fresh `TALOS_<rand>` delimiter of 12+ random characters you invent). Only `write` touches `.gitignore`. Both modes re-check the value and write nothing if it fails, and print the normalised directory as `dir=<norm>` (`./` stripped, `//` collapsed, no trailing `/`): that printed value, never the typed text, is what Step 7 writes as `evidence.dir`, so the config and the `.gitignore` line cannot disagree. `write` probes `<dir>/.probe` because a directory that does not exist yet reads as unignored when probed directly, appends one line (`<norm>/`) only when git does not already ignore it, and refuses, writing nothing, when `.gitignore` is a symlink or not a regular file (it prints one line telling you to add `<norm>/` by hand; a missing `.gitignore` is created). Both warn when the directory already holds tracked files (the attach step refuses a tracked directory):
+Then offer to keep it out of git: "Add `<dir>/` to `.gitignore`? (yes/no)". Run the block below either way, with the checked directory as the first quoted argument (replace `<dir>`) and `<mode>` replaced by `write` on an explicit yes or `check` otherwise (give the heredoc a fresh `TALOS_<rand>` delimiter of 12+ random characters you invent). Only `write` touches `.gitignore`. Both modes re-check the value and write nothing if it fails, and print the normalised directory as `dir=<norm>` (`./` stripped, `//` collapsed, no trailing `/`): that printed value, never the typed text, is what Step 7 writes as `evidence.dir`, so the config and the `.gitignore` line cannot disagree. A regular-file check on `.gitignore` runs before `git check-ignore` is ever called, because git would block reading a FIFO and print warnings for a symlink: `write` refuses, writing nothing, when `.gitignore` is a symlink or not a regular file (it prints one `rejected:` line telling you to add `<norm>/` by hand), and `check` prints `not checked:` with the same advice and skips `git check-ignore`; a missing `.gitignore` is fine. `write` probes `<dir>/.probe` because a directory that does not exist yet reads as unignored when probed directly, and appends one line (`<norm>/`) only when git does not already ignore it (a missing `.gitignore` is created). Both warn when the directory already holds tracked files (the attach step refuses a tracked directory):
 
 ```bash
 bash -s -- '<dir>' <mode> <<'TALOS_<rand>'
@@ -197,15 +201,20 @@ done
 [ -n "$norm" ] || die "no directory left after normalising"
 echo "dir=$norm"
 cd "$(git rev-parse --show-toplevel)" || exit 1
-git check-ignore -q -- "$norm/.probe"; rc=$?
+if [ -L .gitignore ] || { [ -e .gitignore ] && [ ! -f .gitignore ]; }; then
+  [ "${2:-}" = "write" ] && die ".gitignore is a symlink or not a regular file; add $norm/ to it by hand"
+  echo "not checked: .gitignore is a symlink or not a regular file; add $norm/ to it by hand"
+  rc=2
+else
+  git check-ignore -q -- "$norm/.probe"; rc=$?
+fi
 if [ "$rc" -eq 0 ]; then
   echo "already ignored: $norm/"
+elif [ "$rc" -eq 2 ]; then
+  :
 elif [ "$rc" -eq 1 ] && [ "${2:-}" != "write" ]; then
   echo "not ignored: $norm/"
 elif [ "$rc" -eq 1 ]; then
-  if [ -L .gitignore ] || { [ -e .gitignore ] && [ ! -f .gitignore ]; }; then
-    die ".gitignore is a symlink or not a regular file; add $norm/ to it by hand"
-  fi
   if [ -s .gitignore ] && [ -n "$(tail -c1 .gitignore)" ]; then echo >> .gitignore; fi
   printf '%s/\n' "$norm" >> .gitignore
   echo "added $norm/ to .gitignore"
@@ -232,6 +241,8 @@ Only ask if provider is github:
 If yes:
 > "What's the project number and owner?
 > Example: project_number: 2, owner: myorg"
+
+The owner is typed text that later goes on a `gh` command line (Step 9), so check it character for character before using it anywhere: a GitHub login is 1 to 39 characters, only letters, digits and `-`, not starting or ending with `-`. If it fails, say why and ask again; never write it to the config. The project number is digits only.
 
 If no (or non-GitHub provider): board.enabled = false.
 
@@ -491,8 +502,8 @@ agents:
 ```
 
 When writing the file:
-- Status file (Step 4b): accepted writes the block above with `enabled: true`; declined (or skipped for `vcs.provider: file`) writes the whole block commented out, `# status:` with `#   enabled: false` under it, so the keys stay visible. A JSON config has no comments: accepted writes `"status": { "enabled": true }` (the other keys keep their defaults), declined and skipped omit the `status` key. The status file is NOT added to `merge.union_paths` (fragments replace union merging).
-- Evidence (Step 4c): accepted writes the block above with `enabled: true`, `dir` (the normalised `dir=` value Step 4c printed, never the typed text) and `command` (a typed command is written as a YAML double-quoted string, escaping `\` and `"`; on the agent-capture path omit `command`); the other `evidence.*` keys keep their defaults and `store` is not written (`attach` is the only value). Declined, "off" and "off" after the newer-gh message write an ACTIVE block, `evidence:` with `enabled: false` and nothing else, never a commented one: a commented block reads as unset, so every re-run would ask again. A JSON config gets `"evidence": { "enabled": true, "dir": "<dir>", "command": "<command>" }` when accepted and `"evidence": { "enabled": false }` when declined. "Ask me later" and a skipped provider (`gitlab`, `azure`, `file`) write no `evidence` key.
+- Status file (Step 4b): accepted writes the block above with `enabled: true`; declined writes the same block with `enabled: false`, active and not commented out (the `# key:` lines stay as comments), so a later setup re-run sees `status.enabled` set and does not ask again. Skipped for `vcs.provider: file` writes no `status` key. A JSON config has no comments: accepted writes `"status": { "enabled": true }` (the other keys keep their defaults), declined writes `"status": { "enabled": false }`, skipped omits the key. The status file is NOT added to `merge.union_paths` (fragments replace union merging).
+- Evidence (Step 4c): accepted writes the block above with `enabled: true`, `dir` (the normalised `dir=` value Step 4c printed, never the typed text) and `command` (a typed command is written as a YAML double-quoted string, escaping `\` and `"`; on the agent-capture path omit the `command` line); the other `evidence.*` keys keep their defaults and `store` is not written (`attach` is the only value). Declined, "off" and "off" after the newer-gh message write an ACTIVE block, `evidence:` with `enabled: false` and nothing else, never a commented one: a commented block reads as unset, so every re-run would ask again. A JSON config gets `"evidence": { "enabled": true, "dir": "<dir>", "command": "<command>" }` when accepted (on the agent-capture path omit the `"command"` key: `"evidence": { "enabled": true, "dir": "<dir>" }`; `dir` and `command` are written only when accepted, as the `<IF_EVIDENCE_ACCEPTED>` lines are in YAML) and `"evidence": { "enabled": false }` when declined. "Ask me later" and a skipped provider (`gitlab`, `azure`, `file`) write no `evidence` key.
 - If harness = `claude`: omit the `agents:` block entirely (Claude Code spawns native subagents and ignores it).
 - Models: a per-repo override chosen in Step 6c goes into this repo's `agents:` block (`model:` and `roles.<role>.model`), even when harness = `claude`. A user-level answer is written by Step 6c itself, not here.
 - If harness = `pi`: write the active `agents:` block with `runner: pi` and `subagents: false` (`agents.subagents: false`: pi runs the stages inline).
@@ -700,7 +711,8 @@ If board.enabled = true AND the user said they don't have a project yet:
 
 Offer to create one:
 ```bash
-gh project create --owner <OWNER> --title "talos" --format json
+owner='<OWNER>'   # the owner checked in Step 5; never put unchecked text here
+gh project create --owner "$owner" --title "talos" --format json
 ```
 
 Record the returned project number as `board.project_number` (and the owner as `board.owner`) in `talos.pipeline.yml`, then offer to provision its Status options with the same script Step 8a uses:
