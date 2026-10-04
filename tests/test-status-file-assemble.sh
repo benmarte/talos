@@ -34,22 +34,28 @@ OUTSIDE="$PARENT/outside"
 mkdir -p "$OUTSIDE" || exit 1
 trap 'rm -rf "$SANDBOX" "$PARENT"' EXIT
 
-# rm_under_parent: rm -rf that can only act on paths strictly under $PARENT
-# (the checked mktemp -d above). An empty/unset variable, a path outside
-# $PARENT, or a ".." component is refused instead of removed (#448).
-rm_under_parent() {
-  local d
+# rm_under <root> <path>...: rm -rf that can only act on paths strictly under
+# <root>, which must be an existing directory (a checked mktemp -d). An empty
+# root, a path outside it, or a ".." component is refused instead of removed
+# (#448). rm_under_parent is the $PARENT case; the sandbox cwd uses $SANDBOX.
+rm_under() {
+  local root="$1" d
+  shift
+  if [ -z "$root" ] || [ ! -d "$root" ]; then
+    echo "rm_under: refusing, root '$root' is not a directory" >&2; exit 1
+  fi
   for d in "$@"; do
     case "$d" in
-      "$PARENT"/*) ;;
-      *) echo "rm_under_parent: refusing '$d' (not under \$PARENT)" >&2; exit 1 ;;
+      "$root"/*) ;;
+      *) echo "rm_under: refusing '$d' (not under $root)" >&2; exit 1 ;;
     esac
     case "$d" in
-      */../*|*/..) echo "rm_under_parent: refusing '$d' (.. component)" >&2; exit 1 ;;
+      */../*|*/..) echo "rm_under: refusing '$d' (.. component)" >&2; exit 1 ;;
     esac
     rm -rf "$d"
   done
 }
+rm_under_parent() { rm_under "$PARENT" "$@"; }
 # Hermetic temp dir: every mktemp the script makes lands here, so the leak
 # assertion at the end counts only this run's talos-status.* directories.
 mkdir -p "$PARENT/tmp"
@@ -184,7 +190,7 @@ printf '# T\n\n## Resume here\n\nmine\n' > docs/TRACKER.md
 run_sf init >/dev/null
 assert_eq "1" "$(grep -c '^## Resume here$' docs/TRACKER.md)" "init: an existing heading is not duplicated"
 assert_eq "1" "$(grep -c '^## Log$' docs/TRACKER.md)" "init: the missing log heading is appended"
-rm -rf docs TALOS_STATUS.md
+rm_under "$SANDBOX" "$SANDBOX/docs" "$SANDBOX/TALOS_STATUS.md"
 
 # ── path / heading validation: every verb, nothing written ──────────────────
 reset_fixture
@@ -688,7 +694,7 @@ out="$(run_sf assemble --pr 87 --issue 7)"; rc=$?
 assert_eq "0" "$rc" "isolated: assemble exits 0 with a hostile module in the cwd"
 assert_file_absent "$PARENT/pwned-py" "isolated: the cwd module was never imported by this script's python"
 rm -f unicodedata.py TALOS_STATUS.md
-rm -rf __pycache__
+rm_under "$SANDBOX" "$SANDBOX/__pycache__"
 
 # ── hand-edited log: odd digits, a huge number, a heading with trailing blanks
 reset_fixture

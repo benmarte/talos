@@ -75,4 +75,25 @@ assert_contains "$out_t4" "ERROR" \
 assert_contains "$out_t4" "run-tests.sh" \
   "T4: error message names the script to invoke correctly"
 
+# ═════════════════════════════════════════════════════════════════════════════
+# T5: make_sandbox fails closed when mktemp -d fails (#448)
+# ═════════════════════════════════════════════════════════════════════════════
+# A TMPDIR that does not exist makes mktemp -d fail. The probe calls
+# make_sandbox WITHOUT `|| exit 1` (about 100 test files do) and then writes a
+# marker file: if the helper returned 0 and stayed in the caller's directory,
+# the marker lands there. Mutation: drop the -d check/exit in make_sandbox.
+T5_CWD="$PRIV_TMP/t5cwd"
+mkdir -p "$T5_CWD" || exit 1
+cat > "$PRIV_TMP/t5probe.sh" <<EOF
+. "$TALOS_ROOT/tests/helpers.sh"
+export TMPDIR="$PRIV_TMP/does-not-exist"
+make_sandbox
+echo survived > "$T5_CWD/leaked"
+EOF
+out_t5="$(cd "$T5_CWD" && bash "$PRIV_TMP/t5probe.sh" 2>&1)"; rc_t5=$?
+assert_eq "1" "$rc_t5" "T5: make_sandbox with a failing mktemp ends the test non-zero"
+assert_contains "$out_t5" "make_sandbox: ERROR: mktemp -d failed" "T5: one stderr line says why"
+assert_file_absent "$T5_CWD/leaked" "T5: nothing ran after the failed make_sandbox (no cd, no fall-through)"
+assert_eq "0" "$(ls -A "$T5_CWD" | wc -l | tr -d ' ')" "T5: the caller's directory is untouched"
+
 finish
