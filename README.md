@@ -74,6 +74,15 @@ matching dispatch prompt for that stage, `templates/prompts/<role>.md` (rendered
 by `scripts/talos.sh prompt`, #468), carries the identical line. If you edit a
 role's prompt, keep both copies in sync.
 
+**Criteria first, red-first tests (#421):** the PM numbers each acceptance
+criterion `AC<n>` and marks it `(test)` or `(prose: <reason>)`, and names the
+test files on a `Tests:` line. The developer's first commit is the failing
+tests, one per `(test)` criterion, named by its id, with the red run (command,
+exit code, failing ids) in the commit body; it then implements until they pass.
+QA reruns those files, proves they were red at the first branch commit, and
+reports one line per id. `scripts/pipeline-criteria.sh` does the mapping from
+the runner's output to ids. See the [user guide](docs/user-guide.md#criteria-first-red-first-tests-421).
+
 ---
 
 ## VCS providers
@@ -835,6 +844,7 @@ The pipeline deliberately preserves three gates that only a human should act on:
 | `scripts/pipeline-mergebase.sh` | Mechanical union merge for a CONFLICTING PR whose only conflicting paths are covered by `merge.union_paths` (default `CHANGELOG.md`), no developer dispatch; see the `merge.union_paths` row in the [Config reference](docs/user-guide.md#config-reference) |
 | `scripts/pipeline-paths.sh` | Sourced helper exporting `_resolve_talos_dir()`, the canonical probe for the Talos scripts directory; see [1. Install](#1-install) |
 | `scripts/pipeline-verify.sh --issue N --worktree PATH -- <cmd>` | Run a `verify:` command with `TALOS_ROLE`/`TALOS_ISSUE_NUMBER`/`TALOS_WORKTREE_PATH` exported mechanically for native Claude Code subagents; see [Context](#context) |
+| `scripts/pipeline-criteria.sh ids\|map\|report` | Map a spec's `AC<n>` criteria to test results by id (#421): `ids <spec>` lists them as `test` or `prose`, `map <output> [--spec <spec>]` gives `pass`, `fail` or `missing` per id from a runner's `ok`/`FAIL` assertion labels, `report` gives QA's one line per id (`AC<n> red@<sha8> green@head`, or the failing case). Text only: no network, no LLM; see [Criteria first](docs/user-guide.md#criteria-first-red-first-tests-421) |
 | `scripts/pipeline-worktree.sh` | Lifecycle for per-issue developer worktrees and Claude Code harness worktrees (create/remove/sweep, `checkpoint`/`handoff`); see [Worktree lifecycle](#worktree-lifecycle) |
 
 ### Contract

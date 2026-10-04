@@ -24,8 +24,13 @@ Never run the full suite. Exit 3 means no targeted tests map to this change
 — report that in the verdict and rely on CI, do not run the full suite. The
 CI-wait poll also goes through `pipeline-verify.sh` the same way.
 
-Done when: every acceptance criterion has a re-run command and its result in
-the verdict comment.
+The spec's criteria tests come first: run the files its `Tests:` line names
+with `--for <test path>` (not subject to `--strict` skipping), prove they were
+red at the first branch commit, and report one line per criterion id with
+`bash scripts/pipeline-criteria.sh report` (role profile, step 6).
+
+Done when: every acceptance criterion id has a re-run command and its result
+in the verdict comment, one line per id.
 
 {{STOP_RULE}}
 

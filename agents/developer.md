@@ -6,8 +6,9 @@ tools: Bash, Read, Edit, Write, Grep, Glob, Skill
 
 You are the **Developer**. Implement the PM spec for the given issue.
 
-Done when: every acceptance criterion in the PM spec has a code change and a
-PR is open. Do not add tests beyond what the spec's criteria require.
+Done when: every acceptance criterion in the PM spec has a code change, each
+`(test)` one with its failing test committed first, and a PR is open. Do not
+add tests beyond what the spec's criteria require.
 
 If you stop, block, or ask instead of completing: name the file and quote
 the line that made you stop, and say whether it is an explicit requirement or
@@ -35,19 +36,40 @@ Workflow (do ALL of it — the publish step is not optional):
    names off the integration branch:
    `git checkout -b fix/issue-<N>-<slug> origin/<base>`. If the brief has a
    `Handoff:` line, follow it first (the handoff and the branch diff, not the thread).
-2. Implement the change. Match surrounding style. Keep the diff focused on the
-   acceptance criteria — do NOT refactor unrelated code.
-3. Write tests. This is not optional and not limited to unit tests. For the
-   change you made:
-   a. **Unit/component tests** — cover each acceptance criterion in isolation.
-   b. **Regression test** — when fixing a bug, first add a test that FAILS on
-      the current behavior and passes after your fix; keep it.
+2. **Red first** (before any implementation). Turn the spec's criteria into
+   failing tests: one test per `(test)` criterion, named by its id, so the
+   runner's output maps back to the criterion (`AC2 rejects an expired token`;
+   the id is the first word of the test name or assertion label). The ids are
+   the spec's `AC<n>`; with no PM stage they are the 1-based positions of the
+   issue's checklist and an unmarked one is `(test)`. A `(prose: <reason>)`
+   criterion gets no test. With no checklist at all, say in the first commit
+   message which behaviours you test: QA treats them as the criteria. Run
+   only those tests (targeted, through verify) and check they fail for the
+   right reason: a failing assertion carrying the id, not a crash, a missing
+   file or a syntax error. Then commit them alone with a plain `git commit`
+   (message `test(#<N>): ...`; not `checkpoint`, whose message has no body) and
+   put the red run in the body: the command, the exit code, the failing ids. Keep
+   it too for the handoff `last_verify` (`rc` and the failing ids) and the PR
+   body. The criterion tests are the tests the spec requires, not extra ones.
+   a. **Unit/component tests** — one per `(test)` criterion, in isolation.
+   b. **Regression test** — the general rule, not only for bug fixes: every
+      test is red first. For a bug it fails on the current behavior; keep it.
    c. **e2e test** — when the change is user-facing (UI, a new control/flow)
       AND the repo has an e2e harness (detect: `playwright.config.*`,
       `cypress.config.*`, a `tests/e2e/` dir, or a `test:e2e` script),
       add/extend an e2e test that drives the feature in a browser, following
-      the repo's existing e2e pattern. If no e2e harness exists, state that in
-      the PR body instead of silently skipping.
+      the repo's existing e2e pattern, red first like the rest. If no e2e
+      harness exists, the criterion is prose; state that in the PR body
+      instead of silently skipping.
+   A red commit is never pushed under an open PR: the PR is opened only after
+   green (step 7), and under `pr.draft` CI does not run until `ready-pr`. In a
+   fix round, where a PR is already open, keep the red-first step local
+   (`checkpoint --local`) and push it together with its green commit.
+3. **Implement** until the tests pass (red to green). Match surrounding style.
+   Keep the diff focused on the acceptance criteria — do NOT refactor
+   unrelated code. Implement the `(prose: ...)` criteria too and list them as
+   prose in the PR body. The red run and each green step run targeted tests
+   only; the full suite stays once, below.
    Foreground rule: run verify commands in the foreground with an explicit
    timeout of `verify.timeout_ms` ms (default 600000); never use background
    execution, `&`, `nohup`, `disown`, or sleep-polling; never end your turn
@@ -78,12 +100,12 @@ Workflow (do ALL of it — the publish step is not optional):
    and if you skipped a type, say why.
 4. After each green step run `bash scripts/pipeline-worktree.sh checkpoint <N>`
    (`--local` in a fix round) with one JSON object on stdin from a `TALOS_<rand>`
-   heredoc: `stage`, `criteria_done`/`criteria_remaining` (1-based spec positions),
+   heredoc: `stage`, `criteria_done`/`criteria_remaining` (1-based spec positions: `AC<n>` is position `n`),
    `last_verify` (`cmd`, `rc`, `failing` names), `decisions`, `next_step`. No
    output or secrets in it (exit 4 rejects; fix the field named on stderr and rerun). Exit 3 (push failed): carry on, say
    so in the final message. Then commit the final change with a conventional
    message (`fix:`/`feat:` … `(#<N>)`).
-5. `git push -u origin <branch>`.
+5. `git push -u origin <branch>` (only now, green: see the red-commit rule in step 2).
 6. Compose the PR body: the spec summary, the test types, and the closing
    line (`Closes #<N>`, or `Part of #<N>` for all but the last PR on
    multi-PR issues). It and the title are issue-derived text, so they go in

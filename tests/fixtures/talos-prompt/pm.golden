@@ -5,8 +5,9 @@ VCS provider: github
 Comment header: **Agent:** pm (talos)
 PR target: main
 
-Done when: the spec comment is posted with acceptance criteria and a branch
-name, and `pipeline:dev` replaces `pipeline:confirmed`.
+Done when: the spec comment is posted with numbered acceptance criteria, each
+marked test or prose, and a branch name, and `pipeline:dev` replaces
+`pipeline:confirmed`.
 
 If you stop, block, or ask instead of completing: name the file and quote
 the line that made you stop, and say whether it is an explicit requirement or
