@@ -1045,9 +1045,17 @@ def _login(c):
     a = c.get('author')
     return a.get('login', '') if isinstance(a, dict) else ''
 
-raw = json.load(sys.stdin)
+# An error object, a bare scalar or an unparseable page is a failed read, never
+# an empty comment list (the github-api paginator rejects a non-array page the
+# same way); a non-object entry is just as malformed. Fail loudly, no stdout.
+try:
+    raw = json.load(sys.stdin)
+except ValueError:
+    sys.exit('pipeline-vcs: read-comments: response is not valid JSON')
 if not isinstance(raw, list):
-    raw = []
+    sys.exit('pipeline-vcs: read-comments: response is not a JSON array of comments')
+if not all(isinstance(c, dict) for c in raw):
+    sys.exit('pipeline-vcs: read-comments: response holds a non-object comment entry')
 comments = [dict(c, author={'login': _login(c)},
                   createdAt=c.get('created_at', c.get('createdAt', ''))) for c in raw]
 json.dump({'comments': comments}, sys.stdout)
@@ -4290,7 +4298,7 @@ _github_api() {
   # retryable status via _with_retry, #173).
   _ga_req_once() {
     local _m="$1" _u="$2"; shift 2
-    local _full _status _body _hdr_file
+    local _full _status _body _hdr_file _curl_rc
     _hdr_file="$(mktemp)"
     _full="$(curl -sS -w "\n%{http_code}" \
       -D "$_hdr_file" \
@@ -4298,7 +4306,12 @@ _github_api() {
       -H "Authorization: Bearer $_TOKEN" \
       -H "Accept: application/vnd.github+json" \
       -H "X-GitHub-Api-Version: 2022-11-28" \
-      "$@" "$_u")"
+      "$@" "$_u")" || {
+      _curl_rc=$?
+      printf 'github-api: curl failed (exit %s) on %s\n' "$_curl_rc" "$_VERB" >&2
+      rm -f "$_hdr_file"
+      return 1
+    }
     _status="$(printf '%s' "$_full" | tail -1)"
     _body="$(printf '%s' "$_full" | sed '$d')"
     if [ "${_status:-0}" -ge 300 ] 2>/dev/null; then
@@ -4328,14 +4341,19 @@ _github_api() {
   # ── Diff request (different Accept header) ──────────────────────────────────
   _ga_diff_req_once() {
     local _u="$1"
-    local _full _status _body _hdr_file
+    local _full _status _body _hdr_file _curl_rc
     _hdr_file="$(mktemp)"
     _full="$(curl -sS -w "\n%{http_code}" \
       -D "$_hdr_file" \
       -H "Authorization: Bearer $_TOKEN" \
       -H "Accept: application/vnd.github.v3.diff" \
       -H "X-GitHub-Api-Version: 2022-11-28" \
-      "$_u")"
+      "$_u")" || {
+      _curl_rc=$?
+      printf 'github-api: curl failed (exit %s) on %s\n' "$_curl_rc" "$_VERB" >&2
+      rm -f "$_hdr_file"
+      return 1
+    }
     _status="$(printf '%s' "$_full" | tail -1)"
     _body="$(printf '%s' "$_full" | sed '$d')"
     if [ "${_status:-0}" -ge 300 ] 2>/dev/null; then
@@ -4390,14 +4408,19 @@ _github_api() {
   # paginating after page 1).
   _ga_fetch_page_once() {
     local _u="$1" _next_file="$2"
-    local _full _status _body _hdr_file _next
+    local _full _status _body _hdr_file _next _curl_rc
     _hdr_file="$(mktemp)"
     _full="$(curl -sS -w "\n%{http_code}" \
       -D "$_hdr_file" -X GET \
       -H "Authorization: Bearer $_TOKEN" \
       -H "Accept: application/vnd.github+json" \
       -H "X-GitHub-Api-Version: 2022-11-28" \
-      "$_u")"
+      "$_u")" || {
+      _curl_rc=$?
+      printf 'github-api: curl failed (exit %s) on %s\n' "$_curl_rc" "$_VERB" >&2
+      rm -f "$_hdr_file"
+      return 1
+    }
     _status="$(printf '%s' "$_full" | tail -1)"
     _body="$(printf '%s' "$_full" | sed '$d')"
     _next="$(grep -i '^link:' "$_hdr_file" \
@@ -4550,8 +4573,7 @@ for a in json.load(sys.stdin).get('assignees') or []:
   _ga_assignee_add() {
     local _aa_payload
     _aa_payload="$(python3 -I -c "import json, sys; print(json.dumps({'assignees': [sys.argv[1]]}))" "$2")"
-    _with_retry "$_VERB" _ga_req_once POST "$_API/issues/$1/assignees" \
-      -H "Content-Type: application/json" -d "$_aa_payload"
+    _ga_json_try POST "$_API/issues/$1/assignees" "$_aa_payload"
   }
 
   # Provider calls for the needs-owner verbs (#345). _ga_req_once under
@@ -4564,25 +4586,50 @@ for a in json.load(sys.stdin).get('assignees') or []:
 import json, sys
 sys.stdout.write(json.dumps({"body": sys.stdin.buffer.read().decode("utf-8", errors="replace")}, ensure_ascii=False))
 ')" || return 1
-    _with_retry "$_VERB" _ga_req_once POST "$_API/issues/$1/comments" \
-      -H "Content-Type: application/json" -d "$_gnp_payload" >/dev/null
+    _ga_json_try POST "$_API/issues/$1/comments" "$_gnp_payload" >/dev/null
   }
   _ga_no_label_add() {
-    _with_retry "$_VERB" _ga_req_once POST "$_API/issues/$1/labels" \
-      -H "Content-Type: application/json" -d "{\"labels\":[\"$_TALOS_NEEDS_OWNER_LABEL\"]}" >/dev/null
+    _ga_json_try POST "$_API/issues/$1/labels" "{\"labels\":[\"$_TALOS_NEEDS_OWNER_LABEL\"]}" >/dev/null
   }
   _ga_no_label_remove() {
     _with_retry "$_VERB" _ga_req_once DELETE "$_API/issues/$1/labels/$_TALOS_NEEDS_OWNER_LABEL_URL" >/dev/null
   }
 
-  # Provider calls for upsert-pr-comment (#381). The body goes to curl on stdin
-  # (`--data-binary @-`) from the staged JSON file; the redirect sits on the
-  # function _with_retry reruns, so a retry re-reads the file instead of an
-  # already consumed stdin. curl inherits the redirect through _ga_req_once.
-  _ga_upc_read() { _ga_fetch_all_comments "$1"; }
-  _ga_upc_once() {
-    _ga_req_once "$1" "$_API/$2" -H "Content-Type: application/json" --data-binary @- < "$3"
+  # JSON writes (#381, #451). The body goes to curl on stdin (`--data-binary @-`)
+  # from a staged file, never as a `-d` argv element: argv caps one string at
+  # 128 KiB on Linux, and a body under the 120,000-byte raw cap can escape to
+  # more than that. The redirect sits on the function _with_retry reruns, so a
+  # retry re-reads the file instead of an already consumed stdin; curl inherits
+  # it through _ga_req_once.
+  # _ga_json_once <METHOD> <URL> <payload-file>
+  _ga_json_once() {
+    _ga_req_once "$1" "$2" -H "Content-Type: application/json" --data-binary @- < "$3"
   }
+  # _ga_json_try <METHOD> <URL> <payload> -- stages <payload> in a temp file,
+  # prints the response body, returns 1 on failure (callers that must not abort
+  # the script, like _ga_req_once under _with_retry).
+  _ga_json_try() {
+    local _gj_file _gj_rc=0
+    _gj_file="$(mktemp)" || return 1
+    if ! printf '%s' "$3" > "$_gj_file"; then
+      rm -f "$_gj_file"
+      return 1
+    fi
+    _with_retry "$_VERB" _ga_json_once "$1" "$2" "$_gj_file" || _gj_rc=$?
+    rm -f "$_gj_file"
+    return "$_gj_rc"
+  }
+  # _ga_json <METHOD> <URL> <payload> -- _ga_json_try that exits 1 on failure,
+  # like _ga_req.
+  _ga_json() {
+    local _gj_body
+    _gj_body="$(_ga_json_try "$@")" || exit 1
+    printf '%s' "$_gj_body"
+  }
+
+  # Provider calls for upsert-pr-comment (#381).
+  _ga_upc_read() { _ga_fetch_all_comments "$1"; }
+  _ga_upc_once() { _ga_json_once "$1" "$_API/$2" "$3"; }
   _ga_upc_write() { _with_retry "$_VERB" _ga_upc_once "$1" "$2" "$3"; }
 
   # ── Verb dispatch ───────────────────────────────────────────────────────────
@@ -4717,8 +4764,7 @@ print(d.get('state', ''))
       local _payload
       _payload="$(python3 -I -c "import json,sys; print(json.dumps({'body':sys.argv[1]}))" "$_body")"
       local _gaci_resp
-      _gaci_resp="$(_ga_req POST "$_API/issues/$_n/comments" \
-        -H "Content-Type: application/json" -d "$_payload")" || exit 1
+      _gaci_resp="$(_ga_json POST "$_API/issues/$_n/comments" "$_payload")" || exit 1
       printf '%s' "$_gaci_resp" | python3 -I -c "
 import json, sys
 d = json.load(sys.stdin)
@@ -4737,11 +4783,9 @@ print(d.get('html_url', ''))
       fi
       local _cpayload _spayload
       _cpayload="$(python3 -I -c "import json,sys; print(json.dumps({'body':sys.argv[1]}))" "$_body")"
-      _ga_req POST "$_API/issues/$_n/comments" \
-        -H "Content-Type: application/json" -d "$_cpayload" >/dev/null
+      _ga_json POST "$_API/issues/$_n/comments" "$_cpayload" >/dev/null
       _spayload='{"state":"closed"}'
-      _ga_req PATCH "$_API/issues/$_n" \
-        -H "Content-Type: application/json" -d "$_spayload" >/dev/null
+      _ga_json PATCH "$_API/issues/$_n" "$_spayload" >/dev/null
       echo "Closed issue #$_n"
       ;;
 
@@ -4753,7 +4797,7 @@ print(d.get('html_url', ''))
         return 0
       fi
       local _cur_labels
-      _cur_labels="$(_ga_req GET "$_API/issues/$_n/labels")"
+      _cur_labels="$(_ga_req GET "$_API/issues/$_n/labels")" || exit 1
       local _new_payload
       _new_payload="$(printf '%s' "$_cur_labels" | \
         ADD_LABELS="$ADD_LABELS" REMOVE_LABELS="$REMOVE_LABELS" python3 -I -c "
@@ -4767,8 +4811,7 @@ for l in add:
 labels = [l for l in labels if l not in rem]
 print(json.dumps({'labels': labels}))
 ")"
-      _ga_req PUT "$_API/issues/$_n/labels" \
-        -H "Content-Type: application/json" -d "$_new_payload" >/dev/null
+      _ga_json PUT "$_API/issues/$_n/labels" "$_new_payload" >/dev/null
       echo "Labels updated on issue #$_n"
       ;;
 
@@ -4822,8 +4865,7 @@ print(json.dumps({
 }))
 ")"
       local _ci_resp
-      _ci_resp="$(_ga_req POST "$_API/issues" \
-        -H "Content-Type: application/json" -d "$_ci_payload")" || exit 1
+      _ci_resp="$(_ga_json POST "$_API/issues" "$_ci_payload")" || exit 1
       printf '%s' "$_ci_resp" | python3 -I -c "
 import json, sys
 d = json.load(sys.stdin)
@@ -4875,8 +4917,7 @@ print(json.dumps({
 }))
 ")"
       local _pr_resp
-      _pr_resp="$(_ga_req POST "$_API/pulls" \
-        -H "Content-Type: application/json" -d "$_pr_payload")" || exit 1
+      _pr_resp="$(_ga_json POST "$_API/pulls" "$_pr_payload")" || exit 1
       printf '%s' "$_pr_resp" | python3 -I -c "
 import json, sys
 d = json.load(sys.stdin)
@@ -4983,8 +5024,7 @@ print(json.load(sys.stdin).get('head',{}).get('ref',''))
       fi
       local _rev_payload
       _rev_payload="$(python3 -I -c "import json,sys; print(json.dumps({'body':sys.argv[1],'event':'APPROVE'}))" "$_rbody")"
-      _ga_req POST "$_API/pulls/$_n/reviews" \
-        -H "Content-Type: application/json" -d "$_rev_payload" >/dev/null
+      _ga_json POST "$_API/pulls/$_n/reviews" "$_rev_payload" >/dev/null
       echo "Approved PR #$_n"
       ;;
 
@@ -4997,7 +5037,7 @@ print(json.load(sys.stdin).get('head',{}).get('ref',''))
         return 0
       fi
       local _cur_labels
-      _cur_labels="$(_ga_req GET "$_API/issues/$_n/labels")"
+      _cur_labels="$(_ga_req GET "$_API/issues/$_n/labels")" || exit 1
       local _new_payload
       _new_payload="$(printf '%s' "$_cur_labels" | \
         ADD_LABELS="$ADD_LABELS" REMOVE_LABELS="$REMOVE_LABELS" python3 -I -c "
@@ -5011,8 +5051,7 @@ for l in add:
 labels = [l for l in labels if l not in rem]
 print(json.dumps({'labels': labels}))
 ")"
-      _ga_req PUT "$_API/issues/$_n/labels" \
-        -H "Content-Type: application/json" -d "$_new_payload" >/dev/null
+      _ga_json PUT "$_API/issues/$_n/labels" "$_new_payload" >/dev/null
       echo "Labels updated on PR #$_n"
       ;;
 
@@ -5084,8 +5123,7 @@ for c in data.get('check_runs', []):
       esac
       local _merge_payload
       _merge_payload="$(python3 -I -c "import json,sys; print(json.dumps({'merge_method':sys.argv[1],'delete_branch':True}))" "$_mm")"
-      _ga_req PUT "$_API/pulls/$_n/merge" \
-        -H "Content-Type: application/json" -d "$_merge_payload" >/dev/null
+      _ga_json PUT "$_API/pulls/$_n/merge" "$_merge_payload" >/dev/null
       echo "Merged PR #$_n"
       ;;
 
@@ -5107,9 +5145,7 @@ try: print(json.load(sys.stdin).get('head', {}).get('sha', ''))
 except Exception: print('')
 " 2>/dev/null)"
       [ -z "$_ub_sha" ] && { echo "pipeline-vcs: update-branch: could not resolve head SHA for PR #$_ub_n" >&2; exit 1; }
-      _ga_req PUT "$_API/pulls/$_ub_n/update-branch" \
-        -H "Content-Type: application/json" \
-        -d "{\"expected_head_sha\":\"$_ub_sha\"}" >/dev/null
+      _ga_json PUT "$_API/pulls/$_ub_n/update-branch" "{\"expected_head_sha\":\"$_ub_sha\"}" >/dev/null
       echo "update-branch: PR #$_ub_n branch updated with its base"
       ;;
 
@@ -5146,8 +5182,7 @@ print(d.get('merged_at') or '')
       local _payload
       _payload="$(python3 -I -c "import json,sys; print(json.dumps({'body':sys.argv[1]}))" "$_body")"
       local _gacp_resp
-      _gacp_resp="$(_ga_req POST "$_API/issues/$_n/comments" \
-        -H "Content-Type: application/json" -d "$_payload")" || exit 1
+      _gacp_resp="$(_ga_json POST "$_API/issues/$_n/comments" "$_payload")" || exit 1
       printf '%s' "$_gacp_resp" | python3 -I -c "
 import json, sys
 d = json.load(sys.stdin)
@@ -5301,8 +5336,7 @@ except Exception:
       fi
       while IFS= read -r _run_id; do
         [ -n "$_run_id" ] && \
-          _ga_req POST "$_API/actions/runs/$_run_id/rerun-failed-jobs" \
-            -H "Content-Type: application/json" -d '{}' >/dev/null
+          _ga_json POST "$_API/actions/runs/$_run_id/rerun-failed-jobs" '{}' >/dev/null
       done <<< "$_failed_ids"
       echo "rerun-ci: re-ran failed runs for PR #$_n ($_sha)"
       ;;
@@ -5475,8 +5509,7 @@ json.dump({'comments': comments}, sys.stdout)
         local _json_body
         _json_body="$(python3 -I -c "import json,sys; print(json.dumps({'body': sys.argv[1]}))" "$2")"
         local _resp
-        _resp="$(_ga_req POST "$_API/issues/$1/comments" \
-          -H "Content-Type: application/json" -d "$_json_body")"
+        _resp="$(_ga_json POST "$_API/issues/$1/comments" "$_json_body")"
         if [ -z "$_resp" ]; then
           return 1
         fi
