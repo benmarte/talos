@@ -170,11 +170,16 @@ assert_contains "$out" "limits.warn_at${TAB}0.8${TAB}default" "no config file: t
 assert_contains "$out" "notifications.buzz_channel${TAB}BZ${TAB}env" "no config file: the env layer still applies"
 unset PIPELINE_BUZZ_CHANNEL
 
-# ── --dump-layers is an alias for `--show --origin-only agents.` ─────────────
+# ── --dump-layers keeps its old output (install.sh's model hint reads it) ────
 reset_cfg
 glob_json '{"agents":{"model":"sonnet"},"limits":{"warn_at":0.5}}'
 proj_json '{"agents":{"roles":{"qa":{"model":"haiku"}}}}'
-assert_eq "$(bash "$CFG_SH" --show --origin-only agents. 2>/dev/null)" "$(bash "$CFG_SH" --dump-layers 2>/dev/null)" "--dump-layers prints what --show --origin-only agents. prints"
+assert_eq "$(printf 'agents.model\tglobal\nagents.roles.qa.model\tproject')" "$(bash "$CFG_SH" --dump-layers 2>/dev/null)" "--dump-layers: agents.* file layers only, project|global names"
+reset_cfg
+assert_eq "" "$(bash "$CFG_SH" --dump-layers 2>/dev/null)" "--dump-layers: no config file, no rows (a default row would hide install.sh's model hint)"
+export PIPELINE_BUZZ_CHANNEL=BZ
+assert_eq "" "$(bash "$CFG_SH" --dump-layers 2>/dev/null)" "--dump-layers: env and default rows are not listed"
+unset PIPELINE_BUZZ_CHANNEL
 assert_eq "0" "$(grep -c -- '--dump-layers' "$AGENT_SH")" "pipeline-agent.sh no longer calls --dump-layers"
 assert_eq "1" "$(grep -c -- 'pipeline-config.sh" --show agents\.' "$AGENT_SH")" "pipeline-agent.sh --resolve-all calls --show agents."
 
