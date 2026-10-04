@@ -44,7 +44,8 @@ assert_contains "$skill_flat" 'removing `pipeline:blocked` (each block grants on
   "budget stop: how the owner resumes"
 assert_contains "$skill_flat" 'BLOCKED_BY="talos.pipeline.yml:limits.tokens_per_issue (explicit)"' \
   "budget stop: blocked comment BLOCKED_BY"
-assert_contains "$skill_flat" 'SPEND_COMMENT' "Step 0: spend.comment variable"
+assert_eq "spend.comment true" "$(talos_env_key SPEND_COMMENT) $(talos_env_default SPEND_COMMENT)" "Step 0: spend.comment variable (read by talos.sh env, default true)"
+assert_contains "$skill_flat" 'SPEND_COMMENT' "Step 3 names SPEND_COMMENT"
 
 # No upsert-pr-comment use without a stdin body file; no cost output piped
 # straight into it (the empty-body case would exit 1 on every event-less stage).

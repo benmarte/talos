@@ -288,8 +288,11 @@ assert_eq "0" "$(grep -c 'evidence:start' "$TPL" || true)" "template: it is plai
 # ---- wording: the playbook --------------------------------------------------
 sk_ev="$(ev_text "$SKILL" | norm)"
 shas() { case "$sk_ev" in *"$1"*) pass "SKILL.md: $2" ;; *) fail "SKILL.md: $2" "missing: $1" ;; esac; }
-shas 'EVIDENCE_LINE="$(bash scripts/pipeline-evidence.sh enabled)"; EVIDENCE_RC=$?' "Step 0 is one enabled call"
-shas 'EVIDENCE_ENABLED is true only when `EVIDENCE_RC` is 0' "EVIDENCE_ENABLED comes from the exit code"
+# Step 0 is `talos.sh env` (#465): it makes the one enabled call and turns its exit code into EVIDENCE_ENABLED.
+assert_contains "$(cat "$TALOS_ROOT/scripts/talos.sh")" 'EVIDENCE_LINE' "Step 0 is one enabled call: talos.sh env prints EVIDENCE_LINE"
+assert_eq "1" "$(grep -c 'pipeline-evidence.sh" enabled' "$TALOS_ROOT/scripts/talos.sh")" "Step 0 is one enabled call: talos.sh env makes exactly one pipeline-evidence.sh enabled call"
+shas '`EVIDENCE_ENABLED` is `true` only when evidence is on' "EVIDENCE_ENABLED is true only when evidence is on"
+shas 'then `EVIDENCE_LINE` is `evidence on when=<user-facing|always> mode=<command|agent>`' "EVIDENCE_LINE is the enabled call's line"
 shas 'pipeline: evidence ignored: <reason>' "the unsupported-provider warning is relayed once"
 shas 'never a re-stamp: add `Evidence: <EVIDENCE_LINE>` after `Prior stage summary:`' "QA dispatch: the Evidence: line after Prior stage summary, never a re-stamp"
 shas 'append the content of `<scripts dir>/../templates/prompts/qa-evidence.md` to the prompt' "QA dispatch: the template is appended, resolved from the scripts dir"

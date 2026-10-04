@@ -41,39 +41,17 @@ Check per role, not once for all eight — a repo may override only `developer` 
 
 The neutral path (2) applies to the adapter and inline paths only. The native Claude path never reads it: Claude Code resolves `Agent(subagent_type: ...)` from its own directories, so a role that runs natively must be overridden in `.claude/agents/<role>.md`. `bash scripts/pipeline-agent.sh --resolve-all` warns on stderr when a neutral file exists but is shadowed by a `.claude/agents` file, or would be ignored because that role runs on the native path.
 
-**Startup diagnostic:** once per run, print a single line naming the two resolved sources above — the scripts directory already resolved, and which of the three subagent-name cases applies. This is visibility only: it does not change which source is used, and does not alter the per-role decision logic above. It describes the native path, so it only ever looks at `.claude/agents/`; the adapter and inline paths also read `.agents/talos/agents/` (see "Role profile precedence").
-
-```bash
-if [ -f .claude/agents/developer.md ]; then
-  agent_source="repo override (.claude/agents/)"
-elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
-  agent_source="plugin (talos:<role>, \$CLAUDE_PLUGIN_ROOT set)"
-else
-  agent_source="global/bare (~/.claude/agents/ or none)"
-fi
-echo "talos: scripts=<resolved scripts dir>  agents=$agent_source"
-```
+**Startup diagnostic:** once per run, print `talos: scripts=<SCRIPTS_DIR>  agents=<AGENT_SOURCE>` from the Step 0 output: the scripts directory and which of the three subagent-name cases applies. Visibility only; it describes the native path, so it only looks at `.claude/agents/` (the adapter and inline paths also read `.agents/talos/agents/`, see "Role profile precedence").
 
 **Harness compatibility** — driven by config `agents.subagents` (`auto` | `true` | `false`) and `agents.runner` (`claude` | `pi` | `codex` | `gemini` | `antigravity` | `custom`). `auto` = `true` when the *global* runner is `claude`, otherwise `false`; if `agents.subagents` is unset, behave as `auto`.
 
-**Per-role runner override (#167):** the runner is resolved per role, not once for the whole pipeline. Before every spawn, on every harness path, resolve that role's effective runner: `agents.roles.<role>.runner` if set, else `agents.runner` (default `claude`) — run `bash scripts/pipeline-agent.sh --resolve <role>` for the one-line `runner=<r> runner_cmd=<c> model=<m> effort=<e>` answer instead of separate `pipeline-config.sh` lookups. On the native path (`subagents: true`), a role whose effective runner is `claude` spawns natively as below; a role whose effective runner is anything else spawns via `bash scripts/pipeline-agent.sh <role> - <<'TALOS_<rand>' ... TALOS_<rand>` instead, even while the rest of the pipeline stays native — this is a per-spawn decision, so two roles in the same run can take different paths. On that adapter path, `pipeline-agent.sh` exports the resolved effort as `TALOS_EFFORT` (empty when unset) alongside `TALOS_ROLE`, for a `runner_cmd` to map onto its own flag — no further orchestrator action needed for effort on this path.
+**Per-role runner override (#167):** the runner is resolved per role, not once for the whole pipeline. Before every spawn read the role's `agent.<role>.runner` from the Step 0 output (`agents.roles.<role>.runner` if set, else `agents.runner`, default `claude`; the underlying call is `bash scripts/pipeline-agent.sh --resolve <role>`). On the native path (`subagents: true`), a role whose runner is `claude` spawns natively as below; any other role spawns via `bash scripts/pipeline-agent.sh <role> - <<'TALOS_<rand>' ... TALOS_<rand>` instead, even while the rest of the pipeline stays native — a per-spawn decision, so two roles in one run can take different paths. On the adapter path `pipeline-agent.sh` exports the resolved effort as `TALOS_EFFORT` (empty when unset) alongside `TALOS_ROLE`, for a `runner_cmd` to map onto its own flag.
 
-- **`subagents: true`** (native subagents, e.g. Claude Code) — spawn them as each stage instructs, after the per-role runner check above sends it here. **Per-role model selection (native path, `claude`-routed roles only):** The Talos config is the only place a role's model is set — the shipped `agents/*.md` files carry no `model:` line. `pipeline-config.sh` answers from the layered config: the repo's own config sits over the user-level file (`${TALOS_HOME:-$HOME/.talos}/talos.pipeline.*`, `agents.*` keys only), and where both set a key the project config wins. Before spawning each subagent, resolve its model in three steps:
-  1. Read `agents.roles.<role>.model` via `bash scripts/pipeline-config.sh agents.roles.<role>.model` (substitute the actual role name, e.g. `agents.roles.developer.model`).
-  2. If empty, read `agents.model` via `bash scripts/pipeline-config.sh agents.model`.
-  3. If still empty, omit `model:` from the spawn call — the subagent inherits the session model.
-
-  When a non-empty value is found at step 1 or 2, pass it as `model: "<value>"` in the Agent spawn call. A config with no model at either level (in either layer) needs no lookup change — omit `model:` for all spawns. `bash scripts/pipeline-agent.sh --resolve-all` prints what every role resolves to and which layer (`project`, `global`, `session default`) decided it.
+- **`subagents: true`** (native subagents, e.g. Claude Code) — spawn them as each stage instructs, after the per-role runner check above sends it here. **Per-role model selection (native path, `claude`-routed roles only):** the Talos config is the only place a role's model is set — the shipped `agents/*.md` files carry no `model:` line. `agent.<role>.model` in the Step 0 output is `agents.roles.<role>.model`, else `agents.model`, from the layered config (the repo's config over the user-level file `${TALOS_HOME:-$HOME/.talos}/talos.pipeline.*`, `agents.*` keys only; the project config wins where both set a key). Present: pass `model: "<value>"` in the Agent spawn call. Absent: omit `model:`, and the subagent inherits the session model. `bash scripts/pipeline-agent.sh --resolve-all` prints what every role resolves to and which layer (`project`, `global`, `session default`) decided it.
 
   **Alias rule:** config values may be a full model ID or one of the aliases `opus`, `sonnet`, `haiku`, and are stored as typed. When this harness's Agent tool accepts only aliases (a full ID is rejected), map a full ID to its family alias before spawning — an ID containing `opus` becomes `opus`, `sonnet` becomes `sonnet`, `haiku` becomes `haiku`. The config value itself is never rewritten; only the `model:` passed to the spawn call is.
 
-  Examples:
-  - `agents.roles.developer.model` absent; `agents.model = haiku` → `Agent(subagent_type: "talos:developer", model: "haiku", ...)`
-  - `agents.roles.reviewer.model = opus` → `Agent(subagent_type: "talos:reviewer", model: "opus", ...)`
-  - `agents.roles.qa.model = <a full Sonnet ID>` on an aliases-only harness → `Agent(subagent_type: "talos:qa", model: "sonnet", ...)`
-  - No model at either level → `Agent(subagent_type: "talos:docs", ...)` (no `model:` key)
-
-  **Per-role effort selection (native path, `claude`-routed roles only, #271, #445):** no per-spawn effort parameter exists, and the orchestrator never writes a tracked file, so config effort is advisory here. Before a spawn run `bash scripts/pipeline-agent.sh --check-effort <role>` and relay the one notice line it prints, if any (nothing when config is empty or matches the role file's `effort:`); the spawn is unchanged either way. The adapter path applies it via `TALOS_EFFORT`.
+  **Per-role effort selection (native path, `claude`-routed roles only, #271, #445):** there is no per-spawn effort parameter and the orchestrator never writes a tracked file, so config effort is advisory here. Before a spawn, relay `agent.<role>.effort_notice` if the Step 0 output has one (`pipeline-agent.sh --check-effort <role>` prints it, nothing when config is empty or matches the role file's `effort:`); the spawn is unchanged. The adapter path applies it via `TALOS_EFFORT`.
 - **`subagents: false` + `runner: pi`** — **inline mode**: you (the orchestrator) act as each stage role yourself, one role per turn. pi has no subagents and does NOT use `pipeline-agent.sh`. For every stage the playbook says "spawn a subagent with this prompt":
   1. Find the role profile with `bash scripts/pipeline-agent.sh --resolve-profile <role>` — it prints one absolute path (the same lookup a stage run uses: see "Subagent names"), and exits non-zero with the locations it searched when there is none. Read that file. Strip the YAML frontmatter — it is Claude Code metadata. Use only the body.
   2. Adopt the role: treat the role body + the stage prompt as your current instructions and carry them out **inline with your tools** (read/write/edit/bash). Do everything the role would do.
@@ -102,167 +80,34 @@ echo "talos: scripts=<resolved scripts dir>  agents=$agent_source"
 
 ## Step 0 — Read config
 
-Find the project config file in this order:
-1. `$PIPELINE_CONFIG` env var (absolute path)
-2. `./talos.pipeline.yml`
-3. `./pipeline.yaml`
+Run this once, before Step 1, and keep the answer for the whole run:
 
-Read each value with: `bash scripts/pipeline-config.sh <key>` (a key that is not set prints its documented default)
+```bash
+bash scripts/talos.sh env
+```
 
-Store these for the run:
-- BASE_BRANCH (default: detect with git)
-- VCS_PROVIDER (`vcs.provider`, default: `github`)
-- BOARD_ENABLED, PROJECT_NUMBER, BOARD_OWNER
-- MAX_PARALLEL, MAX_FIX_ATTEMPTS, LABEL_FILTER, SKIP_LABELS
-- MERGE_AUTO (`merge.auto`, default `true`) — when `false`, Step 4 stops at `pipeline:approved` and hands the merge to a human
-- MERGE_AUTO_SYNC (`merge.auto_sync`, default `true`) — when `true`, Step 4's post-merge sibling sync block updates every other open pipeline PR's branch with the new base (#289); `false` skips it
-- MERGE_REQUIRED_CHECKS (`merge.required_checks`, default `[]`, newline-separated)
-- VERIFY_COMMANDS (newline-separated list from `verify`)
-- VERIFY_QA_MODE (`verify.qa_mode`, default `ci` when `merge.required_checks` is
-  non-empty, else `local`): `bash scripts/pipeline-config.sh verify.qa_mode`
-  — `pipeline-config.sh` applies the `merge.required_checks`-derived default
-  itself.
-  `ci` means QA trusts CI (`pr-checks`) instead of re-running `verify:` locally;
-  `local` means QA runs the full `verify:` list once, as before. An explicit
-  `verify.qa_mode: ci` with an empty or absent `merge.required_checks` list is
-  treated as `local`, not `ci` — trusting CI as the oracle for zero required
-  checks would let QA pass vacuously, so `pipeline-config.sh` fails this
-  combination closed to `local` and warns on stderr; QA always sees the
-  resolved value here, never the raw config.
-- VERIFY_TARGETED (`verify.targeted`, default `true`): whether the developer
-  runs only the tests covering its changed files while iterating (`true`), or
-  the full `verify:` list on every iteration (`false`). Either way the
-  developer runs the full `verify:` list exactly once before the final commit.
-- VERIFY_CI_WAIT_S (`verify.ci_wait_s`, default `900`): seconds QA waits in the
-  foreground, under `qa_mode: ci`, for `merge.required_checks` to go green
-  before failing closed.
-- VERIFY_TIMEOUT_MS (`verify.timeout_ms`, default `600000`): milliseconds the
-  developer and QA prompts substitute as `<VERIFY_TIMEOUT_MS>` into the
-  foreground rule placed next to every verify and CI-wait instruction (#205)
-  — the explicit timeout a stage must pass to its verify command instead of
-  backgrounding it. A non-integer or non-positive config value is rejected by
-  `pipeline-config.sh` (stderr warning, falls back to this default).
-- Each role toggle: ROLE_VALIDATOR, ROLE_PM, ROLE_QA, ROLE_REVIEWER, ROLE_SECURITY, ROLE_DOCS (all default true)
-- ROLE_PLANNER (`roles.planner`, default `false`) — off by default; zero behavior change when absent or false
-- ROLE_ADVERSARIAL (`roles.adversarial`, default `false`, #237) — off by
-  default; zero behavior change when absent or false (no dispatch, no
-  `adversarial:approved` requirement, no stale-role handling). When `true`,
-  Step 3e Phase 3 dispatches it after security, typically paired with
-  `agents.roles.adversarial.runner: custom` + a local `runner_cmd`.
-- ROLE_PM_SKIP_WHEN_SPEC_PRESENT (`roles.pm_skip_when_spec_present`, default
-  `true`) — when `true` (and `roles.pm` is also `true`), Step 3b skips
-  spawning the PM subagent for an issue whose body already carries a usable
-  spec (see Step 3b). Set to `false` to force PM to always run on
-  `pipeline:confirmed` issues, ignoring this shortcut.
-- ROLE_CHANGELOG_FRAGMENTS (`roles.changelog_fragments`, default `false`) — when `true`, the docs stage writes `docs/CHANGELOG.d/<issue>.md` fragments instead of editing `CHANGELOG.md` (#290), and Step 4's post-merge bookkeeping runs `bash scripts/pipeline-changelog.sh assemble` after each merge that added fragments
-- ROLE_DOCS_MODE (`roles.docs_mode`, default `auto`) — only meaningful when
-  `roles.docs` is also `true`. `auto`: Step 3e Phase 1 checks the PR's changed
-  paths (`pr-files`) before dispatching docs; when the developer's own diff
-  already covers CHANGELOG + README/docs, or touches only
-  `scripts/**`/`tests/**` with a CHANGELOG entry present, no docs subagent is
-  dispatched at all — `docs:done` is stamped directly. When docs does dispatch
-  under `auto` (the gate did not match), its prompt receives only the changed
-  doc-relevant paths and the CHANGELOG hunk, not the full PR diff. `always`:
-  restores the pre-#200 behavior — docs always dispatches, always reads the
-  full diff via `diff-pr`.
-- STATUS_ENABLED (`status.enabled`, default `false`, #333), STATUS_FILE
-  (`status.file`, default `TALOS_STATUS.md`), STATUS_FRAGMENTS_DIR
-  (`status.fragments_dir`, default `docs/status.d`). With `STATUS_ENABLED =
-  false` none of the status steps run: every status instruction below says
-  "`STATUS_ENABLED = true`" and is skipped otherwise.
-- COMMENTS_ENABLED, COMMENTS_HEADER_TPL, COMMENTS_TMPL_DIR
-- SPEND_COMMENT (`spend.comment`, default `true`, #334) — `false` skips the PR spend comment (Rule 3 spend block); `limits.tokens_per_issue` is read by `pipeline-budget.sh` itself
-- AGENTS_RUNNER (`agents.runner`, default `claude`), AGENTS_SUBAGENTS (`agents.subagents`, default `auto`) — select the harness execution mode (see Harness compatibility)
-- FILE_SOURCE_PATH (`vcs.file.source.path`, for file mode)
-- ISOLATION (`execution.isolation`, default `worktree`) — how each stage gets its working copy; validated immediately after config is read
-- WORKTREE_WARN_THRESHOLD (`execution.worktree_warn_threshold`, default `10`) — non-active worktree count above which Step 5 relays a warning
+Its output is the only config read in this playbook (project config over the user-level file, defaults applied, `ISOLATION` validated):
+
+- `KEY=value`, one setting per line, under the variable names used below (`MAX_PARALLEL`, `VERIFY_COMMANDS`, `ROLE_QA`, ...). A list joins its items with the two characters `\n`; a control byte prints as `\xNN`. `VERIFY_QA_MODE` is the resolved value. With `STATUS_ENABLED = false` none of the status steps run: every status instruction below says "`STATUS_ENABLED = true`" and is skipped otherwise.
 <!-- pr-draft:start -->
-- PR_DRAFT (`pr.draft`, default `true`, #332, #435) — `true` switches Step 3 to
-  the **Draft stage order** (see "Draft stage order" before Step 3d): the
-  developer opens a DRAFT PR, every stage that needs no CI runs while it is a
-  draft, and `ready-pr` triggers the one CI run. Resolve it with
-  `PR_DRAFT="$(bash scripts/pipeline-draft-check.sh resolve)"` (`true` or
-  `false`; show its one stderr warning line, if any, once). Talos never edits CI
-  config.
+- `PR_DRAFT` (`pr.draft`, default `true`, #332, #435) is `true` or `false`; `true` switches Step 3 to the **Draft stage order** (see before Step 3d). It comes from `pipeline-draft-check.sh resolve`, the one resolver: show its one stderr warning line, if any, once. Talos never edits CI config.
 <!-- pr-draft:end -->
 <!-- evidence:start -->
-- EVIDENCE_ENABLED, EVIDENCE_LINE (`evidence.*`, default off, #352): `EVIDENCE_LINE="$(bash scripts/pipeline-evidence.sh enabled)"; EVIDENCE_RC=$?`. EVIDENCE_ENABLED is true only when `EVIDENCE_RC` is 0 (then `EVIDENCE_LINE` is `evidence on when=<user-facing|always> mode=<command|agent>`); otherwise nothing evidence-related happens. A stderr line `pipeline: evidence ignored: <reason>` is left as is: warn once, evidence off.
+- `EVIDENCE_ENABLED` is `true` only when evidence is on (default off, #352); then `EVIDENCE_LINE` is `evidence on when=<user-facing|always> mode=<command|agent>`. Otherwise nothing evidence-related happens. A stderr line `pipeline: evidence ignored: <reason>` is left as is: warn once, evidence off.
 <!-- evidence:end -->
+- `agent.<role>.runner|runner_cmd|model|effort|fallback|effort_notice` (an absent field is empty): see Harness compatibility.
+- `warn reason=<r>`: relay it once and continue; `resolve-failed role=<role>` means that role has no `agent.` lines, so do not spawn it (`bash scripts/pipeline-agent.sh --resolve <role>` shows the error).
+- `stop reason=<r>` (non-zero exit: `isolation-invalid`, `config-unreadable`, `scripts-missing`, ...): abort the run, print the line and the stderr error, process no issues.
 
 **File mode vs VCS mode:**
 - If `VCS_PROVIDER = file`: no PRs are opened; developer commits to branch; QA/reviewer/security/docs stages are skipped; board calls are skipped (the file IS the board). See the File Mode section.
 - All other providers: full pipeline as described below.
 
-**Config defaults:**
-- `base_branch`: `git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|.*/||'` or `main`
-- `board.enabled`: false
-- `roles.*`: all true
-- `roles.docs_mode`: `auto`
-- `roles.changelog_fragments`: false (#290 — when `true`, docs writes
-  `docs/CHANGELOG.d/<issue>.md` fragments instead of editing `CHANGELOG.md`,
-  and Step 4 assembles them after each merge)
-- `merge.auto`: true
-- `merge.auto_sync`: true
-- `merge.method`: squash
-- `merge.required_checks`: []
-- `verify.qa_mode`: `ci` when `merge.required_checks` is non-empty, else `local`
-  (an explicit `ci` with an empty/absent `merge.required_checks` list is
-  itself resolved to `local`, never a vacuous `ci` pass)
-- `verify.targeted`: `true`
-- `verify.ci_wait_s`: `900`
-- `verify.timeout_ms`: `600000`
-- `issues.label_filter`: pipeline:ready (an additional label requirement; see Step 2)
-- `issues.max_parallel`: 1
-- `limits.max_fix_attempts`: 3
-- `execution.isolation`: worktree
-- `execution.worktree_warn_threshold`: 10
-- `status.enabled`: false (#333)
-<!-- pr-draft:start -->
-- `pr.draft`: true (#332, #435; resolved by the PR_DRAFT call above)
-<!-- pr-draft:end -->
-
 #### Concurrency and verify: isolation
 
-**`issues.max_parallel > 1` with compose-based `verify:` commands requires concurrency-safe scripts.**
+**`issues.max_parallel > 1` with compose-based `verify:` commands requires concurrency-safe scripts.** Under `isolation: worktree` (the default) each developer and QA stage runs in its own checkout, but Talos does NOT manage Docker/compose project names, port allocations, or shared scratch directories (`isolation: branch` enforces `max_parallel: 1`, so it has no contention). Observed failures all produced results that look correct but describe the wrong worktree: a verify script overwritten by another agent mid-run (a green log about the wrong worktree), `--no-deps` runs that passed while DB-backed tests never ran, and a container recreated mid-run. Verify scripts SHOULD assert their environment first: exit non-zero when `${TALOS_ISSUE_NUMBER:-}` is not the issue they expect. Talos exports `TALOS_ISSUE_NUMBER` and `TALOS_WORKTREE_PATH` into each stage's environment: on the native path (`subagents: true`) through the task prompt, which is instruction-based and not airtight (a stage that ignores it runs verify without the exports); on the adapter path as real shell variables via `TALOS_ISSUE=<N> pipeline-agent.sh <role> "<prompt>"`. Consuming projects derive `COMPOSE_PROJECT_NAME` and port offsets from `TALOS_ISSUE_NUMBER`; Talos supplies no derived values. **Without this, a degraded run will report as clean.** The default (`max_parallel: 1`) needs no action.
 
-Under `isolation: worktree` (the default), Talos provides filesystem isolation — each developer and QA stage runs in its own checkout. It does NOT manage Docker/compose project names, port allocations, or shared scratch directories. (`isolation: branch` serializes stages by enforcing `max_parallel: 1`, so compose contention does not apply.) When two or more stages run verify commands simultaneously against a shared compose stack, the following failures have been observed (all of which produced results that look correct but describe the wrong worktree):
-
-- **Script collision:** one agent's verify script overwritten by another's mid-run, producing a green log about the wrong worktree.
-- **Container contention:** `--no-deps` runs completing successfully while DB-backed tests never ran.
-- **Recreate race:** a container restarted mid-run, causing unrelated commands to fail at random.
-
-To protect against this, verify scripts SHOULD assert their environment before proceeding:
-
-```bash
-if [ "${TALOS_ISSUE_NUMBER:-}" != "$EXPECTED_ISSUE" ]; then
-  echo "ERROR: running in wrong environment (expected issue $EXPECTED_ISSUE, got '${TALOS_ISSUE_NUMBER}')" >&2
-  exit 1
-fi
-```
-
-Talos exports `TALOS_ISSUE_NUMBER` and `TALOS_WORKTREE_PATH` into each stage's environment. On the native path (`subagents: true`), these are injected via the task prompt — this is instruction-based and not airtight; a stage that ignores the instruction runs verify without the exports. On the adapter path (`subagents: false`, `pipeline-agent.sh`), they are exported as real shell variables via `TALOS_ISSUE=<N> pipeline-agent.sh <role> "<prompt>"`. Consuming projects derive `COMPOSE_PROJECT_NAME` and port offsets from `TALOS_ISSUE_NUMBER` — Talos does not supply derived values.
-
-**Without this, a degraded run will report as clean.** The default (`max_parallel: 1`) has no contention and requires no action.
-- `verify`: [] (no verify commands)
-- `comments.enabled`: true
-- `comments.header`: `**Agent:** {role} (talos)`
-- `comments.templates_dir`: `templates/comments`
-- `notifications.threading`: true
-
-**Startup isolation gate (immediately after config is read, before Step 1):**
-
-```bash
-bash scripts/pipeline-isolation.sh validate
-```
-
-If this exits non-zero (invalid or unimplemented isolation mode, or `isolation: branch` with `max_parallel > 1`): abort the run — print the error from stderr, do not begin processing issues.
-
-Valid modes:
-- `worktree` (default) — unchanged; each developer/QA stage gets a private `git worktree`. Stage profiles (QA, docs; reviewer and security only if the harness happens to give them one) tag their worktree with `pipeline-worktree.sh tag <N>` so it can be found and removed once the PR merges or closes (#240) — see the developer/QA/docs prompts below.
-- `branch` — stages run in the orchestrator's checkout; requires `max_parallel: 1`.
-- `checkout` — recognised but **refused**: exits 1 with a clear "not yet implemented" message.
-- Any other value — exits 1 naming valid values.
-
+**Isolation (`ISOLATION`):** `worktree` (default) gives each developer/QA stage a private `git worktree`; stage profiles (QA, docs; reviewer and security only if the harness happens to give them one) tag theirs with `pipeline-worktree.sh tag <N>` so it is removed once the PR merges or closes (#240). `branch` runs stages in the orchestrator's checkout and requires `max_parallel: 1`. `checkout` and any other value are refused (`stop reason=isolation-invalid`).
 ---
 
 ## Stage comment convention

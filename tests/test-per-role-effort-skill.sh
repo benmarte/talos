@@ -20,8 +20,8 @@ SKILL_MD="$TALOS_ROOT/skills/pipeline/SKILL.md"
 harness_section="$(sed -n '/^\*\*Harness compatibility\*\*/,/^\*\*Subagent names/p' "$SKILL_MD" 2>/dev/null)"
 [ -n "$harness_section" ] || harness_section="$(cat "$SKILL_MD")"
 
-assert_contains "$harness_section" "model=<m> effort=<e>" \
-  "SKILL.md --resolve reference line includes effort=<e>"
+assert_contains "$harness_section" 'agent.<role>.runner|runner_cmd|model|effort|' \
+  "SKILL.md Step 0 output lists the per-role runner, model and effort fields (the --resolve answer)"
 assert_contains "$harness_section" "TALOS_EFFORT" \
   "SKILL.md harness-compatibility section documents TALOS_EFFORT for the adapter path"
 
@@ -51,16 +51,9 @@ assert_not_contains "$effort_block_flat" "pipeline-config.sh agents.roles" \
 assert_not_contains "$effort_block_flat" "rewrite that file" \
   "Per-role effort selection block no longer rewrites the role file's frontmatter"
 
-# Byte-count ceilings (#445): SKILL.md was 134465 bytes before the effort prose
-# became a verb call. A ceiling just under that keeps it from growing back
-# without making every unrelated edit trip the test.
-skill_bytes="$(wc -c < "$SKILL_MD" | tr -d ' ')"
+# Byte-count ceiling (#445): the effort block stays small. The whole-file size
+# cap lives in one place, tests/test-skill-size.sh (#465).
 effort_block_bytes="$(printf '%s' "$effort_block" | wc -c | tr -d ' ')"
-if [ "$skill_bytes" -lt 134465 ]; then
-  pass "SKILL.md is shorter than before the effort block became a verb call ($skill_bytes < 134465 bytes)"
-else
-  fail "SKILL.md is shorter than before the effort block became a verb call" "$skill_bytes bytes"
-fi
 if [ "$effort_block_bytes" -lt 900 ]; then
   pass "Per-role effort selection block stays under 900 bytes ($effort_block_bytes)"
 else

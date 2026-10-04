@@ -88,13 +88,13 @@ steps_3c_4() { awk '/^### 3c\. /{p=1} /^## Step 5 /{p=0} p'; }
 # step1_text: Step 1 (reconcile / resume), up to "## Step 2 —".
 step1_text() { awk '/^## Step 1 — /{p=1} /^## Step 2 — /{p=0} p'; }
 
-# step0_lists: Step 0's two lists -- "Store these for the run:" (the config
-# values) up to "**File mode vs VCS mode:**", and "**Config defaults:**" up to
-# "#### Concurrency and verify". The pr-draft blocks inside them (PR_DRAFT and
-# the `pr.draft: false` default) are stripped before comparing.
+# step0_lists: Step 0 -- the one `talos.sh env` call and its output contract (#465;
+# the config list and the defaults list it replaced now live in the script and
+# are pinned by tests/test-talos-env.sh), from "## Step 0" up to "#### Concurrency
+# and verify". The pr-draft blocks inside it (the PR_DRAFT bullet) are stripped
+# before comparing.
 step0_lists() {
-  awk '/^Store these for the run:/{p=1} /^\*\*File mode vs VCS mode:\*\*/{p=0}
-       /^\*\*Config defaults:\*\*/{p=1} /^#### Concurrency and verify/{p=0} p'
+  awk '/^## Step 0 — /{p=1} /^#### Concurrency and verify/{p=0} p'
 }
 
 # regen_fixtures: rewrite the three fixtures from $SKILL with blocks stripped.
@@ -137,7 +137,7 @@ check_step1_unchanged() {  # $1 = SKILL.md
   [ "$(strip_draft "$1" | step1_text)" = "$(cat "$FIXTURE_STEP1")" ]
 }
 
-# Step 0's config list and defaults list (the two otherwise unguarded blocks).
+# Step 0's env call and output contract (an otherwise unguarded block).
 check_step0_unchanged() {  # $1 = SKILL.md
   [ "$(strip_draft "$1" | step0_lists)" = "$(cat "$FIXTURE_STEP0")" ]
 }
@@ -160,14 +160,14 @@ check_no_new_verb_when_unset() {  # $1 = SKILL.md
 markers_ok "$SKILL"; assert_eq "0" "$?" "default unchanged: pr-draft markers are paired, un-nested and present"
 assert_fixture "default unchanged: Steps 3c-4 with pr-draft blocks stripped equal the fixture" check_default_unchanged "$FIXTURE" steps_3c_4
 assert_fixture "default unchanged: Step 1 with pr-draft blocks stripped equals the fixture" check_step1_unchanged "$FIXTURE_STEP1" step1_text
-assert_fixture "default unchanged: Step 0 config list and defaults list with pr-draft blocks stripped equal the fixture" check_step0_unchanged "$FIXTURE_STEP0" step0_lists
+assert_fixture "default unchanged: Step 0 (the env call and its contract) with pr-draft blocks stripped equals the fixture" check_step0_unchanged "$FIXTURE_STEP0" step0_lists
 check_no_new_verb_when_unset "$SKILL"; assert_eq "0" "$?" "default unchanged: no draft verb, --draft or --ci-runs outside a pr-draft block (pr.draft unset calls no new verb)"
 
 # ── Prose pins (all inside pr-draft blocks) ──────────────────────────────────
 DT="$(draft_text "$SKILL" | norm)"
 
-assert_contains "$DT" 'PR_DRAFT (`pr.draft`, default `true`, #332, #435)' "Step 0: PR_DRAFT is read from pr.draft, default true (#435)"
-in_order "$DT" 'Resolve it with' 'PR_DRAFT="\$\(bash scripts/pipeline-draft-check\.sh resolve\)"' 'show its one stderr warning line' 'Talos never edits CI config'
+assert_contains "$DT" '`PR_DRAFT` (`pr.draft`, default `true`, #332, #435)' "Step 0: PR_DRAFT is read from pr.draft, default true (#435)"
+in_order "$DT" 'It comes from `pipeline-draft-check\.sh resolve`, the one resolver' 'show its one stderr warning line' 'Talos never edits CI config'
 assert_eq "0" "$?" "Step 0: PR_DRAFT comes from the one resolver call, which owns the provider fallback and the CI warning (#435)"
 assert_not_contains "$DT" 'pipeline-config.sh pr.draft' "Step 0: no call site reads pr.draft on its own (#435)"
 in_order "$DT" 'Under `VERIFY_QA_MODE` `ci` the PR was just marked ready' 'run the gate below with `--wait <B>`' '`B` = `min\(VERIFY_CI_WAIT_S, VERIFY_TIMEOUT_MS/1000 - 30\)`' 'the Bash call.s timeout `VERIFY_TIMEOUT_MS`' '2, still pending at `B`, spawns QA'
@@ -576,11 +576,11 @@ assert_eq "0" "$r" "positive control: without the qa:pass strip the failure roun
 # Control 3: the default-unchanged check does detect a change to the default flow.
 awk '/^### 3d\. /{print; print "Dispatch QA without looking at the PR state."; next} 1' "$SKILL" > "$MUT"
 check_default_unchanged "$MUT"; assert_eq "1" "$?" "positive control: a line added to the default flow turns 'default unchanged' red"
-awk '/^- COMMENTS_ENABLED, COMMENTS_HEADER_TPL/{print "- A_NEW_DEFAULT_VALUE (added outside a pr-draft block)"} 1' "$SKILL" > "$MUT"
-check_step0_unchanged "$MUT"; assert_eq "1" "$?" "positive control: a line added to Step 0's config list turns 'Step 0 unchanged' red (#340)"
-awk '/^- `execution.worktree_warn_threshold`: 10/{print; print "- `a.new.default`: 1"; next} 1' "$SKILL" > "$MUT"
-check_step0_unchanged "$MUT"; assert_eq "1" "$?" "positive control: a line added to Step 0's defaults list turns 'Step 0 unchanged' red (#340)"
-sed 's/^- `pr.draft`: true (#332, #435; /- `pr.draft`: false (#332; /' "$SKILL" > "$MUT"
+awk '/^- `agent\.<role>\.runner\|/{print "- A_NEW_DEFAULT_VALUE (added outside a pr-draft block)"} 1' "$SKILL" > "$MUT"
+check_step0_unchanged "$MUT"; assert_eq "1" "$?" "positive control: a line added to Step 0's output contract turns 'Step 0 unchanged' red (#340)"
+awk '/^bash scripts\/talos\.sh env$/{print; print "bash scripts/pipeline-config.sh board.enabled"; next} 1' "$SKILL" > "$MUT"
+check_step0_unchanged "$MUT"; assert_eq "1" "$?" "positive control: a config read added beside the env call turns 'Step 0 unchanged' red (#340)"
+sed 's/^- `PR_DRAFT` (`pr.draft`, default `true`, #332, #435)/- `PR_DRAFT` (`pr.draft`, default `false`, #332)/' "$SKILL" > "$MUT"
 check_step0_unchanged "$MUT"; assert_eq "0" "$?" "control: a change inside a pr-draft block in Step 0 is not a default-text change (#340)"
 strip_draft "$SKILL" > "$MUT"; printf 'bash scripts/pipeline-vcs.sh ready-pr 42\n' >> "$MUT"
 check_no_new_verb_when_unset "$MUT"; assert_eq "1" "$?" "positive control: a draft verb outside a pr-draft block turns 'no new verb when unset' red"
