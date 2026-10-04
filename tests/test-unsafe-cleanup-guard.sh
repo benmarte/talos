@@ -116,6 +116,9 @@ def logical_lines(path):
         if not buf:
             start = ln
         body = line.rstrip("\n")
+        if not buf and body.lstrip().startswith("#"):
+            yield ln, body  # a comment never continues, even when it ends in a backslash
+            continue
         if body.endswith("\\"):
             buf += body[:-1] + " "
             continue
@@ -357,6 +360,8 @@ expect_ok "handler on a continuation line" 'D="$(mktemp -d)" \
 expect_flag "mktemp split across lines, no handler" 'D="$(mktemp -d \
   "$T/x.XXXXXX")"' R1
 
+expect_flag "a comment ending in a backslash does not swallow the next line" '# note \
+rm -rf "$X/sub"' R2
 expect_flag "rm -rf continued across lines" 'rm -rf \
   "$X/sub"' R2
 expect_flag "/bin/rm -rf var/sub" '/bin/rm -rf "$X/sub"' R2

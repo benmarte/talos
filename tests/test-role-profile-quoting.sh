@@ -64,9 +64,10 @@
 #      docs and templates are read by people; the files an agent loads as its
 #      instructions are the two globs scanned.
 #  14  the concrete `--summary "3 criteria verified"` in playbook Rule 3
-#      ACCEPTED in this PR, pending #481 (the `post_stage` stdin /
-#      `--summary-file` route); the positive control below keeps the quoted form
-#      flagged, and the negative controls pin the stdin and file forms safe.
+#      FIXED: Rule 3 now passes the summary on stdin
+#      (`--summary -`) or by `--summary-file` (#481); the positive control below
+#      keeps the quoted form flagged, and the negative controls pin the stdin and
+#      file forms safe.
 #
 # The scan FAILS when it scans zero files, a file is unreadable, or a path
 # contains a space and so was split (the file list is an array, always quoted).
@@ -378,5 +379,8 @@ PY
 )"
 assert_eq "9" "$(grep -c '^<!-- case ' "$FIX")" "the fixture holds nine pre-#340 unsafe recipes"
 assert_eq "" "$missing" "every one of the nine pre-#340 unsafe recipes is flagged (cases not flagged: ${missing:-none})"
+
+# Rule 3 wording: the run URL is bound to this repository (#452)
+assert_contains "$(tr '\n' ' ' < "$TALOS_ROOT/skills/pipeline/SKILL.md" | tr -s ' ')" "this repository's own, \`https://github.com/<owner>/<repo>/actions/runs/<digits>\` with \`<owner>/<repo>\` the slug you resolved" "Step 3d: the CI run URL must be this repository's own"
 
 finish
