@@ -107,6 +107,19 @@ for v in $(printf '%s\n' $printed | sort -u); do
   esac
 done
 
+# Reverse direction: every known harness is either a runner id or one of the
+# named harnesses that have glue but no runner of their own, so a harness added
+# to install.sh without a runner is a deliberate edit here.
+for h in $known; do
+  case "$runner_ids" in
+    *" $h "*) pass "known harness $h is a TALOS_RUNNERS id" ;;
+    *) case " cursor opencode generic " in
+         *" $h "*) pass "known harness $h is a documented harness without a runner" ;;
+         *) fail "known harness $h is a TALOS_RUNNERS id or a documented runner-less harness" ;;
+       esac ;;
+  esac
+done
+
 # ── header comment ───────────────────────────────────────────────────────────
 inst_src="$(cat "$INSTALL")"
 header="$(sed -n '1,/^set -euo/p' "$INSTALL")"
@@ -117,12 +130,23 @@ assert_contains "$header" "dangling symlink" "header states the dangling-symlink
 assert_contains "$header" "--harness claude forces" "header describes the override"
 
 # ── all Claude writes live in install_claude_adapter ─────────────────────────
-outside="$(awk '/^install_claude_adapter\(\) \{/{f=1} !f{print} f&&/^\}/{f=0}' "$INSTALL" | grep -v '^[[:space:]]*#')"
-if printf '%s\n' "$outside" | grep -Ev '^[[:space:]]*echo' | grep -E 'install_file|mkdir|cp |rm |>' | grep -Eq 'CLAUDE_DIR|CLAUDE_CONFIG_DIR'; then
-  fail "nothing outside install_claude_adapter writes under CLAUDE_DIR"
-else
-  pass "nothing outside install_claude_adapter writes under CLAUDE_DIR"
-fi
+# install_claude_adapter and the two helpers only it calls are the writers. Any
+# other non-comment line naming CLAUDE_DIR / CLAUDE_CONFIG_DIR must be an echo,
+# an assignment or a test, never a command that writes. (A same-line grep for
+# write verbs misses `dir="$CLAUDE_DIR/skills/x"` followed by `mkdir -p "$dir"`.)
+strip_fns() {  # $1... = function names whose bodies are dropped
+  awk -v names=" $* " '
+    match($0, /^[a-z_]+\(\) \{/) { n = substr($0, 1, RLENGTH - 4); if (index(names, " " n " ")) skip = 1 }
+    !skip { print }
+    skip && /^\}/ { skip = 0 }
+  ' "$INSTALL" | grep -v '^[[:space:]]*#'
+}
+outside="$(strip_fns install_claude_adapter install_claude_plugin handle_bare_skill)"
+stray="$(printf '%s\n' "$outside" | grep -E 'CLAUDE_DIR|CLAUDE_CONFIG_DIR' \
+  | grep -Ev '^[[:space:]]*(echo |CLAUDE_DIR=|CLAUDE_ADAPTER=|CLAUDE_WHY=|(el)?if \[ )' || true)"
+assert_eq "" "$stray" "nothing outside the Claude adapter functions names CLAUDE_DIR except decisions and echoes"
+helper_calls="$(strip_fns install_claude_adapter | grep -E '^[[:space:]]*(install_claude_plugin|handle_bare_skill)[[:space:]]' || true)"
+assert_eq "" "$helper_calls" "install_claude_plugin and handle_bare_skill are called only from install_claude_adapter"
 if grep -q '^install_claude_adapter() {' "$INSTALL"; then
   pass "install.sh defines install_claude_adapter"
 else
@@ -167,6 +191,16 @@ assert_contains "$OUT" "Claude Code adapter skipped (not selected" "output says 
 assert_contains "$OUT" "--harness claude forces it" "output says how to force the adapter"
 assert_not_contains "$OUT" "Restart any open" "no Claude restart note when the adapter was skipped"
 assert_file_exists "$HOME/.talos/agents/developer.md" "the ~/.talos/agents copy is unconditional"
+assert_not_contains "$OUT" "is not a current Talos command" "no stale-skill notice on a clean install"
+
+# A directory under ~/.talos/skills/ that is no longer a command gets a notice;
+# it is never deleted.
+mkdir -p "$HOME/.talos/skills/oldcmd"
+printf 'mine\n' > "$HOME/.talos/skills/oldcmd/SKILL.md"
+inst "$PATH" --global --no-agent-skills --harness codex
+assert_eq "0" "$RC" "a stale ~/.talos/skills/<cmd> does not fail the install"
+assert_contains "$OUT" "$HOME/.talos/skills/oldcmd is not a current Talos command" "a stale ~/.talos/skills/<cmd> directory gets a notice"
+assert_file_exists "$HOME/.talos/skills/oldcmd/SKILL.md" "the stale directory is never deleted"
 
 # ── explicit list: the adapter runs iff the list contains claude ─────────────
 for list in claude "codex,claude" "pi,claude,generic"; do
@@ -251,7 +285,7 @@ if [ "$CAN_STRIP" = true ]; then
     fail "existing ~/.claude tree is byte-identical after --harness codex"
   fi
   assert_eq "1" "$(printf '%s\n' "$OUT" | grep -c 'was not refreshed')" "exactly one line says the tree was not refreshed"
-  assert_contains "$OUT" "re-run with --harness claude" "the not-refreshed line says how to refresh"
+  assert_contains "$OUT" "bash $TALOS_ROOT/install.sh --global --harness claude" "the not-refreshed line prints the full command to refresh"
   rm -rf "${SANDBOX:?}/tree-before"
 fi
 
@@ -263,6 +297,7 @@ assert_eq "0" "$RC" "per-repo --harness gemini exits 0"
 assert_contains "$OUT" "context.fileName" "--harness gemini with no GEMINI.md prints the context.fileName option"
 assert_contains "$OUT" "agents.runner: gemini" "gemini: Next steps name the runner"
 assert_contains "$OUT" 'gemini "Read ~/.talos/skills/pipeline/SKILL.md and follow it"' "gemini: start line in the docs CLI form"
+assert_contains "$OUT" "confines its file tools to the workspace" "gemini: the start line carries the workspace-confinement caveat"
 assert_not_contains "$OUT" "run: /pipeline" "gemini: no Claude /pipeline start line"
 
 R="$(new_repo repo-unknown-gemini)"

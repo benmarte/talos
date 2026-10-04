@@ -52,7 +52,8 @@ assert_eq "1" "$(calls "\[plugin\] \[marketplace\] \[add\] \[$TALOS_ROOT\] \[--j
 assert_eq "1" "$(calls '\[plugin\] \[install\] \[talos@talos\] \[--json\]')" "fresh: installs talos@talos"
 assert_eq "dir	$TALOS_ROOT" "$(cat "$CLAUDE_STUB_STATE/marketplace")" "fresh: the stub config now holds the checkout as the talos marketplace"
 assert_contains "$OUT" "registered: talos@talos" "fresh: output says the plugin is registered"
-assert_contains "$OUT" "loads from $TALOS_ROOT in place" "fresh: output says the plugin loads from the checkout in place"
+assert_contains "$OUT" "copied the plugin into its plugin cache" "fresh: output says Claude Code copies the plugin into its cache"
+assert_not_contains "$OUT" "loads from $TALOS_ROOT in place" "fresh: output no longer claims the plugin loads from the checkout in place"
 assert_contains "$OUT" "agent-skills dependency" "fresh: output names the agent-skills side effect"
 assert_contains "$OUT" "/talos:pipeline, /talos:setup, /talos:resume" "fresh: the closing note names the three commands"
 # Isolation: every call saw the sandbox config dir, never a real one.
@@ -92,6 +93,15 @@ assert_eq "0" "$(calls '\[add\]')" "other directory with --keep-marketplace: no 
 assert_eq "dir	$SANDBOX/moved-checkout" "$(cat "$CLAUDE_STUB_STATE/marketplace")" "other directory with --keep-marketplace: source unchanged"
 assert_contains "$OUT" "points at $SANDBOX/moved-checkout, not this checkout ($TALOS_ROOT); left as is (--keep-marketplace)" "other directory with --keep-marketplace: output names both paths"
 assert_eq "1" "$(calls '\[install\] \[talos@talos\]')" "other directory with --keep-marketplace: install still runs"
+
+# A control character in a printed path is stripped: a marketplace path with an
+# ESC (JSON \u001b) must not reach the terminal.
+newcase esc-path
+export CLAUDE_STUB_LIST_RAW='[{"name":"talos","source":"directory","path":"/moved\u001b[31m-checkout"}]'
+inst --keep-marketplace
+assert_eq "0" "$RC" "ESC in a marketplace path: exits 0"
+assert_contains "$OUT" "points at /moved[31m-checkout, not this checkout" "ESC in a marketplace path: printed with the ESC removed"
+assert_eq "0" "$(printf '%s' "$OUT" | LC_ALL=C grep -c "$(printf '\033')" || true)" "ESC in a marketplace path: no ESC byte in the installer output"
 
 newcase keep-fresh
 inst --keep-marketplace

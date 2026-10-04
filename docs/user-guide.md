@@ -303,9 +303,11 @@ guarded: a failure, a missing `claude`, or a Claude Code without `claude plugin`
 prints a notice (with the two commands to run inside Claude Code) and never
 aborts the install or deletes anything.
 
-- *In place.* The plugin loads from the checkout itself, not from a copy.
-  Moving or deleting the clone breaks `/talos:*`; re-running `install.sh
-  --global` from the new location repoints the marketplace.
+- *Cached copy.* Claude Code copies the plugin into its own plugin cache when
+  it installs it, so a `git pull` in the checkout reaches `/talos:*` only after
+  you re-run `install.sh --global` (or update the plugin). The marketplace
+  entry still points at the checkout: if you move or delete the clone,
+  re-running `install.sh --global` from the new location repoints it.
 - *Side effect.* Installing the plugin also installs its `agent-skills`
   dependency from GitHub, which needs network and adds a second plugin to your
   Claude config, even with `--no-agent-skills` (the installer says so just before

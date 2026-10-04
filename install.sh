@@ -17,10 +17,13 @@
 #   points at another directory, with one line naming the old and new paths;
 #   --keep-marketplace leaves an existing talos marketplace untouched) and
 #   `claude plugin install talos@talos`, both guarded: a failure prints a
-#   notice and never aborts the install. The plugin
-#   loads from this checkout in place (moving or deleting it breaks /talos:*;
-#   re-run this installer from the new location) and installing it also installs
-#   its agent-skills dependency from GitHub, even with --no-agent-skills. No `claude` on PATH, or one without
+#   notice and never aborts the install. Claude Code copies the plugin into its
+#   own plugin cache when it installs it, so a later change to this checkout
+#   reaches /talos:* only after this installer is re-run (or the plugin is
+#   updated); the marketplace entry still points at this checkout, so re-run it
+#   from the new location if the checkout moves. Installing the plugin also
+#   installs its agent-skills dependency from GitHub, even with
+#   --no-agent-skills. No `claude` on PATH, or one without
 #   `claude plugin`: a notice with the two commands to run inside Claude Code,
 #   and nothing is deleted.
 #   Legacy aliases (until v0.20): ~/.claude/skills/pipeline and
@@ -276,12 +279,20 @@ else:
 # form to plugin skills only, so copying SKILL.md files cannot do it. Never
 # fatal: every step is guarded, and CLAUDE_PLUGIN_REGISTERED stays false unless
 # `claude plugin install` exited 0, which is what allows stale-copy deletions.
-# The plugin loads from $SRC in place, and installing it also installs its
-# agent-skills dependency from GitHub (network).
+# Claude Code copies the plugin into its own plugin cache, so the marketplace
+# entry (this checkout) is only read at install and update time; installing it
+# also installs its agent-skills dependency from GitHub (network).
 CLAUDE_PLUGIN_REGISTERED=false
+
+# printable <text> -- <text> with ESC and every other control character
+# removed, for paths and tool output that are echoed to the terminal: a path
+# from the environment, a marketplace JSON entry or `claude` output must not
+# be able to inject an escape sequence into the install log.
+printable() { printf '%s' "$1" | LC_ALL=C tr -d '\000-\037\177'; }
 install_claude_plugin() {
-  local state kind val out here there
-  local manual="register it from inside Claude Code: /plugin marketplace add $SRC, then /plugin install talos@talos"
+  local state kind val out here there src_p val_p
+  src_p="$(printable "$SRC")"
+  local manual="register it from inside Claude Code: /plugin marketplace add $src_p, then /plugin install talos@talos"
   CLAUDE_PLUGIN_REGISTERED=false
   echo "  Plugin (/talos:<command>):"
   if ! command -v claude >/dev/null 2>&1; then
@@ -293,12 +304,13 @@ install_claude_plugin() {
     return 0
   fi
   if [ ! -f "$SRC/.claude-plugin/marketplace.json" ]; then
-    echo "    notice: $SRC/.claude-plugin/marketplace.json not found, so the talos plugin was not registered."
+    echo "    notice: $src_p/.claude-plugin/marketplace.json not found, so the talos plugin was not registered."
     return 0
   fi
   state="$(claude_marketplace_state)" || state="unknown"
   kind="${state%%$'\t'*}"; val=""
   case "$state" in *$'\t'*) val="${state#*$'\t'}" ;; esac
+  val_p="$(printable "$val")"
   case "$kind" in
     absent) ;;
     dir)
@@ -307,16 +319,16 @@ install_claude_plugin() {
       if [ "$here" = "$there" ]; then
         kind="same"
       elif [ "$KEEP_MARKETPLACE" = "true" ]; then
-        echo "    notice: the talos marketplace points at $val, not this checkout ($SRC); left as is (--keep-marketplace), so /talos:* loads from there."
+        echo "    notice: the talos marketplace points at $val_p, not this checkout ($src_p); left as is (--keep-marketplace), so /talos:* installs from there."
         kind="same"
       elif [ "$FORCE" = "false" ]; then
-        echo "    notice: the talos marketplace points at $val, not this checkout ($SRC); left as is (--no-overwrite), so /talos:* loads from there."
+        echo "    notice: the talos marketplace points at $val_p, not this checkout ($src_p); left as is (--no-overwrite), so /talos:* installs from there."
         kind="same"
       fi ;;
     other)
       # A github or other non-directory source already provides the namespace:
       # re-adding would silently repoint it at this checkout, so leave it.
-      echo "    notice: the talos marketplace is already registered from a non-directory source ($val); left as is."
+      echo "    notice: the talos marketplace is already registered from a non-directory source ($val_p); left as is."
       kind="same" ;;
     *)
       echo "    notice: could not read 'claude plugin marketplace list --json', so the talos plugin was not registered; $manual."
@@ -325,21 +337,21 @@ install_claude_plugin() {
   if [ "$kind" != "same" ]; then
     if out="$(claude plugin marketplace add "$SRC" --json </dev/null 2>&1)"; then
       if [ "$kind" = "dir" ]; then
-        echo "    marketplace: talos repointed from $val to $SRC (pass --keep-marketplace to leave an existing registration as it is)"
+        echo "    marketplace: talos repointed from $val_p to $src_p (pass --keep-marketplace to leave an existing registration as it is)"
       else
-        echo "    marketplace: talos added from $SRC"
+        echo "    marketplace: talos added from $src_p"
       fi
     else
-      echo "    notice: 'claude plugin marketplace add' failed, so the talos plugin was not registered: $(printf '%s' "$out" | tail -n 1 | cut -c1-200)"
+      echo "    notice: 'claude plugin marketplace add' failed, so the talos plugin was not registered: $(printable "$(printf '%s' "$out" | tail -n 1 | cut -c1-200)")"
       return 0
     fi
   fi
   echo "    note: installing the plugin also installs its agent-skills dependency (github.com/addyosmani/agent-skills, needs network), even with --no-agent-skills."
   if out="$(claude plugin install talos@talos --json </dev/null 2>&1)"; then
     CLAUDE_PLUGIN_REGISTERED=true
-    echo "    registered: talos@talos (user scope). It loads from $SRC in place: moving or deleting that checkout breaks /talos:*, and re-running install.sh --global from the new location repoints it."
+    echo "    registered: talos@talos (user scope). Claude Code copied the plugin into its plugin cache, so edits to $src_p reach /talos:* only after you re-run install.sh --global (or update the plugin); the marketplace entry points at that checkout, so re-run it from the new location if you move it."
   else
-    echo "    notice: 'claude plugin install talos@talos' failed: $(printf '%s' "$out" | tail -n 1 | cut -c1-200)"
+    echo "    notice: 'claude plugin install talos@talos' failed: $(printable "$(printf '%s' "$out" | tail -n 1 | cut -c1-200)")"
     echo "            Nothing was deleted. After fixing that, re-run this installer or $manual."
   fi
   return 0
@@ -348,6 +360,10 @@ install_claude_plugin() {
 # Legacy aliases (#335): the pre-namespace names, kept until v0.20. Each one is
 # a thin skill at ~/.claude/skills/<name>/SKILL.md carrying ALIAS_MARKER.
 ALIAS_MARKER='<!-- talos:alias -->'
+# The bare names that ended up as a Talos alias on this run (written, or already
+# a Talos alias and kept), in order. The closing note names only these: a foreign
+# ~/.claude/skills/pipeline that blocked the alias must not be reported as one.
+ALIASES_ACTIVE=""
 
 # alias_skill_text <name> <command> <what> -- the alias SKILL.md. The plugin's
 # own skills/pipeline-setup/SKILL.md (so /talos:pipeline-setup keeps working) is
@@ -419,6 +435,7 @@ handle_bare_skill() {
   fi
   if [ "$owned" = "true" ] && [ "$FORCE" = "false" ]; then
     echo "    skip (exists): $dest  (pass --force to overwrite)"
+    if grep -qxF "$ALIAS_MARKER" "$dest"; then ALIASES_ACTIVE="${ALIASES_ACTIVE:+$ALIASES_ACTIVE }/$name"; fi
     return 0
   fi
   if ! mkdir -p "$dir" 2>/dev/null || ! alias_skill_text "$name" "$cmd" "$what" > "$dest" 2>/dev/null; then
@@ -426,6 +443,7 @@ handle_bare_skill() {
     return 0
   fi
   echo "    installed: $dest  (alias of /talos:$cmd)"
+  ALIASES_ACTIVE="${ALIASES_ACTIVE:+$ALIASES_ACTIVE }/$name"
 }
 
 # install_claude_adapter -- the ONLY place --global writes under
@@ -621,6 +639,15 @@ if [ "$GLOBAL" = "true" ]; then
   for cmd in "${TALOS_COMMANDS[@]}"; do
     install_file "$SRC/skills/$cmd/SKILL.md" "$TALOS_HOME_DIR/skills/$cmd/SKILL.md"
   done
+  # A command that left TALOS_COMMANDS keeps its old directory: say so, delete
+  # nothing (the directory may hold edits, and this installer did not create it
+  # as a unit it can prove is unmodified).
+  for stale_dir in "$TALOS_HOME_DIR"/skills/*/; do
+    [ -d "$stale_dir" ] || continue
+    stale="$(basename "$stale_dir")"
+    case " ${TALOS_COMMANDS[*]} " in *" $stale "*) continue ;; esac
+    echo "  notice: $(printable "${stale_dir%/}") is not a current Talos command (current: ${TALOS_COMMANDS[*]}); it is left in place, never deleted: remove it yourself if it is stale."
+  done
 
   install_agents_pointers
 
@@ -628,7 +655,7 @@ if [ "$GLOBAL" = "true" ]; then
     install_claude_adapter
   elif [ -f "$CLAUDE_DIR/skills/pipeline/SKILL.md" ]; then
     echo ""
-    echo "Claude Code adapter skipped: $CLAUDE_DIR was not refreshed (nothing was changed or deleted). To refresh it, re-run with --harness claude (or --harness claude,<others>)."
+    echo "Claude Code adapter skipped: $CLAUDE_DIR was not refreshed (nothing was changed or deleted). To refresh it, run: bash $(printable "$SRC")/install.sh --global --harness claude (or --harness claude,<others>)."
   fi
 
   # Model hint (#336). Role models are set only in the Talos config (the agent
@@ -659,12 +686,18 @@ if [ "$GLOBAL" = "true" ]; then
     echo "        Claude Code session to pick up the newly installed skills."
     if [ "$CLAUDE_PLUGIN_REGISTERED" = "true" ]; then
       echo "        Commands: /talos:pipeline, /talos:setup, /talos:resume (plugin talos@talos,"
-      echo "        loaded from $SRC: keep that checkout where it is, or re-run this installer from its new location)."
+      echo "        installed from $(printable "$SRC"); Claude Code keeps its own copy, so re-run this installer after a git pull or if the checkout moves)."
     else
       echo "        The talos plugin is not registered, so /talos:* commands are missing (see the plugin notice above)."
     fi
     if [ "$LEGACY_ALIASES" = "true" ]; then
-      echo "        Old names /pipeline and /pipeline-setup still work as aliases until v0.20: $CLAUDE_DIR/skills/<name>/SKILL.md"
+      if [ -z "$ALIASES_ACTIVE" ]; then
+        echo "        No legacy /pipeline or /pipeline-setup alias is active (see the notices above): use /talos:pipeline and /talos:setup."
+      elif [ "$ALIASES_ACTIVE" = "/pipeline /pipeline-setup" ]; then
+        echo "        Old names /pipeline and /pipeline-setup still work as aliases until v0.20: $(printable "$CLAUDE_DIR")/skills/<name>/SKILL.md"
+      else
+        echo "        Old name $ALIASES_ACTIVE still works as an alias until v0.20: $(printable "$CLAUDE_DIR")/skills/<name>/SKILL.md (the other legacy name is not an alias here: see the notices above)."
+      fi
     fi
   fi
   echo "        Playbooks for any other agent: $TALOS_HOME_DIR/skills/<command>/SKILL.md"
@@ -814,6 +847,7 @@ fi
 
 _START_PHRASE="Read ~/.talos/skills/pipeline/SKILL.md and follow it"
 for _h in ${_NEXT//,/ }; do
+  _caveat=""
   case "$_h" in
     claude)
       echo "     [claude] Open a Claude Code session in $TARGET and run: /talos:pipeline"
@@ -821,9 +855,13 @@ for _h in ${_NEXT//,/ }; do
     pi)
       echo "     [pi] in talos.pipeline.yml set agents.runner: pi and agents.subagents: false"
       _start="$_START_PHRASE" ;;
-    codex|gemini)
-      echo "     [$_h] in talos.pipeline.yml set agents.runner: $_h"
-      _start="$_h \"$_START_PHRASE\"" ;;
+    codex)
+      echo "     [codex] in talos.pipeline.yml set agents.runner: codex"
+      _start="codex \"$_START_PHRASE\"" ;;
+    gemini)
+      echo "     [gemini] in talos.pipeline.yml set agents.runner: gemini"
+      _start="gemini \"$_START_PHRASE\""
+      _caveat="Gemini CLI confines its file tools to the workspace, so this start line probably fails (a read of ~/.talos/skills is refused); whether adding ~/.talos to its workspace (for example /directory add ~/.talos) helps is unverified." ;;
     antigravity)
       echo "     [antigravity] in talos.pipeline.yml set agents.runner: antigravity"
       _start="agy \"$_START_PHRASE\"" ;;
@@ -832,6 +870,7 @@ for _h in ${_NEXT//,/ }; do
       _start="$_START_PHRASE" ;;
   esac
   echo "          start: $_start"
+  if [ -n "$_caveat" ]; then echo "          caveat: $_caveat"; fi
 done
 
 if [ "$CLAUDE_ADAPTER" = "true" ]; then
