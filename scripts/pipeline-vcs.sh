@@ -18,6 +18,12 @@
 #                                             non-zero if the POST fails.
 #                                             Then runs assign-issue on the new
 #                                             issue (messages on stderr only).
+#   current-user                              Print the authenticated login (#466; github,
+#                                             github-api, gitlab, azure). Exit 1 and no
+#                                             output when it cannot be resolved (file
+#                                             mode, no lookup), 3 when the lookup was
+#                                             refused. Used by talos.sh to count only
+#                                             trusted-author markers.
 #   assign-issue <n>                          Assign issue <n> per issues.assignee
 #                                             (#299) only when it has no assignee;
 #                                             read back, and print "assign-issue:
@@ -1568,6 +1574,20 @@ _vcs_shared_current_user() {
     refused:*) [ "$_cu_mode" = "fail-open" ] && return 3; return 1 ;;
     *) [ "$_cu_mode" = "fail-open" ] && return 0; return 1 ;;
   esac
+}
+
+# _vcs_shared_print_current_user <resolver-cmd> [args...]
+#   The `current-user` verb (#466): print the authenticated login through the
+#   cached _vcs_shared_current_user. Exit 0 with the login; 1 when no identity
+#   was resolved (the lookup was not possible); 3 when it ran and was refused
+#   (an Actions GITHUB_TOKEN or a GitHub App token), the same two outcomes the
+#   marker readers tell apart.
+_vcs_shared_print_current_user() {
+  local _pc_user _pc_rc=0
+  _pc_user="$(_vcs_shared_current_user fail-open "$@")" || _pc_rc=$?
+  [ "$_pc_rc" -eq 0 ] || return 3
+  [ -n "$_pc_user" ] || return 1
+  printf '%s\n' "$_pc_user"
 }
 
 # _vcs_shared_reader_identity <verify_authors> <resolver-cmd> [args...]
@@ -3477,6 +3497,10 @@ _github() {
     assign-issue)
       _vcs_shared_assign_issue "${1:-}" _gh_assignees_get _gh_assignee_add gh api user --jq .login
       ;;
+    current-user)
+      _vcs_shared_print_current_user gh api user --jq .login
+      exit $?
+      ;;
     upsert-pr-comment)
       if [ "$DRY_RUN" = "true" ]; then
         echo "[dry-run] gh api --paginate repos/$(_gh_no_repo)/issues/$1/comments?per_page=100 (newest own comment ending in <!-- talos:$2 -->); then gh api --method PATCH repos/$(_gh_no_repo)/issues/comments/<id> --input - (body on stdin), or gh api --method POST repos/$(_gh_no_repo)/issues/$1/comments --input - when there is none; no write when the body is unchanged"
@@ -4775,6 +4799,10 @@ sys.stdout.write(json.dumps({"body": sys.stdin.buffer.read().decode("utf-8", err
     assign-issue)
       _vcs_shared_assign_issue "${1:-}" _ga_assignees_get _ga_assignee_add _ga_current_user_login
       ;;
+    current-user)
+      _vcs_shared_print_current_user _ga_current_user_login
+      exit $?
+      ;;
     upsert-pr-comment)
       if [ "$DRY_RUN" = "true" ]; then
         echo "[dry-run] github-api: GET $_API/issues/$1/comments?per_page=100 (paginated; newest own comment ending in <!-- talos:$2 -->); then PATCH $_API/issues/comments/<id> (body on stdin), or POST $_API/issues/$1/comments when there is none; no write when the body is unchanged"
@@ -6003,6 +6031,10 @@ for p in paths:
     assign-issue)
       _vcs_shared_assign_issue "${1:-}" _gl_assignees_get _gl_assignee_add _gl_current_user
       ;;
+    current-user)
+      _vcs_shared_print_current_user _gl_current_user
+      exit $?
+      ;;
     list-issues)
       # glab's default page size is well under 100; --per-page raises it to
       # GitLab's own per-page ceiling. glab has no built-in "fetch every
@@ -6792,6 +6824,10 @@ print(" ".join(str(i) for i in sorted(ids)))
       _vcs_shared_assign_issue "${1:-}" _az_assignee_get _az_assignee_set \
         az account show --query user.name --output tsv
       ;;
+    current-user)
+      _vcs_shared_print_current_user az account show --query user.name --output tsv
+      exit $?
+      ;;
     list-issues)
       # ADO has no `az boards work-item list`. Discover work items with a WIQL
       # query instead. The GitHub adapter's "open issues only" maps to ADO's
@@ -7440,6 +7476,10 @@ _file() {
       # update-branch (#289) — no PR concept in file mode. Exit 2; caller skips.
       echo "file mode: update-branch not applicable in file mode" >&2
       exit 2
+      ;;
+    current-user)
+      # No identity in file mode: nothing printed, exit 1 (not resolved).
+      exit 1
       ;;
     diff-pr|pr-checks|list-prs|view-pr|find-pr|check-pr-files|pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
       echo "file mode: $verb not applicable in file mode" >&2

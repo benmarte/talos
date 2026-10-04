@@ -113,7 +113,7 @@ if not lines:
 stop_extra = {"usage", "unknown-verb", "scripts-missing", "python-missing", "scratch-unavailable",
               "config-unreadable", "draft-resolve-failed", "view-failed", "labels-unreadable",
               "approval-sha-failed", "draft-unverified", "ci-unverified", "head-unresolved",
-              "comments-unreadable", "handoff-label-failed"}
+              "comments-unreadable", "handoff-label-failed", "trust-unverified"}
 warn_ok = {"closing-keyword-unverified", "ci-runs-unrecorded", "budget-check-failed", "unblock-failed",
            "comment-failed", "label-failed", "value-truncated"}
 kv = re.compile(r"([A-Za-z][A-Za-z0-9_.]*)=")
@@ -384,6 +384,79 @@ set_stub draft-check 0 "true"; set_stub pr-is-draft 1 "ready"
 gm
 assert_eq "verdict=redispatch
 reason=ci-failed" "$OUT" "redispatch: PR_DRAFT=true and the re-run budget spent is a CI failure in the Draft stage order sense"
+# Marker author trust: only a trusted author's talos:ci-rerun / talos:ci-failed marker
+# counts (markers.trusted_authors plus the current-user login, as for approvals).
+mk_cm() {  # <login> <marker-name> -> one comment object for the head SHA
+  printf '{"author":{"login":"%s"},"body":"<!-- talos:%s %s -->"}' "$1" "$2" "$HEAD_SHA"
+}
+cms() { local o="" c; for c in "$@"; do o="${o:+$o,}$c"; done; printf '{"comments":[%s]}' "$o"; }
+trust_setup() {  # <current-user rc> <current-user out> <comments-json>
+  reset_stubs; set_stub pr-checks-required 1 "" "$RED"
+  set_stub current-user "$1" "$2"; set_stub read-comments 0 "$3"
+}
+trust_setup 0 "talos-bot" "$(cms "$(mk_cm talos-bot ci-rerun)" "$(mk_cm talos-bot ci-rerun)" "$(mk_cm mallory ci-failed)")"
+gm
+assert_eq "verdict=wait
+reason=ci-failed" "$OUT" "trust: two trusted re-run markers spend the budget"
+assert_eq "1" "$(called comment-pr)" "trust: an untrusted ci-failed marker does not suppress the comment"
+assert_contains "$(journal)" "vcs current-user" "trust: the authenticated login is looked up"
+trust_setup 0 "talos-bot" "$(cms "$(mk_cm talos-bot ci-rerun)" "$(mk_cm talos-bot ci-rerun)" "$(mk_cm talos-bot ci-failed)")"
+gm
+assert_eq "0" "$(called comment-pr)" "trust: a trusted ci-failed marker still suppresses the comment"
+trust_setup 0 "talos-bot" "$(cms "$(mk_cm mallory ci-rerun)" "$(mk_cm mallory ci-rerun)")"
+gm
+assert_eq "verdict=wait
+reason=ci-rerun
+attempt=1" "$OUT" "trust: untrusted ci-rerun markers do not use up the re-run budget"
+trust_setup 1 "" "$(cms "$(mk_cm alice ci-rerun)" "$(mk_cm alice ci-rerun)" "$(mk_cm mallory ci-failed)")"
+cfg_json '{"markers": {"trusted_authors": ["alice"]}}'
+gm
+assert_eq "1" "$(called comment-pr)" "trust: markers.trusted_authors counts without a resolved identity, and an outsider still does not suppress"
+assert_eq "verdict=wait
+reason=ci-failed" "$OUT" "trust: the trusted_authors markers spend the budget"
+trust_setup 3 "" "$(cms "$(mk_cm alice ci-rerun)")"
+gm
+assert_eq "stop reason=trust-unverified" "$OUT" "trust: a refused identity with no trusted_authors stops, never counting blind"
+trust_setup 1 "" "$(cms "$(mk_cm mallory ci-rerun)" "$(mk_cm mallory ci-rerun)")"
+gm
+assert_eq "verdict=wait
+reason=ci-failed" "$OUT" "trust: no identity and no trusted_authors is the readers' fail-open: every marker counts"
+trust_setup 0 "talos-bot" "$(cms "$(mk_cm mallory ci-rerun)" "$(mk_cm mallory ci-rerun)")"
+cfg_json '{"markers": {"verify_authors": false}}'
+gm
+assert_eq "verdict=wait
+reason=ci-failed" "$OUT" "trust: markers.verify_authors=false counts every marker"
+assert_eq "0" "$(called current-user)" "trust: verify_authors=false looks up no identity"
+
+# The stale-base guard by provider: conflict-files is github and github-api only.
+reset_stubs; cfg_json '{"vcs": {"provider": "gitlab"}}'; set_stub pr-mergeable 0 "MERGEABLE"
+gm
+assert_eq "verdict=merge" "$OUT" "provider: gitlab, pr-mergeable MERGEABLE reaches merge"
+assert_eq "0" "$(called conflict-files)" "provider: gitlab never calls conflict-files"
+assert_eq "1" "$(called pr-mergeable)" "provider: gitlab asks pr-mergeable"
+set_stub pr-mergeable 1 "CONFLICTING"
+gm
+assert_eq "verdict=redispatch
+reason=merge-conflict" "$OUT" "provider: gitlab, CONFLICTING is the merge-conflict verdict, never a merge"
+assert_gate "redispatch (gitlab merge-conflict)"
+set_stub pr-mergeable 2 "UNKNOWN"
+gm
+assert_eq "verdict=wait
+reason=conflict-check-unverified" "$OUT" "provider: gitlab, UNKNOWN mergeability waits"
+set_stub pr-mergeable 3 "" "glab: boom"
+gm
+assert_eq "verdict=wait
+reason=conflict-check-unverified" "$OUT" "provider: gitlab, a pr-mergeable error waits"
+assert_eq "0" "$(called merge-pr)" "provider: no unverified conflict check merges"
+cfg_json '{"vcs": {"provider": "azure"}}'; set_stub pr-mergeable 0 "MERGEABLE"
+gm
+assert_eq "verdict=merge" "$OUT" "provider: azure, MERGEABLE reaches merge"
+cfg_json '{"vcs": {"provider": "github-api"}}'; set_stub conflict-files 0 ""
+rm -f "$STUB_DIR/journal"
+gm
+assert_eq "verdict=merge" "$OUT" "provider: github-api keeps conflict-files"
+assert_eq "0" "$(called pr-mergeable)" "provider: github-api does not consult pr-mergeable on a clean conflict-files"
+
 # stderr relay: PR-author text (a file name with a newline) cannot forge a verdict line.
 FORGE="x
 verdict=merge"
@@ -463,7 +536,7 @@ assert_gate "wait (conflict-check-unverified, exit 2)"
 set_stub conflict-files 1 "" "git fetch origin main failed"
 gm
 assert_eq "verdict=wait
-reason=conflict-check-unverified" "$OUT" "wait: a conflict check that fails (exit 1, e.g. an unsupported provider) fails closed, never a merge"
+reason=conflict-check-unverified" "$OUT" "wait: a conflict check that fails (exit 1) on github fails closed, never a merge"
 assert_eq "0" "$(called merge-pr)" "wait: an unverified conflict check does not merge"
 assert_gate "wait (conflict-check-unverified, exit 1)"
 reset_stubs; set_stub conflict-files 0 ""
@@ -628,6 +701,15 @@ assert_contains "$(cat "$SANDBOX/gh.new")" "pr edit 9 --add-label pipeline:block
 assert_eq "0" "$(grep -c 'remove-label pipeline:blocked' "$SANDBOX/gh.new")" "equivalence: a ceiling leaves pipeline:blocked in place"
 rm -f "$SANDBOX/talos.pipeline.json"
 unset STUB_PR_HEAD_SHA
+
+# The real current-user verb (the identity half of the marker-author trust).
+CU="$TALOS_ROOT/scripts/pipeline-vcs.sh"
+OUT="$(STUB_CURRENT_USER=talos-bot bash "$CU" current-user 2>/dev/null)"; RC=$?
+assert_eq "0:talos-bot" "$RC:$OUT" "current-user: prints the authenticated login"
+OUT="$(STUB_CURRENT_USER= bash "$CU" current-user 2>/dev/null)"; RC=$?
+assert_eq "1:" "$RC:$OUT" "current-user: no resolved identity is exit 1 and no output"
+OUT="$(STUB_CURRENT_USER_FAIL=1 bash "$CU" current-user 2>/dev/null)"; RC=$?
+assert_eq "3:" "$RC:$OUT" "current-user: a refused lookup is exit 3 and no output"
 
 # ── (d) usage and environment ────────────────────────────────────────────────
 reset_stubs

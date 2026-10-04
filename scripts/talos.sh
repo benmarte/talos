@@ -80,13 +80,18 @@
 #                                 | awaiting-human-merge
 #            verdict=block      reason=forbidden-files | closing-keyword | siblings-capped
 #          A `stop` means a gate could not be checked (exit 1): do not merge. A
-#          conflict check that cannot run (conflict-files exit 1 or 2) is
+#          conflict check that cannot run (github, github-api: conflict-files
+#          exit non-zero; any other provider: pr-mergeable UNKNOWN or an error,
+#          that provider having no conflict-files) is
 #          `wait reason=conflict-check-unverified`, never a merge. The stderr of
 #          each gate call (it can hold PR-author text) is relayed on stderr only
 #          as `note gate=<verb> msg=<escaped>` lines, one per line, sanitised as
 #          above, so no relayed line can begin with `verdict=` or any other key.
 #          The ci-failed comment is posted once per head (<!-- talos:ci-failed
-#          <sha> --> marker). A required check that never starts stays
+#          <sha> --> marker). Only markers by a trusted author count (the
+#          ci-rerun ones too): markers.trusted_authors plus the `current-user`
+#          login, as for approval markers; a refused identity with no
+#          trusted_authors is `stop reason=trust-unverified`. A required check that never starts stays
 #          `wait reason=ci-pending`: no head-age bound exists in the vcs verbs.
 #          Not added to the old order on purpose: pr-mergeable (Step 3c, and only
 #          after a base update here) and assert-sync (Step 0, before 3e).
@@ -95,7 +100,7 @@
 #   stop: usage unknown-verb scripts-missing python-missing scratch-unavailable config-unreadable
 #         draft-resolve-failed view-failed labels-unreadable approval-sha-failed
 #         unsupported-verb:<verb> draft-unverified ci-unverified head-unresolved
-#         comments-unreadable handoff-label-failed
+#         comments-unreadable handoff-label-failed trust-unverified
 #   warn: closing-keyword-unverified ci-runs-unrecorded budget-check-failed
 #         unblock-failed comment-failed label-failed value-truncated
 #
@@ -438,11 +443,44 @@ for l in json.load(sys.stdin).get("labels", []):
 '
 _talos_labels() { python3 -I -c "$_TALOS_LABELS_PY" <<< "$1"; }
 
-# How many comments of a read-comments object hold the marker (argv: the marker).
+# How many comments of a read-comments object hold the marker (argv: the marker,
+# 1 or 0 for "only trusted authors count", the trusted logins one per line).
 _TALOS_COUNT_PY='
 import json, sys
-print(sum(1 for c in json.load(sys.stdin).get("comments", []) if sys.argv[1] in (c.get("body") or "")))
+marker, enforce, trusted = sys.argv[1], sys.argv[2] == "1", set(sys.argv[3].splitlines())
+def login(c):
+    a = c.get("author")
+    return a.get("login") if isinstance(a, dict) else None
+print(sum(1 for c in json.load(sys.stdin).get("comments", [])
+          if marker in (c.get("body") or "") and (not enforce or login(c) in trusted)))
 '
+
+# _talos_trust: who may author a counted marker, the marker-author rule
+# (check-approval-sha and read-attempt): markers.trusted_authors plus the
+# authenticated login, unless markers.verify_authors is false. Sets _TRUST_ON
+# (1 or 0) and _TRUST_SET. An identity that cannot be looked up and no
+# trusted_authors is the same fail-open as those readers (every marker counts);
+# one that was refused and no trusted_authors stops, as nothing could be counted.
+_talos_trust() {
+  _TRUST_ON=0; _TRUST_SET=""
+  [ "$(cfg markers.verify_authors)" != "false" ] || return 0
+  local _t _u _rc
+  _t="$(cfg markers.trusted_authors)"
+  _talos_cap _vcs current-user
+  _rc="$_RC"; _u="$_OUT"
+  case "$_rc" in
+    0) [ -z "$_u" ] || _t="${_t:+$_t$'\n'}$_u" ;;
+    1) : ;;
+    *) _TRUST_ON=1 ;;
+  esac
+  [ -z "$_t" ] || _TRUST_ON=1
+  _TRUST_SET="$_t"
+  [ "$_TRUST_ON" -eq 0 ] || [ -n "$_TRUST_SET" ] || _talos_stop trust-unverified
+}
+# _talos_count_marker <marker> <read-comments-json>
+_talos_count_marker() {
+  python3 -I -c "$_TALOS_COUNT_PY" "$1" "$_TRUST_ON" "$_TRUST_SET" <<< "$2"
+}
 
 # _talos_label_of <role>: the approval label of a role, from pipeline-contract.sh.
 _talos_label_of() {
@@ -650,9 +688,10 @@ _talos_gate_merge() {
       _cierr="$_ERR"
       _sha="$(_vcs pr-head "$_pr")" || _talos_stop head-unresolved
       [[ "$_sha" =~ ^[0-9a-f]{40}$ ]] || _talos_stop head-unresolved
+      _talos_trust
       _talos_cap _vcs read-comments "$_pr"
       [ "$_RC" -eq 0 ] || _talos_stop comments-unreadable
-      _cnt="$(python3 -I -c "$_TALOS_COUNT_PY" "<!-- talos:ci-rerun $_sha -->" <<< "$_OUT")" || _talos_stop comments-unreadable
+      _cnt="$(_talos_count_marker "<!-- talos:ci-rerun $_sha -->" "$_OUT")" || _talos_stop comments-unreadable
       _talos_isnum "$_cnt" || _talos_stop comments-unreadable
       if [ "$_cnt" -lt 2 ]; then
         if _vcs rerun-ci "$_pr" > /dev/null; then
@@ -665,7 +704,7 @@ _talos_gate_merge() {
         _talos_verdict wait
       fi
       # The comment is posted once per head: its marker is looked up first.
-      _cnt="$(python3 -I -c "$_TALOS_COUNT_PY" "<!-- talos:ci-failed $_sha -->" <<< "$_OUT")" || _talos_stop comments-unreadable
+      _cnt="$(_talos_count_marker "<!-- talos:ci-failed $_sha -->" "$_OUT")" || _talos_stop comments-unreadable
       _talos_isnum "$_cnt" || _talos_stop comments-unreadable
       if [ "$_cnt" -eq 0 ]; then
         _talos_post "$_pr" "CI still failing after 2 re-runs for this head; not merging."$'\n\n'"$_cierr"$'\n'"<!-- talos:ci-failed $_sha -->"
@@ -681,28 +720,42 @@ _talos_gate_merge() {
   # conflicting path in merge.union_paths, else it exits 3), else by
   # update-branch (merge.auto_sync), else by the developer's merge-base task. A
   # pushed head is not CI-verified, so it ends in `wait`.
-  _talos_cap _vcs conflict-files "$_pr"
-  if [ "$_RC" -ne 0 ]; then
-    # Fail closed: a conflict check that cannot run never ends in a merge.
-    _talos_emit reason conflict-check-unverified
-    _talos_verdict wait
-  elif [ -n "$_OUT" ]; then
-    if bash "$SCRIPT_DIR/pipeline-mergebase.sh" "$_pr" > /dev/null; then
-      _synced=1
-    elif [ "$(cfg merge.auto_sync)" = "true" ] && _vcs update-branch "$_pr" > /dev/null; then
-      _synced=1
-    fi
-    if [ "$_synced" -eq 1 ]; then
-      _r=0
-      _vcs pr-mergeable "$_pr" > /dev/null || _r=$?
-      if [ "$_r" -ne 1 ]; then
-        _talos_emit reason base-synced
+  # conflict-files exists for github and github-api only (it exits 1 "not
+  # implemented" elsewhere, which is indistinguishable from a real failure on
+  # github), so the provider decides: any other provider is judged by pr-mergeable
+  # alone (no path list, so no union-path sync: CONFLICTING goes to the developer).
+  case "$(cfg vcs.provider)" in
+    github | github-api)
+      _talos_cap _vcs conflict-files "$_pr"
+      if [ "$_RC" -ne 0 ]; then
+        # Fail closed: a conflict check that cannot run never ends in a merge.
+        _talos_emit reason conflict-check-unverified
         _talos_verdict wait
-      fi
-    fi
-    _talos_emit reason merge-conflict
-    _talos_verdict redispatch
-  fi
+      elif [ -n "$_OUT" ]; then
+        if bash "$SCRIPT_DIR/pipeline-mergebase.sh" "$_pr" > /dev/null; then
+          _synced=1
+        elif [ "$(cfg merge.auto_sync)" = "true" ] && _vcs update-branch "$_pr" > /dev/null; then
+          _synced=1
+        fi
+        if [ "$_synced" -eq 1 ]; then
+          _r=0
+          _vcs pr-mergeable "$_pr" > /dev/null || _r=$?
+          if [ "$_r" -ne 1 ]; then
+            _talos_emit reason base-synced
+            _talos_verdict wait
+          fi
+        fi
+        _talos_emit reason merge-conflict
+        _talos_verdict redispatch
+      fi ;;
+    *)
+      _talos_cap _vcs pr-mergeable "$_pr"
+      case "$_RC" in
+        0) : ;;
+        1) _talos_emit reason merge-conflict; _talos_verdict redispatch ;;
+        *) _talos_emit reason conflict-check-unverified; _talos_verdict wait ;;
+      esac ;;
+  esac
 
   # 8. Human-merge mode, else the merge. The CI-run count must be read while the
   # PR is open: merge-pr deletes the head branch.
