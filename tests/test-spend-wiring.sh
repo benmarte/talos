@@ -24,7 +24,7 @@ skill_flat="$(tr '\n' ' ' < "$SKILL_MD" | tr -s ' ')"
 # ── (a) presence ───────────────────────────────────────────────────────────
 assert_contains "$skill_flat" 'post_stage <event> <role> <N> [--pr] [--sha] [--verdict] [--summary] [--attempt ...] [--model]' \
   "Rule 3: post_stage lists --model"
-assert_contains "$skill_flat" '--model "<value passed as `model:` to the spawn>"' \
+assert_contains "$skill_flat" '--model <value passed as `model:` to the spawn>' \
   "Rule 3: --model carries the value passed as model: to the spawn"
 assert_contains "$skill_flat" 'omitting the flag when the spawn had no model' \
   "Rule 3: --model is omitted when the spawn had no model"
@@ -34,7 +34,7 @@ assert_contains "$skill_flat" 'upsert-pr-comment <M> --marker spend --body-file 
   "spend block: upsert-pr-comment --marker spend --body-file -"
 assert_contains "$skill_flat" 'pipeline-budget.sh check --issue <N>' "budget stop: pipeline-budget.sh check"
 assert_contains "$skill_flat" '|| rc=$?' "budget stop: exit code captured with || rc=\$?"
-assert_contains "$skill_flat" 'post_stage budget-blocked orchestrator <N> --pr <M> --summary "$out"' \
+assert_contains "$skill_flat" 'post_stage budget-blocked orchestrator <N> --pr <M> --summary -` with `printf '"'"'%s'"'"' "$out" |` in front' \
   "budget stop: post_stage budget-blocked orchestrator"
 assert_contains "$skill_flat" 'pipeline-events.sh cost --summary --issue' "Step 5: cost --summary --issue"
 assert_contains "$skill_flat" 'With `limits.tokens_per_issue` unset' \
