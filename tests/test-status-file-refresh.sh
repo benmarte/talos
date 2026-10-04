@@ -745,10 +745,56 @@ wait "$pid1"; rc1=$?
 wait "$pid2"; rc2=$?
 assert_eq "0" "$rc1" "parallel: first process exits 0"
 assert_eq "0" "$rc2" "parallel: second process exits 0"
+if [ "$rc1" != 0 ] || [ "$rc2" != 0 ]; then
+  echo "--- par1.out (rc=$rc1) ---"; cat "$PARENT/par1.out"
+  echo "--- par2.out (rc=$rc2) ---"; cat "$PARENT/par2.out"
+fi
 ofetch
 gained="$(( $(ocount) - c0 ))"
 if [ "$gained" -ge 1 ] && [ "$gained" -le 1 ]; then pass "parallel: origin gained at most one commit"; else fail "parallel: origin gained at most one commit" "gained $gained"; fi
 assert_eq "$seq_text" "$(oshow TALOS_STATUS.md)" "parallel: status file byte-identical to the sequential reference"
+
+# #505: two refreshes in one checkout can make a fetch lose the lock on
+# refs/remotes/origin/<base>. A git shim fails the first N fetches the same way;
+# refresh retries the fetch instead of exiting 1 before it reaches the push.
+REAL_GIT="$(command -v git)"
+install_fetch_lock_shim() {  # $1 = number of fetches to fail
+  local d="$PARENT/gitshim"
+  rm_under_parent "$d"; mkdir -p "$d"
+  echo 0 > "$d/n"
+  cat > "$d/git" <<EOF
+#!/bin/sh
+if [ "\$1" = fetch ]; then
+  n=\$(cat "$d/n")
+  if [ "\$n" -lt "$1" ]; then
+    echo \$((n + 1)) > "$d/n"
+    echo "error: cannot lock ref 'refs/remotes/origin/main': is at aaaa but expected bbbb" >&2
+    exit 1
+  fi
+fi
+exec "$REAL_GIT" "\$@"
+EOF
+  chmod +x "$d/git"
+}
+reset_fixture; cfg_rf
+fx_reset; add_pr 10 fix/issue-5-x ""; add_issue 5 ""; fx_flush
+ofetch
+install_fetch_lock_shim 2
+out="$(PATH="$PARENT/gitshim:$PATH" run_sf refresh)"; rc=$?
+assert_eq "0" "$rc" "fetch lock: refresh survives two lost ref locks"
+assert_eq "2" "$(cat "$PARENT/gitshim/n")" "fetch lock: exactly the two lost fetches were retried"
+ofetch
+assert_contains "$(oshow TALOS_STATUS.md)" "- PR #10 " "fetch lock: the block was published"
+
+reset_fixture; cfg_rf
+fx_reset; add_pr 10 fix/issue-5-x ""; add_issue 5 ""; fx_flush
+ofetch
+install_fetch_lock_shim 99
+out="$(PATH="$PARENT/gitshim:$PATH" run_sf refresh)"; rc=$?
+assert_eq "1" "$rc" "fetch lock: a fetch that never recovers exits 1"
+assert_contains "$out" "cannot lock ref" "fetch lock: the give-up message carries git's own error"
+assert_eq "5" "$(cat "$PARENT/gitshim/n")" "fetch lock: gave up after 5 fetches"
+rm_under_parent "$PARENT/gitshim"
 
 # ── paths, base branch ──────────────────────────────────────────────────────
 reset_fixture; cfg_rf
