@@ -85,9 +85,9 @@ STATUSES="posted empty over-cap refused failed"
 for pair in 'enabled|false' 'command|unset' 'dir|.talos/evidence' 'include|unset' \
   'when|user-facing' 'store|attach' 'max_files|10' 'max_mb|20'; do
   key="${pair%%|*}"; def="${pair#*|}"
-  if printf '%s\n' "$readme_text" | has_config_row "evidence.$key" "$def"; then
-    pass "README config table: evidence.$key ($def)"
-  else fail "README config table: evidence.$key ($def)"; fi
+  if printf '%s\n' "$guide_text" | has_config_row "evidence.$key" "$def"; then
+    pass "user guide config table: evidence.$key ($def)"
+  else fail "user guide config table: evidence.$key ($def)"; fi
 done
 
 if printf '%s\n' "$readme_text" | grep -q '^| `scripts/pipeline-evidence.sh '; then

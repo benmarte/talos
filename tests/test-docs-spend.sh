@@ -55,15 +55,15 @@ guide_text="$(cat "$GUIDE")"
 section="$(printf '%s\n' "$guide_text" | guide_section '### Seeing token spend (#334)' | flat)"
 
 # --- README -----------------------------------------------------------------
-if printf '%s\n' "$readme_text" | has_config_row 'limits.tokens_per_issue' 'unset'; then
-  pass "README config table: limits.tokens_per_issue (unset = guard off)"
-else fail "README config table: limits.tokens_per_issue (unset = guard off)"; fi
-if printf '%s\n' "$readme_text" | has_config_row 'limits.warn_at' '0.8'; then
-  pass "README config table: limits.warn_at (0.8)"
-else fail "README config table: limits.warn_at (0.8)"; fi
-if printf '%s\n' "$readme_text" | has_config_row 'spend.comment' 'true'; then
-  pass "README config table: spend.comment (true)"
-else fail "README config table: spend.comment (true)"; fi
+if printf '%s\n' "$guide_text" | has_config_row 'limits.tokens_per_issue' 'unset'; then
+  pass "user guide config table: limits.tokens_per_issue (unset = guard off)"
+else fail "user guide config table: limits.tokens_per_issue (unset = guard off)"; fi
+if printf '%s\n' "$guide_text" | has_config_row 'limits.warn_at' '0.8'; then
+  pass "user guide config table: limits.warn_at (0.8)"
+else fail "user guide config table: limits.warn_at (0.8)"; fi
+if printf '%s\n' "$guide_text" | has_config_row 'spend.comment' 'true'; then
+  pass "user guide config table: spend.comment (true)"
+else fail "user guide config table: spend.comment (true)"; fi
 
 readme_flat="$(printf '%s\n' "$readme_text" | flat)"
 for needle in 'upsert-pr-comment' 'pipeline-budget.sh' 'talos-status.sh' \
@@ -84,7 +84,7 @@ done
 
 check_has "$section" 'off by default' "guide section: the budget guard is off by default"
 check_has "$section" 'fix rounds only' "guide section: the guard runs before fix rounds only"
-check_has "$section" 'project config only' "guide section: limits.* and spend.* are project config only"
+check_has "$section" 'user-level file under' "guide section: limits.* and spend.* may be set in the user-level file"
 check_has "$section" 'each block grants one more limit' "guide section: each block grants one more limit"
 check_has "$section" 'requested model' "guide section: model attribution is the requested model"
 check_has "$section" 'never as 0' "guide section: unrecorded is shown, never as 0"
