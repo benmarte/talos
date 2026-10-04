@@ -653,14 +653,19 @@ bash scripts/pipeline-draft-check.sh
 - `unknown`: the workflows could not be read with confidence. Say so, and ask
   the user to check the requirements below by hand.
 
-For `no-skip` and `no-ready-trigger`, ask: "Add `if: github.event.pull_request.draft
-!= true` to each job and `ready_for_review` to `on.pull_request.types` in
-`<file>`? (y/n)". Edit the file only after an explicit yes, mirroring
-`templates/ci/github-tests.yml` (which already has both); never edit silently, and
-leave every workflow you did not offer to change alone. If the user says no, ask
-whether to keep the draft flow anyway (it still works, it just saves nothing, and
-on `no-ready-trigger` Step 0 falls back to the ready flow while `pr.draft` is
-unset) or to use the ready flow.
+For `no-skip` and `no-ready-trigger`, offer a minimal workflow change with
+`bash scripts/pipeline-draft-check.sh edit <file>` (`<file>` is a workflow the
+check read). It prints the exact diff and writes nothing: `ready_for_review`
+appended to `on.pull_request.types`, `if: github.event.pull_request.draft != true`
+on a job without an `if:`, and an existing `if: <cond>` rewritten as `(<cond>) &&
+github.event.pull_request.draft != true`. Nothing else changes, and it refuses a
+symlink or non-regular file (a line starting `refused:`: relay it and leave the
+file for the user). Show the user that diff verbatim and ask "Apply this to
+`<file>`? (y/n)". Only after an explicit yes run the same command with `--write`;
+never edit a workflow any other way, and leave every workflow you did not offer
+alone. If the user says no, ask whether to keep the draft flow anyway (it still
+works, it just saves nothing, and on `no-ready-trigger` Step 0 falls back to the
+ready flow while `pr.draft` is unset) or to use the ready flow.
 
 - `on.pull_request.types` must include `ready_for_review`. Without it, marking
   a PR ready fires no event, no run ever starts, and QA waits for one until

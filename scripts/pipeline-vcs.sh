@@ -152,7 +152,9 @@
 #                                             on failure or an empty
 #                                             merge.required_checks (#205).
 #                                             A skipped check (github
-#                                             `skipping`, github-api `skipped`)
+#                                             `skipping`, github-api `skipped`
+#                                             or `neutral`, which gh also files
+#                                             under `skipping`)
 #                                             is pending, not failed (#435): a
 #                                             draft push leaves one until the
 #                                             ready_for_review run replaces it.
@@ -4996,7 +4998,7 @@ for c in data.get('check_runs', []):
         status = 'pending'
     elif c.get('conclusion') == 'success':
         status = 'pass'
-    elif c.get('conclusion') == 'skipped':
+    elif c.get('conclusion') in ('skipped', 'neutral'):
         status = 'pending'
     else:
         status = 'fail'

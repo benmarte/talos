@@ -4,24 +4,31 @@
 #
 # Usage: pipeline-draft-check.sh [check [<workflows-dir>]]
 #        pipeline-draft-check.sh resolve
+#        pipeline-draft-check.sh edit <workflow-file> [--write]
 #
 #   check     Scan <workflows-dir> (default .github/workflows) for *.yml and
 #             *.yaml and print ONE status on stdout. Always exit 0 (fail open:
-#             a check problem never blocks a run).
-#               ok                a workflow has a `pull_request` trigger that
-#                                 lists `ready_for_review` in `types`, and a
-#                                 job- (or workflow-) level `if:` that reads
-#                                 github.event.pull_request.draft
-#               no-skip           PR-triggered workflows exist, none skips drafts
-#               no-ready-trigger  a draft skip exists but `ready_for_review` is
-#                                 not in `types`: `ready-pr` fires no event, no
-#                                 run starts, and QA waits for one for nothing
+#             a check problem never blocks a run). A file's draft skip counts
+#             only when a job- (or workflow-) level `if:` is
+#             `github.event.pull_request.draft != true`, `== false` or
+#             `!github.event.pull_request.draft`, alone or `&&`-combined;
+#             `== true`, an `||` branch or a mere mention does not count.
+#               ok                every workflow with a `pull_request` trigger
+#                                 skips drafts and lists `ready_for_review` in
+#                                 `types`
+#               no-skip           a PR-triggered workflow does not skip drafts
+#               no-ready-trigger  a workflow skips drafts but `ready_for_review`
+#                                 is not in `types`: `ready-pr` fires no event
+#                                 for it, no run starts, and QA waits for one
 #               none              no workflow has a `pull_request` trigger
 #               unknown           parse error, `pull_request_target`, a reusable
-#                                 workflow, anything doubtful
-#             It parses with PyYAML when importable, else a conservative grep
-#             of the same three signals. Setting TALOS_DRAFT_CHECK_NO_YAML=1
-#             forces the grep path (the tests use it). Never edits a file.
+#                                 workflow, a symlink or a file over 1 MB,
+#                                 anything doubtful
+#             When files disagree the worst wins: no-ready-trigger, then
+#             no-skip, then ok, then unknown, then none. It parses with PyYAML
+#             when importable, else a conservative grep of the same signals.
+#             TALOS_DRAFT_CHECK_NO_YAML=1 forces the grep path (the tests use
+#             it). check never edits a file.
 #   resolve   The effective PR_DRAFT on stdout, `true` or `false`, from
 #             `pr.draft` and `vcs.provider`; at most one warning line on stderr.
 #               explicit false                         false
@@ -41,18 +48,83 @@
 #                                                      true: warn, stay true
 #             Used by /pipeline Step 0 and pipeline-status-file.sh, so both
 #             read the same value.
+#   edit      The minimal workflow change /pipeline-setup offers. Without
+#             --write it prints the unified diff and writes nothing; with
+#             --write it applies exactly that diff. Only these edits: append
+#             `ready_for_review` to `on.pull_request.types` (a missing `types`
+#             gets `[opened, synchronize, reopened, ready_for_review]`), give
+#             each job without an `if:` `if: github.event.pull_request.draft !=
+#             true`, and rewrite an existing job `if: <cond>` as `(<cond>) &&
+#             github.event.pull_request.draft != true`. Jobs gated to a
+#             non-PR event are left alone. Nothing else is touched (never
+#             `permissions:`, other events, secrets or steps); the result is
+#             checked line by line and refused if it would. It prints `refused:
+#             <why>` on stderr and exits 1, writing nothing, for a file that is
+#             not a regular non-symlink file directly under .github/workflows
+#             (no symlink on the path), over 1 MB, or in a shape it cannot edit
+#             minimally (`on:` as a list or scalar, a multi-line or quoted `if:`,
+#             flow-style `pull_request`).
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# ── check ─────────────────────────────────────────────────────────────────────
-# Per file, four 0/1 flags: trigger skip ready unknown.
-_dc_flags_yaml() {
-  python3 -I - "$1" 2>/dev/null <<'TALOS_k3v9XqLm2Wd7'
-import sys
-import yaml
+# ── The draft-skip predicate, shared by check (PyYAML) and edit ───────────────
+read -r -d '' _DC_PRED <<'TALOS_p4Xr9Lw2Qn7B' || true
+import re
 
 DRAFT = "github.event.pull_request.draft"
+FORMS = {DRAFT + "!=true", DRAFT + "==false", "!" + DRAFT}
+
+def _split(e, op):
+    parts, depth, cur, i = [], 0, "", 0
+    while i < len(e):
+        c = e[i]
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+        if depth == 0 and e.startswith(op, i):
+            parts.append(cur)
+            cur, i = "", i + len(op)
+            continue
+        cur += c
+        i += 1
+    parts.append(cur)
+    return parts
+
+def _unwrap(e):
+    while e.startswith("("):
+        depth = 0
+        for i, c in enumerate(e):
+            depth += (c == "(") - (c == ")")
+            if depth == 0:
+                break
+        if i != len(e) - 1:
+            break
+        e = e[1:-1]
+    return e
+
+def real_skip(expr):
+    """True only when the condition holds back a draft: draft != true, == false,
+    or !draft, alone or && combined; an || branch, == true or a mention is not."""
+    if not isinstance(expr, str):
+        return False
+    e = re.sub(r"\s+", "", expr)
+    m = re.fullmatch(r"\$\{\{(.*)\}\}", e)
+    if m:
+        e = m.group(1)
+    e = _unwrap(e)
+    if len(_split(e, "||")) > 1:
+        return False
+    return any(p in FORMS or (p.startswith("!") and _unwrap(p[1:]) == DRAFT)
+               or (p.startswith("(") and real_skip(p)) for p in _split(e, "&&"))
+TALOS_p4Xr9Lw2Qn7B
+
+# ── check ─────────────────────────────────────────────────────────────────────
+# Per file, four 0/1 flags: trigger skip ready unknown.
+read -r -d '' _DC_YAML_PY <<'TALOS_k3v9XqLm2Wd7' || true
+import sys
+import yaml
 
 def names(on):
     if isinstance(on, str):
@@ -62,9 +134,6 @@ def names(on):
     if isinstance(on, dict):
         return {str(k) for k in on}
     return set()
-
-def has_draft(v):
-    return isinstance(v, str) and DRAFT in v
 
 try:
     with open(sys.argv[1], encoding="utf-8") as fh:
@@ -85,8 +154,8 @@ try:
     ready = int(isinstance(types, list) and "ready_for_review" in types)
     jobs = doc.get("jobs")
     jobs = jobs if isinstance(jobs, dict) else {}
-    skip = int(has_draft(doc.get("if")) or any(
-        isinstance(j, dict) and has_draft(j.get("if")) for j in jobs.values()))
+    skip = int(real_skip(doc.get("if")) or any(
+        isinstance(j, dict) and real_skip(j.get("if")) for j in jobs.values()))
     # A job that calls a reusable workflow may skip drafts where this file
     # cannot see: doubtful, not "no-skip".
     unknown = int(not skip and any(
@@ -95,16 +164,27 @@ try:
 except Exception:
     print(0, 0, 0, 1)
 TALOS_k3v9XqLm2Wd7
-}
+
+_dc_flags_yaml() { python3 -I -c "$_DC_PRED"$'\n'"$_DC_YAML_PY" "$1" 2>/dev/null; }
 
 _dc_flags_grep() {
-  local f="$1" t s r u txt
+  local f="$1" t s r u txt skiplines
   txt="$(sed 's/[[:space:]]*#.*//' "$f" 2>/dev/null)" || { echo "0 0 0 1"; return; }
   t=0; s=0; r=0; u=0
   if printf '%s\n' "$txt" | grep -Eq '^[[:space:]]*(-[[:space:]]*)?pull_request[[:space:]]*:?[[:space:]]*$|^[[:space:]]*(on|"on"|true)[[:space:]]*:[[:space:]]*(pull_request[[:space:]]*$|\[([^]]*[[:space:],])?pull_request[],[:space:]])'; then
     t=1
     printf '%s\n' "$txt" | grep -q 'ready_for_review' && r=1
-    printf '%s\n' "$txt" | grep -Eq 'github\.event\.pull_request\.draft' && s=1
+    # A real skip, per line: draft != true, == false or !draft (parentheses
+    # read as blanks for the form), and no `||` once parenthesised groups are
+    # removed (`(a || b) && draft != true` is still a skip).
+    [ -n "$(printf '%s\n' "$txt" | awk '
+      /github\.event\.pull_request\.draft/ {
+        flat = $0; gsub(/[()]/, " ", flat)
+        if (flat !~ /github\.event\.pull_request\.draft[ \t]*(!=[ \t]*true|==[ \t]*false)|![ \t]*github\.event\.pull_request\.draft/) next
+        strip = $0
+        while (strip ~ /\([^()]*\)/) gsub(/\([^()]*\)/, "", strip)
+        if (strip !~ /\|\|/) print "1"
+      }')" ] && s=1
     [ "$s" = 0 ] && printf '%s\n' "$txt" | grep -Eq '^[[:space:]]*uses:' && u=1
   elif printf '%s\n' "$txt" | grep -Eq 'pull_request_target|workflow_call'; then
     u=1
@@ -113,13 +193,18 @@ _dc_flags_grep() {
 }
 
 _dc_check() {
-  local dir="${1:-.github/workflows}" f flags t s r u
-  local ok=0 noready=0 unk=0 prs=0 have_yaml=0
+  local dir="${1:-.github/workflows}" f flags t s r u size
+  local noready=0 noskip=0 ok=0 unk=0 have_yaml=0
   if [ "${TALOS_DRAFT_CHECK_NO_YAML:-}" != 1 ] && python3 -I -c 'import yaml' 2>/dev/null; then
     have_yaml=1
   fi
   for f in "$dir"/*.yml "$dir"/*.yaml; do
-    [ -f "$f" ] || continue   # an unmatched glob stays literal: skip it
+    [ -e "$f" ] || [ -L "$f" ] || continue   # an unmatched glob stays literal: skip it
+    # A symlink, a non-regular file or an oversized one is never read.
+    if [ -L "$f" ] || [ ! -f "$f" ]; then unk=1; continue; fi
+    size="$(wc -c < "$f" 2>/dev/null | tr -d ' ')"
+    case "${size:-x}" in ''|*[!0-9]*) unk=1; continue ;; esac
+    if [ "$size" -gt 1048576 ]; then unk=1; continue; fi
     if [ "$have_yaml" = 1 ]; then flags="$(_dc_flags_yaml "$f")"; else flags="$(_dc_flags_grep "$f")"; fi
     # shellcheck disable=SC2034
     read -r t s r u <<EOF
@@ -129,17 +214,20 @@ EOF
       [01][01][01][01]) ;;
       *) unk=1; continue ;;
     esac
-    [ "$u" = 1 ] && unk=1
-    [ "$t" = 1 ] || continue
-    prs=1
-    if [ "$s" = 1 ] && [ "$r" = 1 ]; then ok=1
-    elif [ "$s" = 1 ]; then noready=1
+    if [ "$t" = 1 ]; then
+      if [ "$s" = 1 ] && [ "$r" = 1 ]; then ok=1
+      elif [ "$s" = 1 ]; then noready=1
+      elif [ "$u" = 1 ]; then unk=1
+      else noskip=1
+      fi
+    elif [ "$u" = 1 ]; then
+      unk=1
     fi
   done
-  if [ "$ok" = 1 ]; then echo ok
-  elif [ "$noready" = 1 ]; then echo no-ready-trigger
+  if [ "$noready" = 1 ]; then echo no-ready-trigger
+  elif [ "$noskip" = 1 ]; then echo no-skip
+  elif [ "$ok" = 1 ]; then echo ok
   elif [ "$unk" = 1 ]; then echo unknown
-  elif [ "$prs" = 1 ]; then echo no-skip
   else echo none
   fi
 }
@@ -179,9 +267,199 @@ _dc_resolve() {
   echo true
 }
 
+# ── edit ──────────────────────────────────────────────────────────────────────
+read -r -d '' _DC_EDIT_PY <<'TALOS_e7Zt3Hc8Vm5F' || true
+import difflib, os, shutil, stat, sys, tempfile
+
+SKIP = DRAFT + " != true"
+TYPES = "[opened, synchronize, reopened, ready_for_review]"
+MAX = 1 << 20
+write = len(sys.argv) > 2 and sys.argv[2] == "--write"
+
+def refuse(msg):
+    print("refused: " + msg, file=sys.stderr)
+    sys.exit(1)
+
+# ── the file: .github/workflows/<name>.yml|yaml, regular, no symlink on the path
+rel = os.path.relpath(sys.argv[1])
+parts = rel.split(os.sep)
+if len(parts) != 3 or parts[:2] != [".github", "workflows"] or not parts[2].endswith((".yml", ".yaml")):
+    refuse("not a workflow file directly under .github/workflows")
+def check_path():
+    cur = ""
+    for p in parts:
+        cur = os.path.join(cur, p)
+        try:
+            st = os.lstat(cur)
+        except OSError:
+            refuse("cannot inspect " + cur)
+        if stat.S_ISLNK(st.st_mode):
+            refuse(cur + " is a symlink")
+    if not stat.S_ISREG(st.st_mode):
+        refuse(rel + " is not a regular file")
+    if st.st_size > MAX:
+        refuse(rel + " is over 1 MB")
+check_path()
+try:
+    with open(rel, "rb") as fh:
+        text = fh.read(MAX + 1).decode("utf-8")
+except (OSError, UnicodeDecodeError):
+    refuse("cannot read " + rel + " as UTF-8")
+eol = "\r\n" if "\r\n" in text else "\n"
+orig = text.splitlines(keepends=True)
+if orig and not orig[-1].endswith(("\n", "\r")):
+    orig[-1] += eol
+lines = list(orig)
+
+def indent(l):
+    return len(l) - len(l.lstrip(" "))
+def sig(l):
+    s = l.strip()
+    return bool(s) and not s.startswith("#")
+def block_end(start, base):
+    for i in range(start + 1, len(lines)):
+        if sig(lines[i]) and indent(lines[i]) <= base:
+            return i
+    return len(lines)
+def first_sig(a, b):
+    for i in range(a, b):
+        if sig(lines[i]):
+            return i
+    return None
+def body(l):
+    return l.rstrip("\r\n")
+if any("\t" in l[:len(l) - len(l.lstrip())] for l in lines):
+    refuse("tab indentation")
+
+ops = []   # (index, "replace"|"after", new line without eol)
+
+# ── on.pull_request.types
+i_on = next((i for i, l in enumerate(lines) if re.match(r"^(on|\"on\"|'on'):\s*(#.*)?$", body(l))), None)
+if i_on is None:
+    refuse("`on:` is not a block mapping (a list or scalar `on:` needs a hand edit)")
+on_end = block_end(i_on, 0)
+f = first_sig(i_on + 1, on_end)
+if f is None:
+    refuse("empty `on:`")
+ei = indent(lines[f])
+i_pr = next((i for i in range(i_on + 1, on_end)
+             if indent(lines[i]) == ei and re.match(r"^\s*pull_request:\s*(#.*)?$", body(lines[i]))), None)
+if i_pr is None:
+    refuse("no block-style `pull_request:` trigger")
+pr_end = block_end(i_pr, ei)
+kids = [i for i in range(i_pr + 1, pr_end) if sig(lines[i])]
+ki = indent(lines[kids[0]]) if kids else ei + 2
+t_idx = next((i for i in kids if indent(lines[i]) == ki and re.match(r"^\s*types:", body(lines[i]))), None)
+if t_idx is None:
+    ops.append((i_pr, "after", " " * ki + "types: " + TYPES))
+else:
+    line = body(lines[t_idx])
+    m = re.match(r"^(\s*types:\s*)\[([^\]]*)\](\s*(#.*)?)$", line)
+    if m:
+        items = [x.strip().strip("'\"") for x in m.group(2).split(",") if x.strip()]
+        if "ready_for_review" not in items:
+            inner = m.group(2).rstrip()
+            new = m.group(1) + "[" + inner + (", " if inner.strip() else "") + "ready_for_review]" + m.group(3)
+            ops.append((t_idx, "replace", new))
+    elif re.match(r"^\s*types:\s*(#.*)?$", line):
+        items, last, j = [], None, t_idx + 1
+        while j < pr_end:
+            if sig(lines[j]):
+                im = re.match(r"^\s*-\s*(.+?)\s*(#.*)?$", body(lines[j]))
+                if not im or indent(lines[j]) <= ki:
+                    break
+                items.append(im.group(1).strip("'\""))
+                last = j
+            j += 1
+        if last is None:
+            refuse("`types:` has an unsupported shape")
+        if "ready_for_review" not in items:
+            ops.append((last, "after", " " * indent(lines[last]) + "- ready_for_review"))
+    else:
+        refuse("`types:` has an unsupported shape")
+
+# ── jobs
+i_jobs = next((i for i, l in enumerate(lines) if re.match(r"^jobs:\s*(#.*)?$", body(l))), None)
+if i_jobs is None:
+    refuse("no block-style `jobs:`")
+j_end = block_end(i_jobs, 0)
+f = first_sig(i_jobs + 1, j_end)
+if f is None:
+    refuse("empty `jobs:`")
+ji = indent(lines[f])
+for i in range(i_jobs + 1, j_end):
+    if not sig(lines[i]) or indent(lines[i]) != ji or not re.match(r"^\s*([\"']?)[A-Za-z0-9_.-]+\1:\s*(#.*)?$", body(lines[i])):
+        continue
+    job_end = block_end(i, ji)
+    b = first_sig(i + 1, job_end)
+    if b is None:
+        continue
+    kk = indent(lines[b])
+    if_idx = next((k for k in range(i + 1, job_end)
+                   if sig(lines[k]) and indent(lines[k]) == kk and re.match(r"^\s*if:", body(lines[k]))), None)
+    if if_idx is None:
+        ops.append((i, "after", " " * kk + "if: " + SKIP))
+        continue
+    m = re.match(r"^(\s*if:\s*)(.*)$", body(lines[if_idx]))
+    val = m.group(2).rstrip()
+    if val == "" or val[0] in ">|\"'":
+        refuse("job `if:` at line %d is multi-line or quoted; edit it by hand" % (if_idx + 1))
+    comment = ""
+    cm = re.match(r"^(.*?)(\s+#.*)$", val)
+    if cm:
+        if "'" in val or '"' in val:
+            refuse("job `if:` at line %d has a trailing comment next to quotes; edit it by hand" % (if_idx + 1))
+        val, comment = cm.group(1), cm.group(2)
+    if real_skip(val):
+        continue
+    if "github.event_name" in val and "pull_request" not in val:
+        continue   # gated to a non-PR event: leave it alone
+    w = re.fullmatch(r"\$\{\{\s*(.*?)\s*\}\}", val, re.S)
+    if w:
+        new = "${{ (" + w.group(1) + ") && " + SKIP + " }}"
+    elif "${{" in val:
+        refuse("job `if:` at line %d mixes text and `${{ }}`; edit it by hand" % (if_idx + 1))
+    else:
+        new = "(" + val + ") && " + SKIP
+    ops.append((if_idx, "replace", m.group(1) + new + comment))
+
+for idx, kind, new in sorted(ops, key=lambda o: -o[0]):
+    if kind == "replace":
+        lines[idx] = new + eol
+    else:
+        lines.insert(idx + 1, new + eol)
+
+if lines == orig:
+    print("no change needed")
+    sys.exit(0)
+
+# ── only if:, types: and `- ready_for_review` lines may differ; never permissions
+a, b2 = [body(l) for l in orig], [body(l) for l in lines]
+for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b2, autojunk=False).get_opcodes():
+    if tag == "equal":
+        continue
+    if tag == "delete" or not all(re.match(r"^\s*(if:|types:|-\s*ready_for_review\s*$)", x) for x in a[i1:i2] + b2[j1:j2]):
+        refuse("internal check: the edit would touch more than if: and types:; nothing written")
+
+sys.stdout.write("".join(difflib.unified_diff(orig, lines, fromfile=rel, tofile=rel + " (proposed)", n=2)))
+if write:
+    check_path()
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(rel), prefix=".talos-edit-")
+    with os.fdopen(fd, "w", encoding="utf-8", newline="") as out:
+        out.write("".join(lines))
+    shutil.copymode(rel, tmp)
+    os.replace(tmp, rel)
+    print("written: " + rel)
+TALOS_e7Zt3Hc8Vm5F
+
+_dc_edit() {
+  [ -n "${1:-}" ] || { echo "refused: usage: pipeline-draft-check.sh edit <workflow-file> [--write]" >&2; return 1; }
+  python3 -I -c "$_DC_PRED"$'\n'"$_DC_EDIT_PY" "$@"
+}
+
 case "${1:-check}" in
-  check)   _dc_check "${2:-}" ;;
-  resolve) _dc_resolve ;;
-  *) echo "usage: pipeline-draft-check.sh [check [<workflows-dir>] | resolve]" >&2; echo unknown ;;
+  check)   _dc_check "${2:-}"; exit 0 ;;
+  resolve) _dc_resolve; exit 0 ;;
+  edit)    shift; _dc_edit "$@"; exit $? ;;
+  *) echo "usage: pipeline-draft-check.sh [check [<workflows-dir>] | resolve | edit <file> [--write]]" >&2; echo unknown; exit 0 ;;
 esac
-exit 0

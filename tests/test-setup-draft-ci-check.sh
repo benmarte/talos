@@ -40,7 +40,12 @@ SN="$(tr '\n' ' ' < "$SETUP" | tr -s ' ')"
 assert_contains "$SN" 'bash scripts/pipeline-draft-check.sh' "setup skill: runs the check script"
 assert_not_contains "$SN" 'for f in .github/workflows' "setup skill: no shell loop over the workflows"
 assert_contains "$SN" 'ask the user to check the requirements below by hand' "setup skill: an unknown status goes to the user"
-assert_contains "$SN" 'Edit the file only after an explicit yes' "setup skill: a workflow is edited only after an explicit yes"
+assert_contains "$SN" 'bash scripts/pipeline-draft-check.sh edit <file>` (`<file>` is a workflow the check read). It prints the exact diff and writes nothing' "setup skill: the edit is proposed as a diff first"
+assert_contains "$SN" 'Show the user that diff verbatim' "setup skill: the user sees the exact diff"
+assert_contains "$SN" 'Only after an explicit yes run the same command with `--write`' "setup skill: a workflow is written only after an explicit yes"
+assert_contains "$SN" 'it refuses a symlink or non-regular file' "setup skill: a symlink or non-regular file is refused"
+assert_contains "$SN" '`(<cond>) && github.event.pull_request.draft != true`' "setup skill: an existing job if: is combined, never replaced"
+assert_not_contains "$SN" 'mirroring `templates/ci/github-tests.yml`' "setup skill: no invitation to copy more of the template"
 assert_contains "$SN" 'only when the user picks the ready flow (the non-default); never write `draft: true`' "setup skill: only the non-default is written"
 
 # ── Draft-time-success guidance (README + setup skill) ────────────────────────

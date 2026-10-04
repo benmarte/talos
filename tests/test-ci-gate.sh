@@ -208,6 +208,9 @@ ga_run() {  # $1 = check-runs JSON
 ga_run '{"check_runs":[{"name":"test","status":"completed","conclusion":"skipped"}]}'
 assert_eq "2" "$rc" "github-api: a skipped conclusion is pending (exit 2)"
 assert_not_contains "$out" 'pr-checks-required: failed:' "github-api: a skipped conclusion is not failed:"
+ga_run '{"check_runs":[{"name":"test","status":"completed","conclusion":"neutral"}]}'
+assert_eq "2" "$rc" "github-api: a neutral conclusion is pending like gh's skipping bucket (exit 2)"
+assert_not_contains "$out" 'pr-checks-required: failed:' "github-api: a neutral conclusion is not failed:"
 ga_run '{"check_runs":[{"name":"test","status":"completed","conclusion":"cancelled"}]}'
 assert_eq "1" "$rc" "github-api control: a cancelled conclusion still fails"
 ga_run '{"check_runs":[{"name":"test","status":"completed","conclusion":"success"}]}'

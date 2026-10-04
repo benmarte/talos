@@ -780,8 +780,15 @@ keep the ready flow, where every push runs CI.
   ready would start no run and QA would wait for nothing, so with `pr.draft`
   unset that run uses the ready flow, and with `pr.draft: true` you get the
   warning only. See `templates/ci/github-tests.yml` for a workflow that has both.
-  Talos never edits a workflow; `/pipeline-setup` offers the change after an
-  explicit yes.
+  Only a real skip counts (`draft != true`, `== false` or `!draft`, alone or
+  `&&`-combined; not `== true` or an `||` branch), and when workflows disagree
+  the worst state wins. `/pipeline` itself never edits a workflow.
+  `/pipeline-setup` offers a minimal change: `pipeline-draft-check.sh edit
+  <file>` prints the exact diff (`ready_for_review` appended to `types`, the
+  skip added to a job, an existing job `if: <cond>` rewritten as `(<cond>) &&
+  github.event.pull_request.draft != true`, nothing else, never `permissions:`),
+  `edit <file> --write` applies it only after your explicit yes, and a symlink
+  or non-regular file is refused.
 - **A skipped check is pending, not red.** A draft push leaves the job skipped
   until the `ready_for_review` run replaces it. `pr-checks-required` reads a
   skipped check as pending (exit 2), never as `failed:` and never as a pass.
