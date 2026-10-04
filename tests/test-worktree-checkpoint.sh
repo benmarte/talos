@@ -242,6 +242,23 @@ assert_eq "0" "$([ -d "$W44" ] && echo 1 || echo 0)" "remove <N> removed the wor
 assert_file_absent "$HF_DIR/44.json" "remove <N> deleted .talos/handoff/44.json"
 bash "$WT" remove 4444 >/dev/null; assert_eq "0" "$?" "remove with nothing to remove still exits 0"
 
+# An unresolvable handoff directory must skip the delete with a note, never rm /<n>.json.
+W50="$(new_wt 50 nodir)"
+printf 'f\n' > "$W50/f.txt"; (cd "$W50" && bash "$WT" checkpoint 50 </dev/null >/dev/null 2>&1)
+mkdir -p "$SANDBOX/shim"
+cat > "$SANDBOX/shim/git" <<TALOS_g4r8w1y6zt3k
+#!/bin/sh
+# fails only the handoff-dir lookup (-C . rev-parse --git-common-dir)
+[ "\$1" = "-C" ] && [ "\$2" = "." ] && [ "\$3" = "rev-parse" ] && [ "\$4" = "--git-common-dir" ] && exit 1
+exec $(command -v git) "\$@"
+TALOS_g4r8w1y6zt3k
+chmod +x "$SANDBOX/shim/git"
+OUT="$(PATH="$SANDBOX/shim:$PATH" bash "$WT" remove 50 2>&1)"; rc=$?
+assert_eq "0" "$rc" "remove still exits 0 when the handoff directory cannot be resolved"
+assert_contains "$OUT" "could not resolve the handoff directory" "remove says it skipped the handoff delete"
+assert_eq "0" "$([ -d "$W50" ] && echo 1 || echo 0)" "remove still removed the worktree"
+assert_file_exists "$HF_DIR/50.json" "the handoff was left in place, not deleted through a bad path"
+
 # ── sweep leaves the handoff of a worktree it removes ────────────────────────
 W45="$(new_wt 45 swept)"
 printf 'd\n' > "$W45/d.txt"; (cd "$W45" && bash "$WT" checkpoint 45 </dev/null >/dev/null 2>&1)

@@ -1280,24 +1280,6 @@ Every `sweep` run ends with a summary line:
 and the total on-disk size of `.claude/worktrees`, for a quick health check
 without wading through `list`'s per-worktree output.
 
-### Checkpoint and handoff
-
-A stage that dies (provider outage, spend limit, a crash) used to leave its work uncommitted in a worktree. `pipeline-worktree.sh checkpoint` saves it and records where the stage was.
-
-```bash
-bash scripts/pipeline-worktree.sh checkpoint <N> [--local] [--runner R] [--model M]   # optional JSON on stdin
-bash scripts/pipeline-worktree.sh handoff <N>                                          # read-only
-```
-
-- **What it does.** Stages everything with `git add -A` (never `.talos/` or `.claude/worktrees/`, and never a path matching the `check-pr-files` default patterns or `merge.forbidden_files`; those are named on stderr), commits `wip(#<N>): checkpoint`, pushes `HEAD:refs/heads/<branch>` (never forced) and refreshes the handoff. The current branch must match `(fix|feat)/issue-<N>-`, so it works in a worktree and under `isolation: branch`, and can never commit on `main`. Nothing to commit still refreshes the handoff and retries an unpushed commit.
-- **Push policy.** A first pass pushes. A fix round passes `--local` (commit only): a push under an open PR starts CI and moves the head the approvals are stamped on. The WIP subjects appear in the squash commit body. The push never runs inside the repo-wide worktree lock.
-- **The handoff file.** `<repo-root>/.talos/handoff/<N>.json` (repo root = the parent of the git common dir, like the events log): mode 0600 in a 0700 directory, outside every git tree, never staged or pushed, so it cannot reach a PR diff or the squash commit. Trade-off: it is **this machine only**; failover and resume on one machine work, cross-machine resume does not. Fields: `v` (1), `issue`, `branch`, `head` (the checkpoint commit), `stage`, `criteria_done` and `criteria_remaining` (1-based positions in the spec's acceptance list, integers only), `last_verify` (`cmd`, `rc`, up to 20 failing test names; never output), `decisions` (up to 8 one-line strings), `next_step`, `runner` and `model` (only when given by flag or `TALOS_RUNNER`/`TALOS_MODEL`; never guessed) and `ts` (UTC). At most 8 KiB; unknown keys and control characters are rejected. Fields left out of the stdin object keep their earlier value, so the failover path (which passes none) refreshes `head` and `ts`.
-- **No secrets.** A string that looks like a credential (`ghp_`, `sk-`, `AKIA...`, `-----BEGIN`, a JWT, `Bearer `, `://user:pass@`, `token=`, any unbroken 32+ character `[A-Za-z0-9_-]` run) or that contains the value of an environment variable whose name has `TOKEN`, `KEY`, `SECRET` or `PASSWORD` is rejected (exit 4, previous file kept, only the field name on stderr), never redacted. Shorten a very long test name if it trips the 32-character rule.
-- **Exit codes.** 0 ok; 1 refused (wrong branch, git failure); 2 usage; 3 push failed (commit kept locally, handoff written, nothing reported as pushed); 4 handoff rejected (commit and push done).
-- **`handoff <N>`** prints the validated JSON and exits 0, or exits 1 with one line when the file is absent, invalid or stale (the branch is gone, or `head` is not on it, so a re-created branch never inherits an old handoff). It works from any directory of the repo.
-- **Lifecycle.** The playbook adds a `Handoff:` line to a developer brief only when `handoff <N>` exits 0; the stage reads the handoff and `git diff origin/<base>...` instead of the thread. `/resume` shows stage, remaining criteria, `next_step` and `ts` for in-flight issues. `remove <N>` deletes the file with the worktree; `sweep` does not. The runner failover path (`agents.fallback`) calls `checkpoint <N>` when a runner fails with a provider error.
-- **Known gap.** `sweep` removes by issue id, and also deletes a local branch that has no `origin/<branch>`; so a worktree whose checkpoint push failed is kept only by `remove <N>` (reason `unpushed`) and by `sweep <N>` listing it, not by a `sweep` that omits it.
-
 **Default:** `10` (an absent key behaves exactly like `10`)
 
 **Worked config example:**
@@ -1315,6 +1297,24 @@ threshold <T>`. Step 5 relays that line verbatim via `pipeline-notify.sh info`
 when present, and says nothing when the count is at or under the threshold.
 This is visibility only -- raising or lowering the threshold does not change
 what `sweep` removes; it only changes when the warning fires.
+
+### Checkpoint and handoff
+
+A stage that dies (provider outage, spend limit, a crash) used to leave its work uncommitted in a worktree. `pipeline-worktree.sh checkpoint` saves it and records where the stage was.
+
+```bash
+bash scripts/pipeline-worktree.sh checkpoint <N> [--local] [--runner R] [--model M]   # optional JSON on stdin
+bash scripts/pipeline-worktree.sh handoff <N>                                          # read-only
+```
+
+- **What it does.** Stages everything with `git add -A` (never `.talos/` or `.claude/worktrees/`, and never a path matching the `check-pr-files` default patterns or `merge.forbidden_files`; those are named on stderr), commits `wip(#<N>): checkpoint`, pushes `HEAD:refs/heads/<branch>` (never forced) and refreshes the handoff. The current branch must match `(fix|feat)/issue-<N>-`, so it works in a worktree and under `isolation: branch`, and can never commit on `main`. Nothing to commit still refreshes the handoff and retries an unpushed commit.
+- **Push policy.** A first pass pushes. A fix round passes `--local` (commit only): a push under an open PR starts CI and moves the head the approvals are stamped on. The WIP subjects appear in the squash commit body. The push never runs inside the repo-wide worktree lock.
+- **The handoff file.** `<repo-root>/.talos/handoff/<N>.json` (repo root = the parent of the git common dir, like the events log): mode 0600 in a 0700 directory, outside every git tree, never staged or pushed, so it cannot reach a PR diff or the squash commit. Trade-off: it is **this machine only**; failover and resume on one machine work, cross-machine resume does not. Fields: `v` (1), `issue`, `branch`, `head` (the checkpoint commit), `stage`, `criteria_done` and `criteria_remaining` (1-based positions in the spec's acceptance list, integers only), `last_verify` (`cmd`, `rc`, up to 20 failing test names; never output), `decisions` (up to 8 one-line strings), `next_step`, `runner` and `model` (only when given by flag or `TALOS_RUNNER`/`TALOS_MODEL`; never guessed) and `ts` (UTC). At most 8 KiB; unknown keys and control characters are rejected. Fields left out of the stdin object keep their earlier value, so the failover path (which passes none) refreshes `head` and `ts`.
+- **No secrets.** A string that looks like a credential (`ghp_`, `sk-`, `AKIA...`, `-----BEGIN`, a JWT, `Bearer `, `://user:pass@`, `token=`, any unbroken 32+ character `[A-Za-z0-9_-]` run) or that contains the value of an environment variable whose name has `TOKEN`, `KEY`, `SECRET` or `PASSWORD` is rejected (exit 4, previous file kept, only the field name on stderr), never redacted. Shorten a very long test name if it trips the 32-character rule.
+- **Exit codes.** 0 ok; 1 refused (wrong branch, git failure); 2 usage; 3 push failed (commit kept locally, handoff written, nothing reported as pushed); 4 handoff rejected (commit and push done).
+- **`handoff <N>`** prints the validated JSON and exits 0, or exits 1 with one line when the file is absent, invalid or stale (the branch is gone, or `head` is not on it, so a re-created branch never inherits an old handoff). It works from any directory of the repo.
+- **Lifecycle.** The playbook adds a `Handoff:` line to a developer brief only when `handoff <N>` exits 0; the stage reads the handoff and `git diff origin/<base>...` instead of the thread. `/resume` shows stage, remaining criteria, `next_step` and `ts` for in-flight issues. `remove <N>` deletes the file with the worktree; `sweep` does not. The runner failover path (`agents.fallback`) calls `checkpoint <N>` when a runner fails with a provider error.
+- **Known gap.** `sweep` removes by issue id, and also deletes a local branch that has no `origin/<branch>`; so a worktree whose checkpoint push failed is kept only by `remove <N>` (reason `unpushed`) and by `sweep <N>` listing it, not by a `sweep` that omits it.
 
 ### Adding context to every stage prompt (`hooks.pre_dispatch`)
 

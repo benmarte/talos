@@ -510,7 +510,11 @@ _wt_remove_body() {
   [ "$removed" -eq 0 ] && echo "pipeline-worktree: no worktree for issue #$n (already clean)"
   # #419: the handoff goes with the worktree it described (a preserved
   # worktree keeps it).
-  [ "$removed" -gt 0 ] && rm -f "$(_wt_handoff_dir)/$n.json" 2>/dev/null
+  if [ "$removed" -gt 0 ]; then
+    hf_dir="$(_wt_handoff_dir)" && [ -n "$hf_dir" ] \
+      && rm -f "$hf_dir/$n.json" \
+      || echo "pipeline-worktree: could not resolve the handoff directory; handoff for #$n left in place"
+  fi
   exit 0
 }
 

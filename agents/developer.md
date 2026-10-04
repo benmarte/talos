@@ -80,7 +80,7 @@ Workflow (do ALL of it — the publish step is not optional):
    (`--local` in a fix round) with one JSON object on stdin from a `TALOS_<rand>`
    heredoc: `stage`, `criteria_done`/`criteria_remaining` (1-based spec positions),
    `last_verify` (`cmd`, `rc`, `failing` names), `decisions`, `next_step`. No
-   output or secrets in it (exit 4 rejects). Exit 3 (push failed): carry on, say
+   output or secrets in it (exit 4 rejects; fix the field named on stderr and rerun). Exit 3 (push failed): carry on, say
    so in the final message. Then commit the final change with a conventional
    message (`fix:`/`feat:` … `(#<N>)`).
 5. `git push -u origin <branch>`.
