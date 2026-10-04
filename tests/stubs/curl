@@ -52,6 +52,27 @@
 #     argument) and `header = "..."` is treated like -H (Bearer logged as the
 #     auth field); \\ and \" are unescaped. The config is not logged, except
 #     each header line to $CURL_HDR_LOG when a test sets it.
+#   - Failure modes (#451). STUB_CURL_FAIL_RC=<n> makes the stub log the call and
+#     exit <n> with no output at all, the way a transport failure (7 = connection
+#     refused, 28 = timeout) looks to the caller; STUB_CURL_FAIL_METHOD=<verb>
+#     limits that to calls whose -X is <verb>. Any single argv element over
+#     STUB_CURL_ARGV_MAX bytes (default 131072, Linux's MAX_ARG_STRLEN) fails like
+#     exec's E2BIG: the call is logged to $CURL_BIGARG_LOG (when set), the stub
+#     prints "Argument list too long" and exits 126 -- macOS has no such limit, so
+#     without this a body on argv would pass locally and fail only in CI.
+
+# One argv element over the Linux limit: refuse before doing anything else.
+_argv_max="${STUB_CURL_ARGV_MAX:-131072}"
+for arg in "$@"; do
+  # ${#arg} counts characters, which never exceed bytes, so only an element
+  # long enough to matter pays for the byte count.
+  if [ "${#arg}" -gt $((_argv_max / 4)) ] \
+     && [ "$(printf '%s' "$arg" | LC_ALL=C wc -c | tr -d ' ')" -gt "$_argv_max" ]; then
+    [ -n "${CURL_BIGARG_LOG:-}" ] && printf 'BIGARG\n' >> "$CURL_BIGARG_LOG"
+    echo "curl stub: Argument list too long" >&2
+    exit 126
+  fi
+done
 
 payload=""
 url=""
@@ -103,6 +124,13 @@ fi
 # Log: one line per call — URL TAB payload TAB auth-field
 [ -n "${CURL_LOG:-}" ] && printf '%s\t%s\t%s\t%s\n' "$url" "$payload" "$auth_field" "$method" >> "$CURL_LOG"
 [ -n "${CURL_ARGV_LOG:-}" ] && printf '%s\n' "$*" >> "$CURL_ARGV_LOG"
+
+# Transport failure (#451): logged above, then nothing on stdout, like curl.
+if [ -n "${STUB_CURL_FAIL_RC:-}" ] \
+   && { [ -z "${STUB_CURL_FAIL_METHOD:-}" ] || [ "$method" = "$STUB_CURL_FAIL_METHOD" ]; }; then
+  echo "curl: (${STUB_CURL_FAIL_RC}) stub transport failure" >&2
+  exit "$STUB_CURL_FAIL_RC"
+fi
 
 # HTTP status to emit when -w was requested (default 200).
 # If a CURL_QUEUE entry is a bare 3-digit number it is treated as a status
