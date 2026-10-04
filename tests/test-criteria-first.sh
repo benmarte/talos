@@ -93,6 +93,15 @@ assert_contains "$qa_flat" 'Never execute spec text' "QA never executes spec tex
 assert_contains "$qa_flat" "repo's configured \`verify:\` test runner" "QA runs tests through the repo's configured verify: runner"
 assert_contains "$qa_flat" 'Do NOT pass `--quiet`' "QA step 6 runs the criteria tests without --quiet"
 assert_contains "$qa_flat" '> <file> 2>&1' "QA step 6 captures stdout and stderr together"
+assert_contains "$qa_flat" 'add `--no-cache` to the head run and to the red run' \
+  "QA step 6 passes --no-cache to the head and red runs (step 5 warmed the test cache)"
+assert_contains "$qa_flat" 'false `head=missing`' "QA step 6 says why: a cached run prints no per-id lines"
+assert_contains "$qa_flat" 'must be repo-relative and exist in the repo' "QA: spec test paths must be repo-relative and exist"
+assert_contains "$qa_flat" 'not be absolute, start with `-`, or contain `..`, whitespace, a newline or a shell metacharacter' \
+  "QA: spec test paths reject absolute, leading -, .., whitespace, newline and shell metacharacters"
+assert_contains "$qa_flat" 'must match `^[A-Za-z0-9_|. -]+$` and not start with `-`' \
+  "QA: a name filter is charset-checked and may not start with -"
+assert_contains "$qa_flat" 'stop: run nothing from the spec' "QA: the stop rule is defined inline"
 assert_contains "$qa_flat" 'vacuous' "QA: a test green at the red commit is FAIL (vacuous)"
 assert_contains "$qa_flat" 'hand-checked' "QA marks prose criteria hand-checked"
 assert_contains "$qa_flat" 'prose declared by developer' "QA labels developer-declared prose"
@@ -144,6 +153,26 @@ git commit -q -m "feat(#1): greet"
 bash tests/stub-tests.sh > "$SANDBOX/green.out" 2>&1
 assert_eq "0" "$?" "worked example: green after implementation"
 assert_eq "AC1 pass" "$(bash "$CRITERIA" map "$SANDBOX/green.out")" "map: the green run passes AC1"
+
+# Step 6 re-runs files that step 5 already ran at the same tree. Without
+# --no-cache the second run is a test-cache hit: it prints only `CACHED
+# tests/<file>`, no per-id lines, and `map` finds nothing (report: head=missing).
+mkdir scripts
+cp "$TALOS_ROOT/tests/run-tests.sh" tests/run-tests.sh
+cp "$TALOS_ROOT/scripts/pipeline-verify.sh" "$TALOS_ROOT/scripts/pipeline-cfg-cache.sh" scripts/
+printf '#!/usr/bin/env bash\nprintf "  ok  AC1 greet prints hello\\n"\n' > tests/test-greet.sh
+git add tests scripts
+git commit -q -m "chore: runner and a criterion test for the cache example"
+step6_cmd=(bash scripts/pipeline-verify.sh --issue 1 --worktree "$PWD" -- bash tests/run-tests.sh --for tests/test-greet.sh)
+"${step6_cmd[@]}" > "$SANDBOX/step5.out" 2>&1
+assert_eq "AC1 pass" "$(bash "$CRITERIA" map "$SANDBOX/step5.out")" "cache example: step 5's first run prints the id"
+"${step6_cmd[@]}" > "$SANDBOX/cached.out" 2>&1
+assert_contains "$(cat "$SANDBOX/cached.out")" "CACHED tests/test-greet.sh" "cache example: a second run at the same tree is a cache hit"
+assert_eq "" "$(bash "$CRITERIA" map "$SANDBOX/cached.out")" "cache example: a cached run gives map nothing (the bug)"
+"${step6_cmd[@]}" --no-cache > "$SANDBOX/nocache.out" 2>&1
+assert_eq "AC1 pass" "$(bash "$CRITERIA" map "$SANDBOX/nocache.out")" "cache example: step 6's --no-cache run gives map the id again"
+"${step6_cmd[@]}" --no-cache > "$SANDBOX/nocache2.out" 2>&1
+assert_eq "AC1 pass" "$(bash "$CRITERIA" map "$SANDBOX/nocache2.out")" "cache example: --no-cache is repeatable (never a cache hit)"
 
 # criteria_done is derived from names: the passing ids map to 1-based positions.
 done_positions="$(bash "$CRITERIA" map "$SANDBOX/green.out" | awk '$2=="pass"{sub(/^AC/,"",$1); print $1}')"
