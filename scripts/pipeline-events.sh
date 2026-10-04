@@ -373,6 +373,10 @@ for key in order:
         g.pop("ci_runs")
     rows.append({"issue": key[0], "role": key[1], **g})
     for field in g:
+        # orchestrator rows (spend-guard blocks, failovers) are not stage
+        # runs, so they never count as unrecorded, like in --markdown (#450)
+        if field == "unrecorded" and key[1] == "orchestrator":
+            continue
         total[field] = _add(total[field], g[field])
 
 if not have_ci_runs:
@@ -415,13 +419,17 @@ def render_markdown(fmt):
     def tokens(v):
         return fmt.fmt_num(fmt.as_count(v))
 
+    def row_tokens(r):
+        # a row of runs that all reported no usage is "unrecorded", not 0
+        return "unrecorded" if r["unrecorded"] == r["events"] else tokens(r["tokens"])
+
     def duration(v):
         return fmt.fmt_dur(fmt.as_count(v))
 
     # role and model come from the log: shown as code, never rendered.
     for r in stage_rows:
         out.append(cells(fmt.md_code(r["role"]), fmt.md_code(fmt.model_summary(models[r["role"]])), r["events"],
-                         tokens(r["tokens"]), r["tool_uses"], duration(r["duration_s"]), r["restamp"], r["unrecorded"]))
+                         row_tokens(r), r["tool_uses"], duration(r["duration_s"]), r["restamp"], r["unrecorded"]))
     out.append(cells("TOTAL", "", tot["events"], tokens(tot["tokens"]), tot["tool_uses"], duration(tot["duration_s"]),
                      tot["restamp"], tot["unrecorded"]))
     if pr:
@@ -728,10 +736,10 @@ case "$VERB" in
     issue="" role="" event="" last="" json_mode="0"
     while [ $# -gt 0 ]; do
       case "$1" in
-        --issue) issue="${2:-}"; shift 2 ;;
-        --role) role="${2:-}"; shift 2 ;;
-        --event) event="${2:-}"; shift 2 ;;
-        --last) last="${2:-}"; shift 2 ;;
+        --issue) _need_value "$1" $#; issue="$2"; shift 2 ;;
+        --role) _need_value "$1" $#; role="$2"; shift 2 ;;
+        --event) _need_value "$1" $#; event="$2"; shift 2 ;;
+        --last) _need_value "$1" $#; last="$2"; shift 2 ;;
         --json) json_mode="1"; shift ;;
         *) shift ;;
       esac
@@ -743,7 +751,7 @@ case "$VERB" in
     issue=""
     while [ $# -gt 0 ]; do
       case "$1" in
-        --issue) issue="${2:-}"; shift 2 ;;
+        --issue) _need_value "$1" $#; issue="$2"; shift 2 ;;
         *) shift ;;
       esac
     done
