@@ -63,7 +63,11 @@ _talos_load_defaults() {
   _need=" ${_TALOS_SECURITY_KEYS//$'\n'/ } "
   _talos_defaults_split
   for _row in ${_TD_ROWS[@]+"${_TD_ROWS[@]}"}; do
+    # A key row has a tab; a key holding whitespace is never counted (one row
+    # named "k1 k2 ..." would otherwise strike every pending key at once).
+    case "$_row" in *$'\t'*) ;; *) continue ;; esac
     _k="${_row%%$'\t'*}"
+    case "$_k" in *[[:space:]]*) continue ;; esac
     case "$_need" in *" $_k "*) _need="${_need/ $_k / }" ;; esac
   done
   [ -z "${_need// /}" ] || return 1

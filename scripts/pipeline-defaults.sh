@@ -74,6 +74,10 @@
 # Tabs matter: keep a real tab between columns. tests/test-config-defaults-table.sh
 # checks that every row has six fields.
 
+# The split cache (_talos_defaults_split) is this process's own: drop anything
+# an inherited environment preset, before any use (#483).
+unset _TD_ROWS _TD_ROWS_SRC
+
 IFS= read -r -d '' _TALOS_DEFAULTS_RAW <<'TALOS_Qz7vK2mXr9Lp' || true
 base_branch	str		derived	-	repo
 release_branch	str	main	-	-	repo
