@@ -454,6 +454,23 @@ pm 9 42 --handoff
 assert_contains "$OUT" "warn reason=comment-failed issue=42" "handoff: a failed comment is a warning, and the relay still goes"
 assert_eq "1" "$(called notify)" "handoff: the relay goes after a failed comment"
 
+# ── (a) post-merge: the lease release (#470, AC4) ────────────────────────────
+# The merge path is the run that held the issue's lease (`next` answered
+# action=merge): its work complete, it frees the issue. A heal is another
+# run's bookkeeping and releases nothing.
+LEASE="$SANDBOX/.git/talos-lease.ledger"
+reset_stubs
+printf 'issue=42 held=1 expires=9999999999 pid=%s\n' "$$" > "$LEASE"
+pm 9 42
+assert_eq "0" "$RC" "lease release: post-merge still exits 0 with a held lease"
+assert_not_contains "$(cat "$LEASE" 2>/dev/null)" "issue=42" "lease release: the merge path releases the issue's lease"
+assert_not_contains "$OUT" "warn reason=lease" "lease release: a released lease warns nothing"
+reset_stubs
+printf 'issue=42 held=1 expires=9999999999 pid=%s\n' "$$" > "$LEASE"
+pm 9 42 --heal
+assert_contains "$(cat "$LEASE" 2>/dev/null)" "issue=42" "lease release: a heal is another run's bookkeeping and releases nothing"
+assert_not_contains "$OUT" "warn reason=lease" "lease release: a heal never touches the lease it does not own"
+
 # ── (b) sweep ────────────────────────────────────────────────────────────────
 # Item 2: the heal.
 reset_stubs

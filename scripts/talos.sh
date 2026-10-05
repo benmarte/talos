@@ -153,6 +153,10 @@
 #          resolved (no trusted_authors and the identity refused or unavailable),
 #          or unreadable comments, count no marker (the repeat is the lesser
 #          harm): `warn reason=trust-unverified|comments-unreadable`.
+#          A merge (not --heal) releases the issue's lease (#470, AC4) after the
+#          items: the run that answered action=merge holds it, and the merge
+#          completing frees it. A heal is another run's bookkeeping: it
+#          releases nothing (its issue's lease belongs to whoever holds it).
 #   post-merge <pr> <issue> --handoff [--details-file <file>]
 #          merge.auto is off: approved.md on the PR (the file's text, if given,
 #          is DETAILS), then the orchestrator relay. Nothing else runs.
@@ -182,7 +186,7 @@
 #          item 4 `cost=<line>` per line of the one cost --summary call, item 5 the
 #          status resume refresh (status.enabled).
 #
-# post-merge-reasons: changelog-failed comments-unreadable trust-unverified comment-failed close-failed issue-state-unverified board-failed status-log-failed status-resume-not-refreshed worktree-remove-failed notify-failed spend-upsert-failed siblings-unlisted value-truncated
+# post-merge-reasons: changelog-failed comments-unreadable trust-unverified comment-failed close-failed issue-state-unverified board-failed status-log-failed status-resume-not-refreshed worktree-remove-failed notify-failed spend-upsert-failed siblings-unlisted lease-release-failed value-truncated
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
 #   warn: all the others
 # sweep-reasons: issues-unlisted prs-unlisted find-pr-unverified find-pr-failed worktree-sweep-failed epic-close-failed epic-label-failed epic-comment-failed epic-acceptance-unsupported unblock-failed marker-authors-unverified needs-owner-clear-failed needs-owner-list-failed notify-failed
@@ -276,7 +280,10 @@
 #          fix-round stage=<role> (run `gate fix-round`, then the developer) | batch
 #          (--draft, reviewer/security/adversarial: wait for every role of the draft
 #          review batch, then one `gate fix-round` for all of them). `done` never calls
-#          `gate fix-round` and never merges.
+#          `gate fix-round` and never merges. Before the `next=` line the issue's
+#          lease is released (#470, AC4): the run `next` dispatched holds it, and
+#          a done stage frees it for the next run immediately, not after the TTL.
+#          A release that cannot be done is `warn reason=lease-release-failed`.
 #          --action-id <id> ([a-z0-9._-]{1,64}) makes the call at most once: the id is
 #          recorded under the git common dir (talos-done.ledger, pipeline-lock.sh) before
 #          anything is announced, and a repeat prints `done=duplicate` and does nothing
@@ -285,11 +292,11 @@
 #          and the call may be repeated. Without --action-id nothing is recorded.
 #          Child stderr is relayed only as `note done=<verb> msg=<escaped>` lines.
 #
-# done-reasons: usage unknown-role verdict-invalid file-unreadable summary-empty draft-pr-failed label-failed ledger-unavailable ledger-locked scripts-missing python-missing scratch-unavailable config-unreadable board-failed notify-failed model-invalid spend-upsert-failed
+# done-reasons: usage unknown-role verdict-invalid file-unreadable summary-empty draft-pr-failed label-failed ledger-unavailable ledger-locked scripts-missing python-missing scratch-unavailable config-unreadable board-failed notify-failed model-invalid spend-upsert-failed lease-release-failed
 #   stop: usage unknown-role verdict-invalid file-unreadable summary-empty draft-pr-failed label-failed
 #         ledger-unavailable ledger-locked scripts-missing python-missing scratch-unavailable config-unreadable
 #         (exit 2 for usage, unknown-role, verdict-invalid; else 1)
-#   warn: board-failed notify-failed model-invalid spend-upsert-failed
+#   warn: board-failed notify-failed model-invalid spend-upsert-failed lease-release-failed
 #
 # state, next (#470). `state` prints the normalised run state, the same JSON
 # pipeline-status-file.sh collects for the Resume block (one call of its
@@ -1411,6 +1418,10 @@ _talos_post_merge() {
   else
     _talos_emit post_merge done
     _talos_post_merge_run "$_pr" "$_n" "$_heal" "$_ci"
+    # The merge path is the run that held the issue's lease (`next` answered
+    # action=merge): its work complete, free it (#470, AC4). A heal is another
+    # run's bookkeeping and releases nothing.
+    [ "$_heal" -eq 0 ] && _talos_lease_release "$_n"
   fi
   _talos_flush
 }
@@ -1951,7 +1962,11 @@ _talos_ledger() {
 # (mkdir advisory lock, the same primitive every shared-local-state file uses).
 # Holding a lease means "a run works on issue <N> right now": another run that
 # cannot acquire it waits -- it never takes over, and a lock that times out is
-# a wait verdict, never a force-acquire.
+# a wait verdict, never a force-acquire. `next` acquires the lease before
+# answering dispatch/merge, and the run that acted releases it at
+# end-of-stage bookkeeping (`done`, below): a released issue is free to other
+# runs immediately. A run that crashes holds its lease until the TTL expires
+# (the TTL is the crash boundary, not the working lifetime).
 #
 # File: <common dir>/talos-lease.ledger, one line `issue=<N> held=<unix-ts>
 # expires=<unix-ts> pid=<pid>` per held lease (a lease that expired is not a
@@ -2082,6 +2097,18 @@ _talos_lease_held_line() {
     esac
   done < "$_f" 2>/dev/null || return 2
   return 0
+}
+
+# _talos_lease_release <issue>: the end-of-stage half of the lease (#470, AC4).
+# A release never fails the caller: the worst case (a lease that could not be
+# pruned) is the TTL that already bounds a crashed run, so it is a warn on the
+# done/post-merge reason lists, never a stop. A release with no lease held --
+# issue-side stages never acquire one -- is a no-op (release's own rc 1).
+_talos_lease_release() {
+  local _issue="$1" _rc
+  _talos_lease release "$_issue" >/dev/null 2>&1
+  _rc=$?
+  [ "$_rc" -eq 0 ] || [ "$_rc" -eq 1 ] || _talos_warn lease-release-failed "issue=$_issue"
 }
 
 # done <role> --issue <N> [--pr <M>] [--verdict <V>] --summary-file <F|-> [--draft]
@@ -2217,6 +2244,9 @@ _talos_done() {
       *) _next="fix-round stage=$_role" ;;
     esac
   fi
+  # The stage's work is complete: free the issue's lease (#470, AC4) so the
+  # next `next` run answers immediately, not after the TTL.
+  _talos_lease_release "$_n"
   _talos_emit next "$_next"
   _talos_flush
 }

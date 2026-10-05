@@ -415,14 +415,14 @@ reset_stubs
 printf 'issue=42 held=1000000 expires=1001800 pid=%s\n' "$$" > "$LEASE"
 dn qa --issue 42 --pr 57 --verdict PASS --summary-file "$SUM"
 assert_eq "0" "$RC" "lease release: done still exits 0 with a held lease"
-assert_file_absent "$LEASE" "lease release: done releases the issue's lease at end of stage"
+assert_not_contains "$(cat "$LEASE" 2>/dev/null)" "issue=42" "lease release: done releases the issue's lease at end of stage"
 assert_not_contains "$OUT" "warn reason=lease" "lease release: a released lease warns nothing"
 # Without a lease (issue-side stages never acquire one) the release is a no-op.
-reset_stubs
+rm -f "$LEASE" "${LEASE:?}.lock.d"
 dn validator --issue 42 --verdict CONFIRMED --summary-file "$SUM"
 assert_eq "0" "$RC" "lease release: no lease held, done is unaffected"
 assert_not_contains "$OUT" "warn reason=lease" "lease release: a lease that was never held warns nothing"
-assert_file_absent "$LEASE" "lease release: no ledger line is created by done"
+assert_file_absent "$LEASE" "lease release: no ledger line is created when none was held"
 
 # ── (e) free text is data ────────────────────────────────────────────────────
 reset_stubs
