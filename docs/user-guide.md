@@ -1443,6 +1443,23 @@ when present, and says nothing when the count is at or under the threshold.
 This is visibility only -- raising or lowering the threshold does not change
 what `sweep` removes; it only changes when the warning fires.
 
+### Criteria first: red-first tests (#421)
+
+Acceptance criteria become executable before any implementation exists.
+
+- **PM.** Each criterion in the spec has a stable id and a marker: `- [ ] AC1 an expired token is rejected (test)` or `- [ ] AC2 the README names the flag (prose: doc wording, no harness)`. A spec also has a `Tests:` line naming the test file paths and, optionally, a name filter (plain data, never a runner command: QA runs the files through the repo's configured runner). With no PM stage (`spec:ready`, or an issue body that is already a spec) the ids are the 1-based positions of the issue's checklist and an unmarked criterion is `(test)`.
+- **Developer.** The first commit on the branch is the failing tests, one per `(test)` criterion, with the id in the test name (`AC2 rejects an expired token`), made with a plain `git commit` so the body can carry the red run: the command, the exit code and the failing ids. Then red to green, with a checkpoint after each green step. Prose criteria are implemented and listed as prose in the PR body. A red commit is never pushed under an open PR: the PR opens after green, and in a fix round the red-first step stays local and is pushed with its green commit. The full suite still runs once, after the last code change; the red run and each green step run targeted tests only.
+- **QA.** Runs the spec's test files by path (`--for <test path>`, which `--strict` never skips), proves they were red at the first branch commit (a test green there is a FAIL, vacuous), runs them at head, and reports one line per id: `AC<n> red@<sha8> green@head`, the failing case, or `AC<n> prose hand-checked`. Required CI is waited on as before.
+- **The mapping.** `scripts/pipeline-criteria.sh` reads the runner's assertion labels (`  ok  AC2 ...` or `FAIL  AC2 ...`) and prints `pass`, `fail` or `missing` per id. Deriving the handoff's `criteria_done` from it ships with the handoff work (#419); until then only the naming convention is fixed.
+
+```bash
+bash scripts/pipeline-criteria.sh ids spec.md                    # AC1 test / AC2 prose
+bash scripts/pipeline-criteria.sh map head.out --spec spec.md    # AC1 pass
+bash scripts/pipeline-criteria.sh report --spec spec.md --red red.out --head head.out --red-sha 1a2b3c4d
+```
+
+A worked example (a spec with one `(test)` and one `(prose)` criterion and a stub runner) is in `tests/fixtures/criteria-first/`, driven by `tests/test-criteria-first.sh`.
+
 ### Checkpoint and handoff
 
 A stage that dies (provider outage, spend limit, a crash) used to leave its work uncommitted in a worktree. `pipeline-worktree.sh checkpoint` saves it and records where the stage was.
