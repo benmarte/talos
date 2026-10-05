@@ -249,7 +249,7 @@ assert_eq "" "$(grep -ln 'bash "$SCRIPT_DIR/pipeline-config.sh" "\$@"' "$SCRIPTS
 mk_sf_variant() {  # NAME -> scripts dir (copy, stub vcs)
   local d="$SANDBOX/sf-$1"
   mkdir -p "$d" || return 1
-  cp "$SCRIPTS"/*.sh "$d/" || return 1
+  cp "$SCRIPTS"/*.sh "$SCRIPTS"/*.py "$d/" || return 1
   printf '%s\n' '#!/usr/bin/env bash' 'case "${1:-}" in list-prs|list-issues|list-needs-owner) echo "[]"; exit 0 ;; esac' 'exit 1' > "$d/pipeline-vcs.sh"
   printf '%s' "$d"
 }

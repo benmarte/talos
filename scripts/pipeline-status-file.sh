@@ -11,7 +11,12 @@
 # Usage: pipeline-status-file.sh init
 #        pipeline-status-file.sh assemble [--pr <pr> --issue <n>] [--refresh]
 #        pipeline-status-file.sh refresh [--print]
+#        pipeline-status-file.sh collect
 #
+#   collect   The normalised GitHub state as JSON on stdout (#470): the same
+#             reads and the same object the Resume block is built from (read
+#             verbs only). `talos.sh state` consumes it; no worktree, commit,
+#             push or label, and status.enabled is ignored (the caller gates).
 #   init      Create status.file in the current working tree with a title, a
 #             one-line "resume with any LLM" note, the status.resume_heading
 #             section and the status.log_heading section. An existing file is
@@ -250,11 +255,11 @@ fi
 
 _sf_err() { echo "pipeline-status-file: $*" >&2; }
 
-USAGE="usage: pipeline-status-file.sh init | assemble [--pr <pr> --issue <n>] [--refresh] | refresh [--print]"
+USAGE="usage: pipeline-status-file.sh init | assemble [--pr <pr> --issue <n>] [--refresh] | refresh [--print] | collect"
 
 verb="${1:-}"
 case "$verb" in
-  init|assemble|refresh) shift ;;
+  init|assemble|refresh|collect) shift ;;
   *) echo "$USAGE" >&2; exit 1 ;;
 esac
 
@@ -265,6 +270,8 @@ PRINT=""    # refresh --print: block on stdout, no writes
 REFRESH=""  # assemble --refresh: regenerate the block in the same commit
 if [ "$verb" = "init" ]; then
   [ "$#" -eq 0 ] || ARG_ERR="init takes no arguments"
+elif [ "$verb" = "collect" ]; then
+  [ "$#" -eq 0 ] || ARG_ERR="collect takes no arguments"
 elif [ "$verb" = "refresh" ]; then
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -415,7 +422,20 @@ LOG_MAX="$(_sf_posint status.log_max)"
 # ── Python: one implementation of the skeleton, the entry format and the
 #    window, shared by init and assemble. Large inputs arrive on stdin
 #    (assemble: "<sha> <name>" lines) or are read by python itself. ──────────
+# pipeline-next-stage.py (#470): the stage of an open pipeline PR, the one
+# implementation this script and `talos.sh next` share. Loaded by prepending
+# its source to the python below (one process, -I: no cwd on sys.path), the
+# same mechanism pipeline-config.sh uses for pipeline-secret-shapes.py. A
+# missing module fails closed: no stage is ever guessed, the run stops.
+if [ -r "$SCRIPT_DIR/pipeline-next-stage.py" ]; then
+  IFS= read -r -d '' SF_NEXT_PY < "$SCRIPT_DIR/pipeline-next-stage.py" || true
+else
+  echo "talos: pipeline-next-stage.py missing; reinstall Talos" >&2
+  exit 1
+fi
+
 IFS= read -r -d '' SF_PY <<'PYEOF' || true
+
 import datetime, importlib, json, os, re, signal, subprocess, sys, time, unicodedata
 
 MAX_LINES = 3
@@ -719,13 +739,15 @@ _running = None  # the read verb's Popen, so a signal can stop it
 def _stop_on_signal(signum, _frame):
     """INT, TERM or HUP during the read phase: kill the running verb's process
     group (it runs in its own session, so the terminal's signal never reaches it)
-    and exit 128+signum, instead of leaving it to outlive this script."""
+    and exit 128+signum, instead of leaving it to outlive this script. Covers
+    this script's own reads and next_stage's (pipeline-next-stage.py)."""
     p = _running
     if p is not None:
         try:
             os.killpg(p.pid, signal.SIGKILL)
         except OSError:
             pass
+    ns_kill_running()
     sys.exit(128 + signum)
 
 
@@ -767,37 +789,13 @@ def parse_array(text, what):
     return d
 
 
-def next_stage(n, labels, issue_labels, enabled):
-    """First match wins: blocked, then the draft or default order, counting only
-    enabled roles; an approval label that is missing or stale means that role."""
-    if BLOCKED_LABEL in labels or BLOCKED_LABEL in issue_labels:
-        return 'blocked'
-    draft = False
-    if opts.get('pr-draft') == 'true':
-        rc, _, _ = vcs('pr-is-draft', str(n))
-        if rc == 0:
-            draft = True
-        elif rc != 1:
-            return 'unverified'
-    stale = set()
-    if any(label in labels for _, label in APPROVALS):
-        rc, out, _ = vcs('check-approval-sha', str(n), '--stale-list')
-        stale = set(m.group(1) for m in map(STALE_RE.match, out.splitlines()) if m)
-        # exit 1 is both "stale approvals" (stale lines on stdout) and a failed read.
-        if rc not in (0, 1) or (rc == 1 and not stale):
-            die('check-approval-sha failed for PR #%d (rc=%d)' % (n, rc))
-    for role, label in APPROVALS:
-        if draft and role == 'qa':
-            continue
-        if role in enabled and (label not in labels or role in stale):
-            return role
-    if draft:
-        return 'ready'
-    if opts.get('required-checks') == 'yes':
-        rc, _, _ = vcs('pr-checks-required', str(n))
-        if rc != 0:
-            return 'ci'
-    return 'merge' if opts.get('merge-auto') == 'true' else 'human-merge'
+# The stage of an open pipeline PR lives in pipeline-next-stage.py (#470), the
+# one implementation both this script and `talos.sh next` call. next_stage()
+# keeps its own read deadline, signal handler and vcs runner (it reads
+# pr-is-draft, check-approval-sha --stale-list and pr-checks-required), which
+# is what next_stage_init() binds from this script's opts; collect() keeps its
+# own deadline and handler for its own reads (list-prs, list-issues,
+# list-needs-owner), so one phase's deadline never resets the other's.
 
 
 def collect():
@@ -870,6 +868,10 @@ def collect():
     others = len(blocked) + len(owners or []) + (1 if queued else 0)
     shown = len(eligible) if 2 + len(eligible) + others <= budget else budget - 3
     enabled = set(x for x in opts.get('roles', '').split(',') if x)
+    # next_stage() runs its own reads with its own deadline and signal handler
+    # (pipeline-next-stage.py): bind them to this mode's opts once, before the
+    # first call, so the handler of collect()'s own reads stays untouched.
+    next_stage_init(opts)
     # `Next` must still see a merge-ready PR past the cap: any PR beyond it that
     # carries the approval label of every enabled role (and no blocked or
     # needs-owner label) is looked up as well, at most as many as the cap shows (with
@@ -1197,15 +1199,22 @@ print('pipeline-status-file: assembled %d fragment(s)%s, %d entr%s archived' % (
     len(rotated), 'y' if len(rotated) == 1 else 'ies'))
 PYEOF
 
+# Every `python3 -I -c` below runs the module (next_stage) plus this file's
+# program in one process: the module's source first, so its `if mode == ...`
+# dispatch never triggers (the embedded program below rebinds the names).
+SF_PYS="$SF_NEXT_PY
+$SF_PY"
+
 TODAY="${TALOS_STATUS_TODAY:-$(date -u +%Y-%m-%d)}"
 
 # ── init: operates on the caller's working tree ──────────────────────────────
 if [ "$verb" = "init" ]; then
   ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)"
-  python3 -I -c "$SF_PY" init "$ROOT" "$STATUS_FILE" "$FRAG_DIR" "$ARCHIVE_DIR" \
+  python3 -I -c "$SF_PYS" init "$ROOT" "$STATUS_FILE" "$FRAG_DIR" "$ARCHIVE_DIR" \
     "$LOG_HEADING" "$RESUME_HEADING" "$LOG_DAYS" "$LOG_MAX" "$TODAY" "" "" "" "" </dev/null
   exit $?
 fi
+
 
 # ── assemble ─────────────────────────────────────────────────────────────────
 BASE_BRANCH="$(cfg base_branch 2>/dev/null)"
@@ -1326,7 +1335,7 @@ _sf_stage_commit() {
   fi
   # The staged name list must be exactly the manifest; anything else aborts.
   if ! git --literal-pathspecs -C "$_SF_TMP/wt" diff --cached --name-status -z --no-renames \
-      | python3 -I -c "$SF_PY" verify "$_SF_TMP/wt" "$STATUS_FILE" "$FRAG_DIR" "$ARCHIVE_DIR" \
+      | python3 -I -c "$SF_PYS" verify "$_SF_TMP/wt" "$STATUS_FILE" "$FRAG_DIR" "$ARCHIVE_DIR" \
           "$LOG_HEADING" "$RESUME_HEADING" "$LOG_DAYS" "$LOG_MAX" "$TODAY" "" "" "" "$_SF_MANIFEST"; then
     _sf_err "staged changes differ from what $verb wrote — nothing committed or pushed"
     return 1
@@ -1371,7 +1380,7 @@ _sf_collect() {
   [ -n "$(cfg merge.required_checks | tr -d '[:space:]')" ] && checks="yes"
   # The same effective value Step 0 uses (#435): default true, false on github-api/file.
   [ "$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" resolve 2>/dev/null)" = "true" ] && draft="true"
-  python3 -I -c "$SF_PY" collect "$PWD" "$STATUS_FILE" "$FRAG_DIR" "$ARCHIVE_DIR" \
+  python3 -I -c "$SF_PYS" collect "$PWD" "$STATUS_FILE" "$FRAG_DIR" "$ARCHIVE_DIR" \
     "$LOG_HEADING" "$RESUME_HEADING" "$LOG_DAYS" "$LOG_MAX" "$TODAY" "" "" "" "" \
     --vcs "$SCRIPT_DIR/pipeline-vcs.sh" --out "$_SF_TMP/gh.json" --roles "$roles" \
     --merge-auto "$auto" --required-checks "$checks" --pr-draft "$draft" \
@@ -1397,6 +1406,17 @@ _sf_fetch_base() {
     return 1
   fi
 }
+# ── collect (#470): the normalised GitHub state as JSON on stdout, no writes ──
+# `talos.sh state` reads this instead of carrying a second copy of the
+# collection logic. Read verbs only; it ignores status.enabled (the caller
+# gates itself and must see the state even with the file disabled); no
+# worktree, commit or push.
+if [ "$verb" = "collect" ]; then
+  _sf_collect || exit 1
+  cat "$_SF_TMP/gh.json"
+  exit $?
+fi
+
 REFRESH_ON=""
 if [ "$verb" = "refresh" ] || [ -n "$REFRESH" ]; then
   _sf_collect
@@ -1419,7 +1439,7 @@ fi
 if [ "$verb" = "refresh" ] && [ -n "$PRINT" ]; then
   _sf_fetch_base || exit 1
   ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)"
-  python3 -I -c "$SF_PY" print "$ROOT" "$STATUS_FILE" "$FRAG_DIR" "$ARCHIVE_DIR" \
+  python3 -I -c "$SF_PYS" print "$ROOT" "$STATUS_FILE" "$FRAG_DIR" "$ARCHIVE_DIR" \
     "$LOG_HEADING" "$RESUME_HEADING" "$LOG_DAYS" "$LOG_MAX" "$TODAY" "" "" "" "" \
     "${_SF_RARGS[@]}" </dev/null
   exit $?
@@ -1475,7 +1495,7 @@ while :; do
   SUBJECT="docs(status): refresh resume block [skip ci]"
   DONE_MSG="refreshed the resume block in $STATUS_FILE on $BASE_BRANCH and pushed"
   if [ "$verb" = "assemble" ]; then
-    printf '%s\n' "$FRAG_LIST" | python3 -I -B -c "$SF_PY" assemble "$_SF_TMP/wt" \
+    printf '%s\n' "$FRAG_LIST" | python3 -I -B -c "$SF_PYS" assemble "$_SF_TMP/wt" \
       "$STATUS_FILE" "$FRAG_DIR" "$ARCHIVE_DIR" "$LOG_HEADING" "$RESUME_HEADING" \
       "$LOG_DAYS" "$LOG_MAX" "$TODAY" "$PR" "$ISSUE" "$_SF_TMP/title.json" "$_SF_MANIFEST" \
       --spend-dir "$_SF_TMP/spend" --script-dir "$SCRIPT_DIR"
@@ -1497,7 +1517,7 @@ while :; do
   # The block is regenerated from the freshly fetched base on every attempt, so
   # a push that lost a race re-derives it and finds it already there.
   if [ -n "$REFRESH_ON" ]; then
-    python3 -I -c "$SF_PY" refresh "$_SF_TMP/wt" "$STATUS_FILE" "$FRAG_DIR" "$ARCHIVE_DIR" \
+    python3 -I -c "$SF_PYS" refresh "$_SF_TMP/wt" "$STATUS_FILE" "$FRAG_DIR" "$ARCHIVE_DIR" \
       "$LOG_HEADING" "$RESUME_HEADING" "$LOG_DAYS" "$LOG_MAX" "$TODAY" "" "" "" "$_SF_MANIFEST" \
       "${_SF_RARGS[@]}" </dev/null
     _SF_RC=$?
