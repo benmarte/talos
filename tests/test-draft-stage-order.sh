@@ -508,21 +508,17 @@ model_reset; printf 'qa:pass\nreview:approved\n' > "$MODEL_STATE/labels"
 bash "$VCS" label-pr 42 --remove qa:pass >/dev/null 2>&1
 assert_eq "review:approved" "$(cat "$MODEL_STATE/labels")" "liveness: only qa:pass is removed, review:approved stays"
 
-# ── Step 1 resume routing ────────────────────────────────────────────────────
+# ── Step 1 resume routing (#470: `talos.sh next` owns the draft check) ───────
 check_step1_resume() {  # $1 = SKILL.md
-  local s dt
-  s="$(awk '/^## Step 1 — /{p=1} /^## Step 2 — /{p=0} p' "$1")"
-  case "$s" in *'pr-is-draft'*) ;; *) return 1 ;; esac
-  dt="$(printf '%s\n' "$s" | awk -v s="$START" -v e="$END" '{ t = $0; gsub(/^[ \t]+|[ \t]+$/, "", t) } t == s { inb = 1; next } t == e { inb = 0; next } inb' | norm)"
-  in_order "$dt" \
-    'resume routing' \
-    'pr-is-draft <PR_NUMBER>` first' 'prints `draft` \(exit 0\)' \
-    'resume at the first missing draft-window stage \(docs, then reviewer/security' \
-    'or at `ready-pr`' \
-    'never at QA' \
-    'exit 2 \(unverified\) stops and reports'
+  local s
+  s="$(awk '/^## Step 1 — /{p=1} /^## Step 2 — /{p=0} p' "$1" | norm)"
+  in_order "$s" \
+    '[Rr]esume in-flight PRs.*talos\.sh next' \
+    'action=dispatch stage=<role> pr=<M> issue=<N>' \
+    'wait reason=draft.*[Dd]raft stage order, never QA' \
+    'wait reason=<blocked|ci|human-merge|owner|lease|none>'
 }
-check_step1_resume "$SKILL"; assert_eq "0" "$?" "Step 1 resume: a draft PR resumes at the first missing draft-window stage or ready-pr, never QA; exit 2 stops and reports"
+check_step1_resume "$SKILL"; assert_eq "0" "$?" "Step 1 resume: `talos.sh next` answers dispatch/merge/wait, a draft-window PR continues the Draft stage order and never resumes at QA"
 
 # ── (d2) ci_runs is captured BEFORE merge-pr ─────────────────────────────────
 # merge-pr deletes the head branch; GitHub then returns every run for that head
