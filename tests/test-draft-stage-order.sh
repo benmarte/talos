@@ -156,7 +156,31 @@ check_no_new_verb_when_unset() {  # $1 = SKILL.md
   ! strip_draft "$1" | grep -qE 'ready-pr|draft-pr|pr-is-draft|pr-ci-runs|--ci-runs|--draft'
 }
 
-[ "$(wc -l < "$FIXTURE" | tr -d ' ')" -gt 250 ]; assert_eq "0" "$?" "fixture: Steps 3c-4 fixture is the full section, not a stub (the dispatch fences moved to templates/prompts, #468)"
+# Structural check (#471): the pr-draft block carries the full seven-step Draft
+# stage order — the in_order anchors in order, plus the two verbatim replay
+# lines (the fixture's provider-call table) that mark it as more than a stub.
+# (Replaces the >250-line fixture guard: SKILL.md is compressed, a line count
+# would force dead prose back in.)
+DRAFT_ORDER_TEXT="$(draft_text "$SKILL" | norm)"
+in_order "$DRAFT_ORDER_TEXT" \
+  '1\. \*\*Developer — open the DRAFT PR' \
+  '2\. \*\*Docs — CHANGELOG now' \
+  '3\. \*\*Review — reviewer, security and adversarial in parallel' \
+  '4\. \*\*Developer — ONE fix round for every finding' \
+  '5\. \*\*`ready-pr` — the ONE CI run' \
+  '6\. \*\*QA — on a ready PR only' \
+  '7\. \*\*Merge'
+assert_eq "0" "$?" "fixture: the pr-draft block holds the seven Draft stage order anchors, in order"
+case "$DRAFT_ORDER_TEXT" in
+  *'happy path: create-pr --draft -> ready-pr -> QA, merge'*) r=0 ;;
+  *) r=1 ;;
+esac
+assert_eq "0" "$r" "fixture: the happy-path replay line is verbatim"
+case "$DRAFT_ORDER_TEXT" in
+  *'failure round: draft-pr -> label-pr --remove qa:pass -> developer fix + re-stamps -> ready-pr -> QA, merge'*) r=0 ;;
+  *) r=1 ;;
+esac
+assert_eq "0" "$r" "fixture: the failure-round replay line is verbatim"
 markers_ok "$SKILL"; assert_eq "0" "$?" "default unchanged: pr-draft markers are paired, un-nested and present"
 assert_fixture "default unchanged: Steps 3c-4 with pr-draft blocks stripped equal the fixture" check_default_unchanged "$FIXTURE" steps_3c_4
 assert_fixture "default unchanged: Step 1 with pr-draft blocks stripped equals the fixture" check_step1_unchanged "$FIXTURE_STEP1" step1_text
