@@ -10,11 +10,14 @@
 #        talos.sh summary [<issue-id>...]
 #        talos.sh prompt <role> --issue <N> [--pr <M>] [--shape first|fix-round|restamp] [--draft] [...]
 #        talos.sh done <role> --issue <N> [--pr <M>] [--verdict <V>] --summary-file <F|-> [--draft] [...]
+#        talos.sh state
+#        talos.sh next
 #        talos.sh help
 #
 # One script with verbs; each later slice adds a verb and deletes the playbook
 # prose it replaces. Slice 1 added `env`, slice 2 (#466) `gate`, slice 3 (#467)
-# `post-merge`, `sweep` and `summary`, slice 4 (#468) `prompt`, slice 5 (#469) `done`.
+# `post-merge`, `sweep` and `summary`, slice 4 (#468) `prompt`, slice 5 (#469)
+# `done`, slice 6 (#470) `state` and `next`.
 #
 #   env    Everything Step 0 of skills/pipeline/SKILL.md and the per-role runner
 #          resolution used to make the orchestrator gather by hand, in one call:
@@ -150,6 +153,10 @@
 #          resolved (no trusted_authors and the identity refused or unavailable),
 #          or unreadable comments, count no marker (the repeat is the lesser
 #          harm): `warn reason=trust-unverified|comments-unreadable`.
+#          A merge (not --heal) releases the issue's lease (#470, AC4) after the
+#          items: the run that answered action=merge holds it, and the merge
+#          completing frees it. A heal is another run's bookkeeping: it
+#          releases nothing (its issue's lease belongs to whoever holds it).
 #   post-merge <pr> <issue> --handoff [--details-file <file>]
 #          merge.auto is off: approved.md on the PR (the file's text, if given,
 #          is DETAILS), then the orchestrator relay. Nothing else runs.
@@ -179,7 +186,7 @@
 #          item 4 `cost=<line>` per line of the one cost --summary call, item 5 the
 #          status resume refresh (status.enabled).
 #
-# post-merge-reasons: changelog-failed comments-unreadable trust-unverified comment-failed close-failed issue-state-unverified board-failed status-log-failed status-resume-not-refreshed worktree-remove-failed notify-failed spend-upsert-failed siblings-unlisted value-truncated
+# post-merge-reasons: changelog-failed comments-unreadable trust-unverified comment-failed close-failed issue-state-unverified board-failed status-log-failed status-resume-not-refreshed worktree-remove-failed notify-failed spend-upsert-failed siblings-unlisted lease-release-failed value-truncated
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
 #   warn: all the others
 # sweep-reasons: issues-unlisted prs-unlisted find-pr-unverified find-pr-failed worktree-sweep-failed epic-close-failed epic-label-failed epic-comment-failed epic-acceptance-unsupported unblock-failed marker-authors-unverified needs-owner-clear-failed needs-owner-list-failed notify-failed
@@ -273,7 +280,10 @@
 #          fix-round stage=<role> (run `gate fix-round`, then the developer) | batch
 #          (--draft, reviewer/security/adversarial: wait for every role of the draft
 #          review batch, then one `gate fix-round` for all of them). `done` never calls
-#          `gate fix-round` and never merges.
+#          `gate fix-round` and never merges. Before the `next=` line the issue's
+#          lease is released (#470, AC4): the run `next` dispatched holds it, and
+#          a done stage frees it for the next run immediately, not after the TTL.
+#          A release that cannot be done is `warn reason=lease-release-failed`.
 #          --action-id <id> ([a-z0-9._-]{1,64}) makes the call at most once: the id is
 #          recorded under the git common dir (talos-done.ledger, pipeline-lock.sh) before
 #          anything is announced, and a repeat prints `done=duplicate` and does nothing
@@ -282,12 +292,61 @@
 #          and the call may be repeated. Without --action-id nothing is recorded.
 #          Child stderr is relayed only as `note done=<verb> msg=<escaped>` lines.
 #
-# done-reasons: usage unknown-role verdict-invalid file-unreadable summary-empty draft-pr-failed label-failed ledger-unavailable ledger-locked scripts-missing python-missing scratch-unavailable config-unreadable board-failed notify-failed model-invalid spend-upsert-failed
+# done-reasons: usage unknown-role verdict-invalid file-unreadable summary-empty draft-pr-failed label-failed ledger-unavailable ledger-locked scripts-missing python-missing scratch-unavailable config-unreadable board-failed notify-failed model-invalid spend-upsert-failed lease-release-failed
 #   stop: usage unknown-role verdict-invalid file-unreadable summary-empty draft-pr-failed label-failed
 #         ledger-unavailable ledger-locked scripts-missing python-missing scratch-unavailable config-unreadable
 #         (exit 2 for usage, unknown-role, verdict-invalid; else 1)
-#   warn: board-failed notify-failed model-invalid spend-upsert-failed
+#   warn: board-failed notify-failed model-invalid spend-upsert-failed lease-release-failed
 #
+# state, next (#470). `state` prints the normalised run state, the same JSON
+# pipeline-status-file.sh collects for the Resume block (one call of its
+# `collect` verb: read verbs only, no worktree, commit, push or label; the
+# same inputs, the same shape, no duplicated collection logic). Output, after
+# the sanitiser: `state=<JSON>` — the object the status file writes
+# ({"prs": [...], "pr_total": n, "ignored": n, "blocked": [...],
+# "queued": [...], "held": [...], "owners": [...], "capped": [...]}), one
+# line (no raw control bytes; the JSON has none). Every invalid or unreadable
+# input fails closed with a lone `stop reason=<enum>` line, no partial JSON.
+#
+# state-reasons: usage scripts-missing python-missing scratch-unavailable config-unreadable state-unavailable
+#   stop: all of them (exit 2 for usage; else 1)
+#
+# next   Exactly one action for the orchestrator to take, derived from `state`:
+#        for PR-side stages only in this slice (#470; issue-side stages are
+#        slice 7, #471). PR-side action schema, fixed-enum reasons, first
+#        match wins over the collected state:
+#          action=dispatch stage=<role> pr=<M> issue=<N>  PR #M's stage is <role>
+#                                  (qa, docs, reviewer, security, adversarial:
+#                                  the first enabled role missing or stale on
+#                                  the lowest-numbered such PR); dispatch that
+#                                  stage's prompt.
+#          action=merge pr=<M> issue=<N>  the lowest PR at stage merge: run
+#                                  `gate merge <M> <N>`.
+#          action=wait reason=<enum>     nothing to dispatch now. reason is one
+#                                  of: draft (a PR is in its draft window; the
+#                                  draft stage order continues), ci (a PR at
+#                                  stage ci: the CI wait), human-merge (a PR
+#                                  at human-merge: a human merges),
+#                                  blocked (a PR or issue carries
+#                                  pipeline:blocked), owner (a PR or queued issue
+#                                  carries pipeline:needs-owner or an Owner
+#                                  line exists), lease (another run holds the
+#                                  lease), none (no PR and nothing queued).
+#        `next --issue <N>` (issue-side) is not implemented in this slice and
+#        never guesses: `stop reason=unsupported-verb:next-issue`.
+#
+# next-reasons: usage state-unavailable unsupported-verb:next-issue unsupported-verb:<provider-verb>
+#   stop: usage state-unavailable unsupported-verb:next-issue
+#         (exit 2 for usage; else 1)
+#   wait: draft ci human-merge blocked owner lease none
+#
+# Lease ledger (#470, AC4): `next` acquires the issue's lease
+# (<git common dir>/talos-lease.ledger, pipeline-lock.sh) before answering
+# `action=dispatch|merge` — a second run on the same issue answers
+# `action=wait reason=lease` instead of racing it. A lease held by another
+# run is a wait, never a takeover; a lock that times out is a wait too
+# (fail closed). TTL = verify.timeout_ms/1000 + verify.ci_wait_s, floor 30
+# minutes; TALOS_LEASE_TTL_S and TALOS_NOW override it in tests.
 # Exit codes: 0 ok (for gate: a verdict was printed), 1 a `stop`, 2 usage.
 set -u
 
@@ -467,6 +526,16 @@ verbs:
   done <role> --issue <N> [--pr <M>] [--verdict <V>] --summary-file <F|-> [--draft]
                                      end-of-stage bookkeeping: board, role relay,
                                      post_stage, spend block, lifecycle event
+  state                              the normalised run state as one state=<JSON>
+                                     line (pipeline-status-file.sh collect:
+                                     same reads, same shape, no writes)
+  next                               exactly one action for the orchestrator,
+                                     PR-side stages only: action=dispatch
+                                     stage=<role> pr=<M> issue=<N> |
+                                     action=merge pr=<M> issue=<N> |
+                                     action=wait reason=<draft|ci|human-merge|
+                                     blocked|owner|lease|none>; issue-side is
+                                     stop reason=unsupported-verb:next-issue
   help                              this text
 HELP
 }
@@ -1349,6 +1418,10 @@ _talos_post_merge() {
   else
     _talos_emit post_merge done
     _talos_post_merge_run "$_pr" "$_n" "$_heal" "$_ci"
+    # The merge path is the run that held the issue's lease (`next` answered
+    # action=merge): its work complete, free it (#470, AC4). A heal is another
+    # run's bookkeeping and releases nothing.
+    [ "$_heal" -eq 0 ] && _talos_lease_release "$_n"
   fi
   _talos_flush
 }
@@ -1883,6 +1956,161 @@ _talos_ledger() {
   return "$_rc"
 }
 
+# ── lease ledger (#470, AC4) ─────────────────────────────────────────────────
+# A run's exclusive lease on an issue, fail-closed. The ledger lives under the
+# git common dir next to talos-done.ledger and is guarded by pipeline-lock.sh
+# (mkdir advisory lock, the same primitive every shared-local-state file uses).
+# Holding a lease means "a run works on issue <N> right now": another run that
+# cannot acquire it waits -- it never takes over, and a lock that times out is
+# a wait verdict, never a force-acquire. `next` acquires the lease before
+# answering dispatch/merge, and the run that acted releases it at
+# end-of-stage bookkeeping (`done`, below): a released issue is free to other
+# runs immediately. A run that crashes holds its lease until the TTL expires
+# (the TTL is the crash boundary, not the working lifetime).
+#
+# File: <common dir>/talos-lease.ledger, one line `issue=<N> held=<unix-ts>
+# expires=<unix-ts> pid=<pid>` per held lease (a lease that expired is not a
+# lease). Timestamps are integers; TALOS_NOW overrides the clock in tests.
+_talos_lease_file() {
+  local _f
+  _f="$(git rev-parse --git-common-dir 2>/dev/null)" && [ -n "$_f" ] || return 1
+  _f="$(cd "$_f" 2>/dev/null && pwd -P)" || return 1
+  printf '%s/talos-lease.ledger' "$_f"
+}
+
+# _talos_now: the clock, as an integer (TALOS_NOW overrides it in tests).
+_talos_now() { printf '%s' "${TALOS_NOW:-$(date +%s)}"; }
+
+# _talos_lease_ttl_s: the default TTL, verify.timeout_ms/1000 + verify.ci_wait_s
+# (the one dispatch's full horizon: the verify run plus the CI wait), floored
+# at 30 minutes. TALOS_LEASE_TTL_S overrides it in tests.
+_talos_lease_ttl_s() {
+  local _t
+  case "${TALOS_LEASE_TTL_S:-}" in
+    ''|*[!0-9]*) ;;
+    *) printf '%s' "$TALOS_LEASE_TTL_S"; return 0 ;;
+  esac
+  _t=$(( $(cfg verify.timeout_ms) / 1000 + $(cfg verify.ci_wait_s) ))
+  [ "$_t" -lt 1800 ] && _t=1800
+  printf '%s' "$_t"
+}
+
+# _talos_lease_read <issue>: 0 free (no lease, or one that expired), 1 held by
+# another live run (prints the holder line), 2 the ledger is unavailable. A
+# stale line (its expires timestamp passed) is pruned, so a crashed run's
+# lease frees itself after the TTL.
+_talos_lease_read() {
+  local _issue="$1" _f _now _ln _exp _pid
+  _f="$(_talos_lease_file)" || return 2
+  _now="$(_talos_now)"
+  [ -f "$_f" ] || return 0
+  while IFS= read -r _ln || [ -n "$_ln" ]; do
+    case "$_ln" in
+      "issue=$_issue "*)
+        _exp="${_ln##* expires=}"; _exp="${_exp%% *}"
+        case "$_exp" in ''|*[!0-9]*) return 2 ;; esac
+        if [ "$_exp" -le "$_now" ]; then
+          # Expired: not a lease. Prune it under the lock (best effort -- a
+          # concurrent prune is harmless, the same line is removed once).
+          _talos_lease_prune "$_f" "$_issue"
+          return 0
+        fi
+        printf '%s' "$_ln"
+        return 1 ;;
+    esac
+  done < "$_f" 2>/dev/null || return 2
+  return 0
+}
+
+# _talos_lease_prune <file> <issue>: remove issue=<N>'s line (lock held by caller
+# or by _lock_acquire inside).
+_talos_lease_prune() {
+  local _f="$1" _issue="$2" _tmp _rc=0
+  [ -f "$_f" ] || return 0
+  _tmp="${_f}.tmp.$$"
+  grep -v -e "^issue=$_issue " "$_f" > "$_tmp" 2>/dev/null || true
+  mv "$_tmp" "$_f" 2>/dev/null || _rc=1
+  [ "$_rc" -eq 0 ] || rm -f "${_tmp:?}" 2>/dev/null
+  return "$_rc"
+}
+
+# _talos_lease <acquire|release|check> <issue> [ttl-s]:
+#   check    -- _talos_lease_read's answer.
+#   acquire  -- 0 acquired (the lease line is written under pipeline-lock.sh),
+#               1 held by another run (its line is printed), 2 ledger/lock
+#               unavailable, 3 the lock timed out (never a takeover: the caller
+#               waits). An expired lease is acquired (its line is replaced).
+#   release  -- 0 released, 1 not held (no line), 2 unavailable.
+_talos_lease() {
+  local _op="$1" _issue="$2" _ttl="${3:-}" _f _now _rc _ln
+  [ "$_op" = check ] && { _talos_lease_read "$_issue"; return $?; }
+  _f="$(_talos_lease_file)" || return 2
+  . "$SCRIPT_DIR/pipeline-lock.sh"
+  case "$_op" in
+    release)
+      _lock_acquire "$_f" "${TALOS_LEASE_LOCK_S:-10}" || return 3
+      _talos_lease_prune "$_f" "$_issue"
+      _rc=$?
+      _lock_release "$_f"
+      [ "$_rc" -eq 0 ] || return 2
+      return 0 ;;
+  esac
+  # acquire
+  [ -z "$_ttl" ] && _ttl="$(_talos_lease_ttl_s)"
+  case "$_ttl" in ''|*[!0-9]*) return 2 ;; esac
+  _lock_acquire "$_f" "${TALOS_LEASE_LOCK_S:-10}" || return 3
+  _now="$(_talos_now)"
+  _ln="$(_talos_lease_held_line "$_f" "$_issue" "$_now")"
+  _rc=$?
+  if [ "$_rc" -eq 2 ]; then
+    _lock_release "$_f"
+    return 2
+  fi
+  if [ -n "$_ln" ]; then
+    _lock_release "$_f"
+    printf '%s' "$_ln"
+    return 1
+  fi
+  _rc=0
+  printf 'issue=%s held=%s expires=%s pid=%s\n' "$_issue" "$_now" "$((_now + _ttl))" "$$" >> "$_f" || _rc=1
+  _lock_release "$_f"
+  [ "$_rc" -eq 0 ] || return 2
+  return 0
+}
+
+# _talos_lease_held_line <file> <issue> <now>: print issue=<N>'s line when it is
+# a live lease (expires in the future); empty (rc 0) when free or expired; rc 2
+# when the ledger cannot be read. Lock held by the caller.
+_talos_lease_held_line() {
+  local _f="$1" _issue="$2" _now="$3" _ln _exp
+  [ -f "$_f" ] || return 0
+  while IFS= read -r _ln || [ -n "$_ln" ]; do
+    case "$_ln" in
+      "issue=$_issue "*)
+        _exp="${_ln##* expires=}"; _exp="${_exp%% *}"
+        case "$_exp" in ''|*[!0-9]*) return 2 ;; esac
+        if [ "$_exp" -gt "$_now" ]; then
+          printf '%s' "$_ln"
+          return 0
+        fi
+        return 0 ;;
+    esac
+  done < "$_f" 2>/dev/null || return 2
+  return 0
+}
+
+# _talos_lease_release <issue>: the end-of-stage half of the lease (#470, AC4).
+# A release never fails the caller: the worst case (a lease that could not be
+# pruned) is the TTL that already bounds a crashed run, so it is a warn on the
+# done/post-merge reason lists, never a stop. A release with no lease held --
+# issue-side stages never acquire one -- is a no-op (release's own rc 1).
+_talos_lease_release() {
+  local _issue="$1" _rc
+  _talos_lease release "$_issue" >/dev/null 2>&1
+  _rc=$?
+  [ "$_rc" -eq 0 ] || [ "$_rc" -eq 1 ] || _talos_warn lease-release-failed "issue=$_issue"
+}
+
 # done <role> --issue <N> [--pr <M>] [--verdict <V>] --summary-file <F|-> [--draft]
 #      [--action-id <id>] [--tokens <n>] [--tool-uses <n>] [--duration-s <n>]
 #      [--model <m>] [--sha <sha>]
@@ -2016,6 +2244,9 @@ _talos_done() {
       *) _next="fix-round stage=$_role" ;;
     esac
   fi
+  # The stage's work is complete: free the issue's lease (#470, AC4) so the
+  # next `next` run answers immediately, not after the TTL.
+  _talos_lease_release "$_n"
   _talos_emit next "$_next"
   _talos_flush
 }
@@ -2030,6 +2261,138 @@ _talos_gate() {
   esac
 }
 
+# ── state, next (#470) ────────────────────────────────────────────────────────
+
+# state: the normalised run state, one `state=<JSON>` line. The JSON comes
+# from pipeline-status-file.sh collect: the same reads and the same shape as
+# the status file's Resume block, no duplicated collection logic here. A
+# failure there (unreadable config, failed read, timeout) is a stop; the JSON
+# is emitted only when the whole collect succeeded, so no partial JSON.
+_talos_state() {
+  [ "$#" -eq 0 ] || _talos_stop usage 2
+  _talos_prepare state pipeline-config.sh pipeline-cfg-cache.sh pipeline-status-file.sh \
+                     pipeline-contract.sh pipeline-next-stage.py pipeline-draft-check.sh pipeline-vcs.sh
+  local _json
+  _talos_run state bash "$SCRIPT_DIR/pipeline-status-file.sh" collect
+  [ "$_RC" -eq 0 ] || _talos_stop state-unavailable
+  _json="$_OUT"
+  case "$_json" in
+    '{'*'}') : ;;
+    *) _talos_stop state-unavailable ;;
+  esac
+  _talos_emit state "$_json"
+  _talos_flush
+}
+
+# _TALOS_NEXT_PY: one action from the collected state (argv: the JSON, read
+# from the file the bash above wrote -- never argv text). Fixed-enum reasons;
+# the PRs are already ordered (ascending) by the collect. Draft-order note: a
+# PR at stage `ready` is a draft-window PR (the collect's draft check ran),
+# so the answer is wait reason=draft, the draft stage order continues; the
+# state is trusted, no PR text is.
+_TALOS_NEXT_PY='
+import json, sys
+with open(sys.argv[1]) as f:
+    data = json.load(f)
+prs = sorted((p for p in data["prs"] if not p.get("owner")), key=lambda p: p["n"])
+queued = data.get("queued") or []
+held = set(data.get("held") or [])
+owners = data.get("owners") or []
+blocked = data.get("blocked") or []
+ROLE_STAGES = ("qa", "docs", "reviewer", "security", "adversarial")
+def say(action, **kw):
+    out = "action=" + action
+    for k in ("stage", "pr", "issue", "reason"):
+        if k in kw:
+            out += " %s=%s" % (k, kw[k])
+    print(out)
+for p in prs:
+    st = p["stage"]
+    if st in ROLE_STAGES:
+        say("dispatch", stage=st, pr=p["n"], issue=p["issue"])
+    elif st == "merge":
+        say("merge", pr=p["n"], issue=p["issue"])
+    elif st == "ready":
+        say("wait", reason="draft")
+    elif st == "ci":
+        say("wait", reason="ci")
+    elif st == "human-merge":
+        say("wait", reason="human-merge")
+    elif st == "blocked":
+        say("wait", reason="blocked")
+    elif st == "unverified":
+        say("wait", reason="blocked")
+    else:
+        print("stop reason=unsupported-verb:%s" % st)
+        sys.exit(1)
+    sys.exit(0)
+if blocked or owners or data.get("held") or any(p.get("owner") for p in data["prs"]):
+    say("wait", reason="owner")
+    sys.exit(0)
+startable = [n for n in queued if n not in held]
+if startable:
+    # Issue-side stages are slice 7 (#471): never a guess.
+    print("stop reason=unsupported-verb:next-issue")
+    sys.exit(1)
+say("wait", reason="none")
+'
+
+# next: one action from the state, PR-side stages only in this slice (#470).
+# The lease (#470, AC4) is acquired for a dispatch/merge answer before it is
+# printed, so two runs never act on the same issue at once; a lease held by
+# another run (or a lock that could not be held) answers
+# `action=wait reason=lease` -- never a takeover.
+_talos_next() {
+  local _issue="" _a _r
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --issue) _issue="${2:-}"; shift 2 ;;
+      *) _talos_stop usage 2 ;;
+    esac
+  done
+  # Issue-side stages are slice 7 (#471): never a guess, never a queue pick.
+  [ -z "$_issue" ] || _talos_stop "unsupported-verb:next-issue"
+  _talos_prepare next pipeline-config.sh pipeline-cfg-cache.sh pipeline-status-file.sh \
+                     pipeline-contract.sh pipeline-next-stage.py pipeline-draft-check.sh pipeline-vcs.sh pipeline-lock.sh
+
+  _talos_run next bash "$SCRIPT_DIR/pipeline-status-file.sh" collect
+  [ "$_RC" -eq 0 ] || _talos_stop state-unavailable
+  printf '%s' "$_OUT" > "$_CFG_CACHE_DIR/state.json"
+
+  _a="$(python3 -I -c "$_TALOS_NEXT_PY" "$_CFG_CACHE_DIR/state.json" 2>/dev/null)"
+  _r=$?
+  if [ "$_r" -ne 0 ]; then
+    # The one non-guessing exit: an unknown stage or the issue-side stop.
+    case "$_a" in
+      "stop reason=unsupported-verb:"*) _talos_stop "${_a#stop reason=}" ;;
+      *) _talos_stop state-unavailable ;;
+    esac
+  fi
+  case "$_a" in
+    "action=dispatch stage="*" pr="*" issue="*) : ;;
+    "action=merge pr="*" issue="*) : ;;
+    "action=wait reason="*) _talos_emit_next_wait "$_a"; _talos_flush; exit 0 ;;
+    *) _talos_stop state-unavailable ;;
+  esac
+
+  # The lease: acquire the target issue's before answering. Held by another
+  # run, or the lock not held: wait (fail closed, never a takeover).
+  _issue="$(printf '%s\n' "$_a" | sed -n 's/.* issue=//p')"
+  _talos_lease acquire "$_issue" >/dev/null
+  case "$?" in
+    0) : ;;
+    *) _talos_emit_next_wait "action=wait reason=lease"; _talos_flush; exit 0 ;;
+  esac
+  _talos_emit_next "$_a"
+  _talos_flush
+}
+
+# _talos_emit_next <line>: the action line, sanitised as one pair.
+# The line's value (after `action=`) under the action key, so the sanitiser
+# renders the one `action=...` line.
+_talos_emit_next() { printf '%s\0%s\0' action "${1#action=}" >> "$_TALOS_OUT"; }
+_talos_emit_next_wait() { printf '%s\0%s\0' action "${1#action=}" >> "$_TALOS_OUT"; }
+
 verb="${1:-}"
 [ "$#" -eq 0 ] || shift
 
@@ -2041,6 +2404,8 @@ case "$verb" in
   summary) _talos_summary "$@" ;;
   prompt) _talos_prompt "$@" ;;
   done) _talos_done "$@" ;;
+  state) _talos_state "$@" ;;
+  next) _talos_next "$@" ;;
   help | -h | --help) _talos_help ;;
   "") _talos_help >&2; exit 2 ;;
   *) printf 'stop reason=unknown-verb\n'; exit 2 ;;
