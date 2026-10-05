@@ -93,7 +93,7 @@ sleep-polling; never end your turn while a verify command is running.
    and a path-mapping miss cannot skip them; the `--for <each path from
    pr-files> --strict` run in step 5 is only the changed-path run). Do NOT
    pass `--quiet` to these runs (step 5's summary advice does not apply):
-   the per-id `ok AC<n>` / `FAIL AC<n>` lines are the evidence, and
+   the per-id `ok AC<n>` / `FAIL AC<n>` lines are the proof, and
    `--quiet` drops them, so `report` would print a false `head=missing`.
    Capture stdout and stderr together (`> <file> 2>&1`) and feed those files
    to `pipeline-criteria.sh map` / `report`. Prove the tests were red first: the red
