@@ -518,7 +518,7 @@ check_step1_resume() {  # $1 = SKILL.md
     'wait reason=draft.*[Dd]raft stage order, never QA' \
     'wait reason=<blocked|ci|human-merge|owner|lease|none>'
 }
-check_step1_resume "$SKILL"; assert_eq "0" "$?" "Step 1 resume: `talos.sh next` answers dispatch/merge/wait, a draft-window PR continues the Draft stage order and never resumes at QA"
+check_step1_resume "$SKILL"; assert_eq "0" "$?" "Step 1 resume: \`talos.sh next\` answers dispatch/merge/wait, a draft-window PR continues the Draft stage order and never resumes at QA"
 
 # ── (d2) ci_runs is captured BEFORE merge-pr ─────────────────────────────────
 # merge-pr deletes the head branch; GitHub then returns every run for that head

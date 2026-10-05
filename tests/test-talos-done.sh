@@ -406,6 +406,24 @@ dn qa --issue 42 --pr 57 --verdict PASS --summary-file "$SUM" --action-id held-1
 assert_eq "done=ok" "$(printf '%s' "$OUT" | head -n 1)" "ledger-locked: the call can be repeated once the lock is free"
 assert_eq "0" "$([ -e "$LEDGER.lock.d" ] && echo 1 || echo 0)" "the ledger lock is released"
 
+# ── (h) the lease: done releases the issue's lease at end of stage ────────────
+# `next` acquires the issue's lease before answering a dispatch/merge (#470);
+# the run that acted releases it here, so a finished stage frees the issue
+# immediately instead of locking it for the whole TTL.
+LEASE="$SANDBOX/.git/talos-lease.ledger"
+reset_stubs
+printf 'issue=42 held=1000000 expires=1001800 pid=%s\n' "$$" > "$LEASE"
+dn qa --issue 42 --pr 57 --verdict PASS --summary-file "$SUM"
+assert_eq "0" "$RC" "lease release: done still exits 0 with a held lease"
+assert_file_absent "$LEASE" "lease release: done releases the issue's lease at end of stage"
+assert_not_contains "$OUT" "warn reason=lease" "lease release: a released lease warns nothing"
+# Without a lease (issue-side stages never acquire one) the release is a no-op.
+reset_stubs
+dn validator --issue 42 --verdict CONFIRMED --summary-file "$SUM"
+assert_eq "0" "$RC" "lease release: no lease held, done is unaffected"
+assert_not_contains "$OUT" "warn reason=lease" "lease release: a lease that was never held warns nothing"
+assert_file_absent "$LEASE" "lease release: no ledger line is created by done"
+
 # ── (e) free text is data ────────────────────────────────────────────────────
 reset_stubs
 HOSTILE="$SANDBOX/hostile.txt"

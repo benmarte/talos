@@ -258,13 +258,6 @@ _line="$(sed "s/pid=[0-9]*/pid=/" "$LEASE")"
 assert_eq "issue=34 held=1000000 expires=1002600 pid=" "$_line" \
   "lease: TTL above the floor is verify timeout + CI wait (600 + 2000 = 2600 s)"
 
-# TTL: verify.timeout_ms/1000 + verify.ci_wait_s, floor 30 minutes.
-cfg_json '{"vcs": {"provider": "github"}, "verify": {"timeout_ms": 600000, "ci_wait_s": 900}}'
-rm -f "$LEASE" "${LEASE:?}.lock.d"
-TALOS_NOW=1000000 st next
-_line="$(sed "s/pid=[0-9]*/pid=/" "$LEASE")"
-assert_eq "issue=34 held=1000000 expires=1001800 pid=" "$_line" \
-  "lease: TTL (600 + 900 = 1500 s) is floored at 30 minutes (1800 s)"
 cfg_json '{"vcs": {"provider": "github"}, "verify": {"timeout_ms": 1000, "ci_wait_s": 0}}'
 rm -f "$LEASE" "${LEASE:?}.lock.d"
 TALOS_NOW=1000000 st next
