@@ -9,11 +9,13 @@
 #          line, no partial JSON.
 #   next   exactly one action validated against the fixed action schema:
 #          action=dispatch stage=<role> pr=<M> issue=<N> | action=merge pr=<M>
-#          issue=<N> | action=wait reason=<fixed enum>. Issue-side `next
-#          --issue <N>` is `stop reason=unsupported-verb:next-issue`, never a
-#          guess. A dispatch/merge answer acquires the issue's lease first
-#          (AC4): a lease held by another run answers `action=wait
-#          reason=lease`, never a takeover; a timed-out lock is a wait too.
+#          issue=<N> | action=wait reason=<fixed enum>. Issue-side routing is
+#          #471 (tests/test-talos-next.sh); this file pins that a queued issue
+#          the stubs cannot answer fails closed, never a guessed dispatch.
+#
+#          A dispatch/merge answer acquires the issue's lease first (AC4): a
+#          lease held by another run answers `action=wait reason=lease`, never
+#          a takeover; a timed-out lock is a wait too.
 #   lease  <git common dir>/talos-lease.ledger guarded by pipeline-lock.sh;
 #          TTL = verify.timeout_ms/1000 + verify.ci_wait_s, floor 30 minutes
 #          (TALOS_LEASE_TTL_S / TALOS_NOW override both in tests); an expired
@@ -218,14 +220,15 @@ st next
 assert_eq "1" "$RC" "next: an unknown stage exits non-zero"
 assert_eq "stop reason=unsupported-verb:nonsense" "$OUT" "next: an unknown stage is stop reason=unsupported-verb:<stage>, never a guess"
 
-# Issue-side: stop, never a guess (slice 7 owns it, #471).
+# Issue-side stages are #471: a queued issue with no PR-side action now routes
+# through the issue queue (tests/test-talos-next.sh owns the routing parity).
+# The stub gh answers view-issue for any issue with no pipeline label, so the
+# issue-side walk finds no stage: a wait, never a guessed dispatch.
+LEASE_RESET
 set_state '{"prs": [], "pr_total": 0, "ignored": 0, "blocked": [], "queued": [42], "held": [], "owners": [], "capped": []}'
 st next
-assert_eq "1" "$RC" "next (issue queued): exits non-zero"
-assert_eq "stop reason=unsupported-verb:next-issue" "$OUT" "next (issue queued): the issue side is unsupported-verb:next-issue, never a queue pick"
-st next --issue 42
-assert_eq "1" "$RC" "next --issue: exits non-zero"
-assert_eq "stop reason=unsupported-verb:next-issue" "$OUT" "next --issue: fail-closed marker, no action"
+assert_eq "0" "$RC" "next (issue queued): exits 0 when the issue has no stage"
+assert_eq "action=wait reason=none" "$OUT" "next (issue queued): an unlabeled queued issue is a wait, never a guessed dispatch"
 
 # Usage.
 st next --bogus
@@ -272,18 +275,18 @@ mkdir -p "$LEASE.lock.d"
 printf 'issue=99 held=1 expires=9999999999 pid=%s\n' "$$" > "$LEASE.lock.d/pid"  # a live holder token
 printf 'issue=34 held=1 expires=9999999999 pid=%s\n' "$$" > "$LEASE"
 TALOS_LEASE_LOCK_S=1 st next
-assert_eq "action=wait reason=lease" "$OUT" "lease (lock timeout): a lock that cannot be held is a wait, never a force-acquire"
+assert_contains "$OUT" "action=wait reason=lease retry_after_s=" "lease (lock timeout): a lock that cannot be held is a wait with the holder's TTL, never a force-acquire"
 assert_contains "$(cat "$LEASE")" "expires=9999999999" "lease (lock timeout): the holder's line is untouched"
 rm -rf "${LEASE:?}.lock.d"
 
-# ── AC5: help documents state and next ────────────────────────────────────────
-HELP_OUT="$(bash "$TALOS" help)"
+# ── AC5: help documents state and next (issue-side: #471) ─────────────────────
+HELP_OUT="$(bash "$TN" help)"
 assert_contains "$HELP_OUT" "  state " "help: lists the state verb"
 assert_contains "$HELP_OUT" "state=<JSON>" "help: says what state prints"
 assert_contains "$HELP_OUT" "  next " "help: lists the next verb"
 assert_contains "$HELP_OUT" "action=dispatch" "help: documents the dispatch action"
 assert_contains "$HELP_OUT" "action=wait" "help: documents the wait action"
-assert_contains "$HELP_OUT" "unsupported-verb:next-issue" "help: documents the issue-side fail-closed marker"
+assert_contains "$HELP_OUT" "action=ask-owner" "help: documents the ask-owner action"
 
 # The header documents both verbs' reason enums (the fixed contract).
 for _h in "state-reasons:" "next-reasons:"; do
