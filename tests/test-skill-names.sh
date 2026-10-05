@@ -299,13 +299,19 @@ qa_tail_flat="If your harness has no skill mechanism${qa_tail_flat%%as well as C
 assert_contains "$adv_flat" "$qa_tail_flat" \
   "agents/adversarial.md's agent-skills sentence matches qa.md's verbatim (harness-portability tail)"
 
-# ── hooks.post_stage: Rule 3 in the conversation-stream section (#182) ─────
+# ── hooks.post_stage: Rule 2 and Rule 3 in the conversation-stream section (#182) ─
+# The post_stage invocation after a role relay moved out of the playbook into
+# `talos.sh done` (#469): Rule 2 names the call, Rule 3 keeps the usage and model
+# flags the orchestrator supplies, and the verb writes the event.
 assert_contains "$(cat "$SKILL_MD")" \
-  "Rule 3 — Post-stage hook" \
-  "skills/pipeline/SKILL.md has the Rule 3 (post-stage hook) orchestrator rule"
+  "Rule 3 — Usage and model" \
+  "skills/pipeline/SKILL.md has the Rule 3 (usage and model) orchestrator rule"
 assert_contains "$(cat "$SKILL_MD")" \
-  "bash scripts/pipeline-hooks.sh post_stage <event> <role> <N>" \
-  "skills/pipeline/SKILL.md Rule 3 gives the literal post_stage invocation"
+  "**Rule 2 — Stage return (always):** when a subagent returns, run \`bash scripts/talos.sh done <role>" \
+  "skills/pipeline/SKILL.md Rule 2 runs talos.sh done when a subagent returns"
+assert_contains "$(cat "$TALOS_ROOT/scripts/talos.sh")" \
+  '_talos_post_stage "$_role" "$_role" "$_n"' \
+  "talos.sh done writes the role's post_stage event (the invocation Rule 3 used to spell out)"
 
 # ── Per-stage cost accounting (#202): Rule 3 usage-passthrough sentence and
 # the Step 5 cost mention ───────────────────────────────────────────────────

@@ -9,11 +9,12 @@
 #        talos.sh sweep [<issue-id>...]
 #        talos.sh summary [<issue-id>...]
 #        talos.sh prompt <role> --issue <N> [--pr <M>] [--shape first|fix-round|restamp] [--draft] [...]
+#        talos.sh done <role> --issue <N> [--pr <M>] [--verdict <V>] --summary-file <F|-> [--draft] [...]
 #        talos.sh help
 #
 # One script with verbs; each later slice adds a verb and deletes the playbook
 # prose it replaces. Slice 1 added `env`, slice 2 (#466) `gate`, slice 3 (#467)
-# `post-merge`, `sweep` and `summary`, slice 4 (#468) `prompt`.
+# `post-merge`, `sweep` and `summary`, slice 4 (#468) `prompt`, slice 5 (#469) `done`.
 #
 #   env    Everything Step 0 of skills/pipeline/SKILL.md and the per-role runner
 #          resolution used to make the orchestrator gather by hand, in one call:
@@ -199,6 +200,7 @@
 #   prompt <role> --issue <N> [--pr <M>] [--shape first|fix-round|restamp] [--draft]
 #          [--spec-source pm|issue-body] [--prior-file F] [--title-file F]
 #          [--body-file F] [--ci-failure-file F] [--docs-paths-file F] [--restamp-file F]
+#          [--preamble-file F]
 #          <role> is validator pm developer qa reviewer security adversarial docs planner.
 #          --shape first (default): the stage's own prompt. fix-round: the developer
 #          prompt of a fix round (needs --pr and --prior-file; --ci-failure-file adds
@@ -211,7 +213,9 @@
 #          --spec-source issue-body is a skipped PM stage. --prior-file is the
 #          `Prior stage summary` (none when absent), --title-file and --body-file are the
 #          planner's epic, --docs-paths-file is the docs stage's filtered path list (absent:
-#          the full diff-pr diff). Free text reaches the verb only in files, never on
+#          the full diff-pr diff). --preamble-file is the `hooks.pre_dispatch` output: its text
+#          (nothing when the file is empty) goes at the very top of the rendered file, as it
+#          is, one newline after it; it is never scanned for markers. Free text reaches the verb only in files, never on
 #          argv; a file's trailing newlines are cut and its text is otherwise inserted as it
 #          is. The configured values (base branch, provider, comment header and templates
 #          dir, verify settings, required checks, isolation, changelog and status modes)
@@ -229,6 +233,60 @@
 #
 # prompt-reasons: usage unknown-role unknown-shape shape-unsupported file-unreadable template-missing unknown-placeholder value-missing render-failed isolation-invalid scripts-missing python-missing scratch-unavailable config-unreadable
 #   stop: all of them (exit 2 for usage, unknown-role, unknown-shape, shape-unsupported; else 1)
+#
+# done    End-of-stage bookkeeping: what the playbook's "After <role> returns" blocks and
+#         its conversation stream protocol told the orchestrator to run by hand, in
+#         the same order, one call per returned stage. Role events are written the way
+#         the playbook wrote them (`post_stage <role> <role> ...`); `stage_complete` is
+#         the adapter path's own event (pipeline-agent.sh) and is not written here.
+#
+#   done <role> --issue <N> [--pr <M>] [--verdict <V>] --summary-file <F|-> [--draft]
+#        [--action-id <id>] [--tokens <n>] [--tool-uses <n>] [--duration-s <n>]
+#        [--model <m>] [--sha <sha>]
+#          <role> is validator pm developer qa reviewer security adversarial docs. The
+#          summary is the stage's 2-3 line text, read from the file (`-`: stdin, up to
+#          64 KB, never argv); it is the relay message and the post_stage summary. --pr is
+#          required for qa, reviewer, security, adversarial and the developer's PR_OPENED.
+#          --draft is PR_DRAFT. The verdict is one of a fixed list per role; pm and docs
+#          take none:
+#            validator CONFIRMED ALREADY_FIXED DUPLICATE NEEDS_MORE_INFO SECURITY_THREAT
+#            developer PR_OPENED BLOCKED        qa PASS FAIL RESTAMP_PASS RESTAMP_FAIL
+#            reviewer APPROVED CHANGES RESTAMP_PASS RESTAMP_FAIL
+#            security, adversarial CLEAR FINDINGS RESTAMP_PASS RESTAMP_FAIL
+#          Order: (1) before anything is announced, a RESTAMP_FAIL strips the role's
+#          approval label (label-pr --remove, so the next pass is a full stage, not
+#          another re-stamp) and, with --draft, a qa FAIL runs `draft-pr` then
+#          `label-pr --remove qa:pass`; a failure there is a stop and nothing is
+#          written; (2) board status (validator CONFIRMED: In progress, validator
+#          non-CONFIRMED and developer BLOCKED: Blocked, developer PR_OPENED: In
+#          review); (3) the role relay (pipeline-notify.sh <role> "#<N>" - <N>, the
+#          summary on stdin); (4) post_stage <role> with --pr --sha --verdict
+#          --tokens --tool-uses --duration-s (a model that is not [A-Za-z0-9._:-]+ is
+#          dropped with `warn reason=model-invalid`); (5) the spend block, after a
+#          role relay only: the --line, and with a PR the comment upsert, as
+#          post-merge does it; (6) the lifecycle event: pr-opened (PR_OPENED) or
+#          blocked (a failing verdict: validator non-CONFIRMED, developer BLOCKED, qa
+#          FAIL, reviewer CHANGES, security and adversarial FINDINGS, any RESTAMP_FAIL),
+#          notified and then post_stage <event> orchestrator, with no spend block.
+#          Output: `done=ok|duplicate` first, `spend=<line>`, `next=<what follows>` last:
+#          continue | stop (validator non-CONFIRMED, developer BLOCKED: move on) |
+#          fix-round stage=<role> (run `gate fix-round`, then the developer) | batch
+#          (--draft, reviewer/security/adversarial: wait for every role of the draft
+#          review batch, then one `gate fix-round` for all of them). `done` never calls
+#          `gate fix-round` and never merges.
+#          --action-id <id> ([a-z0-9._-]{1,64}) makes the call at most once: the id is
+#          recorded under the git common dir (talos-done.ledger, pipeline-lock.sh) before
+#          anything is announced, and a repeat prints `done=duplicate` and does nothing
+#          else (no relay, event, spend or label). A lock that cannot be held is `stop
+#          reason=ledger-locked` (after TALOS_DONE_LOCK_S seconds, default 10): nothing is written
+#          and the call may be repeated. Without --action-id nothing is recorded.
+#          Child stderr is relayed only as `note done=<verb> msg=<escaped>` lines.
+#
+# done-reasons: usage unknown-role verdict-invalid file-unreadable summary-empty draft-pr-failed label-failed ledger-unavailable ledger-locked scripts-missing python-missing scratch-unavailable config-unreadable board-failed notify-failed model-invalid spend-upsert-failed
+#   stop: usage unknown-role verdict-invalid file-unreadable summary-empty draft-pr-failed label-failed
+#         ledger-unavailable ledger-locked scripts-missing python-missing scratch-unavailable config-unreadable
+#         (exit 2 for usage, unknown-role, verdict-invalid; else 1)
+#   warn: board-failed notify-failed model-invalid spend-upsert-failed
 #
 # Exit codes: 0 ok (for gate: a verdict was printed), 1 a `stop`, 2 usage.
 set -u
@@ -402,9 +460,13 @@ verbs:
   summary [<issue-id>...]            Step 5: worktree sweep and warning, cost
                                      table, status resume block
   prompt <role> --issue <N> [--pr <M>] [--shape first|fix-round|restamp] [--draft]
+                                     [--preamble-file F]
                                      render a stage prompt from
                                      templates/prompts/<role>.md to a file:
                                      prompt_file=<path>
+  done <role> --issue <N> [--pr <M>] [--verdict <V>] --summary-file <F|-> [--draft]
+                                     end-of-stage bookkeeping: board, role relay,
+                                     post_stage, spend block, lifecycle event
   help                              this text
 HELP
 }
@@ -692,8 +754,7 @@ _talos_gate_fix_round() {
     1)
       _talos_emit budget "$_bout"
       _talos_block_labels "$_n" "$_pr"
-      printf '%s' "$_bout" | bash "$SCRIPT_DIR/pipeline-hooks.sh" post_stage budget-blocked orchestrator "$_n" \
-        ${_pr:+--pr "$_pr"} --summary - > /dev/null
+      printf '%s' "$_bout" | _talos_post_stage budget-blocked orchestrator "$_n" ${_pr:+--pr "$_pr"} --summary -
       _talos_emit reason budget-exceeded
       _talos_emit blocked_by "talos.pipeline.yml:limits.tokens_per_issue (explicit)"
       _talos_verdict block ;;
@@ -1021,6 +1082,37 @@ _PM_ISSUE=""
 # _talos_warn <reason> [key=value]: a non-fatal item that did not go through.
 _talos_warn() { _talos_emit warn "reason=$1${2:+ $2}"; }
 
+# _talos_post_stage <event> <role> <issue> [pipeline-hooks.sh args]: the one writer
+# of a post_stage event (hooks.post_stage and the events log). pipeline-hooks.sh
+# never fails; its one stderr line is relayed as a `note <key>=hook` line. stdin
+# passes through to it (--summary -).
+_talos_post_stage() {
+  _talos_run hook bash "$SCRIPT_DIR/pipeline-hooks.sh" post_stage "$@"
+}
+
+# _talos_spend <issue> [<pr>]: the spend block. The --line first (without --pr
+# before a PR exists, and then nothing else); the comment only with a PR,
+# comments on and spend.comment not false, and only a non-empty body, as `cost`
+# piped straight into the upsert would exit 1 on an empty one.
+_talos_spend() {
+  local _n="$1" _pr="${2:-}" _sp _body
+  _talos_run spend bash "$SCRIPT_DIR/pipeline-events.sh" cost --issue "$_n" ${_pr:+--pr "$_pr"} --line
+  [ -z "$_OUT" ] || _talos_emit spend "$_OUT"
+  [ -n "$_pr" ] || return 0
+  _sp="$(cfg spend.comment)"
+  if [ "$(cfg comments.enabled)" = "true" ] && [ "$_sp" != "false" ]; then
+    _talos_run spend bash "$SCRIPT_DIR/pipeline-events.sh" cost --issue "$_n" --pr "$_pr" --markdown
+    _body="$_OUT"
+    if [ -n "$_body" ]; then
+      printf '%s' "$_body" > "$_CFG_CACHE_DIR/spend"
+      _talos_run spend _vcs upsert-pr-comment "$_pr" --marker spend --body-file - < "$_CFG_CACHE_DIR/spend"
+      # 2 is a provider without the verb: silent. 1 (a token that cannot post as
+      # itself) is reported once and never retried.
+      [ "$_RC" -ne 1 ] || _talos_warn spend-upsert-failed "issue=$_n"
+    fi
+  fi
+}
+
 # _talos_render <template> <issue-ref> <pr-ref> <verdict> <summary> <details-file>:
 # the comment body, from comments.templates_dir (then the installed copy), in
 # _BODY. Fails when comments.header is empty: nothing is posted without it.
@@ -1148,7 +1240,7 @@ _talos_issue_open() {
 # merged and issue-closed events and the spend block. A 5th argument of 1 says
 # the caller just listed the issue as open (the sweep heal).
 _talos_post_merge_run() {
-  local _pr="$1" _n="$2" _heal="$3" _ci="$4" _known="${5:-0}" _rec=0 _mk _cnt _body _sp _rc
+  local _pr="$1" _n="$2" _heal="$3" _ci="$4" _known="${5:-0}" _rec=0 _mk _cnt _rc
   _PM_ISSUE="$_n"
   _mk="<!-- talos:issue-closed pr=$_pr -->"
   [ "$_heal" -eq 1 ] || _talos_siblings "$_n" "$_pr"
@@ -1209,30 +1301,9 @@ _talos_post_merge_run() {
   _talos_notify orchestrator "#$_n" "all stages passed — merged PR #$_pr, issue closed" "$_n"
   _talos_notify merged "#$_n" "PR #$_pr merged" "$_n"
   _talos_notify issue-closed "#$_n" "issue resolved" "$_n"
-  # pipeline-hooks.sh never fails; its one stderr line is relayed.
-  _talos_run hook bash "$SCRIPT_DIR/pipeline-hooks.sh" post_stage merged orchestrator "$_n" --pr "$_pr" \
-    --summary "PR #$_pr merged" ${_ci:+--ci-runs "$_ci"}
-  _talos_run hook bash "$SCRIPT_DIR/pipeline-hooks.sh" post_stage issue-closed orchestrator "$_n" --pr "$_pr" \
-    --summary "issue resolved"
-
-  # The spend block (after `merged`): the --line first; the comment only with
-  # comments on and spend.comment not false, and only a non-empty body, as
-  # `cost` piped straight into the upsert would exit 1 on an empty one.
-  _talos_run spend bash "$SCRIPT_DIR/pipeline-events.sh" cost --issue "$_n" --pr "$_pr" --line
-  [ -z "$_OUT" ] || _talos_emit spend "$_OUT"
-  _sp="$(cfg spend.comment)"
-  if [ "$(cfg comments.enabled)" = "true" ] && [ "$_sp" != "false" ]; then
-    _talos_run spend bash "$SCRIPT_DIR/pipeline-events.sh" cost --issue "$_n" --pr "$_pr" --markdown
-    _body="$_OUT"
-    if [ -n "$_body" ]; then
-      printf '%s' "$_body" > "$_CFG_CACHE_DIR/spend"
-      _talos_run spend _vcs upsert-pr-comment "$_pr" --marker spend --body-file - < "$_CFG_CACHE_DIR/spend"
-      _rc="$_RC"
-      # 2 is a provider without the verb: silent. 1 (a token that cannot post as
-      # itself) is reported once and never retried.
-      [ "$_rc" -ne 1 ] || _talos_warn spend-upsert-failed "issue=$_n"
-    fi
-  fi
+  _talos_post_stage merged orchestrator "$_n" --pr "$_pr" --summary "PR #$_pr merged" ${_ci:+--ci-runs "$_ci"}
+  _talos_post_stage issue-closed orchestrator "$_n" --pr "$_pr" --summary "issue resolved"
+  _talos_spend "$_n" "$_pr"
 }
 
 # _talos_handoff <pr> <issue> <details-file>: human-merge mode (merge.auto off).
@@ -1553,9 +1624,15 @@ for i in range(0, len(parts) - 1, 2):
     vals[key] = raw.decode("utf-8", "surrogateescape")
 MARK = re.compile(r"^\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}\n|\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}", re.M)
 used = {m.group(1) or m.group(2) for m in MARK.finditer(text)}
+# A marker with spaces inside ({{ NAME }}) is a typo for one, never literal text.
+for m in re.finditer(r"\{\{[ \t]*([A-Za-z_][A-Za-z0-9_]*)[ \t]*\}\}", text):
+    if m.group(0) != "{{" + m.group(1) + "}}":
+        stop("unknown-placeholder")
 if used - allowed:
     stop("unknown-placeholder")
-if used - set(vals):
+# STOP_RULE is the one value that must not be empty: an empty partial would
+# silently drop the rule every prompt carries.
+if used - set(vals) or ("STOP_RULE" in used and not vals["STOP_RULE"]):
     stop("value-missing")
 def sub(m):
     value = vals[m.group(1) or m.group(2)]
@@ -1587,8 +1664,9 @@ _talos_prompt_checks() {
 # prompt <role> --issue <N> [--pr <M>] [--shape first|fix-round|restamp] [--draft]
 #        [--spec-source pm|issue-body] [--prior-file F] [--title-file F]
 #        [--body-file F] [--ci-failure-file F] [--docs-paths-file F] [--restamp-file F]
+#        [--preamble-file F]
 _talos_prompt() {
-  local _role="${1:-}" _issue="" _pr="" _shape=first _draft=0 _spec=pm _prior="" _title="" _body="" _ci="" _docs="" _rs=""
+  local _role="${1:-}" _issue="" _pr="" _shape=first _draft=0 _spec=pm _prior="" _title="" _body="" _ci="" _docs="" _rs="" _pre=""
   local _f _h _v _tpl _pf _r _base
   [ "$#" -eq 0 ] || shift
   case " $_TALOS_ROLES " in *" $_role "*) : ;; *) _talos_stop unknown-role 2 ;; esac
@@ -1606,6 +1684,7 @@ _talos_prompt() {
       --ci-failure-file) _ci="$2"; shift 2 ;;
       --docs-paths-file) _docs="$2"; shift 2 ;;
       --restamp-file) _rs="$2"; shift 2 ;;
+      --preamble-file) _pre="$2"; shift 2 ;;
       *) _talos_stop usage 2 ;;
     esac
   done
@@ -1618,7 +1697,7 @@ _talos_prompt() {
     restamp) case "$_role" in qa | reviewer | security | adversarial) : ;; *) _talos_stop shape-unsupported 2 ;; esac ;;
     *) _talos_stop unknown-shape 2 ;;
   esac
-  for _f in "$_prior" "$_title" "$_body" "$_ci" "$_docs" "$_rs"; do
+  for _f in "$_prior" "$_title" "$_body" "$_ci" "$_docs" "$_rs" "$_pre"; do
     [ -z "$_f" ] || { [ -f "$_f" ] && [ -r "$_f" ]; } || _talos_stop file-unreadable
   done
 
@@ -1640,8 +1719,9 @@ _talos_prompt() {
   [ "$_shape" != restamp ] || _h="$_h — re-stamp"
   _talos_pv HEADER "$_h"
   _talos_pf STOP_RULE "$_tpl/_stop-rule.md"
-  if [ -n "$_prior" ]; then _talos_pf PRIOR_STAGE_SUMMARY "$_prior"
-  elif [ "$_shape" != fix-round ]; then _talos_pv PRIOR_STAGE_SUMMARY none
+  # An empty --prior-file is no prior summary: `none`, never a blank line.
+  if [ -n "$_prior" ] && [ -n "$(cat "$_prior")" ]; then _talos_pf PRIOR_STAGE_SUMMARY "$_prior"
+  elif [ "$_shape" != fix-round ] || [ -n "$_prior" ]; then _talos_pv PRIOR_STAGE_SUMMARY none
   fi
 
   case "$_role" in
@@ -1756,7 +1836,187 @@ _talos_prompt() {
       *) _talos_stop render-failed ;;
     esac
   fi
+  # The hooks.pre_dispatch text goes on top, byte for byte (the file keeps its mode).
+  if [ -n "$_pre" ] && [ -n "$(cat "$_pre")" ]; then
+    { printf '%s\n' "$(cat "$_pre")"; cat "$_pf"; } > "$_CFG_CACHE_DIR/preamble" \
+      && cat "$_CFG_CACHE_DIR/preamble" > "$_pf" || { rm -f "${_pf:?}"; _talos_stop render-failed; }
+  fi
   _talos_emit prompt_file "$_pf"
+  _talos_flush
+}
+
+# ── done ─────────────────────────────────────────────────────────────────────
+# End-of-stage bookkeeping: what the playbook's "After <role> returns" blocks and
+# its conversation stream protocol (the role relay, post_stage, the spend block)
+# told the orchestrator to run by hand.
+
+# _talos_done_verdicts <role>: the verdicts a role may report (empty: none).
+_talos_done_verdicts() {
+  case "$1" in
+    validator) printf '%s' "CONFIRMED ALREADY_FIXED DUPLICATE NEEDS_MORE_INFO SECURITY_THREAT" ;;
+    developer) printf '%s' "PR_OPENED BLOCKED" ;;
+    qa) printf '%s' "PASS FAIL RESTAMP_PASS RESTAMP_FAIL" ;;
+    reviewer) printf '%s' "APPROVED CHANGES RESTAMP_PASS RESTAMP_FAIL" ;;
+    security | adversarial) printf '%s' "CLEAR FINDINGS RESTAMP_PASS RESTAMP_FAIL" ;;
+  esac
+}
+
+# _talos_ledger <has|claim> <id>: the done-ledger, one action id per line in
+# <git common dir>/talos-done.ledger. `has` reads it; `claim` appends the id under
+# pipeline-lock.sh and answers 0 (claimed), 1 (already there) or 2 (the lock was
+# not held: nothing is written, the caller stops).
+_talos_ledger() {
+  local _f _rc=0
+  _f="$(git rev-parse --git-common-dir 2>/dev/null)" && [ -n "$_f" ] || return 3
+  _f="$(cd "$_f" 2>/dev/null && pwd -P)" || return 3
+  _f="$_f/talos-done.ledger"
+  if [ "$1" = has ]; then
+    grep -Fxq -e "$2" "$_f" 2>/dev/null
+    return $?
+  fi
+  . "$SCRIPT_DIR/pipeline-lock.sh"
+  _lock_acquire "$_f" "${TALOS_DONE_LOCK_S:-10}" || return 2
+  if grep -Fxq -e "$2" "$_f" 2>/dev/null; then _rc=1
+  else printf '%s\n' "$2" >> "$_f" || _rc=2
+  fi
+  _lock_release "$_f"
+  return "$_rc"
+}
+
+# done <role> --issue <N> [--pr <M>] [--verdict <V>] --summary-file <F|-> [--draft]
+#      [--action-id <id>] [--tokens <n>] [--tool-uses <n>] [--duration-s <n>]
+#      [--model <m>] [--sha <sha>]
+_talos_done() {
+  local _role="${1:-}" _n="" _pr="" _v="" _sf="" _draft=0 _aid="" _aids=0 _tok="" _tu="" _dur="" _model="" _sha=""
+  local _ok=1 _x _sum _col="" _msg="" _ev="" _fail=0 _label _next=continue _a
+  [ "$#" -eq 0 ] || shift
+  case " $_TALOS_ROLES " in *" $_role "*) [ "$_role" != planner ] && _ok=0 ;; esac
+  [ "$_ok" -eq 0 ] || _talos_stop unknown-role 2
+  while [ "$#" -gt 0 ]; do
+    [ "$1" = "--draft" ] || [ "$#" -ge 2 ] || _talos_stop usage 2
+    case "$1" in
+      --issue) _n="$2"; shift 2 ;;
+      --pr) _pr="$2"; shift 2 ;;
+      --verdict) _v="$2"; shift 2 ;;
+      --summary-file) _sf="$2"; shift 2 ;;
+      --draft) _draft=1; shift ;;
+      --action-id) _aid="$2"; _aids=1; shift 2 ;;
+      --tokens) _tok="$2"; shift 2 ;;
+      --tool-uses) _tu="$2"; shift 2 ;;
+      --duration-s) _dur="$2"; shift 2 ;;
+      --model) _model="$2"; shift 2 ;;
+      --sha) _sha="$2"; shift 2 ;;
+      *) _talos_stop usage 2 ;;
+    esac
+  done
+  _talos_isnum "$_n" && [ -n "$_sf" ] || _talos_stop usage 2
+  for _x in "$_pr" "$_tok" "$_tu" "$_dur"; do
+    [ -z "$_x" ] || _talos_isnum "$_x" || _talos_stop usage 2
+  done
+  [ "$_aids" -eq 0 ] || [[ "$_aid" =~ ^[a-z0-9._-]{1,64}$ ]] || _talos_stop usage 2
+  [[ -z "$_sha" || "$_sha" =~ ^[0-9a-fA-F]{4,64}$ ]] || _talos_stop usage 2
+  # Every verdict is on the role's fixed list: no verdict at all for a role with none.
+  _ok=1
+  for _x in $(_talos_done_verdicts "$_role"); do [ "$_x" = "$_v" ] && _ok=0; done
+  { [ "$_ok" -eq 0 ] || { [ -z "$_v" ] && [ -z "$(_talos_done_verdicts "$_role")" ]; }; } || _talos_stop verdict-invalid 2
+  # A PR-side stage names its PR; so does the developer's pr-opened.
+  case "$_role" in
+    qa | reviewer | security | adversarial) [ -n "$_pr" ] || _talos_stop usage 2 ;;
+    developer) [ "$_v" != PR_OPENED ] || [ -n "$_pr" ] || _talos_stop usage 2 ;;
+  esac
+  [ "$_sf" = "-" ] || { [ -f "$_sf" ] && [ -r "$_sf" ]; } || _talos_stop file-unreadable
+
+  _talos_prepare done pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh pipeline-contract.sh \
+                      pipeline-status.sh pipeline-notify.sh pipeline-hooks.sh pipeline-events.sh \
+                      pipeline-lock.sh
+  . "$SCRIPT_DIR/pipeline-contract.sh"
+  _TALOS_NOTE_KEY=done
+  _PM_ISSUE="$_n"
+  # The summary is free text: it is copied once to a scratch file (stdin for `-`)
+  # and travels only as that file, to the relay and to the hook.
+  _sum="$_CFG_CACHE_DIR/summary"
+  if [ "$_sf" = "-" ]; then head -c 65536 > "$_sum"; else head -c 65536 < "$_sf" > "$_sum"; fi
+  [ -s "$_sum" ] || _talos_stop summary-empty
+
+  # An action id is done at most once: a repeat does nothing and says so.
+  if [ -n "$_aid" ]; then
+    _talos_ledger has "$_aid"; _a=$?
+    [ "$_a" -ne 3 ] || _talos_stop ledger-unavailable
+    if [ "$_a" -eq 0 ]; then
+      _talos_emit done duplicate
+      _talos_flush
+      exit 0
+    fi
+  fi
+
+  case "$_v" in CHANGES | FINDINGS | FAIL | RESTAMP_FAIL | BLOCKED | ALREADY_FIXED | DUPLICATE | NEEDS_MORE_INFO | SECURITY_THREAT) _fail=1 ;; esac
+
+  # What a failing verdict must set right first, before anything is announced:
+  # a stale approval is stripped (RESTAMP_FAIL), and under PR_DRAFT a failed QA
+  # converts the PR back to a draft and drops qa:pass. Both are idempotent.
+  if [ "$_role" = qa ] && [ "$_v" = FAIL ] && [ "$_draft" -eq 1 ]; then
+    _talos_run draft-pr _vcs draft-pr "$_pr"
+    [ "$_RC" -eq 0 ] || _talos_stop draft-pr-failed
+  fi
+  if [ "$_v" = RESTAMP_FAIL ] || { [ "$_role" = qa ] && [ "$_v" = FAIL ] && [ "$_draft" -eq 1 ]; }; then
+    _label="$(_talos_label_of "$_role")" || _talos_stop label-failed
+    _talos_run label _vcs label-pr "$_pr" --remove "$_label"
+    [ "$_RC" -eq 0 ] || _talos_stop label-failed
+  fi
+
+  if [ -n "$_aid" ]; then
+    _talos_ledger claim "$_aid"; _a=$?
+    case "$_a" in
+      0) : ;;
+      1) _talos_emit done duplicate; _talos_flush; exit 0 ;;
+      *) _talos_stop ledger-locked ;;
+    esac
+  fi
+  _talos_emit done ok
+
+  case "$_role:$_v" in
+    validator:CONFIRMED) _col="In progress" ;;
+    validator:*) _col="Blocked"; _msg="Validator: $_v"; _ev=blocked ;;
+    developer:PR_OPENED) _col="In review"; _msg="PR #$_pr opened"; _ev=pr-opened ;;
+    developer:BLOCKED) _col="Blocked"; _msg="developer blocked"; _ev=blocked ;;
+    qa:FAIL | qa:RESTAMP_FAIL) _msg="QA failed in PR #$_pr"; _ev=blocked ;;
+    reviewer:CHANGES | reviewer:RESTAMP_FAIL) _msg="reviewer: changes required"; _ev=blocked ;;
+    security:FINDINGS | security:RESTAMP_FAIL | adversarial:FINDINGS | adversarial:RESTAMP_FAIL)
+      _msg="$_role: findings in PR #$_pr"; _ev=blocked ;;
+  esac
+
+  if [ -n "$_col" ]; then
+    _talos_run board bash "$SCRIPT_DIR/pipeline-status.sh" "$_n" "$_col"
+    [ "$_RC" -eq 0 ] || _talos_warn board-failed "issue=$_n"
+  fi
+  _talos_notify "$_role" "#$_n" - "$_n" < "$_sum"
+
+  # The model reaches the hook only as one plain word: any other value is dropped.
+  if [ -n "$_model" ] && ! [[ "$_model" =~ ^[A-Za-z0-9._:-]+$ ]]; then
+    _talos_warn model-invalid "issue=$_n"
+    _model=""
+  fi
+  _talos_post_stage "$_role" "$_role" "$_n" ${_pr:+--pr "$_pr"} ${_sha:+--sha "$_sha"} ${_v:+--verdict "$_v"} \
+    --summary-file "$_sum" ${_tok:+--tokens "$_tok"} ${_tu:+--tool-uses "$_tu"} ${_dur:+--duration-s "$_dur"} \
+    ${_model:+--model "$_model"} < /dev/null
+  # The spend block follows a role relay only: no new tokens after a lifecycle event.
+  _talos_spend "$_n" "$_pr"
+
+  if [ -n "$_ev" ]; then
+    _talos_notify "$_ev" "#$_n" "$_msg" "$_n"
+    _talos_post_stage "$_ev" orchestrator "$_n" ${_pr:+--pr "$_pr"} --summary "$_msg" < /dev/null
+  fi
+
+  if [ "$_fail" -eq 1 ]; then
+    case "$_role" in
+      validator | developer) _next=stop ;;
+      reviewer | security | adversarial)
+        # A draft review batch is one fix round for every finding, run by the caller.
+        if [ "$_draft" -eq 1 ]; then _next=batch; else _next="fix-round stage=$_role"; fi ;;
+      *) _next="fix-round stage=$_role" ;;
+    esac
+  fi
+  _talos_emit next "$_next"
   _talos_flush
 }
 
@@ -1780,6 +2040,7 @@ case "$verb" in
   sweep) _talos_sweep "$@" ;;
   summary) _talos_summary "$@" ;;
   prompt) _talos_prompt "$@" ;;
+  done) _talos_done "$@" ;;
   help | -h | --help) _talos_help ;;
   "") _talos_help >&2; exit 2 ;;
   *) printf 'stop reason=unknown-verb\n'; exit 2 ;;

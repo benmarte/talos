@@ -56,11 +56,16 @@ assert_contains "$verb_text" 'Only the orchestrator clears pipeline:blocked' \
 # Each blocking stage's fix round must go through `gate fix-round`, which clears
 # the block before the developer fix round and only on verdict=redispatch;
 # losing one call site leaves that stage's fix round blocked.
-for stage in qa reviewer security adversarial; do
+# QA's site is its own; reviewer, security and adversarial share one site, reached
+# through `talos.sh done`'s `next=fix-round stage=<role>` (tests/test-talos-done.sh
+# pins that answer per role), so the one `<role>` line stands for those three.
+for stage in qa '<role>'; do
   after="$(grep -F -A3 -- "gate fix-round <N> $stage --pr <PR_NUMBER>" "$SKILL_MD")"
   assert_contains "$after" 'verdict=redispatch' \
     "SKILL.md re-dispatches the developer only on verdict=redispatch after the $stage gate fix-round"
 done
+assert_contains "$(grep -F -B1 -- "gate fix-round <N> <role> --pr <PR_NUMBER>" "$SKILL_MD")" 'next=fix-round stage=<role>' \
+  "SKILL.md reaches the shared fix-round site from next=fix-round stage=<role> (reviewer, security, adversarial)"
 
 # ── Blocked PRs are reported, not silent (#312) ────────────────────────────
 # The report moved from the prose into `talos.sh sweep` (#467): the verb counts the

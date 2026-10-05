@@ -350,7 +350,7 @@ The configured command receives this JSON on stdin (fields the caller didn't sup
 
 Contract: a non-zero exit or a timeout (`hooks.timeout_s`) is a silent no-op with exactly one line on stderr; `hooks.post_stage` never blocks the pipeline and has no output to prepend anywhere — it is purely a side channel. `TALOS_ROLE` and `TALOS_ISSUE_NUMBER` are also exported into the command's environment.
 
-Implemented in `scripts/pipeline-hooks.sh` (`post_stage`, sharing its watchdog/timeout machinery with `pre_dispatch`); wired into the adapter path (`scripts/pipeline-agent.sh`, once per stage run — event `stage_complete`, verdict from the runner's exit code) and the native orchestrator path (`skills/pipeline/SKILL.md`, Conversation stream protocol, Rule 3).
+Implemented in `scripts/pipeline-hooks.sh` (`post_stage`, sharing its watchdog/timeout machinery with `pre_dispatch`); wired into the adapter path (`scripts/pipeline-agent.sh`, once per stage run — event `stage_complete`, verdict from the runner's exit code) and the native orchestrator path (`skills/pipeline/SKILL.md`, Conversation stream protocol, Rule 2: `scripts/talos.sh done`, #469).
 
 ### Events log
 

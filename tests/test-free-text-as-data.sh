@@ -425,23 +425,41 @@ PY
 assert_eq "0" "$?" "playbook rendering recipe: SUMMARY and DETAILS each reach the comment byte for byte (trimmed)"
 assert_no_pwned "playbook rendering recipe"
 
-# ── skills/pipeline/SKILL.md: the Rule 2 relay ───────────────────────────────
-run_recipe "$TALOS_ROOT/skills/pipeline/SKILL.md" 'pipeline-notify.sh <role> "#<N>" - <N> <<'; rc=$?
-assert_eq "0" "$rc" "playbook relay recipe: runs ($(head -c 200 "$SANDBOX/r.err"))"
+# ── skills/pipeline/SKILL.md Rule 2: `talos.sh done` and the stage summary ───
+# The relay (`pipeline-notify.sh <role> "#<N>" - <N>`) and the role's post_stage event
+# moved out of the playbook into `talos.sh done` (#469). The summary reaches the verb in
+# a file (or stdin) and its consumers as stdin and a file, never as an argument: the
+# hostile body arrives byte for byte, and one call is one relay and one event.
+DS="$SANDBOX/done-scripts"
+mkdir -p "$DS"
+cp "$TALOS_ROOT"/scripts/* "$DS/"
+for s in pipeline-vcs.sh pipeline-notify.sh pipeline-hooks.sh pipeline-status.sh pipeline-events.sh; do
+  cp "$STUBROOT/scripts/pipeline-vcs.sh" "$DS/$s"
+done
+done_run() {  # $1=stdin source ($BODY or /dev/null) $2...=args of `done`
+  local in="$1"; shift
+  rm -rf "${REC:?}"/*
+  (cd "$STUBROOT" && bash "$DS/talos.sh" done "$@" <"$in" >"$SANDBOX/done.out" 2>"$SANDBOX/done.err"); return $?
+}
+done_run /dev/null qa --issue 7 --pr 8 --verdict PASS --summary-file "$BODY"; rc=$?
+assert_eq "0" "$rc" "talos.sh done: runs ($(head -c 200 "$SANDBOX/done.err"))"
 c="$(call_of pipeline-notify.sh)"
-assert_eq 'pipeline-notify.sh|qa|#7|-|7' "$(argv_of "$c.argv")" "playbook relay recipe: ONE command, message passed as -"
-cmp -s "$SANDBOX/r.sh.bodies/1" "$c.stdin"; assert_eq "0" "$?" "playbook relay recipe: the stub received the summary byte for byte"
-assert_eq "1" "$(calls)" "playbook relay recipe: one relay is one command"
-assert_no_pwned "playbook relay recipe"
-
-# ── skills/pipeline/SKILL.md: Rule 3 post_stage with a subagent-authored summary ─
-run_recipe "$TALOS_ROOT/skills/pipeline/SKILL.md" 'post_stage qa qa 42'; rc=$?
-assert_eq "0" "$rc" "playbook Rule 3 recipe: runs ($(head -c 200 "$SANDBOX/r.err"))"
+assert_eq 'pipeline-notify.sh|qa|#7|-|7' "$(argv_of "$c.argv")" "talos.sh done: the relay is ONE command, the message passed as -"
+cmp -s "$BODY" "$c.stdin"; assert_eq "0" "$?" "talos.sh done: the relay stub received the summary byte for byte (cmp, trailing newline included)"
 c="$(call_of pipeline-hooks.sh)"
-assert_eq 'pipeline-hooks.sh|post_stage|qa|qa|42|--pr|57|--verdict|PASS|--summary|-' "$(argv_of "$c.argv")" "playbook Rule 3 recipe: ONE command, the summary passed as -, never as an argument"
-cmp -s "$SANDBOX/r.sh.bodies/1" "$c.stdin"; assert_eq "0" "$?" "playbook Rule 3 recipe: the stub received the summary byte for byte"
-assert_eq "1" "$(calls)" "playbook Rule 3 recipe: one post_stage is one command"
-assert_no_pwned "playbook Rule 3 recipe"
+assert_contains "$(argv_of "$c.argv")" 'pipeline-hooks.sh|post_stage|qa|qa|7|--pr|8|--verdict|PASS|--summary-file|' "talos.sh done: post_stage gets the summary by --summary-file, never as an argument"
+cmp -s "$BODY" "$c.file"; assert_eq "0" "$?" "talos.sh done: the hook stub read the summary file byte for byte"
+all_argv=""
+for f in "$REC"/call.*.argv; do all_argv="$all_argv$(argv_of "$f")"$'\n'; done
+assert_not_contains "$all_argv" "touch" "talos.sh done: no call carries the summary text on its command line"
+assert_eq "1" "$(grep -c '^pipeline-notify.sh|' <<< "$all_argv")" "talos.sh done: one stage return is one relay"
+assert_eq "1" "$(grep -c '^pipeline-hooks.sh|post_stage|' <<< "$all_argv")" "talos.sh done: one stage return is one post_stage"
+assert_no_pwned "talos.sh done (file)"
+done_run "$BODY" qa --issue 7 --pr 8 --verdict PASS --summary-file -; rc=$?
+assert_eq "0" "$rc" "talos.sh done --summary-file -: runs ($(head -c 200 "$SANDBOX/done.err"))"
+c="$(call_of pipeline-notify.sh)"
+cmp -s "$BODY" "$c.stdin"; assert_eq "0" "$?" "talos.sh done --summary-file -: the relay stub received the stdin summary byte for byte"
+assert_no_pwned "talos.sh done (stdin)"
 
 # ── skills/pipeline/SKILL.md: sub-issue body + title + create-issue ──────────
 run_recipe "$TALOS_ROOT/skills/pipeline/SKILL.md" 'BODY_FILE="$(mktemp)"' 'create-issue "$SUB_TITLE" "$BODY_FILE" \

@@ -190,15 +190,72 @@ assert_eq "stop reason=value-missing" "$(cat "$OUT")" "a re-stamp without --rest
 assert_eq "0" "$(ls "$TMPDIR"/talos-prompt.* 2>/dev/null | wc -l | tr -d ' ')" "a stop leaves no prompt file behind"
 
 mk_tree t-drop
-printf 'a\n{{PRIOR_STAGE_SUMMARY}}\nb {{PRIOR_STAGE_SUMMARY}} c\n{{HANDOFF_LINE}}\nz\n' > "$SANDBOX/t-drop/templates/prompts/pm.md"
-bash "$SANDBOX/t-drop/scripts/talos.sh" prompt pm --issue 1 --prior-file "$SANDBOX/empty.txt" > "$OUT" 2> "$ERR"
-# HANDOFF_LINE has no value for pm: value-missing. Use a name the pm case does set.
-assert_eq "stop reason=value-missing" "$(cat "$OUT")" "a marker the stage never sets is value-missing, not silently empty"
-printf 'a\n{{PRIOR_STAGE_SUMMARY}}\nb {{PRIOR_STAGE_SUMMARY}} c\nz\n' > "$SANDBOX/t-drop/templates/prompts/pm.md"
-bash "$SANDBOX/t-drop/scripts/talos.sh" prompt pm --issue 1 --prior-file "$SANDBOX/empty.txt" > "$OUT" 2> "$ERR"
+printf 'a\n{{DRAFT_PR_LINE}}\nb {{DRAFT_PR_LINE}} c\n{{NOT_SET_FOR_PM}}\nz\n' > "$SANDBOX/t-drop/templates/prompts/pm.md"
+bash "$SANDBOX/t-drop/scripts/talos.sh" prompt pm --issue 1 > "$OUT" 2> "$ERR"
+assert_eq "stop reason=unknown-placeholder" "$(cat "$OUT")" "a marker off the allow-list is unknown-placeholder, not silently empty"
+printf 'a\n{{DRAFT_PR_LINE}}\nb {{DRAFT_PR_LINE}} c\nz\n' > "$SANDBOX/t-drop/templates/prompts/developer.md"
+bash "$SANDBOX/t-drop/scripts/talos.sh" prompt developer --issue 1 > "$OUT" 2> "$ERR"
 PF="$(sed -n 's/^prompt_file=//p' "$OUT")"
 assert_eq "$(printf 'a\nb  c\nz')" "$(body)" "a line that is one marker with an empty value is dropped; an inline empty value is not"
 drop
+
+# An EMPTY shared stop-rule partial stops the render: it is a missing value, so the
+# rule every prompt carries is never dropped silently.
+mk_tree t-emptyrule
+: > "$SANDBOX/t-emptyrule/templates/prompts/_stop-rule.md"
+bash "$SANDBOX/t-emptyrule/scripts/talos.sh" prompt pm --issue 1 > "$OUT" 2> "$ERR"; RC=$?
+assert_eq "stop reason=value-missing" "$(cat "$OUT")" "an empty _stop-rule.md is stop reason=value-missing"
+assert_eq "1" "$RC" "an empty _stop-rule.md exits 1"
+printf '\n\n' > "$SANDBOX/t-emptyrule/templates/prompts/_stop-rule.md"
+bash "$SANDBOX/t-emptyrule/scripts/talos.sh" prompt pm --issue 1 > "$OUT" 2> "$ERR"
+assert_eq "stop reason=value-missing" "$(cat "$OUT")" "a _stop-rule.md of only newlines is stop reason=value-missing"
+assert_eq "0" "$(ls "$TMPDIR"/talos-prompt.* 2>/dev/null | wc -l | tr -d ' ')" "an empty stop rule leaves no prompt file behind"
+
+# An empty --prior-file is no prior summary: `none`, not a blank line.
+render qa --issue 7 --pr 9 --prior-file "$SANDBOX/empty.txt"
+text="$(body)"; drop
+assert_contains "$text" "Prior stage summary: none" "an empty --prior-file renders none"
+render developer --issue 7 --pr 9 --shape fix-round --prior-file "$SANDBOX/empty.txt"
+text="$(body)"; drop
+assert_contains "$text" "Prior stage summary: none" "an empty --prior-file renders none in a fix round too"
+
+# A marker with spaces inside, {{ NAME }}, is a typo, never literal text.
+mk_tree t-spaced
+printf 'Issue {{ ISSUE }}\n' > "$SANDBOX/t-spaced/templates/prompts/pm.md"
+bash "$SANDBOX/t-spaced/scripts/talos.sh" prompt pm --issue 1 > "$OUT" 2> "$ERR"; RC=$?
+assert_eq "stop reason=unknown-placeholder" "$(cat "$OUT")" "{{ NAME }} is stop reason=unknown-placeholder"
+assert_eq "1" "$RC" "{{ NAME }} exits 1"
+printf 'Issue {{ISSUE }}\n' > "$SANDBOX/t-spaced/templates/prompts/pm.md"
+bash "$SANDBOX/t-spaced/scripts/talos.sh" prompt pm --issue 1 > "$OUT" 2> "$ERR"
+assert_eq "stop reason=unknown-placeholder" "$(cat "$OUT")" "{{ISSUE }} is stop reason=unknown-placeholder"
+printf 'run: ${{ secrets.TOKEN }} and {{ISSUE}}\n' > "$SANDBOX/t-spaced/templates/prompts/pm.md"
+bash "$SANDBOX/t-spaced/scripts/talos.sh" prompt pm --issue 1 > "$OUT" 2> "$ERR"
+PF="$(sed -n 's/^prompt_file=//p' "$OUT")"
+assert_eq 'run: ${{ secrets.TOKEN }} and 1' "$(body)" "other {{ }} text that is no name stays literal"
+drop
+
+# --preamble-file: the hooks.pre_dispatch output goes on top of the rendered prompt,
+# byte for byte and never rendered; an empty file changes nothing; the mode stays 0600.
+reset_cfg
+printf '## Context\nfrom a hook $(touch ./pwned4) {{ISSUE}}\n---\n' > "$SANDBOX/pre.txt"
+render pm --issue 7 --preamble-file "$SANDBOX/pre.txt"
+text="$(body)"
+assert_eq "0" "$RC" "--preamble-file: exits 0"
+assert_eq '## Context
+from a hook $(touch ./pwned4) {{ISSUE}}
+---
+You are the Project Manager. Issue #7 has been CONFIRMED.' "$(printf '%s\n' "$text" | sed -n 1,4p)" "--preamble-file: the hook text is on top, verbatim, then the prompt"
+assert_file_absent "$SANDBOX/pwned4" "--preamble-file: the hook text is never evaluated"
+mode="$(python3 -I -c 'import os,sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777))' "$PF")"
+assert_eq "0o600" "$mode" "--preamble-file: the prompt file is still mode 0600"
+drop
+render pm --issue 7
+plain="$(body)"; drop
+render pm --issue 7 --preamble-file "$SANDBOX/empty.txt"
+assert_eq "$plain" "$(body)" "--preamble-file: an empty file changes nothing"
+drop
+check_stop_pre="$(bash "$TALOS" prompt pm --issue 7 --preamble-file "$SANDBOX/no-such-file")"
+assert_eq "stop reason=file-unreadable" "$check_stop_pre" "--preamble-file: an unreadable file is stop reason=file-unreadable"
 
 # ── (c) the safety lines in every prompt ──────────────────────────────────────
 reset_cfg
