@@ -305,7 +305,8 @@
 # same inputs, the same shape, no duplicated collection logic). Output, after
 # the sanitiser: `state=<JSON>` — the object the status file writes
 # ({"prs": [...], "pr_total": n, "ignored": n, "blocked": [...],
-# "queued": [...], "held": [...], "owners": [...], "capped": [...]}), one
+# "queued": [...], "held": [...], "inflight": [...], "owners": [...],
+# "capped": [...]}), one
 # line (no raw control bytes; the JSON has none). Every invalid or unreadable
 # input fails closed with a lone `stop reason=<enum>` line, no partial JSON.
 #
@@ -384,6 +385,10 @@
 #                          --pr <N>; the absence of one (or BLOCKED:) is BLOCKED
 #          planner         no verdict; the sub-issues the agent created are its
 #                          work -- one `done` per run (no pass/fail verdict)
+#          docs            no verdict: docs takes none (like pm and planner;
+#                          #519 -- docs was absent from the verdict reading,
+#                          so a docs dispatch failed the run after the agent
+#                          had already run)
 #        Then `done <role> ... --summary-file -` (the final message on stdin),
 #        and the `next=` line of `done` decides what follows: `continue` loops,
 #        `stop` moves on, a `fix-round` runs `gate fix-round` (the verb's
@@ -410,6 +415,23 @@
 #        relayed 75/69 provider contract) stops the run with
 #        `run=stopped reason=dispatch-failed role=<role>` after the `done`
 #        BLOCKED bookkeeping -- the issue is left free for the next run.
+#        The in-flight fallback (#519): when an untargeted run's `next`
+#        answers `action=wait`, the pass works the collect's `inflight` list
+#        -- issues mid-state-machine (pipeline:confirmed, pipeline:dev or
+#        pipeline:epic-decomposed), not queued, not blocked or needs-owner,
+#        and never an issue that already has an open pipeline PR (the PR side
+#        owns that work) -- with one `next --issue` each. A dispatch or merge
+#        answer executes through the same branches as any other pass (the
+#        loop's single executor: `gate merge`, merge-pr, post-merge); an
+#        in-flight issue that is itself waiting moves to the next in-flight
+#        issue, an `action=ask-owner` ends the run clean, and an exhausted
+#        (or empty) list ends it on the last wait, exit 0 -- the ready queue
+#        is never re-walked. The list is read once before the first pass,
+#        straight from pipeline-status-file.sh `collect` (a `talos.sh state`
+#        value would pass the sanitiser's 8192-char emit cap); a read that is
+#        not collect JSON is `warn reason=inflight-unreadable` and leaves the
+#        fallback unused, never a silent queue walk. A targeted `--issue` run
+#        never reads it.
 #        One `info run` notice per pass carries the action; nothing else is
 #        printed. Stderr carries the child relay lines only.
 #
@@ -417,6 +439,7 @@
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
 #   warn: notify-failed board-failed spend-upsert-failed lease-release-failed
 #         model-invalid label-failed comment-failed budget-check-failed
+#         inflight-unreadable
 #
 # Lease ledger (#470, AC4): `next` acquires the issue's lease
 # (<git common dir>/talos-lease.ledger, pipeline-lock.sh) before answering
@@ -2845,7 +2868,7 @@ _run_verdict() {
   local _role="$1" _f="$2" _w _v _line
   [ -f "$_f" ] && [ -r "$_f" ] || return 1
   case "$_role" in
-    pm | planner)
+    pm | planner | docs)
       printf none; return 0 ;;
     developer)
       # The convention: "PR URL + what was implemented". A pull/<N> URL (or a
@@ -2899,9 +2922,10 @@ _run_agent() {
 # ── run: the loop (#472) ─────────────────────────────────────────────────────
 # One pass = `next` (the one call the playbook's Step 2 was), the act branch,
 # `done` (the one bookkeeping write). The loop ends on wait/ask-owner, a gate
-# verdict that is not merge, the first-pass stop rules, or the pass cap.
+# verdict that is not merge, the first-pass stop rules, or the pass cap; an
+# untargeted drained-queue wait first works the in-flight issues (#519).
 _talos_run_loop() {
-  local _issue="" _max=20 _iter=0 _act _r _rc _pr _n
+  local _issue="" _max=20 _iter=0 _act _r _rc _pr _n _inflight_list _state_json _next_issue
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --issue) _issue="${2:-}"; shift 2 ;;
@@ -2927,6 +2951,31 @@ _talos_run_loop() {
   _r="$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" resolve 2>/dev/null)"
   [ "$_r" = "true" ] && _RUN_DRAFT=1 || _RUN_DRAFT=0
 
+  # The in-flight issues (mid-flight label states), from the collect's
+  # `inflight`: read once, straight from `collect`'s stdout the way `next`
+  # reads it -- `talos.sh state` passes the JSON through the sanitiser's
+  # 8192-char emit cap, where a `[truncated]` tail silently disabled this
+  # fallback (#519 review, finding 3). An issue whose read shows an open
+  # pipeline PR is dropped by this gate, and the collect excludes it too:
+  # `next --issue` on such an issue skips adoption (it is queued-only) and
+  # answers a developer fix round, so a stale pipeline:dev beside an open
+  # PR re-dispatched an implementer on every drained run (#519 review,
+  # finding 1). A drained-queue pass works the survivors before it stops;
+  # an empty list ends the run at its first wait -- never a second,
+  # untargeted ready-queue walk (finding 2). An unreadable read is said
+  # (`warn reason=inflight-unreadable`), never silently inert. Untargeted
+  # runs only: a targeted run never uses this list.
+  _inflight_list=""
+  if [ -z "$_issue" ]; then
+    _state_json="$(bash "$SCRIPT_DIR"/pipeline-status-file.sh collect 2>/dev/null)"
+    case "$_state_json" in
+      '{'*'}')
+        _inflight_list="$(printf '%s' "$_state_json" | python3 -I -c 'import json,sys; d=json.load(sys.stdin); open_prs=set(p.get("issue") for p in (d.get("prs") or []) if isinstance(p, dict)); print(" ".join(str(n) for n in (d.get("inflight") or []) if n not in open_prs))' 2>/dev/null)" \
+          || _talos_warn inflight-unreadable ;;
+      *) _talos_warn inflight-unreadable ;;
+    esac
+  fi
+
   while [ "$_iter" -lt "$_max" ]; do
     _iter=$((_iter + 1))
     if [ -n "$_issue" ]; then
@@ -2942,7 +2991,35 @@ _talos_run_loop() {
       "action=ask-owner"*)
         _talos_emit stop "$_act"; _talos_flush; exit 0 ;;
       "action=wait reason="*)
-        _talos_emit stop "$_act"; _talos_flush; exit 0 ;;
+        # The queue drained (or the issue is lease-held): work the in-flight
+        # issues, one `next --issue` at a time, until one answers with an
+        # action. An in-flight issue that is itself waiting moves to the
+        # NEXT one (#519 review: a held lease on one issue must not end a
+        # pass that has other in-flight work); `action=ask-owner` ends the
+        # run clean, as at the head of the loop. The shapes are the outer
+        # loop's, exactly, and a dispatch or merge answer falls through to
+        # the single executor below -- an in-flight merge runs the outer
+        # `gate merge` branch, there is no second (swallowing) one (#519
+        # review, finding 4). An empty or drained list ends the run on the
+        # last wait, clean; the ready queue is never re-walked.
+        while [ -n "$_inflight_list" ]; do
+          _next_issue="${_inflight_list%% *}"
+          _inflight_list="${_inflight_list#* }"
+          [ "$_next_issue" = "$_inflight_list" ] && _inflight_list=""
+          _act="$(bash "$SCRIPT_DIR"/talos.sh next --issue "$_next_issue" 2>/dev/null)"
+          case "$_act" in
+            "action=dispatch stage="*" issue="*|"action=dispatch stage="*" pr="*" issue="*|"action=merge pr="*" issue="*)
+              break ;;
+            "action=wait reason="*) continue ;;
+            "action=ask-owner"*)
+              _talos_emit stop "$_act"; _talos_flush; exit 0 ;;
+            "stop reason="*) _talos_stop "${_act#stop reason=}" ;;
+            *) _talos_stop state-unavailable ;;
+          esac
+        done
+        case "$_act" in
+          "action=wait reason="*) _talos_emit stop "$_act"; _talos_flush; exit 0 ;;
+        esac ;;
       "stop reason="*)
         # A state-read failure (`next`'s own stop): not a clean end.
         _talos_stop "${_act#stop reason=}" ;;
