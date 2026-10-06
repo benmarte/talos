@@ -731,7 +731,7 @@ scratch directory.
 without an orchestrator session:
 
 ```bash
-bash scripts/talos.sh run                      # every queued issue + open PR
+bash scripts/talos.sh run                      # every queued or in-flight issue + open PR
 bash scripts/talos.sh run --issue 42           # one issue
 bash scripts/talos.sh run --max-iterations 50  # raise the dispatch cap (20)
 ```
@@ -739,8 +739,12 @@ bash scripts/talos.sh run --max-iterations 50  # raise the dispatch cap (20)
 `run` loops `talos.sh next`, renders each stage's prompt with `talos.sh
 prompt`, dispatches it through `pipeline-agent.sh` (the configured
 `agents.runner`, with `agents.fallback` failover), and does the end-of-stage
-bookkeeping through `talos.sh done` — no LLM calls from Talos itself. It
-stops clean (exit 0) on any `stop`/`ask-owner`/`wait` answer, including
+bookkeeping through `talos.sh done` — no LLM calls from Talos itself. When
+the ready queue drains, a `wait` answer falls through to the in-flight issues
+(#519): one `next --issue` per issue mid-state-machine (`pipeline:confirmed`,
+`pipeline:dev` or `pipeline:epic-decomposed`), dispatching whatever it finds;
+an in-flight issue that is itself waiting ends the run. It stops clean
+(exit 0) on any remaining `stop`/`ask-owner`/`wait` answer, including
 `reason=lease` (another run holds the issue's lease) and
 `reason=iterations-exhausted max=<n>` at the dispatch cap; a failed state
 read exits non-zero. Re-run `run` to resume: the lease ledger and the #419
