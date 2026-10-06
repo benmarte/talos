@@ -742,8 +742,9 @@ prompt`, dispatches it through `pipeline-agent.sh` (the configured
 bookkeeping through `talos.sh done` — no LLM calls from Talos itself. When
 the ready queue drains, a `wait` answer falls through to the in-flight issues
 (#519): one `next --issue` per issue mid-state-machine (`pipeline:confirmed`,
-`pipeline:dev` or `pipeline:epic-decomposed`), dispatching whatever it finds;
-an in-flight issue that is itself waiting ends the run. It stops clean
+`pipeline:dev` or `pipeline:epic-decomposed`) that has no open pipeline PR,
+dispatching whatever it finds; an in-flight issue that is itself waiting
+moves to the next one, and the run ends once the in-flight list is spent. It stops clean
 (exit 0) on any remaining `stop`/`ask-owner`/`wait` answer, including
 `reason=lease` (another run holds the issue's lease) and
 `reason=iterations-exhausted max=<n>` at the dispatch cap; a failed state

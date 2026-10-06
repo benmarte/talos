@@ -17,6 +17,13 @@
 #             reads and the same object the Resume block is built from (read
 #             verbs only). `talos.sh state` consumes it; no worktree, commit,
 #             push or label, and status.enabled is ignored (the caller gates).
+#             The JSON also carries `inflight` (#519): the issues `talos.sh
+#             run` resumes mid-state-machine -- labelled `pipeline:confirmed`,
+#             `pipeline:dev` or `pipeline:epic-decomposed`, not in `queued`,
+#             not blocked or needs-owner, and with no open pipeline PR (an
+#             issue's PR makes the PR side the owner of that work; a stale
+#             pipeline:dev beside an open PR must never re-dispatch a
+#             developer).
 #   init      Create status.file in the current working tree with a title, a
 #             one-line "resume with any LLM" note, the status.resume_heading
 #             section and the status.log_heading section. An existing file is
@@ -867,9 +874,18 @@ def collect():
     held = [n for n in queued if NEEDS_OWNER_LABEL in issues[n]]
     # In-flight: mid-flight label states a `talos.sh run` pass resumes via
     # `next --issue <N>` (the issue-side routing, #471). Not in `queued`:
-    # their next stage never comes from the ready filter.
+    # their next stage never comes from the ready filter. And never an issue
+    # that already has an open pipeline PR (`pr_issues`, the same `eligible`
+    # listing adoption consults): that work is implemented and the PR side
+    # owns it -- a stale pipeline:dev beside an open PR would put every
+    # drained run through `next --issue`, which skips adoption for a
+    # not-queued issue and answers a developer fix round, re-dispatching an
+    # implementer onto finished work until max_fix_attempts tripped the run
+    # to exit 1 (#519 review, finding 1).
+    pr_issues = set(issue for (_, _, issue) in eligible)
     inflight = sorted(n for n in issues
-                      if n not in queued and not (issues[n] & {BLOCKED_LABEL, NEEDS_OWNER_LABEL})
+                      if n not in queued and n not in pr_issues
+                      and not (issues[n] & {BLOCKED_LABEL, NEEDS_OWNER_LABEL})
                       and (issues[n] & INFLIGHT_LABELS))
 
     # Look up only the PRs the block will show (lowest numbers): the line cap
