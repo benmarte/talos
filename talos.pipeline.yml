@@ -1,0 +1,17 @@
+# dogfood config: mlx-serve via pi, no board
+agents:
+  runner: pi
+  roles:
+    validator: { model: "mlx-serve/ddalcu/Qwen3.8-Flash-Next-MLX-Serve-mixed-4-8bit" }
+    pm:        { model: "mlx-serve/ddalcu/Qwen3.8-Flash-Next-MLX-Serve-mixed-4-8bit" }
+    developer: { model: "mlx-serve/ddalcu/Qwen3.8-Flash-Next-MLX-Serve-mixed-4-8bit" }
+    qa:        { model: "mlx-serve/ddalcu/Qwen3.8-Flash-Next-MLX-Serve-mixed-4-8bit" }
+    reviewer:  { model: "mlx-serve/ddalcu/Qwen3.8-Flash-Next-MLX-Serve-mixed-4-8bit" }
+    security:  { model: "mlx-serve/ddalcu/Qwen3.8-Flash-Next-MLX-Serve-mixed-4-8bit" }
+    docs:      { model: "mlx-serve/ddalcu/Qwen3.8-Flash-Next-MLX-Serve-mixed-4-8bit" }
+board:
+  enabled: false
+issues:
+  max_parallel: 1
+verify:
+  qa_mode: ci
