@@ -727,6 +727,27 @@ scratch directory.
    `bash ~/.talos/scripts/pipeline-status.sh --dry-run <n> "In progress"`
    style commands manually.
 
+**No-LLM driver (`talos.sh run`, #472):** the pipeline also drives itself
+without an orchestrator session:
+
+```bash
+bash scripts/talos.sh run                      # every queued issue + open PR
+bash scripts/talos.sh run --issue 42           # one issue
+bash scripts/talos.sh run --max-iterations 50  # raise the dispatch cap (20)
+```
+
+`run` loops `talos.sh next`, renders each stage's prompt with `talos.sh
+prompt`, dispatches it through `pipeline-agent.sh` (the configured
+`agents.runner`, with `agents.fallback` failover), and does the end-of-stage
+bookkeeping through `talos.sh done` — no LLM calls from Talos itself. It
+stops clean (exit 0) on any `stop`/`ask-owner`/`wait` answer, including
+`reason=lease` (another run holds the issue's lease) and
+`reason=iterations-exhausted max=<n>` at the dispatch cap; a failed state
+read exits non-zero. Re-run `run` to resume: the lease ledger and the #419
+handoff files carry the state. `.claude/commands/pipeline-tick.md` (the
+event-driven tick) is SUPERSEDED by `run`/`next` — kept only as reference,
+see its own banner.
+
 **Human-merge mode:** set `merge.auto: false` in `talos.pipeline.yml` to run the
 full pipeline but leave the final merge to a human. Every gate still applies —
 approval labels, forbidden-files check, green CI — but instead of merging, the
