@@ -680,6 +680,12 @@ if mode == 'verify':
 # `refresh` splices it into the status file and lists the file in the manifest.
 BLOCKED_LABEL = 'pipeline:blocked'
 READY_LABEL = 'pipeline:ready'
+DEV_LABEL = 'pipeline:dev'
+CONFIRMED_LABEL = 'pipeline:confirmed'
+EPIC_DECOMPOSED_LABEL = 'pipeline:epic-decomposed'
+# The issues a `talos.sh run` pass drives past `ready`: the label state
+# machine's mid-flight stages (their next stage comes from `next`'s routing).
+INFLIGHT_LABELS = frozenset((CONFIRMED_LABEL, DEV_LABEL, EPIC_DECOMPOSED_LABEL))
 BRANCH_RE = re.compile(r'^(?:fix|feat)/issue-([0-9]{1,9})(?:-|\Z)')
 STALE_RE = re.compile(r'^stale role=([a-z]+) label=')
 SHA_RE = re.compile(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})\Z')
@@ -859,6 +865,12 @@ def collect():
                     key=lambda n: (min([PRIORITY[l] for l in issues[n] if l in PRIORITY] or [3]), n))
     # Ready AND waiting on the owner: listed as queued, never offered as `start`.
     held = [n for n in queued if NEEDS_OWNER_LABEL in issues[n]]
+    # In-flight: mid-flight label states a `talos.sh run` pass resumes via
+    # `next --issue <N>` (the issue-side routing, #471). Not in `queued`:
+    # their next stage never comes from the ready filter.
+    inflight = sorted(n for n in issues
+                      if n not in queued and not (issues[n] & {BLOCKED_LABEL, NEEDS_OWNER_LABEL})
+                      and (issues[n] & INFLIGHT_LABELS))
 
     # Look up only the PRs the block will show (lowest numbers): the line cap
     # decides this BEFORE the per-PR reads, so 300 PRs cost the same as 40.
@@ -891,6 +903,7 @@ def collect():
                     'stage': next_stage(n, labels, issue_labels, enabled)})
     write_text(opts['out'], json.dumps({'prs': prs, 'pr_total': len(eligible), 'ignored': ignored,
                                         'blocked': blocked, 'queued': queued, 'held': held,
+                                        'inflight': inflight,
                                         'owners': owners, 'capped': capped}))
 
 

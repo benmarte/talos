@@ -2845,7 +2845,7 @@ _run_verdict() {
   local _role="$1" _f="$2" _w _v _line
   [ -f "$_f" ] && [ -r "$_f" ] || return 1
   case "$_role" in
-    pm | planner)
+    pm | planner | docs)
       printf none; return 0 ;;
     developer)
       # The convention: "PR URL + what was implemented". A pull/<N> URL (or a
@@ -2927,6 +2927,18 @@ _talos_run_loop() {
   _r="$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" resolve 2>/dev/null)"
   [ "$_r" = "true" ] && _RUN_DRAFT=1 || _RUN_DRAFT=0
 
+  # The in-flight issues (mid-flight label states), from the collect's state:
+  # read once; a pass that drained the ready queue works through them before
+  # it stops. [ -z "$_issue" ] runs: a targeted run never uses this list.
+  _inflight_list=""
+  if [ -z "$_issue" ]; then
+    _state_json="$(bash "$SCRIPT_DIR"/talos.sh state 2>/dev/null | sed -n 's/^state=//p' | head -n 1)"
+    case "$_state_json" in
+      '{'*'}') _inflight_list="$(printf '%s' "$_state_json" | python3 -I -c 'import json,sys; print(" ".join(str(n) for n in (json.load(sys.stdin).get("inflight") or [])))' 2>/dev/null)" ;;
+    esac
+    [ -n "$_inflight_list" ] || _inflight_list=" "
+  fi
+
   while [ "$_iter" -lt "$_max" ]; do
     _iter=$((_iter + 1))
     if [ -n "$_issue" ]; then
@@ -2942,7 +2954,31 @@ _talos_run_loop() {
       "action=ask-owner"*)
         _talos_emit stop "$_act"; _talos_flush; exit 0 ;;
       "action=wait reason="*)
-        _talos_emit stop "$_act"; _talos_flush; exit 0 ;;
+        # The queue drained (or the issue is lease-held): fall through to the
+        # in-flight issues (mid-flight label states, the collect's `inflight`),
+        # one `next --issue` each; a still-waiting answer ends the run.
+        if [ -n "$_inflight_list" ]; then
+          _next_issue="${_inflight_list%% *}"
+          _inflight_list="${_inflight_list#* }"
+          [ "$_next_issue" = "$_inflight_list" ] && _inflight_list=""
+          _act="$(bash "$SCRIPT_DIR"/talos.sh next --issue "$_next_issue" 2>/dev/null)"
+          case "$_act" in
+            action=*) : ;;
+            stop\ reason=*) _talos_stop "${_act#stop reason=}" ;;
+            *) _talos_stop state-unavailable ;;
+          esac
+          _RUN_ACT="${_act#action=}"
+          case "$_RUN_ACT" in
+            dispatch\ stage=*) _talos_run_dispatch "$_RUN_ACT"; continue ;;
+            merge\ pr=*) : ;;
+            *)
+              # The in-flight issue waits too: in-flight only (not the queue),
+              # so this run is done with it either way.
+              _talos_emit stop "$_act"; _talos_flush; exit 0 ;;
+          esac
+        else
+          _talos_emit stop "$_act"; _talos_flush; exit 0
+        fi ;;
       "stop reason="*)
         # A state-read failure (`next`'s own stop): not a clean end.
         _talos_stop "${_act#stop reason=}" ;;
