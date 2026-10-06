@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # talos-status.sh -- the shared status-line renderer (#385, part of #334).
 # One offline command any tool's status line can call. It reads the local
-# .talos/events.jsonl audit log, makes no network or VCS call and costs no
+# events log (<git common dir>/talos/events.jsonl by default, #517), makes no network or VCS call and costs no
 # model tokens.
 #
 # Usage: talos-status.sh --line    [--format a,b,c] [--style compact|full|minimal] [--width N]
@@ -84,15 +84,16 @@
 # Colour: always (config), or auto when stdout is a TTY and NO_COLOR is unset
 # or empty. Only the stage mark and the budget segment are coloured.
 #
-# Log: <main repo root>/<events.path>, default .talos/events.jsonl, the root
-# found through `git rev-parse --git-common-dir` (so a linked worktree and a
+# Log: <git common dir>/<events.path>, default talos/events.jsonl (#517:
+# the run state lives outside every git tree; the common dir is found through
+# `git rev-parse --git-common-dir`, so a linked worktree and a
 # subdirectory both work). `events.path` is read in-process from the project
 # config (the file pipeline-config.sh would use: $PIPELINE_CONFIG, else the first
 # of talos.pipeline.yml/.yaml/.json ... in the git toplevel), and only when that
 # file mentions `events`; JSON, or a top-level `events:` section with a `path:`
 # line in YAML. The path comes from a possibly untrusted repo, so an absolute
-# path, a `..` that leaves the root, a log that is a symlink, or one whose real
-# location leaves the root means no log: nothing is printed.
+# path, a `..` that leaves the common dir, a log that is a symlink, or one whose
+# real location leaves the common dir means no log: nothing is printed.
 #
 # Bounded work (a status line redraws constantly and the repo is untrusted):
 # the log is opened with O_NOFOLLOW and O_NONBLOCK, must be a regular file of
@@ -432,25 +433,27 @@ def configured_events_path(data):
 
 
 def events_log_path(base):
-    """The log path under the main repo root, or None. `events.path` (default
-    .talos/events.jsonl) is relative to the root; it comes from the repo's
-    config, so an absolute path, a `..` that leaves the root and a real location
-    outside the root are all refused."""
-    root = os.path.dirname(common_dir)
-    rel = ".talos/events.jsonl"
+    """The log path under the git common dir, or None. `events.path` (default
+    talos/events.jsonl) is relative to the git common dir (#517 -- the run
+    state lives outside every git tree, unlike the old <repo-root>/.talos/
+    default); it comes from the repo's config, so an absolute path, a `..`
+    that leaves the common dir and a real location outside it are all
+    refused."""
+    root = common_dir
+    rel = "talos/events.jsonl"
     data = project_config(base)
     if data is not None and b"events" in data:
         rel = configured_events_path(data) or rel
     if "\0" in rel or os.path.isabs(rel):
-        dbg("events.path must be relative to the repository root")
+        dbg("events.path must be relative to the git common dir")
         return None
     norm = os.path.normpath(rel)
     if norm == ".." or norm.startswith(".." + os.sep):
-        dbg("events.path leaves the repository root")
+        dbg("events.path leaves the git common dir")
         return None
     path = os.path.join(root, norm)
     if not os.path.realpath(path).startswith(os.path.realpath(root) + os.sep):
-        dbg("the events log resolves outside the repository root")
+        dbg("the events log resolves outside the git common dir")
         return None
     return path
 

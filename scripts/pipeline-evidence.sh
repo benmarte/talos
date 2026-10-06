@@ -230,6 +230,17 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CFG_SH="$SCRIPT_DIR/pipeline-config.sh"
 
+# _talos_ignore_in_tree (#517): the evidence dir (evidence.dir, default
+# .talos/evidence) deliberately stays in-tree -- self-ignore .talos/ via
+# info/exclude before the first creation, never via a tracked .gitignore
+# commit. Hard dependency, the same fail-closed pattern as the cfg cache.
+if [ -f "$SCRIPT_DIR/pipeline-paths.sh" ]; then
+  . "$SCRIPT_DIR/pipeline-paths.sh"
+else
+  echo "talos: pipeline-paths.sh missing; reinstall Talos" >&2
+  exit 1
+fi
+
 usage() {
   echo "Usage: pipeline-evidence.sh capture | collect <dir> [--since <epoch>] [--stage <dir>] | upload <pr> [--since <epoch>] [--dry-run] | attach <pr> [--since <epoch>] [--dry-run] | dir | enabled | check-url <pr>" >&2
   exit 2
@@ -368,6 +379,9 @@ TALOS_CAPTURE_PY_Hq2Vn8Rt4Wx
 cmd_capture() {
   [ $# -eq 0 ] || usage
   _enter_toplevel
+  # #517: capture is where evidence.command first writes under
+  # evidence.dir (.talos/evidence, in-tree) -- make it self-ignoring.
+  _talos_ignore_in_tree "$TOPLEVEL"
   local command timeout_ms since log rc
   command="$(cfg evidence.command)"
   case "$command" in
@@ -1077,6 +1091,9 @@ cmd_attach() {
   done
   case "$pr" in ''|*[!0-9]*) echo "pipeline-evidence: attach needs a PR number (digits only)" >&2; usage ;; esac
   _enter_toplevel
+  # #517: an agent may have written evidence.dir by itself (capture
+  # skipped) -- the ignore guard is idempotent, so run it here too.
+  _talos_ignore_in_tree "$TOPLEVEL"
 
   # 1. gate, before anything that can run a command or call a provider
   _evidence_enabled || {

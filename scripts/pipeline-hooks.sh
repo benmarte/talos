@@ -32,11 +32,13 @@
 #   events.enabled       whether every post_stage payload is also appended,
 #                        as one JSON line, to the local events log (#183).
 #                        Default: true.
-#   events.path          path to the events log, relative to the MAIN
-#                        repository root (resolved via `git rev-parse
-#                        --git-common-dir`, so every linked worktree of the
-#                        same repo appends to the one file) unless already
-#                        absolute. Default: ".talos/events.jsonl". Read with
+#   events.path          path to the events log, relative to the GIT COMMON
+#                        dir (`git rev-parse --git-common-dir`, so every
+#                        linked worktree of the same repo appends to the one
+#                        file and the log sits outside every git tree, #517)
+#                        unless already absolute. Default:
+#                        "talos/events.jsonl" -- the canonical run-state
+#                        directory from scripts/pipeline-paths.sh. Read with
 #                        scripts/pipeline-events.sh.
 #
 # Contract (mirrors pipeline-notify.sh): NEVER blocks the pipeline. A
@@ -99,6 +101,17 @@ else
   exit 1
 fi
 
+# _talos_state_dir (#517): the one canonical resolver for the run-state
+# directory that roots events.path. Hard dependency, the same fail-closed
+# pattern as pipeline-cfg-cache.sh above -- without it the log would be back
+# inside the git tree (the #517 dogfood bug).
+if [ -f "$SCRIPT_DIR/pipeline-paths.sh" ]; then
+  . "$SCRIPT_DIR/pipeline-paths.sh"
+else
+  echo "talos: pipeline-paths.sh missing; reinstall Talos" >&2
+  exit 1
+fi
+
 # ── Shared helpers (pre_dispatch and post_stage both use these) ────────────
 
 # _hooks_timeout_s -> prints hooks.timeout_s, validated.
@@ -121,31 +134,27 @@ _hooks_timeout_s() {
 # _events_log_path -> prints the absolute path to the events.jsonl log, or
 # nothing (rc 1) if it can't be resolved (not a git repo, etc).
 #
-# Resolved via `git rev-parse --git-common-dir`, NOT --git-dir: the common
-# dir is shared by every linked worktree of a repo (git-common-dir(5)), so a
-# developer/QA/reviewer stage running from inside a per-issue worktree still
-# appends to the one log file at the main repository's root -- never a
-# worktree-local copy. --git-common-dir can print a path relative to the
-# caller's cwd (e.g. ".git" from the main repo, "../../.git" from a linked
-# worktree two levels down), so it's resolved to absolute here before use;
-# events.path (default ".talos/events.jsonl") is then joined onto that
-# resolved root when it isn't already absolute.
+# Relative events.path values (the default "talos/events.jsonl") resolve
+# against the GIT COMMON dir (#517): the log lives at
+# <git-common-dir>/talos/events.jsonl, shared by every linked worktree of the
+# repo and OUTSIDE every git tree -- a stage's `git add -A` can never commit
+# it (the pre-#517 <repo-root>/.talos/ default was inside the tree in a
+# normal clone). --git-common-dir can print a path relative to the caller's
+# cwd (e.g. ".git" from the main repo, "../../.git" from a linked worktree
+# two levels down), so it is resolved to an absolute physical path here
+# (pwd -P). An absolute events.path is used as-is and needs no repository.
+# The same resolution is mirrored deliberately in scripts/pipeline-events.sh
+# and talos-status.sh's status line; pipeline-worktree.sh's handoff uses
+# _talos_state_dir itself.
 _events_log_path() {
-  local common_dir root path_cfg
-  common_dir="$(git rev-parse --git-common-dir 2>/dev/null)" || return 1
-  [ -n "$common_dir" ] || return 1
-  case "$common_dir" in
-    /*) : ;;
-    *) common_dir="$(cd "$(dirname "$common_dir")" 2>/dev/null && pwd)/$(basename "$common_dir")" ;;
-  esac
-  [ -n "$common_dir" ] || return 1
-  root="$(dirname "$common_dir")"
-
+  local path_cfg state
   path_cfg="$(cfg events.path)"
   case "$path_cfg" in
-    /*) printf '%s' "$path_cfg" ;;
-    *) printf '%s/%s' "$root" "$path_cfg" ;;
+    /*) printf '%s' "$path_cfg"; return 0 ;;
+    '') return 1 ;;
   esac
+  state="$(_talos_state_dir)" || return 1
+  printf '%s/%s' "$(dirname "$state")" "$path_cfg"
 }
 
 # _events_append <json_line> -- appends one JSON object, as a single line, to

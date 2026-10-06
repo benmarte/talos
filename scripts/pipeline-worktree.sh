@@ -124,9 +124,10 @@
 #                           line when it is absent, invalid or stale. Read-only,
 #                           works from any directory of the repo.
 #
-# The handoff lives at <repo-root>/.talos/handoff/<N>.json (repo-root is the
-# parent of the git-common-dir, like the events log): mode 0600 in a 0700
-# directory, outside every git tree, never staged or pushed, this machine only.
+# The handoff lives at <git common dir>/talos/handoff/<N>.json (the #517
+# relocation: the old <repo-root>/.talos/ path IS inside the tree in a normal
+# clone): mode 0600 in a 0700 directory, outside every git tree, never staged
+# or pushed, this machine only.
 # It is size-capped (8 KiB) and schema-checked, and a value that looks like a
 # credential, or contains the value of a *TOKEN*/*KEY*/*SECRET*/*PASSWORD*
 # environment variable, is rejected, never redacted. `sweep` leaves it;
@@ -148,6 +149,17 @@ if [ -f "$SCRIPT_DIR/pipeline-cfg-cache.sh" ]; then
   . "$SCRIPT_DIR/pipeline-cfg-cache.sh"
 else
   echo "talos: pipeline-cfg-cache.sh missing; reinstall Talos" >&2
+  exit 1
+fi
+
+# _talos_state_dir / _talos_ignore_in_tree (#517): the one canonical
+# resolvers in pipeline-paths.sh -- the handoff location and the .talos/
+# self-ignore rule. Hard dependency, the same fail-closed pattern as
+# pipeline-cfg-cache.sh above.
+if [ -f "$SCRIPT_DIR/pipeline-paths.sh" ]; then
+  . "$SCRIPT_DIR/pipeline-paths.sh"
+else
+  echo "talos: pipeline-paths.sh missing; reinstall Talos" >&2
   exit 1
 fi
 # pipeline-lock.sh (#180): `git worktree add/remove` races on the same
@@ -707,6 +719,10 @@ _wt_tag_body() {
     echo "pipeline-worktree: tag: not inside a git worktree" >&2
     exit 1
   }
+  # #517: .talos/env is deliberately in-tree (the #186 race rationale at
+  # :687) -- self-ignore it via info/exclude BEFORE the first write, never
+  # via a tracked .gitignore commit.
+  _talos_ignore_in_tree "$toplevel"
   mkdir -p "$toplevel/.talos"
   # Same plain KEY=value format as `create` writes (#186) -- parsed by the
   # reader, never `source`d. Overwriting on every call is what makes this
@@ -763,6 +779,10 @@ _wt_create_body() {
     echo "pipeline-worktree: create: git worktree add failed for branch $branch off $base" >&2
     exit 1
   fi
+  # #517: the per-worktree .talos/env is deliberately in-tree -- self-ignore
+  # .talos/ via info/exclude BEFORE the first write, never via a tracked
+  # .gitignore commit, so a stage's git add -A can never commit it.
+  _talos_ignore_in_tree "$wt_path"
   mkdir -p "$wt_path/.talos"
   # Plain KEY=value lines, raw value, no shell quoting. This file is PARSED
   # by pipeline-verify.sh's reader, never `source`d, so it is safe even when
@@ -778,12 +798,15 @@ _wt_create_body() {
 }
 
 # ── #419: checkpoint / handoff ───────────────────────────────────────────────
-# <repo-root>/.talos/handoff, from any directory of the repo. Outside every git
-# tree and shared by all worktrees; `sweep` deletes worktrees, never this.
+# The handoff directory: <git common dir>/talos/handoff, from any directory
+# of the repo (#517: it used to be <repo-root>/.talos/handoff, which IS
+# inside the tree in a normal clone -- the dogfood finding #4 bug). Outside
+# every git tree and shared by all worktrees; `sweep` deletes worktrees,
+# never this.
 _wt_handoff_dir() {
-  local root
-  root="$(_wt_main_worktree_path_for '.')" || return 1
-  printf '%s/.talos/handoff' "$root"
+  local state
+  state="$(_talos_state_dir)" || return 1
+  printf '%s/handoff' "$state"
 }
 
 # The one validator for a handoff, used on write AND on read. Never echoes a
@@ -1023,7 +1046,7 @@ _wt_checkpoint_body() {
     exit 1
   fi
   top="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "pipeline-worktree: checkpoint: not inside a git worktree" >&2; exit 1; }
-  hdir="$(_wt_handoff_dir)" || { echo "pipeline-worktree: checkpoint: cannot resolve the repo root" >&2; exit 1; }
+  hdir="$(_wt_handoff_dir)" || { echo "pipeline-worktree: checkpoint: cannot resolve the run-state directory" >&2; exit 1; }
   _WT_CP_INPUT="$(_wt_read_stdin)"
   cd "$top" || exit 1
   git add -A || { echo "pipeline-worktree: checkpoint: git add failed" >&2; exit 1; }

@@ -193,7 +193,7 @@ hooks.pre_dispatch	str		-	-	any
 hooks.post_stage	str		-	-	any
 hooks.timeout_s	int	30	-	-	any
 events.enabled	bool	true	-	-	any
-events.path	path	.talos/events.jsonl	-	-	any
+events.path	path	talos/events.jsonl	-	-	any
 evidence.enabled	bool	false	-	-	any
 evidence.command	str		-	-	repo
 evidence.dir	path	.talos/evidence	-	-	any
