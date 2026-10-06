@@ -288,6 +288,14 @@ Then open a Claude Code session in your repo and run:
 /talos:pipeline
 ```
 
+**No-LLM driver**: `bash scripts/talos.sh run` loops `talos.sh next` and dispatches each stage through
+`pipeline-agent.sh` itself — no orchestrator session, no LLM calls from Talos; the role prompts still
+run through the runner `agents.runner` names (`agents.fallback` failover applies). `--issue <N>` scopes
+it to one issue; `--max-iterations <n>` (default 20) caps the dispatch passes; every stop/ask-owner wait
+exits clean with its `stop` line. Resume after a crash re-runs `run`: the lease ledger and the #419
+handoff files carry the state. `.claude/commands/pipeline-tick.md` is SUPERSEDED by `run`+`next` (see
+its banner); this section and `docs/user-guide.md` are the upgrade notes.
+
 ---
 
 ## Config reference

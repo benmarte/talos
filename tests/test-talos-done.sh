@@ -529,7 +529,7 @@ assert_out "sanitised spend" ""
 # gate and post-merge call them.
 direct_hooks="$(grep -n 'pipeline-hooks.sh" post_stage' "$TALOS" | grep -v '^[0-9]*:[^:]*#' || true)"
 assert_eq "1" "$(printf '%s\n' "$direct_hooks" | grep -c .)" "post_stage is run from exactly one place in talos.sh"
-assert_contains "$direct_hooks" '_talos_run hook bash "$SCRIPT_DIR/pipeline-hooks.sh" post_stage "$@"' "that place is the _talos_post_stage helper"
+assert_contains "$direct_hooks" '_talos_run_capture hook bash "$SCRIPT_DIR/pipeline-hooks.sh" post_stage "$@"' "that place is the _talos_post_stage helper"
 direct_cost="$(grep -n 'pipeline-events.sh" cost --issue' "$TALOS" || true)"
 assert_eq "2" "$(printf '%s\n' "$direct_cost" | grep -c .)" "the cost --line and --markdown calls exist once each"
 assert_eq "3" "$(sed -n '/^_talos_spend() {/,/^}/p' "$TALOS" | grep -c 'pipeline-events.sh" cost --issue\|upsert-pr-comment')" "all of them are inside _talos_spend"

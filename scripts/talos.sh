@@ -12,6 +12,7 @@
 #        talos.sh done <role> --issue <N> [--pr <M>] [--verdict <V>] --summary-file <F|-> [--draft] [...]
 #        talos.sh state
 #        talos.sh next
+#        talos.sh run [--issue <N>] [--max-iterations <n>]
 #        talos.sh help
 #
 # One script with verbs; each later slice adds a verb and deletes the playbook
@@ -368,6 +369,55 @@
 #         (exit 2 for usage; else 1)
 #   wait: draft ci human-merge blocked owner lease none dependency cap
 #
+# run    The loop of Step 2 itself (slice 8, #472): `next`, act on the one
+#        action, `done`, repeat -- with no orchestrator LLM. Every prompt is
+#        rendered by `prompt` and dispatched through `pipeline-agent.sh <role> -`
+#        with the prompt file on stdin; the verdict is read back from the
+#        stage's convention:
+#          validator, qa, reviewer, security, adversarial
+#                          the `<VERDICT>: ...` first word of the agent's final
+#                          message, checked against the role's `done` verdict
+#                          list (an unknown word is a dispatch failure, never a
+#                          verdict -- nothing is recorded)
+#          pm              no verdict: pm takes none (done without --verdict)
+#          developer       a PR URL in the final message is `PR_OPENED` with
+#                          --pr <N>; the absence of one (or BLOCKED:) is BLOCKED
+#          planner         no verdict; the sub-issues the agent created are its
+#                          work -- one `done` per run (no pass/fail verdict)
+#        Then `done <role> ... --summary-file -` (the final message on stdin),
+#        and the `next=` line of `done` decides what follows: `continue` loops,
+#        `stop` moves on, a `fix-round` runs `gate fix-round` (the verb's
+#        `blocked_by=` and `reason=` stop the run; `wait` does -- a `budget`
+#        warn line on a `redispatch` is relayed), `batch` waits for nothing
+#        here (a draft batch answers one role per action from `next`; each
+#        dispatch is its own loop pass).
+#
+#   run [--issue <N>] [--max-iterations <n>]
+#          --issue <N> pins every `next` call to the named issue (the
+#          `--issue` form). --max-iterations <n> caps the loop's passes
+#          (default 20): a safety bound, never a ceiling the config owns.
+#        The driver never merges and never writes a label of its own: on
+#        `action=merge` it runs `gate merge <pr> <issue>`; verdict=merge runs
+#        `_vcs merge-pr` then `post-merge <pr> <issue>` with the captured
+#        `ci_runs=` (a merge without it is `--ci-runs` absent), and stops the
+#        run (the next run reconciles); on verdict=wait|block|redispatch it
+#        stops (redispatch: a dispatch for the same PR follows on the next
+#        run). On `action=ask-owner` and on every `stop reason=` it stops and
+#        exits 0 after announcing the action (the stop is the answer, not a
+#        fault); a failed state read (a `stop reason=` from `next` itself)
+#        exits 1, so a caller's loop can tell the two apart. A dispatch whose
+#        prompt render or agent run fails (a non-zero exit that is not the
+#        relayed 75/69 provider contract) stops the run with
+#        `run=stopped reason=dispatch-failed role=<role>` after the `done`
+#        BLOCKED bookkeeping -- the issue is left free for the next run.
+#        One `info run` notice per pass carries the action; nothing else is
+#        printed. Stderr carries the child relay lines only.
+#
+# run-reasons: usage unknown-role unknown-pr dispatch-failed
+#   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
+#   warn: notify-failed board-failed spend-upsert-failed lease-release-failed
+#         model-invalid label-failed comment-failed budget-check-failed
+#
 # Lease ledger (#470, AC4): `next` acquires the issue's lease
 # (<git common dir>/talos-lease.ledger, pipeline-lock.sh) before answering
 # `action=dispatch|merge` — a second run on the same issue answers
@@ -573,6 +623,15 @@ verbs:
                                      max-total-dispatches|budget-exceeded,
                                      a missing provider verb stop
                                      reason=unsupported-verb:<verb>
+  run [--issue <N>] [--max-iterations <n>]
+                                     the no-LLM driver: loops `next`, dispatches
+                                     the stage through pipeline-agent.sh with the
+                                     rendered prompt on stdin, reads the verdict
+                                     from the final-message convention and calls
+                                     `done`; a merge action runs `gate merge`, then
+                                     `merge-pr` and `post-merge`; stops on
+                                     ask-owner, wait and every gate verdict that
+                                     is not merge
   help                              this text
 HELP
 }
@@ -709,11 +768,11 @@ _talos_verdict() {
 
 # _talos_cap <cmd>...: run it with stdout in _OUT, stderr in _ERR (also relayed
 # to stderr, see _talos_relay) and the exit status in _RC.
-_talos_cap() { _talos_run "${2:-}" "$@"; }
+_talos_cap() { _talos_run_capture "${2:-}" "$@"; }
 
-# _talos_run <tag> <cmd>...: _talos_cap with an explicit relay tag, for a call
+# _talos_run_capture <tag> <cmd>...: _talos_cap with an explicit relay tag, for a call
 # whose second word is not a verb (a script path).
-_talos_run() {
+_talos_run_capture() {
   local _tag="$1"
   shift
   _OUT="$("$@" 2>"$_CFG_CACHE_DIR/err")"
@@ -1193,7 +1252,7 @@ _talos_warn() { _talos_emit warn "reason=$1${2:+ $2}"; }
 # never fails; its one stderr line is relayed as a `note <key>=hook` line. stdin
 # passes through to it (--summary -).
 _talos_post_stage() {
-  _talos_run hook bash "$SCRIPT_DIR/pipeline-hooks.sh" post_stage "$@"
+  _talos_run_capture hook bash "$SCRIPT_DIR/pipeline-hooks.sh" post_stage "$@"
 }
 
 # _talos_spend <issue> [<pr>]: the spend block. The --line first (without --pr
@@ -1202,16 +1261,16 @@ _talos_post_stage() {
 # piped straight into the upsert would exit 1 on an empty one.
 _talos_spend() {
   local _n="$1" _pr="${2:-}" _sp _body
-  _talos_run spend bash "$SCRIPT_DIR/pipeline-events.sh" cost --issue "$_n" ${_pr:+--pr "$_pr"} --line
+  _talos_run_capture spend bash "$SCRIPT_DIR/pipeline-events.sh" cost --issue "$_n" ${_pr:+--pr "$_pr"} --line
   [ -z "$_OUT" ] || _talos_emit spend "$_OUT"
   [ -n "$_pr" ] || return 0
   _sp="$(cfg spend.comment)"
   if [ "$(cfg comments.enabled)" = "true" ] && [ "$_sp" != "false" ]; then
-    _talos_run spend bash "$SCRIPT_DIR/pipeline-events.sh" cost --issue "$_n" --pr "$_pr" --markdown
+    _talos_run_capture spend bash "$SCRIPT_DIR/pipeline-events.sh" cost --issue "$_n" --pr "$_pr" --markdown
     _body="$_OUT"
     if [ -n "$_body" ]; then
       printf '%s' "$_body" > "$_CFG_CACHE_DIR/spend"
-      _talos_run spend _vcs upsert-pr-comment "$_pr" --marker spend --body-file - < "$_CFG_CACHE_DIR/spend"
+      _talos_run_capture spend _vcs upsert-pr-comment "$_pr" --marker spend --body-file - < "$_CFG_CACHE_DIR/spend"
       # 2 is a provider without the verb: silent. 1 (a token that cannot post as
       # itself) is reported once and never retried.
       [ "$_RC" -ne 1 ] || _talos_warn spend-upsert-failed "issue=$_n"
@@ -1237,14 +1296,14 @@ _talos_render() {
 # the text reaching the verb in a file.
 _talos_say() {
   { printf '%s\n' "$_BODY" > "$_CFG_CACHE_DIR/body" \
-      && _talos_run comment _vcs "$1" "$2" --body-file "$_CFG_CACHE_DIR/body" ${3:+"$3"}; } \
+      && _talos_run_capture comment _vcs "$1" "$2" --body-file "$_CFG_CACHE_DIR/body" ${3:+"$3"}; } \
     && [ "$_RC" -eq 0 ]
 }
 
 # _talos_notify <args of pipeline-notify.sh>: the message is fixed words and
 # numbers; a failed relay is a warning.
 _talos_notify() {
-  _talos_run notify bash "$SCRIPT_DIR/pipeline-notify.sh" "$@"
+  _talos_run_capture notify bash "$SCRIPT_DIR/pipeline-notify.sh" "$@"
   [ "$_RC" -eq 0 ] || _talos_warn notify-failed "${_PM_ISSUE:+issue=$_PM_ISSUE}"
 }
 
@@ -1282,10 +1341,10 @@ _talos_sibling() {
       *) _talos_emit sibling "$_s action=unverified"; return 0 ;;
     esac
   fi
-  if _talos_run mergebase bash "$SCRIPT_DIR/pipeline-mergebase.sh" "$_s" && [ "$_RC" -eq 0 ]; then
+  if _talos_run_capture mergebase bash "$SCRIPT_DIR/pipeline-mergebase.sh" "$_s" && [ "$_RC" -eq 0 ]; then
     _via=mergebase
   else
-    _talos_run update-branch _vcs update-branch "$_s"
+    _talos_run_capture update-branch _vcs update-branch "$_s"
     [ "$_RC" -ne 0 ] || _via=update-branch
   fi
   if [ -n "$_via" ]; then
@@ -1352,7 +1411,7 @@ _talos_post_merge_run() {
   [ "$_heal" -eq 1 ] || _talos_siblings "$_n" "$_pr"
 
   if [ "$(cfg roles.changelog_fragments)" = "true" ]; then
-    _talos_run changelog bash "$SCRIPT_DIR/pipeline-changelog.sh" assemble
+    _talos_run_capture changelog bash "$SCRIPT_DIR/pipeline-changelog.sh" assemble
     [ "$_RC" -eq 0 ] || _talos_warn changelog-failed "issue=$_n"
   fi
 
@@ -1380,7 +1439,7 @@ _talos_post_merge_run() {
   if [ "$_known" = "1" ]; then _rc=0; else _talos_issue_open "$_n"; _rc=$?; fi
   case "$_rc" in
     0)
-      _talos_run close-issue _vcs close-issue "$_n" "closed by PR #$_pr"
+      _talos_run_capture close-issue _vcs close-issue "$_n" "closed by PR #$_pr"
       [ "$_RC" -eq 0 ] || _talos_warn close-failed "issue=$_n"
       ;;
     1) : ;;
@@ -1388,11 +1447,11 @@ _talos_post_merge_run() {
   esac
   _talos_emit recorded "$([ "$_rec" -eq 1 ] && echo yes || echo no)"
 
-  _talos_run board bash "$SCRIPT_DIR/pipeline-status.sh" "$_n" "Done"
+  _talos_run_capture board bash "$SCRIPT_DIR/pipeline-status.sh" "$_n" "Done"
   [ "$_RC" -eq 0 ] || _talos_warn board-failed "issue=$_n"
 
   if [ "$(cfg status.enabled)" = "true" ]; then
-    _talos_run status-log bash "$SCRIPT_DIR/pipeline-status-file.sh" assemble --refresh --pr "$_pr" --issue "$_n"
+    _talos_run_capture status-log bash "$SCRIPT_DIR/pipeline-status-file.sh" assemble --refresh --pr "$_pr" --issue "$_n"
     if [ "$_RC" -ne 0 ]; then
       _talos_warn status-log-failed "issue=$_n"
     else
@@ -1400,7 +1459,7 @@ _talos_post_merge_run() {
     fi
   fi
 
-  _talos_run worktree bash "$SCRIPT_DIR/pipeline-worktree.sh" remove "$_n"
+  _talos_run_capture worktree bash "$SCRIPT_DIR/pipeline-worktree.sh" remove "$_n"
   [ "$_RC" -eq 0 ] || _talos_warn worktree-remove-failed "issue=$_n"
 
   [ "$_rec" -eq 0 ] || return 0
@@ -1516,7 +1575,7 @@ _talos_sweep() {
   _PM_ISSUE=""
 
   # 4. Worktrees of issues outside this run's queue.
-  _talos_run worktree bash "$SCRIPT_DIR/pipeline-worktree.sh" sweep ${_IDS[@]+"${_IDS[@]}"}
+  _talos_run_capture worktree bash "$SCRIPT_DIR/pipeline-worktree.sh" sweep ${_IDS[@]+"${_IDS[@]}"}
   if [ "$_RC" -ne 0 ]; then
     _talos_warn worktree-sweep-failed
   else
@@ -1557,12 +1616,12 @@ _talos_sweep() {
       _talos_cap _vcs check-epic-acceptance "$_n"
       case "$_RC" in
         0)
-          _talos_run epic _vcs close-issue "$_n" "All sub-issues resolved."
+          _talos_run_capture epic _vcs close-issue "$_n" "All sub-issues resolved."
           if [ "$_RC" -ne 0 ]; then
             _talos_warn epic-close-failed "issue=$_n"
           else
             if [ "$_carried" = 1 ]; then
-              _talos_run epic _vcs label-issue "$_n" --remove pipeline:epic-children-done
+              _talos_run_capture epic _vcs label-issue "$_n" --remove pipeline:epic-children-done
               [ "$_RC" -eq 0 ] || _talos_warn epic-label-failed "issue=$_n"
             fi
             _talos_emit epic "$_n action=closed"
@@ -1575,7 +1634,7 @@ _talos_sweep() {
           else
             # The unticked items are the epic body's text: a file, never argv.
             printf '%s\n' "$_OUT" > "$_CFG_CACHE_DIR/details"
-            _talos_run epic _vcs label-issue "$_n" --add pipeline:epic-children-done
+            _talos_run_capture epic _vcs label-issue "$_n" --add pipeline:epic-children-done
             [ "$_RC" -eq 0 ] || _talos_warn epic-label-failed "issue=$_n"
             if _talos_render epic-acceptance-pending "#$_n" "" "Epic acceptance pending" \
                  "all sub-issues are closed; unticked acceptance boxes remain" "$_CFG_CACHE_DIR/details" \
@@ -1592,14 +1651,14 @@ _talos_sweep() {
     # 7. A sub-issue whose dependencies are all closed is queued.
     while read -r _k _n <&3; do
       [ "$_k" = unblock ] || continue
-      _talos_run unblock _vcs label-issue "$_n" --add pipeline:ready
+      _talos_run_capture unblock _vcs label-issue "$_n" --add pipeline:ready
       if [ "$_RC" -eq 0 ]; then _talos_emit unblocked "$_n"; else _talos_warn unblock-failed "issue=$_n"; fi
     done 3<<< "$_plan"
   fi
 
   # 8. Needs-owner: clear the answered items, never on an unverified trust set.
   if [ "$(cfg status.enabled)" = "true" ]; then
-    _talos_run needs-owner _vcs list-needs-owner --json
+    _talos_run_capture needs-owner _vcs list-needs-owner --json
     case "$_RC" in
       0)
         _e="$(python3 -I -c '
@@ -1615,7 +1674,7 @@ print(len(a), sum(1 for r in a if r.get("answered") == "yes"))
               _n=0 ;;
             *)
               if [ "$_n" -gt 0 ]; then
-                _talos_run needs-owner _vcs list-needs-owner --clear-answered
+                _talos_run_capture needs-owner _vcs list-needs-owner --clear-answered
                 [ "$_RC" -eq 0 ] || _talos_warn needs-owner-clear-failed
               fi ;;
           esac
@@ -1651,7 +1710,7 @@ _talos_summary() {
     while read -r _s _i _b <&3; do
       [ -z "$_i" ] || _keep+=("$_i")
     done 3<<< "$_prs"
-    _talos_run worktree bash "$SCRIPT_DIR/pipeline-worktree.sh" sweep ${_keep[@]+"${_keep[@]}"}
+    _talos_run_capture worktree bash "$SCRIPT_DIR/pipeline-worktree.sh" sweep ${_keep[@]+"${_keep[@]}"}
     if [ "$_RC" -ne 0 ]; then
       _talos_warn worktree-sweep-failed
     else
@@ -1663,7 +1722,7 @@ _talos_summary() {
   fi
 
   # 2. The worktree-count warning, relayed once.
-  _talos_run worktree bash "$SCRIPT_DIR/pipeline-worktree.sh" list
+  _talos_run_capture worktree bash "$SCRIPT_DIR/pipeline-worktree.sh" list
   _line="$(grep 'pipeline-worktree: WARNING:' <<< "$_OUT" | head -n 1)"
   if [ -n "$_line" ]; then
     _talos_emit worktree_warning "$_line"
@@ -1673,7 +1732,7 @@ _talos_summary() {
   # 4. The cost table: one call, one --issue per issue.
   if [ "${#_IDS[@]}" -gt 0 ]; then
     for _i in "${_IDS[@]}"; do _a+=(--issue "$_i"); done
-    _talos_run cost bash "$SCRIPT_DIR/pipeline-events.sh" cost --summary "${_a[@]}"
+    _talos_run_capture cost bash "$SCRIPT_DIR/pipeline-events.sh" cost --summary "${_a[@]}"
     if [ -n "$_OUT" ]; then
       while IFS= read -r _line || [ -n "$_line" ]; do
         _talos_emit cost "$_line"
@@ -1683,7 +1742,7 @@ _talos_summary() {
 
   # 5. The status resume block, once per run (it reads GitHub 3+N to 3+4N times).
   if [ "$(cfg status.enabled)" = "true" ]; then
-    _talos_run status-refresh bash "$SCRIPT_DIR/pipeline-status-file.sh" refresh
+    _talos_run_capture status-refresh bash "$SCRIPT_DIR/pipeline-status-file.sh" refresh
     [ "$_RC" -eq 0 ] || _talos_warn status-refresh-failed
   fi
   _talos_flush
@@ -2052,6 +2111,9 @@ _talos_lease_read() {
           _talos_lease_prune "$_f" "$_issue"
           return 0
         fi
+        # Own lease (this run's own earlier iteration, same pid): re-entrant.
+        _pid="${_ln##* pid=}"
+        [ "$_pid" = "$$" ] || [ -n "${TALOS_RUN_PID:-}" ] && [ "$_pid" = "$TALOS_RUN_PID" ] && return 0
         printf '%s' "$_ln"
         return 1 ;;
     esac
@@ -2109,7 +2171,7 @@ _talos_lease() {
     return 1
   fi
   _rc=0
-  printf 'issue=%s held=%s expires=%s pid=%s\n' "$_issue" "$_now" "$((_now + _ttl))" "$$" >> "$_f" || _rc=1
+  printf 'issue=%s held=%s expires=%s pid=%s\n' "$_issue" "$_now" "$((_now + _ttl))" "${TALOS_RUN_PID:-$$}" >> "$_f" || _rc=1
   _lock_release "$_f"
   [ "$_rc" -eq 0 ] || return 2
   return 0
@@ -2134,6 +2196,19 @@ _talos_lease_held_line() {
     esac
   done < "$_f" 2>/dev/null || return 2
   return 0
+}
+
+_talos_lease_release_run_all() {
+  [ -n "${TALOS_RUN_PID:-}" ] || return 0
+  local _f _ln _pid
+  _f="$(_talos_lease_file)" || return 0
+  [ -f "$_f" ] || return 0
+  while IFS= read -r _ln || [ -n "$_ln" ]; do
+    _pid="${_ln##* pid=}"; _pid="${_pid%% *}"
+    [ "$_pid" = "$TALOS_RUN_PID" ] || continue
+    _issue="${_ln%% *}"; _issue="${_issue#issue=}"
+    _talos_lease release "$_issue" >/dev/null 2>&1
+  done < "$_f" 2>/dev/null
 }
 
 # _talos_lease_release <issue>: the end-of-stage half of the lease (#470, AC4).
@@ -2220,12 +2295,12 @@ _talos_done() {
   # a stale approval is stripped (RESTAMP_FAIL), and under PR_DRAFT a failed QA
   # converts the PR back to a draft and drops qa:pass. Both are idempotent.
   if [ "$_role" = qa ] && [ "$_v" = FAIL ] && [ "$_draft" -eq 1 ]; then
-    _talos_run draft-pr _vcs draft-pr "$_pr"
+    _talos_run_capture draft-pr _vcs draft-pr "$_pr"
     [ "$_RC" -eq 0 ] || _talos_stop draft-pr-failed
   fi
   if [ "$_v" = RESTAMP_FAIL ] || { [ "$_role" = qa ] && [ "$_v" = FAIL ] && [ "$_draft" -eq 1 ]; }; then
     _label="$(_talos_label_of "$_role")" || _talos_stop label-failed
-    _talos_run label _vcs label-pr "$_pr" --remove "$_label"
+    _talos_run_capture label _vcs label-pr "$_pr" --remove "$_label"
     [ "$_RC" -eq 0 ] || _talos_stop label-failed
   fi
 
@@ -2251,7 +2326,7 @@ _talos_done() {
   esac
 
   if [ -n "$_col" ]; then
-    _talos_run board bash "$SCRIPT_DIR/pipeline-status.sh" "$_n" "$_col"
+    _talos_run_capture board bash "$SCRIPT_DIR/pipeline-status.sh" "$_n" "$_col"
     [ "$_RC" -eq 0 ] || _talos_warn board-failed "issue=$_n"
   fi
   _talos_notify "$_role" "#$_n" - "$_n" < "$_sum"
@@ -2310,7 +2385,7 @@ _talos_state() {
   _talos_prepare state pipeline-config.sh pipeline-cfg-cache.sh pipeline-status-file.sh \
                      pipeline-contract.sh pipeline-next-stage.py pipeline-draft-check.sh pipeline-vcs.sh
   local _json
-  _talos_run state bash "$SCRIPT_DIR/pipeline-status-file.sh" collect
+  _talos_run_capture state bash "$SCRIPT_DIR/pipeline-status-file.sh" collect
   [ "$_RC" -eq 0 ] || _talos_stop state-unavailable
   _json="$_OUT"
   case "$_json" in
@@ -2417,6 +2492,7 @@ with open(state_file) as f:
     data = json.load(f)
 prs = data.get("prs") or []
 queued = data.get("queued") or []
+qset = set(queued)
 held = set(data.get("held") or [])
 owners = data.get("owners") or []
 blocked = set(n for _, n in (data.get("blocked") or []))
@@ -2585,6 +2661,12 @@ if target:
     if n in queued and any(p.get("issue") == n for p in prs):
         adopt(n)
     labels, body, _ = view_issue(n)
+    # A not-queued issue is the collect word: still ready means the filter or
+    # the cap skipped it (a wait); past ready (confirmed/dev/epic) the labels
+    # themselves are the routing (the #471 label-parity fixtures) - and a
+    # queued issue routes by its own labels as today.
+    if n not in qset and "pipeline:ready" in labels:
+        say("wait", reason="none")
     route(n, labels, body)
 
 # The queue pick (#471, AC1): the collect queued list is already sorted
@@ -2638,7 +2720,7 @@ _talos_next() {
                      pipeline-contract.sh pipeline-next-stage.py pipeline-draft-check.sh \
                      pipeline-vcs.sh pipeline-budget.sh pipeline-lock.sh
 
-  _talos_run next bash "$SCRIPT_DIR/pipeline-status-file.sh" collect
+  _talos_run_capture next bash "$SCRIPT_DIR/pipeline-status-file.sh" collect
   [ "$_RC" -eq 0 ] || _talos_stop state-unavailable
   printf '%s' "$_OUT" > "$_CFG_CACHE_DIR/state.json"
 
@@ -2722,7 +2804,11 @@ _talos_lease_live_count() {
   while IFS= read -r _ln || [ -n "$_ln" ]; do
     _exp="${_ln##* expires=}"; _exp="${_exp%% *}"
     case "$_exp" in ''|*[!0-9]*) continue ;; esac
-    [ "$_exp" -gt "$_now" ] && _c=$((_c + 1))
+    [ "$_exp" -gt "$_now" ] || continue
+    _ln_pid="${_ln##* pid=}"; _ln_pid="${_ln_pid%% *}"
+    # Another run's dispatch (this run's own lease is itself, not in-flight).
+    [ -n "${TALOS_RUN_PID:-}" ] && [ "$_ln_pid" = "$TALOS_RUN_PID" ] && continue
+    _c=$((_c + 1))
   done < "$_f" 2>/dev/null
   printf '%s' "$_c"
 }
@@ -2732,6 +2818,258 @@ _talos_lease_live_count() {
 # renders the one `action=...` line.
 _talos_emit_next() { printf '%s\0%s\0' action "${1#action=}" >> "$_TALOS_OUT"; }
 _talos_emit_next_wait() { printf '%s\0%s\0' action "${1#action=}" >> "$_TALOS_OUT"; }
+
+# ── run (#472, slice 8) ──────────────────────────────────────────────────────
+# The no-LLM driver: the loop of Step 2 in one bash process. Every stage is
+# dispatched through pipeline-agent.sh with the rendered prompt on stdin; the
+# verdict is derived from the stage's final-message convention (#472, AC2);
+# every end-of-stage write is `done`'s.
+#
+# _run_fail <reason> [<detail>]: a dispatch failure that is not the relayed
+# provider contract (75/69): the run stops, nothing is recorded, and the
+# issue's lease is left for the next run. Exit 1.
+_run_fail() {
+  _talos_emit run stopped
+  _talos_emit reason "dispatch-failed role=$_role"
+  _talos_flush
+  echo "talos.sh run: dispatch-failed role=${_role:-?} reason=$1${2:+ $2}" >&2
+  exit 1
+}
+
+# _run_verdict <role> <file>: the verdict word for the agent's answer in <file>
+# on stdout (`none` for a role with no verdict; `PR_OPENED <pr>` or `BLOCKED`
+# for the developer), 0. A non-zero exit is a dispatch failure (nothing is
+# recorded): an unknown word is NOT a verdict (#472, AC2 -- never guessed).
+_run_verdict_url() { grep -oE "https?://[^ <>()\"]+/(pull|[a-z-]+/[a-z-]+/pull)/[0-9]+" "$1" 2>/dev/null | head -n 1; }
+_run_verdict() {
+  local _role="$1" _f="$2" _w _v _line
+  [ -f "$_f" ] && [ -r "$_f" ] || return 1
+  case "$_role" in
+    pm | planner)
+      printf none; return 0 ;;
+    developer)
+      # The convention: "PR URL + what was implemented". A pull/<N> URL (or a
+      # `pr=<N>` word, the run's own relay shape) is PR_OPENED; no PR is
+      # BLOCKED. A verdict word BLOCKED: names it too.
+      _line="$(_run_verdict_url "$_f")"
+      _v="$(printf '%s\n' "$_line" | sed -n 's|.*/pull/\([0-9][0-9]*\).*|\1|p')"
+      [ -n "$_v" ] || _v="$(sed -n 's/\bpr=\([0-9][0-9]*\)\b.*/\1/p' "$_f" | head -n 1)"
+      if [ -n "$_v" ]; then printf 'PR_OPENED %s' "$_v"; else printf BLOCKED; fi
+      return 0 ;;
+  esac
+  # The verdict word: a line whose first word is `<WORD>:` with WORD on the
+  # role's done list (`CONFIRMED: real and reproducible`). Read by one
+  # `python3 -I` pass, no shell: a word that is not a verdict, or one from
+  # another role's list, is never one.
+  _w="$(python3 -I -c '
+import re, sys
+ROLES = {
+  "validator": "CONFIRMED ALREADY_FIXED DUPLICATE NEEDS_MORE_INFO SECURITY_THREAT",
+  "qa": "PASS FAIL RESTAMP_PASS RESTAMP_FAIL",
+  "reviewer": "APPROVED CHANGES RESTAMP_PASS RESTAMP_FAIL",
+  "security": "CLEAR FINDINGS RESTAMP_PASS RESTAMP_FAIL",
+  "adversarial": "CLEAR FINDINGS RESTAMP_PASS RESTAMP_FAIL",
+}
+role, path = sys.argv[1], sys.argv[2]
+verds = set(ROLES[role].split())
+word = ""
+with open(path, encoding="utf-8", errors="replace") as f:
+    for ln in f:
+        m = re.match(r"\s*([A-Z_]+):", ln)
+        if m and m.group(1) in verds:
+            word = m.group(1); break
+if not word: raise SystemExit(1)
+print(word)
+' "$_role" "$_f")" || return 1
+  printf '%s' "$_w"
+}
+
+# _run_agent <role> <prompt-file> <out-file>: pipeline-agent.sh <role> - with
+# the prompt file on stdin (never argv, AC6); stdout to <out-file>, the exit
+# status in _AG_RC, stderr relayed as note lines. A non-zero _AG_RC:
+#   75/69 are the provider contract (#418: failover exhausted) -- the caller's
+#   queued provider check reads them and stops the run; any other code is a
+#   dispatch failure.
+_run_agent() {
+  _AG_RC=0
+  bash "$SCRIPT_DIR/pipeline-agent.sh" "$1" - < "$2" > "$3" 2>"$_CFG_CACHE_DIR/agent.err" || _AG_RC=$?
+  _talos_relay "agent.$1" "$(cat "$_CFG_CACHE_DIR/agent.err")"
+}
+
+# ── run: the loop (#472) ─────────────────────────────────────────────────────
+# One pass = `next` (the one call the playbook's Step 2 was), the act branch,
+# `done` (the one bookkeeping write). The loop ends on wait/ask-owner, a gate
+# verdict that is not merge, the first-pass stop rules, or the pass cap.
+_talos_run_loop() {
+  local _issue="" _max=20 _iter=0 _act _r _rc _pr _n
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --issue) _issue="${2:-}"; shift 2 ;;
+      --max-iterations) _max="$2"; shift 2 ;;
+      *) _talos_stop usage 2 ;;
+    esac
+  done
+  [ -z "$_issue" ] || _talos_isnum "$_issue" || _talos_stop usage 2
+  [ -z "$_max" ] || _talos_isnum "$_max" || _talos_stop usage 2
+  [ -z "$_max" ] || [ "$_max" -ge 1 ] || _talos_stop usage 2
+  _talos_prepare run pipeline-config.sh pipeline-cfg-cache.sh pipeline-status-file.sh \
+                     pipeline-contract.sh pipeline-next-stage.py pipeline-draft-check.sh \
+                     pipeline-vcs.sh pipeline-budget.sh pipeline-lock.sh pipeline-agent.sh \
+                     pipeline-notify.sh pipeline-hooks.sh pipeline-events.sh
+  TALOS_RUN_PID="$$"; export TALOS_RUN_PID
+  # The run releases its own leases on exit (every path): one exit hook.
+  _talos_on_exit "_talos_lease_release_run_all"
+  local _dispatched=0
+  . "$SCRIPT_DIR/pipeline-contract.sh"
+
+  # PR_DRAFT, once: every prompt under it takes --draft, and the developer
+  # prompt's Required checks line already says none.
+  _r="$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" resolve 2>/dev/null)"
+  [ "$_r" = "true" ] && _RUN_DRAFT=1 || _RUN_DRAFT=0
+
+  while [ "$_iter" -lt "$_max" ]; do
+    _iter=$((_iter + 1))
+    if [ -n "$_issue" ]; then
+      _act="$(bash "$SCRIPT_DIR"/talos.sh next --issue "$_issue" 2>/dev/null)"
+    else
+      _act="$(bash "$SCRIPT_DIR"/talos.sh next 2>/dev/null)"
+    fi
+    _rc=$?
+    case "$_act" in
+      "action=dispatch stage="*" issue="*) : ;;
+      "action=dispatch stage="*" pr="*" issue="*) : ;;
+      "action=merge pr="*" issue="*) : ;;
+      "action=ask-owner"*)
+        _talos_emit stop "$_act"; _talos_flush; exit 0 ;;
+      "action=wait reason="*)
+        _talos_emit stop "$_act"; _talos_flush; exit 0 ;;
+      "stop reason="*)
+        # A state-read failure (`next`'s own stop): not a clean end.
+        _talos_stop "${_act#stop reason=}" ;;
+      *) _talos_stop state-unavailable ;;
+    esac
+    _RUN_ACT="${_act#action=}"
+
+    case "$_RUN_ACT" in
+      "merge pr="*)
+        _pr="$(sed -n 's/merge pr=\([0-9]*\).*/\1/p' <<<"$_RUN_ACT")"
+        _n="$(sed -n 's/.* issue=\([0-9]*\).*/\1/p' <<<"$_RUN_ACT")"
+        _r="$(bash "$SCRIPT_DIR"/talos.sh gate merge "$_pr" "$_n" 2>/dev/null)"
+        case "$_r" in
+          "verdict=merge"*)
+            _RUN_CI="$(sed -n 's/^ci_runs=//p' <<<"$_r" | head -n 1)"
+            _talos_emit merged pr="$_pr"
+            if _vcs merge-pr "$_pr" > /dev/null; then
+              # post-merge, with the CI-run count read before the merge (the
+              # merge deletes the head branch).
+              if [ -n "$_RUN_CI" ]; then
+                bash "$SCRIPT_DIR"/talos.sh post-merge "$_pr" "$_n" --ci-runs "$_RUN_CI" > /dev/null 2>"$_CFG_CACHE_DIR/err" \
+                  || _talos_relay post-merge "$(cat "$_CFG_CACHE_DIR/err")"
+              else
+                bash "$SCRIPT_DIR"/talos.sh post-merge "$_pr" "$_n" > /dev/null 2>"$_CFG_CACHE_DIR/err" \
+                  || _talos_relay post-merge "$(cat "$_CFG_CACHE_DIR/err")"
+              fi
+              _talos_emit stop "merged pr=$_pr"
+              _talos_flush; exit 0
+            fi
+            _talos_warn merge-failed "pr=$_pr"
+            _talos_stop merge-failed ;;
+          verdict=handoff | verdict=redispatch | verdict=wait | verdict=block*)
+            # The gate's verdict IS the answer (its writes ran inside it): the
+            # loop ends -- the next run re-reads the state.
+            _talos_emit stop "$(head -n 1 <<<"$_r")"
+            _talos_flush; exit 0 ;;
+          *)
+            _talos_stop state-unavailable ;;
+        esac ;;
+      "dispatch stage="*)
+        _talos_run_dispatch "$_RUN_ACT" ;;
+      *)
+        _talos_stop state-unavailable ;;
+    esac
+  done
+  _talos_emit stop "reason=iterations-exhausted max=$_max"
+  _talos_flush
+  exit 0
+}
+
+# _talos_run_dispatch <action-line>: one dispatched stage, the four calls the
+# playbook's act path used to spell out: prompt (the renderer), the agent run
+# (pipeline-agent.sh, the prompt on stdin), the verdict word (the
+# final-message convention), done (the bookkeeping). The stage's `next=`
+# answer decides what this pass does next; the loop continues it.
+# _talos_run_dispatch <action-line>: one dispatched stage, the four calls the
+# playbook's act path used to spell out. The action line's stage comes off a
+# sanitised single line (`action=dispatch stage=<role> ...`, one `stage=`
+# pair), so the sed reads the word after `stage=`.
+_talos_run_dispatch() {
+  local _a="$1" _f _role _pr _n _v _w _dargs _next _rc
+  _role="$(sed -n 's/.*stage=\([a-z-]*\).*/\1/p' <<<"$_a")"
+  _pr="$(sed -n 's/.* pr=\([0-9]*\).*/\1/p' <<<"$_a")"
+  _n="$(sed -n 's/.* issue=\([0-9]*\).*/\1/p' <<<"$_a")"
+  case " $_TALOS_ROLES " in *" $_role "*) : ;; *) _role=""; _run_fail unknown-role ;; esac
+  case "$_role" in
+    validator | planner | pm | developer) [ -n "$_n" ] || _run_fail unknown-act ;;
+    qa | reviewer | security | adversarial | docs) [ -n "$_pr" ] || _run_fail unknown-act ;;
+  esac
+
+  # 1. The prompt: the one renderer is `talos.sh prompt`.
+  local _pargs=(prompt "$_role" --issue "$_n")
+  [ -z "$_pr" ] || _pargs+=(--pr "$_pr")
+  [ "$_RUN_DRAFT" -eq 1 ] && _pargs+=(--draft)
+  _f="$(bash "$SCRIPT_DIR"/talos.sh "${_pargs[@]}" 2>"$_CFG_CACHE_DIR/err" | sed -n 's/^prompt_file=//p')"
+  _rc=$?
+  if [ "$_rc" -ne 0 ] || [ ! -s "$_f" ] || [ ! -f "$_f" ]; then
+    _talos_relay prompt "$(cat "$_CFG_CACHE_DIR/err" 2>/dev/null)"
+    _run_fail prompt-render
+  fi
+
+  # 2. The dispatch: the prompt on stdin, the agent's own runner resolution.
+  _run_agent "$_role" "$_f" "$_CFG_CACHE_DIR/agent.out"
+  if [ "$_AG_RC" -ne 0 ]; then
+    case "$_AG_RC" in
+      75 | 69)
+        # The provider contract (#418): failover exhausted. A stop, never a
+        # verdict; the state did not advance, so the run is not clean: exit 1.
+        _talos_emit stop "reason=provider-failed rc=$_AG_RC role=$_role"
+        _talos_flush; exit 1 ;;
+      *)
+        _run_fail agent-failed "rc=$_AG_RC" ;;
+    esac
+  fi
+
+  # 3. The verdict from the final message (AC2), never guessed.
+  _v="$(_run_verdict "$_role" "$_CFG_CACHE_DIR/agent.out")" || { rm -f "${_f:?}"; _run_fail verdict-unreadable; }
+
+  # 4. The bookkeeping is always `done`'s, the final message as the summary
+  # file on stdin: `done <role> --issue <N> [--pr <M>] [--verdict <V>] --summary-file -`.
+  _dargs=(done "$_role" --issue "$_n")
+  [ -z "$_pr" ] || _dargs+=(--pr "$_pr")
+  [ "$_RUN_DRAFT" -eq 1 ] && _dargs+=(--draft)
+  case "$_v" in
+    none) : ;;
+    "PR_OPENED "*)
+      _w="${_v#PR_OPENED }"
+      _dargs+=(--verdict PR_OPENED --pr "$_w") ;;
+    BLOCKED) _dargs+=(--verdict BLOCKED) ;;
+    *) _dargs+=(--verdict "$_v") ;;
+  esac
+  _dargs+=(--summary-file -)
+  _next="$(bash "$SCRIPT_DIR"/talos.sh "${_dargs[@]}" < "$_CFG_CACHE_DIR/agent.out" 2>"$_CFG_CACHE_DIR/err" \
+            | sed -n 's/^next=//p' | head -n 1)"
+  rm -f "${_f:?}"
+
+  # 5. What follows, the pass ends the same way the playbook's Step 2 reads
+  # `next=`: `stop` ends the run clean; a fix-round and `continue` go back to
+  # `next` (the gate and the ceilings run inside it, #471); `batch` is one
+  # role per action anyway.
+  case "$_next" in
+    stop)
+      _talos_emit stop "reason=stage-blocked role=$_role"
+      _talos_flush; exit 0 ;;
+  esac
+  return 0
+}
 
 verb="${1:-}"
 [ "$#" -eq 0 ] || shift
@@ -2746,6 +3084,7 @@ case "$verb" in
   done) _talos_done "$@" ;;
   state) _talos_state "$@" ;;
   next) _talos_next "$@" ;;
+  run) _talos_run_loop "$@" ;;
   help | -h | --help) _talos_help ;;
   "") _talos_help >&2; exit 2 ;;
   *) printf 'stop reason=unknown-verb\n'; exit 2 ;;
