@@ -13,6 +13,10 @@
 #   exit 1           any read that feeds the block failed (list-prs,
 #                    list-issues, pr-head, check-approval-sha, list-needs-owner
 #                    with exit 1): nothing pushed.
+#   collect          the state JSON on stdout; its `inflight` key (#519)
+#                    lists the mid-state-machine issues `talos.sh run`
+#                    resumes, and never an issue that already has an open
+#                    pipeline PR.
 #
 # Every refresh runs against a bare `origin` inside the sandbox (no network).
 # The GitHub reads go through a VERB-LEVEL stub: scripts/ is copied into the
@@ -1186,6 +1190,39 @@ out="$(run_sf refresh)"; rc=$?
 assert_eq "0" "$rc" "manifest: without the hook the same refresh succeeds"
 ofetch
 assert_eq "TALOS_STATUS.md" "$(git show --name-only --format= origin/main)" "manifest: the commit holds only the status file"
+
+# ── collect: the `inflight` list (#519) ──────────────────────────────────────
+# The `inflight` key is `talos.sh run`'s in-flight fallback input: issues in
+# the label mid-states (confirmed/dev/epic-decomposed), not queued, not
+# blocked or needs-owner, ascending -- and NEVER an issue whose pipeline work
+# is already up as an open PR against the base (the PR side owns that work; a
+# stale pipeline:dev beside an open PR would re-dispatch a developer fix
+# round on every drained run -- #519 review, finding 1). A fork PR with no
+# Talos label is not the pipeline's, by the collect's own eligibility rule,
+# so it keeps no issue out.
+cfg_rf
+fx_reset
+add_pr 12 "fix/issue-9-stale" "pipeline:review"
+add_issue 9 "pipeline:dev"
+add_issue 10 "pipeline:dev"
+add_issue 11 "pipeline:confirmed"
+add_issue 16 "pipeline:epic-decomposed"
+add_issue 13 "pipeline:ready"
+add_issue 14 "pipeline:blocked,pipeline:dev"
+add_issue 15 "pipeline:needs-owner,pipeline:dev"
+add_pr 17 "fix/issue-10-fork" "" true
+fx_flush
+collect_inflight() {
+  bash "$SF" collect 2>/dev/null \
+    | python3 -I -c 'import json,sys; print(" ".join(str(n) for n in json.load(sys.stdin)["inflight"]))'
+}
+assert_eq "10 11 16" "$(collect_inflight)" "collect: inflight is the mid-state issues with no open pipeline PR, ascending"
+fx_reset
+add_pr 18 "fix/issue-10-other" "" false
+add_issue 10 "pipeline:dev"
+add_issue 11 "pipeline:confirmed"
+fx_flush
+assert_eq "11" "$(collect_inflight)" "collect: an unlabelled same-base non-fork PR keeps its issue out of inflight"
 
 # ── no stage left a temp directory behind ───────────────────────────────────
 assert_eq "0" "$(status_tmp_dirs)" "leak: no talos-status.* directory left in the test's TMPDIR after the whole file"

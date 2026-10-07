@@ -19,6 +19,11 @@
 #       prompt) records nothing and exits 1
 #   (f) --max-iterations caps the passes; the lease keeps two callers from
 #       the same dispatch
+#   (g) the in-flight fallback (#519): a queue-drained wait works the
+#       collect's `inflight` list -- an open-PR issue is never re-dispatched,
+#       an empty list stops at the first wait with no second ready-queue
+#       walk, an unreadable state read is said (never silently inert), and a
+#       waiting in-flight issue moves to the next one
 # Every test runs on stubs under make_sandbox: no GitHub write, no LLM call.
 set -u
 . "$(dirname "$0")/helpers.sh"
@@ -95,8 +100,17 @@ TALOS_stubagentR8kWq2Xn
 # is exercised via run --issue.
 cat > "$GS/pipeline-status-file.sh" <<'TALOS_stubstatusJ3mVx7Bq'
 #!/usr/bin/env bash
-printf '%s' "$(cat "${STUB_DIR:?}/collect.json" 2>/dev/null || echo '{}')"
-if [ -f "${STUB_DIR}/collect.rc" ]; then exit "$(cat "${STUB_DIR}/collect.rc")"; fi
+# The collect stub: $STUB_DIR/collect.json is the state; the issue-side route
+# is exercised via run --issue. Every call is journalled so a test can count
+# the collects the run loop pays for (#519).
+# With $STUB_DIR/collect.garbage present the FIRST call answers non-JSON and
+# removes the marker, so a test can pin the in-flight list read failing while
+# the passes' own state reads work.
+d="${STUB_DIR:?}"
+printf 'status-file collect\n' >> "$d/journal"
+if [ -f "$d/collect.garbage" ]; then rm -f "$d/collect.garbage"; printf 'not json at all'; exit 0; fi
+printf '%s' "$(cat "$d/collect.json" 2>/dev/null || echo '{}')"
+if [ -f "$d/collect.rc" ]; then exit "$(cat "$d/collect.rc")"; fi
 exit 0
 TALOS_stubstatusJ3mVx7Bq
 
@@ -245,5 +259,88 @@ case "$OUT" in
   "stop action=wait reason=cap"*) pass "lease: a held lease is a stop (cap shape), never a double dispatch" ;;
   *) fail "lease: a held lease is a stop, never a double dispatch" "got: $OUT" ;;
 esac
+
+# ── (g) the in-flight fallback (#519) ────────────────────────────────────────
+# A queue-drained wait works the collect's `inflight` list; the journalled
+# collect stub counts the reads, so the pins name the collects a drained run
+# pays for: the one list read plus its own passes, never a second
+# ready-queue walk.
+
+# (g1) an in-flight issue with no open PR becomes a dispatch.
+reset_stubs
+LEASE_RESET
+printf '{"prs": [], "pr_total": 0, "ignored": 0, "blocked": [], "queued": [], "held": [], "inflight": [7], "owners": [], "capped": []}' \
+  > "$STUB_DIR/collect.json"
+printf '{"number": 7, "title": "t", "labels": [{"name": "pipeline:confirmed"}], "body": "body", "state": "open"}' \
+  > "$STUB_DIR/view-issue.7"
+printf 'blocked: the fixture has no test route\n' > "$STUB_DIR/message"
+cfg_json '{"vcs": {"provider": "github"}, "issues": {"max_parallel": 1}, "roles": {"validator": true, "developer": true}, "verify": {"timeout_ms": 600000, "ci_wait_s": 900}}'
+TALOS_LEASE_TTL_S=1 TALOS_NOW=8000 rn --max-iterations 5
+assert_eq "0" "$RC" "inflight: the untargeted run ends clean on the stage's BLOCKED"
+assert_contains "$OUT" "stop reason=stage-blocked role=developer" "inflight: the in-flight developer stage ran through done"
+assert_contains "$(journal)" "vcs view-issue 7" "inflight: the drained wait fell through to next --issue"
+assert_contains "$(journal)" "agent developer" "inflight: a confirmed issue with no open PR becomes a dispatch, not the first wait"
+assert_contains "$(journal)" "hooks post_stage developer developer 7 --verdict BLOCKED" "inflight: done's bookkeeping ran for the fallback dispatch"
+
+# (g2) a stale pipeline:dev with an OPEN PR must not manufacture a developer
+# fix round -- not even when the state lists it as in-flight (#519 review,
+# finding 1: `next --issue` on a not-queued issue skips adoption).
+reset_stubs
+LEASE_RESET
+printf '{"prs": [{"n": 12, "issue": 9, "head": "0000000000000000000000000000000000000012", "owner": false, "stage": "ci"}], "pr_total": 1, "ignored": 0, "blocked": [], "queued": [], "held": [], "inflight": [9], "owners": [], "capped": []}' \
+  > "$STUB_DIR/collect.json"
+printf '{"number": 9, "title": "t", "labels": [{"name": "pipeline:dev"}], "body": "body", "state": "open"}' \
+  > "$STUB_DIR/view-issue.9"
+TALOS_LEASE_TTL_S=1 TALOS_NOW=8500 rn --max-iterations 3
+assert_eq "0" "$RC" "inflight open PR: the run ends clean on the PR-side wait"
+assert_contains "$OUT" "action=wait reason=ci" "inflight open PR: the open PR's CI wait is the run's answer"
+assert_not_contains "$(journal)" "vcs view-issue 9" "inflight open PR: the gated issue is never even routed"
+assert_not_contains "$(journal)" "agent developer" "inflight open PR: no developer fix round is manufactured"
+assert_eq "2" "$(journal | grep -c '^status-file collect$')" "inflight open PR: the gate costs no extra collect (the list read plus this pass's next)"
+
+# (g3) an empty inflight list stops at the first wait: never the second
+# collect and ready-queue walk the old empty-list sentinel paid (#519 review,
+# finding 2).
+reset_stubs
+LEASE_RESET
+printf '{"prs": [], "pr_total": 0, "ignored": 0, "blocked": [], "queued": [], "held": [], "inflight": [], "owners": [], "capped": []}' \
+  > "$STUB_DIR/collect.json"
+TALOS_NOW=9000 rn --max-iterations 3
+assert_eq "0" "$RC" "inflight empty: the drained run exits clean"
+assert_contains "$OUT" "stop action=wait reason=none" "inflight empty: the run stops at its first wait"
+assert_eq "2" "$(journal | grep -c '^status-file collect$')" "inflight empty: the list read plus the pass's next, never a second queue walk"
+assert_not_contains "$(journal)" "vcs view-issue" "inflight empty: the ready queue is not re-walked"
+
+# (g4) an unreadable state read is said: the fallback is never silently inert
+# (the emit-cap truncation this replaced did nothing at all; #519 review,
+# finding 3).
+reset_stubs
+LEASE_RESET
+printf '{"prs": [], "pr_total": 0, "ignored": 0, "blocked": [], "queued": [], "held": [], "inflight": [], "owners": [], "capped": []}' \
+  > "$STUB_DIR/collect.json"
+printf 'not json at all' > "$STUB_DIR/collect.garbage"
+TALOS_NOW=9500 rn --max-iterations 3
+assert_contains "$OUT" "warn reason=inflight-unreadable" "inflight unreadable: the failed list read names itself on the run's output, never silently inert"
+assert_contains "$OUT" "stop action=wait reason=none" "inflight unreadable: the unreadable list leaves the fallback unused; the first wait still ends the run clean"
+assert_eq "0" "$RC" "inflight unreadable: the run is clean -- a fallback read is not a state-read failure"
+
+# (g5) a waiting in-flight issue (here: another run holds its lease) moves to
+# the NEXT in-flight issue instead of ending the whole run (#519 review,
+# non-blocking note).
+reset_stubs
+LEASE_RESET
+printf '{"prs": [], "pr_total": 0, "ignored": 0, "blocked": [], "queued": [], "held": [], "inflight": [7, 8], "owners": [], "capped": []}' \
+  > "$STUB_DIR/collect.json"
+printf '{"number": 7, "title": "t", "labels": [{"name": "pipeline:dev"}], "body": "body", "state": "open"}' \
+  > "$STUB_DIR/view-issue.7"
+printf '{"number": 8, "title": "t", "labels": [{"name": "pipeline:dev"}], "body": "body", "state": "open"}' \
+  > "$STUB_DIR/view-issue.8"
+printf 'blocked: the fixture has no test route\n' > "$STUB_DIR/message"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=10000 bash "$RUN" next --issue 7 > /dev/null 2>&1
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=10000 rn --max-iterations 3
+assert_eq "0" "$RC" "inflight lease: the run ends clean on the second issue's stage"
+assert_contains "$(journal)" "vcs view-issue 8" "inflight lease: the lease-held issue did not end the pass; the next in-flight issue was routed"
+assert_not_contains "$(journal)" "hooks post_stage developer developer 7" "inflight lease: the lease-held issue was not dispatched"
+assert_contains "$OUT" "stop reason=stage-blocked role=developer" "inflight lease: the second in-flight issue dispatched"
 
 finish
