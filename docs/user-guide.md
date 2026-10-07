@@ -3135,7 +3135,7 @@ If your setup predates the config and secrets work (epic #437), check these once
 | `status.resume_max_lines` | `40` | Maximum number of lines in the resume section. Must be a positive integer; an invalid value warns once and the default is used. |
 | `evidence.enabled` | `false` | Opt-in switch for evidence capture (#352): QA attaches screenshots or recordings of a user-facing change to the PR. Strict `true`/`false`; anything else warns once and reads as absent. `/talos:setup` asks once and writes it. See [Evidence capture](../README.md#evidence-capture-opt-in). |
 | `evidence.command` | unset (empty means agent capture) | Shell command that writes the files, run as `bash -c` at the repo root, only when `evidence.enabled` is `true`. Empty or absent: QA's browser skill saves screenshots itself. At most 2000 characters. |
-| `evidence.dir` | `.talos/evidence` | Directory the files are written to, relative to the repo root. It must be git-ignored. |
+| `evidence.dir` | `.talos/evidence` | Directory the files are written to, relative to the repo root. The default `.talos/` location is auto-ignored via `.git/info/exclude` by the in-tree guard (#517, no gitignore file); a custom dir outside `.talos/` is NOT covered by that guard (it only appends `.talos/`) — set such a directory only if the repo already ignores it. |
 | `evidence.include` | unset (png, jpg, jpeg, gif, webm, mp4, mov) | 1-20 basename globs narrowing which files are attached. Never widens the allowlist: svg and html are never published. |
 | `evidence.when` | `user-facing` | `user-facing` or `always`. |
 | `evidence.store` | `attach` | `attach` is the only value: files go up with `gh pr comment --attach`. |

@@ -88,14 +88,18 @@
 #                           PARSED line-by-line by the reader, never
 #                           `source`d, so no shell quoting is needed even
 #                           when the worktree path contains spaces. This is
-#                           a PER-WORKTREE file at that worktree's own root
-#                           -- not the shared main-repo .talos/ that
-#                           pipeline-events.sh's events.jsonl lives under
-#                           (that one resolves via `git rev-parse
-#                           --git-common-dir`, one path shared by every
-#                           worktree of this repo). Same ".talos/" name,
-#                           deliberately different resolution; both are
-#                           gitignored. `create` acquires the same
+#                           a PER-WORKTREE file at that worktree's own root.
+#                           It is NOT run state: the shared events log lives
+#                           at <git-common-dir>/talos/events.jsonl (#517),
+#                           resolved once via _talos_state_dir (`git rev-parse
+#                           --git-common-dir`), outside every git tree and
+#                           shared by every worktree of this repo. Same
+#                           ".talos/" name, different resolution: this
+#                           in-tree .talos/ is auto-ignored via
+#                           .git/info/exclude by _talos_ignore_in_tree
+#                           (#517 -- one appended line, never a tracked
+#                           .gitignore), so a stage's `git add -A` can never
+#                           commit it. `create` acquires the same
 #                           repo-wide lock as `remove`/`sweep` (#180) since
 #                           `git worktree add` races their mutation of the
 #                           shared git-common-dir metadata. `tag` (#240)

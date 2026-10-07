@@ -39,7 +39,13 @@
 #                        unless already absolute. Default:
 #                        "talos/events.jsonl" -- the canonical run-state
 #                        directory from scripts/pipeline-paths.sh. Read with
-#                        scripts/pipeline-events.sh.
+#                        scripts/pipeline-events.sh. A relative value whose
+#                        normalized form climbs out of the common dir ("../x")
+#                        is refused by the WRITER: one stderr note, no append,
+#                        still exit 0 (the never-block contract); talos-
+#                        status.sh refuses it the same way on the READ side,
+#                        and an absolute path stays the hooks-writes-it /
+#                        status-refuses-it asymmetry.
 #
 # Contract (mirrors pipeline-notify.sh): NEVER blocks the pipeline. A
 # non-zero exit, a timeout, or (pre_dispatch only) empty stdout from the
@@ -157,6 +163,35 @@ _events_log_path() {
   printf '%s/%s' "$(dirname "$state")" "$path_cfg"
 }
 
+# _events_path_leaves_common <relative_path> -> rc 0 when the normalized form
+# of a RELATIVE events.path climbs out of its base: "." and empty segments
+# collapse away, each ".." pops one segment, and a ".." with nothing left to
+# pop is the escape. Pure string walk, no subprocess. This is the bash
+# equivalent of talos-status.sh's events_log_path refusal (os.path.normpath
+# + the ".."-prefix check), mirrored at the WRITER (fix round of #517, PR
+# #527 review): an escaping relative events.path used to be appended as-is,
+# putting the log back inside a git tree (untracked, un-ignored -- exactly
+# the #517 bug class) or outside every worktree's shared reach.
+_events_path_leaves_common() {
+  local rest="$1/" seg depth=0
+  while [ -n "$rest" ]; do
+    seg="${rest%%/*}"
+    rest="${rest#*/}"
+    case "$seg" in
+      ''|.) ;;
+      ..)
+        if [ "$depth" -gt 0 ]; then
+          depth=$((depth - 1))
+        else
+          return 0
+        fi
+        ;;
+      *) depth=$((depth + 1)) ;;
+    esac
+  done
+  return 1
+}
+
 # _events_append <json_line> -- appends one JSON object, as a single line, to
 # the events log (see _events_log_path), when events.enabled (default true).
 # Best-effort only: any failure (disabled, unresolvable path, mkdir/write
@@ -170,9 +205,27 @@ _events_log_path() {
 # never partial ones. No flock/lockfile needed.
 _events_append() {
   local json_line="$1"
-  local enabled log_path log_dir
+  local enabled path_cfg log_path log_dir
   enabled="$(cfg events.enabled)"
   [ "$enabled" = "false" ] && return 0
+
+  # Containment at the WRITER (mirrors talos-status.sh's refusal, fix round
+  # of #517 / PR #527 review): a RELATIVE events.path whose normalized form
+  # climbs out of the git common dir is refused -- one stderr note and a
+  # skipped append, never a non-zero exit (the never-block contract). An
+  # absolute events.path is still used as-is: the documented
+  # hooks-writes-it / status-refuses-it asymmetry. The second cfg read is a
+  # per-invocation cache hit (pipeline-cfg-cache.sh), not a second parse.
+  path_cfg="$(cfg events.path)"
+  case "$path_cfg" in
+    /*|'') : ;;
+    *)
+      if _events_path_leaves_common "$path_cfg"; then
+        echo "pipeline-hooks: events.path '$path_cfg' leaves the git common dir -- appending skipped" >&2
+        return 0
+      fi
+      ;;
+  esac
 
   log_path="$(_events_log_path)"
   if [ -z "$log_path" ]; then

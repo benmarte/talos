@@ -168,7 +168,7 @@ assert_eq "1" "$(grep -cxF '.talos/' "$EXCL")" "AC4: that one line is .talos/ an
 # second call (tag) -- idempotent: a second invocation adds nothing
 (cd "$W4" && bash "$WTS" tag 12 >/dev/null 2>&1)
 assert_eq "1" "$(grep -cxF '.talos/' "$EXCL")" "AC4: a second run-state write leaves exactly one .talos/ line in info/exclude (idempotent)"
-assert_eq "" "$(git ls-files -- .gitignore)" "AC4: the repo still tracks no .gitignore -- the guard never creates one"
+assert_eq "" "$(git -C "$R4" ls-files -- .gitignore)" "AC4: the repo still tracks no .gitignore -- the guard never creates one"
 assert_eq "" "$(git -C "$W4" status --porcelain)" "AC4: after tag, the worktree's git status --porcelain is empty"
 # evidence: capture is where evidence.command first writes under evidence.dir
 R4B="$(mk_repo ac4evidence)"

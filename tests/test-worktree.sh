@@ -372,9 +372,10 @@ assert_contains "$env_contents" "TALOS_ISSUE_NUMBER=555" ".talos/env has a TALOS
 assert_contains "$env_contents" "TALOS_WORKTREE_PATH=$new_wt" ".talos/env has a TALOS_WORKTREE_PATH=<path> line matching the worktree's own path"
 assert_not_contains "$env_contents" "export " ".talos/env is written as plain KEY=value, not shell 'export' lines (#186 security fix -- the reader parses, never sources, this file)"
 
-# .talos/env is per-worktree, not the shared main-repo .talos/ (distinct
-# from events.jsonl's git-common-dir resolution) -- the main checkout must
-# not have gained one as a side effect of creating an issue worktree.
+# .talos/env is per-worktree; the shared events log lives at
+# <git-common-dir>/talos/events.jsonl (#517), outside every git tree -- the
+# main checkout must not have gained one as a side effect of creating an
+# issue worktree.
 assert_file_absent "$SANDBOX/.talos/env" "create does not write .talos/env into the main checkout"
 
 # create is cleaned up normally by remove/sweep like any other issue worktree.
