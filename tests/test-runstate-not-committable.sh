@@ -138,6 +138,19 @@ printf '%s\n' '{"events": {"path": "../escape.jsonl"}}' > "$R3/talos.pipeline.js
 out="$(cd "$R3" && TALOS_STATUS_DEBUG=1 bash "$STATUS" --line 2>"$SANDBOX/ac3-dbg2.log" </dev/null)"
 assert_eq "" "$out" "AC3: talos-status.sh refuses an events.path that leaves the common dir"
 assert_contains "$(cat "$SANDBOX/ac3-dbg2.log")" "leaves the git common dir" "AC3: the containment refusal names the git common dir"
+# ...and the WRITER refuses it too (fix round, 2026-10-07 review: the
+# fail-open relative join in _events_log_path let "../escaped-events.jsonl"
+# land as <repo-root>/escaped-events.jsonl -- untracked and NOT git-ignored,
+# so an agent's git add -A could have committed it. The writer mirrors the
+# status line's containment: one stderr note, a skipped append, exit 0 --
+# the existing never-block contract).
+printf '%s\n' '{"events": {"path": "../escaped-events.jsonl"}}' > "$R3/talos.pipeline.json"
+( cd "$R3" && bash "$HOOKS" post_stage qa qa 520 --verdict PASS --summary "AC3 writer refuses dotdot" 2>"$SANDBOX/ac3-writer-dbg.log" </dev/null ); rc=$?
+assert_eq "0" "$rc" "AC3: post_stage exits 0 when a relative events.path leaves the common dir (never-block contract)"
+assert_contains "$(cat "$SANDBOX/ac3-writer-dbg.log")" "leaves the git common dir" "AC3: the writer's skip note names the git common dir"
+assert_eq "1" "$(grep -c "leaves the git common dir" "$SANDBOX/ac3-writer-dbg.log")" "AC3: the writer's refusal is exactly ONE stderr note"
+assert_file_absent "$R3/escaped-events.jsonl" "AC3: the writer never creates the escaping file outside the common dir"
+assert_eq "" "$(git -C "$R3" status --porcelain -- ':!talos.pipeline.json')" "AC3: the skipped append leaves nothing committable in the tree"
 rm -rf "$R3" "$ABS"
 
 # ── AC4: in-tree .talos/ self-ignores via info/exclude, never .gitignore ────
