@@ -21,11 +21,11 @@ ERR="$SANDBOX/err.txt"
 
 set_cfg() { printf '%s\n' "$1" > talos.pipeline.json; }
 # reset_log -- empty the sandbox events log (guarded: only ever the sandbox's).
-reset_log() { [ -n "${SANDBOX:-}" ] && rm -rf "${SANDBOX:?}/.talos"; }
+reset_log() { [ -n "${SANDBOX:-}" ] && rm -rf "${SANDBOX:?}/.git/talos"; }
 # seed ISSUE ROLE TOKENS [EVENT] -- append one event line (TOKENS "null" = unrecorded).
 seed() {
-  mkdir -p .talos
-  python3 - "$1" "$2" "$3" "${4:-qa}" <<'PY' >> .talos/events.jsonl
+  mkdir -p .git/talos
+  python3 - "$1" "$2" "$3" "${4:-qa}" <<'PY' >> .git/talos/events.jsonl
 import json, sys
 issue, role, tokens, event = sys.argv[1:5]
 print(json.dumps({"ts": "2026-10-03T00:00:00Z", "event": event, "role": role,
@@ -204,12 +204,12 @@ if [ -e "$MARKER" ]; then pass "limit set: the events tool is consulted"; else f
 set_cfg '{"agents": {"runner": "claude"}}'
 reset_log; seed 7 dev 1
 if [ "$(id -u)" -ne 0 ]; then
-  chmod 000 .talos/events.jsonl
+  chmod 000 .git/talos/events.jsonl
   run_check check --issue 7
   assert_eq "" "$OUT" "chmod 000 log, guard off: no stdout"
   assert_eq "0" "$RC" "chmod 000 log, guard off: exit 0"
   assert_eq "" "$(cat "$ERR")" "chmod 000 log, guard off: no stderr"
-  chmod 644 .talos/events.jsonl
+  chmod 644 .git/talos/events.jsonl
 else
   pass "chmod 000 check skipped (running as root)"
 fi
@@ -240,10 +240,10 @@ assert_eq "0" "$RC" "negative tokens: exit 0"
 # ── (g) read-only, no vcs calls, python -I ──────────────────────────────────
 set_cfg '{"limits": {"tokens_per_issue": 4000000, "warn_at": 0.8}}'
 reset_log; seed 7 dev 3300000; seed 7 orchestrator null budget-blocked
-BEFORE="$(cksum < .talos/events.jsonl)"
+BEFORE="$(cksum < .git/talos/events.jsonl)"
 run_check check --issue 7
 run_check check --issue 7 --json
-assert_eq "$BEFORE" "$(cksum < .talos/events.jsonl)" "the events log is byte-identical after a check"
+assert_eq "$BEFORE" "$(cksum < .git/talos/events.jsonl)" "the events log is byte-identical after a check"
 
 NOCODE="$(grep -v '^[[:space:]]*#' "$BUDGET")"
 case "$NOCODE" in *pipeline-vcs.sh*) fail "never calls pipeline-vcs.sh" "found in code";; *) pass "never calls pipeline-vcs.sh";; esac
@@ -256,8 +256,8 @@ case "$NOCODE" in *'set -e'*) fail "no set -e (exit 1 is the signal)";; *) pass 
 if [ -x "$BUDGET" ]; then pass "script is executable"; else fail "script is executable"; fi
 
 # ── (h) 10k-event log under CI headroom ─────────────────────────────────────
-reset_log; mkdir -p .talos
-python3 - <<'PY' > .talos/events.jsonl
+reset_log; mkdir -p .git/talos
+python3 - <<'PY' > .git/talos/events.jsonl
 import json
 for i in range(10000):
     print(json.dumps({"ts": "2026-10-03T00:00:00Z", "event": "qa", "role": "qa" if i % 2 else "dev",

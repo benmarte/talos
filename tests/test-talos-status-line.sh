@@ -24,9 +24,9 @@ make_sandbox || exit 1
 
 STATUS="$TALOS_ROOT/scripts/talos-status.sh"
 EVENTS="$TALOS_ROOT/scripts/pipeline-events.sh"
-LOG="$SANDBOX/.talos/events.jsonl"
+LOG="$SANDBOX/.git/talos/events.jsonl"
 ERR="$SANDBOX/err.txt"
-mkdir -p "$SANDBOX/.talos"
+mkdir -p "$SANDBOX/.git/talos"
 NOGIT="$(mktemp -d "${TMPDIR:-/tmp}/talos-nogit.XXXXXX")" || exit 1
 trap '[ -n "${SANDBOX:-}" ] && rm -rf "$SANDBOX"; [ -n "${NOGIT:-}" ] && rm -rf "$NOGIT"' EXIT
 
@@ -673,7 +673,7 @@ assert_eq "#222 · 5.20M" "$OUT" "line cap: a log of exactly 200,000 lines is re
 
 # ── (k) bounded work: oversized / symlinked / special logs, slow budget ────
 # The repo is untrusted and the status line redraws constantly: it must never
-# hang, whatever .talos/events.jsonl is.
+# hang, whatever .git/talos/events.jsonl is.
 STUBS="$SANDBOX/stubscripts"
 # run_timed SCRIPT ARGS... -- run `bash SCRIPT ARGS` from the sandbox; sets OUT,
 # RC and ELAPSED_MS (stderr dropped).
@@ -723,14 +723,16 @@ ln -s "$SANDBOX/real-inside.jsonl" "$LOG"
 run_timed "$STATUS" --line --format issue
 assert_eq "" "$OUT" "symlink: a log symlinked within the repo is refused too"
 rm -f "$LOG" "$SANDBOX/real-inside.jsonl"
-# a symlinked .talos directory leading outside the repo
+# a symlinked talos state directory leading outside the git common dir is
+# refused too (#517: the log lives at <git common dir>/talos/, so the
+# containment check is against the common dir)
 reset_log; ev developer 752 764 1000 PASS
-mv "$SANDBOX/.talos" "$NOGIT/outside/dottalos"
-ln -s "$NOGIT/outside/dottalos" "$SANDBOX/.talos"
+mv "$SANDBOX/.git/talos" "$NOGIT/outside/dottalos"
+ln -s "$NOGIT/outside/dottalos" "$SANDBOX/.git/talos"
 run_timed "$STATUS" --line --format issue
-assert_eq "" "$OUT" "symlink: a .talos directory symlinked outside the repo prints nothing"
-rm -f "$SANDBOX/.talos"
-mv "$NOGIT/outside/dottalos" "$SANDBOX/.talos"
+assert_eq "" "$OUT" "symlink: the talos state dir symlinked outside the repo prints nothing"
+rm -f "$SANDBOX/.git/talos"
+mv "$NOGIT/outside/dottalos" "$SANDBOX/.git/talos"
 # a FIFO in place of the log: no block
 rm -f "$LOG"; mkfifo "$LOG"
 run_timed "$STATUS" --line --format issue
@@ -799,10 +801,12 @@ clear_budget_cfg
 unset BUDGET_SLEEP_PID
 
 # ── (l) events.path ────────────────────────────────────────────────────────
-mkdir -p "$SANDBOX/data" "$NOGIT/outside"
+# Relative values resolve against the GIT COMMON dir (#517), so the
+# relocated log lives under .git/.
+mkdir -p "$SANDBOX/.git/data" "$NOGIT/outside"
 DEFAULT_LOG="$LOG"
 reset_log; ev developer 111 1 1000 PASS                    # the default log: a decoy
-LOG="$SANDBOX/data/ev.jsonl"; : > "$LOG"; ev developer 752 764 56000 PASS
+LOG="$SANDBOX/.git/data/ev.jsonl"; : > "$LOG"; ev developer 752 764 56000 PASS
 cp "$LOG" "$NOGIT/outside/ev.jsonl"
 set_ep_json() { printf '%s\n' "{\"events\": {\"path\": \"$1\"}, \"agents\": {\"model\": \"x\"}}" > "$SANDBOX/talos.pipeline.json"; }
 rm -f "$SANDBOX/talos.pipeline.json" "$SANDBOX/talos.pipeline.yml"
@@ -819,13 +823,13 @@ assert_eq "#752" "$OUT" "events.path: a .. that stays inside the root is normali
 for bad in "$NOGIT/outside/ev.jsonl" "../outside/ev.jsonl" "data/../../outside/ev.jsonl" ".."; do
   set_ep_json "$bad"
   run_status --line --format issue
-  assert_eq "" "$OUT" "events.path: '$bad' is refused (absolute or leaves the repo) -> nothing"
+  assert_eq "" "$OUT" "events.path: '$bad' is refused (absolute or leaves the git common dir) -> nothing"
 done
-ln -s "$NOGIT/outside" "$SANDBOX/linkdir"
+ln -s "$NOGIT/outside" "$SANDBOX/.git/linkdir"
 set_ep_json "linkdir/ev.jsonl"
 run_status --line --format issue
-assert_eq "" "$OUT" "events.path: a directory symlink that leads outside the repo is refused"
-rm -f "$SANDBOX/linkdir" "$SANDBOX/talos.pipeline.json"
+assert_eq "" "$OUT" "events.path: a directory symlink that leads outside the common dir is refused"
+rm -f "$SANDBOX/.git/linkdir" "$SANDBOX/talos.pipeline.json"
 set_ep_json "data/ev.jsonl"
 printf '%s\n' '{"agents": {"model": "x"}}' > "$SANDBOX/talos.pipeline.json"
 run_status --line --format issue

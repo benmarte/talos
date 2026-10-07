@@ -27,7 +27,7 @@ export STUB_PROMPT_DIR="$SANDBOX/prompts"
 mkdir -p "$STUB_PROMPT_DIR"
 ERR="$SANDBOX/err.txt"
 PROV="$SANDBOX/.talos/providers.json"
-EVENTS="$SANDBOX/.talos/events.jsonl"
+EVENTS="$SANDBOX/.git/talos/events.jsonl"
 
 # pipeline-worktree.sh stand-ins: absent verb (today's reality), working verb,
 # failing verb.
@@ -40,7 +40,7 @@ wt_stub() {  # absent | present | failing
 }
 
 reset() {
-  rm -rf "${SANDBOX:?}/.talos" "$STUB_PROMPT_DIR"; mkdir -p "$STUB_PROMPT_DIR"
+  rm -rf "${SANDBOX:?}/.talos" "${SANDBOX:?}/.git/talos" "$STUB_PROMPT_DIR"; mkdir -p "$STUB_PROMPT_DIR"
   : > "$RUNNER_LOG"; : > "$GH_LOG"; : > "$WT_LOG"
   unset STUB_CLAUDE_EXIT STUB_CLAUDE_STDERR STUB_CLAUDE_STDOUT STUB_CLAUDE_HOOK \
         STUB_CODEX_EXIT STUB_CODEX_STDERR STUB_CODEX_STDOUT STUB_CODEX_HOOK \
@@ -542,7 +542,7 @@ assert_eq "1" "$m" "contract: talos:failover-refused is a TALOS_MARKERS member"
 
 reset
 set_cfg '{"limits": {"tokens_per_issue": 4000000}}'
-mkdir -p .talos
+mkdir -p .git/talos
 printf '%s\n' '{"ts": "2026-10-03T00:00:00Z", "event": "qa", "role": "qa", "issue": 7, "pr": null, "verdict": "PASS", "tokens": 1000, "tool_uses": null, "duration_s": null}' \
   '{"ts": "2026-10-03T00:00:01Z", "event": "qa", "role": "dev", "issue": 7, "pr": null, "verdict": "PASS", "tokens": null, "tool_uses": null, "duration_s": null}' > "$EVENTS"
 cost_before="$(bash "$TALOS_ROOT/scripts/pipeline-events.sh" cost --issue 7 --line 2>&1)"

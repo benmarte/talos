@@ -133,8 +133,8 @@ assert_eq "$(_talos_default evidence.max_mb)" "$(sed -n 's/^_EVIDENCE_DEFAULT_MA
 assert_eq "$(_talos_default verify.timeout_ms)" "$(sed -n 's/.*_digits_or \([0-9]*\) "\$(cfg verify.timeout_ms)".*/\1/p' "$_ev")" "verify.timeout_ms fallback is the table default"
 
 # ── comments.header: the events spend report keeps its no-header behaviour ───
-mkdir -p "$SANDBOX/.talos" || exit 1
-printf '%s\n' '{"event":"developer","role":"developer","issue":7,"pr":9,"verdict":"PASS","model":"sonnet","tokens":1000,"tool_uses":1,"duration_s":10,"ts":"2026-10-03T00:00:00Z"}' > "$SANDBOX/.talos/events.jsonl"
+mkdir -p "$SANDBOX/.git/talos" || exit 1
+printf '%s\n' '{"event":"developer","role":"developer","issue":7,"pr":9,"verdict":"PASS","model":"sonnet","tokens":1000,"tool_uses":1,"duration_s":10,"ts":"2026-10-03T00:00:00Z"}' > "$SANDBOX/.git/talos/events.jsonl"
 _first="$(bash "$SCRIPTS/pipeline-events.sh" cost --issue 7 --pr 9 --markdown 2>/dev/null | sed -n 1p)"
 assert_eq "### Token spend — #7" "$_first" "comments.header unset: the spend report starts at its heading (no header line)"
 printf '%s\n' '{"comments": {"header": "**Agent:** {role} (x)"}}' > "$PROJ/talos.pipeline.json"
