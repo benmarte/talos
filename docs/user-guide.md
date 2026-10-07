@@ -810,8 +810,10 @@ already has Talos labels re-runs `bash scripts/bootstrap-labels.sh` once so
   `docs/status.d/<issue>-<pr>.md` (`status.fragments_dir`), and the
   orchestrator folds it into the log after the merge. The directory is
   `docs/status.d/`, not `.talos/status.d/`, because it must be a tracked
-  directory: in a consumer repo `.talos/` is gitignored (the fragment would
-  silently never enter the PR) or untracked (`assert-sync` aborts on it).
+  directory: since #517 Talos auto-ignores the in-tree `.talos/` via
+  `.git/info/exclude` before writing there, so a fragment placed under
+  `.talos/` would silently never enter the PR (and where Talos has written no
+  in-tree `.talos/`, it is simply untracked and `assert-sync` aborts on it).
 - **Caps and archive.** An entry is at most 3 lines and 400 characters. The
   log keeps entries newer than `status.log_days` (30) and at most
   `status.log_max` (50); older ones move to `status/archive/YYYY-MM.md`

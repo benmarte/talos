@@ -570,7 +570,9 @@ notifications:
 # defaults to false, so setting the other keys changes nothing until you opt in.
 # /talos:setup writes this block for you (#349).
 # status.fragments_dir must be a TRACKED directory (hence docs/status.d, not
-# .talos/status.d: .talos/ is gitignored or untracked in a consumer repo).
+# .talos/status.d: since #517 Talos auto-ignores the in-tree .talos/ via
+# .git/info/exclude before writing there, so a fragment under .talos/ would
+# never enter the PR).
 # status:
 #   enabled: false                   # default false (opt-in)
 #   file: "TALOS_STATUS.md"
