@@ -16,7 +16,7 @@ cat > talos.pipeline.json <<'EOF'
 }
 EOF
 
-assert_eq "rebase"  "$(bash "$CFG_SH" merge.method squash)"          "nested key lookup"
+assert_eq "rebase"  "$(bash "$CFG_SH" merge.method squash)"          "AC7: the single-canonical-file fixture resolves the same values (nested key lookup)"
 assert_eq "true"    "$(bash "$CFG_SH" board.enabled false)"          "bool normalised to lowercase string"
 assert_eq "false"   "$(bash "$CFG_SH" roles.qa true)"                "false bool wins over default"
 assert_eq "7"       "$(bash "$CFG_SH" board.project_number "")"      "numeric value"
@@ -163,7 +163,7 @@ cat > talos.pipeline.json <<'EOF'
 {"merge": {"method": "rebase"}}
 EOF
 assert_eq "rebase" "$(bash "$CFG_SH" merge.method)" \
-  "the canonical talos.pipeline.json answers the lookup; the legacy name is ignored"
+  "AC7: the canonical talos.pipeline.json answers the lookup; the legacy name is ignored (a single-file dir is a clean load)"
 rm .claude-pipeline.json talos.pipeline.json
 
 # roles.docs_mode (#200): default resolution — auto unless explicitly set
