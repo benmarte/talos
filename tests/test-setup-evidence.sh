@@ -250,22 +250,19 @@ assert_contains "$Z" "Step 8" "Step 0 still jumps to Step 8"
 
 # ── Step 7: the evidence: block, decline writes an ACTIVE enabled: false ─────
 T="$(step '## Step 7 ')"
-assert_contains "$T" "# ── Evidence (Step 4c)" "Step 7 template has an Evidence block"
-assert_contains "$T" "evidence:" "Step 7 template has an evidence: block"
+assert_contains "$T" '"evidence": {' "Step 7 template has an evidence key (json, #526)"
 assert_contains "$T" "- Evidence (Step 4c):" "Step 7 has an Evidence bullet"
-assert_contains "$T" "enabled: false" "a declined question writes enabled: false"
-assert_contains "$T" "a commented block reads as unset" "the skill says why a commented block is not used"
+assert_contains "$T" '"enabled": false' "a declined question writes \"enabled\": false"
+assert_contains "$T" "an ACTIVE block, never omitted" "the skill says why an active false block is used (JSON has no comments, #526)"
 assert_contains "$T" '"evidence": { "enabled": false }' "a declined JSON config gets an active evidence key"
-assert_contains "$T" 'the normalised `dir=` value Step 4c printed, never the typed text' "Step 7 writes the same normalised dir the .gitignore line uses"
+assert_contains "$T" 'the normalised dir= value Step 4c printed, never the typed text' "Step 7 writes the same normalised dir the .gitignore line uses"
 assert_contains "$T" "Ask me later" "an ask-me-later choice is handled"
 assert_contains "$T" "store" "the store key is mentioned"
 assert_contains "$T" "attach" "store is attach only"
 
 # JSON form (#456): the agent-capture path omits command, dir/command only when accepted
 assert_contains "$T" 'omit the `"command"` key: `"evidence": { "enabled": true, "dir": "<dir>" }`' "the JSON form has an omit-command rule for the agent-capture path (#456)"
-assert_contains "$T" '<IF_EVIDENCE_ACCEPTED>' "Step 7 names the <IF_EVIDENCE_ACCEPTED> gate (#456)"
-assert_contains "$T" "are written only when accepted" "the JSON dir/command keys are gated like the YAML ones (#456)"
-assert_eq "1" "$(awk '/^<IF_EVIDENCE_ACCEPTED>$/{o=1} /^<\/IF_EVIDENCE_ACCEPTED>$/{c=o} END{print c+0}' "$SETUP")" "the YAML template gates dir and command in an <IF_EVIDENCE_ACCEPTED> pair (#456)"
+assert_contains "$T" "are written only when accepted" "the JSON dir/command keys are gated by acceptance (omission replaces the YAML IF pair, #526)"
 assert_contains "$Q" 'on every setup re-run' "ask me later re-asks on every re-run, said outright (#456, J9)"
 
 # ── Board owner (#456): checked before it reaches gh, passed quoted via a variable ──

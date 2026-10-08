@@ -51,7 +51,7 @@ cfg_keys="$(grep -c "merge.auto_sync" "$CFG")"
 assert_eq "1" "$cfg_keys" "config: merge.auto_sync in known keys"
 
 # Example configs document the key.
-assert_contains "$(cat "$TALOS_ROOT/talos.pipeline.yml.example")" "auto_sync" "example: yml documents auto_sync"
+assert_contains "$(cat "$TALOS_ROOT/talos.pipeline.json.example")" "auto_sync" "example: json documents auto_sync"
 assert_contains "$(cat "$TALOS_ROOT/talos.pipeline.json.example")" '"auto_sync"' "example: json documents auto_sync"
 
 finish

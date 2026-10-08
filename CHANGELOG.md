@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+- feat(config): config is JSON only (#526). Exactly two canonical files exist --
+  the repo's `talos.pipeline.json` and the user-level
+  `${TALOS_HOME:-$HOME/.talos}/talos.pipeline.json` (project overrides global;
+  env stays the last-mile layer; `~/.talos/.env` is the secrets store, not a
+  layer) -- and every YAML load path is deleted (`_CFG_NAMES`, the PyYAML-
+  optional reader, the #490 warn machinery). Any other `talos.pipeline.*` file
+  in a layer directory fails the load closed with one stderr line:
+  `reason=config-shadowed` beside the json (winner, the strays, the
+  `rm`/merge instruction) and `reason=config-legacy-file` without one (the
+  `--convert` migration command); every read verb (`KEY`, `--has`, `--show`,
+  `--dump`) exits 3 and a `talos.sh` run answers `stop reason=config-unreadable`
+  while the specific line reaches the operator, so the 2026-10-06 incident
+  class (a stray committed `talos.pipeline.yml` silently shadowing the repo
+  json and costing three full CI runs) can never happen silently again.
+  `pipeline-config.sh --convert <legacy.yml> <target.json> [--force]` is the
+  only YAML-aware code left (one-shot, human-invoked; needs PyYAML and says so
+  when it cannot find it; refuses an existing non-empty target without
+  `--force`; drops secret-shaped leaves like a load would). `--dump` grows a
+  SOURCES header (`sources.project`, `sources.global`, `sources.env_keys`,
+  `sources.secrets_path`) so one command answers "where is talos configured";
+  `PIPELINE_CONFIG` stays an explicit pointer (a `.yml`/`.yaml` pointer is
+  refused like any other legacy file; an explicit pointer skips the
+  project-directory stray check). The repo, `talos.pipeline.json.example`
+  (the `_note` now covers every table key), install.sh, /talos:setup (Step 7
+  writes JSON), the docs, and the tests are migrated; `talos.pipeline.yml.example`
+  is gone and legacy non-`talos.pipeline.*` names (`.claude-pipeline.*`,
+  `pipeline.*`) are simply no longer read -- the upgrade note tells owners to
+  rename them. Supersedes #525 (its warn became these fail-closed reason codes).
 - fix(orchestrator): a lease line whose `pid=` is a dead process no longer idles
   its issue — and, through `issues.max_parallel`, the whole queue — for the full
   TTL (#522). The lease scan (`_talos_lease_read`, `_talos_lease_held_line`,

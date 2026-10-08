@@ -362,7 +362,7 @@ rm -f talos.pipeline.json
 # Source-level: the loader heredoc (the shared load path) carries no yaml
 # reference; `import yaml` appears only inside --convert.
 loader_src="$(sed -n '/^read -r -d .. _CFG_LOADER_PY/,/^PYLOADER$/p' "$CFG_SH")"
-if printf '%s' "$loader_src" | grep -qw 'yaml'; then
+if grep -qw 'yaml' <<<"$loader_src"; then
   fail "AC6: the loader source carries no yaml reference" \
     "the _CFG_LOADER_PY heredoc still mentions yaml"
 else

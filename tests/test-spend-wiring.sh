@@ -56,7 +56,7 @@ assert_contains "$verb_all" 'With limits.tokens_per_issue unset' \
 assert_contains "$verb_all" 'so the fix-round flow is unchanged' "budget stop: unchanged wording present"
 assert_contains "$skill_flat" 'removing `pipeline:blocked` (each block grants one more limit) or raising `limits.tokens_per_issue`' \
   "budget stop: how the owner resumes"
-assert_contains "$verb_fr" 'blocked_by "talos.pipeline.yml:limits.tokens_per_issue (explicit)"' \
+assert_contains "$verb_fr" 'blocked_by "talos.pipeline.json:limits.tokens_per_issue (explicit)"' \
   "budget stop: BLOCKED_BY of the blocked comment (the blocked_by= line)"
 assert_contains "$skill_flat" 'post blocked.md with BLOCKED_BY = the `blocked_by=` value' "budget stop: SKILL.md posts blocked.md with that BLOCKED_BY"
 assert_eq "spend.comment true" "$(talos_env_key SPEND_COMMENT) $(talos_env_default SPEND_COMMENT)" "Step 0: spend.comment variable (read by talos.sh env, default true)"

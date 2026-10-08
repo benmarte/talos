@@ -245,8 +245,8 @@ _cfg_project_problem() {
     case "$PIPELINE_CONFIG" in
       *.yml|*.yaml)
         case "$PIPELINE_CONFIG" in */*) _cv_dir="${PIPELINE_CONFIG%/*}" ;; *) _cv_dir="." ;; esac
-        printf 'pipeline-config: reason=config-legacy-file %s -- convert: bash scripts/pipeline-config.sh --convert %s %s/$_CFG_PROJECT_NAME.json\n' \
-          "$PIPELINE_CONFIG" "$PIPELINE_CONFIG" "$_cv_dir"
+        printf 'pipeline-config: reason=config-legacy-file %s -- convert: bash scripts/pipeline-config.sh --convert %s %s/%s.json\n' \
+          "$PIPELINE_CONFIG" "$PIPELINE_CONFIG" "$_cv_dir" "$_CFG_PROJECT_NAME"
         return 0 ;;
       *) return 0 ;;
     esac

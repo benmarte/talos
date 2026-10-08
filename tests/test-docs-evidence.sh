@@ -23,7 +23,6 @@ CHANGELOG="$TALOS_ROOT/CHANGELOG.md"
 SCRIPTS="$TALOS_ROOT/scripts"
 EVIDENCE_SH="$SCRIPTS/pipeline-evidence.sh"
 CONFIG_SH="$SCRIPTS/pipeline-config.sh"
-YML_EXAMPLE="$TALOS_ROOT/talos.pipeline.yml.example"
 JSON_EXAMPLE="$TALOS_ROOT/talos.pipeline.json.example"
 
 flat() { tr '\n' ' ' | tr -s ' '; }
@@ -309,11 +308,6 @@ if grep -qF '(false, 10, 20, attach, user-facing)' "$CONFIG_SH" \
   pass "pipeline-config.sh comment says (false, 10, 20, attach, user-facing)"
 else fail "pipeline-config.sh comment says (false, 10, 20, attach, user-facing)"; fi
 
-yml_flat="$(flat < "$YML_EXAMPLE")"
-check_has "$yml_flat" 'evidence.max_files: integer 1-100. Default: 10.' "yml example: max_files default 10"
-check_has "$yml_flat" 'evidence.max_mb: integer 1-100. Default: 20.' "yml example: max_mb default 20"
-check_lacks "$yml_flat" 'evidence.max_files: integer 1-100. Default: 12.' "yml example: no max_files default 12"
-check_lacks "$yml_flat" 'evidence.max_mb: integer 1-100. Default: 25.' "yml example: no max_mb default 25"
 
 json_note="$(python3 -I -c '
 import json, sys

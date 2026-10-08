@@ -627,7 +627,7 @@ fr 42 qa --pr 9
 assert_eq "verdict=block
 budget=talos:budget exceeded issue=42 used=120 limit=100 effective=100 pct=120 unrecorded=0
 reason=budget-exceeded
-blocked_by=talos.pipeline.yml:limits.tokens_per_issue (explicit)" "$OUT" "block: a budget stop prints the line, the reason and BLOCKED_BY"
+blocked_by=talos.pipeline.json:limits.tokens_per_issue (explicit)" "$OUT" "block: a budget stop prints the line, the reason and BLOCKED_BY"
 assert_eq "0" "$(called record-attempt)" "block: a budget stop records no attempt"
 assert_contains "$(journal)" "vcs label-pr 9 --add pipeline:blocked" "block: a budget stop sets pipeline:blocked on the PR"
 assert_contains "$(journal)" "vcs label-issue 42 --add pipeline:blocked" "block: a budget stop sets pipeline:blocked on the issue"
@@ -646,7 +646,7 @@ assert_eq "verdict=block
 count=3
 total=3
 reason=max-fix-attempts
-blocked_by=talos.pipeline.yml:limits.max_fix_attempts (explicit)" "$OUT" "block: the per-stage ceiling"
+blocked_by=talos.pipeline.json:limits.max_fix_attempts (explicit)" "$OUT" "block: the per-stage ceiling"
 assert_contains "$(journal)" "vcs label-pr 9 --add pipeline:blocked" "block: a ceiling sets pipeline:blocked on the PR"
 assert_contains "$(journal)" "vcs label-issue 42 --add pipeline:blocked" "block: a ceiling sets pipeline:blocked on the issue"
 assert_eq "0" "$(journal | grep -c 'remove pipeline:blocked')" "block: a ceiling never unblocks"
@@ -655,7 +655,7 @@ assert_gate "block (max-fix-attempts)"
 set_stub record-attempt 1 "stage=qa count=1 total=8" "pipeline-vcs: record-attempt: BLOCKED — total dispatches (8) >= max_total_dispatches (8)"
 fr 42 qa --pr 9
 assert_contains "$OUT" "reason=max-total-dispatches" "block: the total-dispatches ceiling"
-assert_contains "$OUT" "blocked_by=talos.pipeline.yml:limits.max_total_dispatches (explicit)" "block: BLOCKED_BY names the ceiling record-attempt reported"
+assert_contains "$OUT" "blocked_by=talos.pipeline.json:limits.max_total_dispatches (explicit)" "block: BLOCKED_BY names the ceiling record-attempt reported"
 set_stub record-attempt 1 "" "pipeline-vcs: record-attempt: could not resolve head SHA for PR #9"
 fr 42 qa --pr 9
 assert_contains "$OUT" "reason=record-failed" "block: a record-attempt that fails without a ceiling fails closed"

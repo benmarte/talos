@@ -14,7 +14,7 @@ export TMPDIR="$PRIV_TMP"
 
 SETUP="${SETUP_FILE:-$TALOS_ROOT/skills/setup/SKILL.md}"
 GUIDE="$TALOS_ROOT/docs/user-guide.md"
-EXAMPLE="$TALOS_ROOT/talos.pipeline.yml.example"
+EXAMPLE="$TALOS_ROOT/talos.pipeline.json.example"
 CHANGELOG="$TALOS_ROOT/CHANGELOG.md"
 flat() { tr '\n' ' ' < "$1" | tr -s ' '; }
 SN="$(flat "$SETUP")"
@@ -45,21 +45,18 @@ assert_contains "$Q" "skip" "the file-provider skip is spelled out"
 
 # ── Step 7 template: the status: block, YAML and JSON ────────────────────────
 T="$(step '## Step 7 ')"
-assert_contains "$T" "status:" "Step 7 template has a status: block"
-assert_contains "$T" "enabled: <true|false>" "the status block is enabled true when accepted, false otherwise"
-for k in file fragments_dir log_days log_max resume_max_lines; do
-  assert_contains "$T" "# $k:" "the status block shows $k as a commented default"
-done
+assert_contains "$T" '"status": {' "Step 7 template has a status key (json, #526)"
+assert_contains "$T" '"enabled": <true|false>' "the status key is enabled true when accepted, false otherwise"
+assert_not_contains "$T" "# file:" "the JSON template shows no commented status keys (JSON has no comments, #526; an absent key keeps its table default)"
 assert_contains "$T" '"status": { "enabled": true }' "a JSON config gets a status key when accepted"
-assert_contains "$T" '"status": { "enabled": false }' "declined in JSON writes an explicit enabled: false (#456)"
-assert_contains "$T" "declined writes the same block with \`enabled: false\`, active and not commented out" "declined in YAML writes status: with enabled: false, active (#456)"
-assert_not_contains "$T" "the whole block commented out" "a YAML decline no longer comments the whole block out (#456)"
+assert_contains "$T" '"status": { "enabled": false }' "declined writes an explicit enabled: false (#456)"
+assert_contains "$T" "an ACTIVE block, never omitted" "declined writes an active status key so a re-run never asks again (#456)"
 
 # ── The step that runs init, and what it tells the user ──────────────────────
 S="$(step '## Step 7b')"
 assert_contains "$S" "bash scripts/pipeline-status-file.sh init" "Step 7b runs pipeline-status-file.sh init"
 assert_contains "$S" "commit" "Step 7b tells the user to commit"
-assert_contains "$S" "talos.pipeline.yml" "Step 7b names the config in the commit advice"
+assert_contains "$S" "talos.pipeline.json" "Step 7b names the config in the commit advice"
 assert_contains "$S" "together" "Step 7b says to commit the config and the status file together"
 assert_contains "$S" "does not commit" "Step 7b says init does not commit"
 assert_contains "$S" "vcs.provider: file" "Step 7b is skipped for the file provider"
@@ -102,7 +99,7 @@ mkdir -p "$REPO" && cd "$REPO" || exit 1
 git init -q -b main
 git config user.email t@example.com; git config user.name t
 ln -s "$TALOS_ROOT/scripts" scripts
-printf 'base_branch: main\nvcs:\n  provider: github\nstatus:\n  enabled: true\n' > talos.pipeline.yml
+printf '%s\n' '{"base_branch": "main", "vcs": {"provider": "github"}, "status": {"enabled": true}}' > talos.pipeline.json
 out="$(bash "$SANDBOX/init-only.sh" 2>&1)"; rc=$?
 assert_eq "0" "$rc" "the skill's init command exits 0 in a sandbox repo"
 assert_contains "$out" "created TALOS_STATUS.md" "init reports it created the file"
