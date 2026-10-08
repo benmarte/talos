@@ -35,23 +35,23 @@ assert_eq "" "$out" "valid tokens/tool-uses: no stdout"
 
 _check="$(python3 -c "
 import json
-d = json.loads(open('.talos/events.jsonl').read().strip())
+d = json.loads(open('.git/talos/events.jsonl').read().strip())
 print('OK' if d.get('tokens') == 1234 and d.get('tool_uses') == 7 and d.get('duration_s') == 12 else 'BAD:' + json.dumps(d))
 ")"
 assert_eq "OK" "$_check" "valid tokens/tool-uses: the log line carries tokens/tool_uses/duration_s"
 
 # ── (b) Omitted -> null in both ─────────────────────────────────────────────
-rm -f .talos/events.jsonl
+rm -f .git/talos/events.jsonl
 bash "$HOOKS" post_stage qa qa 42 --verdict PASS >/dev/null 2>"$SANDBOX/err.log"
 _check="$(python3 -c "
 import json
-d = json.loads(open('.talos/events.jsonl').read().strip())
+d = json.loads(open('.git/talos/events.jsonl').read().strip())
 print('OK' if d.get('tokens') is None and d.get('tool_uses') is None else 'BAD:' + json.dumps(d))
 ")"
 assert_eq "OK" "$_check" "omitted tokens/tool-uses: null in the log line"
 
 # ── (c) Invalid --tokens -> null + one stderr note, still exits 0 ──────────
-rm -f .talos/events.jsonl
+rm -f .git/talos/events.jsonl
 out="$(bash "$HOOKS" post_stage qa qa 42 --verdict PASS --tokens abc 2>"$SANDBOX/err.log")"
 rc=$?
 assert_eq "0" "$rc" "invalid --tokens: post_stage still exits 0"
@@ -59,7 +59,7 @@ assert_contains "$(cat "$SANDBOX/err.log")" "not a non-negative integer" \
   "invalid --tokens: one stderr note explains the fallback"
 _check="$(python3 -c "
 import json
-d = json.loads(open('.talos/events.jsonl').read().strip())
+d = json.loads(open('.git/talos/events.jsonl').read().strip())
 print('OK' if d.get('tokens') is None else 'BAD:' + json.dumps(d))
 ")"
 assert_eq "OK" "$_check" "invalid --tokens: null in the log line, not the bad string"
@@ -67,7 +67,7 @@ assert_eq "OK" "$_check" "invalid --tokens: null in the log line, not the bad st
 # ── Fixture log for the cost summary: two issues, four roles, one explicit
 # zero-tokens event (validator on issue 42) distinct from the null-tokens
 # event (developer on issue 43) ─────────────────────────────────────────────
-rm -f .talos/events.jsonl
+rm -f .git/talos/events.jsonl
 bash "$HOOKS" post_stage qa qa 42 --verdict PASS --tokens 100 --tool-uses 5 --duration-s 10 >/dev/null 2>&1
 bash "$HOOKS" post_stage qa qa 42 --verdict PASS --tokens 50 --tool-uses 2 --duration-s 5 >/dev/null 2>&1
 bash "$HOOKS" post_stage reviewer reviewer 42 --verdict PASS --tokens 200 --tool-uses 1 --duration-s 20 >/dev/null 2>&1
@@ -129,7 +129,7 @@ assert_eq "0" "$_zero_unrecorded_count" "cost: an explicit --tokens 0 event is n
 
 # ── (i) RESTAMP_PASS/RESTAMP_FAIL verdicts are counted in the restamp
 #        column (#258), separate from full-stage events/tokens ────────────
-rm -f .talos/events.jsonl
+rm -f .git/talos/events.jsonl
 bash "$HOOKS" post_stage qa qa 44 --verdict PASS --tokens 100 --tool-uses 5 --duration-s 10 >/dev/null 2>&1
 bash "$HOOKS" post_stage qa qa 44 --verdict RESTAMP_PASS --tokens 20 --tool-uses 1 --duration-s 2 >/dev/null 2>&1
 bash "$HOOKS" post_stage security security 44 --verdict RESTAMP_FAIL --tokens 15 --tool-uses 1 --duration-s 1 >/dev/null 2>&1

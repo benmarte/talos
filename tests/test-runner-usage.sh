@@ -32,12 +32,12 @@ FIX="$TALOS_ROOT/tests/fixtures/runner-usage"
 export RUNNER_LOG="$SANDBOX/runner.log"
 OUT="$SANDBOX/out.txt"
 ERR="$SANDBOX/err.txt"
-EVLOG="$SANDBOX/.talos/events.jsonl"
+EVLOG="$SANDBOX/.git/talos/events.jsonl"
 SC_PATHFILE="$SANDBOX/sidecar.path"
 export SC_PATHFILE
 
 reset() {
-  rm -rf "${SANDBOX:?}/.talos" "${SANDBOX:?}/talos.pipeline.json"
+  rm -rf "${SANDBOX:?}/.talos" "${SANDBOX:?}/.git/talos" "${SANDBOX:?}/talos.pipeline.json"
   : > "$RUNNER_LOG"
   unset STUB_CLAUDE_EXIT STUB_CLAUDE_STDERR STUB_CLAUDE_STDOUT STUB_CLAUDE_HOOK \
         STUB_CLAUDE_JSON_FILE STUB_CLAUDE_TEXT_FILE \
@@ -78,7 +78,7 @@ assert_contains "$(claude_argv)" "[--setting-sources] [project] [--output-format
 set_cfg '{"agents": {"capture_usage": false}}'
 TALOS_ISSUE=7 bash "$AGENT" developer "the task text" >"$SANDBOX/text-mode.out" 2>/dev/null
 rm -f talos.pipeline.json
-rm -rf "${SANDBOX:?}/.talos"
+rm -rf "${SANDBOX:?}/.talos" "${SANDBOX:?}/.git/talos"
 stage
 if cmp -s "$OUT" "$SANDBOX/text-mode.out" && cmp -s "$OUT" "$FIX/claude-ok.txt"; then
   pass "claude: stdout with the JSON capture is byte-identical to the text-mode stdout"
@@ -98,7 +98,7 @@ set_cfg '{"agents": {"model": "sonnet"}}'
 stage
 assert_eq '"sonnet"' "$(event_field stage_complete model)" "claude: the primary runner names its config-resolved model"
 set_cfg '{"agents": {"model": "sonnet", "roles": {"developer": {"model": "opus"}}}}'
-rm -rf "${SANDBOX:?}/.talos"
+rm -rf "${SANDBOX:?}/.talos" "${SANDBOX:?}/.git/talos"
 stage
 assert_eq '"opus"' "$(event_field stage_complete model)" "claude: a role model wins over agents.model"
 
@@ -192,7 +192,7 @@ set_cfg '{"agents": {"runner_args": ["--output-format=text"]}}'
 assert_eq "0" "$(claude_argv | grep -c -- '\[json\]')" "runner_args --output-format=text: no capture flag either"
 # a value other than the literal false leaves capture on
 set_cfg '{"agents": {"capture_usage": true}}'
-rm -rf "${SANDBOX:?}/.talos"; stage
+rm -rf "${SANDBOX:?}/.talos" "${SANDBOX:?}/.git/talos"; stage
 assert_eq "2722" "$(event_field stage_complete tokens)" "capture_usage true: tokens recorded"
 
 # ═══ 4. attribution: the runner that ran, role-routed or fallback ═══════════
@@ -205,7 +205,7 @@ assert_eq "null" "$(event_field stage_complete tokens)" "role-routed: codex expo
 assert_contains "$(errtxt)" "talos:usage runner=codex tokens=null" "role-routed: marker names codex"
 assert_eq '"sonnet"' "$(event_field stage_complete model)" "role-routed: the config-resolved model is kept (post_stage skips its fallback when --runner is given)"
 # a role not routed elsewhere still names the global runner
-rm -rf "${SANDBOX:?}/.talos"
+rm -rf "${SANDBOX:?}/.talos" "${SANDBOX:?}/.git/talos"
 export STUB_CLAUDE_JSON_FILE="$FIX/claude-ok.json"
 stage developer
 assert_eq '"claude"' "$(event_field stage_complete runner)" "an unrouted role names the global runner"

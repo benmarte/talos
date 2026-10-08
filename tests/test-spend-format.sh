@@ -17,8 +17,8 @@ make_sandbox || exit 1
 
 EVENTS="$TALOS_ROOT/scripts/pipeline-events.sh"
 MODULE_DIR="$TALOS_ROOT/scripts"
-LOG="$SANDBOX/.talos/events.jsonl"
-mkdir -p "$SANDBOX/.talos"
+LOG="$SANDBOX/.git/talos/events.jsonl"
+mkdir -p "$SANDBOX/.git/talos"
 
 # fmt EXPR -- evaluate a python expression with the module's functions bound
 # as m.<name>, importing by explicit path the way pipeline-events.sh does

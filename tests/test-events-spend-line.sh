@@ -20,8 +20,8 @@ set -u
 make_sandbox || exit 1
 
 EVENTS="$TALOS_ROOT/scripts/pipeline-events.sh"
-LOG="$SANDBOX/.talos/events.jsonl"
-mkdir -p "$SANDBOX/.talos"
+LOG="$SANDBOX/.git/talos/events.jsonl"
+mkdir -p "$SANDBOX/.git/talos"
 
 # reset_log -- empty the sandbox events log.
 reset_log() { : > "$LOG"; }

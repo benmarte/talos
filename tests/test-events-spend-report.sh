@@ -23,8 +23,8 @@ export TMPDIR="$SANDBOX/tmp"; mkdir -p "$TMPDIR"
 export LC_ALL=C
 
 EVENTS="$TALOS_ROOT/scripts/pipeline-events.sh"
-LOG="$SANDBOX/.talos/events.jsonl"
-mkdir -p "$SANDBOX/.talos"
+LOG="$SANDBOX/.git/talos/events.jsonl"
+mkdir -p "$SANDBOX/.git/talos"
 
 reset_log() { : > "$LOG"; }
 set_cfg() { printf '%s\n' "$1" > "$SANDBOX/talos.pipeline.json"; }

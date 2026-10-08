@@ -137,9 +137,9 @@ assert_eq "$KEYS_CI" "$(keys_of)" "ci_runs still lands between tool_uses and ts 
 assert_eq '"opus"' "$(model_of --model opus --verdict PASS --pr 5)" "--model before other flags"
 
 # The same value reaches the events log (sandbox repo, never the real one).
-rm -f "$SANDBOX/.talos/events.jsonl"
+rm -f "$SANDBOX/.git/talos/events.jsonl"
 bash "$HOOKS" post_stage stage_complete qa 42 --verdict PASS --model opus >/dev/null 2>&1
-assert_eq '"opus"' "$(python3 -c "import json; print(json.dumps(json.loads(open('$SANDBOX/.talos/events.jsonl').readlines()[-1])['model']))")" "events log line records the --model value"
+assert_eq '"opus"' "$(python3 -c "import json; print(json.dumps(json.loads(open('$SANDBOX/.git/talos/events.jsonl').readlines()[-1])['model']))")" "events log line records the --model value"
 
 # A hostile --model value is data, never code.
 bash "$HOOKS" post_stage stage_complete qa 42 --verdict PASS --model '$(touch '"$SANDBOX"'/pwned)"; touch '"$SANDBOX"'/pwned2' >/dev/null 2>&1

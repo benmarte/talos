@@ -120,7 +120,7 @@ assert_contains "$usage_line" 'show as unrecorded' "usage section: adapter and p
 # ── (c) behaviour: `talos.sh done` against the real pipeline-events.sh ────────
 # The sandbox's scripts/: the real ones, except pipeline-vcs.sh is a recorder and the
 # notify and hook scripts do nothing (the real hook would add events to the log).
-mkdir -p scripts .talos
+mkdir -p scripts .git/talos
 for s in "$TALOS_ROOT"/scripts/*; do ln -s "$s" "scripts/$(basename "$s")"; done
 rm -f scripts/pipeline-vcs.sh scripts/pipeline-notify.sh scripts/pipeline-hooks.sh
 cat > scripts/pipeline-vcs.sh <<'STUB'
@@ -135,7 +135,7 @@ STUB
 printf '#!/usr/bin/env bash\ncat > /dev/null\nexit 0\n' > scripts/pipeline-notify.sh
 printf '#!/usr/bin/env bash\nexit 0\n' > scripts/pipeline-hooks.sh
 export SPEND_STUB_DIR="$SANDBOX"
-LOG=".talos/events.jsonl"
+LOG=".git/talos/events.jsonl"
 ev() {  # ROLE ISSUE PR TOKENS
   printf '{"event":"%s","role":"%s","issue":%s,"pr":%s,"verdict":"PASS","tokens":%s,"tool_uses":3,"duration_s":60,"ts":"2026-10-03T00:00:00Z"}\n' \
     "$1" "$1" "$2" "$3" "$4" >> "$LOG"

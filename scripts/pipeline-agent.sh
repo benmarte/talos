@@ -708,6 +708,10 @@ _prov_mark_down() {
   local _file _secs
   _file="$(_prov_path)" || { echo "pipeline-agent: [warn] not in a git repository -- cannot record $1 as down" >&2; return 0; }
   _secs="$(cfg agents.provider_down_s)"
+  # #517: providers.json deliberately stays in-tree (<root>/.talos/) --
+  # self-ignore .talos/ via info/exclude before mkdir, never via a tracked
+  # .gitignore commit. The helper is idempotent and never fails.
+  _talos_ignore_in_tree
   mkdir -p "$(dirname "$_file")" 2>/dev/null || { echo "pipeline-agent: [warn] cannot create $(dirname "$_file") -- $1 not recorded as down" >&2; return 0; }
   if command -v with_lock >/dev/null 2>&1; then
     with_lock "$_file" 5 -- _prov_write "$_file" "$1" "$2" "$_secs" \

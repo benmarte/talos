@@ -815,8 +815,10 @@ already has Talos labels re-runs `bash scripts/bootstrap-labels.sh` once so
   `docs/status.d/<issue>-<pr>.md` (`status.fragments_dir`), and the
   orchestrator folds it into the log after the merge. The directory is
   `docs/status.d/`, not `.talos/status.d/`, because it must be a tracked
-  directory: in a consumer repo `.talos/` is gitignored (the fragment would
-  silently never enter the PR) or untracked (`assert-sync` aborts on it).
+  directory: since #517 Talos auto-ignores the in-tree `.talos/` via
+  `.git/info/exclude` before writing there, so a fragment placed under
+  `.talos/` would silently never enter the PR (and where Talos has written no
+  in-tree `.talos/`, it is simply untracked and `assert-sync` aborts on it).
 - **Caps and archive.** An entry is at most 3 lines and 400 characters. The
   log keeps entries newer than `status.log_days` (30) and at most
   `status.log_max` (50); older ones move to `status/archive/YYYY-MM.md`
@@ -1497,7 +1499,7 @@ bash scripts/pipeline-worktree.sh handoff <N>                                   
 
 - **What it does.** Stages everything with `git add -A` (never `.talos/` or `.claude/worktrees/`, and never a path matching the `check-pr-files` default patterns or `merge.forbidden_files`, read from the same list and matched case-insensitively; those are named on stderr, and checkpoint stops with exit 1 if it cannot resolve the list), commits `wip(#<N>): checkpoint`, pushes `HEAD:refs/heads/<branch>` (never forced) and refreshes the handoff. The current branch must match `(fix|feat)/issue-<N>-`, so it works in a worktree and under `isolation: branch`, and can never commit on `main`. Nothing to commit still refreshes the handoff and retries an unpushed commit.
 - **Push policy.** A first pass pushes. A fix round passes `--local` (commit only): a push under an open PR starts CI and moves the head the approvals are stamped on. The WIP subjects appear in the squash commit body. The push never runs inside the repo-wide worktree lock.
-- **The handoff file.** `<repo-root>/.talos/handoff/<N>.json` (repo root = the parent of the git common dir, like the events log): mode 0600 in a 0700 directory, outside every git tree, never staged or pushed, so it cannot reach a PR diff or the squash commit. Trade-off: it is **this machine only**; failover and resume on one machine work, cross-machine resume does not. Fields: `v` (1), `issue`, `branch`, `head` (the checkpoint commit), `stage`, `criteria_done` and `criteria_remaining` (1-based positions in the spec's acceptance list, integers only), `last_verify` (`cmd`, `rc`, up to 20 failing test names; never output), `decisions` (up to 8 one-line strings), `next_step`, `runner` and `model` (only when given by flag or `TALOS_RUNNER`/`TALOS_MODEL`; never guessed) and `ts` (UTC). At most 8 KiB; unknown keys and control characters are rejected. Fields left out of the stdin object keep their earlier value, so the failover path (which passes none) refreshes `head` and `ts`.
+- **The handoff file.** `<git common dir>/talos/handoff/<N>.json` — the run-state directory, outside every git tree (#517; the old `<repo-root>/.talos/handoff/` was inside the tree in a normal clone): mode 0600 in a 0700 directory, never staged or pushed, so it cannot reach a PR diff or the squash commit, and an agent's `git add -A` can never commit it. Trade-off: it is **this machine only**; failover and resume on one machine work, cross-machine resume does not. Fields: `v` (1), `issue`, `branch`, `head` (the checkpoint commit), `stage`, `criteria_done` and `criteria_remaining` (1-based positions in the spec's acceptance list, integers only), `last_verify` (`cmd`, `rc`, up to 20 failing test names; never output), `decisions` (up to 8 one-line strings), `next_step`, `runner` and `model` (only when given by flag or `TALOS_RUNNER`/`TALOS_MODEL`; never guessed, omitted when absent). State left at the old location is never read, migrated, or cleaned.
 - **No secrets.** A string that looks like a credential (`ghp_`, `sk-`, `AKIA...`, `-----BEGIN`, a JWT, `Bearer `, `://user:pass@`, `token=`, any unbroken 32+ character `[A-Za-z0-9_-]` run) or that contains the value of an environment variable whose name has `TOKEN`, `KEY`, `SECRET` or `PASSWORD` is rejected (exit 4, previous file kept, only the field name on stderr), never redacted. Shorten a very long test name if it trips the 32-character rule.
 - **Exit codes.** 0 ok; 1 refused (wrong branch, git failure); 2 usage; 3 push failed (commit kept locally, handoff written, nothing reported as pushed); 4 handoff rejected (commit and push done).
 - **`handoff <N>`** prints the validated JSON and exits 0, or exits 1 with one line when the file is absent, invalid or stale (the branch is gone, or `head` is not on it, so a re-created branch never inherits an old handoff). It works from any directory of the repo.
@@ -1599,8 +1601,8 @@ cat >> "$HOME/.talos-events.jsonl"
 This is exactly what Talos's built-in events log does out of the box for
 every project -- see below -- so a custom `hooks.post_stage` command like
 this one is only needed when the destination has to be something other than
-the repo-local `.talos/events.jsonl` file (a different path, a remote sink,
-etc).
+the events log at `<git common dir>/talos/events.jsonl` (#517: outside every
+git tree) -- a different path, a remote sink, etc.
 
 ### One script, both hooks
 
@@ -1675,14 +1677,21 @@ schema shown above) is also appended, as one JSON line, to a local audit log
 by default, so every project gets a durable local record of what happened in
 a run for free, without wiring up an external sink.
 
-**Where.** The log path (`events.path`, default `.talos/events.jsonl`) is
-resolved relative to the **main repository root**, via `git rev-parse
---git-common-dir` -- not the current worktree's own `.git` dir. Every linked
-worktree of a repo shares one common dir (git-common-dir(5)), so a
-developer/QA/reviewer stage running from inside a per-issue worktree still
-appends to the single log file at the main checkout, never a worktree-local
-copy. A relative `events.path` is joined onto that resolved root; an
-absolute one is used as-is (the status line refuses it). `.talos/` is gitignored by default.
+**Where.** The log path (`events.path`, default `talos/events.jsonl`) is
+resolved relative to the **git common dir**, via `git rev-parse
+--git-common-dir` -- not the current worktree's own `.git` dir, and not the
+repo root. Every linked worktree of a repo shares one common dir
+(git-common-dir(5)), so a developer/QA/reviewer stage running from inside a
+per-issue worktree still appends to the single log file, never a
+worktree-local copy. The log lives at `<git common dir>/talos/events.jsonl`,
+OUTSIDE every git tree (#517): never staged or pushed, and an agent's
+`git add -A` can never commit it. A relative `events.path` is joined onto
+the resolved common dir; an absolute one is used as-is (the status line
+refuses it). The deliberately in-tree `.talos/` files (the per-worktree
+`.talos/env`, `providers.json`, the evidence dir) are auto-ignored via
+`.git/info/exclude` before their first write -- Talos never edits a tracked
+`.gitignore`, and repos with tracked `.talos/` content get one stderr
+warning per command and nothing else.
 
 **Concurrency.** Appends are a single `printf '%s\n' >>` -- one `O_APPEND`
 write syscall. A JSON event line is well under the POSIX `PIPE_BUF` atomic
@@ -1698,7 +1707,7 @@ code or affects the pipeline.
 ```yaml
 events:
   enabled: true                 # default true
-  path: ".talos/events.jsonl"   # relative to the main repo root, unless absolute
+  path: "talos/events.jsonl"    # relative to the git common dir, unless absolute
 ```
 
 **Reading the log.** Use `scripts/pipeline-events.sh` rather than parsing the
@@ -1948,9 +1957,10 @@ Limits to know about. A log over 32 MB is not read at all (the line prints
 nothing, never partial totals). The status line honours `events.path`, but
 stricter than the event writer: it reads it only from the project config,
 as JSON or block-style YAML (flow-style `events: {path: x}` silently falls
-back to the default log), and only inside the repo; an absolute path, a `..`
-that leaves the repo root, a symlinked log or a location outside the root
-prints nothing. The `budget` segment runs only when a project config file
+back to the default log), and only inside the git common dir (#517: the
+default log resolves relative to it); an absolute path, a `..`
+that leaves the common dir, a symlinked log or a location outside the common
+dir prints nothing. The `budget` segment runs only when a project config file
 mentions `tokens_per_issue`; it calls `pipeline-budget.sh` with a 2 s timeout
 (`TALOS_STATUS_TIMEOUT_S` minus 1 s when that is raised) in its own process group. On a 10,000-event log the line takes about 72 ms on
 macOS and 39 ms on Linux with the budget off, and about 324 ms on macOS with it
@@ -2697,10 +2707,13 @@ when `pipeline-worktree.sh checkpoint` exists (skipped with one
 `talos:failover checkpoint-skipped` note otherwise; the files stay in the
 worktree), `talos:failover role=<r> from=<a> to=<b> reason=<class:detail>` is
 printed on stderr, and a `failover` event (role `orchestrator`, so it never
-counts as an unrecorded stage run) is appended to `.talos/events.jsonl`. The
-next stage, in this checkout or any worktree of it, skips a runner whose entry
-has not expired; after `down_until` it is tried again. The file lives next to
-`events.jsonl` (the repository's common git directory), is written atomically
+counts as an unrecorded stage run) is appended to the events log
+(`<git common dir>/talos/events.jsonl`, #517). The next stage, in this
+checkout or any worktree of it, skips a runner whose entry has not expired;
+after `down_until` it is tried again. `providers.json` stays deliberately
+in-tree at `<repo-root>/.talos/providers.json` -- auto-ignored via
+`.git/info/exclude` before its first write, never via a tracked
+`.gitignore` commit -- is written atomically
 under `with_lock`, and a missing, corrupt or unreadable file reads as "nothing
 is down" with one warning: bookkeeping never blocks a stage. The stage's
 `stage_complete` event names the runner that actually ran (and a null model)
@@ -3114,7 +3127,7 @@ If your setup predates the config and secrets work (epic #437), check these once
 | `hooks.post_stage` | `""` (disabled) | Shell command run after every verdict, approval, block, and merge — fire-and-forget with the same never-block contract as `hooks.pre_dispatch`. Receives a JSON outcome event on stdin. See [Hooks](../README.md#hooks) below for the schema. |
 | `hooks.timeout_s` | `30` | Seconds `hooks.pre_dispatch` / `hooks.post_stage` may run before being killed. Must be a positive integer; a non-integer or non-positive value is rejected (stderr warning, falls back to the default). |
 | `events.enabled` | `true` | Whether every `hooks.post_stage` payload is also appended, as one JSON line, to the local events log — independently of whether `hooks.post_stage` itself is configured. See [Events log](../README.md#events-log) below. |
-| `events.path` | `.talos/events.jsonl` | Path to the events log, relative to the **main repository root** (resolved via `git rev-parse --git-common-dir`, so every linked worktree of the same repo appends to the one file) unless already absolute (`talos-status.sh` refuses an absolute path or one outside the repo). |
+| `events.path` | `talos/events.jsonl` | Path to the events log, relative to the **git common dir** (resolved via `git rev-parse --git-common-dir`, so every linked worktree of the same repo appends to the one file and the log lives outside every git tree, #517) unless already absolute (`talos-status.sh` refuses an absolute path or one outside the common dir). |
 | `pr.draft` | `true` | Draft PRs, the default since #435 (#332): the developer opens a DRAFT PR, every stage that needs no CI runs while it is a draft, and `ready-pr` triggers the one CI run (see [Draft PRs](../README.md#draft-prs-prdraft-default-332-435)). `false` keeps the ready flow, where every push runs CI. Supported on `github`, `gitlab` and `azure`; `github-api` and `file` cannot open draft PRs and always use the ready flow (`github-api` warns once). On `github`, Step 0 also checks your workflows with `scripts/pipeline-draft-check.sh` and warns when CI does not skip drafts; when a job skips drafts but `ready_for_review` is missing from `on.pull_request.types` and the key is unset, the run uses the ready flow instead, because QA would wait for a run that never starts. |
 | `status.enabled` | `false` | Opt-in switch for the built-in status file (epic #333). Off by default: with it unset or `false`, `/talos:pipeline` never calls `pipeline-status-file.sh` and changes no behaviour. With `true`, `/talos:pipeline` maintains the log and the Resume block (see "Status file and resume"). |
 | `status.file` | `TALOS_STATUS.md` | Path of the status file, relative to the repo root. |
@@ -3127,7 +3140,7 @@ If your setup predates the config and secrets work (epic #437), check these once
 | `status.resume_max_lines` | `40` | Maximum number of lines in the resume section. Must be a positive integer; an invalid value warns once and the default is used. |
 | `evidence.enabled` | `false` | Opt-in switch for evidence capture (#352): QA attaches screenshots or recordings of a user-facing change to the PR. Strict `true`/`false`; anything else warns once and reads as absent. `/talos:setup` asks once and writes it. See [Evidence capture](../README.md#evidence-capture-opt-in). |
 | `evidence.command` | unset (empty means agent capture) | Shell command that writes the files, run as `bash -c` at the repo root, only when `evidence.enabled` is `true`. Empty or absent: QA's browser skill saves screenshots itself. At most 2000 characters. |
-| `evidence.dir` | `.talos/evidence` | Directory the files are written to, relative to the repo root. It must be git-ignored. |
+| `evidence.dir` | `.talos/evidence` | Directory the files are written to, relative to the repo root. The default `.talos/` location is auto-ignored via `.git/info/exclude` by the in-tree guard (#517, no gitignore file); a custom dir outside `.talos/` is NOT covered by that guard (it only appends `.talos/`) — set such a directory only if the repo already ignores it. |
 | `evidence.include` | unset (png, jpg, jpeg, gif, webm, mp4, mov) | 1-20 basename globs narrowing which files are attached. Never widens the allowlist: svg and html are never published. |
 | `evidence.when` | `user-facing` | `user-facing` or `always`. |
 | `evidence.store` | `attach` | `attach` is the only value: files go up with `gh pr comment --attach`. |

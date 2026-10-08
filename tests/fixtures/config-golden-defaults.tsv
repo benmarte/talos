@@ -52,7 +52,7 @@ comments.enabled	true	table	docs
 comments.header		explicit	pipeline-events.sh
 comments.templates_dir	templates/comments	table	pipeline-vcs.sh
 events.enabled	true	table	pipeline-hooks.sh
-events.path	.talos/events.jsonl	table	pipeline-events.sh,pipeline-hooks.sh
+events.path	talos/events.jsonl	table	pipeline-events.sh,pipeline-hooks.sh
 evidence.command		empty	pipeline-evidence.sh
 evidence.dir	.talos/evidence	table	pipeline-evidence.sh:_EVIDENCE_DEFAULT_DIR
 evidence.enabled	false	table	pipeline-evidence.sh

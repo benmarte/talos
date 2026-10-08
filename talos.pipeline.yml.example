@@ -535,17 +535,21 @@ notifications:
 #   timeout_s: 30                    # seconds before either hook is killed;
 #                                     # must be a positive integer (default 30)
 
-# ── Local events log (#183) ────────────────────────────────────────────────────
+# ── Local events log (#183, relocated out of the tree by #517) ───────────────
 # Every post_stage payload (same schema as hooks.post_stage above) is also
 # appended, as one JSON line, to a local audit log -- independently of
-# whether hooks.post_stage is configured at all. Gitignored by default
-# (.talos/ is in .gitignore). Read it with:
+# whether hooks.post_stage is configured at all. The log lives at
+# <git common dir>/talos/events.jsonl, OUTSIDE every git tree: never staged
+# or pushed. The deliberately in-tree .talos/ files (.talos/env,
+# providers.json, the evidence dir) are auto-ignored via
+# .git/info/exclude before their first write -- never via a tracked
+# .gitignore commit. Read it with:
 #   bash scripts/pipeline-events.sh list [--issue N] [--role R] [--event E] [--last K] [--json]
 #   bash scripts/pipeline-events.sh tail [--issue N]
 #   bash scripts/pipeline-events.sh path
 # events:
 #   enabled: true                    # default true; false disables the log entirely
-#   path: ".talos/events.jsonl"      # relative to the MAIN repository root (shared
+#   path: "talos/events.jsonl"       # relative to the GIT COMMON dir (shared
 #                                     # by every linked worktree via `git rev-parse
 #                                     # --git-common-dir`) unless already absolute
 
@@ -566,7 +570,9 @@ notifications:
 # defaults to false, so setting the other keys changes nothing until you opt in.
 # /talos:setup writes this block for you (#349).
 # status.fragments_dir must be a TRACKED directory (hence docs/status.d, not
-# .talos/status.d: .talos/ is gitignored or untracked in a consumer repo).
+# .talos/status.d: since #517 Talos auto-ignores the in-tree .talos/ via
+# .git/info/exclude before writing there, so a fragment under .talos/ would
+# never enter the PR).
 # status:
 #   enabled: false                   # default false (opt-in)
 #   file: "TALOS_STATUS.md"
