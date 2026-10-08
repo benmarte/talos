@@ -30,11 +30,11 @@
 #      a worktree path that isn't an existing absolute directory is a fatal
 #      error (diagnostic to stderr naming the file, exit 2) rather than a
 #      silently-ignored or partially-trusted value. NOTE: this is a
-#      *per-worktree* file at this worktree's own root, not the shared
-#      main-repo .talos/ that pipeline-events.sh's events.jsonl lives under
-#      (that one resolves via `git rev-parse --git-common-dir`, one path
-#      shared by every worktree of a repo). Same ".talos/" name, deliberately
-#      different resolution.
+#      *per-worktree* file at this worktree's own root (deliberately in-tree
+#      and self-ignored via `info/exclude`, #517), not the events.jsonl that
+#      pipeline-events.sh reads: the run state lives at
+#      <git common dir>/talos/, outside every git tree -- one path resolved
+#      via `git rev-parse --git-common-dir`, shared by every worktree of a repo.
 #   3. TALOS_ISSUE_NUMBER / TALOS_WORKTREE_PATH already in the calling
 #      environment (e.g. the adapter path, which exports both before this
 #      script would ever run — re-exporting the same value is a no-op).

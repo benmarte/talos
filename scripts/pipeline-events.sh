@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# pipeline-events.sh — reader for the local .talos/events.jsonl audit log
-# that scripts/pipeline-hooks.sh's post_stage verb appends to (#183). See
+# pipeline-events.sh — reader for the local events.jsonl audit log at
+# <git common dir>/talos/events.jsonl (#517: outside every git tree; the
+# default events.path "talos/events.jsonl" resolves against the git common
+# dir) that scripts/pipeline-hooks.sh's post_stage verb appends to (#183). See
 # pipeline-hooks.sh for the payload schema and the events.enabled/events.path
 # config keys.
 #
@@ -117,26 +119,30 @@ else
   exit 1
 fi
 
+# _talos_state_dir (#517): the one canonical resolver behind
+# _events_log_path. Hard dependency, the same fail-closed pattern as
+# pipeline-cfg-cache.sh above.
+if [ -f "$SCRIPT_DIR/pipeline-paths.sh" ]; then
+  . "$SCRIPT_DIR/pipeline-paths.sh"
+else
+  echo "talos: pipeline-paths.sh missing; reinstall Talos" >&2
+  exit 1
+fi
+
 # _events_log_path -> prints the absolute path to the events log, or nothing
 # (rc 1) if it can't be resolved. Mirrors pipeline-hooks.sh's
-# _events_log_path exactly (same resolution, same events.path default) --
-# see that copy's comment for why --git-common-dir (not --git-dir) is used.
+# _events_log_path exactly (same resolution through _talos_state_dir, same
+# events.path default) -- see that copy's comment for why the GIT COMMON dir
+# (#517), not the repo root or --git-dir, roots relative paths.
 _events_log_path() {
-  local common_dir root path_cfg
-  common_dir="$(git rev-parse --git-common-dir 2>/dev/null)" || return 1
-  [ -n "$common_dir" ] || return 1
-  case "$common_dir" in
-    /*) : ;;
-    *) common_dir="$(cd "$(dirname "$common_dir")" 2>/dev/null && pwd)/$(basename "$common_dir")" ;;
-  esac
-  [ -n "$common_dir" ] || return 1
-  root="$(dirname "$common_dir")"
-
+  local path_cfg state
   path_cfg="$(cfg events.path)"
   case "$path_cfg" in
-    /*) printf '%s' "$path_cfg" ;;
-    *) printf '%s/%s' "$root" "$path_cfg" ;;
+    /*) printf '%s' "$path_cfg"; return 0 ;;
+    '') return 1 ;;
   esac
+  state="$(_talos_state_dir)" || return 1
+  printf '%s/%s' "$(dirname "$state")" "$path_cfg"
 }
 
 cmd_path() {

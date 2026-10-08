@@ -300,13 +300,13 @@ assert_contains "$(cat "$t9_file" 2>/dev/null)" "You are the Project Manager. Is
 # reached ~/.talos/scripts and `cost --line` printed nothing on a global install.
 assert_file_exists "$T9_HOME/.talos/scripts/pipeline-spend-format.py" \
   "--global installs scripts/pipeline-spend-format.py next to the .sh scripts (#393)"
-mkdir -p "$SANDBOX/.talos"
+mkdir -p "$SANDBOX/.git/talos"
 printf '%s\n' '{"event":"developer","role":"developer","issue":7,"pr":null,"verdict":"PASS","tokens":1500,"tool_uses":3,"duration_s":60,"ts":"2026-10-03T00:00:00Z"}' \
-  > "$SANDBOX/.talos/events.jsonl"
+  > "$SANDBOX/.git/talos/events.jsonl"
 t9_line="$(cd "$SANDBOX" && bash "$T9_HOME/.talos/scripts/pipeline-events.sh" cost --issue 7 --line 2>/dev/null)"
 assert_eq "talos: #7 developer done — 2k tokens, 3 tools, 1m00s · issue total 2k (dev 2k)" "$t9_line" \
   "cost --line works from the installed copy (#393)"
-rm -f "$SANDBOX/.talos/events.jsonl"
+rm -f "$SANDBOX/.git/talos/events.jsonl"
 
 # ── Test 10: a NEW scripts/*.sh is installed with zero install.sh edits ─────
 # Build a scratch copy of just what install.sh reads from $SRC, add a brand

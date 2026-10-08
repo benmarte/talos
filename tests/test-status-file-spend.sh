@@ -47,8 +47,8 @@ git branch -M main
 printf '{"vcs": {"provider": "github", "repo": "acme/widget"}, "base_branch": "main", "status": {"enabled": true}}\n' \
   > talos.pipeline.json
 
-LOG="$SANDBOX/.talos/events.jsonl"
-mkdir -p "$SANDBOX/.talos"
+LOG="$SANDBOX/.git/talos/events.jsonl"
+mkdir -p "$SANDBOX/.git/talos"
 
 reset_fixture() {  # fresh bare origin with the seed commit, fresh WORK clone, empty events log
   rm -rf "$UPSTREAM" "$WORK"

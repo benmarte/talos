@@ -453,6 +453,13 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)" || exit 1
 
+# The canonical run-state resolvers (#517): _talos_state_dir (the out-of-tree
+# state directory) and _talos_ignore_in_tree (the info/exclude self-ignore
+# for the deliberately in-tree .talos/ files). Same unconditional source as
+# pipeline-agent.sh; pipeline-paths.sh is part of every install.
+# shellcheck source=pipeline-paths.sh
+. "$SCRIPT_DIR/pipeline-paths.sh"
+
 # The roles `pipeline-agent.sh --resolve-all` lists, in the same order.
 _TALOS_ROLES="validator pm developer qa reviewer security adversarial docs planner"
 
@@ -2940,6 +2947,11 @@ _talos_run_loop() {
                      pipeline-contract.sh pipeline-next-stage.py pipeline-draft-check.sh \
                      pipeline-vcs.sh pipeline-budget.sh pipeline-lock.sh pipeline-agent.sh \
                      pipeline-notify.sh pipeline-hooks.sh pipeline-events.sh
+  # #517: self-ignore the deliberately in-tree .talos/ files (per-worktree
+  # .talos/env, providers.json, the evidence dir) via info/exclude before
+  # the first stage dispatch -- never via a tracked .gitignore commit.
+  # Idempotent and never fails outside a repository.
+  _talos_ignore_in_tree
   TALOS_RUN_PID="$$"; export TALOS_RUN_PID
   # The run releases its own leases on exit (every path): one exit hook.
   _talos_on_exit "_talos_lease_release_run_all"

@@ -8,7 +8,7 @@ use_stubs
 
 WT="$TALOS_ROOT/scripts/pipeline-worktree.sh"
 ORIGIN="$SANDBOX/origin.git"
-HF_DIR="$SANDBOX/.talos/handoff"
+HF_DIR="$SANDBOX/.git/talos/handoff"
 
 git config user.email "test@talos"
 git config user.name "talos test"
@@ -45,7 +45,7 @@ printf 'stray\n' > stray.txt
 bash "$WT" checkpoint 42 </dev/null >/dev/null 2>"$SANDBOX/err"; rc=$?
 assert_eq "1" "$rc" "on main: checkpoint refuses (exit 1)"
 assert_contains "$(cat "$SANDBOX/err")" "nothing staged" "on main: the refusal says nothing was staged"
-assert_eq "?? stray.txt" "$(git status --porcelain stray.txt)" "on main: nothing was staged or committed"
+assert_eq "?? stray.txt" "$(git status --porcelain stray.txt)" "on main: nothing was staged or committed (run-state writes go outside the tree, #517)"
 assert_eq "1" "$(git rev-list --count HEAD)" "on main: no commit was made"
 rm -f stray.txt
 
@@ -65,8 +65,13 @@ assert_not_contains "$(git -C "$W42" log -1 --format=%B)" "skip ci" "the WIP com
 assert_eq "$(git -C "$W42" rev-parse HEAD)" "$(origin_ref fix/issue-42-widget)" "the issue branch is on origin at the checkpoint commit"
 assert_contains "$(git -C "$W42" show --name-only --format= HEAD)" "feature.txt" "git add -A: the new file is in the commit"
 assert_not_contains "$(git -C "$W42" show --name-only --format= HEAD)" ".talos" "nothing under .talos/ is staged"
+# #517: after a successful checkpoint the worktree tree must be pristine --
+# the handoff (and everything the checkpoint writes for itself) lives at
+# <git common dir>/talos, outside every git tree.
+assert_eq "" "$(git -C "$W42" status --porcelain)" "checkpoint: the worktree tree stays clean after all writes (#517)"
+assert_file_absent "$SANDBOX/.talos/handoff" "checkpoint: the old in-tree <repo-root>/.talos/handoff location is never created (#517)"
 HF="$HF_DIR/42.json"
-assert_file_exists "$HF" "handoff written at <repo-root>/.talos/handoff/42.json"
+assert_file_exists "$HF" "handoff written at <git-common-dir>/talos/handoff/42.json (#517: outside every git tree)"
 assert_eq "600" "$(mode "$HF")" "handoff file mode is 0600"
 assert_eq "700" "$(mode "$HF_DIR")" "handoff directory mode is 0700"
 assert_eq "$(git -C "$W42" rev-parse HEAD)" "$(pj "$HF" head)" "handoff head is the checkpoint commit"
@@ -249,7 +254,7 @@ assert_eq "go" "$(pj "$HF" next_step)" "valid update lands"
 mkdir -p "$SANDBOX/elsewhere"
 mv "$HF_DIR" "$SANDBOX/hf-real"; ln -s "$SANDBOX/elsewhere" "$HF_DIR"
 ck '{"next_step":"x"}'
-assert_eq "4" "$RC" "a symlinked .talos/handoff is refused"
+assert_eq "4" "$RC" "a symlinked handoff directory is refused (#517: it now lives under the git common dir)"
 assert_eq "" "$(ls -A "$SANDBOX/elsewhere")" "nothing was written through the symlink"
 rm "$HF_DIR"; mv "$SANDBOX/hf-real" "$HF_DIR"
 
@@ -304,7 +309,7 @@ printf 'c\n' > "$W44/c.txt"; (cd "$W44" && bash "$WT" checkpoint 44 </dev/null >
 assert_file_exists "$HF_DIR/44.json" "setup: handoff for 44"
 bash "$WT" remove 44 >/dev/null
 assert_eq "0" "$([ -d "$W44" ] && echo 1 || echo 0)" "remove <N> removed the worktree"
-assert_file_absent "$HF_DIR/44.json" "remove <N> deleted .talos/handoff/44.json"
+assert_file_absent "$HF_DIR/44.json" "remove <N> deleted the handoff at its common-dir home (#517)"
 bash "$WT" remove 4444 >/dev/null; assert_eq "0" "$?" "remove with nothing to remove still exits 0"
 
 # An unresolvable handoff directory must skip the delete with a note, never rm /<n>.json.
@@ -313,8 +318,11 @@ printf 'f\n' > "$W50/f.txt"; (cd "$W50" && bash "$WT" checkpoint 50 </dev/null >
 mkdir -p "$SANDBOX/shim"
 cat > "$SANDBOX/shim/git" <<TALOS_g4r8w1y6zt3k
 #!/bin/sh
-# fails only the handoff-dir lookup (-C . rev-parse --git-common-dir)
+# fails only the handoff-dir lookups: `git -C . rev-parse --git-common-dir`
+# (the pre-#517 main-worktree resolver) and bare `git rev-parse
+# --git-common-dir` (_talos_state_dir, the resolver now used)
 [ "\$1" = "-C" ] && [ "\$2" = "." ] && [ "\$3" = "rev-parse" ] && [ "\$4" = "--git-common-dir" ] && exit 1
+[ "\$1" = "rev-parse" ] && [ "\$2" = "--git-common-dir" ] && exit 1
 exec $(command -v git) "\$@"
 TALOS_g4r8w1y6zt3k
 chmod +x "$SANDBOX/shim/git"

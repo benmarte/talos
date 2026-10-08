@@ -25,35 +25,35 @@ assert_eq "0" "$rc" "post_stage --ci-runs: exits 0"
 assert_eq "" "$out" "post_stage --ci-runs: no stdout"
 _check="$(python3 -c "
 import json
-d = json.loads(open('.talos/events.jsonl').read().strip())
+d = json.loads(open('.git/talos/events.jsonl').read().strip())
 print('OK' if d.get('ci_runs') == 1 and d.get('event') == 'merged' else 'BAD:' + json.dumps(d))
 ")"
 assert_eq "OK" "$_check" "post_stage --ci-runs: the log line carries ci_runs as an integer"
 
 # ── (b) omitted -> no ci_runs key at all ─────────────────────────────────────
-rm -f .talos/events.jsonl
+rm -f .git/talos/events.jsonl
 bash "$HOOKS" post_stage merged orchestrator 42 --pr 57 >/dev/null 2>"$SANDBOX/err.log"
 _check="$(python3 -c "
 import json
-d = json.loads(open('.talos/events.jsonl').read().strip())
+d = json.loads(open('.git/talos/events.jsonl').read().strip())
 print('OK' if 'ci_runs' not in d else 'BAD:' + json.dumps(d))
 ")"
 assert_eq "OK" "$_check" "omitted --ci-runs: the payload has no ci_runs key"
 
 # ── (c) invalid value -> dropped, one note, exit 0 ───────────────────────────
-rm -f .talos/events.jsonl
+rm -f .git/talos/events.jsonl
 bash "$HOOKS" post_stage merged orchestrator 42 --ci-runs abc >/dev/null 2>"$SANDBOX/err.log"; rc=$?
 assert_eq "0" "$rc" "invalid --ci-runs: post_stage still exits 0"
 assert_contains "$(cat "$SANDBOX/err.log")" "not a non-negative integer" "invalid --ci-runs: one stderr note"
 _check="$(python3 -c "
 import json
-d = json.loads(open('.talos/events.jsonl').read().strip())
+d = json.loads(open('.git/talos/events.jsonl').read().strip())
 print('OK' if 'ci_runs' not in d else 'BAD:' + json.dumps(d))
 ")"
 assert_eq "OK" "$_check" "invalid --ci-runs: the bad string never reaches the log"
 
 # ── Fixture log: issue 42 has a merged event with ci_runs, issue 43 has none ─
-rm -f .talos/events.jsonl
+rm -f .git/talos/events.jsonl
 bash "$HOOKS" post_stage qa qa 42 --verdict PASS --tokens 100 --tool-uses 2 --duration-s 10 2>/dev/null
 bash "$HOOKS" post_stage merged orchestrator 42 --pr 57 --ci-runs 2 2>/dev/null
 bash "$HOOKS" post_stage qa qa 43 --verdict PASS --tokens 50 --tool-uses 1 --duration-s 5 2>/dev/null

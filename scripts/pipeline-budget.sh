@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # pipeline-budget.sh — the opt-in per-issue token guard (#382, part of #334).
 # Answers "may Talos start another fix round on issue N?" from the local
-# .talos/events.jsonl audit log and the limits.* config keys.
+# events log (<git common dir>/talos/events.jsonl by default, #517) and the
+# limits.* config keys.
 #
 # Usage: pipeline-budget.sh check --issue N [--json]
 #
