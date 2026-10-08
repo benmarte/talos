@@ -633,7 +633,7 @@ printf 'APPROVED: docs pass\n' > "$STUB_DIR/message.docs"
 TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 1
 assert_eq "0" "$RC" "the approval-stage pass exits 0"
 assert_contains "$(journal)" "agent docs" "the approval-stage pass dispatches agent docs"
-assert_eq "0" "$(journal | grep -c 'vcs ready-pr 12')" "the approval-stage pass calls ready-pr zero times (AC3's contract; the id label lands with the implementation commit)"
+assert_eq "0" "$(journal | grep -c 'vcs ready-pr 12')" "AC3: the approval-stage pass calls ready-pr zero times"
 
 # AC13: docs and pins move with the contract.
 grep -q 'run-reasons: .*ready-pr-failed' "$GS/talos.sh"
