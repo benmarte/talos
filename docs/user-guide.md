@@ -753,6 +753,21 @@ handoff files carry the state. `.claude/commands/pipeline-tick.md` (the
 event-driven tick) is SUPERSEDED by `run`/`next` — kept only as reference,
 see its own banner.
 
+**The verdict comes from the final message.** `run` reads each stage's verdict
+from the agent's final message, never from a posted comment. A verdict-word
+role's answer must carry a line whose first word is `<WORD>:` with WORD on
+that role's own verdict list (for example `CONFIRMED: ...` on validator,
+`PASS: ...`/`FAIL: ...` on QA, `APPROVED: ...`/`CHANGES: ...` on reviewer,
+`CLEAR: ...`/`FINDINGS: ...` on security and adversarial); the
+developer's message is read for its PR URL (`PR_OPENED`, and `BLOCKED` when
+there is none); pm, planner and docs carry no verdict. An answer with no such
+line is a dispatch failure (`verdict-unreadable`) — nothing is recorded, never
+a guess. To keep even a weak local model's answer parseable, every verdict-word
+role profile (`agents/{validator,qa,reviewer,security,adversarial}.md`) and
+the QA prompt template now spell the contract: the FIRST LINE of the final
+message is the verdict word, a colon and a one-line reason; 1-3 lines of
+findings after it; NOTHING before it (#518).
+
 **Human-merge mode:** set `merge.auto: false` in `talos.pipeline.yml` to run the
 full pipeline but leave the final merge to a human. Every gate still applies —
 approval labels, forbidden-files check, green CI — but instead of merging, the
@@ -3180,6 +3195,16 @@ If your setup predates the config and secrets work (epic #437), check these once
   `--timings` to `tests/run-tests.sh` (or set `TALOS_TEST_TIMINGS=1`). After
   the per-file report it prints `TIMINGS (seconds, slowest first)`, one
   `<secs>  tests/<name>` line per file (a cached file shows `cached`).
+- **A stage ends the run with `verdict-unreadable`** — the agent's final
+  message never carried a verdict line, one whose first word is `<WORD>:`
+  with WORD on that role's own verdict list (`CONFIRMED:`, `PASS:`,
+  `APPROVED:`, `CLEAR:`, ...). Nothing is recorded and the run stops clean —
+  this happens
+  most often with a weak local model on the `custom` runner that narrates
+  instead of answering. The verdict-word role profiles spell the contract
+  (verdict word first, then 1-3 lines of findings, nothing before it); if
+  your install predates #518, re-run `install.sh` so the installed
+  `agents/*.md` carry it, then re-run the stage.
 - **Notifications are plain one-liners, not rich cards** — templates missing.
   Re-run `install.sh <repo> --force` (older installs didn't ship
   `templates/`; manual copies often omit them).

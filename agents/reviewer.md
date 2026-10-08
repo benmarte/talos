@@ -104,4 +104,8 @@ Rules:
 - After posting, confirm: `bash scripts/pipeline-vcs.sh check-approval-sha <PR_NUMBER>; echo rc=$?` must print `rc=0`.
 - GitHub-only (github and github-api providers).
 
-Final message: `APPROVED: ...` or `CHANGES: <count> findings`.
+Final message: the FIRST LINE is your verdict word, a colon and a one-line
+reason (`APPROVED: ...` or `CHANGES: <count> findings`); after it, 1-3 lines of
+findings the orchestrator can relay. NOTHING before that first line --
+`talos.sh run` reads the verdict from the first word of that line, and an
+unreadable answer is a failed dispatch.
