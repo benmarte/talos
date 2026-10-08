@@ -122,8 +122,10 @@ assert_eq "1" "$?" "AC2: no copy of next_stage stays in pipeline-status-file.sh"
 grep -q "python3 -I -c \"\$SF_PYS\"" "$TALOS_ROOT/scripts/pipeline-status-file.sh"
 assert_eq "0" "$?" "AC2: the collect/refresh modes run under python3 -I"
 
-# The action schema, as a checker: one line, exactly one of the three shapes,
-# fixed-enum reasons, nothing untrusted.
+# The action schema, as a checker: one line, exactly one of the four shapes,
+# fixed-enum reasons, nothing untrusted. The draft wait is key-carrying (#516):
+# it names the PR and the issue so the run loop can continue the Draft stage
+# order from it; every other reason stays bare.
 check_action() {  # $1 = file with the output
   python3 -I -c '
 import re, sys
@@ -140,7 +142,9 @@ if re.fullmatch(r"action=dispatch stage=(qa|docs|reviewer|security|adversarial) 
     sys.exit(0)
 if re.fullmatch(r"action=merge pr=[0-9]+ issue=[0-9]+", ln):
     sys.exit(0)
-if re.fullmatch(r"action=wait reason=(draft|ci|human-merge|blocked|owner|lease|none)", ln):
+if re.fullmatch(r"action=wait reason=(ci|human-merge|blocked|owner|lease|none)", ln):
+    sys.exit(0)
+if re.fullmatch(r"action=wait reason=draft pr=[0-9]+ issue=[0-9]+", ln):
     sys.exit(0)
 sys.exit(1)
 ' "$1"
@@ -179,11 +183,20 @@ st next
 assert_eq "action=merge pr=12 issue=34" "$OUT" "next (merge): names the PR to merge"
 assert_action "next (merge)"
 
-for reason in draft:ready ci:ci human-merge:human-merge blocked:blocked; do
+# AC1 (#516): the draft wait names the PR and the issue, so the run loop can
+# continue the Draft stage order from it; every other reason stays bare.
+set_state '{"prs": [{"n": 12, "issue": 34, "head": "a4f9", "owner": false, "stage": "ready"}], "pr_total": 1, "ignored": 0, "blocked": [], "queued": [], "held": [], "owners": [], "capped": []}'
+LEASE_RESET
+st next
+assert_eq "action=wait reason=draft pr=12 issue=34" "$OUT" "AC1: the ready stage's draft wait names the PR and the issue"
+assert_action "next (stage ready, key-carrying draft)"
+
+for reason in ci:ci human-merge:human-merge blocked:blocked; do
   r="${reason%%:*}"; s="${reason#*:}"
   set_state "{\"prs\": [{\"n\": 12, \"issue\": 34, \"head\": \"a4f9\", \"owner\": false, \"stage\": \"$s\"}], \"pr_total\": 1, \"ignored\": 0, \"blocked\": [], \"queued\": [], \"held\": [], \"owners\": [], \"capped\": []}"
+  LEASE_RESET
   st next
-  assert_eq "action=wait reason=$r" "$OUT" "next (stage $s): wait reason=$r"
+  assert_eq "action=wait reason=$r" "$OUT" "next (stage $s): wait reason=$r (bare)"
   assert_action "next ($s)"
 done
 

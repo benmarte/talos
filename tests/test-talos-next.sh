@@ -450,6 +450,16 @@ printf '{"prs": [], "pr_total": 0, "ignored": 0, "blocked": [["issue", 61]], "qu
 nx
 assert_eq "action=wait reason=owner" "$OUT" "AC9: a blocked issue is never dispatched"
 
+# AC1 (#516): adoption's ready branch names the PR on the draft wait, so the
+# run loop can continue the Draft stage order from it.
+open_state '[{"n": 15, "issue": 61, "head": "a4f9", "owner": false, "stage": "ready"}]' 61
+LEASE_RESET
+nxi 61
+assert_eq "action=wait reason=draft pr=15 issue=61" "$OUT" "AC1: adoption's ready branch names the PR on the draft wait"
+LEASE_RESET
+nx
+assert_eq "action=wait reason=draft pr=15 issue=61" "$OUT" "AC1: the queue pick's ready stage answers the key-carrying draft wait too"
+
 # ── AC10: provider gaps fail closed ───────────────────────────────────────────
 reset_stubs
 cfg '{"max_parallel": 1}' '{"validator": true, "planner": true, "pm": true, "developer": true, "pm_skip_when_spec_present": true}'
