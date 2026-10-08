@@ -39,6 +39,15 @@ ev_cfg() { set_cfg "{\"evidence\": {\"$1\": $2}}"; }
 single() { bash "$CFG_SH" "$1" "$2" 2>"$ERR"; }
 # dumped <key> -- the value --dump holds for <key> (newlines kept), or
 # "<absent>"; stderr in $ERR. Split on NUL in python (values may be multiline).
+# _dump_nonsources -- re-emit a dump stream without its sources.* pairs (#526)
+# so byte-identity assertions keep comparing the resolved keys only.
+_dump_nonsources() {
+  local _k _v
+  while IFS= read -r -d '' _k && IFS= read -r -d '' _v; do
+    case "$_k" in sources.*) continue ;; esac
+    printf '%s\0%s\0' "$_k" "$_v"
+  done
+}
 dumped() {
   bash "$CFG_SH" --dump 2>"$ERR" | python3 -I -c '
 import sys
@@ -181,7 +190,7 @@ assert_eq "<absent>" "$(dumped evidence.max_mb)" "10: only the bad key is droppe
 
 # ---- 11: --dump without the keys is unchanged ------------------------------
 set_cfg '{"base_branch": "main", "limits": {"max_fix_attempts": 3}}'
-bash "$CFG_SH" --dump 2>/dev/null | tr '\0' '\n' > "$SANDBOX/dump-now.txt"
+bash "$CFG_SH" --dump 2>/dev/null | _dump_nonsources | tr '\0' '\n' > "$SANDBOX/dump-now.txt"
 printf 'base_branch\nmain\nlimits.max_fix_attempts\n3\nverify.qa_mode\nlocal\n' > "$SANDBOX/dump-main.txt"
 if cmp -s "$SANDBOX/dump-main.txt" "$SANDBOX/dump-now.txt"; then
   pass "11: --dump without evidence keys is byte-identical to main"
@@ -213,7 +222,8 @@ contract="$(. "$TALOS_ROOT/scripts/pipeline-contract.sh"; printf '%s\n' "${TALOS
 assert_contains "$contract" "talos:evidence" "13: talos:evidence is a TALOS_MARKERS member"
 
 # ---- 14: the examples show the block, disabled -----------------------------
-assert_contains "$(cat "$TALOS_ROOT/talos.pipeline.yml.example")" "#   enabled: false" "14: YAML example shows evidence.enabled: false commented out"
+assert_file_absent "$TALOS_ROOT/talos.pipeline.yml.example" \
+  "14: talos.pipeline.yml.example is gone (#526); the JSON example is canonical"
 for k in enabled command dir include when store max_files max_mb; do
   assert_contains "$(cat "$TALOS_ROOT/talos.pipeline.json.example")" "evidence.$k" "14: JSON example _note names evidence.$k"
 done

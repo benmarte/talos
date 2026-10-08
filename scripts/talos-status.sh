@@ -88,10 +88,9 @@
 # the run state lives outside every git tree; the common dir is found through
 # `git rev-parse --git-common-dir`, so a linked worktree and a
 # subdirectory both work). `events.path` is read in-process from the project
-# config (the file pipeline-config.sh would use: $PIPELINE_CONFIG, else the first
-# of talos.pipeline.yml/.yaml/.json ... in the git toplevel), and only when that
-# file mentions `events`; JSON, or a top-level `events:` section with a `path:`
-# line in YAML. The path comes from a possibly untrusted repo, so an absolute
+# config (the file pipeline-config.sh would use: $PIPELINE_CONFIG, else
+# talos.pipeline.json in the git toplevel), and only when that file mentions
+# `events`. The path comes from a possibly untrusted repo, so an absolute
 # path, a `..` that leaves the common dir, a log that is a symlink, or one whose
 # real location leaves the common dir means no log: nothing is printed.
 #
@@ -380,9 +379,7 @@ def load_config(fmt):
 
 MAX_LOG_BYTES = 32 * 1024 * 1024
 MAX_LOG_LINES = 200000  # the newest lines read from a log
-PROJECT_CONFIG_NAMES = ("talos.pipeline.yml", "talos.pipeline.yaml", "talos.pipeline.json",
-                        ".claude-pipeline.yaml", "pipeline.yaml", ".claude-pipeline.json",
-                        "pipeline.json")  # the names pipeline-config.sh tries, in order
+PROJECT_CONFIG_NAMES = ("talos.pipeline.json",)  # the canonical project config (#526)
 
 
 def project_config(base):

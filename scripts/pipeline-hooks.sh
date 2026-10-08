@@ -17,7 +17,7 @@
 #          [--details-file F] [--attempt stage:count:total] [--duration-s N] [--tokens N] [--tool-uses N]
 #          [--ci-runs N] [--model M] [--runner R]
 #
-# Config (talos.pipeline.yml via pipeline-config.sh, read through the cfg()
+# Config (talos.pipeline.json via pipeline-config.sh, read through the cfg()
 # cache — see pipeline-cfg-cache.sh):
 #   hooks.pre_dispatch   shell command to run before each stage's prompt is
 #                        built. Default "" — disabled.

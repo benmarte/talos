@@ -467,7 +467,7 @@
 #                                             failed comment fetch fails closed: exit 1,
 #                                             nothing posted.
 #
-# Config keys (from talos.pipeline.yml via pipeline-config.sh):
+# Config keys (from talos.pipeline.json via pipeline-config.sh):
 #   vcs.provider          github | github-api | gitlab | azure | file   (default: github)
 #   vcs.token_env         env-var name for the GitHub token (github-api only;
 #                         default: GITHUB_TOKEN then GH_TOKEN)
@@ -561,16 +561,12 @@ fi
 [ -f "$SCRIPT_DIR/pipeline-contract.sh" ] && . "$SCRIPT_DIR/pipeline-contract.sh"
 
 # ── Resolve config path for Python blocks (#116) ─────────────────────────────
-# Mirrors the lookup order in pipeline-config.sh; passed as TALOS_CFG env var
-# to Python blocks that need to detect config-parse failures.
+# Mirrors the canonical project config in pipeline-config.sh (#526); passed as
+# TALOS_CFG env var to Python blocks that need to detect config-parse failures.
 _TALOS_CFG="${PIPELINE_CONFIG:-}"
 if [ -z "$_TALOS_CFG" ]; then
-  for _talos_c in "talos.pipeline.yml" "talos.pipeline.yaml" "talos.pipeline.json" \
-                  ".claude-pipeline.yaml" "pipeline.yaml" \
-                  ".claude-pipeline.json" "pipeline.json"; do
-    if [ -f "$_talos_c" ]; then _TALOS_CFG="$_talos_c"; break; fi
-  done
-  unset _talos_c
+  # The canonical project config only (#526): no name list, no precedence.
+  if [ -f "talos.pipeline.json" ]; then _TALOS_CFG="talos.pipeline.json"; fi
 fi
 
 # ── Config-parse warning (#116) ───────────────────────────────────────────────
@@ -582,28 +578,17 @@ fi
 # that is the intended degradation path for non-pipeline invocations.
 if [ -n "$_TALOS_CFG" ] && [ -f "$_TALOS_CFG" ]; then
   if ! python3 -I - "$_TALOS_CFG" 2>/dev/null <<'_CFG_PARSE_CHECK'
-import sys
+import sys, json
 p = sys.argv[1]
 try:
-    # -I drops the user site; append it back (never insert: cwd and the
-    # stdlib must keep winning) so a pip --user PyYAML still parses YAML config (#395).
-    try:
-        import site, sys
-        sys.path.append(site.getusersitepackages())
-    except Exception:
-        pass
-    try:
-        import yaml
-        yaml.safe_load(open(p))
-    except ImportError:
-        import json
-        json.load(open(p))
+    # JSON only (#526): the config parser is json, like the loader's.
+    json.load(open(p))
     sys.exit(0)
 except Exception:
     sys.exit(1)
 _CFG_PARSE_CHECK
   then
-    printf 'pipeline-config: WARNING -- %s could not be parsed (malformed YAML/JSON or PyYAML not installed?); ALL configuration keys are using built-in defaults.\n' "$_TALOS_CFG" >&2
+    printf 'pipeline-config: WARNING -- %s could not be parsed (malformed JSON); ALL configuration keys are using built-in defaults.\n' "$_TALOS_CFG" >&2
   fi
 fi
 
@@ -6371,7 +6356,7 @@ print(p.get("id") or "")
 #   Prerequisites:
 #     az extension add --name azure-devops
 #     az devops configure --defaults organization=<org_url> project=<project>
-#   Or set vcs.azure.org_url + vcs.azure.project in talos.pipeline.yml
+#   Or set vcs.azure.org_url + vcs.azure.project in talos.pipeline.json
 # ─────────────────────────────────────────────────────────────────────────────
 # Post a comment to an Azure DevOps work item. `az boards work-item comment add`
 # does not exist in the azure-devops extension, so use the REST comments endpoint

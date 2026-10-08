@@ -196,44 +196,26 @@ proj_json '{"notifications":{"slack":{"bot_token":"env:GH_TOKEN"}}}'
 out="$(GH_TOKEN=PLANTEDDENIED41 bash "$CFG_SH" --show notifications.slack.bot_token 2>"$ERR")"
 assert_eq "notifications.slack.bot_token${TAB}env:GH_TOKEN (denied)${TAB}repo" "$out" "(show) a reference to a denied name prints (denied), set or not"
 
-# ── YAML aliases: a cycle and a billion-laughs config load, no traceback ─────
-if python3 -I -c 'import site, sys; sys.path.append(site.getusersitepackages()); import yaml' 2>/dev/null; then
-  reset_cfg
-  printf 'notifications:\n  slack_channel: "#from-yaml"\nzz: &r\n  self: *r\n  keep: ok\nll: &l [*l, fine]\n' > "$PROJ/talos.pipeline.yml"
-  out="$(get notifications.slack_channel)"; rc=$?
-  assert_eq "0" "$rc" "(alias) a self-referencing alias: the lookup exits 0"
-  assert_eq "#from-yaml" "$out" "(alias) ... and the rest of the file still loads"
-  assert_not_contains "$(cat "$ERR")" "Traceback" "(alias) ... with no traceback"
-  assert_contains "$(cat "$ERR")" "'zz.self' refers to itself" "(alias) the cycle is dropped with one line naming the key path"
-  assert_contains "$(bash "$CFG_SH" --show zz.keep 2>/dev/null)" "zz.keep${TAB}ok${TAB}repo" "(alias) the sibling of a dropped cycle key stays"
-  # the same cycle in the global file (it is walked before the repo-only drop)
-  reset_cfg
-  printf 'notifications:\n  slack_channel: "#from-global"\nzz: &r\n  self: *r\n' > "$GHOME/talos.pipeline.yml"
-  assert_eq "#from-global" "$(get notifications.slack_channel)" "(alias) a cycle in the global file loads too"
-  assert_not_contains "$(cat "$ERR")" "Traceback" "(alias) ... with no traceback (global)"
-
-  reset_cfg
-  {
-    printf 'notifications:\n  slack_channel: "#from-yaml"\n'
-    printf 'a: &a [x, x, x, x, x, x, x, x, x]\n'
-    _prev=a
-    for _l in b c d e f g h i; do
-      printf '%s: &%s [*%s, *%s, *%s, *%s, *%s, *%s, *%s, *%s, *%s]\n' "$_l" "$_l" "$_prev" "$_prev" "$_prev" "$_prev" "$_prev" "$_prev" "$_prev" "$_prev" "$_prev"
-      _prev="$_l"
-    done
-    printf 'zz: *i\n'
-  } > "$PROJ/talos.pipeline.yml"
-  _t0=$SECONDS
-  out="$(get notifications.slack_channel)"; rc=$?
-  _dt=$((SECONDS - _t0))
-  assert_eq "#from-yaml" "$out" "(alias) a nested-alias config still yields the value"
-  if [ "$_dt" -lt 20 ]; then pass "(alias) ... and completes quickly"; else fail "(alias) ... and completes quickly" "took ${_dt}s"; fi
-  assert_not_contains "$(cat "$ERR")" "Traceback" "(alias) ... with no traceback"
-  assert_contains "$(cat "$ERR")" "expands to too many values" "(alias) the blown-up value is dropped with one line naming the key"
-  unset _prev _l _t0 _dt
-else
-  pass "(alias) PyYAML is not installed here: the alias cases need a YAML parser and are skipped"
-fi
+# ── deep nesting is bounded, no traceback (the #444 walker, JSON-only #526) ──
+# JSON cannot alias, so the old YAML alias-cycle and billion-laughs cases are
+# gone; the walker's depth/size bounds still protect a pathological file.
+reset_cfg
+python3 -I - "$SANDBOX/deep.json" <<'PYNEST'
+import json, sys
+obj = 1
+for _ in range(200):
+    obj = {"x": obj}
+json.dump(obj, open(sys.argv[1], "w"))
+PYNEST
+cp "$SANDBOX/deep.json" talos.pipeline.json
+_t0=$SECONDS
+out="$(get notifications.slack_channel)"; rc=$?
+_dt=$((SECONDS - _t0))
+assert_eq "0" "$rc" "(deep) a 200-level-nested config: the lookup exits 0"
+assert_not_contains "$(cat "$ERR")" "Traceback" "(deep) ... with no traceback"
+assert_contains "$(cat "$ERR")" "is nested too deeply" "(deep) the too-deep subtree is dropped with one line"
+if [ "$_dt" -lt 20 ]; then pass "(deep) ... and completes quickly"; else fail "(deep) ... and completes quickly" "took ${_dt}s"; fi
+unset _t0 _dt
 reset_cfg
 
 # ── env:NAME may not point at a denied variable, even from the environment ───

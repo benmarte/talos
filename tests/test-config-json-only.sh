@@ -30,6 +30,26 @@ SHIM="$SANDBOX/shim"
 GHOME="$SANDBOX/talos-home"
 ERR="$SANDBOX/stderr"
 mkdir -p "$SHIM" "$GHOME" || exit 1
+
+# python3 without PyYAML: handles the "-I -c CODE" and "-I -" (script on stdin)
+# forms (the technique from the deleted tests/test-config-yaml-warn.sh).
+REAL_PY="$(command -v python3)"
+cat > "$SHIM/python3" <<TALOS_j8wvq2xn5hr7t
+#!/usr/bin/env bash
+REAL_PY="$REAL_PY"
+[ "\${1:-}" = "-I" ] && shift
+case "\${1:-}" in
+  -c) code="\$2"; shift 2 ;;
+  -)  shift; code="\$(cat)" ;;
+  *)  exec "\$REAL_PY" -I "\$@" ;;
+esac
+exec "\$REAL_PY" -I -c 'import sys; sys.modules["yaml"] = None; c = sys.argv[1]; sys.argv = ["-c"] + sys.argv[2:]; exec(compile(c, "<string>", "exec"), {"__name__": "__main__"})' "\$code" "\$@"
+TALOS_j8wvq2xn5hr7t
+chmod +x "$SHIM/python3"
+# Precondition: the shim really hides PyYAML.
+shim_rc=0
+env PATH="$SHIM:$PATH" python3 -I -c 'import yaml' 2>/dev/null || shim_rc=$?
+assert_exit_code "1" "$shim_rc" "precondition: the python3 shim cannot import yaml"
 unset PIPELINE_CONFIG
 export TALOS_HOME="$GHOME"
 
@@ -37,7 +57,6 @@ HAVE_YAML=0
 python3 -I -c 'import site, sys; sys.path.append(site.getusersitepackages()); import yaml' 2>/dev/null && HAVE_YAML=1
 
 nolines() { wc -l < "$1" | tr -d ' '; }
-
 # The NUL-pair reader pipeline-cfg-cache.sh's cfg() uses: returns 0 when the
 # whole stream parses as complete KEY\0VALUE\0 pairs (no dangling key).
 pairs_ok() {  # $1=dump file
@@ -76,7 +95,7 @@ assert_exit_code "0" "$rc" "AC1: no config file: --dump exits 0"
 assert_eq "0" "$(nolines "$ERR")" "AC1: no config file: --dump is silent"
 
 printf '{"merge": {"method": "merge"}}\n' > .claude-pipeline.json
-assert_eq "squash" "$(bash "$CFG_SH" merge.method SENT)" \
+assert_eq "squash" "$(bash "$CFG_SH" merge.method)" \
   "AC1: a legacy .claude-pipeline.json alone is no longer read"
 assert_eq "0" "$(nolines "$ERR")" "AC1: an unread legacy name prints nothing"
 rm -f .claude-pipeline.json
@@ -182,6 +201,7 @@ assert_contains "$err" "reason=config-legacy-file talos.pipeline.yaml" \
 rm -f talos.pipeline.yaml
 
 # The user layer: a lone legacy file there fails with the global convert line.
+rm -f "$GHOME/talos.pipeline.json"
 printf 'agents:\n  model: fromyaml\n' > "$GHOME/talos.pipeline.yaml"
 chmod 600 "$GHOME/talos.pipeline.yaml"
 err="$(bash "$CFG_SH" agents.model SENT 2>&1 >/dev/null)"; rc=$?
@@ -251,6 +271,10 @@ EOF
   bash "$CFG_SH" --convert talos.pipeline.yml talos.pipeline.json >/dev/null 2>"$ERR"; rc=$?
   assert_exit_code "0" "$rc" "AC4: --convert exits 0 on a clean yml"
   assert_file_exists talos.pipeline.json "AC4: --convert writes the target json"
+  # The reason codes say so: a stray file never lives beside the canonical json,
+  # so the migrated repo removes the legacy file after converting it.
+  cp talos.pipeline.yml "$SANDBOX/legacy.yml"
+  rm talos.pipeline.yml
   python3 -I -c 'import json, sys; json.load(open(sys.argv[1]))' talos.pipeline.json \
     && pass "AC4: the target parses as JSON" \
     || fail "AC4: the target parses as JSON" "json.load failed"
@@ -279,9 +303,9 @@ sys.path.append(site.getusersitepackages())
 import yaml, json, sys
 yml = yaml.safe_load(open(sys.argv[1]))
 js = json.load(open(sys.argv[2]))
-print("same" if yml == js else "differ")' talos.pipeline.yml talos.pipeline.json)"
+print("same" if yml == js else "differ")' "$SANDBOX/legacy.yml" talos.pipeline.json)"
   assert_eq "same" "$equal" "AC4: converted json values equal the yml's parsed values"
-  rm -f talos.pipeline.yml talos.pipeline.json
+  rm -f talos.pipeline.json
 else
   echo "  skip: PyYAML not installed -- AC4 round-trip case"
 fi

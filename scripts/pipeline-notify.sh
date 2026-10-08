@@ -60,7 +60,7 @@
 #        only the notification variables listed in pipeline-secrets.sh
 #        (_TALOS_DOTENV_ALLOW) are exported from it, #476)
 #   2. Bot tokens: SLACK_BOT_TOKEN / DISCORD_BOT_TOKEN posting to configured
-#        channels. Channels from talos.pipeline.yml notifications.slack_channel /
+#        channels. Channels from talos.pipeline.json notifications.slack_channel /
 #        notifications.discord_channel, overrideable via env vars
 #        PIPELINE_SLACK_CHANNEL / PIPELINE_DISCORD_CHANNEL.
 #

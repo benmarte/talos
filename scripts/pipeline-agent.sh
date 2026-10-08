@@ -81,7 +81,7 @@
 #       record <runner> as down in .talos/providers.json for
 #       agents.provider_down_s seconds.
 #
-# Config keys (talos.pipeline.yml via pipeline-config.sh):
+# Config keys (talos.pipeline.json via pipeline-config.sh):
 #   agents.runner       claude (default) | pi | codex | gemini | antigravity | custom
 #   agents.runner_args  list of extra CLI args appended to claude/pi/codex/gemini/agy
 #   agents.runner_cmd   full shell command for runner=custom;
