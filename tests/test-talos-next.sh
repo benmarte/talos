@@ -478,11 +478,18 @@ LEASE_RESET
 TALOS_NOW=1000000 nxi 21
 assert_eq "action=dispatch stage=validator issue=21" "$OUT" "AC11: the first caller dispatches"
 assert_contains "$(cat "$LEASE")" "issue=21 held=1000000" "AC11: the dispatch holds the issue's lease"
+# The holder the second caller sees is a LIVE foreign process (#522 re-pin: the
+# first call's own pid is a dead one-shot by now -- age 100 >= the reclaim
+# guard -- and a dead holder's line is not a lease, so the old seed only ever
+# proved the bug-free case by accident).
+( sleep 30 ) & _ac11_lpid=$!
+printf 'issue=21 held=1000000 expires=1000900 pid=%s\n' "$_ac11_lpid" > "$LEASE"
 TALOS_NOW=1000100 nxi 21
 case "$OUT" in
   "action=wait reason=lease retry_after_s="*) pass "AC11: the second caller waits, never a second dispatch" ;;
   *) fail "AC11: the second caller waits, never a second dispatch" "got: $OUT" ;;
 esac
+kill "$_ac11_lpid" 2>/dev/null
 # The lease expires (TTL): a dead worker's action is re-issued.
 printf 'issue=21 held=1000000 expires=1000900 pid=1\n' > "$LEASE"
 TALOS_NOW=2000000 nxi 21
@@ -514,5 +521,135 @@ esac
 # No raw control byte reaches stdout at all.
 printf '%s' "$OUT" | LC_ALL=C grep -q "$(printf '\033')"
 assert_eq "1" "$?" "AC12: no raw ESC byte in the output"
+
+# ── AC1/AC3/AC5/AC6/AC10: the dead-holder lease end-to-end (#522) ─────────────
+# The ledger's reclaim: a line whose `pid=` is a dead process stops being a
+# lease once it is older than TALOS_LEASE_RECLAIM_S (default 10 s). `next`
+# answers the normal action, announces the reclaim once on stderr and derives
+# the age-guard wait's retry from the seconds until reclaimable. The cap's
+# live-lease count skips reclaimable lines and counts each issue once.
+
+# AC1: the dead-holder dispatch. A reaped child stands for the pid a one-shot
+# `next` leaves behind.
+reset_stubs
+cfg '{"max_parallel": 1}' '{"validator": true, "planner": true, "pm": true, "developer": true}'
+issue 61 "pipeline:ready" /dev/null
+open_state '[]' 61
+LEASE_RESET
+( sleep 30 ) & _d61=$!
+kill "$_d61" 2>/dev/null; wait "$_d61" 2>/dev/null
+printf 'issue=61 held=999985 expires=1001800 pid=%s\n' "$_d61" > "$LEASE"
+TALOS_NOW=1000000 nxi 61
+case "$OUT" in
+  "action=dispatch stage="*" issue=61") pass "AC1: a dead-pid lease answers the normal dispatch, never a wait" ;;
+  *) fail "AC1: a dead-pid lease answers the normal dispatch, never a wait" "got: $OUT" ;;
+esac
+
+# AC3: a live foreign holder is still a lease; the TTL is the bound for a
+# live-but-hung holder, and age alone never reclaims it (the holder is reaped
+# only after the assertion).
+reset_stubs
+cfg '{"max_parallel": 1}' '{"validator": true, "planner": true, "pm": true, "developer": true}'
+issue 62 "pipeline:ready" /dev/null
+open_state '[]' 62
+LEASE_RESET
+( sleep 30 ) & _l62=$!
+printf 'issue=62 held=999000 expires=1000900 pid=%s\n' "$_l62" > "$LEASE"
+TALOS_NOW=1000000 nxi 62
+case "$OUT" in
+  "action=wait reason=lease retry_after_s=900") pass "AC3: a live foreign holder waits with the full remaining TTL, never the guard" ;;
+  *) fail "AC3: a live foreign holder waits with the full remaining TTL, never the guard" "got: $OUT" ;;
+esac
+kill "$_l62" 2>/dev/null
+
+# AC5: a wait that exists only because of the age guard reports the seconds
+# until reclaimable, never the full remaining TTL.
+reset_stubs
+cfg '{"max_parallel": 1}' '{"validator": true, "planner": true, "pm": true, "developer": true}'
+issue 63 "pipeline:ready" /dev/null
+open_state '[]' 63
+LEASE_RESET
+( sleep 30 ) & _d63=$!
+kill "$_d63" 2>/dev/null; wait "$_d63" 2>/dev/null
+printf 'issue=63 held=999995 expires=1001800 pid=%s\n' "$_d63" > "$LEASE"
+TALOS_NOW=1000000 nxi 63
+case "$OUT" in
+  "action=wait reason=lease retry_after_s=5") pass "AC5: the guard wait's retry is the seconds until reclaimable, never the TTL" ;;
+  *) fail "AC5: the guard wait's retry is the seconds until reclaimable, never the TTL" "got: $OUT" ;;
+esac
+
+# AC6: the reclaim is announced exactly once on stderr; stdout carries only
+# the action line; nothing is announced when nothing was reclaimed.
+reset_stubs
+cfg '{"max_parallel": 1}' '{"validator": true, "planner": true, "pm": true, "developer": true}'
+issue 64 "pipeline:ready" /dev/null
+open_state '[]' 64
+LEASE_RESET
+( sleep 30 ) & _d64=$!
+kill "$_d64" 2>/dev/null; wait "$_d64" 2>/dev/null
+printf 'issue=64 held=999985 expires=1001800 pid=%s\n' "$_d64" > "$LEASE"
+TALOS_NOW=1000000 nxi 64
+case "$OUT" in
+  "action=dispatch stage="*" issue=64") pass "AC6: the reclaimed dispatch still answers on stdout" ;;
+  *) fail "AC6: the reclaimed dispatch still answers on stdout" "got: $OUT" ;;
+esac
+assert_eq "1" "$(grep -c "lease reclaimed from dead holder issue=64" "$ERR")" "AC6: the reclaim note is on stderr exactly once"
+assert_eq "talos.sh next: lease reclaimed from dead holder issue=64" "$(grep "lease reclaimed from dead holder issue=64" "$ERR")" "AC6: the note is the one convention line"
+assert_not_contains "$OUT" "lease reclaimed" "AC6: stdout carries only the action line"
+reset_stubs
+issue 65 "pipeline:ready" /dev/null
+open_state '[]' 65
+LEASE_RESET
+( sleep 30 ) & _l65=$!
+printf 'issue=65 held=999985 expires=1001800 pid=%s\n' "$_l65" > "$LEASE"
+TALOS_NOW=1000000 nxi 65
+case "$OUT" in
+  "action=wait reason=lease"*) pass "AC6: a genuine live-holder wait still answers" ;;
+  *) fail "AC6: a genuine live-holder wait still answers" "got: $OUT" ;;
+esac
+assert_not_contains "$(cat "$ERR")" "lease reclaimed" "AC6: no stderr note when nothing was reclaimed"
+kill "$_l65" 2>/dev/null
+
+# AC10: the live-lease cap counts each issue at most once and skips
+# reclaimable lines: two dead-pid lines never cap the queue, two live foreign
+# pids do, and two live lines for one issue are one in-flight issue.
+reset_stubs
+cfg '{"max_parallel": 2}' '{"validator": true, "planner": true, "pm": true, "developer": true}'
+issue 71 "pipeline:ready" /dev/null
+issue 72 "pipeline:ready" /dev/null
+issue 73 "pipeline:ready" /dev/null
+LEASE_RESET
+( sleep 30 ) & _d71=$!
+kill "$_d71" 2>/dev/null; wait "$_d71" 2>/dev/null
+( sleep 30 ) & _d72=$!
+kill "$_d72" 2>/dev/null; wait "$_d72" 2>/dev/null
+open_state '[]' 71 72 73
+printf 'issue=71 held=999985 expires=1001800 pid=%s\n' "$_d71" > "$LEASE"
+printf 'issue=72 held=999985 expires=1001800 pid=%s\n' "$_d72" >> "$LEASE"
+TALOS_NOW=1000000 nx
+case "$OUT" in
+  "action=dispatch stage="*" issue="*) pass "AC10: two dead-pid lines never cap the queue" ;;
+  *) fail "AC10: two dead-pid lines never cap the queue" "got: $OUT" ;;
+esac
+( sleep 30 ) & _l71=$!
+( sleep 30 ) & _l72=$!
+printf 'issue=71 held=999985 expires=1001800 pid=%s\n' "$_l71" > "$LEASE"
+printf 'issue=72 held=999985 expires=1001800 pid=%s\n' "$_l72" >> "$LEASE"
+TALOS_NOW=1000000 nx
+case "$OUT" in
+  "action=wait reason=cap") pass "AC10: two live foreign pids cap the queue" ;;
+  *) fail "AC10: two live foreign pids cap the queue" "got: $OUT" ;;
+esac
+rm "$STUB_DIR/view-issue.71.json" "$STUB_DIR/view-issue.72.json"
+open_state '[]' 73
+printf 'issue=73 held=999985 expires=1001800 pid=%s\n' "$_l71" > "$LEASE"
+printf 'issue=73 held=999985 expires=1000900 pid=%s\n' "$_l72" >> "$LEASE"
+TALOS_NOW=1000000 nx
+case "$OUT" in
+  "action=wait reason=cap") fail "AC10: two live lines for one issue are one in-flight, never a cap" "got: $OUT" ;;
+  "action=dispatch stage="*" issue=73"*|"action=wait reason=lease"*) pass "AC10: two live lines for one issue are one in-flight, never a cap" ;;
+  *) fail "AC10: two live lines for one issue are one in-flight, never a cap" "got: $OUT" ;;
+esac
+kill "$_l71" "$_l72" 2>/dev/null
 
 finish

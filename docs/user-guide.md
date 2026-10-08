@@ -1419,6 +1419,21 @@ local file. Locking it would add latency without fixing a real race.
 `pipeline-lock.sh` is installed (`bash install.sh --global` ships it); no new
 config key exists for it.
 
+**Lease maintenance (`talos.sh lease prune`, #522).** `next` holds an issue's
+lease in `<git common dir>/talos-lease.ledger` while it works on it. A one-shot
+`next` that exits (or a run that crashes) leaves a line whose `pid=` is a dead
+process: `next` reclaims such a line on its own once it is older than
+`TALOS_LEASE_RECLAIM_S` (default 10 s, an env-only override) instead of waiting
+the full TTL, and announces it once on stderr
+(`talos.sh next: lease reclaimed from dead holder issue=<N>`). To clear those
+lines without editing the ledger by hand, run `bash scripts/talos.sh lease
+prune`: under the same advisory lock, it removes every line no reader counts as
+a lease (expired, a dead holder past the reclaim guard, a duplicate shadowed by
+a later-expiring line), prints one `pruned issue=<N>` line per removed ledger
+line, and is a silent no-op (exit 0, the ledger never rewritten) when there is
+nothing to remove. A live holder's lease is never touched, and the TTL stays
+the bound for a live-but-hung holder.
+
 ### Worktree cleanup and the stale-worktree warning (`execution.worktree_warn_threshold`)
 
 **Policy (#240):** a stage's working copy lives exactly as long as the stage

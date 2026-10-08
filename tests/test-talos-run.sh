@@ -247,18 +247,27 @@ LEASE_RESET
 printf 'CONFIRMED: ok\n' > "$STUB_DIR/message"
 TALOS_LEASE_TTL_S=1 TALOS_NOW=6000 rn --issue 9 --max-iterations 2
 assert_contains "$OUT" "iterations-exhausted max=2" "cap: two passes end in the cap stop, the max named"
+assert_contains "$OUT" "iterations-exhausted max=2" \
+  "AC9: a run never reclaims its own live lease mid-loop -- the multi-iteration pass cap completes both passes"
 # The lease: a second run on the same issue waits, never double-dispatches.
 reset_stubs
 LEASE_RESET
 TALOS_LEASE_TTL_S=1800 TALOS_NOW=7000 bash "$RUN" next --issue 9 > /dev/null 2>&1
 # The same clock as the holder: the run's next sees the live lease (expires
 # 8800 > NOW 7000), the acquire answers held, and the run stops on the wait.
+# The holder is a LIVE foreign process (#522 re-pin: the one-shot `next` above
+# stamps its own pid, which is a dead process by the time the run's `next`
+# reads the line -- the dead-holder reclaim would answer a dispatch, so the
+# old fixture only stayed green by accident).
+sleep 30 & _f_lpid=$!
+printf 'issue=9 held=7000 expires=8800 pid=%s\n' "$_f_lpid" > "$LEASE"
 TALOS_LEASE_TTL_S=1800 TALOS_NOW=7000 rn --issue 9 --max-iterations 1
 case "$OUT" in
-  "stop action=wait reason=lease"*) pass "lease: a held lease is a stop with the wait action" ;;
-  "stop action=wait reason=cap"*) pass "lease: a held lease is a stop (cap shape), never a double dispatch" ;;
-  *) fail "lease: a held lease is a stop, never a double dispatch" "got: $OUT" ;;
+  "stop action=wait reason=lease"*) pass "AC9: a run never reclaims a live lease -- the run's next sees it and waits" ;;
+  *) fail "AC9: a run never reclaims a live lease -- the run's next sees it and waits" "got: $OUT" ;;
 esac
+assert_contains "$(cat "$LEASE")" "expires=8800 pid=$_f_lpid" "AC9: the live lease survives the run untouched"
+kill "$_f_lpid" 2>/dev/null
 
 # ── (g) the in-flight fallback (#519) ────────────────────────────────────────
 # A queue-drained wait works the collect's `inflight` list; the journalled

@@ -447,8 +447,28 @@
 # `action=wait reason=lease` instead of racing it. A lease held by another
 # run is a wait, never a takeover; a lock that times out is a wait too
 # (fail closed). TTL = verify.timeout_ms/1000 + verify.ci_wait_s, floor 30
-# minutes; TALOS_LEASE_TTL_S and TALOS_NOW override it in tests.
-# Exit codes: 0 ok (for gate: a verdict was printed), 1 a `stop`, 2 usage.
+# minutes; TALOS_LEASE_TTL_S and TALOS_NOW override it in tests. A line whose
+# holder process is gone stops being a lease once it is older than
+# TALOS_LEASE_RECLAIM_S (default 10 s, env override; the reclaim mirror is
+# pipeline-lock.sh's staleness rule, #522): `next` reclaims it under the lock
+# and says so once on stderr; the TTL stays the bound for a live-but-hung
+# holder, and an age alone never reclaims a live holder. Exit codes: 0 ok
+# (for gate: a verdict was printed), 1 a `stop`, 2 usage.
+#
+# lease   `talos.sh lease prune` -- the maintenance verb for the lease ledger
+#         (#522): removes every line no reader counts as a lease (expired, a
+#         dead holder past the reclaim guard, a duplicate shadowed by a
+#         later-expiring line) under pipeline-lock.sh, printing one plain
+#         `pruned issue=<N>` line per removed ledger line and nothing for the
+#         issues it leaves alone; nothing to remove is a silent no-op (exit 0,
+#         the ledger never rewritten, so no lost update can race a concurrent
+#         acquire). A lock that cannot be held is `stop reason=lock-timeout`
+#         (exit 1, every line untouched); a ledger that cannot be reached or
+#         read is `stop reason=ledger-unavailable`.
+#
+# lease-reasons: lock-timeout ledger-unavailable
+#   stop: usage lock-timeout ledger-unavailable scripts-missing python-missing
+#         scratch-unavailable config-unreadable (exit 2 for usage; else 1)
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)" || exit 1
@@ -662,6 +682,14 @@ verbs:
                                      `merge-pr` and `post-merge`; stops on
                                      ask-owner, wait and every gate verdict that
                                      is not merge
+  lease prune                        the maintenance verb for the lease ledger:
+                                     removes every line no reader counts as a
+                                     lease (expired, a dead holder past the
+                                     reclaim guard, a duplicate shadowed by a
+                                     later-expiring line) under
+                                     pipeline-lock.sh; one `pruned issue=<N>`
+                                     line per removed line, nothing when there
+                                     is nothing to remove (a silent no-op)
   help                              this text
 HELP
 }
@@ -2082,17 +2110,47 @@ _talos_ledger() {
   return "$_rc"
 }
 
-# ── lease ledger (#470, AC4) ─────────────────────────────────────────────────
+# ── lease ledger (#470, AC4; reclaim + `lease prune`: #522) ──────────────────
 # A run's exclusive lease on an issue, fail-closed. The ledger lives under the
 # git common dir next to talos-done.ledger and is guarded by pipeline-lock.sh
 # (mkdir advisory lock, the same primitive every shared-local-state file uses).
 # Holding a lease means "a run works on issue <N> right now": another run that
 # cannot acquire it waits -- it never takes over, and a lock that times out is
 # a wait verdict, never a force-acquire. `next` acquires the lease before
-# answering dispatch/merge, and the run that acted releases it at
-# end-of-stage bookkeeping (`done`, below): a released issue is free to other
-# runs immediately. A run that crashes holds its lease until the TTL expires
-# (the TTL is the crash boundary, not the working lifetime).
+# answering dispatch/merge, and the run that acted releases it at the release
+# points `done` and `post-merge`: a released issue is free to other runs
+# immediately.
+#
+# Two bounds, and what each one is for. The TTL is the crash/hang boundary for
+# a LIVE holder: a live-but-hung run keeps its lease until `expires` passes --
+# the working lifetime is never bounded by the TTL. A line whose holder
+# process is GONE is not a lease once it is older than TALOS_LEASE_RECLAIM_S
+# (default 10 s, an env-only override like TALOS_LEASE_TTL_S and
+# TALOS_LEASE_LOCK_S): `next` reclaims it in seconds instead of waiting the
+# 1800 s TTL. Why 10: it must exceed the window in which the stamping process
+# is alive but not yet visible to a racing reader (one fork/exec of `next`,
+# tens of ms), and 10 is the ledger's own lock-wait number
+# (TALOS_LEASE_LOCK_S), so an operator reasons about one number. The clock
+# (`_talos_now` -> date +%s) is a wall clock, not monotonic, and TALOS_NOW
+# overrides it in tests; both failure directions are fail-closed: now < held
+# (a stepped-back clock) is never reclaimed, and since liveness -- not age --
+# is the primary test, a forward jump never reclaims a live holder either.
+# `kill -0` reads another user's process as dead (EPERM); pipeline-lock.sh's
+# staleness rule already accepts that for the same class of single-user local
+# file, and so does the ledger.
+#
+# The effective lease of an issue is the latest-expiring non-reclaimable line
+# among ALL of the issue's lines -- latest-expiring, not first, so a reader
+# can never shorten a held lease and the answer never depends on line order.
+# Every line `lease prune` removes is therefore a line no reader would have
+# counted, which is what makes the maintenance verb safe by construction.
+# Readers decide, writers write: the only ledger writers stay `acquire`,
+# `release` and the new `lease prune`, each under _lock_acquire; the reclaim
+# decision adds no new unlocked write -- reclaim is made visible by the
+# acquire that replaces the line. TALOS_RUN_PID is the operator's lever: a
+# manual loop's lease stays live as long as the loop's process does (the run
+# driver sets it for its whole life; `done`/`post-merge` are the release
+# points).
 #
 # File: <common dir>/talos-lease.ledger, one line `issue=<N> held=<unix-ts>
 # expires=<unix-ts> pid=<pid>` per held lease (a lease that expired is not a
@@ -2121,12 +2179,96 @@ _talos_lease_ttl_s() {
   printf '%s' "$_t"
 }
 
-# _talos_lease_read <issue>: 0 free (no lease, or one that expired), 1 held by
-# another live run (prints the holder line), 2 the ledger is unavailable. A
-# stale line (its expires timestamp passed) is pruned, so a crashed run's
-# lease frees itself after the TTL.
+# _talos_lease_line_pid <line>: the `pid=` field of a ledger line, stripped of
+# any trailing fields (the `%% *` strip every other field parse uses, #522).
+# Empty output when the line has no `pid=` field.
+_talos_lease_line_pid() {
+  local _pid=""
+  case "$1" in
+    *" pid="*) _pid="${1##* pid=}"; _pid="${_pid%% *}" ;;
+  esac
+  printf '%s' "$_pid"
+}
+
+# _talos_lease_reclaim_s: the dead-holder age guard, in seconds (default 10).
+# TALOS_LEASE_RECLAIM_S is an env-only override (like TALOS_LEASE_TTL_S and
+# TALOS_LEASE_LOCK_S -- not a config key, not an env-verb table row); unset,
+# blank or non-numeric falls back to the default.
+_talos_lease_reclaim_s() {
+  case "${TALOS_LEASE_RECLAIM_S:-}" in
+    ''|*[!0-9]*) printf '10' ;;
+    *) printf '%s' "$TALOS_LEASE_RECLAIM_S" ;;
+  esac
+}
+
+# _talos_lease_pid_live <pid>: 0 the process is live, 1 it is not (or the pid
+# is not a number: fail closed, never reclaimed). `kill -0` is the sanctioned
+# liveness probe -- the same one pipeline-lock.sh:112's staleness rule uses;
+# it reads another user's process as dead (EPERM), which the lock already
+# accepts for this class of single-user local file, and so does the ledger.
+_talos_lease_pid_live() {
+  case "$1" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  kill -0 "$1" 2>/dev/null
+}
+
+# _talos_lease_reclaimable <pid> <held> <now>: 0 the holder is gone and the
+# line is old enough (the line is NOT a lease); 1 it is still a lease. The
+# single decider (#522, AC4): no caller runs `kill -0` on a raw pid field.
+# Liveness is the primary condition -- the age only breaks PID reuse, so an
+# age alone can never reclaim a live holder's line and the TTL stays the bound
+# for live-but-hung holders -- and every malformed field (no or empty or
+# non-numeric pid, missing or non-numeric held, now < held) is fail-closed:
+# never reclaimed.
+_talos_lease_reclaimable() {
+  local _pid="$1" _held="$2" _now="$3" _guard
+  case "$_pid" in ''|*[!0-9]*) return 1 ;; esac
+  _talos_lease_pid_live "$_pid" && return 1
+  case "$_held" in ''|*[!0-9]*) return 1 ;; esac
+  case "$_now" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$_now" -ge "$_held" ] || return 1
+  _guard="$(_talos_lease_reclaim_s)"
+  [ $(( _now - _held )) -ge "$_guard" ] || return 1
+  return 0
+}
+
+# _talos_lease_retry_s <line> <now>: the retry_after_s of a HELD (non-
+# reclaimable) holder line, for `next`'s wait answer (#522, AC5). A wait that
+# exists only because of the age guard reports the seconds until the line is
+# reclaimable (floored at 1), never the full remaining TTL; a genuine
+# live-holder wait reports expires-now untouched. Every malformed field falls
+# back to the TTL shape, floored at 1 (fail closed).
+_talos_lease_retry_s() {
+  local _ln="$1" _now="$2" _pid _held _exp _guard _retry
+  case "$_now" in ''|*[!0-9]*) printf '1'; return 0 ;; esac
+  _exp="${_ln##* expires=}"; _exp="${_exp%% *}"
+  case "$_exp" in ''|*[!0-9]*) printf '1'; return 0 ;; esac
+  _retry=$(( _exp - _now ))
+  [ "$_retry" -ge 1 ] || _retry=1
+  _held="${_ln##* held=}"; _held="${_held%% *}"
+  case "$_held" in ''|*[!0-9]*) printf '%s' "$_retry"; return 0 ;; esac
+  [ "$_now" -ge "$_held" ] || { printf '%s' "$_retry"; return 0; }
+  _pid="$(_talos_lease_line_pid "$_ln")"
+  case "$_pid" in ''|*[!0-9]*) printf '%s' "$_retry"; return 0 ;; esac
+  _talos_lease_pid_live "$_pid" && { printf '%s' "$_retry"; return 0; }
+  _guard="$(_talos_lease_reclaim_s)"
+  _retry=$(( _held + _guard - _now ))
+  [ "$_retry" -ge 1 ] || _retry=1
+  printf '%s' "$_retry"
+}
+
+# _talos_lease_read <issue>: 0 free (no lease, or nothing the reader counts as
+# one), 1 held by another run (prints the effective holder line), 2 the ledger
+# is unavailable. The effective lease is the latest-expiring non-reclaimable
+# line among ALL of the issue's lines (#522, AC7) -- never the first line, so
+# a reader can never shorten a held lease and the answer never depends on line
+# order. The existing best-effort prune of an expired line is kept: it runs
+# only when the reader's own answer is free and only because an expired line
+# exists, so no reader-counted line is ever removed; the reclaim decision
+# itself adds no unlocked write (#522).
 _talos_lease_read() {
-  local _issue="$1" _f _now _ln _exp _pid
+  local _issue="$1" _f _now _ln _exp _pid _held _best="" _best_exp="" _expired=0
   _f="$(_talos_lease_file)" || return 2
   _now="$(_talos_now)"
   [ -f "$_f" ] || return 0
@@ -2136,19 +2278,36 @@ _talos_lease_read() {
         _exp="${_ln##* expires=}"; _exp="${_exp%% *}"
         case "$_exp" in ''|*[!0-9]*) return 2 ;; esac
         if [ "$_exp" -le "$_now" ]; then
-          # Expired: not a lease. Prune it under the lock (best effort -- a
-          # concurrent prune is harmless, the same line is removed once).
-          _talos_lease_prune "$_f" "$_issue"
-          return 0
-        fi
-        # Own lease (this run's own earlier iteration, same pid): re-entrant.
-        _pid="${_ln##* pid=}"
-        [ "$_pid" = "$$" ] || [ -n "${TALOS_RUN_PID:-}" ] && [ "$_pid" = "$TALOS_RUN_PID" ] && return 0
-        printf '%s' "$_ln"
-        return 1 ;;
+          # Expired: not a lease. Remember it for the end-of-scan prune.
+          _expired=1
+        else
+          _pid="$(_talos_lease_line_pid "$_ln")"
+          _held="${_ln##* held=}"; _held="${_held%% *}"
+          if ! _talos_lease_reclaimable "$_pid" "$_held" "$_now"; then
+            if [ -z "$_best" ] || [ "$_exp" -gt "$_best_exp" ]; then
+              _best="$_ln"; _best_exp="$_exp"
+            fi
+          fi
+        fi ;;
     esac
   done < "$_f" 2>/dev/null || return 2
-  return 0
+  if [ -z "$_best" ]; then
+    # Free: nothing the reader counts as a lease. The best-effort prune still
+    # fires exactly as before -- only because an expired line exists, so it
+    # never removes a line any reader counted (best effort -- a concurrent
+    # prune is harmless, the same line is removed once).
+    [ "$_expired" -eq 1 ] && _talos_lease_prune "$_f" "$_issue"
+    return 0
+  fi
+  # Own lease (this run's own earlier iteration, same pid): re-entrant, and
+  # set -u safe -- the TALOS_RUN_PID comparison only runs when it is set, so
+  # the unbound read the old mis-grouped expression made is gone (#522, AC9).
+  _pid="$(_talos_lease_line_pid "$_best")"
+  if [ "$_pid" = "$$" ] || { [ -n "${TALOS_RUN_PID:-}" ] && [ "$_pid" = "$TALOS_RUN_PID" ]; }; then
+    return 0
+  fi
+  printf '%s' "$_best"
+  return 1
 }
 
 # _talos_lease_prune <file> <issue>: remove issue=<N>'s line (lock held by caller
@@ -2187,6 +2346,7 @@ _talos_lease() {
   # acquire
   [ -z "$_ttl" ] && _ttl="$(_talos_lease_ttl_s)"
   case "$_ttl" in ''|*[!0-9]*) return 2 ;; esac
+  _TALOS_LEASE_RECLAIMED=0
   _lock_acquire "$_f" "${TALOS_LEASE_LOCK_S:-10}" || return 3
   _now="$(_talos_now)"
   _ln="$(_talos_lease_held_line "$_f" "$_issue" "$_now")"
@@ -2200,18 +2360,55 @@ _talos_lease() {
     printf '%s' "$_ln"
     return 1
   fi
-  _rc=0
-  printf 'issue=%s held=%s expires=%s pid=%s\n' "$_issue" "$_now" "$((_now + _ttl))" "${TALOS_RUN_PID:-$$}" >> "$_f" || _rc=1
+  # Free: every issue=<N> line is a non-lease (expired, or a dead holder past
+  # the age guard). Collapse: remove every other issue=<N> line before
+  # appending, under the lock, so two consecutive acquires leave exactly one
+  # line (#522, AC8). A dead-holder line replaced here is the reclaim the
+  # reader's scan decided (#522, AC1/AC6): this write makes it visible, the
+  # decision itself added none. An expired line removed here is the old TTL
+  # free, never announced.
+  local _tmp _ln2 _exp2 _pid2 _held2 _reclaimed=0 _wrc=0
+  _tmp="${_f}.tmp.$$"
+  : > "$_tmp" 2>/dev/null || _wrc=1
+  if [ "$_wrc" -eq 0 ]; then
+    if [ -f "$_f" ]; then
+      while IFS= read -r _ln2 || [ -n "$_ln2" ]; do
+        case "$_ln2" in
+          "issue=$_issue "*)
+            _exp2="${_ln2##* expires=}"; _exp2="${_exp2%% *}"
+            case "$_exp2" in
+              ''|*[!0-9]*) _wrc=2 ;;
+              *)
+                if [ "$_exp2" -gt "$_now" ]; then
+                  _pid2="$(_talos_lease_line_pid "$_ln2")"
+                  _held2="${_ln2##* held=}"; _held2="${_held2%% *}"
+                  if _talos_lease_reclaimable "$_pid2" "$_held2" "$_now"; then _reclaimed=1; fi
+                fi ;;
+            esac ;;
+          *) printf '%s\n' "$_ln2" >> "$_tmp" 2>/dev/null || _wrc=1 ;;
+        esac
+      done < "$_f" 2>/dev/null || _wrc=2
+    fi
+  fi
+  if [ "$_wrc" -eq 0 ]; then
+    printf 'issue=%s held=%s expires=%s pid=%s\n' "$_issue" "$_now" "$((_now + _ttl))" "${TALOS_RUN_PID:-$$}" >> "$_tmp" 2>/dev/null || _wrc=1
+  fi
+  if [ "$_wrc" -eq 0 ]; then
+    mv "$_tmp" "$_f" 2>/dev/null || _wrc=1
+  fi
+  [ "$_wrc" -eq 0 ] || rm -f "${_tmp:?}" 2>/dev/null
+  _TALOS_LEASE_RECLAIMED="$_reclaimed"
   _lock_release "$_f"
-  [ "$_rc" -eq 0 ] || return 2
+  [ "$_wrc" -eq 0 ] || return 2
   return 0
 }
 
-# _talos_lease_held_line <file> <issue> <now>: print issue=<N>'s line when it is
-# a live lease (expires in the future); empty (rc 0) when free or expired; rc 2
-# when the ledger cannot be read. Lock held by the caller.
+# _talos_lease_held_line <file> <issue> <now>: print the issue's effective
+# lease line when one exists -- the latest-expiring non-reclaimable line among
+# ALL of the issue's lines (#522, AC7); empty (rc 0) when free; rc 2 when the
+# ledger cannot be read. Lock held by the caller.
 _talos_lease_held_line() {
-  local _f="$1" _issue="$2" _now="$3" _ln _exp
+  local _f="$1" _issue="$2" _now="$3" _ln _exp _pid _held _best="" _best_exp=""
   [ -f "$_f" ] || return 0
   while IFS= read -r _ln || [ -n "$_ln" ]; do
     case "$_ln" in
@@ -2219,12 +2416,17 @@ _talos_lease_held_line() {
         _exp="${_ln##* expires=}"; _exp="${_exp%% *}"
         case "$_exp" in ''|*[!0-9]*) return 2 ;; esac
         if [ "$_exp" -gt "$_now" ]; then
-          printf '%s' "$_ln"
-          return 0
-        fi
-        return 0 ;;
+          _pid="$(_talos_lease_line_pid "$_ln")"
+          _held="${_ln##* held=}"; _held="${_held%% *}"
+          if ! _talos_lease_reclaimable "$_pid" "$_held" "$_now"; then
+            if [ -z "$_best" ] || [ "$_exp" -gt "$_best_exp" ]; then
+              _best="$_ln"; _best_exp="$_exp"
+            fi
+          fi
+        fi ;;
     esac
   done < "$_f" 2>/dev/null || return 2
+  [ -n "$_best" ] && printf '%s' "$_best"
   return 0
 }
 
@@ -2234,7 +2436,7 @@ _talos_lease_release_run_all() {
   _f="$(_talos_lease_file)" || return 0
   [ -f "$_f" ] || return 0
   while IFS= read -r _ln || [ -n "$_ln" ]; do
-    _pid="${_ln##* pid=}"; _pid="${_pid%% *}"
+    _pid="$(_talos_lease_line_pid "$_ln")"
     [ "$_pid" = "$TALOS_RUN_PID" ] || continue
     _issue="${_ln%% *}"; _issue="${_issue#issue=}"
     _talos_lease release "$_issue" >/dev/null 2>&1
@@ -2251,6 +2453,86 @@ _talos_lease_release() {
   _talos_lease release "$_issue" >/dev/null 2>&1
   _rc=$?
   [ "$_rc" -eq 0 ] || [ "$_rc" -eq 1 ] || _talos_warn lease-release-failed "issue=$_issue"
+}
+
+# _talos_lease_compact <file> <now>: rewrite the ledger to the effective-line-
+# per-issue set, under the caller's lock (#522, AC11): every line no reader
+# counts is removed -- expired (`expires <= now`), a dead holder past the age
+# guard (AC1), and a duplicate shadowed by a later-expiring line. A live
+# holder's effective line is never removed, whatever the pid. Nothing to
+# remove is a silent no-op: the file is never rewritten, so no lost update can
+# race a concurrent acquire (#522, AC12). One plain `pruned issue=<N>` line
+# per removed ledger line (never _talos_emit, whose sanitiser renders a space
+# only for the stop/warn/note keys), printed only after the atomic temp+mv
+# rewrite succeeds, so a mid-run failure can never mix `pruned` lines with a
+# `stop` line. rc 0 ok (with or without removals); any failure leaves the
+# ledger untouched and returns non-zero, never printing a note.
+_talos_lease_compact() {
+  local _f="$1" _now="$2" _ln _exp _issue _eff _rc=0 _removed="" _tmp _wrc=0 _i
+  [ -f "$_f" ] || return 0
+  _tmp="${_f}.tmp.$$"
+  : > "$_tmp" 2>/dev/null || return 1
+  while IFS= read -r _ln || [ -n "$_ln" ]; do
+    _issue="${_ln%% *}"; _issue="${_issue#issue=}"
+    case "$_issue" in
+      ''|*[!0-9]*)
+        # Not an issue=<digits> line (or a non-numeric one): keep verbatim,
+        # never remove what no reader matched.
+        printf '%s\n' "$_ln" >> "$_tmp" 2>/dev/null || _wrc=1 ;;
+      *)
+        _exp="${_ln##* expires=}"; _exp="${_exp%% *}"
+        case "$_exp" in
+          ''|*[!0-9]*) _rc=1 ;;
+          *)
+            if ! _eff="$(_talos_lease_held_line "$_f" "$_issue" "$_now")"; then _rc=1; fi
+            if [ "$_rc" -eq 0 ] && [ "$_wrc" -eq 0 ]; then
+              if [ "$_ln" = "$_eff" ]; then
+                printf '%s\n' "$_ln" >> "$_tmp" 2>/dev/null || _wrc=1
+              else
+                _removed="$_removed $_issue"
+              fi
+            fi ;;
+        esac ;;
+    esac
+  done < "$_f" 2>/dev/null || _rc=1
+  if [ "$_rc" -eq 0 ] && [ "$_wrc" -eq 0 ] && [ -n "$_removed" ]; then
+    mv "$_tmp" "$_f" 2>/dev/null || _rc=1
+  fi
+  if [ "$_rc" -ne 0 ] || [ "$_wrc" -ne 0 ]; then
+    rm -f "${_tmp:?}" 2>/dev/null
+    return 1
+  fi
+  [ -n "$_removed" ] || return 0
+  for _i in $_removed; do
+    _talos_isnum "$_i" || continue
+    printf 'pruned issue=%s\n' "$_i"
+  done
+  return 0
+}
+
+# _talos_lease_verb "$@" -- the `lease` dispatch arm (#522, AC13). The verb's
+# only sub-verb is `prune`; a missing or unknown one is `stop reason=usage`
+# with exit 2, exactly _talos_gate's shape. `lease prune` runs
+# _talos_prepare lease pipeline-lock.sh (AC13), takes the ledger's own lock
+# (AC14: a live holder times out to a lone `stop reason=lock-timeout`, exit 1)
+# and compacts the ledger; a ledger that cannot be reached or read is
+# `stop reason=ledger-unavailable`.
+_talos_lease_verb() {
+  local _sub="${1:-}" _f _rc=0
+  [ "$#" -eq 0 ] || shift
+  case "$_sub" in
+    prune) : ;;
+    *) _talos_stop usage 2 ;;
+  esac
+  [ "$#" -eq 0 ] || _talos_stop usage 2
+  _talos_prepare lease pipeline-lock.sh
+  _f="$(_talos_lease_file)" || _talos_stop ledger-unavailable 1
+  . "$SCRIPT_DIR/pipeline-lock.sh"
+  _lock_acquire "$_f" "${TALOS_LEASE_LOCK_S:-10}" || _talos_stop lock-timeout 1
+  _talos_lease_compact "$_f" "$(_talos_now)" || _rc=1
+  _lock_release "$_f"
+  [ "$_rc" -eq 0 ] || _talos_stop ledger-unavailable 1
+  return 0
 }
 
 # done <role> --issue <N> [--pr <M>] [--verdict <V>] --summary-file <F|-> [--draft]
@@ -2736,9 +3018,12 @@ say("wait", reason="none")
 # acquired for a dispatch/merge answer before it is printed, so two runs
 # never act on the same issue at once; a lease held by another run (or a
 # lock that could not be held) answers `action=wait reason=lease` with the
-# holder's remaining TTL as retry_after_s -- never a takeover.
+# holder's remaining TTL as retry_after_s -- never a takeover. A dead
+# holder's line past the reclaim guard is not a lease: the acquire reclaims
+# it (#522) and the wait it still causes reports the seconds until
+# reclaimable, never the TTL.
 _talos_next() {
-  local _issue="" _a _r _inflight _roles="" _exp _retry _skip
+  local _issue="" _a _r _inflight _roles="" _retry _skip
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --issue) _issue="${2:-}"; shift 2 ;;
@@ -2804,15 +3089,21 @@ _talos_next() {
 
   # The lease: acquire the target issue's before answering. Held by another
   # run, or the lock not held: wait with the holder's remaining TTL (fail
-  # closed, never a takeover).
+  # closed, never a takeover). A wait that exists only because of the age
+  # guard reports the seconds until the line is reclaimable, never the full
+  # remaining TTL (#522, AC5). A reclaim is announced exactly once on stderr
+  # (the `talos.sh run: dispatch-failed` convention, #522, AC6); stdout
+  # carries only the action line.
   _issue="$(printf '%s\n' "$_a" | sed -n 's/.* issue=//p')"
   _talos_lease acquire "$_issue" > "$_CFG_CACHE_DIR/lease.line"
   case "$?" in
-    0) : ;;
+    0)
+      if [ "${_TALOS_LEASE_RECLAIMED:-0}" -eq 1 ]; then
+        echo "talos.sh next: lease reclaimed from dead holder issue=$_issue" >&2
+      fi
+      : ;;
     1)
-      _exp="$(sed -n 's/.* expires=\([0-9]*\).*/\1/p' "$_CFG_CACHE_DIR/lease.line")"
-      _retry=$(( _exp - $(_talos_now) ))
-      [ "$_retry" -ge 1 ] || _retry=1
+      _retry="$(_talos_lease_retry_s "$(cat "$_CFG_CACHE_DIR/lease.line")" "$(_talos_now)")"
       _talos_emit_next_wait "action=wait reason=lease retry_after_s=$_retry"
       _talos_flush; exit 0 ;;
     *)
@@ -2823,11 +3114,14 @@ _talos_next() {
   _talos_flush
 }
 
-# _talos_lease_live_count: how many leases in the ledger have not expired
-# (the in-flight dispatches `next` counts against issues.max_parallel). An
-# unreadable ledger counts zero: the cap is a scheduling hint, never a stop.
+# _talos_lease_live_count: how many issues hold a lease the reader counts
+# (the in-flight dispatches `next` counts against issues.max_parallel): every
+# issue at most once, skipping the lines no reader counts -- expired, a dead
+# holder past the age guard (the reclaim, #522, AC10), and this run's own
+# lease. An unreadable ledger counts zero: the cap is a scheduling hint, never
+# a stop.
 _talos_lease_live_count() {
-  local _f _now _ln _exp _c=0
+  local _f _now _ln _exp _pid _held _issue _c=0 _seen=""
   _f="$(_talos_lease_file)" || { printf 0; return 0; }
   [ -f "$_f" ] || { printf 0; return 0; }
   _now="$(_talos_now)"
@@ -2835,9 +3129,14 @@ _talos_lease_live_count() {
     _exp="${_ln##* expires=}"; _exp="${_exp%% *}"
     case "$_exp" in ''|*[!0-9]*) continue ;; esac
     [ "$_exp" -gt "$_now" ] || continue
-    _ln_pid="${_ln##* pid=}"; _ln_pid="${_ln_pid%% *}"
+    _pid="$(_talos_lease_line_pid "$_ln")"
+    _held="${_ln##* held=}"; _held="${_held%% *}"
+    if _talos_lease_reclaimable "$_pid" "$_held" "$_now"; then continue; fi
     # Another run's dispatch (this run's own lease is itself, not in-flight).
-    [ -n "${TALOS_RUN_PID:-}" ] && [ "$_ln_pid" = "$TALOS_RUN_PID" ] && continue
+    [ -n "${TALOS_RUN_PID:-}" ] && [ "$_pid" = "$TALOS_RUN_PID" ] && continue
+    _issue="${_ln%% *}"; _issue="${_issue#issue=}"
+    case " $_seen " in *" $_issue "*) continue ;; esac
+    _seen="$_seen$_issue "
     _c=$((_c + 1))
   done < "$_f" 2>/dev/null
   printf '%s' "$_c"
@@ -3174,6 +3473,7 @@ case "$verb" in
   state) _talos_state "$@" ;;
   next) _talos_next "$@" ;;
   run) _talos_run_loop "$@" ;;
+  lease) _talos_lease_verb "$@" ;;
   help | -h | --help) _talos_help ;;
   "") _talos_help >&2; exit 2 ;;
   *) printf 'stop reason=unknown-verb\n'; exit 2 ;;
