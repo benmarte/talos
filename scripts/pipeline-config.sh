@@ -232,21 +232,31 @@ _locate_user_cfg() {
 # config-unreadable; --has and the single-key lookup exit 3 (an unknown
 # answer, never "absent").
 #
-# An explicit PIPELINE_CONFIG pointer resolves the project layer by itself, so
-# the project-directory stray check is skipped when it is set — but a pointer
-# at a .yml/.yaml file is refused like any other legacy file (YAML is never
-# parsed at load time).
+# An explicit PIPELINE_CONFIG pointer is a deliberate human decision: the
+# operator named the winner themselves, so the project-directory stray check
+# is skipped when the pointer is set (only canonical-path loads get the
+# stray/legacy gate). The pointer itself is still gated: a pointer at a
+# .yml/.yaml file is refused like any other legacy file -- by NAME (the
+# case pattern matches the string, so the refusal fires even when the file
+# does not exist; YAML is never parsed at load time, so a named-but-absent
+# YAML pointer is the same named legacy state).
 #
 # _cfg_project_problem / _cfg_user_problem print the problem line (or nothing)
 # and return 0 either way; _cfg_gate collects both and exits 3 when any printed.
+# The python loader repr()s untrusted paths so a control byte can never forge
+# a row or drive a terminal; the gate is pure shell, so it neutralises control
+# bytes in place instead (a normal path prints unchanged, no quoting added).
+_cfg_safe_path() { printf '%s' "$1" | tr '\001-\037\177' '?'; }
+
 _cfg_project_problem() {
-  local _strays="" _n _winner="$_CFG_PROJECT_NAME.json" _sep="" _cv_dir
+  local _strays="" _n _winner="$_CFG_PROJECT_NAME.json" _sep="" _cv_dir _cv_path
   if [ -n "${PIPELINE_CONFIG:-}" ]; then
     case "$PIPELINE_CONFIG" in
       *.yml|*.yaml)
+        _cv_path="$(_cfg_safe_path "$PIPELINE_CONFIG")"
         case "$PIPELINE_CONFIG" in */*) _cv_dir="${PIPELINE_CONFIG%/*}" ;; *) _cv_dir="." ;; esac
         printf 'pipeline-config: reason=config-legacy-file %s -- convert: bash scripts/pipeline-config.sh --convert %s %s/%s.json\n' \
-          "$PIPELINE_CONFIG" "$PIPELINE_CONFIG" "$_cv_dir" "$_CFG_PROJECT_NAME"
+          "$_cv_path" "$_cv_path" "$(_cfg_safe_path "$_cv_dir")" "$_CFG_PROJECT_NAME"
         return 0 ;;
       *) return 0 ;;
     esac
@@ -265,7 +275,7 @@ _cfg_project_problem() {
 }
 
 _cfg_user_problem() {
-  local _dir _strays="" _n _winner _sep=""
+  local _dir _shown_dir _strays="" _n _winner _sep=""
   _dir="$(_cfg_user_dir)"
   [ -n "$_dir" ] || return 0
   # The user directory can be the project directory (TALOS_HOME=.): the project
@@ -276,6 +286,11 @@ _cfg_user_problem() {
     if [ -f "$_dir/$_n" ]; then _strays="$_strays$_sep$_dir/$_n"; _sep=" "; fi
   done
   [ -n "$_strays" ] || return 0
+  # Only the PRINTED text is sanitized: the filesystem checks above used the
+  # real (possibly env-derived) directory.
+  _shown_dir="$(_cfg_safe_path "$_dir")"
+  _winner="$_shown_dir/$_CFG_PROJECT_NAME.json"
+  _strays="$(_cfg_safe_path "$_strays")"
   if [ -f "$_winner" ]; then
     printf 'pipeline-config: reason=config-shadowed winner=%s also-present=%s rm %s  # or merge them into the winner first\n' \
       "$_winner" "$(printf '%s' "$_strays" | tr ' ' ',')" "$_strays"

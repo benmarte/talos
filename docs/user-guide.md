@@ -117,11 +117,11 @@ Core (all setups):
 |------|-----------|-------|
 | `bash` | everything | macOS/Linux; Windows via WSL or Git Bash |
 | `git` | everything | |
-| `python3` (3.9+) | config parsing, notify payloads | stdlib only; every embedded call runs as `python3 -I` (isolated mode, so a file in the target repo named like a module, such as `json.py`, can never run inside Talos); JSON config (`talos.pipeline.json`) needs no extra dependency — recommended for new projects. YAML config requires PyYAML (`pip install pyyaml`; a `pip install --user` copy is found too); not installable on some platforms (PEP 668). |
+| `python3` (3.9+) | config parsing, notify payloads | stdlib only; every embedded call runs as `python3 -I` (isolated mode, so a file in the target repo named like a module, such as `json.py`, can never run inside Talos). Config is JSON only (#526): `talos.pipeline.json` needs no extra dependency; `--convert` is the one path that reads YAML and asks for PyYAML when it cannot find it. |
 | `curl` | notifications | skip if you don't use notifications |
 | `nak` | Buzz notifications only | `brew install nak`; signs/publishes Nostr events — skip unless you use Buzz |
 
-> **Note: examples throughout this guide use `talos.pipeline.yml` syntax.** The repo ships `talos.pipeline.json`; for new projects, JSON is recommended and requires no extra dependency (see the `python3` row above).
+> **Note: examples throughout this guide use JSON (`talos.pipeline.json`).** Config is JSON only (#526): exactly two canonical files (the repo's own and the user-level one), no other name is ever read.
 
 Per VCS provider (pick one):
 
@@ -2970,7 +2970,8 @@ directory and fails the load closed with ONE stderr line when the config set is
 dirty:
 
 - `reason=config-shadowed winner=<json> also-present=<strays> rm <strays>  # or merge them into the winner first` — a `talos.pipeline.yml`/`.yaml` sits beside that layer's `talos.pipeline.json`. The json always wins; the strays are named so you can merge them into it (run `--dump`'s values through the json) or just `rm` them.
-- `reason=config-legacy-file <path> -- convert: bash scripts/pipeline-config.sh --convert <path> <dir>/talos.pipeline.json` — a `talos.pipeline.yml`/`.yaml` with no `talos.pipeline.json` in the same layer directory. The legacy YAML parser is gone; `--convert` (see below) is the one YAML-aware path left.
+- `reason=config-legacy-file <path> -- convert: bash scripts/pipeline-config.sh --convert <path> <dir>/talos.pipeline.json` — a `talos.pipeline.yml`/`.yaml` with no `talos.pipeline.json` in the same layer directory (a `$PIPELINE_CONFIG` pointer at a `.yml`/`.yaml` file is refused the same way, by name, even before the file's existence matters). The legacy YAML parser is gone; `--convert` (see below) is the one YAML-aware path left.
+- **An explicit `$PIPELINE_CONFIG` pointer skips the same-dir stray check.** It is a deliberate human decision — the operator named the winner themselves — so only canonical-path loads (the two default files) get the stray/legacy gate. The pointer itself is still gated: a `.yml`/`.yaml` pointer is refused like any other legacy file, by name, even when the file does not exist.
 
 Every read verb exits 3 on these, and a `talos.sh` run answers `stop reason=config-unreadable` while printing the specific line, so a mid-migration repo is a named state, never a working config. `~/.talos/.env` is unaffected: it is the secrets store, not a config layer.
 
@@ -3185,7 +3186,7 @@ If your setup predates the config and secrets work (epic #437), check these once
 
 - **Verify output is too noisy for the developer/QA agent's context** — pass
   `--quiet` to `tests/run-tests.sh` (or set `TALOS_TEST_QUIET=1`) as the
-  `verify:` command in `talos.pipeline.yml`/`talos.pipeline.json`. It prints
+  `verify` key in `talos.pipeline.json`. It prints
   one line per test file (pass/fail/cached) plus full output only for failing
   files, instead of every assertion of every file. The developer and QA
   prompts already prefer summary output for verify commands and are
@@ -3252,7 +3253,7 @@ If your setup predates the config and secrets work (epic #437), check these once
   `bash ~/.talos/scripts/pipeline-vcs.sh --dry-run <verb> ...`.
 - **Approval label lost after a new commit** — when a non-waived file (source code, tests, agent instructions such as `agents/`, `skills/`, `templates/prompts/`, the runner dot-directories (`.claude/agents/`, `.claude/rules/`, `.agents/`, `.agent/`, `.gemini/`, `.pi/`, `.codex/`, at any depth) or any `AGENTS.md`/`CLAUDE.md`/`GEMINI.md`/`AGENTS.override.md`/`CLAUDE.local.md`, protected config) is pushed after an approval, that approval is marked stale; only the affected stages are re-run, and docs approvals whose delta touches only `*.example` or other waived paths are re-stamped without re-dispatch (see `merge.approval_waiver_paths` in README).
 - **`pipeline-config: [warn] unknown config key '...'`** — a key in your
-  `talos.pipeline.yml`/`talos.pipeline.json` doesn't match anything Talos
+  `talos.pipeline.json` doesn't match anything Talos
   reads; the warning names the nearest known key it thinks you meant (e.g.
   `merge.atuo` → `merge.auto`). Fix the typo — an unknown key is otherwise
   silently ignored and the pipeline runs with that key's default. Set

@@ -306,6 +306,30 @@ js = json.load(open(sys.argv[2]))
 print("same" if yml == js else "differ")' "$SANDBOX/legacy.yml" talos.pipeline.json)"
   assert_eq "same" "$equal" "AC4: converted json values equal the yml's parsed values"
   rm -f talos.pipeline.json
+
+  # --convert drops a secret-shaped leaf the same way a load would (#444): one
+  # line names the shape and never the value; the json is clean, so the load
+  # after it prints no shape warning again.
+  printf 'notifications:\n  slack_channel: "#ok"\n  slack:\n    webhook: https://hooks.slack.com/services/T1/B2/XXXXXXXXXXXXXXXXXXXXXXXXXXXX\n' > talos.pipeline.yml
+  bash "$CFG_SH" --convert talos.pipeline.yml talos.pipeline.json >/dev/null 2>"$ERR"; rc=$?
+  assert_exit_code "0" "$rc" "AC4: --convert exits 0 on a yml with a secret-shaped leaf"
+  assert_contains "$(cat "$ERR")" "holds a Slack webhook URL" \
+    "AC4: the secret-shaped leaf is dropped with one line naming the shape"
+  assert_not_contains "$(cat "$ERR")" "hooks.slack.com/services" \
+    "AC4: the secret value never prints"
+  python3 -I - "$SANDBOX" <<'TALOS_pyy7s2v5n1h9k4t'
+import json, sys
+d = json.load(open(sys.argv[1] + "/talos.pipeline.json"))
+assert "webhook" not in d.get("notifications", {}).get("slack", {}), "the secret leaf landed in the json"
+TALOS_pyy7s2v5n1h9k4t
+  [ $? -eq 0 ] && pass "AC4: the converted json does not carry the secret leaf" \
+    || fail "AC4: the converted json does not carry the secret leaf" "the webhook key is still in the json"
+  cp talos.pipeline.json talos.pipeline.json.bak
+  err2="$(bash "$CFG_SH" notifications.slack_channel "" 2>&1 >/dev/null)"
+  assert_not_contains "$err2" "holds a Slack webhook URL" \
+    "AC4: the converted json loads clean (the shape was dropped at convert time, not at load)"
+  mv talos.pipeline.json.bak talos.pipeline.json
+  rm -f talos.pipeline.yml talos.pipeline.json
 else
   echo "  skip: PyYAML not installed -- AC4 round-trip case"
 fi

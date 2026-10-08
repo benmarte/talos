@@ -43,7 +43,7 @@ If it prints nothing, stop — Talos is not installed.
 
   `PROMPT_FILE` is the `prompt_file=` path (the prompt text never touches a command line). The adapter finds the role definition itself — `$PWD/.claude/agents/<role>.md`, then `$PWD/.agents/talos/agents/<role>.md`, then the install's `agents/` — and combines it with the stage prompt. No native subagents: developer stages run sequentially, `max_parallel: 1`.
 
-**Provider failover (#418):** `agents.fallback` reruns a provider-error death (exit 75: rate limit/quota/overload/auth/network) on the next runner unless the attempt wrote. Exit **69** = exhausted or refused after a write: no `record-attempt`, no fix round; `pipeline:blocked` on issue(+PR), relay the stderr line, needs-owner when `STATUS_ENABLED = true` (Rule 20), else blocked.md with BLOCKED_BY="talos.pipeline.yml:agents.fallback (explicit)"; the owner resumes by removing `pipeline:blocked` (each block grants one more limit) or raising `limits.tokens_per_issue`.
+**Provider failover (#418):** `agents.fallback` reruns a provider-error death (exit 75: rate limit/quota/overload/auth/network) on the next runner unless the attempt wrote. Exit **69** = exhausted or refused after a write: no `record-attempt`, no fix round; `pipeline:blocked` on issue(+PR), relay the stderr line, needs-owner when `STATUS_ENABLED = true` (Rule 20), else blocked.md with BLOCKED_BY="talos.pipeline.json:agents.fallback (explicit)"; the owner resumes by removing `pipeline:blocked` (each block grants one more limit) or raising `limits.tokens_per_issue`.
 
 **Usage-reporting spawn form (#259):** on the native path (`subagents: true`), spawn every stage (developer, QA, reviewer, security, validator, docs, adversarial, planner) with the Agent background form (`isolation: "worktree"` for a writable checkout; the bare background/async spawn for read-only; no adapter path): the notification carries usage (`subagent_tokens`/`tool_uses`/`duration_ms`). VERIFIED 2026-09-09: background spawns report usage; named/adapter-path spawns show no input/output split, no model, no dollar cost (UNVERIFIED beyond these observed fields) — expected, not a bug — they show as unrecorded in the spend line, not as zero.
 
@@ -132,7 +132,7 @@ With `PR_DRAFT = true` pass `--draft` to every `done` call: a QA `FAIL` is conve
 
 ## Chat mode — no issues yet
 
-If the user describes work conversationally, extract the tasks, write `plan.md` with one `- [ ] Task` item per task, set config to file mode (`vcs: {provider: file, file: {source: {path: plan.md}}}` in `talos.pipeline.yml`), and proceed with the File Mode pipeline.
+If the user describes work conversationally, extract the tasks, write `plan.md` with one `- [ ] Task` item per task, set config to file mode (`{"vcs": {"provider": "file", "file": {"source": {"path": "plan.md"}}}}` in `talos.pipeline.json`), and proceed with the File Mode pipeline.
 
 ## File mode pipeline
 

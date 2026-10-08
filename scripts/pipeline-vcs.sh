@@ -1395,7 +1395,7 @@ _vcs_shared_contract_env() {
 #                               list rejects every marker.
 #     warn_identity_refused(reader, verify, trusted) -> the one stderr line
 #                               for that empty-list case, saying how to fix it.
-#     config_parse_failed()  -> True when TALOS_CFG exists but does not parse.
+#     config_parse_failed()  -> True when TALOS_CFG exists but does not parse (json only, #526).
 #     body_last_line(body)   -> the last non-whitespace line, stripped; a
 #                               marker only counts there, so a quoted or
 #                               fenced one cannot win.
@@ -1443,22 +1443,14 @@ def warn_identity_refused(reader, verify, trusted):
 
 def config_parse_failed():
     # Config-parse-failed detection for the marker-authors-unverified message (#116).
+    # JSON only (#526): the config parser is json, like the loader's. The only
+    # yaml import left in scripts/ is pipeline-config.sh's --convert verb (the
+    # accepted exception); no config load path parses YAML any more.
     cfg = os.environ.get('TALOS_CFG', '')
     if not cfg or not pathlib.Path(cfg).exists():
         return False
-    # -I drops the user site; append it back (never insert: cwd and the
-    # stdlib must keep winning) so a pip --user PyYAML still parses YAML config (#395).
     try:
-        import site
-        sys.path.append(site.getusersitepackages())
-    except Exception:
-        pass
-    try:
-        try:
-            import yaml
-            yaml.safe_load(open(cfg))
-        except ImportError:
-            json.load(open(cfg))
+        json.load(open(cfg))
     except Exception:
         return True
     return False
