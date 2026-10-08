@@ -45,7 +45,7 @@ assert_contains "$skill_text" "never invalidates an approval" "skill: waiver not
 
 # Config + examples.
 assert_contains "$(cat "$CFG")" "roles.changelog_fragments" "config: key in known keys"
-assert_contains "$(cat "$TALOS_ROOT/talos.pipeline.yml.example")" "changelog_fragments" "example: yml documents the flag"
+assert_contains "$(cat "$TALOS_ROOT/talos.pipeline.json.example")" "changelog_fragments" "example: json documents the flag"
 assert_contains "$(cat "$TALOS_ROOT/talos.pipeline.json.example")" '"changelog_fragments"' "example: json documents the flag"
 
 # The script's own contract.

@@ -7,7 +7,7 @@
 #   pipeline-status.sh 42 "In progress"
 #   pipeline-status.sh --dry-run 42 "Done"
 #
-# Status names must match the configured display names in talos.pipeline.yml
+# Status names must match the configured display names in talos.pipeline.json
 # (e.g. "Ready", "In progress", "In review", "Done", "Blocked").
 #
 # Config keys read (via pipeline-config.sh):

@@ -16,7 +16,7 @@ cat > talos.pipeline.json <<'EOF'
 }
 EOF
 
-assert_eq "rebase"  "$(bash "$CFG_SH" merge.method squash)"          "nested key lookup"
+assert_eq "rebase"  "$(bash "$CFG_SH" merge.method squash)"          "AC7: the single-canonical-file fixture resolves the same values (nested key lookup)"
 assert_eq "true"    "$(bash "$CFG_SH" board.enabled false)"          "bool normalised to lowercase string"
 assert_eq "false"   "$(bash "$CFG_SH" roles.qa true)"                "false bool wins over default"
 assert_eq "7"       "$(bash "$CFG_SH" board.project_number "")"      "numeric value"
@@ -43,27 +43,14 @@ echo "{ not json" > talos.pipeline.json
 assert_eq "safe" "$(bash "$CFG_SH" merge.method safe)" "corrupt config returns default"
 rm talos.pipeline.json
 
-# YAML path (only when PyYAML is available — matches script behaviour)
-if python3 -c "import yaml" 2>/dev/null; then
-  cat > talos.pipeline.yml <<'EOF'
-merge:
-  method: rebase
-verify:
-  - npm test
-  - npm run lint
-EOF
-  assert_eq "rebase" "$(bash "$CFG_SH" merge.method squash)" "yaml nested key"
-  assert_eq "$(printf 'npm test\nnpm run lint')" "$(bash "$CFG_SH" verify "")" "yaml list"
-  rm talos.pipeline.yml
-else
-  echo "  skip: PyYAML not installed — yaml cases skipped"
-fi
-
-# Legacy config names still honored; talos.* wins when both exist
-cat > .claude-pipeline.json <<'EOF'
-{"merge": {"method": "merge"}}
-EOF
-assert_eq "merge" "$(bash "$CFG_SH" merge.method squash)" "legacy .claude-pipeline.json still read"
+# YAML is never parsed at load (#526): a legacy .yml/.yaml beside the canonical
+# json fails the load closed (covered in tests/test-config-json-only.sh), and a
+# lone one too. The old "legacy names still honored" behavior is gone: a
+# non-canonical name (.claude-pipeline.json, pipeline.json, ...) is simply not
+# read -- the canonical json, if present, answers every lookup.
+printf '{"merge": {"method": "merge"}}\n' > .claude-pipeline.json
+assert_eq "squash" "$(bash "$CFG_SH" merge.method)" \
+  "a legacy .claude-pipeline.json beside the canonical json is not read"
 cat > talos.pipeline.json <<'EOF'
 {"merge": {"required_checks": ["test"]}}
 EOF
@@ -175,7 +162,8 @@ rm talos.pipeline.json
 cat > talos.pipeline.json <<'EOF'
 {"merge": {"method": "rebase"}}
 EOF
-assert_eq "rebase" "$(bash "$CFG_SH" merge.method squash)" "talos.pipeline.json wins over legacy"
+assert_eq "rebase" "$(bash "$CFG_SH" merge.method)" \
+  "AC7: the canonical talos.pipeline.json answers the lookup; the legacy name is ignored (a single-file dir is a clean load)"
 rm .claude-pipeline.json talos.pipeline.json
 
 # roles.docs_mode (#200): default resolution — auto unless explicitly set

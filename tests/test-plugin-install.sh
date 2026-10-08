@@ -8,7 +8,7 @@
 # plugin at all, and every script path in the playbook resolved against the repo.
 #
 # These tests model that layout exactly: a plugin cache dir holding a copy of the
-# Talos tree, and a target repo containing only talos.pipeline.yml.
+# Talos tree, and a target repo containing only talos.pipeline.json (the canonical config, #526).
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox
@@ -195,9 +195,9 @@ out_notify="$(CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
 assert_not_contains "$out_notify" "template not found" "notify finds templates from the plugin root"
 
 # ── 5. Config still comes from the REPO, never the plugin ────────────────────
-# The plugin ships its own talos.pipeline.yml (Talos's own config). If config
-# resolution ever followed the script location, every install would inherit
-# Talos's settings instead of the user's.
+# The plugin tree carries talos.pipeline.json (Talos's own config, #526). If
+# config resolution ever followed the script location, every install would
+# inherit Talos's settings instead of the user's.
 got_repo="$(CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" \
   bash "$PLUGIN_ROOT/scripts/pipeline-config.sh" repo "none")"
 assert_eq "acme/widget" "$got_repo" "config reads the target repo, not the plugin"

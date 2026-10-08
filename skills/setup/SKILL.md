@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Interactive onboarding for Talos. Detects the repo, asks a few questions, writes talos.pipeline.yml, bootstraps labels, fires a test notification, and leaves the repo ready to run the pipeline (`/talos:pipeline` in Claude Code, or in any other agent Read ~/.talos/skills/pipeline/SKILL.md and follow it).
+description: Interactive onboarding for Talos. Detects the repo, asks a few questions, writes talos.pipeline.json, bootstraps labels, fires a test notification, and leaves the repo ready to run the pipeline (`/talos:pipeline` in Claude Code, or in any other agent Read ~/.talos/skills/pipeline/SKILL.md and follow it).
 ---
 
 You are the **pipeline setup wizard**. Walk the user through configuring Talos for this repo. Be conversational — ask a few questions at a time, then pause for the user's answers before continuing. Do not ask all questions in a wall of text.
@@ -26,13 +26,13 @@ Five cases, in priority order: explicit override ($TALOS_HOME), global install (
 
 ## Step 0 — Detect existing config
 
-Check whether `talos.pipeline.yml` or `pipeline.yaml` already exists in the current directory.
+Check whether `talos.pipeline.json` already exists in the current directory. A legacy `talos.pipeline.yml`/`.yaml` beside it fails every config read closed (`reason=config-shadowed`), and one without a json fails with `reason=config-legacy-file` (#526): when you find either, offer `bash scripts/pipeline-config.sh --convert <legacy> talos.pipeline.json` (or the `rm` the reason line prints) and proceed only after the legacy file is gone or converted -- never write a json alongside it.
 
 If a config **exists**:
 - Read it with `bash scripts/pipeline-config.sh <key>` to show current values (a key that is not set prints its documented default).
 - Tell the user: "Found an existing config. Here's what's set: ..."
 - Ask: "Would you like to update any of these settings, or is this just a re-run to bootstrap labels?"
-- If no changes needed: run `bash scripts/pipeline-config.sh --has status.enabled` (exit 0 set, 1 not set, 3 the config does not parse: tell the user and skip this check). On exit 1 (no `status:` block yet), ask Step 4b's question once; on yes add ONLY the `status:` block to the existing file (show the lines to add and write only after an explicit yes; never rewrite the rest of the file, per the Idempotency rules), then run Step 7b. A no adds `status:` with `enabled: false` the same way (no Step 7b), so the question is not asked again. A JSON config cannot be re-serialised without losing its formatting and key order, so never parse and re-write it: show the single line `"status": { "enabled": true },` (`false` on a no) and add it as a new line directly after the file's opening `{`, leaving every other byte alone. If the object is empty (`{}`), drop the trailing comma.
+- If no changes needed: run `bash scripts/pipeline-config.sh --has status.enabled` (exit 0 set, 1 not set, 3 the config does not parse or the config set is dirty -- the reason line on stderr says which, and for `config-shadowed`/`config-legacy-file` apply the `--convert`/`rm` it prints before retrying: tell the user and skip this check). On exit 1 (no `status:` block yet), ask Step 4b's question once; on yes add ONLY the `status:` block to the existing file (show the lines to add and write only after an explicit yes; never rewrite the rest of the file, per the Idempotency rules), then run Step 7b. A no adds `status:` with `enabled: false` the same way (no Step 7b), so the question is not asked again. A JSON config cannot be re-serialised without losing its formatting and key order, so never parse and re-write it: show the single line `"status": { "enabled": true },` (`false` on a no) and add it as a new line directly after the file's opening `{`, leaving every other byte alone. If the object is empty (`{}`), drop the trailing comma.
 - If no changes needed and `bash scripts/pipeline-config.sh vcs.provider` prints `github`: run `bash scripts/pipeline-config.sh --has evidence.enabled` (same exit codes). On exit 1 (no `evidence:` block yet), ask Step 4c's question once; on anything but "ask me later" add ONLY the `evidence:` block to the existing file (show the lines to add and write only after an explicit yes; never rewrite the rest of the file, per the Idempotency rules). "Ask me later" writes nothing. A config that already has `enabled: false` is never re-asked.
 - If no changes needed, in every case (whatever the check above printed): run Step 7c with the harness from `bash scripts/pipeline-config.sh agents.runner`, then Step 7d, then jump to Step 8 (bootstrap labels) and Step 10 (test notification).
 
@@ -321,7 +321,7 @@ First look at what is already routed:
 bash scripts/pipeline-agent.sh --resolve-all
 ```
 
-It prints one line per role: `role=<r> model=<m> restamp_model=<m> origin=<project|global|session default>`. `global` is the user-level file `${TALOS_HOME:-$HOME/.talos}/talos.pipeline.{yml,yaml,json}`; `project` is this repo's config.
+It prints one line per role: `role=<r> model=<m> restamp_model=<m> origin=<project|global|session default>`. `global` is the user-level file `${TALOS_HOME:-$HOME/.talos}/talos.pipeline.json`; `project` is this repo's config.
 
 **When a routing already exists** (any role with `origin=global` or `origin=project`), show the table and ask:
 
@@ -348,7 +348,7 @@ Record the answer:
 - **Per role** — walk the roles enabled in this setup (Step 4's answers, plus `developer`, which always runs) one at a time and write `agents.roles.<role>.model: <model>` for each. Offer an `agents.model` fallback for the rest; write it if the user names one.
 - **Leave unset** — writes nothing, no `agents.model` and no role keys. Every role inherits the session model. An existing user-level file is left as it is.
 
-**Where it is written.** By default into the user-level file, `${TALOS_HOME:-$HOME/.talos}/talos.pipeline.yml` (or `.json` when PyYAML is not importable, or whichever extension already exists there), so the question is asked once and applies to every repo. Only `agents.*` keys are read from that file; never put board, merge, issue or verify settings in it.
+**Where it is written.** By default into the user-level file, `${TALOS_HOME:-$HOME/.talos}/talos.pipeline.json`, so the question is asked once and applies to every repo. Only `agents.*` keys are read from that file; never put board, merge, issue or verify settings in it.
 
 - **No user-level file yet** — create it with just the `agents:` keys recorded above.
 - **A user-level file exists** — never overwrite it blindly. Build the new content in a scratch file (keep every key already there; change only `agents.model` and `agents.roles.<role>.model`), show `diff -u <existing> <new>`, and write only after an explicit yes. On anything but yes, leave the file untouched and say so. Never overwrite an existing user-level file without showing the diff and getting that yes.
@@ -357,167 +357,111 @@ Afterwards run `bash scripts/pipeline-agent.sh --resolve-all` again and show the
 
 ---
 
-## Step 7 — Write talos.pipeline.yml
+## Step 7 — Write talos.pipeline.json
 
-Based on the collected answers, write `talos.pipeline.yml` in the current directory using this template (fill in the collected values, comment out sections not configured):
+Based on the collected answers, write `talos.pipeline.json` in the current directory using this template. JSON has no comments, so nothing is commented out: **omit every key whose value you did not collect** -- an absent key keeps its table default, and `_note` is ignored by the loader (keep it or drop it):
 
-```yaml
-# Generated by /talos:setup on <date>
-# Start the pipeline with `/talos:pipeline` in Claude Code; in any other agent: Read ~/.talos/skills/pipeline/SKILL.md and follow it
-base_branch: <BASE_BRANCH>
-release_branch: main
+```json
+{
+  "_note": "Generated by /talos:setup on <date>. Start the pipeline with /talos:pipeline in Claude Code; in any other agent: Read ~/.talos/skills/pipeline/SKILL.md and follow it. _note is ignored by the loader. agents.runner ids: claude (default) | pi | codex | gemini | antigravity | custom; when the harness is claude this block is omitted entirely.",
 
-vcs:
-  provider: <PROVIDER>          # github | gitlab | azure | file
-  # repo: <OWNER/REPO>          # omit to auto-detect from git remote
+  "base_branch": "<BASE_BRANCH>",
+  "release_branch": "main",
 
-# ── Board (GitHub only) ──────────────────────────────────────────────────────
-board:
-  enabled: <true|false>
-  # project_number: <N>
-  # owner: <OWNER>
-  status_field: Status
-  statuses:
-    ready: "Ready"
-    in_progress: "In progress"
-    in_review: "In review"
-    done: "Done"
-    blocked: "Blocked"
-  # status_map: optional — map pipeline status names to your board's column names.
-  # Use this when your project uses different column names than the defaults above.
-  # An absent key passes through unchanged; omitting status_map entirely is safe.
-  # Example: if your board uses "Needs attention" instead of "Blocked":
-  # status_map:
-  #   Blocked: "Needs attention"
+  "vcs": {
+    "provider": "<PROVIDER>"
+  },
 
-# ── Verify commands ───────────────────────────────────────────────────────────
-verify:
-  <VERIFY_COMMANDS — one per line, or empty list>
+  "board": {
+    "enabled": <true|false>,
+    "project_number": <PROJECT_NUMBER>,
+    "owner": "<OWNER>",
+    "status_field": "Status",
+    "statuses": {
+      "ready": "Ready",
+      "in_progress": "In progress",
+      "in_review": "In review",
+      "done": "Done",
+      "blocked": "Blocked"
+    }
+  },
 
-# ── Merge ─────────────────────────────────────────────────────────────────────
-merge:
-  method: squash
-  required_checks: []
-  delete_branch: true
-  # forbidden_files:           # PR paths matching these glob patterns block the
-  #   - ".env"                 # merge for human review (defaults shown; basename
-  #   - ".env.*"               # and full path are both matched)
-  #   - "*.pem"
-  #   - "*.key"
-  #   - "*.p12"
-  #   - "*.pfx"
-  #   - "*.secrets"
-  #   - "secrets.*"
-<IF_EXTRA_FORBIDDEN_PATTERNS>
-  forbidden_files:
-    - ".env"
-    - ".env.*"
-    - "*.pem"
-    - "*.key"
-    - "*.p12"
-    - "*.pfx"
-    - "*.secrets"
-    - "secrets.*"
-<EXTRA_FORBIDDEN_PATTERNS — one per line, indented>
-</IF_EXTRA_FORBIDDEN_PATTERNS>
+  "verify": ["<VERIFY_COMMAND>"],
 
-# ── Issue selection ───────────────────────────────────────────────────────────
-issues:
-  label_filter: "pipeline:ready"
-  skip_labels:
-    - "pipeline:blocked"
-    - "wontfix"
-  max_parallel: 1
+  "merge": {
+    "method": "squash",
+    "required_checks": [],
+    "delete_branch": true
+  },
 
-# ── Roles ─────────────────────────────────────────────────────────────────────
-roles:
-  validator: <true|false>
-  pm: <true|false>
-  qa: <true|false>
-  reviewer: <true|false>
-  security: <true|false>
-  docs: <true|false>
-  adversarial: <true|false>   # optional pre-merge second opinion, off by default (#237)
-  # pm_skip_when_spec_present: true  # default; set false to always run PM
-  # docs_mode: auto                  # auto (default) | always
+  "issues": {
+    "label_filter": "pipeline:ready",
+    "skip_labels": ["pipeline:blocked", "wontfix"],
+    "max_parallel": 1
+  },
 
-# ── Status file (Step 4b) ─────────────────────────────────────────────────────
-status:
-  enabled: <true|false>
-  # file: "TALOS_STATUS.md"
-  # fragments_dir: "docs/status.d"   # must be a tracked directory
-  # log_days: 30
-  # log_max: 50
-  # resume_max_lines: 40
+  "roles": {
+    "validator": true,
+    "pm": true,
+    "qa": true,
+    "reviewer": true,
+    "security": true,
+    "docs": true,
+    "adversarial": false
+  },
 
-# ── Evidence (Step 4c) ────────────────────────────────────────────────────────
-evidence:
-  enabled: <true|false>
-<IF_EVIDENCE_ACCEPTED>
-  dir: <EVIDENCE_DIR>             # the normalised dir= value printed by Step 4c
-  command: "<EVIDENCE_COMMAND>"   # omit this line on the agent-capture path
-</IF_EVIDENCE_ACCEPTED>
+  "status": {
+    "enabled": <true|false>
+  },
 
-# ── Comments ──────────────────────────────────────────────────────────────────
-comments:
-  enabled: true
-  header: "**Agent:** {role} (talos)"
-  templates_dir: "templates/comments"
+  "evidence": {
+    "enabled": <true|false>,
+    "dir": "<EVIDENCE_DIR>"
+  },
 
-# ── Notifications ─────────────────────────────────────────────────────────────
-notifications:
-  slack_channel: "<SLACK_CHANNEL_OR_EMPTY>"
-  discord_channel: "<DISCORD_CHANNEL_OR_EMPTY>"
-  templates_dir: "templates/notifications"
-  threading: true
-  # events: leave unset to fire all events (recommended).
-  # WARNING: if you set a list you MUST include the role events
-  # (validator/developer/qa/reviewer/security/docs/orchestrator) or the
-  # conversation stream is silently killed. See talos.pipeline.yml.example.
-<IF_USER_REQUESTED_FILTER>
-  events:
-<EVENTS_LIST_WITH_ALL_ROLE_EVENTS_PLUS_CHOSEN_LIFECYCLE_EVENTS>
-</IF_USER_REQUESTED_FILTER>
+  "comments": {
+    "enabled": true,
+    "header": "**Agent:** {role} (talos)",
+    "templates_dir": "templates/comments"
+  },
 
-# ── Limits ────────────────────────────────────────────────────────────────────
-limits:
-  max_fix_attempts: 3
+  "notifications": {
+    "slack_channel": "<SLACK_CHANNEL>",
+    "discord_channel": "<DISCORD_CHANNEL>",
+    "templates_dir": "templates/notifications",
+    "threading": true
+  },
 
-<IF_NON_CLAUDE_HARNESS>
-# ── Agent runner (non-Claude-Code harnesses only) ─────────────────────────────
-# Claude Code spawns native subagents and ignores this section. Harnesses
-# without subagents (Codex CLI, headless runners) execute role stages through
-# scripts/pipeline-agent.sh, which uses:
-agents:
-  runner: <HARNESS>            # claude (default) | pi | codex | gemini | antigravity | custom
-  # runner_args:               # extra CLI args for the claude/pi/codex/gemini/antigravity runner
-  #   - --full-auto
-<IF_CUSTOM_HARNESS>
-  runner_cmd: "<RUNNER_CMD>"   # runner: custom — prompt arrives on stdin.
-                               # Must be an AGENTIC CLI (executes shell/edits
-                               # files); use one backed by a local model
-                               # (e.g. Ollama) for fully local pipelines.
-</IF_CUSTOM_HARNESS>
-</IF_NON_CLAUDE_HARNESS>
+  "limits": {
+    "max_fix_attempts": 3
+  },
+
+  "agents": {
+    "runner": "<HARNESS>",
+    "subagents": false
+  }
+}
 ```
 
-When writing the file:
-- Status file (Step 4b): accepted writes the block above with `enabled: true`; declined writes the same block with `enabled: false`, active and not commented out (the `# key:` lines stay as comments), so a later setup re-run sees `status.enabled` set and does not ask again. Skipped for `vcs.provider: file` writes no `status` key. A JSON config has no comments: accepted writes `"status": { "enabled": true }` (the other keys keep their defaults), declined writes `"status": { "enabled": false }`, skipped omits the key. The status file is NOT added to `merge.union_paths` (fragments replace union merging).
-- Evidence (Step 4c): accepted writes the block above with `enabled: true`, `dir` (the normalised `dir=` value Step 4c printed, never the typed text) and `command` (a typed command is written as a YAML double-quoted string, escaping `\` and `"`; on the agent-capture path omit the `command` line); the other `evidence.*` keys keep their defaults and `store` is not written (`attach` is the only value). Declined, "off" and "off" after the newer-gh message write an ACTIVE block, `evidence:` with `enabled: false` and nothing else, never a commented one: a commented block reads as unset, so every re-run would ask again. A JSON config gets `"evidence": { "enabled": true, "dir": "<dir>", "command": "<command>" }` when accepted (on the agent-capture path omit the `"command"` key: `"evidence": { "enabled": true, "dir": "<dir>" }`; `dir` and `command` are written only when accepted, as the `<IF_EVIDENCE_ACCEPTED>` lines are in YAML) and `"evidence": { "enabled": false }` when declined. "Ask me later" and a skipped provider (`gitlab`, `azure`, `file`) write no `evidence` key.
-- If harness = `claude`: omit the `agents:` block entirely (Claude Code spawns native subagents and ignores it).
-- Models: a per-repo override chosen in Step 6c goes into this repo's `agents:` block (`model:` and `roles.<role>.model`), even when harness = `claude`. A user-level answer is written by Step 6c itself, not here.
-- If harness = `pi`: write the active `agents:` block with `runner: pi` and `subagents: false` (`agents.subagents: false`: pi runs the stages inline).
-- If harness = `codex`, `gemini` or `antigravity`: write the active `agents:` block with the chosen `runner` value (for example `runner: antigravity`); omit `runner_cmd`.
-- If harness = `custom`: write the active `agents:` block with `runner: custom` and `runner_cmd: "<value the user provided>"`.
-- If `roles.adversarial: true` AND the user asked for a different backend for it (Step 4): write (or extend) the `agents:` block with a `roles: { adversarial: { runner: ..., runner_cmd: ... } }` sub-block — same shape as the `docs/user-guide.md` "Second opinion on a local model" example — even when the top-level harness is `claude`, since only `adversarial` is opting out of the native default.
+When writing the file (omit the whole block when its keys are not configured):
+- Status file (Step 4b): accepted writes `"status": { "enabled": true }`; declined writes `"status": { "enabled": false }` (an ACTIVE block, never omitted, so a re-run never asks again); skipped for `vcs.provider: file` omits the key. `vcs.repo` is omitted: it auto-detects from `git remote get-url origin`. The status file is NOT added to `merge.union_paths` (fragments replace union merging).
+- Evidence (Step 4c): accepted writes `"evidence": { "enabled": true, "dir": "<the normalised dir= value Step 4c printed, never the typed text>", "command": "<the typed command>" }` (a typed command carries backslashes and quotes, so it is written as a JSON string literal; on the agent-capture path omit the `"command"` key: `"evidence": { "enabled": true, "dir": "<dir>" }`). `dir` and `command` are written only when accepted; `store` is not written (`attach` is the only value). Declined, "off" and "off" after the newer-gh message write `"evidence": { "enabled": false }` -- an ACTIVE block, never omitted (JSON has no comments, so a commented block cannot even exist), so every re-run sees `evidence.enabled` set and does not ask again. "Ask me later" and a skipped provider (`gitlab`, `azure`, `file`) omit the key.
+- Extra forbidden patterns (the merge-gate question below): a yes writes an active `"forbidden_files"` list inside `merge` with the defaults plus the user's extras: `"forbidden_files": [".env", ".env.*", "*.pem", "*.key", "*.p12", "*.pfx", "*.secrets", "secrets.*"]`; a no omits the key (the built-in defaults apply).
+- If harness = `claude`: omit the `agents` block entirely (Claude Code spawns native subagents and ignores it).
+- Models: a per-repo override chosen in Step 6c goes into this repo's `agents` block (`"model"` and `"roles": { "<role>": { "model": "<model>" } }`), even when harness = `claude`. A user-level answer is written by Step 6c itself, not here.
+- If harness = `pi`: write `"agents": { "runner": "pi", "subagents": false }` (pi runs the stages inline).
+- If harness = `codex`, `gemini` or `antigravity`: write `"agents": { "runner": "<HARNESS>" }` (for example `"runner": "antigravity"`); omit `runner_cmd`.
+- If harness = `custom`: write `"agents": { "runner": "custom", "runner_cmd": "<value the user provided>" }`.
+- If `roles.adversarial: true` AND the user asked for a different backend for it (Step 4): write (or extend) the `agents` block with `"roles": { "adversarial": { "runner": "...", "runner_cmd": "..." } }` -- same shape as the `docs/user-guide.md` "Second opinion on a local model" example -- even when the top-level harness is `claude`, since only `adversarial` is opting out of the native default.
+- `notifications.events`: leave unset (recommended) unless the user asked for a filter; when they did, write the full event list (all role events plus the chosen lifecycle events) -- see talos.pipeline.json.example for the full list.
 
 Also ask before writing:
-> "The merge gate blocks PRs that touch sensitive file patterns (.env, *.pem, *.key, …). Would you like to add any extra patterns beyond the defaults?"
+> "The merge gate blocks PRs that touch sensitive file patterns (.env, *.pem, *.key, ...). Would you like to add any extra patterns beyond the defaults?"
 
-If yes: write an active `forbidden_files:` list (defaults + the user's extras) in place of the commented-out block.
-If no: leave the defaults commented out as shown in the template.
+If yes: write the active `forbidden_files` list described above.
+If no: omit `forbidden_files` (the built-in defaults apply).
 
-Tell the user: "Written `talos.pipeline.yml`. Here's a summary of what's configured: ..."
+Tell the user: "Written `talos.pipeline.json`. Here's a summary of what's configured: ..."
 
 ---
 
@@ -529,7 +473,7 @@ Skip when Step 4b was declined or skipped (`vcs.provider: file`). Otherwise, fro
 bash scripts/pipeline-status-file.sh init
 ```
 
-It prints `created`, `appended` (an existing file was missing a heading) or `already has both headings`, and exits 0; it never overwrites an existing file and it does not commit. Tell the user: "Commit `talos.pipeline.yml` and the status file together, so the first run starts from a base that has both." If it exits non-zero, show its message and carry on without the file (`status.enabled` stays true; `init` is safe to re-run).
+It prints `created`, `appended` (an existing file was missing a heading) or `already has both headings`, and exits 0; it never overwrites an existing file and it does not commit. Tell the user: "Commit `talos.pipeline.json` and the status file together, so the first run starts from a base that has both." If it exits non-zero, show its message and carry on without the file (`status.enabled` stays true; `init` is safe to re-run).
 
 ---
 
@@ -634,7 +578,7 @@ name for `main` if this repo's base branch differs. Tell the user it was
 written and that the header comments in the file explain each knob.
 
 **Check `merge.required_checks` before finishing this step.** If the
-existing (or about-to-be-written) `talos.pipeline.yml`/`.json` names a job
+existing (or about-to-be-written) `talos.pipeline.json` names a job
 this template only runs on push, not on PRs — most commonly
 `test (macos-latest)` — warn explicitly: "your `merge.required_checks`
 names `test (macos-latest)`, which this template no longer runs on pull
@@ -727,7 +671,7 @@ owner='<OWNER>'   # the owner checked in Step 5; never put unchecked text here
 gh project create --owner "$owner" --title "talos" --format json
 ```
 
-Record the returned project number as `board.project_number` (and the owner as `board.owner`) in `talos.pipeline.yml`, then offer to provision its Status options with the same script Step 8a uses:
+Record the returned project number as `board.project_number` (and the owner as `board.owner`) in `talos.pipeline.json`, then offer to provision its Status options with the same script Step 8a uses:
 ```bash
 bash scripts/bootstrap-board.sh
 ```
@@ -755,7 +699,7 @@ Print a checklist of everything that was set up:
 ```
 Talos setup complete!
 
-Config:       talos.pipeline.yml
+Config:       talos.pipeline.json
 Provider:     <PROVIDER>
 Base branch:  <BASE_BRANCH>
 Verify:       <commands or "none">
@@ -791,7 +735,7 @@ Next steps:
 
 ## Idempotency rules
 
-- Never overwrite an existing `talos.pipeline.yml` without the user's explicit confirmation.
+- Never overwrite an existing `talos.pipeline.json` without the user's explicit confirmation, and never write it alongside a legacy `talos.pipeline.yml`/`.yaml` (offer `--convert` or the `rm` first, #526).
 - An existing status file is never overwritten: `init` leaves it alone and appends only a missing heading.
 - The evidence re-run adds only the `evidence:` block, after an explicit yes; the workflow files are never edited, and `.gitignore` gets one appended line only after its own explicit yes.
 - If `bootstrap-labels.sh` reports a label already exists, that is not an error — say "already up to date".

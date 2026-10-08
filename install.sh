@@ -813,14 +813,24 @@ if [ "$WRITE_AGENTS_MD" = "true" ]; then
     || echo "  warning: could not write the Talos block into $(printable "$TARGET")/AGENTS.md"
 fi
 
-# Offer to copy config example. talos.pipeline.* is NEVER overwritten.
+# Offer to copy config example. talos.pipeline.json is NEVER overwritten; a
+# legacy talos.pipeline.yml/.yaml beside it would fail the load closed (#526),
+# so it is named with the migration command instead of being left silent.
 echo ""
-if [ ! -f "$TARGET/talos.pipeline.yml" ] && [ ! -f "$TARGET/talos.pipeline.json" ]; then
+if [ ! -f "$TARGET/talos.pipeline.json" ]; then
   echo "Config template:"
-  echo "  Copy talos.pipeline.yml.example to talos.pipeline.yml and edit it:"
-  echo "    cp $(printable "$SRC")/talos.pipeline.yml.example $(printable "$TARGET")/talos.pipeline.yml"
+  echo "  Copy talos.pipeline.json.example to talos.pipeline.json and edit it:"
+  echo "    cp $(printable "$SRC")/talos.pipeline.json.example $(printable "$TARGET")/talos.pipeline.json"
+  if [ -f "$TARGET/talos.pipeline.yml" ] || [ -f "$TARGET/talos.pipeline.yaml" ]; then
+    echo "  Legacy config present -- talos.pipeline.yml/.yaml will fail the load closed (reason=config-legacy-file)."
+    echo "  Migrate it first: bash scripts/pipeline-config.sh --convert talos.pipeline.yml talos.pipeline.json"
+  fi
 else
-  echo "Config: talos.pipeline.* already exists -- not overwriting."
+  echo "Config: talos.pipeline.json already exists -- not overwriting."
+  if [ -f "$TARGET/talos.pipeline.yml" ] || [ -f "$TARGET/talos.pipeline.yaml" ]; then
+    echo "  Legacy config present -- the json will not load while a talos.pipeline.yml/.yaml sits beside it (reason=config-shadowed)."
+    echo "  Migrate it first: bash scripts/pipeline-config.sh --convert talos.pipeline.yml talos.pipeline.json"
+  fi
 fi
 
 # ── /talos:pipeline availability ──────────────────────────────────────────────
@@ -833,7 +843,7 @@ fi
 # will not see the skill until it restarts.
 echo ""
 echo "Done. Next steps:"
-echo "  1. Edit $(printable "$TARGET")/talos.pipeline.yml for your project"
+echo "  1. Edit $(printable "$TARGET")/talos.pipeline.json for your project"
 echo "  2. Bootstrap labels (if using GitHub/GitLab/Azure):"
 
 TALOS_HOME_DIR="${TALOS_HOME:-$HOME/.talos}"
@@ -864,20 +874,20 @@ for _h in ${_NEXT//,/ }; do
       echo "     [claude] Open a Claude Code session in $(printable "$TARGET") and run: /talos:pipeline"
       continue ;;
     pi)
-      echo "     [pi] in talos.pipeline.yml set agents.runner: pi and agents.subagents: false"
+      echo "     [pi] in talos.pipeline.json set agents.runner: pi and agents.subagents: false"
       _start="$_START_PHRASE" ;;
     codex)
-      echo "     [codex] in talos.pipeline.yml set agents.runner: codex"
+      echo "     [codex] in talos.pipeline.json set agents.runner: codex"
       _start="codex \"$_START_PHRASE\"" ;;
     gemini)
-      echo "     [gemini] in talos.pipeline.yml set agents.runner: gemini"
+      echo "     [gemini] in talos.pipeline.json set agents.runner: gemini"
       _start="gemini \"$_START_PHRASE\""
       _caveat="Gemini CLI confines its file tools to the workspace, so this start line probably fails (a read of ~/.talos/skills is refused); whether adding ~/.talos to its workspace (for example /directory add ~/.talos) helps is unverified." ;;
     antigravity)
-      echo "     [antigravity] in talos.pipeline.yml set agents.runner: antigravity"
+      echo "     [antigravity] in talos.pipeline.json set agents.runner: antigravity"
       _start="agy \"$_START_PHRASE\"" ;;
     *)
-      echo "     [$_h] in talos.pipeline.yml set agents.runner: custom and agents.runner_cmd"
+      echo "     [$_h] in talos.pipeline.json set agents.runner: custom and agents.runner_cmd"
       _start="$_START_PHRASE" ;;
   esac
   echo "          start: $_start"

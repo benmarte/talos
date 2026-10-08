@@ -120,7 +120,7 @@ while IFS= read -r tk; do
 done <<EOF
 $(_talos_defaults_keys)
 EOF
-assert_eq "" "$_unpinned" "every table row with a default has a golden row"
+assert_eq "" "$_unpinned" "AC7: the golden-defaults fixture loses no keys (every table row with a default has a golden row)"
 
 # ── pipeline-evidence.sh keeps its own safety-net fallbacks for evidence.dir,
 # evidence.max_files, evidence.max_mb and verify.timeout_ms (variables and a

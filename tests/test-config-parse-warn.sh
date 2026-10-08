@@ -5,7 +5,8 @@
 #   A1. Malformed JSON config + VCS call -> WARNING on stderr, exit 0
 #   A2. No config file + VCS call -> silent (unconfigured is normal)
 #   A3. Valid JSON config + VCS call -> no WARNING
-#   A4. YAML config with PyYAML + VCS call -> no WARNING (skipped when PyYAML absent)
+#   A4. A legacy .yml config pointer -> WARNING (the config parser is JSON
+#       only, #526; the loader's gate refuses such a pointer itself)
 #   A5. Suppression: pre-creating /tmp/talos-cfg-parse-warn-* for ALL PIDs does NOT
 #       suppress the warning [mutation: sentinel-based -- if the mechanism reverts to
 #       writing/reading /tmp/talos-cfg-parse-warn-<PID>, this test goes RED]
@@ -73,18 +74,27 @@ assert_not_contains "$err_a3" "WARNING" \
   "A3: valid JSON + VCS call: no WARNING"
 rm talos.pipeline.json
 
-# ---- A4: Valid YAML + PyYAML -> no WARNING (skipped when PyYAML absent) -----
-if python3 -c "import yaml" 2>/dev/null; then
-  printf 'merge:\n  method: rebase\n' > talos.pipeline.yml
-  err_a4="$(PIPELINE_CONFIG="$SANDBOX/talos.pipeline.yml" \
-            STUB_ISSUE_COMMENTS_JSON="$_attempt_json" \
-            bash "$VCS" read-attempt 42 2>&1 >/dev/null)"
-  assert_not_contains "$err_a4" "WARNING" \
-    "A4: valid YAML + PyYAML + VCS call: no WARNING"
-  rm talos.pipeline.yml
-else
-  pass "A4: valid YAML (PyYAML absent -- skipped)"
-fi
+# ---- A4: A legacy .yml config pointer -> WARNING ----------------------------
+# The config parser is JSON only (#526): a pointer at a .yml file names a file
+# the parser cannot read, so the in-process parse warning fires (the loader's
+# gate refuses the pointer itself with reason=config-legacy-file, and the verb
+# still degrades to defaults, exit 0).
+printf 'merge:\n  method: rebase\n' > talos.pipeline.yml
+err_a4="$(PIPELINE_CONFIG="$SANDBOX/talos.pipeline.yml" \
+          STUB_ISSUE_COMMENTS_JSON="$_attempt_json" \
+          bash "$VCS" read-attempt 42 2>&1 >/dev/null)"
+assert_contains "$err_a4" "WARNING" \
+  "A4: a .yml config pointer + VCS call: parse WARNING fires (JSON-only parser)"
+assert_contains "$err_a4" "could not be parsed" \
+  "A4: a .yml config pointer: warning names parse failure"
+assert_contains "$err_a4" "talos.pipeline.yml" \
+  "A4: a .yml config pointer: warning names the file"
+rc_a4=0
+PIPELINE_CONFIG="$SANDBOX/talos.pipeline.yml" \
+  STUB_ISSUE_COMMENTS_JSON="$_attempt_json" \
+  bash "$VCS" read-attempt 42 >/dev/null 2>/dev/null || rc_a4=$?
+assert_eq "0" "$rc_a4" "A4: a .yml config pointer: the verb still exits 0"
+rm talos.pipeline.yml
 
 # ---- A5: Suppression resistance ---------------------------------------------
 # Pre-create /tmp/talos-cfg-parse-warn-<N> for the entire PID space.
@@ -115,31 +125,6 @@ for i in range(1, 100000):
         pass
 " 2>/dev/null || true
 rm talos.pipeline.json
-
-# ---- A6: YAML config + PyYAML simulated absent -> WARNING fires -------------
-# Pins the PyYAML-absent degraded path against regression so CI (which now
-# installs PyYAML) does not permanently lose coverage of this code path.
-# Without this test, a future regression in the json-fallback silently ships.
-printf 'merge:\n  method: rebase\n' > talos.pipeline.yml
-# Simulate PyYAML absent with a PATH shim: a python3 that runs with -S (no
-# site-packages), so `import yaml` fails while the stdlib (json) still works.
-# PYTHONPATH cannot do this any more: every embedded call is `python3 -I`,
-# which ignores PYTHON* env vars and the cwd (#395). PYTHONUSERBASE points the
-# user-site append at an empty dir so a developer's `pip --user` PyYAML cannot answer.
-_fake_py="$SANDBOX/no_site_bin"
-mkdir -p "$_fake_py"
-printf '#!/bin/sh\nexec "%s" -S "$@"\n' "$(command -v python3)" > "$_fake_py/python3"
-chmod +x "$_fake_py/python3"
-err_a6="$(PIPELINE_CONFIG="$SANDBOX/talos.pipeline.yml" \
-          STUB_ISSUE_COMMENTS_JSON="$_attempt_json" \
-          PATH="$_fake_py:$PATH" PYTHONUSERBASE="$_fake_py/ub" \
-          bash "$VCS" read-attempt 42 2>&1 >/dev/null)"
-assert_contains "$err_a6" "WARNING" \
-  "A6(pyyaml-absent): YAML config without PyYAML triggers WARNING"
-assert_contains "$err_a6" "talos.pipeline.yml" \
-  "A6(pyyaml-absent): warning names the YAML config file"
-rm -rf "$_fake_py"
-rm talos.pipeline.yml
 
 # =========================================================================
 # SECTION B: pipeline-config.sh direct invocations (silent degradation)

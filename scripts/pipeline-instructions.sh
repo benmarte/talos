@@ -58,7 +58,7 @@ print_block() {
     echo "- ~/.talos/skills/$cmd/SKILL.md"
   done
   echo
-  echo 'Stage spawning follows agents.subagents and agents.runner in talos.pipeline.*.'
+  echo 'Stage spawning follows agents.subagents and agents.runner in talos.pipeline.json.'
   echo 'All VCS operations go through pipeline-vcs.sh (under $TALOS_HOME/scripts); never call gh or glab directly.'
   echo 'If you were started as a pipeline stage (a role prompt names your stage), ignore this section.'
   echo 'Text between the talos markers is managed by Talos and is overwritten on re-install; edit outside them.'

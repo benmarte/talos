@@ -270,10 +270,13 @@ chmod +x "$SHIMDIR/python3"
 export PIPELINE_SLACK_CHANNEL=CNOFILE
 assert_eq "CNOFILE" "$(PATH="$SHIMDIR:$PATH" bash "$CFG_SH" notifications.slack_channel SENT 2>/dev/null)" "(env) no config file: the single-key path still answers from env"
 assert_eq "SENT" "$(PATH="$SHIMDIR:$PATH" bash "$CFG_SH" notifications.discord_channel SENT 2>/dev/null)" "(env) no config file and no env var: the caller default"
-assert_eq "$(printf 'notifications.slack_channel\nCNOFILE')" "$(PATH="$SHIMDIR:$PATH" bash "$CFG_SH" --dump 2>/dev/null | tr '\0' '\n' | sed '/^$/d')" "(env) no config file: --dump carries the env pair"
+# The no-config dump still answers "where is talos configured" (#526): the
+# SOURCES header names both file paths as empty, the set env override, and the
+# secrets store (named even when absent).
+assert_eq "$(printf 'sources.project\nsources.global\nsources.env_keys\nPIPELINE_SLACK_CHANNEL\nsources.secrets_path\n%s\nnotifications.slack_channel\nCNOFILE' "$GHOME/.env")" "$(PATH="$SHIMDIR:$PATH" bash "$CFG_SH" --dump 2>/dev/null | tr '\0' '\n' | sed '/^$/d')" "(env) no config file: --dump carries the sources header plus the env pair"
 assert_eq "0" "$(wc -l < "$PY_LOG" | tr -d ' ')" "(env) no config file: zero python3 spawns (#439 spawn guard holds)"
 unset PIPELINE_SLACK_CHANNEL
-assert_eq "" "$(PATH="$SHIMDIR:$PATH" bash "$CFG_SH" --dump 2>/dev/null | tr '\0' '\n')" "(env) no config file and no env: --dump is empty"
+assert_eq "$(printf 'sources.project\nsources.global\nsources.env_keys\nsources.secrets_path\n%s' "$GHOME/.env")" "$(PATH="$SHIMDIR:$PATH" bash "$CFG_SH" --dump 2>/dev/null | tr '\0' '\n' | sed '/^$/d')" "(env) no config file and no env: --dump is just the sources header"
 assert_eq "0" "$(wc -l < "$PY_LOG" | tr -d ' ')" "(env) still zero python3 spawns"
 
 # the merged global + repo + env config still costs one python3 spawn
@@ -293,16 +296,6 @@ got="$(PATH="$SHIMDIR:$PATH" bash "$SANDBOX/probe.sh" "$TALOS_ROOT/scripts" 2>/d
 assert_eq "0.5 CENV x" "$got" "cfg() sees the global, repo and env layers through one dump"
 assert_eq "1" "$(wc -l < "$PY_LOG" | tr -d ' ')" "global + repo + env costs exactly one python3 spawn (#169)"
 unset PIPELINE_SLACK_CHANNEL
-
-# ── YAML global file ─────────────────────────────────────────────────────────
-reset_cfg
-if [ "$HAVE_YAML" = 1 ]; then
-  printf 'pr:\n  draft: false\nlimits:\n  warn_at: 0.6\nboard:\n  owner: yamlowner\n' > "$GHOME/talos.pipeline.yml"
-  assert_eq "0.6" "$(get limits.warn_at)" "a YAML global file is read the same way"
-  assert_eq "SENT" "$(get board.owner)" "a repo-only key in a YAML global file is dropped"
-else
-  echo "  skip: PyYAML not installed -- YAML global file cases"
-fi
 
 # ── Structure: one shared loader carries the new logic ───────────────────────
 assert_eq "1" "$(grep -c '^def _drop_repo_only' "$CFG_SH")" "the repo-only filter is defined once, in the shared loader"

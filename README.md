@@ -29,7 +29,7 @@ GitHub Issues (or a local markdown checklist in file mode) serve as the state ma
 | Validator gate | `pipeline:ready` → validator must emit CONFIRMED |
 | QA-gates-review | `qa:pass` required before reviewer/security/docs |
 | Auto-merge | Orchestrator merges when CI + all stage labels are green |
-| Dashboard / per-project config | `talos.pipeline.json` per repo (YAML also supported when PyYAML installed) |
+| Dashboard / per-project config | `talos.pipeline.json` per repo (JSON only, #526; exactly two canonical files) |
 
 ---
 
@@ -209,17 +209,18 @@ Talos resolves its scripts in this order -- `$TALOS_HOME/scripts` (explicit over
 
 ```bash
 cp path/to/talos/talos.pipeline.json.example talos.pipeline.json
-# Edit talos.pipeline.json for your project
-# JSON needs no PyYAML dependency — recommended for new projects.
-# YAML is also supported: cp talos.pipeline.yml.example talos.pipeline.yml (requires PyYAML)
+# Edit talos.pipeline.json for your project — config is JSON only (#526).
+# Exactly two canonical files: talos.pipeline.json (repo) and
+# ~/.talos/talos.pipeline.json (user-level). Any other talos.pipeline.* file
+# in a layer directory fails the load closed (reason=config-shadowed /
+# reason=config-legacy-file); migrate a legacy YAML with
+# bash scripts/pipeline-config.sh --convert talos.pipeline.yml talos.pipeline.json
 ```
 
 Minimum viable config (board and notifications optional):
 
-```yaml
-base_branch: dev        # the branch PRs target
-verify:
-  - python -m pytest tests/ -x -q   # your actual test command
+```json
+{ "base_branch": "dev", "verify": ["python -m pytest tests/ -x -q"] }
 ```
 
 ### 3. Bootstrap labels (GitHub / GitLab / Azure only)
@@ -303,9 +304,9 @@ its banner); this section and `docs/user-guide.md` are the upgrade notes.
 Every config key, its type and its default live in one table, `scripts/pipeline-defaults.sh`, and nothing else states a default: the key reference (about 120 rows, one per key) is the [Config reference](docs/user-guide.md#config-reference) section of the user guide, and `tests/test-docs-defaults-vs-table.sh` fails when it or an example config disagrees with the table.
 
 - **See what a repo resolves:** `bash scripts/pipeline-config.sh --show` prints every key with its value and the layer that decided it (`default`, `global`, `repo` or `env`). A secret is never printed.
-- **Four layers**, each overriding the one below key by key: the table defaults, the user-level file `~/.talos/talos.pipeline.{yml,json}` (every key except the repo-only ones), your repo's `talos.pipeline.json` or `.yml`, then the key's environment variable.
+- **Two config files, four layers**, each overriding the one below key by key (#526): the table defaults, the user-level file `~/.talos/talos.pipeline.json` (every key except the repo-only ones), your repo's `talos.pipeline.json`, then the key's environment variable. A stray `talos.pipeline.yml`/`.yaml` in a layer directory fails every config read closed (`reason=config-shadowed` / `reason=config-legacy-file`).
 - **Secrets are never config values.** A webhook or token key holds an `env:NAME` reference; the value comes from the environment, the repo `.env` or `~/.talos/.env` (mode 0600, yours, outside every repo). `~/.hermes/.env` is deprecated. A secret-shaped value in a config file is dropped on load.
-- **Examples:** `talos.pipeline.json.example` and `talos.pipeline.yml.example` (the comments are the teaching text; both are tested against the table).
+- **Example:** `talos.pipeline.json.example` (the `_note` is the teaching text; it is tested against the table, and a stray yml example would fail the load closed).
 
 ### Hooks
 
@@ -405,13 +406,15 @@ The pipeline sets four GitHub Projects Status column values during a run: `In pr
 
 **`board.status_map` worked example.** If your board uses "Needs attention" instead of "Blocked":
 
-```yaml
-board:
-  enabled: true
-  project_number: 4
-  owner: myorg
-  status_map:
-    Blocked: "Needs attention"
+```json
+{
+  "board": {
+    "enabled": true,
+    "project_number": 4,
+    "owner": "myorg",
+    "status_map": { "Blocked": "Needs attention" }
+  }
+}
 ```
 
 With this config, `pipeline-status.sh 42 "Blocked"` looks up and sets the "Needs attention" column option. The `talos:board-unverified` warning is suppressed as long as "Needs attention" exists on the board. Keys not in `status_map` pass through as-is (e.g. `In progress`, `In review`, and `Done` continue to use their default names).
@@ -441,7 +444,7 @@ Every `github-api` list endpoint (paginated through `_ga_fetch_all_pages`) must 
 
 ### Upgrade note: `merge.forbidden_files` union semantics (v0.14+)
 
-**If you have `merge.forbidden_files` set in your `talos.pipeline.yml` before upgrading to v0.14+, your configuration now means something different.**
+**If you have `merge.forbidden_files` set in your `talos.pipeline.json` before upgrading to v0.14+, your configuration now means something different.**
 
 Previously, setting `merge.forbidden_files` replaced the built-in defaults entirely — only your configured patterns were active. From v0.14 onward, your configured patterns are **added to** the built-in defaults (union semantics). The built-in patterns (`.env`, `.env.*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.secrets`, `secrets.*`, `*id_rsa*`, `*id_ecdsa*`, `*id_ed25519*`, `*id_dsa*`, `*.ppk`, `*.jks`, `*.keystore`, `*.pkcs12`, `*.kdbx`, `*.ovpn`, `.netrc`, `_netrc`, plus the ten credential-file patterns added in #436: `.npmrc`, `.pypirc`, `.git-credentials`, `credentials.json`, `*-credentials.json`, `*_credentials.json`, `.aws/credentials`, `*/.aws/credentials`, `.docker/config.json`, `*/.docker/config.json`) are always active alongside your patterns.
 
@@ -481,7 +484,7 @@ Config and secrets (epic #437: #439-#446). The full rules are in the user guide'
 
 **(b) A `.env` inside any git work tree is refused (#443).** A dotfiles repository at `$HOME` puts `~/.hermes/.env` and `~/.talos/.env` inside a work tree. Move the file outside every repository, set `TALOS_HOME` to a directory outside it, or export the variables in your shell.
 
-**(c) A group- or world-writable global `talos.pipeline.yml` is read as absent (#443).** The file drives `hooks.*` and `notifications.cmd`, which run commands, so a copy anyone else can write is not trusted; your global settings stop applying and one stderr line names the file. Fix with `chmod go-w ~/.talos/talos.pipeline.yml`.
+**(c) A group- or world-writable global `talos.pipeline.json` is read as absent (#443).** The file drives `hooks.*` and `notifications.cmd`, which run commands, so a copy anyone else can write is not trusted; your global settings stop applying and one stderr line names the file. Fix with `chmod go-w ~/.talos/talos.pipeline.json`.
 
 **(d) `TEAMS_WEBHOOK_URL` is now read from the `.env` files (#443).** It used to come from the environment and the repo `.env` only; it is now looked up like every other credential (environment, repo `.env`, `~/.talos/.env`, deprecated `~/.hermes/.env`). A Teams webhook you had in `~/.hermes/.env` that never did anything now takes effect.
 
@@ -503,7 +506,7 @@ Also merged with v0.19 and visible to users:
 
 **(l) Commands are `/talos:pipeline`, `/talos:setup` and `/talos:resume` (#335).** The legacy `/pipeline` and `/pipeline-setup` aliases print a rename line and keep working until v0.20. `install.sh --global` now registers a local `talos` plugin; pass `--keep-marketplace` to leave an existing registration alone and `--no-legacy-aliases` to skip the aliases. See [1. Install](#1-install).
 
-**(m) A YAML config without PyYAML now warns instead of being ignored silently (#490).** One stderr line per YAML file names the file and the fix (`pip install pyyaml`, or use the `.json` form); until you apply it, that file's settings still do not take effect.
+**(m) A YAML config file fails the load closed (#526).** Config is JSON only: a `talos.pipeline.yml`/`.yaml` beside the canonical json stops every config read with `reason=config-shadowed` (winner, the strays, the `rm`/merge instruction), and one without a json stops with `reason=config-legacy-file` plus the `--convert` migration command. Ambiguity never runs — the 2026-10-06 incident (a stray committed yml silently shadowed the json and cost three full CI runs) is why this is fail-closed, not a warn.
 
 ### Upgrade notes (v0.18+)
 
@@ -713,7 +716,7 @@ bash ~/.talos/scripts/pipeline-notify.sh --render buzz qa "#42" "PASS: 3 criteri
 | `issue-closed.md` | `issue-closed` | Issue closed after merge |
 | `info.md` | `info` | Generic informational events |
 
-**Events-filter warning:** `notifications.events` defaults to unset (all events fire). If you set a list, any event not in it is **silently dropped** — no error, no log line. A lifecycle-only list like `[pr-opened, merged, blocked, issue-closed]` kills the entire conversation stream. When you need a filter, copy the full list from `talos.pipeline.yml.example` and remove only what you don't want.
+**Events-filter warning:** `notifications.events` defaults to unset (all events fire). If you set a list, any event not in it is **silently dropped** — no error, no log line. A lifecycle-only list like `[pr-opened, merged, blocked, issue-closed]` kills the entire conversation stream. When you need a filter, copy the full list from `talos.pipeline.json.example` and remove only what you don't want.
 
 ### Environment variable overrides
 
@@ -798,7 +801,7 @@ Three hard limits: it needs `gh` v2.99.0 or newer with write access to the repo 
 ## How a run works end-to-end
 
 1. You run `/talos:pipeline` in a Claude Code session.
-2. The orchestrator reads `talos.pipeline.yml` and reconciles any in-flight PRs from a previous run.
+2. The orchestrator reads `talos.pipeline.json` and reconciles any in-flight PRs from a previous run.
 3. It lists issues with `pipeline:ready` (up to `max_parallel`).
 4. For each issue:
    - **Validator** reads the issue and codebase. CONFIRMED advances; anything else sets `pipeline:blocked`.
@@ -902,7 +905,7 @@ It also holds two lists the installer and the tests read. `TALOS_RUNNERS` is the
 | `read-attempt` | `<issue-n>` | Print the current attempt state (`stage=<s> count=<k> total=<t>`, plus a trailing ` key=<token>` when the marker carries one) from the most-recent attempt marker on the issue. Prints `stage= count=0 total=0` when no marker exists (a new issue). Always exits 0 unless the marker is corrupt (in which case it exits 1, fail-closed). Read-only; does not post a new comment. Internally fetches via `read-comments` (fully paginated, no 100-comment cap). |
 | `read-comments` | `<issue-or-pr-n>` | Print every comment on an issue or PR as `{"comments": [...]}`, fully paginated (`gh api --paginate` for `github`, Link-header pagination for `github-api` — no 100-comment cap). Shared reader used internally by `read-attempt` and by `post-approval`'s duplicate-marker check (#172). Fail-closed: prints nothing and exits 1 on any page failure. |
 | `check-attempt` | `<issue-n>` | Exit 1 (with reason on stderr) when either ceiling is already reached for the issue. Exit 0 otherwise. Does **not** record a new attempt — use `record-attempt` for that. Fail-closed: propagates a corrupt-marker exit 1 from `read-attempt`. |
-| `assert-sync` | | Assert the orchestrator working tree is clean and current with `origin/<base_branch>`. **Dirty tree** (any uncommitted change) — exits 1, names the dirty files, instructs operator to commit or stash; this check runs *before* `git fetch origin` so the tree is never read in a mixed state. **Behind origin** — exits 1, prints both local and remote SHAs plus the commit gap, instructs `Run: git pull --ff-only`. **Diverged** (ahead and behind simultaneously) — exits 1, warns against force-push. **Ahead of origin only** — exits 0 but prints a stderr warning: *"pipeline-vcs: assert-sync: WARNING -- working tree is ahead of origin/<base> by N commit(s); non-isolated stages will read unpushed commits."* **Clean and level** — exits 0, no output. `base_branch` is resolved in order: `talos.pipeline.yml` config key, then `git symbolic-ref refs/remotes/origin/HEAD`, then `main`. Provider-agnostic; runs before the VCS provider dispatch. |
+| `assert-sync` | | Assert the orchestrator working tree is clean and current with `origin/<base_branch>`. **Dirty tree** (any uncommitted change) — exits 1, names the dirty files, instructs operator to commit or stash; this check runs *before* `git fetch origin` so the tree is never read in a mixed state. **Behind origin** — exits 1, prints both local and remote SHAs plus the commit gap, instructs `Run: git pull --ff-only`. **Diverged** (ahead and behind simultaneously) — exits 1, warns against force-push. **Ahead of origin only** — exits 0 but prints a stderr warning: *"pipeline-vcs: assert-sync: WARNING -- working tree is ahead of origin/<base> by N commit(s); non-isolated stages will read unpushed commits."* **Clean and level** — exits 0, no output. `base_branch` is resolved in order: `talos.pipeline.json` config key, then `git symbolic-ref refs/remotes/origin/HEAD`, then `main`. Provider-agnostic; runs before the VCS provider dispatch. |
 | `has-spec` | `<issue-n>` | Exit 0 when the issue body IS a usable spec (contains an "acceptance criteria" heading with at least one checklist item, or carries the `spec:ready` label); exit 1 otherwise. GitHub only (`github` and `github-api` providers). Used by PM skip-when-spec-present logic to detect when an issue is ready for direct developer dispatch. |
 | `slug-for` | `<title>` | Derive a 40-character-or-less branch slug from an issue title (lowercased, non-alphanumeric runs collapsed to `--`, trimmed). Provider-agnostic; used for consistent branch naming in both the PM skip path and developer `fix/issue-<n>-<slug>` / `feat/issue-<n>-<slug>` branches. |
 | `post-approval` | `<pr-number> <role> [--body-file <path>]` | Fetch the current head SHA via `pr-head`, construct the `<!-- talos:approval sha=<sha> role=<role> -->` marker, append it as the last line of the comment body (from `--body-file` or an empty body when the flag is omitted), post the comment via `comment-pr`, and apply the role's approval label -- all in one atomic operation. Valid roles: `qa`, `reviewer`, `security`, `docs`; an invalid role exits 1. GitHub and `github-api` providers only; non-GitHub providers exit 1. This is the recommended way for every review stage to close the approval gate -- it eliminates the five failure modes observed when markers were constructed by hand: three missing the `<!-- -->` wrapper, one carrying a placeholder SHA, and one where the label was applied with no marker at all. **Duplicate-marker check (#172):** before posting, fetches every PR comment via `read-comments` (fully paginated) and looks for this exact marker as the last non-whitespace line of any comment. Found at the **same head SHA** — prints a stderr note and exits 0 **without posting again** (the approval label is still applied defensively, since `label-pr` is idempotent). Re-stamping at a **different** head SHA is a different marker string and always posts. The comment fetch itself failing exits 1 with nothing posted (fail-closed) — a partial page set is never mistaken for "no duplicate found". |
@@ -1023,15 +1026,17 @@ This gate implements Rule 6: the legitimate final PR in a multi-PR issue says `C
 Claude Code is the first-class harness (native subagents, worktree isolation),
 but the pipeline itself is plain bash + markdown — any **agentic** CLI can
 orchestrate it. The execution mode is chosen by `agents.subagents` and
-`agents.runner` in `talos.pipeline.yml`:
+`agents.runner` in `talos.pipeline.json`:
 
-```yaml
-agents:
-  runner: codex        # claude (default) | pi | codex | gemini | antigravity | custom
-  subagents: auto      # auto | true | false   (auto = true for claude, else false)
-  model: claude-haiku-4-5-20251001   # optional — model for all stages (native path only)
-  roles:               # optional — per-role model overrides (native path only)
-    reviewer: {model: claude-opus-5}
+```json
+{
+  "agents": {
+    "runner": "codex",
+    "subagents": "auto",
+    "model": "claude-haiku-4-5-20251001",
+    "roles": { "reviewer": { "model": "claude-opus-5" } }
+  }
+}
 ```
 
 - **`runner: claude`** (subagents: true) — native parallel subagents.
@@ -1057,7 +1062,7 @@ agents:
   There is no fixed heredoc delimiter: the stage prompt carries issue-derived text that could contain the closing line, so the playbook (`skills/pipeline/SKILL.md`) uses `TALOS_<rand>` with `<rand>` 12+ random characters invented fresh for each spawn; the playbook renders the prompt to a file with `scripts/talos.sh prompt` and pipes it in (`bash scripts/pipeline-agent.sh <role> - < "$PROMPT_FILE"`, #468). The path is what the `AGENTS.md` block resolves (`.claude/talos/scripts` is the legacy vendored location).
 
   The adapter merges the role profile (frontmatter stripped) with the
-  stage prompt and executes it via the runner configured in `talos.pipeline.yml`
+  stage prompt and executes it via the runner configured in `talos.pipeline.json`
   (`codex` → `codex exec`, `pi` → `pi -p`, `custom` → `runner_cmd` on stdin). It
   looks for the profile in `.claude/agents/<role>.md`, then
   `.agents/talos/agents/<role>.md`, then the install (`pipeline-agent.sh
@@ -1067,7 +1072,7 @@ agents:
 
 ```bash
 bash talos/install.sh --global --harness codex   # once per machine; pi, cursor, opencode, gemini, antigravity, generic likewise
-bash talos/install.sh /path/to/your-repo --harness codex   # per repo; commit AGENTS.md and talos.pipeline.yml
+bash talos/install.sh /path/to/your-repo --harness codex   # per repo; commit AGENTS.md and talos.pipeline.json
 codex "Read ~/.talos/skills/pipeline/SKILL.md and follow it"
 ```
 
@@ -1087,21 +1092,20 @@ The user guide's [Install and start, per harness](docs/user-guide.md#install-and
 2. `agents.model` — global model for all stages not explicitly overridden.
 3. Neither present — omit `model:` entirely; the subagent inherits the session model.
 
-**Two config layers.** Set your routing once for every repo in a user-level file, `${TALOS_HOME:-$HOME/.talos}/talos.pipeline.{yml,yaml,json}`; a repo's own `talos.pipeline.*` is merged over it, key by key, and wins where both set the same key. Only the `agents.*` subtree is read from the user-level file (board, merge, issue and verify settings describe a repo, not a user); any other key there is ignored with one warning. **Every `agents.*` key in the user-level file applies to every repo you run Talos in** -- not just models but `agents.runner`, `agents.runner_args` and `agents.roles.<role>.runner_cmd` too, and the adapter path executes `runner_cmd` as a shell command. Put only settings and commands you trust in every repo there; a repo's own config can override a key but cannot remove the file's other keys. A missing, unreadable or malformed user-level file behaves as absent. The layer sits under whichever project config is found, including one named by `$PIPELINE_CONFIG`, and every chain below (`restamp_model`, `effort`, per-role `runner`) is evaluated on the merged config.
+**Two config layers.** Set your routing once for every repo in a user-level file, `${TALOS_HOME:-$HOME/.talos}/talos.pipeline.json`; a repo's own `talos.pipeline.json` is merged over it, key by key, and wins where both set the same key. Only the `agents.*` subtree is read from the user-level file (board, merge, issue and verify settings describe a repo, not a user); any other key there is ignored with one warning. **Every `agents.*` key in the user-level file applies to every repo you run Talos in** -- not just models but `agents.runner`, `agents.runner_args` and `agents.roles.<role>.runner_cmd` too, and the adapter path executes `runner_cmd` as a shell command. Put only settings and commands you trust in every repo there; a repo's own config can override a key but cannot remove the file's other keys. A missing, unreadable or malformed user-level file behaves as absent. The layer sits under whichever project config is found, including one named by `$PIPELINE_CONFIG`, and every chain below (`restamp_model`, `effort`, per-role `runner`) is evaluated on the merged config.
 
-```yaml
-# ~/.talos/talos.pipeline.yml  -- applies to every repo
-agents:
-  model: sonnet
-  roles:
-    security: {model: opus}
+```json
+// ~/.talos/talos.pipeline.json -- applies to every repo
+{
+  "agents": { "model": "sonnet", "roles": { "security": { "model": "opus" } } }
+}
 ```
 
-```yaml
-# <repo>/talos.pipeline.yml  -- this repo only: qa runs on haiku, everything else follows the user-level file
-agents:
-  roles:
-    qa: {model: haiku}
+```json
+// <repo>/talos.pipeline.json -- this repo only: qa runs on haiku
+{
+  "agents": { "roles": { "qa": { "model": "haiku" } } }
+}
 ```
 
 Run `/talos:setup` (or the setup skill in another agent) to be asked once how you want models assigned (one model for every role, one per role, or leave unset) and have the answer written to the user-level file. `bash scripts/pipeline-agent.sh --resolve-all` prints one line per role — model, re-stamp model, and which layer decided it (`project`, `global` for the user-level file, or `session default`) — and, when a `runner` / `runner_cmd` is set for a role (a user-level one applies to every repo), appends `runner=… runner_origin=…` and `runner_cmd_origin=…` with the layer that supplied it, then a TAB and `runner_cmd=…` as the last field (the value is free text and may hold spaces, so `cut -f2-` returns it whole). It also warns when a role file Claude Code would load still carries a `model:` frontmatter line. `--resolve <role>` keeps its one-line `runner=… model=… effort=…` output.
@@ -1112,22 +1116,22 @@ Run `/talos:setup` (or the setup skill in another agent) to be asked once how yo
 
 **Judgement vs. volume (the primary use case):** implementation work is high-volume and verifiable; review work requires judgement. Set a cheap model globally and a quality model for the stages that matter:
 
-```yaml
-agents:
-  runner: claude
-  model: haiku                          # volume stages: developer, QA, docs, …
-  roles:
-    reviewer: {model: opus}             # judgement stages
-    security: {model: opus}
+```json
+{
+  "agents": {
+    "runner": "claude",
+    "model": "haiku",
+    "roles": { "reviewer": { "model": "opus" }, "security": { "model": "opus" } }
+  }
+}
 ```
 
 Two overrides rather than eight entries. A new role added later automatically inherits `agents.model` rather than silently falling back to the session model.
 
 **Global override (all stages, one model):**
 
-```yaml
-agents:
-  model: sonnet    # all stages; no roles: block needed
+```json
+{ "agents": { "model": "sonnet" } }
 ```
 
 **Backwards compatibility:** a config with no model key at either level omits `model:` from each Agent spawn call, so every role inherits the session model.
@@ -1138,12 +1142,13 @@ A finer lever than a model swap alone (#271): `low` | `medium` | `high` | `max`,
 
 Applying the resolved value differs from `model`, because there is no per-spawn Agent tool parameter for effort, and the orchestrator never edits a tracked file at spawn time. On the **adapter path** (`codex` / `gemini` / `antigravity` / `custom`), `pipeline-agent.sh` applies it for real: it exports the resolved value as `TALOS_EFFORT` in the environment, the same way `TALOS_ROLE` is exported, so a `runner_cmd` can map it onto that CLI's own effort/reasoning flag. On the **native `claude` path**, this config key is advisory only — the mechanism Claude Code exposes for subagents is the dispatched agent definition's **frontmatter `effort:` field**, and that field is only ever set by committing it directly in `agents/<role>.md` (or its repo-override copy). If the resolved config value is non-empty and does not match what the role's committed frontmatter says, the orchestrator relays the one-line notice printed by `bash scripts/pipeline-agent.sh --check-effort <role>` (nothing when config is empty or matches) and spawns anyway — it does not rewrite the file:
 
-```yaml
-agents:
-  effort: medium          # applied via TALOS_EFFORT on the adapter path;
-                          # advisory-only notice on the native claude path
-  roles:
-    developer: {effort: high}   # same split, per role
+```json
+{
+  "agents": {
+    "effort": "medium",
+    "roles": { "developer": { "effort": "high" } }
+  }
+}
 ```
 
 ```yaml
@@ -1161,15 +1166,16 @@ effort: high
 
 `agents.runner` picks one backend for the whole pipeline. `agents.roles.<role>.runner` (and `.runner_cmd`) overrides it for a single role, on **both** execution paths — resolved role-first: the role's own key wins when set, else `agents.runner` (default `claude`); `runner_cmd` follows the same precedence and is only read when the resolved runner is `custom`. `agents.runner_args` stays global-only — there is no `agents.roles.<role>.runner_args`.
 
-```yaml
-agents:
-  runner: claude                 # pipeline default, unchanged
-  roles:
-    qa:
-      model: claude-opus-5       # existing per-role model override, unchanged
-    reviewer:
-      runner: custom             # this role only — everything else stays claude
-      runner_cmd: "…"            # required when runner: custom
+```json
+{
+  "agents": {
+    "runner": "claude",
+    "roles": {
+      "qa": { "model": "claude-opus-5" },
+      "reviewer": { "runner": "custom", "runner_cmd": "..." }
+    }
+  }
+}
 ```
 
 On the native path (Claude Code, `subagents: true`), a role whose effective runner is `claude` still spawns as a native subagent; a role whose effective runner is anything else is dispatched via `bash scripts/pipeline-agent.sh <role> -` with the stage prompt on stdin (a heredoc whose `TALOS_<rand>` delimiter is invented fresh per spawn) instead — the orchestrator makes this decision per role, so the rest of the pipeline keeps running natively. On the adapter path, `pipeline-agent.sh` already resolves the same precedence internally, so no config change is needed to get the per-role behaviour there.
@@ -1183,15 +1189,18 @@ Run `bash scripts/pipeline-agent.sh --resolve <role>` to see what a role will ac
 llama-server -m qwen2.5-coder-32b-instruct-q4_k_m.gguf --port 8080 -c 32768 --jinja
 ```
 
-```yaml
-agents:
-  runner: claude                 # everything else: native Claude subagents
-  roles:
-    security:
-      runner: custom
-      runner_cmd: >-
-        OPENAI_API_BASE=http://localhost:8080/v1 OPENAI_API_KEY=local
-        aider --model openai/local --yes-always --no-auto-commits --message "$(cat)"
+```json
+{
+  "agents": {
+    "runner": "claude",
+    "roles": {
+      "security": {
+        "runner": "custom",
+        "runner_cmd": "OPENAI_API_BASE=http://localhost:8080/v1 OPENAI_API_KEY=local aider --model openai/local --yes-always --no-auto-commits --message $(cat)"
+      }
+    }
+  }
+}
 ```
 
 Every other role keeps running natively; only `security` pays the local-model round trip, and it costs nothing per PR since the endpoint is local.
@@ -1202,7 +1211,7 @@ Harness-compatibility section handles the inline mode. Talos makes no claim abou
 
 **Google Antigravity:** `install.sh <repo>` writes the same `AGENTS.md`
 block as for every harness. Per its documentation, Antigravity reads both `AGENTS.md` and `GEMINI.md`, cumulatively, with no stated precedence (docs only; not run by Talos). `install.sh --global --harness antigravity` writes `~/.talos` only. Set `agents.runner: antigravity` in
-`talos.pipeline.yml` to route role stages through `agy -p`.
+`talos.pipeline.json` to route role stages through `agy -p`.
 
 **Local models:** the `custom` runner accepts any command, so a local-model
 pipeline works by pointing `runner_cmd` at an agentic CLI backed by Ollama,
@@ -1231,14 +1240,13 @@ fi
 
 `TALOS_ROLE` lets you route by role without a wrapper script. For the judgement-vs-volume split:
 
-```yaml
-agents:
-  runner: custom
-  runner_cmd: |
-    case "$TALOS_ROLE" in
-      developer|qa) exec pi -p --provider ds4 --model deepseek-v4-flash "$(cat)" ;;
-      *)            exec claude -p "$(cat)" ;;
-    esac
+```json
+{
+  "agents": {
+    "runner": "custom",
+    "runner_cmd": "case \"$TALOS_ROLE\" in developer|qa) exec pi -p --provider ds4 --model deepseek-v4-flash \"$(cat)\" ;; *) exec claude -p \"$(cat)\" ;; esac"
+  }
+}
 ```
 
 Example — llama.cpp serving an OpenAI-compatible endpoint:
@@ -1250,24 +1258,21 @@ llama-server -m qwen2.5-coder-32b-instruct-q4_k_m.gguf --port 8080 -c 32768 --ji
 
 Then drive stages through any OpenAI-compatible agentic CLI, e.g. Aider:
 
-```yaml
-agents:
-  runner: custom
-  runner_cmd: >-
-    OPENAI_API_BASE=http://localhost:8080/v1 OPENAI_API_KEY=local
-    aider --model openai/local --yes-always --no-auto-commits --message "$(cat)"
+```json
+{
+  "agents": {
+    "runner": "custom",
+    "runner_cmd": "OPENAI_API_BASE=http://localhost:8080/v1 OPENAI_API_KEY=local aider --model openai/local --yes-always --no-auto-commits --message $(cat)"
+  }
+}
 ```
 
 Or configure Codex CLI with a local provider profile
 (`~/.codex/config.toml` → `[model_providers.llamacpp]`
 `base_url = "http://localhost:8080/v1"`) and use the named runner:
 
-```yaml
-agents:
-  runner: codex
-  runner_args:
-    - --profile
-    - local
+```json
+{ "agents": { "runner": "codex", "runner_args": ["--profile", "local"] } }
 ```
 
 Pick a model that supports function calling (Qwen coder-class or similar) —

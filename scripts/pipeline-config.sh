@@ -5,19 +5,36 @@
 #          pipeline-config.sh --has KEY     exit 0 when KEY is set in a config
 #                                           file, 1 when it is not, 3 when it
 #                                           is not found and a config file
-#                                           could not be parsed
+#                                           could not be parsed (also 3 when
+#                                           the config set is dirty, #526)
 #          pipeline-config.sh --show [--origin-only] [KEY-PREFIX]
 #                                           every key with its value and the
 #                                           layer that decided it (see below)
+#          pipeline-config.sh --convert LEGACY.yml TARGET.json [--force]
+#                                           one-shot YAML -> JSON migration
+#                                           (#526, the only YAML-aware code)
 # Example: pipeline-config.sh board.project_number 1
 #          pipeline-config.sh notifications.slack_channel ""
 #          pipeline-config.sh merge.method squash
 #
-# Config file lookup order:
-#   1. $PIPELINE_CONFIG env var (absolute path to config file)
-#   2. ./talos.pipeline.yml (.yaml / .json variants)
-#   3. Legacy names: ./.claude-pipeline.yaml, ./pipeline.yaml (+ .json variants)
-#   4. No config found — returns the default (or empty string)
+# Config files (#526, JSON only): exactly two, both canonical-named:
+#   PROJECT  ./talos.pipeline.json  ($PIPELINE_CONFIG env var overrides with an
+#            explicit pointer to a .json file; a pointer at a .yml/.yaml file
+#            is refused like any other legacy file, see the gate below)
+#   GLOBAL   ${TALOS_HOME:-$HOME/.talos}/talos.pipeline.json
+#   No config found — returns the default (or empty string).
+#
+# Fail closed on ambiguity (#526): any OTHER talos.pipeline.* file in a layer
+# directory stops the load with ONE stderr line, before any value resolves:
+#   talos.pipeline.yml/.yaml beside that layer's talos.pipeline.json →
+#     reason=config-shadowed winner=<json> also-present=<strays> rm <strays>
+#     # or merge them into the winner first
+#   talos.pipeline.yml/.yaml with no talos.pipeline.json in that dir →
+#     reason=config-legacy-file <path> -- convert: bash scripts/pipeline-config.sh
+#     --convert <path> <dir>/talos.pipeline.json
+# Every read verb (KEY, --has, --show, --dump) exits 3 on it. Through talos.sh
+# (the cfg cache primes on --dump) the run answers stop reason=config-unreadable
+# and the specific line reaches the operator.
 #
 # Defaults (#439): a key absent from every config layer prints the default
 # argument when one is given (even ""), else the key's default from the config
@@ -25,8 +42,8 @@
 # file at all, none of this spawns python3.
 #
 # Layers (#336, #441), lowest to highest: the table default, the global file
-# ${TALOS_HOME:-$HOME/.talos}/talos.pipeline.{yml,yaml,json}, the repo's own
-# config, then the key's environment variable (the table's env column, e.g.
+# ${TALOS_HOME:-$HOME/.talos}/talos.pipeline.json, the repo's own config, then
+# the key's environment variable (the table's env column, e.g.
 # PIPELINE_SLACK_CHANNEL; set and non-empty). Each layer overrides the one below
 # it key by key; dicts merge, scalars replace, and a list in a higher layer
 # replaces the lower layer's list whole (no union). The global file may set any
@@ -34,6 +51,10 @@
 # with one stderr note naming the key -- see the shared loader below.
 #
 #   --dump          every resolved key as NUL-delimited pairs (one python3 spawn)
+#                   plus a SOURCES header (#526): sources.project,
+#                   sources.global, sources.env_keys (the set env-override
+#                   variable NAMES) and sources.secrets_path — one command
+#                   fully answers "where is talos configured".
 #   --show          one line per key: key<TAB>value<TAB>layer, layer being
 #                   default|global|repo|env (the table default, the global file,
 #                   the repo file, the key's environment variable). Lists every
@@ -59,16 +80,9 @@
 # environment variable is not something to write a block over). Use --show to
 # see the env layer.
 #
-# YAML parsing:
-#   Uses PyYAML (python3 -c "import yaml") if importable.
-#   Falls back to JSON parsing for .json config files (rename yours to
-#   talos.pipeline.json or pipeline.json).
-#   Never crashes — missing keys, absent files, or parse errors all return
-#   the default. Without PyYAML a YAML file (.yml/.yaml) is not read at all:
-#   one stderr line per file names it and the fix (pip install pyyaml, or the
-#   .json form), then its keys fall back to the defaults (#490). Each call is its
-#   own process, so the note is stamped under $TMPDIR/talos-yaml-warn-<uid>/ and
-#   repeats at most once an hour per file (TALOS_YAML_WARN_DEDUP=0: every call).
+# Parsing (#526): the loader's only parser is json. A legacy .yml/.yaml never
+# reaches the parser: the gate above refuses it first, and --convert is the
+# one path that reads YAML (a human-invoked migration, needs PyYAML).
 #
 set -u
 
@@ -80,8 +94,7 @@ set -u
 # once per script invocation instead: dump here, then answer every lookup
 # from the cached output with pure shell. A key absent from the dump means
 # "absent in config" — the caller applies its own caller-supplied default,
-# exactly like the single-key path below does. Same file-lookup order, same
-# YAML-then-JSON precedence, and the same "verify" (dict-form → commands
+# exactly like the single-key path below does. Same file lookup, and the same "verify" (dict-form → commands
 # list) / "verify.qa_mode" (merge.required_checks-derived default, fail-
 # closed downgrade) / "verify.timeout_ms" / "verify.ci_wait_s" /
 # "hooks.timeout_s" / "notifications.cmd_timeout_s" / "status.log_days" /
@@ -137,14 +150,14 @@ fi
 # their own copy of the file-lookup loop and the parse block).
 #
 # Three file/env layers, the higher one wins per leaf key (#441):
-#   1. user-level  ${TALOS_HOME:-$HOME/.talos}/talos.pipeline.{yml,yaml,json}
+#   1. user-level  ${TALOS_HOME:-$HOME/.talos}/talos.pipeline.json
 #                  Every key is read except the repo-only ones (the table's
 #                  scope column: keys that describe one repository -- board,
 #                  verify commands, merge file lists, ...). A repo-only key
 #                  found here is dropped and prints ONE stderr line that names
 #                  the key and never its value. Untrusted input: parsed as data
-#                  only (JSON / yaml.safe_load), never sourced or evaluated;
-#                  missing, unreadable, empty, malformed or non-mapping content
+#                  only (JSON), never sourced or evaluated; missing,
+#                  unreadable, empty, malformed or non-mapping content
 #                  behaves as absent (malformed/empty/non-mapping/unreadable
 #                  prints one stderr warning; the lookup and its exit status
 #                  are unaffected).
@@ -155,9 +168,10 @@ fi
 #                  the layer is read as absent. The check is the shared one in
 #                  pipeline-secrets.sh (the same stat helper as ~/.talos/.env),
 #                  run inside the loader's python3 process: no extra spawn.
-#   2. project     $PIPELINE_CONFIG, else the first existing ./talos.pipeline.*
-#                  / legacy name. The user-level layer sits under whichever
-#                  one is found.
+#   2. project     $PIPELINE_CONFIG (an explicit pointer; must be a .json file,
+#                  a .yml/.yaml pointer is refused like any other legacy file),
+#                  else ./talos.pipeline.json. The user-level layer sits
+#                  under whichever one is found.
 #   3. env         the variable in the table's env column, when set and not
 #                  empty. No generic TALOS_CFG_* scheme.
 # The validators below (positive integers, spend, evidence, fallback, effort)
@@ -167,33 +181,131 @@ fi
 # tokens, GitHub, AWS, private keys, Nostr nsec) is dropped as absent on load,
 # with one stderr line that names the key and never the value; a value that
 # starts `env:` is always allowed. TALOS_CONFIG_STRICT_KEYS does not affect it.
-# Names tried, in order, for the project file; the first three also bound the
-# user-level lookup (same extension order, no legacy names).
-_CFG_NAMES=("talos.pipeline.yml" "talos.pipeline.yaml" "talos.pipeline.json"
-            ".claude-pipeline.yaml" "pipeline.yaml"
-            ".claude-pipeline.json" "pipeline.json")
+
+# ── Canonical config files and the stray/legacy gate (#526) ─────────────
+# Exactly two config files exist, both JSON, both canonical-named: the repo's
+# own talos.pipeline.json and the user-level ${TALOS_HOME:-$HOME/.talos}/
+# talos.pipeline.json. No name list, no extension precedence, no legacy names
+# (the old .claude-pipeline.* / pipeline.* names are simply not read anymore;
+# an owner still on one runs --convert or renames the file).
+_CFG_PROJECT_NAME="talos.pipeline"
+
+# The user-level config directory: $TALOS_HOME, else $HOME/.talos. Empty when
+# neither variable is set (a corner case: no user-level layer at all).
+_cfg_user_dir() {
+  if [ -n "${TALOS_HOME:-}" ]; then printf '%s' "$TALOS_HOME"
+  elif [ -n "${HOME:-}" ]; then printf '%s' "$HOME/.talos"
+  fi
+}
 
 # Prints the project config path, or nothing when there is none.
 _locate_project_cfg() {
-  local _p="${PIPELINE_CONFIG:-}" _n
-  if [ -z "$_p" ]; then
-    for _n in "${_CFG_NAMES[@]}"; do
-      if [ -f "$_n" ]; then _p="$_n"; break; fi
-    done
+  if [ -n "${PIPELINE_CONFIG:-}" ]; then
+    if [ -f "$PIPELINE_CONFIG" ]; then printf '%s' "$PIPELINE_CONFIG"; fi
+  else
+    local _p="$_CFG_PROJECT_NAME.json"
+    if [ -f "$_p" ]; then printf '%s' "$_p"; fi
   fi
-  if [ -n "$_p" ] && [ -f "$_p" ]; then printf '%s' "$_p"; fi
 }
 
 # Prints the user-level config path, or nothing when there is none.
 _locate_user_cfg() {
-  local _dir _n
-  if [ -n "${TALOS_HOME:-}" ]; then _dir="$TALOS_HOME"
-  elif [ -n "${HOME:-}" ]; then _dir="$HOME/.talos"
-  else return 0
+  local _dir _p
+  _dir="$(_cfg_user_dir)"
+  [ -n "$_dir" ] || return 0
+  _p="$_dir/$_CFG_PROJECT_NAME.json"
+  if [ -f "$_p" ]; then printf '%s' "$_p"; fi
+}
+
+# ── The stray/legacy gate (#526) ──────────────────────────────────────
+# One stderr line per layer directory with a problem, exit 3, before any
+# value resolves. Strays are the talos.pipeline.yml/.yaml files; the layer's
+# canonical json is always the winner.
+#
+#   second file beside the json  -> reason=config-shadowed winner=<json>
+#       also-present=<strays> rm <strays>  # or merge them into the winner first
+#   lone legacy file, no json    -> reason=config-legacy-file <path>
+#       -- convert: bash scripts/pipeline-config.sh --convert <path> <json>
+#
+# The reason joins the env-reasons class through the existing plumbing: --dump
+# exits 3, so talos.sh (cfg cache primed on --dump) stops with
+# config-unreadable; --has and the single-key lookup exit 3 (an unknown
+# answer, never "absent").
+#
+# An explicit PIPELINE_CONFIG pointer is a deliberate human decision: the
+# operator named the winner themselves, so the project-directory stray check
+# is skipped when the pointer is set (only canonical-path loads get the
+# stray/legacy gate). The pointer itself is still gated: a pointer at a
+# .yml/.yaml file is refused like any other legacy file -- by NAME (the
+# case pattern matches the string, so the refusal fires even when the file
+# does not exist; YAML is never parsed at load time, so a named-but-absent
+# YAML pointer is the same named legacy state).
+#
+# _cfg_project_problem / _cfg_user_problem print the problem line (or nothing)
+# and return 0 either way; _cfg_gate collects both and exits 3 when any printed.
+# The python loader repr()s untrusted paths so a control byte can never forge
+# a row or drive a terminal; the gate is pure shell, so it neutralises control
+# bytes in place instead (a normal path prints unchanged, no quoting added).
+_cfg_safe_path() { printf '%s' "$1" | tr '\001-\037\177' '?'; }
+
+_cfg_project_problem() {
+  local _strays="" _n _winner="$_CFG_PROJECT_NAME.json" _sep="" _cv_dir _cv_path
+  if [ -n "${PIPELINE_CONFIG:-}" ]; then
+    case "$PIPELINE_CONFIG" in
+      *.yml|*.yaml)
+        _cv_path="$(_cfg_safe_path "$PIPELINE_CONFIG")"
+        case "$PIPELINE_CONFIG" in */*) _cv_dir="${PIPELINE_CONFIG%/*}" ;; *) _cv_dir="." ;; esac
+        printf 'pipeline-config: reason=config-legacy-file %s -- convert: bash scripts/pipeline-config.sh --convert %s %s/%s.json\n' \
+          "$_cv_path" "$_cv_path" "$(_cfg_safe_path "$_cv_dir")" "$_CFG_PROJECT_NAME"
+        return 0 ;;
+      *) return 0 ;;
+    esac
   fi
-  for _n in "${_CFG_NAMES[@]:0:3}"; do
-    if [ -f "$_dir/$_n" ]; then printf '%s' "$_dir/$_n"; return 0; fi
+  for _n in "$_CFG_PROJECT_NAME.yml" "$_CFG_PROJECT_NAME.yaml"; do
+    if [ -f "$_n" ]; then _strays="$_strays$_sep$_n"; _sep=" "; fi
   done
+  [ -n "$_strays" ] || return 0
+  if [ -f "$_winner" ]; then
+    printf 'pipeline-config: reason=config-shadowed winner=%s also-present=%s rm %s  # or merge them into the winner first\n' \
+      "$_winner" "$(printf '%s' "$_strays" | tr ' ' ',')" "$_strays"
+  else
+    printf 'pipeline-config: reason=config-legacy-file %s -- convert: bash scripts/pipeline-config.sh --convert %s %s\n' \
+      "$_strays" "${_strays%% *}" "$_winner"
+  fi
+}
+
+_cfg_user_problem() {
+  local _dir _shown_dir _strays="" _n _winner _sep=""
+  _dir="$(_cfg_user_dir)"
+  [ -n "$_dir" ] || return 0
+  # The user directory can be the project directory (TALOS_HOME=.): the project
+  # gate already covered it, so never report the same files twice.
+  [ "$_dir" = "$PWD" ] && return 0
+  _winner="$_dir/$_CFG_PROJECT_NAME.json"
+  for _n in "$_CFG_PROJECT_NAME.yml" "$_CFG_PROJECT_NAME.yaml"; do
+    if [ -f "$_dir/$_n" ]; then _strays="$_strays$_sep$_dir/$_n"; _sep=" "; fi
+  done
+  [ -n "$_strays" ] || return 0
+  # Only the PRINTED text is sanitized: the filesystem checks above used the
+  # real (possibly env-derived) directory.
+  _shown_dir="$(_cfg_safe_path "$_dir")"
+  _winner="$_shown_dir/$_CFG_PROJECT_NAME.json"
+  _strays="$(_cfg_safe_path "$_strays")"
+  if [ -f "$_winner" ]; then
+    printf 'pipeline-config: reason=config-shadowed winner=%s also-present=%s rm %s  # or merge them into the winner first\n' \
+      "$_winner" "$(printf '%s' "$_strays" | tr ' ' ',')" "$_strays"
+  else
+    printf 'pipeline-config: reason=config-legacy-file %s -- convert: bash scripts/pipeline-config.sh --convert %s %s\n' \
+      "$_strays" "${_strays%% *}" "$_winner"
+  fi
+}
+
+_cfg_gate() {
+  local _found=0 _line
+  _line="$(_cfg_project_problem)"; if [ -n "$_line" ]; then printf '%s\n' "$_line" >&2; _found=1; fi
+  _line="$(_cfg_user_problem)";     if [ -n "$_line" ]; then printf '%s\n' "$_line" >&2; _found=1; fi
+  [ "$_found" = "0" ] && return 0
+  return 3
 }
 
 # Python half of the loader. Handed to each python3 process as an argv string
@@ -210,87 +322,20 @@ import sys
 # Which file layers failed to parse ("project" / "user"): --has reads it so a
 # parse error is not mistaken for "the key is absent" (#440).
 _LOAD_ERRORS = []
-_YAML_WARNED = set()  # YAML files already reported as unreadable without PyYAML (#490)
 
 def _warn(msg):
     sys.stderr.write("pipeline-config: [warn] %s\n" % msg)
 
-class _NoYamlError(ValueError):
-    # A YAML config file that cannot be read because PyYAML is missing (#490).
-    pass
-
-def _yaml_warn_due(path):
-    # Every pipeline-config.sh call is its own process, so a per-process note
-    # would repeat for each lookup of a run. A stamp file keyed by the YAML
-    # file's path and mtime, in a private dir under $TMPDIR, limits the note to
-    # once per hour per file. TALOS_YAML_WARN_DEDUP=0 notes every process. Any
-    # problem with the stamp dir means: warn. The dir is opened without
-    # following a symlink and must be a directory (O_NOFOLLOW | O_DIRECTORY);
-    # fchmod 0700 then succeeds only for its owner, so a dir that belongs to
-    # another user is refused, and a loose mode on our own dir is tightened.
-    if os.environ.get("TALOS_YAML_WARN_DEDUP") == "0":
-        return True
-    dfd = None
-    try:
-        import hashlib, time
-        d = os.path.join(os.environ.get("TMPDIR") or "/tmp", "talos-yaml-warn-%d" % os.geteuid())
-        try:
-            os.mkdir(d, 0o700)
-        except FileExistsError:
-            pass
-        dfd = os.open(d, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        os.fchmod(dfd, 0o700)
-        key = "%s\0%d" % (path, os.stat(path).st_mtime_ns)
-        name = hashlib.sha256(key.encode("utf-8", "surrogateescape")).hexdigest()
-        try:
-            if time.time() - os.stat(name, dir_fd=dfd, follow_symlinks=False).st_mtime < 3600:
-                return False
-            os.unlink(name, dir_fd=dfd)
-        except FileNotFoundError:
-            pass
-        try:
-            os.close(os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dfd))
-        except FileExistsError:
-            return False  # another process stamped it a moment ago
-    except Exception:
-        pass
-    finally:
-        if dfd is not None:
-            os.close(dfd)
-    return True
-
 def _parse_cfg_file(path):
-    # Prefer PyYAML (safe_load only); fall back to json without it.
-    # -I drops the user site; append it back (never insert: cwd and the
-    # stdlib must keep winning) so a pip --user PyYAML still parses YAML config (#395).
-    try:
-        import site, sys
-        sys.path.append(site.getusersitepackages())
-    except Exception:
-        pass
-    try:
-        import yaml
-    except ImportError:
-        yaml = None
+    # JSON only (#526): the loader's only parser. A legacy YAML file never
+    # reaches here - the shell gate (reason=config-shadowed / reason=config-legacy-file)
+    # refuses every talos.pipeline.* file that is not the layer's canonical
+    # json before any read verb spawns python3, and an explicit PIPELINE_CONFIG
+    # pointer at a legacy YAML file is refused the same way. --convert is the
+    # only YAML-aware path in the whole pipeline.
+    import json
     with open(path) as f:
-        if yaml is not None:
-            return yaml.safe_load(f)
-        import json
-        try:
-            return json.load(f)
-        except ValueError:
-            # A YAML file that is not also JSON cannot be read without PyYAML
-            # (#490). Say so (at most once an hour per file, see _yaml_warn_due)
-            # instead of silently using defaults.
-            if not path.lower().endswith((".yml", ".yaml")):
-                raise
-            if path not in _YAML_WARNED:
-                _YAML_WARNED.add(path)
-                if _yaml_warn_due(path):
-                    _warn("%s is a YAML config but PyYAML is not installed, so it is "
-                          "ignored -- run `pip install pyyaml` or use the .json form"
-                          % repr(path))
-            raise _NoYamlError("PyYAML is not installed")
+        return json.load(f)
 
 # Repo-only scope (#441): the table's scope column, as key templates ("*" is
 # one dynamic segment). A leaf is repo-only when it equals a template, is a
@@ -375,12 +420,12 @@ def _drop_secret_shaped(obj, what):
             _warn("the secret-shape check is not installed (pipeline-secret-shapes.py "
                   "is missing) -- config values are not checked; reinstall Talos")
         return obj
-    # YAML aliases make the parsed layer a graph, not a tree: a node can be
-    # reached many times (nested aliases expand exponentially) or from itself.
-    # So each container is scanned ONCE (memo by id), a node met again while it
-    # is still being walked is a cycle, and a value whose expanded size passes
-    # _MAX_NODES or whose depth passes _MAX_DEPTH is dropped. Each is the same
-    # one-line form as a shape hit: the key, never the value.
+    # The parsed layer is a tree, but the walk is memo'd per container so a
+    # deeply nested file is scanned once and bounded: a value whose expanded
+    # size passes _MAX_NODES or whose depth passes _MAX_DEPTH is dropped, and
+    # a node met again while it is still being walked is treated as
+    # self-referential. Each is the same one-line form as a shape hit: the
+    # key, never the value.
     memo = {}
     active = set()
     def drop(where, why):
@@ -393,7 +438,7 @@ def _drop_secret_shaped(obj, what):
             if nid in memo:
                 return memo[nid]
             if nid in active:
-                return drop(where, "refers to itself (a YAML alias cycle)")
+                return drop(where, "refers to itself (a self-referencing structure)")
             if depth >= _MAX_DEPTH:
                 return drop(where, "is nested too deeply")
             active.add(nid)
@@ -414,7 +459,7 @@ def _drop_secret_shaped(obj, what):
                         out.append(kept)
             active.discard(nid)
             if size > _MAX_NODES:
-                memo[nid] = drop(where, "expands to too many values (nested YAML aliases)")
+                memo[nid] = drop(where, "expands to too many values (nested too deep)")
             else:
                 memo[nid] = (out, size)
             return memo[nid]
@@ -467,8 +512,6 @@ def _load_user_layer(user_path, project_path):
     except Exception as e:
         # Type name only: a parser's message may echo file content.
         _LOAD_ERRORS.append("user")
-        if isinstance(e, _NoYamlError):
-            return {}  # already reported by _parse_cfg_file: one note per file
         _warn("user-level config %s unreadable or malformed (%s) -- ignoring it"
               % (shown, type(e).__name__))
         return {}
@@ -478,8 +521,8 @@ def _load_user_layer(user_path, project_path):
     if not isinstance(raw, dict):
         _warn("user-level config %s must be a mapping -- ignoring it" % shown)
         return {}
-    # Scanned first: it also breaks alias cycles and bounds alias blow-up, which
-    # the recursive drops below would otherwise walk (#444).
+    # Scanned first: it bounds the walk of a deeply nested file, which the
+    # recursive drops below would otherwise follow (#444).
     raw = _drop_secret_shaped(raw, "user-level config %s" % shown)
     return _drop_repo_only(_check_agents(raw, "user-level config %s" % shown), [], shown)
 
@@ -912,6 +955,126 @@ for _dotted, _row in _order:
     out.write(_line.encode("utf-8", "replace"))
 PYSHOW
 
+# ── SOURCES helpers (#526) ─────────────────────────────────────────────────
+# What one --dump answers about "where is talos configured": sources.project,
+# sources.global, sources.env_keys (the set env-override variable NAMES) and
+# sources.secrets_path (the ~/.talos/.env store, named even when absent).
+_cfg_secrets_path() {
+  local _dir
+  _dir="$(_cfg_user_dir)"
+  [ -n "$_dir" ] || return 0
+  printf '%s' "$_dir/.env"
+}
+
+# The table's env-override variable NAMES that are set and not empty right
+# now, space-joined. Same table walk as _talos_env_dump in pipeline-defaults.sh,
+# collecting names instead of values.
+_cfg_env_keys_set() {
+  local _row _f _env _out=""
+  _talos_defaults_split
+  for _row in ${_TD_ROWS[@]+"${_TD_ROWS[@]}"}; do
+    _f="${_row#*$'\t'}"
+    _f="${_f#*$'\t'}"; _f="${_f#*$'\t'}"; _f="${_f#*$'\t'}"
+    _env="${_f%%$'\t'*}"
+    if [ "$_env" != "-" ] && [ -n "${!_env:-}" ]; then _out="$_out $_env"; fi
+  done
+  printf '%s' "${_out# }"
+}
+
+# ── --convert LEGACY.yml TARGET.json [--force] (#526) ─────────────────────
+# The ONLY YAML-aware code in Talos: a one-shot, human-invoked migration that
+# parses a legacy .yml/.yaml config (the same a stray file or a PIPELINE_CONFIG
+# pointer names), drops its secret-shaped leaves the same way the loader would
+# (a literal secret is refused, never written on), and writes the result as
+# JSON to TARGET. Needs PyYAML to read the input (a load never does); without
+# it the one line names the fix. An existing non-empty TARGET is refused
+# without an explicit --force (one line, writes nothing); --force overwrites.
+# Nothing else converts anything.
+if [ "${1:-}" = "--convert" ]; then
+  [ "$#" -ge 3 ] || { echo "pipeline-config: --convert: usage: pipeline-config.sh --convert LEGACY.yml TARGET.json [--force]" >&2; exit 3; }
+  shift
+  _CV_LEGACY="${1:-}" _CV_TARGET="${2:-}" _CV_FORCE=""
+  shift 2
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --force) _CV_FORCE=1 ;;
+      *) echo "pipeline-config: --convert: unknown option $1 (usage: pipeline-config.sh --convert LEGACY.yml TARGET.json [--force])" >&2; exit 3 ;;
+    esac
+    shift
+  done
+  case "$_CV_LEGACY" in
+    *.yml|*.yaml) ;;
+    *) echo "pipeline-config: --convert: $_CV_LEGACY is not a .yml/.yaml file -- nothing to convert" >&2; exit 3 ;;
+  esac
+  case "$_CV_TARGET" in
+    *.json) ;;
+    *) echo "pipeline-config: --convert: the target must be a .json file, not $_CV_TARGET" >&2; exit 3 ;;
+  esac
+  if [ "$_CV_LEGACY" = "$_CV_TARGET" ]; then
+    echo "pipeline-config: --convert: the target must not be the legacy file itself ($_CV_LEGACY)" >&2
+    exit 3
+  fi
+  if [ -f "$_CV_TARGET" ] && [ -s "$_CV_TARGET" ] && [ -z "$_CV_FORCE" ]; then
+    echo "pipeline-config: --convert: target $_CV_TARGET already exists and is not empty -- use --force to overwrite it" >&2
+    exit 3
+  fi
+  [ -f "$_CV_LEGACY" ] || { echo "pipeline-config: --convert: $_CV_LEGACY is not a readable file" >&2; exit 3; }
+  python3 -I - "$_CV_LEGACY" "$_CV_TARGET" "$(_cfg_loader_src)" <<'PYCONVERT'
+import sys, json
+exec(sys.argv[3])
+import site, sys
+# -I drops the user site; append it back so a pip --user PyYAML still reads the
+# legacy input (the same convention the old YAML loader used, #395).
+sys.path.append(site.getusersitepackages())
+try:
+    import yaml
+except ImportError:
+    sys.stderr.write("pipeline-config: --convert: %s needs PyYAML to read YAML, and PyYAML is not installed -- run pip install pyyaml (or convert by hand)\n" % repr(sys.argv[1]))
+    sys.exit(3)
+try:
+    with open(sys.argv[1]) as f:
+        raw = yaml.safe_load(f)
+except Exception as e:
+    sys.stderr.write("pipeline-config: --convert: %s is unreadable or malformed (%s)\n" % (repr(sys.argv[1]), type(e).__name__))
+    sys.exit(3)
+if not isinstance(raw, dict):
+    sys.stderr.write("pipeline-config: --convert: %s must hold a mapping (top-level keys)\n" % repr(sys.argv[1]))
+    sys.exit(3)
+# The loader's own hygiene, so a converted file cannot hold what a load would
+# refuse: secret-shaped leaves are dropped with the same one-line warnings
+# (a literal secret is refused, moved to ~/.talos/.env as env:NAME), and a
+# scalar agents: block is dropped the same way.
+_what = "legacy config %s" % repr(sys.argv[1])
+raw = _drop_secret_shaped(_check_agents(raw, _what), _what)
+import os, tempfile
+_tmp = None
+try:
+    _fd, _tmp = tempfile.mkstemp(prefix=".talos-convert-", suffix=".tmp",
+                                 dir=os.path.dirname(os.path.abspath(sys.argv[2])) or ".")
+    with os.fdopen(_fd, "w") as f:
+        json.dump(raw, f, indent=2)
+        f.write("\n")
+    os.replace(_tmp, sys.argv[2])
+except Exception as e:
+    if _tmp is not None:
+        try:
+            os.unlink(_tmp)
+        except OSError:
+            pass
+    sys.stderr.write("pipeline-config: --convert: could not write %s (%s)\n" % (repr(sys.argv[2]), type(e).__name__))
+    sys.exit(3)
+PYCONVERT
+  _CV_RC=$?
+  if [ "$_CV_RC" -eq 0 ]; then
+    echo "pipeline-config: --convert: converted $_CV_LEGACY -> $_CV_TARGET"
+  fi
+  exit "$_CV_RC"
+fi
+
+# Every read verb below (KEY, --show, --dump, --has) refuses a dirty config
+# set: one stderr line per layer problem, exit 3, before any value resolves.
+_cfg_gate || exit 3
+
 # --dump-layers is the old verb for the agents.* origins, kept one release as an
 # alias: the same rows, file layers only, with the old layer names (install.sh's
 # model hint reads it, and a default row would always satisfy that hint).
@@ -969,14 +1132,23 @@ fi
 if [ "${1:-}" = "--dump" ]; then
   _DCFG="$(_locate_project_cfg)"
   _DUSER="$(_locate_user_cfg)"
+  _DENV_KEYS="$(_cfg_env_keys_set)"
+  _DSECRETS="$(_cfg_secrets_path)"
   # No config present (or unreadable) — nothing to dump; every lookup falls
   # back to its caller's default, same as "no config found" below.
-  # Env overrides still apply (pure shell, no python3 spawn).
+  # Env overrides still apply (pure shell, no python3 spawn). The SOURCES
+  # header still answers "where is talos configured": both file paths empty,
+  # the set env-override variables named, the secrets store named even when
+  # absent.
   if [ -z "$_DCFG" ] && [ -z "$_DUSER" ]; then
+    printf 'sources.project\0%s\0' ""
+    printf 'sources.global\0%s\0' ""
+    printf 'sources.env_keys\0%s\0' "$_DENV_KEYS"
+    printf 'sources.secrets_path\0%s\0' "$_DSECRETS"
     _talos_env_dump
     exit 0
   fi
-  python3 -I - "$_DCFG" "$(_talos_known_keys_json)" "$_DUSER" "$(_cfg_loader_src)" "$_CFG_EVIDENCE_PY" "$_CFG_FALLBACK_PY" "$_CFG_INT_PY" <<'PYEOF'
+  python3 -I - "$_DCFG" "$(_talos_known_keys_json)" "$_DUSER" "$(_cfg_loader_src)" "$_CFG_EVIDENCE_PY" "$_CFG_FALLBACK_PY" "$_CFG_INT_PY" "$_DENV_KEYS" "$_DSECRETS" <<'PYEOF'
 import sys
 
 known_keys_json = sys.argv[2]
@@ -1279,7 +1451,17 @@ if isinstance(_roles_cfg, dict):
         elif _rekey_effort in flat:
             del flat[_rekey_effort]
 
+# SOURCES header (#526), emitted before every resolved pair so the dump's
+# first pairs answer "where is talos configured": the project path as the
+# shell located it (an explicit PIPELINE_CONFIG pointer shows itself), the
+# global path, the set env-override variable NAMES, and the secrets store
+# (named even when absent). Ordinary KEY/value pairs: the strict
+# NUL-pair cache reader (pipeline-cfg-cache.sh) parses the stream unchanged.
 out = sys.stdout.buffer
+out.write(("sources.project\0" + sys.argv[1] + "\0").encode("utf-8", "surrogateescape"))
+out.write(("sources.global\0" + sys.argv[3] + "\0").encode("utf-8", "surrogateescape"))
+out.write(("sources.env_keys\0" + sys.argv[8] + "\0").encode("utf-8", "surrogateescape"))
+out.write(("sources.secrets_path\0" + sys.argv[9] + "\0").encode("utf-8", "surrogateescape"))
 for k, v in flat.items():
     if isinstance(v, bool):
         s = "true" if v else "false"
@@ -1301,7 +1483,9 @@ fi
 # to pass a sentinel default (`pipeline-config.sh status.enabled unset`). Never
 # consults the table: a key that only has a table default is NOT set. No config
 # file means exit 1 with no python3 spawn. Exit 3 when KEY was not found AND a
-# config file could not be parsed (malformed, or PyYAML missing for a YAML file):
+# config file could not be parsed (malformed), or when the config set is dirty
+# (the #526 gate: reason=config-shadowed / config-legacy-file prints the
+# specific line and every read verb exits 3 before python3 runs):
 # the answer is unknown, and "absent" would send a caller to write a block over
 # a config it could not read. A key found in the layer that did parse is still 0.
 if [ "${1:-}" = "--has" ]; then

@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
-# test-config-yaml-warn.sh -- covers #490: a YAML config (repo or user layer) was
-# silently ignored when PyYAML could not be imported, so a user's settings
-# reverted to the defaults with no message.
+# test-config-yaml-warn.sh -- #490's subject changed shape in #526: config is
+# JSON only, so there is no "a YAML config was silently ignored without
+# PyYAML" path anymore. The file keeps its name (the suite's count check
+# requires every test file that exists on the base ref to exist here) and now
+# pins the successor behavior:
+#
+#   1. a legacy talos.pipeline.yml with no json in its layer directory fails
+#      the load closed with reason=config-legacy-file (no "pip install pyyaml"
+#      note anywhere -- that warn machinery is deleted)
+#   2. a clean json load with no PyYAML importable is silent (the loader never
+#      imports yaml)
+#   3. --convert is the only path that needs PyYAML, and it says so when it
+#      cannot find it
 #
 # PyYAML is hidden with a python3 shim on PATH inside the sandbox (nothing is
 # uninstalled): it runs the real python3 with sys.modules['yaml'] = None, so
 # `import yaml` raises ImportError.
-#
-#   1. repo YAML file, no PyYAML: ONE stderr line naming the file and the fix;
-#      the lookup still exits 0 and returns the default (no crash)
-#   2. --dump and the user-level (global) layer warn the same way, one line per file
-#   3. a JSON config (and JSON content in a .yml) stays silent
-#   4. with PyYAML available, a YAML config is read and nothing is warned
-#   5. every call is its own process: a stamp under $TMPDIR limits the note to
-#      once per file (until the file changes); a user-level YAML file gets that
-#      one line, not also the older "unreadable or malformed" one
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox || exit 1
@@ -22,13 +23,13 @@ make_sandbox || exit 1
 CFG_SH="$TALOS_ROOT/scripts/pipeline-config.sh"
 REAL_PY="$(command -v python3)"
 SHIM="$SANDBOX/shim"
-PROJ="$SANDBOX/project"
 GHOME="$SANDBOX/talos-home"
 ERR="$SANDBOX/stderr"
-mkdir -p "$SHIM" "$PROJ" "$GHOME" || exit 1
-cd "$PROJ" || exit 1
+mkdir -p "$SHIM" "$GHOME" || exit 1
+unset PIPELINE_CONFIG
+export TALOS_HOME="$GHOME"
 
-cat > "$SHIM/python3" <<TALOS_SHIMx7Kq2Wm9Pd4Lt
+cat > "$SHIM/python3" <<TALOS_SHIMy5Tq8Wm2Pd6Kt
 #!/usr/bin/env bash
 # python3 without PyYAML: handles the "-I -c CODE" and "-I -" (script on stdin) forms.
 [ "\${1:-}" = "-I" ] && shift
@@ -38,7 +39,7 @@ case "\${1:-}" in
   *)  exec "$REAL_PY" -I "\$@" ;;
 esac
 exec "$REAL_PY" -I -c 'import sys; sys.modules["yaml"] = None; c = sys.argv[1]; sys.argv = ["-c"] + sys.argv[2:]; exec(compile(c, "<string>", "exec"), {"__name__": "__main__"})' "\$code" "\$@"
-TALOS_SHIMx7Kq2Wm9Pd4Lt
+TALOS_SHIMy5Tq8Wm2Pd6Kt
 chmod +x "$SHIM/python3"
 
 # Precondition: the shim really hides PyYAML.
@@ -47,94 +48,47 @@ env PATH="$SHIM:$PATH" python3 -I -c 'import yaml' 2>/dev/null || shim_rc=$?
 assert_eq "1" "$shim_rc" "precondition: the python3 shim cannot import yaml"
 
 nolines() { wc -l < "$1" | tr -d ' '; }
-unset PIPELINE_CONFIG
-export TALOS_HOME="$GHOME"
-# Stamps go inside the sandbox, never the real $TMPDIR. Sections 1-4 count the
-# note per process, so they opt out of the cross-process dedupe (section 5 uses it).
-export TMPDIR="$SANDBOX/tmp"
-mkdir -p "$TMPDIR" || exit 1
-export TALOS_YAML_WARN_DEDUP=0
 
-# ---- 1. repo YAML file, no PyYAML -------------------------------------------
-printf 'pr:\n  draft: false\n' > "$PROJ/talos.pipeline.yml"
+# ---- 1. a lone legacy yml fails closed, and the old #490 warn is gone --------
+printf 'pr:\n  draft: false\n' > talos.pipeline.yml
 out="$(env PATH="$SHIM:$PATH" bash "$CFG_SH" pr.draft SENT 2>"$ERR")"; rc=$?
-assert_eq "0" "$rc" "repo .yml without PyYAML: still exits 0 (no crash)"
-assert_eq "SENT" "$out" "repo .yml without PyYAML: the default is returned"
-assert_eq "1" "$(nolines "$ERR")" "repo .yml without PyYAML: exactly one stderr line"
-assert_contains "$(cat "$ERR")" "talos.pipeline.yml" "repo .yml without PyYAML: the line names the file"
-assert_contains "$(cat "$ERR")" "pip install pyyaml" "repo .yml without PyYAML: the line names the fix"
-assert_contains "$(cat "$ERR")" ".json" "repo .yml without PyYAML: the line offers the .json form"
+assert_eq "3" "$rc" "a lone legacy .yml fails the load closed (#526)"
+assert_eq "" "$out" "a lone legacy .yml resolves no value"
+assert_eq "1" "$(nolines "$ERR")" "a lone legacy .yml: exactly one stderr line"
+assert_contains "$(cat "$ERR")" "reason=config-legacy-file" "the line names the legacy reason"
+assert_not_contains "$(cat "$ERR")" "pip install pyyaml" "the deleted #490 warn is gone (no pip install pyyaml note)"
+assert_not_contains "$(cat "$ERR")" "TALOS_YAML_WARN_DEDUP" "the deleted dedupe knob is gone from behavior and docs"
+assert_not_contains "$(cat "$ERR")" ".json form" "the deleted '.json form' advice is gone"
+rm -f talos.pipeline.yml
 
-# ---- 2. --dump, and the user-level layer ------------------------------------
+# ---- 2. a clean json load with no PyYAML importable is silent ----------------
+printf '{"pr": {"draft": false}}\n' > talos.pipeline.json
+out="$(env PATH="$SHIM:$PATH" bash "$CFG_SH" pr.draft SENT 2>"$ERR")"; rc=$?
+assert_eq "0" "$rc" "a json load without PyYAML: still exits 0 (no crash)"
+assert_eq "false" "$out" "a json load without PyYAML: the value is returned"
+assert_eq "0" "$(nolines "$ERR")" "a json load without PyYAML: silent"
 env PATH="$SHIM:$PATH" bash "$CFG_SH" --dump >/dev/null 2>"$ERR"; rc=$?
 assert_eq "0" "$rc" "--dump without PyYAML: exits 0"
-assert_eq "1" "$(nolines "$ERR")" "--dump without PyYAML: exactly one stderr line"
+assert_eq "0" "$(nolines "$ERR")" "--dump without PyYAML: silent"
+rm -f talos.pipeline.json
 
-printf 'limits:\n  warn_at: 0.6\n' > "$GHOME/talos.pipeline.yml"
-chmod 600 "$GHOME/talos.pipeline.yml"
-out="$(env PATH="$SHIM:$PATH" bash "$CFG_SH" limits.warn_at SENT 2>"$ERR")"; rc=$?
-assert_eq "0" "$rc" "global .yml without PyYAML: still exits 0"
-assert_eq "2" "$(grep -c 'pip install pyyaml' "$ERR")" "global + repo .yml: one fix line per YAML file"
-assert_contains "$(cat "$ERR")" "$GHOME" "global .yml without PyYAML: a line names the global file"
-assert_not_contains "$(cat "$ERR")" "malformed" "global .yml without PyYAML: no second, older line for the same file"
-rm -f "$GHOME/talos.pipeline.yml" "$PROJ/talos.pipeline.yml"
+# ---- 3. --convert is the only PyYAML consumer, and it says so ----------------
+printf 'pr:\n  draft: false\n' > talos.pipeline.yml
+env PATH="$SHIM:$PATH" bash "$CFG_SH" --convert talos.pipeline.yml "$SANDBOX/out.json" >/dev/null 2>"$ERR"; rc=$?
+assert_eq "3" "$rc" "--convert without PyYAML: exits 3"
+assert_eq "1" "$(nolines "$ERR")" "--convert without PyYAML: exactly one stderr line"
+assert_contains "$(cat "$ERR")" "PyYAML is not installed" "--convert without PyYAML: the line says so"
+assert_contains "$(cat "$ERR")" "pip install pyyaml" "--convert without PyYAML: the line names the fix"
+assert_file_absent "$SANDBOX/out.json" "--convert without PyYAML: no target written"
+rm -f talos.pipeline.yml
 
-# ---- 3. JSON stays silent ----------------------------------------------------
-printf '{"pr": {"draft": false}}' > "$PROJ/talos.pipeline.json"
-out="$(env PATH="$SHIM:$PATH" bash "$CFG_SH" pr.draft SENT 2>"$ERR")"
-assert_eq "false" "$out" "JSON config without PyYAML is still read"
-assert_eq "0" "$(nolines "$ERR")" "JSON config without PyYAML: no warning"
-rm -f "$PROJ/talos.pipeline.json"
-
-printf '{"pr": {"draft": false}}' > "$PROJ/talos.pipeline.yml"
-out="$(env PATH="$SHIM:$PATH" bash "$CFG_SH" pr.draft SENT 2>"$ERR")"
-assert_eq "false" "$out" "JSON content in a .yml without PyYAML is still read"
-assert_eq "0" "$(nolines "$ERR")" "JSON content in a .yml without PyYAML: no warning"
-rm -f "$PROJ/talos.pipeline.yml"
-
-# ---- 4. with PyYAML: read, no warning ----------------------------------------
-if python3 -I -c 'import site, sys; sys.path.append(site.getusersitepackages()); import yaml' 2>/dev/null; then
-  printf 'pr:\n  draft: false\n' > "$PROJ/talos.pipeline.yml"
-  out="$(bash "$CFG_SH" pr.draft SENT 2>"$ERR")"
-  assert_eq "false" "$out" "with PyYAML: the repo .yml is read"
-  assert_eq "0" "$(nolines "$ERR")" "with PyYAML: no warning"
+# The source carries no YAML load path: import yaml appears only inside --convert.
+n_imports="$(grep -c 'import yaml' "$CFG_SH")"
+assert_eq "1" "$n_imports" "import yaml appears only inside --convert (exactly once)"
+if grep -q '_YAML_WARNED\|_yaml_warn_due\|_NoYamlError\|TALOS_YAML_WARN_DEDUP' "$CFG_SH"; then
+  fail "the #490 machinery is deleted" "_YAML_WARNED/_yaml_warn_due/_NoYamlError/TALOS_YAML_WARN_DEDUP still present"
 else
-  echo "  skip: PyYAML not installed -- with-PyYAML case"
+  pass "the #490 machinery is deleted"
 fi
-
-# ---- 5. one warning per file across processes ---------------------------------
-unset TALOS_YAML_WARN_DEDUP
-printf 'pr:\n  draft: false\n' > "$PROJ/talos.pipeline.yml"
-env PATH="$SHIM:$PATH" bash "$CFG_SH" pr.draft SENT >/dev/null 2>"$ERR"
-assert_eq "1" "$(nolines "$ERR")" "dedupe: the first call warns"
-env PATH="$SHIM:$PATH" bash "$CFG_SH" pr.draft SENT >/dev/null 2>"$ERR"
-assert_eq "0" "$(nolines "$ERR")" "dedupe: a second call (new process) does not warn again"
-env PATH="$SHIM:$PATH" bash "$CFG_SH" --dump >/dev/null 2>"$ERR"
-assert_eq "0" "$(nolines "$ERR")" "dedupe: --dump (another process) does not warn again either"
-out="$(env PATH="$SHIM:$PATH" bash "$CFG_SH" pr.draft SENT 2>/dev/null)"
-assert_eq "SENT" "$out" "dedupe: the lookup still returns the default"
-TALOS_YAML_WARN_DEDUP=0 env PATH="$SHIM:$PATH" bash "$CFG_SH" pr.draft SENT >/dev/null 2>"$ERR"
-assert_eq "1" "$(nolines "$ERR")" "dedupe: TALOS_YAML_WARN_DEDUP=0 warns on every call"
-touch -t 203001010000 "$PROJ/talos.pipeline.yml"
-env PATH="$SHIM:$PATH" bash "$CFG_SH" pr.draft SENT >/dev/null 2>"$ERR"
-assert_eq "1" "$(nolines "$ERR")" "dedupe: a changed file (new mtime) warns again"
-stamp_dir="$TMPDIR/talos-yaml-warn-$(id -u)"
-assert_eq "700" "$(python3 -I -c 'import os, stat, sys; print(oct(stat.S_IMODE(os.lstat(sys.argv[1]).st_mode))[2:])' "$stamp_dir")" "dedupe: the stamp dir is private (0700)"
-# An unusable stamp location never hides the warning and never fails the lookup.
-rm -rf "${stamp_dir:?}"
-printf 'x' > "$stamp_dir"
-env PATH="$SHIM:$PATH" TALOS_HOME="$GHOME" bash "$CFG_SH" pr.draft SENT >/dev/null 2>"$ERR"; rc=$?
-assert_eq "0" "$rc" "dedupe: an unusable stamp dir does not fail the lookup"
-assert_eq "1" "$(nolines "$ERR")" "dedupe: an unusable stamp dir still warns"
-rm -f "$stamp_dir"
-# A symlinked stamp dir is refused (the warning shows, nothing is stamped through the link).
-mkdir -p "$SANDBOX/elsewhere" || exit 1
-ln -s "$SANDBOX/elsewhere" "$stamp_dir"
-env PATH="$SHIM:$PATH" bash "$CFG_SH" pr.draft SENT >/dev/null 2>"$ERR"
-assert_eq "1" "$(nolines "$ERR")" "dedupe: a symlinked stamp dir still warns"
-env PATH="$SHIM:$PATH" bash "$CFG_SH" pr.draft SENT >/dev/null 2>"$ERR"
-assert_eq "1" "$(nolines "$ERR")" "dedupe: a symlinked stamp dir never suppresses the warning"
-assert_eq "0" "$(ls "$SANDBOX/elsewhere" | wc -l | tr -d ' ')" "dedupe: nothing is stamped through a symlinked dir"
-rm -f "$stamp_dir" "$PROJ/talos.pipeline.yml"
 
 finish

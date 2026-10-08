@@ -10,7 +10,7 @@
 # Environment:
 #   PIPELINE_CONFIG   Absolute path to config file (passed through to
 #                     pipeline-config.sh). If absent, pipeline-config.sh
-#                     searches for talos.pipeline.yml/.yaml/.json.
+#                     uses ./talos.pipeline.json.
 #
 # Config keys read:
 #   execution.isolation   worktree (default) | branch | checkout (refused)

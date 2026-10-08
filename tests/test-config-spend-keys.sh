@@ -28,6 +28,17 @@ dumped() {
     END { if (!found) print "<absent>" }'
 }
 errlines() { wc -l < "$ERR" | tr -d ' '; }
+
+# _dump_nonsources -- re-emit a dump stream without its sources.* pairs (#526)
+# so byte-identity assertions keep comparing the resolved keys only.
+_dump_nonsources() {
+  local _k _v
+  while IFS= read -r -d '' _k && IFS= read -r -d '' _v; do
+    case "$_k" in sources.*) continue ;; esac
+    printf '%s\0%s\0' "$_k" "$_v"
+  done
+}
+
 errtext() { cat "$ERR"; }
 
 # ---- 1: valid values -> no unknown-key warning, value readable -------------
@@ -120,7 +131,9 @@ done
 # carries the keys present plus verify.qa_mode's derived default, and nothing
 # for the three new keys.
 set_cfg '{"base_branch": "main", "limits": {"max_fix_attempts": 3}}'
-bash "$CFG_SH" --dump 2>/dev/null | tr '\0' '\n' > "$SANDBOX/dump-now.txt"
+# The SOURCES header (#526) is part of every dump; the byte-identity below
+# compares the resolved keys only.
+bash "$CFG_SH" --dump 2>/dev/null | _dump_nonsources | tr '\0' '\n' > "$SANDBOX/dump-now.txt"
 printf 'base_branch\nmain\nlimits.max_fix_attempts\n3\nverify.qa_mode\nlocal\n' > "$SANDBOX/dump-main.txt"
 if cmp -s "$SANDBOX/dump-main.txt" "$SANDBOX/dump-now.txt"; then
   pass "6: --dump without the new keys is byte-identical to main"

@@ -836,25 +836,19 @@ run_status --line --format issue
 assert_eq "#111" "$OUT" "events.path: a config that does not mention events -> the default log"
 rm -f "$SANDBOX/talos.pipeline.json"
 printf '%s\n' \
-  'board:' \
-  '  labels: {a: b}' \
-  'agents:' \
-  '  note: |' \
-  '    text' \
-  'events:' \
-  '  other: 1' \
-  '  path: data/ev.jsonl   # relocated' \
-  'limits:' \
-  '  path: nonsense' > "$SANDBOX/talos.pipeline.yml"
+  '{"board": {"labels": {"a": "b"}},' \
+  ' "agents": {"note": "text"},' \
+  ' "events": {"other": 1, "path": "data/ev.jsonl"},' \
+  ' "limits": {"path": "nonsense"}}' > "$SANDBOX/talos.pipeline.json"
 run_status --line --format issue
-assert_eq "#752" "$OUT" "events.path: a YAML config, unrelated syntax around it does not matter"
-printf '%s\n' 'events:' '  path: /etc/passwd' > "$SANDBOX/talos.pipeline.yml"
+assert_eq "#752" "$OUT" "events.path: unrelated keys around it do not matter (JSON config)"
+set_ep_json "/etc/passwd"
 run_status --line --format issue
-assert_eq "" "$OUT" "events.path: an absolute path in YAML is refused"
-printf '%s\n' 'events:' '  path: 5' > "$SANDBOX/talos.pipeline.yml"
+assert_eq "" "$OUT" "events.path: an absolute path is refused"
+printf '%s\n' '{"events": {"path": 5}, "agents": {"model": "x"}}' > "$SANDBOX/talos.pipeline.json"
 run_status --line --format issue
 assert_eq "#111" "$OUT" "events.path: a non-string value -> the default log"
-rm -f "$SANDBOX/talos.pipeline.yml"
+rm -f "$SANDBOX/talos.pipeline.json"
 LOG="$DEFAULT_LOG"
 
 # ── static guards ──────────────────────────────────────────────────────────

@@ -106,17 +106,31 @@ HOME="$GLOBAL_HOME" CLAUDE_CONFIG_DIR="$FAKE_CLAUDE_HOME" \
 assert_contains "$(tail -1 "$GLOBAL_HOME/.talos/scripts/pipeline-vcs.sh")" "MODIFIED" \
   "--no-overwrite skips existing files in global mode"
 
-# talos.pipeline.* config is NEVER overwritten by any install mode
-touch "$SANDBOX/talos.pipeline.yml"
-echo "CUSTOM_CONFIG" >> "$SANDBOX/talos.pipeline.yml"
+# talos.pipeline.json (the canonical config, #526) is NEVER overwritten by any
+# install mode, and the installer text itself is JSON-only: it offers the JSON
+# example, never a yml copy instruction.
+touch "$SANDBOX/talos.pipeline.json"
+echo "CUSTOM_CONFIG" >> "$SANDBOX/talos.pipeline.json"
 bash "$TALOS_ROOT/install.sh" "$SANDBOX" --no-agent-skills >/dev/null
-assert_contains "$(tail -1 "$SANDBOX/talos.pipeline.yml")" "CUSTOM_CONFIG" \
-  "talos.pipeline.yml is never overwritten by per-repo install"
+assert_contains "$(tail -1 "$SANDBOX/talos.pipeline.json")" "CUSTOM_CONFIG" \
+  "talos.pipeline.json is never overwritten by per-repo install"
 HOME="$GLOBAL_HOME" CLAUDE_CONFIG_DIR="$FAKE_CLAUDE_HOME" \
   bash "$TALOS_ROOT/install.sh" --global --no-agent-skills >/dev/null
-assert_contains "$(tail -1 "$SANDBOX/talos.pipeline.yml")" "CUSTOM_CONFIG" \
-  "talos.pipeline.yml is never overwritten by global install either"
-rm -f "$SANDBOX/talos.pipeline.yml"
+assert_contains "$(tail -1 "$SANDBOX/talos.pipeline.json")" "CUSTOM_CONFIG" \
+  "talos.pipeline.json is never overwritten by global install either"
+rm -f "$SANDBOX/talos.pipeline.json"
+
+# AC9 (JSON-only installer text, #526): the per-repo installer's guidance
+# names only the canonical config.
+install_out="$(bash "$TALOS_ROOT/install.sh" "$SANDBOX" --no-agent-skills 2>&1)"
+assert_contains "$install_out" "talos.pipeline.json.example" \
+  "AC9: the installer offers talos.pipeline.json.example (JSON only, #526)"
+assert_not_contains "$install_out" "talos.pipeline.yml.example" \
+  "AC9: the installer never offers talos.pipeline.yml.example"
+assert_not_contains "$install_out" "cp .*talos.pipeline.yml " \
+  "AC9: the installer never instructs a yml copy"
+assert_not_contains "$install_out" "talos.pipeline.yml for your project" \
+  "AC9: the installer's next steps name talos.pipeline.json"
 
 # ── Marketplace manifest ──────────────────────────────────────────────────────
 assert_file_exists "$TALOS_ROOT/.claude-plugin/marketplace.json" \

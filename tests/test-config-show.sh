@@ -190,7 +190,7 @@ proj_json '{"merge":{"method":"rebase"}}'
 bash "$CFG_SH" --has notifications.buzz_channel >/dev/null 2>&1; rc=$?
 assert_eq "1" "$rc" "--has does not see the env layer"
 assert_eq "notifications.buzz_channel${TAB}BZ${TAB}env" "$(line_for "$(show notifications.buzz_channel)" notifications.buzz_channel)" "--show does see it"
-assert_contains "$(sed -n '1,60p' "$CFG_SH")" "ignores the env layer" "the header says --has ignores the env layer"
+assert_contains "$(sed -n '1,80p' "$CFG_SH")" "ignores the env layer" "the header says --has ignores the env layer"
 unset PIPELINE_BUZZ_CHANNEL
 
 # ── agents must be a mapping, in either layer ────────────────────────────────

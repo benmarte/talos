@@ -15,7 +15,7 @@ set -u
 
 README="$TALOS_ROOT/README.md"
 GUIDE="$TALOS_ROOT/docs/user-guide.md"
-EXAMPLE="$TALOS_ROOT/talos.pipeline.yml.example"
+EXAMPLE="$TALOS_ROOT/talos.pipeline.json.example"
 CHANGELOG="$TALOS_ROOT/CHANGELOG.md"
 
 flat() { tr '\n' ' ' | tr -s ' '; }
@@ -121,8 +121,8 @@ check_has "$guide_flat" '| `TALOS_STATUS_DEBUG` |' "guide env table has TALOS_ST
 check_has "$guide_flat" '| `TALOS_STATUS_TIMEOUT_S` |' "guide env table has TALOS_STATUS_TIMEOUT_S"
 check_has "$guide_flat" '[Seeing token spend](#seeing-token-spend-334)' "guide cost paragraph links to the new section"
 
-# --- talos.pipeline.yml.example: the spend comment goes on the PR ------------
-example_flat="$(sed -n '/Spend reporting/,/uses true/p' "$EXAMPLE" | sed 's/#//g' | flat)"
+# --- talos.pipeline.json.example _note: the spend comment goes on the PR -----
+example_flat="$(flat < "$EXAMPLE")"
 check_has "$example_flat" 'on the PR' "example: the spend comment is described as on the PR"
 check_lacks "$example_flat" 'on the issue' "example: the spend comment is not described as on the issue"
 

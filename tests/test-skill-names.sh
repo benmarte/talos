@@ -49,8 +49,8 @@ assert_contains "$(cat "$TALOS_ROOT/agents/developer.md")" "quiet" \
   "agents/developer.md mentions quiet verify output"
 assert_contains "$(cat "$TALOS_ROOT/agents/qa.md")" "quiet" \
   "agents/qa.md mentions quiet verify output"
-assert_contains "$(cat "$TALOS_ROOT/talos.pipeline.yml.example")" "quiet" \
-  "talos.pipeline.yml.example mentions --quiet"
+assert_contains "$(cat "$TALOS_ROOT/talos.pipeline.json.example")" "quiet" \
+  "talos.pipeline.json.example mentions --quiet"
 assert_contains "$(cat "$TALOS_ROOT/talos.pipeline.json.example")" "quiet" \
   "talos.pipeline.json.example mentions --quiet"
 

@@ -979,7 +979,7 @@ _talos_gate_fix_round() {
       _talos_block_labels "$_n" "$_pr"
       printf '%s' "$_bout" | _talos_post_stage budget-blocked orchestrator "$_n" ${_pr:+--pr "$_pr"} --summary -
       _talos_emit reason budget-exceeded
-      _talos_emit blocked_by "talos.pipeline.yml:limits.tokens_per_issue (explicit)"
+      _talos_emit blocked_by "talos.pipeline.json:limits.tokens_per_issue (explicit)"
       _talos_verdict block ;;
     *) _talos_emit warn "reason=budget-check-failed" ;;
   esac
@@ -993,8 +993,8 @@ _talos_gate_fix_round() {
   if [ "$_RC" -ne 0 ]; then
     _talos_block_labels "$_n" "$_pr"
     case "$_ERR" in
-      *max_total_dispatches*) _r=max-total-dispatches; _by="talos.pipeline.yml:limits.max_total_dispatches (explicit)" ;;
-      *max_fix_attempts*) _r=max-fix-attempts; _by="talos.pipeline.yml:limits.max_fix_attempts (explicit)" ;;
+      *max_total_dispatches*) _r=max-total-dispatches; _by="talos.pipeline.json:limits.max_total_dispatches (explicit)" ;;
+      *max_fix_attempts*) _r=max-fix-attempts; _by="talos.pipeline.json:limits.max_fix_attempts (explicit)" ;;
       *) _r=record-failed; _by="scripts/pipeline-vcs.sh:record-attempt exited non-zero (interpreted)" ;;
     esac
     _talos_emit reason "$_r"

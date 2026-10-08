@@ -9,8 +9,8 @@
 #   - a table key has no row in the user guide, or a row names a key the table
 #     does not have;
 #   - a `default:` / "default X" / "X (default)" statement in
-#     talos.pipeline.yml.example, or in a `_note` of talos.pipeline.json.example,
-#     differs from the table;
+#     a `_note` of talos.pipeline.json.example differs from the table (the
+#     YAML example is gone with the YAML load paths, #526);
 #   - a key path in talos.pipeline.json or talos.pipeline.json.example is not a
 #     table key;
 #   - the README "Config reference" section grows past ~15 lines or loses its
@@ -36,7 +36,6 @@ make_sandbox || exit 1
 TABLE="$TALOS_ROOT/scripts/pipeline-defaults.sh"
 GUIDE="$TALOS_ROOT/docs/user-guide.md"
 README="$TALOS_ROOT/README.md"
-YML="$TALOS_ROOT/talos.pipeline.yml.example"
 JEX="$TALOS_ROOT/talos.pipeline.json.example"
 JLIVE="$TALOS_ROOT/talos.pipeline.json"
 
@@ -45,9 +44,9 @@ import json
 import re
 import sys
 
-table_path, guide_path, readme_path, yml_path, jex_path, jlive_path = sys.argv[1:7]
+table_path, guide_path, readme_path, jex_path, jlive_path = sys.argv[1:6]
 problems = []
-stats = {"rows": 0, "compared": 0, "yml": 0, "json": 0}
+stats = {"rows": 0, "compared": 0, "json": 0}
 
 
 def fail(msg):
@@ -259,42 +258,8 @@ def check_statement(label, key, value, bare):
     stats[label] += 1
     if not same(value, row["default"]):
         fail("%s: `%s` is stated with default %s, the table default is %s"
-             % ("example" if label == "yml" else "json note", key, shown(value), shown(row["default"])))
+             % ("json note", key, shown(value), shown(row["default"])))
 
-
-# ── talos.pipeline.yml.example ───────────────────────────────────────────────
-KEY_LINE = re.compile(r"^(\s*)(#\s*)?([a-z_][a-z0-9_]*):(?:\s|$)")
-chunks = []          # [leaf key or None, text]
-cur = None
-sec = None
-for line in open(yml_path).read().split("\n"):
-    if not line.strip():
-        cur = None
-        continue
-    km = KEY_LINE.match(line)
-    if km and km.group(3) in SEGMENTS:
-        indent, hash_, leaf = len(km.group(1)), km.group(2), km.group(3)
-        # A top-level section: `verify:` at column 0, or `# hooks:` (one space).
-        if leaf in TOP and indent == 0 and (not hash_ or len(hash_) == 2):
-            sec = leaf
-        cands = [k for k in TABLE if sec and k.startswith(sec + ".") and k.split(".")[-1] == leaf]
-        # A commented-out key line is all text; a live one has its trailing comment.
-        text = line[line.index(leaf):] if hash_ else (line.split("#", 1)[1] if "#" in line else "")
-        cur = [cands[0] if len(cands) == 1 else None, text]
-        chunks.append(cur)
-        continue
-    if line.lstrip().startswith("#"):
-        if cur is None:
-            cur = [None, ""]
-            chunks.append(cur)
-        cur[1] += " " + line.lstrip()[1:]
-    else:
-        cur = None
-for leafkey, text in chunks:
-    text = re.sub(r"\s+", " ", text)
-    for off, value, bare in statements(text):
-        key = explicit_key(text, off) or leafkey
-        check_statement("yml", key, value, bare)
 
 # ── talos.pipeline.json.example and talos.pipeline.json ──────────────────────
 def leaves(node, prefix=()):
@@ -320,16 +285,16 @@ for path, label in ((jex_path, "talos.pipeline.json.example"), (jlive_path, "tal
 
 for p in problems:
     print("FAIL: " + p)
-print("INFO: rows=%(rows)d compared=%(compared)d yml=%(yml)d json=%(json)d" % stats)
+print("INFO: rows=%(rows)d compared=%(compared)d json=%(json)d" % stats)
 TALOS_PYdocs8Kx4Rm2Zq
 
 # run_check GUIDE README YML [JSON-EXAMPLE]  -> prints the checker's output
 run_check() {
-  python3 -I -c "$CHECK_PY" "$TABLE" "$1" "$2" "$3" "${4:-$JEX}" "$JLIVE"
+  python3 -I -c "$CHECK_PY" "$TABLE" "$1" "$2" "${3:-$JEX}" "$JLIVE"
 }
 
 # ── the real files are green ─────────────────────────────────────────────────
-OUT="$(run_check "$GUIDE" "$README" "$YML" 2>&1)"
+OUT="$(run_check "$GUIDE" "$README" 2>&1)"
 _fails="$(printf '%s\n' "$OUT" | grep -c '^FAIL: ')"
 if [ "$_fails" = "0" ]; then
   pass "docs and examples agree with the config table"
@@ -342,7 +307,7 @@ _n() { printf '%s' "$_info" | sed -n "s/.*$1=\([0-9]*\).*/\1/p"; }
 # Floors, so a parser that silently finds nothing cannot pass: the table has
 # ~120 rows, ~95 of them with a comparable default; the YAML example and the
 # JSON note state dozens of defaults.
-for pair in "rows:100" "compared:70" "yml:25" "json:25"; do
+for pair in "rows:100" "compared:70" "json:25"; do
   _k="${pair%%:*}" _min="${pair##*:}"
   _v="$(_n "$_k")"
   if [ -n "$_v" ] && [ "$_v" -ge "$_min" ]; then pass "the check reads enough $_k ($_v >= $_min)"
@@ -357,7 +322,7 @@ sed 's/^| `merge.method` | `squash` |/| `merge.method` | `merge` |/' "$GUIDE" > 
 if cmp -s "$GUIDE" "$T/guide-changed.md"; then
   fail "fixture: the merge.method row edit applied" "the row was not found in the user guide"
 else
-  OUT="$(run_check "$T/guide-changed.md" "$README" "$YML" 2>&1)"
+  OUT="$(run_check "$T/guide-changed.md" "$README" 2>&1)"
   assert_contains "$OUT" 'FAIL: user guide: `merge.method` states' "a changed default in a copy of the user guide is red"
 fi
 
@@ -366,14 +331,14 @@ sed 's/^| `issues.skip_labels` | `\[pipeline:blocked, wontfix\]`/| `issues.skip_
 if cmp -s "$GUIDE" "$T/guide-list.md"; then
   fail "fixture: the issues.skip_labels row edit applied" "the row was not found in the user guide"
 else
-  OUT="$(run_check "$T/guide-list.md" "$README" "$YML" 2>&1)"
+  OUT="$(run_check "$T/guide-list.md" "$README" 2>&1)"
   assert_contains "$OUT" 'FAIL: user guide: `issues.skip_labels` states' "a changed list default is red"
 fi
 sed 's/^| `board.enabled` | `true` |/| `board.enabled` | `false` |/' "$GUIDE" > "$T/guide-bool.md"
 if cmp -s "$GUIDE" "$T/guide-bool.md"; then
   fail "fixture: the board.enabled row edit applied" "the row was not found in the user guide"
 else
-  OUT="$(run_check "$T/guide-bool.md" "$README" "$YML" 2>&1)"
+  OUT="$(run_check "$T/guide-bool.md" "$README" 2>&1)"
   assert_contains "$OUT" 'FAIL: user guide: `board.enabled` states' "board.enabled stated as false is red (the #446 drift)"
 fi
 
@@ -382,60 +347,44 @@ sed 's/^| `status.log_max` | `50` | Most log entries kept\./| `status.log_max` |
 if cmp -s "$GUIDE" "$T/guide-status.md"; then
   fail "fixture: the status.log_max row edit applied" "the row was not found in the user guide"
 else
-  OUT="$(run_check "$T/guide-status.md" "$README" "$YML" 2>&1)"
+  OUT="$(run_check "$T/guide-status.md" "$README" 2>&1)"
   assert_contains "$OUT" 'FAIL: user guide: `status.log_max` states' "a changed default in the status key table is red"
 fi
 
 # ── red on a deleted row ─────────────────────────────────────────────────────
 grep -v '^| `limits.warn_at` |' "$GUIDE" > "$T/guide-norow.md"
-OUT="$(run_check "$T/guide-norow.md" "$README" "$YML" 2>&1)"
+OUT="$(run_check "$T/guide-norow.md" "$README" 2>&1)"
 assert_contains "$OUT" 'table key `limits.warn_at` has no row' "a table key with no row in the user guide is red"
 
 # ── red on a row for a key the table does not have ───────────────────────────
 sed 's/^| `limits.warn_at` |/| `limits.warn_att` |/' "$GUIDE" > "$T/guide-unknown.md"
-OUT="$(run_check "$T/guide-unknown.md" "$README" "$YML" 2>&1)"
+OUT="$(run_check "$T/guide-unknown.md" "$README" 2>&1)"
 assert_contains "$OUT" 'row `limits.warn_att` names a key the table does not have' "a row for an unknown key is red"
 
 # ── README rows are checked too (a temp README with a table row) ─────────────
 { cat "$README"; printf '\n| Key | Default | Description |\n|-----|---------|-------------|\n| `merge.method` | `rebase` | x |\n'; } > "$T/readme-table.md"
-OUT="$(run_check "$GUIDE" "$T/readme-table.md" "$YML" 2>&1)"
+OUT="$(run_check "$GUIDE" "$T/readme-table.md" 2>&1)"
 assert_contains "$OUT" 'FAIL: README: `merge.method` states' "a changed default in a copy of the README is red"
 
 # ── README section size and pointers ─────────────────────────────────────────
 { printf '## Config reference\n\nSee `pipeline-config.sh --show` and docs/user-guide.md#config-reference.\n\n'
   for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do printf 'line %s\n' "$_i"; done; } > "$T/readme-long.md"
-OUT="$(run_check "$GUIDE" "$T/readme-long.md" "$YML" 2>&1)"
+OUT="$(run_check "$GUIDE" "$T/readme-long.md" 2>&1)"
 assert_contains "$OUT" 'README: the Config reference section is' "a README Config reference section over 15 lines is red"
 printf '## Config reference\n\nSee the user guide.\n' > "$T/readme-nopointer.md"
-OUT="$(run_check "$GUIDE" "$T/readme-nopointer.md" "$YML" 2>&1)"
+OUT="$(run_check "$GUIDE" "$T/readme-nopointer.md" 2>&1)"
 assert_contains "$OUT" 'does not point at pipeline-config.sh --show' "a README section without the --show pointer is red"
-
-# ── red on a changed default in a temp copy of the YAML example ──────────────
-sed 's/verify.targeted (default true)/verify.targeted (default false)/' "$YML" > "$T/example-changed.yml"
-if cmp -s "$YML" "$T/example-changed.yml"; then
-  fail "fixture: the verify.targeted statement edit applied" "the statement was not found in the YAML example"
-else
-  OUT="$(run_check "$GUIDE" "$README" "$T/example-changed.yml" 2>&1)"
-  assert_contains "$OUT" 'example: `verify.targeted` is stated with default' "a changed default in a copy of the YAML example is red"
-fi
-sed 's/^\( *\)# buzz_timeout_s: 15 /\1# buzz_timeout_s: 20 /; s/anchor\. Default: 15\./anchor. Default: 20./' "$YML" > "$T/example-buzz.yml"
-if cmp -s "$YML" "$T/example-buzz.yml"; then
-  fail "fixture: the buzz_timeout_s statement edit applied" "the statement was not found in the YAML example"
-else
-  OUT="$(run_check "$GUIDE" "$README" "$T/example-buzz.yml" 2>&1)"
-  assert_contains "$OUT" 'example: `notifications.buzz_timeout_s` is stated with default' "a key-line default statement in the YAML example is red"
-fi
 
 # ── red on a changed default in a temp copy of the JSON example's _note ──────
 sed 's/verify.ci_wait_s (default 900,/verify.ci_wait_s (default 600,/' "$JEX" > "$T/example-changed.json"
 if cmp -s "$JEX" "$T/example-changed.json"; then
   fail "fixture: the verify.ci_wait_s note edit applied" "the statement was not found in the JSON example"
 else
-  OUT="$(run_check "$GUIDE" "$README" "$YML" "$T/example-changed.json" 2>&1)"
+  OUT="$(run_check "$GUIDE" "$README" "$T/example-changed.json" 2>&1)"
   assert_contains "$OUT" 'json note: `verify.ci_wait_s` is stated with default' "a changed default in a copy of the JSON example note is red"
 fi
 sed 's/"max_parallel": 1/"max_paralel": 1/' "$JEX" > "$T/example-typo.json"
-OUT="$(run_check "$GUIDE" "$README" "$YML" "$T/example-typo.json" 2>&1)"
+OUT="$(run_check "$GUIDE" "$README" "$T/example-typo.json" 2>&1)"
 assert_contains "$OUT" 'key path issues.max_paralel is not a table key' "a mistyped key path in the JSON example is red"
 
 finish

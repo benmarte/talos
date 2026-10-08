@@ -1,17 +1,14 @@
 #!/usr/bin/env bash
 # Tests for the user-level config layer (#336): ${TALOS_HOME:-$HOME/.talos}/
-# talos.pipeline.{yml,yaml,json} is loaded by pipeline-config.sh and the
-# project config is deep-merged over it, leaf by leaf. Only the agents.*
+# talos.pipeline.json (the canonical user-level file, #526) is loaded by
+# pipeline-config.sh and the project config is deep-merged over it, leaf by
+# leaf. Only the agents.*
 # subtree was read from the user-level file at first; since #441 every key is
 # read except the repo-only ones (tests/test-config-global-layer.sh covers that).
 # It is untrusted input (parsed as data only, never sourced or evaluated).
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox
-# PyYAML probe, same lookup as the loader (-I drops the user site; it is appended back, #395).
-HAVE_YAML=0
-python3 -I -c 'import site, sys; sys.path.append(site.getusersitepackages()); import yaml' 2>/dev/null && HAVE_YAML=1
-
 CFG_SH="$TALOS_ROOT/scripts/pipeline-config.sh"
 AGENT_SH="$TALOS_ROOT/scripts/pipeline-agent.sh"
 USER_DIR="$HOME/.talos"
@@ -46,20 +43,11 @@ assert_contains "$(bash "$AGENT_SH" --resolve security 2>/dev/null)" "model=opus
 assert_contains "$(bash "$AGENT_SH" --resolve qa 2>/dev/null)" "model=sonnet" "AC1: --resolve falls back to user-level agents.model"
 assert_contains "$(dump)" "agents.model" "AC1: --dump carries the user-level layer with no project config"
 
-# yml / yaml / json lookup order among user-level extensions (same as project)
+# The canonical user-level file is talos.pipeline.json only (#526): a .yml/.yaml
+# there fails the load closed (covered in tests/test-config-json-only.sh), so
+# there is no extension precedence to test.
 reset_cfg
-if [ "$HAVE_YAML" = 1 ]; then
-  printf 'agents:\n  model: fromyml\n' > "$USER_DIR/talos.pipeline.yml"
-  printf 'agents:\n  model: fromyaml\n' > "$USER_DIR/talos.pipeline.yaml"
-  user_json '{"agents": {"model": "fromjson"}}'
-  assert_eq "fromyml" "$(get agents.model "")" "AC3: user-level .yml wins over .yaml and .json"
-  rm "$USER_DIR/talos.pipeline.yml"
-  assert_eq "fromyaml" "$(get agents.model "")" "AC3: user-level .yaml wins over .json"
-  rm "$USER_DIR/talos.pipeline.yaml"
-else
-  echo "  skip: PyYAML not installed -- user-level .yml/.yaml precedence cases"
-  user_json '{"agents": {"model": "fromjson"}}'
-fi
+user_json '{"agents": {"model": "fromjson"}}'
 assert_eq "fromjson" "$(get agents.model "")" "AC3: user-level .json is read"
 
 # ── AC2: project overrides one role, per leaf ────────────────────────────────
@@ -186,17 +174,6 @@ assert_file_absent "$SANDBOX/PWNED2" "AC5: backticks in a user-level value are n
 assert_contains "$(dump)" '$(touch ' "AC5: --dump carries the metacharacter value inert"
 assert_contains "$(bash "$AGENT_SH" --resolve qa 2>/dev/null)" '$(touch ' "AC5: --resolve prints the value as data"
 assert_file_absent "$SANDBOX/PWNED" "AC5: --dump/--resolve never execute the value"
-# YAML user-level file: unsafe tags are not constructed
-reset_cfg
-if [ "$HAVE_YAML" = 1 ]; then
-  printf 'agents:\n  model: !!python/object/apply:os.system ["touch %s/PWNED3"]\n' "$SANDBOX" > "$USER_DIR/talos.pipeline.yml"
-  bash "$CFG_SH" agents.model "" >"$OUT" 2>"$ERR"; rc=$?
-  assert_eq "0" "$rc" "AC5: an unsafe YAML tag does not crash the lookup"
-  assert_file_absent "$SANDBOX/PWNED3" "AC5: an unsafe YAML tag is never constructed (safe load)"
-else
-  echo "  skip: PyYAML not installed -- unsafe YAML tag case"
-fi
-
 # ── AC6: re-stamp chain across both layers; effort/runner layering ───────────
 reset_cfg
 user_json '{"agents": {"model": "sonnet", "restamp_model": "haiku", "roles": {"qa": {"restamp_model": "opus"}}}}'
@@ -249,7 +226,7 @@ assert_eq "sonnet opus haiku sonnet" "$got" "AC6b: cfg() over the merged dump se
 assert_eq "1" "$(wc -l < "$PY_LOG" | tr -d ' ')" "AC6b: merged config still costs exactly one python3 spawn (#169)"
 
 # ── Structure: one shared loader, no duplicated file-lookup loop ─────────────
-_n="$(grep -c '"talos.pipeline.yml" "talos.pipeline.yaml" "talos.pipeline.json"' "$CFG_SH")"
-assert_eq "1" "$_n" "AC6b: the project file lookup order is defined once in pipeline-config.sh"
+_n="$(grep -c '_CFG_PROJECT_NAME=' "$CFG_SH")"
+assert_eq "1" "$_n" "AC6b: the canonical project filename is defined once in pipeline-config.sh"
 
 finish

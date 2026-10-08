@@ -20,9 +20,6 @@ use_stubs
 
 CFG_SH="$TALOS_ROOT/scripts/pipeline-config.sh"
 
-HAVE_YAML=false
-python3 -c "import yaml" 2>/dev/null && HAVE_YAML=true
-
 # ---- 1: top-level typo warns with a nearest-match suggestion ---------------
 cat > talos.pipeline.json <<'EOF'
 {"limts": {"max_fix_attempts": 3}}
@@ -53,16 +50,7 @@ err3="$(bash "$CFG_SH" --dump 2>&1 1>/dev/null)"
 assert_eq "" "$err3" "3: valid wildcard key (agents.roles.qa.model) does not warn"
 rm talos.pipeline.json
 
-# ---- 4: both example configs produce zero warnings -------------------------
-if $HAVE_YAML; then
-  cp "$TALOS_ROOT/talos.pipeline.yml.example" talos.pipeline.yml
-  err4="$(bash "$CFG_SH" --dump 2>&1 1>/dev/null)"
-  assert_eq "" "$err4" "4: talos.pipeline.yml.example produces zero warnings"
-  rm talos.pipeline.yml
-else
-  pass "4: talos.pipeline.yml.example produces zero warnings (PyYAML absent -- skipped)"
-fi
-
+# ---- 4: the canonical example config produces zero warnings ----------------
 cp "$TALOS_ROOT/talos.pipeline.json.example" talos.pipeline.json
 err5="$(bash "$CFG_SH" --dump 2>&1 1>/dev/null)"
 assert_eq "" "$err5" "4: talos.pipeline.json.example produces zero warnings"
@@ -119,22 +107,6 @@ err9="$(bash "$CFG_SH" merge.method squash 2>&1 1>/dev/null)"
 assert_contains "$err9" "unknown config key 'limts.max_fix_attempts'" \
   "9: single-key (direct) path also warns on an unknown key"
 rm talos.pipeline.json
-
-# ---- 9-yaml: YAML fixture also warns (only when PyYAML is available) -------
-# Covers the same typo through the YAML parsing branch, so the YAML code
-# path stays under test wherever PyYAML happens to be installed.
-if $HAVE_YAML; then
-  cat > talos.pipeline.yml <<'EOF'
-limts:
-  max_fix_attempts: 3
-EOF
-  err9y="$(bash "$CFG_SH" --dump 2>&1 1>/dev/null)"
-  assert_contains "$err9y" "unknown config key 'limts.max_fix_attempts'" \
-    "9-yaml: YAML fixture also warns on an unknown key (PyYAML present)"
-  rm talos.pipeline.yml
-else
-  pass "9-yaml: YAML fixture also warns on an unknown key (PyYAML absent -- skipped)"
-fi
 
 # ---- 10: known top-level and merge.* keys never warn ------------------------
 cat > talos.pipeline.json <<'EOF'
