@@ -2,6 +2,51 @@
 
 ## [Unreleased]
 
+- fix(orchestrator): a lease line whose `pid=` is a dead process no longer idles
+  its issue — and, through `issues.max_parallel`, the whole queue — for the full
+  TTL (#522). The lease scan (`_talos_lease_read`, `_talos_lease_held_line`,
+  `_talos_lease_live_count`) now weighs every `issue=<N>` line and answers the
+  latest-expiring non-reclaimable one (never the first line, so a reader can
+  never shorten a held lease and never grants a second dispatch above a live
+  line), and `_talos_lease_reclaimable <pid> <held> <now>` is the single
+  fail-closed liveness decider (mirror of `pipeline-lock.sh:112`'s staleness
+  rule plus a PID-reuse age guard): a line whose holder process is gone stops
+  being a lease once it is older than `TALOS_LEASE_RECLAIM_S` (default 10 s,
+  env-only override, like `TALOS_LEASE_TTL_S`/`TALOS_LEASE_LOCK_S`). Liveness
+  is the primary condition, so an age alone can never reclaim a live holder —
+  the TTL stays the crash/hang boundary for live-but-hung holders, and both
+  clock directions are fail-closed (`now < held` never reclaims; a forward
+  jump never reclaims a live holder; a missing/`held`-less or malformed-pid
+  line is never reclaimed and the TTL still frees it). `next` reclaims under
+  the lock (the acquire that replaces the line is the only write — the reclaim
+  decision adds none), announces it once on stderr as
+  `talos.sh next: lease reclaimed from dead holder issue=<N>`, derives the
+  age-guard wait's `retry_after_s` from the seconds until reclaimable (floored
+  at 1, never the remaining TTL) and collapses to one line per issue on every
+  free acquire; a genuine live-holder wait still reports `expires-now`
+  untouched and `_talos_lease acquire`'s rc-1 stdout stays the holder line,
+  byte-identically. The re-entrancy test is fixed and `set -u`-safe: a line
+  stamped with the reader's own `$$` (or with `$TALOS_RUN_PID` when that
+  matches) answers "own lease" and `_talos_lease_read` can no longer abort the
+  caller's shell on it. New `talos.sh lease prune` maintenance verb: under
+  `pipeline-lock.sh`, removes every non-effective line (expired, dead holder
+  past the guard, duplicate shadowed by a later-expiring line) and prints one
+  plain `pruned issue=<N>` line per removed ledger line (never `_talos_emit`,
+  whose sanitiser renders a space only for `stop`/`warn`/`note`); nothing to
+  remove is a silent no-op (exit 0, the ledger never rewritten, so no lost
+  update can race a concurrent acquire), a live lock holder times out to a
+  lone `stop reason=lock-timeout` (exit 1) with every line untouched, and an
+  unreachable or malformed ledger is `stop reason=ledger-unavailable` — its
+  two own reasons live in the new `# lease-reasons:` header line. Fixes the
+  two latent lease-scan bugs the validator found on `main`: the `:2116`
+  re-entrancy test mis-grouped as `(A || B) && C && D`, so a line stamped with
+  the reader's own `$$` was "held by another" — and read the unbound
+  `$TALOS_RUN_PID` under `set -u`, aborting the caller's shell — and the
+  first-line-only scan (plus the acquire path's append-only write) let an
+  expired or dead line above a live one grant a second dispatch and accrete
+  duplicate lines no reader counted.
+- **The verdict-word roles state the final-message contract their reader needs (#518, dogfood findings #5 + #2).** `talos.sh run`'s verdict reader accepts only a line whose first word is `<WORD>:` with WORD on the role's own verdict list, but the role instructions only said "verdict + key findings" — so a 27B local model answering the validator stage with chatty labels/comments narration (no `CONFIRMED:` line anywhere) failed the dispatch with `verdict-unreadable`, and the dogfood run had to work around it with a `--append-system-prompt` spelling the contract. Now every verdict-word role profile — `agents/validator.md`, `agents/qa.md`, `agents/reviewer.md`, `agents/security.md` and `agents/adversarial.md` — replaces that weak line with the contract: the FIRST LINE of the final message is the verdict word, a colon and a one-line reason; after it, 1-3 lines of findings the orchestrator can relay; NOTHING before that first line. Each file owns its line (no shared snippet), `templates/prompts/qa.md` restates the same contract in its own two lines, and `tests/fixtures/talos-prompt/qa.golden` is regenerated. `scripts/talos.sh` is untouched: the reader still fails closed (an unreadable verdict is a `verdict-unreadable` dispatch failure, never a guess from the comment text), with no new verdict words and no extra required punctuation.
+- **Talos run state moved outside every git tree; the in-tree `.talos/` self-ignores via `info/exclude` (#517, dogfood finding #4).** The events log and the compact stage handoff now live at `<git common dir>/talos/` (`events.jsonl`, `handoff/<N>.json` — the directory created 0700, handoff files 0600), resolved by one canonical `_talos_state_dir` in `scripts/pipeline-paths.sh` that every consumer routes through (`pipeline-hooks.sh`, `pipeline-events.sh`, `pipeline-worktree.sh`, `talos-status.sh`). The `events.path` default changes from `.talos/events.jsonl` to `talos/events.jsonl` and a relative value now resolves against the git common dir instead of the repo root (absolute values unchanged; `talos-status.sh`'s containment check is now "under the common dir"). The deliberately in-tree `.talos/` files — per-worktree `.talos/env`, `providers.json`, `evidence.dir` — are auto-ignored by appending `.talos/` to `<git common dir>/info/exclude` before their first write (idempotent; never a tracked `.gitignore` commit), and a repo with tracked `.talos/` content gets one stderr warning per command while the tracked files stay untouched. State left at the old location is neither read, migrated, nor cleaned; `_wt_unstage_forbidden` is kept as defense-in-depth. New guard `tests/test-runstate-not-committable.sh` pins AC1–AC5 and AC7: a fixture run in a repo with no `.gitignore` writes the log and handoff under the common dir, leaves `git status --porcelain` empty, and a `git add -A && git commit` then fails with HEAD unchanged.
 - feat(orchestrator): `talos.sh run` drives the in-flight issues (#519, follow-up to #472; dogfood finding #1): a pass without `--issue` no longer stops `wait reason=none` while work is mid-state-machine — `pipeline-status-file.sh collect` emits an `inflight` list (issues carrying `pipeline:confirmed`, `pipeline:dev` or `pipeline:epic-decomposed`, never in `queued`/`held`, never blocked or needs-owner, and never an issue that already has an open pipeline PR — the PR side owns that work), and a queue-drained `action=wait` answer falls through to one `next --issue` per in-flight issue before the run ends; a targeted `--issue` run never reads the list, an in-flight issue that is itself waiting moves to the next in-flight issue, the run ends clean on the last wait once none of them has an action, and a dispatch that comes back asking the owner ends it at once. The list is read once, straight from the `collect` output (`talos.sh state`'s 8192-char emit cap could truncate it into a silently inert fallback; an unreadable read now prints `warn reason=inflight-unreadable` and the run never re-walks the ready queue). `_run_verdict` gives the docs role the `none` verdict, like pm/planner.
 - feat(orchestrator): `talos.sh run` — a pure-bash no-LLM driver (#472, slice 8 of #422). `run [--issue <N>] [--max-iterations <n>]` (cap default 20) loops `talos.sh next` and answers every action the schema emits: a `dispatch` runs `talos.sh prompt <role>` (the rendered `prompt_file` piped to `pipeline-agent.sh <role> -`, never argv) and derives the verdict from the role's final-message convention (`<VERDICT>:` word, the developer's PR URL → `PR_OPENED`, none → `BLOCKED`; pm/planner carry none), then does the bookkeeping through `talos.sh done` with the agent output as the summary on stdin; `merge` runs `gate merge` and on `verdict=merge` the `merge-pr` → `post-merge --ci-runs` path; `wait`/`ask-owner`/`stop` exit 0 clean with their actions relayed, a failed state read exits 1, and a provider death (exit 75/69) relays the stderr and stops without a verdict or recorded attempt. Two `next` calls never double-dispatch: the lease ledger is honoured down the loop (a per-stage `done` releases the stage's lease, the run's exit hook releases what is left of its own). The handoff path (`#419`) composes the resumed prompt. Migration: `.claude/commands/pipeline-tick.md` is superseded (a banner in the file; README, docs/user-guide.md and skills/setup/SKILL.md name the run verb); SKILL.md does not grow (ratchet holds).
 - feat(orchestrator): `talos.sh next` extends to issue-side stages — queue build (label_filter/skip_labels/priority/ID order, `max_parallel`), dependency gating (planner on), stage routing with the PM has-spec short-circuit, epic detection, `ask-owner`, orphan adoption, fix-round ceilings and the lease ledger — one schema-validated action per call, all free text as data; `skills/pipeline/SKILL.md` is rewritten to the `next` → act → `done` loop (83,461 → 54,179 B; the ≤32,000 B target is not reachable while the pinning suite holds ~8 KB of orchestrator-judgement contracts standing that no verb enforces — revised figure stated per the plan's escape hatch; ratchet `SKILL_MAX_BYTES` holds 54,659)
