@@ -2,10 +2,11 @@
 # `view-issue <n> --since-stage` (#548, epic #558): the PM and validator read the
 # issue body plus only the comments newer than the last stage, not the whole
 # thread. The boundary is the latest stage comment (a `**PM spec:**` comment or a
-# `**Agent:**` verdict, a needs-owner question included); a bare `<!-- talos:`
-# marker comment is dropped. An owner clarification posted after the last stage
-# must be seen; the human comments before it are summarised as a count, and
-# `read-comments` still reads the whole thread.
+# `**Agent:**` verdict, a needs-owner question included); the output keeps that
+# comment (what the last stage found or asked) and what follows, and a bare
+# `<!-- talos:` marker comment is dropped. An owner clarification posted after the
+# last stage must be seen; the human comments before it are summarised as a
+# count, and `read-comments` still reads the whole thread.
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox
@@ -55,10 +56,10 @@ assert_contains "$out" "since-stage" "--since-stage keeps the title"
 assert_contains "$out" "OWNER CLARIFICATION" "--since-stage shows the owner clarification posted after the last stage"
 assert_contains "$out" "only the CLI" "--since-stage shows every comment after the last stage"
 assert_not_contains "$out" "early question from a bystander" "--since-stage drops a comment from before the last stage"
-assert_not_contains "$out" "NEEDS_MORE_INFO" "--since-stage drops the stage verdict itself"
-assert_not_contains "$out" "talos:needs-owner" "--since-stage drops the needs-owner question (a stage comment; the boundary)"
+assert_not_contains "$out" "NEEDS_MORE_INFO" "--since-stage drops an older stage verdict"
+assert_contains "$out" "talos:needs-owner" "--since-stage keeps the latest stage comment itself (the question the reply answers)"
 assert_not_contains "$out" "talos:attempt" "--since-stage drops marker comments"
-assert_eq "2" "$(printf '%s' "$out" | count_of)" "--since-stage: only the two comments after the latest stage comment (the needs-owner question)"
+assert_eq "3" "$(printf '%s' "$out" | count_of)" "--since-stage: the latest stage comment plus the two comments after it"
 keys="$(printf '%s' "$out" | python3 -I -c "import json,sys; print(sorted(json.load(sys.stdin).keys()))")"
 assert_eq "['body', 'comments', 'earlier_comments', 'labels', 'title']" "$keys" \
   "--since-stage: the view-issue shape plus earlier_comments"
@@ -68,15 +69,17 @@ assert_eq "1" "$(printf '%s' "$out" | earlier_of)" \
 # ── the boundary is the LATEST stage comment (a PM spec after a validator verdict)
 export STUB_GH_COMMENTS_RAW="$(comments_json "$EARLY" "$VERDICT" "$REPLY" "$SPEC" "$LATER")"
 out="$(bash "$VCS" view-issue 548 --since-stage)"
-assert_eq "1" "$(printf '%s' "$out" | count_of)" "the latest stage comment is the boundary (PM spec included)"
+assert_eq "2" "$(printf '%s' "$out" | count_of)" "the latest stage comment is the boundary (PM spec included): it and the one after"
+assert_contains "$out" "PM spec" "the PM spec comment itself is kept"
 assert_contains "$out" "only the CLI" "a comment after the PM spec is kept"
 assert_not_contains "$out" "OWNER CLARIFICATION" "a comment before the PM spec is dropped"
 assert_eq "2" "$(printf '%s' "$out" | earlier_of)" "earlier_comments counts the two human comments before the PM spec"
 
-# ── nothing newer than the last stage: no comments, a zero-cost read
+# ── nothing newer than the last stage: just that stage comment
 export STUB_GH_COMMENTS_RAW="$(comments_json "$EARLY" "$VERDICT")"
 out="$(bash "$VCS" view-issue 548 --since-stage)"
-assert_eq "0" "$(printf '%s' "$out" | count_of)" "no comment after the last stage: an empty list"
+assert_eq "1" "$(printf '%s' "$out" | count_of)" "no comment after the last stage: only the stage comment itself"
+assert_contains "$out" "NEEDS_MORE_INFO" "no comment after the last stage: it is the latest verdict"
 
 # ── no stage has run yet (first validation): every human comment is new, markers still dropped
 export STUB_GH_COMMENTS_RAW="$(comments_json "$EARLY" "$ATTEMPT" "$REPLY")"

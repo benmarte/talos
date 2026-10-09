@@ -63,9 +63,9 @@
 #             <n> --since-stage               Delta form for the PM and validator (#548):
 #                                             {title, body, labels, comments,
 #                                             earlier_comments}, where comments holds
-#                                             only what came after the latest stage
-#                                             comment (a "**PM spec:**" or "**Agent:**"
-#                                             comment), bare "<!-- talos:" marker
+#                                             the latest stage comment (a "**PM spec:**"
+#                                             or "**Agent:**" comment) plus what came
+#                                             after it, bare "<!-- talos:" marker
 #                                             comments dropped, and earlier_comments
 #                                             counts the human comments before it
 #                                             (read them with read-comments). With no
@@ -1164,10 +1164,11 @@ print(json.dumps(result))
 # _vi_spec_filter. Prints {title, body, labels, comments, earlier_comments}.
 # A stage comment (body starting "**PM spec:**" or "**Agent:**", the same
 # prefixes _vi_spec_filter keys on) marks how far the pipeline has read; the
-# latest one is the boundary. comments is every non-marker comment after it (all
-# of them when no stage comment exists), so an owner's clarification posted since
-# the last stage is always there. earlier_comments counts the human comments
-# before the boundary, which `read-comments` still returns.
+# latest one is the boundary. comments is the boundary comment itself (what the
+# last stage found or asked) plus every non-marker comment after it; with no stage
+# comment yet, every human comment. So an owner's clarification posted since the
+# last stage is always there. earlier_comments counts the human comments before
+# the boundary, which `read-comments` still returns.
 _vi_delta_filter() {
   python3 -I -c "
 import json, sys
@@ -1196,7 +1197,7 @@ print(json.dumps({
     'title': meta.get('title', ''),
     'body': meta.get('body') or '',
     'labels': meta.get('labels', []),
-    'comments': [c for c in comments[cut + 1:] if is_human(c)],
+    'comments': [c for i, c in enumerate(comments) if i >= cut and (i == cut or is_human(c))],
     'earlier_comments': sum(1 for c in comments[:cut + 1] if is_human(c)),
 }))
 " "$1" "$2"
@@ -4161,7 +4162,7 @@ print(json.dumps(out))
         if [ "$_vi_spec" = "true" ]; then
           echo "[dry-run] GET $_GH_API/issues/$_vi_n; read-comments $_vi_n (filter to latest **PM spec:** comment, dropping talos: markers and **Agent:** verdicts)"
         elif [ "$_vi_since" = "true" ]; then
-          echo "[dry-run] GET $_GH_API/issues/$_vi_n; read-comments $_vi_n (keep only the comments after the latest **PM spec:** / **Agent:** comment)"
+          echo "[dry-run] GET $_GH_API/issues/$_vi_n; read-comments $_vi_n (keep the latest **PM spec:** / **Agent:** comment and the comments after it)"
         else
           echo "[dry-run] GET $_GH_API/issues/$_vi_n; GET $_GH_API/issues/$_vi_n/comments (paginated)"
         fi
