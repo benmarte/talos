@@ -90,6 +90,13 @@ cat > "$d/agent.stdin"
 printf "agent %s\n" "$role" >> "$d/journal"
 if [ -f "$d/message" ]; then cat "$d/message"; fi
 if [ -f "$d/message.$role" ]; then cat "$d/message.$role"; fi
+# #537: the Nth dispatch of a role (1-based, counted off the journal) may carry
+# its own final message (message.<role>.<N>) and a hook (hook.<role>.<N>, a
+# shell snippet sourced here: it moves the fixture's state the way that stage's
+# real work would, e.g. a developer push changing the PR head).
+cnt="$(grep -c "^agent $role\$" "$d/journal")"
+if [ -f "$d/message.$role.$cnt" ]; then cat "$d/message.$role.$cnt"; fi
+if [ -f "$d/hook.$role.$cnt" ]; then . "$d/hook.$role.$cnt"; fi
 if [ -f "$d/agerr" ]; then cat "$d/agerr" >&2; fi
 rc=0
 if [ -f "$d/agrc" ]; then rc="$(cat "$d/agrc")"; fi
@@ -374,12 +381,6 @@ draft_ready() {  # the guard stub: the ready verb took (rc 1, stdout exactly rea
 }
 draft_order() { grep -oE 'ready-pr 12|pr-is-draft 12|pr-checks-required 12( --wait [0-9]+)?|agent qa|post_stage qa' "$STUB_DIR/journal" | tr '\n' '>' | sed 's/>$//'; }
 
-# AC2: only the key-carrying shape triggers the continuation -- the case
-# pattern requires pr= and issue=, so a bare `action=wait reason=draft` (no
-# producer emits it after AC1) falls through to today's terminal stop.
-grep -qF 'action=wait reason=draft pr="*" issue="*' "$GS/talos.sh"
-assert_eq "0" "$?" "AC2: only the key-carrying draft wait triggers the continuation (the case pattern requires pr= and issue=)"
-
 # The primary flow: ci mode, the ready verb took, QA dispatched, the whole
 # continuation inside one pass (AC2 trigger, AC4 once, AC6 guard-pass, AC7 one
 # CI wait, AC9 dispatch, AC12 max-iterations 1).
@@ -649,5 +650,107 @@ grep -q 'finishes the draft window by itself' "$TALOS_ROOT/CHANGELOG.md"
 assert_eq "0" "$?" "AC13: CHANGELOG has the draft-window entry under [Unreleased] (anchored to the #516 entry's own text, not a generic draft-window match which would satisfy the pre-existing #332 entry too)"
 assert_not_contains "$(cat "$TALOS_ROOT/skills/pipeline/SKILL.md")" "ready-pr-failed" "AC13-adjacent: SKILL.md is not edited"
 assert_not_contains "$(cat "$TALOS_ROOT/skills/pipeline/SKILL.md")" "qa-ci-red" "AC13-adjacent: SKILL.md is not edited"
+
+# ── (i) a QA FAIL is a developer fix round, never a QA re-run (#537) ──────────
+# After a QA FAIL the driver runs the playbook's flow: `gate fix-round <N> qa
+# --pr <M>` (record-attempt, then the unblock) and the developer in the
+# fix-round shape; the next pass resumes the normal path (ready-pr, QA). A
+# second QA FAIL at the head of the first (the fix round pushed nothing) is the
+# backstop: pipeline:blocked on the PR and the issue, stop
+# reason=qa-fail-unchanged-head, exit 0 -- never a loop to --max-iterations.
+# The collect stub is static (stage ready), as in (h); the stubs' hooks move
+# the state the way the real stage would: the developer's push changes the PR
+# head, a passing QA moves the PR to the merge stage.
+fix_fixture() {
+  reset_stubs
+  LEASE_RESET
+  draft_cfg '"timeout_ms": 600000, "ci_wait_s": 900'
+  draft_collect ready
+  draft_ready
+  printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' > "$STUB_DIR/pr-head.12"
+  printf 'https://github.com/acme/widget/pull/12\nfixed the failing test\n' > "$STUB_DIR/message.developer"
+  printf 'FAIL: the suite broke\n' > "$STUB_DIR/message.qa.1"
+  # The developer's real work, as the stub plays it: the fix round's prompt is
+  # kept for the shape pin (the push, when there is one, is added per test).
+  cat > "$STUB_DIR/hook.developer.1" <<'HOOK'
+cp "$d/agent.stdin" "$d/developer.prompt"
+HOOK
+}
+fix_order() { grep -oE 'ready-pr 12|agent qa|vcs record-attempt 9 qa --pr 12|label-pr 12 --remove pipeline:blocked|agent developer|view-pr 12' "$STUB_DIR/journal" | tr '\n' '>' | sed 's/>$//'; }
+
+# (i1) QA FAIL -> fix round (the developer pushes a new head) -> QA PASS ->
+# the merge arm.
+fix_fixture
+cat >> "$STUB_DIR/hook.developer.1" <<'HOOK'
+printf bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb > "$d/pr-head.12"
+HOOK
+printf 'PASS: verified\n' > "$STUB_DIR/message.qa.2"
+printf '{"labels": [{"name": "qa:pass"}, {"name": "docs:done"}, {"name": "review:approved"}, {"name": "security:approved"}], "state": "open"}' > "$STUB_DIR/view-pr.12"
+cat > "$STUB_DIR/hook.qa.2" <<'HOOK'
+printf '%s' '{"prs":[{"n":12,"issue":9,"head":"bbbb","owner":false,"stage":"merge"}],"pr_total":1,"ignored":0,"blocked":[],"queued":[],"held":[],"owners":[],"capped":[]}' > "$d/collect.json"
+HOOK
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=12000 rn --max-iterations 5
+assert_eq "0" "$RC" "fix round: the run exits 0"
+assert_not_contains "$OUT" "iterations-exhausted" "fix round: the run does not loop to --max-iterations"
+assert_contains "$OUT" "stop merged pr=12" "fix round: a passing QA after the fix reaches the merge arm and merges"
+assert_eq "ready-pr 12>agent qa>vcs record-attempt 9 qa --pr 12>label-pr 12 --remove pipeline:blocked>agent developer>ready-pr 12>agent qa>view-pr 12" "$(fix_order)" \
+  "fix round: QA FAIL -> gate fix-round (record-attempt, unblock) -> developer -> the normal path (ready-pr, QA) -> the merge arm"
+assert_contains "$(cat "$STUB_DIR/developer.prompt" 2>/dev/null)" "Fix round: PR #12 is already open" \
+  "fix round: the developer got the fix-round shape of the prompt"
+assert_not_contains "$OUT" "qa-fail-unchanged-head" "fix round: a pushed fix is not the backstop"
+
+# (i2) the backstop: the fix round pushes nothing, the second QA FAIL is at the
+# same head -> blocked on PR and issue, stop, exit 0, ready-pr exactly twice.
+fix_fixture
+printf 'FAIL: still broken\n' > "$STUB_DIR/message.qa.2"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=12000 rn --max-iterations 9
+assert_eq "0" "$RC" "backstop: the stop exits 0"
+assert_contains "$OUT" "stop reason=qa-fail-unchanged-head pr=12 issue=9" "backstop: the stop line names the reason, the PR and the issue"
+assert_not_contains "$OUT" "iterations-exhausted" "backstop: never a loop to --max-iterations"
+assert_contains "$(journal)" "vcs label-pr 12 --add pipeline:blocked" "backstop: pipeline:blocked on the PR"
+assert_contains "$(journal)" "vcs label-issue 9 --add pipeline:blocked" "backstop: pipeline:blocked on the issue"
+assert_eq "2" "$(journal | grep -c 'vcs ready-pr 12')" "backstop: ready-pr ran exactly twice"
+assert_eq "2" "$(journal | grep -c '^agent qa$')" "backstop: QA ran exactly twice"
+assert_eq "1" "$(journal | grep -c '^agent developer$')" "backstop: exactly one fix round ran"
+
+# (i3) the gate's own refusal (a ceiling) ends the run clean and its reason is
+# relayed, not lost: no fix round, no unchanged-head stop.
+fix_fixture
+printf 'pipeline-vcs: record-attempt: max_fix_attempts (3) reached for qa\n' > "$STUB_DIR/record-attempt.err"
+printf 1 > "$STUB_DIR/record-attempt.rc"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=12000 rn --max-iterations 9
+assert_eq "0" "$RC" "gate block: a ceiling ends the run clean"
+assert_contains "$OUT" "stop verdict=block reason=max-fix-attempts" "gate block: the stop names the gate's verdict and reason"
+assert_contains "$(cat "$ERR")" "max_fix_attempts" "gate block: the gate's stderr is relayed to the run's stderr"
+assert_eq "0" "$(journal | grep -c '^agent developer$')" "gate block: no developer fix round past the ceiling"
+
+# ── (j) the developer's `pr=<N>` word, on the host's own text tools (#537) ────
+# A final message with no PR URL but a standalone `pr=<N>` is PR_OPENED <N>; the
+# word must not be part of a longer one (xpr=12, my_pr=3, pr=12a, PR=4). The
+# reading used a GNU-only `\b` in sed: BSD sed (macOS) matched nothing, so
+# `pr=12` alone was misread as BLOCKED.
+dev_pr_word() {  # $1 = the final message ; $2 = the expected PR (digits) or none ; $3 = label
+  reset_stubs
+  LEASE_RESET
+  printf '{"number": 9, "title": "t", "labels": [{"name": "pipeline:dev"}], "body": "body", "state": "open"}' \
+    > "$STUB_DIR/view-issue.9"
+  cfg_json '{"vcs": {"provider": "github"}, "issues": {"max_parallel": 1}, "roles": {"developer": true}, "verify": {"timeout_ms": 600000, "ci_wait_s": 900}}'
+  printf '%b' "$1" > "$STUB_DIR/message"
+  TALOS_LEASE_TTL_S=1 TALOS_NOW=13000 rn --issue 9 --max-iterations 1
+  if [ "$2" = none ]; then
+    assert_contains "$(journal)" "hooks post_stage developer developer 9 --verdict BLOCKED" "pr word: $3 is no PR (BLOCKED)"
+  else
+    assert_contains "$(journal)" "hooks post_stage developer developer 9 --pr $2 --verdict PR_OPENED" "pr word: $3 is PR $2"
+  fi
+}
+dev_pr_word 'pr=12\n' 12 "a bare pr=12"
+dev_pr_word 'opened pr=7 today\n' 7 "pr=7 inside a sentence (only the digits, not the text before)"
+dev_pr_word 'see (pr=34).\n' 34 "pr=34 in parentheses"
+dev_pr_word 'pr=5 then pr=6\n' 5 "the first of two pr= words"
+dev_pr_word 'implemented the thing\nopened pr=8\n' 8 "a pr= word on the second line"
+dev_pr_word 'xpr=12\n' none "xpr=12"
+dev_pr_word 'pr=12a\n' none "pr=12a"
+dev_pr_word 'my_pr=3\n' none "my_pr=3"
+dev_pr_word 'PR=4\n' none "PR=4 (case-sensitive)"
 
 finish

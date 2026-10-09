@@ -374,7 +374,9 @@
 #   wait: draft ci human-merge blocked owner lease none dependency cap
 #
 # run    The loop of Step 2 itself (slice 8, #472): `next`, act on the one
-#        action, `done`, repeat -- with no orchestrator LLM. Every prompt is
+#        action, `done`, repeat -- the deterministic orchestrator for local and
+#        weak-model profiles (code routes, gates and does the bookkeeping; an
+#        LLM still does every stage), with no orchestrator LLM. Every prompt is
 #        rendered by `prompt` and dispatched through `pipeline-agent.sh <role> -`
 #        with the prompt file on stdin; the verdict is read back from the
 #        stage's convention:
@@ -384,8 +386,9 @@
 #                          list (an unknown word is a dispatch failure, never a
 #                          verdict -- nothing is recorded)
 #          pm              no verdict: pm takes none (done without --verdict)
-#          developer       a PR URL in the final message is `PR_OPENED` with
-#                          --pr <N>; the absence of one (or BLOCKED:) is BLOCKED
+#          developer       a PR URL in the final message (or a standalone
+#                          `pr=<N>` word, #537) is `PR_OPENED` with --pr <N>;
+#                          the absence of one (or BLOCKED:) is BLOCKED
 #          planner         no verdict; the sub-issues the agent created are its
 #                          work -- one `done` per run (no pass/fail verdict)
 #          docs            no verdict: docs takes none (like pm and planner;
@@ -399,6 +402,19 @@
 #        warn line on a `redispatch` is relayed), `batch` waits for nothing
 #        here (a draft batch answers one role per action from `next`; each
 #        dispatch is its own loop pass).
+#        A QA `fix-round` is run by the driver itself (#537), the playbook's
+#        flow: `gate fix-round <N> qa --pr <M>` (the budget guard, the attempt
+#        ceilings, the unblock right before the round), then the developer
+#        through the one dispatch path with `--shape fix-round` and QA's report
+#        as the prior summary; after the push the next pass resumes the normal
+#        path (re-stamps, ready-pr, QA). Backstop: a QA FAIL at the PR head the
+#        previous QA FAIL saw (the fix round pushed nothing) sets
+#        pipeline:blocked on the PR and the issue and stops, `stop
+#        reason=qa-fail-unchanged-head pr=<M> issue=<N>`, exit 0 -- never a
+#        loop to --max-iterations. The last failing head per PR lives in the
+#        run's own scratch dir, never the repo tree; a head that cannot be
+#        read is `stop reason=head-unresolved`. A gate `verdict=block` ends the
+#        run clean (`stop verdict=block reason=<why>`).
 #
 #   run [--issue <N>] [--max-iterations <n>]
 #          --issue <N> pins every `next` call to the named issue (the
@@ -463,9 +479,9 @@
 #        One `info run` notice per pass carries the action; nothing else is
 #        printed. Stderr carries the child relay lines only.
 #
-# run-reasons: usage unknown-role unknown-pr dispatch-failed ready-pr-failed
+# run-reasons: usage unknown-role unknown-pr dispatch-failed ready-pr-failed qa-fail-unchanged-head head-unresolved
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
-#         ready-pr-failed draft-unverified
+#         ready-pr-failed draft-unverified qa-fail-unchanged-head head-unresolved
 #   warn: qa-ci-red notify-failed board-failed spend-upsert-failed lease-release-failed
 #         model-invalid label-failed comment-failed budget-check-failed
 #         inflight-unreadable
@@ -703,7 +719,8 @@ verbs:
                                      a missing provider verb stop
                                      reason=unsupported-verb:<verb>
   run [--issue <N>] [--max-iterations <n>]
-                                     the no-LLM driver: loops `next`, dispatches
+                                     the deterministic orchestrator (local and
+                                     weak-model profiles): loops `next`, dispatches
                                      the stage through pipeline-agent.sh with the
                                      rendered prompt on stdin, reads the verdict
                                      from the final-message convention and calls
@@ -3182,7 +3199,7 @@ _talos_emit_next() { printf '%s\0%s\0' action "${1#action=}" >> "$_TALOS_OUT"; }
 _talos_emit_next_wait() { printf '%s\0%s\0' action "${1#action=}" >> "$_TALOS_OUT"; }
 
 # ── run (#472, slice 8) ──────────────────────────────────────────────────────
-# The no-LLM driver: the loop of Step 2 in one bash process. Every stage is
+# The deterministic orchestrator: the loop of Step 2 in one bash process. Every stage is
 # dispatched through pipeline-agent.sh with the rendered prompt on stdin; the
 # verdict is derived from the stage's final-message convention (#472, AC2);
 # every end-of-stage write is `done`'s.
@@ -3215,7 +3232,10 @@ _run_verdict() {
       # BLOCKED. A verdict word BLOCKED: names it too.
       _line="$(_run_verdict_url "$_f")"
       _v="$(printf '%s\n' "$_line" | sed -n 's|.*/pull/\([0-9][0-9]*\).*|\1|p')"
-      [ -n "$_v" ] || _v="$(sed -n 's/\bpr=\([0-9][0-9]*\)\b.*/\1/p' "$_f" | head -n 1)"
+      # The word is `pr=<digits>` standing alone (no letter, digit or
+      # underscore on either side; case-sensitive): the first such word's
+      # digits. grep -o, not sed `\b` -- BSD sed has no word boundary (#537).
+      [ -n "$_v" ] || _v="$(grep -oE '(^|[^A-Za-z0-9_])pr=[0-9]+([^A-Za-z0-9_]|$)' "$_f" | head -n 1 | grep -oE '[0-9]+')"
       if [ -n "$_v" ]; then printf 'PR_OPENED %s' "$_v"; else printf BLOCKED; fi
       return 0 ;;
   esac
@@ -3430,17 +3450,14 @@ _talos_run_loop() {
   exit 0
 }
 
-# _talos_run_dispatch <action-line>: one dispatched stage, the four calls the
-# playbook's act path used to spell out: prompt (the renderer), the agent run
-# (pipeline-agent.sh, the prompt on stdin), the verdict word (the
-# final-message convention), done (the bookkeeping). The stage's `next=`
-# answer decides what this pass does next; the loop continues it.
-# _talos_run_dispatch <action-line>: one dispatched stage, the four calls the
-# playbook's act path used to spell out. The action line's stage comes off a
-# sanitised single line (`action=dispatch stage=<role> ...`, one `stage=`
-# pair), so the sed reads the word after `stage=`.
+# _talos_run_dispatch <action-line> [<shape> [<prior-file>]]: one dispatched
+# stage, the four calls the playbook's act path used to spell out. The action
+# line's stage comes off a sanitised single line (`action=dispatch stage=<role>
+# ...`, one `stage=` pair), so the sed reads the word after `stage=`. <shape>
+# and <prior-file> are the prompt's `--shape` and `--prior-file` (the QA-FAIL
+# fix round passes fix-round and QA's report, #537).
 _talos_run_dispatch() {
-  local _a="$1" _f _role _pr _n _v _w _dargs _next _rc
+  local _a="$1" _shape="${2:-}" _prior="${3:-}" _f _role _pr _n _v _w _dargs _next _rc
   _role="$(sed -n 's/.*stage=\([a-z-]*\).*/\1/p' <<<"$_a")"
   _pr="$(sed -n 's/.* pr=\([0-9]*\).*/\1/p' <<<"$_a")"
   _n="$(sed -n 's/.* issue=\([0-9]*\).*/\1/p' <<<"$_a")"
@@ -3453,6 +3470,8 @@ _talos_run_dispatch() {
   # 1. The prompt: the one renderer is `talos.sh prompt`.
   local _pargs=(prompt "$_role" --issue "$_n")
   [ -z "$_pr" ] || _pargs+=(--pr "$_pr")
+  [ -z "$_shape" ] || _pargs+=(--shape "$_shape")
+  [ -z "$_prior" ] || _pargs+=(--prior-file "$_prior")
   [ "$_RUN_DRAFT" -eq 1 ] && _pargs+=(--draft)
   _f="$(bash "$SCRIPT_DIR"/talos.sh "${_pargs[@]}" 2>"$_CFG_CACHE_DIR/err" | sed -n 's/^prompt_file=//p')"
   _rc=$?
@@ -3497,32 +3516,70 @@ _talos_run_dispatch() {
   rm -f "${_f:?}"
 
   # 5. What follows, the pass ends the same way the playbook's Step 2 reads
-  # `next=`: `stop` ends the run clean; a fix-round and `continue` go back to
-  # `next` (the gate and the ceilings run inside it, #471); `batch` is one
-  # role per action anyway.
+  # `next=`: `stop` ends the run clean; `continue` goes back to `next`;
+  # `batch` is one role per action anyway. A QA `fix-round` runs the fix round
+  # itself (#537) -- left to `next`, the unchanged head would just be re-run
+  # through ready-pr and QA; the other roles' fix-round answers still go back
+  # to `next` (the gate and the ceilings run inside it, #471).
+  [ "$_role" != qa ] || [ "$_v" != PASS ] || rm -f "$_CFG_CACHE_DIR/qa-fail-head.$_pr"
   case "$_next" in
     stop)
       _talos_emit stop "reason=stage-blocked role=$_role"
       _talos_flush; exit 0 ;;
+    "fix-round stage=qa")
+      [ "$_role" != qa ] || _talos_run_qa_fail "$_pr" "$_n" ;;
   esac
   return 0
 }
 
-# _talos_run_draft_complete <pr> <issue> (#516): the draft-window completion,
-# called from the run loop's wait arm when the resolver answered `ready` --
-# every enabled draft-window approval is fresh at the current head, so the
-# pass finishes the Draft stage order itself. The write is leased first (the
-# same shape `next`'s dispatch path uses); the ready verb runs once; the
-# Draft guard asks the PR itself, never memory; the one CI wait runs only
-# under qa_mode: ci; QA dispatches through the driver's one dispatch path;
-# and the lease is released before the function returns to the loop. The
-# function calls none of the gate's verdict verbs itself -- after it returns,
-# the next pass's existing merge arm runs (the gate reads ci_runs before the
-# write that deletes the head branch).
-_talos_run_draft_complete() {
-  local _pr="$1" _n="$2" _r _b _ci_wait _t_ms _wait_args
-  # The write is leased first (next's dispatch shape): a held lease or an
-  # unavailable ledger/lock ends the run with the lease wait, zero ready-pr.
+# _talos_run_qa_fail <pr> <issue> (#537): a QA FAIL is a developer fix round,
+# the playbook's flow: `gate fix-round <N> qa --pr <M>` (the budget guard, the
+# attempt ceilings, the unblock right before the round), then the developer in
+# the fix-round shape through the one dispatch path. After the push the normal
+# path resumes (re-stamps, ready-pr, QA) on the next pass.
+# The backstop: a QA FAIL at the head the previous QA FAIL saw (the fix round
+# pushed nothing) stops the run -- pipeline:blocked on the PR and the issue,
+# `stop reason=qa-fail-unchanged-head pr=<M> issue=<N>`, exit 0 -- instead of
+# re-running ready-pr and QA on the same head up to --max-iterations. The last
+# failing head per PR is the run's own scratch file; a head that cannot be read
+# is `stop reason=head-unresolved` (fail closed: no verdict without a head).
+_talos_run_qa_fail() {
+  local _pr="$1" _n="$2" _head _f _r _why
+  _f="$_CFG_CACHE_DIR/qa-fail-head.$_pr"
+  _talos_cap _vcs pr-head "$_pr"
+  { [ "$_RC" -eq 0 ] && [ -n "$_OUT" ]; } || _talos_stop head-unresolved
+  _head="$_OUT"
+  if [ -f "$_f" ] && [ "$(cat "$_f")" = "$_head" ]; then
+    _talos_block_labels "$_n" "$_pr"
+    _talos_emit stop "reason=qa-fail-unchanged-head pr=$_pr issue=$_n"
+    _talos_flush; exit 0
+  fi
+  printf '%s\n' "$_head" > "$_f" || _talos_stop scratch-unavailable
+  _r="$(bash "$SCRIPT_DIR"/talos.sh gate fix-round "$_n" qa --pr "$_pr" 2>"$_CFG_CACHE_DIR/err")"
+  _talos_relay gate-fix-round "$(cat "$_CFG_CACHE_DIR/err" 2>/dev/null)"
+  case "$_r" in
+    verdict=redispatch*) : ;;
+    verdict=block*)
+      # The gate set pipeline:blocked and said why; the run ends clean.
+      _why="$(sed -n 's/^reason=//p' <<<"$_r" | head -n 1)"
+      _talos_emit stop "verdict=block${_why:+ reason=$_why}"
+      _talos_flush; exit 0 ;;
+    *) _talos_stop state-unavailable ;;
+  esac
+  # `done` freed the lease with the QA stage; the developer's write is leased
+  # again, as next's dispatch path leases it.
+  _talos_run_lease "$_n"
+  # QA's report is the fix round's prior stage summary (the playbook's
+  # --prior-file: the relay of the stage that failed); agent.out still holds it
+  # and the developer's run is about to overwrite it.
+  cp "$_CFG_CACHE_DIR/agent.out" "$_CFG_CACHE_DIR/qa-fail.summary" || _talos_stop scratch-unavailable
+  _talos_run_dispatch "dispatch stage=developer pr=$_pr issue=$_n" fix-round "$_CFG_CACHE_DIR/qa-fail.summary"
+}
+
+# _talos_run_lease <issue>: lease the write (next's dispatch shape): a held
+# lease or an unavailable ledger/lock ends the run with the lease wait, exit 0.
+_talos_run_lease() {
+  local _n="$1" _r
   _talos_lease acquire "$_n" > "$_CFG_CACHE_DIR/lease.line"
   case "$?" in
     0)
@@ -3538,6 +3595,24 @@ _talos_run_draft_complete() {
       _talos_emit stop "action=wait reason=lease retry_after_s=${TALOS_LEASE_LOCK_S:-10}"
       _talos_flush; exit 0 ;;
   esac
+}
+
+# _talos_run_draft_complete <pr> <issue> (#516): the draft-window completion,
+# called from the run loop's wait arm when the resolver answered `ready` --
+# every enabled draft-window approval is fresh at the current head, so the
+# pass finishes the Draft stage order itself. The write is leased first (the
+# same shape `next`'s dispatch path uses); the ready verb runs once; the
+# Draft guard asks the PR itself, never memory; the one CI wait runs only
+# under qa_mode: ci; QA dispatches through the driver's one dispatch path;
+# and the lease is released before the function returns to the loop. The
+# function calls none of the gate's verdict verbs itself -- after it returns,
+# the next pass's existing merge arm runs (the gate reads ci_runs before the
+# write that deletes the head branch).
+_talos_run_draft_complete() {
+  local _pr="$1" _n="$2" _r _b _ci_wait _t_ms _wait_args
+  # The write is leased first: a held lease or an unavailable ledger/lock ends
+  # the run with the lease wait, zero ready-pr.
+  _talos_run_lease "$_n"
   # The ready verb, once (the draft-verb gate answers 0 only on success).
   _talos_cap _vcs ready-pr "$_pr"
   [ "$_RC" -eq 0 ] || _talos_stop ready-pr-failed

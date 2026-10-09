@@ -722,8 +722,11 @@ scratch directory.
    `bash ~/.talos/scripts/pipeline-status.sh --dry-run <n> "In progress"`
    style commands manually.
 
-**No-LLM driver (`talos.sh run`, #472):** the pipeline also drives itself
-without an orchestrator session:
+**Deterministic orchestrator (`talos.sh run`, #472):** LLM-driven
+orchestration (`/talos:pipeline`, Claude) is the default. `talos.sh run` is the
+deterministic orchestrator for local and weak-model profiles: code routes,
+gates and does the bookkeeping, and an LLM still does every stage. It drives
+the pipeline without an orchestrator session:
 
 ```bash
 bash scripts/talos.sh run                      # every queued or in-flight issue + open PR
@@ -734,7 +737,7 @@ bash scripts/talos.sh run --max-iterations 50  # raise the dispatch cap (20)
 `run` loops `talos.sh next`, renders each stage's prompt with `talos.sh
 prompt`, dispatches it through `pipeline-agent.sh` (the configured
 `agents.runner`, with `agents.fallback` failover), and does the end-of-stage
-bookkeeping through `talos.sh done` — no LLM calls from Talos itself. When
+bookkeeping through `talos.sh done` — no LLM calls in the orchestration itself. When
 the ready queue drains, a `wait` answer falls through to the in-flight issues
 (#519): one `next --issue` per issue mid-state-machine (`pipeline:confirmed`,
 `pipeline:dev` or `pipeline:epic-decomposed`) that has no open pipeline PR,
@@ -743,7 +746,13 @@ moves to the next one, and the run ends once the in-flight list is spent. It sto
 (exit 0) on any remaining `stop`/`ask-owner`/`wait` answer, including
 `reason=lease` (another run holds the issue's lease) and
 `reason=iterations-exhausted max=<n>` at the dispatch cap; a failed state
-read exits non-zero. Re-run `run` to resume: the lease ledger and the #419
+read exits non-zero. A QA FAIL is a developer fix round, as in the playbook
+(#537): `run` calls `gate fix-round <N> qa --pr <M>` (budget guard, attempt
+ceilings, the unblock) and dispatches the developer in the fix-round shape;
+after the push the normal path resumes (re-stamps, `ready-pr`, QA). A second
+QA FAIL at the same PR head (the fix round pushed nothing) stops the run:
+`pipeline:blocked` on the PR and the issue, `stop
+reason=qa-fail-unchanged-head pr=<M> issue=<N>`, exit 0. Re-run `run` to resume: the lease ledger and the #419
 handoff files carry the state. `.claude/commands/pipeline-tick.md` (the
 event-driven tick) is SUPERSEDED by `run`/`next` — kept only as reference,
 see its own banner.
