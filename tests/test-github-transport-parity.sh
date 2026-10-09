@@ -446,7 +446,19 @@ SETUP='rm -f "$STUB_ASSIGNEE_FILE"'; ASSIGNEE=self
 EXP_OUT="assigned to bot"
 parity "assign-issue" assign-issue 42
 assert_contains "$(req_of)" "$BASE/issues/42/assignees" "assign-issue: POST issues/<n>/assignees (adds, never replaces)"
+# issue-assignees / unassign-issue / list-assignees (#560): the assignees of an issue.
+SETUP='printf "alice\nbob\n" > "$STUB_ASSIGNEE_FILE"'
+EXP_OUT="alice"
+parity "issue-assignees" issue-assignees 7
+SETUP='printf "alice\nbob\n" > "$STUB_ASSIGNEE_FILE"'
+EXP_OUT="unassign-issue: #7 unassigned bob"
+parity "unassign-issue" unassign-issue 7 bob
+assert_contains "$(req_of)" "DELETE" "unassign-issue: DELETE issues/<n>/assignees (the other assignee stays)"
+assert_contains "$(req_of)" '{"assignees": ["bob"]}' "unassign-issue: only the named login is in the payload"
 unset STUB_ASSIGNEE_FILE
+Q="$(printf '%s\n' '[{"number":7,"assignees":[{"login":"bob"}]},{"number":8,"assignees":[]},{"number":10,"pull_request":{},"assignees":[{"login":"zed"}]}]')"
+parity "list-assignees" list-assignees
+json_is "list-assignees: assigned issues only, pull requests skipped" '{"7":["bob"]}'
 
 # upsert-pr-comment, mark-needs-owner, list-needs-owner: the stubbed comment store.
 export STUB_COMMENT_STORE="$SANDBOX/store.json"

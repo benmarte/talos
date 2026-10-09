@@ -215,6 +215,9 @@ elif [ -n "${STUB_ASSIGNEE_FILE:-}${STUB_ASSIGNEE_DIR:-}" ] && [[ "$url" =~ /iss
   if [ "${STUB_ASSIGN_FAIL:-}" = "1" ]; then
     http_status=422
     resp='{"message":"Validation Failed"}'
+  elif [ "$method" = "DELETE" ] && [ "${STUB_UNASSIGN_FAIL:-}" = "1" ]; then
+    http_status=422
+    resp='{"message":"Validation Failed"}'
   elif [ "$method" = "DELETE" ]; then
     [ -f "$_as_f" ] && printf '%s' "$payload" | python3 -I -c "
 import json, sys

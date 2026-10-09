@@ -96,7 +96,7 @@ cfg_p github
 export STUB_GH_ISSUES_RAW='[{"number":7,"assignees":[{"login":"bob"}]},{"number":8,"assignees":[]},{"number":9,"assignees":[{"login":"alice"},{"login":"carol"}]},{"number":10,"pull_request":{},"assignees":[{"login":"zed"}]}]'
 run list-assignees
 assert_eq '0|{"7": ["bob"], "9": ["alice", "carol"]}' "$rc|$(canon "$out")" "#560 github: list-assignees maps assigned issues to their logins, skipping unassigned issues and PRs"
-assert_eq "1" "$(grep -c 'api --paginate' "$GH_LOG")" "#560 github: list-assignees is one paginated request"
+assert_eq "1" "$(grep -c 'issues?state=open&per_page=100' "$GH_LOG")" "#560 github: list-assignees is one paginated request"
 unset STUB_GH_ISSUES_RAW
 
 cfg_p github-api
