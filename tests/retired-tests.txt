@@ -1,0 +1,12 @@
+# Test files removed on purpose. tests/run-tests.sh fails a full run when a test
+# file that exists on the base ref is missing here, unless it is named below
+# (one basename per line). Add a line in the same change that deletes the file.
+
+# #550: the tracked status file and the resume skill are gone
+test-config-status-keys.sh
+test-resume-skill.sh
+test-setup-status-file.sh
+test-status-file-assemble.sh
+test-status-file-refresh.sh
+test-status-file-spend.sh
+test-status-file-wiring.sh

@@ -44,6 +44,8 @@
 #          table gains a trailing ci_runs column and every --json row and the
 #          total gain a trailing ci_runs field, summing those values. With no
 #          such event the output is exactly the shape described above.
+#          A `stage_start` event (#550, the dispatch marker the status line reads)
+#          is not a stage run: every cost form skips it. list and tail show it.
 #          --pr M keeps only events whose pr is M (an event with pr null never
 #          matches), in the table, --json and --line alike.
 #          --line (needs --issue; wins over --json) prints one summary line
@@ -345,6 +347,9 @@ with open(log_path, "r", errors="replace") as f:
                 raise ValueError("not an object")
         except (ValueError, TypeError):
             skipped += 1
+            continue
+        # #550: a dispatch marker for the status line, not a finished stage.
+        if rec.get("event") == "stage_start":
             continue
         if not matches(rec):
             continue

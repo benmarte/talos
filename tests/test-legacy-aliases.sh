@@ -111,7 +111,7 @@ newcase stale-resume-default
 old_copy talos-resume resume
 old_copy pipeline pipeline
 inst
-assert_file_absent "$SK/talos-resume" "default: the old talos-resume copy is removed (/talos:resume replaces it)"
+assert_file_absent "$SK/talos-resume" "default: the old talos-resume copy is removed (the skill is retired)"
 assert_eq "1" "$(grep -cxF "$MARKER" "$SK/pipeline/SKILL.md")" "default: a pre-alias full copy of pipeline is replaced by the alias"
 assert_not_contains "$(cat "$SK/pipeline/SKILL.md")" "old full copy" "default: the old text is gone"
 

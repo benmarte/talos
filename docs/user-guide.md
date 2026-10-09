@@ -204,7 +204,7 @@ URL in `TEAMS_WEBHOOK_URL`.
 | Variable | Purpose |
 |----------|---------|
 | `TALOS_RETRY_SLEEP_SCALE` | Scale factor for retry backoff sleeps (default `1`; tests set to `0` for instant runs without delay). Scales every sleep uniformly — e.g. `TALOS_RETRY_SLEEP_SCALE=0.1` makes retries 10x faster for local testing, `TALOS_RETRY_SLEEP_SCALE=0` skips all sleeps entirely (network calls still retry, no delay between attempts). |
-| `TALOS_STATUS_DEBUG` | `1` makes `talos-status.sh` print stderr notes saying why it printed nothing (otherwise its stderr is silent); see [Seeing token spend](#seeing-token-spend-334) |
+| `TALOS_STATUS_DEBUG` | `1` makes `talos-status.sh` print stderr notes saying why it printed nothing (otherwise its stderr is silent); see [The status line](#the-status-line) |
 | `TALOS_STATUS_TIMEOUT_S` | Hard alarm of `talos-status.sh` in seconds, an integer 1 to 10 (default `3`; anything else uses `3`); on expiry it prints nothing and exits 0 |
 
 Nothing is strictly *required*: with no credentials at all, notifications are
@@ -272,8 +272,8 @@ hint), set `agents.runner: custom`, and give `agents.runner_cmd` (the prompt
 arrives on stdin).
 
 What the global install writes. `~/.talos/{scripts,agents,templates,skills}/`
-always (`skills/<command>/SKILL.md` holds the `pipeline`, `setup` and
-`resume` playbooks, so any agent can be pointed at a path under `~/.talos`; see
+always (`skills/<command>/SKILL.md` holds the `pipeline` and `setup`
+playbooks, so any agent can be pointed at a path under `~/.talos`; see
 "Playbooks for any other agent" below). Only when the Claude adapter runs, it
 ALSO writes the role profiles to `~/.claude/agents/<role>.md` -- that second
 copy is what Claude Code's native subagent discovery actually reads, so a
@@ -297,8 +297,8 @@ created. This is a change from earlier versions, where
 `--global --harness codex` still refreshed `~/.claude`.
 
 **Command names (`/talos:<command>`).** A marketplace install and
-`install.sh --global` both give Claude Code `/talos:pipeline`, `/talos:setup`
-and `/talos:resume`. Claude Code applies the `plugin:skill` form to plugin
+`install.sh --global` both give Claude Code `/talos:pipeline` and `/talos:setup`.
+Claude Code applies the `plugin:skill` form to plugin
 skills only (a skill under `~/.claude/skills` is invoked by its directory name,
 and a `name:` with a colon or a nested directory does not change that), so the
 Claude adapter registers this checkout as a plugin: `claude plugin marketplace
@@ -350,9 +350,8 @@ aborts the install or deletes anything.
 
 **Playbooks for any other agent.** Every agent can be pointed at the
 playbooks by path: `Read ~/.talos/skills/pipeline/SKILL.md and follow it`
-(the setup wizard is `~/.talos/skills/setup/SKILL.md`, the resume
-briefing `~/.talos/skills/resume/SKILL.md`). `install.sh <repo>` prints that
-line, and the `AGENTS.md` block names the three paths.
+(the setup wizard is `~/.talos/skills/setup/SKILL.md`). `install.sh <repo>`
+prints that line, and the `AGENTS.md` block names the two paths.
 
 **Pointer skills in `~/.agents/skills`.** With `codex`, `pi`, `cursor` or
 `opencode` in the `--harness` list, `--global` also writes
@@ -424,7 +423,7 @@ bash talos/install.sh /path/to/your-repo      # talos.pipeline.json and the AGEN
 ```
 
 pi loads the pipeline from the pointer skills `talos-pipeline`,
-`talos-setup` and `talos-resume` that `--harness pi` writes into
+and `talos-setup` that `--harness pi` writes into
 `~/.agents/skills` (a directory pi scans), or from the `AGENTS.md` block, which
 names the same playbooks. No pi settings file needs editing, and this guide makes
 no claim about where pi keeps its settings or its default agent directory.
@@ -628,7 +627,7 @@ For every harness:
 
 - `bash talos/install.sh --global [--harness <list>]`, once per machine, writes
   `${TALOS_HOME:-~/.talos}/{scripts,agents,templates,skills}`. `skills/<command>/SKILL.md`
-  holds `pipeline`, `setup` and `resume`.
+  holds `pipeline` and `setup`.
 - `bash talos/install.sh <repo> [--harness <list>] [--no-agents-md] [--import-agents-md]`
   writes `talos.pipeline.*` (never overwritten), the one marker-fenced block in
   `<repo>/AGENTS.md` (the same for every harness; it never writes the block into
@@ -639,9 +638,8 @@ For every harness:
   `<repo>/.agents/talos/agents/<role>.md`, after `.claude/agents/<role>.md` and
   before the install. The native Claude path never reads it.
 - Start line for any agent: `Read ~/.talos/skills/pipeline/SKILL.md and follow it`
-  (setup: `Read ~/.talos/skills/setup/SKILL.md and follow it`; resume:
-  `Read ~/.talos/skills/resume/SKILL.md and follow it`). Claude Code has `/talos:pipeline`,
-  `/talos:setup` and `/talos:resume`, from either install path (the old `/pipeline`
+  (setup: `Read ~/.talos/skills/setup/SKILL.md and follow it`). Claude Code has
+  `/talos:pipeline` and `/talos:setup`, from either install path (the old `/pipeline`
   and `/pipeline-setup` work as aliases until v0.20).
 
 | Harness | `--global --harness` writes | `agents.runner` | Start line |
@@ -812,103 +810,39 @@ epic flagged for missing boxes still auto-closes once a human ticks them.
 The planner role is off by default — it adds API calls and is most useful
 when you regularly work with multi-task epics.
 
-### The status file and resume (`status.*`, #333)
+### Resuming a run (#550)
 
-A tracked file, `TALOS_STATUS.md` by default (`status.file`), keeps what a new
-session would otherwise lose. It is opt-in: `status.enabled` defaults to
-`false`, and `/talos:setup` asks about it once (default no) and, on yes,
-writes `status.enabled: true` and runs `bash scripts/pipeline-status-file.sh
-init`. `init` does not commit: commit `talos.pipeline.json` and the status file
-together. An existing repo that does not re-run setup keeps it off; setting
-`status.enabled: true` and running `init` by hand does the same. A repo that
-already has Talos labels re-runs `bash scripts/bootstrap-labels.sh` once so
-`pipeline:needs-owner` exists.
+There is nothing to resume from and nothing to read first. A cleared session, a
+token limit or a switch to another LLM all resume the same way: start the
+pipeline again (`/talos:pipeline` in Claude Code, `Read ~/.talos/skills/pipeline/SKILL.md
+and follow it` in another agent, or `bash scripts/talos.sh run`). The state
+lives on the remote (labels, PRs, comments) and in the local events log, not in
+a file Talos keeps up to date.
 
-- **What it contains.** A generated Resume block under `## Resume here` (open
-  pipeline PRs and their next stage, blocked reasons, questions waiting on the
-  owner, what is queued) and a capped log under `## Log`, one entry per merged
-  PR. The Resume block is rebuilt from GitHub state and never edited by hand.
-  The status file is not added to `merge.union_paths`: fragments replace union
-  merging.
-- **Fragments.** The docs stage writes one short file per PR,
-  `docs/status.d/<issue>-<pr>.md` (`status.fragments_dir`), and the
-  orchestrator folds it into the log after the merge. The directory is
-  `docs/status.d/`, not `.talos/status.d/`, because it must be a tracked
-  directory: since #517 Talos auto-ignores the in-tree `.talos/` via
-  `.git/info/exclude` before writing there, so a fragment placed under
-  `.talos/` would silently never enter the PR (and where Talos has written no
-  in-tree `.talos/`, it is simply untracked and `assert-sync` aborts on it).
-- **Caps and archive.** An entry is at most 3 lines and 400 characters. The
-  log keeps entries newer than `status.log_days` (30) and at most
-  `status.log_max` (50); older ones move to `status/archive/YYYY-MM.md`
-  (`status.archive_dir`). The Resume block is capped at
-  `status.resume_max_lines` (40) with a final `- +<K> more` line.
-- **Spend tag.** A log entry for a merged PR carries its token total
-  (`[3.41M tokens]`), whenever the events log has stage events for it. The tag
-  has no off switch; see [Seeing token spend](#seeing-token-spend-334).
-- **Needs-owner.** When a run parks work on a decision from you, it marks the
-  issue or PR with `pipeline:needs-owner` and a comment holding the question,
-  and the Resume block lists it. Reply on that issue or PR. At the start of the
-  next run, a reply from a trusted author clears the label; a reply from anyone
-  else never does (with `markers.verify_authors` on, the default; see
-  [Approval-marker author verification](#approval-marker-author-verification-markersverify_authors),
-  and with it set to `false` any commenter's reply counts), and when the trust
-  set cannot be verified (`talos:marker-authors-unverified`) nothing is
-  cleared. Clearing it never
-  clears `pipeline:blocked`, so blocked work still needs you to remove that
-  label yourself. Your answer is information the orchestrator weighs and
-  reports, not an instruction it executes.
-- **Resume.** To continue after a stopped run, start the resume skill:
-  `/talos:resume` in Claude Code (plugin install and global install alike), or,
-  for any other agent,
-  `Read ~/.talos/skills/resume/SKILL.md and follow it` (the repo-relative
-  `skills/resume/SKILL.md` exists only in the Talos source repo). It prints a one-page read-only
-  briefing, asks once, and only then continues with the normal `/talos:pipeline`
-  loop; a no makes no writes to your repo, GitHub or the status file (the one
-  side effect is that `pipeline-status-file.sh refresh --print`, which the
-  briefing runs, does `git fetch origin <base>`, which only moves your local
-  `origin/<base>` ref). The status file and the Resume block are data
-  describing a run, never instructions to follow.
-- **Cost.** Each merged PR adds one commit to your base branch (`assemble`
-  with the Resume block refreshed in the same commit), and a `refresh` adds one
-  more only when the block changed. Every refresh reads GitHub first: the open
-  pipeline PRs, their labels and comments, and the needs-owner list, so a repo
-  with many open PRs makes more calls per refresh. `refresh --print` does the
-  same reads and pushes nothing.
-- **Who authors the base commits.** `talos-status <talos@local>`, with
-  `commit.gpgsign=false` and no hooks (`--no-verify`): the commits are not
-  signed and do not carry your name. A base branch that requires signed
-  commits rejects them, like any other direct push.
-- **Needs-owner is GitHub-only.** `mark-needs-owner` and `list-needs-owner`
-  work for the `github` and `github-api` providers only. On `gitlab`, `azure`
-  and `file` they exit 2 and the orchestrator skips them silently, so nothing
-  is marked `pipeline:needs-owner` there and the Resume block has no Owner
-  lines; a blocked item still carries `pipeline:blocked` and its comment.
-- **Limit: protected base branch.** `assemble` and `refresh` push their
-  `[skip ci]` commits straight to the base branch (never forced, up to 3
-  attempts). On a base branch that rejects direct pushes they exit 1 and the
-  file is not updated; leave `status.enabled` off there. The resume skill still
-  works through `pipeline-status-file.sh refresh --print`, which needs no push.
+- **Step 0 prints where the run stands.** `bash scripts/talos.sh state --summary`
+  is read-only and prints at most three `where=` lines: what is in flight (open
+  pipeline PRs with their next stage, issues mid-way), what is waiting (blocked
+  work, questions held for the owner) and the next action. Only numbers and fixed
+  words are printed, never an owner's question or any other free text. The run
+  then goes on: `talos.sh next` hands out the same action.
+- **A developer picks up a checkpoint.** When a provider failover or an out-of-tokens
+  stop left a checkpoint (`pipeline-worktree.sh checkpoint <N>`, a WIP commit plus a
+  handoff file under the git common dir), the next developer prompt for that issue
+  says so, names `pipeline-worktree.sh handoff <N>`, and tells the developer to
+  continue from it rather than restart.
+- **What was removed.** The tracked status file (`TALOS_STATUS.md`), its generated
+  Resume block and log, the `status.*` keys, the `docs/status.d/` fragments, the
+  archive and the `/talos:resume` skill are gone; `/talos:setup` no longer asks about
+  them. A `status:` block or a leftover file in an existing repo is unused (the
+  config loader warns once about the unknown key); delete it in a normal commit.
+  `pipeline-status-file.sh` keeps only `collect`, the state reader behind
+  `talos.sh state` and `next`.
+- **Needs-owner.** The orchestrator no longer marks work `pipeline:needs-owner` on
+  its own. A `pipeline:needs-owner` label that a person sets is still honoured:
+  the issue is held, `next` answers `ask-owner` for it, and `state --summary`
+  lists it under waiting.
 
-**The status keys.** Every key is optional; the full rows are in the [Config reference](#config-reference).
-
-| Key | Default | What it controls | Set in |
-|-----|---------|------------------|--------|
-| `status.enabled` | `false` | The opt-in switch. Off: nothing is written, read or committed. | repo or user-level file |
-| `status.file` | `TALOS_STATUS.md` | Path of the status file, relative to the repo root. | repo only |
-| `status.log_heading` | `## Log` | Heading of the log section. | repo or user-level file |
-| `status.resume_heading` | `## Resume here` | Heading of the Resume block. | repo or user-level file |
-| `status.fragments_dir` | `docs/status.d` | Where the docs stage writes per-PR fragments; must be tracked. | repo only |
-| `status.archive_dir` | `status/archive` | Where log entries rotated out are archived. | repo only |
-| `status.log_days` | `30` | Age limit of a log entry, in days. | repo or user-level file |
-| `status.log_max` | `50` | Most log entries kept. | repo or user-level file |
-| `status.resume_max_lines` | `40` | Most lines in the Resume block. | repo or user-level file |
-
-**Turning it off.**
-
-1. Set `status.enabled: false` in the repo's config, or delete the key (`false` is the default). From the next run `/talos:pipeline` never calls `pipeline-status-file.sh`: no log entry, no Resume refresh, and no more `[skip ci]` commits on your base branch. Re-running `/talos:setup` and answering no to the status-file question writes `enabled: false` for you.
-2. The files already there stay in place. Remove them in a normal commit when you no longer want them: the status file (`status.file`), the fragment directory (`status.fragments_dir`, `docs/status.d/` by default) and the archive (`status.archive_dir`). With the switch off the docs stage no longer writes fragments, so a leftover one is only history.
-3. The resume skill keeps working with the switch off: `pipeline-status-file.sh refresh --print` ignores `status.enabled` and builds the briefing from GitHub, with no push.
+For a live view while a run works, see [The status line](#the-status-line).
 
 ### Draft PRs: one CI run per PR (`pr.draft`, default `true`, #332, #435)
 
@@ -1527,7 +1461,7 @@ bash scripts/pipeline-worktree.sh handoff <N>                                   
 - **No secrets.** A string that looks like a credential (`ghp_`, `sk-`, `AKIA...`, `-----BEGIN`, a JWT, `Bearer `, `://user:pass@`, `token=`, any unbroken 32+ character `[A-Za-z0-9_-]` run) or that contains the value of an environment variable whose name has `TOKEN`, `KEY`, `SECRET` or `PASSWORD` is rejected (exit 4, previous file kept, only the field name on stderr), never redacted. Shorten a very long test name if it trips the 32-character rule.
 - **Exit codes.** 0 ok; 1 refused (wrong branch, git failure); 2 usage; 3 push failed (commit kept locally, handoff written, nothing reported as pushed); 4 handoff rejected (commit and push done).
 - **`handoff <N>`** prints the validated JSON and exits 0, or exits 1 with one line when the file is absent, invalid or stale (the branch is gone, or `head` is not on it, so a re-created branch never inherits an old handoff). It works from any directory of the repo.
-- **Lifecycle.** The playbook adds a `Handoff:` line to a developer brief only when `handoff <N>` exits 0; the stage reads the handoff and `git diff origin/<base>...` instead of the thread. `/resume` shows stage, remaining criteria, `next_step` and `ts` for in-flight issues. `remove <N>` deletes the file with the worktree; `sweep` does not. The runner failover path (`agents.fallback`) calls `checkpoint <N>` when a runner fails with a provider error.
+- **Lifecycle.** `talos.sh prompt developer` adds a `Checkpoint found:` line to the developer prompt only when `handoff <N>` exits 0 (#550): it names the verb, says to continue from the checkpoint and not restart, and points at `git diff origin/<base>...` for the work already on the branch. `remove <N>` deletes the file with the worktree; `sweep` does not. The runner failover path (`agents.fallback`) calls `checkpoint <N>` when a runner fails with a provider error.
 - **Known gap.** `sweep` removes by issue id, and also deletes a local branch that has no `origin/<branch>`; so a worktree whose checkpoint push failed is kept only by `remove <N>` (reason `unpushed`) and by `sweep <N>` listing it, not by a `sweep` that omits it.
 
 ### Adding context to every stage prompt (`hooks.pre_dispatch`)
@@ -1692,6 +1626,13 @@ schema shown above) is also appended, as one JSON line, to a local audit log
 by default, so every project gets a durable local record of what happened in
 a run for free, without wiring up an external sink.
 
+**Dispatch markers (#550).** `talos.sh prompt` also appends one `stage_start`
+line (`{"event":"stage_start","role":"orchestrator","stage":"qa","issue":7,"pr":9,"ts":...}`)
+each time a stage prompt is rendered, so [the status line](#the-status-line) can show
+the stage as running. It is written by `pipeline-hooks.sh stage_start`, which never
+runs `hooks.post_stage`, and every `pipeline-events.sh cost` form skips it; `list`
+and `tail` show it.
+
 **Where.** The log path (`events.path`, default `talos/events.jsonl`) is
 resolved relative to the **git common dir**, via `git rev-parse
 --git-common-dir` -- not the current worktree's own `.git` dir, and not the
@@ -1849,13 +1790,6 @@ is tracked on #357, so do not rely on it there.
 models it ran with, in first-seen order (past 8 stages the rest fold into
 `+K more`). "A run" is just the set of issues you pass; there is no run id.
 
-**4. The status-log tag** (only with `status.enabled: true`).
-`pipeline-status-file.sh assemble` adds the merged PR's total to its log
-entry: `- DATE PR #P (#I): [3.41M tokens] text`, or `[PR 3.41M · issue 3.52M
-tokens]` when the two totals differ, with `, +K unrecorded` or
-`[tokens unrecorded]` as above. There is no off switch for the tag (a
-deliberate choice on #334), so these figures land in git history on the base
-branch; keep that in mind before enabling the status file in a public repo.
 
 **Which commands exit how.** `cost` exits 0 on success, with no log and when
 the formatter module is missing; it exits 2 (usage) for `--line`, `--markdown`
@@ -1903,8 +1837,7 @@ A caller under `set -e` must capture the code rather than test it inline.
 - **warn** (at or above `limits.warn_at`) is relayed in the harness at the next
   check and shown in the PR comment's budget line. It stops nothing.
 - **exceeded** makes the playbook set `pipeline:blocked` on the PR and the
-  issue, record a `budget-blocked` event, and either mark the issue needs-owner
-  (`status.enabled: true`) or post a blocked comment.
+  issue, record a `budget-blocked` event and post a blocked comment.
 
 To continue, the owner either removes `pipeline:blocked` or raises
 `limits.tokens_per_issue`. Removing the label works because each recorded
@@ -1916,109 +1849,86 @@ is the effective limit, not the key.
 
 #### The status line
 
-`talos-status.sh` renders one line from the events log for a harness status
-bar. `install.sh --global` installs it to `~/.talos/scripts/talos-status.sh`
-(or `$TALOS_HOME/scripts/`), next to the shared `pipeline-spend-format.py`
-module it imports; that module is a library, not a command.
+`talos-status.sh --line` prints one line for a harness status bar (#385, #550):
 
 ```
-$ talos-status.sh --line
-#764 · PR #770 · rev ✓ · 1.69M (+1 unrecorded) · today 1.69M (+1 unrecorded)
+talos #7 qa ●●●◐○○ 3.41M
 ```
 
-That is 76 columns, so it fits the default 80. The budget segment is the
-first to go when the line is too wide; the same data at `--width 100` ends
-with ` · ⚠ 84% of 2M`.
+`<issue> <stage> <dots> <tokens>`. The dots are validator, pm, developer, review
+(reviewer, security, adversarial), qa, merge, in that order: `●` done, `◐` running,
+`○` pending. A role switched off in the config (`roles.<role>: false`) has no dot,
+and neither has a validator or pm stage that never ran once a later stage has
+begun. A failing verdict (`FAIL`, `CHANGES`, `FINDINGS`, `BLOCKED`) sends the work
+back: the developer shows pending again, and so do the gates after a new developer
+push. Tokens are the issue's total so far, formatted like every spend figure
+(`pipeline-spend-format.py`). With no active issue (none yet, or the issue merged)
+it prints nothing.
 
-- `--line [--format a,b,c] [--style compact|full|minimal] [--width N]` prints
-  the line; `--preview [--format a,b,c] [--width N]` prints compact, full and
-  minimal at the current width and at 60 columns (real events when there are
-  any, otherwise sample data headed `(sample)`; `--style` is ignored);
-  `--help` prints usage.
-- It exits 0 on every input, an unknown option, a bad value, no flag at all, no
-  log or not a git repo included. Stdout is then empty. There is no usage error
-  and no exit 2, because a status bar must never show an error.
-- Width order: `--width`, then `max_width` from `statusline.yml`, then
-  `COLUMNS`, then 80. Segments drop from the end and the line never wraps.
-- Colour only with `color: always`, or `auto` on a TTY with `NO_COLOR` unset or
-  empty. A status-line host is usually not a TTY, so colour needs `always`.
-- `stage` shows finished stages only, so a running stage never appears.
+It is offline and costs no model tokens. It reads the events log, and it exits 0
+on every input (an unknown option, no log, not a git repo): a status bar must
+never show an error.
 
-**`statusline.yml`** is a separate file, not part of `talos.pipeline.*`:
-the unknown-key warning does not cover it, and a typo silently falls back to
-the defaults. Layers, later wins key by key: `~/.talos/statusline.yml`
-(`$TALOS_HOME`), then `<main repo root>/.talos/statusline.yml`, then
-`<git toplevel>/.talos/statusline.yml`. The format is JSON or a small YAML
-subset (scalars, `[a, b]` and `- item` lists, comments; anchors, aliases and
-tags are refused). PyYAML is not involved, the cap is 64 KB and it must be a
-regular file. (The pipeline config itself is JSON only, #526; this statusline
-file is its own thing.)
-Fields, under a top-level `statusline:` key:
+- **Which issue.** The current branch (`fix/issue-<N>-...`, `feat/issue-<N>-...`),
+  else the issue of the newest event.
+- **Running.** `talos.sh prompt` (the one step the playbook and `talos.sh run` both
+  take for every dispatched stage) writes a `stage_start` event through
+  `pipeline-hooks.sh stage_start`. A stage is running while that event is newer than
+  the role's last finishing event, and for at most 6 hours, so a crashed run never
+  stays "running". The event is recorded under role `orchestrator`: no cost or
+  spend report counts it, and `hooks.post_stage` does not fire for it.
+- **Live tokens.** Claude Code runs the `statusLine` command and passes it a JSON
+  object on stdin, including `transcript_path` (the session transcript;
+  [Claude Code status line docs](https://code.claude.com/docs/en/statusline)). While
+  a stage is running, the line adds the usage written since that stage started:
+  input + output + cache-creation tokens, the measure the events record (cache reads
+  are not counted), from the transcript and from the subagent transcripts next to it
+  (`<transcript minus .jsonl>/subagents/agent-*.jsonl`; that layout is what Claude
+  Code writes today, not a documented contract). Each message id counts once. The
+  count rises as the agent works; at the stage end the recorded figure from
+  `talos.sh done` takes over. Claude Code does not count subagent requests in its own
+  `context_window` or `cost` fields, which is why the transcripts are read. Limits:
+  only the last 8 MB of a transcript is read, a stage run by `talos.sh run` through
+  a CLI runner (`pipeline-agent.sh`) lives in another process's transcript and shows
+  up at the stage end, and a `/clear` in the middle of a stage drops the earlier
+  part. A harness that passes nothing on stdin gets the recorded total only.
+- **Config.** Only `roles.*` and `events.path` are read, as JSON, from the project's
+  `talos.pipeline.json` over `${TALOS_HOME:-~/.talos}/talos.pipeline.json`. There is
+  no `statusline.yml` any more, and no style, segment or width option.
+- **Log limits.** `events.path` must stay under the git common dir (an absolute path,
+  a `..` that leaves it, or a symlinked log prints nothing). Only the last 16 MB of
+  the log is read and the whole run is cut off after 3 seconds
+  (`TALOS_STATUS_TIMEOUT_S`, an integer 1 to 10). `TALOS_STATUS_DEBUG=1` prints a
+  stderr note saying why nothing was printed. A 17 MB transcript adds about 190 ms;
+  a normal one is far less.
 
-| Field | Default | Meaning |
-|-------|---------|---------|
-| `segments` | `[issue, pr, stage, issue_tokens, today_tokens, budget]` | Any of `issue pr stage issue_tokens stage_tokens today_tokens budget model breakdown`; unknown names are dropped |
-| `separator` | ` · ` | Control characters removed, at most 10 characters |
-| `style` | `compact` | `compact`, `full` or `minimal` |
-| `color` | `auto` | `auto`, `always` or `never` |
-| `max_width` | unset | Clamped to 20..500 |
-| `placement` | unset | Parsed but ignored: nothing reads it yet |
-
-Environment: `TALOS_STATUS_DEBUG=1` prints stderr notes saying why nothing was
-printed (stderr is otherwise silent); `TALOS_STATUS_TIMEOUT_S` (an integer
-1..10, default 3) sets the hard alarm after which it prints nothing and exits
-0; `COLUMNS` and `NO_COLOR` are width and colour inputs.
-
-Limits to know about. A log over 32 MB is not read at all (the line prints
-nothing, never partial totals). The status line honours `events.path`, but
-stricter than the event writer: it reads it only from the project config,
-as JSON or block-style YAML (flow-style `events: {path: x}` silently falls
-back to the default log), and only inside the git common dir (#517: the
-default log resolves relative to it); an absolute path, a `..`
-that leaves the common dir, a symlinked log or a location outside the common
-dir prints nothing. The `budget` segment runs only when a project config file
-mentions `tokens_per_issue`; it calls `pipeline-budget.sh` with a 2 s timeout
-(`TALOS_STATUS_TIMEOUT_S` minus 1 s when that is raised) in its own process group. On a 10,000-event log the line takes about 72 ms on
-macOS and 39 ms on Linux with the budget off, and about 324 ms on macOS with it
-on, so it does not meet the 50 ms target the plan set; CI asserts under 500 ms
-with `budget` removed. For a short refresh interval, leave `budget` out of
-`--format`.
-
-**Claude Code snippet.** Add this to `~/.claude/settings.json` (or the
-project's settings) to show it in Claude Code's status bar:
+**Claude Code.** `install.sh --global` wires it: when the Claude adapter runs it
+sets `statusLine` in `~/.claude/settings.json` (`$CLAUDE_CONFIG_DIR/settings.json`)
+to `bash '<TALOS_HOME>/scripts/talos-status.sh' --line`, next to the
+`pipeline-spend-format.py` module it imports. The edit is idempotent, keeps every
+other key, writes through a symlinked settings file, and never replaces a
+`statusLine` that is not Talos's: it prints the existing command and how to chain
+the Talos line into it (call the command from yours, keep Claude's JSON on its
+stdin, print its output next to yours). A settings file that does not parse is left
+alone with a notice. By hand:
 
 ```json
 {
   "statusLine": {
     "type": "command",
-    "command": "~/.talos/scripts/talos-status.sh --line"
+    "command": "bash ~/.talos/scripts/talos-status.sh --line"
   }
 }
 ```
 
-`padding` and `refreshInterval` (minimum 1 second) are optional. Claude Code
-sends a JSON object on stdin (it includes `cwd`); `talos-status.sh` ignores
-stdin and uses its **own** working directory to find the repo. UNVERIFIED:
-whether Claude Code starts the command in the session's directory; the docs do
-not say. If the line stays empty, run the command from your repo with
-`TALOS_STATUS_DEBUG=1` to see why. A `statusLine` key replaces an existing
-one, and chaining two needs a wrapper script of your own (`placement` does not
-do it).
+Claude Code re-runs the command after each assistant message (debounced to 300 ms)
+and, with the optional `refreshInterval` (seconds, minimum 1), on a timer; set one
+to keep the count moving while only background subagents work.
 
-**Not built.** Deferred from the #334 plan, with no tracking issue yet except
-where noted:
-
-- `--configure` and `--uninstall`, and the setup flow around them (tool
-  detection, preview-and-customize, backups) for Claude Code, Codex, Gemini,
-  Cursor, VS Code and a terminal fallback;
-- the pi extension and omp plugin, and reading pi or omp usage (formats
-  UNVERIFIED);
-- the Claude Code mods panel (owner check pending);
-- `cost_estimate` and any price table (the harness gives no input/output or
-  cache split), and the `run_tokens` and `blocked` segments;
-- a spend command among the `/talos-*` skills, which waits on #335;
-- fixing the default `cost` table's orchestrator `unrecorded` count;
-- honouring `placement`.
+**Other harnesses.** Call `talos-status.sh --line` from the harness's own status or
+footer hook, with the repository as the working directory. pi has no command hook
+for its footer (its footer is set by a TypeScript extension through `ctx.ui`), so
+nothing is installed for it.
 
 ### Attaching evidence to the PR (`evidence.*`, #352)
 
@@ -2028,7 +1938,7 @@ QA captures only after it has passed every acceptance criterion, once per QA run
 
 #### Turning it on
 
-`/talos:setup` asks in Step 4c, after the status-file question:
+`/talos:setup` asks in Step 4c:
 
 - It is skipped with one line for `vcs.provider` `gitlab`, `azure` and `file` (see the provider matrix below). On `github` it first checks that `gh pr comment --help` lists `--attach`; if not, it says evidence needs gh 2.99.0 or newer and offers only "off". That checks the machine running setup; the machine running the pipeline needs the same.
 - It detects Playwright (`playwright.config.*`), Cypress (`cypress.config.*`) and an e2e harness (`tests/e2e/` or a `test:e2e` script) and proposes a `command` and a `dir`. With neither Playwright nor Cypress, it offers agent capture (no `command`: QA's browser skill saves screenshots into `dir`, best effort, no recordings) or off. A command you type is written to the config as text; setup never runs it.
@@ -2401,8 +2311,7 @@ the neutral one exists but the role runs natively on Claude. No new config key.
 
 The neutral location is `.agents/talos/agents/`, not `.talos/`, because `.talos/` is
 ephemeral state: this repo's own `.gitignore` ignores it, and in a consumer repo it
-holds run state such as the events log (the same reason `status.fragments_dir`
-defaults to `docs/status.d`, not `.talos/status.d`). An override has to be tracked
+holds run state such as the events log. An override has to be tracked
 and reviewed with the code, so it lives in a directory that is committed.
 
 **Adding skills to a profile (Claude Code):** two supported mechanisms:
@@ -2990,7 +2899,7 @@ Why fail closed instead of warn: on 2026-10-06 a stray `talos.pipeline.yml` left
 
 `${TALOS_HOME:-$HOME/.talos}/talos.pipeline.json` accepts every key except the repo-only ones, so `pr.draft`, `limits.*`, `spend.*`, `verify.ci_wait_s`, `hooks.*`, `evidence.enabled`, `notifications.*` and `agents.*` can be set once for every repo. The repo file overrides it key by key, and a repo list replaces a global list whole.
 
-**Repo-only keys.** A key that describes one repository is honoured only in that repo's own file. A repo-only key found in the user-level file is dropped with one stderr line that names the key and never the value. The list is the table's scope column: `base_branch`, `release_branch`, `repo`, `vcs.provider`, `vcs.repo`, `vcs.azure.*`, `vcs.file.source.path`, `board.*` (all of them), `verify`, `verify.commands`, `verify.qa_mode`, `merge.required_checks`, `merge.forbidden_files`, `merge.forbidden_files_replace`, `merge.forbidden_files_allow`, `merge.approval_waiver_paths`, `merge.union_paths`, `issues.label_filter`, `issues.skip_labels`, `status.file`, `status.fragments_dir`, `status.archive_dir`, `markers.trusted_authors`, `markers.verify_authors` and `evidence.command`. The environment variable of a repo-only key still applies, because the environment is the last layer.
+**Repo-only keys.** A key that describes one repository is honoured only in that repo's own file. A repo-only key found in the user-level file is dropped with one stderr line that names the key and never the value. The list is the table's scope column: `base_branch`, `release_branch`, `repo`, `vcs.provider`, `vcs.repo`, `vcs.azure.*`, `vcs.file.source.path`, `board.*` (all of them), `verify`, `verify.commands`, `verify.qa_mode`, `merge.required_checks`, `merge.forbidden_files`, `merge.forbidden_files_replace`, `merge.forbidden_files_allow`, `merge.approval_waiver_paths`, `merge.union_paths`, `issues.label_filter`, `issues.skip_labels`, `markers.trusted_authors`, `markers.verify_authors` and `evidence.command`. The environment variable of a repo-only key still applies, because the environment is the last layer.
 
 **The file must be trusted.** It drives `hooks.*` and `notifications.cmd`, which run commands, so Talos reads it only when it is a regular file (or a symlink you own pointing at one), owned by you, and neither group- nor world-writable. Otherwise one stderr line names the file and the fix (`chmod go-w <file>`) and the layer is read as absent. A malformed, empty or non-mapping file also reads as absent, with one warning. The file is parsed as data only (JSON), never sourced.
 
@@ -3119,7 +3028,7 @@ If your setup predates the config and secrets work (epic #437), check these once
 | `roles.security` | `true` | Security review |
 | `roles.adversarial` | `false` | Optional pre-merge second opinion (#237), off by default — attacks the diff for vacuous tests, weak patterns, secret shapes and unverified claims. Runs after security. Typically paired with `agents.roles.adversarial.runner: custom` + `runner_cmd` pointing at a second, independent backend (e.g. a local model). Zero behaviour change when absent or `false`: no dispatch, and `adversarial:approved` is never required by the merge gate. |
 | `roles.docs` | `true` | Updates docs/CHANGELOG; terminal stage |
-| `roles.docs_mode` | `auto` | Only relevant when `roles.docs` is `true`. `auto`: `talos.sh docs-gate <pr> --issue <N>` (the Step 3e Phase 1 verb, also used by `talos.sh run`) reads the PR's changed paths (`pipeline-vcs.sh pr-files <pr>`). It dispatches docs only when the PR changes `README.md`, `docs/**` (`docs/CHANGELOG.d/**` fragments and the `status.fragments_dir` fragments excluded) or `scripts/pipeline-defaults.sh`; docs then receives only those paths (`--docs-paths-file`) instead of the full diff. Otherwise no docs subagent runs: the verb stamps `docs:done` with "no docs-relevant changes" and runs `done docs`. A failed `pr-files` read dispatches (never "nothing to check"). The developer owns the CHANGELOG line (or fragment) in its PR. `always`: docs always dispatches and reads the full diff via `diff-pr`. |
+| `roles.docs_mode` | `auto` | Only relevant when `roles.docs` is `true`. `auto`: `talos.sh docs-gate <pr> --issue <N>` (the Step 3e Phase 1 verb, also used by `talos.sh run`) reads the PR's changed paths (`pipeline-vcs.sh pr-files <pr>`). It dispatches docs only when the PR changes `README.md`, `docs/**` (`docs/CHANGELOG.d/**` fragments excluded) or `scripts/pipeline-defaults.sh`; docs then receives only those paths (`--docs-paths-file`) instead of the full diff. Otherwise no docs subagent runs: the verb stamps `docs:done` with "no docs-relevant changes" and runs `done docs`. A failed `pr-files` read dispatches (never "nothing to check"). The developer owns the CHANGELOG line (or fragment) in its PR. `always`: docs always dispatches and reads the full diff via `diff-pr`. |
 | `roles.changelog_fragments` | `false` | Opt-in (#290, part of #287): docs writes one fragment per issue under `docs/CHANGELOG.d/<issue>.md` instead of editing `CHANGELOG.md`, so parallel PRs never touch the same file. After each merge the orchestrator runs `scripts/pipeline-changelog.sh assemble` to fold consumed fragments into `CHANGELOG.md`'s `## [Unreleased]` section on the base branch (newest first, fragments deleted, non-fatal on failure). Default `false` — docs edits `CHANGELOG.md` as before. |
 | `roles.planner` | `false` | Epic decomposition (optional, off by default) — detects epics (via `epic` label, ≥ 4 checklist items, or body ≥ 2000 chars) and creates dependency-ordered sub-issues; independent sub-issues enter the queue immediately, dependent sub-issues are unblocked automatically as predecessors close. The auto-close sweep does NOT close an epic once its sub-issues finish if the epic's own body still has unticked `- [ ]` acceptance boxes — it gets `pipeline:epic-children-done` and a comment naming what's outstanding instead, and stays open for a human |
 | `comments.enabled` | `true` | Post a stage comment at each handoff (Daedalus parity) |
@@ -3155,15 +3064,6 @@ If your setup predates the config and secrets work (epic #437), check these once
 | `events.enabled` | `true` | Whether every `hooks.post_stage` payload is also appended, as one JSON line, to the local events log — independently of whether `hooks.post_stage` itself is configured. See [Events log](../README.md#events-log) below. |
 | `events.path` | `talos/events.jsonl` | Path to the events log, relative to the **git common dir** (resolved via `git rev-parse --git-common-dir`, so every linked worktree of the same repo appends to the one file and the log lives outside every git tree, #517) unless already absolute (`talos-status.sh` refuses an absolute path or one outside the common dir). |
 | `pr.draft` | `true` | Draft PRs, the default since #435 (#332): the developer opens a DRAFT PR, every stage that needs no CI runs while it is a draft, and `ready-pr` triggers the one CI run (see [Draft PRs](../README.md#draft-prs-prdraft-default-332-435)). `false` keeps the ready flow, where every push runs CI. Supported on `github`, `gitlab` and `azure`; `github-api` and `file` cannot open draft PRs and always use the ready flow (`github-api` warns once). On `github`, Step 0 also checks your workflows with `scripts/pipeline-draft-check.sh` and warns when CI does not skip drafts; when a job skips drafts but `ready_for_review` is missing from `on.pull_request.types` and the key is unset, the run uses the ready flow instead, because QA would wait for a run that never starts. |
-| `status.enabled` | `false` | Opt-in switch for the built-in status file (epic #333). Off by default: with it unset or `false`, `/talos:pipeline` never calls `pipeline-status-file.sh` and changes no behaviour. With `true`, `/talos:pipeline` maintains the log and the Resume block (see "Status file and resume"). |
-| `status.file` | `TALOS_STATUS.md` | Path of the status file, relative to the repo root. |
-| `status.log_heading` | `## Log` | Heading of the log section in the status file. |
-| `status.resume_heading` | `## Resume here` | Heading of the resume section in the status file. |
-| `status.fragments_dir` | `docs/status.d` | Directory for per-issue status fragments. It must be a **tracked** directory: the default is `docs/status.d`, not `.talos/status.d`, because in a consumer repo `.talos/` is either gitignored (the fragment silently never enters the PR) or untracked (`pipeline-vcs.sh assert-sync` aborts on it). `docs/status.d` is tracked and already covered by the `docs/**` and `*.md` defaults of `merge.approval_waiver_paths`, so a fragment commit never makes an approval stale. Mirrors `docs/CHANGELOG.d/`. |
-| `status.archive_dir` | `status/archive` | Directory where log entries rotated out of the status file are archived. |
-| `status.log_days` | `30` | Age limit, in days, for log entries kept in the status file. Must be a positive integer; an invalid value warns once on stderr and the default is used. |
-| `status.log_max` | `50` | Maximum number of log entries kept in the status file. Must be a positive integer; an invalid value warns once and the default is used. |
-| `status.resume_max_lines` | `40` | Maximum number of lines in the resume section. Must be a positive integer; an invalid value warns once and the default is used. |
 | `evidence.enabled` | `false` | Opt-in switch for evidence capture (#352): QA attaches screenshots or recordings of a user-facing change to the PR. Strict `true`/`false`; anything else warns once and reads as absent. `/talos:setup` asks once and writes it. See [Evidence capture](../README.md#evidence-capture-opt-in). |
 | `evidence.command` | unset (empty means agent capture) | Shell command that writes the files, run as `bash -c` at the repo root, only when `evidence.enabled` is `true`. Empty or absent: QA's browser skill saves screenshots itself. At most 2000 characters. |
 | `evidence.dir` | `.talos/evidence` | Directory the files are written to, relative to the repo root. The default `.talos/` location is auto-ignored via `.git/info/exclude` by the in-tree guard (#517, no gitignore file); a custom dir outside `.talos/` is NOT covered by that guard (it only appends `.talos/`) — set such a directory only if the repo already ignores it. |

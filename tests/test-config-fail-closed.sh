@@ -31,32 +31,32 @@ assert_eq "$SANDBOX/talos-home" "$TALOS_HOME" "TALOS_HOME is the sandbox directo
 case "$HOME" in "$SANDBOX"/*) pass "HOME is inside the sandbox" ;; *) fail "HOME is inside the sandbox" "HOME=$HOME" ;; esac
 
 # ── (2) --has: its own exit code for a parse error ───────────────────────────
-printf '%s\n' '{"status": {"enabled": true}}' > talos.pipeline.json
-bash "$CFG_SH" --has status.enabled; _rc=$?
+printf '%s\n' '{"merge": {"auto": true}}' > talos.pipeline.json
+bash "$CFG_SH" --has merge.auto; _rc=$?
 assert_eq "0" "$_rc" "--has: a key that is set exits 0"
 bash "$CFG_SH" --has evidence.enabled; _rc=$?
 assert_eq "1" "$_rc" "--has: an absent key in a good config exits 1"
-printf '%s\n' '{"status": {"enabled": ' > talos.pipeline.json
-bash "$CFG_SH" --has status.enabled 2>"$SANDBOX/err"; _rc=$?
+printf '%s\n' '{"merge": {"auto": ' > talos.pipeline.json
+bash "$CFG_SH" --has merge.auto 2>"$SANDBOX/err"; _rc=$?
 assert_eq "3" "$_rc" "--has: a config that does not parse exits 3, not 1"
 assert_contains "$(cat "$SANDBOX/err")" "could not be parsed" "--has: the parse error is explained on stderr"
 assert_not_contains "$(cat "$SANDBOX/err")" "enabled" "--has: the message does not echo config content"
 # a key found in the layer that did parse is still set
-printf '%s\n' '{"status": {"enabled": true}}' > "$TALOS_HOME/talos.pipeline.json"
-bash "$CFG_SH" --has status.enabled 2>/dev/null; _rc=$?
+printf '%s\n' '{"merge": {"auto": true}}' > "$TALOS_HOME/talos.pipeline.json"
+bash "$CFG_SH" --has merge.auto 2>/dev/null; _rc=$?
 assert_eq "0" "$_rc" "--has: a key set in the global file is found although the repo file is malformed"
 bash "$CFG_SH" --has evidence.enabled 2>/dev/null; _rc=$?
 assert_eq "3" "$_rc" "--has: an absent key with a malformed repo file is unknown (3)"
 rm -f "$TALOS_HOME/talos.pipeline.json" "$PROJ/talos.pipeline.json"
 # a malformed global file counts as well
-printf '%s\n' '{"status": ' > "$TALOS_HOME/talos.pipeline.json"
+printf '%s\n' '{"merge": ' > "$TALOS_HOME/talos.pipeline.json"
 printf '%s\n' '{"board": {"enabled": true}}' > "$PROJ/talos.pipeline.json"
-bash "$CFG_SH" --has status.enabled 2>/dev/null; _rc=$?
+bash "$CFG_SH" --has merge.auto 2>/dev/null; _rc=$?
 assert_eq "3" "$_rc" "--has: an absent key with a malformed global file is unknown (3)"
 bash "$CFG_SH" --has board.enabled 2>/dev/null; _rc=$?
 assert_eq "0" "$_rc" "--has: a key set in the good repo file is still 0"
 rm -f "$TALOS_HOME/talos.pipeline.json" "$PROJ/talos.pipeline.json"
-bash "$CFG_SH" --has status.enabled; _rc=$?
+bash "$CFG_SH" --has merge.auto; _rc=$?
 assert_eq "1" "$_rc" "--has: no config at all exits 1"
 
 # ── (1) fail closed without a usable pipeline-defaults.sh ────────────────────
@@ -245,7 +245,7 @@ assert_eq "" "$(grep -ln 'bash "$SCRIPT_DIR/pipeline-config.sh" "\$@"' "$SCRIPTS
 # ── the 2>/dev/null wrappers fail closed for a security key ──────────────────
 # pipeline-status-file.sh (roles.*, merge.auto) and pipeline-changelog.sh used to
 # wrap pipeline-config.sh in 2>/dev/null; both now read through the cache's cfg().
-# refresh --print runs against a copy of scripts/ with a verb-level vcs stub.
+# collect runs against a copy of scripts/ with a verb-level vcs stub.
 mk_sf_variant() {  # NAME -> scripts dir (copy, stub vcs)
   local d="$SANDBOX/sf-$1"
   mkdir -p "$d" || return 1
@@ -266,18 +266,17 @@ git init -q --bare "$SANDBOX/origin.git" || exit 1
 git -C "$GITREPO" remote add origin "$SANDBOX/origin.git"
 git -C "$GITREPO" push -q origin main || exit 1
 git -C "$GITREPO" fetch -q origin main
-# every status.* key set explicitly, so a broken table is first felt at a role key
-printf '%s\n' '{"base_branch": "main", "status": {"enabled": true, "file": "TALOS_STATUS.md", "log_heading": "## Log", "resume_heading": "## Resume here", "fragments_dir": "docs/status.d", "archive_dir": "status/archive", "log_days": 30, "log_max": 50, "resume_max_lines": 40}}' > "$GITREPO/talos.pipeline.json"
+printf '%s\n' '{"base_branch": "main"}' > "$GITREPO/talos.pipeline.json"
 D="$(mk_sf_variant intact)" || exit 1
-out="$(cd "$GITREPO" && bash "$D/pipeline-status-file.sh" refresh --print 2>"$SANDBOX/err")"; rc=$?
-assert_eq "0" "$rc" "status file, intact table: refresh --print exits 0"
-assert_contains "$out" "## Resume here" "status file, intact table: refresh --print prints the block"
+out="$(cd "$GITREPO" && bash "$D/pipeline-status-file.sh" collect 2>"$SANDBOX/err")"; rc=$?
+assert_eq "0" "$rc" "collect, intact table: exits 0"
+assert_contains "$out" '"prs": []' "collect, intact table: prints the state"
 D="$(mk_sf_variant broken)" || exit 1
 printf '%s' 'truncated' > "$D/pipeline-defaults.sh"
-out="$(cd "$GITREPO" && bash "$D/pipeline-status-file.sh" refresh --print 2>"$SANDBOX/err")"; rc=$?
-assert_eq "1" "$([ "$rc" -ne 0 ] && echo 1 || echo 0)" "status file, broken table: refresh --print fails (rc $rc)"
-assert_not_contains "$out" "## Resume here" "status file, broken table: no block is printed"
-assert_contains "$(cat "$SANDBOX/err")" "stopping rather than guess" "status file, broken table: the fail-closed line names the cause"
+out="$(cd "$GITREPO" && bash "$D/pipeline-status-file.sh" collect 2>"$SANDBOX/err")"; rc=$?
+assert_eq "1" "$([ "$rc" -ne 0 ] && echo 1 || echo 0)" "collect, broken table: fails (rc $rc)"
+assert_not_contains "$out" '"prs"' "collect, broken table: no state is printed"
+assert_contains "$(cat "$SANDBOX/err")" "stopping rather than guess" "collect, broken table: the fail-closed line names the cause"
 # pipeline-changelog.sh has no lookup of its own left: its cfg() is the cache's.
 assert_eq "0" "$(grep -c 'bash .*pipeline-config.sh' "$SCRIPTS/pipeline-changelog.sh" || true)" "pipeline-changelog.sh does not run pipeline-config.sh itself"
 # pipeline-draft-check.sh is fail open by contract ("a check problem never blocks a run"). It reads

@@ -350,9 +350,10 @@ BUD_AFTER="$(bash "$BUDGET_SH" check --issue 7 2>/dev/null)"
 assert_contains "$BUD_AFTER" "used=2722 " "budget: used goes up by the recorded tokens"
 assert_contains "$BUD_AFTER" "unrecorded=1" "budget: the unparseable run is still the only unrecorded one"
 COST_LINE="$(bash "$EVENTS_SH" cost --issue 7 --line 2>/dev/null)"
-STATUS_LINE="$(cd "$SANDBOX" && bash "$STATUS_SH" --line --format issue,issue_tokens 2>/dev/null)"
+STATUS_LINE="$(cd "$SANDBOX" && bash "$STATUS_SH" --line 2>/dev/null)"
 assert_contains "$COST_LINE" "issue total 3k (+1 unrecorded)" "cost --line shows the recorded tokens"
-assert_contains "$STATUS_LINE" "3k (+1 unrecorded)" "talos-status --line agrees with cost --line"
+assert_contains "$STATUS_LINE" "talos #7 " "talos-status --line names the issue"
+case "$STATUS_LINE" in *" 3k") pass "talos-status --line agrees with cost --line on the total" ;; *) fail "talos-status --line agrees with cost --line on the total" "$STATUS_LINE" ;; esac
 # a stage_attempt event counts in cost
 reset
 set_cfg '{"agents": {"fallback": ["codex"]}}'

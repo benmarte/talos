@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # test-setup-evidence.sh -- the /pipeline-setup evidence capture step (#411,
-# part of epic #352). Grep-based like test-setup-status-file.sh, plus sandbox
+# part of epic #352). Grep-based like the other setup-skill tests, plus sandbox
 # runs: the fenced detection, `.gitignore` and `gh` capability commands are
 # extracted from the skill and executed, so the test runs the text the wizard
 # actually shows.
@@ -23,11 +23,11 @@ fence() {
   awk -v p="$1" '/^```bash$/{buf=""; inb=1; next} /^```$/{ if (inb && index(buf, p)) printf "%s", buf; inb=0; buf=""; next} inb{buf = buf $0 "\n"}' "$SETUP"
 }
 
-# ── Placement: Step 4c sits after 4b and before Step 5 ───────────────────────
-b_line="$(grep -n '^## Step 4b' "$SETUP" | head -1 | cut -d: -f1)"
+# ── Placement: Step 4c sits after Step 4 and before Step 5 ───────────────────
+b_line="$(grep -n '^## Step 4 ' "$SETUP" | head -1 | cut -d: -f1)"
 c_line="$(grep -n '^## Step 4c' "$SETUP" | head -1 | cut -d: -f1)"
 five_line="$(grep -n '^## Step 5 ' "$SETUP" | head -1 | cut -d: -f1)"
-assert_eq "1" "$([ -n "$c_line" ] && [ -n "$b_line" ] && [ "$c_line" -gt "$b_line" ] && [ "$c_line" -lt "$five_line" ] && echo 1 || echo 0)" "the evidence question sits after Step 4b and before Step 5 (Step 4c)"
+assert_eq "1" "$([ -n "$c_line" ] && [ -n "$b_line" ] && [ "$c_line" -gt "$b_line" ] && [ "$c_line" -lt "$five_line" ] && echo 1 || echo 0)" "the evidence question sits after Step 4 and before Step 5 (Step 4c)"
 Q="$(step '## Step 4c')"
 assert_contains "$Q" "evidence capture" "Step 4c is the evidence capture question"
 

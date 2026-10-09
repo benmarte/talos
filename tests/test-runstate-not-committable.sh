@@ -91,7 +91,6 @@ assert_contains "$(cat "$PATHS")" "_talos_state_dir()" "AC2: scripts/pipeline-pa
 for f in pipeline-hooks.sh pipeline-events.sh pipeline-worktree.sh; do
   assert_contains "$(cat "$TALOS_ROOT/scripts/$f")" "_talos_state_dir" "AC2: $f resolves the run state through _talos_state_dir"
 done
-assert_contains "$(sed -n '/def events_log_path/,/return path/p' "$STATUS")" "root = common_dir" "AC2: talos-status.sh roots the events log on the git common dir, not its parent"
 NOT_A_REPO="$(safe_mktemp_dir "${TMPDIR:-/tmp}/talos-runstate-notrepo.XXXXXX")" || exit 1
 bash -c 'cd "$1" && . "$2" && _talos_state_dir >/dev/null 2>&1' _ "$NOT_A_REPO" "$PATHS"; rc=$?
 assert_eq "1" "$rc" "AC2: _talos_state_dir exits 1 outside a git repository"

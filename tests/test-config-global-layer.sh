@@ -52,7 +52,7 @@ print("\n".join(bad))
 print("REPO=" + " ".join(repo))
 TALOS_PYscp4Hq8Wn2Zt
 )"
-EXPECTED_REPO="base_branch board.azure_states.* board.azure_states.done board.azure_states.in_progress board.azure_states.in_review board.azure_states.ready board.enabled board.owner board.project_number board.status_field board.status_map.* board.statuses.* evidence.command issues.label_filter issues.skip_labels markers.trusted_authors markers.verify_authors merge.approval_waiver_paths merge.forbidden_files merge.forbidden_files_allow merge.forbidden_files_replace merge.required_checks merge.union_paths release_branch repo status.archive_dir status.file status.fragments_dir vcs.azure.area_path vcs.azure.org_url vcs.azure.project vcs.azure.work_item_type vcs.file.source.path vcs.provider vcs.repo verify verify.commands verify.qa_mode"
+EXPECTED_REPO="base_branch board.azure_states.* board.azure_states.done board.azure_states.in_progress board.azure_states.in_review board.azure_states.ready board.enabled board.owner board.project_number board.status_field board.status_map.* board.statuses.* evidence.command issues.label_filter issues.skip_labels markers.trusted_authors markers.verify_authors merge.approval_waiver_paths merge.forbidden_files merge.forbidden_files_allow merge.forbidden_files_replace merge.required_checks merge.union_paths release_branch repo vcs.azure.area_path vcs.azure.org_url vcs.azure.project vcs.azure.work_item_type vcs.file.source.path vcs.provider vcs.repo verify verify.commands verify.qa_mode"
 assert_eq "REPO=$EXPECTED_REPO" "$(printf '%s\n' "$_scope_out" | tail -n1)" "the repo-only set is exactly the owner-approved list (hooks.* and notifications.cmd stay global)"
 assert_eq "" "$(printf '%s\n' "$_scope_out" | sed '$d')" "every table row's scope is any or repo"
 
@@ -109,11 +109,11 @@ assert_not_contains "$(bash "$CFG_SH" --has board.owner 2>/dev/null && echo yes)
 
 # Every repo-only group, one key each, one note each
 reset_cfg
-glob_json '{"base_branch":"b1","release_branch":"b2","repo":"o/r","vcs":{"provider":"azure","repo":"o/r2","azure":{"org_url":"u","project":"p"},"file":{"source":{"path":"x.md"}}},"board":{"enabled":false,"project_number":4,"statuses":{"ready":"R"},"status_map":{"a":"b"}},"verify":{"commands":["make"],"qa_mode":"ci"},"merge":{"required_checks":["ci"],"forbidden_files":["f"],"forbidden_files_allow":["g"],"approval_waiver_paths":["w"],"union_paths":["u"]},"markers":{"trusted_authors":["t"],"verify_authors":false},"issues":{"label_filter":"l","skip_labels":["s"]},"evidence":{"command":"c"},"status":{"file":"S.md","fragments_dir":"fd","archive_dir":"ad"}}'
+glob_json '{"base_branch":"b1","release_branch":"b2","repo":"o/r","vcs":{"provider":"azure","repo":"o/r2","azure":{"org_url":"u","project":"p"},"file":{"source":{"path":"x.md"}}},"board":{"enabled":false,"project_number":4,"statuses":{"ready":"R"},"status_map":{"a":"b"}},"verify":{"commands":["make"],"qa_mode":"ci"},"merge":{"required_checks":["ci"],"forbidden_files":["f"],"forbidden_files_allow":["g"],"approval_waiver_paths":["w"],"union_paths":["u"]},"markers":{"trusted_authors":["t"],"verify_authors":false},"issues":{"label_filter":"l","skip_labels":["s"]},"evidence":{"command":"c"}}'
 get base_branch >/dev/null
-assert_eq "27" "$(errlines)" "(b) one note per dropped repo-only key (27 keys across every group)"
+assert_eq "24" "$(errlines)" "(b) one note per dropped repo-only key (24 keys across every group)"
 _e="$(cat "$ERR")"
-for _k in base_branch release_branch repo vcs.provider vcs.repo vcs.azure.org_url vcs.azure.project vcs.file.source.path board.enabled board.project_number board.statuses.ready board.status_map.a verify.commands verify.qa_mode merge.required_checks merge.forbidden_files merge.forbidden_files_allow merge.approval_waiver_paths merge.union_paths markers.trusted_authors markers.verify_authors issues.label_filter issues.skip_labels evidence.command status.file status.fragments_dir status.archive_dir; do
+for _k in base_branch release_branch repo vcs.provider vcs.repo vcs.azure.org_url vcs.azure.project vcs.file.source.path board.enabled board.project_number board.statuses.ready board.status_map.a verify.commands verify.qa_mode merge.required_checks merge.forbidden_files merge.forbidden_files_allow merge.approval_waiver_paths merge.union_paths markers.trusted_authors markers.verify_authors issues.label_filter issues.skip_labels evidence.command; do
   assert_contains "$_e" "'$_k'" "(b) the repo-only key $_k is named in a note"
 done
 assert_eq "main" "$(bash "$CFG_SH" release_branch 2>/dev/null)" "(b) a dropped repo-only key falls back to the table default"
@@ -162,7 +162,7 @@ assert_eq "repopat" "$(get merge.forbidden_files)" "(c) merge.forbidden_files: t
 
 # ── (d) --dump and the single-key path agree for every key ───────────────────
 reset_cfg
-glob_json '{"pr":{"draft":false},"limits":{"max_fix_attempts":5,"warn_at":5,"tokens_per_issue":9000},"spend":{"comment":"maybe"},"evidence":{"enabled":"yes","max_files":7,"dir":"../up"},"verify":{"ci_wait_s":"abc","timeout_ms":1234,"commands":["x"]},"hooks":{"timeout_s":-3,"pre_dispatch":"echo hi"},"status":{"log_days":12,"file":"G.md"},"notifications":{"events":["a","b"],"slack_channel":"CG","cmd_timeout_s":4},"agents":{"model":"sonnet","effort":"nope","fallback":["pi","pi"],"provider_down_s":7,"roles":{"qa":{"model":"gq","effort":"high","fallback":["codex"]}}},"board":{"owner":"gone"},"vcs":{"token_env":"TOK"}}'
+glob_json '{"pr":{"draft":false},"limits":{"max_fix_attempts":5,"warn_at":5,"tokens_per_issue":9000},"spend":{"comment":"maybe"},"evidence":{"enabled":"yes","max_files":7,"dir":"../up"},"verify":{"ci_wait_s":"abc","timeout_ms":1234,"commands":["x"]},"hooks":{"timeout_s":-3,"pre_dispatch":"echo hi"},"notifications":{"events":["a","b"],"slack_channel":"CG","cmd_timeout_s":4},"agents":{"model":"sonnet","effort":"nope","fallback":["pi","pi"],"provider_down_s":7,"roles":{"qa":{"model":"gq","effort":"high","fallback":["codex"]}}},"board":{"owner":"gone"},"vcs":{"token_env":"TOK"}}'
 proj_json '{"limits":{"warn_at":0.7},"merge":{"required_checks":["ci"]},"board":{"project_number":3},"notifications":{"events":["c"]},"agents":{"roles":{"docs":{"model":"rd"}}}}'
 export PIPELINE_SLACK_CHANNEL=CENV PIPELINE_BOARD_OWNER=envowner
 _parity="$(python3 -I - "$CFG_SH" "$DEFAULTS_SH" <<'TALOS_PYpar9Rk3Vb6Lm'

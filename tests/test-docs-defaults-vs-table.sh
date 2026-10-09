@@ -185,7 +185,7 @@ if guide_cfg is None:
     fail("user guide: no '## Config reference' section")
     guide_cfg = ""
 seen = check_doc("user guide", doc_rows(guide_cfg), True)
-# Key tables elsewhere in the guide (the status keys, the evidence keys) state
+# Key tables elsewhere in the guide (the evidence keys) state
 # defaults too: same comparison, no duplicate or unknown-row rule.
 check_doc("user guide", doc_rows(guide.replace(guide_cfg, "")), False, dups=False)
 for key in TABLE:
@@ -342,13 +342,13 @@ else
   assert_contains "$OUT" 'FAIL: user guide: `board.enabled` states' "board.enabled stated as false is red (the #446 drift)"
 fi
 
-# a key table outside the Config reference (the status keys) is checked too
-sed 's/^| `status.log_max` | `50` | Most log entries kept\./| `status.log_max` | `60` | Most log entries kept./' "$GUIDE" > "$T/guide-status.md"
+# a key table outside the Config reference (the evidence keys) is checked too
+sed 's/^| `evidence.when` | `user-facing` |/| `evidence.when` | `always` |/' "$GUIDE" > "$T/guide-status.md"
 if cmp -s "$GUIDE" "$T/guide-status.md"; then
-  fail "fixture: the status.log_max row edit applied" "the row was not found in the user guide"
+  fail "fixture: the evidence.when row edit applied" "the row was not found in the user guide"
 else
   OUT="$(run_check "$T/guide-status.md" "$README" 2>&1)"
-  assert_contains "$OUT" 'FAIL: user guide: `status.log_max` states' "a changed default in the status key table is red"
+  assert_contains "$OUT" 'FAIL: user guide: `evidence.when` states' "a changed default in the evidence key table is red"
 fi
 
 # ── red on a deleted row ─────────────────────────────────────────────────────

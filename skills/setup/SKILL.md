@@ -32,7 +32,6 @@ If a config **exists**:
 - Read it with `bash scripts/pipeline-config.sh <key>` to show current values (a key that is not set prints its documented default).
 - Tell the user: "Found an existing config. Here's what's set: ..."
 - Ask: "Would you like to update any of these settings, or is this just a re-run to bootstrap labels?"
-- If no changes needed: run `bash scripts/pipeline-config.sh --has status.enabled` (exit 0 set, 1 not set, 3 the config does not parse or the config set is dirty -- the reason line on stderr says which, and for `config-shadowed`/`config-legacy-file` apply the `--convert`/`rm` it prints before retrying: tell the user and skip this check). On exit 1 (no `status:` block yet), ask Step 4b's question once; on yes add ONLY the `status:` block to the existing file (show the lines to add and write only after an explicit yes; never rewrite the rest of the file, per the Idempotency rules), then run Step 7b. A no adds `status:` with `enabled: false` the same way (no Step 7b), so the question is not asked again. A JSON config cannot be re-serialised without losing its formatting and key order, so never parse and re-write it: show the single line `"status": { "enabled": true },` (`false` on a no) and add it as a new line directly after the file's opening `{`, leaving every other byte alone. If the object is empty (`{}`), drop the trailing comma.
 - If no changes needed and `bash scripts/pipeline-config.sh vcs.provider` prints `github`: run `bash scripts/pipeline-config.sh --has evidence.enabled` (same exit codes). On exit 1 (no `evidence:` block yet), ask Step 4c's question once; on anything but "ask me later" add ONLY the `evidence:` block to the existing file (show the lines to add and write only after an explicit yes; never rewrite the rest of the file, per the Idempotency rules). "Ask me later" writes nothing. A config that already has `enabled: false` is never re-asked.
 - If no changes needed, in every case (whatever the check above printed): run Step 7c with the harness from `bash scripts/pipeline-config.sh agents.runner`, then Step 7d, then jump to Step 8 (bootstrap labels) and Step 10 (test notification).
 
@@ -129,21 +128,6 @@ Also ask (2 more questions, defaults shown, only if the user wants to change the
 >   when the developer's diff already covers CHANGELOG + README/docs, or is
 >   scripts/tests-only with a CHANGELOG entry) or `always` (docs subagent always
 >   runs and reads the full diff)? [auto — `roles.docs_mode`]"
-
----
-
-## Step 4b — Ask: status file
-
-When `vcs.provider: file`, skip this question with one line ("No status file: file mode has no PRs to log.") and record it as declined. Otherwise ask once:
-
-> "Keep a status file in this repo? It is a short page, `TALOS_STATUS.md`, that records what merged and what is waiting on you, so a stopped run can be resumed later, with any LLM. What it costs:
-> - Talos commits updates to it straight to your base branch, as `[skip ci]` commits: one per merged PR, and one each time the Resume block is refreshed.
-> - The docs stage adds one small file per PR under `docs/status.d/`.
-> - Heads up: a protected base branch needs an admin or bypass token, otherwise the pushes are rejected and the file is not updated.
->
-> [default: **no**]"
-
-On yes: `status.enabled: true` in Step 7, then Step 7b creates the file. On no (and on an empty answer, since the default is no): the block is written with `enabled: false` (an active block, so Step 0 never asks again), and Step 7b is skipped.
 
 ---
 
@@ -410,10 +394,6 @@ Based on the collected answers, write `talos.pipeline.json` in the current direc
     "adversarial": false
   },
 
-  "status": {
-    "enabled": <true|false>
-  },
-
   "evidence": {
     "enabled": <true|false>,
     "dir": "<EVIDENCE_DIR>"
@@ -444,7 +424,7 @@ Based on the collected answers, write `talos.pipeline.json` in the current direc
 ```
 
 When writing the file (omit the whole block when its keys are not configured):
-- Status file (Step 4b): accepted writes `"status": { "enabled": true }`; declined writes `"status": { "enabled": false }` (an ACTIVE block, never omitted, so a re-run never asks again); skipped for `vcs.provider: file` omits the key. `vcs.repo` is omitted: it auto-detects from `git remote get-url origin`. The status file is NOT added to `merge.union_paths` (fragments replace union merging).
+- `vcs.repo` is omitted: it auto-detects from `git remote get-url origin`.
 - Evidence (Step 4c): accepted writes `"evidence": { "enabled": true, "dir": "<the normalised dir= value Step 4c printed, never the typed text>", "command": "<the typed command>" }` (a typed command carries backslashes and quotes, so it is written as a JSON string literal; on the agent-capture path omit the `"command"` key: `"evidence": { "enabled": true, "dir": "<dir>" }`). `dir` and `command` are written only when accepted; `store` is not written (`attach` is the only value). Declined, "off" and "off" after the newer-gh message write `"evidence": { "enabled": false }` -- an ACTIVE block, never omitted (JSON has no comments, so a commented block cannot even exist), so every re-run sees `evidence.enabled` set and does not ask again. "Ask me later" and a skipped provider (`gitlab`, `azure`, `file`) omit the key.
 - Extra forbidden patterns (the merge-gate question below): a yes writes an active `"forbidden_files"` list inside `merge` with the defaults plus the user's extras: `"forbidden_files": [".env", ".env.*", "*.pem", "*.key", "*.p12", "*.pfx", "*.secrets", "secrets.*"]`; a no omits the key (the built-in defaults apply).
 - If harness = `claude`: omit the `agents` block entirely (Claude Code spawns native subagents and ignores it).
@@ -462,18 +442,6 @@ If yes: write the active `forbidden_files` list described above.
 If no: omit `forbidden_files` (the built-in defaults apply).
 
 Tell the user: "Written `talos.pipeline.json`. Here's a summary of what's configured: ..."
-
----
-
-## Step 7b — Create the status file (only if Step 4b was accepted)
-
-Skip when Step 4b was declined or skipped (`vcs.provider: file`). Otherwise, from the repo root:
-
-```bash
-bash scripts/pipeline-status-file.sh init
-```
-
-It prints `created`, `appended` (an existing file was missing a heading) or `already has both headings`, and exits 0; it never overwrites an existing file and it does not commit. Tell the user: "Commit `talos.pipeline.json` and the status file together, so the first run starts from a base that has both." If it exits non-zero, show its message and carry on without the file (`status.enabled` stays true; `init` is safe to re-run).
 
 ---
 
@@ -500,7 +468,7 @@ bash scripts/pipeline-instructions.sh write . --harness <harness>
 
 ## Step 7d — Offer to update old command names
 
-Talos commands are now `/talos:pipeline`, `/talos:setup` and `/talos:resume`. The old names `/pipeline`, `/pipeline-setup` and `/talos:pipeline-setup` still run as aliases until v0.20, so declining here breaks nothing. Look for them in this repo's instruction files:
+Talos commands are now `/talos:pipeline` and `/talos:setup`. The old names `/pipeline`, `/pipeline-setup` and `/talos:pipeline-setup` still run as aliases until v0.20, so declining here breaks nothing. Look for them in this repo's instruction files:
 
 ```bash
 grep -nE '(^|[^A-Za-z0-9_./:-])/(pipeline-setup|pipeline)([^A-Za-z0-9_:/-]|$)|/talos:pipeline-setup' CLAUDE.md AGENTS.md 2>/dev/null
@@ -707,7 +675,6 @@ Roles:        validator pm developer qa reviewer security docs [adversarial]
 Board:        <enabled/disabled>
 Notifications: <configured platforms or "none">
 Harness:      <claude (native subagents) | pi | codex | gemini | antigravity | custom>
-Status file:  <status.file path, e.g. TALOS_STATUS.md, or "disabled">
 Evidence:     <evidence.dir, or "off" / "not asked">
 
 Control labels (created by bootstrap-labels.sh in Step 8):
@@ -736,7 +703,6 @@ Next steps:
 ## Idempotency rules
 
 - Never overwrite an existing `talos.pipeline.json` without the user's explicit confirmation, and never write it alongside a legacy `talos.pipeline.yml`/`.yaml` (offer `--convert` or the `rm` first, #526).
-- An existing status file is never overwritten: `init` leaves it alone and appends only a missing heading.
 - The evidence re-run adds only the `evidence:` block, after an explicit yes; the workflow files are never edited, and `.gitignore` gets one appended line only after its own explicit yes.
 - If `bootstrap-labels.sh` reports a label already exists, that is not an error — say "already up to date".
 - Running setup a second time on a configured repo should be safe and produce no surprises.

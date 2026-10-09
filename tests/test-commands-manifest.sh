@@ -18,8 +18,8 @@ if ! declare -p TALOS_COMMANDS >/dev/null 2>&1; then
   exit 1
 fi
 
-assert_eq "pipeline setup resume" "${TALOS_COMMANDS[*]}" \
-  "TALOS_COMMANDS lists the three commands in order"
+assert_eq "pipeline setup" "${TALOS_COMMANDS[*]}" \
+  "TALOS_COMMANDS lists the two commands in order"
 
 # The set of skills/*/ directories holding a SKILL.md equals TALOS_COMMANDS plus
 # the alias directory, and the alias is not a command.

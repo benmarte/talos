@@ -55,7 +55,7 @@ assert_contains "$OUT" "registered: talos@talos" "fresh: output says the plugin 
 assert_contains "$OUT" "copied the plugin into its plugin cache" "fresh: output says Claude Code copies the plugin into its cache"
 assert_not_contains "$OUT" "loads from $TALOS_ROOT in place" "fresh: output no longer claims the plugin loads from the checkout in place"
 assert_contains "$OUT" "agent-skills dependency" "fresh: output names the agent-skills side effect"
-assert_contains "$OUT" "/talos:pipeline, /talos:setup, /talos:resume" "fresh: the closing note names the three commands"
+assert_contains "$OUT" "/talos:pipeline, /talos:setup (plugin" "fresh: the closing note names the two commands"
 # Isolation: every call saw the sandbox config dir, never a real one.
 bad="$(grep -vF "CLAUDE_CONFIG_DIR=$CASE/claude" "$CLAUDE_PLUGIN_LOG" || true)"
 assert_eq "" "$bad" "fresh: every claude call ran with CLAUDE_CONFIG_DIR inside the sandbox"

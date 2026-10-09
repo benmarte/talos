@@ -246,7 +246,6 @@ assert_contains "$out_with" "/pipeline" \
 #        scripts/pipeline-paths.sh (canonical definition)
 #        skills/pipeline/SKILL.md
 #        skills/setup/SKILL.md
-#        skills/resume/SKILL.md
 #
 # RED when any site drifts: A catches dropped delegation; B catches literal divergence.
 
@@ -272,8 +271,7 @@ for probe_str in '${TALOS_HOME:+' ".talos/scripts" '${CLAUDE_PLUGIN_ROOT:+' ".cl
   for pf in \
     "$TALOS_ROOT/scripts/pipeline-paths.sh" \
     "$TALOS_ROOT/skills/pipeline/SKILL.md" \
-    "$TALOS_ROOT/skills/setup/SKILL.md" \
-    "$TALOS_ROOT/skills/resume/SKILL.md"; do
+    "$TALOS_ROOT/skills/setup/SKILL.md"; do
     if grep -qF "$probe_str" "$pf"; then
       pass "$(basename "$pf") contains probe string: $probe_str"
     else

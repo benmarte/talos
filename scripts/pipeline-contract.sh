@@ -65,7 +65,7 @@ TALOS_RUNNERS=(
 # a playbook and its entry land together. skills/pipeline-setup/ is NOT a
 # command: it is the deprecated /talos:pipeline-setup alias (#335), removed in
 # v0.20.
-TALOS_COMMANDS=(pipeline setup resume)
+TALOS_COMMANDS=(pipeline setup)
 
 # The subset of TALOS_ROLES that carries an approval label (gated by
 # check-approval-sha / post-approval), in the same order as

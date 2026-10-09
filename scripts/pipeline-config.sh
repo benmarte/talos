@@ -97,8 +97,7 @@ set -u
 # exactly like the single-key path below does. Same file lookup, and the same "verify" (dict-form → commands
 # list) / "verify.qa_mode" (merge.required_checks-derived default, fail-
 # closed downgrade) / "verify.timeout_ms" / "verify.ci_wait_s" /
-# "hooks.timeout_s" / "notifications.cmd_timeout_s" / "status.log_days" /
-# "status.log_max" / "status.resume_max_lines" (positive-integer
+# "hooks.timeout_s" / "notifications.cmd_timeout_s" (positive-integer
 # validation, fail-closed to the caller's default) special cases as the
 # single-key path, so a lookup
 # against this dump is byte-identical to calling this script for that key
@@ -789,9 +788,6 @@ _INT_KEYS = {
     "hooks.timeout_s": ("seconds", 1, 86400),
     "notifications.cmd_timeout_s": ("seconds", 1, 86400),
     "notifications.buzz_timeout_s": ("seconds", 1, 3600),
-    "status.log_days": ("days", 1, 999999),
-    "status.log_max": ("entries", 1, 999999),
-    "status.resume_max_lines": ("lines", 1, 999999),
     "limits.max_fix_attempts": ("attempts", 1, 100),
     "limits.max_total_dispatches": ("dispatches", 1, 1000),
     "execution.worktree_warn_threshold": ("worktrees", 0, 10000),
@@ -1501,7 +1497,7 @@ fi
 # ── --has KEY (#439, #440) ────────────────────────────────────────────────────
 # Exit 0 when KEY is set (a non-null value, a subtree counts) in any file layer,
 # exit 1 when it is absent -- for the "is it configured at all" probes that used
-# to pass a sentinel default (`pipeline-config.sh status.enabled unset`). Never
+# to pass a sentinel default (`unset` as the default argument). Never
 # consults the table: a key that only has a table default is NOT set. No config
 # file means exit 1 with no python3 spawn. Exit 3 when KEY was not found AND a
 # config file could not be parsed (malformed), or when the config set is dirty

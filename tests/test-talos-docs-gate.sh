@@ -2,8 +2,7 @@
 # test-talos-docs-gate.sh -- `scripts/talos.sh docs-gate <pr> --issue <N>` (#546, epic #558).
 #
 # The docs stage costs an LLM dispatch only when the PR changes something docs
-# own: README.md, docs/** (not CHANGELOG fragments, not the status fragments
-# dir) or scripts/pipeline-defaults.sh (a config key). Everything else is
+# own: README.md, docs/** (not CHANGELOG fragments) or scripts/pipeline-defaults.sh (a config key). Everything else is
 # stamped docs:done by code. This file pins, against a journaling stub of
 # pipeline-vcs.sh:
 #   (a) the decision: scripts+tests+changelog -> skip; README, docs/**, a
@@ -99,17 +98,7 @@ reset $'docs/CHANGELOG.d/546.md\nscripts/talos.sh'
 dg 7 --issue 3
 assert_contains "$OUT" "docs=skip reason=no-docs-paths" "a CHANGELOG fragment alone is not docs-relevant"
 
-reset $'docs/status.d/3-7.md\nscripts/talos.sh'
-dg 7 --issue 3
-assert_contains "$OUT" "docs=skip reason=no-docs-paths" "a status fragment (default dir) alone is not docs-relevant"
-
-reset $'notes/x.md\nscripts/talos.sh'
-cfg_json '{"vcs": {"provider": "github"}, "comments": {"enabled": false}, "status": {"enabled": true, "fragments_dir": "docs/notes/"}}'
-printf 'docs/notes/3-7.md\n' > "$STUB_DIR/pr-files.out"
-dg 7 --issue 3
-assert_contains "$OUT" "docs=skip reason=no-docs-paths" "a status fragment under a configured fragments_dir is not docs-relevant"
-
-reset $'docs/CHANGELOG.d/546.md\nREADME.md\ndocs/status.d/3-7.md\ndocs/guide.md'
+reset $'docs/CHANGELOG.d/546.md\nREADME.md\ndocs/guide.md'
 dg 7 --issue 3
 assert_contains "$OUT" "docs=dispatch" "fragments plus README plus docs: dispatch"
 assert_eq $'README.md\ndocs/guide.md' "$(cat "$PF")" "a mix: fragments are left out of the paths file"

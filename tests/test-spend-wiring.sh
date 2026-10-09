@@ -96,7 +96,6 @@ assert_not_contains "$step4_ci" "gate fix-round" "Step 4 never runs gate fix-rou
 restamp="$(grep -n 'RESTAMP_FAIL' "$SKILL_MD" | grep -i 'budget' || true)"
 assert_eq "" "$restamp" "RESTAMP_FAIL lines carry no budget check"
 
-assert_contains "$skill_flat" 'a budget stop (Step 3)' "Rule 20 lists a budget stop"
 # The post-merge items moved into `talos.sh post-merge` (#467): the spend block runs
 # once, after the merged event, and only for a first run (tests/test-talos-postmerge.sh).
 pm_run="$(sed -n '/^_talos_post_merge_run() {/,/^}/p' "$TALOS_ROOT/scripts/talos.sh")"

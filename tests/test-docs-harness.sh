@@ -208,9 +208,6 @@ done
 assert_contains "$guide_flat" 'never writes the block into `CLAUDE.md`' "guide: the block is never written into CLAUDE.md"
 assert_contains "$guide_flat" '--resolve-profile' "guide documents --resolve-profile"
 assert_contains "$guide_flat" '.agents/talos/agents/<role>.md' "guide documents the neutral role override path"
-assert_contains "$guide_flat" '~/.talos/skills/resume/SKILL.md' "guide points other agents at ~/.talos/skills/resume/SKILL.md"
-assert_contains "$guide_flat" 'skills/resume/SKILL.md' "guide keeps the skills/resume/SKILL.md substring (test-setup-status-file.sh)"
-assert_contains "$readme_flat" '~/.talos/skills/resume/SKILL.md' "README points other agents at ~/.talos/skills/resume/SKILL.md"
 assert_contains "$readme_flat" 'TALOS_<rand>' "README adapter example points at the TALOS_<rand> heredoc form"
 
 # ── Negative controls: the helpers above go red on planted text ─────────────

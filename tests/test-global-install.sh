@@ -172,7 +172,7 @@ assert_file_exists "$T6_CLAUDE/skills/pipeline/SKILL.md" \
   "--global writes the /pipeline alias to ~/.claude/skills/ (#335)"
 assert_file_exists "$T6_CLAUDE/skills/pipeline-setup/SKILL.md" \
   "--global writes the /pipeline-setup alias to ~/.claude/skills/ (#335)"
-# /talos:resume comes from the plugin; there is no bare copy of resume at all
+# The resume skill is gone (#550); there is no bare copy of resume at all
 # (neither resume/, which would clash with the built-in /resume, nor the old
 # provisional talos-resume/, #335).
 assert_file_absent "$T6_CLAUDE/skills/talos-resume" \

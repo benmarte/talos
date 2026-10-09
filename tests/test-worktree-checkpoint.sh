@@ -92,6 +92,18 @@ bash "$WT" handoff 9999 >"$SANDBOX/out" 2>&1; rc=$?
 assert_eq "1" "$rc" "handoff exits 1 when absent"
 assert_eq "1" "$(wc -l < "$SANDBOX/out" | tr -d ' ')" "handoff absent: one line"
 
+# ── #550: a re-dispatched developer is told to read the checkpoint and continue ──
+PROMPT_OUT="$(CLAUDE_CONFIG_DIR="$SANDBOX/cc" bash "$TALOS_ROOT/scripts/talos.sh" prompt developer --issue 42 2>/dev/null)"
+PROMPT_FILE="$(printf '%s\n' "$PROMPT_OUT" | sed -n 's/^prompt_file=//p')"
+assert_contains "$(cat "$PROMPT_FILE")" 'Checkpoint found' "re-dispatch on an issue with a checkpoint: the developer prompt says so"
+assert_contains "$(cat "$PROMPT_FILE")" 'handoff 42' "and names the verb that prints it"
+assert_contains "$(cat "$PROMPT_FILE")" 'do not restart' "and says to continue, not restart"
+rm -f "${PROMPT_FILE:?}"
+PROMPT_OUT="$(CLAUDE_CONFIG_DIR="$SANDBOX/cc" bash "$TALOS_ROOT/scripts/talos.sh" prompt developer --issue 9999 2>/dev/null)"
+PROMPT_FILE="$(printf '%s\n' "$PROMPT_OUT" | sed -n 's/^prompt_file=//p')"
+assert_not_contains "$(cat "$PROMPT_FILE")" 'Checkpoint found' "an issue with no checkpoint gets no such line"
+rm -f "${PROMPT_FILE:?}"
+
 # ── Idempotent, ts refresh, field carry-over, runner/model flags ─────────────
 sleep 1
 TS1="$(pj "$HF" ts)"; N1="$(git -C "$W42" rev-list --count HEAD)"
@@ -437,7 +449,7 @@ assert_contains "$DRIFT" "caught nostr-nsec" "drift: a short nsec1 value is caug
 PIPE="$(cat "$TALOS_ROOT/scripts/talos.sh")"
 assert_contains "$PIPE" 'if bash "$SCRIPT_DIR/pipeline-worktree.sh" handoff "$_issue" > /dev/null 2>&1; then' "prompt verb: the handoff line is conditional on the handoff verb's exit 0, its output discarded"
 assert_contains "$PIPE" 'git diff origin/$_base...' "prompt verb: the handoff line names the branch diff"
-assert_contains "$(cat "$TALOS_ROOT/skills/pipeline/SKILL.md")" 'the Handoff line when `pipeline-worktree.sh handoff <N>` exits 0' "pipeline skill: names the conditional handoff line"
+assert_contains "$(cat "$TALOS_ROOT/skills/pipeline/SKILL.md")" 'the Checkpoint line when `pipeline-worktree.sh handoff <N>` exits 0' "pipeline skill: names the conditional handoff line"
 DEV="$(cat "$TALOS_ROOT/agents/developer.md")"
 assert_contains "$DEV" 'bash scripts/pipeline-worktree.sh checkpoint <N>' "developer profile: names the checkpoint verb"
 assert_contains "$DEV" '--local' "developer profile: --local in a fix round"
