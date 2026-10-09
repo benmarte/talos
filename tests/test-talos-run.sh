@@ -631,6 +631,7 @@ reset_stubs
 LEASE_RESET
 draft_cfg '"timeout_ms": 600000, "ci_wait_s": 900'
 draft_collect docs
+printf 'README.md\n' > "$STUB_DIR/pr-files"
 printf 'APPROVED: docs pass\n' > "$STUB_DIR/message.docs"
 TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 1
 assert_eq "0" "$RC" "the approval-stage pass exits 0"

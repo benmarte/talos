@@ -3546,14 +3546,30 @@ _talos_run_dispatch() {
     qa | reviewer | security | adversarial | docs) [ -n "$_pr" ] || _run_fail unknown-act ;;
   esac
 
+  # 0. The docs stage is dispatched only when docs-relevant files changed: a
+  # skip is stamped by the verb itself, so there is nothing left to run.
+  local _dpf=""
+  if [ "$_role" = docs ]; then
+    _v="$(bash "$SCRIPT_DIR"/talos.sh docs-gate "$_pr" --issue "$_n" 2>"$_CFG_CACHE_DIR/err")" || _run_fail docs-gate "$_v"
+    _talos_relay docs-gate "$(cat "$_CFG_CACHE_DIR/err")"
+    case "$_v" in
+      docs=skip*) return 0 ;;
+      docs=dispatch*) _dpf="$(sed -n 's/^docs=.* paths-file=\([^ ]*\).*/\1/p' <<<"$_v")" ;;
+      *) _run_fail docs-gate ;;
+    esac
+  fi
+
   # 1. The prompt: the one renderer is `talos.sh prompt`.
   local _pargs=(prompt "$_role" --issue "$_n")
   [ -z "$_pr" ] || _pargs+=(--pr "$_pr")
   [ -z "$_shape" ] || _pargs+=(--shape "$_shape")
   [ -z "$_prior" ] || _pargs+=(--prior-file "$_prior")
+  [ -z "$_dpf" ] || _pargs+=(--docs-paths-file "$_dpf")
   [ "$_RUN_DRAFT" -eq 1 ] && _pargs+=(--draft)
   _f="$(bash "$SCRIPT_DIR"/talos.sh "${_pargs[@]}" 2>"$_CFG_CACHE_DIR/err" | sed -n 's/^prompt_file=//p')"
   _rc=$?
+  # The prompt carries the paths, so the file is spent either way.
+  [ -z "$_dpf" ] || rm -f "$_dpf"
   if [ "$_rc" -ne 0 ] || [ ! -s "$_f" ] || [ ! -f "$_f" ]; then
     _talos_relay prompt "$(cat "$_CFG_CACHE_DIR/err" 2>/dev/null)"
     _run_fail prompt-render
