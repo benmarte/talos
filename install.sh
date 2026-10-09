@@ -53,6 +53,10 @@
 #       CLAUDE_CONFIG_DIR is set and non-empty; ${CLAUDE_CONFIG_DIR:-$HOME/.claude}
 #       is a directory (a dangling symlink there is NOT detected); or
 #       claude is on PATH.
+#   The adapter also wires the Talos status line (#550): statusLine in
+#   <dir>/settings.json runs ~/.talos/scripts/talos-status.sh --line. Idempotent;
+#   a statusLine that is not Talos's is never replaced (the installer prints how
+#   to chain it), and a settings file that does not parse is left alone.
 #   Override: --harness claude forces the adapter; a list without claude
 #   skips it. A skipped adapter never deletes or refreshes an existing
 #   ~/.claude tree; the installer says so. --global prints one line saying
@@ -457,6 +461,73 @@ handle_bare_skill() {
   ALIASES_ACTIVE="${ALIASES_ACTIVE:+$ALIASES_ACTIVE }/$name"
 }
 
+# install_claude_statusline (#550) -- wire scripts/talos-status.sh into Claude
+# Code's user settings (<dir>/settings.json, statusLine). Idempotent. Another
+# statusLine is never replaced: the installer prints how to chain the Talos line
+# into it. A Talos one (its command names talos-status.sh) is pointed at the
+# installed copy. A settings file that does not parse is left alone; a symlink is
+# written through, not replaced. python3 (-I) does the JSON edit; no jq needed.
+# Never aborts the install.
+IFS= read -r -d '' STATUSLINE_PY <<'TALOS_STATUSLINE_PY' || true
+import json, os, shlex, sys, tempfile
+settings, script = sys.argv[1:3]
+cmd = "bash %s --line" % shlex.quote(script)
+real = os.path.realpath(settings)
+try:
+    doc = {}
+    if os.path.exists(real):
+        with open(real, encoding="utf-8") as f:
+            doc = json.load(f)
+        if not isinstance(doc, dict):
+            raise ValueError("not a JSON object")
+    sl = doc.get("statusLine")
+    current = sl.get("command") if isinstance(sl, dict) else None
+    if current == cmd:
+        print("already")
+        sys.exit(0)
+    if sl is not None and not (isinstance(current, str) and "talos-status.sh" in current):
+        print("chain\t" + (current if isinstance(current, str) else json.dumps(sl)))
+        sys.exit(0)
+    state = "wired" if sl is None else "updated"
+    doc["statusLine"] = dict(sl, command=cmd) if isinstance(sl, dict) else {"type": "command", "command": cmd}
+    doc["statusLine"].setdefault("type", "command")
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(real), prefix=".settings-")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(doc, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    if os.path.exists(real):
+        os.chmod(tmp, os.stat(real).st_mode & 0o777)
+    os.replace(tmp, real)
+    print(state)
+except (OSError, ValueError) as e:
+    print("unreadable\t%s: %s" % (type(e).__name__, e))
+TALOS_STATUSLINE_PY
+
+install_claude_statusline() {
+  local settings="$CLAUDE_DIR/settings.json" script="$TALOS_HOME_DIR/scripts/talos-status.sh" res state detail
+  echo "  Status line ($(printable "$settings")):"
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "    notice: python3 not found; the status line was not wired. Set statusLine.command to: bash $(printable "$script") --line"
+    return 0
+  fi
+  res="$(python3 -I -c "$STATUSLINE_PY" "$settings" "$script" 2>/dev/null)" || res=""
+  state="${res%%$'\t'*}"
+  detail="${res#*$'\t'}"
+  case "$state" in
+    wired) echo "    installed: statusLine -> bash $(printable "$script") --line" ;;
+    updated) echo "    updated: statusLine now runs the installed copy ($(printable "$script"))" ;;
+    already) echo "    skip (already wired): statusLine runs $(printable "$script")" ;;
+    chain)
+      echo "    notice: $(printable "$settings") already has a statusLine, left as it is: $(printable "$detail")"
+      echo "            To show the Talos line (talos #<issue> <stage> dots tokens) too, call"
+      echo "            bash $(printable "$script") --line"
+      echo "            from that command, keeping Claude's JSON on its stdin (it reads transcript_path"
+      echo "            from it), and print its output next to yours." ;;
+    unreadable) echo "    notice: $(printable "$settings") was not changed ($(printable "$detail")); wire it by hand: statusLine {\"type\": \"command\", \"command\": \"bash $(printable "$script") --line\"}" ;;
+    *) echo "    notice: the status line was not wired (the settings edit failed)." ;;
+  esac
+}
+
 # install_claude_adapter -- the ONLY place --global writes under
 # ${CLAUDE_CONFIG_DIR:-$HOME/.claude}: role profiles to <dir>/agents/ (Claude
 # Code's native subagent discovery), the talos plugin registration (so
@@ -474,6 +545,7 @@ install_claude_adapter() {
     fi
   done
   install_claude_plugin
+  install_claude_statusline
   echo "  Legacy aliases ($(printable "$CLAUDE_DIR")/skills, removed in v0.20):"
   if [ "$LEGACY_ALIASES" = "true" ]; then
     handle_bare_skill pipeline pipeline pipeline "pipeline orchestrator" yes
