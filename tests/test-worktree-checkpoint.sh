@@ -92,6 +92,18 @@ bash "$WT" handoff 9999 >"$SANDBOX/out" 2>&1; rc=$?
 assert_eq "1" "$rc" "handoff exits 1 when absent"
 assert_eq "1" "$(wc -l < "$SANDBOX/out" | tr -d ' ')" "handoff absent: one line"
 
+# ── #550: a re-dispatched developer is told to read the checkpoint and continue ──
+PROMPT_OUT="$(CLAUDE_CONFIG_DIR="$SANDBOX/cc" bash "$TALOS_ROOT/scripts/talos.sh" prompt developer --issue 42 2>/dev/null)"
+PROMPT_FILE="$(printf '%s\n' "$PROMPT_OUT" | sed -n 's/^prompt_file=//p')"
+assert_contains "$(cat "$PROMPT_FILE")" 'Checkpoint found' "re-dispatch on an issue with a checkpoint: the developer prompt says so"
+assert_contains "$(cat "$PROMPT_FILE")" 'handoff 42' "and names the verb that prints it"
+assert_contains "$(cat "$PROMPT_FILE")" 'do not restart' "and says to continue, not restart"
+rm -f "${PROMPT_FILE:?}"
+PROMPT_OUT="$(CLAUDE_CONFIG_DIR="$SANDBOX/cc" bash "$TALOS_ROOT/scripts/talos.sh" prompt developer --issue 9999 2>/dev/null)"
+PROMPT_FILE="$(printf '%s\n' "$PROMPT_OUT" | sed -n 's/^prompt_file=//p')"
+assert_not_contains "$(cat "$PROMPT_FILE")" 'Checkpoint found' "an issue with no checkpoint gets no such line"
+rm -f "${PROMPT_FILE:?}"
+
 # ── Idempotent, ts refresh, field carry-over, runner/model flags ─────────────
 sleep 1
 TS1="$(pj "$HF" ts)"; N1="$(git -C "$W42" rev-list --count HEAD)"
