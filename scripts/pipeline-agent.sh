@@ -19,13 +19,6 @@
 #                                             # native-path per-role dispatch
 #                                             # decision use one resolution.
 #        pipeline-agent.sh --resolve-all     # (#336) one line per role:
-#                                             # In a profile-aware run (profiles
-#                                             # configured, TALOS_PROFILE or
-#                                             # TALOS_HARNESS set; #539) the first
-#                                             # line is a header instead of a role:
-#                                             #   profile=<name|none> profile_origin=<config|env|fallback|none> harness=<h>
-#                                             # and one stderr warn per profile
-#                                             # that was passed over, with why.
 #                                             #   role=<r> model=<m> restamp_model=<m> origin=<project|global|session default>
 #                                             # origin names the config layer
 #                                             # that decided the model. Warns on
@@ -37,6 +30,13 @@
 #                                             # (a value cannot add a column).
 #                                             # runner_cmd= is the last field,
 #                                             # after a TAB, and is not encoded.
+#                                             # (#539) In a profile-aware run
+#                                             # (profiles configured, TALOS_PROFILE
+#                                             # or TALOS_HARNESS set) a header
+#                                             # line comes first:
+#                                             #   profile=<name|none> profile_origin=<config|env|fallback|none> harness=<h>
+#                                             # and each profile passed over gets
+#                                             # one stderr warn naming why.
 #        pipeline-agent.sh --resolve-profile <role>
 #                                             # (#367) print the one absolute
 #                                             # path of the role definition a
