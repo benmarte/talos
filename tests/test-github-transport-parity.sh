@@ -34,8 +34,10 @@ CMT='{"id":100,"html_url":"https://github.com/acme/widget/issues/3#issuecomment-
 # parity <label> <verb> [args...]
 #   Q   queued responses, one per line      CFG  extra JSON members for the config
 #   LQ  queued Link: next URLs (optional)   ENV  extra "VAR=value" words for both legs
+#   SETUP  shell text run before each leg (reset the stub's state files)
+#   ASSIGNEE  issues.assignee for the run (default none: no assignment calls)
 #   EXP_OUT / EXP_RC  the contract: stdout contains EXP_OUT, exit code is EXP_RC (default 0)
-Q=""; LQ=""; CFG=""; ENV=""; EXP_OUT=""; EXP_RC=0
+Q=""; LQ=""; CFG=""; ENV=""; SETUP=""; ASSIGNEE="none"; EXP_OUT=""; EXP_RC=0
 
 _leg() {  # _leg <gh|curl> <args...>
   local t="$1"; shift
@@ -43,7 +45,8 @@ _leg() {  # _leg <gh|curl> <args...>
   [ "$t" = curl ] && { prov=github-api; reqlog="$CURL_LOG"; }
   printf '%s' "$Q" > "$qf"; printf '%s' "$LQ" > "$lf"
   : > "$GH_REST_LOG"; : > "$CURL_LOG"
-  printf '{"vcs":{"provider":"%s","repo":"acme/widget"},"issues":{"assignee":"none"}%s}' "$prov" "$CFG" > talos.pipeline.json
+  printf '{"vcs":{"provider":"%s","repo":"acme/widget"},"issues":{"assignee":"%s"}%s}' "$prov" "$ASSIGNEE" "$CFG" > talos.pipeline.json
+  [ -z "$SETUP" ] || eval "$SETUP"
   # shellcheck disable=SC2086
   if [ "$t" = gh ]; then
     env $ENV GH_QUEUE="$qf" GH_LINK_QUEUE="$lf" bash "$VCS" "$@" > "$SANDBOX/out.$t" 2> "$SANDBOX/err.$t"
@@ -63,7 +66,7 @@ parity() {
   assert_eq "$(cat "$SANDBOX/req.curl")" "$(cat "$SANDBOX/req.gh")" "$label: same requests (URL, payload, method) on both transports"
   assert_eq "$EXP_RC" "$(cat "$SANDBOX/rc.curl")" "$label: exit code $EXP_RC"
   [ -z "$EXP_OUT" ] || assert_contains "$(cat "$SANDBOX/out.curl")" "$EXP_OUT" "$label: stdout carries the contract"
-  Q=""; LQ=""; CFG=""; ENV=""; EXP_OUT=""; EXP_RC=0
+  Q=""; LQ=""; CFG=""; ENV=""; SETUP=""; ASSIGNEE="none"; EXP_OUT=""; EXP_RC=0
 }
 out_of() { cat "$SANDBOX/out.curl"; }
 err_of() { cat "$SANDBOX/err.curl"; }
@@ -433,9 +436,52 @@ Q="$(printf '%s\n' '{"number":3,"title":"t","body":"no criteria here","labels":[
 EXP_RC=1
 parity "has-spec (no spec)" has-spec 3
 
-# ── identity ──────────────────────────────────────────────────────────────────
+# ── identity, assignment, the comment-store verbs ─────────────────────────────
 EXP_OUT="bot"
 parity "current-user" current-user
+
+# assign-issue: the stubbed issue keeps its assignee in a file, which each leg starts without.
+export STUB_ASSIGNEE_FILE="$SANDBOX/assignee.state"
+SETUP='rm -f "$STUB_ASSIGNEE_FILE"'; ASSIGNEE=self
+EXP_OUT="assigned to bot"
+parity "assign-issue" assign-issue 42
+assert_contains "$(req_of)" "$BASE/issues/42/assignees" "assign-issue: POST issues/<n>/assignees (adds, never replaces)"
+unset STUB_ASSIGNEE_FILE
+
+# upsert-pr-comment, mark-needs-owner, list-needs-owner: the stubbed comment store.
+export STUB_COMMENT_STORE="$SANDBOX/store.json"
+SETUP='printf "[]" > "$STUB_COMMENT_STORE"'
+printf 'Spend so far: 10' > "$SANDBOX/spend.md"
+EXP_OUT="upserted pr=7 comment=created"
+parity "upsert-pr-comment" upsert-pr-comment 7 --marker spend --body-file "$SANDBOX/spend.md"
+
+SETUP='printf "[]" > "$STUB_COMMENT_STORE"'
+EXP_OUT="marked n=7 comment=posted"
+parity "mark-needs-owner" mark-needs-owner 7 "Which option do we ship?"
+assert_contains "$(req_of)" "$BASE/issues/7/labels" "mark-needs-owner: the label call follows the comment"
+
+SETUP='printf "%s" "[{\"id\":5001,\"user\":{\"login\":\"bot\"},\"created_at\":\"2026-01-01T00:00:00Z\",\"body\":\"Pick a DB\\n\\n<!-- talos:needs-owner -->\"}]" > "$STUB_COMMENT_STORE"'
+Q="$(printf '%s\n' '[{"number":5,"labels":[{"name":"pipeline:needs-owner"}]},{"number":6,"labels":[{"name":"p1"}]}]')"
+EXP_OUT="needs-owner n=5 kind=issue answered=no question=Pick a DB"
+parity "list-needs-owner" list-needs-owner
+unset STUB_COMMENT_STORE
+
+# checkout-pr is a git operation: gh's own helper on the gh transport, the pull ref
+# fetched into the head branch with a token only. The two legs differ on purpose.
+printf '{"vcs":{"provider":"github","repo":"acme/widget"}}' > talos.pipeline.json
+: > "$GH_LOG"
+bash "$VCS" checkout-pr 9 >/dev/null 2>&1; rc=$?
+assert_eq "0" "$rc" "checkout-pr (gh): exits 0"
+assert_contains "$(cat "$GH_LOG")" "pr checkout 9 --repo acme/widget" "checkout-pr (gh): gh pr checkout does the work"
+git init -q --bare "$SANDBOX/origin.git"
+git remote set-url origin "$SANDBOX/origin.git"
+git -c user.name=t -c user.email=t@t commit -q --allow-empty -m base
+git push -q origin HEAD:refs/pull/9/head 2>/dev/null
+printf '{"vcs":{"provider":"github-api","repo":"acme/widget"}}' > talos.pipeline.json
+printf '%s\n' "$PR9" > "$SANDBOX/q.co"
+CURL_QUEUE="$SANDBOX/q.co" bash "$VCS" checkout-pr 9 >/dev/null 2>&1; rc=$?
+assert_eq "0" "$rc" "checkout-pr (curl): exits 0"
+assert_eq "fix/issue-42-guard" "$(git rev-parse --abbrev-ref HEAD)" "checkout-pr (curl): the PR's head branch is checked out from refs/pull/9/head"
 
 # ── transport selection ───────────────────────────────────────────────────────
 # github + a gh that is not authenticated falls back to the token transport; with
