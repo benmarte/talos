@@ -14,7 +14,7 @@
       "pipeline:blocked",
       "wontfix"
     ],
-    "max_parallel": 2
+    "max_parallel": 1
   },
   "roles": {
     "validator": true,
@@ -25,9 +25,13 @@
     "docs": true,
     "changelog_fragments": true
   },
-  "verify": [
-    "bash tests/run-tests.sh --quiet"
-  ],
+  "verify": {
+    "commands": [
+      "bash tests/run-tests.sh --quiet"
+    ],
+    "qa_mode": "local",
+    "timeout_ms": 1800000
+  },
   "merge": {
     "method": "squash",
     "required_checks": [
