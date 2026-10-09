@@ -777,7 +777,7 @@ _talos_resolve_role() {
   local _role="$1" _line _rc _notice _re _runner _rest
   _line="$(bash "$SCRIPT_DIR/pipeline-agent.sh" --resolve "$_role")"
   _rc=$?
-  _re='^(.*) model=(.*) effort=(low|medium|high|max)?( fallback=([a-z,]+))?$'
+  _re='^(.*) model=(.*) effort=(low|medium|high|max)?( fallback=([A-Za-z0-9_,-]+))?$'
   case "$_line" in
     "runner="*" runner_cmd="*) : ;;
     *) _rc=1 ;;
@@ -853,6 +853,32 @@ _talos_env() {
   done <<EOF
 $(_talos_env_table)
 EOF
+
+  # The harness and the LLM profiles (#539). Only a profile-aware run prints them
+  # (profiles configured, TALOS_PROFILE or TALOS_HARNESS set; pipeline-config.sh
+  # decides), so a plain run's output is unchanged. AGENTS_MODE is what Step 0
+  # acts on: native | adapter | inline, from the active profile or, without one,
+  # from agents.mode / agents.subagents / the harness -- never from agents.runner
+  # alone.
+  _val="$(cfg_src harness)"
+  if [ -n "$_val" ]; then
+    local _pn _pl
+    _talos_emit HARNESS "$_val"
+    _talos_emit HARNESS_ORIGIN "$(cfg_src harness_origin)"
+    _talos_emit PROFILE "$(cfg_src profile)"
+    _talos_emit PROFILE_ORIGIN "$(cfg_src profile_origin)"
+    _talos_emit AGENTS_MODE "$(cfg_src profile_mode)"
+    for _pn in $(cfg_src profiles | tr ',' ' '); do
+      _pl="mode=$(cfg_prof "$_pn" mode) runner=$(cfg_prof "$_pn" runner) cli=$(cfg_prof "$_pn" cli) usable=$(cfg_prof "$_pn" usable)"
+      [ "$(cfg_prof "$_pn" usable)" != "no" ] || _pl="$_pl reason=$(cfg_prof "$_pn" reason)"
+      _talos_emit PROFILE_INFO "$_pn $_pl"
+    done
+    while IFS= read -r _pl; do
+      [ -z "$_pl" ] || _talos_emit PROFILE_SKIPPED "${_pl%%:*} reason=${_pl#*:}"
+    done <<EOF
+$(cfg_src profile_skipped)
+EOF
+  fi
 
   # PR_DRAFT: pipeline-draft-check.sh is the one resolver (#435). Its stderr
   # warning line passes through. The old prose defined no fallback for a failed
