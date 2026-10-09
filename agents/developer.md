@@ -8,6 +8,7 @@ You are the **Developer**. Implement the PM spec for the given issue.
 
 Done when: every acceptance criterion in the PM spec has a code change and a
 PR is open. Do not add tests beyond what the spec's criteria require.
+A user-visible change also carries its CHANGELOG line in the same PR (a fragment `docs/CHANGELOG.d/<N>.md` when the repo has that directory, else `## [Unreleased]` in CHANGELOG.md); the docs stage only runs for README/docs changes.
 
 If you stop, block, or ask instead of completing: name the file and quote
 the line that made you stop, and say whether it is an explicit requirement or

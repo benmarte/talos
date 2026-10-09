@@ -89,13 +89,13 @@ progress as issue/PR comments and threaded Slack/Discord messages along the way.
   orchestrator skips spawning a PM subagent entirely and advances straight to
   `pipeline:dev` (`roles.pm_skip_when_spec_present`, default `true` — see
   [Config reference](#config-reference)).
-- **Token-lean docs** — when the developer's own diff already touches
-  `CHANGELOG.md` plus `README.md`/`docs/**`, or touches only
-  `scripts/**`/`tests/**` with a CHANGELOG entry present, Step 3e Phase 1
-  skips the docs subagent entirely
-  and stamps `docs:done` directly; otherwise docs still dispatches but reads
-  only the changed doc paths and the CHANGELOG hunk instead of the full PR
-  diff (`roles.docs_mode`, default `auto` — see
+- **Token-lean docs** — the docs subagent is dispatched only when the PR
+  changes `README.md`, `docs/**` (CHANGELOG and status fragments excluded) or
+  `scripts/pipeline-defaults.sh` (a config key); otherwise
+  `talos.sh docs-gate` stamps `docs:done` itself ("no docs-relevant changes")
+  and no LLM runs. The developer writes the CHANGELOG line in its own PR. A
+  dispatched docs stage reads only the changed doc paths, not the full PR diff
+  (`roles.docs_mode`, default `auto` — see
   [Config reference](#config-reference)).
 - **Compact stage handoff** — `pipeline-vcs.sh view-issue <n> --spec` prints
   the issue body plus only the latest `**PM spec:**` comment, dropping every
@@ -3119,7 +3119,7 @@ If your setup predates the config and secrets work (epic #437), check these once
 | `roles.security` | `true` | Security review |
 | `roles.adversarial` | `false` | Optional pre-merge second opinion (#237), off by default — attacks the diff for vacuous tests, weak patterns, secret shapes and unverified claims. Runs after security. Typically paired with `agents.roles.adversarial.runner: custom` + `runner_cmd` pointing at a second, independent backend (e.g. a local model). Zero behaviour change when absent or `false`: no dispatch, and `adversarial:approved` is never required by the merge gate. |
 | `roles.docs` | `true` | Updates docs/CHANGELOG; terminal stage |
-| `roles.docs_mode` | `auto` | Only relevant when `roles.docs` is `true`. `auto`: Step 3e Phase 1 checks the PR's changed paths (`pipeline-vcs.sh pr-files <pr>`) before dispatching docs. No docs subagent is dispatched (the orchestrator stamps `docs:done` directly with "docs verified by developer diff (docs_mode: auto)") when `CHANGELOG.md` is changed AND (`README.md` or a `docs/**` path is also changed), OR every changed path other than `CHANGELOG.md` itself is under `scripts/**` or `tests/**` AND `CHANGELOG.md` is changed. When docs does dispatch under `auto` (the gate above didn't match), its prompt receives only the changed doc-relevant paths and the CHANGELOG hunk (`git diff origin/<base>...HEAD -- CHANGELOG.md`), not the full PR diff, and is told to read source only on demand. `always`: restores the pre-#200 behavior — docs always dispatches and always reads the full diff via `diff-pr`. Filed from a pipeline run where the docs stage spent 26k-108k tokens per PR concluding "no docs changes required" because the developer had already updated docs as part of its own acceptance criteria (#200). |
+| `roles.docs_mode` | `auto` | Only relevant when `roles.docs` is `true`. `auto`: `talos.sh docs-gate <pr> --issue <N>` (the Step 3e Phase 1 verb, also used by `talos.sh run`) reads the PR's changed paths (`pipeline-vcs.sh pr-files <pr>`). It dispatches docs only when the PR changes `README.md`, `docs/**` (`docs/CHANGELOG.d/**` fragments and the `status.fragments_dir` fragments excluded) or `scripts/pipeline-defaults.sh`; docs then receives only those paths (`--docs-paths-file`) instead of the full diff. Otherwise no docs subagent runs: the verb stamps `docs:done` with "no docs-relevant changes" and runs `done docs`. A failed `pr-files` read dispatches (never "nothing to check"). The developer owns the CHANGELOG line (or fragment) in its PR. `always`: docs always dispatches and reads the full diff via `diff-pr`. |
 | `roles.changelog_fragments` | `false` | Opt-in (#290, part of #287): docs writes one fragment per issue under `docs/CHANGELOG.d/<issue>.md` instead of editing `CHANGELOG.md`, so parallel PRs never touch the same file. After each merge the orchestrator runs `scripts/pipeline-changelog.sh assemble` to fold consumed fragments into `CHANGELOG.md`'s `## [Unreleased]` section on the base branch (newest first, fragments deleted, non-fatal on failure). Default `false` — docs edits `CHANGELOG.md` as before. |
 | `roles.planner` | `false` | Epic decomposition (optional, off by default) — detects epics (via `epic` label, ≥ 4 checklist items, or body ≥ 2000 chars) and creates dependency-ordered sub-issues; independent sub-issues enter the queue immediately, dependent sub-issues are unblocked automatically as predecessors close. The auto-close sweep does NOT close an epic once its sub-issues finish if the epic's own body still has unticked `- [ ]` acceptance boxes — it gets `pipeline:epic-children-done` and a comment naming what's outstanding instead, and stays open for a human |
 | `comments.enabled` | `true` | Post a stage comment at each handoff (Daedalus parity) |

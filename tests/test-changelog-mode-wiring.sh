@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Skill-text assertions for the CHANGELOG MODE trigger wiring (#296):
-#   1. SKILL.md's docs dispatch carries the <CHANGELOG_MODE_LINE> placeholder
-#      in the docs prompt and defines the fragment/direct substitution rule.
-#   2. The auto-stamp body mentions fragments when the flag is on.
+#   1. The docs prompt template carries the <CHANGELOG_MODE_LINE> placeholder
+#      and the rendered prompt substitutes the fragment/direct line.
+#   2. The full-diff and filtered-paths dispatches go through the one prompt.
 #   3. agents/docs.md treats the fragments line as the trigger and an
 #      absent/direct line as normal CHANGELOG editing.
 set -u
@@ -21,7 +21,6 @@ docs_text="$(cat "$DOCS")"
 # the playbook into templates/prompts/docs.md, #468) and the rule is the verb's.
 tmpl_text="$(cat "$TALOS_ROOT/templates/prompts/docs.md")"
 assert_contains "$tmpl_text" "{{CHANGELOG_MODE_LINE}}" "template: docs prompt carries the CHANGELOG_MODE_LINE marker"
-assert_contains "$skill_text" 'CHANGELOG MODE: fragments|direct` (#296)' "skill: the docs prompt's changelog-mode line is named"
 
 # Rendered: flag on mandates the literal fragments line (without it fragment mode would
 # silently degrade to direct CHANGELOG.md edits); flag off gives the direct line.
@@ -32,10 +31,9 @@ printf '{"roles": {"changelog_fragments": false}}' > "$SANDBOX/talos.pipeline.js
 assert_contains "$(talos_prompt_text docs --issue 7 --pr 9)" $'\nCHANGELOG MODE: direct\n' "docs prompt: flag off carries CHANGELOG MODE: direct"
 
 # Both dispatch paths (docs_mode always: the full diff; auto: the filtered one) go through the one prompt.
-assert_contains "$skill_text" 'straight to the docs prompt with no `--docs-paths-file`' "skill: docs_mode always path uses the docs prompt with the full diff"
-
-# Auto-stamp body records the fragment convention.
-assert_contains "$skill_text" "CHANGELOG handled via fragments" "skill: auto-stamp mentions fragment handling"
+assert_contains "$(talos_prompt_text docs --issue 7 --pr 9)" 'pipeline-vcs.sh diff-pr 9' "docs prompt: no paths file means the full diff"
+printf 'README.md\n' > "$SANDBOX/paths.txt"
+assert_not_contains "$(talos_prompt_text docs --issue 7 --pr 9 --docs-paths-file "$SANDBOX/paths.txt")" 'diff-pr 9' "docs prompt: a paths file replaces the full diff"
 
 # Docs profile: absent line = direct mode (explicit fallback).
 assert_contains "$docs_text" "or carries no changelog-mode line at all, edit \`CHANGELOG.md\` normally" "docs profile: absent line means direct mode"

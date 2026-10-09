@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Skill-text/config assertions for CHANGELOG fragments (#290):
 #   1. agents/docs.md carries the CHANGELOG MODE: fragments instructions.
-#   2. SKILL.md reads roles.changelog_fragments, defaults it false, wires the
-#      docs prompt line, the docs_mode auto gate note, and the Step 4
-#      assemble hook.
+#   2. SKILL.md reads roles.changelog_fragments, defaults it false, and wires
+#      the Step 4 assemble hook.
 #   3. pipeline-config.sh knows the key; example configs document it.
 #   4. scripts/pipeline-changelog.sh exists with the assemble contract.
 set -u
@@ -25,13 +24,10 @@ docs_text="$(cat "$DOCS_AGENT")"
 # Step 0 is `talos.sh env` (#465): the variable and its default live in its table.
 assert_eq "roles.changelog_fragments" "$(talos_env_key ROLE_CHANGELOG_FRAGMENTS)" "skill: Step 0 reads roles.changelog_fragments"
 assert_eq "false" "$(talos_env_default ROLE_CHANGELOG_FRAGMENTS)" "skill: flag documented default false"
-assert_contains "$skill_text" "ROLE_CHANGELOG_FRAGMENTS" "skill: the playbook names ROLE_CHANGELOG_FRAGMENTS"
 
 # Docs prompt carries the fragment mode.
 assert_contains "$docs_text" "CHANGELOG MODE: fragments" "docs profile: names the CHANGELOG MODE: fragments trigger"
 
-# SKILL docs prompt carries the fragment instructions too.
-assert_contains "$skill_text" "CHANGELOG MODE: fragments" "skill: docs prompt carries the fragment trigger"
 assert_contains "$(cat "$TALOS_ROOT/templates/prompts/docs.md")" "docs/CHANGELOG.d/<issue-number>.md" "template: docs prompt names the fragment path (the block moved to templates/prompts/docs.md, #468)"
 
 # Step 4 hook + waiver note + gate note.

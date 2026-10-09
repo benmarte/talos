@@ -25,11 +25,11 @@ TALOS_WORKTREE_PATH is not meaningful there.)
 Verify commands (run once, immediately before your final commit):
 {{VERIFY_COMMANDS}}
 
-Use "Part of #{{ISSUE}}" instead of "Closes #{{ISSUE}}" in the PR body for all but the
-last PR on multi-PR issues.
+Use "Part of #{{ISSUE}}" instead of "Closes #{{ISSUE}}" in the PR body for all but the last PR on multi-PR issues.
 
 Done when: every acceptance criterion in the PM spec has a code change and a
 PR is open. Do not add tests beyond what the spec's criteria require.
+A user-visible change also carries its CHANGELOG line in the same PR (a fragment `docs/CHANGELOG.d/<N>.md` when the repo has that directory, else `## [Unreleased]` in CHANGELOG.md); the docs stage only runs for README/docs changes.
 
 {{STOP_RULE}}
 
