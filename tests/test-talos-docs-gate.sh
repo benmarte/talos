@@ -58,7 +58,7 @@ DG="$GS/talos.sh"
 cfg_json() { printf '%s' "$1" > "$SANDBOX/talos.pipeline.json"; }
 export PIPELINE_CONFIG="$SANDBOX/talos.pipeline.json"
 reset() {  # $1 = the changed paths, one per line
-  rm -rf "${STUB_DIR:?}" "$SANDBOX/.git/talos-done.ledger" "$SANDBOX/.git/talos-lease.ledger"; mkdir -p "$STUB_DIR"
+  rm -rf "${STUB_DIR:?}" "${SANDBOX:?}/.git/talos-done.ledger" "${SANDBOX:?}/.git/talos-lease.ledger"; mkdir -p "$STUB_DIR"
   cfg_json '{"vcs": {"provider": "github"}, "comments": {"enabled": false}}'
   printf '%s\n' "$1" > "$STUB_DIR/pr-files.out"
 }
