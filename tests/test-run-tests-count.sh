@@ -228,4 +228,26 @@ assert_exit_code 0 "$rc_full" "T6: full run exits 0"
 assert_not_contains "$out_full" "FILTERED" "T6: full-run RESULT does not say FILTERED"
 assert_not_contains "$out_f" "all 2 test file(s) passed" "T6: filtered RESULT differs from full-run wording"
 
+# ── Test 7 (#550): a deliberate removal is listed in tests/retired-tests.txt ──
+# The count check exists so a test file cannot vanish unnoticed; deleting one on
+# purpose needs a reviewable, named entry. origin has test-gamma.sh and
+# test-delta.sh, the checkout lacks both: only the file named in the list is
+# forgiven, comments and blank lines are ignored, and an entry for a file that
+# is still expected elsewhere never masks another.
+FD7="$SANDBOX/t7"
+mkdir -p "$FD7"
+build_fixture "$FD7" "test-alpha.sh test-beta.sh" "test-gamma.sh test-delta.sh"
+printf '# retired on purpose\n\ntest-gamma.sh\n' > "$FD7/tests/retired-tests.txt"
+out="$(bash "$FD7/tests/run-tests.sh" 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "T7: a listed file is forgiven, an unlisted missing one still fails"
+assert_contains "$out" "test-delta.sh" "T7: the unlisted file is named as missing"
+assert_not_contains "$out" "  test-gamma.sh" "T7: the listed file is not reported missing"
+printf '# retired on purpose\ntest-gamma.sh\ntest-delta.sh\n' > "$FD7/tests/retired-tests.txt"
+out="$(bash "$FD7/tests/run-tests.sh" 2>&1)"; rc=$?
+assert_exit_code 0 "$rc" "T7: every missing file listed: the run passes"
+assert_not_contains "$out" "SHORT" "T7: no SHORT when every missing file is retired"
+rm -f "$FD7/tests/retired-tests.txt"
+out="$(bash "$FD7/tests/run-tests.sh" 2>&1)"; rc=$?
+assert_exit_code 1 "$rc" "T7: without the list both files are missing again"
+
 finish

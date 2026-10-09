@@ -130,7 +130,7 @@ assert_contains "$header" "dangling symlink" "header states the dangling-symlink
 assert_contains "$header" "--harness claude forces" "header describes the override"
 
 # ── all Claude writes live in install_claude_adapter ─────────────────────────
-# install_claude_adapter and the two helpers only it calls are the writers. Any
+# install_claude_adapter and the three helpers only it calls are the writers. Any
 # other non-comment line naming CLAUDE_DIR / CLAUDE_CONFIG_DIR must be an echo,
 # an assignment or a test, never a command that writes. (A same-line grep for
 # write verbs misses `dir="$CLAUDE_DIR/skills/x"` followed by `mkdir -p "$dir"`.)
@@ -141,7 +141,7 @@ strip_fns() {  # $1... = function names whose bodies are dropped
     skip && /^\}/ { skip = 0 }
   ' "$INSTALL" | grep -v '^[[:space:]]*#'
 }
-outside="$(strip_fns install_claude_adapter install_claude_plugin handle_bare_skill)"
+outside="$(strip_fns install_claude_adapter install_claude_plugin install_claude_statusline handle_bare_skill)"
 stray="$(printf '%s\n' "$outside" | grep -E 'CLAUDE_DIR|CLAUDE_CONFIG_DIR' \
   | grep -Ev '^[[:space:]]*(echo |CLAUDE_DIR=|CLAUDE_ADAPTER=|CLAUDE_WHY=|(el)?if \[ )' || true)"
 assert_eq "" "$stray" "nothing outside the Claude adapter functions names CLAUDE_DIR except decisions and echoes"
@@ -264,7 +264,10 @@ if [ "$CAN_STRIP" = true ]; then
   newhome same-b
   mkdir -p "$HOME/.claude"
   inst "$BIN" --global --no-agent-skills
-  if diff -r "$SANDBOX/tree-explicit" "$HOME/.claude" >/dev/null; then
+  # settings.json carries the absolute TALOS_HOME path (the statusLine command,
+  # #550), which differs per HOME: compare it with the HOME name normalised.
+  if diff -r -x settings.json "$SANDBOX/tree-explicit" "$HOME/.claude" >/dev/null \
+     && [ "$(sed 's|home-same-a|H|g' "$SANDBOX/tree-explicit/settings.json")" = "$(sed 's|home-same-b|H|g' "$HOME/.claude/settings.json")" ]; then
     pass "detected install writes the same ~/.claude tree as --harness claude"
   else
     fail "detected install writes the same ~/.claude tree as --harness claude"

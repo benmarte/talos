@@ -3,6 +3,8 @@
 # Usage: bash tests/run-tests.sh [--base-ref <ref>] [-j N] [--quiet] [--timings] [--no-cache] [pattern]
 #        bash tests/run-tests.sh --for <path> [<path> ...] [--for <path> ...] [--quiet] ...
 #        bash tests/run-tests.sh --changed [<base-ref>] [--quiet] ...
+#   (count check) a test file that exists on the base ref but not here fails the run
+#               unless tests/retired-tests.txt names it (#550)
 #   --base-ref  override the auto-detected base ref for count comparison
 #               (default: auto-detects origin/HEAD, falls back to origin/main)
 #   -j N        run up to N test files concurrently (also: TALOS_TEST_JOBS)
@@ -738,6 +740,14 @@ while [ "$_repeat_iter" -le "$REPEAT" ]; do
       [ -z "$_entry" ] && continue
       _fname="$(basename "$_entry")"
       EXPECTED_COUNT=$((EXPECTED_COUNT + 1))
+      # tests/retired-tests.txt (#550): a file removed on purpose is named there,
+      # one basename per line (# comments and blank lines ignored), so deleting
+      # a test is a reviewable change instead of a silent shortfall.
+      if [ -f "$TALOS_ROOT/tests/retired-tests.txt" ] \
+         && grep -qxF "$_fname" "$TALOS_ROOT/tests/retired-tests.txt"; then
+        EXPECTED_COUNT=$((EXPECTED_COUNT - 1))
+        continue
+      fi
       if [ ! -f "$TALOS_ROOT/tests/$_fname" ]; then
         MISSING_FILES="${MISSING_FILES}  $_fname
 "
