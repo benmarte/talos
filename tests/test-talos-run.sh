@@ -352,4 +352,302 @@ assert_contains "$(journal)" "vcs view-issue 8" "inflight lease: the lease-held 
 assert_not_contains "$(journal)" "hooks post_stage developer developer 7" "inflight lease: the lease-held issue was not dispatched"
 assert_contains "$OUT" "stop reason=stage-blocked role=developer" "inflight lease: the second in-flight issue dispatched"
 
+# ── (h) the draft-window completion (#516) ───────────────────────────────────
+# On `action=wait reason=draft pr=<M> issue=<N>` the driver continues the Draft
+# stage order itself: the resolver answered `ready` (every enabled draft-window
+# approval fresh), so the pass leases the write, calls ready-pr, asks the PR
+# (the Draft guard), waits for the one CI run when qa_mode is ci, dispatches QA
+# through the one dispatch path, and releases the lease before returning to the
+# loop. Every pin runs on the journaling stubs; the resolver is the collect's
+# canned stage, so no fixture needs the real resolver.
+draft_cfg() {  # $1 = the verify block's members ; $2 = extra top-level members
+  printf '{"vcs": {"provider": "github"}, "issues": {"max_parallel": 1}, "roles": {"validator": true, "qa": true, "docs": true, "reviewer": true, "security": true}, "pr": {"draft": true}, "verify": {%s}%s}' \
+    "${1:-}" "${2:-}" > "$SANDBOX/talos.pipeline.json"
+}
+draft_collect() {  # $1 = the PR's collect stage
+  printf '{"prs":[{"n":12,"issue":9,"head":"a4f9","owner":false,"stage":"%s"}],"pr_total":1,"ignored":0,"blocked":[],"queued":[],"held":[],"owners":[],"capped":[]}' \
+    "$1" > "$STUB_DIR/collect.json"
+}
+draft_ready() {  # the guard stub: the ready verb took (rc 1, stdout exactly ready)
+  printf ready > "$STUB_DIR/pr-is-draft.12"
+  printf 1 > "$STUB_DIR/pr-is-draft.12.rc"
+}
+draft_order() { grep -oE 'ready-pr 12|pr-is-draft 12|pr-checks-required 12( --wait [0-9]+)?|agent qa|post_stage qa' "$STUB_DIR/journal" | tr '\n' '>' | sed 's/>$//'; }
+
+# AC2: only the key-carrying shape triggers the continuation -- the case
+# pattern requires pr= and issue=, so a bare `action=wait reason=draft` (no
+# producer emits it after AC1) falls through to today's terminal stop.
+grep -qF 'action=wait reason=draft pr="*" issue="*' "$GS/talos.sh"
+assert_eq "0" "$?" "AC2: only the key-carrying draft wait triggers the continuation (the case pattern requires pr= and issue=)"
+
+# The primary flow: ci mode, the ready verb took, QA dispatched, the whole
+# continuation inside one pass (AC2 trigger, AC4 once, AC6 guard-pass, AC7 one
+# CI wait, AC9 dispatch, AC12 max-iterations 1).
+reset_stubs
+LEASE_RESET
+draft_cfg '"qa_mode": "ci", "timeout_ms": 600000, "ci_wait_s": 900' ', "merge": {"required_checks": ["test (ubuntu-latest)"]}'
+draft_collect ready
+draft_ready
+printf 'PASS: verified\n' > "$STUB_DIR/message.qa"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 1
+assert_eq "0" "$RC" "AC2: the key-carrying draft wait triggers the continuation; the run exits 0"
+assert_contains "$OUT" "reason=iterations-exhausted max=1" "AC12: the capped run's last stop names the max"
+assert_contains "$(journal)" "vcs ready-pr 12" "AC2: the pass continued (ready-pr called)"
+assert_eq "1" "$(journal | grep -c 'vcs ready-pr 12')" "AC4: ready-pr is called exactly once for that PR"
+assert_contains "$(journal)" "vcs pr-is-draft 12" "AC6: the Draft guard asked the PR, never memory"
+assert_contains "$(journal)" "vcs pr-checks-required 12 --wait 570" "AC7: the one CI wait uses B=570 (min(900, 600000/1000-30))"
+assert_eq "1" "$(journal | grep -c 'vcs pr-checks-required 12')" "AC7: exactly one CI wait before QA"
+assert_contains "$(journal)" "agent qa" "AC9: QA dispatched through the driver's one dispatch path"
+grep -q "You are QA" "$STUB_DIR/agent.stdin"
+assert_eq "0" "$?" "AC9: the agent received prompt qa's render on stdin, never argv"
+assert_contains "$(journal)" "post_stage qa" "AC12: the journal holds the full continuation"
+assert_eq "ready-pr 12>pr-is-draft 12>pr-checks-required 12 --wait 570>agent qa>post_stage qa" "$(draft_order)" \
+  "AC12: the continuation's order is the Draft stage order (ready-pr, the guard, the CI wait, QA, its post_stage)"
+
+# AC8: qa_mode local -- the continuation calls no pr-checks-required at all;
+# the QA dispatch follows ready-pr and the guard directly.
+reset_stubs
+LEASE_RESET
+draft_cfg '"timeout_ms": 600000, "ci_wait_s": 900'
+draft_collect ready
+draft_ready
+printf 'PASS: verified\n' > "$STUB_DIR/message.qa"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 1
+assert_eq "0" "$RC" "AC8: the local-mode run exits 0"
+assert_contains "$(journal)" "agent qa" "AC8: the QA dispatch follows ready-pr and the guard directly (no CI wait in local mode)"
+assert_not_contains "$(journal)" "pr-checks-required" "the local-mode continuation calls no pr-checks-required at all"
+
+# AC5: a non-zero ready-pr is a stop, never a QA dispatch.
+reset_stubs
+LEASE_RESET
+draft_cfg '"timeout_ms": 600000, "ci_wait_s": 900'
+draft_collect ready
+printf 2 > "$STUB_DIR/ready-pr.12.rc"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 1
+assert_eq "1" "$RC" "AC5: a non-zero ready-pr is a stop (exit 1)"
+assert_eq "stop reason=ready-pr-failed" "$OUT" "AC5: the stdout is exactly the stop line (the emit buffer wiped)"
+assert_not_contains "$(journal)" "pr-is-draft" "AC5: the guard never ran"
+assert_not_contains "$(journal)" "pr-checks-required" "AC5: no CI wait"
+assert_not_contains "$(journal)" "agent qa" "AC5: never a QA dispatch"
+
+# AC6: the guard's draft answer (the ready never took) stops ready-pr-failed.
+reset_stubs
+LEASE_RESET
+draft_cfg '"timeout_ms": 600000, "ci_wait_s": 900'
+draft_collect ready
+printf draft > "$STUB_DIR/pr-is-draft.12"
+printf 0 > "$STUB_DIR/pr-is-draft.12.rc"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 1
+assert_eq "1" "$RC" "AC6: a draft answer after ready-pr stops ready-pr-failed (exit 1)"
+assert_eq "stop reason=ready-pr-failed" "$OUT" "AC6: the stop line"
+assert_not_contains "$(journal)" "agent qa" "AC6: 0 agent qa"
+
+# AC6: pr.draft false never reaches the arm (the resolver answers false); a
+# fixture that forces stage ready with pr-is-draft rc 0 must still stop.
+reset_stubs
+LEASE_RESET
+cfg_json '{"vcs": {"provider": "github"}, "issues": {"max_parallel": 1}, "roles": {"validator": true, "qa": true}, "verify": {"timeout_ms": 600000, "ci_wait_s": 900}}'
+draft_collect ready
+printf draft > "$STUB_DIR/pr-is-draft.12"
+printf 0 > "$STUB_DIR/pr-is-draft.12.rc"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 1
+assert_eq "1" "$RC" "AC6: pr.draft false with a forced ready stage still stops ready-pr-failed"
+assert_contains "$OUT" "stop reason=ready-pr-failed" "AC6: the stop line"
+assert_not_contains "$(journal)" "agent qa" "AC6: 0 agent qa"
+
+# AC6: any other rc/output is draft-unverified (the gate's existing enum).
+reset_stubs
+LEASE_RESET
+draft_cfg '"timeout_ms": 600000, "ci_wait_s": 900'
+draft_collect ready
+printf 2 > "$STUB_DIR/pr-is-draft.12.rc"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 1
+assert_eq "1" "$RC" "AC6: any other rc/output stops draft-unverified"
+assert_contains "$OUT" "stop reason=draft-unverified" "AC6: the stop line"
+assert_not_contains "$(journal)" "agent qa" "AC6: 0 agent qa"
+
+# AC7: a red required check is scheduling -- the qa-ci-red warn, then the ci
+# wait stop, no QA, no merge gate, exit 0.
+reset_stubs
+LEASE_RESET
+draft_cfg '"qa_mode": "ci", "timeout_ms": 600000, "ci_wait_s": 900' ', "merge": {"required_checks": ["test (ubuntu-latest)"]}'
+draft_collect ready
+draft_ready
+printf 'pr-checks-required: failed: test (ubuntu-latest)\n' > "$STUB_DIR/pr-checks-required.12.err"
+printf 1 > "$STUB_DIR/pr-checks-required.12.rc"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 1
+assert_eq "0" "$RC" "AC7: a red required check is scheduling (exit 0)"
+assert_contains "$OUT" "warn reason=qa-ci-red pr=12 issue=9" "AC7: the warn line names the reason and the PR"
+assert_contains "$OUT" "stop action=wait reason=ci pr=12 issue=9" "AC7: the stop carries the ci wait shape"
+assert_not_contains "$(journal)" "agent qa" "AC7: no QA dispatch"
+
+# AC7: rc 1 without the failed: line still dispatches QA; rc 2 (pending at the
+# deadline) dispatches QA too.
+reset_stubs
+LEASE_RESET
+draft_cfg '"qa_mode": "ci", "timeout_ms": 600000, "ci_wait_s": 900' ', "merge": {"required_checks": ["test (ubuntu-latest)"]}'
+draft_collect ready
+draft_ready
+printf 'something unrelated\n' > "$STUB_DIR/pr-checks-required.12.err"
+printf 1 > "$STUB_DIR/pr-checks-required.12.rc"
+printf 'PASS: verified\n' > "$STUB_DIR/message.qa"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 1
+assert_contains "$(journal)" "agent qa" "AC7: rc 1 without the failed: line still dispatches QA"
+
+reset_stubs
+LEASE_RESET
+draft_cfg '"qa_mode": "ci", "timeout_ms": 600000, "ci_wait_s": 900' ', "merge": {"required_checks": ["test (ubuntu-latest)"]}'
+draft_collect ready
+draft_ready
+printf 2 > "$STUB_DIR/pr-checks-required.12.rc"
+printf 'PASS: verified\n' > "$STUB_DIR/message.qa"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 1
+assert_contains "$(journal)" "agent qa" "AC7: rc 2 (pending at the deadline) dispatches QA"
+
+# AC7: the wait bound clamps at 3600, and a non-positive B omits the flag
+# entirely.
+reset_stubs
+LEASE_RESET
+draft_cfg '"qa_mode": "ci", "timeout_ms": 6000000, "ci_wait_s": 4000' ', "merge": {"required_checks": ["x"]}'
+draft_collect ready
+draft_ready
+printf 'PASS: verified\n' > "$STUB_DIR/message.qa"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 1
+assert_contains "$(journal)" "vcs pr-checks-required 12 --wait 3600" "AC7: the wait bound clamps at 3600"
+
+reset_stubs
+LEASE_RESET
+draft_cfg '"qa_mode": "ci", "timeout_ms": 1000, "ci_wait_s": 900' ', "merge": {"required_checks": ["x"]}'
+draft_collect ready
+draft_ready
+printf 'PASS: verified\n' > "$STUB_DIR/message.qa"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 1
+assert_contains "$(journal)" "vcs pr-checks-required 12" "AC7: the CI-wait call happens even when B is not a positive integer"
+assert_not_contains "$(journal)" "pr-checks-required 12 --wait" "AC7: a non-positive B omits the --wait flag entirely"
+
+# AC9: qa off -- no dispatch, return to the loop.
+reset_stubs
+LEASE_RESET
+cfg_json '{"vcs": {"provider": "github"}, "issues": {"max_parallel": 1}, "roles": {"validator": true, "qa": false, "docs": true, "reviewer": true, "security": true}, "pr": {"draft": true}, "verify": {"timeout_ms": 600000, "ci_wait_s": 900}}'
+draft_collect ready
+draft_ready
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 1
+assert_eq "0" "$RC" "AC9-adjacent: the qa-off run exits 0"
+assert_contains "$(journal)" "vcs ready-pr 12" "AC9-adjacent: ready-pr ran"
+assert_not_contains "$(journal)" "agent qa" "AC9-adjacent: qa off means no QA dispatch"
+
+# AC9: a QA FAIL converts the PR back -- --draft keeps its existing meaning.
+reset_stubs
+LEASE_RESET
+draft_cfg '"timeout_ms": 600000, "ci_wait_s": 900'
+draft_collect ready
+draft_ready
+printf 'FAIL: the suite broke\n' > "$STUB_DIR/message.qa"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 1
+assert_contains "$(journal)" "agent qa" "AC9: the QA FAIL dispatch ran"
+assert_contains "$(journal)" "vcs draft-pr 12" "AC9: --draft keeps its existing meaning: a QA FAIL converts the PR back"
+assert_contains "$(journal)" "vcs label-pr 12 --remove qa:pass" "AC9: the failed QA drops qa:pass"
+
+# AC10: a held lease ends the pass with the lease wait, zero ready-pr, exit 0.
+reset_stubs
+LEASE_RESET
+draft_cfg '"timeout_ms": 600000, "ci_wait_s": 900'
+draft_collect ready
+draft_ready
+sleep 30 & _f_lpid=$!
+printf 'issue=9 held=7000 expires=8800 pid=%s\n' "$_f_lpid" > "$LEASE"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=7000 rn --max-iterations 1
+case "$OUT" in
+  "stop action=wait reason=lease retry_after_s="*) pass "AC10: a held lease ends the pass with the lease wait" ;;
+  *) fail "AC10: a held lease ends the pass with the lease wait" "got: $OUT" ;;
+esac
+assert_eq "0" "$RC" "AC10: the lease wait exits 0"
+assert_not_contains "$(journal)" "vcs ready-pr 12" "AC10: zero ready-pr on a held lease"
+kill "$_f_lpid" 2>/dev/null
+
+# AC10: a lock that could not be held answers the same shape with the lock's
+# own seconds, never a takeover.
+reset_stubs
+LEASE_RESET
+draft_cfg '"timeout_ms": 600000, "ci_wait_s": 900'
+draft_collect ready
+draft_ready
+mkdir "$LEASE.lock.d"
+sleep 30 & _lock_lpid=$!
+printf '%s:1\n' "$_lock_lpid" > "$LEASE.lock.d/pid"
+TALOS_LEASE_LOCK_S=1 TALOS_LEASE_TTL_S=1800 TALOS_NOW=7000 rn --max-iterations 1
+assert_contains "$OUT" "stop action=wait reason=lease retry_after_s=1" "AC10: a lock timeout answers the lock's own seconds"
+assert_not_contains "$(journal)" "vcs ready-pr 12" "AC10: zero ready-pr on a lock timeout"
+kill "$_lock_lpid" 2>/dev/null
+rm -rf "${LEASE:?}.lock.d"
+
+# AC11: no second merge path -- pin structurally: the loop has exactly one
+# merge-pr and one gate merge call; the continuation has none of the three.
+_loop_src="$(sed -n '/^_talos_run_loop()/,/^}$/p' "$GS/talos.sh")"
+_comp_src="$(sed -n '/^_talos_run_draft_complete()/,/^}$/p' "$GS/talos.sh")"
+assert_contains "$_comp_src" "_talos_run_draft_complete()" "AC11: the continuation exists next to _talos_run_dispatch"
+assert_eq "0" "$(printf '%s' "$_comp_src" | grep -c 'merge-pr\\|gate merge \\|post-merge')" "AC11: the continuation calls no merge path at all"
+assert_eq "1" "$(printf '%s' "$_loop_src" | grep -c '_vcs merge-pr')" "the loop has exactly one merge-pr call"
+assert_eq "1" "$(printf '%s' "$_loop_src" | grep -c 'gate merge ')" "the loop has exactly one gate merge call"
+# AC3 (the structural half of the contract): ready-pr is reachable only from
+# the resolver's ready stage -- the run loop's single ready-pr call site is the
+# continuation's, behind the resolver's ready answer. At the red commit the
+# continuation does not exist, so the pin fails for the right reason; the
+# behavioral half (the approval-stage pass dispatches and calls it zero times)
+# is the pin above, whose id label lands with the implementation commit.
+assert_contains "$_comp_src" "_talos_cap _vcs ready-pr" "AC3: ready-pr is reachable only from the resolver's ready stage (the run loop's single ready-pr call site is the continuation's, through AC4's _talos_cap call form)"
+assert_eq "0" "$(printf '%s' "$_loop_src" | grep -c '_talos_cap _vcs ready-pr')" "the run loop's body outside the continuation calls ready-pr zero times (through AC4's _talos_cap call form)"
+
+# AC12: a second pass is never stopped by the run's own leftover lease.
+reset_stubs
+LEASE_RESET
+draft_cfg '"timeout_ms": 600000, "ci_wait_s": 900'
+draft_collect ready
+draft_ready
+printf 'PASS: verified\n' > "$STUB_DIR/message.qa"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 2
+assert_eq "0" "$RC" "AC12: two passes end in the cap stop"
+assert_contains "$OUT" "reason=iterations-exhausted max=2" "AC12: the cap names the max"
+assert_not_contains "$OUT" "reason=lease" "AC12: never stopped by its own reason=lease"
+assert_eq "2" "$(journal | grep -c 'vcs ready-pr 12')" "AC12: the second pass ran the continuation again (the lease was released)"
+
+# The other wait reasons keep today's terminal stop (AC2's contract; unlabeled:
+# the behavior holds at the red commit too, so an id label there would read as
+# vacuous to the criteria report).
+reset_stubs
+LEASE_RESET
+cfg_json '{"vcs": {"provider": "github"}, "issues": {"max_parallel": 1}, "roles": {"validator": true, "qa": true}, "pr": {"draft": true}, "verify": {"timeout_ms": 600000, "ci_wait_s": 900}}'
+draft_collect ci
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 1
+assert_eq "0" "$RC" "the ci-stage wait ends the run clean"
+assert_contains "$OUT" "stop action=wait reason=ci" "the ci wait keeps the bare terminal form"
+assert_not_contains "$(journal)" "vcs ready-pr 12" "the ci wait calls ready-pr zero times"
+
+# The approval stages still come first (AC3's contract; the AC3 label lands
+# with the implementation commit -- the behavior holds at the red commit, so an
+# AC3 label there would read as vacuous to the criteria report).
+reset_stubs
+LEASE_RESET
+draft_cfg '"timeout_ms": 600000, "ci_wait_s": 900'
+draft_collect docs
+printf 'APPROVED: docs pass\n' > "$STUB_DIR/message.docs"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 1
+assert_eq "0" "$RC" "the approval-stage pass exits 0"
+assert_contains "$(journal)" "agent docs" "the approval-stage pass dispatches agent docs"
+assert_eq "0" "$(journal | grep -c 'vcs ready-pr 12')" "AC3: the approval-stage pass calls ready-pr zero times"
+
+# AC13: docs and pins move with the contract.
+grep -q 'run-reasons: .*ready-pr-failed' "$GS/talos.sh"
+assert_eq "0" "$?" "AC13: run-reasons names ready-pr-failed"
+grep -q 'warn: .*qa-ci-red' "$GS/talos.sh"
+assert_eq "0" "$?" "AC13: run-reasons names qa-ci-red"
+grep -qF 'action=wait reason=draft pr=<M> issue=<N>' "$GS/talos.sh"
+assert_eq "0" "$?" "AC13: the next schema describes the key-carrying draft wait"
+grep -q '_talos_run_draft_complete' "$GS/talos.sh"
+assert_eq "0" "$?" "AC13: the run block describes the draft continuation"
+grep -q 'finishes the draft window by itself' "$TALOS_ROOT/CHANGELOG.md"
+assert_eq "0" "$?" "AC13: CHANGELOG has the draft-window entry under [Unreleased] (anchored to the #516 entry's own text, not a generic draft-window match which would satisfy the pre-existing #332 entry too)"
+assert_not_contains "$(cat "$TALOS_ROOT/skills/pipeline/SKILL.md")" "ready-pr-failed" "AC13-adjacent: SKILL.md is not edited"
+assert_not_contains "$(cat "$TALOS_ROOT/skills/pipeline/SKILL.md")" "qa-ci-red" "AC13-adjacent: SKILL.md is not edited"
+
 finish

@@ -324,7 +324,10 @@
 #          action=merge pr=<M> issue=<N>  the lowest PR at stage merge: run
 #                                  `gate merge <M> <N>`.
 #          action=wait reason=<enum>     a PR-side wait: draft (the draft
-#                                  window; the draft stage order continues),
+#                                  window; key-carrying as
+#                                  `action=wait reason=draft pr=<M> issue=<N>`:
+#                                  the run loop continues the Draft stage
+#                                  order from it),
 #                                  ci (the CI wait), human-merge (a human
 #                                  merges), blocked (a PR or issue carries
 #                                  pipeline:blocked).
@@ -432,12 +435,38 @@
 #        not collect JSON is `warn reason=inflight-unreadable` and leaves the
 #        fallback unused, never a silent queue walk. A targeted `--issue` run
 #        never reads it.
+#        The draft-window completion (#516): on `action=wait reason=draft
+#        pr=<M> issue=<N>` (the resolver answered `ready`: every enabled
+#        draft-window approval is fresh) the pass finishes the Draft stage
+#        order itself, inside one pass, as `_talos_run_draft_complete <M> <N>`:
+#        the write is leased first (a held lease or an unavailable ledger or
+#        lock ends the run with `stop action=wait reason=lease
+#        retry_after_s=<s>`, zero ready-pr); ready-pr runs once (a non-zero
+#        exit is `stop reason=ready-pr-failed`, exit 1, never a QA dispatch);
+#        the Draft guard asks the PR itself (rc 1 with stdout exactly `ready`
+#        continues; rc 0 -- the ready never took -- is `stop
+#        reason=ready-pr-failed`; any other rc/output is `stop
+#        reason=draft-unverified`); under `verify.qa_mode: ci` exactly one
+#        `pr-checks-required <M> --wait <B>` runs with
+#        `B = min(cfg verify.ci_wait_s, cfg verify.timeout_ms/1000 - 30)`
+#        clamped to the verb's 3600 bound (the flag omitted when B is not a
+#        positive integer); a red required check ends the run with
+#        `warn reason=qa-ci-red pr=<M> issue=<N>` + `stop action=wait
+#        reason=ci pr=<M> issue=<N>` exit 0 (a red build is scheduling, the
+#        same wait shape the resolver answers for a pending build); QA
+#        dispatches through the one dispatch path (`dispatch stage=qa pr=<M>
+#        issue=<N>`), skipped when `roles.qa` is false, with `--draft` keeping
+#        its existing meaning (a QA FAIL converts the PR back inside `done`);
+#        the lease is released before the pass returns to the loop. The
+#        continuation never merges: after it returns, the next pass's
+#        `action=merge` arm runs.
 #        One `info run` notice per pass carries the action; nothing else is
 #        printed. Stderr carries the child relay lines only.
 #
-# run-reasons: usage unknown-role unknown-pr dispatch-failed
+# run-reasons: usage unknown-role unknown-pr dispatch-failed ready-pr-failed
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
-#   warn: notify-failed board-failed spend-upsert-failed lease-release-failed
+#         ready-pr-failed draft-unverified
+#   warn: qa-ci-red notify-failed board-failed spend-upsert-failed lease-release-failed
 #         model-invalid label-failed comment-failed budget-check-failed
 #         inflight-unreadable
 #
@@ -2726,7 +2755,7 @@ blocked = data.get("blocked") or []
 ROLE_STAGES = ("qa", "docs", "reviewer", "security", "adversarial")
 def say(action, **kw):
     out = "action=" + action
-    for k in ("stage", "pr", "issue", "reason"):
+    for k in ("stage", "reason", "pr", "issue"):
         if k in kw:
             out += " %s=%s" % (k, kw[k])
     print(out)
@@ -2737,7 +2766,9 @@ for p in prs:
     elif st == "merge":
         say("merge", pr=p["n"], issue=p["issue"])
     elif st == "ready":
-        say("wait", reason="draft")
+        # The draft wait is key-carrying (#516): it names the PR and the issue
+        # so the run loop can continue the Draft stage order from it.
+        say("wait", reason="draft", pr=p["n"], issue=p["issue"])
     elif st == "ci":
         say("wait", reason="ci")
     elif st == "human-merge":
@@ -2794,7 +2825,7 @@ def die(msg):
 
 def say(action, **kw):
     out = "action=" + action
-    for k in ("stage", "pr", "issue", "reason", "retry_after_s", "question"):
+    for k in ("stage", "reason", "pr", "issue", "retry_after_s", "question"):
         if k in kw:
             out += " %s=%s" % (k, kw[k])
     print(out)
@@ -2952,7 +2983,9 @@ def adopt(n):
         elif st == "merge":
             say("merge", pr=p["n"], issue=n)
         elif st == "ready":
-            say("wait", reason="draft")
+            # The draft wait is key-carrying (#516), same as the PR-side half:
+            # the run loop continues the Draft stage order from it.
+            say("wait", reason="draft", pr=p["n"], issue=n)
         elif st == "ci":
             say("wait", reason="ci")
         elif st == "human-merge":
@@ -3329,7 +3362,23 @@ _talos_run_loop() {
           esac
         done
         case "$_act" in
-          "action=wait reason="*) _talos_emit stop "$_act"; _talos_flush; exit 0 ;;
+          "action=wait reason="*)
+            # The draft-window continuation (#516): only the key-carrying shape
+            # (both the producer halves emit `pr=`/`issue=` on the draft wait,
+            # and nothing else) hands control back to the top of the pass loop.
+            # A bare draft wait and every other reason keep today's terminal
+            # stop, and the in-flight walk above is byte-for-byte unchanged.
+            case "$_act" in
+              "action=wait reason=draft pr="*" issue="*)
+                _pr="$(sed -n 's/.* pr=\([0-9]*\).*/\1/p' <<<"$_act")"
+                _n="$(sed -n 's/.* issue=\([0-9]*\).*/\1/p' <<<"$_act")"
+                case "$_pr" in ''|*[!0-9]*) _talos_stop state-unavailable ;; esac
+                case "$_n" in ''|*[!0-9]*) _talos_stop state-unavailable ;; esac
+                _talos_run_draft_complete "$_pr" "$_n"
+                continue ;;
+            esac
+            _talos_emit stop "$_act"
+            _talos_flush; exit 0 ;;
         esac ;;
       "stop reason="*)
         # A state-read failure (`next`'s own stop): not a clean end.
@@ -3457,6 +3506,98 @@ _talos_run_dispatch() {
       _talos_flush; exit 0 ;;
   esac
   return 0
+}
+
+# _talos_run_draft_complete <pr> <issue> (#516): the draft-window completion,
+# called from the run loop's wait arm when the resolver answered `ready` --
+# every enabled draft-window approval is fresh at the current head, so the
+# pass finishes the Draft stage order itself. The write is leased first (the
+# same shape `next`'s dispatch path uses); the ready verb runs once; the
+# Draft guard asks the PR itself, never memory; the one CI wait runs only
+# under qa_mode: ci; QA dispatches through the driver's one dispatch path;
+# and the lease is released before the function returns to the loop. The
+# function calls none of the gate's verdict verbs itself -- after it returns,
+# the next pass's existing merge arm runs (the gate reads ci_runs before the
+# write that deletes the head branch).
+_talos_run_draft_complete() {
+  local _pr="$1" _n="$2" _r _b _ci_wait _t_ms _wait_args
+  # The write is leased first (next's dispatch shape): a held lease or an
+  # unavailable ledger/lock ends the run with the lease wait, zero ready-pr.
+  _talos_lease acquire "$_n" > "$_CFG_CACHE_DIR/lease.line"
+  case "$?" in
+    0)
+      if [ "${_TALOS_LEASE_RECLAIMED:-0}" -eq 1 ]; then
+        echo "talos.sh run: lease reclaimed from dead holder issue=$_n" >&2
+      fi
+      : ;;
+    1)
+      _r="$(_talos_lease_retry_s "$(cat "$_CFG_CACHE_DIR/lease.line")" "$(_talos_now)")"
+      _talos_emit stop "action=wait reason=lease retry_after_s=$_r"
+      _talos_flush; exit 0 ;;
+    *)
+      _talos_emit stop "action=wait reason=lease retry_after_s=${TALOS_LEASE_LOCK_S:-10}"
+      _talos_flush; exit 0 ;;
+  esac
+  # The ready verb, once (the draft-verb gate answers 0 only on success).
+  _talos_cap _vcs ready-pr "$_pr"
+  [ "$_RC" -eq 0 ] || _talos_stop ready-pr-failed
+  # The Draft guard asks the PR itself, never memory (SKILL 3d's contract):
+  # rc 1 with stdout exactly `ready` continues; rc 0 (the ready never took)
+  # stops ready-pr-failed, because stopping is what keeps the next pass from
+  # calling ready-pr again forever; any other rc/output is draft-unverified.
+  _talos_cap _vcs pr-is-draft "$_pr"
+  case "$_RC" in
+    0) _talos_stop ready-pr-failed ;;
+    1) [ "$_OUT" = "ready" ] || _talos_stop draft-unverified ;;
+    *) _talos_stop draft-unverified ;;
+  esac
+  # QA is the stage the resolver skips inside the draft window; the
+  # continuation checks the role itself, with the cfg idiom next's issue-side
+  # routing uses. qa off: no dispatch, back to the loop.
+  case "$(cfg roles.qa | tr '[:upper:]' '[:lower:]')" in
+    false) _talos_lease_release "$_n"; return 0 ;;
+  esac
+  # The one CI wait, qa_mode: ci only (SKILL 3d's table): B =
+  # min(cfg verify.ci_wait_s, cfg verify.timeout_ms/1000 - 30), clamped to the
+  # verb's own 3600 bound, the flag omitted entirely when B is not a positive
+  # integer. rc 0 or 2 dispatches QA; rc 1 with the failed line in stderr ends
+  # the run with the ci wait shape (a red build is scheduling, not a fault);
+  # rc 1 without it dispatches QA.
+  if [ "$(cfg verify.qa_mode)" = "ci" ]; then
+    _ci_wait="$(cfg verify.ci_wait_s)"; _t_ms="$(cfg verify.timeout_ms)"
+    _b=""
+    case "$_ci_wait" in ''|*[!0-9]*) ;; *)
+      case "$_t_ms" in ''|*[!0-9]*) ;; *)
+        _b=$((_t_ms / 1000 - 30))
+        [ "$_ci_wait" -lt "$_b" ] && _b="$_ci_wait"
+        [ "$_b" -gt 3600 ] && _b=3600
+        [ "$_b" -le 0 ] && _b=""
+      ;; esac ;;
+    esac
+    _wait_args=()
+    [ -n "$_b" ] && _wait_args=(--wait "$_b")
+    _talos_cap _vcs pr-checks-required "$_pr" ${_wait_args[@]+"${_wait_args[@]}"}
+    case "$_RC" in
+      0|2) : ;;
+      1)
+        case "$_ERR" in
+          *"pr-checks-required: failed:"*)
+            _talos_emit warn "reason=qa-ci-red pr=$_pr issue=$_n"
+            _talos_emit stop "action=wait reason=ci pr=$_pr issue=$_n"
+            _talos_flush; exit 0 ;;
+          *) : ;;
+        esac ;;
+      *) _talos_stop state-unavailable ;;
+    esac
+  fi
+  # The QA dispatch, the driver's one dispatch path (prompt qa, the agent with
+  # the rendered prompt on stdin, the verdict word, done's bookkeeping). A QA
+  # FAIL under PR_DRAFT converts the PR back inside done -- no new code.
+  _talos_run_dispatch "dispatch stage=qa pr=$_pr issue=$_n"
+  # The lease is released before returning to the loop (idempotent: done's
+  # bookkeeping already freed it; a leftover line of this run's own pid would
+  # make the next pass answer reason=lease).
+  _talos_lease_release "$_n"
 }
 
 verb="${1:-}"

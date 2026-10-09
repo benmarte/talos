@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+- feat(orchestrator): `talos.sh run` finishes the draft window by itself
+  (#516). On `action=wait reason=draft pr=<M> issue=<N>` (the resolver
+  answered `ready`: every enabled draft-window approval is fresh) the pass
+  continues the Draft stage order in one pass: the write is leased first, the
+  ready verb runs once, the Draft guard asks the PR itself (a draft answer
+  after ready-pr is `stop reason=ready-pr-failed`; anything else unverified is
+  `stop reason=draft-unverified`), under `verify.qa_mode: ci` exactly one
+  `pr-checks-required --wait <B>` gates the QA dispatch (a red required check
+  ends the run with `warn reason=qa-ci-red` and the ci wait stop, exit 0), QA
+  dispatches through the one dispatch path (skipped when `roles.qa` is off),
+  and the lease is released before the pass returns to the loop. The
+  continuation never merges: the next pass's existing merge arm runs. Both
+  `next` producers now name the PR on the draft wait (`reason=draft
+  pr=<M> issue=<N>`); every other wait reason stays bare. Ends the
+  hand-completed dogfood lifecycle (ready-pr and a QA dispatch by hand).
 - feat(config): config is JSON only (#526). Exactly two canonical files exist --
   the repo's `talos.pipeline.json` and the user-level
   `${TALOS_HOME:-$HOME/.talos}/talos.pipeline.json` (project overrides global;
