@@ -144,6 +144,17 @@ assert_eq "task" "$(cls claude 2 'something went wrong that we do not know')" "c
 assert_eq "task" "$(cls claude 1 'I added retry code that handles 429 and rate limit responses (ETIMEDOUT too).')" "classify: 429 and rate limits in model prose are task"
 assert_eq "task" "$(cls claude 1 '  API Error: 429 indented prose')" "classify: a shape that is not at the line start is task"
 assert_eq "task" "$(cls claude 1 "$(printf 'API Error: 429\n'; for i in $(seq 1 25); do echo "line $i"; done)")" "classify: only the last 20 lines are read"
+# #540: the spend-limit line Claude Code really printed (captured 2026-10-04).
+SPEND_LINE="You've hit your monthly spend limit · raise it at claude.ai/settings/usage?from=cc_cli_limit_message · your weekly limit resets Oct 9 at 12am (America/New_York)"
+assert_eq "provider" "$(cls claude 1 "$SPEND_LINE")" "classify: the captured monthly spend-limit line is provider"
+assert_eq "provider" "$(cls claude 1 "You’ve hit your monthly spend limit · raise it at claude.ai/settings/usage")" "classify: the same line with a curly apostrophe is provider"
+assert_eq "provider" "$(cls claude 1 "You've hit your limit · resets 3pm")" "classify: a bare 'hit your limit' wording is provider"
+assert_eq "provider" "$(cls claude 1 "You've hit your weekly usage limit · resets Mon at 9am")" "classify: any '<words> limit' wording is provider"
+assert_eq "provider" "$(cls claude 1 "$(printf 'working...\n%s\n' "$SPEND_LINE")")" "classify: the line is found among the last lines of output"
+assert_eq "task" "$(cls claude 1 "I told the user: $SPEND_LINE")" "classify: the same words mid-line in prose are task"
+assert_eq "task" "$(cls claude 1 "  $SPEND_LINE")" "classify: an indented copy is task"
+assert_eq "task" "$(cls claude 1 "You've hit your limit of 3 retries, so I stopped.")" "classify: line-start prose about a retry limit is task"
+assert_eq "ok" "$(cls claude 0 "$SPEND_LINE")" "classify: exit 0 is ok even with that text"
 for r in claude pi codex gemini antigravity custom; do
   assert_eq "provider" "$(cls "$r" 75 '')" "classify: exit 75 is provider for $r"
   assert_eq "task" "$(cls "$r" 1 'plain failure')" "classify: a plain failure is task for $r"
@@ -228,6 +239,13 @@ STUB_CLAUDE_EXIT=1 STUB_CLAUDE_STDOUT='Credit balance is too low' stage
 assert_eq "0" "$RC" "pattern: an error line on stdout fails over"
 assert_eq "codex-stub-ok" "$OUT" "pattern: the failed attempt's stdout is discarded"
 assert_contains "$(errtxt)" "reason=provider:quota" "pattern: quota detail"
+# #540: the real Claude Code spend-limit exit fails over as quota.
+reset
+set_cfg '{"agents": {"fallback": ["codex"]}}'
+STUB_CLAUDE_EXIT=1 STUB_CLAUDE_STDERR="$SPEND_LINE" stage
+assert_eq "0" "$RC" "pattern: the captured spend-limit line fails over"
+assert_eq "codex-stub-ok" "$OUT" "pattern: the fallback finished the stage after the spend-limit line"
+assert_contains "$(errtxt)" "from=claude to=codex reason=provider:quota" "pattern: the spend-limit line is quota"
 
 # A stage that did not fail over keeps its event as it was (runner = agents.runner, model = agents.model).
 reset
