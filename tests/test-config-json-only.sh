@@ -397,6 +397,66 @@ assert_eq "1" "$n_imports" "AC6: import yaml appears only inside --convert (exac
 n_safe_load="$(grep -c 'safe_load' "$CFG_SH")"
 assert_eq "1" "$n_safe_load" "AC6: safe_load appears only inside --convert (exactly once)"
 
+# ═══ #541: a PIPELINE_CONFIG pointer at a missing file fails closed ══════════
+# The pointer is a deliberate operator decision; a typo'd path used to load
+# defaults only (rc 0) and run on a config nobody wrote. Same convention as
+# the other gate reasons: one stderr line, exit 3, before any value resolves.
+
+MISSING="$SANDBOX/no-such-dir/x.json"
+for verb in "verify.qa_mode" "--has verify.qa_mode" "--show" "--dump"; do
+  # shellcheck disable=SC2086
+  out="$(PIPELINE_CONFIG="$MISSING" bash "$CFG_SH" $verb 2>"$ERR")"; rc=$?
+  assert_exit_code "3" "$rc" "#541: a missing PIPELINE_CONFIG target exits 3 ($verb)"
+  assert_eq "" "$out" "#541: a missing PIPELINE_CONFIG target resolves no value ($verb)"
+  assert_eq "1" "$(nolines "$ERR")" "#541: exactly one stderr line ($verb)"
+  assert_contains "$(cat "$ERR")" "pipeline-config: reason=config-pointer-missing $MISSING" \
+    "#541: the line names the reason and the missing path ($verb)"
+done
+
+# The path is printed sanitized: a control byte can never forge a row.
+CTL_MISSING="$SANDBOX/no-such"$'\x01'"dir/x.json"
+PIPELINE_CONFIG="$CTL_MISSING" bash "$CFG_SH" verify.qa_mode >/dev/null 2>"$ERR"; rc=$?
+assert_exit_code "3" "$rc" "#541: a missing pointer with a control byte exits 3"
+assert_contains "$(cat "$ERR")" "reason=config-pointer-missing $SANDBOX/no-such?dir/x.json" \
+  "#541: the control byte is neutralised in the printed path"
+
+# Through the cfg cache talos.sh primes, the same line stops the run.
+out="$(PIPELINE_CONFIG="$MISSING" bash "$TALOS_ROOT/scripts/talos.sh" env 2>&1)"
+assert_contains "$out" "stop reason=config-unreadable" \
+  "#541: talos.sh stops with config-unreadable on a missing pointer"
+assert_contains "$out" "reason=config-pointer-missing" \
+  "#541: the config-pointer-missing line reaches the operator through talos.sh"
+
+# An empty pointer still means "unset", and an existing target still loads.
+out="$(PIPELINE_CONFIG="" bash "$CFG_SH" merge.method SENT 2>"$ERR")"; rc=$?
+assert_eq "SENT" "$out" "#541: an empty PIPELINE_CONFIG means unset (table default)"
+assert_exit_code "0" "$rc" "#541: an empty PIPELINE_CONFIG exits 0"
+printf '{"merge": {"method": "rebase"}}\n' > "$SANDBOX/present.json"
+out="$(PIPELINE_CONFIG="$SANDBOX/present.json" bash "$CFG_SH" merge.method SENT 2>"$ERR")"; rc=$?
+assert_eq "rebase" "$out" "#541: an existing pointer target still loads"
+assert_exit_code "0" "$rc" "#541: an existing pointer target exits 0"
+rm -f "$SANDBOX/present.json"
+
+# ═══ #541: the user-layer stray check tests the REAL path ════════════════════
+# With a control byte in TALOS_HOME the existence test used to run on the
+# sanitized display path, miss the real canonical json, and tell the user to
+# convert instead of delete the stray.
+
+CTLHOME="$SANDBOX/ctl"$'\x01'"home"
+mkdir -p "$CTLHOME" || exit 1
+printf '{"agents": {"model": "x"}}\n' > "$CTLHOME/talos.pipeline.json"
+chmod 600 "$CTLHOME/talos.pipeline.json"
+printf 'agents:\n  model: y\n' > "$CTLHOME/talos.pipeline.yml"
+TALOS_HOME="$CTLHOME" bash "$CFG_SH" merge.method >/dev/null 2>"$ERR"; rc=$?
+assert_exit_code "3" "$rc" "#541: a stray beside the json under a control-byte TALOS_HOME exits 3"
+assert_contains "$(cat "$ERR")" "reason=config-shadowed winner=$SANDBOX/ctl?home/talos.pipeline.json" \
+  "#541: the control-byte TALOS_HOME gets delete-the-stray (config-shadowed), not convert"
+assert_eq "0" "$(grep -c 'config-legacy-file' "$ERR")" \
+  "#541: the control-byte TALOS_HOME is not told to convert"
+assert_eq "0" "$(printf '%s' "$(cat "$ERR")" | tr -d '\n' | tr -cd '\001' | wc -c | tr -d ' ')" \
+  "#541: the printed text carries no raw control byte"
+rm -rf "$CTLHOME"
+
 # ═══ AC8: the yml example is gone ════════════════════════════════════════════
 
 assert_file_absent "$TALOS_ROOT/talos.pipeline.yml.example" \
