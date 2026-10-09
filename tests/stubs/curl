@@ -203,23 +203,56 @@ print(json.dumps(c))
       rm -f "$_cs_payload"
     fi
   fi
-elif [ -n "${STUB_ASSIGNEE_FILE:-}" ] && [[ "$url" =~ /issues/[0-9]+/assignees$ ]]; then
+elif [ -n "${STUB_ASSIGNEE_FILE:-}${STUB_ASSIGNEE_DIR:-}" ] && [[ "$url" =~ /issues/([0-9]+)/assignees$ ]]; then
+  # POST adds an assignee (#299); DELETE removes the named ones (#560). With
+  # STUB_ASSIGNEE_DIR (#560) the state is one file per issue ($DIR/<n>, one
+  # login per line) and a POST adds to it; STUB_ASSIGNEE_RACER=<login> adds a
+  # second operator whose write lands at the same moment.
+  _as_f="${STUB_ASSIGNEE_FILE:-}"
+  [ -n "${STUB_ASSIGNEE_DIR:-}" ] && _as_f="$STUB_ASSIGNEE_DIR/${BASH_REMATCH[1]}"
   if [ "${STUB_ASSIGN_FAIL:-}" = "1" ]; then
     http_status=422
     resp='{"message":"Validation Failed"}'
+  elif [ "$method" = "DELETE" ]; then
+    [ -f "$_as_f" ] && printf '%s' "$payload" | python3 -I -c "
+import json, sys
+gone = [x.lower() for x in json.load(sys.stdin)['assignees']]
+path = sys.argv[1]
+keep = [l for l in open(path).read().split() if l.lower() not in gone]
+open(path, 'w').write(''.join(l + '\\n' for l in keep))
+" "$_as_f"
+    http_status=200
+    resp='{}'
   else
-    [ "${STUB_ASSIGN_DROP:-}" != "1" ] && printf '%s' "$payload" \
-      | python3 -I -c "import json,sys; print(json.load(sys.stdin)['assignees'][0])" > "$STUB_ASSIGNEE_FILE"
+    if [ "${STUB_ASSIGN_DROP:-}" != "1" ]; then
+      printf '%s' "$payload" | STUB_RACER="${STUB_ASSIGNEE_RACER:-}" ADD="${STUB_ASSIGNEE_ADD:-}${STUB_ASSIGNEE_DIR:+1}" python3 -I -c "
+import json, os, sys
+path = sys.argv[1]
+new = json.load(sys.stdin)['assignees'][0]
+cur = open(path).read().split() if os.path.exists(path) else []
+out = (cur if os.environ['ADD'] else []) + [new]
+if os.environ['STUB_RACER']:
+    out.append(os.environ['STUB_RACER'])
+seen, keep = set(), []
+for l in out:
+    if l.lower() not in seen:
+        seen.add(l.lower())
+        keep.append(l)
+open(path, 'w').write(''.join(l + '\\n' for l in keep))
+" "$_as_f"
+    fi
     http_status=201
     resp='{}'
   fi
-elif [ -n "${STUB_ASSIGNEE_FILE:-}" ] && [ "$method" = "GET" ] && [[ "$url" =~ /issues/[0-9]+$ ]]; then
+elif [ -n "${STUB_ASSIGNEE_FILE:-}${STUB_ASSIGNEE_DIR:-}" ] && [ "$method" = "GET" ] && [[ "$url" =~ /issues/([0-9]+)$ ]]; then
+  _as_f="${STUB_ASSIGNEE_FILE:-}"
+  [ -n "${STUB_ASSIGNEE_DIR:-}" ] && _as_f="$STUB_ASSIGNEE_DIR/${BASH_REMATCH[1]}"
   _as_cur=""
-  [ -s "$STUB_ASSIGNEE_FILE" ] && _as_cur="$(cat "$STUB_ASSIGNEE_FILE")"
+  [ -s "$_as_f" ] && _as_cur="$(cat "$_as_f")"
   resp="$(CUR="$_as_cur" python3 -I -c "
 import json, os
-cur = os.environ['CUR']
-print(json.dumps({'number': 42, 'assignees': [{'login': cur}] if cur else []}))
+cur = os.environ['CUR'].split()
+print(json.dumps({'number': 42, 'assignees': [{'login': c} for c in cur]}))
 ")"
 elif [ -n "${CURL_QUEUE:-}" ] && [ -s "$CURL_QUEUE" ]; then
   raw="$(head -1 "$CURL_QUEUE")"
