@@ -713,6 +713,17 @@ assert_eq "2" "$(journal | grep -c 'vcs ready-pr 12')" "backstop: ready-pr ran e
 assert_eq "2" "$(journal | grep -c '^agent qa$')" "backstop: QA ran exactly twice"
 assert_eq "1" "$(journal | grep -c '^agent developer$')" "backstop: exactly one fix round ran"
 
+# (i3) the gate's own refusal (a ceiling) ends the run clean and its reason is
+# relayed, not lost: no fix round, no unchanged-head stop.
+fix_fixture
+printf 'pipeline-vcs: record-attempt: max_fix_attempts (3) reached for qa\n' > "$STUB_DIR/record-attempt.err"
+printf 1 > "$STUB_DIR/record-attempt.rc"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=12000 rn --max-iterations 9
+assert_eq "0" "$RC" "gate block: a ceiling ends the run clean"
+assert_contains "$OUT" "stop verdict=block reason=max-fix-attempts" "gate block: the stop names the gate's verdict and reason"
+assert_contains "$(cat "$ERR")" "max_fix_attempts" "gate block: the gate's stderr is relayed to the run's stderr"
+assert_eq "0" "$(journal | grep -c '^agent developer$')" "gate block: no developer fix round past the ceiling"
+
 # ── (j) the developer's `pr=<N>` word, on the host's own text tools (#537) ────
 # A final message with no PR URL but a standalone `pr=<N>` is PR_OPENED <N>; the
 # word must not be part of a longer one (xpr=12, my_pr=3, pr=12a, PR=4). The
