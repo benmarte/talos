@@ -175,6 +175,8 @@ agents.provider_down_s	int	900	-	-	any
 agents.stage_timeout_s	int		-	-	any
 agents.roles.*.stage_timeout_s	int		derived	-	any
 agents.capture_usage	bool	true	-	-	any
+agents.profile	str		-	TALOS_PROFILE	any
+agents.mode	enum		-	-	any
 limits.max_fix_attempts	int	3	-	-	any
 limits.max_total_dispatches	int	8	-	-	any
 limits.max_retries	int	5	-	-	any

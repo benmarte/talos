@@ -198,9 +198,13 @@ assert_eq "claude" "$(dump_get sources.profile)" "matrix: with no harness detect
 assert_eq "unknown" "$(dump_get sources.harness)" "matrix: no harness is reported as unknown"
 # TALOS_HARNESS wins over an inherited CLAUDECODE=1 (pi started inside Claude Code).
 assert_eq "adapt" "$(dump_get sources.profile CLAUDECODE=1 TALOS_HARNESS=pi TALOS_PROFILE=adapt)" "matrix: TALOS_HARNESS wins over CLAUDECODE"
-assert_eq "pi" "$(dump_get sources.harness CLAUDECODE=1 TALOS_HARNESS=pi)" "matrix: and is the reported harness"
+assert_eq "pi" "$(dump_get sources.harness CLAUDECODE=1 TALOS_HARNESS=pi TALOS_PROFILE=adapt)" "matrix: and is the reported harness"
 TALOS_HARNESS=pi CLAUDECODE=1 TALOS_PROFILE=claude bash "$CONFIG" --dump >/dev/null 2>"$ERR"; rc=$?
 assert_eq "4" "$rc" "matrix: an inherited CLAUDECODE=1 does not make a pi session native"
+# A TALOS_HARNESS that is not a name is ignored with one line; detection still applies.
+err="$(TALOS_HARNESS='Bad Name!' CLAUDECODE=1 bash "$CONFIG" --dump 2>&1 >/dev/null)"
+assert_contains "$err" "TALOS_HARNESS is not a harness name" "matrix: an unusable TALOS_HARNESS is reported"
+assert_eq "claude-code" "$(dump_get sources.harness TALOS_HARNESS='Bad Name!' CLAUDECODE=1 2>/dev/null)" "matrix: and ignored in favour of detection"
 # A mode-less profile adapts to the harness instead of being refused.
 set_cfg '{"agents": {"profile": "p", "profiles": {"p": {"model": "m"}}}}'
 assert_eq "p" "$(dump_get sources.profile TALOS_HARNESS=pi)" "matrix: a profile with no mode is usable under pi"
@@ -256,6 +260,11 @@ out="$(PATH="$NOPI" CLAUDECODE=1 bash "$TALOS" env 2>/dev/null)"
 assert_contains "$(printf '%s\n' "$out" | grep '^PROFILE_INFO=gone ')" "cli=missing usable=no" "env: a profile whose runner CLI is not installed is reported cli=missing"
 assert_contains "$(printf '%s\n' "$out" | grep '^PROFILE_INFO=claude ')" "cli=present usable=yes" "env: and one whose CLI is installed cli=present"
 
+# A profile name with upper case, - and _ is a fallback entry like any other.
+set_cfg '{"agents": {"fallback": ["Big-Local_1"], "profiles": {"Big-Local_1": {"runner": "pi", "model": "m"}}}}'
+assert_eq "Big-Local_1" "$(env_get "$(bash "$TALOS" env 2>/dev/null)" agent.developer.fallback)" "env: a profile name is shown in the per-role fallback chain"
+assert_eq "runner=claude runner_cmd= model= effort= fallback=Big-Local_1" "$(bash "$AGENT" --resolve developer 2>/dev/null)" "resolve: fallback= lists a profile name"
+
 # agents.subagents: auto resolves from the harness, not from agents.runner.
 reset
 set_cfg '{"agents": {"runner": "claude", "subagents": "auto"}}'
@@ -286,9 +295,11 @@ assert_eq "60" "$(dump_get agents.stage_timeout_s TALOS_PROFILE=ollama)" "dump: 
 assert_eq "claude,local,ollama" "$(dump_get sources.profiles)" "dump: sources.profiles lists the configured profiles"
 assert_eq "qwen3-coder:480b-cloud" "$(dump_get profile.ollama.model)" "dump: every profile's resolved keys are available as profile.<name>.<key>"
 assert_eq "opus" "$(dump_get profile.claude.roles.security.model)" "dump: including its role overrides"
-assert_eq "$(printf 'agents.profile\tlocal\tenv')" "$(TALOS_PROFILE=local bash "$CONFIG" --show agents.profile 2>/dev/null)" "show: agents.profile shows the active profile and the env layer"
-assert_eq "$(printf 'agents.profile\tclaude\trepo')" "$(bash "$CONFIG" --show agents.profile 2>/dev/null)" "show: agents.profile from the repo file is layer repo"
-assert_eq "$(printf 'agents.runner\tpi\trepo')" "$(TALOS_PROFILE=local bash "$CONFIG" --show agents.runner 2>/dev/null)" "show: a key decided by a profile defined in the repo file is layer repo"
+# show_row <key>: the one `--show` row of exactly that key.
+show_row() { awk -F'\t' -v k="$1" '$1 == k' ; }
+assert_eq "$(printf 'agents.profile\tlocal\tenv')" "$(TALOS_PROFILE=local bash "$CONFIG" --show agents. 2>/dev/null | show_row agents.profile)" "show: agents.profile shows the active profile and the env layer"
+assert_eq "$(printf 'agents.profile\tclaude\trepo')" "$(bash "$CONFIG" --show agents. 2>/dev/null | show_row agents.profile)" "show: agents.profile from the repo file is layer repo"
+assert_eq "$(printf 'agents.runner\tpi\trepo')" "$(TALOS_PROFILE=local bash "$CONFIG" --show agents. 2>/dev/null | show_row agents.runner)" "show: a key decided by a profile defined in the repo file is layer repo"
 
 # agents.profile and agents.mode are table keys; TALOS_PROFILE is the env column.
 . "$TALOS_ROOT/scripts/pipeline-defaults.sh"
@@ -315,7 +326,7 @@ mkdir -p "$SANDBOX/userhome"
 printf '{"agents": {"profiles": {"home": {"runner": "pi", "model": "from-user"}}}}\n' > "$SANDBOX/userhome/talos.pipeline.json"
 set_cfg '{"agents": {"profile": "home"}}'
 assert_eq "from-user" "$(TALOS_HOME="$SANDBOX/userhome" bash "$CONFIG" agents.model 2>/dev/null)" "layers: a profile defined in the user-level file is selectable from the repo file"
-assert_eq "$(printf 'agents.model\tfrom-user\tglobal')" "$(TALOS_HOME="$SANDBOX/userhome" bash "$CONFIG" --show agents.model 2>/dev/null)" "layers: its keys are layer global in --show"
+assert_eq "$(printf 'agents.model\tfrom-user\tglobal')" "$(TALOS_HOME="$SANDBOX/userhome" bash "$CONFIG" --show agents. 2>/dev/null | show_row agents.model)" "layers: its keys are layer global in --show"
 
 # ═══ 7. Fallback entries may name a profile ══════════════════════════════════
 reset
