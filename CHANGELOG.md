@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- fix(config): a `PIPELINE_CONFIG` pointer at a file that does not exist now
+  fails closed (#541). It used to print nothing and load defaults only (rc 0),
+  so a typo'd path ran on a config nobody wrote. The config gate now emits one
+  `pipeline-config: reason=config-pointer-missing <path>` line (path sanitized
+  like the other gate reasons) and exits 3 on every read verb, `--show`,
+  `--dump` and the cfg cache `talos.sh` primes; an empty `PIPELINE_CONFIG` still
+  means unset. Also: the user-level stray check tested existence on the
+  sanitized display path, so a control byte in `TALOS_HOME` told the user to
+  convert a stray instead of deleting it (`config-shadowed`); it now tests the
+  real path and prints only the sanitized one.
 - feat(orchestrator): `talos.sh run` finishes the draft window by itself
   (#516). On `action=wait reason=draft pr=<M> issue=<N>` (the resolver
   answered `ready`: every enabled draft-window approval is fresh) the pass
