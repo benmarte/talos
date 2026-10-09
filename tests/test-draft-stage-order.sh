@@ -311,70 +311,115 @@ export PATH="$BIN:$PATH"
 
 cat > "$BIN/gh" <<'EOF'
 #!/usr/bin/env bash
-S="${MODEL_STATE:?}"
-PRN=42
-emit() {  # $1 = pull_request event type
-  case "$1" in
-    opened|synchronize|reopened|ready_for_review)
-      if [ "$(cat "$S/draft")" = true ]; then c=skipped; else c=success; fi
-      printf '%s %s\n' "$c" "$PRN" >> "$S/runs" ;;
-  esac
-}
-case "$*" in
-  "repo view"*) printf 'acme/widget\n'; exit 0 ;;
-  "__event "*) emit "$2"; exit 0 ;;
-  "pr create "*)
-    case " $* " in *" --draft "*) echo true > "$S/draft" ;; *) echo false > "$S/draft" ;; esac
-    emit opened
-    printf 'https://github.com/acme/widget/pull/%s\n' "$PRN" ;;
-  "pr ready "*)
-    case "$*" in
-      *--undo*) echo true > "$S/draft"; emit converted_to_draft ;;
-      *) echo false > "$S/draft"; emit ready_for_review ;;
-    esac ;;
-  "pr view "*"--json isDraft"*)
-    [ -n "${MODEL_FETCH_FAIL:-}" ] && { echo "gh: HTTP 502" >&2; exit 1; }
-    if [ -n "${MODEL_GARBAGE:-}" ]; then printf 'nope'; else printf '{"isDraft":%s}' "$(cat "$S/draft")"; fi ;;
-  "pr merge "*)
-    # Like GitHub: --delete-branch removes the head branch, after which every
-    # run for that head comes back with an empty pull_requests[].
-    awk '{ print $1, "-" }' "$S/runs" > "$S/runs.tmp" && mv "$S/runs.tmp" "$S/runs" ;;
-  "pr view "*"--json headRefName"*) printf '{"headRefName":"feat/issue-332-x"}' ;;
-  "pr view "*"--json headRefOid"*)
-    # check-approval-sha input: head SHA, labels, and a QA approval marker.
-    python3 - "$S" <<'PY'
-import json, os, sys
-s = sys.argv[1]
-def rd(n):
-    f = os.path.join(s, n)
+[ "${1:-}" = auth ] && exit 0
+exec python3 -I "$(dirname "$0")/model-gh.py" "$@"
+EOF
+cat > "$BIN/model-gh.py" <<'EOF'
+# The model GitHub: one PR (#42) with a draft state, labels, a head SHA and a
+# QA approval marker, behind the REST calls pipeline-vcs.sh makes
+# (`gh api -i -X <METHOD> [--input <file>] <path>`), plus `__event <type>`.
+import json, os, re, sys
+from urllib.parse import unquote
+
+S = os.environ["MODEL_STATE"]
+PRN = 42
+
+
+def rd(name):
+    f = os.path.join(S, name)
     return open(f).read().strip() if os.path.exists(f) else ""
-comments = []
-if rd("qa_sha"):
-    comments.append({"author": {"login": "model-bot"},
-                     "body": "QA passed\n\n<!-- talos:approval sha=%s role=qa -->" % rd("qa_sha")})
-print(json.dumps({"headRefOid": rd("head"), "baseRefName": "main",
-                  "labels": [{"name": l} for l in rd("labels").splitlines() if l],
-                  "comments": comments}))
-PY
-    ;;
-  "pr edit "*)
-    prev=""
-    for a in "$@"; do
-      case "$prev" in
-        --remove-label) grep -vxF "$a" "$S/labels" > "$S/labels.tmp"; mv "$S/labels.tmp" "$S/labels" ;;
-        --add-label) printf '%s\n' "$a" >> "$S/labels" ;;
-      esac
-      prev="$a"
-    done ;;
-  "api user"*) printf 'model-bot\n' ;;
-  "api "*"actions/runs"*)
-    awk 'BEGIN { n = 0 } { n++; prs = ($2 == "-") ? "" : sprintf("{\"number\":%s}", $2)
-           r[n] = sprintf("{\"conclusion\":\"%s\",\"pull_requests\":[%s]}", $1, prs) }
-         END { printf "{\"total_count\":%d,\"workflow_runs\":[", n;
-               for (i = 1; i <= n; i++) printf "%s%s", (i > 1 ? "," : ""), r[i];
-               printf "]}" }' "$S/runs" ;;
-esac
-exit 0
+
+
+def wr(name, value):
+    open(os.path.join(S, name), "w").write(value)
+
+
+def emit(event):
+    if event in ("opened", "synchronize", "reopened", "ready_for_review"):
+        conclusion = "skipped" if rd("draft") == "true" else "success"
+        open(os.path.join(S, "runs"), "a").write("%s %s\n" % (conclusion, PRN))
+
+
+def reply(status, body, raw=False):
+    sys.stdout.write("HTTP/2.0 %d Model\nX-Stub: 1\r\n\r\n%s\n" % (status, body if raw else json.dumps(body)))
+    if status >= 400:
+        sys.stderr.write("gh: model error (HTTP %d)\n" % status)
+        sys.exit(1)
+    sys.exit(0)
+
+
+argv = sys.argv[1:]
+if argv[:1] == ["__event"]:
+    emit(argv[1])
+    sys.exit(0)
+if argv[:2] != ["api", "-i"]:
+    if argv[:1] == ["api"]:
+        print("acme/widget")   # repo auto-detection
+    sys.exit(0)
+
+method, infile, path = "GET", None, ""
+i = 2
+while i < len(argv):
+    if argv[i] == "-X":
+        method = argv[i + 1]; i += 2
+    elif argv[i] == "-H":
+        i += 2
+    elif argv[i] == "--input":
+        infile = argv[i + 1]; i += 2
+    else:
+        path = argv[i]; i += 1
+payload = json.load(open(infile)) if infile else {}
+route = re.sub(r"^repos/[^/]+/[^/]+/?", "", path.split("?")[0])
+
+if method == "POST" and path == "graphql":
+    q = payload.get("query", "")
+    if "convertPullRequestToDraft" in q:
+        wr("draft", "true"); emit("converted_to_draft")
+    elif "markPullRequestReadyForReview" in q:
+        wr("draft", "false"); emit("ready_for_review")
+    reply(200, {"data": {"result": {}}})
+if method == "POST" and route == "pulls":
+    wr("draft", "true" if payload.get("draft") else "false")
+    emit("opened")
+    reply(201, {"number": PRN, "html_url": "https://github.com/acme/widget/pull/%d" % PRN})
+if route == "pulls/%d" % PRN and method == "GET":
+    if os.environ.get("MODEL_FETCH_FAIL"):
+        reply(502, {"message": "Bad Gateway"})
+    if os.environ.get("MODEL_GARBAGE"):
+        reply(200, "nope", raw=True)
+    repo = {"full_name": "acme/widget"}
+    reply(200, {"number": PRN, "state": "open", "merged_at": None, "draft": rd("draft") == "true",
+                "node_id": "PR_model", "mergeable": True,
+                "labels": [{"name": l} for l in rd("labels").splitlines() if l],
+                "head": {"ref": "feat/issue-332-x", "sha": rd("head"), "repo": repo},
+                "base": {"ref": "main", "repo": repo}})
+if route == "pulls/%d/merge" % PRN and method == "PUT":
+    # Like GitHub: the merge removes the head branch, after which every run for
+    # that head comes back with an empty pull_requests[].
+    lines = [l.split()[0] + " -" for l in open(os.path.join(S, "runs")).read().splitlines() if l.strip()]
+    wr("runs", "\n".join(lines) + ("\n" if lines else ""))
+    reply(200, {"merged": True})
+if route == "issues/%d/comments" % PRN and method == "GET":
+    comments = []
+    if rd("qa_sha"):
+        comments.append({"id": 1, "user": {"login": "model-bot"}, "created_at": "2026-01-01T00:00:00Z",
+                         "body": "QA passed\n\n<!-- talos:approval sha=%s role=qa -->" % rd("qa_sha")})
+    reply(200, comments)
+if route == "issues/%d/labels" % PRN and method == "POST":
+    open(os.path.join(S, "labels"), "a").write("".join(l + "\n" for l in payload.get("labels", [])))
+    reply(200, [])
+m = re.fullmatch(r"issues/%d/labels/(.+)" % PRN, route)
+if m and method == "DELETE":
+    name = unquote(m.group(1))
+    wr("labels", "".join(l + "\n" for l in rd("labels").splitlines() if l and l != name))
+    reply(200, [])
+if route == "user":
+    reply(200, {"login": "model-bot"})
+if route == "actions/runs":
+    runs = [l.split() for l in rd("runs").splitlines() if l.strip()]
+    reply(200, {"total_count": len(runs), "workflow_runs": [
+        {"conclusion": c, "pull_requests": ([] if n == "-" else [{"number": int(n)}])} for c, n in runs]})
+reply(200, {})
 EOF
 chmod +x "$BIN/gh"
 

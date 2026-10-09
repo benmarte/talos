@@ -14,6 +14,7 @@ export TALOS_RETRY_SLEEP_SCALE=0
 export GITHUB_TOKEN="test-token-381"
 export STUB_COMMENT_STORE="$SANDBOX/store.json"
 export GH_STDIN_LOG="$SANDBOX/gh.stdin.log"
+export GH_REST_LOG="$CURL_LOG"   # the gh transport logs its requests where the token transport does
 export CURL_ARGV_LOG="$SANDBOX/curl.argv.log"
 export STUB_CURRENT_USER="owner"
 FIX="$SANDBOX/fix"
@@ -63,13 +64,8 @@ upsert() { local f="$1"; shift; run upsert-pr-comment 7 --marker spend --body-fi
 
 # writes: one "METHOD issues/..." line per write call, in order.
 writes() {
-  if [ "$P" = "github" ]; then
-    grep -E '^api --method (POST|PATCH) ' "$GH_LOG" \
-      | sed -E 's#^api --method ([A-Z]+) repos/[^/]+/[^/]+/(issues/[^ ]+).*#\1 \2#'
-  else
-    awk -F'\t' '$4=="POST" || $4=="PATCH" {print $4 " " $1}' "$CURL_LOG" \
-      | sed 's#https://api.github.com/repos/acme/widget/##'
-  fi
+  awk -F'\t' '$4=="POST" || $4=="PATCH" {print $4 " " $1}' "$CURL_LOG" \
+    | sed 's#https://api.github.com/repos/acme/widget/##'
 }
 wcount() { writes | grep -c . || true; }
 # any call at all to a stub
@@ -268,12 +264,12 @@ import json, sys
 body = json.load(open(sys.argv[1]))[0]["body"]
 sys.exit(0 if body == "€" * 34000 + "\n\n<!-- talos:spend -->" else 1)
 TALOS_PY_Vb6sT2nQe9Dy
-  if [ "$P" = "github" ]; then ARGV="$GH_LOG"; else ARGV="$CURL_ARGV_LOG"; fi
+  if [ "$P" = "github" ]; then ARGV="$SANDBOX/gh.argv"; sed 's/ payload=.*//' "$GH_LOG" > "$ARGV"; else ARGV="$CURL_ARGV_LOG"; fi
   _max="$(awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }' "$ARGV")"
   [ "$_max" -lt 2000 ] && pass "$L: no call's argv is larger than 2000 bytes (max $_max)" || fail "$L: no call's argv is larger than 2000 bytes" "max $_max"
   assert_not_contains "$(cat "$ARGV")" "€" "$L: the body text is never on a command line"
   if [ "$P" = "github" ]; then
-    assert_contains "$(grep -- '--method POST' "$GH_LOG")" "--input -" "$L: the write passes --input -"
+    assert_contains "$(grep -- '-X POST' "$ARGV")" "--input <payload>" "$L: the write passes --input <file>, not the body"
   else
     assert_contains "$(grep -- 'issues/7/comments' "$CURL_ARGV_LOG" | grep -- '-X POST')" "--data-binary @-" "$L: the write passes --data-binary @-"
   fi
@@ -294,7 +290,7 @@ TALOS_PY_Vb6sT2nQe9Dy
 
   # ── failures: exit 1, nothing (more) posted ───────────────────────────────
   reset
-  if [ "$P" = "github" ]; then export STUB_GH_API_FAIL=comments; else export STUB_COMMENT_READ_FAIL=1; fi
+  export STUB_COMMENT_READ_FAIL=1
   upsert "$B"
   assert_eq "1" "$RC" "$L: a failed comment read exits 1"
   assert_eq "0" "$(wcount)" "$L: a failed read posts nothing (no blind duplicate)"
@@ -309,9 +305,9 @@ TALOS_PY_Vb6sT2nQe9Dy
   export STUB_CURRENT_USER="owner"
 
   # GET /user refused (Actions GITHUB_TOKEN, GitHub App token): exit 1, no write.
-  # gh writes the raw error JSON to STDOUT and exits non-zero; curl gets a 403.
+  # Both transports see the same 403.
   reset
-  if [ "$P" = "github" ]; then export STUB_CURRENT_USER_FAIL=1; else export STUB_CURRENT_USER_STATUS=403; fi
+  export STUB_CURRENT_USER_STATUS=403
   upsert "$B"
   assert_eq "1" "$RC" "$L: GET /user refused (error JSON, non-zero) exits 1"
   assert_eq "0" "$(wcount)" "$L: ...and writes nothing (no POST, no PATCH)"
@@ -361,7 +357,7 @@ TALOS_PY_Vb6sT2nQe9Dy
   unset STUB_COMMENT_WRITE_FAIL
   assert_eq "" "$(ls -A "$TD")" "$L: no temp file is left after a failed write"
   reset
-  if [ "$P" = "github" ]; then export STUB_GH_API_FAIL=comments; else export STUB_COMMENT_READ_FAIL=1; fi
+  export STUB_COMMENT_READ_FAIL=1
   TMPDIR="$TD" upsert "$B"
   unset STUB_GH_API_FAIL STUB_COMMENT_READ_FAIL
   assert_eq "" "$(ls -A "$TD")" "$L: no temp file is left after a failed read"
@@ -403,7 +399,7 @@ TALOS_PY_Vb6sT2nQe9Dy
   upsert "$B"
   assert_eq "0" "$RC" "$L: works whatever the PR state (exit 0)"
   assert_not_contains "$(cat "$GH_LOG" "$CURL_LOG")" "/pulls/" "$L: never reads the PR (no CLOSED/MERGED refusal)"
-  assert_not_contains "$(cat "$GH_LOG")" "pr view" "$L: never runs gh pr view"
+  assert_not_contains "$(cat "$GH_LOG")" "pulls" "$L: never asks gh for the PR"
 
   # ── the spend comment is hidden from view-issue --spec, kept in read-comments
   reset

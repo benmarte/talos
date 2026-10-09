@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Regression tests for #302: the find-pr merged lookup (the Step 1 heal's
-# source) must not silently truncate. github-api paginates via Link headers
-# up to a page cap and warns when the cap is hit; github warns when
-# `gh pr list` returns exactly --limit results.
+# source) must not silently truncate. The GitHub provider paginates via Link headers
+# up to a page cap and warns when the cap is hit, on either transport.
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox
@@ -63,18 +62,25 @@ assert_contains "$out" "pulls?state=closed&per_page=100 (paginated via Link head
 
 # ── github ────────────────────────────────────────────────────────────────────
 printf '{"vcs": {"provider": "github", "repo": "acme/widget"}}' > talos.pipeline.json
-_302_gh() {
-  COUNT="$1" python3 -c "
+# The gh transport pages through the same Link headers: the stub serves one page
+# per document of STUB_GH_PRS_RAW. A merged PR that closes #500 sits on page 2.
+_302_page() {  # <first> <last> [merged-body]
+  FIRST="$1" LAST="$2" BODY="${3:-}" python3 -c "
 import json, os
-print(json.dumps([{'number': i, 'state': 'MERGED', 'title': 't', 'headRefName': 'b%d' % i, 'body': ''}
-                  for i in range(1, int(os.environ['COUNT']) + 1)]))
+print(json.dumps([{'number': i, 'state': 'closed', 'merged_at': '2026-09-01T00:00:00Z', 'title': 't',
+                   'head': {'ref': 'b%d' % i}, 'body': os.environ['BODY']}
+                  for i in range(int(os.environ['FIRST']), int(os.environ['LAST']) + 1)]), end='')
 "
 }
-STUB_PR_LIST="$(_302_gh 100)" bash "$VCS" find-pr 500 merged >/dev/null 2>"$SANDBOX/err"
-assert_contains "$(cat "$SANDBOX/err")" "find-pr: WARNING result capped at 100 (gh pr list --limit ceiling)" \
-  "#302 github: a result count equal to --limit warns"
-STUB_PR_LIST="$(_302_gh 99)" bash "$VCS" find-pr 500 merged >/dev/null 2>"$SANDBOX/err"
-assert_not_contains "$(cat "$SANDBOX/err")" "WARNING" "#302 github: a result under --limit does not warn"
+out="$(STUB_GH_PRS_RAW="$(_302_page 1 100)$(_302_page 101 101 'Closes #500')" bash "$VCS" find-pr 500 merged 2>"$SANDBOX/err")"
+assert_contains "$out" '"number": 101' "#302 github: a merged PR only on page 2 is found"
+assert_not_contains "$(cat "$SANDBOX/err")" "WARNING" "#302 github: no warning while the list is complete"
+
+_302_pages=""
+for _i in 1 2 3 4 5 6 7 8 9 10 11; do _302_pages="$_302_pages$(_302_page "$_i" "$_i")"; done
+STUB_GH_PRS_RAW="$_302_pages" bash "$VCS" find-pr 500 merged >/dev/null 2>"$SANDBOX/err"
+assert_contains "$(cat "$SANDBOX/err")" "find-pr: WARNING result capped at 10 pages" \
+  "#302 github: the cap warning names the cap"
 
 GH_FAIL_STDERR="HTTP 401: Bad credentials" bash "$VCS" find-pr 500 merged >"$SANDBOX/out" 2>"$SANDBOX/err"; rc=$?
 assert_eq "1" "$rc" "#302 github: a failed gh pr list makes find-pr exit non-zero"

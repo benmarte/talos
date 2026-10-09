@@ -56,7 +56,7 @@ assert_eq "number,title,labels|2" "$(printf '%s' "$out" | python3 -I -c "import 
 assert_not_contains "$out" "Body text" "#449 list-issues --no-body output carries no body text"
 printf '%s\n' "$_449_issues" > "$CURL_QUEUE"
 out="$(bash "$VCS" list-issues)"
-assert_eq "number,title,body,labels" "$(printf '%s' "$out" | python3 -I -c "import json,sys; print(','.join(json.load(sys.stdin)[0].keys()))")" \
+assert_eq "number,title,labels,body" "$(printf '%s' "$out" | python3 -I -c "import json,sys; print(','.join(json.load(sys.stdin)[0].keys()))")" \
   "#449 the default list-issues output is unchanged (body still present)"
 assert_contains "$out" "Body text" "#449 the default output still carries the body"
 
@@ -76,7 +76,7 @@ assert_not_contains "$log" "$TEST_TOKEN"          "comment-issue: token not in l
 assert_not_contains "$out" "$TEST_TOKEN"          "comment-issue: token not in output"
 assert_contains "$out" "issuecomment-100"         "comment-issue: returns html_url on stdout"
 
-# ── label-issue (multi-step: GET current labels + PUT updated list) ───────────
+# ── label-issue (one POST for the additions, one DELETE per removal) ──────────
 : > "$CURL_LOG"
 printf '%s\n' \
   '[{"id":1,"name":"pipeline:dev","color":"5319e7"}]' \
@@ -93,7 +93,9 @@ assert_not_contains "$out" "$TEST_TOKEN"         "label-issue: token not in outp
 
 # ── create-pr ─────────────────────────────────────────────────────────────────
 : > "$CURL_LOG"
+# No base_branch is configured, so the default branch is read first.
 printf '%s\n' \
+  '{"default_branch":"main"}' \
   '{"number":99,"title":"fix: login bug","html_url":"https://github.com/acme/widget/pull/99","head":{"ref":"fix/issue-3-login","sha":"abc123"},"base":{"ref":"main"}}' \
   > "$CURL_QUEUE"
 
@@ -1020,19 +1022,27 @@ err="$(bash "$VCS" check-closing-keyword 7 9 2>&1)"; rc=$?
 assert_eq "1" "$rc"                                                      "check-closing-keyword: exits 1 when open sibling present"
 assert_contains "$err" "sibling"                                         "check-closing-keyword: sibling in error message"
 
-# ── label-pr gate: check-approval-sha routes through github-api when provider=github-api ──
-# Verify that label-pr's internal check-approval-sha call works end-to-end via _github_api.
+# ── label-pr: the missing-marker warning reads the PR and its comments ───────
+# Adding an approval label makes label-pr look for the marker at the current head.
 : > "$CURL_LOG"
 _HEAD2="ccddee112233445566778899aabbccddeeff0011"
-# label-pr queues: 1) GET current labels, 2) PUT updated labels, 3) GET /pulls/$n (check-approval-sha), 4) GET /issues/$n/comments
+# label-pr queues: 1) POST the label, 2) GET /pulls/$n (head SHA), 3) GET /issues/$n/comments
 printf '%s\n' \
-  "[{\"id\":1,\"name\":\"pipeline:review\",\"color\":\"5319e7\"}]" \
-  "[{\"id\":1,\"name\":\"pipeline:review\"},{\"id\":2,\"name\":\"qa:pass\"}]" \
+  "[{\"id\":2,\"name\":\"qa:pass\"}]" \
   "{\"number\":3,\"head\":{\"sha\":\"$_HEAD2\"},\"base\":{\"ref\":\"main\"},\"labels\":[{\"name\":\"qa:pass\"}]}" \
   "[{\"body\":\"<!-- talos:approval sha=${_HEAD2} role=qa -->\",\"user\":{\"login\":\"bot\"}}]" \
   > "$CURL_QUEUE"
 out="$(bash "$VCS" label-pr 3 --add qa:pass 2>&1)"; rc=$?
 assert_eq "0" "$rc"                                                      "label-pr gate: exits 0 with current marker"
+assert_not_contains "$out" "WARNING"                                      "label-pr gate: no missing-marker warning when the marker is current"
+printf '%s\n' \
+  "[{\"id\":2,\"name\":\"qa:pass\"}]" \
+  "{\"number\":3,\"head\":{\"sha\":\"$_HEAD2\"},\"base\":{\"ref\":\"main\"},\"labels\":[]}" \
+  "[]" \
+  > "$CURL_QUEUE"
+out="$(bash "$VCS" label-pr 3 --add qa:pass 2>&1)"; rc=$?
+assert_eq "0" "$rc"                                                      "label-pr gate: still exits 0 without a marker (a nudge, not a wall)"
+assert_contains "$out" "WARNING"                                          "label-pr gate: warns when no marker is at the current head"
 
 # ── dry-run: all new verbs print [dry-run] and never invoke curl ──────────────
 : > "$CURL_LOG"
@@ -1278,7 +1288,7 @@ assert_contains "$out" '"number": 150' "#171 github-api: list-prs includes the l
 printf '%s\n' '[{"number":1,"title":"a","head":{"ref":"b1","repo":{"full_name":"acme/widget"}},"base":{"ref":"main","repo":{"full_name":"acme/widget"}},"labels":[]},{"number":2,"title":"b","head":{"ref":"b2","repo":{"full_name":"evil/widget"}},"base":{"ref":"main","repo":{"full_name":"acme/widget"}},"labels":[]},{"number":3,"title":"c","head":{"ref":"b3","repo":null},"base":{"ref":"main","repo":{"full_name":"acme/widget"}},"labels":[]}]' > "$CURL_QUEUE"
 out="$(bash "$VCS" list-prs)"
 assert_eq "1:False:main 2:True:main 3:True:main" "$(printf '%s' "$out" | python3 -c "import json,sys; print(' '.join('%d:%s:%s' % (p['number'], p['isCrossRepository'], p['baseRefName']) for p in json.load(sys.stdin)))")" "#346 github-api: list-prs exposes isCrossRepository and baseRefName"
-assert_eq "number title headRefName labels baseRefName isCrossRepository" "$(printf '%s' "$out" | python3 -c "import json,sys; print(' '.join(json.load(sys.stdin)[0].keys()))")" "#346 github-api: list-prs appends the new fields after the existing ones"
+assert_eq "number title headRefName baseRefName labels isCrossRepository" "$(printf '%s' "$out" | python3 -c "import json,sys; print(' '.join(json.load(sys.stdin)[0].keys()))")" "#346 github-api: list-prs appends the new fields after the existing ones"
 
 # ── Issue #172: record-attempt --idempotency-key idempotency (github-api) ───
 export GITHUB_TOKEN="$TEST_TOKEN"

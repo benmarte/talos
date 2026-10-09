@@ -109,21 +109,35 @@ out="$(printf 'rendered text\n' | bash "$NOTIFY" --render default qa "#42" - 2>&
 assert_contains "$out" "rendered text" "notify --render: '-' reads the message from stdin too"
 
 # ── pipeline-vcs.sh <verb> <n> --body-file - ─────────────────────────────────
-# A gh that records the --body it was given, byte for byte, and answers the
-# state / URL queries the verbs make.
+# A gh that records the "body" of the JSON payload it was given (the file after
+# `--input`), byte for byte, and answers the state / URL queries the verbs make.
 FAKE="$SANDBOX/fakebin"; mkdir -p "$FAKE"
 cat > "$FAKE/gh" <<'GH'
 #!/usr/bin/env bash
-case "$*" in
-  *"--json state"*) printf 'OPEN\n'; exit 0 ;;
-  *"nameWithOwner"*) printf 'acme/widget\n'; exit 0 ;;
+case "$1 $2" in
+  "auth token") exit 0 ;;
+  "api -i") ;;
+  *) exit 0 ;;
 esac
-prev=""
+in=""; prev=""
 for a in "$@"; do
-  if [ "$prev" = "--body" ]; then printf '%s' "$a" > "$GH_BODY_OUT"; printf '%s\n' "$*" > "$GH_ARGV_OUT"; fi
+  [ "$prev" = "--input" ] && in="$a"
   prev="$a"
 done
-printf 'https://github.com/acme/widget/issues/1#issuecomment-1\n'
+if [ -n "$in" ]; then
+  python3 -I -c "
+import json, sys
+d = json.load(open(sys.argv[1]))
+if 'body' in d:
+    open(sys.argv[2], 'w').write(d['body'])
+" "$in" "$GH_BODY_OUT"
+  printf '%s\n' "$*" > "$GH_ARGV_OUT"
+fi
+case "$*" in
+  *"-X POST"*) body='{"id":1,"html_url":"https://github.com/acme/widget/issues/1#issuecomment-1"}' ;;
+  *) body='{"state":"open","merged_at":null}' ;;
+esac
+printf 'HTTP/2.0 200 OK\nX-Stub: 1\r\n\r\n%s\n' "$body"
 GH
 chmod +x "$FAKE/gh"
 export GH_BODY_OUT="$SANDBOX/gh.body" GH_ARGV_OUT="$SANDBOX/gh.argv"

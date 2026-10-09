@@ -93,30 +93,32 @@
 #                                             single '-', trimmed. Provider-agnostic
 #                                             (#199).
 #   create-pr <branch> <title> <body-file>    Open a pull / merge request
-#             [--draft]                       ...as a DRAFT (#332): gh `--draft`,
-#                                             glab `--draft`, az `--draft true`;
-#                                             `--draft` goes after the three
-#                                             positionals. github-api exits 2
-#                                             (never silently opens a non-draft
-#                                             PR); file mode stays a no-op.
+#             [--draft]                       ...as a DRAFT (#332): GitHub
+#                                             `draft: true`, glab `--draft`, az
+#                                             `--draft true`; `--draft` goes
+#                                             after the three positionals. File
+#                                             mode stays a no-op.
 #   ready-pr <n>                              Mark a draft PR ready for review
-#                                             (#332): `gh pr ready`, `glab mr
+#                                             (#332): GitHub GraphQL
+#                                             markPullRequestReadyForReview (the
+#                                             one mutation REST lacks), `glab mr
 #                                             update --ready`, `az repos pr
 #                                             update --draft false`. Exit 0 only
 #                                             on success; every failure (bad or
-#                                             non-numeric id, setup error,
-#                                             github-api, file mode) is exit 2.
+#                                             non-numeric id, setup error, file
+#                                             mode) is exit 2.
 #   draft-pr <n>                              Convert a PR back to a draft
-#                                             (#332): `gh pr ready --undo`,
-#                                             `glab mr update --draft`, `az
-#                                             repos pr update --draft true`.
+#                                             (#332): GitHub GraphQL
+#                                             convertPullRequestToDraft, `glab mr
+#                                             update --draft`, `az repos pr
+#                                             update --draft true`.
 #                                             Same exit contract as ready-pr.
 #   pr-is-draft <n>                           Print `draft` or `ready` (#332).
 #                                             Exit 0 = draft, 1 = ready, 2 =
 #                                             unverified (fetch failed, bad or
 #                                             non-numeric PR id, unparseable
 #                                             response, unsupported provider:
-#                                             github-api, file; setup error: no
+#                                             file; setup error: no
 #                                             token, unknown provider, missing
 #                                             CLI; --dry-run). Exit 0 only with
 #                                             stdout exactly `draft`, exit 1 only
@@ -125,32 +127,25 @@
 #                                             stdout is empty on every exit 2.
 #                                             Callers dispatch QA / the CI wait
 #                                             only on exit 1.
-#   pr-ci-runs <n>                            Print the number of
-#                                             `pull_request`-triggered workflow
-#                                             runs of THIS PR that executed
-#                                             (#332): one listing for the head
-#                                             branch, keeping runs whose
-#                                             pull_requests[] names this PR (a
-#                                             reused branch name does not
-#                                             inflate it) and dropping those
-#                                             whose conclusion is `skipped` (a
-#                                             draft push skipped by the
-#                                             `draft != true` job guard is not
-#                                             CI that ran). github only; every
-#                                             other provider exits 2, and so
-#                                             does any setup error, a failed,
-#                                             truncated or unparseable listing,
-#                                             a run that cannot be attributed
-#                                             to a PR (empty pull_requests[],
-#                                             e.g. a fork) or a total that
-#                                             reaches GitHub's 1000-result
-#                                             search cap (never a short count).
-#                                             Call it while the PR is OPEN:
-#                                             `merge-pr` deletes the head
-#                                             branch and GitHub then returns
-#                                             every run for it with an empty
-#                                             pull_requests[], so a merged PR
-#                                             reads as unverified (exit 2).
+#   pr-ci-runs <n>                            Print the number of `pull_request`
+#                                             workflow runs of THIS PR that
+#                                             executed (#332): one listing for
+#                                             the head branch, keeping runs whose
+#                                             pull_requests[] names this PR and
+#                                             dropping `skipped` ones (a draft
+#                                             push skipped by the `draft != true`
+#                                             guard is not CI that ran). github
+#                                             only; every other provider exits 2,
+#                                             and so does any setup error, a
+#                                             failed, truncated or unparseable
+#                                             listing, a run that cannot be
+#                                             attributed to a PR (empty
+#                                             pull_requests[], e.g. a fork) or a
+#                                             total at GitHub's 1000-result cap
+#                                             (never a short count). Call it
+#                                             while the PR is OPEN: after
+#                                             `merge-pr` deletes the head branch
+#                                             every run reads as unattributed.
 #   view-pr <n|branch>                        View PR details
 #   list-prs                                  List open PRs
 #   diff-pr <n>                               Show PR diff
@@ -169,17 +164,19 @@
 #   approve-pr <n> <body>                     Approve a PR with a comment
 #              <n> --body-file <path|->       ...or read the comment from a file / stdin
 #   label-pr <n> [--add <l>] [--remove <l>]   Add/remove labels on PR
-#   pr-checks <n>                             Show CI check status
+#   pr-checks <n>                             Show CI check status: one line per
+#                                             check run or commit status, "name
+#                                             TAB pass|fail|pending|skipping|
+#                                             cancel TAB elapsed TAB url". Exit
+#                                             1 when any failed, 8 while any is
+#                                             pending, else 0.
 #   pr-checks-required <n>                    Exit 0 only when every check in
 #                                             merge.required_checks passes on
 #                                             the current head; exit 2 while
 #                                             any is pending/missing, exit 1
 #                                             on failure or an empty
 #                                             merge.required_checks (#205).
-#                                             A skipped check (github
-#                                             `skipping`, github-api `skipped`
-#                                             or `neutral`, which gh also files
-#                                             under `skipping`)
+#                                             A skipped or neutral check
 #                                             is pending, not failed (#435): a
 #                                             draft push leaves one until the
 #                                             ready_for_review run replaces it.
@@ -362,8 +359,8 @@
 #                                             1 and never a blind duplicate. Works on a merged
 #                                             PR. --dry-run prints the planned calls, exit 0.
 #   edit-pr-body <pr> --body-file <path|->    Replace the description of PR <pr> (#455;
-#                                             github: `gh pr edit --body-file -`,
-#                                             github-api: PATCH pulls/<n>; gitlab, azure
+#                                             github, github-api: PATCH pulls/<n>;
+#                                             gitlab, azure
 #                                             and file exit 2 `not implemented for
 #                                             provider '<p>'`). The body comes ONLY from
 #                                             a file or stdin with `-`, never argv or a
@@ -482,7 +479,7 @@
 #
 # Config keys (from talos.pipeline.json via pipeline-config.sh):
 #   vcs.provider          github | github-api | gitlab | azure | file   (default: github)
-#   vcs.token_env         env-var name for the GitHub token (github-api only;
+#   vcs.token_env         env-var name for the GitHub token (token transport;
 #                         default: GITHUB_TOKEN then GH_TOKEN)
 #   vcs.repo              owner/repo  (auto-detected if omitted)
 #   vcs.azure.org_url     e.g. https://dev.azure.com/myorg
@@ -528,8 +525,10 @@
 #   Webhook-safe no-ops (create-pr / merge-pr in file mode) → exit 0 + message.
 #
 # Provider notes:
-#   github      — battle-tested; requires `gh` CLI authenticated.
-#   github-api  — token-only; no `gh` needed; set GITHUB_TOKEN or GH_TOKEN.
+#   github      — ONE REST client. Transport: `gh api` when `gh` is on PATH and
+#                 authenticated, else curl with GITHUB_TOKEN or GH_TOKEN.
+#   github-api  — the same client pinned to the token transport (curl), for CI
+#                 and containers: no `gh` needed; set GITHUB_TOKEN or GH_TOKEN.
 #                 Projects v2 board updates also use the token (pipeline-status.sh).
 #   gitlab  — best-effort; requires `glab` CLI authenticated.
 #   azure   — best-effort; requires `az` CLI + azure-devops extension:
@@ -653,7 +652,7 @@ if [ -z "$REPO" ] && [ "$PROVIDER" != "file" ]; then
     REPO="$(git remote get-url origin 2>/dev/null \
       | sed 's|.*github\.com[:/]||; s|\.git$||' || echo "")"
   else
-    REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null \
+    REPO="$(gh api 'repos/{owner}/{repo}' --jq .full_name 2>/dev/null \
       || git remote get-url origin 2>/dev/null \
       | sed 's|.*github.com[:/]||; s|.*gitlab.com[:/]||; s|\.git$||' \
       || echo "")"
@@ -734,9 +733,9 @@ else:
 }
 
 # ── Shared: evaluate a set of required checks against their current status ────
-# (#205 review follow-up) Both `_github` and `_github_api`'s `pr-checks-required`
-# normalize their provider-specific check data down to "<name><TAB>status" lines
-# (status is one of pass|fail|pending) and feed them here on stdin, so the
+# (#205 review follow-up) Every provider's `pr-checks-required` normalizes its
+# check data down to "<name><TAB>status" lines
+# (status is one of pass|fail|pending) and feeds them here on stdin, so the
 # pass/fail/pending decision -- and the "empty required_checks never passes
 # vacuously" rule from #195 -- lives in exactly one place.
 #
@@ -783,11 +782,10 @@ sys.exit(0)
 # ── Retry-with-backoff (#173) ─────────────────────────────────────────────────
 # Single point of truth for retry/backoff — the only place this logic lives.
 # Every network-facing verb in every adapter routes through it:
-#   - _github:     the `gh`   shadow function defined at the top of _github()
 #   - _gitlab:     the `glab` shadow function defined at the top of _gitlab()
 #   - _azure:      the `az`   shadow function defined at the top of _azure()
-#   - _github_api: _ga_req, _ga_diff_req, _ga_fetch_all_pages, via their
-#                  *_once single-attempt helpers
+#   - _github:     _gh_try, _gh_req, _gh_diff and _gh_pages, via the
+#                  _gh_once single-attempt helper (gh and curl alike)
 # _file has no network calls and is deliberately not wired up.
 #
 # Usage: _with_retry <verb-label> <cmd...>
@@ -1037,8 +1035,7 @@ _list_cap_warn() {
   fi
 }
 
-# ── gh api --paginate multi-page merge (shared by _github list-issues/
-# list-prs, #171) ─────────────────────────────────────────────────────────────
+# ── gh api --paginate multi-page merge (gitlab, azure) ───────────────────────
 # `gh api --paginate <endpoint>` fetches every page of a REST list endpoint
 # (following Link: rel="next" headers internally) with NO cap, but per gh's
 # own --help text: "Each page is a separate JSON array or object" — pages are
@@ -1188,11 +1185,9 @@ print('\n'.join(lines))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SHARED ATTEMPT/APPROVAL MARKER HELPERS (#177 slice 1)
-#   Provider-independent marker-parsing logic that `_github` and `_github_api`
-#   used to hand-duplicate (and had already drifted on -- see #177). Each
-#   adapter still owns its own fetch (gh vs REST) and write (gh vs REST POST);
-#   everything downstream of "already-normalised JSON in hand" lives here,
-#   defined exactly once, so the two adapters cannot drift on regexes,
+#   Provider-independent marker-parsing logic. Each adapter owns its own fetch
+#   and write; everything downstream of "already-normalised JSON in hand"
+#   lives here, defined exactly once, so the adapters cannot drift on regexes,
 #   ceiling math, or message wording again.
 #
 #   Where the two adapters previously drifted on wording (an em dash vs a
@@ -1203,8 +1198,7 @@ print('\n'.join(lines))
 
 # _vcs_shared_read_attempt
 #   stdin:  normalised comments JSON, {"comments":[{"author":{"login":...},
-#           "body":...}, ...]} -- the shape the `read-comments` verb (and
-#           _github_api's inline REST normalisation) already produce.
+#           "body":...}, ...]} -- the shape the `read-comments` verb produces.
 #   env:    TRUSTED_AUTHORS, TALOS_CFG -- same contract read-attempt has
 #           always used. VERIFY_AUTHORS, CURRENT_USER (#187) -- effective
 #           trust set is TRUSTED_AUTHORS ∪ {CURRENT_USER} when
@@ -1497,11 +1491,9 @@ _vcs_shared_valid_login() {
 # _vcs_shared_current_user <fail-open|fail-closed> <resolver-cmd> [args...]
 #   Resolves and caches, once per process, the authenticated user's login
 #   (#187) -- markers.verify_authors' "infer the current user as trusted"
-#   half. The two adapters keep owning their own fetch mechanics exactly as
-#   they already do for every other read: _github calls this as
-#   `_vcs_shared_current_user fail-open gh api user --jq .login`, _github_api as
-#   `_vcs_shared_current_user fail-open _ga_current_user_login` (a thin REST
-#   wrapper defined alongside that adapter's other _ga_* helpers). This
+#   half. The adapters keep owning their own fetch mechanics: _github calls this
+#   as `_vcs_shared_current_user fail-open _gh_user_login` (a thin REST wrapper
+#   next to the other _gh_* helpers). This
 #   function owns the caching and the check of what came back (#453), and
 #   tells three outcomes apart:
 #     ok           the resolver exited 0 and its first line passes
@@ -1602,10 +1594,8 @@ _vcs_shared_reader_identity() {
 # `mark-needs-owner` / `list-needs-owner`: park a pending owner decision on
 # GitHub as the label pipeline:needs-owner plus a marker comment whose last
 # line is `<!-- talos:needs-owner -->`, and read it back from any later
-# session. One shared implementation for github and github-api: each adapter
-# supplies only its provider calls (see _gh_no_* in _github, _ga_no_* in
-# _github_api); the comment reader is this script's own `read-comments`, so
-# both providers share it.
+# session. The adapter supplies only its provider calls (the _gh_no_* helpers);
+# the comment reader is this script's own `read-comments`.
 #
 # Everything read from GitHub (comment bodies, logins, the question text) is
 # untrusted data. It is parsed by python3 -I from stdin or a file, never
@@ -2797,8 +2787,7 @@ sys.exit(0)
 
 # _vcs_shared_check_pr_files (#177 slice 3)
 #   stdin:  the PR's changed file paths, one per line. Both adapters fetch
-#           this via their existing paginated `pr-files` mechanism (gh:
-#           `gh api --paginate` + _gh_paginate_merge; REST: _ga_fetch_all_pages)
+#           this via their paginated `pr-files` mechanism (_gh_pages)
 #           BEFORE calling this function, and that fetch already exits 1
 #           (printing nothing) on failure -- so empty stdin here always means
 #           "0 changed files", never "fetch failed". Fail-closed-on-fetch-
@@ -3103,7 +3092,7 @@ _VCS_GITLAB_SCAN_CAP=65536
 # closing keyword or a literal "Part of #N" -- tightening `body_pat` in the
 # sibling-scan block below (or wrapping it in a `closing_or_part_of` check)
 # is the entire fix. This slice intentionally leaves that behaviour
-# unchanged; it only stops _github and _github_api from hand-duplicating it.
+# unchanged.
 # _vcs_shared_sibling_blocked <pr> <siblings> <claim> <remedy> (#304)
 #   The one sibling-gate diagnostic (stderr), shared by
 #   _vcs_shared_check_closing_keyword and the link-based azure gate so the
@@ -3289,11 +3278,9 @@ else:
 }
 
 # _vcs_shared_find_pr <issue_n>
-#   (#177 slice 4) The issue-reference matching _github and _github_api used
-#   to hand-duplicate, extracted verbatim. State filtering (open/closed/
-#   merged/all) is NOT shared: gh natively supports server-side `--state
-#   merged`, but the REST list-PRs endpoint has no such value -- the
-#   github-api adapter maps merged to state=closed plus an application-side
+#   (#177 slice 4) The issue-reference matching. State filtering (open/closed/
+#   merged/all) is NOT shared: the GitHub REST list-PRs endpoint has no
+#   `merged` state -- the GitHub adapter maps merged to state=closed plus an application-side
 #   merged_at check, and normalises `state` to OPEN/CLOSED/MERGED and
 #   `headRefName` (from `head.ref`) before calling this function. That
 #   normalisation is genuinely provider-specific, so it stays in the
@@ -3363,7 +3350,7 @@ for pr in prs:
 
 # _vcs_shared_pr_mergeable <status-fetch-fn>
 #   (#177 slice 4) The retry/backoff loop and MERGEABLE/CONFLICTING/UNKNOWN
-#   exit-code contract _github and _github_api used to hand-duplicate.
+#   exit-code contract.
 #   <status-fetch-fn> is a caller-supplied function name, invoked with no
 #   arguments on every attempt; it must print exactly one of MERGEABLE /
 #   CONFLICTING / UNKNOWN (anything else is treated as "still computing" and
@@ -3405,8 +3392,8 @@ _vcs_shared_pr_mergeable() {
 #   dispatch? <pr-number>'s head is fetched via GitHub's own
 #   `refs/pull/<n>/head` ref -- a plain git ref exposed for every PR
 #   regardless of gh-CLI vs REST auth, so this needs no adapter-specific API
-#   call; both `_github` and `_github_api` call this directly with just the
-#   PR number and their resolved base branch.
+#   call; `_github` calls this directly with just the PR number and its
+#   resolved base branch.
 #
 #   The actual merge attempt runs in a throwaway DETACHED worktree created
 #   OUTSIDE the caller's own checkout (mktemp -d under ${TMPDIR:-/tmp}) --
@@ -3502,1002 +3489,12 @@ _vcs_shared_conflict_files() {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# GITHUB ADAPTER
-# ─────────────────────────────────────────────────────────────────────────────
-_github() {
-  # Shadow `gh` for the duration of this adapter so every one of the ~33
-  # bare `gh ...` call sites below (including ones inside `_run gh ...`,
-  # `$(gh ...)`, and pipelines like `gh ... | ...`) gets retry/backoff for
-  # free, with zero call-site edits (#173). An explicit `_gh` wrapper would
-  # require touching every site — including the ones inside `_run` and
-  # command substitutions — and is guaranteed to drift the next time a call
-  # site is added; this scoped shadow is a single point of truth with
-  # identical call syntax. Defined here (not at top level) so it never
-  # shadows the top-level repo auto-detection `gh repo view` call above,
-  # which runs before any adapter function is invoked.
-  gh() { _with_retry "$VERB" command gh "$@"; }
-
-  # _gh_label_edit <issue|pr> <n> -- label-issue / label-pr (#455). The labels
-  # come from _parse_label_args' arrays and go to gh as an argv array: label text
-  # with a `'`, `$(` or a space is one argument, never re-parsed by a shell. The
-  # dry-run line is display only (labels shown single-quoted).
-  _gh_label_edit() {
-    local _gle_args=(gh "$1" edit "$2") _gle_disp="gh $1 edit $2" _gle_lbl
-    local _gle_q="'" _gle_qe="'\\''"
-    for _gle_lbl in ${ADD_LABEL_ARR[@]+"${ADD_LABEL_ARR[@]}"}; do
-      _gle_args+=(--add-label "$_gle_lbl")
-      _gle_disp="$_gle_disp --add-label '${_gle_lbl//$_gle_q/$_gle_qe}'"
-    done
-    for _gle_lbl in ${REMOVE_LABEL_ARR[@]+"${REMOVE_LABEL_ARR[@]}"}; do
-      _gle_args+=(--remove-label "$_gle_lbl")
-      _gle_disp="$_gle_disp --remove-label '${_gle_lbl//$_gle_q/$_gle_qe}'"
-    done
-    if [ -n "$REPO" ]; then
-      _gle_args+=(--repo "$REPO")
-      _gle_disp="$_gle_disp --repo '$REPO'"
-    fi
-    if [ "$DRY_RUN" = "true" ]; then echo "[dry-run] $_gle_disp"; return 0; fi
-    "${_gle_args[@]}"
-  }
-
-  # edit-pr-body <n> <body> (#455): the body is staged on gh's stdin
-  # (`--body-file -`), never an argument. The here-string sits on the function
-  # _with_retry reruns, so every attempt re-opens it.
-  _gh_epb_once() { command gh pr edit "$1" --body-file - ${REPO:+--repo "$REPO"} <<<"$2"; }
-
-  # Provider calls for _vcs_shared_assign_issue (#299).
-  _gh_assignees_get() {
-    gh issue view "$1" --json assignees -q '.assignees[].login' ${REPO:+--repo "$REPO"}
-  }
-  _gh_assignee_add() {
-    gh issue edit "$1" --add-assignee "$2" ${REPO:+--repo "$REPO"}
-  }
-  _gh_assignee_remove() {
-    gh issue edit "$1" --remove-assignee "$2" ${REPO:+--repo "$REPO"}
-  }
-
-  # Provider calls for the needs-owner verbs (#345). The issues REST endpoints
-  # serve issues and PRs alike, so one route covers both kinds.
-  _gh_no_repo() { if [ -n "${REPO:-}" ]; then printf '%s' "$REPO"; else printf '%s' '{owner}/{repo}'; fi; }
-  _gh_no_user() { gh api user --jq .login; }
-  _gh_no_items() {
-    local _gno_raw
-    _gno_raw="$(gh api --paginate "repos/$(_gh_no_repo)/issues?state=open&labels=$_TALOS_NEEDS_OWNER_LABEL_URL&per_page=100")" || return 1
-    printf '%s' "$_gno_raw" | _gh_paginate_merge
-  }
-  _gh_no_post_comment() {
-    gh api --method POST "repos/$(_gh_no_repo)/issues/$1/comments" -f "body=$2" >/dev/null
-  }
-  _gh_no_label_add() {
-    gh api --method POST "repos/$(_gh_no_repo)/issues/$1/labels" -f "labels[]=$_TALOS_NEEDS_OWNER_LABEL" >/dev/null
-  }
-  _gh_no_label_remove() {
-    gh api --method DELETE "repos/$(_gh_no_repo)/issues/$1/labels/$_TALOS_NEEDS_OWNER_LABEL_URL" >/dev/null
-  }
-
-  # Provider calls for upsert-pr-comment (#381). The body goes to `gh api` on
-  # stdin (`--input -`) from the staged JSON file. The redirect is inside
-  # _gh_upc_once, the function _with_retry reruns, so every attempt re-opens the
-  # file; a redirect on the outer call would be consumed by the first attempt.
-  _gh_upc_read() {
-    local _gur_raw
-    _gur_raw="$(gh api --paginate "repos/$(_gh_no_repo)/issues/$1/comments?per_page=100")" || return 1
-    printf '%s' "$_gur_raw" | _gh_paginate_merge
-  }
-  _gh_upc_once() { command gh api --method "$1" "$2" --input - < "$3"; }
-  _gh_upc_write() { _with_retry "$VERB" _gh_upc_once "$1" "repos/$(_gh_no_repo)/$2" "$3"; }
-
-  local verb="$1"; shift
-  case "$verb" in
-    assign-issue)
-      _vcs_shared_assign_issue "${1:-}" _gh_assignees_get _gh_assignee_add gh api user --jq .login
-      ;;
-    current-user)
-      _vcs_shared_print_current_user gh api user --jq .login
-      exit $?
-      ;;
-    issue-assignees)
-      _vcs_shared_issue_assignees "${1:-}" _gh_assignees_get || exit 1
-      ;;
-    unassign-issue)
-      _vcs_shared_unassign_issue "${1:-}" "${2:-}" _gh_assignees_get _gh_assignee_remove || exit 1
-      ;;
-    list-assignees)
-      # One paginated request, the list-issues endpoint (#560).
-      local _la_repo="$REPO"
-      [ -z "$_la_repo" ] && _la_repo='{owner}/{repo}'
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] gh api --paginate repos/${_la_repo}/issues?state=open&per_page=100 (assignees per issue)"
-        return 0
-      fi
-      local _la_raw
-      _la_raw="$(gh api --paginate "repos/${_la_repo}/issues?state=open&per_page=100")" || exit 1
-      printf '%s' "$_la_raw" | _gh_paginate_merge | _vcs_shared_assignee_map github || exit 1
-      ;;
-    upsert-pr-comment)
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] gh api --paginate repos/$(_gh_no_repo)/issues/$1/comments?per_page=100 (newest own comment ending in <!-- talos:$2 -->); then gh api --method PATCH repos/$(_gh_no_repo)/issues/comments/<id> --input - (body on stdin), or gh api --method POST repos/$(_gh_no_repo)/issues/$1/comments --input - when there is none; no write when the body is unchanged"
-        return 0
-      fi
-      _vcs_shared_upsert_pr_comment "${1:-}" "${2:-}" "${3:-}" _gh_upc_read _gh_upc_write gh api user --jq .login
-      ;;
-    mark-needs-owner)
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] gh api --paginate repos/$(_gh_no_repo)/issues/$1/comments (read-comments); unless the newest trusted marker comment already has this body and is unanswered: gh api --method POST repos/$(_gh_no_repo)/issues/$1/comments -f body=<text + marker>; gh api --method POST repos/$(_gh_no_repo)/issues/$1/labels -f labels[]=$_TALOS_NEEDS_OWNER_LABEL"
-        return 0
-      fi
-      _vcs_shared_mark_needs_owner "${1:-}" "${2-}" _gh_no_post_comment _gh_no_label_add _gh_no_user
-      ;;
-    list-needs-owner)
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] gh api --paginate repos/$(_gh_no_repo)/issues?state=open&labels=$_TALOS_NEEDS_OWNER_LABEL_URL&per_page=100; read-comments per item"
-        case " $* " in
-          *" --clear-answered "*) echo "[dry-run] for each answered item: gh api --method DELETE repos/$(_gh_no_repo)/issues/<n>/labels/$_TALOS_NEEDS_OWNER_LABEL_URL" ;;
-        esac
-        return 0
-      fi
-      _vcs_shared_list_needs_owner _gh_no_items _gh_no_label_remove _gh_no_user "$@"
-      ;;
-    list-issues)
-      # `gh issue list --limit N` is a single request capped at N (1000 was
-      # GitHub's own hard ceiling on search-API result sets) — it silently
-      # truncated any backlog bigger than N. `gh api --paginate` against the
-      # REST issues endpoint has no such cap: it follows Link: rel="next"
-      # headers internally until exhausted (#171). That endpoint returns
-      # pull requests too (they carry a `pull_request` key) — filter those
-      # out and reshape to the historical
-      # `gh issue list --json number,title,labels,body` field set so callers
-      # see no schema change.
-      # --no-body (#449) leaves the `body` key out of every item, for callers that
-      # only need number/title/labels. The default output is unchanged.
-      local _li_repo="$REPO" _li_nobody=0
-      [ "${1:-}" = "--no-body" ] && _li_nobody=1
-      [ -z "$_li_repo" ] && _li_repo='{owner}/{repo}'
-      local _li_endpoint="repos/${_li_repo}/issues?state=open&per_page=100"
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] gh api --paginate $_li_endpoint"
-        return 0
-      fi
-      local _li_raw
-      _li_raw="$(gh api --paginate "$_li_endpoint")" || exit 1
-      printf '%s' "$_li_raw" | _gh_paginate_merge | NO_BODY="$_li_nobody" python3 -I -c "
-import json, os, sys
-items = json.load(sys.stdin)
-out = [{'number': i.get('number'), 'title': i.get('title', ''),
-        'labels': [{'name': l.get('name')} for l in (i.get('labels') or [])],
-        'body': i.get('body') or ''}
-       for i in items if 'pull_request' not in i]
-if os.environ.get('NO_BODY') == '1':
-    for i in out:
-        del i['body']
-print(json.dumps(out))
-"
-      ;;
-    view-issue)
-      local _vi_n="$1"; shift
-      local _vi_spec=false
-      while [ $# -gt 0 ]; do
-        case "$1" in
-          --spec) _vi_spec=true ;;
-        esac
-        shift
-      done
-      if [ "$_vi_spec" = "true" ]; then
-        if [ "$DRY_RUN" = "true" ]; then
-          echo "[dry-run] gh issue view $_vi_n --json title,body,labels; read-comments $_vi_n (filter to latest **PM spec:** comment, dropping talos: markers and **Agent:** verdicts)"
-          return 0
-        fi
-        local _vi_meta _vi_comments
-        _vi_meta="$(gh issue view "$_vi_n" --json title,body,labels ${REPO:+--repo "$REPO"})" || exit 1
-        _vi_comments="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" read-comments "$_vi_n" ${REPO:+--repo "$REPO"})" || exit 1
-        _vi_spec_filter "$_vi_meta" "$_vi_comments"
-        return
-      fi
-      _run gh issue view "$_vi_n" --json title,body,labels,comments \
-        ${REPO:+--repo "$REPO"}
-      ;;
-    comment-issue)
-      local n="$1" body="$2"
-      if [ "$DRY_RUN" = "true" ]; then
-        if [ "$ALLOW_CLOSED" = "true" ]; then
-          echo "[dry-run] gh issue comment $n --body $body (--allow-closed; URL on stdout)"
-        else
-          echo "[dry-run] gh issue view $n --json state -q .state; gh issue comment $n --body $body (URL on stdout)"
-        fi
-        return 0
-      fi
-      local _ci_state_unverified=false
-      if [ "$ALLOW_CLOSED" != "true" ]; then
-        local _ci_state
-        if _ci_state="$(gh issue view "$n" --json state -q .state ${REPO:+--repo "$REPO"} 2>/dev/null)"; then
-          case "$_ci_state" in
-            CLOSED|closed)
-              echo "pipeline-vcs: comment-issue: issue #$n is ${_ci_state} (use --allow-closed to override)" >&2
-              exit 1
-              ;;
-          esac
-        else
-          echo "pipeline-vcs: warning: could not determine state of issue #$n — proceeding" >&2
-          _ci_state_unverified=true
-        fi
-      fi
-      local _ci_url
-      _ci_url="$(gh issue comment "$n" --body "$body" ${REPO:+--repo "$REPO"})" || exit 1
-      echo "$_ci_url"
-      if [ "$_ci_state_unverified" = "true" ]; then
-        echo "talos:comment-state-unverified target=issue#$n reason=state-check-failed"
-      fi
-      ;;
-    close-issue)
-      local n="$1" body="$2"
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] gh issue comment $n --body <body> && gh issue close $n"
-      else
-        gh issue comment "$n" --body "$body" ${REPO:+--repo "$REPO"}
-        gh issue close "$n" ${REPO:+--repo "$REPO"}
-      fi
-      ;;
-    label-issue)
-      local n="$1"; shift
-      _parse_label_args "$@"
-      _gh_label_edit issue "$n"
-      ;;
-    check-epic-acceptance)
-      # check-epic-acceptance <epic-n> — see header comment. Fetches the
-      # epic's body and delegates to the shared checklist scan.
-      local n="$1"
-      [ -z "$n" ] && { echo "pipeline-vcs: check-epic-acceptance: missing issue number" >&2; exit 1; }
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] gh issue view $n --json body -q .body | scan for unticked '- [ ]' checklist lines"
-        return 0
-      fi
-      local _cea_body
-      _cea_body="$(gh issue view "$n" --json body -q .body ${REPO:+--repo "$REPO"})" || exit 1
-      printf '%s' "$_cea_body" | _epic_acceptance_scan
-      ;;
-    create-issue)
-      local title="$1" body_file="$2"; shift 2
-      local label_args=()
-      while [ $# -gt 0 ]; do
-        case "$1" in
-          --label) [ $# -ge 2 ] || _vcs_flag_needs_value --label "create-issue <title> <body-file> [--label <label>]..."; label_args+=("--label" "$2"); shift 2 ;;
-          *) shift ;;
-        esac
-      done
-      if [ "$DRY_RUN" = "true" ]; then
-        _run gh issue create --title "$title" --body-file "$body_file" \
-          "${label_args[@]+"${label_args[@]}"}" ${REPO:+--repo "$REPO"}
-        return 0
-      fi
-      local _ci_url
-      _ci_url="$(gh issue create --title "$title" --body-file "$body_file" \
-        "${label_args[@]+"${label_args[@]}"}" ${REPO:+--repo "$REPO"})" || return
-      [ -n "$_ci_url" ] && printf '%s\n' "$_ci_url"
-      # Assign the new issue (#299) -- stdout stays the URL alone.
-      _vcs_shared_assign_issue "$(_vcs_issue_number_from_url "$_ci_url")" \
-        _gh_assignees_get _gh_assignee_add gh api user --jq .login >&2
-      ;;
-    create-pr)
-      local branch="$1" title="$2" body_file="$3"
-      [ -z "$BASE_BRANCH" ] && BASE_BRANCH="$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null)"
-      local _draft_arg=""; [ "$_PR_DRAFT" = "true" ] && _draft_arg="--draft"
-      _run gh pr create --base "$BASE_BRANCH" --head "$branch" \
-        --title "$title" --body-file "$body_file" ${REPO:+--repo "$REPO"} $_draft_arg
-      ;;
-    ready-pr|draft-pr)
-      # (#332) `gh pr ready <n>` marks a draft ready; `--undo` converts back.
-      local _rd_n="${1:-}" _rd_undo=""
-      _vcs_require_pr_id "$VERB" "$_rd_n"
-      [ "$VERB" = "draft-pr" ] && _rd_undo="--undo"
-      _run gh pr ready "$_rd_n" $_rd_undo ${REPO:+--repo "$REPO"}
-      ;;
-    pr-is-draft)
-      # (#332) Fail closed: see _vcs_shared_pr_is_draft.
-      _github_fetch_draft() {
-        gh pr view "$1" --json isDraft ${REPO:+--repo "$REPO"}
-      }
-      _vcs_shared_pr_is_draft "${1:-}" isDraft \
-        "gh pr view ${1:-} --json isDraft ${REPO:+--repo $REPO}" _github_fetch_draft
-      ;;
-    pr-ci-runs)
-      # (#332) Number of `pull_request` workflow runs that executed for THIS PR:
-      # the runs listed for its head branch whose pull_requests[] names this PR
-      # (so another PR that reused the branch name does not inflate the count),
-      # minus those whose conclusion is `skipped` (with pr.draft, a push to a
-      # draft PR still creates a run whose jobs are all skipped by the
-      # `draft != true` guard; it is not CI that ran).
-      # ONE paginated listing, so the count is a single snapshot: a run that
-      # appears while we count is either in it or not, never half-counted
-      # between a total query and a skipped query. Fail closed: a run whose
-      # pull_requests[] is empty (a fork's run, or one GitHub never linked)
-      # cannot be attributed, a listing shorter than its total_count is
-      # truncated, and GitHub caps filtered run searches at 1000 results; each
-      # is unverified (exit 2), never a short count.
-      local _cr_n="${1:-}" _cr_repo="$REPO"
-      [ -z "$_cr_repo" ] && _cr_repo='{owner}/{repo}'
-      if ! _vcs_pr_id_numeric "$_cr_n"; then
-        echo "pipeline-vcs: pr-ci-runs: PR id must be numeric (got '$_cr_n') -- unverified" >&2
-        exit 2
-      fi
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] gh pr view $_cr_n --json headRefName; gh api --paginate -X GET repos/$_cr_repo/actions/runs -f event=pull_request -f branch=<head> -F per_page=100"
-        return 0
-      fi
-      local _cr_head_raw _cr_head _cr_listing
-      _cr_head_raw="$(gh pr view "$_cr_n" --json headRefName ${REPO:+--repo "$REPO"})" || {
-        echo "pipeline-vcs: pr-ci-runs: could not fetch PR #$_cr_n -- unverified" >&2
-        exit 2
-      }
-      _cr_head="$(printf '%s' "$_cr_head_raw" | python3 -I -c '
-import json, sys
-try:
-    v = json.load(sys.stdin).get("headRefName")
-except Exception:
-    sys.exit(2)
-if not isinstance(v, str) or not v:
-    sys.exit(2)
-print(v)
-')" || {
-        echo "pipeline-vcs: pr-ci-runs: PR #$_cr_n has no head branch -- unverified" >&2
-        exit 2
-      }
-      _cr_listing="$(gh api --paginate -X GET "repos/$_cr_repo/actions/runs" \
-        -f event=pull_request -f branch="$_cr_head" -F per_page=100)" || {
-        echo "pipeline-vcs: pr-ci-runs: could not list workflow runs for PR #$_cr_n -- unverified" >&2
-        exit 2
-      }
-      # `gh api --paginate` prints the pages as concatenated JSON documents.
-      printf '%s' "$_cr_listing" | PR_N="$_cr_n" python3 -I -c '
-import json, os, sys
-n = int(os.environ["PR_N"])
-text = sys.stdin.read()
-dec = json.JSONDecoder()
-pos, pages = 0, []
-try:
-    while True:
-        while pos < len(text) and text[pos].isspace():
-            pos += 1
-        if pos >= len(text):
-            break
-        doc, pos = dec.raw_decode(text, pos)
-        pages.append(doc)
-except Exception:
-    sys.exit(2)
-if not pages:
-    sys.exit(2)
-total = pages[0].get("total_count") if isinstance(pages[0], dict) else None
-if type(total) is not int or total < 0 or total >= 1000:
-    sys.exit(2)
-runs = []
-for page in pages:
-    if not isinstance(page, dict) or type(page.get("total_count")) is not int:
-        sys.exit(2)
-    wr = page.get("workflow_runs")
-    if not isinstance(wr, list):
-        sys.exit(2)
-    runs.extend(wr)
-if len(runs) != total:
-    sys.exit(2)
-count = 0
-for run in runs:
-    if not isinstance(run, dict):
-        sys.exit(2)
-    prs = run.get("pull_requests")
-    if not isinstance(prs, list) or not prs:
-        sys.exit(2)
-    nums = []
-    for p in prs:
-        num = p.get("number") if isinstance(p, dict) else None
-        if type(num) is not int:
-            sys.exit(2)
-        nums.append(num)
-    if n in nums and run.get("conclusion") != "skipped":
-        count += 1
-print(count)
-' || {
-        echo "pipeline-vcs: pr-ci-runs: workflow runs for PR #$_cr_n are malformed, truncated, cannot be attributed to a PR, or are at GitHub's 1000-result cap -- unverified" >&2
-        exit 2
-      }
-      ;;
-    view-pr)
-      _run gh pr view "$1" --json number,title,headRefName,labels,url,body \
-        ${REPO:+--repo "$REPO"}
-      ;;
-    list-prs)
-      # LANE SCOPING (2026-08-22): filter to PRs targeting THIS config's base_branch, and
-      # return baseRefName so callers can verify. Without a base filter, PRs are repo-wide:
-      # in a multi-lane repo (main + per-LLM experiment branches sharing one remote) a lane's
-      # Step-1 reconciliation sees another lane's in-flight PR, adopts it as its own orphaned
-      # work, retargets it and merges it into the wrong base. That happened: the qwen lane
-      # merged the canonical lane's P0-14 PR (#203, base main) into `qwen`, leaving `main`
-      # without its own work and contaminating the experiment.
-      #
-      # PAGINATION (#171): `gh pr list` defaulted to --limit 30 with no
-      # override, so it silently truncated any lane with more than 30 open
-      # PRs. `gh api --paginate` against the REST pulls endpoint has no cap:
-      # it follows Link: rel="next" headers internally until exhausted. The
-      # REST endpoint's own `base` query param covers the lane-scoping the
-      # old `--base` flag provided.
-      local _lp_repo="$REPO"
-      [ -z "$_lp_repo" ] && _lp_repo='{owner}/{repo}'
-      local _lp_endpoint="repos/${_lp_repo}/pulls?state=open&per_page=100"
-      [ -n "$BASE_BRANCH" ] && _lp_endpoint="${_lp_endpoint}&base=${BASE_BRANCH}"
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] gh api --paginate $_lp_endpoint"
-        return 0
-      fi
-      local _lp_raw
-      _lp_raw="$(gh api --paginate "$_lp_endpoint")" || exit 1
-      printf '%s' "$_lp_raw" | _gh_paginate_merge | python3 -I -c "
-import json, sys
-items = json.load(sys.stdin)
-def cross(i):
-    # A fork PR (#346): head and base repos differ; a deleted fork has no head repo.
-    h = ((i.get('head') or {}).get('repo') or {}).get('full_name')
-    return h is None or h != ((i.get('base') or {}).get('repo') or {}).get('full_name')
-out = [{'number': i.get('number'), 'title': i.get('title', ''),
-        'headRefName': (i.get('head') or {}).get('ref', ''),
-        'baseRefName': (i.get('base') or {}).get('ref', ''),
-        'labels': [{'name': l.get('name')} for l in (i.get('labels') or [])],
-        'isCrossRepository': cross(i)}
-       for i in items]
-print(json.dumps(out))
-"
-      ;;
-    diff-pr)
-      local _dp_n="$1"; shift
-      local _dp_stat=false
-      while [ $# -gt 0 ]; do
-        case "$1" in
-          --stat) _dp_stat=true ;;
-        esac
-        shift
-      done
-      if [ "$_dp_stat" = "true" ]; then
-        # Derived from the same paginated pr-files (#200) endpoint -- no new
-        # fetch pattern, just additions/deletions instead of just paths.
-        local _dp_repo="$REPO"
-        [ -z "$_dp_repo" ] && _dp_repo='{owner}/{repo}'
-        local _dp_endpoint="repos/${_dp_repo}/pulls/${_dp_n}/files?per_page=100"
-        if [ "$DRY_RUN" = "true" ]; then
-          echo "[dry-run] gh api --paginate $_dp_endpoint | git-diff-stat-style summary"
-          return 0
-        fi
-        local _dp_raw
-        _dp_raw="$(gh api --paginate "$_dp_endpoint")" || exit 1
-        printf '%s' "$_dp_raw" | _gh_paginate_merge | _diff_stat_format
-        return
-      fi
-      _run gh pr diff "$_dp_n" ${REPO:+--repo "$REPO"}
-      ;;
-    checkout-pr)
-      _run gh pr checkout "$1" ${REPO:+--repo "$REPO"}
-      ;;
-    approve-pr)
-      local n="$1" body="${2:-approved}"
-      _run gh pr review "$n" --approve --body "$body" ${REPO:+--repo "$REPO"}
-      ;;
-    label-pr)
-      local n="$1"; shift
-      _parse_label_args "$@"
-      _gh_label_edit pr "$n"
-      ;;
-    pr-checks)
-      _run gh pr checks "$1" ${REPO:+--repo "$REPO"}
-      ;;
-    pr-checks-required)
-      # (#205 review follow-up) Scoped to merge.required_checks only -- the
-      # literal QA CI-wait loop used to aggregate every check `gh pr checks`
-      # reported (`cut -f2 | sort -u`), so an unrelated optional check stuck
-      # pending burned the whole wait budget, and a required check GitHub
-      # hadn't scheduled yet was invisible (every *reported* check could read
-      # "pass" while the required one was simply absent -- a false PASS).
-      local _n="$1" _required
-      _required="$(cfg merge.required_checks)"
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] gh pr checks $_n ${REPO:+--repo $REPO}; evaluate against merge.required_checks"
-        return 0
-      fi
-      # Empty config never passes vacuously and needs no CI data to say so.
-      [ -z "$_required" ] && { printf '' | _eval_required_checks "$_required"; return; }
-      local _raw _norm
-      _raw="$(gh pr checks "$_n" ${REPO:+--repo "$REPO"} 2>/dev/null)"
-      _norm="$(printf '%s\n' "$_raw" | python3 -I -c "
-import sys
-for line in sys.stdin:
-    parts = line.rstrip('\n').split('\t')
-    if len(parts) < 2 or not parts[0]:
-        continue
-    name, raw = parts[0], parts[1].strip().lower()
-    if raw == 'pass':
-        status = 'pass'
-    elif raw in ('pending', 'queued', 'in_progress', 'expected', 'requested', 'waiting', 'skipping'):
-        status = 'pending'
-    else:
-        status = 'fail'
-    print(name + '\t' + status)
-")"
-      printf '%s\n' "$_norm" | _eval_required_checks "$_required"
-      ;;
-    merge-pr)
-      local flag
-      case "$MERGE_METHOD" in
-        squash) flag="--squash" ;; rebase) flag="--rebase" ;; *) flag="--merge" ;;
-      esac
-      _run gh pr merge "$1" $flag --delete-branch ${REPO:+--repo "$REPO"}
-      ;;
-    comment-pr)
-      # PRs are issues for commenting purposes on GitHub
-      local n="$1" body="$2"
-      if [ "$DRY_RUN" = "true" ]; then
-        if [ "$ALLOW_CLOSED" = "true" ]; then
-          echo "[dry-run] gh issue comment $n --body $body (--allow-closed; URL on stdout)"
-        else
-          echo "[dry-run] gh pr view $n --json state -q .state; gh issue comment $n --body $body (URL on stdout)"
-        fi
-        return 0
-      fi
-      local _cp_state_unverified=false
-      if [ "$ALLOW_CLOSED" != "true" ]; then
-        local _cp_state
-        if _cp_state="$(gh pr view "$n" --json state -q .state ${REPO:+--repo "$REPO"} 2>/dev/null)"; then
-          case "$_cp_state" in
-            CLOSED|closed)
-              echo "pipeline-vcs: comment-pr: PR #$n is CLOSED (not merged) — use --allow-closed to override" >&2
-              exit 1
-              ;;
-          esac
-        else
-          echo "pipeline-vcs: warning: could not determine state of PR #$n — proceeding" >&2
-          _cp_state_unverified=true
-        fi
-      fi
-      local _cp_url
-      _cp_url="$(gh issue comment "$n" --body "$body" ${REPO:+--repo "$REPO"})" || exit 1
-      echo "$_cp_url"
-      if [ "$_cp_state_unverified" = "true" ]; then
-        echo "talos:comment-state-unverified target=pr#$n reason=state-check-failed"
-      fi
-      ;;
-    edit-pr-body)
-      # Replace the PR's description (#455). ARGS is `<n> <body>` here: the
-      # pre-dispatch block validated the flags, the caps and the placeholders.
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] gh pr edit $1 --body-file - (body on stdin)${REPO:+ --repo $REPO}"
-        return 0
-      fi
-      _with_retry "$VERB" _gh_epb_once "$1" "$2" || exit 1
-      echo "edited pr=$1 body"
-      ;;
-    find-pr)
-      # Issue-reference matching is _vcs_shared_find_pr (#177 slice 4). This
-      # arm is now just fetch -> call: gh natively supports server-side
-      # `--state open|closed|merged|all`, so no post-fetch normalisation is
-      # needed on this side (see the shared function's header comment).
-      local n="$1" state="${2:-open}"
-      # A result count equal to --limit may be truncated -- warn (#302).
-      local _fp_limit=100 _fp_out
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] gh pr list --state $state --limit $_fp_limit ... | filter issue-$n / #$n"
-        return 0
-      fi
-      _fp_out="$(gh pr list --state "$state" --limit "$_fp_limit" \
-        --json number,state,title,headRefName,body ${REPO:+--repo "$REPO"})" || {
-        echo "pipeline-vcs: find-pr: gh pr list failed" >&2; exit 1; }
-      _list_cap_warn find-pr "$_fp_limit" "$(printf '%s' "$_fp_out" | _json_array_count)" "gh pr list --limit ceiling" PRs
-      printf '%s' "$_fp_out" | _vcs_shared_find_pr "$n" "$state" "$REPO"
-      ;;
-    check-pr-files)
-      # Forbidden-files pattern/allow-list logic is _vcs_shared_check_pr_files
-      # (#177 slice 3). This arm is now just fetch -> call. The fetch mirrors
-      # pr-files below (`gh api --paginate` + _gh_paginate_merge, #171
-      # pattern) rather than the old unpaginated `gh pr view --json files`,
-      # so a >100-file PR is no longer silently truncated (#211-class bug);
-      # a failed fetch exits 1 with no stdout, which is the fail-closed
-      # behaviour the shared function's stdin contract relies on.
-      local n="$1"
-      local _cpf_repo="$REPO"
-      [ -z "$_cpf_repo" ] && _cpf_repo='{owner}/{repo}'
-      local _cpf_endpoint="repos/${_cpf_repo}/pulls/${n}/files?per_page=100"
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] gh pr view $n --json files | match against forbidden patterns"
-        return 0
-      fi
-      local _cpf_raw
-      _cpf_raw="$(gh api --paginate "$_cpf_endpoint")" || exit 1
-      printf '%s' "$_cpf_raw" | _gh_paginate_merge | python3 -I -c "
-import json, sys
-items = json.load(sys.stdin)
-for i in items:
-    path = i.get('filename', '')
-    if path:
-        print(path)
-" | CONFIGURED="$(cfg merge.forbidden_files)" REPLACE="$(cfg merge.forbidden_files_replace)" ALLOW="$(cfg merge.forbidden_files_allow)" _vcs_shared_check_pr_files
-      ;;
-    pr-files)
-      # #211 review fix: `gh pr view --json files` (used until PR #211) never
-      # paginated past its first 100 entries, unlike every other list endpoint
-      # in this file. A >100-file PR silently returned only the first 100
-      # paths, which could make the Step 3e Phase 1 auto-docs gate (SKILL.md)
-      # look at a truncated path list and auto-skip docs incorrectly. Switch
-      # to `gh api --paginate` + `_gh_paginate_merge` (#171 pattern, same as
-      # list-issues/list-prs above) so every changed path is returned
-      # regardless of PR size, and a failed page exits non-zero with no
-      # partial output rather than a silently-short list.
-      local n="$1"
-      local _pf_repo="$REPO"
-      [ -z "$_pf_repo" ] && _pf_repo='{owner}/{repo}'
-      local _pf_endpoint="repos/${_pf_repo}/pulls/${n}/files?per_page=100"
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] gh api --paginate $_pf_endpoint"
-        return 0
-      fi
-      local _pf_raw
-      _pf_raw="$(gh api --paginate "$_pf_endpoint")" || exit 1
-      printf '%s' "$_pf_raw" | _gh_paginate_merge | python3 -I -c "
-import json, sys
-items = json.load(sys.stdin)
-for i in items:
-    path = i.get('filename', '')
-    if path:
-        print(path)
-"
-      ;;
-    rerun-ci)
-      local n="$1"
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] gh run rerun --failed <runs for PR #$n head SHA>"
-        return 0
-      fi
-      local sha
-      sha="$(gh pr view "$n" --json headRefOid -q .headRefOid ${REPO:+--repo "$REPO"} 2>/dev/null)"
-      [ -z "$sha" ] && { echo "pipeline-vcs: could not resolve head SHA for PR #$n" >&2; exit 1; }
-      gh run list --commit "$sha" --json databaseId,conclusion ${REPO:+--repo "$REPO"} 2>/dev/null \
-        | python3 -I -c "
-import json, sys
-try: runs = json.load(sys.stdin)
-except Exception: runs = []
-for r in runs:
-    if r.get('conclusion') in ('failure', 'timed_out', 'cancelled'):
-        print(r['databaseId'])
-" | while IFS= read -r run_id; do
-          [ -n "$run_id" ] && _run gh run rerun "$run_id" --failed ${REPO:+--repo "$REPO"}
-        done
-      echo "rerun-ci: re-ran failed runs for PR #$n ($sha)"
-      ;;
-    update-branch)
-      # update-branch <n> (#289) — update the PR's head branch by merging its
-      # base into it SERVER-SIDE (GitHub's own "Update branch" button):
-      # `PUT /repos/{owner}/{repo}/pulls/{n}/update-branch` with
-      # `expected_head_sha`. Contract: exit 0 on success, exit 1 on a
-      # head-moved conflict (HTTP 409) or any other failure — the caller
-      # re-checks pr-mergeable either way. Nothing is resolved for the PR's
-      # own conflicted files: if the PR conflicts with its base in content,
-      # the update itself returns 409 and the caller falls back to the
-      # developer merge-base dispatch.
-      local _ub_n="$1"
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] gh api --method PUT repos/{owner}/{repo}/pulls/$_ub_n/update-branch"
-        return 0
-      fi
-      local _ub_sha
-      _ub_sha="$(gh pr view "$_ub_n" --json headRefOid -q .headRefOid ${REPO:+--repo "$REPO"} 2>/dev/null)"
-      [ -z "$_ub_sha" ] && { echo "pipeline-vcs: update-branch: could not resolve head SHA for PR #$_ub_n" >&2; exit 1; }
-      local _ub_repo="${REPO:-$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null)}"
-      [ -z "$_ub_repo" ] && { echo "pipeline-vcs: update-branch: could not resolve repo" >&2; exit 1; }
-      gh api --method PUT "repos/$_ub_repo/pulls/$_ub_n/update-branch" \
-        -f expected_head_sha="$_ub_sha" >/dev/null 2>&1 || {
-        echo "pipeline-vcs: update-branch: GitHub refused the branch update for PR #$_ub_n (head moved, or conflicts unresolved server-side)" >&2
-        exit 1
-      }
-      echo "update-branch: PR #$_ub_n branch updated with its base"
-      ;;
-    check-closing-keyword)
-      # check-closing-keyword <pr_branch_or_number> <issue_N>
-      # Exit 0 when safe to merge; exit 1 when the PR body contains a closing
-      # keyword for <issue_N> AND other PRs referencing that issue are still
-      # OPEN (closing the tracker would orphan in-flight sibling work).
-      #
-      # Rule 6: the final PR in a multi-PR issue says "Closes #N".  By the time
-      # that PR is ready to merge, all siblings are merged — no open siblings
-      # exist, so the gate passes.  Only blocks when a sibling is still open.
-      #
-      # Known limitation: a lone PR that overclaims its deliverables cannot be
-      # detected by this gate.  That requires a ledger; nothing ticks one in
-      # VCS mode today.
-      #
-      # FAIL-OPEN: if the PR body or sibling list cannot be fetched, emit a
-      # machine-readable marker on stdout and exit 0.  The reason field is a
-      # fixed literal — never interpolated from an API response — so a remote
-      # error string cannot inject extra output lines.
-      #
-      # The closing-keyword regex, the sibling scan and the diagnostic
-      # message are _vcs_shared_check_closing_keyword (#177 slice 4). This
-      # arm is now just fetch -> call.
-      local pr_ref="${1:-}" issue_n="${2:-}"
-      [ -z "$pr_ref" ]  && { echo "pipeline-vcs: check-closing-keyword: missing PR ref"     >&2; exit 1; }
-      [ -z "$issue_n" ] && { echo "pipeline-vcs: check-closing-keyword: missing issue number" >&2; exit 1; }
-
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] check-closing-keyword $pr_ref $issue_n: fetch PR body, look for closing keyword, then find-pr $issue_n open"
-        return 0
-      fi
-
-      # Repo-scope guard: if $REPO is unresolved we cannot scope the URL/owner#N
-      # forms to the current repository — fail open with a fixed-literal marker.
-      if [ -z "$REPO" ]; then
-        echo "talos:closing-keyword-unverified pr=$pr_ref issue=$issue_n reason=repo-unresolved"
-        return 0
-      fi
-
-      # Fetch the PR to get its number and body.
-      local pr_json
-      pr_json="$(gh pr view "$pr_ref" --json number,body ${REPO:+--repo "$REPO"} 2>/dev/null)"
-      if [ -z "$pr_json" ]; then
-        echo "pipeline-vcs: check-closing-keyword: could not fetch PR '$pr_ref' — skipping check" >&2
-        echo "talos:closing-keyword-unverified pr=$pr_ref issue=$issue_n reason=pr-fetch-failed"
-        return 0
-      fi
-
-      # Extract PR number and body via Python (safe JSON parse).
-      local pr_number pr_body
-      pr_number="$(printf '%s' "$pr_json" | python3 -I -c "import json,sys; d=json.load(sys.stdin); print(d.get('number',''))")"
-      pr_body="$(printf '%s' "$pr_json" | python3 -I -c "import json,sys; d=json.load(sys.stdin); print(d.get('body',''))")"
-
-      # Lazily fetches the open-PR list -- only invoked by the shared
-      # function when a closing keyword is actually present.
-      # Every page, no cap (#319: `gh pr list --limit 100` missed a sibling
-      # past the first 100). $REPO is set: the repo-unresolved guard above.
-      _github_fetch_closing_siblings() {
-        local _raw
-        _raw="$(gh api --paginate "repos/${REPO}/pulls?state=open&per_page=100")" || return 1
-        [ -n "$_raw" ] || return 1
-        printf '%s' "$_raw" | _gh_paginate_merge | python3 -I -c "
-import json, sys
-print(json.dumps([{'number': p.get('number'), 'state': p.get('state'), 'title': p.get('title') or '',
-                   'headRefName': (p.get('head') or {}).get('ref', ''), 'body': p.get('body') or ''}
-                  for p in json.load(sys.stdin)]))
-"
-      }
-
-      printf '%s' "$pr_body" | REPO="$REPO" \
-        _vcs_shared_check_closing_keyword "$issue_n" "$pr_number" "$pr_ref" _github_fetch_closing_siblings
-      exit $?
-      ;;
-    pr-head)
-      # pr-head <n> — print the current head SHA for a PR (fail-closed: exits 1 if unresolvable)
-      local n="$1"
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] gh pr view $n --json headRefOid -q .headRefOid"
-        return 0
-      fi
-      local sha
-      sha="$(gh pr view "$n" --json headRefOid -q .headRefOid ${REPO:+--repo "$REPO"} 2>/dev/null)"
-      [ -z "$sha" ] && { echo "pipeline-vcs: pr-head: could not resolve head SHA for PR #$n" >&2; exit 1; }
-      printf '%s\n' "$sha"
-      ;;
-    pr-mergeable)
-      # pr-mergeable <n> (#214) — print exactly one of MERGEABLE / CONFLICTING
-      # / UNKNOWN from `gh pr view --json mergeable`. The retry/backoff loop
-      # and the exit-code contract are _vcs_shared_pr_mergeable (#177 slice
-      # 4); this arm only fetches and translates gh's own already-normalised
-      # MERGEABLE/CONFLICTING/UNKNOWN value.
-      local n="$1"
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] gh pr view $n --json mergeable -q .mergeable"
-        return 0
-      fi
-      _github_fetch_mergeable() {
-        gh pr view "$n" --json mergeable -q .mergeable ${REPO:+--repo "$REPO"} 2>/dev/null
-      }
-      _vcs_shared_pr_mergeable _github_fetch_mergeable
-      exit $?
-      ;;
-
-    # ── Attempt counting ─────────────────────────────────────────────────────
-    # Shared Python helper embedded here; called by record-attempt, read-attempt,
-    # check-attempt. Follows the same fail-closed pattern as check-approval-sha.
-
-    read-comments)
-      # read-comments <issue-or-pr-n>
-      # Print every comment on an issue/PR as {"comments": [...]}, fully
-      # paginated via `gh api --paginate` against the REST issues/{n}/comments
-      # endpoint (PRs are issues in GitHub's data model, so this endpoint
-      # covers PR comments too -- the same endpoint check-approval-sha's
-      # github-api counterpart already uses via _ga_fetch_all_comments).
-      # No 100-comment cap (#171 pattern via _gh_paginate_merge). Shared
-      # reader: read-attempt and post-approval's duplicate-marker check both
-      # call this verb rather than each fetching comments themselves (#172).
-      # Fail-closed: prints nothing to stdout and exits 1 on any page failure.
-      local n="${1:-}"
-      [ -z "$n" ] && { echo "pipeline-vcs: read-comments: missing issue/PR number" >&2; exit 1; }
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] gh api --paginate repos/{owner}/{repo}/issues/$n/comments"
-        return 0
-      fi
-      local rc_repo rc_raw
-      rc_repo="$REPO"
-      [ -z "$rc_repo" ] && rc_repo='{owner}/{repo}'
-      rc_raw="$(gh api --paginate "repos/${rc_repo}/issues/${n}/comments?per_page=100")" || exit 1
-      printf '%s' "$rc_raw" | _gh_paginate_merge | _vcs_shared_normalize_comments
-      ;;
-
-    read-attempt)
-      # read-attempt <issue-n>
-      # Print "stage=<s> count=<k> total=<t>" from the most-recent attempt
-      # marker on the issue. Prints "stage= count=0 total=0" when no marker
-      # exists (new issue). Exits 0 always (read-only query).
-      local n="${1:-}"
-      [ -z "$n" ] && { echo "pipeline-vcs: read-attempt: missing issue number" >&2; exit 1; }
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] read-attempt $n: fetch issue comments and extract last talos:attempt marker"
-        return 0
-      fi
-      local issue_data
-      issue_data="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" read-comments "$n" ${REPO:+--repo "$REPO"} 2>/dev/null)"
-      if [ $? -ne 0 ] || [ -z "$issue_data" ]; then
-        echo "pipeline-vcs: read-attempt: could not fetch issue #$n data" >&2
-        exit 1
-      fi
-      local trusted_authors verify_authors
-      trusted_authors="$(cfg markers.trusted_authors)"
-      verify_authors="$(cfg markers.verify_authors)"
-      _vcs_shared_reader_identity "$verify_authors" gh api user --jq .login
-      printf '%s' "$issue_data" | TRUSTED_AUTHORS="$trusted_authors" VERIFY_AUTHORS="$verify_authors" CURRENT_USER="$_RID_USER" CURRENT_USER_REFUSED="$_RID_REFUSED" TALOS_CFG="$_TALOS_CFG" _vcs_shared_read_attempt
-      ;;
-
-
-    check-attempt)
-      # check-attempt <issue-n>
-      # Exit 1 (with reason) when EITHER ceiling is already reached for the
-      # issue.  Does NOT record a new attempt — callers do that with
-      # record-attempt.  Reads limits.max_fix_attempts and
-      # limits.max_total_dispatches from config.
-      local n="${1:-}"
-      [ -z "$n" ] && { echo "pipeline-vcs: check-attempt: missing issue number" >&2; exit 1; }
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] check-attempt $n: compare current attempt state against configured ceilings"
-        return 0
-      fi
-      local max_stage max_total
-      max_stage="$(cfg limits.max_fix_attempts)"
-      max_total="$(cfg limits.max_total_dispatches)"
-      local state
-      state="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" read-attempt "$n" ${REPO:+--repo "$REPO"} 2>&1)"
-      local rc=$?
-      if [ $rc -ne 0 ]; then
-        echo "pipeline-vcs: check-attempt: read-attempt failed: $state" >&2
-        exit 1
-      fi
-      # Pass through any machine-readable talos: markers from read-attempt to our
-      # own stdout, then narrow state to only the parseable stage=...count=...total=
-      # line (filters out both talos: markers and any stderr warnings captured via 2>&1).
-      printf '%s\n' "$state" | grep '^talos:' || true
-      state="$(printf '%s\n' "$state" | grep '^stage=')"
-      # Parse the state line
-      local cur_stage cur_count cur_total
-      cur_stage="$(printf '%s' "$state" | sed 's/stage=\([^ ]*\).*/\1/')"
-      cur_count="$(printf '%s' "$state" | sed 's/.*count=\([0-9]*\).*/\1/')"
-      cur_total="$(printf '%s' "$state" | sed 's/.*total=\([0-9]*\).*/\1/')"
-      if ! _vcs_shared_attempt_blocked "check-attempt" "$cur_count" "$cur_total" "$max_stage" "$max_total" "$cur_stage"; then
-        exit 1
-      fi
-      echo "pipeline-vcs: check-attempt: ok (stage=$cur_stage count=$cur_count total=$cur_total; max_stage=$max_stage max_total=$max_total)"
-      exit 0
-      ;;
-
-    record-attempt)
-      # record-attempt <issue-n> <blocking-stage> [--idempotency-key <token>]
-      # Read prior state, compute new per-stage count and total, post the
-      # marker comment, and print "stage=<s> count=<k> total=<t>".
-      # Exits non-zero when EITHER ceiling is exceeded AFTER recording.
-      # --idempotency-key <token> (#172): optional flag, back-compat when omitted.
-      # --pr <pr-n> (#172 QA follow-up): derives the key itself as
-      # "<stage>-<pr-head-sha>". See _vcs_shared_record_attempt for the full
-      # rationale -- identical behaviour on both adapters.
-      local n="${1:-}" stage="${2:-}"
-      [ -z "$n" ]     && { echo "pipeline-vcs: record-attempt: missing issue number" >&2; exit 1; }
-      [ -z "$stage" ] && { echo "pipeline-vcs: record-attempt: missing stage argument" >&2; exit 1; }
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] record-attempt $n $stage: read prior state, post <!-- talos:attempt stage=$stage ... --> marker"
-        return 0
-      fi
-      # Adapter-specific write: post the marker comment via `gh`, print the
-      # created comment's URL, and exit non-zero when the write itself
-      # failed (an empty URL from a successful gh call never happens).
-      _github_post_attempt_marker() {
-        local _url
-        _url="$(gh issue comment "$1" --body "$2" ${REPO:+--repo "$REPO"} 2>/dev/null)"
-        printf '%s' "$_url"
-        [ -n "$_url" ]
-      }
-      shift 2 2>/dev/null || shift "$#"
-      _vcs_shared_record_attempt "$n" "$stage" _github_post_attempt_marker "$@"
-      ;;
-
-    check-approval-sha)
-      # check-approval-sha <n> [--stale-list]
-      # Verify that every approval label present on the PR was earned against
-      # the current head SHA.  If a SHA differs, check whether all changed files
-      # since the approval SHA are covered by the configured waiver list
-      # (merge.approval_waiver_paths; default: *.md docs/** CHANGELOG.md *.example).
-      # Hard-coded non-waivable: scripts/**, tests/**, agent instructions
-      # (agents/**, skills/**, templates/prompts/**, .claude/{agents,skills,
-      # commands,talos}/**, .agents/**, any AGENTS.md or CLAUDE.md; all
-      # casefolded), and all pipeline config filenames
-      # (talos.pipeline.{yml,yaml,json}, .claude-pipeline.{yaml,json},
-      # pipeline.{yaml,json}) -- enforced FIRST (before the config waiver) so
-      # the config waiver can never be widened to cover them.
-      # Fail-closed: unresolvable head SHA, missing marker, or git diff failure
-      # all exit non-zero.
-      # --stale-list: additionally print one greppable stdout line per stale
-      # role ("stale role=<role> label=<label>"), on top of the unchanged
-      # stderr prose and exit code. Without the flag, behavior is unchanged.
-      #
-      # Marker extraction is _vcs_shared_check_approval_marker (#177 slice 1);
-      # the SHA-vs-head comparison and waiver-path logic is
-      # _vcs_shared_check_approval_sha (#177 slice 2). This arm is now just
-      # fetch (gh pr view) -> call.
-      local n="$1"; shift
-      local stale_list_flag="false"
-      if [ "${1:-}" = "--stale-list" ]; then
-        stale_list_flag="true"
-      fi
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] check-approval-sha $n: verify all approval labels match current head SHA"
-        return 0
-      fi
-      local pr_data
-      pr_data="$(gh pr view "$n" --json headRefOid,baseRefName,labels,comments ${REPO:+--repo "$REPO"} 2>/dev/null)"
-      if [ -z "$pr_data" ]; then
-        echo "pipeline-vcs: check-approval-sha: could not fetch PR #$n data" >&2
-        exit 1
-      fi
-      local trusted_authors_cas verify_authors_cas
-      trusted_authors_cas="$(cfg markers.trusted_authors)"
-      verify_authors_cas="$(cfg markers.verify_authors)"
-      _vcs_shared_reader_identity "$verify_authors_cas" gh api user --jq .login
-      local marker_out marker_rc marker_json
-      marker_out="$(printf '%s' "$pr_data" | TRUSTED_AUTHORS="$trusted_authors_cas" VERIFY_AUTHORS="$verify_authors_cas" CURRENT_USER="$_RID_USER" CURRENT_USER_REFUSED="$_RID_REFUSED" TALOS_CFG="$_TALOS_CFG" _vcs_shared_check_approval_marker)"
-      marker_rc=$?
-      if [ "$marker_rc" -eq 1 ]; then
-        exit 1
-      fi
-      if [ "$marker_rc" -eq 3 ]; then
-        # No approval labels present: marker_out IS the diagnostic message.
-        printf '%s\n' "$marker_out"
-        exit 0
-      fi
-      # marker_rc == 0: marker_out is zero or more machine-readable
-      # `talos:...` passthrough lines followed by exactly one JSON payload
-      # line -- relay the former to our own stdout (same convention
-      # read-attempt/check-attempt use) and keep the latter for the waiver
-      # comparison below.
-      printf '%s\n' "$marker_out" | grep '^talos:' || true
-      marker_json="$(printf '%s\n' "$marker_out" | grep -v '^talos:')"
-      local waiver_paths repo_root
-      waiver_paths="$(cfg merge.approval_waiver_paths)"
-      repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
-      printf '%s' "$pr_data" \
-        | WAIVER_PATHS="$waiver_paths" REPO_ROOT="${repo_root:-}" MARKER_ENTRIES="$marker_json" STALE_LIST="$stale_list_flag" _vcs_shared_check_approval_sha
-      exit $?
-      ;;
-    *) echo "pipeline-vcs: unknown verb: $verb" >&2; exit 1 ;;
-  esac
-}
-
-# ─────────────────────────────────────────────────────────────────────────────
 # GITHUB CLIENT  (one REST client behind the `github` and `github-api` providers)
 #   Transport: `gh api` when the gh CLI is on PATH and authenticated (it owns
-#     auth and enterprise hosts), curl with GITHUB_TOKEN / GH_TOKEN otherwise.
-#     vcs.provider `github-api` pins the token transport. Everything above the
-#     transport is written once and sees the same status, headers and body from
-#     either, so retry, pagination and error handling cannot drift.
-#   Prerequisites: an authenticated gh, or GITHUB_TOKEN / GH_TOKEN (vcs.token_env
-#     names a custom env var to read for the token transport).
-#   Repo: vcs.repo config, else parsed from git remote get-url origin.
-#   Token security: NEVER logged to stdout, stderr, or CURL_LOG (only the
-#     "Authorization: Bearer" prefix appears in stub logs).
+#     auth and enterprise hosts), else curl with GITHUB_TOKEN / GH_TOKEN
+#     (vcs.token_env names another variable); `github-api` pins curl. Both hand
+#     the layers above the same status, headers and body, so retry, pagination
+#     and error handling are written once. The token is never logged.
 # ─────────────────────────────────────────────────────────────────────────────
 _GH_ROOT="https://api.github.com"
 _GH_JSON="application/vnd.github+json"
@@ -4570,10 +3567,9 @@ _gh_http() {
 
 # _gh_once <METHOD> <path> <accept> <payload-file|""> [<next-file>] -- one
 # attempt, shaped for _with_retry: the body on success; on a rate limit it sets
-# $_WR_RETRYABLE (decided from the status, never from message text) and
-# $_WR_RETRY_AFTER. With <next-file> it also writes the next page's path there
-# (empty when there is none). A file, not a global: _with_retry runs inside a
-# command substitution, which a global would not survive.
+# $_WR_RETRYABLE (from the status, never message text) and $_WR_RETRY_AFTER.
+# With <next-file> it writes the next page's Link (empty if none) there: a
+# file, since a global would not survive _with_retry's command substitution.
 _gh_once() {
   local _m="$1" _p="$2" _acc="$3" _data="${4:-}" _next_file="${5:-}"
   local _hdr _full _status _body _rc=0 _reset
@@ -4609,10 +3605,9 @@ _gh_once() {
 }
 
 # _gh_try <METHOD> <path> [<json-payload>] -- _gh_once under _with_retry. Prints
-# the body; returns 1 on failure, so a caller that must not abort (a best-effort
-# lookup) can carry on. A payload is staged in a file and reaches the transport
-# on stdin, never as an argument: argv caps one string at 128 KiB on Linux, and a
-# body under the 120,000-byte raw cap can escape to more than that.
+# the body; returns 1 on failure (a best-effort caller can carry on). A payload
+# is staged in a file and reaches the transport on stdin, never as an argument:
+# argv caps one string at 128 KiB on Linux, which an escaped body can exceed.
 _gh_try() {
   local _m="$1" _p="$2" _f="" _rc=0
   if [ $# -ge 3 ]; then
@@ -4635,16 +3630,14 @@ _gh_req() {
 _gh_diff() {
   local _body
   _body="$(_with_retry "$VERB" _gh_once GET "$1" "$_GH_DIFF" "")" || exit 1
-  printf '%s' "$_body"
+  printf '%s\n' "$_body"
 }
 
-# _gh_rel_path <url> -- prints the path and query of <url> relative to the API
-# root, and returns 0, when <url> is on the API origin: https, same host, same
-# port (443 when omitted). Otherwise prints the refused scheme://host:port
-# (never the path, query or userinfo) and returns 1. Parsed with urllib.parse,
-# not a regex (#320), and stricter than the parser alone: userinfo, backslashes,
-# whitespace and control characters are refused outright, so curl cannot read a
-# different host out of the same string.
+# _gh_rel_path <url> -- when <url> is on the API origin (https, same host and
+# port) prints its path and query relative to the root, else prints the refused
+# scheme://host:port and returns 1. Parsed with urllib.parse (#320); userinfo,
+# backslashes, whitespace and control characters are refused outright, so curl
+# cannot read a different host out of the same string.
 _gh_rel_path() {
   python3 -I -c '
 import sys
@@ -4672,17 +3665,13 @@ print(p.path.lstrip("/") + ("?" + p.query if p.query else ""))
 }
 
 # _gh_pages <path> [<max-pages> <noun> [<key>]] -- every page of a REST list
-# endpoint, following Link: rel="next" from <path>. Prints one JSON array of the
-# items. With <key> each page is an object whose list sits under <key> (check
-# runs, workflow runs) and the result is {"total_count": N, "<key>": [...]}.
-# With <max-pages> it stops after that many pages and, if a next page still
-# exists, warns on stderr naming the cap (#302 -- a truncated lookup must never
-# look like one that found nothing). Returns 1 with NOTHING on stdout on any
-# failure partway through, including a page that fails only after exhausting its
-# retries (#173) and a page of the wrong shape (#319: a truncated page silently
-# dropped a merge-gate sibling) -- callers treat non-zero as "no usable data".
-# Every next link is pinned to the API origin before a request carries a token
-# (#320).
+# endpoint, following Link: rel="next". Prints one JSON array; with <key> each
+# page is an object whose list sits under <key> (check runs, workflow runs) and
+# the result is {"total_count": N, "<key>": [...]}. <max-pages> stops there and
+# warns on stderr (#302: a truncated lookup must never look like an empty one).
+# Returns 1 with NOTHING on stdout on any failed or wrong-shaped page (#319), so
+# callers read non-zero as "no usable data". Next links are pinned to the API
+# origin before a request carries a token (#320).
 _gh_pages() {
   local _gp_path="$1" _gp_max="${2:-}" _gp_noun="${3:-items}" _gp_key="${4:-}"
   local _gp_all _gp_body _gp_next_file _gp_pages=0 _gp_url _gp_ref
@@ -4743,14 +3732,11 @@ json.dump(prev, sys.stdout)
 # _gh_comments <issue-or-pr-n> -- every comment as a JSON array.
 _gh_comments() { _gh_pages "$_GH_API/issues/$1/comments?per_page=100"; }
 
-# _gh_user_login -- REST resolver for _vcs_shared_current_user (#187): GET /user
-# and print the .login field. Non-zero when the request fails (a 403 for an
-# Actions GITHUB_TOKEN or a GitHub App token, a rate limit) or the answer has no
-# usable login: _vcs_shared_current_user reads that as "refused" (#453), which
-# the marker readers answer by trusting only markers.trusted_authors. One
-# attempt, not _gh_req: this lookup is never a hard dependency, so a failure
-# must become a state, not an exit. A 2xx answer whose `login` is missing, null,
-# empty or not a string is "refused" too, not "unavailable" (#455).
+# _gh_user_login -- resolver for _vcs_shared_current_user (#187): GET /user, print
+# .login. Non-zero when the request fails (403 for an Actions GITHUB_TOKEN or a
+# GitHub App token, a rate limit) or the login is missing, null, empty or not a
+# string: that is "refused" (#453, #455) and the marker readers then trust only
+# markers.trusted_authors. One attempt, no exit: a failure is a state.
 _gh_user_login() {
   local _ul_body
   _ul_body="$(_gh_once GET user "$_GH_JSON" "" 2>/dev/null)" || return 1
@@ -4766,1138 +3752,840 @@ print(login)
 " 2>/dev/null
 }
 
-_github_api() {
-  _gh_init
-  local _API="$_GH_API" _REPO="$REPO"
-  local _VERB="$1"; shift
 
-  # Provider calls for _vcs_shared_assign_issue (#299). _gh_try, not _gh_req:
-  # _gh_req exits the whole script on failure, and a failed assignment must
-  # never fail the verb that asked for it.
-  _ga_assignees_get() {
-    local _ag_body
-    _ag_body="$(_gh_try GET "$_API/issues/$1")" || return 1
-    printf '%s' "$_ag_body" | python3 -I -c "
+# _gh_num <verb> <kind> <value> -- exit 1 unless <value> is a plain number: it
+# becomes a URL path segment, so nothing else may reach a request.
+_gh_num() {
+  case "$3" in
+    ''|*[!0-9]*) echo "pipeline-vcs: $1: $2 number must be numeric (got '$3')" >&2; exit 1 ;;
+  esac
+}
+
+# _gh_urlenc <text> [<safe-chars>] -- percent-encode <text> for a URL path or
+# query value (default: everything but unreserved characters).
+_gh_urlenc() {
+  python3 -I -c 'import sys; from urllib.parse import quote; sys.stdout.write(quote(sys.argv[1], safe=sys.argv[2]))' "$1" "${2:-}"
+}
+
+# _gh_field <dotted.path> -- stdin: JSON. Prints that field (empty when it is
+# absent or null); non-zero when stdin is not JSON.
+_gh_field() {
+  python3 -I -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except ValueError:
+    sys.exit(1)
+for k in sys.argv[1].split("."):
+    d = d.get(k) if isinstance(d, dict) else None
+print("" if d is None else d)' "$1"
+}
+
+# _gh_body_json -- stdin: text. Prints {"body": <text>}; the body never rides on
+# argv (#455).
+_gh_body_json() {
+  python3 -I -c '
+import json, sys
+sys.stdout.write(json.dumps({"body": sys.stdin.buffer.read().decode("utf-8", errors="replace")}))'
+}
+
+# _gh_pr_num <ref> -- prints the PR number for a number or a branch name (the
+# open PR for that head, else the newest PR of any state). Non-zero when none.
+_gh_pr_num() {
+  case "$1" in
+    ''|*[!0-9]*) ;;
+    *) printf '%s' "$1"; return 0 ;;
+  esac
+  local _head="$1" _st _raw _n
+  case "$_head" in *:*) ;; *) _head="${REPO%%/*}:$_head" ;; esac
+  _head="$(_gh_urlenc "$_head" ':/')"
+  for _st in open all; do
+    _raw="$(_gh_try GET "$_GH_API/pulls?state=$_st&head=$_head&per_page=1")" || return 1
+    _n="$(printf '%s' "$_raw" | python3 -I -c '
+import json, sys
+d = json.load(sys.stdin)
+print(d[0]["number"] if isinstance(d, list) and d else "")')" || return 1
+    [ -n "$_n" ] && { printf '%s' "$_n"; return 0; }
+  done
+  return 1
+}
+
+# _gh_pull <number|branch> -- the pull request, as REST prints it. Exits 1 when
+# it cannot be read.
+_gh_pull() {
+  local _n
+  _n="$(_gh_pr_num "$1")" || { echo "pipeline-vcs: $VERB: no pull request found for '$1'" >&2; exit 1; }
+  _gh_req GET "$_GH_API/pulls/$_n"
+}
+
+# _gh_comments_obj <n> -- {"comments": [...]} for an issue or PR: every comment,
+# each with author.login and createdAt next to the REST fields. Non-zero when
+# any page fails.
+_gh_comments_obj() {
+  local _raw
+  _raw="$(_gh_comments "$1")" || return 1
+  [ -n "$_raw" ] || return 1
+  printf '%s' "$_raw" | _vcs_shared_normalize_comments
+}
+
+# _gh_marker_data <pr> -- {"headRefOid", "baseRefName", "labels", "comments"} for
+# the approval-marker readers, from two REST reads (the PR, every comment).
+# Non-zero, nothing on stdout, when either fails.
+_gh_marker_data() {
+  local _pr _cm
+  _pr="$(_gh_try GET "$_GH_API/pulls/$1")" || return 1
+  _cm="$(_gh_comments_obj "$1")" || return 1
+  [ -n "$_pr" ] || return 1
+  printf '%s\n%s' "$_cm" "$_pr" | python3 -I -c '
+import json, sys
+head, _, pr = sys.stdin.read().partition("\n")
+pr = json.loads(pr)
+json.dump({"headRefOid": (pr.get("head") or {}).get("sha", ""),
+           "baseRefName": (pr.get("base") or {}).get("ref", ""),
+           "labels": [{"name": l.get("name", "")} for l in pr.get("labels") or []],
+           "comments": json.loads(head)["comments"]}, sys.stdout)'
+}
+
+# _gh_check_table <pr> [<required names>] -- one "name TAB state TAB elapsed TAB
+# url" line per check on the PR's head commit: its check runs plus its legacy
+# commit statuses. State is pass | fail | pending | skipping | cancel. The
+# commit-status read is skipped when <required names> (newline separated) are
+# all check runs already. Non-zero when a read fails.
+_gh_check_table() {
+  local _sha _runs _stat='{"statuses":[]}' _tbl _name
+  _sha="$(_gh_try GET "$_GH_API/pulls/$1" | _gh_field head.sha)" || return 1
+  [ -n "$_sha" ] || return 1
+  _runs="$(_gh_pages "$_GH_API/commits/$_sha/check-runs?per_page=100" "" "check runs" check_runs)" || return 1
+  _tbl="$(printf '%s\n%s' "$_runs" "$_stat" | _gh_check_table_py)"
+  local _need=0
+  if [ -z "${2:-}" ]; then
+    _need=1
+  else
+    while IFS= read -r _name; do
+      [ -n "$_name" ] || continue
+      printf '%s\n' "$_tbl" | cut -f1 | grep -qxF -- "$_name" || _need=1
+    done <<<"$2"
+  fi
+  if [ "$_need" = 1 ]; then
+    _stat="$(_gh_try GET "$_GH_API/commits/$_sha/status")" || return 1
+    _tbl="$(printf '%s\n%s' "$_runs" "$_stat" | _gh_check_table_py)"
+  fi
+  printf '%s\n' "$_tbl"
+}
+_gh_check_table_py() {
+  python3 -I -c '
+import json, sys
+from datetime import datetime
+runs, _, stat = sys.stdin.read().partition("\n")
+runs = json.loads(runs).get("check_runs") or []
+try:
+    stat = json.loads(stat).get("statuses") or []
+except ValueError:
+    stat = []
+
+def secs(a, b):
+    try:
+        f = "%Y-%m-%dT%H:%M:%SZ"
+        return max(0, int((datetime.strptime(b, f) - datetime.strptime(a, f)).total_seconds()))
+    except Exception:
+        return 0
+
+def fmt(s):
+    h, rest = divmod(s, 3600)
+    m, sec = divmod(rest, 60)
+    return (str(h) + "h" if h else "") + (str(m) + "m" if h or m else "") + str(sec) + "s" if s else "0"
+
+for c in runs:
+    if not c.get("name"):
+        continue
+    if c.get("status") != "completed":
+        state = "pending"
+    else:
+        state = {"success": "pass", "skipped": "skipping", "neutral": "skipping",
+                 "cancelled": "cancel"}.get(c.get("conclusion"), "fail")
+    print("\t".join([c["name"], state, fmt(secs(c.get("started_at") or "", c.get("completed_at") or "")),
+                     c.get("html_url") or c.get("details_url") or ""]))
+for s in stat:
+    if s.get("context"):
+        state = {"success": "pass", "pending": "pending"}.get(s.get("state"), "fail")
+        print("\t".join([s["context"], state, "0", s.get("target_url") or ""]))
+'
+}
+
+# Provider calls for _vcs_shared_assign_issue (#299). _gh_try, not _gh_req:
+# _gh_req exits the whole script on failure, and a failed assignment must
+# never fail the verb that asked for it.
+_gh_assignees_get() {
+  local _ag_body
+  _ag_body="$(_gh_try GET "$_GH_API/issues/$1")" || return 1
+  printf '%s' "$_ag_body" | python3 -I -c "
 import json, sys
 for a in json.load(sys.stdin).get('assignees') or []:
     print(a.get('login', ''))
 "
-  }
-  # POST .../assignees ADDS to the list (PATCH .../issues/{n} would replace it).
-  _ga_assignee_add() {
-    local _aa_payload
-    _aa_payload="$(python3 -I -c "import json, sys; print(json.dumps({'assignees': [sys.argv[1]]}))" "$2")"
-    _gh_try POST "$_API/issues/$1/assignees" "$_aa_payload"
-  }
-  _ga_assignee_remove() {
-    local _ar_payload
-    _ar_payload="$(python3 -I -c "import json, sys; print(json.dumps({'assignees': [sys.argv[1]]}))" "$2")"
-    _ga_json_try DELETE "$_API/issues/$1/assignees" "$_ar_payload" >/dev/null
-  }
+}
+# POST .../assignees ADDS to the list (PATCH .../issues/{n} would replace it).
+_gh_assignee_add() {
+  local _aa_payload
+  _aa_payload="$(python3 -I -c "import json, sys; print(json.dumps({'assignees': [sys.argv[1]]}))" "$2")"
+  _gh_try POST "$_GH_API/issues/$1/assignees" "$_aa_payload"
+}
+# DELETE .../assignees takes one login off and keeps the others.
+_gh_assignee_remove() {
+  local _ar_payload
+  _ar_payload="$(python3 -I -c "import json, sys; print(json.dumps({'assignees': [sys.argv[1]]}))" "$2")"
+  _gh_try DELETE "$_GH_API/issues/$1/assignees" "$_ar_payload" >/dev/null
+}
 
-  # Provider calls for the needs-owner verbs (#345). _gh_try (not _gh_req) so a
-  # failure returns to the shared helper, which owns the exit code. The issues
-  # endpoints serve issues and PRs alike.
-  _ga_no_items() { _gh_pages "$_API/issues?state=open&labels=$_TALOS_NEEDS_OWNER_LABEL_URL&per_page=100"; }
-  _ga_no_post_comment() {
-    local _gnp_payload
-    _gnp_payload="$(printf '%s' "$2" | python3 -I -c '
-import json, sys
-sys.stdout.write(json.dumps({"body": sys.stdin.buffer.read().decode("utf-8", errors="replace")}, ensure_ascii=False))
-')" || return 1
-    _gh_try POST "$_API/issues/$1/comments" "$_gnp_payload" >/dev/null
-  }
-  _ga_no_label_add() {
-    _gh_try POST "$_API/issues/$1/labels" "{\"labels\":[\"$_TALOS_NEEDS_OWNER_LABEL\"]}" >/dev/null
-  }
-  _ga_no_label_remove() {
-    _gh_try DELETE "$_API/issues/$1/labels/$_TALOS_NEEDS_OWNER_LABEL_URL" >/dev/null
-  }
+# Provider calls for the needs-owner verbs (#345). _gh_try (not _gh_req) so a
+# failure returns to the shared helper, which owns the exit code. The issues
+# endpoints serve issues and PRs alike.
+_gh_no_items() { _gh_pages "$_GH_API/issues?state=open&labels=$_TALOS_NEEDS_OWNER_LABEL_URL&per_page=100"; }
+_gh_no_post_comment() {
+  local _np_payload
+  _np_payload="$(printf '%s' "$2" | _gh_body_json)" || return 1
+  _gh_try POST "$_GH_API/issues/$1/comments" "$_np_payload" >/dev/null
+}
+_gh_no_label_add() {
+  _gh_try POST "$_GH_API/issues/$1/labels" "{\"labels\":[\"$_TALOS_NEEDS_OWNER_LABEL\"]}" >/dev/null
+}
+_gh_no_label_remove() {
+  _gh_try DELETE "$_GH_API/issues/$1/labels/$_TALOS_NEEDS_OWNER_LABEL_URL" >/dev/null
+}
 
-  # Provider calls for upsert-pr-comment (#381). The body is already in a file,
-  # which reaches the transport on stdin; the shared helper owns the exit code.
-  _ga_upc_read() { _gh_comments "$1"; }
-  _ga_upc_write() { _with_retry "$_VERB" _gh_once "$1" "$_API/$2" "$_GH_JSON" "$3"; }
+# Provider calls for upsert-pr-comment (#381). The body is already in a file,
+# which reaches the transport on stdin; the shared helper owns the exit code.
+_gh_upc_read() { _gh_comments "$1"; }
+_gh_upc_write() { _with_retry "$VERB" _gh_once "$1" "$_GH_API/$2" "$_GH_JSON" "$3"; }
 
-  # ── Verb dispatch ───────────────────────────────────────────────────────────
-  case "$_VERB" in
+# _gh_label_edit <issue|pr> <n> -- label-issue / label-pr (#455). The labels
+# come from _parse_label_args' arrays: each is one JSON string or one URL path
+# segment, never re-parsed by a shell. Additions are one POST and removals one
+# DELETE each, so a concurrent label change is never overwritten; removing a
+# label the item does not carry is not an error.
+_gh_label_edit() {
+  local _le_kind="$1" _le_n="$2" _le_lbl _le_err _le_rc _le_payload
+  _gh_num "$VERB" "$_le_kind" "$_le_n"
+  if [ "$DRY_RUN" = "true" ]; then
+    echo "[dry-run] POST $_GH_API/issues/$_le_n/labels labels=${ADD_LABELS:-<none>}; DELETE $_GH_API/issues/$_le_n/labels/<label> for: ${REMOVE_LABELS:-<none>}"
+    return 0
+  fi
+  if [ "${#ADD_LABEL_ARR[@]}" -gt 0 ]; then
+    _le_payload="$(python3 -I -c 'import json, sys; print(json.dumps({"labels": sys.argv[1:]}))' "${ADD_LABEL_ARR[@]}")"
+    _gh_req POST "$_GH_API/issues/$_le_n/labels" "$_le_payload" >/dev/null || exit 1
+  fi
+  for _le_lbl in ${REMOVE_LABEL_ARR[@]+"${REMOVE_LABEL_ARR[@]}"}; do
+    _le_err="$(mktemp)"
+    _le_rc=0
+    _gh_try DELETE "$_GH_API/issues/$_le_n/labels/$(_gh_urlenc "$_le_lbl")" >/dev/null 2>"$_le_err" || _le_rc=$?
+    if [ "$_le_rc" -ne 0 ] && [ "$_GH_STATUS" != "404" ]; then
+      cat "$_le_err" >&2
+      rm -f "$_le_err"
+      exit 1
+    fi
+    rm -f "$_le_err"
+  done
+  if [ "$_le_kind" = PR ]; then
+    echo "Labels updated on PR #$_le_n"
+  else
+    echo "Labels updated on issue #$_le_n"
+  fi
+}
 
+# _gh_comment_state_gate <issue|PR> <n> -- the closed-target check before a
+# comment (comment-issue, comment-pr). Sets _GH_UNVERIFIED=true when the state
+# could not be read (the comment goes ahead, flagged); exits 1 on a closed
+# issue, or a PR closed without merging, unless --allow-closed.
+_gh_comment_state_gate() {
+  local _cs_kind="$1" _cs_n="$2" _cs_raw _cs_state _cs_merged _cs_path=issues
+  _GH_UNVERIFIED=false
+  [ "$ALLOW_CLOSED" = "true" ] && return 0
+  [ "$_cs_kind" = PR ] && _cs_path=pulls
+  if ! _cs_raw="$(_gh_try GET "$_GH_API/$_cs_path/$_cs_n" 2>/dev/null)"; then
+    echo "pipeline-vcs: warning: could not determine state of $_cs_kind #$_cs_n — proceeding" >&2
+    _GH_UNVERIFIED=true
+    return 0
+  fi
+  _cs_state="$(printf '%s' "$_cs_raw" | _gh_field state)"
+  _cs_merged="$(printf '%s' "$_cs_raw" | _gh_field merged_at)"
+  if [ "$_cs_state" = "closed" ] && [ -z "$_cs_merged" ]; then
+    if [ "$_cs_kind" = PR ]; then
+      echo "pipeline-vcs: comment-pr: PR #$_cs_n is CLOSED (not merged) — use --allow-closed to override" >&2
+    else
+      echo "pipeline-vcs: comment-issue: issue #$_cs_n is CLOSED (use --allow-closed to override)" >&2
+    fi
+    exit 1
+  fi
+}
+
+# _gh_post_comment <n> <body> -- POST the comment and print its URL; exits 1 on failure.
+_gh_post_comment() {
+  local _pc_resp
+  _pc_resp="$(_gh_req POST "$_GH_API/issues/$1/comments" "$(printf '%s' "$2" | _gh_body_json)")" || exit 1
+  printf '%s' "$_pc_resp" | _gh_field html_url
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GITHUB ADAPTER  (providers `github` and `github-api`)
+# ─────────────────────────────────────────────────────────────────────────────
+_github() {
+  _gh_init
+  local verb="$1"; shift
+  case "$verb" in
     assign-issue)
-      _vcs_shared_assign_issue "${1:-}" _ga_assignees_get _ga_assignee_add _gh_user_login
+      _vcs_shared_assign_issue "${1:-}" _gh_assignees_get _gh_assignee_add _gh_user_login
       ;;
     current-user)
       _vcs_shared_print_current_user _gh_user_login
       exit $?
       ;;
     issue-assignees)
-      _vcs_shared_issue_assignees "${1:-}" _ga_assignees_get || exit 1
+      _vcs_shared_issue_assignees "${1:-}" _gh_assignees_get || exit 1
       ;;
     unassign-issue)
-      _vcs_shared_unassign_issue "${1:-}" "${2:-}" _ga_assignees_get _ga_assignee_remove || exit 1
+      _vcs_shared_unassign_issue "${1:-}" "${2:-}" _gh_assignees_get _gh_assignee_remove || exit 1
       ;;
     list-assignees)
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: GET $_API/issues?state=open&per_page=100 (paginated; assignees per issue)"
-        return 0
-      fi
+      # One paginated request, the list-issues endpoint (#560).
       local _la_raw
-      _la_raw="$(_ga_fetch_all_pages "$_API/issues?state=open&per_page=100")" || exit 1
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/issues?state=open&per_page=100 (paginated; assignees per issue)"; return 0; }
+      _la_raw="$(_gh_pages "$_GH_API/issues?state=open&per_page=100")" || exit 1
       printf '%s' "$_la_raw" | _vcs_shared_assignee_map github || exit 1
       ;;
     upsert-pr-comment)
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: GET $_API/issues/$1/comments?per_page=100 (paginated; newest own comment ending in <!-- talos:$2 -->); then PATCH $_API/issues/comments/<id> (body on stdin), or POST $_API/issues/$1/comments when there is none; no write when the body is unchanged"
-        return 0
-      fi
-      _vcs_shared_upsert_pr_comment "${1:-}" "${2:-}" "${3:-}" _ga_upc_read _ga_upc_write _gh_user_login
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/issues/$1/comments?per_page=100 (paginated; newest own comment ending in <!-- talos:$2 -->); then PATCH $_GH_API/issues/comments/<id> (body on stdin), or POST $_GH_API/issues/$1/comments when there is none; no write when the body is unchanged"; return 0; }
+      _vcs_shared_upsert_pr_comment "${1:-}" "${2:-}" "${3:-}" _gh_upc_read _gh_upc_write _gh_user_login
       ;;
     mark-needs-owner)
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: GET $_API/issues/$1/comments (read-comments); unless the newest trusted marker comment already has this body and is unanswered: POST $_API/issues/$1/comments; POST $_API/issues/$1/labels ($_TALOS_NEEDS_OWNER_LABEL)"
-        return 0
-      fi
-      _vcs_shared_mark_needs_owner "${1:-}" "${2-}" _ga_no_post_comment _ga_no_label_add _gh_user_login
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/issues/$1/comments (read-comments); unless the newest trusted marker comment already has this body and is unanswered: POST $_GH_API/issues/$1/comments; POST $_GH_API/issues/$1/labels ($_TALOS_NEEDS_OWNER_LABEL)"; return 0; }
+      _vcs_shared_mark_needs_owner "${1:-}" "${2-}" _gh_no_post_comment _gh_no_label_add _gh_user_login
       ;;
     list-needs-owner)
       if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: GET $_API/issues?state=open&labels=$_TALOS_NEEDS_OWNER_LABEL_URL&per_page=100 (paginated); read-comments per item"
+        echo "[dry-run] GET $_GH_API/issues?state=open&labels=$_TALOS_NEEDS_OWNER_LABEL_URL&per_page=100 (paginated); read-comments per item"
         case " $* " in
-          *" --clear-answered "*) echo "[dry-run] github-api: for each answered item: DELETE $_API/issues/<n>/labels/$_TALOS_NEEDS_OWNER_LABEL_URL" ;;
+          *" --clear-answered "*) echo "[dry-run] for each answered item: DELETE $_GH_API/issues/<n>/labels/$_TALOS_NEEDS_OWNER_LABEL_URL" ;;
         esac
         return 0
       fi
-      _vcs_shared_list_needs_owner _ga_no_items _ga_no_label_remove _gh_user_login "$@"
+      _vcs_shared_list_needs_owner _gh_no_items _gh_no_label_remove _gh_user_login "$@"
       ;;
-
     list-issues)
-      # --no-body (#449): omit `body` from every item; default output unchanged.
-      local _li_nobody=0
+      # The REST issues endpoint returns pull requests too (they carry a
+      # `pull_request` key): drop them. --no-body (#449) leaves `body` out of
+      # every item, for callers that only need number/title/labels.
+      local _li_nobody=0 _li_raw
       [ "${1:-}" = "--no-body" ] && _li_nobody=1
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: GET $_API/issues?state=open&per_page=100 (paginated via Link headers until exhausted)"
-        return 0
-      fi
-      local _raw
-      _raw="$(_gh_pages "$_API/issues?state=open&per_page=100")" || exit 1
-      printf '%s' "$_raw" | NO_BODY="$_li_nobody" python3 -I -c "
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/issues?state=open&per_page=100 (paginated via Link headers until exhausted)"; return 0; }
+      _li_raw="$(_gh_pages "$_GH_API/issues?state=open&per_page=100")" || exit 1
+      printf '%s' "$_li_raw" | NO_BODY="$_li_nobody" python3 -I -c "
 import json, os, sys
-data = json.load(sys.stdin)
-result = [{'number': i['number'], 'title': i.get('title',''),
-           'body': i.get('body','') or '',
-           'labels': [{'name': l['name']} for l in i.get('labels',[])]}
-          for i in data]
+items = json.load(sys.stdin)
+out = [{'number': i.get('number'), 'title': i.get('title', ''),
+        'labels': [{'name': l.get('name')} for l in (i.get('labels') or [])],
+        'body': i.get('body') or ''}
+       for i in items if 'pull_request' not in i]
 if os.environ.get('NO_BODY') == '1':
-    for i in result:
+    for i in out:
         del i['body']
-print(json.dumps(result, indent=2))
+print(json.dumps(out))
 "
       ;;
-
     view-issue)
-      local _n="$1"; shift
-      local _vi_spec=false
+      local _vi_n="${1:-}" _vi_spec=false _vi_issue _vi_comments _vi_meta
+      shift
       while [ $# -gt 0 ]; do
         case "$1" in
           --spec) _vi_spec=true ;;
         esac
         shift
       done
-      if [ "$_vi_spec" = "true" ]; then
-        if [ "$DRY_RUN" = "true" ]; then
-          echo "[dry-run] github-api: GET $_API/issues/$_n; read-comments $_n (filter to latest **PM spec:** comment, dropping talos: markers and **Agent:** verdicts)"
-          return 0
+      _gh_num "$verb" issue "$_vi_n"
+      if [ "$DRY_RUN" = "true" ]; then
+        if [ "$_vi_spec" = "true" ]; then
+          echo "[dry-run] GET $_GH_API/issues/$_vi_n; read-comments $_vi_n (filter to latest **PM spec:** comment, dropping talos: markers and **Agent:** verdicts)"
+        else
+          echo "[dry-run] GET $_GH_API/issues/$_vi_n; GET $_GH_API/issues/$_vi_n/comments (paginated)"
         fi
-        local _issue _comments _meta
-        _issue="$(_gh_req GET "$_API/issues/$_n")"
-        _comments="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" read-comments "$_n" ${REPO:+--repo "$REPO"})" || exit 1
-        _meta="$(printf '%s' "$_issue" | python3 -I -c "
+        return 0
+      fi
+      _vi_issue="$(_gh_req GET "$_GH_API/issues/$_vi_n")" || exit 1
+      if [ "$_vi_spec" = "true" ]; then
+        _vi_comments="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" read-comments "$_vi_n" ${REPO:+--repo "$REPO"})" || exit 1
+        _vi_meta="$(printf '%s' "$_vi_issue" | python3 -I -c "
 import json, sys
-data = json.load(sys.stdin)
-print(json.dumps({'title': data.get('title',''), 'body': data.get('body') or '',
-                   'labels': [{'name': l['name']} for l in data.get('labels',[])]}))
+d = json.load(sys.stdin)
+print(json.dumps({'title': d.get('title', ''), 'body': d.get('body') or '',
+                  'labels': [{'name': l['name']} for l in d.get('labels', [])]}))
 ")"
-        _vi_spec_filter "$_meta" "$_comments"
+        _vi_spec_filter "$_vi_meta" "$_vi_comments"
         return
       fi
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: GET $_API/issues/$_n"
-        return 0
-      fi
-      local _issue _comments
-      _issue="$(_gh_req GET "$_API/issues/$_n")"
-      _comments="$(_gh_req GET "$_API/issues/$_n/comments?per_page=100")"
-      printf '%s' "$_issue" | COMMENTS="$_comments" python3 -I -c "
-import json, re, sys, os
-data = json.load(sys.stdin)
-try:
-    comments = json.loads(os.environ.get('COMMENTS','[]'))
-except Exception:
-    comments = []
-result = {
-    'title': data.get('title',''),
-    'body': data.get('body','') or '',
-    'labels': [{'name': l['name']} for l in data.get('labels',[])],
-    'comments': [{'body': c.get('body','')} for c in comments]
-}
-print(json.dumps(result, indent=2))
+      _vi_comments="$(_gh_comments_obj "$_vi_n")" || exit 1
+      printf '%s\n%s' "$_vi_comments" "$_vi_issue" | python3 -I -c "
+import json, sys
+head, _, issue = sys.stdin.read().partition('\n')
+d = json.loads(issue)
+print(json.dumps({
+    'title': d.get('title', ''),
+    'body': d.get('body') or '',
+    'labels': [{'name': l['name']} for l in d.get('labels', [])],
+    'comments': [dict(c, url=c.get('html_url', '')) for c in json.loads(head)['comments']]}))
 "
       ;;
-
     comment-issue)
-      local _n="$1" _body="$2"
+      local n="$1" body="$2"
+      _gh_num "$verb" issue "$n"
       if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: GET $_API/issues/$_n (state check); POST $_API/issues/$_n/comments"
-        return 0
-      fi
-      local _gaci_state_unverified=false
-      if [ "$ALLOW_CLOSED" != "true" ]; then
-        local _gaci_state_raw _gaci_state
-        if _gaci_state_raw="$(_gh_req GET "$_API/issues/$_n" 2>/dev/null)"; then
-          _gaci_state="$(printf '%s' "$_gaci_state_raw" | python3 -I -c "
-import json, sys
-d = json.load(sys.stdin)
-print(d.get('state', ''))
-" 2>/dev/null)"
-          if [ "$_gaci_state" = "closed" ]; then
-            echo "pipeline-vcs: comment-issue: issue #$_n is closed (use --allow-closed to override)" >&2
-            exit 1
-          fi
+        if [ "$ALLOW_CLOSED" = "true" ]; then
+          echo "[dry-run] POST $_GH_API/issues/$n/comments body=$body (--allow-closed; URL on stdout)"
         else
-          echo "pipeline-vcs: warning: could not determine state of issue #$_n — proceeding" >&2
-          _gaci_state_unverified=true
+          echo "[dry-run] GET $_GH_API/issues/$n (state check); POST $_GH_API/issues/$n/comments body=$body (URL on stdout)"
         fi
+        return 0
       fi
-      local _payload
-      _payload="$(python3 -I -c "import json,sys; print(json.dumps({'body':sys.argv[1]}))" "$_body")"
-      local _gaci_resp
-      _gaci_resp="$(_gh_req POST "$_API/issues/$_n/comments" "$_payload")" || exit 1
-      printf '%s' "$_gaci_resp" | python3 -I -c "
-import json, sys
-d = json.load(sys.stdin)
-print(d.get('html_url', ''))
-"
-      if [ "$_gaci_state_unverified" = "true" ]; then
-        echo "talos:comment-state-unverified target=issue#$_n reason=state-check-failed"
+      _gh_comment_state_gate issue "$n"
+      _gh_post_comment "$n" "$body"
+      if [ "$_GH_UNVERIFIED" = "true" ]; then
+        echo "talos:comment-state-unverified target=issue#$n reason=state-check-failed"
       fi
       ;;
-
     close-issue)
-      local _n="$1" _body="${2:-resolved}"
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: POST $_API/issues/$_n/comments, then PATCH state=closed"
-        return 0
-      fi
-      local _cpayload _spayload
-      _cpayload="$(python3 -I -c "import json,sys; print(json.dumps({'body':sys.argv[1]}))" "$_body")"
-      _gh_req POST "$_API/issues/$_n/comments" "$_cpayload" >/dev/null
-      _spayload='{"state":"closed"}'
-      _gh_req PATCH "$_API/issues/$_n" "$_spayload" >/dev/null
-      echo "Closed issue #$_n"
+      local n="$1" body="${2:-resolved}"
+      _gh_num "$verb" issue "$n"
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] POST $_GH_API/issues/$n/comments body=$body; PATCH $_GH_API/issues/$n state=closed"; return 0; }
+      _gh_post_comment "$n" "$body" >/dev/null
+      _gh_req PATCH "$_GH_API/issues/$n" '{"state":"closed"}' >/dev/null || exit 1
+      echo "Closed issue #$n"
       ;;
-
     label-issue)
-      local _n="$1"; shift
+      local n="$1"; shift
       _parse_label_args "$@"
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: GET $_API/issues/$_n/labels, PUT updated list"
-        return 0
-      fi
-      local _cur_labels
-      _cur_labels="$(_gh_req GET "$_API/issues/$_n/labels")" || exit 1
-      local _new_payload
-      _new_payload="$(printf '%s' "$_cur_labels" | \
-        ADD_LABELS="$ADD_LABELS" REMOVE_LABELS="$REMOVE_LABELS" python3 -I -c "
-import json, sys, os
-labels = [l['name'] for l in json.load(sys.stdin)]
-add = os.environ.get('ADD_LABELS','').split()
-rem = os.environ.get('REMOVE_LABELS','').split()
-for l in add:
-    if l not in labels:
-        labels.append(l)
-labels = [l for l in labels if l not in rem]
-print(json.dumps({'labels': labels}))
-")"
-      _gh_req PUT "$_API/issues/$_n/labels" "$_new_payload" >/dev/null
-      echo "Labels updated on issue #$_n"
+      _gh_label_edit issue "$n"
       ;;
-
     check-epic-acceptance)
-      # check-epic-acceptance <epic-n> — see header comment. Fetches the
-      # epic's body and delegates to the shared checklist scan.
-      local _n="$1"
-      [ -z "$_n" ] && { echo "pipeline-vcs: check-epic-acceptance: missing issue number" >&2; exit 1; }
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: GET $_API/issues/$_n | scan for unticked '- [ ]' checklist lines"
-        return 0
-      fi
-      local _cea_issue _cea_body
-      _cea_issue="$(_gh_req GET "$_API/issues/$_n")" || exit 1
-      _cea_body="$(printf '%s' "$_cea_issue" | python3 -I -c "
-import json, sys
-d = json.load(sys.stdin)
-print(d.get('body','') or '')
-")"
-      printf '%s' "$_cea_body" | _epic_acceptance_scan
+      # Fetches the epic's body and delegates to the shared checklist scan.
+      local n="${1:-}" _cea_issue
+      [ -z "$n" ] && { echo "pipeline-vcs: check-epic-acceptance: missing issue number" >&2; exit 1; }
+      _gh_num "$verb" issue "$n"
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/issues/$n | scan for unticked '- [ ]' checklist lines"; return 0; }
+      _cea_issue="$(_gh_req GET "$_GH_API/issues/$n")" || exit 1
+      printf '%s' "$_cea_issue" | _gh_field body | _epic_acceptance_scan
       ;;
-
     create-issue)
-      local _ci_title="$1" _ci_body_file="$2"; shift 2
-      local _ci_labels=()
+      local title="$1" body_file="$2"; shift 2
+      local label_args=() _ci_resp _ci_payload
       while [ $# -gt 0 ]; do
         case "$1" in
-          --label) [ $# -ge 2 ] || _vcs_flag_needs_value --label "create-issue <title> <body-file> [--label <label>]..."; _ci_labels+=("$2"); shift 2 ;;
+          --label) [ $# -ge 2 ] || _vcs_flag_needs_value --label "create-issue <title> <body-file> [--label <label>]..."; label_args+=("$2"); shift 2 ;;
           *) shift ;;
         esac
       done
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: POST $_API/issues (title=$_ci_title)"
-        return 0
-      fi
-      local _ci_body_content
-      _ci_body_content="$(cat "$_ci_body_file")"
-      local _ci_labels_json
-      if [ ${#_ci_labels[@]} -gt 0 ]; then
-        _ci_labels_json="$(python3 -I -c "import json,sys; print(json.dumps(sys.argv[1:]))" "${_ci_labels[@]}")"
-      else
-        _ci_labels_json="[]"
-      fi
-      local _ci_payload
-      _ci_payload="$(CI_TITLE="$_ci_title" CI_BODY="$_ci_body_content" CI_LABELS="$_ci_labels_json" python3 -I -c "
-import json, os
-print(json.dumps({
-    'title':  os.environ['CI_TITLE'],
-    'body':   os.environ['CI_BODY'],
-    'labels': json.loads(os.environ['CI_LABELS']),
-}))
-")"
-      local _ci_resp
-      _ci_resp="$(_gh_req POST "$_API/issues" "$_ci_payload")" || exit 1
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] POST $_GH_API/issues title=$title labels=${label_args[*]:-<none>}"; return 0; }
+      [ -r "$body_file" ] || { echo "pipeline-vcs: create-issue: cannot read '$body_file'" >&2; exit 1; }
+      _ci_payload="$(python3 -I -c 'import json, sys; print(json.dumps({"title": sys.argv[1], "body": sys.stdin.read(), "labels": sys.argv[2:]}))' \
+        "$title" ${label_args[@]+"${label_args[@]}"} < "$body_file")"
+      _ci_resp="$(_gh_req POST "$_GH_API/issues" "$_ci_payload")" || exit 1
       printf '%s' "$_ci_resp" | python3 -I -c "
 import json, sys
 d = json.load(sys.stdin)
-url = d.get('html_url', d.get('url', ''))
-n = d.get('number', '')
-if url:
-    print(url)
-else:
-    print(n)
+print(d.get('html_url') or d.get('url') or d.get('number', ''))
 "
       # Assign the new issue (#299) -- stdout stays the URL alone.
-      _vcs_shared_assign_issue "$(printf '%s' "$_ci_resp" \
-          | python3 -I -c "import json, sys; print(json.load(sys.stdin).get('number', ''))" 2>/dev/null)" \
-        _ga_assignees_get _ga_assignee_add _gh_user_login >&2
+      _vcs_shared_assign_issue "$(printf '%s' "$_ci_resp" | _gh_field number 2>/dev/null)" \
+        _gh_assignees_get _gh_assignee_add _gh_user_login >&2
       ;;
-
-    # (#332) Draft support is gh/glab/az only; exit 2, no HTTP call. pr-is-draft
-    # and pr-ci-runs get their own arms so the verb-parity test sees them.
+    create-pr)
+      local branch="$1" title="$2" body_file="$3" _cp_draft=false _cp_payload
+      [ "$_PR_DRAFT" = "true" ] && _cp_draft=true
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] POST $_GH_API/pulls head=$branch base=${BASE_BRANCH:-<default branch>} title=$title draft=$_cp_draft"; return 0; }
+      [ -r "$body_file" ] || { echo "pipeline-vcs: create-pr: cannot read '$body_file'" >&2; exit 1; }
+      if [ -z "$BASE_BRANCH" ]; then
+        BASE_BRANCH="$(_gh_req GET "$_GH_API" | _gh_field default_branch)"
+        [ -n "$BASE_BRANCH" ] || { echo "pipeline-vcs: create-pr: could not resolve the default branch" >&2; exit 1; }
+      fi
+      _cp_payload="$(python3 -I -c 'import json, sys
+print(json.dumps({"title": sys.argv[1], "head": sys.argv[2], "base": sys.argv[3],
+                  "draft": sys.argv[4] == "true", "body": sys.stdin.read()}))' \
+        "$title" "$branch" "$BASE_BRANCH" "$_cp_draft" < "$body_file")"
+      _gh_req POST "$_GH_API/pulls" "$_cp_payload" | _gh_field html_url
+      ;;
     ready-pr|draft-pr)
-      _vcs_draft_unsupported "$_VERB" github-api
+      # (#332) GraphQL is the one thing REST cannot do here: a PR's draft state
+      # is only writable through a mutation on its node id.
+      local _rd_n="${1:-}" _rd_mut=markPullRequestReadyForReview _rd_msg="is ready for review" _rd_node _rd_resp _rd_q
+      _vcs_require_pr_id "$verb" "$_rd_n"
+      [ "$verb" = "draft-pr" ] && { _rd_mut=convertPullRequestToDraft; _rd_msg="is a draft again"; }
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/pulls/$_rd_n (node id); POST graphql $_rd_mut"; return 0; }
+      _rd_node="$(_gh_req GET "$_GH_API/pulls/$_rd_n" | _gh_field node_id)"
+      [ -n "$_rd_node" ] || { echo "pipeline-vcs: $verb: could not read PR #$_rd_n" >&2; exit 1; }
+      _rd_q="mutation(\$id: ID!) { $_rd_mut(input: {pullRequestId: \$id}) { pullRequest { isDraft } } }"
+      _rd_resp="$(_gh_req POST graphql "$(python3 -I -c '
+import json, sys
+print(json.dumps({"query": sys.argv[1], "variables": {"id": sys.argv[2]}}))' "$_rd_q" "$_rd_node")")" || exit 1
+      printf '%s' "$_rd_resp" | python3 -I -c '
+import json, sys
+d = json.load(sys.stdin)
+sys.exit(1 if d.get("errors") or not d.get("data") else 0)' \
+        || { echo "pipeline-vcs: $verb: GitHub refused the change for PR #$_rd_n" >&2; exit 1; }
+      echo "PR #$_rd_n $_rd_msg"
       ;;
     pr-is-draft)
-      _vcs_draft_unsupported pr-is-draft github-api
+      # (#332) Fail closed: see _vcs_shared_pr_is_draft.
+      _github_fetch_draft() { _gh_try GET "$_GH_API/pulls/$1"; }
+      _vcs_shared_pr_is_draft "${1:-}" draft "GET $_GH_API/pulls/${1:-} (.draft)" _github_fetch_draft
       ;;
     pr-ci-runs)
-      _vcs_draft_unsupported pr-ci-runs github-api
-      ;;
-
-    create-pr)
-      local _branch="$1" _title="$2" _body_file="$3"
-      # (#332) Never silently open a non-draft PR when a draft was asked for.
-      [ "$_PR_DRAFT" = "true" ] && _vcs_draft_unsupported "create-pr --draft" github-api
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: POST $_API/pulls (head=$_branch)"
-        return 0
+      # (#332) Number of `pull_request` workflow runs that executed for THIS PR:
+      # the listed runs for its head branch whose pull_requests[] names this PR
+      # (a reused branch name must not inflate it), minus `skipped` ones (a push
+      # to a draft PR creates a run whose jobs the `draft != true` guard skips).
+      # One paginated listing, so the count is one snapshot. Fail closed (exit
+      # 2, never a short count) on a run with no pull_requests[] (a fork's), a
+      # listing shorter than its total_count, or GitHub's 1000-result search cap.
+      local _cr_n="${1:-}" _cr_head _cr_listing
+      if ! _vcs_pr_id_numeric "$_cr_n"; then
+        echo "pipeline-vcs: pr-ci-runs: PR id must be numeric (got '$_cr_n') -- unverified" >&2
+        exit 2
       fi
-      [ -z "$BASE_BRANCH" ] && BASE_BRANCH="main"
-      local _body_content
-      _body_content="$(cat "$_body_file")"
-      local _pr_payload
-      _pr_payload="$(BASE="$BASE_BRANCH" HEAD="$_branch" TITLE="$_title" \
-        BODY="$_body_content" python3 -I -c "
-import json, os
-print(json.dumps({
-    'title': os.environ['TITLE'],
-    'head':  os.environ['HEAD'],
-    'base':  os.environ['BASE'],
-    'body':  os.environ['BODY'],
-}))
-")"
-      local _pr_resp
-      _pr_resp="$(_gh_req POST "$_API/pulls" "$_pr_payload")" || exit 1
-      printf '%s' "$_pr_resp" | python3 -I -c "
-import json, sys
-d = json.load(sys.stdin)
-print(d.get('html_url', d.get('url', '')))
-"
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/pulls/$_cr_n (head branch); GET $_GH_API/actions/runs?event=pull_request&branch=<head>&per_page=100 (paginated)"; return 0; }
+      _cr_head="$(_gh_try GET "$_GH_API/pulls/$_cr_n")" || {
+        echo "pipeline-vcs: pr-ci-runs: could not fetch PR #$_cr_n -- unverified" >&2
+        exit 2
+      }
+      _cr_head="$(printf '%s' "$_cr_head" | _gh_field head.ref)"
+      [ -n "$_cr_head" ] || {
+        echo "pipeline-vcs: pr-ci-runs: PR #$_cr_n has no head branch -- unverified" >&2
+        exit 2
+      }
+      _cr_listing="$(_gh_pages "$_GH_API/actions/runs?event=pull_request&branch=$(_gh_urlenc "$_cr_head")&per_page=100" "" "workflow runs" workflow_runs)" || {
+        echo "pipeline-vcs: pr-ci-runs: could not list workflow runs for PR #$_cr_n -- unverified" >&2
+        exit 2
+      }
+      printf '%s' "$_cr_listing" | PR_N="$_cr_n" python3 -I -c '
+import json, os, sys
+n = int(os.environ["PR_N"])
+page = json.load(sys.stdin)
+total = page.get("total_count")
+if type(total) is not int or total < 0 or total >= 1000:
+    sys.exit(2)
+runs = page["workflow_runs"]
+if len(runs) != total:
+    sys.exit(2)
+count = 0
+for run in runs:
+    if not isinstance(run, dict):
+        sys.exit(2)
+    prs = run.get("pull_requests")
+    if not isinstance(prs, list) or not prs:
+        sys.exit(2)
+    nums = []
+    for p in prs:
+        num = p.get("number") if isinstance(p, dict) else None
+        if type(num) is not int:
+            sys.exit(2)
+        nums.append(num)
+    if n in nums and run.get("conclusion") != "skipped":
+        count += 1
+print(count)
+' || {
+        echo "pipeline-vcs: pr-ci-runs: workflow runs for PR #$_cr_n are malformed, truncated, cannot be attributed to a PR, or are at GitHub's 1000-result cap -- unverified" >&2
+        exit 2
+      }
       ;;
-
     view-pr)
-      local _n="$1"
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: GET $_API/pulls/$_n"
-        return 0
-      fi
-      local _pr
-      _pr="$(_gh_req GET "$_API/pulls/$_n")"
-      printf '%s' "$_pr" | python3 -I -c "
+      local _vp_ref="${1:-}" _vp_pr
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/pulls/$_vp_ref"; return 0; }
+      _vp_pr="$(_gh_pull "$_vp_ref")" || exit 1
+      printf '%s' "$_vp_pr" | python3 -I -c "
 import json, sys
 d = json.load(sys.stdin)
-result = {
-    'number': d.get('number'),
-    'title':  d.get('title',''),
-    'headRefName': d.get('head',{}).get('ref',''),
-    'labels': [{'name': l['name']} for l in d.get('labels',[])],
-    'url':    d.get('html_url',''),
-}
-print(json.dumps(result, indent=2))
+print(json.dumps({'number': d.get('number'), 'title': d.get('title', ''),
+                  'headRefName': (d.get('head') or {}).get('ref', ''),
+                  'labels': [{'name': l['name']} for l in d.get('labels', [])],
+                  'url': d.get('html_url', ''), 'body': d.get('body') or ''}))
 "
       ;;
-
     list-prs)
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: GET $_API/pulls?state=open&per_page=100 (paginated via Link headers until exhausted)"
-        return 0
-      fi
-      local _raw
-      _raw="$(_gh_pages "$_API/pulls?state=open&per_page=100")" || exit 1
-      printf '%s' "$_raw" | python3 -I -c "
+      # Lane scoping: only PRs targeting THIS config's base_branch, with baseRefName
+      # so callers can verify. A repo-wide list let one lane adopt and merge another
+      # lane's in-flight PR into the wrong base.
+      local _lp_endpoint="$_GH_API/pulls?state=open&per_page=100" _lp_raw
+      [ -n "$BASE_BRANCH" ] && _lp_endpoint="${_lp_endpoint}&base=${BASE_BRANCH}"
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_lp_endpoint (paginated via Link headers until exhausted)"; return 0; }
+      _lp_raw="$(_gh_pages "$_lp_endpoint")" || exit 1
+      printf '%s' "$_lp_raw" | python3 -I -c "
 import json, sys
-data = json.load(sys.stdin)
+items = json.load(sys.stdin)
 def cross(i):
     # A fork PR (#346): head and base repos differ; a deleted fork has no head repo.
     h = ((i.get('head') or {}).get('repo') or {}).get('full_name')
     return h is None or h != ((i.get('base') or {}).get('repo') or {}).get('full_name')
-result = [{'number': i['number'], 'title': i.get('title',''),
-           'headRefName': i.get('head',{}).get('ref',''),
-           'labels': [{'name': l['name']} for l in i.get('labels',[])],
-           'baseRefName': (i.get('base') or {}).get('ref', ''),
-           'isCrossRepository': cross(i)}
-          for i in data]
-print(json.dumps(result, indent=2))
+print(json.dumps([{'number': i.get('number'), 'title': i.get('title', ''),
+                   'headRefName': (i.get('head') or {}).get('ref', ''),
+                   'baseRefName': (i.get('base') or {}).get('ref', ''),
+                   'labels': [{'name': l.get('name')} for l in (i.get('labels') or [])],
+                   'isCrossRepository': cross(i)}
+                  for i in items]))
 "
       ;;
-
     diff-pr)
-      local _n="$1"; shift
-      local _dp_stat=false
+      local _dp_n="${1:-}" _dp_stat=false _dp_raw
+      shift
       while [ $# -gt 0 ]; do
         case "$1" in
           --stat) _dp_stat=true ;;
         esac
         shift
       done
+      _gh_num "$verb" PR "$_dp_n"
+      if [ "$DRY_RUN" = "true" ]; then
+        if [ "$_dp_stat" = "true" ]; then
+          echo "[dry-run] GET $_GH_API/pulls/$_dp_n/files?per_page=100 (paginated) | git-diff-stat-style summary"
+        else
+          echo "[dry-run] GET $_GH_API/pulls/$_dp_n (Accept: $_GH_DIFF)"
+        fi
+        return 0
+      fi
       if [ "$_dp_stat" = "true" ]; then
         # Derived from the same paginated pr-files (#200) endpoint -- no new
         # fetch pattern, just additions/deletions instead of just paths.
-        if [ "$DRY_RUN" = "true" ]; then
-          echo "[dry-run] github-api: GET $_API/pulls/$_n/files (paginated via Link headers) | git-diff-stat-style summary"
-          return 0
-        fi
-        local _dp_raw
-        _dp_raw="$(_gh_pages "$_API/pulls/$_n/files?per_page=100")" || exit 1
+        _dp_raw="$(_gh_pages "$_GH_API/pulls/$_dp_n/files?per_page=100")" || exit 1
         printf '%s' "$_dp_raw" | _diff_stat_format
         return
       fi
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: GET $_API/pulls/$_n (Accept: vnd.github.v3.diff)"
-        return 0
-      fi
-      _gh_diff "$_API/pulls/$_n"
+      _gh_diff "$_GH_API/pulls/$_dp_n"
       ;;
-
     checkout-pr)
-      local _n="$1"
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: GET head.ref for PR #$_n, then git fetch + checkout"
-        return 0
+      # A git operation, so gh's own helper wins when it is the transport (it
+      # wires up fork remotes and upstream tracking); with a token only, fetch
+      # GitHub's pull ref into a branch of the PR's head name.
+      local _co_n="${1:-}" _co_branch
+      _gh_num "$verb" PR "$_co_n"
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] gh pr checkout $_co_n (token only: GET $_GH_API/pulls/$_co_n; git fetch origin refs/pull/$_co_n/head:<head ref>; git checkout <head ref>)"; return 0; }
+      if [ "$_GH_XPORT" = gh ]; then
+        gh pr checkout "$_co_n" ${REPO:+--repo "$REPO"}
+        return
       fi
-      local _pr_data _branch
-      _pr_data="$(_gh_req GET "$_API/pulls/$_n")"
-      _branch="$(printf '%s' "$_pr_data" | python3 -I -c "
-import json, sys
-print(json.load(sys.stdin).get('head',{}).get('ref',''))
-")"
-      [ -z "$_branch" ] && { echo "github-api: could not resolve head ref for PR #$_n" >&2; exit 1; }
-      git fetch origin "refs/pull/$_n/head:$_branch"
-      git checkout "$_branch"
+      _co_branch="$(_gh_req GET "$_GH_API/pulls/$_co_n" | _gh_field head.ref)"
+      [ -n "$_co_branch" ] || { echo "pipeline-vcs: checkout-pr: could not resolve head ref for PR #$_co_n" >&2; exit 1; }
+      git fetch origin "refs/pull/$_co_n/head:$_co_branch" && git checkout "$_co_branch"
       ;;
-
     approve-pr)
-      local _n="$1" _rbody="${2:-approved}"
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: POST $_API/pulls/$_n/reviews (APPROVE)"
-        return 0
-      fi
-      local _rev_payload
-      _rev_payload="$(python3 -I -c "import json,sys; print(json.dumps({'body':sys.argv[1],'event':'APPROVE'}))" "$_rbody")"
-      _gh_req POST "$_API/pulls/$_n/reviews" "$_rev_payload" >/dev/null
-      echo "Approved PR #$_n"
-      ;;
-
-    label-pr)
-      # PRs share label API with issues on GitHub
-      local _n="$1"; shift
-      _parse_label_args "$@"
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: GET $_API/issues/$_n/labels, PUT updated list (PR)"
-        return 0
-      fi
-      local _cur_labels
-      _cur_labels="$(_gh_req GET "$_API/issues/$_n/labels")" || exit 1
-      local _new_payload
-      _new_payload="$(printf '%s' "$_cur_labels" | \
-        ADD_LABELS="$ADD_LABELS" REMOVE_LABELS="$REMOVE_LABELS" python3 -I -c "
-import json, sys, os
-labels = [l['name'] for l in json.load(sys.stdin)]
-add = os.environ.get('ADD_LABELS','').split()
-rem = os.environ.get('REMOVE_LABELS','').split()
-for l in add:
-    if l not in labels:
-        labels.append(l)
-labels = [l for l in labels if l not in rem]
-print(json.dumps({'labels': labels}))
-")"
-      _gh_req PUT "$_API/issues/$_n/labels" "$_new_payload" >/dev/null
-      echo "Labels updated on PR #$_n"
-      ;;
-
-    pr-checks)
-      local _n="$1"
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: GET $_API/commits/<sha>/check-runs for PR #$_n"
-        return 0
-      fi
-      local _pr_data _sha
-      _pr_data="$(_gh_req GET "$_API/pulls/$_n")"
-      _sha="$(printf '%s' "$_pr_data" | python3 -I -c "
+      local n="${1:-}" _ap_body="${2:-approved}"
+      _gh_num "$verb" PR "$n"
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] POST $_GH_API/pulls/$n/reviews event=APPROVE body=$_ap_body"; return 0; }
+      _gh_req POST "$_GH_API/pulls/$n/reviews" "$(printf '%s' "$_ap_body" | python3 -I -c '
 import json, sys
-print(json.load(sys.stdin).get('head',{}).get('sha',''))
-")"
-      [ -z "$_sha" ] && { echo "github-api: could not resolve head SHA for PR #$_n" >&2; exit 1; }
-      _gh_req GET "$_API/commits/$_sha/check-runs"
+print(json.dumps({"body": sys.stdin.read(), "event": "APPROVE"}))')" >/dev/null || exit 1
+      echo "Approved PR #$n"
       ;;
-
+    label-pr)
+      local n="$1"; shift
+      _parse_label_args "$@"
+      _gh_label_edit PR "$n"
+      ;;
+    pr-checks)
+      # The table `gh pr checks` printed: name, state, elapsed, link. Exit 1 when
+      # any check failed, 8 while any is pending, else 0.
+      local _pk_n="${1:-}" _pk_tbl
+      _gh_num "$verb" PR "$_pk_n"
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/pulls/$_pk_n; GET $_GH_API/commits/<sha>/check-runs; GET $_GH_API/commits/<sha>/status"; return 0; }
+      _pk_tbl="$(_gh_check_table "$_pk_n")" || exit 1
+      [ -n "$_pk_tbl" ] && printf '%s\n' "$_pk_tbl"
+      printf '%s\n' "$_pk_tbl" | cut -f2 | grep -qxE 'fail|cancel' && return 1
+      printf '%s\n' "$_pk_tbl" | cut -f2 | grep -qxE 'pending' && return 8
+      return 0
+      ;;
     pr-checks-required)
-      # (#205 review follow-up) Scoped to merge.required_checks only -- see
-      # the matching comment on _github's pr-checks-required for why.
-      local _n="$1" _required
+      # Scoped to merge.required_checks (#205): an unrelated optional check stuck
+      # pending must not burn the wait, and a required check GitHub has not
+      # scheduled yet is pending, never an absent "pass". A read that fails reads
+      # as "nothing reported": exit 2, never a pass.
+      local _n="${1:-}" _required _tbl
+      _gh_num "$verb" PR "$_n"
       _required="$(cfg merge.required_checks)"
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: GET $_API/pulls/$_n, GET $_API/commits/<sha>/check-runs for PR #$_n; evaluate against merge.required_checks"
-        return 0
-      fi
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/pulls/$_n; GET $_GH_API/commits/<sha>/check-runs; evaluate against merge.required_checks"; return 0; }
       # Empty config never passes vacuously and needs no CI data to say so.
       [ -z "$_required" ] && { printf '' | _eval_required_checks "$_required"; return; }
-      local _pr_data _sha
-      _pr_data="$(_gh_req GET "$_API/pulls/$_n")"
-      _sha="$(printf '%s' "$_pr_data" | python3 -I -c "
-import json, sys
-print(json.load(sys.stdin).get('head',{}).get('sha',''))
-")"
-      [ -z "$_sha" ] && { echo "github-api: could not resolve head SHA for PR #$_n" >&2; exit 1; }
-      local _cr_data _norm
-      _cr_data="$(_gh_req GET "$_API/commits/$_sha/check-runs")"
-      _norm="$(printf '%s' "$_cr_data" | python3 -I -c "
-import json, sys
-data = json.load(sys.stdin)
-for c in data.get('check_runs', []):
-    name = c.get('name', '')
-    if not name:
-        continue
-    if c.get('status') != 'completed':
-        status = 'pending'
-    elif c.get('conclusion') == 'success':
-        status = 'pass'
-    elif c.get('conclusion') in ('skipped', 'neutral'):
-        status = 'pending'
-    else:
-        status = 'fail'
-    print(name + '\t' + status)
-")"
-      printf '%s\n' "$_norm" | _eval_required_checks "$_required"
+      _tbl="$(_gh_check_table "$_n" "$_required")" || _tbl=""
+      printf '%s\n' "$_tbl" | awk -F'\t' 'NF >= 2 { s = ($2 == "pass") ? "pass" : (($2 == "pending" || $2 == "skipping") ? "pending" : "fail"); print $1 "\t" s }' \
+        | _eval_required_checks "$_required"
       ;;
-
     merge-pr)
-      local _n="$1"
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: PUT $_API/pulls/$_n/merge (method=$MERGE_METHOD)"
-        return 0
-      fi
-      local _mm
-      case "$MERGE_METHOD" in
-        squash) _mm="squash" ;; rebase) _mm="rebase" ;; *) _mm="merge" ;;
-      esac
-      local _merge_payload
-      _merge_payload="$(python3 -I -c "import json,sys; print(json.dumps({'merge_method':sys.argv[1],'delete_branch':True}))" "$_mm")"
-      _gh_req PUT "$_API/pulls/$_n/merge" "$_merge_payload" >/dev/null
-      echo "Merged PR #$_n"
-      ;;
-
-    update-branch)
-      # update-branch <n> (#289) — REST twin of the gh adapter's verb: server-
-      # side base update via `PUT /repos/{owner}/{repo}/pulls/{n}/update-branch`
-      # with expected_head_sha. Exit 0 on success, exit 1 on HTTP 409 (head
-      # moved or server-side conflicts) — caller re-checks pr-mergeable.
-      local _ub_n="$1"
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: PUT $_API/pulls/$_ub_n/update-branch"
-        return 0
-      fi
-      local _ub_sha_json _ub_sha
-      _ub_sha_json="$(_gh_req GET "$_API/pulls/$_ub_n" 2>/dev/null)" || exit 1
-      _ub_sha="$(printf '%s' "$_ub_sha_json" | python3 -I -c "
+      local n="${1:-}" _mm=merge _mp_pr _mp_ref _mp_same
+      _gh_num "$verb" PR "$n"
+      case "$MERGE_METHOD" in squash) _mm=squash ;; rebase) _mm=rebase ;; esac
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/pulls/$n; PUT $_GH_API/pulls/$n/merge merge_method=$_mm; DELETE the head branch ref"; return 0; }
+      _mp_pr="$(_gh_req GET "$_GH_API/pulls/$n")" || exit 1
+      _gh_req PUT "$_GH_API/pulls/$n/merge" "{\"merge_method\": \"$_mm\"}" >/dev/null || exit 1
+      # --delete-branch: the merge endpoint does not delete it. A fork's branch is not ours to delete.
+      _mp_ref="$(printf '%s' "$_mp_pr" | _gh_field head.ref)"
+      _mp_same="$(printf '%s' "$_mp_pr" | python3 -I -c "
 import json, sys
-try: print(json.load(sys.stdin).get('head', {}).get('sha', ''))
-except Exception: print('')
-" 2>/dev/null)"
-      [ -z "$_ub_sha" ] && { echo "pipeline-vcs: update-branch: could not resolve head SHA for PR #$_ub_n" >&2; exit 1; }
-      _gh_req PUT "$_API/pulls/$_ub_n/update-branch" "{\"expected_head_sha\":\"$_ub_sha\"}" >/dev/null
-      echo "update-branch: PR #$_ub_n branch updated with its base"
+d = json.load(sys.stdin)
+print('yes' if ((d.get('head') or {}).get('repo') or {}).get('full_name') == ((d.get('base') or {}).get('repo') or {}).get('full_name') else 'no')")"
+      if [ -n "$_mp_ref" ] && [ "$_mp_same" = yes ]; then
+        _gh_try DELETE "$_GH_API/git/refs/heads/$(_gh_urlenc "$_mp_ref" /)" >/dev/null \
+          || echo "pipeline-vcs: merge-pr: PR #$n merged, but its branch '$_mp_ref' could not be deleted" >&2
+      fi
+      echo "Merged PR #$n"
       ;;
-
     comment-pr)
-      # PRs share the issues comment API on GitHub
-      local _n="$1" _body="$2"
+      # PRs are issues for commenting purposes on GitHub
+      local n="$1" body="$2"
+      _gh_num "$verb" PR "$n"
       if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: GET $_API/pulls/$_n (state check); POST $_API/issues/$_n/comments (PR comment)"
-        return 0
-      fi
-      local _gacp_state_unverified=false
-      if [ "$ALLOW_CLOSED" != "true" ]; then
-        local _gacp_state_raw _gacp_state _gacp_merged_at
-        if _gacp_state_raw="$(_gh_req GET "$_API/pulls/$_n" 2>/dev/null)"; then
-          _gacp_state="$(printf '%s' "$_gacp_state_raw" | python3 -I -c "
-import json, sys
-d = json.load(sys.stdin)
-print(d.get('state', ''))
-" 2>/dev/null)"
-          _gacp_merged_at="$(printf '%s' "$_gacp_state_raw" | python3 -I -c "
-import json, sys
-d = json.load(sys.stdin)
-print(d.get('merged_at') or '')
-" 2>/dev/null)"
-          if [ "$_gacp_state" = "closed" ] && [ -z "$_gacp_merged_at" ]; then
-            echo "pipeline-vcs: comment-pr: PR #$_n is closed (not merged) — use --allow-closed to override" >&2
-            exit 1
-          fi
+        if [ "$ALLOW_CLOSED" = "true" ]; then
+          echo "[dry-run] POST $_GH_API/issues/$n/comments body=$body (--allow-closed; URL on stdout)"
         else
-          echo "pipeline-vcs: warning: could not determine state of PR #$_n — proceeding" >&2
-          _gacp_state_unverified=true
+          echo "[dry-run] GET $_GH_API/pulls/$n (state check); POST $_GH_API/issues/$n/comments body=$body (URL on stdout)"
         fi
+        return 0
       fi
-      local _payload
-      _payload="$(python3 -I -c "import json,sys; print(json.dumps({'body':sys.argv[1]}))" "$_body")"
-      local _gacp_resp
-      _gacp_resp="$(_gh_req POST "$_API/issues/$_n/comments" "$_payload")" || exit 1
-      printf '%s' "$_gacp_resp" | python3 -I -c "
-import json, sys
-d = json.load(sys.stdin)
-print(d.get('html_url', ''))
-"
-      if [ "$_gacp_state_unverified" = "true" ]; then
-        echo "talos:comment-state-unverified target=pr#$_n reason=state-check-failed"
+      _gh_comment_state_gate PR "$n"
+      _gh_post_comment "$n" "$body"
+      if [ "$_GH_UNVERIFIED" = "true" ]; then
+        echo "talos:comment-state-unverified target=pr#$n reason=state-check-failed"
       fi
       ;;
-
     edit-pr-body)
-      # Replace the PR's description (#455): PATCH pulls/<n>. ARGS is `<n> <body>`
-      # (the pre-dispatch block validated flags, caps and placeholders). The body
-      # reaches python on stdin and curl on stdin (_gh_req stages the payload in
-      # a file), never as an argument.
-      local _n="$1" _epb_payload
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: PATCH $_API/pulls/$_n (body on stdin)"
-        return 0
-      fi
-      _epb_payload="$(printf '%s' "$2" | python3 -I -c '
-import json, sys
-sys.stdout.write(json.dumps({"body": sys.stdin.buffer.read().decode("utf-8", errors="replace")}))
-')" || { echo "pipeline-vcs: edit-pr-body: could not build the request body; nothing changed" >&2; exit 1; }
-      _gh_req PATCH "$_API/pulls/$_n" "$_epb_payload" >/dev/null
-      echo "edited pr=$_n body"
+      # Replace the PR's description (#455). ARGS is `<n> <body>` here: the
+      # pre-dispatch block validated the flags, the caps and the placeholders.
+      local n="${1:-}" _eb_payload
+      _gh_num "$verb" PR "$n"
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] PATCH $_GH_API/pulls/$n (body on stdin)"; return 0; }
+      _eb_payload="$(printf '%s' "$2" | _gh_body_json)" \
+        || { echo "pipeline-vcs: edit-pr-body: could not build the request body; nothing changed" >&2; exit 1; }
+      _gh_req PATCH "$_GH_API/pulls/$n" "$_eb_payload" >/dev/null || exit 1
+      echo "edited pr=$n body"
       ;;
-
     find-pr)
-      # Issue-reference matching is _vcs_shared_find_pr (#177 slice 4). REST's
-      # list-PRs endpoint has no state=merged query value and no MERGED
-      # distinction in the raw `state` field (unlike gh's own `--json
-      # state`), so this arm still owns its state mapping/merged_at filter --
-      # it hands the shared function an already state-filtered, common
-      # {number, state, title, headRefName, body} shape. See the shared
-      # function's header comment for why that split holds.
-      # The list is paginated (#302): state=closed also returns unmerged PRs,
-      # so the PR closing an older issue can sit past the first 100. Pages
-      # are capped at _fp_max_pages; hitting it warns on stderr.
-      local _n="$1" _state="${2:-open}" _fp_max_pages=10
-      # GitHub REST only accepts state=open|closed|all.
-      # "merged" PRs are closed with merged_at set; "all" covers both open and closed.
-      local _api_state
-      case "$_state" in
-        merged) _api_state="closed" ;;
-        open)   _api_state="open" ;;
-        all)    _api_state="all" ;;
-        *)      _api_state="$_state" ;;
+      # Issue-reference matching is _vcs_shared_find_pr. REST has no state=merged,
+      # so this arm maps the state and hands over a {number, state, title,
+      # headRefName, body} list. state=closed also returns unmerged PRs, so the
+      # list is paginated (#302), up to _fp_max_pages with a warning at the cap.
+      local n="$1" state="${2:-open}" _fp_max_pages=10 _fp_state _fp_raw
+      case "$state" in
+        merged) _fp_state=closed ;;   # merged PRs are closed with merged_at set
+        *)      _fp_state="$state" ;;
       esac
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: GET $_API/pulls?state=$_api_state&per_page=100 (paginated via Link headers, up to $_fp_max_pages pages) | filter issue-$_n / #$_n"
-        return 0
-      fi
-      local _raw
-      _raw="$(_gh_pages "$_API/pulls?state=$_api_state&per_page=100" "$_fp_max_pages" PRs)" || exit 1
-      printf '%s' "$_raw" | STATE_FILTER="$_state" python3 -I -c "
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/pulls?state=$_fp_state&per_page=100 (paginated via Link headers, up to $_fp_max_pages pages) | filter issue-$n / #$n"; return 0; }
+      _fp_raw="$(_gh_pages "$_GH_API/pulls?state=$_fp_state&per_page=100" "$_fp_max_pages" PRs)" || exit 1
+      printf '%s' "$_fp_raw" | STATE_FILTER="$state" python3 -I -c "
 import json, sys, os
-state_filter = os.environ.get('STATE_FILTER','open')
+state_filter = os.environ.get('STATE_FILTER', 'open')
 try: prs = json.load(sys.stdin)
 except Exception: prs = []
 out = []
 for pr in prs:
-    # For merged filter: only PRs with merged_at set
     if state_filter == 'merged' and not pr.get('merged_at'):
         continue
-    # Normalise state to gh-compatible values: OPEN, CLOSED, MERGED
-    raw_state = pr.get('state','').upper()
     if pr.get('merged_at'):
         out_state = 'MERGED'
-    elif raw_state == 'OPEN':
+    elif (pr.get('state') or '').upper() == 'OPEN':
         out_state = 'OPEN'
     else:
         out_state = 'CLOSED'
     out.append({'number': pr.get('number'), 'state': out_state,
-                'title': pr.get('title',''),
-                'headRefName': pr.get('head',{}).get('ref',''),
-                'body': pr.get('body','') or ''})
+                'title': pr.get('title', ''),
+                'headRefName': (pr.get('head') or {}).get('ref', ''),
+                'body': pr.get('body') or ''})
 json.dump(out, sys.stdout)
-" | _vcs_shared_find_pr "$_n" "$_state" "$_REPO"
+" | _vcs_shared_find_pr "$n" "$state" "$REPO"
       ;;
-
-    check-pr-files)
-      # Forbidden-files pattern/allow-list logic is _vcs_shared_check_pr_files
-      # (#177 slice 3). This arm is now just fetch -> call. The fetch mirrors
-      # pr-files below (_gh_pages, #171 pattern) rather than the old
-      # single-page `_gh_req GET .../files?per_page=100`, so a >100-file PR is
-      # no longer silently truncated (#211-class bug); a failed fetch exits 1
-      # with no stdout, which is the fail-closed behaviour the shared
-      # function's stdin contract relies on.
-      local _n="$1"
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: GET $_API/pulls/$_n/files | match against forbidden patterns"
-        return 0
+    check-pr-files|pr-files)
+      # Every page (#171, #211): a >100-file PR is never silently truncated, and
+      # a failed page exits non-zero with no partial output -- the fail-closed
+      # behaviour the forbidden-files gate's stdin contract relies on.
+      # check-pr-files hands the paths to _vcs_shared_check_pr_files (#177
+      # slice 3); pr-files prints them.
+      local n="${1:-}" _pf_raw
+      _gh_num "$verb" PR "$n"
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/pulls/$n/files?per_page=100 (paginated via Link headers until exhausted) | print .filename, one per line"; return 0; }
+      _pf_raw="$(_gh_pages "$_GH_API/pulls/$n/files?per_page=100")" || exit 1
+      if [ "$verb" = "pr-files" ]; then
+        printf '%s' "$_pf_raw" | _gh_paths
+      else
+        printf '%s' "$_pf_raw" | _gh_paths \
+          | CONFIGURED="$(cfg merge.forbidden_files)" REPLACE="$(cfg merge.forbidden_files_replace)" ALLOW="$(cfg merge.forbidden_files_allow)" _vcs_shared_check_pr_files
       fi
-      local _cpf_raw
-      _cpf_raw="$(_gh_pages "$_API/pulls/$_n/files?per_page=100")" || exit 1
-      printf '%s' "$_cpf_raw" | python3 -I -c "
-import json, sys
-try:
-    files = json.load(sys.stdin)
-except Exception:
-    files = []
-for f in files:
-    path = f.get('filename', '')
-    if path:
-        print(path)
-" | CONFIGURED="$(cfg merge.forbidden_files)" REPLACE="$(cfg merge.forbidden_files_replace)" ALLOW="$(cfg merge.forbidden_files_allow)" _vcs_shared_check_pr_files
       ;;
-
-    pr-files)
-      # #211 review fix: a single `_gh_req GET .../files?per_page=100` (used
-      # until PR #211) never followed the Link: rel="next" header, unlike
-      # every other list endpoint in this file -- a >100-file PR silently
-      # returned only the first 100 paths, which could feed a truncated list
-      # into the Step 3e Phase 1 auto-docs gate (SKILL.md). Switch to
-      # `_gh_pages` (#171 pattern, same as list-issues above) so
-      # every changed path is returned regardless of PR size, and a failed
-      # page exits non-zero with no partial output.
-      local _n="$1"
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: GET $_API/pulls/$_n/files (paginated via Link headers until exhausted) | print .filename, one per line"
-        return 0
-      fi
-      local _pf_raw
-      _pf_raw="$(_gh_pages "$_API/pulls/$_n/files?per_page=100")" || exit 1
-      printf '%s' "$_pf_raw" | python3 -I -c "
-import json, sys
-try:
-    files = json.load(sys.stdin)
-except Exception:
-    files = []
-for f in files:
-    path = f.get('filename', '')
-    if path:
-        print(path)
-"
-      ;;
-
     rerun-ci)
-      local _n="$1"
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: GET PR head SHA, list runs, POST rerun-failed-jobs for failed runs"
+      local n="${1:-}" _rr_sha _rr_runs _rr_ids _rr_id
+      _gh_num "$verb" PR "$n"
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/pulls/$n (head SHA); GET $_GH_API/actions/runs?head_sha=<sha>; POST $_GH_API/actions/runs/<id>/rerun-failed-jobs for each failed run"; return 0; }
+      _rr_sha="$(_gh_req GET "$_GH_API/pulls/$n" | _gh_field head.sha)"
+      [ -n "$_rr_sha" ] || { echo "pipeline-vcs: could not resolve head SHA for PR #$n" >&2; exit 1; }
+      _rr_runs="$(_gh_pages "$_GH_API/actions/runs?head_sha=$_rr_sha&per_page=100" "" "workflow runs" workflow_runs)" || exit 1
+      _rr_ids="$(printf '%s' "$_rr_runs" | python3 -I -c "
+import json, sys
+for r in json.load(sys.stdin)['workflow_runs']:
+    if r.get('conclusion') in ('failure', 'timed_out', 'cancelled'):
+        print(r['id'])")"
+      if [ -z "$_rr_ids" ]; then
+        echo "rerun-ci: no failed runs found for PR #$n ($_rr_sha)"
         return 0
       fi
-      local _pr_data _sha
-      _pr_data="$(_gh_req GET "$_API/pulls/$_n")"
-      _sha="$(printf '%s' "$_pr_data" | python3 -I -c "
-import json, sys
-print(json.load(sys.stdin).get('head',{}).get('sha',''))
-")"
-      [ -z "$_sha" ] && { echo "github-api: could not resolve head SHA for PR #$_n" >&2; exit 1; }
-      local _runs_raw
-      _runs_raw="$(_gh_req GET "$_API/actions/runs?head_sha=$_sha")"
-      local _failed_ids
-      _failed_ids="$(printf '%s' "$_runs_raw" | python3 -I -c "
-import json, sys
-try:
-    d = json.load(sys.stdin)
-    runs = d.get('workflow_runs', d) if isinstance(d, dict) else d
-    for r in runs:
-        if r.get('conclusion') in ('failure','timed_out','cancelled'):
-            print(r['id'])
-except Exception:
-    pass
-")"
-      if [ -z "$_failed_ids" ]; then
-        echo "rerun-ci: no failed runs found for PR #$_n ($_sha)"
-        return 0
-      fi
-      while IFS= read -r _run_id; do
-        [ -n "$_run_id" ] && \
-          _gh_req POST "$_API/actions/runs/$_run_id/rerun-failed-jobs" '{}' >/dev/null
-      done <<< "$_failed_ids"
-      echo "rerun-ci: re-ran failed runs for PR #$_n ($_sha)"
+      while IFS= read -r _rr_id; do
+        [ -n "$_rr_id" ] && { _gh_req POST "$_GH_API/actions/runs/$_rr_id/rerun-failed-jobs" '{}' >/dev/null || exit 1; }
+      done <<< "$_rr_ids"
+      echo "rerun-ci: re-ran failed runs for PR #$n ($_rr_sha)"
       ;;
-
-    # ── Parity verbs (matching _github capability) ────────────────────────────
-
-    pr-head)
-      # pr-head <n> — print the current head SHA for a PR (fail-closed: exits 1 if unresolvable)
-      local _n="$1"
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: GET $_API/pulls/$_n .head.sha"
-        return 0
-      fi
-      local _pr_data
-      _pr_data="$(_gh_req GET "$_API/pulls/$_n")"
-      if [ -z "$_pr_data" ]; then
-        echo "pipeline-vcs: pr-head: could not resolve head SHA for PR #$_n" >&2; exit 1
-      fi
-      local _sha
-      _sha="$(printf '%s' "$_pr_data" | python3 -I -c "import json,sys; d=json.load(sys.stdin); print(d.get('head',{}).get('sha',''))")"
-      [ -z "$_sha" ] && { echo "pipeline-vcs: pr-head: could not resolve head SHA for PR #$_n" >&2; exit 1; }
-      printf '%s\n' "$_sha"
-      ;;
-
-    pr-mergeable)
-      # pr-mergeable <n> (#214) — GitHub REST returns `mergeable` as
-      # true/false/null (null = not yet computed). The retry/backoff loop and
-      # the exit-code contract are _vcs_shared_pr_mergeable (#177 slice 4);
-      # this arm only fetches and translates REST's true/false/null. Mirrors
-      # pr-head's fetch above but re-fetches per attempt since mergeable is
-      # computed lazily and can change between polls.
-      local _n="$1"
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: GET $_API/pulls/$_n .mergeable"
-        return 0
-      fi
-      _github_api_fetch_mergeable() {
-        local _pm_data _pm_v
-        _pm_data="$(_gh_req GET "$_API/pulls/$_n")"
-        _pm_v="$(printf '%s' "$_pm_data" | python3 -I -c "
-import json, sys
-try:
-    d = json.load(sys.stdin)
-except Exception:
-    d = {}
-v = d.get('mergeable', None)
-print('true' if v is True else 'false' if v is False else 'null')
-")"
-        case "$_pm_v" in
-          true)  echo MERGEABLE ;;
-          false) echo CONFLICTING ;;
-          *)     echo UNKNOWN ;;
-        esac
+    update-branch)
+      # update-branch <n> (#289): merge the base into the PR's head SERVER-SIDE
+      # (PUT pulls/{n}/update-branch with expected_head_sha). Exit 0 on success,
+      # 1 on a head-moved conflict (409) or any other failure; the caller
+      # re-checks pr-mergeable and falls back to a developer merge-base task.
+      local _ub_n="${1:-}" _ub_sha
+      _gh_num "$verb" PR "$_ub_n"
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/pulls/$_ub_n (head SHA); PUT $_GH_API/pulls/$_ub_n/update-branch expected_head_sha=<sha>"; return 0; }
+      _ub_sha="$(_gh_try GET "$_GH_API/pulls/$_ub_n" 2>/dev/null | _gh_field head.sha)"
+      [ -n "$_ub_sha" ] || { echo "pipeline-vcs: update-branch: could not resolve head SHA for PR #$_ub_n" >&2; exit 1; }
+      _gh_try PUT "$_GH_API/pulls/$_ub_n/update-branch" "{\"expected_head_sha\":\"$_ub_sha\"}" >/dev/null 2>&1 || {
+        echo "pipeline-vcs: update-branch: GitHub refused the branch update for PR #$_ub_n (head moved, or conflicts unresolved server-side)" >&2
+        exit 1
       }
-      _vcs_shared_pr_mergeable _github_api_fetch_mergeable
-      exit $?
-      ;;
-
-    read-comments)
-      # read-comments <issue-or-pr-n>
-      # Print every comment on an issue/PR as {"comments": [...]}, fully
-      # paginated via _gh_comments (the same shared reader
-      # check-approval-sha already uses for PR comments). Shared reader used
-      # by both post-approval's duplicate-marker check and (via subprocess,
-      # on the _github side) read-attempt (#172). No change to this
-      # provider's own read-attempt, which already normalises inline via
-      # _gh_comments.
-      # Fail-closed: prints nothing to stdout and exits 1 on any page failure.
-      local _n="${1:-}"
-      [ -z "$_n" ] && { echo "pipeline-vcs: read-comments: missing issue/PR number" >&2; exit 1; }
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: GET $_API/issues/$_n/comments (read-comments, paginated)"
-        return 0
-      fi
-      local _rc_raw
-      _rc_raw="$(_gh_comments "$_n")"
-      if [ $? -ne 0 ] || [ -z "$_rc_raw" ]; then
-        echo "pipeline-vcs: read-comments: could not fetch issue #$_n data" >&2
-        exit 1
-      fi
-      printf '%s' "$_rc_raw" | _vcs_shared_normalize_comments
-      ;;
-
-    read-attempt)
-      # read-attempt <n>
-      # Print "stage=<s> count=<k> total=<t>" from the most-recent attempt
-      # marker on the issue. Prints "stage= count=0 total=0" when no marker
-      # exists. Exits 0 always (read-only query).
-      local _n="${1:-}"
-      [ -z "$_n" ] && { echo "pipeline-vcs: read-attempt: missing issue number" >&2; exit 1; }
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: GET $_API/issues/$_n/comments (read-attempt)"
-        return 0
-      fi
-      local _raw_comments
-      # Paginate: follow Link: rel="next" headers so markers beyond comment #100
-      # are never missed (fix for #126 -- single per_page=100 fetch fails open).
-      _raw_comments="$(_gh_comments "$_n")"
-      if [ $? -ne 0 ] || [ -z "$_raw_comments" ]; then
-        echo "pipeline-vcs: read-attempt: could not fetch issue #$_n data" >&2
-        exit 1
-      fi
-      # Normalize REST response (array with user.login) to gh-compatible shape
-      # (object with comments array where author.login replaces user.login).
-      # Guard: (c.get('user') or {}) handles "user": null (deleted account).
-      local _normalized
-      _normalized="$(printf '%s' "$_raw_comments" | python3 -I -c "
-import json, sys
-raw = json.load(sys.stdin)
-if not isinstance(raw, list):
-    raw = []
-comments = [dict(c, author={'login': (c.get('user') or {}).get('login', '')}) for c in raw]
-json.dump({'comments': comments}, sys.stdout)
-")"
-      local _trusted_authors _verify_authors
-      _trusted_authors="$(cfg markers.trusted_authors)"
-      _verify_authors="$(cfg markers.verify_authors)"
-      _vcs_shared_reader_identity "$_verify_authors" _gh_user_login
-      printf '%s' "$_normalized" | TRUSTED_AUTHORS="$_trusted_authors" VERIFY_AUTHORS="$_verify_authors" CURRENT_USER="$_RID_USER" CURRENT_USER_REFUSED="$_RID_REFUSED" TALOS_CFG="$_TALOS_CFG" _vcs_shared_read_attempt
-      ;;
-
-    check-attempt)
-      # check-attempt <n>
-      # Exit 1 when either ceiling is already reached. Read-only.
-      local _n="${1:-}"
-      [ -z "$_n" ] && { echo "pipeline-vcs: check-attempt: missing issue number" >&2; exit 1; }
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] check-attempt $_n: compare current attempt state against configured ceilings"
-        return 0
-      fi
-      local _max_stage _max_total
-      _max_stage="$(cfg limits.max_fix_attempts)"
-      _max_total="$(cfg limits.max_total_dispatches)"
-      local _state
-      _state="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" read-attempt "$_n" ${REPO:+--repo "$REPO"} 2>&1)"
-      local _rc=$?
-      if [ $_rc -ne 0 ]; then
-        echo "pipeline-vcs: check-attempt: read-attempt failed: $_state" >&2
-        exit 1
-      fi
-      printf '%s\n' "$_state" | grep '^talos:' || true
-      _state="$(printf '%s\n' "$_state" | grep '^stage=')"
-      local _cur_stage _cur_count _cur_total
-      _cur_stage="$(printf '%s' "$_state" | sed 's/stage=\([^ ]*\).*/\1/')"
-      _cur_count="$(printf '%s' "$_state" | sed 's/.*count=\([0-9]*\).*/\1/')"
-      _cur_total="$(printf '%s' "$_state" | sed 's/.*total=\([0-9]*\).*/\1/')"
-      if ! _vcs_shared_attempt_blocked "check-attempt" "$_cur_count" "$_cur_total" "$_max_stage" "$_max_total" "$_cur_stage"; then
-        exit 1
-      fi
-      echo "pipeline-vcs: check-attempt: ok (stage=$_cur_stage count=$_cur_count total=$_cur_total; max_stage=$_max_stage max_total=$_max_total)"
-      exit 0
-      ;;
-
-    record-attempt)
-      # record-attempt <n> <stage> [--idempotency-key <token>]
-      # See _vcs_shared_record_attempt for the full rationale -- identical
-      # behaviour on both adapters.
-      local _n="${1:-}" _stage="${2:-}"
-      [ -z "$_n" ]     && { echo "pipeline-vcs: record-attempt: missing issue number" >&2; exit 1; }
-      [ -z "$_stage" ] && { echo "pipeline-vcs: record-attempt: missing stage argument" >&2; exit 1; }
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] record-attempt $_n $_stage: read prior state, post <!-- talos:attempt stage=$_stage ... --> marker"
-        return 0
-      fi
-      # Adapter-specific write: POST the marker comment via the REST API,
-      # print the created comment's html_url (may legitimately be empty even
-      # on success), and exit non-zero only when the write itself failed.
-      _github_api_post_attempt_marker() {
-        local _json_body
-        _json_body="$(python3 -I -c "import json,sys; print(json.dumps({'body': sys.argv[1]}))" "$2")"
-        local _resp
-        _resp="$(_gh_req POST "$_API/issues/$1/comments" "$_json_body")"
-        if [ -z "$_resp" ]; then
-          return 1
-        fi
-        printf '%s' "$_resp" | python3 -I -c "import json,sys; d=json.load(sys.stdin); print(d.get('html_url',''))" 2>/dev/null
-        return 0
-      }
-      shift 2 2>/dev/null || shift "$#"
-      _vcs_shared_record_attempt "$_n" "$_stage" _github_api_post_attempt_marker "$@"
-      ;;
-
-    check-approval-sha)
-      # check-approval-sha <n> [--stale-list]
-      # Verify every approval label on the PR was earned against the current head SHA.
-      # --stale-list: additionally print one greppable stdout line per stale
-      # role ("stale role=<role> label=<label>"). Without the flag, unchanged.
-      #
-      # Marker extraction is _vcs_shared_check_approval_marker (#177 slice 1);
-      # the SHA-vs-head comparison and waiver-path logic is
-      # _vcs_shared_check_approval_sha (#177 slice 2). This arm is now just
-      # fetch (REST) -> normalise to the gh-compatible shape -> call.
-      local _n="$1"; shift
-      local _stale_list_flag="false"
-      if [ "${1:-}" = "--stale-list" ]; then
-        _stale_list_flag="true"
-      fi
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: check-approval-sha $_n: verify all approval labels match current head SHA"
-        return 0
-      fi
-      local _pr_raw _comments_raw
-      _pr_raw="$(_gh_req GET "$_API/pulls/$_n")"
-      if [ -z "$_pr_raw" ]; then
-        echo "pipeline-vcs: check-approval-sha: could not fetch PR #$_n data" >&2; exit 1
-      fi
-      # Paginate comments: follow Link: rel="next" so approvals beyond #100 are
-      # found (fix for #126 -- single per_page=100 fetch fails closed here but
-      # forces unnecessary re-stamp; paginating avoids the stale false-positive).
-      _comments_raw="$(_gh_comments "$_n")"
-      if [ $? -ne 0 ] || [ -z "$_comments_raw" ]; then
-        echo "pipeline-vcs: check-approval-sha: could not fetch PR #$_n data" >&2; exit 1
-      fi
-      # Assemble gh-compatible JSON: headRefOid, baseRefName, labels, comments
-      #
-      # _pr_raw and _comments_raw are concatenated on stdin and parsed with
-      # json.JSONDecoder().raw_decode instead of split('\n', 1): the live
-      # REST API returns pretty-printed, multi-line JSON (lines[0] would be
-      # just '{'), while tests/stubs/curl returns compact single-line JSON --
-      # raw_decode is format-agnostic and handles both (#244).
-      local _pr_data
-      _pr_data="$(printf '%s\n%s' "$_pr_raw" "$_comments_raw" | python3 -I -c "
-import json, sys
-
-data = sys.stdin.read()
-decoder = json.JSONDecoder()
-
-def decode_next(s, i):
-    while i < len(s) and s[i].isspace():
-        i += 1
-    return decoder.raw_decode(s, i)
-
-pr = {}
-craw = []
-if data.strip():
-    pr, idx = decode_next(data, 0)
-    try:
-        craw, _ = decode_next(data, idx)
-    except (json.JSONDecodeError, ValueError):
-        craw = []
-if not isinstance(craw, list):
-    craw = []
-comments = [dict(c, author={'login': (c.get('user') or {}).get('login', '')}) for c in craw]
-labels = [{'name': lb.get('name', '')} for lb in pr.get('labels', [])]
-out = {
-    'headRefOid':  pr.get('head', {}).get('sha', ''),
-    'baseRefName': pr.get('base', {}).get('ref', ''),
-    'labels':      labels,
-    'comments':    comments,
-}
-json.dump(out, sys.stdout)
-")"
-      local _trusted_authors_cas _verify_authors_cas
-      _trusted_authors_cas="$(cfg markers.trusted_authors)"
-      _verify_authors_cas="$(cfg markers.verify_authors)"
-      _vcs_shared_reader_identity "$_verify_authors_cas" _gh_user_login
-      local _marker_out _marker_rc _marker_json
-      _marker_out="$(printf '%s' "$_pr_data" | TRUSTED_AUTHORS="$_trusted_authors_cas" VERIFY_AUTHORS="$_verify_authors_cas" CURRENT_USER="$_RID_USER" CURRENT_USER_REFUSED="$_RID_REFUSED" TALOS_CFG="$_TALOS_CFG" _vcs_shared_check_approval_marker)"
-      _marker_rc=$?
-      if [ "$_marker_rc" -eq 1 ]; then
-        exit 1
-      fi
-      if [ "$_marker_rc" -eq 3 ]; then
-        # No approval labels present: _marker_out IS the diagnostic message.
-        printf '%s\n' "$_marker_out"
-        exit 0
-      fi
-      # _marker_rc == 0: _marker_out is zero or more machine-readable
-      # `talos:...` passthrough lines followed by exactly one JSON payload
-      # line -- relay the former to our own stdout (same convention
-      # read-attempt/check-attempt use) and keep the latter for the waiver
-      # comparison below.
-      printf '%s\n' "$_marker_out" | grep '^talos:' || true
-      _marker_json="$(printf '%s\n' "$_marker_out" | grep -v '^talos:')"
-      local _waiver_paths _repo_root
-      _waiver_paths="$(cfg merge.approval_waiver_paths)"
-      _repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
-      printf '%s' "$_pr_data" \
-        | WAIVER_PATHS="$_waiver_paths" REPO_ROOT="${_repo_root:-}" MARKER_ENTRIES="$_marker_json" STALE_LIST="$_stale_list_flag" _vcs_shared_check_approval_sha
-      exit $?
+      echo "update-branch: PR #$_ub_n branch updated with its base"
       ;;
     check-closing-keyword)
-      # check-closing-keyword <pr_ref> <issue_n>
-      # Fail-open. Exit 1 only when a closing keyword is present AND open
-      # sibling PRs still reference the same issue.
-      #
-      # The closing-keyword regex, the sibling scan and the diagnostic
-      # message are _vcs_shared_check_closing_keyword (#177 slice 4). This
-      # arm is now just fetch -> call.
-      local _pr_ref="${1:-}" _issue_n="${2:-}"
-      [ -z "$_pr_ref" ]  && { echo "pipeline-vcs: check-closing-keyword: missing PR ref"     >&2; exit 1; }
-      [ -z "$_issue_n" ] && { echo "pipeline-vcs: check-closing-keyword: missing issue number" >&2; exit 1; }
-      if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] github-api: check-closing-keyword $_pr_ref $_issue_n: fetch PR body, look for closing keyword, then fetch open PRs"
+      # check-closing-keyword <pr_branch_or_number> <issue_N>: exit 1 only when the
+      # PR body closes <issue_N> AND other PRs for it are still open (the final
+      # PR of a multi-PR issue finds its siblings merged and passes). FAIL-OPEN:
+      # an unreadable PR or sibling list prints a machine-readable marker (a fixed
+      # literal, never API text) and exits 0. The regex, sibling scan and message
+      # are _vcs_shared_check_closing_keyword; this arm is fetch -> call.
+      local pr_ref="${1:-}" issue_n="${2:-}" _cc_num _cc_raw _cc_body
+      [ -z "$pr_ref" ]  && { echo "pipeline-vcs: check-closing-keyword: missing PR ref"     >&2; exit 1; }
+      [ -z "$issue_n" ] && { echo "pipeline-vcs: check-closing-keyword: missing issue number" >&2; exit 1; }
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] check-closing-keyword $pr_ref $issue_n: GET $_GH_API/pulls/$pr_ref (body, closing keyword), then GET $_GH_API/pulls?state=open&per_page=100 (siblings)"; return 0; }
+      # Repo-scope guard: with $REPO unresolved the URL/owner#N forms cannot be
+      # scoped to this repository -- fail open with a fixed-literal marker.
+      if [ -z "$REPO" ]; then
+        echo "talos:closing-keyword-unverified pr=$pr_ref issue=$issue_n reason=repo-unresolved"
         return 0
       fi
-      # Repo-scope guard
-      if [ -z "$_REPO" ]; then
-        echo "talos:closing-keyword-unverified pr=$_pr_ref issue=$_issue_n reason=repo-unresolved"
-        return 0
-      fi
-      # Resolve PR number if not numeric
-      local _pr_num
-      if grep -qE '^[0-9]+$' <<<"$_pr_ref"; then
-        _pr_num="$_pr_ref"
+      if _cc_num="$(_gh_pr_num "$pr_ref" 2>/dev/null)" \
+          && _cc_raw="$(_gh_try GET "$_GH_API/pulls/$_cc_num" 2>/dev/null)" && [ -n "$_cc_raw" ]; then
+        :
       else
-        local _found_pr
-        _found_pr="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" find-pr "$_pr_ref" open ${REPO:+--repo "$REPO"} 2>/dev/null)"
-        _pr_num="$(printf '%s' "$_found_pr" | python3 -I -c "import json,sys; d=json.load(sys.stdin); print(d.get('number',''))" 2>/dev/null)"
-        if [ -z "$_pr_num" ]; then
-          echo "pipeline-vcs: check-closing-keyword: could not fetch PR '$_pr_ref' -- skipping check" >&2
-          echo "talos:closing-keyword-unverified pr=$_pr_ref issue=$_issue_n reason=pr-fetch-failed"
-          return 0
-        fi
-      fi
-      local _pr_raw
-      _pr_raw="$(_gh_req GET "$_API/pulls/$_pr_num")"
-      if [ -z "$_pr_raw" ]; then
-        echo "pipeline-vcs: check-closing-keyword: could not fetch PR '$_pr_ref' -- skipping check" >&2
-        echo "talos:closing-keyword-unverified pr=$_pr_ref issue=$_issue_n reason=pr-fetch-failed"
+        echo "pipeline-vcs: check-closing-keyword: could not fetch PR '$pr_ref' — skipping check" >&2
+        echo "talos:closing-keyword-unverified pr=$pr_ref issue=$issue_n reason=pr-fetch-failed"
         return 0
       fi
-      local _pr_body
-      _pr_body="$(printf '%s' "$_pr_raw" | python3 -I -c "import json,sys; d=json.load(sys.stdin); print(d.get('body',''))")"
+      _cc_body="$(printf '%s' "$_cc_raw" | _gh_field body)"
 
       # Lazily fetches and normalises the open-PR list -- only invoked by the
-      # shared function when a closing keyword is actually present. REST has
-      # no headRefName field natively, so it's derived from head.ref here.
-      # Every page up to _max (#319): a sibling past the first 100 still
-      # counts. A list that fills all _max pages is capped only if one probe
-      # past the cap finds more PRs.
-      _github_api_fetch_closing_siblings() {
+      # shared function when a closing keyword is actually present. Every page
+      # up to _max (#319): a sibling past the first 100 still counts. A list
+      # that fills all _max pages is capped only if one probe past the cap finds
+      # more PRs.
+      _github_fetch_closing_siblings() {
         local _open_prs_raw _probe _max=100 _capped=0
-        _open_prs_raw="$(_gh_pages "$_API/pulls?state=open&per_page=100" "$_max" PRs)" || return 1
+        _open_prs_raw="$(_gh_pages "$_GH_API/pulls?state=open&per_page=100" "$_max" PRs)" || return 1
         [ -z "$_open_prs_raw" ] && return 1
         if [ "$(printf '%s' "$_open_prs_raw" | _json_array_len)" = "$((_max * 100))" ]; then
-          _probe="$(_gh_try GET "$_API/pulls?state=open&per_page=100&page=$((_max + 1))")" || return 1
+          _probe="$(_gh_try GET "$_GH_API/pulls?state=open&per_page=100&page=$((_max + 1))")" || return 1
           _probe="$(printf '%s' "$_probe" | _json_array_len)" || return 1
           [ "$_probe" = 0 ] || _capped=1
         fi
@@ -5906,23 +4594,189 @@ import json, sys
 prs = json.load(sys.stdin)
 if not isinstance(prs, list):
     prs = []
-normalized = []
-for pr in prs:
-    p = dict(pr)
-    p['headRefName'] = pr.get('head', {}).get('ref', '')
-    normalized.append(p)
-json.dump(normalized, sys.stdout)
+json.dump([dict(p, headRefName=(p.get('head') or {}).get('ref', '')) for p in prs], sys.stdout)
 " || return 1
         [ "$_capped" = 0 ] || return "$_VCS_SIBLINGS_CAPPED"
       }
 
-      printf '%s' "$_pr_body" | REPO="$_REPO" \
-        _vcs_shared_check_closing_keyword "$_issue_n" "$_pr_num" "$_pr_ref" _github_api_fetch_closing_siblings
+      printf '%s' "$_cc_body" | REPO="$REPO" \
+        _vcs_shared_check_closing_keyword "$issue_n" "$_cc_num" "$pr_ref" _github_fetch_closing_siblings
+      exit $?
+      ;;
+    pr-head)
+      # pr-head <n> -- print the current head SHA for a PR (fail-closed: exits 1 if unresolvable)
+      local n="${1:-}" sha
+      _gh_num "$verb" PR "$n"
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/pulls/$n (.head.sha)"; return 0; }
+      sha="$(_gh_try GET "$_GH_API/pulls/$n" | _gh_field head.sha)"
+      [ -z "$sha" ] && { echo "pipeline-vcs: pr-head: could not resolve head SHA for PR #$n" >&2; exit 1; }
+      printf '%s\n' "$sha"
+      ;;
+    pr-mergeable)
+      # pr-mergeable <n> (#214): REST `mergeable` is true/false/null (null = not
+      # computed yet) -> MERGEABLE / CONFLICTING / UNKNOWN; _vcs_shared_pr_mergeable
+      # owns the retry loop and exit codes. Re-fetched per attempt (computed lazily).
+      local n="${1:-}"
+      _gh_num "$verb" PR "$n"
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/pulls/$n (.mergeable)"; return 0; }
+      _github_fetch_mergeable() {
+        case "$(_gh_req GET "$_GH_API/pulls/$n" | _gh_field mergeable)" in
+          True)  echo MERGEABLE ;;
+          False) echo CONFLICTING ;;
+          *)     echo UNKNOWN ;;
+        esac
+      }
+      _vcs_shared_pr_mergeable _github_fetch_mergeable
       exit $?
       ;;
 
-    *) echo "pipeline-vcs: unknown verb: $_VERB" >&2; exit 1 ;;
+    # ── Attempt counting ─────────────────────────────────────────────────────
+
+    read-comments)
+      # read-comments <issue-or-pr-n>: every comment as {"comments": [...]}, all
+      # pages (PRs are issues here). The shared reader behind read-attempt and
+      # post-approval's duplicate check (#172). Fail-closed: nothing on stdout and
+      # exit 1 on any page failure.
+      local n="${1:-}"
+      [ -z "$n" ] && { echo "pipeline-vcs: read-comments: missing issue/PR number" >&2; exit 1; }
+      _gh_num "$verb" issue "$n"
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/issues/$n/comments?per_page=100 (paginated)"; return 0; }
+      _gh_comments_obj "$n" || { echo "pipeline-vcs: read-comments: could not fetch issue #$n data" >&2; exit 1; }
+      ;;
+
+    read-attempt)
+      # read-attempt <issue-n>
+      # Print "stage=<s> count=<k> total=<t>" from the most-recent attempt
+      # marker on the issue. Prints "stage= count=0 total=0" when no marker
+      # exists (new issue). Exits 0 always (read-only query).
+      local n="${1:-}" issue_data trusted_authors verify_authors
+      [ -z "$n" ] && { echo "pipeline-vcs: read-attempt: missing issue number" >&2; exit 1; }
+      _gh_num "$verb" issue "$n"
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] read-attempt $n: GET $_GH_API/issues/$n/comments (paginated) and extract the last talos:attempt marker"; return 0; }
+      issue_data="$(_gh_comments_obj "$n")" || { echo "pipeline-vcs: read-attempt: could not fetch issue #$n data" >&2; exit 1; }
+      trusted_authors="$(cfg markers.trusted_authors)"
+      verify_authors="$(cfg markers.verify_authors)"
+      _vcs_shared_reader_identity "$verify_authors" _gh_user_login
+      printf '%s' "$issue_data" | TRUSTED_AUTHORS="$trusted_authors" VERIFY_AUTHORS="$verify_authors" CURRENT_USER="$_RID_USER" CURRENT_USER_REFUSED="$_RID_REFUSED" TALOS_CFG="$_TALOS_CFG" _vcs_shared_read_attempt
+      ;;
+
+    check-attempt)
+      # check-attempt <issue-n>
+      # Exit 1 (with reason) when EITHER ceiling is already reached for the
+      # issue.  Does NOT record a new attempt -- callers do that with
+      # record-attempt.  Reads limits.max_fix_attempts and
+      # limits.max_total_dispatches from config.
+      local n="${1:-}"
+      [ -z "$n" ] && { echo "pipeline-vcs: check-attempt: missing issue number" >&2; exit 1; }
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] check-attempt $n: compare current attempt state against configured ceilings"; return 0; }
+      local max_stage max_total
+      max_stage="$(cfg limits.max_fix_attempts)"
+      max_total="$(cfg limits.max_total_dispatches)"
+      local state
+      state="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" read-attempt "$n" ${REPO:+--repo "$REPO"} 2>&1)"
+      local rc=$?
+      if [ $rc -ne 0 ]; then
+        echo "pipeline-vcs: check-attempt: read-attempt failed: $state" >&2
+        exit 1
+      fi
+      # Pass through any machine-readable talos: markers from read-attempt to our
+      # own stdout, then narrow state to only the parseable stage=...count=...total=
+      # line (filters out both talos: markers and any stderr warnings captured via 2>&1).
+      printf '%s\n' "$state" | grep '^talos:' || true
+      state="$(printf '%s\n' "$state" | grep '^stage=')"
+      local cur_stage cur_count cur_total
+      cur_stage="$(printf '%s' "$state" | sed 's/stage=\([^ ]*\).*/\1/')"
+      cur_count="$(printf '%s' "$state" | sed 's/.*count=\([0-9]*\).*/\1/')"
+      cur_total="$(printf '%s' "$state" | sed 's/.*total=\([0-9]*\).*/\1/')"
+      if ! _vcs_shared_attempt_blocked "check-attempt" "$cur_count" "$cur_total" "$max_stage" "$max_total" "$cur_stage"; then
+        exit 1
+      fi
+      echo "pipeline-vcs: check-attempt: ok (stage=$cur_stage count=$cur_count total=$cur_total; max_stage=$max_stage max_total=$max_total)"
+      exit 0
+      ;;
+
+    record-attempt)
+      # record-attempt <issue-n> <stage> [--pr <pr-n> | --idempotency-key <token>]:
+      # see _vcs_shared_record_attempt.
+      local n="${1:-}" stage="${2:-}"
+      [ -z "$n" ]     && { echo "pipeline-vcs: record-attempt: missing issue number" >&2; exit 1; }
+      [ -z "$stage" ] && { echo "pipeline-vcs: record-attempt: missing stage argument" >&2; exit 1; }
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] record-attempt $n $stage: read prior state, post <!-- talos:attempt stage=$stage ... --> marker"; return 0; }
+      # The write: POST the marker comment and print its URL (it may
+      # legitimately be empty); non-zero only when the write itself failed.
+      _github_post_attempt_marker() {
+        local _resp
+        _resp="$(_gh_try POST "$_GH_API/issues/$1/comments" "$(printf '%s' "$2" | _gh_body_json)")" || return 1
+        [ -n "$_resp" ] || return 1
+        printf '%s' "$_resp" | _gh_field html_url 2>/dev/null
+        return 0
+      }
+      shift 2 2>/dev/null || shift "$#"
+      _vcs_shared_record_attempt "$n" "$stage" _github_post_attempt_marker "$@"
+      ;;
+
+    check-approval-sha)
+      # check-approval-sha <n> [--stale-list]: every approval label must have been
+      # earned at the current head SHA (waivers: merge.approval_waiver_paths; code,
+      # tests, agent instructions and pipeline config are never waivable).
+      # Fail-closed. Marker extraction and the SHA/waiver logic are
+      # _vcs_shared_check_approval_marker / _vcs_shared_check_approval_sha; this
+      # arm is fetch (the PR, every comment) -> call.
+      local n="${1:-}"; shift
+      local stale_list_flag="false"
+      if [ "${1:-}" = "--stale-list" ]; then
+        stale_list_flag="true"
+      fi
+      _gh_num "$verb" PR "$n"
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] check-approval-sha $n: verify all approval labels match current head SHA"; return 0; }
+      local pr_data
+      pr_data="$(_gh_marker_data "$n")" || pr_data=""
+      if [ -z "$pr_data" ]; then
+        echo "pipeline-vcs: check-approval-sha: could not fetch PR #$n data" >&2
+        exit 1
+      fi
+      local trusted_authors_cas verify_authors_cas
+      trusted_authors_cas="$(cfg markers.trusted_authors)"
+      verify_authors_cas="$(cfg markers.verify_authors)"
+      _vcs_shared_reader_identity "$verify_authors_cas" _gh_user_login
+      local marker_out marker_rc marker_json
+      marker_out="$(printf '%s' "$pr_data" | TRUSTED_AUTHORS="$trusted_authors_cas" VERIFY_AUTHORS="$verify_authors_cas" CURRENT_USER="$_RID_USER" CURRENT_USER_REFUSED="$_RID_REFUSED" TALOS_CFG="$_TALOS_CFG" _vcs_shared_check_approval_marker)"
+      marker_rc=$?
+      if [ "$marker_rc" -eq 1 ]; then
+        exit 1
+      fi
+      if [ "$marker_rc" -eq 3 ]; then
+        # No approval labels present: marker_out IS the diagnostic message.
+        printf '%s\n' "$marker_out"
+        exit 0
+      fi
+      # marker_rc == 0: marker_out is zero or more machine-readable
+      # `talos:...` passthrough lines followed by exactly one JSON payload
+      # line -- relay the former to our own stdout (same convention
+      # read-attempt/check-attempt use) and keep the latter for the waiver
+      # comparison below.
+      printf '%s\n' "$marker_out" | grep '^talos:' || true
+      marker_json="$(printf '%s\n' "$marker_out" | grep -v '^talos:')"
+      local waiver_paths repo_root
+      waiver_paths="$(cfg merge.approval_waiver_paths)"
+      repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
+      printf '%s' "$pr_data" \
+        | WAIVER_PATHS="$waiver_paths" REPO_ROOT="${repo_root:-}" MARKER_ENTRIES="$marker_json" STALE_LIST="$stale_list_flag" _vcs_shared_check_approval_sha
+      exit $?
+      ;;
+    *) echo "pipeline-vcs: unknown verb: $verb" >&2; exit 1 ;;
   esac
+}
+
+# _gh_paths -- stdin: a JSON array of changed files. Prints each .filename.
+_gh_paths() {
+  python3 -I -c "
+import json, sys
+for f in json.load(sys.stdin):
+    path = f.get('filename', '')
+    if path:
+        print(path)
+"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -8436,6 +7290,39 @@ _has_whole_approval_marker() {
   sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
     | grep -qxF "<!-- talos:approval sha=$1 role=$2 -->"
 }
+# _vcs_label_role <approval-label> -- the role that earns it; nothing for any other label.
+_vcs_label_role() {
+  case "$1" in
+    qa:pass) echo qa ;; review:approved) echo reviewer ;;
+    security:approved) echo security ;; docs:done) echo docs ;;
+  esac
+}
+# _vcs_stamped_roles <pr> -- on one line, the roles with a whole approval marker
+# comment at the PR's current head. Non-zero when the PR cannot be read.
+_vcs_stamped_roles() {
+  local _sr_data _sr_sha _sr_comments _sr_role _sr_out=""
+  _vcs_pr_id_numeric "$1" || return 1
+  _gh_init
+  _sr_data="$(_gh_marker_data "$1" 2>/dev/null)" || return 1
+  _sr_sha="$(printf '%s' "$_sr_data" | _gh_field headRefOid)"
+  [ -n "$_sr_sha" ] || return 1
+  _sr_comments="$(printf '%s' "$_sr_data" | python3 -I -c "
+import json, sys
+for c in json.load(sys.stdin).get('comments', []):
+    print(c.get('body', ''))
+")"
+  for _sr_role in qa reviewer security docs; do
+    printf '%s\n' "$_sr_comments" | _has_whole_approval_marker "$_sr_sha" "$_sr_role" && _sr_out="$_sr_out $_sr_role"
+  done
+  echo "$_sr_out"
+}
+# _vcs_label_stamped <approval-label> <stamped-roles> -- 0 when the label's role is among them.
+_vcs_label_stamped() {
+  local _ls_role
+  _ls_role="$(_vcs_label_role "$1")"
+  [ -n "$_ls_role" ] && case " $2 " in *" $_ls_role "*) return 0 ;; esac
+  return 1
+}
 # _ADDING_APPROVAL_LABELS and _REQUIRE_MARKER are consumed by the post-dispatch block.
 _REQUIRE_MARKER=false
 _ADDING_APPROVAL_LABELS=""
@@ -8473,38 +7360,11 @@ if [ "$VERB" = "label-pr" ] && [ "${#ARGS[@]}" -ge 1 ]; then
   # exists for each approval label being added.  Exit 1 (fatal) if absent.
   # Only implemented for the github provider (check-approval-sha is github-only).
   if [ "$_REQUIRE_MARKER" = "true" ] && [ -n "$_ADDING_APPROVAL_LABELS" ] \
-      && [ "$DRY_RUN" != "true" ] && [ "$PROVIDER" = "github" ]; then
-    _lp_pr_data=""
-    _lp_pr_data="$(gh pr view "$_LABEL_PR_N" --json headRefOid,baseRefName,labels,comments \
-      ${REPO:+--repo "$REPO"} 2>/dev/null)" || true
-    _lp_head_sha=""
-    _lp_comments=""
-    if [ -n "$_lp_pr_data" ]; then
-      _lp_head_sha="$(printf '%s' "$_lp_pr_data" \
-        | python3 -I -c "import json,sys; print(json.load(sys.stdin).get('headRefOid',''))" \
-        2>/dev/null)" || true
-      _lp_comments="$(printf '%s' "$_lp_pr_data" | python3 -I -c "
-import json, sys
-data = json.load(sys.stdin)
-for c in data.get('comments', []):
-    print(c.get('body', ''))
-" 2>/dev/null)" || true
-    fi
+      && [ "$DRY_RUN" != "true" ] && { [ "$PROVIDER" = "github" ] || [ "$PROVIDER" = "github-api" ]; }; then
     _lp_marker_found=false
-    if [ -n "$_lp_head_sha" ]; then
+    if _lp_stamped="$(_vcs_stamped_roles "$_LABEL_PR_N")"; then
       for _lp_lbl in $_ADDING_APPROVAL_LABELS; do
-        case "$_lp_lbl" in
-          qa:pass)           _lp_role=qa ;;
-          review:approved)   _lp_role=reviewer ;;
-          security:approved) _lp_role=security ;;
-          docs:done)         _lp_role=docs ;;
-          *)                 continue ;;
-        esac
-        if printf '%s\n' "$_lp_comments" \
-            | _has_whole_approval_marker "$_lp_head_sha" "$_lp_role"; then
-          _lp_marker_found=true
-          break
-        fi
+        _vcs_label_stamped "$_lp_lbl" "$_lp_stamped" && { _lp_marker_found=true; break; }
       done
     fi
     if [ "$_lp_marker_found" = "false" ]; then
@@ -8639,8 +7499,7 @@ if [ "$VERB" = "post-approval" ]; then
 
   # ── Duplicate-marker detection (#172, restores what d7aedf2 removed) ──────
   # Fetch every PR comment (paginated via the shared read-comments verb --
-  # gh api --paginate for _github, _gh_comments for github-api; see
-  # each provider's read-comments arm) and check whether this exact marker
+  # _gh_comments; see the read-comments arm) and check whether this exact marker
   # already exists as the last non-whitespace line of any comment (same
   # last-line rule as read-attempt/check-approval-sha, #79). A different SHA
   # is a different marker string and always posts (re-stamp after a head
@@ -8772,8 +7631,7 @@ fi
 # ── Main dispatch ─────────────────────────────────────────────────────────────
 _vcs_dispatch_provider() {
   case "$PROVIDER" in
-    github)     _github     "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
-    github-api) _github_api "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
+    github|github-api) _github "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
     gitlab)     _gitlab     "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
     azure)      _azure      "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
     file)       _file       "$VERB" "${ARGS[@]+"${ARGS[@]}"}" ;;
@@ -8920,38 +7778,11 @@ _DISPATCH_RC=$?
 # occur here because we never re-read the labels we just applied.
 if [ "$VERB" = "label-pr" ] && [ -n "${_ADDING_APPROVAL_LABELS:-}" ] \
     && [ "${_REQUIRE_MARKER:-false}" = "false" ] && [ "$DRY_RUN" != "true" ] \
-    && [ "$PROVIDER" = "github" ] && [ "$_DISPATCH_RC" -eq 0 ]; then
-  _pd_pr_data=""
-  _pd_pr_data="$(gh pr view "$_LABEL_PR_N" --json headRefOid,comments \
-    ${REPO:+--repo "$REPO"} 2>/dev/null)" || true
-  _pd_head_sha=""
-  _pd_comments=""
-  if [ -n "$_pd_pr_data" ]; then
-    _pd_head_sha="$(printf '%s' "$_pd_pr_data" \
-      | python3 -I -c "import json,sys; print(json.load(sys.stdin).get('headRefOid',''))" \
-      2>/dev/null)" || true
-    _pd_comments="$(printf '%s' "$_pd_pr_data" | python3 -I -c "
-import json, sys
-data = json.load(sys.stdin)
-for c in data.get('comments', []):
-    print(c.get('body', ''))
-" 2>/dev/null)" || true
-  fi
+    && { [ "$PROVIDER" = "github" ] || [ "$PROVIDER" = "github-api" ]; } && [ "$_DISPATCH_RC" -eq 0 ]; then
   _pd_missing=false
-  if [ -n "$_pd_head_sha" ]; then
+  if _pd_stamped="$(_vcs_stamped_roles "$_LABEL_PR_N")"; then
     for _pd_lbl in $_ADDING_APPROVAL_LABELS; do
-      case "$_pd_lbl" in
-        qa:pass)           _pd_role=qa ;;
-        review:approved)   _pd_role=reviewer ;;
-        security:approved) _pd_role=security ;;
-        docs:done)         _pd_role=docs ;;
-        *) continue ;;
-      esac
-      if ! printf '%s\n' "$_pd_comments" \
-          | _has_whole_approval_marker "$_pd_head_sha" "$_pd_role"; then
-        _pd_missing=true
-        break
-      fi
+      _vcs_label_stamped "$_pd_lbl" "$_pd_stamped" || { _pd_missing=true; break; }
     done
   fi
   if [ "$_pd_missing" = "true" ]; then
@@ -8959,15 +7790,8 @@ for c in data.get('comments', []):
     echo "pipeline-vcs: label-pr: If you have not already posted your verdict reasoning, do so first." >&2
     echo "pipeline-vcs: label-pr: The gate will reject this PR. Post the marker:" >&2
     for _lp_wl in $_ADDING_APPROVAL_LABELS; do
-      case "$_lp_wl" in
-        qa:pass)           _lp_wr=qa ;;
-        review:approved)   _lp_wr=reviewer ;;
-        security:approved) _lp_wr=security ;;
-        docs:done)         _lp_wr=docs ;;
-        *) continue ;;
-      esac
       printf 'pipeline-vcs:   bash scripts/pipeline-vcs.sh post-approval %s %s\n' \
-        "$_LABEL_PR_N" "$_lp_wr" >&2
+        "$_LABEL_PR_N" "$(_vcs_label_role "$_lp_wl")" >&2
     done
   fi
 fi

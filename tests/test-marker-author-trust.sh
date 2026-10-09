@@ -98,16 +98,21 @@ assert_not_contains "$out" "talos:marker-authors-unverified" \
 assert_not_contains "$out" "talos:marker-authors-rejected" \
   "gh (c): verify_authors=false emits no rejection line"
 
-# ── (d) identity lookup fails + no trusted_authors -> fail-open, unchanged ─
+# ── (d) identity lookup refused + no trusted_authors -> fail closed ───────
+# GitHub answers GET /user or refuses it (an Actions GITHUB_TOKEN, a GitHub App
+# token, an empty login): a refused lookup is not "no identity check configured",
+# so only markers.trusted_authors counts and it is unset: the marker is rejected.
 set_cfg '{}'
 _c="$(mk_gh_approval "$HEAD_SHA" qa mallory)"
-out="$(gh_check "$HEAD_SHA" '[{"name":"qa:pass"}]' "$_c")"  # no STUB_CURRENT_USER -> unresolved
-assert_contains "$out" "talos:marker-authors-unverified reader=check-approval-sha" \
-  "gh (d): unresolved identity + unconfigured list -> fail-open warning (unchanged)"
-assert_contains "$out" "author check skipped" \
-  "gh (d): fail-open warning text unchanged"
-assert_contains "$out" "all approval labels are current" \
-  "gh (d): fail-open still accepts the marker"
+out="$(gh_check "$HEAD_SHA" '[{"name":"qa:pass"}]' "$_c" STUB_CURRENT_USER_STATUS=403)"
+assert_contains "$out" "talos:marker-authors-rejected" \
+  "gh (d): refused identity + unconfigured list -> marker rejected"
+assert_contains "$out" "markers.trusted_authors is not set" \
+  "gh (d): refused identity: the warning names the fix"
+assert_not_contains "$out" "author check skipped" \
+  "gh (d): refused identity is not the fail-open warning"
+assert_not_contains "$out" "all approval labels are current" \
+  "gh (d): refused identity does not accept the marker"
 
 # ── (e) bot login rejected unless explicitly listed ────────────────────────
 set_cfg '{}'
@@ -134,7 +139,7 @@ _c='[
 out="$(gh_check "$HEAD_SHA" '[{"name":"qa:pass"}]' "$_c" STUB_CURRENT_USER=octocat)"
 assert_contains "$out" "all approval labels are current" \
   "gh (f): the trusted marker (5th, newest) still wins the scan"
-_calls="$(grep -c 'api user --jq .login' "$GH_LOG")"
+_calls="$(grep -c ' user$' "$GH_LOG")"
 assert_eq "1" "$_calls" "gh (f): identity resolver invoked exactly once despite 5 markers"
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -219,8 +224,7 @@ set_cfg_api '{}'
 _c="$(mk_rest_approval "$HEAD_SHA" qa mallory)"
 # REST: a 2xx /user answer with an empty login names no identity, so it is
 # refused (#455), not "unresolved": only markers.trusted_authors counts and it
-# is unset, so the marker is rejected (fail closed). gh still models the
-# fail-open case above.
+# is unset, so the marker is rejected (fail closed).
 out="$(api_check "$HEAD_SHA" '[{"name":"qa:pass"}]' "$_c" STUB_CURRENT_USER=)"
 assert_contains "$out" "talos:marker-authors-rejected" \
   "github-api (d): empty-login identity + unconfigured list -> refused, marker rejected"

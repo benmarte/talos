@@ -71,16 +71,19 @@ bash "$NOTIFY" issue-closed "#$N" "item resolved" "$N" >/dev/null 2>&1
 
 # ── Assertions: VCS side ─────────────────────────────────────────────────────
 log="$(cat "$GH_LOG")"
-# NB: real-run label-issue goes through eval, so the shell strips the quotes
-assert_contains "$log" "issue edit $N --add-label pipeline:confirmed --remove-label pipeline:ready" \
-  "e2e: label state machine ready→confirmed"
-assert_contains "$log" "issue comment $N --body **Agent:** validator — CONFIRMED: crash reproducible" \
+assert_contains "$log" "issues/$N/labels payload={\"labels\": [\"pipeline:confirmed\"]}" \
+  "e2e: label state machine ready→confirmed (the new label)"
+assert_contains "$log" "-X DELETE -H Accept: application/vnd.github+json repos/acme/widget/issues/$N/labels/pipeline%3Aready" \
+  "e2e: label state machine ready→confirmed (the old label is removed)"
+assert_contains "$log" "issues/$N/comments payload={\"body\": \"**Agent:** validator \u2014 CONFIRMED: crash reproducible\"}" \
   "e2e: validator findings comment lands on the issue"
-assert_contains "$log" "pr create --base main --head fix/issue-$N" "e2e: PR opened against base branch"
-assert_contains "$log" "issue comment 9 --body QA: PASS" "e2e: QA verdict lands on the PR"
-assert_contains "$log" "pr review 9 --approve" "e2e: reviewer approval posted"
-assert_contains "$log" "pr merge 9 --squash --delete-branch" "e2e: PR squash-merged"
-assert_contains "$log" "issue close $N" "e2e: issue closed at the end"
+assert_contains "$log" "repos/acme/widget/pulls payload={\"title\": \"fix: guard null session\", \"head\": \"fix/issue-$N\", \"base\": \"main\"" \
+  "e2e: PR opened against base branch"
+assert_contains "$log" "issues/9/comments payload={\"body\": \"QA: PASS" "e2e: QA verdict lands on the PR"
+assert_contains "$log" "pulls/9/reviews payload=" "e2e: reviewer approval posted"
+assert_contains "$log" "pulls/9/merge payload={\"merge_method\": \"squash\"}" "e2e: PR squash-merged"
+assert_contains "$log" "git/refs/heads/" "e2e: the merged PR's head branch is deleted"
+assert_contains "$log" "issues/$N payload={\"state\":\"closed\"}" "e2e: issue closed at the end"
 assert_contains "$log" "project item-edit --id ITEM_42" "e2e: board status updated"
 
 # ── Assertions: chat side — one thread, links, complete conversation ─────────
@@ -126,11 +129,11 @@ if [ "$sweep_rc" -ne 0 ]; then
 - Bring the full stack up and prove it communicates" >/dev/null 2>&1
 fi
 sweep_log="$(cat "$GH_LOG")"
-assert_contains "$sweep_log" "issue edit 100 --add-label pipeline:epic-children-done" \
+assert_contains "$sweep_log" "issues/100/labels payload={\"labels\": [\"pipeline:epic-children-done\"]}" \
   "e2e: epic with unticked boxes gets pipeline:epic-children-done"
-assert_contains "$sweep_log" "issue comment 100" \
+assert_contains "$sweep_log" "issues/100/comments payload=" \
   "e2e: epic with unticked boxes gets a comment naming what's outstanding"
-assert_not_contains "$sweep_log" "issue close 100" \
+assert_not_contains "$sweep_log" "issues/100 payload={\"state\":\"closed\"}" \
   "e2e: epic with unticked boxes is NOT closed"
 
 # Epic #200: all sub-issues closed, and every acceptance box is ticked.
@@ -144,7 +147,7 @@ if [ "$sweep_rc" -eq 0 ]; then
   bash "$VCS" close-issue 200 "All sub-issues resolved." >/dev/null 2>&1
 fi
 sweep_log="$(cat "$GH_LOG")"
-assert_contains "$sweep_log" "issue close 200" \
+assert_contains "$sweep_log" "issues/200 payload={\"state\":\"closed\"}" \
   "e2e: epic with all boxes ticked still closes"
 assert_not_contains "$sweep_log" "epic-children-done" \
   "e2e: epic with all boxes ticked does not get pipeline:epic-children-done"
@@ -158,7 +161,7 @@ if [ "$sweep_rc" -eq 0 ]; then
   bash "$VCS" close-issue 300 "All sub-issues resolved." >/dev/null 2>&1
 fi
 sweep_log="$(cat "$GH_LOG")"
-assert_contains "$sweep_log" "issue close 300" \
+assert_contains "$sweep_log" "issues/300 payload={\"state\":\"closed\"}" \
   "e2e: epic with no checkboxes still closes"
 
 # ── Idempotency across repeated sweeps (PR #190 reviewer finding) ───────────
@@ -196,8 +199,8 @@ sweep_epic_400   # sweep 1: unticked -> labels + comments
 sweep_epic_400   # sweep 2: still unticked, already labeled -> must not repeat
 
 sweep_log="$(cat "$GH_LOG")"
-label_calls="$(grep -c "issue edit 400 --add-label pipeline:epic-children-done" <<<"$sweep_log")"
-comment_calls="$(grep -c "issue comment 400" <<<"$sweep_log")"
+label_calls="$(grep -c "issues/400/labels payload={\"labels\": \[\"pipeline:epic-children-done\"\]}" <<<"$sweep_log")"
+comment_calls="$(grep -c "issues/400/comments payload=" <<<"$sweep_log")"
 assert_eq "1" "$label_calls" \
   "e2e: two sweeps of a still-unticked epic add pipeline:epic-children-done exactly once"
 assert_eq "1" "$comment_calls" \
@@ -211,9 +214,9 @@ export STUB_EPIC_BODY='Epic description.
 - [x] Bring the full stack up and prove it communicates'
 sweep_epic_400
 sweep_log="$(cat "$GH_LOG")"
-assert_contains "$sweep_log" "issue close 400" \
+assert_contains "$sweep_log" "issues/400 payload={\"state\":\"closed\"}" \
   "e2e: epic closes once its boxes are ticked on a later sweep"
-assert_contains "$sweep_log" "issue edit 400 --remove-label pipeline:epic-children-done" \
+assert_contains "$sweep_log" "issues/400/labels/pipeline%3Aepic-children-done" \
   "e2e: pipeline:epic-children-done is removed once the epic closes"
 
 # ── Untrusted checklist text must never reach a shell command literal ───────
@@ -261,7 +264,7 @@ unset STUB_EPIC_BODY
 # qa_mode: ci (it polls pr-checks in the foreground instead, fail-closed) and
 # runs it exactly once more under qa_mode: local. Uses the `verify` PATH stub
 # (tests/stubs/verify, logs to $VERIFY_LOG) the same way GH_LOG/CURL_LOG track
-# gh/curl invocations, and the gh stub's "pr checks" case for the CI oracle.
+# gh/curl invocations, and the gh stub's check-run fixtures for the CI oracle.
 CFG="$HOME/.talos/scripts/pipeline-config.sh"
 
 simulate_developer_verify() {
@@ -481,7 +484,7 @@ assert_eq "$COMMIT_LOG_BEFORE" "$COMMIT_LOG_AFTER" "e2e #196: no new commit crea
 # docs:done is still applied, independent of whether a commit was made.
 bash "$VCS" label-pr 9 --add docs:done >/dev/null 2>&1
 log="$(cat "$GH_LOG")"
-assert_contains "$log" "pr edit 9 --add-label docs:done" "e2e #196: docs:done still applied when nothing to commit"
+assert_contains "$log" "issues/9/labels payload={\"labels\": [\"docs:done\"]}" "e2e #196: docs:done still applied when nothing to commit"
 
 # ── #199: skip the PM stage when the issue body is already a usable spec ────
 # Simulates the Step 3b decision this playbook prescribes: has-spec gates
@@ -516,7 +519,7 @@ log="$(cat "$GH_LOG")"
 pm_calls="$(grep -c "PM spec:" <<<"$log" || true)"
 assert_eq "0" "$pm_calls" "e2e: issue with acceptance criteria dispatches zero PM subagents (#199)"
 assert_contains "$log" "**PM:** skipped, issue body is the spec" "e2e: skip comment posted (#199)"
-assert_contains "$log" "issue edit 601 --add-label pipeline:dev --remove-label pipeline:confirmed" \
+assert_contains "$log" "issues/601/labels payload={\"labels\": [\"pipeline:dev\"]}" \
   "e2e: skip path advances straight to pipeline:dev (#199)"
 
 # (b) body has no acceptance-criteria heading -> PM still runs (one dispatch).
@@ -579,7 +582,7 @@ assert_eq "0" "$docs_calls" \
   "e2e: scripts+tests+CHANGELOG PR dispatches zero docs subagents (#546)"
 assert_contains "$DOCS_GATE_OUT" "docs=skip reason=no-docs-paths" \
   "e2e: scripts+tests+CHANGELOG PR is a docs skip (#546)"
-assert_contains "$log" "pr edit 9 --add-label docs:done" \
+assert_contains "$log" "issues/9/labels payload={\"labels\": [\"docs:done\"]}" \
   "e2e: scripts+tests+CHANGELOG PR still reaches docs:done via the code stamp (#546)"
 assert_contains "$log" "no docs-relevant changes" \
   "e2e: the code stamp carries the no-docs-relevant-changes text (#546)"
@@ -593,7 +596,7 @@ assert_eq "1" "$docs_calls" \
   "e2e: a README PR dispatches docs exactly once (#546)"
 assert_contains "$log" "paths-file=" \
   "e2e: the dispatch names the filtered paths file (#546)"
-assert_contains "$log" "pr edit 9 --add-label docs:done" \
+assert_contains "$log" "issues/9/labels payload={\"labels\": [\"docs:done\"]}" \
   "e2e: dispatched docs run still reaches docs:done (#546)"
 
 # (b2) a config-key change (the defaults table) dispatches docs too; agents/**
@@ -689,9 +692,9 @@ assert_eq "1" "$qa_rc" \
   "e2e: QA in ci mode fails within one poll on a CONFLICTING PR (#214)"
 assert_contains "$out" "conflicts with base" \
   "e2e: QA's CONFLICTING-PR failure reason names the conflict (#214)"
-assert_eq "1" "$(grep -c '^pr view 9 --json mergeable -q \.mergeable' <<<"$log")" \
+assert_eq "1" "$(grep -c 'repos/acme/widget/pulls/9$' <<<"$log")" \
   "e2e: QA in ci mode calls pr-mergeable exactly once on a CONFLICTING PR (#214)"
-assert_eq "0" "$(grep -c '^pr checks 9' <<<"$log")" \
+assert_eq "0" "$(grep -c 'check-runs' <<<"$log")" \
   "e2e: QA in ci mode never polls pr-checks after a CONFLICTING pr-mergeable result (#214)"
 rm -f talos.pipeline.json
 

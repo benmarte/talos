@@ -126,7 +126,7 @@ _adv_sha="cafebabe00000000000000000000000000000001"
 : > "$GH_LOG"
 out="$(STUB_PR_HEAD_SHA="$_adv_sha" bash "$VCS" post-approval 9 adversarial 2>&1)"; rc=$?
 assert_exit_code 0 "$rc" "post-approval 9 adversarial: exits 0"
-assert_contains "$(cat "$GH_LOG")" "pr edit 9 --add-label adversarial:approved" \
+assert_contains "$(cat "$GH_LOG")" "issues/9/labels payload={\"labels\": [\"adversarial:approved\"]}" \
   "post-approval 9 adversarial: applies the adversarial:approved label"
 assert_contains "$(cat "$GH_LOG")" "sha=${_adv_sha} role=adversarial" \
   "post-approval 9 adversarial: marker carries role=adversarial"

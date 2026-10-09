@@ -692,13 +692,13 @@ total=1
 stage=qa" "$OUT" "equivalence: real scripts, a first QA failure: redispatch with the counts record-attempt printed"
 assert_eq "$(cat "$SANDBOX/gh.old")" "$(cat "$SANDBOX/gh.new")" "equivalence: the verb leaves the gh journal the three-step prose left"
 assert_gate "fix-round (real scripts)"
-assert_contains "$(cat "$SANDBOX/gh.new")" "pr edit 9 --remove-label pipeline:blocked" "equivalence: the PR unblock reached gh"
+assert_contains "$(cat "$SANDBOX/gh.new")" "-X DELETE -H Accept: application/vnd.github+json repos/acme/widget/issues/9/labels/pipeline%3Ablocked" "equivalence: the PR unblock reached gh"
 cfg_json '{"limits": {"max_fix_attempts": 1}}'
 run_new
 assert_contains "$OUT" "verdict=block" "equivalence: a ceiling of 1 blocks the first attempt under the real record-attempt"
 assert_contains "$OUT" "reason=max-fix-attempts" "equivalence: the real BLOCKED line is mapped to max-fix-attempts"
-assert_contains "$(cat "$SANDBOX/gh.new")" "pr edit 9 --add-label pipeline:blocked" "equivalence: the block label reached gh"
-assert_eq "0" "$(grep -c 'remove-label pipeline:blocked' "$SANDBOX/gh.new")" "equivalence: a ceiling leaves pipeline:blocked in place"
+assert_contains "$(cat "$SANDBOX/gh.new")" 'issues/9/labels payload={"labels": ["pipeline:blocked"]}' "equivalence: the block label reached gh"
+assert_eq "0" "$(grep -c 'labels/pipeline%3Ablocked' "$SANDBOX/gh.new")" "equivalence: a ceiling leaves pipeline:blocked in place"
 rm -f "$SANDBOX/talos.pipeline.json"
 unset STUB_PR_HEAD_SHA
 
@@ -707,8 +707,8 @@ CU="$TALOS_ROOT/scripts/pipeline-vcs.sh"
 OUT="$(STUB_CURRENT_USER=talos-bot bash "$CU" current-user 2>/dev/null)"; RC=$?
 assert_eq "0:talos-bot" "$RC:$OUT" "current-user: prints the authenticated login"
 OUT="$(STUB_CURRENT_USER= bash "$CU" current-user 2>/dev/null)"; RC=$?
-assert_eq "1:" "$RC:$OUT" "current-user: no resolved identity is exit 1 and no output"
-OUT="$(STUB_CURRENT_USER_FAIL=1 bash "$CU" current-user 2>/dev/null)"; RC=$?
+assert_eq "3:" "$RC:$OUT" "current-user: an answer with no login is a refused lookup (exit 3, no output)"
+OUT="$(STUB_CURRENT_USER_STATUS=403 bash "$CU" current-user 2>/dev/null)"; RC=$?
 assert_eq "3:" "$RC:$OUT" "current-user: a refused lookup is exit 3 and no output"
 
 # ── (d) usage and environment ────────────────────────────────────────────────

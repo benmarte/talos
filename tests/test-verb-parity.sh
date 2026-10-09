@@ -1,15 +1,12 @@
 #!/usr/bin/env bash
-# test-verb-parity.sh — verify that _github and _github_api expose the same
-# set of verbs.
+# test-verb-parity.sh — verify that the single GitHub implementation (_github,
+# behind vcs.provider github and github-api) exposes every verb either former
+# implementation had.
 #
 # Extraction: parse the case statement inside each provider function by looking
 # for lines matching the pattern "    <word>)" where <word> starts with a
 # lowercase letter.  Excludes the "*)" catch-all.
 #
-# Deliberate divergence: if a verb exists in one provider but not the other
-# intentionally, annotate the case arm with "# PARITY-EXCEPTION: reason".
-# The test subtracts annotated verbs before the equality check, making the
-# allowlist explicit and machine-verifiable.
 set -u
 . "$(dirname "$0")/helpers.sh"
 # No sandbox needed — we only read the script; no git ops or network calls.
@@ -52,111 +49,33 @@ for i in range(fn_start + 1, len(lines)):
 
 # Extract verb labels: "    <word>)" where <word> matches [a-z][a-z0-9-]+
 # Exclude the "*)" catch-all and any line with "# PARITY-EXCEPTION:".
-verb_re = re.compile(r'^\s{4}([a-z][a-z0-9-]+)\)')
+verb_re = re.compile(r'^\s{4}([a-z][a-z0-9|-]+)\)')
 verbs = []
 for line in lines[fn_start:fn_end]:
     m = verb_re.match(line)
     if m and 'PARITY-EXCEPTION:' not in line:
-        verbs.append(m.group(1))
+        verbs.extend(m.group(1).split('|'))
 
 for v in sorted(set(verbs)):
     print(v)
 PYEOF
 }
 
-# ── Extract PARITY-EXCEPTION verbs from a function ───────────────────────────
-extract_exceptions() {
-  local fn="$1"
-  python3 - "$VCS" "$fn" <<'PYEOF'
-import re, sys
-
-script_path = sys.argv[1]
-fn_name     = sys.argv[2]
-
-with open(script_path) as f:
-    lines = f.readlines()
-
-fn_start = None
-for i, line in enumerate(lines):
-    if re.match(r'^' + re.escape(fn_name) + r'\s*\(\)', line):
-        fn_start = i
-        break
-
-if fn_start is None:
-    sys.exit(0)
-
-fn_end = len(lines)
-for i in range(fn_start + 1, len(lines)):
-    if re.match(r'^[A-Za-z_][A-Za-z0-9_]*\s*\(\)', lines[i]):
-        fn_end = i
-        break
-
-verb_re = re.compile(r'^\s{4}([a-z][a-z0-9-]+)\).*#\s*PARITY-EXCEPTION:')
-for line in lines[fn_start:fn_end]:
-    m = verb_re.match(line)
-    if m:
-        print(m.group(1))
-PYEOF
-}
-
 # ── Run extraction ────────────────────────────────────────────────────────────
+# One GitHub implementation serves vcs.provider github AND github-api (#551):
+# its verb set must stay exactly the 41 verbs the two former implementations
+# each exposed, so neither provider lost a verb in the merge.
+EXPECTED_VERBS="approve-pr assign-issue check-approval-sha check-attempt check-closing-keyword check-epic-acceptance check-pr-files checkout-pr close-issue comment-issue comment-pr create-issue create-pr current-user diff-pr draft-pr edit-pr-body find-pr label-issue label-pr list-issues list-needs-owner list-prs mark-needs-owner merge-pr pr-checks pr-checks-required pr-ci-runs pr-files pr-head pr-is-draft pr-mergeable read-attempt read-comments ready-pr record-attempt rerun-ci update-branch upsert-pr-comment view-issue view-pr"
 _github_verbs="$(extract_verbs _github)"
-_github_api_verbs="$(extract_verbs _github_api)"
-_exceptions="$(extract_exceptions _github; extract_exceptions _github_api)"
 
-# ── Compare ───────────────────────────────────────────────────────────────────
-result="$(python3 - "$_github_verbs" "$_github_api_verbs" "$_exceptions" <<'PYEOF'
-import sys
-
-github_verbs     = set(sys.argv[1].split()) if sys.argv[1].strip() else set()
-github_api_verbs = set(sys.argv[2].split()) if sys.argv[2].strip() else set()
-exceptions       = set(sys.argv[3].split()) if sys.argv[3].strip() else set()
-
-# Subtract declared exceptions from both sides before comparing.
-github_eff     = github_verbs     - exceptions
-github_api_eff = github_api_verbs - exceptions
-
-only_github     = sorted(github_eff     - github_api_eff)
-only_github_api = sorted(github_api_eff - github_eff)
-
-print('_github: ' + str(sorted(github_verbs)))
-print('_github_api: ' + str(sorted(github_api_verbs)))
-if exceptions:
-    print('PARITY-EXCEPTION verbs (excluded): ' + str(sorted(exceptions)))
-if only_github or only_github_api:
-    if only_github:
-        print('Only in _github: ' + str(only_github))
-    if only_github_api:
-        print('Only in _github_api: ' + str(only_github_api))
-    print('PARITY FAILED - divergence detected!')
-    sys.exit(1)
-else:
-    total = len(github_eff)
-    print('PARITY OK - both providers expose ' + str(total) + ' verbs')
-    sys.exit(0)
-PYEOF
-)"
-_exit=$?
-
-printf '%s\n' "$result"
-
-if [ $_exit -eq 0 ]; then
-  pass "parity: _github and _github_api expose the same verb set"
-else
-  fail "parity: providers have diverged" "$(printf '%s' "$result" | tail -3)"
-fi
-
-# ── Mutation test: PARITY-EXCEPTION annotation subtracts correctly ────────────
-# We simulate a fake verb in _github only (as if the parity test ran before
-# Part B was applied) by checking that the extractor does NOT include
-# annotated verbs.  We verify this by checking that if we add a fake annotation
-# to our own output it would be subtracted.  This is a structural check, not
-# a live mutation.
-# The real mutation test runs the full parity check against the pre-fix script —
-# that is tested in CI by the "verify: bash tests/run-tests.sh" step.
+assert_eq "$(printf '%s\n' $EXPECTED_VERBS | sort | tr '\n' ' ')" "$(printf '%s\n' $_github_verbs | sort | tr '\n' ' ')" \
+  "parity: _github serves exactly the 41 verbs both former GitHub providers had"
+assert_eq "0" "$(grep -c '^_github_api()' "$VCS")" "parity: there is no second GitHub implementation"
+assert_contains "$(sed -n '/^_vcs_dispatch_provider()/,/^}/p' "$VCS")" "github|github-api) _github " \
+  "parity: github and github-api dispatch to the same function"
 
 # ── Single-definition registry (#177 slices 1-5) ──────────────────────────────
-# _github and _github_api used to hand-duplicate every marker regex, waiver
+# The two GitHub providers used to hand-duplicate every marker regex, waiver
 # rule, and provider-independent constant below (and had already drifted on
 # message wording in several -- see the per-slice notes preserved next to
 # each entry). Slices 1-4 moved each into a shared helper defined exactly
@@ -223,7 +142,7 @@ REGISTRY_LINES
 # The registry above proves each marker/waiver/constant string is defined
 # exactly once *somewhere* in the file. This check additionally proves
 # *where*: no embedded `python3 -c "..."` block inside _github() or
-# _github_api() may itself contain a literal "talos:" marker string. If one
+# _github() may itself contain a literal "talos:" marker string. If one
 # did, it would mean a marker was hand-inlined into an adapter's Python
 # instead of routed through a _vcs_shared_* helper -- exactly the drift
 # pattern slices 1-4 fixed. Scoped to python3 -c blocks (not the whole
@@ -292,7 +211,7 @@ def python_blocks(start, end):
         i = j + 1
 
 violations = []
-for fn in ('_github', '_github_api'):
+for fn in ('_github',):
     start, end = function_bounds(fn)
     for line_no, block in python_blocks(start, end):
         if 'talos:' in block:
@@ -301,7 +220,7 @@ for fn in ('_github', '_github_api'):
 if violations:
     print('\n'.join(violations))
     sys.exit(1)
-print('OK - no talos: marker literals inside python3 -c blocks in _github/_github_api')
+print('OK - no talos: marker literals inside python3 -c blocks in _github')
 sys.exit(0)
 PYEOF
 }
@@ -310,7 +229,7 @@ marker_check="$(check_marker_literals_in_python_blocks)"
 marker_rc=$?
 printf '%s\n' "$marker_check"
 if [ "$marker_rc" -eq 0 ]; then
-  pass "single-definition: no talos: marker literal inside a python3 -c block in _github/_github_api"
+  pass "single-definition: no talos: marker literal inside a python3 -c block in _github"
 else
   fail "single-definition: talos: marker literal found inside an adapter's python3 -c block" "$marker_check"
 fi

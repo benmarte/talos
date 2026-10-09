@@ -348,15 +348,16 @@ verb_case() {  # verb_case <provider> <verb> <trusted-json-or-empty>
   [ -n "$_tr" ] && _cfg="$_cfg, \"markers\": {\"trusted_authors\": $_tr}"
   printf '%s}\n' "$_cfg" > talos.pipeline.json
   : > "$GH_LOG"; : > "$CURL_LOG"; : > "$CURL_QUEUE"
-  unset STUB_CURRENT_USER_FAIL STUB_CURRENT_USER_STATUS
-  export STUB_CURRENT_USER=""
+  unset STUB_CURRENT_USER_STATUS STUB_GH_COMMENTS_RAW STUB_PR_COMMENTS_JSON
+  export STUB_CURRENT_USER="" STUB_CURRENT_USER_STATUS=403
   if [ "$_p" = "github" ]; then
-    export STUB_CURRENT_USER_FAIL=1
-    export STUB_GH_COMMENTS_RAW="[{\"id\":1,\"user\":{\"login\":\"mallory\"},\"body\":\"$_ATT_BODY\"}]"
     export STUB_PR_HEAD_SHA="$_HS" STUB_PR_LABELS_JSON='[{"name":"qa:pass"}]'
-    export STUB_PR_COMMENTS_JSON="[{\"body\":\"$_APPR_BODY\",\"author\":{\"login\":\"mallory\"}}]"
+    if [ "$_verb" = "read-attempt" ]; then
+      export STUB_GH_COMMENTS_RAW="[{\"id\":1,\"user\":{\"login\":\"mallory\"},\"body\":\"$_ATT_BODY\"}]"
+    else
+      export STUB_PR_COMMENTS_JSON="[{\"body\":\"$_APPR_BODY\",\"author\":{\"login\":\"mallory\"}}]"
+    fi
   else
-    export STUB_CURRENT_USER_STATUS=403
     if [ "$_verb" = "read-attempt" ]; then
       printf '%s\n' "[{\"id\":1,\"user\":{\"login\":\"mallory\"},\"body\":\"$_ATT_BODY\"}]" > "$CURL_QUEUE"
     else

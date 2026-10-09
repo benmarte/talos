@@ -43,7 +43,7 @@ a = json.loads(sys.argv[1]); a.insert(int(sys.argv[3]), json.loads(sys.argv[2]))
 ' "$1" "$2" "$3"
 }
 
-# ── github (gh api --paginate, every page) ──────────────────────────────────
+# ── github (every page of the open-PR API) ──────────────────────────────────
 _self='{"number":9,"state":"open","title":"fix: final","head":{"ref":"fix/issue-42-final"},"body":"Closes #42"}'
 _sib='{"number":8,"state":"open","title":"fix: part","head":{"ref":"fix/issue-42-part1"},"body":"Part of #42"}'
 
@@ -53,7 +53,7 @@ out="$(STUB_PR_BODY="Closes #42" STUB_PR_NUMBER=9 STUB_GH_PRS_RAW="$(_with "$(_p
   bash "$VCS" check-closing-keyword 9 42 2>&1)"; rc=$?
 assert_eq "1" "$rc" "github: a sibling only on page 2 blocks the merge"
 assert_contains "$out" "reference the same issue: #8" "github: names the page-2 sibling"
-assert_contains "$(cat "$GH_LOG")" "api --paginate repos/acme/widget/pulls?state=open&per_page=100" \
+assert_contains "$(cat "$GH_LOG")" "repos/acme/widget/pulls?state=open&per_page=100" \
   "github: reads every page of the open-PR API"
 
 # Exactly 1000 open PRs and no sibling: verified, no false siblings-capped.

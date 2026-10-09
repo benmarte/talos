@@ -75,80 +75,25 @@ assert_exit_code 1 "$rc" "owner/repo#N with open sibling: exits 1"
 assert_contains "$out" "#8" "owner/repo#N sibling: names PR #8"
 
 # ── FAIL-OPEN: PR body cannot be fetched → exit 0 + stdout marker ─────────
-# Simulate fetch failure by making the PR number resolve to empty JSON.
-# We do this by pointing the stub at an empty response via STUB_PR_NUMBER=""
-# and relying on the stub returning '{"number":,"body":""}' which won't parse.
-# Instead, override via a wrapper script.
-cat > "$SANDBOX/bad_gh" <<'GHSCRIPT'
-#!/usr/bin/env bash
-[ -n "${GH_LOG:-}" ] && printf '%s\n' "$*" >> "$GH_LOG"
-args="$*"
-case "$args" in
-  "pr view "*"--json number,body"*)
-    # Simulate a failed fetch — print nothing
-    exit 1 ;;
-  "repo view --json nameWithOwner"*)
-    printf 'acme/widget\n' ;;
-  "repo view --json defaultBranchRef"*)
-    printf 'main\n' ;;
-  *)
-    ;;
-esac
-exit 0
-GHSCRIPT
-chmod +x "$SANDBOX/bad_gh"
-
-# Use the custom gh (PATH already has stubs first; temporarily override with a
-# wrapper that shadows gh for just this test).
-# We can't easily override individual stubs so we copy bad_gh as gh in a subdir.
-mkdir -p "$SANDBOX/badstubs"
-cp "$SANDBOX/bad_gh" "$SANDBOX/badstubs/gh"
-chmod +x "$SANDBOX/badstubs/gh"
-
-out="$(PATH="$SANDBOX/badstubs:$PATH" GH_LOG="$SANDBOX/gh.log" \
-  bash "$VCS" check-closing-keyword 9 42 2>&1)"; rc=$?
-# The full output is both stdout and stderr (merged above).  Split for clarity.
-stdout_out="$(PATH="$SANDBOX/badstubs:$PATH" GH_LOG="$SANDBOX/gh.log" \
-  bash "$VCS" check-closing-keyword 9 42 2>/dev/null)"
+# STUB_GH_API_FAIL=pr makes the stubbed GitHub answer the PR read with HTTP 502.
+out="$(STUB_GH_API_FAIL=pr bash "$VCS" check-closing-keyword 9 42 2>&1)"; rc=$?
+stdout_out="$(STUB_GH_API_FAIL=pr bash "$VCS" check-closing-keyword 9 42 2>/dev/null)"
 assert_exit_code 0 "$rc" "fail-open: PR fetch failure exits 0"
 assert_contains "$stdout_out" "talos:closing-keyword-unverified" "fail-open: marker emitted on stdout"
 assert_contains "$stdout_out" "pr-fetch-failed" "fail-open: reason=pr-fetch-failed in marker"
 
 # ── FAIL-OPEN: sibling list cannot be fetched → exit 0 + stdout marker ───────
-# PR body fetch succeeds (has Closes #42) but pr list returns empty.
-cat > "$SANDBOX/nolist_gh" <<'GHSCRIPT'
-#!/usr/bin/env bash
-[ -n "${GH_LOG:-}" ] && printf '%s\n' "$*" >> "$GH_LOG"
-args="$*"
-case "$args" in
-  "pr view "*"--json number,body"*)
-    printf '{"number":9,"body":"Closes #42"}\n' ;;
-  "pr list --state open"*)
-    # Simulate failure — return nothing
-    exit 1 ;;
-  "repo view --json nameWithOwner"*)
-    printf 'acme/widget\n' ;;
-  "repo view --json defaultBranchRef"*)
-    printf 'main\n' ;;
-  *)
-    ;;
-esac
-exit 0
-GHSCRIPT
-chmod +x "$SANDBOX/nolist_gh"
-mkdir -p "$SANDBOX/noliststubs"
-cp "$SANDBOX/nolist_gh" "$SANDBOX/noliststubs/gh"
-chmod +x "$SANDBOX/noliststubs/gh"
-
-stdout_out="$(PATH="$SANDBOX/noliststubs:$PATH" GH_LOG="$SANDBOX/gh.log" \
-  bash "$VCS" check-closing-keyword 9 42 2>/dev/null)"; rc=$?
+# The PR read succeeds (its body has Closes #42) but the open-PR list fails.
+stdout_out="$(STUB_PR_BODY="Closes #42" STUB_GH_API_FAIL=prs bash "$VCS" check-closing-keyword 9 42 2>/dev/null)"; rc=$?
 assert_exit_code 0 "$rc" "fail-open sibling fetch: exits 0"
 assert_contains "$stdout_out" "talos:closing-keyword-unverified" "fail-open sibling fetch: marker on stdout"
 assert_contains "$stdout_out" "sibling-fetch-failed" "fail-open sibling fetch: reason=sibling-fetch-failed"
 
-# ── view-pr now includes body in --json fields ────────────────────────────────
+# ── view-pr reads the PR (its body included) ──────────────────────────────────
 out="$(bash "$VCS" --dry-run view-pr 9)"
-assert_contains "$out" "body" "view-pr dry-run: body included in --json fields"
+assert_contains "$out" "pulls/9" "view-pr dry-run: reads the PR resource"
+out="$(STUB_PR_BODY="the body" bash "$VCS" view-pr 9)"
+assert_contains "$out" '"body": "the body"' "view-pr: the body is part of the output"
 
 # ── file provider: check-closing-keyword is a no-op ─────────────────────────
 cat > talos.pipeline.json <<'EOF'

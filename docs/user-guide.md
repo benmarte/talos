@@ -65,7 +65,7 @@ progress as issue/PR comments and threaded Slack/Discord messages along the way.
   paths (`.env`, `*.pem`, `.npmrc`, `credentials.json`, …; 30 defaults, matched
   case-insensitively; `merge.forbidden_files`).
 - **Rate-limit retry with backoff** — every network call in every provider
-  (`gh`/`glab`/`az` CLI invocations, and the `github-api` provider's `curl`
+  (`glab`/`az` CLI invocations, and the GitHub providers' `gh api` / `curl`
   requests) automatically retries on HTTP 429, a GitHub secondary rate limit,
   or a matching CLI rate-limit error, honouring `Retry-After` when supplied
   (capped at 60s) and otherwise backing off exponentially (2s, doubling, capped at 60s), up
@@ -127,13 +127,13 @@ Per VCS provider (pick one):
 
 | Provider | Tool | Auth |
 |----------|------|------|
-| `github` (default) | [`gh`](https://cli.github.com) | `gh auth login` (or `GH_TOKEN` env var) |
-| `github-api` | none | `GITHUB_TOKEN` or `GH_TOKEN` env var — no `gh` CLI needed |
+| `github` (default) | [`gh`](https://cli.github.com), or none | `gh auth login` (or `GH_TOKEN` env var); without a logged-in `gh` it uses `GITHUB_TOKEN`/`GH_TOKEN` over `curl` |
+| `github-api` | none | `GITHUB_TOKEN` or `GH_TOKEN` env var — no `gh` CLI needed; pins the `curl` transport |
 | `gitlab` | [`glab`](https://gitlab.com/gitlab-org/cli) | `glab auth login` |
 | `azure` | `az` + azure-devops extension | `az login`; `az extension add --name azure-devops` |
 | `file` | none | fully offline |
 
-The `github-api` provider is the recommended choice for **CI/CD environments or minimal containers** where installing `gh` is impractical. Set `GITHUB_TOKEN` (or `GH_TOKEN`) and add `vcs.provider: github-api` to your `talos.pipeline.json`.
+Both GitHub providers are one REST client (#551). Its transport is `gh api` when `gh` is installed and logged in (`gh` owns auth, paging and enterprise hosts), and `curl` with `GITHUB_TOKEN` or `GH_TOKEN` otherwise; every verb behaves the same on either. `github-api` always uses `curl` and never asks `gh`, which is the recommended choice for **CI/CD environments or minimal containers**: set `GITHUB_TOKEN` (or `GH_TOKEN`) and add `vcs.provider: github-api` to your `talos.pipeline.json`. Reads use REST rather than GraphQL, so they spend the core quota; the one GraphQL call is the `ready-pr`/`draft-pr` mutation REST does not offer.
 
 Per feature (optional):
 
@@ -159,8 +159,8 @@ Per feature (optional):
 | `TEAMS_WEBHOOK_URL` | Teams via incoming webhook (no threading — Teams has no bot-token alternative, so this is its only delivery path) |
 | `BUZZ_RELAY_URL` | Buzz relay websocket URL, e.g. `ws://localhost:3000` ([block/buzz](https://github.com/block/buzz); needs `BUZZ_BOT_PRIVATE_KEY` + `notifications.buzz_channel`) |
 | `BUZZ_BOT_PRIVATE_KEY` | Nostr key (nsec or hex) the Buzz bot signs kind:9 events with (threading via NIP-10 replies) |
-| `GITHUB_TOKEN` | GitHub API token for `github-api` provider (Personal Access Token or Actions token) |
-| `GH_TOKEN` | Alternative to `GITHUB_TOKEN`; also accepted by `gh` CLI (`github` provider) |
+| `GITHUB_TOKEN` | GitHub API token for the `curl` transport (`github-api`, or `github` without a logged-in `gh`): Personal Access Token or Actions token |
+| `GH_TOKEN` | Alternative to `GITHUB_TOKEN`; also accepted by the `gh` CLI |
 
 Where to put them, first match wins: your shell env (exported variables always
 win), a `.env` file at the **repo root** (`<repo>/.env`), then `~/.talos/.env`
