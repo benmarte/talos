@@ -32,7 +32,7 @@ cfg_p() {  # <provider> [extra top-level JSON members]
 }
 claim() {  # <operator> <n> : sets out / err / rc ; operator "" = no identity
   : > "$GH_LOG"
-  out="$(STUB_CURRENT_USER="$1" bash "$TALOS" claim "$2" 2>"$SANDBOX/err")"; rc=$?
+  out="$(STUB_CURRENT_USER="${1:-}" bash "$TALOS" claim "${2:-}" 2>"$SANDBOX/err")"; rc=$?
   err="$(cat "$SANDBOX/err")"
 }
 state() { sort "$STUB_ASSIGNEE_DIR/$1" 2>/dev/null | paste -sd, -; }

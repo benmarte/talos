@@ -739,6 +739,14 @@ verbs:
                                      max-total-dispatches|budget-exceeded,
                                      a missing provider verb stop
                                      reason=unsupported-verb:<verb>
+  claim <N>                          multi-user claiming (#560): assign issue N to
+                                     this operator unless another holds it, read
+                                     the assignees back, and give it up if a lower
+                                     login also claimed it: claim=taken|owned
+                                     owner=<me> | claim=lost owner=<login> |
+                                     claim=unclaimed reason=not-assignable |
+                                     claim=off reason=<disabled|assignee-none|
+                                     identity-unresolved>
   run [--issue <N>] [--max-iterations <n>]
                                      the deterministic orchestrator (local and
                                      weak-model profiles): loops `next`, dispatches
@@ -3145,6 +3153,99 @@ if dep_blocked:
 say("wait", reason="none")
 '
 
+# ── claim (#560): the VCS assignee is the lock between operators ─────────────
+# _TALOS_CLAIM_PY: argv = my login; stdin = the issue's assignee logins, one per
+# line (provider text, so data on stdin, never argv). Prints one tab-separated
+# line: `none` (unassigned), `owned<TAB>lowest` (we are assigned and have the
+# lowest login), `tie<TAB>lowest<TAB>mine` (we are assigned but another login
+# is lower: the loser of a simultaneous claim) or `lost<TAB>lowest` (assigned,
+# not to us). Logins compare case-insensitively; the lowest keeps the issue.
+_TALOS_CLAIM_PY='
+import sys
+me = sys.argv[1].lower()
+who = []
+for line in sys.stdin.read().splitlines():
+    line = line.strip()
+    if line and line.lower() not in [w.lower() for w in who]:
+        who.append(line)
+if not who:
+    print("none")
+else:
+    low = min(who, key=lambda w: w.lower())
+    mine = next((w for w in who if w.lower() == me), None)
+    if mine is None:
+        print("lost\t" + low)
+    elif mine.lower() == low.lower():
+        print("owned\t" + low)
+    else:
+        print("tie\t" + low + "\t" + mine)
+'
+
+# _talos_claim_one <issue>: claim the issue for this operator. Sets
+# _CLAIM_RESULT (off|owned|taken|lost|unclaimed|unreadable|release-failed),
+# _CLAIM_OWNER (the login holding it, or the reason for `off`). Writes only
+# through the vcs verbs assign-issue (an unassigned issue) and unassign-issue
+# (we lost a tie), and reads the assignees back after the write, so two
+# operators claiming at once end with exactly one owner: the lowest login keeps
+# the issue, a higher one gives it up. Needs _talos_prepare to have run.
+_talos_claim_one() {
+  local _n="$1" _me _c _verdict _owner _mine
+  _CLAIM_RESULT="" _CLAIM_OWNER=""
+  talos_claim_resolve
+  case "$TALOS_CLAIM_STATE" in
+    off:*) _CLAIM_RESULT=off; _CLAIM_OWNER="${TALOS_CLAIM_STATE#off:}"; return 0 ;;
+  esac
+  _me="${TALOS_CLAIM_STATE#on:}"
+  _talos_cap _vcs issue-assignees "$_n"
+  [ "$_RC" -eq 0 ] || { _CLAIM_RESULT=unreadable; return 0; }
+  _verdict="$(printf '%s\n' "$_OUT" | python3 -I -c "$_TALOS_CLAIM_PY" "$_me")" || { _CLAIM_RESULT=unreadable; return 0; }
+  _c="taken"
+  if [ "$_verdict" = "none" ]; then
+    # Unassigned: assign ourselves (assign-issue reads back; it warns, never
+    # fails), then read the field again for whoever else arrived.
+    _talos_cap _vcs assign-issue "$_n"
+    _talos_cap _vcs issue-assignees "$_n"
+    [ "$_RC" -eq 0 ] || { _CLAIM_RESULT=unreadable; return 0; }
+    _verdict="$(printf '%s\n' "$_OUT" | python3 -I -c "$_TALOS_CLAIM_PY" "$_me")" || { _CLAIM_RESULT=unreadable; return 0; }
+    if [ "$_verdict" = "none" ]; then _CLAIM_RESULT=unclaimed; return 0; fi
+  else
+    _c="owned"
+  fi
+  IFS=$'\t' read -r _verdict _owner _mine <<< "$_verdict"
+  _CLAIM_OWNER="$_owner"
+  case "$_verdict" in
+    owned) _CLAIM_RESULT="$_c" ;;
+    lost) _CLAIM_RESULT=lost ;;
+    tie)
+      # Another login is lower and keeps the issue: give ours up.
+      _talos_cap _vcs unassign-issue "$_n" "$_mine"
+      if [ "$_RC" -ne 0 ]; then _CLAIM_RESULT=release-failed; return 0; fi
+      _CLAIM_RESULT=lost ;;
+    *) _CLAIM_RESULT=unreadable ;;
+  esac
+  return 0
+}
+
+# claim <issue>: the verb. One line: claim=taken|owned owner=<me>,
+# claim=lost owner=<login>, claim=unclaimed reason=not-assignable, or
+# claim=off reason=<disabled|assignee-none|identity-unresolved>; stop
+# reason=claim-unreadable|claim-release-failed (exit 1) when the assignees
+# cannot be read or a lost tie cannot be released.
+_talos_claim() {
+  [ "$#" -eq 1 ] && _talos_isnum "$1" || _talos_stop usage 2
+  _talos_prepare claim pipeline-config.sh pipeline-cfg-cache.sh pipeline-vcs.sh
+  _talos_claim_one "$1"
+  case "$_CLAIM_RESULT" in
+    off) _talos_emit claim "off reason=$_CLAIM_OWNER" ;;
+    taken | owned | lost) _talos_emit claim "$_CLAIM_RESULT owner=$_CLAIM_OWNER" ;;
+    unclaimed) _talos_emit claim "unclaimed reason=not-assignable" ;;
+    unreadable) _talos_stop claim-unreadable ;;
+    release-failed) _talos_stop claim-release-failed ;;
+    *) _talos_stop state-unavailable ;;
+  esac
+  _talos_flush
+}
+
 # next: one action from the state -- the PR-side half (#470), then the
 # issue-side half (#471) when no PR answered. The lease (#470, AC4) is
 # acquired for a dispatch/merge answer before it is printed, so two runs
@@ -3786,6 +3887,7 @@ case "$verb" in
   done) _talos_done "$@" ;;
   state) _talos_state "$@" ;;
   next) _talos_next "$@" ;;
+  claim) _talos_claim "$@" ;;
   run) _talos_run_loop "$@" ;;
   lease) _talos_lease_verb "$@" ;;
   help | -h | --help) _talos_help ;;

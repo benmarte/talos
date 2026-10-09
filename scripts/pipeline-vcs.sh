@@ -1484,6 +1484,11 @@ TALOS_PY_Vt4wQ9nHc2Rz
 #   error JSON `gh api --jq` prints when GET /user is refused -- is not a login.
 _vcs_shared_valid_login() {
   local _vl_re='^[A-Za-z0-9](-?[A-Za-z0-9])*(_[A-Za-z0-9]{1,39})?$' _vl_base="${1%"[bot]"}" _vl_handle
+  # An Azure DevOps identity is a user principal name, `name@domain.tld` (#560):
+  # `az account show --query user.name` prints one, so current-user and a claim
+  # must accept it. A single @, no spaces, quotes or braces.
+  local _vl_upn='^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$'
+  if [[ "$1" =~ $_vl_upn ]] && [ "${#1}" -le 254 ]; then return 0; fi
   [[ "$_vl_base" =~ $_vl_re ]] || return 1
   _vl_handle="${_vl_base%%_*}"
   [ "${#_vl_handle}" -le 39 ]
