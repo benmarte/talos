@@ -54,23 +54,8 @@ After QA returns: `bash scripts/talos.sh done qa --issue <N> --pr <PR_NUMBER> --
 Only after `qa:pass`.
 
 
-**Phase 1 — Docs first** (`ROLE_DOCS_MODE` = `always` | `auto`, default `auto`, #200). `always`: dispatch docs, full diff, no `--docs-paths-file`.
-
-`always` — dispatch the docs stage, full diff. Skip straight to the docs prompt with no `--docs-paths-file` (the full `diff-pr` diff).
-
-`auto` — the developer's own diff decides:
-1. `CHANGED_PATHS="$(bash scripts/pipeline-vcs.sh pr-files <PR_NUMBER>)"`. Non-zero/exit-2 → the gate does NOT match (fall to 4): a fetch failure is never "nothing to check".
-1a. When `STATUS_ENABLED = true`, remove from `CHANGED_PATHS` every path equal to `STATUS_FRAGMENTS_DIR` or under it, before steps 2 and 4: a status fragment (default `docs/status.d/`) must never satisfy the "starts with `docs/`" test, and a missing fragment never dispatches docs by itself.
-2. The gate matches (no docs subagent needed) when EITHER:
-   - `CHANGELOG.md` ∈ paths ∧ (`README.md` ∨ some `docs/**`), OR
-   - ≥1 non-`CHANGELOG.md` path ∧ all under `scripts/`/`tests/` ∧ `CHANGELOG.md` ∈ paths.
-   With `roles.changelog_fragments: true` (#290): `docs/CHANGELOG.d/**` fragments count as `docs/**` for both bullets, and a PR touching ONLY fragments still does NOT match — docs owns fragment prose, so it still dispatches docs (or confirms correct fragments and posts `docs:done` untouched).
-3. Gate matches → no docs subagent. Stamp: "docs verified by developer diff (docs_mode: auto)" (+ when `ROLE_CHANGELOG_FRAGMENTS = true`, " — CHANGELOG handled via fragments, not direct edits (#296)") → `bash scripts/pipeline-vcs.sh post-approval <PR_NUMBER> docs --body-file <body-file>`; then `done docs` with the stamp text (Rule 2); straight to phase 2.
-4. Gate does not match: dispatch the docs subagent with `--docs-paths-file` holding the doc-relevant subset of `CHANGED_PATHS` (`README.md`, `docs/**`, `CHANGELOG.md`; empty file for none).
-
-The docs prompt carries `CHANGELOG MODE: fragments|direct` (#296) and, with `STATUS_ENABLED = true` (#333), `STATUS FRAGMENT: <STATUS_FRAGMENTS_DIR>/<issue>-<pr>.md` (a fix round: same path). Auto-stamps need no line; with `ROLE_CHANGELOG_FRAGMENTS` on, mention the fragment convention in the stamp body.
-
-Either way: `docs:done` before phase 2.
+**Phase 1 — Docs first:** `bash scripts/talos.sh docs-gate <PR_NUMBER> --issue <N>` decides it in code.
+`docs=skip`: the verb stamped `docs:done` and ran `done docs`; dispatch nothing. `docs=dispatch`: spawn docs (the **Docs** line below; `paths-file=F` → `--docs-paths-file F`, else the full diff), then `done docs`.
 
 **Sync guard (non-isolated stages):** before dispatching reviewer and security, run `bash scripts/pipeline-vcs.sh assert-sync`; a non-zero exit halts the current issue with the error output — do not dispatch any of the three stages (Main can advance mid-run; the Step 0 check does not cover that).
 
@@ -94,7 +79,7 @@ Either way: `docs:done` before phase 2.
 
 **Docs** (if `roles.docs = true`; spawn per the usage-reporting spawn form above): `bash scripts/talos.sh prompt docs --issue <N> --pr <PR_NUMBER> [--docs-paths-file F]`.
 
-After docs completes (phase 1): `bash scripts/talos.sh done docs --issue <N> --pr <PR_NUMBER> --summary-file F`; for an auto-stamp (`docs_mode: auto`, nothing dispatched) the summary is `docs verified by developer diff (docs_mode: auto) — no subagent dispatched`.
+After docs completes (phase 1): `bash scripts/talos.sh done docs --issue <N> --pr <PR_NUMBER> --summary-file F`.
 
 After reviewer/security (2) and adversarial (3): for each `bash scripts/talos.sh done <role> --issue <N> --pr <PR_NUMBER> --verdict <V> --summary-file F` (Rule 2; the reviewer's summary includes the top 1-2 human-attention report items, #294). `next=fix-round stage=<role>` → `bash scripts/talos.sh gate fix-round <N> <role> --pr <PR_NUMBER>` (Step 3): `verdict=redispatch` → developer; `verdict=block` → stop.
 

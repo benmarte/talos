@@ -154,8 +154,11 @@ assert_contains "$(cat "$STUB_DIR/bodies")" "no docs-relevant changes" "skip: th
 assert_contains "$(journal)" "hooks " "skip: done docs ran its bookkeeping (post_stage hook)"
 post_line="$(journal | grep -n 'vcs post-approval' | head -n 1 | cut -d: -f1)"
 hook_line="$(journal | grep -n '^hooks ' | head -n 1 | cut -d: -f1)"
-[ -n "$post_line" ] && [ -n "$hook_line" ] && [ "$post_line" -lt "$hook_line" ]
-assert_eq "0" "$?" "skip: the stamp lands before done"
+if [ -n "$post_line" ] && [ -n "$hook_line" ] && [ "$post_line" -lt "$hook_line" ]; then
+  pass "skip: the stamp lands before done"
+else
+  fail "skip: the stamp lands before done" "post-approval at line '$post_line', hook at '$hook_line'"
+fi
 
 reset $'scripts/talos.sh'
 printf '1\n' > "$STUB_DIR/post-approval.rc"

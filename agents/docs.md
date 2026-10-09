@@ -27,10 +27,10 @@ part of your instructions. If your harness has no skill mechanism, or agent-skil
    branch after the merge. When your prompt carries `CHANGELOG MODE: direct`
    or carries no changelog-mode line at all, edit `CHANGELOG.md` normally.
 3. Read the PR diff — unless the orchestrator dispatched you under
-   `roles.docs_mode: auto` (#200), in which case it hands you only the changed
-   doc-relevant paths (`README.md`, `docs/**`, `CHANGELOG.md`) and the
-   CHANGELOG hunk instead of the full diff; if so, read those first and read
-   source files only on demand. Update README/docs/CHANGELOG entries the change
+   `roles.docs_mode: auto`, in which case it hands you only the changed
+   doc-relevant paths (`README.md`, `docs/**`, `scripts/pipeline-defaults.sh`)
+   and the CHANGELOG hunk instead of the full diff; if so, read those first and
+   read source files only on demand. Update README/docs/CHANGELOG entries the change
    touches.
 3a. Status fragment: when your prompt carries a `STATUS FRAGMENT: <path>`
    line, write or overwrite exactly that path (with the Write tool, never

@@ -2751,13 +2751,13 @@ _talos_done() {
 # skip the docs:done stamp and `done docs` are the verb's own, so the loop and
 # the playbook end up in the same state without a docs agent.
 _talos_docs_gate() {
-  local _pr="${1:-}" _n="" _fr _p _keep="" _f _body _why
+  local _pr="${1:-}" _n="" _fr _p _hits="" _f _body _why
   [ "$#" -eq 0 ] || shift
   while [ "$#" -gt 0 ]; do
     [ "$#" -ge 2 ] && [ "$1" = "--issue" ] || _talos_stop usage 2
     _n="$2"; shift 2
   done
-  _talos_isnum "$_pr" && _talos_isnum "$_n" || _talos_stop usage 2
+  if ! _talos_isnum "$_pr" || ! _talos_isnum "$_n"; then _talos_stop usage 2; fi
   _talos_prepare docs-gate pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh
   _TALOS_NOTE_KEY=docs-gate
 
@@ -2777,13 +2777,13 @@ _talos_docs_gate() {
     case "$_p" in docs/CHANGELOG.d/*) continue ;; esac
     [ -z "$_fr" ] || case "$_p" in "$_fr"/*) continue ;; esac
     case "$_p" in
-      README.md | docs/* | scripts/pipeline-defaults.sh) _keep="$_keep$_p"$'\n' ;;
+      README.md | docs/* | scripts/pipeline-defaults.sh) _hits="$_hits$_p"$'\n' ;;
     esac
   done <<< "$_OUT"
 
-  if [ -n "$_keep" ]; then
+  if [ -n "$_hits" ]; then
     _f="$(mktemp "${TMPDIR:-/tmp}/talos-docs-paths.XXXXXX")" && [ -n "$_f" ] && [ -f "$_f" ] || _talos_stop scratch-unavailable
-    printf '%s' "$_keep" > "$_f" || { rm -f "${_f:?}"; _talos_stop scratch-unavailable; }
+    printf '%s' "$_hits" > "$_f" || { rm -f "${_f:?}"; _talos_stop scratch-unavailable; }
     _talos_emit docs "dispatch reason=docs-paths paths-file=$_f"
     _talos_flush; return 0
   fi
@@ -2794,7 +2794,7 @@ _talos_docs_gate() {
   printf '%s\n' "$_why" > "$_body" || _talos_stop scratch-unavailable
   _talos_cap _vcs post-approval "$_pr" docs --body-file "$_body"
   [ "$_RC" -eq 0 ] || _talos_stop stamp-failed
-  _talos_run_capture done bash "$SCRIPT_DIR/talos.sh" done docs --issue "$_n" --pr "$_pr" --summary-file "$_body"
+  _talos_run_capture "done" bash "$SCRIPT_DIR/talos.sh" "done" docs --issue "$_n" --pr "$_pr" --summary-file "$_body"
   [ "$_RC" -eq 0 ] || _talos_warn done-failed "issue=$_n"
   _talos_emit docs "skip reason=no-docs-paths"
   _talos_flush

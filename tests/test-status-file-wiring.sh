@@ -4,8 +4,8 @@
 # STATUS_ENABLED, so a repo that has not opted in sees no change.
 #   1. Step 0 lists the three keys and says nothing runs when disabled.
 #   2. Step 3e: the docs prompt carries <STATUS_FRAGMENT_LINE>, fragment paths
-#      leave CHANGED_PATHS before the docs_mode: auto gate, a missing fragment
-#      never dispatches docs.
+#      never satisfy the docs gate (`talos.sh docs-gate`, pinned by
+#      tests/test-talos-docs-gate.sh).
 #   3. Step 4 runs assemble --refresh after "board -> Done" and before the
 #      worktree removal, also on the Step 1 merged-but-open heal; Step 5 runs
 #      refresh; Step 1 sweeps needs-owner (never clearing when authors are
@@ -40,7 +40,6 @@ assert_eq "false" "$(talos_env_default STATUS_ENABLED)" "config defaults: status
 # ── 2. Step 3e ───────────────────────────────────────────────────────────────
 # The docs prompt moved to templates/prompts/docs.md and the line is the verb's (#468).
 grep -qxF '{{STATUS_FRAGMENT_LINE}}' "$TALOS_ROOT/templates/prompts/docs.md" && pass "docs prompt template: STATUS_FRAGMENT_LINE marker alone on its line" || fail "docs prompt template: STATUS_FRAGMENT_LINE marker alone on its line"
-assert_contains "$skill_text" 'STATUS FRAGMENT: <STATUS_FRAGMENTS_DIR>/<issue>-<pr>.md' "docs prompt: literal fragment line named in the playbook"
 make_sandbox || exit 1
 printf '{"status": {"enabled": true}}' > "$SANDBOX/talos.pipeline.json"
 printf 'README.md\n' > "$SANDBOX/paths.txt"
@@ -48,15 +47,6 @@ assert_contains "$(talos_prompt_text docs --issue 7 --pr 9)" $'\nSTATUS FRAGMENT
 assert_contains "$(talos_prompt_text docs --issue 7 --pr 9 --docs-paths-file "$SANDBOX/paths.txt")" $'\nSTATUS FRAGMENT: docs/status.d/7-9.md\n' "docs prompt: the literal fragment line, docs_mode auto path (filtered)"
 printf '{"status": {"enabled": false}}' > "$SANDBOX/talos.pipeline.json"
 assert_not_contains "$(talos_prompt_text docs --issue 7 --pr 9)" 'STATUS FRAGMENT' "docs prompt: line omitted when disabled"
-assert_contains "$skill_text" 'remove from `CHANGED_PATHS` every path equal to `STATUS_FRAGMENTS_DIR` or under it' "gate 1a: fragment paths leave CHANGED_PATHS"
-assert_contains "$skill_text" 'never dispatches docs by itself' "gate: missing fragment never dispatches docs"
-g1="$(line_of 'remove from `CHANGED_PATHS` every path equal')"
-g2="$(line_of '2. The gate matches (no docs subagent needed)')"
-g4="$(line_of '4. Gate does not match: dispatch the docs subagent')"
-[ -n "$g1" ] && [ -n "$g2" ] && [ "$g1" -lt "$g2" ] \
-  && pass "gate 1a sits before the matches test (step 2)" || fail "gate 1a sits before the matches test (step 2)"
-[ -n "$g1" ] && [ -n "$g4" ] && [ "$g1" -lt "$g4" ] \
-  && pass "gate 1a sits before the filtered subset (step 4)" || fail "gate 1a sits before the filtered subset (step 4)"
 # ── 3. Steps 4, 5, 1 ─────────────────────────────────────────────────────────
 # The three calls moved from the prose into `talos.sh post-merge`, `summary` and `sweep`
 # (#467); tests/test-talos-postmerge.sh runs them, this file pins their wiring.

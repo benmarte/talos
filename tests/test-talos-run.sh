@@ -658,12 +658,13 @@ draft_cfg '"timeout_ms": 600000, "ci_wait_s": 900'
 draft_collect docs
 printf 'README.md\nscripts/talos.sh\n' > "$STUB_DIR/pr-files"
 printf 'docs updated\n' > "$STUB_DIR/message.docs"
-TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 1
+mkdir -p "$SANDBOX/tmp-docs"
+TMPDIR="$SANDBOX/tmp-docs" TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 1
 assert_contains "$(journal)" "agent docs" "docs-gate dispatch: a README PR dispatches the docs agent"
 assert_contains "$(cat "$STUB_DIR/agent.stdin")" "README.md" "docs-gate dispatch: the prompt carries the filtered paths"
 assert_not_contains "$(cat "$STUB_DIR/agent.stdin")" "scripts/talos.sh" "docs-gate dispatch: the prompt carries only the docs-relevant subset"
 assert_not_contains "$(journal)" "post-approval 12 docs" "docs-gate dispatch: the run does not stamp, the agent's done does"
-assert_eq "0" "$(ls "${TMPDIR:-/tmp}"/talos-docs-paths.* 2>/dev/null | wc -l | tr -d ' ')" "docs-gate dispatch: the paths file is removed after the stage"
+assert_eq "0" "$(find "$SANDBOX/tmp-docs" -maxdepth 1 -name 'talos-docs-paths.*' 2>/dev/null | wc -l | tr -d ' ')" "docs-gate dispatch: the paths file is removed after the stage"
 
 # AC13: docs and pins move with the contract.
 grep -q 'run-reasons: .*ready-pr-failed' "$GS/talos.sh"
