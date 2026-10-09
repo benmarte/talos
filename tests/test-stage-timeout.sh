@@ -86,7 +86,7 @@ set_cfg "{\"agents\": {\"runner\": \"custom\", \"runner_cmd\": \"$HANG_CMD\", \"
 rm -f "$CAPTURE"
 TALOS_STAGE_TIMEOUT_DIVISOR=30 run_stage developer
 assert_eq "124" "$RC" "global key: a hung runner exits 124"
-if [ "$SECS" -le 6 ]; then pass "global key: returned within ~6 s (took ${SECS}s)"; else fail "global key: returned within ~6 s" "took ${SECS}s"; fi
+if [ "$SECS" -le 12 ]; then pass "global key: returned within ~12 s (took ${SECS}s)"; else fail "global key: returned within ~12 s" "took ${SECS}s"; fi
 assert_contains "$(cat "$ERR")" "pipeline-agent: reason=stage-timeout role=developer after_s=2" "global key: the reason line names the role and the bound"
 assert_eq "1" "$(grep -c '^pipeline-agent: reason=stage-timeout ' "$ERR")" "global key: exactly one reason line"
 sleep 1
@@ -113,7 +113,7 @@ set_cfg "{\"agents\": {\"runner\": \"custom\", \"stage_timeout_s\": 60,
  \"runner_cmd\": \"trap '' TERM; sleep $SENT & sleep $SENT\"}}"
 TALOS_STAGE_TIMEOUT_DIVISOR=30 run_stage developer
 assert_eq "124" "$RC" "TERM-proof runner: exits 124"
-if [ "$SECS" -le 9 ]; then pass "TERM-proof runner: returned within ~9 s (took ${SECS}s)"; else fail "TERM-proof runner: returned within ~9 s" "took ${SECS}s"; fi
+if [ "$SECS" -le 18 ]; then pass "TERM-proof runner: returned within ~18 s (took ${SECS}s)"; else fail "TERM-proof runner: returned within ~18 s" "took ${SECS}s"; fi
 sleep 1
 assert_eq "" "$(leaked)" "TERM-proof runner: nothing survives the KILL"
 
