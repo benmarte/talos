@@ -19,7 +19,7 @@ err="$(STUB_ISSUE_STATE=OPEN bash "$VCS" comment-issue 7 '${HEADER}
 **Verdict:** CONFIRMED -- repro attached' 2>&1 >/dev/null)"; rc=$?
 assert_eq "1" "$rc" "comment-issue: leftover \${HEADER} exits 1"
 assert_contains "$err" "HEADER" "comment-issue: stderr names the leftover placeholder"
-assert_not_contains "$(cat "$GH_LOG")" "issue comment" "comment-issue: nothing posted"
+assert_not_contains "$(cat "$GH_LOG")" "/comments payload=" "comment-issue: nothing posted"
 
 : > "$GH_LOG"
 err="$(STUB_PR_STATE=OPEN bash "$VCS" comment-pr 9 '**Agent:** qa (talos)
@@ -27,7 +27,7 @@ err="$(STUB_PR_STATE=OPEN bash "$VCS" comment-pr 9 '**Agent:** qa (talos)
 **QA:** $VERDICT -- ${SUMMARY}' 2>&1 >/dev/null)"; rc=$?
 assert_eq "1" "$rc" "comment-pr: leftover \$VERDICT / \${SUMMARY} exits 1"
 assert_contains "$err" "SUMMARY VERDICT" "comment-pr: stderr names every leftover placeholder"
-assert_not_contains "$(cat "$GH_LOG")" "pr comment" "comment-pr: nothing posted"
+assert_not_contains "$(cat "$GH_LOG")" "/comments payload=" "comment-pr: nothing posted"
 
 # The list is derived from the templates, so a project template's own
 # variable counts too (comments.templates_dir).
@@ -36,7 +36,7 @@ printf '${HEADER}\n\nDeployed to ${ENVIRONMENT}\n' > templates/comments/deployed
 : > "$GH_LOG"
 STUB_ISSUE_STATE=OPEN bash "$VCS" comment-issue 7 'Deployed to ${ENVIRONMENT}' >/dev/null 2>&1; rc=$?
 assert_eq "1" "$rc" "comment-issue: a project template variable is guarded too"
-assert_not_contains "$(cat "$GH_LOG")" "issue comment" "comment-issue: project-variable body not posted"
+assert_not_contains "$(cat "$GH_LOG")" "/comments payload=" "comment-issue: project-variable body not posted"
 rm -rf templates
 
 # ── A fully rendered body posts ──────────────────────────────────────────────
@@ -45,7 +45,7 @@ STUB_ISSUE_STATE=OPEN bash "$VCS" comment-issue 7 '**Agent:** validator (talos)
 
 **Verdict:** CONFIRMED -- repro attached' >/dev/null 2>&1; rc=$?
 assert_eq "0" "$rc" "comment-issue: fully rendered body exits 0"
-assert_contains "$(cat "$GH_LOG")" "issue comment 7 --body **Agent:** validator (talos)" \
+assert_contains "$(cat "$GH_LOG")" 'issues/7/comments payload={"body": "**Agent:** validator (talos)' \
   "comment-issue: fully rendered body is posted"
 
 # ── Unrelated $ text, and placeholders quoted inside code, still post ────────
@@ -61,7 +61,7 @@ The old bug posted a literal `${HEADER}`.'
 : > "$GH_LOG"
 STUB_PR_STATE=OPEN bash "$VCS" comment-pr 9 "$body" >/dev/null 2>&1; rc=$?
 assert_eq "0" "$rc" "comment-pr: \${foo} / \$PATH in a code fence exits 0"
-assert_contains "$(cat "$GH_LOG")" 'echo "${foo}" "$PATH"' \
+assert_contains "$(cat "$GH_LOG")" 'echo \"${foo}\" \"$PATH\"' \
   "comment-pr: code-fenced body is posted verbatim"
 
 # ── An unclosed fence exempts nothing ────────────────────────────────────────
@@ -74,7 +74,7 @@ echo hi
 **QA:** PASS -- ${SUMMARY}' 2>&1 >/dev/null)"; rc=$?
 assert_eq "1" "$rc" "comment-pr: placeholder after an unclosed fence exits 1"
 assert_contains "$err" "SUMMARY" "comment-pr: unclosed fence does not hide the leftover"
-assert_not_contains "$(cat "$GH_LOG")" "pr comment" "comment-pr: unclosed-fence body not posted"
+assert_not_contains "$(cat "$GH_LOG")" "/comments payload=" "comment-pr: unclosed-fence body not posted"
 
 # ── A long unmatched backtick run is processed in linear time (ReDoS) ────────
 # (`+).+?\1 backtracked catastrophically: 16k backticks took ~35 s.
@@ -113,7 +113,7 @@ err="$(STUB_PR_STATE=OPEN bash "$VCS" comment-pr 9 --body-file "$SANDBOX/huge.md
 elapsed="$(python3 -c 'import sys, time; print("%.2f" % (time.time() - float(sys.argv[1])))' "$start")"
 assert_eq "1" "$rc" "comment-pr: 2,000,000-backtick body exits 1"
 assert_contains "$err" "65536" "comment-pr: stderr names the 65536-character limit"
-assert_not_contains "$(cat "$GH_LOG")" "pr comment" "comment-pr: oversized body not posted"
+assert_not_contains "$(cat "$GH_LOG")" "/comments payload=" "comment-pr: oversized body not posted"
 assert_eq "fast" "$(python3 -c 'import sys; print("fast" if float(sys.argv[1]) < 5 else "slow")' "$elapsed")" \
   "comment-pr: 2,000,000-backtick body refused in under 5 s (took ${elapsed}s)"
 
@@ -123,7 +123,7 @@ python3 -c 'print("x" * 65537, end="")' > "$SANDBOX/over.md"
 err="$(STUB_ISSUE_STATE=OPEN bash "$VCS" comment-issue 7 --body-file "$SANDBOX/over.md" 2>&1 >/dev/null)"; rc=$?
 assert_eq "1" "$rc" "comment-issue: 65537-character body exits 1"
 assert_contains "$err" "65536" "comment-issue: stderr names the limit for a just-over body"
-assert_not_contains "$(cat "$GH_LOG")" "issue comment" "comment-issue: just-over body not posted"
+assert_not_contains "$(cat "$GH_LOG")" "/comments payload=" "comment-issue: just-over body not posted"
 
 # ── An invalid-UTF-8 body is still guard-scanned, not an error ───────────────
 printf '**Agent:** qa (talos)\n\ncaf\351 ${HEADER}\n' > "$SANDBOX/latin1-body.md"
@@ -141,7 +141,7 @@ err="$(STUB_ISSUE_STATE=OPEN bash "$VCS" comment-issue 7 '**Agent:** validator (
 **Verdict:** CONFIRMED' 2>&1 >/dev/null)"; rc=$?
 assert_eq "0" "$rc" "comment-issue: a non-UTF-8 template does not block the comment"
 assert_contains "$err" "latin1.md" "comment-issue: stderr names the skipped template"
-assert_contains "$(cat "$GH_LOG")" "issue comment 7" "comment-issue: body posted despite the bad template"
+assert_contains "$(cat "$GH_LOG")" "issues/7/comments payload=" "comment-issue: body posted despite the bad template"
 rm -rf templates
 
 # ── No template directory resolves: the built-in names still guard ───────────
@@ -155,7 +155,7 @@ for name in $(cat "$TALOS_ROOT"/templates/comments/*.md \
   STUB_ISSUE_STATE=OPEN bash "$SANDBOX/bare/scripts/pipeline-vcs.sh" comment-issue 7 "left \${$name}" \
     >/dev/null 2>&1; rc=$?
   assert_eq "1" "$rc" "comment-issue: no template dir -- built-in \${$name} still refused"
-  assert_not_contains "$(cat "$GH_LOG")" "issue comment" "comment-issue: no template dir -- \${$name} body not posted"
+  assert_not_contains "$(cat "$GH_LOG")" "/comments payload=" "comment-issue: no template dir -- \${$name} body not posted"
 done
 # Control: the bare copy itself works, so the refusals above are the guard's.
 STUB_ISSUE_STATE=OPEN bash "$SANDBOX/bare/scripts/pipeline-vcs.sh" comment-issue 7 "all filled" \

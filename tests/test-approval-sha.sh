@@ -424,53 +424,25 @@ out="$(STUB_PR_HEAD_SHA="$SHA_B" PIPELINE_CONFIG="$PIPELINE_CONFIG" \
 assert_exit_code 0 "$rc" "pr-head: exits 0 on success"
 assert_eq "$SHA_B" "$(printf '%s' "$out" | tr -d '[:space:]')" "pr-head: returns head SHA"
 
-# pr-head fails when gh returns empty (no such PR / auth failure)
-# We can simulate this with a stub variant that returns empty.
-# Since the stub uses ${STUB_PR_HEAD_SHA:-abc123sha} which fills in abc123sha
-# when empty, we need to test the real empty-output path via a custom mini-stub.
-_mini_stub_dir="$(safe_mktemp_dir "${TMPDIR:-/tmp}/talos-stub-mini.XXXXXX")" || exit 1
-cat > "$_mini_stub_dir/gh" <<'GHEOF'
-#!/usr/bin/env bash
-# Mini stub that returns empty for pr view --json headRefOid
-case "$*" in
-  "pr view "*"--json headRefOid"*) printf '' ;;
-  *) ;;
-esac
-exit 0
-GHEOF
-chmod +x "$_mini_stub_dir/gh"
-out="$(PATH="$_mini_stub_dir:$STUBS_DIR:$PATH" PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+# pr-head fails when the PR reports no head SHA (STUB_PR_HEAD_SHA set but empty).
+out="$(STUB_PR_HEAD_SHA='' PIPELINE_CONFIG="$PIPELINE_CONFIG" \
        bash "$VCS" pr-head 9 2>&1)"; rc=$?
 assert_exit_code 1 "$rc" "pr-head: exits 1 when SHA unresolvable"
 assert_contains "$out" "could not resolve head SHA" "pr-head: descriptive error"
-rm -rf "$_mini_stub_dir"
 
-# Also test check-approval-sha fail-closed on unresolvable head SHA using the
-# same mini-stub approach (combined json returns empty headRefOid):
-_mini_stub_dir2="$(safe_mktemp_dir "${TMPDIR:-/tmp}/talos-stub-mini2.XXXXXX")" || exit 1
-cat > "$_mini_stub_dir2/gh" <<'GHEOF'
-#!/usr/bin/env bash
-case "$*" in
-  "pr view "*"--json headRefOid,baseRefName,labels,comments"*)
-    printf '{"headRefOid":"","baseRefName":"main","labels":[{"name":"qa:pass"}],"comments":[]}\n' ;;
-  *) ;;
-esac
-exit 0
-GHEOF
-chmod +x "$_mini_stub_dir2/gh"
-out="$(PATH="$_mini_stub_dir2:$STUBS_DIR:$PATH" PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+# Also test check-approval-sha fail-closed on an unresolvable head SHA:
+out="$(STUB_PR_HEAD_SHA='' STUB_PR_LABELS_JSON='[{"name":"qa:pass"}]' PIPELINE_CONFIG="$PIPELINE_CONFIG" \
        bash "$VCS" check-approval-sha 9 2>&1)"; rc=$?
 assert_exit_code 1 "$rc" "unresolvable SHA: check-approval-sha exits 1 (fail-closed)"
 assert_contains "$out" "could not resolve head SHA" "unresolvable SHA: descriptive error"
-rm -rf "$_mini_stub_dir2"
 
 # ── Dry-run: new verbs emit [dry-run] and make no live gh calls ───────────────
 : > "$GH_LOG"
 out="$(PIPELINE_CONFIG="$PIPELINE_CONFIG" bash "$VCS" --dry-run pr-head 9
        PIPELINE_CONFIG="$PIPELINE_CONFIG" bash "$VCS" --dry-run check-approval-sha 9)"
 assert_contains "$out" "[dry-run]" "new verbs support --dry-run"
-log_no_repo="$(grep -v "repo view" "$GH_LOG" 2>/dev/null || true)"
-assert_not_contains "$log_no_repo" "pr view" "dry-run makes no live pr view calls"
+log_no_repo="$(grep -v "jq .full_name" "$GH_LOG" 2>/dev/null || true)"
+assert_eq "" "$log_no_repo" "dry-run makes no live GitHub calls"
 
 # ── Issue #66 Part B: quoted-marker MUST NOT satisfy check-approval-sha ───────
 
@@ -495,7 +467,7 @@ assert_contains "$out" "no SHA marker" "quoted marker: treated as missing, not a
 
 # [test] Part B regression: a marker that IS the last line still passes (no over-correction).
 _lc="$(mk_comment_with_marker_author "$SHA_B" qa "trusted-bot")"
-out="$(vcs_check "$SHA_B" '[{"name":"qa:pass"}]' "$_lc")"; rc=$?
+out="$(STUB_CURRENT_USER=trusted-bot vcs_check "$SHA_B" '[{"name":"qa:pass"}]' "$_lc")"; rc=$?
 assert_exit_code 0 "$rc" "last-line marker: check-approval-sha exits 0 (happy path)"
 assert_contains "$out" "all approval labels are current" "last-line marker: reports all current"
 
@@ -518,16 +490,17 @@ assert_exit_code 0 "$rc" "trusted author + last-line marker: exits 0 (exit-zero 
 assert_contains "$out" "all approval labels are current" "trusted author: gate satisfied"
 printf '{}' > test-approval-config.json  # restore
 
-# [test] with markers.trusted_authors absent, check skipped AND talos:marker-authors-unverified emitted.
-# Config is '{}' (no trusted_authors key) — fail-open, warn, emit marker on stdout.
+# [test] with markers.trusted_authors absent, the resolved operator identity (GET /user)
+# is the one trusted author: the marker the operator's own account posted is accepted.
 out="$(vcs_check "$SHA_B" '[{"name":"qa:pass"}]' "$(mk_comment_with_marker "$SHA_B" qa)")"; rc=$?
-assert_exit_code 0 "$rc" "unconfigured trusted_authors: exits 0 (fail-open)"
-assert_contains "$out" "talos:marker-authors-unverified" \
-  "unconfigured trusted_authors: machine-readable marker emitted on stdout"
-assert_contains "$out" "reader=check-approval-sha" \
-  "unconfigured trusted_authors: marker identifies the reader"
+assert_exit_code 0 "$rc" "unconfigured trusted_authors: the operator's own marker exits 0"
 assert_contains "$out" "all approval labels are current" \
-  "unconfigured trusted_authors: approval still accepted (fail-open)"
+  "unconfigured trusted_authors: the operator's own marker is accepted"
+# GET /user refused (an Actions GITHUB_TOKEN) and no trusted_authors: fail closed, saying how to fix it.
+out="$(STUB_CURRENT_USER_STATUS=403 vcs_check "$SHA_B" '[{"name":"qa:pass"}]' "$(mk_comment_with_marker "$SHA_B" qa)")"; rc=$?
+assert_exit_code 1 "$rc" "refused identity, trusted_authors unset: exits 1 (fail closed)"
+assert_contains "$out" "markers.trusted_authors is not set" \
+  "refused identity, trusted_authors unset: the warning names the fix"
 
 # ── Issue #81: fabricated-SHA diagnostic improvements ────────────────────────
 

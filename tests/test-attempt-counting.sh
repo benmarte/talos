@@ -13,6 +13,10 @@ use_stubs
 
 VCS="$TALOS_ROOT/scripts/pipeline-vcs.sh"
 
+# GET /user answers "bot": the account that posted the fixture markers below
+# (marker-author trust itself is test-marker-author-trust.sh's subject).
+export STUB_CURRENT_USER=bot
+
 # Isolated config — avoids bleeding in any real talos.pipeline.yml
 cat > "$SANDBOX/talos.pipeline.json" <<'EOF'
 {"limits": {"max_fix_attempts": 3, "max_total_dispatches": 8}}
@@ -91,7 +95,7 @@ assert_exit_code 0 "$rc_r1" "record-attempt first qa: exits 0 (count=1 below lim
 assert_contains "$out_r1" "stage=qa" "record-attempt first qa: stdout reports stage"
 assert_contains "$out_r1" "count=1"  "record-attempt first qa: count=1"
 assert_contains "$out_r1" "total=1"  "record-attempt first qa: total=1"
-assert_contains "$(cat "$GH_LOG")" "issue comment 42" "record-attempt: posted via gh"
+assert_contains "$(cat "$GH_LOG")" "issues/42/comments payload=" "record-attempt: posted via gh"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # [test] per-stage count increments on same stage; total also increments
@@ -260,8 +264,8 @@ rc_dr=$?
 assert_exit_code 0 "$rc_dr" "dry-run record-attempt: exits 0"
 assert_contains "$out_dr" "[dry-run]" "dry-run record-attempt: prints dry-run marker"
 assert_contains "$out_dr" "record-attempt" "dry-run record-attempt: names the verb"
-# Only repo-detection may appear; no "issue comment" write should be logged
-assert_not_contains "$(cat "$GH_LOG")" "issue comment" "dry-run record-attempt: no issue comment write"
+# Only repo-detection may appear; no "/comments payload=" write should be logged
+assert_not_contains "$(cat "$GH_LOG")" "/comments payload=" "dry-run record-attempt: no issue comment write"
 
 out_dr2="$(PIPELINE_CONFIG="$PIPELINE_CONFIG" bash "$VCS" --dry-run read-attempt 42 2>&1)"
 assert_contains "$out_dr2" "[dry-run]" "dry-run read-attempt: prints dry-run marker"
@@ -273,23 +277,10 @@ assert_contains "$out_dr3" "[dry-run]" "dry-run check-attempt: prints dry-run ma
 # [test] record-attempt verifies the write landed (empty URL → exit 1)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-mkdir -p "$SANDBOX/stubs-fail"
-cat > "$SANDBOX/stubs-fail/gh" <<'GHEOF'
-#!/usr/bin/env bash
-[ -n "${GH_LOG:-}" ] && printf '%s\n' "$*" >> "$GH_LOG"
-args="$*"
-case "$args" in
-  "issue comment "*)  printf '' ;;            # empty URL — simulate failed write
-  "issue view "*"--json comments"*)  printf '{"comments":[]}\n' ;;
-  "issue view "*"--json state -q .state"*)  printf 'OPEN\n' ;;
-  "repo view "*) printf 'acme/widget\n' ;;
-  *) exit 0 ;;
-esac
-GHEOF
-chmod +x "$SANDBOX/stubs-fail/gh"
-
-out_nw="$(PATH="$SANDBOX/stubs-fail:$PATH" PIPELINE_CONFIG="$PIPELINE_CONFIG" \
-  bash "$VCS" record-attempt 42 qa 2>&1)"; rc_nw=$?
+# The comment POST answers 200 with an empty body: the write cannot be confirmed.
+github_leg gh
+printf '%s\n' '[]' '200' > "$CURL_QUEUE"
+out_nw="$(PIPELINE_CONFIG="$PIPELINE_CONFIG" bash "$VCS" record-attempt 42 qa 2>&1)"; rc_nw=$?
 assert_exit_code 1 "$rc_nw" "record-attempt: exits 1 when comment URL not returned"
 assert_contains "$out_nw" "failed to post" "record-attempt: explains failed write"
 
@@ -362,22 +353,28 @@ assert_exit_code 0 "$rc_ta" "trusted author attempt: read-attempt exits 0 (exit-
 assert_contains "$out_ta" "count=2" "trusted author attempt: marker accepted, count=2"
 assert_contains "$out_ta" "total=5" "trusted author attempt: marker accepted, total=5"
 
-# [test] with markers.trusted_authors absent/empty, fail-open: behavior unchanged
-# AND talos:marker-authors-unverified is emitted on stdout.
+# [test] with markers.trusted_authors absent/empty, the resolved operator identity
+# (GET /user) is the one trusted author: the operator's own marker counts.
 # Config used: $PIPELINE_CONFIG which has no markers.trusted_authors key.
 _any_attempt="$(mk_attempt_comment qa 3 7)"
-# read-attempt stdout only (2>/dev/null) — the talos: marker goes to stdout
 out_fo="$(STUB_ISSUE_COMMENTS_JSON="$_any_attempt" PIPELINE_CONFIG="$PIPELINE_CONFIG" \
   bash "$VCS" read-attempt 42 2>/dev/null)"
 rc_fo="$(STUB_ISSUE_COMMENTS_JSON="$_any_attempt" PIPELINE_CONFIG="$PIPELINE_CONFIG" \
   bash "$VCS" read-attempt 42 >/dev/null 2>&1; echo $?)"
-assert_exit_code 0 "$rc_fo" "unconfigured trusted_authors read-attempt: exits 0 (fail-open)"
-assert_contains "$out_fo" "talos:marker-authors-unverified" \
-  "unconfigured trusted_authors read-attempt: machine-readable marker on stdout"
-assert_contains "$out_fo" "reader=read-attempt" \
-  "unconfigured trusted_authors read-attempt: marker identifies the reader"
+assert_exit_code 0 "$rc_fo" "unconfigured trusted_authors read-attempt: exits 0"
 assert_contains "$out_fo" "count=3" \
-  "unconfigured trusted_authors read-attempt: marker still accepted (fail-open)"
+  "unconfigured trusted_authors read-attempt: the operator's own marker counts"
+assert_not_contains "$out_fo" "talos:marker-authors-unverified" \
+  "unconfigured trusted_authors read-attempt: identity resolved, nothing unverified"
+
+# GET /user refused (an Actions GITHUB_TOKEN, a GitHub App token) and no
+# trusted_authors: fail closed -- the marker is not counted, and stderr says how to fix it.
+err_fo="$(STUB_CURRENT_USER_STATUS=403 STUB_ISSUE_COMMENTS_JSON="$_any_attempt" PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+  bash "$VCS" read-attempt 42 2>&1 >/dev/null)"
+out_fo="$(STUB_CURRENT_USER_STATUS=403 STUB_ISSUE_COMMENTS_JSON="$_any_attempt" PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+  bash "$VCS" read-attempt 42 2>/dev/null)"
+assert_contains "$out_fo" "count=0" "refused identity read-attempt: the marker is not counted (fail closed)"
+assert_contains "$err_fo" "markers.trusted_authors is not set" "refused identity read-attempt: stderr names the fix"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # #172: record-attempt --idempotency-key idempotency
@@ -415,7 +412,7 @@ assert_contains "$out_idem2" "count=1" \
   "idempotency-key second call (same key): count stays 1, not 2"
 assert_contains "$out_idem2" "total=1" \
   "idempotency-key second call (same key): total stays 1, not 2"
-assert_not_contains "$(cat "$GH_LOG")" "issue comment" \
+assert_not_contains "$(cat "$GH_LOG")" "/comments payload=" \
   "idempotency-key second call (same key): no second POST logged"
 
 # [test] a DIFFERENT key against the same prior marker does NOT dedupe -- it
@@ -426,7 +423,7 @@ out_idem3="$(STUB_ISSUE_COMMENTS_JSON="$_idem_prior" PIPELINE_CONFIG="$PIPELINE_
 rc_idem3=$?
 assert_exit_code 0 "$rc_idem3" "idempotency-key different key: exits 0"
 assert_contains "$out_idem3" "count=2" "idempotency-key different key: count increments to 2"
-assert_contains "$(cat "$GH_LOG")" "issue comment" \
+assert_contains "$(cat "$GH_LOG")" "/comments payload=" \
   "idempotency-key different key: a new marker IS posted"
 
 # [test] omitting --idempotency-key preserves today's behaviour: always
@@ -437,7 +434,7 @@ out_idem4="$(STUB_ISSUE_COMMENTS_JSON="$_idem_prior" PIPELINE_CONFIG="$PIPELINE_
 rc_idem4=$?
 assert_exit_code 0 "$rc_idem4" "no --idempotency-key: exits 0 (back-compat)"
 assert_contains "$out_idem4" "count=2" "no --idempotency-key: count increments as before"
-assert_contains "$(cat "$GH_LOG")" "issue comment" \
+assert_contains "$(cat "$GH_LOG")" "/comments payload=" \
   "no --idempotency-key: always posts (back-compat)"
 
 # [test] an invalid token (disallowed characters) is rejected, exit 1, before
@@ -448,7 +445,7 @@ out_idem5="$(STUB_ISSUE_COMMENTS_JSON='[]' PIPELINE_CONFIG="$PIPELINE_CONFIG" \
 rc_idem5=$?
 assert_exit_code 1 "$rc_idem5" "invalid idempotency-key: exits 1"
 assert_contains "$out_idem5" "idempotency-key" "invalid idempotency-key: error names the flag"
-assert_not_contains "$(cat "$GH_LOG")" "issue comment" \
+assert_not_contains "$(cat "$GH_LOG")" "/comments payload=" \
   "invalid idempotency-key: nothing posted"
 
 # [test] dry-run with --idempotency-key is unchanged: single [dry-run] line,
@@ -495,7 +492,7 @@ rc_pr2=$?
 assert_exit_code 0 "$rc_pr2" "--pr retry (bash -c #2, same head): exits 0"
 assert_contains "$out_pr2" "count=1" \
   "--pr retry (bash -c #2, same head): count stays N+1 (1), not N+2 (2)"
-assert_not_contains "$(cat "$GH_LOG")" "issue comment" \
+assert_not_contains "$(cat "$GH_LOG")" "/comments payload=" \
   "--pr retry (bash -c #2, same head): no second POST logged"
 
 # [test] a NEW head SHA (genuinely new commit -> genuinely new attempt)
@@ -519,7 +516,7 @@ rc_pr_both=$?
 assert_exit_code 1 "$rc_pr_both" "--pr with --idempotency-key: exits 1"
 assert_contains "$out_pr_both" "mutually exclusive" \
   "--pr with --idempotency-key: error names the conflict"
-assert_not_contains "$(cat "$GH_LOG")" "issue comment" \
+assert_not_contains "$(cat "$GH_LOG")" "/comments payload=" \
   "--pr with --idempotency-key: nothing posted"
 
 # [test] unresolvable head SHA fails closed -- exit 1, nothing posted.
@@ -528,7 +525,7 @@ out_pr_nohead="$(STUB_PR_HEAD_SHA='' PIPELINE_CONFIG="$PIPELINE_CONFIG" \
   bash "$VCS" record-attempt 42 qa --pr 404 2>&1)"
 rc_pr_nohead=$?
 assert_exit_code 1 "$rc_pr_nohead" "--pr unresolvable head: exits 1"
-assert_not_contains "$(cat "$GH_LOG")" "issue comment" \
+assert_not_contains "$(cat "$GH_LOG")" "/comments payload=" \
   "--pr unresolvable head: nothing posted"
 
 # [test] grep guard: no SKILL.md record-attempt call site hand-mints a token

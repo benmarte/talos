@@ -9,43 +9,18 @@
 # newest trusted marker comment after skipping a leading **Agent:** line and the
 # marker line -- never `**Needs owner**`-style header text from the verb itself.
 #
-# The stock gh stub serves one comments fixture for every issue number, so this
-# file puts a small wrapper in front of it (comments per number, and a switch
-# per failing call). Everything else still reaches the stock stub and its log.
+# STUB_FIX_DIR points the stock gh stub at a directory of per-number comment
+# fixtures (comments-<n>.json) and switches for the calls that must fail
+# (fail-comments-<n>, fail-post-comment, fail-delete-<n>).
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox
 use_stubs
 
 VCS="$TALOS_ROOT/scripts/pipeline-vcs.sh"
-export STUBS_DIR
 export NO_FIX="$SANDBOX/fixtures"
-mkdir -p "$NO_FIX" "$SANDBOX/bin"
-
-cat > "$SANDBOX/bin/gh" <<'TALOS_WRAPPER_h7Qk2LmP9xRt'
-#!/usr/bin/env bash
-# Per-number comments and per-call failures in front of the stock gh stub.
-case "$*" in
-  "api --paginate repos/"*"/issues/"*"/comments"*)
-    printf '%s\n' "$*" >> "${GH_LOG:-/dev/null}"
-    _n="${3#repos/*/issues/}"; _n="${_n%%/*}"
-    if [ -e "$NO_FIX/fail-comments-$_n" ]; then echo "gh: HTTP 502: Bad Gateway" >&2; exit 1; fi
-    if [ -f "$NO_FIX/comments-$_n.json" ]; then cat "$NO_FIX/comments-$_n.json"; else printf '[]'; fi
-    exit 0 ;;
-  "api --method POST repos/"*"/issues/"*"/comments"*)
-    printf '%s\n' "$*" >> "${GH_LOG:-/dev/null}"
-    if [ -e "$NO_FIX/fail-post-comment" ]; then echo "gh: HTTP 403: Forbidden" >&2; exit 1; fi
-    exit 0 ;;
-  "api --method DELETE repos/"*"/issues/"*"/labels/"*)
-    printf '%s\n' "$*" >> "${GH_LOG:-/dev/null}"
-    _n="${4#repos/*/issues/}"; _n="${_n%%/*}"
-    if [ -e "$NO_FIX/fail-delete-$_n" ]; then echo "gh: HTTP 404: Not Found" >&2; exit 1; fi
-    exit 0 ;;
-esac
-exec "$STUBS_DIR/gh" "$@"
-TALOS_WRAPPER_h7Qk2LmP9xRt
-chmod +x "$SANDBOX/bin/gh"
-export PATH="$SANDBOX/bin:$PATH"
+mkdir -p "$NO_FIX"
+export STUB_FIX_DIR="$NO_FIX"
 
 set_cfg() { printf '%s\n' "$1" > talos.pipeline.json; }
 set_cfg '{"vcs": {"provider": "github", "repo": "acme/widget"}}'
@@ -121,13 +96,15 @@ run mark-needs-owner 7 "Which option do we ship?"
 assert_eq "0" "$RC" "mark: exits 0"
 assert_eq "marked n=7 comment=posted" "$OUT" "mark: reports the comment was posted"
 LOG="$(cat "$GH_LOG")"
-assert_contains "$LOG" "api --method POST repos/acme/widget/issues/7/comments -f body=Which option do we ship?${NL}${NL}${MARK}" \
+assert_contains "$LOG" "issues/7/comments payload=" "mark: POSTs the comment to issues/<n>/comments"
+assert_contains "$LOG" "payload={\"body\": \"Which option do we ship?\\n\\n${MARK}\"}" \
   "mark: posts the text, a blank line, then the marker as the last line"
-assert_eq "1" "$(grep -c -- '--method POST repos/acme/widget/issues/7/comments' "$GH_LOG")" "mark: exactly one comment POST"
+assert_eq "1" "$(grep -c -- 'issues/7/comments payload=' "$GH_LOG")" "mark: exactly one comment POST"
 assert_eq "1" "$(printf '%s' "$LOG" | grep -c -F -- "$MARK")" "mark: the marker appears once"
-assert_contains "$LOG" "api --method POST repos/acme/widget/issues/7/labels -f labels[]=$LABEL" "mark: adds the label"
-_c="$(grep -n -- '--method POST repos/acme/widget/issues/7/comments' "$GH_LOG" | head -1 | cut -d: -f1)"
-_l="$(grep -n -- '--method POST repos/acme/widget/issues/7/labels' "$GH_LOG" | head -1 | cut -d: -f1)"
+assert_contains "$LOG" "issues/7/labels payload=" "mark: adds the label through issues/<n>/labels"
+assert_contains "$LOG" "payload={\"labels\":[\"$LABEL\"]}" "mark: the label is the payload"
+_c="$(grep -n -- 'issues/7/comments payload=' "$GH_LOG" | head -1 | cut -d: -f1)"
+_l="$(grep -n -- 'issues/7/labels payload=' "$GH_LOG" | head -1 | cut -d: -f1)"
 [ -n "$_c" ] && [ -n "$_l" ] && [ "$_c" -lt "$_l" ] && pass "mark: the comment is posted before the label is added" \
   || fail "mark: the comment is posted before the label is added" "comment line '$_c', label line '$_l'"
 
@@ -135,14 +112,14 @@ _l="$(grep -n -- '--method POST repos/acme/widget/issues/7/labels' "$GH_LOG" | h
 reset
 run mark-needs-owner 12 "Merge now or wait?"
 assert_eq "0" "$RC" "mark: a PR number exits 0"
-assert_contains "$(cat "$GH_LOG")" "issues/12/labels -f labels[]=$LABEL" "mark: a PR number is labelled through the issues route"
+assert_contains "$(cat "$GH_LOG")" "issues/12/labels" "mark: a PR number is labelled through the issues route"
 
 # --body-file <path>
 reset
 printf 'From a file\nsecond line\n' > "$SANDBOX/q.txt"
 run mark-needs-owner 7 --body-file "$SANDBOX/q.txt"
 assert_eq "0" "$RC" "mark: --body-file <path> exits 0"
-assert_contains "$(cat "$GH_LOG")" "-f body=From a file${NL}second line${NL}${NL}${MARK}" "mark: --body-file <path> posts the file text plus the marker"
+assert_contains "$(cat "$GH_LOG")" "payload={\"body\": \"From a file\\nsecond line\\n\\n${MARK}\"}" "mark: --body-file <path> posts the file text plus the marker"
 
 # --body-file - (stdin, heredoc)
 reset
@@ -151,7 +128,7 @@ Question from stdin with $(touch pwned) and `touch pwned2`
 TALOS_TXT_p4Nw8ZxK2mQe
 )"; RC=$?
 assert_eq "0" "$RC" "mark: --body-file - exits 0"
-assert_contains "$(cat "$GH_LOG")" 'body=Question from stdin with $(touch pwned) and `touch pwned2`' "mark: --body-file - posts the stdin text byte for byte"
+assert_contains "$(cat "$GH_LOG")" 'Question from stdin with $(touch pwned) and `touch pwned2`' "mark: --body-file - posts the stdin text byte for byte"
 assert_file_absent "$SANDBOX/pwned" "mark: stdin text is never executed"
 assert_file_absent "pwned2" "mark: stdin text with backticks is never executed"
 
@@ -209,7 +186,7 @@ reset
 : > "$NO_FIX/fail-comments-7"
 run mark-needs-owner 7 "Will this post?"
 assert_eq "1" "$RC" "mark: a failed comment read exits 1"
-assert_not_contains "$(cat "$GH_LOG")" "--method POST" "mark: a failed comment read posts nothing"
+assert_not_contains "$(cat "$GH_LOG")" "-X POST" "mark: a failed comment read posts nothing"
 
 # ── idempotency ──────────────────────────────────────────────────────────
 reset
@@ -217,8 +194,8 @@ mkc 7 "owner|Which option do we ship?\n\n$MARK"
 run mark-needs-owner 7 "Which option do we ship?"
 assert_eq "0" "$RC" "idempotent: same text, unanswered, exits 0"
 assert_eq "marked n=7 comment=existing" "$OUT" "idempotent: reports the existing comment"
-assert_eq "0" "$(grep -c -- '--method POST repos/acme/widget/issues/7/comments' "$GH_LOG")" "idempotent: no second comment"
-assert_contains "$(cat "$GH_LOG")" "issues/7/labels -f labels[]=$LABEL" "idempotent: the label is still ensured"
+assert_eq "0" "$(grep -c -- 'issues/7/comments payload=' "$GH_LOG")" "idempotent: no second comment"
+assert_contains "$(cat "$GH_LOG")" "issues/7/labels" "idempotent: the label is still ensured"
 
 # marker line and trailing whitespace are ignored; so are CRLF line endings
 reset
@@ -290,7 +267,7 @@ setup_list() {
   mkc 5 "owner|**Agent:** developer (talos)\n\n**Needs owner** — Pick a DB\n\n$MARK" "owner|Use postgres"
   mkc 9 "owner|Merge strategy?\n\nsecond line\n\n$MARK" "owner|**Agent:** qa (talos)\n\nverdict" "owner|<!-- talos:attempt stage=qa count=1 total=3 -->"
 }
-mutating() { grep -c -E -- '--method (POST|DELETE|PUT|PATCH)|--add-label|--remove-label| edit ' "$GH_LOG"; }
+mutating() { grep -c -E -- '-X (POST|DELETE|PUT|PATCH)' "$GH_LOG"; }
 
 setup_list
 run list-needs-owner
@@ -340,7 +317,8 @@ assert_not_contains "$OUT" "cleared n=9" "clear: leaves an unanswered item alone
 assert_not_contains "$OUT" "cleared n=12" "clear: leaves an item with no marker comment alone (12)"
 assert_contains "$OUT" "needs-owner n=5 kind=issue answered=yes" "clear: the listing is still printed"
 assert_eq "1" "$(mutating)" "clear: exactly one label-mutating call"
-assert_contains "$(cat "$GH_LOG")" "api --method DELETE repos/acme/widget/issues/5/labels/pipeline%3Aneeds-owner" "clear: removes the label from the answered item"
+assert_contains "$(cat "$GH_LOG")" "-X DELETE" "clear: removes the label with a DELETE"
+assert_contains "$(cat "$GH_LOG")" "repos/acme/widget/issues/5/labels/pipeline%3Aneeds-owner" "clear: ...from the answered item"
 
 # a PR is cleared through the same route
 setup_list

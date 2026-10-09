@@ -2,17 +2,18 @@
 # test-pr-draft.sh -- opt-in draft PR plumbing (#332, PR 1 of 2):
 #   create-pr --draft, ready-pr, draft-pr, pr-is-draft, pr-ci-runs.
 #
-# Every provider command is asserted as the exact argv the CLI stub received
-# (the #162 lesson: assert the constructed command, not a happy exit code).
-# The gh/glab/az stubs live in this file (a private PATH dir) so the shared
-# tests/stubs/* stay untouched.
+# Every provider command is asserted as the exact request or argv the stub
+# received (the #162 lesson: assert the constructed command, not a happy exit
+# code). GitHub goes through the shared gh stub (REST requests in GH_LOG, the
+# JSON payload on the same line); the glab/az stubs live in this file (a private
+# PATH dir) so the shared tests/stubs/* stay untouched.
 #
 # Covers:
 #   (a) create-pr without --draft: golden argv per provider (default unchanged)
-#   (b) create-pr --draft: exact argv per provider; github-api/file behaviour
-#   (c) ready-pr / draft-pr: exact argv per provider (github with --undo)
+#   (b) create-pr --draft: exact request/argv per provider; github-api/file behaviour
+#   (c) ready-pr / draft-pr: exact requests/argv per provider
 #   (d) pr-is-draft: draft(0) / ready(1) / fetch failure(2) / garbage(2) /
-#       non-numeric id(2) / github-api + file (2); stdout empty on every 2
+#       non-numeric id(2) / file (2); stdout empty on every 2
 #   (e) pr-ci-runs: executed-run count scoped to this PR (skipped runs and a
 #       reused branch name's other-PR runs excluded; one listing), failure,
 #       garbage, unattributable/truncated/capped listings, non-github (2)
@@ -33,29 +34,6 @@ BIN="$SANDBOX/draftbin"
 mkdir -p "$BIN"
 export DRAFT_LOG="$SANDBOX/draft.log"
 : > "$DRAFT_LOG"
-
-cat > "$BIN/gh" <<'EOF'
-#!/usr/bin/env bash
-case "$*" in
-  "repo view"*) printf 'acme/widget\n'; exit 0 ;;
-esac
-{ for a in "$@"; do printf '[%s]' "$a"; done; printf '\n'; } >> "$DRAFT_LOG"
-case "$*" in
-  "pr create "*) printf 'https://github.com/acme/widget/pull/9\n' ;;
-  "pr view "*"--json isDraft"*)
-    [ "${STUB_FAIL:-}" = "1" ] && { echo "gh: HTTP 502" >&2; exit 1; }
-    printf '%s' "${STUB_RESP:-}" ;;
-  "pr view "*"--json headRefName"*)
-    [ "${STUB_FAIL:-}" = "1" ] && { echo "gh: HTTP 502" >&2; exit 1; }
-    if [ -n "${STUB_HEAD+x}" ]; then printf '%s' "$STUB_HEAD"; else printf '{"headRefName":"feat/x"}'; fi ;;
-  "api "*"actions/runs"*)
-    [ "${STUB_RUNS_FAIL:-}" = "1" ] && { echo "gh: HTTP 500" >&2; exit 1; }
-    printf '%s' "${STUB_RUNS:-}" ;;
-  "pr ready "*)
-    [ "${STUB_FAIL:-}" = "1" ] && { echo "gh: pr ready failed" >&2; exit 1; } ;;
-esac
-exit 0
-EOF
 
 cat > "$BIN/glab" <<'EOF'
 #!/usr/bin/env bash
@@ -86,7 +64,7 @@ case "$*" in
 esac
 exit 0
 EOF
-chmod +x "$BIN/gh" "$BIN/glab" "$BIN/az"
+chmod +x "$BIN/glab" "$BIN/az"
 export PATH="$BIN:$PATH"
 
 BODY="$SANDBOX/body.md"
@@ -107,15 +85,19 @@ EOF
   esac
 }
 
-# last_log -- the most recent argv line the stubs logged.
+# last_log -- the most recent argv line the glab/az stubs logged; last_gh -- the
+# gh stub's, with the request's JSON payload (if any) on the end of the line.
 last_log() { tail -n 1 "$DRAFT_LOG"; }
+last_gh() { tail -n 1 "$GH_LOG"; }
 log_lines() { wc -l < "$DRAFT_LOG" | tr -d ' '; }
 
 # ── (a) create-pr without --draft: golden argv per provider ──────────────────
-set_provider github; : > "$DRAFT_LOG"
+set_provider github; : > "$GH_LOG"
 bash "$VCS" create-pr feat/x "T" "$BODY" >/dev/null 2>&1
-assert_eq "[pr][create][--base][main][--head][feat/x][--title][T][--body-file][$BODY][--repo][acme/widget]" \
-  "$(last_log)" "github: create-pr without --draft keeps the golden argv"
+assert_contains "$(last_gh)" "-X POST" "github: create-pr is a POST"
+assert_contains "$(last_gh)" "repos/acme/widget/pulls payload=" "github: create-pr goes to pulls"
+assert_contains "$(last_gh)" 'payload={"title": "T", "head": "feat/x", "base": "main", "draft": false, "body": "the body"}' \
+  "github: create-pr without --draft keeps the golden payload (a ready PR)"
 
 set_provider gitlab; : > "$DRAFT_LOG"
 bash "$VCS" create-pr feat/x "T" "$BODY" >/dev/null 2>&1
@@ -128,11 +110,11 @@ assert_eq "AZ [repos][pr][create][--source-branch][feat/x][--target-branch][main
   "$(last_log)" "azure: create-pr without --draft keeps the golden argv"
 
 # ── (b) create-pr --draft ────────────────────────────────────────────────────
-set_provider github; : > "$DRAFT_LOG"
+set_provider github; : > "$GH_LOG"
 out="$(bash "$VCS" create-pr feat/x "T" "$BODY" --draft 2>&1)"; rc=$?
 assert_eq "0" "$rc" "github: create-pr --draft exits 0"
-assert_eq "[pr][create][--base][main][--head][feat/x][--title][T][--body-file][$BODY][--repo][acme/widget][--draft]" \
-  "$(last_log)" "github: create-pr --draft appends exactly --draft"
+assert_contains "$(last_gh)" 'payload={"title": "T", "head": "feat/x", "base": "main", "draft": true, "body": "the body"}' \
+  "github: create-pr --draft sends exactly draft: true"
 assert_contains "$out" "pull/9" "github: create-pr --draft still prints the PR URL"
 
 set_provider gitlab; : > "$DRAFT_LOG"
@@ -145,24 +127,25 @@ bash "$VCS" create-pr feat/x "T" "$BODY" --draft >/dev/null 2>&1
 assert_eq "AZ [repos][pr][create][--source-branch][feat/x][--target-branch][main][--title][T][--description][the body][--org][https://dev.azure.com/acme][--project][proj][--repository][acme/widget][--output][json][--draft][true]" \
   "$(last_log)" "azure: create-pr --draft appends exactly --draft true"
 
-set_provider github; : > "$DRAFT_LOG"
+set_provider github; : > "$GH_LOG"
 out="$(bash "$VCS" --dry-run create-pr feat/x "T" "$BODY" --draft 2>&1)"
-assert_contains "$out" "gh pr create --base main --head feat/x" "github: dry-run prints the create command"
-assert_contains "$out" "--draft" "github: dry-run create-pr --draft shows --draft"
-assert_eq "0" "$(log_lines)" "github: dry-run create-pr --draft calls no CLI"
+assert_contains "$out" "[dry-run] POST repos/acme/widget/pulls head=feat/x base=main" "github: dry-run prints the create request"
+assert_contains "$out" "draft=true" "github: dry-run create-pr --draft shows draft=true"
+assert_eq "" "$(cat "$GH_LOG")" "github: dry-run create-pr --draft calls nothing"
 
-# github-api: never silently opens a non-draft PR; no HTTP call
+# github-api is the same client on the token transport: it opens the draft too
+# (the PR is created with draft: true in the same request; never a non-draft one).
 set_provider github-api
 export GITHUB_TOKEN="test-token-pr-draft"
-: > "$CURL_LOG"
+: > "$CURL_LOG"; printf '%s\n' '{"html_url":"https://github.com/acme/widget/pull/9"}' > "$CURL_QUEUE"
 out="$(bash "$VCS" create-pr feat/x "T" "$BODY" --draft 2>"$SANDBOX/err.log")"; rc=$?
-assert_eq "2" "$rc" "github-api: create-pr --draft exits 2"
-assert_eq "" "$out" "github-api: create-pr --draft prints nothing on stdout"
-assert_eq "" "$(cat "$CURL_LOG")" "github-api: create-pr --draft makes no HTTP call"
-assert_contains "$(cat "$SANDBOX/err.log")" "not supported" "github-api: create-pr --draft explains itself on stderr"
+assert_eq "0" "$rc" "github-api: create-pr --draft exits 0"
+assert_contains "$out" "pull/9" "github-api: create-pr --draft prints the PR URL"
+assert_contains "$(cat "$CURL_LOG")" '"draft": true' "github-api: create-pr --draft sends draft: true"
 : > "$CURL_LOG"
 out="$(bash "$VCS" --dry-run create-pr feat/x "T" "$BODY" --draft 2>&1)"; rc=$?
-assert_eq "2" "$rc" "github-api: create-pr --draft --dry-run also exits 2"
+assert_eq "0" "$rc" "github-api: create-pr --draft --dry-run exits 0"
+assert_eq "" "$(cat "$CURL_LOG")" "github-api: create-pr --draft --dry-run makes no HTTP call"
 
 # file mode: create-pr --draft stays the existing no-op
 set_provider file
@@ -171,13 +154,16 @@ assert_eq "0" "$rc" "file: create-pr --draft is a no-op (exit 0)"
 assert_contains "$out" "no PR created" "file: create-pr --draft prints the usual no-op message"
 
 # ── (c) ready-pr / draft-pr ──────────────────────────────────────────────────
-set_provider github; : > "$DRAFT_LOG"
+set_provider github; : > "$GH_LOG"
 bash "$VCS" ready-pr 42 >/dev/null 2>&1; rc=$?
 assert_eq "0" "$rc" "github: ready-pr exits 0"
-assert_eq "[pr][ready][42][--repo][acme/widget]" "$(last_log)" "github: ready-pr is gh pr ready <n>"
+assert_contains "$(cat "$GH_LOG")" "repos/acme/widget/pulls/42" "github: ready-pr reads the PR for its node id"
+assert_contains "$(last_gh)" "graphql payload=" "github: ready-pr ends in a GraphQL request (the one thing REST cannot do)"
+assert_contains "$(last_gh)" "markPullRequestReadyForReview" "github: ready-pr is the markPullRequestReadyForReview mutation"
+assert_contains "$(last_gh)" '"variables": {"id": "PR_node_42"}' "github: ...on the PR's node id"
 bash "$VCS" draft-pr 42 >/dev/null 2>&1; rc=$?
 assert_eq "0" "$rc" "github: draft-pr exits 0"
-assert_eq "[pr][ready][42][--undo][--repo][acme/widget]" "$(last_log)" "github: draft-pr is gh pr ready <n> --undo"
+assert_contains "$(last_gh)" "convertPullRequestToDraft" "github: draft-pr is the convertPullRequestToDraft mutation"
 
 set_provider gitlab; : > "$DRAFT_LOG"
 bash "$VCS" ready-pr 42 >/dev/null 2>&1
@@ -193,26 +179,29 @@ bash "$VCS" draft-pr 42 >/dev/null 2>&1
 assert_eq "AZ [repos][pr][update][--id][42][--draft][true][--org][https://dev.azure.com/acme][--output][json]" \
   "$(last_log)" "azure: draft-pr is az repos pr update --draft true"
 
-set_provider github; : > "$DRAFT_LOG"
+set_provider github; : > "$DRAFT_LOG"; : > "$GH_LOG"
 for v in ready-pr draft-pr; do
   out="$(bash "$VCS" $v "not-a-number" 2>/dev/null)"; rc=$?
   assert_eq "2" "$rc" "github: $v rejects a non-numeric PR id with exit 2"
   assert_eq "" "$out" "github: $v prints nothing for a non-numeric PR id"
 done
-assert_eq "0" "$(log_lines)" "github: a non-numeric PR id reaches no CLI"
+assert_eq "" "$(cat "$GH_LOG")" "github: a non-numeric PR id reaches no request"
 
+: > "$GH_LOG"
 out="$(bash "$VCS" --dry-run ready-pr 42 2>&1)"
-assert_contains "$out" "gh pr ready 42" "github: ready-pr --dry-run prints the command"
-assert_eq "0" "$(log_lines)" "github: ready-pr --dry-run calls no CLI"
+assert_contains "$out" "markPullRequestReadyForReview" "github: ready-pr --dry-run names the mutation"
+assert_eq "" "$(cat "$GH_LOG")" "github: ready-pr --dry-run calls nothing"
 
-# github-api: exit 2, no HTTP call
+# github-api: the same client, the same two requests, over curl
 set_provider github-api; : > "$CURL_LOG"
-for v in ready-pr draft-pr; do
-  out="$(bash "$VCS" $v 42 2>/dev/null)"; rc=$?
-  assert_eq "2" "$rc" "github-api: $v exits 2"
-  assert_eq "" "$out" "github-api: $v prints nothing on stdout"
-done
-assert_eq "" "$(cat "$CURL_LOG")" "github-api: ready-pr/draft-pr make no HTTP call"
+printf '%s\n' '{"node_id":"PR_node_42"}' '{"data":{"x":{}}}' > "$CURL_QUEUE"
+out="$(bash "$VCS" ready-pr 42 2>/dev/null)"; rc=$?
+assert_eq "0" "$rc" "github-api: ready-pr exits 0"
+assert_contains "$(cat "$CURL_LOG")" "https://api.github.com/graphql" "github-api: ready-pr sends the mutation to /graphql"
+printf '%s\n' '{"node_id":"PR_node_42"}' '{"errors":[{"message":"no"}],"data":null}' > "$CURL_QUEUE"
+out="$(bash "$VCS" draft-pr 42 2>/dev/null)"; rc=$?
+assert_eq "2" "$rc" "github-api: a GraphQL-level refusal is exit 2"
+assert_eq "" "$out" "github-api: ...with nothing on stdout"
 
 # file mode: exit 2
 set_provider file
@@ -224,59 +213,79 @@ done
 
 # ── (d) pr-is-draft ──────────────────────────────────────────────────────────
 # check_draft <provider> <label> <draft-json> <ready-json> <garbage-json>
+# $5: the variable that carries the stubbed PR response (github: the gh stub's
+# verbatim PR body; the others: this file's private stubs).
 check_draft() {
-  local prov="$1" argv="$2" draft_json="$3" ready_json="$4"
+  local prov="$1" argv="$2" draft_json="$3" ready_json="$4" respvar="${5:-STUB_RESP}" failvar="STUB_FAIL=1" lastlog=last_log
   set_provider "$prov"
-  : > "$DRAFT_LOG"
-  out="$(STUB_RESP="$draft_json" bash "$VCS" pr-is-draft 42 2>/dev/null)"; rc=$?
+  : > "$DRAFT_LOG"; : > "$GH_LOG"
+  if [ "$prov" = github ]; then failvar="STUB_GH_API_FAIL=pr"; lastlog=last_gh; fi
+  out="$(env "$respvar=$draft_json" bash "$VCS" pr-is-draft 42 2>/dev/null)"; rc=$?
   assert_eq "0" "$rc" "$prov: pr-is-draft exits 0 for a draft"
   assert_eq "draft" "$out" "$prov: pr-is-draft prints draft"
-  assert_eq "$argv" "$(last_log)" "$prov: pr-is-draft fetches the exact command"
+  if [ "$prov" = github ]; then
+    assert_contains "$($lastlog)" "$argv" "$prov: pr-is-draft fetches the PR"
+  else
+    assert_eq "$argv" "$($lastlog)" "$prov: pr-is-draft fetches the exact command"
+  fi
 
-  out="$(STUB_RESP="$ready_json" bash "$VCS" pr-is-draft 42 2>/dev/null)"; rc=$?
+  out="$(env "$respvar=$ready_json" bash "$VCS" pr-is-draft 42 2>/dev/null)"; rc=$?
   assert_eq "1" "$rc" "$prov: pr-is-draft exits 1 for a ready PR"
   assert_eq "ready" "$out" "$prov: pr-is-draft prints ready"
 
-  out="$(STUB_FAIL=1 STUB_RESP="$ready_json" bash "$VCS" pr-is-draft 42 2>/dev/null)"; rc=$?
+  out="$(env "$failvar" "$respvar=$ready_json" bash "$VCS" pr-is-draft 42 2>/dev/null)"; rc=$?
   assert_eq "2" "$rc" "$prov: pr-is-draft exits 2 on a failed fetch"
   assert_eq "" "$out" "$prov: pr-is-draft prints nothing on a failed fetch"
 
   local garbage
   for garbage in 'not json at all' '' '[]' '{}' '{"unrelated":true}' '{"isDraft":"false","draft":"false"}' '{"isDraft":null,"draft":null}' '{"isDraft":0,"draft":0}'; do
-    out="$(STUB_RESP="$garbage" bash "$VCS" pr-is-draft 42 2>/dev/null)"; rc=$?
+    out="$(env "$respvar=$garbage" bash "$VCS" pr-is-draft 42 2>/dev/null)"; rc=$?
     assert_eq "2" "$rc" "$prov: pr-is-draft exits 2 for response '${garbage:-<empty>}'"
     assert_eq "" "$out" "$prov: pr-is-draft prints nothing for response '${garbage:-<empty>}'"
   done
 
-  : > "$DRAFT_LOG"
+  : > "$DRAFT_LOG"; : > "$GH_LOG"
   for bad in abc 4x2 "" "-1" "4 2"; do
-    out="$(STUB_RESP="$draft_json" bash "$VCS" pr-is-draft "$bad" 2>/dev/null)"; rc=$?
+    out="$(env "$respvar=$draft_json" bash "$VCS" pr-is-draft "$bad" 2>/dev/null)"; rc=$?
     assert_eq "2" "$rc" "$prov: pr-is-draft exits 2 for PR id '$bad'"
     assert_eq "" "$out" "$prov: pr-is-draft prints nothing for PR id '$bad'"
   done
   assert_eq "0" "$(log_lines)" "$prov: a bad PR id reaches no CLI"
+  assert_eq "" "$(cat "$GH_LOG")" "$prov: a bad PR id reaches no request"
 }
 
-check_draft github "[pr][view][42][--json][isDraft][--repo][acme/widget]" '{"isDraft":true}' '{"isDraft":false}'
+check_draft github "repos/acme/widget/pulls/42" '{"draft":true}' '{"draft":false}' STUB_GH_PR_RAW
 check_draft gitlab "GLAB [mr][view][42][--output][json][-R][acme/widget]" '{"iid":42,"draft":true}' '{"iid":42,"draft":false}'
 check_draft azure "AZ [repos][pr][show][--id][42][--org][https://dev.azure.com/acme][--output][json]" '{"isDraft":true}' '{"isDraft":false}'
 
 # A PR whose fields are all there but only the *other* provider's key: still unverified.
 set_provider github
-out="$(STUB_RESP='{"draft":true}' bash "$VCS" pr-is-draft 42 2>/dev/null)"; rc=$?
-assert_eq "2" "$rc" "github: a response without isDraft is unverified, not ready"
-assert_eq "" "$out" "github: a response without isDraft prints nothing"
+out="$(STUB_GH_PR_RAW='{"isDraft":true}' bash "$VCS" pr-is-draft 42 2>/dev/null)"; rc=$?
+assert_eq "2" "$rc" "github: a response without draft is unverified, not ready"
+assert_eq "" "$out" "github: a response without draft prints nothing"
 
 set_provider github
-: > "$DRAFT_LOG"
+: > "$GH_LOG"
 out="$(bash "$VCS" --dry-run pr-is-draft 42 2>/dev/null)"; rc=$?
 assert_eq "2" "$rc" "github: pr-is-draft --dry-run verifies nothing, so exits 2"
 assert_eq "" "$out" "github: pr-is-draft --dry-run prints nothing on stdout"
 out="$(bash "$VCS" --dry-run pr-is-draft 42 2>&1 >/dev/null)"
-assert_contains "$out" "[dry-run] gh pr view 42 --json isDraft" "github: pr-is-draft --dry-run shows the command on stderr"
-assert_eq "0" "$(log_lines)" "github: pr-is-draft --dry-run calls no CLI"
+assert_contains "$out" "[dry-run] GET repos/acme/widget/pulls/42 (.draft)" "github: pr-is-draft --dry-run shows the request on stderr"
+assert_eq "" "$(cat "$GH_LOG")" "github: pr-is-draft --dry-run calls nothing"
 
-for prov in github-api file; do
+# github-api reads the same field over curl.
+set_provider github-api; : > "$CURL_LOG"
+printf '%s\n' '{"draft":true}' > "$CURL_QUEUE"
+out="$(bash "$VCS" pr-is-draft 42 2>/dev/null)"; rc=$?
+assert_eq "0 draft" "$rc $out" "github-api: pr-is-draft prints draft, exit 0"
+printf '%s\n' '{"draft":false}' > "$CURL_QUEUE"
+out="$(bash "$VCS" pr-is-draft 42 2>/dev/null)"; rc=$?
+assert_eq "1 ready" "$rc $out" "github-api: pr-is-draft prints ready, exit 1"
+printf '%s\n' '500' > "$CURL_QUEUE"
+out="$(bash "$VCS" pr-is-draft 42 2>/dev/null)"; rc=$?
+assert_eq "2 " "$rc $out" "github-api: a failed read is exit 2 with nothing on stdout"
+
+for prov in file; do
   set_provider "$prov"; : > "$CURL_LOG"
   out="$(bash "$VCS" pr-is-draft 42 2>/dev/null)"; rc=$?
   assert_eq "2" "$rc" "$prov: pr-is-draft exits 2"
@@ -302,39 +311,39 @@ ok42="$(run_json success 42)"; fail42="$(run_json failure 42)"
 live42="$(run_json null 42)"; skip42="$(run_json skipped 42)"
 ok99="$(run_json success 99)"; skip99="$(run_json skipped 99)"
 
-set_provider github; : > "$DRAFT_LOG"
-out="$(STUB_RUNS="$(runs_page 6 "$ok42" "$fail42" "$live42" "$skip42" "$skip42" "$ok99")" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
+set_provider github; : > "$GH_LOG"
+out="$(STUB_GH_RUNS_RAW="$(runs_page 6 "$ok42" "$fail42" "$live42" "$skip42" "$skip42" "$ok99")" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
 assert_eq "0" "$rc" "github: pr-ci-runs exits 0"
 assert_eq "3" "$out" "github: pr-ci-runs counts this PR's executed runs (6 listed - 1 other PR - 2 skipped; an in-progress run counts)"
-assert_contains "$(cat "$DRAFT_LOG")" "[api][--paginate][-X][GET][repos/acme/widget/actions/runs][-f][event=pull_request][-f][branch=feat/x][-F][per_page=100]" \
+assert_contains "$(cat "$GH_LOG")" "repos/acme/widget/actions/runs?event=pull_request&branch=pr-branch&per_page=100" \
   "github: pr-ci-runs lists pull_request runs for the PR head branch"
-assert_contains "$(cat "$DRAFT_LOG")" "[pr][view][42][--json][headRefName][--repo][acme/widget]" \
+assert_contains "$(cat "$GH_LOG")" "repos/acme/widget/pulls/42" \
   "github: pr-ci-runs resolves the head branch from the PR"
-assert_eq "1" "$(grep -c 'actions/runs' "$DRAFT_LOG")" \
+assert_eq "1" "$(grep -c 'actions/runs' "$GH_LOG")" \
   "github: pr-ci-runs makes ONE run listing (no total-then-skipped race)"
 
 # Regression: another PR that reused the same head branch name must not inflate
 # the count. Its runs name that PR, not this one.
-out="$(STUB_RUNS="$(runs_page 3 "$ok99" "$ok99" "$skip99")" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
+out="$(STUB_GH_RUNS_RAW="$(runs_page 3 "$ok99" "$ok99" "$skip99")" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
 assert_eq "0" "$rc" "github: pr-ci-runs exits 0 when every listed run belongs to another PR"
 assert_eq "0" "$out" "github: pr-ci-runs does not count another PR's runs that reused the branch name"
-out="$(STUB_RUNS="$(runs_page 3 "$ok42" "$ok99" "$ok99")" bash "$VCS" pr-ci-runs 42 2>/dev/null)"
+out="$(STUB_GH_RUNS_RAW="$(runs_page 3 "$ok42" "$ok99" "$ok99")" bash "$VCS" pr-ci-runs 42 2>/dev/null)"
 assert_eq "1" "$out" "github: pr-ci-runs counts only this PR's run among a reused branch name's runs"
 
-out="$(STUB_RUNS="$(runs_page 2 "$ok42" "$fail42")" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
+out="$(STUB_GH_RUNS_RAW="$(runs_page 2 "$ok42" "$fail42")" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
 assert_eq "0" "$rc" "github: pr-ci-runs exits 0 when nothing was skipped"
 assert_eq "2" "$out" "github: pr-ci-runs counts every run when none were skipped"
 
-out="$(STUB_RUNS="$(runs_page 2 "$skip42" "$skip42")" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
+out="$(STUB_GH_RUNS_RAW="$(runs_page 2 "$skip42" "$skip42")" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
 assert_eq "0" "$rc" "github: pr-ci-runs exits 0 when every run was skipped"
 assert_eq "0" "$out" "github: pr-ci-runs prints a real 0 when every run was skipped"
 
-out="$(STUB_RUNS="$(runs_page 0)" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
+out="$(STUB_GH_RUNS_RAW="$(runs_page 0)" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
 assert_eq "0" "$rc" "github: pr-ci-runs exits 0 for zero runs"
 assert_eq "0" "$out" "github: pr-ci-runs prints a real 0"
 
-# Pages arrive as concatenated JSON documents (gh api --paginate).
-out="$(STUB_RUNS="$(runs_page 3 "$ok42" "$skip42")$(runs_page 3 "$ok42")" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
+# Several pages (the stub serves one concatenated document per page, with a Link header).
+out="$(STUB_GH_RUNS_RAW="$(runs_page 3 "$ok42" "$skip42")$(runs_page 3 "$ok42")" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
 assert_eq "0" "$rc" "github: pr-ci-runs reads a multi-page listing"
 assert_eq "2" "$out" "github: pr-ci-runs sums runs across pages"
 
@@ -347,47 +356,53 @@ for bad in '' 'not json' '[]' '{}' '{"total_count":"3","workflow_runs":[]}' '{"t
            '{"total_count":1,"workflow_runs":[{"conclusion":"success","pull_requests":[{"number":"42"}]}]}' \
            '{"total_count":1,"workflow_runs":[{"conclusion":"success","pull_requests":[{}]}]}' \
            '{"total_count":1,"workflow_runs":[{"conclusion":"success","pull_requests":[]}]}'; do
-  out="$(STUB_RUNS="$bad" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
+  out="$(STUB_GH_RUNS_RAW="$bad" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
   assert_eq "2" "$rc" "github: pr-ci-runs exits 2 for runs response '${bad:-<empty>}'"
   assert_eq "" "$out" "github: pr-ci-runs prints nothing for runs response '${bad:-<empty>}'"
 done
 
 # A listing shorter than its own total_count (truncated pages) is unverified.
-out="$(STUB_RUNS="$(runs_page 5 "$ok42" "$ok42")" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
+out="$(STUB_GH_RUNS_RAW="$(runs_page 5 "$ok42" "$ok42")" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
 assert_eq "2" "$rc" "github: pr-ci-runs exits 2 when the listing is shorter than total_count"
 assert_eq "" "$out" "github: pr-ci-runs prints no short count for a truncated listing"
 
 # GitHub caps filtered run searches at 1000 results: a total that reaches the
 # cap is unverified, never reported as a (short) count.
-out="$(STUB_RUNS="$(runs_page 1000 "$ok42")" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
+out="$(STUB_GH_RUNS_RAW="$(runs_page 1000 "$ok42")" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
 assert_eq "2" "$rc" "github: pr-ci-runs exits 2 when the total reaches the 1000-result cap"
 assert_eq "" "$out" "github: pr-ci-runs prints no short count at the cap"
 
-out="$(STUB_RUNS_FAIL=1 STUB_RUNS="$(runs_page 1 "$ok42")" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
+out="$(STUB_GH_API_FAIL=runs STUB_GH_RUNS_RAW="$(runs_page 1 "$ok42")" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
 assert_eq "2" "$rc" "github: pr-ci-runs exits 2 when the runs fetch fails"
 assert_eq "" "$out" "github: pr-ci-runs prints nothing when the runs fetch fails"
 
-out="$(STUB_FAIL=1 STUB_RUNS="$(runs_page 1 "$ok42")" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
+out="$(STUB_GH_API_FAIL=pr STUB_GH_RUNS_RAW="$(runs_page 1 "$ok42")" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
 assert_eq "2" "$rc" "github: pr-ci-runs exits 2 when the head branch cannot be fetched"
 assert_eq "" "$out" "github: pr-ci-runs prints nothing when the head branch cannot be fetched"
 
-out="$(STUB_HEAD='{"headRefName":""}' STUB_RUNS="$(runs_page 1 "$ok42")" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
+out="$(STUB_PR_HEAD_REF_NAME='' STUB_GH_RUNS_RAW="$(runs_page 1 "$ok42")" bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
 assert_eq "2" "$rc" "github: pr-ci-runs exits 2 for an empty head branch"
 assert_eq "" "$out" "github: pr-ci-runs prints nothing for an empty head branch"
 
-: > "$DRAFT_LOG"
+: > "$GH_LOG"
 for bad in abc "" "4x"; do
-  out="$(STUB_RUNS='{"total_count":3}' bash "$VCS" pr-ci-runs "$bad" 2>/dev/null)"; rc=$?
+  out="$(STUB_GH_RUNS_RAW='{"total_count":3}' bash "$VCS" pr-ci-runs "$bad" 2>/dev/null)"; rc=$?
   assert_eq "2" "$rc" "github: pr-ci-runs exits 2 for PR id '$bad'"
   assert_eq "" "$out" "github: pr-ci-runs prints nothing for PR id '$bad'"
 done
-assert_eq "0" "$(log_lines)" "github: a bad PR id reaches no CLI"
+assert_eq "" "$(cat "$GH_LOG")" "github: a bad PR id reaches no request"
 
 out="$(bash "$VCS" --dry-run pr-ci-runs 42 2>/dev/null)"; rc=$?
 assert_eq "2" "$rc" "github: pr-ci-runs --dry-run verifies nothing, so exits 2"
 assert_eq "" "$out" "github: pr-ci-runs --dry-run prints nothing on stdout"
 
-for prov in github-api gitlab azure file; do
+# github-api counts runs over curl, the same listing.
+set_provider github-api; : > "$CURL_LOG"
+printf '%s\n' '{"head":{"ref":"feat/x"}}' "$(runs_page 2 "$ok42" "$skip42")" > "$CURL_QUEUE"
+out="$(bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
+assert_eq "0 1" "$rc $out" "github-api: pr-ci-runs counts this PR's executed runs over curl"
+
+for prov in gitlab azure file; do
   set_provider "$prov"; : > "$CURL_LOG"
   out="$(bash "$VCS" pr-ci-runs 42 2>/dev/null)"; rc=$?
   assert_eq "2" "$rc" "$prov: pr-ci-runs exits 2 (github only)"
@@ -433,18 +448,20 @@ for prov_cli in "gitlab glab" "azure az" "github gh"; do
   fi
   set_provider "$prov"
   for v in pr-is-draft pr-ci-runs ready-pr draft-pr; do
-    out="$(PATH="/usr/bin:/bin" "$BASH_BIN" "$VCS" "$v" 42 2>/dev/null)"; rc=$?
+    out="$(PATH="/usr/bin:/bin" env -u GITHUB_TOKEN -u GH_TOKEN "$BASH_BIN" "$VCS" "$v" 42 2>/dev/null)"; rc=$?
     assert_eq "2" "$rc" "$prov without $cli: $v exits 2"
     assert_eq "" "$out" "$prov without $cli: $v prints nothing on stdout"
   done
 done
 
-# A failing gh pr ready is a failure, not a result.
+# A failing mutation is a failure, not a result.
 set_provider github
 for v in ready-pr draft-pr; do
-  out="$(STUB_FAIL=1 bash "$VCS" "$v" 42 2>/dev/null)"; rc=$?
-  assert_eq "2" "$rc" "github: $v exits 2 when gh fails"
-  assert_eq "" "$out" "github: $v prints nothing when gh fails"
+  out="$(STUB_GRAPHQL_FAIL=1 bash "$VCS" "$v" 42 2>/dev/null)"; rc=$?
+  assert_eq "2" "$rc" "github: $v exits 2 when GitHub refuses the mutation"
+  assert_eq "" "$out" "github: $v prints nothing when GitHub refuses the mutation"
+  out="$(STUB_GH_API_FAIL=pr bash "$VCS" "$v" 42 2>/dev/null)"; rc=$?
+  assert_eq "2" "$rc" "github: $v exits 2 when the PR cannot be read"
 done
 
 # ── pr.draft is a known config key ───────────────────────────────────────────

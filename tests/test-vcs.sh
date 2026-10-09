@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Regression tests for pipeline-vcs.sh — github verb → gh command mapping
-# (via --dry-run and the gh stub) and the file-mode adapter's real logic.
+# Regression tests for pipeline-vcs.sh — the GitHub provider on its gh transport
+# (--dry-run and the gh stub's REST fixtures; the token transport is
+# tests/test-github-api.sh, and tests/test-github-transport-parity.sh runs every
+# verb through both) and the file-mode adapter's real logic.
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox
@@ -10,30 +12,32 @@ VCS="$TALOS_ROOT/scripts/pipeline-vcs.sh"
 
 # ── GitHub adapter: dry-run command construction ─────────────────────────────
 out="$(bash "$VCS" --dry-run label-issue 5 --add pipeline:confirmed --remove pipeline:ready)"
-assert_contains "$out" "gh issue edit 5" "label-issue targets the issue"
-assert_contains "$out" "--add-label 'pipeline:confirmed'" "label-issue --add mapped"
-assert_contains "$out" "--remove-label 'pipeline:ready'" "label-issue --remove mapped"
+assert_contains "$out" "repos/acme/widget/issues/5/labels" "label-issue targets the issue"
+assert_contains "$out" "labels=pipeline:confirmed" "label-issue --add mapped"
+assert_contains "$out" "for: pipeline:ready" "label-issue --remove mapped"
 
 out="$(bash "$VCS" --dry-run merge-pr 9)"
-assert_contains "$out" "gh pr merge 9 --squash --delete-branch" "merge-pr defaults to squash"
+assert_contains "$out" "PUT repos/acme/widget/pulls/9/merge merge_method=squash" "merge-pr defaults to squash"
+assert_contains "$out" "DELETE the head branch" "merge-pr deletes the head branch"
 
 cat > talos.pipeline.json <<'EOF'
 {"merge": {"method": "rebase"}}
 EOF
 out="$(bash "$VCS" --dry-run merge-pr 9)"
-assert_contains "$out" "--rebase" "merge.method config changes merge flag"
+assert_contains "$out" "merge_method=rebase" "merge.method config changes the merge method"
 rm talos.pipeline.json
 
 out="$(bash "$VCS" --dry-run comment-pr 9 "review done")"
-assert_contains "$out" "gh issue comment 9" "comment-pr uses issue comment API"
+assert_contains "$out" "POST repos/acme/widget/issues/9/comments" "comment-pr uses issue comment API"
 
 out="$(bash "$VCS" --dry-run close-issue 5 "resolved")"
-assert_contains "$out" "gh issue close 5" "close-issue closes after commenting"
+assert_contains "$out" "PATCH repos/acme/widget/issues/5 state=closed" "close-issue closes after commenting"
 
 # Real-run against the stub: verify gh receives the calls
 bash "$VCS" comment-issue 5 "findings body" >/dev/null 2>&1
-assert_contains "$(cat "$GH_LOG")" "issue comment 5 --body findings body" \
-  "comment-issue invokes gh with the body"
+assert_contains "$(cat "$GH_LOG")" "-X POST" "comment-issue POSTs through gh api"
+assert_contains "$(cat "$GH_LOG")" 'payload={"body": "findings body"}' \
+  "comment-issue sends the body as the JSON payload"
 
 # ── Comment body: --body-file support, and no silent flag-as-body ─────────────
 # Regression: passing `--body-file <path>` used to make "$2" the body verbatim,
@@ -42,24 +46,24 @@ assert_contains "$(cat "$GH_LOG")" "issue comment 5 --body findings body" \
 printf 'verdict from a file' > body.md
 
 out="$(bash "$VCS" --dry-run comment-issue 7 --body-file body.md)"
-assert_contains "$out" "--body verdict from a file" \
+assert_contains "$out" "body=verdict from a file" \
   "comment-issue --body-file reads the file into the body"
 assert_not_contains "$out" "body.md" \
   "comment-issue --body-file does not pass the path through as the body"
 
 out="$(bash "$VCS" --dry-run comment-pr 8 --body-file body.md)"
-assert_contains "$out" "--body verdict from a file" \
+assert_contains "$out" "body=verdict from a file" \
   "comment-pr --body-file reads the file into the body"
 
 out="$(bash "$VCS" --dry-run comment-issue 7 --body "inline via flag")"
-assert_contains "$out" "--body inline via flag" \
+assert_contains "$out" "body=inline via flag" \
   "comment-issue --body accepts an explicit flag form too"
 
 # A bare flag must never reach gh as the body.
 out="$(bash "$VCS" --dry-run comment-issue 7 --body-file 2>&1)"; rc=$?
 assert_exit_code 1 "$rc" "comment-issue refuses a flag-shaped body"
 assert_contains "$out" "looks like a flag" "the refusal explains itself"
-assert_not_contains "$out" "gh issue comment" "no gh call is constructed"
+assert_not_contains "$out" "issues/7/comments" "no request is constructed"
 
 out="$(bash "$VCS" --dry-run comment-pr 8 --body-file 2>&1)"; rc=$?
 assert_exit_code 1 "$rc" "comment-pr refuses a flag-shaped body"
@@ -71,11 +75,11 @@ assert_contains "$out" "cannot read" "the unreadable path is named"
 
 # A body that legitimately starts with a dash is still a body, not a flag.
 out="$(bash "$VCS" --dry-run comment-issue 7 "- bullet one")"
-assert_contains "$out" "--body - bullet one" "a leading single dash is not treated as a flag"
+assert_contains "$out" "body=- bullet one" "a leading single dash is not treated as a flag"
 
 # Verbs that are not comment verbs keep their own flag handling.
 out="$(bash "$VCS" --dry-run label-issue 7 --add pipeline:ready)"
-assert_contains "$out" "--add-label 'pipeline:ready'" "label-issue flags are untouched"
+assert_contains "$out" "labels=pipeline:ready" "label-issue flags are untouched"
 
 rm -f body.md
 
@@ -661,25 +665,25 @@ assert_eq "" "$out" "#171 github: list-prs prints no partial list on a failed pa
 : > "$GH_LOG"
 bash "$VCS" rerun-ci 9 >/dev/null 2>&1
 log="$(cat "$GH_LOG")"
-assert_contains "$log" "run rerun 111 --failed" "failed run re-run"
-assert_not_contains "$log" "run rerun 112" "successful run left alone"
+assert_contains "$log" "actions/runs/111/rerun-failed-jobs" "failed run re-run"
+assert_not_contains "$log" "actions/runs/112" "successful run left alone"
 
 # ── Dry-run variants of the new verbs never hit gh ────────────────────────────
 : > "$GH_LOG"
 out="$(bash "$VCS" --dry-run find-pr 42; bash "$VCS" --dry-run check-pr-files 9; bash "$VCS" --dry-run rerun-ci 9)"
 assert_contains "$out" "[dry-run]" "new verbs support --dry-run"
-assert_not_contains "$(grep -v "repo view" "$GH_LOG")" "pr " "dry-run makes no pr/run gh calls"
+assert_eq "" "$(grep -v "jq .full_name" "$GH_LOG")" "dry-run makes no GitHub calls"
 
 # ── GitHub adapter: create-issue ─────────────────────────────────────────────
 out="$(bash "$VCS" --dry-run create-issue "Fix the crash" /dev/null --label pipeline:ready)"
-assert_contains "$out" "gh issue create" "create-issue dry-run contains 'gh issue create'"
-assert_contains "$out" "--label" "create-issue dry-run includes --label arg"
+assert_contains "$out" "POST repos/acme/widget/issues" "create-issue dry-run names the REST call"
+assert_contains "$out" "labels=pipeline:ready" "create-issue dry-run includes the label"
 
 : > "$GH_LOG"
 printf '' > "$SANDBOX/body.md"
 bash "$VCS" create-issue "Fix the crash" "$SANDBOX/body.md" --label pipeline:ready >/dev/null 2>&1
-assert_contains "$(cat "$GH_LOG")" "issue create" "create-issue invokes gh with issue create"
-assert_contains "$(cat "$GH_LOG")" "--label pipeline:ready" "create-issue passes label to gh"
+assert_contains "$(cat "$GH_LOG")" "-X POST" "create-issue POSTs through gh api"
+assert_contains "$(cat "$GH_LOG")" '"labels": ["pipeline:ready"]' "create-issue passes the label in the payload"
 
 # ── pr-checks-required: scoped to merge.required_checks only (#205 review) ───
 # The literal QA CI-wait loop used to aggregate every check `gh pr checks`
@@ -729,7 +733,7 @@ EOF
 : > "$GH_LOG"
 out="$(bash "$VCS" --dry-run pr-checks-required 9)"
 assert_contains "$out" "[dry-run]" "pr-checks-required: --dry-run prints a dry-run line"
-assert_not_contains "$(grep -v "repo view" "$GH_LOG")" "pr " "pr-checks-required: --dry-run makes no gh pr calls"
+assert_eq "" "$(grep -v "jq .full_name" "$GH_LOG")" "pr-checks-required: --dry-run makes no GitHub calls"
 rm talos.pipeline.json
 
 # ── #449: --wait is digits, read in base 10 (a leading zero is not octal) ────
@@ -739,11 +743,11 @@ rm talos.pipeline.json
 cat > talos.pipeline.json <<'EOF'
 {"merge": {"required_checks": ["test"]}}
 EOF
-_449_wait() {  # $1=--wait value; sets out, rc, reads (gh `pr checks` calls)
+_449_wait() {  # $1=--wait value; sets out, rc, reads (check-run reads, one per poll)
   : > "$GH_LOG"
   out="$(STUB_PR_CHECKS="$(printf 'test\tpending\t0m1s\thttps://x')" TALOS_RETRY_SLEEP_SCALE=0 \
     bash "$VCS" pr-checks-required 9 --wait "$1" 2>&1)"; rc=$?
-  reads="$(grep -c '^pr checks' "$GH_LOG")"
+  reads="$(grep -c 'check-runs' "$GH_LOG")"
 }
 for _449_v in 08 09; do
   _449_wait "$_449_v"
@@ -945,7 +949,7 @@ _a299_state() { cat "$STUB_ASSIGNEE_FILE" 2>/dev/null; }
 for _p in github github-api gitlab azure; do
   case "$_p" in
     github)     _new=42; _created="https://github.com/acme/widget/issues/42"
-                _read_sig="--json assignees"; _write_sig="--add-assignee" ;;
+                _read_sig="repos/acme/widget/issues/42"; _write_sig="/assignees" ;;
     github-api) _new=42; _created="https://github.com/acme/widget/issues/42"
                 _read_sig="/issues/42	"; _write_sig="/assignees" ;;
     gitlab)     _new=42; _created="https://gitlab.com/acme/widget/-/issues/42"
@@ -1048,12 +1052,14 @@ for _v in label-issue label-pr; do
   : > "$GH_LOG"
   bash "$VCS" "$_v" 5 --add "$_455_label" --remove "a b" >/dev/null 2>"$SANDBOX/err"; rc=$?
   assert_eq "0" "$rc" "#455 $_v: a label with a quote, \$( and a space is accepted (err: $(cat "$SANDBOX/err"))"
-  assert_eq "1" "$(grep -c -F -- "edit 5 --add-label $_455_label --remove-label a b" "$GH_LOG")" \
-    "#455 $_v: the label reaches gh as one argument, remove label with a space intact"
+  assert_eq "1" "$(grep -c -F -- "payload={\"labels\": [\"it's \$(touch $_455_mark) x\"]}" "$GH_LOG")" \
+    "#455 $_v: the label reaches gh as one JSON string, never through a shell"
+  assert_eq "1" "$(grep -c -F -- "-X DELETE" "$GH_LOG")" "#455 $_v: the removal is one DELETE"
+  assert_contains "$(cat "$GH_LOG")" "issues/5/labels/a%20b" "#455 $_v: the remove label with a space is one encoded path segment"
   assert_eq "no" "$([ -e "$_455_mark" ] && echo yes || echo no)" "#455 $_v: label text is never executed"
 done
 out="$(bash "$VCS" --dry-run label-issue 5 --add "it's x")"
-assert_contains "$out" "--add-label 'it'\\''s x'" "#455 label-issue: the dry-run line quotes a label with a quote"
+assert_contains "$out" "labels=it's x" "#455 label-issue: the dry-run line shows a label with a quote verbatim"
 
 # gitlab: the same, through glab's argv (a leading dash and a space included)
 printf '{"vcs": {"provider": "gitlab", "repo": "acme/widget"}}\n' > talos.pipeline.json
@@ -1070,38 +1076,30 @@ unset STUB_GLAB_ARGV_LOG
 rm -f talos.pipeline.json
 
 # ── #455: edit-pr-body <pr> --body-file <path|-> ─────────────────────────────
-_epb_bin="$SANDBOX/epb-bin"; mkdir -p "$_epb_bin"
-cat > "$_epb_bin/gh" <<'TALOS_STUB_EPB455'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$GH_LOG"
-case "$*" in "pr edit"*) cat > "$EPB_STDIN" ;; esac
-exit 0
-TALOS_STUB_EPB455
-chmod +x "$_epb_bin/gh"
-export EPB_STDIN="$SANDBOX/epb.stdin"
 _epb_body="$SANDBOX/epb-body.md"
 printf '%s\n' "Summary with it's \$(touch $_455_mark) and \`ticks\`" "" "Closes #455" > "$_epb_body"
 _epb_cfg() { printf '{"vcs": {"provider": "%s", "repo": "acme/widget"}}\n' "$1" > talos.pipeline.json; }
 _epb_run() { OUT="$(bash "$VCS" "$@" 2>"$SANDBOX/err")"; RC=$?; ERR="$(cat "$SANDBOX/err")"; }
 
-# github: gh pr edit --body-file -, body on stdin only
+# github: PATCH pulls/<n>, the body in the payload only
 _epb_cfg github
-: > "$GH_LOG"; : > "$EPB_STDIN"
+: > "$GH_LOG"
 export TALOS_WRITE_LOG="$SANDBOX/epb-writes.log"; : > "$TALOS_WRITE_LOG"
-PATH="$_epb_bin:$PATH" _epb_run edit-pr-body 7 --body-file "$_epb_body"
+_epb_run edit-pr-body 7 --body-file "$_epb_body"
 assert_eq "0" "$RC" "#455 github: edit-pr-body exits 0 (err: $ERR)"
 assert_eq "edited pr=7 body" "$OUT" "#455 github: edit-pr-body prints one line"
-assert_eq "1" "$(grep -c -F -- 'pr edit 7 --body-file - --repo acme/widget' "$GH_LOG")" "#455 github: gh pr edit --body-file -"
-assert_eq "$(cat "$_epb_body")" "$(cat "$EPB_STDIN")" "#455 github: the body arrives on stdin intact"
-assert_not_contains "$(cat "$GH_LOG")" "Summary with" "#455 github: the body is never an argument"
+assert_eq "1" "$(grep -c -F -- '-X PATCH' "$GH_LOG")" "#455 github: one PATCH"
+assert_contains "$(cat "$GH_LOG")" "repos/acme/widget/pulls/7" "#455 github: pulls/<n> endpoint"
+assert_contains "$(cat "$GH_LOG")" 'payload={"body": "Summary with' "#455 github: the JSON payload carries the body"
+assert_not_contains "$(sed 's/ payload=.*//' "$GH_LOG")" "Summary with" "#455 github: the body is never an argument"
 assert_eq "edit-pr-body" "$(cat "$TALOS_WRITE_LOG")" "#455 github: edit-pr-body is journaled in the write log"
 assert_eq "no" "$([ -e "$_455_mark" ] && echo yes || echo no)" "#455 github: the body is never executed"
 
 # --body-file - reads stdin
-: > "$GH_LOG"; : > "$EPB_STDIN"
-OUT="$(printf 'from stdin\n' | PATH="$_epb_bin:$PATH" bash "$VCS" edit-pr-body 7 --body-file - 2>"$SANDBOX/err")"; RC=$?
+: > "$GH_LOG"
+OUT="$(printf 'from stdin\n' | bash "$VCS" edit-pr-body 7 --body-file - 2>"$SANDBOX/err")"; RC=$?
 assert_eq "0" "$RC" "#455 github: --body-file - exits 0"
-assert_eq "from stdin" "$(cat "$EPB_STDIN")" "#455 github: --body-file - passes stdin through"
+assert_contains "$(cat "$GH_LOG")" 'payload={"body": "from stdin' "#455 github: --body-file - passes stdin through"
 
 # github-api: PATCH pulls/<n>, payload on stdin
 _epb_cfg github-api
@@ -1145,7 +1143,7 @@ for _p in gitlab azure file; do
   assert_eq "2" "$RC" "#455 $_p: edit-pr-body exits 2"
   assert_contains "$ERR" "not implemented for provider '$_p'" "#455 $_p: says it is not implemented"
 done
-unset TALOS_WRITE_LOG EPB_STDIN
+unset TALOS_WRITE_LOG
 rm -f talos.pipeline.json
 
 finish

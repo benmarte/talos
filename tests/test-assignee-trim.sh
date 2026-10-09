@@ -56,7 +56,7 @@ _cfg github " alice "; rm -f "$STUB_ASSIGNEE_FILE"
 _run_gh assign-issue 42
 assert_eq "alice" "$(cat "$STUB_ASSIGNEE_FILE" 2>/dev/null)" \
   "github ' alice ': the trimmed identity is what gets assigned"
-assert_contains "$log" "issue edit 42 --add-assignee alice" \
+assert_contains "$log" 'issues/42/assignees payload={"assignees": ["alice"]}' \
   "github ' alice ': gh receives the trimmed identity, no surrounding whitespace"
 
 rm -f talos.pipeline.json "$STUB_ASSIGNEE_FILE"

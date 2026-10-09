@@ -1,21 +1,14 @@
 #!/usr/bin/env bash
-# test-adapter-body-parity.sh — feed the SAME normalised fixture (a comments
-# array, a PR object, a PR list, a mergeable value) to BOTH the gh-based
-# adapter (_github, via tests/stubs/gh) and the REST-based adapter
-# (_github_api, via tests/stubs/curl -- the same stub test-github-api.sh
-# uses) for every verb whose provider-independent logic now lives in a
-# _vcs_shared_* helper (#177 slices 1-4), and asserts byte-identical stdout
-# and exit code.
-#
-# This is a stronger guarantee than tests/test-verb-parity.sh's checks:
-#   - "same verb names"        proves the two adapters expose the same API.
-#   - "string defined once"    proves a marker/rule isn't hand-duplicated.
-#   - this file                proves that, given the same input, the two
-#                               adapters actually PRODUCE the same output --
-#                               the drift #177 was filed over (see its
-#                               em-dash-vs-hyphen example) is exactly the
-#                               class of bug a byte-diff like this catches
-#                               and a name-only or count-only check cannot.
+# test-adapter-body-parity.sh -- the stubbed GitHub's two input forms agree. The
+# gh-shaped STUB_* fixtures (a comments array, a PR object, a PR list, a
+# mergeable value; converted to REST by tests/stubs/gh-rest-fixtures.py) and the
+# REST bodies a test queues by hand (CURL_QUEUE, tests/stubs/curl) describe the
+# same data, and the one GitHub implementation must print byte-identical stdout
+# and the same exit code for both, for every verb whose provider-independent
+# logic lives in a _vcs_shared_* helper (#177 slices 1-4). A fixture that
+# drifted from the REST shape it stands for would otherwise make a test pass on
+# data GitHub never sends. (Transport parity -- gh vs curl on one set of
+# responses -- is tests/test-github-transport-parity.sh.)
 #
 # Fixture shape note: both stubs are fed the SAME logical values (a head
 # SHA, a login, a comment body, ...) -- only the wire shape differs, because
@@ -69,8 +62,8 @@ reset_stubs() {
 # assert_parity <label> <out_gh> <rc_gh> <out_api> <rc_api>
 assert_parity() {
   local label="$1" out_gh="$2" rc_gh="$3" out_api="$4" rc_api="$5"
-  assert_eq "$out_gh" "$out_api" "$label: stdout identical across adapters"
-  assert_eq "$rc_gh" "$rc_api"   "$label: exit code identical across adapters"
+  assert_eq "$out_gh" "$out_api" "$label: stdout identical across the two input forms"
+  assert_eq "$rc_gh" "$rc_api"   "$label: exit code identical across the two input forms"
 }
 
 # ── read-attempt ───────────────────────────────────────────────────────────
@@ -253,7 +246,7 @@ reset_stubs
 use_github_api
 printf '%s\n' \
   '{"title":"Fix login crash","body":"stub body","labels":[{"name":"pipeline:dev"}]}' \
-  '[{"user":{"login":"talos-pm"},"body":"**PM spec:** do the thing"}]' \
+  '[{"user":{"login":"talos-pm"},"body":"**PM spec:** do the thing","id":1000,"html_url":"https://github.com/acme/widget/issues/1#issuecomment-1000"}]' \
   > "$CURL_QUEUE"
 out_api="$(bash "$VCS" view-issue 5 --spec 2>/dev/null)"; rc_api=$?
 

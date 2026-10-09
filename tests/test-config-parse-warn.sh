@@ -161,16 +161,21 @@ rm talos.pipeline.json
 # =========================================================================
 # SECTION C: marker-authors-unverified cause-naming in pipeline-vcs.sh
 # =========================================================================
-# Trigger path: read-attempt finds a talos:attempt marker, trusted_authors is
-# empty -> author_check_active = False -> marker-authors-unverified fires.
-# When TALOS_CFG points to a broken config: "could not be parsed" text.
-# When TALOS_CFG is empty (no config): "author check skipped" text (unchanged).
+# GitHub answers GET /user or refuses it, so an unresolved identity cannot
+# happen through an adapter any more; the shared reader is driven directly.
+# With no trusted_authors and no resolved identity the author check is off and
+# marker-authors-unverified fires. When TALOS_CFG points to a broken config:
+# "could not be parsed" text. With no config: "author check skipped" (unchanged).
+_shared_src="$(awk '/^_github\(\) \{/{exit} /^_vcs_shared_read_attempt\(\) \{/{flag=1} flag{print}' "$VCS")"
+eval "$_shared_src"
+SCRIPT_DIR="$TALOS_ROOT/scripts"
+cfg() { bash "$CFG_SH" "$@"; }
+_attempt_comments='{"comments":[{"body":"verdict record\n<!-- talos:attempt stage=developer count=1 total=1 -->","author":{"login":"bot"}}]}'
 
 # ---- C1: Broken config -> warning names parse-failure cause ----------------
 echo "{ not json" > broken.json
-out_c1="$(PIPELINE_CONFIG="$SANDBOX/broken.json" \
-           STUB_ISSUE_COMMENTS_JSON="$_attempt_json" \
-           bash "$VCS" read-attempt 42 2>&1)"
+out_c1="$(printf '%s' "$_attempt_comments" | TRUSTED_AUTHORS='' VERIFY_AUTHORS=true CURRENT_USER='' TALOS_CFG="$SANDBOX/broken.json" \
+           _vcs_shared_read_attempt 2>&1)"
 assert_contains "$out_c1" "marker-authors-unverified" \
   "C1: broken config: talos:marker-authors-unverified emitted"
 assert_contains "$out_c1" "could not be parsed" \
@@ -180,8 +185,8 @@ assert_not_contains "$out_c1" "author check skipped" \
 rm broken.json
 
 # ---- C2: No config -> existing text unchanged ------------------------------
-out_c2="$(STUB_ISSUE_COMMENTS_JSON="$_attempt_json" \
-           bash "$VCS" read-attempt 42 2>&1)"
+out_c2="$(printf '%s' "$_attempt_comments" | TRUSTED_AUTHORS='' VERIFY_AUTHORS=true CURRENT_USER='' TALOS_CFG='' \
+           _vcs_shared_read_attempt 2>&1)"
 assert_contains "$out_c2" "marker-authors-unverified" \
   "C2: no config: talos:marker-authors-unverified emitted"
 assert_contains "$out_c2" "author check skipped" \

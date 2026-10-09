@@ -44,9 +44,9 @@ teardown_github_api() {
 : > "$GH_LOG"
 out1="$(bash "$VCS" comment-pr 9 "This is the verdict body" 2>/dev/null)"; rc1=$?
 assert_eq "0" "$rc1" "github/comment-pr: normal string body exits 0"
-assert_contains "$out1" "/comments/" \
+assert_contains "$out1" "issuecomment-" \
   "github/comment-pr: normal string body returns URL on stdout"
-assert_contains "$(cat "$GH_LOG")" "issue comment 9 --body This is the verdict body" \
+assert_contains "$(cat "$GH_LOG")" 'payload={"body": "This is the verdict body"}' \
   "github/comment-pr: normal string body reaches gh"
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -57,7 +57,7 @@ echo "verdict: PASS" > "$SANDBOX/body.md"
 : > "$GH_LOG"
 out2="$(bash "$VCS" comment-pr 9 --body-file "$SANDBOX/body.md" 2>/dev/null)"; rc2=$?
 assert_eq "0" "$rc2" "github/comment-pr: --body-file valid exits 0"
-assert_contains "$out2" "/comments/" \
+assert_contains "$out2" "issuecomment-" \
   "github/comment-pr: --body-file returns URL on stdout"
 assert_contains "$(cat "$GH_LOG")" "verdict: PASS" \
   "github/comment-pr: --body-file content reaches gh"
@@ -71,7 +71,7 @@ err3="$(bash "$VCS" comment-pr 9 --body-file "$SANDBOX/missing.md" 2>&1 >/dev/nu
 assert_eq "1" "$rc3" "github/comment-pr: --body-file missing exits 1"
 assert_contains "$err3" "cannot read" \
   "github/comment-pr: --body-file missing prints error to stderr"
-assert_not_contains "$(cat "$GH_LOG")" "issue comment" \
+assert_not_contains "$(cat "$GH_LOG")" "/comments payload=" \
   "github/comment-pr: --body-file missing makes no gh call"
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -86,7 +86,7 @@ assert_contains "$err4" "--body-file" \
   "github/comment-pr: bare path error names --body-file"
 assert_contains "$err4" "$SANDBOX/verdict.md" \
   "github/comment-pr: bare path error contains the path"
-assert_not_contains "$(cat "$GH_LOG")" "issue comment" \
+assert_not_contains "$(cat "$GH_LOG")" "/comments payload=" \
   "github/comment-pr: bare path makes no gh call"
 
 # Same for comment-issue
@@ -103,7 +103,7 @@ assert_contains "$err4b" "--body-file" \
 : > "$GH_LOG"
 out4c="$(bash "$VCS" comment-pr 9 "/this/file/does/not/exist.txt" 2>/dev/null)"; rc4c=$?
 assert_eq "0" "$rc4c" "github/comment-pr: non-existent path-like body exits 0"
-assert_contains "$out4c" "/comments/" \
+assert_contains "$out4c" "issuecomment-" \
   "github/comment-pr: non-existent path-like body returns URL"
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -119,7 +119,7 @@ SPECIALEOF
 : > "$GH_LOG"
 out5="$(bash "$VCS" comment-pr 9 --body-file "$SANDBOX/special.md" 2>/dev/null)"; rc5=$?
 assert_eq "0" "$rc5" "github/comment-pr: special-char --body-file exits 0"
-assert_contains "$out5" "/comments/" \
+assert_contains "$out5" "issuecomment-" \
   "github/comment-pr: special-char --body-file returns URL"
 assert_contains "$(cat "$GH_LOG")" "backslash" \
   "github/comment-pr: special-char content reaches gh intact"
@@ -294,7 +294,7 @@ err11="$(STUB_PR_STATE=OPEN \
 assert_eq "1" "$rc11" "github/label-pr: --require-marker without marker exits 1"
 assert_contains "$err11" "ERROR" \
   "github/label-pr: --require-marker failure prints ERROR to stderr"
-assert_not_contains "$(cat "$GH_LOG")" "pr edit" \
+assert_not_contains "$(cat "$GH_LOG")" "/labels payload=" \
   "github/label-pr: --require-marker failure does not apply label"
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -308,7 +308,7 @@ out12="$(STUB_PR_STATE=OPEN \
            STUB_PR_COMMENTS_JSON='[{"body":"<!-- talos:approval sha=abc123sha000000000000000000000000000000 role=qa -->"}]' \
            bash "$VCS" label-pr 9 --add qa:pass --require-marker 2>/dev/null)"; rc12=$?
 assert_eq "0" "$rc12" "github/label-pr: --require-marker with marker exits 0"
-assert_contains "$(cat "$GH_LOG")" "pr edit" \
+assert_contains "$(cat "$GH_LOG")" "/labels payload=" \
   "github/label-pr: --require-marker with marker applies label"
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -335,7 +335,7 @@ for _449_body in \
           STUB_PR_COMMENTS_JSON="$_449_json" \
           bash "$VCS" label-pr 9 --add qa:pass --require-marker 2>&1 >/dev/null)"; rc=$?
   assert_eq "1" "$rc" "#449 quoted marker ($_449_body): --require-marker refuses"
-  assert_not_contains "$(cat "$GH_LOG")" "pr edit" "#449 quoted marker ($_449_body): no label applied"
+  assert_not_contains "$(cat "$GH_LOG")" "/labels payload=" "#449 quoted marker ($_449_body): no label applied"
 done
 # The real marker still counts: on its own line in a longer body, with stray
 # indentation, or with CRLF line endings.

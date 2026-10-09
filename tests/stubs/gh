@@ -3,7 +3,35 @@
 # canned responses for the query shapes the pipeline scripts use.
 # Override values with: STUB_REPO (owner/name), STUB_ISSUE_TITLE, STUB_PR_TITLE.
 
-[ -n "${GH_LOG:-}" ] && printf '%s\n' "$*" >> "$GH_LOG"
+# The transport probe (pipeline-vcs.sh asks `gh auth token` once per run to learn
+# whether gh is logged in) is answered before anything else: it is not a GitHub
+# call, so it is not logged and the failure hooks below never count it.
+# STUB_GH_AUTH=0 is a gh with no login.
+if [ "${1:-}" = auth ] && [ "${2:-}" = token ]; then
+  [ "${STUB_GH_AUTH:-1}" = "0" ] && { echo "gh: not logged in" >&2; exit 1; }
+  printf 'stub-gh-token\n'
+  exit 0
+fi
+
+# One line per call. The temp file after `--input` is replaced by `<payload>` (its
+# name differs on every run) and its body is appended to the same line as
+# ` payload=<body>` (the file is gone by the time a test reads the log), so a test
+# can assert the JSON a REST write carried and two runs log identical lines.
+if [ -n "${GH_LOG:-}" ]; then
+  _log_line=""
+  _log_payload=""
+  _log_prev=""
+  for _log_a in "$@"; do
+    if [ "$_log_prev" = "--input" ] && [ -f "$_log_a" ]; then
+      _log_payload=" payload=$(cat "$_log_a")"
+      _log_a="<payload>"
+    fi
+    _log_line="${_log_line:+$_log_line }$_log_a"
+    _log_prev="$_log_a"
+    [ "$_log_a" = "<payload>" ] && _log_prev=""
+  done
+  printf '%s%s\n' "$_log_line" "$_log_payload" >> "$GH_LOG"
+fi
 
 # ── Rate-limit simulation hook (#173) ─────────────────────────────────────────
 # GH_RATE_LIMIT_UNTIL_CALL=<N>: the first N invocations of this stub (across
@@ -39,6 +67,66 @@ fi
 REPO="${STUB_REPO:-acme/widget}"
 OWNER="${REPO%%/*}"
 
+# ── `gh api -i ...`: the GitHub REST client's own call shape ──────────────────
+# pipeline-vcs.sh sends every GitHub request as
+#   gh api -i -X <METHOD> -H <header> [-H <header> --input <file>] <path>
+# and reads the status line, the headers and the body back. The curl stub is
+# already a fake GitHub (queued responses, comment store, assignees, identity),
+# so this arm turns the call into the curl call the token transport would have
+# made and prints curl's answer the way `gh api -i` does: the same stubbed
+# GitHub serves both transports, which is what lets one test drive either.
+#   GH_QUEUE / GH_LINK_QUEUE    the responses to pop, one per call (the curl
+#                               stub's CURL_QUEUE / CURL_LINK_QUEUE format)
+#   GH_REST_LOG                 one "<url> TAB <payload> TAB TAB <method>" per call,
+#                               the line the curl stub writes to CURL_LOG
+#   With no queue entry left, gh-rest-fixtures.py answers from the STUB_*
+#   variables. A status >= 400 exits 1 with `gh: <message> (HTTP <n>)` on stderr
+#   after the headers and body, as the real CLI does.
+if [ "${1:-}" = api ] && [ "${2:-}" = "-i" ]; then
+  shift 2
+  _rm="GET"; _rin=""; _rpath=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -X) _rm="$2"; shift 2 ;;
+      -H) shift 2 ;;
+      --input) _rin="$2"; shift 2 ;;
+      *) _rpath="$1"; shift ;;
+    esac
+  done
+  _rpath="${_rpath//\{owner\}\/\{repo\}/$REPO}"
+  _rhdr="$(mktemp)" || exit 1
+  _rdir="$(dirname "$0")"
+  set -- -sS -w '\n%{http_code}' -D "$_rhdr" -X "$_rm" "https://api.github.com/$_rpath"
+  # The curl stub's own logs and queues stay out of this: a gh test's CURL_QUEUE
+  # may hold notification responses. A write counter shares this stub's log name.
+  _rlog="${GH_REST_LOG:-}"
+  [ -z "$_rlog" ] && [ -n "${GH_LOG:-}" ] && _rlog="$GH_LOG.rest"
+  [ -z "$_rlog" ] && _rlog=/dev/null
+  _renv=(env -u CURL_ARGV_LOG CURL_LOG="$_rlog" CURL_QUEUE="${GH_QUEUE:-}" CURL_LINK_QUEUE="${GH_LINK_QUEUE:-}"
+         STUB_GH_FIXTURES=1 STUB_COMMENT_COUNTER_BASE="${GH_LOG:-$_rlog}")
+  if [ -n "$_rin" ]; then
+    # The body of a write, one line per attempt (a retry that re-sent nothing shows up as an empty line).
+    [ -n "${GH_STDIN_LOG:-}" ] && { cat "$_rin"; printf '\n'; } >> "$GH_STDIN_LOG"
+    set -- "${@:1:$(($# - 1))}" --data-binary @- "${@:$#}"
+    _rout="$("${_renv[@]}" "$_rdir/curl" "$@" < "$_rin")"
+  else
+    _rout="$("${_renv[@]}" "$_rdir/curl" "$@")"
+  fi
+  _rstatus="${_rout##*$'\n'}"
+  _rbody="${_rout%$'\n'*}"
+  printf 'HTTP/2.0 %s Stub\n' "$_rstatus"
+  sed 1d "$_rhdr"
+  printf '%s\n' "$_rbody"
+  rm -f "$_rhdr"
+  if [ "$_rstatus" -ge 400 ] 2>/dev/null; then
+    echo "gh: $(printf '%s' "$_rbody" | python3 -I -c 'import json,sys
+try: print(json.load(sys.stdin).get("message","error"))
+except Exception: print("error")') (HTTP $_rstatus)" >&2
+    exit 1
+  fi
+  exit 0
+fi
+
 # _stub_limit <args...> — prints the value following a "--limit" argument, or
 # nothing if none was passed. Used so "issue list"/"pr list" can honor
 # --limit faithfully (#171) instead of always returning the full canned list.
@@ -66,6 +154,8 @@ _as_add() {
 
 args="$*"
 case "$args" in
+  "api repos/{owner}/{repo} --jq .full_name"*)
+    printf '%s\n' "$REPO" ;;
   "repo view --json nameWithOwner -q .nameWithOwner"*)
     printf '%s\n' "$REPO" ;;
   "repo view --json url -q .url"*)

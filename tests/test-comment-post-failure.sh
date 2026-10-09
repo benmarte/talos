@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test-comment-post-failure.sh — gh-provider comment POST failure propagation (issue #69).
+# test-comment-post-failure.sh — comment POST failure propagation (issue #69), on both GitHub transports.
 #
 # Covers 6 [test] acceptance criteria:
 #  1. gh comment POST fails  → comment-issue exits non-zero          (core regression)
@@ -19,243 +19,60 @@ use_stubs
 
 VCS="$TALOS_ROOT/scripts/pipeline-vcs.sh"
 
-# ── Temp-stub factory ─────────────────────────────────────────────────────────
-# Creates a stub gh that fails (exit 1) on "issue comment" while succeeding
-# for all other calls (state lookups etc.).
-make_failing_post_stub() {
-  local dir="$1"
-  mkdir -p "$dir"
-  cat > "$dir/gh" <<'GHSTUB'
-#!/usr/bin/env bash
-[ -n "${GH_LOG:-}" ] && printf '%s\n' "$*" >> "$GH_LOG"
-REPO="${STUB_REPO:-acme/widget}"
-args="$*"
-case "$args" in
-  "issue view "*"--json state -q .state"*)
-    [ "${STUB_ISSUE_STATE_FAIL:-}" = "true" ] && exit 1
-    printf '%s\n' "${STUB_ISSUE_STATE:-OPEN}" ;;
-  "pr view "*"--json state -q .state"*)
-    printf '%s\n' "${STUB_PR_STATE:-OPEN}" ;;
-  "issue comment "*)
-    # Simulate a POST failure — print error to stderr, exit non-zero
-    printf 'gh: failed to post comment: HTTP 503\n' >&2
-    exit 1 ;;
-  *)
-    exit 0 ;;
-esac
-GHSTUB
-  chmod +x "$dir/gh"
-}
+# Every case runs once per GitHub transport (github_leg gh | curl) against the
+# same queued REST responses: the state read first, then the comment POST.
+URL5='{"id":999,"html_url":"https://github.com/acme/widget/issues/5#issuecomment-999"}'
+OPEN_ISSUE='{"state":"open","title":"issue 5"}'
+OPEN_PR='{"state":"open","merged_at":null,"number":9}'
 
-# ═════════════════════════════════════════════════════════════════════════════
-# CRITERION 1: gh POST fails → comment-issue exits non-zero
-# (This is the acceptance criterion the current code fails before the fix.)
-# ═════════════════════════════════════════════════════════════════════════════
+for LEG in gh curl; do
+  github_leg "$LEG"
 
-_stub1="$(safe_mktemp_dir)" || exit 1
-make_failing_post_stub "$_stub1"
+  # CRITERIA 1, 4: a failed POST (HTTP 503) -> comment-issue exits non-zero, nothing on stdout
+  printf '%s\n' "$OPEN_ISSUE" '503' > "$CURL_QUEUE"
+  out="$(bash "$VCS" comment-issue 5 "body" 2>/dev/null)"; rc=$?
+  assert_eq "1" "$rc" "$LEG/comment-issue: failed POST exits non-zero [CRITERION 1]"
+  assert_eq "" "$out" "$LEG/comment-issue: failed POST produces no stdout output [CRITERION 4]"
 
-: > "$GH_LOG"
-_old_path="$PATH"; export PATH="$_stub1:$PATH"
-out1="$(STUB_ISSUE_STATE=OPEN bash "$VCS" comment-issue 5 "body" 2>/dev/null)"; rc1=$?
-export PATH="$_old_path"; rm -rf "$_stub1"
+  # CRITERION 2: ... and so does comment-pr
+  printf '%s\n' "$OPEN_PR" '503' > "$CURL_QUEUE"
+  out="$(bash "$VCS" comment-pr 9 "body" 2>/dev/null)"; rc=$?
+  assert_eq "1" "$rc" "$LEG/comment-pr: failed POST exits non-zero [CRITERION 2]"
+  assert_eq "" "$out" "$LEG/comment-pr: failed POST produces no stdout output [CRITERION 9b]"
 
-assert_eq "1" "$rc1" \
-  "gh/comment-issue: failed POST exits non-zero [CRITERION 1]"
+  # CRITERION 3: state read failed AND the POST failed -> the unverified marker is NOT emitted
+  # (without the exit-on-failed-POST guard the marker WOULD be emitted: discriminating)
+  printf '%s\n' '500' '503' > "$CURL_QUEUE"
+  out="$(bash "$VCS" comment-issue 5 "body" 2>/dev/null)"; rc=$?
+  assert_eq "1" "$rc" "$LEG/comment-issue: state-check-failed + failed POST exits non-zero"
+  assert_not_contains "$out" "talos:comment-state-unverified" \
+    "$LEG/comment-issue: failed POST does not emit state-unverified marker [CRITERION 3]"
 
-# ═════════════════════════════════════════════════════════════════════════════
-# CRITERION 2: gh POST fails → comment-pr exits non-zero
-# ═════════════════════════════════════════════════════════════════════════════
+  # CRITERIA 5, 6: a successful POST exits 0 and prints the URL (PR #68 guard)
+  printf '%s\n' "$OPEN_ISSUE" "$URL5" > "$CURL_QUEUE"
+  out="$(bash "$VCS" comment-issue 5 "findings body" 2>/dev/null)"; rc=$?
+  assert_eq "0" "$rc" "$LEG/comment-issue: successful POST exits 0 [CRITERION 5]"
+  assert_contains "$out" "issuecomment-999" "$LEG/comment-issue: successful POST emits html_url [CRITERION 5]"
+  assert_not_contains "$out" "talos:comment-state-unverified" "$LEG/comment-issue: successful POST does not emit the marker"
+  printf '%s\n' "$OPEN_PR" '{"id":998,"html_url":"https://github.com/acme/widget/pull/9#issuecomment-998"}' > "$CURL_QUEUE"
+  out="$(bash "$VCS" comment-pr 9 "review done" 2>/dev/null)"; rc=$?
+  assert_eq "0" "$rc" "$LEG/comment-pr: successful POST exits 0 [CRITERION 6]"
+  assert_contains "$out" "issuecomment-998" "$LEG/comment-pr: successful POST emits html_url [CRITERION 6]"
 
-_stub2="$(safe_mktemp_dir)" || exit 1
-make_failing_post_stub "$_stub2"
+  # CRITERION 7: state read failed + POST succeeded -> marker emitted, exit 0 (PR #79 must not regress)
+  printf '%s\n' '500' '{"id":888,"html_url":"https://github.com/acme/widget/issues/5#issuecomment-888"}' > "$CURL_QUEUE"
+  out="$(bash "$VCS" comment-issue 5 "body" 2>/dev/null)"; rc=$?
+  assert_eq "0" "$rc" "$LEG/comment-issue: state-check-fail + POST success exits 0 [CRITERION 7]"
+  assert_contains "$out" "talos:comment-state-unverified" "$LEG/comment-issue: state-check-fail + POST success emits marker [CRITERION 7]"
+  assert_contains "$out" "issuecomment-888" "$LEG/comment-issue: state-check-fail + POST success emits URL [CRITERION 7]"
 
-: > "$GH_LOG"
-_old_path="$PATH"; export PATH="$_stub2:$PATH"
-out2="$(STUB_PR_STATE=OPEN bash "$VCS" comment-pr 9 "body" 2>/dev/null)"; rc2=$?
-export PATH="$_old_path"; rm -rf "$_stub2"
-
-assert_eq "1" "$rc2" \
-  "gh/comment-pr: failed POST exits non-zero [CRITERION 2]"
-
-# ═════════════════════════════════════════════════════════════════════════════
-# CRITERION 3: gh POST fails → talos:comment-state-unverified NOT emitted
-# ═════════════════════════════════════════════════════════════════════════════
-
-_stub3="$(safe_mktemp_dir)" || exit 1
-make_failing_post_stub "$_stub3"
-
-: > "$GH_LOG"
-_old_path="$PATH"; export PATH="$_stub3:$PATH"
-out3="$(STUB_ISSUE_STATE_FAIL=true bash "$VCS" comment-issue 5 "body" 2>/dev/null)"; rc3=$?
-export PATH="$_old_path"; rm -rf "$_stub3"
-
-# State check fails → _ci_state_unverified=true; POST fails → || exit 1 fires
-# BEFORE the marker line. Without the || exit 1 guard, the marker WOULD be emitted
-# (discriminating: remove the guard and this assertion goes red).
-assert_not_contains "$out3" "talos:comment-state-unverified" \
-  "gh/comment-issue: failed POST does not emit state-unverified marker [CRITERION 3]"
-
-# ═════════════════════════════════════════════════════════════════════════════
-# CRITERION 4: gh POST fails → no stdout output (no URL, no empty line)
-# ═════════════════════════════════════════════════════════════════════════════
-
-_stub4="$(safe_mktemp_dir)" || exit 1
-make_failing_post_stub "$_stub4"
-
-: > "$GH_LOG"
-_old_path="$PATH"; export PATH="$_stub4:$PATH"
-out4="$(STUB_ISSUE_STATE=OPEN bash "$VCS" comment-issue 5 "body" 2>/dev/null)"; rc4=$?
-export PATH="$_old_path"; rm -rf "$_stub4"
-
-assert_eq "" "$out4" \
-  "gh/comment-issue: failed POST produces no stdout output [CRITERION 4]"
-
-# ═════════════════════════════════════════════════════════════════════════════
-# CRITERION 5: gh POST succeeds → comment-issue exits 0 and emits URL
-# (PR #68 regression guard)
-# ═════════════════════════════════════════════════════════════════════════════
-
-: > "$GH_LOG"
-out5="$(STUB_ISSUE_STATE=OPEN bash "$VCS" comment-issue 5 "findings body" 2>/dev/null)"; rc5=$?
-
-assert_eq "0" "$rc5" \
-  "gh/comment-issue: successful POST exits 0 [CRITERION 5]"
-assert_contains "$out5" "/comments/" \
-  "gh/comment-issue: successful POST emits comment URL on stdout [CRITERION 5]"
-
-# ═════════════════════════════════════════════════════════════════════════════
-# CRITERION 6: gh POST succeeds → comment-pr exits 0 and emits URL
-# (PR #68 regression guard)
-# ═════════════════════════════════════════════════════════════════════════════
-
-: > "$GH_LOG"
-out6="$(STUB_PR_STATE=OPEN bash "$VCS" comment-pr 9 "review done" 2>/dev/null)"; rc6=$?
-
-assert_eq "0" "$rc6" \
-  "gh/comment-pr: successful POST exits 0 [CRITERION 6]"
-assert_contains "$out6" "/comments/" \
-  "gh/comment-pr: successful POST emits comment URL on stdout [CRITERION 6]"
-
-# ═════════════════════════════════════════════════════════════════════════════
-# CRITERION 7: state-check failed + POST succeeds → marker emitted, exits 0
-# (PR #79 marker must NOT regress)
-# ═════════════════════════════════════════════════════════════════════════════
-
-# Stub: state check fails (exit 1), but comment POST succeeds.
-_stub7="$(safe_mktemp_dir)" || exit 1
-mkdir -p "$_stub7"
-cat > "$_stub7/gh" <<'GHSTUB7'
-#!/usr/bin/env bash
-[ -n "${GH_LOG:-}" ] && printf '%s\n' "$*" >> "$GH_LOG"
-REPO="${STUB_REPO:-acme/widget}"
-args="$*"
-case "$args" in
-  "issue view "*"--json state -q .state"*)
-    exit 1 ;;   # state check fails — triggers fail-open
-  "issue comment "*)
-    printf 'https://github.com/%s/issues/comments/777\n' "$REPO" ;;
-  *)
-    exit 0 ;;
-esac
-GHSTUB7
-chmod +x "$_stub7/gh"
-
-: > "$GH_LOG"
-_old_path="$PATH"; export PATH="$_stub7:$PATH"
-out7="$(bash "$VCS" comment-issue 5 "body" 2>/dev/null)"; rc7=$?
-export PATH="$_old_path"; rm -rf "$_stub7"
-
-assert_eq "0" "$rc7" \
-  "gh/comment-issue: state-check-failed + POST success exits 0 [CRITERION 7]"
-assert_contains "$out7" "talos:comment-state-unverified" \
-  "gh/comment-issue: state-check-failed + POST success emits marker [CRITERION 7]"
-assert_contains "$out7" "/comments/" \
-  "gh/comment-issue: state-check-failed + POST success emits URL [CRITERION 7]"
-
-# ═════════════════════════════════════════════════════════════════════════════
-# CRITERION 8: --allow-closed still works (PR #68 regression guard)
-# ═════════════════════════════════════════════════════════════════════════════
-
-: > "$GH_LOG"
-out8="$(STUB_ISSUE_STATE=CLOSED bash "$VCS" comment-issue 5 "body" --allow-closed 2>/dev/null)"; rc8=$?
-
-assert_eq "0" "$rc8" \
-  "gh/comment-issue: --allow-closed on closed issue exits 0 [CRITERION 8]"
-assert_contains "$out8" "/comments/" \
-  "gh/comment-issue: --allow-closed on closed issue returns URL [CRITERION 8]"
-
-# ═════════════════════════════════════════════════════════════════════════════
-# CRITERION 9: github-api provider — failed POST exits non-zero (real fix)
-# ═════════════════════════════════════════════════════════════════════════════
-
-cat > "$SANDBOX/talos.pipeline.json" <<'EOF'
-{"vcs": {"provider": "github-api", "repo": "acme/widget"}}
-EOF
-export GITHUB_TOKEN="test-token-69"
-
-# 9a: comment-issue — failed POST (403) exits non-zero
-: > "$CURL_LOG"; : > "$CURL_QUEUE"
-printf '%s\n' \
-  '{"state":"open","title":"issue 5"}' \
-  '403' \
-  > "$CURL_QUEUE"
-
-out9a="$(bash "$VCS" comment-issue 5 "body" 2>/dev/null)"; rc9a=$?
-
-assert_eq "1" "$rc9a" \
-  "github-api/comment-issue: failed POST (403) exits non-zero [CRITERION 9a]"
-assert_eq "" "$out9a" \
-  "github-api/comment-issue: failed POST produces no stdout [CRITERION 9a]"
-
-# 9b: comment-pr — failed POST (503) exits non-zero
-: > "$CURL_LOG"; : > "$CURL_QUEUE"
-printf '%s\n' \
-  '{"state":"open","merged_at":null,"number":9}' \
-  '503' \
-  > "$CURL_QUEUE"
-
-out9b="$(bash "$VCS" comment-pr 9 "body" 2>/dev/null)"; rc9b=$?
-
-assert_eq "1" "$rc9b" \
-  "github-api/comment-pr: failed POST (503) exits non-zero [CRITERION 9b]"
-assert_eq "" "$out9b" \
-  "github-api/comment-pr: failed POST produces no stdout [CRITERION 9b]"
-
-# 9c: comment-issue — successful POST still exits 0 and emits URL (PR #68 guard)
-: > "$CURL_LOG"; : > "$CURL_QUEUE"
-printf '%s\n' \
-  '{"state":"open","title":"issue 5"}' \
-  '{"id":999,"html_url":"https://github.com/acme/widget/issues/5#issuecomment-999"}' \
-  > "$CURL_QUEUE"
-
-out9c="$(bash "$VCS" comment-issue 5 "body" 2>/dev/null)"; rc9c=$?
-
-assert_eq "0" "$rc9c" \
-  "github-api/comment-issue: successful POST exits 0 [CRITERION 9c]"
-assert_contains "$out9c" "issuecomment-999" \
-  "github-api/comment-issue: successful POST emits html_url [CRITERION 9c]"
-assert_not_contains "$out9c" "talos:comment-state-unverified" \
-  "github-api/comment-issue: successful POST does not emit marker [CRITERION 9c]"
-
-# 9d: state-check-failed + POST succeeds → marker still emitted, exits 0
-: > "$CURL_LOG"; : > "$CURL_QUEUE"
-printf '%s\n' \
-  '500' \
-  '{"id":888,"html_url":"https://github.com/acme/widget/issues/5#issuecomment-888"}' \
-  > "$CURL_QUEUE"
-
-out9d="$(bash "$VCS" comment-issue 5 "body" 2>/dev/null)"; rc9d=$?
-
-assert_eq "0" "$rc9d" \
-  "github-api/comment-issue: state-check-fail + POST success exits 0 [CRITERION 9d]"
-assert_contains "$out9d" "talos:comment-state-unverified" \
-  "github-api/comment-issue: state-check-fail + POST success emits marker [CRITERION 9d]"
-assert_contains "$out9d" "issuecomment-888" \
-  "github-api/comment-issue: state-check-fail + POST success emits URL [CRITERION 9d]"
-
-rm -f "$SANDBOX/talos.pipeline.json"
-unset GITHUB_TOKEN
+  # CRITERION 8: --allow-closed still works (PR #68 guard)
+  printf '%s\n' "$URL5" > "$CURL_QUEUE"
+  out="$(bash "$VCS" comment-issue 5 "body" --allow-closed 2>/dev/null)"; rc=$?
+  assert_eq "0" "$rc" "$LEG/comment-issue: --allow-closed on a closed issue exits 0 [CRITERION 8]"
+  assert_contains "$out" "issuecomment-999" "$LEG/comment-issue: --allow-closed returns the URL [CRITERION 8]"
+done
+unset GH_QUEUE GH_LINK_QUEUE GH_REST_LOG GITHUB_TOKEN
 
 # ═════════════════════════════════════════════════════════════════════════════
 # #451: github-api writes fail loudly on a transport failure and keep bodies
@@ -308,26 +125,26 @@ assert_eq "" "$out11" "github-api/comment-issue: transport failure prints nothin
 assert_not_contains "$(cat "$SANDBOX/err11")" "Traceback" \
   "github-api/comment-issue: transport failure leaves no python traceback [#451]"
 
-# label-issue: the label GET fails
+# label-issue: the add POST fails -> nothing else is sent
 _reset451
 export STUB_CURL_FAIL_RC=7
-out11="$(bash "$VCS" label-issue 5 --add x 2>"$SANDBOX/err11")"; rc11=$?
+out11="$(bash "$VCS" label-issue 5 --add x --remove y 2>"$SANDBOX/err11")"; rc11=$?
 assert_eq "1" "$rc11" "github-api/label-issue: transport failure exits 1 [#451]"
 assert_not_contains "$out11" "Labels updated" \
   "github-api/label-issue: no success line after a transport failure [#451]"
 assert_not_contains "$(cat "$SANDBOX/err11")" "Traceback" \
   "github-api/label-issue: transport failure leaves no python traceback [#451]"
+assert_eq "0" "$(_calls451 DELETE)" "github-api/label-issue: no removal follows a failed addition [#451]"
 
-# label-issue / label-pr: only the label read fails -> nothing is written back
-# (an empty payload would otherwise be PUT over the issue's labels).
+# label-issue / label-pr: a failed removal is an error, never a success line.
 for _verb451 in label-issue label-pr; do
   _reset451
-  export STUB_CURL_FAIL_RC=7 STUB_CURL_FAIL_METHOD=GET
-  out11="$(bash "$VCS" "$_verb451" 5 --add x 2>"$SANDBOX/err11")"; rc11=$?
-  assert_eq "1" "$rc11" "github-api/$_verb451: a failed label read exits 1 [#451]"
-  assert_eq "0" "$(_calls451 PUT)" "github-api/$_verb451: nothing is PUT after a failed label read [#451]"
+  export STUB_CURL_FAIL_RC=7 STUB_CURL_FAIL_METHOD=DELETE
+  out11="$(bash "$VCS" "$_verb451" 5 --remove x 2>"$SANDBOX/err11")"; rc11=$?
+  assert_eq "1" "$rc11" "github-api/$_verb451: a failed removal exits 1 [#451]"
+  assert_not_contains "$out11" "Labels updated" "github-api/$_verb451: no success line after a failed removal [#451]"
   assert_not_contains "$(cat "$SANDBOX/err11")" "Traceback" \
-    "github-api/$_verb451: a failed label read leaves no python traceback [#451]"
+    "github-api/$_verb451: a failed removal leaves no python traceback [#451]"
 done
 
 # mark-needs-owner: the comments read succeeds, the POST fails -> not "posted",
@@ -356,7 +173,7 @@ assert_not_contains "$out11" "marker posted" \
 assert_eq "1" "$(_calls451 POST)" \
   "github-api/post-approval: the label is not applied after a failed marker POST [#451]"
 assert_eq "0" "$(_calls451 PUT)" \
-  "github-api/post-approval: no label PUT after a failed marker POST [#451]"
+  "github-api/post-approval: no label write follows a failed marker POST [#451]"
 
 # 11b: a body that escapes to over 128 KiB (21,900 non-ASCII characters = 43,800
 # raw bytes, under the 120,000-byte cap, but json.dumps escapes each to 6 bytes

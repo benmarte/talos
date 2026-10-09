@@ -148,7 +148,7 @@ if [[ "$url" == *"/user" && "$url" != *"/users/"* ]]; then
 elif [ -n "${STUB_COMMENT_STORE:-}" ] && [ -e "$STUB_COMMENT_STORE" ] && { [[ "$url" =~ /issues/([0-9]+)/comments(\?.*)?$ ]] || [[ "$url" =~ /issues/comments/([0-9]+)$ ]]; }; then
   _cs_n="${BASH_REMATCH[1]}"
   if [ "$method" != "POST" ] && [ "$method" != "PATCH" ]; then
-    if [ "${STUB_COMMENT_READ_FAIL:-}" = "1" ]; then
+    if [ "${STUB_COMMENT_READ_FAIL:-}" = "1" ] || [ "${STUB_GH_API_FAIL:-}" = "comments" ]; then
       http_status=500
       resp='{"message":"Server Error"}'
     elif [ -s "$STUB_COMMENT_STORE" ]; then
@@ -160,11 +160,13 @@ elif [ -n "${STUB_COMMENT_STORE:-}" ] && [ -e "$STUB_COMMENT_STORE" ] && { [[ "$
     _cs_fail=""
     if [ -n "${STUB_COMMENT_WRITE_429:-}" ]; then
       # Next to the log, so parallel tests never share state; no log, no counter.
-      if [ -z "${CURL_LOG:-}" ]; then
+      # (The gh stub passes STUB_COMMENT_COUNTER_BASE = its own log, so the same
+      # counter file serves a test of either transport.)
+      if [ -z "${STUB_COMMENT_COUNTER_BASE:-${CURL_LOG:-}}" ]; then
         echo "curl stub: STUB_COMMENT_WRITE_429 needs CURL_LOG set" >&2
         exit 1
       fi
-      _cs_counter="$CURL_LOG.w429"
+      _cs_counter="${STUB_COMMENT_COUNTER_BASE:-$CURL_LOG}.w429"
       _cs_count=0
       [ -f "$_cs_counter" ] && _cs_count="$(cat "$_cs_counter")"
       _cs_count=$((_cs_count + 1))
@@ -211,6 +213,9 @@ elif [ -n "${STUB_ASSIGNEE_FILE:-}${STUB_ASSIGNEE_DIR:-}" ] && [[ "$url" =~ /iss
   _as_f="${STUB_ASSIGNEE_FILE:-}"
   [ -n "${STUB_ASSIGNEE_DIR:-}" ] && _as_f="$STUB_ASSIGNEE_DIR/${BASH_REMATCH[1]}"
   if [ "${STUB_ASSIGN_FAIL:-}" = "1" ]; then
+    http_status=422
+    resp='{"message":"Validation Failed"}'
+  elif [ "$method" = "DELETE" ] && [ "${STUB_UNASSIGN_FAIL:-}" = "1" ]; then
     http_status=422
     resp='{"message":"Validation Failed"}'
   elif [ "$method" = "DELETE" ]; then
@@ -267,6 +272,17 @@ elif [ -n "${CURL_QUEUE:-}" ] && [ -s "$CURL_QUEUE" ]; then
     *)
       resp="$raw" ;;
   esac
+elif [ "${STUB_GH_FIXTURES:-}" = "1" ] && [[ "$url" == https://api.github.com/* ]]; then
+  # Fixture GitHub (the gh stub sets STUB_GH_FIXTURES=1): the answer comes from
+  # the STUB_* variables, see gh-rest-fixtures.py. Line 1 is the status, line 2
+  # the next page's URL (Link header), the rest the body.
+  _fx_payload="$(mktemp)" || exit 1
+  printf '%s' "$payload" > "$_fx_payload"
+  _fx_out="$(python3 -I "$(dirname "$0")/gh-rest-fixtures.py" "${method:-GET}" "$url" "$_fx_payload")"
+  rm -f "$_fx_payload"
+  http_status="$(printf '%s\n' "$_fx_out" | sed -n 1p)"
+  link_next_fx="$(printf '%s\n' "$_fx_out" | sed -n 2p)"
+  resp="$(printf '%s\n' "$_fx_out" | sed 1,2d)"
 else
   case "$url" in
     *slack.com*)   resp='{"ok":true,"ts":"1111.2222"}' ;;
@@ -284,7 +300,7 @@ fi
 resp="${resp//$'\x01'/$'\n'}"
 
 # Pop one Link: next URL from CURL_LINK_QUEUE (empty line = no Link header)
-link_next=""
+link_next="${link_next_fx:-}"
 if [ -n "${CURL_LINK_QUEUE:-}" ] && [ -f "$CURL_LINK_QUEUE" ] && [ -s "$CURL_LINK_QUEUE" ]; then
   link_next="$(head -1 "$CURL_LINK_QUEUE")"
   tail -n +2 "$CURL_LINK_QUEUE" > "$CURL_LINK_QUEUE.tmp" \
@@ -299,7 +315,11 @@ if [ -n "$hdr_file" ]; then
   printf '%b\r\n' "$hdr_block" > "$hdr_file"
 fi
 
-[ -n "$resp" ] && printf '%s\n' "$resp"
-# Append HTTP status code on its own line when -w was requested
-[ "$has_w" = "true" ] && printf '%s\n' "$http_status"
+# With -w "\n%{http_code}" curl prints the body (possibly empty) and the status
+# on its own line, so an empty body still leaves its newline before the status.
+if [ "$has_w" = "true" ]; then
+  printf '%s\n%s\n' "$resp" "$http_status"
+else
+  [ -n "$resp" ] && printf '%s\n' "$resp"
+fi
 exit 0

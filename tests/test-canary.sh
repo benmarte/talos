@@ -67,13 +67,14 @@ export STUB_PR_LABELS_JSON='[{"name":"qa:pass"}]'
 export STUB_PR_COMMENTS_JSON="[{\"body\":\"<!-- talos:approval sha=${SHA_GH} role=qa -->\"}]"
 
 # github-api provider (curl stub -- a strict FIFO; every call below must be
-# queued in the exact order pipeline-vcs.sh's _github_api arms issue them:
+# queued in the exact order pipeline-vcs.sh's _github arms issue them:
 # create-issue(POST + #299 assignee read; GET /user is intercepted, not
 # queued, and resolves to the stub's default login, so the assignee write
-# follows: POST assignees + read-back, #455) label-issue(GET+PUT)
+# follows: POST assignees + read-back, #455) label-issue(POST labels)
 # view-issue--spec(meta+comments)
 # create-pr(1) post-approval(pr-head, dup-check comments, comment-pr state
-# check, comment-pr POST, label-pr GET+PUT) check-approval-sha(PR+comments)
+# check, comment-pr POST, label-pr POST, then the missing-marker check: PR +
+# comments) check-approval-sha(PR+comments)
 # (the marker comment is authored by the stub's default login, which GET /user
 # resolves to, so the author-trust check accepts it)
 # pr-mergeable(1) check-pr-files(1) cleanup-close-issue(comment+PATCH).
@@ -83,8 +84,7 @@ printf '%s\n' \
   '{"number":401,"assignees":[]}' \
   '{}' \
   '{"number":401,"assignees":[{"login":"talos-test-bot"}]}' \
-  '[]' \
-  '{}' \
+  '[{"name":"pipeline:ready"}]' \
   '{"title":"canary","body":"canary run body","labels":[]}' \
   '[]' \
   '{"html_url":"https://github.com/acme/widget-canary/pull/402"}' \
@@ -92,8 +92,9 @@ printf '%s\n' \
   '[]' \
   '{"state":"open","merged_at":null}' \
   '{"id":900,"html_url":"https://github.com/acme/widget-canary/pull/402#issuecomment-900"}' \
-  '[]' \
-  '{}' \
+  '[{"name":"qa:pass"}]' \
+  "{\"head\":{\"sha\":\"${SHA_API}\"}}" \
+  "[{\"body\":\"<!-- talos:approval sha=${SHA_API} role=qa -->\",\"user\":{\"login\":\"talos-test-bot\"}}]" \
   "{\"number\":402,\"head\":{\"sha\":\"${SHA_API}\"},\"base\":{\"ref\":\"main\"},\"labels\":[{\"name\":\"qa:pass\"}]}" \
   "[{\"body\":\"<!-- talos:approval sha=${SHA_API} role=qa -->\",\"user\":{\"login\":\"talos-test-bot\"}}]" \
   '{"number":402,"mergeable":true}' \
@@ -115,7 +116,7 @@ assert_contains "$out" "PASS check-pr-files[github-api]" "happy path: github-api
 
 gh_log="$(cat "$GH_LOG")"
 assert_contains "$gh_log" "pr close 302" "happy path: github cleanup closes the PR"
-assert_contains "$gh_log" "issue close 301" "happy path: github cleanup closes the issue"
+assert_contains "$gh_log" 'issues/301 payload={"state":"closed"}' "happy path: github cleanup closes the issue"
 assert_contains "$gh_log" "label create pipeline:ready --color" "happy path: bootstrap-labels created a pipeline:* label"
 assert_contains "$gh_log" "--repo acme/widget-canary" "happy path: bootstrap-labels ran against the sandbox repo"
 
@@ -164,7 +165,7 @@ assert_not_contains "$out" "PASS check-pr-files[github]" "failing step: check-pr
 
 gh_log="$(cat "$GH_LOG")"
 assert_contains "$gh_log" "pr close 502" "failing step: cleanup still closes the PR"
-assert_contains "$gh_log" "issue close 501" "failing step: cleanup still closes the issue"
+assert_contains "$gh_log" 'issues/501 payload={"state":"closed"}' "failing step: cleanup still closes the issue"
 
 unset STUB_GH_API_FAIL TALOS_CANARY_PROVIDERS
 

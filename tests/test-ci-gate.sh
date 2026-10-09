@@ -136,17 +136,26 @@ assert_eq "1" "${res%%|*}" "no checks configured: rc 1"
 assert_not_contains "$res" 'pr-checks-required: failed:' "no checks configured: rc 1 without the failed: line (routes to QA)"
 
 # ── (e) pr-checks-required --wait <seconds> ──────────────────────────────────
-# A counting gh stub: pending for the first $GH_PENDING_READS `pr checks`
-# reads (state $GH_EARLY, default pending), then $GH_FINAL. TALOS_RETRY_SLEEP_SCALE=0 makes every sleep instant;
-# the verb's deadline still counts the nominal 30s steps.
+# A counting gh stub: the check-run read answers pending for the first
+# $GH_PENDING_READS reads (state $GH_EARLY, default pending), then $GH_FINAL;
+# every other REST call is the stock stub's. TALOS_RETRY_SLEEP_SCALE=0 makes
+# every sleep instant; the verb's deadline still counts the nominal 30s steps.
 mkdir -p "$SANDBOX/bin"
+export STUBS_DIR
 cat > "$SANDBOX/bin/gh" <<'TALOS_u8Rk2VxN5pQeW'
 #!/usr/bin/env bash
 case "$*" in
-  "pr checks"*)
+  "api -i"*"/check-runs"*)
     n="$(cat "$GH_CNT" 2>/dev/null || echo 0)"; n=$((n + 1)); printf '%s' "$n" > "$GH_CNT"
     if [ "$n" -le "${GH_PENDING_READS:-0}" ]; then st="${GH_EARLY:-pending}"; else st="${GH_FINAL:-pass}"; fi
-    printf 'test\t%s\t1m\thttps://x\n' "$st" ;;
+    case "$st" in
+      pass)     status=completed; conclusion='"success"' ;;
+      pending)  status=in_progress; conclusion=null ;;
+      skipping) status=completed; conclusion='"skipped"' ;;
+      *)        status=completed; conclusion="\"$st\"" ;;
+    esac
+    printf 'HTTP/2.0 200 OK\nX-Stub: 1\r\n\r\n{"total_count":1,"check_runs":[{"name":"test","status":"%s","conclusion":%s}]}\n' "$status" "$conclusion" ;;
+  "api -i"*) exec "$STUBS_DIR/gh" "$@" ;;
   *) exit 0 ;;
 esac
 TALOS_u8Rk2VxN5pQeW
@@ -180,7 +189,7 @@ for bad in abc 3601 -5 1.5 ''; do
   wait_run 0 pass 9 --wait "$bad"
   assert_eq "2" "$rc" "--wait '$bad' is a usage error (exit 2)"
   assert_contains "$out" 'Usage: pipeline-vcs.sh pr-checks-required' "--wait '$bad' prints usage"
-  assert_eq "0" "$reads" "--wait '$bad' makes no gh call"
+  assert_eq "0" "$reads" "--wait '$bad' makes no GitHub call"
 done
 wait_run 0 pass 9 --wait
 assert_eq "2" "$rc" "--wait without a value is a usage error (exit 2)"

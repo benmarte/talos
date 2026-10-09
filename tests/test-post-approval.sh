@@ -39,6 +39,10 @@ LOCAL_HEAD="$(git rev-parse HEAD)"
 # Stub PR head SHA is different from local HEAD -- verifies SHA comes from PR.
 STUB_SHA="aabb1122ccdd3344eeff556677889900aabb1122"
 
+# The fixture markers below are authored by "bot"; GET /user answers with the same
+# login, so the operator's own markers count (author trust is test-marker-author-trust.sh).
+export STUB_CURRENT_USER=bot
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CRITERION 1a: Hand-built unwrapped marker is NOT accepted by gate (RED guard).
 # The gate's MARKER_RE requires <!-- --> delimiters; a bare marker is invisible.
@@ -144,9 +148,9 @@ out5="$(STUB_PR_HEAD_SHA="$STUB_SHA" STUB_ISSUE_COMMENTS_JSON="$_dup_comments" \
 assert_exit_code 0 "$rc5" "re-stamp: same-SHA re-stamp exits 0"
 assert_contains "$out5" "already exists" \
   "re-stamp: stderr note explains the marker already exists"
-assert_not_contains "$(cat "$GH_LOG")" "issue comment" \
+assert_not_contains "$(cat "$GH_LOG")" "/comments payload=" \
   "re-stamp: no comment posted (duplicate detected, zero POSTs)"
-assert_contains "$(cat "$GH_LOG")" "pr edit 9 --add-label qa:pass" \
+assert_contains "$(cat "$GH_LOG")" "issues/9/labels payload={\"labels\": [\"qa:pass\"]}" \
   "re-stamp: label still applied defensively (label-pr is idempotent)"
 
 # CRITERION 5b: a DIFFERENT SHA is a different marker string -- always posts.
@@ -155,7 +159,7 @@ DIFFERENT_SHA="ffffffffffffffffffffffffffffffffffffffff"
 out5b="$(STUB_PR_HEAD_SHA="$DIFFERENT_SHA" STUB_ISSUE_COMMENTS_JSON="$_dup_comments" \
           bash "$VCS" post-approval 9 qa 2>&1)"; rc5b=$?
 assert_exit_code 0 "$rc5b" "different SHA: post-approval exits 0"
-assert_contains "$(cat "$GH_LOG")" "issue comment" \
+assert_contains "$(cat "$GH_LOG")" "/comments payload=" \
   "different SHA: comment IS posted (new marker at the new head)"
 
 # CRITERION 5c: a failed comment fetch during the duplicate check fails
@@ -164,9 +168,9 @@ assert_contains "$(cat "$GH_LOG")" "issue comment" \
 out5c="$(STUB_PR_HEAD_SHA="$STUB_SHA" STUB_GH_API_FAIL="comments" \
           bash "$VCS" post-approval 9 qa 2>&1)"; rc5c=$?
 assert_exit_code 1 "$rc5c" "failed duplicate-check fetch: exits non-zero"
-assert_not_contains "$(cat "$GH_LOG")" "issue comment" \
+assert_not_contains "$(cat "$GH_LOG")" "/comments payload=" \
   "failed duplicate-check fetch: no comment posted"
-assert_not_contains "$(cat "$GH_LOG")" "pr edit" \
+assert_not_contains "$(cat "$GH_LOG")" "/labels payload=" \
   "failed duplicate-check fetch: no label applied"
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -383,7 +387,7 @@ outp150="$(STUB_PR_HEAD_SHA="$STUB_SHA" STUB_GH_COMMENTS_RAW="${_150_page1}${_15
 assert_exit_code 0 "$rcp150" "T-pagination-150: post-approval exits 0 when marker is on page 2 of 150"
 assert_contains "$outp150" "already exists" \
   "T-pagination-150: reports the marker already exists"
-assert_not_contains "$(cat "$GH_LOG")" "issue comment" \
+assert_not_contains "$(cat "$GH_LOG")" "/comments payload=" \
   "T-pagination-150: zero comment POSTs when marker found beyond comment #100"
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -398,7 +402,7 @@ assert_contains "$out16" "marker posted" \
 assert_contains "$(cat "$GH_LOG")" "talos:approval sha=${STUB_SHA} role=reviewer" \
   "normal path: marker reached gh with correct SHA and role"
 assert_contains "$(cat "$GH_LOG")" "review:approved" \
-  "normal path: review:approved label applied via gh pr edit"
+  "normal path: review:approved label applied through issues/<n>/labels"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CRITERION 16b: Label applied when vcs.repo is set (REPO non-empty path).
@@ -418,7 +422,7 @@ out16b="$(STUB_PR_HEAD_SHA="$STUB_SHA" bash "$VCS" post-approval 9 qa 2>&1)"; rc
 assert_exit_code 0 "$rc16b" "REPO set: post-approval exits 0"
 assert_contains "$(cat "$GH_LOG")" "qa:pass" \
   "REPO set: qa:pass label present in gh log"
-assert_not_contains "$(cat "$GH_LOG")" "--add-label --repo" \
+assert_not_contains "$(cat "$GH_LOG")" "\"--repo\"" \
   "REPO set: --repo not treated as label name (label not corrupted)"
 assert_contains "$(cat "$GH_LOG")" "talos:approval sha=${STUB_SHA} role=qa" \
   "REPO set: marker posted with correct SHA"
