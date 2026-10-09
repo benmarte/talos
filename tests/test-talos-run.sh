@@ -637,6 +637,33 @@ assert_eq "0" "$RC" "the approval-stage pass exits 0"
 assert_contains "$(journal)" "agent docs" "the approval-stage pass dispatches agent docs"
 assert_eq "0" "$(journal | grep -c 'vcs ready-pr 12')" "AC3: the approval-stage pass calls ready-pr zero times"
 
+# The docs stage goes through `docs-gate` (#546): a PR with no docs-relevant
+# change is stamped by code (no docs agent), a docs-relevant one dispatches the
+# agent with the filtered paths in its prompt.
+reset_stubs
+LEASE_RESET
+draft_cfg '"timeout_ms": 600000, "ci_wait_s": 900'
+draft_collect docs
+printf 'scripts/talos.sh\ntests/t.sh\nCHANGELOG.md\n' > "$STUB_DIR/pr-files"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 1
+assert_eq "0" "$RC" "docs-gate skip: the pass exits 0"
+assert_not_contains "$(journal)" "agent docs" "docs-gate skip: no docs agent is dispatched"
+assert_contains "$(journal)" "vcs post-approval 12 docs --body-file" "docs-gate skip: docs:done is stamped by code"
+assert_contains "$(journal)" "hooks " "docs-gate skip: done docs ran"
+
+reset_stubs
+LEASE_RESET
+draft_cfg '"timeout_ms": 600000, "ci_wait_s": 900'
+draft_collect docs
+printf 'README.md\nscripts/talos.sh\n' > "$STUB_DIR/pr-files"
+printf 'docs updated\n' > "$STUB_DIR/message.docs"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 1
+assert_contains "$(journal)" "agent docs" "docs-gate dispatch: a README PR dispatches the docs agent"
+assert_contains "$(cat "$STUB_DIR/agent.stdin")" "README.md" "docs-gate dispatch: the prompt carries the filtered paths"
+assert_not_contains "$(cat "$STUB_DIR/agent.stdin")" "scripts/talos.sh" "docs-gate dispatch: the prompt carries only the docs-relevant subset"
+assert_not_contains "$(journal)" "post-approval 12 docs" "docs-gate dispatch: the run does not stamp, the agent's done does"
+assert_eq "0" "$(ls "${TMPDIR:-/tmp}"/talos-docs-paths.* 2>/dev/null | wc -l | tr -d ' ')" "docs-gate dispatch: the paths file is removed after the stage"
+
 # AC13: docs and pins move with the contract.
 grep -q 'run-reasons: .*ready-pr-failed' "$GS/talos.sh"
 assert_eq "0" "$?" "AC13: run-reasons names ready-pr-failed"
