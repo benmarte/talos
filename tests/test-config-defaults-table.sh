@@ -59,7 +59,7 @@ print("\n".join(bad))
 print("ROWS=%d" % len(rows))
 TALOS_PYtab7Gw3Nd5Xk
 )"
-assert_eq "ROWS=123" "$(printf '%s\n' "$_out" | tail -n1)" "the table has one row per config key (123 rows)"
+assert_eq "ROWS=125" "$(printf '%s\n' "$_out" | tail -n1)" "the table has one row per config key (125 rows)"
 assert_eq "" "$(printf '%s\n' "$_out" | sed '$d')" \
   "every row has six fields, a unique key, a valid type/derived/env/scope column, and a default of the right shape"
 
@@ -84,7 +84,7 @@ notifications.cmd_timeout_s notifications.slack.webhook notifications.discord.we
 agents.runner_cmd agents.model agents.restamp_model agents.effort agents.restamp_effort
 agents.roles.*.model agents.roles.*.runner agents.roles.*.runner_cmd
 agents.roles.*.restamp_model agents.roles.*.effort agents.roles.*.restamp_effort
-agents.fallback agents.roles.*.fallback agents.provider_down_s agents.capture_usage limits.max_fix_attempts
+agents.fallback agents.roles.*.fallback agents.provider_down_s agents.stage_timeout_s agents.roles.*.stage_timeout_s agents.capture_usage limits.max_fix_attempts
 limits.max_total_dispatches limits.max_retries limits.tokens_per_issue limits.warn_at
 spend.comment pr.draft status.enabled status.file status.log_heading
 status.resume_heading status.fragments_dir status.archive_dir status.log_days

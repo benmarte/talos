@@ -36,9 +36,10 @@ BOUNDS="verify.timeout_ms:1:86400000 verify.ci_wait_s:1:86400 hooks.timeout_s:1:
 notifications.cmd_timeout_s:1:86400 notifications.buzz_timeout_s:1:3600
 status.log_days:1:999999 status.log_max:1:999999 status.resume_max_lines:1:999999
 limits.max_fix_attempts:1:100 limits.max_total_dispatches:1:1000
-execution.worktree_warn_threshold:0:10000 board.project_number:1:2147483647"
+execution.worktree_warn_threshold:0:10000 board.project_number:1:2147483647
+agents.stage_timeout_s:60:86400"
 BOUNDS="$(printf '%s' "$BOUNDS" | tr '\n' ' ')"
-OWN="limits.tokens_per_issue evidence.max_files evidence.max_mb agents.provider_down_s"
+OWN="limits.tokens_per_issue evidence.max_files evidence.max_mb agents.provider_down_s agents.roles.*.stage_timeout_s"
 CONSUMER="issues.max_parallel limits.max_retries"
 
 # ── Every int row is in a bucket ─────────────────────────────────────────────
