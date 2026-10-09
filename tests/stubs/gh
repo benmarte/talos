@@ -53,6 +53,17 @@ _stub_limit() {
   done
 }
 
+# Assignee state (#560). _as_path <issue-n>: the file holding that issue's
+# assignees (STUB_ASSIGNEE_DIR/<n> when set, else the one STUB_ASSIGNEE_FILE).
+# _as_add <file> <login>: add a login once (case-insensitive).
+_as_path() {
+  if [ -n "${STUB_ASSIGNEE_DIR:-}" ]; then printf '%s/%s' "$STUB_ASSIGNEE_DIR" "$1"
+  else printf '%s' "${STUB_ASSIGNEE_FILE:-}"; fi
+}
+_as_add() {
+  grep -qixF -- "$2" "$1" 2>/dev/null || printf '%s\n' "$2" >> "$1"
+}
+
 args="$*"
 case "$args" in
   "repo view --json nameWithOwner -q .nameWithOwner"*)
@@ -337,13 +348,20 @@ print(json.dumps(c))
   "issue view "*"--json assignees"*)
     # assign-issue's read / read-back (#299). STUB_ASSIGNEE_FILE holds the
     # issue's current assignee (absent or empty = unassigned), so a write
-    # below is visible to the read-back that follows it.
-    [ -n "${STUB_ASSIGNEE_FILE:-}" ] && [ -s "$STUB_ASSIGNEE_FILE" ] && cat "$STUB_ASSIGNEE_FILE"
+    # below is visible to the read-back that follows it. STUB_ASSIGNEE_DIR
+    # (#560) keeps one file per issue number instead ($DIR/<n>, one login per
+    # line), for tests with several issues.
+    _as_f="$(_as_path "$3")"
+    [ -n "$_as_f" ] && [ -s "$_as_f" ] && cat "$_as_f"
     exit 0 ;;
   "issue edit "*"--add-assignee "*)
     # assign-issue's write (#299). STUB_ASSIGN_FAIL=1: GitHub rejects the
     # assignee (non-zero exit, error on stderr). STUB_ASSIGN_DROP=1: exits 0
     # but the assignee never lands, so only the read-back can catch it.
+    # --add-assignee ADDS (#560, with STUB_ASSIGNEE_DIR or STUB_ASSIGNEE_ADD=1):
+    # the assignees already there stay. STUB_ASSIGNEE_RACER=<login> (#560):
+    # another operator's write lands at the same moment, so both are on the
+    # issue at the read-back.
     if [ "${STUB_ASSIGN_FAIL:-}" = "1" ]; then
       echo "failed to update https://github.com/$REPO/issues/42: could not assign user: not found" >&2
       exit 1
@@ -353,8 +371,32 @@ print(json.dumps(c))
       [ "$_as_prev" = "--add-assignee" ] && _as_login="$_as_a"
       _as_prev="$_as_a"
     done
-    [ "${STUB_ASSIGN_DROP:-}" != "1" ] && [ -n "${STUB_ASSIGNEE_FILE:-}" ] \
-      && printf '%s\n' "$_as_login" > "$STUB_ASSIGNEE_FILE"
+    _as_f="$(_as_path "$3")"
+    if [ "${STUB_ASSIGN_DROP:-}" != "1" ] && [ -n "$_as_f" ]; then
+      if [ -n "${STUB_ASSIGNEE_DIR:-}" ] || [ "${STUB_ASSIGNEE_ADD:-}" = "1" ]; then
+        _as_add "$_as_f" "$_as_login"
+      else
+        printf '%s\n' "$_as_login" > "$_as_f"
+      fi
+      [ -n "${STUB_ASSIGNEE_RACER:-}" ] && _as_add "$_as_f" "$STUB_ASSIGNEE_RACER"
+    fi
+    exit 0 ;;
+  "issue edit "*"--remove-assignee "*)
+    # unassign-issue's write (#560). STUB_UNASSIGN_FAIL=1 rejects it.
+    if [ "${STUB_UNASSIGN_FAIL:-}" = "1" ]; then
+      echo "failed to update https://github.com/$REPO/issues/42: could not unassign user" >&2
+      exit 1
+    fi
+    _as_prev=""
+    for _as_a in "$@"; do
+      [ "$_as_prev" = "--remove-assignee" ] && _as_login="$_as_a"
+      _as_prev="$_as_a"
+    done
+    _as_f="$(_as_path "$3")"
+    if [ -n "$_as_f" ] && [ -f "$_as_f" ]; then
+      grep -vixF -- "$_as_login" "$_as_f" > "$_as_f.tmp"
+      mv "$_as_f.tmp" "$_as_f"
+    fi
     exit 0 ;;
   "--version"*)
     # Evidence upload's capability message (#415). STUB_GH_VERSION overrides.
