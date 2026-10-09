@@ -124,6 +124,9 @@ assert_eq "3" "$RC" "fast runner: its own exit code passes through"
 assert_eq "fast-out" "$OUT" "fast runner: stdout is untouched"
 assert_contains "$(cat "$ERR")" "fast-err" "fast runner: stderr is untouched"
 assert_not_contains "$(cat "$ERR")" "reason=stage-timeout" "fast runner: no timeout line"
+# The supervisor itself adds nothing to stderr: perl's compile-time warning for
+# a statement after exec() would land on every bounded stage (#540 review).
+assert_not_contains "$(cat "$ERR")" "Statement unlikely to be reached" "fast runner: the supervisor prints no perl warning"
 
 # stdin still reaches the runner (custom runners read the prompt on stdin)
 RECEIVED="$SANDBOX/received.txt"

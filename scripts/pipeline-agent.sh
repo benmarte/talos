@@ -1147,7 +1147,9 @@ if (!defined $pid) { print STDERR "pipeline-agent: stage timeout: fork failed: $
 if (!$pid) {
   setpgrp(0, 0);
   open(STDIN, '<', '/dev/null') if -t STDIN;
-  exec { $cmd[0] } @cmd;
+  # The bare block keeps perl's "Statement unlikely to be reached" compile
+  # warning off every bounded stage's stderr (#540).
+  { exec { $cmd[0] } @cmd; }
   print STDERR "pipeline-agent: $cmd[0]: command not found\n";
   POSIX::_exit(127);
 }
