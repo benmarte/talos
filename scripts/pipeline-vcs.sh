@@ -4487,236 +4487,166 @@ print(json.dumps([{'number': p.get('number'), 'state': p.get('state'), 'title': 
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# GITHUB API ADAPTER  (token-only — no gh CLI required)
-#   Prerequisites:
-#     Set GITHUB_TOKEN or GH_TOKEN in your environment.
-#     Optional: vcs.token_env config key names a custom env var to read.
+# GITHUB CLIENT  (one REST client behind the `github` and `github-api` providers)
+#   Transport: `gh api` when the gh CLI is on PATH and authenticated (it owns
+#     auth and enterprise hosts), curl with GITHUB_TOKEN / GH_TOKEN otherwise.
+#     vcs.provider `github-api` pins the token transport. Everything above the
+#     transport is written once and sees the same status, headers and body from
+#     either, so retry, pagination and error handling cannot drift.
+#   Prerequisites: an authenticated gh, or GITHUB_TOKEN / GH_TOKEN (vcs.token_env
+#     names a custom env var to read for the token transport).
 #   Repo: vcs.repo config, else parsed from git remote get-url origin.
-#   Pagination: single request with per_page=100; warns on truncation.
-#   Output: normalises REST field names to match the gh adapter shape so
-#     orchestrator prompts consume it unchanged (headRefName, etc.).
-#   Token security: NEVER logged to stdout, stderr, or CURL_LOG (only
+#   Token security: NEVER logged to stdout, stderr, or CURL_LOG (only the
 #     "Authorization: Bearer" prefix appears in stub logs).
 # ─────────────────────────────────────────────────────────────────────────────
-_github_api() {
-  # ── Token resolution ────────────────────────────────────────────────────────
-  local _TOKEN_ENV
-  _TOKEN_ENV="$(cfg vcs.token_env)"
-  local _TOKEN=""
-  if [ -n "$_TOKEN_ENV" ]; then
-    _TOKEN="${!_TOKEN_ENV:-}"
+_GH_ROOT="https://api.github.com"
+_GH_JSON="application/vnd.github+json"
+_GH_DIFF="application/vnd.github.v3.diff"
+_GH_XPORT=""   # gh | curl, set by _gh_init
+_GH_TOKEN=""   # token transport only
+_GH_API=""     # repos/<owner>/<name>, relative to the API root
+_GH_STATUS=""  # HTTP status of the last _gh_once
+
+# _gh_init -- set the repo path and, unless --dry-run (which makes no call),
+# pick the transport: once per process. Exits 1 when neither transport is
+# usable. Call it from the main shell, never from a command substitution (the
+# choice would not survive the subshell).
+_gh_init() {
+  [ -n "$_GH_API" ] && return 0
+  local _env _tok=""
+  if [ -n "$REPO" ]; then
+    _GH_API="repos/$REPO"
+  else
+    _GH_API='repos/{owner}/{repo}'   # gh fills the placeholders from the checkout
   fi
-  if [ -z "$_TOKEN" ]; then
-    _TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
-  fi
-  if [ -z "$_TOKEN" ]; then
-    echo "github-api: GITHUB_TOKEN or GH_TOKEN required" >&2
+  [ "$DRY_RUN" = "true" ] && return 0
+  _env="$(cfg vcs.token_env)"
+  [ -n "$_env" ] && _tok="${!_env:-}"
+  [ -z "$_tok" ] && _tok="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+  if [ "$PROVIDER" != "github-api" ] && command -v gh >/dev/null 2>&1 && gh auth token >/dev/null 2>&1; then
+    _GH_XPORT=gh
+  elif [ -n "$_tok" ]; then
+    _GH_XPORT=curl
+    _GH_TOKEN="$_tok"
+  else
+    echo "github: no authenticated gh CLI and GITHUB_TOKEN or GH_TOKEN required" >&2
     exit 1
   fi
-
-  # ── Repo resolution (no gh call) ────────────────────────────────────────────
-  local _REPO="$REPO"
-  if [ -z "$_REPO" ]; then
-    _REPO="$(git remote get-url origin 2>/dev/null \
-      | sed 's|.*github\.com[:/]||; s|\.git$||')"
+  if [ "$_GH_XPORT" = curl ] && [ -z "$REPO" ]; then
+    echo "github: cannot determine the repository (set vcs.repo)" >&2
+    exit 1
   fi
-  local _OWNER="${_REPO%%/*}"
-  local _NAME="${_REPO#*/}"
-  local _API="https://api.github.com/repos/$_OWNER/$_NAME"
+}
 
-  local _VERB="$1"; shift
+# _gh_http <METHOD> <path> <accept> <hdr-file> [<payload-file>] -- one HTTP
+# exchange on the chosen transport. Prints the body, then "\n<status>" (what
+# `curl -w '\n%{http_code}'` gives); the response headers go to <hdr-file>.
+# Returns non-zero, with the transport's own stderr, when no response arrived.
+_gh_http() {
+  local _m="$1" _p="$2" _acc="$3" _hdr="$4" _data="${5:-}" _raw _r=0 _crlf=$'\r\n'
+  if [ "$_GH_XPORT" = gh ]; then
+    # The trailing x keeps $(...) from eating the newlines that end an empty body.
+    _raw="$(gh api -i -X "$_m" -H "Accept: $_acc" ${_data:+-H "Content-Type: application/json" --input "$_data"} "$_p" 2>"$_hdr.err"; _r=$?; printf x; exit "$_r")" || _r=$?
+    _raw="${_raw%x}"
+    case "$_raw" in
+      HTTP/*) ;;
+      *) cat "$_hdr.err" >&2; rm -f "$_hdr.err"; return "${_r:-1}" ;;
+    esac
+    rm -f "$_hdr.err"
+    printf '%s\n' "${_raw%%"$_crlf$_crlf"*}" > "$_hdr"
+    local _line="${_raw%%$'\n'*}"
+    _line="${_line#* }"
+    printf '%s\n%s' "${_raw#*"$_crlf$_crlf"}" "${_line%% *}"
+    return 0
+  fi
+  local _args=(-sS -w "\n%{http_code}" -D "$_hdr" -X "$_m"
+    -H "Authorization: Bearer $_GH_TOKEN" -H "Accept: $_acc" -H "X-GitHub-Api-Version: 2022-11-28")
+  if [ -n "$_data" ]; then
+    curl "${_args[@]}" -H "Content-Type: application/json" --data-binary @- "$_GH_ROOT/$_p" < "$_data"
+  else
+    curl "${_args[@]}" "$_GH_ROOT/$_p"
+  fi
+}
 
-  # ── Rate-limit helpers shared by _ga_req/_ga_diff_req/_ga_fetch_all_pages
-  # (#173) — reused, not forked, since all three already share status/body
-  # parsing conventions. Each *_once single-attempt function below routes
-  # through _with_retry via these.
-  # _ga_is_secondary_limit <status> <body> — true when GitHub returned 403
-  # with a secondary-rate-limit / abuse-detection body (retryable even though
-  # the status is not 429).
-  _ga_is_secondary_limit() {
-    [ "$1" = "403" ] && grep -qiE 'secondary rate limit|abuse detection' <<<"$2"
+# _gh_once <METHOD> <path> <accept> <payload-file|""> [<next-file>] -- one
+# attempt, shaped for _with_retry: the body on success; on a rate limit it sets
+# $_WR_RETRYABLE (decided from the status, never from message text) and
+# $_WR_RETRY_AFTER. With <next-file> it also writes the next page's path there
+# (empty when there is none). A file, not a global: _with_retry runs inside a
+# command substitution, which a global would not survive.
+_gh_once() {
+  local _m="$1" _p="$2" _acc="$3" _data="${4:-}" _next_file="${5:-}"
+  local _hdr _full _status _body _rc=0 _reset
+  _hdr="$(mktemp)"
+  _full="$(_gh_http "$_m" "$_p" "$_acc" "$_hdr" "$_data")" || {
+    _rc=$?
+    printf 'github: %s failed (exit %s) on %s\n' "$_GH_XPORT" "$_rc" "$VERB" >&2
+    rm -f "$_hdr"
+    return 1
   }
-  # _ga_retry_after <header-file> — prints the Retry-After value in seconds
-  # if the response carried one, else nothing (caller falls back to
-  # exponential backoff).
-  _ga_retry_after() {
-    grep -i '^retry-after:' "$1" 2>/dev/null | head -1 | sed 's/[^0-9]*//g' | tr -d '[:space:]'
-  }
-  # _ga_rate_limit_msg <status> <header-file> <verb> — the human-readable
-  # message printed to stderr for a retryable failure. Retryability itself is
-  # signalled to _with_retry via $_WR_RETRYABLE (set by the caller from the
-  # parsed status code, not from this text) — #194 review.
-  _ga_rate_limit_msg() {
-    local _status="$1" _hdr="$2" _verb="$3" _reset
-    _reset="$(grep -i '^x-ratelimit-reset:' "$_hdr" 2>/dev/null \
-      | sed 's/[^0-9]*//g' | tr -d '[:space:]')"
-    if [ -n "$_reset" ]; then
-      printf 'github-api: HTTP %s on %s (rate-limited; reset at %s)\n' "$_status" "$_verb" "$_reset"
+  _status="${_full##*$'\n'}"
+  _body="${_full%$'\n'*}"
+  _GH_STATUS="$_status"
+  [ -n "$_next_file" ] && grep -i '^link:' "$_hdr" \
+    | grep -o '<[^>]*>; rel="next"' \
+    | sed 's/<\([^>]*\)>; rel="next"/\1/' > "$_next_file"
+  if [ "${_status:-0}" -ge 300 ] 2>/dev/null; then
+    if [ "$_status" = "429" ] || { [ "$_status" = "403" ] && grep -qiE 'secondary rate limit|abuse detection' <<<"$_body"; }; then
+      _WR_RETRYABLE=1
+      _WR_RETRY_AFTER="$(grep -i '^retry-after:' "$_hdr" 2>/dev/null | head -1 | sed 's/[^0-9]*//g' | tr -d '[:space:]')"
+      _reset="$(grep -i '^x-ratelimit-reset:' "$_hdr" 2>/dev/null | sed 's/[^0-9]*//g' | tr -d '[:space:]')"
+      printf 'github: HTTP %s on %s (rate-limited%s)\n' "$_status" "$VERB" "${_reset:+; reset at $_reset}" >&2
+    elif [ -n "$_next_file" ]; then
+      printf 'github: HTTP %s fetching page: %s\n' "$_status" "$_p" >&2
     else
-      printf 'github-api: HTTP %s on %s (rate-limited)\n' "$_status" "$_verb"
+      printf 'github: HTTP %s on %s\n' "$_status" "$VERB" >&2
     fi
-  }
+    rm -f "$_hdr"
+    return 1
+  fi
+  rm -f "$_hdr"
+  printf '%s' "$_body"
+}
 
-  # ── HTTP request helper (never logs token) ──────────────────────────────────
-  # Usage: _ga_req <METHOD> <URL> [extra curl args...]
-  # Outputs response body; exits 1 on non-2xx (after exhausting retries on a
-  # retryable status via _with_retry, #173).
-  _ga_req_once() {
-    local _m="$1" _u="$2"; shift 2
-    local _full _status _body _hdr_file _curl_rc
-    _hdr_file="$(mktemp)"
-    _full="$(curl -sS -w "\n%{http_code}" \
-      -D "$_hdr_file" \
-      -X "$_m" \
-      -H "Authorization: Bearer $_TOKEN" \
-      -H "Accept: application/vnd.github+json" \
-      -H "X-GitHub-Api-Version: 2022-11-28" \
-      "$@" "$_u")" || {
-      _curl_rc=$?
-      printf 'github-api: curl failed (exit %s) on %s\n' "$_curl_rc" "$_VERB" >&2
-      rm -f "$_hdr_file"
-      return 1
-    }
-    _status="$(printf '%s' "$_full" | tail -1)"
-    _body="$(printf '%s' "$_full" | sed '$d')"
-    if [ "${_status:-0}" -ge 300 ] 2>/dev/null; then
-      if [ "$_status" = "429" ] || _ga_is_secondary_limit "$_status" "$_body"; then
-        _WR_RETRYABLE=1
-        _WR_RETRY_AFTER="$(_ga_retry_after "$_hdr_file")"
-        _ga_rate_limit_msg "$_status" "$_hdr_file" "$_VERB" >&2
-        rm -f "$_hdr_file"
-        return 1
-      fi
-      rm -f "$_hdr_file"
-      printf 'github-api: HTTP %s on %s\n' "$_status" "$_VERB" >&2
-      return 1
-    fi
-    rm -f "$_hdr_file"
-    printf '%s' "$_body"
-  }
+# _gh_try <METHOD> <path> [<json-payload>] -- _gh_once under _with_retry. Prints
+# the body; returns 1 on failure, so a caller that must not abort (a best-effort
+# lookup) can carry on. A payload is staged in a file and reaches the transport
+# on stdin, never as an argument: argv caps one string at 128 KiB on Linux, and a
+# body under the 120,000-byte raw cap can escape to more than that.
+_gh_try() {
+  local _m="$1" _p="$2" _f="" _rc=0
+  if [ $# -ge 3 ]; then
+    _f="$(mktemp)" || return 1
+    printf '%s' "$3" > "$_f" || { rm -f "$_f"; return 1; }
+  fi
+  _with_retry "$VERB" _gh_once "$_m" "$_p" "$_GH_JSON" "$_f" || _rc=$?
+  [ -n "$_f" ] && rm -f "$_f"
+  return "$_rc"
+}
 
-  _ga_req() {
-    local _gr_body
-    if ! _gr_body="$(_with_retry "$_VERB" _ga_req_once "$@")"; then
-      exit 1
-    fi
-    printf '%s' "$_gr_body"
-  }
+# _gh_req <METHOD> <path> [<json-payload>] -- _gh_try that exits 1 on failure.
+_gh_req() {
+  local _body
+  _body="$(_gh_try "$@")" || exit 1
+  printf '%s' "$_body"
+}
 
-  # ── Diff request (different Accept header) ──────────────────────────────────
-  _ga_diff_req_once() {
-    local _u="$1"
-    local _full _status _body _hdr_file _curl_rc
-    _hdr_file="$(mktemp)"
-    _full="$(curl -sS -w "\n%{http_code}" \
-      -D "$_hdr_file" \
-      -H "Authorization: Bearer $_TOKEN" \
-      -H "Accept: application/vnd.github.v3.diff" \
-      -H "X-GitHub-Api-Version: 2022-11-28" \
-      "$_u")" || {
-      _curl_rc=$?
-      printf 'github-api: curl failed (exit %s) on %s\n' "$_curl_rc" "$_VERB" >&2
-      rm -f "$_hdr_file"
-      return 1
-    }
-    _status="$(printf '%s' "$_full" | tail -1)"
-    _body="$(printf '%s' "$_full" | sed '$d')"
-    if [ "${_status:-0}" -ge 300 ] 2>/dev/null; then
-      if [ "$_status" = "429" ] || _ga_is_secondary_limit "$_status" "$_body"; then
-        _WR_RETRYABLE=1
-        _WR_RETRY_AFTER="$(_ga_retry_after "$_hdr_file")"
-        _ga_rate_limit_msg "$_status" "$_hdr_file" "$_VERB" >&2
-        rm -f "$_hdr_file"
-        return 1
-      fi
-      rm -f "$_hdr_file"
-      printf 'github-api: HTTP %s on %s\n' "$_status" "$_VERB" >&2
-      return 1
-    fi
-    rm -f "$_hdr_file"
-    printf '%s' "$_body"
-  }
+# _gh_diff <path> -- the unified diff of a pull request.
+_gh_diff() {
+  local _body
+  _body="$(_with_retry "$VERB" _gh_once GET "$1" "$_GH_DIFF" "")" || exit 1
+  printf '%s' "$_body"
+}
 
-  _ga_diff_req() {
-    local _u="$1"
-    local _gdr_body
-    if ! _gdr_body="$(_with_retry "$_VERB" _ga_diff_req_once "$_u")"; then
-      exit 1
-    fi
-    printf '%s' "$_gdr_body"
-  }
-
-  # _ga_fetch_all_pages <start-url> [<max-pages> <noun>]
-  # Fetches every page of a GitHub REST list endpoint by following
-  # Link: rel="next" headers, starting from <start-url>. With <max-pages>,
-  # stops after that many pages; if a next page still exists it prints a
-  # _list_cap_warn-style stderr warning naming the cap (#302 -- a truncated
-  # lookup must never look like one that found nothing). Prints a single JSON
-  # array concatenating every page's items. Exits 1 (prints NOTHING to
-  # stdout) on any HTTP error partway through, including a page that fails
-  # only after exhausting its retries (#173) — callers must treat a non-zero
-  # exit as "no usable data", never as a complete-but-short list, so a failed
-  # page can never be mistaken for a complete result (#171).
-  # Uses the same auth headers as _ga_req; does not use _ga_req itself because
-  # _ga_req discards the Link header after each request.
-  # _ga_fetch_page_once <url> <next-link-file> — single-attempt fetch of one
-  # page. On success, prints the page body and writes the next page's URL
-  # (empty when there is none) to <next-link-file>. _with_retry captures this
-  # function's stdout/stderr via a command substitution around the ENTIRE
-  # retry loop (`_gafp_body="$(_with_retry ...)"` below) — that forks a
-  # subshell, so a plain global variable set in here would not survive back
-  # out to _ga_fetch_all_pages. A file is used instead of the $_WR_RETRY_AFTER
-  # global-variable convention (which works fine elsewhere: it's read by
-  # _with_retry itself, inside the same subshell it was set in) specifically
-  # to cross that subshell boundary (#173 regression found in review: an
-  # earlier version of this fix used a global here and silently stopped
-  # paginating after page 1).
-  _ga_fetch_page_once() {
-    local _u="$1" _next_file="$2"
-    local _full _status _body _hdr_file _next _curl_rc
-    _hdr_file="$(mktemp)"
-    _full="$(curl -sS -w "\n%{http_code}" \
-      -D "$_hdr_file" -X GET \
-      -H "Authorization: Bearer $_TOKEN" \
-      -H "Accept: application/vnd.github+json" \
-      -H "X-GitHub-Api-Version: 2022-11-28" \
-      "$_u")" || {
-      _curl_rc=$?
-      printf 'github-api: curl failed (exit %s) on %s\n' "$_curl_rc" "$_VERB" >&2
-      rm -f "$_hdr_file"
-      return 1
-    }
-    _status="$(printf '%s' "$_full" | tail -1)"
-    _body="$(printf '%s' "$_full" | sed '$d')"
-    _next="$(grep -i '^link:' "$_hdr_file" \
-      | grep -o '<[^>]*>; rel="next"' \
-      | sed 's/<\([^>]*\)>; rel="next"/\1/')"
-    printf '%s' "$_next" > "$_next_file"
-    if [ "${_status:-0}" -ge 300 ] 2>/dev/null; then
-      if [ "$_status" = "429" ] || _ga_is_secondary_limit "$_status" "$_body"; then
-        _WR_RETRYABLE=1
-        _WR_RETRY_AFTER="$(_ga_retry_after "$_hdr_file")"
-        _ga_rate_limit_msg "$_status" "$_hdr_file" "$_VERB (fetching $_u)" >&2
-        rm -f "$_hdr_file"
-        return 1
-      fi
-      rm -f "$_hdr_file"
-      printf 'github-api: HTTP %s fetching page: %s\n' "$_status" "$_u" >&2
-      return 1
-    fi
-    rm -f "$_hdr_file"
-    printf '%s' "$_body"
-  }
-
-  # _ga_refused_origin <url> -- prints nothing and returns 0 when <url> is on
-  # the API origin ($_API): https, same host, same port (443 when omitted).
-  # Otherwise prints the refused scheme://host:port (never the path, query or
-  # userinfo) and returns 1. Parsed with urllib.parse, not a regex (#320), and
-  # stricter than the parser alone: userinfo, backslashes, whitespace and
-  # control characters are refused outright, so curl cannot read a different
-  # host out of the same string.
-  _ga_refused_origin() {
-    python3 -I -c '
+# _gh_rel_path <url> -- prints the path and query of <url> relative to the API
+# root, and returns 0, when <url> is on the API origin: https, same host, same
+# port (443 when omitted). Otherwise prints the refused scheme://host:port
+# (never the path, query or userinfo) and returns 1. Parsed with urllib.parse,
+# not a regex (#320), and stricter than the parser alone: userinfo, backslashes,
+# whitespace and control characters are refused outright, so curl cannot read a
+# different host out of the same string.
+_gh_rel_path() {
+  python3 -I -c '
 import sys
 from urllib.parse import urlsplit
 
@@ -4737,89 +4667,94 @@ if odd or p.username is not None or got[0] != "https" or got != origin(sys.argv[
     port = "" if got[2] is None else ":%s" % got[2]
     print("%s://%s%s" % (got[0] or "<no scheme>", host, port))
     sys.exit(1)
-' "$_API" "$1"
-  }
+print(p.path.lstrip("/") + ("?" + p.query if p.query else ""))
+' "$_GH_ROOT" "$1"
+}
 
-  _ga_fetch_all_pages() {
-    local _gafp_url="$1" _gafp_max="${2:-}" _gafp_noun="${3:-items}"
-    local _gafp_all _gafp_body _gafp_next_file _gafp_pages=0 _gafp_refused
-    _gafp_all="[]"
-    _gafp_next_file="$(mktemp)"
-    # Note (#194 security, non-blocking): unlike post-approval's $_pa_tmpfile,
-    # this file lives in a `local` variable inside a function that is always
-    # invoked via a command-substitution subshell -- the file's trap-EXIT
-    # convention doesn't apply cleanly here (an EXIT trap fires after the
-    # function has already returned and its locals have gone out of scope,
-    # which trips `set -u`). Cleanup stays explicit `rm -f` on every return
-    # path instead.
-    while [ -n "$_gafp_url" ]; do
-      # Pin every page to the API origin before curl sends the token (#320):
-      # a Link: rel="next" naming any other host, an http downgrade or another
-      # port fails like a failed page (#302) -- non-zero, no partial output.
-      if ! _gafp_refused="$(_ga_refused_origin "$_gafp_url")"; then
-        printf 'github-api: %s: refusing to follow pagination link to %s (not the API origin); no token sent\n' \
-          "$_VERB" "$_gafp_refused" >&2
-        rm -f "$_gafp_next_file"
-        return 1
-      fi
-      : > "$_gafp_next_file"
-      if ! _gafp_body="$(_with_retry "$_VERB" _ga_fetch_page_once "$_gafp_url" "$_gafp_next_file")"; then
-        rm -f "$_gafp_next_file"
-        return 1
-      fi
-      # A page that is not a JSON array is a failed page, never an empty
-      # one (#319: a truncated page silently dropped a merge-gate sibling).
-      # Both go in on stdin -- the merged list on the first line (json.dump
-      # writes no newline), then the page -- because an env var this size
-      # hits E2BIG (128 KB per string on Linux).
-      _gafp_all="$(printf '%s\n%s' "$_gafp_all" "$_gafp_body" | URL="$_gafp_url" python3 -I -c "
+# _gh_pages <path> [<max-pages> <noun> [<key>]] -- every page of a REST list
+# endpoint, following Link: rel="next" from <path>. Prints one JSON array of the
+# items. With <key> each page is an object whose list sits under <key> (check
+# runs, workflow runs) and the result is {"total_count": N, "<key>": [...]}.
+# With <max-pages> it stops after that many pages and, if a next page still
+# exists, warns on stderr naming the cap (#302 -- a truncated lookup must never
+# look like one that found nothing). Returns 1 with NOTHING on stdout on any
+# failure partway through, including a page that fails only after exhausting its
+# retries (#173) and a page of the wrong shape (#319: a truncated page silently
+# dropped a merge-gate sibling) -- callers treat non-zero as "no usable data".
+# Every next link is pinned to the API origin before a request carries a token
+# (#320).
+_gh_pages() {
+  local _gp_path="$1" _gp_max="${2:-}" _gp_noun="${3:-items}" _gp_key="${4:-}"
+  local _gp_all _gp_body _gp_next_file _gp_pages=0 _gp_url _gp_ref
+  _gp_all="[]"
+  [ -n "$_gp_key" ] && _gp_all="{\"$_gp_key\": []}"
+  _gp_next_file="$(mktemp)"
+  while [ -n "$_gp_path" ]; do
+    : > "$_gp_next_file"
+    if ! _gp_body="$(_with_retry "$VERB" _gh_once GET "$_gp_path" "$_GH_JSON" "" "$_gp_next_file")"; then
+      rm -f "$_gp_next_file"
+      return 1
+    fi
+    # Both go in on stdin -- the merged result on the first line (json.dump
+    # writes no newline), then the page -- because an env var this size hits
+    # E2BIG (128 KB per string on Linux).
+    _gp_all="$(printf '%s\n%s' "$_gp_all" "$_gp_body" | KEY="$_gp_key" URL="$_gp_path" python3 -I -c "
 import json, os, sys
 prev, _, page = sys.stdin.read().partition('\n')
 prev = json.loads(prev)
+key = os.environ['KEY']
 try:
     page = json.loads(page)
 except ValueError:
     page = None
-if not isinstance(page, list):
-    sys.exit('github-api: page is not a JSON array: ' + os.environ['URL'])
-prev.extend(page)
+if key:
+    if not isinstance(page, dict) or not isinstance(page.get(key), list):
+        sys.exit('github: page is not a JSON object with a ' + key + ' list: ' + os.environ['URL'])
+    prev[key].extend(page[key])
+    prev.setdefault('total_count', page.get('total_count'))
+else:
+    if not isinstance(page, list):
+        sys.exit('github: page is not a JSON array: ' + os.environ['URL'])
+    prev.extend(page)
 json.dump(prev, sys.stdout)
-")" || { rm -f "$_gafp_next_file"; return 1; }
-      _gafp_url="$(cat "$_gafp_next_file")"
-      _gafp_pages=$((_gafp_pages + 1))
-      if [ -n "$_gafp_max" ] && [ -n "$_gafp_url" ] && [ "$_gafp_pages" -ge "$_gafp_max" ]; then
-        printf 'pipeline-vcs: %s: WARNING result capped at %s pages (github-api page cap) -- some %s may be missing\n' \
-          "$_VERB" "$_gafp_max" "$_gafp_noun" >&2
+")" || { rm -f "$_gp_next_file"; return 1; }
+    _gp_url="$(cat "$_gp_next_file")"
+    _gp_path=""
+    _gp_pages=$((_gp_pages + 1))
+    if [ -n "$_gp_url" ]; then
+      if [ -n "$_gp_max" ] && [ "$_gp_pages" -ge "$_gp_max" ]; then
+        printf 'pipeline-vcs: %s: WARNING result capped at %s pages (github page cap) -- some %s may be missing\n' \
+          "$VERB" "$_gp_max" "$_gp_noun" >&2
         break
       fi
-    done
-    rm -f "$_gafp_next_file"
-    printf '%s' "$_gafp_all"
-  }
+      if ! _gp_ref="$(_gh_rel_path "$_gp_url")"; then
+        printf 'github: %s: refusing to follow pagination link to %s (not the API origin); no token sent\n' \
+          "$VERB" "$_gp_ref" >&2
+        rm -f "$_gp_next_file"
+        return 1
+      fi
+      _gp_path="$_gp_ref"
+    fi
+  done
+  rm -f "$_gp_next_file"
+  printf '%s' "$_gp_all"
+}
 
-  # _ga_fetch_all_comments <issue-n> — thin wrapper over _ga_fetch_all_pages
-  # for the one caller (view-issue) that needs a single issue's comments.
-  _ga_fetch_all_comments() {
-    _ga_fetch_all_pages "$_API/issues/$1/comments?per_page=100"
-  }
+# _gh_comments <issue-or-pr-n> -- every comment as a JSON array.
+_gh_comments() { _gh_pages "$_GH_API/issues/$1/comments?per_page=100"; }
 
-  # _ga_current_user_login -- REST resolver for _vcs_shared_current_user
-  # (#187): GET /user and print the .login field. Exits non-zero when the
-  # request fails (a 403 for an Actions GITHUB_TOKEN or a GitHub App token, a
-  # rate limit) or the answer is not JSON or has no (or a null) login:
-  # _vcs_shared_current_user reads that
-  # as "refused" (#453), which the marker readers answer by trusting only
-  # markers.trusted_authors. Uses _ga_req_once (not _ga_req) deliberately --
-  # this lookup is never a hard dependency, so a failure must not abort the
-  # whole verb the way _ga_req's exit-1-on-failure would; the helper turns it
-  # into a state, not an exit.
-  _ga_current_user_login() {
-    local _cul_body
-    _cul_body="$(_ga_req_once GET "${_API%%/repos/*}/user" 2>/dev/null)" || return 1
-    # A 2xx answer whose `login` is missing, null, empty or not a string (false,
-    # 0, ...) is "refused" (exit 1), not "unavailable": it names no identity
-    # (#455). A string that is not login-shaped is refused by the shared check.
-    printf '%s' "$_cul_body" | python3 -I -c "
+# _gh_user_login -- REST resolver for _vcs_shared_current_user (#187): GET /user
+# and print the .login field. Non-zero when the request fails (a 403 for an
+# Actions GITHUB_TOKEN or a GitHub App token, a rate limit) or the answer has no
+# usable login: _vcs_shared_current_user reads that as "refused" (#453), which
+# the marker readers answer by trusting only markers.trusted_authors. One
+# attempt, not _gh_req: this lookup is never a hard dependency, so a failure
+# must become a state, not an exit. A 2xx answer whose `login` is missing, null,
+# empty or not a string is "refused" too, not "unavailable" (#455).
+_gh_user_login() {
+  local _ul_body
+  _ul_body="$(_gh_once GET user "$_GH_JSON" "" 2>/dev/null)" || return 1
+  printf '%s' "$_ul_body" | python3 -I -c "
 import json, sys
 try:
     login = json.load(sys.stdin).get('login')
@@ -4829,14 +4764,19 @@ if not isinstance(login, str) or not login.strip():
     sys.exit(1)
 print(login)
 " 2>/dev/null
-  }
+}
 
-  # Provider calls for _vcs_shared_assign_issue (#299). _ga_req_once under
-  # _with_retry, not _ga_req: _ga_req exits the whole script on failure, and
-  # a failed assignment must never fail the verb that asked for it.
+_github_api() {
+  _gh_init
+  local _API="$_GH_API" _REPO="$REPO"
+  local _VERB="$1"; shift
+
+  # Provider calls for _vcs_shared_assign_issue (#299). _gh_try, not _gh_req:
+  # _gh_req exits the whole script on failure, and a failed assignment must
+  # never fail the verb that asked for it.
   _ga_assignees_get() {
     local _ag_body
-    _ag_body="$(_with_retry "$_VERB" _ga_req_once GET "$_API/issues/$1")" || return 1
+    _ag_body="$(_gh_try GET "$_API/issues/$1")" || return 1
     printf '%s' "$_ag_body" | python3 -I -c "
 import json, sys
 for a in json.load(sys.stdin).get('assignees') or []:
@@ -4847,7 +4787,7 @@ for a in json.load(sys.stdin).get('assignees') or []:
   _ga_assignee_add() {
     local _aa_payload
     _aa_payload="$(python3 -I -c "import json, sys; print(json.dumps({'assignees': [sys.argv[1]]}))" "$2")"
-    _ga_json_try POST "$_API/issues/$1/assignees" "$_aa_payload"
+    _gh_try POST "$_API/issues/$1/assignees" "$_aa_payload"
   }
   _ga_assignee_remove() {
     local _ar_payload
@@ -4855,70 +4795,38 @@ for a in json.load(sys.stdin).get('assignees') or []:
     _ga_json_try DELETE "$_API/issues/$1/assignees" "$_ar_payload" >/dev/null
   }
 
-  # Provider calls for the needs-owner verbs (#345). _ga_req_once under
-  # _with_retry (not _ga_req) so a failure returns to the shared helper, which
-  # owns the exit code. The issues endpoints serve issues and PRs alike.
-  _ga_no_items() { _ga_fetch_all_pages "$_API/issues?state=open&labels=$_TALOS_NEEDS_OWNER_LABEL_URL&per_page=100"; }
+  # Provider calls for the needs-owner verbs (#345). _gh_try (not _gh_req) so a
+  # failure returns to the shared helper, which owns the exit code. The issues
+  # endpoints serve issues and PRs alike.
+  _ga_no_items() { _gh_pages "$_API/issues?state=open&labels=$_TALOS_NEEDS_OWNER_LABEL_URL&per_page=100"; }
   _ga_no_post_comment() {
     local _gnp_payload
     _gnp_payload="$(printf '%s' "$2" | python3 -I -c '
 import json, sys
 sys.stdout.write(json.dumps({"body": sys.stdin.buffer.read().decode("utf-8", errors="replace")}, ensure_ascii=False))
 ')" || return 1
-    _ga_json_try POST "$_API/issues/$1/comments" "$_gnp_payload" >/dev/null
+    _gh_try POST "$_API/issues/$1/comments" "$_gnp_payload" >/dev/null
   }
   _ga_no_label_add() {
-    _ga_json_try POST "$_API/issues/$1/labels" "{\"labels\":[\"$_TALOS_NEEDS_OWNER_LABEL\"]}" >/dev/null
+    _gh_try POST "$_API/issues/$1/labels" "{\"labels\":[\"$_TALOS_NEEDS_OWNER_LABEL\"]}" >/dev/null
   }
   _ga_no_label_remove() {
-    _with_retry "$_VERB" _ga_req_once DELETE "$_API/issues/$1/labels/$_TALOS_NEEDS_OWNER_LABEL_URL" >/dev/null
+    _gh_try DELETE "$_API/issues/$1/labels/$_TALOS_NEEDS_OWNER_LABEL_URL" >/dev/null
   }
 
-  # JSON writes (#381, #451). The body goes to curl on stdin (`--data-binary @-`)
-  # from a staged file, never as a `-d` argv element: argv caps one string at
-  # 128 KiB on Linux, and a body under the 120,000-byte raw cap can escape to
-  # more than that. The redirect sits on the function _with_retry reruns, so a
-  # retry re-reads the file instead of an already consumed stdin; curl inherits
-  # it through _ga_req_once.
-  # _ga_json_once <METHOD> <URL> <payload-file>
-  _ga_json_once() {
-    _ga_req_once "$1" "$2" -H "Content-Type: application/json" --data-binary @- < "$3"
-  }
-  # _ga_json_try <METHOD> <URL> <payload> -- stages <payload> in a temp file,
-  # prints the response body, returns 1 on failure (callers that must not abort
-  # the script, like _ga_req_once under _with_retry).
-  _ga_json_try() {
-    local _gj_file _gj_rc=0
-    _gj_file="$(mktemp)" || return 1
-    if ! printf '%s' "$3" > "$_gj_file"; then
-      rm -f "$_gj_file"
-      return 1
-    fi
-    _with_retry "$_VERB" _ga_json_once "$1" "$2" "$_gj_file" || _gj_rc=$?
-    rm -f "$_gj_file"
-    return "$_gj_rc"
-  }
-  # _ga_json <METHOD> <URL> <payload> -- _ga_json_try that exits 1 on failure,
-  # like _ga_req.
-  _ga_json() {
-    local _gj_body
-    _gj_body="$(_ga_json_try "$@")" || exit 1
-    printf '%s' "$_gj_body"
-  }
-
-  # Provider calls for upsert-pr-comment (#381).
-  _ga_upc_read() { _ga_fetch_all_comments "$1"; }
-  _ga_upc_once() { _ga_json_once "$1" "$_API/$2" "$3"; }
-  _ga_upc_write() { _with_retry "$_VERB" _ga_upc_once "$1" "$2" "$3"; }
+  # Provider calls for upsert-pr-comment (#381). The body is already in a file,
+  # which reaches the transport on stdin; the shared helper owns the exit code.
+  _ga_upc_read() { _gh_comments "$1"; }
+  _ga_upc_write() { _with_retry "$_VERB" _gh_once "$1" "$_API/$2" "$_GH_JSON" "$3"; }
 
   # ── Verb dispatch ───────────────────────────────────────────────────────────
   case "$_VERB" in
 
     assign-issue)
-      _vcs_shared_assign_issue "${1:-}" _ga_assignees_get _ga_assignee_add _ga_current_user_login
+      _vcs_shared_assign_issue "${1:-}" _ga_assignees_get _ga_assignee_add _gh_user_login
       ;;
     current-user)
-      _vcs_shared_print_current_user _ga_current_user_login
+      _vcs_shared_print_current_user _gh_user_login
       exit $?
       ;;
     issue-assignees)
@@ -4941,14 +4849,14 @@ sys.stdout.write(json.dumps({"body": sys.stdin.buffer.read().decode("utf-8", err
         echo "[dry-run] github-api: GET $_API/issues/$1/comments?per_page=100 (paginated; newest own comment ending in <!-- talos:$2 -->); then PATCH $_API/issues/comments/<id> (body on stdin), or POST $_API/issues/$1/comments when there is none; no write when the body is unchanged"
         return 0
       fi
-      _vcs_shared_upsert_pr_comment "${1:-}" "${2:-}" "${3:-}" _ga_upc_read _ga_upc_write _ga_current_user_login
+      _vcs_shared_upsert_pr_comment "${1:-}" "${2:-}" "${3:-}" _ga_upc_read _ga_upc_write _gh_user_login
       ;;
     mark-needs-owner)
       if [ "$DRY_RUN" = "true" ]; then
         echo "[dry-run] github-api: GET $_API/issues/$1/comments (read-comments); unless the newest trusted marker comment already has this body and is unanswered: POST $_API/issues/$1/comments; POST $_API/issues/$1/labels ($_TALOS_NEEDS_OWNER_LABEL)"
         return 0
       fi
-      _vcs_shared_mark_needs_owner "${1:-}" "${2-}" _ga_no_post_comment _ga_no_label_add _ga_current_user_login
+      _vcs_shared_mark_needs_owner "${1:-}" "${2-}" _ga_no_post_comment _ga_no_label_add _gh_user_login
       ;;
     list-needs-owner)
       if [ "$DRY_RUN" = "true" ]; then
@@ -4958,7 +4866,7 @@ sys.stdout.write(json.dumps({"body": sys.stdin.buffer.read().decode("utf-8", err
         esac
         return 0
       fi
-      _vcs_shared_list_needs_owner _ga_no_items _ga_no_label_remove _ga_current_user_login "$@"
+      _vcs_shared_list_needs_owner _ga_no_items _ga_no_label_remove _gh_user_login "$@"
       ;;
 
     list-issues)
@@ -4970,7 +4878,7 @@ sys.stdout.write(json.dumps({"body": sys.stdin.buffer.read().decode("utf-8", err
         return 0
       fi
       local _raw
-      _raw="$(_ga_fetch_all_pages "$_API/issues?state=open&per_page=100")" || exit 1
+      _raw="$(_gh_pages "$_API/issues?state=open&per_page=100")" || exit 1
       printf '%s' "$_raw" | NO_BODY="$_li_nobody" python3 -I -c "
 import json, os, sys
 data = json.load(sys.stdin)
@@ -5000,7 +4908,7 @@ print(json.dumps(result, indent=2))
           return 0
         fi
         local _issue _comments _meta
-        _issue="$(_ga_req GET "$_API/issues/$_n")"
+        _issue="$(_gh_req GET "$_API/issues/$_n")"
         _comments="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" read-comments "$_n" ${REPO:+--repo "$REPO"})" || exit 1
         _meta="$(printf '%s' "$_issue" | python3 -I -c "
 import json, sys
@@ -5016,8 +4924,8 @@ print(json.dumps({'title': data.get('title',''), 'body': data.get('body') or '',
         return 0
       fi
       local _issue _comments
-      _issue="$(_ga_req GET "$_API/issues/$_n")"
-      _comments="$(_ga_req GET "$_API/issues/$_n/comments?per_page=100")"
+      _issue="$(_gh_req GET "$_API/issues/$_n")"
+      _comments="$(_gh_req GET "$_API/issues/$_n/comments?per_page=100")"
       printf '%s' "$_issue" | COMMENTS="$_comments" python3 -I -c "
 import json, re, sys, os
 data = json.load(sys.stdin)
@@ -5044,7 +4952,7 @@ print(json.dumps(result, indent=2))
       local _gaci_state_unverified=false
       if [ "$ALLOW_CLOSED" != "true" ]; then
         local _gaci_state_raw _gaci_state
-        if _gaci_state_raw="$(_ga_req GET "$_API/issues/$_n" 2>/dev/null)"; then
+        if _gaci_state_raw="$(_gh_req GET "$_API/issues/$_n" 2>/dev/null)"; then
           _gaci_state="$(printf '%s' "$_gaci_state_raw" | python3 -I -c "
 import json, sys
 d = json.load(sys.stdin)
@@ -5062,7 +4970,7 @@ print(d.get('state', ''))
       local _payload
       _payload="$(python3 -I -c "import json,sys; print(json.dumps({'body':sys.argv[1]}))" "$_body")"
       local _gaci_resp
-      _gaci_resp="$(_ga_json POST "$_API/issues/$_n/comments" "$_payload")" || exit 1
+      _gaci_resp="$(_gh_req POST "$_API/issues/$_n/comments" "$_payload")" || exit 1
       printf '%s' "$_gaci_resp" | python3 -I -c "
 import json, sys
 d = json.load(sys.stdin)
@@ -5081,9 +4989,9 @@ print(d.get('html_url', ''))
       fi
       local _cpayload _spayload
       _cpayload="$(python3 -I -c "import json,sys; print(json.dumps({'body':sys.argv[1]}))" "$_body")"
-      _ga_json POST "$_API/issues/$_n/comments" "$_cpayload" >/dev/null
+      _gh_req POST "$_API/issues/$_n/comments" "$_cpayload" >/dev/null
       _spayload='{"state":"closed"}'
-      _ga_json PATCH "$_API/issues/$_n" "$_spayload" >/dev/null
+      _gh_req PATCH "$_API/issues/$_n" "$_spayload" >/dev/null
       echo "Closed issue #$_n"
       ;;
 
@@ -5095,7 +5003,7 @@ print(d.get('html_url', ''))
         return 0
       fi
       local _cur_labels
-      _cur_labels="$(_ga_req GET "$_API/issues/$_n/labels")" || exit 1
+      _cur_labels="$(_gh_req GET "$_API/issues/$_n/labels")" || exit 1
       local _new_payload
       _new_payload="$(printf '%s' "$_cur_labels" | \
         ADD_LABELS="$ADD_LABELS" REMOVE_LABELS="$REMOVE_LABELS" python3 -I -c "
@@ -5109,7 +5017,7 @@ for l in add:
 labels = [l for l in labels if l not in rem]
 print(json.dumps({'labels': labels}))
 ")"
-      _ga_json PUT "$_API/issues/$_n/labels" "$_new_payload" >/dev/null
+      _gh_req PUT "$_API/issues/$_n/labels" "$_new_payload" >/dev/null
       echo "Labels updated on issue #$_n"
       ;;
 
@@ -5123,7 +5031,7 @@ print(json.dumps({'labels': labels}))
         return 0
       fi
       local _cea_issue _cea_body
-      _cea_issue="$(_ga_req GET "$_API/issues/$_n")" || exit 1
+      _cea_issue="$(_gh_req GET "$_API/issues/$_n")" || exit 1
       _cea_body="$(printf '%s' "$_cea_issue" | python3 -I -c "
 import json, sys
 d = json.load(sys.stdin)
@@ -5163,7 +5071,7 @@ print(json.dumps({
 }))
 ")"
       local _ci_resp
-      _ci_resp="$(_ga_json POST "$_API/issues" "$_ci_payload")" || exit 1
+      _ci_resp="$(_gh_req POST "$_API/issues" "$_ci_payload")" || exit 1
       printf '%s' "$_ci_resp" | python3 -I -c "
 import json, sys
 d = json.load(sys.stdin)
@@ -5177,7 +5085,7 @@ else:
       # Assign the new issue (#299) -- stdout stays the URL alone.
       _vcs_shared_assign_issue "$(printf '%s' "$_ci_resp" \
           | python3 -I -c "import json, sys; print(json.load(sys.stdin).get('number', ''))" 2>/dev/null)" \
-        _ga_assignees_get _ga_assignee_add _ga_current_user_login >&2
+        _ga_assignees_get _ga_assignee_add _gh_user_login >&2
       ;;
 
     # (#332) Draft support is gh/glab/az only; exit 2, no HTTP call. pr-is-draft
@@ -5215,7 +5123,7 @@ print(json.dumps({
 }))
 ")"
       local _pr_resp
-      _pr_resp="$(_ga_json POST "$_API/pulls" "$_pr_payload")" || exit 1
+      _pr_resp="$(_gh_req POST "$_API/pulls" "$_pr_payload")" || exit 1
       printf '%s' "$_pr_resp" | python3 -I -c "
 import json, sys
 d = json.load(sys.stdin)
@@ -5230,7 +5138,7 @@ print(d.get('html_url', d.get('url', '')))
         return 0
       fi
       local _pr
-      _pr="$(_ga_req GET "$_API/pulls/$_n")"
+      _pr="$(_gh_req GET "$_API/pulls/$_n")"
       printf '%s' "$_pr" | python3 -I -c "
 import json, sys
 d = json.load(sys.stdin)
@@ -5251,7 +5159,7 @@ print(json.dumps(result, indent=2))
         return 0
       fi
       local _raw
-      _raw="$(_ga_fetch_all_pages "$_API/pulls?state=open&per_page=100")" || exit 1
+      _raw="$(_gh_pages "$_API/pulls?state=open&per_page=100")" || exit 1
       printf '%s' "$_raw" | python3 -I -c "
 import json, sys
 data = json.load(sys.stdin)
@@ -5286,7 +5194,7 @@ print(json.dumps(result, indent=2))
           return 0
         fi
         local _dp_raw
-        _dp_raw="$(_ga_fetch_all_pages "$_API/pulls/$_n/files?per_page=100")" || exit 1
+        _dp_raw="$(_gh_pages "$_API/pulls/$_n/files?per_page=100")" || exit 1
         printf '%s' "$_dp_raw" | _diff_stat_format
         return
       fi
@@ -5294,7 +5202,7 @@ print(json.dumps(result, indent=2))
         echo "[dry-run] github-api: GET $_API/pulls/$_n (Accept: vnd.github.v3.diff)"
         return 0
       fi
-      _ga_diff_req "$_API/pulls/$_n"
+      _gh_diff "$_API/pulls/$_n"
       ;;
 
     checkout-pr)
@@ -5304,7 +5212,7 @@ print(json.dumps(result, indent=2))
         return 0
       fi
       local _pr_data _branch
-      _pr_data="$(_ga_req GET "$_API/pulls/$_n")"
+      _pr_data="$(_gh_req GET "$_API/pulls/$_n")"
       _branch="$(printf '%s' "$_pr_data" | python3 -I -c "
 import json, sys
 print(json.load(sys.stdin).get('head',{}).get('ref',''))
@@ -5322,7 +5230,7 @@ print(json.load(sys.stdin).get('head',{}).get('ref',''))
       fi
       local _rev_payload
       _rev_payload="$(python3 -I -c "import json,sys; print(json.dumps({'body':sys.argv[1],'event':'APPROVE'}))" "$_rbody")"
-      _ga_json POST "$_API/pulls/$_n/reviews" "$_rev_payload" >/dev/null
+      _gh_req POST "$_API/pulls/$_n/reviews" "$_rev_payload" >/dev/null
       echo "Approved PR #$_n"
       ;;
 
@@ -5335,7 +5243,7 @@ print(json.load(sys.stdin).get('head',{}).get('ref',''))
         return 0
       fi
       local _cur_labels
-      _cur_labels="$(_ga_req GET "$_API/issues/$_n/labels")" || exit 1
+      _cur_labels="$(_gh_req GET "$_API/issues/$_n/labels")" || exit 1
       local _new_payload
       _new_payload="$(printf '%s' "$_cur_labels" | \
         ADD_LABELS="$ADD_LABELS" REMOVE_LABELS="$REMOVE_LABELS" python3 -I -c "
@@ -5349,7 +5257,7 @@ for l in add:
 labels = [l for l in labels if l not in rem]
 print(json.dumps({'labels': labels}))
 ")"
-      _ga_json PUT "$_API/issues/$_n/labels" "$_new_payload" >/dev/null
+      _gh_req PUT "$_API/issues/$_n/labels" "$_new_payload" >/dev/null
       echo "Labels updated on PR #$_n"
       ;;
 
@@ -5360,13 +5268,13 @@ print(json.dumps({'labels': labels}))
         return 0
       fi
       local _pr_data _sha
-      _pr_data="$(_ga_req GET "$_API/pulls/$_n")"
+      _pr_data="$(_gh_req GET "$_API/pulls/$_n")"
       _sha="$(printf '%s' "$_pr_data" | python3 -I -c "
 import json, sys
 print(json.load(sys.stdin).get('head',{}).get('sha',''))
 ")"
       [ -z "$_sha" ] && { echo "github-api: could not resolve head SHA for PR #$_n" >&2; exit 1; }
-      _ga_req GET "$_API/commits/$_sha/check-runs"
+      _gh_req GET "$_API/commits/$_sha/check-runs"
       ;;
 
     pr-checks-required)
@@ -5381,14 +5289,14 @@ print(json.load(sys.stdin).get('head',{}).get('sha',''))
       # Empty config never passes vacuously and needs no CI data to say so.
       [ -z "$_required" ] && { printf '' | _eval_required_checks "$_required"; return; }
       local _pr_data _sha
-      _pr_data="$(_ga_req GET "$_API/pulls/$_n")"
+      _pr_data="$(_gh_req GET "$_API/pulls/$_n")"
       _sha="$(printf '%s' "$_pr_data" | python3 -I -c "
 import json, sys
 print(json.load(sys.stdin).get('head',{}).get('sha',''))
 ")"
       [ -z "$_sha" ] && { echo "github-api: could not resolve head SHA for PR #$_n" >&2; exit 1; }
       local _cr_data _norm
-      _cr_data="$(_ga_req GET "$_API/commits/$_sha/check-runs")"
+      _cr_data="$(_gh_req GET "$_API/commits/$_sha/check-runs")"
       _norm="$(printf '%s' "$_cr_data" | python3 -I -c "
 import json, sys
 data = json.load(sys.stdin)
@@ -5421,7 +5329,7 @@ for c in data.get('check_runs', []):
       esac
       local _merge_payload
       _merge_payload="$(python3 -I -c "import json,sys; print(json.dumps({'merge_method':sys.argv[1],'delete_branch':True}))" "$_mm")"
-      _ga_json PUT "$_API/pulls/$_n/merge" "$_merge_payload" >/dev/null
+      _gh_req PUT "$_API/pulls/$_n/merge" "$_merge_payload" >/dev/null
       echo "Merged PR #$_n"
       ;;
 
@@ -5436,14 +5344,14 @@ for c in data.get('check_runs', []):
         return 0
       fi
       local _ub_sha_json _ub_sha
-      _ub_sha_json="$(_ga_req GET "$_API/pulls/$_ub_n" 2>/dev/null)" || exit 1
+      _ub_sha_json="$(_gh_req GET "$_API/pulls/$_ub_n" 2>/dev/null)" || exit 1
       _ub_sha="$(printf '%s' "$_ub_sha_json" | python3 -I -c "
 import json, sys
 try: print(json.load(sys.stdin).get('head', {}).get('sha', ''))
 except Exception: print('')
 " 2>/dev/null)"
       [ -z "$_ub_sha" ] && { echo "pipeline-vcs: update-branch: could not resolve head SHA for PR #$_ub_n" >&2; exit 1; }
-      _ga_json PUT "$_API/pulls/$_ub_n/update-branch" "{\"expected_head_sha\":\"$_ub_sha\"}" >/dev/null
+      _gh_req PUT "$_API/pulls/$_ub_n/update-branch" "{\"expected_head_sha\":\"$_ub_sha\"}" >/dev/null
       echo "update-branch: PR #$_ub_n branch updated with its base"
       ;;
 
@@ -5457,7 +5365,7 @@ except Exception: print('')
       local _gacp_state_unverified=false
       if [ "$ALLOW_CLOSED" != "true" ]; then
         local _gacp_state_raw _gacp_state _gacp_merged_at
-        if _gacp_state_raw="$(_ga_req GET "$_API/pulls/$_n" 2>/dev/null)"; then
+        if _gacp_state_raw="$(_gh_req GET "$_API/pulls/$_n" 2>/dev/null)"; then
           _gacp_state="$(printf '%s' "$_gacp_state_raw" | python3 -I -c "
 import json, sys
 d = json.load(sys.stdin)
@@ -5480,7 +5388,7 @@ print(d.get('merged_at') or '')
       local _payload
       _payload="$(python3 -I -c "import json,sys; print(json.dumps({'body':sys.argv[1]}))" "$_body")"
       local _gacp_resp
-      _gacp_resp="$(_ga_json POST "$_API/issues/$_n/comments" "$_payload")" || exit 1
+      _gacp_resp="$(_gh_req POST "$_API/issues/$_n/comments" "$_payload")" || exit 1
       printf '%s' "$_gacp_resp" | python3 -I -c "
 import json, sys
 d = json.load(sys.stdin)
@@ -5494,7 +5402,7 @@ print(d.get('html_url', ''))
     edit-pr-body)
       # Replace the PR's description (#455): PATCH pulls/<n>. ARGS is `<n> <body>`
       # (the pre-dispatch block validated flags, caps and placeholders). The body
-      # reaches python on stdin and curl on stdin (_ga_json stages the payload in
+      # reaches python on stdin and curl on stdin (_gh_req stages the payload in
       # a file), never as an argument.
       local _n="$1" _epb_payload
       if [ "$DRY_RUN" = "true" ]; then
@@ -5505,7 +5413,7 @@ print(d.get('html_url', ''))
 import json, sys
 sys.stdout.write(json.dumps({"body": sys.stdin.buffer.read().decode("utf-8", errors="replace")}))
 ')" || { echo "pipeline-vcs: edit-pr-body: could not build the request body; nothing changed" >&2; exit 1; }
-      _ga_json PATCH "$_API/pulls/$_n" "$_epb_payload" >/dev/null
+      _gh_req PATCH "$_API/pulls/$_n" "$_epb_payload" >/dev/null
       echo "edited pr=$_n body"
       ;;
 
@@ -5535,7 +5443,7 @@ sys.stdout.write(json.dumps({"body": sys.stdin.buffer.read().decode("utf-8", err
         return 0
       fi
       local _raw
-      _raw="$(_ga_fetch_all_pages "$_API/pulls?state=$_api_state&per_page=100" "$_fp_max_pages" PRs)" || exit 1
+      _raw="$(_gh_pages "$_API/pulls?state=$_api_state&per_page=100" "$_fp_max_pages" PRs)" || exit 1
       printf '%s' "$_raw" | STATE_FILTER="$_state" python3 -I -c "
 import json, sys, os
 state_filter = os.environ.get('STATE_FILTER','open')
@@ -5565,8 +5473,8 @@ json.dump(out, sys.stdout)
     check-pr-files)
       # Forbidden-files pattern/allow-list logic is _vcs_shared_check_pr_files
       # (#177 slice 3). This arm is now just fetch -> call. The fetch mirrors
-      # pr-files below (_ga_fetch_all_pages, #171 pattern) rather than the old
-      # single-page `_ga_req GET .../files?per_page=100`, so a >100-file PR is
+      # pr-files below (_gh_pages, #171 pattern) rather than the old
+      # single-page `_gh_req GET .../files?per_page=100`, so a >100-file PR is
       # no longer silently truncated (#211-class bug); a failed fetch exits 1
       # with no stdout, which is the fail-closed behaviour the shared
       # function's stdin contract relies on.
@@ -5576,7 +5484,7 @@ json.dump(out, sys.stdout)
         return 0
       fi
       local _cpf_raw
-      _cpf_raw="$(_ga_fetch_all_pages "$_API/pulls/$_n/files?per_page=100")" || exit 1
+      _cpf_raw="$(_gh_pages "$_API/pulls/$_n/files?per_page=100")" || exit 1
       printf '%s' "$_cpf_raw" | python3 -I -c "
 import json, sys
 try:
@@ -5591,12 +5499,12 @@ for f in files:
       ;;
 
     pr-files)
-      # #211 review fix: a single `_ga_req GET .../files?per_page=100` (used
+      # #211 review fix: a single `_gh_req GET .../files?per_page=100` (used
       # until PR #211) never followed the Link: rel="next" header, unlike
       # every other list endpoint in this file -- a >100-file PR silently
       # returned only the first 100 paths, which could feed a truncated list
       # into the Step 3e Phase 1 auto-docs gate (SKILL.md). Switch to
-      # `_ga_fetch_all_pages` (#171 pattern, same as list-issues above) so
+      # `_gh_pages` (#171 pattern, same as list-issues above) so
       # every changed path is returned regardless of PR size, and a failed
       # page exits non-zero with no partial output.
       local _n="$1"
@@ -5605,7 +5513,7 @@ for f in files:
         return 0
       fi
       local _pf_raw
-      _pf_raw="$(_ga_fetch_all_pages "$_API/pulls/$_n/files?per_page=100")" || exit 1
+      _pf_raw="$(_gh_pages "$_API/pulls/$_n/files?per_page=100")" || exit 1
       printf '%s' "$_pf_raw" | python3 -I -c "
 import json, sys
 try:
@@ -5626,14 +5534,14 @@ for f in files:
         return 0
       fi
       local _pr_data _sha
-      _pr_data="$(_ga_req GET "$_API/pulls/$_n")"
+      _pr_data="$(_gh_req GET "$_API/pulls/$_n")"
       _sha="$(printf '%s' "$_pr_data" | python3 -I -c "
 import json, sys
 print(json.load(sys.stdin).get('head',{}).get('sha',''))
 ")"
       [ -z "$_sha" ] && { echo "github-api: could not resolve head SHA for PR #$_n" >&2; exit 1; }
       local _runs_raw
-      _runs_raw="$(_ga_req GET "$_API/actions/runs?head_sha=$_sha")"
+      _runs_raw="$(_gh_req GET "$_API/actions/runs?head_sha=$_sha")"
       local _failed_ids
       _failed_ids="$(printf '%s' "$_runs_raw" | python3 -I -c "
 import json, sys
@@ -5652,7 +5560,7 @@ except Exception:
       fi
       while IFS= read -r _run_id; do
         [ -n "$_run_id" ] && \
-          _ga_json POST "$_API/actions/runs/$_run_id/rerun-failed-jobs" '{}' >/dev/null
+          _gh_req POST "$_API/actions/runs/$_run_id/rerun-failed-jobs" '{}' >/dev/null
       done <<< "$_failed_ids"
       echo "rerun-ci: re-ran failed runs for PR #$_n ($_sha)"
       ;;
@@ -5667,7 +5575,7 @@ except Exception:
         return 0
       fi
       local _pr_data
-      _pr_data="$(_ga_req GET "$_API/pulls/$_n")"
+      _pr_data="$(_gh_req GET "$_API/pulls/$_n")"
       if [ -z "$_pr_data" ]; then
         echo "pipeline-vcs: pr-head: could not resolve head SHA for PR #$_n" >&2; exit 1
       fi
@@ -5691,7 +5599,7 @@ except Exception:
       fi
       _github_api_fetch_mergeable() {
         local _pm_data _pm_v
-        _pm_data="$(_ga_req GET "$_API/pulls/$_n")"
+        _pm_data="$(_gh_req GET "$_API/pulls/$_n")"
         _pm_v="$(printf '%s' "$_pm_data" | python3 -I -c "
 import json, sys
 try:
@@ -5714,12 +5622,12 @@ print('true' if v is True else 'false' if v is False else 'null')
     read-comments)
       # read-comments <issue-or-pr-n>
       # Print every comment on an issue/PR as {"comments": [...]}, fully
-      # paginated via _ga_fetch_all_comments (the same shared reader
+      # paginated via _gh_comments (the same shared reader
       # check-approval-sha already uses for PR comments). Shared reader used
       # by both post-approval's duplicate-marker check and (via subprocess,
       # on the _github side) read-attempt (#172). No change to this
       # provider's own read-attempt, which already normalises inline via
-      # _ga_fetch_all_comments.
+      # _gh_comments.
       # Fail-closed: prints nothing to stdout and exits 1 on any page failure.
       local _n="${1:-}"
       [ -z "$_n" ] && { echo "pipeline-vcs: read-comments: missing issue/PR number" >&2; exit 1; }
@@ -5728,7 +5636,7 @@ print('true' if v is True else 'false' if v is False else 'null')
         return 0
       fi
       local _rc_raw
-      _rc_raw="$(_ga_fetch_all_comments "$_n")"
+      _rc_raw="$(_gh_comments "$_n")"
       if [ $? -ne 0 ] || [ -z "$_rc_raw" ]; then
         echo "pipeline-vcs: read-comments: could not fetch issue #$_n data" >&2
         exit 1
@@ -5750,7 +5658,7 @@ print('true' if v is True else 'false' if v is False else 'null')
       local _raw_comments
       # Paginate: follow Link: rel="next" headers so markers beyond comment #100
       # are never missed (fix for #126 -- single per_page=100 fetch fails open).
-      _raw_comments="$(_ga_fetch_all_comments "$_n")"
+      _raw_comments="$(_gh_comments "$_n")"
       if [ $? -ne 0 ] || [ -z "$_raw_comments" ]; then
         echo "pipeline-vcs: read-attempt: could not fetch issue #$_n data" >&2
         exit 1
@@ -5770,7 +5678,7 @@ json.dump({'comments': comments}, sys.stdout)
       local _trusted_authors _verify_authors
       _trusted_authors="$(cfg markers.trusted_authors)"
       _verify_authors="$(cfg markers.verify_authors)"
-      _vcs_shared_reader_identity "$_verify_authors" _ga_current_user_login
+      _vcs_shared_reader_identity "$_verify_authors" _gh_user_login
       printf '%s' "$_normalized" | TRUSTED_AUTHORS="$_trusted_authors" VERIFY_AUTHORS="$_verify_authors" CURRENT_USER="$_RID_USER" CURRENT_USER_REFUSED="$_RID_REFUSED" TALOS_CFG="$_TALOS_CFG" _vcs_shared_read_attempt
       ;;
 
@@ -5824,7 +5732,7 @@ json.dump({'comments': comments}, sys.stdout)
         local _json_body
         _json_body="$(python3 -I -c "import json,sys; print(json.dumps({'body': sys.argv[1]}))" "$2")"
         local _resp
-        _resp="$(_ga_json POST "$_API/issues/$1/comments" "$_json_body")"
+        _resp="$(_gh_req POST "$_API/issues/$1/comments" "$_json_body")"
         if [ -z "$_resp" ]; then
           return 1
         fi
@@ -5855,14 +5763,14 @@ json.dump({'comments': comments}, sys.stdout)
         return 0
       fi
       local _pr_raw _comments_raw
-      _pr_raw="$(_ga_req GET "$_API/pulls/$_n")"
+      _pr_raw="$(_gh_req GET "$_API/pulls/$_n")"
       if [ -z "$_pr_raw" ]; then
         echo "pipeline-vcs: check-approval-sha: could not fetch PR #$_n data" >&2; exit 1
       fi
       # Paginate comments: follow Link: rel="next" so approvals beyond #100 are
       # found (fix for #126 -- single per_page=100 fetch fails closed here but
       # forces unnecessary re-stamp; paginating avoids the stale false-positive).
-      _comments_raw="$(_ga_fetch_all_comments "$_n")"
+      _comments_raw="$(_gh_comments "$_n")"
       if [ $? -ne 0 ] || [ -z "$_comments_raw" ]; then
         echo "pipeline-vcs: check-approval-sha: could not fetch PR #$_n data" >&2; exit 1
       fi
@@ -5908,7 +5816,7 @@ json.dump(out, sys.stdout)
       local _trusted_authors_cas _verify_authors_cas
       _trusted_authors_cas="$(cfg markers.trusted_authors)"
       _verify_authors_cas="$(cfg markers.verify_authors)"
-      _vcs_shared_reader_identity "$_verify_authors_cas" _ga_current_user_login
+      _vcs_shared_reader_identity "$_verify_authors_cas" _gh_user_login
       local _marker_out _marker_rc _marker_json
       _marker_out="$(printf '%s' "$_pr_data" | TRUSTED_AUTHORS="$_trusted_authors_cas" VERIFY_AUTHORS="$_verify_authors_cas" CURRENT_USER="$_RID_USER" CURRENT_USER_REFUSED="$_RID_REFUSED" TALOS_CFG="$_TALOS_CFG" _vcs_shared_check_approval_marker)"
       _marker_rc=$?
@@ -5969,7 +5877,7 @@ json.dump(out, sys.stdout)
         fi
       fi
       local _pr_raw
-      _pr_raw="$(_ga_req GET "$_API/pulls/$_pr_num")"
+      _pr_raw="$(_gh_req GET "$_API/pulls/$_pr_num")"
       if [ -z "$_pr_raw" ]; then
         echo "pipeline-vcs: check-closing-keyword: could not fetch PR '$_pr_ref' -- skipping check" >&2
         echo "talos:closing-keyword-unverified pr=$_pr_ref issue=$_issue_n reason=pr-fetch-failed"
@@ -5986,10 +5894,10 @@ json.dump(out, sys.stdout)
       # past the cap finds more PRs.
       _github_api_fetch_closing_siblings() {
         local _open_prs_raw _probe _max=100 _capped=0
-        _open_prs_raw="$(_ga_fetch_all_pages "$_API/pulls?state=open&per_page=100" "$_max" PRs)" || return 1
+        _open_prs_raw="$(_gh_pages "$_API/pulls?state=open&per_page=100" "$_max" PRs)" || return 1
         [ -z "$_open_prs_raw" ] && return 1
         if [ "$(printf '%s' "$_open_prs_raw" | _json_array_len)" = "$((_max * 100))" ]; then
-          _probe="$(_with_retry "$_VERB" _ga_req_once GET "$_API/pulls?state=open&per_page=100&page=$((_max + 1))")" || return 1
+          _probe="$(_gh_try GET "$_API/pulls?state=open&per_page=100&page=$((_max + 1))")" || return 1
           _probe="$(printf '%s' "$_probe" | _json_array_len)" || return 1
           [ "$_probe" = 0 ] || _capped=1
         fi
@@ -8731,7 +8639,7 @@ if [ "$VERB" = "post-approval" ]; then
 
   # ── Duplicate-marker detection (#172, restores what d7aedf2 removed) ──────
   # Fetch every PR comment (paginated via the shared read-comments verb --
-  # gh api --paginate for _github, _ga_fetch_all_comments for github-api; see
+  # gh api --paginate for _github, _gh_comments for github-api; see
   # each provider's read-comments arm) and check whether this exact marker
   # already exists as the last non-whitespace line of any comment (same
   # last-line rule as read-attempt/check-approval-sha, #79). A different SHA

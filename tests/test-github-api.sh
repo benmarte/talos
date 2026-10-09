@@ -1506,8 +1506,8 @@ unset GITHUB_TOKEN
 # A `-d "$payload"` hands the whole body to curl as one argv element, which
 # Linux caps at 128 KiB (a body under the raw 120,000-byte cap can escape past
 # it). Bodies go through --data-binary @- from a staged file instead
-# (_ga_json). The arm runs from `_github_api()` to the next top-level function.
-_ga_arm="$(awk '/^_github_api\(\) \{/ { on = 1 } on { print } on && /^\}/ { exit }' "$VCS")"
+# (_gh_http). The arm is `_github_api()` plus the transport `_gh_http()`.
+_ga_arm="$(awk '/^(_github_api|_gh_http)\(\) \{/ { on = 1 } on { print } on && /^\}/ { on = 0 }' "$VCS")"
 [ -n "$_ga_arm" ] && pass "#451 guard: located the github-api arm" \
   || fail "#451 guard: located the github-api arm" "no _github_api() function found in pipeline-vcs.sh"
 assert_eq "0" "$(printf '%s\n' "$_ga_arm" | grep -cE -- '(^|[[:space:]])-d[[:space:]]+"|--data(-raw|-urlencode)?[[:space:]]')" \

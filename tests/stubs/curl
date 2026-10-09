@@ -267,6 +267,17 @@ elif [ -n "${CURL_QUEUE:-}" ] && [ -s "$CURL_QUEUE" ]; then
     *)
       resp="$raw" ;;
   esac
+elif [ "${STUB_GH_FIXTURES:-}" = "1" ] && [[ "$url" == https://api.github.com/* ]]; then
+  # Fixture GitHub (the gh stub sets STUB_GH_FIXTURES=1): the answer comes from
+  # the STUB_* variables, see gh-rest-fixtures.py. Line 1 is the status, line 2
+  # the next page's URL (Link header), the rest the body.
+  _fx_payload="$(mktemp)" || exit 1
+  printf '%s' "$payload" > "$_fx_payload"
+  _fx_out="$(python3 -I "$(dirname "$0")/gh-rest-fixtures.py" "${method:-GET}" "$url" "$_fx_payload")"
+  rm -f "$_fx_payload"
+  http_status="$(printf '%s\n' "$_fx_out" | sed -n 1p)"
+  link_next_fx="$(printf '%s\n' "$_fx_out" | sed -n 2p)"
+  resp="$(printf '%s\n' "$_fx_out" | sed 1,2d)"
 else
   case "$url" in
     *slack.com*)   resp='{"ok":true,"ts":"1111.2222"}' ;;
@@ -284,7 +295,7 @@ fi
 resp="${resp//$'\x01'/$'\n'}"
 
 # Pop one Link: next URL from CURL_LINK_QUEUE (empty line = no Link header)
-link_next=""
+link_next="${link_next_fx:-}"
 if [ -n "${CURL_LINK_QUEUE:-}" ] && [ -f "$CURL_LINK_QUEUE" ] && [ -s "$CURL_LINK_QUEUE" ]; then
   link_next="$(head -1 "$CURL_LINK_QUEUE")"
   tail -n +2 "$CURL_LINK_QUEUE" > "$CURL_LINK_QUEUE.tmp" \
