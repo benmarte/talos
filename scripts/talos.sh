@@ -3555,7 +3555,8 @@ _talos_run_qa_fail() {
     _talos_flush; exit 0
   fi
   printf '%s\n' "$_head" > "$_f" || _talos_stop scratch-unavailable
-  _r="$(bash "$SCRIPT_DIR"/talos.sh gate fix-round "$_n" qa --pr "$_pr" 2>/dev/null)"
+  _r="$(bash "$SCRIPT_DIR"/talos.sh gate fix-round "$_n" qa --pr "$_pr" 2>"$_CFG_CACHE_DIR/err")"
+  _talos_relay gate-fix-round "$(cat "$_CFG_CACHE_DIR/err" 2>/dev/null)"
   case "$_r" in
     verdict=redispatch*) : ;;
     verdict=block*)
