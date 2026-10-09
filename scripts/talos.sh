@@ -374,7 +374,9 @@
 #   wait: draft ci human-merge blocked owner lease none dependency cap
 #
 # run    The loop of Step 2 itself (slice 8, #472): `next`, act on the one
-#        action, `done`, repeat -- with no orchestrator LLM. Every prompt is
+#        action, `done`, repeat -- the deterministic orchestrator for local and
+#        weak-model profiles (code routes, gates and does the bookkeeping; an
+#        LLM still does every stage), with no orchestrator LLM. Every prompt is
 #        rendered by `prompt` and dispatched through `pipeline-agent.sh <role> -`
 #        with the prompt file on stdin; the verdict is read back from the
 #        stage's convention:
@@ -384,8 +386,9 @@
 #                          list (an unknown word is a dispatch failure, never a
 #                          verdict -- nothing is recorded)
 #          pm              no verdict: pm takes none (done without --verdict)
-#          developer       a PR URL in the final message is `PR_OPENED` with
-#                          --pr <N>; the absence of one (or BLOCKED:) is BLOCKED
+#          developer       a PR URL in the final message (or a standalone
+#                          `pr=<N>` word, #537) is `PR_OPENED` with --pr <N>;
+#                          the absence of one (or BLOCKED:) is BLOCKED
 #          planner         no verdict; the sub-issues the agent created are its
 #                          work -- one `done` per run (no pass/fail verdict)
 #          docs            no verdict: docs takes none (like pm and planner;
@@ -399,6 +402,19 @@
 #        warn line on a `redispatch` is relayed), `batch` waits for nothing
 #        here (a draft batch answers one role per action from `next`; each
 #        dispatch is its own loop pass).
+#        A QA `fix-round` is run by the driver itself (#537), the playbook's
+#        flow: `gate fix-round <N> qa --pr <M>` (the budget guard, the attempt
+#        ceilings, the unblock right before the round), then the developer
+#        through the one dispatch path with `--shape fix-round` and QA's report
+#        as the prior summary; after the push the next pass resumes the normal
+#        path (re-stamps, ready-pr, QA). Backstop: a QA FAIL at the PR head the
+#        previous QA FAIL saw (the fix round pushed nothing) sets
+#        pipeline:blocked on the PR and the issue and stops, `stop
+#        reason=qa-fail-unchanged-head pr=<M> issue=<N>`, exit 0 -- never a
+#        loop to --max-iterations. The last failing head per PR lives in the
+#        run's own scratch dir, never the repo tree; a head that cannot be
+#        read is `stop reason=head-unresolved`. A gate `verdict=block` ends the
+#        run clean (`stop verdict=block reason=<why>`).
 #
 #   run [--issue <N>] [--max-iterations <n>]
 #          --issue <N> pins every `next` call to the named issue (the
@@ -463,9 +479,9 @@
 #        One `info run` notice per pass carries the action; nothing else is
 #        printed. Stderr carries the child relay lines only.
 #
-# run-reasons: usage unknown-role unknown-pr dispatch-failed ready-pr-failed
+# run-reasons: usage unknown-role unknown-pr dispatch-failed ready-pr-failed qa-fail-unchanged-head head-unresolved
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
-#         ready-pr-failed draft-unverified
+#         ready-pr-failed draft-unverified qa-fail-unchanged-head head-unresolved
 #   warn: qa-ci-red notify-failed board-failed spend-upsert-failed lease-release-failed
 #         model-invalid label-failed comment-failed budget-check-failed
 #         inflight-unreadable
@@ -703,7 +719,8 @@ verbs:
                                      a missing provider verb stop
                                      reason=unsupported-verb:<verb>
   run [--issue <N>] [--max-iterations <n>]
-                                     the no-LLM driver: loops `next`, dispatches
+                                     the deterministic orchestrator (local and
+                                     weak-model profiles): loops `next`, dispatches
                                      the stage through pipeline-agent.sh with the
                                      rendered prompt on stdin, reads the verdict
                                      from the final-message convention and calls
@@ -3182,7 +3199,7 @@ _talos_emit_next() { printf '%s\0%s\0' action "${1#action=}" >> "$_TALOS_OUT"; }
 _talos_emit_next_wait() { printf '%s\0%s\0' action "${1#action=}" >> "$_TALOS_OUT"; }
 
 # ── run (#472, slice 8) ──────────────────────────────────────────────────────
-# The no-LLM driver: the loop of Step 2 in one bash process. Every stage is
+# The deterministic orchestrator: the loop of Step 2 in one bash process. Every stage is
 # dispatched through pipeline-agent.sh with the rendered prompt on stdin; the
 # verdict is derived from the stage's final-message convention (#472, AC2);
 # every end-of-stage write is `done`'s.

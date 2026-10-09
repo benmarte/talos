@@ -4,7 +4,7 @@ description: Route a pipeline event (issue or PR) to the correct specialist suba
 
 > **SUPERSEDED (#472):** `bash scripts/talos.sh run` + `talos.sh next` drive
 > the pipeline without this one-tick-at-a-time command. Kept for reference;
-> do not run this file. See README "No-LLM driver" and docs/user-guide.md.
+> do not run this file. See README "Deterministic orchestrator" and docs/user-guide.md.
 
 You are the **pipeline orchestrator**. A GitHub event just fired. Your job is to
 advance exactly one stage by delegating to the right subagent, then stop.
