@@ -220,6 +220,22 @@ use_stubs() {
   : > "$NAK_LOG"; : > "$NAK_QUEUE"; : > "$NAK_ENV_LOG"; : > "$VERIFY_LOG"
 }
 
+# github_leg <gh|curl> [<extra config members>] — point the sandbox at ONE of the
+# two GitHub transports (#551). `gh` is vcs.provider github with the gh stub;
+# `curl` is vcs.provider github-api with the curl stub and a token. The queue and
+# the request log are shared names, so a test written against CURL_QUEUE and
+# CURL_LOG runs unchanged on either: the gh stub reads GH_QUEUE / GH_LINK_QUEUE and
+# writes GH_REST_LOG in the curl stub's formats (the log's auth field is empty on
+# the gh leg: it carries no token). <extra config members> is JSON text that
+# starts with a comma, e.g. ',"merge": {"method": "rebase"}'.
+github_leg() {
+  local _gl_prov=github
+  [ "$1" = curl ] && _gl_prov=github-api
+  printf '{"vcs": {"provider": "%s", "repo": "acme/widget"}%s}\n' "$_gl_prov" "${2:-}" > talos.pipeline.json
+  export GITHUB_TOKEN="${GITHUB_TOKEN:-leg-test-token}"
+  export GH_QUEUE="$CURL_QUEUE" GH_LINK_QUEUE="$CURL_LINK_QUEUE" GH_REST_LOG="$CURL_LOG"
+}
+
 # install_talos — install Talos globally into the sandbox HOME (~/.talos/) and
 # configure the sandbox repo (config only). Scripts land in $HOME/.talos/scripts/
 # which is probe position 2 in the canonical order, so all probe-using helpers

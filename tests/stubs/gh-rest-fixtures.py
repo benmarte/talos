@@ -45,14 +45,19 @@ def jenv(name, default):
 
 
 def docs(raw):
+    """Concatenated JSON pages -> a list of pages; text that is not JSON is
+    served verbatim, as one page, so a test can hand the client garbage."""
     dec, pos, out = json.JSONDecoder(), 0, []
-    while pos < len(raw):
-        while pos < len(raw) and raw[pos].isspace():
-            pos += 1
-        if pos >= len(raw):
-            break
-        doc, pos = dec.raw_decode(raw, pos)
-        out.append(doc)
+    try:
+        while pos < len(raw):
+            while pos < len(raw) and raw[pos].isspace():
+                pos += 1
+            if pos >= len(raw):
+                break
+            doc, pos = dec.raw_decode(raw, pos)
+            out.append(doc)
+    except ValueError:
+        reply_raw(200, raw)
     return out
 
 
@@ -61,6 +66,23 @@ def reply(status, body, nxt=""):
     print(nxt)
     print(json.dumps(body))
     sys.exit(0)
+
+
+def reply_raw(status, text):
+    print(status)
+    print("")
+    print(text)
+    sys.exit(0)
+
+
+FIX = E("STUB_FIX_DIR")
+
+
+def fixed(name):
+    """STUB_FIX_DIR: per-number files a test drops in -- comments-<n>.json (the
+    REST array, or any text to serve verbatim) and the switches fail-comments-<n>,
+    fail-post-comment and fail-delete-<n>."""
+    return bool(FIX) and os.path.exists(os.path.join(FIX, name))
 
 
 def paged(pages):
@@ -109,6 +131,9 @@ def comments_rest():
             d["user"] = d.pop("author")
         if "createdAt" in d and "created_at" not in d:
             d["created_at"] = d.pop("createdAt")
+        # A comment with no author was posted by the account Talos runs as: the
+        # same identity GET /user answers with, so marker-author trust accepts it.
+        d.setdefault("user", {"login": E("STUB_CURRENT_USER", "talos-test-bot")})
         d.setdefault("id", 1000 + i)
         d.setdefault("html_url", "https://github.com/%s/issues/1#issuecomment-%d" % (REPO, d["id"]))
         out.append(d)
@@ -143,6 +168,13 @@ def pr_checks():
     return runs
 
 
+if path == "/graphql":
+    # The draft-state mutations (ready-pr, draft-pr): STUB_GRAPHQL_FAIL=1 is a
+    # GraphQL-level refusal (HTTP 200 carrying "errors").
+    if E("STUB_GRAPHQL_FAIL") == "1":
+        reply(200, {"errors": [{"message": "Resource not accessible"}], "data": None})
+    reply(200, {"data": {"result": {"pullRequest": {"isDraft": False}}}})
+
 m = re.fullmatch(r"/repos/([^/]+/[^/]+)(/.*)?", path)
 if not m:
     reply(404, {"message": "Not Found"})
@@ -153,6 +185,10 @@ if method == "GET":
     if rest == "":
         reply(200, {"full_name": repo, "default_branch": "main", "owner": {"login": repo.split("/")[0]}})
     mm = re.fullmatch(r"/pulls/(\d+)", rest)
+    if mm and E("STUB_GH_API_FAIL") == "pr":
+        reply(502, {"message": "Bad Gateway"})
+    if mm and "STUB_GH_PR_RAW" in os.environ:
+        reply_raw(200, E("STUB_GH_PR_RAW"))   # the PR body, verbatim (garbage included)
     if mm:
         n = int(mm.group(1))
         state = E("STUB_PR_STATE", "OPEN")
@@ -198,6 +234,13 @@ if method == "GET":
                     "body": E("STUB_EPIC_BODY") or E("STUB_ISSUE_BODY", "stub body"),
                     "labels": jenv("STUB_ISSUE_LABELS_JSON", []), "assignees": [],
                     "html_url": "https://github.com/%s/issues/%s" % (repo, mm.group(1))})
+    mm = re.fullmatch(r"/issues/(\d+)/comments", rest)
+    if mm and FIX:
+        if fixed("fail-comments-" + mm.group(1)):
+            reply(502, {"message": "Bad Gateway"})
+        if fixed("comments-%s.json" % mm.group(1)):
+            reply_raw(200, open(os.path.join(FIX, "comments-%s.json" % mm.group(1))).read())
+        reply(200, [])
     if re.fullmatch(r"/issues/\d+/comments", rest):
         if E("STUB_GH_API_FAIL") == "comments":
             reply(500, {"message": "Server Error"})
@@ -209,6 +252,10 @@ if method == "GET":
         paged([{"total_count": len(pr_checks()), "check_runs": pr_checks()}])
     if re.fullmatch(r"/commits/[^/]+/status", rest):
         reply(200, {"state": "success", "statuses": []})
+    if rest == "/actions/runs" and E("STUB_GH_API_FAIL") == "runs":
+        reply(500, {"message": "Server Error"})
+    if rest == "/actions/runs" and "STUB_GH_RUNS_RAW" in os.environ:
+        paged(docs(E("STUB_GH_RUNS_RAW")))   # pre-concatenated pages, as for the other *_RAW
     if rest == "/actions/runs":
         paged([{"total_count": 2, "workflow_runs": [{"id": 111, "conclusion": "failure"},
                                                       {"id": 112, "conclusion": "success"}]}])
@@ -218,6 +265,8 @@ if method == "GET":
 body = payload()
 mm = re.fullmatch(r"/issues/(\d+)/comments", rest)
 if method == "POST" and mm:
+    if fixed("fail-post-comment"):
+        reply(403, {"message": "Forbidden"})
     cid = E("STUB_COMMENT_ID", "100")
     reply(201, {"id": int(cid), "body": body.get("body", ""),
                 "html_url": "https://github.com/%s/issues/%s#issuecomment-%s" % (repo, mm.group(1), cid)})
@@ -234,5 +283,8 @@ if method == "PUT" and re.fullmatch(r"/pulls/\d+/update-branch", rest):
 if method == "PUT" and re.fullmatch(r"/pulls/\d+/merge", rest):
     reply(200, {"merged": True, "message": "Pull Request successfully merged"})
 if method == "DELETE":
+    mm = re.fullmatch(r"/issues/(\d+)/labels/.+", rest)
+    if mm and fixed("fail-delete-" + mm.group(1)):
+        reply(403, {"message": "Forbidden"})
     reply(204, {})
 reply(200, {})

@@ -160,11 +160,13 @@ elif [ -n "${STUB_COMMENT_STORE:-}" ] && [ -e "$STUB_COMMENT_STORE" ] && { [[ "$
     _cs_fail=""
     if [ -n "${STUB_COMMENT_WRITE_429:-}" ]; then
       # Next to the log, so parallel tests never share state; no log, no counter.
-      if [ -z "${CURL_LOG:-}" ]; then
+      # (The gh stub passes STUB_COMMENT_COUNTER_BASE = its own log, so the same
+      # counter file serves a test of either transport.)
+      if [ -z "${STUB_COMMENT_COUNTER_BASE:-${CURL_LOG:-}}" ]; then
         echo "curl stub: STUB_COMMENT_WRITE_429 needs CURL_LOG set" >&2
         exit 1
       fi
-      _cs_counter="$CURL_LOG.w429"
+      _cs_counter="${STUB_COMMENT_COUNTER_BASE:-$CURL_LOG}.w429"
       _cs_count=0
       [ -f "$_cs_counter" ] && _cs_count="$(cat "$_cs_counter")"
       _cs_count=$((_cs_count + 1))
@@ -310,7 +312,11 @@ if [ -n "$hdr_file" ]; then
   printf '%b\r\n' "$hdr_block" > "$hdr_file"
 fi
 
-[ -n "$resp" ] && printf '%s\n' "$resp"
-# Append HTTP status code on its own line when -w was requested
-[ "$has_w" = "true" ] && printf '%s\n' "$http_status"
+# With -w "\n%{http_code}" curl prints the body (possibly empty) and the status
+# on its own line, so an empty body still leaves its newline before the status.
+if [ "$has_w" = "true" ]; then
+  printf '%s\n%s\n' "$resp" "$http_status"
+else
+  [ -n "$resp" ] && printf '%s\n' "$resp"
+fi
 exit 0
