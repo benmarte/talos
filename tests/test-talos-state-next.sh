@@ -107,10 +107,73 @@ st state --bogus
 assert_eq "stop reason=usage" "$OUT" "state: an argument is usage"
 assert_eq "2" "$RC" "state: usage exits 2"
 
+# ── #550: `state --summary`, the Step 0 "where we are" lines ──────────────────
+# Three lines at most (in flight, waiting, next) built from the same state, no
+# write, nothing but numbers and fixed words (an owner's question is never shown).
+LEASE="$SANDBOX/.git/talos-lease.ledger"
+LEASE_RESET() { rm -f "$LEASE" "${LEASE:?}.lock.d"; }
+LEASE_RESET
+reset_stubs
+set_state '{"prs": [{"n": 12, "issue": 34, "head": "a4f9", "owner": false, "stage": "qa"}, {"n": 13, "issue": 35, "head": "b7c1", "owner": false, "stage": "merge"}], "pr_total": 2, "ignored": 0, "blocked": [["issue", 40]], "queued": [50, 51], "held": [], "inflight": [41], "owners": [{"n": 42, "status": "unanswered", "question": "which db? $(touch pwned)\u001b[31m"}], "capped": []}'
+st state --summary
+assert_eq "0" "$RC" "summary: exits 0"
+assert_eq "where=in flight: PR #12 (#34) at qa, PR #13 (#35) at merge; issue #41
+where=waiting: blocked issue #40; owner #42
+where=next: dispatch qa on PR #12 (#34)" "$OUT" "summary: in flight, waiting, next, three lines"
+assert_eq "" "$(cat "$ERR")" "summary: no stderr"
+assert_not_contains "$OUT" "which db" "summary: an owner's question text is never shown"
+assert_file_absent "$SANDBOX/pwned" "summary: nothing in the state is executed"
+assert_file_absent "$LEASE" "summary: takes no lease"
+st next
+assert_eq "action=dispatch stage=qa pr=12 issue=34" "$OUT" "resume path: the action next takes is the one the summary named"
+
+set_state '{"prs": [{"n": 13, "issue": 35, "head": "b7c1", "owner": false, "stage": "merge"}], "pr_total": 1, "ignored": 0, "blocked": [], "queued": [], "held": [], "inflight": [], "owners": [], "capped": []}'
+st state --summary
+assert_eq "where=in flight: PR #13 (#35) at merge
+where=waiting: nothing
+where=next: merge PR #13 (#35)" "$OUT" "summary: a PR at merge"
+LEASE_RESET
+st next
+assert_eq "action=merge pr=13 issue=35" "$OUT" "resume path: next merges the PR the summary named"
+
+set_state '{"prs": [{"n": 12, "issue": 34, "head": "a4f9", "owner": false, "stage": "ci"}], "pr_total": 1, "ignored": 0, "blocked": [], "queued": [7], "held": [], "inflight": [], "owners": [], "capped": []}'
+st state --summary
+assert_contains "$OUT" "where=next: wait (ci) on PR #12 (#34)" "summary: a PR-side wait is the next step, as in next, even with a queue"
+
+set_state '{"prs": [], "pr_total": 0, "ignored": 0, "blocked": [], "queued": [7, 9], "held": [7], "inflight": [41], "owners": [], "capped": []}'
+st state --summary
+assert_eq "where=in flight: issue #41
+where=waiting: owner #7
+where=next: start issue #9" "$OUT" "summary: a held issue is skipped, the first free queued issue starts"
+
+set_state '{"prs": [], "pr_total": 0, "ignored": 0, "blocked": [], "queued": [], "held": [], "inflight": [41], "owners": [], "capped": []}'
+st state --summary
+assert_contains "$OUT" "where=next: continue issue #41" "summary: only an in-flight issue left: continue it"
+
+set_state '{"prs": [], "pr_total": 0, "ignored": 0, "blocked": [], "queued": [7], "held": [7], "inflight": [], "owners": [{"n": 7, "status": "answered", "question": "q"}], "capped": []}'
+st state --summary
+assert_eq "where=in flight: nothing
+where=waiting: owner #7
+where=next: waiting on the owner" "$OUT" "summary: everything held for the owner"
+
+set_state '{"prs": [], "pr_total": 0, "ignored": 0, "blocked": [], "queued": [], "held": [], "inflight": [], "owners": null, "capped": []}'
+st state --summary
+assert_eq "where=in flight: nothing
+where=waiting: nothing
+where=next: nothing queued" "$OUT" "summary: an empty state"
+
+printf '1' > "$STUB_DIR/collect.rc"
+st state --summary
+assert_eq "stop reason=state-unavailable" "$OUT" "summary: a failed collect is a stop, no summary lines"
+assert_eq "1" "$RC" "summary: a failed collect exits 1"
+rm -f "$STUB_DIR/collect.rc"
+st state --summary extra
+assert_eq "stop reason=usage" "$OUT" "summary: an extra argument is usage"
+
 # ── AC2: the extraction ───────────────────────────────────────────────────────
 # next_stage lives in pipeline-next-stage.py (its one implementation), and
 # pipeline-status-file.sh loads it; the stage-of-PR tests stay in
-# tests/test-status-file-refresh.sh (the byte-identical pin, #454 note).
+# tests/test-collect.sh (#550: the collect JSON, the stage table).
 assert_file_exists "$TALOS_ROOT/scripts/pipeline-next-stage.py" "AC2: pipeline-next-stage.py exists"
 grep -q "def next_stage(n, labels, issue_labels, enabled):" "$TALOS_ROOT/scripts/pipeline-next-stage.py"
 assert_eq "0" "$?" "AC2: the module defines next_stage"

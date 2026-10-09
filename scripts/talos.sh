@@ -11,7 +11,7 @@
 #        talos.sh summary [<issue-id>...]
 #        talos.sh prompt <role> --issue <N> [--pr <M>] [--shape first|fix-round|restamp] [--draft] [...]
 #        talos.sh done <role> --issue <N> [--pr <M>] [--verdict <V>] --summary-file <F|-> [--draft] [...]
-#        talos.sh state
+#        talos.sh state [--summary]
 #        talos.sh next
 #        talos.sh run [--issue <N>] [--max-iterations <n>]
 #        talos.sh help
@@ -128,8 +128,8 @@
 #   post-merge <pr> <issue> [--ci-runs <n>] [--heal]
 #          Order: sibling sync (a merge only: --heal skips it), changelog assemble
 #          (roles.changelog_fragments), the issue-closed comment (--allow-closed:
-#          GitHub closes the issue at merge), close-issue, board Done, status log
-#          (status.enabled), worktree remove, the orchestrator/merged/issue-closed
+#          GitHub closes the issue at merge), close-issue, board Done, worktree
+#          remove, the orchestrator/merged/issue-closed
 #          notices, post_stage merged (with --ci-runs <n>, read BEFORE merge-pr,
 #          which deletes the branch; none is never guessed) and issue-closed, the
 #          spend block. Output keys: `sibling=<pr> action=clean|mergebase|
@@ -138,8 +138,8 @@
 #          re-checks pr-mergeable before the next), `recorded=yes|no`, `spend=<the
 #          cost --line>`. The sibling sync runs when merge.auto_sync is true.
 #          Idempotent per item: a second run is a safe no-op. changelog assemble,
-#          board Done, the status log (an entry per PR is replaced), worktree
-#          remove and a clean sibling are idempotent in their scripts. The issue-closed
+#          board Done, worktree remove and a clean sibling are idempotent in
+#          their scripts. The issue-closed
 #          comment carries <!-- talos:issue-closed pr=<M> -->: when a comment by a
 #          trusted author (markers.trusted_authors plus the current user, as for
 #          approval markers) already has it, `recorded=yes` and the comment, the
@@ -176,25 +176,22 @@
 #          pending: the label and the comment just posted, once per epic; waiting: already flagged; exit 2 is
 #          `warn reason=epic-acceptance-unsupported epic=<n>`, the epic left open)
 #          and item 7 `unblocked=<n>` (every issue named on its `Depends on:` lines
-#          is no longer open). With status.enabled, item 8 `needs_owner_pending=<p>`,
-#          `needs_owner_answered=<a>`; answered items are cleared once, except
-#          under `warn reason=marker-authors-unverified` (all pending, no clear).
+#          is no longer open).
 #   summary [<issue-id>...]
 #          The ids are the issues processed in this run. Step 5 item 1: the worktree
 #          sweep keeping those and the issue of every PR still open (any base, label
 #          or fork, as the old Step 5 said; the head must be fix|feat/issue-<n>; the
 #          PR list unreadable: `warn reason=prs-unlisted`, nothing swept), item 2
 #          `worktree_warning=<line>` (relayed once as an `info worktrees` notice),
-#          item 4 `cost=<line>` per line of the one cost --summary call, item 5 the
-#          status resume refresh (status.enabled).
+#          item 4 `cost=<line>` per line of the one cost --summary call.
 #
-# post-merge-reasons: changelog-failed comments-unreadable trust-unverified comment-failed close-failed issue-state-unverified board-failed status-log-failed status-resume-not-refreshed worktree-remove-failed notify-failed spend-upsert-failed siblings-unlisted lease-release-failed value-truncated
+# post-merge-reasons: changelog-failed comments-unreadable trust-unverified comment-failed close-failed issue-state-unverified board-failed worktree-remove-failed notify-failed spend-upsert-failed siblings-unlisted lease-release-failed value-truncated
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
 #   warn: all the others
-# sweep-reasons: issues-unlisted prs-unlisted find-pr-unverified find-pr-failed worktree-sweep-failed epic-close-failed epic-label-failed epic-comment-failed epic-acceptance-unsupported unblock-failed marker-authors-unverified needs-owner-clear-failed needs-owner-list-failed notify-failed
+# sweep-reasons: issues-unlisted prs-unlisted find-pr-unverified find-pr-failed worktree-sweep-failed epic-close-failed epic-label-failed epic-comment-failed epic-acceptance-unsupported unblock-failed notify-failed
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
 #   warn: all the others, and the post-merge warns of a heal
-# summary-reasons: prs-unlisted worktree-sweep-failed notify-failed status-refresh-failed
+# summary-reasons: prs-unlisted worktree-sweep-failed notify-failed
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
 #   warn: all the others
 #
@@ -300,16 +297,19 @@
 #         (exit 2 for usage, unknown-role, verdict-invalid; else 1)
 #   warn: board-failed notify-failed model-invalid spend-upsert-failed lease-release-failed
 #
-# state, next (#470). `state` prints the normalised run state, the same JSON
-# pipeline-status-file.sh collects for the Resume block (one call of its
-# `collect` verb: read verbs only, no worktree, commit, push or label; the
-# same inputs, the same shape, no duplicated collection logic). Output, after
-# the sanitiser: `state=<JSON>` — the object the status file writes
+# state, next (#470). `state` prints the normalised run state: the JSON of
+# pipeline-status-file.sh `collect` (read verbs only, no worktree, commit, push
+# or label). Output, after the sanitiser: `state=<JSON>`
 # ({"prs": [...], "pr_total": n, "ignored": n, "blocked": [...],
 # "queued": [...], "held": [...], "inflight": [...], "owners": [...],
 # "capped": [...]}), one
 # line (no raw control bytes; the JSON has none). Every invalid or unreadable
 # input fails closed with a lone `stop reason=<enum>` line, no partial JSON.
+#   state --summary (#550) prints, instead of the JSON, the three lines Step 0 of
+#   the playbook shows a new session: `where=in flight: ...`, `where=waiting: ...`,
+#   `where=next: ...`. Read-only, no lease; only numbers and fixed words (an
+#   owner's question is never printed); `next` hands out the action the third
+#   line names.
 #
 # state-reasons: usage scripts-missing python-missing scratch-unavailable config-unreadable state-unavailable
 #   stop: all of them (exit 2 for usage; else 1)
@@ -364,7 +364,6 @@
 #        fix-round outcome first (pipeline-budget.sh check, then
 #        check-attempt) and never dispatches past a ceiling:
 #          stop reason=max-fix-attempts|max-total-dispatches|budget-exceeded
-#        (a budget stop with status.enabled = true is ask-owner instead),
 #        or stop reason=unsupported-verb:<verb> when the provider lacks a
 #        needed verb (has-spec, check-attempt) -- never a guess.
 #
@@ -578,9 +577,6 @@ ROLE_ADVERSARIAL	roles.adversarial	s
 ROLE_PM_SKIP_WHEN_SPEC_PRESENT	roles.pm_skip_when_spec_present	s
 ROLE_CHANGELOG_FRAGMENTS	roles.changelog_fragments	s
 ROLE_DOCS_MODE	roles.docs_mode	s
-STATUS_ENABLED	status.enabled	s
-STATUS_FILE	status.file	s
-STATUS_FRAGMENTS_DIR	status.fragments_dir	s
 COMMENTS_ENABLED	comments.enabled	s
 COMMENTS_HEADER_TPL	comments.header	s
 COMMENTS_TMPL_DIR	comments.templates_dir	s
@@ -711,9 +707,9 @@ verbs:
                                      the human-merge hand-off comment and relay
   sweep [<issue-id>...]              Step 1: heal merged-but-open issues,
                                      sweep worktrees, report blocked work,
-                                     epics, dependencies, needs-owner
+                                     epics, dependencies
   summary [<issue-id>...]            Step 5: worktree sweep and warning, cost
-                                     table, status resume block
+                                     table
   prompt <role> --issue <N> [--pr <M>] [--shape first|fix-round|restamp] [--draft]
                                      [--preamble-file F]
                                      render a stage prompt from
@@ -722,9 +718,11 @@ verbs:
   done <role> --issue <N> [--pr <M>] [--verdict <V>] --summary-file <F|-> [--draft]
                                      end-of-stage bookkeeping: board, role relay,
                                      post_stage, spend block, lifecycle event
-  state                              the normalised run state as one state=<JSON>
+  state [--summary]                  the normalised run state as one state=<JSON>
                                      line (pipeline-status-file.sh collect:
-                                     same reads, same shape, no writes)
+                                     same reads, same shape, no writes);
+                                     --summary: three where= lines instead
+                                     (in flight, waiting, next)
   next [--issue <N>]                 exactly one action for the orchestrator:
                                      PR-side first (action=dispatch
                                      stage=<role> pr=<M> issue=<N> |
@@ -1528,7 +1526,7 @@ _talos_issue_open() {
 # _talos_post_merge_run <pr> <issue> <heal 0|1> <ci-runs or empty> [known-open]:
 # the items, in order. Siblings (a merge, not a heal), changelog, the issue-closed
 # comment, close-issue (only while the issue is open: the github verb comments
-# on every call), board Done, status log, worktree remove, the notices, the
+# on every call), board Done, worktree remove, the notices, the
 # merged and issue-closed events and the spend block. A 5th argument of 1 says
 # the caller just listed the issue as open (the sweep heal).
 _talos_post_merge_run() {
@@ -1577,15 +1575,6 @@ _talos_post_merge_run() {
   _talos_run_capture board bash "$SCRIPT_DIR/pipeline-status.sh" "$_n" "Done"
   [ "$_RC" -eq 0 ] || _talos_warn board-failed "issue=$_n"
 
-  if [ "$(cfg status.enabled)" = "true" ]; then
-    _talos_run_capture status-log bash "$SCRIPT_DIR/pipeline-status-file.sh" assemble --refresh --pr "$_pr" --issue "$_n"
-    if [ "$_RC" -ne 0 ]; then
-      _talos_warn status-log-failed "issue=$_n"
-    else
-      case "$_ERR" in *"not refreshed"*) _talos_warn status-resume-not-refreshed "issue=$_n" ;; esac
-    fi
-  fi
-
   _talos_run_capture worktree bash "$SCRIPT_DIR/pipeline-worktree.sh" remove "$_n"
   [ "$_RC" -eq 0 ] || _talos_warn worktree-remove-failed "issue=$_n"
 
@@ -1630,7 +1619,7 @@ _talos_post_merge() {
   [ "$_hand" -eq 0 ] || { [ "$_heal" -eq 0 ] && [ -z "$_ci" ]; } || _talos_stop usage 2
   [ "$_det" = /dev/null ] || { [ "$_hand" -eq 1 ] && [ -r "$_det" ]; } || _talos_stop usage 2
   _talos_prepare post-merge pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh pipeline-contract.sh \
-                            pipeline-changelog.sh pipeline-status.sh pipeline-status-file.sh \
+                            pipeline-changelog.sh pipeline-status.sh \
                             pipeline-worktree.sh pipeline-notify.sh pipeline-hooks.sh pipeline-events.sh \
                             pipeline-mergebase.sh
   . "$SCRIPT_DIR/pipeline-contract.sh"
@@ -1664,7 +1653,7 @@ _talos_sweep() {
   local _issues="" _k _n _pr _prs="" _list="" _healed="" _bi="" _bp="" _ki=0 _kp=0 _plan _s _i _b _e _carried
   _talos_ids "$@"
   _talos_prepare sweep pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh pipeline-contract.sh \
-                       pipeline-changelog.sh pipeline-status.sh pipeline-status-file.sh \
+                       pipeline-changelog.sh pipeline-status.sh \
                        pipeline-worktree.sh pipeline-notify.sh pipeline-hooks.sh pipeline-events.sh \
                        pipeline-mergebase.sh
   . "$SCRIPT_DIR/pipeline-contract.sh"
@@ -1782,38 +1771,6 @@ _talos_sweep() {
       if [ "$_RC" -eq 0 ]; then _talos_emit unblocked "$_n"; else _talos_warn unblock-failed "issue=$_n"; fi
     done 3<<< "$_plan"
   fi
-
-  # 8. Needs-owner: clear the answered items, never on an unverified trust set.
-  if [ "$(cfg status.enabled)" = "true" ]; then
-    _talos_run_capture needs-owner _vcs list-needs-owner --json
-    case "$_RC" in
-      0)
-        _e="$(python3 -I -c '
-import json, sys
-a = json.load(sys.stdin)
-print(len(a), sum(1 for r in a if r.get("answered") == "yes"))
-' <<< "$_OUT")" || _e=""
-        if [[ "$_e" =~ ^([0-9]+)\ ([0-9]+)$ ]]; then
-          _k="${BASH_REMATCH[1]}"; _n="${BASH_REMATCH[2]}"
-          case "$_ERR" in
-            *talos:marker-authors-unverified*)
-              _talos_warn marker-authors-unverified
-              _n=0 ;;
-            *)
-              if [ "$_n" -gt 0 ]; then
-                _talos_run_capture needs-owner _vcs list-needs-owner --clear-answered
-                [ "$_RC" -eq 0 ] || _talos_warn needs-owner-clear-failed
-              fi ;;
-          esac
-          _talos_emit needs_owner_pending "$((_k - _n))"
-          _talos_emit needs_owner_answered "$_n"
-        else
-          _talos_warn needs-owner-list-failed
-        fi ;;
-      2) : ;;
-      *) _talos_warn needs-owner-list-failed ;;
-    esac
-  fi
   _talos_flush
 }
 
@@ -1823,7 +1780,7 @@ _talos_summary() {
   local _prs _s _i _b _keep=() _a=() _line
   _talos_ids "$@"
   _talos_prepare summary pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh pipeline-contract.sh \
-                         pipeline-worktree.sh pipeline-notify.sh pipeline-events.sh pipeline-status-file.sh
+                         pipeline-worktree.sh pipeline-notify.sh pipeline-events.sh
   . "$SCRIPT_DIR/pipeline-contract.sh"
   _TALOS_NOTE_KEY=summary
   _talos_emit summary done
@@ -1866,12 +1823,6 @@ _talos_summary() {
       done <<< "$_OUT"
     fi
   fi
-
-  # 5. The status resume block, once per run (it reads GitHub 3+N to 3+4N times).
-  if [ "$(cfg status.enabled)" = "true" ]; then
-    _talos_run_capture status-refresh bash "$SCRIPT_DIR/pipeline-status-file.sh" refresh
-    [ "$_RC" -eq 0 ] || _talos_warn status-refresh-failed
-  fi
   _talos_flush
 }
 
@@ -1884,7 +1835,7 @@ _talos_summary() {
 _TALOS_PROMPT_NAMES="ISSUE PR ROLE ROLE_TITLE BASE_BRANCH VCS_PROVIDER COMMENTS_ENABLED COMMENTS_TMPL_DIR HEADER
   VERIFY_TARGETED VERIFY_TIMEOUT_MS VERIFY_CI_WAIT_S VERIFY_QA_MODE VERIFY_COMMANDS REQUIRED_CHECKS_LINE
   VERIFY_TIMEOUT_LINE SPEC_SOURCE ISOLATION_NOTE PRIOR_STAGE_SUMMARY HANDOFF_LINE DRAFT_PR_LINE FIX_ROUND_LINES
-  PASSED_LEAD CHANGELOG_MODE_LINE STATUS_FRAGMENT_LINE DOCS_DIFF_INSTRUCTION TITLE BODY RESTAMP_INPUTS STOP_RULE"
+  PASSED_LEAD CHANGELOG_MODE_LINE DOCS_DIFF_INSTRUCTION TITLE BODY RESTAMP_INPUTS STOP_RULE"
 
 # The renderer: argv = template, values file, output file, allowed names. The
 # values file is NUL-delimited NAME, VALUE pairs; a NAME written `<NAME` carries
@@ -2080,12 +2031,6 @@ _talos_prompt() {
       else _v="CHANGELOG MODE: direct"
       fi
       _talos_pv CHANGELOG_MODE_LINE "$_v"
-      if [ "$(cfg status.enabled)" = true ] && [ -n "$_pr" ]; then
-        _v="$(cfg status.fragments_dir)"
-        _talos_pv STATUS_FRAGMENT_LINE "STATUS FRAGMENT: ${_v%/}/$_issue-$_pr.md"
-      else
-        _talos_pv STATUS_FRAGMENT_LINE ""
-      fi
       if [ -n "$_docs" ] && [ -n "$_pr" ]; then
         _f="$_CFG_CACHE_DIR/docs-diff"
         {
@@ -2819,11 +2764,12 @@ _talos_gate() {
 # ── state, next (#470) ────────────────────────────────────────────────────────
 
 # state: the normalised run state, one `state=<JSON>` line. The JSON comes
-# from pipeline-status-file.sh collect: the same reads and the same shape as
-# the status file's Resume block, no duplicated collection logic here. A
+# from pipeline-status-file.sh collect (read verbs only). A
 # failure there (unreadable config, failed read, timeout) is a stop; the JSON
 # is emitted only when the whole collect succeeded, so no partial JSON.
 _talos_state() {
+  local _sum=0 _act _where _l
+  if [ "${1:-}" = "--summary" ]; then _sum=1; shift; fi
   [ "$#" -eq 0 ] || _talos_stop usage 2
   _talos_prepare state pipeline-config.sh pipeline-cfg-cache.sh pipeline-status-file.sh \
                      pipeline-contract.sh pipeline-next-stage.py pipeline-draft-check.sh pipeline-vcs.sh
@@ -2835,9 +2781,68 @@ _talos_state() {
     '{'*'}') : ;;
     *) _talos_stop state-unavailable ;;
   esac
+  if [ "$_sum" -eq 1 ]; then
+    # #550: the three "where we are" lines Step 0 prints. The PR-side answer is
+    # `next`'s own program (no lease, nothing written); the lines are numbers
+    # and fixed words, never a question or any other free text of the state.
+    printf '%s' "$_json" > "$_CFG_CACHE_DIR/state.json"
+    _act="$(python3 -I -c "$_TALOS_NEXT_PY" "$_CFG_CACHE_DIR/state.json" 2>/dev/null)" || _act="unknown"
+    _where="$(python3 -I -c "$_TALOS_WHERE_PY" "$_CFG_CACHE_DIR/state.json" "$_act" 2>/dev/null)" || _talos_stop state-unavailable
+    while IFS= read -r _l; do _talos_emit where "$_l"; done <<< "$_where"
+    _talos_flush
+    return 0
+  fi
   _talos_emit state "$_json"
   _talos_flush
 }
+
+# _TALOS_WHERE_PY: `state --summary`. argv: the state file, then the PR-side
+# answer of _TALOS_NEXT_PY (an `action=...` line, `issue-side`, or `unknown`).
+# Prints exactly three lines: in flight, waiting, next. Only integers and fixed
+# words are printed (a stage name is checked against [a-z-]).
+_TALOS_WHERE_PY='
+import json, re, sys
+with open(sys.argv[1]) as f:
+    d = json.load(f)
+act = sys.argv[2].split("\n")[0]
+def num(x):
+    return x if isinstance(x, int) and not isinstance(x, bool) else 0
+def some(items, fmt, cap=4):
+    out = [fmt % i for i in items[:cap]]
+    return out + (["+%d more" % (len(items) - cap)] if len(items) > cap else [])
+prs = sorted((p for p in d.get("prs") or [] if isinstance(p, dict)), key=lambda p: num(p.get("n")))
+def stage(p):
+    st = str(p.get("stage"))
+    return st if re.fullmatch(r"[a-z-]{1,20}", st) else "unknown"
+inflight = [num(n) for n in d.get("inflight") or []]
+pr_part = ", ".join(some([(num(p.get("n")), num(p.get("issue")), stage(p)) for p in prs], "PR #%d (#%d) at %s"))
+issue_part = ("issue%s " % ("s" if len(inflight) > 1 else "") + ", ".join(some(inflight, "#%d", 5))) if inflight else ""
+print("in flight: " + ("; ".join(x for x in (pr_part, issue_part) if x) or "nothing"))
+blocked = ["%s #%d" % ("PR" if k == "PR" else "issue", num(n)) for k, n in (d.get("blocked") or []) if isinstance(k, str)]
+held = [num(n) for n in d.get("held") or []]
+owners = sorted(set(held + [num(o.get("n")) for o in d.get("owners") or [] if isinstance(o, dict)]))
+waiting = (["blocked " + ", ".join(some(blocked, "%s", 5))] if blocked else []) + (["owner " + ", ".join(some(owners, "#%d", 5))] if owners else [])
+print("waiting: " + ("; ".join(waiting) if waiting else "nothing"))
+a = dict(w.split("=", 1) for w in act.split()[1:] if "=" in w)
+free = [n for n in d.get("queued") or [] if n not in held]
+first = next((p for p in prs if not p.get("owner")), None)
+if act.startswith("action=dispatch") and first:
+    nxt = "dispatch %s on PR #%d (#%d)" % (a.get("stage", "?") if re.fullmatch(r"[a-z-]{1,20}", a.get("stage", "")) else "?", num(first.get("n")), num(first.get("issue")))
+elif act.startswith("action=merge") and first:
+    nxt = "merge PR #%d (#%d)" % (num(first.get("n")), num(first.get("issue")))
+elif act.startswith("action=wait") and first:
+    r = a.get("reason", "")
+    nxt = "wait (%s) on PR #%d (#%d)" % (r if re.fullmatch(r"[a-z-]{1,20}", r) else "?", num(first.get("n")), num(first.get("issue")))
+elif free:
+    nxt = "start issue #%d" % num(free[0])
+elif inflight:
+    nxt = "continue issue #%d" % inflight[0]
+elif held or owners:
+    nxt = "waiting on the owner"
+else:
+    nxt = "nothing queued"
+print("next: " + nxt)
+'
 
 # _TALOS_NEXT_PY: one action from the collected state (argv: the JSON, read
 # from the file the bash above wrote -- never argv text). Fixed-enum reasons;
@@ -2946,7 +2951,6 @@ roles = set(x for x in o.get("roles", "").split(",") if x)
 skip_labels = set(x for x in o.get("skip-labels", "").split(",") if x)
 label_filter = o.get("label-filter", "pipeline:ready")
 target = o.get("issue", "")
-status_on = o.get("status-enabled") == "true"
 pm_skip = o.get("pm-skip") == "true"
 planner_on = "planner" in roles
 validator_on = "validator" in roles
@@ -2991,8 +2995,7 @@ def ask_owner(n):
 
 # The gate fix-round composition (#471, AC6), read-only: the budget guard
 # (pipeline-budget.sh check; exit 1 = exceeded) then check-attempt (its
-# ceilings), in the verb order. A budget stop is ask-owner with
-# status.enabled = true (the fixed-vocabulary question), else a stop.
+# ceilings), in the verb order.
 def fix_round_gate(n):
     if o.get("budget"):
         try:
@@ -3001,10 +3004,6 @@ def fix_round_gate(n):
         except OSError:
             p = None
         if p is not None and p.returncode == 1:
-            if status_on:
-                say("ask-owner", issue=n,
-                    question="token budget exceeded for issue #" + str(n) +
-                             ": raise limits.tokens_per_issue, or clear pipeline:blocked to grant one more limit")
             die("budget-exceeded")
     rc, _, err = vcs("check-attempt", str(n))
     if rc == 0:
@@ -3203,7 +3202,6 @@ _talos_next() {
             --issue "$_issue" --roles "$_roles" --label-filter "$(cfg issues.label_filter)" \
             --skip-labels "$_skip" --max-parallel "$(cfg issues.max_parallel)" \
             --pm-skip "$(printf '%s' "$(cfg roles.pm_skip_when_spec_present)" | tr '[:upper:]' '[:lower:]')" \
-            --status-enabled "$(printf '%s' "$(cfg status.enabled)" | tr '[:upper:]' '[:lower:]')" \
             --in-flight "$_inflight" 2>/dev/null)"
     _r=$?
     if [ "$_r" -ne 0 ]; then

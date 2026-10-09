@@ -230,8 +230,8 @@ for s in "${TALOS_COMMANDS[@]}"; do
     "$s skill sits in the default skills/ scan path"
 done
 
-assert_file_exists "$PLUGIN_ROOT/skills/resume/SKILL.md" \
-  "the plugin cache holds skills/resume/SKILL.md (exposed as /talos:resume, #348)"
+assert_file_absent "$PLUGIN_ROOT/skills/resume" \
+  "the plugin cache holds no skills/resume (the skill is gone, #550)"
 
 # NOTE: `claude plugin validate` is asserted in test-install.sh, not here —
 # use_stubs puts tests/stubs/claude first on PATH, so running it in this file

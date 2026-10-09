@@ -180,15 +180,6 @@ limits.tokens_per_issue	int		-	-	any
 limits.warn_at	float	0.8	-	-	any
 spend.comment	bool	true	-	-	any
 pr.draft	bool		derived	-	any
-status.enabled	bool	false	-	-	any
-status.file	path	TALOS_STATUS.md	-	-	repo
-status.log_heading	str	## Log	-	-	any
-status.resume_heading	str	## Resume here	-	-	any
-status.fragments_dir	path	docs/status.d	-	-	repo
-status.archive_dir	path	status/archive	-	-	repo
-status.log_days	int	30	-	-	any
-status.log_max	int	50	-	-	any
-status.resume_max_lines	int	40	-	-	any
 markers.trusted_authors	list		-	-	repo
 markers.verify_authors	bool	true	-	-	repo
 hooks.pre_dispatch	str		-	-	any

@@ -104,27 +104,26 @@ assert_file_absent "$HOME/.agents" "per-repo --harness pi creates no ~/.agents"
 
 # ── criterion 6: collisions ─────────────────────────────────────────────────
 newhome collide
-mkdir -p "$HOME/.agents/skills/talos-resume" "$HOME/.agents/skills/graphify"
-printf 'foreign skill\n' > "$HOME/.agents/skills/talos-resume/SKILL.md"
+mkdir -p "$HOME/.agents/skills/talos-setup" "$HOME/.agents/skills/graphify"
+printf 'foreign skill\n' > "$HOME/.agents/skills/talos-setup/SKILL.md"
 mkdir -p "$HOME/.agents/skills/talos-pipeline"
 printf 'also foreign, mentions %s inline\n' "$MARKER" > "$HOME/.agents/skills/talos-pipeline/SKILL.md"
 printf 'graphify\n' > "$HOME/.agents/skills/graphify/SKILL.md"
-cp "$HOME/.agents/skills/talos-resume/SKILL.md" "$SANDBOX/foreign-resume.orig"
+cp "$HOME/.agents/skills/talos-setup/SKILL.md" "$SANDBOX/foreign-setup.orig"
 cp "$HOME/.agents/skills/talos-pipeline/SKILL.md" "$SANDBOX/foreign-pipeline.orig"
 inst --harness codex
 assert_eq "0" "$RC" "collision run exits 0"
-cmp -s "$SANDBOX/foreign-resume.orig" "$HOME/.agents/skills/talos-resume/SKILL.md" \
-  && pass "a foreign talos-resume/SKILL.md is left byte-identical" || fail "a foreign talos-resume/SKILL.md is left byte-identical"
+cmp -s "$SANDBOX/foreign-setup.orig" "$HOME/.agents/skills/talos-setup/SKILL.md" \
+  && pass "a foreign talos-setup/SKILL.md is left byte-identical" || fail "a foreign talos-setup/SKILL.md is left byte-identical"
 cmp -s "$SANDBOX/foreign-pipeline.orig" "$HOME/.agents/skills/talos-pipeline/SKILL.md" \
   && pass "a foreign file that only quotes the marker inline is left byte-identical" || fail "a foreign file that only quotes the marker inline is left byte-identical"
-assert_eq "1" "$(printf '%s\n' "$OUT" | grep -c 'talos-resume/SKILL.md' )" "one line names the foreign talos-resume file"
-assert_contains "$(printf '%s\n' "$OUT" | grep 'talos-resume/SKILL.md')" "warning" "the line about the foreign file is a warning"
+assert_eq "1" "$(printf '%s\n' "$OUT" | grep -c 'talos-setup/SKILL.md' )" "one line names the foreign talos-setup file"
+assert_contains "$(printf '%s\n' "$OUT" | grep 'talos-setup/SKILL.md')" "warning" "the line about the foreign file is a warning"
 assert_eq "graphify" "$(cat "$HOME/.agents/skills/graphify/SKILL.md")" "an unrelated skill in ~/.agents/skills is untouched"
-assert_file_exists "$HOME/.agents/skills/talos-setup/SKILL.md" "the non-colliding pointer is still written"
 # a pointer (marker present) is overwritten; --no-overwrite skips it
 newhome overwrite
 inst --harness codex
-f="$HOME/.agents/skills/talos-resume/SKILL.md"
+f="$HOME/.agents/skills/talos-setup/SKILL.md"
 cp "$f" "$SANDBOX/pointer.orig"
 printf '%s\nstale\n' "$MARKER" > "$f"
 inst --harness codex --no-overwrite
@@ -136,7 +135,7 @@ cmp -s "$SANDBOX/pointer.orig" "$f" && pass "a re-run overwrites a pointer that 
 printf 'foreign\n' > "$f"
 inst --harness codex --no-overwrite
 assert_eq "foreign" "$(cat "$f")" "--no-overwrite leaves a foreign file byte-identical"
-assert_eq "1" "$(printf '%s\n' "$OUT" | grep -c 'talos-resume/SKILL.md')" "--no-overwrite names the foreign file once"
+assert_eq "1" "$(printf '%s\n' "$OUT" | grep -c 'talos-setup/SKILL.md')" "--no-overwrite names the foreign file once"
 
 # ── criterion 7: symlinks ───────────────────────────────────────────────────
 newhome link-root
@@ -165,21 +164,21 @@ assert_contains "$OUT" "$HOME/.agents/skills" "a symlinked ~/.agents/skills: the
 
 newhome link-cmd
 mkdir -p "$HOME/.agents/skills" "$SANDBOX/target-cmd"
-ln -s "$SANDBOX/target-cmd" "$HOME/.agents/skills/talos-resume"
+ln -s "$SANDBOX/target-cmd" "$HOME/.agents/skills/talos-setup"
 inst --harness codex
-assert_eq "0" "$RC" "a symlinked talos-resume dir: exit 0"
-assert_eq "0" "$(find "$SANDBOX/target-cmd" -mindepth 1 | wc -l | tr -d ' ')" "a symlinked talos-resume dir: nothing written through it"
-assert_contains "$OUT" "$HOME/.agents/skills/talos-resume" "a symlinked talos-resume dir: the notice names the link"
-assert_file_exists "$HOME/.agents/skills/talos-pipeline/SKILL.md" "a symlinked talos-resume dir: the other pointers are still written"
+assert_eq "0" "$RC" "a symlinked talos-setup dir: exit 0"
+assert_eq "0" "$(find "$SANDBOX/target-cmd" -mindepth 1 | wc -l | tr -d ' ')" "a symlinked talos-setup dir: nothing written through it"
+assert_contains "$OUT" "$HOME/.agents/skills/talos-setup" "a symlinked talos-setup dir: the notice names the link"
+assert_file_exists "$HOME/.agents/skills/talos-pipeline/SKILL.md" "a symlinked talos-setup dir: the other pointers are still written"
 
 newhome link-file
-mkdir -p "$HOME/.agents/skills/talos-resume"
+mkdir -p "$HOME/.agents/skills/talos-setup"
 printf 'elsewhere\n' > "$SANDBOX/target-file"
-ln -s "$SANDBOX/target-file" "$HOME/.agents/skills/talos-resume/SKILL.md"
+ln -s "$SANDBOX/target-file" "$HOME/.agents/skills/talos-setup/SKILL.md"
 inst --harness codex
 assert_eq "0" "$RC" "a symlinked SKILL.md: exit 0"
 assert_eq "elsewhere" "$(cat "$SANDBOX/target-file")" "a symlinked SKILL.md: nothing written through it"
-assert_contains "$OUT" "$HOME/.agents/skills/talos-resume/SKILL.md" "a symlinked SKILL.md: the notice names it"
+assert_contains "$OUT" "$HOME/.agents/skills/talos-setup/SKILL.md" "a symlinked SKILL.md: the notice names it"
 
 newhome nondir
 mkdir -p "$HOME/.agents"

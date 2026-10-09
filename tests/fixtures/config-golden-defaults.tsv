@@ -118,15 +118,6 @@ roles.reviewer	true	table	pipeline-status-file.sh:_sf_role_on
 roles.security	true	table	pipeline-status-file.sh:_sf_role_on
 roles.validator	true	table	docs
 spend.comment	true	table	docs
-status.archive_dir	status/archive	table	pipeline-status-file.sh
-status.enabled	false	table	pipeline-status-file.sh,resume/SKILL.md
-status.file	TALOS_STATUS.md	table	pipeline-status-file.sh,resume/SKILL.md
-status.fragments_dir	docs/status.d	table	pipeline-status-file.sh
-status.log_days	30	table	pipeline-status-file.sh:_sf_posint
-status.log_heading	## Log	table	pipeline-status-file.sh
-status.log_max	50	table	pipeline-status-file.sh:_sf_posint
-status.resume_heading	## Resume here	table	pipeline-status-file.sh
-status.resume_max_lines	40	table	pipeline-status-file.sh:_sf_posint
 vcs.azure.area_path		empty	pipeline-vcs.sh
 vcs.azure.org_url		empty	bootstrap-board.sh,pipeline-status.sh,pipeline-vcs.sh
 vcs.azure.project		empty	bootstrap-board.sh,pipeline-vcs.sh

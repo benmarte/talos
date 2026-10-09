@@ -67,7 +67,7 @@ fi
 exit 0
 '
 for s in pipeline-vcs.sh pipeline-notify.sh pipeline-hooks.sh pipeline-mergebase.sh pipeline-changelog.sh \
-         pipeline-status.sh pipeline-status-file.sh pipeline-worktree.sh pipeline-events.sh; do
+         pipeline-status.sh pipeline-worktree.sh pipeline-events.sh; do
   printf '%s' "$STUB_BODY" > "$GS/$s"
 done
 PM="$GS/talos.sh"
@@ -148,7 +148,7 @@ PM_FIRST='post_merge=done'
 
 # ── (a) post-merge: the golden order ─────────────────────────────────────────
 reset_stubs
-cfg_json '{"vcs": {"provider": "github"}, "roles": {"changelog_fragments": true}, "status": {"enabled": true}}'
+cfg_json '{"vcs": {"provider": "github"}, "roles": {"changelog_fragments": true}}'
 set_stub events.cost.md 0 "spend-comment-body"
 set_stub events.cost.line 0 "spend: 12 tokens"
 pm 9 42 --ci-runs 3
@@ -165,7 +165,6 @@ vcs comment-issue 42 --body-file F --allow-closed
 vcs list-issues
 vcs close-issue 42 closed by PR #9
 status 42 Done
-status-file assemble --refresh --pr 9 --issue 42
 worktree remove 42
 notify orchestrator #42 all stages passed — merged PR #9, issue closed 42
 notify merged #42 PR #9 merged 42
@@ -193,7 +192,7 @@ reset_stubs
 pm 9 42
 assert_not_contains "$(journal)" "--ci-runs" "post-merge: no --ci-runs value, no flag"
 assert_eq "0" "$(called changelog)" "post-merge: changelog_fragments off: no assemble"
-assert_eq "0" "$(called status-file)" "post-merge: status.enabled off: no status log"
+assert_eq "0" "$(called status-file)" "post-merge: no status log any more (#550)"
 assert_eq "1" "$(journal | grep -c 'events cost.*--line')" "post-merge: the spend --line runs once"
 assert_eq "0" "$(called upsert-pr-comment)" "post-merge: an empty spend body is never upserted"
 pm 9 42 --heal
@@ -206,7 +205,7 @@ assert_out "post-merge --heal" "$PM_FIRST"
 # tells someone: one comment, one merged event. close-issue is not one of them: a
 # close that failed after the comment must be retried by the next heal.
 reset_stubs
-cfg_json '{"vcs": {"provider": "github"}, "roles": {"changelog_fragments": true}, "status": {"enabled": true}}'
+cfg_json '{"vcs": {"provider": "github"}, "roles": {"changelog_fragments": true}}'
 pm 9 42 --ci-runs 3
 POSTED="$(cat "$STUB_DIR/last-body")"
 python3 -I -c 'import json, sys; print(json.dumps({"comments": [{"author": {"login": "bot"}, "body": sys.stdin.read()}]}))' <<< "$POSTED" > "$SANDBOX/c.json"
@@ -220,7 +219,6 @@ assert_eq "0" "$(called notify)" "idempotent: no second notice"
 assert_eq "0" "$(called hooks)" "idempotent: no second merged event"
 assert_eq "0" "$(called events)" "idempotent: no second spend block"
 assert_eq "1" "$(called status)" "idempotent: board Done is idempotent in its script and still runs"
-assert_eq "1" "$(called status-file)" "idempotent: the status log replaces its entry and still runs"
 assert_eq "1" "$(called worktree)" "idempotent: worktree remove is a no-op when gone and still runs"
 assert_eq "1" "$(called changelog)" "idempotent: changelog assemble is a no-op when empty and still runs"
 assert_out "idempotent" "$PM_FIRST"
@@ -339,30 +337,26 @@ assert_eq "1" "$(journal | grep -c "^vcs list-issues")" "state: the sweep heal r
 
 # ── (a) post-merge: every item is non-fatal ──────────────────────────────────
 reset_stubs
-cfg_json '{"vcs": {"provider": "github"}, "roles": {"changelog_fragments": true}, "status": {"enabled": true}}'
+cfg_json '{"vcs": {"provider": "github"}, "roles": {"changelog_fragments": true}}'
 set_stub changelog 1 "" "boom"
 set_stub comment-issue 1 "" "boom"
 set_stub close-issue 1 "" "boom"
 set_stub status 1 "" "boom"
-set_stub status-file 1 "" "boom"
 set_stub worktree 1 "" "boom"
 set_stub notify 1 "" "boom"
 set_stub events.cost.md 0 "body"
 set_stub upsert-pr-comment 1 "" "boom"
 pm 9 42
 assert_eq "0" "$RC" "non-fatal: every item failing still exits 0"
-for r in changelog-failed comment-failed close-failed board-failed status-log-failed worktree-remove-failed notify-failed spend-upsert-failed; do
+for r in changelog-failed comment-failed close-failed board-failed worktree-remove-failed notify-failed spend-upsert-failed; do
   assert_contains "$OUT" "warn reason=$r issue=42" "non-fatal: warn reason=$r"
 done
 assert_eq "3" "$(printf '%s\n' "$OUT" | grep -c 'reason=notify-failed')" "non-fatal: each failed notice warns"
 assert_eq "2" "$(called hooks)" "non-fatal: the events fire after the failures"
 assert_out "non-fatal" "$PM_FIRST"
-set_stub status-file 0 "" "status: resume block not refreshed: read failed"
 set_stub upsert-pr-comment 2 "" "not implemented"
 pm 9 42
-assert_contains "$OUT" "warn reason=status-resume-not-refreshed issue=42" "non-fatal: a 'not refreshed' line on exit 0 is its own warning"
 assert_not_contains "$OUT" "reason=spend-upsert-failed" "non-fatal: upsert rc=2 (non-GitHub provider) is silent"
-assert_not_contains "$OUT" "reason=status-log-failed" "non-fatal: exit 0 is not a failed status log"
 assert_out "non-fatal (rc 2)" "$PM_FIRST"
 set_stub list-prs 1 "" "boom"
 pm 9 42
@@ -608,43 +602,11 @@ sw 3
 assert_eq "0" "$(called label-issue)" "unblock: roles.planner off: no epic or dependency sweep"
 assert_eq "0" "$(called check-epic-acceptance)" "epics: roles.planner off: no acceptance check"
 
-# Item 8: needs-owner.
+# Item 8 (needs-owner clearing) went with the status file (#550): the sweep never reads the list.
 reset_stubs
-cfg_json '{"vcs": {"provider": "github"}, "status": {"enabled": true}}'
-set_stub list-needs-owner.--json 0 '[{"n":1,"kind":"issue","answered":"yes","question":"a"},{"n":2,"kind":"pr","answered":"no","question":"b"},{"n":3,"kind":"issue","answered":"yes","question":"c"}]'
 sw 3
-assert_contains "$OUT" "needs_owner_pending=1" "needs-owner: pending count"
-assert_contains "$OUT" "needs_owner_answered=2" "needs-owner: answered count"
-assert_eq "1" "$(journal | grep -c 'list-needs-owner --clear-answered')" "needs-owner: answered items are cleared once"
-assert_not_contains "$OUT" "question" "needs-owner: question text is never printed"
-assert_out "needs-owner" "sweep=done"
-set_stub list-needs-owner.--json 0 '[{"n":1,"kind":"issue","answered":"yes","question":"a"},{"n":2,"kind":"pr","answered":"no","question":"b"}]' "pipeline-vcs: list-needs-owner: talos:marker-authors-unverified (no trust set)"
-rm -f "$STUB_DIR/journal"
-sw 3
-assert_eq "0" "$(journal | grep -c 'clear-answered')" "needs-owner: an unverified trust set: never clear"
-assert_contains "$OUT" "needs_owner_pending=2" "needs-owner: an unverified trust set: every item pending"
-assert_contains "$OUT" "needs_owner_answered=0" "needs-owner: and none answered"
-assert_contains "$OUT" "warn reason=marker-authors-unverified" "needs-owner: and it says so"
-set_stub list-needs-owner.--json 0 '[{"n":2,"kind":"pr","answered":"no","question":"b"}]'
-rm -f "$STUB_DIR/journal"
-sw 3
-assert_eq "0" "$(journal | grep -c 'clear-answered')" "needs-owner: nothing answered: no clear call"
-set_stub list-needs-owner.--json 2 "" "not implemented"
-sw 3
-assert_not_contains "$OUT" "needs_owner" "needs-owner: exit 2 (provider cannot answer) is silent"
-assert_not_contains "$OUT" "warn" "needs-owner: exit 2 is not a warning"
-set_stub list-needs-owner.--json 1 "" "boom"
-sw 3
-assert_contains "$OUT" "warn reason=needs-owner-list-failed" "needs-owner: exit 1 is reported"
-assert_eq "0" "$RC" "needs-owner: and never fails the run"
-set_stub list-needs-owner.--json 0 '[{"n":1,"kind":"issue","answered":"yes","question":"a"}]'
-set_stub list-needs-owner.--clear-answered 1 "" "boom"
-sw 3
-assert_contains "$OUT" "warn reason=needs-owner-clear-failed" "needs-owner: a failed clear is reported"
-cfg_json '{"vcs": {"provider": "github"}}'
-rm -f "$STUB_DIR/journal"
-sw 3
-assert_eq "0" "$(called list-needs-owner)" "needs-owner: status.enabled off: skipped"
+assert_eq "0" "$(called list-needs-owner)" "sweep: the needs-owner list is not read any more"
+assert_not_contains "$OUT" "needs_owner" "sweep: no needs_owner_* lines"
 
 # ── (c) summary ──────────────────────────────────────────────────────────────
 reset_stubs
@@ -687,19 +649,10 @@ assert_eq "0" "$(called notify)" "summary: no warning line, no notice"
 reset_stubs
 sm
 assert_eq "0" "$(called events)" "summary: no issue ids, no cost call"
-# The status refresh.
+# The status resume block went with the status file (#550).
 reset_stubs
-cfg_json '{"vcs": {"provider": "github"}, "status": {"enabled": true}}'
 sm 4
-assert_contains "$(journal)" "status-file refresh" "status: the resume block is refreshed once"
-set_stub status-file 1 "" "boom"
-sm 4
-assert_contains "$OUT" "warn reason=status-refresh-failed" "status: a failed refresh is a warning, not a failed run"
-assert_eq "0" "$RC" "status: and exits 0"
-cfg_json '{"vcs": {"provider": "github"}}'
-rm -f "$STUB_DIR/journal"
-sm 4
-assert_eq "0" "$(called status-file)" "status: status.enabled off: no refresh"
+assert_eq "0" "$(called status-file)" "summary: no status refresh any more"
 
 # ── (d) sanitising ───────────────────────────────────────────────────────────
 reset_stubs

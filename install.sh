@@ -9,8 +9,8 @@
 #   --harness below) it also copies the role profiles to ~/.claude/agents/, so
 #   Claude Code's native subagent discovery finds the current profiles instead
 #   of a stale plugin copy, and registers this checkout as the `talos` Claude
-#   Code plugin so the commands are /talos:pipeline, /talos:setup and
-#   /talos:resume, the same as after `/plugin marketplace add benmarte/talos`.
+#   Code plugin so the commands are /talos:pipeline and /talos:setup, the same
+#   as after `/plugin marketplace add benmarte/talos`.
 #   Registration is `claude plugin marketplace add <this checkout>` (a local
 #   directory marketplace; skipped when the Claude config already has a
 #   marketplace named talos from a non-directory source, repointed when it
@@ -294,7 +294,7 @@ else:
 
 # install_claude_plugin -- register this checkout as the `talos` Claude Code
 # plugin (a local directory marketplace plus `claude plugin install`), so
-# /talos:pipeline, /talos:setup and /talos:resume exist for a global install as
+# /talos:pipeline and /talos:setup exist for a global install as
 # they do for a marketplace install (#335). Claude Code gives the plugin:skill
 # form to plugin skills only, so copying SKILL.md files cannot do it. Never
 # fatal: every step is guarded, and CLAUDE_PLUGIN_REGISTERED stays false unless
@@ -555,7 +555,7 @@ install_claude_adapter() {
     handle_bare_skill pipeline pipeline pipeline "pipeline orchestrator" no
     handle_bare_skill pipeline-setup pipeline-setup setup "setup wizard" no
   fi
-  # The provisional bare copy of resume (#348): /talos:resume replaces it.
+  # The retired bare copy of resume (#348); /talos:resume itself is gone (#550).
   handle_bare_skill talos-resume resume resume "resume briefing" no
 }
 
@@ -631,7 +631,7 @@ TALOS_POINTER_BODY
     AGENTS_POINTERS_WRITTEN=true
   done
   if has_harness claude; then
-    echo "  note: with claude selected too, cursor and opencode also scan ~/.claude/skills and may see both sets (the bare pipeline and pipeline-setup aliases, and talos-pipeline, talos-setup and talos-resume). Whether Claude Code reads ~/.agents/skills is unverified."
+    echo "  note: with claude selected too, cursor and opencode also scan ~/.claude/skills and may see both sets (the bare pipeline and pipeline-setup aliases, and talos-pipeline and talos-setup). Whether Claude Code reads ~/.agents/skills is unverified."
   fi
 }
 
@@ -768,7 +768,7 @@ if [ "$GLOBAL" = "true" ]; then
     echo "  NOTE: skills are discovered when a session starts. Restart any open"
     echo "        Claude Code session to pick up the newly installed skills."
     if [ "$CLAUDE_PLUGIN_REGISTERED" = "true" ]; then
-      echo "        Commands: /talos:pipeline, /talos:setup, /talos:resume (plugin talos@talos,"
+      echo "        Commands: /talos:pipeline, /talos:setup (plugin talos@talos,"
       echo "        installed from $(printable "$SRC"); Claude Code keeps its own copy, so re-run this installer after a git pull or if the checkout moves)."
     else
       echo "        The talos plugin is not registered, so /talos:* commands are missing (see the plugin notice above)."

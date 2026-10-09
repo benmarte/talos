@@ -77,8 +77,8 @@ if [ -n "$section" ]; then pass "guide has the ### Seeing token spend (#334) sec
 else fail "guide has the ### Seeing token spend (#334) section"; fi
 
 for needle in 'limits.tokens_per_issue' 'limits.warn_at' 'spend.comment' \
-  'statusline.yml' 'upsert-pr-comment' 'pipeline-budget.sh' 'talos-status.sh' \
-  '--line' '--markdown' '--summary' '--pr' 'statusLine'; do
+  'stage_start' 'upsert-pr-comment' 'pipeline-budget.sh' 'talos-status.sh' \
+  '--line' '--markdown' '--summary' '--pr' 'statusLine' 'transcript_path'; do
   check_has "$section" "$needle" "guide section names $needle"
 done
 
@@ -89,31 +89,24 @@ check_has "$section" 'each block grants one more limit' "guide section: each blo
 check_has "$section" 'requested model' "guide section: model attribution is the requested model"
 check_has "$section" 'never as 0' "guide section: unrecorded is shown, never as 0"
 check_has "$section" '`tokens` field is `null` or not a finite non-negative number' "guide section: what unrecorded means"
-check_has "$section" 'no off switch' "guide section: the status-log tag has no off switch"
 check_has "$section" 'exits 0 on every input' "guide section: talos-status.sh exits 0 on every input"
 check_has "$section" 'currently fails closed' "guide section: Enterprise Managed User logins fail closed"
 check_has "$section" 'GITHUB_TOKEN' "guide section: the Actions GITHUB_TOKEN caveat"
-check_has "$section" 'does not meet the 50 ms target' "guide section: the 50 ms target is not met"
-check_has "$section" 'UNVERIFIED' "guide section: the statusLine working directory is marked UNVERIFIED"
+check_has "$section" 'never replaces a' "guide section: install never replaces a statusLine that is not Talos's"
+check_lacks "$section" 'statusline.yml`** is' "guide section: the statusline.yml file is gone"
 check_has "$section" 'TALOS_STATUS_TIMEOUT_S' "guide section: TALOS_STATUS_TIMEOUT_S"
 check_has "$section" 'TALOS_STATUS_DEBUG' "guide section: TALOS_STATUS_DEBUG"
-check_has "$section" 'Not built' "guide section lists the deferred items"
-check_has "$section" '#335' "guide section names #335 for the deferred cost command"
 check_lacks "$section" '--configure`, `--uninstall` are available' "guide section does not offer --configure as available"
 
 # #456: the spend comment is public on a public repo, the run summary has its
 # stage models column, and the status-line example is real output that fits the
-# default 80 columns and shows the review mark.
+# format.
 check_has "$section" 'On a public repo the comment is public' "guide section: the spend comment says outright it is public on a public repo"
 check_has "$section" '`stage models` column' "guide section: the run summary has a stage models column"
 if grep -q '"stage models"' "$TALOS_ROOT/scripts/pipeline-events.sh"; then pass "pipeline-events.sh prints the stage models column the guide names"
 else fail "pipeline-events.sh prints the stage models column the guide names"; fi
-example_line="$(printf '%s\n' "$guide_text" | awk '/^\$ talos-status.sh --line$/ {getline; print; exit}')"
-width="$(printf '%s' "$example_line" | python3 -I -c 'import sys; print(len(sys.stdin.read()))')"
-if [ "${width:-999}" -le 80 ]; then pass "guide status-line example fits 80 columns ($width)"
-else fail "guide status-line example fits 80 columns" "$width characters: $example_line"; fi
-check_has "$example_line" 'rev ✓' "guide status-line example shows rev ✓, the finished-stage mark"
-check_lacks "$example_line" 'rev done' "guide status-line example does not show the old rev done"
+check_has "$section" 'talos #7 qa ●●●◐○○ 3.41M' "guide section: the status-line example is the one-line format"
+check_lacks "$section" 'rev ✓' "guide section: the old segment example is gone"
 
 guide_flat="$(printf '%s\n' "$guide_text" | flat)"
 check_has "$guide_flat" '(the status line refuses it)' "guide events.path text: the status line refuses an absolute path"

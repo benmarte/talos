@@ -142,7 +142,7 @@ nxi() { OUT="$(bash "$TN" next --issue "$@" 2>"$ERR")"; RC=$?; }
 reset_stubs
 cfg '{"max_parallel": 2}' '{"validator": true, "planner": true, "pm": true, "developer": true}'
 # The collect's queued list is already sorted (p0 < p1 < p2 < unlabeled, then
-# ID ascending -- the shared sort, tests/test-status-file-*.sh pins it); next
+# ID ascending -- the shared sort, tests/test-collect.sh pins it); next
 # applies label_filter collapse, skip_labels and the max_parallel cap.
 issue 11 "pipeline:ready,p0" /dev/null
 issue 3 "pipeline:ready,p1" /dev/null
@@ -374,15 +374,6 @@ LEASE_RESET
 nxi 41
 assert_eq "stop reason=budget-exceeded" "$OUT" "AC6: a budget stop names budget-exceeded"
 
-# The same budget stop with STATUS_ENABLED = true: ask-owner instead of a stop.
-cfg '{"max_parallel": 1}' '{"validator": true, "planner": true, "pm": true, "developer": true}' '{"max_fix_attempts": 3, "max_total_dispatches": 8}' '"status": {"enabled": true}'
-LEASE_RESET
-nxi 41
-case "$OUT" in
-  "action=ask-owner issue=41 question="*) pass "AC6: a budget stop with status on asks the owner instead" ;;
-  *) fail "AC6: a budget stop with status on asks the owner instead" "got: $OUT" ;;
-esac
-
 # A first developer dispatch (no open PR) never runs the gate: no ceilings.
 cfg '{"max_parallel": 1}' '{"validator": true, "planner": true, "pm": true, "developer": true}' '{"max_fix_attempts": 3, "max_total_dispatches": 8}'
 reset_stubs
@@ -416,7 +407,7 @@ esac
 
 # ── AC8: ask-owner ────────────────────────────────────────────────────────────
 reset_stubs
-cfg '{"max_parallel": 1}' '{"validator": true, "planner": true, "pm": true, "developer": true}' '{"max_fix_attempts": 3, "max_total_dispatches": 8}' '"status": {"enabled": true}'
+cfg '{"max_parallel": 1}' '{"validator": true, "planner": true, "pm": true, "developer": true}' '{"max_fix_attempts": 3, "max_total_dispatches": 8}'
 # A queued issue carrying the needs-owner marker (held in the state, question
 # in owners) routes to ask-owner.
 issue 51 "pipeline:ready,pipeline:needs-owner" /dev/null
@@ -507,7 +498,7 @@ assert_eq "action=dispatch stage=validator issue=21" "$OUT" "AC11: an expired le
 
 # ── AC12: free text never reaches reason/question unsanitised ──────────────────
 reset_stubs
-cfg '{"max_parallel": 1}' '{"validator": true, "planner": true, "pm": true, "developer": true, "pm_skip_when_spec_present": true}' '' '"status": {"enabled": true}'
+cfg '{"max_parallel": 1}' '{"validator": true, "planner": true, "pm": true, "developer": true, "pm_skip_when_spec_present": true}' ''
 # A planted $(touch) and an ANSI escape in a needs-owner question: the output
 # carries them sanitised (control bytes as \xNN) and the touch never runs.
 PWN="$SANDBOX/pwned-marker"

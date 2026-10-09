@@ -13,7 +13,7 @@
 set -u
 . "$(dirname "$0")/helpers.sh"
 
-SKILL_MAX_BYTES=52200
+SKILL_MAX_BYTES=50900
 SKILL_SLACK=500
 
 SKILL_MD="$TALOS_ROOT/skills/pipeline/SKILL.md"

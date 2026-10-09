@@ -8,7 +8,7 @@ By `ISOLATION`:
 - `worktree` (default): spawn with `isolation: "worktree"`.
 - `branch`: a plain subagent in the orchestrator's checkout. Precondition `bash scripts/pipeline-vcs.sh assert-sync` — non-zero: `pipeline:blocked` on the issue, blocked.md with BLOCKED_BY="scripts/pipeline-vcs.sh assert-sync output (explicit)", next issue. Never dispatch into a dirty tree.
 
-Prompt: `bash scripts/talos.sh prompt developer --issue <N> --prior-file F`; `--spec-source issue-body` when 3b was skipped; `--shape fix-round --pr <PR>` for a fix round (`--ci-failure-file F` for a CI failure). The verb writes the isolation note and the Handoff line when `pipeline-worktree.sh handoff <N>` exits 0.
+Prompt: `bash scripts/talos.sh prompt developer --issue <N> --prior-file F`; `--spec-source issue-body` when 3b was skipped; `--shape fix-round --pr <PR>` for a fix round (`--ci-failure-file F` for a CI failure). The verb writes the isolation note and the Checkpoint line when `pipeline-worktree.sh handoff <N>` exits 0.
 
 
 After developer returns: `bash scripts/talos.sh done developer --issue <N> [--pr <PR>] --verdict PR_OPENED|BLOCKED --summary-file F` (Rule 2; the summary is what was implemented plus the PR URL, or what failed). Then:
@@ -115,10 +115,10 @@ The verb checks: no `pipeline:blocked`; each enabled role's approval label (`qa:
 **Human-merge mode (`handoff`, `merge.auto = false`).** Every gate still applied, and the verb set `pipeline:approved` (a repeat answers `wait`). Hand off to a human:
 Run `bash scripts/talos.sh post-merge <PR_NUMBER> <N> --handoff [--details-file <file>]`: approved.md on the PR, then the relay, nothing else (a failed comment is `warn reason=comment-failed`: report it). STOP: do NOT close the issue or run the post-merge steps; the human's merge closes it, and `sweep`'s heal does the bookkeeping on a later run.
 
-**After `merge-pr`:** `bash scripts/talos.sh post-merge <PR_NUMBER> <N>` — one call: the sibling sync, the changelog assemble, the issue-closed comment, `close-issue`, board Done, the status log, the worktree removal, the notices, the `merged` and `issue-closed` `post_stage` events and the spend block; each non-fatal (`warn reason=<r> issue=<N>` → run summary).
+**After `merge-pr`:** `bash scripts/talos.sh post-merge <PR_NUMBER> <N>` — one call: the sibling sync, the changelog assemble, the issue-closed comment, `close-issue`, board Done, the worktree removal, the notices, the `merged` and `issue-closed` `post_stage` events and the spend block; each non-fatal (`warn reason=<r> issue=<N>` → run summary).
 - `recorded=yes`: done earlier; `close-issue` + board Done re-ran (idempotent).
 - `spend=<line>`: print it. `warn reason=spend-upsert-failed`: ONE Step 5 line, never retried.
-- The changelog and status log push `[skip ci]` commits to the base: afterwards fast-forward the orchestrator's checkout (Rule 21).
+- The changelog pushes a `[skip ci]` commit to the base: afterwards fast-forward the orchestrator's checkout (Rule 20).
 - **Sibling sync (#289, `merge.auto_sync` true).** `sibling=<pr> action=clean|mergebase|update-branch|developer|unverified`; relayed. `developer` → the merge-base task immediately (Step 3c fallback prompt), never more than one per merge, re-checking `pr-mergeable` between, relay `pipeline-notify.sh info "merge-base" - <N>` (stdin `#<N> sibling PR #<PR> synced with new base (developer)`). A base-only sync and status-file commits do not invalidate approvals; non-waived-path syncs do — wait for the re-stamps.
 
 ---

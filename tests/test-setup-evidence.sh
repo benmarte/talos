@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # test-setup-evidence.sh -- the /pipeline-setup evidence capture step (#411,
-# part of epic #352). Grep-based like test-setup-status-file.sh, plus sandbox
+# part of epic #352). Grep-based like the other setup-skill tests, plus sandbox
 # runs: the fenced detection, `.gitignore` and `gh` capability commands are
 # extracted from the skill and executed, so the test runs the text the wizard
 # actually shows.

@@ -7,7 +7,6 @@ Comment templates dir: tpl/comments
 Comments enabled: true
 
 CHANGELOG MODE: fragments
-STATUS FRAGMENT: docs/status.d/468-77.md
 
 Read diff: `bash scripts/pipeline-vcs.sh diff-pr 77` (the full diff)
 

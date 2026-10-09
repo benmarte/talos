@@ -35,7 +35,7 @@ Workflow (do ALL of it — the publish step is not optional):
    only when a prior verdict is referenced (fix rounds). Create the branch it
    names off the integration branch:
    `git checkout -b fix/issue-<N>-<slug> origin/<base>`. If the brief has a
-   `Handoff:` line, follow it first (the handoff and the branch diff, not the thread).
+   `Checkpoint found:` line, follow it first: read the handoff, continue from it and the branch diff, do not restart.
 2. **Red first** (before any implementation). Turn the spec's criteria into
    failing tests: one test per `(test)` criterion, named by its id, so the
    runner's output maps back to the criterion (`AC2 rejects an expired token`;
