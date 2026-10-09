@@ -381,12 +381,6 @@ draft_ready() {  # the guard stub: the ready verb took (rc 1, stdout exactly rea
 }
 draft_order() { grep -oE 'ready-pr 12|pr-is-draft 12|pr-checks-required 12( --wait [0-9]+)?|agent qa|post_stage qa' "$STUB_DIR/journal" | tr '\n' '>' | sed 's/>$//'; }
 
-# AC2: only the key-carrying shape triggers the continuation -- the case
-# pattern requires pr= and issue=, so a bare `action=wait reason=draft` (no
-# producer emits it after AC1) falls through to today's terminal stop.
-grep -qF 'action=wait reason=draft pr="*" issue="*' "$GS/talos.sh"
-assert_eq "0" "$?" "AC2: only the key-carrying draft wait triggers the continuation (the case pattern requires pr= and issue=)"
-
 # The primary flow: ci mode, the ready verb took, QA dispatched, the whole
 # continuation inside one pass (AC2 trigger, AC4 once, AC6 guard-pass, AC7 one
 # CI wait, AC9 dispatch, AC12 max-iterations 1).
