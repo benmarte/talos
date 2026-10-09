@@ -672,17 +672,23 @@ fix_fixture() {
   printf 'FAIL: the suite broke\n' > "$STUB_DIR/message.qa.1"
   # The developer's real work, as the stub plays it: the fix round's prompt is
   # kept for the shape pin (the push, when there is one, is added per test).
-  printf '%s\n' 'cp "$d/agent.stdin" "$d/developer.prompt"' > "$STUB_DIR/hook.developer.1"
+  cat > "$STUB_DIR/hook.developer.1" <<'HOOK'
+cp "$d/agent.stdin" "$d/developer.prompt"
+HOOK
 }
 fix_order() { grep -oE 'ready-pr 12|agent qa|vcs record-attempt 9 qa --pr 12|label-pr 12 --remove pipeline:blocked|agent developer|view-pr 12' "$STUB_DIR/journal" | tr '\n' '>' | sed 's/>$//'; }
 
 # (i1) QA FAIL -> fix round (the developer pushes a new head) -> QA PASS ->
 # the merge arm.
 fix_fixture
-printf '%s\n' 'printf bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb > "$d/pr-head.12"' >> "$STUB_DIR/hook.developer.1"
+cat >> "$STUB_DIR/hook.developer.1" <<'HOOK'
+printf bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb > "$d/pr-head.12"
+HOOK
 printf 'PASS: verified\n' > "$STUB_DIR/message.qa.2"
 printf '{"labels": [{"name": "qa:pass"}, {"name": "docs:done"}, {"name": "review:approved"}, {"name": "security:approved"}], "state": "open"}' > "$STUB_DIR/view-pr.12"
-printf '%s\n' 'printf "%s" "{\"prs\":[{\"n\":12,\"issue\":9,\"head\":\"bbbb\",\"owner\":false,\"stage\":\"merge\"}],\"pr_total\":1,\"ignored\":0,\"blocked\":[],\"queued\":[],\"held\":[],\"owners\":[],\"capped\":[]}" > "$d/collect.json"' > "$STUB_DIR/hook.qa.2"
+cat > "$STUB_DIR/hook.qa.2" <<'HOOK'
+printf '%s' '{"prs":[{"n":12,"issue":9,"head":"bbbb","owner":false,"stage":"merge"}],"pr_total":1,"ignored":0,"blocked":[],"queued":[],"held":[],"owners":[],"capped":[]}' > "$d/collect.json"
+HOOK
 TALOS_LEASE_TTL_S=1800 TALOS_NOW=12000 rn --max-iterations 5
 assert_eq "0" "$RC" "fix round: the run exits 0"
 assert_not_contains "$OUT" "iterations-exhausted" "fix round: the run does not loop to --max-iterations"
