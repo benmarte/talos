@@ -239,7 +239,9 @@ _locate_user_cfg() {
 # .yml/.yaml file is refused like any other legacy file -- by NAME (the
 # case pattern matches the string, so the refusal fires even when the file
 # does not exist; YAML is never parsed at load time, so a named-but-absent
-# YAML pointer is the same named legacy state).
+# YAML pointer is the same named legacy state). A pointer at a file that is not
+# there fails closed too (#541): reason=config-pointer-missing <path>, exit 3
+# like the rest of the gate. An empty PIPELINE_CONFIG still means unset.
 #
 # _cfg_project_problem / _cfg_user_problem print the problem line (or nothing)
 # and return 0 either way; _cfg_gate collects both and exits 3 when any printed.
@@ -258,7 +260,14 @@ _cfg_project_problem() {
         printf 'pipeline-config: reason=config-legacy-file %s -- convert: bash scripts/pipeline-config.sh --convert %s %s/%s.json\n' \
           "$_cv_path" "$_cv_path" "$(_cfg_safe_path "$_cv_dir")" "$_CFG_PROJECT_NAME"
         return 0 ;;
-      *) return 0 ;;
+      *)
+        # An explicit pointer at a file that is not there fails closed (#541):
+        # the operator named a winner, so silently loading defaults only would
+        # run on a config nobody wrote (a typo'd path looked like success).
+        if [ ! -f "$PIPELINE_CONFIG" ]; then
+          printf 'pipeline-config: reason=config-pointer-missing %s\n' "$(_cfg_safe_path "$PIPELINE_CONFIG")"
+        fi
+        return 0 ;;
     esac
   fi
   for _n in "$_CFG_PROJECT_NAME.yml" "$_CFG_PROJECT_NAME.yaml"; do
@@ -275,7 +284,7 @@ _cfg_project_problem() {
 }
 
 _cfg_user_problem() {
-  local _dir _shown_dir _strays="" _n _winner _sep=""
+  local _dir _shown_dir _strays="" _n _winner _sep="" _has_winner
   _dir="$(_cfg_user_dir)"
   [ -n "$_dir" ] || return 0
   # The user directory can be the project directory (TALOS_HOME=.): the project
@@ -286,12 +295,16 @@ _cfg_user_problem() {
     if [ -f "$_dir/$_n" ]; then _strays="$_strays$_sep$_dir/$_n"; _sep=" "; fi
   done
   [ -n "$_strays" ] || return 0
-  # Only the PRINTED text is sanitized: the filesystem checks above used the
-  # real (possibly env-derived) directory.
+  # Only the PRINTED text is sanitized (#541): every filesystem test uses the
+  # real (possibly env-derived) path. Testing the sanitized one missed the real
+  # json whenever TALOS_HOME held a control byte, and told the user to convert
+  # instead of deleting the stray.
+  _has_winner=0
+  [ -f "$_winner" ] && _has_winner=1
   _shown_dir="$(_cfg_safe_path "$_dir")"
   _winner="$_shown_dir/$_CFG_PROJECT_NAME.json"
   _strays="$(_cfg_safe_path "$_strays")"
-  if [ -f "$_winner" ]; then
+  if [ "$_has_winner" = "1" ]; then
     printf 'pipeline-config: reason=config-shadowed winner=%s also-present=%s rm %s  # or merge them into the winner first\n' \
       "$_winner" "$(printf '%s' "$_strays" | tr ' ' ',')" "$_strays"
   else
