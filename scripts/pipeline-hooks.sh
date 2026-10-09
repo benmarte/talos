@@ -16,6 +16,15 @@
 #          [--verdict V] [--summary "..." | --summary - | --summary-file F]
 #          [--details-file F] [--attempt stage:count:total] [--duration-s N] [--tokens N] [--tool-uses N]
 #          [--ci-runs N] [--model M] [--runner R]
+#        pipeline-hooks.sh stage_start <role> <issue> [--pr N]
+#
+# stage_start (#550) appends one `stage_start` event to the events log when a
+# stage is dispatched (talos.sh prompt calls it), so the status line
+# (talos-status.sh) can show the stage as running. It only appends: the
+# hooks.post_stage command is not run, and the event is recorded under role
+# `orchestrator` (the dispatched role is in `stage`), so no cost or spend report
+# counts it as a stage run. Same events.enabled / events.path rules and
+# never-block contract as post_stage; a malformed argument is the only exit 2.
 #
 # Config (talos.pipeline.json via pipeline-config.sh, read through the cfg()
 # cache — see pipeline-cfg-cache.sh):
@@ -414,6 +423,7 @@ _HOOKS_SUMMARY_MAX=4096
 # _hooks_usage -- the usage text, shared by the bad-verb and missing-value exits.
 _hooks_usage() {
   echo "Usage: pipeline-hooks.sh pre_dispatch <role> <issue> [<pr>] [<worktree_path>] [files_hint...]" >&2
+  echo "       pipeline-hooks.sh stage_start <role> <issue> [--pr N]" >&2
   echo "       pipeline-hooks.sh post_stage <event> <role> <issue> [--pr N] [--sha S] [--verdict V] [--summary \"...\" | --summary - | --summary-file F] [--details-file F] [--attempt stage:count:total] [--duration-s N] [--tokens N] [--tool-uses N] [--ci-runs N] [--model M] [--runner R]" >&2
 }
 
@@ -628,8 +638,33 @@ json.dump(payload, sys.stdout)
   return 0
 }
 
+# stage_start ROLE ISSUE [--pr N]: see the header.
+stage_start() {
+  local role="${1:-}" issue="${2:-}" pr=""
+  case "$role" in ''|*[!a-z-]*) _hooks_usage; exit 2 ;; esac
+  case "$issue" in ''|*[!0-9]*) _hooks_usage; exit 2 ;; esac
+  shift 2
+  if [ "${1:-}" = "--pr" ]; then
+    case "${2:-}" in ''|*[!0-9]*) _hooks_usage; exit 2 ;; esac
+    pr="$2"
+  fi
+  _events_append "$(TALOS_ST_STAGE="$role" TALOS_ST_ISSUE="$issue" TALOS_ST_PR="$pr" python3 -I -c '
+import datetime, json, os
+e = os.environ
+print(json.dumps({
+    "event": "stage_start", "role": "orchestrator", "stage": e["TALOS_ST_STAGE"],
+    "issue": int(e["TALOS_ST_ISSUE"]), "pr": int(e["TALOS_ST_PR"]) if e["TALOS_ST_PR"] else None,
+    "ts": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+}))
+')"
+}
+
 VERB="${1:-}"
 case "$VERB" in
+  stage_start)
+    shift
+    stage_start "$@"
+    ;;
   pre_dispatch)
     shift
     pre_dispatch "$@"

@@ -2137,6 +2137,11 @@ _talos_prompt() {
     { printf '%s\n' "$(cat "$_pre")"; cat "$_pf"; } > "$_CFG_CACHE_DIR/preamble" \
       && cat "$_CFG_CACHE_DIR/preamble" > "$_pf" || { rm -f "${_pf:?}"; _talos_stop render-failed; }
   fi
+  # #550: the dispatch marker. Rendering the prompt is the one step both the
+  # playbook and `talos.sh run` take for every dispatched stage; the status line
+  # reads the event to show the stage as running. Best effort, silent.
+  [ ! -f "$SCRIPT_DIR/pipeline-hooks.sh" ] \
+    || bash "$SCRIPT_DIR/pipeline-hooks.sh" stage_start "$_role" "$_issue" ${_pr:+--pr "$_pr"} >/dev/null 2>&1 || :
   _talos_emit prompt_file "$_pf"
   _talos_flush
 }
