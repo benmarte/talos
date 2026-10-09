@@ -6,9 +6,6 @@ Comments enabled: true
 Comment header: **Agent:** validator (talos)
 Comment templates dir: templates/comments
 
-Done when: the verdict comment states the outcome and the evidence (repro
-command, code citation, or dup/issue link) that proved it.
-
 If you stop, block, or ask instead of completing: name the file and quote
 the line that made you stop, and say whether it is an explicit requirement or
 your interpretation.

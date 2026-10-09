@@ -3213,19 +3213,20 @@ pulls it automatically — you do not add anything by hand:
 
 The role profiles delegate their methodology to those skills instead of
 restating it, which is why the profiles are 20–60 lines rather than several
-hundred. Each role now *directs* the model to use them rather than treating them
-as optional:
+hundred. Each role names **one** skill it must load (every loaded skill is paid
+for on every dispatch, #548) and lists the others as "only if the task needs it":
 
-| Role | Skills it reaches for, if available |
-|---|---|
-| validator | `debugging-and-error-recovery`, `doubt-driven-development` |
-| pm | `spec-driven-development`, `api-and-interface-design` |
-| planner | `planning-and-task-breakdown` |
-| developer | `test-driven-development`, `incremental-implementation`, `debugging-and-error-recovery`, `git-workflow-and-versioning`, `code-simplification`, `frontend-ui-engineering`, `deprecation-and-migration` |
-| qa | `test-driven-development`, `browser-testing-with-devtools`, plus `verify`/`run` |
-| reviewer | `code-review-and-quality`, `code-simplification`, `performance-optimization`, plus `code-review` |
-| security | `security-and-hardening`, plus `security-review` |
-| docs | `documentation-and-adrs` |
+| Role | Required skill | Only if the task needs it |
+|---|---|---|
+| validator | `debugging-and-error-recovery` | |
+| pm | `spec-driven-development` | `api-and-interface-design` |
+| planner | `planning-and-task-breakdown` | |
+| developer | `test-driven-development` | `incremental-implementation`, `debugging-and-error-recovery`, `git-workflow-and-versioning`, `code-simplification`, `frontend-ui-engineering`, `deprecation-and-migration` |
+| qa | `test-driven-development` | `browser-testing-with-devtools` |
+| reviewer | `code-review-and-quality` | `code-simplification`, `performance-optimization` |
+| security | `security-and-hardening` | plus `security-review` |
+| docs | `documentation-and-adrs` | |
+| adversarial | `code-review-and-quality` | `security-and-hardening` |
 
 Skills are still referenced by **bare name**, never by plugin id, so Claude
 Code's built-in `code-review` / `security-review` and your own `.claude/skills/`

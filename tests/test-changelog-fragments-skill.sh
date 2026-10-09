@@ -28,7 +28,8 @@ assert_eq "false" "$(talos_env_default ROLE_CHANGELOG_FRAGMENTS)" "skill: flag d
 # Docs prompt carries the fragment mode.
 assert_contains "$docs_text" "CHANGELOG MODE: fragments" "docs profile: names the CHANGELOG MODE: fragments trigger"
 
-assert_contains "$(cat "$TALOS_ROOT/templates/prompts/docs.md")" "docs/CHANGELOG.d/<issue-number>.md" "template: docs prompt names the fragment path (the block moved to templates/prompts/docs.md, #468)"
+assert_contains "$docs_text" "docs/CHANGELOG.d/<issue-number>.md" "docs profile names the fragment path (stated once, in the profile: #548)"
+assert_not_contains "$(cat "$TALOS_ROOT/templates/prompts/docs.md")" "docs/CHANGELOG.d/" "template: docs prompt does not repeat the fragment procedure"
 
 # Step 4 hook + waiver note + gate note.
 # The hook moved from the prose into `talos.sh post-merge` (#467): the playbook names it,

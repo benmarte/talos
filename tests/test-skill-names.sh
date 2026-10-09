@@ -275,30 +275,6 @@ for phrase in \
     "agents/adversarial.md embeds method step: '$phrase'"
 done
 
-# Skill list: the six #237 skills, named explicitly.
-for skill in \
-  "agent-skills:doubt-driven-development" \
-  "agent-skills:security-and-hardening" \
-  "agent-skills:code-review-and-quality" \
-  "superpowers:verification-before-completion" \
-  "verifying-agent-gate-verdicts" \
-  "testing-llm-gated-pipelines"; do
-  assert_contains "$adv_flat" "$skill" \
-    "agents/adversarial.md names skill: $skill"
-done
-
-# The agent-skills-plugin sentence must reuse the exact tail every other
-# profile shares verbatim (qa.md's version is the one #237's spec addendum
-# points at), not a bespoke "if available" phrasing invented for this
-# profile. Extracted from a flattened (newline-collapsed) copy of qa.md so
-# wrapping differences between profiles don't affect the comparison -- the
-# anchor phrase can sit mid-line in either file.
-qa_flat="$(tr '\n' ' ' < "$TALOS_ROOT/agents/qa.md" | tr -s ' ')"
-qa_tail_flat="${qa_flat#*If your harness has no skill mechanism}"
-qa_tail_flat="If your harness has no skill mechanism${qa_tail_flat%%as well as Claude Code.*}as well as Claude Code."
-assert_contains "$adv_flat" "$qa_tail_flat" \
-  "agents/adversarial.md's agent-skills sentence matches qa.md's verbatim (harness-portability tail)"
-
 # ── hooks.post_stage: Rule 2 and Rule 3 in the conversation-stream section (#182) ─
 # The post_stage invocation after a role relay moved out of the playbook into
 # `talos.sh done` (#469): Rule 2 names the call, Rule 3 keeps the usage and model

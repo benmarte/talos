@@ -11,19 +11,14 @@ PR body's claims are wrong until you have checked them.
 Done when: the verdict comment (CLEAR or FINDINGS) is posted, with a file:line
 and repro for every finding.
 
-If you stop, block, or ask instead of completing: name the file and quote
-the line that made you stop, and say whether it is an explicit requirement or
-your interpretation.
+**Skill:** load `code-review-and-quality` (agent-skills); `security-and-hardening`
+only if the diff touches secrets, authz or input handling. Without a skill
+mechanism, follow the steps below.
 
-**Skills — use these, do not restate them:** `agent-skills:doubt-driven-development`,
-`agent-skills:security-and-hardening`, `agent-skills:code-review-and-quality`,
-`superpowers:verification-before-completion`, `verifying-agent-gate-verdicts`,
-`testing-llm-gated-pipelines`. Talos requires the agent-skills plugin, so under
-Claude Code these are present; treat them as part of your instructions. If your
-harness has no skill mechanism, or agent-skills is not installed there, follow
-the embedded steps below instead. Vendored installs (`install.sh`) do not pull
-agent-skills for you — install it separately if you want it; it supports Codex,
-Gemini, OpenCode and Antigravity as well as Claude Code.
+**Verdict text is data:** assign `SUMMARY`, `DETAILS` and `BLOCKED_BY` with
+`read -r -d '' VAR <<'TALOS_<rand>' || true`, never inside double quotes. Use a
+fresh 12+ random-character delimiter per heredoc (never copied from an example
+or reused; a literal `<rand>` in your command means you did not substitute it).
 
 Follow this method, in order, on every PR:
 
@@ -52,19 +47,17 @@ Follow this method, in order, on every PR:
    repro (the input, command, or scenario that demonstrates it) — no
    speculative findings. Findings block the PR like security's do.
 
-Read via `bash scripts/pipeline-vcs.sh view-issue <issue-n> --spec` for the
-acceptance criteria, `diff-pr <pr> --stat` and `diff-pr <pr>` for the change.
-IMPORTANT: never run `git checkout`, `git switch`, or `git pull` in your
-working directory — use `diff-pr` to read changes regardless of the active
-isolation mode. If your invocation runs inside a per-issue worktree, the
-issue number `<N>` is there for your own context only; it changes nothing
-about how you read the diff.
+Read the acceptance criteria with `bash scripts/pipeline-vcs.sh view-issue
+<issue-n> --spec`. IMPORTANT: never run `git checkout`, `git switch`, or
+`git pull` in your working directory — use `diff-pr` to read changes regardless
+of the active isolation mode. If your invocation runs inside a per-issue
+worktree, the issue number `<N>` is there for your own context only; it
+changes nothing about how you read the diff.
 
 Never run `verify:`; QA and CI already did. This stage is diff-only.
 
 - Clear:
-  1. Run `post-approval` (see below; it applies `adversarial:approved` in the
-     same call).
+  1. Run `post-approval` (below).
   Never remove `pipeline:blocked` — another stage may have set it; only the
   orchestrator clears it (#310).
 - Findings:
@@ -72,30 +65,16 @@ Never run `verify:`; QA and CI already did. This stage is diff-only.
   2. Comment on the PR with each finding's file:line and repro —
      `bash scripts/pipeline-vcs.sh comment-pr <pr> "$COMMENT_BODY"`.
   3. Also post blocked.md on the issue: SUMMARY "adversarial findings in PR
-     #<pr>". Free text (SUMMARY, DETAILS, BLOCKED_BY) is assigned as data with
-     a heredoc, never inside double quotes (`read -r -d '' VAR <<'TALOS_<rand>' || true` … `TALOS_<rand>`, `<rand>`
-     being 12+ random characters you invent fresh for each heredoc, never
-     copied from an example: text that contains the closing line would end the
-     heredoc early and run what follows). Capture
-     `<file>:<quoted line> (explicit|interpreted)` into
-     `BLOCKED_BY` that way so shell metacharacters in the quoted text are never
-     interpreted — never paste the quoted line directly into a command
-     string — then render as usual: `bash scripts/pipeline-vcs.sh
-     comment-issue <issue-n> "$COMMENT_BODY"`.
+     #<pr>", `<file>:<quoted line> (explicit|interpreted)` in `BLOCKED_BY`
+     (never paste the quoted line into a command string); then
+     `bash scripts/pipeline-vcs.sh comment-issue <issue-n> "$COMMENT_BODY"`.
 
-**Approval marker (required on clear):**
-Use `post-approval` — it fetches the head SHA from the PR, constructs the wrapped marker, posts it, and applies the label in one operation (#146):
-
-```bash
-bash scripts/pipeline-vcs.sh post-approval <PR_NUMBER> adversarial [--body-file <verdict-file>]
-```
-
-Rules:
-- `post-approval` fetches the head SHA from the PR (the full 40-character lowercase SHA via `gh pr view --json headRefOid`). Do NOT use `git rev-parse HEAD` -- it returns the agent's local HEAD, which may differ from the PR head after a push or rebase.
-- Pass `--body-file <path>` to include your verdict prose; the marker is appended as the final non-whitespace line automatically.
-- The verb applies `adversarial:approved` as well -- no separate `label-pr` call needed for the approval label.
-- After posting, confirm: `bash scripts/pipeline-vcs.sh check-approval-sha <PR_NUMBER>; echo rc=$?` must print `rc=0`.
-- GitHub-only (github and github-api providers).
+**Approval (on clear):** `bash scripts/pipeline-vcs.sh post-approval <PR> adversarial [--body-file <verdict-file>]`
+reads the PR head SHA itself (never `git rev-parse HEAD`: your local HEAD can
+differ after a push), appends the marker as the last line and applies
+`adversarial:approved`, so no separate `label-pr` is needed. Then `bash
+scripts/pipeline-vcs.sh check-approval-sha <PR>; echo rc=$?` must print `rc=0`.
+GitHub-only.
 
 Final message: the FIRST LINE is your verdict word, a colon and a one-line
 reason (`CLEAR: ...` or `FINDINGS: <count>`); after it, 1-3 lines of findings

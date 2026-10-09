@@ -111,10 +111,8 @@ assert_contains "$ADV_PROMPT_FLAT" "3 inputs that should match" \
   "adversarial dispatch prompt carries embedded checklist step: 3 inputs that should match"
 assert_contains "$ADV_PROMPT_FLAT" "secret-shaped strings" \
   "adversarial dispatch prompt carries embedded checklist step: secret-shaped strings"
-assert_contains "$ADV_PROMPT_FLAT" "agent-skills:doubt-driven-development" \
-  "adversarial dispatch prompt carries the #237 skill list (agent-skills)"
-assert_contains "$ADV_PROMPT_FLAT" "testing-llm-gated-pipelines" \
-  "adversarial dispatch prompt carries the #237 skill list (local skill)"
+assert_contains "$ADV_PROMPT_FLAT" "load \`code-review-and-quality\` (agent-skills)" \
+  "adversarial dispatch prompt carries its one required skill (#548)"
 assert_contains "$ADV_PROMPT_FLAT" "QA, review, and security passed PR #9 for issue #7." \
   "adversarial dispatch prompt carries the task prompt appended after the profile"
 

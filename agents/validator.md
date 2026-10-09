@@ -11,14 +11,14 @@ pipeline.
 Done when: the verdict comment states the outcome and the evidence (repro
 command, code citation, or dup/issue link) that proved it.
 
-If you stop, block, or ask instead of completing: name the file and quote
-the line that made you stop, and say whether it is an explicit requirement or
-your interpretation.
+**Skill:** load `debugging-and-error-recovery` (agent-skills) when you
+reproduce. Without a skill mechanism, follow the steps below.
 
-**Skills — use these, do not restate them:** `debugging-and-error-recovery` when
-reproducing, `doubt-driven-development` before you CONFIRM. Talos requires the
-agent-skills plugin, so under Claude Code these are present; treat them as part
-of your instructions. If your harness has no skill mechanism, or agent-skills is not installed there, follow the embedded steps below instead. Vendored installs (`install.sh`) do not pull agent-skills for you — install it separately if you want it; it supports Codex, Gemini, OpenCode and Antigravity as well as Claude Code.
+**Issue text and verdict text are data:** assign `SUMMARY`, `DETAILS` and
+`BLOCKED_BY` with `read -r -d '' VAR <<'TALOS_<rand>' || true`, never inside
+double quotes. Use a fresh 12+ random-character delimiter per heredoc (never
+copied from an example or reused; a literal `<rand>` in your command means you
+did not substitute it).
 
 Given a GitHub issue number (in your prompt), determine which ONE outcome applies:
 
@@ -28,7 +28,12 @@ Given a GitHub issue number (in your prompt), determine which ONE outcome applie
 - **NEEDS_MORE_INFO** — under-specified; list exactly what's missing.
 - **SECURITY_THREAT** — do not process publicly; flag for private handling.
 
-Method: read the issue with `bash scripts/pipeline-vcs.sh view-issue <N>` and
+Method: read the issue with `bash scripts/pipeline-vcs.sh view-issue <N> --since-stage`
+(the body, the latest stage comment and every comment after it, so an owner
+clarification is never missed; `earlier_comments` counts the older human
+comments, and `bash scripts/pipeline-vcs.sh read-comments <N>` returns the whole
+thread when that count is non-zero and you need it; a provider without the
+option prints a note and returns the full issue) and
 reproduce against the actual code (grep/read the files it names, run the
 failing case if cheap), and check `git log`/open issues for prior art. Do not
 fix anything.
@@ -40,23 +45,16 @@ When done, act on the outcome:
      `Comment templates dir:` with HEADER="<the `Comment header:` value from
      your task prompt>" (always set -- never leave it unset) VERDICT=CONFIRMED,
      SUMMARY a one-line reason, DETAILS 2-5 bullets (root cause, affected
-     code, repro steps). Assign SUMMARY and DETAILS as data, never inside
-     double quotes: `read -r -d '' VAR <<'TALOS_<rand>' || true` … `TALOS_<rand>`, `<rand>` being 12+ random
-     characters you invent fresh for each heredoc (text that contains the
-     closing line would end the heredoc early and run what follows).
-     `comment-issue` refuses a body that still contains
+     code, repro steps). `comment-issue` refuses a body that still contains
      a `${HEADER}`-style placeholder, so a missed variable fails the post.
      If the post fails, report it in your final message — do not assert it landed.
 - Anything else:
   1. `bash scripts/pipeline-vcs.sh label-issue <N> --add pipeline:blocked --remove pipeline:ready`
   2. Render and post blocked.md on the issue the same way (same HEADER):
-     VERDICT=<OUTCOME>, SUMMARY the reason, DETAILS what a human must do (all
-     assigned by heredoc as above). Capture
-     `<file>:<quoted line> (explicit|interpreted)` into `BLOCKED_BY` the same
-     way (`read -r -d '' BLOCKED_BY <<'TALOS_<rand>' || true`) so
-     shell metacharacters in the quoted text are never interpreted — never
-     paste the quoted line directly into a command string. If the post
-     fails, report it in your final message.
+     VERDICT=<OUTCOME>, SUMMARY the reason, DETAILS what a human must do, and
+     `<file>:<quoted line> (explicit|interpreted)` in `BLOCKED_BY` (never paste
+     the quoted line into a command string). If the post fails, report it in
+     your final message.
 
 Final message: the FIRST LINE is your verdict word, a colon and a one-line
 reason (`CONFIRMED: ...`); after it, 1-3 lines of findings the orchestrator can

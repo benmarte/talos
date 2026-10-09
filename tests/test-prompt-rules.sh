@@ -41,8 +41,6 @@ assert_contains "$qa_block_flat" "Never run the full suite" \
 # fallback (#263 review follow-up).
 assert_contains "$qa_block_flat" "--strict" \
   "QA prompt template uses --strict"
-assert_contains "$qa_block_flat" "Exit 3" \
-  "QA prompt template explains exit 3 (no targeted tests map)"
 
 # A regression back to a bare "run-tests.sh" instruction (no --for/--changed
 # scoping) is exactly the bug #257 fixes -- fail if that pattern reappears.
@@ -111,26 +109,13 @@ for _role in validator qa reviewer security adversarial; do
     "AC1 $_role profile states the rule once (no second copy)"
 done
 
-# ── #518 AC2: the one prompt-template restatement (qa) ───────────────────────
-# templates/prompts/qa.md is the only stage template that restates the final
-# message, so it carries the same first-line contract -- and the rendered
-# `tests/fixtures/talos-prompt/qa.golden` is regenerated from it (golden suite:
-# tests/test-talos-prompt.sh). No other verdict-word template restates it: the
-# developer template's PR-URL shape is parsed separately by `_run_verdict`.
-_qa_tpl="$(final_rule_of "$TALOS_ROOT/templates/prompts/qa.md")"
-assert_contains "$_qa_tpl" "FIRST LINE is your verdict word" \
-  "AC2 qa prompt template restates the verdict-first first line"
-assert_contains "$_qa_tpl" '`PASS: ...` or `FAIL: ...`' \
-  "AC2 qa prompt template examples its own verdict words"
-assert_contains "$_qa_tpl" "1-3 lines of findings" \
-  "AC2 qa prompt template keeps findings after the verdict line"
-assert_contains "$_qa_tpl" "NOTHING before" \
-  "AC2 qa prompt template forbids anything before the verdict line"
-assert_eq "1" "$(grep -c '^Final message:' "$TALOS_ROOT/templates/prompts/qa.md" || true)" \
-  "AC2 qa prompt template states the rule once"
-for _t in validator reviewer security adversarial restamp; do
-  assert_eq "0" "$(grep -c '^Final message:' "$TALOS_ROOT/templates/prompts/$_t.md" || true)" \
-    "AC2 no verdict-first restatement in the $_t prompt template"
+# ── #548: the contract lives in the profile only ──────────────────────────────
+# `talos.sh run` parses the first line of the answer; the prompt templates used to
+# restate it (qa did, since #518 AC2), so a stage paid for it twice. The profile
+# is loaded on every dispatch, so it is the one place.
+for _t in validator qa reviewer security adversarial docs developer pm planner restamp; do
+  assert_eq "0" "$(grep -c -i 'final message\|FIRST LINE is your verdict' "$TALOS_ROOT/templates/prompts/$_t.md" || true)" \
+    "#548 the $_t prompt template does not restate the final-message contract"
 done
 
 finish

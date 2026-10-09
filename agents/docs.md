@@ -10,21 +10,22 @@ approval. Do not open a fix loop.
 
 Done when: CHANGELOG has the entry and README reflects any changed config key.
 
-If you stop, block, or ask instead of completing: name the file and quote
-the line that made you stop, and say whether it is an explicit requirement or
-your interpretation.
+**Skill:** load `documentation-and-adrs` (agent-skills). Without a skill
+mechanism, follow the steps below.
 
-**Skills — use these, do not restate them:** `documentation-and-adrs`. Talos
-requires the agent-skills plugin, so under Claude Code it is present; treat it as
-part of your instructions. If your harness has no skill mechanism, or agent-skills is not installed there, follow the embedded steps below instead. Vendored installs (`install.sh`) do not pull agent-skills for you — install it separately if you want it; it supports Codex, Gemini, OpenCode and Antigravity as well as Claude Code.
+**Summary text is data:** assign `SUMMARY` and `DETAILS` with
+`read -r -d '' VAR <<'TALOS_<rand>' || true`, never inside double quotes. Use a
+fresh 12+ random-character delimiter per heredoc (never copied from an example
+or reused; a literal `<rand>` in your command means you did not substitute it).
 
 1. Tag your worktree: `bash scripts/pipeline-worktree.sh tag <issue-n>` -- lets the Step 1/Step 5 sweeps and the Step 4 post-merge `remove <N>` find and clean up this working copy once the PR merges or closes (#240).
 2. **CHANGELOG fragments mode (#290):** when your prompt carries the line
    `CHANGELOG MODE: fragments`, do NOT edit `CHANGELOG.md`. Write or extend
    `docs/CHANGELOG.d/<issue-number>.md` (this issue's bullet(s), same prose
-   style as a direct CHANGELOG entry; append if the file already exists).
-   The orchestrator assembles fragments into `CHANGELOG.md` on the base
-   branch after the merge. When your prompt carries `CHANGELOG MODE: direct`
+   style as a direct CHANGELOG entry; append if the file already exists, never
+   touch other issues' fragments). The orchestrator assembles fragments into
+   `CHANGELOG.md` on the base branch after the merge. When your prompt carries
+   `CHANGELOG MODE: direct`
    or carries no changelog-mode line at all, edit `CHANGELOG.md` normally.
 3. Read the PR diff — unless the orchestrator dispatched you under
    `roles.docs_mode: auto`, in which case it hands you only the changed
@@ -49,12 +50,7 @@ part of your instructions. If your harness has no skill mechanism, or agent-skil
    and push.
 5. After posting the approval marker below (which applies `docs:done`), also
    render and post docs-posted.md on the issue: VERDICT=POSTED, SUMMARY what
-   was updated, DETAILS 2-5 bullets (files changed). Assign SUMMARY and
-   DETAILS as data with a heredoc, never inside double quotes
-   (`read -r -d '' VAR <<'TALOS_<rand>' || true` … `TALOS_<rand>`, `<rand>` being 12+ random characters you invent
-   fresh for each heredoc, never copied from an example: text that contains
-   the closing line would end the heredoc early and run what follows; a
-   literal `<rand>` in your command means you did not substitute it). Then
+   was updated, DETAILS 2-5 bullets (files changed). Then
    `bash scripts/pipeline-vcs.sh comment-issue <issue-n> "$COMMENT_BODY"`. If
    the post fails, report it in your final message.
 
@@ -65,18 +61,11 @@ If nothing needs documenting, say so explicitly (SUMMARY: no docs changes
 required) and still apply `docs:done`. Do not open a fix loop; this stage is
 terminal.
 
-**Approval marker (required after push):**
-Use `post-approval` **after** the final push — it queries GitHub's API so it reflects the commit you just pushed, constructs the wrapped marker, posts it, and applies the label in one operation (#146):
-
-```bash
-bash scripts/pipeline-vcs.sh post-approval <PR_NUMBER> docs [--body-file <summary-file>]
-```
-
-Rules:
-- `post-approval` fetches the head SHA from the PR (the full 40-character lowercase SHA via `gh pr view --json headRefOid`). Do NOT use `git rev-parse HEAD` -- it returns the agent's local HEAD, which may differ from the PR head after a push or rebase.
-- Pass `--body-file <path>` to include your verdict prose; the marker is appended as the final non-whitespace line automatically.
-- The verb applies `docs:done` as well -- no separate `label-pr` call needed for the approval label.
-- After posting, confirm: `bash scripts/pipeline-vcs.sh check-approval-sha <PR_NUMBER>; echo rc=$?` must print `rc=0`.
-- GitHub-only (github and github-api providers).
+**Approval (required after the final push):** `bash scripts/pipeline-vcs.sh post-approval <PR> docs [--body-file <summary-file>]`
+reads the PR head SHA itself (never `git rev-parse HEAD`: your local HEAD can
+differ after a push), appends the marker as the last line and applies
+`docs:done`, so no separate `label-pr` is needed. Then `bash
+scripts/pipeline-vcs.sh check-approval-sha <PR>; echo rc=$?` must print `rc=0`.
+GitHub-only.
 
 Final message: `docs posted: ...`.

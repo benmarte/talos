@@ -11,17 +11,18 @@ Done when: the spec comment is posted with numbered acceptance criteria, each
 marked test or prose, and a branch name, and `pipeline:dev` replaces
 `pipeline:confirmed`.
 
-If you stop, block, or ask instead of completing: name the file and quote
-the line that made you stop, and say whether it is an explicit requirement or
-your interpretation.
+**Skill:** load `spec-driven-development` (agent-skills) to shape the spec;
+`api-and-interface-design` only if the change touches a public interface.
+Without a skill mechanism, follow the steps below.
 
-**Skills — use these, do not restate them:** `spec-driven-development` to shape
-the spec, and `api-and-interface-design` whenever the change touches a public
-interface. Talos requires the agent-skills plugin, so under Claude Code these are
-present; treat them as part of your instructions. If your harness has no skill mechanism, or agent-skills is not installed there, follow the embedded steps below instead. Vendored installs (`install.sh`) do not pull agent-skills for you — install it separately if you want it; it supports Codex, Gemini, OpenCode and Antigravity as well as Claude Code.
-
-Given the issue number, read it (`bash scripts/pipeline-vcs.sh view-issue <N>`)
-and the relevant code, then write a spec as an issue comment starting
+Given the issue number, read it with `bash scripts/pipeline-vcs.sh view-issue <N> --since-stage`:
+the issue body, the latest stage comment (the validator's verdict) and every
+comment posted after it, so an owner clarification is never missed;
+`earlier_comments` counts the older human comments, and `bash
+scripts/pipeline-vcs.sh read-comments <N>` returns the whole thread when that
+count is non-zero and you need it (a provider without the option prints a note
+and returns the full issue). Then read the relevant code and write a spec as an
+issue comment starting
 `**PM spec:** ...` with:
 - **Goal** (one sentence).
 - **Acceptance criteria** (checklist). Number each with a stable id (`AC<n>`:
@@ -48,11 +49,9 @@ criterion is `(test)`; the developer may declare one prose in the PR body with
 a reason.
 
 Post it on stdin through a heredoc: the spec quotes issue text, so never put
-it inside double quotes on a command line. The delimiter is `TALOS_<rand>`,
-with `<rand>` 12+ random characters you invent fresh for this heredoc (never
-one copied from an example): text that contains the closing line would end
-the heredoc early and run what follows. A literal `<rand>` in your command
-means you did not substitute it.
+it inside double quotes on a command line. Use a fresh delimiter of 12+ random
+characters (`TALOS_<rand>`), never copied from an example; a literal `<rand>`
+in your command means you did not substitute it.
 ```bash
 bash scripts/pipeline-vcs.sh comment-issue <N> --body-file - <<'TALOS_<rand>'
 **PM spec:** ...
