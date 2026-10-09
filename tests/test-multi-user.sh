@@ -44,7 +44,16 @@ case "$verb" in
     echo "$STUB_ME" ;;
   list-assignees)
     [ -f "$FX/assignees.err" ] && cat "$FX/assignees.err" >&2
-    cat "$FX/assignees.json" 2>/dev/null || echo '{}'
+    # The bulk view of the per-issue files in $FX/as, read fresh on every call.
+    python3 -I -c "
+import json, os, sys
+d = {}
+for n in os.listdir(sys.argv[1]):
+    if n.isdigit():
+        who = [l for l in open(os.path.join(sys.argv[1], n)).read().split() if l]
+        if who:
+            d[n] = who
+print(json.dumps(d))" "$FX/as"
     exit "$(rc_of assignees.rc 0)" ;;
   issue-assignees)
     cat "$FX/as/$1" 2>/dev/null; exit 0 ;;
@@ -113,19 +122,6 @@ EOF
   printf '%040d\n' 17 > "$FX/head.17"; printf '%040d\n' 18 > "$FX/head.18"
   printf 'bob\n' > "$FX/as/1"; printf 'alice\n' > "$FX/as/2"; : > "$FX/as/3"
   printf 'bob\n' > "$FX/as/4"; printf 'bob\n' > "$FX/as/6"; printf 'bob\n' > "$FX/as/7"; printf 'bob\n' > "$FX/as/8"
-  flush_assignees
-}
-# flush_assignees: assignees.json is the bulk view of the per-issue files.
-flush_assignees() {
-  python3 -I -c "
-import json, os, sys
-d = {}
-for n in os.listdir(sys.argv[1]):
-    if n.isdigit():
-        who = [l for l in open(os.path.join(sys.argv[1], n)).read().split() if l]
-        if who:
-            d[n] = who
-print(json.dumps(d))" "$FX/as" > "$FX/assignees.json"
 }
 LEASE="$SANDBOX/.git/talos-lease.ledger"
 as_state() { sort "$FX/as/$1" 2>/dev/null | paste -sd, -; }
@@ -200,14 +196,14 @@ done
 
 # only B's work left in the repo: A has nothing to do
 cfg_p; reset_repo
-rm -f "$FX/as/2" "$FX/as/3"; printf 'bob\n' > "$FX/as/2"; printf 'bob\n' > "$FX/as/3"; flush_assignees
+rm -f "$FX/as/2" "$FX/as/3"; printf 'bob\n' > "$FX/as/2"; printf 'bob\n' > "$FX/as/3"
 me alice next
 assert_eq "0|action=wait reason=none" "$RC|$OUT" "A's next with only bob's work left is wait reason=none"
 assert_eq "0" "$(count_calls assign-issue)" "A claims nothing of bob's"
 
 # ═════ next: the claim before the first dispatch ═══════════════════════════
 cfg_p; reset_repo
-printf 'bob\n' > "$FX/as/2"; flush_assignees      # only #3 is free for A
+printf 'bob\n' > "$FX/as/2"      # only #3 is free for A
 me alice next
 assert_eq "0|action=dispatch stage=validator issue=3" "$RC|$OUT" "A's next picks the unassigned #3"
 assert_eq "alice" "$(as_state 3)" "A's next claimed #3 (assigned it to A) before answering"
@@ -215,7 +211,7 @@ assert_eq "1" "$(count_calls assign-issue)" "exactly one claim write"
 
 # a claim lost to a lower login moves on: zed claims #3 while amy's write lands
 cfg_p; reset_repo
-printf 'bob\n' > "$FX/as/2"; flush_assignees
+printf 'bob\n' > "$FX/as/2"
 printf 'amy\n' > "$FX/racer"
 me zed next
 assert_eq "0|action=wait reason=none" "$RC|$OUT" "a claim lost to a lower login moves on (nothing else for zed): wait reason=none"
@@ -225,7 +221,7 @@ assert_eq "amy" "$(as_state 3)" "exactly one owner of #3 after the race: the low
 cfg_p; reset_repo
 printf '%s' '[{"number":3,"title":"three","labels":[{"name":"pipeline:ready"}],"body":""},{"number":5,"title":"five","labels":[{"name":"pipeline:ready"}],"body":""}]' > "$FX/issues.json"
 printf '[]' > "$FX/prs.json"
-rm -f "$FX"/as/[0-9]*; : > "$FX/as/3"; : > "$FX/as/5"; flush_assignees
+rm -f "$FX"/as/[0-9]*; : > "$FX/as/3"; : > "$FX/as/5"
 printf 'amy\n' > "$FX/racer"
 me zed next
 assert_eq "0|action=dispatch stage=validator issue=5" "$RC|$OUT" "after losing #3 zed's next moves on to #5"
@@ -234,7 +230,7 @@ assert_eq "zed" "$(as_state 5)" "zed claimed #5"
 
 # a legacy unassigned in-flight issue is claimed like a ready one
 cfg_p; reset_repo
-: > "$FX/as/4"; printf 'bob\n' > "$FX/as/2"; printf 'bob\n' > "$FX/as/3"; flush_assignees
+: > "$FX/as/4"; printf 'bob\n' > "$FX/as/2"; printf 'bob\n' > "$FX/as/3"
 me alice next --issue 4
 assert_eq "0|action=dispatch stage=developer issue=4" "$RC|$OUT" "A continues an unassigned in-flight issue"
 assert_eq "alice" "$(as_state 4)" "A claimed the unassigned in-flight issue #4 first"
@@ -264,11 +260,12 @@ assert_eq "" "$(cat "$FX/agent.log" 2>/dev/null)" "A's runs never dispatch an ag
 
 # only B's work in the repo: an untargeted run ends clean and idle
 cfg_p; reset_repo
-printf 'bob\n' > "$FX/as/2"; printf 'bob\n' > "$FX/as/3"; flush_assignees
+printf 'bob\n' > "$FX/as/2"; printf 'bob\n' > "$FX/as/3"
 me alice run
 assert_contains "$OUT" "stop action=wait reason=none" "A's untargeted run with only bob's work ends on wait reason=none"
 assert_eq "" "$(cat "$FX/agent.log" 2>/dev/null)" "A's untargeted run dispatches nothing of bob's"
 assert_eq "0" "$(count_calls assign-issue)" "A's untargeted run claims nothing of bob's"
+assert_eq "1" "$(count_calls current-user)" "a run resolves the operator's identity once, however many next and collect calls it makes"
 
 # ═════ the opt-outs give today's behaviour exactly ═════════════════════════
 for variant in 'claim-false|"issues": {"claim": false}' 'assignee-none|"issues": {"assignee": "none"}'; do

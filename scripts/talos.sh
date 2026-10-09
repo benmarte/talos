@@ -2848,6 +2848,15 @@ elif held or owners:
 else:
     nxt = "nothing queued"
 print("next: " + nxt)
+# Items of other operators (#560), only while claiming is on and there are any:
+# one entry per issue with the login of its owner (a PR counts as its issue).
+mine = {}
+for t in d.get("theirs") or []:
+    if isinstance(t, dict) and num(t.get("issue")):
+        o = t.get("owner")
+        mine.setdefault(num(t.get("issue")), o if isinstance(o, str) and re.fullmatch(r"[A-Za-z0-9._@+\[\]-]{1,64}", o) else "?")
+if mine:
+    print("theirs: " + ", ".join(some(sorted(mine.items()), "#%d (@%s)", 5)))
 '
 
 # _TALOS_NEXT_PY: one action from the collected state (argv: the JSON, read
@@ -2952,6 +2961,7 @@ qset = set(queued)
 held = set(data.get("held") or [])
 owners = data.get("owners") or []
 blocked = set(n for _, n in (data.get("blocked") or []))
+theirs = set(t["issue"] for t in (data.get("theirs") or []) if isinstance(t, dict) and isinstance(t.get("issue"), int))
 by_owner = dict((x["n"], x) for x in owners if isinstance(x, dict))
 roles = set(x for x in o.get("roles", "").split(",") if x)
 skip_labels = set(x for x in o.get("skip-labels", "").split(",") if x)
@@ -3108,6 +3118,9 @@ if target:
         n = int(target)
     except ValueError:
         die("usage")
+    # An issue of another operator (#560): never routed, whatever its labels say.
+    if n in theirs:
+        say("wait", reason="theirs")
     if n in held or n in by_owner:
         ask_owner(n)
     if n in queued and any(p.get("issue") == n for p in prs):
@@ -3256,7 +3269,7 @@ _talos_claim() {
 # it (#522) and the wait it still causes reports the seconds until
 # reclaimable, never the TTL.
 _talos_next() {
-  local _issue="" _a _r _inflight _roles="" _retry _skip
+  local _issue="" _target _a _r _inflight _roles="" _retry _skip _tries
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --issue) _issue="${2:-}"; shift 2 ;;
@@ -3264,6 +3277,7 @@ _talos_next() {
     esac
   done
   [ -z "$_issue" ] || _talos_isnum "$_issue" || _talos_stop usage 2
+  _target="$_issue"
   _talos_prepare next pipeline-config.sh pipeline-cfg-cache.sh pipeline-status-file.sh \
                      pipeline-contract.sh pipeline-next-stage.py pipeline-draft-check.sh \
                      pipeline-vcs.sh pipeline-budget.sh pipeline-lock.sh
@@ -3327,6 +3341,34 @@ _talos_next() {
   # (the `talos.sh run: dispatch-failed` convention, #522, AC6); stdout
   # carries only the action line.
   _issue="$(printf '%s\n' "$_a" | sed -n 's/.* issue=//p')"
+
+  # The claim (#560): the first dispatch on an issue nobody is assigned to
+  # (collect's `unclaimed`: a ready issue or a legacy in-flight one) assigns it
+  # to this operator before anything is answered, so two operators never both
+  # start it. A claim lost to a lower login re-routes from a fresh read -- the
+  # issue is the other operator's now and the walk moves to the next one (the
+  # re-route is a child `next`, bounded at five losses in a row); a target
+  # named with --issue answers `wait reason=theirs` the same way.
+  if python3 -I -c 'import json, sys; sys.exit(0 if int(sys.argv[2]) in (json.load(open(sys.argv[1])).get("unclaimed") or []) else 1)' \
+       "$_CFG_CACHE_DIR/state.json" "$_issue" 2>/dev/null; then
+    _talos_claim_one "$_issue"
+    case "$_CLAIM_RESULT" in
+      lost)
+        _tries="${TALOS_NEXT_CLAIM_TRIES:-0}"
+        _talos_isnum "$_tries" || _tries=0
+        if [ "$_tries" -ge 5 ]; then
+          _talos_emit_next_wait "action=wait reason=none"
+          _talos_flush; exit 0
+        fi
+        _a="$(TALOS_NEXT_CLAIM_TRIES=$((_tries + 1)) bash "$SCRIPT_DIR/talos.sh" next ${_target:+--issue "$_target"})"
+        _r=$?
+        printf '%s\n' "$_a"
+        exit "$_r" ;;
+      unreadable) _talos_stop claim-unreadable ;;
+      release-failed) _talos_stop claim-release-failed ;;
+    esac
+  fi
+
   _talos_lease acquire "$_issue" > "$_CFG_CACHE_DIR/lease.line"
   case "$?" in
     0)
@@ -3487,6 +3529,9 @@ _talos_run_loop() {
   # Idempotent and never fails outside a repository.
   _talos_ignore_in_tree
   TALOS_RUN_PID="$$"; export TALOS_RUN_PID
+  # The claim identity (#560), resolved once for the whole run: every `next`,
+  # collect and claim below inherits it through TALOS_CLAIM_STATE.
+  talos_claim_resolve
   # The run releases its own leases on exit (every path): one exit hook.
   _talos_on_exit "_talos_lease_release_run_all"
   local _dispatched=0

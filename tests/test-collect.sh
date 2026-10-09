@@ -84,6 +84,9 @@ case "$verb" in
     [ "$rc" = 0 ] && echo draft
     [ "$rc" = 1 ] && echo ready
     exit "$rc" ;;
+  current-user)
+    # #560: the identity read; none here, so collect keeps every issue (claiming off).
+    exit 1 ;;
   list-needs-owner)
     [ -f "$FX/owners.err" ] && cat "$FX/owners.err" >&2
     if [ -f "$FX/owners.json" ]; then cat "$FX/owners.json"; else echo '[]'; fi
@@ -424,7 +427,7 @@ before_status="$(git status --porcelain)"
 collect
 assert_eq "0" "$RC" "read-only: exits 0"
 assert_not_contains "$(calls)" "WRITE" "read-only: the verb stub saw only read verbs"
-assert_eq "" "$(awk '{print $1}' "$FX/calls.log" | sort -u | grep -v -x -e list-prs -e list-issues -e pr-head -e check-approval-sha -e pr-checks-required -e pr-is-draft -e list-needs-owner)" "read-only: only the documented read verbs were called"
+assert_eq "" "$(awk '{print $1}' "$FX/calls.log" | sort -u | grep -v -x -e list-prs -e list-issues -e pr-head -e check-approval-sha -e pr-checks-required -e pr-is-draft -e list-needs-owner -e current-user)" "read-only: only the documented read verbs were called"
 assert_eq "$before_status" "$(git status --porcelain)" "read-only: the caller's checkout is untouched"
 
 # the real gh stub: no POST/PATCH/PUT/DELETE and no label or comment call
