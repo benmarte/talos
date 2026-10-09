@@ -60,6 +60,18 @@
 #                                             GitHub only (github/github-api parity);
 #                                             gitlab, azure, and file mode fall back
 #                                             to plain view-issue with a stderr note.
+#             <n> --since-stage               Delta form for the PM and validator (#548):
+#                                             {title, body, labels, comments,
+#                                             earlier_comments}, where comments holds
+#                                             only what came after the latest stage
+#                                             comment (a "**PM spec:**" or "**Agent:**"
+#                                             comment), bare "<!-- talos:" marker
+#                                             comments dropped, and earlier_comments
+#                                             counts the human comments before it
+#                                             (read them with read-comments). With no
+#                                             stage comment yet, every human comment
+#                                             is new. Same read as --spec; same
+#                                             fallback on gitlab, azure and file mode.
 #   comment-issue <n> <body>                  Post comment on issue <n>
 #                 <n> --body-file <path|->    ...or read the body from a file, or from
 #                                             stdin with "-" (heredoc; #342)
@@ -1144,6 +1156,49 @@ result = {
     'comments': kept,
 }
 print(json.dumps(result))
+" "$1" "$2"
+}
+
+# ── Delta comment filter (view-issue --since-stage, #548) ─────────────────────
+# $1: issue metadata JSON, $2: a read-comments-shaped JSON document, as for
+# _vi_spec_filter. Prints {title, body, labels, comments, earlier_comments}.
+# A stage comment (body starting "**PM spec:**" or "**Agent:**", the same
+# prefixes _vi_spec_filter keys on) marks how far the pipeline has read; the
+# latest one is the boundary. comments is every non-marker comment after it (all
+# of them when no stage comment exists), so an owner's clarification posted since
+# the last stage is always there. earlier_comments counts the human comments
+# before the boundary, which `read-comments` still returns.
+_vi_delta_filter() {
+  python3 -I -c "
+import json, sys
+
+meta = json.loads(sys.argv[1])
+comments = json.loads(sys.argv[2]).get('comments', [])
+if not isinstance(comments, list):
+    comments = []
+
+def body_of(c):
+    return (c.get('body') or '').lstrip()
+
+def is_stage(c):
+    b = body_of(c)
+    return b.startswith('**Agent:**') or b.startswith('**PM spec:**')
+
+def is_human(c):
+    return not is_stage(c) and '<!-- talos:' not in body_of(c)
+
+cut = -1
+for i, c in enumerate(comments):
+    if is_stage(c):
+        cut = i
+
+print(json.dumps({
+    'title': meta.get('title', ''),
+    'body': meta.get('body') or '',
+    'labels': meta.get('labels', []),
+    'comments': [c for c in comments[cut + 1:] if is_human(c)],
+    'earlier_comments': sum(1 for c in comments[:cut + 1] if is_human(c)),
+}))
 " "$1" "$2"
 }
 
@@ -4092,11 +4147,12 @@ print(json.dumps(out))
 "
       ;;
     view-issue)
-      local _vi_n="${1:-}" _vi_spec=false _vi_issue _vi_comments _vi_meta
+      local _vi_n="${1:-}" _vi_spec=false _vi_since=false _vi_issue _vi_comments _vi_meta
       shift
       while [ $# -gt 0 ]; do
         case "$1" in
           --spec) _vi_spec=true ;;
+          --since-stage) _vi_since=true ;;
         esac
         shift
       done
@@ -4104,13 +4160,15 @@ print(json.dumps(out))
       if [ "$DRY_RUN" = "true" ]; then
         if [ "$_vi_spec" = "true" ]; then
           echo "[dry-run] GET $_GH_API/issues/$_vi_n; read-comments $_vi_n (filter to latest **PM spec:** comment, dropping talos: markers and **Agent:** verdicts)"
+        elif [ "$_vi_since" = "true" ]; then
+          echo "[dry-run] GET $_GH_API/issues/$_vi_n; read-comments $_vi_n (keep only the comments after the latest **PM spec:** / **Agent:** comment)"
         else
           echo "[dry-run] GET $_GH_API/issues/$_vi_n; GET $_GH_API/issues/$_vi_n/comments (paginated)"
         fi
         return 0
       fi
       _vi_issue="$(_gh_req GET "$_GH_API/issues/$_vi_n")" || exit 1
-      if [ "$_vi_spec" = "true" ]; then
+      if [ "$_vi_spec" = "true" ] || [ "$_vi_since" = "true" ]; then
         _vi_comments="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" read-comments "$_vi_n" ${REPO:+--repo "$REPO"})" || exit 1
         _vi_meta="$(printf '%s' "$_vi_issue" | python3 -I -c "
 import json, sys
@@ -4118,7 +4176,11 @@ d = json.load(sys.stdin)
 print(json.dumps({'title': d.get('title', ''), 'body': d.get('body') or '',
                   'labels': [{'name': l['name']} for l in d.get('labels', [])]}))
 ")"
-        _vi_spec_filter "$_vi_meta" "$_vi_comments"
+        if [ "$_vi_spec" = "true" ]; then
+          _vi_spec_filter "$_vi_meta" "$_vi_comments"
+        else
+          _vi_delta_filter "$_vi_meta" "$_vi_comments"
+        fi
         return
       fi
       _vi_comments="$(_gh_comments_obj "$_vi_n")" || exit 1
@@ -4972,7 +5034,7 @@ for p in paths:
       # --spec (#201) is a GitHub-only compact form; fall back to the plain
       # full view rather than silently ignoring the flag.
       for _vi_a in "$@"; do
-        [ "$_vi_a" = "--spec" ] && echo "pipeline-vcs: view-issue --spec: not implemented for provider 'gitlab' -- falling back to full view-issue" >&2
+        case "$_vi_a" in --spec|--since-stage) echo "pipeline-vcs: view-issue $_vi_a: not implemented for provider 'gitlab' -- falling back to full view-issue" >&2 ;; esac
       done
       _run glab issue view "$1" $RARG
       ;;
@@ -5812,7 +5874,7 @@ print(" ".join(str(i) for i in sorted(ids)))
       # --spec (#201) is a GitHub-only compact form; fall back to the plain
       # full view rather than silently ignoring the flag.
       for _vi_a in "$@"; do
-        [ "$_vi_a" = "--spec" ] && echo "pipeline-vcs: view-issue --spec: not implemented for provider 'azure' -- falling back to full view-issue" >&2
+        case "$_vi_a" in --spec|--since-stage) echo "pipeline-vcs: view-issue $_vi_a: not implemented for provider 'azure' -- falling back to full view-issue" >&2 ;; esac
       done
       _run az boards work-item show --id "$1" $ORG_ARG --output json
       ;;
@@ -6636,10 +6698,12 @@ if verb == 'list-issues':
 
 elif verb == 'view-issue':
     n = args[0]
-    if '--spec' in args:
-        # --spec (#201) is a GitHub-only compact form; fall back to the
-        # plain full view rather than silently ignoring the flag.
-        print("pipeline-vcs: view-issue --spec: not implemented for provider 'file' -- falling back to full view-issue", file=sys.stderr)
+    for flag in ('--spec', '--since-stage'):
+        if flag in args:
+            # --spec (#201) and --since-stage (#548) are GitHub-only compact
+            # forms; fall back to the plain full view rather than silently
+            # ignoring the flag.
+            print("pipeline-vcs: view-issue %s: not implemented for provider 'file' -- falling back to full view-issue" % flag, file=sys.stderr)
     content = load_file()
     content, changed = ensure_ids(content)
     if changed:
