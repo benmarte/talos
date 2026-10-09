@@ -796,10 +796,18 @@ _INT_KEYS = {
     "limits.max_total_dispatches": ("dispatches", 1, 1000),
     "execution.worktree_warn_threshold": ("worktrees", 0, 10000),
     "board.project_number": ("project number", 1, 2147483647),
+    "agents.stage_timeout_s": ("seconds", 60, 86400),
 }
 
+def _int_spec(key):
+    # agents.roles.<role>.stage_timeout_s (#540) is bounded like its global key.
+    parts = key.split(".")
+    if len(parts) == 4 and parts[:2] == ["agents", "roles"] and parts[3] == "stage_timeout_s":
+        return _INT_KEYS["agents.stage_timeout_s"]
+    return _INT_KEYS.get(key)
+
 def _validate_int_key(key, value):
-    spec = _INT_KEYS.get(key)
+    spec = _int_spec(key)
     if spec is None or value is None:
         return value
     unit, lo, hi = spec
@@ -827,7 +835,7 @@ def _validate_int_key(key, value):
     return None
 
 def _int_apply(flat):
-    for _int_key in _INT_KEYS:
+    for _int_key in [k for k in flat if _int_spec(k) is not None]:
         if _int_key in flat:
             _validated = _validate_int_key(_int_key, flat[_int_key])
             if _validated is None:
