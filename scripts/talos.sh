@@ -502,7 +502,7 @@
 #
 # docs-gate  `talos.sh docs-gate <pr> --issue <N>` decides whether the docs stage needs an
 #         LLM (#546). One line: `docs=dispatch reason=docs-paths paths-file=<f>` when the PR
-#         changes README.md, docs/** (docs/CHANGELOG.d/** and status.fragments_dir fragments
+#         changes README.md, docs/** (docs/CHANGELOG.d/** fragments
 #         excluded) or scripts/pipeline-defaults.sh -- <f> is a mode-0600 file under
 #         ${TMPDIR:-/tmp} holding those paths, for `prompt docs --docs-paths-file`, removed by
 #         the caller; `docs=dispatch reason=always` (roles.docs_mode always: the full diff,
@@ -2702,7 +2702,7 @@ _talos_done() {
 # skip the docs:done stamp and `done docs` are the verb's own, so the loop and
 # the playbook end up in the same state without a docs agent.
 _talos_docs_gate() {
-  local _pr="${1:-}" _n="" _fr _p _hits="" _f _body _why
+  local _pr="${1:-}" _n="" _p _hits="" _f _body _why
   [ "$#" -eq 0 ] || shift
   while [ "$#" -gt 0 ]; do
     [ "$#" -ge 2 ] && [ "$1" = "--issue" ] || _talos_stop usage 2
@@ -2723,10 +2723,8 @@ _talos_docs_gate() {
     _talos_emit docs "dispatch reason=fetch-failed"; _talos_flush; return 0
   fi
 
-  _fr="$(cfg status.fragments_dir)"; _fr="${_fr%/}"
   while IFS= read -r _p; do
     case "$_p" in docs/CHANGELOG.d/*) continue ;; esac
-    [ -z "$_fr" ] || case "$_p" in "$_fr"/*) continue ;; esac
     case "$_p" in
       README.md | docs/* | scripts/pipeline-defaults.sh) _hits="$_hits$_p"$'\n' ;;
     esac
