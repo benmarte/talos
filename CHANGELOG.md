@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+- fix(orchestrator): `talos.sh run` now answers a QA FAIL with a developer fix
+  round instead of re-running `ready-pr` and QA on the unchanged head every
+  pass (#537). The driver runs `gate fix-round <N> qa --pr <M>` (budget guard,
+  attempt ceilings, the unblock) and dispatches the developer with `--shape
+  fix-round`, QA's report as the prior summary; after the push the normal path
+  (re-stamps, `ready-pr`, QA) resumes. A second QA FAIL at the same PR head
+  (the fix round pushed nothing) sets `pipeline:blocked` on the PR and the
+  issue and stops with `stop reason=qa-fail-unchanged-head pr=<M> issue=<N>`,
+  exit 0, instead of looping to `--max-iterations`; the last failing head per
+  PR lives in the run's own scratch dir. The LLM-orchestrator path is
+  unchanged. Also: a developer final message with a standalone `pr=<N>` word
+  (no PR URL) is `PR_OPENED` on BSD sed (macOS) too -- the GNU-only `\b` is
+  replaced by `grep -oE` with explicit boundary classes, which also prints just
+  the digits when the word sits inside a sentence and still refuses `xpr=12`,
+  `my_pr=3`, `pr=12a` and `PR=4`. Docs: LLM-driven orchestration (Claude) is
+  the default; `talos.sh run` is the deterministic orchestrator for local and
+  weak-model profiles (code routes, gates and does the bookkeeping, LLMs do the
+  stages).
 - **`agents.stage_timeout_s` bounds a stage; `agents.fallback` now fires on Claude Code's real spend-limit exit (#540).** A hung runner (a local model that stops mid-turn) used to block the orchestrator forever. `agents.stage_timeout_s` and `agents.roles.<role>.stage_timeout_s` (role-first, integer 60-86400, default unset = no timeout and no behaviour change) bound each `pipeline-agent.sh` runner attempt: on expiry the runner and its children are killed (a process group, TERM then KILL; needs `perl`, no `timeout`/`gtimeout`/`setsid`, bash 3.2, no resident watcher), the exit code is `124`, and stderr gets `pipeline-agent: reason=stage-timeout role=<r> after_s=<n>`. A timeout is classified `task` (detail `timeout`): it never fails over, and `hooks.post_stage` gets verdict `FAIL`. Separately, `_classify_exit` now recognises the line Claude Code actually printed on 2026-10-04, `You've hit your monthly spend limit · raise it at ...` (straight or curly apostrophe, any `<words> limit` wording, line-anchored), as `provider`/`quota`, so `agents.fallback` takes over instead of the stage failing as a task; the same words mid-line in model prose stay `task`.
 - fix(config): a `PIPELINE_CONFIG` pointer at a file that does not exist now
   fails closed (#541). It used to print nothing and load defaults only (rc 0),
