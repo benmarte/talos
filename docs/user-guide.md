@@ -822,7 +822,10 @@ a file Talos keeps up to date.
 - **Step 0 prints where the run stands.** `bash scripts/talos.sh state --summary`
   is read-only and prints at most three `where=` lines: what is in flight (open
   pipeline PRs with their next stage, issues mid-way), what is waiting (blocked
-  work, questions held for the owner) and the next action. Only numbers and fixed
+  work, questions held for the owner) and the next action. With several operators
+  on the repo (see [multi-user claiming](#global-project-and-environment-configuration-and-multi-user-claiming))
+  a fourth line, `where=theirs: #N (@login)`, lists the other operators' work,
+  which is never routed. Only numbers and fixed
   words are printed, never an owner's question or any other free text. The run
   then goes on: `talos.sh next` hands out the same action.
 - **A developer picks up a checkpoint.** When a provider failover or an out-of-tokens
@@ -1218,7 +1221,7 @@ and `azure`. The `file` provider has no assignee concept and is unaffected.
 | --- | --- |
 | `self` | The authenticated operator: `gh api user` (github), `GET /user` (github-api), `glab api user` (gitlab), `az account show --query user.name` (azure). |
 | any other string | That identity, assigned verbatim: a GitHub login, a GitLab username, an Azure DevOps UPN or display name. |
-| `none` | Never assign. Talos behaves as it did before this key existed. |
+| `none` | Never assign. Talos behaves as it did before this key existed. It also turns [multi-user claiming](#global-project-and-environment-configuration-and-multi-user-claiming) off, since a claim is an assignment. |
 | `assignee: ""` (quoted) | Disables assignment (same as `none`), and each `assign-issue` prints a one-line notice on stderr saying the empty value was read as `none`. A bare `assignee:` (YAML null) is dropped by the config reader and behaves as if unset, resolving to `self`. |
 
 The value is trimmed of leading and trailing whitespace before any of the above comparisons, so `" self "` is `self`, `"NONE "` is `none`, and a whitespace-only value (`"  "`) is `none` (with the same empty-value notice).
@@ -2947,6 +2950,28 @@ Create it with `mkdir -p ~/.talos && touch ~/.talos/.env && chmod 600 ~/.talos/.
 **Secret-shaped values are rejected in every config layer.** On load, a string value in the repo file or the user-level file that looks like a secret is dropped as absent, with one stderr line that names the key, says what it looks like and tells you to move the value to `~/.talos/.env` and reference it. The shapes are: Slack tokens (`xox[abposr]-`) and webhook URLs, Discord and Teams webhook URLs, GitHub tokens (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`), GitLab tokens (`glpat-`), `sk-` API keys, AWS access keys (`AKIA...`), private-key blocks and Nostr `nsec1` keys. A value that starts with `env:` is always allowed, and `TALOS_CONFIG_STRICT_KEYS` does not affect the check. An ordinary `#channel`, path or `https://hooks.example.com` never matches.
 
 `TEAMS_WEBHOOK_URL` is read from the same `.env` files and config reference as the other platforms. (It used to come from the environment and the repo `.env` only.) Teams has no bot-token path and never threads; see [Per-issue notification threading](../README.md#per-issue-notification-threading).
+
+### Global, project and environment configuration, and multi-user claiming
+
+**Which layer sets what.** Three places hold configuration, lowest to highest ([How config is layered](#how-config-is-layered)):
+
+- **Global**, `~/.talos/talos.pipeline.json` (`$TALOS_HOME`): your personal defaults for every repo, for example `agents.model`, `pr.draft`, `limits.*`, `identity.name`. It accepts every key except the repo-only ones.
+- **Project**, `talos.pipeline.json` in the repo, checked in: what describes this repository and wins over the global file key by key.
+- **Environment**: a key's own documented variable, last and one-off.
+
+**Repo-only keys** (`vcs.*`, `board.*`, `base_branch`, `verify.*`, `merge.required_checks` and the other forbidden/union/waiver lists, `issues.label_filter`, `issues.skip_labels`, `markers.*_authors`, `evidence.command`) are honoured only in the repo file; in the global file they are dropped with a note that names the key ([The user-level file](#the-user-level-file) has the full list).
+
+**Secrets never go in either file.** They are `env:NAME` references to variables in your environment or in `~/.talos/.env` ([Secrets](#secrets)).
+
+**Several operators on one repo (`issues.claim`, `identity.name`).** Each person runs their own Talos with their own VCS login; the **assignee is the shared lock**, and no label, service or file is added.
+
+- **Identity.** The login of `issues.assignee` when it names someone, else `identity.name`, else the authenticated login (`current-user`: `gh`, `glab`, `az`). It is resolved once per run. If none resolves (an Actions token, file mode) claiming is off and nothing changes.
+- **Claim.** Before the first stage on an unassigned `pipeline:ready` issue, or an unassigned legacy in-flight one, `talos.sh next` assigns it to you (`assign-issue`) and reads the assignees back. If another login appeared at the same moment, the lexicographically lowest login (case-insensitive) keeps the issue and the others unassign themselves (`unassign-issue`) and move on to the next issue. On GitHub and GitLab, which hold several assignees, both writes land and the tie is settled at the read-back. Azure DevOps holds one assignee, so the later write replaces the earlier and the earlier operator sees that at the read-back. `bash scripts/talos.sh claim <N>` runs one claim by hand and prints `claim=taken|owned|lost|unclaimed|off`.
+- **Filter.** `collect`, `state`, `next` and `run` act only on issues assigned to you or to nobody, and on pipeline PRs whose issue is yours. Other operators' issues and PRs (ready, in flight or blocked) are never routed; they appear in `talos.sh state --summary` as `theirs: #N (@login)`. Your own `issues.skip_labels` still apply. An issue you already hold is yours even if someone else is added to it later.
+- **Leases.** The local lease ledger stays: it keeps two sessions of the same user on one machine apart. The assignee keeps different users apart.
+- **Opting out.** `issues.claim: false` restores the behaviour before this key: no filter, no claim. `issues.assignee: none` (or empty) also turns claiming off, because a claim needs an assignment: with no assignment there is nothing to lock on.
+- **Cost.** One `list-assignees` read per `collect` (one paginated request on GitHub) and one `current-user` lookup per run; setting `identity.name` removes the lookup.
+- **Azure DevOps.** `az account show` prints your UPN (`name@example.com`), which is accepted; if your assignable name differs, set `identity.name`.
 
 ### Safety rules
 

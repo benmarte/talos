@@ -183,6 +183,7 @@ cfg_p; reset_repo
 me alice next
 assert_eq "0|action=dispatch stage=validator issue=2" "$RC|$OUT" "A's next dispatches A's own #2, not bob's #1 (lower number)"
 assert_eq "0" "$(count_calls assign-issue)" "A's next on its own issue needs no claim write"
+assert_eq "" "$ERR" "A's next says nothing on stderr"
 
 me bob next
 assert_eq "0|action=dispatch stage=qa pr=17 issue=7" "$RC|$OUT" "B's next dispatches B's PR 17 at qa"

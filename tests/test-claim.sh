@@ -55,6 +55,7 @@ for P in github gitlab azure; do
   claim "$A" 7
   assert_eq "0|claim=taken owner=$A" "$rc|$out" "#560 $P: A claims the unassigned issue #7"
   assert_eq "$A" "$(state 7)" "#560 $P: #7 is assigned to A"
+  assert_eq "" "$err" "#560 $P: a clean claim says nothing on stderr"
   claim "$B" 8
   assert_eq "0|claim=taken owner=$B" "$rc|$out" "#560 $P: B claims the unassigned issue #8"
   assert_eq "$B" "$(state 8)" "#560 $P: #8 is assigned to B"

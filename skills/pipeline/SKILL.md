@@ -70,7 +70,7 @@ Run once. Restamp keys read later; project config over the user-level file. List
 - `warn reason=<r>`: relay once, continue; `resolve-failed role=<role>`: do not spawn it.
 - `stop reason=<r>` (non-zero exit): abort, print it, process no issues.
 
-Then print where the run stands: `bash scripts/talos.sh state --summary` (read-only; at most three `where=` lines: in flight, waiting, next) and continue. A new session, or another LLM, resumes by starting this skill; there is nothing else to read. Skip it in File mode; on a `stop`, report it and continue.
+Then print where the run stands: `bash scripts/talos.sh state --summary` (read-only; at most three `where=` lines: in flight, waiting, next; plus `theirs:` when another operator holds work, which you never touch) and continue. A new session, or another LLM, resumes by starting this skill; there is nothing else to read. Skip it in File mode; on a `stop`, report it and continue.
 
 **File mode** (`VCS_PROVIDER = file`): no PRs, no QA/reviewer/security/docs, no board (the file IS the board).
 
