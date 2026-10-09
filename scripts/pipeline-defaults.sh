@@ -121,6 +121,8 @@ issues.label_filter	str	pipeline:ready	-	-	repo
 issues.skip_labels	list	pipeline:blocked\nwontfix	-	-	repo
 issues.max_parallel	int	1	-	-	any
 issues.assignee	str	self	-	-	any
+issues.claim	bool	true	-	-	any
+identity.name	str		-	-	any
 execution.isolation	enum	worktree	-	-	any
 execution.worktree_warn_threshold	int	10	-	-	any
 roles.validator	bool	true	-	-	any

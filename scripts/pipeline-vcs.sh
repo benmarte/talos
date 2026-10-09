@@ -31,6 +31,19 @@
 #                                             write is confirmed. Every failure is
 #                                             a stderr WARNING + exit 0. github,
 #                                             github-api, gitlab, azure (not file).
+#   issue-assignees <n>                       Print issue <n>'s assignee logins, one per
+#                                             line (nothing when unassigned; #560).
+#                                             Exit 1 on a failed read. github,
+#                                             github-api, gitlab, azure; file exits 2.
+#   unassign-issue <n> <login>                Take <login> off issue <n>, keeping any
+#                                             other assignee (azure clears its single
+#                                             field), read back; prints "unassign-issue:
+#                                             #<n> unassigned <login>" (or "not assigned
+#                                             to"). Exit 1 + WARNING when the login is
+#                                             still there (#560).
+#   list-assignees                            One JSON object {"<n>": ["login", ...]} of
+#                                             the open issues that have an assignee
+#                                             (#560). Exit 1 on a failed read.
 #   view-issue <n>                            View issue details
 #             <n> --spec                      Compact form for stage handoff (#201):
 #                                             same {title, body, labels, comments}
@@ -2035,7 +2048,10 @@ _vcs_shared_assign_issue() {
 
   local id="$want"
   if [ "$want_lc" = "self" ]; then
-    id="$(_vcs_shared_current_user fail-open "$@")"
+    # identity.name (#560) is what `self` means when it is set: the login this
+    # operator claims issues under. Otherwise the authenticated login.
+    id="$(cfg identity.name | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    [ -n "$id" ] || id="$(_vcs_shared_current_user fail-open "$@")"
     if [ -z "$id" ]; then
       echo "pipeline-vcs: assign-issue: WARNING -- could not resolve the operator identity (issues.assignee: self); #$n left unassigned" >&2
       return 0
@@ -2053,6 +2069,100 @@ _vcs_shared_assign_issue() {
     echo "pipeline-vcs: assign-issue: WARNING -- '$id' is not #$n's assignee on read-back (not assignable in this project?); left unassigned" >&2
   fi
   return 0
+}
+
+# _vcs_shared_issue_assignees <n> <get-fn>
+#   The `issue-assignees` verb (#560): the logins assigned to issue <n>, one
+#   per line (nothing when unassigned), through the same per-provider read
+#   assign-issue uses. Exit 1 on a bad number or a failed read -- a claim must
+#   never read "unassigned" off a failed call.
+_vcs_shared_issue_assignees() {
+  local n="${1:-}" get_fn="$2" _ia_out
+  case "$n" in
+    ''|*[!0-9]*) echo "pipeline-vcs: issue-assignees: issue number must be an integer, got '$n'" >&2; return 1 ;;
+  esac
+  if [ "$DRY_RUN" = "true" ]; then
+    echo "[dry-run] issue-assignees #$n: read the assignees"
+    return 0
+  fi
+  _ia_out="$("$get_fn" "$n")" || {
+    echo "pipeline-vcs: issue-assignees: could not read #$n's assignees" >&2; return 1; }
+  printf '%s\n' "$_ia_out" | sed '/^[[:space:]]*$/d'
+}
+
+# _vcs_shared_unassign_issue <n> <login> <get-fn> <remove-fn>
+#   The `unassign-issue` verb (#560): take <login> off issue <n>, leaving any
+#   other assignee. A login that is not assigned is left alone (no write). The
+#   field is read back and success is reported only when <login> is gone. Exit
+#   1, with a stderr WARNING, when the write fails or the read-back still shows
+#   the login: the caller (a claim giving the issue up) must know.
+#   stdout: "unassign-issue: #<n> unassigned <login>" or "... #<n> not assigned
+#   to <login>".
+_vcs_shared_unassign_issue() {
+  local n="${1:-}" login="${2:-}" get_fn="$3" remove_fn="$4" _ua_cur _ua_err
+  case "$n" in
+    ''|*[!0-9]*) echo "pipeline-vcs: unassign-issue: issue number must be an integer, got '$n'" >&2; return 1 ;;
+  esac
+  if [ -z "$login" ]; then
+    echo "pipeline-vcs: unassign-issue: usage: unassign-issue <n> <login>" >&2
+    return 1
+  fi
+  if [ "$DRY_RUN" = "true" ]; then
+    echo "[dry-run] unassign-issue #$n: read the assignees; if '$login' is one, remove it and read it back"
+    return 0
+  fi
+  _ua_cur="$("$get_fn" "$n" 2>/dev/null)" || {
+    echo "pipeline-vcs: unassign-issue: WARNING -- could not read #$n's assignees; nothing changed" >&2; return 1; }
+  if ! printf '%s\n' "$_ua_cur" | grep -qixF -- "$login"; then
+    echo "unassign-issue: #$n not assigned to $login"
+    return 0
+  fi
+  if ! _ua_err="$("$remove_fn" "$n" "$login" 2>&1 >/dev/null)"; then
+    echo "pipeline-vcs: unassign-issue: WARNING -- could not unassign '$login' from #$n: $(printf '%s' "$_ua_err" | tail -1)" >&2
+    return 1
+  fi
+  if "$get_fn" "$n" 2>/dev/null | grep -qixF -- "$login"; then
+    echo "pipeline-vcs: unassign-issue: WARNING -- '$login' is still #$n's assignee on read-back" >&2
+    return 1
+  fi
+  echo "unassign-issue: #$n unassigned $login"
+}
+
+# _vcs_shared_assignee_map <github|gitlab|azure>
+#   The `list-assignees` verb's reducer (#560): a provider's open-issue listing
+#   on stdin -> {"<n>": ["login", ...]} on stdout, assigned issues only. GitHub
+#   items are `number` + assignees[].login and skip pull requests; GitLab `iid`
+#   + assignees[].username; Azure `id` + fields.System.AssignedTo.uniqueName
+#   (the form `current-user` prints). Exit 1 when stdin is not a JSON array.
+_vcs_shared_assignee_map() {
+  python3 -I -c '
+import json, sys
+kind = sys.argv[1]
+try:
+    items = json.load(sys.stdin)
+except ValueError:
+    sys.exit(1)
+if not isinstance(items, list):
+    sys.exit(1)
+out = {}
+for i in items:
+    if not isinstance(i, dict):
+        continue
+    if kind == "github":
+        n, who = i.get("number"), [a.get("login") for a in i.get("assignees") or [] if isinstance(a, dict)]
+        if "pull_request" in i:
+            continue
+    elif kind == "gitlab":
+        n, who = i.get("iid"), [a.get("username") for a in i.get("assignees") or [] if isinstance(a, dict)]
+    else:
+        n = i.get("id")
+        v = (i.get("fields") or {}).get("System.AssignedTo")
+        who = [v.get("uniqueName")] if isinstance(v, dict) else [v] if isinstance(v, str) else []
+    who = [w for w in who if isinstance(w, str) and w]
+    if isinstance(n, int) and not isinstance(n, bool) and who:
+        out[str(n)] = who
+print(json.dumps(out))
+' "$1"
 }
 
 # _vcs_issue_number_from_url <create-issue output> -- the <n> of the last
@@ -3437,6 +3547,9 @@ _github() {
   _gh_assignee_add() {
     gh issue edit "$1" --add-assignee "$2" ${REPO:+--repo "$REPO"}
   }
+  _gh_assignee_remove() {
+    gh issue edit "$1" --remove-assignee "$2" ${REPO:+--repo "$REPO"}
+  }
 
   # Provider calls for the needs-owner verbs (#345). The issues REST endpoints
   # serve issues and PRs alike, so one route covers both kinds.
@@ -3477,6 +3590,24 @@ _github() {
     current-user)
       _vcs_shared_print_current_user gh api user --jq .login
       exit $?
+      ;;
+    issue-assignees)
+      _vcs_shared_issue_assignees "${1:-}" _gh_assignees_get || exit 1
+      ;;
+    unassign-issue)
+      _vcs_shared_unassign_issue "${1:-}" "${2:-}" _gh_assignees_get _gh_assignee_remove || exit 1
+      ;;
+    list-assignees)
+      # One paginated request, the list-issues endpoint (#560).
+      local _la_repo="$REPO"
+      [ -z "$_la_repo" ] && _la_repo='{owner}/{repo}'
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] gh api --paginate repos/${_la_repo}/issues?state=open&per_page=100 (assignees per issue)"
+        return 0
+      fi
+      local _la_raw
+      _la_raw="$(gh api --paginate "repos/${_la_repo}/issues?state=open&per_page=100")" || exit 1
+      printf '%s' "$_la_raw" | _gh_paginate_merge | _vcs_shared_assignee_map github || exit 1
       ;;
     upsert-pr-comment)
       if [ "$DRY_RUN" = "true" ]; then
@@ -4713,6 +4844,11 @@ for a in json.load(sys.stdin).get('assignees') or []:
     _aa_payload="$(python3 -I -c "import json, sys; print(json.dumps({'assignees': [sys.argv[1]]}))" "$2")"
     _ga_json_try POST "$_API/issues/$1/assignees" "$_aa_payload"
   }
+  _ga_assignee_remove() {
+    local _ar_payload
+    _ar_payload="$(python3 -I -c "import json, sys; print(json.dumps({'assignees': [sys.argv[1]]}))" "$2")"
+    _ga_json_try DELETE "$_API/issues/$1/assignees" "$_ar_payload" >/dev/null
+  }
 
   # Provider calls for the needs-owner verbs (#345). _ga_req_once under
   # _with_retry (not _ga_req) so a failure returns to the shared helper, which
@@ -4779,6 +4915,21 @@ sys.stdout.write(json.dumps({"body": sys.stdin.buffer.read().decode("utf-8", err
     current-user)
       _vcs_shared_print_current_user _ga_current_user_login
       exit $?
+      ;;
+    issue-assignees)
+      _vcs_shared_issue_assignees "${1:-}" _ga_assignees_get || exit 1
+      ;;
+    unassign-issue)
+      _vcs_shared_unassign_issue "${1:-}" "${2:-}" _ga_assignees_get _ga_assignee_remove || exit 1
+      ;;
+    list-assignees)
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] github-api: GET $_API/issues?state=open&per_page=100 (paginated; assignees per issue)"
+        return 0
+      fi
+      local _la_raw
+      _la_raw="$(_ga_fetch_all_pages "$_API/issues?state=open&per_page=100")" || exit 1
+      printf '%s' "$_la_raw" | _vcs_shared_assignee_map github || exit 1
       ;;
     upsert-pr-comment)
       if [ "$DRY_RUN" = "true" ]; then
@@ -5913,6 +6064,10 @@ for a in json.load(sys.stdin).get('assignees') or []:
   _gl_assignee_add() {
     glab issue update "$1" --assignee "+$2" $RARG
   }
+  # "!" removes one assignee and keeps the others (#560).
+  _gl_assignee_remove() {
+    glab issue update "$1" --assignee "!$2" $RARG
+  }
   _gl_current_user() {
     glab api user | python3 -I -c "import json, sys; print(json.load(sys.stdin).get('username', ''))"
   }
@@ -6011,6 +6166,22 @@ for p in paths:
     current-user)
       _vcs_shared_print_current_user _gl_current_user
       exit $?
+      ;;
+    issue-assignees)
+      _vcs_shared_issue_assignees "${1:-}" _gl_assignees_get || exit 1
+      ;;
+    unassign-issue)
+      _vcs_shared_unassign_issue "${1:-}" "${2:-}" _gl_assignees_get _gl_assignee_remove || exit 1
+      ;;
+    list-assignees)
+      # Capped at glab's per-page ceiling, like list-issues (#560).
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] glab issue list --state opened --per-page 100 --output json $RARG (assignees per issue)"
+        return 0
+      fi
+      local _la_raw
+      _la_raw="$(glab issue list --state opened --per-page 100 --output json $RARG)" || exit 1
+      printf '%s' "$_la_raw" | _vcs_shared_assignee_map gitlab || exit 1
       ;;
     list-issues)
       # glab's default page size is well under 100; --per-page raises it to
@@ -6625,6 +6796,26 @@ elif v:
   _az_assignee_set() {
     az boards work-item update --id "$1" --assigned-to "$2" $ORG_ARG --output none
   }
+  # The work item's assignee as its unique name only (#560): the form
+  # `current-user` prints, so a claim compares one name per person.
+  _az_assignee_login() {
+    local _al_json
+    _al_json="$(az boards work-item show --id "$1" $ORG_ARG --output json)" || return 1
+    printf '%s' "$_al_json" | python3 -I -c "
+import json, re, sys
+v = (json.load(sys.stdin).get('fields') or {}).get('System.AssignedTo')
+if isinstance(v, dict):
+    if v.get('uniqueName'):
+        print(v['uniqueName'])
+elif v:
+    m = re.search(r'<([^>]+)>', v)
+    print(m.group(1) if m else v)
+"
+  }
+  # An empty --assigned-to clears the field (#560).
+  _az_assignee_clear() {
+    az boards work-item update --id "$1" --assigned-to "" $ORG_ARG --output none
+  }
 
   # PR and work-item ids go into REST paths and az --id: digits only (#304).
   _az_require_id() {
@@ -6804,6 +6995,23 @@ print(" ".join(str(i) for i in sorted(ids)))
     current-user)
       _vcs_shared_print_current_user az account show --query user.name --output tsv
       exit $?
+      ;;
+    issue-assignees)
+      _vcs_shared_issue_assignees "${1:-}" _az_assignee_login || exit 1
+      ;;
+    unassign-issue)
+      _vcs_shared_unassign_issue "${1:-}" "${2:-}" _az_assignee_login _az_assignee_clear || exit 1
+      ;;
+    list-assignees)
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] az boards query $ORG_ARG $PROJ_ARG --wiql \"SELECT [System.Id], [System.AssignedTo] FROM WorkItems ...\" --output json"
+        return 0
+      fi
+      local _la_raw
+      _la_raw="$(az boards query $ORG_ARG $PROJ_ARG \
+        --wiql "SELECT [System.Id], [System.AssignedTo] FROM WorkItems WHERE [System.State] NOT IN ('Closed', 'Done', 'Removed') ORDER BY [System.ChangedDate] DESC" \
+        --output json)" || exit 1
+      printf '%s' "$_la_raw" | _vcs_shared_assignee_map azure || exit 1
       ;;
     list-issues)
       # ADO has no `az boards work-item list`. Discover work items with a WIQL
@@ -7457,6 +7665,11 @@ _file() {
     current-user)
       # No identity in file mode: nothing printed, exit 1 (not resolved).
       exit 1
+      ;;
+    issue-assignees|unassign-issue|list-assignees)
+      # No assignees in file mode (#560): exit 2, nothing on stdout.
+      echo "file mode: $verb not applicable in file mode" >&2
+      exit 2
       ;;
     diff-pr|pr-checks|list-prs|view-pr|find-pr|check-pr-files|pr-files|rerun-ci|check-closing-keyword|check-epic-acceptance)
       echo "file mode: $verb not applicable in file mode" >&2

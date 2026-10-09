@@ -66,7 +66,9 @@ execution.worktree_warn_threshold	10	table	pipeline-worktree.sh
 hooks.post_stage		empty	pipeline-hooks.sh
 hooks.pre_dispatch		empty	pipeline-hooks.sh
 hooks.timeout_s	30	table	pipeline-hooks.sh
+identity.name		empty	pipeline-cfg-cache.sh,pipeline-vcs.sh
 issues.assignee	self	table	pipeline-status.sh,pipeline-vcs.sh
+issues.claim	true	table	pipeline-status-file.sh,talos.sh
 issues.label_filter	pipeline:ready	table	docs
 issues.max_parallel	1	table	pipeline-isolation.sh
 issues.skip_labels	pipeline:blocked\nwontfix	table	docs

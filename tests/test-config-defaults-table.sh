@@ -59,7 +59,7 @@ print("\n".join(bad))
 print("ROWS=%d" % len(rows))
 TALOS_PYtab7Gw3Nd5Xk
 )"
-assert_eq "ROWS=116" "$(printf '%s\n' "$_out" | tail -n1)" "the table has one row per config key (116 rows)"
+assert_eq "ROWS=118" "$(printf '%s\n' "$_out" | tail -n1)" "the table has one row per config key (118 rows)"
 assert_eq "" "$(printf '%s\n' "$_out" | sed '$d')" \
   "every row has six fields, a unique key, a valid type/derived/env/scope column, and a default of the right shape"
 
@@ -73,7 +73,7 @@ verify.targeted verify.ci_wait_s verify.timeout_ms merge.auto merge.method
 merge.required_checks merge.delete_branch merge.forbidden_files
 merge.forbidden_files_replace merge.forbidden_files_allow merge.approval_waiver_paths
 merge.union_paths merge.auto_sync issues.label_filter issues.skip_labels
-issues.max_parallel issues.assignee execution.isolation execution.worktree_warn_threshold
+issues.max_parallel issues.assignee issues.claim identity.name execution.isolation execution.worktree_warn_threshold
 roles.validator roles.pm roles.pm_skip_when_spec_present roles.qa roles.reviewer
 roles.security roles.adversarial roles.docs roles.docs_mode roles.planner
 roles.changelog_fragments comments.enabled comments.header comments.templates_dir
