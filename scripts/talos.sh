@@ -4,6 +4,7 @@
 # Usage: talos.sh env
 #        talos.sh gate fix-round <N> <stage> [--pr M]
 #        talos.sh gate merge <pr> <issue>
+#        talos.sh docs-gate <pr> --issue <N>
 #        talos.sh post-merge <pr> <issue> [--ci-runs <n>] [--heal]
 #        talos.sh post-merge <pr> <issue> --handoff [--details-file <file>]
 #        talos.sh sweep [<issue-id>...]
@@ -500,6 +501,23 @@
 # holder, and an age alone never reclaims a live holder. Exit codes: 0 ok
 # (for gate: a verdict was printed), 1 a `stop`, 2 usage.
 #
+# docs-gate  `talos.sh docs-gate <pr> --issue <N>` decides whether the docs stage needs an
+#         LLM (#546). One line: `docs=dispatch reason=docs-paths paths-file=<f>` when the PR
+#         changes README.md, docs/** (docs/CHANGELOG.d/** and status.fragments_dir fragments
+#         excluded) or scripts/pipeline-defaults.sh -- <f> is a mode-0600 file under
+#         ${TMPDIR:-/tmp} holding those paths, for `prompt docs --docs-paths-file`, removed by
+#         the caller; `docs=dispatch reason=always` (roles.docs_mode always: the full diff,
+#         no file); `docs=dispatch reason=fetch-failed` (pr-files could not be read: never
+#         "nothing to check"); `docs=skip reason=role-off` (roles.docs false, nothing written);
+#         `docs=skip reason=no-docs-paths`, after the verb stamped docs:done itself
+#         (pipeline-vcs.sh post-approval <pr> docs) and ran `done docs` -- the caller
+#         dispatches nothing. The developer owns the CHANGELOG line or fragment.
+#
+# docs-gate-reasons: usage scripts-missing python-missing scratch-unavailable config-unreadable stamp-failed done-failed
+#   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable stamp-failed
+#         (exit 2 for usage; else 1)
+#   warn: done-failed (plus the warns of `done`, relayed on stderr)
+#
 # lease   `talos.sh lease prune` -- the maintenance verb for the lease ledger
 #         (#522): removes every line no reader counts as a lease (expired, a
 #         dead holder past the reclaim guard, a duplicate shadowed by a
@@ -682,6 +700,11 @@ verbs:
                                      verdict=redispatch or verdict=block
   gate merge <pr> <issue>            every Step 4 merge gate, one verdict:
                                      merge|handoff|redispatch|wait|block
+  docs-gate <pr> --issue <N>         does the docs stage need an LLM: docs=dispatch
+                                     reason=<docs-paths|always|fetch-failed>
+                                     [paths-file=<f>] | docs=skip
+                                     reason=<role-off|no-docs-paths> (on
+                                     no-docs-paths the verb stamped docs:done)
   post-merge <pr> <issue> [--ci-runs <n>] [--heal]
                                      what follows a merge, in order, once
   post-merge <pr> <issue> --handoff [--details-file F]
@@ -2721,6 +2744,62 @@ _talos_done() {
   _talos_flush
 }
 
+# docs-gate <pr> --issue <N>: does the docs stage need an LLM? Dispatch only
+# when the PR changes README.md, docs/** (CHANGELOG and status fragments
+# excluded) or scripts/pipeline-defaults.sh; roles.docs_mode always forces it
+# and a failed pr-files read dispatches too (never "nothing to check"). On a
+# skip the docs:done stamp and `done docs` are the verb's own, so the loop and
+# the playbook end up in the same state without a docs agent.
+_talos_docs_gate() {
+  local _pr="${1:-}" _n="" _fr _p _keep="" _f _body _why
+  [ "$#" -eq 0 ] || shift
+  while [ "$#" -gt 0 ]; do
+    [ "$#" -ge 2 ] && [ "$1" = "--issue" ] || _talos_stop usage 2
+    _n="$2"; shift 2
+  done
+  _talos_isnum "$_pr" && _talos_isnum "$_n" || _talos_stop usage 2
+  _talos_prepare docs-gate pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh
+  _TALOS_NOTE_KEY=docs-gate
+
+  case "$(cfg roles.docs | tr '[:upper:]' '[:lower:]')" in
+    false) _talos_emit docs "skip reason=role-off"; _talos_flush; return 0 ;;
+  esac
+  case "$(cfg roles.docs_mode | tr '[:upper:]' '[:lower:]')" in
+    always) _talos_emit docs "dispatch reason=always"; _talos_flush; return 0 ;;
+  esac
+  _talos_cap _vcs pr-files "$_pr"
+  if [ "$_RC" -ne 0 ]; then
+    _talos_emit docs "dispatch reason=fetch-failed"; _talos_flush; return 0
+  fi
+
+  _fr="$(cfg status.fragments_dir)"; _fr="${_fr%/}"
+  while IFS= read -r _p; do
+    case "$_p" in docs/CHANGELOG.d/*) continue ;; esac
+    [ -z "$_fr" ] || case "$_p" in "$_fr"/*) continue ;; esac
+    case "$_p" in
+      README.md | docs/* | scripts/pipeline-defaults.sh) _keep="$_keep$_p"$'\n' ;;
+    esac
+  done <<< "$_OUT"
+
+  if [ -n "$_keep" ]; then
+    _f="$(mktemp "${TMPDIR:-/tmp}/talos-docs-paths.XXXXXX")" && [ -n "$_f" ] && [ -f "$_f" ] || _talos_stop scratch-unavailable
+    printf '%s' "$_keep" > "$_f" || { rm -f "${_f:?}"; _talos_stop scratch-unavailable; }
+    _talos_emit docs "dispatch reason=docs-paths paths-file=$_f"
+    _talos_flush; return 0
+  fi
+
+  # Nothing docs own changed: stamp it here, then run the stage's bookkeeping.
+  _body="$_CFG_CACHE_DIR/docs-stamp"
+  _why="docs verified by code: no docs-relevant changes (docs_mode: auto) — no subagent dispatched"
+  printf '%s\n' "$_why" > "$_body" || _talos_stop scratch-unavailable
+  _talos_cap _vcs post-approval "$_pr" docs --body-file "$_body"
+  [ "$_RC" -eq 0 ] || _talos_stop stamp-failed
+  _talos_run_capture done bash "$SCRIPT_DIR/talos.sh" done docs --issue "$_n" --pr "$_pr" --summary-file "$_body"
+  [ "$_RC" -eq 0 ] || _talos_warn done-failed "issue=$_n"
+  _talos_emit docs "skip reason=no-docs-paths"
+  _talos_flush
+}
+
 _talos_gate() {
   local _sub="${1:-}"
   [ "$#" -eq 0 ] || shift
@@ -3681,6 +3760,7 @@ verb="${1:-}"
 case "$verb" in
   env) _talos_env "$@" ;;
   gate) _talos_gate "$@" ;;
+  docs-gate) _talos_docs_gate "$@" ;;
   post-merge) _talos_post_merge "$@" ;;
   sweep) _talos_sweep "$@" ;;
   summary) _talos_summary "$@" ;;
