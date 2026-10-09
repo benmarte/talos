@@ -81,7 +81,7 @@ fi
 
 exec 3<&0 || exec 3</dev/null
 python3 -I -B - "$SCRIPT_DIR" "$_common" "$_top" "$_branch" <<'PYEOF'
-import glob, importlib, json, math, os, re, select, signal, stat, sys, time
+import calendar, glob, importlib, json, os, re, select, signal, stat, sys, time
 
 scripts_dir, common, top, branch = sys.argv[1:5]
 DEBUG = os.environ.get("TALOS_STATUS_DEBUG") == "1"
@@ -204,7 +204,7 @@ if any(r.get("event") == "merged" for r in evs):
 # ── stage state ───────────────────────────────────────────────────────────
 def ts_epoch(ts):
     try:
-        return time.mktime(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S")) - time.timezone
+        return calendar.timegm(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
     except (TypeError, ValueError):
         return 0
 

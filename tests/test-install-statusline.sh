@@ -100,6 +100,7 @@ printf '%s\n' '{"statusLine": {"type": "command", "command": "~/bin/my-line.sh"}
 BEFORE="$(cat "$CC/settings.json")"
 inst --harness claude
 assert_eq "$BEFORE" "$(cat "$CC/settings.json")" "an existing statusLine leaves settings.json untouched"
+# shellcheck disable=SC2088  # a literal tilde, as the user wrote it in settings.json
 assert_contains "$OUT" "~/bin/my-line.sh" "the installer names the statusLine it found"
 assert_contains "$OUT" "talos-status.sh" "and tells how to chain the Talos line"
 assert_contains "$OUT" "--line" "with the --line command"
