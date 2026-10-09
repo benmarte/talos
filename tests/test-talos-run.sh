@@ -713,4 +713,33 @@ assert_eq "2" "$(journal | grep -c 'vcs ready-pr 12')" "backstop: ready-pr ran e
 assert_eq "2" "$(journal | grep -c '^agent qa$')" "backstop: QA ran exactly twice"
 assert_eq "1" "$(journal | grep -c '^agent developer$')" "backstop: exactly one fix round ran"
 
+# ── (j) the developer's `pr=<N>` word, on the host's own text tools (#537) ────
+# A final message with no PR URL but a standalone `pr=<N>` is PR_OPENED <N>; the
+# word must not be part of a longer one (xpr=12, my_pr=3, pr=12a, PR=4). The
+# reading used a GNU-only `\b` in sed: BSD sed (macOS) matched nothing, so
+# `pr=12` alone was misread as BLOCKED.
+dev_pr_word() {  # $1 = the final message ; $2 = the expected PR (digits) or none ; $3 = label
+  reset_stubs
+  LEASE_RESET
+  printf '{"number": 9, "title": "t", "labels": [{"name": "pipeline:dev"}], "body": "body", "state": "open"}' \
+    > "$STUB_DIR/view-issue.9"
+  cfg_json '{"vcs": {"provider": "github"}, "issues": {"max_parallel": 1}, "roles": {"developer": true}, "verify": {"timeout_ms": 600000, "ci_wait_s": 900}}'
+  printf '%b' "$1" > "$STUB_DIR/message"
+  TALOS_LEASE_TTL_S=1 TALOS_NOW=13000 rn --issue 9 --max-iterations 1
+  if [ "$2" = none ]; then
+    assert_contains "$(journal)" "hooks post_stage developer developer 9 --verdict BLOCKED" "pr word: $3 is no PR (BLOCKED)"
+  else
+    assert_contains "$(journal)" "hooks post_stage developer developer 9 --pr $2 --verdict PR_OPENED" "pr word: $3 is PR $2"
+  fi
+}
+dev_pr_word 'pr=12\n' 12 "a bare pr=12"
+dev_pr_word 'opened pr=7 today\n' 7 "pr=7 inside a sentence (only the digits, not the text before)"
+dev_pr_word 'see (pr=34).\n' 34 "pr=34 in parentheses"
+dev_pr_word 'pr=5 then pr=6\n' 5 "the first of two pr= words"
+dev_pr_word 'implemented the thing\nopened pr=8\n' 8 "a pr= word on the second line"
+dev_pr_word 'xpr=12\n' none "xpr=12"
+dev_pr_word 'pr=12a\n' none "pr=12a"
+dev_pr_word 'my_pr=3\n' none "my_pr=3"
+dev_pr_word 'PR=4\n' none "PR=4 (case-sensitive)"
+
 finish
