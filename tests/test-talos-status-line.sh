@@ -226,6 +226,7 @@ done_ev developer 5 PR_OPENED 100 500
 done_ev developer 9 PR_OPENED 200 100
 run_status --line
 assert_contains "$OUT" "talos #9 " "no matching branch: the newest event's issue"
+git -C "$SANDBOX" -c user.email=t@talos -c user.name=talos commit -q --allow-empty -m init
 BRANCH0="$(git -C "$SANDBOX" symbolic-ref --short HEAD)"
 git -C "$SANDBOX" checkout -q -b fix/issue-5-thing
 run_status --line
