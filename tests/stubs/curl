@@ -148,7 +148,7 @@ if [[ "$url" == *"/user" && "$url" != *"/users/"* ]]; then
 elif [ -n "${STUB_COMMENT_STORE:-}" ] && [ -e "$STUB_COMMENT_STORE" ] && { [[ "$url" =~ /issues/([0-9]+)/comments(\?.*)?$ ]] || [[ "$url" =~ /issues/comments/([0-9]+)$ ]]; }; then
   _cs_n="${BASH_REMATCH[1]}"
   if [ "$method" != "POST" ] && [ "$method" != "PATCH" ]; then
-    if [ "${STUB_COMMENT_READ_FAIL:-}" = "1" ]; then
+    if [ "${STUB_COMMENT_READ_FAIL:-}" = "1" ] || [ "${STUB_GH_API_FAIL:-}" = "comments" ]; then
       http_status=500
       resp='{"message":"Server Error"}'
     elif [ -s "$STUB_COMMENT_STORE" ]; then
