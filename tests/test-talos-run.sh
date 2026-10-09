@@ -522,7 +522,8 @@ draft_collect ready
 draft_ready
 printf 'PASS: verified\n' > "$STUB_DIR/message.qa"
 TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 1
-assert_contains "$(journal)" "vcs pr-checks-required 12" "AC7: a non-positive B omits the --wait flag entirely"
+assert_contains "$(journal)" "vcs pr-checks-required 12" "AC7: the CI-wait call happens even when B is not a positive integer"
+assert_not_contains "$(journal)" "pr-checks-required 12 --wait" "AC7: a non-positive B omits the --wait flag entirely"
 
 # AC9: qa off -- no dispatch, return to the loop.
 reset_stubs
@@ -594,8 +595,8 @@ assert_eq "1" "$(printf '%s' "$_loop_src" | grep -c 'gate merge ')" "the loop ha
 # continuation does not exist, so the pin fails for the right reason; the
 # behavioral half (the approval-stage pass dispatches and calls it zero times)
 # is the pin above, whose id label lands with the implementation commit.
-assert_contains "$_comp_src" "_vcs ready-pr" "AC3: ready-pr is reachable only from the resolver's ready stage (the run loop's single ready-pr call site is the continuation's)"
-assert_eq "0" "$(printf '%s' "$_loop_src" | grep -c '_vcs ready-pr')" "the run loop's body outside the continuation calls ready-pr zero times"
+assert_contains "$_comp_src" "_talos_cap _vcs ready-pr" "AC3: ready-pr is reachable only from the resolver's ready stage (the run loop's single ready-pr call site is the continuation's, through AC4's _talos_cap call form)"
+assert_eq "0" "$(printf '%s' "$_loop_src" | grep -c '_talos_cap _vcs ready-pr')" "the run loop's body outside the continuation calls ready-pr zero times (through AC4's _talos_cap call form)"
 
 # AC12: a second pass is never stopped by the run's own leftover lease.
 reset_stubs
@@ -644,8 +645,8 @@ grep -qF 'action=wait reason=draft pr=<M> issue=<N>' "$GS/talos.sh"
 assert_eq "0" "$?" "AC13: the next schema describes the key-carrying draft wait"
 grep -q '_talos_run_draft_complete' "$GS/talos.sh"
 assert_eq "0" "$?" "AC13: the run block describes the draft continuation"
-grep -q 'draft window' "$TALOS_ROOT/CHANGELOG.md"
-assert_eq "0" "$?" "AC13: CHANGELOG has the draft-window entry under [Unreleased]"
+grep -q 'finishes the draft window by itself' "$TALOS_ROOT/CHANGELOG.md"
+assert_eq "0" "$?" "AC13: CHANGELOG has the draft-window entry under [Unreleased] (anchored to the #516 entry's own text, not a generic draft-window match which would satisfy the pre-existing #332 entry too)"
 assert_not_contains "$(cat "$TALOS_ROOT/skills/pipeline/SKILL.md")" "ready-pr-failed" "AC13-adjacent: SKILL.md is not edited"
 assert_not_contains "$(cat "$TALOS_ROOT/skills/pipeline/SKILL.md")" "qa-ci-red" "AC13-adjacent: SKILL.md is not edited"
 
