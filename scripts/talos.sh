@@ -3215,7 +3215,10 @@ _run_verdict() {
       # BLOCKED. A verdict word BLOCKED: names it too.
       _line="$(_run_verdict_url "$_f")"
       _v="$(printf '%s\n' "$_line" | sed -n 's|.*/pull/\([0-9][0-9]*\).*|\1|p')"
-      [ -n "$_v" ] || _v="$(sed -n 's/\bpr=\([0-9][0-9]*\)\b.*/\1/p' "$_f" | head -n 1)"
+      # The word is `pr=<digits>` standing alone (no letter, digit or
+      # underscore on either side; case-sensitive): the first such word's
+      # digits. grep -o, not sed `\b` -- BSD sed has no word boundary (#537).
+      [ -n "$_v" ] || _v="$(grep -oE '(^|[^A-Za-z0-9_])pr=[0-9]+([^A-Za-z0-9_]|$)' "$_f" | head -n 1 | grep -oE '[0-9]+')"
       if [ -n "$_v" ]; then printf 'PR_OPENED %s' "$_v"; else printf BLOCKED; fi
       return 0 ;;
   esac
