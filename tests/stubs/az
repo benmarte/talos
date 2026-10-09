@@ -9,6 +9,22 @@ if [ -n "${GH_LOG:-}" ]; then
 fi
 
 args="$*"
+# Assignee state (#560). _as_path <work-item-id>: the file holding that work
+# item's assignee (STUB_ASSIGNEE_DIR/<id> when set, else the one
+# STUB_ASSIGNEE_FILE). ADO has a single System.AssignedTo.
+_as_path() {
+  if [ -n "${STUB_ASSIGNEE_DIR:-}" ]; then printf '%s/%s' "$STUB_ASSIGNEE_DIR" "$1"
+  else printf '%s' "${STUB_ASSIGNEE_FILE:-}"; fi
+}
+# _as_id <args...>: the value after --id.
+_as_id() {
+  local _p="" _a
+  for _a in "$@"; do
+    [ "$_p" = "--id" ] && { printf '%s' "$_a"; return 0; }
+    _p="$_a"
+  done
+}
+
 
 # When AZ_STUB_NO_EXT=1, extension list returns nothing (simulate missing extension)
 if [ "${AZ_STUB_NO_EXT:-0}" = "1" ]; then
@@ -106,7 +122,8 @@ case "$args" in
     # unassigned, i.e. the field is missing, as ADO returns it), so
     # assign-issue's write is visible to its read-back.
     _as_cur=""
-    [ -n "${STUB_ASSIGNEE_FILE:-}" ] && [ -s "$STUB_ASSIGNEE_FILE" ] && _as_cur="$(cat "$STUB_ASSIGNEE_FILE")"
+    _as_f="$(_as_path "$(_as_id "$@")")"
+    [ -n "$_as_f" ] && [ -s "$_as_f" ] && _as_cur="$(cat "$_as_f")"
     CUR="$_as_cur" python3 -I -c "
 import json, os
 cur = os.environ['CUR']
@@ -141,8 +158,14 @@ print(json.dumps({'id': 5, 'fields': fields}))
       [ "$_as_prev" = "--assigned-to" ] && _as_login="$_as_a"
       _as_prev="$_as_a"
     done
-    [ "${STUB_ASSIGN_DROP:-}" != "1" ] && [ -n "${STUB_ASSIGNEE_FILE:-}" ] \
-      && printf '%s\n' "$_as_login" > "$STUB_ASSIGNEE_FILE"
+    # An empty --assigned-to clears the field (unassign-issue, #560).
+    # STUB_ASSIGNEE_RACER=<login> (#560): another operator's write lands right
+    # after this one and, ADO having one assignee, replaces it.
+    _as_f="$(_as_path "$(_as_id "$@")")"
+    if [ "${STUB_ASSIGN_DROP:-}" != "1" ] && [ -n "$_as_f" ]; then
+      printf '%s\n' "$_as_login" | sed '/^$/d' > "$_as_f"
+      [ -n "${STUB_ASSIGNEE_RACER:-}" ] && [ -n "$_as_login" ] && printf '%s\n' "$STUB_ASSIGNEE_RACER" > "$_as_f"
+    fi
     exit 0 ;;
   "boards work-item update "*)
     printf '{"id":1}\n' ;;

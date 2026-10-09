@@ -36,6 +36,19 @@
 #   owners    list-needs-owner --json items {n, status, question}, or null when the
 #             provider has no such verb; status is answered|unanswered|unverified
 #   capped    the list verbs whose result was capped
+#   me, theirs, unclaimed   (#560) only while multi-user claiming is on
+#             (issues.claim, an issues.assignee other than none, and a
+#             resolvable identity; see talos_claim_resolve): `me` is the
+#             operator's login, `theirs` the other operators' items, each
+#             {kind: "issue"|"PR", n, issue, owner} -- an open issue assigned
+#             to someone else, or a pipeline PR whose issue is -- and
+#             `unclaimed` the issues of the queue, the in-flight list and the
+#             open PRs with no assignee, which `talos.sh next` claims before it
+#             dispatches. Everything above is then the operator's own: the
+#             theirs items are left out of prs, blocked, queued, held,
+#             inflight and owners, and their PRs cost no per-PR read. One bulk
+#             `list-assignees` read; exit 2 (file mode) keeps the unfiltered
+#             state, any other failure fails the run.
 #
 # Fail closed: list-prs, list-issues, pr-head, check-approval-sha or
 # list-needs-owner exiting non-zero (list-needs-owner exit 2, an unsupported
@@ -229,6 +242,38 @@ def collect():
         capped.append('list-issues')
     issues = dict((_num(i), _label_set(i)) for i in raw_issues if _num(i))
 
+    # Multi-user claiming (#560): with --me (the operator's login), act only on
+    # what is assigned to the operator or to nobody. The assignees come from one
+    # bulk read; exit 2 is a provider with no assignees (file mode), which keeps
+    # today's unfiltered state, and any other failure fails the run: a guess
+    # here would route another operator's work. An issue is another operator's
+    # ("theirs") when it has assignees and the operator is not one of them.
+    me = opts.get('me', '')
+    amap, theirs, theirs_issues = {}, [], {}
+    if me:
+        rc, out, err = vcs('list-assignees')
+        if rc == 2:
+            me = ''
+        elif rc != 0:
+            die('list-assignees failed (rc=%d)' % rc)
+        else:
+            try:
+                raw_amap = json.loads(out)
+            except ValueError:
+                die('list-assignees did not return JSON')
+            if not isinstance(raw_amap, dict):
+                die('list-assignees did not return a JSON object')
+            for k, v in raw_amap.items():
+                if re.fullmatch(r'[0-9]{1,9}', k) and isinstance(v, list):
+                    amap[int(k)] = [w for w in v if isinstance(w, str) and w]
+    if me:
+        for n in sorted(issues):
+            who = amap.get(n) or []
+            if who and me.lower() not in [w.lower() for w in who]:
+                theirs_issues[n] = min(who, key=lambda w: w.lower())
+                theirs.append({'kind': 'issue', 'n': n, 'issue': n, 'owner': theirs_issues[n]})
+        issues = dict((n, l) for n, l in issues.items() if n not in theirs_issues)
+
     # list-needs-owner: exit 2 is an unsupported provider (no Owner lines); any
     # other failure is a failed read and fails the run like list-prs does.
     owners = None
@@ -255,16 +300,28 @@ def collect():
     eligible, ignored, blocked = [], 0, []
     for it in sorted((i for i in raw_prs if _num(i)), key=lambda i: i['number']):
         n, labels = it['number'], _label_set(it)
-        if BLOCKED_LABEL in labels:
-            blocked.append(('PR', n))
         branch = it.get('headRefName')
         m = BRANCH_RE.match(branch) if isinstance(branch, str) else None
+        pipeline_pr = bool(m) and it.get('baseRefName') == base \
+            and bool(labels & talos_labels or it.get('isCrossRepository') is False)
+        # A pipeline PR whose issue is another operator's is theirs: not routed,
+        # not blocked-listed, not looked up (#560).
+        if pipeline_pr and int(m.group(1)) in theirs_issues:
+            theirs.append({'kind': 'PR', 'n': n, 'issue': int(m.group(1)),
+                           'owner': theirs_issues[int(m.group(1))]})
+            continue
+        if BLOCKED_LABEL in labels:
+            blocked.append(('PR', n))
         if not m or it.get('baseRefName') != base:
             continue
         if not (labels & talos_labels or it.get('isCrossRepository') is False):
             ignored += 1
             continue
         eligible.append((n, labels, int(m.group(1))))
+    if me:
+        gone = set(theirs_issues) | set(t['n'] for t in theirs if t['kind'] == 'PR')
+        if owners is not None:
+            owners = [o for o in owners if o['n'] not in gone]
     blocked += [('issue', n) for n in issues if BLOCKED_LABEL in issues[n]]
     blocked.sort(key=lambda b: (b[1], b[0]))
     queued = sorted((n for n in issues if READY_LABEL in issues[n]),
@@ -315,10 +372,19 @@ def collect():
         prs.append({'n': n, 'issue': issue, 'head': head,
                     'owner': NEEDS_OWNER_LABEL in labels or NEEDS_OWNER_LABEL in issue_labels,
                     'stage': next_stage(n, labels, issue_labels, enabled)})
-    sys.stdout.write(json.dumps({'prs': prs, 'pr_total': len(eligible), 'ignored': ignored,
-                                        'blocked': blocked, 'queued': queued, 'held': held,
-                                        'inflight': inflight,
-                                        'owners': owners, 'capped': capped}))
+    state = {'prs': prs, 'pr_total': len(eligible), 'ignored': ignored,
+             'blocked': blocked, 'queued': queued, 'held': held,
+             'inflight': inflight, 'owners': owners, 'capped': capped}
+    if me:
+        # The items `talos.sh next` must claim before it dispatches: open
+        # issues of the operator's queue, in flight or behind a PR that no one
+        # has been assigned to (#560). Added only while claiming is on, so the
+        # unfiltered state is byte-for-byte today's.
+        pending = set(queued) | set(inflight) | set(e[2] for e in eligible)
+        state['me'] = me
+        state['theirs'] = sorted(theirs, key=lambda t: (t['n'], t['kind']))
+        state['unclaimed'] = sorted(n for n in pending if n in issues and not amap.get(n))
+    sys.stdout.write(json.dumps(state))
 
 collect()
 PYEOF
@@ -369,7 +435,14 @@ trap 'exit 130' INT
 trap 'exit 131' QUIT
 trap 'exit 143' TERM
 
+# The operator (#560): with claiming on, collect keeps to the operator's issues.
+# Empty when issues.claim is false, issues.assignee is none or no identity
+# resolves, and collect then reads no assignee at all.
+me=""
+talos_claim_resolve
+case "${TALOS_CLAIM_STATE:-}" in on:?*) me="${TALOS_CLAIM_STATE#on:}" ;; esac
+
 python3 -I -c "$SF_PYS" \
-  --vcs "$SCRIPT_DIR/pipeline-vcs.sh" --roles "$roles" \
+  --vcs "$SCRIPT_DIR/pipeline-vcs.sh" --roles "$roles" --me "$me" \
   --merge-auto "$auto" --required-checks "$checks" --pr-draft "$draft" \
   --talos-labels "$talos_labels" --base-branch "$BASE_BRANCH" </dev/null

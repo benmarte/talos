@@ -739,6 +739,14 @@ verbs:
                                      max-total-dispatches|budget-exceeded,
                                      a missing provider verb stop
                                      reason=unsupported-verb:<verb>
+  claim <N>                          multi-user claiming (#560): assign issue N to
+                                     this operator unless another holds it, read
+                                     the assignees back, and give it up if a lower
+                                     login also claimed it: claim=taken|owned
+                                     owner=<me> | claim=lost owner=<login> |
+                                     claim=unclaimed reason=not-assignable |
+                                     claim=off reason=<disabled|assignee-none|
+                                     identity-unresolved>
   run [--issue <N>] [--max-iterations <n>]
                                      the deterministic orchestrator (local and
                                      weak-model profiles): loops `next`, dispatches
@@ -2840,6 +2848,15 @@ elif held or owners:
 else:
     nxt = "nothing queued"
 print("next: " + nxt)
+# Items of other operators (#560), only while claiming is on and there are any:
+# one entry per issue with the login of its owner (a PR counts as its issue).
+mine = {}
+for t in d.get("theirs") or []:
+    if isinstance(t, dict) and num(t.get("issue")):
+        o = t.get("owner")
+        mine.setdefault(num(t.get("issue")), o if isinstance(o, str) and re.fullmatch(r"[A-Za-z0-9._@+\[\]-]{1,64}", o) else "?")
+if mine:
+    print("theirs: " + ", ".join(some(sorted(mine.items()), "#%d (@%s)", 5)))
 '
 
 # _TALOS_NEXT_PY: one action from the collected state (argv: the JSON, read
@@ -2944,6 +2961,7 @@ qset = set(queued)
 held = set(data.get("held") or [])
 owners = data.get("owners") or []
 blocked = set(n for _, n in (data.get("blocked") or []))
+theirs = set(t["issue"] for t in (data.get("theirs") or []) if isinstance(t, dict) and isinstance(t.get("issue"), int))
 by_owner = dict((x["n"], x) for x in owners if isinstance(x, dict))
 roles = set(x for x in o.get("roles", "").split(",") if x)
 skip_labels = set(x for x in o.get("skip-labels", "").split(",") if x)
@@ -3100,6 +3118,9 @@ if target:
         n = int(target)
     except ValueError:
         die("usage")
+    # An issue of another operator (#560): never routed, whatever its labels say.
+    if n in theirs:
+        say("wait", reason="theirs")
     if n in held or n in by_owner:
         ask_owner(n)
     if n in queued and any(p.get("issue") == n for p in prs):
@@ -3145,6 +3166,99 @@ if dep_blocked:
 say("wait", reason="none")
 '
 
+# ── claim (#560): the VCS assignee is the lock between operators ─────────────
+# _TALOS_CLAIM_PY: argv = my login; stdin = the issue's assignee logins, one per
+# line (provider text, so data on stdin, never argv). Prints one tab-separated
+# line: `none` (unassigned), `owned<TAB>lowest` (we are assigned and have the
+# lowest login), `tie<TAB>lowest<TAB>mine` (we are assigned but another login
+# is lower: the loser of a simultaneous claim) or `lost<TAB>lowest` (assigned,
+# not to us). Logins compare case-insensitively; the lowest keeps the issue.
+_TALOS_CLAIM_PY='
+import sys
+me = sys.argv[1].lower()
+who = []
+for line in sys.stdin.read().splitlines():
+    line = line.strip()
+    if line and line.lower() not in [w.lower() for w in who]:
+        who.append(line)
+if not who:
+    print("none")
+else:
+    low = min(who, key=lambda w: w.lower())
+    mine = next((w for w in who if w.lower() == me), None)
+    if mine is None:
+        print("lost\t" + low)
+    elif mine.lower() == low.lower():
+        print("owned\t" + low)
+    else:
+        print("tie\t" + low + "\t" + mine)
+'
+
+# _talos_claim_one <issue>: claim the issue for this operator. Sets
+# _CLAIM_RESULT (off|owned|taken|lost|unclaimed|unreadable|release-failed),
+# _CLAIM_OWNER (the login holding it, or the reason for `off`). Writes only
+# through the vcs verbs assign-issue (an unassigned issue) and unassign-issue
+# (we lost a tie), and reads the assignees back after the write, so two
+# operators claiming at once end with exactly one owner: the lowest login keeps
+# the issue, a higher one gives it up. Needs _talos_prepare to have run.
+_talos_claim_one() {
+  local _n="$1" _me _c _verdict _owner _mine
+  _CLAIM_RESULT="" _CLAIM_OWNER=""
+  talos_claim_resolve
+  case "$TALOS_CLAIM_STATE" in
+    off:*) _CLAIM_RESULT=off; _CLAIM_OWNER="${TALOS_CLAIM_STATE#off:}"; return 0 ;;
+  esac
+  _me="${TALOS_CLAIM_STATE#on:}"
+  _talos_cap _vcs issue-assignees "$_n"
+  [ "$_RC" -eq 0 ] || { _CLAIM_RESULT=unreadable; return 0; }
+  _verdict="$(printf '%s\n' "$_OUT" | python3 -I -c "$_TALOS_CLAIM_PY" "$_me")" || { _CLAIM_RESULT=unreadable; return 0; }
+  _c="taken"
+  if [ "$_verdict" = "none" ]; then
+    # Unassigned: assign ourselves (assign-issue reads back; it warns, never
+    # fails), then read the field again for whoever else arrived.
+    _talos_cap _vcs assign-issue "$_n"
+    _talos_cap _vcs issue-assignees "$_n"
+    [ "$_RC" -eq 0 ] || { _CLAIM_RESULT=unreadable; return 0; }
+    _verdict="$(printf '%s\n' "$_OUT" | python3 -I -c "$_TALOS_CLAIM_PY" "$_me")" || { _CLAIM_RESULT=unreadable; return 0; }
+    if [ "$_verdict" = "none" ]; then _CLAIM_RESULT=unclaimed; return 0; fi
+  else
+    _c="owned"
+  fi
+  IFS=$'\t' read -r _verdict _owner _mine <<< "$_verdict"
+  _CLAIM_OWNER="$_owner"
+  case "$_verdict" in
+    owned) _CLAIM_RESULT="$_c" ;;
+    lost) _CLAIM_RESULT=lost ;;
+    tie)
+      # Another login is lower and keeps the issue: give ours up.
+      _talos_cap _vcs unassign-issue "$_n" "$_mine"
+      if [ "$_RC" -ne 0 ]; then _CLAIM_RESULT=release-failed; return 0; fi
+      _CLAIM_RESULT=lost ;;
+    *) _CLAIM_RESULT=unreadable ;;
+  esac
+  return 0
+}
+
+# claim <issue>: the verb. One line: claim=taken|owned owner=<me>,
+# claim=lost owner=<login>, claim=unclaimed reason=not-assignable, or
+# claim=off reason=<disabled|assignee-none|identity-unresolved>; stop
+# reason=claim-unreadable|claim-release-failed (exit 1) when the assignees
+# cannot be read or a lost tie cannot be released.
+_talos_claim() {
+  [ "$#" -eq 1 ] && _talos_isnum "$1" || _talos_stop usage 2
+  _talos_prepare claim pipeline-config.sh pipeline-cfg-cache.sh pipeline-vcs.sh
+  _talos_claim_one "$1"
+  case "$_CLAIM_RESULT" in
+    off) _talos_emit claim "off reason=$_CLAIM_OWNER" ;;
+    taken | owned | lost) _talos_emit claim "$_CLAIM_RESULT owner=$_CLAIM_OWNER" ;;
+    unclaimed) _talos_emit claim "unclaimed reason=not-assignable" ;;
+    unreadable) _talos_stop claim-unreadable ;;
+    release-failed) _talos_stop claim-release-failed ;;
+    *) _talos_stop state-unavailable ;;
+  esac
+  _talos_flush
+}
+
 # next: one action from the state -- the PR-side half (#470), then the
 # issue-side half (#471) when no PR answered. The lease (#470, AC4) is
 # acquired for a dispatch/merge answer before it is printed, so two runs
@@ -3155,7 +3269,7 @@ say("wait", reason="none")
 # it (#522) and the wait it still causes reports the seconds until
 # reclaimable, never the TTL.
 _talos_next() {
-  local _issue="" _a _r _inflight _roles="" _retry _skip
+  local _issue="" _target _a _r _inflight _roles="" _retry _skip _tries
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --issue) _issue="${2:-}"; shift 2 ;;
@@ -3163,6 +3277,7 @@ _talos_next() {
     esac
   done
   [ -z "$_issue" ] || _talos_isnum "$_issue" || _talos_stop usage 2
+  _target="$_issue"
   _talos_prepare next pipeline-config.sh pipeline-cfg-cache.sh pipeline-status-file.sh \
                      pipeline-contract.sh pipeline-next-stage.py pipeline-draft-check.sh \
                      pipeline-vcs.sh pipeline-budget.sh pipeline-lock.sh
@@ -3226,6 +3341,34 @@ _talos_next() {
   # (the `talos.sh run: dispatch-failed` convention, #522, AC6); stdout
   # carries only the action line.
   _issue="$(printf '%s\n' "$_a" | sed -n 's/.* issue=//p')"
+
+  # The claim (#560): the first dispatch on an issue nobody is assigned to
+  # (collect's `unclaimed`: a ready issue or a legacy in-flight one) assigns it
+  # to this operator before anything is answered, so two operators never both
+  # start it. A claim lost to a lower login re-routes from a fresh read -- the
+  # issue is the other operator's now and the walk moves to the next one (the
+  # re-route is a child `next`, bounded at five losses in a row); a target
+  # named with --issue answers `wait reason=theirs` the same way.
+  if python3 -I -c 'import json, sys; sys.exit(0 if int(sys.argv[2]) in (json.load(open(sys.argv[1])).get("unclaimed") or []) else 1)' \
+       "$_CFG_CACHE_DIR/state.json" "$_issue" 2>/dev/null; then
+    _talos_claim_one "$_issue"
+    case "$_CLAIM_RESULT" in
+      lost)
+        _tries="${TALOS_NEXT_CLAIM_TRIES:-0}"
+        _talos_isnum "$_tries" || _tries=0
+        if [ "$_tries" -ge 5 ]; then
+          _talos_emit_next_wait "action=wait reason=none"
+          _talos_flush; exit 0
+        fi
+        _a="$(TALOS_NEXT_CLAIM_TRIES=$((_tries + 1)) bash "$SCRIPT_DIR/talos.sh" next ${_target:+--issue "$_target"})"
+        _r=$?
+        printf '%s\n' "$_a"
+        exit "$_r" ;;
+      unreadable) _talos_stop claim-unreadable ;;
+      release-failed) _talos_stop claim-release-failed ;;
+    esac
+  fi
+
   _talos_lease acquire "$_issue" > "$_CFG_CACHE_DIR/lease.line"
   case "$?" in
     0)
@@ -3386,6 +3529,9 @@ _talos_run_loop() {
   # Idempotent and never fails outside a repository.
   _talos_ignore_in_tree
   TALOS_RUN_PID="$$"; export TALOS_RUN_PID
+  # The claim identity (#560), resolved once for the whole run: every `next`,
+  # collect and claim below inherits it through TALOS_CLAIM_STATE.
+  talos_claim_resolve
   # The run releases its own leases on exit (every path): one exit hook.
   _talos_on_exit "_talos_lease_release_run_all"
   local _dispatched=0
@@ -3786,6 +3932,7 @@ case "$verb" in
   done) _talos_done "$@" ;;
   state) _talos_state "$@" ;;
   next) _talos_next "$@" ;;
+  claim) _talos_claim "$@" ;;
   run) _talos_run_loop "$@" ;;
   lease) _talos_lease_verb "$@" ;;
   help | -h | --help) _talos_help ;;

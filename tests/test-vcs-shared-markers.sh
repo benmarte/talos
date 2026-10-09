@@ -267,10 +267,10 @@ assert_eq "False" "$(tp "is_talos_comment('Use option B')")" "trust_py: a plain 
 # ═══════════════════════════════════════════════════════════════════════════
 # Login resolution (#453): _vcs_shared_valid_login, _vcs_shared_current_user
 # ═══════════════════════════════════════════════════════════════════════════
-for _l in octocat a-b octocat_acme 'dependabot[bot]' a-b_Acme1; do
+for _l in octocat a-b octocat_acme 'dependabot[bot]' a-b_Acme1 alice@example.com first.last+tag@sub.example.co.uk; do
   _vcs_shared_valid_login "$_l"; assert_eq "0" "$?" "valid_login: '$_l' is a login"
 done
-for _l in '' 'bad login' -a a- a--b _a a_ a__b a_b_c 'a[bot]x' '{"message":"Not Found"}' "$(printf 'a%.0s' $(seq 1 40))"; do
+for _l in '' 'bad login' -a a- a--b _a a_ a__b a_b_c 'a[bot]x' '{"message":"Not Found"}' a@b a@@b.co 'a b@example.com' 'a@exa mple.com' '@example.com'"$(printf 'a%.0s' $(seq 1 40))"; do
   _vcs_shared_valid_login "$_l"; assert_eq "1" "$?" "valid_login: '${_l:0:20}' is not"
 done
 _cu_ok() { printf 'octocat_acme\n'; }

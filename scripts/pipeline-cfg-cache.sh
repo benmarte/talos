@@ -132,3 +132,44 @@ cfg() {
   if [ "$#" -lt 2 ]; then _talos_default "$_key"; return $?; fi
   printf '%s' "$_default"
 }
+
+# talos_claim_resolve -- multi-user claiming (#560): resolve, once per run,
+# whether this operator claims issues and under which login. Sets and exports
+# TALOS_CLAIM_STATE to `on:<login>` or `off:<reason>`; every child process of
+# the run (talos.sh next from run, collect from next, ...) inherits it and
+# resolves nothing. Call it plainly, not inside $(...): a subshell cannot set
+# the variable for the caller.
+#
+#   off:disabled          issues.claim is false
+#   off:assignee-none     issues.assignee is none or empty: a claim needs an
+#                         assignment, so no assignment means no claiming
+#   off:identity-unresolved   no login could be resolved (an Actions token, file
+#                         mode): claiming is off and the old behaviour stands
+#   on:<login>            issues.assignee when it names someone, else
+#                         identity.name, else the `current-user` verb's login
+#                         (pipeline-vcs.sh caches that lookup in its own
+#                         per-process cfg-cache dir)
+_talos_trim() { printf '%s' "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'; }
+talos_claim_resolve() {
+  case "${TALOS_CLAIM_STATE:-}" in on:?*|off:?*) return 0 ;; esac
+  local _tc_state _tc_assignee _tc_lc _tc_me=""
+  if [ "$(cfg issues.claim | tr '[:upper:]' '[:lower:]')" = "false" ]; then
+    _tc_state="off:disabled"
+  else
+    _tc_assignee="$(_talos_trim "$(cfg issues.assignee)")"
+    _tc_lc="$(printf '%s' "$_tc_assignee" | tr '[:upper:]' '[:lower:]')"
+    if [ -z "$_tc_assignee" ] || [ "$_tc_lc" = "none" ]; then
+      _tc_state="off:assignee-none"
+    else
+      if [ "$_tc_lc" = "self" ]; then
+        _tc_me="$(_talos_trim "$(cfg identity.name)")"
+        [ -n "$_tc_me" ] || _tc_me="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" current-user 2>/dev/null | head -n 1)"
+      else
+        _tc_me="$_tc_assignee"
+      fi
+      if [ -n "$_tc_me" ]; then _tc_state="on:$_tc_me"; else _tc_state="off:identity-unresolved"; fi
+    fi
+  fi
+  TALOS_CLAIM_STATE="$_tc_state"
+  export TALOS_CLAIM_STATE
+}
