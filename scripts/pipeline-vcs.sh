@@ -2118,7 +2118,7 @@ _vcs_shared_unassign_issue() {
   fi
   _ua_cur="$("$get_fn" "$n" 2>/dev/null)" || {
     echo "pipeline-vcs: unassign-issue: WARNING -- could not read #$n's assignees; nothing changed" >&2; return 1; }
-  if ! printf '%s\n' "$_ua_cur" | grep -qixF -- "$login"; then
+  if ! grep -qixF -- "$login" <<<"$_ua_cur"; then
     echo "unassign-issue: #$n not assigned to $login"
     return 0
   fi
