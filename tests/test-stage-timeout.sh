@@ -56,6 +56,7 @@ run_stage() {
 SENT=$((100000 + RANDOM))
 HANG_CMD="sleep $SENT & sh -c 'sleep $SENT' & sleep $SENT"
 leaked() { pgrep -f "sleep $SENT" 2>/dev/null || true; }
+# shellcheck disable=SC2086  # several pids, word splitting intended
 cleanup_leak() { local p; p="$(leaked)"; [ -z "$p" ] || kill -KILL $p 2>/dev/null; }
 trap 'cleanup_leak; rm -rf "$SANDBOX"' EXIT
 
@@ -85,7 +86,7 @@ set_cfg "{\"agents\": {\"runner\": \"custom\", \"runner_cmd\": \"$HANG_CMD\", \"
 rm -f "$CAPTURE"
 TALOS_STAGE_TIMEOUT_DIVISOR=30 run_stage developer
 assert_eq "124" "$RC" "global key: a hung runner exits 124"
-[ "$SECS" -le 6 ] && pass "global key: returned within ~6 s (took ${SECS}s)" || fail "global key: returned within ~6 s" "took ${SECS}s"
+if [ "$SECS" -le 6 ]; then pass "global key: returned within ~6 s (took ${SECS}s)"; else fail "global key: returned within ~6 s" "took ${SECS}s"; fi
 assert_contains "$(cat "$ERR")" "pipeline-agent: reason=stage-timeout role=developer after_s=2" "global key: the reason line names the role and the bound"
 assert_eq "1" "$(grep -c '^pipeline-agent: reason=stage-timeout ' "$ERR")" "global key: exactly one reason line"
 sleep 1
@@ -106,6 +107,15 @@ set_cfg "{\"agents\": {\"runner\": \"custom\", \"runner_cmd\": \"sleep 4; echo d
 TALOS_STAGE_TIMEOUT_DIVISOR=30 run_stage developer
 assert_eq "0" "$RC" "role key: a long role bound wins over a short global one (the 4 s runner is not killed)"
 assert_contains "$OUT" "done-ok" "role key: the runner's output reaches the caller"
+
+# A runner (and its children) that ignore TERM are still gone: KILL follows.
+set_cfg "{\"agents\": {\"runner\": \"custom\", \"stage_timeout_s\": 60,
+ \"runner_cmd\": \"trap '' TERM; sleep $SENT & sleep $SENT\"}}"
+TALOS_STAGE_TIMEOUT_DIVISOR=30 run_stage developer
+assert_eq "124" "$RC" "TERM-proof runner: exits 124"
+if [ "$SECS" -le 9 ]; then pass "TERM-proof runner: returned within ~9 s (took ${SECS}s)"; else fail "TERM-proof runner: returned within ~9 s" "took ${SECS}s"; fi
+sleep 1
+assert_eq "" "$(leaked)" "TERM-proof runner: nothing survives the KILL"
 
 # ── 4. A fast runner under a timeout is unaffected ───────────────────────────
 set_cfg '{"agents": {"runner": "custom", "runner_cmd": "cat >/dev/null; echo fast-out; echo fast-err >&2; exit 3", "stage_timeout_s": 600}}'

@@ -146,6 +146,21 @@
 #   (EX_TEMPFAIL, the contract for a custom runner_cmd); 69 (EX_UNAVAILABLE)
 #   is ours: chain exhausted, every runner down, or failover refused because
 #   the failed attempt had already written (see the write guard below).
+#   agents.stage_timeout_s        (#540) wall-clock bound in seconds (integer
+#                       60-86400) on each runner attempt; unset (the default) =
+#                       no timeout and no behaviour change.
+#   agents.roles.<role>.stage_timeout_s  per-role override, role-first like
+#                       agents.roles.<role>.effort.
+#                       On expiry the runner AND its children are killed (TERM,
+#                       then KILL after at most 3 s), the exit code is 124, and
+#                       stderr gets one line:
+#                         pipeline-agent: reason=stage-timeout role=<r> after_s=<n>
+#                       A timeout is classified `task` (detail `timeout`), never
+#                       a provider error: it does not fail over, and
+#                       hooks.post_stage gets verdict FAIL like any non-zero
+#                       exit. Each attempt gets the full bound. Needs perl (a
+#                       warning and no timeout if it is missing); see "Stage
+#                       timeout" below for how the kill works.
 #   hooks.pre_dispatch  command run before the prompt is built (#181); its
 #                       stdout, if non-empty, is prepended to the prompt
 #                       under a "## Context" heading. Default "" (disabled).
@@ -266,6 +281,23 @@ _resolve_effort() {
   _e="$(cfg "agents.roles.$_role.effort")"
   [ -n "$_e" ] || _e="$(cfg agents.effort)"
   printf '%s' "$_e"
+}
+
+# _resolve_stage_timeout <role> (#540): role-first agents.stage_timeout_s, in
+# whole seconds, or empty for "no timeout" (unset; the config reader already
+# dropped an out-of-range value). TALOS_STAGE_TIMEOUT_DIVISOR is a TEST SEAM:
+# the config floor is 60 s, too long to wait in a test, so tests divide the
+# configured seconds (60 / 30 = 2 s). Nothing sets it in production.
+_resolve_stage_timeout() {
+  local _role="$1" _t _d
+  _t="$(cfg "agents.roles.$_role.stage_timeout_s")"
+  [ -n "$_t" ] || _t="$(cfg agents.stage_timeout_s)"
+  case "$_t" in "" | *[!0-9]*) return 0 ;; esac
+  _d="${TALOS_STAGE_TIMEOUT_DIVISOR:-1}"
+  case "$_d" in "" | 0 | *[!0-9]*) _d=1 ;; esac
+  _t=$((_t / _d))
+  [ "$_t" -ge 1 ] || _t=1
+  printf '%s' "$_t"
 }
 
 # _resolve_fallback <role> (#418): role-first agents.fallback, one runner name
@@ -573,10 +605,11 @@ fi
 #   task      everything else, including any unrecognised non-zero exit. The
 #             failure mode is the existing behaviour, never a silent provider
 #             switch.
-# Per-runner patterns. UNVERIFIED: none of them were captured from a real CLI
-# run (the only observed signal is the spend-limit 429 in tasks/lessons.md);
-# they are candidates and a pattern that stops matching only means a provider
-# error falls back to `task`. A runner with no entry below (codex, gemini,
+# Per-runner patterns. UNVERIFIED, except one: the claude "You've hit your
+# monthly spend limit" line was captured from a real run on 2026-10-04 (#540).
+# The others were not captured from a real CLI run (the only other observed
+# signal is the spend-limit 429 in tasks/lessons.md); they are candidates and a
+# pattern that stops matching only means a provider error falls back to `task`. A runner with no entry below (codex, gemini,
 # antigravity, pi, custom) ships exit-75-only until its patterns are captured.
 CLASS="" CLASS_DETAIL=""
 _classify_exit() {
@@ -593,9 +626,22 @@ _classify_exit() {
 "
   done
   _cls_has() { LC_ALL=C grep -Eq "$1" <<<"$_txt"; }
+  # #540: a stage that hit agents.stage_timeout_s (rc 124 AND the reason line
+  # _tmo prints) is a task failure whatever else the runner printed before it
+  # hung: a timeout never fails over. Checked before any runner-specific shape.
+  if [ "$_rc" = 124 ] && _cls_has '^pipeline-agent: reason=stage-timeout '; then
+    CLASS="task"; CLASS_DETAIL="timeout"
+    unset -f _cls_has
+    return 0
+  fi
   case "$_runner" in
     claude)
-      if _cls_has '^(API Error: [0-9]{3} .*)?([Cc]redit balance is too low|(Claude AI )?[Uu]sage limit reached)'; then
+      # The "You've hit your ... limit" line is the quota exit Claude Code really
+      # prints (#540): straight or curly apostrophe, 0-4 words before "limit",
+      # which must end the line or be followed by " ·" or "." -- so a sentence
+      # that merely starts that way ("...your limit of 3 retries") stays `task`.
+      if _cls_has '^(API Error: [0-9]{3} .*)?([Cc]redit balance is too low|(Claude AI )?[Uu]sage limit reached)' \
+         || _cls_has "^You('ve|’ve| have) hit your ([A-Za-z-]+ ){0,4}limit( ·|\\.|\$)"; then
         CLASS="provider"; CLASS_DETAIL="quota"
       elif _cls_has '^(API Error: 401( |$)|Invalid API key|API Error: .*authentication_error)'; then
         CLASS="provider"; CLASS_DETAIL="auth"
@@ -1076,6 +1122,78 @@ _usage_marker() {
   echo "talos:usage runner=$1 tokens=${_AT_TOKENS:-null}" >&2
 }
 
+# ── Stage timeout (#540) ──────────────────────────────────────────────────────
+# _tmo <cmd> [args...] runs one runner attempt. With no agents.stage_timeout_s it
+# is just `"$@"` (a function call: no extra process, nothing changed). With one,
+# the command runs under a small perl supervisor, because macOS ships no
+# timeout/gtimeout/setsid and bash 3.2's job control cannot reach into a
+# function. The supervisor forks the command into its OWN process group
+# (setpgrp), waits with an alarm, and on expiry sends TERM then (after at most
+# 3 s, or as soon as the leader is gone) KILL to the whole group, so the runner's
+# children die with it. It exits 124 after printing the one reason line that
+# _classify_exit keys on. It is the foreground parent of the attempt, so it is
+# reaped when the attempt ends: there is no watcher to leak. A TERM/INT/HUP sent
+# to the supervisor takes the group down too. A command that exits on its own
+# passes its exit status through (128+N for a signal), and its stdin is /dev/null
+# only when it would otherwise be a terminal (a process group that is not the
+# foreground one is stopped on a tty read). perl is on every macOS and Linux CI
+# box; without it the key is ignored with one warning rather than failing the stage.
+read -r -d '' _TMO_PL <<'PLEOF' || true
+use strict; use warnings; use POSIX ();
+my ($secs, $role, @cmd) = @ARGV;
+my ($status, $reaped, $fired, $sig) = (0, 0, 0, 0);
+my $pid = fork();
+if (!defined $pid) { print STDERR "pipeline-agent: stage timeout: fork failed: $!\n"; exit 1; }
+if (!$pid) {
+  setpgrp(0, 0);
+  open(STDIN, '<', '/dev/null') if -t STDIN;
+  exec { $cmd[0] } @cmd;
+  print STDERR "pipeline-agent: $cmd[0]: command not found\n";
+  POSIX::_exit(127);
+}
+setpgrp($pid, $pid);
+sub stop_group {
+  if (!$reaped) {
+    kill 'TERM', -$pid;
+    for (1 .. 30) {
+      if (waitpid($pid, POSIX::WNOHANG()) == $pid) { $status = $?; $reaped = 1; last; }
+      select(undef, undef, undef, 0.1);
+    }
+  }
+  kill 'KILL', -$pid;
+}
+$SIG{ALRM} = sub { return if $reaped; $fired = 1; stop_group(); };
+for my $s (qw(TERM INT HUP)) {
+  $SIG{$s} = sub { $sig = $_[0]; stop_group(); };
+}
+alarm $secs;
+while (!$reaped) {
+  my $r = waitpid($pid, 0);
+  if ($r == $pid) { $status = $?; $reaped = 1; }
+  elsif ($r < 0 && !$!{EINTR}) { last; }
+}
+alarm 0;
+if ($fired) {
+  print STDERR "pipeline-agent: reason=stage-timeout role=$role after_s=$secs\n";
+  exit 124;
+}
+my %sigrc = (TERM => 143, INT => 130, HUP => 129);
+exit($sigrc{$sig}) if $sig;
+exit(($status & 127) ? 128 + ($status & 127) : $status >> 8);
+PLEOF
+_STAGE_TMO="$(_resolve_stage_timeout "$ROLE")"
+if [ -n "$_STAGE_TMO" ] && ! command -v perl >/dev/null 2>&1; then
+  echo "pipeline-agent: [warn] agents.stage_timeout_s is set but perl is not installed -- no timeout applied (role=$ROLE)" >&2
+  _STAGE_TMO=""
+fi
+_tmo() {
+  if [ -z "$_STAGE_TMO" ]; then
+    "$@"
+  else
+    perl -e "$_TMO_PL" "$_STAGE_TMO" "$ROLE" "$@"
+  fi
+}
+
 # RC (#182): every branch below used to `exec` straight into the runner, so
 # the runner's exit code WAS this script's exit code and nothing ran after
 # it. hooks.post_stage needs to fire once the runner exits (event
@@ -1098,33 +1216,33 @@ case "$RUNNER" in
     if _usage_capture_wanted; then _usage_begin; fi
     if [ -n "$_UDIR" ]; then
       # #420: JSON output; its message text is printed below, as text mode would.
-      claude -p --setting-sources project \
+      _tmo claude -p --setting-sources project \
         ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} --output-format json "$PROMPT" >"$_UDIR/raw"
       RC=$?
       _usage_finish_claude "$_UDIR/raw"
     else
-      claude -p --setting-sources project \
+      _tmo claude -p --setting-sources project \
         ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} "$PROMPT"
       RC=$?
     fi
     ;;
   codex)
-    codex exec ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} "$PROMPT"
+    _tmo codex exec ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} "$PROMPT"
     RC=$?
     ;;
   gemini)
-    gemini ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} -p "$PROMPT"
+    _tmo gemini ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} -p "$PROMPT"
     RC=$?
     ;;
   antigravity)
     # invocation per Antigravity CLI docs (2026-03)
-    agy ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} -p "$PROMPT"
+    _tmo agy ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} -p "$PROMPT"
     RC=$?
     ;;
   pi)
     # pi print mode — one-shot headless stage (inline mode is the pi default;
     # this case exists for callers that want a single headless stage).
-    pi -p ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} "$PROMPT"
+    _tmo pi -p ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} "$PROMPT"
     RC=$?
     ;;
   custom)
@@ -1169,7 +1287,7 @@ case "$RUNNER" in
       TALOS_USAGE_FILE="$_UDIR/usage.json"
       export TALOS_USAGE_FILE
     fi
-    sh -c "$RUNNER_CMD" <"$_PROMPT_FILE"
+    _tmo sh -c "$RUNNER_CMD" <"$_PROMPT_FILE"
     RC=$?
     if [ -n "$_UDIR" ]; then
       _usage_finish_sidecar "$TALOS_USAGE_FILE"
