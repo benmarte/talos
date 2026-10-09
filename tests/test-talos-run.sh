@@ -90,6 +90,13 @@ cat > "$d/agent.stdin"
 printf "agent %s\n" "$role" >> "$d/journal"
 if [ -f "$d/message" ]; then cat "$d/message"; fi
 if [ -f "$d/message.$role" ]; then cat "$d/message.$role"; fi
+# #537: the Nth dispatch of a role (1-based, counted off the journal) may carry
+# its own final message (message.<role>.<N>) and a hook (hook.<role>.<N>, a
+# shell snippet sourced here: it moves the fixture's state the way that stage's
+# real work would, e.g. a developer push changing the PR head).
+cnt="$(grep -c "^agent $role\$" "$d/journal")"
+if [ -f "$d/message.$role.$cnt" ]; then cat "$d/message.$role.$cnt"; fi
+if [ -f "$d/hook.$role.$cnt" ]; then . "$d/hook.$role.$cnt"; fi
 if [ -f "$d/agerr" ]; then cat "$d/agerr" >&2; fi
 rc=0
 if [ -f "$d/agrc" ]; then rc="$(cat "$d/agrc")"; fi
@@ -649,5 +656,59 @@ grep -q 'finishes the draft window by itself' "$TALOS_ROOT/CHANGELOG.md"
 assert_eq "0" "$?" "AC13: CHANGELOG has the draft-window entry under [Unreleased] (anchored to the #516 entry's own text, not a generic draft-window match which would satisfy the pre-existing #332 entry too)"
 assert_not_contains "$(cat "$TALOS_ROOT/skills/pipeline/SKILL.md")" "ready-pr-failed" "AC13-adjacent: SKILL.md is not edited"
 assert_not_contains "$(cat "$TALOS_ROOT/skills/pipeline/SKILL.md")" "qa-ci-red" "AC13-adjacent: SKILL.md is not edited"
+
+# ── (i) a QA FAIL is a developer fix round, never a QA re-run (#537) ──────────
+# After a QA FAIL the driver runs the playbook's flow: `gate fix-round <N> qa
+# --pr <M>` (record-attempt, then the unblock) and the developer in the
+# fix-round shape; the next pass resumes the normal path (ready-pr, QA). A
+# second QA FAIL at the head of the first (the fix round pushed nothing) is the
+# backstop: pipeline:blocked on the PR and the issue, stop
+# reason=qa-fail-unchanged-head, exit 0 -- never a loop to --max-iterations.
+# The collect stub is static (stage ready), as in (h); the stubs' hooks move
+# the state the way the real stage would: the developer's push changes the PR
+# head, a passing QA moves the PR to the merge stage.
+fix_fixture() {
+  reset_stubs
+  LEASE_RESET
+  draft_cfg '"timeout_ms": 600000, "ci_wait_s": 900'
+  draft_collect ready
+  draft_ready
+  printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' > "$STUB_DIR/pr-head.12"
+  printf 'https://github.com/acme/widget/pull/12\nfixed the failing test\n' > "$STUB_DIR/message.developer"
+  printf 'FAIL: the suite broke\n' > "$STUB_DIR/message.qa.1"
+  # The developer's real work, as the stub plays it: the fix round's prompt is
+  # kept for the shape pin (the push, when there is one, is added per test).
+  printf '%s\n' 'cp "$d/agent.stdin" "$d/developer.prompt"' > "$STUB_DIR/hook.developer.1"
+}
+fix_order() { grep -oE 'ready-pr 12|agent qa|vcs record-attempt 9 qa --pr 12|label-pr 12 --remove pipeline:blocked|agent developer|view-pr 12' "$STUB_DIR/journal" | tr '\n' '>' | sed 's/>$//'; }
+
+# (i1) QA FAIL -> fix round (the developer pushes a new head) -> QA PASS ->
+# the merge arm.
+fix_fixture
+printf '%s\n' 'printf bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb > "$d/pr-head.12"' >> "$STUB_DIR/hook.developer.1"
+printf 'PASS: verified\n' > "$STUB_DIR/message.qa.2"
+printf '%s\n' 'printf "%s" "{\"prs\":[{\"n\":12,\"issue\":9,\"head\":\"bbbb\",\"owner\":false,\"stage\":\"merge\"}],\"pr_total\":1,\"ignored\":0,\"blocked\":[],\"queued\":[],\"held\":[],\"owners\":[],\"capped\":[]}" > "$d/collect.json"' > "$STUB_DIR/hook.qa.2"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=12000 rn --max-iterations 5
+assert_eq "0" "$RC" "fix round: the run exits 0"
+assert_not_contains "$OUT" "iterations-exhausted" "fix round: the run does not loop to --max-iterations"
+assert_eq "ready-pr 12>agent qa>vcs record-attempt 9 qa --pr 12>label-pr 12 --remove pipeline:blocked>agent developer>ready-pr 12>agent qa>view-pr 12" "$(fix_order)" \
+  "fix round: QA FAIL -> gate fix-round (record-attempt, unblock) -> developer -> the normal path (ready-pr, QA) -> the merge arm"
+assert_contains "$(cat "$STUB_DIR/developer.prompt" 2>/dev/null)" "Fix round: PR #12 is already open" \
+  "fix round: the developer got the fix-round shape of the prompt"
+assert_not_contains "$OUT" "qa-fail-unchanged-head" "fix round: a pushed fix is not the backstop"
+
+# (i2) the backstop: the fix round pushes nothing, the second QA FAIL is at the
+# same head -> blocked on PR and issue, stop, exit 0, ready-pr exactly twice.
+fix_fixture
+printf 'FAIL: still broken\n' > "$STUB_DIR/message.qa.2"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=12000 rn --max-iterations 9
+assert_eq "0" "$RC" "backstop: the stop exits 0"
+assert_contains "$OUT" "stop reason=qa-fail-unchanged-head pr=12 issue=9" "backstop: the stop line names the reason, the PR and the issue"
+assert_not_contains "$OUT" "iterations-exhausted" "backstop: never a loop to --max-iterations"
+assert_contains "$(journal)" "vcs label-pr 12 --add pipeline:blocked" "backstop: pipeline:blocked on the PR"
+assert_contains "$(journal)" "vcs label-issue 9 --add pipeline:blocked" "backstop: pipeline:blocked on the issue"
+assert_eq "2" "$(journal | grep -c 'vcs ready-pr 12')" "backstop: ready-pr ran exactly twice"
+assert_eq "2" "$(journal | grep -c '^agent qa$')" "backstop: QA ran exactly twice"
+assert_eq "1" "$(journal | grep -c '^agent developer$')" "backstop: exactly one fix round ran"
 
 finish
