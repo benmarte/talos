@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+- feat(multi-user): several operators can run Talos on one repo without touching
+  each other's work (#560, part of #558). The VCS assignee is the shared lock and
+  the instance identity is the operator's login (`issues.assignee` when it names
+  someone, else the new user-level `identity.name`, else `current-user`),
+  resolved once per run. Before the first stage on an unassigned `pipeline:ready`
+  or legacy in-flight issue, `talos.sh next` claims it: assign self, read the
+  assignees back, and when another login is there too the lexicographically lowest
+  keeps the issue and the others unassign themselves and move on (GitHub and
+  GitLab hold several assignees; Azure DevOps one, where the later write wins).
+  `collect`, `state`, `next` and `run` then act only on issues assigned to the
+  operator (or to nobody) and on pipeline PRs whose issue is the operator's;
+  other operators' items are never routed and appear in `talos.sh state --summary`
+  as `theirs: #N (@login)`. New verbs: `talos.sh claim <N>`, and
+  `issue-assignees`, `unassign-issue` and `list-assignees` in `pipeline-vcs.sh`
+  (github, github-api, gitlab, azure). New keys: `issues.claim` (default true;
+  false restores the old unfiltered behaviour; `issues.assignee: none` also turns
+  claiming off) and `identity.name`. The local lease ledger stays for same-user
+  sessions. An Azure DevOps UPN (`name@example.com`) is now accepted as a login by
+  `current-user`. The user guide's config section gains a passage on global vs
+  project vs environment configuration, repo-only keys, secrets and claiming.
 - feat(status): a harness status line and zero-ceremony resume (#550, part of
   #558). `talos-status.sh --line` prints one line, `talos #<issue> <stage>
   ●●◐○○○ <tokens>`: dots for validator, pm, developer, review, qa, merge (done ●,
