@@ -56,7 +56,7 @@ assert_contains "$(cat "$CSTORE")" "talos:approval sha=$SHA role=qa" "post-appro
 unset STUB_COMMENT_STORE
 
 # ── (c)-(e) the cache layer itself, with a pass owned by this shell ───────────
-mkpass() { rm -rf "$SANDBOX/pass"; mkdir -m 700 "$SANDBOX/pass"; printf '%s' "$$" > "$SANDBOX/pass/owner"; export TALOS_PASS_CACHE="$SANDBOX/pass"; }
+mkpass() { rm -rf "${SANDBOX:?}/pass"; mkdir -m 700 "$SANDBOX/pass"; printf '%s' "$$" > "$SANDBOX/pass/owner"; export TALOS_PASS_CACHE="$SANDBOX/pass"; }
 
 mkpass; reset
 bash "$VCS" pr-head 9 >/dev/null; bash "$VCS" pr-head 9 >/dev/null

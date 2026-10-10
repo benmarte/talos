@@ -72,9 +72,10 @@ export STUB_PR_COMMENTS_JSON="[{\"body\":\"<!-- talos:approval sha=${SHA_GH} rol
 # queued, and resolves to the stub's default login, so the assignee write
 # follows: POST assignees + read-back, #455) label-issue(POST labels)
 # view-issue--spec(meta+comments)
-# create-pr(1) post-approval(pr-head, dup-check comments, comment-pr state
-# check, comment-pr POST, label-pr POST, then the missing-marker check: PR +
-# comments) the post-approval self-check: check-approval-sha(PR+comments)
+# create-pr(1) post-approval(pr-head, dup-check comments, comment-pr POST
+# [its state check is the PR pr-head read: the pass shares its reads, #554],
+# label-pr POST, then PR + comments once, which label-pr's missing-marker
+# check and the self-check, check-approval-sha, share)
 # (the marker comment is authored by the stub's default login, which GET /user
 # resolves to, so the author-trust check accepts it)
 # pr-mergeable(1) check-pr-files(1) cleanup-close-issue(comment+PATCH).
@@ -88,13 +89,10 @@ printf '%s\n' \
   '{"title":"canary","body":"canary run body","labels":[]}' \
   '[]' \
   '{"html_url":"https://github.com/acme/widget-canary/pull/402"}' \
-  "{\"head\":{\"sha\":\"${SHA_API}\"}}" \
+  "{\"head\":{\"sha\":\"${SHA_API}\"},\"state\":\"open\",\"merged_at\":null}" \
   '[]' \
-  '{"state":"open","merged_at":null}' \
   '{"id":900,"html_url":"https://github.com/acme/widget-canary/pull/402#issuecomment-900"}' \
   '[{"name":"qa:pass"}]' \
-  "{\"head\":{\"sha\":\"${SHA_API}\"}}" \
-  "[{\"body\":\"<!-- talos:approval sha=${SHA_API} role=qa -->\",\"user\":{\"login\":\"talos-test-bot\"}}]" \
   "{\"number\":402,\"head\":{\"sha\":\"${SHA_API}\"},\"base\":{\"ref\":\"main\"},\"labels\":[{\"name\":\"qa:pass\"}]}" \
   "[{\"body\":\"<!-- talos:approval sha=${SHA_API} role=qa -->\",\"user\":{\"login\":\"talos-test-bot\"}}]" \
   '{"number":402,"mergeable":true}' \
