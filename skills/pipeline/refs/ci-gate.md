@@ -1,6 +1,6 @@
 # CI gate (`verify.qa_mode = ci`)
 
-Read when `talos.sh env` prints `ref=ci-gate`. On the first QA dispatch or a retry after a fix round (never a Step 4 re-stamp), after the draft guard when `PR_DRAFT` is on, and before spawning QA, ask required CI first so QA is never dispatched on a red build:
+Read when `talos.sh env` prints `ref=ci-gate`. With `READY_GATE = qa-local` it applies only to QA on a READY PR (a human marked it ready, or a fallback): QA on the draft runs before any CI exists and never waits (`refs/draft-order.md`). On the first QA dispatch or a retry after a fix round (never a Step 4 re-stamp), after the draft guard when `PR_DRAFT` is on, and before spawning QA, ask required CI first so QA is never dispatched on a red build:
 
 ```bash
 out="$(bash scripts/pipeline-vcs.sh pr-checks-required <PR_NUMBER> 2>&1)"; rc=$?

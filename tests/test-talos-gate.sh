@@ -336,6 +336,38 @@ set_stub draft-check 3 "true"
 gm
 assert_eq "stop reason=draft-resolve-failed" "$OUT" "stop: a failing PR_DRAFT resolver stops"
 
+# AC12 (#535): pr.ready_gate never changes the merge gate. Each scenario runs
+# with the gate off and on; the verdict lines (and the verbs called) are equal,
+# and `gate merge` never consults the gate resolver. CI stays the authority.
+gate_scenario() {  # $1 = label, $2 = scenario function name
+  local g out_off out_on verbs_off verbs_on
+  for g in off qa-local; do
+    reset_stubs
+    "$2"
+    cfg_json '{"pr": {"draft": true, "ready_gate": "'"$g"'"}, "roles": {"adversarial": false}}'
+    gm
+    if [ "$g" = off ]; then out_off="$RC $OUT"; verbs_off="$(vcs_verbs)"; else out_on="$RC $OUT"; verbs_on="$(vcs_verbs)"; fi
+    assert_eq "0" "$(journal | grep -c 'draft-check ready-gate')" "AC12 $1 (gate $g): gate merge never consults the gate resolver"
+  done
+  assert_eq "$out_off" "$out_on" "AC12 $1: the verdict is the same with the gate on as off"
+  assert_eq "$verbs_off" "$verbs_on" "AC12 $1: the same verbs are called with the gate on as off"
+}
+sc_green() { set_stub draft-check 0 "true"; set_stub pr-is-draft 1 "ready"; }
+sc_ci_pending() { sc_green; set_stub pr-checks-required 2 "" "pr-checks-required: pending or missing: ci / test"; }
+sc_ci_red() { sc_green; set_stub pr-checks-required 1 "" "pr-checks-required: failed: ci / test"; }
+sc_stale() { sc_green; set_stub check-approval-sha 1 "stale role=qa label=qa:pass"; }
+sc_draft() { set_stub draft-check 0 "true"; set_stub pr-is-draft 0 "draft"; }
+gate_scenario "CI green" sc_green
+gate_scenario "CI pending" sc_ci_pending
+gate_scenario "CI red" sc_ci_red
+gate_scenario "stale approvals" sc_stale
+gate_scenario "draft PR" sc_draft
+reset_stubs; sc_ci_pending
+cfg_json '{"pr": {"draft": true, "ready_gate": "qa-local"}}'
+gm
+assert_eq "verdict=wait
+reason=ci-pending" "$OUT" "AC12 gate on: a pending required check still waits, CI is the merge authority"
+
 # Required CI and the re-run budget.
 reset_stubs; set_stub pr-checks-required 2 "" "pr-checks-required: pending or missing: ci / test"
 gm

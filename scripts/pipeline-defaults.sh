@@ -57,6 +57,10 @@
 #                                              resolve (the one resolver, #435;
 #                                              no second copy here)
 #
+# pr.ready_gate is not derived: off is its table default. The EFFECTIVE gate
+# (qa-local only with pr.draft and roles.qa on) is `pipeline-draft-check.sh
+# ready-gate` (#535), the one place that decides it.
+#
 # verify.qa_mode is NOT derived here: pipeline-config.sh derives "ci" from
 # merge.required_checks whenever a config file exists, so the table value
 # (local) only answers when there is no config at all, where no check list
@@ -185,6 +189,7 @@ limits.tokens_per_issue	int		-	-	any
 limits.warn_at	float	0.8	-	-	any
 spend.comment	bool	true	-	-	any
 pr.draft	bool		derived	-	any
+pr.ready_gate	enum	off	-	-	any
 markers.trusted_authors	list		-	-	repo
 markers.verify_authors	bool	true	-	-	repo
 hooks.pre_dispatch	str		-	-	any

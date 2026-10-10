@@ -23,7 +23,9 @@
 #             pr-checks-required), plus every higher one that carries the approval
 #             label of every enabled role (and neither pipeline:blocked nor
 #             pipeline:needs-owner), so 300 PRs cost the same reads as 40.
-#             stage comes from pipeline-next.py, first match wins.
+#             stage comes from pipeline-next.py, first match wins. With the QA
+#             pre-CI gate on (`pipeline-draft-check.sh ready-gate` = qa-local,
+#             passed as --ready-gate, #535) a draft PR routes qa last.
 #   ignored   open PRs with a pipeline-style branch and no Talos label, from a fork
 #   blocked   [["PR"|"issue", n], ...] carrying pipeline:blocked
 #   queued    open issues labelled pipeline:ready, p0 p1 p2 unlabelled, then number
@@ -111,7 +113,7 @@ if [ -z "$BASE_BRANCH" ]; then
 fi
 [ -z "$BASE_BRANCH" ] && BASE_BRANCH="main"
 
-roles="" auto="true" checks="no" draft="false" talos_labels=""
+roles="" auto="true" checks="no" draft="false" ready_gate="off" talos_labels=""
 # Names only (entries are name|color|description), comma-joined; no name has a comma.
 for e in ${TALOS_STAGE_LABELS[@]+"${TALOS_STAGE_LABELS[@]}"} ${TALOS_APPROVAL_LABELS[@]+"${TALOS_APPROVAL_LABELS[@]}"}; do
   talos_labels="${talos_labels}${e%%|*},"
@@ -129,6 +131,8 @@ _sf_role_on roles.adversarial && roles="${roles}adversarial,"
 [ -n "$(cfg merge.required_checks | tr -d '[:space:]')" ] && checks="yes"
 # The same effective value Step 0 uses (#435): default true, false on github-api/file.
 [ "$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" resolve 2>/dev/null)" = "true" ] && draft="true"
+# The QA pre-CI gate (#535), from its one resolver; anything but qa-local is off.
+[ "$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" ready-gate 2>/dev/null)" = "qa-local" ] && ready_gate="qa-local"
 
 # A signal that reaches only this bash waits for the read phase to finish (bash
 # runs its trap after the foreground command), bounded by the read deadline; one
@@ -147,5 +151,5 @@ case "${TALOS_CLAIM_STATE:-}" in on:?*) me="${TALOS_CLAIM_STATE#on:}" ;; esac
 
 python3 -I "$SCRIPT_DIR/pipeline-next.py" collect \
   --vcs "$SCRIPT_DIR/pipeline-vcs.sh" --roles "$roles" --me "$me" \
-  --merge-auto "$auto" --required-checks "$checks" --pr-draft "$draft" \
+  --merge-auto "$auto" --required-checks "$checks" --pr-draft "$draft" --ready-gate "$ready_gate" \
   --talos-labels "$talos_labels" --base-branch "$BASE_BRANCH" </dev/null

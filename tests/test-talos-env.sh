@@ -315,6 +315,24 @@ assert_eq "2" "$rc" "stop: env with an argument exits 2"
 assert_eq "stop reason=usage" "$out" "stop: env with an argument is usage"
 assert_contains "$(bash "$TALOS" help 2>&1)" "usage: talos.sh <verb>" "help: prints the usage"
 
+# AC13 (#535): READY_GATE is the effective pr.ready_gate, from the one resolver.
+setup_default
+out="$(env_run)"
+assert_eq "off" "$(env_value "$out" READY_GATE)" "AC13 READY_GATE is off by default"
+assert_eq "$(bash "$TALOS_ROOT/scripts/pipeline-draft-check.sh" ready-gate 2>/dev/null)" "$(env_value "$out" READY_GATE)" "AC13 READY_GATE equals pipeline-draft-check.sh ready-gate"
+proj_json '{"vcs": {"provider": "github"}, "pr": {"ready_gate": "qa-local"}}'
+out="$(env_run)"
+assert_eq "qa-local" "$(env_value "$out" READY_GATE)" "AC13 READY_GATE is qa-local when asked for under pr.draft"
+assert_eq "$(bash "$TALOS_ROOT/scripts/pipeline-draft-check.sh" ready-gate 2>/dev/null)" "$(env_value "$out" READY_GATE)" "AC13 qa-local equals pipeline-draft-check.sh ready-gate"
+assert_contains "$out" "ref=draft-order" "AC13 ref=draft-order is still named under pr.draft with the gate on"
+assert_eq "1" "$(printf '%s\n' "$out" | grep -c '^ref=draft-order')" "AC13 draft-order is named once, the gate adds no second ref"
+proj_json '{"vcs": {"provider": "github"}, "pr": {"draft": false, "ready_gate": "qa-local"}}'
+out="$(env_run)"
+assert_eq "off" "$(env_value "$out" READY_GATE)" "AC13 pr.draft false: READY_GATE is off"
+assert_not_contains "$out" "ref=draft-order" "AC13 pr.draft false names no draft-order ref"
+printf '%s\n' "$out" > "$SANDBOX/out.gate"
+check_env_output "$SANDBOX/out.gate"; assert_eq "0" "$?" "AC13 the READY_GATE line satisfies the line contract"
+
 # A PR_DRAFT resolve that fails must stop the run, never default to false.
 setup_default
 mkdir -p "$SANDBOX/badroot/scripts"

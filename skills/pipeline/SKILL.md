@@ -36,6 +36,7 @@ bash scripts/talos.sh env
 
 Run once; keep the answer for the whole run. It replaces every config read (project config over the user-level file, defaults applied, `ISOLATION` validated). Values are escaped (lists join `\n`; control and bidi characters become `\xNN`/`\uXXXX`; a cut ends `[truncated]`).
 - `PR_DRAFT` (`pr.draft`, default `true`) is `true` or `false`, from `pipeline-draft-check.sh resolve`, the one resolver: show its one stderr warning line, if any, once. Talos never edits CI config.
+- `READY_GATE` (`pr.ready_gate`, default `off`) is `qa-local` or `off`, from `pipeline-draft-check.sh ready-gate`, the one resolver. `qa-local` makes QA the LAST draft-window stage, before `ready-pr` (`ref=draft-order`).
 - `agent.<role>.runner|runner_cmd|model|effort|fallback|effort_notice` (absent = empty).
 - `AGENTS_MODE` (profile-aware runs only) is the spawn mode, not `agents.runner`: `native` = the Spawning paragraph, `inline` or `adapter` = `ref=harness`. `PROFILE` is the LLM in use (switch it with `TALOS_PROFILE`); relay each `PROFILE_SKIPPED` line once.
 - `ref=<topic>`: a ref that applies to this run. Read `refs/<topic>.md` before Step 1, once. `PR_DRAFT = true` reorders Steps 3c-3e (`ref=draft-order`).
@@ -119,8 +120,8 @@ After it returns: `done developer --issue <N> [--pr <PR>] --verdict PR_OPENED|BL
 
 ### 3d. QA (`roles.qa`)
 
-Before every QA dispatch: `ref=draft-order` (the `pr-is-draft` guard) when `PR_DRAFT`, `ref=ci-gate` when `VERIFY_QA_MODE` is `ci`. Spawn with `talos.sh prompt qa --issue <N> --pr <PR> --prior-file F` (the developer's pr-opened relay). QA verifies per hard rule 5. After it returns: `done qa --issue <N> --pr <PR> --verdict PASS|FAIL --summary-file F`.
-- **Pass:** `next=continue` → Step 3e (with `PR_DRAFT`, review already ran: go to Step 4).
+Before every QA dispatch: `ref=draft-order` (the `pr-is-draft` guard; inverted when `READY_GATE = qa-local`: QA runs on the DRAFT) when `PR_DRAFT`, `ref=ci-gate` when `VERIFY_QA_MODE` is `ci` and QA runs on a ready PR. Spawn with `talos.sh prompt qa --issue <N> --pr <PR> --prior-file F` (the developer's pr-opened relay). QA verifies per hard rule 5. After it returns: `done qa --issue <N> --pr <PR> --verdict PASS|FAIL --summary-file F`.
+- **Pass:** `next=continue` → Step 3e (with `PR_DRAFT`, review already ran: go to Step 4). With `READY_GATE = qa-local` QA ran last on the draft: `ready-pr` follows, then Step 4.
 - **Fail** (`next=fix-round stage=qa`): `gate fix-round <N> qa --pr <PR>`: `verdict=redispatch` → developer fix round; `verdict=block` → board "Blocked", stop. With `PR_DRAFT` the fix round ends with `ready-pr` (`ref=draft-order`).
 
 ### 3e. Review stages

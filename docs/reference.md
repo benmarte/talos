@@ -32,7 +32,7 @@ Default order: validator, planner (optional), pm, developer, qa, docs, reviewer 
 | planner | LLM, off | `roles.planner` | Epics only (`epic` label, 4 or more `- [ ]` items, or body of 2000+ characters): at most 10 sub-issues, dependencies via `Depends on:`. The epic gets `pipeline:epic-decomposed`. |
 | pm | LLM | `roles.pm` | Posts the spec with numbered acceptance criteria. Skipped by code when `roles.pm_skip_when_spec_present` and the issue body already has an acceptance-criteria heading with a checklist, or carries `spec:ready`. |
 | developer | LLM, always | none | Reads the spec. Branch `fix/issue-N-slug` (`feat/` for a `feat` title). Red tests first, runs `verify` once before the final commit, opens the PR. The only stage that writes code. |
-| qa | LLM | `roles.qa` | Checks each acceptance criterion; runs targeted tests only, never the full suite; under `verify.qa_mode: ci` waits for required CI. |
+| qa | LLM | `roles.qa` | Checks each acceptance criterion; runs targeted tests only, never the full suite; under `verify.qa_mode: ci` waits for required CI. With `pr.ready_gate: qa-local` it runs last on the draft, before CI, and also runs the full `verify:` list once. |
 | docs | code gate, LLM only if needed | `roles.docs`, `roles.docs_mode` | `docs-gate` stamps `docs:done` itself unless the PR changes `README.md`, `docs/**` or `scripts/pipeline-defaults.sh` (`roles.docs_mode: always` forces the agent). |
 | reviewer, security | LLM | `roles.reviewer`, `roles.security` | Read `diff-pr --stat`, then the files that matter. Run no tests. |
 | adversarial | LLM, off | `roles.adversarial` | Second opinion on another backend. |
@@ -40,7 +40,7 @@ Default order: validator, planner (optional), pm, developer, qa, docs, reviewer 
 
 Everything except the stage agents is mechanical: routing (`next`), bookkeeping (`done`), gates, sweeps, merge.
 
-With `pr.draft` true (the default; it resolves to false when CI lacks a `ready_for_review` trigger, and for the `github-api` and `file` providers) the order changes: developer opens a draft PR, docs, reviewer and security (and adversarial) review the draft in one batch, one developer fix round covers all findings, `ready-pr` starts the one CI run, then QA, then merge. See [Gates: verify, QA, CI and merge](#gates-verify-qa-ci-and-merge).
+With `pr.draft` true (the default; it resolves to false when CI lacks a `ready_for_review` trigger, and for the `github-api` and `file` providers) the order changes: developer opens a draft PR, docs, reviewer and security (and adversarial) review the draft in one batch, one developer fix round covers all findings, `ready-pr` starts the one CI run, then QA, then merge. With `pr.ready_gate: qa-local`, QA runs on the draft before `ready-pr` instead. See [Gates: verify, QA, CI and merge](#gates-verify-qa-ci-and-merge).
 
 ### What a run costs
 
@@ -48,7 +48,7 @@ Each stage is a fresh agent. Spend is measured per run ([Hooks, events, spend an
 
 - `roles.*`: drop whole stages. `roles.pm_skip_when_spec_present` and `roles.docs_mode: auto` drop the PM and docs agents when code can decide.
 - `verify.qa_mode: ci` (default once `merge.required_checks` is set): QA trusts CI instead of re-running tests. `verify.targeted`: the developer iterates on targeted tests and runs the full `verify` once.
-- `pr.draft`: one CI run per PR.
+- `pr.draft`: one CI run per PR. `pr.ready_gate: qa-local` also keeps that run off a head QA would reject.
 - Re-stamp: after a fix push that leaves approvals stale, a role already approved re-reviews only the delta (`agents.restamp_model`, `agents.restamp_effort`).
 - `agents.roles.<role>.model`, `.effort` and `.runner`: route cheap stages to cheap models ([Profiles, runners and fallback](#profiles-runners-and-fallback)).
 - `limits.tokens_per_issue`: optional hard budget before each fix round.
@@ -436,6 +436,7 @@ Derived defaults: `base_branch`, `repo`, `vcs.repo` and `board.owner` come from 
 | Key | Type | Default | Env override | Scope |
 |---|---|---|---|---|
 | `pr.draft` | bool | derived | - | any |
+| `pr.ready_gate` | enum | `off` | - | any |
 
 #### markers.*
 
@@ -772,7 +773,7 @@ An unreadable gate answers `stop reason=<r>` (fail closed). Gates 3 and 4 set `p
 | `verify.timeout_ms` | `600000` | Foreground timeout for each verify and CI-wait call, 1 to 86400000 |
 
 - Verify runs in the foreground only, through `scripts/pipeline-verify.sh [--issue N] [--worktree P] [-- cmd]`, which exports the stage identity and prints `talos:verify issue=.. worktree=..`.
-- QA never runs the full list. `scripts/pipeline-criteria.sh qa-run` runs the spec's test files; other targeted runs use `tests/run-tests.sh --for <path> --strict` (Talos's own runner; exit 3 means no test selected and QA relies on CI). Reviewer, security and docs never run verify.
+- QA never runs the full list, except under `pr.ready_gate: qa-local` while the PR is a draft ([Draft PRs](#draft-prs)). `scripts/pipeline-criteria.sh qa-run` runs the spec's test files; other targeted runs use `tests/run-tests.sh --for <path> --strict` (Talos's own runner; exit 3 means no test selected and QA relies on CI). Reviewer, security and docs never run verify.
 - Under `ci`, one `pr-checks-required <pr> --wait <B>` waits for CI, `B = min(verify.ci_wait_s, verify.timeout_ms/1000 - 30)`, at most 3600. QA is not dispatched into a `CONFLICTING` PR; red required CI re-dispatches the developer instead.
 
 ### Required checks
@@ -790,6 +791,12 @@ An unreadable gate answers `stop reason=<r>` (fail closed). Gates 3 and 4 set `p
 ### Draft PRs
 
 `pr.draft` opens the PR as a draft so docs, review and fixes start no CI. Order: developer (local verify, draft PR), docs, reviewer + security + adversarial in parallel, one fix round, re-stamps, `ready-pr` (the one CI run), QA, merge. A QA or CI failure runs `draft-pr` first, so a fix costs one run. QA and the CI wait start only when `pr-is-draft` exits 1 with stdout `ready`; `gate merge` reports `ci_runs` (`pr-ci-runs`, GitHub only).
+
+**QA pre-CI gate.** `pr.ready_gate: qa-local` (default `off`, which is the flow above, unchanged) makes QA the last stage of the draft window: docs, reviewer, security (+ adversarial), then QA on the draft, then `ready-pr`. QA checks out the PR head, runs the `qa-run` criteria and the full `verify:` list once through `pipeline-verify.sh` (the suite CI would run), never waits for CI, and `post-approval` stamps the head SHA it verified. Only a PASS fires `ready-pr`, so the one CI run is never spent on a head QA rejects; a FAIL runs the normal fix round on the still-draft PR (no `draft-pr`, no CI was ever spent) and QA runs again on the new head. CI stays the merge authority: `gate merge` is unchanged and still needs `pr-checks-required` green on the final head. After `ready-pr` no QA is dispatched and nothing waits inside a QA stage; the next pass is the ordinary `ci` / `merge` stage.
+
+The gate applies only while `pr.draft` resolves true and `roles.qa` is on (`pipeline-draft-check.sh ready-gate` prints the effective value, `talos.sh env` as `READY_GATE`); otherwise it reads `off` with one stderr line. An unknown value reads `off` with a warning. A ready PR without `qa:pass` (a human marked it ready) gets QA after ready as before.
+
+Costs and limits. QA-local cannot guarantee CI green: CI runs on ubuntu while a local run is often macOS (#329), so it only avoids spending the run on a locally red head. The full `verify:` list costs one more suite run per PR, bounded by `verify.timeout_ms`, and QA now runs before CI instead of alongside it: roughly 20 minutes more wall time per PR when everything is green.
 
 `pipeline-draft-check.sh resolve` sets the effective value: explicit `false` is the ready flow; `file` mode and `github-api` never use drafts (`github-api` says so on stderr); `gitlab` and `azure` do unless `false`; `github` also runs the CI check. `pipeline-draft-check.sh check` prints one status (always exit 0):
 
