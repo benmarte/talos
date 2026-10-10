@@ -51,6 +51,16 @@ assert_contains "$state" "\"buzz_event_id\": \"$NEW_ID\"" "stale anchor replaced
 retry_call="$(tail -1 "$NAK_LOG")"
 assert_not_contains "$retry_call" ";;reply" "recovery repost is a fresh root (no stale reply tag)"
 
+# #570: the repost is the root form -- the same title and footer a normal root
+# post of the same event carries, not the bare reply text.
+assert_contains "$retry_call" "[#42 Fix login crash]" "recovery repost carries the issue title"
+assert_contains "$retry_call" "qa passed  acme/widget" "recovery repost carries the repo footer"
+repost_call="$retry_call"
+rm -f "$PIPELINE_THREAD_STATE"; : > "$NAK_LOG"
+live_notify qa "#42" "qa passed" 42 >/dev/null
+root_call="$(tail -1 "$NAK_LOG")"
+assert_eq "$root_call" "$repost_call" "recovery repost is byte-identical to a normal root post of the same event"
+
 # ── threading disabled via config ────────────────────────────────────────────
 rm -f "$PIPELINE_THREAD_STATE"; : > "$NAK_LOG"
 cat > talos.pipeline.json <<'EOF'

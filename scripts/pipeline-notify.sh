@@ -731,8 +731,9 @@ _nak() {  # $1=anchor. The key travels in the environment, never argv (#281).
 }
 # shellcheck disable=SC2329
 _send_buzz() {  # $1=anchor event id
-  # A repost after a refused anchor reuses the first text (still the reply form).
-  [ -n "${BUZZ_TEXT:-}" ] || BUZZ_TEXT="$(_fmt payload buzz bot "$1")"
+  # Rendered per call: a repost after a refused anchor is a root, so it takes the
+  # root form (title and footer), not the reply form of the first attempt (#570).
+  BUZZ_TEXT="$(_fmt payload buzz bot "$1")"
   _S_RC=2
   if [ "$DEBUG" = 1 ]; then
     _dbg "BUZZ state_key=$STATE_KEY"; _dbg "BUZZ thread_anchor=${1:-(none — root post)}"
