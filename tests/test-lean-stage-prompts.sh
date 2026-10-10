@@ -17,9 +17,12 @@ RS="$SANDBOX/restamp.txt"
 printf 'approved_sha=aaaa\nhead_sha=bbbb\n' > "$RS"
 
 QA="$(talos_prompt_text qa --issue 5 --pr 7)"
-assert_contains "$QA" 'do not re-run it by hand' "AC1 qa prompt: a red@/green@head criterion is not re-run by hand"
 assert_contains "$QA" '`red@<sha8> green@head`' "AC1 qa prompt: the rule names the qa-run line it applies to"
-assert_contains "$QA" '`prose hand-checked`' "AC1 qa prompt: hand-check only the prose hand-checked lines"
+assert_contains "$QA" 'do not re-run or hand-exercise it' "AC1 qa prompt: a red@/green@head criterion is neither re-run nor hand-exercised"
+assert_contains "$QA" 'Exercise real behaviour for every other criterion' "AC1 qa prompt: every other criterion still gets a real-behaviour check"
+assert_contains "$QA" '`green@head (red: missing)`' "AC1 qa prompt: a criterion with no red proof is still checked"
+assert_contains "$QA" '`prose hand-checked`' "AC1 qa prompt: prose hand-checked lines are still checked"
+assert_contains "$QA" 'did not run' "AC1 qa prompt: a criterion qa-run did not run is still checked"
 
 VAL="$(talos_prompt_text validator --issue 5)"
 effort="$(printf '%s\n' "$VAL" | grep '^Effort cap:')"
@@ -32,7 +35,8 @@ assert_contains "$effort" 'cited' "AC2 validator prompt: stop once the evidence 
 
 for role in reviewer security; do
   ctx="$(talos_prompt_text "$role" --issue 5 --pr 7 | grep '^Context cap:')"
-  assert_contains "$ctx" 'read the diff once' "AC3 $role prompt: a Context cap: line reads the diff once"
+  assert_contains "$ctx" 'read the whole diff once' "AC3 $role prompt: a Context cap: line reads the whole diff once"
+  assert_contains "$ctx" 'page through a long one' "AC3 $role prompt: a long diff is paged through, not skipped"
   assert_contains "$ctx" 'No repo tour' "AC3 $role prompt: no repo tour"
 done
 assert_contains "$(talos_prompt_text reviewer --issue 5 --pr 7 | grep '^Context cap:')" 'suspected finding' "AC3 reviewer prompt: a file outside the diff only for a suspected finding"
