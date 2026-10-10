@@ -109,7 +109,7 @@ Runs with `pipeline:dev` and no open PR. Branch `fix/issue-<N>-<slug>` (`feat/` 
 
 By `ISOLATION`: `worktree`: spawn with `isolation: "worktree"`. `branch`: a plain subagent in the orchestrator's checkout, after `bash scripts/pipeline-vcs.sh assert-sync`; non-zero: `pipeline:blocked` on the issue, blocked.md with BLOCKED_BY="scripts/pipeline-vcs.sh assert-sync output (explicit)", next issue. Never dispatch into a dirty tree.
 
-Prompt: `talos.sh prompt developer --issue <N> --prior-file F`; `--spec-source issue-body` when 3b was skipped; `--shape fix-round --pr <PR>` for a fix round (`--ci-failure-file F` for a CI failure). The verb writes the isolation note and Checkpoint line. `PR_DRAFT = true`: `ref=draft-order`.
+Prompt: `talos.sh prompt developer --issue <N> --prior-file F`; `--spec-source issue-body` when 3b was skipped; `--shape fix-round --pr <PR>` for a fix round (`--ci-failure-file F` for a CI failure). The verb writes the isolation note and the Checkpoint line when `pipeline-worktree.sh handoff <N>` exits 0. `PR_DRAFT = true`: `ref=draft-order`.
 
 After it returns: `done developer --issue <N> [--pr <PR>] --verdict PR_OPENED|BLOCKED --summary-file F` (what was implemented plus the PR URL, or what failed). Then:
 - **PR opened** (board "In review", `pr-opened` event sent by the verb). **Mergeability gate before QA:** `bash scripts/pipeline-vcs.sh pr-mergeable <PR>`. 0 (`MERGEABLE`) or 2 (`UNKNOWN`, fail open): Step 3d. 1 (`CONFLICTING`): no QA yet; resolve it first (`refs/merge-conflict.md`: mechanical union, else a developer merge-base task through `gate fix-round`), then check again.
