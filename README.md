@@ -1374,7 +1374,7 @@ printed before running, and both flags compose with `--quiet`, `-j`,
 
 Passing runs are cached under `.talos/test-cache/` (gitignored), keyed on the
 test file's own content plus a whole-set hash of **all tracked files except**
-`tasks/**`, `docs/superpowers/**`, `.github/**`, and `.gitignore` (each
+`tasks/**`, `.github/**`, and `.gitignore` (each
 proven, via a `grep -l` sweep of every `tests/test-*.sh`, to be read by no
 test) -- touching any other git-tracked file, including `tests/run-tests.sh`
 itself, invalidates every cached result. Only tracked files are hashed;
