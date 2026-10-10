@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # talos-status.sh -- the harness status line (#385, simplified by #550).
 #
-#   talos #7 qa ●●●◐○○ 3.41M
+#   talos #7 qa ●●●●◐○ 3.41M
 #
 # Usage: talos-status.sh [--line]
 #

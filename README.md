@@ -36,8 +36,8 @@ Needs `bash`, `git`, `python3`, and the CLI of your tracker (`gh` for GitHub). D
 ## Quickstart
 
 ```bash
-bash talos/install.sh /path/to/repo           # writes talos.pipeline.json (edit it, or run /talos:setup)
-bash ~/.talos/scripts/bootstrap-labels.sh     # creates the pipeline:* labels (GitHub)
+bash talos/install.sh /path/to/repo           # per-repo setup; then copy talos.pipeline.json.example (or run /talos:setup)
+bash ~/.talos/scripts/bootstrap-labels.sh     # from inside the repo (needs install.sh --global): creates the pipeline:* labels
 gh issue edit 42 --add-label pipeline:ready   # queue an issue
 ```
 
@@ -52,10 +52,10 @@ Without Claude Code: `bash ~/.talos/scripts/talos.sh run`, or tell any agentic C
 
 ## Status line
 
-`install.sh` wires Claude Code's status line to `scripts/talos-status.sh`, which reads the local events log (no network call, no model tokens):
+`install.sh --global` wires Claude Code's status line to `scripts/talos-status.sh` (never replacing one you have), which reads the local events log (no network call, no model tokens):
 
 ```
-talos #7 qa ●●●◐○○ 3.41M
+talos #7 qa ●●●●◐○ 3.41M
 ```
 
 One dot per stage (validator, pm, developer, review, qa, merge): done, running, pending, then the tokens spent on the issue so far. Other harnesses can call `talos-status.sh --line` from their footer hook. After a cleared session or an LLM switch, run `/talos:pipeline` (or `talos.sh run`) again: the work is resumed from GitHub labels, the PR and the events log, with no extra file to maintain. See [Hooks, events, spend and the status line](docs/reference.md#hooks-events-spend-and-the-status-line).
