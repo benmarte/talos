@@ -87,6 +87,10 @@
 #   --mark-down <runner> <class:detail>
 #       record <runner> as down in .talos/providers.json for
 #       agents.provider_down_s seconds.
+#   --down-rows
+#       (#539) one name<TAB>down_until<TAB>reason line per runner currently down,
+#       from the same providers.json reader; pipeline-config.sh uses it to skip
+#       a profile whose runner is down.
 #
 # Config keys (talos.pipeline.json via pipeline-config.sh):
 #   agents.runner       claude (default) | pi | codex | gemini | antigravity | custom
@@ -722,10 +726,12 @@ _prov_path() {
 # tests/test-runner-failover.sh pins it to TALOS_RUNNERS.
 _RUNNER_IDS="claude pi codex gemini antigravity custom"
 
-# _prov_down <file>: one runner name per line for every unexpired entry.
+# _prov_down <file> [rows]: one runner name per line for every unexpired entry;
+# with `rows`, name<TAB>down_until<TAB>reason (reason cut to [A-Za-z0-9:._-]{0,60})
+# for --down-rows, the one reader pipeline-config.sh asks (#539).
 _prov_down() {
   [ -f "$1" ] || return 0
-  python3 -I - "$1" "$_RUNNER_IDS" <<'PYEOF'
+  python3 -I - "$1" "$_RUNNER_IDS" "${2:-}" <<'PYEOF'
 import datetime, json, sys
 path = sys.argv[1]
 try:
@@ -744,7 +750,11 @@ for name, ent in data.items():
     except Exception:
         continue
     if name in known and until > now:
-        print(name)
+        if len(sys.argv) > 3 and sys.argv[3] == "rows":
+            why = "".join(c if c.isascii() and (c.isalnum() or c in ":._-") else "_" for c in str(ent.get("reason", "")))[:60]
+            print("%s\t%s\t%s" % (name, ent["down_until"], why))
+        else:
+            print(name)
 PYEOF
 }
 
@@ -841,6 +851,15 @@ if [ "${1:-}" = "--mark-down" ]; then
     exit 2
   fi
   _prov_mark_down "$2" "$3"
+  exit 0
+fi
+
+# --down-rows (#539): name<TAB>down_until<TAB>reason per runner currently down,
+# from the same reader the failover chain uses. pipeline-config.sh asks for it to
+# skip a profile whose runner is down; it needs no config, so it never loads one.
+if [ "${1:-}" = "--down-rows" ]; then
+  _DR_FILE="$(_prov_path)" || exit 0
+  _prov_down "$_DR_FILE" rows
   exit 0
 fi
 

@@ -504,7 +504,9 @@ def _drop_secret_shaped(obj, what):
 #             a non-empty runner_cmd). The candidates [profile, ...fallback
 #             entries that name a profile] are walked in order and the first
 #             usable one is active; each one passed over is listed with one
-#             reason. None usable, or an unknown name, stops the load: one
+#             reason. A profile whose runner is marked down in providers.json
+#             (until its down_until) is passed over too: `provider-down
+#             until=<ts> reason=<class:detail>`. None usable, or an unknown name, stops the load: one
 #             stderr reason line and exit 4 (not 3, so cfg() can tell a profile
 #             failure, which must stop a script, from the older gate failures).
 _PROFILE_MODES = ("native", "adapter", "inline")
@@ -594,6 +596,26 @@ def _profile_state(eff):
         reason = "runner-custom-has-no-runner_cmd" if runner == "custom" else "runner-%s-not-on-path" % safe
     return mode, runner, cli, reason
 
+def _down_runners():
+    # {runner: (down_until, reason)} for the runners currently marked down. The
+    # one providers.json reader is pipeline-agent.sh's (--down-rows, the failover
+    # chain's own), so no second parser lives here: an unreadable or corrupt file
+    # reads as nothing down, with that reader's one warning on stderr.
+    import subprocess
+    if not _AGENT_SH or not os.path.isfile(_AGENT_SH):
+        return {}
+    try:
+        res = subprocess.run(["bash", _AGENT_SH, "--down-rows"], stdout=subprocess.PIPE,
+                             stdin=subprocess.DEVNULL, timeout=20)
+    except Exception:
+        return {}
+    down = {}
+    for row in res.stdout.decode("utf-8", "replace").splitlines():
+        parts = row.split("\t")
+        if len(parts) == 3 and parts[0]:
+            down[parts[0]] = (parts[1], parts[2])
+    return down
+
 def _profile_fail(line):
     sys.stderr.write("pipeline-config: %s\n" % line)
     sys.exit(4)
@@ -633,11 +655,24 @@ def _apply_profile(merged):
                            if isinstance(e, str) and e in resolved and e != requested]
     skipped = []
     active = ""
+    # A runner marked down in .talos/providers.json (#418) makes its profile
+    # unusable while the mark lasts. Only worth asking when there is another
+    # candidate to fall to; if every harness-usable candidate is down the first
+    # one is used anyway (the mark is advisory, and a stopped run is worse).
+    down = _down_runners() if len(cands) > 1 else {}
+    held = []
     for c in cands:
-        if not states[c][3]:
+        if states[c][3]:
+            skipped.append((c, states[c][3]))
+        elif states[c][1] in down:
+            held.append(c)
+            skipped.append((c, "provider-down until=%s reason=%s" % down[states[c][1]]))
+        else:
             active = c
             break
-        skipped.append((c, states[c][3]))
+    if not active and held:
+        active = held[0]
+        skipped = [s for s in skipped if cands.index(s[0]) < cands.index(active)]
     if not active:
         _profile_fail("reason=profile-unusable requested=%s harness=%s skipped=%s"
                       % (repr(requested)[:40], _HARNESS[0], ",".join("%s:%s" % s for s in skipped)))
@@ -776,7 +811,12 @@ _cfg_loader_src() {
   read -r _hn _ho <<EOF
 $(_cfg_harness)
 EOF
-  printf '_CFG_TABLE = %s\n_HARNESS = ("%s", "%s")\n%s\n%s\n%s' "$(_talos_scope_env_json)" "$_hn" "$_ho" "${_TALOS_TRUST_LIB:-}" "$_CFG_SHAPES_PY" "$_CFG_LOADER_PY"
+  # _AGENT_SH: pipeline-agent.sh, whose --down-rows is the providers.json reader
+  # (a path holding a newline is not passed: the lookup is then skipped).
+  local _as="$_CFG_SELF_DIR/pipeline-agent.sh"
+  case "$_as" in *$'\n'*) _as="" ;; esac
+  _as="${_as//\\/\\\\}"; _as="${_as//\"/\\\"}"
+  printf '_CFG_TABLE = %s\n_HARNESS = ("%s", "%s")\n_AGENT_SH = "%s"\n%s\n%s\n%s' "$(_talos_scope_env_json)" "$_hn" "$_ho" "$_as" "${_TALOS_TRUST_LIB:-}" "$_CFG_SHAPES_PY" "$_CFG_LOADER_PY"
 }
 
 # ── Evidence-key validator (#405, part of #352) ──────────────────────────────

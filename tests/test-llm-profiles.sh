@@ -416,7 +416,79 @@ assert_eq "0" "$(runner_calls CLAUDE)" "stage: claude did not run"
 assert_contains "$(cat "$ERR")" "talos:runner role=developer runner=pi" "stage: the runner marker shows pi"
 assert_eq "glm-5.3-flash" "$(event_field stage_complete model)" "stage: the stage event records the profile's model"
 
-# ═══ 8. The playbook ═════════════════════════════════════════════════════════
+# ═══ 8. A profile whose runner is marked down is passed over (#418 tracking) ═
+PROV="$SANDBOX/.talos/providers.json"
+# mark_down <runner> <seconds from now, negative = expired> <class:detail>
+mark_down() {
+  mkdir -p "$SANDBOX/.talos"
+  python3 -I - "$PROV" "$1" "$2" "$3" <<'PYEOF'
+import datetime, json, sys
+path, runner, secs, reason = sys.argv[1:5]
+fmt = "%Y-%m-%dT%H:%M:%SZ"
+now = datetime.datetime.now(datetime.timezone.utc)
+until = (now + datetime.timedelta(seconds=int(secs))).strftime(fmt)
+try:
+    data = json.load(open(path))
+except Exception:
+    data = {}
+data[runner] = {"down_until": until, "reason": reason, "since": now.strftime(fmt)}
+json.dump(data, open(path, "w"))
+print(until)
+PYEOF
+}
+reset
+set_cfg '{"agents": {"profile": "claude", "fallback": ["local"], "profiles": {
+  "claude": {"model": "sonnet"},
+  "local":  {"runner": "pi", "mode": "inline", "model": "glm"}}}}'
+assert_eq "claude" "$(dump_get sources.profile)" "down: nothing marked down -> the requested profile"
+until_ts="$(mark_down claude 600 provider:quota)"
+assert_eq "local" "$(dump_get sources.profile)" "down: the requested profile's runner is down and unexpired -> the fallback profile"
+assert_eq "fallback" "$(dump_get sources.profile_origin)" "down: and the origin says fallback"
+want_reason="provider-down until=$until_ts reason=provider:quota"
+assert_eq "claude:$want_reason" "$(dump_get sources.profile_skipped)" "down: the skip carries one reason with the expiry and the recorded class:detail"
+bash "$AGENT" --resolve-all >"$SANDBOX/out.txt" 2>"$ERR"
+assert_contains "$(cat "$ERR")" "profile 'claude' skipped: $want_reason" "down: --resolve-all warns with the reason line"
+assert_eq "pi" "$(bash "$CONFIG" agents.runner 2>/dev/null)" "down: the fallback profile's keys are the effective config"
+out="$(bash "$TALOS" env 2>/dev/null)"
+assert_eq "local" "$(env_get "$out" PROFILE)" "down: talos.sh env reports the fallback profile"
+assert_eq "claude reason=$want_reason" "$(env_get "$out" PROFILE_SKIPPED)" "down: and the skipped profile with its reason"
+# A down mark on a runner no candidate uses changes nothing.
+reset
+set_cfg '{"agents": {"profile": "claude", "fallback": ["local"], "profiles": {
+  "claude": {"model": "sonnet"},
+  "local":  {"runner": "pi", "mode": "inline", "model": "glm"}}}}'
+mark_down codex 600 provider:429 >/dev/null
+assert_eq "claude" "$(dump_get sources.profile)" "down: a different runner being down changes nothing"
+# Expired: usable again.
+mark_down claude -60 provider:quota >/dev/null
+assert_eq "claude" "$(dump_get sources.profile)" "down: an expired mark is usable"
+assert_eq "" "$(dump_get sources.profile_skipped)" "down: and nothing is skipped"
+# Corrupt file: nothing down, with the existing reader's one warning.
+printf '{not json' > "$PROV"
+assert_eq "claude" "$(dump_get sources.profile)" "down: a corrupt providers.json reads as nothing down"
+assert_eq "1" "$(bash "$CONFIG" --dump 2>&1 >/dev/null | grep -c 'unreadable or corrupt')" "down: with the existing warning, once"
+# Every harness-usable candidate down: the first is used anyway, not a stop.
+mark_down claude 600 provider:quota >/dev/null
+mark_down pi 600 provider:429 >/dev/null
+assert_eq "claude" "$(dump_get sources.profile)" "down: all usable candidates down -> the requested one is still used"
+assert_eq "" "$(dump_get sources.profile_skipped)" "down: and it is not reported as skipped"
+# A down fallback is skipped in favour of the next usable one.
+reset
+set_cfg '{"agents": {"profile": "claude", "fallback": ["local", "ollama"], "profiles": {
+  "claude": {"model": "sonnet"},
+  "local":  {"runner": "pi", "model": "glm"},
+  "ollama": {"runner": "codex", "model": "q"}}}}'
+mark_down claude 600 provider:quota >/dev/null
+mark_down pi 600 provider:overloaded >/dev/null
+assert_eq "ollama" "$(dump_get sources.profile)" "down: a down fallback is passed over for the next usable profile"
+assert_eq "2" "$(dump_get sources.profile_skipped | awk 'END { print NR }')" "down: both passed-over profiles are listed"
+# No profile configured and no harness: providers.json is never read.
+reset
+set_cfg "$CFG_PLAIN"
+mark_down claude 600 provider:quota >/dev/null
+assert_eq "" "$(bash "$CONFIG" --dump 2>&1 >/dev/null)" "down: a run without profiles ignores providers.json"
+
+# ═══ 9. The playbook ═════════════════════════════════════════════════════════
 SKILL="$TALOS_ROOT/skills/pipeline/SKILL.md"
 assert_contains "$(cat "$SKILL")" "AGENTS_MODE" "skill: the playbook uses the resolved mode, not agents.runner"
 assert_contains "$(cat "$SKILL")" "TALOS_PROFILE" "skill: names the profile switch"

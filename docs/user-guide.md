@@ -2637,7 +2637,13 @@ selected from a repo's file. With no profiles configured, nothing changes.
   first usable one is active; each one passed over is listed once, for example
   `PROFILE_SKIPPED=claude reason=mode-native-unsupported-by-pi`. A fresh session
   started from another tool (`TALOS_HARNESS=pi talos ...`) therefore continues on
-  `local` with no config edit. None usable stops the run with
+  `local` with no config edit. A profile is also passed over while its runner is
+  marked down in `.talos/providers.json` (what a provider-error failover records
+  for `agents.provider_down_s`): `PROFILE_SKIPPED=claude reason=provider-down
+  until=<ts> reason=provider:quota`, so a session started after a quota failure
+  picks the fallback by itself; an expired mark, or an unreadable file, counts as
+  nothing down. If every harness-usable candidate is down the first is used anyway
+  (the mark is advisory). None usable on the harness stops the run with
   `reason=profile-unusable`.
 - **Fallback entries.** `agents.fallback` (and `agents.roles.<role>.fallback`) may
   name a profile as well as a runner; a bare runner name behaves exactly as in
