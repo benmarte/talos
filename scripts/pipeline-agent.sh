@@ -47,6 +47,11 @@
 #                                             # invalid <role>. pi inline mode
 #                                             # (skills/pipeline/SKILL.md) uses
 #                                             # it: same order as a stage run.
+#        pipeline-agent.sh --resolve-roles <role>...
+#                                             # --resolve and --check-effort for
+#                                             # every role in one process, five
+#                                             # NUL-terminated fields per role
+#                                             # (talos.sh env reads them).
 #
 # The executed prompt = role definition body (the profile found by the order
 # below, with its YAML frontmatter stripped — the frontmatter is Claude Code
@@ -408,33 +413,37 @@ _resolve_role_profile() {
   return 1
 }
 
-# --resolve <role>: print the resolved runner/runner_cmd/model/effort and
-# exit, without running anything. Shared resolution for the orchestrator's
-# native-path per-role dispatch decision (skills/pipeline/SKILL.md).
-if [ "${1:-}" = "--resolve" ]; then
-  _RESOLVE_ROLE="${2:-}"
-  if [ -z "$_RESOLVE_ROLE" ]; then
+# _verb_resolve <role>: print the resolved runner/runner_cmd/model/effort and
+# return, without running anything. Shared resolution for the orchestrator's
+# native-path per-role dispatch decision (skills/pipeline/SKILL.md). Returns 2
+# on a missing role, 1 on an unknown runner.
+_verb_resolve() {
+  local _role="${1:-}" _RESOLVED_RUNNER _fb
+  if [ -z "$_role" ]; then
     echo "Usage: pipeline-agent.sh --resolve <role>" >&2
-    exit 2
+    return 2
   fi
-  _RESOLVED_RUNNER="$(_resolve_runner "$_RESOLVE_ROLE")"
+  _RESOLVED_RUNNER="$(_resolve_runner "$_role")"
   case "$_RESOLVED_RUNNER" in
     claude | pi | codex | gemini | antigravity | custom) : ;;
     *)
-      echo "pipeline-agent: unknown agents.runner '$_RESOLVED_RUNNER' (role=$_RESOLVE_ROLE). Valid: claude | pi | codex | gemini | antigravity | custom" >&2
-      exit 1
+      echo "pipeline-agent: unknown agents.runner '$_RESOLVED_RUNNER' (role=$_role). Valid: claude | pi | codex | gemini | antigravity | custom" >&2
+      return 1
       ;;
   esac
   # fallback= (#418): appended only when a chain resolves, so a role without
   # one keeps the exact line.
-  _RESOLVED_FB="$(_fallback_chain "$_RESOLVE_ROLE" "$_RESOLVED_RUNNER" 2>/dev/null | paste -sd, -)"
+  _fb="$(_fallback_chain "$_role" "$_RESOLVED_RUNNER" 2>/dev/null | paste -sd, -)"
   printf 'runner=%s runner_cmd=%s model=%s effort=%s%s\n' \
     "$_RESOLVED_RUNNER" \
-    "$(_resolve_runner_cmd "$_RESOLVE_ROLE")" \
-    "$(_resolve_model "$_RESOLVE_ROLE")" \
-    "$(_resolve_effort "$_RESOLVE_ROLE")" \
-    "${_RESOLVED_FB:+ fallback=$_RESOLVED_FB}"
-  exit 0
+    "$(_resolve_runner_cmd "$_role")" \
+    "$(_resolve_model "$_role")" \
+    "$(_resolve_effort "$_role")" \
+    "${_fb:+ fallback=$_fb}"
+}
+if [ "${1:-}" = "--resolve" ]; then
+  _verb_resolve "${2:-}"
+  exit $?
 fi
 
 # --resolve-all (#336): one line per role -- the model it will run on, its
@@ -599,36 +608,58 @@ fi
 # is advisory there (no per-spawn effort parameter; the orchestrator never writes
 # a tracked file), so this only compares the resolved value with the role file's
 # committed `effort:` frontmatter and names both on one stdout line.
-if [ "${1:-}" = "--check-effort" ]; then
-  if [ -z "${2:-}" ]; then
+# _verb_check_effort <role>: prints the notice (nothing when there is none).
+_verb_check_effort() {
+  local _role="${1:-}" _cfg _file _fm="" _show
+  if [ -z "$_role" ]; then
     echo "Usage: pipeline-agent.sh --check-effort <role>" >&2
-    exit 2
+    return 2
   fi
-  _valid_role_name "$2" || { _resolve_role_profile "$2" >/dev/null; exit $?; }
-  [ "$(_resolve_runner "$2")" = "claude" ] || exit 0
-  _CE_CFG="$(_resolve_effort "$2")"
+  _valid_role_name "$_role" || { _resolve_role_profile "$_role" >/dev/null; return $?; }
+  [ "$(_resolve_runner "$_role")" = "claude" ] || return 0
+  _cfg="$(_resolve_effort "$_role")"
   # Same enum the config reader enforces (an invalid value reads as unset).
-  case "$_CE_CFG" in low | medium | high | max) : ;; *) exit 0 ;; esac
-  _CE_FILE="$(_resolve_role_profile "$2" 2>/dev/null || true)"
-  _CE_FM=""
-  if [ -n "$_CE_FILE" ]; then
+  case "$_cfg" in low | medium | high | max) : ;; *) return 0 ;; esac
+  _file="$(_resolve_role_profile "$_role" 2>/dev/null || true)"
+  if [ -n "$_file" ]; then
     # The raw value never reaches the output: CR, an inline YAML comment and one
     # pair of surrounding quotes are stripped, then only the four effort names
     # are accepted; anything else (control bytes, long text) prints <invalid>.
-    _CE_FM="$(awk 'NR==1 { if ($0 !~ /^---[ \t\r]*$/) exit; next }
+    _fm="$(awk 'NR==1 { if ($0 !~ /^---[ \t\r]*$/) exit; next }
       /^---[ \t\r]*$/ { exit }
       /^effort:/ { v = $0; sub(/^effort:[ \t]*/, "", v); sub(/\r$/, "", v)
         sub(/^#.*$/, "", v); sub(/[ \t]+#.*$/, "", v); sub(/[ \t]+$/, "", v)
         if (v ~ /^".*"$/ || v ~ /^\047.*\047$/) v = substr(v, 2, length(v) - 2)
-        print v; exit }' "$_CE_FILE" | head -c 64)"
-    case "$_CE_FM" in "" | low | medium | high | max) : ;; *) _CE_FM="<invalid>" ;; esac
+        print v; exit }' "$_file" | head -c 64)"
+    case "$_fm" in "" | low | medium | high | max) : ;; *) _fm="<invalid>" ;; esac
   fi
-  [ -n "$_CE_FILE" ] && [ "$_CE_CFG" = "$_CE_FM" ] && exit 0
-  if [ -z "$_CE_FILE" ]; then _CE_SHOW="role file not found"
-  elif [ -z "$_CE_FM" ]; then _CE_SHOW="its frontmatter has no effort:"
-  else _CE_SHOW="its frontmatter has effort=$_CE_FM"; fi
+  [ -n "$_file" ] && [ "$_cfg" = "$_fm" ] && return 0
+  if [ -z "$_file" ]; then _show="role file not found"
+  elif [ -z "$_fm" ]; then _show="its frontmatter has no effort:"
+  else _show="its frontmatter has effort=$_fm"; fi
   printf "talos: notice: role '%s' has effort=%s in config but %s -- native path uses the committed frontmatter; config effort is advisory here\n" \
-    "$2" "$_CE_CFG" "$_CE_SHOW"
+    "$_role" "$_cfg" "$_show"
+}
+if [ "${1:-}" = "--check-effort" ]; then
+  _verb_check_effort "${2:-}"
+  exit $?
+fi
+
+# --resolve-roles <role>...: --resolve and --check-effort for every role in ONE
+# process (talos.sh env resolves all nine roles with it instead of spawning two
+# children per role). Five NUL-terminated fields per role: role, the --resolve
+# exit status, its line, the --check-effort exit status ("" when it was not run:
+# the resolve failed) and its notice. A line can hold a newline, so NUL is the
+# only safe separator. No role is a usage error (2).
+if [ "${1:-}" = "--resolve-roles" ]; then
+  shift
+  [ "$#" -gt 0 ] || { echo "Usage: pipeline-agent.sh --resolve-roles <role>..." >&2; exit 2; }
+  for _RR_ROLE in "$@"; do
+    _RR_LINE="$(_verb_resolve "$_RR_ROLE")"; _RR_RC=$?
+    _RR_CRC="" _RR_NOTICE=""
+    if [ "$_RR_RC" -eq 0 ]; then _RR_NOTICE="$(_verb_check_effort "$_RR_ROLE")"; _RR_CRC=$?; fi
+    printf '%s\0%s\0%s\0%s\0%s\0' "$_RR_ROLE" "$_RR_RC" "$_RR_LINE" "$_RR_CRC" "$_RR_NOTICE"
+  done
   exit 0
 fi
 

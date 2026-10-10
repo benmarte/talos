@@ -776,14 +776,13 @@ verbs:
 HELP
 }
 
-# _talos_resolve_role <role>: the runner, command, model, effort and fallback
-# of `pipeline-agent.sh --resolve`, then the --check-effort notice. The line is
-# parsed from the right (model, effort and fallback have fixed shapes at its
+# _talos_resolve_role <role> <resolve-rc> <line> <check-rc> <notice>: one role's
+# record from `pipeline-agent.sh --resolve-roles`: the runner, command, model,
+# effort and fallback of `--resolve`, then the `--check-effort` notice. The line
+# is parsed from the right (model, effort and fallback have fixed shapes at its
 # end), so a runner_cmd that holds the words "model=" cannot move a field.
 _talos_resolve_role() {
-  local _role="$1" _line _rc _notice _re _runner _rest
-  _line="$(bash "$SCRIPT_DIR/pipeline-agent.sh" --resolve "$_role")"
-  _rc=$?
+  local _role="$1" _rc="$2" _line="$3" _crc="$4" _notice="$5" _re _runner _rest
   _re='^(.*) model=(.*) effort=(low|medium|high|max)?( fallback=([A-Za-z0-9_,-]+))?$'
   case "$_line" in
     "runner="*" runner_cmd="*) : ;;
@@ -810,13 +809,29 @@ _talos_resolve_role() {
     _talos_emit warn "reason=resolve-failed role=$_role"
     return 0
   fi
-  # --check-effort prints nothing when no effort is configured, so skip the spawn then.
+  # No effort configured: there is no notice to look for.
   [ -n "${BASH_REMATCH[3]}" ] || return 0
-  if ! _notice="$(bash "$SCRIPT_DIR/pipeline-agent.sh" --check-effort "$_role")"; then
+  if [ "$_crc" != 0 ]; then
     _talos_emit warn "reason=effort-check-failed role=$_role"
   elif [ -n "$_notice" ]; then
     _talos_emit "agent.$_role.effort_notice" "$_notice"
   fi
+}
+
+# _talos_resolve_roles: every role of $_TALOS_ROLES through ONE pipeline-agent.sh
+# process (--resolve-roles), read back as five NUL-terminated fields per role. A
+# record that is missing (the child died) is a resolve-failed warn for that role.
+_talos_resolve_roles() {
+  local _f="$_CFG_CACHE_DIR/roles.resolved" _role _r _rc _line _crc _notice
+  # shellcheck disable=SC2086 # the role list is meant to split into words
+  bash "$SCRIPT_DIR/pipeline-agent.sh" --resolve-roles $_TALOS_ROLES > "$_f" || : > "$_f"
+  for _role in $_TALOS_ROLES; do
+    if ! { IFS= read -r -d '' _r && IFS= read -r -d '' _rc && IFS= read -r -d '' _line \
+           && IFS= read -r -d '' _crc && IFS= read -r -d '' _notice; }; then
+      _rc=1 _line="" _crc="" _notice=""
+    fi
+    _talos_resolve_role "$_role" "$_rc" "$_line" "$_crc" "$_notice"
+  done < "$_f"
 }
 
 # _talos_base_branch: base_branch, else the remote's default branch, else main.
@@ -904,11 +919,8 @@ EOF
   _talos_emit PR_DRAFT "$_val"
   _TALOS_PR_DRAFT="$_val"
 
-  local _role
   _TALOS_HARNESS_REF=0
-  for _role in $_TALOS_ROLES; do
-    _talos_resolve_role "$_role"
-  done
+  _talos_resolve_roles
 
   _talos_env_refs
   _talos_flush
