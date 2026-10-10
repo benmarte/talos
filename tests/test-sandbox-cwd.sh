@@ -21,7 +21,7 @@ use_stubs
 # counts made them flaky. Everything below sandboxes into a directory only this
 # run uses. The rm -rf is anchored on that checked mktemp -d path.
 PRIV_TMP="$(mktemp -d "${TMPDIR:-/tmp}/talos-sandbox-cwd.XXXXXX")" || exit 1
-trap 'rm -rf "$SANDBOX" "$PRIV_TMP"' EXIT
+trap '_is_trap_owner && rm -rf "$SANDBOX" "$PRIV_TMP"' EXIT
 export TMPDIR="$PRIV_TMP"
 
 # ═════════════════════════════════════════════════════════════════════════════

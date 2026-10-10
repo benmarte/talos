@@ -26,7 +26,7 @@ git config user.name "talos-test"
 UPSTREAM_PARENT="$(safe_mktemp_dir "${TMPDIR:-/tmp}/talos-cl-origin.XXXXXX")" || exit 1
 UPSTREAM="$UPSTREAM_PARENT/upstream.git"
 git init -q --bare "$UPSTREAM"
-trap 'rm -rf "$SANDBOX" "$UPSTREAM_PARENT"' EXIT
+trap '_is_trap_owner && rm -rf "$SANDBOX" "$UPSTREAM_PARENT"' EXIT
 
 git remote set-url origin "$UPSTREAM"
 

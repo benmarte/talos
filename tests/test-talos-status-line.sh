@@ -26,7 +26,7 @@ LOG="$SANDBOX/.git/talos/events.jsonl"
 ERR="$SANDBOX/err.txt"
 mkdir -p "$SANDBOX/.git/talos"
 NOGIT="$(mktemp -d "${TMPDIR:-/tmp}/talos-nogit.XXXXXX")" || exit 1
-trap '[ -n "${SANDBOX:-}" ] && rm -rf "$SANDBOX"; [ -n "${NOGIT:-}" ] && rm -rf "$NOGIT"' EXIT
+trap '_is_trap_owner && { [ -n "${SANDBOX:-}" ] && rm -rf "$SANDBOX"; [ -n "${NOGIT:-}" ] && rm -rf "$NOGIT"; }' EXIT
 
 export TALOS_HOME="$SANDBOX/.talos-home"
 unset COLUMNS NO_COLOR TALOS_STATUS_DEBUG
