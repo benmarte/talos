@@ -1,10 +1,10 @@
 # Changelog
 
-One line per change, newest first. Releases before 0.17.0 are in [docs/CHANGELOG-archive.md](docs/CHANGELOG-archive.md).
+One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
 - removed: CHANGELOG fragments (roles.changelog_fragments, docs/CHANGELOG.d, scripts/pipeline-changelog.sh) and the post-merge assemble step; the developer writes its CHANGELOG line directly and merge.union_paths resolves concurrent edits (#555)
-- docs: README cut to a short overview; docs/user-guide.md replaced by docs/reference.md with generated config tables; older releases moved to docs/CHANGELOG-archive.md (#555)
+- docs: README cut to a short overview; docs/user-guide.md replaced by docs/reference.md with generated config tables; releases before 0.17.0 dropped from this file (#555)
 - lean: pr-checks-required --wait polls at 30 s, then 60 s, then 120 s (was fixed 30 s); deadline and exit codes unchanged (#554)
 - lean: post-approval shares one per-pass read cache (PR, comments, login); one approval costs 7 REST calls, not 10 (#554)
 - lean: board moves cost 4 GraphQL calls for the first and 1 for each later one; ids are cached per run (#554)
@@ -100,3 +100,5 @@ One line per change, newest first. Releases before 0.17.0 are in [docs/CHANGELOG
 - feat: every reviewer verdict comment ends with a Human-attention report of 2-5 bullets with file:line pointers (#294)
 - feat: roles.changelog_fragments (default false) makes docs write docs/CHANGELOG.d/<issue>.md, folded into [Unreleased] after each merge by pipeline-changelog.sh assemble (#290)
 - changed: the Step 4 stale-base guard applies to any stale base, and merge.union_paths entries cover non-CHANGELOG additive paths (#288)
+
+Older releases: see the git tags (`git show v0.18.0:CHANGELOG.md` has every release up to 0.18.0 in full) or git history.

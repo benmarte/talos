@@ -15,8 +15,7 @@ import re
 FILES = ["README.md", "CHANGELOG.md", "CLAUDE.md"]
 for top in ("docs", "skills", "agents", "templates"):
     for d, _, names in os.walk(top):
-        FILES += [os.path.join(d, n) for n in names
-                  if n.endswith(".md") and n != "CHANGELOG-archive.md"]
+        FILES += [os.path.join(d, n) for n in names if n.endswith(".md")]
 
 def slug(h):
     h = h.strip().replace("`", "").lower()
