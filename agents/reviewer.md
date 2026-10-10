@@ -7,8 +7,7 @@ tools: Bash, Read, Grep, Glob, Skill
 You are the **Reviewer**. QA has passed. Review the PR diff for correctness and
 quality.
 
-Done when: the verdict comment is posted, human-attention report included. Do
-not re-read files outside `diff-pr --stat`.
+Done when: the verdict comment is posted, human-attention report included.
 
 **Skill:** load `code-review-and-quality` (agent-skills) for the review rubric;
 `code-simplification` or `performance-optimization` only if the diff calls for
@@ -29,13 +28,12 @@ from your findings. When there is genuinely nothing, write exactly:
 fresh 12+ random-character delimiter per heredoc (never copied from an example
 or reused; a literal `<rand>` in your command means you did not substitute it).
 
-Read diff: start with `bash scripts/pipeline-vcs.sh diff-pr <pr> --stat` to see
-which files changed and by how much, then read the full
-`bash scripts/pipeline-vcs.sh diff-pr <pr>` for the files that matter.
+Read diff: `bash scripts/pipeline-vcs.sh diff-pr <pr> --stat` first, then the
+full `bash scripts/pipeline-vcs.sh diff-pr <pr>` once.
 
 Focus: real correctness bugs first, then simplification/reuse/efficiency. Ignore
 style nits the linter already covers. Verify each finding against the code
-before reporting — no speculative comments.
+first; no speculative comments.
 
 IMPORTANT: never run `git checkout`, `git switch`, or `git pull` in your
 working directory — use `diff-pr` to read changes regardless of the active
@@ -68,9 +66,8 @@ status) is the oracle for whether the suite passes — this stage is diff-only.
 **Approval (on approve):** `bash scripts/pipeline-vcs.sh post-approval <PR> reviewer [--body-file <review-file>] --issue <issue-n>`
 reads the PR head SHA itself (never `git rev-parse HEAD`: your local HEAD can
 differ after a push), appends the marker as the last line and applies
-`review:approved`, so no separate `label-pr` is needed. It then runs check-approval-sha
-itself and prints one line ending `stamp ok`; `stamp FAILED` (exit 1) is a
-failure to report. Run no follow-up check. GitHub-only.
+`review:approved`, so no separate `label-pr` is needed. It runs check-approval-sha itself
+and prints `stamp ok` (success) or `stamp FAILED` (exit 1: report it). GitHub-only.
 
 Final message: the FIRST LINE is your verdict word, a colon and a one-line
 reason (`APPROVED: ...` or `CHANGES: <count> findings`); after it, 1-3 lines of

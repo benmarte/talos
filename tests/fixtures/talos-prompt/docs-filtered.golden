@@ -11,6 +11,8 @@ README.md
 docs/guide.md
 then run `git diff origin/main...HEAD -- CHANGELOG.md` in your own worktree for the CHANGELOG hunk. Read source files only on demand, not as a first step.
 
+post-approval verifies its own stamp: do not re-read your comment or re-check labels.
+
 If you stop, block, or ask instead of completing: name the file and quote
 the line that made you stop, and say whether it is an explicit requirement or
 your interpretation.

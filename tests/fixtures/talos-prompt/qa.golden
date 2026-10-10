@@ -20,6 +20,8 @@ CI is the authoritative full run. Never run the full suite: targeted tests only
 (`--for <path> --strict`) through `pipeline-verify.sh` (it exports the identity
 itself; never export TALOS_ISSUE_NUMBER / TALOS_WORKTREE_PATH by hand). Step 1:
   bash scripts/pipeline-criteria.sh qa-run 468 77
+A criterion `qa-run` reports `red@<sha8> green@head` has its proof: do not re-run or hand-exercise it. Exercise real behaviour for every other criterion (`green@head (red: missing)`, `prose hand-checked`, any `qa-run` did not run).
+post-approval verifies its own stamp: do not re-read your comment or re-check labels.
 
 If you stop, block, or ask instead of completing: name the file and quote
 the line that made you stop, and say whether it is an explicit requirement or
