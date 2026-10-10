@@ -2396,11 +2396,11 @@ _talos_gate() {
 # failure there (unreadable config, failed read, timeout) is a stop; the JSON
 # is emitted only when the whole collect succeeded, so no partial JSON.
 _talos_state() {
-  local _sum=0 _act _where _l
+  local _sum=0 _where _l
   if [ "${1:-}" = "--summary" ]; then _sum=1; shift; fi
   [ "$#" -eq 0 ] || _talos_stop usage 2
   _talos_prepare state pipeline-config.sh pipeline-cfg-cache.sh pipeline-status-file.sh \
-                     pipeline-contract.sh pipeline-next-stage.py pipeline-draft-check.sh pipeline-vcs.sh
+                     pipeline-contract.sh pipeline-next.py pipeline-draft-check.sh pipeline-vcs.sh
   local _json
   _talos_run_capture state bash "$SCRIPT_DIR/pipeline-status-file.sh" collect
   [ "$_RC" -eq 0 ] || _talos_stop state-unavailable
@@ -2414,8 +2414,7 @@ _talos_state() {
     # `next`'s own program (no lease, nothing written); the lines are numbers
     # and fixed words, never a question or any other free text of the state.
     printf '%s' "$_json" > "$_CFG_CACHE_DIR/state.json"
-    _act="$(python3 -I -c "$_TALOS_NEXT_PY" "$_CFG_CACHE_DIR/state.json" 2>/dev/null)" || _act="unknown"
-    _where="$(python3 -I -c "$_TALOS_WHERE_PY" "$_CFG_CACHE_DIR/state.json" "$_act" 2>/dev/null)" || _talos_stop state-unavailable
+    _where="$(python3 -I "$SCRIPT_DIR/pipeline-next.py" where "$_CFG_CACHE_DIR/state.json" 2>/dev/null)" || _talos_stop state-unavailable
     while IFS= read -r _l; do _talos_emit where "$_l"; done <<< "$_where"
     _talos_flush
     return 0
@@ -2423,370 +2422,6 @@ _talos_state() {
   _talos_emit state "$_json"
   _talos_flush
 }
-
-# _TALOS_WHERE_PY: `state --summary`. argv: the state file, then the PR-side
-# answer of _TALOS_NEXT_PY (an `action=...` line, `issue-side`, or `unknown`).
-# Prints exactly three lines: in flight, waiting, next. Only integers and fixed
-# words are printed (a stage name is checked against [a-z-]).
-_TALOS_WHERE_PY='
-import json, re, sys
-with open(sys.argv[1]) as f:
-    d = json.load(f)
-act = sys.argv[2].split("\n")[0]
-def num(x):
-    return x if isinstance(x, int) and not isinstance(x, bool) else 0
-def some(items, fmt, cap=4):
-    out = [fmt % i for i in items[:cap]]
-    return out + (["+%d more" % (len(items) - cap)] if len(items) > cap else [])
-prs = sorted((p for p in d.get("prs") or [] if isinstance(p, dict)), key=lambda p: num(p.get("n")))
-def stage(p):
-    st = str(p.get("stage"))
-    return st if re.fullmatch(r"[a-z-]{1,20}", st) else "unknown"
-inflight = [num(n) for n in d.get("inflight") or []]
-pr_part = ", ".join(some([(num(p.get("n")), num(p.get("issue")), stage(p)) for p in prs], "PR #%d (#%d) at %s"))
-issue_part = ("issue%s " % ("s" if len(inflight) > 1 else "") + ", ".join(some(inflight, "#%d", 5))) if inflight else ""
-print("in flight: " + ("; ".join(x for x in (pr_part, issue_part) if x) or "nothing"))
-blocked = ["%s #%d" % ("PR" if k == "PR" else "issue", num(n)) for k, n in (d.get("blocked") or []) if isinstance(k, str)]
-held = [num(n) for n in d.get("held") or []]
-owners = sorted(set(held + [num(o.get("n")) for o in d.get("owners") or [] if isinstance(o, dict)]))
-waiting = (["blocked " + ", ".join(some(blocked, "%s", 5))] if blocked else []) + (["owner " + ", ".join(some(owners, "#%d", 5))] if owners else [])
-print("waiting: " + ("; ".join(waiting) if waiting else "nothing"))
-a = dict(w.split("=", 1) for w in act.split()[1:] if "=" in w)
-free = [n for n in d.get("queued") or [] if n not in held]
-first = next((p for p in prs if not p.get("owner")), None)
-if act.startswith("action=dispatch") and first:
-    nxt = "dispatch %s on PR #%d (#%d)" % (a.get("stage", "?") if re.fullmatch(r"[a-z-]{1,20}", a.get("stage", "")) else "?", num(first.get("n")), num(first.get("issue")))
-elif act.startswith("action=merge") and first:
-    nxt = "merge PR #%d (#%d)" % (num(first.get("n")), num(first.get("issue")))
-elif act.startswith("action=wait") and first:
-    r = a.get("reason", "")
-    nxt = "wait (%s) on PR #%d (#%d)" % (r if re.fullmatch(r"[a-z-]{1,20}", r) else "?", num(first.get("n")), num(first.get("issue")))
-elif free:
-    nxt = "start issue #%d" % num(free[0])
-elif inflight:
-    nxt = "continue issue #%d" % inflight[0]
-elif held or owners:
-    nxt = "waiting on the owner"
-else:
-    nxt = "nothing queued"
-print("next: " + nxt)
-# Items of other operators (#560), only while claiming is on and there are any:
-# one entry per issue with the login of its owner (a PR counts as its issue).
-mine = {}
-for t in d.get("theirs") or []:
-    if isinstance(t, dict) and num(t.get("issue")):
-        o = t.get("owner")
-        mine.setdefault(num(t.get("issue")), o if isinstance(o, str) and re.fullmatch(r"[A-Za-z0-9._@+\[\]-]{1,64}", o) else "?")
-if mine:
-    print("theirs: " + ", ".join(some(sorted(mine.items()), "#%d (@%s)", 5)))
-'
-
-# _TALOS_NEXT_PY: one action from the collected state (argv: the JSON, read
-# from the file the bash above wrote -- never argv text). Fixed-enum reasons;
-# the PRs are already ordered (ascending) by the collect. Draft-order note: a
-# PR at stage `ready` is a draft-window PR (the collect's draft check ran),
-# so the answer is wait reason=draft, the draft stage order continues; the
-# state is trusted, no PR text is.
-_TALOS_NEXT_PY='
-import json, sys
-with open(sys.argv[1]) as f:
-    data = json.load(f)
-prs = sorted((p for p in data["prs"] if not p.get("owner")), key=lambda p: p["n"])
-queued = data.get("queued") or []
-held = set(data.get("held") or [])
-owners = data.get("owners") or []
-blocked = data.get("blocked") or []
-ROLE_STAGES = ("qa", "docs", "reviewer", "security", "adversarial")
-def say(action, **kw):
-    out = "action=" + action
-    for k in ("stage", "reason", "pr", "issue"):
-        if k in kw:
-            out += " %s=%s" % (k, kw[k])
-    print(out)
-for p in prs:
-    st = p["stage"]
-    if st in ROLE_STAGES:
-        say("dispatch", stage=st, pr=p["n"], issue=p["issue"])
-    elif st == "merge":
-        say("merge", pr=p["n"], issue=p["issue"])
-    elif st == "ready":
-        # The draft wait is key-carrying (#516): it names the PR and the issue
-        # so the run loop can continue the Draft stage order from it.
-        say("wait", reason="draft", pr=p["n"], issue=p["issue"])
-    elif st == "ci":
-        say("wait", reason="ci")
-    elif st == "human-merge":
-        say("wait", reason="human-merge")
-    elif st == "blocked":
-        say("wait", reason="blocked")
-    elif st == "unverified":
-        say("wait", reason="blocked")
-    else:
-        print("stop reason=unsupported-verb:%s" % st)
-        sys.exit(1)
-    sys.exit(0)
-# No PR answered: the issue side decides (#471) -- owner waits, the queue
-# walk, the routing. The bash caller runs _TALOS_NEXT_ISSUE_PY for it.
-print("issue-side")
-'
-
-# _TALOS_NEXT_ISSUE_PY: the issue-side half of `next` (#471, slice 7). Runs
-# only when the PR-side half printed its `issue-side` sentinel: no open
-# non-owner PR answered. One program, `python3 -I`, the state JSON on argv
-# and the mode's options as --name value pairs; the read verbs go through
-# the pipeline-vcs.sh path in opts (view-issue, has-spec, check-attempt) and
-# the budget guard through pipeline-budget.sh -- read-only, one verb per
-# call, never a GitHub write. Prints exactly one line:
-#   action=dispatch stage=<role> issue=<N>          the issue's one stage
-#   action=dispatch stage=<role> pr=<M> issue=<N>   adoption: a queued issue's
-#                                                   open PR, resumed at its
-#                                                   blocking stage (the same
-#                                                   stage the collect already
-#                                                   computed -- never a second
-#                                                   implementation)
-#   action=merge pr=<M> issue=<N>                   an adopted PR at merge
-#   action=ask-owner issue=<N> question=<text>      a needs-owner queued issue
-#   action=wait reason=<enum> [retry_after_s=<s>]   nothing to dispatch
-#   stop reason=<enum>                              a ceiling or a missing
-#                                                   provider verb (exit 1)
-# The lease itself is bash's (acquired for the dispatch answer); the walk's
-# capacity check gets the live-lease count through --in-flight.
-_TALOS_NEXT_ISSUE_PY='
-import json, re, subprocess, sys
-
-state_file = sys.argv[1]
-o = {}
-args = sys.argv[2:]
-for i in range(0, len(args) - 1, 2):
-    o[args[i][2:]] = args[i + 1]
-
-UNSUPPORTED = re.compile(r"not implemented for provider|unknown verb")
-ROLE_STAGES = ("qa", "docs", "reviewer", "security", "adversarial")
-
-def die(msg):
-    print("stop reason=" + msg)
-    sys.exit(1)
-
-def say(action, **kw):
-    out = "action=" + action
-    for k in ("stage", "reason", "pr", "issue", "retry_after_s", "question"):
-        if k in kw:
-            out += " %s=%s" % (k, kw[k])
-    print(out)
-    sys.exit(0)
-
-with open(state_file) as f:
-    data = json.load(f)
-prs = data.get("prs") or []
-queued = data.get("queued") or []
-qset = set(queued)
-held = set(data.get("held") or [])
-owners = data.get("owners") or []
-blocked = set(n for _, n in (data.get("blocked") or []))
-theirs = set(t["issue"] for t in (data.get("theirs") or []) if isinstance(t, dict) and isinstance(t.get("issue"), int))
-by_owner = dict((x["n"], x) for x in owners if isinstance(x, dict))
-roles = set(x for x in o.get("roles", "").split(",") if x)
-skip_labels = set(x for x in o.get("skip-labels", "").split(",") if x)
-label_filter = o.get("label-filter", "pipeline:ready")
-target = o.get("issue", "")
-pm_skip = o.get("pm-skip") == "true"
-planner_on = "planner" in roles
-validator_on = "validator" in roles
-pm_on = "pm" in roles
-
-def vcs(*a):
-    try:
-        p = subprocess.run(["bash", o["vcs"]] + list(a), stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE)
-    except OSError:
-        die("state-unavailable")
-    return p.returncode, p.stdout.decode("utf-8", "replace"), p.stderr.decode("utf-8", "replace")
-
-def view_issue(n):
-    rc, out, err = vcs("view-issue", str(n))
-    if rc != 0:
-        if UNSUPPORTED.search(err):
-            die("unsupported-verb:view-issue")
-        die("state-unavailable")
-    try:
-        d = json.loads(out)
-    except ValueError:
-        die("state-unavailable")
-    if not isinstance(d, dict):
-        die("state-unavailable")
-    labels = set()
-    for l in d.get("labels") or []:
-        name = l.get("name") if isinstance(l, dict) else l
-        if isinstance(name, str):
-            labels.add(name)
-    body = d.get("body")
-    return labels, body if isinstance(body, str) else "", d.get("state") if isinstance(d.get("state"), str) else "open"
-
-def ask_owner(n):
-    q = ""
-    e = by_owner.get(n)
-    if e and isinstance(e.get("question"), str):
-        q = e["question"]
-    if not q:
-        q = "the pipeline needs an owner decision on this issue"
-    say("ask-owner", issue=n, question=q)
-
-# The gate fix-round composition (#471, AC6), read-only: the budget guard
-# (pipeline-budget.sh check; exit 1 = exceeded) then check-attempt (its
-# ceilings), in the verb order.
-def fix_round_gate(n):
-    if o.get("budget"):
-        try:
-            p = subprocess.run(["bash", o["budget"], "check", "--issue", str(n)],
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        except OSError:
-            p = None
-        if p is not None and p.returncode == 1:
-            die("budget-exceeded")
-    rc, _, err = vcs("check-attempt", str(n))
-    if rc == 0:
-        return
-    if UNSUPPORTED.search(err):
-        die("unsupported-verb:check-attempt")
-    if rc != 1:
-        die("state-unavailable")
-    if "max_total_dispatches" in err:
-        die("max-total-dispatches")
-    if "max_fix_attempts" in err:
-        die("max-fix-attempts")
-    die("record-failed")
-
-def developer_route(n):
-    # A developer dispatch for an issue that already has an open PR is a fix
-    # round: compose the gate outcome first, never dispatch past a ceiling.
-    if any(p.get("issue") == n for p in prs):
-        fix_round_gate(n)
-    say("dispatch", stage="developer", issue=n)
-
-def route(n, labels, body):
-    # One stage per action, first match wins (#471, AC3).
-    if "pipeline:blocked" in labels:
-        say("wait", reason="blocked")
-    if "pipeline:epic-decomposed" in labels or "pipeline:dev" in labels:
-        developer_route(n)
-    if "pipeline:confirmed" in labels:
-        # Epic detection feeds routing (#471, AC4); the sub-issue creation
-        # itself stays in the planner act/done path, never here.
-        if planner_on and ("epic" in labels or len(re.findall(r"- \[ \]", body)) >= 4
-                           or len(body) >= 2000):
-            say("dispatch", stage="planner", issue=n)
-        if pm_on:
-            if pm_skip:
-                rc, _, err = vcs("has-spec", str(n))
-                if rc == 0:
-                    developer_route(n)
-                if UNSUPPORTED.search(err):
-                    die("unsupported-verb:has-spec")
-                if rc != 1:
-                    die("state-unavailable")
-            say("dispatch", stage="pm", issue=n)
-        developer_route(n)
-    if "pipeline:ready" in labels:
-        if validator_on:
-            say("dispatch", stage="validator", issue=n)
-        say("wait", reason="none")
-    say("wait", reason="none")
-
-# A `Depends on: #<N>` line whose issue is still open gates the candidate
-# (#471, AC2); only with roles.planner = true. An unreadable dependency is
-# treated as open (fail closed: the issue is not chosen on a failed read).
-def dep_gated(body):
-    deps = re.findall(r"Depends on:\s*#([0-9]+)", body)
-    for d in deps:
-        rc, out, err = vcs("view-issue", d)
-        if rc != 0:
-            if UNSUPPORTED.search(err):
-                die("unsupported-verb:view-issue")
-            return True
-        try:
-            st = json.loads(out).get("state")
-        except ValueError:
-            return True
-        if st != "closed":
-            return True
-    return False
-
-# Adoption (#471, AC9): a queued issue with an open pipeline PR is resumed
-# at the PR blocking stage (the stage the collect already computed for it).
-def adopt(n):
-    for p in sorted((p for p in prs if p.get("issue") == n and not p.get("owner")),
-                   key=lambda p: p["n"]):
-        st = p["stage"]
-        if st in ROLE_STAGES:
-            say("dispatch", stage=st, pr=p["n"], issue=n)
-        elif st == "merge":
-            say("merge", pr=p["n"], issue=n)
-        elif st == "ready":
-            # The draft wait is key-carrying (#516), same as the PR-side half:
-            # the run loop continues the Draft stage order from it.
-            say("wait", reason="draft", pr=p["n"], issue=n)
-        elif st == "ci":
-            say("wait", reason="ci")
-        elif st == "human-merge":
-            say("wait", reason="human-merge")
-        elif st in ("blocked", "unverified"):
-            say("wait", reason="blocked")
-        else:
-            die("unsupported-verb:" + st)
-    return False
-
-if target:
-    try:
-        n = int(target)
-    except ValueError:
-        die("usage")
-    # An issue of another operator (#560): never routed, whatever its labels say.
-    if n in theirs:
-        say("wait", reason="theirs")
-    if n in held or n in by_owner:
-        ask_owner(n)
-    if n in queued and any(p.get("issue") == n for p in prs):
-        adopt(n)
-    labels, body, _ = view_issue(n)
-    # A not-queued issue is the collect word: still ready means the filter or
-    # the cap skipped it (a wait); past ready (confirmed/dev/epic) the labels
-    # themselves are the routing (the #471 label-parity fixtures) - and a
-    # queued issue routes by its own labels as today.
-    if n not in qset and "pipeline:ready" in labels:
-        say("wait", reason="none")
-    route(n, labels, body)
-
-# The queue pick (#471, AC1): the collect queued list is already sorted
-# (p0 < p1 < p2 < unlabeled, then ID ascending); label_filter collapse,
-# skip_labels, the dependency gate and the max_parallel cap are applied here.
-if held:
-    ask_owner(min(held))
-if blocked or owners or any(p.get("owner") for p in prs):
-    say("wait", reason="owner")
-cands = [n for n in queued if n not in held and n not in blocked]
-if not cands:
-    say("wait", reason="none")
-try:
-    cap = int(o.get("max-parallel") or "1") - int(o.get("in-flight") or "0")
-except ValueError:
-    die("state-unavailable")
-if cap <= 0:
-    say("wait", reason="cap")
-dep_blocked = False
-for n in cands:
-    labels, body, _ = view_issue(n)
-    if labels & skip_labels:
-        continue
-    if label_filter != "pipeline:ready" and label_filter not in labels:
-        continue
-    if planner_on and dep_gated(body):
-        dep_blocked = True
-        continue
-    route(n, labels, body)
-if dep_blocked:
-    say("wait", reason="dependency")
-say("wait", reason="none")
-'
 
 # ── claim (#560): the VCS assignee is the lock between operators ─────────────
 # _TALOS_CLAIM_PY: argv = my login; stdin = the issue's assignee logins, one per
@@ -2902,7 +2537,7 @@ _talos_next() {
   [ -z "$_issue" ] || _talos_isnum "$_issue" || _talos_stop usage 2
   _target="$_issue"
   _talos_prepare next pipeline-config.sh pipeline-cfg-cache.sh pipeline-status-file.sh \
-                     pipeline-contract.sh pipeline-next-stage.py pipeline-draft-check.sh \
+                     pipeline-contract.sh pipeline-next.py pipeline-draft-check.sh \
                      pipeline-vcs.sh pipeline-budget.sh pipeline-lock.sh
 
   if _OUT="$(_talos_collect_get)"; then
@@ -2920,7 +2555,7 @@ _talos_next() {
   if [ -n "$_issue" ]; then
     _a="issue-side"
   else
-    _a="$(python3 -I -c "$_TALOS_NEXT_PY" "$_CFG_CACHE_DIR/state.json" 2>/dev/null)"
+    _a="$(python3 -I "$SCRIPT_DIR/pipeline-next.py" pr-side "$_CFG_CACHE_DIR/state.json" 2>/dev/null)"
     _r=$?
     if [ "$_r" -ne 0 ]; then
       # The one non-guessing exit: an unknown stage.
@@ -2938,7 +2573,7 @@ _talos_next() {
     case "$(cfg roles.pm | tr '[:upper:]' '[:lower:]')" in false) ;; *) _roles="${_roles}pm," ;; esac
     _skip="$(printf '%s\n' "$(cfg issues.skip_labels)" | paste -sd, -)"
     _inflight="$(_talos_lease_live_count)"
-    _a="$(python3 -I -c "$_TALOS_NEXT_ISSUE_PY" "$_CFG_CACHE_DIR/state.json" \
+    _a="$(python3 -I "$SCRIPT_DIR/pipeline-next.py" issue-side "$_CFG_CACHE_DIR/state.json" \
             --vcs "$SCRIPT_DIR/pipeline-vcs.sh" --budget "$SCRIPT_DIR/pipeline-budget.sh" \
             --issue "$_issue" --roles "$_roles" --label-filter "$(cfg issues.label_filter)" \
             --skip-labels "$_skip" --max-parallel "$(cfg issues.max_parallel)" \
@@ -3154,7 +2789,7 @@ _talos_run_loop() {
   [ -z "$_max" ] || _talos_isnum "$_max" || _talos_stop usage 2
   [ -z "$_max" ] || [ "$_max" -ge 1 ] || _talos_stop usage 2
   _talos_prepare run pipeline-config.sh pipeline-cfg-cache.sh pipeline-status-file.sh \
-                     pipeline-contract.sh pipeline-next-stage.py pipeline-draft-check.sh \
+                     pipeline-contract.sh pipeline-next.py pipeline-draft-check.sh \
                      pipeline-vcs.sh pipeline-budget.sh pipeline-lock.sh pipeline-agent.sh \
                      pipeline-notify.sh pipeline-hooks.sh pipeline-events.sh
   # #517: self-ignore the deliberately in-tree .talos/ files (per-worktree
