@@ -473,7 +473,8 @@
 #                                             working tree is never read in a mixed state.
 #                                             Used as an orchestrator precondition before
 #                                             dispatching non-worktree-isolated stages.
-#   post-approval <pr> <role> [--body-file p] Fetch head SHA from the PR, construct
+#   post-approval <pr> <role> [--body-file p] [--issue n]
+#                                             Fetch head SHA from the PR, construct
 #                                             the wrapped approval marker, post it as a
 #                                             comment, and apply the approval label.
 #                                             GitHub-only (github and github-api providers).
@@ -488,6 +489,14 @@
 #                                             the label is still applied defensively. A
 #                                             failed comment fetch fails closed: exit 1,
 #                                             nothing posted.
+#                                             Self-check (#549): the verb then runs
+#                                             check-approval-sha itself and prints ONE
+#                                             result line ending `stamp ok`, or
+#                                             `stamp FAILED (...)` with exit 1 -- no
+#                                             stage runs a confirmation after it.
+#                                             --issue <n> tags the calling stage's
+#                                             worktree for issue <n> (best effort; the
+#                                             main checkout is never tagged).
 #
 # Config keys (from talos.pipeline.json via pipeline-config.sh):
 #   vcs.provider          github | github-api | gitlab | azure | file   (default: github)
@@ -4271,7 +4280,26 @@ print(d.get('html_url') or d.get('url') or d.get('number', ''))
 print(json.dumps({"title": sys.argv[1], "head": sys.argv[2], "base": sys.argv[3],
                   "draft": sys.argv[4] == "true", "body": sys.stdin.read()}))' \
         "$title" "$branch" "$BASE_BRANCH" "$_cp_draft" < "$body_file")"
-      _gh_req POST "$_GH_API/pulls" "$_cp_payload" | _gh_field html_url
+      # (#549) One line, `PR #<n> <url>`: the caller needs no view-pr to learn
+      # either. The number is the API's own, else the URL's tail; an answer with
+      # neither is a failure, never a guessed PR.
+      _gh_req POST "$_GH_API/pulls" "$_cp_payload" | python3 -I -c '
+import json, re, sys
+try:
+    d = json.load(sys.stdin)
+except ValueError:
+    sys.exit(1)
+if not isinstance(d, dict):
+    sys.exit(1)
+url = d.get("html_url") if isinstance(d.get("html_url"), str) else ""
+num = d.get("number")
+if not isinstance(num, int) or isinstance(num, bool):
+    m = re.search(r"/pull/([0-9]+)$", url)
+    num = int(m.group(1)) if m else None
+if not url or num is None:
+    sys.stderr.write("pipeline-vcs: create-pr: the API answer carries no PR number or URL\n")
+    sys.exit(1)
+print("PR #%d %s" % (num, url))' || exit 1
       ;;
     ready-pr|draft-pr)
       # (#332) GraphQL is the one thing REST cannot do here: a PR's draft state
@@ -7465,6 +7493,7 @@ if [ "$VERB" = "post-approval" ]; then
   _pa_n="${ARGS[0]:-}"
   _pa_role="${ARGS[1]:-}"
   _pa_body_file=""
+  _pa_issue=""
   _pa_i=2
   while [ "$_pa_i" -lt "${#ARGS[@]}" ]; do
     case "${ARGS[$_pa_i]}" in
@@ -7473,9 +7502,22 @@ if [ "$VERB" = "post-approval" ]; then
         _pa_body_file="${ARGS[$_pa_ni]:-}"
         _pa_i=$((_pa_ni + 1))
         ;;
+      --issue)
+        _pa_ni=$((_pa_i + 1))
+        _pa_issue="${ARGS[$_pa_ni]:-}"
+        _pa_i=$((_pa_ni + 1))
+        ;;
       *) _pa_i=$((_pa_i + 1)) ;;
     esac
   done
+  if [ -n "$_pa_issue" ]; then
+    case "$_pa_issue" in
+      *[!0-9]*)
+        echo "pipeline-vcs: post-approval: --issue must be an issue number, got '$_pa_issue'" >&2
+        exit 1
+        ;;
+    esac
+  fi
 
   # Validate PR number
   if [ -z "$_pa_n" ]; then
@@ -7531,6 +7573,32 @@ if [ "$VERB" = "post-approval" ]; then
       "$_pa_n" "$_pa_role" "$_pa_label"
     exit 0
   fi
+
+  # (#549) Tag the calling stage's worktree for its issue, so the sweeps and the
+  # post-merge `remove <N>` find it (#240). Best effort: the main checkout is
+  # refused by `tag`, and a stage with no worktree has nothing to tag.
+  if [ -n "$_pa_issue" ] && [ -f "$SCRIPT_DIR/pipeline-worktree.sh" ]; then
+    bash "$SCRIPT_DIR/pipeline-worktree.sh" tag "$_pa_issue" >/dev/null 2>&1 || :
+  fi
+
+  # (#549) The verb checks its own stamp, so no stage runs a second command to
+  # confirm it. Only "all approval labels are current" counts: check-approval-sha
+  # also exits 0 for "no approval labels present", which here means the label
+  # never landed. Prints the one result line; its exit status is the verb's.
+  # $1 = what was done ("marker posted and qa:pass label applied").
+  _pa_result() {
+    local _r_out _r_rc _r_why
+    _r_out="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" check-approval-sha "$_pa_n" --stale-list \
+      ${REPO:+--repo "$REPO"} 2>&1)"; _r_rc=$?
+    if [ "$_r_rc" -eq 0 ] && printf '%s\n' "$_r_out" | grep -q 'all approval labels are current'; then
+      printf 'post-approval: PR #%s %s %s; stamp ok\n' "$_pa_n" "$_pa_role" "$1"
+      return 0
+    fi
+    _r_why="$(printf '%s\n' "$_r_out" | grep -v '^[[:space:]]*$' | head -n 1 | tr -cd '[:print:]' | cut -c1-160)"
+    printf 'post-approval: PR #%s %s %s; stamp FAILED (check-approval-sha rc=%s: %s)\n' \
+      "$_pa_n" "$_pa_role" "$1" "$_r_rc" "${_r_why:-no output}"
+    return 1
+  }
 
   # Fetch head SHA from the PR head -- not from the local worktree.
   # git rev-parse HEAD returns the agent's checkout, which may differ from the
@@ -7600,13 +7668,12 @@ print('none')
     echo "pipeline-vcs: post-approval: $_pa_role marker already exists at $_pa_sha; not posting again" >&2
     # Apply the label defensively — a missing label alongside an existing
     # marker must still self-heal (label-pr is idempotent).
-    bash "$SCRIPT_DIR/pipeline-vcs.sh" label-pr "$_pa_n" --add "$_pa_label" || {
+    bash "$SCRIPT_DIR/pipeline-vcs.sh" label-pr "$_pa_n" --add "$_pa_label" >/dev/null || {
       echo "pipeline-vcs: post-approval: label-pr failed for PR #$_pa_n" >&2
       exit 1
     }
-    printf 'post-approval: PR #%s %s marker already present at %s; %s label ensured\n' \
-      "$_pa_n" "$_pa_role" "$_pa_sha" "$_pa_label"
-    exit 0
+    _pa_result "marker already present at $_pa_sha; $_pa_label label ensured"
+    exit $?
   fi
 
   _pa_tmpfile="$(mktemp)"
@@ -7642,14 +7709,13 @@ print('none')
   # Do NOT pass --repo here: label-pr's _parse_label_args has no --repo case,
   # so it falls through to the catch-all and treats "--repo" as a label name.
   # label-pr resolves $REPO independently from the config.
-  bash "$SCRIPT_DIR/pipeline-vcs.sh" label-pr "$_pa_n" --add "$_pa_label" || {
+  bash "$SCRIPT_DIR/pipeline-vcs.sh" label-pr "$_pa_n" --add "$_pa_label" >/dev/null || {
     echo "pipeline-vcs: post-approval: label-pr failed for PR #$_pa_n" >&2
     exit 1
   }
 
-  printf 'post-approval: PR #%s %s marker posted and %s label applied\n' \
-    "$_pa_n" "$_pa_role" "$_pa_label"
-  exit 0
+  _pa_result "marker posted and $_pa_label label applied"
+  exit $?
 fi
 
 # ── conflict-files: mechanical-merge eligibility check (#256) ────────────────
