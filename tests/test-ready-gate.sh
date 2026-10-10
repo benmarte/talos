@@ -61,5 +61,10 @@ assert_contains "$guard" "READY_GATE" "PB1 the QA draft guard branches on READY_
 assert_contains "$guard" "QA is dispatched while the PR is a draft" "PB2 qa-local dispatches QA on a draft (RC 0)"
 assert_contains "$guard" "ready-pr follows only a QA PASS" "PB3 qa-local reaches ready-pr only after a QA PASS"
 assert_not_contains "$guard" "first QA dispatch" "PB4 prompt qa asks pr-is-draft on every dispatch, not only the first"
+order="$(sed -n '/^## Order/,/^`tests\/test-draft-stage-order.sh`/p' "$TALOS_ROOT/skills/pipeline/refs/draft-order.md")"
+for n in 1 2 3 4 5 6 7; do
+  assert_eq "1" "$(printf '%s\n' "$order" | grep -c "^$n\. \*\*")" "PB5 Order step $n starts at the beginning of its own line"
+done
+assert_eq "7" "$(printf '%s\n' "$order" | grep -c '^[0-9]\. ')" "PB5 the Order list has exactly seven steps, one per line"
 
 finish
