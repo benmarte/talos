@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- lean: core consolidation, no behaviour change: one config resolver, one verdict table, talos.sh env resolves all roles in one process (25 python spawns -> 8), one pipeline-next.py for collect/next/state, a single lease-ledger scan, contract-only script headers (#557)
 - removed: CHANGELOG fragments (roles.changelog_fragments, docs/CHANGELOG.d, scripts/pipeline-changelog.sh) and the post-merge assemble step; the developer writes its CHANGELOG line directly and merge.union_paths resolves concurrent edits (#555)
 - docs: README cut to a short overview; docs/user-guide.md replaced by docs/reference.md with generated config tables; releases before 0.17.0 dropped from this file (#555)
 - lean: pr-checks-required --wait polls at 30 s, then 60 s, then 120 s (was fixed 30 s); deadline and exit codes unchanged (#554)
