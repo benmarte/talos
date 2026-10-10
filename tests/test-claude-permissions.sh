@@ -159,16 +159,16 @@ run_role developer
 assert_not_contains "$ARGV" "--dangerously-skip-permissions" "mode: a flag-shaped mode is never passed"
 
 # ── verify commands: only what a prefix rule can say safely ──────────────────
-set_cfg '{"verify": ["make test && rm -rf /", "echo $(id)", "x*", "bash -c \"a\"", "cat `id`", "a;b", "a|b", "a>b", "(sub)", "back\\slash", "good --flag value", "bash tests/run-tests.sh --quiet", "npm run test:unit"]}'
+set_cfg '{"verify": ["make test && wipe it", "echo $(id)", "x*", "bash -c \"a\"", "cat `id`", "a;b", "a|b", "a>b", "(sub)", "back\\slash", "good --flag value", "bash tests/run-tests.sh --quiet", "npm run test:unit"]}'
 run_role developer
 has "Bash(good --flag value:*)" "verify: a plain command is mapped"
 has "Bash(bash tests/run-tests.sh --quiet:*)" "verify: a command with flags is mapped"
 has "Bash(npm run test:unit:*)" "verify: a colon inside the command is kept"
-for bad in 'rm -rf' '$(id)' 'x*' 'bash -c' '`id`' 'a;b' 'a|b' 'a>b' '(sub)' 'back\slash'; do
+for bad in 'wipe it' '$(id)' 'x*' 'bash -c' '`id`' 'a;b' 'a|b' 'a>b' '(sub)' 'back\slash'; do
   assert_not_contains "$ARGV" "$bad" "verify: '$bad' never reaches the rule list"
 done
 assert_contains "$STDERR" "verify" "verify: skipped commands are warned about"
-assert_not_contains "$STDERR" "rm -rf" "verify: the warning does not echo the command text"
+assert_not_contains "$STDERR" "wipe it" "verify: the warning does not echo the command text"
 # nothing that came from verify may begin with '-' after --allowedTools (flag injection)
 set_cfg '{"verify": ["--dangerously-skip-permissions", "-x"]}'
 run_role developer
