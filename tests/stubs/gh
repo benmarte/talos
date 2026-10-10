@@ -181,6 +181,13 @@ case "$args" in
       _mg="${STUB_PR_MERGEABLE:-MERGEABLE}"
     fi
     printf '%s\n' "$_mg" ;;
+  "api repos/"*"/issues/"*"--jq .title"*)
+    # pipeline-meta.sh's REST title read (#554). STUB_GH_API_FAIL=title: it fails.
+    [ "${STUB_GH_API_FAIL:-}" = "title" ] && { echo "gh: HTTP 500: Server Error" >&2; exit 1; }
+    printf '%s\n' "${STUB_ISSUE_TITLE:-Fix login crash}" ;;
+  "api repos/"*"/pulls/"*"--jq .title"*)
+    [ "${STUB_GH_API_FAIL:-}" = "title" ] && { echo "gh: HTTP 500: Server Error" >&2; exit 1; }
+    printf '%s\n' "${STUB_PR_TITLE:-fix: guard null session}" ;;
   "issue view "*"--json title -q .title"*)
     printf '%s\n' "${STUB_ISSUE_TITLE:-Fix login crash}" ;;
   "pr view "*"--json title -q .title"*)
