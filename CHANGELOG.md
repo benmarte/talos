@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- fix: a Buzz message reposted as a new root after a refused or stale thread
+  anchor now carries the issue title and footer, like any other root post. It
+  used to reuse the bare reply text of the failed attempt (#570).
 - fix(run): `talos.sh run`'s merge arm now takes every gate answer that carries
   detail lines (#543). It matched `verdict=handoff`, `verdict=redispatch` and
   `verdict=wait` exactly, so a real `verdict=wait` + `reason=approvals-missing
