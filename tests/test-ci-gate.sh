@@ -172,12 +172,12 @@ assert_eq "1" "$rc" "--wait: pending twice then fail returns 1"
 assert_contains "$out" 'pr-checks-required: failed: test' "--wait: the failed: line is the same"
 wait_run 99 pass 9 --wait 100
 assert_eq "2" "$rc" "--wait: still pending at the deadline returns 2"
-assert_eq "5" "$reads" "--wait: 100s is four sleeps (30, 30, 30, 10), so five reads"
+assert_eq "4" "$reads" "--wait: 100s is three sleeps (30, 60, 10 -- the backoff, #554), so four reads"
 wait_run 99 pass 9 --wait 0
 assert_eq "2" "$rc" "--wait 0: one read, still pending returns 2"
 assert_eq "1" "$reads" "--wait 0: exactly one read"
 wait_run 99 pass --wait 100 9
-assert_eq "5" "$reads" "--wait before the PR number is accepted too"
+assert_eq "4" "$reads" "--wait before the PR number is accepted too"
 
 for bad in abc 3601 -5 1.5 ''; do
   wait_run 0 pass 9 --wait "$bad"
@@ -195,6 +195,36 @@ assert_eq "2" "$rc" "no --wait: pending returns 2 as before"
 assert_eq "1" "$reads" "no --wait: one read, no polling"
 wait_run 0 pass 9
 assert_eq "0" "$rc" "no --wait: green returns 0 as before"
+
+# ── (e1) the commit-status read is skipped when check runs cover every required check ──
+# (#551 does this; #554 pins it.) A required check that no check run reports might be
+# a legacy commit status, so then, and only then, /status is read.
+status_reads() { : > "$GH_LOG"; wait_run 0 pass 9; grep -c '/commits/[^/]*/status' "$GH_LOG" || true; }
+assert_eq "0" "$(status_reads)" "required check reported by a check run: no commit-status read"
+printf '{"merge": {"required_checks": ["test", "legacy-ci"]}}\n' > talos.pipeline.json
+assert_eq "1" "$(status_reads)" "a required check no check run reports: one commit-status read"
+printf '{"merge": {"required_checks": ["test"]}}\n' > talos.pipeline.json
+
+# ── (e2) the poll interval backs off: 30 s, 60 s, then 120 s (#554) ──────────
+# A sleep stub that logs its argument and returns at once, with the real scale
+# (1), so the schedule the verb asks for is what the log shows.
+cat > "$SANDBOX/bin/sleep" <<'TALOS_s4Bq9LmZ2xWd'
+#!/usr/bin/env bash
+printf '%s\n' "$1" >> "$SLEEP_LOG"
+TALOS_s4Bq9LmZ2xWd
+chmod +x "$SANDBOX/bin/sleep"
+export SLEEP_LOG="$SANDBOX/sleep.log"
+sleeps_for() {  # $1=pending reads, rest=verb args; prints the sleeps, comma-joined
+  : > "$SLEEP_LOG"
+  TALOS_RETRY_SLEEP_SCALE=1 wait_run "$1" pass "${@:2}"
+  paste -sd, - < "$SLEEP_LOG"
+}
+assert_eq "30,60,120,120,120" "$(sleeps_for 99 9 --wait 450)" \
+  "--wait 450: 30, 60, then the 120 s cap"
+assert_eq "30,60,10" "$(sleeps_for 99 9 --wait 100)" "--wait 100: the final step is clipped to the time left"
+assert_eq "30,60" "$(sleeps_for 2 9 --wait 900)" "--wait 900, green on the third read: only two sleeps"
+assert_eq "" "$(sleeps_for 0 9 --wait 900)" "--wait: an immediately green read sleeps zero times"
+rm -f "$SANDBOX/bin/sleep"
 
 # ── (f) a skipped required check is pending, never a failure (#435) ──────────
 # A draft push leaves a skipped required check until the ready_for_review run

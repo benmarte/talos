@@ -7844,9 +7844,10 @@ _vcs_draft_gate_dispatch() {
 # else exit 2 with usage); only github and github-api poll, the others drop it
 # and answer once, exactly as before. Without --wait nothing here runs. The
 # deadline is the larger of wall time and the summed nominal sleeps, so
-# TALOS_RETRY_SLEEP_SCALE=0 makes a test instant and still deterministic.
+# TALOS_RETRY_SLEEP_SCALE=0 makes a test instant and still deterministic. The
+# poll interval backs off 30 s -> 60 s -> 120 s (#554).
 _vcs_pr_checks_required_dispatch() {
-  local _w="" _keep=() _i=0 _a _start _slept=0 _el _left _step _scale _rc
+  local _w="" _keep=() _i=0 _a _start _slept=0 _polls=0 _el _left _step _scale _rc
   while [ "$_i" -lt "${#ARGS[@]}" ]; do
     _a="${ARGS[$_i]}"
     if [ "$_a" = "--wait" ]; then
@@ -7886,7 +7887,11 @@ _vcs_pr_checks_required_dispatch() {
     _el=$((SECONDS - _start)); [ "$_slept" -gt "$_el" ] && _el=$_slept
     _left=$((_w - _el))
     [ "$_left" -le 0 ] && break
-    _step=30; [ "$_left" -lt 30 ] && _step=$_left
+    # Back off: 30 s, 60 s, then 120 s (#554) -- a CI run takes minutes, and every
+    # poll is two REST reads, so a fixed 30 s step spent most of them on "pending".
+    case "$_polls" in 0) _step=30 ;; 1) _step=60 ;; *) _step=120 ;; esac
+    _polls=$((_polls + 1))
+    [ "$_left" -lt "$_step" ] && _step=$_left
     sleep "$(awk -v s="$_step" -v k="$_scale" 'BEGIN { print s * k }')"
     _slept=$((_slept + _step))
   done
