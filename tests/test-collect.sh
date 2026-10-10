@@ -30,7 +30,7 @@ PARENT="$(mktemp -d "${TMPDIR:-/tmp}/talos-collect.XXXXXX")" || exit 1
 { [ -n "$PARENT" ] && [ -d "$PARENT" ]; } || exit 1
 FX="$PARENT/fx"
 SCR="$PARENT/scripts"
-trap 'rm -rf "$SANDBOX" "$PARENT"' EXIT
+trap '_is_trap_owner && rm -rf "$SANDBOX" "$PARENT"' EXIT
 mkdir -p "$PARENT/tmp"
 export TMPDIR="$PARENT/tmp"
 export SF_FX="$FX"

@@ -112,11 +112,16 @@ safe_mktemp_dir() {
   printf '%s\n' "$_smd_dir"
 }
 
+# _is_trap_owner — true only in the process that ran make_sandbox (or that set
+# _SANDBOX_OWNER="${BASHPID:-$$}" itself). A test file that installs its own EXIT
+# trap guards the body with it: `trap '_is_trap_owner && { ...; }' EXIT`.
+#
 # _sandbox_cleanup — make_sandbox's EXIT-trap body. Removes $SANDBOX only in the
 # process that created it (see the owner note at the trap in make_sandbox).
 # BASHPID is bash >= 4; bash 3.2 falls back to $$, where the race cannot occur.
+_is_trap_owner() { [ "${BASHPID:-$$}" = "${_SANDBOX_OWNER:-}" ]; }
 _sandbox_cleanup() {
-  [ "${BASHPID:-$$}" = "${_SANDBOX_OWNER:-}" ] || return 0
+  _is_trap_owner || return 0
   [ -n "${SANDBOX:-}" ] || return 0
   rm -rf "$SANDBOX"
 }

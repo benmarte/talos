@@ -41,7 +41,8 @@ CONFIG_SH="$REPO_ROOT/scripts/pipeline-config.sh"
 # redefined below with this file's own sentinel-aware versions.
 . "$SCRIPT_DIR/helpers.sh"
 SCRATCH="$(safe_mktemp_dir)" || exit 1
-trap 'rm -rf "$SCRATCH"' EXIT
+_SANDBOX_OWNER="${BASHPID:-$$}"
+trap '_is_trap_owner && rm -rf "$SCRATCH"' EXIT
 
 ok() {
   printf 'ok: %s\n' "$1"

@@ -27,7 +27,7 @@ UPSTREAM="$UPSTREAM_PARENT/upstream.git"
 git init -q --bare "$UPSTREAM"
 # make_sandbox's own EXIT trap only removes $SANDBOX -- extend it to also
 # remove the sibling bare-repo fixture.
-trap 'rm -rf "$SANDBOX" "$UPSTREAM_PARENT"' EXIT
+trap '_is_trap_owner && rm -rf "$SANDBOX" "$UPSTREAM_PARENT"' EXIT
 
 git remote set-url origin "$UPSTREAM"
 

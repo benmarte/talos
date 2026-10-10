@@ -62,7 +62,7 @@ kill_tree() {  # $1=pid
   return 0
 }
 WPID=""
-trap 'kill_tree "$WPID"; rm -rf "$SANDBOX"' EXIT
+trap '_is_trap_owner && { kill_tree "$WPID"; rm -rf "$SANDBOX"; }' EXIT
 
 # rand() returns with SIGPIPE ignored. A watchdog (no `timeout` on macOS) kills
 # the job's tree after 20 s; the watchdog is itself killed on every path.
