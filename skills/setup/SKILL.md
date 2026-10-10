@@ -5,7 +5,7 @@ description: Interactive onboarding for Talos. Detects the repo, asks a few ques
 
 You are the **pipeline setup wizard**. Walk the user through configuring Talos for this repo. Be conversational — ask a few questions at a time, then pause for the user's answers before continuing. Do not ask all questions in a wall of text.
 
-Any agent can run this wizard: `Read ~/.talos/skills/setup/SKILL.md and follow it` (Claude Code has `/talos:setup`; the old `/pipeline-setup` still works as an alias until v0.20). Where a step says to ask, ask in plain text and wait for the answer; use a question tool only if your harness has one.
+Any agent can run this wizard: `Read ~/.talos/skills/setup/SKILL.md and follow it` (Claude Code has `/talos:setup`). Where a step says to ask, ask in plain text and wait for the answer; use a question tool only if your harness has one.
 
 **Script location:** resolve once before anything else, and reuse the answer — every `bash scripts/<name>.sh` below means the directory you resolve here:
 
@@ -26,14 +26,13 @@ Five cases, in priority order: explicit override ($TALOS_HOME), global install (
 
 ## Step 0 — Detect existing config
 
-Check whether `talos.pipeline.json` already exists in the current directory. A legacy `talos.pipeline.yml`/`.yaml` beside it fails every config read closed (`reason=config-shadowed`), and one without a json fails with `reason=config-legacy-file` (#526): when you find either, offer `bash scripts/pipeline-config.sh --convert <legacy> talos.pipeline.json` (or the `rm` the reason line prints) and proceed only after the legacy file is gone or converted -- never write a json alongside it.
+Check whether `talos.pipeline.json` already exists in the current directory. A legacy `talos.pipeline.yml`/`.yaml` beside it fails every config read closed (`reason=config-shadowed`), and one without a json fails with `reason=config-legacy-file` (#526): when you find either, offer to write the json by hand from the legacy file (or the `rm` the reason line prints) and proceed only after the legacy file is gone or converted -- never write a json alongside it.
 
 If a config **exists**:
 - Read it with `bash scripts/pipeline-config.sh <key>` to show current values (a key that is not set prints its documented default).
 - Tell the user: "Found an existing config. Here's what's set: ..."
 - Ask: "Would you like to update any of these settings, or is this just a re-run to bootstrap labels?"
-- If no changes needed and `bash scripts/pipeline-config.sh vcs.provider` prints `github`: run `bash scripts/pipeline-config.sh --has evidence.enabled` (same exit codes). On exit 1 (no `evidence:` block yet), ask Step 4c's question once; on anything but "ask me later" add ONLY the `evidence:` block to the existing file (show the lines to add and write only after an explicit yes; never rewrite the rest of the file, per the Idempotency rules). "Ask me later" writes nothing. A config that already has `enabled: false` is never re-asked.
-- If no changes needed, in every case (whatever the check above printed): run Step 7c with the harness from `bash scripts/pipeline-config.sh agents.runner`, then Step 7d, then jump to Step 8 (bootstrap labels) and Step 10 (test notification).
+- If no changes needed: run Step 7c with the harness from `bash scripts/pipeline-config.sh agents.runner`, then Step 7d, then jump to Step 8 (bootstrap labels) and Step 10 (test notification).
 
 If **no config**: continue to Step 1.
 
@@ -128,90 +127,6 @@ Also ask (2 more questions, defaults shown, only if the user wants to change the
 >   when the developer's diff already covers CHANGELOG + README/docs, or is
 >   scripts/tests-only with a CHANGELOG entry) or `always` (docs subagent always
 >   runs and reads the full diff)? [auto — `roles.docs_mode`]"
-
----
-
-## Step 4c — Ask: evidence capture
-
-When `vcs.provider` is `gitlab`, `azure` or `file`, skip this question with one line ("No evidence capture: it posts screenshots to GitHub PRs.") and it writes no evidence: block. Otherwise (github) first check that `gh` can attach files. This tests the machine running setup; the machine running the pipeline needs the same.
-
-```bash
-gh pr comment --help 2>&1 | grep -q -- '--attach'
-```
-
-If it exits non-zero (no `--attach` in the help, or no `gh`), say "Evidence capture needs gh 2.99.0 or newer (`gh pr comment --attach`); this machine's gh does not have it", offer only "off", and on "off" write the declined block (Step 7). Otherwise detect the repo's test harness, from the repo root, with the same signals `agents/developer.md` uses:
-
-```bash
-pw=no; cy=no; e2e=no
-for f in playwright.config.*; do [ -e "$f" ] && pw=yes; done
-for f in cypress.config.*; do [ -e "$f" ] && cy=yes; done
-{ [ -d tests/e2e ] || grep -q '"test:e2e"' package.json 2>/dev/null; } && e2e=yes
-echo "playwright=$pw cypress=$cy e2e=$e2e"
-```
-
-Propose from the output:
-- `playwright=yes cypress=no`: `command: "npx playwright test --grep @evidence"` and `dir: test-results`. Tell the user to set `use: { screenshot: 'on', video: 'on' }` in the Playwright config and to tag the tests to capture `@evidence`.
-- `cypress=yes playwright=no`: `dir: cypress/evidence` (the default `cypress/` holds tracked tests), and tell the user to point `screenshotsFolder` and `videosFolder` there. Suggest `npx cypress run` as the command, an editable suggestion only.
-- Both: ask which one to use, then propose as above.
-- Neither (`e2e=yes` alone is neither: no command can be inferred, so ask for one): offer agent capture or off. Agent capture leaves `command` empty (omitted): QA's browser skill saves screenshots into `dir`, best effort, with no recordings.
-
-A command the user types goes into the config as text only; setup never runs it. Ask once, naming the costs:
-
-> "Attach screenshots or recordings of a user-facing change to its PR, as evidence? Before you say yes:
-> - Attachments are public on public repos: anyone can open the file without signing in. On private and internal repos the repo's access rules apply.
-> - Screenshots and recordings can contain on-screen secrets (tokens, emails, internal URLs).
-> - GitHub's attachment size limits apply: 10 MB images, 10 MB videos on free plans, 100 MB videos on paid plans. It is not verified that `gh --attach` accepts `.webm` recordings (Playwright's video format), so Talos does not promise it; images and videos only.
->
-> Proposed: `<command>` into `<dir>`. [default: **off**] (on / off / ask me later)"
-
-On "ask me later" write nothing; the Step 0 re-run asks again, on every setup re-run until it gets a yes or an "off" (this is by design). On "off" write the declined block. On "on": use the proposed or a typed `dir`, which is one repo-relative path. `<dir>` goes on a command line, so first check it character for character: 1 to 200 characters, only letters, digits, `.`, `_`, `/` and `-`, not starting with `-` or `/`, no `..` component, no `.git` component. If it fails, say why and ask again; never write it. The two proposed directories are constants and always pass.
-
-Then offer to keep it out of git: "Add `<dir>/` to `.gitignore`? (yes/no)". Run the block below either way, with the checked directory as the first quoted argument (replace `<dir>`) and `<mode>` replaced by `write` on an explicit yes or `check` otherwise (give the heredoc a fresh `TALOS_<rand>` delimiter of 12+ random characters you invent). Only `write` touches `.gitignore`. Both modes re-check the value and write nothing if it fails, and print the normalised directory as `dir=<norm>` (`./` stripped, `//` collapsed, no trailing `/`): that printed value, never the typed text, is what Step 7 writes as `evidence.dir`, so the config and the `.gitignore` line cannot disagree. A regular-file check on `.gitignore` runs before `git check-ignore` is ever called, because git would block reading a FIFO and print warnings for a symlink: `write` refuses, writing nothing, when `.gitignore` is a symlink or not a regular file (it prints one `rejected:` line telling you to add `<norm>/` by hand), and `check` prints `not checked:` with the same advice and skips `git check-ignore`; a missing `.gitignore` is fine. `write` probes `<dir>/.probe` because a directory that does not exist yet reads as unignored when probed directly, and appends one line (`<norm>/`) only when git does not already ignore it (a missing `.gitignore` is created). Both warn when the directory already holds tracked files (the attach step refuses a tracked directory):
-
-```bash
-bash -s -- '<dir>' <mode> <<'TALOS_<rand>'
-export LC_ALL=C
-die() { echo "rejected: $1" >&2; exit 1; }
-d="$1"
-case "$d" in ''|-*|/*|*[!A-Za-z0-9._/-]*) die "not a valid evidence dir";; esac
-[ "${#d}" -le 200 ] || die "longer than 200 characters"
-norm=""
-IFS=/ read -ra parts <<< "$d"
-for p in "${parts[@]}"; do
-  case "$p" in ''|.) continue;; ..) die "a .. component";; esac
-  [ "$(printf '%s' "$p" | tr A-Z a-z)" = ".git" ] && die "a .git component"
-  norm="${norm:+$norm/}$p"
-done
-[ -n "$norm" ] || die "no directory left after normalising"
-echo "dir=$norm"
-cd "$(git rev-parse --show-toplevel)" || exit 1
-if [ -L .gitignore ] || { [ -e .gitignore ] && [ ! -f .gitignore ]; }; then
-  [ "${2:-}" = "write" ] && die ".gitignore is a symlink or not a regular file; add $norm/ to it by hand"
-  echo "not checked: .gitignore is a symlink or not a regular file; add $norm/ to it by hand"
-  rc=2
-else
-  git check-ignore -q -- "$norm/.probe"; rc=$?
-fi
-if [ "$rc" -eq 0 ]; then
-  echo "already ignored: $norm/"
-elif [ "$rc" -eq 2 ]; then
-  :
-elif [ "$rc" -eq 1 ] && [ "${2:-}" != "write" ]; then
-  echo "not ignored: $norm/"
-elif [ "$rc" -eq 1 ]; then
-  if [ -s .gitignore ] && [ -n "$(tail -c1 .gitignore)" ]; then echo >> .gitignore; fi
-  printf '%s/\n' "$norm" >> .gitignore
-  echo "added $norm/ to .gitignore"
-else
-  die "git check-ignore failed (exit $rc)"
-fi
-if [ -n "$(git ls-files -- "$norm" | head -n 1)" ]; then
-  echo "warning: $norm already holds tracked files; evidence needs an untracked directory" >&2
-fi
-TALOS_<rand>
-```
-
-On a decline (`check` mode), when the block says `already ignored` or when it refuses, `.gitignore` is not touched. Tell the user to commit the `.gitignore` change with the config. On yes to evidence: Step 7 writes `evidence.enabled: true` with `dir` (the `dir=` value above) and `command`. The workflow files are never edited.
 
 ---
 
@@ -350,7 +265,6 @@ Based on the collected answers, write `talos.pipeline.json` in the current direc
   "_note": "Generated by /talos:setup on <date>. Start the pipeline with /talos:pipeline in Claude Code; in any other agent: Read ~/.talos/skills/pipeline/SKILL.md and follow it. _note is ignored by the loader. agents.runner ids: claude (default) | pi | codex | gemini | antigravity | custom; when the harness is claude this block is omitted entirely.",
 
   "base_branch": "<BASE_BRANCH>",
-  "release_branch": "main",
 
   "vcs": {
     "provider": "<PROVIDER>"
@@ -374,8 +288,7 @@ Based on the collected answers, write `talos.pipeline.json` in the current direc
 
   "merge": {
     "method": "squash",
-    "required_checks": [],
-    "delete_branch": true
+    "required_checks": []
   },
 
   "issues": {
@@ -392,11 +305,6 @@ Based on the collected answers, write `talos.pipeline.json` in the current direc
     "security": true,
     "docs": true,
     "adversarial": false
-  },
-
-  "evidence": {
-    "enabled": <true|false>,
-    "dir": "<EVIDENCE_DIR>"
   },
 
   "comments": {
@@ -425,7 +333,6 @@ Based on the collected answers, write `talos.pipeline.json` in the current direc
 
 When writing the file (omit the whole block when its keys are not configured):
 - `vcs.repo` is omitted: it auto-detects from `git remote get-url origin`.
-- Evidence (Step 4c): accepted writes `"evidence": { "enabled": true, "dir": "<the normalised dir= value Step 4c printed, never the typed text>", "command": "<the typed command>" }` (a typed command carries backslashes and quotes, so it is written as a JSON string literal; on the agent-capture path omit the `"command"` key: `"evidence": { "enabled": true, "dir": "<dir>" }`). `dir` and `command` are written only when accepted; `store` is not written (`attach` is the only value). Declined, "off" and "off" after the newer-gh message write `"evidence": { "enabled": false }` -- an ACTIVE block, never omitted (JSON has no comments, so a commented block cannot even exist), so every re-run sees `evidence.enabled` set and does not ask again. "Ask me later" and a skipped provider (`gitlab`, `azure`, `file`) omit the key.
 - Extra forbidden patterns (the merge-gate question below): a yes writes an active `"forbidden_files"` list inside `merge` with the defaults plus the user's extras: `"forbidden_files": [".env", ".env.*", "*.pem", "*.key", "*.p12", "*.pfx", "*.secrets", "secrets.*"]`; a no omits the key (the built-in defaults apply).
 - If harness = `claude`: omit the `agents` block entirely (Claude Code spawns native subagents and ignores it).
 - Models: a per-repo override chosen in Step 6c goes into this repo's `agents` block (`"model"` and `"roles": { "<role>": { "model": "<model>" } }`), even when harness = `claude`. A user-level answer is written by Step 6c itself, not here.
@@ -468,7 +375,7 @@ bash scripts/pipeline-instructions.sh write . --harness <harness>
 
 ## Step 7d — Offer to update old command names
 
-Talos commands are now `/talos:pipeline` and `/talos:setup`. The old names `/pipeline`, `/pipeline-setup` and `/talos:pipeline-setup` still run as aliases until v0.20, so declining here breaks nothing. Look for them in this repo's instruction files:
+Talos commands are now `/talos:pipeline` and `/talos:setup`. The old names `/pipeline`, `/pipeline-setup` and `/talos:pipeline-setup` no longer run (the aliases were removed in #553), so a reference to them is dead. Look for them in this repo's instruction files:
 
 ```bash
 grep -nE '(^|[^A-Za-z0-9_./:-])/(pipeline-setup|pipeline)([^A-Za-z0-9_:/-]|$)|/talos:pipeline-setup' CLAUDE.md AGENTS.md 2>/dev/null
@@ -675,7 +582,6 @@ Roles:        validator pm developer qa reviewer security docs [adversarial]
 Board:        <enabled/disabled>
 Notifications: <configured platforms or "none">
 Harness:      <claude (native subagents) | pi | codex | gemini | antigravity | custom>
-Evidence:     <evidence.dir, or "off" / "not asked">
 
 Control labels (created by bootstrap-labels.sh in Step 8):
   p0        — dispatched first (highest priority)
@@ -690,7 +596,6 @@ Next steps:
   1. Add the 'pipeline:ready' label to a GitHub issue (or a '- [ ] task' in plan.md for file mode)
   2. Start the pipeline with `/talos:pipeline` in Claude Code; in any other agent: Read ~/.talos/skills/pipeline/SKILL.md and follow it
      (local/weak-model option: `bash scripts/talos.sh run` orchestrates in code, the LLMs do the stages; see README "Deterministic orchestrator" and docs/user-guide.md "Deterministic orchestrator (`talos.sh run`)")
-  2b. The old event-driven `.claude/commands/pipeline-tick.md` is SUPERSEDED by `run`/`next` and kept only as reference
   3. For GitHub Projects, make sure the Status field has: Ready, In progress, In review, Done, Blocked
      (if your board uses different column names, configure board.status_map to remap them — see the
      example in the config template above; pipeline-status.sh will emit talos:board-unverified on
@@ -702,8 +607,7 @@ Next steps:
 
 ## Idempotency rules
 
-- Never overwrite an existing `talos.pipeline.json` without the user's explicit confirmation, and never write it alongside a legacy `talos.pipeline.yml`/`.yaml` (offer `--convert` or the `rm` first, #526).
-- The evidence re-run adds only the `evidence:` block, after an explicit yes; the workflow files are never edited, and `.gitignore` gets one appended line only after its own explicit yes.
+- Never overwrite an existing `talos.pipeline.json` without the user's explicit confirmation, and never write it alongside a legacy `talos.pipeline.yml`/`.yaml` (offer to convert it by hand or the `rm` first, #526).
 - If `bootstrap-labels.sh` reports a label already exists, that is not an error — say "already up to date".
 - Running setup a second time on a configured repo should be safe and produce no surprises.
 

@@ -72,11 +72,10 @@ assert_claude_tree() {  # $1=config dir $2=label -- cmp-equal to the sources
     if cmp -s "$src" "$d/agents/$role.md"; then pass "$label: agents/$role.md is cmp-equal"
     else fail "$label: agents/$role.md is cmp-equal"; fi
   done
-  # The commands come from the plugin (#335); the adapter's own skills are the
-  # two legacy aliases, thin files carrying the alias marker.
+  # The commands come from the plugin (#335); the adapter writes no skill of its own (#553).
   for name in pipeline pipeline-setup; do
-    if grep -qxF '<!-- talos:alias -->' "$d/skills/$name/SKILL.md" 2>/dev/null; then pass "$label: skills/$name/SKILL.md is a legacy alias"
-    else fail "$label: skills/$name/SKILL.md is a legacy alias"; fi
+    if [ ! -e "$d/skills/$name" ]; then pass "$label: no bare skills/$name is written"
+    else fail "$label: no bare skills/$name is written"; fi
   done
 }
 
@@ -141,12 +140,12 @@ strip_fns() {  # $1... = function names whose bodies are dropped
     skip && /^\}/ { skip = 0 }
   ' "$INSTALL" | grep -v '^[[:space:]]*#'
 }
-outside="$(strip_fns install_claude_adapter install_claude_plugin install_claude_statusline handle_bare_skill)"
+outside="$(strip_fns install_claude_adapter install_claude_plugin install_claude_statusline remove_retired_bare_skill)"
 stray="$(printf '%s\n' "$outside" | grep -E 'CLAUDE_DIR|CLAUDE_CONFIG_DIR' \
   | grep -Ev '^[[:space:]]*(echo |CLAUDE_DIR=|CLAUDE_ADAPTER=|CLAUDE_WHY=|(el)?if \[ )' || true)"
 assert_eq "" "$stray" "nothing outside the Claude adapter functions names CLAUDE_DIR except decisions and echoes"
-helper_calls="$(strip_fns install_claude_adapter | grep -E '^[[:space:]]*(install_claude_plugin|handle_bare_skill)[[:space:]]' || true)"
-assert_eq "" "$helper_calls" "install_claude_plugin and handle_bare_skill are called only from install_claude_adapter"
+helper_calls="$(strip_fns install_claude_adapter | grep -E '^[[:space:]]*(install_claude_plugin|remove_retired_bare_skill)[[:space:]]' || true)"
+assert_eq "" "$helper_calls" "install_claude_plugin and remove_retired_bare_skill are called only from install_claude_adapter"
 if grep -q '^install_claude_adapter() {' "$INSTALL"; then
   pass "install.sh defines install_claude_adapter"
 else
@@ -277,7 +276,7 @@ if [ "$CAN_STRIP" = true ]; then
   # Skipped adapter + existing tree: byte-identical, one "not refreshed" line.
   newhome skip-existing
   inst "$BIN" --global --no-agent-skills --harness claude
-  printf 'locally edited\n' >> "$HOME/.claude/skills/pipeline/SKILL.md"
+  printf 'locally edited\n' >> "$HOME/.claude/agents/developer.md"
   printf 'keep me\n' > "$HOME/.claude/agents/extra.md"
   cp -R "$HOME/.claude" "$SANDBOX/tree-before"
   inst "$BIN" --global --no-agent-skills --harness codex

@@ -278,7 +278,6 @@ _sha256_file() {
 # reads or asserts against that path. Re-run that grep before adding
 # anything here.
 #   tasks/**             -- internal planning notes; zero references
-#   docs/superpowers/**  -- spec drafts; zero references
 #   .github/**           -- CI workflow config; zero references
 #   .gitignore           -- tests that mention ".gitignore" (test-assert-sync*)
 #                            write and check their OWN fixture .gitignore in
@@ -290,7 +289,7 @@ compute_deps_hash() {
   [ -z "$_HASH_TOOL" ] && { printf '' | _sha256; return; }
   git -C "$TALOS_ROOT" ls-files -z 2>/dev/null | while IFS= read -r -d '' _dep; do
     case "$_dep" in
-      tasks/*|docs/superpowers/*|.github/*|.gitignore) continue ;;
+      tasks/*|.github/*|.gitignore) continue ;;
     esac
     printf '%s %s\n' "$_dep" "$(_sha256_file "$TALOS_ROOT/$_dep")"
   done | LC_ALL=C sort | _sha256

@@ -47,7 +47,7 @@ SKIP = {"pipeline-config.sh", "pipeline-cfg-cache.sh", "pipeline-defaults.sh"}
 # starting with a letter (a templated key such as "agents.roles.$r.model").
 # Prose that merely says "pipeline-config.sh would use" is not a call.
 KEY = (r'''"[A-Za-z_][^"]*"|[a-z_][a-z0-9_]*(?:\.[A-Za-z0-9_*]+)+|'''
-       r'''(?:base_branch|release_branch|repo|verify)(?![\w.])''')
+       r'''(?:base_branch|repo|verify)(?![\w.])''')
 DEF = r'''"(?:[^"\\]|\\.)*"|'[^']*'|[^\s"'`$()|;&<>]+'''
 CALL = re.compile(
     r"(?<![\w-])(?P<fn>cfg|pipeline-config\.sh\"?|\"\$CFG(?:_SH)?\")[ \t]+(?P<key>" + KEY + r")"

@@ -76,7 +76,7 @@ assert_contains "$out" "limits.warn_at${TAB}0.5${TAB}global" "(b) a non-agents k
 assert_contains "$out" "agents.roles.qa.model${TAB}haiku${TAB}repo" "(b) a wildcard row lists the present key under it"
 assert_contains "$out" "board.status_map.ready${TAB}Todo${TAB}repo" "(b) board.status_map.* lists the present key"
 assert_contains "$out" "bogus.thing${TAB}x${TAB}repo" "(b) an unknown key present is listed"
-assert_contains "$out" "release_branch${TAB}main${TAB}default" "(b) a table key nobody sets is listed with its default"
+assert_contains "$out" "hooks.timeout_s${TAB}30${TAB}default" "(b) a table key nobody sets is listed with its default"
 assert_not_contains "$out" "agents.roles.*" "(b) a wildcard row is never listed as itself"
 assert_not_contains "$out" "agents.roles.pm.model" "(b) a wildcard row lists only the keys that are present"
 only="$(show agents.)"

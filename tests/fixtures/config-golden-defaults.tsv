@@ -53,14 +53,6 @@ comments.header		explicit	pipeline-events.sh
 comments.templates_dir	templates/comments	table	pipeline-vcs.sh
 events.enabled	true	table	pipeline-hooks.sh
 events.path	talos/events.jsonl	table	pipeline-events.sh,pipeline-hooks.sh
-evidence.command		empty	pipeline-evidence.sh
-evidence.dir	.talos/evidence	table	pipeline-evidence.sh:_EVIDENCE_DEFAULT_DIR
-evidence.enabled	false	table	pipeline-evidence.sh
-evidence.include		empty	pipeline-evidence.sh
-evidence.max_files	10	table	pipeline-evidence.sh:_EVIDENCE_DEFAULT_MAX_FILES
-evidence.max_mb	20	table	pipeline-evidence.sh:_EVIDENCE_DEFAULT_MAX_MB
-evidence.store	attach	table	docs
-evidence.when	user-facing	table	pipeline-evidence.sh
 execution.isolation	worktree	table	pipeline-isolation.sh
 execution.worktree_warn_threshold	10	table	pipeline-worktree.sh
 hooks.post_stage		empty	pipeline-hooks.sh
@@ -82,7 +74,6 @@ markers.verify_authors	true	table	pipeline-vcs.sh
 merge.approval_waiver_paths		empty	pipeline-vcs.sh
 merge.auto	true	table	pipeline-status-file.sh
 merge.auto_sync	true	table	docs
-merge.delete_branch	true	table	docs
 merge.forbidden_files		empty	pipeline-vcs.sh
 merge.forbidden_files_allow		empty	pipeline-vcs.sh
 merge.forbidden_files_replace		equiv	pipeline-vcs.sh
@@ -106,7 +97,6 @@ notifications.teams.webhook		empty	pipeline-notify.sh (#443, new)
 notifications.templates_dir	templates/notifications	table	pipeline-notify.sh
 notifications.threading	true	table	pipeline-notify.sh
 pr.draft		empty	pipeline-draft-check.sh:_dc_cfg
-release_branch	main	table	docs
 repo		empty	pipeline-hooks.sh
 roles.adversarial	false	table	pipeline-status-file.sh:_sf_role_on
 roles.changelog_fragments	false	table	docs
@@ -125,11 +115,11 @@ vcs.azure.org_url		empty	bootstrap-board.sh,pipeline-status.sh,pipeline-vcs.sh
 vcs.azure.project		empty	bootstrap-board.sh,pipeline-vcs.sh
 vcs.azure.work_item_type	Product Backlog Item	table	bootstrap-board.sh,pipeline-vcs.sh
 vcs.file.source.path	plan.md	table	pipeline-vcs.sh
-vcs.provider	github	table	bootstrap-board.sh,pipeline-evidence.sh,setup/SKILL.md,pipeline-status.sh,pipeline-vcs.sh
-vcs.repo		empty	pipeline-board-shared.sh,pipeline-evidence.sh,pipeline-hooks.sh,pipeline-status.sh,pipeline-vcs.sh
+vcs.provider	github	table	bootstrap-board.sh,setup/SKILL.md,pipeline-status.sh,pipeline-vcs.sh
+vcs.repo		empty	pipeline-board-shared.sh,pipeline-hooks.sh,pipeline-status.sh,pipeline-vcs.sh
 vcs.token_env		empty	bootstrap-board.sh,pipeline-status.sh,pipeline-vcs.sh
 verify		empty	pipeline-verify.sh
 verify.ci_wait_s	900	table	docs
 verify.qa_mode	local	table	pipeline/SKILL.md
 verify.targeted	true	table	docs
-verify.timeout_ms	600000	table	pipeline-evidence.sh
+verify.timeout_ms	600000	table	docs

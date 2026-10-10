@@ -37,7 +37,6 @@
     "required_checks": [
       "test (ubuntu-latest)"
     ],
-    "delete_branch": true,
     "approval_waiver_paths": [
       "*.md",
       "docs/**",

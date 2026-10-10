@@ -168,10 +168,10 @@ assert_file_exists "$T6_HOME/.talos/agents/developer.md" \
 n_tmpl="$(ls "$T6_HOME/.talos/templates/notifications/"*.md 2>/dev/null | wc -l | tr -d ' ')"
 src_tmpl="$(ls "$TALOS_ROOT/templates/notifications/"*.md 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "$src_tmpl" "$n_tmpl" "--global writes all notification templates"
-assert_file_exists "$T6_CLAUDE/skills/pipeline/SKILL.md" \
-  "--global writes the /pipeline alias to ~/.claude/skills/ (#335)"
-assert_file_exists "$T6_CLAUDE/skills/pipeline-setup/SKILL.md" \
-  "--global writes the /pipeline-setup alias to ~/.claude/skills/ (#335)"
+assert_file_absent "$T6_CLAUDE/skills/pipeline" \
+  "--global writes no /pipeline alias to ~/.claude/skills/ (#553)"
+assert_file_absent "$T6_CLAUDE/skills/pipeline-setup" \
+  "--global writes no /pipeline-setup alias to ~/.claude/skills/ (#553)"
 # The resume skill is gone (#550); there is no bare copy of resume at all
 # (neither resume/, which would clash with the built-in /resume, nor the old
 # provisional talos-resume/, #335).
@@ -337,9 +337,9 @@ assert_file_exists "$T10_HOME/.talos/scripts/pipeline-newthing.sh" \
   "a newly added scripts/*.sh is installed by --global with no install.sh edit (#276)"
 # install.sh runs under set -e: a skill missing from the fixture would abort the
 # install after the scripts are copied and the assertion above would still pass.
-# Asserting the last skill line's output makes a missing fixture file fail here (#348).
-assert_file_exists "$T10_CLAUDE/skills/pipeline-setup/SKILL.md" \
-  "the partial-source install ran through the adapter's last alias (#348, #335)"
+# Asserting the last install line's output makes a missing fixture file fail here (#348).
+assert_file_exists "$T10_CLAUDE/agents/docs.md" \
+  "the partial-source install ran through the adapter's last role profile (#348)"
 assert_file_exists "$T10_HOME/.talos/skills/newcmd/SKILL.md" \
   "a new command in skills/ plus a manifest entry is installed to ~/.talos/skills/ with no install.sh edit (#363)"
 assert_file_absent "$T10_CLAUDE/skills/newcmd" \
@@ -347,8 +347,8 @@ assert_file_absent "$T10_CLAUDE/skills/newcmd" \
 
 # ── Test 11: playbooks land under ~/.talos/skills; ~/.claude copies unchanged ─
 # (#363) Every command in TALOS_COMMANDS is copied to <talos home>/skills/<command>/
-# SKILL.md. The Claude skills dir holds only the two legacy aliases, pipeline/
-# and pipeline-setup/ (#335); the commands themselves come from the plugin.
+# SKILL.md. The Claude skills dir holds no Talos skill (#553); the commands
+# themselves come from the plugin.
 . "$TALOS_ROOT/scripts/pipeline-contract.sh"
 T11_HOME="$SANDBOX/t11-home"
 T11_CLAUDE="$SANDBOX/t11-claude"
@@ -363,19 +363,16 @@ for cmd in "${TALOS_COMMANDS[@]}"; do
     "--global installs $cmd to ~/.talos/skills/$cmd/SKILL.md (#363)"
 done
 # The playbook's on-demand refs (#547) sit next to its SKILL.md, wherever a pointer
-# or alias skill sends the agent to read it: every repo ref is installed.
+# skill sends the agent to read it: every repo ref is installed.
 for ref in "$TALOS_ROOT"/skills/pipeline/refs/*.md; do
   assert_file_exists "$T11_HOME/.talos/skills/pipeline/refs/$(basename "$ref")" \
     "--global installs the pipeline ref $(basename "$ref") next to SKILL.md (#547)"
 done
-# skills/pipeline-setup/ is the plugin's /talos:pipeline-setup alias, not a
-# command, so it is the one directory ~/.talos/skills does not mirror (#335).
-skills_diff="$(diff -rq -x pipeline-setup "$TALOS_ROOT/skills" "$T11_HOME/.talos/skills" 2>&1 || true)"
+skills_diff="$(diff -rq "$TALOS_ROOT/skills" "$T11_HOME/.talos/skills" 2>&1 || true)"
 [ -z "$skills_diff" ] && pass "~/.talos/skills matches repo skills/ structurally (#363)" \
   || fail "~/.talos/skills matches repo skills/ structurally (#363)" "$skills_diff"
-assert_eq "pipeline
-pipeline-setup" "$(ls "$T11_CLAUDE/skills")" \
-  "the Claude skills dir holds exactly the pipeline and pipeline-setup aliases (#363, #335)"
+assert_eq "" "$(ls "$T11_CLAUDE/skills" 2>/dev/null)" \
+  "the Claude skills dir holds no Talos skill: no bare alias (#363, #553)"
 
 # TALOS_HOME redirects the copies.
 T11B_HOME="$SANDBOX/t11b-home"
@@ -383,7 +380,7 @@ T11B_TALOS="$SANDBOX/t11b-talos"
 mkdir -p "$T11B_HOME"
 env HOME="$T11B_HOME" CLAUDE_CONFIG_DIR="$SANDBOX/t11b-claude" TALOS_HOME="$T11B_TALOS" \
   bash "$TALOS_ROOT/install.sh" --global --no-agent-skills >/dev/null 2>&1
-skills_diff="$(diff -rq -x pipeline-setup "$TALOS_ROOT/skills" "$T11B_TALOS/skills" 2>&1 || true)"
+skills_diff="$(diff -rq "$TALOS_ROOT/skills" "$T11B_TALOS/skills" 2>&1 || true)"
 [ -z "$skills_diff" ] && pass "TALOS_HOME=<dir> puts the playbooks in <dir>/skills (#363)" \
   || fail "TALOS_HOME=<dir> puts the playbooks in <dir>/skills (#363)" "$skills_diff"
 assert_file_absent "$T11B_HOME/.talos" "TALOS_HOME=<dir> writes nothing to ~/.talos (#363)"

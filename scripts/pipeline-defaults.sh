@@ -80,7 +80,6 @@ unset _TD_ROWS _TD_ROWS_SRC
 
 IFS= read -r -d '' _TALOS_DEFAULTS_RAW <<'TALOS_Qz7vK2mXr9Lp' || true
 base_branch	str		derived	-	repo
-release_branch	str	main	-	-	repo
 repo	str		derived	-	repo
 vcs.provider	enum	github	-	-	repo
 vcs.repo	str		derived	PIPELINE_REPO	repo
@@ -110,7 +109,6 @@ verify.timeout_ms	int	600000	-	-	any
 merge.auto	bool	true	-	-	any
 merge.method	enum	squash	-	-	any
 merge.required_checks	list		-	-	repo
-merge.delete_branch	bool	true	-	-	any
 merge.forbidden_files	list		derived	-	repo
 merge.forbidden_files_replace	bool	false	-	-	repo
 merge.forbidden_files_allow	list		-	-	repo
@@ -191,14 +189,6 @@ hooks.post_stage	str		-	-	any
 hooks.timeout_s	int	30	-	-	any
 events.enabled	bool	true	-	-	any
 events.path	path	talos/events.jsonl	-	-	any
-evidence.enabled	bool	false	-	-	any
-evidence.command	str		-	-	repo
-evidence.dir	path	.talos/evidence	-	-	any
-evidence.include	list		-	-	any
-evidence.when	enum	user-facing	-	-	any
-evidence.store	enum	attach	-	-	any
-evidence.max_files	int	10	-	-	any
-evidence.max_mb	int	20	-	-	any
 TALOS_Qz7vK2mXr9Lp
 # Leading and trailing newline so every row can be matched as "\nKEY\t".
 _TALOS_DEFAULTS_TSV=$'\n'"${_TALOS_DEFAULTS_RAW%$'\n'}"$'\n'

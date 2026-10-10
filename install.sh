@@ -2,7 +2,7 @@
 # install.sh -- copy Talos scripts and skills into a target repo, or install globally.
 #
 # Global install (recommended for new setups):
-#   bash install.sh --global [--no-legacy-aliases] [--keep-marketplace]
+#   bash install.sh --global [--keep-marketplace]
 #   Writes scripts, agents, templates and the playbooks (skills/<command>/SKILL.md,
 #   one per entry of TALOS_COMMANDS in scripts/pipeline-contract.sh, each with its
 #   refs/*.md read on demand) to ~/.talos/ (the playbooks to ~/.talos/skills/). When the Claude adapter runs (see
@@ -26,15 +26,12 @@
 #   --no-agent-skills. No `claude` on PATH, or one without
 #   `claude plugin`: a notice with the two commands to run inside Claude Code,
 #   and nothing is deleted.
-#   Legacy aliases (until v0.20): ~/.claude/skills/pipeline and
-#   ~/.claude/skills/pipeline-setup are thin alias skills (marker
-#   <!-- talos:alias -->) that print "renamed to /talos:<command>; this alias is
-#   removed in v0.20" and then follow the ~/.talos playbook. --no-legacy-aliases
-#   installs none and, once the plugin is registered, removes Talos-owned bare
-#   copies (the marker, or a pre-alias full copy: frontmatter name plus a Talos
-#   script or config name) including the old ~/.claude/skills/talos-resume. A
-#   skill there that is not Talos's is never overwritten or deleted: the
-#   installer warns and leaves it, and a symlink on the path is skipped.
+#   Retired bare skills: ~/.claude/skills/pipeline, ~/.claude/skills/pipeline-setup
+#   and ~/.claude/skills/talos-resume (the pre-namespace names, #335, #348) are
+#   removed once the plugin is registered, but only when Talos wrote them (the
+#   marker <!-- talos:alias -->, or a pre-alias full copy: frontmatter name plus
+#   a Talos script or config name). A skill there that is not Talos's is never
+#   overwritten or deleted, and a symlink on the path is skipped.
 #   A single update (git pull + install.sh --global) reaches every repo and harness.
 #   Re-runs overwrite existing ~/.talos/ and ~/.claude/ files by default.
 #   Pass --no-overwrite to skip.
@@ -136,7 +133,6 @@ WITH_SKILLS=true
 GLOBAL=false
 WRITE_AGENTS_MD=true
 IMPORT_AGENTS_MD=false
-LEGACY_ALIASES=true
 KEEP_MARKETPLACE=false
 AGENT_SKILLS_REPO="${TALOS_AGENT_SKILLS_REPO:-https://github.com/addyosmani/agent-skills}"
 
@@ -155,7 +151,7 @@ for arg in "$@"; do
     --no-agent-skills) WITH_SKILLS=false ;;
     --no-agents-md)    WRITE_AGENTS_MD=false ;;
     --import-agents-md) IMPORT_AGENTS_MD=true ;;
-    --no-legacy-aliases) LEGACY_ALIASES=false ;;
+    --no-legacy-aliases) ;;  # gone in #553 (no alias is installed any more); accepted so an old command line still runs
     --keep-marketplace)  KEEP_MARKETPLACE=true ;;
     --harness)       expect_harness=true ;;
     --harness=*)       HARNESS_RAW="${arg#*=}"; HARNESS_GIVEN=true ;;
@@ -372,28 +368,11 @@ install_claude_plugin() {
   return 0
 }
 
-# Legacy aliases (#335): the pre-namespace names, kept until v0.20. Each one is
-# a thin skill at ~/.claude/skills/<name>/SKILL.md carrying ALIAS_MARKER.
+# Retired bare skills (#335, #553): the pre-namespace names /pipeline and
+# /pipeline-setup were thin alias skills at ~/.claude/skills/<name>/SKILL.md
+# carrying ALIAS_MARKER. They are no longer installed; an older install's copy
+# is removed below.
 ALIAS_MARKER='<!-- talos:alias -->'
-# The bare names that ended up as a Talos alias on this run (written, or already
-# a Talos alias and kept), in order. The closing note names only these: a foreign
-# ~/.claude/skills/pipeline that blocked the alias must not be reported as one.
-ALIASES_ACTIVE=""
-
-# alias_skill_text <name> <command> <what> -- the alias SKILL.md. The plugin's
-# own skills/pipeline-setup/SKILL.md (so /talos:pipeline-setup keeps working) is
-# this text for (pipeline-setup, setup, setup wizard); tests/test-legacy-aliases.sh
-# asserts it.
-alias_skill_text() {
-  printf -- '---\nname: %s\ndescription: "Deprecated alias of /talos:%s, removed in v0.20. Prints the rename notice, then runs the Talos %s."\n---\n%s\n' "$1" "$2" "$3" "$ALIAS_MARKER"
-  cat <<'TALOS_ALIAS_BODY' | sed "s/@CMD@/$2/g"
-Print this line first, exactly: `renamed to /talos:@CMD@; this alias is removed in v0.20`
-
-Then run the command it points at, unchanged and with the same arguments: read the playbook with your file-read tool and follow it exactly. Use the first of these that exists: `$TALOS_HOME/skills/@CMD@/SKILL.md` (only when TALOS_HOME is set), `~/.talos/skills/@CMD@/SKILL.md`, `$CLAUDE_PLUGIN_ROOT/skills/@CMD@/SKILL.md` (only when CLAUDE_PLUGIN_ROOT is set).
-`$TALOS_HOME` is read from the Claude Code session environment, so an install into a custom TALOS_HOME is found only when that variable is exported before Claude Code starts.
-If none of them exists, tell the user to run `bash install.sh --global` from the Talos repo, and stop.
-TALOS_ALIAS_BODY
-}
 
 # is_talos_full_copy <file> <frontmatter name> -- a copy an installer from
 # before #335 wrote: a plain file whose frontmatter `name:` is the given command
@@ -407,58 +386,29 @@ is_talos_full_copy() {
   grep -qE 'pipeline-vcs\.sh|pipeline-config\.sh|talos\.pipeline\.' "$f"
 }
 
-# handle_bare_skill <dir name> <old frontmatter name> <command> <what> <alias yes|no>
-# -- one bare skill under $CLAUDE_DIR/skills. With alias=yes it writes the thin
-# alias (replacing a Talos-owned file: the marker, or an is_talos_full_copy
-# match). With alias=no (--no-legacy-aliases, and the retired talos-resume) it
-# removes a Talos-owned file, but only once the plugin is registered, because
-# until then that copy is the only way to run the command. A file that is not
-# Talos's is never touched, and a symlink on the path is skipped.
-handle_bare_skill() {
-  local name="$1" old="$2" cmd="$3" what="$4" alias="$5"
-  local dir="$CLAUDE_DIR/skills/$1" dest owned=false
+# remove_retired_bare_skill <dir name> <old frontmatter name> -- one retired bare
+# skill under $CLAUDE_DIR/skills. A Talos-owned file (the alias marker, or an
+# is_talos_full_copy match) is removed, but only once the plugin is registered,
+# because until then that copy is the only way to run the command. A file that
+# is not Talos's is never touched, and a symlink on the path is skipped.
+remove_retired_bare_skill() {
+  local name="$1" old="$2"
+  local dir="$CLAUDE_DIR/skills/$1" dest
   dest="$dir/SKILL.md"
   if [ -L "$dir" ] || [ -L "$dest" ]; then
     if [ -L "$dir" ]; then echo "    notice: $(printable "$dir") is a symlink; left untouched."
     else echo "    notice: $(printable "$dest") is a symlink; left untouched."; fi
     return 0
   fi
-  if { [ -e "$dir" ] && [ ! -d "$dir" ]; } || { [ -e "$dest" ] && [ ! -f "$dest" ]; }; then
-    echo "    notice: $(printable "$dir") is not a plain directory with a plain SKILL.md; left untouched."
+  [ -f "$dest" ] || return 0
+  grep -qxF "$ALIAS_MARKER" "$dest" || is_talos_full_copy "$dest" "$old" || return 0
+  if [ "$CLAUDE_PLUGIN_REGISTERED" != "true" ]; then
+    echo "    kept (the talos plugin is not registered, so this is still the only way to run it): $(printable "$dest")"
     return 0
   fi
-  if [ -f "$dest" ]; then
-    if grep -qxF "$ALIAS_MARKER" "$dest" || is_talos_full_copy "$dest" "$old"; then
-      owned=true
-    else
-      if [ "$alias" = "yes" ]; then
-        echo "    warning: $(printable "$dest") exists and is not a Talos alias; left untouched (/$name is not Talos's here)."
-      fi
-      return 0
-    fi
-  fi
-  if [ "$alias" = "no" ]; then
-    [ "$owned" = "true" ] || return 0
-    if [ "$CLAUDE_PLUGIN_REGISTERED" != "true" ]; then
-      echo "    kept (the talos plugin is not registered, so this is still the only way to run it): $(printable "$dest")"
-      return 0
-    fi
-    rm -f -- "${dest:?}"
-    rmdir "$dir" 2>/dev/null || true
-    echo "    removed: $(printable "$dest")"
-    return 0
-  fi
-  if [ "$owned" = "true" ] && [ "$FORCE" = "false" ]; then
-    echo "    skip (exists): $(printable "$dest")  (pass --force to overwrite)"
-    if grep -qxF "$ALIAS_MARKER" "$dest"; then ALIASES_ACTIVE="${ALIASES_ACTIVE:+$ALIASES_ACTIVE }/$name"; fi
-    return 0
-  fi
-  if ! mkdir -p "$dir" 2>/dev/null || ! alias_skill_text "$name" "$cmd" "$what" > "$dest" 2>/dev/null; then
-    echo "    notice: could not write $(printable "$dest")."
-    return 0
-  fi
-  echo "    installed: $(printable "$dest")  (alias of /talos:$cmd)"
-  ALIASES_ACTIVE="${ALIASES_ACTIVE:+$ALIASES_ACTIVE }/$name"
+  rm -f -- "${dest:?}"
+  rmdir "$dir" 2>/dev/null || true
+  echo "    removed: $(printable "$dest")"
 }
 
 # install_claude_statusline (#550) -- wire scripts/talos-status.sh into Claude
@@ -531,9 +481,8 @@ install_claude_statusline() {
 # install_claude_adapter -- the ONLY place --global writes under
 # ${CLAUDE_CONFIG_DIR:-$HOME/.claude}: role profiles to <dir>/agents/ (Claude
 # Code's native subagent discovery), the talos plugin registration (so
-# /talos:<command> exists), and the legacy /pipeline and /pipeline-setup alias
-# skills in <dir>/skills/. A bare /pipeline alias runs without
-# CLAUDE_PLUGIN_ROOT, so SKILL.md's subagent names fall to the agents/ copies.
+# /talos:<command> exists), and the removal of the retired bare skills in
+# <dir>/skills/.
 # Needs scripts/pipeline-contract.sh sourced.
 install_claude_adapter() {
   local agent src_agent
@@ -546,17 +495,11 @@ install_claude_adapter() {
   done
   install_claude_plugin
   install_claude_statusline
-  echo "  Legacy aliases ($(printable "$CLAUDE_DIR")/skills, removed in v0.20):"
-  if [ "$LEGACY_ALIASES" = "true" ]; then
-    handle_bare_skill pipeline pipeline pipeline "pipeline orchestrator" yes
-    handle_bare_skill pipeline-setup pipeline-setup setup "setup wizard" yes
-  else
-    echo "    --no-legacy-aliases: no bare /pipeline or /pipeline-setup is installed."
-    handle_bare_skill pipeline pipeline pipeline "pipeline orchestrator" no
-    handle_bare_skill pipeline-setup pipeline-setup setup "setup wizard" no
-  fi
+  echo "  Retired bare skills ($(printable "$CLAUDE_DIR")/skills):"
+  remove_retired_bare_skill pipeline pipeline
+  remove_retired_bare_skill pipeline-setup pipeline-setup
   # The retired bare copy of resume (#348); /talos:resume itself is gone (#550).
-  handle_bare_skill talos-resume resume resume "resume briefing" no
+  remove_retired_bare_skill talos-resume resume
 }
 
 # install_agents_pointers -- the ONLY place --global writes under
@@ -630,9 +573,6 @@ TALOS_POINTER_BODY
     echo "  installed: $(printable "$dest")"
     AGENTS_POINTERS_WRITTEN=true
   done
-  if has_harness claude; then
-    echo "  note: with claude selected too, cursor and opencode also scan ~/.claude/skills and may see both sets (the bare pipeline and pipeline-setup aliases, and talos-pipeline and talos-setup). Whether Claude Code reads ~/.agents/skills is unverified."
-  fi
 }
 
 # ── GLOBAL INSTALL ────────────────────────────────────────────────────────────
@@ -640,7 +580,7 @@ if [ "$GLOBAL" = "true" ]; then
   TALOS_HOME_DIR="${TALOS_HOME:-$HOME/.talos}"
   echo "Installing Talos globally into: $(printable "$TALOS_HOME_DIR")"
   if [ "$CLAUDE_ADAPTER" = "true" ]; then
-    echo "(Skills -> $(printable "$TALOS_HOME_DIR")/skills, plus the talos plugin and the legacy aliases in $(printable "$CLAUDE_DIR")/skills; Agents -> $(printable "$TALOS_HOME_DIR")/agents and $(printable "$CLAUDE_DIR")/agents)"
+    echo "(Skills -> $(printable "$TALOS_HOME_DIR")/skills, plus the talos plugin; Agents -> $(printable "$TALOS_HOME_DIR")/agents and $(printable "$CLAUDE_DIR")/agents)"
     _adapter_state="ran"
   else
     echo "(Skills -> $(printable "$TALOS_HOME_DIR")/skills, Agents -> $(printable "$TALOS_HOME_DIR")/agents)"
@@ -708,7 +648,7 @@ if [ "$GLOBAL" = "true" ]; then
 
   # Skills: every command in TALOS_COMMANDS (scripts/pipeline-contract.sh) goes
   # to ~/.talos/skills/<command>/ (harness-neutral: any agent can be pointed at
-  # it). Claude's /talos:<command> names and legacy aliases are
+  # it). Claude's /talos:<command> names are
   # install_claude_adapter's. A new playbook needs a manifest entry, not an
   # installer edit.
   _CONTRACT="$SRC/scripts/pipeline-contract.sh"
@@ -720,7 +660,7 @@ if [ "$GLOBAL" = "true" ]; then
   echo ""
   echo "Orchestrator skills (~/.talos/skills):"
   # A playbook's refs (skills/<command>/refs/*.md, read on demand, #547) sit
-  # next to it, wherever a pointer or alias skill sends the agent to read it.
+  # next to it, wherever a pointer skill sends the agent to read it.
   for cmd in "${TALOS_COMMANDS[@]}"; do
     install_file "$SRC/skills/$cmd/SKILL.md" "$TALOS_HOME_DIR/skills/$cmd/SKILL.md"
     for ref in "$SRC/skills/$cmd/refs/"*.md; do
@@ -742,7 +682,7 @@ if [ "$GLOBAL" = "true" ]; then
 
   if [ "$CLAUDE_ADAPTER" = "true" ]; then
     install_claude_adapter
-  elif [ -f "$CLAUDE_DIR/skills/pipeline/SKILL.md" ]; then
+  elif [ -f "$CLAUDE_DIR/agents/developer.md" ]; then
     echo ""
     echo "Claude Code adapter skipped: $(printable "$CLAUDE_DIR") was not refreshed (nothing was changed or deleted). To refresh it, run: bash $(printable "$SRC")/install.sh --global --harness claude (or --harness claude,<others>)."
   fi
@@ -778,15 +718,6 @@ if [ "$GLOBAL" = "true" ]; then
       echo "        installed from $(printable "$SRC"); Claude Code keeps its own copy, so re-run this installer after a git pull or if the checkout moves)."
     else
       echo "        The talos plugin is not registered, so /talos:* commands are missing (see the plugin notice above)."
-    fi
-    if [ "$LEGACY_ALIASES" = "true" ]; then
-      if [ -z "$ALIASES_ACTIVE" ]; then
-        echo "        No legacy /pipeline or /pipeline-setup alias is active (see the notices above): use /talos:pipeline and /talos:setup."
-      elif [ "$ALIASES_ACTIVE" = "/pipeline /pipeline-setup" ]; then
-        echo "        Old names /pipeline and /pipeline-setup still work as aliases until v0.20: $(printable "$CLAUDE_DIR")/skills/<name>/SKILL.md"
-      else
-        echo "        Old name $ALIASES_ACTIVE still works as an alias until v0.20: $(printable "$CLAUDE_DIR")/skills/<name>/SKILL.md (the other legacy name is not an alias here: see the notices above)."
-      fi
     fi
   fi
   echo "        Playbooks for any other agent: $(printable "$TALOS_HOME_DIR")/skills/<command>/SKILL.md"
@@ -893,7 +824,7 @@ fi
 
 # Offer to copy config example. talos.pipeline.json is NEVER overwritten; a
 # legacy talos.pipeline.yml/.yaml beside it would fail the load closed (#526),
-# so it is named with the migration command instead of being left silent.
+# so it is named with a manual migration hint instead of being left silent.
 echo ""
 if [ ! -f "$TARGET/talos.pipeline.json" ]; then
   echo "Config template:"
@@ -901,13 +832,13 @@ if [ ! -f "$TARGET/talos.pipeline.json" ]; then
   echo "    cp $(printable "$SRC")/talos.pipeline.json.example $(printable "$TARGET")/talos.pipeline.json"
   if [ -f "$TARGET/talos.pipeline.yml" ] || [ -f "$TARGET/talos.pipeline.yaml" ]; then
     echo "  Legacy config present -- talos.pipeline.yml/.yaml will fail the load closed (reason=config-legacy-file)."
-    echo "  Migrate it first: bash scripts/pipeline-config.sh --convert talos.pipeline.yml talos.pipeline.json"
+    echo "  Convert it to talos.pipeline.json by hand first (the old YAML converter is in git history)."
   fi
 else
   echo "Config: talos.pipeline.json already exists -- not overwriting."
   if [ -f "$TARGET/talos.pipeline.yml" ] || [ -f "$TARGET/talos.pipeline.yaml" ]; then
     echo "  Legacy config present -- the json will not load while a talos.pipeline.yml/.yaml sits beside it (reason=config-shadowed)."
-    echo "  Migrate it first: bash scripts/pipeline-config.sh --convert talos.pipeline.yml talos.pipeline.json"
+    echo "  Merge it into talos.pipeline.json by hand, then remove the legacy file."
   fi
 fi
 

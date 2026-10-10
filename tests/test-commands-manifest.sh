@@ -5,8 +5,7 @@
 # commands (the playbooks under skills/). install.sh --global loops over it
 # instead of naming the three skill directories. This test pins the list to
 # the skills/ tree so a new playbook cannot be added without a manifest entry
-# (or the reverse). skills/pipeline-setup/ is the one extra directory: the
-# deprecated /talos:pipeline-setup alias (#335), not a command.
+# (or the reverse).
 set -u
 . "$(dirname "$0")/helpers.sh"
 
@@ -21,15 +20,10 @@ fi
 assert_eq "pipeline setup" "${TALOS_COMMANDS[*]}" \
   "TALOS_COMMANDS lists the two commands in order"
 
-# The set of skills/*/ directories holding a SKILL.md equals TALOS_COMMANDS plus
-# the alias directory, and the alias is not a command.
+# The set of skills/*/ directories holding a SKILL.md equals TALOS_COMMANDS.
 DIRS="$(for f in "$TALOS_ROOT"/skills/*/SKILL.md; do [ -f "$f" ] && basename "$(dirname "$f")"; done | sort)"
-MANIFEST="$(printf '%s\n' "${TALOS_COMMANDS[@]}" pipeline-setup | sort)"
-assert_eq "$MANIFEST" "$DIRS" "skills/*/SKILL.md directories equal TALOS_COMMANDS plus the pipeline-setup alias"
-case " ${TALOS_COMMANDS[*]} " in
-  *" pipeline-setup "*) fail "pipeline-setup is an alias, not a command" ;;
-  *) pass "pipeline-setup is an alias, not a command" ;;
-esac
+MANIFEST="$(printf '%s\n' "${TALOS_COMMANDS[@]}" | sort)"
+assert_eq "$MANIFEST" "$DIRS" "skills/*/SKILL.md directories equal TALOS_COMMANDS"
 
 # talos_claude_skill_name was the provisional bare-name mapping; /talos:<command>
 # from the plugin replaced it (#335).

@@ -59,18 +59,18 @@ print("\n".join(bad))
 print("ROWS=%d" % len(rows))
 TALOS_PYtab7Gw3Nd5Xk
 )"
-assert_eq "ROWS=120" "$(printf '%s\n' "$_out" | tail -n1)" "the table has one row per config key (120 rows)"
+assert_eq "ROWS=110" "$(printf '%s\n' "$_out" | tail -n1)" "the table has one row per config key (110 rows)"
 assert_eq "" "$(printf '%s\n' "$_out" | sed '$d')" \
   "every row has six fields, a unique key, a valid type/derived/env/scope column, and a default of the right shape"
 
 # ── (d) the table's key set is the old known-keys list: no key lost ──────────
-OLD_KEYS="base_branch release_branch repo vcs.provider vcs.repo vcs.token_env vcs.azure.org_url
+OLD_KEYS="base_branch repo vcs.provider vcs.repo vcs.token_env vcs.azure.org_url
 vcs.azure.project vcs.azure.work_item_type vcs.azure.area_path vcs.file.source.path
 board.enabled board.project_number board.owner board.status_field board.statuses.*
 board.status_map.* board.azure_states.* board.azure_states.ready board.azure_states.in_progress
 board.azure_states.in_review board.azure_states.done verify verify.commands verify.qa_mode
 verify.targeted verify.ci_wait_s verify.timeout_ms merge.auto merge.method
-merge.required_checks merge.delete_branch merge.forbidden_files
+merge.required_checks merge.forbidden_files
 merge.forbidden_files_replace merge.forbidden_files_allow merge.approval_waiver_paths
 merge.union_paths merge.auto_sync issues.label_filter issues.skip_labels
 issues.max_parallel issues.assignee issues.claim identity.name execution.isolation execution.worktree_warn_threshold
@@ -87,9 +87,7 @@ agents.roles.*.restamp_model agents.roles.*.effort agents.roles.*.restamp_effort
 agents.fallback agents.roles.*.fallback agents.provider_down_s agents.stage_timeout_s agents.roles.*.stage_timeout_s agents.capture_usage agents.profile agents.mode limits.max_fix_attempts
 limits.max_total_dispatches limits.max_retries limits.tokens_per_issue limits.warn_at
 spend.comment pr.draft markers.trusted_authors markers.verify_authors
-hooks.pre_dispatch hooks.post_stage hooks.timeout_s events.enabled events.path
-evidence.enabled evidence.command evidence.dir evidence.include evidence.when
-evidence.store evidence.max_files evidence.max_mb"
+hooks.pre_dispatch hooks.post_stage hooks.timeout_s events.enabled events.path"
 
 _table_keys="$( . "$DEFAULTS_SH"; _talos_defaults_keys | LC_ALL=C sort )"
 _old_sorted="$(printf '%s\n' $OLD_KEYS | LC_ALL=C sort)"

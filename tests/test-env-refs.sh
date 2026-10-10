@@ -8,7 +8,7 @@
 #   (a) a run with nothing special names no ref except draft-order (pr.draft is
 #       on by default; pr.draft false names none)
 #   (b) each trigger names its ref: draft-order, planner, adversarial,
-#       human-merge, ci-gate, evidence, file-mode, hooks and harness (a global
+#       human-merge, ci-gate, file-mode, hooks and harness (a global
 #       non-claude runner, a role runner, subagents false, a fallback chain)
 #   (c) every ref= topic env can print is a file in skills/pipeline/refs/, and
 #       the core playbook names every file there
@@ -44,8 +44,6 @@ R="$(refs_for "$(nd '"merge": {"auto": false}')")"
 assert_eq "human-merge" "$R" "merge.auto false names human-merge"
 R="$(refs_for "$(nd '"merge": {"required_checks": ["ci / test"]}')")"
 assert_eq "ci-gate" "$R" "required checks make qa_mode ci, which names ci-gate"
-R="$(refs_for "$(nd '"evidence": {"enabled": true, "when": "always", "command": "echo x"}')")"
-assert_eq "evidence" "$R" "evidence on names evidence"
 R="$(refs_for '{"vcs": {"provider": "file"}, "pr": {"draft": false}}')"
 assert_eq "file-mode" "$R" "the file provider names file-mode"
 R="$(refs_for "$(nd '"hooks": {"pre_dispatch": "echo hi"}')")"
@@ -68,7 +66,7 @@ R="$(refs_for '{"vcs": {"provider": "github"}, "roles": {"planner": true}, "agen
 assert_eq "draft-order planner harness" "$R" "several triggers print one line each, in a fixed order"
 
 # (c) the topics env can print are files, and the core names every ref file.
-for t in draft-order planner adversarial human-merge ci-gate evidence file-mode hooks harness; do
+for t in draft-order planner adversarial human-merge ci-gate file-mode hooks harness; do
   assert_file_exists "$REFS/$t.md" "ref file for env topic $t exists"
 done
 core="$(cat "$SKILL")"

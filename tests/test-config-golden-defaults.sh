@@ -122,16 +122,6 @@ $(_talos_defaults_keys)
 EOF
 assert_eq "" "$_unpinned" "AC7: the golden-defaults fixture loses no keys (every table row with a default has a golden row)"
 
-# ── pipeline-evidence.sh keeps its own safety-net fallbacks for evidence.dir,
-# evidence.max_files, evidence.max_mb and verify.timeout_ms (variables and a
-# first argument, not config-call literals). They must equal the table. ────────
-_ev="$SCRIPTS/pipeline-evidence.sh"
-assert_eq ".talos/evidence" "$(sed -n 's/^_EVIDENCE_DEFAULT_DIR="\(.*\)"$/\1/p' "$_ev")" "evidence.dir fallback equals the table"
-assert_eq "$(_talos_default evidence.dir)" "$(sed -n 's/^_EVIDENCE_DEFAULT_DIR="\(.*\)"$/\1/p' "$_ev")" "evidence.dir fallback is the table default"
-assert_eq "$(_talos_default evidence.max_files)" "$(sed -n 's/^_EVIDENCE_DEFAULT_MAX_FILES=\([0-9]*\)$/\1/p' "$_ev")" "evidence.max_files fallback is the table default"
-assert_eq "$(_talos_default evidence.max_mb)" "$(sed -n 's/^_EVIDENCE_DEFAULT_MAX_MB=\([0-9]*\)$/\1/p' "$_ev")" "evidence.max_mb fallback is the table default"
-assert_eq "$(_talos_default verify.timeout_ms)" "$(sed -n 's/.*_digits_or \([0-9]*\) "\$(cfg verify.timeout_ms)".*/\1/p' "$_ev")" "verify.timeout_ms fallback is the table default"
-
 # ── comments.header: the events spend report keeps its no-header behaviour ───
 mkdir -p "$SANDBOX/.git/talos" || exit 1
 printf '%s\n' '{"event":"developer","role":"developer","issue":7,"pr":9,"verdict":"PASS","model":"sonnet","tokens":1000,"tool_uses":1,"duration_s":10,"ts":"2026-10-03T00:00:00Z"}' > "$SANDBOX/.git/talos/events.jsonl"

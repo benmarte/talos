@@ -101,8 +101,8 @@ if have_yaml and os.path.exists(yml_example):
 call_patterns = [
     re.compile(r'\bpipeline-config\.sh\s+"?([a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z0-9_.*<>${}]*[a-zA-Z0-9_*>}])'),
     re.compile(r'\bcfg\s+"?([a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z0-9_.*<>${}]*[a-zA-Z0-9_*>}])'),
-    re.compile(r'\bpipeline-config\.sh\s+"?(base_branch|release_branch|repo)\b'),
-    re.compile(r'\bcfg\s+"?(base_branch|release_branch|repo)\b'),
+    re.compile(r'\bpipeline-config\.sh\s+"?(base_branch|repo)\b'),
+    re.compile(r'\bcfg\s+"?(base_branch|repo)\b'),
 ]
 
 files = []

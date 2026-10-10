@@ -24,9 +24,8 @@
 #   env    Everything Step 0 of skills/pipeline/SKILL.md and the per-role runner
 #          resolution used to make the orchestrator gather by hand, in one call:
 #          every resolved config value Step 0 lists, the isolation gate, PR_DRAFT
-#          (pipeline-draft-check.sh resolve), the evidence line (pipeline-
-#          evidence.sh enabled), the startup diagnostic's two facts and, for
-#          each role, the answers of `pipeline-agent.sh --resolve <role>` and
+#          (pipeline-draft-check.sh resolve), the startup diagnostic's two facts
+#          and, for each role, the answers of `pipeline-agent.sh --resolve <role>` and
 #          `--check-effort <role>`. Their logic is called, never copied.
 #
 # Output (stdout), one line each, nothing else:
@@ -41,8 +40,8 @@
 #                              skills/pipeline/refs/<topic>.md, read once.
 #                              Topics: draft-order (PR_DRAFT true), planner,
 #                              adversarial, human-merge (merge.auto false),
-#                              ci-gate (verify.qa_mode ci), evidence, file-mode,
-#                              hooks (hooks.pre_dispatch set) and harness (a
+#                              ci-gate (verify.qa_mode ci), file-mode, hooks
+#                              (hooks.pre_dispatch set) and harness (a
 #                              non-claude runner, subagents false or a fallback
 #                              chain). Printed last, one line per topic, none
 #                              when none applies.
@@ -61,7 +60,7 @@
 # reason=value-truncated key=<KEY>`. A real "[truncated]" inside a value prints
 # as \x5btruncated], so the marker only ever means a cut. Free text never
 # travels on argv: values go to the sanitiser on stdin, a file carries them there.
-# A child's stderr line (config, draft or evidence warning, an isolation error)
+# A child's stderr line (config or draft warning, an isolation error)
 # is passed through on stderr, unchanged.
 #
 # env-reasons: scripts-missing python-missing scratch-unavailable config-unreadable isolation-invalid usage unknown-verb draft-resolve-failed resolve-failed effort-check-failed value-truncated
@@ -256,8 +255,7 @@
 #         the adapter path's own event (pipeline-agent.sh) and is not written here.
 #
 #   done <role> --issue <N> [--pr <M>] [--verdict <V>] --summary-file <F|-> [--draft]
-#        [--action-id <id>] [--tokens <n>] [--tool-uses <n>] [--duration-s <n>]
-#        [--model <m>] [--sha <sha>]
+#        [--tokens <n>] [--tool-uses <n>] [--duration-s <n>] [--model <m>] [--sha <sha>]
 #          <role> is validator pm developer qa reviewer security adversarial docs. The
 #          summary is the stage's 2-3 line text, read from the file (`-`: stdin, up to
 #          64 KB, never argv); it is the relay message and the post_stage summary. --pr is
@@ -283,7 +281,7 @@
 #          blocked (a failing verdict: validator non-CONFIRMED, developer BLOCKED, qa
 #          FAIL, reviewer CHANGES, security and adversarial FINDINGS, any RESTAMP_FAIL),
 #          notified and then post_stage <event> orchestrator, with no spend block.
-#          Output: `done=ok|duplicate` first, `spend=<line>`, `next=<what follows>` last:
+#          Output: `done=ok` first, `spend=<line>`, `next=<what follows>` last:
 #          continue | stop (validator non-CONFIRMED, developer BLOCKED: move on) |
 #          fix-round stage=<role> (run `gate fix-round`, then the developer) | batch
 #          (--draft, reviewer/security/adversarial: wait for every role of the draft
@@ -292,17 +290,11 @@
 #          lease is released (#470, AC4): the run `next` dispatched holds it, and
 #          a done stage frees it for the next run immediately, not after the TTL.
 #          A release that cannot be done is `warn reason=lease-release-failed`.
-#          --action-id <id> ([a-z0-9._-]{1,64}) makes the call at most once: the id is
-#          recorded under the git common dir (talos-done.ledger, pipeline-lock.sh) before
-#          anything is announced, and a repeat prints `done=duplicate` and does nothing
-#          else (no relay, event, spend or label). A lock that cannot be held is `stop
-#          reason=ledger-locked` (after TALOS_DONE_LOCK_S seconds, default 10): nothing is written
-#          and the call may be repeated. Without --action-id nothing is recorded.
 #          Child stderr is relayed only as `note done=<verb> msg=<escaped>` lines.
 #
-# done-reasons: usage unknown-role verdict-invalid file-unreadable summary-empty draft-pr-failed label-failed ledger-unavailable ledger-locked scripts-missing python-missing scratch-unavailable config-unreadable board-failed notify-failed model-invalid spend-upsert-failed lease-release-failed
+# done-reasons: usage unknown-role verdict-invalid file-unreadable summary-empty draft-pr-failed label-failed scripts-missing python-missing scratch-unavailable config-unreadable board-failed notify-failed model-invalid spend-upsert-failed lease-release-failed
 #   stop: usage unknown-role verdict-invalid file-unreadable summary-empty draft-pr-failed label-failed
-#         ledger-unavailable ledger-locked scripts-missing python-missing scratch-unavailable config-unreadable
+#         scripts-missing python-missing scratch-unavailable config-unreadable
 #         (exit 2 for usage, unknown-role, verdict-invalid; else 1)
 #   warn: board-failed notify-failed model-invalid spend-upsert-failed lease-release-failed
 #
@@ -703,9 +695,8 @@ _talos_help() {
   cat <<'HELP'
 usage: talos.sh <verb>
 verbs:
-  env                                print every Step 0 setting, PR_DRAFT, the
-                                     evidence line and the per-role
-                                     runner/model/effort as sanitised KEY=value lines,
+  env                                print every Step 0 setting, PR_DRAFT and the
+                                     per-role runner/model/effort as sanitised KEY=value lines,
                                      then ref=<topic> for each playbook ref that
                                      applies to the run
   gate fix-round <N> <stage> [--pr M]  the checks before a developer fix round:
@@ -842,7 +833,7 @@ _talos_env() {
   [ "$#" -eq 0 ] || _talos_stop usage 2
 
   _talos_prepare env pipeline-config.sh pipeline-cfg-cache.sh pipeline-agent.sh pipeline-draft-check.sh \
-                     pipeline-evidence.sh pipeline-isolation.sh
+                     pipeline-isolation.sh
 
   # The startup isolation gate: its error text stays on stderr.
   if ! bash "$SCRIPT_DIR/pipeline-isolation.sh" validate >/dev/null; then
@@ -915,17 +906,6 @@ EOF
   _talos_emit PR_DRAFT "$_val"
   _TALOS_PR_DRAFT="$_val"
 
-  # EVIDENCE: enabled only when the call exits 0; the line is its stdout.
-  if _val="$(bash "$SCRIPT_DIR/pipeline-evidence.sh" enabled)"; then
-    _talos_emit EVIDENCE_ENABLED true
-    _talos_emit EVIDENCE_LINE "$_val"
-    _TALOS_EVIDENCE=true
-  else
-    _TALOS_EVIDENCE=false
-    _talos_emit EVIDENCE_ENABLED false
-    _talos_emit EVIDENCE_LINE ""
-  fi
-
   local _role
   _TALOS_HARNESS_REF=0
   for _role in $_TALOS_ROLES; do
@@ -950,7 +930,6 @@ _talos_env_refs() {
   _talos_cfg_is roles.adversarial true && _talos_emit ref adversarial
   _talos_cfg_is merge.auto false && _talos_emit ref human-merge
   _talos_cfg_is verify.qa_mode ci && _talos_emit ref ci-gate
-  [ "$_TALOS_EVIDENCE" = true ] && _talos_emit ref evidence
   _talos_cfg_is vcs.provider file && _talos_emit ref file-mode
   [ -z "$(cfg hooks.pre_dispatch)" ] || _talos_emit ref hooks
   _val="$(cfg agents.fallback)"
@@ -2195,31 +2174,9 @@ _talos_done_verdicts() {
   esac
 }
 
-# _talos_ledger <has|claim> <id>: the done-ledger, one action id per line in
-# <git common dir>/talos-done.ledger. `has` reads it; `claim` appends the id under
-# pipeline-lock.sh and answers 0 (claimed), 1 (already there) or 2 (the lock was
-# not held: nothing is written, the caller stops).
-_talos_ledger() {
-  local _f _rc=0
-  _f="$(git rev-parse --git-common-dir 2>/dev/null)" && [ -n "$_f" ] || return 3
-  _f="$(cd "$_f" 2>/dev/null && pwd -P)" || return 3
-  _f="$_f/talos-done.ledger"
-  if [ "$1" = has ]; then
-    grep -Fxq -e "$2" "$_f" 2>/dev/null
-    return $?
-  fi
-  . "$SCRIPT_DIR/pipeline-lock.sh"
-  _lock_acquire "$_f" "${TALOS_DONE_LOCK_S:-10}" || return 2
-  if grep -Fxq -e "$2" "$_f" 2>/dev/null; then _rc=1
-  else printf '%s\n' "$2" >> "$_f" || _rc=2
-  fi
-  _lock_release "$_f"
-  return "$_rc"
-}
-
 # ── lease ledger (#470, AC4; reclaim + `lease prune`: #522) ──────────────────
 # A run's exclusive lease on an issue, fail-closed. The ledger lives under the
-# git common dir next to talos-done.ledger and is guarded by pipeline-lock.sh
+# git common dir and is guarded by pipeline-lock.sh
 # (mkdir advisory lock, the same primitive every shared-local-state file uses).
 # Holding a lease means "a run works on issue <N> right now": another run that
 # cannot acquire it waits -- it never takes over, and a lock that times out is
@@ -2643,11 +2600,10 @@ _talos_lease_verb() {
 }
 
 # done <role> --issue <N> [--pr <M>] [--verdict <V>] --summary-file <F|-> [--draft]
-#      [--action-id <id>] [--tokens <n>] [--tool-uses <n>] [--duration-s <n>]
-#      [--model <m>] [--sha <sha>]
+#      [--tokens <n>] [--tool-uses <n>] [--duration-s <n>] [--model <m>] [--sha <sha>]
 _talos_done() {
-  local _role="${1:-}" _n="" _pr="" _v="" _sf="" _draft=0 _aid="" _aids=0 _tok="" _tu="" _dur="" _model="" _sha=""
-  local _ok=1 _x _sum _col="" _msg="" _ev="" _fail=0 _label _next=continue _a
+  local _role="${1:-}" _n="" _pr="" _v="" _sf="" _draft=0 _tok="" _tu="" _dur="" _model="" _sha=""
+  local _ok=1 _x _sum _col="" _msg="" _ev="" _fail=0 _label _next=continue
   [ "$#" -eq 0 ] || shift
   case " $_TALOS_ROLES " in *" $_role "*) [ "$_role" != planner ] && _ok=0 ;; esac
   [ "$_ok" -eq 0 ] || _talos_stop unknown-role 2
@@ -2659,7 +2615,6 @@ _talos_done() {
       --verdict) _v="$2"; shift 2 ;;
       --summary-file) _sf="$2"; shift 2 ;;
       --draft) _draft=1; shift ;;
-      --action-id) _aid="$2"; _aids=1; shift 2 ;;
       --tokens) _tok="$2"; shift 2 ;;
       --tool-uses) _tu="$2"; shift 2 ;;
       --duration-s) _dur="$2"; shift 2 ;;
@@ -2672,7 +2627,6 @@ _talos_done() {
   for _x in "$_pr" "$_tok" "$_tu" "$_dur"; do
     [ -z "$_x" ] || _talos_isnum "$_x" || _talos_stop usage 2
   done
-  [ "$_aids" -eq 0 ] || [[ "$_aid" =~ ^[a-z0-9._-]{1,64}$ ]] || _talos_stop usage 2
   [[ -z "$_sha" || "$_sha" =~ ^[0-9a-fA-F]{4,64}$ ]] || _talos_stop usage 2
   # Every verdict is on the role's fixed list: no verdict at all for a role with none.
   _ok=1
@@ -2697,17 +2651,6 @@ _talos_done() {
   if [ "$_sf" = "-" ]; then head -c 65536 > "$_sum"; else head -c 65536 < "$_sf" > "$_sum"; fi
   [ -s "$_sum" ] || _talos_stop summary-empty
 
-  # An action id is done at most once: a repeat does nothing and says so.
-  if [ -n "$_aid" ]; then
-    _talos_ledger has "$_aid"; _a=$?
-    [ "$_a" -ne 3 ] || _talos_stop ledger-unavailable
-    if [ "$_a" -eq 0 ]; then
-      _talos_emit done duplicate
-      _talos_flush
-      exit 0
-    fi
-  fi
-
   case "$_v" in CHANGES | FINDINGS | FAIL | RESTAMP_FAIL | BLOCKED | ALREADY_FIXED | DUPLICATE | NEEDS_MORE_INFO | SECURITY_THREAT) _fail=1 ;; esac
 
   # What a failing verdict must set right first, before anything is announced:
@@ -2723,14 +2666,6 @@ _talos_done() {
     [ "$_RC" -eq 0 ] || _talos_stop label-failed
   fi
 
-  if [ -n "$_aid" ]; then
-    _talos_ledger claim "$_aid"; _a=$?
-    case "$_a" in
-      0) : ;;
-      1) _talos_emit done duplicate; _talos_flush; exit 0 ;;
-      *) _talos_stop ledger-locked ;;
-    esac
-  fi
   _talos_emit done ok
 
   case "$_role:$_v" in
@@ -3616,7 +3551,7 @@ _talos_run_loop() {
                      pipeline-vcs.sh pipeline-budget.sh pipeline-lock.sh pipeline-agent.sh \
                      pipeline-notify.sh pipeline-hooks.sh pipeline-events.sh
   # #517: self-ignore the deliberately in-tree .talos/ files (per-worktree
-  # .talos/env, providers.json, the evidence dir) via info/exclude before
+  # .talos/env, providers.json) via info/exclude before
   # the first stage dispatch -- never via a tracked .gitignore commit.
   # Idempotent and never fails outside a repository.
   _talos_ignore_in_tree

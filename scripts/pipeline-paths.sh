@@ -67,7 +67,7 @@ _talos_state_dir() {
 
 # _talos_ignore_in_tree [where] -- the guard the #517 dogfood run lacked:
 # before ANY creation of the deliberately in-tree .talos/ files (the
-# per-worktree .talos/env, providers.json, the evidence dir), make sure the
+# per-worktree .talos/env, providers.json), make sure the
 # git ignore file EXCLUDES .talos/ -- by appending a `.talos/` line to
 # <git-common-dir>/info/exclude when absent. Never a tracked file: the
 # repo's .gitignore is the user's, Talos does not edit it (and never

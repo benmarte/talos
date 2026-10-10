@@ -62,9 +62,7 @@ TALOS_RUNNERS=(
 # <command>/SKILL.md, where any harness can be pointed at it, and registers the
 # checkout as the `talos` plugin so Claude Code gets /talos:<command>.
 # tests/test-commands-manifest.sh checks this list against the skills/ tree, so
-# a playbook and its entry land together. skills/pipeline-setup/ is NOT a
-# command: it is the deprecated /talos:pipeline-setup alias (#335), removed in
-# v0.20.
+# a playbook and its entry land together.
 TALOS_COMMANDS=(pipeline setup)
 
 # The subset of TALOS_ROLES that carries an approval label (gated by
@@ -148,7 +146,6 @@ TALOS_MARKERS=(
   talos:worktree-sweep
   talos:spend
   talos:budget
-  talos:evidence
 )
 
 # ── talos_contract_check_label_length ────────────────────────────────────

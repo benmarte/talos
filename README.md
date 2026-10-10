@@ -8,8 +8,6 @@ GitHub Issues (or a local markdown checklist in file mode) serve as the state ma
 
 > 📖 **New here? Start with the [User Guide](docs/user-guide.md)** — per-harness install and start lines (Claude Code, pi, Codex CLI, Gemini CLI, Antigravity, local models via llama.cpp, any other agent), prerequisites, environment variables, feature matrix, and troubleshooting. This README is the architecture and configuration reference.
 
-> **Historical note**: an earlier design used GitHub Actions (`anthropics/claude-code-action`) as the event-driven driver. That variant lives in `examples/github-actions/` and `.claude/commands/pipeline-tick.md` for reference, but the primary, production-tested model is the orchestrator session described here.
-
 ---
 
 > **Talos installs [agent-skills](https://github.com/addyosmani/agent-skills) for you.** The role profiles delegate their methodology to those skills rather than restating it, so it is a hard requirement — but never a manual step. The plugin declares it as a dependency (`+ 1 dependency: agent-skills`); `install.sh` fetches it into `.claude/skills/` (skip with `--no-agent-skills`). Upstream, MIT, unmodified.
@@ -167,7 +165,7 @@ The global install always writes `~/.talos/`. It writes `~/.claude/agents`, regi
 - Installing the plugin also installs its `agent-skills` dependency from `github.com/addyosmani/agent-skills`, which needs network.
 - If your Claude config already has a marketplace named `talos` from a non-directory source (for example you ran `/plugin marketplace add benmarte/talos`), the installer leaves it alone and says so; that source already provides the names. With no `claude` on PATH, or a Claude Code without `claude plugin`, it prints the two commands to run inside Claude Code and deletes nothing.
 
-The old names keep working until v0.20. `/pipeline` and `/pipeline-setup` (installed to `~/.claude/skills/pipeline` and `~/.claude/skills/pipeline-setup`) and `/talos:pipeline-setup` (shipped in the plugin) are thin aliases: each prints `renamed to /talos:<command>; this alias is removed in v0.20`, then reads the same `~/.talos/skills/<command>/SKILL.md` playbook, so a repo whose `CLAUDE.md` still says `/pipeline` keeps working. `install.sh --global --no-legacy-aliases` installs no bare names and, once the plugin is registered, removes Talos-owned bare copies (an alias, a pre-alias full copy, and the old `~/.claude/skills/talos-resume`). A skill at `~/.claude/skills/pipeline` or `pipeline-setup` that is not Talos's is never overwritten or deleted: the installer warns and leaves it. `/talos:setup` offers to rewrite old command names in your `CLAUDE.md` and `AGENTS.md`. The aliases read `$TALOS_HOME` from the Claude Code session environment, so an install into a custom `TALOS_HOME` is found only when that variable is exported before Claude Code starts. The aliases are removed after two minor releases, with a CHANGELOG entry in each. A re-run from a second checkout repoints the `talos` marketplace to that checkout and prints the old and new paths; `--keep-marketplace` leaves an existing registration untouched.
+The old names `/pipeline`, `/pipeline-setup` and `/talos:pipeline-setup` were removed in #553 (the v0.20 promise). `install.sh --global` removes an older install's Talos-owned bare copies in `~/.claude/skills` (`pipeline`, `pipeline-setup`, the old `talos-resume`) once the plugin is registered; a skill there that is not Talos's is never overwritten or deleted. `/talos:setup` offers to rewrite old command names in your `CLAUDE.md` and `AGENTS.md`. A re-run from a second checkout repoints the `talos` marketplace to that checkout and prints the old and new paths; `--keep-marketplace` leaves an existing registration untouched.
 
 `install.sh <repo>` writes one marker-fenced Talos block (between a begin and an end HTML comment, shown by `bash scripts/pipeline-instructions.sh print`) into the repo's `AGENTS.md` for every harness, so a non-Claude agent finds the playbook paths under `~/.talos/skills/`. A missing file is created, a file without the markers gets the block appended, and a stale block is repaired in place (the output says `added the Talos block to`, `updated the Talos block in`, or `up to date`). A malformed fence or a symlinked `AGENTS.md` is left byte-identical with a notice. Text outside the markers is never touched. Commit the file: an untracked `AGENTS.md` makes `pipeline-vcs.sh assert-sync` abort on a dirty tree, and it runs at Step 0 under every isolation mode.
 
@@ -213,8 +211,7 @@ cp path/to/talos/talos.pipeline.json.example talos.pipeline.json
 # Exactly two canonical files: talos.pipeline.json (repo) and
 # ~/.talos/talos.pipeline.json (user-level). Any other talos.pipeline.* file
 # in a layer directory fails the load closed (reason=config-shadowed /
-# reason=config-legacy-file); migrate a legacy YAML with
-# bash scripts/pipeline-config.sh --convert talos.pipeline.yml talos.pipeline.json
+# reason=config-legacy-file); convert a legacy YAML to JSON by hand.
 ```
 
 Minimum viable config (board and notifications optional):
@@ -296,8 +293,7 @@ the bookkeeping, no orchestrator session; an LLM still does every stage, through
 `agents.runner` names (`agents.fallback` failover applies). `--issue <N>` scopes
 it to one issue; `--max-iterations <n>` (default 20) caps the dispatch passes; every stop/ask-owner wait
 exits clean with its `stop` line. Resume after a crash re-runs `run`: the lease ledger and the #419
-handoff files carry the state. `.claude/commands/pipeline-tick.md` is SUPERSEDED by `run`+`next` (see
-its banner); this section and `docs/user-guide.md` are the upgrade notes.
+handoff files carry the state.
 
 ---
 
@@ -376,7 +372,7 @@ Implemented in `scripts/pipeline-hooks.sh` (`post_stage`, sharing its watchdog/t
 
 Every `hooks.post_stage` payload (see the JSON schema above) is also appended, as one JSON line, to a local `events.jsonl` audit log in Talos's run-state directory, `<git common dir>/talos/` — independently of whether `hooks.post_stage` itself is configured. This gives every run a local, durable record of what happened without depending on an external sink.
 
-Enabled by default (`events.enabled: true`); set it to `false` to disable. The log path (`events.path`, default `talos/events.jsonl`) is resolved relative to the **git common dir** via `git rev-parse --git-common-dir` — so a developer/QA/reviewer stage running from inside a per-issue worktree still appends to the one log file shared by every worktree of the repo. The run state lives **outside every git tree**: it is never staged or pushed, and an agent's `git add -A` cannot commit it (#517). The deliberately in-tree `.talos/` files (the per-worktree `.talos/env`, `providers.json`, the evidence dir) are auto-ignored via `.git/info/exclude` before their first write — Talos never edits a tracked `.gitignore`.
+Enabled by default (`events.enabled: true`); set it to `false` to disable. The log path (`events.path`, default `talos/events.jsonl`) is resolved relative to the **git common dir** via `git rev-parse --git-common-dir` — so a developer/QA/reviewer stage running from inside a per-issue worktree still appends to the one log file shared by every worktree of the repo. The run state lives **outside every git tree**: it is never staged or pushed, and an agent's `git add -A` cannot commit it (#517). The deliberately in-tree `.talos/` files (the per-worktree `.talos/env`, `providers.json`) are auto-ignored via `.git/info/exclude` before their first write — Talos never edits a tracked `.gitignore`.
 
 Appends are a single `printf '%s\n' >>` (one `O_APPEND` write syscall) — a JSON event line is well under the POSIX `PIPE_BUF` atomic-write threshold, so concurrent stages appending at once (e.g. under `issues.max_parallel`) never interleave partial lines. No file lock is used or needed. A failure to write (unresolvable path, permissions, disk full) is a stderr note only — it never affects the pipeline's exit code.
 
@@ -491,7 +487,7 @@ Config and secrets (epic #437: #439-#446). The full rules are in the user guide'
 
 **(f) Secrets are `env:NAME` references, and secret-shaped values are rejected in any config layer (#443, #444).** The six keys `notifications.{slack,discord,teams}.webhook`, `notifications.{slack,discord}.bot_token` and `notifications.buzz.bot_key` accept only `env:NAME`; a literal is refused. A Slack, Discord or Teams webhook, a Slack or GitHub or GitLab token, an AWS key, a private key or a Nostr `nsec1` key in the repo or the global file is dropped on load, with a stderr line that names the key (never the value). If one was ever committed, rotate it.
 
-**(g) Repo-only keys are dropped from the global file (#441).** The global file now accepts every key, except the ones that describe one repository (`base_branch`, `vcs.*`, `board.*`, `verify`, `merge.required_checks` and the other `merge.*` lists, `issues.label_filter`, `issues.skip_labels`, `markers.*`, `evidence.command` and a few more; the table's scope column is the list). One found there is ignored with a stderr note naming the key; put it in the repo's file.
+**(g) Repo-only keys are dropped from the global file (#441).** The global file now accepts every key, except the ones that describe one repository (`base_branch`, `vcs.*`, `board.*`, `verify`, `merge.required_checks` and the other `merge.*` lists, `issues.label_filter`, `issues.skip_labels`, `markers.*` and a few more; the table's scope column is the list). One found there is ignored with a stderr note naming the key; put it in the repo's file.
 
 **(h) The `.env` deny list wins over the allow list (#444).** `BASH_ENV`, `PATH`, `LD_PRELOAD`, `GIT_*`, `*_PROXY`, `GH_*`, `GITHUB_*`, `AWS_*` and similar names are never read from a `.env`, and an `env:NAME` reference to one is refused. `GITHUB_TOKEN` and `GH_TOKEN` have to be exported in your shell.
 
@@ -503,9 +499,9 @@ Also merged with v0.19 and visible to users:
 
 **(k) `agents.capture_usage` defaults to `true` (#420).** On the adapter path (`pipeline-agent.sh`), `claude` stages now run with `--output-format json`, so token usage reaches the stage event; the printed message text is unchanged. Set `agents.capture_usage: false` to restore plain text mode; native subagents are unaffected. See [Token usage on adapter runs](#token-usage-on-adapter-runs-420).
 
-**(l) Commands are `/talos:pipeline` and `/talos:setup` (#335).** The legacy `/pipeline` and `/pipeline-setup` aliases print a rename line and keep working until v0.20. `install.sh --global` now registers a local `talos` plugin; pass `--keep-marketplace` to leave an existing registration alone and `--no-legacy-aliases` to skip the aliases. See [1. Install](#1-install).
+**(l) Commands are `/talos:pipeline` and `/talos:setup` (#335).** The legacy `/pipeline` and `/pipeline-setup` aliases were removed in #553. `install.sh --global` registers a local `talos` plugin; pass `--keep-marketplace` to leave an existing registration alone. See [1. Install](#1-install).
 
-**(m) A YAML config file fails the load closed (#526).** Config is JSON only: a `talos.pipeline.yml`/`.yaml` beside the canonical json stops every config read with `reason=config-shadowed` (winner, the strays, the `rm`/merge instruction), and one without a json stops with `reason=config-legacy-file` plus the `--convert` migration command. Ambiguity never runs — the 2026-10-06 incident (a stray committed yml silently shadowed the json and cost three full CI runs) is why this is fail-closed, not a warn.
+**(m) A YAML config file fails the load closed (#526).** Config is JSON only: a `talos.pipeline.yml`/`.yaml` beside the canonical json stops every config read with `reason=config-shadowed` (winner, the strays, the `rm`/merge instruction), and one without a json stops with `reason=config-legacy-file` plus a hint to convert it by hand (the old `--convert` verb was removed in #553; it is in git history). Ambiguity never runs — the 2026-10-06 incident (a stray committed yml silently shadowed the json and cost three full CI runs) is why this is fail-closed, not a warn.
 
 ### Upgrade notes (v0.18+)
 
@@ -789,14 +785,6 @@ Thread anchors are stored in `~/.talos/threads.json` keyed by `<repo-slug>:<issu
 
 ---
 
-## Evidence capture (opt-in)
-
-When QA passes every criterion of a user-facing change, it can attach screenshots or recordings to the PR as one comment, using `gh pr comment --attach`. It is **off by default**. Turn it on with the `/talos:setup` question (default off), or add an `evidence:` block (`enabled: true`, plus `command` and `dir`) to `talos.pipeline.json`. Evidence never changes QA's verdict, and QA never opens the images: the reviewer is only handed a link.
-
-Three hard limits: it needs `gh` v2.99.0 or newer with write access to the repo (no GitHub Enterprise Server, and not the Actions `GITHUB_TOKEN`); attachments are public on public repos and cannot be deleted; screenshots can show secrets. Only the `github` and `github-api` providers are supported. Keys, commands, status values and security notes: [Attaching evidence to the PR](docs/user-guide.md#attaching-evidence-to-the-pr-evidence-352) in the user guide.
-
----
-
 ## How a run works end-to-end
 
 1. You run `/talos:pipeline` in a Claude Code session.
@@ -844,7 +832,6 @@ The pipeline deliberately preserves three gates that only a human should act on:
 | `scripts/pipeline-events.sh path\|list [--issue N] [--role R] [--event E] [--last K] [--json]\|cost [--issue N] [--pr M] [--json\|--line\|--markdown\|--summary]` | Reader for the local events log (`<git common dir>/talos/events.jsonl` by default, outside every git tree); see [Events log](#events-log) and [Cost accounting](#cost-accounting) |
 | `scripts/pipeline-budget.sh check --issue N [--json]` | The token budget guard (#334): prints `talos:budget <ok\|warn\|exceeded> ...` (nothing when `limits.tokens_per_issue` is off); exit 0 for ok, warn, unknown and off, 1 for exceeded only, 2 for usage; see [Seeing token spend](docs/user-guide.md#seeing-token-spend-334) |
 | `scripts/talos-status.sh [--line]` | The harness status line (#385, #550): `talos #<issue> <stage> ●●◐○○○ <tokens>` from the events log and, for a running stage, the harness transcript on stdin (`transcript_path`); offline, exits 0 on every input, prints nothing without an active issue. `install.sh --global` copies it next to `pipeline-spend-format.py` (a shared module, not a command) and wires it into Claude Code's `statusLine`; see [Status line and resume](#status-line-and-resume) |
-| `scripts/pipeline-evidence.sh capture\|collect\|upload\|attach\|dir\|enabled` | Evidence capture (#352, opt-in): runs `evidence.command`, picks the files that may leave the machine and attaches them to the PR with `gh pr comment --attach`; see [Evidence capture](#evidence-capture-opt-in) |
 | `scripts/pipeline-hooks.sh` | Run `hooks.pre_dispatch`/`hooks.post_stage` external commands at fixed pipeline points; see [Hooks](#hooks) |
 | `scripts/pipeline-isolation.sh validate` | Startup gate for `execution.isolation` + `issues.max_parallel` combinations; see the `execution.isolation` row in the [Config reference](docs/user-guide.md#config-reference) |
 | `scripts/pipeline-bounded.sh` | Sourced helper exporting `talos_bounded` (run a command under a wall-clock limit on macOS and Linux, no `timeout(1)`) and `talos_pos_int`; shared by `hooks.*`, `notifications.cmd` and the Buzz `nak` call |
@@ -1388,7 +1375,7 @@ printed before running, and both flags compose with `--quiet`, `-j`,
 
 Passing runs are cached under `.talos/test-cache/` (gitignored), keyed on the
 test file's own content plus a whole-set hash of **all tracked files except**
-`tasks/**`, `docs/superpowers/**`, `.github/**`, and `.gitignore` (each
+`tasks/**`, `.github/**`, and `.gitignore` (each
 proven, via a `grep -l` sweep of every `tests/test-*.sh`, to be read by no
 test) -- touching any other git-tracked file, including `tests/run-tests.sh`
 itself, invalidates every cached result. Only tracked files are hashed;

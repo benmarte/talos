@@ -225,7 +225,7 @@ _delta_428() {  # <path> -- one-file commit off SHA_A on a throwaway branch; pri
   git rev-parse HEAD
 }
 _c="$(mk_comment_with_marker "$SHA_A" qa)"
-for _p in agents/qa.md skills/pipeline/SKILL.md templates/prompts/qa-evidence.md AGENTS.md CLAUDE.md \
+for _p in agents/qa.md skills/pipeline/SKILL.md templates/prompts/qa.md AGENTS.md CLAUDE.md \
           sub/AGENTS.md a/b/CLAUDE.md .claude/agents/developer.md .claude/skills/x/SKILL.md \
           .claude/commands/pr.md .claude/talos/scripts/x.sh .agents/x.md \
           Skills/pipeline/SKILL.md Agents/qa.md AGENTS.MD claude.md .Claude/agents/x.md \

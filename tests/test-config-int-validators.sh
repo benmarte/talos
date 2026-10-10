@@ -11,7 +11,7 @@
 # Every `int` row of the table must be in exactly one bucket, so a new int key
 # cannot slip in unvalidated:
 #   BOUNDS    validated here by _CFG_INT_PY (key lo hi)
-#   OWN       has its own validator in pipeline-config.sh (spend, evidence,
+#   OWN       has its own validator in pipeline-config.sh (spend,
 #             failover keys); tested in their own files
 #   CONSUMER  the consumer already refuses or falls back with its own message
 #             (issues.max_parallel #120 in test-isolation.sh, limits.max_retries
@@ -38,7 +38,7 @@ limits.max_fix_attempts:1:100 limits.max_total_dispatches:1:1000
 execution.worktree_warn_threshold:0:10000 board.project_number:1:2147483647
 agents.stage_timeout_s:60:86400"
 BOUNDS="$(printf '%s' "$BOUNDS" | tr '\n' ' ')"
-OWN="limits.tokens_per_issue evidence.max_files evidence.max_mb agents.provider_down_s agents.roles.*.stage_timeout_s"
+OWN="limits.tokens_per_issue agents.provider_down_s agents.roles.*.stage_timeout_s"
 CONSUMER="issues.max_parallel limits.max_retries"
 
 # ── Every int row is in a bucket ─────────────────────────────────────────────

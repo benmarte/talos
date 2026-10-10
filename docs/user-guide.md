@@ -117,7 +117,7 @@ Core (all setups):
 |------|-----------|-------|
 | `bash` | everything | macOS/Linux; Windows via WSL or Git Bash |
 | `git` | everything | |
-| `python3` (3.9+) | config parsing, notify payloads | stdlib only; every embedded call runs as `python3 -I` (isolated mode, so a file in the target repo named like a module, such as `json.py`, can never run inside Talos). Config is JSON only (#526): `talos.pipeline.json` needs no extra dependency; `--convert` is the one path that reads YAML and asks for PyYAML when it cannot find it. |
+| `python3` (3.9+) | config parsing, notify payloads | stdlib only; every embedded call runs as `python3 -I` (isolated mode, so a file in the target repo named like a module, such as `json.py`, can never run inside Talos). Config is JSON only (#526): `talos.pipeline.json` needs no extra dependency. |
 | `curl` | notifications | skip if you don't use notifications |
 | `nak` | Buzz notifications only | `brew install nak`; signs/publishes Nostr events — skip unless you use Buzz |
 
@@ -279,8 +279,7 @@ ALSO writes the role profiles to `~/.claude/agents/<role>.md` -- that second
 copy is what Claude Code's native subagent discovery actually reads, so a
 global install no longer leaves Claude Code sessions pinned to a stale plugin
 profile -- registers the checkout as the `talos` plugin (see "Command names"
-below), and writes the two legacy alias skills `~/.claude/skills/pipeline` and
-`~/.claude/skills/pipeline-setup`. A repo-level `.claude/agents/<role>.md` still
+below). A repo-level `.claude/agents/<role>.md` still
 wins over both. Per-repo installs write only `talos.pipeline.*` config (never
 overwritten), the `AGENTS.md` block, and agent-skills to `.claude/skills/`
 (skip with `--no-agent-skills`); no Talos scripts are copied into repos.
@@ -326,27 +325,17 @@ aborts the install or deletes anything.
   does too). Any other source, such as a
   GitHub marketplace you added by hand: left alone, with a notice, because that
   source already provides the names. A list it cannot read: no registration.
-- *Legacy aliases, until v0.20.* `/pipeline`, `/pipeline-setup` (written to
-  `~/.claude/skills/<name>/SKILL.md`, each carrying an alias-ownership comment line) and
-  `/talos:pipeline-setup` (the plugin's `skills/pipeline-setup`) are thin
-  aliases. Each prints `renamed to /talos:<command>; this alias is removed in
-  v0.20`, then reads `$TALOS_HOME/skills/<command>/SKILL.md` or
-  `~/.talos/skills/<command>/SKILL.md` and follows it. A repo whose `CLAUDE.md`
-  still says `/pipeline` therefore keeps working; `/talos:setup` offers to
-  rewrite those references. `$TALOS_HOME` is read from the Claude Code session
-  environment, so a custom `TALOS_HOME` is found only when it is exported before
-  Claude Code starts. They run without `CLAUDE_PLUGIN_ROOT`, so the
-  pipeline playbook resolves subagent names to the bare ones from
-  `~/.claude/agents/`.
-- `--no-legacy-aliases` installs no bare names and removes the Talos-owned ones:
-  an alias, a pre-alias full copy (frontmatter `name:` plus a Talos script or
-  config name in the text), and the old `~/.claude/skills/talos-resume`. It
-  deletes only once the plugin is registered; until then the old copy is still
-  the only way to run the command, so it is kept. A skill at
-  `~/.claude/skills/pipeline` or `pipeline-setup` that is not Talos's is never
-  overwritten or deleted (the installer warns), and a symlink on the path is
-  skipped. Removing the aliases is planned after two minor releases, with a
-  CHANGELOG entry in each.
+- *The old bare names are gone (#553).* `/pipeline`, `/pipeline-setup` and
+  `/talos:pipeline-setup` no longer exist. `install.sh --global` removes an
+  older install's Talos-owned copies of `~/.claude/skills/pipeline` and
+  `pipeline-setup` (an alias with its ownership comment line, or a pre-alias full
+  copy: frontmatter `name:` plus a Talos script or config name in the text) and
+  the old `~/.claude/skills/talos-resume`. It deletes only once the plugin is
+  registered; until then the old copy is still the only way to run the command,
+  so it is kept. A skill there that is not Talos's is never overwritten or
+  deleted, and a symlink on the path is skipped. `/talos:setup` offers to
+  rewrite old command names in your `CLAUDE.md` and `AGENTS.md`.
+  `--no-legacy-aliases` is accepted and ignored.
 
 **Playbooks for any other agent.** Every agent can be pointed at the
 playbooks by path: `Read ~/.talos/skills/pipeline/SKILL.md and follow it`
@@ -640,8 +629,7 @@ For every harness:
   before the install. The native Claude path never reads it.
 - Start line for any agent: `Read ~/.talos/skills/pipeline/SKILL.md and follow it`
   (setup: `Read ~/.talos/skills/setup/SKILL.md and follow it`). Claude Code has
-  `/talos:pipeline` and `/talos:setup`, from either install path (the old `/pipeline`
-  and `/pipeline-setup` work as aliases until v0.20).
+  `/talos:pipeline` and `/talos:setup`, from either install path.
 
 | Harness | `--global --harness` writes | `agents.runner` | Start line |
 |---------|-----------------------------|-----------------|------------|
@@ -752,9 +740,7 @@ after the push the normal path resumes (re-stamps, `ready-pr`, QA). A second
 QA FAIL at the same PR head (the fix round pushed nothing) stops the run:
 `pipeline:blocked` on the PR and the issue, `stop
 reason=qa-fail-unchanged-head pr=<M> issue=<N>`, exit 0. Re-run `run` to resume: the lease ledger and the #419
-handoff files carry the state. `.claude/commands/pipeline-tick.md` (the
-event-driven tick) is SUPERSEDED by `run`/`next` — kept only as reference,
-see its own banner.
+handoff files carry the state.
 
 **The verdict comes from the final message.** `run` reads each stage's verdict
 from the agent's final message, never from a posted comment. A verdict-word
@@ -1649,7 +1635,7 @@ OUTSIDE every git tree (#517): never staged or pushed, and an agent's
 `git add -A` can never commit it. A relative `events.path` is joined onto
 the resolved common dir; an absolute one is used as-is (the status line
 refuses it). The deliberately in-tree `.talos/` files (the per-worktree
-`.talos/env`, `providers.json`, the evidence dir) are auto-ignored via
+`.talos/env`, `providers.json`) are auto-ignored via
 `.git/info/exclude` before their first write -- Talos never edits a tracked
 `.gitignore`, and repos with tracked `.talos/` content get one stderr
 warning per command and nothing else.
@@ -1934,121 +1920,6 @@ to keep the count moving while only background subagents work.
 footer hook, with the repository as the working directory. pi has no command hook
 for its footer (its footer is set by a TypeScript extension through `ctx.ui`), so
 nothing is installed for it.
-
-### Attaching evidence to the PR (`evidence.*`, #352)
-
-Evidence capture lets QA attach screenshots or recordings of a user-facing change to its PR, as one comment, so a human reviewer can see the change without checking the branch out. It is **off by default** and strictly opt-in. The files go up with `gh pr comment --attach`; there is no other store (`evidence.store` has one value, `attach`).
-
-QA captures only after it has passed every acceptance criterion, once per QA run. Evidence never changes QA's verdict: `failed`, `refused`, `over-cap`, `empty`, a non-zero capture rc and a tool timeout are reported, and none of them is a FAIL, including under `when: always`. A re-stamp never captures. There is no step after the merge.
-
-#### Turning it on
-
-`/talos:setup` asks in Step 4c:
-
-- It is skipped with one line for `vcs.provider` `gitlab`, `azure` and `file` (see the provider matrix below). On `github` it first checks that `gh pr comment --help` lists `--attach`; if not, it says evidence needs gh 2.99.0 or newer and offers only "off". That checks the machine running setup; the machine running the pipeline needs the same.
-- It detects Playwright (`playwright.config.*`), Cypress (`cypress.config.*`) and an e2e harness (`tests/e2e/` or a `test:e2e` script) and proposes a `command` and a `dir`. With neither Playwright nor Cypress, it offers agent capture (no `command`: QA's browser skill saves screenshots into `dir`, best effort, no recordings) or off. A command you type is written to the config as text; setup never runs it.
-- It names the costs (public attachments, on-screen secrets, size limits) and the default is **off**. "Ask me later" writes nothing, so the next run of `/talos:setup` asks again. "Off" writes an active `evidence:` block with `enabled: false`, so it is not asked again. The Step 0 re-run of an existing setup asks once when `evidence.enabled` is unset.
-- On "on" it offers to append `<dir>/` to `.gitignore` (see below).
-
-Or write the block yourself:
-
-```yaml
-evidence:
-  enabled: true
-  dir: .talos/evidence
-  command: "npx playwright test --grep @evidence"   # omit for agent capture
-```
-
-| Key | Default | Meaning |
-|-----|---------|---------|
-| `evidence.enabled` | `false` | The gate. Must be exactly `true`; `attach` runs nothing otherwise. |
-| `evidence.command` | unset (empty means agent capture) | Shell command that writes the files. At most 2000 characters. |
-| `evidence.dir` | `.talos/evidence` | Where the files are written, relative to the repo root. 1-200 characters from `[A-Za-z0-9._/-]`, no leading `-` or `/`, no `..` or `.git` component. |
-| `evidence.include` | unset (png, jpg, jpeg, gif, webm, mp4, mov) | 1-20 basename globs of 1-64 characters. Narrows the selection; never adds a type. |
-| `evidence.when` | `user-facing` | `user-facing` or `always`. |
-| `evidence.store` | `attach` | The only value. |
-| `evidence.max_files` | `10` | Integer 1-100. |
-| `evidence.max_mb` | `20` | Integer 1-100, MiB, a total. A fixed 10 MiB per-file cap applies on top. |
-
-An invalid value warns once and reads as absent, so the default applies. `evidence.command` is repo-only (a command to run belongs to one repo); the other `evidence.*` keys may also be set in the user-level file (`~/.talos/talos.pipeline.*`).
-
-#### `.gitignore` is required
-
-The default `.talos/evidence` is not something you want tracked, and whatever `dir` you choose must be git-ignored. `collect` refuses a directory git does not ignore (it checks `git check-ignore -q -- <dir>/probe.png`, a child path, because a rule such as `ev/*` ignores the children and not the directory) and refuses a directory that holds any tracked file. Step 4c offers to append `<dir>/` to `.gitignore`; commit that change with the config. Cypress's default `cypress/` holds tracked tests, so point `screenshotsFolder` and `videosFolder` at a separate directory such as `cypress/evidence`.
-
-#### Commands
-
-All are verbs of `scripts/pipeline-evidence.sh`. `collect`, `dir` and `enabled` make no network call and no git write. `capture` makes no network call of its own, but it runs `evidence.command`, which can do anything that command does (for example `npx playwright test` can download packages). `upload` and `attach` are the only verbs that talk to GitHub.
-
-| Verb | What it does | Exit codes |
-|------|--------------|-----------|
-| `capture` | Runs `evidence.command` with `bash -c` at the repo root, stdin on `/dev/null`, output in a private log. Takes no argument. Prints `evidence-capture rc=<n> log=<path> since=<epoch>`, or `evidence-capture mode=agent` (and runs nothing) when `evidence.command` is empty. `verify.timeout_ms` is a hard limit on the command's process group. A non-zero `rc` is reported, not a failure. | 0 a line was printed; 1 the log or runner failed; 2 usage (any argument) or not inside a worktree |
-| `collect <dir> [--since <epoch>] [--stage <dir>]` | Prints the files that are safe to publish, one TSV line each (`<relpath>`, bytes, `image` or `video`). `--since` drops files older than the capture; `--stage` copies the selection into an empty directory outside the evidence dir. | 0 manifest; 1 refused (reason on stderr); 2 usage; 3 nothing selected; 4 over a cap |
-| `upload <pr> [--since <epoch>] [--dry-run]` | Posts ONE evidence comment with the selected files, then deletes the author's older evidence comments (create, then delete, so a failed post keeps the old one). `--dry-run` prints the planned `gh` calls and makes none. | 0 posted; 1 collect, staging or `gh` failure; 2 usage, unsupported provider, no `gh` binary, or `gh` without `--attach`; 3 nothing to attach |
-| `attach <pr> [--since <epoch>] [--dry-run]` | The one call a stage makes: the `evidence.enabled` gate, then `capture`, then `upload`, then one status line. | 0 posted, empty, over-cap; 1 refused, failed; 2 usage, evidence disabled, unsupported provider, no `gh`, or `gh` without `--attach` |
-| `dir` | Prints the evidence dir (`evidence.dir` or `.talos/evidence`). Agent capture saves its files there. | 0 |
-| `enabled` | The Step 0 check. Exit 1 with no output when `evidence.enabled` is not `true`; exit 1 with one `pipeline: evidence ignored: <reason>` line on stderr when the provider or `gh` cannot do it (warn once, treat evidence as off, like `pr.draft`); otherwise exit 0 and print `evidence on when=<user-facing\|always> mode=<command\|agent>`. Runs no command and makes no provider call. | 0 on; 1 off |
-
-`attach` prints exactly one line on stdout:
-
-```text
-evidence-attach pr=<n> status=<s> images=<i> videos=<v> capture=<c> comment=<url>
-```
-
-`capture` is the command's rc (124 on timeout), `agent`, or `skipped` (`--dry-run`). `comment` is empty unless a comment was posted. `status` is one of:
-
-| Status | Meaning |
-|--------|---------|
-| `posted` | The comment is up and `comment=` holds its URL. This can come with exit 1 when only deleting an older comment failed. Decide from `status=` plus a non-empty `comment=`, not the exit code. |
-| `empty` | Nothing in the evidence dir was selected (nothing new since the capture, or nothing of an allowed type). Nothing is posted. |
-| `over-cap` | More than 10 files, 20 MiB in total or 10 MiB in one file. `collect` exits 4, so nothing is selected. Nothing is posted. |
-| `refused` | `collect` refused (a directory git does not ignore, a tracked file, a symlink, a bad path). The reason is on stderr. |
-| `failed` | Any other `collect`, staging or `gh` failure. |
-
-`attach` exiting 2 with empty stdout (disabled, unsupported provider, old `gh`) is shown by QA as `evidence unavailable`. No status-only comment is ever posted: `empty`, `over-cap` and `refused` are this one line. After an `over-cap` or `empty` later round, the earlier evidence comment stays; the line is the signal.
-
-#### What each stage does
-
-- **Orchestrator, Step 0.** Runs `enabled`. On exit 0 evidence is on for the run; on anything else nothing evidence-related happens.
-- **QA.** On a first QA dispatch, or a retry after a fix round, the orchestrator appends QA's evidence procedure (`templates/prompts/qa-evidence.md`) to its prompt; with evidence off, QA's prompt has no evidence text at all. In `mode=agent` QA notes `date +%s` before it takes screenshots and saves them only under `dir`, then passes that epoch as `--since`. In `mode=command` it runs `attach <pr>` under `pipeline-verify.sh`, in the foreground. With `when: user-facing`, QA runs it only when the PR touches a UI path or the criteria describe a UI; otherwise it writes `evidence skipped: not user-facing`. A FAIL gets no evidence: the fix round's QA captures again on the new head. QA relays the `evidence-attach` line as one bullet of its verdict.
-- **Reviewer.** Gets one extra line, `Evidence: <url>`, only when QA's status is `posted` and `check-url <pr>` accepts the `comment=` value: it must be exactly one line, this repository's own `https://github.com/<owner>/<repo>/pull/<pr>#issuecomment-<digits>`. Any other host, PR, repo or extra text is dropped. The line is also omitted under `pr.draft` (review runs before QA there). The reviewer is told not to open, fetch or read the link.
-
-QA never opens, Reads or describes an image or video, and never fetches the comment body, so evidence adds no image tokens to any stage. The reviewer is given a URL, not the image.
-
-#### Requirements and limits
-
-| `vcs.provider` | Evidence |
-|----------------|----------|
-| `github` | supported |
-| `github-api` | supported when a `gh` binary is installed; otherwise exit 2 |
-| `gitlab`, `azure`, `file` | not supported (exit 2); the run goes on without evidence |
-
-- **`gh` v2.99.0 or newer.** Talos probes the capability, not the version: `gh pr comment --help` must list `--attach`. (v2.102.0 is the version whose source the upload design was checked against.)
-- **Write access** to the repository.
-- **Not GitHub Enterprise Server.** `gh --attach` does not support it.
-- **Not the Actions `GITHUB_TOKEN`.** `gh` refuses it (exit 1 with `gh`'s own reason). Evidence upload needs a user token, which on a dev machine is `gh auth login`. Do not add a long-lived token to CI just for evidence: in GitHub Actions leave `evidence.enabled` at `false`. With the default `GITHUB_TOKEN` the upload is refused by `gh` and nothing is posted (status `failed`).
-- **Uploads cannot be deleted.** Deleting a comment, including the older evidence comment `upload` removes after a good post, does not delete the uploaded files.
-- **Caps.** 10 files, 20 MiB in total and 10 MiB per file (`evidence.max_files`, `evidence.max_mb` and a fixed per-file cap). Over any of them is exit 4 and nothing is selected, never a partial upload.
-- **Allowlisted types only.** `png`, `jpg`, `jpeg`, `gif`, `webm`, `mp4` and `mov`, each checked against the file's first bytes (a renamed file is skipped). `svg` and `html` are never published, even when `evidence.include` names them. At most 3 path components below `dir`, counting the file name (so at most two subdirectory levels), names only from `[A-Za-z0-9._-]`, no hidden files, no symlinks, no hard links.
-
-#### Rendering
-
-Images render inline in the comment. A video renders as a player only when it is the sole content of its paragraph, which is how `upload` writes the body (one paragraph per file). That comes from reading `gh`'s source, not from rendering a comment on github.com.
-
-#### Security
-
-- **Screenshots and recordings can hold on-screen secrets** (tokens, emails, internal URLs). Magic bytes prove a file's type, not that the picture is clean. The real boundary is the evidence dir, the allowlist and `--since`: only files written by this capture, in that directory, are considered.
-- **Attachments are public on public repos**, and uploads cannot be deleted. A leaked secret needs GitHub support, not a comment delete.
-- **Only allowlisted types are published**, as above.
-- **Files are copied to a private staging directory** (mode 0700, outside the worktree) and only that copy is attached. `gh --attach` opens each path again by name and follows symlinks, so attaching from the evidence dir would let a file swapped after selection leave the machine.
-- **`capture` runs `evidence.command` as arbitrary shell**, with the same trust and reach as `verify:`, and only when `evidence.enabled` is `true`. Its log is a 0600 temp file outside the worktree; it is never published.
-- Nothing is ever deleted from the evidence dir.
-
-#### Not verified
-
-- **UNVERIFIED:** whether files attached to a **private** repo's PR are readable by an unauthenticated viewer. Treat private-repo attachments as readable by anyone holding the link until you have checked.
-- **UNVERIFIED:** a real upload. Talos has not yet made a real `gh pr comment --attach` run: the tests use a stub, and the first real upload happens on the first PR with evidence enabled.
-- **UNVERIFIED:** whether `gh --attach` and GitHub accept `.webm` (Playwright's video format). Talos does not promise it; `.mp4` and `.mov` are allowed too.
 
 ### Notification templates, transpiled per platform
 
@@ -2980,7 +2851,7 @@ directory and fails the load closed with ONE stderr line when the config set is
 dirty:
 
 - `reason=config-shadowed winner=<json> also-present=<strays> rm <strays>  # or merge them into the winner first` — a `talos.pipeline.yml`/`.yaml` sits beside that layer's `talos.pipeline.json`. The json always wins; the strays are named so you can merge them into it (run `--dump`'s values through the json) or just `rm` them.
-- `reason=config-legacy-file <path> -- convert: bash scripts/pipeline-config.sh --convert <path> <dir>/talos.pipeline.json` — a `talos.pipeline.yml`/`.yaml` with no `talos.pipeline.json` in the same layer directory (a `$PIPELINE_CONFIG` pointer at a `.yml`/`.yaml` file is refused the same way, by name, even before the file's existence matters). The legacy YAML parser is gone; `--convert` (see below) is the one YAML-aware path left.
+- `reason=config-legacy-file <path> -- convert it by hand to <dir>/talos.pipeline.json (the YAML converter is in git history, #553)` — a `talos.pipeline.yml`/`.yaml` with no `talos.pipeline.json` in the same layer directory (a `$PIPELINE_CONFIG` pointer at a `.yml`/`.yaml` file is refused the same way, by name, even before the file's existence matters). There is no YAML parser and no converter any more (`--convert` was removed in #553; it is in git history): write the json by hand.
 - **An explicit `$PIPELINE_CONFIG` pointer skips the same-dir stray check.** It is a deliberate human decision — the operator named the winner themselves — so only canonical-path loads (the two default files) get the stray/legacy gate. The pointer itself is still gated: a `.yml`/`.yaml` pointer is refused like any other legacy file, by name, even when the file does not exist. A pointer at a file that does not exist fails closed too (`pipeline-config: reason=config-pointer-missing <path>`, exit 3) instead of silently loading defaults; an empty `$PIPELINE_CONFIG` still means unset.
 
 Every read verb exits 3 on these, and a `talos.sh` run answers `stop reason=config-unreadable` while printing the specific line, so a mid-migration repo is a named state, never a working config. `~/.talos/.env` is unaffected: it is the secrets store, not a config layer.
@@ -2989,9 +2860,9 @@ Why fail closed instead of warn: on 2026-10-06 a stray `talos.pipeline.yml` left
 
 ### The user-level file
 
-`${TALOS_HOME:-$HOME/.talos}/talos.pipeline.json` accepts every key except the repo-only ones, so `pr.draft`, `limits.*`, `spend.*`, `verify.ci_wait_s`, `hooks.*`, `evidence.enabled`, `notifications.*` and `agents.*` can be set once for every repo. The repo file overrides it key by key, and a repo list replaces a global list whole.
+`${TALOS_HOME:-$HOME/.talos}/talos.pipeline.json` accepts every key except the repo-only ones, so `pr.draft`, `limits.*`, `spend.*`, `verify.ci_wait_s`, `hooks.*`, `notifications.*` and `agents.*` can be set once for every repo. The repo file overrides it key by key, and a repo list replaces a global list whole.
 
-**Repo-only keys.** A key that describes one repository is honoured only in that repo's own file. A repo-only key found in the user-level file is dropped with one stderr line that names the key and never the value. The list is the table's scope column: `base_branch`, `release_branch`, `repo`, `vcs.provider`, `vcs.repo`, `vcs.azure.*`, `vcs.file.source.path`, `board.*` (all of them), `verify`, `verify.commands`, `verify.qa_mode`, `merge.required_checks`, `merge.forbidden_files`, `merge.forbidden_files_replace`, `merge.forbidden_files_allow`, `merge.approval_waiver_paths`, `merge.union_paths`, `issues.label_filter`, `issues.skip_labels`, `markers.trusted_authors`, `markers.verify_authors` and `evidence.command`. The environment variable of a repo-only key still applies, because the environment is the last layer.
+**Repo-only keys.** A key that describes one repository is honoured only in that repo's own file. A repo-only key found in the user-level file is dropped with one stderr line that names the key and never the value. The list is the table's scope column: `base_branch`, `repo`, `vcs.provider`, `vcs.repo`, `vcs.azure.*`, `vcs.file.source.path`, `board.*` (all of them), `verify`, `verify.commands`, `verify.qa_mode`, `merge.required_checks`, `merge.forbidden_files`, `merge.forbidden_files_replace`, `merge.forbidden_files_allow`, `merge.approval_waiver_paths`, `merge.union_paths`, `issues.label_filter`, `issues.skip_labels`, `markers.trusted_authors` and `markers.verify_authors`. The environment variable of a repo-only key still applies, because the environment is the last layer.
 
 **The file must be trusted.** It drives `hooks.*` and `notifications.cmd`, which run commands, so Talos reads it only when it is a regular file (or a symlink you own pointing at one), owned by you, and neither group- nor world-writable. Otherwise one stderr line names the file and the fix (`chmod go-w <file>`) and the layer is read as absent. A malformed, empty or non-mapping file also reads as absent, with one warning. The file is parsed as data only (JSON), never sourced.
 
@@ -3048,7 +2919,7 @@ Create it with `mkdir -p ~/.talos && touch ~/.talos/.env && chmod 600 ~/.talos/.
 - **Project**, `talos.pipeline.json` in the repo, checked in: what describes this repository and wins over the global file key by key.
 - **Environment**: a key's own documented variable, last and one-off.
 
-**Repo-only keys** (`vcs.*`, `board.*`, `base_branch`, `verify.*`, `merge.required_checks` and the other forbidden/union/waiver lists, `issues.label_filter`, `issues.skip_labels`, `markers.*_authors`, `evidence.command`) are honoured only in the repo file; in the global file they are dropped with a note that names the key ([The user-level file](#the-user-level-file) has the full list).
+**Repo-only keys** (`vcs.*`, `board.*`, `base_branch`, `verify.*`, `merge.required_checks` and the other forbidden/union/waiver lists, `issues.label_filter`, `issues.skip_labels`, `markers.*_authors`) are honoured only in the repo file; in the global file they are dropped with a note that names the key ([The user-level file](#the-user-level-file) has the full list).
 
 **Secrets never go in either file.** They are `env:NAME` references to variables in your environment or in `~/.talos/.env` ([Secrets](#secrets)).
 
@@ -3091,7 +2962,6 @@ If your setup predates the config and secrets work (epic #437), check these once
 | Key | Default | Description |
 |-----|---------|-------------|
 | `base_branch` | repo default branch | Branch all PRs target |
-| `release_branch` | `main` | Production branch (changelog headers) |
 | `repo` | auto-detect | Legacy top-level alias for `vcs.repo` — checked first (before `vcs.repo`, before the git remote) by helpers that resolve `owner/repo` (e.g. `pipeline-hooks.sh`). Prefer `vcs.repo` in new configs; both are read for back-compat. |
 | `vcs.provider` | `github` | VCS backend: `github`, `gitlab`, `azure`, or `file` |
 | `vcs.repo` | auto-detect | `owner/repo` override (required when git remote unavailable) |
@@ -3122,7 +2992,6 @@ If your setup predates the config and secrets work (epic #437), check these once
 | `merge.auto_sync` | `true` | After each successful `merge-pr`, update every OTHER open pipeline PR's branch with the new base (#289): a sibling whose conflicts are entirely covered by `merge.union_paths` resolves mechanically via `pipeline-mergebase.sh`; otherwise `update-branch` (server-side base update — GitHub `PUT .../pulls/{n}/update-branch` with `expected_head_sha`, GitLab `glab mr rebase`; unsupported on azure/file, exit 2) re-checks mergeability, and a still-conflicting sibling gets the developer merge-base dispatch immediately instead of at its own merge time. `false` skips the block entirely. |
 | `merge.method` | `squash` | `squash`, `merge`, or `rebase` |
 | `merge.required_checks` | `[]` | CI check names required before merge. If your workflow only runs some checks (e.g. a macOS job) on push and not on pull requests -- as `templates/ci/github-tests.yml` does by default -- do not name that check here, or QA's CI-wait loop will wait for a check that never appears on the PR; see [CI](../README.md#ci). |
-| `merge.delete_branch` | `true` | Delete feature branch after merge |
 | `merge.forbidden_files` | see defaults | Glob patterns (matched against filename and full path) for files that must not appear in a PR. Matching is **case-insensitive** (`.ENV` and `Credentials.JSON` are caught). Defaults (30 patterns): `.env`, `.env.*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.secrets`, `secrets.*`, `*id_rsa*`, `*id_ecdsa*`, `*id_ed25519*`, `*id_dsa*`, `*.ppk`, `*.jks`, `*.keystore`, `*.pkcs12`, `*.kdbx`, `*.ovpn`, `.netrc`, `_netrc`, `.npmrc`, `.pypirc`, `.git-credentials`, `credentials.json`, `*-credentials.json`, `*_credentials.json`, `.aws/credentials`, `*/.aws/credentials`, `.docker/config.json`, `*/.docker/config.json` (the last ten, credential files, were added in #436; `*credentials*.json` is deliberately not a default, so `credentials-schema.json` stays allowed). `pipeline-worktree.sh checkpoint` reads the same list through `pipeline-vcs.sh forbidden-files-patterns` and fails closed if it cannot resolve it. Setting this key **adds** to the defaults (union semantics) — the built-in patterns remain active alongside any configured patterns. To replace the defaults entirely, also set `merge.forbidden_files_replace: true` (see below). **Note:** `*id_rsa*` also matches `id_rsa.pub` (a harmless public key) — this is an accepted false positive. If you commit public keys, add `id_rsa.pub` (or the specific filename) to `merge.forbidden_files_allow`. **Note:** `*.keystore` may also block self-signed test keystores committed for CI use — `fnmatch` cannot distinguish a real keystore from a test one. This is expected behaviour; operators who legitimately commit test keystores should add the specific filename to `merge.forbidden_files_allow` (e.g. `["test.keystore", "debug.keystore"]`). **Note:** `.netrc` and `_netrc` are literal patterns (no glob characters). As of #76 (PR #90), literal deny patterns generate canaries and wildcard allow entries that match them are rejected — the deferral that kept `.netrc` out of the defaults is resolved (#78). **Note:** Three extensions were deliberately excluded from the defaults in #78: `*.gpg` (`pass`/SOPS/git-crypt workflows commit GPG-encrypted blobs intentionally — encryption-at-rest is a legitimate reason to put a secret in a repo), `*.asc` (detached signatures and public signing keys are routinely committed as release artifacts), and `*.der` (DER is an encoding used equally by public X.509 certificates and private keys — the extension alone is not a reliable signal). If one of these applies to files that should genuinely never appear in your PRs, add the pattern to `merge.forbidden_files`. **Note:** a `.npmrc` that holds no token (only a registry URL or `engine-strict`) is a common false positive for the `.npmrc` default. Add the exact filename to `merge.forbidden_files_allow` (`[".npmrc"]`); a wildcard entry is rejected. |
 | `merge.forbidden_files_replace` | `false` | Set to `true` to restore the pre-v0.13 replacement behaviour: `merge.forbidden_files` will then **replace** the built-in defaults entirely rather than unioning with them. **Security warning:** this suppresses the built-in secret-protection patterns for every PR until the key is removed. A `talos:forbidden-files-defaults-replaced` marker is emitted on stdout on every run so the suppressed state is auditable in the PR record. Keep this `false` unless you have a specific reason to narrow the deny list. |
 | `merge.forbidden_files_allow` | `[]` | Explicit exemptions for `merge.forbidden_files`. Globs matched against filename and full path, checked **before** deny patterns. Use this when a deny pattern over-matches a committed template (e.g. allow `.env.example` while keeping `.env.production` blocked). Example: `[".env.example"]`. **Security note:** each entry punches a hole in the secret-protection gate — if a real secret file matches an allow entry it will not be blocked. Keep the allow list minimal and specific. **Literal-override caveat:** the allow-list validation generates canaries from both wildcard and literal deny patterns. A wildcard allow entry (e.g. `*.env`) that matches a canary derived from any deny pattern is rejected. The one permitted exception is an allow entry that is an exact string match for a literal deny pattern (e.g. adding `.env` to allow when `.env` is a deny pattern) — this is treated as a deliberate operator decision to permit that specific file. Keep such overrides intentional and minimal. |
@@ -3180,14 +3049,6 @@ If your setup predates the config and secrets work (epic #437), check these once
 | `events.enabled` | `true` | Whether every `hooks.post_stage` payload is also appended, as one JSON line, to the local events log — independently of whether `hooks.post_stage` itself is configured. See [Events log](../README.md#events-log) below. |
 | `events.path` | `talos/events.jsonl` | Path to the events log, relative to the **git common dir** (resolved via `git rev-parse --git-common-dir`, so every linked worktree of the same repo appends to the one file and the log lives outside every git tree, #517) unless already absolute (`talos-status.sh` refuses an absolute path or one outside the common dir). |
 | `pr.draft` | `true` | Draft PRs, the default since #435 (#332): the developer opens a DRAFT PR, every stage that needs no CI runs while it is a draft, and `ready-pr` triggers the one CI run (see [Draft PRs](../README.md#draft-prs-prdraft-default-332-435)). `false` keeps the ready flow, where every push runs CI. Supported on `github`, `gitlab` and `azure`; `github-api` and `file` cannot open draft PRs and always use the ready flow (`github-api` warns once). On `github`, Step 0 also checks your workflows with `scripts/pipeline-draft-check.sh` and warns when CI does not skip drafts; when a job skips drafts but `ready_for_review` is missing from `on.pull_request.types` and the key is unset, the run uses the ready flow instead, because QA would wait for a run that never starts. |
-| `evidence.enabled` | `false` | Opt-in switch for evidence capture (#352): QA attaches screenshots or recordings of a user-facing change to the PR. Strict `true`/`false`; anything else warns once and reads as absent. `/talos:setup` asks once and writes it. See [Evidence capture](../README.md#evidence-capture-opt-in). |
-| `evidence.command` | unset (empty means agent capture) | Shell command that writes the files, run as `bash -c` at the repo root, only when `evidence.enabled` is `true`. Empty or absent: QA's browser skill saves screenshots itself. At most 2000 characters. |
-| `evidence.dir` | `.talos/evidence` | Directory the files are written to, relative to the repo root. The default `.talos/` location is auto-ignored via `.git/info/exclude` by the in-tree guard (#517, no gitignore file); a custom dir outside `.talos/` is NOT covered by that guard (it only appends `.talos/`) — set such a directory only if the repo already ignores it. |
-| `evidence.include` | unset (png, jpg, jpeg, gif, webm, mp4, mov) | 1-20 basename globs narrowing which files are attached. Never widens the allowlist: svg and html are never published. |
-| `evidence.when` | `user-facing` | `user-facing` or `always`. |
-| `evidence.store` | `attach` | `attach` is the only value: files go up with `gh pr comment --attach`. |
-| `evidence.max_files` | `10` | Most files in one upload, integer 1-100. |
-| `evidence.max_mb` | `20` | Most MiB in one upload (a total), integer 1-100. A fixed 10 MiB per-file cap applies on top. An invalid value warns once and reads as absent. `evidence.command` is repo-only; the other `evidence.*` keys may also be set in the user-level file. |
 | `agents.runner` | `claude` | Agent harness for the whole pipeline: `claude` (native subagents), `pi`, `codex`, `gemini`, `antigravity`, or `custom` (with `agents.runner_cmd`). See [Other harnesses](../README.md#other-harnesses-pi-codex-cli-gemini-cli-antigravity-local-models). |
 | `agents.subagents` | `auto` | `auto` (true for `claude`, else false), `true`, or `false`. Chooses native parallel subagents vs. the headless `pipeline-agent.sh` adapter. |
 | `agents.runner_cmd` | — | Command for `agents.runner: custom` — the prompt arrives on stdin. Global-only; use `agents.roles.<role>.runner_cmd` to override a single role. |
@@ -3253,13 +3114,10 @@ If your setup predates the config and secrets work (epic #437), check these once
 - **A legacy YAML config fails the load closed (#526)** — config is JSON only:
   a `talos.pipeline.yml`/`.yaml` beside `talos.pipeline.json` stops every config
   read with one stderr line (`reason=config-shadowed ... rm <stray>`), and one
-  without a json stops with `reason=config-legacy-file ... --convert ...`.
-  Apply the fix the line prints (merge the stray into the json or run
-  `bash scripts/pipeline-config.sh --convert talos.pipeline.yml talos.pipeline.json`,
-  then remove the legacy file). `talos.pipeline.json.example` is the starting
-  point for a new config. External owners running one YAML config each (swarm,
-  ci-toolkit, dycotomic-platform) run `--convert` once per repo, then remove
-  the legacy file.
+  without a json stops with `reason=config-legacy-file ...`.
+  Apply the fix the line prints (merge the stray into the json by hand, or
+  write the json from `talos.pipeline.json.example`, then remove the legacy
+  file). The old `--convert` verb was removed in #553; it is in git history.
 - **Board updates fail** — Two paths depending on your provider:
   - **Missing Status option** (e.g. `Blocked`): run
     `bash scripts/bootstrap-board.sh` to provision it — idempotent, safe to
@@ -3358,10 +3216,7 @@ does that work itself instead. Skills are reachable; agents are not.
 Talos's own scripts only call your VCS CLI (`gh`/`glab`/`az`) and, for
 notifications, the Slack/Discord/Teams HTTP APIs.
 
-**Can it run in CI?** An experimental GitHub Actions driver exists in
-[`examples/github-actions/`](../examples/github-actions/) (event-driven via
-`anthropics/claude-code-action`), but it's unmaintained reference material —
-the supported path is a local orchestrator session.
+**Can it run in CI?** No; the supported path is a local orchestrator session.
 
 **Is my repo modified?** Only `.claude/` (plus `talos.pipeline.json` and,
 for every harness, a fenced block in `AGENTS.md`; `--no-agents-md` skips it). All state lives in

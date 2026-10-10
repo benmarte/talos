@@ -239,7 +239,7 @@ assert_eq "0" "$RC" "no plugin subcommand: exits 0"
 assert_contains "$OUT" "has no 'claude plugin' subcommand" "no plugin subcommand: notice"
 assert_contains "$OUT" "/plugin marketplace add $TALOS_ROOT" "no plugin subcommand: the notice gives the manual command"
 assert_eq "0" "$(calls '\[marketplace\]')" "no plugin subcommand: no marketplace call"
-assert_file_exists "$CASE/claude/skills/pipeline/SKILL.md" "no plugin subcommand: the /pipeline alias is still installed"
+assert_file_absent "$CASE/claude/skills/pipeline" "no plugin subcommand: no /pipeline alias is installed (#553)"
 
 newcase unreadable-list
 export CLAUDE_STUB_LIST_RAW='this is not json'
@@ -272,7 +272,7 @@ if [ "$STRIP_OK" = true ] && [ -z "$(PATH="$BIN" command -v claude 2>/dev/null |
   assert_contains "$OUT" "claude is not on PATH, so the talos plugin was not registered" "no claude on PATH: notice"
   assert_contains "$OUT" "/plugin marketplace add $TALOS_ROOT, then /plugin install talos@talos" "no claude on PATH: the notice gives both manual commands"
   assert_file_exists "$CASE/claude/agents/developer.md" "no claude on PATH: the role profiles are still installed"
-  assert_file_exists "$CASE/claude/skills/pipeline/SKILL.md" "no claude on PATH: the /pipeline alias is still installed"
+  assert_file_absent "$CASE/claude/skills/pipeline" "no claude on PATH: no /pipeline alias is installed (#553)"
 else
   echo "  -- skipped: cannot build a PATH without claude (no-claude case)"
 fi
@@ -296,6 +296,32 @@ OUT="$(env CLAUDE_CONFIG_DIR="$CASE/claude" TALOS_HOME="$CASE/talos" TALOS_AGENT
 assert_eq "0" "$RC" "no marketplace.json: exits 0"
 assert_contains "$OUT" "marketplace.json not found" "no marketplace.json: notice"
 assert_eq "0" "$(calls '\[add\]')" "no marketplace.json: no marketplace add"
+
+# ── 8b. retired bare skills (#553): an older install's alias is removed ───────
+# Talos-owned copies (the alias marker, or a pre-alias full copy) go once the
+# plugin is registered; a skill that is not Talos's is never touched; without a
+# registered plugin the copy is kept, because it is still the only way to run it.
+seed_retired() {
+  mkdir -p "$CASE/claude/skills/pipeline" "$CASE/claude/skills/pipeline-setup" "$CASE/claude/skills/talos-resume"
+  printf -- '---\nname: pipeline\ndescription: x\n---\n<!-- talos:alias -->\nold alias\n' > "$CASE/claude/skills/pipeline/SKILL.md"
+  printf -- '---\nname: pipeline-setup\ndescription: mine\n---\nmy own skill, nothing of Talos in it\n' > "$CASE/claude/skills/pipeline-setup/SKILL.md"
+  printf -- '---\nname: resume\ndescription: x\n---\nRun bash scripts/pipeline-vcs.sh\n' > "$CASE/claude/skills/talos-resume/SKILL.md"
+}
+newcase retired-skills
+seed_retired
+inst
+assert_eq "0" "$RC" "retired skills: exits 0"
+assert_file_absent "$CASE/claude/skills/pipeline" "retired skills: the Talos alias marker copy is removed"
+assert_file_absent "$CASE/claude/skills/talos-resume" "retired skills: the pre-alias full copy is removed"
+assert_file_exists "$CASE/claude/skills/pipeline-setup/SKILL.md" "retired skills: a skill that is not Talos's is left in place"
+assert_contains "$(cat "$CASE/claude/skills/pipeline-setup/SKILL.md")" "my own skill" "retired skills: and it is unchanged"
+newcase retired-skills-no-plugin
+export CLAUDE_STUB_NO_PLUGIN=1
+seed_retired
+inst
+assert_file_exists "$CASE/claude/skills/pipeline/SKILL.md" "retired skills: with no registered plugin the alias is kept"
+assert_contains "$OUT" "kept (the talos plugin is not registered" "retired skills: and the output says why"
+unset CLAUDE_STUB_NO_PLUGIN
 
 # ── 9. the plugin's own manifest is the marketplace, and the stub is the stub ─
 assert_file_exists "$TALOS_ROOT/.claude-plugin/marketplace.json" "the repo ships .claude-plugin/marketplace.json (the local marketplace)"

@@ -38,8 +38,6 @@ FILE_SOURCE_PATH=plan.md
 ISOLATION=worktree
 WORKTREE_WARN_THRESHOLD=4
 PR_DRAFT=true
-EVIDENCE_ENABLED=true
-EVIDENCE_LINE=evidence on when=always mode=command
 agent.validator.runner=claude
 agent.validator.model=sonnet
 agent.validator.effort=medium
@@ -83,5 +81,4 @@ ref=planner
 ref=adversarial
 ref=human-merge
 ref=ci-gate
-ref=evidence
 ref=harness

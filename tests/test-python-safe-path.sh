@@ -14,9 +14,6 @@
 #     site. It exists since Python 3.4; Python 3.9+ is the supported floor.
 #   * -P / PYTHONSAFEPATH are not used: 3.9 (the macOS system python3) does not
 #     know them.
-#   * The one PyYAML import site (--convert, #526) appends the user site back (APPEND, so stdlib
-#     and system packages win and cwd never enters) so a `pip install --user
-#     pyyaml` keeps reading YAML config.
 #   * Test doubles in tests/stubs/ are guarded too (#452): they run with the
 #     scratch repo as cwd, so a bare `python3 -c` there would run a planted
 #     module just the same.
@@ -33,7 +30,6 @@ set -u
 make_sandbox
 use_stubs
 
-REAL_PY="$(command -v python3)"
 CFG="$TALOS_ROOT/scripts/pipeline-config.sh"
 VCS="$TALOS_ROOT/scripts/pipeline-vcs.sh"
 NOTIFY="$TALOS_ROOT/scripts/pipeline-notify.sh"
@@ -287,49 +283,5 @@ check "events log"              bash "$EV" log --event qa --role qa --issue 42
 check "events list"             bash "$EV" list --issue 42
 check "events cost"             bash "$EV" cost --issue 42
 check "events cost --line"      bash "$EV" cost --issue 42 --line
-
-# ---- user-site PyYAML (--convert is the only YAML-aware import site, #526) --
-# Under -I the user site is dropped, so --convert appends it back.
-# `python3 -S` (a PATH shim) removes system site-packages, so a system PyYAML
-# cannot answer and the only candidates are cwd and the user site.
-NOSYS="$SANDBOX/nosys-bin"
-mkdir -p "$NOSYS"
-printf '#!/bin/sh\nexec "%s" -S "$@"\n' "$REAL_PY" > "$NOSYS/python3"
-chmod +x "$NOSYS/python3"
-
-UB="$SANDBOX/ub"
-USER_SITE="$(cd / && PYTHONUSERBASE="$UB" "$REAL_PY" -I -c 'import site; print(site.getusersitepackages())')"
-mkdir -p "$USER_SITE/yaml"
-cat > "$USER_SITE/yaml/__init__.py" <<'EOF_USERSITE_YAML_k3Hs9Rv2Lq0p'
-YAMLError = ValueError
-def safe_load(f):
-    return {"merge": {"method": "from-user-site-yaml"}}
-EOF_USERSITE_YAML_k3Hs9Rv2Lq0p
-
-printf 'merge:\n  method: rebase\n' > "$SANDBOX/talos.pipeline.yml"
-rm -f "$SANDBOX/talos.pipeline.json"
-
-rm -f "$MARK"/*
-_got_rc=0
-( cd "$SANDBOX" && PATH="$NOSYS:$PATH" PYTHONUSERBASE="$UB" bash "$CFG" --convert talos.pipeline.yml "$SANDBOX/conv.json" >/dev/null 2>&1 ) || _got_rc=$?
-assert_eq "0" "$_got_rc" \
-  "user-site PyYAML: --convert finds PyYAML under PYTHONUSERBASE"
-assert_eq "" "$(ls "$MARK" | tr '\n' ' ')" \
-  "user-site PyYAML: the planted yaml.py in cwd did not run"
-mv "$SANDBOX/conv.json" "$SANDBOX/talos.pipeline.json"
-# The migrated repo removes the legacy file: a stray yml beside the json fails
-# the load closed, exactly what the reason line tells the operator to do.
-rm -f "$SANDBOX/talos.pipeline.yml"
-_got="$(cd "$SANDBOX" && bash "$CFG" merge.method safe 2>/dev/null)"
-assert_eq "from-user-site-yaml" "$_got" \
-  "user-site PyYAML: the converted values load"
-
-# No PyYAML in the user site: the planted yaml.py in cwd must still not run.
-_got_rc=0
-( cd "$SANDBOX" && PATH="$NOSYS:$PATH" PYTHONUSERBASE="$SANDBOX/ub-empty" bash "$CFG" --convert talos.pipeline.yml "$SANDBOX/conv2.json" >/dev/null 2>&1 ) || _got_rc=$?
-assert_eq "" "$(ls "$MARK" | tr '\n' ' ')" \
-  "no user-site PyYAML: the planted yaml.py in cwd did not run"
-assert_eq "3" "$_got_rc" \
-  "no user-site PyYAML: --convert refuses (exit 3), not a crash"
 
 finish

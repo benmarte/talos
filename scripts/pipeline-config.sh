@@ -10,9 +10,6 @@
 #          pipeline-config.sh --show [--origin-only] [KEY-PREFIX]
 #                                           every key with its value and the
 #                                           layer that decided it (see below)
-#          pipeline-config.sh --convert LEGACY.yml TARGET.json [--force]
-#                                           one-shot YAML -> JSON migration
-#                                           (#526, the only YAML-aware code)
 # Example: pipeline-config.sh board.project_number 1
 #          pipeline-config.sh notifications.slack_channel ""
 #          pipeline-config.sh merge.method squash
@@ -30,8 +27,8 @@
 #     reason=config-shadowed winner=<json> also-present=<strays> rm <strays>
 #     # or merge them into the winner first
 #   talos.pipeline.yml/.yaml with no talos.pipeline.json in that dir →
-#     reason=config-legacy-file <path> -- convert: bash scripts/pipeline-config.sh
-#     --convert <path> <dir>/talos.pipeline.json
+#     reason=config-legacy-file <path> -- convert it by hand to
+#     <dir>/talos.pipeline.json (the YAML converter is in git history, #553)
 # Every read verb (KEY, --has, --show, --dump) exits 3 on it. Through talos.sh
 # (the cfg cache primes on --dump) the run answers stop reason=config-unreadable
 # and the specific line reaches the operator.
@@ -81,8 +78,7 @@
 # see the env layer.
 #
 # Parsing (#526): the loader's only parser is json. A legacy .yml/.yaml never
-# reaches the parser: the gate above refuses it first, and --convert is the
-# one path that reads YAML (a human-invoked migration, needs PyYAML).
+# reaches the parser: the gate above refuses it first.
 #
 set -u
 
@@ -173,7 +169,7 @@ fi
 #                  under whichever one is found.
 #   3. env         the variable in the table's env column, when set and not
 #                  empty. No generic TALOS_CFG_* scheme.
-# The validators below (positive integers, spend, evidence, fallback, effort)
+# The validators below (positive integers, spend, fallback, effort)
 # run on the merged value, so they hold whichever layer supplied it.
 # Secret shapes (#444): a string leaf of either FILE layer that looks like a
 # secret (scripts/pipeline-secret-shapes.py: Slack/Discord/Teams webhooks and
@@ -186,7 +182,7 @@ fi
 # own talos.pipeline.json and the user-level ${TALOS_HOME:-$HOME/.talos}/
 # talos.pipeline.json. No name list, no extension precedence, no legacy names
 # (the old .claude-pipeline.* / pipeline.* names are simply not read anymore;
-# an owner still on one runs --convert or renames the file).
+# an owner still on one converts the file by hand).
 _CFG_PROJECT_NAME="talos.pipeline"
 
 # The user-level config directory: $TALOS_HOME, else $HOME/.talos. Empty when
@@ -224,7 +220,7 @@ _locate_user_cfg() {
 #   second file beside the json  -> reason=config-shadowed winner=<json>
 #       also-present=<strays> rm <strays>  # or merge them into the winner first
 #   lone legacy file, no json    -> reason=config-legacy-file <path>
-#       -- convert: bash scripts/pipeline-config.sh --convert <path> <json>
+#       -- convert it by hand to <json> (the converter is in git history)
 #
 # The reason joins the env-reasons class through the existing plumbing: --dump
 # exits 3, so talos.sh (cfg cache primed on --dump) stops with
@@ -256,8 +252,8 @@ _cfg_project_problem() {
       *.yml|*.yaml)
         _cv_path="$(_cfg_safe_path "$PIPELINE_CONFIG")"
         case "$PIPELINE_CONFIG" in */*) _cv_dir="${PIPELINE_CONFIG%/*}" ;; *) _cv_dir="." ;; esac
-        printf 'pipeline-config: reason=config-legacy-file %s -- convert: bash scripts/pipeline-config.sh --convert %s %s/%s.json\n' \
-          "$_cv_path" "$_cv_path" "$(_cfg_safe_path "$_cv_dir")" "$_CFG_PROJECT_NAME"
+        printf 'pipeline-config: reason=config-legacy-file %s -- convert it by hand to %s/%s.json (the YAML converter is in git history, #553)\n' \
+          "$_cv_path" "$(_cfg_safe_path "$_cv_dir")" "$_CFG_PROJECT_NAME"
         return 0 ;;
       *)
         # An explicit pointer at a file that is not there fails closed (#541):
@@ -277,8 +273,8 @@ _cfg_project_problem() {
     printf 'pipeline-config: reason=config-shadowed winner=%s also-present=%s rm %s  # or merge them into the winner first\n' \
       "$_winner" "$(printf '%s' "$_strays" | tr ' ' ',')" "$_strays"
   else
-    printf 'pipeline-config: reason=config-legacy-file %s -- convert: bash scripts/pipeline-config.sh --convert %s %s\n' \
-      "$_strays" "${_strays%% *}" "$_winner"
+    printf 'pipeline-config: reason=config-legacy-file %s -- convert it by hand to %s (the YAML converter is in git history, #553)\n' \
+      "$_strays" "$_winner"
   fi
 }
 
@@ -307,8 +303,8 @@ _cfg_user_problem() {
     printf 'pipeline-config: reason=config-shadowed winner=%s also-present=%s rm %s  # or merge them into the winner first\n' \
       "$_winner" "$(printf '%s' "$_strays" | tr ' ' ',')" "$_strays"
   else
-    printf 'pipeline-config: reason=config-legacy-file %s -- convert: bash scripts/pipeline-config.sh --convert %s %s\n' \
-      "$_strays" "${_strays%% *}" "$_winner"
+    printf 'pipeline-config: reason=config-legacy-file %s -- convert it by hand to %s (the YAML converter is in git history, #553)\n' \
+      "$_strays" "$_winner"
   fi
 }
 
@@ -345,8 +341,7 @@ def _parse_cfg_file(path):
     # reaches here - the shell gate (reason=config-shadowed / reason=config-legacy-file)
     # refuses every talos.pipeline.* file that is not the layer's canonical
     # json before any read verb spawns python3, and an explicit PIPELINE_CONFIG
-    # pointer at a legacy YAML file is refused the same way. --convert is the
-    # only YAML-aware path in the whole pipeline.
+    # pointer at a legacy YAML file is refused the same way.
     import json
     with open(path) as f:
         return json.load(f)
@@ -819,120 +814,9 @@ EOF
   printf '_CFG_TABLE = %s\n_HARNESS = ("%s", "%s")\n_AGENT_SH = "%s"\n%s\n%s\n%s' "$(_talos_scope_env_json)" "$_hn" "$_ho" "$_as" "${_TALOS_TRUST_LIB:-}" "$_CFG_SHAPES_PY" "$_CFG_LOADER_PY"
 }
 
-# ── Evidence-key validator (#405, part of #352) ──────────────────────────────
-# Python half of the evidence.* validation. Like _CFG_LOADER_PY it is handed to
-# each python3 process as an argv string and exec()'d (inside the existing
-# `python3 -I` process), so --dump and the single-key lookup share ONE
-# definition instead of a third pair of copies. Defines
-# _validate_evidence_key(key, value) -> the validated value, or None after one
-# stderr warning (callers treat None as absent), and _evidence_apply(flat) for
-# the --dump dict. A key outside evidence.* passes through untouched. Defaults
-# (false, 10, 20, attach, user-facing) belong to the CALLER; nothing here
-# injects one. Evidence is uploaded with `gh pr comment --attach` only (owner
-# decision on #352).
-read -r -d '' _CFG_EVIDENCE_PY <<'PYEVIDENCE' || true
-import re
-
-# Enum keys as a table so a new value (e.g. "pr" for evidence.store) is a
-# one-word edit; the warning text is built from the tuple.
-_EVIDENCE_ENUMS = {
-    "evidence.when": ("user-facing", "always"),
-    "evidence.store": ("attach",),
-}
-_EVIDENCE_KEYS = (
-    "evidence.enabled", "evidence.command", "evidence.dir",
-    "evidence.include", "evidence.when", "evidence.store",
-    "evidence.max_files", "evidence.max_mb",
-)
-
-def _ev_reject(key, want, value):
-    shown = repr(value)
-    if len(shown) > 80:
-        shown = shown[:77] + "..."
-    sys.stderr.write(
-        "pipeline-config: %s must be %s -- got: %s -- using default\n"
-        % (key, want, shown)
-    )
-    return None
-
-def _validate_evidence_key(key, value):
-    if value is None or key not in _EVIDENCE_KEYS:
-        return value
-    if key == "evidence.enabled":
-        if not isinstance(value, bool):
-            return _ev_reject(key, "true or false", value)
-        return value
-    if key in _EVIDENCE_ENUMS:
-        allowed = _EVIDENCE_ENUMS[key]
-        if not isinstance(value, str) or value not in allowed:
-            return _ev_reject(key, "one of " + "|".join(allowed), value)
-        return value
-    if key in ("evidence.max_files", "evidence.max_mb"):
-        # Strict: a real int or a 1-4 digit string, never a bool, a float
-        # (12.0), padding (" 12 ") or underscores ("1_0").
-        iv = None
-        if isinstance(value, bool):
-            pass
-        elif isinstance(value, int):
-            iv = value
-        elif isinstance(value, str) and re.fullmatch(r"[0-9]{1,4}", value):
-            iv = int(value)
-        if iv is None or not 1 <= iv <= 100:
-            return _ev_reject(key, "an integer from 1 to 100", value)
-        return iv
-    if key == "evidence.dir":
-        # Value-only checks: a relative path of at most 200 characters from
-        # [A-Za-z0-9._/-] that does not start with "-" or "/" (so no space,
-        # shell metacharacter, glob, control character or backslash), with no
-        # ".." component, not ".", and no ".git" component at any depth (any
-        # case; "." and empty components are dropped first). realpath /
-        # tracked-file checks are run time.
-        ok = isinstance(value, str) and re.fullmatch(
-            r"[A-Za-z0-9._][A-Za-z0-9._/-]{0,199}", value) is not None
-        if ok:
-            parts = [p for p in value.split("/") if p not in ("", ".")]
-            ok = (
-                bool(parts) and ".." not in parts
-                and ".git" not in [p.lower() for p in parts]
-            )
-        if not ok:
-            return _ev_reject(
-                key, "a relative path of at most 200 characters from "
-                "A-Z a-z 0-9 . _ / - (no leading - or /, no .. component, "
-                "not . and no .git component)", value)
-        return value
-    if key == "evidence.include":
-        # A list of 1-20 basename globs of at most 64 characters; a bare
-        # string, [], too many items or ONE bad item makes the whole value
-        # absent (fail closed).
-        if not (isinstance(value, list) and 1 <= len(value) <= 20 and all(
-                isinstance(x, str) and re.fullmatch(r"[A-Za-z0-9*?._-]{1,64}", x)
-                for x in value)):
-            return _ev_reject(
-                key, "a list of 1-20 basename globs of 1-64 characters "
-                "matching [A-Za-z0-9*?._-] (no /)", value)
-        return value
-    if key == "evidence.command":
-        if not (isinstance(value, str) and len(value) <= 2000
-                and "\0" not in value):
-            return _ev_reject(
-                key, "a string of at most 2000 characters with no NUL", value)
-        return value
-    return value
-
-def _evidence_apply(flat):
-    for _ev_key in _EVIDENCE_KEYS:
-        if _ev_key in flat:
-            _ev_val = _validate_evidence_key(_ev_key, flat[_ev_key])
-            if _ev_val is None:
-                del flat[_ev_key]
-            else:
-                flat[_ev_key] = _ev_val
-PYEVIDENCE
-
 # ── Runner-failover validators (#418) ────────────────────────────────────────
-# Same shape as _CFG_EVIDENCE_PY: one snippet exec()'d by both the --dump and
-# the single-key python3 processes. _validate_fallback_key(key, value) returns
+# One snippet exec()'d by both the --dump and the single-key python3
+# processes. _validate_fallback_key(key, value) returns
 # the value, or None after one stderr warning (callers read None as absent).
 #   agents.fallback, agents.roles.<role>.fallback: a list of 1-5 runner ids, no
 #     duplicates inside the list. "Not the primary" depends on the role, so
@@ -998,8 +882,7 @@ PYFALLBACK
 # Same shape as the snippets above: one definition exec()'d by both the --dump
 # and the single-key python3 processes. Every int row of the table is either
 # listed in _INT_KEYS (unit, lowest, highest accepted value) or has its own
-# validator above (limits.tokens_per_issue, evidence.max_files/max_mb,
-# agents.provider_down_s), or is left to a consumer that already refuses or
+# validator above (limits.tokens_per_issue, agents.provider_down_s), or is left to a consumer that already refuses or
 # falls back with its own message (issues.max_parallel, #120; limits.max_retries,
 # #194). tests/test-config-int-validators.sh checks that split row by row.
 # _validate_int_key(key, value) -> the value as an int, or None after one stderr
@@ -1234,96 +1117,6 @@ _cfg_env_keys_set() {
   printf '%s' "${_out# }"
 }
 
-# ── --convert LEGACY.yml TARGET.json [--force] (#526) ─────────────────────
-# The ONLY YAML-aware code in Talos: a one-shot, human-invoked migration that
-# parses a legacy .yml/.yaml config (the same a stray file or a PIPELINE_CONFIG
-# pointer names), drops its secret-shaped leaves the same way the loader would
-# (a literal secret is refused, never written on), and writes the result as
-# JSON to TARGET. Needs PyYAML to read the input (a load never does); without
-# it the one line names the fix. An existing non-empty TARGET is refused
-# without an explicit --force (one line, writes nothing); --force overwrites.
-# Nothing else converts anything.
-if [ "${1:-}" = "--convert" ]; then
-  [ "$#" -ge 3 ] || { echo "pipeline-config: --convert: usage: pipeline-config.sh --convert LEGACY.yml TARGET.json [--force]" >&2; exit 3; }
-  shift
-  _CV_LEGACY="${1:-}" _CV_TARGET="${2:-}" _CV_FORCE=""
-  shift 2
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
-      --force) _CV_FORCE=1 ;;
-      *) echo "pipeline-config: --convert: unknown option $1 (usage: pipeline-config.sh --convert LEGACY.yml TARGET.json [--force])" >&2; exit 3 ;;
-    esac
-    shift
-  done
-  case "$_CV_LEGACY" in
-    *.yml|*.yaml) ;;
-    *) echo "pipeline-config: --convert: $_CV_LEGACY is not a .yml/.yaml file -- nothing to convert" >&2; exit 3 ;;
-  esac
-  case "$_CV_TARGET" in
-    *.json) ;;
-    *) echo "pipeline-config: --convert: the target must be a .json file, not $_CV_TARGET" >&2; exit 3 ;;
-  esac
-  if [ "$_CV_LEGACY" = "$_CV_TARGET" ]; then
-    echo "pipeline-config: --convert: the target must not be the legacy file itself ($_CV_LEGACY)" >&2
-    exit 3
-  fi
-  if [ -f "$_CV_TARGET" ] && [ -s "$_CV_TARGET" ] && [ -z "$_CV_FORCE" ]; then
-    echo "pipeline-config: --convert: target $_CV_TARGET already exists and is not empty -- use --force to overwrite it" >&2
-    exit 3
-  fi
-  [ -f "$_CV_LEGACY" ] || { echo "pipeline-config: --convert: $_CV_LEGACY is not a readable file" >&2; exit 3; }
-  python3 -I - "$_CV_LEGACY" "$_CV_TARGET" "$(_cfg_loader_src)" <<'PYCONVERT'
-import sys, json
-exec(sys.argv[3])
-import site, sys
-# -I drops the user site; append it back so a pip --user PyYAML still reads the
-# legacy input (the same convention the old YAML loader used, #395).
-sys.path.append(site.getusersitepackages())
-try:
-    import yaml
-except ImportError:
-    sys.stderr.write("pipeline-config: --convert: %s needs PyYAML to read YAML, and PyYAML is not installed -- run pip install pyyaml (or convert by hand)\n" % repr(sys.argv[1]))
-    sys.exit(3)
-try:
-    with open(sys.argv[1]) as f:
-        raw = yaml.safe_load(f)
-except Exception as e:
-    sys.stderr.write("pipeline-config: --convert: %s is unreadable or malformed (%s)\n" % (repr(sys.argv[1]), type(e).__name__))
-    sys.exit(3)
-if not isinstance(raw, dict):
-    sys.stderr.write("pipeline-config: --convert: %s must hold a mapping (top-level keys)\n" % repr(sys.argv[1]))
-    sys.exit(3)
-# The loader's own hygiene, so a converted file cannot hold what a load would
-# refuse: secret-shaped leaves are dropped with the same one-line warnings
-# (a literal secret is refused, moved to ~/.talos/.env as env:NAME), and a
-# scalar agents: block is dropped the same way.
-_what = "legacy config %s" % repr(sys.argv[1])
-raw = _drop_secret_shaped(_check_agents(raw, _what), _what)
-import os, tempfile
-_tmp = None
-try:
-    _fd, _tmp = tempfile.mkstemp(prefix=".talos-convert-", suffix=".tmp",
-                                 dir=os.path.dirname(os.path.abspath(sys.argv[2])) or ".")
-    with os.fdopen(_fd, "w") as f:
-        json.dump(raw, f, indent=2)
-        f.write("\n")
-    os.replace(_tmp, sys.argv[2])
-except Exception as e:
-    if _tmp is not None:
-        try:
-            os.unlink(_tmp)
-        except OSError:
-            pass
-    sys.stderr.write("pipeline-config: --convert: could not write %s (%s)\n" % (repr(sys.argv[2]), type(e).__name__))
-    sys.exit(3)
-PYCONVERT
-  _CV_RC=$?
-  if [ "$_CV_RC" -eq 0 ]; then
-    echo "pipeline-config: --convert: converted $_CV_LEGACY -> $_CV_TARGET"
-  fi
-  exit "$_CV_RC"
-fi
-
 # Every read verb below (KEY, --show, --dump, --has) refuses a dirty config
 # set: one stderr line per layer problem, exit 3, before any value resolves.
 _cfg_gate || exit 3
@@ -1401,14 +1194,13 @@ if [ "${1:-}" = "--dump" ]; then
     _talos_env_dump
     exit 0
   fi
-  python3 -I - "$_DCFG" "$(_talos_known_keys_json)" "$_DUSER" "$(_cfg_loader_src)" "$_CFG_EVIDENCE_PY" "$_CFG_FALLBACK_PY" "$_CFG_INT_PY" "$_DENV_KEYS" "$_DSECRETS" <<'PYEOF'
+  python3 -I - "$_DCFG" "$(_talos_known_keys_json)" "$_DUSER" "$(_cfg_loader_src)" "$_CFG_FALLBACK_PY" "$_CFG_INT_PY" "$_DENV_KEYS" "$_DSECRETS" <<'PYEOF'
 import sys
 
 known_keys_json = sys.argv[2]
 exec(sys.argv[4])
 exec(sys.argv[5])
 exec(sys.argv[6])
-exec(sys.argv[7])
 
 def walk(obj, parts):
     for part in parts:
@@ -1613,10 +1405,6 @@ for _spend_key in ("limits.tokens_per_issue", "limits.warn_at", "spend.comment")
         else:
             flat[_spend_key] = _validated
 
-# evidence.* (#405): validated by the shared snippet (_CFG_EVIDENCE_PY); an
-# invalid value warns once and is dropped, like the spend keys above.
-_evidence_apply(flat)
-
 # agents.fallback / agents.roles.<role>.fallback / agents.provider_down_s
 # (#418): validated by the shared snippet (_CFG_FALLBACK_PY), same shape.
 _fallback_apply(flat)
@@ -1719,8 +1507,8 @@ if isinstance(_roles_cfg, dict):
 out = sys.stdout.buffer
 out.write(("sources.project\0" + sys.argv[1] + "\0").encode("utf-8", "surrogateescape"))
 out.write(("sources.global\0" + sys.argv[3] + "\0").encode("utf-8", "surrogateescape"))
-out.write(("sources.env_keys\0" + sys.argv[8] + "\0").encode("utf-8", "surrogateescape"))
-out.write(("sources.secrets_path\0" + sys.argv[9] + "\0").encode("utf-8", "surrogateescape"))
+out.write(("sources.env_keys\0" + sys.argv[7] + "\0").encode("utf-8", "surrogateescape"))
+out.write(("sources.secrets_path\0" + sys.argv[8] + "\0").encode("utf-8", "surrogateescape"))
 
 def _dump_text(v):
     if isinstance(v, bool):
@@ -1861,7 +1649,7 @@ fi
 # The heredoc passes file paths, key, default, the known-keys JSON and the
 # shared loader source as argv to avoid shell quoting issues with special
 # characters in values.
-python3 -I - "$CFG" "$KEY" "$DEFAULT" "$(_talos_known_keys_json)" "$USER_CFG" "$(_cfg_loader_src)" "$_CFG_EVIDENCE_PY" "$_CFG_FALLBACK_PY" "$_CFG_INT_PY" "$_NODEFAULT" <<'PYEOF'
+python3 -I - "$CFG" "$KEY" "$DEFAULT" "$(_talos_known_keys_json)" "$USER_CFG" "$(_cfg_loader_src)" "$_CFG_FALLBACK_PY" "$_CFG_INT_PY" "$_NODEFAULT" <<'PYEOF'
 import sys
 
 key      = sys.argv[2]
@@ -1870,7 +1658,6 @@ known_keys_json = sys.argv[4] if len(sys.argv) > 4 else "[]"
 exec(sys.argv[6])
 exec(sys.argv[7])
 exec(sys.argv[8])
-exec(sys.argv[9])
 
 def walk(obj, parts):
     for part in parts:
@@ -2109,11 +1896,10 @@ elif key.startswith("agents.roles.") and key.endswith(".restamp_effort"):
 
 value = _validate_int_key(key, value)
 value = _validate_spend_key(key, value)
-value = _validate_evidence_key(key, value)
 value = _validate_fallback_key(key, value)
 
 if value is None:
-    if len(sys.argv) > 10 and sys.argv[10] == "1":
+    if len(sys.argv) > 9 and sys.argv[9] == "1":
         # No caller default and no table (pipeline-defaults.sh missing) for a
         # security-relevant key: fail closed (#440), same as _cfg_fail_closed.
         sys.stderr.write(

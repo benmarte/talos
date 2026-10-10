@@ -52,12 +52,12 @@ print("\n".join(bad))
 print("REPO=" + " ".join(repo))
 TALOS_PYscp4Hq8Wn2Zt
 )"
-EXPECTED_REPO="base_branch board.azure_states.* board.azure_states.done board.azure_states.in_progress board.azure_states.in_review board.azure_states.ready board.enabled board.owner board.project_number board.status_field board.status_map.* board.statuses.* evidence.command issues.label_filter issues.skip_labels markers.trusted_authors markers.verify_authors merge.approval_waiver_paths merge.forbidden_files merge.forbidden_files_allow merge.forbidden_files_replace merge.required_checks merge.union_paths release_branch repo vcs.azure.area_path vcs.azure.org_url vcs.azure.project vcs.azure.work_item_type vcs.file.source.path vcs.provider vcs.repo verify verify.commands verify.qa_mode"
+EXPECTED_REPO="base_branch board.azure_states.* board.azure_states.done board.azure_states.in_progress board.azure_states.in_review board.azure_states.ready board.enabled board.owner board.project_number board.status_field board.status_map.* board.statuses.* issues.label_filter issues.skip_labels markers.trusted_authors markers.verify_authors merge.approval_waiver_paths merge.forbidden_files merge.forbidden_files_allow merge.forbidden_files_replace merge.required_checks merge.union_paths repo vcs.azure.area_path vcs.azure.org_url vcs.azure.project vcs.azure.work_item_type vcs.file.source.path vcs.provider vcs.repo verify verify.commands verify.qa_mode"
 assert_eq "REPO=$EXPECTED_REPO" "$(printf '%s\n' "$_scope_out" | tail -n1)" "the repo-only set is exactly the owner-approved list (hooks.* and notifications.cmd stay global)"
 assert_eq "" "$(printf '%s\n' "$_scope_out" | sed '$d')" "every table row's scope is any or repo"
 
 # ── (a) global-only keys are read; the repo overrides key by key ─────────────
-GLOBAL_ANY='{"pr":{"draft":false},"limits":{"max_fix_attempts":5,"warn_at":0.5,"tokens_per_issue":9000},"spend":{"comment":false},"evidence":{"enabled":true,"max_files":7},"verify":{"ci_wait_s":321,"targeted":false},"hooks":{"pre_dispatch":"echo hi","timeout_s":9},"notifications":{"cmd":"echo n","slack_channel":"CGLOBAL"},"issues":{"max_parallel":3}}'
+GLOBAL_ANY='{"pr":{"draft":false},"limits":{"max_fix_attempts":5,"warn_at":0.5,"tokens_per_issue":9000},"spend":{"comment":false},"events":{"enabled":false,"path":"g/e.jsonl"},"verify":{"ci_wait_s":321,"targeted":false},"hooks":{"pre_dispatch":"echo hi","timeout_s":9},"notifications":{"cmd":"echo n","slack_channel":"CGLOBAL"},"issues":{"max_parallel":3}}'
 reset_cfg
 glob_json "$GLOBAL_ANY"
 assert_eq "false" "$(get pr.draft)" "(a) pr.draft from the global file alone"
@@ -65,8 +65,8 @@ assert_eq "5" "$(get limits.max_fix_attempts)" "(a) limits.max_fix_attempts from
 assert_eq "0.5" "$(get limits.warn_at)" "(a) limits.warn_at from the global file alone"
 assert_eq "9000" "$(get limits.tokens_per_issue)" "(a) limits.tokens_per_issue from the global file alone"
 assert_eq "false" "$(get spend.comment)" "(a) spend.comment from the global file alone"
-assert_eq "true" "$(get evidence.enabled)" "(a) evidence.enabled from the global file alone"
-assert_eq "7" "$(get evidence.max_files)" "(a) evidence.max_files from the global file alone"
+assert_eq "false" "$(get events.enabled)" "(a) events.enabled from the global file alone"
+assert_eq "g/e.jsonl" "$(get events.path)" "(a) events.path from the global file alone"
 assert_eq "321" "$(get verify.ci_wait_s)" "(a) verify.ci_wait_s from the global file alone"
 assert_eq "false" "$(get verify.targeted)" "(a) verify.targeted from the global file alone"
 assert_eq "echo hi" "$(get hooks.pre_dispatch)" "(a) hooks.pre_dispatch is allowed globally"
@@ -77,12 +77,12 @@ _d="$(dump)"
 assert_contains "$_d" "$(printf 'limits.warn_at\n0.5')" "(a) --dump carries the global-only keys"
 assert_contains "$_d" "$(printf 'pr.draft\nfalse')" "(a) --dump carries pr.draft from the global file"
 
-proj_json '{"pr":{"draft":true},"limits":{"warn_at":0.9},"evidence":{"max_files":2}}'
+proj_json '{"pr":{"draft":true},"limits":{"warn_at":0.9},"events":{"path":"r/e.jsonl"}}'
 assert_eq "true" "$(get pr.draft)" "(a) a repo value overrides the global one"
 assert_eq "0.9" "$(get limits.warn_at)" "(a) the repo overrides limits.warn_at"
-assert_eq "2" "$(get evidence.max_files)" "(a) the repo overrides evidence.max_files"
+assert_eq "r/e.jsonl" "$(get events.path)" "(a) the repo overrides events.path"
 assert_eq "5" "$(get limits.max_fix_attempts)" "(a) a sibling key the repo does not set keeps the global value"
-assert_eq "true" "$(get evidence.enabled)" "(a) override is key by key, not per subtree"
+assert_eq "false" "$(get events.enabled)" "(a) override is key by key, not per subtree"
 assert_eq "321" "$(get verify.ci_wait_s)" "(a) a key absent from the repo file keeps the global value"
 _d="$(dump)"
 assert_contains "$_d" "$(printf 'limits.warn_at\n0.9')" "(a) --dump has the repo override"
@@ -109,14 +109,14 @@ assert_not_contains "$(bash "$CFG_SH" --has board.owner 2>/dev/null && echo yes)
 
 # Every repo-only group, one key each, one note each
 reset_cfg
-glob_json '{"base_branch":"b1","release_branch":"b2","repo":"o/r","vcs":{"provider":"azure","repo":"o/r2","azure":{"org_url":"u","project":"p"},"file":{"source":{"path":"x.md"}}},"board":{"enabled":false,"project_number":4,"statuses":{"ready":"R"},"status_map":{"a":"b"}},"verify":{"commands":["make"],"qa_mode":"ci"},"merge":{"required_checks":["ci"],"forbidden_files":["f"],"forbidden_files_allow":["g"],"approval_waiver_paths":["w"],"union_paths":["u"]},"markers":{"trusted_authors":["t"],"verify_authors":false},"issues":{"label_filter":"l","skip_labels":["s"]},"evidence":{"command":"c"}}'
+glob_json '{"base_branch":"b1","repo":"o/r","vcs":{"provider":"azure","repo":"o/r2","azure":{"org_url":"u","project":"p"},"file":{"source":{"path":"x.md"}}},"board":{"enabled":false,"project_number":4,"statuses":{"ready":"R"},"status_map":{"a":"b"}},"verify":{"commands":["make"],"qa_mode":"ci"},"merge":{"required_checks":["ci"],"forbidden_files":["f"],"forbidden_files_allow":["g"],"approval_waiver_paths":["w"],"union_paths":["u"]},"markers":{"trusted_authors":["t"],"verify_authors":false},"issues":{"label_filter":"l","skip_labels":["s"]}}'
 get base_branch >/dev/null
-assert_eq "24" "$(errlines)" "(b) one note per dropped repo-only key (24 keys across every group)"
+assert_eq "22" "$(errlines)" "(b) one note per dropped repo-only key (22 keys across every group)"
 _e="$(cat "$ERR")"
-for _k in base_branch release_branch repo vcs.provider vcs.repo vcs.azure.org_url vcs.azure.project vcs.file.source.path board.enabled board.project_number board.statuses.ready board.status_map.a verify.commands verify.qa_mode merge.required_checks merge.forbidden_files merge.forbidden_files_allow merge.approval_waiver_paths merge.union_paths markers.trusted_authors markers.verify_authors issues.label_filter issues.skip_labels evidence.command; do
+for _k in base_branch repo vcs.provider vcs.repo vcs.azure.org_url vcs.azure.project vcs.file.source.path board.enabled board.project_number board.statuses.ready board.status_map.a verify.commands verify.qa_mode merge.required_checks merge.forbidden_files merge.forbidden_files_allow merge.approval_waiver_paths merge.union_paths markers.trusted_authors markers.verify_authors issues.label_filter issues.skip_labels; do
   assert_contains "$_e" "'$_k'" "(b) the repo-only key $_k is named in a note"
 done
-assert_eq "main" "$(bash "$CFG_SH" release_branch 2>/dev/null)" "(b) a dropped repo-only key falls back to the table default"
+assert_eq "" "$(bash "$CFG_SH" repo 2>/dev/null)" "(b) a dropped repo-only key falls back to the table default"
 _all_dropped="$(dump)"
 glob_json '{}'
 assert_eq "$(dump)" "$_all_dropped" "(b) --dump of a global file of only repo-only keys equals the dump of an empty global file"
@@ -162,7 +162,7 @@ assert_eq "repopat" "$(get merge.forbidden_files)" "(c) merge.forbidden_files: t
 
 # ── (d) --dump and the single-key path agree for every key ───────────────────
 reset_cfg
-glob_json '{"pr":{"draft":false},"limits":{"max_fix_attempts":5,"warn_at":5,"tokens_per_issue":9000},"spend":{"comment":"maybe"},"evidence":{"enabled":"yes","max_files":7,"dir":"../up"},"verify":{"ci_wait_s":"abc","timeout_ms":1234,"commands":["x"]},"hooks":{"timeout_s":-3,"pre_dispatch":"echo hi"},"notifications":{"events":["a","b"],"slack_channel":"CG","cmd_timeout_s":4},"agents":{"model":"sonnet","effort":"nope","fallback":["pi","pi"],"provider_down_s":7,"roles":{"qa":{"model":"gq","effort":"high","fallback":["codex"]}}},"board":{"owner":"gone"},"vcs":{"token_env":"TOK"}}'
+glob_json '{"pr":{"draft":false},"limits":{"max_fix_attempts":5,"warn_at":5,"tokens_per_issue":9000},"spend":{"comment":"maybe"},"verify":{"ci_wait_s":"abc","timeout_ms":1234,"commands":["x"]},"hooks":{"timeout_s":-3,"pre_dispatch":"echo hi"},"notifications":{"events":["a","b"],"slack_channel":"CG","cmd_timeout_s":4},"agents":{"model":"sonnet","effort":"nope","fallback":["pi","pi"],"provider_down_s":7,"roles":{"qa":{"model":"gq","effort":"high","fallback":["codex"]}}},"board":{"owner":"gone"},"vcs":{"token_env":"TOK"}}'
 proj_json '{"limits":{"warn_at":0.7},"merge":{"required_checks":["ci"]},"board":{"project_number":3},"notifications":{"events":["c"]},"agents":{"roles":{"docs":{"model":"rd"}}}}'
 export PIPELINE_SLACK_CHANNEL=CENV PIPELINE_BOARD_OWNER=envowner
 _parity="$(python3 -I - "$CFG_SH" "$DEFAULTS_SH" <<'TALOS_PYpar9Rk3Vb6Lm'
@@ -200,21 +200,18 @@ unset PIPELINE_SLACK_CHANNEL PIPELINE_BOARD_OWNER
 
 # ── (e) validators run on the merged value, whichever layer set it ───────────
 reset_cfg
-glob_json '{"verify":{"ci_wait_s":"abc","timeout_ms":-1},"hooks":{"timeout_s":0},"limits":{"warn_at":5},"spend":{"comment":"yes"},"evidence":{"enabled":"yes","max_files":500,"dir":"../x"},"agents":{"effort":"extreme","fallback":["pi","pi"],"provider_down_s":5,"roles":{"qa":{"effort":"nope"}}}}'
+glob_json '{"verify":{"ci_wait_s":"abc","timeout_ms":-1},"hooks":{"timeout_s":0},"limits":{"warn_at":5},"spend":{"comment":"yes"},"agents":{"effort":"extreme","fallback":["pi","pi"],"provider_down_s":5,"roles":{"qa":{"effort":"nope"}}}}'
 assert_eq "SENT" "$(get verify.ci_wait_s)" "(e) a non-integer global verify.ci_wait_s is rejected"
 assert_contains "$(cat "$ERR")" "verify.ci_wait_s must be a positive integer" "(e) ... with the positive-integer warning"
 assert_eq "SENT" "$(get verify.timeout_ms)" "(e) a negative global verify.timeout_ms is rejected"
 assert_eq "SENT" "$(get hooks.timeout_s)" "(e) a zero global hooks.timeout_s is rejected"
 assert_eq "SENT" "$(get limits.warn_at)" "(e) an out-of-range global limits.warn_at is rejected"
 assert_eq "SENT" "$(get spend.comment)" "(e) a non-bool global spend.comment is rejected"
-assert_eq "SENT" "$(get evidence.enabled)" "(e) a non-bool global evidence.enabled is rejected (_CFG_EVIDENCE_PY)"
-assert_eq "SENT" "$(get evidence.max_files)" "(e) an out-of-range global evidence.max_files is rejected"
-assert_eq "SENT" "$(get evidence.dir)" "(e) a path-escaping global evidence.dir is rejected"
 assert_eq "SENT" "$(get agents.effort)" "(e) a bad global agents.effort is rejected"
 assert_eq "SENT" "$(get agents.fallback)" "(e) a duplicate-runner global agents.fallback is rejected (_CFG_FALLBACK_PY)"
 assert_eq "SENT" "$(get agents.provider_down_s)" "(e) an out-of-range global agents.provider_down_s is rejected"
 _d="$(dump)"
-for _k in verify.ci_wait_s verify.timeout_ms hooks.timeout_s limits.warn_at spend.comment evidence.enabled evidence.max_files evidence.dir agents.effort agents.fallback agents.provider_down_s; do
+for _k in verify.ci_wait_s verify.timeout_ms hooks.timeout_s limits.warn_at spend.comment agents.effort agents.fallback agents.provider_down_s; do
   assert_not_contains "$_d" "$_k" "(e) --dump drops the invalid global $_k too"
 done
 # a valid repo value beats an invalid global one; an invalid repo value does not fall back to the global value

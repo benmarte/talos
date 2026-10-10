@@ -1515,9 +1515,7 @@ def warn_identity_refused(reader, verify, trusted):
 
 def config_parse_failed():
     # Config-parse-failed detection for the marker-authors-unverified message (#116).
-    # JSON only (#526): the config parser is json, like the loader's. The only
-    # yaml import left in scripts/ is pipeline-config.sh's --convert verb (the
-    # accepted exception); no config load path parses YAML any more.
+    # JSON only (#526): the config parser is json, like the loader's.
     cfg = os.environ.get('TALOS_CFG', '')
     if not cfg or not pathlib.Path(cfg).exists():
         return False

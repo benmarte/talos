@@ -185,10 +185,10 @@ delta_head() {  # <path> -- one-file commit off SHA_BASE; prints the new SHA
 }
 
 _entries="$(entries_json "qa:pass" "qa" "$SHA_BASE")"
-for _p in agents/qa.md skills/pipeline/SKILL.md templates/prompts/qa-evidence.md AGENTS.md CLAUDE.md \
+for _p in agents/qa.md skills/pipeline/SKILL.md templates/prompts/qa.md AGENTS.md CLAUDE.md \
           sub/AGENTS.md a/b/CLAUDE.md \
           .claude/agents/developer.md .claude/skills/x/SKILL.md .claude/commands/pr.md .claude/talos/scripts/x.sh .agents/x.md \
-          Skills/pipeline/SKILL.md Agents/qa.md Templates/Prompts/qa-evidence.md AGENTS.MD Claude.md claude.md sub/agents.md .Claude/agents/x.md \
+          Skills/pipeline/SKILL.md Agents/qa.md Templates/Prompts/qa.md AGENTS.MD Claude.md claude.md sub/agents.md .Claude/agents/x.md \
           GEMINI.md sub/GEMINI.md .gemini/system.md .agent/rules/x.md .pi/SYSTEM.md AGENTS.override.md a/b/AGENTS.override.md \
           .codex/config.toml .codex/notes.md .claude/rules/x.md CLAUDE.local.md sub/CLAUDE.local.md \
           GEMINI.MD Gemini.md .Gemini/x.md .PI/x.md AGENTS.OVERRIDE.MD claude.LOCAL.md .Claude/Rules/x.md \

@@ -10,7 +10,7 @@
 #       draft-pr then drops qa:pass, a failure there writes nothing; a draft review
 #       batch never calls `gate fix-round`
 #   (c) the usage flags, the model rule, the spend block (no PR: --line only)
-#   (d) the done-ledger: grammar, at-most-once, a held lock, a failed pre-step
+#   (d) --action-id is refused (the done-ledger was removed, #553)
 #   (e) free text travels only as a file or stdin, byte for byte
 #   (f) every non-fatal failure is a warn; the output contract and the sanitiser
 #   (g) the one writer: post_stage and the spend block are written only by the helpers
@@ -73,9 +73,8 @@ set_stub() {
   printf '%s' "${3:-}" > "$STUB_DIR/$1.out"
   printf '%s' "${4:-}" > "$STUB_DIR/$1.err"
 }
-LEDGER="$SANDBOX/.git/talos-done.ledger"
 reset_stubs() {
-  rm -rf "${STUB_DIR:?}" "${LEDGER:?}" "${LEDGER:?}.lock.d"; mkdir -p "$STUB_DIR"
+  rm -rf "${STUB_DIR:?}"; mkdir -p "$STUB_DIR"
   cfg_json '{"vcs": {"provider": "github"}, "comments": {"enabled": false}}'
   set_stub events.cost.line 0 "spend: 12 tokens"
 }
@@ -343,68 +342,12 @@ dn qa --issue 42 --pr 57 --verdict PASS --summary-file "$SUM"
 assert_contains "$OUT" "warn reason=spend-upsert-failed issue=42" "an upsert that exits 1 is warn reason=spend-upsert-failed"
 assert_eq "0" "$RC" "a failed upsert never fails the call"
 
-# ── (d) the done-ledger ──────────────────────────────────────────────────────
+# ── (d) the removed --action-id (#553) is an unknown option ────────────────
 reset_stubs
 dn qa --issue 42 --pr 57 --verdict PASS --summary-file "$SUM" --action-id qa-42.1_a
-assert_eq "done=ok" "$(line_of done | sed 's/^/done=/')" "an action id: done=ok the first time"
-assert_eq "qa-42.1_a" "$(cat "$LEDGER")" "the id is recorded under the git common dir"
-BEFORE="$(journal)"
-dn qa --issue 42 --pr 57 --verdict PASS --summary-file "$SUM" --action-id qa-42.1_a
-assert_eq "done=duplicate" "$OUT" "a repeated action id prints done=duplicate and nothing else"
-assert_eq "0" "$RC" "a duplicate exits 0"
-assert_eq "$BEFORE" "$(journal)" "a duplicate emits no second relay, event, spend or label"
-assert_out "duplicate" ""
-dn qa --issue 42 --pr 57 --verdict PASS --summary-file "$SUM" --action-id qa-42.2
-assert_eq "done=ok" "$(printf '%s' "$OUT" | head -n 1)" "another id is another action"
-assert_eq "qa-42.1_a
-qa-42.2" "$(cat "$LEDGER")" "both ids are in the ledger, one per line"
-# A call with no id records nothing and repeats freely.
-before_n="$(wc -l < "$LEDGER" | tr -d ' ')"
-dn qa --issue 42 --pr 57 --verdict PASS --summary-file "$SUM"
-dn qa --issue 42 --pr 57 --verdict PASS --summary-file "$SUM"
-assert_eq "$before_n" "$(wc -l < "$LEDGER" | tr -d ' ')" "no --action-id: the ledger is untouched"
-assert_eq "done=ok" "$(printf '%s' "$OUT" | head -n 1)" "no --action-id: a repeat runs again"
-# Grammar: [a-z0-9._-]{1,64}.
-for bad in "" "UPPER" "a b" 'a;b' 'a$(x)' "$(printf 'x%.0s' $(seq 1 65))" 'a/b'; do
-  reset_stubs
-  dn qa --issue 42 --pr 57 --verdict PASS --summary-file "$SUM" --action-id "$bad"
-  assert_eq "stop reason=usage" "$OUT" "action id '$(printf '%.20s' "$bad")' is refused"
-  assert_eq "2" "$RC" "a bad action id exits 2"
-  assert_eq "" "$(journal)" "a bad action id runs nothing"
-done
-reset_stubs
-dn qa --issue 42 --pr 57 --verdict PASS --summary-file "$SUM" --action-id "$(printf 'x%.0s' $(seq 1 64))"
-assert_eq "done=ok" "$(printf '%s' "$OUT" | head -n 1)" "a 64-character action id is accepted"
-# Outside a git repository there is no common dir to hold the ledger: an id is a stop.
-reset_stubs
-mkdir -p "$SANDBOX/nogit-dir"
-REAL_SANDBOX="$(cd "$SANDBOX" && pwd -P)"
-OUT="$(cd "$SANDBOX/nogit-dir" && GIT_CEILING_DIRECTORIES="$REAL_SANDBOX" bash "$DN" done qa --issue 42 --pr 57 --verdict PASS --summary-file "$SUM" --action-id no-repo 2>"$ERR")"; RC=$?
-assert_eq "stop reason=ledger-unavailable" "$OUT" "an action id outside a git repository is stop reason=ledger-unavailable"
-assert_eq "1" "$RC" "ledger-unavailable exits 1"
-assert_eq "" "$(journal)" "ledger-unavailable: nothing is announced"
-# A failed pre-step is not recorded: the same id works once the cause is gone.
-reset_stubs
-set_stub label-pr 1
-dn reviewer --issue 42 --pr 57 --verdict RESTAMP_FAIL --summary-file "$SUM" --action-id rs-1
-assert_eq "stop reason=label-failed" "$OUT" "ledger: a failed pre-step is a stop"
-assert_file_absent "$LEDGER" "ledger: a failed pre-step records nothing"
-set_stub label-pr 0
-dn reviewer --issue 42 --pr 57 --verdict RESTAMP_FAIL --summary-file "$SUM" --action-id rs-1
-assert_eq "done=ok" "$(printf '%s' "$OUT" | head -n 1)" "ledger: the same id runs once the pre-step works"
-# A lock held by a live process is `ledger-locked`: nothing is written or announced.
-reset_stubs
-mkdir "$LEDGER.lock.d"
-printf '%s:1\n' "$$" > "$LEDGER.lock.d/pid"
-TALOS_DONE_LOCK_S=1 dn qa --issue 42 --pr 57 --verdict PASS --summary-file "$SUM" --action-id held-1
-assert_eq "stop reason=ledger-locked" "$OUT" "a lock that cannot be held is stop reason=ledger-locked"
-assert_eq "1" "$RC" "ledger-locked exits 1"
-assert_eq "" "$(journal)" "ledger-locked: nothing is announced"
-assert_file_absent "$LEDGER" "ledger-locked: nothing is recorded"
-rm -rf "${LEDGER:?}.lock.d"
-dn qa --issue 42 --pr 57 --verdict PASS --summary-file "$SUM" --action-id held-1
-assert_eq "done=ok" "$(printf '%s' "$OUT" | head -n 1)" "ledger-locked: the call can be repeated once the lock is free"
-assert_eq "0" "$([ -e "$LEDGER.lock.d" ] && echo 1 || echo 0)" "the ledger lock is released"
+assert_eq "stop reason=usage" "$OUT" "--action-id is gone: an unknown option is stop reason=usage"
+assert_eq "2" "$RC" "--action-id exits 2"
+assert_eq "" "$(journal)" "--action-id runs nothing"
 
 # ── (h) the lease: done releases the issue's lease at end of stage ────────────
 # `next` acquires the issue's lease before answering a dispatch/merge (#470);
