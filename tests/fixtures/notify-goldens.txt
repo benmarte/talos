@@ -1,0 +1,842 @@
+
+### event=validator platform=slack-webhook
+rc=0
+-- curl (url, payload, auth, method)
+https://hooks.slack.test/T/B/X	{"text": "🔎 Validator — CONFIRMED · #42", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "🔎 *Validator* — CONFIRMED · <https://github.com/acme/widget/issues/42|#42>\n\n<https://github.com/acme/widget/issues/42|#42 Fix login crash>\n\nreproduced on main\n\n• the null guard in login.ts is missing\n• add a regression test for the empty-password case\n• fix it behind the existing validator\n• run the full suite afterwards"}}, {"type": "section", "fields": [{"type": "mrkdwn", "text": "*PR*\n<https://github.com/acme/widget/pull/9|#9>"}, {"type": "mrkdwn", "text": "*Issue*\n<https://github.com/acme/widget/issues/42|#42>"}, {"type": "mrkdwn", "text": "*Stage*\nvalidator"}, {"type": "mrkdwn", "text": "*Repo*\nacme/widget"}]}, {"type": "context", "elements": [{"type": "mrkdwn", "text": "acme-widget · validator · #42"}]}], "attachments": [{"color": "#3498db", "fallback": "🔎 Validator — CONFIRMED · #42"}]}		
+
+### event=validator platform=slack-bot
+rc=0
+-- curl (url, payload, auth, method)
+https://slack.com/api/chat.postMessage	{"text": "🔎 Validator — CONFIRMED · #42", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "🔎 *Validator* — CONFIRMED · <https://github.com/acme/widget/issues/42|#42>\n\n<https://github.com/acme/widget/issues/42|#42 Fix login crash>\n\nreproduced on main\n\n• the null guard in login.ts is missing\n• add a regression test for the empty-password case\n• fix it behind the existing validator\n• run the full suite afterwards"}}, {"type": "section", "fields": [{"type": "mrkdwn", "text": "*PR*\n<https://github.com/acme/widget/pull/9|#9>"}, {"type": "mrkdwn", "text": "*Issue*\n<https://github.com/acme/widget/issues/42|#42>"}, {"type": "mrkdwn", "text": "*Stage*\nvalidator"}, {"type": "mrkdwn", "text": "*Repo*\nacme/widget"}]}, {"type": "context", "elements": [{"type": "mrkdwn", "text": "acme-widget · validator · #42"}]}], "attachments": [{"color": "#3498db", "fallback": "🔎 Validator — CONFIRMED · #42"}], "channel": "C0TEST"}	Authorization: Bearer	
+-- thread state
+{
+  "acme-widget:42": {
+    "slack_ts": "1111.2222"
+  }
+}
+
+### event=validator platform=discord-webhook
+rc=0
+-- curl (url, payload, auth, method)
+https://discord.test/api/webhooks/1/abc	{"embeds": [{"title": "🔎 Validator — CONFIRMED · #42", "description": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\nreproduced on main\n\n- the null guard in login.ts is missing\n- add a regression test for the empty-password case\n- fix it behind the existing validator\n- run the full suite afterwards", "color": 3447003, "footer": {"text": "acme-widget · validator · #42"}, "fields": [{"name": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)", "inline": true}, {"name": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)", "inline": true}, {"name": "Stage", "value": "validator", "inline": true}, {"name": "Repo", "value": "acme/widget", "inline": true}], "url": "https://github.com/acme/widget/issues/42"}]}		
+
+### event=validator platform=discord-bot
+rc=0
+-- curl (url, payload, auth, method)
+https://discord.com/api/v10/channels/D0TEST/messages	{"embeds": [{"title": "🔎 Validator — CONFIRMED · #42", "description": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\nreproduced on main\n\n- the null guard in login.ts is missing\n- add a regression test for the empty-password case\n- fix it behind the existing validator\n- run the full suite afterwards", "color": 3447003, "footer": {"text": "acme-widget · validator · #42"}, "fields": [{"name": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)", "inline": true}, {"name": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)", "inline": true}, {"name": "Stage", "value": "validator", "inline": true}, {"name": "Repo", "value": "acme/widget", "inline": true}], "url": "https://github.com/acme/widget/issues/42"}]}		
+https://discord.com/api/v10/channels/D0TEST/messages/900000000000000001/threads	{"name": "#42 \u2014 \ud83d\udd0e **Validator** \u2014 CONFIRMED \u00b7 #42", "auto_archive_duration": 1440}		
+-- thread state
+{
+  "acme-widget:42": {
+    "discord_msg_id": "900000000000000001",
+    "discord_thread_id": "900000000000000001"
+  }
+}
+
+### event=validator platform=teams
+rc=0
+-- curl (url, payload, auth, method)
+https://teams.test/webhook/1	{"type": "message", "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive", "content": {"type": "AdaptiveCard", "version": "1.4", "body": [{"type": "TextBlock", "wrap": true, "weight": "Bolder", "size": "Medium", "text": "🔎 **Validator** — CONFIRMED · [#42](https://github.com/acme/widget/issues/42)"}, {"type": "TextBlock", "wrap": true, "text": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\nreproduced on main\n\n- the null guard in login.ts is missing\n- add a regression test for the empty-password case\n- fix it behind the existing validator\n- run the full suite afterwards"}, {"type": "FactSet", "facts": [{"title": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)"}, {"title": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)"}, {"title": "Stage", "value": "validator"}, {"title": "Repo", "value": "acme/widget"}]}, {"type": "TextBlock", "wrap": true, "isSubtle": true, "spacing": "Small", "text": "acme-widget · validator · #42"}]}}]}		
+
+### event=validator platform=buzz
+rc=0
+-- nak argv
+event --auth -k 9 -c 🔎 **Validator** — CONFIRMED · [#42](https://github.com/acme/widget/issues/42)  [#42 Fix login crash](https://github.com/acme/widget/issues/42)  reproduced on main  - the null guard in login.ts is missing - add a regression test for the empty-password case - fix it behind the existing validator - run the full suite afterwards  acme/widget · [PR #9](https://github.com/acme/widget/pull/9) -t h=chan-uuid-1 ws://localhost:3000
+-- thread state
+{
+  "acme-widget:42": {
+    "buzz_event_id": "aaaa000000000000000000000000000000000000000000000000000000000001"
+  }
+}
+
+### event=pr-opened platform=slack-webhook
+rc=0
+-- curl (url, payload, auth, method)
+https://hooks.slack.test/T/B/X	{"text": "🤖 Talos — PR opened · #42", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "🤖 *Talos* — PR opened · <https://github.com/acme/widget/pull/9|#42>\n\n<https://github.com/acme/widget/issues/42|#42 Fix login crash>\n\nfix: guard"}}, {"type": "section", "fields": [{"type": "mrkdwn", "text": "*PR*\n<https://github.com/acme/widget/pull/9|#9>"}, {"type": "mrkdwn", "text": "*Issue*\n<https://github.com/acme/widget/issues/42|#42>"}, {"type": "mrkdwn", "text": "*Stage*\npr-opened"}, {"type": "mrkdwn", "text": "*Repo*\nacme/widget"}]}, {"type": "context", "elements": [{"type": "mrkdwn", "text": "acme-widget · pr-opened · #42"}]}], "attachments": [{"color": "#3498db", "fallback": "🤖 Talos — PR opened · #42"}]}		
+
+### event=pr-opened platform=slack-bot
+rc=0
+-- curl (url, payload, auth, method)
+https://slack.com/api/chat.postMessage	{"text": "🤖 Talos — PR opened · #42", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "🤖 *Talos* — PR opened · <https://github.com/acme/widget/pull/9|#42>\n\n<https://github.com/acme/widget/issues/42|#42 Fix login crash>\n\nfix: guard"}}, {"type": "section", "fields": [{"type": "mrkdwn", "text": "*PR*\n<https://github.com/acme/widget/pull/9|#9>"}, {"type": "mrkdwn", "text": "*Issue*\n<https://github.com/acme/widget/issues/42|#42>"}, {"type": "mrkdwn", "text": "*Stage*\npr-opened"}, {"type": "mrkdwn", "text": "*Repo*\nacme/widget"}]}, {"type": "context", "elements": [{"type": "mrkdwn", "text": "acme-widget · pr-opened · #42"}]}], "attachments": [{"color": "#3498db", "fallback": "🤖 Talos — PR opened · #42"}], "channel": "C0TEST"}	Authorization: Bearer	
+-- thread state
+{
+  "acme-widget:42": {
+    "slack_ts": "1111.2222"
+  }
+}
+
+### event=pr-opened platform=discord-webhook
+rc=0
+-- curl (url, payload, auth, method)
+https://discord.test/api/webhooks/1/abc	{"embeds": [{"title": "🤖 Talos — PR opened · #42", "description": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\nfix: guard", "color": 3447003, "footer": {"text": "acme-widget · pr-opened · #42"}, "fields": [{"name": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)", "inline": true}, {"name": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)", "inline": true}, {"name": "Stage", "value": "pr-opened", "inline": true}, {"name": "Repo", "value": "acme/widget", "inline": true}], "url": "https://github.com/acme/widget/pull/9"}]}		
+
+### event=pr-opened platform=discord-bot
+rc=0
+-- curl (url, payload, auth, method)
+https://discord.com/api/v10/channels/D0TEST/messages	{"embeds": [{"title": "🤖 Talos — PR opened · #42", "description": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\nfix: guard", "color": 3447003, "footer": {"text": "acme-widget · pr-opened · #42"}, "fields": [{"name": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)", "inline": true}, {"name": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)", "inline": true}, {"name": "Stage", "value": "pr-opened", "inline": true}, {"name": "Repo", "value": "acme/widget", "inline": true}], "url": "https://github.com/acme/widget/pull/9"}]}		
+https://discord.com/api/v10/channels/D0TEST/messages/900000000000000001/threads	{"name": "#42 \u2014 \ud83e\udd16 **Talos** \u2014 PR opened \u00b7 #42", "auto_archive_duration": 1440}		
+-- thread state
+{
+  "acme-widget:42": {
+    "discord_msg_id": "900000000000000001",
+    "discord_thread_id": "900000000000000001"
+  }
+}
+
+### event=pr-opened platform=teams
+rc=0
+-- curl (url, payload, auth, method)
+https://teams.test/webhook/1	{"type": "message", "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive", "content": {"type": "AdaptiveCard", "version": "1.4", "body": [{"type": "TextBlock", "wrap": true, "weight": "Bolder", "size": "Medium", "text": "🤖 **Talos** — PR opened · [#42](https://github.com/acme/widget/pull/9)"}, {"type": "TextBlock", "wrap": true, "text": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\nfix: guard"}, {"type": "FactSet", "facts": [{"title": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)"}, {"title": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)"}, {"title": "Stage", "value": "pr-opened"}, {"title": "Repo", "value": "acme/widget"}]}, {"type": "TextBlock", "wrap": true, "isSubtle": true, "spacing": "Small", "text": "acme-widget · pr-opened · #42"}]}}]}		
+
+### event=pr-opened platform=buzz
+rc=0
+-- nak argv
+event --auth -k 9 -c 🤖 **Talos** — PR opened · [#42](https://github.com/acme/widget/pull/9)  [#42 Fix login crash](https://github.com/acme/widget/issues/42)  fix: guard  acme/widget · [PR #9](https://github.com/acme/widget/pull/9) -t h=chan-uuid-1 ws://localhost:3000
+-- thread state
+{
+  "acme-widget:42": {
+    "buzz_event_id": "aaaa000000000000000000000000000000000000000000000000000000000001"
+  }
+}
+
+### event=blocked platform=slack-webhook
+rc=0
+-- curl (url, payload, auth, method)
+https://hooks.slack.test/T/B/X	{"text": "🤖 Talos — blocked by qa · #42", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "🤖 *Talos* — blocked by qa · <https://github.com/acme/widget/issues/42|#42>\n\n<https://github.com/acme/widget/issues/42|#42 Fix login crash>\n\n2 of 5 criteria failed\n\n_Human attention needed before the pipeline can continue._"}}, {"type": "section", "fields": [{"type": "mrkdwn", "text": "*PR*\n<https://github.com/acme/widget/pull/9|#9>"}, {"type": "mrkdwn", "text": "*Issue*\n<https://github.com/acme/widget/issues/42|#42>"}, {"type": "mrkdwn", "text": "*Stage*\nblocked"}, {"type": "mrkdwn", "text": "*Repo*\nacme/widget"}]}, {"type": "context", "elements": [{"type": "mrkdwn", "text": "acme-widget · blocked · #42"}]}], "attachments": [{"color": "#e74c3c", "fallback": "🤖 Talos — blocked by qa · #42"}]}		
+
+### event=blocked platform=slack-bot
+rc=0
+-- curl (url, payload, auth, method)
+https://slack.com/api/chat.postMessage	{"text": "🤖 Talos — blocked by qa · #42", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "🤖 *Talos* — blocked by qa · <https://github.com/acme/widget/issues/42|#42>\n\n<https://github.com/acme/widget/issues/42|#42 Fix login crash>\n\n2 of 5 criteria failed\n\n_Human attention needed before the pipeline can continue._"}}, {"type": "section", "fields": [{"type": "mrkdwn", "text": "*PR*\n<https://github.com/acme/widget/pull/9|#9>"}, {"type": "mrkdwn", "text": "*Issue*\n<https://github.com/acme/widget/issues/42|#42>"}, {"type": "mrkdwn", "text": "*Stage*\nblocked"}, {"type": "mrkdwn", "text": "*Repo*\nacme/widget"}]}, {"type": "context", "elements": [{"type": "mrkdwn", "text": "acme-widget · blocked · #42"}]}], "attachments": [{"color": "#e74c3c", "fallback": "🤖 Talos — blocked by qa · #42"}], "channel": "C0TEST"}	Authorization: Bearer	
+-- thread state
+{
+  "acme-widget:42": {
+    "slack_ts": "1111.2222"
+  }
+}
+
+### event=blocked platform=discord-webhook
+rc=0
+-- curl (url, payload, auth, method)
+https://discord.test/api/webhooks/1/abc	{"embeds": [{"title": "🤖 Talos — blocked by qa · #42", "description": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\n2 of 5 criteria failed\n\n_Human attention needed before the pipeline can continue._", "color": 15158332, "footer": {"text": "acme-widget · blocked · #42"}, "fields": [{"name": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)", "inline": true}, {"name": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)", "inline": true}, {"name": "Stage", "value": "blocked", "inline": true}, {"name": "Repo", "value": "acme/widget", "inline": true}], "url": "https://github.com/acme/widget/issues/42"}]}		
+
+### event=blocked platform=discord-bot
+rc=0
+-- curl (url, payload, auth, method)
+https://discord.com/api/v10/channels/D0TEST/messages	{"embeds": [{"title": "🤖 Talos — blocked by qa · #42", "description": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\n2 of 5 criteria failed\n\n_Human attention needed before the pipeline can continue._", "color": 15158332, "footer": {"text": "acme-widget · blocked · #42"}, "fields": [{"name": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)", "inline": true}, {"name": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)", "inline": true}, {"name": "Stage", "value": "blocked", "inline": true}, {"name": "Repo", "value": "acme/widget", "inline": true}], "url": "https://github.com/acme/widget/issues/42"}]}		
+https://discord.com/api/v10/channels/D0TEST/messages/900000000000000001/threads	{"name": "#42 \u2014 \ud83e\udd16 **Talos** \u2014 blocked by qa \u00b7 #42", "auto_archive_duration": 1440}		
+-- thread state
+{
+  "acme-widget:42": {
+    "discord_msg_id": "900000000000000001",
+    "discord_thread_id": "900000000000000001"
+  }
+}
+
+### event=blocked platform=teams
+rc=0
+-- curl (url, payload, auth, method)
+https://teams.test/webhook/1	{"type": "message", "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive", "content": {"type": "AdaptiveCard", "version": "1.4", "body": [{"type": "TextBlock", "wrap": true, "weight": "Bolder", "size": "Medium", "text": "🤖 **Talos** — blocked by qa · [#42](https://github.com/acme/widget/issues/42)"}, {"type": "TextBlock", "wrap": true, "text": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\n2 of 5 criteria failed\n\n_Human attention needed before the pipeline can continue._"}, {"type": "FactSet", "facts": [{"title": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)"}, {"title": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)"}, {"title": "Stage", "value": "blocked"}, {"title": "Repo", "value": "acme/widget"}]}, {"type": "TextBlock", "wrap": true, "isSubtle": true, "spacing": "Small", "text": "acme-widget · blocked · #42"}]}}]}		
+
+### event=blocked platform=buzz
+rc=0
+-- nak argv
+event --auth -k 9 -c 🤖 **Talos** — blocked by qa · [#42](https://github.com/acme/widget/issues/42)  [#42 Fix login crash](https://github.com/acme/widget/issues/42)  2 of 5 criteria failed  _Human attention needed before the pipeline can continue._  acme/widget · [PR #9](https://github.com/acme/widget/pull/9) -t h=chan-uuid-1 ws://localhost:3000
+-- thread state
+{
+  "acme-widget:42": {
+    "buzz_event_id": "aaaa000000000000000000000000000000000000000000000000000000000001"
+  }
+}
+
+### event=merged platform=slack-webhook
+rc=0
+-- curl (url, payload, auth, method)
+https://hooks.slack.test/T/B/X	{"text": "🤖 Talos — merged · #42", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "🤖 *Talos* — merged · <https://github.com/acme/widget/pull/9|#42>\n\n<https://github.com/acme/widget/issues/42|#42 Fix login crash>\n\nfix: guard"}}, {"type": "section", "fields": [{"type": "mrkdwn", "text": "*PR*\n<https://github.com/acme/widget/pull/9|#9>"}, {"type": "mrkdwn", "text": "*Issue*\n<https://github.com/acme/widget/issues/42|#42>"}, {"type": "mrkdwn", "text": "*Stage*\nmerged"}, {"type": "mrkdwn", "text": "*Repo*\nacme/widget"}]}, {"type": "context", "elements": [{"type": "mrkdwn", "text": "acme-widget · merged · #42"}]}], "attachments": [{"color": "#2ecc71", "fallback": "🤖 Talos — merged · #42"}]}		
+
+### event=merged platform=slack-bot
+rc=0
+-- curl (url, payload, auth, method)
+https://slack.com/api/chat.postMessage	{"text": "🤖 Talos — merged · #42", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "🤖 *Talos* — merged · <https://github.com/acme/widget/pull/9|#42>\n\n<https://github.com/acme/widget/issues/42|#42 Fix login crash>\n\nfix: guard"}}, {"type": "section", "fields": [{"type": "mrkdwn", "text": "*PR*\n<https://github.com/acme/widget/pull/9|#9>"}, {"type": "mrkdwn", "text": "*Issue*\n<https://github.com/acme/widget/issues/42|#42>"}, {"type": "mrkdwn", "text": "*Stage*\nmerged"}, {"type": "mrkdwn", "text": "*Repo*\nacme/widget"}]}, {"type": "context", "elements": [{"type": "mrkdwn", "text": "acme-widget · merged · #42"}]}], "attachments": [{"color": "#2ecc71", "fallback": "🤖 Talos — merged · #42"}], "channel": "C0TEST"}	Authorization: Bearer	
+-- thread state
+{
+  "acme-widget:42": {
+    "slack_ts": "1111.2222"
+  }
+}
+
+### event=merged platform=discord-webhook
+rc=0
+-- curl (url, payload, auth, method)
+https://discord.test/api/webhooks/1/abc	{"embeds": [{"title": "🤖 Talos — merged · #42", "description": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\nfix: guard", "color": 3066993, "footer": {"text": "acme-widget · merged · #42"}, "fields": [{"name": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)", "inline": true}, {"name": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)", "inline": true}, {"name": "Stage", "value": "merged", "inline": true}, {"name": "Repo", "value": "acme/widget", "inline": true}], "url": "https://github.com/acme/widget/pull/9"}]}		
+
+### event=merged platform=discord-bot
+rc=0
+-- curl (url, payload, auth, method)
+https://discord.com/api/v10/channels/D0TEST/messages	{"embeds": [{"title": "🤖 Talos — merged · #42", "description": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\nfix: guard", "color": 3066993, "footer": {"text": "acme-widget · merged · #42"}, "fields": [{"name": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)", "inline": true}, {"name": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)", "inline": true}, {"name": "Stage", "value": "merged", "inline": true}, {"name": "Repo", "value": "acme/widget", "inline": true}], "url": "https://github.com/acme/widget/pull/9"}]}		
+https://discord.com/api/v10/channels/D0TEST/messages/900000000000000001/threads	{"name": "#42 \u2014 \ud83e\udd16 **Talos** \u2014 merged \u00b7 #42", "auto_archive_duration": 1440}		
+-- thread state
+{
+  "acme-widget:42": {
+    "discord_msg_id": "900000000000000001",
+    "discord_thread_id": "900000000000000001"
+  }
+}
+
+### event=merged platform=teams
+rc=0
+-- curl (url, payload, auth, method)
+https://teams.test/webhook/1	{"type": "message", "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive", "content": {"type": "AdaptiveCard", "version": "1.4", "body": [{"type": "TextBlock", "wrap": true, "weight": "Bolder", "size": "Medium", "text": "🤖 **Talos** — merged · [#42](https://github.com/acme/widget/pull/9)"}, {"type": "TextBlock", "wrap": true, "text": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\nfix: guard"}, {"type": "FactSet", "facts": [{"title": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)"}, {"title": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)"}, {"title": "Stage", "value": "merged"}, {"title": "Repo", "value": "acme/widget"}]}, {"type": "TextBlock", "wrap": true, "isSubtle": true, "spacing": "Small", "text": "acme-widget · merged · #42"}]}}]}		
+
+### event=merged platform=buzz
+rc=0
+-- nak argv
+event --auth -k 9 -c 🤖 **Talos** — merged · [#42](https://github.com/acme/widget/pull/9)  [#42 Fix login crash](https://github.com/acme/widget/issues/42)  fix: guard  acme/widget · [PR #9](https://github.com/acme/widget/pull/9) -t h=chan-uuid-1 ws://localhost:3000
+-- thread state
+{
+  "acme-widget:42": {
+    "buzz_event_id": "aaaa000000000000000000000000000000000000000000000000000000000001"
+  }
+}
+
+### event=info platform=slack-webhook
+rc=0
+-- curl (url, payload, auth, method)
+https://hooks.slack.test/T/B/X	{"text": "🤖 Talos — info · #42", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "🤖 *Talos* — info · <https://github.com/acme/widget/issues/42|#42>\n\n<https://github.com/acme/widget/issues/42|#42 Fix login crash>\n\nfence `​`​` inside `code` and *bold* and <https://x.test/a|link> and\n• a bullet\nsecond line"}}, {"type": "section", "fields": [{"type": "mrkdwn", "text": "*PR*\n<https://github.com/acme/widget/pull/9|#9>"}, {"type": "mrkdwn", "text": "*Issue*\n<https://github.com/acme/widget/issues/42|#42>"}, {"type": "mrkdwn", "text": "*Stage*\ninfo"}, {"type": "mrkdwn", "text": "*Repo*\nacme/widget"}]}, {"type": "context", "elements": [{"type": "mrkdwn", "text": "acme-widget · info · #42"}]}], "attachments": [{"color": "#3498db", "fallback": "🤖 Talos — info · #42"}]}		
+
+### event=info platform=slack-bot
+rc=0
+-- curl (url, payload, auth, method)
+https://slack.com/api/chat.postMessage	{"text": "🤖 Talos — info · #42", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "🤖 *Talos* — info · <https://github.com/acme/widget/issues/42|#42>\n\n<https://github.com/acme/widget/issues/42|#42 Fix login crash>\n\nfence `​`​` inside `code` and *bold* and <https://x.test/a|link> and\n• a bullet\nsecond line"}}, {"type": "section", "fields": [{"type": "mrkdwn", "text": "*PR*\n<https://github.com/acme/widget/pull/9|#9>"}, {"type": "mrkdwn", "text": "*Issue*\n<https://github.com/acme/widget/issues/42|#42>"}, {"type": "mrkdwn", "text": "*Stage*\ninfo"}, {"type": "mrkdwn", "text": "*Repo*\nacme/widget"}]}, {"type": "context", "elements": [{"type": "mrkdwn", "text": "acme-widget · info · #42"}]}], "attachments": [{"color": "#3498db", "fallback": "🤖 Talos — info · #42"}], "channel": "C0TEST"}	Authorization: Bearer	
+-- thread state
+{
+  "acme-widget:42": {
+    "slack_ts": "1111.2222"
+  }
+}
+
+### event=info platform=discord-webhook
+rc=0
+-- curl (url, payload, auth, method)
+https://discord.test/api/webhooks/1/abc	{"embeds": [{"title": "🤖 Talos — info · #42", "description": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\nfence `​`​` inside `code` and **bold** and [link](https://x.test/a) and\n- a bullet\nsecond line", "color": 3447003, "footer": {"text": "acme-widget · info · #42"}, "fields": [{"name": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)", "inline": true}, {"name": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)", "inline": true}, {"name": "Stage", "value": "info", "inline": true}, {"name": "Repo", "value": "acme/widget", "inline": true}], "url": "https://github.com/acme/widget/issues/42"}]}		
+
+### event=info platform=discord-bot
+rc=0
+-- curl (url, payload, auth, method)
+https://discord.com/api/v10/channels/D0TEST/messages	{"embeds": [{"title": "🤖 Talos — info · #42", "description": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\nfence `​`​` inside `code` and **bold** and [link](https://x.test/a) and\n- a bullet\nsecond line", "color": 3447003, "footer": {"text": "acme-widget · info · #42"}, "fields": [{"name": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)", "inline": true}, {"name": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)", "inline": true}, {"name": "Stage", "value": "info", "inline": true}, {"name": "Repo", "value": "acme/widget", "inline": true}], "url": "https://github.com/acme/widget/issues/42"}]}		
+https://discord.com/api/v10/channels/D0TEST/messages/900000000000000001/threads	{"name": "#42 \u2014 \ud83e\udd16 **Talos** \u2014 info \u00b7 #42", "auto_archive_duration": 1440}		
+-- thread state
+{
+  "acme-widget:42": {
+    "discord_msg_id": "900000000000000001",
+    "discord_thread_id": "900000000000000001"
+  }
+}
+
+### event=info platform=teams
+rc=0
+-- curl (url, payload, auth, method)
+https://teams.test/webhook/1	{"type": "message", "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive", "content": {"type": "AdaptiveCard", "version": "1.4", "body": [{"type": "TextBlock", "wrap": true, "weight": "Bolder", "size": "Medium", "text": "🤖 **Talos** — info · [#42](https://github.com/acme/widget/issues/42)"}, {"type": "TextBlock", "wrap": true, "text": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\nfence `​`​` inside `code` and **bold** and [link](https://x.test/a) and\n- a bullet\nsecond line"}, {"type": "FactSet", "facts": [{"title": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)"}, {"title": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)"}, {"title": "Stage", "value": "info"}, {"title": "Repo", "value": "acme/widget"}]}, {"type": "TextBlock", "wrap": true, "isSubtle": true, "spacing": "Small", "text": "acme-widget · info · #42"}]}}]}		
+
+### event=info platform=buzz
+rc=0
+-- nak argv
+event --auth -k 9 -c 🤖 **Talos** — info · [#42](https://github.com/acme/widget/issues/42)  [#42 Fix login crash](https://github.com/acme/widget/issues/42)  fence `​`​` inside `code` and **bold** and [link](https://x.test/a) and - a bullet second line  acme/widget · [PR #9](https://github.com/acme/widget/pull/9) -t h=chan-uuid-1 ws://localhost:3000
+-- thread state
+{
+  "acme-widget:42": {
+    "buzz_event_id": "aaaa000000000000000000000000000000000000000000000000000000000001"
+  }
+}
+
+### event=issue-closed platform=slack-webhook
+rc=0
+-- curl (url, payload, auth, method)
+https://hooks.slack.test/T/B/X	{"text": "🤖 Talos — issue closed · #42", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "🤖 *Talos* — issue closed · <https://github.com/acme/widget/issues/42|#42>\n\n<https://github.com/acme/widget/issues/42|#42 Fix login crash>\n\nfix: guard\n\n_All stages complete. Board → Done._"}}, {"type": "section", "fields": [{"type": "mrkdwn", "text": "*PR*\n<https://github.com/acme/widget/pull/9|#9>"}, {"type": "mrkdwn", "text": "*Issue*\n<https://github.com/acme/widget/issues/42|#42>"}, {"type": "mrkdwn", "text": "*Stage*\nissue-closed"}, {"type": "mrkdwn", "text": "*Repo*\nacme/widget"}]}, {"type": "context", "elements": [{"type": "mrkdwn", "text": "acme-widget · issue-closed · #42"}]}], "attachments": [{"color": "#2ecc71", "fallback": "🤖 Talos — issue closed · #42"}]}		
+
+### event=issue-closed platform=slack-bot
+rc=0
+-- curl (url, payload, auth, method)
+https://slack.com/api/chat.postMessage	{"text": "🤖 Talos — issue closed · #42", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "🤖 *Talos* — issue closed · <https://github.com/acme/widget/issues/42|#42>\n\n<https://github.com/acme/widget/issues/42|#42 Fix login crash>\n\nfix: guard\n\n_All stages complete. Board → Done._"}}, {"type": "section", "fields": [{"type": "mrkdwn", "text": "*PR*\n<https://github.com/acme/widget/pull/9|#9>"}, {"type": "mrkdwn", "text": "*Issue*\n<https://github.com/acme/widget/issues/42|#42>"}, {"type": "mrkdwn", "text": "*Stage*\nissue-closed"}, {"type": "mrkdwn", "text": "*Repo*\nacme/widget"}]}, {"type": "context", "elements": [{"type": "mrkdwn", "text": "acme-widget · issue-closed · #42"}]}], "attachments": [{"color": "#2ecc71", "fallback": "🤖 Talos — issue closed · #42"}], "channel": "C0TEST"}	Authorization: Bearer	
+-- thread state
+{
+  "acme-widget:42": {
+    "slack_ts": "1111.2222"
+  }
+}
+
+### event=issue-closed platform=discord-webhook
+rc=0
+-- curl (url, payload, auth, method)
+https://discord.test/api/webhooks/1/abc	{"embeds": [{"title": "🤖 Talos — issue closed · #42", "description": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\nfix: guard\n\n_All stages complete. Board → Done._", "color": 3066993, "footer": {"text": "acme-widget · issue-closed · #42"}, "fields": [{"name": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)", "inline": true}, {"name": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)", "inline": true}, {"name": "Stage", "value": "issue-closed", "inline": true}, {"name": "Repo", "value": "acme/widget", "inline": true}], "url": "https://github.com/acme/widget/issues/42"}]}		
+
+### event=issue-closed platform=discord-bot
+rc=0
+-- curl (url, payload, auth, method)
+https://discord.com/api/v10/channels/D0TEST/messages	{"embeds": [{"title": "🤖 Talos — issue closed · #42", "description": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\nfix: guard\n\n_All stages complete. Board → Done._", "color": 3066993, "footer": {"text": "acme-widget · issue-closed · #42"}, "fields": [{"name": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)", "inline": true}, {"name": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)", "inline": true}, {"name": "Stage", "value": "issue-closed", "inline": true}, {"name": "Repo", "value": "acme/widget", "inline": true}], "url": "https://github.com/acme/widget/issues/42"}]}		
+https://discord.com/api/v10/channels/D0TEST/messages/900000000000000001/threads	{"name": "#42 \u2014 \ud83e\udd16 **Talos** \u2014 issue closed \u00b7 #42", "auto_archive_duration": 1440}		
+-- thread state
+{
+  "acme-widget:42": {
+    "discord_msg_id": "900000000000000001",
+    "discord_thread_id": "900000000000000001"
+  }
+}
+
+### event=issue-closed platform=teams
+rc=0
+-- curl (url, payload, auth, method)
+https://teams.test/webhook/1	{"type": "message", "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive", "content": {"type": "AdaptiveCard", "version": "1.4", "body": [{"type": "TextBlock", "wrap": true, "weight": "Bolder", "size": "Medium", "text": "🤖 **Talos** — issue closed · [#42](https://github.com/acme/widget/issues/42)"}, {"type": "TextBlock", "wrap": true, "text": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\nfix: guard\n\n_All stages complete. Board → Done._"}, {"type": "FactSet", "facts": [{"title": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)"}, {"title": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)"}, {"title": "Stage", "value": "issue-closed"}, {"title": "Repo", "value": "acme/widget"}]}, {"type": "TextBlock", "wrap": true, "isSubtle": true, "spacing": "Small", "text": "acme-widget · issue-closed · #42"}]}}]}		
+
+### event=issue-closed platform=buzz
+rc=0
+-- nak argv
+event --auth -k 9 -c 🤖 **Talos** — issue closed · [#42](https://github.com/acme/widget/issues/42)  [#42 Fix login crash](https://github.com/acme/widget/issues/42)  fix: guard  _All stages complete. Board → Done._  acme/widget · [PR #9](https://github.com/acme/widget/pull/9) -t h=chan-uuid-1 ws://localhost:3000
+-- thread state
+{
+  "acme-widget:42": {
+    "buzz_event_id": "aaaa000000000000000000000000000000000000000000000000000000000001"
+  }
+}
+
+### event=dispatched platform=slack-webhook
+rc=0
+-- curl (url, payload, auth, method)
+https://hooks.slack.test/T/B/X	{"text": "🤖 Talos — dispatched · #42", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "🤖 *Talos* — dispatched · <https://github.com/acme/widget/issues/42|#42>\n\n<https://github.com/acme/widget/issues/42|#42 Fix login crash>\n\ndispatched happened\n\n_Agent updates on this issue and its PR appear in this thread._"}}, {"type": "section", "fields": [{"type": "mrkdwn", "text": "*PR*\n<https://github.com/acme/widget/pull/9|#9>"}, {"type": "mrkdwn", "text": "*Issue*\n<https://github.com/acme/widget/issues/42|#42>"}, {"type": "mrkdwn", "text": "*Stage*\ndispatched"}, {"type": "mrkdwn", "text": "*Repo*\nacme/widget"}]}, {"type": "context", "elements": [{"type": "mrkdwn", "text": "acme-widget · dispatched · #42"}]}], "attachments": [{"color": "#3498db", "fallback": "🤖 Talos — dispatched · #42"}]}		
+
+### event=dispatched platform=slack-bot
+rc=0
+-- curl (url, payload, auth, method)
+https://slack.com/api/chat.postMessage	{"text": "🤖 Talos — dispatched · #42", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "🤖 *Talos* — dispatched · <https://github.com/acme/widget/issues/42|#42>\n\n<https://github.com/acme/widget/issues/42|#42 Fix login crash>\n\ndispatched happened\n\n_Agent updates on this issue and its PR appear in this thread._"}}, {"type": "section", "fields": [{"type": "mrkdwn", "text": "*PR*\n<https://github.com/acme/widget/pull/9|#9>"}, {"type": "mrkdwn", "text": "*Issue*\n<https://github.com/acme/widget/issues/42|#42>"}, {"type": "mrkdwn", "text": "*Stage*\ndispatched"}, {"type": "mrkdwn", "text": "*Repo*\nacme/widget"}]}, {"type": "context", "elements": [{"type": "mrkdwn", "text": "acme-widget · dispatched · #42"}]}], "attachments": [{"color": "#3498db", "fallback": "🤖 Talos — dispatched · #42"}], "channel": "C0TEST"}	Authorization: Bearer	
+-- thread state
+{
+  "acme-widget:42": {
+    "slack_ts": "1111.2222"
+  }
+}
+
+### event=dispatched platform=discord-webhook
+rc=0
+-- curl (url, payload, auth, method)
+https://discord.test/api/webhooks/1/abc	{"embeds": [{"title": "🤖 Talos — dispatched · #42", "description": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\ndispatched happened\n\n_Agent updates on this issue and its PR appear in this thread._", "color": 3447003, "footer": {"text": "acme-widget · dispatched · #42"}, "fields": [{"name": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)", "inline": true}, {"name": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)", "inline": true}, {"name": "Stage", "value": "dispatched", "inline": true}, {"name": "Repo", "value": "acme/widget", "inline": true}], "url": "https://github.com/acme/widget/issues/42"}]}		
+
+### event=dispatched platform=discord-bot
+rc=0
+-- curl (url, payload, auth, method)
+https://discord.com/api/v10/channels/D0TEST/messages	{"embeds": [{"title": "🤖 Talos — dispatched · #42", "description": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\ndispatched happened\n\n_Agent updates on this issue and its PR appear in this thread._", "color": 3447003, "footer": {"text": "acme-widget · dispatched · #42"}, "fields": [{"name": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)", "inline": true}, {"name": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)", "inline": true}, {"name": "Stage", "value": "dispatched", "inline": true}, {"name": "Repo", "value": "acme/widget", "inline": true}], "url": "https://github.com/acme/widget/issues/42"}]}		
+https://discord.com/api/v10/channels/D0TEST/messages/900000000000000001/threads	{"name": "#42 \u2014 \ud83e\udd16 **Talos** \u2014 dispatched \u00b7 #42", "auto_archive_duration": 1440}		
+-- thread state
+{
+  "acme-widget:42": {
+    "discord_msg_id": "900000000000000001",
+    "discord_thread_id": "900000000000000001"
+  }
+}
+
+### event=dispatched platform=teams
+rc=0
+-- curl (url, payload, auth, method)
+https://teams.test/webhook/1	{"type": "message", "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive", "content": {"type": "AdaptiveCard", "version": "1.4", "body": [{"type": "TextBlock", "wrap": true, "weight": "Bolder", "size": "Medium", "text": "🤖 **Talos** — dispatched · [#42](https://github.com/acme/widget/issues/42)"}, {"type": "TextBlock", "wrap": true, "text": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\ndispatched happened\n\n_Agent updates on this issue and its PR appear in this thread._"}, {"type": "FactSet", "facts": [{"title": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)"}, {"title": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)"}, {"title": "Stage", "value": "dispatched"}, {"title": "Repo", "value": "acme/widget"}]}, {"type": "TextBlock", "wrap": true, "isSubtle": true, "spacing": "Small", "text": "acme-widget · dispatched · #42"}]}}]}		
+
+### event=dispatched platform=buzz
+rc=0
+-- nak argv
+event --auth -k 9 -c 🤖 **Talos** — dispatched · [#42](https://github.com/acme/widget/issues/42)  [#42 Fix login crash](https://github.com/acme/widget/issues/42)  dispatched happened  _Agent updates on this issue and its PR appear in this thread._  acme/widget · [PR #9](https://github.com/acme/widget/pull/9) -t h=chan-uuid-1 ws://localhost:3000
+-- thread state
+{
+  "acme-widget:42": {
+    "buzz_event_id": "aaaa000000000000000000000000000000000000000000000000000000000001"
+  }
+}
+
+### event=qa platform=slack-webhook
+rc=0
+-- curl (url, payload, auth, method)
+https://hooks.slack.test/T/B/X	{"text": "🧪 QA — PASS · #42", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "🧪 *QA* — PASS · <https://github.com/acme/widget/issues/42|#42>\n\n<https://github.com/acme/widget/issues/42|#42 Fix login crash>\n\n5/5 criteria verified"}}, {"type": "section", "fields": [{"type": "mrkdwn", "text": "*PR*\n<https://github.com/acme/widget/pull/9|#9>"}, {"type": "mrkdwn", "text": "*Issue*\n<https://github.com/acme/widget/issues/42|#42>"}, {"type": "mrkdwn", "text": "*Stage*\nqa"}, {"type": "mrkdwn", "text": "*Repo*\nacme/widget"}]}, {"type": "context", "elements": [{"type": "mrkdwn", "text": "acme-widget · qa · #42"}]}], "attachments": [{"color": "#2ecc71", "fallback": "🧪 QA — PASS · #42"}]}		
+
+### event=qa platform=slack-bot
+rc=0
+-- curl (url, payload, auth, method)
+https://slack.com/api/chat.postMessage	{"text": "🧪 QA — PASS · #42", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "🧪 *QA* — PASS · <https://github.com/acme/widget/issues/42|#42>\n\n<https://github.com/acme/widget/issues/42|#42 Fix login crash>\n\n5/5 criteria verified"}}, {"type": "section", "fields": [{"type": "mrkdwn", "text": "*PR*\n<https://github.com/acme/widget/pull/9|#9>"}, {"type": "mrkdwn", "text": "*Issue*\n<https://github.com/acme/widget/issues/42|#42>"}, {"type": "mrkdwn", "text": "*Stage*\nqa"}, {"type": "mrkdwn", "text": "*Repo*\nacme/widget"}]}, {"type": "context", "elements": [{"type": "mrkdwn", "text": "acme-widget · qa · #42"}]}], "attachments": [{"color": "#2ecc71", "fallback": "🧪 QA — PASS · #42"}], "channel": "C0TEST"}	Authorization: Bearer	
+-- thread state
+{
+  "acme-widget:42": {
+    "slack_ts": "1111.2222"
+  }
+}
+
+### event=qa platform=discord-webhook
+rc=0
+-- curl (url, payload, auth, method)
+https://discord.test/api/webhooks/1/abc	{"embeds": [{"title": "🧪 QA — PASS · #42", "description": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\n5/5 criteria verified", "color": 3066993, "footer": {"text": "acme-widget · qa · #42"}, "fields": [{"name": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)", "inline": true}, {"name": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)", "inline": true}, {"name": "Stage", "value": "qa", "inline": true}, {"name": "Repo", "value": "acme/widget", "inline": true}], "url": "https://github.com/acme/widget/issues/42"}]}		
+
+### event=qa platform=discord-bot
+rc=0
+-- curl (url, payload, auth, method)
+https://discord.com/api/v10/channels/D0TEST/messages	{"embeds": [{"title": "🧪 QA — PASS · #42", "description": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\n5/5 criteria verified", "color": 3066993, "footer": {"text": "acme-widget · qa · #42"}, "fields": [{"name": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)", "inline": true}, {"name": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)", "inline": true}, {"name": "Stage", "value": "qa", "inline": true}, {"name": "Repo", "value": "acme/widget", "inline": true}], "url": "https://github.com/acme/widget/issues/42"}]}		
+https://discord.com/api/v10/channels/D0TEST/messages/900000000000000001/threads	{"name": "#42 \u2014 \ud83e\uddea **QA** \u2014 PASS \u00b7 #42", "auto_archive_duration": 1440}		
+-- thread state
+{
+  "acme-widget:42": {
+    "discord_msg_id": "900000000000000001",
+    "discord_thread_id": "900000000000000001"
+  }
+}
+
+### event=qa platform=teams
+rc=0
+-- curl (url, payload, auth, method)
+https://teams.test/webhook/1	{"type": "message", "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive", "content": {"type": "AdaptiveCard", "version": "1.4", "body": [{"type": "TextBlock", "wrap": true, "weight": "Bolder", "size": "Medium", "text": "🧪 **QA** — PASS · [#42](https://github.com/acme/widget/issues/42)"}, {"type": "TextBlock", "wrap": true, "text": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\n5/5 criteria verified"}, {"type": "FactSet", "facts": [{"title": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)"}, {"title": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)"}, {"title": "Stage", "value": "qa"}, {"title": "Repo", "value": "acme/widget"}]}, {"type": "TextBlock", "wrap": true, "isSubtle": true, "spacing": "Small", "text": "acme-widget · qa · #42"}]}}]}		
+
+### event=qa platform=buzz
+rc=0
+-- nak argv
+event --auth -k 9 -c 🧪 **QA** — PASS · [#42](https://github.com/acme/widget/issues/42)  [#42 Fix login crash](https://github.com/acme/widget/issues/42)  5/5 criteria verified  acme/widget · [PR #9](https://github.com/acme/widget/pull/9) -t h=chan-uuid-1 ws://localhost:3000
+-- thread state
+{
+  "acme-widget:42": {
+    "buzz_event_id": "aaaa000000000000000000000000000000000000000000000000000000000001"
+  }
+}
+
+### event=docs platform=slack-webhook
+rc=0
+-- curl (url, payload, auth, method)
+https://hooks.slack.test/T/B/X	{"text": "📚 Docs — docs updated · #42", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "📚 *Docs* — docs updated · <https://github.com/acme/widget/issues/42|#42>\n\n<https://github.com/acme/widget/issues/42|#42 Fix login crash>\n\ndocs happened"}}, {"type": "section", "fields": [{"type": "mrkdwn", "text": "*PR*\n<https://github.com/acme/widget/pull/9|#9>"}, {"type": "mrkdwn", "text": "*Issue*\n<https://github.com/acme/widget/issues/42|#42>"}, {"type": "mrkdwn", "text": "*Stage*\ndocs"}, {"type": "mrkdwn", "text": "*Repo*\nacme/widget"}]}, {"type": "context", "elements": [{"type": "mrkdwn", "text": "acme-widget · docs · #42"}]}], "attachments": [{"color": "#3498db", "fallback": "📚 Docs — docs updated · #42"}]}		
+
+### event=docs platform=slack-bot
+rc=0
+-- curl (url, payload, auth, method)
+https://slack.com/api/chat.postMessage	{"text": "📚 Docs — docs updated · #42", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "📚 *Docs* — docs updated · <https://github.com/acme/widget/issues/42|#42>\n\n<https://github.com/acme/widget/issues/42|#42 Fix login crash>\n\ndocs happened"}}, {"type": "section", "fields": [{"type": "mrkdwn", "text": "*PR*\n<https://github.com/acme/widget/pull/9|#9>"}, {"type": "mrkdwn", "text": "*Issue*\n<https://github.com/acme/widget/issues/42|#42>"}, {"type": "mrkdwn", "text": "*Stage*\ndocs"}, {"type": "mrkdwn", "text": "*Repo*\nacme/widget"}]}, {"type": "context", "elements": [{"type": "mrkdwn", "text": "acme-widget · docs · #42"}]}], "attachments": [{"color": "#3498db", "fallback": "📚 Docs — docs updated · #42"}], "channel": "C0TEST"}	Authorization: Bearer	
+-- thread state
+{
+  "acme-widget:42": {
+    "slack_ts": "1111.2222"
+  }
+}
+
+### event=docs platform=discord-webhook
+rc=0
+-- curl (url, payload, auth, method)
+https://discord.test/api/webhooks/1/abc	{"embeds": [{"title": "📚 Docs — docs updated · #42", "description": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\ndocs happened", "color": 3447003, "footer": {"text": "acme-widget · docs · #42"}, "fields": [{"name": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)", "inline": true}, {"name": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)", "inline": true}, {"name": "Stage", "value": "docs", "inline": true}, {"name": "Repo", "value": "acme/widget", "inline": true}], "url": "https://github.com/acme/widget/issues/42"}]}		
+
+### event=docs platform=discord-bot
+rc=0
+-- curl (url, payload, auth, method)
+https://discord.com/api/v10/channels/D0TEST/messages	{"embeds": [{"title": "📚 Docs — docs updated · #42", "description": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\ndocs happened", "color": 3447003, "footer": {"text": "acme-widget · docs · #42"}, "fields": [{"name": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)", "inline": true}, {"name": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)", "inline": true}, {"name": "Stage", "value": "docs", "inline": true}, {"name": "Repo", "value": "acme/widget", "inline": true}], "url": "https://github.com/acme/widget/issues/42"}]}		
+https://discord.com/api/v10/channels/D0TEST/messages/900000000000000001/threads	{"name": "#42 \u2014 \ud83d\udcda **Docs** \u2014 docs updated \u00b7 #42", "auto_archive_duration": 1440}		
+-- thread state
+{
+  "acme-widget:42": {
+    "discord_msg_id": "900000000000000001",
+    "discord_thread_id": "900000000000000001"
+  }
+}
+
+### event=docs platform=teams
+rc=0
+-- curl (url, payload, auth, method)
+https://teams.test/webhook/1	{"type": "message", "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive", "content": {"type": "AdaptiveCard", "version": "1.4", "body": [{"type": "TextBlock", "wrap": true, "weight": "Bolder", "size": "Medium", "text": "📚 **Docs** — docs updated · [#42](https://github.com/acme/widget/issues/42)"}, {"type": "TextBlock", "wrap": true, "text": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\ndocs happened"}, {"type": "FactSet", "facts": [{"title": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)"}, {"title": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)"}, {"title": "Stage", "value": "docs"}, {"title": "Repo", "value": "acme/widget"}]}, {"type": "TextBlock", "wrap": true, "isSubtle": true, "spacing": "Small", "text": "acme-widget · docs · #42"}]}}]}		
+
+### event=docs platform=buzz
+rc=0
+-- nak argv
+event --auth -k 9 -c 📚 **Docs** — docs updated · [#42](https://github.com/acme/widget/issues/42)  [#42 Fix login crash](https://github.com/acme/widget/issues/42)  docs happened  acme/widget · [PR #9](https://github.com/acme/widget/pull/9) -t h=chan-uuid-1 ws://localhost:3000
+-- thread state
+{
+  "acme-widget:42": {
+    "buzz_event_id": "aaaa000000000000000000000000000000000000000000000000000000000001"
+  }
+}
+
+### event=pm platform=slack-webhook
+rc=0
+-- curl (url, payload, auth, method)
+https://hooks.slack.test/T/B/X	{"text": "📝 PM — spec posted · #42", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "📝 *PM* — spec posted · <https://github.com/acme/widget/issues/42|#42>\n\n<https://github.com/acme/widget/issues/42|#42 Fix login crash>\n\npm happened"}}, {"type": "section", "fields": [{"type": "mrkdwn", "text": "*PR*\n<https://github.com/acme/widget/pull/9|#9>"}, {"type": "mrkdwn", "text": "*Issue*\n<https://github.com/acme/widget/issues/42|#42>"}, {"type": "mrkdwn", "text": "*Stage*\npm"}, {"type": "mrkdwn", "text": "*Repo*\nacme/widget"}]}, {"type": "context", "elements": [{"type": "mrkdwn", "text": "acme-widget · pm · #42"}]}], "attachments": [{"color": "#3498db", "fallback": "📝 PM — spec posted · #42"}]}		
+
+### event=pm platform=slack-bot
+rc=0
+-- curl (url, payload, auth, method)
+https://slack.com/api/chat.postMessage	{"text": "📝 PM — spec posted · #42", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "📝 *PM* — spec posted · <https://github.com/acme/widget/issues/42|#42>\n\n<https://github.com/acme/widget/issues/42|#42 Fix login crash>\n\npm happened"}}, {"type": "section", "fields": [{"type": "mrkdwn", "text": "*PR*\n<https://github.com/acme/widget/pull/9|#9>"}, {"type": "mrkdwn", "text": "*Issue*\n<https://github.com/acme/widget/issues/42|#42>"}, {"type": "mrkdwn", "text": "*Stage*\npm"}, {"type": "mrkdwn", "text": "*Repo*\nacme/widget"}]}, {"type": "context", "elements": [{"type": "mrkdwn", "text": "acme-widget · pm · #42"}]}], "attachments": [{"color": "#3498db", "fallback": "📝 PM — spec posted · #42"}], "channel": "C0TEST"}	Authorization: Bearer	
+-- thread state
+{
+  "acme-widget:42": {
+    "slack_ts": "1111.2222"
+  }
+}
+
+### event=pm platform=discord-webhook
+rc=0
+-- curl (url, payload, auth, method)
+https://discord.test/api/webhooks/1/abc	{"embeds": [{"title": "📝 PM — spec posted · #42", "description": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\npm happened", "color": 3447003, "footer": {"text": "acme-widget · pm · #42"}, "fields": [{"name": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)", "inline": true}, {"name": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)", "inline": true}, {"name": "Stage", "value": "pm", "inline": true}, {"name": "Repo", "value": "acme/widget", "inline": true}], "url": "https://github.com/acme/widget/issues/42"}]}		
+
+### event=pm platform=discord-bot
+rc=0
+-- curl (url, payload, auth, method)
+https://discord.com/api/v10/channels/D0TEST/messages	{"embeds": [{"title": "📝 PM — spec posted · #42", "description": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\npm happened", "color": 3447003, "footer": {"text": "acme-widget · pm · #42"}, "fields": [{"name": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)", "inline": true}, {"name": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)", "inline": true}, {"name": "Stage", "value": "pm", "inline": true}, {"name": "Repo", "value": "acme/widget", "inline": true}], "url": "https://github.com/acme/widget/issues/42"}]}		
+https://discord.com/api/v10/channels/D0TEST/messages/900000000000000001/threads	{"name": "#42 \u2014 \ud83d\udcdd **PM** \u2014 spec posted \u00b7 #42", "auto_archive_duration": 1440}		
+-- thread state
+{
+  "acme-widget:42": {
+    "discord_msg_id": "900000000000000001",
+    "discord_thread_id": "900000000000000001"
+  }
+}
+
+### event=pm platform=teams
+rc=0
+-- curl (url, payload, auth, method)
+https://teams.test/webhook/1	{"type": "message", "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive", "content": {"type": "AdaptiveCard", "version": "1.4", "body": [{"type": "TextBlock", "wrap": true, "weight": "Bolder", "size": "Medium", "text": "📝 **PM** — spec posted · [#42](https://github.com/acme/widget/issues/42)"}, {"type": "TextBlock", "wrap": true, "text": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\npm happened"}, {"type": "FactSet", "facts": [{"title": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)"}, {"title": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)"}, {"title": "Stage", "value": "pm"}, {"title": "Repo", "value": "acme/widget"}]}, {"type": "TextBlock", "wrap": true, "isSubtle": true, "spacing": "Small", "text": "acme-widget · pm · #42"}]}}]}		
+
+### event=pm platform=buzz
+rc=0
+-- nak argv
+event --auth -k 9 -c 📝 **PM** — spec posted · [#42](https://github.com/acme/widget/issues/42)  [#42 Fix login crash](https://github.com/acme/widget/issues/42)  pm happened  acme/widget · [PR #9](https://github.com/acme/widget/pull/9) -t h=chan-uuid-1 ws://localhost:3000
+-- thread state
+{
+  "acme-widget:42": {
+    "buzz_event_id": "aaaa000000000000000000000000000000000000000000000000000000000001"
+  }
+}
+
+### event=security platform=slack-webhook
+rc=0
+-- curl (url, payload, auth, method)
+https://hooks.slack.test/T/B/X	{"text": "🔐 Security — FINDINGS · #42", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "🔐 *Security* — FINDINGS · <https://github.com/acme/widget/issues/42|#42>\n\n<https://github.com/acme/widget/issues/42|#42 Fix login crash>\n\nHigh: unsanitised input in <b>login</b> & \"quotes\" é ✓"}}, {"type": "section", "fields": [{"type": "mrkdwn", "text": "*PR*\n<https://github.com/acme/widget/pull/9|#9>"}, {"type": "mrkdwn", "text": "*Issue*\n<https://github.com/acme/widget/issues/42|#42>"}, {"type": "mrkdwn", "text": "*Stage*\nsecurity"}, {"type": "mrkdwn", "text": "*Repo*\nacme/widget"}]}, {"type": "context", "elements": [{"type": "mrkdwn", "text": "acme-widget · security · #42"}]}], "attachments": [{"color": "#e67e22", "fallback": "🔐 Security — FINDINGS · #42"}]}		
+
+### event=security platform=slack-bot
+rc=0
+-- curl (url, payload, auth, method)
+https://slack.com/api/chat.postMessage	{"text": "🔐 Security — FINDINGS · #42", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "🔐 *Security* — FINDINGS · <https://github.com/acme/widget/issues/42|#42>\n\n<https://github.com/acme/widget/issues/42|#42 Fix login crash>\n\nHigh: unsanitised input in <b>login</b> & \"quotes\" é ✓"}}, {"type": "section", "fields": [{"type": "mrkdwn", "text": "*PR*\n<https://github.com/acme/widget/pull/9|#9>"}, {"type": "mrkdwn", "text": "*Issue*\n<https://github.com/acme/widget/issues/42|#42>"}, {"type": "mrkdwn", "text": "*Stage*\nsecurity"}, {"type": "mrkdwn", "text": "*Repo*\nacme/widget"}]}, {"type": "context", "elements": [{"type": "mrkdwn", "text": "acme-widget · security · #42"}]}], "attachments": [{"color": "#e67e22", "fallback": "🔐 Security — FINDINGS · #42"}], "channel": "C0TEST"}	Authorization: Bearer	
+-- thread state
+{
+  "acme-widget:42": {
+    "slack_ts": "1111.2222"
+  }
+}
+
+### event=security platform=discord-webhook
+rc=0
+-- curl (url, payload, auth, method)
+https://discord.test/api/webhooks/1/abc	{"embeds": [{"title": "🔐 Security — FINDINGS · #42", "description": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\nHigh: unsanitised input in <b>login</b> & \"quotes\" é ✓", "color": 15105570, "footer": {"text": "acme-widget · security · #42"}, "fields": [{"name": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)", "inline": true}, {"name": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)", "inline": true}, {"name": "Stage", "value": "security", "inline": true}, {"name": "Repo", "value": "acme/widget", "inline": true}], "url": "https://github.com/acme/widget/issues/42"}]}		
+
+### event=security platform=discord-bot
+rc=0
+-- curl (url, payload, auth, method)
+https://discord.com/api/v10/channels/D0TEST/messages	{"embeds": [{"title": "🔐 Security — FINDINGS · #42", "description": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\nHigh: unsanitised input in <b>login</b> & \"quotes\" é ✓", "color": 15105570, "footer": {"text": "acme-widget · security · #42"}, "fields": [{"name": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)", "inline": true}, {"name": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)", "inline": true}, {"name": "Stage", "value": "security", "inline": true}, {"name": "Repo", "value": "acme/widget", "inline": true}], "url": "https://github.com/acme/widget/issues/42"}]}		
+https://discord.com/api/v10/channels/D0TEST/messages/900000000000000001/threads	{"name": "#42 \u2014 \ud83d\udd10 **Security** \u2014 FINDINGS \u00b7 #42", "auto_archive_duration": 1440}		
+-- thread state
+{
+  "acme-widget:42": {
+    "discord_msg_id": "900000000000000001",
+    "discord_thread_id": "900000000000000001"
+  }
+}
+
+### event=security platform=teams
+rc=0
+-- curl (url, payload, auth, method)
+https://teams.test/webhook/1	{"type": "message", "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive", "content": {"type": "AdaptiveCard", "version": "1.4", "body": [{"type": "TextBlock", "wrap": true, "weight": "Bolder", "size": "Medium", "text": "🔐 **Security** — FINDINGS · [#42](https://github.com/acme/widget/issues/42)"}, {"type": "TextBlock", "wrap": true, "text": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\nHigh: unsanitised input in <b>login</b> & \"quotes\" é ✓"}, {"type": "FactSet", "facts": [{"title": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)"}, {"title": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)"}, {"title": "Stage", "value": "security"}, {"title": "Repo", "value": "acme/widget"}]}, {"type": "TextBlock", "wrap": true, "isSubtle": true, "spacing": "Small", "text": "acme-widget · security · #42"}]}}]}		
+
+### event=security platform=buzz
+rc=0
+-- nak argv
+event --auth -k 9 -c 🔐 **Security** — FINDINGS · [#42](https://github.com/acme/widget/issues/42)  [#42 Fix login crash](https://github.com/acme/widget/issues/42)  High: unsanitised input in <b>login</b> & "quotes" é ✓  acme/widget · [PR #9](https://github.com/acme/widget/pull/9) -t h=chan-uuid-1 ws://localhost:3000
+-- thread state
+{
+  "acme-widget:42": {
+    "buzz_event_id": "aaaa000000000000000000000000000000000000000000000000000000000001"
+  }
+}
+
+### thread slack-bot: root, reply, reply
+rc=0
+-- curl (url, payload, auth, method)
+https://slack.com/api/chat.postMessage	{"text": "🤖 Talos — dispatched · #7", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "🤖 *Talos* — dispatched · <https://github.com/acme/widget/issues/7|#7>\n\n<https://github.com/acme/widget/issues/7|#7 Fix login crash>\n\nkickoff\n\n_Agent updates on this issue and its PR appear in this thread._"}}, {"type": "section", "fields": [{"type": "mrkdwn", "text": "*Issue*\n<https://github.com/acme/widget/issues/7|#7>"}, {"type": "mrkdwn", "text": "*Stage*\ndispatched"}, {"type": "mrkdwn", "text": "*Repo*\nacme/widget"}]}, {"type": "context", "elements": [{"type": "mrkdwn", "text": "acme-widget · dispatched · #7"}]}], "attachments": [{"color": "#3498db", "fallback": "🤖 Talos — dispatched · #7"}], "channel": "C0TEST"}	Authorization: Bearer	
+rc=0
+-- curl (url, payload, auth, method)
+https://slack.com/api/chat.postMessage	{"text": "🔎 Validator — CONFIRMED · #7", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "🔎 *Validator* — CONFIRMED · <https://github.com/acme/widget/issues/7|#7>\n\nok"}}, {"type": "context", "elements": [{"type": "mrkdwn", "text": "acme-widget · validator · #7"}]}], "attachments": [{"color": "#3498db", "fallback": "🔎 Validator — CONFIRMED · #7"}], "channel": "C0TEST", "thread_ts": "1111.2222"}	Authorization: Bearer	
+rc=0
+-- curl (url, payload, auth, method)
+https://slack.com/api/chat.postMessage	{"text": "🤖 Talos — PR opened · #7", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "🤖 *Talos* — PR opened · <https://github.com/acme/widget/pull/3|#7>\n\nfix: guard null session"}}, {"type": "context", "elements": [{"type": "mrkdwn", "text": "acme-widget · pr-opened · #7"}]}], "attachments": [{"color": "#3498db", "fallback": "🤖 Talos — PR opened · #7"}], "channel": "C0TEST", "thread_ts": "1111.2222"}	Authorization: Bearer	
+-- thread state
+{
+  "acme-widget:7": {
+    "slack_ts": "1111.2222"
+  }
+}
+
+### thread discord-bot: root, reply, reply
+rc=0
+-- curl (url, payload, auth, method)
+https://discord.com/api/v10/channels/D0TEST/messages	{"embeds": [{"title": "🤖 Talos — dispatched · #7", "description": "[#7 Fix login crash](https://github.com/acme/widget/issues/7)\n\nkickoff\n\n_Agent updates on this issue and its PR appear in this thread._", "color": 3447003, "footer": {"text": "acme-widget · dispatched · #7"}, "fields": [{"name": "Issue", "value": "[#7](https://github.com/acme/widget/issues/7)", "inline": true}, {"name": "Stage", "value": "dispatched", "inline": true}, {"name": "Repo", "value": "acme/widget", "inline": true}], "url": "https://github.com/acme/widget/issues/7"}]}		
+https://discord.com/api/v10/channels/D0TEST/messages/900000000000000001/threads	{"name": "#7 \u2014 \ud83e\udd16 **Talos** \u2014 dispatched \u00b7 #7", "auto_archive_duration": 1440}		
+rc=0
+-- curl (url, payload, auth, method)
+https://discord.com/api/v10/channels/900000000000000001/messages	{"embeds": [{"title": "🔎 Validator — CONFIRMED · #7", "description": "ok", "color": 3447003, "footer": {"text": "acme-widget · validator · #7"}, "url": "https://github.com/acme/widget/issues/7"}]}		
+rc=0
+-- curl (url, payload, auth, method)
+https://discord.com/api/v10/channels/900000000000000001/messages	{"embeds": [{"title": "🤖 Talos — PR opened · #7", "description": "fix: guard null session", "color": 3447003, "footer": {"text": "acme-widget · pr-opened · #7"}, "url": "https://github.com/acme/widget/pull/3"}]}		
+-- thread state
+{
+  "acme-widget:7": {
+    "discord_msg_id": "900000000000000001",
+    "discord_thread_id": "900000000000000001"
+  }
+}
+
+### thread buzz: root, reply, reply
+rc=0
+-- nak argv
+event --auth -k 9 -c 🤖 **Talos** — dispatched · [#7](https://github.com/acme/widget/issues/7)  [#7 Fix login crash](https://github.com/acme/widget/issues/7)  kickoff  _Agent updates on this issue and its PR appear in this thread._  acme/widget -t h=chan-uuid-1 ws://localhost:3000
+rc=0
+-- nak argv
+event --auth -k 9 -c 🔎 **Validator** — CONFIRMED · [#7](https://github.com/acme/widget/issues/7)  ok -t h=chan-uuid-1 -t e=aaaa000000000000000000000000000000000000000000000000000000000001;;reply ws://localhost:3000
+rc=0
+-- nak argv
+event --auth -k 9 -c 🤖 **Talos** — PR opened · [#7](https://github.com/acme/widget/pull/3)  fix: guard null session -t h=chan-uuid-1 -t e=aaaa000000000000000000000000000000000000000000000000000000000001;;reply ws://localhost:3000
+-- thread state
+{
+  "acme-widget:7": {
+    "buzz_event_id": "aaaa000000000000000000000000000000000000000000000000000000000001"
+  }
+}
+
+### discord thread id stored: later posts go to the thread channel
+rc=0
+-- curl (url, payload, auth, method)
+https://discord.com/api/v10/channels/D0TEST/messages	{"embeds": [{"title": "🤖 Talos — dispatched · #8", "description": "[#8 Fix login crash](https://github.com/acme/widget/issues/8)\n\nkickoff\n\n_Agent updates on this issue and its PR appear in this thread._", "color": 3447003, "footer": {"text": "acme-widget · dispatched · #8"}, "fields": [{"name": "Issue", "value": "[#8](https://github.com/acme/widget/issues/8)", "inline": true}, {"name": "Stage", "value": "dispatched", "inline": true}, {"name": "Repo", "value": "acme/widget", "inline": true}], "url": "https://github.com/acme/widget/issues/8"}]}		
+https://discord.com/api/v10/channels/D0TEST/messages/700/threads	{"name": "#8 \u2014 \ud83e\udd16 **Talos** \u2014 dispatched \u00b7 #8", "auto_archive_duration": 1440}		
+rc=0
+-- curl (url, payload, auth, method)
+https://discord.com/api/v10/channels/800/messages	{"embeds": [{"title": "🧪 QA — PASS · #8", "description": "fine", "color": 3066993, "footer": {"text": "acme-widget · qa · #8"}, "url": "https://github.com/acme/widget/issues/8"}]}		
+-- thread state
+{
+  "acme-widget:8": {
+    "discord_msg_id": "700",
+    "discord_thread_id": "800"
+  }
+}
+
+### discord thread creation fails: inline reply fallback
+pipeline-notify: discord thread creation failed, falling back to inline replies: {"message":"Missing Permissions","code":50013}
+rc=0
+-- curl (url, payload, auth, method)
+https://discord.com/api/v10/channels/D0TEST/messages	{"embeds": [{"title": "🤖 Talos — dispatched · #9", "description": "[#9 Fix login crash](https://github.com/acme/widget/issues/9)\n\nkickoff\n\n_Agent updates on this issue and its PR appear in this thread._", "color": 3447003, "footer": {"text": "acme-widget · dispatched · #9"}, "fields": [{"name": "Issue", "value": "[#9](https://github.com/acme/widget/issues/9)", "inline": true}, {"name": "Stage", "value": "dispatched", "inline": true}, {"name": "Repo", "value": "acme/widget", "inline": true}], "url": "https://github.com/acme/widget/issues/9"}]}		
+https://discord.com/api/v10/channels/D0TEST/messages/710/threads	{"name": "#9 \u2014 \ud83e\udd16 **Talos** \u2014 dispatched \u00b7 #9", "auto_archive_duration": 1440}		
+rc=0
+-- curl (url, payload, auth, method)
+https://discord.com/api/v10/channels/D0TEST/messages	{"embeds": [{"title": "🧪 QA — PASS · #9", "description": "fine", "color": 3066993, "footer": {"text": "acme-widget · qa · #9"}, "url": "https://github.com/acme/widget/issues/9"}], "message_reference": {"message_id": "710", "fail_if_not_exists": false}}		
+-- thread state
+{
+  "acme-widget:9": {
+    "discord_msg_id": "710"
+  }
+}
+
+### slack thread_not_found: clear the anchor and repost as a root
+rc=0
+-- curl (url, payload, auth, method)
+https://slack.com/api/chat.postMessage	{"text": "🧪 QA — PASS · #11", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "🧪 *QA* — PASS · <https://github.com/acme/widget/issues/11|#11>\n\nfine"}}, {"type": "context", "elements": [{"type": "mrkdwn", "text": "acme-widget · qa · #11"}]}], "attachments": [{"color": "#2ecc71", "fallback": "🧪 QA — PASS · #11"}], "channel": "C0TEST", "thread_ts": "1.1"}	Authorization: Bearer	
+https://slack.com/api/chat.postMessage	{"text": "🧪 QA — PASS · #11", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "🧪 *QA* — PASS · <https://github.com/acme/widget/issues/11|#11>\n\n<https://github.com/acme/widget/issues/11|#11 Fix login crash>\n\nfine"}}, {"type": "section", "fields": [{"type": "mrkdwn", "text": "*Issue*\n<https://github.com/acme/widget/issues/11|#11>"}, {"type": "mrkdwn", "text": "*Stage*\nqa"}, {"type": "mrkdwn", "text": "*Repo*\nacme/widget"}]}, {"type": "context", "elements": [{"type": "mrkdwn", "text": "acme-widget · qa · #11"}]}], "attachments": [{"color": "#2ecc71", "fallback": "🧪 QA — PASS · #11"}], "channel": "C0TEST"}	Authorization: Bearer	
+-- thread state
+{
+  "acme-widget:11": {
+    "slack_ts": "9.9"
+  }
+}
+
+### slack api error: one stderr line, no anchor
+pipeline-notify: slack api delivery failed: {"ok":false,"error":"channel_not_found"}
+rc=0
+-- curl (url, payload, auth, method)
+https://slack.com/api/chat.postMessage	{"text": "🧪 QA — PASS · #12", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "🧪 *QA* — PASS · <https://github.com/acme/widget/issues/12|#12>\n\n<https://github.com/acme/widget/issues/12|#12 Fix login crash>\n\nfine"}}, {"type": "section", "fields": [{"type": "mrkdwn", "text": "*Issue*\n<https://github.com/acme/widget/issues/12|#12>"}, {"type": "mrkdwn", "text": "*Stage*\nqa"}, {"type": "mrkdwn", "text": "*Repo*\nacme/widget"}]}, {"type": "context", "elements": [{"type": "mrkdwn", "text": "acme-widget · qa · #12"}]}], "attachments": [{"color": "#2ecc71", "fallback": "🧪 QA — PASS · #12"}], "channel": "C0TEST"}	Authorization: Bearer	
+
+### webhook transport failure: one stderr line
+pipeline-notify: teams webhook delivery failed
+rc=0
+-- curl (url, payload, auth, method)
+https://teams.test/webhook/1	{"type": "message", "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive", "content": {"type": "AdaptiveCard", "version": "1.4", "body": [{"type": "TextBlock", "wrap": true, "weight": "Bolder", "size": "Medium", "text": "🤖 **Talos** — info · [#13](https://github.com/acme/widget/issues/13)"}, {"type": "TextBlock", "wrap": true, "text": "[#13 Fix login crash](https://github.com/acme/widget/issues/13)\n\nm"}, {"type": "FactSet", "facts": [{"title": "Issue", "value": "[#13](https://github.com/acme/widget/issues/13)"}, {"title": "Stage", "value": "info"}, {"title": "Repo", "value": "acme/widget"}]}, {"type": "TextBlock", "wrap": true, "isSubtle": true, "spacing": "Small", "text": "acme-widget · info · #13"}]}}]}		
+pipeline-notify: slack webhook delivery failed
+rc=0
+-- curl (url, payload, auth, method)
+https://hooks.slack.test/T/B/X	{"text": "🤖 Talos — info · #13", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "🤖 *Talos* — info · <https://github.com/acme/widget/issues/13|#13>\n\n<https://github.com/acme/widget/issues/13|#13 Fix login crash>\n\nm"}}, {"type": "section", "fields": [{"type": "mrkdwn", "text": "*Issue*\n<https://github.com/acme/widget/issues/13|#13>"}, {"type": "mrkdwn", "text": "*Stage*\ninfo"}, {"type": "mrkdwn", "text": "*Repo*\nacme/widget"}]}, {"type": "context", "elements": [{"type": "mrkdwn", "text": "acme-widget · info · #13"}]}], "attachments": [{"color": "#3498db", "fallback": "🤖 Talos — info · #13"}]}		
+
+### buzz: reply rejected -> clear anchor, repost as root
+pipeline-notify: buzz relay rejected publish: connecting to relay... ok.
+publishing to relay... authenticating as npub1xx...... auth error: msg: restricted: not a relay member. failed: msg: auth-required: not authenticated
+rc=0
+-- nak argv
+event --auth -k 9 -c 🧪 **QA** — PASS · [#14](https://github.com/acme/widget/issues/14)  fine -t h=chan-uuid-1 -t e=cccc;;reply ws://localhost:3000
+event --auth -k 9 -c 🧪 **QA** — PASS · [#14](https://github.com/acme/widget/issues/14)  fine -t h=chan-uuid-1 ws://localhost:3000
+-- thread state
+{
+  "acme-widget:14": {
+    "buzz_event_id": "bbbb000000000000000000000000000000000000000000000000000000000002"
+  }
+}
+
+### buzz: publish failure on a root
+pipeline-notify: buzz publish failed
+rc=0
+-- nak argv
+event --auth -k 9 -c 🧪 **QA** — PASS · [#15](https://github.com/acme/widget/issues/15)  [#15 Fix login crash](https://github.com/acme/widget/issues/15)  fine  acme/widget -t h=chan-uuid-1 ws://localhost:3000
+
+### buzz: unresponsive relay is cut at buzz_timeout_s
+pipeline-notify: buzz relay timed out after 1s: ws://localhost:3000
+rc=0
+-- nak argv
+event --auth -k 9 -c 🧪 **QA** — PASS · [#16](https://github.com/acme/widget/issues/16)  [#16 Fix login crash](https://github.com/acme/widget/issues/16)  fine  acme/widget -t h=chan-uuid-1 ws://localhost:3000
+
+### buzz: key travels in NOSTR_SECRET_KEY, never argv
+rc=0
+-- nak argv
+event --auth -k 9 -c 🧪 **QA** — PASS · [#17](https://github.com/acme/widget/issues/17)  [#17 Fix login crash](https://github.com/acme/widget/issues/17)  fine  acme/widget -t h=chan-uuid-1 ws://localhost:3000
+-- nak env
+NOSTR_SECRET_KEY=<set>
+
+### no templates: platform=slack-bot (grid fallback)
+rc=0
+-- curl (url, payload, auth, method)
+https://slack.com/api/chat.postMessage	{"text": "🧪 [talos] qa #42 — PASS: 5/5 criteria verified (https://github.com/acme/widget/issues/42)", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "🧪 [talos] qa #42 — PASS: 5/5 criteria verified (https://github.com/acme/widget/issues/42)\n```\nComment  🧪 [talos] qa #42 — PASS: 5/5 criteria verified\nPR       #9\nIssue    #42\nStage    qa\nRepo     acme/widget\n```\n<https://github.com/acme/widget/pull/9|PR #9> · <https://github.com/acme/widget/issues/42|Issue #42>"}}, {"type": "context", "elements": [{"type": "mrkdwn", "text": "acme-widget · qa · #42"}]}], "attachments": [{"color": "#2ecc71", "fallback": "🧪 [talos] qa #42 — PASS: 5/5 criteria verified (https://github.com/acme/widget/issues/42)"}], "channel": "C0TEST"}	Authorization: Bearer	
+rc=0
+-- curl (url, payload, auth, method)
+https://slack.com/api/chat.postMessage	{"text": "🧪 [talos] qa #42 — PASS: again (https://github.com/acme/widget/issues/42)", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "🧪 [talos] qa #42 — PASS: again (https://github.com/acme/widget/issues/42)"}}, {"type": "context", "elements": [{"type": "mrkdwn", "text": "acme-widget · qa · #42"}]}], "attachments": [{"color": "#2ecc71", "fallback": "🧪 [talos] qa #42 — PASS: again (https://github.com/acme/widget/issues/42)"}], "channel": "C0TEST", "thread_ts": "1111.2222"}	Authorization: Bearer	
+
+### no templates: platform=discord-bot (grid fallback)
+rc=0
+-- curl (url, payload, auth, method)
+https://discord.com/api/v10/channels/D0TEST/messages	{"embeds": [{"title": "🧪 [talos] qa #42 — PASS: 5/5 criteria verified (https://github.com/acme/widget/issues/42)", "description": "```\nComment  🧪 [talos] qa #42 — PASS: 5/5 criteria verified\nPR       #9\nIssue    #42\nStage    qa\nRepo     acme/widget\n```\n[PR #9](https://github.com/acme/widget/pull/9) · [Issue #42](https://github.com/acme/widget/issues/42)", "color": 3066993, "footer": {"text": "acme-widget · qa · #42"}, "url": "https://github.com/acme/widget/issues/42"}]}		
+https://discord.com/api/v10/channels/D0TEST/messages/900000000000000001/threads	{"name": "#42 \u2014 \ud83e\uddea [talos] qa #42 \u2014 PASS: 5/5 criteria verified (https://github.com/acme/widget/issues/42)", "auto_archive_duration": 1440}		
+rc=0
+-- curl (url, payload, auth, method)
+https://discord.com/api/v10/channels/900000000000000001/messages	{"embeds": [{"title": "🧪 [talos] qa #42 — PASS: again (https://github.com/acme/widget/issues/42)", "description": "🧪 [talos] qa #42 — PASS: again (https://github.com/acme/widget/issues/42)", "color": 3066993, "footer": {"text": "acme-widget · qa · #42"}, "url": "https://github.com/acme/widget/issues/42"}]}		
+
+### no templates: platform=teams (grid fallback)
+rc=0
+-- curl (url, payload, auth, method)
+https://teams.test/webhook/1	{"type": "message", "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive", "content": {"type": "AdaptiveCard", "version": "1.4", "body": [{"type": "TextBlock", "wrap": true, "weight": "Bolder", "size": "Medium", "text": "🧪 [talos] qa #42 — PASS: 5/5 criteria verified (https://github.com/acme/widget/issues/42)"}, {"type": "TextBlock", "wrap": true, "fontType": "Monospace", "text": "Comment  🧪 [talos] qa #42 — PASS: 5/5 criteria verified\nPR       #9\nIssue    #42\nStage    qa\nRepo     acme/widget"}, {"type": "TextBlock", "wrap": true, "text": "[PR #9](https://github.com/acme/widget/pull/9) · [Issue #42](https://github.com/acme/widget/issues/42)"}, {"type": "TextBlock", "wrap": true, "isSubtle": true, "spacing": "Small", "text": "acme-widget · qa · #42"}]}}]}		
+rc=0
+-- curl (url, payload, auth, method)
+https://teams.test/webhook/1	{"type": "message", "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive", "content": {"type": "AdaptiveCard", "version": "1.4", "body": [{"type": "TextBlock", "wrap": true, "weight": "Bolder", "size": "Medium", "text": "🧪 [talos] qa #42 — PASS: again (https://github.com/acme/widget/issues/42)"}, {"type": "TextBlock", "wrap": true, "fontType": "Monospace", "text": "Comment  🧪 [talos] qa #42 — PASS: again\nPR       #9\nIssue    #42\nStage    qa\nRepo     acme/widget"}, {"type": "TextBlock", "wrap": true, "text": "[PR #9](https://github.com/acme/widget/pull/9) · [Issue #42](https://github.com/acme/widget/issues/42)"}, {"type": "TextBlock", "wrap": true, "isSubtle": true, "spacing": "Small", "text": "acme-widget · qa · #42"}]}}]}		
+
+### no templates: platform=buzz (grid fallback)
+rc=0
+-- nak argv
+event --auth -k 9 -c ### 🧪 [talos] qa #42 — PASS: 5/5 criteria verified (https://github.com/acme/widget/issues/42)  ``` Comment  🧪 [talos] qa #42 — PASS: 5/5 criteria verified PR       #9 Issue    #42 Stage    qa Repo     acme/widget ```  [PR #9](https://github.com/acme/widget/pull/9) · [Issue #42](https://github.com/acme/widget/issues/42) -t h=chan-uuid-1 ws://localhost:3000
+rc=0
+-- nak argv
+event --auth -k 9 -c 🧪 [talos] qa #42 — PASS: again (https://github.com/acme/widget/issues/42) -t h=chan-uuid-1 -t e=aaaa000000000000000000000000000000000000000000000000000000000001;;reply ws://localhost:3000
+
+### --render slack
+# platform: slack
+# event:    validator
+# template: <SB>/.home/.talos/templates/notifications/validator.md
+# rich:     yes
+
+{"text": "🔎 Validator — CONFIRMED · #42", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "🔎 *Validator* — CONFIRMED · <https://github.com/acme/widget/issues/42|#42>\n\n<https://github.com/acme/widget/issues/42|#42 Fix login crash>\n\nreproduced on main\n\n• the null guard in login.ts is missing\n• add a regression test for the empty-password case\n• fix it behind the existing validator\n• run the full suite afterwards"}}, {"type": "section", "fields": [{"type": "mrkdwn", "text": "*PR*\n<https://github.com/acme/widget/pull/9|#9>"}, {"type": "mrkdwn", "text": "*Issue*\n<https://github.com/acme/widget/issues/42|#42>"}, {"type": "mrkdwn", "text": "*Stage*\nvalidator"}, {"type": "mrkdwn", "text": "*Repo*\nacme/widget"}]}, {"type": "context", "elements": [{"type": "mrkdwn", "text": "acme-widget · validator · #42"}]}], "attachments": [{"color": "#3498db", "fallback": "🔎 Validator — CONFIRMED · #42"}], "channel": ""}
+rc=0
+
+### --render discord
+# platform: discord
+# event:    validator
+# template: <SB>/.home/.talos/templates/notifications/validator.md
+# rich:     yes
+
+{"embeds": [{"title": "🔎 Validator — CONFIRMED · #42", "description": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\nreproduced on main\n\n- the null guard in login.ts is missing\n- add a regression test for the empty-password case\n- fix it behind the existing validator\n- run the full suite afterwards", "color": 3447003, "footer": {"text": "acme-widget · validator · #42"}, "fields": [{"name": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)", "inline": true}, {"name": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)", "inline": true}, {"name": "Stage", "value": "validator", "inline": true}, {"name": "Repo", "value": "acme/widget", "inline": true}], "url": "https://github.com/acme/widget/issues/42"}]}
+rc=0
+
+### --render teams
+# platform: teams
+# event:    validator
+# template: <SB>/.home/.talos/templates/notifications/validator.md
+# rich:     yes
+
+{"type": "message", "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive", "content": {"type": "AdaptiveCard", "version": "1.4", "body": [{"type": "TextBlock", "wrap": true, "weight": "Bolder", "size": "Medium", "text": "🔎 **Validator** — CONFIRMED · [#42](https://github.com/acme/widget/issues/42)"}, {"type": "TextBlock", "wrap": true, "text": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\nreproduced on main\n\n- the null guard in login.ts is missing\n- add a regression test for the empty-password case\n- fix it behind the existing validator\n- run the full suite afterwards"}, {"type": "FactSet", "facts": [{"title": "PR", "value": "[#9](https://github.com/acme/widget/pull/9)"}, {"title": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)"}, {"title": "Stage", "value": "validator"}, {"title": "Repo", "value": "acme/widget"}]}, {"type": "TextBlock", "wrap": true, "isSubtle": true, "spacing": "Small", "text": "acme-widget · validator · #42"}]}}]}
+rc=0
+
+### --render buzz
+# platform: buzz
+# event:    validator
+# template: <SB>/.home/.talos/templates/notifications/validator.md
+# rich:     yes
+
+🔎 **Validator** — CONFIRMED · [#42](https://github.com/acme/widget/issues/42)
+
+[#42 Fix login crash](https://github.com/acme/widget/issues/42)
+
+reproduced on main
+
+- the null guard in login.ts is missing
+- add a regression test for the empty-password case
+- fix it behind the existing validator
+- run the full suite afterwards
+
+acme/widget · [PR #9](https://github.com/acme/widget/pull/9)
+rc=0
+
+### --render default
+# platform: default
+# event:    validator
+# template: <SB>/.home/.talos/templates/notifications/validator.md
+# rich:     yes
+
+🔎 **Validator** — CONFIRMED · [#42](https://github.com/acme/widget/issues/42)
+
+[#42 Fix login crash](https://github.com/acme/widget/issues/42)
+
+reproduced on main
+
+- the null guard in login.ts is missing
+- add a regression test for the empty-password case
+- fix it behind the existing validator
+- run the full suite afterwards
+rc=0
+
+### --render unknown platform
+pipeline-notify: --render: unknown platform 'nope' (slack|discord|teams|buzz|default)
+rc=2
+
+### PIPELINE_NOTIFY_DEBUG=1: nothing posted, payloads printed
+[pipeline-notify DEBUG] SLACK (webhook, no threading): 🧪 *QA* — PASS · <https://github.com/acme/widget/issues/42|#42>
+
+<https://github.com/acme/widget/issues/42|#42 Fix login crash>
+
+debug
+[pipeline-notify DEBUG] SLACK (bot) state_key=acme-widget:42
+[pipeline-notify DEBUG] SLACK thread_anchor=(none — root post)
+[pipeline-notify DEBUG] SLACK payload={"text": "🧪 QA — PASS · #42", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "🧪 *QA* — PASS · <https://github.com/acme/widget/issues/42|#42>\n\n<https://github.com/acme/widget/issues/42|#42 Fix login crash>\n\ndebug"}}, {"type": "section", "fields": [{"type": "mrkdwn", "text": "*Issue*\n<https://github.com/acme/widget/issues/42|#42>"}, {"type": "mrkdwn", "text": "*Stage*\nqa"}, {"type": "mrkdwn", "text": "*Repo*\nacme/widget"}]}, {"type": "context", "elements": [{"type": "mrkdwn", "text": "acme-widget · qa · #42"}]}], "attachments": [{"color": "#2ecc71", "fallback": "🧪 QA — PASS · #42"}], "channel": "C0TEST"}
+[pipeline-notify DEBUG] DISCORD (webhook, no threading): 🧪 **QA** — PASS · [#42](https://github.com/acme/widget/issues/42)
+
+[#42 Fix login crash](https://github.com/acme/widget/issues/42)
+
+debug
+[pipeline-notify DEBUG] DISCORD (bot) state_key=acme-widget:42
+[pipeline-notify DEBUG] DISCORD thread=(none — will create from root)
+[pipeline-notify DEBUG] DISCORD payload={"embeds": [{"title": "🧪 QA — PASS · #42", "description": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\ndebug", "color": 3066993, "footer": {"text": "acme-widget · qa · #42"}, "fields": [{"name": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)", "inline": true}, {"name": "Stage", "value": "qa", "inline": true}, {"name": "Repo", "value": "acme/widget", "inline": true}], "url": "https://github.com/acme/widget/issues/42"}]}
+[pipeline-notify DEBUG] TEAMS payload={"type": "message", "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive", "content": {"type": "AdaptiveCard", "version": "1.4", "body": [{"type": "TextBlock", "wrap": true, "weight": "Bolder", "size": "Medium", "text": "🧪 **QA** — PASS · [#42](https://github.com/acme/widget/issues/42)"}, {"type": "TextBlock", "wrap": true, "text": "[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\ndebug"}, {"type": "FactSet", "facts": [{"title": "Issue", "value": "[#42](https://github.com/acme/widget/issues/42)"}, {"title": "Stage", "value": "qa"}, {"title": "Repo", "value": "acme/widget"}]}, {"type": "TextBlock", "wrap": true, "isSubtle": true, "spacing": "Small", "text": "acme-widget · qa · #42"}]}}]}
+[pipeline-notify DEBUG] BUZZ state_key=acme-widget:42
+[pipeline-notify DEBUG] BUZZ thread_anchor=(none — root post)
+[pipeline-notify DEBUG] BUZZ relay=ws://localhost:3000 channel=chan-uuid-1 kind=9 text=🧪 **QA** — PASS · [#42](https://github.com/acme/widget/issues/42)
+
+[#42 Fix login crash](https://github.com/acme/widget/issues/42)
+
+debug
+
+acme/widget
+-- curl calls: 0
+
+### message over the byte cap is truncated with a marker
+pipeline-notify: message was 20000 bytes; truncated to at most 16384 bytes
+rc=0
+-- curl (url, payload, auth, method)
+https://hooks.slack.test/T/B/X section text chars: 3000 longest x run: 2873
+
+### multibyte message over the cap is cut at a UTF-8 boundary, in bytes
+pipeline-notify: message was 18000 bytes; truncated to at most 16384 bytes
+e-acute run: 8192 chars, 16384 bytes; marker: True
+
+### notifications.cmd stdin payload
+rc=0
+{"event": "pr-opened", "ref": "#42", "message": "\ud83e\udd16 **Talos** \u2014 PR opened \u00b7 [#42](https://github.com/acme/widget/pull/9)\n\n[#42 Fix login crash](https://github.com/acme/widget/issues/42)\n\nfix: guard", "thread_key": "42", "fields": [{"label": "PR", "text": "#9", "url": "https://github.com/acme/widget/pull/9"}, {"label": "Issue", "text": "#42", "url": "https://github.com/acme/widget/issues/42"}, {"label": "Stage", "text": "pr-opened", "url": ""}, {"label": "Repo", "text": "acme/widget", "url": ""}], "repo": "acme/widget", "issue": 42}
+{"event": "info", "ref": "#5", "message": "\ud83e\udd16 **Talos** \u2014 info \u00b7 [#5](https://github.com/acme/widget/issues/5)\n\n[#5 Fix login crash](https://github.com/acme/widget/issues/5)\n\nx", "thread_key": "#5", "fields": [{"label": "Issue", "text": "#5", "url": "https://github.com/acme/widget/issues/5"}, {"label": "Stage", "text": "info", "url": ""}, {"label": "Repo", "text": "acme/widget", "url": ""}], "repo": "acme/widget", "issue": 5}

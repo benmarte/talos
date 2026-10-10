@@ -127,24 +127,21 @@ else
   exit 1
 fi
 
+# talos_bounded / talos_pos_int (#552): the one portable "run under a timeout"
+# shared with pipeline-notify.sh (notifications.cmd, the Buzz nak call).
+if [ -f "$SCRIPT_DIR/pipeline-bounded.sh" ]; then
+  . "$SCRIPT_DIR/pipeline-bounded.sh"
+else
+  echo "talos: pipeline-bounded.sh missing; reinstall Talos" >&2
+  exit 1
+fi
+
 # ── Shared helpers (pre_dispatch and post_stage both use these) ────────────
 
-# _hooks_timeout_s -> prints hooks.timeout_s, validated.
-# hooks.timeout_s is already validated (positive integer, or absent so the
-# "30" default below is returned as-is) by pipeline-config.sh's
-# _validate_int_key() before it reaches cfg() -- this re-check is just a
-# backstop so a non-integer can never reach `sleep`/`-gt` below even if that
-# invariant is ever violated (e.g. this function called directly, bypassing
-# cfg()).
-_hooks_timeout_s() {
-  local timeout_s
-  timeout_s="$(cfg hooks.timeout_s)"
-  case "$timeout_s" in
-    ''|*[!0-9]*) timeout_s=30 ;;
-  esac
-  [ "$timeout_s" -gt 0 ] 2>/dev/null || timeout_s=30
-  printf '%s' "$timeout_s"
-}
+# _hooks_timeout_s -> prints hooks.timeout_s: a positive integer, else 30.
+# pipeline-config.sh already validates the key; this is the backstop so a
+# non-integer can never reach `sleep`.
+_hooks_timeout_s() { talos_pos_int "$(cfg hooks.timeout_s)" 30; }
 
 # _events_log_path -> prints the absolute path to the events.jsonl log, or
 # nothing (rc 1) if it can't be resolved (not a git repo, etc).
@@ -285,15 +282,10 @@ _hooks_repo() {
 }
 
 # _hooks_run <hook_cmd> <timeout_s> <stdin_json> <role> <issue> <worktree>
-# Runs <hook_cmd> with <stdin_json> on stdin under a portable timeout, and
-# sets two globals the caller reads immediately after:
-#   _HOOKS_RUN_RC   the command's exit code, or non-zero if it was killed at
-#                   the timeout (both cases are indistinguishable on
-#                   purpose -- both mean "no-op" to the caller)
+# Runs <hook_cmd> with <stdin_json> on stdin under talos_bounded and sets:
+#   _HOOKS_RUN_RC   the command's exit code, or non-zero if it was killed at the
+#                   timeout (both mean "no-op" to the caller, on purpose)
 #   _HOOKS_RUN_OUT  captured stdout, only populated when _HOOKS_RUN_RC = 0
-# No `timeout(1)` on macOS by default, so this rolls its own: the hook runs
-# as its own process group (set -m) and a background watchdog subshell
-# sends it SIGTERM, then SIGKILL shortly after, once timeout_s elapses.
 _hooks_run() {
   local hook_cmd="$1" timeout_s="$2" stdin_json="$3"
   local role="$4" issue="$5" worktree="$6"
@@ -313,40 +305,12 @@ _hooks_run() {
   }
   printf '%s' "$stdin_json" > "$in_file"
 
-  set -m
   TALOS_ROLE="$role" TALOS_ISSUE_NUMBER="$issue" TALOS_WORKTREE_PATH="$worktree" \
-    sh -c "$hook_cmd" < "$in_file" > "$out_file" 2>/dev/null &
-  local hook_pid=$!
-  set +m
+    talos_bounded "$timeout_s" sh -c "$hook_cmd" < "$in_file" > "$out_file" 2>/dev/null
 
-  # The watchdog also gets its own process group (set -m), same as the hook
-  # above: on the fast-success path below we need to kill the *group*, not
-  # just the subshell pid, or the "sleep $timeout_s" it already forked is
-  # orphaned and keeps running for up to hooks.timeout_s (#181 review).
-  set -m
-  ( sleep "$timeout_s"
-    kill -TERM -"$hook_pid" 2>/dev/null
-    sleep 0.2
-    kill -KILL -"$hook_pid" 2>/dev/null
-  ) &
-  local watchdog_pid=$!
-  set +m
-
-  local rc=0
-  wait "$hook_pid" 2>/dev/null
-  rc=$?
-
-  # Kill the watchdog's whole process group (negative pid) so its "sleep
-  # $timeout_s" child is reaped too, not just the subshell leader.
-  kill -- -"$watchdog_pid" 2>/dev/null
-  wait "$watchdog_pid" 2>/dev/null
-
-  local out=""
-  [ "$rc" -eq 0 ] && out="$(cat "$out_file" 2>/dev/null)"
+  _HOOKS_RUN_RC="$_BOUNDED_RC"
+  [ "$_BOUNDED_RC" -eq 0 ] && _HOOKS_RUN_OUT="$(cat "$out_file" 2>/dev/null)"
   rm -f "$in_file" "$out_file"
-
-  _HOOKS_RUN_RC="$rc"
-  _HOOKS_RUN_OUT="$out"
   return 0
 }
 

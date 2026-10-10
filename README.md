@@ -659,7 +659,7 @@ templates/notifications/
   <event>.md   # e.g. validator.md, qa.md, blocked.md, pr-opened.md, …
 ```
 
-`_neutral_to_platform()` in `pipeline-notify.sh` turns the neutral dialect into each sink's native syntax right before a payload builder consumes it:
+The formatter in `pipeline-notify.sh` (`to_platform()`, one dialect table per sink) turns the neutral dialect into each sink's native syntax right before the sink's payload formatter consumes it:
 
 | Sink | Transpiles to |
 |------|---------------|
@@ -847,6 +847,7 @@ The pipeline deliberately preserves three gates that only a human should act on:
 | `scripts/pipeline-evidence.sh capture\|collect\|upload\|attach\|dir\|enabled` | Evidence capture (#352, opt-in): runs `evidence.command`, picks the files that may leave the machine and attaches them to the PR with `gh pr comment --attach`; see [Evidence capture](#evidence-capture-opt-in) |
 | `scripts/pipeline-hooks.sh` | Run `hooks.pre_dispatch`/`hooks.post_stage` external commands at fixed pipeline points; see [Hooks](#hooks) |
 | `scripts/pipeline-isolation.sh validate` | Startup gate for `execution.isolation` + `issues.max_parallel` combinations; see the `execution.isolation` row in the [Config reference](docs/user-guide.md#config-reference) |
+| `scripts/pipeline-bounded.sh` | Sourced helper exporting `talos_bounded` (run a command under a wall-clock limit on macOS and Linux, no `timeout(1)`) and `talos_pos_int`; shared by `hooks.*`, `notifications.cmd` and the Buzz `nak` call |
 | `scripts/pipeline-lock.sh` | Portable `mkdir`-based advisory locking for shared local state (threads.json, worktree metadata, test cache) under `issues.max_parallel > 1`; see the `issues.max_parallel` row in the [Config reference](docs/user-guide.md#config-reference) |
 | `scripts/pipeline-mergebase.sh` | Mechanical union merge for a CONFLICTING PR whose only conflicting paths are covered by `merge.union_paths` (default `CHANGELOG.md`), no developer dispatch; see the `merge.union_paths` row in the [Config reference](docs/user-guide.md#config-reference) |
 | `scripts/pipeline-paths.sh` | Sourced helper exporting `_resolve_talos_dir()`, the canonical probe for the Talos scripts directory; see [1. Install](#1-install) |
