@@ -90,10 +90,11 @@ done
 rmdir "$d/r.$$"; exit 0'
 # peak_of FIXTURE TARGET WAIT_TENTHS ARGS... -- run 4 stubs, print the highest concurrency seen
 peak_of() {
-  local fd="$1" target="$2" wait_t="$3"; shift 3
-  rm -rf "$fd/sync"; mkdir -p "$fd/sync"
-  SYNC_DIR="$fd/sync" TARGET="$target" WAIT_TENTHS="$wait_t" "$@" >/dev/null 2>&1
-  sort -n "$fd/sync/peak" 2>/dev/null | tail -n 1
+  local fd="$1" target="$2" wait_t="$3" sd; shift 3
+  # one dir per distinct call (it runs in a $(...) subshell, so no counter): no rm needed
+  sd="$fd/sync-$target-$wait_t-$(printf '%s' "$*" | cksum | cut -d' ' -f1)"; mkdir -p "$sd"
+  SYNC_DIR="$sd" TARGET="$target" WAIT_TENTHS="$wait_t" "$@" >/dev/null 2>&1
+  sort -n "$sd/peak" 2>/dev/null | tail -n 1
 }
 FDB1="$SANDBOX/b1"
 build_min_fixture "$FDB1"

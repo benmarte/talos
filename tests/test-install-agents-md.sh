@@ -17,13 +17,6 @@ new_repo() {
 
 bash "$INSTALL" --global --no-agent-skills >/dev/null 2>&1
 
-# ── the heredoc and its stale claims are gone ────────────────────────────────
-inst="$(cat "$INSTALL")"
-assert_not_contains "$inst" "AGENTSEOF" "install.sh no longer carries the AGENTS.md heredoc"
-assert_not_contains "$inst" "v1.20.3" "install.sh makes no Antigravity version claim"
-assert_not_contains "$inst" "no native subagents" "install.sh no longer says there are no native subagents"
-assert_contains "$inst" "pipeline-instructions.sh" "install.sh calls pipeline-instructions.sh"
-
 # ── every harness value, including the default, gets the block ───────────────
 for h in default claude codex antigravity; do
   R="$(new_repo "h-$h")"

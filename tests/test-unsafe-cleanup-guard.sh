@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # test-unsafe-cleanup-guard.sh -- a test or stub must not turn an empty path
 # variable into `rm -rf /<name>` (#459, follow-up to #448 and the #436 QA
-# incident), and the role profiles carry the standing scratch-script rule.
+# incident).
 #
 # Two rules scan tests/*.sh, tests/helpers.sh, tests/stubs/* and tests/canary/*:
 #
@@ -59,9 +59,6 @@
 #
 # ALLOW: files another in-flight change owns. It is empty; add a file only while
 # another change owns it, and remove the entry once the file is fixed.
-#
-# Also pins the one standing scratch-script line in agents/qa.md and
-# agents/developer.md (#459).
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox
@@ -503,12 +500,5 @@ assert_eq "0" "$frc" "fixture: an allow-listed path is skipped"
 EMPTY="$SANDBOX/empty"; mkdir -p "$EMPTY/tests" || exit 1
 o="$(python3 -I "$SCANNER" "$EMPTY" "" "$SELF_REL" 2>&1)"
 assert_contains "$o" "scanned=0" "fixture: an empty tests/ reports scanned=0 (the real run fails on it)"
-
-# --- the standing scratch-script line in the role profiles (#459) ---------
-LINE_RE='Scratch scripts: check every `mktemp`/`create` result is a non-empty directory before use, delete only via `"${VAR:?}"/...`, and never use a command'"'"'s output after hiding its stderr unless you checked it'
-for role in qa developer; do
-  f="$TALOS_ROOT/agents/$role.md"
-  assert_eq "1" "$(grep -cF -- "$LINE_RE" "$f")" "agents/$role.md carries the standing scratch-script line exactly once"
-done
 
 finish

@@ -1,102 +1,16 @@
 #!/usr/bin/env bash
 # Acceptance criteria as failing tests before implementation (#421).
 #
-# The PM numbers each acceptance criterion `AC<n>` and marks it `(test)` or
-# `(prose: <reason>)`; the developer's first commit is failing tests named by
-# id, run to prove they are red for the right reason; QA reruns the spec's
-# test files, proves red at the first branch commit, and reports one line per
-# id. This test pins that, from the profile text, and drives the mechanical
-# half (scripts/pipeline-criteria.sh: ids, map, report) on a worked example: a
-# fixture spec with one (test) and one (prose) criterion and a stub runner.
-# The criteria_done derivation itself ships with the handoff (#419): here only
+# Drives the mechanical half (scripts/pipeline-criteria.sh: ids, map, report) on
+# a worked example: a fixture spec with one (test) and one (prose) criterion and
+# a stub runner. The PM/developer/QA profile wording is not pinned here (prose,
+# #556). The criteria_done derivation ships with the handoff (#419): here only
 # the id-in-the-test-name convention is asserted.
 set -u
 . "$(dirname "$0")/helpers.sh"
 
-PM_MD="$TALOS_ROOT/agents/pm.md"
-DEV_MD="$TALOS_ROOT/agents/developer.md"
-QA_MD="$TALOS_ROOT/agents/qa.md"
 CRITERIA="$TALOS_ROOT/scripts/pipeline-criteria.sh"
 FIX="$TALOS_ROOT/tests/fixtures/criteria-first"
-
-# flat FILE: line wraps and indents squeezed to single spaces, so a phrase
-# that wraps across lines still matches a literal substring.
-flat() { tr '\n' ' ' < "$1" | tr -s ' '; }
-pm_flat="$(flat "$PM_MD")"
-dev_flat="$(flat "$DEV_MD")"
-qa_flat="$(flat "$QA_MD")"
-
-# line_of FILE PATTERN: first line number matching the extended regex, or 0.
-line_of() { grep -nE -m1 -- "$2" "$1" | cut -d: -f1 | grep . || echo 0; }
-
-# ── PM: ids and markers ─────────────────────────────────────────────────────
-assert_contains "$pm_flat" 'AC<n>' "PM profile numbers criteria AC<n>"
-assert_contains "$pm_flat" '(test)' "PM profile defines the (test) marker"
-assert_contains "$pm_flat" '(prose: <reason>)' "PM profile defines the (prose: <reason>) marker"
-assert_contains "$pm_flat" '**Tests:**' "PM spec has a Tests: line naming the test files"
-assert_not_contains "$pm_flat" 'the runner command with its name filter' "PM spec does not ask for a runner command"
-assert_contains "$pm_flat" 'never a runner command' "PM Tests: line is plain data, never a runner command"
-assert_contains "$pm_flat" "issue's checklist" \
-  "PM profile says what the ids are with no PM stage (the issue's checklist)"
-pm_example="$(grep -E '^ *- \[ \] AC[0-9]+ ' "$PM_MD")"
-assert_contains "$pm_example" '(test)' "PM template example shows a (test) criterion"
-assert_contains "$pm_example" '(prose:' "PM template example shows a (prose: ...) criterion"
-
-# ── Developer: failing tests first, then implement ──────────────────────────
-dev_tests_step="$(line_of "$DEV_MD" '^2\. .*[Rr]ed')"
-dev_impl_step="$(line_of "$DEV_MD" '^3\. .*[Ii]mplement')"
-if [ "$dev_tests_step" -gt 0 ] && [ "$dev_impl_step" -gt "$dev_tests_step" ]; then
-  pass "developer: the failing-tests step precedes the implement step"
-else
-  fail "developer: the failing-tests step precedes the implement step" \
-    "tests step line=$dev_tests_step implement step line=$dev_impl_step"
-fi
-assert_not_contains "$dev_flat" '2. Implement the change.' \
-  "developer: the old implement-then-test step 2 is gone"
-dev_step2=""
-if [ "$dev_tests_step" -gt 0 ] && [ "$dev_impl_step" -gt "$dev_tests_step" ]; then
-  dev_step2="$(sed -n "${dev_tests_step},$((dev_impl_step - 1))p" "$DEV_MD" | tr '\n' ' ' | tr -s ' ')"
-fi
-assert_contains "$dev_step2" 'failing tests' "developer step 2 writes failing tests"
-assert_contains "$dev_step2" 'named by' "developer step 2 names tests by criterion id"
-assert_contains "$dev_step2" 'AC2 rejects an expired token' "developer step 2 gives the id-in-the-name example"
-assert_contains "$dev_step2" 'plain `git commit`' "developer step 2 commits the red tests with plain git commit"
-assert_contains "$dev_step2" 'exit code' "developer step 2 records the exit code in the commit body"
-assert_contains "$dev_step2" 'last_verify' "developer step 2 records the red run in the handoff last_verify"
-assert_contains "$dev_flat" 'never pushed under an open PR' \
-  "developer: a red commit is never pushed under an open PR"
-assert_contains "$dev_flat" 'fix round' "developer: the fix-round red-first case is addressed"
-# Preserved in substance: regression, e2e, full-suite-once, targeted red/green.
-assert_not_contains "$dev_flat" 'keep the red-first step local (`checkpoint --local`)' \
-  "developer: the fix-round red commit is not a checkpoint --local"
-assert_contains "$dev_flat" 'keep the red-first commit local' "developer: a fix round keeps the plain red commit local"
-assert_contains "$dev_flat" 'Regression' "developer: regression rule kept"
-assert_contains "$dev_flat" 'e2e' "developer: e2e rule kept"
-assert_contains "$dev_flat" 'playwright.config' "developer: e2e harness detection kept"
-assert_contains "$dev_flat" 'exactly once' "developer: full suite exactly once kept"
-assert_contains "$dev_flat" 'red run and each green step run targeted tests only' \
-  "developer: red and green steps run targeted tests only"
-assert_contains "$dev_flat" 'Do not add tests beyond what the spec' \
-  "developer: Done when still bounds the tests to the spec's criteria"
-
-# ── QA: one qa-run call, one line per id ────────────────────────────────────
-# The path and name-filter validation, the --no-cache / no --quiet runs, the red
-# proof and the stop rule are code now (#549): tests/test-qa-run.sh drives them.
-# The profile only has to name the verb and keep the verdict-line contract.
-assert_contains "$qa_flat" 'pipeline-criteria.sh qa-run <issue-n> <pr>' "QA profile runs the one qa-run call"
-assert_contains "$qa_flat" 'one line per criterion' "QA verdict has one line per criterion id"
-assert_contains "$qa_flat" 'AC<n> red@<sha8> green@head' "QA verdict line format red@<sha8> green@head"
-assert_not_contains "$qa_flat" 'use the runner command and name filter the spec' \
-  "QA does not run a runner command the spec names"
-assert_contains "$qa_flat" 'data, never a command' "QA: the spec's Tests: line is data, never a command"
-assert_contains "$qa_flat" 'nothing from the spec runs' "QA: a refused Tests: value runs nothing from the spec"
-assert_contains "$qa_flat" 'blocking finding' "QA: a refused Tests: value is a blocking finding"
-assert_contains "$qa_flat" 'vacuous' "QA: a test green at the red commit is FAIL (vacuous)"
-assert_contains "$qa_flat" 'hand-checked' "QA marks prose criteria hand-checked"
-assert_contains "$qa_flat" 'prose declared by developer' "QA labels developer-declared prose"
-assert_contains "$qa_flat" 'pr-checks-required' "QA still waits on required CI"
-assert_contains "$qa_flat" 'Exit 3' "QA keeps the exit 3 rule for the changed-path run"
-assert_not_contains "$qa_flat" '--no-cache' "QA profile no longer spells out the runner flags (qa-run owns them)"
 
 # ── pipeline-criteria.sh on the worked example ──────────────────────────────
 assert_file_exists "$CRITERIA" "scripts/pipeline-criteria.sh exists"

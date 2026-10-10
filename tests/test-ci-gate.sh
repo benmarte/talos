@@ -3,56 +3,22 @@
 # gates QA on CI state (#355).
 #
 # Covers:
-#   (a) skills/pipeline/refs/ci-gate.md (#547; named by `ref=ci-gate` in the env
-#       output and by Step 3d): the CI gate is ci-mode only, routes rc 0/2 to QA,
-#       rc 1 plus `pr-checks-required: failed:` to a developer re-dispatch counted
-#       as `record-attempt <N> developer --pr`, and rc 1 without that line to QA
-#   (b) the Step 3c developer prompt carries `Required checks:` and `CI wait
-#       budget:`; local mode omits them; the draft block sends `none`
-#   (c) agents/developer.md: the CI-wait step after step 8, the `none` skip,
-#       the budget formula, the final-verify exception in step 3, both standing lines
+#   (b) the developer prompt carries `Required checks:` and `CI wait budget:`;
+#       local mode omits them; the draft shape sends `none`
+#   (d) the exit-code/stderr contract the CI gate's routing table depends on:
+#       the gate command is extracted from skills/pipeline/refs/ci-gate.md and run
+#       against the real `pr-checks-required` verb and a stubbed `gh`
 #   (e) `pr-checks-required <n> --wait <seconds>` (the one-call CI wait the
 #       developer and QA profiles use): 0/1/2 results, bad values, no-flag baseline
 #   (f) a skipped required check is pending, not failed (#435)
-#   (d) the exit-code/stderr contract the routing table depends on, against the
-#       real `pr-checks-required` verb and a stubbed `gh`
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox || exit 1
 use_stubs
 
-SKILL="$TALOS_ROOT/skills/pipeline/SKILL.md"
 GATE_REF="$TALOS_ROOT/skills/pipeline/refs/ci-gate.md"
-DEV="$TALOS_ROOT/agents/developer.md"
 VCS="$TALOS_ROOT/scripts/pipeline-vcs.sh"
-
-# ── (a) the CI gate ──────────────────────────────────────────────────────────
 GATE="$(cat "$GATE_REF")"
-[ -n "$GATE" ] && pass "the ci-gate ref carries the CI gate" || fail "the ci-gate ref carries the CI gate"
-
-STEP_3D="$(awk '/^### 3d\. QA/{f=1} /^### 3e\./{f=0} f' "$SKILL" | tr '\n' ' ' | tr -s ' ')"
-assert_contains "$STEP_3D" '`ref=ci-gate` when `VERIFY_QA_MODE` is `ci`' "Step 3d names the ci-gate ref for ci mode (local unchanged)"
-assert_contains "$GATE" 'Read when `talos.sh env` prints `ref=ci-gate`' "the ref is read only in ci mode"
-assert_contains "$GATE" 'never a Step 4 re-stamp' "gate skips a Step 4 re-stamp"
-assert_contains "$GATE" 'out="$(bash scripts/pipeline-vcs.sh pr-checks-required <PR_NUMBER> 2>&1)"; rc=$?' \
-  "gate captures output and exit code in one assignment"
-assert_contains "$GATE" '| 0 or 2 | any | Spawn QA' "rc 0 and rc 2 route to QA"
-assert_contains "$GATE" '| 1 | holds `pr-checks-required: failed:` | No QA: developer re-dispatch' \
-  "rc 1 with the failed: line routes to a developer re-dispatch"
-assert_contains "$GATE" '| 1 | no such line (unsupported provider, no checks) | Spawn QA as usual' \
-  "rc 1 without the failed: line routes to QA"
-assert_contains "$GATE" 'gate fix-round <N> developer --pr <PR_NUMBER>' "re-dispatch is recorded as a developer attempt (gate fix-round, #466)"
-# The budget check and the unblock moved from this prose into the verb (#466):
-# the budget guard runs before record-attempt, the unblock after it.
-VERB_TEXT="$(sed -n '/^_talos_gate_fix_round() {/,/^}/p' "$TALOS_ROOT/scripts/talos.sh")"
-budget_at="$(printf '%s\n' "$VERB_TEXT" | grep -n -m1 -F 'pipeline-budget.sh" check' | cut -d: -f1)"
-record_at="$(printf '%s\n' "$VERB_TEXT" | grep -n -m1 -F '_vcs record-attempt' | cut -d: -f1)"
-unblock_at="$(printf '%s\n' "$VERB_TEXT" | grep -n -m1 -F -- '--remove pipeline:blocked' | cut -d: -f1)"
-[ -n "$budget_at" ] && [ -n "$record_at" ] && [ -n "$unblock_at" ] && [ "$budget_at" -lt "$record_at" ] && [ "$record_at" -lt "$unblock_at" ] \
-  && pass "re-dispatch runs the budget check first, then record-attempt, then clears pipeline:blocked (gate fix-round)" \
-  || fail "re-dispatch runs the budget check first, then record-attempt, then clears pipeline:blocked (gate fix-round)" "budget=$budget_at record=$record_at unblock=$unblock_at"
-assert_contains "$GATE" 'draft-pr` and `label-pr --remove qa:pass`' "draft mode reuses the QA/CI failure path"
-assert_contains "$GATE" 'ready-pr' "draft mode ends the fix round with ready-pr"
 
 # ── (b) Step 3c developer prompt ─────────────────────────────────────────────
 # The dispatch block moved to templates/prompts/developer.md (#468): this renders it
@@ -66,41 +32,12 @@ printf '{"merge": {"required_checks": ["test (ubuntu-latest)"]}, "verify": {"qa_
 LOCAL_PROMPT="$(talos_prompt_text developer --issue 5)"
 assert_not_contains "$LOCAL_PROMPT" 'Required checks:' "local mode omits the developer prompt's Required checks line"
 assert_not_contains "$LOCAL_PROMPT" 'CI wait budget' "local mode omits the developer prompt's CI wait budget"
-assert_contains "$(cat "$TALOS_ROOT/skills/pipeline/refs/draft-order.md")" 'Every `talos.sh prompt` and every `talos.sh done` takes `--draft`' "the draft-order ref sends --draft on every prompt, including the developer's"
 
-# Behavioural (#435): render the developer brief the way Step 3c says to (--draft
-# makes its `Required checks:` line `none`), then apply the developer profile's
-# step 9 rule to the rendered brief. Under PR_DRAFT = true no CI wait runs (no
-# pr-checks-required call); the ready flow still waits.
+# (#435) --draft makes the brief's `Required checks:` line `none`, which is what
+# tells the developer to skip the CI wait.
 printf '{"merge": {"required_checks": ["test (ubuntu-latest)"]}, "verify": {"qa_mode": "ci"}}' > "$SANDBOX/talos.pipeline.json"
 DRAFT_CHECKS="$(talos_prompt_text developer --issue 5 --draft | grep '^Required checks:')"
 assert_eq "Required checks: none" "$DRAFT_CHECKS" "PR_DRAFT = true: the rendered brief line is Required checks: none"
-ci_wait_runs() {  # $1 = rendered brief line; step 9: only when present and not none
-  case "$1" in "Required checks: none"|"") return 1 ;; "Required checks: "*) return 0 ;; *) return 1 ;; esac
-}
-ci_wait_runs "$DRAFT_CHECKS" && fail "PR_DRAFT = true: the developer CI wait is a no-op" || pass "PR_DRAFT = true: the developer CI wait is a no-op"
-ci_wait_runs "Required checks: test (ubuntu-latest)" && pass "ready flow: the developer CI wait still runs" || fail "ready flow: the developer CI wait still runs"
-
-# ── (c) developer profile ────────────────────────────────────────────────────
-DEV_TEXT="$(cat "$DEV")"
-STEP_9="$(awk '/^9\. \*\*CI wait\*\*/{f=1; print; next} /^10\./{f=0} f' "$DEV")"
-[ -n "$STEP_9" ] && pass "developer profile has the CI wait step 9" || fail "developer profile has the CI wait step 9"
-assert_contains "$DEV_TEXT" '8. On success:' "step 8 is unchanged and precedes the CI wait"
-assert_contains "$DEV_TEXT" '10. On failure:' "the failure step follows the CI wait"
-assert_contains "$STEP_9" 'is present and not' "CI wait is skipped when Required checks: is none"
-assert_contains "$STEP_9" 'pr-checks-required <PR>' "CI wait uses pr-checks-required"
-assert_contains "$STEP_9" 'pr-checks-required <PR> --wait <budget>' "CI wait is one --wait call"
-assert_contains "$STEP_9" 'min(CI wait budget, Verify timeout/1000 - 30)' "CI wait budget is capped under the verify timeout"
-assert_contains "$STEP_9" 'pr-checks-required: failed:' "only the failed: line triggers a fix"
-assert_contains "$STEP_9" 'at most 2 rounds' "CI fix rounds are bounded"
-assert_contains "$STEP_9" 'CI: green|red|pending on <head sha>' "final message carries the CI result"
-assert_contains "$DEV_TEXT" 'The
-   only exception is step 9: one targeted re-run on a CI-fix commit.' "step 3 carries the final-verify exception"
-assert_not_contains "$STEP_9" 'until' "CI wait carries no inline poll loop"
-assert_not_contains "$(cat "$TALOS_ROOT/agents/qa.md")" 'until bash scripts/pipeline-vcs.sh' "qa.md carries no inline poll loop"
-assert_contains "$(cat "$TALOS_ROOT/agents/qa.md")" 'pr-checks-required <pr> --wait <verify.ci_wait_s, default 900>' "qa.md waits with --wait"
-assert_contains "$DEV_TEXT" '`init.defaultBranch`' "standing line: fixtures must not depend on ambient git config"
-assert_contains "$DEV_TEXT" 'Text over 128 KB reaches' "standing line: 128 KB text goes on stdin or in a file"
 
 # ── (d) the contract the table depends on ────────────────────────────────────
 gate_cmd="$(printf '%s\n' "$GATE" | sed -n '/^```bash$/,/^```$/p' | sed '1d;$d' | sed -e 's/<PR_NUMBER>/9/' -e "s#bash scripts/#bash $TALOS_ROOT/scripts/#")"

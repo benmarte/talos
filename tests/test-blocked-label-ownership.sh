@@ -5,13 +5,12 @@
 # role's profile used to remove pipeline:blocked from the PR and the issue on
 # its own approval, so one role's approval erased the other role's block (PR
 # #307: security's CLEAR wiped the reviewer's CHANGES block a minute later).
-# This test pins the fix: no role profile carries a `--remove
-# pipeline:blocked` step, and SKILL.md names the orchestrator as the one that
-# clears it before a developer fix round.
+# This static guard pins the fix: no role profile carries a `--remove
+# pipeline:blocked` step. The orchestrator's clear (`talos.sh gate fix-round`)
+# and the blocked-work report (`talos.sh sweep`) are run by test-talos-gate.sh
+# and test-talos-postmerge.sh.
 set -u
 . "$(dirname "$0")/helpers.sh"
-
-SKILL_MD="$TALOS_ROOT/skills/pipeline/SKILL.md"
 
 # A `--remove` flag whose value list names pipeline:blocked, on one line.
 # `--add pipeline:blocked --remove pipeline:review` (a block step) does not
@@ -36,52 +35,5 @@ done
 # Every role profile, not just the parallel ones: none may clear a block.
 offenders="$(grep -El -- "$REMOVE_BLOCKED_RE" "$TALOS_ROOT"/agents/*.md 2>/dev/null)"
 assert_eq "" "$offenders" "no agents/*.md profile removes pipeline:blocked"
-
-# ── SKILL.md: the orchestrator owns clearing the block ─────────────────────
-skill_flat="$(tr '\n' ' ' < "$SKILL_MD" | tr -s ' ')"
-assert_contains "$skill_flat" 'only the orchestrator clears `pipeline:blocked`' \
-  "SKILL.md names the orchestrator as the one who clears pipeline:blocked"
-# The clear commands moved from the prose into `talos.sh gate fix-round` (#466):
-# the verb runs them, on the PR (only when one exists) and on the issue, after
-# record-attempt allows the round (tests/test-talos-gate.sh runs it).
-verb_text="$(cat "$TALOS_ROOT/scripts/talos.sh")"
-assert_contains "$verb_text" 'label-pr "$_pr" --remove pipeline:blocked' \
-  "talos.sh gate fix-round runs the orchestrator's PR clear command"
-assert_contains "$verb_text" 'label-issue "$_n" --remove pipeline:blocked' \
-  "talos.sh gate fix-round runs the orchestrator's issue clear command"
-assert_contains "$verb_text" 'Only the orchestrator clears pipeline:blocked' \
-  "talos.sh gate fix-round says only the orchestrator clears the block"
-
-# ── The four fix-round clear points (#312) ─────────────────────────────────
-# Each blocking stage's fix round must go through `gate fix-round`, which clears
-# the block before the developer fix round and only on verdict=redispatch;
-# losing one call site leaves that stage's fix round blocked.
-# QA's site is its own; reviewer, security and adversarial share one site, reached
-# through `talos.sh done`'s `next=fix-round stage=<role>` (tests/test-talos-done.sh
-# pins that answer per role), so the one `<role>` line stands for those three.
-for stage in qa '<role>'; do
-  after="$(grep -F -A3 -- "gate fix-round <N> $stage --pr <PR>" "$SKILL_MD")"
-  assert_contains "$after" 'verdict=redispatch' \
-    "SKILL.md re-dispatches the developer only on verdict=redispatch after the $stage gate fix-round"
-done
-assert_contains "$(grep -F -B1 -- "gate fix-round <N> <role> --pr <PR>" "$SKILL_MD")" 'next=fix-round stage=<role>' \
-  "SKILL.md reaches the shared fix-round site from next=fix-round stage=<role> (reviewer, security, adversarial)"
-
-# ── Blocked PRs are reported, not silent (#312) ────────────────────────────
-# The report moved from the prose into `talos.sh sweep` (#467): the verb counts the
-# blocked issues and the blocked PRs and sends the one notice (tests/test-talos-postmerge.sh
-# runs it, with and without a blocked item); the playbook names the key and the rule.
-assert_contains "$verb_text" 'blocked PRs awaiting human action: ${_bi}' \
-  "talos.sh sweep's blocked-work report lists blocked PRs"
-assert_contains "$verb_text" '[ $((_ki + _kp)) -gt 0 ]' \
-  "talos.sh sweep's blocked-work report fires only when K + J > 0"
-assert_contains "$skill_flat" '`blocked_issues=K` / `blocked_prs=J`: stale blocked work, one `info backlog` notice when K + J > 0' \
-  "SKILL.md Step 1 names the blocked-work report and its K + J > 0 rule"
-assert_contains "$skill_flat" 'A PR carrying `pipeline:blocked` (on the PR or its issue) is `blocked`, not `in-flight`' \
-  "SKILL.md Step 5 summary reports a blocked PR as blocked"
-
-# ── Blocked PRs are not resumed, whether adopted or already in-flight (#322) ─
-assert_contains "$skill_flat" 'a PR that carries `pipeline:blocked` (on the PR or its issue) is not resumed: item 4 reports it, Step 5 lists it `blocked`' \
-  "SKILL.md Step 1 does not resume an adopted or in-flight PR carrying pipeline:blocked"
 
 finish

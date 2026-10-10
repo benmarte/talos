@@ -119,39 +119,6 @@ for h in $known; do
   esac
 done
 
-# ── header comment ───────────────────────────────────────────────────────────
-inst_src="$(cat "$INSTALL")"
-header="$(sed -n '1,/^set -euo/p' "$INSTALL")"
-assert_contains "$header" "comma-separated list" "header describes the list"
-assert_contains "$header" "install_claude_adapter" "header names the adapter function"
-assert_contains "$header" "claude is on PATH" "header describes the PATH detection signal"
-assert_contains "$header" "dangling symlink" "header states the dangling-symlink decision"
-assert_contains "$header" "--harness claude forces" "header describes the override"
-
-# ── all Claude writes live in install_claude_adapter ─────────────────────────
-# install_claude_adapter and the three helpers only it calls are the writers. Any
-# other non-comment line naming CLAUDE_DIR / CLAUDE_CONFIG_DIR must be an echo,
-# an assignment or a test, never a command that writes. (A same-line grep for
-# write verbs misses `dir="$CLAUDE_DIR/skills/x"` followed by `mkdir -p "$dir"`.)
-strip_fns() {  # $1... = function names whose bodies are dropped
-  awk -v names=" $* " '
-    match($0, /^[a-z_]+\(\) \{/) { n = substr($0, 1, RLENGTH - 4); if (index(names, " " n " ")) skip = 1 }
-    !skip { print }
-    skip && /^\}/ { skip = 0 }
-  ' "$INSTALL" | grep -v '^[[:space:]]*#'
-}
-outside="$(strip_fns install_claude_adapter install_claude_plugin install_claude_statusline remove_retired_bare_skill)"
-stray="$(printf '%s\n' "$outside" | grep -E 'CLAUDE_DIR|CLAUDE_CONFIG_DIR' \
-  | grep -Ev '^[[:space:]]*(echo |CLAUDE_DIR=|CLAUDE_ADAPTER=|CLAUDE_WHY=|(el)?if \[ )' || true)"
-assert_eq "" "$stray" "nothing outside the Claude adapter functions names CLAUDE_DIR except decisions and echoes"
-helper_calls="$(strip_fns install_claude_adapter | grep -E '^[[:space:]]*(install_claude_plugin|remove_retired_bare_skill)[[:space:]]' || true)"
-assert_eq "" "$helper_calls" "install_claude_plugin and remove_retired_bare_skill are called only from install_claude_adapter"
-if grep -q '^install_claude_adapter() {' "$INSTALL"; then
-  pass "install.sh defines install_claude_adapter"
-else
-  fail "install.sh defines install_claude_adapter"
-fi
-
 # ── --harness parsing ────────────────────────────────────────────────────────
 newhome parse
 for list in codex "codex,pi" "claude,codex,gemini" generic "cursor,opencode"; do

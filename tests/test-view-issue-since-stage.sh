@@ -148,10 +148,4 @@ err="$(bash "$VCS" view-issue 1 --since-stage 2>&1 >/dev/null)"
 assert_contains "$err" "view-issue --since-stage: not implemented for provider 'file'" "file: --since-stage prints a stderr fallback note"
 rm -f talos.pipeline.json plan.md
 
-# ── the PM and validator profiles use it, and the verb exists
-assert_contains "$(cat "$TALOS_ROOT/agents/pm.md")" "view-issue <N> --since-stage" "agents/pm.md reads the issue with --since-stage"
-assert_contains "$(cat "$TALOS_ROOT/agents/validator.md")" "view-issue <N> --since-stage" "agents/validator.md reads the issue with --since-stage"
-assert_contains "$(cat "$TALOS_ROOT/agents/pm.md")" "read-comments" "agents/pm.md says how to read the earlier thread"
-assert_contains "$(cat "$TALOS_ROOT/agents/validator.md")" "read-comments" "agents/validator.md says how to read the earlier thread"
-
 finish

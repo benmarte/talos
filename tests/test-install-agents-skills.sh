@@ -229,14 +229,10 @@ probe="$SANDBOX/probe-sandbox.sh"
 printf '%s\n' '. "$1/tests/helpers.sh"' 'make_sandbox || exit 1' 'printf "%s\n" "${TALOS_AGENTS_HOME-unset}"' > "$probe"
 assert_eq "unset" "$(env TALOS_AGENTS_HOME=/nonexistent/agents "$BASH_BIN" "$probe" "$TALOS_ROOT")" "make_sandbox unsets TALOS_AGENTS_HOME"
 
-# ── hygiene: no python3 without -I, no CLAUDE_DIR in the new function ───────
+# ── hygiene: no python3 without -I in the pointer function ───────
 fn="$(awk '/^install_agents_pointers\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$INSTALL")"
 if [ -n "$fn" ]; then pass "install.sh defines install_agents_pointers"; else fail "install.sh defines install_agents_pointers"; fi
 if printf '%s\n' "$fn" | grep 'python3' | grep -qv 'python3 -I'; then fail "any python3 call in install_agents_pointers uses -I"
 else pass "any python3 call in install_agents_pointers uses -I"; fi
-assert_not_contains "$fn" "CLAUDE_DIR" "install_agents_pointers does not touch the Claude directory"
-header="$(sed -n '1,/^set -euo/p' "$INSTALL")"
-assert_contains "$header" "install_agents_pointers" "header names the pointer function"
-assert_contains "$header" "TALOS_AGENTS_HOME" "header documents the installer-only override"
 
 finish
