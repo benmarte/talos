@@ -1355,7 +1355,7 @@ _cp_verify_rule_ok() {
   [[ "${#1}" -le 200 && "$1" =~ ^[A-Za-z0-9./_][A-Za-z0-9\ ./_=:@%+-]*$ ]]
 }
 _claude_perm_build() {
-  local _a _own_allow=0 _skip=0 _own_mode=0 _mode _f _n _d _i=0 _line _rules=() _dirs=() _deny=() _tools _in_cwd=0 _phys
+  local _a _own_allow=0 _skip=0 _own_mode=0 _mode _f _n _d _i=0 _line _rules=() _dirs=() _deny=() _tools _in_cwd=0 _phys _home
   _CP_ARGS=()
   for _a in ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"}; do
     case "$_a" in
@@ -1396,6 +1396,8 @@ _claude_perm_build() {
   fi
 
   _rules=(Read Glob Grep)
+  _home="$(cd "$HOME" 2>/dev/null && pwd)"
+  _cp_safe_path "$_home" || _home=""
   for _f in "$SCRIPT_DIR"/pipeline-*.sh "$SCRIPT_DIR"/talos.sh; do
     [ -f "$_f" ] || continue
     _n="${_f##*/}"
@@ -1404,6 +1406,10 @@ _claude_perm_build() {
     for _d in "${_dirs[@]}"; do
       _cp_safe_path "$_d" || continue
       _rules+=("Bash(bash $_d/$_n:*)")
+      # An agent writes the install as ~/.talos/scripts/X; the rule matches the command text.
+      if [ -n "$_home" ]; then
+        case "$_d" in "$_home"/*) _rules+=("Bash(bash ~${_d#"$_home"}/$_n:*)") ;; esac
+      fi
     done
   done
   _rules+=("Bash(git status:*)" "Bash(git diff:*)" "Bash(git log:*)" "Bash(git show:*)"
