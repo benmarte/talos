@@ -112,6 +112,15 @@ safe_mktemp_dir() {
   printf '%s\n' "$_smd_dir"
 }
 
+# _sandbox_cleanup — make_sandbox's EXIT-trap body. Removes $SANDBOX only in the
+# process that created it (see the owner note at the trap in make_sandbox).
+# BASHPID is bash >= 4; bash 3.2 falls back to $$, where the race cannot occur.
+_sandbox_cleanup() {
+  [ "${BASHPID:-$$}" = "${_SANDBOX_OWNER:-}" ] || return 0
+  [ -n "${SANDBOX:-}" ] || return 0
+  rm -rf "$SANDBOX"
+}
+
 # make_sandbox — create an isolated temp dir with a git repo + fake origin.
 # Sets SANDBOX and cds into it. Cleaned up automatically on exit.
 #
@@ -170,7 +179,14 @@ make_sandbox() {
     SANDBOX=""
     exit 1
   }
-  trap 'rm -rf "$SANDBOX"' EXIT
+  # Owner-guarded (#566): bash >= 5 installs a fatal-signal handler once an EXIT
+  # trap exists, and a forked child inherits it until it execs or clears traps.
+  # A `( sleep 30 ) & kill "$!"` that wins the race (Linux schedules the parent
+  # first; macOS runs the child first, so it never showed locally) makes the
+  # child run THIS trap and delete the live test's sandbox. Only the process
+  # that created the sandbox may remove it.
+  _SANDBOX_OWNER="${BASHPID:-$$}"
+  trap '_sandbox_cleanup' EXIT
   cd "$SANDBOX" || exit 1
   git init -q
   git remote add origin git@github.com:acme/widget.git
