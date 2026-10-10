@@ -295,6 +295,66 @@ run_cases "draft order"
 assert_eq "docs reviewer security adversarial ready" "$(J "' '.join(p['stage'] for p in d['prs'][:5])")" "draft order: the draft stage order"
 cfg_rf
 
+# pr.ready_gate (#535): the QA pre-CI gate. cfg_gate writes the whole config
+# (cfg_rf has one fixed "pr" member). $1 = ready_gate value, $2 = extra members.
+cfg_gate() {
+  printf '{"vcs": {"provider": "github", "repo": "acme/widget"}, "base_branch": "main", "pr": {"draft": true, "ready_gate": "%s"}, "roles": {"adversarial": true}%s}\n' \
+    "$1" "${2:+, $2}" > talos.pipeline.json
+}
+DALL="qa:pass,docs:done,review:approved,security:approved,adversarial:approved"
+
+# AC4: gate off (explicit or unset) leaves the draft order untouched: a draft PR
+# never routes qa, a ready PR routes qa first.
+for g in off ""; do
+  cfg_gate "$g"
+  tc_reset
+  tc docs "AC4 gate '${g:-unset}': draft PR skips qa -> docs" ""; echo 0 > "$FX/draft.$TC_LAST.rc"
+  tc ready "AC4 gate '${g:-unset}': draft PR with qa missing and the rest approved -> ready" "docs:done,review:approved,security:approved,adversarial:approved"; echo 0 > "$FX/draft.$TC_LAST.rc"
+  tc ready "AC4 gate '${g:-unset}': draft PR with qa:pass present -> ready" "$DALL"; echo 0 > "$FX/draft.$TC_LAST.rc"
+  tc qa "AC4 gate '${g:-unset}': ready PR routes qa first" "docs:done"; echo 1 > "$FX/draft.$TC_LAST.rc"
+  run_cases "AC4 gate ${g:-unset}"
+done
+
+# AC5/AC6: gate on, draft PR: docs, reviewer, security, adversarial, then qa.
+cfg_gate qa-local
+tc_reset
+tc docs "AC5 draft PR with nothing -> docs" ""; echo 0 > "$FX/draft.$TC_LAST.rc"
+tc reviewer "AC5 docs -> reviewer" "docs:done"; echo 0 > "$FX/draft.$TC_LAST.rc"
+tc security "AC5 docs reviewer -> security" "docs:done,review:approved"; echo 0 > "$FX/draft.$TC_LAST.rc"
+tc adversarial "AC5 docs reviewer security -> adversarial" "docs:done,review:approved,security:approved"; echo 0 > "$FX/draft.$TC_LAST.rc"
+tc qa "AC5 every other approval fresh -> qa last" "docs:done,review:approved,security:approved,adversarial:approved"; echo 0 > "$FX/draft.$TC_LAST.rc"
+tc docs "AC5 qa:pass present but docs missing -> docs before qa" "qa:pass,review:approved,security:approved,adversarial:approved"; echo 0 > "$FX/draft.$TC_LAST.rc"
+tc reviewer "AC5 a stale reviewer approval routes reviewer before qa" "docs:done,review:approved,security:approved,adversarial:approved"; echo 0 > "$FX/draft.$TC_LAST.rc"
+printf 'stale role=reviewer label=review:approved\n' > "$FX/stale.$TC_LAST"; echo 1 > "$FX/stale.$TC_LAST.rc"
+tc ready "AC6 every approval fresh including qa:pass -> ready (the wait reason=draft stage)" "$DALL"; echo 0 > "$FX/draft.$TC_LAST.rc"
+tc qa "AC6 a push after qa:pass (stale-list names qa) -> qa again" "$DALL"; echo 0 > "$FX/draft.$TC_LAST.rc"
+printf 'stale role=qa label=qa:pass\n' > "$FX/stale.$TC_LAST"; echo 1 > "$FX/stale.$TC_LAST.rc"
+tc unverified "AC5 pr-is-draft exit 2 -> unverified, never qa" ""; echo 2 > "$FX/draft.$TC_LAST.rc"
+run_cases "AC5 gate on"
+
+# AC7: gate on, ready PR (a human marked it ready): qa as today; with qa:pass on to the CI/merge stages.
+tc_reset
+tc qa "AC7 ready PR without qa:pass -> qa as today" "docs:done,review:approved,security:approved,adversarial:approved"; echo 1 > "$FX/draft.$TC_LAST.rc"
+tc qa "AC7 ready PR with nothing -> qa first" ""; echo 1 > "$FX/draft.$TC_LAST.rc"
+tc merge "AC7 ready PR with qa:pass and every approval -> merge" "$DALL"; echo 1 > "$FX/draft.$TC_LAST.rc"
+run_cases "AC7 ready"
+cfg_gate qa-local '"merge": {"required_checks": ["build"]}'
+tc_reset
+tc ci "AC7 ready PR with qa:pass, required check pending -> ci" "$DALL"; echo 1 > "$FX/draft.$TC_LAST.rc"; echo 2 > "$FX/ci.$TC_LAST.rc"
+tc merge "AC7 ready PR with qa:pass, required check green -> merge" "$DALL"; echo 1 > "$FX/draft.$TC_LAST.rc"; echo 0 > "$FX/ci.$TC_LAST.rc"
+run_cases "AC7 ci"
+cfg_gate qa-local '"merge": {"auto": false}'
+tc_reset
+tc human-merge "AC7 ready PR with qa:pass, merge.auto false -> human-merge" "$DALL"; echo 1 > "$FX/draft.$TC_LAST.rc"
+run_cases "AC7 human-merge"
+
+# The gate is effective only with roles.qa on: with qa off the draft order is today's.
+cfg_gate qa-local '"roles": {"adversarial": true, "qa": false}'
+tc_reset
+tc ready "AC2 roles.qa false: the gate reads off, draft PR with the rest approved -> ready" "docs:done,review:approved,security:approved,adversarial:approved"; echo 0 > "$FX/draft.$TC_LAST.rc"
+run_cases "AC2 qa off"
+cfg_rf
+
 # pr.draft unset (#435): the default is the draft flow on github, and the ready
 # flow on github-api (it cannot open draft PRs, so pr-is-draft would exit 2 and
 # every PR would read `unverified`).

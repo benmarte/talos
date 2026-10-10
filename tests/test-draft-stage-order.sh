@@ -131,8 +131,10 @@ route = re.sub(r"^repos/[^/]+/[^/]+/?", "", path.split("?")[0])
 if method == "POST" and path == "graphql":
     q = payload.get("query", "")
     if "convertPullRequestToDraft" in q:
+        open(os.path.join(S, "mutations"), "a").write("draft-pr\n")
         wr("draft", "true"); emit("converted_to_draft")
     elif "markPullRequestReadyForReview" in q:
+        open(os.path.join(S, "mutations"), "a").write("ready-pr\n")
         wr("draft", "false"); emit("ready_for_review")
     reply(200, {"data": {"result": {}}})
 if method == "POST" and route == "pulls":
@@ -189,6 +191,7 @@ model_reset() {
   printf 'success 99\n' > "$MODEL_STATE/runs"
   echo false > "$MODEL_STATE/draft"
   : > "$MODEL_STATE/labels"
+  : > "$MODEL_STATE/mutations"
   rm -f "$MODEL_STATE/qa_sha" "$MODEL_STATE/head"
 }
 push() {  # $1 = number of commits pushed (each is a `synchronize`)
@@ -400,6 +403,50 @@ assert_eq "false|pipeline: pr.draft ignored: provider file cannot open draft PRs
 assert_eq "false|" "$(resolve_with '{"vcs":{"provider":"file"},"pr":{"draft":false}}')" "default: explicit false on file is false, silently"
 assert_eq "true|" "$(resolve_with '{"pr":{"draft":"TRUE"}}')" "default: the key is case-insensitive"
 assert_eq "true|" "$(resolve_with '{"pr":{"draft":"banana"}}')" "default: a junk value reads as unset (the default)"
+
+# ── (h) the QA pre-CI gate (#535): CI-run count with pr.ready_gate qa-local ──
+# QA runs on the DRAFT, before ready-pr. A QA FAIL goes through the real
+# `talos.sh done qa --verdict FAIL --draft`; with the gate on it converts nothing
+# (nothing was ever built) and ready-pr is never called, so no CI run exists for
+# that head. A QA PASS is followed by the one ready-pr, the one CI run.
+TALOS="$TALOS_ROOT/scripts/talos.sh"
+printf '{"vcs": {"provider": "github", "repo": "acme/widget"}, "base_branch": "main", "comments": {"enabled": false}, "pr": {"draft": true, "ready_gate": "qa-local"}}\n' > talos.pipeline.json
+printf 'FAIL: criterion 2\n' > "$SANDBOX/qa-summary.txt"
+export CLAUDE_CONFIG_DIR="$SANDBOX/cc"
+mutations() { tr '\n' ' ' < "$MODEL_STATE/mutations" | sed 's/ $//'; }
+gated_qa_fail() {  # the QA-local FAIL bookkeeping, then the fix round (pushes land on the still-draft PR)
+  bash "$TALOS" done qa --issue 332 --pr 42 --verdict FAIL --summary-file "$SANDBOX/qa-summary.txt" --draft </dev/null >/dev/null 2>&1
+  push "$1"
+}
+
+model_reset
+bash "$VCS" create-pr feat/issue-332-x "T" "$BODY" --draft >/dev/null 2>&1; push 6
+gated_qa_fail 3
+assert_eq "0" "$(ci_runs)" "AC9 gated QA FAIL leaves 0 CI runs for that head"
+assert_eq "" "$(mutations)" "AC9 gated QA FAIL: ready-pr is never called and nothing is converted (the PR was never ready)"
+assert_eq "true" "$(cat "$MODEL_STATE/draft")" "AC9 gated QA FAIL: the PR is still a draft"
+
+model_reset
+bash "$VCS" create-pr feat/issue-332-x "T" "$BODY" --draft >/dev/null 2>&1; push 6
+bash "$VCS" ready-pr 42 </dev/null >/dev/null 2>&1
+assert_eq "1" "$(ci_runs)" "AC9 gated QA PASS then ready-pr yields exactly 1 CI run"
+assert_eq "ready-pr" "$(mutations)" "AC9 gated QA PASS: ready-pr was called once"
+
+model_reset
+bash "$VCS" create-pr feat/issue-332-x "T" "$BODY" --draft >/dev/null 2>&1; push 6
+gated_qa_fail 4
+assert_eq "0" "$(ci_runs)" "AC9 a QA FAIL round leaves 0 runs before the PASS"
+bash "$VCS" ready-pr 42 </dev/null >/dev/null 2>&1
+assert_eq "1" "$(ci_runs)" "AC9 a QA FAIL round then PASS yields exactly 1 CI run"
+assert_eq "ready-pr" "$(mutations)" "AC9 FAIL round then PASS: ready-pr called once, no conversion in between"
+
+# Control: gate off, the same FAIL on a ready PR converts it back (today's flow).
+printf '{"vcs": {"provider": "github", "repo": "acme/widget"}, "base_branch": "main", "comments": {"enabled": false}, "pr": {"draft": true}}\n' > talos.pipeline.json
+model_reset
+bash "$VCS" create-pr feat/issue-332-x "T" "$BODY" --draft >/dev/null 2>&1; push 6
+bash "$VCS" ready-pr 42 </dev/null >/dev/null 2>&1
+gated_qa_fail 3
+assert_eq "ready-pr draft-pr" "$(mutations)" "AC9 control: gate off, a QA FAIL on a ready PR converts it back to a draft"
 
 
 finish

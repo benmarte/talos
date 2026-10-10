@@ -97,6 +97,7 @@ notifications.teams.webhook		empty	pipeline-notify.sh (#443, new)
 notifications.templates_dir	templates/notifications	table	pipeline-notify.sh
 notifications.threading	true	table	pipeline-notify.sh
 pr.draft		empty	pipeline-draft-check.sh:_dc_cfg
+pr.ready_gate	off	table	pipeline-draft-check.sh:_dc_cfg (#535, new)
 repo		empty	pipeline-hooks.sh
 roles.adversarial	false	table	pipeline-status-file.sh:_sf_role_on
 roles.docs	true	table	pipeline-status-file.sh:_sf_role_on

@@ -165,6 +165,32 @@ hooks post_stage blocked orchestrator 42 --pr 57 --summary QA failed in PR #57" 
 assert_eq "fix-round stage=qa" "$(line_of next)" "draft QA FAIL: next is the fix round"
 assert_eq "0" "$(called record-attempt)" "done never records an attempt (gate fix-round does)"
 
+# AC11 (#535): pr.ready_gate qa-local. QA ran on the DRAFT head, so a FAIL has
+# nothing to convert back: on a draft PR no draft-pr call is made; on a ready PR
+# (a human marked it ready) the conversion still happens. The strip, the relay
+# and the fix round are the usual ones.
+gate_cfg() {  # $1 = ready_gate value
+  cfg_json '{"vcs": {"provider": "github"}, "comments": {"enabled": false}, "pr": {"draft": true, "ready_gate": "'"$1"'"}}'
+}
+reset_stubs
+gate_cfg qa-local
+set_stub pr-is-draft 0 "draft"
+dn qa --issue 42 --pr 57 --verdict FAIL --summary-file "$SUM" --draft
+assert_eq "0" "$(called draft-pr)" "AC11 gate on, draft PR: no draft-pr call"
+assert_contains "$(jr)" "vcs pr-is-draft 57" "AC11 gate on: the PR is asked itself whether it is a draft"
+assert_contains "$(jr)" "vcs label-pr 57 --remove qa:pass" "AC11 gate on, draft PR: qa:pass is still dropped"
+assert_eq "fix-round stage=qa" "$(line_of next)" "AC11 gate on, draft PR: next is the fix round"
+reset_stubs
+gate_cfg qa-local
+set_stub pr-is-draft 1 "ready"
+dn qa --issue 42 --pr 57 --verdict FAIL --summary-file "$SUM" --draft
+assert_eq "1" "$(called draft-pr)" "AC11 gate on, ready PR: draft-pr is still called"
+reset_stubs
+gate_cfg off
+dn qa --issue 42 --pr 57 --verdict FAIL --summary-file "$SUM" --draft
+assert_eq "1" "$(called draft-pr)" "AC11 gate off: draft-pr is called as before"
+assert_eq "0" "$(called pr-is-draft)" "AC11 gate off: the PR is not asked"
+
 reset_stubs
 dn reviewer --issue 42 --pr 57 --verdict APPROVED --summary-file "$SUM"
 assert_eq "notify reviewer #42 - 42

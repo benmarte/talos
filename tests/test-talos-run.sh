@@ -400,6 +400,35 @@ assert_contains "$(journal)" "post_stage qa" "AC12: the journal holds the full c
 assert_eq "ready-pr 12>pr-is-draft 12>pr-checks-required 12 --wait 570>agent qa>post_stage qa" "$(draft_order)" \
   "AC12: the continuation's order is the Draft stage order (ready-pr, the guard, the CI wait, QA, its post_stage)"
 
+# AC8 (#535): pr.ready_gate qa-local. QA already passed on the draft head (the
+# resolver answers `ready` only then), so the continuation calls ready-pr once,
+# runs the draft guard, and dispatches no QA and makes no pr-checks-required call,
+# whatever verify.qa_mode says. The CI wait is the next pass's `ci` stage.
+reset_stubs
+LEASE_RESET
+draft_cfg '"qa_mode": "ci", "timeout_ms": 600000, "ci_wait_s": 900' ', "merge": {"required_checks": ["test (ubuntu-latest)"]}, "pr": {"draft": true, "ready_gate": "qa-local"}'
+draft_collect ready
+draft_ready
+printf 'PASS: verified\n' > "$STUB_DIR/message.qa"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 1
+assert_eq "0" "$RC" "AC8 gate on: the continuation exits 0"
+assert_eq "1" "$(journal | grep -c 'vcs ready-pr 12')" "AC8 gate on: ready-pr is called exactly once"
+assert_contains "$(journal)" "vcs pr-is-draft 12" "AC8 gate on: the draft guard still runs"
+assert_not_contains "$(journal)" "agent qa" "AC8 gate on: no QA is dispatched after ready-pr"
+assert_not_contains "$(journal)" "pr-checks-required" "AC8 gate on: no pr-checks-required call"
+assert_eq "ready-pr 12>pr-is-draft 12" "$(draft_order)" "AC8 gate on: the sequence is ready-pr then the guard, nothing else"
+
+# Gate off, explicitly: the sequence is today's (ready-pr, guard, CI wait, QA).
+reset_stubs
+LEASE_RESET
+draft_cfg '"qa_mode": "ci", "timeout_ms": 600000, "ci_wait_s": 900' ', "merge": {"required_checks": ["test (ubuntu-latest)"]}, "pr": {"draft": true, "ready_gate": "off"}'
+draft_collect ready
+draft_ready
+printf 'PASS: verified\n' > "$STUB_DIR/message.qa"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 1
+assert_eq "ready-pr 12>pr-is-draft 12>pr-checks-required 12 --wait 570>agent qa>post_stage qa" "$(draft_order)" \
+  "AC8 gate off: ready-pr, the guard, the CI wait under qa_mode ci, then QA (unchanged)"
+
 # AC8: qa_mode local -- the continuation calls no pr-checks-required at all;
 # the QA dispatch follows ready-pr and the guard directly.
 reset_stubs

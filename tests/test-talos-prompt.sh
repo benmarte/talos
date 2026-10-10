@@ -429,6 +429,43 @@ bash "$SANDBOX/t-nopartial/scripts/talos.sh" prompt pm --issue 1 > "$OUT" 2> "$E
 assert_eq "stop reason=file-unreadable" "$(cat "$OUT")" "a missing shared partial is stop reason=file-unreadable"
 assert_eq "0" "$(ls "$TMPDIR"/talos-prompt.* 2>/dev/null | wc -l | tr -d ' ')" "no stop leaves a prompt file behind"
 
+# AC10 (#535): pr.ready_gate qa-local. `prompt qa` asks the PR itself: a draft
+# renders the pre-CI text, a ready PR today's text, anything else stops.
+mk_tree t-gate
+printf '#!/usr/bin/env bash\n[ "${1:-}" = pr-is-draft ] || exit 0\nprintf "%%s" "${GATE_PRD_OUT:-}"\nexit "${GATE_PRD_RC:-2}"\n' > "$SANDBOX/t-gate/scripts/pipeline-vcs.sh"
+GATE_TALOS="$SANDBOX/t-gate/scripts/talos.sh"
+gate_qa() {  # prints the rendered qa prompt (or the stop line); RC is talos.sh's exit
+  bash "$GATE_TALOS" prompt qa --issue 468 --pr 77 --prior-file "$F_PRIOR" > "$OUT" 2> "$ERR"; RC=$?
+  PF="$(sed -n 's/^prompt_file=//p' "$OUT")"
+  if [ -n "$PF" ]; then body; drop; else cat "$OUT"; fi
+}
+GATE_ON="${RICH%\}}, \"pr\": {\"draft\": true, \"ready_gate\": \"qa-local\"}}"
+GATE_OFF="${RICH%\}}, \"pr\": {\"draft\": true, \"ready_gate\": \"off\"}}"
+reset_cfg; proj_json "$RICH"
+export GATE_PRD_RC=1 GATE_PRD_OUT=ready
+gate_unset_text="$(gate_qa)"
+proj_json "$GATE_OFF"; export GATE_PRD_RC=0 GATE_PRD_OUT=draft
+assert_eq "$gate_unset_text" "$(gate_qa)" "AC10 gate off renders byte-identical output (even on a draft PR)"
+proj_json "$GATE_ON"; export GATE_PRD_RC=0 GATE_PRD_OUT=draft
+pre_ci="$(gate_qa)"
+assert_contains "$pre_ci" "Pre-CI gate" "AC10 draft PR: the text names the pre-CI gate"
+assert_contains "$pre_ci" "bash tests/run-tests.sh --quiet" "AC10 draft PR: the full verify: list is named (first command)"
+assert_contains "$pre_ci" "bash lint.sh" "AC10 draft PR: the full verify: list is named (second command)"
+assert_contains "$pre_ci" "Do not wait for CI" "AC10 draft PR: no CI wait"
+assert_not_contains "$pre_ci" "CI wait budget" "AC10 draft PR: no CI wait budget line"
+assert_not_contains "$pre_ci" "Required checks:" "AC10 draft PR: no Required checks line"
+assert_contains "$pre_ci" "head SHA" "AC10 draft PR: post-approval stamps the head SHA it verified"
+assert_contains "$pre_ci" "pipeline-criteria.sh qa-run 468 77" "AC10 draft PR: qa-run is still step 1"
+assert_contains "$pre_ci" "post-approval verifies its own stamp" "AC10 draft PR: the self-verified stamp rule is kept"
+export GATE_PRD_RC=1 GATE_PRD_OUT=ready
+assert_eq "$gate_unset_text" "$(gate_qa)" "AC10 ready PR with the gate on renders today's text"
+for bad in "2|" "0|ready" "1|draft" "3|draft"; do
+  export GATE_PRD_RC="${bad%%|*}" GATE_PRD_OUT="${bad#*|}"
+  assert_eq "stop reason=draft-unverified" "$(gate_qa)" "AC10 unreadable draft state (rc ${bad%%|*}, out '${bad#*|}') stops draft-unverified"
+done
+unset GATE_PRD_RC GATE_PRD_OUT
+reset_cfg
+
 # The renderer treats every template of the repo as input it must fully fill: no
 # marker outside the allow-list, so a new template cannot ship an unfillable name.
 names="$(sed -n 's/^_TALOS_PROMPT_NAMES="//p; /^  [A-Z_ ]*"\{0,1\}$/p' "$TALOS" | tr -d '"' | tr -s ' \n' ' ')"
