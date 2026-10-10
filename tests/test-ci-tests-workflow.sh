@@ -6,9 +6,7 @@
 #   2. This repo's own .github/workflows/tests.yml (dogfooding) matches --
 #      same structure, same "test" job id so "test (ubuntu-latest)" stays a
 #      stable required-check name across PR and push runs.
-#   3. skills/setup/SKILL.md's CI step: offers the template only
-#      when no existing workflow runs the test suite, and never edits an
-#      existing workflow (prompt text assertions).
+#   3. (removed, #556: it grepped the setup skill's prose)
 #   4. talos.pipeline.json's merge.required_checks is a subset of the job
 #      names .github/workflows/tests.yml actually runs on pull_request --
 #      naming a push-only check (e.g. "test (macos-latest)") hangs QA's
@@ -86,14 +84,6 @@ print('OK' if ok else 'STRUCTURE_MISMATCH')
 check_workflow_structure "$TEMPLATE" "template"
 
 template_content="$(cat "$TEMPLATE")"
-assert_contains "$template_content" "job id stays" \
-  "template: header explains the job id stays \"test\" across PR and push"
-assert_contains "$template_content" "merge.required_checks" \
-  "template: header documents the merge.required_checks caveat"
-assert_contains "$template_content" "test (macos-latest)" \
-  "template: header names the unsafe required-check example explicitly"
-assert_contains "$template_content" "wait forever" \
-  "template: header states explicitly the merge gate will wait forever if not removed"
 assert_contains "$template_content" "jobs:" "template: has a jobs section"
 assert_contains "$template_content" "  test:" "template: job id is \"test\" (required-check name stability)"
 assert_contains "$template_content" "tests/run-tests.sh" "template: runs tests/run-tests.sh"
@@ -120,27 +110,37 @@ assert_not_contains "$repo_content" "cancel-in-progress: true" \
   ".github/workflows/tests.yml: cancel-in-progress is not unconditionally true"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. Setup skill: offers the template only when absent, never edits an
-#    existing workflow.
+# 3. Sharding (#556): the suite runs as parallel shards and the one required
+#    status, job "test" (check name "test (ubuntu-latest)"), aggregates them.
 # ─────────────────────────────────────────────────────────────────────────────
-SETUP_SKILL="$TALOS_ROOT/skills/setup/SKILL.md"
-assert_file_exists "$SETUP_SKILL" "skills/setup/SKILL.md exists"
-
-setup_content="$(cat "$SETUP_SKILL")"
-assert_contains "$setup_content" "templates/ci/github-tests.yml" \
-  "pipeline-setup SKILL.md references the CI template"
-assert_contains "$setup_content" "run-tests.sh" \
-  "pipeline-setup SKILL.md checks for an existing workflow running the test suite"
-assert_contains "$setup_content" "never edit it" \
-  "pipeline-setup SKILL.md states it never edits an existing workflow"
-assert_contains "$setup_content" "No workflow runs your test suite yet" \
-  "pipeline-setup SKILL.md only offers the template when no workflow runs the suite"
-assert_contains "$setup_content" "merge.required_checks" \
-  "pipeline-setup SKILL.md checks merge.required_checks after writing the template"
-assert_contains "$setup_content" "test (macos-latest)" \
-  "pipeline-setup SKILL.md names the unsafe required-check example"
-assert_contains "$setup_content" "wait forever" \
-  "pipeline-setup SKILL.md warns the merge gate will wait forever if not removed"
+if python3 -c "import yaml" 2>/dev/null; then
+  out="$(python3 -c "
+import yaml
+with open('$REPO_WORKFLOW') as f:
+    jobs = yaml.safe_load(f)['jobs']
+test, shard, count = jobs.get('test', {}), jobs.get('shard', {}), jobs.get('count', {})
+needs = test.get('needs') or []
+problems = []
+if sorted(needs) != ['count', 'shard']:
+    problems.append('test must need exactly count and shard, got %r' % (needs,))
+if 'always()' not in str(test.get('if', '')):
+    problems.append('test must run with always() so a failed shard fails it instead of skipping it')
+if str(test.get('name', '')) != 'test (\${{ matrix.os }})':
+    problems.append('test must be named test (<os>)')
+if shard.get('strategy', {}).get('fail-fast') is not False:
+    problems.append('shards must not fail-fast')
+shards = shard.get('strategy', {}).get('matrix', {}).get('shard', [])
+if sorted(s.split('/')[1] for s in shards) != ['4'] * 4 or sorted(s.split('/')[0] for s in shards) != ['1', '2', '3', '4']:
+    problems.append('shards must be exactly 1/4..4/4, got %r' % (shards,))
+steps = ' '.join(str(s.get('run', '')) for s in shard.get('steps', []))
+if '--shard' not in steps:
+    problems.append('shard job must run run-tests.sh --shard')
+if '--count-only' not in ' '.join(str(s.get('run', '')) for s in count.get('steps', [])):
+    problems.append('count job must run run-tests.sh --count-only')
+print('OK' if not problems else '; '.join(problems))
+" 2>&1)"
+  assert_eq "OK" "$out" ".github/workflows/tests.yml: shards + count feed the single required job"
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 4. talos.pipeline.json's merge.required_checks must be a subset of the job
