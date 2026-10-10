@@ -430,8 +430,10 @@
 #        `action=merge` it runs `gate merge <pr> <issue>`; verdict=merge runs
 #        `_vcs merge-pr` then `post-merge <pr> <issue>` with the captured
 #        `ci_runs=` (a merge without it is `--ci-runs` absent), and stops the
-#        run (the next run reconciles); on verdict=wait|block|redispatch it
-#        stops (redispatch: a dispatch for the same PR follows on the next
+#        run (the next run reconciles); on verdict=wait|block|redispatch|handoff
+#        it stops, relaying the verdict and its detail lines on the one stop
+#        line (`stop verdict=wait reason=approvals-missing missing=qa:pass`,
+#        #543; redispatch: a dispatch for the same PR follows on the next
 #        run). On `action=ask-owner` and on every `stop reason=` it stops and
 #        exits 0 after announcing the action (the stop is the answer, not a
 #        fault); a failed state read (a `stop reason=` from `next` itself)
@@ -3685,10 +3687,13 @@ _talos_run_loop() {
             fi
             _talos_warn merge-failed "pr=$_pr"
             _talos_stop merge-failed ;;
-          verdict=handoff | verdict=redispatch | verdict=wait | verdict=block*)
+          verdict=handoff* | verdict=redispatch* | verdict=wait* | verdict=block*)
             # The gate's verdict IS the answer (its writes ran inside it): the
-            # loop ends -- the next run re-reads the state.
-            _talos_emit stop "$(head -n 1 <<<"$_r")"
+            # loop ends -- the next run re-reads the state. The answer is the
+            # verdict line plus its detail lines (reason=, missing=, stale=),
+            # relayed on the one stop line; a sanitiser warn line is not part
+            # of the answer.
+            _talos_emit stop "$(grep -v '^warn ' <<<"$_r" | tr '\n' ' ' | sed 's/ $//')"
             _talos_flush; exit 0 ;;
           *)
             _talos_stop state-unavailable ;;

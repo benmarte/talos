@@ -753,6 +753,53 @@ assert_contains "$OUT" "stop verdict=block reason=max-fix-attempts" "gate block:
 assert_contains "$(cat "$ERR")" "max_fix_attempts" "gate block: the gate's stderr is relayed to the run's stderr"
 assert_eq "0" "$(journal | grep -c '^agent developer$')" "gate block: no developer fix round past the ceiling"
 
+# ── (k) the merge arm takes every multi-line gate answer (#543) ───────────────
+# `gate merge` prints `verdict=<v>` and then one line per detail (`reason=`,
+# `missing=`, `stale=`). The merge arm matched wait/handoff/redispatch exactly,
+# so any real answer with a detail line died as `stop reason=state-unavailable`
+# (exit 1). Each of these drives the REAL gate over the stubbed vcs verbs and
+# must end the run clean (exit 0) with the gate's verdict and reasons relayed.
+merge_fixture() {  # $1 = the PR's labels (JSON array members) ; $2 = extra top-level config members
+  reset_stubs
+  LEASE_RESET
+  draft_cfg '"timeout_ms": 600000, "ci_wait_s": 900' "${2:-}"
+  draft_collect merge
+  printf '{"labels": [%s], "state": "open"}' "$1" > "$STUB_DIR/view-pr.12"
+}
+ALL_APPROVALS='{"name": "qa:pass"}, {"name": "docs:done"}, {"name": "review:approved"}, {"name": "security:approved"}'
+
+merge_fixture '{"name": "docs:done"}, {"name": "review:approved"}, {"name": "security:approved"}'
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=12000 rn --max-iterations 5
+assert_eq "0" "$RC" "merge arm wait: a gate wait answer ends the run clean (exit 0)"
+assert_contains "$OUT" "stop verdict=wait reason=approvals-missing missing=qa:pass" "merge arm wait: the stop names the verdict, the reason and the missing label"
+assert_not_contains "$OUT" "state-unavailable" "merge arm wait: never state-unavailable"
+assert_not_contains "$(journal)" "merge-pr" "merge arm wait: nothing is merged"
+
+merge_fixture "$ALL_APPROVALS"
+printf 1 > "$STUB_DIR/check-approval-sha.rc"
+printf 'stale role=qa label=qa:pass\n' > "$STUB_DIR/check-approval-sha.out"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=12000 rn --max-iterations 5
+assert_eq "0" "$RC" "merge arm redispatch: a gate redispatch answer ends the run clean (exit 0)"
+assert_contains "$OUT" "stop verdict=redispatch reason=stale-approvals stale=qa" "merge arm redispatch: the stop names the verdict, the reason and the stale roles"
+assert_not_contains "$OUT" "state-unavailable" "merge arm redispatch: never state-unavailable"
+assert_not_contains "$(journal)" "merge-pr" "merge arm redispatch: nothing is merged"
+
+merge_fixture "$ALL_APPROVALS" ', "merge": {"auto": false}'
+draft_ready  # draft_cfg turns pr.draft on: the gate asks pr-is-draft, which says ready
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=12000 rn --max-iterations 5
+assert_eq "0" "$RC" "merge arm handoff: a gate handoff answer ends the run clean (exit 0)"
+assert_contains "$OUT" "stop verdict=handoff" "merge arm handoff: the stop names the verdict"
+assert_not_contains "$OUT" "state-unavailable" "merge arm handoff: never state-unavailable"
+assert_not_contains "$(journal)" "merge-pr" "merge arm handoff: nothing is merged"
+
+# A gate block keeps its reason too (the arm used to print the first line only).
+merge_fixture "$ALL_APPROVALS"
+printf 'infra/prod.tf\n' > "$STUB_DIR/check-pr-files.out"
+printf 1 > "$STUB_DIR/check-pr-files.rc"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=12000 rn --max-iterations 5
+assert_eq "0" "$RC" "merge arm block: a gate block answer ends the run clean (exit 0)"
+assert_contains "$OUT" "stop verdict=block reason=forbidden-files" "merge arm block: the reason is relayed"
+
 # ── (j) the developer's `pr=<N>` word, on the host's own text tools (#537) ────
 # A final message with no PR URL but a standalone `pr=<N>` is PR_OPENED <N>; the
 # word must not be part of a longer one (xpr=12, my_pr=3, pr=12a, PR=4). The
