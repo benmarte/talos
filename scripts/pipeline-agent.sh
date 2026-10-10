@@ -30,6 +30,13 @@
 #                                             # (a value cannot add a column).
 #                                             # runner_cmd= is the last field,
 #                                             # after a TAB, and is not encoded.
+#                                             # (#539) In a profile-aware run
+#                                             # (profiles configured, TALOS_PROFILE
+#                                             # or TALOS_HARNESS set) a header
+#                                             # line comes first:
+#                                             #   profile=<name|none> profile_origin=<config|env|fallback|none> harness=<h>
+#                                             # and each profile passed over gets
+#                                             # one stderr warn naming why.
 #        pipeline-agent.sh --resolve-profile <role>
 #                                             # (#367) print the one absolute
 #                                             # path of the role definition a
@@ -80,6 +87,10 @@
 #   --mark-down <runner> <class:detail>
 #       record <runner> as down in .talos/providers.json for
 #       agents.provider_down_s seconds.
+#   --down-rows
+#       (#539) one name<TAB>down_until<TAB>reason line per runner currently down,
+#       from the same providers.json reader; pipeline-config.sh uses it to skip
+#       a profile whose runner is down.
 #
 # Config keys (talos.pipeline.json via pipeline-config.sh):
 #   agents.runner       claude (default) | pi | codex | gemini | antigravity | custom
@@ -132,9 +143,18 @@
 #   agents.fallback     (#418) ordered list of runner names (same ids as
 #                       agents.runner), tried in turn when a runner dies with a
 #                       PROVIDER error (rate limit, quota, overload, auth,
-#                       network). Names only: a fallback runner uses its own
+#                       network). A bare runner name: the runner uses its own
 #                       default model, agents.runner_args is not forwarded to
 #                       it, and a custom entry uses the role-first runner_cmd.
+#                       An entry may instead name a PROFILE (#539,
+#                       agents.profiles.<name>; a name that is both wins as the
+#                       profile): the attempt then runs that profile's resolved
+#                       runner, runner_cmd, runner_args, model, effort and
+#                       stage_timeout_s (role override first, then the
+#                       profile's own value, then base agents.*), and TALOS_MODEL
+#                       names the model. A profile whose mode this harness cannot
+#                       provide, or whose runner CLI is missing, is skipped with
+#                       one `talos:failover ... reason=<why>` line, never run.
 #   agents.roles.<role>.fallback  per-role override, role-first like runner.
 #   agents.provider_down_s        seconds a provider stays marked down in
 #                       .talos/providers.json (60-86400, default 900).
@@ -178,7 +198,9 @@
 # null. pipeline-agent.sh does not time the run itself.
 #
 # runner_cmd environment: TALOS_ROLE, TALOS_ISSUE_NUMBER, TALOS_WORKTREE_PATH,
-# and TALOS_EFFORT are exported and visible to runner_cmd. TALOS_ROLE lets you
+# and TALOS_EFFORT are exported and visible to runner_cmd. So is TALOS_MODEL (#539):
+# this attempt's model (the role-first agents.model, or the fallback profile's),
+# unset when none is configured, so one runner_cmd can pass it to its CLI. TALOS_ROLE lets you
 # route by role:
 #   e.g. case "$TALOS_ROLE" in
 #          developer|qa) exec pi -p --provider ds4 --model deepseek-v4-flash "$(cat)" ;;
@@ -288,16 +310,20 @@ _resolve_effort() {
 # dropped an out-of-range value). TALOS_STAGE_TIMEOUT_DIVISOR is a TEST SEAM:
 # the config floor is 60 s, too long to wait in a test, so tests divide the
 # configured seconds (60 / 30 = 2 s). Nothing sets it in production.
-_resolve_stage_timeout() {
-  local _role="$1" _t _d
-  _t="$(cfg "agents.roles.$_role.stage_timeout_s")"
-  [ -n "$_t" ] || _t="$(cfg agents.stage_timeout_s)"
+_stage_timeout_norm() {
+  local _t="$1" _d
   case "$_t" in "" | *[!0-9]*) return 0 ;; esac
   _d="${TALOS_STAGE_TIMEOUT_DIVISOR:-1}"
   case "$_d" in "" | 0 | *[!0-9]*) _d=1 ;; esac
   _t=$((_t / _d))
   [ "$_t" -ge 1 ] || _t=1
   printf '%s' "$_t"
+}
+_resolve_stage_timeout() {
+  local _role="$1" _t
+  _t="$(cfg "agents.roles.$_role.stage_timeout_s")"
+  [ -n "$_t" ] || _t="$(cfg agents.stage_timeout_s)"
+  _stage_timeout_norm "$_t"
 }
 
 # _resolve_fallback <role> (#418): role-first agents.fallback, one runner name
@@ -313,11 +339,14 @@ _resolve_fallback() {
 # without the primary (it varies by role, so config cannot check that). Notes
 # each dropped entry once on stderr.
 _fallback_chain() {
-  local _role="$1" _primary="$2" _e
+  local _role="$1" _primary="$2" _e _active=""
+  _active="$(cfg_src profile)"
   while IFS= read -r _e; do
     [ -n "$_e" ] || continue
     if [ "$_e" = "$_primary" ]; then
       echo "pipeline-agent: agents.fallback lists the primary runner '$_primary' (role=$_role) -- dropped" >&2
+    elif [ -n "$_active" ] && [ "$_e" = "$_active" ]; then
+      echo "pipeline-agent: agents.fallback lists the active profile '$_active' (role=$_role) -- dropped" >&2
     else
       printf '%s\n' "$_e"
     fi
@@ -463,6 +492,17 @@ sys.stdout.buffer.write(re.sub(rb"[\x00-\x1f\x7f]|\xc2[\x80-\x9f]", b"", sys.std
     _v="${_v//"$_pct"/%25}"
     printf '%s' "${_v// /%20}"
   }
+  # (#539) A profile-aware run opens with the profile and harness, and names each
+  # profile it passed over; a run without profiles prints neither.
+  if [ -n "$(cfg_src harness)" ]; then
+    _pn="$(cfg_src profile)"; _po="$(cfg_src profile_origin)"
+    printf 'profile=%s profile_origin=%s harness=%s\n' "$(_col "${_pn:-none}")" "$(_col "${_po:-none}")" "$(_col "$(cfg_src harness)")"
+    while IFS= read -r _sk; do
+      [ -z "$_sk" ] || echo "pipeline-agent: [warn] profile '$(_plain "${_sk%%:*}")' skipped: $(_plain "${_sk#*:}")" >&2
+    done <<EOF
+$(cfg_src profile_skipped)
+EOF
+  fi
   for _r in $_ALL_ROLES; do
     _m="$(_col "$(_resolve_model "$_r")")"
     if [ -n "$(cfg "agents.roles.$_r.model")" ]; then
@@ -686,10 +726,12 @@ _prov_path() {
 # tests/test-runner-failover.sh pins it to TALOS_RUNNERS.
 _RUNNER_IDS="claude pi codex gemini antigravity custom"
 
-# _prov_down <file>: one runner name per line for every unexpired entry.
+# _prov_down <file> [rows]: one runner name per line for every unexpired entry;
+# with `rows`, name<TAB>down_until<TAB>reason (reason cut to [A-Za-z0-9:._-]{0,60})
+# for --down-rows, the one reader pipeline-config.sh asks (#539).
 _prov_down() {
   [ -f "$1" ] || return 0
-  python3 -I - "$1" "$_RUNNER_IDS" <<'PYEOF'
+  python3 -I - "$1" "$_RUNNER_IDS" "${2:-}" <<'PYEOF'
 import datetime, json, sys
 path = sys.argv[1]
 try:
@@ -708,7 +750,11 @@ for name, ent in data.items():
     except Exception:
         continue
     if name in known and until > now:
-        print(name)
+        if len(sys.argv) > 3 and sys.argv[3] == "rows":
+            why = "".join(c if c.isascii() and (c.isalnum() or c in ":._-") else "_" for c in str(ent.get("reason", "")))[:60]
+            print("%s\t%s\t%s" % (name, ent["down_until"], why))
+        else:
+            print(name)
 PYEOF
 }
 
@@ -808,6 +854,15 @@ if [ "${1:-}" = "--mark-down" ]; then
   exit 0
 fi
 
+# --down-rows (#539): name<TAB>down_until<TAB>reason per runner currently down,
+# from the same reader the failover chain uses. pipeline-config.sh asks for it to
+# skip a profile whose runner is down; it needs no config, so it never loads one.
+if [ "${1:-}" = "--down-rows" ]; then
+  _DR_FILE="$(_prov_path)" || exit 0
+  _prov_down "$_DR_FILE" rows
+  exit 0
+fi
+
 ROLE="${1:-}"
 TASK="${2:-}"
 # Export TALOS_ROLE so runner_cmd (runner=custom) can route by role.
@@ -845,6 +900,17 @@ TALOS_WORKTREE_PATH="$PWD"
 # path (skills/pipeline/SKILL.md), not this script's single-shot `claude -p`.
 TALOS_EFFORT="$(_resolve_effort "$ROLE")"
 export TALOS_ISSUE_NUMBER TALOS_WORKTREE_PATH TALOS_EFFORT
+# TALOS_MODEL (#539): the attempt's model, for a runner_cmd to hand to its CLI.
+# _export_model sets it for the attempt about to run and unsets it when empty (or
+# when the text holds a control character), so one attempt's model never reaches
+# the next. Stage runs only: the --resolve verbs above exit before this point.
+_export_model() {
+  case "$1" in
+    "" | *[[:cntrl:]]*) unset TALOS_MODEL ;;
+    *) TALOS_MODEL="$1"; export TALOS_MODEL ;;
+  esac
+}
+_export_model "$(_resolve_model "$ROLE")"
 
 if [ -z "$ROLE" ] || [ -z "$TASK" ]; then
   echo "Usage: pipeline-agent.sh <role> <task-prompt|->" >&2
@@ -1083,11 +1149,15 @@ _usage_finish_sidecar() {
 # fallback runner names only what its own output reported. Empty = null.
 _attempt_model() {
   local _m=""
-  if [ "$1" = "$_FO_PRIMARY" ]; then
+  if [ -n "$_FO_MODEL_SET" ]; then
+    # A chain attempt (#539): the model it was started with (the config model
+    # for the primary, the profile's for a profile entry, none for a bare runner).
+    _m="$_FO_MODEL_NOW"
+  elif [ "$1" = "$_FO_PRIMARY" ]; then
     _m="$(_resolve_model "$ROLE")"
-    case "$_m" in "" | *[!A-Za-z0-9._:-]*) _m="" ;; esac
-    [ "${#_m}" -le 100 ] || _m=""
   fi
+  case "$_m" in "" | *[!A-Za-z0-9._:-]*) _m="" ;; esac
+  [ "${#_m}" -le 100 ] || _m=""
   [ -n "$_m" ] || _m="$_AT_MODEL"
   printf '%s' "$_m"
 }
@@ -1248,7 +1318,7 @@ case "$RUNNER" in
     RC=$?
     ;;
   custom)
-    RUNNER_CMD="$(_resolve_runner_cmd "$ROLE")"
+    RUNNER_CMD="${_FO_CMD:-$(_resolve_runner_cmd "$ROLE")}"
     if [ -z "$RUNNER_CMD" ]; then
       echo "pipeline-agent: agents.runner=custom requires agents.runner_cmd (role=$ROLE)" >&2
       exit 1
@@ -1319,7 +1389,7 @@ esac
 # GAP: a runner that calls raw `gh` instead of pipeline-vcs.sh is not seen (the
 # role profiles forbid it). Any other writer to refs/remotes (a parallel
 # `git fetch`) reads as a push: the failover is refused, never forced.
-_FO_FINAL="" _FO_PRIMARY="$RUNNER"
+_FO_FINAL="" _FO_PRIMARY="$RUNNER" _FO_CMD="" _FO_MODEL_NOW="" _FO_MODEL_SET=""
 _fo_event() {  # <from> <to> <reason>
   [ -f "$SCRIPT_DIR/pipeline-hooks.sh" ] || return 0
   bash "$SCRIPT_DIR/pipeline-hooks.sh" post_stage failover orchestrator "$TALOS_ISSUE_NUMBER" \
@@ -1329,9 +1399,64 @@ _fo_switch() {
   echo "talos:failover role=$ROLE from=$1 to=$2 reason=$3" >&2
   _fo_event "$1" "$2" "$3"
 }
+# A chain entry is a bare runner name or, since #539, the name of a profile
+# (a name that is both is the profile). _fo_entry <entry> sets _E_PROFILE (empty
+# for a bare runner) and _E_RUNNER (the runner id the attempt runs on: the
+# profile's, role override first).
+_E_PROFILE="" _E_RUNNER=""
+_pf_role() {  # <profile> <key>: profile.<p>.roles.<ROLE>.<key>, else profile.<p>.<key>
+  local _v
+  _v="$(cfg_prof "$1" "roles.$ROLE.$2")"
+  [ -n "$_v" ] || _v="$(cfg_prof "$1" "$2")"
+  printf '%s' "$_v"
+}
+_fo_entry() {
+  _E_PROFILE=""; _E_RUNNER="$1"
+  if [ -n "$(cfg_prof "$1" usable)" ]; then
+    _E_PROFILE="$1"
+    _E_RUNNER="$(_pf_role "$1" runner)"
+  fi
+}
+# _fo_skip <entry>: for a profile entry, why it cannot be attempted here (the
+# loader's reason: harness mode, runner CLI); nothing when it can.
+_fo_skip() {
+  [ "$(cfg_prof "$1" usable)" = "no" ] || return 0
+  cfg_prof "$1" reason
+}
+# _fo_apply_entry: set what one attempt runs with. A profile entry brings its own
+# runner_args, runner_cmd, model, effort and stage_timeout_s; anything else (the
+# primary, a bare runner) gets what a plain run has, so a profile's values never
+# reach the next attempt.
+_fo_apply_entry() {
+  local _a
+  _FO_CMD=""
+  _FO_MODEL_NOW=""
+  TALOS_EFFORT="$_FO_EFFORT0"
+  _STAGE_TMO="$_FO_TMO0"
+  if [ -n "$_E_PROFILE" ]; then
+    RUNNER_ARGS=()
+    while IFS= read -r _a; do
+      [ -z "$_a" ] || RUNNER_ARGS+=("$_a")
+    done <<EOF
+$(cfg_prof "$_E_PROFILE" runner_args)
+EOF
+    _FO_CMD="$(_pf_role "$_E_PROFILE" runner_cmd)"
+    _FO_MODEL_NOW="$(_pf_role "$_E_PROFILE" model)"
+    TALOS_EFFORT="$(_pf_role "$_E_PROFILE" effort)"
+    _STAGE_TMO="$(_stage_timeout_norm "$(_pf_role "$_E_PROFILE" stage_timeout_s)")"
+    if [ -n "$_STAGE_TMO" ] && ! command -v perl >/dev/null 2>&1; then
+      echo "pipeline-agent: [warn] agents.stage_timeout_s is set but perl is not installed -- no timeout applied (role=$ROLE)" >&2
+      _STAGE_TMO=""
+    fi
+  elif [ "$_E_RUNNER" = "$_FO_PRIMARY" ]; then
+    _FO_MODEL_NOW="$(_resolve_model "$ROLE")"
+  fi
+  export TALOS_EFFORT
+  _export_model "$_FO_MODEL_NOW"
+}
 _fo_unavailable() {  # <runner>: 0 when a FALLBACK runner cannot be started
   case "$1" in
-    custom) [ -z "$(_resolve_runner_cmd "$ROLE")" ] ;;
+    custom) [ -z "${_FO_CMD:-$(_resolve_runner_cmd "$ROLE")}" ] ;;
     antigravity) ! command -v agy >/dev/null 2>&1 ;;
     *) ! command -v "$1" >/dev/null 2>&1 ;;
   esac
@@ -1350,8 +1475,9 @@ _fo_checkpoint() {
   return 0
 }
 _run_chain() {
-  local _order _cands=() _down _r _i _n _nxt _snap _verbs _why _reasons="" _chain_txt _wl_ok
+  local _order _cands=() _down _r _i _n _nxt _snap _verbs _why _reasons="" _chain_txt _wl_ok _skip _prun
   _order=("$RUNNER" "${CHAIN[@]}")
+  _FO_TMO0="$_STAGE_TMO"; _FO_EFFORT0="$TALOS_EFFORT"
   _chain_txt="$(printf '%s,' "${_order[@]}")"; _chain_txt="${_chain_txt%,}"
   _FO_OUT="$(mktemp "${TMPDIR:-/tmp}/talos-fo-out.XXXXXX")" && _FO_ERR="$(mktemp "${TMPDIR:-/tmp}/talos-fo-err.XXXXXX")" \
     && TALOS_WRITE_LOG="$(mktemp "${TMPDIR:-/tmp}/talos-fo-wr.XXXXXX")" || {
@@ -1367,7 +1493,9 @@ _run_chain() {
   _FO_PROV="$(_prov_path)" || { echo "pipeline-agent: [warn] not in a git repository -- provider down-tracking unavailable" >&2; _FO_PROV=""; }
   _down="$(_prov_down "$_FO_PROV")"
   for _r in "${_order[@]}"; do
-    if grep -Fxq -- "$_r" <<<"$_down"; then
+    _prun="$_r"
+    if [ "$_r" != "$_FO_PRIMARY" ]; then _fo_entry "$_r"; _prun="$_E_RUNNER"; fi
+    if grep -Fxq -- "$_prun" <<<"$_down"; then
       _reasons="$_reasons $_r:down-cached"
     else
       _cands+=("$_r")
@@ -1382,33 +1510,47 @@ _run_chain() {
     _r="${_cands[$_i]}"
     _nxt=""; [ $((_i + 1)) -lt "$_n" ] && _nxt="${_cands[$((_i + 1))]}"
     _i=$((_i + 1))
-    if [ "$_r" != "$_FO_PRIMARY" ] && _fo_unavailable "$_r"; then
-      _reasons="$_reasons $_r:unavailable"
-      _fo_switch "$_r" "${_nxt:-none}" "unavailable"
-      continue
+    if [ "$_r" = "$_FO_PRIMARY" ]; then
+      _E_PROFILE=""; _E_RUNNER="$RUNNER"
+    else
+      _fo_entry "$_r"
+      _skip=""
+      if [ -n "$_E_PROFILE" ]; then
+        _skip="$(_fo_skip "$_r")"
+      else
+        _FO_CMD=""
+        _fo_unavailable "$_r" && _skip="unavailable"
+      fi
+      if [ -n "$_skip" ]; then
+        _reasons="$_reasons $_r:$_skip"
+        _fo_switch "$_r" "${_nxt:-none}" "$_skip"
+        continue
+      fi
+      RUNNER_ARGS=()
     fi
-    if [ "$_r" != "$_FO_PRIMARY" ]; then RUNNER_ARGS=(); fi
-    if [ "$_r" = "custom" ] && [ -z "$(_resolve_runner_cmd "$ROLE")" ]; then
+    _fo_apply_entry
+    if [ "$_E_RUNNER" = "custom" ] && [ -z "${_FO_CMD:-$(_resolve_runner_cmd "$ROLE")}" ]; then
       echo "pipeline-agent: agents.runner=custom requires agents.runner_cmd (role=$ROLE)" >&2
       exit 1
     fi
     _wl_ok=true
     : >"$TALOS_WRITE_LOG" 2>/dev/null || _wl_ok=false
     _snap="$(git for-each-ref refs/remotes 2>/dev/null)"
-    _FO_FINAL="$_r"
+    _FO_FINAL="$_E_RUNNER"
     _attempt_flush
-    _run_runner "$_r" >"$_FO_OUT" 2>"$_FO_ERR"
+    _FO_MODEL_SET=1
+    _run_runner "$_E_RUNNER" >"$_FO_OUT" 2>"$_FO_ERR"
     # The classifier reads what _run_runner printed: for claude in JSON mode that
     # is the extracted message text, so its line-anchored patterns still match.
-    _classify_exit "$_r" "$RC" "$_FO_ERR" "$_FO_OUT"
+    _classify_exit "$_E_RUNNER" "$RC" "$_FO_ERR" "$_FO_OUT"
     cat "$_FO_ERR" >&2
-    _usage_marker "$_r"
+    _usage_marker "$_E_RUNNER"
     if [ "$CLASS" != "provider" ]; then
       cat "$_FO_OUT"
       return
     fi
     _why="provider:$CLASS_DETAIL"
-    _prov_mark_down "$_r" "$_why"
+    _prov_mark_down "$_E_RUNNER" "$_why"
     # Fail closed: a journal that could not be emptied, was deleted, or cannot be
     # read means "unknown", never "no writes" -- no rerun.
     if [ "$_wl_ok" != true ] || [ ! -f "$TALOS_WRITE_LOG" ] || ! _verbs="$(sort -u "$TALOS_WRITE_LOG" 2>/dev/null)"; then

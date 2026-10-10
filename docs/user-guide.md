@@ -2575,6 +2575,92 @@ unaffected. This is the enabling piece for a second, independent review pass
 on a different backend, which the dedicated `adversarial` stage below
 actually uses.
 
+### Switching providers / profiles (`agents.profile`, `TALOS_PROFILE`, #539)
+
+Moving from Claude (a different subagent model per role) to Ollama Cloud or a
+local LLM (one model for every role) used to mean editing `agents.runner`,
+`agents.subagents` and `agents.model`, deleting every `agents.roles.*.model`
+(a Claude model id left in a role leaks into a pi or Ollama dispatch), and
+undoing all of it afterwards. A **profile** is a named bundle of `agents.*`
+keys, so the switch is one word:
+
+```json
+{
+  "agents": {
+    "profile": "claude",
+    "fallback": ["local"],
+    "profiles": {
+      "claude": {
+        "mode": "native",
+        "model": "sonnet",
+        "roles": {
+          "planner": {"model": "opus"},
+          "security": {"model": "opus", "restamp_model": "opus"},
+          "adversarial": {"model": "opus", "restamp_model": "opus"}
+        }
+      },
+      "local":  {"runner": "pi", "mode": "inline", "subagents": false, "model": "glm-5.3-flash"},
+      "ollama": {"runner": "custom", "mode": "adapter", "subagents": false,
+                 "runner_cmd": "ollama-agent --model $TALOS_MODEL", "model": "qwen3-coder:480b-cloud",
+                 "stage_timeout_s": 1800}
+    }
+  }
+}
+```
+
+Run `TALOS_PROFILE=local` (or edit the one `agents.profile` value) and nothing
+else changes. A profile holds any subset of the `agents.*` keys plus `mode`;
+profiles may sit in the user-level file (`~/.talos/talos.pipeline.json`) and be
+selected from a repo's file. With no profiles configured, nothing changes.
+
+- **Order.** For any `agents.*` key: the environment, then the selected profile,
+  then the base `agents.*`, then the table default. The profile's `roles` block
+  **replaces** the base `roles` block whole, so put per-role Claude models inside
+  the Claude profile (as above); a profile with no `roles` key keeps the base
+  roles, and `"roles": {}` clears them.
+- **Unknown profile.** `TALOS_PROFILE=nope` (or a typo in `agents.profile`) stops
+  the run with one line, `reason=profile-unknown name='nope' origin=env
+  valid=claude,local,ollama`, exit 4. It never falls back to the base config.
+- **Mode.** `native` is the harness's own subagent tool (Claude Code's Agent),
+  `adapter` is one agentic CLI per stage through `pipeline-agent.sh`, and
+  `inline` is the orchestrator playing every role itself (weak or local models).
+  Unset, the mode follows `agents.subagents` and the runner.
+- **Harness.** Talos reads the harness that is orchestrating the run: Claude Code
+  from `CLAUDECODE=1`, anything else from `TALOS_HARNESS` (for example `pi` or
+  `codex`; it wins over an inherited `CLAUDECODE`). Claude Code provides all
+  three modes; any other declared harness provides `adapter` and `inline`; an
+  unknown harness is not restricted. `agents.subagents: auto` resolves from the
+  harness, not from `agents.runner`.
+- **First usable profile.** The candidates are `[profile, ...fallback entries
+  that name a profile]`. A profile is usable when the harness provides its mode
+  and its runner's CLI is on `PATH` (`custom`: a non-empty `runner_cmd`). The
+  first usable one is active; each one passed over is listed once, for example
+  `PROFILE_SKIPPED=claude reason=mode-native-unsupported-by-pi`. A fresh session
+  started from another tool (`TALOS_HARNESS=pi talos ...`) therefore continues on
+  `local` with no config edit. A profile is also passed over while its runner is
+  marked down in `.talos/providers.json` (what a provider-error failover records
+  for `agents.provider_down_s`): `PROFILE_SKIPPED=claude reason=provider-down
+  until=<ts> reason=provider:quota`, so a session started after a quota failure
+  picks the fallback by itself; an expired mark, or an unreadable file, counts as
+  nothing down. If every harness-usable candidate is down the first is used anyway
+  (the mark is advisory). None usable on the harness stops the run with
+  `reason=profile-unusable`.
+- **Fallback entries.** `agents.fallback` (and `agents.roles.<role>.fallback`) may
+  name a profile as well as a runner; a bare runner name behaves exactly as in
+  [Runner failover](#runner-failover-agentsfallback-418). A profile entry runs
+  with its own runner, `runner_cmd`, `runner_args`, model, effort and
+  `stage_timeout_s`, and the runner receives the model as `TALOS_MODEL`. A name
+  that is both a profile and a runner is the profile. Failover applies to the
+  adapter path only: when Claude itself runs out, the native orchestrator ends
+  with it, and the profile switch above is the way on.
+- **See it.** `bash scripts/talos.sh env` prints `HARNESS`, `PROFILE`,
+  `PROFILE_ORIGIN`, `AGENTS_MODE` and one `PROFILE_INFO` line per profile (mode,
+  runner, whether its CLI is installed, usable or not) as soon as profiles are
+  configured or `TALOS_HARNESS` is set. `bash scripts/pipeline-agent.sh
+  --resolve-all` starts with `profile=<name> profile_origin=<config|env|fallback>
+  harness=<h>`, and `bash scripts/pipeline-config.sh --dump` carries the same as
+  `sources.profile` / `sources.profile_origin`.
+
 ### Runner failover (`agents.fallback`, #418)
 
 A provider outage (HTTP 429, a spent quota or credit balance, an overloaded
@@ -3113,8 +3199,10 @@ If your setup predates the config and secrets work (epic #437), check these once
 | `agents.roles.<role>.effort` | falls back to `agents.effort` | Role-specific effort override, e.g. `high` for `developer`, `low` for cheap volume stages. |
 | `agents.restamp_effort` | falls back to `agents.effort` | Effort for **re-stamp** dispatches (#271), same chain shape as `agents.restamp_model`. |
 | `agents.roles.<role>.restamp_effort` | falls back to `agents.restamp_effort`, then `agents.effort` | Role-specific re-stamp effort override. Precedence: role restamp effort → global restamp effort → `agents.effort`. |
-| `agents.fallback` | unset (no chain) | Ordered list of 1-5 runner names (`claude`, `pi`, `codex`, `gemini`, `antigravity`, `custom`) tried in turn when a runner dies of a **provider** error (exit 75, or a recognised claude rate-limit, quota, overload, auth or network line). Names only: the fallback runner uses its own model and does not get `agents.runner_args`. An invalid value warns once and reads as absent. See [Runner failover](../README.md#runner-failover-agentsfallback). |
+| `agents.fallback` | unset (no chain) | Ordered list of 1-5 entries tried in turn when a runner dies of a **provider** error (exit 75, or a recognised claude rate-limit, quota, overload, auth or network line). An entry is a runner name (`claude`, `pi`, `codex`, `gemini`, `antigravity`, `custom`): that runner uses its own model and does not get `agents.runner_args`; or, since #539, a **profile name**: the attempt runs with that profile's runner, model, mode and `stage_timeout_s`. An invalid value warns once and reads as absent. See [Runner failover](../README.md#runner-failover-agentsfallback). |
 | `agents.roles.<role>.fallback` | falls back to `agents.fallback` | Role-specific failover chain. |
+| `agents.profile` | unset (no profile) | The named profile from `agents.profiles.<name>` to run on (#539); env `TALOS_PROFILE` overrides it. An unknown name stops the run with one `reason=profile-unknown` line. A fallback entry that names a profile is also a candidate when the harness cannot provide, or the runner CLI is missing for, the requested one. See [Switching providers / profiles](#switching-providers--profiles-agentsprofile-talos_profile-539). |
+| `agents.mode` | unset (follows `agents.subagents` and the runner) | `native`, `adapter` or `inline` (#539): the harness's own subagent tool, one agentic CLI per stage through `pipeline-agent.sh`, or the orchestrator playing every role. Meant for a profile (`agents.profiles.<name>.mode`); a mode the current harness cannot provide gets the profile skipped. An invalid value warns once and reads as unset. |
 | `agents.provider_down_s` | `900` | Seconds a failed provider stays marked down in `.talos/providers.json` (integer 60-86400). |
 | `agents.stage_timeout_s` | unset (no timeout) | Wall-clock bound, in seconds (integer 60-86400), on each `pipeline-agent.sh` runner attempt (#540). On expiry the runner and its child processes are killed, the exit code is `124`, and stderr gets `pipeline-agent: reason=stage-timeout role=<r> after_s=<n>`. A timeout is a `task` failure, never a provider error: it does not fail over to `agents.fallback`, and `hooks.post_stage` sees verdict `FAIL`. Unset means no bound and no behaviour change. Needs `perl` (ships with macOS and Linux) for the process-group kill. An invalid value warns once and reads as unset. |
 | `agents.roles.<role>.stage_timeout_s` | falls back to `agents.stage_timeout_s` | Role-specific stage bound, role-first like `agents.roles.<role>.effort`: e.g. a long bound for `developer`, a short one for `qa`. |

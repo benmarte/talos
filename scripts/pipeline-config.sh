@@ -329,6 +329,8 @@ _cfg_gate() {
 # _cfg_loader_src, which prepends it as _CFG_TABLE, never this variable raw.
 read -r -d '' _CFG_LOADER_PY <<'PYLOADER' || true
 import os
+import re
+import shutil
 import sys
 
 # Which file layers failed to parse ("project" / "user"): --has reads it so a
@@ -485,6 +487,62 @@ def _drop_secret_shaped(obj, what):
     kept = walk(obj, "", 0)[0]
     return {} if kept is _GONE else kept
 
+# ── LLM profiles (#539) ───────────────────────────────────────────────────────
+# agents.profiles.<name> holds any subset of the agents.* keys plus `mode`;
+# agents.profile (env TALOS_PROFILE) selects one. The selected profile overlays
+# agents.* key by key (its `roles` block REPLACES the base roles whole), so the
+# order is env -> profile -> base agents.* -> table default. A run is
+# "profile-aware" only when profiles are configured, a profile is requested or
+# TALOS_HARNESS is set; anything else is untouched (byte-identical output).
+#   mode      native  = the harness's own subagent tool (Claude Code's Agent)
+#             adapter = one agentic CLI per stage, via pipeline-agent.sh
+#             inline  = the orchestrator plays every role itself
+#   harness   _HARNESS (name, origin) from the shell: claude-code provides all
+#             three modes, any other declared harness adapter and inline, an
+#             unknown harness is not restricted (nothing is refused on a guess).
+#   usable    mode provided by the harness AND the runner's CLI on PATH (custom:
+#             a non-empty runner_cmd). The candidates [profile, ...fallback
+#             entries that name a profile] are walked in order and the first
+#             usable one is active; each one passed over is listed with one
+#             reason. A profile whose runner is marked down in providers.json
+#             (until its down_until) is passed over too: `provider-down
+#             until=<ts> reason=<class:detail>`. None usable, or an unknown name, stops the load: one
+#             stderr reason line and exit 4 (not 3, so cfg() can tell a profile
+#             failure, which must stop a script, from the older gate failures).
+_PROFILE_MODES = ("native", "adapter", "inline")
+_PROFILE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,31}\Z")
+_RUNNER_CLI = {"claude": "claude", "pi": "pi", "codex": "codex", "gemini": "gemini", "antigravity": "agy"}
+_PROFILE_NAMES = []   # valid profile names; the fallback validator reads it
+_PROFILE = {}         # the selection (see _apply_profile); empty = not profile-aware
+
+def _check_profiles(agents, what):
+    # Drop what a profile cannot hold: a bad mode, a bad name, a non-mapping.
+    out = dict(agents)
+    if out.get("mode") is not None and out["mode"] not in _PROFILE_MODES:
+        _warn("%s: agents.mode must be native, adapter or inline -- got: %s -- ignoring it" % (what, repr(out["mode"])[:40]))
+        del out["mode"]
+    profs = out.get("profiles")
+    if profs is None:
+        return out
+    if not isinstance(profs, dict):
+        _warn("%s: agents.profiles must be a mapping -- ignoring it" % what)
+        del out["profiles"]
+        return out
+    clean = {}
+    for name, prof in profs.items():
+        if not isinstance(name, str) or not _PROFILE_NAME_RE.match(name):
+            _warn("%s: ignoring profile name %s (1-32 characters of A-Z a-z 0-9 _ -, starting with a letter or digit)" % (what, repr(name)[:40]))
+        elif not isinstance(prof, dict):
+            _warn("%s: agents.profiles.%s must be a mapping -- ignoring it" % (what, name))
+        else:
+            prof = dict(prof)
+            if prof.get("mode") is not None and prof["mode"] not in _PROFILE_MODES:
+                _warn("%s: agents.profiles.%s.mode must be native, adapter or inline -- got: %s -- ignoring it" % (what, name, repr(prof["mode"])[:40]))
+                del prof["mode"]
+            clean[name] = prof
+    out["profiles"] = clean
+    return out
+
 def _check_agents(obj, what):
     # agents: must be a mapping in either file (it was warned about before #441
     # dropped the check). A scalar or list there is ignored, so it cannot erase
@@ -492,7 +550,139 @@ def _check_agents(obj, what):
     if obj.get("agents") is not None and not isinstance(obj["agents"], dict):
         _warn("%s: agents must be a mapping -- ignoring it" % what)
         return {k: v for k, v in obj.items() if k != "agents"}
+    if isinstance(obj.get("agents"), dict):
+        fixed = _check_profiles(obj["agents"], what)
+        if fixed != obj["agents"]:
+            obj = dict(obj)
+            obj["agents"] = fixed
     return obj
+
+def _harness_modes():
+    # None = unknown harness: every mode is allowed.
+    if _HARNESS[0] == "unknown":
+        return None
+    return _PROFILE_MODES if _HARNESS[0] == "claude-code" else ("adapter", "inline")
+
+def _eff_mode(eff):
+    # The mode of an effective agents.* mapping: agents.mode when set, else from
+    # agents.subagents and the runner; `auto` is decided by the harness (an
+    # unknown harness falls back to the old rule: native when the runner is claude).
+    if eff.get("mode") in _PROFILE_MODES:
+        return eff["mode"]
+    sub = eff.get("subagents", "auto")
+    sub = ("true" if sub else "false") if isinstance(sub, bool) else str(sub).strip().lower()
+    runner = eff.get("runner") if isinstance(eff.get("runner"), str) and eff.get("runner") else "claude"
+    if sub == "true":
+        return "native"
+    if sub != "false":
+        if _HARNESS[0] == "claude-code" or (_HARNESS[0] == "unknown" and runner == "claude"):
+            return "native"
+    return "inline" if runner == "pi" else "adapter"
+
+def _profile_state(eff):
+    # (mode, runner, cli_present, skip_reason) of an effective agents.* mapping.
+    mode = _eff_mode(eff)
+    runner = eff.get("runner") if isinstance(eff.get("runner"), str) and eff.get("runner") else "claude"
+    if runner == "custom":
+        cli = bool(str(eff.get("runner_cmd") or "").strip())
+    else:
+        cli = bool(_RUNNER_CLI.get(runner) and shutil.which(_RUNNER_CLI[runner]))
+    safe = re.sub(r"[^A-Za-z0-9._-]", "?", runner)[:20]
+    modes = _harness_modes()
+    reason = ""
+    if modes is not None and mode not in modes:
+        reason = "mode-%s-unsupported-by-%s" % (mode, _HARNESS[0])
+    elif not cli:
+        reason = "runner-custom-has-no-runner_cmd" if runner == "custom" else "runner-%s-not-on-path" % safe
+    return mode, runner, cli, reason
+
+def _down_runners():
+    # {runner: (down_until, reason)} for the runners currently marked down. The
+    # one providers.json reader is pipeline-agent.sh's (--down-rows, the failover
+    # chain's own), so no second parser lives here: an unreadable or corrupt file
+    # reads as nothing down, with that reader's one warning on stderr.
+    import subprocess
+    if not _AGENT_SH or not os.path.isfile(_AGENT_SH):
+        return {}
+    try:
+        res = subprocess.run(["bash", _AGENT_SH, "--down-rows"], stdout=subprocess.PIPE,
+                             stdin=subprocess.DEVNULL, timeout=20)
+    except Exception:
+        return {}
+    down = {}
+    for row in res.stdout.decode("utf-8", "replace").splitlines():
+        parts = row.split("\t")
+        if len(parts) == 3 and parts[0]:
+            down[parts[0]] = (parts[1], parts[2])
+    return down
+
+def _profile_fail(line):
+    sys.stderr.write("pipeline-config: %s\n" % line)
+    sys.exit(4)
+
+def _apply_profile(merged):
+    import copy
+    _PROFILE.clear()
+    agents = merged.get("agents") if isinstance(merged.get("agents"), dict) else {}
+    profs = agents.get("profiles") if isinstance(agents.get("profiles"), dict) else {}
+    names = [n for n in profs if isinstance(n, str) and _PROFILE_NAME_RE.match(n) and isinstance(profs[n], dict)]
+    _PROFILE_NAMES[:] = names
+    env_name = (os.environ.get("TALOS_PROFILE") or "").strip()
+    cfg_name = agents.get("profile")
+    cfg_name = cfg_name.strip() if isinstance(cfg_name, str) else ""
+    requested, origin = (env_name, "env") if env_name else (cfg_name, "config")
+    if not (names or requested or _HARNESS[1] == "env"):
+        return merged
+    base = {k: v for k, v in agents.items() if k not in ("profile", "profiles")}
+    resolved, states = {}, {}
+    for n in names:
+        eff = dict(base)
+        for k, v in profs[n].items():
+            if k not in ("profile", "profiles"):
+                eff[k] = copy.deepcopy(v)
+        resolved[n] = eff
+        states[n] = _profile_state(eff)
+    _PROFILE.update(aware=True, names=names, resolved=resolved, states=states,
+                    requested=requested, origin=origin, active="", skipped=[],
+                    mode=_eff_mode(base))
+    if not requested:
+        return merged
+    if requested not in resolved:
+        _profile_fail("reason=profile-unknown name=%s origin=%s valid=%s"
+                      % (repr(requested)[:40], origin, ",".join(names) or "none"))
+    fb = resolved[requested].get("fallback")
+    cands = [requested] + [e for e in (fb if isinstance(fb, list) else [])
+                           if isinstance(e, str) and e in resolved and e != requested]
+    skipped = []
+    active = ""
+    # A runner marked down in .talos/providers.json (#418) makes its profile
+    # unusable while the mark lasts. Only worth asking when there is another
+    # candidate to fall to; if every harness-usable candidate is down the first
+    # one is used anyway (the mark is advisory, and a stopped run is worse).
+    down = _down_runners() if len(cands) > 1 else {}
+    held = []
+    for c in cands:
+        if states[c][3]:
+            skipped.append((c, states[c][3]))
+        elif states[c][1] in down:
+            held.append(c)
+            skipped.append((c, "provider-down until=%s reason=%s" % down[states[c][1]]))
+        else:
+            active = c
+            break
+    if not active and held:
+        active = held[0]
+        skipped = [s for s in skipped if cands.index(s[0]) < cands.index(active)]
+    if not active:
+        _profile_fail("reason=profile-unusable requested=%s harness=%s skipped=%s"
+                      % (repr(requested)[:40], _HARNESS[0], ",".join("%s:%s" % s for s in skipped)))
+    new_agents = dict(agents)
+    new_agents.update(resolved[active])
+    out = dict(merged)
+    out["agents"] = new_agents
+    _PROFILE.update(active=active, origin=origin if active == requested else "fallback",
+                    skipped=skipped, mode=states[active][0])
+    return out
 
 def _load_user_layer(user_path, project_path):
     if not user_path:
@@ -567,7 +757,12 @@ def load_layers(project_path, user_path, env=True):
     project = _check_agents(project, "config %s" % repr(project_path))
     user = _load_user_layer(user_path, project_path)
     merged = _deep_merge(user, project)
-    return project, user, (_apply_env(merged) if env else merged)
+    if not env:
+        return project, user, merged
+    merged = _apply_env(_apply_profile(merged))
+    if _PROFILE.get("active"):
+        merged["agents"]["profile"] = _PROFILE["active"]
+    return project, user, merged
 PYLOADER
 
 # The loader source handed to python: the table's scope/env rows as _CFG_TABLE,
@@ -589,7 +784,40 @@ _CFG_SHAPES_PY=""
 if [ -r "$_CFG_SELF_DIR/pipeline-secret-shapes.py" ]; then
   read -r -d '' _CFG_SHAPES_PY < "$_CFG_SELF_DIR/pipeline-secret-shapes.py" || true
 fi
-_cfg_loader_src() { printf '_CFG_TABLE = %s\n%s\n%s\n%s' "$(_talos_scope_env_json)" "${_TALOS_TRUST_LIB:-}" "$_CFG_SHAPES_PY" "$_CFG_LOADER_PY"; }
+# The harness the run is orchestrated from (#539): TALOS_HARNESS (a declared
+# name; `claude` and `claudecode` are spellings of claude-code) wins over
+# detection (CLAUDECODE=1 -> claude-code), else unknown. Prints `<name> <origin>`,
+# origin env | detected | none. A TALOS_HARNESS that is not a name
+# ([a-z0-9][a-z0-9._-]{0,31}) is ignored with one stderr line. Pure shell, no
+# python3; the loader gets the answer as _HARNESS.
+_cfg_harness() {
+  local _h
+  if [ -n "${TALOS_HARNESS:-}" ]; then
+    _h="$(printf '%s' "$TALOS_HARNESS" | tr '[:upper:]' '[:lower:]')"
+    case "$_h" in
+      claude | claudecode | claude-code) printf 'claude-code env'; return 0 ;;
+      *[!a-z0-9._-]* | [!a-z0-9]*) _h="" ;;
+    esac
+    if [ -n "$_h" ] && [ "${#_h}" -le 32 ]; then
+      printf '%s env' "$_h"
+      return 0
+    fi
+    echo "pipeline-config: [warn] TALOS_HARNESS is not a harness name (1-32 of a-z 0-9 . _ -) -- ignoring it" >&2
+  fi
+  if [ "${CLAUDECODE:-}" = "1" ]; then printf 'claude-code detected'; else printf 'unknown none'; fi
+}
+_cfg_loader_src() {
+  local _hn _ho
+  read -r _hn _ho <<EOF
+$(_cfg_harness)
+EOF
+  # _AGENT_SH: pipeline-agent.sh, whose --down-rows is the providers.json reader
+  # (a path holding a newline is not passed: the lookup is then skipped).
+  local _as="$_CFG_SELF_DIR/pipeline-agent.sh"
+  case "$_as" in *$'\n'*) _as="" ;; esac
+  _as="${_as//\\/\\\\}"; _as="${_as//\"/\\\"}"
+  printf '_CFG_TABLE = %s\n_HARNESS = ("%s", "%s")\n_AGENT_SH = "%s"\n%s\n%s\n%s' "$(_talos_scope_env_json)" "$_hn" "$_ho" "$_as" "${_TALOS_TRUST_LIB:-}" "$_CFG_SHAPES_PY" "$_CFG_LOADER_PY"
+}
 
 # ── Evidence-key validator (#405, part of #352) ──────────────────────────────
 # Python half of the evidence.* validation. Like _CFG_LOADER_PY it is handed to
@@ -750,10 +978,10 @@ def _validate_fallback_key(key, value):
     if not _is_fallback_key(key):
         return value
     if not (isinstance(value, list) and 1 <= len(value) <= 5
-            and all(isinstance(x, str) and x in _FALLBACK_RUNNERS for x in value)
+            and all(isinstance(x, str) and (x in _FALLBACK_RUNNERS or x in _PROFILE_NAMES) for x in value)
             and len(set(value)) == len(value)):
         return _fb_reject(
-            key, "a list of 1-5 distinct runners from " + "|".join(_FALLBACK_RUNNERS),
+            key, "a list of 1-5 distinct runners from " + "|".join(_FALLBACK_RUNNERS) + " or profile names",
             value)
     return value
 
@@ -912,6 +1140,14 @@ def _walk(obj, path):
 def _layer(dotted, path):
     if dotted in _env_keys:
         return "env"
+    # A key decided by the active profile (#539) is in the layer that defines
+    # the profile (project over user-level), ahead of the base key it replaced.
+    if _PROFILE.get("active") and path[:1] == ("agents",) and dotted != "agents.profile":
+        _ppath = ("agents", "profiles", _PROFILE["active"]) + tuple(path[1:])
+        if _walk(_project, _ppath) is not None:
+            return "repo"
+        if _walk(_user, _ppath) is not None:
+            return "global"
     if _walk(_project, path) is not None:
         return "repo"
     if _walk(_user, path) is not None:
@@ -1157,7 +1393,7 @@ if [ "${1:-}" = "--dump" ]; then
   # header still answers "where is talos configured": both file paths empty,
   # the set env-override variables named, the secrets store named even when
   # absent.
-  if [ -z "$_DCFG" ] && [ -z "$_DUSER" ]; then
+  if [ -z "$_DCFG" ] && [ -z "$_DUSER" ] && [ -z "${TALOS_PROFILE:-}" ] && [ -z "${TALOS_HARNESS:-}" ]; then
     printf 'sources.project\0%s\0' ""
     printf 'sources.global\0%s\0' ""
     printf 'sources.env_keys\0%s\0' "$_DENV_KEYS"
@@ -1236,6 +1472,12 @@ def _warn_unknown_keys(cfg_obj):
             continue
         parts = key.split(".")
         if any(_key_matches(parts, t) for t in templates):
+            continue
+        # agents.profiles.<name>.<rest> holds any agents.<rest> key (#539), but
+        # a profile cannot select or define profiles.
+        if (len(parts) >= 4 and parts[:2] == ["agents", "profiles"]
+                and parts[3] not in ("profile", "profiles")
+                and any(_key_matches(["agents"] + parts[3:], t) for t in templates)):
             continue
         candidates = []
         for t in templates:
@@ -1479,18 +1721,70 @@ out.write(("sources.project\0" + sys.argv[1] + "\0").encode("utf-8", "surrogatee
 out.write(("sources.global\0" + sys.argv[3] + "\0").encode("utf-8", "surrogateescape"))
 out.write(("sources.env_keys\0" + sys.argv[8] + "\0").encode("utf-8", "surrogateescape"))
 out.write(("sources.secrets_path\0" + sys.argv[9] + "\0").encode("utf-8", "surrogateescape"))
-for k, v in flat.items():
+
+def _dump_text(v):
     if isinstance(v, bool):
-        s = "true" if v else "false"
-    elif isinstance(v, list):
-        s = "\n".join(str(x) for x in v)
-    else:
-        s = str(v)
+        return "true" if v else "false"
+    if isinstance(v, list):
+        return "\n".join(str(x) for x in v)
+    return str(v)
+
+def _dump_pair(k, v):
     out.write(k.encode("utf-8", "surrogateescape"))
     out.write(b"\x00")
-    out.write(s.encode("utf-8", "surrogateescape"))
+    out.write(_dump_text(v).encode("utf-8", "surrogateescape"))
     out.write(b"\x00")
+
+# Profile-aware runs only (#539; see the profile block in the shared loader):
+# the harness, the active profile and where it came from, the profiles passed
+# over (name:reason), and for every profile its mode / runner / CLI / usability
+# plus its resolved keys as profile.<name>.<key> (profile over base agents.*,
+# validated like the keys they overlay). pipeline-agent.sh reads these for a
+# fallback entry that names a profile.
+if _PROFILE.get("aware"):
+    _dump_pair("sources.harness", _HARNESS[0])
+    _dump_pair("sources.harness_origin", _HARNESS[1])
+    _dump_pair("sources.profile", _PROFILE["active"])
+    _dump_pair("sources.profile_origin", _PROFILE["origin"] if _PROFILE["active"] else "")
+    _dump_pair("sources.profile_requested", _PROFILE["requested"])
+    _dump_pair("sources.profile_mode", _PROFILE["mode"])
+    _dump_pair("sources.profiles", ",".join(_PROFILE["names"]))
+    _dump_pair("sources.profile_skipped", "\n".join("%s:%s" % sk for sk in _PROFILE["skipped"]))
+    import contextlib
+    import io
+    for _pn in _PROFILE["names"]:
+        _pf = {}
+        _pstack = [("agents", _PROFILE["resolved"][_pn])]
+        while _pstack:
+            _pp, _po = _pstack.pop()
+            for _pk, _pv in _po.items():
+                if isinstance(_pv, dict):
+                    _pstack.append(("%s.%s" % (_pp, _pk), _pv))
+                elif _pv is not None:
+                    _pf["%s.%s" % (_pp, _pk)] = _pv
+        # The active profile was validated with the effective config above: say nothing twice.
+        with contextlib.redirect_stderr(io.StringIO() if _pn == _PROFILE["active"] else sys.stderr):
+            _int_apply(_pf)
+            for _ek in [k for k in _pf if k == "agents.effort" or (k.startswith("agents.roles.") and k.endswith(".effort"))]:
+                _ev = _valid_effort(_ek, _pf[_ek])
+                if _ev is None:
+                    del _pf[_ek]
+                else:
+                    _pf[_ek] = _ev
+        _pmode, _prunner, _pcli, _preason = _PROFILE["states"][_pn]
+        _pf["agents.mode"] = _pmode
+        _pf["agents.runner"] = _prunner
+        _pf["agents.cli"] = "present" if _pcli else "missing"
+        _pf["agents.usable"] = "no" if _preason else "yes"
+        _pf["agents.reason"] = _preason
+        for _pk, _pv in _pf.items():
+            _dump_pair("profile.%s.%s" % (_pn, _pk[len("agents."):]), _pv)
+
+for k, v in flat.items():
+    _dump_pair(k, v)
 PYEOF
+  _DRC=$?
+  if [ "$_DRC" -eq 4 ]; then exit 4; fi
   exit 0
 fi
 
@@ -1554,7 +1848,7 @@ CFG="$(_locate_project_cfg)"
 USER_CFG="$(_locate_user_cfg)"
 
 # No config present — return default
-if [ -z "$CFG" ] && [ -z "$USER_CFG" ]; then
+if [ -z "$CFG" ] && [ -z "$USER_CFG" ] && [ -z "${TALOS_PROFILE:-}" ] && [ -z "${TALOS_HARNESS:-}" ]; then
   # The key's env override (#441) still applies: pure shell, no python3 spawn.
   if _ENVV="$(_talos_env_value "$KEY")"; then printf '%s' "$_ENVV"; else
     [ -z "$_NODEFAULT" ] || _cfg_fail_closed
@@ -1637,6 +1931,12 @@ def _warn_unknown_keys(cfg_obj):
             continue
         parts = key.split(".")
         if any(_key_matches(parts, t) for t in templates):
+            continue
+        # agents.profiles.<name>.<rest> holds any agents.<rest> key (#539), but
+        # a profile cannot select or define profiles.
+        if (len(parts) >= 4 and parts[:2] == ["agents", "profiles"]
+                and parts[3] not in ("profile", "profiles")
+                and any(_key_matches(["agents"] + parts[3:], t) for t in templates)):
             continue
         candidates = []
         for t in templates:

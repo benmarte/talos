@@ -103,7 +103,7 @@ _CFG_CACHE_DONE="$_CFG_CACHE_DIR/done"
 # first call anywhere (in this process) to actually need the dump
 # populates it, every other call just reads it.
 cfg() {
-  local _key="${1:-}" _default="${2:-}"
+  local _key="${1:-}" _default="${2:-}" _cfg_rc
   if [ -n "$_CFG_CACHE_DIR" ]; then
     if [ ! -e "$_CFG_CACHE_DONE" ]; then
       # stderr intentionally NOT redirected (#176): --dump's stderr is where
@@ -117,6 +117,18 @@ cfg() {
       # python3 and never wrote to stderr, so there was never a routine
       # message this redirect was hiding.
       "$SCRIPT_DIR/pipeline-config.sh" --dump > "$_CFG_CACHE_FILE"
+      _cfg_rc=$?
+      if [ "$_cfg_rc" -eq 4 ]; then
+        # An unknown or unusable LLM profile (#539): the reason line is already
+        # on stderr. Running on an empty dump would mean the defaults of every
+        # key (merge.auto, the limits, the hooks), so stop the whole script,
+        # the way a security key without a table default does below.
+        # (Marked done so a cfg call racing the signal does not dump and print again.)
+        : > "$_CFG_CACHE_FILE"
+        : > "$_CFG_CACHE_DONE"
+        kill -s TERM "$$"
+        return 1
+      fi
       : > "$_CFG_CACHE_DONE"
     fi
     if [ -f "$_CFG_CACHE_FILE" ]; then
@@ -132,6 +144,17 @@ cfg() {
   if [ "$#" -lt 2 ]; then _talos_default "$_key"; return $?; fi
   printf '%s' "$_default"
 }
+
+# cfg_src NAME / cfg_prof PROFILE KEY (#539): the dump's profile pairs. They are
+# header data, not config keys (so not in the schema table): `sources.<NAME>`
+# (harness, harness_origin, profile, profile_origin, profile_mode, profiles,
+# profile_skipped; present only in a profile-aware run) and `profile.<PROFILE>.<KEY>`
+# (a profile's resolved agents.<KEY>, plus mode / runner / cli / usable / reason).
+# Empty when absent, never a table default.
+_CFG_SRC_PREFIX="sources"
+_CFG_PROF_PREFIX="profile"
+cfg_src() { cfg "$_CFG_SRC_PREFIX.$1" ""; }
+cfg_prof() { cfg "$_CFG_PROF_PREFIX.$1.$2" ""; }
 
 # talos_claim_resolve -- multi-user claiming (#560): resolve, once per run,
 # whether this operator claims issues and under which login. Sets and exports
