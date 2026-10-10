@@ -25,7 +25,7 @@ newcase() {
   export CLAUDE_STUB_STATE="$CASE/stub-state"
   export CLAUDE_PLUGIN_LOG="$CASE/plugin.log"
   : > "$CLAUDE_PLUGIN_LOG"
-  unset CLAUDE_STUB_NO_PLUGIN CLAUDE_STUB_LIST_RAW CLAUDE_STUB_ADD_FAIL CLAUDE_STUB_INSTALL_FAIL
+  unset CLAUDE_STUB_NO_PLUGIN CLAUDE_STUB_LIST_RAW CLAUDE_STUB_ADD_FAIL CLAUDE_STUB_INSTALL_FAIL CLAUDE_STUB_REMOVE_FAIL
 }
 
 # seed_marketplace <kind> <value> -- what `marketplace list` reports for talos.
@@ -210,6 +210,86 @@ assert_eq "0" "$RC" "github source: exits 0"
 assert_eq "0" "$(calls '\[add\]')" "github source: the marketplace is not re-added"
 assert_eq "github	benmarte/talos" "$(cat "$CLAUDE_STUB_STATE/marketplace")" "github source: left exactly as it was"
 assert_contains "$OUT" "non-directory source (github); left as is" "github source: output says it was left alone"
+
+# ── 3b. --local-plugin: the marketplace is this checkout (#586) ──────────────
+# line_of <pattern> -- the log line number of the first matching stub call.
+line_of() { grep -n -- "$1" "$CLAUDE_PLUGIN_LOG" | head -1 | cut -d: -f1; }
+SWITCH_BACK_REMOVE="claude plugin marketplace remove talos"
+SWITCH_BACK_ADD="claude plugin marketplace add benmarte/talos"
+SWITCH_BACK_INSTALL="claude plugin install talos@talos"
+
+newcase local-fresh
+inst --local-plugin
+assert_eq "0" "$RC" "AC1 --local-plugin on a fresh config exits 0"
+assert_eq "1" "$(calls "\[add\] \[$TALOS_ROOT\] \[--json\]")" "AC1 --local-plugin adds the checkout as the marketplace"
+assert_eq "1" "$(calls '\[install\] \[talos@talos\]')" "AC1 --local-plugin installs talos@talos"
+assert_eq "dir	$TALOS_ROOT" "$(cat "$CLAUDE_STUB_STATE/marketplace")" "AC1 --local-plugin leaves the checkout as the directory marketplace"
+assert_not_contains "$OUT" "target directory not found" "AC1 --local-plugin is not mistaken for the target path"
+assert_not_contains "$OUT" "Configuring Talos for repo" "AC1 --local-plugin is not mistaken for a repo target"
+assert_contains "$OUT" "Claude Code reads on each session start" "AC1 --local-plugin success line says the checkout is read on each session start"
+
+newcase local-github
+seed_marketplace github "benmarte/talos"
+inst --local-plugin
+assert_eq "0" "$RC" "AC2 github marketplace with --local-plugin exits 0"
+assert_eq "1" "$(calls '\[marketplace\] \[remove\] \[talos\] \[--json\]')" "AC2 --local-plugin removes the github marketplace"
+assert_eq "1" "$(calls "\[add\] \[$TALOS_ROOT\]")" "AC2 --local-plugin then adds the checkout"
+_rm="$(line_of '\[remove\]')"; _ad="$(line_of '\[add\]')"; _in="$(line_of '\[install\]')"
+assert_eq "1" "$([ -n "$_rm" ] && [ -n "$_ad" ] && [ -n "$_in" ] && [ "$_rm" -lt "$_ad" ] && [ "$_ad" -lt "$_in" ] && echo 1 || echo 0)" "AC2 calls run in order: remove, add, install"
+assert_eq "dir	$TALOS_ROOT" "$(cat "$CLAUDE_STUB_STATE/marketplace")" "AC2 the stub config holds the checkout as a directory marketplace"
+
+newcase local-same
+inst --local-plugin
+: > "$CLAUDE_PLUGIN_LOG"
+inst --local-plugin
+assert_eq "0" "$RC" "AC3 second --local-plugin run exits 0"
+assert_eq "0" "$(calls '\[remove\]')" "AC3 second run makes no remove call"
+assert_eq "0" "$(calls '\[add\]')" "AC3 second run makes no add call"
+assert_eq "1" "$(calls '\[install\] \[talos@talos\]')" "AC3 second run still installs talos@talos"
+
+for _extra in --keep-marketplace --no-overwrite; do
+  newcase "local-other-dir$_extra"
+  seed_marketplace dir "$SANDBOX/moved-checkout"
+  inst --local-plugin "$_extra"
+  assert_eq "0" "$RC" "AC4 other directory with --local-plugin $_extra exits 0"
+  assert_eq "1" "$(calls "\[add\] \[$TALOS_ROOT\]")" "AC4 --local-plugin $_extra still repoints to the checkout"
+  assert_eq "dir	$TALOS_ROOT" "$(cat "$CLAUDE_STUB_STATE/marketplace")" "AC4 --local-plugin $_extra leaves the checkout registered"
+done
+
+newcase local-switch-back
+seed_marketplace github "benmarte/talos"
+inst --local-plugin
+assert_contains "$OUT" "$SWITCH_BACK_REMOVE" "AC5 output prints the marketplace remove switch-back command"
+assert_contains "$OUT" "$SWITCH_BACK_ADD" "AC5 output prints the marketplace add benmarte/talos switch-back command"
+assert_contains "$OUT" "$SWITCH_BACK_INSTALL" "AC5 output prints the install switch-back command"
+
+newcase nolocal-github
+seed_marketplace github "benmarte/talos"
+inst
+assert_eq "0" "$(calls '\[remove\]')" "AC6 without the flag a github marketplace gets no remove"
+assert_eq "0" "$(calls '\[add\]')" "AC6 without the flag a github marketplace gets no add"
+assert_eq "github	benmarte/talos" "$(cat "$CLAUDE_STUB_STATE/marketplace")" "AC6 without the flag the github registration is untouched"
+assert_contains "$OUT" "non-directory source (github); left as is" "AC6 without the flag the notice keeps its wording"
+assert_contains "$OUT" "--local-plugin" "AC6 without the flag the notice names --local-plugin"
+assert_not_contains "$OUT" "$SWITCH_BACK_ADD" "AC6 without the flag no switch-back commands are printed"
+
+newcase local-remove-fails
+seed_marketplace github "benmarte/talos"
+export CLAUDE_STUB_REMOVE_FAIL=1
+inst --local-plugin
+assert_eq "0" "$RC" "AC7 remove fails: exit code is 0"
+assert_contains "$OUT" "'claude plugin marketplace remove' failed" "AC7 remove fails: output has a notice"
+assert_eq "0" "$(calls '\[add\]')" "AC7 remove fails: no add call"
+assert_eq "0" "$(calls '\[install\]')" "AC7 remove fails: no install call"
+assert_eq "github	benmarte/talos" "$(cat "$CLAUDE_STUB_STATE/marketplace")" "AC7 remove fails: the github registration is unchanged"
+assert_contains "$OUT" "Done. Global Talos install" "AC7 remove fails: the install runs to Done."
+unset CLAUDE_STUB_REMOVE_FAIL
+
+newcase local-success-line
+inst --local-plugin
+assert_not_contains "$OUT" "only after you re-run" "AC8 the success line does not say edits need a re-run"
+assert_not_contains "$OUT" "copied the plugin into its plugin cache" "AC8 the success line does not claim a cache copy"
+assert_contains "$OUT" "registered: talos@talos" "AC8 the plugin is still reported as registered"
 
 # ── 4. failures never abort the install and never delete anything ────────────
 newcase install-fails

@@ -47,8 +47,7 @@ terminal.
 **Approval (required after the final push):** `bash scripts/pipeline-vcs.sh post-approval <PR> docs [--body-file <summary-file>] --issue <issue-n>`
 reads the PR head SHA itself (never `git rev-parse HEAD`: your local HEAD can
 differ after a push), appends the marker as the last line and applies
-`docs:done`, so no separate `label-pr` is needed. It then runs check-approval-sha
-itself and prints one line ending `stamp ok`; `stamp FAILED` (exit 1) is a
-failure to report. Run no follow-up check. GitHub-only.
+`docs:done`, so no separate `label-pr` is needed. It runs check-approval-sha itself
+and prints `stamp ok` (success) or `stamp FAILED` (exit 1: report it). GitHub-only.
 
 Final message: `docs posted: ...`.

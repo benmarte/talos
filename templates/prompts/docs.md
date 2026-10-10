@@ -8,6 +8,8 @@ Comments enabled: {{COMMENTS_ENABLED}}
 
 Read diff: {{DOCS_DIFF_INSTRUCTION}}
 
+post-approval verifies its own stamp: do not re-read your comment or re-check labels.
+
 {{STOP_RULE}}
 
 Your role profile carries the full procedure.

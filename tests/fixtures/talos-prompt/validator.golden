@@ -6,6 +6,8 @@ Comments enabled: true
 Comment header: **Agent:** validator (talos)
 Comment templates dir: templates/comments
 
+Effort cap: scale effort to the issue type. A feature or enhancement request needs scope, a duplicate check and feasibility only, no repro hunt. Reproduce only for bug reports. Stop exploring once the verdict's evidence is cited.
+
 If you stop, block, or ask instead of completing: name the file and quote
 the line that made you stop, and say whether it is an explicit requirement or
 your interpretation.

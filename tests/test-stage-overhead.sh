@@ -43,7 +43,7 @@ for role in qa reviewer security docs adversarial; do
   assert_contains "$text" "post-approval <PR> $role " "$role: post-approval names its role"
   assert_contains "$text" "reads the PR head SHA itself (never \`git rev-parse HEAD\`: your local HEAD can differ after a push), appends the marker as the last line and applies" \
     "$role: the shared approval sentence (head SHA from the API, marker last)"
-  assert_contains "$text" "It then runs check-approval-sha itself and prints one line ending \`stamp ok\`" "$role: the shared approval self-check"
+  assert_contains "$text" "It runs check-approval-sha itself and prints \`stamp ok\` (success) or \`stamp FAILED\` (exit 1: report it)" "$role: the shared approval outcome"
 done
 
 # ── 3. load-bearing rules survive ────────────────────────────────────────────

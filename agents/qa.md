@@ -48,10 +48,8 @@ in the foreground with an explicit timeout of `verify.timeout_ms` ms (default
 sleep-polling; never end your turn while a verify command is running.
 2. Check `verify.qa_mode` (config key; default `ci` when `merge.required_checks`
    is non-empty, else `local`). A `qa_mode: ci` with an empty or absent
-   `merge.required_checks` list is itself treated as `local` — trusting CI as
-   the oracle for an empty check list would let QA pass vacuously without
-   ever observing a real CI signal, so
-   `pipeline-config.sh` resolves that combination to `local` for you. In
+   `merge.required_checks` list is treated as `local` (CI cannot be the oracle
+   for an empty list; `pipeline-config.sh` resolves it for you). In
    EITHER mode: CI is the authoritative full run (`pr-checks-required <pr>`
    must already be green, when configured). Run ONLY targeted tests, with
    `--strict` so an unmapped path is skipped instead of falling back to the
@@ -73,16 +71,17 @@ sleep-polling; never end your turn while a verify command is running.
      was still pending or missing; fail closed.
    - `local` (including the empty-`required_checks` fallback above) — there is
      no CI to trust, but the developer already ran the full `verify:` list
-     once before opening the PR (#195), so the targeted-tests-only rule above
-     still applies unchanged; there is nothing extra to run here. Prefer
+     before opening the PR (#195), so the targeted-only rule above is
+     unchanged; nothing extra to run. Prefer
      summary output for verify commands (e.g. `--quiet` for Talos's own
      suite, or the project's equivalent) -- quote only failures, never paste
-     full green output into comments or final messages.
-3. Exercise each acceptance criterion from the PM spec — drive the actual
-   behavior where feasible, not only unit tests. Criteria marked `(prose: ...)` have
-   no test: check them by hand and label them hand-checked; a criterion the
-   developer declared prose in the PR body (the spec had no marker) is
-   labelled `prose declared by developer`.
+     green output.
+3. A criterion `qa-run` reports `red@<sha8> green@head` has its proof: do not
+   re-run or hand-exercise it. Every other one (`green@head (red: missing)`,
+   `prose hand-checked`, any `qa-run` did not run): drive the actual behavior
+   where feasible, not only unit tests; label developer-declared prose (no
+   spec marker) `prose declared by developer`. After `post-approval`,
+   do not re-read your comment.
    The verdict has one line per criterion id, copied from `qa-run`'s lines.
 4. Look for missing edge-case tests and obvious regressions.
 
@@ -103,9 +102,8 @@ Outcome:
 **Approval (on pass):** `bash scripts/pipeline-vcs.sh post-approval <PR> qa [--body-file <verdict-file>] --issue <issue-n>`
 reads the PR head SHA itself (never `git rev-parse HEAD`: your local HEAD can
 differ after a push), appends the marker as the last line and applies
-`qa:pass`, so no separate `label-pr` is needed. It then runs check-approval-sha
-itself and prints one line ending `stamp ok`; `stamp FAILED` (exit 1) is a
-failure to report. Run no follow-up check. GitHub-only.
+`qa:pass`, so no separate `label-pr` is needed. It runs check-approval-sha itself
+and prints `stamp ok` (success) or `stamp FAILED` (exit 1: report it). GitHub-only.
 
 Final message: the FIRST LINE is your verdict word, a colon and a one-line
 reason (`PASS: ...` or `FAIL: ...`); after it, 1-3 lines of findings the
