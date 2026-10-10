@@ -171,19 +171,19 @@ st state --summary extra
 assert_eq "stop reason=usage" "$OUT" "summary: an extra argument is usage"
 
 # ── AC2: the extraction ───────────────────────────────────────────────────────
-# next_stage lives in pipeline-next-stage.py (its one implementation), and
-# pipeline-status-file.sh loads it; the stage-of-PR tests stay in
+# next_stage lives in pipeline-next.py (its one implementation, #557), and
+# pipeline-status-file.sh runs it; the stage-of-PR tests stay in
 # tests/test-collect.sh (#550: the collect JSON, the stage table).
-assert_file_exists "$TALOS_ROOT/scripts/pipeline-next-stage.py" "AC2: pipeline-next-stage.py exists"
-grep -q "def next_stage(n, labels, issue_labels, enabled):" "$TALOS_ROOT/scripts/pipeline-next-stage.py"
+assert_file_exists "$TALOS_ROOT/scripts/pipeline-next.py" "AC2: pipeline-next.py exists"
+grep -q "def next_stage(n, labels, issue_labels, enabled):" "$TALOS_ROOT/scripts/pipeline-next.py"
 assert_eq "0" "$?" "AC2: the module defines next_stage"
-grep -q "pipeline-next-stage.py" "$TALOS_ROOT/scripts/pipeline-status-file.sh"
-assert_eq "0" "$?" "AC2: pipeline-status-file.sh loads the module"
+grep -q "pipeline-next.py" "$TALOS_ROOT/scripts/pipeline-status-file.sh"
+assert_eq "0" "$?" "AC2: pipeline-status-file.sh runs the module"
 grep -q "def next_stage(" "$TALOS_ROOT/scripts/pipeline-status-file.sh"
 assert_eq "1" "$?" "AC2: no copy of next_stage stays in pipeline-status-file.sh"
 # python3 -I, the repo convention for every embedded program.
-grep -q "python3 -I -c \"\$SF_PYS\"" "$TALOS_ROOT/scripts/pipeline-status-file.sh"
-assert_eq "0" "$?" "AC2: the collect/refresh modes run under python3 -I"
+grep -q "python3 -I \"\$SCRIPT_DIR/pipeline-next.py\" collect" "$TALOS_ROOT/scripts/pipeline-status-file.sh"
+assert_eq "0" "$?" "AC2: collect runs under python3 -I"
 
 # The action schema, as a checker: one line, exactly one of the four shapes,
 # fixed-enum reasons, nothing untrusted. The draft wait is key-carrying (#516):

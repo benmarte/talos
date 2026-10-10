@@ -84,31 +84,18 @@ set -u
 
 # ── --dump (#169) ─────────────────────────────────────────────────────────────
 # Prints the whole resolved config once as NUL-delimited key/value pairs
-# (key NUL value NUL key NUL value NUL ...) instead of one dot-path lookup.
-# Callers that used to shell out to this script once per cfg() call (a fresh
-# python3 process re-parsing the config file every time) can spawn python3
-# once per script invocation instead: dump here, then answer every lookup
-# from the cached output with pure shell. A key absent from the dump means
-# "absent in config" — the caller applies its own caller-supplied default,
-# exactly like the single-key path below does. Same file lookup, and the same "verify" (dict-form → commands
-# list) / "verify.qa_mode" (merge.required_checks-derived default, fail-
-# closed downgrade) / "verify.timeout_ms" / "verify.ci_wait_s" /
-# "hooks.timeout_s" / "notifications.cmd_timeout_s" (positive-integer
-# validation, fail-closed to the caller's default) special cases as the
-# single-key path, so a lookup
-# against this dump is byte-identical to calling this script for that key
-# directly. Purely additive: an early exit, does not touch anything below.
+# (key NUL value NUL ...). Callers spawn python3 once per script invocation
+# (cfg() in pipeline-cfg-cache.sh) and answer every lookup from the cached
+# output in pure shell. A key absent from the dump means "absent in config":
+# the caller applies its own default. The dump and a direct single-key read are
+# the same program (_CFG_READ_PY below), so they agree byte for byte.
 
 # ── Known config keys (#176, #439) ──────────────────────────────────────────
 # Every documented config key, "*" standing in for a dynamic segment
 # (board.status_map.*, agents.roles.*.model, etc.). The list is the key column
 # of the config schema table in pipeline-defaults.sh (#439); it is generated
-# from there (_talos_known_keys_json) at the two places that hand it to python3,
-# so it can never drift from the table. The --dump path and the single-key path
-# below each parse the config file in their own separate python3 process (so
-# the unknown-key check itself can't literally be one shared function call, see
-# both copies' comments), but both are handed this exact same JSON via argv
-# instead of each embedding their own copy of the list as a Python literal.
+# from there (_talos_known_keys_json) and handed to python3 as argv, so it can
+# never drift from the table.
 #
 # A partial install may not ship pipeline-defaults.sh yet: then the table is
 # empty and the unknown-key check is skipped (an empty list matches nothing).
@@ -141,8 +128,7 @@ fi
 
 # ── Shared config loader (#336) ───────────────────────────────────────────────
 # One place that finds the config files and one that parses + merges them,
-# used by both --dump and the single-key lookup below (they used to each carry
-# their own copy of the file-lookup loop and the parse block).
+# used by --dump, the single-key lookup and --has.
 #
 # Three file/env layers, the higher one wins per leaf key (#441):
 #   1. user-level  ${TALOS_HOME:-$HOME/.talos}/talos.pipeline.json
@@ -317,8 +303,7 @@ _cfg_gate() {
 }
 
 # Python half of the loader. Handed to each python3 process as an argv string
-# and exec()'d at the top, so the --dump and single-key processes share one
-# definition (they are separate processes and cannot import a shared module
+# and exec()'d at the top of the resolver (they cannot import a shared module
 # without a new installed file). Defines load_layers(project_path, user_path,
 # env=True) -> (project, user, merged).
 # The scope/env data comes from the table in pipeline-defaults.sh: use
@@ -815,8 +800,7 @@ EOF
 }
 
 # ── Runner-failover validators (#418) ────────────────────────────────────────
-# One snippet exec()'d by both the --dump and the single-key python3
-# processes. _validate_fallback_key(key, value) returns
+# One snippet exec()'d by the resolver. _validate_fallback_key(key, value) returns
 # the value, or None after one stderr warning (callers read None as absent).
 #   agents.fallback, agents.roles.<role>.fallback: a list of 1-5 runner ids, no
 #     duplicates inside the list. "Not the primary" depends on the role, so
@@ -879,8 +863,7 @@ def _fallback_apply(flat):
 PYFALLBACK
 
 # ── Integer-key validator (#440, part of #437) ───────────────────────────────
-# Same shape as the snippets above: one definition exec()'d by both the --dump
-# and the single-key python3 processes. Every int row of the table is either
+# Same shape as the snippets above: one definition exec()'d by the resolver. Every int row of the table is either
 # listed in _INT_KEYS (unit, lowest, highest accepted value) or has its own
 # validator above (limits.tokens_per_issue, agents.provider_down_s), or is left to a consumer that already refuses or
 # falls back with its own message (issues.max_parallel, #120; limits.max_retries,
@@ -1117,6 +1100,397 @@ _cfg_env_keys_set() {
   printf '%s' "${_out# }"
 }
 
+# ── The resolver: --dump and a single-key read ───────────────────────────────
+# One python3 program, one code path: it loads the layers, warns about unknown
+# keys, then either dumps every resolved key (mode dump) or resolves the one
+# key asked for (mode key). Both modes call the same validators and the same
+# derived-default helpers, so a lookup against the dump (what cfg() in
+# pipeline-cfg-cache.sh answers from) is byte-identical to a direct read.
+# argv: mode, project cfg, user cfg, known-keys JSON, loader, fallback
+# validators, int validators, then for dump: env keys set, secrets path; for
+# key: key, default, "1" when there is no default to fall back to.
+read -r -d '' _CFG_READ_PY <<'PYREAD' || true
+import sys
+
+mode = sys.argv[1]
+exec(sys.argv[5])
+exec(sys.argv[6])
+exec(sys.argv[7])
+
+def walk(obj, parts):
+    for part in parts:
+        if isinstance(obj, dict) and part in obj:
+            obj = obj[part]
+        else:
+            return None
+    return obj
+
+# Merged project-over-user-level config (see the shared loader above). An
+# unparseable project file is treated as absent: every key falls back to the
+# user-level layer or its caller-supplied default.
+_project_cfg, _user_cfg, cfg = load_layers(sys.argv[2], sys.argv[3])
+
+# ── Unknown-key warning (#176) ──────────────────────────────────────────────
+# Runs against the config exactly as parsed, before any derived key is
+# synthesized, so only keys the user actually wrote are flagged.
+import difflib
+import json
+import os
+
+_KNOWN_CONFIG_KEYS = json.loads(sys.argv[4])
+
+def _present_leaf_keys(obj, prefix, out):
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            _present_leaf_keys(v, "%s.%s" % (prefix, k) if prefix else k, out)
+    elif obj is not None:
+        out.append(prefix)
+
+def _key_matches(parts, template_parts):
+    return len(parts) == len(template_parts) and all(
+        t == "*" or t == p for t, p in zip(template_parts, parts)
+    )
+
+def _warn_unknown_keys(cfg_obj):
+    if os.environ.get("TALOS_CONFIG_STRICT_KEYS", "1") == "0":
+        return
+    if not isinstance(cfg_obj, dict) or not _KNOWN_CONFIG_KEYS:
+        return
+    present = []
+    _present_leaf_keys(cfg_obj, "", present)
+    templates = [t.split(".") for t in _KNOWN_CONFIG_KEYS]
+    for key in present:
+        if key.split(".")[-1] == "_note":
+            continue
+        parts = key.split(".")
+        if any(_key_matches(parts, t) for t in templates):
+            continue
+        # agents.profiles.<name>.<rest> holds any agents.<rest> key (#539), but
+        # a profile cannot select or define profiles.
+        if (len(parts) >= 4 and parts[:2] == ["agents", "profiles"]
+                and parts[3] not in ("profile", "profiles")
+                and any(_key_matches(["agents"] + parts[3:], t) for t in templates)):
+            continue
+        candidates = []
+        for t in templates:
+            if len(t) == len(parts):
+                candidates.append(
+                    ".".join(tp if tp != "*" else p for tp, p in zip(t, parts))
+                )
+            else:
+                candidates.append(".".join(t))
+        match = difflib.get_close_matches(key, candidates, n=1, cutoff=0.6)
+        if match:
+            sys.stderr.write(
+                "pipeline-config: [warn] unknown config key %r "
+                "(did you mean %r?)\n" % (key, match[0])
+            )
+        else:
+            sys.stderr.write(
+                "pipeline-config: [warn] unknown config key %r\n" % key
+            )
+
+try:
+    _warn_unknown_keys(cfg)
+except Exception as _e:
+    # The check must never take stdout down with it: a crash here would abort
+    # the process before any value is printed, breaking every caller's lookup,
+    # not just the warning. Fail loud, then continue.
+    sys.stderr.write(
+        "pipeline-config: [warn] unknown-key check unavailable: %s\n" % _e
+    )
+
+# ── Validators and derived defaults, shared by both modes ───────────────────
+
+# verify.qa_mode: "ci" when merge.required_checks is a non-empty list (CI is
+# already the suite oracle), "local" otherwise; an explicit value wins --
+# EXCEPT "ci" with an empty/absent merge.required_checks, a fail-open trap (QA
+# would pass vacuously with nothing to poll). That resolves to "local" with
+# one stderr warning, whether the "ci" was derived or written.
+def _qa_mode(value):
+    required_checks = walk(cfg, ["merge", "required_checks"])
+    has_required_checks = isinstance(required_checks, list) and len(required_checks) > 0
+    if value is None:
+        value = "ci" if has_required_checks else "local"
+    if value == "ci" and not has_required_checks:
+        sys.stderr.write(
+            "pipeline-config: verify.qa_mode=ci with empty/absent "
+            "merge.required_checks -- resolving to 'local' (ci mode would "
+            "pass QA vacuously with no required checks to poll)\n"
+        )
+        value = "local"
+    return value
+
+# limits.tokens_per_issue / limits.warn_at / spend.comment (#378): the
+# per-issue spend guard. Same fail-closed-to-absent shape as _validate_int_key
+# (an invalid value warns once and returns None, so the caller's default
+# applies), but none fits it: 0 is the silent "guard off" value for
+# tokens_per_issue, warn_at is a decimal in (0, 1], spend.comment a strict bool.
+def _validate_spend_key(key, value):
+    if value is None:
+        return value
+    if key == "limits.tokens_per_issue":
+        try:
+            if isinstance(value, bool) or (isinstance(value, float) and value != int(value)):
+                raise ValueError
+            iv = int(value)
+            if iv == 0:
+                return None  # explicit off: silent, same as unset
+            if iv < 0:
+                raise ValueError
+            return iv
+        except (TypeError, ValueError, OverflowError):
+            sys.stderr.write(
+                "pipeline-config: %s must be a positive integer (tokens) -- "
+                "got: %r -- treating the guard as off\n" % (key, value)
+            )
+            return None
+    if key == "limits.warn_at":
+        try:
+            if isinstance(value, bool):
+                raise ValueError
+            fv = float(value)
+            if not (0 < fv <= 1):  # also rejects nan; inf is > 1
+                raise ValueError
+            return fv
+        except (TypeError, ValueError, OverflowError):
+            sys.stderr.write(
+                "pipeline-config: %s must be a number greater than 0 and at "
+                "most 1 -- got: %r -- using default\n" % (key, value)
+            )
+            return None
+    if key == "spend.comment":
+        if not isinstance(value, bool):
+            sys.stderr.write(
+                "pipeline-config: %s must be true or false -- got: %r -- "
+                "using default\n" % (key, value)
+            )
+            return None
+        return value
+    return value
+
+# agents.restamp_model / agents.roles.<role>.restamp_model (#258): role
+# restamp -> global restamp -> agents.model. `own` is the value at the key being
+# resolved; a re-stamp dispatch defaults to the same cheap tier as agents.model.
+def _restamp_model(own):
+    if own is None or own == "":
+        own = walk(cfg, ["agents", "restamp_model"])
+        if own is None or own == "":
+            own = walk(cfg, ["agents", "model"])
+    return own
+
+# agents.effort / agents.roles.<role>.effort / agents.restamp_effort /
+# agents.roles.<role>.restamp_effort (#271): reasoning-effort lever. Anything
+# outside low/medium/high/max is reported on stderr and treated as absent.
+# restamp_effort chains role -> global -> agents.effort; `inherit` is the next
+# link (a callable, so an unused link neither runs nor warns).
+_EFFORT_VALUES = ("low", "medium", "high", "max")
+
+def _valid_effort(effort_key, effort_value):
+    if effort_value is None or effort_value == "":
+        return None
+    if effort_value not in _EFFORT_VALUES:
+        sys.stderr.write(
+            "pipeline-config: %s must be one of low, medium, high, max -- "
+            "got: %r -- using default\n" % (effort_key, effort_value)
+        )
+        return None
+    return effort_value
+
+def _restamp_effort(effort_key, own, inherit):
+    return _valid_effort(effort_key, own) or inherit()
+
+def _is_effort_key(key):
+    return key == "agents.effort" or (key.startswith("agents.roles.") and key.endswith(".effort"))
+
+def _apply_effort(flat):
+    for _ekey in [k for k in list(flat.keys()) if _is_effort_key(k)]:
+        _evalue = _valid_effort(_ekey, flat[_ekey])
+        if _evalue is None:
+            del flat[_ekey]
+        else:
+            flat[_ekey] = _evalue
+
+def _lookup(key, default, no_default):
+    value = walk(cfg, key.split("."))
+    # "verify" is historically a flat list of shell commands; the dict form
+    # (verify: {commands: [...], qa_mode: ..., ...}) reads as its commands.
+    if key == "verify" and isinstance(value, dict):
+        value = value.get("commands", [])
+    if key == "verify.qa_mode":
+        value = _qa_mode(value)
+    if key == "agents.restamp_model" or (key.startswith("agents.roles.") and key.endswith(".restamp_model")):
+        value = _restamp_model(value)
+    def _agents_effort():
+        return _valid_effort("agents.effort", walk(cfg, ["agents", "effort"]))
+    def _global_restamp_effort():
+        return _restamp_effort("agents.restamp_effort", walk(cfg, ["agents", "restamp_effort"]), _agents_effort)
+    if _is_effort_key(key):
+        value = _valid_effort(key, value)
+    elif key == "agents.restamp_effort":
+        value = _restamp_effort(key, value, _agents_effort)
+    elif key.startswith("agents.roles.") and key.endswith(".restamp_effort"):
+        value = _restamp_effort(key, value, _global_restamp_effort)
+    value = _validate_int_key(key, value)
+    value = _validate_spend_key(key, value)
+    value = _validate_fallback_key(key, value)
+    if value is None:
+        if no_default:
+            # No caller default and no table (pipeline-defaults.sh missing) for
+            # a security-relevant key: fail closed (#440).
+            sys.stderr.write(
+                "pipeline-config: %s is not set in any config and pipeline-defaults.sh "
+                "is missing, so its default is unknown; refusing to guess for a "
+                "security-relevant key\n" % key)
+            sys.exit(3)
+        print(default, end="")
+    elif isinstance(value, bool):
+        # Python True/False to "true"/"false", so callers can do
+        # [ "$(pipeline-config.sh board.enabled true)" = "true" ]
+        print(str(value).lower(), end="")
+    elif isinstance(value, list):
+        # Lists come back newline-separated for easy shell iteration.
+        print("\n".join(str(v) for v in value), end="")
+    else:
+        print(str(value), end="")
+
+def _dump(env_keys, secrets_path):
+    flat = {}
+
+    def flatten(obj, prefix):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                flatten(v, "%s.%s" % (prefix, k) if prefix else k)
+        elif obj is not None:
+            flat[prefix] = obj
+
+    flatten(cfg, "")
+
+    _raw_verify = cfg.get("verify")
+    if isinstance(_raw_verify, dict):
+        flat["verify"] = _raw_verify.get("commands", [])
+    flat["verify.qa_mode"] = _qa_mode(walk(cfg, ["verify", "qa_mode"]))
+
+    # An invalid value warns once on stderr and is dropped: the caller then
+    # gets the key's table default. The defaults are the CALLER's -- the dump
+    # never injects them.
+    _int_apply(flat)
+    for _spend_key in ("limits.tokens_per_issue", "limits.warn_at", "spend.comment"):
+        if _spend_key in flat:
+            _validated = _validate_spend_key(_spend_key, flat[_spend_key])
+            if _validated is None:
+                del flat[_spend_key]
+            else:
+                flat[_spend_key] = _validated
+    _fallback_apply(flat)
+
+    # Derived restamp keys: the global one, and one for every role already
+    # present under agents.roles (a role with no block resolves through a
+    # direct read's identical chain, since a cache miss means "use the caller's
+    # default").
+    _roles_cfg = walk(cfg, ["agents", "roles"])
+    _role_names = list(_roles_cfg) if isinstance(_roles_cfg, dict) else []
+    _restamps = [("agents.restamp_model", walk(cfg, ["agents", "restamp_model"]))] + [
+        ("agents.roles.%s.restamp_model" % r, walk(cfg, ["agents", "roles", r, "restamp_model"]))
+        for r in _role_names
+    ]
+    for _rkey, _own in _restamps:
+        _resolved = _restamp_model(_own)
+        if _resolved is not None and _resolved != "":
+            flat[_rkey] = _resolved
+        elif _rkey in flat:
+            del flat[_rkey]
+
+    _apply_effort(flat)
+    _global_restamp_effort = _restamp_effort(
+        "agents.restamp_effort", walk(cfg, ["agents", "restamp_effort"]),
+        lambda: flat.get("agents.effort"))
+    _restamp_efforts = [("agents.restamp_effort", _global_restamp_effort)] + [
+        ("agents.roles.%s.restamp_effort" % r,
+         _restamp_effort("agents.roles.%s.restamp_effort" % r,
+                         walk(cfg, ["agents", "roles", r, "restamp_effort"]),
+                         lambda: _global_restamp_effort))
+        for r in _role_names
+    ]
+    for _rekey, _resolved_effort in _restamp_efforts:
+        if _resolved_effort:
+            flat[_rekey] = _resolved_effort
+        elif _rekey in flat:
+            del flat[_rekey]
+
+    # SOURCES header (#526), before every resolved pair: the project path as the
+    # shell located it, the global path, the set env-override variable NAMES, and
+    # the secrets store (named even when absent). Ordinary pairs, so the strict
+    # NUL-pair cache reader (pipeline-cfg-cache.sh) parses the stream unchanged.
+    out = sys.stdout.buffer
+
+    def _dump_text(v):
+        if isinstance(v, bool):
+            return "true" if v else "false"
+        if isinstance(v, list):
+            return "\n".join(str(x) for x in v)
+        return str(v)
+
+    def _dump_pair(k, v):
+        out.write(k.encode("utf-8", "surrogateescape"))
+        out.write(b"\x00")
+        out.write(_dump_text(v).encode("utf-8", "surrogateescape"))
+        out.write(b"\x00")
+
+    _dump_pair("sources.project", sys.argv[2])
+    _dump_pair("sources.global", sys.argv[3])
+    _dump_pair("sources.env_keys", env_keys)
+    _dump_pair("sources.secrets_path", secrets_path)
+
+    # Profile-aware runs only (#539; see the profile block in the shared loader):
+    # the harness, the active profile and where it came from, the profiles passed
+    # over (name:reason), and for every profile its mode / runner / CLI / usability
+    # plus its resolved keys as profile.<name>.<key> (profile over base agents.*,
+    # validated like the keys they overlay). pipeline-agent.sh reads these for a
+    # fallback entry that names a profile.
+    if _PROFILE.get("aware"):
+        _dump_pair("sources.harness", _HARNESS[0])
+        _dump_pair("sources.harness_origin", _HARNESS[1])
+        _dump_pair("sources.profile", _PROFILE["active"])
+        _dump_pair("sources.profile_origin", _PROFILE["origin"] if _PROFILE["active"] else "")
+        _dump_pair("sources.profile_requested", _PROFILE["requested"])
+        _dump_pair("sources.profile_mode", _PROFILE["mode"])
+        _dump_pair("sources.profiles", ",".join(_PROFILE["names"]))
+        _dump_pair("sources.profile_skipped", "\n".join("%s:%s" % sk for sk in _PROFILE["skipped"]))
+        import contextlib
+        import io
+        for _pn in _PROFILE["names"]:
+            _pf = {}
+            _pstack = [("agents", _PROFILE["resolved"][_pn])]
+            while _pstack:
+                _pp, _po = _pstack.pop()
+                for _pk, _pv in _po.items():
+                    if isinstance(_pv, dict):
+                        _pstack.append(("%s.%s" % (_pp, _pk), _pv))
+                    elif _pv is not None:
+                        _pf["%s.%s" % (_pp, _pk)] = _pv
+            # The active profile was validated with the effective config above: say nothing twice.
+            with contextlib.redirect_stderr(io.StringIO() if _pn == _PROFILE["active"] else sys.stderr):
+                _int_apply(_pf)
+                _apply_effort(_pf)
+            _pmode, _prunner, _pcli, _preason = _PROFILE["states"][_pn]
+            _pf["agents.mode"] = _pmode
+            _pf["agents.runner"] = _prunner
+            _pf["agents.cli"] = "present" if _pcli else "missing"
+            _pf["agents.usable"] = "no" if _preason else "yes"
+            _pf["agents.reason"] = _preason
+            for _pk, _pv in _pf.items():
+                _dump_pair("profile.%s.%s" % (_pn, _pk[len("agents."):]), _pv)
+
+    for k, v in flat.items():
+        _dump_pair(k, v)
+
+if mode == "dump":
+    _dump(sys.argv[8], sys.argv[9])
+else:
+    _lookup(sys.argv[8], sys.argv[9], sys.argv[10] == "1")
+PYREAD
+
 # Every read verb below (KEY, --show, --dump, --has) refuses a dirty config
 # set: one stderr line per layer problem, exit 3, before any value resolves.
 _cfg_gate || exit 3
@@ -1194,383 +1568,8 @@ if [ "${1:-}" = "--dump" ]; then
     _talos_env_dump
     exit 0
   fi
-  python3 -I - "$_DCFG" "$(_talos_known_keys_json)" "$_DUSER" "$(_cfg_loader_src)" "$_CFG_FALLBACK_PY" "$_CFG_INT_PY" "$_DENV_KEYS" "$_DSECRETS" <<'PYEOF'
-import sys
-
-known_keys_json = sys.argv[2]
-exec(sys.argv[4])
-exec(sys.argv[5])
-exec(sys.argv[6])
-
-def walk(obj, parts):
-    for part in parts:
-        if isinstance(obj, dict) and part in obj:
-            obj = obj[part]
-        else:
-            return None
-    return obj
-
-# Merged project-over-user-level config (see the shared loader above).
-# Unparseable project config -- treated as absent; every key falls back to
-# the user-level layer or its caller-supplied default.
-_project_cfg, _user_cfg, cfg = load_layers(sys.argv[1], sys.argv[3])
-
-# ── Unknown-key warning (#176) ──────────────────────────────────────────────
-# This dump is what cfg() (pipeline-cfg-cache.sh) answers every lookup from,
-# so it's the one place a typo in the config file is guaranteed to be seen
-# exactly once per script invocation, regardless of how many keys the
-# invoking script goes on to look up. The single-key path below runs this
-# same check for direct (non-cached) callers -- it parses the file
-# independently in its own python3 process, so the check can't literally be
-# one shared function call, but both paths define the identical
-# _warn_unknown_keys() helper (same wildcard-matching rules, same
-# nearest-match suggestion, same env opt-out) against the same
-# _KNOWN_CONFIG_KEYS list (module-level, passed in via argv -- see the
-# top of this script) so a typo warns identically no matter which path
-# answered the lookup. Runs against the config exactly as parsed -- not
-# after any derived-default keys (verify.qa_mode, etc.) are synthesized
-# below -- so only keys the user actually wrote are ever flagged.
-import difflib
-import json
-import os
-
-# Handed in via argv (module-level definition, see top of this script) so
-# both this path and the single-key path below stay byte-identical for
-# every key without either duplicating the list as a Python literal.
-_KNOWN_CONFIG_KEYS = json.loads(known_keys_json)
-
-def _present_leaf_keys(obj, prefix, out):
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            _present_leaf_keys(v, "%s.%s" % (prefix, k) if prefix else k, out)
-    elif obj is not None:
-        out.append(prefix)
-
-def _key_matches(parts, template_parts):
-    return len(parts) == len(template_parts) and all(
-        t == "*" or t == p for t, p in zip(template_parts, parts)
-    )
-
-def _warn_unknown_keys(cfg_obj):
-    if os.environ.get("TALOS_CONFIG_STRICT_KEYS", "1") == "0":
-        return
-    if not isinstance(cfg_obj, dict) or not _KNOWN_CONFIG_KEYS:
-        return
-    present = []
-    _present_leaf_keys(cfg_obj, "", present)
-    templates = [t.split(".") for t in _KNOWN_CONFIG_KEYS]
-    for key in present:
-        if key.split(".")[-1] == "_note":
-            continue
-        parts = key.split(".")
-        if any(_key_matches(parts, t) for t in templates):
-            continue
-        # agents.profiles.<name>.<rest> holds any agents.<rest> key (#539), but
-        # a profile cannot select or define profiles.
-        if (len(parts) >= 4 and parts[:2] == ["agents", "profiles"]
-                and parts[3] not in ("profile", "profiles")
-                and any(_key_matches(["agents"] + parts[3:], t) for t in templates)):
-            continue
-        candidates = []
-        for t in templates:
-            if len(t) == len(parts):
-                candidates.append(
-                    ".".join(tp if tp != "*" else p for tp, p in zip(t, parts))
-                )
-            else:
-                candidates.append(".".join(t))
-        match = difflib.get_close_matches(key, candidates, n=1, cutoff=0.6)
-        if match:
-            sys.stderr.write(
-                "pipeline-config: [warn] unknown config key %r "
-                "(did you mean %r?)\n" % (key, match[0])
-            )
-        else:
-            sys.stderr.write(
-                "pipeline-config: [warn] unknown config key %r\n" % key
-            )
-
-try:
-    _warn_unknown_keys(cfg)
-except Exception as _e:
-    # The unknown-key check must never take stdout down with it -- a
-    # crash here (e.g. an unexpected cfg shape) would abort the whole
-    # python3 process before flat/stdout is built, silently breaking
-    # every caller's config lookup, not just the warning. Fail loud
-    # instead of silent: one line naming the reason, then continue.
-    sys.stderr.write(
-        "pipeline-config: [warn] unknown-key check unavailable: %s\n"
-        % _e
-    )
-
-flat = {}
-
-def flatten(obj, prefix):
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            flatten(v, "%s.%s" % (prefix, k) if prefix else k)
-    elif obj is not None:
-        flat[prefix] = obj
-
-flatten(cfg, "")
-
-# "verify" dict-form -> commands list (mirrors the single-key path). List
-# form is already captured correctly by the generic flatten() above.
-_raw_verify = cfg.get("verify")
-if isinstance(_raw_verify, dict):
-    flat["verify"] = _raw_verify.get("commands", [])
-
-# verify.qa_mode derived default + fail-closed downgrade (mirrors the
-# single-key path exactly, including the one-line stderr warning).
-_required_checks = walk(cfg, "merge.required_checks".split("."))
-_has_required_checks = isinstance(_required_checks, list) and len(_required_checks) > 0
-_qa_mode = walk(cfg, "verify.qa_mode".split("."))
-if _qa_mode is None:
-    _qa_mode = "ci" if _has_required_checks else "local"
-if _qa_mode == "ci" and not _has_required_checks:
-    sys.stderr.write(
-        "pipeline-config: verify.qa_mode=ci with empty/absent "
-        "merge.required_checks -- resolving to 'local' (ci mode would "
-        "pass QA vacuously with no required checks to poll)\n"
-    )
-    _qa_mode = "local"
-flat["verify.qa_mode"] = _qa_mode
-
-# Positive-integer keys (verify.timeout_ms, hooks.timeout_s, limits.max_fix_attempts,
-# ...): validated by the shared snippet (_CFG_INT_PY), the same one the
-# single-key path below runs, so this dump (what cfg() answers every lookup
-# from, pipeline-cfg-cache.sh) and a direct call stay byte-identical for these
-# keys. An invalid value warns once on stderr and is dropped: the caller then
-# gets the key's table default.
-_int_apply(flat)
-
-# limits.tokens_per_issue / limits.warn_at / spend.comment (#378): the
-# per-issue spend guard's config. Same fail-closed-to-absent shape as
-# _validate_int_key (an invalid value warns once on stderr and returns None,
-# so the caller's default applies), but none of these fits it: 0 is the
-# silent "guard off" value for tokens_per_issue, warn_at is a decimal in
-# (0, 1], and spend.comment is a strict bool. The defaults (empty / 0.8 /
-# true) are the CALLER's -- the dump never injects them. Defined identically
-# in the --dump process and the single-key process (separate python3 spawns,
-# like _validate_int_key).
-def _validate_spend_key(key, value):
-    if value is None:
-        return value
-    if key == "limits.tokens_per_issue":
-        try:
-            if isinstance(value, bool) or (isinstance(value, float) and value != int(value)):
-                raise ValueError
-            iv = int(value)
-            if iv == 0:
-                return None  # explicit off: silent, same as unset
-            if iv < 0:
-                raise ValueError
-            return iv
-        except (TypeError, ValueError, OverflowError):
-            sys.stderr.write(
-                "pipeline-config: %s must be a positive integer (tokens) -- "
-                "got: %r -- treating the guard as off\n" % (key, value)
-            )
-            return None
-    if key == "limits.warn_at":
-        try:
-            if isinstance(value, bool):
-                raise ValueError
-            fv = float(value)
-            if not (0 < fv <= 1):  # also rejects nan; inf is > 1
-                raise ValueError
-            return fv
-        except (TypeError, ValueError, OverflowError):
-            sys.stderr.write(
-                "pipeline-config: %s must be a number greater than 0 and at "
-                "most 1 -- got: %r -- using default\n" % (key, value)
-            )
-            return None
-    if key == "spend.comment":
-        if not isinstance(value, bool):
-            sys.stderr.write(
-                "pipeline-config: %s must be true or false -- got: %r -- "
-                "using default\n" % (key, value)
-            )
-            return None
-        return value
-    return value
-
-for _spend_key in ("limits.tokens_per_issue", "limits.warn_at", "spend.comment"):
-    if _spend_key in flat:
-        _validated = _validate_spend_key(_spend_key, flat[_spend_key])
-        if _validated is None:
-            # Same as an absent key: the caller applies its own default.
-            del flat[_spend_key]
-        else:
-            flat[_spend_key] = _validated
-
-# agents.fallback / agents.roles.<role>.fallback / agents.provider_down_s
-# (#418): validated by the shared snippet (_CFG_FALLBACK_PY), same shape.
-_fallback_apply(flat)
-
-# agents.restamp_model / agents.roles.<role>.restamp_model derived default
-# (#258): role restamp -> global restamp -> agents.model, mirroring
-# verify.qa_mode's derived-default pattern above -- a re-stamp dispatch
-# should default to the same cheap tier as agents.model, not silently fall
-# back to the session default the way an unset agents.roles.<role>.model
-# does. This dump only ever contains keys named up front, so only roles
-# already present under agents.roles get a computed entry here; a role
-# with no agents.roles.<role> block at all still resolves correctly
-# through the single-key path's identical fallback chain below, since a
-# cfg() cache miss on this key is exactly "absent -- use the caller's
-# default" (agents.model, read separately).
-_agents_model = walk(cfg, "agents.model".split("."))
-_global_restamp = walk(cfg, "agents.restamp_model".split("."))
-if _global_restamp is None or _global_restamp == "":
-    _global_restamp = _agents_model
-if _global_restamp is not None and _global_restamp != "":
-    flat["agents.restamp_model"] = _global_restamp
-elif "agents.restamp_model" in flat:
-    del flat["agents.restamp_model"]
-
-_roles_cfg = walk(cfg, "agents.roles".split("."))
-if isinstance(_roles_cfg, dict):
-    for _role_name in _roles_cfg:
-        _role_restamp = walk(cfg, ["agents", "roles", _role_name, "restamp_model"])
-        _resolved = _role_restamp
-        if _resolved is None or _resolved == "":
-            _resolved = walk(cfg, "agents.restamp_model".split("."))
-        if _resolved is None or _resolved == "":
-            _resolved = _agents_model
-        _rkey = "agents.roles.%s.restamp_model" % _role_name
-        if _resolved is not None and _resolved != "":
-            flat[_rkey] = _resolved
-        elif _rkey in flat:
-            del flat[_rkey]
-
-# agents.effort / agents.roles.<role>.effort / agents.restamp_effort /
-# agents.roles.<role>.restamp_effort (#271): reasoning-effort lever
-# alongside agents.model/.restamp_model. Allowed values low/medium/high/max
-# -- anything else is reported on stderr and treated as absent, mirroring
-# _validate_int_key's fail-closed-to-absent shape for a fixed string enum.
-# restamp_effort's derived-default chain mirrors the restamp_model block
-# just above exactly, with agents.effort standing in for agents.model as
-# the base key -- effort has no runner-independent session default the way
-# an unset model falls back to the harness default, so bottoming out at an
-# empty agents.effort really does mean "let the runner apply its own
-# default effort".
-_EFFORT_VALUES = ("low", "medium", "high", "max")
-
-def _valid_effort(effort_key, effort_value):
-    if effort_value is None or effort_value == "":
-        return None
-    if effort_value not in _EFFORT_VALUES:
-        sys.stderr.write(
-            "pipeline-config: %s must be one of low, medium, high, max -- "
-            "got: %r -- using default\n" % (effort_key, effort_value)
-        )
-        return None
-    return effort_value
-
-for _ekey in [
-    k for k in list(flat.keys())
-    if k == "agents.effort" or (k.startswith("agents.roles.") and k.endswith(".effort"))
-]:
-    _evalue = _valid_effort(_ekey, flat[_ekey])
-    if _evalue is None:
-        del flat[_ekey]
-    else:
-        flat[_ekey] = _evalue
-
-_agents_effort = flat.get("agents.effort")
-_global_restamp_effort = _valid_effort("agents.restamp_effort", walk(cfg, "agents.restamp_effort".split("."))) or _agents_effort
-if _global_restamp_effort:
-    flat["agents.restamp_effort"] = _global_restamp_effort
-elif "agents.restamp_effort" in flat:
-    del flat["agents.restamp_effort"]
-
-if isinstance(_roles_cfg, dict):
-    for _role_name in _roles_cfg:
-        _role_restamp_effort = _valid_effort(
-            "agents.roles.%s.restamp_effort" % _role_name,
-            walk(cfg, ["agents", "roles", _role_name, "restamp_effort"]),
-        )
-        _resolved_effort = _role_restamp_effort or _global_restamp_effort
-        _rekey_effort = "agents.roles.%s.restamp_effort" % _role_name
-        if _resolved_effort:
-            flat[_rekey_effort] = _resolved_effort
-        elif _rekey_effort in flat:
-            del flat[_rekey_effort]
-
-# SOURCES header (#526), emitted before every resolved pair so the dump's
-# first pairs answer "where is talos configured": the project path as the
-# shell located it (an explicit PIPELINE_CONFIG pointer shows itself), the
-# global path, the set env-override variable NAMES, and the secrets store
-# (named even when absent). Ordinary KEY/value pairs: the strict
-# NUL-pair cache reader (pipeline-cfg-cache.sh) parses the stream unchanged.
-out = sys.stdout.buffer
-out.write(("sources.project\0" + sys.argv[1] + "\0").encode("utf-8", "surrogateescape"))
-out.write(("sources.global\0" + sys.argv[3] + "\0").encode("utf-8", "surrogateescape"))
-out.write(("sources.env_keys\0" + sys.argv[7] + "\0").encode("utf-8", "surrogateescape"))
-out.write(("sources.secrets_path\0" + sys.argv[8] + "\0").encode("utf-8", "surrogateescape"))
-
-def _dump_text(v):
-    if isinstance(v, bool):
-        return "true" if v else "false"
-    if isinstance(v, list):
-        return "\n".join(str(x) for x in v)
-    return str(v)
-
-def _dump_pair(k, v):
-    out.write(k.encode("utf-8", "surrogateescape"))
-    out.write(b"\x00")
-    out.write(_dump_text(v).encode("utf-8", "surrogateescape"))
-    out.write(b"\x00")
-
-# Profile-aware runs only (#539; see the profile block in the shared loader):
-# the harness, the active profile and where it came from, the profiles passed
-# over (name:reason), and for every profile its mode / runner / CLI / usability
-# plus its resolved keys as profile.<name>.<key> (profile over base agents.*,
-# validated like the keys they overlay). pipeline-agent.sh reads these for a
-# fallback entry that names a profile.
-if _PROFILE.get("aware"):
-    _dump_pair("sources.harness", _HARNESS[0])
-    _dump_pair("sources.harness_origin", _HARNESS[1])
-    _dump_pair("sources.profile", _PROFILE["active"])
-    _dump_pair("sources.profile_origin", _PROFILE["origin"] if _PROFILE["active"] else "")
-    _dump_pair("sources.profile_requested", _PROFILE["requested"])
-    _dump_pair("sources.profile_mode", _PROFILE["mode"])
-    _dump_pair("sources.profiles", ",".join(_PROFILE["names"]))
-    _dump_pair("sources.profile_skipped", "\n".join("%s:%s" % sk for sk in _PROFILE["skipped"]))
-    import contextlib
-    import io
-    for _pn in _PROFILE["names"]:
-        _pf = {}
-        _pstack = [("agents", _PROFILE["resolved"][_pn])]
-        while _pstack:
-            _pp, _po = _pstack.pop()
-            for _pk, _pv in _po.items():
-                if isinstance(_pv, dict):
-                    _pstack.append(("%s.%s" % (_pp, _pk), _pv))
-                elif _pv is not None:
-                    _pf["%s.%s" % (_pp, _pk)] = _pv
-        # The active profile was validated with the effective config above: say nothing twice.
-        with contextlib.redirect_stderr(io.StringIO() if _pn == _PROFILE["active"] else sys.stderr):
-            _int_apply(_pf)
-            for _ek in [k for k in _pf if k == "agents.effort" or (k.startswith("agents.roles.") and k.endswith(".effort"))]:
-                _ev = _valid_effort(_ek, _pf[_ek])
-                if _ev is None:
-                    del _pf[_ek]
-                else:
-                    _pf[_ek] = _ev
-        _pmode, _prunner, _pcli, _preason = _PROFILE["states"][_pn]
-        _pf["agents.mode"] = _pmode
-        _pf["agents.runner"] = _prunner
-        _pf["agents.cli"] = "present" if _pcli else "missing"
-        _pf["agents.usable"] = "no" if _preason else "yes"
-        _pf["agents.reason"] = _preason
-        for _pk, _pv in _pf.items():
-            _dump_pair("profile.%s.%s" % (_pn, _pk[len("agents."):]), _pv)
-
-for k, v in flat.items():
-    _dump_pair(k, v)
-PYEOF
+  python3 -I -c "$_CFG_READ_PY" dump "$_DCFG" "$_DUSER" "$(_talos_known_keys_json)" \
+      "$(_cfg_loader_src)" "$_CFG_FALLBACK_PY" "$_CFG_INT_PY" "$_DENV_KEYS" "$_DSECRETS"
   _DRC=$?
   if [ "$_DRC" -eq 4 ]; then exit 4; fi
   exit 0
@@ -1646,275 +1645,5 @@ if [ -z "$CFG" ] && [ -z "$USER_CFG" ] && [ -z "${TALOS_PROFILE:-}" ] && [ -z "$
 fi
 
 # ── Parse and extract with Python ────────────────────────────────────────────
-# The heredoc passes file paths, key, default, the known-keys JSON and the
-# shared loader source as argv to avoid shell quoting issues with special
-# characters in values.
-python3 -I - "$CFG" "$KEY" "$DEFAULT" "$(_talos_known_keys_json)" "$USER_CFG" "$(_cfg_loader_src)" "$_CFG_FALLBACK_PY" "$_CFG_INT_PY" "$_NODEFAULT" <<'PYEOF'
-import sys
-
-key      = sys.argv[2]
-default  = sys.argv[3] if len(sys.argv) > 3 else ""
-known_keys_json = sys.argv[4] if len(sys.argv) > 4 else "[]"
-exec(sys.argv[6])
-exec(sys.argv[7])
-exec(sys.argv[8])
-
-def walk(obj, parts):
-    for part in parts:
-        if isinstance(obj, dict) and part in obj:
-            obj = obj[part]
-        else:
-            return None
-    return obj
-
-# Merged project-over-user-level config (see the shared loader above). An
-# unparseable project file is treated as absent, so the lookup degrades to
-# the user-level layer or the caller-supplied default -- not a crash.
-_project_cfg, _user_cfg, cfg = load_layers(sys.argv[1], sys.argv[5])
-
-# ── Unknown-key warning (#176) ──────────────────────────────────────────────
-# This path parses the config file independently of the --dump path above
-# (two separate python3 processes), so the check can't literally be one
-# shared function call, but both paths define the identical
-# _warn_unknown_keys() helper (same wildcard-matching rules, same
-# nearest-match suggestion, same env opt-out) against the same
-# _KNOWN_CONFIG_KEYS list (module-level, passed in via argv -- see the
-# top of this script) so a typo warns identically no matter which path
-# answered the lookup. cfg() (pipeline-cfg-cache.sh) calls --dump once per script
-# invocation and answers every lookup from that cache, so a cached caller
-# only hits the --dump path's copy of this check; a direct (non-cached)
-# call to this script hits this copy instead, once per invocation.
-import difflib
-import json
-import os
-
-# Handed in via argv (module-level definition, see top of this script) so
-# both this path and the --dump path above stay byte-identical for every
-# key without either duplicating the list as a Python literal.
-_KNOWN_CONFIG_KEYS = json.loads(known_keys_json)
-
-def _present_leaf_keys(obj, prefix, out):
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            _present_leaf_keys(v, "%s.%s" % (prefix, k) if prefix else k, out)
-    elif obj is not None:
-        out.append(prefix)
-
-def _key_matches(parts, template_parts):
-    return len(parts) == len(template_parts) and all(
-        t == "*" or t == p for t, p in zip(template_parts, parts)
-    )
-
-def _warn_unknown_keys(cfg_obj):
-    if os.environ.get("TALOS_CONFIG_STRICT_KEYS", "1") == "0":
-        return
-    if not isinstance(cfg_obj, dict) or not _KNOWN_CONFIG_KEYS:
-        return
-    present = []
-    _present_leaf_keys(cfg_obj, "", present)
-    templates = [t.split(".") for t in _KNOWN_CONFIG_KEYS]
-    for key in present:
-        if key.split(".")[-1] == "_note":
-            continue
-        parts = key.split(".")
-        if any(_key_matches(parts, t) for t in templates):
-            continue
-        # agents.profiles.<name>.<rest> holds any agents.<rest> key (#539), but
-        # a profile cannot select or define profiles.
-        if (len(parts) >= 4 and parts[:2] == ["agents", "profiles"]
-                and parts[3] not in ("profile", "profiles")
-                and any(_key_matches(["agents"] + parts[3:], t) for t in templates)):
-            continue
-        candidates = []
-        for t in templates:
-            if len(t) == len(parts):
-                candidates.append(
-                    ".".join(tp if tp != "*" else p for tp, p in zip(t, parts))
-                )
-            else:
-                candidates.append(".".join(t))
-        match = difflib.get_close_matches(key, candidates, n=1, cutoff=0.6)
-        if match:
-            sys.stderr.write(
-                "pipeline-config: [warn] unknown config key %r "
-                "(did you mean %r?)\n" % (key, match[0])
-            )
-        else:
-            sys.stderr.write(
-                "pipeline-config: [warn] unknown config key %r\n" % key
-            )
-
-try:
-    _warn_unknown_keys(cfg)
-except Exception as _e:
-    # The unknown-key check must never take stdout down with it -- a
-    # crash here (e.g. an unexpected cfg shape) would abort the whole
-    # python3 process before flat/stdout is built, silently breaking
-    # every caller's config lookup, not just the warning. Fail loud
-    # instead of silent: one line naming the reason, then continue.
-    sys.stderr.write(
-        "pipeline-config: [warn] unknown-key check unavailable: %s\n"
-        % _e
-    )
-
-value = walk(cfg, key.split("."))
-
-# "verify" is historically a flat list of shell commands. Also accept a dict
-# form (verify: {commands: [...], qa_mode: ..., targeted: ..., ci_wait_s: ...,
-# timeout_ms: ...}) so verify.qa_mode / verify.targeted / verify.ci_wait_s /
-# verify.timeout_ms can be read with the
-# normal dot-path lookup below without disturbing what plain "verify" returns
-# to existing callers (a newline-joined command list).
-if key == "verify" and isinstance(value, dict):
-    value = value.get("commands", [])
-
-# verify.qa_mode has a config-derived default that overrides whatever default
-# the caller passed in: "ci" when merge.required_checks is a non-empty list
-# (CI is already the suite oracle), "local" otherwise. An explicit
-# verify.qa_mode value in config always wins over this derived default --
-# EXCEPT that "ci" with an empty/absent merge.required_checks list is a
-# fail-open trap: QA would trust CI as the oracle for a check list that has
-# nothing in it, i.e. pass vacuously without ever running verify: locally
-# or observing any real CI signal. Fail closed instead: resolve to "local"
-# and warn once on stderr, regardless of whether "ci" came from this derived
-# default or from an explicit verify.qa_mode: ci in the config.
-if key == "verify.qa_mode":
-    required_checks = walk(cfg, "merge.required_checks".split("."))
-    has_required_checks = isinstance(required_checks, list) and len(required_checks) > 0
-    if value is None:
-        value = "ci" if has_required_checks else "local"
-    if value == "ci" and not has_required_checks:
-        sys.stderr.write(
-            "pipeline-config: verify.qa_mode=ci with empty/absent "
-            "merge.required_checks -- resolving to 'local' (ci mode would "
-            "pass QA vacuously with no required checks to poll)\n"
-        )
-        value = "local"
-
-# Positive-integer keys (verify.timeout_ms and verify.ci_wait_s, which a stage
-# interpolates unquoted into an agent-run shell test; hooks.timeout_s and
-# notifications.cmd_timeout_s, which bound a hook or sink command; the limits
-# and status integers): a non-integer, out-of-range value, or one carrying shell
-# metacharacters is a config error, not something a caller can act on, so it
-# falls back to the key's table default with one stderr warning. Defined once,
-# in _CFG_INT_PY, and run by this path and the --dump path above alike.
-
-# limits.tokens_per_issue / limits.warn_at / spend.comment (#378): the
-# per-issue spend guard's config. Same fail-closed-to-absent shape as
-# _validate_int_key (an invalid value warns once on stderr and returns None,
-# so the caller's default applies), but none of these fits it: 0 is the
-# silent "guard off" value for tokens_per_issue, warn_at is a decimal in
-# (0, 1], and spend.comment is a strict bool. The defaults (empty / 0.8 /
-# true) are the CALLER's -- the dump never injects them. Defined identically
-# in the --dump process and the single-key process (separate python3 spawns,
-# like _validate_int_key).
-def _validate_spend_key(key, value):
-    if value is None:
-        return value
-    if key == "limits.tokens_per_issue":
-        try:
-            if isinstance(value, bool) or (isinstance(value, float) and value != int(value)):
-                raise ValueError
-            iv = int(value)
-            if iv == 0:
-                return None  # explicit off: silent, same as unset
-            if iv < 0:
-                raise ValueError
-            return iv
-        except (TypeError, ValueError, OverflowError):
-            sys.stderr.write(
-                "pipeline-config: %s must be a positive integer (tokens) -- "
-                "got: %r -- treating the guard as off\n" % (key, value)
-            )
-            return None
-    if key == "limits.warn_at":
-        try:
-            if isinstance(value, bool):
-                raise ValueError
-            fv = float(value)
-            if not (0 < fv <= 1):  # also rejects nan; inf is > 1
-                raise ValueError
-            return fv
-        except (TypeError, ValueError, OverflowError):
-            sys.stderr.write(
-                "pipeline-config: %s must be a number greater than 0 and at "
-                "most 1 -- got: %r -- using default\n" % (key, value)
-            )
-            return None
-    if key == "spend.comment":
-        if not isinstance(value, bool):
-            sys.stderr.write(
-                "pipeline-config: %s must be true or false -- got: %r -- "
-                "using default\n" % (key, value)
-            )
-            return None
-        return value
-    return value
-
-# agents.restamp_model / agents.roles.<role>.restamp_model derived default
-# (#258): role restamp -> global restamp -> agents.model. Mirrors the
-# --dump path's identical block above -- see that copy's comment for why
-# the two can't literally be one shared function call.
-if key == "agents.restamp_model":
-    if value is None or value == "":
-        value = walk(cfg, "agents.model".split("."))
-elif key.startswith("agents.roles.") and key.endswith(".restamp_model"):
-    if value is None or value == "":
-        value = walk(cfg, "agents.restamp_model".split("."))
-        if value is None or value == "":
-            value = walk(cfg, "agents.model".split("."))
-
-# agents.effort / agents.roles.<role>.effort / agents.restamp_effort /
-# agents.roles.<role>.restamp_effort (#271): reasoning-effort lever
-# alongside agents.model/.restamp_model. Mirrors the --dump path's
-# identical block above -- see that copy's comment for the full rationale
-# (allowed values, why restamp_effort's base key is agents.effort, and why
-# an invalid value falls through the chain like an absent one).
-_EFFORT_VALUES = ("low", "medium", "high", "max")
-
-def _valid_effort(effort_key, effort_value):
-    if effort_value is None or effort_value == "":
-        return None
-    if effort_value not in _EFFORT_VALUES:
-        sys.stderr.write(
-            "pipeline-config: %s must be one of low, medium, high, max -- "
-            "got: %r -- using default\n" % (effort_key, effort_value)
-        )
-        return None
-    return effort_value
-
-if key == "agents.effort" or (key.startswith("agents.roles.") and key.endswith(".effort")):
-    value = _valid_effort(key, value)
-elif key == "agents.restamp_effort":
-    value = _valid_effort(key, value) or _valid_effort("agents.effort", walk(cfg, "agents.effort".split(".")))
-elif key.startswith("agents.roles.") and key.endswith(".restamp_effort"):
-    value = (
-        _valid_effort(key, value)
-        or _valid_effort("agents.restamp_effort", walk(cfg, "agents.restamp_effort".split(".")))
-        or _valid_effort("agents.effort", walk(cfg, "agents.effort".split(".")))
-    )
-
-value = _validate_int_key(key, value)
-value = _validate_spend_key(key, value)
-value = _validate_fallback_key(key, value)
-
-if value is None:
-    if len(sys.argv) > 9 and sys.argv[9] == "1":
-        # No caller default and no table (pipeline-defaults.sh missing) for a
-        # security-relevant key: fail closed (#440), same as _cfg_fail_closed.
-        sys.stderr.write(
-            "pipeline-config: %s is not set in any config and pipeline-defaults.sh "
-            "is missing, so its default is unknown; refusing to guess for a "
-            "security-relevant key\n" % key)
-        sys.exit(3)
-    print(default, end="")
-elif isinstance(value, bool):
-    # Normalise Python True/False to lowercase strings ("true"/"false") so
-    # callers can do: [ "$(pipeline-config.sh board.enabled true)" = "true" ]
-    print(str(value).lower(), end="")
-elif isinstance(value, list):
-    # Return lists as newline-separated values for easy shell iteration.
-    print("\n".join(str(v) for v in value), end="")
-else:
-    print(str(value), end="")
-PYEOF
+python3 -I -c "$_CFG_READ_PY" key "$CFG" "$USER_CFG" "$(_talos_known_keys_json)" \
+    "$(_cfg_loader_src)" "$_CFG_FALLBACK_PY" "$_CFG_INT_PY" "$KEY" "$DEFAULT" "$_NODEFAULT"

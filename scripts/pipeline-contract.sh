@@ -1,34 +1,12 @@
 #!/usr/bin/env bash
-# pipeline-contract.sh -- single source of truth for Talos's roles, labels,
-# and `talos:` markers (#178).
+# pipeline-contract.sh -- single source of truth for Talos's roles, labels and
+# `talos:` markers. Sourceable, not executable: plain bash arrays and functions,
+# no side effects, bash 3.2 (indexed arrays only, no `declare -A`).
 #
-# Before this file existed, the same three lists were hand-restated in
-# pipeline-vcs.sh (as Python literals inside embedded `python3 -c` blocks),
-# bootstrap-labels.sh (its own `labels=(...)` array), skills/pipeline/
-# SKILL.md, every agents/*.md, and the tests -- issue #155/#178 found the
-# contract duplicated up to six times and drifting silently. Prompts and
-# docs keep their hand-written prose; this file is what tests/test-
-# contract.sh greps them against.
-#
-# Sourceable, not executable: every value below is a plain bash array or
-# function, no side effects. Bash 3.2 compatible (macOS ships 3.2) --
-# indexed arrays only, no `declare -A`.
-#
-# Consumers:
-#   pipeline-vcs.sh      -- sources this, derives KNOWN_STAGES/
-#                            APPROVAL_LABELS/VALID_ROLES for its embedded
-#                            Python blocks from TALOS_ROLES/
-#                            TALOS_APPROVAL_LABELS/TALOS_APPROVAL_ROLES
-#                            (passed in via env, same pattern as
-#                            TRUSTED_AUTHORS/TALOS_CFG already use).
-#   bootstrap-labels.sh   -- sources this, iterates the label arrays
-#                            instead of keeping its own list.
-#   install.sh            -- copies this file alongside the other
-#                            scripts/pipeline-*.sh files.
-#   tests/test-contract.sh -- asserts every label/marker string that
-#                            appears in prose (SKILL.md, agents/*.md,
-#                            templates/**, README.md, docs/reference.md)
-#                            is a member of the arrays below.
+# Consumers: pipeline-vcs.sh (derives its embedded Python's role and label sets
+# from these arrays, passed in via env), bootstrap-labels.sh (the label arrays),
+# install.sh (copies this file) and tests/test-contract.sh (asserts every label
+# or marker string in prose is a member of the arrays below).
 
 # ── Roles ──────────────────────────────────────────────────────────────────
 # Every stage name recognised in `talos:attempt` markers, and the role half
