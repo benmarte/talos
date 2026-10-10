@@ -728,12 +728,12 @@ Scripts respect these env vars, which take priority over the config file:
 | `PIPELINE_DISCORD_CHANNEL` | `notifications.discord_channel` |
 | `PIPELINE_BUZZ_CHANNEL` | `notifications.buzz_channel` |
 | `PIPELINE_THREAD_STATE` | path to thread anchor state file (default: `~/.talos/threads.json`) |
-| `PIPELINE_REPO_URL` | repo URL used to build issue/PR links (default: detected via `gh repo view`) |
+| `PIPELINE_REPO_URL` | repo URL used to build issue/PR links (default: derived from `vcs.repo` or the checkout's remote by `pipeline-meta.sh`, no API call; `gh repo view` only when neither says) |
 | `PIPELINE_ISSUE_TITLE` / `PIPELINE_PR` / `PIPELINE_PR_TITLE` | issue/PR context for templates (skips the `gh` lookups) |
 | `PIPELINE_NOTIFY_DEBUG` | set to `1` to print payloads without posting (safe for testing) |
 | `PIPELINE_RUN_ID` | when set, scopes the per-run board-validation sentinel in `pipeline-status.sh` to this value so multiple concurrent pipeline runs sharing one `/tmp` directory do not interfere with each other. Without it, the sentinel is keyed on project number alone. |
 | `TALOS_SWEEP_ALL_LANES` | set to `1` to allow `pipeline-worktree.sh sweep` to run across all lanes when multiple `.talos-lane-home` markers exist in the repo. Without this, sweep exits safely when more than one lane home is detected (multi-lane interlock). `remove <N>` is always unaffected by this variable. |
-| `TALOS_BOARD_MAX_PAGES` | overrides the page cap for `pipeline-status.sh`'s items() pagination loop (default `50`, i.e. 5000 items at 100/page). A non-positive-integer value falls back to the default with a warning on stderr. Hitting the cap, or a malformed page (`hasNextPage=true` with an empty cursor), bails out via `talos:board-unverified` instead of looping forever. |
+| `TALOS_BOARD_MAX_PAGES` | overrides the page cap for the `github-api` provider's items() pagination loop in `pipeline-status.sh` (the `github` provider finds an issue's board item by issue instead, in one call) (default `50`, i.e. 5000 items at 100/page). A non-positive-integer value falls back to the default with a warning on stderr. Hitting the cap, or a malformed page (`hasNextPage=true` with an empty cursor), bails out via `talos:board-unverified` instead of looping forever. |
 
 ### Per-issue notification threading
 

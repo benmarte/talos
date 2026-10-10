@@ -194,7 +194,7 @@
 #                                             ready_for_review run replaces it.
 #                                             It never passes, so a persistent
 #                                             skip ends exit 2 at the deadline.
-#              <n> --wait <seconds>           ...poll (30s steps) until not 2 or
+#              <n> --wait <seconds>           ...poll (30, 60, then 120 s steps) until not 2 or
 #                                             <seconds> (digits, <= 3600, read in
 #                                             base 10: 08 and 09 are valid, 0010
 #                                             is 10; #449) pass;
@@ -494,6 +494,10 @@
 #                                             result line ending `stamp ok`, or
 #                                             `stamp FAILED (...)` with exit 1 -- no
 #                                             stage runs a confirmation after it.
+#                                             One pass shares its reads (#554): the PR,
+#                                             its comments and the login are read once
+#                                             before the writes and once after (see
+#                                             "Per-pass read cache"); 7 REST calls, not 10.
 #                                             --issue <n> tags the calling stage's
 #                                             worktree for issue <n> (best effort; the
 #                                             main checkout is never tagged).
