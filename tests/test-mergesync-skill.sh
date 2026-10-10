@@ -30,12 +30,12 @@ assert_contains "$skill_text" "merge.auto_sync" "skill: the sibling sync block n
 # (tests/test-talos-postmerge.sh runs every rung); the playbook keeps the
 # developer dispatch it cannot script.
 verb_text="$(cat "$TALOS_ROOT/scripts/talos.sh")"
-assert_contains "$skill_text" "Sibling sync (#289" "skill: Step 4 has the sibling sync block"
+assert_contains "$skill_text" "**Sibling sync**" "skill: Step 4 has the sibling sync block"
 assert_contains "$verb_text" '_vcs conflict-files "$_s"' "verb: the sync drives off conflict-files"
 assert_contains "$verb_text" 'pipeline-mergebase.sh" "$_s"' "verb: the sync tries the mechanical union first"
 assert_contains "$verb_text" '_vcs update-branch "$_s"' "verb: the sync falls back to update-branch"
 assert_contains "$verb_text" '[ "$(cfg merge.auto_sync)" = "true" ] || return 0' "verb: the sync is gated on merge.auto_sync"
-assert_contains "$skill_text" "developer merge-base task" "skill: block falls back to the developer dispatch"
+assert_contains "$(playbook_text)" "developer merge-base task" "playbook: the sibling sync falls back to the developer merge-base task (refs/merge-conflict.md)"
 assert_contains "$skill_text" "never more than one per merge" "skill: one sibling sync developer task per merge"
 
 # The verb contract in the script.

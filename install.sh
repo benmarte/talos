@@ -4,8 +4,8 @@
 # Global install (recommended for new setups):
 #   bash install.sh --global [--no-legacy-aliases] [--keep-marketplace]
 #   Writes scripts, agents, templates and the playbooks (skills/<command>/SKILL.md,
-#   one per entry of TALOS_COMMANDS in scripts/pipeline-contract.sh) to ~/.talos/
-#   (the playbooks to ~/.talos/skills/). When the Claude adapter runs (see
+#   one per entry of TALOS_COMMANDS in scripts/pipeline-contract.sh, each with its
+#   refs/*.md read on demand) to ~/.talos/ (the playbooks to ~/.talos/skills/). When the Claude adapter runs (see
 #   --harness below) it also copies the role profiles to ~/.claude/agents/, so
 #   Claude Code's native subagent discovery finds the current profiles instead
 #   of a stale plugin copy, and registers this checkout as the `talos` Claude
@@ -719,8 +719,14 @@ if [ "$GLOBAL" = "true" ]; then
   . "$_CONTRACT"
   echo ""
   echo "Orchestrator skills (~/.talos/skills):"
+  # A playbook's refs (skills/<command>/refs/*.md, read on demand, #547) sit
+  # next to it, wherever a pointer or alias skill sends the agent to read it.
   for cmd in "${TALOS_COMMANDS[@]}"; do
     install_file "$SRC/skills/$cmd/SKILL.md" "$TALOS_HOME_DIR/skills/$cmd/SKILL.md"
+    for ref in "$SRC/skills/$cmd/refs/"*.md; do
+      [ -f "$ref" ] || continue
+      install_file "$ref" "$TALOS_HOME_DIR/skills/$cmd/refs/$(basename "$ref")"
+    done
   done
   # A command that left TALOS_COMMANDS keeps its old directory: say so, delete
   # nothing (the directory may hold edits, and this installer did not create it

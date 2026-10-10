@@ -42,6 +42,6 @@ assert_contains "$signoff_text" "Human-attention report" "template: verdict comm
 assert_contains "$signoff_text" '${ATTENTION_REPORT}' "template: ATTENTION_REPORT placeholder present"
 
 # Orchestrator relay carries the top items.
-assert_contains "$skill_text" "top 1-2 human-attention report items" "skill: reviewer relay includes top attention items"
+assert_contains "$skill_text" "top 1-2 human-attention items" "skill: reviewer relay includes top attention items"
 
 finish

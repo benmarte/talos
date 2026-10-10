@@ -17,7 +17,11 @@ CFG_SH="$TALOS_ROOT/scripts/pipeline-config.sh"
 
 # ── Extract the Step 3e re-stamp block (Re-stamp check + Re-stamp dispatch,
 # bounded by the Sync guard above and Phase 2's heading below) ─────────────
-restamp_block="$(sed -n '/^\*\*Re-stamp check (fix-round path, #258):\*\*/,/^\*\*Phase 2 —/p' "$SKILL_MD")"
+# #547: the check, its trigger and the RESTAMP_FAIL rule are one core paragraph;
+# the dispatch recipe (prompt, model, effort) is skills/pipeline/refs/restamp.md.
+# The block under test is both.
+RESTAMP_REF="$TALOS_ROOT/skills/pipeline/refs/restamp.md"
+restamp_block="$(sed -n '/^\*\*Re-stamp check (fix-round path):\*\*/,/^\*\*Phase 2 —/p' "$SKILL_MD"; cat "$RESTAMP_REF")"
 
 if [ -z "$restamp_block" ]; then
   fail "SKILL.md Step 3e carries a Re-stamp check block" "block not found"
@@ -61,7 +65,7 @@ assert_contains "$restamp_block_flat" "RESTAMP_FAIL" \
 # or the next pass finds the role stale again and re-stamps forever. The strip
 # moved from the playbook's prose into `talos.sh done` (#469): the playbook says
 # the verb does it first, and the verb takes the label from the contract ────
-assert_contains "$restamp_block_flat" "On \`RESTAMP_FAIL\` the verb first strips the stale label" \
+assert_contains "$restamp_block_flat" "on \`RESTAMP_FAIL\` the verb first strips the stale label" \
   "Step 3e re-stamp block: on RESTAMP_FAIL the verb strips the stale label first"
 assert_contains "$restamp_block_flat" "done <role> ... --verdict RESTAMP_PASS" \
   "Step 3e re-stamp block reports through talos.sh done"
@@ -77,7 +81,7 @@ assert_contains "$restamp_block_flat" "stale role=<role> label=<label>" \
 
 # ── Trigger condition is explicit: label present AND stale, absent -> full
 # stage (review finding: make this unambiguous, not implied) ───────────────
-assert_contains "$restamp_block_flat" "Trigger, explicit" \
+assert_contains "$restamp_block_flat" "**Trigger:**" \
   "Step 3e re-stamp block states its trigger condition explicitly"
 assert_contains "$restamp_block_flat" "present on the PR AND \`--stale-list\` reports it stale" \
   "Step 3e re-stamp block's trigger requires the label present AND stale"
@@ -86,13 +90,13 @@ assert_contains "$restamp_block_flat" "label is absent" \
 
 # ── Non-blocking review note: the re-stamp dispatch spawns per the same
 # usage-reporting spawn form as every other dispatch prompt ────────────────
-assert_contains "$restamp_block_flat" "spawn per the usage-reporting spawn form above" \
-  "Step 3e re-stamp dispatch block points at the usage-reporting spawn form"
+assert_contains "$restamp_block_flat" "spawned per the Spawning paragraph" \
+  "re-stamp dispatch ref points at the usage-reporting spawn form (the core Spawning paragraph)"
 
 # ── Phase 3 (adversarial) points back at the same re-stamp check ───────────
-phase3_block="$(sed -n '/^\*\*Phase 3 — Adversarial/,/^\*\*Adversarial\*\* (if/p' "$SKILL_MD")"
-assert_contains "$phase3_block" "re-stamp check above" \
-  "Phase 3 (adversarial) references the Phase 2 re-stamp check"
+phase3_block="$(cat "$TALOS_ROOT/skills/pipeline/refs/adversarial.md")"
+assert_contains "$phase3_block" "re-stamp check" \
+  "Phase 3 (adversarial) references the re-stamp check"
 
 # ── Step 4's stale-approval handling dispatches a re-stamp, not a full
 # stage, for every role check-approval-sha --stale-list names ──────────────
@@ -101,8 +105,8 @@ step4_block_flat="$(printf '%s' "$step4_block" | tr '\n' ' ' | tr -s ' ')"
 
 assert_contains "$step4_block_flat" "already has a prior approval on this PR" \
   "Step 4 stale handling explains every --stale-list role has a prior approval"
-assert_contains "$step4_block_flat" "Re-stamp dispatch block" \
-  "Step 4 stale handling points at Step 3e's shared Re-stamp dispatch block"
+assert_contains "$step4_block_flat" "refs/restamp.md" \
+  "Step 4 stale handling points at the shared re-stamp dispatch ref"
 assert_contains "$step4_block_flat" "RESTAMP_FAIL" \
   "Step 4 stale handling explains a RESTAMP_FAIL escalates to a full re-dispatch"
 

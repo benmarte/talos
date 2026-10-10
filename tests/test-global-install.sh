@@ -362,6 +362,12 @@ for cmd in "${TALOS_COMMANDS[@]}"; do
   assert_file_exists "$T11_HOME/.talos/skills/$cmd/SKILL.md" \
     "--global installs $cmd to ~/.talos/skills/$cmd/SKILL.md (#363)"
 done
+# The playbook's on-demand refs (#547) sit next to its SKILL.md, wherever a pointer
+# or alias skill sends the agent to read it: every repo ref is installed.
+for ref in "$TALOS_ROOT"/skills/pipeline/refs/*.md; do
+  assert_file_exists "$T11_HOME/.talos/skills/pipeline/refs/$(basename "$ref")" \
+    "--global installs the pipeline ref $(basename "$ref") next to SKILL.md (#547)"
+done
 # skills/pipeline-setup/ is the plugin's /talos:pipeline-setup alias, not a
 # command, so it is the one directory ~/.talos/skills does not mirror (#335).
 skills_diff="$(diff -rq -x pipeline-setup "$TALOS_ROOT/skills" "$T11_HOME/.talos/skills" 2>&1 || true)"

@@ -26,10 +26,8 @@ skill_flat="$(tr '\n' ' ' < "$SKILL_MD" | tr -s ' ')"
 # ── (a) presence ───────────────────────────────────────────────────────────
 done_fn="$(sed -n '/^_talos_done() {/,/^}/p' "$TALOS_ROOT/scripts/talos.sh")"
 spend_fn="$(sed -n '/^_talos_spend() {/,/^}/p' "$TALOS_ROOT/scripts/talos.sh")"
-assert_contains "$skill_flat" '--model <value passed as `model:` to the spawn>' \
-  "Rule 3: --model carries the value passed as model: to the spawn"
-assert_contains "$skill_flat" 'only when the spawn had one' \
-  "Rule 3: --model is passed only when the spawn had a model"
+assert_contains "$skill_flat" 'Pass `--model <the spawn'"'"'s model:>` only when the spawn had one' \
+  "Usage: --model carries the model: of the spawn, and only when the spawn had one"
 assert_contains "$done_fn" '${_model:+--model "$_model"}' "done: --model is omitted when the spawn had no model"
 assert_contains "$done_fn" '[[ "$_model" =~ ^[A-Za-z0-9._:-]+$ ]]' "done: --model passes only when it matches [A-Za-z0-9._:-]+"
 assert_contains "$done_fn" '_talos_post_stage "$_role" "$_role" "$_n"' "done: post_stage follows the role relay"
@@ -50,11 +48,11 @@ assert_contains "$verb_fr" '--summary -' "budget stop: the hook summary comes fr
 # The cost table moved into `talos.sh summary` (#467): one call, one --issue per id.
 assert_contains "$verb_all" 'pipeline-events.sh" cost --summary "${_a[@]}"' "Step 5: summary runs the one cost --summary call"
 assert_contains "$verb_all" 'for _i in "${_IDS[@]}"; do _a+=(--issue "$_i"); done' "Step 5: summary passes one --issue per processed issue"
-assert_contains "$skill_flat" 'the one `cost --summary` call' "Step 5: the playbook names the one cost --summary call"
+assert_contains "$skill_flat" 'prints `cost=<line>` lines' "Step 5: the playbook has the summary call print the cost lines"
 assert_contains "$verb_all" 'With limits.tokens_per_issue unset' \
   "budget stop: talos.sh states the unset flow is unchanged"
 assert_contains "$verb_all" 'so the fix-round flow is unchanged' "budget stop: unchanged wording present"
-assert_contains "$skill_flat" 'removing `pipeline:blocked` (each block grants one more limit) or raising `limits.tokens_per_issue`' \
+assert_contains "$skill_flat" 'the owner removes `pipeline:blocked` (each block grants one more limit) or raises `limits.tokens_per_issue`' \
   "budget stop: how the owner resumes"
 assert_contains "$verb_fr" 'blocked_by "talos.pipeline.json:limits.tokens_per_issue (explicit)"' \
   "budget stop: BLOCKED_BY of the blocked comment (the blocked_by= line)"
@@ -83,17 +81,17 @@ CANON='Run the Step 3 budget check ("Budget stop") first.'
 assert_eq "0" "$(grep -cF -- "$CANON" "$SKILL_MD")" "the old budget-check sentence is gone (the verb runs the check)"
 # Six sites since #469: the reviewer, security and adversarial rounds share one `<role>` site
 # (`done` answers next=fix-round stage=<role>), the other five are as before.
-assert_eq "6" "$(grep -cE 'gate fix-round <N> (developer|<that-role>|<role>|qa|reviewer|security|adversarial) --pr' "$SKILL_MD")" "six fix-round gate fix-round sites"
-raw="$(grep -nE 'record-attempt <N> (developer|<that-role>|<role>|qa|reviewer|security|adversarial)' "$SKILL_MD" | grep -v 'no fix round follows' || true)"
-assert_eq "" "$raw" "no fix round calls record-attempt directly (only the no-dispatch resend does)"
-# The no-dispatch record-attempt (no-PR resend, then Blocked) has no check.
-no_pr_window="$(grep -n -B6 'no fix round follows, so no budget check' "$SKILL_MD")"
-assert_not_contains "$no_pr_window" "gate fix-round" "no budget check before the no-PR resend record-attempt"
+# Counted over the whole playbook (#547): QA and the shared <role> site in the core,
+# the merge-base task (refs/merge-conflict.md), the CI gate (refs/ci-gate.md), and
+# the draft round and the draft QA/CI failure round (refs/draft-order.md).
+assert_eq "6" "$(playbook_text | grep -cE 'gate fix-round <N> (developer|<that-role>|<role>|qa|reviewer|security|adversarial) --pr')" "six fix-round gate fix-round sites"
+raw="$(playbook_text | grep -nE 'record-attempt <N> (developer|<that-role>|<role>|qa|reviewer|security|adversarial)' || true)"
+assert_eq "" "$raw" "no fix round calls record-attempt directly"
 # The Step 4 CI failure path and the re-stamp path never mention the check.
 step4_ci="$(awk '/^## Step 4 /{p=1} /^## Step 5 /{p=0} p' "$SKILL_MD")"
 assert_not_contains "$step4_ci" "pipeline-budget.sh" "Step 4 never runs the budget check"
 assert_not_contains "$step4_ci" "gate fix-round" "Step 4 never runs gate fix-round"
-restamp="$(grep -n 'RESTAMP_FAIL' "$SKILL_MD" | grep -i 'budget' || true)"
+restamp="$(playbook_text | grep -n 'RESTAMP_FAIL' | grep -i 'budget' || true)"
 assert_eq "" "$restamp" "RESTAMP_FAIL lines carry no budget check"
 
 # The post-merge items moved into `talos.sh post-merge` (#467): the spend block runs
@@ -105,16 +103,16 @@ assert_eq "1" "$(printf '%s\n' "$spend_fn" | grep -c 'upsert-pr-comment "$_pr" -
 assert_eq "1" "$(printf '%s\n' "$pm_run" | grep -c '_talos_spend "$_n" "$_pr"')" "post-merge: the spend block is the one _talos_spend call"
 assert_eq "1" "$(printf '%s\n' "$pm_run" | awk '/_talos_post_stage merged/{m=NR} /_talos_spend/ && !c{c=NR} END{print (m && c && m < c) ? 1 : 0}')" "post-merge: the spend block is after post_stage merged"
 assert_eq "0" "$(grep -c 'pipeline-hooks.sh" post_stage\|pipeline-events.sh" cost --issue' <<< "$pm_run")" "post-merge: no direct post_stage or spend writer is left (the helpers own them)"
-assert_contains "$skill_flat" 'the `merged` and `issue-closed` `post_stage` events and the spend block' "Step 4: the post-merge call includes the spend block"
-merge_seq="$(grep -n 'merge sequence:  pr-ci-runs -> merge-pr -> post_stage merged --ci-runs' "$SKILL_MD" | wc -l | tr -d ' ')"
+assert_contains "$skill_flat" 'the `merged` and `issue-closed` events and the spend block' "Step 4: the post-merge call includes the spend block"
+merge_seq="$(grep -n 'merge sequence:  pr-ci-runs -> merge-pr -> post_stage merged --ci-runs' "$TALOS_ROOT/skills/pipeline/refs/draft-order.md" | wc -l | tr -d ' ')"
 assert_eq "1" "$merge_seq" "the merge sequence: line is unchanged"
-item4="$(grep -n '3\. \*\*Cost column' "$SKILL_MD")"
-assert_contains "$item4" 'print item 1'"'"'s `cost=` lines' "Step 5 item 3 prints the one --summary call's lines"
+item4="$(grep -n '^3\. After the table print' "$SKILL_MD")"
+assert_contains "$item4" 'print the `cost=` lines' "Step 5 item 3 prints the one --summary call's lines"
 assert_not_contains "$item4" 'loop `--issue N`' "Step 5 item 3: the per-issue loop is gone"
-usage_line="$(grep -m1 'Usage-reporting spawn form' "$SKILL_MD")"
-assert_contains "$usage_line" 'no input/output split, no model, no dollar cost (UNVERIFIED beyond these observed fields)' \
+usage_line="$(grep -m1 'Usage on these paths' "$TALOS_ROOT/skills/pipeline/refs/harness.md")"
+assert_contains "$usage_line" 'no input/output split, no model and no dollar cost' \
   "usage section: Agent notification fields only"
-assert_contains "$usage_line" 'show as unrecorded' "usage section: adapter and pi-inline runs show as unrecorded"
+assert_contains "$usage_line" 'show as `unrecorded`' "usage section: adapter and pi-inline runs show as unrecorded"
 
 # ── (c) behaviour: `talos.sh done` against the real pipeline-events.sh ────────
 # The sandbox's scripts/: the real ones, except pipeline-vcs.sh is a recorder and the

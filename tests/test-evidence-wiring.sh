@@ -5,13 +5,13 @@
 #      unset / false / unsupported provider / gh without --attach / on.
 #   2. The per-file cap is ONE constant, handed to both embedded pythons.
 #   3. `attach` when capture itself fails to run reports capture=<n>.
-#   4. The playbook and the QA template: every playbook line sits inside an
-#      `<!-- evidence:start -->` / `<!-- evidence:end -->` block (small, and
-#      stripped by test-draft-stage-order.sh, whose fixtures prove the default
-#      text); no evidence verb appears outside a block; agents/qa.md carries no
-#      evidence text; the QA procedure is templates/prompts/qa-evidence.md,
-#      appended by the orchestrator only when evidence is on, and its wording
-#      (PASS only, one status line, never changes the verdict) is pinned.
+#   4. The playbook and the QA template: every playbook line about evidence
+#      lives in skills/pipeline/refs/evidence.md (#547; `talos.sh env` names it
+#      with ref=evidence only when evidence is on), so the core SKILL.md carries
+#      no evidence verb; agents/qa.md carries no evidence text; the QA procedure
+#      is templates/prompts/qa-evidence.md, appended by the orchestrator only
+#      when evidence is on, and its wording (PASS only, one status line, never
+#      changes the verdict) is pinned.
 #   5. `check-url`: the reviewer URL gate accepts exactly this repository's own
 #      `https://github.com/<owner>/<repo>/pull/<pr>#issuecomment-<digits>`.
 #   6. A sandbox walk: the fenced attach command from the template, with its
@@ -28,6 +28,7 @@ make_sandbox || exit 1
 EV="$TALOS_ROOT/scripts/pipeline-evidence.sh"
 VCS="$TALOS_ROOT/scripts/pipeline-vcs.sh"
 SKILL="$TALOS_ROOT/skills/pipeline/SKILL.md"
+EVREF="$TALOS_ROOT/skills/pipeline/refs/evidence.md"
 QA="$TALOS_ROOT/agents/qa.md"
 assert_file_exists "$EV" "pipeline-evidence.sh exists"
 
@@ -194,67 +195,27 @@ assert_eq "evidence-attach pr=7 status=posted images=1 videos=0 capture=1 commen
 # =============================================================================
 # 4. the playbook, the QA template and agents/qa.md: structure
 # =============================================================================
-EV_START='<!-- evidence:start -->'
-EV_END='<!-- evidence:end -->'
-PD_START='<!-- pr-draft:start -->'
-PD_END='<!-- pr-draft:end -->'
 TPL="$TALOS_ROOT/templates/prompts/qa-evidence.md"
 
-# strip_ev: the file with every evidence block (markers included) removed.
-strip_ev() {
-  awk -v s="$EV_START" -v e="$EV_END" '
-    { t = $0; gsub(/^[ \t]+|[ \t]+$/, "", t) }
-    t == s { skip = 1; next }
-    t == e { skip = 0; next }
-    !skip' "$1"
-}
-# ev_text: only the lines inside evidence blocks.
-ev_text() {
-  awk -v s="$EV_START" -v e="$EV_END" '
-    { t = $0; gsub(/^[ \t]+|[ \t]+$/, "", t) }
-    t == s { inb = 1; next }
-    t == e { inb = 0; next }
-    inb' "$1"
-}
-# markers_ok: evidence markers alternate, none nested, none open at the end, at
-# least one block, none inside a code fence, and none opened or closed while a
-# pr-draft block is open (the two kinds never overlap).
-markers_ok() {
-  awk -v s="$EV_START" -v e="$EV_END" -v ps="$PD_START" -v pe="$PD_END" '
-    { t = $0; gsub(/^[ \t]+|[ \t]+$/, "", t) }
-    t ~ /^```/ { fence = !fence }
-    t == ps { pd = 1 }
-    t == pe { pd = 0 }
-    t == s { if (open || fence || pd) bad = 1; open = 1; n++ }
-    t == e { if (!open || fence || pd) bad = 1; open = 0 }
-    END { exit (bad || open || n == 0) }' "$1"
-}
 # forbidden: lines of stdin that name an evidence verb, key or the template.
 forbidden() { grep -nE 'pipeline-evidence|EVIDENCE_|evidence-attach|evidence\.|Evidence:|qa-evidence'; }
 norm() { tr '\n' ' ' | tr -s ' '; }
 
-# ---- SKILL.md: opt-in blocks, small, and nothing evidence outside them -------
-markers_ok "$SKILL" && pass "SKILL.md: evidence markers alternate, sit outside code fences and never overlap a pr-draft block" \
-  || fail "SKILL.md: evidence markers alternate, sit outside code fences and never overlap a pr-draft block"
-assert_eq "" "$(strip_ev "$SKILL" | forbidden)" "SKILL.md: no evidence verb, key or template outside an evidence block"
-[ -n "$(ev_text "$SKILL" | forbidden)" ] && pass "SKILL.md: the evidence blocks do carry the wiring" || fail "SKILL.md: the evidence blocks do carry the wiring"
-SK_EV_LINES="$(awk -v s="$EV_START" -v e="$EV_END" '{ t = $0; gsub(/^[ \t]+|[ \t]+$/, "", t) } t == s { inb = 1 } inb { n++ } t == e { inb = 0 } END { print n + 0 }' "$SKILL")"
-if [ "$SK_EV_LINES" -le 25 ]; then pass "SKILL.md: the evidence blocks stay small ($SK_EV_LINES lines, markers included)"; else fail "SKILL.md: the evidence blocks stay small" "$SK_EV_LINES lines"; fi
+# ---- the core playbook: nothing evidence outside the ref, which carries the wiring -
+assert_eq "" "$(forbidden < "$SKILL")" "SKILL.md: no evidence verb, key or template in the core (it is all in refs/evidence.md)"
+[ -n "$(forbidden < "$EVREF")" ] && pass "refs/evidence.md carries the wiring" || fail "refs/evidence.md carries the wiring"
+assert_contains "$(norm < "$SKILL")" '`ref=evidence`' "SKILL.md points the QA step at the evidence ref"
 
 # ---- agents/qa.md carries no evidence text at all (the procedure is the template)
 assert_eq "0" "$(grep -ciE 'evidence' "$QA" || true)" "qa.md: no evidence text"
 assert_eq "0" "$(grep -c 'evidence:start' "$QA" || true)" "qa.md: no evidence block"
 
-# Step 1 carries no evidence text at all; Step 4 carries it only in the #429
-# hand-off block (checked below), so with that block stripped it has none either
+# Steps 1 and 4 carry no evidence text at all (the hand-off bullet is in the ref)
 step1="$(awk '/^## Step 1 — /{p=1} /^## Step 2 — /{p=0} p' "$SKILL")"
 step4="$(awk '/^## Step 4 — /{p=1} /^## Step 5 — /{p=0} p' "$SKILL")"
 [ -n "$step1" ] && [ -n "$step4" ] && pass "Step 1 and Step 4 were extracted" || fail "Step 1 and Step 4 were extracted"
 assert_eq "" "$(printf '%s\n' "$step1" | forbidden)" "Step 1 (reconcile): no evidence text, post-merge and sweep are not wired"
-STEP4="$SANDBOX/step4.md"
-printf '%s\n' "$step4" > "$STEP4"
-assert_eq "" "$(strip_ev "$STEP4" | forbidden)" "Step 4 (merge): no evidence text outside an evidence block"
-assert_eq "1" "$(grep -c -x "$EV_START" "$STEP4" || true)" "Step 4 (merge): exactly one evidence block (the #429 hand-off)"
+assert_eq "" "$(printf '%s\n' "$step4" | forbidden)" "Step 4 (merge): no evidence text in the core"
 assert_eq "" "$(printf '%s\n' "$step1" "$step4" | grep -iE 'remove-pr|sweep --keep' | grep -i evidence)" "Steps 1 and 4: no evidence remove-pr or sweep"
 
 # ---- wording: the QA template ----------------------------------------------
@@ -285,14 +246,14 @@ else fail "template: the epoch note precedes the upload step, which precedes the
 assert_eq "" "$(grep -E '`(Skill|Agent|Task|Read)` tool|\bSkill tool\b|Agent tool' "$TPL")" "template: no Claude-only tool is named"
 assert_eq "0" "$(grep -c 'evidence:start' "$TPL" || true)" "template: it is plain prompt text, no playbook markers"
 
-# ---- wording: the playbook --------------------------------------------------
-sk_ev="$(ev_text "$SKILL" | norm)"
-shas() { case "$sk_ev" in *"$1"*) pass "SKILL.md: $2" ;; *) fail "SKILL.md: $2" "missing: $1" ;; esac; }
+# ---- wording: the evidence ref -----------------------------------------------
+sk_ev="$(norm < "$EVREF")"
+shas() { case "$sk_ev" in *"$1"*) pass "evidence ref: $2" ;; *) fail "evidence ref: $2" "missing: $1" ;; esac; }
 # Step 0 is `talos.sh env` (#465): it makes the one enabled call and turns its exit code into EVIDENCE_ENABLED.
 assert_contains "$(cat "$TALOS_ROOT/scripts/talos.sh")" 'EVIDENCE_LINE' "Step 0 is one enabled call: talos.sh env prints EVIDENCE_LINE"
 assert_eq "1" "$(grep -c 'pipeline-evidence.sh" enabled' "$TALOS_ROOT/scripts/talos.sh")" "Step 0 is one enabled call: talos.sh env makes exactly one pipeline-evidence.sh enabled call"
-shas '`EVIDENCE_ENABLED` is `true` only when evidence is on' "EVIDENCE_ENABLED is true only when evidence is on"
-shas 'then `EVIDENCE_LINE` is `evidence on when=<user-facing|always> mode=<command|agent>`' "EVIDENCE_LINE is the enabled call's line"
+shas 'Read when `talos.sh env` prints `ref=evidence`' "it is read only when env names it (evidence on)"
+shas '`EVIDENCE_LINE` is `evidence on when=<user-facing|always> mode=<command|agent>`' "EVIDENCE_LINE is the enabled call's line"
 shas 'pipeline: evidence ignored: <reason>' "the unsupported-provider warning is relayed once"
 shas 'never a re-stamp: add `Evidence: <EVIDENCE_LINE>` after `Prior stage summary:`' "QA dispatch: the Evidence: line after Prior stage summary, never a re-stamp"
 shas 'append the content of `<scripts dir>/../templates/prompts/qa-evidence.md` to the prompt' "QA dispatch: the template is appended, resolved from the scripts dir"
@@ -304,47 +265,28 @@ shas 'do not fetch, open or Read it' "reviewer: the line tells it not to fetch t
 shas 'under `PR_DRAFT = true` (review runs before QA), add nothing' "reviewer: the line is omitted under PR_DRAFT"
 assert_eq "" "$(printf '%s' "$sk_ev" | grep -oE "grep -Eq '[^']*issuecomment[^']*'" )" "reviewer: no loose grep pattern on the URL is left in the playbook"
 # ---- #429: the evidence link in the approved hand-off (draft + human merge) ----
-# One block in Step 4 "Human-merge mode", after the line saying the verb set
-# pipeline:approved (`gate merge`, #466) and before item 1 (render and post
-# approved.md), so it runs before the render. The line rides the existing DETAILS slot, so
-# approved.md and the disabled text are untouched; the URL gate is the check-url
-# verb covered in section 5 (accepts this repo's own comment URL for this PR only).
-ho="$(ev_text "$STEP4" | norm)"
-hhas() { case "$ho" in *"$1"*) pass "hand-off: $2" ;; *) fail "hand-off: $2" "missing: $1" ;; esac; }
-hhas '(`EVIDENCE_ENABLED`, `PR_DRAFT = true`' "gated on evidence on and a draft PR (the section is human-merge mode, MERGE_AUTO = false)"
+# One paragraph of the ref, run before `post-merge --handoff` (`gate merge`, #466).
+# The line rides the existing DETAILS slot, so approved.md is untouched; the URL gate
+# is the check-url verb covered in section 5 (accepts this repo's own comment URL for
+# this PR only). The human-merge ref points at it.
+hhas() { case "$sk_ev" in *"$1"*) pass "hand-off: $2" ;; *) fail "hand-off: $2" "missing: $1" ;; esac; }
+hhas '**Human-merge hand-off** (`PR_DRAFT = true`, `merge.auto = false`)' "gated on evidence on and a draft PR (the section is human-merge mode, MERGE_AUTO = false)"
 hhas "QA's final message is in hand" "needs QA's final message"
 hhas 'its `evidence-attach` line has `status=posted`' "needs status=posted"
-hhas 'test the `comment=` value with `check-url <PR_NUMBER>`' "the comment= value goes through check-url"
-hhas 'exactly as in the Evidence link block (heredoc, as data)' "same data-not-command handling as the reviewer block"
+hhas 'test the `comment=` value with `check-url` exactly as above' "the comment= value goes through check-url, with the same data-not-command handling as the reviewer block"
 hhas 'write one bullet `- Evidence: <printed url>` to a `mktemp` file for `--details-file`' "one Evidence: bullet, through the details file (the DETAILS slot, #467)"
 hhas 'no QA message on a resumed pass, any other result) add nothing' "no QA message or any other result adds nothing"
 hhas 'Never re-run a role, add a label or stage, or fetch or open the link' "no re-run, label, stage, fetch or open"
-hm_line() { grep -n -m1 -F -- "$1" "$STEP4" | cut -d: -f1; }
-p2="$(hm_line 'and the verb set `pipeline:approved`')"; pev="$(hm_line "$EV_START")"; p3="$(hm_line 'Run `bash scripts/talos.sh post-merge <PR_NUMBER> <N> --handoff')"
-if [ -n "$p2" ] && [ -n "$pev" ] && [ -n "$p3" ] && [ "$p2" -lt "$pev" ] && [ "$pev" -lt "$p3" ]; then
-  pass "hand-off: the block sits between the verb's pipeline:approved line and item 1 (render and post approved.md), before the render"
-else fail "hand-off: the block sits between the pipeline:approved line and item 1" "p2=$p2 block=$pev p3=$p3"; fi
+assert_contains "$(cat "$TALOS_ROOT/skills/pipeline/refs/human-merge.md")" '`refs/evidence.md`' "hand-off: the human-merge ref points at the evidence ref"
 assert_eq "0" "$(grep -ci 'evidence' "$TALOS_ROOT/templates/comments/approved.md" || true)" "hand-off: approved.md names no evidence"
 assert_contains "$(cat "$TALOS_ROOT/templates/comments/approved.md")" '${DETAILS}' "hand-off: approved.md has the DETAILS slot the bullet rides in"
-# disabled case: with the block stripped, the hand-off line is followed directly by item 1
-strip_ev "$STEP4" > "$STEP4.off"
-assert_eq 'Run `bash scripts/talos.sh post-merge' "$(grep -A1 -F 'and the verb set `pipeline:approved`' "$STEP4.off" | tail -n 1 | cut -c1-37)" "hand-off: stripped of the block, the post-merge --handoff call follows the hand-off line directly"
-# the QA append is gated: the template is named only inside the EVIDENCE_ENABLED block
-assert_eq "1" "$(ev_text "$SKILL" | grep -c 'qa-evidence.md')" "SKILL.md: the template is named exactly once, inside an evidence block"
-assert_eq "0" "$(strip_ev "$SKILL" | grep -c 'qa-evidence' || true)" "SKILL.md: the template is not named outside an evidence block"
-case "$(ev_text "$SKILL" | grep 'qa-evidence.md' | head -n 1)" in
-  *'(`EVIDENCE_ENABLED`'*|*'Evidence'*) pass "SKILL.md: the append sits in the EVIDENCE_ENABLED block" ;;
-  *) fail "SKILL.md: the append sits in the EVIDENCE_ENABLED block" ;;
-esac
-assert_eq "" "$(ev_text "$SKILL" | grep -E '`(Skill|Agent|Task|Read)` tool|\bSkill tool\b|Agent tool')" "SKILL.md: no Claude-only tool is named in an evidence block"
-# the evidence blocks come right after the prompt call they extend (the fences moved to
-# `talos.sh prompt` + templates/prompts, #468), so no marker is ever sent to a subagent
-for pat in 'Spawn QA with the prompt of' '**Reviewer** (if `roles.reviewer = true`'; do
-  ok="$(awk -v pat="$pat" -v s="$EV_START" '
-    index($0, pat) { seen = 1; next }
-    seen && NF { print (index($0, s) ? "after" : "no"); exit }' "$SKILL")"
-  [ "$ok" = after ] && pass "SKILL.md: the evidence block follows the prompt call ($pat)" || fail "SKILL.md: the evidence block follows the prompt call ($pat)"
-done
+# the QA append is gated: the template is named only in the evidence ref
+assert_eq "1" "$(grep -c 'qa-evidence.md' "$EVREF")" "evidence ref: the template is named exactly once"
+assert_eq "0" "$(grep -c 'qa-evidence' "$SKILL" || true)" "SKILL.md: the template is not named in the core"
+assert_eq "" "$(grep -E '`(Skill|Agent|Task|Read)` tool|\bSkill tool\b|Agent tool' "$EVREF")" "evidence ref: no Claude-only tool is named"
+# the core's QA step names the ref right after the prompt call it extends, so no
+# evidence text is ever sent to a subagent unless the ref was read
+assert_contains "$(awk '/^### 3d\. /{p=1} /^### 3e\. /{p=0} p' "$SKILL" | norm)" 'with `talos.sh prompt qa --issue <N> --pr <PR> --prior-file F` (the developer'"'"'s pr-opened relay; `ref=evidence`)' "SKILL.md: the QA prompt call names ref=evidence"
 # the resolve path the playbook names works for the source layout (the global, plugin
 # and vendored layouts keep scripts/ and templates/ side by side the same way)
 assert_file_exists "$TALOS_ROOT/scripts/../templates/prompts/qa-evidence.md" "the template resolves as <scripts dir>/../templates/prompts/qa-evidence.md"

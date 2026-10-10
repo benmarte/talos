@@ -243,7 +243,7 @@ nxi 21
 assert_eq "action=dispatch stage=validator issue=21" "$OUT" "AC3: pipeline:ready routes to validator"
 LEASE_RESET
 nxi 22
-assert_eq "action=dispatch stage=planner issue=22" "$OUT" "AC3: pipeline:confirmed epic routes to planner when enabled"
+assert_eq "action=dispatch stage=planner issue=22 ref=planner" "$OUT" "AC3: pipeline:confirmed epic routes to planner when enabled"
 # planner disabled: the same issue passes through to PM (skip-when-spec off,
 # so the has-spec stub is not consulted).
 cfg '{"max_parallel": 1}' '{"validator": true, "planner": false, "pm": true, "developer": true, "pm_skip_when_spec_present": false}'
@@ -280,20 +280,20 @@ open_state '[]'
 issue 31 "pipeline:confirmed,epic" /dev/null
 LEASE_RESET
 nxi 31
-assert_eq "action=dispatch stage=planner issue=31" "$OUT" "AC4: the epic label routes the planner dispatch"
+assert_eq "action=dispatch stage=planner issue=31 ref=planner" "$OUT" "AC4: the epic label routes the planner dispatch"
 # Epic by >= 4 checklist items.
 printf -- '- [ ] a\n- [ ] b\n- [ ] c\n- [ ] d\n' > "$STUB_DIR/e.body"
 issue 32 "pipeline:confirmed" "$STUB_DIR/e.body"
 LEASE_RESET
 nxi 32
-assert_eq "action=dispatch stage=planner issue=32" "$OUT" "AC4: >= 4 checklist items routes the planner dispatch"
+assert_eq "action=dispatch stage=planner issue=32 ref=planner" "$OUT" "AC4: >= 4 checklist items routes the planner dispatch"
 # Epic by body length (>= 2000 chars), not otherwise epic-shaped.
 { for i in 1 2 3 4 5 6 7 8 9 10; do printf 'x%.0s' 1 2 3 4 5 6 7 8 9 10; done; printf '\n'; } > /dev/null  # noqa
 python3 -I -c "print('x' * 2000)" > "$STUB_DIR/long.body"
 issue 33 "pipeline:confirmed" "$STUB_DIR/long.body"
 LEASE_RESET
 nxi 33
-assert_eq "action=dispatch stage=planner issue=33" "$OUT" "AC4: a >= 2000-char body routes the planner dispatch"
+assert_eq "action=dispatch stage=planner issue=33 ref=planner" "$OUT" "AC4: a >= 2000-char body routes the planner dispatch"
 # Below all three thresholds: a non-epic passes through to PM.
 printf 'short body\n' > "$STUB_DIR/s.body"
 issue 34 "pipeline:confirmed" "$STUB_DIR/s.body"
@@ -446,10 +446,10 @@ assert_eq "action=wait reason=owner" "$OUT" "AC9: a blocked issue is never dispa
 open_state '[{"n": 15, "issue": 61, "head": "a4f9", "owner": false, "stage": "ready"}]' 61
 LEASE_RESET
 nxi 61
-assert_eq "action=wait reason=draft pr=15 issue=61" "$OUT" "AC1: adoption's ready branch names the PR on the draft wait"
+assert_eq "action=wait reason=draft pr=15 issue=61 ref=draft-order" "$OUT" "AC1: adoption's ready branch names the PR on the draft wait"
 LEASE_RESET
 nx
-assert_eq "action=wait reason=draft pr=15 issue=61" "$OUT" "AC1: the queue pick's ready stage answers the key-carrying draft wait too"
+assert_eq "action=wait reason=draft pr=15 issue=61 ref=draft-order" "$OUT" "AC1: the queue pick's ready stage answers the key-carrying draft wait too"
 
 # ── AC10: provider gaps fail closed ───────────────────────────────────────────
 reset_stubs

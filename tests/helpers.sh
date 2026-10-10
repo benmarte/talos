@@ -331,6 +331,12 @@ talos_prompt_text() {
   rm -f "${_tpt_file:?}"
 }
 
+# playbook_text -- the pipeline playbook as the orchestrator can read it (#547):
+# the core SKILL.md, then every ref in skills/pipeline/refs/. For a pin that
+# asks "does the playbook say this somewhere"; a pin about WHERE a rule lives
+# (core or one ref) reads that file directly.
+playbook_text() { cat "$TALOS_ROOT/skills/pipeline/SKILL.md" "$TALOS_ROOT"/skills/pipeline/refs/*.md; }
+
 # finish — print summary for this file and exit non-zero on any failure.
 finish() {
   printf '%s: %d passed, %d failed\n' "$(basename "$0")" "$_PASS" "$_FAIL"

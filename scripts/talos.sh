@@ -37,6 +37,15 @@
 #                              agent.<role>.<field> (runner, runner_cmd, model,
 #                              effort, fallback, effort_notice); only runner is
 #                              always printed, an absent field is empty.
+#   ref=<topic>                a playbook ref that applies to this run (#547):
+#                              skills/pipeline/refs/<topic>.md, read once.
+#                              Topics: draft-order (PR_DRAFT true), planner,
+#                              adversarial, human-merge (merge.auto false),
+#                              ci-gate (verify.qa_mode ci), evidence, file-mode,
+#                              hooks (hooks.pre_dispatch set) and harness (a
+#                              non-claude runner, subagents false or a fallback
+#                              chain). Printed last, one line per topic, none
+#                              when none applies.
 #   warn reason=<enum> [role=<role>|key=<KEY>]
 #                              the run can go on; the line says what is missing.
 #   stop reason=<enum>         the run must not start (exit non-zero).
@@ -357,6 +366,11 @@
 #                                  or an Owner line), lease (another run
 #                                  holds the lease; retry_after_s is the
 #                                  holder's remaining TTL), none.
+#        Playbook refs (#547): a planner or adversarial dispatch and the draft
+#        wait end in ` ref=<topic>` (planner, adversarial, draft-order): the
+#        orchestrator reads
+#        skills/pipeline/refs/<topic>.md before acting. No other answer carries
+#        one (ask-owner's question runs to the end of its line).
 #        `next --issue <N>` routes the named issue through the same rules
 #        (adoption first: an open pipeline PR for a queued #N answers the
 #        PR's stage, resumed via the PR-side helper). A developer dispatch
@@ -691,7 +705,9 @@ usage: talos.sh <verb>
 verbs:
   env                                print every Step 0 setting, PR_DRAFT, the
                                      evidence line and the per-role
-                                     runner/model/effort as sanitised KEY=value lines
+                                     runner/model/effort as sanitised KEY=value lines,
+                                     then ref=<topic> for each playbook ref that
+                                     applies to the run
   gate fix-round <N> <stage> [--pr M]  the checks before a developer fix round:
                                      verdict=redispatch or verdict=block
   gate merge <pr> <issue>            every Step 4 merge gate, one verdict:
@@ -733,7 +749,9 @@ verbs:
                                      question=<sanitised> | action=wait
                                      reason=<draft|ci|human-merge|blocked|
                                      owner|lease|dependency|cap|none>
-                                     [retry_after_s=<s>]; a developer fix
+                                     [retry_after_s=<s>]; a planner or
+                                     adversarial dispatch and the draft wait end
+                                     in ref=<topic> (a playbook ref to read); a developer fix
                                      round past a ceiling is stop
                                      reason=max-fix-attempts|
                                      max-total-dispatches|budget-exceeded,
@@ -796,6 +814,9 @@ _talos_resolve_role() {
     [ -z "${BASH_REMATCH[2]}" ] || _talos_emit "agent.$_role.model" "${BASH_REMATCH[2]}"
     [ -z "${BASH_REMATCH[3]}" ] || _talos_emit "agent.$_role.effort" "${BASH_REMATCH[3]}"
     [ -z "${BASH_REMATCH[5]}" ] || _talos_emit "agent.$_role.fallback" "${BASH_REMATCH[5]}"
+    # A role that is not a native claude spawn, or has a fallback chain, needs
+    # the harness ref (#547).
+    if [ "$_runner" != claude ] || [ -n "${BASH_REMATCH[5]}" ]; then _TALOS_HARNESS_REF=1; fi
   else
     _talos_emit warn "reason=resolve-failed role=$_role"
     return 0
@@ -860,6 +881,7 @@ EOF
   # acts on: native | adapter | inline, from the active profile or, without one,
   # from agents.mode / agents.subagents / the harness -- never from agents.runner
   # alone.
+  _TALOS_AGENTS_MODE=""
   _val="$(cfg_src harness)"
   if [ -n "$_val" ]; then
     local _pn _pl
@@ -867,7 +889,8 @@ EOF
     _talos_emit HARNESS_ORIGIN "$(cfg_src harness_origin)"
     _talos_emit PROFILE "$(cfg_src profile)"
     _talos_emit PROFILE_ORIGIN "$(cfg_src profile_origin)"
-    _talos_emit AGENTS_MODE "$(cfg_src profile_mode)"
+    _TALOS_AGENTS_MODE="$(cfg_src profile_mode)"
+    _talos_emit AGENTS_MODE "$_TALOS_AGENTS_MODE"
     for _pn in $(cfg_src profiles | tr ',' ' '); do
       _pl="mode=$(cfg_prof "$_pn" mode) runner=$(cfg_prof "$_pn" runner) cli=$(cfg_prof "$_pn" cli) usable=$(cfg_prof "$_pn" usable)"
       [ "$(cfg_prof "$_pn" usable)" != "no" ] || _pl="$_pl reason=$(cfg_prof "$_pn" reason)"
@@ -890,22 +913,52 @@ EOF
     *) _talos_stop draft-resolve-failed ;;
   esac
   _talos_emit PR_DRAFT "$_val"
+  _TALOS_PR_DRAFT="$_val"
 
   # EVIDENCE: enabled only when the call exits 0; the line is its stdout.
   if _val="$(bash "$SCRIPT_DIR/pipeline-evidence.sh" enabled)"; then
     _talos_emit EVIDENCE_ENABLED true
     _talos_emit EVIDENCE_LINE "$_val"
+    _TALOS_EVIDENCE=true
   else
+    _TALOS_EVIDENCE=false
     _talos_emit EVIDENCE_ENABLED false
     _talos_emit EVIDENCE_LINE ""
   fi
 
   local _role
+  _TALOS_HARNESS_REF=0
   for _role in $_TALOS_ROLES; do
     _talos_resolve_role "$_role"
   done
 
+  _talos_env_refs
   _talos_flush
+}
+
+# _talos_cfg_is <key> <value>: the config value, lower-cased, equals <value>.
+_talos_cfg_is() { [ "$(cfg "$1" | tr '[:upper:]' '[:lower:]')" = "$2" ]; }
+
+# _talos_env_refs (#547): one `ref=<topic>` line per playbook ref that applies
+# to this run, so the orchestrator reads a ref exactly when it is needed and the
+# core playbook stays small. The conditions are the default-off or non-default
+# settings; the default flow names none except draft-order (pr.draft is on).
+_talos_env_refs() {
+  local _val _topic
+  [ "$_TALOS_PR_DRAFT" = true ] && _talos_emit ref draft-order
+  _talos_cfg_is roles.planner true && _talos_emit ref planner
+  _talos_cfg_is roles.adversarial true && _talos_emit ref adversarial
+  _talos_cfg_is merge.auto false && _talos_emit ref human-merge
+  _talos_cfg_is verify.qa_mode ci && _talos_emit ref ci-gate
+  [ "$_TALOS_EVIDENCE" = true ] && _talos_emit ref evidence
+  _talos_cfg_is vcs.provider file && _talos_emit ref file-mode
+  [ -z "$(cfg hooks.pre_dispatch)" ] || _talos_emit ref hooks
+  _val="$(cfg agents.fallback)"
+  case "${_TALOS_AGENTS_MODE:-}" in adapter | inline) _TALOS_HARNESS_REF=1 ;; esac
+  if [ "$_TALOS_HARNESS_REF" = 1 ] || [ -n "$_val" ] \
+     || _talos_cfg_is agents.subagents false || ! _talos_cfg_is agents.runner claude; then
+    _talos_emit ref harness
+  fi
 }
 
 # ── gate ─────────────────────────────────────────────────────────────────────
@@ -3355,7 +3408,7 @@ _talos_next() {
     "action=dispatch stage="*" issue="*) : ;;
     "action=merge pr="*" issue="*) : ;;
     "action=ask-owner issue="*" question="*) _talos_emit_next "$_a"; _talos_flush; exit 0 ;;
-    "action=wait reason="*) _talos_emit_next_wait "$_a"; _talos_flush; exit 0 ;;
+    "action=wait reason="*) _talos_emit_next_wait "$_a$(_talos_next_ref "$_a")"; _talos_flush; exit 0 ;;
     *) _talos_stop state-unavailable ;;
   esac
 
@@ -3410,8 +3463,21 @@ _talos_next() {
       _talos_emit_next_wait "action=wait reason=lease retry_after_s=${TALOS_LEASE_LOCK_S:-10}"
       _talos_flush; exit 0 ;;
   esac
-  _talos_emit_next "$_a"
+  _talos_emit_next "$_a$(_talos_next_ref "$_a")"
   _talos_flush
+}
+
+# _talos_next_ref <action-line> (#547): ` ref=<topic>` (leading space) when the
+# answer sends the orchestrator to a playbook ref, else nothing. Only the
+# answers that need a ref to act on: a planner or adversarial dispatch and the
+# draft wait (the draft order continues from it). `ask-owner` is never given one: its
+# question text runs to the end of the line.
+_talos_next_ref() {
+  case "$1" in
+    "action=dispatch stage=planner "*) printf ' ref=planner' ;;
+    "action=dispatch stage=adversarial "*) printf ' ref=adversarial' ;;
+    "action=wait reason=draft"*) printf ' ref=draft-order' ;;
+  esac
 }
 
 # _talos_lease_live_count: how many issues hold a lease the reader counts

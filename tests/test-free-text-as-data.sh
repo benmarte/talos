@@ -9,7 +9,7 @@
 # --body-file -`) or a variable / `mktemp` file in the recipe itself.
 #
 # Part 1 runs the real scripts with the hostile body. Part 2 pulls every
-# recipe out of agents/*.md and skills/pipeline/SKILL.md, fills the heredoc
+# recipe out of agents/*.md and skills/pipeline/refs/*.md (#547), fills the heredoc
 # bodies with the hostile body and fresh delimiters, runs it in a sandbox
 # against stub scripts, and checks what the consumer received.
 #
@@ -421,11 +421,11 @@ assert_eq "pipeline-vcs.sh|approve-pr|8|--body-file|-" "$(argv_of "$c.argv")" "r
 cmp -s "$SANDBOX/r.sh.bodies/1" "$c.stdin"; assert_eq "0" "$?" "reviewer.md recipe: the stub received the summary byte for byte"
 assert_no_pwned "reviewer.md recipe"
 
-# ── skills/pipeline/SKILL.md: the stage-comment rendering recipe ─────────────
+# ── skills/pipeline/refs/comments.md: the stage-comment rendering recipe ─────────────
 # SUMMARY and DETAILS are read -r -d '' variables (the BLOCKED_BY shape). The
 # variable form trims surrounding whitespace, so the comment holds each body
 # without its trailing newline.
-run_recipe "$TALOS_ROOT/skills/pipeline/SKILL.md" 'TMPL="<TMPL_DIR>'; rc=$?
+run_recipe "$TALOS_ROOT/skills/pipeline/refs/comments.md" 'TMPL="<TMPL_DIR>'; rc=$?
 assert_eq "0" "$rc" "playbook rendering recipe: runs ($(head -c 200 "$SANDBOX/r.err"))"
 posted="$(argv_of "$(call_of comment-issue).argv")"
 assert_contains "$posted" "comment-issue|7|**Agent:** test (talos)" "playbook rendering recipe: the comment is rendered and posted"
@@ -475,8 +475,8 @@ c="$(call_of pipeline-notify.sh)"
 cmp -s "$BODY" "$c.stdin"; assert_eq "0" "$?" "talos.sh done --summary-file -: the relay stub received the stdin summary byte for byte"
 assert_no_pwned "talos.sh done (stdin)"
 
-# ── skills/pipeline/SKILL.md: sub-issue body + title + create-issue ──────────
-run_recipe "$TALOS_ROOT/skills/pipeline/SKILL.md" 'BODY_FILE="$(mktemp)"' 'create-issue "$SUB_TITLE" "$BODY_FILE" \
+# ── skills/pipeline/refs/planner.md: sub-issue body + title + create-issue ──────────
+run_recipe "$TALOS_ROOT/skills/pipeline/refs/planner.md" 'BODY_FILE="$(mktemp)"' 'create-issue "$SUB_TITLE" "$BODY_FILE" \
   --label pipeline:ready'; rc=$?
 assert_eq "0" "$rc" "playbook sub-issue recipe: runs ($(head -c 200 "$SANDBOX/r.err"))"
 c="$(call_of create-issue)"
@@ -485,7 +485,7 @@ assert_contains "$argv" "pipeline-vcs.sh|create-issue|first line|" "playbook sub
 cmp -s "$SANDBOX/r.sh.bodies/1" "$c.file"; assert_eq "0" "$?" "playbook sub-issue recipe: the body file is byte-identical to the hostile body"
 assert_no_pwned "playbook sub-issue recipe"
 
-# ── skills/pipeline/SKILL.md: the adapter prompt ─────────────────────────────
+# ── skills/pipeline/refs/harness.md: the adapter prompt ─────────────────────────────
 # The prompt text reaches the runner from a file (#468): `talos.sh prompt` writes the
 # hostile prior summary into it as data (it is read from a file and never evaluated),
 # and the playbook's adapter recipe pipes that file to the runner on stdin.
@@ -493,7 +493,7 @@ PF_OUT="$(bash "$TALOS_ROOT/scripts/talos.sh" prompt developer --issue 7 --prior
 export PROMPT_FILE="${PF_OUT#prompt_file=}"
 assert_file_exists "$PROMPT_FILE" "the prompt verb rendered the hostile prior summary into a file"
 assert_no_pwned "the prompt verb"
-run_recipe "$TALOS_ROOT/skills/pipeline/SKILL.md" 'pipeline-agent.sh <role> - < "$PROMPT_FILE"'; rc=$?
+run_recipe "$TALOS_ROOT/skills/pipeline/refs/harness.md" 'pipeline-agent.sh <role> - < "$PROMPT_FILE"'; rc=$?
 assert_eq "0" "$rc" "playbook adapter-prompt recipe: runs"
 c="$(call_of pipeline-agent.sh)"
 cmp -s "$PROMPT_FILE" "$c.stdin"; assert_eq "0" "$?" "playbook adapter-prompt recipe: the stub received the prompt byte for byte"

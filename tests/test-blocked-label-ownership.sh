@@ -60,11 +60,11 @@ assert_contains "$verb_text" 'Only the orchestrator clears pipeline:blocked' \
 # through `talos.sh done`'s `next=fix-round stage=<role>` (tests/test-talos-done.sh
 # pins that answer per role), so the one `<role>` line stands for those three.
 for stage in qa '<role>'; do
-  after="$(grep -F -A3 -- "gate fix-round <N> $stage --pr <PR_NUMBER>" "$SKILL_MD")"
+  after="$(grep -F -A3 -- "gate fix-round <N> $stage --pr <PR>" "$SKILL_MD")"
   assert_contains "$after" 'verdict=redispatch' \
     "SKILL.md re-dispatches the developer only on verdict=redispatch after the $stage gate fix-round"
 done
-assert_contains "$(grep -F -B1 -- "gate fix-round <N> <role> --pr <PR_NUMBER>" "$SKILL_MD")" 'next=fix-round stage=<role>' \
+assert_contains "$(grep -F -B1 -- "gate fix-round <N> <role> --pr <PR>" "$SKILL_MD")" 'next=fix-round stage=<role>' \
   "SKILL.md reaches the shared fix-round site from next=fix-round stage=<role> (reviewer, security, adversarial)"
 
 # ── Blocked PRs are reported, not silent (#312) ────────────────────────────
@@ -75,16 +75,14 @@ assert_contains "$verb_text" 'blocked PRs awaiting human action: ${_bi}' \
   "talos.sh sweep's blocked-work report lists blocked PRs"
 assert_contains "$verb_text" '[ $((_ki + _kp)) -gt 0 ]' \
   "talos.sh sweep's blocked-work report fires only when K + J > 0"
-assert_contains "$skill_flat" '`blocked_issues=K` / `blocked_prs=J` (item 5, #312): stale blocked work, one `info backlog` notice when K + J > 0' \
+assert_contains "$skill_flat" '`blocked_issues=K` / `blocked_prs=J`: stale blocked work, one `info backlog` notice when K + J > 0' \
   "SKILL.md Step 1 names the blocked-work report and its K + J > 0 rule"
-assert_contains "$skill_flat" 'A PR skipped because it carries `pipeline:blocked`' \
+assert_contains "$skill_flat" 'A PR carrying `pipeline:blocked` (on the PR or its issue) is `blocked`, not `in-flight`' \
   "SKILL.md Step 5 summary reports a blocked PR as blocked"
 
 # ── Blocked PRs are not resumed, whether adopted or already in-flight (#322) ─
-assert_contains "$skill_flat" 'A PR that carries `pipeline:blocked` (on the PR or its issue) is not resumed — leave it for item 5' \
-  "SKILL.md Step 1 item 1 does not resume an adopted PR carrying pipeline:blocked"
-assert_contains "$skill_flat" 'A PR that carries `pipeline:blocked` (on the PR or its issue) is not resumed — item 5 reports it' \
-  "SKILL.md Step 1 item 3 does not resume an in-flight PR carrying pipeline:blocked"
+assert_contains "$skill_flat" 'a PR that carries `pipeline:blocked` (on the PR or its issue) is not resumed: item 4 reports it, Step 5 lists it `blocked`' \
+  "SKILL.md Step 1 does not resume an adopted or in-flight PR carrying pipeline:blocked"
 
 readme_flat="$(tr '\n' ' ' < "$TALOS_ROOT/README.md" | tr -s ' ')"
 assert_contains "$readme_flat" 'removes `pipeline:blocked` from both the PR and its issue' \
