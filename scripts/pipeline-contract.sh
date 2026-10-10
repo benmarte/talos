@@ -27,7 +27,7 @@
 #                            scripts/pipeline-*.sh files.
 #   tests/test-contract.sh -- asserts every label/marker string that
 #                            appears in prose (SKILL.md, agents/*.md,
-#                            templates/**, README.md, docs/user-guide.md)
+#                            templates/**, README.md, docs/reference.md)
 #                            is a member of the arrays below.
 
 # ── Roles ──────────────────────────────────────────────────────────────────
@@ -43,9 +43,9 @@ TALOS_ROLES=(
 # ── Runners ────────────────────────────────────────────────────────────────
 # Every value `agents.runner` accepts, as "id|Display name". The id is what
 # pipeline-agent.sh's case arms match; the display name is the column header
-# in the docs/user-guide.md "Harness feature matrix". tests/
+# in the docs/reference.md harness table. tests/
 # test-runner-conformance.sh drives one stage through each entry and checks
-# this list against both of those places.
+# this list against the code.
 TALOS_RUNNERS=(
   "claude|Claude Code"
   "pi|pi"
