@@ -238,7 +238,7 @@ EOF
   esac
 else
   _root="${ROLE_ROOT:-$TALOS_ROOT}"
-  FILES=("$_root"/agents/*.md "$_root"/skills/*/SKILL.md)
+  FILES=("$_root"/agents/*.md "$_root"/skills/*/SKILL.md "$_root"/skills/*/refs/*.md)
 fi
 assert_eq "1" "$([ "${#FILES[@]}" -gt 0 ] && echo 1 || echo 0)" "the scan has a non-empty file list (${#FILES[@]} files)"
 HITS="$(scan_files "${FILES[@]}" 2>"$SANDBOX/scan.err")"; rc=$?
@@ -260,7 +260,7 @@ if [ -z "${TALOS_QUOTING_NESTED:-}" ]; then
   CK="$SP/talos"
   mkdir -p "$CK/tests/fixtures" "$CK/scripts" "$CK/skills"
   cp -R "$TALOS_ROOT/agents" "$CK/agents"
-  for d in "$TALOS_ROOT"/skills/*/; do mkdir -p "$CK/skills/$(basename "$d")"; cp "$d/SKILL.md" "$CK/skills/$(basename "$d")/SKILL.md"; done
+  for d in "$TALOS_ROOT"/skills/*/; do mkdir -p "$CK/skills/$(basename "$d")"; cp "$d/SKILL.md" "$CK/skills/$(basename "$d")/SKILL.md"; [ -d "$d/refs" ] && cp -R "$d/refs" "$CK/skills/$(basename "$d")/refs"; done
   cp "$SELF" "$TALOS_ROOT/tests/helpers.sh" "$CK/tests/"
   cp "$TALOS_ROOT/tests/fixtures/pre-340-unsafe-recipes.md" "$CK/tests/fixtures/"
   cp "$TALOS_ROOT/scripts/pipeline-paths.sh" "$CK/scripts/"
@@ -380,7 +380,7 @@ PY
 assert_eq "9" "$(grep -c '^<!-- case ' "$FIX")" "the fixture holds nine pre-#340 unsafe recipes"
 assert_eq "" "$missing" "every one of the nine pre-#340 unsafe recipes is flagged (cases not flagged: ${missing:-none})"
 
-# Rule 3 wording: the run URL is bound to this repository (#452)
-assert_contains "$(tr '\n' ' ' < "$TALOS_ROOT/skills/pipeline/SKILL.md" | tr -s ' ')" "this repository's own, \`https://github.com/<owner>/<repo>/actions/runs/<digits>\` with \`<owner>/<repo>\` the slug you resolved" "Step 3d: the CI run URL must be this repository's own"
+# CI gate wording: the run URL is bound to this repository (#452)
+assert_contains "$(tr '\n' ' ' < "$TALOS_ROOT/skills/pipeline/refs/ci-gate.md" | tr -s ' ')" "this repository's own, \`https://github.com/<owner>/<repo>/actions/runs/<digits>\` with \`<owner>/<repo>\` the slug you resolved" "CI gate: the CI run URL must be this repository's own"
 
 finish

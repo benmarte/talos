@@ -3,10 +3,10 @@
 # gates QA on CI state (#355).
 #
 # Covers:
-#   (a) skills/pipeline/SKILL.md Step 3d: the CI gate sits after the Draft guard
-#       and before Spawn, is ci-mode only, routes rc 0/2 to QA, rc 1 plus
-#       `pr-checks-required: failed:` to a developer re-dispatch counted as
-#       `record-attempt <N> developer --pr`, and rc 1 without that line to QA
+#   (a) skills/pipeline/refs/ci-gate.md (#547; named by `ref=ci-gate` in the env
+#       output and by Step 3d): the CI gate is ci-mode only, routes rc 0/2 to QA,
+#       rc 1 plus `pr-checks-required: failed:` to a developer re-dispatch counted
+#       as `record-attempt <N> developer --pr`, and rc 1 without that line to QA
 #   (b) the Step 3c developer prompt carries `Required checks:` and `CI wait
 #       budget:`; local mode omits them; the draft block sends `none`
 #   (c) agents/developer.md: the CI-wait step after step 9, the `none` skip,
@@ -22,30 +22,24 @@ make_sandbox || exit 1
 use_stubs
 
 SKILL="$TALOS_ROOT/skills/pipeline/SKILL.md"
+GATE_REF="$TALOS_ROOT/skills/pipeline/refs/ci-gate.md"
 DEV="$TALOS_ROOT/agents/developer.md"
 VCS="$TALOS_ROOT/scripts/pipeline-vcs.sh"
 
-# ── (a) Step 3d gate ─────────────────────────────────────────────────────────
-STEP_3D="$(awk '/^### 3d\. QA/{f=1} /^### 3e\./{f=0} f' "$SKILL")"
-GATE="$(printf '%s\n' "$STEP_3D" | awk '/^\*\*CI gate \(#355\)/{f=1} /^Spawn QA with the prompt/{f=0} f')"
-[ -n "$GATE" ] && pass "Step 3d carries a CI gate section" || fail "Step 3d carries a CI gate section"
+# ── (a) the CI gate ──────────────────────────────────────────────────────────
+GATE="$(cat "$GATE_REF")"
+[ -n "$GATE" ] && pass "the ci-gate ref carries the CI gate" || fail "the ci-gate ref carries the CI gate"
 
-line_of() { printf '%s\n' "$STEP_3D" | grep -n -m1 -F -- "$1" | cut -d: -f1; }
-GUARD_END="$(printf '%s\n' "$STEP_3D" | grep -n -F '<!-- pr-draft:end -->' | head -1 | cut -d: -f1)"
-GATE_AT="$(line_of '**CI gate (#355)')"
-SPAWN_AT="$(line_of 'Spawn QA with the prompt')"
-[ -n "$GUARD_END" ] && [ "$GUARD_END" -lt "$GATE_AT" ] && [ "$GATE_AT" -lt "$SPAWN_AT" ] \
-  && pass "the gate follows the Draft guard and precedes Spawn" \
-  || fail "the gate follows the Draft guard and precedes Spawn" "guard-end=$GUARD_END gate=$GATE_AT spawn=$SPAWN_AT"
-
-assert_contains "$GATE" 'Only when `VERIFY_QA_MODE` is `ci`' "gate is ci-mode only (local unchanged)"
+STEP_3D="$(awk '/^### 3d\. QA/{f=1} /^### 3e\./{f=0} f' "$SKILL" | tr '\n' ' ' | tr -s ' ')"
+assert_contains "$STEP_3D" '`ref=ci-gate` when `VERIFY_QA_MODE` is `ci`' "Step 3d names the ci-gate ref for ci mode (local unchanged)"
+assert_contains "$GATE" 'Read when `talos.sh env` prints `ref=ci-gate`' "the ref is read only in ci mode"
 assert_contains "$GATE" 'never a Step 4 re-stamp' "gate skips a Step 4 re-stamp"
 assert_contains "$GATE" 'out="$(bash scripts/pipeline-vcs.sh pr-checks-required <PR_NUMBER> 2>&1)"; rc=$?' \
   "gate captures output and exit code in one assignment"
 assert_contains "$GATE" '| 0 or 2 | any | Spawn QA' "rc 0 and rc 2 route to QA"
 assert_contains "$GATE" '| 1 | holds `pr-checks-required: failed:` | No QA: developer re-dispatch' \
   "rc 1 with the failed: line routes to a developer re-dispatch"
-assert_contains "$GATE" '| 1 | no such line (unsupported provider, no checks) | Spawn QA as today' \
+assert_contains "$GATE" '| 1 | no such line (unsupported provider, no checks) | Spawn QA as usual' \
   "rc 1 without the failed: line routes to QA"
 assert_contains "$GATE" 'gate fix-round <N> developer --pr <PR_NUMBER>' "re-dispatch is recorded as a developer attempt (gate fix-round, #466)"
 # The budget check and the unblock moved from this prose into the verb (#466):
@@ -72,7 +66,7 @@ printf '{"merge": {"required_checks": ["test (ubuntu-latest)"]}, "verify": {"qa_
 LOCAL_PROMPT="$(talos_prompt_text developer --issue 5)"
 assert_not_contains "$LOCAL_PROMPT" 'Required checks:' "local mode omits the developer prompt's Required checks line"
 assert_not_contains "$LOCAL_PROMPT" 'CI wait budget' "local mode omits the developer prompt's CI wait budget"
-assert_contains "$(cat "$SKILL")" 'pass `--draft` on every developer dispatch' "the pr-draft block sends --draft on every developer dispatch"
+assert_contains "$(cat "$TALOS_ROOT/skills/pipeline/refs/draft-order.md")" 'Every `talos.sh prompt` and every `talos.sh done` takes `--draft`' "the draft-order ref sends --draft on every prompt, including the developer's"
 
 # Behavioural (#435): render the developer brief the way Step 3c says to (--draft
 # makes its `Required checks:` line `none`), then apply the developer profile's

@@ -216,12 +216,14 @@ bash "$AGENT" --resolve-all >/dev/null 2>"$ERR"
 assert_contains "$(cat "$ERR")" "$CLAUDE_DIR/developer.md still sets model:" "a model: line in .claude/agents is still warned about"
 
 # ── The playbook states the real order ───────────────────────────────────────
-SKILL="$(cat "$TALOS_ROOT/skills/pipeline/SKILL.md")"
-inline_step="$(printf '%s\n' "$SKILL" | grep -F 'Find the role profile with')"
+# #547: the role-profile order is in the harness ref (named by ref=harness), which is
+# where the adapter and inline paths are described.
+HARNESS="$(cat "$TALOS_ROOT/skills/pipeline/refs/harness.md")"
+inline_step="$(printf '%s\n' "$HARNESS" | grep -F -- '--resolve-profile <role>` prints one absolute path')"
 assert_contains "$inline_step" 'bash scripts/pipeline-agent.sh --resolve-profile <role>' "pi inline step 1 uses --resolve-profile"
-adapter_line="$(printf '%s\n' "$SKILL" | grep -F 'The adapter finds the role definition itself')"
-assert_contains "$adapter_line" '`$PWD/.claude/agents/<role>.md`, then `$PWD/.agents/talos/agents/<role>.md`' "adapter sentence states the order"
-assert_contains "$SKILL" 'The neutral path (2) applies to the adapter and inline paths only.' "Subagent names section limits the neutral path to adapter and inline"
+order_line="$(printf '%s\n' "$HARNESS" | grep -F 'Role profile order')"
+assert_contains "$order_line" '`$PWD/.claude/agents/<role>.md`; `$PWD/.agents/talos/agents/<role>.md`' "the role profile order is stated"
+assert_contains "$order_line" '(adapter and pi-inline paths)' "the profile order (with the neutral path) is limited to adapter and inline"
 assert_contains "$(sed -n '1,60p' "$TALOS_ROOT/scripts/pipeline-agent.sh")" '.agents/talos/agents/<role>.md' "script header lists the neutral location"
 
 finish

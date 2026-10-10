@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Skill-text assertions for the stale-base guard (#288), which generalizes
 # the #256 CHANGELOG serialization guard to "any stale base":
-#   1. SKILL.md Step 4 names the guard "stale-base guard" and does NOT
-#      special-case CHANGELOG (the old "CHANGELOG serialization guard:"
-#      bold heading is gone).
+#   1. SKILL.md Step 4 names the "stale-base guard" and the playbook does NOT
+#      special-case CHANGELOG (the old "CHANGELOG serialization guard"
+#      heading is gone).
 #   2. The guard text drives off `conflict-files` + `merge.union_paths`
 #      (same mechanical path as the Step 3c mergeability gate) and names
 #      the developer merge-base fallback for non-union paths.
@@ -20,18 +20,18 @@ skill_text="$(cat "$SKILL")"
 # the name and the developer fallback, the verb carries the rest.
 verb_text="$(cat "$TALOS_ROOT/scripts/talos.sh")"
 
-assert_contains "$skill_text" "**Stale-base guard" "skill: Step 4 names the guard stale-base guard"
-assert_not_contains "$skill_text" "**CHANGELOG serialization guard:**" "skill: the CHANGELOG-only guard heading is gone (not special-cased)"
+assert_contains "$skill_text" "the stale-base guard" "skill: Step 4 names the guard stale-base guard"
+assert_not_contains "$(playbook_text)" "CHANGELOG serialization guard" "skill: the CHANGELOG-only guard heading is gone (not special-cased)"
 assert_contains "$verb_text" "most common instance" "verb: guard frames CHANGELOG as the common instance, not a special case"
 assert_contains "$verb_text" 'conflict-files "$_pr"' "verb: guard runs conflict-files first"
 assert_contains "$verb_text" "merge.union_paths" "verb: guard gates the mechanical path on merge.union_paths"
 assert_contains "$verb_text" 'pipeline-mergebase.sh" "$_pr"' "verb: guard dispatches the mechanical union merge"
-assert_contains "$skill_text" "git merge origin/main" "skill: non-union fallback still the developer merge-base dispatch"
-assert_contains "$skill_text" "keep BOTH entries" "skill: CHANGELOG union keeps both entries, newest first"
+assert_contains "$(playbook_text)" "git merge origin/<BASE_BRANCH>" "playbook: non-union fallback still the developer merge-base dispatch (refs/merge-conflict.md)"
+assert_contains "$(playbook_text)" "keeps BOTH entries" "playbook: CHANGELOG union keeps both entries, newest first"
 assert_contains "$verb_text" "Before EACH merge verdict" "verb: guard applies before every merge verdict, not only CHANGELOG ones"
 
 # The Step 3c gate reference to the mechanical path is unchanged: it must
 # still be able to reach the same script.
-assert_contains "$skill_text" "scripts/pipeline-mergebase.sh" "skill: mergebase script referenced by path"
+assert_contains "$(playbook_text)" "scripts/pipeline-mergebase.sh" "playbook: mergebase script referenced by path"
 
 finish

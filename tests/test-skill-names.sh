@@ -59,17 +59,17 @@ assert_contains "$(cat "$TALOS_ROOT/talos.pipeline.json.example")" "quiet" \
 # pipeline: a role whose effective runner (agents.roles.<role>.runner, else
 # agents.runner) is not claude must be dispatched via pipeline-agent.sh even
 # while the rest of the pipeline runs native subagents. Assert the rule text
-# and the shared --resolve helper are actually in SKILL.md's harness-
-# compatibility section, not just implemented in the scripts.
-harness_section="$(extract_window "$SKILL_MD" "Harness compatibility")"
+# and the shared --resolve helper are actually in the playbook's harness ref
+# (skills/pipeline/refs/harness.md, #547), not just implemented in the scripts.
+harness_section="$(cat "$TALOS_ROOT/skills/pipeline/refs/harness.md")"
 assert_contains "$harness_section" "resolved per role" \
-  "SKILL.md harness-compatibility section states the runner is resolved per role"
+  "harness ref states the runner is resolved per role"
 assert_contains "$harness_section" "agents.roles.<role>.runner" \
-  "SKILL.md harness-compatibility section names the per-role runner key"
+  "harness ref names the per-role runner key"
 assert_contains "$harness_section" "pipeline-agent.sh --resolve" \
-  "SKILL.md harness-compatibility section points at the shared --resolve helper"
+  "harness ref points at the shared --resolve helper"
 assert_contains "$harness_section" "even while the rest of the pipeline stays native" \
-  "SKILL.md harness-compatibility section states a non-claude role dispatches via pipeline-agent.sh even in native mode"
+  "harness ref states a non-claude role dispatches via pipeline-agent.sh even in native mode"
 
 # ── Verify identity is mechanical, not instruction-based (#186) ────────────
 # Every verify instruction in the developer/QA prompts must route through
@@ -247,13 +247,13 @@ _assert_block_max_lines "$docs_block" "templates/prompts docs prompt template is
 # Optional stage: Step 3e Phase 3 (after security) and Step 4's merge gate
 # must both know about it, and the profile must carry its whole method
 # inline -- a harness with no skill mechanism has nothing else to go on.
-assert_contains "$(cat "$SKILL_MD")" \
-  "Phase 3 — Adversarial (if \`roles.adversarial = true\`" \
-  "skills/pipeline/SKILL.md has the Phase 3 adversarial dispatch section"
+assert_contains "$(cat "$TALOS_ROOT/skills/pipeline/refs/adversarial.md")" \
+  "**Phase 3, after security**" \
+  "refs/adversarial.md has the Phase 3 adversarial dispatch section (named by ref=adversarial)"
 # The gate list itself runs in `talos.sh gate merge` (#466; tests/test-talos-gate.sh
 # shows roles.adversarial = true requiring the label); SKILL.md Step 4 names it.
-assert_contains "$(cat "$SKILL_MD")" \
-  "and \`adversarial:approved\` when \`roles.adversarial = true\`" \
+assert_contains "$(tr '\n' ' ' < "$SKILL_MD" | tr -s ' ')" \
+  "every enabled role's approval label (\`qa:pass\`, \`review:approved\`, \`security:approved\`, \`docs:done\`, \`adversarial:approved\`)" \
   "skills/pipeline/SKILL.md Step 4 gate list requires adversarial:approved when enabled"
 
 ADVERSARIAL_MD="$TALOS_ROOT/agents/adversarial.md"
@@ -280,11 +280,11 @@ done
 # `talos.sh done` (#469): Rule 2 names the call, Rule 3 keeps the usage and model
 # flags the orchestrator supplies, and the verb writes the event.
 assert_contains "$(cat "$SKILL_MD")" \
-  "Rule 3 — Usage and model" \
-  "skills/pipeline/SKILL.md has the Rule 3 (usage and model) orchestrator rule"
+  "**Usage.**" \
+  "skills/pipeline/SKILL.md has the Usage (usage and model) orchestrator rule"
 assert_contains "$(cat "$SKILL_MD")" \
-  "**Rule 2 — Stage return (always):** when a subagent returns, run \`bash scripts/talos.sh done <role>" \
-  "skills/pipeline/SKILL.md Rule 2 runs talos.sh done when a subagent returns"
+  "**Stage return (always).** When a subagent returns, run \`bash scripts/talos.sh done <role>" \
+  "skills/pipeline/SKILL.md Stage return runs talos.sh done when a subagent returns"
 assert_contains "$(cat "$TALOS_ROOT/scripts/talos.sh")" \
   '_talos_post_stage "$_role" "$_role" "$_n"' \
   "talos.sh done writes the role's post_stage event (the invocation Rule 3 used to spell out)"
@@ -292,11 +292,14 @@ assert_contains "$(cat "$TALOS_ROOT/scripts/talos.sh")" \
 # ── Per-stage cost accounting (#202): Rule 3 usage-passthrough sentence and
 # the Step 5 cost mention ───────────────────────────────────────────────────
 assert_contains "$(cat "$SKILL_MD")" \
-  "When the harness completion notification carries usage (subagent_tokens, tool_uses, duration_ms), pass them as \`--tokens\`, \`--tool-uses\`, \`--duration-s\` (ms/1000, integer)" \
-  "skills/pipeline/SKILL.md Rule 3 tells the orchestrator to pass harness usage through to post_stage"
-assert_contains "$(cat "$SKILL_MD")" \
+  "When the completion notification carries usage, pass \`--tokens\`, \`--tool-uses\`, \`--duration-s\` (ms/1000, integer)" \
+  "skills/pipeline/SKILL.md Usage tells the orchestrator to pass harness usage through to post_stage"
+assert_contains "$(playbook_text)" \
   "pipeline-events.sh cost" \
-  "skills/pipeline/SKILL.md Step 5 mentions the cost summary"
+  "the playbook mentions the cost summary"
+assert_contains "$(cat "$SKILL_MD")" \
+  "prints \`cost=<line>\` lines" \
+  "skills/pipeline/SKILL.md Step 5 prints the cost lines"
 
 # ── Usage-reporting spawn form (#259): every role names the same spawn
 # form, scoped to the native path only ─────────────────────────────────────
@@ -311,52 +314,27 @@ assert_contains "$(cat "$SKILL_MD")" \
 # run synchronously with no completion notification at all, so `unrecorded`
 # there is expected, not a bug. Rule 3 must draw the same native-vs-adapter
 # line rather than calling every usage-less completion a bug.
-spawn_rule_line="$(grep -n "Usage-reporting spawn form" "$SKILL_MD" | head -1 | cut -d: -f1)"
-if [ -z "$spawn_rule_line" ]; then
-  fail "skills/pipeline/SKILL.md has a Usage-reporting spawn form rule" "not found"
+spawn_rule_text="$(sed -n '/^\*\*Spawning (native path/p' "$SKILL_MD")"
+if [ -z "$spawn_rule_text" ]; then
+  fail "skills/pipeline/SKILL.md has a Spawning (usage-reporting spawn form) rule" "not found"
 else
-  spawn_rule_text="$(sed -n "${spawn_rule_line}p" "$SKILL_MD")"
   for role in developer QA reviewer security validator docs adversarial planner; do
     assert_contains "$spawn_rule_text" "$role" \
-      "Usage-reporting spawn form rule names role: $role"
+      "Spawning rule names role: $role"
   done
-  assert_contains "$spawn_rule_text" 'subagents: true' \
-    "Usage-reporting spawn form rule scopes the requirement to the native subagent path"
+  assert_contains "$spawn_rule_text" 'subagents' \
+    "Spawning rule scopes the requirement to the native subagent path"
   assert_contains "$spawn_rule_text" 'isolation: "worktree"' \
-    "Usage-reporting spawn form rule names the concrete spawn parameter"
+    "Spawning rule names the concrete spawn parameter"
   assert_contains "$spawn_rule_text" "subagent_tokens" \
-    "Usage-reporting spawn form rule names the usage fields the notification must carry"
-  assert_contains "$spawn_rule_text" "2026-09-09" \
-    "Usage-reporting spawn form rule cites the date of the observed behaviour"
-  assert_contains "$spawn_rule_text" "adapter path" \
-    "Usage-reporting spawn form rule states the adapter path has no completion notification"
-  assert_contains "$spawn_rule_text" "expected, not a bug" \
-    "Usage-reporting spawn form rule states adapter/pi-inline unrecorded usage is expected"
+    "Spawning rule names the usage fields the notification must carry"
 fi
+assert_contains "$(cat "$TALOS_ROOT/skills/pipeline/refs/harness.md")" "not a bug" \
+  "harness ref states adapter/pi-inline unrecorded usage is expected, not a bug"
 
 assert_contains "$(cat "$SKILL_MD")" \
-  "on the native path, a completion without usage is a playbook bug" \
-  "skills/pipeline/SKILL.md Rule 3 flags a usage-less completion as a playbook bug on the native path only"
-assert_contains "$(cat "$SKILL_MD")" \
-  "on the adapter/pi-inline paths it is expected" \
-  "skills/pipeline/SKILL.md Rule 3 states adapter/pi-inline usage-less completions are expected, not a bug"
-
-# ── Reviewer/security/validator/docs Step 3e blocks point at the spawn
-# rule (#259) -- one short line each, not a restatement ────────────────────
-for anchor in \
-  '**Reviewer** (if `roles.reviewer = true`' \
-  '**Security** (if `roles.security = true`' \
-  '**Docs** (if `roles.docs = true`' \
-  'Spawn a subagent with the prompt of `bash scripts/talos.sh prompt validator'; do
-  line="$(grep -n -F -- "$anchor" "$SKILL_MD" | head -1 | cut -d: -f1)"
-  if [ -z "$line" ]; then
-    fail "skills/pipeline/SKILL.md: spawn-rule pointer anchor found" "not found: $anchor"
-    continue
-  fi
-  text="$(sed -n "${line}p" "$SKILL_MD")"
-  assert_contains "$text" "usage-reporting spawn form above" \
-    "skills/pipeline/SKILL.md: '$anchor' points at the usage-reporting spawn form"
-done
+  "A native-path completion without usage is a playbook bug" \
+  "skills/pipeline/SKILL.md Usage flags a usage-less completion as a playbook bug on the native path only"
 
 REPO="${TALOS_AGENT_SKILLS_REPO:-https://github.com/addyosmani/agent-skills}"
 

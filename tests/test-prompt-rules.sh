@@ -71,9 +71,9 @@ assert_contains "$security_block_flat" "Do not run tests" \
   "security prompt template says not to run tests"
 
 # ── Rules section: no push to base mid-run (#257) ───────────────────────────
-rules_section="$(sed -n '/^## Rules$/,$p' "$SKILL_MD")"
+rules_section="$(sed -n '/^## Hard rules$/,$p' "$SKILL_MD")"
 assert_contains "$rules_section" "never commits or pushes to the base branch" \
-  "SKILL.md Rules section forbids pushing to base mid-run"
+  "SKILL.md Hard rules section forbids pushing to base mid-run"
 
 # ── #518 AC1: the verdict-first final message in every verdict-word profile ───
 # `talos.sh run` derives a stage's verdict with `_run_verdict` (scripts/talos.sh):
