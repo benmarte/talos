@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+- lean(agents): multi-turn procedures became single verbs (#549, part of #558),
+  because every extra agent turn re-reads the whole context. New
+  `pipeline-criteria.sh qa-run <issue> <pr>` is the whole QA criteria check in
+  one call: it tags the QA worktree, checks `pr-mergeable` (a CONFLICTING PR
+  stops before anything runs), checks out the PR, reads the spec, validates the
+  `Tests:` line as data (paths `^[A-Za-z0-9_./-]+$`, tracked at the PR head, no
+  `..`, no leading `-`; name filters `^[A-Za-z0-9_|. -]+$`, never a runner
+  command; anything else is refused and nothing from the spec runs), runs the
+  files at the PR head and at the red commit (`--strict --no-cache`, so no path
+  falls back to the full suite and a cached run cannot hide the per-id lines),
+  and prints one line per criterion plus `qa-run: verdict PASS|FAIL <why>`;
+  HEAD is restored afterwards. `post-approval` now runs `check-approval-sha`
+  itself and prints one result line ending `stamp ok` (or `stamp FAILED (...)`
+  with exit 1), so no stage runs a follow-up check; "no approval labels
+  present" no longer counts as a verified stamp, and another role's stale
+  approval shows as `stamp ok (stale elsewhere: <roles>)` instead of failing
+  this role's stamp. `post-approval --issue <N>`
+  tags the stage's worktree (the profiles' separate `tag` step is gone).
+  `create-pr` prints `PR #<n> <url>` on one line (an answer with neither a
+  number nor a URL exits 1), so the developer's `view-pr` confirmation is gone.
+  `agents/qa.md` shrinks from 9.8 KB to 7.2 KB and the QA stage drops
+  about a dozen agent turns (tag, checkout, mergeability, the criteria
+  bookkeeping and the stamp check).
 - **The pipeline playbook is a 22 KB core plus on-demand refs (#547, part of #558).** `skills/pipeline/SKILL.md` is what the orchestrator LLM carries every turn; it was 50.5 KB (about 12.6k tokens) and now keeps only Step 0 (`talos.sh env`, `state --summary`), the `next` → act → `done` loop, the act paths of the default flow and the hard rules, each stated once. What applies only sometimes moved to `skills/pipeline/refs/<topic>.md`, read only when asked for: `draft-order` (the draft stage order, the QA draft guard, the CI-run count), `planner` (epics and sub-issue creation), `harness` (runners, the adapter and pi-inline paths, model and effort detail, provider failover), `hooks`, `human-merge`, `adversarial`, `ci-gate` (`verify.qa_mode: ci`), `evidence`, `file-mode`, `merge-conflict`, `restamp` and `comments` (the stage-comment rendering recipe). `talos.sh env` prints one `ref=<topic>` line per ref that applies to the run, and `talos.sh next` ends a planner or adversarial dispatch and the draft wait in `ref=<topic>`, so the orchestrator is told exactly when to read one. Paraphrased repeats and issue-number archaeology are gone from the playbook (history lives in git and this file); every load-bearing rule is kept: head-SHA approvals through `post-approval`, the `check-approval-sha --stale-list` re-stamp flow, `gate fix-round` attempt counting, only the orchestrator clears `pipeline:blocked`, fail-closed gate fetches, `pr-mergeable` before QA, foreground-only verify, untrusted text as data, the first-line verdict contract, one HEAD mover, and one CI run per draft PR. The validator and PM read `view-issue <id> --since-stage` (#548). `install.sh --global` copies each playbook's `refs/` next to its `SKILL.md` (the plugin ships the whole `skills/` tree). Tests: `tests/test-env-refs.sh` pins which setting names which ref and that every ref is a file the core names; `tests/test-skill-size.sh` resets the playbook cap to the new size plus 10%, with a loose cap per ref.
 - feat(agents): named LLM profiles and a harness-aware subagent capability (#539,
   part of #558). `agents.profiles.<name>` holds any subset of the `agents.*` keys
