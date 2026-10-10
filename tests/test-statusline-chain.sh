@@ -7,8 +7,9 @@
 #       prints each output line as a row); both parts get the same stdin JSON
 #   AC5 a failing original or a failing/empty Talos part still yields the other
 #   AC6 a hanging original does not blank the Talos line
-#   SEC1-SEC7 what counts as the Talos wrapper (any command that references it,
-#       never a user's file), file ownership, backup guard, recursion guard
+#   SEC1-SEC9 what counts as the Talos wrapper (fixed paths only: a command that
+#       names <TALOS_HOME>/statusline-chain.sh; any other command naming that file
+#       name is reserved), file ownership, backup guard, recursion guard
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox || exit 1
@@ -145,27 +146,21 @@ chmod +x "$USER_SH"
 USER_BEFORE="$(cat "$USER_SH")"
 stub_talos 'cat >/dev/null; echo TALOS'
 
-# undo with no backup: not Talos's, so nothing to undo and nothing deleted
+# Reserved (R2/R3/R5): a user's script of that name elsewhere is neither chained nor
+# deleted nor overwritten; wire and undo leave settings.json and the state files alone.
 rm -rf "$CC" "$TH"; mkdir -p "$CC" "$TH"
 printf '{"statusLine": {"type": "command", "command": "bash %s"}}\n' "$USER_SH" > "$CC/settings.json"
 SET_BEFORE="$(cat "$CC/settings.json")"
 OUT="$(env TALOS_HOME="$TH" bash "$CHAIN" undo "$CC/settings.json" 2>&1)"
 assert_eq "$USER_BEFORE" "$(cat "$USER_SH" 2>/dev/null)" "SEC1 undo leaves a user's statusline-chain.sh in place"
 assert_eq "$SET_BEFORE" "$(cat "$CC/settings.json")" "SEC1 undo leaves its statusLine alone"
-assert_contains "$OUT" "nothing to undo" "SEC1 undo says nothing to undo"
-
-# wire chains it as a foreign command, with a stale backup present, and never overwrites it
-printf '{"command": "other"}\n' > "$TH/statusline-previous.json"
+assert_contains "$OUT" "not the Talos wrapper" "SEC1 undo says why it left it"
 OUT="$(env TALOS_HOME="$TH" bash "$CHAIN" wire "$CC/settings.json" "$SD" 2>&1)"
 assert_eq "$USER_BEFORE" "$(cat "$USER_SH" 2>/dev/null)" "SEC1 wire never overwrites a user's statusline-chain.sh"
-assert_contains "$OUT" "chained" "SEC1 wire chains it as a foreign status line"
-CMD="$(settings_cmd)"
-run_cmd
-assert_eq "MINE${NL}TALOS" "$GOT" "SEC1 the chained command runs the user's script, then the Talos line"
-# and undo restores it, the user's script still there
-env TALOS_HOME="$TH" bash "$CHAIN" undo "$CC/settings.json" >/dev/null 2>&1
-assert_eq "bash $USER_SH" "$(settings_cmd)" "SEC1 undo restores the user's statusLine command"
-assert_eq "$USER_BEFORE" "$(cat "$USER_SH" 2>/dev/null)" "SEC1 undo after a chain still leaves the user's script"
+assert_eq "$SET_BEFORE" "$(cat "$CC/settings.json")" "SEC1 wire does not chain a user's statusline-chain.sh"
+assert_file_absent "$TH/statusline-chain.sh" "SEC1 wire writes no wrapper"
+assert_file_absent "$TH/statusline-previous.json" "SEC1 wire saves no backup"
+assert_contains "$OUT" "not the Talos wrapper" "SEC1 wire says it is not the Talos wrapper"
 
 # a relative path is not the Talos wrapper either
 rm -rf "$CC" "$TH"; mkdir -p "$CC" "$TH" "$SANDBOX/rel"
@@ -235,6 +230,10 @@ assert_contains "$OUT" "$TH/statusline-chain.sh" "SEC5 wire names the file in a 
 OUT="$(env TALOS_HOME="$TH" bash "$CHAIN" undo "$CC/settings.json" 2>&1)"
 assert_eq "$B_FILE" "$(cat "$TH/statusline-chain.sh" 2>/dev/null)" "SEC5 undo does not delete a headerless file at the state path"
 assert_eq "$B_SET" "$(cat "$CC/settings.json")" "SEC5 undo does not remove a statusLine that names it"
+assert_eq "$B_BACKUP" "$(cat "$TH/statusline-previous.json" 2>/dev/null)" "SEC5 undo keeps the backup beside a user's file"
+assert_not_contains "$OUT" "removed:" "SEC5 undo claims no deletion"
+assert_not_contains "$OUT" "restored:" "SEC5 undo claims no restore"
+assert_eq "1" "$(printf '%s\n' "$OUT" | grep -c .)" "SEC5 undo prints one notice"
 
 # the same file with a foreign statusLine: nothing is written
 rm -rf "$CC" "$TH"; mkdir -p "$CC" "$TH"
@@ -268,6 +267,76 @@ run_cmd TALOS_STATUSLINE_CHAIN=1
 assert_eq "TALOS" "$GOT" "SEC7 with the marker set the wrapper prints the Talos line only"
 run_cmd
 assert_eq "ORIG${NL}TALOS" "$GOT" "SEC7 without the marker both rows print"
+
+# ── SEC8 fixed paths only (R1): a Talos-header file elsewhere is an ordinary foreign command ─
+PL="$SANDBOX/planted"
+rm -rf "$CC" "$TH" "$PL"; mkdir -p "$CC" "$TH" "$PL"
+printf '# Talos status line chain (#585)\necho DATA\n' > "$PL/status.sh"
+printf '{"type": "command", "command": "touch %s/PLANTED"}\n' "$PL" > "$PL/statusline-previous.json"
+printf '{"statusLine": {"type": "command", "command": "bash %s/status.sh"}}\n' "$PL" > "$CC/settings.json"
+P_FILE="$(cat "$PL/status.sh")"; P_BACKUP="$(cat "$PL/statusline-previous.json")"
+OUT="$(env TALOS_HOME="$TH" bash "$CHAIN" wire "$CC/settings.json" "$SD" 2>&1)"
+assert_contains "$OUT" "chained" "SEC8 wire chains a header-carrying file elsewhere as a foreign command"
+assert_eq "$P_FILE" "$(cat "$PL/status.sh")" "SEC8 wire never touches that file"
+assert_eq "$P_BACKUP" "$(cat "$PL/statusline-previous.json")" "SEC8 wire never touches the planted backup"
+assert_contains "$(cat "$TH/statusline-previous.json" 2>/dev/null)" "$PL/status.sh" "SEC8 the backup at the fixed path holds the foreign command"
+assert_contains "$(settings_cmd)" "$TH/statusline-chain.sh" "SEC8 statusLine now runs the wrapper at the fixed path"
+OUT="$(env TALOS_HOME="$TH" bash "$CHAIN" undo "$CC/settings.json" 2>&1)"
+assert_eq "bash $PL/status.sh" "$(settings_cmd)" "SEC8 undo restores the foreign command from the fixed-path backup"
+assert_eq "$P_BACKUP" "$(cat "$PL/statusline-previous.json" 2>/dev/null)" "SEC8 undo never reads or deletes the planted backup"
+assert_eq "$P_FILE" "$(cat "$PL/status.sh" 2>/dev/null)" "SEC8 undo never deletes that file"
+assert_file_absent "$PL/PLANTED" "SEC8 the planted command never ran"
+
+# undo of a statusLine naming a header file elsewhere, no state at the fixed paths
+rm -rf "$CC" "$TH"; mkdir -p "$CC" "$TH"
+printf '{"statusLine": {"type": "command", "command": "bash %s/status.sh"}}\n' "$PL" > "$CC/settings.json"
+B_SET="$(cat "$CC/settings.json")"
+OUT="$(env TALOS_HOME="$TH" bash "$CHAIN" undo "$CC/settings.json" 2>&1)"
+assert_eq "$B_SET" "$(cat "$CC/settings.json")" "SEC8 undo of a foreign statusLine leaves it alone"
+assert_eq "$P_BACKUP" "$(cat "$PL/statusline-previous.json" 2>/dev/null)" "SEC8 undo of a foreign statusLine leaves the planted backup"
+assert_contains "$OUT" "nothing to undo" "SEC8 undo of a foreign statusLine with no state says nothing to undo"
+
+# ── SEC9 reserved forms (R2/R3/R5): they name statusline-chain.sh but are not the wrapper ─
+stub_orig orig-ok4.sh 'cat >/dev/null; echo ORIG'
+stub_talos 'cat >/dev/null; echo TALOS'
+USER_ELSE="$SANDBOX/userbin/statusline-chain.sh"
+TH9="$SANDBOX/th9"
+for form in \
+  "bash @W@; echo extra" \
+  "bash -c 'bash @W@'" \
+  "(bash @W@)" \
+  "@W@|tail" \
+  "@W@&&true" \
+  "bash $USER_ELSE"; do
+  TH="$TH9"
+  # state absent: nothing is created
+  rm -rf "$CC" "$TH"; mkdir -p "$CC" "$TH"
+  CMD9="${form//@W@/$TH/statusline-chain.sh}"
+  python3 -I -c 'import json,sys; json.dump({"statusLine": {"type": "command", "command": sys.argv[1]}}, open(sys.argv[2], "w"))' "$CMD9" "$CC/settings.json"
+  B_SET="$(cat "$CC/settings.json")"
+  OUT="$(env TALOS_HOME="$TH" bash "$CHAIN" wire "$CC/settings.json" "$SD" 2>&1)"
+  assert_eq "$B_SET" "$(cat "$CC/settings.json")" "SEC9 [$form] wire leaves settings.json byte-identical"
+  assert_file_absent "$TH/statusline-chain.sh" "SEC9 [$form] wire writes no wrapper"
+  assert_file_absent "$TH/statusline-previous.json" "SEC9 [$form] wire saves no backup"
+  assert_eq "1" "$(printf '%s\n' "$OUT" | grep -c .)" "SEC9 [$form] wire prints one notice"
+  assert_contains "$OUT" "not the Talos wrapper" "SEC9 [$form] the notice says why"
+  OUT="$(env TALOS_HOME="$TH" bash "$CHAIN" undo "$CC/settings.json" 2>&1)"
+  assert_eq "$B_SET" "$(cat "$CC/settings.json")" "SEC9 [$form] undo leaves statusLine untouched"
+  assert_eq "1" "$(printf '%s\n' "$OUT" | grep -c .)" "SEC9 [$form] undo prints one notice"
+  # state present (a real chain): wire and undo change and delete nothing
+  chain_for "sh $SANDBOX/orig-ok4.sh"
+  python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); d["statusLine"]["command"]=sys.argv[2]; json.dump(d, open(sys.argv[1],"w"))' "$CC/settings.json" "$CMD9"
+  B_SET="$(cat "$CC/settings.json")"; B_WRAP="$(cat "$TH/statusline-chain.sh")"; B_BACKUP="$(cat "$TH/statusline-previous.json")"
+  env TALOS_HOME="$TH" bash "$CHAIN" wire "$CC/settings.json" "$SD" >/dev/null 2>&1
+  assert_eq "$B_SET" "$(cat "$CC/settings.json")" "SEC9 [$form] with state: wire leaves settings.json alone"
+  assert_eq "$B_WRAP" "$(cat "$TH/statusline-chain.sh" 2>/dev/null)" "SEC9 [$form] with state: wire leaves the wrapper alone"
+  assert_eq "$B_BACKUP" "$(cat "$TH/statusline-previous.json" 2>/dev/null)" "SEC9 [$form] with state: wire leaves the backup alone"
+  env TALOS_HOME="$TH" bash "$CHAIN" undo "$CC/settings.json" >/dev/null 2>&1
+  assert_eq "$B_SET" "$(cat "$CC/settings.json")" "SEC9 [$form] with state: undo leaves statusLine untouched"
+  assert_eq "$B_WRAP" "$(cat "$TH/statusline-chain.sh" 2>/dev/null)" "SEC9 [$form] with state: undo deletes no wrapper"
+  assert_eq "$B_BACKUP" "$(cat "$TH/statusline-previous.json" 2>/dev/null)" "SEC9 [$form] with state: undo deletes no backup"
+done
+TH="$TH_SAVE"
 
 [ "$_FAIL" -eq 0 ] || { printf '%d failed\n' "$_FAIL" >&2; exit 1; }
 printf 'test-statusline-chain: %d passed\n' "$_PASS"
