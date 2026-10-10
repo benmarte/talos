@@ -201,7 +201,7 @@ for _p in agents/qa.md skills/pipeline/SKILL.md templates/prompts/qa.md AGENTS.m
   assert_contains "$out" "$_p" "non-waivable instruction path $_p: names the file"
 done
 
-for _p in README.md docs/user-guide.md CHANGELOG.md templates/comments/qa-verdict.md agentsx/note.md .claude/notes.md Docs/guide.md \
+for _p in README.md docs/reference.md CHANGELOG.md templates/comments/qa-verdict.md agentsx/note.md .claude/notes.md Docs/guide.md \
           docs/agents/x.md docs/skills/x.md docs/gemini-notes.md .pip/x.md .agentx/x.md .gemini-notes/x.md .codexx/x.md \
           GEMINI.md.example sub/.pip/x.md sub/.agentx/x.md sub/.claude/notes.md; do
   _h="$(delta_head "$_p")"
@@ -293,7 +293,7 @@ out="$(WAIVER_PATHS='["skills/**","Agents/**","*.md"]' run_check "$_h" "" "$_ent
 assert_eq "1" "$(printf '%s\n' "$out" | grep -c "entry 'skills/\*\*' ignored")" "note prints once for the skills/** entry"
 assert_contains "$out" "entry 'Agents/**' ignored" "casefolded entry Agents/** also gets the note"
 
-_h="$(delta_head docs/user-guide.md)"
+_h="$(delta_head docs/reference.md)"
 out="$(WAIVER_PATHS='["agents/**","docs/**"]' run_check "$_h" "" "$_entries" 2>&1)"; rc=$?
 assert_eq "0" "$rc" "config lists agents/**: a docs-only delta stays waived"
 assert_contains "$out" "entry 'agents/**' ignored" "config lists agents/**: note still printed on success"

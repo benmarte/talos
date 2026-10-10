@@ -282,9 +282,6 @@ _sha256_file() {
 #   .gitignore           -- tests that mention ".gitignore" (test-assert-sync*)
 #                            write and check their OWN fixture .gitignore in
 #                            a sandbox; none reads the repo's real .gitignore
-# CHANGELOG.md was considered and REJECTED: tests/test-comment-post-failure.sh
-# reads "$TALOS_ROOT/CHANGELOG.md" directly and asserts on its content, so it
-# stays hashed like every other tracked file.
 compute_deps_hash() {
   [ -z "$_HASH_TOOL" ] && { printf '' | _sha256; return; }
   git -C "$TALOS_ROOT" ls-files -z 2>/dev/null | while IFS= read -r -d '' _dep; do

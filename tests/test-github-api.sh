@@ -653,7 +653,7 @@ unset CURL_RETRY_AFTER
 # -- #194 review: TALOS_RETRY_SLEEP_SCALE accepts decimals. Bash's `$(( ))`
 #    arithmetic is integer-only and errors out on a fractional scale, which
 #    would abort the retry loop's subshell after the first attempt instead
-#    of retrying -- the exact scale value docs/user-guide.md recommends for
+#    of retrying -- the exact scale value docs/reference.md recommends for
 #    local testing (0.1) must actually retry-then-succeed, not fail fast.
 : > "$CURL_LOG"
 : > "$_errfile"

@@ -7,7 +7,7 @@
 # as cwd, so a file in that repo named after a not-yet-imported module (json.py,
 # yaml.py, subprocess.py, ...) used to execute inside Talos as the Talos user.
 #
-# THE PATTERN (stated once, here and in docs/user-guide.md): every embedded
+# THE PATTERN (stated once, here and in docs/reference.md): every embedded
 # Python call in scripts/*.sh, install.sh and the fenced recipes in the
 # playbook, agent profiles, templates, docs and README is `python3 -I`.
 #   * -I (isolated mode) drops the script/cwd entry, PYTHON* env vars and user

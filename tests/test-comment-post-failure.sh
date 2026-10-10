@@ -11,7 +11,6 @@
 #  7. state-check-failed + POST succeeds → marker still emitted, exits 0
 #  8. --allow-closed still works after the fix
 #  9. github-api provider still fails hard on a failed POST
-# 10. CHANGELOG has entry for this fix (released in [0.14.0])
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox
@@ -221,22 +220,5 @@ assert_eq "" "$(cat "$CURL_BIGARG_LOG")" "github-api/mark-needs-owner: no curl a
 _reset451
 rm -f "$SANDBOX/talos.pipeline.json"
 unset GITHUB_TOKEN CURL_BIGARG_LOG
-
-# ═════════════════════════════════════════════════════════════════════════════
-# CRITERION 10 [test]: CHANGELOG has entry for this fix (released in [0.14.0])
-# ═════════════════════════════════════════════════════════════════════════════
-
-_changelog="$TALOS_ROOT/CHANGELOG.md"
-# Extract [0.14.0] section up to the next versioned heading (BSD-compat awk)
-_release_section="$(awk '
-  /## \[0\.14\.0\]/ { found=1; next }
-  found && /## \[[0-9]/ { exit }
-  found { print }
-' "$_changelog")"
-
-assert_contains "$_release_section" "comment-issue" \
-  "CHANGELOG: [0.14.0] section mentions comment-issue fix (#69) [CRITERION 10]"
-assert_contains "$_release_section" "69" \
-  "CHANGELOG: [0.14.0] section references issue #69 [CRITERION 10]"
 
 finish

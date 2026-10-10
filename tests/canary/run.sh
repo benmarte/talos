@@ -187,8 +187,7 @@ for i in items:
 }
 step "sweep-stale-leftovers" sweep_stale
 
-# A fresh sandbox repo (created exactly as docs/user-guide.md's "Nightly
-# canary" section describes) has none of the pipeline:*/qa:*/etc. labels
+# A fresh sandbox repo has none of the pipeline:*/qa:*/etc. labels
 # this script applies below (label-issue, post-approval) -- without this,
 # every fresh sandbox fails at the first label call. Idempotent: re-running
 # against an already-bootstrapped repo just edits existing labels in place.

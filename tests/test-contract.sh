@@ -5,7 +5,7 @@
 #   (a) membership -- every pipeline:*/qa:pass/review:approved/
 #       security:approved/docs:done/spec:ready/skip-qa string, and every
 #       talos:[a-z-]+ marker, that appears in prose (skills/pipeline/
-#       SKILL.md, agents/*.md, templates/**, README.md, docs/user-guide.md)
+#       SKILL.md, agents/*.md, templates/**, README.md, docs/reference.md)
 #       must be a member of the contract. A stray string here means the
 #       prose and the contract have drifted -- exactly the failure mode
 #       #155/#178 reported.
@@ -69,7 +69,7 @@ _prose_marker_candidates() {
 }
 
 PROSE_FILES=("$TALOS_ROOT/skills/pipeline/SKILL.md")
-for f in "$TALOS_ROOT"/agents/*.md "$TALOS_ROOT/README.md" "$TALOS_ROOT/docs/user-guide.md"; do
+for f in "$TALOS_ROOT"/agents/*.md "$TALOS_ROOT/README.md" "$TALOS_ROOT/docs/reference.md"; do
   [ -f "$f" ] && PROSE_FILES+=("$f")
 done
 while IFS= read -r -d '' f; do

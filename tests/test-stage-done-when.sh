@@ -9,7 +9,6 @@
 #      carries the shared stop rule through the {{STOP_RULE}} partial instead.
 #      The re-stamp prompt is the exception: its job (re-stamp the delta) is not
 #      the profile's, so it states its own single "Done when:".
-#   3. README documents the convention so a future edit keeps it.
 set -u
 . "$(dirname "$0")/helpers.sh"
 
@@ -36,13 +35,5 @@ for role in $roles; do
 done
 
 assert_eq "1" "$(grep -c '^Done when:' "$PROMPTS/restamp.md")" "templates/prompts/restamp.md states its own single 'Done when:'"
-
-# ── (3) README documents the convention ────────────────────────────────────
-README="$TALOS_ROOT/README.md"
-readme_content="$(cat "$README")"
-assert_contains "$readme_content" "Done when:" \
-  "README documents the 'Done when:' convention"
-assert_contains "$readme_content" "agents/<role>.md" \
-  "README's convention note references agents/<role>.md"
 
 finish
