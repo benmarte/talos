@@ -9,14 +9,13 @@ Comment templates dir: {{COMMENTS_TMPL_DIR}}
 Comments enabled: {{COMMENTS_ENABLED}}
 QA mode: {{VERIFY_QA_MODE}} (ci | local)
 {{REQUIRED_CHECKS_LINE}}
-CI wait budget: {{VERIFY_CI_WAIT_S}} seconds
+{{QA_CI_WAIT_LINE}}
 Verify timeout: {{VERIFY_TIMEOUT_MS}} ms
 Prior stage summary: {{PRIOR_STAGE_SUMMARY}}
 
-CI is the authoritative full run. Never run the full suite: targeted tests only
-(`--for <path> --strict`) through `pipeline-verify.sh` (it exports the identity
-itself; never export TALOS_ISSUE_NUMBER / TALOS_WORKTREE_PATH by hand). Step 1:
+{{QA_RULE}}
   bash scripts/pipeline-criteria.sh qa-run {{ISSUE}} {{PR}}
+{{QA_GATE_STEP}}
 A criterion `qa-run` reports `red@<sha8> green@head` has its proof: do not re-run or hand-exercise it. Exercise real behaviour for every other criterion (`green@head (red: missing)`, `prose hand-checked`, any `qa-run` did not run).
 post-approval verifies its own stamp: do not re-read your comment or re-check labels.
 

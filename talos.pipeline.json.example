@@ -96,6 +96,7 @@
   },
 
   "pr": {
-    "draft": true
+    "draft": true,
+    "ready_gate": "off"
   }
 }

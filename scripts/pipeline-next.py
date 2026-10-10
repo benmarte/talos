@@ -7,7 +7,9 @@ caller's cwd and environment off sys.path). The callers are thin wrappers:
                 (open pipeline PRs with their stage, the issue queue, blocked,
                 owners, in-flight, and the claim filter of #560). Options as
                 `--name value` pairs: vcs roles me merge-auto required-checks
-                pr-draft talos-labels base-branch.
+                pr-draft ready-gate talos-labels base-branch. `ready-gate` is
+                `qa-local` (pr.ready_gate, #535: on a draft PR qa is routed last,
+                after every other enabled approval) or empty/off.
     pr-side     talos.sh next: the PR-side answer from a state file: an
                 `action=...` line, or the sentinel `issue-side` when no PR answers.
     issue-side  talos.sh next: the issue-side answer (queue walk, routing,
@@ -182,6 +184,12 @@ def next_stage(n, labels, issue_labels, enabled):
         if role in enabled and (label not in labels or role in stale):
             return role
     if draft:
+        # The QA pre-CI gate (#535): QA is the LAST draft-window stage, so the one
+        # CI run is never spent on a head QA would reject. Only here, after every
+        # other enabled approval is fresh; a ready PR keeps QA first (above).
+        if opts.get('ready-gate') == 'qa-local' and 'qa' in enabled \
+                and ('qa:pass' not in labels or 'qa' in stale):
+            return 'qa'
         return 'ready'
     if opts.get('required-checks') == 'yes':
         rc, _, _ = vcs('pr-checks-required', str(n))

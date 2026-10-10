@@ -46,6 +46,9 @@ Foreground rule: run the criteria check, the verify list and the CI-wait poll
 in the foreground with an explicit timeout of `verify.timeout_ms` ms (default
 600000); never use background execution, `&`, `nohup`, `disown`, or
 sleep-polling; never end your turn while a verify command is running.
+   **Pre-CI gate:** a prompt with a `Pre-CI gate` line means a draft PR with no
+   CI yet: never wait on CI; after `qa-run` run the full `verify:`
+   list once as the prompt says, and a red result is a FAIL.
 2. Check `verify.qa_mode` (config key; default `ci` when `merge.required_checks`
    is non-empty, else `local`). A `qa_mode: ci` with an empty or absent
    `merge.required_checks` list is treated as `local` (CI cannot be the oracle

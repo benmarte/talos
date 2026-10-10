@@ -59,7 +59,7 @@ print("\n".join(bad))
 print("ROWS=%d" % len(rows))
 TALOS_PYtab7Gw3Nd5Xk
 )"
-assert_eq "ROWS=113" "$(printf '%s\n' "$_out" | tail -n1)" "the table has one row per config key (113 rows)"
+assert_eq "ROWS=114" "$(printf '%s\n' "$_out" | tail -n1)" "the table has one row per config key (114 rows)"
 assert_eq "" "$(printf '%s\n' "$_out" | sed '$d')" \
   "every row has six fields, a unique key, a valid type/derived/env/scope column, and a default of the right shape"
 

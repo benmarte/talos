@@ -30,7 +30,8 @@
 # prints; the tests read them. `stop:`/`warn:` under a line split that enum.
 #
 # env     Step 0 in one call: every resolved config value, the isolation gate,
-#         PR_DRAFT (pipeline-draft-check.sh resolve), SCRIPTS_DIR and AGENT_SOURCE,
+#         PR_DRAFT (pipeline-draft-check.sh resolve), READY_GATE (its ready-gate:
+#         qa-local or off, #535), SCRIPTS_DIR and AGENT_SOURCE,
 #         and per role agent.<role>.<field> (runner, runner_cmd, model, effort,
 #         fallback, effort_notice; only runner is always printed) from
 #         `pipeline-agent.sh --resolve-roles`. Then the `ref=` lines, last.
@@ -90,11 +91,15 @@
 #         only as files (--prior-file --title-file --body-file --ci-failure-file
 #         --docs-paths-file --restamp-file --preamble-file). Markers are {{NAME}}
 #         over _TALOS_PROMPT_NAMES, rendered in one `python3 -I` pass, no eval.
-# prompt-reasons: usage unknown-role unknown-shape shape-unsupported file-unreadable template-missing unknown-placeholder value-missing render-failed isolation-invalid scripts-missing python-missing scratch-unavailable config-unreadable
+#         With pr.ready_gate qa-local (#535) `prompt qa --pr` asks `pr-is-draft`
+#         itself: a draft renders the pre-CI text, a ready PR today's text,
+#         anything else is stop reason=draft-unverified.
+# prompt-reasons: usage unknown-role unknown-shape shape-unsupported draft-unverified file-unreadable template-missing unknown-placeholder value-missing render-failed isolation-invalid scripts-missing python-missing scratch-unavailable config-unreadable
 #   stop: all of them (exit 2 for usage, unknown-role, unknown-shape, shape-unsupported; else 1)
 #
 # done    End-of-stage bookkeeping: label/draft fixups on RESTAMP_FAIL or a draft qa
-#         FAIL (a failure is a stop, nothing written), board status, the role relay,
+#         FAIL (a failure is a stop, nothing written; with the QA pre-CI gate on,
+#         #535, a PR that is still a draft is not converted), board status, the role relay,
 #         post_stage, the spend block, the lifecycle event; then the issue's lease
 #         is released. <role>: validator pm developer qa reviewer security adversarial
 #         docs. --pr is required for qa, reviewer, security, adversarial and
@@ -572,6 +577,15 @@ EOF
   esac
   _talos_emit PR_DRAFT "$_val"
   _TALOS_PR_DRAFT="$_val"
+
+  # READY_GATE (#535): the effective pr.ready_gate, from the same resolver. Its
+  # one stderr line (asked for but cannot apply) passes through.
+  _val="$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" ready-gate)" || _talos_stop draft-resolve-failed
+  case "$_val" in
+    qa-local | off) : ;;
+    *) _talos_stop draft-resolve-failed ;;
+  esac
+  _talos_emit READY_GATE "$_val"
 
   _TALOS_HARNESS_REF=0
   _talos_resolve_roles
@@ -1582,7 +1596,7 @@ _talos_summary() {
 _TALOS_PROMPT_NAMES="ISSUE PR ROLE ROLE_TITLE BASE_BRANCH VCS_PROVIDER COMMENTS_ENABLED COMMENTS_TMPL_DIR HEADER
   VERIFY_TARGETED VERIFY_TIMEOUT_MS VERIFY_CI_WAIT_S VERIFY_QA_MODE VERIFY_COMMANDS REQUIRED_CHECKS_LINE
   VERIFY_TIMEOUT_LINE SPEC_SOURCE ISOLATION_NOTE PRIOR_STAGE_SUMMARY HANDOFF_LINE DRAFT_PR_LINE FIX_ROUND_LINES
-  PASSED_LEAD DOCS_DIFF_INSTRUCTION TITLE BODY RESTAMP_INPUTS STOP_RULE"
+  PASSED_LEAD DOCS_DIFF_INSTRUCTION TITLE BODY RESTAMP_INPUTS STOP_RULE QA_CI_WAIT_LINE QA_RULE QA_GATE_STEP"
 
 # The renderer: argv = template, values file, output file, allowed names. The
 # values file is NUL-delimited NAME, VALUE pairs; a NAME written `<NAME` carries
@@ -1770,9 +1784,37 @@ _talos_prompt() {
       fi ;;
     qa)
       _talos_pv VERIFY_QA_MODE "$(cfg verify.qa_mode)"
-      _talos_pv REQUIRED_CHECKS_LINE "$(_talos_prompt_checks)"
-      _talos_pv VERIFY_CI_WAIT_S "$(cfg verify.ci_wait_s)"
-      _talos_pv VERIFY_TIMEOUT_MS "$(cfg verify.timeout_ms)" ;;
+      _talos_pv VERIFY_TIMEOUT_MS "$(cfg verify.timeout_ms)"
+      # The QA pre-CI gate (#535): with it on, the PR itself says which text QA
+      # gets -- a draft is pre-CI, a ready PR is today's -- and anything else
+      # stops (an unreadable state is never guessed). No LLM call is spent on it.
+      _v=ci
+      if [ "$_shape" = first ] && [ -n "$_pr" ]; then
+        [ -f "$SCRIPT_DIR/pipeline-draft-check.sh" ] && [ -f "$SCRIPT_DIR/pipeline-vcs.sh" ] || _talos_stop scripts-missing
+        _r="$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" ready-gate 2>/dev/null)" || _r=off
+        if [ "$_r" = qa-local ]; then
+          _talos_cap _vcs pr-is-draft "$_pr"
+          case "$_RC:$_OUT" in
+            0:draft) _v=pre-ci ;;
+            1:ready) : ;;
+            *) _talos_stop draft-unverified ;;
+          esac
+        fi
+      fi
+      if [ "$_v" = pre-ci ]; then
+        _talos_pv REQUIRED_CHECKS_LINE ""
+        _talos_pv QA_CI_WAIT_LINE ""
+        _talos_pf QA_RULE "$_tpl/_qa-precheck.md"
+        _r="$(cfg verify)"
+        _talos_pv QA_GATE_STEP "Step 2, in the PR checkout: the full \`verify:\` list once (the suite CI would run), through \`pipeline-verify.sh\`; quote failures only:
+${_r:-none}
+post-approval stamps the head SHA you verified (the PR head, not a stale checkout)."
+      else
+        _talos_pv REQUIRED_CHECKS_LINE "$(_talos_prompt_checks)"
+        _talos_pv QA_CI_WAIT_LINE "CI wait budget: $(cfg verify.ci_wait_s) seconds"
+        _talos_pf QA_RULE "$_tpl/_qa-ci.md"
+        _talos_pv QA_GATE_STEP ""
+      fi ;;
     docs)
       if [ -n "$_docs" ] && [ -n "$_pr" ]; then
         _f="$_CFG_CACHE_DIR/docs-diff"
@@ -2215,7 +2257,7 @@ _talos_lease_verb() {
 #      [--tokens <n>] [--tool-uses <n>] [--duration-s <n>] [--model <m>] [--sha <sha>]
 _talos_done() {
   local _role="${1:-}" _n="" _pr="" _v="" _sf="" _draft=0 _tok="" _tu="" _dur="" _model="" _sha=""
-  local _ok=1 _x _sum _col="" _msg="" _ev="" _fail=0 _label _next=continue
+  local _ok=1 _x _sum _col="" _msg="" _ev="" _fail=0 _label _next=continue _convert
   [ "$#" -eq 0 ] || shift
   case " $_TALOS_ROLES " in *" $_role "*) [ "$_role" != planner ] && _ok=0 ;; esac
   [ "$_ok" -eq 0 ] || _talos_stop unknown-role 2
@@ -2251,7 +2293,7 @@ _talos_done() {
   esac
   [ "$_sf" = "-" ] || { [ -f "$_sf" ] && [ -r "$_sf" ]; } || _talos_stop file-unreadable
 
-  _talos_prepare done pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh pipeline-contract.sh \
+  _talos_prepare done pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh pipeline-contract.sh pipeline-draft-check.sh \
                       pipeline-status.sh pipeline-notify.sh pipeline-hooks.sh pipeline-events.sh \
                       pipeline-lock.sh
   . "$SCRIPT_DIR/pipeline-contract.sh"
@@ -2269,8 +2311,18 @@ _talos_done() {
   # a stale approval is stripped (RESTAMP_FAIL), and under PR_DRAFT a failed QA
   # converts the PR back to a draft and drops qa:pass. Both are idempotent.
   if [ "$_role" = qa ] && [ "$_v" = FAIL ] && [ "$_draft" -eq 1 ]; then
-    _talos_run_capture draft-pr _vcs draft-pr "$_pr"
-    [ "$_RC" -eq 0 ] || _talos_stop draft-pr-failed
+    # The QA pre-CI gate (#535): QA ran on the draft, nothing was ever built, so
+    # a draft PR has nothing to convert back. Only a PR that is positively a
+    # draft skips the conversion; ready or unreadable keeps today's draft-pr.
+    _convert=1
+    if [ "$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" ready-gate 2>/dev/null)" = qa-local ]; then
+      _talos_cap _vcs pr-is-draft "$_pr"
+      if [ "$_RC" -eq 0 ] && [ "$_OUT" = draft ]; then _convert=0; fi
+    fi
+    if [ "$_convert" -eq 1 ]; then
+      _talos_run_capture draft-pr _vcs draft-pr "$_pr"
+      [ "$_RC" -eq 0 ] || _talos_stop draft-pr-failed
+    fi
   fi
   if [ "$_v" = RESTAMP_FAIL ] || { [ "$_role" = qa ] && [ "$_v" = FAIL ] && [ "$_draft" -eq 1 ]; }; then
     _label="$(_talos_label_of "$_role")" || _talos_stop label-failed
@@ -2827,6 +2879,9 @@ _talos_run_loop() {
   # prompt's Required checks line already says none.
   _r="$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" resolve 2>/dev/null)"
   [ "$_r" = "true" ] && _RUN_DRAFT=1 || _RUN_DRAFT=0
+  # The QA pre-CI gate (#535), once, from its one resolver.
+  _r="$(bash "$SCRIPT_DIR/pipeline-draft-check.sh" ready-gate 2>/dev/null)"
+  [ "$_r" = "qa-local" ] && _RUN_GATE=1 || _RUN_GATE=0
 
   # The in-flight issues (mid-flight label states), from the collect's
   # `inflight`: read once, straight from `collect`'s stdout the way `next`
@@ -3144,7 +3199,9 @@ _talos_run_lease() {
 # same shape `next`'s dispatch path uses); the ready verb runs once; the
 # Draft guard asks the PR itself, never memory; the one CI wait runs only
 # under qa_mode: ci; QA dispatches through the driver's one dispatch path;
-# and the lease is released before the function returns to the loop. The
+# and the lease is released before the function returns to the loop. With the
+# QA pre-CI gate on (pr.ready_gate qa-local, #535) QA already passed on the
+# draft: the function ends after the guard, with no QA and no CI wait. The
 # function calls none of the gate's verdict verbs itself -- after it returns,
 # the next pass's existing merge arm runs (the gate reads ci_runs before the
 # write that deletes the head branch).
@@ -3166,6 +3223,15 @@ _talos_run_draft_complete() {
     1) [ "$_OUT" = "ready" ] || _talos_stop draft-unverified ;;
     *) _talos_stop draft-unverified ;;
   esac
+  # The QA pre-CI gate (#535): the resolver answered `ready` only because
+  # qa:pass is already fresh on this head, so there is no QA to dispatch and no
+  # CI to wait on here. The next pass sees a ready PR and its `ci` / `merge`
+  # stages decide, exactly as for any ready PR.
+  if [ "${_RUN_GATE:-0}" -eq 1 ]; then
+    _talos_collect_drop   # ready-pr wrote: the next pass must read the ready PR
+    _talos_lease_release "$_n"
+    return 0
+  fi
   # QA is the stage the resolver skips inside the draft window; the
   # continuation checks the role itself, with the cfg idiom next's issue-side
   # routing uses. qa off: no dispatch, back to the loop.

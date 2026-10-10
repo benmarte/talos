@@ -4,6 +4,7 @@
 #
 # Usage: pipeline-draft-check.sh [check [<workflows-dir>]]
 #        pipeline-draft-check.sh resolve
+#        pipeline-draft-check.sh ready-gate
 #        pipeline-draft-check.sh edit <workflow-file> [--write]
 #
 #   check     Scan <workflows-dir> (default .github/workflows) for *.yml and
@@ -48,6 +49,12 @@
 #                                                      true: warn, stay true
 #             Used by /talos:pipeline Step 0 and pipeline-status-file.sh, so both
 #             read the same value.
+#   ready-gate  (#535) The effective `pr.ready_gate` on stdout, `off` or
+#             `qa-local`. Unset is `off`; an unknown value reads `off` with one
+#             stderr warning naming the key. `qa-local` stands only when `resolve`
+#             answers true and `roles.qa` is on; otherwise `off`, with one stderr
+#             line saying why. The one resolver: pipeline-status-file.sh and
+#             talos.sh read it, none re-derives it.
 #   edit      The minimal workflow change /talos:setup offers. Without
 #             --write it prints the unified diff and writes nothing; with
 #             --write it applies exactly that diff. Only two kinds of change:
@@ -304,6 +311,40 @@ _dc_resolve() {
   echo true
 }
 
+# ── ready-gate (#535) ─────────────────────────────────────────────────────────
+# The effective `pr.ready_gate`: qa-local only when it is asked for AND the draft
+# window exists (pr.draft resolves true) AND there is a QA stage to gate on.
+# This is the one place that decides it; the callers read it, none re-derive it.
+_dc_ready_gate() {
+  local key provider qa
+  key="$(_dc_cfg pr.ready_gate)"
+  case "$key" in
+    ''|off) echo off; return ;;
+    qa-local) ;;
+    *) echo "pipeline: pr.ready_gate: unknown value, reading it as off (use qa-local or off)" >&2
+       echo off; return ;;
+  esac
+  if [ "$(_dc_resolve 2>/dev/null)" != true ]; then
+    provider="$(_dc_cfg vcs.provider)"
+    case "$provider" in
+      github-api|file) echo "pipeline: pr.ready_gate ignored: provider $provider cannot open draft PRs" >&2 ;;
+      *) echo "pipeline: pr.ready_gate ignored: pr.draft is off, so there is no draft window" >&2 ;;
+    esac
+    echo off; return
+  fi
+  # roles.qa is a security key: it is read straight from the resolver, not through
+  # the fail-open _dc_cfg wrapper, and an unreadable config reads as off.
+  qa="$(bash "$SCRIPT_DIR/pipeline-config.sh" roles.qa)" || {
+    echo "pipeline: pr.ready_gate ignored: roles.qa could not be read" >&2
+    echo off; return
+  }
+  if [ "$(printf '%s' "$qa" | tr '[:upper:]' '[:lower:]')" = false ]; then
+    echo "pipeline: pr.ready_gate ignored: roles.qa is off, so there is no QA stage to gate on" >&2
+    echo off; return
+  fi
+  echo qa-local
+}
+
 # ── edit ──────────────────────────────────────────────────────────────────────
 read -r -d '' _DC_EDIT_PY <<'TALOS_e7Zt3Hc8Vm5F' || true
 import difflib, os, shutil, stat, sys, tempfile
@@ -517,6 +558,7 @@ _dc_edit() {
 case "${1:-check}" in
   check)   _dc_check "${2:-}"; exit 0 ;;
   resolve) _dc_resolve; exit 0 ;;
+  ready-gate) _dc_ready_gate; exit 0 ;;
   edit)    shift; _dc_edit "$@"; exit $? ;;
-  *) echo "usage: pipeline-draft-check.sh [check [<workflows-dir>] | resolve | edit <file> [--write]]" >&2; echo unknown; exit 0 ;;
+  *) echo "usage: pipeline-draft-check.sh [check [<workflows-dir>] | resolve | ready-gate | edit <file> [--write]]" >&2; echo unknown; exit 0 ;;
 esac

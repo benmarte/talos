@@ -37,6 +37,7 @@ FILE_SOURCE_PATH=plan.md
 ISOLATION=worktree
 WORKTREE_WARN_THRESHOLD=10
 PR_DRAFT=true
+READY_GATE=off
 agent.validator.runner=claude
 agent.pm.runner=claude
 agent.developer.runner=claude
