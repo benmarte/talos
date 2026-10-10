@@ -7594,7 +7594,7 @@ if [ "$VERB" = "post-approval" ]; then
     local _r_out _r_rc _r_why _r_stale
     _r_out="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" check-approval-sha "$_pa_n" --stale-list \
       ${REPO:+--repo "$REPO"} 2>&1)"; _r_rc=$?
-    if [ "$_r_rc" -eq 0 ] && printf '%s\n' "$_r_out" | grep -q 'all approval labels are current'; then
+    if [ "$_r_rc" -eq 0 ] && grep -q 'all approval labels are current' <<<"$_r_out"; then
       printf 'post-approval: PR #%s %s %s; stamp ok\n' "$_pa_n" "$_pa_role" "$1"
       return 0
     fi

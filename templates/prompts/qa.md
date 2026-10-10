@@ -13,9 +13,9 @@ CI wait budget: {{VERIFY_CI_WAIT_S}} seconds
 Verify timeout: {{VERIFY_TIMEOUT_MS}} ms
 Prior stage summary: {{PRIOR_STAGE_SUMMARY}}
 
-CI is the authoritative full run. Never run the full suite: targeted tests only,
-with `--strict`, through `pipeline-verify.sh` (it exports the identity itself;
-never export TALOS_ISSUE_NUMBER / TALOS_WORKTREE_PATH by hand). Step 1:
+CI is the authoritative full run. Never run the full suite: targeted tests only
+(`--for <path> --strict`) through `pipeline-verify.sh` (it exports the identity
+itself; never export TALOS_ISSUE_NUMBER / TALOS_WORKTREE_PATH by hand). Step 1:
   bash scripts/pipeline-criteria.sh qa-run {{ISSUE}} {{PR}}
 
 {{STOP_RULE}}
