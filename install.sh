@@ -50,10 +50,20 @@
 #       CLAUDE_CONFIG_DIR is set and non-empty; ${CLAUDE_CONFIG_DIR:-$HOME/.claude}
 #       is a directory (a dangling symlink there is NOT detected); or
 #       claude is on PATH.
-#   The adapter also wires the Talos status line (#550): statusLine in
-#   <dir>/settings.json runs ~/.talos/scripts/talos-status.sh --line. Idempotent;
-#   a statusLine that is not Talos's is never replaced (the installer prints how
-#   to chain it), and a settings file that does not parse is left alone.
+#   The adapter also wires the Talos status line (#550, #585): statusLine in
+#   <dir>/settings.json runs ~/.talos/scripts/talos-status.sh --line. Idempotent.
+#   A statusLine that is already there is chained, not replaced: it is saved to
+#   ~/.talos/statusline-previous.json and statusLine.command runs
+#   ~/.talos/statusline-chain.sh, which prints the original's rows and then the
+#   Talos line, each with its own timeout (scripts/talos-statusline.sh does the
+#   work; /talos:setup calls the same script). A statusLine without a command and
+#   a settings file that does not parse are left alone, with a notice.
+#   --no-statusline   skip the status-line step for every harness (one line says so)
+#   --statusline-undo restore statusLine exactly as it was before the chain,
+#                     delete the wrapper and the backup, then exit 0 (implies --global)
+#   Every other selected harness (codex gemini antigravity pi cursor opencode
+#   generic) gets one "not supported by <harness>" line with the manual command:
+#   none has a command status hook the installer could set.
 #   Override: --harness claude forces the adapter; a list without claude
 #   skips it. A skipped adapter never deletes or refreshes an existing
 #   ~/.claude tree; the installer says so. --global prints one line saying
@@ -134,6 +144,8 @@ GLOBAL=false
 WRITE_AGENTS_MD=true
 IMPORT_AGENTS_MD=false
 KEEP_MARKETPLACE=false
+NO_STATUSLINE=false
+STATUSLINE_UNDO=false
 AGENT_SKILLS_REPO="${TALOS_AGENT_SKILLS_REPO:-https://github.com/addyosmani/agent-skills}"
 
 expect_harness=false
@@ -153,6 +165,8 @@ for arg in "$@"; do
     --import-agents-md) IMPORT_AGENTS_MD=true ;;
     --no-legacy-aliases) ;;  # gone in #553 (no alias is installed any more); accepted so an old command line still runs
     --keep-marketplace)  KEEP_MARKETPLACE=true ;;
+    --no-statusline)     NO_STATUSLINE=true ;;
+    --statusline-undo)   STATUSLINE_UNDO=true; GLOBAL=true ;;
     --harness)       expect_harness=true ;;
     --harness=*)       HARNESS_RAW="${arg#*=}"; HARNESS_GIVEN=true ;;
     *)                 [ -z "$TARGET" ] && TARGET="$arg" ;;
@@ -411,71 +425,43 @@ remove_retired_bare_skill() {
   echo "    removed: $(printable "$dest")"
 }
 
-# install_claude_statusline (#550) -- wire scripts/talos-status.sh into Claude
-# Code's user settings (<dir>/settings.json, statusLine). Idempotent. Another
-# statusLine is never replaced: the installer prints how to chain the Talos line
-# into it. A Talos one (its command names talos-status.sh) is pointed at the
-# installed copy. A settings file that does not parse is left alone; a symlink is
-# written through, not replaced. python3 (-I) does the JSON edit; no jq needed.
-# Never aborts the install.
-IFS= read -r -d '' STATUSLINE_PY <<'TALOS_STATUSLINE_PY' || true
-import json, os, shlex, sys, tempfile
-settings, script = sys.argv[1:3]
-cmd = "bash %s --line" % shlex.quote(script)
-real = os.path.realpath(settings)
-try:
-    doc = {}
-    if os.path.exists(real):
-        with open(real, encoding="utf-8") as f:
-            doc = json.load(f)
-        if not isinstance(doc, dict):
-            raise ValueError("not a JSON object")
-    sl = doc.get("statusLine")
-    current = sl.get("command") if isinstance(sl, dict) else None
-    if current == cmd:
-        print("already")
-        sys.exit(0)
-    if sl is not None and not (isinstance(current, str) and "talos-status.sh" in current):
-        print("chain\t" + (current if isinstance(current, str) else json.dumps(sl)))
-        sys.exit(0)
-    state = "wired" if sl is None else "updated"
-    doc["statusLine"] = dict(sl, command=cmd) if isinstance(sl, dict) else {"type": "command", "command": cmd}
-    doc["statusLine"].setdefault("type", "command")
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(real), prefix=".settings-")
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(doc, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-    if os.path.exists(real):
-        os.chmod(tmp, os.stat(real).st_mode & 0o777)
-    os.replace(tmp, real)
-    print(state)
-except (OSError, ValueError) as e:
-    print("unreadable\t%s: %s" % (type(e).__name__, e))
-TALOS_STATUSLINE_PY
+# install_claude_statusline (#550, #585) -- wire the Talos status line into
+# Claude Code's user settings (<dir>/settings.json, statusLine), chaining a
+# status line that is already there. All of it is scripts/talos-statusline.sh;
+# this only indents its output. Never aborts the install.
+statusline_run() {  # <wire|undo> -- the script's output, indented
+  local out
+  case "$1" in
+    wire) out="$(TALOS_HOME="$TALOS_HOME_DIR" bash "$SRC/scripts/talos-statusline.sh" wire "$CLAUDE_DIR/settings.json" "$TALOS_HOME_DIR/scripts" 2>&1)" || true ;;
+    *)    out="$(TALOS_HOME="$TALOS_HOME_DIR" bash "$SRC/scripts/talos-statusline.sh" undo "$CLAUDE_DIR/settings.json" 2>&1)" || true ;;
+  esac
+  printf '%s\n' "$out" | sed 's/^/    /'
+}
 
-install_claude_statusline() {
-  local settings="$CLAUDE_DIR/settings.json" script="$TALOS_HOME_DIR/scripts/talos-status.sh" res state detail
-  echo "  Status line ($(printable "$settings")):"
-  if ! command -v python3 >/dev/null 2>&1; then
-    echo "    notice: python3 not found; the status line was not wired. Set statusLine.command to: bash $(printable "$script") --line"
+# install_statuslines -- the status-line step for every selected harness. Only
+# Claude Code has a command status hook the installer owns; each other selected
+# harness gets one "not supported" line and the manual command.
+install_statuslines() {
+  local h script="$TALOS_HOME_DIR/scripts/talos-status.sh" extra
+  if [ "$CLAUDE_ADAPTER" != "true" ] && [ -z "$HARNESSES" ] && [ "$NO_STATUSLINE" != "true" ]; then
     return 0
   fi
-  res="$(python3 -I -c "$STATUSLINE_PY" "$settings" "$script" 2>/dev/null)" || res=""
-  state="${res%%$'\t'*}"
-  detail="${res#*$'\t'}"
-  case "$state" in
-    wired) echo "    installed: statusLine -> bash $(printable "$script") --line" ;;
-    updated) echo "    updated: statusLine now runs the installed copy ($(printable "$script"))" ;;
-    already) echo "    skip (already wired): statusLine runs $(printable "$script")" ;;
-    chain)
-      echo "    notice: $(printable "$settings") already has a statusLine, left as it is: $(printable "$detail")"
-      echo "            To show the Talos line (talos #<issue> <stage> dots tokens) too, call"
-      echo "            bash $(printable "$script") --line"
-      echo "            from that command, keeping Claude's JSON on its stdin (it reads transcript_path"
-      echo "            from it), and print its output next to yours." ;;
-    unreadable) echo "    notice: $(printable "$settings") was not changed ($(printable "$detail")); wire it by hand: statusLine {\"type\": \"command\", \"command\": \"bash $(printable "$script") --line\"}" ;;
-    *) echo "    notice: the status line was not wired (the settings edit failed)." ;;
-  esac
+  echo ""
+  if [ "$NO_STATUSLINE" = "true" ]; then
+    echo "Status line: skipped (--no-statusline); nothing was written."
+    return 0
+  fi
+  echo "Status line:"
+  if [ "$CLAUDE_ADAPTER" = "true" ]; then
+    echo "  Claude Code ($(printable "$CLAUDE_DIR")/settings.json):"
+    statusline_run wire
+  fi
+  for h in codex gemini antigravity pi cursor opencode generic; do
+    has_harness "$h" || continue
+    extra="no command status hook"
+    [ "$h" = "pi" ] && extra="no command status hook; it needs a TS extension"
+    echo "    not supported by $h: $extra; run bash $(printable "$script") --line from your own prompt or footer"
+  done
 }
 
 # install_claude_adapter -- the ONLY place --global writes under
@@ -494,7 +480,6 @@ install_claude_adapter() {
     fi
   done
   install_claude_plugin
-  install_claude_statusline
   echo "  Retired bare skills ($(printable "$CLAUDE_DIR")/skills):"
   remove_retired_bare_skill pipeline pipeline
   remove_retired_bare_skill pipeline-setup pipeline-setup
@@ -578,6 +563,15 @@ TALOS_POINTER_BODY
 # ── GLOBAL INSTALL ────────────────────────────────────────────────────────────
 if [ "$GLOBAL" = "true" ]; then
   TALOS_HOME_DIR="${TALOS_HOME:-$HOME/.talos}"
+  if [ "$STATUSLINE_UNDO" = "true" ]; then
+    echo "Undoing the Talos status line chain (state in $(printable "$TALOS_HOME_DIR"), settings in $(printable "$CLAUDE_DIR")):"
+    if [ "$CLAUDE_ADAPTER" = "true" ]; then
+      statusline_run undo
+    else
+      echo "    nothing to undo ($(printable "$CLAUDE_WHY"))"
+    fi
+    exit 0
+  fi
   echo "Installing Talos globally into: $(printable "$TALOS_HOME_DIR")"
   if [ "$CLAUDE_ADAPTER" = "true" ]; then
     echo "(Skills -> $(printable "$TALOS_HOME_DIR")/skills, plus the talos plugin; Agents -> $(printable "$TALOS_HOME_DIR")/agents and $(printable "$CLAUDE_DIR")/agents)"
@@ -686,6 +680,8 @@ if [ "$GLOBAL" = "true" ]; then
     echo ""
     echo "Claude Code adapter skipped: $(printable "$CLAUDE_DIR") was not refreshed (nothing was changed or deleted). To refresh it, run: bash $(printable "$SRC")/install.sh --global --harness claude (or --harness claude,<others>)."
   fi
+
+  install_statuslines
 
   # Model hint (#336). Role models are set only in the Talos config (the agent
   # files carry no model:). Stay non-interactive and never write the user-level

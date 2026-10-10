@@ -385,6 +385,20 @@ No output: say nothing and go to Step 8. Otherwise show each match and the line 
 
 ---
 
+## Step 7e — Offer the Talos status line (Claude Code)
+
+Skip this step unless the harness is Claude Code. Claude Code has one `statusLine` slot and a plugin cannot set it, so wiring is done here, by the same script `install.sh --global` uses. An existing status line is chained, not replaced: the original line and the Talos line (`talos #<issue> <stage> dots tokens`) are both shown, and either one failing or hanging never blanks the other.
+
+Ask once: "Show the Talos status line in Claude Code? If you already have a status line it is kept and the Talos line is added under it. (yes/no)". On anything but an explicit yes, change nothing and say that `bash <scripts>/talos-statusline.sh wire ...` or `install.sh --global` does it later (`install.sh --global --no-statusline` skips it for good). On yes, with `<scripts>` the directory resolved at the top, made absolute:
+
+```bash
+bash "<scripts>/talos-statusline.sh" wire "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" "<scripts>"
+```
+
+Relay its output as it is (it says `installed`, `chained`, `skip (already ...)` or a `notice`). When it chained, tell the user how to go back: `bash install.sh --global --statusline-undo` (from the Talos checkout) or `bash "<scripts>/talos-statusline.sh" undo "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"` restores the original exactly. It is safe to re-run.
+
+---
+
 ## Step 8 — Bootstrap labels (non-file providers)
 
 If provider is NOT "file":
