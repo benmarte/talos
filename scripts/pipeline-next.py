@@ -333,7 +333,7 @@ def collect():
     # listing adoption consults): that work is implemented and the PR side
     # owns it -- a stale pipeline:dev beside an open PR would put every
     # drained run through `next --issue`, which skips adoption for a
-    # not-queued issue and answers a developer fix round, re-dispatching an
+    # developer-labelled issue and answers a developer fix round, re-dispatching an
     # implementer onto finished work until max_fix_attempts tripped the run
     # to exit 1 (#519 review, finding 1).
     pr_issues = set(issue for (_, _, issue) in eligible)
@@ -559,9 +559,19 @@ def issue_side(data, o):
             say('wait', reason='theirs')
         if n in held or n in by_owner:
             ask_owner(n)
-        if n in queued and any(p.get('issue') == n for p in prs):
+        # The issue's open pipeline PR is the PR side's, as in the unpinned
+        # next: an owner-flagged one waits, the others are resumed at their
+        # stage (#582). Only the PR of THIS issue is ever consulted.
+        if any(p.get('issue') == n and p.get('owner') for p in prs):
+            say('wait', reason='owner')
+        if n in queued:
             adopt(n)
         labels, body = view_issue(n)
+        # The developer leaves its issue with no pipeline label once the PR is
+        # open (agents/developer.md step 8): the PR owns the work. Only an
+        # explicit developer label keeps the fix-round routing of route().
+        if not (labels & {DEV_LABEL, EPIC_DECOMPOSED_LABEL}):
+            adopt(n)
         # A not-queued issue is the collect word: still ready means the filter or
         # the cap skipped it (a wait); past ready (confirmed/dev/epic) the labels
         # themselves are the routing (the #471 label-parity fixtures) - and a

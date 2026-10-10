@@ -451,6 +451,69 @@ LEASE_RESET
 nx
 assert_eq "action=wait reason=draft pr=15 issue=61 ref=draft-order" "$OUT" "AC1: the queue pick's ready stage answers the key-carrying draft wait too"
 
+# ── #582: next --issue N routes N's open pipeline PR whatever N's labels ──────
+# The developer leaves the issue with NO pipeline label once its PR is open (the
+# PR side owns the work, agents/developer.md step 8b), so the issue is neither
+# queued nor in flight. A pinned next must still answer the PR's stage, exactly
+# as the unpinned next does for that PR -- never `wait reason=none`.
+reset_stubs
+cfg '{"max_parallel": 1}' '{"validator": true, "planner": true, "pm": true, "developer": true}'
+issue 71 "-" /dev/null
+issue 72 "-" /dev/null
+open_state '[{"n": 17, "issue": 71, "head": "a4f9", "owner": false, "stage": "docs"}]'
+LEASE_RESET
+nxi 71
+assert_eq "action=dispatch stage=docs pr=17 issue=71" "$OUT" "#582: an unlabeled issue with an open PR routes the PR's stage"
+LEASE_RESET
+nx
+assert_eq "action=dispatch stage=docs pr=17 issue=71" "$OUT" "#582: the unpinned next answers the same for that PR"
+for _st in qa reviewer security; do
+  open_state '[{"n": 17, "issue": 71, "head": "a4f9", "owner": false, "stage": "'"$_st"'"}]'
+  LEASE_RESET
+  nxi 71
+  assert_eq "action=dispatch stage=$_st pr=17 issue=71" "$OUT" "#582: the PR at $_st is dispatched by the pinned next"
+done
+open_state '[{"n": 17, "issue": 71, "head": "a4f9", "owner": false, "stage": "merge"}]'
+LEASE_RESET
+nxi 71
+assert_eq "action=merge pr=17 issue=71" "$OUT" "#582: the PR at merge is merged by the pinned next"
+for _w in "ready|action=wait reason=draft pr=17 issue=71 ref=draft-order" "ci|action=wait reason=ci" \
+          "human-merge|action=wait reason=human-merge" "blocked|action=wait reason=blocked"; do
+  open_state '[{"n": 17, "issue": 71, "head": "a4f9", "owner": false, "stage": "'"${_w%%|*}"'"}]'
+  LEASE_RESET
+  nxi 71
+  assert_eq "${_w#*|}" "$OUT" "#582: the PR at ${_w%%|*} answers the unpinned wait"
+done
+
+# Never another issue's PR: #72 has no PR of its own, PR 17 is #71's.
+open_state '[{"n": 17, "issue": 71, "head": "a4f9", "owner": false, "stage": "docs"}]'
+LEASE_RESET
+nxi 72
+assert_eq "action=wait reason=none" "$OUT" "#582: a pinned issue without a PR never takes another issue's PR"
+# Two issues, two PRs: each pin gets its own PR (the unpinned next takes the lowest).
+open_state '[{"n": 17, "issue": 71, "head": "a4f9", "owner": false, "stage": "docs"}, {"n": 18, "issue": 72, "head": "b5a0", "owner": false, "stage": "qa"}]'
+LEASE_RESET
+nxi 72
+assert_eq "action=dispatch stage=qa pr=18 issue=72" "$OUT" "#582: the pin on #72 routes PR 18, not the lower PR 17"
+LEASE_RESET
+nxi 71
+assert_eq "action=dispatch stage=docs pr=17 issue=71" "$OUT" "#582: the pin on #71 routes PR 17"
+LEASE_RESET
+nx
+assert_eq "action=dispatch stage=docs pr=17 issue=71" "$OUT" "#582: the unpinned next is unchanged: the lowest PR"
+# An owner-flagged PR waits for the owner, as the unpinned next does.
+open_state '[{"n": 17, "issue": 71, "head": "a4f9", "owner": true, "stage": "qa"}]'
+LEASE_RESET
+nxi 71
+assert_eq "action=wait reason=owner" "$OUT" "#582: a PR waiting on its owner is not dispatched by the pin either"
+# A developer-labelled issue keeps its documented fix-round routing (AC6).
+issue 71 "pipeline:dev" /dev/null
+open_state '[{"n": 17, "issue": 71, "head": "a4f9", "owner": false, "stage": "docs"}]'
+printf 'stage=qa count=1 total=2\n' > "$STUB_DIR/check-attempt.71.json"
+LEASE_RESET
+nxi 71
+assert_eq "action=dispatch stage=developer issue=71" "$OUT" "#582: an issue labelled pipeline:dev beside its PR is still the developer's fix round"
+
 # ── AC10: provider gaps fail closed ───────────────────────────────────────────
 reset_stubs
 cfg '{"max_parallel": 1}' '{"validator": true, "planner": true, "pm": true, "developer": true, "pm_skip_when_spec_present": true}'

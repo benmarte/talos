@@ -2558,7 +2558,7 @@ _talos_next() {
 
   # --issue <N> is the issue-side half alone (#471): the PR-side loop answers
   # the lowest PR of the whole state, which is not the named issue's answer.
-  # Adoption of a queued issue's own PR lives in the issue-side program.
+  # Adoption of the named issue's own open PR (#582) lives in that program.
   if [ -n "$_issue" ]; then
     _a="issue-side"
   else
@@ -2772,15 +2772,17 @@ print(word)
   printf '%s' "$_w"
 }
 
-# _run_agent <role> <prompt-file> <out-file>: pipeline-agent.sh <role> - with
-# the prompt file on stdin (never argv, AC6); stdout to <out-file>, the exit
-# status in _AG_RC, stderr relayed as note lines. A non-zero _AG_RC:
+# _run_agent <role> <prompt-file> <out-file> <issue> [<pr>]: pipeline-agent.sh
+# <role> - with the prompt file on stdin (never argv, AC6); stdout to <out-file>,
+# the exit status in _AG_RC, stderr relayed as note lines. The issue and PR go
+# in TALOS_ISSUE / TALOS_PR: pipeline-agent records them on its stage_complete
+# event, which is what `cost --issue` and the status line count. A non-zero _AG_RC:
 #   75/69 are the provider contract (#418: failover exhausted) -- the caller's
 #   queued provider check reads them and stops the run; any other code is a
 #   dispatch failure.
 _run_agent() {
   _AG_RC=0
-  bash "$SCRIPT_DIR/pipeline-agent.sh" "$1" - < "$2" > "$3" 2>"$_CFG_CACHE_DIR/agent.err" || _AG_RC=$?
+  TALOS_ISSUE="${4:-}" TALOS_PR="${5:-}" bash "$SCRIPT_DIR/pipeline-agent.sh" "$1" - < "$2" > "$3" 2>"$_CFG_CACHE_DIR/agent.err" || _AG_RC=$?
   _talos_relay "agent.$1" "$(cat "$_CFG_CACHE_DIR/agent.err")"
 }
 
@@ -2832,10 +2834,10 @@ _talos_run_loop() {
   # 8192-char emit cap, where a `[truncated]` tail silently disabled this
   # fallback (#519 review, finding 3). An issue whose read shows an open
   # pipeline PR is dropped by this gate, and the collect excludes it too:
-  # `next --issue` on such an issue skips adoption (it is queued-only) and
-  # answers a developer fix round, so a stale pipeline:dev beside an open
-  # PR re-dispatched an implementer on every drained run (#519 review,
-  # finding 1). A drained-queue pass works the survivors before it stops;
+  # `next --issue` on a pipeline:dev issue answers a developer fix round
+  # (adoption skips an explicitly developer-labelled issue, #582), so a stale
+  # pipeline:dev beside an open PR re-dispatched an implementer on every
+  # drained run (#519 review, finding 1). A drained-queue pass works the survivors before it stops;
   # an empty list ends the run at its first wait -- never a second,
   # untargeted ready-queue walk (finding 2). An unreadable read is said
   # (`warn reason=inflight-unreadable`), never silently inert. Untargeted
@@ -3014,7 +3016,7 @@ _talos_run_dispatch() {
   fi
 
   # 2. The dispatch: the prompt on stdin, the agent's own runner resolution.
-  _run_agent "$_role" "$_f" "$_CFG_CACHE_DIR/agent.out"
+  _run_agent "$_role" "$_f" "$_CFG_CACHE_DIR/agent.out" "$_n" "$_pr"
   if [ "$_AG_RC" -ne 0 ]; then
     case "$_AG_RC" in
       75 | 69)

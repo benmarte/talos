@@ -220,7 +220,8 @@
 #          *)            exec claude -p "$(cat)" ;;
 #        esac
 # TALOS_ISSUE_NUMBER is the issue number passed via TALOS_ISSUE=<N> in the caller's
-# environment; empty string when the caller does not set TALOS_ISSUE.
+# environment; empty string when the caller does not set TALOS_ISSUE. TALOS_PR=<M>
+# (optional, digits) names the stage's PR: both land on the stage_complete event.
 # TALOS_WORKTREE_PATH is the $PWD at the time pipeline-agent.sh was invoked.
 # TALOS_USAGE_FILE (#420) is the path of the usage sidecar for THIS attempt, in a
 # fresh mktemp -d directory that is removed when the attempt ends. A runner_cmd
@@ -935,6 +936,16 @@ if [ -n "$_raw_issue" ]; then
   esac
 fi
 TALOS_ISSUE_NUMBER="$_raw_issue"
+# TALOS_PR is the stage's PR when one exists (the run driver and an adapter-path
+# orchestrator set it next to TALOS_ISSUE): recorded on the stage events, never
+# exported to the runner. Empty is no PR; anything but digits is rejected.
+_stage_pr="${TALOS_PR:-}"
+case "$_stage_pr" in
+  *[!0-9]*)
+    echo "pipeline-agent: TALOS_PR must be a plain integer (got: $_stage_pr)" >&2
+    exit 2
+    ;;
+esac
 TALOS_WORKTREE_PATH="$PWD"
 # TALOS_EFFORT (#271): role-first resolved agents.effort, same precedence as
 # _resolve_model. Empty when neither the role nor the global key is set —
@@ -1228,7 +1239,7 @@ _attempt_flush() {
 $(_usage_args "$_AT_RUNNER")
 EOF
   bash "$SCRIPT_DIR/pipeline-hooks.sh" post_stage stage_attempt "$ROLE" "$TALOS_ISSUE_NUMBER" \
-    --verdict FAIL --runner "$_AT_RUNNER" ${_args[@]+"${_args[@]}"} || true
+    ${_stage_pr:+--pr "$_stage_pr"} --verdict FAIL --runner "$_AT_RUNNER" ${_args[@]+"${_args[@]}"} || true
   _AT_TOKENS="" _AT_TOOLS="" _AT_MODEL=""
 }
 # _usage_marker <runner>: one stderr line per attempt, so a caller that writes
@@ -1785,6 +1796,7 @@ if [ -f "$SCRIPT_DIR/pipeline-hooks.sh" ]; then
   _POST_STAGE_VERDICT="PASS"
   [ "$RC" -eq 0 ] || _POST_STAGE_VERDICT="FAIL"
   _POST_STAGE_ARGS=(post_stage stage_complete "$ROLE" "$TALOS_ISSUE_NUMBER" --verdict "$_POST_STAGE_VERDICT")
+  [ -z "$_stage_pr" ] || _POST_STAGE_ARGS+=(--pr "$_stage_pr")
   # duration_s is not tracked anywhere today (PM scope note, #182): emit it
   # only when the caller supplies it via TALOS_STAGE_DURATION_S, null
   # otherwise -- no timer plumbing added in this change.

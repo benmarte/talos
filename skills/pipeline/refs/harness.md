@@ -16,10 +16,10 @@ Read when `talos.sh env` prints `ref=harness`: `agents.subagents` is false, the 
 **`subagents: false` + any other runner.** Replace every "spawn" step with:
 
 ```bash
-bash scripts/pipeline-agent.sh <role> - < "$PROMPT_FILE"
+TALOS_ISSUE=<N> TALOS_PR=<PR> bash scripts/pipeline-agent.sh <role> - < "$PROMPT_FILE"
 ```
 
-`PROMPT_FILE` is the `prompt_file=` path (the prompt text never touches a command line). The adapter finds the role definition itself and combines it with the stage prompt. There are no native subagents: developer stages run sequentially, `max_parallel: 1`.
+`PROMPT_FILE` is the `prompt_file=` path (the prompt text never touches a command line). Always set `TALOS_ISSUE` to the issue number, and `TALOS_PR` to the PR number once one exists (omit it for a first developer or validator/PM stage): the stage's `stage_complete` event, and so `cost --issue` and the spend line, are keyed on them; without `TALOS_ISSUE` the stage's tokens belong to no issue. The adapter finds the role definition itself and combines it with the stage prompt. There are no native subagents: developer stages run sequentially, `max_parallel: 1`.
 
 **Usage on these paths.** Named and adapter-path spawns report no input/output split, no model and no dollar cost (a completion without usage is expected there, not a bug: omit `--tokens`, `--tool-uses`, `--duration-s`); they show as `unrecorded` in the spend line, not as zero.
 

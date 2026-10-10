@@ -236,6 +236,25 @@ me alice next --issue 4
 assert_eq "0|action=dispatch stage=developer issue=4" "$RC|$OUT" "A continues an unassigned in-flight issue"
 assert_eq "alice" "$(as_state 4)" "A claimed the unassigned in-flight issue #4 first"
 
+# #582: a pinned next routes the pinned issue's own PR -- the issue carries no
+# pipeline label once its PR is open -- claiming first, and never another PR
+cfg_p; reset_repo
+printf '%s' '[{"number":9,"title":"nine","labels":[],"body":""},{"number":10,"title":"ten","labels":[],"body":""}]' > "$FX/issues.json"
+printf '%s' '[{"number":19,"title":"PR 19","headRefName":"fix/issue-9-x","baseRefName":"main","isCrossRepository":false,"labels":[{"name":"pipeline:review"}]}]' > "$FX/prs.json"
+printf '%040d\n' 19 > "$FX/head.19"
+rm -f "$FX"/as/[0-9]*; : > "$FX/as/9"; : > "$FX/as/10"
+me alice next --issue 10
+assert_eq "0|action=wait reason=none" "$RC|$OUT" "#582: A's pin on an issue without a PR never routes another issue's PR"
+assert_eq "0" "$(count_calls assign-issue)" "#582: nothing was claimed for the wrong issue"
+me alice next --issue 9
+assert_eq "0|action=dispatch stage=qa pr=19 issue=9" "$RC|$OUT" "#582: A's pin on #9 routes #9's own PR (unlabeled issue, claims on)"
+assert_eq "alice" "$(as_state 9)" "#582: the pinned dispatch claimed the unassigned issue first"
+me alice next
+assert_eq "0|action=dispatch stage=qa pr=19 issue=9" "$RC|$OUT" "#582: the unpinned next answers the same PR"
+printf 'bob\n' > "$FX/as/9"
+me alice next --issue 9
+assert_eq "0|action=wait reason=theirs" "$RC|$OUT" "#582: the PR of bob's issue is not routed by A's pin"
+
 # ═════ state --summary ═════════════════════════════════════════════════════
 cfg_p; reset_repo
 me alice state --summary
