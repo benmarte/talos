@@ -2558,7 +2558,7 @@ _talos_next() {
 
   # --issue <N> is the issue-side half alone (#471): the PR-side loop answers
   # the lowest PR of the whole state, which is not the named issue's answer.
-  # Adoption of a queued issue's own PR lives in the issue-side program.
+  # Adoption of the named issue's own open PR (#582) lives in that program.
   if [ -n "$_issue" ]; then
     _a="issue-side"
   else
@@ -2832,10 +2832,10 @@ _talos_run_loop() {
   # 8192-char emit cap, where a `[truncated]` tail silently disabled this
   # fallback (#519 review, finding 3). An issue whose read shows an open
   # pipeline PR is dropped by this gate, and the collect excludes it too:
-  # `next --issue` on such an issue skips adoption (it is queued-only) and
-  # answers a developer fix round, so a stale pipeline:dev beside an open
-  # PR re-dispatched an implementer on every drained run (#519 review,
-  # finding 1). A drained-queue pass works the survivors before it stops;
+  # `next --issue` on a pipeline:dev issue answers a developer fix round
+  # (adoption skips an explicitly developer-labelled issue, #582), so a stale
+  # pipeline:dev beside an open PR re-dispatched an implementer on every
+  # drained run (#519 review, finding 1). A drained-queue pass works the survivors before it stops;
   # an empty list ends the run at its first wait -- never a second,
   # untargeted ready-queue walk (finding 2). An unreadable read is said
   # (`warn reason=inflight-unreadable`), never silently inert. Untargeted

@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- fix(run): `next --issue N` / `run --issue N` route N's open pipeline PR (docs, review, security, QA, merge) like the unpinned next, although the developer leaves the issue with no label; never another issue's PR (#582)
 - fix(agents): headless claude stages get a scoped --allowedTools per role plus --add-dir for the Talos scripts (agents.claude_allowed_tools extends it; agents.claude_permission_mode is an unset-by-default opt-in), and a stage whose final message starts `BLOCKED: <reason>` blocks the issue for any role instead of stopping verdict-unreadable (#580)
 - lean: core consolidation, no behaviour change: one config resolver, one verdict table, talos.sh env resolves all roles in one process (25 python spawns -> 8), one pipeline-next.py for collect/next/state, a single lease-ledger scan, contract-only script headers (#557)
 - removed: CHANGELOG fragments (roles.changelog_fragments, docs/CHANGELOG.d, scripts/pipeline-changelog.sh) and the post-merge assemble step; the developer writes its CHANGELOG line directly and merge.union_paths resolves concurrent edits (#555)
