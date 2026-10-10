@@ -3971,8 +3971,10 @@ _gh_pull() {
 _gh_comments_obj() {
   local _raw _ck="" _sha _obj
   # In a pass (#554) the comments are stored against the cached PR's head SHA.
-  _sha="$(_gh_cache_get "pr-$1" | _gh_field head.sha 2>/dev/null)"
-  [ -z "$_sha" ] || _ck="comments-$1-$_sha"
+  if _gh_cache_dir >/dev/null; then
+    _sha="$(_gh_cache_get "pr-$1" | _gh_field head.sha 2>/dev/null)"
+    [ -z "$_sha" ] || _ck="comments-$1-$_sha"
+  fi
   if [ -n "$_ck" ] && _obj="$(_gh_cache_get "$_ck")"; then printf '%s' "$_obj"; return 0; fi
   _raw="$(_gh_comments "$1")" || return 1
   [ -n "$_raw" ] || return 1
