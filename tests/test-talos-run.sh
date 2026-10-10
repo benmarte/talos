@@ -88,6 +88,9 @@ d="${STUB_DIR:?}"
 role="$1"
 cat > "$d/agent.stdin"
 printf "agent %s\n" "$role" >> "$d/journal"
+# The identity the run driver hands every dispatch (role:issue:pr; an unset
+# variable prints as <unset>), kept apart from the journal the tests count.
+printf '%s:%s:%s\n' "$role" "${TALOS_ISSUE-<unset>}" "${TALOS_PR-<unset>}" >> "$d/agent.env"
 if [ -f "$d/message" ]; then cat "$d/message"; fi
 if [ -f "$d/message.$role" ]; then cat "$d/message.$role"; fi
 # #537: the Nth dispatch of a role (1-based, counted off the journal) may carry
@@ -200,6 +203,7 @@ TALOS_LEASE_TTL_S=1 TALOS_NOW=3000 rn --issue 9 --max-iterations 1
 assert_eq "0" "$RC" "developer PR_OPENED: the run exits 0"
 assert_contains "$(journal)" "hooks post_stage developer developer 9 --pr 12 --verdict PR_OPENED" \
   "developer PR_OPENED: the PR URL became verdict PR_OPENED with --pr 12"
+assert_eq "developer:9:" "$(cat "$STUB_DIR/agent.env")" "run identity: the first developer dispatch carries TALOS_ISSUE=9 and no PR"
 # No PR URL: BLOCKED.
 reset_stubs
 LEASE_RESET
@@ -885,6 +889,9 @@ assert_contains "$(journal)" "hooks post_stage qa qa 9" "run --issue (#582): don
 assert_contains "$OUT" "action=wait reason=human-merge" "run --issue (#582): the run continued to the PR's next stage and stopped there"
 assert_not_contains "$(journal)" "agent reviewer" "run --issue (#582): another issue's PR is never worked"
 assert_eq "2" "$(collects)" "run --issue (#582): one collect before the dispatch, one after it (done empties the cache)"
+# The dispatch carries the issue and PR identity pipeline-agent records on its
+# stage_complete event (without it the event has issue null).
+assert_eq "qa:9:12" "$(cat "$STUB_DIR/agent.env")" "run identity: a PR stage is dispatched with TALOS_ISSUE=9 and TALOS_PR=12"
 
 # ── (h) BLOCKED: <reason> is a blocked outcome for ANY role (#580) ────────────
 # A headless stage that cannot do its job ends "BLOCKED: <why>" (the validator on

@@ -91,6 +91,21 @@ assert_eq '"claude-sonnet-4-5"' "$(event_field stage_complete model)" "claude: w
 assert_contains "$(errtxt)" "talos:usage runner=claude tokens=2722" "claude: the talos:usage marker names the tokens"
 assert_eq "1" "$(event_count stage_complete)" "claude: exactly one stage_complete"
 
+# the identity the caller names: TALOS_ISSUE and TALOS_PR land on the event, so
+# `cost --issue` finds the stage's tokens; without them the event is anonymous
+reset
+export STUB_CLAUDE_JSON_FILE="$FIX/claude-ok.json" STUB_CLAUDE_TEXT_FILE="$FIX/claude-ok.txt"
+TALOS_ISSUE=7 TALOS_PR=12 bash "$AGENT" qa "the task text" >"$OUT" 2>"$ERR"
+assert_eq "7" "$(event_field stage_complete issue)" "identity: the event names the issue"
+assert_eq "12" "$(event_field stage_complete pr)" "identity: the event names the PR"
+assert_eq "2722" "$(bash "$EVENTS_SH" cost --issue 7 --json 2>/dev/null | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["total"]["tokens"])')" "identity: cost --issue 7 reports the stage's tokens"
+reset
+TALOS_ISSUE=7 TALOS_PR=12x bash "$AGENT" qa "the task text" >"$OUT" 2>"$ERR"; RC=$?
+assert_eq "2" "$RC" "identity: a TALOS_PR that is not a plain integer is a usage error"
+reset
+TALOS_ISSUE=7 TALOS_PR= bash "$AGENT" qa "the task text" >"$OUT" 2>"$ERR"
+assert_eq "null" "$(event_field stage_complete pr)" "identity: an empty TALOS_PR is no PR"
+
 # the model: the config-resolved one for the primary runner
 reset
 export STUB_CLAUDE_JSON_FILE="$FIX/claude-ok.json" STUB_CLAUDE_TEXT_FILE="$FIX/claude-ok.txt"
