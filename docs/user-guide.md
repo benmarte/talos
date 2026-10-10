@@ -3129,7 +3129,11 @@ If your setup predates the config and secrets work (epic #437), check these once
     cannot be auto-detected — you must set `board.owner` explicitly in
     `talos.pipeline.json` (or `PIPELINE_BOARD_OWNER` env var); without it the
     board step is silently skipped.
-  - **Large backlogs / `talos:board-unverified`:** `pipeline-status.sh`
+  - **Large backlogs / `talos:board-unverified`:** with the `github`
+    provider `pipeline-status.sh` finds an issue's board item by issue (one
+    `projectItems` query) and caches the project, field, option and item ids
+    per run (`board-validated-*` under `~/.cache/talos`, 6 h); a stale cache
+    costs one retry with fresh ids. With `github-api` it
     paginates the board's items() query up to 50 pages (5000 items at
     100/page) by default. Override the cap with `TALOS_BOARD_MAX_PAGES`; an
     invalid (non-positive-integer) value falls back to 50 with a warning on

@@ -44,22 +44,22 @@ except Exception:
 }
 
 # _board_resolve_owner USE_TOKEN_PATH ENV_OVERRIDE DRY_RUN — resolves the
-# project owner: ENV_OVERRIDE > board.owner config > (gh repo view, only
-# when gh is the active transport and this isn't a dry run) > first path
-# component of vcs.repo. Requires cfg() to already be defined in the
-# caller's scope. Prints the resolved owner (possibly empty) on stdout.
+# project owner: ENV_OVERRIDE > board.owner config > first path component of
+# vcs.repo > (gh repo view, only when gh is the active transport and this isn't
+# a dry run). Config is read before the network (#554): `gh repo view` is a
+# GraphQL call, and a configured repo makes it redundant. Requires cfg() to
+# already be defined in the caller's scope. Prints the resolved owner
+# (possibly empty) on stdout.
 _board_resolve_owner() {
   local _use_token_path="$1" _env_override="$2" _dry_run="${3:-false}"
-  local _default_owner=""
-  if [ "$_use_token_path" = "false" ] && [ "$_dry_run" = "false" ]; then
+  local _default_owner="" _vcs_repo
+  [ -z "$_env_override" ] && [ -z "$(cfg board.owner)" ] || { printf '%s' "${_env_override:-$(cfg board.owner)}"; return 0; }
+  _vcs_repo="$(cfg vcs.repo)"
+  [ -n "$_vcs_repo" ] && _default_owner="${_vcs_repo%%/*}"
+  if [ -z "$_default_owner" ] && [ "$_use_token_path" = "false" ] && [ "$_dry_run" = "false" ]; then
     _default_owner="$(gh repo view --json owner -q .owner.login 2>/dev/null || echo "")"
   fi
-  if [ -z "$_default_owner" ]; then
-    local _vcs_repo
-    _vcs_repo="$(cfg vcs.repo)"
-    [ -n "$_vcs_repo" ] && _default_owner="${_vcs_repo%%/*}"
-  fi
-  printf '%s' "${_env_override:-$(cfg board.owner "$_default_owner")}"
+  printf '%s' "$_default_owner"
 }
 
 # _board_resolve_project_id_gh PROJECT_NUM OWNER — gh CLI path. Prints the

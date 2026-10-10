@@ -312,7 +312,7 @@ assert_eq "0" "$RC" "inflight open PR: the run ends clean on the PR-side wait"
 assert_contains "$OUT" "action=wait reason=ci" "inflight open PR: the open PR's CI wait is the run's answer"
 assert_not_contains "$(journal)" "vcs view-issue 9" "inflight open PR: the gated issue is never even routed"
 assert_not_contains "$(journal)" "agent developer" "inflight open PR: no developer fix round is manufactured"
-assert_eq "2" "$(journal | grep -c '^status-file collect$')" "inflight open PR: the gate costs no extra collect (the list read plus this pass's next)"
+assert_eq "1" "$(journal | grep -c '^status-file collect$')" "inflight open PR: one collect -- the list read, which this pass's next reuses (#554)"
 
 # (g3) an empty inflight list stops at the first wait: never the second
 # collect and ready-queue walk the old empty-list sentinel paid (#519 review,
@@ -324,7 +324,7 @@ printf '{"prs": [], "pr_total": 0, "ignored": 0, "blocked": [], "queued": [], "h
 TALOS_NOW=9000 rn --max-iterations 3
 assert_eq "0" "$RC" "inflight empty: the drained run exits clean"
 assert_contains "$OUT" "stop action=wait reason=none" "inflight empty: the run stops at its first wait"
-assert_eq "2" "$(journal | grep -c '^status-file collect$')" "inflight empty: the list read plus the pass's next, never a second queue walk"
+assert_eq "1" "$(journal | grep -c '^status-file collect$')" "inflight empty: one collect, read for the list and reused by the pass's next (#554), never a second queue walk"
 assert_not_contains "$(journal)" "vcs view-issue" "inflight empty: the ready queue is not re-walked"
 
 # (g4) an unreadable state read is said: the fallback is never silently inert
@@ -828,5 +828,62 @@ dev_pr_word 'xpr=12\n' none "xpr=12"
 dev_pr_word 'pr=12a\n' none "pr=12a"
 dev_pr_word 'my_pr=3\n' none "my_pr=3"
 dev_pr_word 'PR=4\n' none "PR=4 (case-sensitive)"
+
+# ── (k) the collected state is read once per state (#554) ─────────────────────
+# Inside one `run` the collect is cached (TALOS_COLLECT_CACHE, a file in the run's
+# private dir): the in-flight list read and the first `next` share one read, and
+# later ones reuse it until something writes. Any writing verb empties it.
+CC="$SANDBOX/collect.cache"
+collects() { journal | grep -c '^status-file collect$'; }
+EMPTY_STATE='{"prs": [], "pr_total": 0, "ignored": 0, "blocked": [], "queued": [], "held": [], "inflight": [], "owners": [], "capped": []}'
+reset_stubs; LEASE_RESET; rm -f "$CC"
+export TALOS_COLLECT_CACHE="$CC"
+# a hit: the cached state, not the stub's, answers (and no collect is paid)
+printf '%s' "$EMPTY_STATE" > "$CC"
+OUT="$(TALOS_NOW=14000 bash "$RUN" next 2>/dev/null)"
+assert_contains "$OUT" "action=wait reason=none" "collect cache: a fresh cache answers next (its empty queue, not the stub's queued [9])"
+assert_eq "0" "$(collects)" "collect cache: a hit pays no collect"
+# a miss: read once, kept
+reset_stubs; LEASE_RESET; rm -f "$CC"
+TALOS_NOW=14000 bash "$RUN" next --issue 9 >/dev/null 2>&1
+TALOS_NOW=14000 bash "$RUN" next --issue 9 >/dev/null 2>&1
+assert_eq "1" "$(collects)" "collect cache: a miss reads once, the second next reuses it"
+assert_contains "$(cat "$CC")" '"queued": [9]' "collect cache: the miss stored what collect printed"
+# expired: ignored
+touch -t 202001010000 "$CC"
+TALOS_NOW=14000 bash "$RUN" next --issue 9 >/dev/null 2>&1
+assert_eq "2" "$(collects)" "collect cache: a cache older than two minutes is read again"
+# a failed or non-JSON read is never kept
+reset_stubs; LEASE_RESET; rm -f "$CC"
+printf '1' > "$STUB_DIR/collect.rc"
+TALOS_NOW=14000 bash "$RUN" next --issue 9 >/dev/null 2>&1
+assert_file_absent "$CC" "collect cache: a failed collect is not kept"
+rm -f "$STUB_DIR/collect.rc"; printf 'not json' > "$STUB_DIR/collect.json"
+TALOS_NOW=14000 bash "$RUN" next --issue 9 >/dev/null 2>&1
+assert_file_absent "$CC" "collect cache: a read that is not a JSON object is not kept"
+# every verb that writes empties it
+for v in done gate docs-gate post-merge sweep claim; do
+  printf '%s' "$EMPTY_STATE" > "$CC"
+  bash "$RUN" "$v" >/dev/null 2>&1
+  assert_file_absent "$CC" "collect cache: '$v' empties the cache before it writes"
+done
+printf '%s' "$EMPTY_STATE" > "$CC"
+bash "$RUN" summary >/dev/null 2>&1
+assert_file_exists "$CC" "collect cache: a read-only verb leaves it"
+unset TALOS_COLLECT_CACHE
+
+# In a run: the list read and the first next share one collect; a dispatch's
+# done empties the cache, so the pass after it reads the state the stage left.
+reset_stubs; LEASE_RESET
+printf '{"prs": [], "pr_total": 0, "ignored": 0, "blocked": [], "queued": [9], "held": [], "inflight": [], "owners": [], "capped": []}' > "$STUB_DIR/collect.json"
+printf 'CONFIRMED: real\n' > "$STUB_DIR/message"
+printf '%s' "$EMPTY_STATE" > "$STUB_DIR/collect.after"
+cat > "$STUB_DIR/hook.validator.1" <<'HOOK'
+cp "$d/collect.after" "$d/collect.json"
+HOOK
+TALOS_LEASE_TTL_S=1 TALOS_NOW=15000 rn --max-iterations 5
+assert_contains "$(journal)" "agent validator" "run cache: the queued issue was dispatched on the first read"
+assert_eq "2" "$(collects)" "run cache: list read + first next share one collect; the pass after the dispatch reads again"
+assert_contains "$OUT" "action=wait reason=none" "run cache: the pass after the dispatch saw the state the stage left (queue empty), not the cached one"
 
 finish

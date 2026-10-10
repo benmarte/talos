@@ -137,7 +137,7 @@ assert_rule_before_all "$TALOS_ROOT/agents/qa.md" 'Check `verify.qa_mode`' \
 # agents/qa.md (#179); SKILL.md's QA task prompt no longer restates it.
 assert_contains "$(cat "$TALOS_ROOT/agents/qa.md")" "pr-checks-required <pr> --wait" \
   "agents/qa.md writes the CI-wait call out literally"
-assert_contains "$(cat "$TALOS_ROOT/agents/qa.md")" "30s steps" \
+assert_contains "$(cat "$TALOS_ROOT/agents/qa.md")" "30 s, backing off to 120 s" \
   "agents/qa.md CI-wait call states its poll interval"
 
 # ── Mergeability pre-CI check before QA waits on CI (#214) ─────────────────

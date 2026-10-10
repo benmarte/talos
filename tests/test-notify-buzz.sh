@@ -155,7 +155,11 @@ assert_not_contains "$card" '```' "no monospace grid once a template has resolve
 # When no URL is resolvable at all, the ref in the headline degrades to plain
 # text rather than an empty, dangling link -- "[#87]()" would defeat the
 # _neutral_to_platform tidy-up that is supposed to catch exactly this.
+# (#554: the repo URL now comes from the checkout's remote without asking gh, so
+# "unresolvable" also needs a checkout with no remote.)
+_origin="$(git remote get-url origin)"; git remote remove origin
 card_nourl="$(GH_FAIL_STDERR="rate limited" buzz_card qa "#87" "PASS: all good" 87)"
+git remote add origin "$_origin"
 assert_contains "$card_nourl" "🧪 **QA** — PASS · #87" \
   "ref in headline stays plain text when no URL is resolvable"
 assert_not_contains "$card_nourl" "[#87]" \

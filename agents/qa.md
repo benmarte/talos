@@ -66,7 +66,7 @@ sleep-polling; never end your turn while a verify command is running.
      blocks in one shell call and returns only once every check named in
      `merge.required_checks` passes or the wait budget elapses:
      `bash scripts/pipeline-vcs.sh pr-checks-required <pr> --wait <verify.ci_wait_s, default 900>`
-     It polls inside the one call (30s steps): exits 2 while a required check
+     It polls inside the one call (30 s, backing off to 120 s): exits 2 while a required check
      is pending or missing, 1 the moment one has definitively failed, 0 only
      once every one passes. Its exit status is the result: FAIL whenever it is
      not 0 -- an explicit failure or the wait budget elapsing while a check

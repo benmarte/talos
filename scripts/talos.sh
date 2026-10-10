@@ -987,6 +987,28 @@ _talos_relay() {
   done <<< "$2" | python3 -I -c "$_TALOS_SANITISER" >&2
 }
 
+# The collect cache (#554). Inside one `run` the collected state is kept in a file
+# of the run's private dir (TALOS_COLLECT_CACHE, exported by `run`; unset
+# everywhere else, so a standalone `next` or `state` reads GitHub as before): the
+# in-flight list read and the passes' `next` share one collect instead of paying
+# one each. Only a successful read that is a JSON object is kept; a copy older than
+# two minutes is not used; and every verb that writes (done, gate, docs-gate,
+# post-merge, sweep, claim, and a claim made inside `next`) empties it first, so
+# a pass after a stage's labels changed reads the state that stage left.
+_talos_collect_get() {  # prints the cached state; non-zero on a miss
+  local _c="${TALOS_COLLECT_CACHE:-}"
+  [ -n "$_c" ] && [ -f "$_c" ] && [ ! -L "$_c" ] && [ -O "$_c" ] && [ -s "$_c" ] || return 1
+  [ -n "$(find "$_c" -mmin -2 2>/dev/null)" ] || return 1
+  cat "$_c"
+}
+_talos_collect_put() {  # $1 = a successful collect's stdout
+  local _c="${TALOS_COLLECT_CACHE:-}"
+  [ -n "$_c" ] || return 0
+  case "$1" in '{'*'}') ;; *) return 0 ;; esac
+  printf '%s' "$1" > "$_c.$$" && mv "$_c.$$" "$_c" 2>/dev/null || rm -f "$_c.$$"
+}
+_talos_collect_drop() { [ -z "${TALOS_COLLECT_CACHE:-}" ] || rm -f "$TALOS_COLLECT_CACHE"; }
+
 # _talos_post <pr> <text>: a PR comment; the text reaches the verb in a file.
 _talos_post() {
   { printf '%s\n' "$2" > "$_CFG_CACHE_DIR/body" \
@@ -3220,6 +3242,7 @@ else:
 _talos_claim_one() {
   local _n="$1" _me _c _verdict _owner _mine
   _CLAIM_RESULT="" _CLAIM_OWNER=""
+  _talos_collect_drop   # a claim writes the assignee: the collected state is stale (#554)
   talos_claim_resolve
   case "$TALOS_CLAIM_STATE" in
     off:*) _CLAIM_RESULT=off; _CLAIM_OWNER="${TALOS_CLAIM_STATE#off:}"; return 0 ;;
@@ -3298,8 +3321,13 @@ _talos_next() {
                      pipeline-contract.sh pipeline-next-stage.py pipeline-draft-check.sh \
                      pipeline-vcs.sh pipeline-budget.sh pipeline-lock.sh
 
-  _talos_run_capture next bash "$SCRIPT_DIR/pipeline-status-file.sh" collect
-  [ "$_RC" -eq 0 ] || _talos_stop state-unavailable
+  if _OUT="$(_talos_collect_get)"; then
+    : # inside a run: the state it already collected (#554)
+  else
+    _talos_run_capture next bash "$SCRIPT_DIR/pipeline-status-file.sh" collect
+    [ "$_RC" -eq 0 ] || _talos_stop state-unavailable
+    _talos_collect_put "$_OUT"
+  fi
   printf '%s' "$_OUT" > "$_CFG_CACHE_DIR/state.json"
 
   # --issue <N> is the issue-side half alone (#471): the PR-side loop answers
@@ -3561,6 +3589,8 @@ _talos_run_loop() {
   # The claim identity (#560), resolved once for the whole run: every `next`,
   # collect and claim below inherits it through TALOS_CLAIM_STATE.
   talos_claim_resolve
+  # The collected state is read once per state inside this run (#554).
+  TALOS_COLLECT_CACHE="$_CFG_CACHE_DIR/collect.cache"; export TALOS_COLLECT_CACHE
   # The run releases its own leases on exit (every path): one exit hook.
   _talos_on_exit "_talos_lease_release_run_all"
   local _dispatched=0
@@ -3587,7 +3617,10 @@ _talos_run_loop() {
   # runs only: a targeted run never uses this list.
   _inflight_list=""
   if [ -z "$_issue" ]; then
-    _state_json="$(bash "$SCRIPT_DIR"/pipeline-status-file.sh collect 2>/dev/null)"
+    if ! _state_json="$(_talos_collect_get)"; then
+      _state_json="$(bash "$SCRIPT_DIR"/pipeline-status-file.sh collect 2>/dev/null)" \
+        && _talos_collect_put "$_state_json"
+    fi
     case "$_state_json" in
       '{'*'}')
         _inflight_list="$(printf '%s' "$_state_json" | python3 -I -c 'import json,sys; d=json.load(sys.stdin); open_prs=set(p.get("issue") for p in (d.get("prs") or []) if isinstance(p, dict)); print(" ".join(str(n) for n in (d.get("inflight") or []) if n not in open_prs))' 2>/dev/null)" \
@@ -3952,6 +3985,9 @@ _talos_run_draft_complete() {
 
 verb="${1:-}"
 [ "$#" -eq 0 ] || shift
+
+# A verb that writes makes the collected state stale (#554): empty the run's copy first.
+case "$verb" in done | gate | docs-gate | post-merge | sweep | claim) _talos_collect_drop ;; esac
 
 case "$verb" in
   env) _talos_env "$@" ;;

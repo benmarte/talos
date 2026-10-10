@@ -185,15 +185,20 @@ post() {  # $1=url $2=json body [$3=auth header]; prints the response
 
 # ── Context (lookups only; every string transform lives in the formatter) ─────
 _API_TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
-_meta() {  # $1=issue|pr|repo $2=number -> its title (repo: its url), from gh else REST
+_meta() {  # $1=issue|pr|repo|board $2=number -> its title (repo: its url, board: its name), from gh else REST
   if command -v gh >/dev/null 2>&1; then
-    case "$1" in
-      repo) gh repo view --json url -q .url ;;
-      *)    gh "$1" view "$2" --json title -q .title ;;
-    esac 2>/dev/null || true
+    # pipeline-meta.sh (#554): the board name and URL come from vcs.repo / the
+    # checkout's remote, a title from one REST read kept for 6 h. This was
+    # `gh repo view` (twice), `gh issue view` and `gh pr view`: four GraphQL
+    # calls per message.
+    local fact="$1"
+    case "$1" in issue | pr) fact="$1-title" ;; repo) fact=repo-url ;; esac
+    if [ -f "$SCRIPT_DIR/pipeline-meta.sh" ]; then
+      bash "$SCRIPT_DIR/pipeline-meta.sh" --repo "$(cfg vcs.repo)" "$fact" ${2:+"$2"} 2>/dev/null || true
+    fi
     return 0
   fi
-  [ -n "$_API_TOKEN" ] && [ -n "$_NOTIFY_REPO" ] || return 0
+  [ "$1" != board ] && [ -n "$_API_TOKEN" ] && [ -n "$_NOTIFY_REPO" ] || return 0
   local path="repos/$_NOTIFY_REPO"
   case "$1" in issue) path="$path/issues/$2" ;; pr) path="$path/pulls/$2" ;; esac
   _curl "https://api.github.com/$path" "Authorization: Bearer $_API_TOKEN" -m 5 -H "Accept: application/vnd.github+json" 2>/dev/null \
@@ -220,7 +225,7 @@ REPO_SLUG="$(_slug "$_remote")"
 [ -z "$REPO_SLUG" ] && REPO_SLUG="default"
 
 BOARD="${PIPELINE_BOARD:-}"
-[ -z "$BOARD" ] && BOARD="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null | tr '/' '-')"
+[ -z "$BOARD" ] && BOARD="$(_meta board)"
 [ -z "$BOARD" ] && BOARD="$(basename "$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null)"
 
 _num="$(printf '%s' "${REF:-$THREAD_KEY}" | tr -cd '0-9')"
