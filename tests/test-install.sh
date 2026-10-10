@@ -85,10 +85,10 @@ n_notif="$(ls "$GLOBAL_HOME/.talos/templates/notifications/"*.md 2>/dev/null | w
 src_notif="$(ls "$TALOS_ROOT/templates/notifications/"*.md | wc -l | tr -d ' ')"
 assert_eq "$src_notif" "$n_notif" "--global installs all notification templates ($src_notif)"
 
-assert_file_exists "$FAKE_CLAUDE_HOME/skills/pipeline/SKILL.md" \
-  "--global installs the /pipeline alias to ~/.claude/skills/pipeline/SKILL.md (#335)"
-assert_file_exists "$FAKE_CLAUDE_HOME/skills/pipeline-setup/SKILL.md" \
-  "--global installs the /pipeline-setup alias to ~/.claude/skills/ (#335)"
+assert_file_absent "$FAKE_CLAUDE_HOME/skills/pipeline" \
+  "--global installs no /pipeline alias (#553)"
+assert_file_absent "$FAKE_CLAUDE_HOME/skills/pipeline-setup" \
+  "--global installs no /pipeline-setup alias (#553)"
 
 assert_contains "$gout" "Installing Talos globally" "--global output says 'Installing Talos globally'"
 

@@ -19,3 +19,6 @@ test-evidence-collect.sh
 test-evidence-upload.sh
 test-evidence-wiring.sh
 test-setup-evidence.sh
+
+# #553: the /pipeline and /pipeline-setup aliases are gone
+test-legacy-aliases.sh
