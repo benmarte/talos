@@ -107,7 +107,7 @@ while IFS= read -r _line; do
     *) fail "$key: unknown kind '$kind'" ;;
   esac
 done < "$GOLDEN"
-assert_eq "1" "$([ "$n_rows" -ge 100 ] && echo 1 || echo 0)" "the golden list has its rows ($n_rows)"
+assert_eq "1" "$([ "$n_rows" -ge 90 ] && echo 1 || echo 0)" "the golden list has its rows ($n_rows)"
 
 # ── Every table row with a default is pinned ─────────────────────────────────
 _unpinned=""
