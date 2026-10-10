@@ -1379,10 +1379,11 @@ on a pushed PR branch.
 QA, and (when the harness gives them one) reviewer/security/docs stages each
 get a disposable `git worktree`. The developer worktree is self-identifying
 (`fix|feat/issue-<N>-*` branch); the others are Claude Code harness `agent-*`
-worktrees with no issue number in their name, so QA and docs run `bash
-scripts/pipeline-worktree.sh tag <N>` as their first step, writing
-`<worktree>/.talos/env` (the same #186 format `create` writes) so later
-verbs can find them:
+worktrees with no issue number in their name, so their own first verb
+(`pipeline-criteria.sh qa-run <N> <pr>` for QA, `post-approval <PR> <role>
+--issue <N>` for reviewer, security and docs) runs `pipeline-worktree.sh tag
+<N>` itself, writing `<worktree>/.talos/env` (the same #186 format `create`
+writes) so later verbs can find them:
 
 - `scripts/pipeline-worktree.sh remove <N>` deletes EVERY worktree for issue
   `<N>` -- the developer worktree and any harness worktree tagged to `<N>` --

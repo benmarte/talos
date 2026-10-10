@@ -5,7 +5,7 @@
 # tests/test-canary.sh, a local file:// stand-in) sandbox repository, for
 # each provider in TALOS_CANARY_PROVIDERS (default "github github-api"):
 #   create-issue -> label-issue -> view-issue --spec -> branch+commit+push ->
-#   create-pr -> post-approval qa -> check-approval-sha -> pr-mergeable ->
+#   create-pr -> post-approval qa (verifies its own stamp, #549) -> pr-mergeable ->
 #   check-pr-files -> cleanup
 #
 # Every step is driven through scripts/pipeline-vcs.sh -- the same verbs the
@@ -274,7 +274,6 @@ json.dump({'vcs': {'provider': os.environ['PROVIDER'], 'repo': os.environ['REPO'
   CUR_PR="$PR_N"
 
   step "post-approval[$PROVIDER]"      bash "$VCS" post-approval "$PR_N" qa || return 1
-  step "check-approval-sha[$PROVIDER]" bash "$VCS" check-approval-sha "$PR_N" || return 1
   step "pr-mergeable[$PROVIDER]"       bash "$VCS" pr-mergeable "$PR_N" || return 1
   step "check-pr-files[$PROVIDER]"     bash "$VCS" check-pr-files "$PR_N" || return 1
 

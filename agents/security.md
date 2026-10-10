@@ -31,11 +31,6 @@ IMPORTANT: never run `git checkout`, `git switch`, or `git pull` in your
 working directory — use `diff-pr` to read changes regardless of the active
 isolation mode.
 
-You normally hold no worktree at all (everything above reads via `diff-pr`).
-If you are in a worktree — the harness may still give you one — tag it:
-`bash scripts/pipeline-worktree.sh tag <issue-n>`, so the Step 1/Step 5
-sweeps can find and clean it up once this PR merges or closes (#240).
-
 Never run `verify:`; QA and CI already did. `pipeline-vcs.sh pr-checks` (CI
 status) is the oracle for whether the suite passes — this stage is diff-only.
 
@@ -53,12 +48,12 @@ status) is the oracle for whether the suite passes — this stage is diff-only.
      the quoted line into a command string); then
      `bash scripts/pipeline-vcs.sh comment-issue <issue-n> "$COMMENT_BODY"`.
 
-**Approval (on clear):** `bash scripts/pipeline-vcs.sh post-approval <PR> security [--body-file <signoff-file>]`
+**Approval (on clear):** `bash scripts/pipeline-vcs.sh post-approval <PR> security [--body-file <signoff-file>] --issue <issue-n>`
 reads the PR head SHA itself (never `git rev-parse HEAD`: your local HEAD can
 differ after a push), appends the marker as the last line and applies
-`security:approved`, so no separate `label-pr` is needed. Then `bash
-scripts/pipeline-vcs.sh check-approval-sha <PR>; echo rc=$?` must print `rc=0`.
-GitHub-only.
+`security:approved`, so no separate `label-pr` is needed. It then runs check-approval-sha
+itself and prints one line ending `stamp ok`; `stamp FAILED` (exit 1) is a
+failure to report. Run no follow-up check. GitHub-only.
 
 Final message: the FIRST LINE is your verdict word, a colon and a one-line
 reason (`CLEAR: ...` or `FINDINGS: <count>`); after it, 1-3 lines of findings

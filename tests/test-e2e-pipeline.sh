@@ -560,7 +560,11 @@ DOCS_GATE_OUT=""
 
 simulate_stage_3e_phase1() {  # $1 = PR number, $2 = changed-paths (STUB_PR_FILES form)
   local pr="$1" files="$2" path_file
-  DOCS_GATE_OUT="$(STUB_PR_FILES="$files" STUB_PR_HEAD_SHA="$DOCS_SHA_200" bash "$HOME/.talos/scripts/talos.sh" docs-gate "$pr" --issue "$N" 2>/dev/null)"
+  # The auto-stamp's post-approval reads its own stamp back (#549): the PR with
+  # docs:done applied and the marker it posted, kept in the stub's comment store.
+  printf '[]' > "$SANDBOX/docs-gate-comments.json"
+  DOCS_GATE_OUT="$(STUB_CURRENT_USER=bot STUB_COMMENT_STORE="$SANDBOX/docs-gate-comments.json" STUB_PR_LABELS_JSON='[{"name":"docs:done"}]' \
+    STUB_PR_FILES="$files" STUB_PR_HEAD_SHA="$DOCS_SHA_200" bash "$HOME/.talos/scripts/talos.sh" docs-gate "$pr" --issue "$N" 2>/dev/null)"
   case "$DOCS_GATE_OUT" in
     docs=dispatch*)
       bash "$VCS" comment-pr "$pr" "**Docs:** posted -- ${DOCS_GATE_OUT#docs=dispatch }" >/dev/null 2>&1

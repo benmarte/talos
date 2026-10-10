@@ -2,15 +2,15 @@ Evidence (opt-in, #410). The orchestrator appends this section to your prompt on
 when evidence is on, and the `Evidence:` line above says how (`when=` and `mode=`).
 It adds to the QA procedure and never changes your verdict.
 
-Before step 6 (mode=agent only): run `date +%s` and keep the digits as `<epoch>`
+Before step 3 (mode=agent only): run `date +%s` and keep the digits as `<epoch>`
 (shell state does not persist between Bash calls, so write the number in your
-notes). Save every screenshot or recording you take in step 6 ONLY to an absolute
+notes). Save every screenshot or recording you take in step 3 ONLY to an absolute
 path under `<worktree-path>/<dir>`, where `<dir>` is the output of
 `bash scripts/pipeline-evidence.sh dir`, using whatever browser tool the harness
 provides. File names use only `[A-Za-z0-9._-]`, at most 3 levels below that
 directory, and only images or videos. With mode=command there is nothing to do here.
 
-After step 7, before Outcome: run the upload ONLY when EVERY criterion passed. A
+After step 4, before Outcome: run the upload ONLY when EVERY criterion passed. A
 FAIL gets no evidence (the fix round's QA captures again on the new head), so skip
 this whole section.
 - `when=always`: run it.
@@ -27,7 +27,7 @@ this whole section.
   bash scripts/pipeline-verify.sh --issue <issue-n> --worktree <worktree-path> -- bash scripts/pipeline-evidence.sh attach <pr>
   ```
 
-- mode=agent (the screenshots saved during step 6, newer than `<epoch>`):
+- mode=agent (the screenshots saved during step 3, newer than `<epoch>`):
 
   ```bash
   bash scripts/pipeline-evidence.sh attach <pr> --since <epoch>

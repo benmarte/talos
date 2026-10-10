@@ -1427,7 +1427,14 @@ printf '%s\n' "$_172_p1" >> "$CURL_QUEUE"
 printf '%s\n' "" "$_172_page2_url" "" > "$CURL_LINK_QUEUE"
 printf '%s\n' "$_172_p2" >> "$CURL_QUEUE"
 # duplicate found -> label-pr still runs defensively (get labels + put)
-printf '%s\n' '[]' '{"labels":[{"name":"qa:pass"}]}' >> "$CURL_QUEUE"
+printf '%s\n' '[{"name":"qa:pass"}]' >> "$CURL_QUEUE"
+# then the PR and its comments twice: label-pr's marker check, and the stamp
+# self-check (#549) post-approval ends with
+for _i in 1 2; do
+  printf '%s\n' \
+    "{\"number\":9,\"head\":{\"sha\":\"$_172_SHA\"},\"base\":{\"ref\":\"main\"},\"labels\":[{\"name\":\"qa:pass\"}]}" \
+    "[{\"body\":\"<!-- talos:approval sha=${_172_SHA} role=qa -->\",\"user\":{\"login\":\"bot\"}}]" >> "$CURL_QUEUE"
+done
 out_g_pa150="$(bash "$VCS" post-approval 9 qa 2>&1)"; rc_g_pa150=$?
 assert_eq "0" "$rc_g_pa150" "#172 github-api T-pagination-150: post-approval exits 0 (marker on page 2)"
 assert_contains "$out_g_pa150" "already exists" \
