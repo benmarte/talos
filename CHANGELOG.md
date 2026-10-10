@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- feat(statusline): install.sh --global and /talos:setup chain an existing Claude Code statusLine (original rows, then the Talos line, each with its own timeout) through ~/.talos/statusline-chain.sh instead of leaving it; --no-statusline skips, --statusline-undo restores the original exactly; every other harness prints a `not supported` line (scripts/talos-statusline.sh)
 - fix(run): talos.sh run passes TALOS_ISSUE (and TALOS_PR once a PR exists) to every pipeline-agent.sh dispatch, so the stage_complete event carries the issue and PR and `cost --issue` counts the stage's tokens instead of `unrecorded`; pipeline-agent.sh reads the optional TALOS_PR; the adapter-path playbook sets both
 - fix(run): `next --issue N` / `run --issue N` route N's open pipeline PR (docs, review, security, QA, merge) like the unpinned next, although the developer leaves the issue with no label; never another issue's PR (#582)
 - fix(agents): headless claude stages get a scoped --allowedTools per role plus --add-dir for the Talos scripts (agents.claude_allowed_tools extends it; agents.claude_permission_mode is an unset-by-default opt-in), and a stage whose final message starts `BLOCKED: <reason>` blocks the issue for any role instead of stopping verdict-unreadable (#580)

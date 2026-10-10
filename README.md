@@ -52,7 +52,7 @@ Without Claude Code: `bash ~/.talos/scripts/talos.sh run`, or tell any agentic C
 
 ## Status line
 
-`install.sh --global` wires Claude Code's status line to `scripts/talos-status.sh` (never replacing one you have), which reads the local events log (no network call, no model tokens):
+`install.sh --global` wires Claude Code's status line to `scripts/talos-status.sh` (an existing one is chained, shown above the Talos line, and `--statusline-undo` restores it), which reads the local events log (no network call, no model tokens):
 
 ```
 talos #7 qa ●●●●◐○ 3.41M

@@ -45,7 +45,8 @@
 # read; the whole run is cut off after 3 s (TALOS_STATUS_TIMEOUT_S, 1..10).
 #
 # Other harnesses: call `talos-status.sh --line` from their status or footer hook.
-# install.sh wires Claude Code's statusLine (never over an existing one).
+# install.sh wires Claude Code's statusLine; one that is already there is chained
+# (scripts/talos-statusline.sh, #585), never replaced.
 
 [ "${TALOS_STATUS_DEBUG:-}" = "1" ] || exec 2>/dev/null
 command -v python3 >/dev/null 2>&1 || exit 0

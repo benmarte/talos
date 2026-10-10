@@ -126,7 +126,7 @@ bash talos/install.sh [repo-path] [--harness <list>] [--no-agents-md] [--import-
 | `--no-agent-skills` | per-repo: skip copying agent-skills into `<repo>/.claude/skills` |
 | `--no-agents-md`, `--import-agents-md` | per-repo: write no `AGENTS.md` block / append `@AGENTS.md` to an existing `CLAUDE.md` and `GEMINI.md` (never creates them) |
 
-**Claude adapter.** Writes `~/.claude/agents/<role>.md`, registers the `talos` plugin (`claude plugin marketplace add <checkout>`, `claude plugin install talos@talos`) and wires `statusLine` in `settings.json` to `talos-status.sh --line` (an existing statusLine is kept). With `--harness` it runs only if the list has `claude`; without it, when `CLAUDE_CONFIG_DIR` is set, `${CLAUDE_CONFIG_DIR:-~/.claude}` is a directory, or `claude` is on PATH. A skipped adapter leaves `~/.claude` alone. Without `claude plugin` it prints the two commands to run inside Claude Code. Re-run it after `git pull` (Claude Code caches the plugin). A `talos` marketplace from another source is left alone; one pointing at another directory is repointed unless `--keep-marketplace` (or `--no-overwrite`) is given.
+**Claude adapter.** Writes `~/.claude/agents/<role>.md`, registers the `talos` plugin (`claude plugin marketplace add <checkout>`, `claude plugin install talos@talos`) and wires `statusLine` in `settings.json` to `talos-status.sh --line` (an existing statusLine is chained, not replaced: [The status line](#the-status-line)). With `--harness` it runs only if the list has `claude`; without it, when `CLAUDE_CONFIG_DIR` is set, `${CLAUDE_CONFIG_DIR:-~/.claude}` is a directory, or `claude` is on PATH. A skipped adapter leaves `~/.claude` alone. Without `claude plugin` it prints the two commands to run inside Claude Code. Re-run it after `git pull` (Claude Code caches the plugin). A `talos` marketplace from another source is left alone; one pointing at another directory is repointed unless `--keep-marketplace` (or `--no-overwrite`) is given.
 
 **Pointer skills.** With `codex`, `pi`, `cursor` or `opencode` in `--harness`, `--global` writes thin pointers `~/.agents/skills/talos-<command>/SKILL.md` (`$TALOS_AGENTS_HOME` moves the root) to the `~/.talos` playbooks; a non-Talos file there is never overwritten.
 
@@ -1029,13 +1029,36 @@ talos #7 qa ●●●●◐○ 3.41M
 
 Fields: issue, running (else first pending) stage, one dot each for validator, pm, developer, review (reviewer, security, adversarial), qa, merge (`●` done, `◐` running, `○` pending), the issue's token total. A role turned off in `roles.*` has no dot, nor has a validator or pm that never ran once a later stage has. The issue is the current branch's (`fix|feat/issue-N-...`), else the newest event's; a merged issue prints nothing. A stage runs from its `stage_start` event until its finishing event (6 hours at most). While it runs, the total adds usage read from the harness transcript (`transcript_path` on stdin, plus subagent transcripts). Config read: `roles.*` and `events.path` from `talos.pipeline.json` over `${TALOS_HOME:-~/.talos}/talos.pipeline.json`. The run is cut off after `TALOS_STATUS_TIMEOUT_S` seconds (1 to 10, default 3). `TALOS_STATUS_DEBUG=1` says on stderr why nothing printed.
 
-`install.sh --global` with the Claude adapter sets `statusLine` in `~/.claude/settings.json` (`$CLAUDE_CONFIG_DIR/settings.json`) to `bash <TALOS_HOME>/scripts/talos-status.sh --line` (shell-quoted when the path needs it). It never replaces another status line; it prints how to chain. By hand:
+`install.sh --global` with the Claude adapter sets `statusLine` in `~/.claude/settings.json` (`$CLAUDE_CONFIG_DIR/settings.json`) to `bash <TALOS_HOME>/scripts/talos-status.sh --line` (shell-quoted when the path needs it). `/talos:setup` runs the same `scripts/talos-statusline.sh wire`. By hand:
 
 ```json
 {"statusLine": {"type": "command", "command": "bash ~/.talos/scripts/talos-status.sh --line"}}
 ```
 
-Other harnesses call the same command from their status hook, with the repo as working directory.
+**An existing status line is chained, not replaced.** Claude Code has one `statusLine` slot (a plugin cannot set it), so with a foreign `statusLine` command the installer:
+
+- saves the original `statusLine` object verbatim to `${TALOS_HOME:-~/.talos}/statusline-previous.json`;
+- writes `${TALOS_HOME:-~/.talos}/statusline-chain.sh` (mode 0755) and sets `statusLine.command` to `bash <that file>`; `type`, `padding` and every other field stay.
+
+The wrapper reads Claude's JSON from stdin once and runs your original command (`sh -c`) and `talos-status.sh --line` side by side with that same JSON. Claude Code shows every output line as a row ([status line docs](https://code.claude.com/docs/en/statusline), "Display multiple lines"), so it prints your original rows and the Talos line as the last row. Each part has its own timeout, `TALOS_STATUSLINE_TIMEOUT_S` seconds (1 to 10, default 2), and its own failure: a part that fails, hangs or prints nothing is left out and the other still shows; the wrapper always exits 0.
+
+| Starting `statusLine` | `install.sh --global` does |
+|---|---|
+| none | wires `talos-status.sh --line` directly |
+| Talos's own command | unchanged, or pointed at the installed copy |
+| your command | chains it (above) |
+| the chain wrapper | rewrites the wrapper from the backup in place; `settings.json` and the backup are not touched, nothing is wrapped twice |
+| no `command` (not a command status line), or a `settings.json` that does not parse | left unchanged, with a notice |
+
+`--no-statusline` skips the whole step for every harness (one line says so; nothing is written). `--statusline-undo` (implies `--global`, does nothing else) puts `statusLine` back to exactly the saved value, deletes the wrapper and the backup, and says `nothing to undo` when there is nothing Talos-owned. Both only touch the user-level `settings.json`, never a project's `.claude/settings.json`.
+
+Per-harness support. `install.sh --global --harness <list>` prints one `not supported by <harness>` line, with the manual command, for each selected harness that has no command status hook:
+
+| Harness | Talos line | How |
+|---|---|---|
+| claude | yes | `statusLine` in `settings.json`, chained when one exists |
+| codex, gemini, antigravity, cursor, opencode, generic | not supported | no command status hook the installer owns; run `bash <TALOS_HOME>/scripts/talos-status.sh --line` from your own prompt or footer, with the repo as working directory |
+| pi | not supported | needs a TS extension; same manual command |
 
 ### Resume
 
