@@ -80,7 +80,6 @@ unset _TD_ROWS _TD_ROWS_SRC
 
 IFS= read -r -d '' _TALOS_DEFAULTS_RAW <<'TALOS_Qz7vK2mXr9Lp' || true
 base_branch	str		derived	-	repo
-release_branch	str	main	-	-	repo
 repo	str		derived	-	repo
 vcs.provider	enum	github	-	-	repo
 vcs.repo	str		derived	PIPELINE_REPO	repo
@@ -110,7 +109,6 @@ verify.timeout_ms	int	600000	-	-	any
 merge.auto	bool	true	-	-	any
 merge.method	enum	squash	-	-	any
 merge.required_checks	list		-	-	repo
-merge.delete_branch	bool	true	-	-	any
 merge.forbidden_files	list		derived	-	repo
 merge.forbidden_files_replace	bool	false	-	-	repo
 merge.forbidden_files_allow	list		-	-	repo

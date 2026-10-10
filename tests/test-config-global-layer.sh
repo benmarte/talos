@@ -52,7 +52,7 @@ print("\n".join(bad))
 print("REPO=" + " ".join(repo))
 TALOS_PYscp4Hq8Wn2Zt
 )"
-EXPECTED_REPO="base_branch board.azure_states.* board.azure_states.done board.azure_states.in_progress board.azure_states.in_review board.azure_states.ready board.enabled board.owner board.project_number board.status_field board.status_map.* board.statuses.* issues.label_filter issues.skip_labels markers.trusted_authors markers.verify_authors merge.approval_waiver_paths merge.forbidden_files merge.forbidden_files_allow merge.forbidden_files_replace merge.required_checks merge.union_paths release_branch repo vcs.azure.area_path vcs.azure.org_url vcs.azure.project vcs.azure.work_item_type vcs.file.source.path vcs.provider vcs.repo verify verify.commands verify.qa_mode"
+EXPECTED_REPO="base_branch board.azure_states.* board.azure_states.done board.azure_states.in_progress board.azure_states.in_review board.azure_states.ready board.enabled board.owner board.project_number board.status_field board.status_map.* board.statuses.* issues.label_filter issues.skip_labels markers.trusted_authors markers.verify_authors merge.approval_waiver_paths merge.forbidden_files merge.forbidden_files_allow merge.forbidden_files_replace merge.required_checks merge.union_paths repo vcs.azure.area_path vcs.azure.org_url vcs.azure.project vcs.azure.work_item_type vcs.file.source.path vcs.provider vcs.repo verify verify.commands verify.qa_mode"
 assert_eq "REPO=$EXPECTED_REPO" "$(printf '%s\n' "$_scope_out" | tail -n1)" "the repo-only set is exactly the owner-approved list (hooks.* and notifications.cmd stay global)"
 assert_eq "" "$(printf '%s\n' "$_scope_out" | sed '$d')" "every table row's scope is any or repo"
 
@@ -109,14 +109,14 @@ assert_not_contains "$(bash "$CFG_SH" --has board.owner 2>/dev/null && echo yes)
 
 # Every repo-only group, one key each, one note each
 reset_cfg
-glob_json '{"base_branch":"b1","release_branch":"b2","repo":"o/r","vcs":{"provider":"azure","repo":"o/r2","azure":{"org_url":"u","project":"p"},"file":{"source":{"path":"x.md"}}},"board":{"enabled":false,"project_number":4,"statuses":{"ready":"R"},"status_map":{"a":"b"}},"verify":{"commands":["make"],"qa_mode":"ci"},"merge":{"required_checks":["ci"],"forbidden_files":["f"],"forbidden_files_allow":["g"],"approval_waiver_paths":["w"],"union_paths":["u"]},"markers":{"trusted_authors":["t"],"verify_authors":false},"issues":{"label_filter":"l","skip_labels":["s"]}}'
+glob_json '{"base_branch":"b1","repo":"o/r","vcs":{"provider":"azure","repo":"o/r2","azure":{"org_url":"u","project":"p"},"file":{"source":{"path":"x.md"}}},"board":{"enabled":false,"project_number":4,"statuses":{"ready":"R"},"status_map":{"a":"b"}},"verify":{"commands":["make"],"qa_mode":"ci"},"merge":{"required_checks":["ci"],"forbidden_files":["f"],"forbidden_files_allow":["g"],"approval_waiver_paths":["w"],"union_paths":["u"]},"markers":{"trusted_authors":["t"],"verify_authors":false},"issues":{"label_filter":"l","skip_labels":["s"]}}'
 get base_branch >/dev/null
-assert_eq "23" "$(errlines)" "(b) one note per dropped repo-only key (23 keys across every group)"
+assert_eq "22" "$(errlines)" "(b) one note per dropped repo-only key (22 keys across every group)"
 _e="$(cat "$ERR")"
-for _k in base_branch release_branch repo vcs.provider vcs.repo vcs.azure.org_url vcs.azure.project vcs.file.source.path board.enabled board.project_number board.statuses.ready board.status_map.a verify.commands verify.qa_mode merge.required_checks merge.forbidden_files merge.forbidden_files_allow merge.approval_waiver_paths merge.union_paths markers.trusted_authors markers.verify_authors issues.label_filter issues.skip_labels; do
+for _k in base_branch repo vcs.provider vcs.repo vcs.azure.org_url vcs.azure.project vcs.file.source.path board.enabled board.project_number board.statuses.ready board.status_map.a verify.commands verify.qa_mode merge.required_checks merge.forbidden_files merge.forbidden_files_allow merge.approval_waiver_paths merge.union_paths markers.trusted_authors markers.verify_authors issues.label_filter issues.skip_labels; do
   assert_contains "$_e" "'$_k'" "(b) the repo-only key $_k is named in a note"
 done
-assert_eq "main" "$(bash "$CFG_SH" release_branch 2>/dev/null)" "(b) a dropped repo-only key falls back to the table default"
+assert_eq "" "$(bash "$CFG_SH" repo 2>/dev/null)" "(b) a dropped repo-only key falls back to the table default"
 _all_dropped="$(dump)"
 glob_json '{}'
 assert_eq "$(dump)" "$_all_dropped" "(b) --dump of a global file of only repo-only keys equals the dump of an empty global file"

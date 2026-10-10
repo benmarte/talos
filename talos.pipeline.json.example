@@ -8,8 +8,6 @@
     "token_env": "MY_BOT_TOKEN"
   },
 
-  "release_branch": "main",
-
   "board": {
     "enabled": true,
     "project_number": 1,
@@ -37,7 +35,6 @@
     "required_checks": [
       "test"
     ],
-    "delete_branch": true,
     "forbidden_files_replace": false,
     "forbidden_files_allow": [
       ".env.example"
