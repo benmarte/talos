@@ -17,7 +17,10 @@ use_stubs
 install_talos
 
 AGENT="$HOME/.talos/scripts/pipeline-agent.sh"
-SCRIPTS="$HOME/.talos/scripts"
+SCRIPTS="$(cd "$HOME/.talos/scripts" && pwd)"
+# The stage cwd is a project dir beside the install, never a parent of it (a real
+# ~/.talos is outside the repo).
+mkdir -p "$SANDBOX/proj" && cd "$SANDBOX/proj" || exit 1
 export RUNNER_LOG="$SANDBOX/runner.log"
 ERR="$SANDBOX/agent.err"
 set_cfg() { printf '%s\n' "$1" > talos.pipeline.json; }
@@ -27,6 +30,7 @@ run_role() {
   : > "$RUNNER_LOG"
   bash "$AGENT" "$1" "the task text" >/dev/null 2>"$ERR" </dev/null
   ARGV="$(grep '^CLAUDE ARGS' "$RUNNER_LOG" | head -n 1)"
+  LOG_ALL="$(cat "$RUNNER_LOG")"
   STDERR="$(cat "$ERR")"
 }
 has() { assert_contains "$ARGV" "[$1]" "$2"; }
@@ -67,9 +71,9 @@ hasnt "--permission-mode" "validator: no permission mode when unset"
 assert_not_contains "$ARGV" "--dangerously-skip-permissions" "validator: never skips permissions"
 # `--allowedTools` is variadic: the prompt must follow `--` or it is eaten as a rule.
 assert_contains "$ARGV" "[--] [" "validator: the prompt follows --"
-case "$ARGV" in
-  *"[--] [You are the **Validator**"*) pass "validator: the prompt is the last argument" ;;
-  *) fail "validator: the prompt is the last argument" "$(printf '%s' "$ARGV" | tail -c 200)" ;;
+case "$LOG_ALL" in
+  *"the task text]") pass "validator: the prompt is the last argument" ;;
+  *) fail "validator: the prompt is the last argument" "$(printf '%s' "$LOG_ALL" | tail -c 100)" ;;
 esac
 
 # ── per role ─────────────────────────────────────────────────────────────────

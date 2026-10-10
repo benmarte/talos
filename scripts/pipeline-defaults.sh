@@ -156,6 +156,8 @@ agents.runner	enum	claude	-	-	any
 agents.subagents	enum	auto	-	-	any
 agents.runner_args	str		-	-	any
 agents.runner_cmd	str		-	-	any
+agents.claude_allowed_tools	list		-	-	any
+agents.claude_permission_mode	enum		-	-	any
 agents.model	str		-	-	any
 agents.restamp_model	str		derived	-	any
 agents.effort	enum		-	-	any
@@ -163,6 +165,8 @@ agents.restamp_effort	enum		derived	-	any
 agents.roles.*.model	str		derived	-	any
 agents.roles.*.runner	enum		derived	-	any
 agents.roles.*.runner_cmd	str		derived	-	any
+agents.roles.*.claude_allowed_tools	list		derived	-	any
+agents.roles.*.claude_permission_mode	enum		derived	-	any
 agents.roles.*.restamp_model	str		derived	-	any
 agents.roles.*.effort	enum		derived	-	any
 agents.roles.*.restamp_effort	enum		derived	-	any

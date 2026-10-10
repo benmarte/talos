@@ -378,6 +378,8 @@ Derived defaults: `base_branch`, `repo`, `vcs.repo` and `board.owner` come from 
 | `agents.subagents` | enum | `auto` | - | any |
 | `agents.runner_args` | str | - | - | any |
 | `agents.runner_cmd` | str | - | - | any |
+| `agents.claude_allowed_tools` | list | - | - | any |
+| `agents.claude_permission_mode` | enum | - | - | any |
 | `agents.model` | str | - | - | any |
 | `agents.restamp_model` | str | derived | - | any |
 | `agents.effort` | enum | - | - | any |
@@ -385,6 +387,8 @@ Derived defaults: `base_branch`, `repo`, `vcs.repo` and `board.owner` come from 
 | `agents.roles.*.model` | str | derived | - | any |
 | `agents.roles.*.runner` | enum | derived | - | any |
 | `agents.roles.*.runner_cmd` | str | derived | - | any |
+| `agents.roles.*.claude_allowed_tools` | list | derived | - | any |
+| `agents.roles.*.claude_permission_mode` | enum | derived | - | any |
 | `agents.roles.*.restamp_model` | str | derived | - | any |
 | `agents.roles.*.effort` | enum | derived | - | any |
 | `agents.roles.*.restamp_effort` | enum | derived | - | any |
@@ -514,6 +518,25 @@ A `provider` exit is not counted as an attempt (`limits.max_fix_attempts`, `limi
 **Write guard.** A stage that already wrote is never rerun. `pipeline-vcs.sh` journals each successful write verb (comments, `create-pr`, `create-issue`, `post-approval`, `approve-pr`, `merge-pr`, `close-issue`, `record-attempt`) to `$TALOS_WRITE_LOG`; a moved `refs/remotes` ref counts as a push. Either one after a provider exit prints `talos:failover-refused role=<r> runner=<x> reason=wrote:<verbs|push>`.
 
 **Exit 69**: chain exhausted, every runner down, or failover refused. `talos.sh run` stops with `stop reason=provider-failed rc=<75|69>` and records nothing. The playbook sets `pipeline:blocked` and runs no fix round; remove the label to resume. Native path verbs: `pipeline-agent.sh --classify <runner> <rc> <file|->` and `--mark-down <runner> <class:detail>`.
+
+### Claude permissions on headless stages
+
+`claude -p` cannot answer an approval prompt, so a claude-runner stage in a repo with no allowlist of its own could run nothing. `pipeline-agent.sh` passes `--allowedTools` (a scoped default per role), `--add-dir <the Talos scripts dir>` (skipped when the stage cwd is inside it) and `--disallowedTools Edit/Write` on that dir. Rule grammar: [Claude Code permissions](https://code.claude.com/docs/en/permissions); `Bash(<prefix>:*)` allows the prefix and anything after it, and each subcommand of a compound command must match on its own.
+
+| Role | Default allowlist |
+| --- | --- |
+| all | `Read`, `Glob`, `Grep`; each `pipeline-*.sh` and `talos.sh` present in the install, by name, as `scripts/X`, `./scripts/X` and `<install dir>/X`; read-only git (`status`, `diff`, `log`, `show`, `rev-parse`, `ls-files`, bare `branch`, `branch --show-current`, `branch --list`) |
+| developer | + `Edit`, `Write`, `Bash(git:*)`, the verify commands |
+| validator, qa | + the verify commands |
+| docs | + `Edit`, `Write` |
+
+A verify command becomes `Bash(<command>:*)` only when it is plain words (letters, digits, space and `. / _ = : @ % +  -`). Anything with a quote, `$`, `` ` ``, `;`, `&`, `|`, `<`, `>`, `*`, a parenthesis or a backslash cannot be a prefix rule without widening it, so it is skipped with a warning that names its position, not its text; add a rule for it with `agents.claude_allowed_tools`.
+
+- `agents.claude_allowed_tools` (list) adds rules, e.g. `["Bash(npm run lint:*)"]`. `agents.roles.<role>.claude_allowed_tools` replaces the global list for one role. An entry must be `Name` or `Name(args)` with no comma, control character or inner parenthesis; others are dropped with a warning.
+- `agents.claude_permission_mode` (`acceptEdits`, `auto`, `bypassPermissions`, `manual`, `dontAsk`, `plan`; role override `agents.roles.<role>.claude_permission_mode`) is unset by default and then no `--permission-mode` is passed. **Risk:** issue and PR text is untrusted input and a stage acts on it; `bypassPermissions` removes every guard, so use it only on a sandboxed or ephemeral runner. A broad `claude_allowed_tools` entry such as `Bash` or `Bash(*)` is the same trade.
+- An `--allowedTools` or `--dangerously-skip-permissions` in `agents.runner_args` is the owner's own policy: nothing is added on top of it. A `--permission-mode` there wins over the config key.
+
+A stage whose final message starts with `BLOCKED: <reason>` is a blocked outcome for any role: `talos.sh run` sets `pipeline:blocked` on the issue (and the PR), relays the reason, and stops with `stop reason=stage-blocked role=<r>` (exit 0).
 
 ### Token usage on adapter runs
 
