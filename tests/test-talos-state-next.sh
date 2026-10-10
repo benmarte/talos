@@ -207,7 +207,7 @@ if re.fullmatch(r"action=merge pr=[0-9]+ issue=[0-9]+", ln):
     sys.exit(0)
 if re.fullmatch(r"action=wait reason=(ci|human-merge|blocked|owner|lease|none)", ln):
     sys.exit(0)
-if re.fullmatch(r"action=wait reason=draft pr=[0-9]+ issue=[0-9]+", ln):
+if re.fullmatch(r"action=wait reason=draft pr=[0-9]+ issue=[0-9]+ ref=draft-order", ln):
     sys.exit(0)
 sys.exit(1)
 ' "$1"
@@ -251,8 +251,19 @@ assert_action "next (merge)"
 set_state '{"prs": [{"n": 12, "issue": 34, "head": "a4f9", "owner": false, "stage": "ready"}], "pr_total": 1, "ignored": 0, "blocked": [], "queued": [], "held": [], "owners": [], "capped": []}'
 LEASE_RESET
 st next
-assert_eq "action=wait reason=draft pr=12 issue=34" "$OUT" "AC1: the ready stage's draft wait names the PR and the issue"
+assert_eq "action=wait reason=draft pr=12 issue=34 ref=draft-order" "$OUT" "AC1: the ready stage's draft wait names the PR and the issue"
 assert_action "next (stage ready, key-carrying draft)"
+
+# A PR at the adversarial stage names its ref (#547); the stages of the default
+# flow and the bare waits name none.
+set_state '{"prs": [{"n": 12, "issue": 34, "head": "a4f9", "owner": false, "stage": "adversarial"}], "pr_total": 1, "ignored": 0, "blocked": [], "queued": [], "held": [], "owners": [], "capped": []}'
+LEASE_RESET
+st next
+assert_eq "action=dispatch stage=adversarial pr=12 issue=34 ref=adversarial" "$OUT" "next (stage adversarial): the dispatch names ref=adversarial (#547)"
+set_state '{"prs": [{"n": 12, "issue": 34, "head": "a4f9", "owner": false, "stage": "reviewer"}], "pr_total": 1, "ignored": 0, "blocked": [], "queued": [], "held": [], "owners": [], "capped": []}'
+LEASE_RESET
+st next
+assert_eq "action=dispatch stage=reviewer pr=12 issue=34" "$OUT" "next (stage reviewer): a default-flow dispatch names no ref (#547)"
 
 for reason in ci:ci human-merge:human-merge blocked:blocked; do
   r="${reason%%:*}"; s="${reason#*:}"

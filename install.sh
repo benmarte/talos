@@ -719,8 +719,14 @@ if [ "$GLOBAL" = "true" ]; then
   . "$_CONTRACT"
   echo ""
   echo "Orchestrator skills (~/.talos/skills):"
+  # A playbook's refs (skills/<command>/refs/*.md, read on demand, #547) sit
+  # next to it, wherever a pointer or alias skill sends the agent to read it.
   for cmd in "${TALOS_COMMANDS[@]}"; do
     install_file "$SRC/skills/$cmd/SKILL.md" "$TALOS_HOME_DIR/skills/$cmd/SKILL.md"
+    for ref in "$SRC/skills/$cmd/refs/"*.md; do
+      [ -f "$ref" ] || continue
+      install_file "$ref" "$TALOS_HOME_DIR/skills/$cmd/refs/$(basename "$ref")"
+    done
   done
   # A command that left TALOS_COMMANDS keeps its old directory: say so, delete
   # nothing (the directory may hold edits, and this installer did not create it
