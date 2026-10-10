@@ -73,37 +73,41 @@ assert_eq "$(order_of "$out_p")" "$(order_of "$out_s")" "A: parallel and serial 
 
 # ── Test B: -j and TALOS_TEST_JOBS actually bound/enable concurrency ──────────
 # Named mutation: ignore JOBS entirely and always run one file at a time.
-# Both the -j flag and the env var would then take the same (slow) wall time
-# as the -j 1 baseline, and this test would fail to see the expected speedup.
+# The rendezvous below would then never see 4 files alive together.
+#
+# No wall-clock comparison (#556: "-j 4 is faster than -j 1" is load-sensitive).
+# Each stub registers a run.<pid> directory, records how many are registered at
+# once, and (when a target is set) waits until that many are alive together --
+# so the peak concurrency is observed, not timed.
+SYNC_STUB='d="$SYNC_DIR"; mkdir "$d/r.$$"
+n=$(ls -d "$d"/r.* 2>/dev/null | wc -l | tr -d " "); echo "$n" >> "$d/peak"
+i=0
+while [ "$i" -lt "$WAIT_TENTHS" ] && [ ! -f "$d/met" ]; do
+  n=$(ls -d "$d"/r.* 2>/dev/null | wc -l | tr -d " "); echo "$n" >> "$d/peak"
+  [ "$n" -ge "$TARGET" ] && : > "$d/met"
+  sleep 0.1; i=$((i + 1))
+done
+rmdir "$d/r.$$"; exit 0'
+# peak_of FIXTURE TARGET WAIT_TENTHS ARGS... -- run 4 stubs, print the highest concurrency seen
+peak_of() {
+  local fd="$1" target="$2" wait_t="$3"; shift 3
+  rm -rf "$fd/sync"; mkdir -p "$fd/sync"
+  SYNC_DIR="$fd/sync" TARGET="$target" WAIT_TENTHS="$wait_t" "$@" >/dev/null 2>&1
+  sort -n "$fd/sync/peak" 2>/dev/null | tail -n 1
+}
 FDB1="$SANDBOX/b1"
 build_min_fixture "$FDB1"
 for f in test-1.sh test-2.sh test-3.sh test-4.sh; do
-  write_stub "$FDB1" "$f" "sleep 1; exit 0"
+  write_stub "$FDB1" "$f" "$SYNC_STUB"
 done
-t0=$(date +%s)
-bash "$FDB1/tests/run-tests.sh" --no-cache -j 1 >/dev/null 2>&1
-serial_elapsed=$(( $(date +%s) - t0 ))
-
-FDB2="$SANDBOX/b2"
-build_min_fixture "$FDB2"
-for f in test-1.sh test-2.sh test-3.sh test-4.sh; do
-  write_stub "$FDB2" "$f" "sleep 1; exit 0"
-done
-t0=$(date +%s)
-bash "$FDB2/tests/run-tests.sh" --no-cache -j 4 >/dev/null 2>&1
-jflag_elapsed=$(( $(date +%s) - t0 ))
-
-FDB3="$SANDBOX/b3"
-build_min_fixture "$FDB3"
-for f in test-1.sh test-2.sh test-3.sh test-4.sh; do
-  write_stub "$FDB3" "$f" "sleep 1; exit 0"
-done
-t0=$(date +%s)
-TALOS_TEST_JOBS=4 bash "$FDB3/tests/run-tests.sh" --no-cache >/dev/null 2>&1
-envvar_elapsed=$(( $(date +%s) - t0 ))
-
-if [ "$jflag_elapsed" -lt "$serial_elapsed" ]; then pass "B: -j 4 is faster than -j 1 (${jflag_elapsed}s < ${serial_elapsed}s)"; else fail "B: -j 4 is faster than -j 1" "jflag=${jflag_elapsed}s serial=${serial_elapsed}s"; fi
-if [ "$envvar_elapsed" -lt "$serial_elapsed" ]; then pass "B: TALOS_TEST_JOBS=4 is faster than -j 1 (${envvar_elapsed}s < ${serial_elapsed}s)"; else fail "B: TALOS_TEST_JOBS=4 is faster than -j 1" "envvar=${envvar_elapsed}s serial=${serial_elapsed}s"; fi
+assert_eq "4" "$(peak_of "$FDB1" 4 300 bash "$FDB1/tests/run-tests.sh" --no-cache -j 4)" \
+  "B: -j 4 runs 4 files at once"
+assert_eq "4" "$(peak_of "$FDB1" 4 300 env TALOS_TEST_JOBS=4 bash "$FDB1/tests/run-tests.sh" --no-cache)" \
+  "B: TALOS_TEST_JOBS=4 runs 4 files at once"
+assert_eq "1" "$(peak_of "$FDB1" 99 3 bash "$FDB1/tests/run-tests.sh" --no-cache -j 1)" \
+  "B: -j 1 never overlaps two files"
+peak2="$(peak_of "$FDB1" 99 4 bash "$FDB1/tests/run-tests.sh" --no-cache -j 2)"
+if [ "$peak2" -le 2 ] 2>/dev/null; then pass "B: -j 2 never runs more than 2 files at once (peak $peak2)"; else fail "B: -j 2 never runs more than 2 files at once" "peak=$peak2"; fi
 
 # ── Test C: output ordering is stable regardless of completion order ─────────
 # Named mutation: print each file's block as soon as its job completes
