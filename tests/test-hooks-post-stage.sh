@@ -124,7 +124,7 @@ assert_file_exists "$CAPTURE" "failing hook: the command still ran (received std
 # ── (d) Slow hook (exceeds hooks.timeout_s) -- exit 0, killed at the timeout,
 # no orphaned watchdog process ─────────────────────────────────────────────
 # The sleep duration is a unique, unlikely-to-collide value (not the plain
-# "sleep 3" test-hooks-pre-dispatch.sh's own slow-hook case also spawns as a
+# "sleep N" test-hooks-pre-dispatch.sh's own slow-hook case also spawns as a
 # child of its compound hook command) -- pgrep -f matches on the exec'd
 # command line, which is indistinguishable from any other "sleep 3" process
 # running anywhere on the box, including a sibling test file's own
@@ -132,7 +132,7 @@ assert_file_exists "$CAPTURE" "failing hook: the command still ran (received std
 # together in time. A generic pattern here previously produced a false
 # "leak" by catching that unrelated, legitimately-still-running process.
 cat > talos.pipeline.json <<EOF
-{"hooks": {"post_stage": "sleep 3.194717", "timeout_s": 1}}
+{"hooks": {"post_stage": "sleep 60.194717", "timeout_s": 1}}
 EOF
 _start=$(date +%s)
 err="$(bash "$HOOKS" post_stage qa qa 42 --verdict PASS 2>&1 >/dev/null)"
@@ -140,10 +140,13 @@ rc=$?
 _elapsed=$(( $(date +%s) - _start ))
 assert_eq "0" "$rc" "slow hook: pipeline-hooks.sh still exits 0"
 assert_contains "$err" "pipeline-hooks:" "slow hook: one stderr note is printed"
-if [ "$_elapsed" -le 3 ]; then
-  pass "slow hook: killed at hooks.timeout_s (1s), not left to run its full 3s sleep"
+# Load-insensitive bound (#556): a hook that was NOT killed at timeout_s=1 runs
+# its whole 60 s sleep; a killed one takes about 1 s plus process-start overhead
+# on a loaded runner. 30 s sits far from both.
+if [ "$_elapsed" -lt 30 ]; then
+  pass "slow hook: killed at hooks.timeout_s (1s), not left to run its full 60s sleep"
 else
-  fail "slow hook: killed at hooks.timeout_s (1s), not left to run its full 3s sleep" \
+  fail "slow hook: killed at hooks.timeout_s (1s), not left to run its full 60s sleep" \
     "elapsed: ${_elapsed}s"
 fi
 # Bounded retry: tolerate up to ~0.5s beyond the watchdog's own kill
@@ -152,7 +155,7 @@ fi
 # fails if the process is genuinely still there after every retry.
 _leaked=""
 for _i in 1 2 3 4 5; do
-  _leaked="$(pgrep -f 'sleep 3\.194717$' || true)"
+  _leaked="$(pgrep -f 'sleep 60\.194717$' || true)"
   [ -z "$_leaked" ] && break
   sleep 0.1
 done

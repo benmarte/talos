@@ -97,8 +97,6 @@ assert_eq "$_old_sorted" "$_table_keys" "the table's key set equals the old _KNO
 _json="$( . "$DEFAULTS_SH"; _talos_known_keys_json )"
 _json_keys="$(printf '%s' "$_json" | python3 -I -c 'import json,sys; print("\n".join(sorted(json.load(sys.stdin))))')"
 assert_eq "$_old_sorted" "$_json_keys" "_talos_known_keys_json is valid JSON naming exactly the table keys"
-assert_eq "0" "$(grep -c "^_KNOWN_CONFIG_KEYS_JSON=" "$CFG_SH")" \
-  "pipeline-config.sh carries no second, hand-written copy of the key list"
 
 # ── (a) no config: the table answers; an explicit default still wins ─────────
 assert_eq "true" "$(bash "$CFG_SH" board.enabled)" \
@@ -131,10 +129,6 @@ assert_eq "" "$(bash "$CFG_SH" board.azure_states.blocked)" "board.azure_states.
 # ── (h) pr.draft: no second copy of #435's resolver ──────────────────────────
 _row="$( . "$DEFAULTS_SH"; _talos_defaults_row pr.draft; printf '%s|%s' "$_TD_DERIVED" "$_TD_DEFAULT" )"
 assert_eq "derived|" "$_row" "pr.draft is marked derived with no default of its own"
-assert_contains "$(cat "$DEFAULTS_SH")" "scripts/pipeline-draft-check.sh" \
-  "the table points at pipeline-draft-check.sh resolve as the one pr.draft resolver"
-assert_eq "0" "$(grep -c 'no-ready-trigger\|ready_for_review' "$DEFAULTS_SH")" \
-  "pipeline-defaults.sh holds no copy of the draft-resolution logic"
 
 # ── (b) an explicit config value wins; absent keys still fall back ───────────
 cat > talos.pipeline.json <<'TALOS_JSONq4Lm9Tz2Vb'

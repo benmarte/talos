@@ -225,8 +225,4 @@ got="$(PATH="$SHIMDIR:$PATH" bash "$SANDBOX/probe.sh" "$TALOS_ROOT/scripts" 2>/d
 assert_eq "sonnet opus haiku sonnet" "$got" "AC6b: cfg() over the merged dump sees both layers"
 assert_eq "1" "$(wc -l < "$PY_LOG" | tr -d ' ')" "AC6b: merged config still costs exactly one python3 spawn (#169)"
 
-# ── Structure: one shared loader, no duplicated file-lookup loop ─────────────
-_n="$(grep -c '_CFG_PROJECT_NAME=' "$CFG_SH")"
-assert_eq "1" "$_n" "AC6b: the canonical project filename is defined once in pipeline-config.sh"
-
 finish

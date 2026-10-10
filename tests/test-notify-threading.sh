@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Regression tests for pipeline-notify.sh threading — anchor persistence,
 # reply threading, stale-anchor recovery. Runs LIVE against the curl stub
-# (not debug mode) so thread-state writes are exercised.
+# (not debug mode) so thread-state writes are exercised. One sandbox serves:
+#   (1) Slack/Discord anchor persistence and recovery
+#   (2) the PM role event (#29): delivered, role-mapped, threaded under the
+#       issue's anchor
+#   (3) #180: concurrent writers of threads.json lose no entry
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox
@@ -103,5 +107,92 @@ assert_contains "$state" '"discord_msg_id"' "message anchor still stored for the
 discord_notify qa "#71" "qa passed" 71 >/dev/null
 assert_contains "$(tail -1 "$CURL_LOG" | cut -f2)" "message_reference" \
   "falls back to an inline reply off the stored message anchor"
+
+# ── PM role event (#29) ──────────────────────────────────────────────────────
+# PM used to be the one enabled role that sent no notification, so the channel
+# thread read `validator -> [silence] -> developer` and a long spec was
+# indistinguishable from a dead pipeline. These pin the transport half.
+# Fresh Slack state: nothing above anchors #42 or #77.
+rm -f "$PIPELINE_THREAD_STATE" talos.pipeline.json; : > "$CURL_LOG"; : > "$CURL_QUEUE"
+PM_MSG="stop parseToken() dereferencing a null claim — 3 acceptance criteria, branch fix/issue-42-parsetoken-null"
+
+# ── The pm event is delivered at all (the actual bug) ────────────────────────
+live_notify pm "#42" "$PM_MSG" 42 >/dev/null
+assert_file_exists "$CURL_LOG" "pm event reaches the transport"
+pm_payload="$(tail -1 "$CURL_LOG" | cut -f2)"
+assert_contains "$pm_payload" "acceptance criteria" "pm summary body is delivered"
+assert_contains "$pm_payload" "fix/issue-42-parsetoken-null" "pm message carries the branch name"
+
+# ── Rendered through the pm template, not the verbatim fallback ─────────────
+# The headline's role label, built by the script from ${ROLE_LABEL} (#284).
+# Without the pm template the script posts the bare summary, which would carry
+# no headline at all. "PM" is the display label -- shortened from #283's
+# "Project Manager" when the labels were aligned with daedalus _ROLE_LABELS --
+# and is distinct from the ${ROLE} slug asserted below.
+assert_contains "$pm_payload" "*PM*" "the pm template controls the format"
+# The pm -> project-manager role mapping is what ${ROLE} resolves to. No
+# shipped template spells ${ROLE} out any more (they are built from ${HEADLINE}
+# /${REF_LINK}/${SUMMARY}), so render a project override that uses the variable
+# directly: this pins the MAPPING, which is what matters, rather than a
+# particular template happening to print it.
+mkdir -p "$SANDBOX/templates/notifications"
+printf 'ROLE=${ROLE}\n' > "$SANDBOX/templates/notifications/pm.md"
+role_render="$(cd "$SANDBOX" && PIPELINE_ISSUE_TITLE="Fix login crash" \
+  bash "$NOTIFY" --render default pm "#42" "$PM_MSG" 2>&1)"
+rm -f "$SANDBOX/templates/notifications/pm.md"
+assert_contains "$role_render" "ROLE=project-manager" "pm maps to the project-manager role name"
+
+# ── Threads under the same anchor as every other role event ─────────────────
+# A pm event that started its own root would split the issue's thread in two.
+live_notify validator "#77" "confirmed" 77 >/dev/null
+root_ts="$(python3 -c "
+import json,sys
+print(json.load(open('$PIPELINE_THREAD_STATE'))['acme-widget:77']['slack_ts'])
+")"
+live_notify pm "#77" "$PM_MSG" 77 >/dev/null
+pm_threaded="$(tail -1 "$CURL_LOG" | cut -f2)"
+assert_contains "$pm_threaded" "\"thread_ts\": \"$root_ts\"" "pm replies in the issue thread, not a new root"
+
+# ── Does not disturb the anchor for following stages ─────────────────────────
+live_notify developer "#77" "PR opened" 77 >/dev/null
+dev_threaded="$(tail -1 "$CURL_LOG" | cut -f2)"
+assert_contains "$dev_threaded" "\"thread_ts\": \"$root_ts\"" "developer still threads under the same root after pm"
+
+# ── #180: concurrent writers of threads.json ────────────────────────────────
+# threads.json read-modify-write in _thread_state() used to run unlocked, so N
+# concurrent stages (issues.max_parallel > 1) writing distinct issues could
+# still lose entries -- each spawns its own python3 that loads the whole file,
+# adds its key and writes it back. This drives 8 real invocations for 8
+# different issues at once and asserts none of the 8 entries is lost.
+rm -f "$PIPELINE_THREAD_STATE"; : > "$CURL_LOG"; : > "$CURL_QUEUE"
+# Default curl stub response (queue left empty) is a constant Slack
+# ok+ts -- fine here, the assertion is "all 8 keys survive", not "each ts is
+# unique".
+pids=""
+for n in 1 2 3 4 5 6 7 8; do
+  ( SLACK_BOT_TOKEN=xoxb-test PIPELINE_SLACK_CHANNEL=C0TEST \
+    PIPELINE_ISSUE_TITLE="issue $n" \
+    bash "$NOTIFY" dispatched "#$n" "kickoff $n" "$n" >/dev/null 2>&1 ) &
+  pids="$pids $!"
+done
+for p in $pids; do wait "$p"; done
+
+assert_file_exists "$PIPELINE_THREAD_STATE" "threads.json created by concurrent writers"
+state="$(cat "$PIPELINE_THREAD_STATE")"
+
+for n in 1 2 3 4 5 6 7 8; do
+  assert_contains "$state" "\"acme-widget:$n\"" "entry for issue #$n survives 8-way concurrent write"
+done
+
+# The file must also still be valid JSON -- a lost/interleaved write under
+# the old unlocked code path could truncate or corrupt it, not just drop a
+# key.
+python3 -c "
+import json, sys
+with open('$PIPELINE_THREAD_STATE') as f:
+    d = json.load(f)
+sys.exit(0 if len(d) == 8 else 1)
+" && pass "threads.json is valid JSON with exactly 8 entries" \
+  || fail "threads.json is valid JSON with exactly 8 entries" "$state"
 
 finish

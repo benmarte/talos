@@ -10,7 +10,7 @@
 #   (d) --model sanitizing: control characters stripped, capped at 100 chars,
 #       empty (after sanitizing) falls back to the chain
 #   (e) payload key order is unchanged, post_stage exits 0 and prints nothing
-#   (f) the usage text documents --model in all three places
+#   (f) the usage the script prints documents --model
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox || exit 1
@@ -146,9 +146,7 @@ bash "$HOOKS" post_stage stage_complete qa 42 --verdict PASS --model '$(touch '"
 assert_file_absent "$SANDBOX/pwned" "--model: command substitution is not run"
 assert_file_absent "$SANDBOX/pwned2" "--model: embedded quote does not break out"
 
-# ── (f) usage text documents --model in all three places ─────────────────────
-assert_contains "$(sed -n '1,25p' "$HOOKS")" "[--model M]" "header comment documents --model"
-assert_contains "$(grep -A3 '^# post_stage EVENT' "$HOOKS")" "[--model M]" "function comment documents --model"
+# ── (f) the usage the script prints documents --model ────────────────────────
 usage="$(bash "$HOOKS" bogus 2>&1)"
 assert_contains "$usage" "[--model M]" "usage line documents --model"
 

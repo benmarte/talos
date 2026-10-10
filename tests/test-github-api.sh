@@ -716,22 +716,29 @@ _calls="$(wc -l < "$CURL_LOG" | tr -d ' ')"
 assert_eq "1" "$_calls"                          "404: exactly one curl call, no retry"
 
 # -- --dry-run: never sleeps, never retries, never even reaches curl.
-#    TALOS_RETRY_SLEEP_SCALE is deliberately left unset (defaults to 1) here so
-#    the assertion proves --dry-run itself prevents the sleep, not the scale --
+#    TALOS_RETRY_SLEEP_SCALE is set to 1 for these two runs (the file default is 0)
+#    so the assertion proves --dry-run itself prevents the sleep, not the scale --
+#    Behavioural, not a wall-clock bound: a `sleep` stub first on PATH logs every
+#    call and returns at once, so "no backoff sleep" is read from its log. The
+#    control run (a 429 then a 200 at the default scale) proves the stub sees a
+#    retry sleep, so an empty log for --dry-run means something.
+mkdir -p "$SANDBOX/sleepbin"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\n' "$SANDBOX/sleep.log" > "$SANDBOX/sleepbin/sleep"
+chmod +x "$SANDBOX/sleepbin/sleep"
+: > "$SANDBOX/sleep.log"
+: > "$CURL_LOG"
+printf '429\n%s\n' '[{"number":3,"title":"Fix login bug","body":"Body text","labels":[]}]' > "$CURL_QUEUE"
+out="$(TALOS_RETRY_SLEEP_SCALE=1 PATH="$SANDBOX/sleepbin:$PATH" bash "$VCS" list-issues 2>/dev/null)"; rc=$?
+assert_eq "0" "$rc"                              "dry-run control: a real 429 retry succeeds with the sleep stub"
+assert_eq "1" "$(grep -c . "$SANDBOX/sleep.log")" "dry-run control: the stub sees the retry's backoff sleep"
+: > "$SANDBOX/sleep.log"
 : > "$CURL_LOG"
 printf '429\n' > "$CURL_QUEUE"
-_t0="$(date +%s)"
-out="$(bash "$VCS" --dry-run list-issues)"
-_t1="$(date +%s)"
-_elapsed=$((_t1 - _t0))
+out="$(TALOS_RETRY_SLEEP_SCALE=1 PATH="$SANDBOX/sleepbin:$PATH" bash "$VCS" --dry-run list-issues)"
 assert_contains "$out" "dry-run"                 "dry-run: prints the dry-run marker instead of calling curl"
 _calls="$(wc -l < "$CURL_LOG" | tr -d ' ')"
 assert_eq "0" "$_calls"                          "dry-run: no curl call is made at all"
-if [ "$_elapsed" -lt 2 ]; then
-  pass "dry-run: completes near-instantly (no backoff sleep)"
-else
-  fail "dry-run: completes near-instantly (no backoff sleep)" "elapsed=${_elapsed}s"
-fi
+assert_eq "0" "$(grep -c . "$SANDBOX/sleep.log")" "dry-run: completes near-instantly (no backoff sleep)"
 
 # ── missing token → clear error ───────────────────────────────────────────────
 unset GITHUB_TOKEN GH_TOKEN
@@ -927,67 +934,73 @@ printf 'base\n' > approval428-base.txt
 git add approval428-base.txt
 git commit -q -m "428 base"
 _A428="$(git rev-parse HEAD)"
-mkdir -p agents
-printf 'edit\n' > agents/qa.md
-git add agents/qa.md
-git commit -q -m "428 agents/qa.md"
-_AGENTS428="$(git rev-parse HEAD)"
-git checkout -q --detach "$_A428"
-printf 'edit\n' > README.md
-git add README.md
-git commit -q -m "428 README.md"
-_README428="$(git rev-parse HEAD)"
-
-git checkout -q --detach "$_A428"
-mkdir -p sub
-printf 'edit\n' > sub/claude.md
-git add sub/claude.md
-git commit -q -m "428 sub/claude.md"
-_NESTED428="$(git rev-parse HEAD)"
-
+# One-file deltas off _A428 are built with git plumbing (no checkout). A group of up
+# to five stale paths shares ONE check-approval-sha run: the stale reason names up
+# to five blocked files, so a path is stale when it is one of the names listed;
+# waived paths share one run that must exit 0. A path the group does not settle is
+# re-run alone, so every path is still judged on its own one-file delta.
 _UE428="$(printf '\303\274')"
-git checkout -q --detach "$_A428"
-mkdir -p "skills/$_UE428"
-printf 'edit\n' > "skills/$_UE428/SKILL.md"
-git add "skills/$_UE428/SKILL.md"
-git commit -q -m "428 non-ASCII skills path"
-_UTF428="$(git rev-parse HEAD)"
-git checkout -q --detach "$_A428"
-mkdir -p docs
-printf 'edit\n' > "docs/$_UE428.md"
-git add "docs/$_UE428.md"
-git commit -q -m "428 non-ASCII docs path"
-_UDOC428="$(git rev-parse HEAD)"
-
-# #431: the other runners' instruction files, one commit each off _A428
-# (docs/agents/ is not Talos's agents/ and stays waived).
-_CASES431=()
-for _p431 in GEMINI.md .gemini/system.md .pi/SYSTEM.md AGENTS.override.md CLAUDE.local.md .claude/rules/x.md \
-             .agent/rules/x.md .codex/config.toml GEMINI.MD .Claude/Rules/x.md \
-             sub/.claude/rules/x.md sub/.agents/rules/x.md sub/.codex/notes.md sub/.pi/SYSTEM.md \
-             docs/agents/x.md; do
-  git checkout -q --detach "$_A428"
-  mkdir -p "$(dirname "$_p431")"
-  printf 'edit\n' > "$_p431"
-  git add "$_p431"
-  git commit -q -m "431 $_p431"
-  case "$_p431" in docs/agents/*) _w431=0 ;; *) _w431=1 ;; esac
-  _CASES431+=("$_p431:$(git rev-parse HEAD):$_w431")
-done
-
-for _case in "agents/qa.md:$_AGENTS428:1" "sub/claude.md:$_NESTED428:1" "skills/ue/SKILL.md:$_UTF428:1" "docs/ue.md:$_UDOC428:0" "README.md:$_README428:0" "${_CASES431[@]}"; do
-  IFS=: read -r _f _h _want <<< "$_case"
+_commit428() {  # <path>... -- prints a commit off _A428 whose tree adds every path
+  local _idx="$SANDBOX/.idx428" _blob _p _tree
+  _blob="$(printf 'edit\n' | git hash-object -w --stdin)"
+  rm -f "$_idx"
+  GIT_INDEX_FILE="$_idx" git read-tree "$_A428"
+  for _p in "$@"; do printf '100644 blob %s\t%s\n' "$_blob" "$_p"; done \
+    | GIT_INDEX_FILE="$_idx" git -c core.ignorecase=false update-index --index-info
+  _tree="$(GIT_INDEX_FILE="$_idx" git write-tree)"
+  rm -f "$_idx"
+  git commit-tree "$_tree" -p "$_A428" -m "428 delta"
+}
+_run428() {  # <path>... -- out/rc of check-approval-sha 7 on ONE commit holding every path
+  local _h
+  _h="$(_commit428 "$@")"
   : > "$CURL_LOG"
   printf '%s\n' \
     "{\"number\":7,\"head\":{\"sha\":\"$_h\"},\"base\":{\"ref\":\"main\"},\"labels\":[{\"name\":\"qa:pass\"}]}" \
     "[{\"body\":\"<!-- talos:approval sha=${_A428} role=qa -->\",\"user\":{\"login\":\"bot\"}}]" \
     > "$CURL_QUEUE"
   out="$(bash "$VCS" check-approval-sha 7 2>&1)"; rc=$?
-  assert_eq "$_want" "$rc" "check-approval-sha: $_f-only delta exits $_want (#428)"
-  if [ "$_want" = 1 ]; then
+}
+# _batch428 <stale|waived> <path>... -- for each path: out/rc of its verdict, then _case428 <path>
+_batch428() {
+  local _mode="$1" _max=5 _grp _p _lst _gout _grc
+  shift
+  [ "$_mode" = waived ] && _max=100
+  while [ "$#" -gt 0 ]; do
+    _grp=()
+    while [ "$#" -gt 0 ] && [ "${#_grp[@]}" -lt "$_max" ]; do _grp[${#_grp[@]}]="$1"; shift; done
+    _run428 "${_grp[@]}"
+    _gout="$out"; _grc="$rc"
+    _lst="$(printf '%s\n' "$_gout" | sed -n 's/.*non-waivable files changed since [0-9a-f]*: //p' | head -n 1)"
+    for _p in "${_grp[@]}"; do
+      case "$_mode:$_grc" in
+        stale:1) case ", $_lst, " in *", $_p, "*) out="$_gout"; rc="$_grc" ;; *) _run428 "$_p" ;; esac ;;
+        waived:0) out="$_gout"; rc="$_grc" ;;
+        *) _run428 "$_p" ;;
+      esac
+      _case428 "$_p"
+    done
+  done
+}
+_case428() {  # <path> -- the label names the path, except the non-ASCII ones (ue)
+  local _f="$1"
+  case "$_f" in "skills/$_UE428/SKILL.md") _f="skills/ue/SKILL.md" ;; "docs/$_UE428.md") _f="docs/ue.md" ;; esac
+  if [ "$_batch_want" = 1 ]; then
+    assert_eq "1" "$rc" "check-approval-sha: $_f-only delta exits 1 (#428)"
     assert_contains "$out" "STALE qa:pass" "check-approval-sha: $_f-only delta reports STALE (#428)"
+  else
+    assert_eq "0" "$rc" "check-approval-sha: $_f-only delta exits 0 (#428)"
   fi
-done
+}
+# #431: the other runners' instruction files (docs/agents/ is not Talos's agents/
+# and stays waived).
+_batch_want=1
+_batch428 stale agents/qa.md sub/claude.md "skills/$_UE428/SKILL.md" \
+  GEMINI.md .gemini/system.md .pi/SYSTEM.md AGENTS.override.md CLAUDE.local.md .claude/rules/x.md \
+  .agent/rules/x.md .codex/config.toml GEMINI.MD .Claude/Rules/x.md \
+  sub/.claude/rules/x.md sub/.agents/rules/x.md sub/.codex/notes.md sub/.pi/SYSTEM.md
+_batch_want=0
+_batch428 waived "docs/$_UE428.md" README.md docs/agents/x.md
 
 # ── check-closing-keyword ─────────────────────────────────────────────────────
 : > "$CURL_LOG"

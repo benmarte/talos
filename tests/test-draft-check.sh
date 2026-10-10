@@ -15,7 +15,6 @@
 #   (e) `edit`: the minimal, bounded workflow change (existing job if: combined,
 #       types appended, permissions untouched; symlink, outside path, big file,
 #       multi-line if: and list-form on: refused)
-#   (d) the setup skill calls the script instead of typing a shell loop
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox || exit 1
@@ -24,7 +23,6 @@ HAVE_YAML=0
 python3 -I -c 'import yaml' 2>/dev/null && HAVE_YAML=1
 
 DC="$TALOS_ROOT/scripts/pipeline-draft-check.sh"
-SETUP="$TALOS_ROOT/skills/setup/SKILL.md"
 WARN_NOSKIP="pipeline: CI does not skip draft PRs; CI will still run on every push. See templates/ci/github-tests.yml"
 
 # wf <name> : a fixture repo; reads the workflow YAML from stdin into <name>/.github/workflows/w.yml
@@ -597,16 +595,5 @@ assert_eq "true|pipeline: could not verify that CI skips draft PRs; see template
 assert_eq "true|" "$(resolve_in "$SANDBOX/fx/no-ready" '{"vcs":{"provider":"gitlab"}}')" "resolve: gitlab does not run the github CI check"
 assert_eq "true|" "$(resolve_in "$SANDBOX/fx/no-skip" '{"vcs":{"provider":"azure"}}')" "resolve: azure does not run the github CI check"
 assert_eq "false|pipeline: pr.draft ignored: provider github-api cannot open draft PRs" "$(resolve_in "$SANDBOX/fx/no-ready" '{"vcs":{"provider":"github-api"}}')" "resolve: github-api is false before any CI check"
-
-# ── (d) the setup skill calls the script, no typed loop ──────────────────────
-SETUP_TEXT="$(cat "$SETUP")"
-assert_contains "$SETUP_TEXT" 'bash scripts/pipeline-draft-check.sh' "setup skill runs the check script"
-assert_not_contains "$SETUP_TEXT" 'for f in .github/workflows' "setup skill carries no shell loop over the workflows"
-assert_not_contains "$SETUP_TEXT" 'missing draft != true guard' "setup skill no longer carries the old loop's output lines"
-for status in ok no-skip no-ready-trigger none unknown; do
-  assert_contains "$SETUP_TEXT" "- \`$status\`:" "setup skill explains the $status status"
-done
-assert_contains "$SETUP_TEXT" 'Only after an explicit yes run the same command with `--write`' "setup skill edits a workflow only after an explicit yes"
-assert_contains "$SETUP_TEXT" 'never write `draft: true`' "setup skill writes pr.draft only for the non-default"
 
 finish

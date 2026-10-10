@@ -32,3 +32,23 @@ test-changelog-mode-wiring.sh
 test-docs-defaults-vs-table.sh
 test-docs-harness.sh
 test-docs-spend.sh
+
+# #556: prose pins on SKILL.md / agents / prompt templates; the skill-name check is now static (test-agent-skill-refs.sh, no network)
+test-skill-names.sh
+
+# #556: files that only pinned SKILL.md / agent / script wording
+test-stage-done-when.sh
+test-model-alias-rule-skill.sh
+test-per-role-effort-skill.sh
+test-setup-prompt-rules.sh
+test-setup-model-question-skill.sh
+test-reviewer-attention-report.sh
+test-stale-base-guard.sh
+
+# #556: folded into a sibling file (one sandbox instead of several)
+test-config-yaml-warn.sh
+test-events-cost.sh
+test-events-arg-hang.sh
+test-notify-pm.sh
+test-notify-templates.sh
+test-notify-threads-concurrent.sh

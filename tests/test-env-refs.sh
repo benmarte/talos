@@ -10,8 +10,7 @@
 #   (b) each trigger names its ref: draft-order, planner, adversarial,
 #       human-merge, ci-gate, file-mode, hooks and harness (a global
 #       non-claude runner, a role runner, subagents false, a fallback chain)
-#   (c) every ref= topic env can print is a file in skills/pipeline/refs/, and
-#       the core playbook names every file there
+#   (c) every ref= topic env can print is a file in skills/pipeline/refs/
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox || exit 1
@@ -19,7 +18,6 @@ use_stubs
 
 TALOS="$TALOS_ROOT/scripts/talos.sh"
 REFS="$TALOS_ROOT/skills/pipeline/refs"
-SKILL="$TALOS_ROOT/skills/pipeline/SKILL.md"
 export CLAUDE_CONFIG_DIR="$SANDBOX/cc"
 export TALOS_RETRY_SLEEP_SCALE=0
 
@@ -65,14 +63,9 @@ assert_eq "" "$R" "AGENTS_MODE native (Claude Code) names no harness ref"
 R="$(refs_for '{"vcs": {"provider": "github"}, "roles": {"planner": true}, "agents": {"runner": "codex"}}')"
 assert_eq "draft-order planner harness" "$R" "several triggers print one line each, in a fixed order"
 
-# (c) the topics env can print are files, and the core names every ref file.
+# (c) the topics env can print are files.
 for t in draft-order planner adversarial human-merge ci-gate file-mode hooks harness; do
   assert_file_exists "$REFS/$t.md" "ref file for env topic $t exists"
-done
-core="$(cat "$SKILL")"
-for f in "$REFS"/*.md; do
-  t="$(basename "$f" .md)"
-  assert_contains "$core" "\`$t\`" "SKILL.md names the ref $t"
 done
 
 finish

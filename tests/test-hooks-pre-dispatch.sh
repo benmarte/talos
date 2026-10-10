@@ -81,11 +81,18 @@ EOF
   agent_pid=$!
   set +m
   # Up to 15s for the agent to finish; a leak keeps it blocked past that.
-  while kill -0 "$agent_pid" 2>/dev/null && [ "$i" -lt 30 ]; do
-    sleep 0.5; i=$((i + 1))
+  while kill -0 "$agent_pid" 2>/dev/null && [ "$i" -lt 150 ]; do
+    sleep 0.1; i=$((i + 1))
   done
-  sleep 1
+  # A leaked watchdog sleep outlives the agent for ts (100000+) seconds, so it is
+  # still there at the first look; the poll only gives a killed one a moment to
+  # be reaped instead of padding every run with a fixed second.
   leaked="$(pgrep -f "^sleep $ts\$" || true)"
+  i=0
+  while [ -n "$leaked" ] && [ "$i" -lt 10 ]; do
+    sleep 0.2; i=$((i + 1))
+    leaked="$(pgrep -f "^sleep $ts\$" || true)"
+  done
   # Kill a leaked sleep so the blocked agent can finish instead of hanging.
   [ -z "$leaked" ] || kill $leaked 2>/dev/null
   i=0

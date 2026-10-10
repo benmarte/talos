@@ -170,15 +170,17 @@ def inert(cell):
 print("yes" if len(cells) == 8 and inert(cells[0]) and inert(cells[1]) else "no")
 PYEOF
 # ── (c1) no Markdown from the log: values render as inert code ─────────────
-for evil in '@octocat' '[x](http://e)' '![i](http://e/p.png)' '<!-- talos:spend -->' '<img src=x>' 'a`b' '``' '`'; do
-  reset_log
-  python3 -I - "$LOG" "$evil" <<'PYEOF'
+python3 -I - "$SANDBOX" '@octocat' '[x](http://e)' '![i](http://e/p.png)' '<!-- talos:spend -->' '<img src=x>' 'a`b' '``' '`' <<'PYEOF'
 import json, sys
-with open(sys.argv[1], "w") as f:
-    f.write(json.dumps({"event": "x", "role": sys.argv[2], "issue": 7, "pr": 9, "verdict": "PASS",
-                        "model": sys.argv[2], "tokens": 5, "tool_uses": 1, "duration_s": 1,
-                        "ts": "2026-10-03T00:00:00Z"}) + "\n")
+for n, evil in enumerate(sys.argv[2:]):
+    with open("%s/evil.%d.jsonl" % (sys.argv[1], n), "w") as f:
+        f.write(json.dumps({"event": "x", "role": evil, "issue": 7, "pr": 9, "verdict": "PASS",
+                            "model": evil, "tokens": 5, "tool_uses": 1, "duration_s": 1,
+                            "ts": "2026-10-03T00:00:00Z"}) + "\n")
 PYEOF
+_evn=0
+for evil in '@octocat' '[x](http://e)' '![i](http://e/p.png)' '<!-- talos:spend -->' '<img src=x>' 'a`b' '``' '`'; do
+  cp "$SANDBOX/evil.$_evn.jsonl" "$LOG"; _evn=$((_evn + 1))
   EV_OUT="$(md 7 9)"
   EV_ROW="$(printf '%s\n' "$EV_OUT" | sed -n '/^|---/{n;p;}')"
   # the row must be: | <code span> | <code span> | 1 | 5 | ... with the value only inside the spans
@@ -202,9 +204,10 @@ assert_eq "0" "$(printf '%s' "$BASE_MD" | grep -c '^.*Budget')" "budget: limit u
 assert_eq "0" "$(printf '%s' "$BASE_LINE" | grep -c 'budget')" "budget: limit unset, no suffix on --line"
 
 set_cfg '{"limits": {"tokens_per_issue": 4000000, "warn_at": 0.8}}'
-assert_eq "0" "$(md 7 9 | grep -c 'paused')" "budget: 47% is not exceeded"
-assert_contains "$(md 7 9)" "Budget: 47% of 4M (warn at 80%)" "budget: ok line"
-assert_eq "0" "$(md 7 9 | grep -c '⚠')" "budget: no warning mark at ok"
+OK_MD="$(md 7 9)"
+assert_eq "0" "$(printf '%s\n' "$OK_MD" | grep -c 'paused')" "budget: 47% is not exceeded"
+assert_contains "$OK_MD" "Budget: 47% of 4M (warn at 80%)" "budget: ok line"
+assert_eq "0" "$(printf '%s\n' "$OK_MD" | grep -c '⚠')" "budget: no warning mark at ok"
 assert_eq "$BASE_LINE" "$(bash "$EVENTS" cost --issue 7 --pr 9 --line 2>/dev/null)" "budget: --line has no suffix at ok"
 
 ev developer 7 9 1380000 1 1 '"sonnet"'      # 3.28M = 82%
@@ -237,8 +240,9 @@ base_fixture
 set_cfg '{"limits": {"tokens_per_issue": 4000000, "warn_at": 1}}'
 assert_contains "$(md 7 9)" "(warn at 100%)" "warn_at 1 prints as 100%"
 set_cfg '{"limits": {"tokens_per_issue": 4000000, "warn_at": 0.00001}}'
-assert_contains "$(md 7 9)" "(warn at 0.001%)" "warn_at 1e-05 prints as 0.001%"
-assert_contains "$(md 7 9)" "⚠ Budget: 47% of 4M" "warn_at 1e-05: used is past the threshold -> warn"
+W_MD="$(md 7 9)"
+assert_contains "$W_MD" "(warn at 0.001%)" "warn_at 1e-05 prints as 0.001%"
+assert_contains "$W_MD" "⚠ Budget: 47% of 4M" "warn_at 1e-05: used is past the threshold -> warn"
 set_cfg '{"limits": {"tokens_per_issue": 4000000, "warn_at": 0.755}}'
 assert_contains "$(md 7 9)" "(warn at 75.5%)" "warn_at 0.755 prints as 75.5%"
 set_cfg '{"limits": {"tokens_per_issue": 4000000, "warn_at": 5}}'
@@ -436,8 +440,9 @@ for args in "--markdown" "--pr 9 --markdown" "--summary" "--summary --pr 9" "--m
   assert_eq "" "$OUT" "usage: cost $args prints nothing on stdout"
   assert_contains "$(cat "$SANDBOX/err.log")" "Usage: pipeline-events.sh" "usage: cost $args prints usage"
 done
-assert_contains "$(bash "$EVENTS" bogus 2>&1)" "--markdown" "usage text names --markdown"
-assert_contains "$(bash "$EVENTS" bogus 2>&1)" "--summary" "usage text names --summary"
+USAGE_TXT="$(bash "$EVENTS" bogus 2>&1)"
+assert_contains "$USAGE_TXT" "--markdown" "usage text names --markdown"
+assert_contains "$USAGE_TXT" "--summary" "usage text names --summary"
 
 # ── (h) hardening ──────────────────────────────────────────────────────────
 # a json.py (or any stdlib name) planted in $PWD must never run: every

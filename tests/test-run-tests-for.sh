@@ -104,18 +104,18 @@ assert_contains "$out_b" "PASS  tests/test-x.sh" "B: runs test-x.sh (full suite)
 assert_contains "$out_b" "PASS  tests/test-y.sh" "B: runs test-y.sh (full suite)"
 assert_contains "$out_b" "RESULT: all 2 test file(s) passed" "B: RESULT line covers the whole fixture suite"
 
-# ── Test C: agents/*.md selects test-skill-names.sh + any test referencing it ─
-# Named mutation: only add the fixed test-skill-names.sh entry and skip the
+# ── Test C: agents/*.md selects test-agent-skill-refs.sh + any test referencing it ─
+# Named mutation: only add the fixed test-agent-skill-refs.sh entry and skip the
 # grep -l sweep -- test-references-agents.sh would then never be selected.
 FDC="$SANDBOX/c"
 build_min_fixture "$FDC"
-write_stub "$FDC" "test-skill-names.sh" "exit 0"
+write_stub "$FDC" "test-agent-skill-refs.sh" "exit 0"
 write_stub "$FDC" "test-references-agents.sh" $'# reads agents/developer.md\nexit 0'
 write_stub "$FDC" "test-unrelated.sh" "exit 0"
 
 out_c="$(bash "$FDC/tests/run-tests.sh" --no-cache --for agents/developer.md --quiet 2>&1)"; rc_c=$?
 assert_exit_code 0 "$rc_c" "C: exits 0"
-assert_contains "$out_c" "PASS  tests/test-skill-names.sh" "C: runs the fixed test-skill-names.sh entry"
+assert_contains "$out_c" "PASS  tests/test-agent-skill-refs.sh" "C: runs the fixed test-agent-skill-refs.sh entry"
 assert_contains "$out_c" "PASS  tests/test-references-agents.sh" "C: runs the test that references agents/ (grep -l sweep)"
 assert_not_contains "$out_c" "test-unrelated.sh" "C: does not select the unrelated test"
 

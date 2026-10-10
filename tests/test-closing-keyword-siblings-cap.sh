@@ -220,13 +220,4 @@ assert_eq "talos:closing-keyword-unverified pr=9 issue=42 reason=sibling-fetch-f
   "azure: a sibling fetch failure prints the marker"
 assert_contains "$(cat "$SANDBOX/err")" "TF400813" "azure: the fetch error is no longer discarded"
 
-# ── Step 4: siblings-capped blocks the merge ─────────────────────────────────
-# The gate lives in `talos.sh gate merge` (#466): a marker with reason=siblings-capped
-# is a block even though check-closing-keyword exited 0 (tests/test-talos-gate.sh
-# runs it); SKILL.md names the block and its reason.
-assert_contains "$(cat "$TALOS_ROOT/scripts/talos.sh")" \
-  '*"talos:closing-keyword-unverified"*"reason=siblings-capped"*)' "talos.sh gate merge: a siblings-capped marker blocks the merge"
-assert_contains "$(cat "$TALOS_ROOT/skills/pipeline/SKILL.md")" \
-  '`siblings-capped`' "SKILL.md: Step 4 names siblings-capped as a block"
-
 finish

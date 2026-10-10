@@ -66,41 +66,6 @@ for agent in validator pm developer qa reviewer security adversarial docs planne
   esac
 done
 
-# Every role must actually direct the model to use skills, not merely tolerate
-# them. As of 0.8.0 agent-skills is a hard dependency, so "if available" hedging
-# would leave the guarantee unused.
-# Bodies are hard-wrapped, so a phrase can straddle a newline — normalise
-# whitespace before matching or these assertions fail on prose reflow alone.
-flat() { tr '\n' ' ' < "$1" | tr -s ' '; }
-
-for agent in validator pm developer qa reviewer security adversarial docs planner; do
-  body="$(flat "$PLUGIN_ROOT/agents/$agent.md")"
-  case "$body" in
-    *"**Skill:** load \`"*) pass "$agent directs the model to use skills" ;;
-    *) fail "$agent directs the model to use skills" "no mandatory skills clause" ;;
-  esac
-done
-
-# ...but every profile must still carry a fallback. The dependency only applies
-# to the PLUGIN install; a vendored install.sh copy does not pull agent-skills,
-# so the skills may genuinely be absent and the mandate needs an exit.
-#
-# The fallback must NOT claim other harnesses lack skills. agent-skills ships
-# .gemini/, .opencode/, .codex-plugin/ and an AGENTS.md naming Antigravity — it
-# is not Claude-Code-only, and 0.8.0's wording said otherwise (#41).
-for agent in validator pm developer qa reviewer security adversarial docs planner; do
-  body="$(flat "$PLUGIN_ROOT/agents/$agent.md")"
-  case "$body" in
-    *"Without a skill mechanism"*) pass "$agent carries a skills fallback" ;;
-    *) fail "$agent carries a skills fallback" "mandate with no fallback" ;;
-  esac
-  case "$body" in
-    *"without skill support (Codex"*)
-      fail "$agent does not claim other harnesses lack skills" "repeats the 0.8.0 error" ;;
-    *) pass "$agent does not claim other harnesses lack skills" ;;
-  esac
-done
-
 # The dependency must be declared, and the marketplace must catalogue it —
 # otherwise `dependencies` resolves to nothing installable and enabling talos
 # FAILS for anyone who does not already have agent-skills. The two halves are

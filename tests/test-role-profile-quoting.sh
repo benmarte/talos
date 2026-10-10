@@ -380,7 +380,4 @@ PY
 assert_eq "9" "$(grep -c '^<!-- case ' "$FIX")" "the fixture holds nine pre-#340 unsafe recipes"
 assert_eq "" "$missing" "every one of the nine pre-#340 unsafe recipes is flagged (cases not flagged: ${missing:-none})"
 
-# CI gate wording: the run URL is bound to this repository (#452)
-assert_contains "$(tr '\n' ' ' < "$TALOS_ROOT/skills/pipeline/refs/ci-gate.md" | tr -s ' ')" "this repository's own, \`https://github.com/<owner>/<repo>/actions/runs/<digits>\` with \`<owner>/<repo>\` the slug you resolved" "CI gate: the CI run URL must be this repository's own"
-
 finish

@@ -161,7 +161,6 @@ assert_eq "reason=iterations-exhausted max=1" "$(printf '%s\n' "$OUT" | sed -n '
 # (done released the lease, #470), pass 2's `next` answered a second dispatch,
 # and the dispatch cap answered iterations-exhausted before executing it.
 # The order pin: prompt, then the agent with the prompt on stdin, then done.
-grep -q "^notify validator #9 - 9$" "$(dirname "$STUB_DIR")" 2>/dev/null || true
 assert_contains "$(journal)" "agent validator" "loop: the dispatch went through pipeline-agent.sh with the role"
 assert_contains "$(journal)" "vcs view-issue 9" "loop: next read the issue it routed"
 grep -q "You are the Validator" "$STUB_DIR/agent.stdin"
@@ -219,15 +218,7 @@ printf '{"prs": [], "pr_total": 0, "ignored": 0, "blocked": [], "queued": [], "h
 rn --issue 9 --max-iterations 3
 assert_eq "0" "$RC" "wait: an empty queue answers clean"
 assert_contains "$OUT" "action=wait" "wait: the wait action is relayed on the stop line"
-reset_stubs
-LEASE_RESET
-TALOS_NOW=4000 bash "$GS/pipeline-vcs.sh" collect > /dev/null 2>&1 || true
-# A failed state read: collect exits 1 ->
-printf 'not json' > "$STUB_DIR/collect.json"
-printf '' > "$STUB_DIR/collect.rc" && printf 1 > "$STUB_DIR/collect.rc"
-rm -f "$STUB_DIR/collect.rc"; : > /dev/null
-rn --issue 9 --max-iterations 3 2>/dev/null || true
-# Build the failed-read case directly: collect stub answers 1.
+# A failed state read: the collect stub answers 1.
 reset_stubs
 LEASE_RESET
 printf 1 > "$STUB_DIR/collect.rc"
@@ -665,18 +656,6 @@ assert_contains "$(cat "$STUB_DIR/agent.stdin")" "README.md" "docs-gate dispatch
 assert_not_contains "$(cat "$STUB_DIR/agent.stdin")" "scripts/talos.sh" "docs-gate dispatch: the prompt carries only the docs-relevant subset"
 assert_not_contains "$(journal)" "post-approval 12 docs" "docs-gate dispatch: the run does not stamp, the agent's done does"
 assert_eq "0" "$(find "$SANDBOX/tmp-docs" -maxdepth 1 -name 'talos-docs-paths.*' 2>/dev/null | wc -l | tr -d ' ')" "docs-gate dispatch: the paths file is removed after the stage"
-
-# AC13: docs and pins move with the contract.
-grep -q 'run-reasons: .*ready-pr-failed' "$GS/talos.sh"
-assert_eq "0" "$?" "AC13: run-reasons names ready-pr-failed"
-grep -q 'warn: .*qa-ci-red' "$GS/talos.sh"
-assert_eq "0" "$?" "AC13: run-reasons names qa-ci-red"
-grep -qF 'action=wait reason=draft pr=<M> issue=<N>' "$GS/talos.sh"
-assert_eq "0" "$?" "AC13: the next schema describes the key-carrying draft wait"
-grep -q '_talos_run_draft_complete' "$GS/talos.sh"
-assert_eq "0" "$?" "AC13: the run block describes the draft continuation"
-assert_not_contains "$(cat "$TALOS_ROOT/skills/pipeline/SKILL.md")" "ready-pr-failed" "AC13-adjacent: SKILL.md is not edited"
-assert_not_contains "$(cat "$TALOS_ROOT/skills/pipeline/SKILL.md")" "qa-ci-red" "AC13-adjacent: SKILL.md is not edited"
 
 # ── (i) a QA FAIL is a developer fix round, never a QA re-run (#537) ──────────
 # After a QA FAIL the driver runs the playbook's flow: `gate fix-round <N> qa

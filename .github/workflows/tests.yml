@@ -1,6 +1,14 @@
 # Dogfoods templates/ci/github-tests.yml (#260) -- see that file for the
 # full explanation of paths-ignore, concurrency, and the PR-vs-push matrix
-# split. Keep this file and the template in sync.
+# split. Keep this file and the template in sync, except for the sharding
+# below (#556), which only this repo's tests/run-tests.sh supports.
+#
+# Layout: the suite runs as 4 time-balanced shards (`run-tests.sh --shard i/n`,
+# weights in tests/timings.txt) in parallel, plus a tiny `count` job for the
+# base-ref test-file count check (once, not per shard). The final job `test`
+# needs all of them and is the ONLY required status: its check name stays
+# "test (ubuntu-latest)", exactly what talos.pipeline.json merge.required_checks
+# and branch protection name, so the merge gate needs no change.
 
 name: tests
 
@@ -22,26 +30,41 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    # Skip CI on draft PRs — developers iterate freely on drafts and mark
+  # The base-ref count check: a test file that exists on the base branch but not
+  # here fails the run unless tests/retired-tests.txt names it. Shards skip it.
+  count:
+    # Skip CI on draft PRs -- developers iterate freely on drafts and mark
     # ready-for-review only once every stage has approved. This yields one
     # CI run per PR on the final SHA, immediately before merge.
-    # IMPORTANT: ready_for_review must be in types above — without it,
+    # IMPORTANT: ready_for_review must be in types above -- without it,
     # marking a draft ready fires no event and CI never runs for drafted PRs.
-    # NOTE: != true is used rather than == false; both are behaviourally
-    # identical under GHA numeric coercion, but != true states the intent.
-    # NOTE: if required status checks are ever added for merge, a no-op job
-    # matching "test (ubuntu-latest)" and "test (macos-latest)" that always
-    # passes will be needed, or markdown-only PRs will hang "expected — waiting".
     if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch the base branch
+        env:
+          BASE: ${{ github.base_ref || 'main' }}
+        run: git fetch --no-tags --depth=1 origin "+refs/heads/${BASE}:refs/remotes/origin/${BASE}"
+      - name: Check no test file went missing
+        env:
+          BASE: ${{ github.base_ref || 'main' }}
+        run: bash tests/run-tests.sh --count-only --base-ref "origin/${BASE}"
+
+  shard:
+    if: github.event.pull_request.draft != true
+    name: shard ${{ matrix.shard }} (${{ matrix.os }})
     strategy:
+      # Let every shard finish: a red shard should still report its own failures.
+      fail-fast: false
       matrix:
-        # PR pushes: ubuntu-latest only. Push to main: the full matrix. See
-        # templates/ci/github-tests.yml's header for the merge.required_checks
-        # caveat this implies (only "test (ubuntu-latest)" is PR-safe to name).
+        # PR pushes: ubuntu-latest only. Push to main: the full matrix (macOS
+        # included; it is not a required check, see the template's CAVEAT).
         os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "macos-latest"]') }}
-    # A hung test must cost an hour, not GitHub's 6-hour default (#479). The suite currently takes about 35-40 minutes on a PR runner.
-    timeout-minutes: 60
+        shard: ['1/4', '2/4', '3/4', '4/4']
+    # A hung test must cost half an hour, not GitHub's 6-hour default (#479). A shard takes a few minutes.
+    timeout-minutes: 30
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -51,5 +74,27 @@ jobs:
       - name: Install PyYAML (macOS)
         if: runner.os == 'macOS'
         run: "python3 -m pip install --break-system-packages --only-binary :all: 'pyyaml==6.0.3'"
-      - name: Run test suite
-        run: bash tests/run-tests.sh --no-cache
+      - name: Run test shard
+        run: bash tests/run-tests.sh --no-cache --quiet --shard ${{ matrix.shard }}
+
+  # The one required status. It exists so the check name "test (ubuntu-latest)"
+  # is stable: it passes only when the count check and every shard passed, and
+  # fails on any failure or cancellation. always() makes it report even when a
+  # needed job failed (a skipped aggregator would read as a pass to the gate).
+  test:
+    needs: [count, shard]
+    if: always() && github.event.pull_request.draft != true
+    name: test (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "macos-latest"]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every shard and the count check
+        env:
+          COUNT: ${{ needs.count.result }}
+          SHARDS: ${{ needs.shard.result }}
+        run: |
+          echo "count check: $COUNT; shards: $SHARDS"
+          [ "$COUNT" = success ] && [ "$SHARDS" = success ]

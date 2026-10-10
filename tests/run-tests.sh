@@ -8,7 +8,23 @@
 #   --base-ref  override the auto-detected base ref for count comparison
 #               (default: auto-detects origin/HEAD, falls back to origin/main)
 #   -j N        run up to N test files concurrently (also: TALOS_TEST_JOBS)
-#               default: CPU count (nproc, then sysctl -n hw.ncpu, then 4)
+#               default: CPU count (nproc, then sysctl -n hw.ncpu, then 4).
+#               A work-queue pool: a finished slot takes the next file at once
+#               (no waiting for a batch), slowest files first per
+#               tests/timings.txt (#556).
+#   --shard i/n run only shard i (1-based) of n. The partition covers every
+#               tests/test-*.sh exactly once and is deterministic: files are
+#               assigned longest-first to the least-loaded shard, weighted by
+#               tests/timings.txt (`<secs> <basename>` per line, refreshed by
+#               tests/update-timings.sh); a file missing from it gets a fixed
+#               default weight. The partition is computed over the whole suite,
+#               so a pattern / --for filter composes with it. The base-ref count
+#               check is skipped in a shard (run it once with --count-only).
+#   --count-only  run only the base-ref count check (missing test files vs
+#               tests/retired-tests.txt) and exit; an unresolvable base ref is
+#               an error here, not a skip (#556).
+#   --list      print the selected test file basenames, one per line (after
+#               pattern / --for / --shard), and exit without running them.
 #   --quiet     print one line per file (pass/fail/cached) plus full output
 #               only for failing files (also: TALOS_TEST_QUIET=1)
 #               Either mode ends a failing run with one "FAILED: tests/<name>"
@@ -46,7 +62,7 @@
 #                         scripts/talos-status.sh    -> tests/test-talos-status-line.sh
 #                         tests/test-*.sh            -> itself
 #                         agents/*.md, skills/**, templates/**
-#                                                     -> tests/test-skill-names.sh
+#                                                     -> tests/test-agent-skill-refs.sh
 #                                                        plus any test file
 #                                                        whose contents
 #                                                        reference the path's
@@ -127,6 +143,10 @@ FOR_PATHS=()
 CHANGED_MODE=0
 CHANGED_BASE_REF=""
 STRICT=0
+SHARD_I=""
+SHARD_N=""
+COUNT_ONLY=0
+LIST_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --base-ref)
@@ -169,6 +189,27 @@ while [ $# -gt 0 ]; do
       ;;
     --strict)
       STRICT=1
+      shift
+      ;;
+    --shard)
+      case "${2:-}" in
+        [1-9]*/[1-9]*) SHARD_I="${2%%/*}"; SHARD_N="${2##*/}" ;;
+        *) echo "run-tests.sh: --shard needs i/n (e.g. 1/4), got '${2:-}'" >&2; exit 2 ;;
+      esac
+      case "$SHARD_I$SHARD_N" in
+        *[!0-9]*) echo "run-tests.sh: --shard needs i/n (e.g. 1/4), got '$2'" >&2; exit 2 ;;
+      esac
+      if [ "$SHARD_I" -gt "$SHARD_N" ]; then
+        echo "run-tests.sh: --shard i must be between 1 and n, got '$2'" >&2; exit 2
+      fi
+      shift 2
+      ;;
+    --count-only)
+      COUNT_ONLY=1
+      shift
+      ;;
+    --list)
+      LIST_ONLY=1
       shift
       ;;
     --changed)
@@ -225,6 +266,8 @@ esac
 # ── Result cache ───────────────────────────────────────────────────────────────
 CACHE_ENABLED=1
 [ "$NO_CACHE" -eq 1 ] && CACHE_ENABLED=0
+# --list / --count-only run nothing, so they skip the (slow) whole-repo hash.
+[ "$LIST_ONLY" -eq 1 ] || [ "$COUNT_ONLY" -eq 1 ] && CACHE_ENABLED=0
 CACHE_DIR="$TALOS_ROOT/.talos/test-cache"
 
 # _HASH_TOOL -- the hashing command to pipe stdin through, resolved once.
@@ -338,6 +381,50 @@ if _raw="$(git -C "$TALOS_ROOT" ls-tree --name-only "$RESOLVED_BASE" tests/ 2>/d
 else
   echo "WARNING: could not resolve $RESOLVED_BASE for expected count; skipping count check" >&2
   SKIP_COUNT_CHECK=1
+fi
+
+# count_check RAN -- the base-ref count check: a test file that exists on the
+# base ref but not here fails the run, unless tests/retired-tests.txt names it
+# (#550). Prints and exits 1 when files are missing; returns 0 otherwise.
+count_check() {
+  local ran="$1" _entry _fname MISSING_FILES="" EXPECTED_COUNT=0
+  while IFS= read -r _entry; do
+    [ -z "$_entry" ] && continue
+    _fname="$(basename "$_entry")"
+    EXPECTED_COUNT=$((EXPECTED_COUNT + 1))
+    # tests/retired-tests.txt (#550): a file removed on purpose is named there,
+    # one basename per line (# comments and blank lines ignored), so deleting
+    # a test is a reviewable change instead of a silent shortfall.
+    if [ -f "$TALOS_ROOT/tests/retired-tests.txt" ] \
+       && grep -qxF "$_fname" "$TALOS_ROOT/tests/retired-tests.txt"; then
+      EXPECTED_COUNT=$((EXPECTED_COUNT - 1))
+      continue
+    fi
+    if [ ! -f "$TALOS_ROOT/tests/$_fname" ]; then
+      MISSING_FILES="${MISSING_FILES}  $_fname
+"
+    fi
+  done <<EOF
+$EXPECTED_FILES
+EOF
+  if [ -n "$MISSING_FILES" ]; then
+    echo "RESULT: test count SHORT -- ran $ran of $EXPECTED_COUNT file(s); missing:" >&2
+    printf '%s' "$MISSING_FILES" >&2
+    exit 1
+  fi
+}
+
+# --count-only (#556): the sharded CI runs this once in its own job. An
+# unresolvable base ref fails here (the check's whole job), unlike a normal run.
+if [ "$COUNT_ONLY" -eq 1 ]; then
+  if [ "$SKIP_COUNT_CHECK" -eq 1 ] || [ -z "$EXPECTED_FILES" ]; then
+    echo "run-tests.sh: --count-only: no test files found on $RESOLVED_BASE" >&2
+    exit 1
+  fi
+  _on_disk="$(ls "$TALOS_ROOT"/tests/test-*.sh 2>/dev/null | wc -l | tr -d ' ')"
+  count_check "$_on_disk"
+  echo "RESULT: test count OK -- $_on_disk file(s), none missing vs $RESOLVED_BASE"
+  exit 0
 fi
 
 # ── Targeted test discovery (--for / --changed, #197) ────────────────────────
@@ -464,7 +551,7 @@ _map_changed_path() {
       fi
       ;;
     agents/*.md|skills/*|templates/*)
-      _add_selected "test-skill-names.sh"
+      _add_selected "test-agent-skill-refs.sh"
       case "$p" in
         agents/*) _add_referencing "agents/" ;;
         skills/*) _add_referencing "skills/" ;;
@@ -546,6 +633,70 @@ if [ "$TARGETED_ACTIVE" -eq 1 ] && [ "$FULL_SUITE" -eq 0 ] && [ "${#ALL_FILES[@]
   exit 1
 fi
 
+# ── Sharding (--shard i/n, #556) ─────────────────────────────────────────────
+# timings_weights -- "<weight> <basename>" for every tests/test-*.sh on disk,
+# from tests/timings.txt (a file missing there, or with no usable number, gets
+# DEFAULT_WEIGHT so a new test is placed deterministically; a missing timings
+# file gives every file that weight). The weight floor of 1 keeps a "0 s" file
+# from being free in the balance.
+DEFAULT_WEIGHT=8
+timings_weights() {
+  local f
+  for f in "$TALOS_ROOT"/tests/test-*.sh; do
+    [ -f "$f" ] && basename "$f"
+  done | LC_ALL=C sort | awk -v tf="$TALOS_ROOT/tests/timings.txt" -v dflt="$DEFAULT_WEIGHT" '
+    BEGIN {
+      while ((getline line < tf) > 0) {
+        if (line ~ /^[[:space:]]*#/ || line ~ /^[[:space:]]*$/) continue
+        split(line, p, " ")
+        if (p[1] ~ /^[0-9]+$/) w[p[2]] = p[1] + 0
+      }
+    }
+    { v = ($0 in w) ? w[$0] : dflt; if (v < 1) v = 1; print v, $0 }'
+}
+
+# shard_members I N -- the basenames in shard I of N, one per line. Greedy
+# longest-processing-time: heaviest file first (ties by name) to the currently
+# least-loaded shard (ties to the lowest index). Pure function of the file set
+# and tests/timings.txt, so every shard computes the same partition.
+shard_members() {
+  timings_weights | LC_ALL=C sort -k1,1nr -k2,2 | awk -v n="$2" -v want="$1" '
+    BEGIN { for (i = 1; i <= n; i++) load[i] = 0 }
+    {
+      best = 1
+      for (i = 2; i <= n; i++) if (load[i] < load[best]) best = i
+      load[best] += $1
+      if (best == want) print $2
+    }' | LC_ALL=C sort
+}
+
+if [ -n "$SHARD_N" ]; then
+  _shard_set="
+$(shard_members "$SHARD_I" "$SHARD_N")
+"
+  _in_shard=()
+  if [ "${#ALL_FILES[@]}" -gt 0 ]; then
+    for t in "${ALL_FILES[@]}"; do
+      _nm="
+$(basename "$t")
+"
+      case "$_shard_set" in
+        *"$_nm"*) _in_shard+=("$t") ;;
+      esac
+    done
+  fi
+  ALL_FILES=()
+  [ "${#_in_shard[@]}" -gt 0 ] && ALL_FILES=("${_in_shard[@]}")
+  echo "SHARD $SHARD_I/$SHARD_N: ${#ALL_FILES[@]} test file(s)" >&2
+fi
+
+if [ "$LIST_ONLY" -eq 1 ]; then
+  if [ "${#ALL_FILES[@]}" -gt 0 ]; then
+    for t in "${ALL_FILES[@]}"; do basename "$t"; done
+  fi
+  exit 0
+fi
+
 PARALLEL_FILES=()
 SERIAL_FILES=()
 # Guarded on count first: "${ALL_FILES[@]}" on an empty array is itself an
@@ -609,25 +760,45 @@ run_test_file() {
   fi
 }
 
-# run_parallel_batch -- runs COMBINED[0..PARALLEL_COUNT) in batches of $JOBS
-# concurrent background jobs, waiting for each batch before starting the
-# next. No GNU parallel and no bash-4-only job control (`wait -n`) so this
-# stays portable to bash 3.2 (macOS's default /bin/bash).
+# run_parallel_batch -- runs COMBINED[0..PARALLEL_COUNT) as a work-queue pool
+# of $JOBS slots: a slot that finishes takes the next file at once, instead of
+# idling until the slowest file of a fixed batch ends (#556: that wait made
+# the wall time roughly twice sum/JOBS). Files start slowest-first, by
+# tests/timings.txt, so the long ones overlap rather than trail. Slots are
+# tokens in a FIFO held open on fd 9: a worker returns its token when done.
+# No GNU parallel and no bash-4-only job control (`wait -n`), so this stays
+# portable to bash 3.2 (macOS's default /bin/bash).
 run_parallel_batch() {
-  local i=0 k batch_end pids
-  while [ "$i" -lt "$PARALLEL_COUNT" ]; do
-    batch_end=$((i + JOBS))
-    [ "$batch_end" -gt "$PARALLEL_COUNT" ] && batch_end=$PARALLEL_COUNT
-    pids=""
-    k=$i
-    while [ "$k" -lt "$batch_end" ]; do
-      run_test_file "${COMBINED[$k]}" "$RUN_TMP/$k.log" "$RUN_TMP/$k.exit" "$RUN_TMP/$k.status" &
-      pids="$pids $!"
-      k=$((k + 1))
-    done
-    wait $pids
-    i=$batch_end
-  done
+  local k sched_file
+  [ "$PARALLEL_COUNT" -gt 0 ] || return 0
+  # Dispatch order: heaviest first, ties by position (stable, deterministic).
+  # Reporting order is unaffected -- results land in per-index files.
+  sched_file="$RUN_TMP/sched.txt"
+  k=0
+  while [ "$k" -lt "$PARALLEL_COUNT" ]; do
+    printf '%s %s\n' "$k" "$(basename "${COMBINED[$k]}")"
+    k=$((k + 1))
+  done | awk -v tf="$TALOS_ROOT/tests/timings.txt" '
+    BEGIN {
+      while ((getline line < tf) > 0) {
+        split(line, p, " ")
+        if (p[1] ~ /^[0-9]+$/) w[p[2]] = p[1] + 0
+      }
+    }
+    { print (($2 in w) ? w[$2] : 8), $1 }' | sort -k1,1nr -k2,2n > "$sched_file"
+  mkfifo "$RUN_TMP/slots" || { echo "run-tests: mkfifo failed" >&2; return 1; }
+  exec 9<>"$RUN_TMP/slots"
+  k=0
+  while [ "$k" -lt "$JOBS" ]; do printf 'x\n' >&9; k=$((k + 1)); done
+  while read -r _w k; do
+    read -r -u 9 _tok
+    (
+      run_test_file "${COMBINED[$k]}" "$RUN_TMP/$k.log" "$RUN_TMP/$k.exit" "$RUN_TMP/$k.status"
+      printf 'x\n' >&9
+    ) </dev/null &
+  done < "$sched_file"
+  wait
+  exec 9>&-
 }
 
 # A targeted (--for/--changed) run that did not fall back to the full suite
@@ -727,36 +898,12 @@ while [ "$_repeat_iter" -le "$REPEAT" ]; do
   rm -rf "$RUN_TMP"
 
   # ── Part A: test-file count check ────────────────────────────────────────────
-  # Only applies when no pattern filter and no targeted subset are active
-  # (both run a subset of the suite by design).
-  if [ "$SKIP_COUNT_CHECK" -eq 0 ] && [ -z "$PATTERN" ] && [ "$TARGETED_SUBSET" -eq 0 ] && [ -n "$EXPECTED_FILES" ]; then
-    MISSING_FILES=""
-    EXPECTED_COUNT=0
-    while IFS= read -r _entry; do
-      [ -z "$_entry" ] && continue
-      _fname="$(basename "$_entry")"
-      EXPECTED_COUNT=$((EXPECTED_COUNT + 1))
-      # tests/retired-tests.txt (#550): a file removed on purpose is named there,
-      # one basename per line (# comments and blank lines ignored), so deleting
-      # a test is a reviewable change instead of a silent shortfall.
-      if [ -f "$TALOS_ROOT/tests/retired-tests.txt" ] \
-         && grep -qxF "$_fname" "$TALOS_ROOT/tests/retired-tests.txt"; then
-        EXPECTED_COUNT=$((EXPECTED_COUNT - 1))
-        continue
-      fi
-      if [ ! -f "$TALOS_ROOT/tests/$_fname" ]; then
-        MISSING_FILES="${MISSING_FILES}  $_fname
-"
-      fi
-    done <<EOF
-$EXPECTED_FILES
-EOF
-
-    if [ -n "$MISSING_FILES" ]; then
-      echo "RESULT: test count SHORT -- ran $total_files of $EXPECTED_COUNT file(s); missing:" >&2
-      printf '%s' "$MISSING_FILES" >&2
-      exit 1
-    fi
+  # Only applies when no pattern filter, targeted subset or shard is active
+  # (all run a subset of the suite by design; a sharded CI run does it once,
+  # in its own --count-only job).
+  if [ "$SKIP_COUNT_CHECK" -eq 0 ] && [ -z "$PATTERN" ] && [ "$TARGETED_SUBSET" -eq 0 ] \
+     && [ -z "$SHARD_N" ] && [ -n "$EXPECTED_FILES" ]; then
+    count_check "$total_files"
   fi
 
   if [ "$failed_files" -gt 0 ]; then
@@ -772,6 +919,8 @@ EOF
   if [ "$_repeat_iter" -eq "$REPEAT" ]; then
     if [ -n "$PATTERN" ]; then
       echo "RESULT: all $total_files test file(s) passed (FILTERED by '$PATTERN' -- count check skipped)"
+    elif [ -n "$SHARD_N" ]; then
+      echo "RESULT: all $total_files test file(s) passed (SHARD $SHARD_I/$SHARD_N -- count check runs once, via --count-only)"
     elif [ "$TARGETED_SUBSET" -eq 1 ]; then
       echo "RESULT: all $total_files test file(s) passed (TARGETED via --for/--changed -- count check skipped)"
     elif [ "$SKIP_COUNT_CHECK" -eq 1 ]; then

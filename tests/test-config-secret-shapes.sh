@@ -85,6 +85,14 @@ errcount() { wc -l < "$ERR" | tr -d ' '; }
 # ── (a) one fixture per shape is rejected: key named, value never shown ──────
 reset_cfg
 export SHAPES_PY="$TALOS_ROOT/scripts/pipeline-secret-shapes.py"
+# The shape file's own verdict for every fixture, in one python3 process (fd 3, one
+# line per fixture, read in step with the loop below).
+fixtures | python3 -I -c '
+import sys
+exec(open(sys.argv[1]).read())
+for line in sys.stdin:
+    print(secret_shape(line.rstrip("\n").split("\t", 1)[1]))' "$SHAPES_PY" > "$SANDBOX/shapes.out" 2>/dev/null
+exec 3< "$SANDBOX/shapes.out"
 while IFS="$TAB" read -r _name _val; do
   proj_json "{\"notifications\":{\"slack_channel\":\"$_val\"}}"
   out="$(get notifications.slack_channel)"; rc=$?
@@ -96,9 +104,10 @@ while IFS="$TAB" read -r _name _val; do
   assert_contains "$(cat "$ERR")" "env:NAME" "(a) $_name: stderr says to use env:NAME"
   assert_eq "1" "$(errcount)" "(a) $_name: exactly one stderr line"
   # the shape file itself names the shape (it is what the drift test relies on)
-  _shape="$(FXV="$_val" python3 -I -c 'import os; exec(open(os.environ["SHAPES_PY"]).read()); print(secret_shape(os.environ["FXV"]))' 2>/dev/null)"
+  IFS= read -r _shape <&3 || _shape=""
   assert_eq "$_name" "$_shape" "(a) $_name: pipeline-secret-shapes.py matches the fixture under its own name"
 done < <(fixtures)
+exec 3<&-
 unset _name _val
 
 # A list item and a mapping inside a list are scanned too; the rest of the list stays.

@@ -160,31 +160,9 @@ assert_contains "$out" "STALE" "talos.pipeline.yml change: stale reported"
 # ── [test] fail-closed when head SHA cannot be resolved ───────────────────────
 # When STUB_PR_HEAD_SHA is unset or empty the combined JSON has headRefOid:"".
 # The stub uses ${VAR-default} (not :-) so empty string is preserved (not substituted).
-out="$(STUB_PR_HEAD_SHA_FORCE_EMPTY=1 \
-       STUB_PR_LABELS_JSON='[{"name":"qa:pass"}]' \
-       STUB_PR_COMMENTS_JSON='[]' \
-       PIPELINE_CONFIG="$PIPELINE_CONFIG" \
-       bash "$VCS" check-approval-sha 9 2>&1)"; rc=$?
-# This test relies on the combined JSON producing empty headRefOid.
-# We achieve that by making the stub detect a sentinel env var.
-# If the above doesn't work we fall back to checking the unresolvable-SHA path
-# via an invalid PR number that the stub returns empty for — but first let's
-# see if the pattern works.
-# Actually: the stub always returns {"headRefOid":"abc123sha",...} with the default.
-# To force an empty SHA we need the stub to cooperate. Let's check if adding a
-# specific handler helps, or test the pr-data parse failure path instead.
-# For now: test unresolvable SHA via the pr_data empty path.
-# A simpler approach: pass an explicit empty-sha JSON via a pipe override.
-# But that requires a separate script. Instead, rely on the empty-pr-data path:
-# stub returns "" for pr view when a special pattern triggers it.
-# We'll add that to the test by using a custom stub response env var.
-#
-# Actually, for simplicity we test this via the pr-head subcommand which has
-# the same fail-closed behavior and is easier to trigger with an empty stub response.
-# The check-approval-sha test for unresolvable SHA is covered by the git diff
-# failure test below (fail-closed when diff errors).
-# Skip the check-approval-sha unresolvable-SHA test — covered by unit path above.
-# Mark as pass with note.
+# The stub cannot force an empty headRefOid through this path (a sentinel call here
+# asserted nothing); the pr-head and check-approval-sha unresolvable-SHA cases and
+# the git diff failure test below cover it.
 pass "unresolvable SHA: fail-closed behavior covered via pr-head test and git diff failure test"
 
 # ── [test] all four approval labels match head SHA → exit 0 ───────────────────
@@ -216,6 +194,25 @@ printf '{}' > test-approval-config.json   # restore
 # One isolated one-file delta per path, each branched off SHA_A, so a stale
 # verdict cannot be caused by scripts/ or any other path in the shared history.
 _orig_branch="$(git symbolic-ref --short HEAD)"
+# A delta is a commit off SHA_A that adds the given paths, built with git plumbing
+# (no checkout, no work tree). Every path in a group shares one check-approval-sha
+# call: the stale reason names up to five blocked files, so a path counts as stale
+# when it is one of the names in that list (groups are at most five paths), and as
+# waived when the whole group exits 0. A path the group does not settle is re-run
+# alone, so each path is still judged on its own one-file delta.
+_UE="$(printf '\303\274')"
+_c="$(mk_comment_with_marker "$SHA_A" qa)"
+_commit_428() {  # <path>... -- prints a commit off SHA_A whose tree adds every path
+  local _idx="$SANDBOX/.idx428" _blob _p _tree
+  _blob="$(printf 'edit\n' | git hash-object -w --stdin)"
+  rm -f "$_idx"
+  GIT_INDEX_FILE="$_idx" git read-tree "$SHA_A"
+  for _p in "$@"; do printf '100644 blob %s\t%s\n' "$_blob" "$_p"; done \
+    | GIT_INDEX_FILE="$_idx" git -c core.ignorecase=false update-index --index-info
+  _tree="$(GIT_INDEX_FILE="$_idx" git write-tree)"
+  rm -f "$_idx"
+  git commit-tree "$_tree" -p "$SHA_A" -m "edit"
+}
 _delta_428() {  # <path> -- one-file commit off SHA_A on a throwaway branch; prints SHA
   git checkout -q -B tmp-428 "$SHA_A"
   mkdir -p "$(dirname "$1")"
@@ -224,8 +221,43 @@ _delta_428() {  # <path> -- one-file commit off SHA_A on a throwaway branch; pri
   git commit -q -m "edit $1"
   git rev-parse HEAD
 }
-_c="$(mk_comment_with_marker "$SHA_A" qa)"
-for _p in agents/qa.md skills/pipeline/SKILL.md templates/prompts/qa.md AGENTS.md CLAUDE.md \
+_run_428() {  # <path>... -- out/rc of check-approval-sha on ONE commit holding every path
+  local _h
+  _h="$(_commit_428 "$@")"
+  out="$(vcs_check "$_h" '[{"name":"qa:pass"}]' "$_c")"; rc=$?
+}
+_batch_428() {  # <callback> <stale|waived> <path>... -- calls "<callback> <path>" with out/rc set
+  local _cb="$1" _mode="$2" _max=5 _grp _p _lst _gout _grc
+  shift 2
+  [ "$_mode" = waived ] && _max=100
+  while [ "$#" -gt 0 ]; do
+    _grp=()
+    while [ "$#" -gt 0 ] && [ "${#_grp[@]}" -lt "$_max" ]; do _grp[${#_grp[@]}]="$1"; shift; done
+    _run_428 "${_grp[@]}"
+    _gout="$out"; _grc="$rc"
+    _lst="$(printf '%s\n' "$_gout" | sed -n 's/.*non-waivable files changed since [0-9a-f]*: //p' | head -n 1)"
+    for _p in "${_grp[@]}"; do
+      case "$_mode:$_grc" in
+        stale:1) case ", $_lst, " in *", $_p, "*) out="$_gout"; rc="$_grc" ;; *) _run_428 "$_p" ;; esac ;;
+        waived:0) out="$_gout"; rc="$_grc" ;;
+        *) _run_428 "$_p" ;;
+      esac
+      "$_cb" "$_p"
+    done
+  done
+}
+_cb_stale_428() {
+  assert_exit_code 1 "$rc" "#428 $1 only: default waiver does not cover it, exits 1"
+  assert_contains "$out" "STALE qa:pass (qa)" "#428 $1 only: qa approval stale"
+}
+_cb_waived_428() {
+  if [ "$1" = "docs/$_UE.md" ]; then
+    assert_exit_code 0 "$rc" "#428 docs/<non-ASCII>.md only: stays waived, exits 0"
+  else
+    assert_exit_code 0 "$rc" "#428 $1 only: stays waived by default, exits 0"
+  fi
+}
+_batch_428 _cb_stale_428 stale agents/qa.md skills/pipeline/SKILL.md templates/prompts/qa.md AGENTS.md CLAUDE.md \
           sub/AGENTS.md a/b/CLAUDE.md .claude/agents/developer.md .claude/skills/x/SKILL.md \
           .claude/commands/pr.md .claude/talos/scripts/x.sh .agents/x.md \
           Skills/pipeline/SKILL.md Agents/qa.md AGENTS.MD claude.md .Claude/agents/x.md \
@@ -233,47 +265,32 @@ for _p in agents/qa.md skills/pipeline/SKILL.md templates/prompts/qa.md AGENTS.m
           .codex/config.toml .codex/notes.md .claude/rules/x.md CLAUDE.local.md sub/CLAUDE.local.md \
           GEMINI.MD Gemini.md .Gemini/x.md .PI/x.md AGENTS.OVERRIDE.MD claude.LOCAL.md .Claude/Rules/x.md \
           sub/.claude/rules/x.md sub/.agents/rules/x.md sub/.agent/rules/x.md sub/.gemini/system.md sub/.pi/SYSTEM.md sub/.codex/notes.md \
-          a/b/.claude/skills/x/SKILL.md a/.claude/agents/x.md a/.Claude/Commands/x.md a/.AGENTS/x.md; do
-  _h="$(_delta_428 "$_p")"
-  out="$(vcs_check "$_h" '[{"name":"qa:pass"}]' "$_c")"; rc=$?
-  assert_exit_code 1 "$rc" "#428 $_p only: default waiver does not cover it, exits 1"
-  assert_contains "$out" "STALE qa:pass (qa)" "#428 $_p only: qa approval stale"
-done
-for _p in README.md docs/reference.md templates/comments/qa-verdict.md \
+          a/b/.claude/skills/x/SKILL.md a/.claude/agents/x.md a/.Claude/Commands/x.md a/.AGENTS/x.md
+_batch_428 _cb_waived_428 waived README.md docs/reference.md templates/comments/qa-verdict.md \
           docs/agents/x.md docs/skills/x.md .pip/x.md .agentx/x.md .gemini-notes/x.md .codexx/x.md \
-          GEMINI.md.example sub/.pip/x.md sub/.claude/notes.md; do
-  _h="$(_delta_428 "$_p")"
-  out="$(vcs_check "$_h" '[{"name":"qa:pass"}]' "$_c")"; rc=$?
-  assert_exit_code 0 "$rc" "#428 $_p only: stays waived by default, exits 0"
-done
+          GEMINI.md.example sub/.pip/x.md sub/.claude/notes.md "docs/$_UE.md"
 
 # #431: a broad config waiver cannot widen the runner instruction paths.
-for _p in GEMINI.md .pi/SYSTEM.md sub/.claude/rules/x.md sub/.agents/rules/x.md; do
-  _h="$(_delta_428 "$_p")"
-  printf '%s\n' '{"merge": {"approval_waiver_paths": ["*.md*"]}}' > test-approval-config.json
-  out="$(vcs_check "$_h" '[{"name":"qa:pass"}]' "$_c")"; rc=$?
-  assert_exit_code 1 "$rc" "#431 $_p with *.md* config waiver: exits 1"
-  assert_contains "$out" "STALE qa:pass (qa)" "#431 $_p with *.md* config waiver: stale"
-done
+_cb_431() {
+  assert_exit_code 1 "$rc" "#431 $1 with *.md* config waiver: exits 1"
+  assert_contains "$out" "STALE qa:pass (qa)" "#431 $1 with *.md* config waiver: stale"
+}
+printf '%s\n' '{"merge": {"approval_waiver_paths": ["*.md*"]}}' > test-approval-config.json
+_batch_428 _cb_431 stale GEMINI.md .pi/SYSTEM.md sub/.claude/rules/x.md sub/.agents/rules/x.md
 printf '{}' > test-approval-config.json
 
 # Non-ASCII paths: git would quote them without -z, hiding the prefix. Stale
 # under the default waiver and under a broad *.md* config waiver; a non-ASCII
-# docs name stays waived.
-_UE="$(printf '\303\274')"
-for _p in "skills/$_UE/SKILL.md" "Skills/$_UE/x.md"; do
-  _h="$(_delta_428 "$_p")"
-  for _cfg in '{}' '{"merge": {"approval_waiver_paths": ["*.md*"]}}'; do
-    printf '%s\n' "$_cfg" > test-approval-config.json
-    out="$(vcs_check "$_h" '[{"name":"qa:pass"}]' "$_c")"; rc=$?
-    assert_exit_code 1 "$rc" "#428 non-ASCII $_p (config $_cfg): exits 1"
-    assert_contains "$out" "STALE qa:pass (qa)" "#428 non-ASCII $_p (config $_cfg): stale"
-  done
+# docs name stays waived (in the waived group above).
+_cb_nonascii() {
+  assert_exit_code 1 "$rc" "#428 non-ASCII $1 (config $_cfg): exits 1"
+  assert_contains "$out" "STALE qa:pass (qa)" "#428 non-ASCII $1 (config $_cfg): stale"
+}
+for _cfg in '{}' '{"merge": {"approval_waiver_paths": ["*.md*"]}}'; do
+  printf '%s\n' "$_cfg" > test-approval-config.json
+  _batch_428 _cb_nonascii stale "skills/$_UE/SKILL.md" "Skills/$_UE/x.md"
 done
 printf '{}' > test-approval-config.json
-_h="$(_delta_428 "docs/$_UE.md")"
-out="$(vcs_check "$_h" '[{"name":"qa:pass"}]' "$_c")"; rc=$?
-assert_exit_code 0 "$rc" "#428 docs/<non-ASCII>.md only: stays waived, exits 0"
 
 # #449 (C33): a changed path that is not valid UTF-8 cannot be decoded, so it
 # cannot be judged waivable: fail closed. Name it `\377.md` (waivable by *.md if
@@ -408,14 +425,10 @@ out="$(STUB_PR_HEAD_SHA="$SHA_E" \
        STUB_PR_LABELS_JSON='[{"name":"qa:pass"}]' \
        STUB_PR_COMMENTS_JSON="$_c" \
        PIPELINE_CONFIG="$PIPELINE_CONFIG" \
-       bash "$VCS" check-approval-sha 9 --stale-list 2>/dev/null)"; rc=$?
+       bash "$VCS" check-approval-sha 9 --stale-list 2>"$SANDBOX/stale-list.err")"; rc=$?
 assert_exit_code 1 "$rc" "#196 --stale-list: still exits 1"
 assert_contains "$out" "stale role=qa label=qa:pass" "#196 --stale-list: stdout carries greppable stale line"
-err_only="$(STUB_PR_HEAD_SHA="$SHA_E" \
-       STUB_PR_LABELS_JSON='[{"name":"qa:pass"}]' \
-       STUB_PR_COMMENTS_JSON="$_c" \
-       PIPELINE_CONFIG="$PIPELINE_CONFIG" \
-       bash "$VCS" check-approval-sha 9 --stale-list 2>&1 1>/dev/null)"
+err_only="$(cat "$SANDBOX/stale-list.err")"
 assert_contains "$err_only" "STALE qa:pass" "#196 --stale-list: existing stderr prose unchanged"
 
 # ── [test] pr-head: prints head SHA, fails when unresolvable ──────────────────

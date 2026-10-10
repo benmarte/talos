@@ -1,118 +1,17 @@
 #!/usr/bin/env bash
-# test-spend-wiring.sh -- covers issue #386 (sub-task 9 of epic #334): the
-# playbook wiring of the spend line, the PR spend comment, the budget stop and
-# the run summary in skills/pipeline/SKILL.md. The spend block and the role
-# post_stage moved into `talos.sh done` (#469); they are pinned in scripts/talos.sh.
-#   (a) presence: --model on post_stage, cost --line, the upsert with
-#       --marker spend --body-file -, pipeline-budget.sh check, budget-blocked,
-#       cost --summary; no positional-body upsert; no pipe from cost straight
-#       into the upsert (an empty body would make the verb exit 1)
-#   (b) every developer fix round goes through `talos.sh gate fix-round`, whose
-#       first step is the budget check (#466 moved it out of the prose; the
-#       merge-base task, draft round, QA, reviewer, security, adversarial and
-#       the Step 3d CI gate are the eight sites), and the no-dispatch
-#       record-attempt, the Step 4 CI path and a re-stamp have none; Rule 20,
-#       item 8, Step 5 item 4 and the usage section carry their pieces
-#   (c) behaviour: the spend snippet as written, and `gate fix-round` against the
-#       real pipeline-events.sh / pipeline-budget.sh and a recording stub for
-#       pipeline-vcs.sh (never a GitHub call)
+# test-spend-wiring.sh -- covers issue #386 (sub-task 9 of epic #334): the spend
+# line, the PR spend comment and the budget stop, run as behaviour. The spend block
+# and the role post_stage live in `talos.sh done` (#469), the budget check in
+# `talos.sh gate fix-round` (#466); both are driven against the real
+# pipeline-events.sh / pipeline-budget.sh and a recording stub for pipeline-vcs.sh
+# (never a GitHub call). The prose and source-text pins that used to open this file
+# (SKILL.md / refs wording, talos.sh function bodies) were dropped by #556.
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox || exit 1
 
-SKILL_MD="$TALOS_ROOT/skills/pipeline/SKILL.md"
-skill_flat="$(tr '\n' ' ' < "$SKILL_MD" | tr -s ' ')"
-
-# ── (a) presence ───────────────────────────────────────────────────────────
-done_fn="$(sed -n '/^_talos_done() {/,/^}/p' "$TALOS_ROOT/scripts/talos.sh")"
-spend_fn="$(sed -n '/^_talos_spend() {/,/^}/p' "$TALOS_ROOT/scripts/talos.sh")"
-assert_contains "$skill_flat" 'Pass `--model <the spawn'"'"'s model:>` only when the spawn had one' \
-  "Usage: --model carries the model: of the spawn, and only when the spawn had one"
-assert_contains "$done_fn" '${_model:+--model "$_model"}' "done: --model is omitted when the spawn had no model"
-assert_contains "$done_fn" '[[ "$_model" =~ ^[A-Za-z0-9._:-]+$ ]]' "done: --model passes only when it matches [A-Za-z0-9._:-]+"
-assert_contains "$done_fn" '_talos_post_stage "$_role" "$_role" "$_n"' "done: post_stage follows the role relay"
-assert_contains "$spend_fn" 'pipeline-events.sh" cost --issue "$_n" ${_pr:+--pr "$_pr"} --line' \
-  "spend block: cost --line (without --pr before a PR exists)"
-assert_contains "$spend_fn" 'upsert-pr-comment "$_pr" --marker spend --body-file -' \
-  "spend block: upsert-pr-comment --marker spend --body-file -"
-# The budget guard runs inside `gate fix-round` (#466); its mechanics are pinned
-# in talos.sh, the owner-facing parts stay in SKILL.md Step 3.
-verb_fr="$(sed -n '/^_talos_gate_fix_round() {/,/^}/p' "$TALOS_ROOT/scripts/talos.sh")"
-verb_all="$(cat "$TALOS_ROOT/scripts/talos.sh")"
-assert_contains "$verb_fr" 'pipeline-budget.sh" check --issue "$_n"' "budget stop: gate fix-round runs pipeline-budget.sh check --issue <N>"
-assert_contains "$verb_fr" '|| _brc=$?' "budget stop: the exit code is captured with || _brc=\$?"
-assert_contains "$verb_fr" '_talos_post_stage budget-blocked orchestrator "$_n"' "budget stop: gate fix-round fires post_stage budget-blocked orchestrator"
-assert_contains "$verb_fr" 'printf '"'"'%s'"'"' "$_bout" | _talos_post_stage budget-blocked' "budget stop: the budget line is the hook's stdin (printf '%s' piped into the one post_stage writer)"
-assert_contains "$(sed -n '/^_talos_post_stage() {/,/^}/p' "$TALOS_ROOT/scripts/talos.sh")" 'pipeline-hooks.sh" post_stage "$@"' "post_stage: the helper is the one place that runs pipeline-hooks.sh post_stage"
-assert_contains "$verb_fr" '--summary -' "budget stop: the hook summary comes from stdin"
-# The cost table moved into `talos.sh summary` (#467): one call, one --issue per id.
-assert_contains "$verb_all" 'pipeline-events.sh" cost --summary "${_a[@]}"' "Step 5: summary runs the one cost --summary call"
-assert_contains "$verb_all" 'for _i in "${_IDS[@]}"; do _a+=(--issue "$_i"); done' "Step 5: summary passes one --issue per processed issue"
-assert_contains "$skill_flat" 'prints `cost=<line>` lines' "Step 5: the playbook has the summary call print the cost lines"
-assert_contains "$verb_all" 'With limits.tokens_per_issue unset' \
-  "budget stop: talos.sh states the unset flow is unchanged"
-assert_contains "$verb_all" 'so the fix-round flow is unchanged' "budget stop: unchanged wording present"
-assert_contains "$skill_flat" 'the owner removes `pipeline:blocked` (each block grants one more limit) or raises `limits.tokens_per_issue`' \
-  "budget stop: how the owner resumes"
-assert_contains "$verb_fr" 'blocked_by "talos.pipeline.json:limits.tokens_per_issue (explicit)"' \
-  "budget stop: BLOCKED_BY of the blocked comment (the blocked_by= line)"
-assert_contains "$skill_flat" 'post blocked.md with BLOCKED_BY = the `blocked_by=` value' "budget stop: SKILL.md posts blocked.md with that BLOCKED_BY"
 assert_eq "spend.comment true" "$(talos_env_key SPEND_COMMENT) $(talos_env_default SPEND_COMMENT)" "Step 0: spend.comment variable (read by talos.sh env, default true)"
-assert_contains "$spend_fn" 'cfg spend.comment' "spend block: the comment honours spend.comment"
-assert_contains "$spend_fn" 'cfg comments.enabled' "spend block: the comment honours comments.enabled"
 
-# No upsert-pr-comment use without a stdin body file; no cost output piped
-# straight into it (the empty-body case would exit 1 on every event-less stage).
-bad_upsert="$(grep -n 'upsert-pr-comment' "$SKILL_MD" | grep -v -e '--marker spend --body-file -' || true)"
-assert_eq "" "$bad_upsert" "no upsert-pr-comment line without --marker spend --body-file -"
-direct_pipe="$(grep -nE 'cost .*--markdown *\|' "$SKILL_MD" || true)"
-assert_eq "" "$direct_pipe" "cost --markdown is captured first, never piped straight into the upsert"
-assert_contains "$spend_fn" '[ -n "$_body" ]' "spend block: an empty body skips the upsert"
-assert_eq "" "$(grep -nE 'cost .*--markdown *\|' "$TALOS_ROOT/scripts/talos.sh" || true)" "spend block: talos.sh never pipes cost straight into the upsert"
-assert_not_contains "$spend_fn" 'cat "$_CFG_CACHE_DIR/spend"' "spend block: the upsert's own output is never read, only its exit status"
-
-# ── (b) wiring sites ───────────────────────────────────────────────────────
-# Every developer fix-round site is a `gate fix-round` call (the verb's first step
-# is the budget check, in front of record-attempt: tests/test-ci-gate.sh pins the
-# order): the merge-base task, the draft round, the draft QA/CI failure round, QA,
-# reviewer, security, adversarial and the Step 3d CI gate (#355). No raw
-# record-attempt of a fix round is left to skip the check.
-CANON='Run the Step 3 budget check ("Budget stop") first.'
-assert_eq "0" "$(grep -cF -- "$CANON" "$SKILL_MD")" "the old budget-check sentence is gone (the verb runs the check)"
-# Six sites since #469: the reviewer, security and adversarial rounds share one `<role>` site
-# (`done` answers next=fix-round stage=<role>), the other five are as before.
-# Counted over the whole playbook (#547): QA and the shared <role> site in the core,
-# the merge-base task (refs/merge-conflict.md), the CI gate (refs/ci-gate.md), and
-# the draft round and the draft QA/CI failure round (refs/draft-order.md).
-assert_eq "6" "$(playbook_text | grep -cE 'gate fix-round <N> (developer|<that-role>|<role>|qa|reviewer|security|adversarial) --pr')" "six fix-round gate fix-round sites"
-raw="$(playbook_text | grep -nE 'record-attempt <N> (developer|<that-role>|<role>|qa|reviewer|security|adversarial)' || true)"
-assert_eq "" "$raw" "no fix round calls record-attempt directly"
-# The Step 4 CI failure path and the re-stamp path never mention the check.
-step4_ci="$(awk '/^## Step 4 /{p=1} /^## Step 5 /{p=0} p' "$SKILL_MD")"
-assert_not_contains "$step4_ci" "pipeline-budget.sh" "Step 4 never runs the budget check"
-assert_not_contains "$step4_ci" "gate fix-round" "Step 4 never runs gate fix-round"
-restamp="$(playbook_text | grep -n 'RESTAMP_FAIL' | grep -i 'budget' || true)"
-assert_eq "" "$restamp" "RESTAMP_FAIL lines carry no budget check"
-
-# The post-merge items moved into `talos.sh post-merge` (#467): the spend block runs
-# once, after the merged event, and only for a first run (tests/test-talos-postmerge.sh).
-pm_run="$(sed -n '/^_talos_post_merge_run() {/,/^}/p' "$TALOS_ROOT/scripts/talos.sh")"
-spend_fn="$(sed -n '/^_talos_spend() {/,/^}/p' "$TALOS_ROOT/scripts/talos.sh")"
-assert_eq "1" "$(printf '%s\n' "$spend_fn" | grep -c 'cost --issue "$_n" ${_pr:+--pr "$_pr"} --line')" "spend helper: the spend --line runs once"
-assert_eq "1" "$(printf '%s\n' "$spend_fn" | grep -c 'upsert-pr-comment "$_pr" --marker spend --body-file -')" "spend helper: the spend upsert runs once"
-assert_eq "1" "$(printf '%s\n' "$pm_run" | grep -c '_talos_spend "$_n" "$_pr"')" "post-merge: the spend block is the one _talos_spend call"
-assert_eq "1" "$(printf '%s\n' "$pm_run" | awk '/_talos_post_stage merged/{m=NR} /_talos_spend/ && !c{c=NR} END{print (m && c && m < c) ? 1 : 0}')" "post-merge: the spend block is after post_stage merged"
-assert_eq "0" "$(grep -c 'pipeline-hooks.sh" post_stage\|pipeline-events.sh" cost --issue' <<< "$pm_run")" "post-merge: no direct post_stage or spend writer is left (the helpers own them)"
-assert_contains "$skill_flat" 'the `merged` and `issue-closed` events and the spend block' "Step 4: the post-merge call includes the spend block"
-merge_seq="$(grep -n 'merge sequence:  pr-ci-runs -> merge-pr -> post_stage merged --ci-runs' "$TALOS_ROOT/skills/pipeline/refs/draft-order.md" | wc -l | tr -d ' ')"
-assert_eq "1" "$merge_seq" "the merge sequence: line is unchanged"
-item4="$(grep -n '^3\. After the table print' "$SKILL_MD")"
-assert_contains "$item4" 'print the `cost=` lines' "Step 5 item 3 prints the one --summary call's lines"
-assert_not_contains "$item4" 'loop `--issue N`' "Step 5 item 3: the per-issue loop is gone"
-usage_line="$(grep -m1 'Usage on these paths' "$TALOS_ROOT/skills/pipeline/refs/harness.md")"
-assert_contains "$usage_line" 'no input/output split, no model and no dollar cost' \
-  "usage section: Agent notification fields only"
-assert_contains "$usage_line" 'show as `unrecorded`' "usage section: adapter and pi-inline runs show as unrecorded"
 
 # ── (c) behaviour: `talos.sh done` against the real pipeline-events.sh ────────
 # The sandbox's scripts/: the real ones, except pipeline-vcs.sh is a recorder and the
@@ -178,6 +77,15 @@ rm -f vcs-calls.log
 out="$(bash scripts/talos.sh done pm --issue 7 --summary-file "$SANDBOX/sum.txt" 2>/dev/null < /dev/null)"
 assert_contains "$out" 'spend=' "spend block: before a PR exists the --line is printed"
 assert_file_absent vcs-calls.log "spend block: before a PR exists nothing is upserted"
+
+# spend.comment=false or comments.enabled=false: the --line is still printed, nothing is upserted.
+for _cfg in '{"spend": {"comment": false}}' '{"comments": {"enabled": false}}'; do
+  printf '%s\n' "$_cfg" > talos.pipeline.json
+  out="$(run_done 0 7 9)"
+  assert_contains "$out" 'spend=talos: #9 qa done' "spend block: $_cfg still prints the --line"
+  assert_file_absent vcs-calls.log "spend block: $_cfg skips the PR comment"
+done
+rm -f talos.pipeline.json
 
 # The budget guard through `gate fix-round`, under `set -e`: exit 1 is captured,
 # never aborts; the real pipeline-budget.sh answers, the vcs stub records.

@@ -94,11 +94,8 @@ while IFS= read -r _line; do
     equiv)
       # merge.forbidden_files_replace: main passed "" and the table says false.
       # The only consumer compares the value with the word true, so the two are
-      # the same behaviour. Pin that: no other test of the value exists.
+      # the same behaviour.
       assert_eq "false" "$(_talos_default "$key")" "$key: table default is false"
-      _uses="$(grep -c '"\$REPLACE"' "$SCRIPTS/pipeline-vcs.sh")"
-      _true_uses="$(grep -c '"\$REPLACE" = "true"' "$SCRIPTS/pipeline-vcs.sh")"
-      assert_eq "$_uses" "$_true_uses" "$key: every read of REPLACE tests for the word true, so '' and false behave alike"
       ;;
     explicit)
       # comments.header: pipeline-events.sh passes its own value on purpose

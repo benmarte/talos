@@ -40,9 +40,11 @@ _attempt_json="$(printf '[{"body":"verdict record\\n<!-- talos:attempt stage=dev
 # ---- A1: Malformed JSON + VCS call -> WARNING on stderr, exit 0 -----------
 echo "{ not json" > talos.pipeline.json
 # Capture stderr only; stdout goes to /dev/null.
+# The same run also supplies the exit status (the warning does not abort the run).
+rc_a1=0
 err_a1="$(PIPELINE_CONFIG="$SANDBOX/talos.pipeline.json" \
           STUB_ISSUE_COMMENTS_JSON="$_attempt_json" \
-          bash "$VCS" read-attempt 42 2>&1 >/dev/null)"
+          bash "$VCS" read-attempt 42 2>&1 >/dev/null)" || rc_a1=$?
 assert_contains "$err_a1" "WARNING" \
   "A1: malformed JSON + VCS call: WARNING on stderr (regression guard)"
 assert_contains "$err_a1" "could not be parsed" \
@@ -51,11 +53,6 @@ assert_contains "$err_a1" "talos.pipeline.json" \
   "A1: malformed JSON + VCS call: warning names the config file"
 assert_contains "$err_a1" "built-in defaults" \
   "A1: malformed JSON + VCS call: warning mentions defaults fallback"
-# Confirm the verb itself exits 0 (warning does not abort the run).
-rc_a1=0
-PIPELINE_CONFIG="$SANDBOX/talos.pipeline.json" \
-  STUB_ISSUE_COMMENTS_JSON="$_attempt_json" \
-  bash "$VCS" read-attempt 42 >/dev/null 2>/dev/null || rc_a1=$?
 assert_eq "0" "$rc_a1" "A1: malformed JSON + VCS call: exits 0"
 rm talos.pipeline.json
 
@@ -80,50 +77,50 @@ rm talos.pipeline.json
 # gate refuses the pointer itself with reason=config-legacy-file, and the verb
 # still degrades to defaults, exit 0).
 printf 'merge:\n  method: rebase\n' > talos.pipeline.yml
+rc_a4=0
 err_a4="$(PIPELINE_CONFIG="$SANDBOX/talos.pipeline.yml" \
           STUB_ISSUE_COMMENTS_JSON="$_attempt_json" \
-          bash "$VCS" read-attempt 42 2>&1 >/dev/null)"
+          bash "$VCS" read-attempt 42 2>&1 >/dev/null)" || rc_a4=$?
 assert_contains "$err_a4" "WARNING" \
   "A4: a .yml config pointer + VCS call: parse WARNING fires (JSON-only parser)"
 assert_contains "$err_a4" "could not be parsed" \
   "A4: a .yml config pointer: warning names parse failure"
 assert_contains "$err_a4" "talos.pipeline.yml" \
   "A4: a .yml config pointer: warning names the file"
-rc_a4=0
-PIPELINE_CONFIG="$SANDBOX/talos.pipeline.yml" \
-  STUB_ISSUE_COMMENTS_JSON="$_attempt_json" \
-  bash "$VCS" read-attempt 42 >/dev/null 2>/dev/null || rc_a4=$?
 assert_eq "0" "$rc_a4" "A4: a .yml config pointer: the verb still exits 0"
 rm talos.pipeline.yml
 
 # ---- A5: Suppression resistance ---------------------------------------------
-# Pre-create /tmp/talos-cfg-parse-warn-<N> for the entire PID space.
+# Pre-create /tmp/talos-cfg-parse-warn-<N> for every PID the run below can get:
+# PIDs are handed out sequentially (wrapping at 99999), so the window just above
+# this shell's own PID covers the next few thousand processes -- creating the whole
+# PID space cost ~7 s of system time for a mechanism no script carries any more.
 # Under the old file-based sentinel mechanism this would suppress the warning.
 # Under the new in-process mechanism the warning must still fire.
 # Mutation label: sentinel-based -- reverting to that mechanism makes this RED.
 echo "{ not json" > talos.pipeline.json
-python3 -c "
-import pathlib, sys
-for i in range(1, 100000):
+_sentinels() {  # create|remove
+  python3 -I -c "
+import os, sys
+base = int(sys.argv[2])
+for i in range(base - 20, base + 3000):
+    p = '/tmp/talos-cfg-parse-warn-' + str((i - 1) % 99999 + 1)
     try:
-        pathlib.Path('/tmp/talos-cfg-parse-warn-' + str(i)).touch()
-    except Exception:
+        if sys.argv[1] == 'create':
+            os.close(os.open(p, os.O_CREAT | os.O_WRONLY))
+        else:
+            os.unlink(p)
+    except OSError:
         pass
-" 2>/dev/null || true
+" "$1" "$$" 2>/dev/null || true
+}
+_sentinels create
 err_a5="$(PIPELINE_CONFIG="$SANDBOX/talos.pipeline.json" \
           STUB_ISSUE_COMMENTS_JSON="$_attempt_json" \
           bash "$VCS" read-attempt 42 2>&1 >/dev/null)"
 assert_contains "$err_a5" "WARNING" \
   "A5(suppression): WARNING fires even after all /tmp/talos-cfg-parse-warn-* pre-created [mutation: sentinel-based]"
-# Cleanup sentinel files.
-python3 -c "
-import pathlib
-for i in range(1, 100000):
-    try:
-        pathlib.Path('/tmp/talos-cfg-parse-warn-' + str(i)).unlink()
-    except Exception:
-        pass
-" 2>/dev/null || true
+_sentinels remove
 rm talos.pipeline.json
 
 # =========================================================================
@@ -132,10 +129,9 @@ rm talos.pipeline.json
 
 # ---- B1: Malformed JSON -> returns default silently, exit 0 ----------------
 echo "{ not json" > talos.pipeline.json
-stdout_b1="$(PIPELINE_CONFIG="$SANDBOX/talos.pipeline.json" bash "$CFG_SH" merge.method safe 2>/dev/null)"
 rc_b1=0
-PIPELINE_CONFIG="$SANDBOX/talos.pipeline.json" bash "$CFG_SH" merge.method safe >/dev/null 2>/dev/null || rc_b1=$?
-err_b1="$(PIPELINE_CONFIG="$SANDBOX/talos.pipeline.json" bash "$CFG_SH" merge.method safe 2>&1 >/dev/null)"
+stdout_b1="$(PIPELINE_CONFIG="$SANDBOX/talos.pipeline.json" bash "$CFG_SH" merge.method safe 2>"$SANDBOX/err_b1")" || rc_b1=$?
+err_b1="$(cat "$SANDBOX/err_b1")"
 assert_eq "0"    "$rc_b1"     "B1: malformed JSON direct: exits 0"
 assert_eq "safe" "$stdout_b1" "B1: malformed JSON direct: returns default on stdout"
 assert_not_contains "$err_b1" "WARNING" \
@@ -143,17 +139,15 @@ assert_not_contains "$err_b1" "WARNING" \
 rm talos.pipeline.json
 
 # ---- B2: No config -> returns default silently, exit 0 ---------------------
-stdout_b2="$(bash "$CFG_SH" merge.method squash 2>/dev/null)"
 rc_b2=0
-bash "$CFG_SH" merge.method squash >/dev/null 2>/dev/null || rc_b2=$?
+stdout_b2="$(bash "$CFG_SH" merge.method squash 2>/dev/null)" || rc_b2=$?
 assert_eq "0"       "$rc_b2"     "B2: no config direct: exits 0"
 assert_eq "squash"  "$stdout_b2" "B2: no config direct: default returned silently"
 
 # ---- B3: Valid JSON -> parsed value on stdout, exit 0 ----------------------
 printf '{"merge":{"method":"rebase"}}' > talos.pipeline.json
-stdout_b3="$(PIPELINE_CONFIG="$SANDBOX/talos.pipeline.json" bash "$CFG_SH" merge.method squash 2>/dev/null)"
 rc_b3=0
-PIPELINE_CONFIG="$SANDBOX/talos.pipeline.json" bash "$CFG_SH" merge.method squash >/dev/null 2>/dev/null || rc_b3=$?
+stdout_b3="$(PIPELINE_CONFIG="$SANDBOX/talos.pipeline.json" bash "$CFG_SH" merge.method squash 2>/dev/null)" || rc_b3=$?
 assert_eq "0"       "$rc_b3"     "B3: valid JSON direct: exits 0"
 assert_eq "rebase"  "$stdout_b3" "B3: valid JSON direct: value parsed correctly"
 rm talos.pipeline.json
