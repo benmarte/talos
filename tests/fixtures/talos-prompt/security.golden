@@ -9,13 +9,8 @@ second line
 
 Do not run tests; QA and CI already own that. Review the diff only.
 
-Done when: the verdict comment is posted. Do not re-read files outside
-`diff-pr --stat`.
-
 If you stop, block, or ask instead of completing: name the file and quote
 the line that made you stop, and say whether it is an explicit requirement or
 your interpretation.
 
 Your role profile carries the full procedure.
-
-Final (2-3 lines): CLEAR/FINDINGS outcome + areas covered.

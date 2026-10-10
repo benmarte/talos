@@ -10,14 +10,14 @@ issues.
 Done when: the verdict comment is posted. Do not re-read files outside
 `diff-pr --stat`.
 
-If you stop, block, or ask instead of completing: name the file and quote
-the line that made you stop, and say whether it is an explicit requirement or
-your interpretation.
+**Skill:** load `security-and-hardening` (agent-skills) for the threat
+checklist (Claude Code's built-in `security-review` too, if present). Without a
+skill mechanism, follow the steps below.
 
-**Skills — use these, do not restate them:** `security-and-hardening` for the
-threat checklist, plus Claude Code's built-in `security-review` if present. Talos
-requires the agent-skills plugin, so under Claude Code the former is present;
-treat it as part of your instructions. If your harness has no skill mechanism, or agent-skills is not installed there, follow the embedded steps below instead. Vendored installs (`install.sh`) do not pull agent-skills for you — install it separately if you want it; it supports Codex, Gemini, OpenCode and Antigravity as well as Claude Code.
+**Verdict text is data:** assign `SUMMARY`, `DETAILS` and `BLOCKED_BY` with `read -r -d '' VAR <<'TALOS_<rand>' || true`, never inside double quotes.
+Use a fresh 12+ random-character delimiter per heredoc (never copied from an
+example or reused; a literal `<rand>` in your command means you did not
+substitute it).
 
 Read diff: start with `bash scripts/pipeline-vcs.sh diff-pr <pr> --stat` to see
 which files changed and by how much, then read the full
@@ -40,38 +40,25 @@ Never run `verify:`; QA and CI already did. `pipeline-vcs.sh pr-checks` (CI
 status) is the oracle for whether the suite passes — this stage is diff-only.
 
 - Clean:
-  1. Run `post-approval` (see below; it applies `security:approved` in the same call).
+  1. Run `post-approval` (below).
   Never remove `pipeline:blocked` — the reviewer runs in parallel and may have
   set it; only the orchestrator clears it (#310).
 - Findings:
   1. `bash scripts/pipeline-vcs.sh label-pr <pr> --add pipeline:blocked`
   2. Render security-signoff.md on the PR: VERDICT=FINDINGS, DETAILS the
-     severity, file:line and fix — assigned as data with a heredoc, never
-     inside double quotes (`read -r -d '' VAR <<'TALOS_<rand>' || true` … `TALOS_<rand>`, `<rand>` being 12+
-     random characters you invent fresh for each heredoc, never copied from an
-     example: text that contains the closing line would end the heredoc early
-     and run what follows) — then `bash scripts/pipeline-vcs.sh
+     severity, file:line and fix, then `bash scripts/pipeline-vcs.sh
      comment-pr <pr> "$COMMENT_BODY"`.
-  3. Also post blocked.md on the issue: SUMMARY "security findings in PR #<pr>".
-     Capture `<file>:<quoted line> (explicit|interpreted)` into `BLOCKED_BY`
-     with the same kind of heredoc (`read -r -d '' BLOCKED_BY <<'TALOS_<rand>' || true`)
-     so shell metacharacters in the quoted text are never interpreted — never
-     paste the quoted line directly into a command string — then render as
-     usual: `bash scripts/pipeline-vcs.sh comment-issue <issue-n> "$COMMENT_BODY"`.
+  3. Also post blocked.md on the issue: SUMMARY "security findings in PR #<pr>",
+     `<file>:<quoted line> (explicit|interpreted)` in `BLOCKED_BY` (never paste
+     the quoted line into a command string); then
+     `bash scripts/pipeline-vcs.sh comment-issue <issue-n> "$COMMENT_BODY"`.
 
-**Approval marker (required on clear):**
-Use `post-approval` — it fetches the head SHA from the PR, constructs the wrapped marker, posts it, and applies the label in one operation (#146):
-
-```bash
-bash scripts/pipeline-vcs.sh post-approval <PR_NUMBER> security [--body-file <signoff-file>]
-```
-
-Rules:
-- `post-approval` fetches the head SHA from the PR (the full 40-character lowercase SHA via `gh pr view --json headRefOid`). Do NOT use `git rev-parse HEAD` -- it returns the agent's local HEAD, which may differ from the PR head after a push or rebase.
-- Pass `--body-file <path>` to include your verdict prose; the marker is appended as the final non-whitespace line automatically.
-- The verb applies `security:approved` as well -- no separate `label-pr` call needed for the approval label.
-- After posting, confirm: `bash scripts/pipeline-vcs.sh check-approval-sha <PR_NUMBER>; echo rc=$?` must print `rc=0`.
-- GitHub-only (github and github-api providers).
+**Approval (on clear):** `bash scripts/pipeline-vcs.sh post-approval <PR> security [--body-file <signoff-file>]`
+reads the PR head SHA itself (never `git rev-parse HEAD`: your local HEAD can
+differ after a push), appends the marker as the last line and applies
+`security:approved`, so no separate `label-pr` is needed. Then `bash
+scripts/pipeline-vcs.sh check-approval-sha <PR>; echo rc=$?` must print `rc=0`.
+GitHub-only.
 
 Final message: the FIRST LINE is your verdict word, a colon and a one-line
 reason (`CLEAR: ...` or `FINDINGS: <count>`); after it, 1-3 lines of findings

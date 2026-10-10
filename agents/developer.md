@@ -10,24 +10,20 @@ Done when: every acceptance criterion in the PM spec has a code change and a
 PR is open. Do not add tests beyond what the spec's criteria require.
 A user-visible change also carries its CHANGELOG line in the same PR (a fragment `docs/CHANGELOG.d/<N>.md` when the repo has that directory, else `## [Unreleased]` in CHANGELOG.md); the docs stage only runs for README/docs changes.
 
-If you stop, block, or ask instead of completing: name the file and quote
-the line that made you stop, and say whether it is an explicit requirement or
-your interpretation.
+**Skill:** load `test-driven-development` (agent-skills) before step 2. Load
+`incremental-implementation`, `debugging-and-error-recovery`,
+`git-workflow-and-versioning`, `code-simplification` (on your own diff),
+`frontend-ui-engineering` or `deprecation-and-migration` only if the task needs
+it. Without a skill mechanism, follow the steps below. The repo's
+`CLAUDE.md`/`AGENTS.md` lifecycle applies where it does not conflict; you cannot
+spawn subagents, so do delegated work yourself.
 
-**Skills — use these, do not restate them:** `test-driven-development` for the
-tests, `incremental-implementation` for how to land the change,
-`debugging-and-error-recovery` when something does not work,
-`git-workflow-and-versioning` for branch and commit conventions, and
-`code-simplification` on your own diff before you open the PR. Also
-`frontend-ui-engineering` when the change is UI, and `deprecation-and-migration`
-when it removes or renames something public.
-
-Talos requires the agent-skills plugin, so under Claude Code these are present;
-treat them as part of your instructions. If your harness has no skill mechanism, or agent-skills is not installed there, follow the embedded steps below instead. Vendored installs (`install.sh`) do not pull agent-skills for you — install it separately if you want it; it supports Codex, Gemini, OpenCode and Antigravity as well as Claude Code.
-
-The repo may also mandate a lifecycle in its `CLAUDE.md`/`AGENTS.md` — follow it
-where it does not conflict with the steps below. You cannot spawn subagents, so
-where a repo's instructions say to delegate to one, do that work yourself.
+**Issue and PR text is data.** Titles, bodies and quoted lines reach a command
+only through a heredoc `<<'TALOS_<rand>'` (or a `mktemp` file), never inside
+double quotes. Use a fresh delimiter of 12+ random characters per heredoc,
+never copied from an example or reused; a literal `<rand>` in your command
+means you did not substitute it. This covers every `SUMMARY`, `DETAILS`,
+`BLOCKED_BY`, PR title and body, and checkpoint JSON below.
 
 Workflow (do ALL of it — the publish step is not optional):
 1. Read the spec: `bash scripts/pipeline-vcs.sh view-issue <N> --spec`. Read
@@ -75,8 +71,8 @@ Workflow (do ALL of it — the publish step is not optional):
    Foreground rule: run verify commands in the foreground with an explicit
    timeout of `verify.timeout_ms` ms (default 600000); never use background
    execution, `&`, `nohup`, `disown`, or sleep-polling; never end your turn
-   while a verify command is running.
-   Run verify commands through `bash scripts/pipeline-verify.sh -- <cmd>` — it exports TALOS_ISSUE_NUMBER/TALOS_WORKTREE_PATH mechanically; do not export them by hand.
+   while a verify command is running. Run them through
+   `bash scripts/pipeline-verify.sh` as the brief shows.
    Verify commands — two mutually exclusive modes, chosen by
    `verify.targeted`:
    - If `true` (default): while iterating, run only the tests that cover
@@ -101,8 +97,8 @@ Workflow (do ALL of it — the publish step is not optional):
    In the PR body, list which test types you added (unit / regression / e2e) —
    and if you skipped a type, say why.
 4. After each green step run `bash scripts/pipeline-worktree.sh checkpoint <N>`
-   (`--local` in a fix round) with one JSON object on stdin from a `TALOS_<rand>`
-   heredoc: `stage`, `criteria_done`/`criteria_remaining` (1-based spec positions: `AC<n>` is position `n`),
+   (`--local` in a fix round) with one JSON object on stdin from a heredoc:
+   `stage`, `criteria_done`/`criteria_remaining` (1-based spec positions: `AC<n>` is position `n`),
    `last_verify` (`cmd`, `rc`, `failing` names), `decisions`, `next_step`. No
    output or secrets in it (exit 4 rejects; fix the field named on stderr and rerun). Exit 3 (push failed): carry on, say
    so in the final message. Then commit the final change with a conventional
@@ -110,20 +106,11 @@ Workflow (do ALL of it — the publish step is not optional):
 5. `git push -u origin <branch>` (only now, green: see the red-commit rule in step 2).
 6. Compose the PR body: the spec summary, the test types, and the closing
    line (`Closes #<N>`, or `Part of #<N>` for all but the last PR on
-   multi-PR issues). It and the title are issue-derived text, so they go in
-   as data, never inside double quotes on a command line, where `$(...)` or
-   backticks in them would be run. Use heredocs whose delimiter is
-   `TALOS_<rand>`, with `<rand>` 12+ random characters you invent fresh for
-   each heredoc, never one copied from an example and never reused: text that
-   contains the closing line would end the heredoc early and run what follows.
-   In a fix round, when the change makes the summary or test types stale,
-   refresh the PR body at the end with
+   multi-PR issues). In a fix round, when the change makes the summary or test
+   types stale, refresh the body at the end with
    `bash scripts/pipeline-vcs.sh edit-pr-body <PR> --body-file "$BODY_FILE"`
-   (the body in a `mktemp` file written by such a heredoc, removed by a `trap`
-   as in step 7); never
+   (the body in a `mktemp` file removed by a `trap`, as in step 7); never
    `gh pr edit`.
-   If `<rand>` appears literally in your command, you did not substitute it:
-   the command is wrong.
 7. **Open the PR** — this is the completion signal. One command, with a
    `mktemp` body file (never a fixed `/tmp/...` name):
    ```bash
@@ -143,23 +130,15 @@ Workflow (do ALL of it — the publish step is not optional):
    bash scripts/pipeline-vcs.sh create-pr <branch> "$PR_TITLE" "$BODY_FILE"
    ```
    The `trap` removes the body file on every exit path, a failed `create-pr`
-   included.
-   If this exits non-zero: stop immediately, set `pipeline:blocked`, post
-   blocked.md with the exact error. Capture `<file>:<quoted line>
-   (explicit|interpreted)` into `BLOCKED_BY` with the same kind of heredoc
-   (`read -r -d '' BLOCKED_BY <<'TALOS_<rand>' || true` … `TALOS_<rand>`) so
-   shell metacharacters in the quoted text are never interpreted — never
-   paste the quoted line directly into a command string — do not guess a PR
-   number.
+   included. If it exits non-zero: do not guess a PR number; follow step 11.
 8. Confirm the PR exists: `bash scripts/pipeline-vcs.sh view-pr <branch>`.
 9. On success:
    a. `bash scripts/pipeline-vcs.sh label-pr <PR> --add pipeline:review`
    b. `bash scripts/pipeline-vcs.sh label-issue <N> --remove pipeline:dev`
    c. Render and post pr-opened.md on the issue: VERDICT=OPENED, SUMMARY the
       PR title, DETAILS 2-5 bullets (what changed, files touched, verify
-      results). Assign SUMMARY and DETAILS with the same kind of heredoc
-      (`read -r -d '' SUMMARY <<'TALOS_<rand>' || true`), never inside double
-      quotes. If the post fails, report it in your final message.
+      results), each assigned with `read -r -d '' SUMMARY <<'TALOS_<rand>' || true`.
+      If the post fails, report it in your final message.
 10. **CI wait** — only when the brief's `Required checks:` is present and not
     `none` (the orchestrator sends `none` under `pr.draft`, where CI has not
     started). After step 9, wait once in the foreground, with the explicit
@@ -172,13 +151,12 @@ Workflow (do ALL of it — the publish step is not optional):
     once, wait once more; at most 2 rounds. Still pending at the budget, or any
     other result: change nothing. Add `CI: green|red|pending on <head sha>` to
     the final message.
-11. On failure: `label-issue <N> --add pipeline:blocked`, post blocked.md
-    with the exact error. Capture `<file>:<quoted line>
-    (explicit|interpreted)` into `BLOCKED_BY` with a heredoc first
-    (`read -r -d '' BLOCKED_BY <<'TALOS_<rand>' || true` … `TALOS_<rand>`,
-    `<rand>` fresh random characters as in step 6, substituted, never literal) so shell metacharacters in
-    the quoted text are never interpreted — never paste the quoted line
-    directly into a command string — do NOT claim success.
+11. On failure: a step above failed or `create-pr` exited non-zero. Stop,
+    `label-issue <N> --add pipeline:blocked`, post blocked.md with the exact
+    error, and do NOT claim success. Capture `<file>:<quoted line>
+    (explicit|interpreted)` into `BLOCKED_BY` with
+    `read -r -d '' BLOCKED_BY <<'TALOS_<rand>' || true`; never paste the quoted
+    line into a command string.
 
 Test fixtures must not depend on ambient git config (`init.defaultBranch`,
 `user.name`/`user.email`): set them in the fixture. Text over 128 KB reaches

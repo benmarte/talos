@@ -10,12 +10,15 @@ just that it compiles.
 Done when: every acceptance criterion id has a re-run command and its result
 in the verdict comment, one line per id.
 
-If you stop, block, or ask instead of completing: name the file and quote
-the line that made you stop, and say whether it is an explicit requirement or
-your interpretation.
+**Skill:** load `test-driven-development` (agent-skills) to judge whether the
+tests prove the behaviour; `browser-testing-with-devtools` only for user-facing
+changes. Without a skill mechanism, follow the steps below.
 
-Talos requires the agent-skills plugin, so the skills named below are present
-under Claude Code — use them, do not restate them. If your harness has no skill mechanism, or agent-skills is not installed there, follow the embedded steps below instead. Vendored installs (`install.sh`) do not pull agent-skills for you — install it separately if you want it; it supports Codex, Gemini, OpenCode and Antigravity as well as Claude Code.
+Verdict text and spec/issue quotes are data: assign them with
+`read -r -d '' VAR <<'TALOS_<rand>' || true`, never inside double quotes.
+Use a fresh 12+ random-character delimiter per heredoc (never copied from an
+example or reused; a literal `<rand>` in your command means you did not
+substitute it).
 
 1. Tag your worktree: `bash scripts/pipeline-worktree.sh tag <issue-n>` -- lets the Step 1/Step 5 sweeps and the Step 4 post-merge `remove <N>` find and clean up this working copy once the PR merges or closes (#240).
 2. Read spec: `bash scripts/pipeline-vcs.sh view-issue <issue-n> --spec`.
@@ -109,10 +112,7 @@ sleep-polling; never end your turn while a verify command is running.
    note, not failed; a red commit that is not tests-only is reported as a
    note and the red proof skipped.
 7. Exercise each acceptance criterion from the PM spec — drive the actual
-   behavior where feasible, not only unit tests. Use `test-driven-development`
-   to judge whether the tests actually prove the behavior, and
-   `browser-testing-with-devtools` for user-facing changes. The `verify`/`run`
-   skills too, if the harness has them. Criteria marked `(prose: ...)` have
+   behavior where feasible, not only unit tests. Criteria marked `(prose: ...)` have
    no test: check them by hand and label them hand-checked; a criterion the
    developer declared prose in the PR body (the spec had no marker) is
    labelled `prose declared by developer`.
@@ -131,28 +131,16 @@ Outcome:
   1. `bash scripts/pipeline-vcs.sh label-pr <pr> --add pipeline:blocked --remove pipeline:review`
   2. `bash scripts/pipeline-vcs.sh label-issue <issue-n> --add pipeline:blocked`
   3. Render and post qa-verdict.md on the PR: VERDICT=FAIL, SUMMARY the
-     failing criterion, DETAILS the repro and suggested fix. Assign SUMMARY and
-     DETAILS as data with a heredoc, never inside double quotes
-     (`read -r -d '' VAR <<'TALOS_<rand>' || true` … `TALOS_<rand>`, `<rand>` being 12+ random characters you invent
-     fresh for each heredoc, never copied from an example: text that contains
-     the closing line would end the heredoc early and run what follows; a
-     literal `<rand>` in your command means you did not substitute it). Then
+     failing criterion, DETAILS the repro and suggested fix. Then
      `bash scripts/pipeline-vcs.sh comment-pr <pr> "$COMMENT_BODY"`. If the
      post fails, report it in your final message.
 
-**Approval marker (required on pass):**
-Use `post-approval` — it fetches the head SHA from the PR, constructs the wrapped marker, posts it, and applies the label in one operation (#146):
-
-```bash
-bash scripts/pipeline-vcs.sh post-approval <PR_NUMBER> qa [--body-file <verdict-file>]
-```
-
-Rules:
-- `post-approval` fetches the head SHA from the PR (the full 40-character lowercase SHA via `gh pr view --json headRefOid`). Do NOT use `git rev-parse HEAD` -- it returns the agent's local HEAD, which may differ from the PR head after a push or rebase.
-- Pass `--body-file <path>` to include your verdict prose; the marker is appended as the final non-whitespace line automatically.
-- The verb applies `qa:pass` as well -- no separate `label-pr` call needed for the approval label.
-- After posting, confirm: `bash scripts/pipeline-vcs.sh check-approval-sha <PR_NUMBER>; echo rc=$?` must print `rc=0`.
-- GitHub-only (github and github-api providers).
+**Approval (on pass):** `bash scripts/pipeline-vcs.sh post-approval <PR> qa [--body-file <verdict-file>]`
+reads the PR head SHA itself (never `git rev-parse HEAD`: your local HEAD can
+differ after a push), appends the marker as the last line and applies
+`qa:pass`, so no separate `label-pr` is needed. Then `bash
+scripts/pipeline-vcs.sh check-approval-sha <PR>; echo rc=$?` must print `rc=0`.
+GitHub-only.
 
 Final message: the FIRST LINE is your verdict word, a colon and a one-line
 reason (`PASS: ...` or `FAIL: ...`); after it, 1-3 lines of findings the

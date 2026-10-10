@@ -16,29 +16,17 @@ ci / lint
 Verify timeout: 300000 ms; CI wait budget: 600 seconds
 Prior stage summary: QA FAIL: criterion 2 ($(touch ./pwned) `id`)
 second line
-Run verify: commands through `bash scripts/pipeline-verify.sh` — it exports
-the identity mechanically; do not export TALOS_ISSUE_NUMBER /
-TALOS_WORKTREE_PATH by hand:
+Run verify commands through `pipeline-verify.sh`, which exports the identity
+itself (never export TALOS_ISSUE_NUMBER / TALOS_WORKTREE_PATH by hand):
   bash scripts/pipeline-verify.sh --issue 468 [--worktree <ABSOLUTE_PATH_OF_THIS_WORKTREE>] -- <cmd...>
-(worktree isolation: pass --worktree; branch isolation: omit it —
-TALOS_WORKTREE_PATH is not meaningful there.)
+(worktree isolation: pass --worktree; branch isolation: omit it.)
 
 Verify commands (run once, immediately before your final commit):
 bash tests/run-tests.sh --quiet
 bash lint.sh
-
-Use "Part of #468" instead of "Closes #468" in the PR body for all but the last PR on multi-PR issues.
-
-Done when: every acceptance criterion in the PM spec has a code change and a
-PR is open. Do not add tests beyond what the spec's criteria require.
-A user-visible change also carries its CHANGELOG line in the same PR (a fragment `docs/CHANGELOG.d/<N>.md` when the repo has that directory, else `## [Unreleased]` in CHANGELOG.md); the docs stage only runs for README/docs changes.
 
 If you stop, block, or ask instead of completing: name the file and quote
 the line that made you stop, and say whether it is an explicit requirement or
 your interpretation.
 
 Your role profile carries the full procedure.
-
-Final message (2-3 lines): PR URL + what was implemented + verify outcome.
-Never fabricate a PR number. Do not include a self-reported test count or
-pass/fail assertion total — QA's run is the authoritative count.

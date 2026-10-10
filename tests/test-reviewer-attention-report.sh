@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Skill-text assertions for the reviewer human-attention report (#294):
-#   1. agents/reviewer.md carries the report contract (2-5 bullets, file:line,
+#   1. agents/reviewer.md carries the report contract (at most 3 bullets, file:line,
 #      priority order, empty-list literal).
 #   2. The reviewer prompt template (templates/prompts/reviewer.md) instructs the report and the
 #      ATTENTION_REPORT placeholder in templates/comments/review-signoff.md.
@@ -27,7 +27,8 @@ assert_contains "$reviewer_text" "Human-attention report" "reviewer: names the h
 assert_contains "$reviewer_text" "ATTENTION_REPORT" "reviewer: names the ATTENTION_REPORT placeholder"
 assert_contains "$reviewer_text" "file:line" "reviewer: every bullet carries file:line"
 assert_contains "$reviewer_text" "nothing requires human attention beyond the diff" "reviewer: empty-list literal"
-assert_contains "$reviewer_text" "2-5 bullets" "reviewer: report bounded to 2-5 bullets"
+assert_contains "$reviewer_text" "at most 3 bullets" "reviewer: report capped at 3 bullets (#548)"
+assert_not_contains "$reviewer_text" "2-5 bullets" "reviewer: the old 2-5 bullet bound is gone"
 
 # SKILL reviewer prompt: instruction present (and only in the REVIEWER block,
 # not the security one — the report is a reviewer-stage artifact).

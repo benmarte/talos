@@ -11,7 +11,8 @@
 #       a value is inserted as it is and never expanded again (no second-order
 #       expansion), a marker line with an empty value is dropped, nothing is eval'd
 #   (c) every prompt of every role and shape still carries the safety lines (the
-#       stop rule, `Done when:`, the role-profile line) and no marker is left over
+#       stop rule, the role-profile line; `Done when:` lives in the profile, #548)
+#       and no marker is left over
 #   (d) config effects: draft, verify.qa_mode local, isolation branch,
 #       changelog lines, the handoff line, the docs diff instruction
 #   (e) the contract: one `prompt_file=<path>` line, a mode-0600 file, fixed-enum
@@ -269,7 +270,7 @@ for role in $ROLES; do
   assert_contains "$text" "If you stop, block, or ask instead of completing: name the file and quote
 the line that made you stop, and say whether it is an explicit requirement or
 your interpretation." "$role prompt carries the stop rule"
-  assert_contains "$text" "Done when:" "$role prompt carries its Done when line"
+  assert_not_contains "$text" "Done when:" "$role prompt leaves its Done when line to the role profile (#548)"
   case "$role" in
     planner) assert_contains "$text" "See your agent profile" "$role prompt points at the agent profile" ;;
     *) assert_contains "$text" "Your role profile carries the full procedure." "$role prompt points at the role profile" ;;
