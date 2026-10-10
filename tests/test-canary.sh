@@ -74,7 +74,7 @@ export STUB_PR_COMMENTS_JSON="[{\"body\":\"<!-- talos:approval sha=${SHA_GH} rol
 # view-issue--spec(meta+comments)
 # create-pr(1) post-approval(pr-head, dup-check comments, comment-pr state
 # check, comment-pr POST, label-pr POST, then the missing-marker check: PR +
-# comments) check-approval-sha(PR+comments)
+# comments) the post-approval self-check: check-approval-sha(PR+comments)
 # (the marker comment is authored by the stub's default login, which GET /user
 # resolves to, so the author-trust check accepts it)
 # pr-mergeable(1) check-pr-files(1) cleanup-close-issue(comment+PATCH).

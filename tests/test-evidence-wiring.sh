@@ -239,7 +239,7 @@ has 'evidence unavailable' "exit 2 with no stdout is evidence unavailable"
 has 'Never open, Read or describe an image or video file' "QA never opens an image or video"
 has 'never fetch the comment body' "QA never fetches the comment"
 tpl_pos() { grep -n "$1" "$TPL" | head -n 1 | cut -d: -f1; }
-p_epoch="$(tpl_pos 'run `date +%s`')"; p_after="$(tpl_pos '^After step 7')"; p_verdict="$(tpl_pos '^It never changes PASS/FAIL')"
+p_epoch="$(tpl_pos 'run `date +%s`')"; p_after="$(tpl_pos '^After step 4')"; p_verdict="$(tpl_pos '^It never changes PASS/FAIL')"
 if [ -n "$p_epoch" ] && [ -n "$p_after" ] && [ -n "$p_verdict" ] && [ "$p_epoch" -lt "$p_after" ] && [ "$p_after" -lt "$p_verdict" ]; then
   pass "template: the epoch note precedes the upload step, which precedes the verdict rule"
 else fail "template: the epoch note precedes the upload step, which precedes the verdict rule"; fi

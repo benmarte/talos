@@ -89,7 +89,7 @@ Workflow (do ALL of it — the publish step is not optional):
      commit and push.
    In both modes: no verify runs after that final run, never run it in the
    background, and never sleep-poll for results. Never zero local runs. The
-   only exception is step 10: one targeted re-run on a CI-fix commit.
+   only exception is step 9: one targeted re-run on a CI-fix commit.
    A checkpoint (step 4) runs the targeted tests only, never the full suite.
    Prefer summary output for verify commands (e.g. `--quiet` for Talos's own
    suite, or the project's equivalent) -- quote only failures, never paste
@@ -130,18 +130,18 @@ Workflow (do ALL of it — the publish step is not optional):
    bash scripts/pipeline-vcs.sh create-pr <branch> "$PR_TITLE" "$BODY_FILE"
    ```
    The `trap` removes the body file on every exit path, a failed `create-pr`
-   included. If it exits non-zero: do not guess a PR number; follow step 11.
-8. Confirm the PR exists: `bash scripts/pipeline-vcs.sh view-pr <branch>`.
-9. On success:
+   included. It prints `PR #<n> <url>` (`<PR>` below). If it exits non-zero: do
+   not guess a PR number; follow step 10.
+8. On success:
    a. `bash scripts/pipeline-vcs.sh label-pr <PR> --add pipeline:review`
    b. `bash scripts/pipeline-vcs.sh label-issue <N> --remove pipeline:dev`
    c. Render and post pr-opened.md on the issue: VERDICT=OPENED, SUMMARY the
       PR title, DETAILS 2-5 bullets (what changed, files touched, verify
       results), each assigned with `read -r -d '' SUMMARY <<'TALOS_<rand>' || true`.
       If the post fails, report it in your final message.
-10. **CI wait** — only when the brief's `Required checks:` is present and not
+9. **CI wait** — only when the brief's `Required checks:` is present and not
     `none` (the orchestrator sends `none` under `pr.draft`, where CI has not
-    started). After step 9, wait once in the foreground, with the explicit
+    started). After step 8, wait once in the foreground, with the explicit
     `Verify timeout`, for required CI on the pushed head:
     `bash scripts/pipeline-vcs.sh pr-checks-required <PR> --wait <budget>`,
     `<budget>` = `min(CI wait budget, Verify timeout/1000 - 30)` seconds.
@@ -151,7 +151,7 @@ Workflow (do ALL of it — the publish step is not optional):
     once, wait once more; at most 2 rounds. Still pending at the budget, or any
     other result: change nothing. Add `CI: green|red|pending on <head sha>` to
     the final message.
-11. On failure: a step above failed or `create-pr` exited non-zero. Stop,
+10. On failure: a step above failed or `create-pr` exited non-zero. Stop,
     `label-issue <N> --add pipeline:blocked`, post blocked.md with the exact
     error, and do NOT claim success. Capture `<file>:<quoted line>
     (explicit|interpreted)` into `BLOCKED_BY` with

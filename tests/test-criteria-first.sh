@@ -79,34 +79,24 @@ assert_contains "$dev_flat" 'red run and each green step run targeted tests only
 assert_contains "$dev_flat" 'Do not add tests beyond what the spec' \
   "developer: Done when still bounds the tests to the spec's criteria"
 
-# ── QA: criteria tests by file, red proof, one line per id ──────────────────
-assert_contains "$qa_flat" 'pipeline-criteria.sh' "QA profile uses scripts/pipeline-criteria.sh"
-assert_contains "$qa_flat" '--for <test path>' "QA runs the spec's test files via --for <test path>"
-assert_contains "$qa_flat" 'not subject to `--strict` skipping' \
-  "QA: criteria tests are not skipped by a --strict path-mapping miss"
-assert_contains "$qa_flat" 'one line per criterion id' "QA verdict has one line per criterion id"
+# ── QA: one qa-run call, one line per id ────────────────────────────────────
+# The path and name-filter validation, the --no-cache / no --quiet runs, the red
+# proof and the stop rule are code now (#549): tests/test-qa-run.sh drives them.
+# The profile only has to name the verb and keep the verdict-line contract.
+assert_contains "$qa_flat" 'pipeline-criteria.sh qa-run <issue-n> <pr>' "QA profile runs the one qa-run call"
+assert_contains "$qa_flat" 'one line per criterion' "QA verdict has one line per criterion id"
 assert_contains "$qa_flat" 'AC<n> red@<sha8> green@head' "QA verdict line format red@<sha8> green@head"
 assert_not_contains "$qa_flat" 'use the runner command and name filter the spec' \
   "QA does not run a runner command the spec names"
-assert_contains "$qa_flat" 'is data, never a command' "QA: the spec's Tests: line is data, never a command"
-assert_contains "$qa_flat" 'Never execute spec text' "QA never executes spec text"
-assert_contains "$qa_flat" "repo's configured \`verify:\` test runner" "QA runs tests through the repo's configured verify: runner"
-assert_contains "$qa_flat" 'Do NOT pass `--quiet`' "QA step 6 runs the criteria tests without --quiet"
-assert_contains "$qa_flat" '> <file> 2>&1' "QA step 6 captures stdout and stderr together"
-assert_contains "$qa_flat" 'add `--no-cache` to the head run and to the red run' \
-  "QA step 6 passes --no-cache to the head and red runs (step 5 warmed the test cache)"
-assert_contains "$qa_flat" 'false `head=missing`' "QA step 6 says why: a cached run prints no per-id lines"
-assert_contains "$qa_flat" 'must be repo-relative and exist in the repo' "QA: spec test paths must be repo-relative and exist"
-assert_contains "$qa_flat" 'not be absolute, start with `-`, or contain `..`, whitespace, a newline or a shell metacharacter' \
-  "QA: spec test paths reject absolute, leading -, .., whitespace, newline and shell metacharacters"
-assert_contains "$qa_flat" 'must match `^[A-Za-z0-9_|. -]+$` and not start with `-`' \
-  "QA: a name filter is charset-checked and may not start with -"
-assert_contains "$qa_flat" 'stop: run nothing from the spec' "QA: the stop rule is defined inline"
+assert_contains "$qa_flat" 'data, never a command' "QA: the spec's Tests: line is data, never a command"
+assert_contains "$qa_flat" 'nothing from the spec runs' "QA: a refused Tests: value runs nothing from the spec"
+assert_contains "$qa_flat" 'blocking finding' "QA: a refused Tests: value is a blocking finding"
 assert_contains "$qa_flat" 'vacuous' "QA: a test green at the red commit is FAIL (vacuous)"
 assert_contains "$qa_flat" 'hand-checked' "QA marks prose criteria hand-checked"
 assert_contains "$qa_flat" 'prose declared by developer' "QA labels developer-declared prose"
 assert_contains "$qa_flat" 'pr-checks-required' "QA still waits on required CI"
 assert_contains "$qa_flat" 'Exit 3' "QA keeps the exit 3 rule for the changed-path run"
+assert_not_contains "$qa_flat" '--no-cache' "QA profile no longer spells out the runner flags (qa-run owns them)"
 
 # ── pipeline-criteria.sh on the worked example ──────────────────────────────
 assert_file_exists "$CRITERIA" "scripts/pipeline-criteria.sh exists"

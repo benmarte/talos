@@ -43,7 +43,7 @@ for role in qa reviewer security docs adversarial; do
   assert_contains "$text" "post-approval <PR> $role " "$role: post-approval names its role"
   assert_contains "$text" "reads the PR head SHA itself (never \`git rev-parse HEAD\`: your local HEAD can differ after a push), appends the marker as the last line and applies" \
     "$role: the shared approval sentence (head SHA from the API, marker last)"
-  assert_contains "$text" "check-approval-sha <PR>; echo rc=\$?\` must print \`rc=0\`" "$role: the shared approval check"
+  assert_contains "$text" "It then runs check-approval-sha itself and prints one line ending \`stamp ok\`" "$role: the shared approval self-check"
 done
 
 # ── 3. load-bearing rules survive ────────────────────────────────────────────
@@ -58,7 +58,7 @@ assert_contains "$(flat "$AGENTS/validator.md")" "FIRST LINE is your verdict wor
 assert_contains "$(flat "$AGENTS/developer.md")" "Do not include a self-reported test count" "developer: no self-reported test counts"
 assert_contains "$(flat "$AGENTS/developer.md")" "never use background execution" "developer: foreground-only verify"
 assert_contains "$(flat "$AGENTS/qa.md")" "never use background execution" "qa: foreground-only verify"
-assert_contains "$(flat "$AGENTS/qa.md")" "must be repo-relative and exist in the repo" "qa: spec test paths are validated"
+assert_contains "$(flat "$AGENTS/qa.md")" "a value off the path or name-filter charset is refused and nothing from the spec runs" "qa: spec test paths are validated (by qa-run)"
 for role in validator pm planner developer qa reviewer security docs adversarial; do
   assert_contains "$(cat "$PROMPTS/$role.md")" "{{STOP_RULE}}" "$role prompt: the stop rule is rendered from the one partial"
 done
@@ -70,14 +70,14 @@ budget() {  # role ceiling
   if [ "$size" -le "$2" ]; then pass "$1: profile + prompt template is $size bytes (budget $2)"
   else fail "$1: profile + prompt template is $size bytes (budget $2)" "over by $((size - $2))"; fi
 }
-budget developer 12200
-budget qa 11200
-budget reviewer 5200
-budget security 4300
+budget developer 11800
+budget qa 8200
+budget reviewer 4700
+budget security 3700
 budget pm 4300
 budget validator 4300
-budget docs 5300
-budget adversarial 5400
+budget docs 4600
+budget adversarial 5100
 budget planner 3300
 
 finish

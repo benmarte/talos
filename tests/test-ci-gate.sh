@@ -9,7 +9,7 @@
 #       as `record-attempt <N> developer --pr`, and rc 1 without that line to QA
 #   (b) the Step 3c developer prompt carries `Required checks:` and `CI wait
 #       budget:`; local mode omits them; the draft block sends `none`
-#   (c) agents/developer.md: the CI-wait step after step 9, the `none` skip,
+#   (c) agents/developer.md: the CI-wait step after step 8, the `none` skip,
 #       the budget formula, the final-verify exception in step 3, both standing lines
 #   (e) `pr-checks-required <n> --wait <seconds>` (the one-call CI wait the
 #       developer and QA profiles use): 0/1/2 results, bad values, no-flag baseline
@@ -70,12 +70,12 @@ assert_contains "$(cat "$TALOS_ROOT/skills/pipeline/refs/draft-order.md")" 'Ever
 
 # Behavioural (#435): render the developer brief the way Step 3c says to (--draft
 # makes its `Required checks:` line `none`), then apply the developer profile's
-# step 10 rule to the rendered brief. Under PR_DRAFT = true no CI wait runs (no
+# step 9 rule to the rendered brief. Under PR_DRAFT = true no CI wait runs (no
 # pr-checks-required call); the ready flow still waits.
 printf '{"merge": {"required_checks": ["test (ubuntu-latest)"]}, "verify": {"qa_mode": "ci"}}' > "$SANDBOX/talos.pipeline.json"
 DRAFT_CHECKS="$(talos_prompt_text developer --issue 5 --draft | grep '^Required checks:')"
 assert_eq "Required checks: none" "$DRAFT_CHECKS" "PR_DRAFT = true: the rendered brief line is Required checks: none"
-ci_wait_runs() {  # $1 = rendered brief line; step 10: only when present and not none
+ci_wait_runs() {  # $1 = rendered brief line; step 9: only when present and not none
   case "$1" in "Required checks: none"|"") return 1 ;; "Required checks: "*) return 0 ;; *) return 1 ;; esac
 }
 ci_wait_runs "$DRAFT_CHECKS" && fail "PR_DRAFT = true: the developer CI wait is a no-op" || pass "PR_DRAFT = true: the developer CI wait is a no-op"
@@ -83,20 +83,20 @@ ci_wait_runs "Required checks: test (ubuntu-latest)" && pass "ready flow: the de
 
 # ── (c) developer profile ────────────────────────────────────────────────────
 DEV_TEXT="$(cat "$DEV")"
-STEP_10="$(awk '/^10\. \*\*CI wait\*\*/{f=1; print; next} /^11\./{f=0} f' "$DEV")"
-[ -n "$STEP_10" ] && pass "developer profile has the CI wait step 10" || fail "developer profile has the CI wait step 10"
-assert_contains "$DEV_TEXT" '9. On success:' "step 9 is unchanged and precedes the CI wait"
-assert_contains "$DEV_TEXT" '11. On failure:' "the failure step follows the CI wait"
-assert_contains "$STEP_10" 'is present and not' "CI wait is skipped when Required checks: is none"
-assert_contains "$STEP_10" 'pr-checks-required <PR>' "CI wait uses pr-checks-required"
-assert_contains "$STEP_10" 'pr-checks-required <PR> --wait <budget>' "CI wait is one --wait call"
-assert_contains "$STEP_10" 'min(CI wait budget, Verify timeout/1000 - 30)' "CI wait budget is capped under the verify timeout"
-assert_contains "$STEP_10" 'pr-checks-required: failed:' "only the failed: line triggers a fix"
-assert_contains "$STEP_10" 'at most 2 rounds' "CI fix rounds are bounded"
-assert_contains "$STEP_10" 'CI: green|red|pending on <head sha>' "final message carries the CI result"
+STEP_9="$(awk '/^9\. \*\*CI wait\*\*/{f=1; print; next} /^10\./{f=0} f' "$DEV")"
+[ -n "$STEP_9" ] && pass "developer profile has the CI wait step 9" || fail "developer profile has the CI wait step 9"
+assert_contains "$DEV_TEXT" '8. On success:' "step 8 is unchanged and precedes the CI wait"
+assert_contains "$DEV_TEXT" '10. On failure:' "the failure step follows the CI wait"
+assert_contains "$STEP_9" 'is present and not' "CI wait is skipped when Required checks: is none"
+assert_contains "$STEP_9" 'pr-checks-required <PR>' "CI wait uses pr-checks-required"
+assert_contains "$STEP_9" 'pr-checks-required <PR> --wait <budget>' "CI wait is one --wait call"
+assert_contains "$STEP_9" 'min(CI wait budget, Verify timeout/1000 - 30)' "CI wait budget is capped under the verify timeout"
+assert_contains "$STEP_9" 'pr-checks-required: failed:' "only the failed: line triggers a fix"
+assert_contains "$STEP_9" 'at most 2 rounds' "CI fix rounds are bounded"
+assert_contains "$STEP_9" 'CI: green|red|pending on <head sha>' "final message carries the CI result"
 assert_contains "$DEV_TEXT" 'The
-   only exception is step 10: one targeted re-run on a CI-fix commit.' "step 3 carries the final-verify exception"
-assert_not_contains "$STEP_10" 'until' "CI wait carries no inline poll loop"
+   only exception is step 9: one targeted re-run on a CI-fix commit.' "step 3 carries the final-verify exception"
+assert_not_contains "$STEP_9" 'until' "CI wait carries no inline poll loop"
 assert_not_contains "$(cat "$TALOS_ROOT/agents/qa.md")" 'until bash scripts/pipeline-vcs.sh' "qa.md carries no inline poll loop"
 assert_contains "$(cat "$TALOS_ROOT/agents/qa.md")" 'pr-checks-required <pr> --wait <verify.ci_wait_s, default 900>' "qa.md waits with --wait"
 assert_contains "$DEV_TEXT" '`init.defaultBranch`' "standing line: fixtures must not depend on ambient git config"
