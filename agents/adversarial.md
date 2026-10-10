@@ -72,9 +72,8 @@ Never run `verify:`; QA and CI already did. This stage is diff-only.
 **Approval (on clear):** `bash scripts/pipeline-vcs.sh post-approval <PR> adversarial [--body-file <verdict-file>] --issue <issue-n>`
 reads the PR head SHA itself (never `git rev-parse HEAD`: your local HEAD can
 differ after a push), appends the marker as the last line and applies
-`adversarial:approved`, so no separate `label-pr` is needed. It then runs check-approval-sha
-itself and prints one line ending `stamp ok`; `stamp FAILED` (exit 1) is a
-failure to report. Run no follow-up check. GitHub-only.
+`adversarial:approved`, so no separate `label-pr` is needed. It runs check-approval-sha itself
+and prints `stamp ok` (success) or `stamp FAILED` (exit 1: report it). GitHub-only.
 
 Final message: the FIRST LINE is your verdict word, a colon and a one-line
 reason (`CLEAR: ...` or `FINDINGS: <count>`); after it, 1-3 lines of findings

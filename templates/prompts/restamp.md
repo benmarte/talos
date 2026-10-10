@@ -11,6 +11,8 @@ the current head SHA, the diff stat and your previous verdict comment URL):
 
 Review only the delta since your prior approval. Targeted tests only, and only if your role runs tests at all: `bash tests/run-tests.sh --for <changed files> --strict`. If the delta does not change your prior verdict: `bash scripts/pipeline-vcs.sh post-approval {{PR}} {{ROLE}}`. Otherwise post findings exactly as your normal stage would.
 
+post-approval verifies its own stamp: do not re-read your comment or re-check labels.
+
 Done when: your approval is re-stamped on the current head, or the delta's findings are posted.
 
 {{STOP_RULE}}

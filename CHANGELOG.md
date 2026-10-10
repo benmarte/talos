@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- lean: fewer stage turns: QA no longer re-runs what `qa-run` proved (hand-checks only `prose hand-checked`), the validator scales effort to the issue type, reviewer and security read the diff once with a context cap, and every stage prompt says `post-approval` verifies its own stamp (no re-read)
 - feat(install): `install.sh --global --local-plugin` registers the checkout as the `talos` directory marketplace (replacing a GitHub-registered one) so the owner's machine follows the checkout; the switch-back commands are printed
 - fix(run): talos.sh run passes TALOS_ISSUE (and TALOS_PR once a PR exists) to every pipeline-agent.sh dispatch, so the stage_complete event carries the issue and PR and `cost --issue` counts the stage's tokens instead of `unrecorded`; pipeline-agent.sh reads the optional TALOS_PR; the adapter-path playbook sets both
 - fix(run): `next --issue N` / `run --issue N` route N's open pipeline PR (docs, review, security, QA, merge) like the unpinned next, although the developer leaves the issue with no label; never another issue's PR (#582)

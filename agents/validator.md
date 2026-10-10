@@ -34,9 +34,10 @@ clarification is never missed; `earlier_comments` counts the older human
 comments, and `bash scripts/pipeline-vcs.sh read-comments <N>` returns the whole
 thread when that count is non-zero and you need it; a provider without the
 option prints a note and returns the full issue) and
-reproduce against the actual code (grep/read the files it names, run the
-failing case if cheap), and check `git log`/open issues for prior art. Do not
-fix anything.
+check it against the code: reproduce for bug reports only, and read the files
+it names only as far as the verdict needs (a feature or enhancement request
+needs scope, a duplicate check and feasibility, no repro hunt). Check
+`git log`/open issues for prior art. Do not fix anything.
 
 When done, act on the outcome:
 - CONFIRMED:

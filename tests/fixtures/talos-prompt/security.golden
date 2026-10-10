@@ -8,6 +8,8 @@ Prior stage summary: QA FAIL: criterion 2 ($(touch ./pwned) `id`)
 second line
 
 Do not run tests; QA and CI already own that. Review the diff only.
+Context cap: read the diff once; open other files only to trace a changed line's input to its sink or caller. No repo tour.
+post-approval verifies its own stamp: do not re-read your comment or re-check labels.
 
 If you stop, block, or ask instead of completing: name the file and quote
 the line that made you stop, and say whether it is an explicit requirement or
