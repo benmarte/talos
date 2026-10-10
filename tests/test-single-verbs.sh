@@ -20,14 +20,19 @@ git config user.name t
 printf 'x\n' > f.txt
 git add f.txt
 git commit -q -m init
+OLD_REAL="$(git rev-parse HEAD)"
+printf 'y\n' > f.txt
+git add f.txt
+git commit -q -m second
+NEW_REAL="$(git rev-parse HEAD)"
 
 export STUB_CURRENT_USER=bot
 SHA="aabb1122ccdd3344eeff556677889900aabb1122"
-OLD="1111111111111111111111111111111111111111"
 marker() {  # role sha -> a comments array holding that approval marker
   python3 -I -c 'import json, sys
-print(json.dumps([{"body": "<!-- talos:approval sha=%s role=%s -->" % (sys.argv[2], sys.argv[1]),
-                   "user": {"login": "bot"}, "author": {"login": "bot"}}]))' "$1" "$2"
+print(json.dumps([{"id": 4000, "created_at": "2026-10-01T00:00:00Z",
+                   "body": "<!-- talos:approval sha=%s role=%s -->" % (sys.argv[2], sys.argv[1]),
+                   "user": {"login": "bot"}}]))' "$1" "$2"
 }
 LABEL_QA='[{"name":"qa:pass"}]'
 
@@ -41,7 +46,7 @@ pa() {
   local role="$1" labels="$2" seed="$3"
   shift 3
   printf '%s' "$seed" > "$STORE"
-  STUB_PR_HEAD_SHA="$SHA" STUB_PR_BASE_REF_NAME=main STUB_PR_LABELS_JSON="$labels" \
+  STUB_PR_HEAD_SHA="${HEAD_SHA:-$SHA}" STUB_PR_BASE_REF_NAME=main STUB_PR_LABELS_JSON="$labels" \
     bash "$VCS" post-approval 9 "$role" "$@" 2>"$SANDBOX/pa.err"
 }
 
@@ -62,10 +67,11 @@ assert_contains "$out" "qa" "post-approval: the failure line names the role"
 assert_not_contains "$out" "stamp ok" "post-approval: no label is not an ok stamp"
 assert_eq "1" "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "post-approval: a failed stamp is also one result line"
 
-# Another role's approval is stale (older head): fail closed, as the follow-up did.
-out="$(pa qa '[{"name":"qa:pass"},{"name":"review:approved"}]' "$(marker reviewer "$OLD")")"; rc=$?
-assert_eq "1" "$rc" "post-approval: a stale approval on the PR exits 1"
-assert_contains "$out" "stamp FAILED" "post-approval: a stale approval on the PR is a failed stamp"
+# Another role's approval is stale at an older real head: that role's gate to
+# clear (check-approval-sha --stale-list names it), not a failure of this stamp.
+out="$(HEAD_SHA="$NEW_REAL" pa qa '[{"name":"qa:pass"},{"name":"review:approved"}]' "$(marker reviewer "$OLD_REAL")")"; rc=$?
+assert_eq "0" "$rc" "post-approval: another role's stale approval does not fail this stamp"
+assert_contains "$out" "stamp ok (stale elsewhere: reviewer)" "post-approval: the line names the role that is stale"
 
 # The duplicate path (marker already there at this head) verifies too.
 out="$(pa qa "$LABEL_QA" "$(marker qa "$SHA")")"; rc=$?

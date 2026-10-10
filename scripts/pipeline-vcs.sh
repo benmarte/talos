@@ -7582,17 +7582,31 @@ if [ "$VERB" = "post-approval" ]; then
   fi
 
   # (#549) The verb checks its own stamp, so no stage runs a second command to
-  # confirm it. Only "all approval labels are current" counts: check-approval-sha
-  # also exits 0 for "no approval labels present", which here means the label
-  # never landed. Prints the one result line; its exit status is the verb's.
+  # confirm it. Only "all approval labels are current" counts as ok:
+  # check-approval-sha also exits 0 for "no approval labels present", which here
+  # means the label never landed. Another role's stale approval (reported as a
+  # `stale role=<other>` line, and never this role's) is that role's gate to
+  # clear, so it does not fail this stamp; it is named on the line. Anything
+  # else -- an unreadable PR, a stale entry of this role, no stale list at all
+  # -- fails closed. Prints the one result line; its exit status is the verb's.
   # $1 = what was done ("marker posted and qa:pass label applied").
   _pa_result() {
-    local _r_out _r_rc _r_why
+    local _r_out _r_rc _r_why _r_stale
     _r_out="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" check-approval-sha "$_pa_n" --stale-list \
       ${REPO:+--repo "$REPO"} 2>&1)"; _r_rc=$?
     if [ "$_r_rc" -eq 0 ] && printf '%s\n' "$_r_out" | grep -q 'all approval labels are current'; then
       printf 'post-approval: PR #%s %s %s; stamp ok\n' "$_pa_n" "$_pa_role" "$1"
       return 0
+    fi
+    _r_stale="$(printf '%s\n' "$_r_out" | sed -n 's/^stale role=\([a-z]*\) label=.*/\1/p' | paste -sd, -)"
+    if [ "$_r_rc" -ne 0 ] && [ -n "$_r_stale" ]; then
+      case ",$_r_stale," in
+        *",$_pa_role,"*) ;;
+        *)
+          printf 'post-approval: PR #%s %s %s; stamp ok (stale elsewhere: %s)\n' "$_pa_n" "$_pa_role" "$1" "$_r_stale"
+          return 0
+          ;;
+      esac
     fi
     _r_why="$(printf '%s\n' "$_r_out" | grep -v '^[[:space:]]*$' | head -n 1 | tr -cd '[:print:]' | cut -c1-160)"
     printf 'post-approval: PR #%s %s %s; stamp FAILED (check-approval-sha rc=%s: %s)\n' \
