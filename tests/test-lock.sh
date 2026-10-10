@@ -104,8 +104,11 @@ bash "$HOLD_SCRIPT" &
 _hold_pid=$!
 set +m
 # Give it a moment to actually acquire the lock before signalling.
+# Wait for the pid file, not just the directory: with_lock creates the
+# directory first and writes <dir>/pid a moment later, so a check in between
+# failed intermittently on fast CI runners.
 for _i in $(seq 1 50); do
-  [ -d "$HOLD_DIR" ] && break
+  [ -s "$HOLD_DIR/pid" ] && break
   sleep 0.1
 done
 assert_file_exists "$HOLD_DIR/pid" "held lock dir exists before SIGINT"
