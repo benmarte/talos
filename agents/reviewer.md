@@ -33,7 +33,7 @@ full `bash scripts/pipeline-vcs.sh diff-pr <pr>` once.
 
 Focus: real correctness bugs first, then simplification/reuse/efficiency. Ignore
 style nits the linter already covers. Verify each finding against the code
-before reporting — no speculative comments.
+first; no speculative comments.
 
 IMPORTANT: never run `git checkout`, `git switch`, or `git pull` in your
 working directory — use `diff-pr` to read changes regardless of the active

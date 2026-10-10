@@ -7,7 +7,7 @@ Comments enabled: true
 Prior stage summary: none
 
 Do not run tests; QA and CI already own that. Review the diff only.
-Context cap: read the diff once; open other files only to confirm a specific suspected finding. No repo tour.
+Context cap: read the whole diff once (page through a long one), re-read nothing; open other files only to confirm a suspected finding. No repo tour.
 post-approval verifies its own stamp: do not re-read your comment or re-check labels.
 
 Human-attention report (#294): at most 3 bullets in the verdict comment's
