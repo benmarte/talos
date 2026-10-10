@@ -863,4 +863,57 @@ assert_contains "$(journal)" "agent validator" "run cache: the queued issue was 
 assert_eq "2" "$(collects)" "run cache: list read + first next share one collect; the pass after the dispatch reads again"
 assert_contains "$OUT" "action=wait reason=none" "run cache: the pass after the dispatch saw the state the stage left (queue empty), not the cached one"
 
+# ── (h) BLOCKED: <reason> is a blocked outcome for ANY role (#580) ────────────
+# A headless stage that cannot do its job ends "BLOCKED: <why>" (the validator on
+# testrun#3 could not read the issue). That is not a verdict word for the role,
+# and used to stop the run dispatch-failed verdict-unreadable. Now: the role's
+# done runs with --verdict BLOCKED, pipeline:blocked is set on the issue (and the
+# PR), the reason is relayed, and the run stops clean with the stage-blocked line.
+reset_stubs
+LEASE_RESET
+printf 'BLOCKED: every pipeline-vcs.sh call was refused by the permission mode\nsecond line\n' > "$STUB_DIR/message"
+TALOS_LEASE_TTL_S=1 TALOS_NOW=16000 rn --issue 9 --max-iterations 3
+assert_eq "0" "$RC" "blocked: a validator BLOCKED: ends the run clean (exit 0)"
+assert_contains "$OUT" "stop reason=stage-blocked role=validator" "blocked: the documented stop line"
+assert_not_contains "$OUT" "dispatch-failed" "blocked: never dispatch-failed"
+assert_not_contains "$OUT" "verdict-unreadable" "blocked: never verdict-unreadable"
+assert_contains "$(journal)" "hooks post_stage validator validator 9 --verdict BLOCKED" "blocked: done recorded the verdict BLOCKED for the validator"
+assert_contains "$(journal)" "vcs label-issue 9 --add pipeline:blocked" "blocked: the issue is labelled pipeline:blocked"
+assert_contains "$(cat "$STUB_DIR/hooks.stdin" 2>/dev/null)$(cat "$STUB_DIR/bodies" 2>/dev/null)$(cat "$ERR")" "refused by the permission mode" "blocked: the reason is relayed"
+# a leading blank line does not hide it; a verdict word later in the text does not rescue it
+reset_stubs
+LEASE_RESET
+printf '\nBLOCKED: no access\nCONFIRMED: but really\n' > "$STUB_DIR/message"
+TALOS_LEASE_TTL_S=1 TALOS_NOW=16100 rn --issue 9 --max-iterations 3
+assert_contains "$OUT" "stop reason=stage-blocked role=validator" "blocked: BLOCKED: on the first non-blank line wins over a later verdict word"
+# only the FIRST line counts: BLOCKED: later in the text is not a block
+reset_stubs
+LEASE_RESET
+printf 'CONFIRMED: real\nBLOCKED: only a note\n' > "$STUB_DIR/message"
+TALOS_LEASE_TTL_S=1 TALOS_NOW=16200 rn --issue 9 --max-iterations 1
+assert_not_contains "$OUT" "stage-blocked" "blocked: BLOCKED: on a later line is not a block"
+assert_contains "$(journal)" "hooks post_stage validator validator 9 --verdict CONFIRMED" "blocked: the first-line verdict stands"
+# the developer with a PR URL in its message: BLOCKED: first still blocks
+reset_stubs
+LEASE_RESET
+printf '{"number": 9, "title": "t", "labels": [{"name": "pipeline:dev"}], "body": "body", "state": "open"}' > "$STUB_DIR/view-issue.9"
+cfg_json '{"vcs": {"provider": "github"}, "issues": {"max_parallel": 1}, "roles": {"developer": true}, "verify": {"timeout_ms": 600000, "ci_wait_s": 900}}'
+printf 'BLOCKED: tests need a secret (see https://github.com/acme/widget/pull/12)\n' > "$STUB_DIR/message"
+TALOS_LEASE_TTL_S=1 TALOS_NOW=16300 rn --issue 9 --max-iterations 1
+assert_contains "$OUT" "stop reason=stage-blocked role=developer" "blocked: a developer BLOCKED: line wins over a PR URL in the text"
+assert_contains "$(journal)" "hooks post_stage developer developer 9 --verdict BLOCKED" "blocked: developer recorded as BLOCKED"
+# a PR-side stage (qa): the PR is labelled too, and no fix round follows
+reset_stubs
+LEASE_RESET
+draft_cfg '"qa_mode": "ci", "timeout_ms": 600000, "ci_wait_s": 900' ', "merge": {"required_checks": ["test (ubuntu-latest)"]}'
+draft_collect ready
+draft_ready
+printf 'BLOCKED: the verify command needs approval\n' > "$STUB_DIR/message.qa"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=16400 rn --max-iterations 1
+assert_eq "0" "$RC" "blocked: a qa BLOCKED: ends the run clean"
+assert_contains "$OUT" "stop reason=stage-blocked role=qa" "blocked: qa stop line"
+assert_contains "$(journal)" "hooks post_stage qa qa 9 --pr 12 --verdict BLOCKED" "blocked: qa recorded as BLOCKED"
+assert_contains "$(journal)" "vcs label-pr 12 --add pipeline:blocked" "blocked: the PR is labelled pipeline:blocked"
+assert_not_contains "$(journal)" "gate fix-round" "blocked: a qa BLOCKED: starts no developer fix round"
+
 finish
