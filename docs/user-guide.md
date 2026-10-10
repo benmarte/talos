@@ -2098,8 +2098,9 @@ reply's *only* click-through to the issue/PR. Teams never threads (see
 [Environment variables](#environment-variables) above), so every Teams post
 is a root card.
 
-**The transpiler.** `_neutral_to_platform()` in `pipeline-notify.sh` runs on
-the rendered text right before each payload builder consumes it:
+**The transpiler.** The formatter in `pipeline-notify.sh` (`to_platform()`, one
+dialect table per sink) runs on the rendered text right before each payload
+formatter consumes it:
 
 | Sink | Transpiles to |
 |------|---------------|

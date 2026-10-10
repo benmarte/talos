@@ -90,8 +90,16 @@ assert_contains "$(cat "$ERRFILE")" "pipeline-notify: notifications.cmd" \
   "failing cmd: one stderr note is printed"
 
 # ── (e) Slow command: killed at notifications.cmd_timeout_s, still exits 0 ──
+#
+# Asserted on BEHAVIOUR, not on a tight wall clock (#552): notify's own start-up
+# (several interpreter spawns) stretches arbitrarily on a loaded machine, so
+# "finished within N seconds" flaked. The command sleeps 30 s and then writes a
+# marker; if the 1 s limit killed it, the marker never appears, whatever the load.
+# The generous bound only guards against the call blocking for the full sleep.
+LATE="$SANDBOX/too-late"
+rm -f "$LATE"
 cat > talos.pipeline.json <<EOF
-{"notifications": {"cmd": "sleep 5; echo too-late", "cmd_timeout_s": 1}}
+{"notifications": {"cmd": "sleep 30; echo too-late > $LATE", "cmd_timeout_s": 1}}
 EOF
 : > "$ERRFILE"
 _start=$(date +%s)
@@ -100,11 +108,12 @@ _elapsed=$(( $(date +%s) - _start ))
 assert_eq "0" "$rc" "slow cmd: pipeline-notify.sh still exits 0"
 assert_contains "$(cat "$ERRFILE")" "pipeline-notify: notifications.cmd" \
   "slow cmd: one stderr note is printed"
-if [ "$_elapsed" -le 4 ]; then
-  pass "slow cmd: killed at notifications.cmd_timeout_s (1s), not left to run its full 5s sleep"
+assert_file_absent "$LATE" \
+  "slow cmd: killed at notifications.cmd_timeout_s (1s), never reached the end of its 30s sleep"
+if [ "$_elapsed" -lt 25 ]; then
+  pass "slow cmd: the call returned long before the 30s sleep would have ended"
 else
-  fail "slow cmd: killed at notifications.cmd_timeout_s (1s), not left to run its full 5s sleep" \
-    "elapsed: ${_elapsed}s"
+  fail "slow cmd: the call returned long before the 30s sleep would have ended" "elapsed: ${_elapsed}s"
 fi
 
 # ── (f) No orphaned process after a timeout ───────────────────────────────────
