@@ -596,7 +596,6 @@ Next steps:
   1. Add the 'pipeline:ready' label to a GitHub issue (or a '- [ ] task' in plan.md for file mode)
   2. Start the pipeline with `/talos:pipeline` in Claude Code; in any other agent: Read ~/.talos/skills/pipeline/SKILL.md and follow it
      (local/weak-model option: `bash scripts/talos.sh run` orchestrates in code, the LLMs do the stages; see README "Deterministic orchestrator" and docs/user-guide.md "Deterministic orchestrator (`talos.sh run`)")
-  2b. The old event-driven `.claude/commands/pipeline-tick.md` is SUPERSEDED by `run`/`next` and kept only as reference
   3. For GitHub Projects, make sure the Status field has: Ready, In progress, In review, Done, Blocked
      (if your board uses different column names, configure board.status_map to remap them — see the
      example in the config template above; pipeline-status.sh will emit talos:board-unverified on

@@ -8,8 +8,6 @@ GitHub Issues (or a local markdown checklist in file mode) serve as the state ma
 
 > 📖 **New here? Start with the [User Guide](docs/user-guide.md)** — per-harness install and start lines (Claude Code, pi, Codex CLI, Gemini CLI, Antigravity, local models via llama.cpp, any other agent), prerequisites, environment variables, feature matrix, and troubleshooting. This README is the architecture and configuration reference.
 
-> **Historical note**: an earlier design used GitHub Actions (`anthropics/claude-code-action`) as the event-driven driver. That variant lives in `examples/github-actions/` and `.claude/commands/pipeline-tick.md` for reference, but the primary, production-tested model is the orchestrator session described here.
-
 ---
 
 > **Talos installs [agent-skills](https://github.com/addyosmani/agent-skills) for you.** The role profiles delegate their methodology to those skills rather than restating it, so it is a hard requirement — but never a manual step. The plugin declares it as a dependency (`+ 1 dependency: agent-skills`); `install.sh` fetches it into `.claude/skills/` (skip with `--no-agent-skills`). Upstream, MIT, unmodified.
@@ -295,8 +293,7 @@ the bookkeeping, no orchestrator session; an LLM still does every stage, through
 `agents.runner` names (`agents.fallback` failover applies). `--issue <N>` scopes
 it to one issue; `--max-iterations <n>` (default 20) caps the dispatch passes; every stop/ask-owner wait
 exits clean with its `stop` line. Resume after a crash re-runs `run`: the lease ledger and the #419
-handoff files carry the state. `.claude/commands/pipeline-tick.md` is SUPERSEDED by `run`+`next` (see
-its banner); this section and `docs/user-guide.md` are the upgrade notes.
+handoff files carry the state.
 
 ---
 

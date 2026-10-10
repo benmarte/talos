@@ -752,9 +752,7 @@ after the push the normal path resumes (re-stamps, `ready-pr`, QA). A second
 QA FAIL at the same PR head (the fix round pushed nothing) stops the run:
 `pipeline:blocked` on the PR and the issue, `stop
 reason=qa-fail-unchanged-head pr=<M> issue=<N>`, exit 0. Re-run `run` to resume: the lease ledger and the #419
-handoff files carry the state. `.claude/commands/pipeline-tick.md` (the
-event-driven tick) is SUPERSEDED by `run`/`next` — kept only as reference,
-see its own banner.
+handoff files carry the state.
 
 **The verdict comes from the final message.** `run` reads each stage's verdict
 from the agent's final message, never from a posted comment. A verdict-word
@@ -3229,10 +3227,7 @@ does that work itself instead. Skills are reachable; agents are not.
 Talos's own scripts only call your VCS CLI (`gh`/`glab`/`az`) and, for
 notifications, the Slack/Discord/Teams HTTP APIs.
 
-**Can it run in CI?** An experimental GitHub Actions driver exists in
-[`examples/github-actions/`](../examples/github-actions/) (event-driven via
-`anthropics/claude-code-action`), but it's unmaintained reference material —
-the supported path is a local orchestrator session.
+**Can it run in CI?** No; the supported path is a local orchestrator session.
 
 **Is my repo modified?** Only `.claude/` (plus `talos.pipeline.json` and,
 for every harness, a fenced block in `AGENTS.md`; `--no-agents-md` skips it). All state lives in
