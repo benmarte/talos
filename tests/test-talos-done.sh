@@ -282,14 +282,34 @@ hooks post_stage pr-opened orchestrator 42 --pr 57 --summary PR #57 opened" "$(j
 assert_eq "continue" "$(line_of next)" "developer PR_OPENED: continue (the playbook runs the mergeability gate)"
 reset_stubs
 dn developer --issue 42 --verdict BLOCKED --summary-file "$SUM"
-assert_eq "status 42 Blocked
+assert_eq "vcs label-issue 42 --add pipeline:blocked
+status 42 Blocked
 notify developer #42 - 42
 hooks post_stage developer developer 42 --verdict BLOCKED --summary-file F
 events cost --issue 42 --line
 notify blocked #42 developer blocked 42
-hooks post_stage blocked orchestrator 42 --summary developer blocked" "$(jr)" "developer BLOCKED (no PR): board Blocked, relay, event, spend --line, blocked lifecycle"
+hooks post_stage blocked orchestrator 42 --summary developer blocked" "$(jr)" "developer BLOCKED (no PR): pipeline:blocked (#580), board Blocked, relay, event, spend --line, blocked lifecycle"
 assert_eq "stop" "$(line_of next)" "developer BLOCKED: next=stop"
 assert_out "developer BLOCKED" ""
+
+# BLOCKED (#580) is accepted for every role: pipeline:blocked on the issue (and the
+# PR), board Blocked, the blocked lifecycle event, and never a fix round.
+for r in validator pm docs developer; do
+  reset_stubs
+  dn "$r" --issue 42 --verdict BLOCKED --summary-file "$SUM"
+  assert_eq "done=ok" "$(printf '%s' "$OUT" | head -n 1)" "BLOCKED is accepted for $r"
+  assert_eq "stop" "$(line_of next)" "$r BLOCKED: next=stop"
+  assert_contains "$(jr)" "label-issue 42 --add pipeline:blocked" "$r BLOCKED: the issue is labelled pipeline:blocked"
+  assert_contains "$(jr)" "status 42 Blocked" "$r BLOCKED: board Blocked"
+  assert_contains "$(jr)" "notify blocked #42 $r blocked 42" "$r BLOCKED: the blocked lifecycle event"
+done
+for r in qa reviewer security adversarial; do
+  reset_stubs
+  dn "$r" --issue 42 --pr 57 --verdict BLOCKED --summary-file "$SUM"
+  assert_eq "stop" "$(line_of next)" "$r BLOCKED: next=stop, not a fix round"
+  assert_contains "$(jr)" "label-pr 57 --add pipeline:blocked" "$r BLOCKED: the PR is labelled pipeline:blocked"
+  assert_contains "$(jr)" "label-issue 42 --add pipeline:blocked" "$r BLOCKED: the issue is labelled pipeline:blocked"
+done
 
 # ── (b) a failed pre-step writes nothing ─────────────────────────────────────
 reset_stubs

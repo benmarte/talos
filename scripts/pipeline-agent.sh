@@ -102,6 +102,14 @@
 #   agents.runner_args  list of extra CLI args appended to claude/pi/codex/gemini/agy
 #   agents.runner_cmd   full shell command for runner=custom;
 #                       receives the prompt on stdin
+#   agents.claude_allowed_tools  (#580) list of claude permission rules added to the
+#                       default allowlist of a claude-runner stage, e.g.
+#                       "Bash(npm run lint:*)". Role-first:
+#                       agents.roles.<role>.claude_allowed_tools replaces the global list.
+#   agents.claude_permission_mode  (#580) acceptEdits | auto | bypassPermissions | manual |
+#                       dontAsk | plan; unset (default) passes no --permission-mode.
+#                       Role-first like the list. An explicit opt-in: see the risk note in
+#                       docs/reference.md (issue text is untrusted input).
 #   agents.capture_usage  (#420) bool, default true. Records each attempt's token
 #                       usage in the stage event. claude gets `--output-format
 #                       json` (after agents.runner_args, before the prompt) and
@@ -230,8 +238,14 @@
 #   if [ "${TALOS_ISSUE_NUMBER:-}" != "$EXPECTED" ]; then exit 1; fi
 #
 # Runner invocations:
-#   claude       claude -p --setting-sources project [args] [--output-format json] <prompt>
+#   claude       claude -p --setting-sources project [args] [--output-format json]
+#                  [permission flags] -- <prompt>
 #                (the --output-format json capture flag is agents.capture_usage, #420)
+#                (#580: a headless stage cannot answer an approval prompt, so it gets
+#                 --allowedTools (a scoped default per role + agents.claude_allowed_tools),
+#                 --add-dir <this scripts dir>, --disallowedTools Edit/Write on it, and
+#                 --permission-mode only when agents.claude_permission_mode is set. See
+#                 "Claude permissions" below. `--` ends the variadic flags before the prompt.)
 #                (--setting-sources project keeps user-global CLAUDE.md
 #                 instructions out of pipeline workers)
 #   pi           pi -p [args] <prompt>     # pi print mode, one-shot headless stage
@@ -1297,6 +1311,145 @@ _tmo() {
   fi
 }
 
+# ── Claude permissions (#580) ────────────────────────────────────────────────
+# `claude -p` has no one to answer an approval prompt: in a repo without its own
+# allowlist every Bash call a stage needs ("bash scripts/pipeline-vcs.sh ...",
+# the verify command, even `git ls-files`) was refused and the stage could not do
+# its job. _claude_perm_build fills _CP_ARGS with the flags that fix it, for the
+# claude runner only:
+#   --permission-mode <m>      only when agents.claude_permission_mode is set
+#   --add-dir <scripts dir>    so the install is readable (skipped when the stage
+#                              cwd is inside it: Talos developing itself)
+#   --allowedTools <rules...>  the scoped default for the role + the config list
+#   --disallowedTools <rules>  Edit/Write under the install dir, which is read-only
+#                              to a stage whatever the role may edit elsewhere
+# The default allowlist (rule grammar: https://code.claude.com/docs/en/permissions,
+# `Bash(<prefix>:*)` = the prefix and anything after it; each shell subcommand of a
+# compound command must match on its own):
+#   every role  Read Glob Grep; the pipeline-*.sh and talos.sh scripts that exist in
+#               this install, by name, as scripts/X, ./scripts/X and <install>/X (a
+#               script the repo ships under another name is not allowed); read-only git
+#   developer   + Edit Write Bash(git:*) + the verify commands
+#   validator, qa  + the verify commands (they reproduce and run the tests)
+#   docs        + Edit Write
+# A verify command becomes `Bash(<command>:*)` only when it is plain words (letters,
+# digits and . / _ = : @ % + - and spaces): anything else cannot be said as a prefix
+# rule without widening it, so it is skipped with a warning (that names its position,
+# never its text, which may hold a secret).
+# agents.claude_allowed_tools entries must look like Name or Name(args without
+# parentheses), with no comma or control character, and never start with `-`: an
+# entry can then neither end the rule list nor become a flag.
+# An explicit --allowedTools / --dangerously-skip-permissions in agents.runner_args
+# is the owner's own policy: nothing is added on top of it.
+_CP_ARGS=()
+_CP_MODES="acceptEdits auto bypassPermissions manual dontAsk plan"
+_cp_warn() { echo "pipeline-agent: [warn] $* (role=$ROLE)" >&2; }
+# _cp_safe_path <path>: letters, digits and . _ / + @ = : % - only (no space, wildcard,
+# parenthesis or comma), so it can sit inside a rule.
+_cp_safe_path() { case "$1" in "" | *[!A-Za-z0-9._/+@=:%-]*) return 1 ;; esac; return 0; }
+_cp_user_rule_ok() {
+  [[ "$1" != *[[:cntrl:]]* && "$1" != *,* && "${#1}" -le 500 ]] || return 1
+  [[ "$1" =~ ^[A-Za-z_][A-Za-z0-9_]*(\([^\(\)]*\))?$ ]]
+}
+_cp_verify_rule_ok() {
+  [[ "${#1}" -le 200 && "$1" =~ ^[A-Za-z0-9./_][A-Za-z0-9\ ./_=:@%+-]*$ ]]
+}
+_claude_perm_build() {
+  local _a _own_allow=0 _skip=0 _own_mode=0 _mode _f _n _d _i=0 _line _rules=() _dirs=() _deny=() _tools _in_cwd=0 _phys _home
+  _CP_ARGS=()
+  for _a in ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"}; do
+    case "$_a" in
+      --allowedTools | --allowed-tools | --allowedTools=* | --allowed-tools=*) _own_allow=1 ;;
+      --dangerously-skip-permissions | --allow-dangerously-skip-permissions) _skip=1 ;;
+      --permission-mode | --permission-mode=*) _own_mode=1 ;;
+    esac
+  done
+  [ "$_skip" -eq 0 ] || return 0
+
+  if [ "$_own_mode" -eq 0 ]; then
+    _mode="$(cfg "agents.roles.$ROLE.claude_permission_mode")"
+    [ -n "$_mode" ] || _mode="$(cfg agents.claude_permission_mode)"
+    if [ -n "$_mode" ]; then
+      case " $_CP_MODES " in
+        *" $_mode "*) _CP_ARGS+=(--permission-mode "$_mode") ;;
+        *) _cp_warn "agents.claude_permission_mode must be one of: $_CP_MODES -- ignoring it" ;;
+      esac
+    fi
+  fi
+  [ "$_own_allow" -eq 0 ] || return 0
+
+  # The scripts dir, as invoked and as resolved; relative to the cwd it is scripts/.
+  _dirs=("$SCRIPT_DIR")
+  _phys="$(cd "$SCRIPT_DIR" 2>/dev/null && pwd -P)"
+  [ -z "$_phys" ] || [ "$_phys" = "$SCRIPT_DIR" ] || _dirs+=("$_phys")
+  case "$PWD/" in "$SCRIPT_DIR"/*) _in_cwd=1 ;; esac
+  case "$SCRIPT_DIR/" in "$PWD"/*) _in_cwd=1 ;; esac
+  if [ "$_in_cwd" -eq 0 ]; then
+    for _d in "${_dirs[@]}"; do
+      _CP_ARGS+=(--add-dir "$_d")
+      if _cp_safe_path "$_d"; then
+        _deny+=("Edit(/$_d/**)" "Write(/$_d/**)")
+      else
+        _cp_warn "the Talos scripts dir has characters a permission rule cannot hold; a stage can read it but it is not denied to Edit/Write"
+      fi
+    done
+  fi
+
+  _rules=(Read Glob Grep)
+  _home="$(cd "$HOME" 2>/dev/null && pwd)"
+  _cp_safe_path "$_home" || _home=""
+  for _f in "$SCRIPT_DIR"/pipeline-*.sh "$SCRIPT_DIR"/talos.sh; do
+    [ -f "$_f" ] || continue
+    _n="${_f##*/}"
+    case "$_n" in *[!A-Za-z0-9._-]*) continue ;; esac
+    _rules+=("Bash(bash scripts/$_n:*)" "Bash(bash ./scripts/$_n:*)")
+    for _d in "${_dirs[@]}"; do
+      _cp_safe_path "$_d" || continue
+      _rules+=("Bash(bash $_d/$_n:*)")
+      # An agent writes the install as ~/.talos/scripts/X; the rule matches the command text.
+      if [ -n "$_home" ]; then
+        case "$_d" in "$_home"/*) _rules+=("Bash(bash ~${_d#"$_home"}/$_n:*)") ;; esac
+      fi
+    done
+  done
+  _rules+=("Bash(git status:*)" "Bash(git diff:*)" "Bash(git log:*)" "Bash(git show:*)"
+           "Bash(git rev-parse:*)" "Bash(git ls-files:*)"
+           "Bash(git branch)" "Bash(git branch --show-current)" "Bash(git branch --list:*)")
+  case "$ROLE" in
+    developer) _rules+=(Edit Write "Bash(git:*)") ;;
+    docs) _rules+=(Edit Write) ;;
+  esac
+  case "$ROLE" in
+    developer | qa | validator)
+      while IFS= read -r _line; do
+        [ -n "$_line" ] || continue
+        _i=$((_i + 1))
+        if _cp_verify_rule_ok "$_line"; then
+          _rules+=("Bash($_line:*)")
+        else
+          _cp_warn "verify command #$_i is not plain words, so no permission rule is made for it; add one with agents.claude_allowed_tools if the stage needs it"
+        fi
+      done <<EOF
+$(cfg verify)
+EOF
+      ;;
+  esac
+  _tools="$(cfg "agents.roles.$ROLE.claude_allowed_tools")"
+  [ -n "$_tools" ] || _tools="$(cfg agents.claude_allowed_tools)"
+  while IFS= read -r _line; do
+    [ -n "$_line" ] || continue
+    if _cp_user_rule_ok "$_line"; then
+      _rules+=("$_line")
+    else
+      _cp_warn "agents.claude_allowed_tools: dropped an entry that is not a permission rule (Name or Name(args), no comma, no parentheses inside)"
+    fi
+  done <<EOF
+$_tools
+EOF
+  _CP_ARGS+=(--allowedTools "${_rules[@]}")
+  [ "${#_deny[@]}" -eq 0 ] || _CP_ARGS+=(--disallowedTools "${_deny[@]}")
+}
+
 # RC (#182): every branch below used to `exec` straight into the runner, so
 # the runner's exit code WAS this script's exit code and nothing ran after
 # it. hooks.post_stage needs to fire once the runner exits (event
@@ -1319,13 +1472,17 @@ case "$RUNNER" in
     if _usage_capture_wanted; then _usage_begin; fi
     if [ -n "$_UDIR" ]; then
       # #420: JSON output; its message text is printed below, as text mode would.
+      _claude_perm_build
       _tmo claude -p --setting-sources project \
-        ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} --output-format json "$PROMPT" >"$_UDIR/raw"
+        ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} --output-format json \
+        ${_CP_ARGS[@]+"${_CP_ARGS[@]}"} -- "$PROMPT" >"$_UDIR/raw"
       RC=$?
       _usage_finish_claude "$_UDIR/raw"
     else
+      _claude_perm_build
       _tmo claude -p --setting-sources project \
-        ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} "$PROMPT"
+        ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} \
+        ${_CP_ARGS[@]+"${_CP_ARGS[@]}"} -- "$PROMPT"
       RC=$?
     fi
     ;;

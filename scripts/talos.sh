@@ -105,6 +105,8 @@
 #            developer PR_OPENED BLOCKED        qa PASS FAIL RESTAMP_PASS RESTAMP_FAIL
 #            reviewer APPROVED CHANGES RESTAMP_PASS RESTAMP_FAIL
 #            security, adversarial CLEAR FINDINGS RESTAMP_PASS RESTAMP_FAIL
+#         Any role may also end BLOCKED (#580): board Blocked, pipeline:blocked on the issue and
+#         the PR, next=stop. `run` reads it from a final message whose first line is `BLOCKED: <why>`.
 #         Output: `done=ok` first, `spend=<line>`, `next=` last:
 #            continue | stop | fix-round stage=<role> | batch
 #         `done` never calls `gate fix-round` and never merges.
@@ -2240,7 +2242,7 @@ _talos_done() {
   [[ -z "$_sha" || "$_sha" =~ ^[0-9a-fA-F]{4,64}$ ]] || _talos_stop usage 2
   # Every verdict is on the role's fixed list: no verdict at all for a role with none.
   _ok=1
-  for _x in $(_talos_done_verdicts "$_role"); do [ "$_x" = "$_v" ] && _ok=0; done
+  for _x in $(_talos_done_verdicts "$_role") BLOCKED; do [ "$_x" = "$_v" ] && _ok=0; done
   { [ "$_ok" -eq 0 ] || { [ -z "$_v" ] && [ -z "$(_talos_done_verdicts "$_role")" ]; }; } || _talos_stop verdict-invalid 2
   # A PR-side stage names its PR; so does the developer's pr-opened.
   case "$_role" in
@@ -2279,15 +2281,18 @@ _talos_done() {
   _talos_emit done ok
 
   case "$_role:$_v" in
+    *:BLOCKED) _col="Blocked"; _msg="$_role blocked"; _ev=blocked ;;
     validator:CONFIRMED) _col="In progress" ;;
     validator:*) _col="Blocked"; _msg="Validator: $_v"; _ev=blocked ;;
     developer:PR_OPENED) _col="In review"; _msg="PR #$_pr opened"; _ev=pr-opened ;;
-    developer:BLOCKED) _col="Blocked"; _msg="developer blocked"; _ev=blocked ;;
     qa:FAIL | qa:RESTAMP_FAIL) _msg="QA failed in PR #$_pr"; _ev=blocked ;;
     reviewer:CHANGES | reviewer:RESTAMP_FAIL) _msg="reviewer: changes required"; _ev=blocked ;;
     security:FINDINGS | security:RESTAMP_FAIL | adversarial:FINDINGS | adversarial:RESTAMP_FAIL)
       _msg="$_role: findings in PR #$_pr"; _ev=blocked ;;
   esac
+
+  # #580: BLOCKED (any role) halts the issue (and its PR) for a human: pipeline:blocked.
+  [ "$_v" != BLOCKED ] || _talos_block_labels "$_n" "$_pr"
 
   if [ -n "$_col" ]; then
     _talos_run_capture board bash "$SCRIPT_DIR/pipeline-status.sh" "$_n" "$_col"
@@ -2319,6 +2324,8 @@ _talos_done() {
         if [ "$_draft" -eq 1 ]; then _next=batch; else _next="fix-round stage=$_role"; fi ;;
       *) _next="fix-round stage=$_role" ;;
     esac
+    # #580: a blocked stage (any role) is for a human: no fix round follows.
+    [ "$_v" != BLOCKED ] || _next=stop
   fi
   # The stage's work is complete: free the issue's lease (#470, AC4) so the
   # next `next` run answers immediately, not after the TTL.
@@ -2723,6 +2730,12 @@ _run_verdict_url() { grep -oE "https?://[^ <>()\"]+/(pull|[a-z-]+/[a-z-]+/pull)/
 _run_verdict() {
   local _role="$1" _f="$2" _w _v _line
   [ -f "$_f" ] && [ -r "$_f" ] || return 1
+  # #580: a final message whose first non-blank line is `BLOCKED: <reason>` is a
+  # blocked outcome for ANY role (a stage that could not do its job says so); it
+  # is not a verdict word of the role's list, and never verdict-unreadable.
+  _line="$(grep -m 1 -v '^[[:space:]]*$' "$_f" 2>/dev/null)"
+  _line="${_line#"${_line%%[![:space:]]*}"}"
+  case "$_line" in "BLOCKED:"*) printf BLOCKED; return 0 ;; esac
   case "$_role" in
     pm | planner | docs)
       printf none; return 0 ;;
@@ -3042,6 +3055,11 @@ _talos_run_dispatch() {
   # through ready-pr and QA; the other roles' fix-round answers still go back
   # to `next` (the gate and the ceilings run inside it, #471).
   [ "$_role" != qa ] || [ "$_v" != PASS ] || rm -f "$_CFG_CACHE_DIR/qa-fail-head.$_pr"
+  # #580: the reason a stage gave for BLOCKED, relayed (sanitised, one line) beside
+  # the stop line; the whole message went to done as the summary.
+  if [ "$_v" = BLOCKED ]; then
+    _talos_relay blocked "$(grep -m 1 -v '^[[:space:]]*$' "$_CFG_CACHE_DIR/agent.out" 2>/dev/null | head -c 300)"
+  fi
   case "$_next" in
     stop)
       _talos_emit stop "reason=stage-blocked role=$_role"
