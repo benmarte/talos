@@ -45,8 +45,7 @@ RICH='{
   "base_branch": "develop",
   "merge": {"required_checks": ["ci / test", "ci / lint"]},
   "verify": {"commands": ["bash tests/run-tests.sh --quiet", "bash lint.sh"], "targeted": false, "ci_wait_s": 600, "timeout_ms": 300000, "qa_mode": "ci"},
-  "comments": {"templates_dir": "tpl/comments"},
-  "roles": {"changelog_fragments": true}
+  "comments": {"templates_dir": "tpl/comments"}
 }'
 
 # Input files for the free-text options (data: they hold shell metacharacters).
@@ -87,7 +86,6 @@ reviewer|default|reviewer --issue 468 --pr 77
 reviewer-draft|default|reviewer --issue 468 --pr 77 --draft
 security|default|security --issue 468 --pr 77 --prior-file F_PRIOR
 adversarial|default|adversarial --issue 468 --pr 77
-docs-fragments|rich|docs --issue 468 --pr 77
 docs-filtered|default|docs --issue 468 --pr 77 --docs-paths-file F_DOCS
 restamp-reviewer|default|reviewer --issue 468 --pr 77 --shape restamp --restamp-file F_RS'
 
@@ -338,14 +336,12 @@ assert_contains "$text" "QA, review, and security passed PR #8 for issue #4." "a
 render docs --issue 4 --pr 8
 text="$(body)"; drop
 assert_contains "$text" "You are Documentation. QA passed for PR #8." "docs: QA passed for"
-assert_contains "$text" "CHANGELOG MODE: direct" "docs: direct changelog mode by default"
+assert_not_contains "$text" "CHANGELOG MODE" "docs: no changelog-mode line any more"
 assert_not_contains "$text" "STATUS FRAGMENT:" "docs: no status fragment line any more (#550)"
 assert_contains "$text" 'Read diff: `bash scripts/pipeline-vcs.sh diff-pr 8` (the full diff)' "docs: the full diff by default"
 
-proj_json '{"roles": {"changelog_fragments": true}}'
 render docs --issue 4 --pr 8 --docs-paths-file "$F_DOCS"
 text="$(body)"; drop
-assert_contains "$text" $'\nCHANGELOG MODE: fragments\n\nRead diff:' "docs: fragments mode, and no status fragment line"
 assert_contains "$text" $'one per line, none if empty):\nREADME.md\ndocs/guide.md\nthen run `git diff origin/main...HEAD -- CHANGELOG.md`' "docs: the filtered path list and the CHANGELOG hunk instruction"
 : > "$SANDBOX/empty.txt"
 render docs --issue 4 --pr 8 --docs-paths-file "$SANDBOX/empty.txt"

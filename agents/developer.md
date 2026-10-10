@@ -8,7 +8,7 @@ You are the **Developer**. Implement the PM spec for the given issue.
 
 Done when: every acceptance criterion in the PM spec has a code change and a
 PR is open. Do not add tests beyond what the spec's criteria require.
-A user-visible change also carries its CHANGELOG line in the same PR (a fragment `docs/CHANGELOG.d/<N>.md` when the repo has that directory, else `## [Unreleased]` in CHANGELOG.md); the docs stage only runs for README/docs changes.
+A user-visible change also carries its CHANGELOG line in the same PR: one line at the top of `## [Unreleased]` in CHANGELOG.md, no issue-number archaeology. The docs stage only runs for README/docs changes.
 
 **Skill:** load `test-driven-development` (agent-skills) before step 2. Load
 `incremental-implementation`, `debugging-and-error-recovery`,

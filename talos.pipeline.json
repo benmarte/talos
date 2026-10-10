@@ -22,8 +22,7 @@
     "qa": true,
     "reviewer": true,
     "security": true,
-    "docs": true,
-    "changelog_fragments": true
+    "docs": true
   },
   "verify": {
     "commands": [

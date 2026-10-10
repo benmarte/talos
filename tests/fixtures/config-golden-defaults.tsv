@@ -39,7 +39,7 @@ agents.runner	claude	table	pipeline-agent.sh,pipeline-hooks.sh,setup/SKILL.md
 agents.runner_args		empty	pipeline-agent.sh
 agents.runner_cmd		empty	pipeline-agent.sh
 agents.subagents	auto	table	pipeline-agent.sh
-base_branch		empty	pipeline-changelog.sh,pipeline-hooks.sh,pipeline-mergebase.sh,pipeline-status-file.sh,pipeline-vcs.sh,pipeline-worktree.sh
+base_branch		empty	pipeline-hooks.sh,pipeline-mergebase.sh,pipeline-status-file.sh,pipeline-vcs.sh,pipeline-worktree.sh
 board.azure_states.blocked		empty	pipeline-status.sh
 board.azure_states.done	Done	table	pipeline-status.sh,pipeline-vcs.sh
 board.azure_states.in_progress	Committed	table	pipeline-status.sh
@@ -99,7 +99,6 @@ notifications.threading	true	table	pipeline-notify.sh
 pr.draft		empty	pipeline-draft-check.sh:_dc_cfg
 repo		empty	pipeline-hooks.sh
 roles.adversarial	false	table	pipeline-status-file.sh:_sf_role_on
-roles.changelog_fragments	false	table	docs
 roles.docs	true	table	pipeline-status-file.sh:_sf_role_on
 roles.docs_mode	auto	table	docs
 roles.planner	false	table	docs

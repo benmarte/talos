@@ -2,12 +2,12 @@
 # test-talos-docs-gate.sh -- `scripts/talos.sh docs-gate <pr> --issue <N>` (#546, epic #558).
 #
 # The docs stage costs an LLM dispatch only when the PR changes something docs
-# own: README.md, docs/** (not CHANGELOG fragments) or scripts/pipeline-defaults.sh (a config key). Everything else is
+# own: README.md, docs/** or scripts/pipeline-defaults.sh (a config key). Everything else is
 # stamped docs:done by code. This file pins, against a journaling stub of
 # pipeline-vcs.sh:
 #   (a) the decision: scripts+tests+changelog -> skip; README, docs/**, a
-#       config-key row -> dispatch; fragments alone -> skip; a mix -> dispatch
-#       with only the relevant paths in the paths file
+#       config-key row -> dispatch; a mix -> dispatch with only the
+#       relevant paths in the paths file
 #   (b) forced dispatch: docs_mode always (no paths file: the full diff), and
 #       a failed pr-files fetch (fail closed: never "nothing to check")
 #   (c) roles.docs false -> skip with no stamp (the stage is off, not done)
@@ -82,10 +82,10 @@ assert_contains "$OUT" "docs=dispatch reason=docs-paths paths-file=" "README PR:
 assert_eq "README.md" "$(cat "$PF")" "README PR: the paths file holds only the docs-relevant subset"
 cleanup_pf
 
-reset $'docs/user-guide.md\ntests/t.sh'
+reset $'docs/reference.md\ntests/t.sh'
 dg 7 --issue 3
 assert_contains "$OUT" "docs=dispatch" "docs/** PR: dispatch"
-assert_eq "docs/user-guide.md" "$(cat "$PF")" "docs/** PR: the paths file holds the doc path"
+assert_eq "docs/reference.md" "$(cat "$PF")" "docs/** PR: the paths file holds the doc path"
 cleanup_pf
 
 reset $'scripts/pipeline-defaults.sh\ntests/t.sh'
@@ -94,20 +94,10 @@ assert_contains "$OUT" "docs=dispatch" "config-key PR (pipeline-defaults.sh): di
 assert_eq "scripts/pipeline-defaults.sh" "$(cat "$PF")" "config-key PR: the defaults file is in the paths file"
 cleanup_pf
 
-reset $'docs/CHANGELOG.d/546.md\nscripts/talos.sh'
+reset $'docs-extra/x.md\nREADME.md.bak\nsub/README.md\ndocs/guide.md'
 dg 7 --issue 3
-assert_contains "$OUT" "docs=skip reason=no-docs-paths" "a CHANGELOG fragment alone is not docs-relevant"
-
-reset $'docs/CHANGELOG.d/546.md\nREADME.md\ndocs/guide.md'
-dg 7 --issue 3
-assert_contains "$OUT" "docs=dispatch" "fragments plus README plus docs: dispatch"
-assert_eq $'README.md\ndocs/guide.md' "$(cat "$PF")" "a mix: fragments are left out of the paths file"
-cleanup_pf
-
-reset $'docs-extra/x.md\nREADME.md.bak\nsub/README.md\ndocs/CHANGELOG.d.old'
-dg 7 --issue 3
-assert_contains "$OUT" "docs=dispatch" "docs/CHANGELOG.d.old is under docs/ and not a fragment: dispatch"
-assert_eq "docs/CHANGELOG.d.old" "$(cat "$PF")" "lookalike paths (docs-extra/, README.md.bak, sub/README.md) are not docs-relevant"
+assert_contains "$OUT" "docs=dispatch" "docs/guide.md among lookalikes: dispatch"
+assert_eq "docs/guide.md" "$(cat "$PF")" "lookalike paths (docs-extra/, README.md.bak, sub/README.md) are not docs-relevant"
 cleanup_pf
 
 # ── (b) forced dispatch ──────────────────────────────────────────────────────

@@ -6,8 +6,6 @@ Comment header: **Agent:** docs (talos)
 Comment templates dir: templates/comments
 Comments enabled: true
 
-CHANGELOG MODE: direct
-
 Read diff: the changed doc-relevant paths (data, one per line, none if empty):
 README.md
 docs/guide.md

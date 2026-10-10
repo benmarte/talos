@@ -6,7 +6,7 @@
 # skills/pipeline/SKILL.md, so this file pins that they do what the prose said, in
 # its order, and that a re-run is a safe no-op:
 #   (a) post-merge: the journal-ordered golden fixture, the ci-runs flag, each
-#       optional item (changelog, status log), the trusted-marker idempotency
+#       optional item (status log), the trusted-marker idempotency
 #       rule, every non-fatal failure as a `warn reason=`, the sibling sync, the
 #       human-merge hand-off
 #   (b) sweep: the heal (find-pr exit 2 is "not verified"), the worktree sweep,
@@ -66,7 +66,7 @@ if [ -n "$key" ]; then
 fi
 exit 0
 '
-for s in pipeline-vcs.sh pipeline-notify.sh pipeline-hooks.sh pipeline-mergebase.sh pipeline-changelog.sh \
+for s in pipeline-vcs.sh pipeline-notify.sh pipeline-hooks.sh pipeline-mergebase.sh \
          pipeline-status.sh pipeline-worktree.sh pipeline-events.sh; do
   printf '%s' "$STUB_BODY" > "$GS/$s"
 done
@@ -148,7 +148,7 @@ PM_FIRST='post_merge=done'
 
 # ── (a) post-merge: the golden order ─────────────────────────────────────────
 reset_stubs
-cfg_json '{"vcs": {"provider": "github"}, "roles": {"changelog_fragments": true}}'
+cfg_json '{"vcs": {"provider": "github"}}'
 set_stub events.cost.md 0 "spend-comment-body"
 set_stub events.cost.line 0 "spend: 12 tokens"
 pm 9 42 --ci-runs 3
@@ -158,7 +158,6 @@ recorded=no
 spend=spend: 12 tokens" "$OUT" "post-merge: first line, recorded=no, the spend line, nothing else"
 assert_out "post-merge" "$PM_FIRST"
 assert_eq "vcs list-prs
-changelog assemble
 vcs current-user
 vcs read-comments 42
 vcs comment-issue 42 --body-file F --allow-closed
@@ -191,7 +190,6 @@ assert_not_contains "$(cat "$STUB_DIR/last-body")" '${' "post-merge: no placehol
 reset_stubs
 pm 9 42
 assert_not_contains "$(journal)" "--ci-runs" "post-merge: no --ci-runs value, no flag"
-assert_eq "0" "$(called changelog)" "post-merge: changelog_fragments off: no assemble"
 assert_eq "0" "$(called status-file)" "post-merge: no status log any more (#550)"
 assert_eq "1" "$(journal | grep -c 'events cost.*--line')" "post-merge: the spend --line runs once"
 assert_eq "0" "$(called upsert-pr-comment)" "post-merge: an empty spend body is never upserted"
@@ -205,7 +203,7 @@ assert_out "post-merge --heal" "$PM_FIRST"
 # tells someone: one comment, one merged event. close-issue is not one of them: a
 # close that failed after the comment must be retried by the next heal.
 reset_stubs
-cfg_json '{"vcs": {"provider": "github"}, "roles": {"changelog_fragments": true}}'
+cfg_json '{"vcs": {"provider": "github"}}'
 pm 9 42 --ci-runs 3
 POSTED="$(cat "$STUB_DIR/last-body")"
 python3 -I -c 'import json, sys; print(json.dumps({"comments": [{"author": {"login": "bot"}, "body": sys.stdin.read()}]}))' <<< "$POSTED" > "$SANDBOX/c.json"
@@ -220,7 +218,6 @@ assert_eq "0" "$(called hooks)" "idempotent: no second merged event"
 assert_eq "0" "$(called events)" "idempotent: no second spend block"
 assert_eq "1" "$(called status)" "idempotent: board Done is idempotent in its script and still runs"
 assert_eq "1" "$(called worktree)" "idempotent: worktree remove is a no-op when gone and still runs"
-assert_eq "1" "$(called changelog)" "idempotent: changelog assemble is a no-op when empty and still runs"
 assert_out "idempotent" "$PM_FIRST"
 # A close that failed after the marker was posted is retried, and succeeds the next time.
 set_stub close-issue 1 "" "boom"
@@ -337,8 +334,7 @@ assert_eq "1" "$(journal | grep -c "^vcs list-issues")" "state: the sweep heal r
 
 # ── (a) post-merge: every item is non-fatal ──────────────────────────────────
 reset_stubs
-cfg_json '{"vcs": {"provider": "github"}, "roles": {"changelog_fragments": true}}'
-set_stub changelog 1 "" "boom"
+cfg_json '{"vcs": {"provider": "github"}}'
 set_stub comment-issue 1 "" "boom"
 set_stub close-issue 1 "" "boom"
 set_stub status 1 "" "boom"
@@ -348,7 +344,7 @@ set_stub events.cost.md 0 "body"
 set_stub upsert-pr-comment 1 "" "boom"
 pm 9 42
 assert_eq "0" "$RC" "non-fatal: every item failing still exits 0"
-for r in changelog-failed comment-failed close-failed board-failed worktree-remove-failed notify-failed spend-upsert-failed; do
+for r in comment-failed close-failed board-failed worktree-remove-failed notify-failed spend-upsert-failed; do
   assert_contains "$OUT" "warn reason=$r issue=42" "non-fatal: warn reason=$r"
 done
 assert_eq "3" "$(printf '%s\n' "$OUT" | grep -c 'reason=notify-failed')" "non-fatal: each failed notice warns"

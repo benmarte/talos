@@ -6,8 +6,6 @@ Comment header: {{HEADER}}
 Comment templates dir: {{COMMENTS_TMPL_DIR}}
 Comments enabled: {{COMMENTS_ENABLED}}
 
-{{CHANGELOG_MODE_LINE}}
-
 Read diff: {{DOCS_DIFF_INSTRUCTION}}
 
 {{STOP_RULE}}

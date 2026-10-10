@@ -64,7 +64,7 @@ RICH_PROJECT='{
   "limits": {"max_fix_attempts": 5},
   "merge": {"auto": false, "auto_sync": false, "required_checks": ["ci / test", "ci / lint"]},
   "verify": {"commands": ["bash tests/run-tests.sh --quiet", "bash lint.sh"], "targeted": false, "ci_wait_s": 600, "timeout_ms": 300000},
-  "roles": {"docs_mode": "always", "changelog_fragments": true, "adversarial": true, "planner": true, "pm_skip_when_spec_present": false},
+  "roles": {"docs_mode": "always", "adversarial": true, "planner": true, "pm_skip_when_spec_present": false},
   "spend": {"comment": false},
   "comments": {"templates_dir": "tpl/comments"},
   "execution": {"worktree_warn_threshold": 4},
