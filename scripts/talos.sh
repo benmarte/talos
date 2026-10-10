@@ -2772,15 +2772,17 @@ print(word)
   printf '%s' "$_w"
 }
 
-# _run_agent <role> <prompt-file> <out-file>: pipeline-agent.sh <role> - with
-# the prompt file on stdin (never argv, AC6); stdout to <out-file>, the exit
-# status in _AG_RC, stderr relayed as note lines. A non-zero _AG_RC:
+# _run_agent <role> <prompt-file> <out-file> <issue> [<pr>]: pipeline-agent.sh
+# <role> - with the prompt file on stdin (never argv, AC6); stdout to <out-file>,
+# the exit status in _AG_RC, stderr relayed as note lines. The issue and PR go
+# in TALOS_ISSUE / TALOS_PR: pipeline-agent records them on its stage_complete
+# event, which is what `cost --issue` and the status line count. A non-zero _AG_RC:
 #   75/69 are the provider contract (#418: failover exhausted) -- the caller's
 #   queued provider check reads them and stops the run; any other code is a
 #   dispatch failure.
 _run_agent() {
   _AG_RC=0
-  bash "$SCRIPT_DIR/pipeline-agent.sh" "$1" - < "$2" > "$3" 2>"$_CFG_CACHE_DIR/agent.err" || _AG_RC=$?
+  TALOS_ISSUE="${4:-}" TALOS_PR="${5:-}" bash "$SCRIPT_DIR/pipeline-agent.sh" "$1" - < "$2" > "$3" 2>"$_CFG_CACHE_DIR/agent.err" || _AG_RC=$?
   _talos_relay "agent.$1" "$(cat "$_CFG_CACHE_DIR/agent.err")"
 }
 
@@ -3014,7 +3016,7 @@ _talos_run_dispatch() {
   fi
 
   # 2. The dispatch: the prompt on stdin, the agent's own runner resolution.
-  _run_agent "$_role" "$_f" "$_CFG_CACHE_DIR/agent.out"
+  _run_agent "$_role" "$_f" "$_CFG_CACHE_DIR/agent.out" "$_n" "$_pr"
   if [ "$_AG_RC" -ne 0 ]; then
     case "$_AG_RC" in
       75 | 69)
