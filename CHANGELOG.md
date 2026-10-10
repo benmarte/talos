@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+- feat(agents): named LLM profiles and a harness-aware subagent capability (#539,
+  part of #558). `agents.profiles.<name>` holds any subset of the `agents.*` keys
+  plus `mode` (`native` = the harness's subagent tool, `adapter` = one agentic CLI
+  per stage through `pipeline-agent.sh`, `inline` = the orchestrator plays every
+  role); `agents.profile` or the new `TALOS_PROFILE` env variable selects one, so
+  moving from Claude (a model per role) to Ollama Cloud or a local LLM (one model
+  for every role) is one word instead of a config edit and its undo. The selected
+  profile overlays `agents.*` (env, then profile, then base, then default) and its
+  `roles` block replaces the base roles, so no Claude model id leaks into a
+  single-model profile. An unknown profile fails closed with one
+  `reason=profile-unknown ... valid=<names>` line (exit 4). Talos now knows the
+  harness orchestrating the run (`CLAUDECODE=1` is Claude Code; `TALOS_HARNESS`
+  declares pi, codex and others): `agents.subagents: auto` resolves from it, not
+  from `agents.runner`, and `talos.sh env` reports `HARNESS`, `PROFILE`,
+  `PROFILE_ORIGIN`, `AGENTS_MODE` and a `PROFILE_INFO` line per profile (mode,
+  runner, CLI installed or not). The first usable profile in `[profile,
+  ...fallback]` is picked: a profile whose mode the harness cannot provide, or
+  whose runner CLI is missing, or whose runner is marked down in
+  `.talos/providers.json` (`provider-down until=<ts> reason=<class:detail>`, read
+  by `pipeline-agent.sh --down-rows`, the failover chain's own reader), is skipped
+  with one `PROFILE_SKIPPED` reason, never attempted. `agents.fallback` entries may name a profile (carrying its runner,
+  model, `stage_timeout_s`; the runner gets `TALOS_MODEL`); bare runner names work
+  as before. `pipeline-agent.sh --resolve-all` and `pipeline-config.sh --dump` show
+  the active profile and where it came from. New keys: `agents.profile`
+  (env `TALOS_PROFILE`) and `agents.mode`. Runs with no profiles and no
+  `TALOS_HARNESS` are unchanged. The user guide gains "Switching providers /
+  profiles".
 - **Leaner stage overhead (#548, part of #558).** Every stage paid for its role profile, its rendered prompt and the agent-skills it was told to load before any work started; the developer alone loaded about 58 KB of skills. Each role profile now names one required skill (developer and QA `test-driven-development`, reviewer and adversarial `code-review-and-quality`, security `security-and-hardening`, PM `spec-driven-development`, docs `documentation-and-adrs`, validator `debugging-and-error-recovery`, planner `planning-and-task-breakdown`) and lists the others as "only if the task needs it"; the `doubt-driven-development` mandate (it does not resolve outside the talos plugin cache) is gone. Boilerplate is stated once: the agent-skills plugin paragraph is removed from all nine profiles, the stop rule lives only in the `_stop-rule.md` prompt partial, `Done when:` and the first-line verdict contract only in the profile (the re-stamp prompt keeps its own `Done when:`), the heredoc-as-data rule once per profile (the developer had it eleven times), and the post-approval Rules block is one shared sentence in the five approving profiles. Per role, profile plus rendered prompt plus required skills fell from 72 KB to 26 KB for the developer and from 238 KB to 155 KB across the nine roles. New `pipeline-vcs.sh view-issue <n> --since-stage` returns the issue body, the latest `**PM spec:**` or `**Agent:**` stage comment and every human comment after it, with an `earlier_comments` count (the full thread stays one `read-comments` away; gitlab, azure and file mode fall back to the plain view with a note); the PM and validator read the issue that way, so an owner clarification posted since the last stage is still seen. The reviewer's human-attention report is capped at 3 bullets (was 2-5). `tests/test-stage-overhead.sh` pins one required skill per role, the shared boilerplate and a size budget per role.
 - **One GitHub implementation, REST first (#551).** `pipeline-vcs.sh` had two full GitHub providers: `_github` (the `gh` CLI, mostly GraphQL `gh pr view/list/checks`) and `_github_api` (curl REST, token only), 41 verbs each. There is now one REST client behind both `vcs.provider: github` and `vcs.provider: github-api`. Its transport is one small function: `gh api` when `gh` is on PATH and authenticated (it owns auth, paging and enterprise hosts), curl with `GITHUB_TOKEN`/`GH_TOKEN` (or the variable `vcs.token_env` names) otherwise; `github-api` pins the token transport, so CI containers behave as before and no config breaks. Retry and rate-limit handling, body caps, the stdin body forms, fail-closed reads, the head-SHA approval checks and the trusted-author markers are unchanged; both transports hand the verbs the same status, headers and body. Reads use REST wherever it exists (PR view/head/labels/mergeable/draft, comments, check runs and commit statuses for `pr-checks`/`pr-checks-required`, list PRs/issues, create/edit/merge, workflow runs), so the GraphQL quota is no longer spent; the one GraphQL call left is the `ready-pr`/`draft-pr` mutation REST does not have. Details: `label-issue`/`label-pr` add with one POST and remove with one DELETE per label (no read-modify-write of the whole set); `merge-pr` deletes the head branch after the merge itself; `view-pr`, `pr-head` and the other PR reads still take a branch name; `pr-checks` keeps `gh`'s `name TAB state TAB elapsed TAB url` lines and exit codes (1 failed, 8 pending); `github-api` gains the draft verbs it used to refuse, `list-issues` drops pull requests and `--require-marker` plus the missing-marker warning now run on both providers. `GET /user` is answered or refused on both providers, so the old `gh` path's fail-open "identity unavailable" outcome (`talos:marker-authors-unverified` from an adapter) no longer happens on GitHub: a refused lookup with no `markers.trusted_authors` fails closed, as `github-api` always did. Repo auto-detection asks REST (`gh api repos/{owner}/{repo}`), and `--dry-run` needs no credential. Tests: `tests/test-github-transport-parity.sh` drives every verb through both transports with the same queued REST responses and requires the same stdout, exit code, stderr and requests; `tests/stubs/gh` answers `gh api -i` through the curl stub plus fixtures built from the `STUB_*` variables.
 - feat(multi-user): several operators can run Talos on one repo without touching
