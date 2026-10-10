@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # tests/test-marker-contract.sh
-# Asserts that all four review-stage agent profiles share a byte-identical
-# shared Rules block after normalising role-specific tokens.
+# Asserts that all five approving agent profiles share a byte-identical
+# approval paragraph (the post-approval contract: head SHA from the API, marker
+# last, label applied, check-approval-sha) after normalising role-specific tokens.
+# #548 collapsed the old multi-bullet Rules block into this one paragraph.
 # RED (exit 1) when any profile's block is altered; GREEN (exit 0) after all
 # patches applied.
 #
@@ -11,9 +13,9 @@
 #
 # Coverage (important):
 #   This test checks TWO sets of profiles:
-#   1. Plugin-shipped profiles in $TALOS_ROOT/agents/{reviewer,security,qa,docs}.md
+#   1. Plugin-shipped profiles in $TALOS_ROOT/agents/{reviewer,security,qa,docs,adversarial}.md
 #      (always checked).
-#   2. Repo-level overrides in $TALOS_ROOT/.claude/agents/{reviewer,security,qa,docs}.md
+#   2. Repo-level overrides in $TALOS_ROOT/.claude/agents/{reviewer,security,qa,docs,adversarial}.md
 #      (checked when the file exists; skipped when absent).
 #   GREEN means: every profile that IS present carries the byte-identical shared
 #   Rules block.  It does NOT guarantee that a profile absent from .claude/agents/
@@ -39,17 +41,17 @@ REPO_AGENTS_DIR="$TALOS_ROOT/.claude/agents"
 extract_rules_block() {
     local file="$1"
     awk '
-        /^Rules:/        { found = 1 }
-        /^Final message:/ { found = 0 }
+        /^\*\*Approval/ { found = 1 }
+        found && /^$/    { found = 0 }
         found            { print }
     ' "$file" \
     | sed \
-        -e 's/role=reviewer/role=ROLE/g' \
-        -e 's/role=security/role=ROLE/g' \
-        -e 's/role=qa/role=ROLE/g' \
-        -e 's/role=docs/role=ROLE/g' \
+        -e 's/\*\*Approval ([^)]*)/**Approval (WHEN)/' \
+        -e 's/post-approval <PR> [a-z]*/post-approval <PR> ROLE/' \
+        -e 's/<[a-z]*-file>/<FILE>/' \
         -e 's/`review:approved`/`LABEL`/g' \
         -e 's/`security:approved`/`LABEL`/g' \
+        -e 's/`adversarial:approved`/`LABEL`/g' \
         -e 's/`qa:pass`/`LABEL`/g' \
         -e 's/`docs:done`/`LABEL`/g'
 }
@@ -69,15 +71,15 @@ fi
 
 # 2. Block must contain the SHA rule (proves the right section was extracted).
 case "$REVIEWER_BLOCK" in
-    *"40-character lowercase SHA"*)
+    *"reads the PR head SHA itself"*)
         pass "extracted block contains SHA rule" ;;
     *)
-        fail "extracted block contains SHA rule" "missing '40-character lowercase SHA' in reviewer extract" ;;
+        fail "extracted block contains SHA rule" "missing head-SHA sentence in reviewer extract" ;;
 esac
 
 # 3. Block must contain the git rev-parse prohibition.
 case "$REVIEWER_BLOCK" in
-    *"Do NOT use \`git rev-parse HEAD\`"*)
+    *"never \`git rev-parse HEAD\`"*)
         pass "extracted block contains git-rev-parse prohibition" ;;
     *)
         fail "extracted block contains git-rev-parse prohibition" "missing prohibition line in reviewer extract" ;;
@@ -91,12 +93,12 @@ case "$REVIEWER_BLOCK" in
         fail "extracted block contains check-approval-sha step" "missing check-approval-sha in reviewer extract" ;;
 esac
 
-# 5. Line count >= 6 (Rules: header + at least 5 bullets even before split patch).
+# 5. Line count >= 5 (the paragraph wraps over at least 5 lines).
 line_count=$(printf '%s' "$REVIEWER_BLOCK" | grep -c '^' || true)
-if [ "$line_count" -ge 6 ]; then
-    pass "extracted block has >= 6 lines (non-vacuous; got $line_count)"
+if [ "$line_count" -ge 5 ]; then
+    pass "extracted block has >= 5 lines (non-vacuous; got $line_count)"
 else
-    fail "extracted block has >= 6 lines" "got $line_count — too short, extraction may be broken"
+    fail "extracted block has >= 5 lines" "got $line_count — too short, extraction may be broken"
 fi
 
 # ── Hash equality: all four profiles must agree ───────────────────────────────
@@ -104,6 +106,8 @@ REVIEWER_BLOCK=$(extract_rules_block "$AGENTS_DIR/reviewer.md")
 SECURITY_BLOCK=$(extract_rules_block "$AGENTS_DIR/security.md")
 QA_BLOCK=$(extract_rules_block "$AGENTS_DIR/qa.md")
 DOCS_BLOCK=$(extract_rules_block "$AGENTS_DIR/docs.md")
+ADVERSARIAL_BLOCK=$(extract_rules_block "$AGENTS_DIR/adversarial.md")
+ADVERSARIAL_HASH=$(printf '%s' "$ADVERSARIAL_BLOCK" | sha256sum | awk '{print $1}')
 
 REVIEWER_HASH=$(printf '%s' "$REVIEWER_BLOCK" | sha256sum | awk '{print $1}')
 SECURITY_HASH=$(printf '%s' "$SECURITY_BLOCK" | sha256sum | awk '{print $1}')
@@ -122,6 +126,8 @@ assert_eq "$REVIEWER_HASH" "$QA_HASH" \
     "reviewer == qa Rules block (byte-identical after normalisation)"
 assert_eq "$REVIEWER_HASH" "$DOCS_HASH" \
     "reviewer == docs Rules block (byte-identical after normalisation)"
+assert_eq "$REVIEWER_HASH" "$ADVERSARIAL_HASH" \
+    "reviewer == adversarial Rules block (byte-identical after normalisation)"
 
 # ── Diff on failure (informational) ──────────────────────────────────────────
 # Only runs if there was at least one hash mismatch above, to show exactly
@@ -155,7 +161,7 @@ fi
 #
 # Mutation: remove this section → a bad .claude/agents/security.md passes silently.
 _canonical_hash="$REVIEWER_HASH"
-for _role in reviewer security qa docs; do
+for _role in reviewer security qa docs adversarial; do
     _override="$REPO_AGENTS_DIR/$_role.md"
     if [ ! -f "$_override" ]; then
         pass "repo-level override absent: .claude/agents/$_role.md — skipped (no drift possible)"

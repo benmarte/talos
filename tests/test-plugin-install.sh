@@ -76,7 +76,7 @@ flat() { tr '\n' ' ' < "$1" | tr -s ' '; }
 for agent in validator pm developer qa reviewer security adversarial docs planner; do
   body="$(flat "$PLUGIN_ROOT/agents/$agent.md")"
   case "$body" in
-    *"do not restate them"*) pass "$agent directs the model to use skills" ;;
+    *"**Skill:** load \`"*) pass "$agent directs the model to use skills" ;;
     *) fail "$agent directs the model to use skills" "no mandatory skills clause" ;;
   esac
 done
@@ -91,7 +91,7 @@ done
 for agent in validator pm developer qa reviewer security adversarial docs planner; do
   body="$(flat "$PLUGIN_ROOT/agents/$agent.md")"
   case "$body" in
-    *"no skill mechanism"*) pass "$agent carries a skills fallback" ;;
+    *"Without a skill mechanism"*) pass "$agent carries a skills fallback" ;;
     *) fail "$agent carries a skills fallback" "mandate with no fallback" ;;
   esac
   case "$body" in

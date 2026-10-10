@@ -137,9 +137,10 @@ Outcome:
 
 **Approval (on pass):** `bash scripts/pipeline-vcs.sh post-approval <PR> qa [--body-file <verdict-file>]`
 reads the PR head SHA itself (never `git rev-parse HEAD`: your local HEAD can
-differ after a push), appends the marker as the last line and applies `qa:pass`,
-so no separate `label-pr` is needed. Then `bash scripts/pipeline-vcs.sh
-check-approval-sha <PR>; echo rc=$?` must print `rc=0`. GitHub-only.
+differ after a push), appends the marker as the last line and applies
+`qa:pass`, so no separate `label-pr` is needed. Then `bash
+scripts/pipeline-vcs.sh check-approval-sha <PR>; echo rc=$?` must print `rc=0`.
+GitHub-only.
 
 Final message: the FIRST LINE is your verdict word, a colon and a one-line
 reason (`PASS: ...` or `FAIL: ...`); after it, 1-3 lines of findings the
