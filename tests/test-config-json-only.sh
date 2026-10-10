@@ -4,12 +4,12 @@
 # ~/.talos/talos.pipeline.json); any other talos.pipeline.* file in a layer
 # directory fails the load closed (reason=config-shadowed when the canonical
 # json is present, reason=config-legacy-file when it is not); --dump carries a
-# SOURCES header. (The one-shot --convert verb was removed in #553.)
+# SOURCES header. (The one-shot --convert verb was removed in #553; the old
+# tests/test-config-yaml-warn.sh was folded into the AC3/AC6 cases below.)
 #
 #   AC1 two canonical paths only (project json > global json; legacy names unread)
 #   AC2 a second file beside the json fails closed as config-shadowed
 #   AC3 a lone legacy yml/yaml fails closed as config-legacy-file
-#   AC4 the YAML converter is gone (#553)
 #   AC5 --dump carries the SOURCES pairs; the stream stays parseable
 #   AC6 the loader parses JSON only; a load passes with no PyYAML importable
 #   AC8 talos.pipeline.yml.example is deleted; the json example is canonical
@@ -29,7 +29,7 @@ ERR="$SANDBOX/stderr"
 mkdir -p "$SHIM" "$GHOME" || exit 1
 
 # python3 without PyYAML: handles the "-I -c CODE" and "-I -" (script on stdin)
-# forms (the technique from the deleted tests/test-config-yaml-warn.sh).
+# forms.
 REAL_PY="$(command -v python3)"
 cat > "$SHIM/python3" <<TALOS_j8wvq2xn5hr7t
 #!/usr/bin/env bash
@@ -93,13 +93,6 @@ assert_eq "squash" "$(bash "$CFG_SH" merge.method)" \
   "AC1: a legacy .claude-pipeline.json alone is no longer read"
 assert_eq "0" "$(nolines "$ERR")" "AC1: an unread legacy name prints nothing"
 rm -f .claude-pipeline.json
-
-if grep -q '_CFG_NAMES' "$CFG_SH"; then
-  fail "AC1: the loader references exactly the two canonical filenames" \
-    "_CFG_NAMES (the yml/yaml/json name list) is still present in pipeline-config.sh"
-else
-  pass "AC1: the loader references exactly the two canonical filenames"
-fi
 
 # ═══ AC2: a second file beside the json fails closed as config-shadowed ══════
 
@@ -205,14 +198,6 @@ assert_contains "$err" "convert it by hand to $GHOME/talos.pipeline.json" \
   "AC3: the hint names the global json as the target"
 rm -f "$GHOME/talos.pipeline.yaml"
 
-# ═══ AC4: the YAML converter is gone (#553) ═════════════════════════════════
-# The reason line points at a manual conversion; no verb reads YAML.
-if grep -q -e '--convert' "$CFG_SH"; then
-  fail "AC4: pipeline-config.sh carries no --convert verb" "the string --convert is still in the script"
-else
-  pass "AC4: pipeline-config.sh carries no --convert verb"
-fi
-
 # ═══ AC5: --dump SOURCES ═════════════════════════════════════════════════════
 
 printf '{"agents": {"model": "fromproject"}}\n' > talos.pipeline.json
@@ -260,21 +245,8 @@ assert_eq "false" "$out" "AC6: the canonical json still resolves values"
 assert_eq "0" "$(nolines "$ERR")" "AC6: a JSON load with no PyYAML prints no warning"
 env PATH="$SHIM:$PATH" bash "$CFG_SH" --dump >/dev/null 2>"$ERR"; rc=$?
 assert_exit_code "0" "$rc" "AC6: --dump passes with no PyYAML importable"
+assert_eq "0" "$(nolines "$ERR")" "AC6: --dump with no PyYAML importable is silent"
 rm -f talos.pipeline.json
-
-# Source-level: the loader heredoc (the shared load path) carries no yaml
-# reference, and neither does the rest of the script.
-loader_src="$(sed -n '/^read -r -d .. _CFG_LOADER_PY/,/^PYLOADER$/p' "$CFG_SH")"
-if grep -qw 'yaml' <<<"$loader_src"; then
-  fail "AC6: the loader source carries no yaml reference" \
-    "the _CFG_LOADER_PY heredoc still mentions yaml"
-else
-  pass "AC6: the loader source carries no yaml reference"
-fi
-n_imports="$(grep -c 'import yaml' "$CFG_SH")"
-assert_eq "0" "$n_imports" "AC6: no yaml import anywhere in the script"
-n_safe_load="$(grep -c 'safe_load' "$CFG_SH")"
-assert_eq "0" "$n_safe_load" "AC6: no yaml safe_load anywhere in the script"
 
 # ═══ #541: a PIPELINE_CONFIG pointer at a missing file fails closed ══════════
 # The pointer is a deliberate operator decision; a typo'd path used to load

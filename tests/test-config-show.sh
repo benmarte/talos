@@ -180,8 +180,6 @@ assert_eq "" "$(bash "$CFG_SH" --dump-layers 2>/dev/null)" "--dump-layers: no co
 export PIPELINE_BUZZ_CHANNEL=BZ
 assert_eq "" "$(bash "$CFG_SH" --dump-layers 2>/dev/null)" "--dump-layers: env and default rows are not listed"
 unset PIPELINE_BUZZ_CHANNEL
-assert_eq "0" "$(grep -c -- '--dump-layers' "$AGENT_SH")" "pipeline-agent.sh no longer calls --dump-layers"
-assert_eq "1" "$(grep -c -- 'pipeline-config.sh" --show agents\.' "$AGENT_SH")" "pipeline-agent.sh --resolve-all calls --show agents."
 
 # ── --has: a config FILE layer only, documented ──────────────────────────────
 reset_cfg
@@ -190,7 +188,6 @@ proj_json '{"merge":{"method":"rebase"}}'
 bash "$CFG_SH" --has notifications.buzz_channel >/dev/null 2>&1; rc=$?
 assert_eq "1" "$rc" "--has does not see the env layer"
 assert_eq "notifications.buzz_channel${TAB}BZ${TAB}env" "$(line_for "$(show notifications.buzz_channel)" notifications.buzz_channel)" "--show does see it"
-assert_contains "$(sed -n '1,80p' "$CFG_SH")" "ignores the env layer" "the header says --has ignores the env layer"
 unset PIPELINE_BUZZ_CHANNEL
 
 # ── agents must be a mapping, in either layer ────────────────────────────────

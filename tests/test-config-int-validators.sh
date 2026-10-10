@@ -59,16 +59,14 @@ done
 assert_eq "" "$_unbucketed" "every int row of the table has a validator, an owner or a consumer that rejects bad values"
 
 cfg_json() { printf '%s\n' "$1" > "$PROJ/talos.pipeline.json"; }
-# set KEY RAWJSON -- write {"a":{"b":RAW}} for KEY a.b
+# set KEY RAWJSON -- write {"a":{"b":RAW}} for KEY a.b (pure bash: no spawn per call)
 set_key() {
-  python3 -I - "$1" "$2" > "$PROJ/talos.pipeline.json" <<'TALOS_PYset6Qv9Dm3Xt'
-import json, sys
-key, raw = sys.argv[1], sys.argv[2]
-node = json.loads(raw)
-for part in reversed(key.split(".")):
-    node = {part: node}
-print(json.dumps(node))
-TALOS_PYset6Qv9Dm3Xt
+  local _sk_open="" _sk_close="" _sk_rest="$1" _sk_part
+  while [ "${_sk_rest#*.}" != "$_sk_rest" ]; do
+    _sk_part="${_sk_rest%%.*}"; _sk_rest="${_sk_rest#*.}"
+    _sk_open="$_sk_open{\"$_sk_part\":"; _sk_close="$_sk_close}"
+  done
+  printf '%s{"%s":%s}%s\n' "$_sk_open" "$_sk_rest" "$2" "$_sk_close" > "$PROJ/talos.pipeline.json"
 }
 probe() {  # KEY -> the cached cfg() value
   bash -c 'SCRIPT_DIR="$1"; . "$SCRIPT_DIR/pipeline-cfg-cache.sh"; printf "%s" "$(cfg "$2")"' _ "$SCRIPTS" "$1" 2>/dev/null

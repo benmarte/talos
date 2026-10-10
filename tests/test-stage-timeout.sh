@@ -7,7 +7,7 @@
 #
 # The config floor is 60 s, too long to wait in a test, so the runs below use
 # TALOS_STAGE_TIMEOUT_DIVISOR (a test seam in pipeline-agent.sh): the configured
-# seconds are divided by it, so `60` with a divisor of 30 is a 2 s bound. The
+# seconds are divided by it, so `60` with a divisor of 60 is a 1 s bound. The
 # validator itself is exercised without the seam.
 #
 # Leaks are found with pgrep on a unique sentinel (the #314 pattern in
@@ -39,7 +39,7 @@ run_stage() {
   bash "$AGENT" "${1:-developer}" "the task text" >"$SANDBOX/agent.out" 2>"$ERR" </dev/null &
   pid=$!
   set +m
-  while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 125 ]; do sleep 0.2; i=$((i + 1)); done
+  while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 250 ]; do sleep 0.1; i=$((i + 1)); done
   if kill -0 "$pid" 2>/dev/null; then
     kill -KILL -- -"$pid" 2>/dev/null
     wait "$pid" 2>/dev/null
@@ -56,6 +56,15 @@ run_stage() {
 SENT=$((100000 + RANDOM))
 HANG_CMD="sleep $SENT & sh -c 'sleep $SENT' & sleep $SENT"
 leaked() { pgrep -f "sleep $SENT" 2>/dev/null || true; }
+# gone -- the survivors of a killed runner, after giving the kernel up to 3 s to
+# reap them. A real leak sleeps $SENT (100000+) seconds, so it stays visible; the
+# poll replaces a fixed `sleep 1` before every check.
+gone() {
+  local p i=0
+  p="$(leaked)"
+  while [ -n "$p" ] && [ "$i" -lt 15 ]; do sleep 0.2; i=$((i + 1)); p="$(leaked)"; done
+  printf '%s' "$p"
+}
 # shellcheck disable=SC2086  # several pids, word splitting intended
 cleanup_leak() { local p; p="$(leaked)"; [ -z "$p" ] || kill -KILL $p 2>/dev/null; }
 trap '_is_trap_owner && { cleanup_leak; rm -rf "$SANDBOX"; }' EXIT
@@ -84,38 +93,35 @@ assert_eq "90" "$(bash "$CONFIG" agents.roles.qa.stage_timeout_s 2>/dev/null)" "
 set_cfg "{\"agents\": {\"runner\": \"custom\", \"runner_cmd\": \"$HANG_CMD\", \"stage_timeout_s\": 60},
  \"hooks\": {\"post_stage\": \"cat > $CAPTURE\", \"timeout_s\": 5}}"
 rm -f "$CAPTURE"
-TALOS_STAGE_TIMEOUT_DIVISOR=30 run_stage developer
+TALOS_STAGE_TIMEOUT_DIVISOR=60 run_stage developer
 assert_eq "124" "$RC" "global key: a hung runner exits 124"
 if [ "$SECS" -le 12 ]; then pass "global key: returned within ~12 s (took ${SECS}s)"; else fail "global key: returned within ~12 s" "took ${SECS}s"; fi
-assert_contains "$(cat "$ERR")" "pipeline-agent: reason=stage-timeout role=developer after_s=2" "global key: the reason line names the role and the bound"
+assert_contains "$(cat "$ERR")" "pipeline-agent: reason=stage-timeout role=developer after_s=1" "global key: the reason line names the role and the bound"
 assert_eq "1" "$(grep -c '^pipeline-agent: reason=stage-timeout ' "$ERR")" "global key: exactly one reason line"
-sleep 1
-assert_eq "" "$(leaked)" "global key: no runner process (child or grandchild) survives"
+assert_eq "" "$(gone)" "global key: no runner process (child or grandchild) survives"
 assert_contains "$(cat "$CAPTURE" 2>/dev/null)" '"verdict": "FAIL"' "global key: hooks.post_stage gets verdict FAIL"
 
 # ── 3. The role key beats the global one, in both directions ─────────────────
 set_cfg "{\"agents\": {\"runner\": \"custom\", \"runner_cmd\": \"$HANG_CMD\", \"stage_timeout_s\": 600,
  \"roles\": {\"developer\": {\"stage_timeout_s\": 60}}}}"
-TALOS_STAGE_TIMEOUT_DIVISOR=30 run_stage developer
+TALOS_STAGE_TIMEOUT_DIVISOR=60 run_stage developer
 assert_eq "124" "$RC" "role key: a short role bound fires although the global one is long"
-assert_contains "$(cat "$ERR")" "role=developer after_s=2" "role key: the role value (2 s after the seam) is the one applied"
-sleep 1
-assert_eq "" "$(leaked)" "role key: no runner process survives"
+assert_contains "$(cat "$ERR")" "role=developer after_s=1" "role key: the role value (1 s after the seam) is the one applied"
+assert_eq "" "$(gone)" "role key: no runner process survives"
 
-set_cfg "{\"agents\": {\"runner\": \"custom\", \"runner_cmd\": \"sleep 4; echo done-ok\", \"stage_timeout_s\": 60,
+set_cfg "{\"agents\": {\"runner\": \"custom\", \"runner_cmd\": \"sleep 2; echo done-ok\", \"stage_timeout_s\": 60,
  \"roles\": {\"developer\": {\"stage_timeout_s\": 600}}}}"
-TALOS_STAGE_TIMEOUT_DIVISOR=30 run_stage developer
-assert_eq "0" "$RC" "role key: a long role bound wins over a short global one (the 4 s runner is not killed)"
+TALOS_STAGE_TIMEOUT_DIVISOR=60 run_stage developer
+assert_eq "0" "$RC" "role key: a long role bound wins over a short global one (the 2 s runner is not killed)"
 assert_contains "$OUT" "done-ok" "role key: the runner's output reaches the caller"
 
 # A runner (and its children) that ignore TERM are still gone: KILL follows.
 set_cfg "{\"agents\": {\"runner\": \"custom\", \"stage_timeout_s\": 60,
  \"runner_cmd\": \"trap '' TERM; sleep $SENT & sleep $SENT\"}}"
-TALOS_STAGE_TIMEOUT_DIVISOR=30 run_stage developer
+TALOS_STAGE_TIMEOUT_DIVISOR=60 run_stage developer
 assert_eq "124" "$RC" "TERM-proof runner: exits 124"
 if [ "$SECS" -le 18 ]; then pass "TERM-proof runner: returned within ~18 s (took ${SECS}s)"; else fail "TERM-proof runner: returned within ~18 s" "took ${SECS}s"; fi
-sleep 1
-assert_eq "" "$(leaked)" "TERM-proof runner: nothing survives the KILL"
+assert_eq "" "$(gone)" "TERM-proof runner: nothing survives the KILL"
 
 # ── 4. A fast runner under a timeout is unaffected ───────────────────────────
 set_cfg '{"agents": {"runner": "custom", "runner_cmd": "cat >/dev/null; echo fast-out; echo fast-err >&2; exit 3", "stage_timeout_s": 600}}'
@@ -159,14 +165,13 @@ printf '#!/bin/sh\necho "API Error: 429 rate limited" >&2\nsleep %s &\nsh -c "sl
 chmod +x "$STUBBIN/codex" "$STUBBIN/claude"
 set_cfg '{"agents": {"runner": "claude", "fallback": ["codex"], "stage_timeout_s": 60}}'
 rm -f "$FB_MARK"
-PATH="$STUBBIN:$PATH" TALOS_STAGE_TIMEOUT_DIVISOR=30 run_stage developer
+PATH="$STUBBIN:$PATH" TALOS_STAGE_TIMEOUT_DIVISOR=60 run_stage developer
 assert_eq "124" "$RC" "failover chain: a timeout exits 124"
 assert_file_absent "$FB_MARK" "failover chain: a timeout does not start the fallback runner"
-assert_contains "$(cat "$ERR")" "pipeline-agent: reason=stage-timeout role=developer after_s=2" "failover chain: the reason line is replayed"
+assert_contains "$(cat "$ERR")" "pipeline-agent: reason=stage-timeout role=developer after_s=1" "failover chain: the reason line is replayed"
 assert_eq "1" "$(grep -c '^pipeline-agent: reason=stage-timeout ' "$ERR")" "failover chain: exactly one reason line"
 assert_not_contains "$(cat "$ERR")" "talos:failover" "failover chain: no failover marker"
-sleep 1
-assert_eq "" "$(leaked)" "failover chain: no runner process survives"
+assert_eq "" "$(gone)" "failover chain: no runner process survives"
 # Control: the same rate-limit line WITHOUT a timeout does fail over, so the
 # assertions above are not passing for an unrelated reason.
 printf '#!/bin/sh\necho "API Error: 429 rate limited" >&2\nexit 1\n' > "$STUBBIN/claude"
@@ -175,7 +180,7 @@ PATH="$STUBBIN:$PATH" run_stage developer
 assert_file_exists "$FB_MARK" "control: without a timeout the same line does fail over"
 
 # --classify: the reason line wins over a quota-looking line
-printf 'API Error: 429 rate limited\npipeline-agent: reason=stage-timeout role=developer after_s=2\n' > "$SANDBOX/cls.txt"
+printf 'API Error: 429 rate limited\npipeline-agent: reason=stage-timeout role=developer after_s=1\n' > "$SANDBOX/cls.txt"
 assert_eq "task" "$(bash "$AGENT" --classify claude 124 "$SANDBOX/cls.txt")" "classify: rc 124 with the reason line is task, not provider"
 assert_eq "provider" "$(bash "$AGENT" --classify claude 1 "$SANDBOX/cls.txt")" "classify: the same text without rc 124 still classifies as before"
 

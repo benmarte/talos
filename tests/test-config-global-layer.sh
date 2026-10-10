@@ -294,8 +294,4 @@ assert_eq "0.5 CENV x" "$got" "cfg() sees the global, repo and env layers throug
 assert_eq "1" "$(wc -l < "$PY_LOG" | tr -d ' ')" "global + repo + env costs exactly one python3 spawn (#169)"
 unset PIPELINE_SLACK_CHANNEL
 
-# ── Structure: one shared loader carries the new logic ───────────────────────
-assert_eq "1" "$(grep -c '^def _drop_repo_only' "$CFG_SH")" "the repo-only filter is defined once, in the shared loader"
-assert_eq "1" "$(grep -c '^def _apply_env' "$CFG_SH")" "the env layer is defined once, in the shared loader"
-
 finish

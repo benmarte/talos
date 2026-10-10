@@ -9,9 +9,12 @@ LOCK_SH="$TALOS_ROOT/scripts/pipeline-lock.sh"
 assert_file_exists "$LOCK_SH" "pipeline-lock.sh exists"
 
 # ── AC: two/four concurrent with_lock holders serialize a critical section ──
-# 4 workers each incrementing a shared counter file 50 times (200 total)
-# through with_lock. Without serialization this reliably loses updates
-# (read old value, write old+1, two workers stomp each other).
+# 4 workers each incrementing a shared counter file 20 times (80 total) through
+# with_lock. Each critical section sleeps 10 ms between its read and its write
+# (read old value, write old+1, two workers stomp each other), which makes a
+# lost update certain without the lock -- a no-op with_lock ends near 25 of 80
+# -- so a few dozen increments prove what 200 racing ones used to, in a
+# fraction of the time (the waiters' 0.2 s spin dominated the old run).
 COUNTER="$SANDBOX/counter"
 printf '0' > "$COUNTER"
 INCR_SCRIPT="$SANDBOX/incr.sh"
@@ -20,25 +23,27 @@ cat > "$INCR_SCRIPT" <<EOF
 set -u
 . "$LOCK_SH"
 n="\$1"
-for i in \$(seq 1 "\$n"); do
+i=0
+while [ "\$i" -lt "\$n" ]; do
   with_lock "$COUNTER" 10 -- bash -c '
     val=\$(cat "$COUNTER")
-    val=\$((val + 1))
-    printf "%s" "\$val" > "$COUNTER"
+    sleep 0.01
+    printf "%s" "\$((val + 1))" > "$COUNTER"
   '
+  i=\$((i + 1))
 done
 EOF
 chmod +x "$INCR_SCRIPT"
 
 pids=""
 for w in 1 2 3 4; do
-  bash "$INCR_SCRIPT" 50 &
+  bash "$INCR_SCRIPT" 20 &
   pids="$pids $!"
 done
 for p in $pids; do wait "$p"; done
 
 final="$(cat "$COUNTER")"
-assert_eq "200" "$final" "4 parallel workers x 50 with_lock increments each = exactly 200, no lost updates"
+assert_eq "80" "$final" "4 parallel workers x 20 with_lock increments each = exactly 80, no lost updates"
 assert_file_absent "$COUNTER.lock.d" "lock dir is cleaned up after all workers finish"
 
 # ── AC: stale lock (dead PID) is reclaimed, not waited out ──────────────────
@@ -82,11 +87,22 @@ set -u
 trap - INT
 . "$LOCK_SH"
 _lock_acquire "$HOLD_RESOURCE" 5
-sleep 30
+# Hold with a background sleep + wait, not a foreground sleep: bash defers a
+# signal until its foreground child exits, so a plain "sleep 30" made this test
+# wait the full 30 s for the SIGINT to take effect. wait is interrupted at once.
+sleep 30 </dev/null >/dev/null 2>&1 &
+printf '%s\n' "\$!" > "$SANDBOX/hold.sleep.pid"
+wait "\$!"
 EOF
 chmod +x "$HOLD_SCRIPT"
+# set -m gives the holder its own process group with default signal dispositions:
+# a plain "&" from a non-interactive shell starts it with SIGINT IGNORED, which
+# "trap - INT" cannot undo, so the signal below used to be a no-op and the lock
+# was only ever released by the holder finishing its 30 s sleep.
+set -m
 bash "$HOLD_SCRIPT" &
 _hold_pid=$!
+set +m
 # Give it a moment to actually acquire the lock before signalling.
 for _i in $(seq 1 50); do
   [ -d "$HOLD_DIR" ] && break
@@ -96,6 +112,8 @@ assert_file_exists "$HOLD_DIR/pid" "held lock dir exists before SIGINT"
 kill -INT "$_hold_pid" 2>/dev/null
 wait "$_hold_pid" 2>/dev/null
 assert_file_absent "$HOLD_DIR" "lock released on SIGINT via the composable exit trap"
+# The holder's own sleep outlives it (it was only signalled, not its child).
+kill "$(cat "$SANDBOX/hold.sleep.pid" 2>/dev/null)" 2>/dev/null || true
 
 echo ""
 echo "test-lock: $_PASS passed, $_FAIL failed"

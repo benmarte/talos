@@ -122,8 +122,14 @@ cat > talos.pipeline.json <<EOF
 {"notifications": {"cmd": "sleep 137", "cmd_timeout_s": 1}}
 EOF
 bash "$NOTIFY" info "#1" "m" 1 >/dev/null 2>&1
-sleep 1
+# Poll (up to 3 s) rather than sleep a fixed second: a killed process can take a
+# moment to be reaped, but a real leak sleeps 137 s and stays visible.
 _leaked="$(pgrep -f 'sleep 137$' || true)"
+_i=0
+while [ -n "$_leaked" ] && [ "$_i" -lt 15 ]; do
+  sleep 0.2; _i=$((_i + 1))
+  _leaked="$(pgrep -f 'sleep 137$' || true)"
+done
 assert_eq "" "$_leaked" \
   "timeout: no orphaned 'sleep 137' process survives"
 

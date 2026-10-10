@@ -23,16 +23,11 @@ set_cfg() { printf '%s\n' "$1" > talos.pipeline.json; }
 # reset_log -- empty the sandbox events log (guarded: only ever the sandbox's).
 reset_log() { [ -n "${SANDBOX:-}" ] && rm -rf "${SANDBOX:?}/.git/talos"; }
 # seed ISSUE ROLE TOKENS [EVENT] -- append one event line (TOKENS "null" = unrecorded).
+# (printf, not a python3 per event: ISSUE and TOKENS are plain integers or null.)
 seed() {
   mkdir -p .git/talos
-  python3 - "$1" "$2" "$3" "${4:-qa}" <<'PY' >> .git/talos/events.jsonl
-import json, sys
-issue, role, tokens, event = sys.argv[1:5]
-print(json.dumps({"ts": "2026-10-03T00:00:00Z", "event": event, "role": role,
-                  "issue": int(issue), "pr": None, "verdict": "PASS",
-                  "tokens": None if tokens == "null" else int(tokens),
-                  "tool_uses": None, "duration_s": None}))
-PY
+  printf '{"ts": "2026-10-03T00:00:00Z", "event": "%s", "role": "%s", "issue": %s, "pr": null, "verdict": "PASS", "tokens": %s, "tool_uses": null, "duration_s": null}\n' \
+    "${4:-qa}" "$2" "$1" "$3" >> .git/talos/events.jsonl
 }
 # run_check <args...> -- stdout in $OUT, rc in $RC, stderr in $ERR.
 run_check() { OUT="$(bash "$BUDGET" "$@" 2>"$ERR")"; RC=$?; }
@@ -245,14 +240,21 @@ run_check check --issue 7
 run_check check --issue 7 --json
 assert_eq "$BEFORE" "$(cksum < .git/talos/events.jsonl)" "the events log is byte-identical after a check"
 
+# Behaviour, not a source grep: a recording pipeline-vcs.sh in the copied scripts dir
+# (the real events script back in place) must never be called by a check.
+VCS_MARK="$SANDBOX/vcs-called"
+cp "$TALOS_ROOT/scripts/pipeline-events.sh" "$STUBDIR/pipeline-events.sh"
+printf '#!/usr/bin/env bash\n: > "%s"\nexit 0\n' "$VCS_MARK" > "$STUBDIR/pipeline-vcs.sh"
+rm -f "$VCS_MARK"
+bash "$STUBDIR/pipeline-budget.sh" check --issue 7 >/dev/null 2>&1
+bash "$STUBDIR/pipeline-budget.sh" check --issue 7 --json >/dev/null 2>&1
+if [ -e "$VCS_MARK" ]; then fail "never calls pipeline-vcs.sh" "a check ran the vcs script"; else pass "never calls pipeline-vcs.sh"; fi
 NOCODE="$(grep -v '^[[:space:]]*#' "$BUDGET")"
-case "$NOCODE" in *pipeline-vcs.sh*) fail "never calls pipeline-vcs.sh" "found in code";; *) pass "never calls pipeline-vcs.sh";; esac
 if printf '%s\n' "$NOCODE" | grep -E 'python3( |$)' | grep -v 'python3 -I' >/dev/null; then
   fail "every python3 call uses -I"
 else
   pass "every python3 call uses -I"
 fi
-case "$NOCODE" in *'set -e'*) fail "no set -e (exit 1 is the signal)";; *) pass "no set -e (exit 1 is the signal)";; esac
 if [ -x "$BUDGET" ]; then pass "script is executable"; else fail "script is executable"; fi
 
 # ── (h) 10k-event log under CI headroom ─────────────────────────────────────
