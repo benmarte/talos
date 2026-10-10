@@ -178,4 +178,21 @@ assert_eq "1" "$_lines13" \
   "13: the repr-escaped warning is exactly one stderr line"
 rm talos.pipeline.json
 
+# ---- 14: keys removed in #553 get the ordinary unknown-key warning ---------
+# An existing config that still carries the evidence block, release_branch or
+# merge.delete_branch must not crash: one warning per key, the rest still loads.
+cat > talos.pipeline.json <<'EOF'
+{"release_branch": "main", "merge": {"method": "rebase", "delete_branch": true},
+ "evidence": {"enabled": true, "dir": ".talos/evidence"}}
+EOF
+bash "$CFG_SH" --dump >/dev/null 2>"$SANDBOX/err14"; rc14=$?
+err14="$(cat "$SANDBOX/err14")"
+assert_eq "0" "$rc14" "14: a config holding removed keys still loads (rc 0)"
+assert_contains "$err14" "unknown config key 'release_branch'" "14: release_branch is an unknown key"
+assert_contains "$err14" "unknown config key 'merge.delete_branch'" "14: merge.delete_branch is an unknown key"
+assert_contains "$err14" "unknown config key 'evidence.enabled'" "14: evidence.enabled is an unknown key"
+assert_contains "$err14" "unknown config key 'evidence.dir'" "14: evidence.dir is an unknown key"
+assert_eq "rebase" "$(bash "$CFG_SH" merge.method 2>/dev/null)" "14: a valid key beside the removed ones still resolves"
+rm talos.pipeline.json
+
 finish
