@@ -59,7 +59,7 @@ print("\n".join(bad))
 print("ROWS=%d" % len(rows))
 TALOS_PYtab7Gw3Nd5Xk
 )"
-assert_eq "ROWS=110" "$(printf '%s\n' "$_out" | tail -n1)" "the table has one row per config key (110 rows)"
+assert_eq "ROWS=109" "$(printf '%s\n' "$_out" | tail -n1)" "the table has one row per config key (109 rows)"
 assert_eq "" "$(printf '%s\n' "$_out" | sed '$d')" \
   "every row has six fields, a unique key, a valid type/derived/env/scope column, and a default of the right shape"
 
@@ -76,7 +76,7 @@ merge.union_paths merge.auto_sync issues.label_filter issues.skip_labels
 issues.max_parallel issues.assignee issues.claim identity.name execution.isolation execution.worktree_warn_threshold
 roles.validator roles.pm roles.pm_skip_when_spec_present roles.qa roles.reviewer
 roles.security roles.adversarial roles.docs roles.docs_mode roles.planner
-roles.changelog_fragments comments.enabled comments.header comments.templates_dir
+comments.enabled comments.header comments.templates_dir
 notifications.slack_channel notifications.discord_channel notifications.buzz_channel
 notifications.buzz_relay notifications.buzz_timeout_s notifications.templates_dir
 notifications.threading notifications.events notifications.cmd
