@@ -24,7 +24,7 @@ make_sandbox
 use_stubs
 
 PARENT="$(safe_mktemp_dir "${TMPDIR:-/tmp}/talos-multiuser.XXXXXX")" || exit 1
-trap 'rm -rf "$SANDBOX" "$PARENT"' EXIT
+trap '_is_trap_owner && rm -rf "$SANDBOX" "$PARENT"' EXIT
 FX="$PARENT/fx"
 GS="$PARENT/scripts"
 export SF_FX="$FX"

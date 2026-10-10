@@ -111,11 +111,11 @@ _check_watchdog_reaped "fast-success hook"
 # not mistake that process for the watchdog's sleep. The EXIT trap keeps the
 # sandbox cleanup from make_sandbox and also kills this sleep on any exit.
 sleep 20 & _unrelated_sleep=$!
-trap 'kill "$_unrelated_sleep" 2>/dev/null; rm -rf "$SANDBOX"' EXIT
+trap '_is_trap_owner && { kill "$_unrelated_sleep" 2>/dev/null; rm -rf "$SANDBOX"; }' EXIT
 _check_watchdog_reaped "fast-success hook, unrelated 'sleep 20' running"
 kill "$_unrelated_sleep" 2>/dev/null
 wait "$_unrelated_sleep" 2>/dev/null
-trap 'rm -rf "$SANDBOX"' EXIT
+trap '_is_trap_owner && rm -rf "$SANDBOX"' EXIT
 
 # ── (b) Failing hook -- no-op, byte-identical to no-hook ─────────────────────
 cat > talos.pipeline.json <<EOF
