@@ -179,14 +179,20 @@ run_cases() {  # NAME
   done
 }
 
-# ── an inherited claim identity (#560) ───────────────────────────────────────
-# A stage started by `talos.sh run` inherits TALOS_CLAIM_STATE=on:<login>. Left
-# set, every collect below would skip the stub's current-user and read
-# list-assignees, a verb this stub fails as a WRITE.
-probe="$PARENT/probe-claim.sh"
+# ── the environment of a live run (#554, #560) ───────────────────────────────
+# A stage started by `talos.sh run` inherits what the run exports. Left set,
+# TALOS_CLAIM_STATE=on:<login> makes every collect below skip the stub's
+# current-user and read list-assignees, a verb this stub fails as a WRITE;
+# TALOS_COLLECT_CACHE points `next` at the live run's cached state (read,
+# overwritten and dropped by a test); TALOS_RUN_PID stamps leases with the
+# run's pid.
+probe="$PARENT/probe-run-env.sh"
 # shellcheck disable=SC2016
-printf '%s\n' '. "$1/tests/helpers.sh"' 'make_sandbox || exit 1' 'printf "%s\n" "${TALOS_CLAIM_STATE-unset}"' > "$probe"
-assert_eq "unset" "$(env TALOS_CLAIM_STATE=on:ghost bash "$probe" "$TALOS_ROOT")" "make_sandbox unsets an inherited TALOS_CLAIM_STATE"
+printf '%s\n' '. "$1/tests/helpers.sh"' 'make_sandbox || exit 1' \
+  'printf "%s|%s|%s\n" "${TALOS_CLAIM_STATE-unset}" "${TALOS_COLLECT_CACHE-unset}" "${TALOS_RUN_PID-unset}"' > "$probe"
+assert_eq "unset|unset|unset" \
+  "$(env TALOS_CLAIM_STATE=on:ghost TALOS_COLLECT_CACHE="$PARENT/ghost.cache" TALOS_RUN_PID=1 bash "$probe" "$TALOS_ROOT")" \
+  "make_sandbox unsets an inherited TALOS_CLAIM_STATE, TALOS_COLLECT_CACHE and TALOS_RUN_PID"
 
 # ── argument grammar ─────────────────────────────────────────────────────────
 cfg_rf
