@@ -830,7 +830,11 @@ acme/widget
 pipeline-notify: message was 20000 bytes; truncated to at most 16384 bytes
 rc=0
 -- curl (url, payload, auth, method)
-https://hooks.slack.test/T/B/X	{"text": "🤖 Talos — info · #1", "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "🤖 *Talos* — info · <https://github.com/acme/widget/issues/1|#1>\n\n<ht
+https://hooks.slack.test/T/B/X section text chars: 3000 longest x run: 2873
+
+### multibyte message over the cap is cut at a UTF-8 boundary, in bytes
+pipeline-notify: message was 18000 bytes; truncated to at most 16384 bytes
+e-acute run: 8192 chars, 16384 bytes; marker: True
 
 ### notifications.cmd stdin payload
 rc=0

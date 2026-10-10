@@ -179,7 +179,30 @@ reset_state
 scenario "message over the byte cap is truncated with a marker"
 reset_state
 big="$(python3 -c 'print("x" * 20000)')"
-{ run slack-webhook info "#1" "$big" 1 | cut -c1-200 | sed 's/x\{40,\}/xxxx.../'; } >> "$OUT"
+# The payload is summarised by python, never cut with cut(1): cut -c counts bytes
+# or characters by locale (macOS UTF-8 vs the C locale of a Linux runner), which
+# moved the cut point across the emoji in the payload and failed on Linux CI.
+{ run slack-webhook info "#1" "$big" 1 | python3 -I -c '
+import json, re, sys
+for line in sys.stdin:
+    line = line.rstrip("\n")
+    if line.startswith("https://"):
+        url, payload = line.split("\t")[:2]
+        text = json.loads(payload)["blocks"][0]["text"]["text"]
+        print(url, "section text chars:", len(text), "longest x run:", max(len(r) for r in re.findall(r"x+", text)))
+    else:
+        print(line)
+'; } >> "$OUT"
+
+scenario "multibyte message over the cap is cut at a UTF-8 boundary, in bytes"
+printf '{"notifications": {"cmd": "cat > %s/cmd-in.json"}}' "$SANDBOX" > talos.pipeline.json
+{ bash "$NOTIFY" info "#1" "$(python3 -c 'print("\u00e9" * 9000)')" 1 2>&1
+  python3 -I -c '
+import json, re, sys
+m = json.load(open(sys.argv[1]))["message"]
+run = max(re.findall("\u00e9+", m), key=len)
+print("e-acute run:", len(run), "chars,", len(run.encode()), "bytes; marker:", "[message truncated to 16384 bytes]" in m)' "$SANDBOX/cmd-in.json"; } >> "$OUT"
+rm -f talos.pipeline.json
 
 # ── E. notifications.cmd: the stdin JSON ─────────────────────────────────────
 scenario "notifications.cmd stdin payload"
