@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+- lean: removed features and code with no place in an orchestrator, or no
+  reader (#553, part of #558). User-visible removals:
+  - **Evidence capture (screenshots attached to the PR, off by default).**
+    `scripts/pipeline-evidence.sh`, the `evidence.*` config keys and their
+    validator, the `talos:evidence` marker, `ref=evidence` and
+    `refs/evidence.md`, `templates/prompts/qa-evidence.md`, the `EVIDENCE_*`
+    lines of `talos.sh env`, and the evidence question in `/talos:setup`. A
+    config that still has an `evidence:` block gets the ordinary unknown-key
+    warning and keeps loading.
+  - **Dead config keys** `merge.delete_branch` and `release_branch` (no reader;
+    the same unknown-key warning applies to a config that sets them).
+  - **`pipeline-config.sh --convert`** (the one-shot YAML to JSON migration).
+    The `config-legacy-file` reason now says to convert by hand and points at git
+    history. `install.sh` and `/talos:setup` no longer offer the command.
+  - **`talos.sh done --action-id`** and its ledger (`talos-done.ledger`,
+    `done=duplicate`, `stop reason=ledger-locked`); no caller passed it. The flag
+    is now a usage error.
+  - **The `/pipeline` and `/pipeline-setup` aliases** (promised for v0.20) and
+    `skills/pipeline-setup`. `install.sh --global` no longer writes them and
+    removes an older install's Talos-owned copies once the plugin is
+    registered (a skill that is not Talos's is left alone);
+    `--no-legacy-aliases` is accepted and ignored.
+  - **Stale files:** `.claude/commands/pipeline-tick.md` (superseded by
+    `talos.sh run`/`next`), `examples/github-actions/` and
+    `docs/superpowers/specs/`. `templates/ci/github-tests.yml` stays: the setup
+    skill and the draft-PR CI check still use it.
+  Seven evidence test files and `tests/test-legacy-aliases.sh` are retired
+  (listed in `tests/retired-tests.txt`).
 - **Notifications: every platform kept, one shared sender, 45% less code (#552, part of #558).** `scripts/pipeline-notify.sh` (1,652 lines) and `scripts/pipeline-secrets.sh` (400) are now 800 and 335 lines. Slack, Discord, Teams, Buzz and `notifications.cmd` keep every config key and send byte-identical payloads. What changed is the shape: one formatter (inline python) renders the neutral template once and each platform is a small payload function plus a dialect table; Slack, Discord and Teams webhooks share one sender (`post`, a bounded `curl` with the URL and token on stdin) and one `_webhook_sink` flow; Slack's bot mode and Buzz share one thread-anchor flow (`_anchored`: read the anchor, post, on a refused anchor clear it and repost as a root, store the new id). Buzz keeps its `nak` call, NIP-10 reply tag, the key in `NOSTR_SECRET_KEY` (never argv, #281) and the `notifications.buzz_timeout_s` watchdog. The new `scripts/pipeline-bounded.sh` (`talos_bounded`, `talos_pos_int`) is the one portable run-under-a-timeout, now used by `hooks.pre_dispatch`/`post_stage`, `notifications.cmd` and the Buzz call instead of three copies. The GitHub REST fallback for the issue title no longer puts `GITHUB_TOKEN` on argv; it goes to `curl` on stdin like the webhook URLs. One stderr wording changed: Slack's failed recovery post now says "stale anchor recovery", as Buzz's does. Tests: the new `tests/test-notify-goldens.sh` compares every platform's payload, thread state and stderr with `tests/fixtures/notify-goldens.txt` (generated on the pre-refactor code); `tests/test-notify-cmd.sh` asserts the slow-command kill by a marker file that must never appear instead of a 4 s wall clock, which flaked under load.
 - lean(agents): multi-turn procedures became single verbs (#549, part of #558),
   because every extra agent turn re-reads the whole context. New
