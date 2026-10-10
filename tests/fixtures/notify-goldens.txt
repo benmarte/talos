@@ -668,7 +668,7 @@ publishing to relay... authenticating as npub1xx...... auth error: msg: restrict
 rc=0
 -- nak argv
 event --auth -k 9 -c 🧪 **QA** — PASS · [#14](https://github.com/acme/widget/issues/14)  fine -t h=chan-uuid-1 -t e=cccc;;reply ws://localhost:3000
-event --auth -k 9 -c 🧪 **QA** — PASS · [#14](https://github.com/acme/widget/issues/14)  fine -t h=chan-uuid-1 ws://localhost:3000
+event --auth -k 9 -c 🧪 **QA** — PASS · [#14](https://github.com/acme/widget/issues/14)  [#14 Fix login crash](https://github.com/acme/widget/issues/14)  fine  acme/widget -t h=chan-uuid-1 ws://localhost:3000
 -- thread state
 {
   "acme-widget:14": {
