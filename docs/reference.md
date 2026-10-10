@@ -114,7 +114,7 @@ Required: `bash`, `git`, `python3`. Optional: `curl` (notifications, token trans
 
 ```bash
 git clone https://github.com/benmarte/talos
-bash talos/install.sh --global [--harness <list>] [--no-overwrite] [--keep-marketplace]
+bash talos/install.sh --global [--harness <list>] [--no-overwrite] [--keep-marketplace | --local-plugin]
 bash talos/install.sh [repo-path] [--harness <list>] [--no-agents-md] [--import-agents-md] [--no-agent-skills] [--force]
 ```
 
@@ -122,6 +122,7 @@ bash talos/install.sh [repo-path] [--harness <list>] [--no-agents-md] [--import-
 |------|--------|
 | `--global` | install to `${TALOS_HOME:-~/.talos}` |
 | `--harness <list>`, `--harness=<list>` | installer glue, comma-separated: `claude codex gemini antigravity pi cursor opencode generic`. Another `[a-z0-9-]+` name becomes `generic`; an empty item, bad characters or a missing value exit 1. It does not set `agents.runner` |
+| `--local-plugin` | `--global` only: register the checkout itself as the `talos` marketplace, replacing a GitHub-registered one ([Developing Talos](#developing-talos)) |
 | `--no-overwrite`, `--force` | skip existing files (global default is overwrite) / overwrite them (per-repo; never `talos.pipeline.json`) |
 | `--no-agent-skills` | per-repo: skip copying agent-skills into `<repo>/.claude/skills` |
 | `--no-agents-md`, `--import-agents-md` | per-repo: write no `AGENTS.md` block / append `@AGENTS.md` to an existing `CLAUDE.md` and `GEMINI.md` (never creates them) |
