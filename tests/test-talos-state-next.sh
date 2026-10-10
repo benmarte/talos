@@ -201,7 +201,7 @@ if lines and lines[-1] == "":
 if len(lines) != 1:
     sys.exit(1)
 ln = lines[0]
-if re.fullmatch(r"action=dispatch stage=(qa|docs|reviewer|security|adversarial) pr=[0-9]+ issue=[0-9]+", ln):
+if re.fullmatch(r"action=dispatch stage=(qa|docs|reviewer|security|adversarial) pr=[0-9]+ issue=[0-9]+( ref=adversarial)?", ln):
     sys.exit(0)
 if re.fullmatch(r"action=merge pr=[0-9]+ issue=[0-9]+", ln):
     sys.exit(0)
@@ -236,7 +236,9 @@ for stage in docs reviewer security adversarial; do
   LEASE_RESET
   set_state "{\"prs\": [{\"n\": 12, \"issue\": 34, \"head\": \"a4f9\", \"owner\": false, \"stage\": \"$stage\"}], \"pr_total\": 1, \"ignored\": 0, \"blocked\": [], \"queued\": [], \"held\": [], \"owners\": [], \"capped\": []}"
   st next
-  assert_eq "action=dispatch stage=$stage pr=12 issue=34" "$OUT" "next: dispatches a PR at stage $stage"
+  want="action=dispatch stage=$stage pr=12 issue=34"
+  [ "$stage" = adversarial ] && want="$want ref=adversarial"
+  assert_eq "$want" "$OUT" "next: dispatches a PR at stage $stage"
   assert_action "next ($stage)"
 done
 
