@@ -26,7 +26,7 @@ Five cases, in priority order: explicit override ($TALOS_HOME), global install (
 
 ## Step 0 — Detect existing config
 
-Check whether `talos.pipeline.json` already exists in the current directory. A legacy `talos.pipeline.yml`/`.yaml` beside it fails every config read closed (`reason=config-shadowed`), and one without a json fails with `reason=config-legacy-file` (#526): when you find either, offer `bash scripts/pipeline-config.sh --convert <legacy> talos.pipeline.json` (or the `rm` the reason line prints) and proceed only after the legacy file is gone or converted -- never write a json alongside it.
+Check whether `talos.pipeline.json` already exists in the current directory. A legacy `talos.pipeline.yml`/`.yaml` beside it fails every config read closed (`reason=config-shadowed`), and one without a json fails with `reason=config-legacy-file` (#526): when you find either, offer to write the json by hand from the legacy file (or the `rm` the reason line prints) and proceed only after the legacy file is gone or converted -- never write a json alongside it.
 
 If a config **exists**:
 - Read it with `bash scripts/pipeline-config.sh <key>` to show current values (a key that is not set prints its documented default).
@@ -608,7 +608,7 @@ Next steps:
 
 ## Idempotency rules
 
-- Never overwrite an existing `talos.pipeline.json` without the user's explicit confirmation, and never write it alongside a legacy `talos.pipeline.yml`/`.yaml` (offer `--convert` or the `rm` first, #526).
+- Never overwrite an existing `talos.pipeline.json` without the user's explicit confirmation, and never write it alongside a legacy `talos.pipeline.yml`/`.yaml` (offer to convert it by hand or the `rm` first, #526).
 - If `bootstrap-labels.sh` reports a label already exists, that is not an error — say "already up to date".
 - Running setup a second time on a configured repo should be safe and produce no surprises.
 

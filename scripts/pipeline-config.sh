@@ -10,9 +10,6 @@
 #          pipeline-config.sh --show [--origin-only] [KEY-PREFIX]
 #                                           every key with its value and the
 #                                           layer that decided it (see below)
-#          pipeline-config.sh --convert LEGACY.yml TARGET.json [--force]
-#                                           one-shot YAML -> JSON migration
-#                                           (#526, the only YAML-aware code)
 # Example: pipeline-config.sh board.project_number 1
 #          pipeline-config.sh notifications.slack_channel ""
 #          pipeline-config.sh merge.method squash
@@ -30,8 +27,8 @@
 #     reason=config-shadowed winner=<json> also-present=<strays> rm <strays>
 #     # or merge them into the winner first
 #   talos.pipeline.yml/.yaml with no talos.pipeline.json in that dir →
-#     reason=config-legacy-file <path> -- convert: bash scripts/pipeline-config.sh
-#     --convert <path> <dir>/talos.pipeline.json
+#     reason=config-legacy-file <path> -- convert it by hand to
+#     <dir>/talos.pipeline.json (the YAML converter is in git history, #553)
 # Every read verb (KEY, --has, --show, --dump) exits 3 on it. Through talos.sh
 # (the cfg cache primes on --dump) the run answers stop reason=config-unreadable
 # and the specific line reaches the operator.
@@ -81,8 +78,7 @@
 # see the env layer.
 #
 # Parsing (#526): the loader's only parser is json. A legacy .yml/.yaml never
-# reaches the parser: the gate above refuses it first, and --convert is the
-# one path that reads YAML (a human-invoked migration, needs PyYAML).
+# reaches the parser: the gate above refuses it first.
 #
 set -u
 
@@ -186,7 +182,7 @@ fi
 # own talos.pipeline.json and the user-level ${TALOS_HOME:-$HOME/.talos}/
 # talos.pipeline.json. No name list, no extension precedence, no legacy names
 # (the old .claude-pipeline.* / pipeline.* names are simply not read anymore;
-# an owner still on one runs --convert or renames the file).
+# an owner still on one converts the file by hand).
 _CFG_PROJECT_NAME="talos.pipeline"
 
 # The user-level config directory: $TALOS_HOME, else $HOME/.talos. Empty when
@@ -224,7 +220,7 @@ _locate_user_cfg() {
 #   second file beside the json  -> reason=config-shadowed winner=<json>
 #       also-present=<strays> rm <strays>  # or merge them into the winner first
 #   lone legacy file, no json    -> reason=config-legacy-file <path>
-#       -- convert: bash scripts/pipeline-config.sh --convert <path> <json>
+#       -- convert it by hand to <json> (the converter is in git history)
 #
 # The reason joins the env-reasons class through the existing plumbing: --dump
 # exits 3, so talos.sh (cfg cache primed on --dump) stops with
@@ -256,8 +252,8 @@ _cfg_project_problem() {
       *.yml|*.yaml)
         _cv_path="$(_cfg_safe_path "$PIPELINE_CONFIG")"
         case "$PIPELINE_CONFIG" in */*) _cv_dir="${PIPELINE_CONFIG%/*}" ;; *) _cv_dir="." ;; esac
-        printf 'pipeline-config: reason=config-legacy-file %s -- convert: bash scripts/pipeline-config.sh --convert %s %s/%s.json\n' \
-          "$_cv_path" "$_cv_path" "$(_cfg_safe_path "$_cv_dir")" "$_CFG_PROJECT_NAME"
+        printf 'pipeline-config: reason=config-legacy-file %s -- convert it by hand to %s/%s.json (the YAML converter is in git history, #553)\n' \
+          "$_cv_path" "$(_cfg_safe_path "$_cv_dir")" "$_CFG_PROJECT_NAME"
         return 0 ;;
       *)
         # An explicit pointer at a file that is not there fails closed (#541):
@@ -277,8 +273,8 @@ _cfg_project_problem() {
     printf 'pipeline-config: reason=config-shadowed winner=%s also-present=%s rm %s  # or merge them into the winner first\n' \
       "$_winner" "$(printf '%s' "$_strays" | tr ' ' ',')" "$_strays"
   else
-    printf 'pipeline-config: reason=config-legacy-file %s -- convert: bash scripts/pipeline-config.sh --convert %s %s\n' \
-      "$_strays" "${_strays%% *}" "$_winner"
+    printf 'pipeline-config: reason=config-legacy-file %s -- convert it by hand to %s (the YAML converter is in git history, #553)\n' \
+      "$_strays" "$_winner"
   fi
 }
 
@@ -307,8 +303,8 @@ _cfg_user_problem() {
     printf 'pipeline-config: reason=config-shadowed winner=%s also-present=%s rm %s  # or merge them into the winner first\n' \
       "$_winner" "$(printf '%s' "$_strays" | tr ' ' ',')" "$_strays"
   else
-    printf 'pipeline-config: reason=config-legacy-file %s -- convert: bash scripts/pipeline-config.sh --convert %s %s\n' \
-      "$_strays" "${_strays%% *}" "$_winner"
+    printf 'pipeline-config: reason=config-legacy-file %s -- convert it by hand to %s (the YAML converter is in git history, #553)\n' \
+      "$_strays" "$_winner"
   fi
 }
 
@@ -345,8 +341,7 @@ def _parse_cfg_file(path):
     # reaches here - the shell gate (reason=config-shadowed / reason=config-legacy-file)
     # refuses every talos.pipeline.* file that is not the layer's canonical
     # json before any read verb spawns python3, and an explicit PIPELINE_CONFIG
-    # pointer at a legacy YAML file is refused the same way. --convert is the
-    # only YAML-aware path in the whole pipeline.
+    # pointer at a legacy YAML file is refused the same way.
     import json
     with open(path) as f:
         return json.load(f)
@@ -1121,96 +1116,6 @@ _cfg_env_keys_set() {
   done
   printf '%s' "${_out# }"
 }
-
-# ── --convert LEGACY.yml TARGET.json [--force] (#526) ─────────────────────
-# The ONLY YAML-aware code in Talos: a one-shot, human-invoked migration that
-# parses a legacy .yml/.yaml config (the same a stray file or a PIPELINE_CONFIG
-# pointer names), drops its secret-shaped leaves the same way the loader would
-# (a literal secret is refused, never written on), and writes the result as
-# JSON to TARGET. Needs PyYAML to read the input (a load never does); without
-# it the one line names the fix. An existing non-empty TARGET is refused
-# without an explicit --force (one line, writes nothing); --force overwrites.
-# Nothing else converts anything.
-if [ "${1:-}" = "--convert" ]; then
-  [ "$#" -ge 3 ] || { echo "pipeline-config: --convert: usage: pipeline-config.sh --convert LEGACY.yml TARGET.json [--force]" >&2; exit 3; }
-  shift
-  _CV_LEGACY="${1:-}" _CV_TARGET="${2:-}" _CV_FORCE=""
-  shift 2
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
-      --force) _CV_FORCE=1 ;;
-      *) echo "pipeline-config: --convert: unknown option $1 (usage: pipeline-config.sh --convert LEGACY.yml TARGET.json [--force])" >&2; exit 3 ;;
-    esac
-    shift
-  done
-  case "$_CV_LEGACY" in
-    *.yml|*.yaml) ;;
-    *) echo "pipeline-config: --convert: $_CV_LEGACY is not a .yml/.yaml file -- nothing to convert" >&2; exit 3 ;;
-  esac
-  case "$_CV_TARGET" in
-    *.json) ;;
-    *) echo "pipeline-config: --convert: the target must be a .json file, not $_CV_TARGET" >&2; exit 3 ;;
-  esac
-  if [ "$_CV_LEGACY" = "$_CV_TARGET" ]; then
-    echo "pipeline-config: --convert: the target must not be the legacy file itself ($_CV_LEGACY)" >&2
-    exit 3
-  fi
-  if [ -f "$_CV_TARGET" ] && [ -s "$_CV_TARGET" ] && [ -z "$_CV_FORCE" ]; then
-    echo "pipeline-config: --convert: target $_CV_TARGET already exists and is not empty -- use --force to overwrite it" >&2
-    exit 3
-  fi
-  [ -f "$_CV_LEGACY" ] || { echo "pipeline-config: --convert: $_CV_LEGACY is not a readable file" >&2; exit 3; }
-  python3 -I - "$_CV_LEGACY" "$_CV_TARGET" "$(_cfg_loader_src)" <<'PYCONVERT'
-import sys, json
-exec(sys.argv[3])
-import site, sys
-# -I drops the user site; append it back so a pip --user PyYAML still reads the
-# legacy input (the same convention the old YAML loader used, #395).
-sys.path.append(site.getusersitepackages())
-try:
-    import yaml
-except ImportError:
-    sys.stderr.write("pipeline-config: --convert: %s needs PyYAML to read YAML, and PyYAML is not installed -- run pip install pyyaml (or convert by hand)\n" % repr(sys.argv[1]))
-    sys.exit(3)
-try:
-    with open(sys.argv[1]) as f:
-        raw = yaml.safe_load(f)
-except Exception as e:
-    sys.stderr.write("pipeline-config: --convert: %s is unreadable or malformed (%s)\n" % (repr(sys.argv[1]), type(e).__name__))
-    sys.exit(3)
-if not isinstance(raw, dict):
-    sys.stderr.write("pipeline-config: --convert: %s must hold a mapping (top-level keys)\n" % repr(sys.argv[1]))
-    sys.exit(3)
-# The loader's own hygiene, so a converted file cannot hold what a load would
-# refuse: secret-shaped leaves are dropped with the same one-line warnings
-# (a literal secret is refused, moved to ~/.talos/.env as env:NAME), and a
-# scalar agents: block is dropped the same way.
-_what = "legacy config %s" % repr(sys.argv[1])
-raw = _drop_secret_shaped(_check_agents(raw, _what), _what)
-import os, tempfile
-_tmp = None
-try:
-    _fd, _tmp = tempfile.mkstemp(prefix=".talos-convert-", suffix=".tmp",
-                                 dir=os.path.dirname(os.path.abspath(sys.argv[2])) or ".")
-    with os.fdopen(_fd, "w") as f:
-        json.dump(raw, f, indent=2)
-        f.write("\n")
-    os.replace(_tmp, sys.argv[2])
-except Exception as e:
-    if _tmp is not None:
-        try:
-            os.unlink(_tmp)
-        except OSError:
-            pass
-    sys.stderr.write("pipeline-config: --convert: could not write %s (%s)\n" % (repr(sys.argv[2]), type(e).__name__))
-    sys.exit(3)
-PYCONVERT
-  _CV_RC=$?
-  if [ "$_CV_RC" -eq 0 ]; then
-    echo "pipeline-config: --convert: converted $_CV_LEGACY -> $_CV_TARGET"
-  fi
-  exit "$_CV_RC"
-fi
 
 # Every read verb below (KEY, --show, --dump, --has) refuses a dirty config
 # set: one stderr line per layer problem, exit 3, before any value resolves.

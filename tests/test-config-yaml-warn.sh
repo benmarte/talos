@@ -10,8 +10,7 @@
 #      note anywhere -- that warn machinery is deleted)
 #   2. a clean json load with no PyYAML importable is silent (the loader never
 #      imports yaml)
-#   3. --convert is the only path that needs PyYAML, and it says so when it
-#      cannot find it
+#   3. the script has no yaml import at all (the --convert verb was removed, #553)
 #
 # PyYAML is hidden with a python3 shim on PATH inside the sandbox (nothing is
 # uninstalled): it runs the real python3 with sys.modules['yaml'] = None, so
@@ -72,19 +71,9 @@ assert_eq "0" "$rc" "--dump without PyYAML: exits 0"
 assert_eq "0" "$(nolines "$ERR")" "--dump without PyYAML: silent"
 rm -f talos.pipeline.json
 
-# ---- 3. --convert is the only PyYAML consumer, and it says so ----------------
-printf 'pr:\n  draft: false\n' > talos.pipeline.yml
-env PATH="$SHIM:$PATH" bash "$CFG_SH" --convert talos.pipeline.yml "$SANDBOX/out.json" >/dev/null 2>"$ERR"; rc=$?
-assert_eq "3" "$rc" "--convert without PyYAML: exits 3"
-assert_eq "1" "$(nolines "$ERR")" "--convert without PyYAML: exactly one stderr line"
-assert_contains "$(cat "$ERR")" "PyYAML is not installed" "--convert without PyYAML: the line says so"
-assert_contains "$(cat "$ERR")" "pip install pyyaml" "--convert without PyYAML: the line names the fix"
-assert_file_absent "$SANDBOX/out.json" "--convert without PyYAML: no target written"
-rm -f talos.pipeline.yml
-
-# The source carries no YAML load path: import yaml appears only inside --convert.
+# ---- 3. nothing in the script reads YAML (the --convert verb is gone, #553) -
 n_imports="$(grep -c 'import yaml' "$CFG_SH")"
-assert_eq "1" "$n_imports" "import yaml appears only inside --convert (exactly once)"
+assert_eq "0" "$n_imports" "no yaml import anywhere in the script"
 if grep -q '_YAML_WARNED\|_yaml_warn_due\|_NoYamlError\|TALOS_YAML_WARN_DEDUP' "$CFG_SH"; then
   fail "the #490 machinery is deleted" "_YAML_WARNED/_yaml_warn_due/_NoYamlError/TALOS_YAML_WARN_DEDUP still present"
 else

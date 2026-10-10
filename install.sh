@@ -893,7 +893,7 @@ fi
 
 # Offer to copy config example. talos.pipeline.json is NEVER overwritten; a
 # legacy talos.pipeline.yml/.yaml beside it would fail the load closed (#526),
-# so it is named with the migration command instead of being left silent.
+# so it is named with a manual migration hint instead of being left silent.
 echo ""
 if [ ! -f "$TARGET/talos.pipeline.json" ]; then
   echo "Config template:"
@@ -901,13 +901,13 @@ if [ ! -f "$TARGET/talos.pipeline.json" ]; then
   echo "    cp $(printable "$SRC")/talos.pipeline.json.example $(printable "$TARGET")/talos.pipeline.json"
   if [ -f "$TARGET/talos.pipeline.yml" ] || [ -f "$TARGET/talos.pipeline.yaml" ]; then
     echo "  Legacy config present -- talos.pipeline.yml/.yaml will fail the load closed (reason=config-legacy-file)."
-    echo "  Migrate it first: bash scripts/pipeline-config.sh --convert talos.pipeline.yml talos.pipeline.json"
+    echo "  Convert it to talos.pipeline.json by hand first (the old YAML converter is in git history)."
   fi
 else
   echo "Config: talos.pipeline.json already exists -- not overwriting."
   if [ -f "$TARGET/talos.pipeline.yml" ] || [ -f "$TARGET/talos.pipeline.yaml" ]; then
     echo "  Legacy config present -- the json will not load while a talos.pipeline.yml/.yaml sits beside it (reason=config-shadowed)."
-    echo "  Migrate it first: bash scripts/pipeline-config.sh --convert talos.pipeline.yml talos.pipeline.json"
+    echo "  Merge it into talos.pipeline.json by hand, then remove the legacy file."
   fi
 fi
 

@@ -213,8 +213,7 @@ cp path/to/talos/talos.pipeline.json.example talos.pipeline.json
 # Exactly two canonical files: talos.pipeline.json (repo) and
 # ~/.talos/talos.pipeline.json (user-level). Any other talos.pipeline.* file
 # in a layer directory fails the load closed (reason=config-shadowed /
-# reason=config-legacy-file); migrate a legacy YAML with
-# bash scripts/pipeline-config.sh --convert talos.pipeline.yml talos.pipeline.json
+# reason=config-legacy-file); convert a legacy YAML to JSON by hand.
 ```
 
 Minimum viable config (board and notifications optional):
@@ -505,7 +504,7 @@ Also merged with v0.19 and visible to users:
 
 **(l) Commands are `/talos:pipeline` and `/talos:setup` (#335).** The legacy `/pipeline` and `/pipeline-setup` aliases print a rename line and keep working until v0.20. `install.sh --global` now registers a local `talos` plugin; pass `--keep-marketplace` to leave an existing registration alone and `--no-legacy-aliases` to skip the aliases. See [1. Install](#1-install).
 
-**(m) A YAML config file fails the load closed (#526).** Config is JSON only: a `talos.pipeline.yml`/`.yaml` beside the canonical json stops every config read with `reason=config-shadowed` (winner, the strays, the `rm`/merge instruction), and one without a json stops with `reason=config-legacy-file` plus the `--convert` migration command. Ambiguity never runs — the 2026-10-06 incident (a stray committed yml silently shadowed the json and cost three full CI runs) is why this is fail-closed, not a warn.
+**(m) A YAML config file fails the load closed (#526).** Config is JSON only: a `talos.pipeline.yml`/`.yaml` beside the canonical json stops every config read with `reason=config-shadowed` (winner, the strays, the `rm`/merge instruction), and one without a json stops with `reason=config-legacy-file` plus a hint to convert it by hand (the old `--convert` verb was removed in #553; it is in git history). Ambiguity never runs — the 2026-10-06 incident (a stray committed yml silently shadowed the json and cost three full CI runs) is why this is fail-closed, not a warn.
 
 ### Upgrade notes (v0.18+)
 

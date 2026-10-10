@@ -117,7 +117,7 @@ Core (all setups):
 |------|-----------|-------|
 | `bash` | everything | macOS/Linux; Windows via WSL or Git Bash |
 | `git` | everything | |
-| `python3` (3.9+) | config parsing, notify payloads | stdlib only; every embedded call runs as `python3 -I` (isolated mode, so a file in the target repo named like a module, such as `json.py`, can never run inside Talos). Config is JSON only (#526): `talos.pipeline.json` needs no extra dependency; `--convert` is the one path that reads YAML and asks for PyYAML when it cannot find it. |
+| `python3` (3.9+) | config parsing, notify payloads | stdlib only; every embedded call runs as `python3 -I` (isolated mode, so a file in the target repo named like a module, such as `json.py`, can never run inside Talos). Config is JSON only (#526): `talos.pipeline.json` needs no extra dependency. |
 | `curl` | notifications | skip if you don't use notifications |
 | `nak` | Buzz notifications only | `brew install nak`; signs/publishes Nostr events — skip unless you use Buzz |
 
@@ -2864,7 +2864,7 @@ directory and fails the load closed with ONE stderr line when the config set is
 dirty:
 
 - `reason=config-shadowed winner=<json> also-present=<strays> rm <strays>  # or merge them into the winner first` — a `talos.pipeline.yml`/`.yaml` sits beside that layer's `talos.pipeline.json`. The json always wins; the strays are named so you can merge them into it (run `--dump`'s values through the json) or just `rm` them.
-- `reason=config-legacy-file <path> -- convert: bash scripts/pipeline-config.sh --convert <path> <dir>/talos.pipeline.json` — a `talos.pipeline.yml`/`.yaml` with no `talos.pipeline.json` in the same layer directory (a `$PIPELINE_CONFIG` pointer at a `.yml`/`.yaml` file is refused the same way, by name, even before the file's existence matters). The legacy YAML parser is gone; `--convert` (see below) is the one YAML-aware path left.
+- `reason=config-legacy-file <path> -- convert it by hand to <dir>/talos.pipeline.json (the YAML converter is in git history, #553)` — a `talos.pipeline.yml`/`.yaml` with no `talos.pipeline.json` in the same layer directory (a `$PIPELINE_CONFIG` pointer at a `.yml`/`.yaml` file is refused the same way, by name, even before the file's existence matters). There is no YAML parser and no converter any more (`--convert` was removed in #553; it is in git history): write the json by hand.
 - **An explicit `$PIPELINE_CONFIG` pointer skips the same-dir stray check.** It is a deliberate human decision — the operator named the winner themselves — so only canonical-path loads (the two default files) get the stray/legacy gate. The pointer itself is still gated: a `.yml`/`.yaml` pointer is refused like any other legacy file, by name, even when the file does not exist. A pointer at a file that does not exist fails closed too (`pipeline-config: reason=config-pointer-missing <path>`, exit 3) instead of silently loading defaults; an empty `$PIPELINE_CONFIG` still means unset.
 
 Every read verb exits 3 on these, and a `talos.sh` run answers `stop reason=config-unreadable` while printing the specific line, so a mid-migration repo is a named state, never a working config. `~/.talos/.env` is unaffected: it is the secrets store, not a config layer.
@@ -3127,13 +3127,10 @@ If your setup predates the config and secrets work (epic #437), check these once
 - **A legacy YAML config fails the load closed (#526)** — config is JSON only:
   a `talos.pipeline.yml`/`.yaml` beside `talos.pipeline.json` stops every config
   read with one stderr line (`reason=config-shadowed ... rm <stray>`), and one
-  without a json stops with `reason=config-legacy-file ... --convert ...`.
-  Apply the fix the line prints (merge the stray into the json or run
-  `bash scripts/pipeline-config.sh --convert talos.pipeline.yml talos.pipeline.json`,
-  then remove the legacy file). `talos.pipeline.json.example` is the starting
-  point for a new config. External owners running one YAML config each (swarm,
-  ci-toolkit, dycotomic-platform) run `--convert` once per repo, then remove
-  the legacy file.
+  without a json stops with `reason=config-legacy-file ...`.
+  Apply the fix the line prints (merge the stray into the json by hand, or
+  write the json from `talos.pipeline.json.example`, then remove the legacy
+  file). The old `--convert` verb was removed in #553; it is in git history.
 - **Board updates fail** — Two paths depending on your provider:
   - **Missing Status option** (e.g. `Blocked`): run
     `bash scripts/bootstrap-board.sh` to provision it — idempotent, safe to
