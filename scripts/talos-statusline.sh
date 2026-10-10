@@ -11,7 +11,7 @@
 #   statusline-previous.json  the original statusLine value, verbatim (written
 #                             only when the current statusLine is not Talos's,
 #                             never overwritten while statusLine runs the wrapper)
-#   statusline-chain.sh       the wrapper (mode 0755), regenerated from the
+#   statusline-chain.sh       the wrapper (mode 0700), regenerated from the
 #                             backup on every wire
 #
 # wire, by the current statusLine:
@@ -112,7 +112,7 @@ exit 0
 TALOS_WRAPPER_SH
 
 IFS= read -r -d '' STATUSLINE_PY <<'TALOS_STATUSLINE_PY' || true
-import json, os, shlex, sys, tempfile
+import json, os, re, shlex, sys, tempfile
 
 TEMPLATE = os.environ["TALOS_WRAPPER_TEMPLATE"]
 STATE = os.path.expanduser(os.environ.get("TALOS_HOME") or "~/.talos")
@@ -171,9 +171,26 @@ def split(cmd):
         return []
 
 
+HEADER = "Talos status line chain (#585)"
+
+
+def has_header(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return HEADER in f.read(512)
+    except OSError:
+        return False
+
+
 def chain_path(cmd):
+    # The Talos wrapper is an absolute path that is either the wrapper under the
+    # Talos state dir or a file carrying the Talos header (a wrapper left behind
+    # by an install under another TALOS_HOME). A script that is merely named
+    # statusline-chain.sh is somebody else's status line.
     a = split(cmd)
-    if len(a) == 2 and a[0] == "bash" and os.path.basename(a[1]) == WRAPPER_NAME:
+    if len(a) != 2 or a[0] != "bash" or not os.path.isabs(a[1]):
+        return None
+    if os.path.realpath(a[1]) == os.path.realpath(os.path.join(STATE, WRAPPER_NAME)) or has_header(a[1]):
         return a[1]
     return None
 
@@ -184,7 +201,9 @@ def is_direct(cmd):
 
 
 def render(orig, status):
-    return TEMPLATE.replace("@ORIG@", shlex.quote(orig)).replace("@STATUS@", shlex.quote(status))
+    # One pass: a placeholder inside the user's command is data, not a slot.
+    values = {"@ORIG@": shlex.quote(orig), "@STATUS@": shlex.quote(status)}
+    return re.sub(r"@ORIG@|@STATUS@", lambda m: values[m.group(0)], TEMPLATE)
 
 
 def read_text(path):
@@ -252,20 +271,24 @@ def refresh_chain(wrapper, status):
         return
     text = render(orig, status)
     if read_text(wrapper) != text:
-        atomic_write(wrapper, text, 0o755)
+        atomic_write(wrapper, text, 0o700)
         say("updated: %s now calls %s (statusLine unchanged)" % (wrapper, status))
     else:
-        if not os.access(wrapper, os.X_OK):
-            os.chmod(wrapper, 0o755)
+        if os.stat(wrapper).st_mode & 0o777 != 0o700:
+            os.chmod(wrapper, 0o700)
         say("skip (already chained): statusLine runs %s" % wrapper)
 
 
 def chain(real, doc, sl, cmd, status, settings):
     wrapper = os.path.join(STATE, WRAPPER_NAME)
     backup = os.path.join(STATE, BACKUP_NAME)
+    if os.path.lexists(wrapper) and not has_header(wrapper):
+        say("notice: %s is not a Talos wrapper, so the statusLine was not chained and nothing was overwritten; move that file away and run this again"
+            % wrapper)
+        return
     try:
         atomic_write(backup, dumps(sl), 0o600)
-        atomic_write(wrapper, render(cmd, status), 0o755)
+        atomic_write(wrapper, render(cmd, status), 0o700)
         new = dict(sl, command="bash %s" % shlex.quote(wrapper))
         new.setdefault("type", "command")
         doc["statusLine"] = new
@@ -321,6 +344,9 @@ def undo(settings):
     else:
         say("notice: statusLine is no longer Talos's, left as it is")
     for p in files:
+        if os.path.basename(p) == WRAPPER_NAME and not has_header(p):
+            say("notice: %s is not a Talos wrapper, left in place" % p)
+            continue
         try:
             os.unlink(p)
             say("removed: %s" % p)

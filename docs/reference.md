@@ -1039,7 +1039,7 @@ Fields: issue, running (else first pending) stage, one dot each for validator, p
 **An existing status line is chained, not replaced.** Claude Code has one `statusLine` slot (a plugin cannot set it), so with a foreign `statusLine` command the installer:
 
 - saves the original `statusLine` object verbatim to `${TALOS_HOME:-~/.talos}/statusline-previous.json`;
-- writes `${TALOS_HOME:-~/.talos}/statusline-chain.sh` (mode 0755) and sets `statusLine.command` to `bash <that file>`; `type`, `padding` and every other field stay.
+- writes `${TALOS_HOME:-~/.talos}/statusline-chain.sh` (mode 0700, like the backup: it embeds your original command) and sets `statusLine.command` to `bash <that file>`; `type`, `padding` and every other field stay.
 
 The wrapper reads Claude's JSON from stdin once and runs your original command (`sh -c`) and `talos-status.sh --line` side by side with that same JSON. Claude Code shows every output line as a row ([status line docs](https://code.claude.com/docs/en/statusline), "Display multiple lines"), so it prints your original rows and the Talos line as the last row. Each part has its own timeout, `TALOS_STATUSLINE_TIMEOUT_S` seconds (1 to 10, default 2), and its own failure: a part that fails, hangs or prints nothing is left out and the other still shows; the wrapper always exits 0.
 
@@ -1051,7 +1051,7 @@ The wrapper reads Claude's JSON from stdin once and runs your original command (
 | the chain wrapper | rewrites the wrapper from the backup in place; `settings.json` and the backup are not touched, nothing is wrapped twice |
 | no `command` (not a command status line), or a `settings.json` that does not parse | left unchanged, with a notice |
 
-`--no-statusline` skips the whole step for every harness (one line says so; nothing is written). `--statusline-undo` (implies `--global`, does nothing else) puts `statusLine` back to exactly the saved value, deletes the wrapper and the backup, and says `nothing to undo` when there is nothing Talos-owned. Both only touch the user-level `settings.json`, never a project's `.claude/settings.json`.
+`--no-statusline` skips the whole step for every harness (one line says so; nothing is written). `--statusline-undo` (implies `--global`, does nothing else) puts `statusLine` back to exactly the saved value, deletes the wrapper and the backup, and says `nothing to undo` when there is nothing Talos-owned. A command counts as the Talos wrapper only when it is `bash <absolute path>` to `statusline-chain.sh` under `TALOS_HOME` or to a file carrying the Talos header; a script of your own that is merely named `statusline-chain.sh` is a foreign status line (chained, never deleted or overwritten). Both only touch the user-level `settings.json`, never a project's `.claude/settings.json`.
 
 Per-harness support. `install.sh --global --harness <list>` prints one `not supported by <harness>` line, with the manual command, for each selected harness that has no command status hook:
 
