@@ -140,10 +140,21 @@ assert_contains "$out4" "all approval labels are current" \
 # ─────────────────────────────────────────────────────────────────────────────
 
 EXISTING_MARKER="<!-- talos:approval sha=${STUB_SHA} role=qa -->"
-_dup_comments="$(python3 -c "import json; print(json.dumps([{'body': '${EXISTING_MARKER}', 'user': {'login': 'bot'}}]))")"
+_dup_comments="$(python3 -c "import json; print(json.dumps([{'id': 4000, 'created_at': '2026-10-01T00:00:00Z', 'body': '${EXISTING_MARKER}', 'user': {'login': 'bot'}}]))")"
+
+# post-approval verifies its own stamp (#549) by reading the PR back, so a run
+# needs the PR's state AFTER the verb: the stub keeps posted comments in a
+# store (seeded per run) and reports the approval label as applied.
+CSTORE="$SANDBOX/cs.json"
+pa_state() {  # $1 = seed comments JSON ([] when omitted)
+  printf '%s' "${1:-[]}" > "$CSTORE"
+  export STUB_COMMENT_STORE="$CSTORE"
+}
+LBL_QA='[{"name":"qa:pass"}]'
 
 : > "$GH_LOG"
-out5="$(STUB_PR_HEAD_SHA="$STUB_SHA" STUB_ISSUE_COMMENTS_JSON="$_dup_comments" \
+pa_state "$_dup_comments"
+out5="$(STUB_PR_HEAD_SHA="$STUB_SHA" STUB_PR_LABELS_JSON="$LBL_QA" \
          bash "$VCS" post-approval 9 qa 2>&1)"; rc5=$?
 assert_exit_code 0 "$rc5" "re-stamp: same-SHA re-stamp exits 0"
 assert_contains "$out5" "already exists" \
@@ -156,8 +167,10 @@ assert_contains "$(cat "$GH_LOG")" "issues/9/labels payload={\"labels\": [\"qa:p
 # CRITERION 5b: a DIFFERENT SHA is a different marker string -- always posts.
 : > "$GH_LOG"
 DIFFERENT_SHA="ffffffffffffffffffffffffffffffffffffffff"
-out5b="$(STUB_PR_HEAD_SHA="$DIFFERENT_SHA" STUB_ISSUE_COMMENTS_JSON="$_dup_comments" \
+pa_state "$_dup_comments"
+out5b="$(STUB_PR_HEAD_SHA="$DIFFERENT_SHA" STUB_PR_LABELS_JSON="$LBL_QA" \
           bash "$VCS" post-approval 9 qa 2>&1)"; rc5b=$?
+unset STUB_COMMENT_STORE
 assert_exit_code 0 "$rc5b" "different SHA: post-approval exits 0"
 assert_contains "$(cat "$GH_LOG")" "/comments payload=" \
   "different SHA: comment IS posted (new marker at the new head)"
@@ -346,14 +359,21 @@ export GITHUB_TOKEN="test-token-146"
 # read-comments: paginated comments fetch -- empty (no duplicate)
 # comment-pr: state check + post
 # label-pr: get labels + put
-printf '%s\n%s\n%s\n%s\n%s\n%s\n' \
+printf '%s\n%s\n%s\n%s\n%s\n' \
   "{\"head\":{\"sha\":\"${STUB_SHA}\"}}" \
   "[]" \
   "{\"state\":\"open\",\"merged_at\":null}" \
   "{\"id\":900,\"html_url\":\"https://github.com/acme/widget/pull/9#issuecomment-900\"}" \
-  "[]" \
-  "{\"labels\":[{\"name\":\"qa:pass\"}]}" \
+  "[{\"name\":\"qa:pass\"}]" \
   > "$CURL_QUEUE"
+# Then the PR and its comments twice: label-pr's missing-marker check, and the
+# self-check (#549, check-approval-sha) that post-approval ends with.
+for _i in 1 2; do
+  printf '%s\n%s\n' \
+    "{\"number\":9,\"head\":{\"sha\":\"${STUB_SHA}\"},\"base\":{\"ref\":\"main\"},\"labels\":[{\"name\":\"qa:pass\"}]}" \
+    "[{\"body\":\"<!-- talos:approval sha=${STUB_SHA} role=qa -->\",\"user\":{\"login\":\"bot\"}}]" \
+    >> "$CURL_QUEUE"
+done
 
 out15="$(bash "$VCS" post-approval 9 qa 2>&1)"; rc15=$?
 assert_exit_code 0 "$rc15" "github-api: post-approval exits 0"
@@ -382,7 +402,7 @@ print(json.dumps(c))
 ")"
 
 : > "$GH_LOG"
-outp150="$(STUB_PR_HEAD_SHA="$STUB_SHA" STUB_GH_COMMENTS_RAW="${_150_page1}${_150_page2}" \
+outp150="$(STUB_PR_HEAD_SHA="$STUB_SHA" STUB_PR_LABELS_JSON="$LBL_QA" STUB_GH_COMMENTS_RAW="${_150_page1}${_150_page2}" \
             bash "$VCS" post-approval 9 qa 2>&1)"; rcp150=$?
 assert_exit_code 0 "$rcp150" "T-pagination-150: post-approval exits 0 when marker is on page 2 of 150"
 assert_contains "$outp150" "already exists" \
@@ -395,7 +415,8 @@ assert_not_contains "$(cat "$GH_LOG")" "/comments payload=" \
 # ─────────────────────────────────────────────────────────────────────────────
 
 : > "$GH_LOG"
-out16="$(STUB_PR_HEAD_SHA="$STUB_SHA" bash "$VCS" post-approval 9 reviewer 2>&1)"; rc16=$?
+pa_state '[]'
+out16="$(STUB_PR_HEAD_SHA="$STUB_SHA" STUB_PR_LABELS_JSON='[{"name":"review:approved"}]' bash "$VCS" post-approval 9 reviewer 2>&1)"; rc16=$?
 assert_exit_code 0 "$rc16" "normal path: post-approval exits 0"
 assert_contains "$out16" "marker posted" \
   "normal path: success message on stdout"
@@ -418,7 +439,8 @@ cat > talos.pipeline.json <<'EOF'
 {"vcs": {"provider": "github", "repo": "acme/testrepo"}}
 EOF
 : > "$GH_LOG"
-out16b="$(STUB_PR_HEAD_SHA="$STUB_SHA" bash "$VCS" post-approval 9 qa 2>&1)"; rc16b=$?
+pa_state '[]'
+out16b="$(STUB_PR_HEAD_SHA="$STUB_SHA" STUB_PR_LABELS_JSON="$LBL_QA" bash "$VCS" post-approval 9 qa 2>&1)"; rc16b=$?
 assert_exit_code 0 "$rc16b" "REPO set: post-approval exits 0"
 assert_contains "$(cat "$GH_LOG")" "qa:pass" \
   "REPO set: qa:pass label present in gh log"
@@ -437,7 +459,8 @@ rm -f talos.pipeline.json
 # ─────────────────────────────────────────────────────────────────────────────
 
 : > "$GH_LOG"
-warn17="$(STUB_PR_HEAD_SHA="$STUB_SHA" bash "$VCS" post-approval 9 docs 2>&1 >/dev/null)"
+pa_state '[]'
+warn17="$(STUB_PR_HEAD_SHA="$STUB_SHA" STUB_PR_LABELS_JSON='[{"name":"docs:done"}]' bash "$VCS" post-approval 9 docs 2>&1 >/dev/null)"
 assert_exit_code 0 "$?" \
   "no-suppress: post-approval still exits 0 without _TALOS_POST_APPROVAL_INTERNAL"
 assert_not_contains "$warn17" "hand-built talos:approval marker" \
