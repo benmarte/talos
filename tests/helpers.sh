@@ -176,9 +176,13 @@ make_sandbox() {
   # a test's collect skips its own config and current-user stub and reads
   # list-assignees under the run's login; its `next` reads, overwrites and
   # drops the live run's cached state; its leases carry the run's pid.
+  #
+  # TALOS_MODEL, TALOS_RUNNER (#419, #539): the stage's own attempt.
+  # `pipeline-worktree.sh checkpoint` falls back to both, so a test's handoff
+  # would record a runner and model the test never passed.
   unset TALOS_HOME CLAUDE_PLUGIN_ROOT CLAUDE_CONFIG_DIR TALOS_AGENTS_HOME XDG_RUNTIME_DIR \
         TALOS_ISSUE TALOS_ISSUE_NUMBER TALOS_ROLE TALOS_WORKTREE_PATH \
-        TALOS_CLAIM_STATE TALOS_COLLECT_CACHE TALOS_RUN_PID
+        TALOS_CLAIM_STATE TALOS_COLLECT_CACHE TALOS_RUN_PID TALOS_MODEL TALOS_RUNNER
 
   # Fail closed (#448): a failed mktemp must not leave SANDBOX empty with the
   # EXIT trap armed and the caller still in its own directory (every later
