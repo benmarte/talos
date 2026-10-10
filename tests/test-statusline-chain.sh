@@ -7,6 +7,8 @@
 #       prints each output line as a row); both parts get the same stdin JSON
 #   AC5 a failing original or a failing/empty Talos part still yields the other
 #   AC6 a hanging original does not blank the Talos line
+#   SEC1-SEC7 what counts as the Talos wrapper (any command that references it,
+#       never a user's file), file ownership, backup guard, recursion guard
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox || exit 1
@@ -185,6 +187,87 @@ chain_for "echo @STATUS@ @ORIG@"
 run_cmd
 assert_eq "@STATUS@ @ORIG@${NL}TALOS" "$GOT" "SEC3 @STATUS@ and @ORIG@ in the original command stay literal"
 SD="$SD_SAVE"
+
+# ── SEC4 any command that references the wrapper is "chained" (rule A/B) ────
+# The wrapper lives under $HOME/.talos so the ~ and $HOME forms resolve to it.
+stub_orig orig-ok4.sh 'cat >/dev/null; echo ORIG'
+stub_talos 'cat >/dev/null; echo TALOS'
+TH_SAVE="$TH"
+for form in \
+  "TALOS_STATUSLINE_TIMEOUT_S=5 bash @W@" \
+  "bash ~/.talos/statusline-chain.sh" \
+  'bash $HOME/.talos/statusline-chain.sh' \
+  'bash ${HOME}/.talos/statusline-chain.sh' \
+  'bash ${TALOS_HOME}/statusline-chain.sh' \
+  'bash "$TALOS_HOME/statusline-chain.sh"' \
+  "sh @W@"; do
+  TH="$HOME/.talos"
+  chain_for "sh $SANDBOX/orig-ok4.sh"
+  CMD="${form//@W@/$TH/statusline-chain.sh}"
+  python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); d["statusLine"]["command"]=sys.argv[2]; json.dump(d, open(sys.argv[1],"w"))' "$CC/settings.json" "$CMD"
+  B_BACKUP="$(cat "$TH/statusline-previous.json")"
+  B_SET="$(cat "$CC/settings.json")"
+  B_WRAP="$(cat "$TH/statusline-chain.sh")"
+  OUT="$(env TALOS_HOME="$TH" bash "$CHAIN" wire "$CC/settings.json" "$SD" 2>&1)"
+  assert_eq "$B_BACKUP" "$(cat "$TH/statusline-previous.json")" "SEC4 [$form] the backup is not overwritten"
+  assert_eq "$B_SET" "$(cat "$CC/settings.json")" "SEC4 [$form] statusLine.command is kept as written"
+  assert_eq "$B_WRAP" "$(cat "$TH/statusline-chain.sh")" "SEC4 [$form] the wrapper is unchanged (no self-call)"
+  assert_not_contains "$(cat "$TH/statusline-chain.sh")" "statusline-chain.sh" "SEC4 [$form] the wrapper never names itself"
+  run_cmd TALOS_HOME="$TH"
+  assert_eq "ORIG${NL}TALOS" "$GOT" "SEC4 [$form] the wrapper still runs the original once, then Talos"
+done
+TH="$TH_SAVE"
+
+# ── SEC5 a headerless file at the state path is the user's (rule C) ──────────
+TH="$HOME/.talos"
+rm -rf "$CC" "$TH"; mkdir -p "$CC" "$TH"
+printf '#!/bin/sh\necho MINE\n' > "$TH/statusline-chain.sh"
+printf '{"command": "other"}\n' > "$TH/statusline-previous.json"
+printf '{"statusLine": {"type": "command", "command": "bash %s/statusline-chain.sh"}}\n' "$TH" > "$CC/settings.json"
+B_FILE="$(cat "$TH/statusline-chain.sh")"
+B_SET="$(cat "$CC/settings.json")"
+B_BACKUP="$(cat "$TH/statusline-previous.json")"
+OUT="$(env TALOS_HOME="$TH" bash "$CHAIN" wire "$CC/settings.json" "$SD" 2>&1)"
+assert_eq "$B_FILE" "$(cat "$TH/statusline-chain.sh")" "SEC5 wire leaves a headerless file at the state path alone"
+assert_eq "$B_SET" "$(cat "$CC/settings.json")" "SEC5 wire leaves settings.json alone"
+assert_eq "$B_BACKUP" "$(cat "$TH/statusline-previous.json")" "SEC5 wire leaves the backup alone"
+assert_contains "$OUT" "$TH/statusline-chain.sh" "SEC5 wire names the file in a notice"
+OUT="$(env TALOS_HOME="$TH" bash "$CHAIN" undo "$CC/settings.json" 2>&1)"
+assert_eq "$B_FILE" "$(cat "$TH/statusline-chain.sh" 2>/dev/null)" "SEC5 undo does not delete a headerless file at the state path"
+assert_eq "$B_SET" "$(cat "$CC/settings.json")" "SEC5 undo does not remove a statusLine that names it"
+
+# the same file with a foreign statusLine: nothing is written
+rm -rf "$CC" "$TH"; mkdir -p "$CC" "$TH"
+printf '#!/bin/sh\necho MINE\n' > "$TH/statusline-chain.sh"
+printf '{"statusLine": {"type": "command", "command": "echo foreign"}}\n' > "$CC/settings.json"
+B_SET="$(cat "$CC/settings.json")"
+OUT="$(env TALOS_HOME="$TH" bash "$CHAIN" wire "$CC/settings.json" "$SD" 2>&1)"
+assert_eq "$B_FILE" "$(cat "$TH/statusline-chain.sh")" "SEC5 a foreign statusLine plus a headerless state file: the file is untouched"
+assert_eq "$B_SET" "$(cat "$CC/settings.json")" "SEC5 and settings.json is untouched"
+assert_file_absent "$TH/statusline-previous.json" "SEC5 and no backup is written"
+assert_contains "$OUT" "$TH/statusline-chain.sh" "SEC5 and the notice names the file"
+TH="$TH_SAVE"
+
+# ── SEC6 a backup that names the wrapper is never written or used (rule D) ───
+TH="$HOME/.talos"
+chain_for "sh $SANDBOX/orig-ok4.sh"
+printf '{"type": "command", "command": "bash %s/statusline-chain.sh"}\n' "$TH" > "$TH/statusline-previous.json"
+B_WRAP="$(cat "$TH/statusline-chain.sh")"
+B_BACKUP="$(cat "$TH/statusline-previous.json")"
+OUT="$(env TALOS_HOME="$TH" bash "$CHAIN" wire "$CC/settings.json" "$SD" 2>&1)"
+assert_eq "$B_WRAP" "$(cat "$TH/statusline-chain.sh")" "SEC6 wire does not rewrite the wrapper from a self-referencing backup"
+assert_contains "$OUT" "backup" "SEC6 wire says why"
+OUT="$(env TALOS_HOME="$TH" bash "$CHAIN" undo "$CC/settings.json" 2>&1)"
+assert_not_contains "$(cat "$CC/settings.json")" "statusline-chain.sh" "SEC6 undo never restores a statusLine that names the wrapper"
+TH="$TH_SAVE"
+
+# ── SEC7 recursion guard: a wrapper started inside a wrapper skips the original ─
+stub_talos 'cat >/dev/null; echo TALOS'
+chain_for "sh $SANDBOX/orig-ok4.sh"
+run_cmd TALOS_STATUSLINE_CHAIN=1
+assert_eq "TALOS" "$GOT" "SEC7 with the marker set the wrapper prints the Talos line only"
+run_cmd
+assert_eq "ORIG${NL}TALOS" "$GOT" "SEC7 without the marker both rows print"
 
 [ "$_FAIL" -eq 0 ] || { printf '%d failed\n' "$_FAIL" >&2; exit 1; }
 printf 'test-statusline-chain: %d passed\n' "$_PASS"
