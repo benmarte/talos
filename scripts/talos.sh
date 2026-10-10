@@ -3511,15 +3511,8 @@ _run_verdict() {
   # another role's list, is never one.
   _w="$(python3 -I -c '
 import re, sys
-ROLES = {
-  "validator": "CONFIRMED ALREADY_FIXED DUPLICATE NEEDS_MORE_INFO SECURITY_THREAT",
-  "qa": "PASS FAIL RESTAMP_PASS RESTAMP_FAIL",
-  "reviewer": "APPROVED CHANGES RESTAMP_PASS RESTAMP_FAIL",
-  "security": "CLEAR FINDINGS RESTAMP_PASS RESTAMP_FAIL",
-  "adversarial": "CLEAR FINDINGS RESTAMP_PASS RESTAMP_FAIL",
-}
-role, path = sys.argv[1], sys.argv[2]
-verds = set(ROLES[role].split())
+path = sys.argv[1]
+verds = set(sys.argv[2].split())
 word = ""
 with open(path, encoding="utf-8", errors="replace") as f:
     for ln in f:
@@ -3528,7 +3521,7 @@ with open(path, encoding="utf-8", errors="replace") as f:
             word = m.group(1); break
 if not word: raise SystemExit(1)
 print(word)
-' "$_role" "$_f")" || return 1
+' "$_f" "$(_talos_done_verdicts "$_role")")" || return 1
   printf '%s' "$_w"
 }
 
