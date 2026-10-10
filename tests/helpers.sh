@@ -170,8 +170,15 @@ make_sandbox() {
   # sentinel to that *real*, shared location instead of the sandboxed HOME
   # set below -- exactly how the real ~/.cache/talos got poisoned with a
   # stale cross-owner cache in the first place.
+  #
+  # TALOS_CLAIM_STATE, TALOS_COLLECT_CACHE, TALOS_RUN_PID (#554, #560): what
+  # `talos.sh run` exports, so every stage it starts inherits them. Left set,
+  # a test's collect skips its own config and current-user stub and reads
+  # list-assignees under the run's login; its `next` reads, overwrites and
+  # drops the live run's cached state; its leases carry the run's pid.
   unset TALOS_HOME CLAUDE_PLUGIN_ROOT CLAUDE_CONFIG_DIR TALOS_AGENTS_HOME XDG_RUNTIME_DIR \
-        TALOS_ISSUE TALOS_ISSUE_NUMBER TALOS_ROLE TALOS_WORKTREE_PATH
+        TALOS_ISSUE TALOS_ISSUE_NUMBER TALOS_ROLE TALOS_WORKTREE_PATH \
+        TALOS_CLAIM_STATE TALOS_COLLECT_CACHE TALOS_RUN_PID
 
   # Fail closed (#448): a failed mktemp must not leave SANDBOX empty with the
   # EXIT trap armed and the caller still in its own directory (every later
