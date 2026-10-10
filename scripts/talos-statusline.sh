@@ -17,7 +17,7 @@
 # wire, by the current statusLine:
 #   none                      -> bash <scripts>/talos-status.sh --line
 #   Talos's own command       -> unchanged, or pointed at <scripts>
-#   the chain wrapper         -> wrapper rewritten in place from the backup;
+#   references the wrapper    -> wrapper rewritten in place from the backup;
 #                                settings.json and the backup are not touched
 #   another command           -> backed up, wrapper written, statusLine.command
 #                                becomes `bash <wrapper>` (other fields kept)
@@ -25,6 +25,15 @@
 # undo: statusLine goes back to exactly the backed-up value (key removed when
 #   there is no backup and it was Talos's own command), wrapper and backup are
 #   deleted; with nothing Talos-owned it says "nothing to undo".
+#
+# "References the wrapper" is one decision (wrapper_ref): any token of the command
+# (a leading ~, $HOME, ${HOME}, $TALOS_HOME, ${TALOS_HOME} expanded) that resolves
+# to <TALOS_HOME>/statusline-chain.sh or to an existing file with the Talos header;
+# interpreter, env prefixes and arguments do not matter. Talos writes or deletes
+# <TALOS_HOME>/statusline-chain.sh only when it is missing or has the header; a
+# headerless file there is the user's and is never touched. A backup never names
+# the wrapper. A wrapper started inside a wrapper (TALOS_STATUSLINE_CHAIN set)
+# skips the original and prints only the Talos line.
 #
 # The wrapper reads Claude's JSON from stdin once and runs the original command
 # (sh -c) and `talos-status.sh --line` side by side, each with that stdin, its own
@@ -69,6 +78,11 @@ case "$T" in '' | *[!0-9]*) T=2 ;; esac
 D="$(mktemp -d "${TMPDIR:-/tmp}/talos-chain.XXXXXX" 2>/dev/null)" || exit 0
 trap 'rm -rf "$D"' EXIT
 cat > "$D/in" 2>/dev/null
+# Recursion guard: a wrapper started by a wrapper (corrupted state) skips the
+# original and prints only the Talos line.
+SKIP_ORIG=
+[ -n "${TALOS_STATUSLINE_CHAIN:-}" ] && SKIP_ORIG=1
+export TALOS_STATUSLINE_CHAIN=1
 
 # _run OUTFILE CMD... -- CMD with the saved stdin, stdout to OUTFILE, killed after
 # T seconds; exit code and stderr are dropped.
@@ -95,7 +109,7 @@ except subprocess.TimeoutExpired:
   return 0
 }
 
-_run "$D/orig" sh -c "$ORIG" &
+[ -n "$SKIP_ORIG" ] || _run "$D/orig" sh -c "$ORIG" &
 _run "$D/talos" bash "$TALOS_STATUS" --line &
 wait
 
@@ -182,17 +196,41 @@ def has_header(path):
         return False
 
 
-def chain_path(cmd):
-    # The Talos wrapper is an absolute path that is either the wrapper under the
-    # Talos state dir or a file carrying the Talos header (a wrapper left behind
-    # by an install under another TALOS_HOME). A script that is merely named
-    # statusline-chain.sh is somebody else's status line.
-    a = split(cmd)
-    if len(a) != 2 or a[0] != "bash" or not os.path.isabs(a[1]):
+def state_wrapper():
+    return os.path.join(STATE, WRAPPER_NAME)
+
+
+def expand(token):
+    # a leading ~, $HOME, ${HOME}, $TALOS_HOME or ${TALOS_HOME}, as a shell would
+    home = os.environ.get("HOME") or os.path.expanduser("~")
+    for var, val in (("${HOME}", home), ("$HOME", home), ("${TALOS_HOME}", STATE), ("$TALOS_HOME", STATE)):
+        if token.startswith(var) and (len(token) == len(var) or token[len(var)] == "/"):
+            return val + token[len(var):]
+    if token.startswith("~"):
+        return os.path.expanduser(token)
+    return token
+
+
+def wrapper_ref(cmd):
+    # THE decision: does this command reference the Talos wrapper? Any token that
+    # resolves to the wrapper state path, or to an existing file carrying the Talos
+    # header. The interpreter, env-assignment prefixes and arguments do not matter.
+    # A command that cannot be tokenised is foreign. Returns the resolved path.
+    if not cmd:
         return None
-    if os.path.realpath(a[1]) == os.path.realpath(os.path.join(STATE, WRAPPER_NAME)) or has_header(a[1]):
-        return a[1]
+    mine = os.path.realpath(state_wrapper())
+    for token in split(cmd):
+        path = expand(token)
+        if not os.path.isabs(path):
+            continue
+        if os.path.realpath(path) == mine or (os.path.isfile(path) and has_header(path)):
+            return path
     return None
+
+
+def user_file(path):
+    # a file at the wrapper's place that Talos did not write
+    return os.path.lexists(path) and not has_header(path)
 
 
 def is_direct(cmd):
@@ -219,6 +257,10 @@ def status_cmd(sl):
     return c if isinstance(c, str) else None
 
 
+def not_ours(path, what):
+    say("notice: %s is not a Talos wrapper (it has no Talos header), so %s; nothing was changed or deleted" % (path, what))
+
+
 def wire(settings, scripts):
     # absolute, but as given (abspath would normalise a // in TMPDIR)
     status = os.path.join(scripts if os.path.isabs(scripts) else os.path.abspath(scripts), "talos-status.sh")
@@ -236,8 +278,13 @@ def wire(settings, scripts):
         say("notice: %s has a statusLine without a command, left as it is (only a command status line can be chained): %s"
             % (settings, json.dumps(sl)))
         return
-    if cmd is not None and chain_path(cmd):
-        refresh_chain(chain_path(cmd), status)
+    ref = wrapper_ref(cmd)
+    if ref:
+        # chained already: only the wrapper file is rewritten, never the command or the backup
+        if user_file(ref):
+            not_ours(ref, "the statusLine that names it was left as it is")
+        else:
+            refresh_chain(ref, status)
         return
     if cmd is None or is_direct(cmd):
         if cmd == direct:
@@ -255,21 +302,38 @@ def wire(settings, scripts):
     chain(real, doc, sl, cmd, status, settings)
 
 
+def find_backup(wrapper):
+    return next((p for p in (os.path.join(d, BACKUP_NAME) for d in (os.path.dirname(wrapper), STATE))
+                 if os.path.exists(p)), None)
+
+
+def load_backup(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def usable(value):
+    # a backup is never allowed to point back at the wrapper
+    cmd = status_cmd(value)
+    return cmd is not None and not wrapper_ref(cmd)
+
+
+def read_backup(path):
+    value = load_backup(path)
+    return value if usable(value) else None
+
+
 def refresh_chain(wrapper, status):
-    backup = next((p for p in (os.path.join(d, BACKUP_NAME) for d in (os.path.dirname(wrapper), STATE))
-                   if os.path.exists(p)), None)
-    orig = None
-    if backup:
-        try:
-            with open(backup, encoding="utf-8") as f:
-                orig = status_cmd(json.load(f))
-        except (OSError, ValueError):
-            pass
-    if orig is None:
-        say("notice: statusLine runs %s but its backup (%s) is missing or unreadable, left as it is; "
+    backup = find_backup(wrapper)
+    value = read_backup(backup) if backup else None
+    if value is None:
+        say("notice: statusLine runs %s but its backup (%s) is missing, unreadable or names the wrapper itself, left as it is; "
             "run install.sh --global --statusline-undo, or set statusLine by hand" % (wrapper, BACKUP_NAME))
         return
-    text = render(orig, status)
+    text = render(status_cmd(value), status)
     if read_text(wrapper) != text:
         atomic_write(wrapper, text, 0o700)
         say("updated: %s now calls %s (statusLine unchanged)" % (wrapper, status))
@@ -280,11 +344,12 @@ def refresh_chain(wrapper, status):
 
 
 def chain(real, doc, sl, cmd, status, settings):
-    wrapper = os.path.join(STATE, WRAPPER_NAME)
+    wrapper = state_wrapper()
     backup = os.path.join(STATE, BACKUP_NAME)
-    if os.path.lexists(wrapper) and not has_header(wrapper):
-        say("notice: %s is not a Talos wrapper, so the statusLine was not chained and nothing was overwritten; move that file away and run this again"
-            % wrapper)
+    if user_file(wrapper):
+        not_ours(wrapper, "the statusLine was not chained")
+        return
+    if wrapper_ref(cmd):  # unreachable from wire; a backup never names the wrapper
         return
     try:
         atomic_write(backup, dumps(sl), 0o600)
@@ -314,8 +379,8 @@ def undo(settings):
         return
     sl = doc.get("statusLine") if doc else None
     cmd = status_cmd(sl)
-    wrapper_in_use = chain_path(cmd) if cmd else None
-    dirs = ([os.path.dirname(wrapper_in_use)] if wrapper_in_use else []) + [STATE]
+    ref = wrapper_ref(cmd)
+    dirs = ([os.path.dirname(ref)] if ref else []) + [STATE]
     files = []
     for d in dirs:
         for name in (BACKUP_NAME, WRAPPER_NAME):
@@ -323,20 +388,24 @@ def undo(settings):
             if os.path.exists(p) and p not in files:
                 files.append(p)
     backups = [p for p in files if os.path.basename(p) == BACKUP_NAME]
-    owned = bool(cmd) and (wrapper_in_use is not None or is_direct(cmd))
-    if not owned and not files:
+    mine = [p for p in files if os.path.basename(p) == BACKUP_NAME or has_header(p)]
+    users = ref is not None and user_file(ref)
+    owned = (ref is not None and not users) or (ref is None and cmd is not None and is_direct(cmd))
+    if not owned and not users and not mine:
         say("nothing to undo")
         return
-    if owned:
-        if backups:
-            try:
-                with open(backups[0], encoding="utf-8") as f:
-                    doc["statusLine"] = json.load(f)
-            except (OSError, ValueError) as e:
-                say("notice: %s is unreadable (%s: %s); nothing was undone" % (backups[0], type(e).__name__, e))
-                return
-            what = "restored: statusLine is back to %s" % json.dumps(doc["statusLine"])
+    if users:
+        not_ours(ref, "the statusLine that names it was left as it is")
+    elif owned:
+        value = load_backup(backups[0]) if backups else None
+        if backups and value is None:
+            say("notice: %s is unreadable; nothing was undone" % backups[0])
+            return
+        if value is not None and usable(value):
+            doc["statusLine"] = value
+            what = "restored: statusLine is back to %s" % json.dumps(value)
         else:
+            # no backup, or one that names the wrapper itself: never restore a self-reference
             del doc["statusLine"]
             what = "removed: the Talos statusLine"
         write_settings(real, doc)
@@ -344,7 +413,7 @@ def undo(settings):
     else:
         say("notice: statusLine is no longer Talos's, left as it is")
     for p in files:
-        if os.path.basename(p) == WRAPPER_NAME and not has_header(p):
+        if p not in mine:
             say("notice: %s is not a Talos wrapper, left in place" % p)
             continue
         try:
