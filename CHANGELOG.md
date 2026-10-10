@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+- fix(run): `talos.sh run`'s merge arm now takes every gate answer that carries
+  detail lines (#543). It matched `verdict=handoff`, `verdict=redispatch` and
+  `verdict=wait` exactly, so a real `verdict=wait` + `reason=approvals-missing
+  missing=qa:pass` (or a stale-approvals redispatch, or a handoff) matched
+  nothing and ended the run as `stop reason=state-unavailable`, exit 1. The arm
+  now matches them with a trailing `*` like `block`, ends the run clean (exit 0)
+  and relays the gate's detail on the one stop line, for example
+  `stop verdict=wait reason=approvals-missing missing=qa:pass`; a gate `block`
+  keeps its `reason=` too (it used to print the verdict alone).
 - lean: removed features and code with no place in an orchestrator, or no
   reader (#553, part of #558). User-visible removals:
   - **Evidence capture (screenshots attached to the PR, off by default).**
