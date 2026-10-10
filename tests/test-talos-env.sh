@@ -236,18 +236,30 @@ check_env_output "$SANDBOX/out.bidi"; assert_eq "0" "$?" "sanitising: escaped bi
 # One test per further invisible character (#466, the slice 1 security review).
 # Each row is `<code>|<label>`; the JSON escape is a backslash, `u` and the code.
 BS='\'
-for _case in '2028|U+2028 line separator' '2029|U+2029 paragraph separator' '200e|U+200E left-to-right mark' \
-             '200f|U+200F right-to-left mark' '061c|U+061C Arabic letter mark' '2060|U+2060 word joiner' \
-             '00ad|U+00AD soft hyphen'; do
-  proj_json "{\"agents\": {\"model\": \"a${BS}u${_case%%|*}b\"}}"
-  env_run > "$SANDBOX/out.invisible"
-  assert_contains "$(cat "$SANDBOX/out.invisible")" "agent.pm.model=a${BS}u${_case%%|*}b" "sanitising: ${_case#*|} prints as \\uXXXX"
-  check_env_output "$SANDBOX/out.invisible"; assert_eq "0" "$?" "sanitising: ${_case#*|} output satisfies the line contract"
+# Each character rides in its own role's model, so the eight cases share ONE
+# `talos.sh env` run (agent.<role>.model is that role's value); the line contract
+# is checked once on the whole output and reported under each case's label.
+_inv_cases=('2028|U+2028 line separator' '2029|U+2029 paragraph separator' '200e|U+200E left-to-right mark'
+            '200f|U+200F right-to-left mark' '061c|U+061C Arabic letter mark' '2060|U+2060 word joiner'
+            '00ad|U+00AD soft hyphen')
+_inv_roles=(validator pm developer qa reviewer security adversarial docs)
+_inv_json=""; _i=0
+for _case in "${_inv_cases[@]}"; do
+  _inv_json="$_inv_json\"${_inv_roles[$_i]}\": {\"model\": \"a${BS}u${_case%%|*}b\"}, "
+  _i=$((_i + 1))
 done
-proj_json "{\"agents\": {\"model\": \"a$(printf '\363\240\201\201')b\"}}"
+proj_json "{\"agents\": {\"roles\": {$_inv_json\"docs\": {\"model\": \"a$(printf '\363\240\201\201')b\"}}}}"
 env_run > "$SANDBOX/out.invisible"
-assert_contains "$(cat "$SANDBOX/out.invisible")" "agent.pm.model=a${BS}U000e0041b" "sanitising: a tag character (U+E0041) prints as \\UXXXXXXXX"
-check_env_output "$SANDBOX/out.invisible"; assert_eq "0" "$?" "sanitising: a tag character output satisfies the line contract"
+inv="$(cat "$SANDBOX/out.invisible")"
+check_env_output "$SANDBOX/out.invisible"; _inv_rc=$?
+_i=0
+for _case in "${_inv_cases[@]}"; do
+  assert_contains "$inv" "agent.${_inv_roles[$_i]}.model=a${BS}u${_case%%|*}b" "sanitising: ${_case#*|} prints as \\uXXXX"
+  assert_eq "0" "$_inv_rc" "sanitising: ${_case#*|} output satisfies the line contract"
+  _i=$((_i + 1))
+done
+assert_contains "$inv" "agent.docs.model=a${BS}U000e0041b" "sanitising: a tag character (U+E0041) prints as \\UXXXXXXXX"
+assert_eq "0" "$_inv_rc" "sanitising: a tag character output satisfies the line contract"
 
 # A real "[truncated]" is never the cut marker: it prints as \x5btruncated], and
 # only a cut value ends in the marker (which the warn line also names).

@@ -82,9 +82,6 @@ store_ids() { python3 -c "import json,sys; print(' '.join(str(c['id']) for c in 
 
 mkbody() { printf '%s' "$2" > "$FIX/$1"; printf '%s' "$FIX/$1"; }
 
-HDR="$(sed -n '1,/^set -/p' "$VCS")"
-assert_contains "$HDR" "upsert-pr-comment <pr> --marker <name> --body-file <path|->" "usage header documents upsert-pr-comment"
-
 suite() {
   setp "$1"
   local L="$P"

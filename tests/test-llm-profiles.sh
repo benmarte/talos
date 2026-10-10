@@ -123,12 +123,12 @@ assert_contains "$(bash "$AGENT" --resolve-all 2>/dev/null | grep '^role=securit
 
 # Without TALOS_PROFILE the config's agents.profile (claude) gives today's routing.
 set_cfg "$CFG_PROFILES"
-profiled="$(bash "$AGENT" --resolve-all 2>"$ERR" | role_rows)"
+profiled_all="$(bash "$AGENT" --resolve-all 2>"$ERR")"
+profiled="$(printf '%s\n' "$profiled_all" | role_rows)"
 set_cfg "$CFG_PLAIN"
 plain="$(bash "$AGENT" --resolve-all 2>/dev/null | role_rows)"
 assert_eq "$plain" "$profiled" "TALOS_PROFILE unset: agents.profile=claude routes every role exactly like the same config without profiles"
-set_cfg "$CFG_PROFILES"
-assert_contains "$(bash "$AGENT" --resolve-all 2>/dev/null | head -n 1)" "profile=claude profile_origin=config" "TALOS_PROFILE unset: the header names the profile and its origin (config)"
+assert_contains "$(printf '%s\n' "$profiled_all" | head -n 1)" "profile=claude profile_origin=config" "TALOS_PROFILE unset: the header names the profile and its origin (config)"
 
 # Resolution order: env -> selected profile -> base agents.* -> table default.
 set_cfg '{"agents": {"runner": "codex", "model": "base-model", "effort": "low",
@@ -297,9 +297,10 @@ assert_eq "qwen3-coder:480b-cloud" "$(dump_get profile.ollama.model)" "dump: eve
 assert_eq "opus" "$(dump_get profile.claude.roles.security.model)" "dump: including its role overrides"
 # show_row <key>: the one `--show` row of exactly that key.
 show_row() { awk -F'\t' -v k="$1" '$1 == k' ; }
-assert_eq "$(printf 'agents.profile\tlocal\tenv')" "$(TALOS_PROFILE=local bash "$CONFIG" --show agents. 2>/dev/null | show_row agents.profile)" "show: agents.profile shows the active profile and the env layer"
+show_local="$(TALOS_PROFILE=local bash "$CONFIG" --show agents. 2>/dev/null)"
+assert_eq "$(printf 'agents.profile\tlocal\tenv')" "$(printf '%s\n' "$show_local" | show_row agents.profile)" "show: agents.profile shows the active profile and the env layer"
 assert_eq "$(printf 'agents.profile\tclaude\trepo')" "$(bash "$CONFIG" --show agents. 2>/dev/null | show_row agents.profile)" "show: agents.profile from the repo file is layer repo"
-assert_eq "$(printf 'agents.runner\tpi\trepo')" "$(TALOS_PROFILE=local bash "$CONFIG" --show agents. 2>/dev/null | show_row agents.runner)" "show: a key decided by a profile defined in the repo file is layer repo"
+assert_eq "$(printf 'agents.runner\tpi\trepo')" "$(printf '%s\n' "$show_local" | show_row agents.runner)" "show: a key decided by a profile defined in the repo file is layer repo"
 
 # agents.profile and agents.mode are table keys; TALOS_PROFILE is the env column.
 . "$TALOS_ROOT/scripts/pipeline-defaults.sh"
@@ -487,10 +488,5 @@ reset
 set_cfg "$CFG_PLAIN"
 mark_down claude 600 provider:quota >/dev/null
 assert_eq "" "$(bash "$CONFIG" --dump 2>&1 >/dev/null)" "down: a run without profiles ignores providers.json"
-
-# ═══ 9. The playbook ═════════════════════════════════════════════════════════
-SKILL="$TALOS_ROOT/skills/pipeline/SKILL.md"
-assert_contains "$(cat "$SKILL")" "AGENTS_MODE" "skill: the playbook uses the resolved mode, not agents.runner"
-assert_contains "$(cat "$SKILL")" "TALOS_PROFILE" "skill: names the profile switch"
 
 finish

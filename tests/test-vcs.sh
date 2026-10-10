@@ -375,51 +375,35 @@ rm talos.pipeline.json
 # ── #63: SSH private keys and keystores blocked by default ────────────────────
 # Each of the 9 filenames must be blocked with NO config (default patterns only).
 
-# --- Bare SSH key names (extensionless private keys) ---
-out="$(STUB_PR_FILES='id_rsa' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
-assert_eq "1" "$rc" "#63: id_rsa blocked by default (*id_rsa*)"
-assert_contains "$out" "id_rsa" "#63: id_rsa listed in output"
+# One check-pr-files run lists every violation on its own "  <path>" line, so the
+# default-pattern cases below share a single run: a name is blocked when it is
+# listed as a line of its own (an exact line, so id_rsa is not satisfied by
+# deploy_id_rsa) and the run exits 1.
+_cpf_blocked() {  # <path>... -- one run with exactly these changed paths, default config
+  _cpf_out="$(STUB_PR_FILES="$(printf '%s\n' "$@")" bash "$VCS" check-pr-files 9 2>&1)"; _cpf_rc=$?
+  _cpf_out="$_cpf_out"$'\n'
+}
+_cpf_case() {  # <path> <blocked label> [<listed label>]
+  local _listed=0 _blocked=0
+  case "$_cpf_out" in *$'\n'"  $1"$'\n'*) _listed=1 ;; esac
+  [ "$_listed" = 1 ] && [ "$_cpf_rc" = 1 ] && _blocked=1
+  assert_eq "1" "$_blocked" "$2"
+  [ -z "${3:-}" ] || assert_eq "1" "$_listed" "$3"
+}
 
-out="$(STUB_PR_FILES='id_ecdsa' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
-assert_eq "1" "$rc" "#63: id_ecdsa blocked by default (*id_ecdsa*)"
-assert_contains "$out" "id_ecdsa" "#63: id_ecdsa listed in output"
-
-out="$(STUB_PR_FILES='id_ed25519' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
-assert_eq "1" "$rc" "#63: id_ed25519 blocked by default (*id_ed25519*)"
-assert_contains "$out" "id_ed25519" "#63: id_ed25519 listed in output"
-
-out="$(STUB_PR_FILES='id_dsa' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
-assert_eq "1" "$rc" "#63: id_dsa blocked by default (*id_dsa*)"
-assert_contains "$out" "id_dsa" "#63: id_dsa listed in output"
-
-# --- Prefix variant (custom-named deploy key) ---
-out="$(STUB_PR_FILES='deploy_id_rsa' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
-assert_eq "1" "$rc" "#63: deploy_id_rsa blocked by default (*id_rsa*)"
-assert_contains "$out" "deploy_id_rsa" "#63: deploy_id_rsa listed in output"
-
-# --- Path-nested variant ---
-out="$(STUB_PR_FILES='.ssh/id_rsa' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
-assert_eq "1" "$rc" "#63: .ssh/id_rsa blocked by default (*id_rsa*)"
-assert_contains "$out" ".ssh/id_rsa" "#63: .ssh/id_rsa listed in output"
-
-# --- PuTTY private key ---
-out="$(STUB_PR_FILES='key.ppk' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
-assert_eq "1" "$rc" "#63: key.ppk blocked by default (*.ppk)"
-assert_contains "$out" "key.ppk" "#63: key.ppk listed in output"
-
-# --- Java KeyStore ---
-out="$(STUB_PR_FILES='store.jks' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
-assert_eq "1" "$rc" "#63: store.jks blocked by default (*.jks)"
-assert_contains "$out" "store.jks" "#63: store.jks listed in output"
-
-# --- Android keystore ---
-out="$(STUB_PR_FILES='x.keystore' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
-assert_eq "1" "$rc" "#63: x.keystore blocked by default (*.keystore)"
-assert_contains "$out" "x.keystore" "#63: x.keystore listed in output"
-
-# --- Accepted false positive: id_rsa.pub is blocked (pinned intentional behavior) ---
-out="$(STUB_PR_FILES='id_rsa.pub' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
-assert_eq "1" "$rc" "#63: id_rsa.pub blocked by *id_rsa* (accepted false positive — use allow list to exempt)"
+# --- Bare SSH key names, the prefix variant, the path-nested variant, PuTTY and
+# keystore files, and the accepted false positive id_rsa.pub ---
+_cpf_blocked id_rsa id_ecdsa id_ed25519 id_dsa deploy_id_rsa .ssh/id_rsa key.ppk store.jks x.keystore id_rsa.pub
+_cpf_case id_rsa "#63: id_rsa blocked by default (*id_rsa*)" "#63: id_rsa listed in output"
+_cpf_case id_ecdsa "#63: id_ecdsa blocked by default (*id_ecdsa*)" "#63: id_ecdsa listed in output"
+_cpf_case id_ed25519 "#63: id_ed25519 blocked by default (*id_ed25519*)" "#63: id_ed25519 listed in output"
+_cpf_case id_dsa "#63: id_dsa blocked by default (*id_dsa*)" "#63: id_dsa listed in output"
+_cpf_case deploy_id_rsa "#63: deploy_id_rsa blocked by default (*id_rsa*)" "#63: deploy_id_rsa listed in output"
+_cpf_case .ssh/id_rsa "#63: .ssh/id_rsa blocked by default (*id_rsa*)" "#63: .ssh/id_rsa listed in output"
+_cpf_case key.ppk "#63: key.ppk blocked by default (*.ppk)" "#63: key.ppk listed in output"
+_cpf_case store.jks "#63: store.jks blocked by default (*.jks)" "#63: store.jks listed in output"
+_cpf_case x.keystore "#63: x.keystore blocked by default (*.keystore)" "#63: x.keystore listed in output"
+_cpf_case id_rsa.pub "#63: id_rsa.pub blocked by *id_rsa* (accepted false positive — use allow list to exempt)"
 
 # --- No over-blocking: benign files still pass ---
 out="$(STUB_PR_FILES=$'README.md\nsrc/main.py\ntests/helpers.sh\nidentity.md\nrsa_notes.txt' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
@@ -447,38 +431,15 @@ rm talos.pipeline.json
 # Exit-zero proof: clean PR exits 0 (not shown as separate test — covered by
 # earlier clean-PR assertions in this file).
 
-# --- *.pkcs12 (PKCS#12 bundle — alternative extension) ---
-out="$(STUB_PR_FILES='bundle.pkcs12' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
-assert_eq "1" "$rc" "#78: bundle.pkcs12 blocked by default (*.pkcs12)"
-assert_contains "$out" "bundle.pkcs12" "#78: bundle.pkcs12 listed in output"
-
-# --- *.kdbx (KeePass database) ---
-out="$(STUB_PR_FILES='passwords.kdbx' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
-assert_eq "1" "$rc" "#78: passwords.kdbx blocked by default (*.kdbx)"
-assert_contains "$out" "passwords.kdbx" "#78: passwords.kdbx listed in output"
-
-# --- *.ovpn (OpenVPN profile) ---
-out="$(STUB_PR_FILES='client.ovpn' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
-assert_eq "1" "$rc" "#78: client.ovpn blocked by default (*.ovpn)"
-assert_contains "$out" "client.ovpn" "#78: client.ovpn listed in output"
-
-# --- .netrc (literal pattern — root and nested) ---
-out="$(STUB_PR_FILES='.netrc' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
-assert_eq "1" "$rc" "#78: .netrc blocked by default (.netrc)"
-assert_contains "$out" ".netrc" "#78: .netrc listed in output"
-
-out="$(STUB_PR_FILES='home/.netrc' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
-assert_eq "1" "$rc" "#78: home/.netrc blocked by default (.netrc — nested path)"
-assert_contains "$out" "home/.netrc" "#78: home/.netrc listed in output"
-
-# --- _netrc (Windows spelling — literal pattern) ---
-out="$(STUB_PR_FILES='_netrc' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
-assert_eq "1" "$rc" "#78: _netrc blocked by default (_netrc)"
-assert_contains "$out" "_netrc" "#78: _netrc listed in output"
-
-out="$(STUB_PR_FILES='home/_netrc' bash "$VCS" check-pr-files 9 2>&1)"; rc=$?
-assert_eq "1" "$rc" "#78: home/_netrc blocked by default (_netrc — nested path)"
-assert_contains "$out" "home/_netrc" "#78: home/_netrc listed in output"
+# --- *.pkcs12, *.kdbx, *.ovpn, .netrc and _netrc (root and nested): one run, as above ---
+_cpf_blocked bundle.pkcs12 passwords.kdbx client.ovpn .netrc home/.netrc _netrc home/_netrc
+_cpf_case bundle.pkcs12 "#78: bundle.pkcs12 blocked by default (*.pkcs12)" "#78: bundle.pkcs12 listed in output"
+_cpf_case passwords.kdbx "#78: passwords.kdbx blocked by default (*.kdbx)" "#78: passwords.kdbx listed in output"
+_cpf_case client.ovpn "#78: client.ovpn blocked by default (*.ovpn)" "#78: client.ovpn listed in output"
+_cpf_case .netrc "#78: .netrc blocked by default (.netrc)" "#78: .netrc listed in output"
+_cpf_case home/.netrc "#78: home/.netrc blocked by default (.netrc — nested path)" "#78: home/.netrc listed in output"
+_cpf_case _netrc "#78: _netrc blocked by default (_netrc)" "#78: _netrc listed in output"
+_cpf_case home/_netrc "#78: home/_netrc blocked by default (_netrc — nested path)" "#78: home/_netrc listed in output"
 
 # --- REJECTED patterns: legitimate files must PASS ---
 
