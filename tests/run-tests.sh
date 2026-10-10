@@ -62,7 +62,7 @@
 #                         scripts/talos-status.sh    -> tests/test-talos-status-line.sh
 #                         tests/test-*.sh            -> itself
 #                         agents/*.md, skills/**, templates/**
-#                                                     -> tests/test-skill-names.sh
+#                                                     -> tests/test-agent-skill-refs.sh
 #                                                        plus any test file
 #                                                        whose contents
 #                                                        reference the path's
@@ -549,7 +549,7 @@ _map_changed_path() {
       fi
       ;;
     agents/*.md|skills/*|templates/*)
-      _add_selected "test-skill-names.sh"
+      _add_selected "test-agent-skill-refs.sh"
       case "$p" in
         agents/*) _add_referencing "agents/" ;;
         skills/*) _add_referencing "skills/" ;;

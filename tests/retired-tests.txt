@@ -32,3 +32,6 @@ test-changelog-mode-wiring.sh
 test-docs-defaults-vs-table.sh
 test-docs-harness.sh
 test-docs-spend.sh
+
+# #556: prose pins on SKILL.md / agents / prompt templates; the skill-name check is now static (test-agent-skill-refs.sh, no network)
+test-skill-names.sh

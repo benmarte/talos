@@ -101,9 +101,8 @@ dispatch:adversarial" "$(cat "$DISPATCH_LOG")" \
 # The stub runner_cmd receives the profile body + task prompt combined
 # (pipeline-agent.sh's own contract) -- assert the profile's embedded
 # checklist and skill list actually reached it, not just that a dispatch
-# happened. Flattened (newline-collapsed) first, same as the profile
-# self-containment check in tests/test-skill-names.sh, since markdown
-# wrapping puts some phrases across a line break.
+# happened. Flattened (newline-collapsed) first, since markdown wrapping puts
+# some phrases across a line break.
 ADV_PROMPT_FLAT="$(printf '%s' "$ADV_PROMPT" | tr '\n' ' ' | tr -s ' ')"
 assert_contains "$ADV_PROMPT_FLAT" "revert-in-mind" \
   "adversarial dispatch prompt carries embedded checklist step: revert-in-mind"

@@ -142,7 +142,6 @@
 0 test-setup-model-question-skill.sh
 0 test-setup-prompt-rules.sh
 10 test-single-verbs.sh
-1 test-skill-names.sh
 0 test-skill-size.sh
 9 test-spend-format.sh
 5 test-spend-wiring.sh
