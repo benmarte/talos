@@ -123,12 +123,14 @@ WRAP="$(cat "$TH/statusline-chain.sh" 2>/dev/null)"
 assert_contains "$WRAP" "my-line.sh" "AC3 the wrapper calls the original command"
 assert_not_contains "$WRAP" "statusline-chain.sh" "AC3 the wrapper never calls itself"
 assert_eq "1" "$(printf '%s\n' "$WRAP" | grep -c 'my-line.sh')" "AC3 the original command appears once in the wrapper"
-# a different TALOS_HOME on the next install: the wrapper is refreshed in place
+# a different TALOS_HOME on the next install: Talos owns only <TALOS_HOME>/statusline-chain.sh,
+# so the old wrapper is reserved (named, not ours): nothing is rewritten, chained or deleted
 TH_OLD="$TH"; TH="$SANDBOX/th-d2"
 rm -rf "$TH"
+OLD_WRAP="$(cat "$TH_OLD/statusline-chain.sh")"
 inst --harness claude
 assert_eq "$BEFORE_S" "$(cat "$CC/settings.json")" "AC3 settings.json is unchanged when TALOS_HOME moves"
-assert_contains "$(cat "$TH_OLD/statusline-chain.sh" 2>/dev/null)" "$TH/scripts/talos-status.sh" "AC3 the wrapper in place now points at the new scripts path"
+assert_eq "$OLD_WRAP" "$(cat "$TH_OLD/statusline-chain.sh" 2>/dev/null)" "AC3 the wrapper under the old TALOS_HOME is left as it is"
 assert_file_absent "$TH/statusline-chain.sh" "AC3 no second wrapper is written under the new TALOS_HOME"
 assert_file_absent "$TH/statusline-previous.json" "AC3 no second backup is written under the new TALOS_HOME"
 TH="$TH_OLD"

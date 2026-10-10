@@ -210,6 +210,10 @@ for form in \
   assert_not_contains "$(cat "$TH/statusline-chain.sh")" "statusline-chain.sh" "SEC4 [$form] the wrapper never names itself"
   run_cmd TALOS_HOME="$TH"
   assert_eq "ORIG${NL}TALOS" "$GOT" "SEC4 [$form] the wrapper still runs the original once, then Talos"
+  env TALOS_HOME="$TH" bash "$CHAIN" undo "$CC/settings.json" >/dev/null 2>&1
+  assert_eq "sh $SANDBOX/orig-ok4.sh" "$(settings_cmd)" "SEC4 [$form] undo restores the original from the backup"
+  assert_file_absent "$TH/statusline-chain.sh" "SEC4 [$form] undo deletes the wrapper"
+  assert_file_absent "$TH/statusline-previous.json" "SEC4 [$form] undo deletes the backup"
 done
 TH="$TH_SAVE"
 
