@@ -55,4 +55,11 @@ assert_contains "$(cat "$TALOS_ROOT/tests/fixtures/config-golden-defaults.tsv")"
 printf '{"vcs":{"provider":"github"}}\n' > "$SANDBOX/none.json"
 assert_eq "off" "$(cd "$SANDBOX/proj" && PIPELINE_CONFIG="$SANDBOX/none.json" bash "$TALOS_ROOT/scripts/pipeline-config.sh" pr.ready_gate)" "AC3 pipeline-config.sh answers off from the table"
 
+# ── playbook: the QA draft guard in draft-order.md is conditional on READY_GATE ──
+guard="$(sed -n '/^## QA draft guard/,/^## Merge/p' "$TALOS_ROOT/skills/pipeline/refs/draft-order.md")"
+assert_contains "$guard" "READY_GATE" "PB1 the QA draft guard branches on READY_GATE"
+assert_contains "$guard" "QA is dispatched while the PR is a draft" "PB2 qa-local dispatches QA on a draft (RC 0)"
+assert_contains "$guard" "ready-pr follows only a QA PASS" "PB3 qa-local reaches ready-pr only after a QA PASS"
+assert_not_contains "$guard" "first QA dispatch" "PB4 prompt qa asks pr-is-draft on every dispatch, not only the first"
+
 finish
