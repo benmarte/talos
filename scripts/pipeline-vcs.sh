@@ -3573,6 +3573,7 @@ _GH_STATUS=""  # HTTP status of the last _gh_once
 # choice would not survive the subshell).
 _gh_init() {
   [ -n "$_GH_API" ] && return 0
+  _gh_cache_dir >/dev/null || :   # resolve the pass cache here, in the main shell, so the answer is kept
   local _env _tok=""
   if [ -n "$REPO" ]; then
     _GH_API="repos/$REPO"
@@ -3628,6 +3629,81 @@ _gh_http() {
   fi
 }
 
+# ── Per-pass read cache (#554) ───────────────────────────────────────────────
+# One approval is five verbs (pr-head, read-comments, comment-pr, label-pr,
+# check-approval-sha), each its own process, and each used to read the same PR,
+# its comments and the caller's login again. A pass that wants them shared makes
+# a directory, writes its own pid to <dir>/owner and exports TALOS_PASS_CACHE
+# (post-approval does); the verbs below it then read through that directory.
+#   - Only successes are stored: a failed read is read again, never replayed.
+#   - Any write through the client (_gh_once with a method other than GET)
+#     empties the directory, so a read after a write is always live. The login
+#     (`user`) survives: a write cannot change who the token belongs to.
+#   - Comments are stored against the head SHA of the PR object cached beside
+#     them (comments-<n>-<sha>), and read only while that PR object is still
+#     the one cached: a new head never reads the old head's comments.
+#   - The directory is honoured only for a process under the pass that owns it
+#     (<dir>/owner is an ancestor of this process), so a stale exported variable
+#     in someone's shell, or a directory left by a dead pass, caches nothing.
+#     (This is hygiene, not a boundary: a caller that can plant a directory can
+#     already post markers with the token it holds.)
+#   - A standalone verb has no pass, so no cache: behaviour is unchanged.
+_GH_CACHE=""   # unset = not resolved yet; "-" = off; else the directory
+
+# _gh_cache_dir -- prints the pass directory and returns 0, or returns 1 (and
+# prints nothing) when this process has none. Memoised for the process.
+_gh_cache_dir() {
+  local _cd="${TALOS_PASS_CACHE:-}" _own _p="$$" _i=0
+  if [ -z "$_GH_CACHE" ]; then
+    _GH_CACHE="-"
+    if [ -n "$_cd" ] && [ -d "$_cd" ] && [ -O "$_cd" ] && [ ! -L "$_cd" ] && [ "$DRY_RUN" != "true" ]; then
+      _own="$(cat "$_cd/owner" 2>/dev/null)"
+      case "$_own" in
+        ''|*[!0-9]*) ;;
+        *)
+          while [ "$_i" -lt 12 ] && [ -n "$_p" ] && [ "$_p" -gt 1 ] 2>/dev/null; do
+            if [ "$_p" = "$_own" ]; then _GH_CACHE="$_cd"; break; fi
+            _p="$(ps -o ppid= -p "$_p" 2>/dev/null | tr -d '[:space:]')"
+            _i=$((_i + 1))
+          done ;;
+      esac
+    fi
+  fi
+  [ "$_GH_CACHE" != "-" ] || return 1
+  printf '%s' "$_GH_CACHE"
+}
+# _gh_cache_get <key> -- the stored body, else return 1.
+_gh_cache_get() {
+  local _cd
+  _cd="$(_gh_cache_dir)" || return 1
+  [ -s "$_cd/$1" ] || return 1
+  cat "$_cd/$1"
+}
+# _gh_cache_put <key> -- stdin: the body to store (a no-op without a pass).
+_gh_cache_put() {
+  local _cd _t
+  _cd="$(_gh_cache_dir)" && _t="$(mktemp "$_cd/.put.XXXXXX" 2>/dev/null)" || { cat >/dev/null; return 0; }
+  cat > "$_t" && mv "$_t" "$_cd/$1" || rm -f "$_t"
+}
+# _gh_cache_clear -- a write happened: forget everything but the login.
+_gh_cache_clear() {
+  local _cd _f
+  _cd="$(_gh_cache_dir)" || return 0
+  for _f in "$_cd"/*; do
+    [ -e "$_f" ] || continue
+    [ "${_f##*/}" = owner ] || [ "${_f##*/}" = user ] || rm -f "$_f"
+  done
+}
+# _gh_pull_cached <n> -- the pull request as REST prints it, from the pass cache
+# when it holds one. Non-zero, nothing stored, when the read fails.
+_gh_pull_cached() {
+  local _pc
+  if _pc="$(_gh_cache_get "pr-$1")"; then printf '%s' "$_pc"; return 0; fi
+  _pc="$(_gh_try GET "$_GH_API/pulls/$1")" || return 1
+  [ -n "$_pc" ] && printf '%s' "$_pc" | _gh_cache_put "pr-$1"
+  printf '%s' "$_pc"
+}
+
 # _gh_once <METHOD> <path> <accept> <payload-file|""> [<next-file>] -- one
 # attempt, shaped for _with_retry: the body on success; on a rate limit it sets
 # $_WR_RETRYABLE (from the status, never message text) and $_WR_RETRY_AFTER.
@@ -3636,6 +3712,7 @@ _gh_http() {
 _gh_once() {
   local _m="$1" _p="$2" _acc="$3" _data="${4:-}" _next_file="${5:-}"
   local _hdr _full _status _body _rc=0 _reset
+  [ "$_m" = GET ] || _gh_cache_clear
   _hdr="$(mktemp)"
   _full="$(_gh_http "$_m" "$_p" "$_acc" "$_hdr" "$_data")" || {
     _rc=$?
@@ -3801,9 +3878,10 @@ _gh_comments() { _gh_pages "$_GH_API/issues/$1/comments?per_page=100"; }
 # string: that is "refused" (#453, #455) and the marker readers then trust only
 # markers.trusted_authors. One attempt, no exit: a failure is a state.
 _gh_user_login() {
-  local _ul_body
+  local _ul_body _ul_login
+  if _ul_login="$(_gh_cache_get user)"; then printf '%s\n' "$_ul_login"; return 0; fi
   _ul_body="$(_gh_once GET user "$_GH_JSON" "" 2>/dev/null)" || return 1
-  printf '%s' "$_ul_body" | python3 -I -c "
+  _ul_login="$(printf '%s' "$_ul_body" | python3 -I -c "
 import json, sys
 try:
     login = json.load(sys.stdin).get('login')
@@ -3812,7 +3890,9 @@ except Exception:
 if not isinstance(login, str) or not login.strip():
     sys.exit(1)
 print(login)
-" 2>/dev/null
+" 2>/dev/null)" || return 1
+  printf '%s\n' "$_ul_login" | _gh_cache_put user
+  printf '%s\n' "$_ul_login"
 }
 
 
@@ -3885,10 +3965,16 @@ _gh_pull() {
 # each with author.login and createdAt next to the REST fields. Non-zero when
 # any page fails.
 _gh_comments_obj() {
-  local _raw
+  local _raw _ck="" _sha _obj
+  # In a pass (#554) the comments are stored against the cached PR's head SHA.
+  _sha="$(_gh_cache_get "pr-$1" | _gh_field head.sha 2>/dev/null)"
+  [ -z "$_sha" ] || _ck="comments-$1-$_sha"
+  if [ -n "$_ck" ] && _obj="$(_gh_cache_get "$_ck")"; then printf '%s' "$_obj"; return 0; fi
   _raw="$(_gh_comments "$1")" || return 1
   [ -n "$_raw" ] || return 1
-  printf '%s' "$_raw" | _vcs_shared_normalize_comments
+  _obj="$(printf '%s' "$_raw" | _vcs_shared_normalize_comments)" || return 1
+  [ -z "$_ck" ] || printf '%s' "$_obj" | _gh_cache_put "$_ck"
+  printf '%s' "$_obj"
 }
 
 # _gh_marker_data <pr> -- {"headRefOid", "baseRefName", "labels", "comments"} for
@@ -3896,7 +3982,7 @@ _gh_comments_obj() {
 # Non-zero, nothing on stdout, when either fails.
 _gh_marker_data() {
   local _pr _cm
-  _pr="$(_gh_try GET "$_GH_API/pulls/$1")" || return 1
+  _pr="$(_gh_pull_cached "$1")" || return 1
   _cm="$(_gh_comments_obj "$1")" || return 1
   [ -n "$_pr" ] || return 1
   printf '%s\n%s' "$_cm" "$_pr" | python3 -I -c '
@@ -4064,7 +4150,12 @@ _gh_comment_state_gate() {
   _GH_UNVERIFIED=false
   [ "$ALLOW_CLOSED" = "true" ] && return 0
   [ "$_cs_kind" = PR ] && _cs_path=pulls
-  if ! _cs_raw="$(_gh_try GET "$_GH_API/$_cs_path/$_cs_n" 2>/dev/null)"; then
+  if [ "$_cs_kind" = PR ]; then
+    _cs_raw="$(_gh_pull_cached "$_cs_n" 2>/dev/null)" || _cs_raw=""
+  else
+    _cs_raw="$(_gh_try GET "$_GH_API/$_cs_path/$_cs_n" 2>/dev/null)" || _cs_raw=""
+  fi
+  if [ -z "$_cs_raw" ]; then
     echo "pipeline-vcs: warning: could not determine state of $_cs_kind #$_cs_n — proceeding" >&2
     _GH_UNVERIFIED=true
     return 0
@@ -4697,7 +4788,7 @@ json.dump([dict(p, headRefName=(p.get('head') or {}).get('ref', '')) for p in pr
       local n="${1:-}" sha
       _gh_num "$verb" PR "$n"
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/pulls/$n (.head.sha)"; return 0; }
-      sha="$(_gh_try GET "$_GH_API/pulls/$n" | _gh_field head.sha)"
+      sha="$(_gh_pull_cached "$n" | _gh_field head.sha)"
       [ -z "$sha" ] && { echo "pipeline-vcs: pr-head: could not resolve head SHA for PR #$n" >&2; exit 1; }
       printf '%s\n' "$sha"
       ;;
@@ -7571,6 +7662,14 @@ if [ "$VERB" = "post-approval" ]; then
       "$_pa_n" "$_pa_role" "$_pa_label"
     exit 0
   fi
+
+  # (#554) This pass shares one set of reads between the verbs it spawns (see
+  # "Per-pass read cache"): the PR, its comments and the login are read once
+  # before the writes and once after them. _talos_on_exit removes the directory.
+  _pa_cache="$(mktemp -d "${TMPDIR:-/tmp}/talos-pass.XXXXXX" 2>/dev/null)" && {
+    printf '%s' "$$" > "$_pa_cache/owner" && export TALOS_PASS_CACHE="$_pa_cache" \
+      && _talos_on_exit 'rm -rf "$_pa_cache"'
+  }
 
   # (#549) Tag the calling stage's worktree for its issue, so the sweeps and the
   # post-merge `remove <N>` find it (#240). Best effort: the main checkout is

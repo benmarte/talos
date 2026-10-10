@@ -354,26 +354,25 @@ export GITHUB_TOKEN="test-token-146"
 : > "$CURL_LOG"
 : > "$CURL_QUEUE"
 # post-approval calls pr-head, read-comments (duplicate check, #172),
-# comment-pr, label-pr -- each needs a curl response.
-# pr-head: {"head": {"sha": "<sha>"}}
+# comment-pr, label-pr -- each needs a curl response, except that the pass
+# shares its reads (#554): comment-pr's state check reuses the PR pr-head read.
+# pr-head: the PR
 # read-comments: paginated comments fetch -- empty (no duplicate)
-# comment-pr: state check + post
-# label-pr: get labels + put
-printf '%s\n%s\n%s\n%s\n%s\n' \
-  "{\"head\":{\"sha\":\"${STUB_SHA}\"}}" \
+# comment-pr: post (its state check is the cached PR)
+# label-pr: add the label
+printf '%s\n%s\n%s\n%s\n' \
+  "{\"head\":{\"sha\":\"${STUB_SHA}\"},\"state\":\"open\",\"merged_at\":null}" \
   "[]" \
-  "{\"state\":\"open\",\"merged_at\":null}" \
   "{\"id\":900,\"html_url\":\"https://github.com/acme/widget/pull/9#issuecomment-900\"}" \
   "[{\"name\":\"qa:pass\"}]" \
   > "$CURL_QUEUE"
-# Then the PR and its comments twice: label-pr's missing-marker check, and the
-# self-check (#549, check-approval-sha) that post-approval ends with.
-for _i in 1 2; do
-  printf '%s\n%s\n' \
-    "{\"number\":9,\"head\":{\"sha\":\"${STUB_SHA}\"},\"base\":{\"ref\":\"main\"},\"labels\":[{\"name\":\"qa:pass\"}]}" \
-    "[{\"body\":\"<!-- talos:approval sha=${STUB_SHA} role=qa -->\",\"user\":{\"login\":\"bot\"}}]" \
-    >> "$CURL_QUEUE"
-done
+# Then the PR and its comments once more: the writes emptied the cache, and
+# label-pr's missing-marker check and the self-check (#549, check-approval-sha)
+# that post-approval ends with share this one read.
+printf '%s\n%s\n' \
+  "{\"number\":9,\"head\":{\"sha\":\"${STUB_SHA}\"},\"base\":{\"ref\":\"main\"},\"labels\":[{\"name\":\"qa:pass\"}]}" \
+  "[{\"body\":\"<!-- talos:approval sha=${STUB_SHA} role=qa -->\",\"user\":{\"login\":\"bot\"}}]" \
+  >> "$CURL_QUEUE"
 
 out15="$(bash "$VCS" post-approval 9 qa 2>&1)"; rc15=$?
 assert_exit_code 0 "$rc15" "github-api: post-approval exits 0"
