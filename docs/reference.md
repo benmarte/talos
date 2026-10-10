@@ -125,6 +125,7 @@ bash talos/install.sh [repo-path] [--harness <list>] [--no-agents-md] [--import-
 | `--no-overwrite`, `--force` | skip existing files (global default is overwrite) / overwrite them (per-repo; never `talos.pipeline.json`) |
 | `--no-agent-skills` | per-repo: skip copying agent-skills into `<repo>/.claude/skills` |
 | `--no-agents-md`, `--import-agents-md` | per-repo: write no `AGENTS.md` block / append `@AGENTS.md` to an existing `CLAUDE.md` and `GEMINI.md` (never creates them) |
+| `--no-statusline`, `--statusline-undo` | global: skip the status-line step for every harness / restore the original Claude `statusLine` exactly and remove the chain wrapper (implies `--global`; [The status line](#the-status-line)) |
 
 **Claude adapter.** Writes `~/.claude/agents/<role>.md`, registers the `talos` plugin (`claude plugin marketplace add <checkout>`, `claude plugin install talos@talos`) and wires `statusLine` in `settings.json` to `talos-status.sh --line` (an existing statusLine is chained, not replaced: [The status line](#the-status-line)). With `--harness` it runs only if the list has `claude`; without it, when `CLAUDE_CONFIG_DIR` is set, `${CLAUDE_CONFIG_DIR:-~/.claude}` is a directory, or `claude` is on PATH. A skipped adapter leaves `~/.claude` alone. Without `claude plugin` it prints the two commands to run inside Claude Code. Re-run it after `git pull` (Claude Code caches the plugin). A `talos` marketplace from another source is left alone; one pointing at another directory is repointed unless `--keep-marketplace` (or `--no-overwrite`) is given.
 
