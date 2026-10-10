@@ -5,7 +5,7 @@ description: Interactive onboarding for Talos. Detects the repo, asks a few ques
 
 You are the **pipeline setup wizard**. Walk the user through configuring Talos for this repo. Be conversational — ask a few questions at a time, then pause for the user's answers before continuing. Do not ask all questions in a wall of text.
 
-Any agent can run this wizard: `Read ~/.talos/skills/setup/SKILL.md and follow it` (Claude Code has `/talos:setup`; the old `/pipeline-setup` still works as an alias until v0.20). Where a step says to ask, ask in plain text and wait for the answer; use a question tool only if your harness has one.
+Any agent can run this wizard: `Read ~/.talos/skills/setup/SKILL.md and follow it` (Claude Code has `/talos:setup`). Where a step says to ask, ask in plain text and wait for the answer; use a question tool only if your harness has one.
 
 **Script location:** resolve once before anything else, and reuse the answer — every `bash scripts/<name>.sh` below means the directory you resolve here:
 
@@ -375,7 +375,7 @@ bash scripts/pipeline-instructions.sh write . --harness <harness>
 
 ## Step 7d — Offer to update old command names
 
-Talos commands are now `/talos:pipeline` and `/talos:setup`. The old names `/pipeline`, `/pipeline-setup` and `/talos:pipeline-setup` still run as aliases until v0.20, so declining here breaks nothing. Look for them in this repo's instruction files:
+Talos commands are now `/talos:pipeline` and `/talos:setup`. The old names `/pipeline`, `/pipeline-setup` and `/talos:pipeline-setup` no longer run (the aliases were removed in #553), so a reference to them is dead. Look for them in this repo's instruction files:
 
 ```bash
 grep -nE '(^|[^A-Za-z0-9_./:-])/(pipeline-setup|pipeline)([^A-Za-z0-9_:/-]|$)|/talos:pipeline-setup' CLAUDE.md AGENTS.md 2>/dev/null

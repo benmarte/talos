@@ -279,8 +279,7 @@ ALSO writes the role profiles to `~/.claude/agents/<role>.md` -- that second
 copy is what Claude Code's native subagent discovery actually reads, so a
 global install no longer leaves Claude Code sessions pinned to a stale plugin
 profile -- registers the checkout as the `talos` plugin (see "Command names"
-below), and writes the two legacy alias skills `~/.claude/skills/pipeline` and
-`~/.claude/skills/pipeline-setup`. A repo-level `.claude/agents/<role>.md` still
+below). A repo-level `.claude/agents/<role>.md` still
 wins over both. Per-repo installs write only `talos.pipeline.*` config (never
 overwritten), the `AGENTS.md` block, and agent-skills to `.claude/skills/`
 (skip with `--no-agent-skills`); no Talos scripts are copied into repos.
@@ -326,27 +325,17 @@ aborts the install or deletes anything.
   does too). Any other source, such as a
   GitHub marketplace you added by hand: left alone, with a notice, because that
   source already provides the names. A list it cannot read: no registration.
-- *Legacy aliases, until v0.20.* `/pipeline`, `/pipeline-setup` (written to
-  `~/.claude/skills/<name>/SKILL.md`, each carrying an alias-ownership comment line) and
-  `/talos:pipeline-setup` (the plugin's `skills/pipeline-setup`) are thin
-  aliases. Each prints `renamed to /talos:<command>; this alias is removed in
-  v0.20`, then reads `$TALOS_HOME/skills/<command>/SKILL.md` or
-  `~/.talos/skills/<command>/SKILL.md` and follows it. A repo whose `CLAUDE.md`
-  still says `/pipeline` therefore keeps working; `/talos:setup` offers to
-  rewrite those references. `$TALOS_HOME` is read from the Claude Code session
-  environment, so a custom `TALOS_HOME` is found only when it is exported before
-  Claude Code starts. They run without `CLAUDE_PLUGIN_ROOT`, so the
-  pipeline playbook resolves subagent names to the bare ones from
-  `~/.claude/agents/`.
-- `--no-legacy-aliases` installs no bare names and removes the Talos-owned ones:
-  an alias, a pre-alias full copy (frontmatter `name:` plus a Talos script or
-  config name in the text), and the old `~/.claude/skills/talos-resume`. It
-  deletes only once the plugin is registered; until then the old copy is still
-  the only way to run the command, so it is kept. A skill at
-  `~/.claude/skills/pipeline` or `pipeline-setup` that is not Talos's is never
-  overwritten or deleted (the installer warns), and a symlink on the path is
-  skipped. Removing the aliases is planned after two minor releases, with a
-  CHANGELOG entry in each.
+- *The old bare names are gone (#553).* `/pipeline`, `/pipeline-setup` and
+  `/talos:pipeline-setup` no longer exist. `install.sh --global` removes an
+  older install's Talos-owned copies of `~/.claude/skills/pipeline` and
+  `pipeline-setup` (an alias with its ownership comment line, or a pre-alias full
+  copy: frontmatter `name:` plus a Talos script or config name in the text) and
+  the old `~/.claude/skills/talos-resume`. It deletes only once the plugin is
+  registered; until then the old copy is still the only way to run the command,
+  so it is kept. A skill there that is not Talos's is never overwritten or
+  deleted, and a symlink on the path is skipped. `/talos:setup` offers to
+  rewrite old command names in your `CLAUDE.md` and `AGENTS.md`.
+  `--no-legacy-aliases` is accepted and ignored.
 
 **Playbooks for any other agent.** Every agent can be pointed at the
 playbooks by path: `Read ~/.talos/skills/pipeline/SKILL.md and follow it`
@@ -640,8 +629,7 @@ For every harness:
   before the install. The native Claude path never reads it.
 - Start line for any agent: `Read ~/.talos/skills/pipeline/SKILL.md and follow it`
   (setup: `Read ~/.talos/skills/setup/SKILL.md and follow it`). Claude Code has
-  `/talos:pipeline` and `/talos:setup`, from either install path (the old `/pipeline`
-  and `/pipeline-setup` work as aliases until v0.20).
+  `/talos:pipeline` and `/talos:setup`, from either install path.
 
 | Harness | `--global --harness` writes | `agents.runner` | Start line |
 |---------|-----------------------------|-----------------|------------|
