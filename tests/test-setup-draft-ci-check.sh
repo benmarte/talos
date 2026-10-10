@@ -8,13 +8,12 @@
 # with a pull_request trigger" as its own status, never `ok`. This test runs
 # that call in sandboxes (the statuses themselves are covered by
 # tests/test-draft-check.sh), checks the setup skill's text, and pins the
-# draft-time-success guidance in the README and the setup skill.
+# draft-time-success guidance in the setup skill.
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox || exit 1
 
 SETUP="${SETUP_FILE:-$TALOS_ROOT/skills/setup/SKILL.md}"
-README="$TALOS_ROOT/README.md"
 DC="$TALOS_ROOT/scripts/pipeline-draft-check.sh"
 
 run_check() { (cd "$1" && bash "$DC" 2>&1); }
@@ -49,9 +48,8 @@ assert_contains "$SN" 'for the user to apply by hand' "setup skill: the combined
 assert_not_contains "$SN" 'mirroring `templates/ci/github-tests.yml`' "setup skill: no invitation to copy more of the template"
 assert_contains "$SN" 'only when the user picks the ready flow (the non-default); never write `draft: true`' "setup skill: only the non-default is written"
 
-# ── Draft-time-success guidance (README + setup skill) ────────────────────────
-RN="$(tr '\n' ' ' < "$README" | tr -s ' ')"
-for pair in "README:$RN" "setup:$SN"; do
+# ── Draft-time-success guidance (setup skill) ─────────────────────────────────
+for pair in "setup:$SN"; do
   who="${pair%%:*}"; txt="${pair#*:}"
   assert_contains "$txt" "draft-time run must never report success for a required check" "$who: states a draft-time run must not report success for a required check"
   assert_contains "$txt" "branch protection counts a skipped required check as success" "$who: names the skipped-job-counted-as-success case"

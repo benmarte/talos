@@ -236,7 +236,7 @@ assert_contains "$out_with" "/pipeline" \
 #
 # Tree-wide grep (grep -rn TALOS_HOME --include=*.sh --include=*.md, excl tests/.git)
 # confirmed four literal-probe sites and two delegation sites -- no others exist.
-# Docs files (README.md, user-guide.md, CHANGELOG.md) mention probe strings but
+# Docs files (README.md, reference.md, CHANGELOG.md) mention probe strings but
 # do not execute them; they are not probe sites.
 #
 # Two checks:

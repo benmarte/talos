@@ -134,8 +134,7 @@
 # the template renderer in a file, never on a command line.
 #
 #   post-merge <pr> <issue> [--ci-runs <n>] [--heal]
-#          Order: sibling sync (a merge only: --heal skips it), changelog assemble
-#          (roles.changelog_fragments), the issue-closed comment (--allow-closed:
+#          Order: sibling sync (a merge only: --heal skips it), the issue-closed comment (--allow-closed:
 #          GitHub closes the issue at merge), close-issue, board Done, worktree
 #          remove, the orchestrator/merged/issue-closed
 #          notices, post_stage merged (with --ci-runs <n>, read BEFORE merge-pr,
@@ -145,8 +144,7 @@
 #          dispatches the Step 3c merge-base task for the FIRST such PR only, then
 #          re-checks pr-mergeable before the next), `recorded=yes|no`, `spend=<the
 #          cost --line>`. The sibling sync runs when merge.auto_sync is true.
-#          Idempotent per item: a second run is a safe no-op. changelog assemble,
-#          board Done, worktree remove and a clean sibling are idempotent in
+#          Idempotent per item: a second run is a safe no-op. Board Done, worktree remove and a clean sibling are idempotent in
 #          their scripts. The issue-closed
 #          comment carries <!-- talos:issue-closed pr=<M> -->: when a comment by a
 #          trusted author (markers.trusted_authors plus the current user, as for
@@ -193,7 +191,7 @@
 #          `worktree_warning=<line>` (relayed once as an `info worktrees` notice),
 #          item 4 `cost=<line>` per line of the one cost --summary call.
 #
-# post-merge-reasons: changelog-failed comments-unreadable trust-unverified comment-failed close-failed issue-state-unverified board-failed worktree-remove-failed notify-failed spend-upsert-failed siblings-unlisted lease-release-failed value-truncated
+# post-merge-reasons: comments-unreadable trust-unverified comment-failed close-failed issue-state-unverified board-failed worktree-remove-failed notify-failed spend-upsert-failed siblings-unlisted lease-release-failed value-truncated
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
 #   warn: all the others
 # sweep-reasons: issues-unlisted prs-unlisted find-pr-unverified find-pr-failed worktree-sweep-failed epic-close-failed epic-label-failed epic-comment-failed epic-acceptance-unsupported unblock-failed notify-failed
@@ -232,7 +230,7 @@
 #          is, one newline after it; it is never scanned for markers. Free text reaches the verb only in files, never on
 #          argv; a file's trailing newlines are cut and its text is otherwise inserted as it
 #          is. The configured values (base branch, provider, comment header and templates
-#          dir, verify settings, required checks, isolation, changelog and status modes)
+#          dir, verify settings, required checks, isolation and status modes)
 #          are read through cfg, as `env` reads them; the developer's Handoff line follows
 #          the exit status of `pipeline-worktree.sh handoff <N>`, never its output.
 #          verify.qa_mode local drops the developer's Required checks line and CI wait.
@@ -510,15 +508,14 @@
 #
 # docs-gate  `talos.sh docs-gate <pr> --issue <N>` decides whether the docs stage needs an
 #         LLM (#546). One line: `docs=dispatch reason=docs-paths paths-file=<f>` when the PR
-#         changes README.md, docs/** (docs/CHANGELOG.d/** fragments
-#         excluded) or scripts/pipeline-defaults.sh -- <f> is a mode-0600 file under
+#         changes README.md, docs/** or scripts/pipeline-defaults.sh -- <f> is a mode-0600 file under
 #         ${TMPDIR:-/tmp} holding those paths, for `prompt docs --docs-paths-file`, removed by
 #         the caller; `docs=dispatch reason=always` (roles.docs_mode always: the full diff,
 #         no file); `docs=dispatch reason=fetch-failed` (pr-files could not be read: never
 #         "nothing to check"); `docs=skip reason=role-off` (roles.docs false, nothing written);
 #         `docs=skip reason=no-docs-paths`, after the verb stamped docs:done itself
 #         (pipeline-vcs.sh post-approval <pr> docs) and ran `done docs` -- the caller
-#         dispatches nothing. The developer owns the CHANGELOG line or fragment.
+#         dispatches nothing. The developer owns the CHANGELOG line.
 #
 # docs-gate-reasons: usage scripts-missing python-missing scratch-unavailable config-unreadable stamp-failed done-failed
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable stamp-failed
@@ -583,7 +580,6 @@ ROLE_DOCS	roles.docs	s
 ROLE_PLANNER	roles.planner	s
 ROLE_ADVERSARIAL	roles.adversarial	s
 ROLE_PM_SKIP_WHEN_SPEC_PRESENT	roles.pm_skip_when_spec_present	s
-ROLE_CHANGELOG_FRAGMENTS	roles.changelog_fragments	s
 ROLE_DOCS_MODE	roles.docs_mode	s
 COMMENTS_ENABLED	comments.enabled	s
 COMMENTS_HEADER_TPL	comments.header	s
@@ -1614,7 +1610,7 @@ _talos_issue_open() {
 }
 
 # _talos_post_merge_run <pr> <issue> <heal 0|1> <ci-runs or empty> [known-open]:
-# the items, in order. Siblings (a merge, not a heal), changelog, the issue-closed
+# the items, in order. Siblings (a merge, not a heal), the issue-closed
 # comment, close-issue (only while the issue is open: the github verb comments
 # on every call), board Done, worktree remove, the notices, the
 # merged and issue-closed events and the spend block. A 5th argument of 1 says
@@ -1624,11 +1620,6 @@ _talos_post_merge_run() {
   _PM_ISSUE="$_n"
   _mk="<!-- talos:issue-closed pr=$_pr -->"
   [ "$_heal" -eq 1 ] || _talos_siblings "$_n" "$_pr"
-
-  if [ "$(cfg roles.changelog_fragments)" = "true" ]; then
-    _talos_run_capture changelog bash "$SCRIPT_DIR/pipeline-changelog.sh" assemble
-    [ "$_RC" -eq 0 ] || _talos_warn changelog-failed "issue=$_n"
-  fi
 
   # The marker of an earlier run (a trusted author's) means the comment and
   # everything that tells someone it happened were done: skip those. close-issue
@@ -1709,7 +1700,7 @@ _talos_post_merge() {
   [ "$_hand" -eq 0 ] || { [ "$_heal" -eq 0 ] && [ -z "$_ci" ]; } || _talos_stop usage 2
   [ "$_det" = /dev/null ] || { [ "$_hand" -eq 1 ] && [ -r "$_det" ]; } || _talos_stop usage 2
   _talos_prepare post-merge pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh pipeline-contract.sh \
-                            pipeline-changelog.sh pipeline-status.sh \
+                            pipeline-status.sh \
                             pipeline-worktree.sh pipeline-notify.sh pipeline-hooks.sh pipeline-events.sh \
                             pipeline-mergebase.sh
   . "$SCRIPT_DIR/pipeline-contract.sh"
@@ -1743,7 +1734,7 @@ _talos_sweep() {
   local _issues="" _k _n _pr _prs="" _list="" _healed="" _bi="" _bp="" _ki=0 _kp=0 _plan _s _i _b _e _carried
   _talos_ids "$@"
   _talos_prepare sweep pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh pipeline-contract.sh \
-                       pipeline-changelog.sh pipeline-status.sh \
+                       pipeline-status.sh \
                        pipeline-worktree.sh pipeline-notify.sh pipeline-hooks.sh pipeline-events.sh \
                        pipeline-mergebase.sh
   . "$SCRIPT_DIR/pipeline-contract.sh"
@@ -1925,7 +1916,7 @@ _talos_summary() {
 _TALOS_PROMPT_NAMES="ISSUE PR ROLE ROLE_TITLE BASE_BRANCH VCS_PROVIDER COMMENTS_ENABLED COMMENTS_TMPL_DIR HEADER
   VERIFY_TARGETED VERIFY_TIMEOUT_MS VERIFY_CI_WAIT_S VERIFY_QA_MODE VERIFY_COMMANDS REQUIRED_CHECKS_LINE
   VERIFY_TIMEOUT_LINE SPEC_SOURCE ISOLATION_NOTE PRIOR_STAGE_SUMMARY HANDOFF_LINE DRAFT_PR_LINE FIX_ROUND_LINES
-  PASSED_LEAD CHANGELOG_MODE_LINE DOCS_DIFF_INSTRUCTION TITLE BODY RESTAMP_INPUTS STOP_RULE"
+  PASSED_LEAD DOCS_DIFF_INSTRUCTION TITLE BODY RESTAMP_INPUTS STOP_RULE"
 
 # The renderer: argv = template, values file, output file, allowed names. The
 # values file is NUL-delimited NAME, VALUE pairs; a NAME written `<NAME` carries
@@ -2117,10 +2108,6 @@ _talos_prompt() {
       _talos_pv VERIFY_CI_WAIT_S "$(cfg verify.ci_wait_s)"
       _talos_pv VERIFY_TIMEOUT_MS "$(cfg verify.timeout_ms)" ;;
     docs)
-      if [ "$(cfg roles.changelog_fragments)" = true ]; then _v="CHANGELOG MODE: fragments"
-      else _v="CHANGELOG MODE: direct"
-      fi
-      _talos_pv CHANGELOG_MODE_LINE "$_v"
       if [ -n "$_docs" ] && [ -n "$_pr" ]; then
         _f="$_CFG_CACHE_DIR/docs-diff"
         {
@@ -2742,8 +2729,7 @@ _talos_done() {
 }
 
 # docs-gate <pr> --issue <N>: does the docs stage need an LLM? Dispatch only
-# when the PR changes README.md, docs/** (CHANGELOG and status fragments
-# excluded) or scripts/pipeline-defaults.sh; roles.docs_mode always forces it
+# when the PR changes README.md, docs/** or scripts/pipeline-defaults.sh; roles.docs_mode always forces it
 # and a failed pr-files read dispatches too (never "nothing to check"). On a
 # skip the docs:done stamp and `done docs` are the verb's own, so the loop and
 # the playbook end up in the same state without a docs agent.
@@ -2770,7 +2756,6 @@ _talos_docs_gate() {
   fi
 
   while IFS= read -r _p; do
-    case "$_p" in docs/CHANGELOG.d/*) continue ;; esac
     case "$_p" in
       README.md | docs/* | scripts/pipeline-defaults.sh) _hits="$_hits$_p"$'\n' ;;
     esac

@@ -339,7 +339,7 @@ When writing the file (omit the whole block when its keys are not configured):
 - If harness = `pi`: write `"agents": { "runner": "pi", "subagents": false }` (pi runs the stages inline).
 - If harness = `codex`, `gemini` or `antigravity`: write `"agents": { "runner": "<HARNESS>" }` (for example `"runner": "antigravity"`); omit `runner_cmd`.
 - If harness = `custom`: write `"agents": { "runner": "custom", "runner_cmd": "<value the user provided>" }`.
-- If `roles.adversarial: true` AND the user asked for a different backend for it (Step 4): write (or extend) the `agents` block with `"roles": { "adversarial": { "runner": "...", "runner_cmd": "..." } }` -- same shape as the `docs/user-guide.md` "Second opinion on a local model" example -- even when the top-level harness is `claude`, since only `adversarial` is opting out of the native default.
+- If `roles.adversarial: true` AND the user asked for a different backend for it (Step 4): write (or extend) the `agents` block with `"roles": { "adversarial": { "runner": "...", "runner_cmd": "..." } }` -- same shape as the `docs/reference.md` "Profiles, runners and fallback" adversarial example -- even when the top-level harness is `claude`, since only `adversarial` is opting out of the native default.
 - `notifications.events`: leave unset (recommended) unless the user asked for a filter; when they did, write the full event list (all role events plus the chosen lifecycle events) -- see talos.pipeline.json.example for the full list.
 
 Also ask before writing:
@@ -595,7 +595,7 @@ Control labels (created by bootstrap-labels.sh in Step 8):
 Next steps:
   1. Add the 'pipeline:ready' label to a GitHub issue (or a '- [ ] task' in plan.md for file mode)
   2. Start the pipeline with `/talos:pipeline` in Claude Code; in any other agent: Read ~/.talos/skills/pipeline/SKILL.md and follow it
-     (local/weak-model option: `bash scripts/talos.sh run` orchestrates in code, the LLMs do the stages; see README "Deterministic orchestrator" and docs/user-guide.md "Deterministic orchestrator (`talos.sh run`)")
+     (local/weak-model option: `bash scripts/talos.sh run` orchestrates in code, the LLMs do the stages; see docs/reference.md "How a run works")
   3. For GitHub Projects, make sure the Status field has: Ready, In progress, In review, Done, Blocked
      (if your board uses different column names, configure board.status_map to remap them — see the
      example in the config template above; pipeline-status.sh will emit talos:board-unverified on

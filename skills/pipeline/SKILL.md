@@ -153,7 +153,7 @@ It runs every gate and never merges itself: no `pipeline:blocked`; every enabled
 - `block` (`forbidden-files`, `closing-keyword`, `siblings-capped`): the verb set `pipeline:blocked`, commented and sent the `blocked` notice. Move on; only a human may clear it.
 - `stop reason=<r>`: a gate could not be checked (fail closed): do NOT merge, report it.
 
-**Stale approvals.** Approvals are bound to the PR head SHA. `merge.approval_waiver_paths` (default `*.md`, `docs/**`, `CHANGELOG.md`, `*.example`; never code, tests or agent instructions) keep approvals standing, and with `roles.changelog_fragments: true` a `docs/CHANGELOG.d/**` fragment never invalidates an approval. Dispatch in `stale=` order (QA first):
+**Stale approvals.** Approvals are bound to the PR head SHA. `merge.approval_waiver_paths` (default `*.md`, `docs/**`, `CHANGELOG.md`, `*.example`; never code, tests or agent instructions) keep approvals standing. Dispatch in `stale=` order (QA first):
 - `qa` / `reviewer` / `security` / `adversarial` stale: it already has a prior approval on this PR, so dispatch its **re-stamp** variant (`refs/restamp.md`), never the full stage. A `RESTAMP_FAIL` is not merged against: the next pass re-dispatches the full stage.
 - `docs` stale: a docs-relevant delta since approval (README/docs/non-test `*.md`) → re-run docs normally; else dispatch nothing and run `bash scripts/pipeline-vcs.sh post-approval <PR_NUMBER> docs --body-file <synthetic-summary>` ("no docs-relevant changes since prior docs approval"). Approvals are stamped with `post-approval` at the head SHA.
 

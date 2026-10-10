@@ -22,3 +22,13 @@ test-setup-evidence.sh
 
 # #553: the /pipeline and /pipeline-setup aliases are gone
 test-legacy-aliases.sh
+
+# #555: the CHANGELOG fragment machinery is gone (merge.union_paths covers concurrent CHANGELOG edits)
+test-changelog-assemble.sh
+test-changelog-fragments-skill.sh
+test-changelog-mode-wiring.sh
+
+# #555: tests that pinned docs prose (the generated config table has its own check)
+test-docs-defaults-vs-table.sh
+test-docs-harness.sh
+test-docs-spend.sh

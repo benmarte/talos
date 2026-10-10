@@ -84,8 +84,4 @@ assert_contains "$skill_flat" 'A PR carrying `pipeline:blocked` (on the PR or it
 assert_contains "$skill_flat" 'a PR that carries `pipeline:blocked` (on the PR or its issue) is not resumed: item 4 reports it, Step 5 lists it `blocked`' \
   "SKILL.md Step 1 does not resume an adopted or in-flight PR carrying pipeline:blocked"
 
-readme_flat="$(tr '\n' ' ' < "$TALOS_ROOT/README.md" | tr -s ' ')"
-assert_contains "$readme_flat" 'removes `pipeline:blocked` from both the PR and its issue' \
-  "README says to remove pipeline:blocked from both the PR and its issue"
-
 finish

@@ -675,8 +675,6 @@ grep -qF 'action=wait reason=draft pr=<M> issue=<N>' "$GS/talos.sh"
 assert_eq "0" "$?" "AC13: the next schema describes the key-carrying draft wait"
 grep -q '_talos_run_draft_complete' "$GS/talos.sh"
 assert_eq "0" "$?" "AC13: the run block describes the draft continuation"
-grep -q 'finishes the draft window by itself' "$TALOS_ROOT/CHANGELOG.md"
-assert_eq "0" "$?" "AC13: CHANGELOG has the draft-window entry under [Unreleased] (anchored to the #516 entry's own text, not a generic draft-window match which would satisfy the pre-existing #332 entry too)"
 assert_not_contains "$(cat "$TALOS_ROOT/skills/pipeline/SKILL.md")" "ready-pr-failed" "AC13-adjacent: SKILL.md is not edited"
 assert_not_contains "$(cat "$TALOS_ROOT/skills/pipeline/SKILL.md")" "qa-ci-red" "AC13-adjacent: SKILL.md is not edited"
 

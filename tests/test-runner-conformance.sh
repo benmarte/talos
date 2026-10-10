@@ -7,9 +7,8 @@
 # only. This test drives `pipeline-agent.sh developer -` through every id in
 # TALOS_RUNNERS (scripts/pipeline-contract.sh, the single source of the runner
 # list) against the stubs in tests/stubs/, and checks the list agrees with the
-# three places that restate it: the two validation `case` arms and the dispatch
-# `case` in pipeline-agent.sh, and the header of the "Harness feature matrix"
-# table in docs/user-guide.md.
+# places that restate it: the two validation `case` arms and the dispatch
+# `case` in pipeline-agent.sh.
 #
 # Coverage note: pi coverage is `pi -p` only (the headless runner that
 # pipeline-agent.sh dispatches). pi's inline mode (skills/pipeline/SKILL.md,
@@ -34,11 +33,9 @@ use_stubs
 export RUNNER_LOG="$SANDBOX/runner.log"
 AGENT="$TALOS_ROOT/scripts/pipeline-agent.sh"
 ROLE_FILE="$TALOS_ROOT/agents/developer.md"
-DOCS="$TALOS_ROOT/docs/user-guide.md"
 
-# ids / display names of TALOS_RUNNERS, one per line, in contract order.
+# ids of TALOS_RUNNERS, one per line, in contract order.
 RUNNER_IDS="$(for _e in "${TALOS_RUNNERS[@]}"; do printf '%s\n' "${_e%%|*}"; done)"
-RUNNER_NAMES="$(for _e in "${TALOS_RUNNERS[@]}"; do printf '%s\n' "${_e#*|}"; done)"
 
 # assert_same_ids <label> <expected ids> <actual ids> -- set equality that
 # names every missing and every extra id on failure.
@@ -118,13 +115,5 @@ DISPATCH_ARMS="$(awk '
 assert_same_ids "TALOS_RUNNERS ids == --resolve validation arm" "$RUNNER_IDS" "$RESOLVE_ARM"
 assert_same_ids "TALOS_RUNNERS ids == validation arm" "$RUNNER_IDS" "$VALID_ARM"
 assert_same_ids "TALOS_RUNNERS ids == dispatch arms" "$RUNNER_IDS" "$DISPATCH_ARMS"
-
-# ── Display names agree with the docs table header ──────────────────────────
-# Header row of the table under "## Harness feature matrix", minus the first
-# ("Feature") cell.
-DOC_HEADER="$(awk '/^## Harness feature matrix/ {s=1; next} s && /^\|/ {print; exit}' "$DOCS")"
-DOC_NAMES="$(printf '%s\n' "$DOC_HEADER" \
-  | awk -F'|' '{for (i = 3; i < NF; i++) {c = $i; gsub(/^ +| +$/, "", c); print c}}')"
-assert_eq "$RUNNER_NAMES" "$DOC_NAMES" "TALOS_RUNNERS display names == docs table header (in order)"
 
 finish

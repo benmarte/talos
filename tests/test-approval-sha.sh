@@ -239,7 +239,7 @@ for _p in agents/qa.md skills/pipeline/SKILL.md templates/prompts/qa.md AGENTS.m
   assert_exit_code 1 "$rc" "#428 $_p only: default waiver does not cover it, exits 1"
   assert_contains "$out" "STALE qa:pass (qa)" "#428 $_p only: qa approval stale"
 done
-for _p in README.md docs/user-guide.md templates/comments/qa-verdict.md \
+for _p in README.md docs/reference.md templates/comments/qa-verdict.md \
           docs/agents/x.md docs/skills/x.md .pip/x.md .agentx/x.md .gemini-notes/x.md .codexx/x.md \
           GEMINI.md.example sub/.pip/x.md sub/.claude/notes.md; do
   _h="$(_delta_428 "$_p")"

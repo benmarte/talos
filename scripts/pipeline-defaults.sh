@@ -133,7 +133,6 @@ roles.adversarial	bool	false	-	-	any
 roles.docs	bool	true	-	-	any
 roles.docs_mode	enum	auto	-	-	any
 roles.planner	bool	false	-	-	any
-roles.changelog_fragments	bool	false	-	-	any
 comments.enabled	bool	true	-	-	any
 comments.header	str	**Agent:** {role} (talos)	-	-	any
 comments.templates_dir	path	templates/comments	-	-	any

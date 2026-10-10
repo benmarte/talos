@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # tests/test-docs-149-config-examples.sh
 # Verifies that the three config examples added in #149 parse correctly, plus
-# the hooks.* / events.* keys documented in #185 (README hooks section,
-# docs/user-guide.md worked example, talos.pipeline.*.example).
+# the hooks.* / events.* keys documented in #185 (talos.pipeline.json.example).
 #
 # Strategy: use a sentinel default (__MISS__) that cannot be a real config
 # value.  If the file fails to parse, pipeline-config.sh returns the caller's

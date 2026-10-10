@@ -208,8 +208,5 @@ printf '  ok  AC1 first assertion\nFAIL  AC1 second assertion\n' > "$SANDBOX/mix
 mixed="$(bash "$CRITERIA" map "$SANDBOX/mixed.out")"
 assert_contains "$mixed" "AC1 fail" "map: an id with an ok and a FAIL line is fail"
 
-# ── README and user guide describe the flow ─────────────────────────────────
-assert_contains "$(cat "$TALOS_ROOT/README.md")" "red-first" "README describes the criteria-first flow"
-assert_contains "$(cat "$TALOS_ROOT/docs/user-guide.md")" "red-first" "user guide describes the criteria-first flow"
 
 finish

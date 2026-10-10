@@ -721,6 +721,7 @@ if [ "$GLOBAL" = "true" ]; then
     fi
   fi
   echo "        Playbooks for any other agent: $(printable "$TALOS_HOME_DIR")/skills/<command>/SKILL.md"
+  echo "        Reference (config keys, profiles, providers): $(printable "$SRC")/docs/reference.md"
   if [ "$AGENTS_POINTERS_WRITTEN" = "true" ]; then
     echo "        Pointer skills registered at: $(printable "$AGENTS_DIR")/skills/talos-<command>/SKILL.md"
   fi
@@ -902,6 +903,9 @@ for _h in ${_NEXT//,/ }; do
   echo "          start: $_start"
   if [ -n "$_caveat" ]; then echo "          caveat: $_caveat"; fi
 done
+
+echo ""
+echo "  Reference (config keys, profiles, providers): $(printable "$SRC")/docs/reference.md"
 
 if [ "$CLAUDE_ADAPTER" = "true" ]; then
   echo ""

@@ -222,7 +222,7 @@ assert_eq "done" "$(cat "$SANDBOX/seckeys.out")" "_talos_security_key matches _T
 # is discarded, so a broken table read as "caps off". Every script that sources
 # the cache now stops with one line, whether or not the table is intact.
 NOCACHE_MSG="talos: pipeline-cfg-cache.sh missing; reinstall Talos"
-NOCACHE_SCRIPTS="bootstrap-board pipeline-agent pipeline-budget pipeline-changelog pipeline-events
+NOCACHE_SCRIPTS="bootstrap-board pipeline-agent pipeline-budget pipeline-events
 pipeline-hooks pipeline-mergebase pipeline-notify pipeline-status pipeline-status-file
 pipeline-verify pipeline-vcs pipeline-worktree"
 for variant in intact broken; do
@@ -243,8 +243,8 @@ done
 assert_eq "" "$(grep -ln 'bash "$SCRIPT_DIR/pipeline-config.sh" "\$@"' "$SCRIPTS"/*.sh | tr '\n' ' ')" "no script keeps a cfg() fallback that runs pipeline-config.sh per call"
 
 # ── the 2>/dev/null wrappers fail closed for a security key ──────────────────
-# pipeline-status-file.sh (roles.*, merge.auto) and pipeline-changelog.sh used to
-# wrap pipeline-config.sh in 2>/dev/null; both now read through the cache's cfg().
+# pipeline-status-file.sh (roles.*, merge.auto) used to wrap pipeline-config.sh in
+# 2>/dev/null; it now reads through the cache's cfg().
 # collect runs against a copy of scripts/ with a verb-level vcs stub.
 mk_sf_variant() {  # NAME -> scripts dir (copy, stub vcs)
   local d="$SANDBOX/sf-$1"
@@ -277,8 +277,6 @@ out="$(cd "$GITREPO" && bash "$D/pipeline-status-file.sh" collect 2>"$SANDBOX/er
 assert_eq "1" "$([ "$rc" -ne 0 ] && echo 1 || echo 0)" "collect, broken table: fails (rc $rc)"
 assert_not_contains "$out" '"prs"' "collect, broken table: no state is printed"
 assert_contains "$(cat "$SANDBOX/err")" "stopping rather than guess" "collect, broken table: the fail-closed line names the cause"
-# pipeline-changelog.sh has no lookup of its own left: its cfg() is the cache's.
-assert_eq "0" "$(grep -c 'bash .*pipeline-config.sh' "$SCRIPTS/pipeline-changelog.sh" || true)" "pipeline-changelog.sh does not run pipeline-config.sh itself"
 # pipeline-draft-check.sh is fail open by contract ("a check problem never blocks a run"). It reads
 # only pr.draft and vcs.provider through its own 2>/dev/null wrapper; neither may become a security key.
 (

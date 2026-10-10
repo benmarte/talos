@@ -344,7 +344,7 @@ if event in ('pr-opened', 'merged', 'issue-closed') and pr_title:
 headline = '%s **%s** — %s%s' % (role_icon, role_label, verdict or action,
                                  ' · ' + ('[%s](%s)' % (ref, primary) if primary else ref) if ref else '')
 
-DOCUMENTED = {  # README "Notification templates"; anything else stays a literal ${NAME}
+DOCUMENTED = {  # docs/reference.md "Notifications"; anything else stays a literal ${NAME}
     'ICON': icon, 'REF': ref, 'MSG': msg, 'EVENT': event, 'ROLE': ROLE_NAMES.get(event, event),
     'TITLE': title, 'REF_TITLE': ref_title, 'PR': pr, 'PR_TITLE': pr_title, 'PR_REF': pr_ref,
     'BOARD': env('BOARD'), 'ISSUE_URL': issue_url, 'PR_URL': pr_url, 'REF_LINK': ref_link,

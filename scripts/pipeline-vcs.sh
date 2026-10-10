@@ -2344,7 +2344,7 @@ _vcs_shared_record_attempt() {
   # existing (unincremented) counts and exits with the status those
   # counts already imply. Only covers a same-turn retry that reuses the
   # same token; it cannot detect a retry across a process restart, which
-  # by definition cannot know the prior token (see README.md).
+  # by definition cannot know the prior token.
   if [ "$idem_key_seen" = "true" ] && [ "$prev_stage" = "$stage" ] && [ -n "$prev_key" ] && [ "$prev_key" = "$idem_key" ]; then
     echo "pipeline-vcs: record-attempt: duplicate --idempotency-key '$idem_key' for stage=$stage; not posting again" >&2
     printf 'stage=%s count=%d total=%d\n' "$stage" "$prev_count" "$prev_total"
