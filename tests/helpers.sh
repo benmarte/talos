@@ -184,7 +184,7 @@ make_sandbox() {
     SANDBOX=""
     exit 1
   }
-  # Owner-guarded (#566): bash >= 5 installs a fatal-signal handler once an EXIT
+  # Owner-guarded (#565): bash >= 5 installs a fatal-signal handler once an EXIT
   # trap exists, and a forked child inherits it until it execs or clears traps.
   # A `( sleep 30 ) & kill "$!"` that wins the race (Linux schedules the parent
   # first; macOS runs the child first, so it never showed locally) makes the

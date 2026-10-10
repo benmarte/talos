@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # test-sandbox-signal-race.sh — regression guard for the vanishing-sandbox CI
-# flake (#566): test-talos-next.sh lost its own sandbox mid-run on Linux CI.
+# flake (#565): test-talos-next.sh lost its own sandbox mid-run on Linux CI.
 #
 # Cause: bash >= 5 arms a fatal-signal handler as soon as an EXIT trap exists, and
 # a forked child inherits it until it execs/clears traps. `( sleep 30 ) & kill $!`
