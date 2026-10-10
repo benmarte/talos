@@ -863,6 +863,29 @@ assert_contains "$(journal)" "agent validator" "run cache: the queued issue was 
 assert_eq "2" "$(collects)" "run cache: list read + first next share one collect; the pass after the dispatch reads again"
 assert_contains "$OUT" "action=wait reason=none" "run cache: the pass after the dispatch saw the state the stage left (queue empty), not the cached one"
 
+# (k2) #582: `run --issue N` continues through N's open PR although N carries no
+# pipeline label (the developer removed it), on the run's cached collect; and
+# never works another issue's PR.
+reset_stubs; LEASE_RESET
+cfg_json '{"vcs": {"provider": "github"}, "issues": {"max_parallel": 1}, "roles": {"qa": true}, "verify": {"timeout_ms": 600000, "ci_wait_s": 900}}'
+printf '{"number": 9, "title": "t", "labels": [], "body": "body", "state": "open"}' > "$STUB_DIR/view-issue.9"
+# PR 11 belongs to issue 8 and is the lower number; PR 12 is issue 9's, at $1.
+pr_state() {
+  printf '{"prs": [{"n": 11, "issue": 8, "head": "%040d", "owner": false, "stage": "reviewer"}, {"n": 12, "issue": 9, "head": "%040d", "owner": false, "stage": "%s"}], "pr_total": 2, "ignored": 0, "blocked": [], "queued": [], "held": [], "inflight": [], "owners": [], "capped": []}' 11 12 "$1"
+}
+pr_state qa > "$STUB_DIR/collect.json"
+pr_state human-merge > "$STUB_DIR/collect.after"
+printf 'PASS: criteria met\n' > "$STUB_DIR/message"
+cat > "$STUB_DIR/hook.qa.1" <<'HOOK'
+cp "$d/collect.after" "$d/collect.json"
+HOOK
+TALOS_LEASE_TTL_S=1 TALOS_NOW=15500 rn --issue 9 --max-iterations 4
+assert_eq "1" "$(journal | grep -c '^agent qa$')" "run --issue (#582): the unlabeled issue's PR is dispatched at qa"
+assert_contains "$(journal)" "hooks post_stage qa qa 9" "run --issue (#582): done ran for the PR's stage on issue 9"
+assert_contains "$OUT" "action=wait reason=human-merge" "run --issue (#582): the run continued to the PR's next stage and stopped there"
+assert_not_contains "$(journal)" "agent reviewer" "run --issue (#582): another issue's PR is never worked"
+assert_eq "2" "$(collects)" "run --issue (#582): one collect before the dispatch, one after it (done empties the cache)"
+
 # ── (h) BLOCKED: <reason> is a blocked outcome for ANY role (#580) ────────────
 # A headless stage that cannot do its job ends "BLOCKED: <why>" (the validator on
 # testrun#3 could not read the issue). That is not a verdict word for the role,
