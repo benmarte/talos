@@ -9,7 +9,8 @@
 # "github<TAB><owner/repo>", or is absent (no `talos` marketplace).
 # Knobs (all default off): CLAUDE_STUB_NO_PLUGIN=1 (no `plugin` subcommand),
 # CLAUDE_STUB_LIST_RAW=<text> (print this for `marketplace list --json`),
-# CLAUDE_STUB_ADD_FAIL=1, CLAUDE_STUB_INSTALL_FAIL=1.
+# CLAUDE_STUB_ADD_FAIL=1, CLAUDE_STUB_INSTALL_FAIL=1, CLAUDE_STUB_REMOVE_FAIL=1.
+# `marketplace remove` deletes $CLAUDE_STUB_STATE/marketplace (#586).
 STATE="${CLAUDE_STUB_STATE:-}"
 LOG="${CLAUDE_PLUGIN_LOG:-/dev/null}"
 {
@@ -58,6 +59,14 @@ case "${1:-}" in
           printf 'dir\t%s\n' "${2:-}" > "$STATE/marketplace"
         fi
         echo '{"command":"marketplace-add","outcome":"ok","marketplace":"talos","message":"Successfully added marketplace: talos"}'
+        exit 0 ;;
+      remove)
+        if [ -n "${CLAUDE_STUB_REMOVE_FAIL:-}" ]; then
+          echo '{"command":"marketplace-remove","outcome":"failed","message":"could not remove marketplace talos"}'
+          exit 1
+        fi
+        [ -n "$STATE" ] && rm -f "$STATE/marketplace"
+        echo '{"command":"marketplace-remove","outcome":"ok","marketplace":"talos","message":"Successfully removed marketplace: talos"}'
         exit 0 ;;
     esac ;;
 esac
