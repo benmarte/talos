@@ -73,16 +73,16 @@ TALOS_a3p8v1c6ne52
   git checkout -q -b "$BR"
   write_test tests/test-greet.sh "$kind"
   git add tests
-  if [ -n "$extra" ]; then printf 'x\n' > "$extra"; git add "$extra"; fi
+  if [ -n "$extra" ]; then mkdir -p "$(dirname "$extra")"; printf 'x\n' > "$extra"; git add "$extra"; fi
   git commit -q -m "test(#7): AC1 greet (red first)"
   RED_SHA="$(git rev-parse HEAD)"
   RED8="${RED_SHA:0:8}"
   printf 'done\n' > feature.txt
   git add feature.txt
   git commit -q -m "feat(#7): greet"
-  export QA_SPEC_FILE="$BASE_DIR/spec.md"
-  export RAN_MARKER="$BASE_DIR/ran.marker"
-  export QA_VCS_LOG="$BASE_DIR/vcs.log"
+  export QA_SPEC_FILE="$BASE_DIR/.git/qa-spec.md"
+  export RAN_MARKER="$BASE_DIR/.git/qa-ran.marker"
+  export QA_VCS_LOG="$BASE_DIR/.git/qa-vcs.log"
   unset QA_MERGEABLE
   rm -f "$RAN_MARKER" "$BASE_DIR/pwned" "$QA_VCS_LOG"
 }
@@ -99,8 +99,8 @@ spec() {
   } > "$QA_SPEC_FILE"
 }
 
-qa_run() {  # extra args after <issue> <pr>; sets OUT and RC
-  OUT="$(bash scripts/pipeline-criteria.sh qa-run 7 9 "$@" 2>&1)"; RC=$?
+qa_run() {  # sets OUT and RC
+  OUT="$(bash scripts/pipeline-criteria.sh qa-run 7 9 2>&1)"; RC=$?
 }
 
 # ── 1. happy path: red at the red commit, green at head, back on the branch ──
