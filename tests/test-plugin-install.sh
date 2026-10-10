@@ -230,6 +230,13 @@ for s in "${TALOS_COMMANDS[@]}"; do
     "$s skill sits in the default skills/ scan path"
 done
 
+# The playbook's on-demand refs (#547) ship with the plugin, next to its SKILL.md,
+# where $CLAUDE_PLUGIN_ROOT/skills/pipeline/refs/<topic>.md names them.
+for ref in "$TALOS_ROOT"/skills/pipeline/refs/*.md; do
+  assert_file_exists "$PLUGIN_ROOT/skills/pipeline/refs/$(basename "$ref")" \
+    "plugin ships the pipeline ref $(basename "$ref") next to SKILL.md"
+done
+
 assert_file_absent "$PLUGIN_ROOT/skills/resume" \
   "the plugin cache holds no skills/resume (the skill is gone, #550)"
 
