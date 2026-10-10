@@ -94,16 +94,14 @@ except Exception:
   }
   _board_resolve_owner() {
     local _use_token_path="$1" _env_override="$2" _dry_run="${3:-false}"
-    local _default_owner=""
-    if [ "$_use_token_path" = "false" ] && [ "$_dry_run" = "false" ]; then
+    local _default_owner="" _vcs_repo
+    [ -z "$_env_override" ] && [ -z "$(cfg board.owner)" ] || { printf '%s' "${_env_override:-$(cfg board.owner)}"; return 0; }
+    _vcs_repo="$(cfg vcs.repo)"
+    [ -n "$_vcs_repo" ] && _default_owner="${_vcs_repo%%/*}"
+    if [ -z "$_default_owner" ] && [ "$_use_token_path" = "false" ] && [ "$_dry_run" = "false" ]; then
       _default_owner="$(gh repo view --json owner -q .owner.login 2>/dev/null || echo "")"
     fi
-    if [ -z "$_default_owner" ]; then
-      local _vcs_repo
-      _vcs_repo="$(cfg vcs.repo)"
-      [ -n "$_vcs_repo" ] && _default_owner="${_vcs_repo%%/*}"
-    fi
-    printf '%s' "${_env_override:-$(cfg board.owner "$_default_owner")}"
+    printf '%s' "$_default_owner"
   }
   _board_resolve_project_id_gh() {
     local _proj_num="$1" _owner="$2"
@@ -485,8 +483,13 @@ if [ "$_USE_TOKEN_PATH" = "true" ]; then
       | sed 's|.*github\.com[:/]||; s|\.git$||' || echo "$OWNER/REPO")"
   fi
 else
-  REPO="${PIPELINE_REPO:-$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo "OWNER/REPO")}"
+  # gh path (#554): the repo is only needed to find or add an issue's item, and
+  # most moves find it cached, so `gh repo view` (GraphQL) waits until then.
+  REPO="${PIPELINE_REPO:-$(cfg vcs.repo)}"
 fi
+_board_need_repo() {
+  [ -n "$REPO" ] || REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo "OWNER/REPO")"
+}
 
 # ── Token path: delegate to GraphQL helper ────────────────────────────────────
 if [ "$_USE_TOKEN_PATH" = "true" ]; then
@@ -517,37 +520,27 @@ _gh_fail_board() {
   exit 0
 }
 
-# Shared with bootstrap-board.sh (#266)
-PROJ_ID="$(_board_resolve_project_id_gh "$PROJECT_NUM" "$OWNER")"
-
-if [ -z "$PROJ_ID" ]; then
-  if [ "$DRY_RUN" = "true" ]; then
-    PROJ_ID="<project-id>"
-  else
-    echo "pipeline-status: could not resolve project #$PROJECT_NUM for owner '$OWNER'" >&2
-    exit 1
-  fi
-fi
-
-# ── Fetch field data (with per-run sentinel caching) ─────────────────────────
-# The sentinel file caches the field-list JSON for the duration of a pipeline
-# run, ensuring project field-list is called at most once per run (not once per
-# status update). It also gates the startup validation so the warning fires once.
-# Sentinel key: owner + project number + optional PIPELINE_RUN_ID for multi-run
-# isolation (#252: the key MUST include the owner -- a project number alone is
-# not globally unique, so two owners with the same project number used to
-# silently share (and poison) each other's cached field ids).
+# ── Per-run cache of the board's ids (#554) ──────────────────────────────────
+# One cache file holds what a move needs and a later move needs again: the
+# project node id, every field with its option ids (so the startup validation
+# below fires once, not per move) and the item id of each issue moved so far.
+# A move reads it instead of resolving the project, the fields and the item;
+# the second and third move of an issue are one `item-edit`.
+# File: owner + project number + optional PIPELINE_RUN_ID in the name (#252: a
+# project number alone is not globally unique), and the same three facts inside
+# (owner, number, project_id) -- a file for another owner or project, an
+# old-format file without them, a file older than the TTL, or one that fails
+# the ownership/permission/shape checks is a miss. A stale cache (an option
+# replaced since, an item deleted) fails its `item-edit`; that is retried once
+# below with the cache off, so a changed board costs one extra pass, not a move.
 #
 # Security: the cache lives in a user-private directory (not world-writable /tmp)
 # and is validated before use: regular file, owned by current user, not
-# group/world-writable, and contains valid JSON with the expected shape, and
-# (#252) tagged with the project node id it was fetched for -- a cached file
-# whose project id no longer matches the freshly resolved PROJ_ID is treated
-# as a miss (see _read_sentinel below) so a stale/foreign cache never leaks
-# field ids across projects.
+# group/world-writable, and valid JSON with the expected shape.
 _CACHE_DIR="${XDG_RUNTIME_DIR:-${HOME}/.cache}/talos"
 _SAFE_OWNER="$(printf '%s' "$OWNER" | tr -c 'A-Za-z0-9_-' '_')"
 _BOARD_SENTINEL="${_CACHE_DIR}/board-validated-${_SAFE_OWNER}-${PROJECT_NUM}${PIPELINE_RUN_ID:+-${PIPELINE_RUN_ID}}"
+_BOARD_CACHE_TTL_S=21600
 
 # Create the cache directory with restrictive permissions (user-only).
 # Handle existing directory with potentially wrong permissions gracefully.
@@ -556,80 +549,71 @@ if ! install -d -m 700 "$_CACHE_DIR" 2>/dev/null; then
   chmod 700 "$_CACHE_DIR" 2>/dev/null || true
 fi
 
-# _read_sentinel — read and validate the sentinel cache file.
-# $1=path $2=expected project node id (freshly resolved PROJ_ID). Returns the
-# cached FIELD_DATA on stdout if the file passes all checks; exits with code 1
-# if any check fails (caller falls back to fresh lookup).
+# _read_sentinel <path> -- prints the cached JSON when every check passes; exit 1
+# (a miss) otherwise.
 _read_sentinel() {
-  local _f="$1" _expected_proj_id="$2"
-  # Must be a regular file
-  [ -f "$_f" ] || return 1
-
-  # Must be owned by the current user.
-  # Use python3 for portability (stat flags differ between BSD and GNU).
-  _owner_uid="$(python3 -I -c "import os,sys; st=os.stat(sys.argv[1]); print(st.st_uid)" "$_f" 2>/dev/null)" || return 1
-  _my_uid="$(id -u)" || return 1
-  [ "$_owner_uid" = "$_my_uid" ] || return 1
-
-  # Must not be group- or world-writable (mode bits 0g22 → 0022 mask)
-  _file_mode="$(python3 -I -c "import os,sys,stat; st=os.stat(sys.argv[1]); print(oct(stat.S_IMODE(st.st_mode)))" "$_f" 2>/dev/null)" || return 1
-  case "$_file_mode" in
-    *[2367])   # group- or world-writable bit set
-      return 1 ;;
-  esac
-  # More thorough: check write bits using python
-  python3 -I -c "
-import os, sys, stat
-st = os.stat(sys.argv[1])
-mode = stat.S_IMODE(st.st_mode)
-if mode & (stat.S_IWGRP | stat.S_IWOTH):
-    sys.exit(1)
-sys.exit(0)
-" "$_f" 2>/dev/null || return 1
-
-  # Must contain valid JSON with expected shape: {fields: [{name, id, options:[]}],
-  # project_id: "..."}, and (#252) the embedded project_id must match the
-  # freshly resolved project -- otherwise this is a stale/foreign cache (e.g.
-  # left over from a different owner's identically-numbered project) and must
-  # be discarded rather than silently reused.
-  _cached="$(cat "$_f")"
-  EXPECTED_PROJ_ID="$_expected_proj_id" python3 -I -c "
-import sys, json, os
+  OWNER="$OWNER" PROJECT_NUM="$PROJECT_NUM" TTL="$_BOARD_CACHE_TTL_S" python3 -I -c '
+import json, os, stat, sys, time
+p = sys.argv[1]
 try:
-    d = json.loads(sys.argv[1])
-    if not isinstance(d, dict):
+    st = os.stat(p)
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid():
         sys.exit(1)
-    fields = d.get('fields')
-    if not isinstance(fields, list):
+    if stat.S_IMODE(st.st_mode) & (stat.S_IWGRP | stat.S_IWOTH):
         sys.exit(1)
-    for f in fields:
-        if not isinstance(f, dict):
-            sys.exit(1)
-        if 'name' not in f or 'id' not in f:
-            sys.exit(1)
-        if not isinstance(f.get('options', []), list):
-            sys.exit(1)
-    expected = os.environ.get('EXPECTED_PROJ_ID', '')
-    if not expected or d.get('project_id') != expected:
+    if time.time() - st.st_mtime > int(os.environ["TTL"]):
         sys.exit(1)
-    sys.exit(0)
+    raw = open(p).read()
+    d = json.loads(raw)
+    if not isinstance(d, dict) or not isinstance(d.get("fields"), list):
+        sys.exit(1)
+    for f in d["fields"]:
+        if not isinstance(f, dict) or "name" not in f or "id" not in f or not isinstance(f.get("options", []), list):
+            sys.exit(1)
+    if not d.get("project_id") or d.get("owner") != os.environ["OWNER"] or str(d.get("number")) != os.environ["PROJECT_NUM"]:
+        sys.exit(1)
+    if not isinstance(d.get("items", {}), dict):
+        sys.exit(1)
+    sys.stdout.write(raw)
 except Exception:
     sys.exit(1)
-" "$_cached" 2>/dev/null || return 1
-
-  printf '%s' "$_cached"
+' "$1" 2>/dev/null
 }
 
-_CACHED_FIELD_DATA="$(_read_sentinel "$_BOARD_SENTINEL" "$PROJ_ID" 2>/dev/null)"
-if [ -n "$_CACHED_FIELD_DATA" ]; then
-  # Reuse validated cached field data from earlier in this pipeline run
-  FIELD_DATA="$_CACHED_FIELD_DATA"
+# _write_sentinel -- store $FIELD_DATA (dry runs write nothing). Atomic, mode 0600.
+_write_sentinel() {
+  [ "$DRY_RUN" = "false" ] || return 0
+  (umask 177 && printf '%s' "$FIELD_DATA" > "$_BOARD_SENTINEL.$$" && mv "$_BOARD_SENTINEL.$$" "$_BOARD_SENTINEL") 2>/dev/null \
+    || rm -f "$_BOARD_SENTINEL.$$" 2>/dev/null || true
+}
+
+_FROM_CACHE=0
+FIELD_DATA=""
+if [ "${TALOS_BOARD_NO_CACHE:-}" != "1" ]; then
+  FIELD_DATA="$(_read_sentinel "$_BOARD_SENTINEL")" || FIELD_DATA=""
+fi
+
+if [ -n "$FIELD_DATA" ]; then
+  # Reuse the validated ids from earlier in this run.
+  _FROM_CACHE=1
+  PROJ_ID="$(printf '%s' "$FIELD_DATA" | python3 -I -c "import json,sys; print(json.load(sys.stdin)['project_id'])")"
 else
+  # Shared with bootstrap-board.sh (#266)
+  PROJ_ID="$(_board_resolve_project_id_gh "$PROJECT_NUM" "$OWNER")"
+
+  if [ -z "$PROJ_ID" ]; then
+    if [ "$DRY_RUN" = "true" ]; then
+      PROJ_ID="<project-id>"
+    else
+      echo "pipeline-status: could not resolve project #$PROJECT_NUM for owner '$OWNER'" >&2
+      exit 1
+    fi
+  fi
+
   _RAW_FIELD_LIST="$(_gh_safe gh project field-list "$PROJECT_NUM" --owner "$OWNER" --format json)"
-  # Tag the field data with the project node id it was fetched for (#252),
-  # so a future read can detect and discard a stale/foreign cache instead of
-  # trusting a cache keyed only by (owner, project number).
-  FIELD_DATA="$(PROJ_ID_TAG="$PROJ_ID" python3 -I -c "
+  # Tag the field data with the project it was fetched for (#252, #554), so a
+  # read can discard a cache that is not for this owner and project.
+  FIELD_DATA="$(PROJ_ID_TAG="$PROJ_ID" OWNER="$OWNER" PROJECT_NUM="$PROJECT_NUM" python3 -I -c "
 import sys, json, os
 try:
     d = json.loads(sys.argv[1])
@@ -638,12 +622,14 @@ try:
 except Exception:
     d = {}
 d['project_id'] = os.environ.get('PROJ_ID_TAG', '')
+d['owner'] = os.environ['OWNER']
+d['number'] = int(os.environ['PROJECT_NUM']) if os.environ['PROJECT_NUM'].isdigit() else os.environ['PROJECT_NUM']
 print(json.dumps(d))
 " "$_RAW_FIELD_LIST")"
 
   # ── Startup validation: check all four required statuses ──────────────────
-  # Fires exactly once per run (sentinel written below). Each status is checked
-  # after board.status_map substitution so mapped names are validated.
+  # Fires once per cache (written below). Each status is checked after
+  # board.status_map substitution so mapped names are validated.
   _MISSING_OPTIONS=""
   for _req_status in "In progress" "In review" "Done" "Blocked"; do
     _req_mapped="$(cfg "board.status_map.$_req_status" "$_req_status")"
@@ -667,11 +653,7 @@ except Exception:
     fi
   done
 
-  # Write sentinel with cached field data into the user-private cache directory.
-  # Write with mode 0600 so only the current user can read or modify it.
-  if [ "$DRY_RUN" = "false" ]; then
-    (umask 177 && printf '%s' "$FIELD_DATA" > "$_BOARD_SENTINEL") 2>/dev/null || true
-  fi
+  _write_sentinel
 
   if [ -n "$_MISSING_OPTIONS" ]; then
     # Marker: project number is a validated integer — safe to embed in stdout marker.
@@ -704,8 +686,7 @@ if [ -z "$FIELD_ID" ]; then
   if [ "$DRY_RUN" = "true" ]; then
     FIELD_ID="<field-id>"
   else
-    echo "pipeline-status: status field '$STATUS_FIELD' not found in project #$PROJECT_NUM" >&2
-    exit 1
+    echo "pipeline-status: status field '$STATUS_FIELD' not found in project #$PROJECT_NUM" >&2; exit 1
   fi
 fi
 
@@ -729,18 +710,36 @@ except Exception:
 # Item-add happens BEFORE the option-ID check so the issue always lands on the
 # board even when the status option is missing (a wrong column is far more useful
 # than an absent item).
-ITEM="$(_gh_safe gh project item-list "$PROJECT_NUM" --owner "$OWNER" --limit 400 --format json \
-  | python3 -I -c "
-import sys, json
+# The cache first; else ask for THIS issue's project items (#554) -- one call,
+# where the old `item-list --limit 400` walked up to 400 board items. A lookup
+# that fails reads as "not on the board": item-add below is idempotent (it
+# returns the item that is already there).
+ITEM="$(printf '%s' "$FIELD_DATA" | ISSUE_NUM="$ISSUE" python3 -I -c "
+import sys, json, os
 try:
-    d = json.load(sys.stdin)
-    print(next((i['id'] for i in d.get('items',[])
-                if i.get('content',{}).get('number') == int('$ISSUE')), ''))
+    print((json.load(sys.stdin).get('items') or {}).get(os.environ['ISSUE_NUM'], ''))
 except Exception:
     pass
 " 2>/dev/null)"
+_ITEM_CACHED=0
+[ -z "$ITEM" ] || _ITEM_CACHED=1
 
 if [ -z "$ITEM" ]; then
+  _board_need_repo
+  ITEM="$(_gh_safe gh api graphql -f owner="${REPO%%/*}" -f name="${REPO#*/}" -F num="$ISSUE" \
+    -f query='query($owner:String!,$name:String!,$num:Int!){repository(owner:$owner,name:$name){issue(number:$num){projectItems(first:50){nodes{id project{id}}}}}}' \
+    | PROJ="$PROJ_ID" python3 -I -c "
+import sys, json, os
+try:
+    nodes = json.load(sys.stdin)['data']['repository']['issue']['projectItems']['nodes']
+    print(next((n['id'] for n in nodes if n and (n.get('project') or {}).get('id') == os.environ['PROJ']), ''))
+except Exception:
+    pass
+" 2>/dev/null)"
+fi
+
+if [ -z "$ITEM" ]; then
+  _board_need_repo
   ISSUE_URL="https://github.com/$REPO/issues/$ISSUE"
   if [ "$DRY_RUN" = "true" ]; then
     echo "[dry-run] gh project item-add $PROJECT_NUM --owner $OWNER --url $ISSUE_URL"
@@ -763,6 +762,16 @@ if [ -z "$ITEM" ]; then
     ITEM="$(printf '%s' "$ITEM_JSON" | python3 -I -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)"
     [ -z "$ITEM" ] && { echo "pipeline-status: could not add #$ISSUE to project" >&2; exit 1; }
   fi
+fi
+
+# Remember the issue's item for the next move of this run.
+if [ "$_ITEM_CACHED" = "0" ] && [ "$DRY_RUN" = "false" ]; then
+  FIELD_DATA="$(printf '%s' "$FIELD_DATA" | ISSUE_NUM="$ISSUE" ITEM_ID="$ITEM" python3 -I -c "
+import sys, json, os
+d = json.load(sys.stdin)
+d.setdefault('items', {})[os.environ['ISSUE_NUM']] = os.environ['ITEM_ID']
+print(json.dumps(d))
+" 2>/dev/null)" && _write_sentinel
 fi
 
 # ── Check option ID — missing option is a warning, not fatal (Rule 11) ───────
@@ -793,6 +802,12 @@ else
     --single-select-option-id "$OPT_ID" 2>&1 >/dev/null)"
   _ITEM_EDIT_RC=$?
   if [ "$_ITEM_EDIT_RC" -ne 0 ]; then
+    # Ids that came from the cache may be stale (an option replaced, an item
+    # deleted): drop the cache and run the whole move again with fresh ids, once.
+    if [ "$_FROM_CACHE" = "1" ]; then
+      rm -f "$_BOARD_SENTINEL" 2>/dev/null || true
+      TALOS_BOARD_NO_CACHE=1 exec bash "$0" "$@"
+    fi
     _gh_fail_board "gh project item-edit failed: $_ITEM_EDIT_STDERR"
   fi
   # #252: the success line must never print alongside a talos:board-unverified

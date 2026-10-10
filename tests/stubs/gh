@@ -557,8 +557,28 @@ print(json.dumps({'title': os.environ['TITLE'], 'body': os.environ['BODY'],
     else
       printf '{"fields":[{"name":"Status","id":"FIELD_ID_S","options":[{"name":"In progress","id":"OPT_INPROG"},{"name":"Done","id":"OPT_DONE"},{"name":"In review","id":"OPT_INREV"},{"name":"Blocked","id":"OPT_BLOCKED"}]}]}\n'
     fi ;;
-  "project item-list"*)
-    printf '{"items":[{"id":"ITEM_42","content":{"number":42}}]}\n' ;;
+  "api graphql "*"projectItems"*)
+    # pipeline-status.sh's lookup of an issue's board item (#554): the issue's
+    # projectItems as {id, project{id}}. Issue 42 is on project PROJ_ID_7 as
+    # ITEM_42; any other issue is on no board, unless STUB_BOARD_ITEMS_JSON
+    # supplies the nodes array. STUB_BOARD_LOOKUP_FAIL=1: the call fails.
+    if [ "${STUB_BOARD_LOOKUP_FAIL:-}" = "1" ]; then
+      echo "gh: GraphQL: Something went wrong (projectItems)" >&2
+      exit 1
+    fi
+    _bi_num=""; _bi_prev=""
+    for _bi_a in "$@"; do
+      [ "$_bi_prev" = "-F" ] && case "$_bi_a" in num=*) _bi_num="${_bi_a#num=}" ;; esac
+      _bi_prev="$_bi_a"
+    done
+    if [ -n "${STUB_BOARD_ITEMS_JSON:-}" ]; then
+      _bi_nodes="$STUB_BOARD_ITEMS_JSON"
+    elif [ "$_bi_num" = "42" ]; then
+      _bi_nodes='[{"id":"ITEM_42","project":{"id":"PROJ_ID_7"}}]'
+    else
+      _bi_nodes='[]'
+    fi
+    printf '{"data":{"repository":{"issue":{"projectItems":{"nodes":%s}}}}}\n' "$_bi_nodes" ;;
   "project item-add"*)
     # STUB_ITEM_ADD_FAIL=1 simulates a failed item-add (#252): non-zero exit,
     # an error on stderr, no JSON on stdout.
@@ -572,6 +592,12 @@ print(json.dumps({'title': os.environ['TITLE'], 'body': os.environ['BODY'],
     # stale/foreign field id from a poisoned cache: non-zero exit, an error
     # on stderr. Default (unset): succeed silently, same as before this stub
     # case existed (it used to fall through to the catch-all `*` below).
+    # STUB_ITEM_EDIT_FAIL_ID=<id> (#554): fails only an edit that carries that
+    # id (a stale cached option id), so the retry with fresh ids can succeed.
+    if [ -n "${STUB_ITEM_EDIT_FAIL_ID:-}" ] && case " $* " in *" $STUB_ITEM_EDIT_FAIL_ID "*) true ;; *) false ;; esac; then
+      echo "gh: GraphQL: option not found (updateProjectV2ItemFieldValue)" >&2
+      exit 1
+    fi
     if [ "${STUB_ITEM_EDIT_FAIL:-}" = "1" ]; then
       echo "gh: GraphQL: The field does not exist in the project (updateProjectV2ItemFieldValue)" >&2
       exit 1
