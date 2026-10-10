@@ -56,13 +56,23 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=pipeline-paths.sh
 . "$SCRIPT_DIR/pipeline-paths.sh"
-# Hard dependencies: a partial install must fail loudly, not hide a broken table.
-[ -f "$SCRIPT_DIR/pipeline-cfg-cache.sh" ] && [ -f "$SCRIPT_DIR/pipeline-bounded.sh" ] \
-  || { echo "talos: pipeline-cfg-cache.sh or pipeline-bounded.sh missing; reinstall Talos" >&2; exit 1; }
-# shellcheck source=pipeline-cfg-cache.sh
-. "$SCRIPT_DIR/pipeline-cfg-cache.sh"
-# shellcheck source=pipeline-bounded.sh
-. "$SCRIPT_DIR/pipeline-bounded.sh"
+# cfg() (#169): dumps the config once per invocation and answers lookups
+# from that cache instead of re-parsing on every call. Guarded (#169 review):
+# a partial install/sync may not yet ship pipeline-cfg-cache.sh: that is fatal
+# (no per-call fallback: it would hide the fail-closed exit of a broken table).
+if [ -f "$SCRIPT_DIR/pipeline-cfg-cache.sh" ]; then
+  . "$SCRIPT_DIR/pipeline-cfg-cache.sh"
+else
+  echo "talos: pipeline-cfg-cache.sh missing; reinstall Talos" >&2
+  exit 1
+fi
+# talos_bounded / talos_pos_int (#552), shared with pipeline-hooks.sh.
+if [ -f "$SCRIPT_DIR/pipeline-bounded.sh" ]; then
+  . "$SCRIPT_DIR/pipeline-bounded.sh"
+else
+  echo "talos: pipeline-bounded.sh missing; reinstall Talos" >&2
+  exit 1
+fi
 # with_lock (#180) serializes the threads.json read-modify-write; unlocked fallback.
 if [ -f "$SCRIPT_DIR/pipeline-lock.sh" ]; then
   . "$SCRIPT_DIR/pipeline-lock.sh"
