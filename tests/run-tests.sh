@@ -266,6 +266,8 @@ esac
 # ── Result cache ───────────────────────────────────────────────────────────────
 CACHE_ENABLED=1
 [ "$NO_CACHE" -eq 1 ] && CACHE_ENABLED=0
+# --list / --count-only run nothing, so they skip the (slow) whole-repo hash.
+[ "$LIST_ONLY" -eq 1 ] || [ "$COUNT_ONLY" -eq 1 ] && CACHE_ENABLED=0
 CACHE_DIR="$TALOS_ROOT/.talos/test-cache"
 
 # _HASH_TOOL -- the hashing command to pipe stdin through, resolved once.

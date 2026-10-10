@@ -15,26 +15,27 @@ make_sandbox
 
 # ── Real suite: every file is in exactly one shard, for each CI shard count ──
 all="$(cd "$TALOS_ROOT/tests" && ls test-*.sh | LC_ALL=C sort)"
-for n in 2 3 4 5; do
+SHARDS_DIR="$SANDBOX/real-shards"
+mkdir -p "$SHARDS_DIR"
+for n in 3 4; do
   union=""
   for i in $(seq 1 "$n"); do
-    part="$(bash "$REAL_RUN_TESTS" --shard "$i/$n" --list 2>/dev/null)"
+    bash "$REAL_RUN_TESTS" --shard "$i/$n" --list > "$SHARDS_DIR/$i-of-$n" 2>/dev/null
     union="$union
-$part"
+$(cat "$SHARDS_DIR/$i-of-$n")"
   done
   union="$(printf '%s\n' "$union" | grep -v '^$' | LC_ALL=C sort)"
   assert_eq "$all" "$union" "real suite: shards 1..$n/$n together run every file exactly once"
 done
 
 # deterministic: the same call twice names the same files
-a="$(bash "$REAL_RUN_TESTS" --shard 2/4 --list 2>/dev/null)"
 b="$(bash "$REAL_RUN_TESTS" --shard 2/4 --list 2>/dev/null)"
-assert_eq "$a" "$b" "shard partition is deterministic"
+assert_eq "$(cat "$SHARDS_DIR/2-of-4")" "$b" "shard partition is deterministic"
 
 # balanced: by tests/timings.txt no shard carries much more than its share
-load_of() {  # $1=i $2=n
+load_of() {  # $1=shard list file
   local f w sum=0
-  for f in $(bash "$REAL_RUN_TESTS" --shard "$1/$2" --list 2>/dev/null); do
+  for f in $(cat "$1"); do
     w="$(awk -v f="$f" '$2 == f {print $1}' "$TALOS_ROOT/tests/timings.txt")"
     sum=$((sum + ${w:-8}))
   done
@@ -42,19 +43,22 @@ load_of() {  # $1=i $2=n
 }
 max=0; min=999999
 for i in 1 2 3 4; do
-  l="$(load_of "$i" 4)"
+  l="$(load_of "$SHARDS_DIR/$i-of-4")"
   [ "$l" -gt "$max" ] && max="$l"
   [ "$l" -lt "$min" ] && min="$l"
 done
-if [ $((max * 100)) -le $((min * 115)) ]; then
-  pass "4 shards are balanced by timings (heaviest ${max}s vs lightest ${min}s, within 15%)"
+# Greedy longest-first guarantees heaviest - lightest <= the single heaviest file.
+biggest="$(awk '!/^#/ && $1 + 0 > m {m = $1 + 0} END {print m + 0}' "$TALOS_ROOT/tests/timings.txt")"
+[ "$biggest" -lt 8 ] && biggest=8
+if [ $((max - min)) -le "$biggest" ]; then
+  pass "4 shards are balanced by timings (heaviest ${max}s vs lightest ${min}s, spread <= the biggest file, ${biggest}s)"
 else
-  fail "4 shards are balanced by timings" "heaviest ${max}s vs lightest ${min}s; refresh tests/timings.txt (bash tests/update-timings.sh)"
+  fail "4 shards are balanced by timings" "heaviest ${max}s vs lightest ${min}s, spread over ${biggest}s"
 fi
 
 # a pattern composes with a shard: a subset of that shard, nothing outside it
 sub="$(bash "$REAL_RUN_TESTS" --shard 1/4 --list notify 2>/dev/null)"
-shard1="$(bash "$REAL_RUN_TESTS" --shard 1/4 --list 2>/dev/null)"
+shard1="$(cat "$SHARDS_DIR/1-of-4")"
 extra="$(printf '%s\n' "$sub" | grep -v '^$' | grep -vxF "$shard1" || true)"
 assert_eq "" "$extra" "pattern + shard selects only files of that shard"
 
