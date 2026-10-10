@@ -58,6 +58,12 @@ R="$(refs_for "$(nd '"agents": {"subagents": false}')")"
 assert_eq "harness" "$R" "agents.subagents false names harness"
 R="$(refs_for "$(nd '"agents": {"fallback": ["codex"]}')")"
 assert_eq "harness" "$R" "a fallback chain names harness"
+# A profile-aware run (#539) in a non-native mode needs the harness ref (the
+# harness is set here, so the run is profile-aware: AGENTS_MODE is printed).
+R="$(TALOS_HARNESS=pi refs_for "$(nd '"agents": {"runner": "claude"}')")"
+assert_eq "harness" "$R" "AGENTS_MODE adapter (a pi harness running claude) names harness"
+R="$(TALOS_HARNESS=claude-code refs_for "$(nd '"agents": {"runner": "claude"}')")"
+assert_eq "" "$R" "AGENTS_MODE native (Claude Code) names no harness ref"
 R="$(refs_for '{"vcs": {"provider": "github"}, "roles": {"planner": true}, "agents": {"runner": "codex"}}')"
 assert_eq "draft-order planner harness" "$R" "several triggers print one line each, in a fixed order"
 

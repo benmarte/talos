@@ -881,6 +881,7 @@ EOF
   # acts on: native | adapter | inline, from the active profile or, without one,
   # from agents.mode / agents.subagents / the harness -- never from agents.runner
   # alone.
+  _TALOS_AGENTS_MODE=""
   _val="$(cfg_src harness)"
   if [ -n "$_val" ]; then
     local _pn _pl
@@ -888,7 +889,8 @@ EOF
     _talos_emit HARNESS_ORIGIN "$(cfg_src harness_origin)"
     _talos_emit PROFILE "$(cfg_src profile)"
     _talos_emit PROFILE_ORIGIN "$(cfg_src profile_origin)"
-    _talos_emit AGENTS_MODE "$(cfg_src profile_mode)"
+    _TALOS_AGENTS_MODE="$(cfg_src profile_mode)"
+    _talos_emit AGENTS_MODE "$_TALOS_AGENTS_MODE"
     for _pn in $(cfg_src profiles | tr ',' ' '); do
       _pl="mode=$(cfg_prof "$_pn" mode) runner=$(cfg_prof "$_pn" runner) cli=$(cfg_prof "$_pn" cli) usable=$(cfg_prof "$_pn" usable)"
       [ "$(cfg_prof "$_pn" usable)" != "no" ] || _pl="$_pl reason=$(cfg_prof "$_pn" reason)"
@@ -952,6 +954,7 @@ _talos_env_refs() {
   _talos_cfg_is vcs.provider file && _talos_emit ref file-mode
   [ -z "$(cfg hooks.pre_dispatch)" ] || _talos_emit ref hooks
   _val="$(cfg agents.fallback)"
+  case "${_TALOS_AGENTS_MODE:-}" in adapter | inline) _TALOS_HARNESS_REF=1 ;; esac
   if [ "$_TALOS_HARNESS_REF" = 1 ] || [ -n "$_val" ] \
      || _talos_cfg_is agents.subagents false || ! _talos_cfg_is agents.runner claude; then
     _talos_emit ref harness

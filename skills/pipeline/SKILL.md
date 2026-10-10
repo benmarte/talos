@@ -37,6 +37,7 @@ bash scripts/talos.sh env
 Run once; keep the answer for the whole run. It replaces every config read (project config over the user-level file, defaults applied, `ISOLATION` validated). Values are escaped (lists join `\n`; control and bidi characters become `\xNN`/`\uXXXX`; a cut ends `[truncated]`).
 - `PR_DRAFT` (`pr.draft`, default `true`) is `true` or `false`, from `pipeline-draft-check.sh resolve`, the one resolver: show its one stderr warning line, if any, once. Talos never edits CI config.
 - `agent.<role>.runner|runner_cmd|model|effort|fallback|effort_notice` (absent = empty).
+- `AGENTS_MODE` (profile-aware runs only) is the spawn mode, not `agents.runner`: `native` = the Spawning paragraph, `inline` or `adapter` = `ref=harness`. `PROFILE` is the LLM in use (switch it with `TALOS_PROFILE`); relay each `PROFILE_SKIPPED` line once.
 - `ref=<topic>`: a ref that applies to this run. Read `refs/<topic>.md` before Step 1, once. `PR_DRAFT = true` reorders Steps 3c-3e (`ref=draft-order`).
 - `warn reason=<r>`: relay once, continue; `resolve-failed role=<role>`: do not spawn it.
 - `stop reason=<r>` (non-zero exit): abort, print it, process no issues.

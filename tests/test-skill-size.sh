@@ -17,7 +17,7 @@
 set -u
 . "$(dirname "$0")/helpers.sh"
 
-SKILL_MAX_BYTES=24200
+SKILL_MAX_BYTES=24600
 SKILL_SLACK=2400
 REF_MAX_BYTES=8000
 
