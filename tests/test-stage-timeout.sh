@@ -58,7 +58,7 @@ HANG_CMD="sleep $SENT & sh -c 'sleep $SENT' & sleep $SENT"
 leaked() { pgrep -f "sleep $SENT" 2>/dev/null || true; }
 # shellcheck disable=SC2086  # several pids, word splitting intended
 cleanup_leak() { local p; p="$(leaked)"; [ -z "$p" ] || kill -KILL $p 2>/dev/null; }
-trap 'cleanup_leak; rm -rf "$SANDBOX"' EXIT
+trap '_is_trap_owner && { cleanup_leak; rm -rf "$SANDBOX"; }' EXIT
 
 # ── 1. Validation: 60-86400, rejected the way the other bounded ints are ─────
 for bad in 59 86401 0 -1 '"abc"' 1.5 true; do

@@ -377,7 +377,7 @@ assert_contains "$out" "all approval labels are current" "#196 *.example-only de
 # and cfg()'s pipeline-config.sh sibling is found; removed via trap below.
 _hypothetical_vcs="$TALOS_ROOT/scripts/.vcs-hypothetical-catchall.sh.tmp"
 _cleanup_hypothetical_vcs() { rm -f "$_hypothetical_vcs"; }
-trap _cleanup_hypothetical_vcs EXIT
+trap '_is_trap_owner && _cleanup_hypothetical_vcs' EXIT
 sed "s/CHANGELOG.md', '\*\.example'\]/CHANGELOG.md', '*.example', '*']/" \
   "$VCS" > "$_hypothetical_vcs"
 # Sanity: the substitution must have actually changed something. Since #177
