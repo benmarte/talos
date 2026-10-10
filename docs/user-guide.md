@@ -627,7 +627,8 @@ For every harness:
 
 - `bash talos/install.sh --global [--harness <list>]`, once per machine, writes
   `${TALOS_HOME:-~/.talos}/{scripts,agents,templates,skills}`. `skills/<command>/SKILL.md`
-  holds `pipeline` and `setup`.
+  holds `pipeline` and `setup`; `skills/pipeline/refs/*.md` sits beside the pipeline
+  playbook and is read on demand (`talos.sh env` and `next` print `ref=<topic>`).
 - `bash talos/install.sh <repo> [--harness <list>] [--no-agents-md] [--import-agents-md]`
   writes `talos.pipeline.*` (never overwritten), the one marker-fenced block in
   `<repo>/AGENTS.md` (the same for every harness; it never writes the block into
@@ -1696,8 +1697,8 @@ per-issue, per-role table (`issue`, `role`, `events`, `tokens`, `tool_uses`,
 counts events whose `tokens` field is `null` so an untracked group reads as
 "no data", not a real zero (an explicit `--tokens 0` is a real zero and is
 never counted in `unrecorded`). Whether `unrecorded` is expected depends on
-the spawn path (see "Usage-reporting spawn form" under "Harness
-compatibility" in `skills/pipeline/SKILL.md`): on the native subagent path,
+the spawn path (see "Spawning" in `skills/pipeline/SKILL.md` and
+`skills/pipeline/refs/harness.md`): on the native subagent path,
 every stage is spawned so its completion notification carries usage, so an
 `unrecorded` native-path event is a playbook bug worth investigating; on
 the adapter path (`pipeline-agent.sh`) and pi inline mode, stages run
@@ -1720,7 +1721,7 @@ offline, and none of it blocks the pipeline: every spend call fails open.
 **What the harness reports, and what it does not.** The Agent tool's
 completion notification carries three numbers: `subagent_tokens`,
 `tool_uses` and `duration_ms`, and only for a background or worktree spawn
-(see "Usage-reporting spawn form" in `skills/pipeline/SKILL.md`). There is no
+(see "Spawning" in `skills/pipeline/SKILL.md`). There is no
 input/output split, no cache figure, no model and no dollar amount. UNVERIFIED
 beyond those observed fields: whether the one token total includes cache
 reads. For that reason Talos shows tokens, never a price, and the model it
@@ -2474,7 +2475,7 @@ discoverable symptom: the pipeline runs normally at whatever model the runner
 uses by default.
 
 The model-resolution logic for the native path is in `skills/pipeline/SKILL.md`
-under the `subagents: true` block (lines 32-42): the orchestrator reads
+("Spawning") and `skills/pipeline/refs/harness.md`: the orchestrator reads
 `agents.roles.<role>.model`, falls back to `agents.model`, then omits `model:`
 entirely if neither is set.
 

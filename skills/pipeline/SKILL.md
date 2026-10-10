@@ -24,7 +24,7 @@ Nothing printed: stop, Talos is not installed.
 
 **Subagent names:** repo `.claude/agents/<role>.md` wins (bare name); else `$CLAUDE_PLUGIN_ROOT` → `talos:<role>`; else bare.
 
-**Spawning (native path, `agents.subagents` true).** Spawn every stage in the Agent background form (`isolation: "worktree"` for a writable checkout, plain background for read-only): its completion carries usage (`subagent_tokens`, `tool_uses`, `duration_ms`). `model:` = `agent.<role>.model` from Step 0, else the session model; a harness whose Agent tool takes only aliases gets the family alias (`opus`/`sonnet`/`haiku`) for a full ID, the config value never rewritten. Effort is advisory: relay `agent.<role>.effort_notice` when Step 0 printed one. A role whose `agent.<role>.runner` is not `claude`, or `agents.subagents: false`: `ref=harness`.
+**Spawning (native path, `agents.subagents` true).** Spawn every stage (developer, QA, reviewer, security, validator, docs, adversarial, planner) in the Agent background form (`isolation: "worktree"` for a writable checkout, plain background for read-only): its completion carries usage (`subagent_tokens`, `tool_uses`, `duration_ms`). `model:` = `agent.<role>.model` from Step 0, else the session model; a harness whose Agent tool takes only aliases gets the family alias (`opus`/`sonnet`/`haiku`) for a full ID, the config value never rewritten. Effort is advisory: relay `agent.<role>.effort_notice` when Step 0 printed one. A role whose `agent.<role>.runner` is not `claude`, or `agents.subagents: false`: `ref=harness`.
 
 ---
 
@@ -60,9 +60,9 @@ Then `bash scripts/talos.sh state --summary` (read-only; at most three `where=` 
 
 A prior session may have died mid-issue. Heal once: `bash scripts/talos.sh sweep <ids>` (never fails; `warn reason=` lines → Step 5; `heal=` → fast-forward, hard rule 8).
 
-1. **Adopt orphaned PRs.** A `pipeline:dev`/`pipeline:review` issue with no obvious PR: `bash scripts/pipeline-vcs.sh find-pr <N>`. PR found: adopt it, do NOT re-dispatch the developer, resume at the first missing approval label (QA if `qa:pass` is absent, etc.). None: re-dispatch the developer (counts toward `max_fix_attempts`).
+1. **Adopt orphaned PRs.** A `pipeline:dev`/`pipeline:review` issue with no obvious PR: `bash scripts/pipeline-vcs.sh find-pr <N>`. PR found: adopt it, do NOT re-dispatch the developer, resume at the first missing approval label (QA if `qa:pass` is absent, etc.); a PR that carries `pipeline:blocked` (on the PR or its issue) is not resumed: item 4 reports it, Step 5 lists it `blocked`. None: re-dispatch the developer (counts toward `max_fix_attempts`).
 2. **Heal merged-but-open issues.** `find-pr <N> merged` closes with an `issue-<N>` branch or closing keyword (never a bare `Depends on #N`/`Part of #N`): `heal=<N> pr=<M>` → the post-merge items (`--heal`: no sibling sync, no CI-run count). Exit 2, `warn reason=find-pr-unverified` or `find-pr-failed` means NOT verified, never "no PR": the heal was skipped; put "find-pr not verified for #N — heal skipped, verify manually" in the run summary.
-3. **Resume in-flight PRs** is Step 2's `next` (PR-side stages first). A PR that carries `pipeline:blocked` (on the PR or its issue) is not resumed: item 4 reports it and Step 5 lists it `blocked` (`wait reason=blocked`).
+3. **Resume in-flight PRs** is Step 2's `next` (PR-side stages first; a blocked PR answers `wait reason=blocked`).
 4. **Sweeps.** `worktree_sweep=`; `blocked_issues=K` / `blocked_prs=J`: stale blocked work, one `info backlog` notice when K + J > 0 (a human clears `pipeline:blocked`); planner on: see `refs/planner.md`.
 
 Log: "N queued, M PRs in-flight (A adopted), K ready to merge, B blocked."
