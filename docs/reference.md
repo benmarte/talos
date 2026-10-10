@@ -139,6 +139,18 @@ bash talos/install.sh [repo-path] [--harness <list>] [--no-agents-md] [--import-
 
 Overrides win over the install: `<repo>/.claude/agents/<role>.md`, then `<repo>/.agents/talos/agents/<role>.md` (adapter and pi paths only). Scripts resolve from `$TALOS_HOME`, `~/.talos`, `$CLAUDE_PLUGIN_ROOT`, `.claude/talos` (old vendored installs), then the source repo (each `/scripts`). Treat `TALOS_HOME` like `PATH`.
 
+### Developing Talos
+
+Public users update the plugin on tagged releases; the version in `plugin.json` stays until a release. If you work on Talos itself and want your machine to run the checkout, install with `bash install.sh --global --local-plugin`. It re-registers the `talos` marketplace from the checkout directory (removing a GitHub-registered one first) and installs `talos@talos`. Claude Code reads a directory marketplace on each session start, so `/talos:*` follows the checkout without a re-run. It overrides `--keep-marketplace` and `--no-overwrite` for the marketplace step, and a second run with the checkout already registered only re-installs the plugin. If the removal fails, nothing is changed.
+
+To go back to the GitHub release source:
+
+```bash
+claude plugin marketplace remove talos
+claude plugin marketplace add benmarte/talos
+claude plugin install talos@talos
+```
+
 ### Set up a repo
 
 1. `bash talos/install.sh /path/to/repo`, then copy `talos.pipeline.json.example` to `talos.pipeline.json` and edit it, or run the wizard. Minimal: `{ "base_branch": "dev", "verify": ["npm test"] }`.

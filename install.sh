@@ -134,6 +134,7 @@ GLOBAL=false
 WRITE_AGENTS_MD=true
 IMPORT_AGENTS_MD=false
 KEEP_MARKETPLACE=false
+LOCAL_PLUGIN=false
 AGENT_SKILLS_REPO="${TALOS_AGENT_SKILLS_REPO:-https://github.com/addyosmani/agent-skills}"
 
 expect_harness=false
@@ -153,6 +154,7 @@ for arg in "$@"; do
     --import-agents-md) IMPORT_AGENTS_MD=true ;;
     --no-legacy-aliases) ;;  # gone in #553 (no alias is installed any more); accepted so an old command line still runs
     --keep-marketplace)  KEEP_MARKETPLACE=true ;;
+    --local-plugin)      LOCAL_PLUGIN=true ;;
     --harness)       expect_harness=true ;;
     --harness=*)       HARNESS_RAW="${arg#*=}"; HARNESS_GIVEN=true ;;
     *)                 [ -z "$TARGET" ] && TARGET="$arg" ;;
@@ -329,6 +331,8 @@ install_claude_plugin() {
       there="$(cd "$val" 2>/dev/null && pwd -P)" || there="$val"
       if [ "$here" = "$there" ]; then
         kind="same"
+      elif [ "$LOCAL_PLUGIN" = "true" ]; then
+        :  # an explicit request: repoint below, over --keep-marketplace and --no-overwrite
       elif [ "$KEEP_MARKETPLACE" = "true" ]; then
         echo "    notice: the talos marketplace points at $val_p, not this checkout ($src_p); left as is (--keep-marketplace), so /talos:* installs from there."
         kind="same"
@@ -338,13 +342,27 @@ install_claude_plugin() {
       fi ;;
     other)
       # A github or other non-directory source already provides the namespace:
-      # re-adding would silently repoint it at this checkout, so leave it.
-      echo "    notice: the talos marketplace is already registered from a non-directory source ($val_p); left as is."
-      kind="same" ;;
+      # re-adding would silently repoint it at this checkout, so leave it, unless
+      # --local-plugin asks for exactly that (remove first: re-adding a name from
+      # another source is not known to replace it).
+      if [ "$LOCAL_PLUGIN" != "true" ]; then
+        echo "    notice: the talos marketplace is already registered from a non-directory source ($val_p); left as is (pass --local-plugin to track this checkout instead)."
+        kind="same"
+      elif ! out="$(claude plugin marketplace remove talos --json </dev/null 2>&1)"; then
+        echo "    notice: 'claude plugin marketplace remove' failed, so the talos marketplace ($val_p) and plugin were left as they were: $(printable "$(printf '%s' "$out" | tail -n 1 | cut -c1-200)")"
+        echo "            To track this checkout yourself: claude plugin marketplace remove talos, then claude plugin marketplace add $src_p, then claude plugin install talos@talos."
+        return 0
+      fi ;;
     *)
       echo "    notice: could not read 'claude plugin marketplace list --json', so the talos plugin was not registered; $manual."
       return 0 ;;
   esac
+  if [ "$LOCAL_PLUGIN" = "true" ]; then
+    echo "    --local-plugin: the talos marketplace is this checkout ($src_p). To switch back to the GitHub release source:"
+    echo "      claude plugin marketplace remove talos"
+    echo "      claude plugin marketplace add benmarte/talos"
+    echo "      claude plugin install talos@talos"
+  fi
   if [ "$kind" != "same" ]; then
     if out="$(claude plugin marketplace add "$SRC" --json </dev/null 2>&1)"; then
       if [ "$kind" = "dir" ]; then
@@ -360,7 +378,11 @@ install_claude_plugin() {
   echo "    note: installing the plugin also installs its agent-skills dependency (github.com/addyosmani/agent-skills, needs network), even with --no-agent-skills."
   if out="$(claude plugin install talos@talos --json </dev/null 2>&1)"; then
     CLAUDE_PLUGIN_REGISTERED=true
-    echo "    registered: talos@talos (user scope). Claude Code copied the plugin into its plugin cache, so edits to $src_p reach /talos:* only after you re-run install.sh --global (or update the plugin); the marketplace entry points at that checkout, so re-run it from the new location if you move it."
+    if [ "$LOCAL_PLUGIN" = "true" ]; then
+      echo "    registered: talos@talos (user scope). The marketplace is the local checkout $src_p, which Claude Code reads on each session start, so /talos:* follows it; re-run install.sh --global --local-plugin from the new location if you move it."
+    else
+      echo "    registered: talos@talos (user scope). Claude Code copied the plugin into its plugin cache, so edits to $src_p reach /talos:* only after you re-run install.sh --global (or update the plugin); the marketplace entry points at that checkout, so re-run it from the new location if you move it."
+    fi
   else
     echo "    notice: 'claude plugin install talos@talos' failed: $(printable "$(printf '%s' "$out" | tail -n 1 | cut -c1-200)")"
     echo "            Nothing was deleted. After fixing that, re-run this installer or $manual."
