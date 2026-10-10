@@ -191,14 +191,6 @@ hooks.post_stage	str		-	-	any
 hooks.timeout_s	int	30	-	-	any
 events.enabled	bool	true	-	-	any
 events.path	path	talos/events.jsonl	-	-	any
-evidence.enabled	bool	false	-	-	any
-evidence.command	str		-	-	repo
-evidence.dir	path	.talos/evidence	-	-	any
-evidence.include	list		-	-	any
-evidence.when	enum	user-facing	-	-	any
-evidence.store	enum	attach	-	-	any
-evidence.max_files	int	10	-	-	any
-evidence.max_mb	int	20	-	-	any
 TALOS_Qz7vK2mXr9Lp
 # Leading and trailing newline so every row can be matched as "\nKEY\t".
 _TALOS_DEFAULTS_TSV=$'\n'"${_TALOS_DEFAULTS_RAW%$'\n'}"$'\n'

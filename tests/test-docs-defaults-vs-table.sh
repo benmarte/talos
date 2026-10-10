@@ -185,8 +185,7 @@ if guide_cfg is None:
     fail("user guide: no '## Config reference' section")
     guide_cfg = ""
 seen = check_doc("user guide", doc_rows(guide_cfg), True)
-# Key tables elsewhere in the guide (the evidence keys) state
-# defaults too: same comparison, no duplicate or unknown-row rule.
+# Key tables elsewhere in the guide state defaults too: same comparison, no duplicate or unknown-row rule.
 check_doc("user guide", doc_rows(guide.replace(guide_cfg, "")), False, dups=False)
 for key in TABLE:
     if key not in seen:
@@ -340,15 +339,6 @@ if cmp -s "$GUIDE" "$T/guide-bool.md"; then
 else
   OUT="$(run_check "$T/guide-bool.md" "$README" 2>&1)"
   assert_contains "$OUT" 'FAIL: user guide: `board.enabled` states' "board.enabled stated as false is red (the #446 drift)"
-fi
-
-# a key table outside the Config reference (the evidence keys) is checked too
-sed 's/^| `evidence.when` | `user-facing` |/| `evidence.when` | `always` |/' "$GUIDE" > "$T/guide-status.md"
-if cmp -s "$GUIDE" "$T/guide-status.md"; then
-  fail "fixture: the evidence.when row edit applied" "the row was not found in the user guide"
-else
-  OUT="$(run_check "$T/guide-status.md" "$README" 2>&1)"
-  assert_contains "$OUT" 'FAIL: user guide: `evidence.when` states' "a changed default in the evidence key table is red"
 fi
 
 # ── red on a deleted row ─────────────────────────────────────────────────────

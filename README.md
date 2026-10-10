@@ -376,7 +376,7 @@ Implemented in `scripts/pipeline-hooks.sh` (`post_stage`, sharing its watchdog/t
 
 Every `hooks.post_stage` payload (see the JSON schema above) is also appended, as one JSON line, to a local `events.jsonl` audit log in Talos's run-state directory, `<git common dir>/talos/` — independently of whether `hooks.post_stage` itself is configured. This gives every run a local, durable record of what happened without depending on an external sink.
 
-Enabled by default (`events.enabled: true`); set it to `false` to disable. The log path (`events.path`, default `talos/events.jsonl`) is resolved relative to the **git common dir** via `git rev-parse --git-common-dir` — so a developer/QA/reviewer stage running from inside a per-issue worktree still appends to the one log file shared by every worktree of the repo. The run state lives **outside every git tree**: it is never staged or pushed, and an agent's `git add -A` cannot commit it (#517). The deliberately in-tree `.talos/` files (the per-worktree `.talos/env`, `providers.json`, the evidence dir) are auto-ignored via `.git/info/exclude` before their first write — Talos never edits a tracked `.gitignore`.
+Enabled by default (`events.enabled: true`); set it to `false` to disable. The log path (`events.path`, default `talos/events.jsonl`) is resolved relative to the **git common dir** via `git rev-parse --git-common-dir` — so a developer/QA/reviewer stage running from inside a per-issue worktree still appends to the one log file shared by every worktree of the repo. The run state lives **outside every git tree**: it is never staged or pushed, and an agent's `git add -A` cannot commit it (#517). The deliberately in-tree `.talos/` files (the per-worktree `.talos/env`, `providers.json`) are auto-ignored via `.git/info/exclude` before their first write — Talos never edits a tracked `.gitignore`.
 
 Appends are a single `printf '%s\n' >>` (one `O_APPEND` write syscall) — a JSON event line is well under the POSIX `PIPE_BUF` atomic-write threshold, so concurrent stages appending at once (e.g. under `issues.max_parallel`) never interleave partial lines. No file lock is used or needed. A failure to write (unresolvable path, permissions, disk full) is a stderr note only — it never affects the pipeline's exit code.
 
@@ -491,7 +491,7 @@ Config and secrets (epic #437: #439-#446). The full rules are in the user guide'
 
 **(f) Secrets are `env:NAME` references, and secret-shaped values are rejected in any config layer (#443, #444).** The six keys `notifications.{slack,discord,teams}.webhook`, `notifications.{slack,discord}.bot_token` and `notifications.buzz.bot_key` accept only `env:NAME`; a literal is refused. A Slack, Discord or Teams webhook, a Slack or GitHub or GitLab token, an AWS key, a private key or a Nostr `nsec1` key in the repo or the global file is dropped on load, with a stderr line that names the key (never the value). If one was ever committed, rotate it.
 
-**(g) Repo-only keys are dropped from the global file (#441).** The global file now accepts every key, except the ones that describe one repository (`base_branch`, `vcs.*`, `board.*`, `verify`, `merge.required_checks` and the other `merge.*` lists, `issues.label_filter`, `issues.skip_labels`, `markers.*`, `evidence.command` and a few more; the table's scope column is the list). One found there is ignored with a stderr note naming the key; put it in the repo's file.
+**(g) Repo-only keys are dropped from the global file (#441).** The global file now accepts every key, except the ones that describe one repository (`base_branch`, `vcs.*`, `board.*`, `verify`, `merge.required_checks` and the other `merge.*` lists, `issues.label_filter`, `issues.skip_labels`, `markers.*` and a few more; the table's scope column is the list). One found there is ignored with a stderr note naming the key; put it in the repo's file.
 
 **(h) The `.env` deny list wins over the allow list (#444).** `BASH_ENV`, `PATH`, `LD_PRELOAD`, `GIT_*`, `*_PROXY`, `GH_*`, `GITHUB_*`, `AWS_*` and similar names are never read from a `.env`, and an `env:NAME` reference to one is refused. `GITHUB_TOKEN` and `GH_TOKEN` have to be exported in your shell.
 
@@ -789,14 +789,6 @@ Thread anchors are stored in `~/.talos/threads.json` keyed by `<repo-slug>:<issu
 
 ---
 
-## Evidence capture (opt-in)
-
-When QA passes every criterion of a user-facing change, it can attach screenshots or recordings to the PR as one comment, using `gh pr comment --attach`. It is **off by default**. Turn it on with the `/talos:setup` question (default off), or add an `evidence:` block (`enabled: true`, plus `command` and `dir`) to `talos.pipeline.json`. Evidence never changes QA's verdict, and QA never opens the images: the reviewer is only handed a link.
-
-Three hard limits: it needs `gh` v2.99.0 or newer with write access to the repo (no GitHub Enterprise Server, and not the Actions `GITHUB_TOKEN`); attachments are public on public repos and cannot be deleted; screenshots can show secrets. Only the `github` and `github-api` providers are supported. Keys, commands, status values and security notes: [Attaching evidence to the PR](docs/user-guide.md#attaching-evidence-to-the-pr-evidence-352) in the user guide.
-
----
-
 ## How a run works end-to-end
 
 1. You run `/talos:pipeline` in a Claude Code session.
@@ -844,7 +836,6 @@ The pipeline deliberately preserves three gates that only a human should act on:
 | `scripts/pipeline-events.sh path\|list [--issue N] [--role R] [--event E] [--last K] [--json]\|cost [--issue N] [--pr M] [--json\|--line\|--markdown\|--summary]` | Reader for the local events log (`<git common dir>/talos/events.jsonl` by default, outside every git tree); see [Events log](#events-log) and [Cost accounting](#cost-accounting) |
 | `scripts/pipeline-budget.sh check --issue N [--json]` | The token budget guard (#334): prints `talos:budget <ok\|warn\|exceeded> ...` (nothing when `limits.tokens_per_issue` is off); exit 0 for ok, warn, unknown and off, 1 for exceeded only, 2 for usage; see [Seeing token spend](docs/user-guide.md#seeing-token-spend-334) |
 | `scripts/talos-status.sh [--line]` | The harness status line (#385, #550): `talos #<issue> <stage> ●●◐○○○ <tokens>` from the events log and, for a running stage, the harness transcript on stdin (`transcript_path`); offline, exits 0 on every input, prints nothing without an active issue. `install.sh --global` copies it next to `pipeline-spend-format.py` (a shared module, not a command) and wires it into Claude Code's `statusLine`; see [Status line and resume](#status-line-and-resume) |
-| `scripts/pipeline-evidence.sh capture\|collect\|upload\|attach\|dir\|enabled` | Evidence capture (#352, opt-in): runs `evidence.command`, picks the files that may leave the machine and attaches them to the PR with `gh pr comment --attach`; see [Evidence capture](#evidence-capture-opt-in) |
 | `scripts/pipeline-hooks.sh` | Run `hooks.pre_dispatch`/`hooks.post_stage` external commands at fixed pipeline points; see [Hooks](#hooks) |
 | `scripts/pipeline-isolation.sh validate` | Startup gate for `execution.isolation` + `issues.max_parallel` combinations; see the `execution.isolation` row in the [Config reference](docs/user-guide.md#config-reference) |
 | `scripts/pipeline-lock.sh` | Portable `mkdir`-based advisory locking for shared local state (threads.json, worktree metadata, test cache) under `issues.max_parallel > 1`; see the `issues.max_parallel` row in the [Config reference](docs/user-guide.md#config-reference) |

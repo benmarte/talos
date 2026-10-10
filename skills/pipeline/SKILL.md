@@ -20,7 +20,7 @@ done
 
 Nothing printed: stop, Talos is not installed.
 
-**Refs.** This file is the whole default flow. `refs/<topic>.md` beside it (installed at `~/.talos/skills/pipeline/refs/`; also under `$TALOS_HOME` and `$CLAUDE_PLUGIN_ROOT`) holds what applies only sometimes: `draft-order`, `planner`, `adversarial`, `harness`, `hooks`, `human-merge`, `ci-gate`, `evidence`, `file-mode`, `comments`, `merge-conflict`, `restamp`. Read one only when `talos.sh env` or `next` prints `ref=<topic>` or a step below names it.
+**Refs.** This file is the whole default flow. `refs/<topic>.md` beside it (installed at `~/.talos/skills/pipeline/refs/`; also under `$TALOS_HOME` and `$CLAUDE_PLUGIN_ROOT`) holds what applies only sometimes: `draft-order`, `planner`, `adversarial`, `harness`, `hooks`, `human-merge`, `ci-gate`, `file-mode`, `comments`, `merge-conflict`, `restamp`. Read one only when `talos.sh env` or `next` prints `ref=<topic>` or a step below names it.
 
 **Subagent names:** repo `.claude/agents/<role>.md` wins (bare name); else `$CLAUDE_PLUGIN_ROOT` → `talos:<role>`; else bare.
 
@@ -119,7 +119,7 @@ After it returns: `done developer --issue <N> [--pr <PR>] --verdict PR_OPENED|BL
 
 ### 3d. QA (`roles.qa`)
 
-Before every QA dispatch: `ref=draft-order` (the `pr-is-draft` guard) when `PR_DRAFT`, `ref=ci-gate` when `VERIFY_QA_MODE` is `ci`. Spawn with `talos.sh prompt qa --issue <N> --pr <PR> --prior-file F` (the developer's pr-opened relay; `ref=evidence`). QA verifies per hard rule 5. After it returns: `done qa --issue <N> --pr <PR> --verdict PASS|FAIL --summary-file F`.
+Before every QA dispatch: `ref=draft-order` (the `pr-is-draft` guard) when `PR_DRAFT`, `ref=ci-gate` when `VERIFY_QA_MODE` is `ci`. Spawn with `talos.sh prompt qa --issue <N> --pr <PR> --prior-file F` (the developer's pr-opened relay). QA verifies per hard rule 5. After it returns: `done qa --issue <N> --pr <PR> --verdict PASS|FAIL --summary-file F`.
 - **Pass:** `next=continue` → Step 3e (with `PR_DRAFT`, review already ran: go to Step 4).
 - **Fail** (`next=fix-round stage=qa`): `gate fix-round <N> qa --pr <PR>`: `verdict=redispatch` → developer fix round; `verdict=block` → board "Blocked", stop. With `PR_DRAFT` the fix round ends with `ready-pr` (`ref=draft-order`).
 

@@ -173,7 +173,7 @@ fi
 #                  under whichever one is found.
 #   3. env         the variable in the table's env column, when set and not
 #                  empty. No generic TALOS_CFG_* scheme.
-# The validators below (positive integers, spend, evidence, fallback, effort)
+# The validators below (positive integers, spend, fallback, effort)
 # run on the merged value, so they hold whichever layer supplied it.
 # Secret shapes (#444): a string leaf of either FILE layer that looks like a
 # secret (scripts/pipeline-secret-shapes.py: Slack/Discord/Teams webhooks and
@@ -819,120 +819,9 @@ EOF
   printf '_CFG_TABLE = %s\n_HARNESS = ("%s", "%s")\n_AGENT_SH = "%s"\n%s\n%s\n%s' "$(_talos_scope_env_json)" "$_hn" "$_ho" "$_as" "${_TALOS_TRUST_LIB:-}" "$_CFG_SHAPES_PY" "$_CFG_LOADER_PY"
 }
 
-# ── Evidence-key validator (#405, part of #352) ──────────────────────────────
-# Python half of the evidence.* validation. Like _CFG_LOADER_PY it is handed to
-# each python3 process as an argv string and exec()'d (inside the existing
-# `python3 -I` process), so --dump and the single-key lookup share ONE
-# definition instead of a third pair of copies. Defines
-# _validate_evidence_key(key, value) -> the validated value, or None after one
-# stderr warning (callers treat None as absent), and _evidence_apply(flat) for
-# the --dump dict. A key outside evidence.* passes through untouched. Defaults
-# (false, 10, 20, attach, user-facing) belong to the CALLER; nothing here
-# injects one. Evidence is uploaded with `gh pr comment --attach` only (owner
-# decision on #352).
-read -r -d '' _CFG_EVIDENCE_PY <<'PYEVIDENCE' || true
-import re
-
-# Enum keys as a table so a new value (e.g. "pr" for evidence.store) is a
-# one-word edit; the warning text is built from the tuple.
-_EVIDENCE_ENUMS = {
-    "evidence.when": ("user-facing", "always"),
-    "evidence.store": ("attach",),
-}
-_EVIDENCE_KEYS = (
-    "evidence.enabled", "evidence.command", "evidence.dir",
-    "evidence.include", "evidence.when", "evidence.store",
-    "evidence.max_files", "evidence.max_mb",
-)
-
-def _ev_reject(key, want, value):
-    shown = repr(value)
-    if len(shown) > 80:
-        shown = shown[:77] + "..."
-    sys.stderr.write(
-        "pipeline-config: %s must be %s -- got: %s -- using default\n"
-        % (key, want, shown)
-    )
-    return None
-
-def _validate_evidence_key(key, value):
-    if value is None or key not in _EVIDENCE_KEYS:
-        return value
-    if key == "evidence.enabled":
-        if not isinstance(value, bool):
-            return _ev_reject(key, "true or false", value)
-        return value
-    if key in _EVIDENCE_ENUMS:
-        allowed = _EVIDENCE_ENUMS[key]
-        if not isinstance(value, str) or value not in allowed:
-            return _ev_reject(key, "one of " + "|".join(allowed), value)
-        return value
-    if key in ("evidence.max_files", "evidence.max_mb"):
-        # Strict: a real int or a 1-4 digit string, never a bool, a float
-        # (12.0), padding (" 12 ") or underscores ("1_0").
-        iv = None
-        if isinstance(value, bool):
-            pass
-        elif isinstance(value, int):
-            iv = value
-        elif isinstance(value, str) and re.fullmatch(r"[0-9]{1,4}", value):
-            iv = int(value)
-        if iv is None or not 1 <= iv <= 100:
-            return _ev_reject(key, "an integer from 1 to 100", value)
-        return iv
-    if key == "evidence.dir":
-        # Value-only checks: a relative path of at most 200 characters from
-        # [A-Za-z0-9._/-] that does not start with "-" or "/" (so no space,
-        # shell metacharacter, glob, control character or backslash), with no
-        # ".." component, not ".", and no ".git" component at any depth (any
-        # case; "." and empty components are dropped first). realpath /
-        # tracked-file checks are run time.
-        ok = isinstance(value, str) and re.fullmatch(
-            r"[A-Za-z0-9._][A-Za-z0-9._/-]{0,199}", value) is not None
-        if ok:
-            parts = [p for p in value.split("/") if p not in ("", ".")]
-            ok = (
-                bool(parts) and ".." not in parts
-                and ".git" not in [p.lower() for p in parts]
-            )
-        if not ok:
-            return _ev_reject(
-                key, "a relative path of at most 200 characters from "
-                "A-Z a-z 0-9 . _ / - (no leading - or /, no .. component, "
-                "not . and no .git component)", value)
-        return value
-    if key == "evidence.include":
-        # A list of 1-20 basename globs of at most 64 characters; a bare
-        # string, [], too many items or ONE bad item makes the whole value
-        # absent (fail closed).
-        if not (isinstance(value, list) and 1 <= len(value) <= 20 and all(
-                isinstance(x, str) and re.fullmatch(r"[A-Za-z0-9*?._-]{1,64}", x)
-                for x in value)):
-            return _ev_reject(
-                key, "a list of 1-20 basename globs of 1-64 characters "
-                "matching [A-Za-z0-9*?._-] (no /)", value)
-        return value
-    if key == "evidence.command":
-        if not (isinstance(value, str) and len(value) <= 2000
-                and "\0" not in value):
-            return _ev_reject(
-                key, "a string of at most 2000 characters with no NUL", value)
-        return value
-    return value
-
-def _evidence_apply(flat):
-    for _ev_key in _EVIDENCE_KEYS:
-        if _ev_key in flat:
-            _ev_val = _validate_evidence_key(_ev_key, flat[_ev_key])
-            if _ev_val is None:
-                del flat[_ev_key]
-            else:
-                flat[_ev_key] = _ev_val
-PYEVIDENCE
-
 # ── Runner-failover validators (#418) ────────────────────────────────────────
-# Same shape as _CFG_EVIDENCE_PY: one snippet exec()'d by both the --dump and
-# the single-key python3 processes. _validate_fallback_key(key, value) returns
+# One snippet exec()'d by both the --dump and the single-key python3
+# processes. _validate_fallback_key(key, value) returns
 # the value, or None after one stderr warning (callers read None as absent).
 #   agents.fallback, agents.roles.<role>.fallback: a list of 1-5 runner ids, no
 #     duplicates inside the list. "Not the primary" depends on the role, so
@@ -998,8 +887,7 @@ PYFALLBACK
 # Same shape as the snippets above: one definition exec()'d by both the --dump
 # and the single-key python3 processes. Every int row of the table is either
 # listed in _INT_KEYS (unit, lowest, highest accepted value) or has its own
-# validator above (limits.tokens_per_issue, evidence.max_files/max_mb,
-# agents.provider_down_s), or is left to a consumer that already refuses or
+# validator above (limits.tokens_per_issue, agents.provider_down_s), or is left to a consumer that already refuses or
 # falls back with its own message (issues.max_parallel, #120; limits.max_retries,
 # #194). tests/test-config-int-validators.sh checks that split row by row.
 # _validate_int_key(key, value) -> the value as an int, or None after one stderr
@@ -1401,14 +1289,13 @@ if [ "${1:-}" = "--dump" ]; then
     _talos_env_dump
     exit 0
   fi
-  python3 -I - "$_DCFG" "$(_talos_known_keys_json)" "$_DUSER" "$(_cfg_loader_src)" "$_CFG_EVIDENCE_PY" "$_CFG_FALLBACK_PY" "$_CFG_INT_PY" "$_DENV_KEYS" "$_DSECRETS" <<'PYEOF'
+  python3 -I - "$_DCFG" "$(_talos_known_keys_json)" "$_DUSER" "$(_cfg_loader_src)" "$_CFG_FALLBACK_PY" "$_CFG_INT_PY" "$_DENV_KEYS" "$_DSECRETS" <<'PYEOF'
 import sys
 
 known_keys_json = sys.argv[2]
 exec(sys.argv[4])
 exec(sys.argv[5])
 exec(sys.argv[6])
-exec(sys.argv[7])
 
 def walk(obj, parts):
     for part in parts:
@@ -1613,10 +1500,6 @@ for _spend_key in ("limits.tokens_per_issue", "limits.warn_at", "spend.comment")
         else:
             flat[_spend_key] = _validated
 
-# evidence.* (#405): validated by the shared snippet (_CFG_EVIDENCE_PY); an
-# invalid value warns once and is dropped, like the spend keys above.
-_evidence_apply(flat)
-
 # agents.fallback / agents.roles.<role>.fallback / agents.provider_down_s
 # (#418): validated by the shared snippet (_CFG_FALLBACK_PY), same shape.
 _fallback_apply(flat)
@@ -1719,8 +1602,8 @@ if isinstance(_roles_cfg, dict):
 out = sys.stdout.buffer
 out.write(("sources.project\0" + sys.argv[1] + "\0").encode("utf-8", "surrogateescape"))
 out.write(("sources.global\0" + sys.argv[3] + "\0").encode("utf-8", "surrogateescape"))
-out.write(("sources.env_keys\0" + sys.argv[8] + "\0").encode("utf-8", "surrogateescape"))
-out.write(("sources.secrets_path\0" + sys.argv[9] + "\0").encode("utf-8", "surrogateescape"))
+out.write(("sources.env_keys\0" + sys.argv[7] + "\0").encode("utf-8", "surrogateescape"))
+out.write(("sources.secrets_path\0" + sys.argv[8] + "\0").encode("utf-8", "surrogateescape"))
 
 def _dump_text(v):
     if isinstance(v, bool):
@@ -1861,7 +1744,7 @@ fi
 # The heredoc passes file paths, key, default, the known-keys JSON and the
 # shared loader source as argv to avoid shell quoting issues with special
 # characters in values.
-python3 -I - "$CFG" "$KEY" "$DEFAULT" "$(_talos_known_keys_json)" "$USER_CFG" "$(_cfg_loader_src)" "$_CFG_EVIDENCE_PY" "$_CFG_FALLBACK_PY" "$_CFG_INT_PY" "$_NODEFAULT" <<'PYEOF'
+python3 -I - "$CFG" "$KEY" "$DEFAULT" "$(_talos_known_keys_json)" "$USER_CFG" "$(_cfg_loader_src)" "$_CFG_FALLBACK_PY" "$_CFG_INT_PY" "$_NODEFAULT" <<'PYEOF'
 import sys
 
 key      = sys.argv[2]
@@ -1870,7 +1753,6 @@ known_keys_json = sys.argv[4] if len(sys.argv) > 4 else "[]"
 exec(sys.argv[6])
 exec(sys.argv[7])
 exec(sys.argv[8])
-exec(sys.argv[9])
 
 def walk(obj, parts):
     for part in parts:
@@ -2109,11 +1991,10 @@ elif key.startswith("agents.roles.") and key.endswith(".restamp_effort"):
 
 value = _validate_int_key(key, value)
 value = _validate_spend_key(key, value)
-value = _validate_evidence_key(key, value)
 value = _validate_fallback_key(key, value)
 
 if value is None:
-    if len(sys.argv) > 10 and sys.argv[10] == "1":
+    if len(sys.argv) > 9 and sys.argv[9] == "1":
         # No caller default and no table (pipeline-defaults.sh missing) for a
         # security-relevant key: fail closed (#440), same as _cfg_fail_closed.
         sys.stderr.write(

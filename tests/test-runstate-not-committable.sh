@@ -169,23 +169,13 @@ assert_eq "1" "$(grep -cxF '.talos/' "$EXCL")" "AC4: that one line is .talos/ an
 assert_eq "1" "$(grep -cxF '.talos/' "$EXCL")" "AC4: a second run-state write leaves exactly one .talos/ line in info/exclude (idempotent)"
 assert_eq "" "$(git -C "$R4" ls-files -- .gitignore)" "AC4: the repo still tracks no .gitignore -- the guard never creates one"
 assert_eq "" "$(git -C "$W4" status --porcelain)" "AC4: after tag, the worktree's git status --porcelain is empty"
-# evidence: capture is where evidence.command first writes under evidence.dir
-R4B="$(mk_repo ac4evidence)"
-cat > "$R4B/talos.pipeline.json" <<'EOF'
-{"evidence": {"enabled": true, "command": "mkdir -p .talos/evidence && printf png > .talos/evidence/shot.png"}}
-EOF
-( cd "$R4B" && bash "$TALOS_ROOT/scripts/pipeline-evidence.sh" capture >/dev/null 2>&1 ); rc=$?
-assert_eq "0" "$rc" "AC4 setup: evidence capture ran the command"
-assert_eq "0" "$(git -C "$R4B" check-ignore -q .talos/evidence/shot.png; echo $?)" "AC4: the evidence dir's first write is self-ignored via info/exclude"
-assert_eq "1" "$(grep -cxF '.talos/' "$R4B/.git/info/exclude")" "AC4: the evidence path appended exactly one exclude line"
-assert_eq "" "$(cd "$R4B" && git status --porcelain -- ':!talos.pipeline.json')" "AC4: with only in-tree .talos/ evidence written, git status --porcelain is empty"
 # _talos_ignore_in_tree is the ONE helper: every in-tree-writing consumer
 # calls it (the providers.json mkdir in pipeline-agent.sh, the worktree
-# env writes, the evidence dir, and the first stage dispatch of talos.sh run)
-for f in pipeline-worktree.sh pipeline-agent.sh pipeline-evidence.sh talos.sh; do
+# env writes, and the first stage dispatch of talos.sh run)
+for f in pipeline-worktree.sh pipeline-agent.sh talos.sh; do
   assert_contains "$(cat "$TALOS_ROOT/scripts/$f")" "_talos_ignore_in_tree" "AC4: $f routes its in-tree .talos/ writes through the shared helper"
 done
-rm -rf "$R4" "$W4" "$R4B"
+rm -rf "$R4" "$W4"
 
 # ── AC5: tracked .talos/ content warns once and is never touched ────────────
 R5="$(mk_repo ac5)"

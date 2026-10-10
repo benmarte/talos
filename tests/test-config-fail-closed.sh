@@ -34,7 +34,7 @@ case "$HOME" in "$SANDBOX"/*) pass "HOME is inside the sandbox" ;; *) fail "HOME
 printf '%s\n' '{"merge": {"auto": true}}' > talos.pipeline.json
 bash "$CFG_SH" --has merge.auto; _rc=$?
 assert_eq "0" "$_rc" "--has: a key that is set exits 0"
-bash "$CFG_SH" --has evidence.enabled; _rc=$?
+bash "$CFG_SH" --has hooks.pre_dispatch; _rc=$?
 assert_eq "1" "$_rc" "--has: an absent key in a good config exits 1"
 printf '%s\n' '{"merge": {"auto": ' > talos.pipeline.json
 bash "$CFG_SH" --has merge.auto 2>"$SANDBOX/err"; _rc=$?
@@ -45,7 +45,7 @@ assert_not_contains "$(cat "$SANDBOX/err")" "enabled" "--has: the message does n
 printf '%s\n' '{"merge": {"auto": true}}' > "$TALOS_HOME/talos.pipeline.json"
 bash "$CFG_SH" --has merge.auto 2>/dev/null; _rc=$?
 assert_eq "0" "$_rc" "--has: a key set in the global file is found although the repo file is malformed"
-bash "$CFG_SH" --has evidence.enabled 2>/dev/null; _rc=$?
+bash "$CFG_SH" --has hooks.pre_dispatch 2>/dev/null; _rc=$?
 assert_eq "3" "$_rc" "--has: an absent key with a malformed repo file is unknown (3)"
 rm -f "$TALOS_HOME/talos.pipeline.json" "$PROJ/talos.pipeline.json"
 # a malformed global file counts as well

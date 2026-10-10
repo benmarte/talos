@@ -10,3 +10,12 @@ test-status-file-assemble.sh
 test-status-file-refresh.sh
 test-status-file-spend.sh
 test-status-file-wiring.sh
+
+# #553: evidence capture is gone
+test-config-evidence-keys.sh
+test-docs-evidence.sh
+test-evidence-attach.sh
+test-evidence-collect.sh
+test-evidence-upload.sh
+test-evidence-wiring.sh
+test-setup-evidence.sh

@@ -68,7 +68,6 @@ RICH_PROJECT='{
   "spend": {"comment": false},
   "comments": {"templates_dir": "tpl/comments"},
   "execution": {"worktree_warn_threshold": 4},
-  "evidence": {"enabled": true, "when": "always", "command": "echo x"},
   "agents": {"runner": "claude", "model": "sonnet", "effort": "medium", "fallback": ["codex"],
     "roles": {"qa": {"effort": "high"},
               "developer": {"runner": "custom", "runner_cmd": "my-runner --flag \"a b\" model=x effort=max"},
@@ -146,8 +145,6 @@ assert_contains "$rich" "agent.qa.effort=high" "rich: a role effort wins"
 assert_contains "$rich" "agent.qa.effort_notice=talos: notice: role 'qa' has effort=high in config but its frontmatter has effort=low" "rich: the --check-effort notice is relayed"
 assert_not_contains "$rich" "agent.pm.effort_notice" "rich: no notice when config and frontmatter agree"
 assert_contains "$rich" "agent.pm.fallback=codex" "rich: the fallback chain is relayed"
-assert_contains "$rich" "EVIDENCE_ENABLED=true" "rich: evidence on"
-assert_contains "$rich" "EVIDENCE_LINE=evidence on when=always mode=command" "rich: the evidence line is its stdout"
 assert_contains "$rich" 'SKIP_LABELS=pipeline:blocked\nwontfix\nhold' "rich: a list is joined by the two characters \\n"
 assert_contains "$rich" 'VERIFY_COMMANDS=bash tests/run-tests.sh --quiet\nbash lint.sh' "rich: verify commands are a \\n list"
 assert_contains "$rich" "VERIFY_QA_MODE=ci" "rich: required checks derive qa_mode ci"

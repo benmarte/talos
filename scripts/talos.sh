@@ -24,9 +24,8 @@
 #   env    Everything Step 0 of skills/pipeline/SKILL.md and the per-role runner
 #          resolution used to make the orchestrator gather by hand, in one call:
 #          every resolved config value Step 0 lists, the isolation gate, PR_DRAFT
-#          (pipeline-draft-check.sh resolve), the evidence line (pipeline-
-#          evidence.sh enabled), the startup diagnostic's two facts and, for
-#          each role, the answers of `pipeline-agent.sh --resolve <role>` and
+#          (pipeline-draft-check.sh resolve), the startup diagnostic's two facts
+#          and, for each role, the answers of `pipeline-agent.sh --resolve <role>` and
 #          `--check-effort <role>`. Their logic is called, never copied.
 #
 # Output (stdout), one line each, nothing else:
@@ -41,8 +40,8 @@
 #                              skills/pipeline/refs/<topic>.md, read once.
 #                              Topics: draft-order (PR_DRAFT true), planner,
 #                              adversarial, human-merge (merge.auto false),
-#                              ci-gate (verify.qa_mode ci), evidence, file-mode,
-#                              hooks (hooks.pre_dispatch set) and harness (a
+#                              ci-gate (verify.qa_mode ci), file-mode, hooks
+#                              (hooks.pre_dispatch set) and harness (a
 #                              non-claude runner, subagents false or a fallback
 #                              chain). Printed last, one line per topic, none
 #                              when none applies.
@@ -61,7 +60,7 @@
 # reason=value-truncated key=<KEY>`. A real "[truncated]" inside a value prints
 # as \x5btruncated], so the marker only ever means a cut. Free text never
 # travels on argv: values go to the sanitiser on stdin, a file carries them there.
-# A child's stderr line (config, draft or evidence warning, an isolation error)
+# A child's stderr line (config or draft warning, an isolation error)
 # is passed through on stderr, unchanged.
 #
 # env-reasons: scripts-missing python-missing scratch-unavailable config-unreadable isolation-invalid usage unknown-verb draft-resolve-failed resolve-failed effort-check-failed value-truncated
@@ -703,9 +702,8 @@ _talos_help() {
   cat <<'HELP'
 usage: talos.sh <verb>
 verbs:
-  env                                print every Step 0 setting, PR_DRAFT, the
-                                     evidence line and the per-role
-                                     runner/model/effort as sanitised KEY=value lines,
+  env                                print every Step 0 setting, PR_DRAFT and the
+                                     per-role runner/model/effort as sanitised KEY=value lines,
                                      then ref=<topic> for each playbook ref that
                                      applies to the run
   gate fix-round <N> <stage> [--pr M]  the checks before a developer fix round:
@@ -842,7 +840,7 @@ _talos_env() {
   [ "$#" -eq 0 ] || _talos_stop usage 2
 
   _talos_prepare env pipeline-config.sh pipeline-cfg-cache.sh pipeline-agent.sh pipeline-draft-check.sh \
-                     pipeline-evidence.sh pipeline-isolation.sh
+                     pipeline-isolation.sh
 
   # The startup isolation gate: its error text stays on stderr.
   if ! bash "$SCRIPT_DIR/pipeline-isolation.sh" validate >/dev/null; then
@@ -915,17 +913,6 @@ EOF
   _talos_emit PR_DRAFT "$_val"
   _TALOS_PR_DRAFT="$_val"
 
-  # EVIDENCE: enabled only when the call exits 0; the line is its stdout.
-  if _val="$(bash "$SCRIPT_DIR/pipeline-evidence.sh" enabled)"; then
-    _talos_emit EVIDENCE_ENABLED true
-    _talos_emit EVIDENCE_LINE "$_val"
-    _TALOS_EVIDENCE=true
-  else
-    _TALOS_EVIDENCE=false
-    _talos_emit EVIDENCE_ENABLED false
-    _talos_emit EVIDENCE_LINE ""
-  fi
-
   local _role
   _TALOS_HARNESS_REF=0
   for _role in $_TALOS_ROLES; do
@@ -950,7 +937,6 @@ _talos_env_refs() {
   _talos_cfg_is roles.adversarial true && _talos_emit ref adversarial
   _talos_cfg_is merge.auto false && _talos_emit ref human-merge
   _talos_cfg_is verify.qa_mode ci && _talos_emit ref ci-gate
-  [ "$_TALOS_EVIDENCE" = true ] && _talos_emit ref evidence
   _talos_cfg_is vcs.provider file && _talos_emit ref file-mode
   [ -z "$(cfg hooks.pre_dispatch)" ] || _talos_emit ref hooks
   _val="$(cfg agents.fallback)"
@@ -3616,7 +3602,7 @@ _talos_run_loop() {
                      pipeline-vcs.sh pipeline-budget.sh pipeline-lock.sh pipeline-agent.sh \
                      pipeline-notify.sh pipeline-hooks.sh pipeline-events.sh
   # #517: self-ignore the deliberately in-tree .talos/ files (per-worktree
-  # .talos/env, providers.json, the evidence dir) via info/exclude before
+  # .talos/env, providers.json) via info/exclude before
   # the first stage dispatch -- never via a tracked .gitignore commit.
   # Idempotent and never fails outside a repository.
   _talos_ignore_in_tree
