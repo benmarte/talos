@@ -1,49 +1,19 @@
 #!/usr/bin/env bash
-# pipeline-cfg-cache.sh -- per-invocation config cache for cfg() (#169).
+# pipeline-cfg-cache.sh -- per-invocation config cache for cfg().
 #
-# Source this file (after SCRIPT_DIR is set) wherever a script used to
-# define its own `cfg() { "$SCRIPT_DIR/pipeline-config.sh" "$@"; }`
-# one-liner: pipeline-vcs.sh, pipeline-notify.sh, pipeline-status.sh,
-# pipeline-agent.sh, pipeline-worktree.sh.
+# Source it (after SCRIPT_DIR is set) instead of defining a per-call wrapper
+# around pipeline-config.sh. The first cfg() call dumps the whole resolved config
+# once (`pipeline-config.sh --dump`: one python3 spawn, none without a config
+# file) into a per-invocation cache dir; every later call is pure shell.
 #
-# cfg() used to shell out to pipeline-config.sh on every call -- a fresh
-# python3 process re-parsing the whole config file from disk, even for
-# repeat lookups within the same verb (59 call sites across these 5
-# scripts, ~26ms each -- issue #169). Instead, the first cfg() call in a
-# script invocation dumps the whole resolved config once
-# (`pipeline-config.sh --dump`, one python3 spawn, or zero if no config
-# file exists) into a per-invocation cache dir, and every cfg() call
-# after that -- in this call or any later one -- is answered from that
-# cache with pure shell, no python3 involved.
+# Subshells: `x="$(cfg key)"` runs in a subshell that cannot write a "loaded"
+# flag back, so the cache paths are created at source time (inherited by every
+# subshell) and "dumped yet?" is a sentinel FILE, not a variable. The cache is
+# per invocation: a config edit mid-run is not picked up.
 #
-# Subshell note: almost every real cfg() call site is written
-# `x="$(cfg key default)"` -- a command-substitution subshell. A subshell
-# inherits its parent's variables at fork time but can never write state
-# back to the parent, so a naive "have I loaded yet?" flag set *inside*
-# cfg() would never be visible to the next `$(cfg ...)` call -- each one
-# would see the flag as unset and re-dump, defeating the cache entirely
-# (caught by the spawn-count regression test). The fix: only the cache
-# *paths* need to exist before any cfg() call can happen, and those are
-# created here, synchronously, at source time (mktemp -d -- cheap, no
-# python3) -- every subshell inherits the same paths. Whether the dump has
-# actually been populated yet is tracked as a *file on disk* (a sentinel
-# file), not a shell variable, so it is visible to every subshell
-# regardless of which one populates it first.
-#
-# Cache semantics are strictly per invocation, not global: the dump
-# happens at most once per process -- a config file edit made
-# mid-invocation is NOT picked up. A new script invocation sources this
-# file again, gets a fresh cache dir, and always re-dumps, seeing the
-# edit.
-#
-# The cache dir is unique per invocation (mktemp -d) and is always
-# removed on exit, including on error, via a small composable EXIT-trap
-# registry: some scripts (pipeline-vcs.sh's post-approval verb) already
-# register their own EXIT trap for an unrelated temp file, and a bare
-# `trap ... EXIT` from either site would silently clobber the other's.
-#
-# Bash 3.2 (macOS) compatible: a plain indexed array, no associative
-# arrays.
+# The cache dir is unique (mktemp -d) and removed on exit through a composable
+# EXIT-trap registry (_talos_on_exit), so scripts that register their own EXIT
+# hook never clobber each other. Bash 3.2 compatible.
 
 # The config schema table (#439): the fallback for a cfg call with no default.
 # It is loaded only when intact (pipeline-defaults-check.sh, shared with

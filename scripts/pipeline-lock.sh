@@ -1,70 +1,31 @@
 #!/usr/bin/env bash
-# pipeline-lock.sh -- portable advisory locking for shared local state
-# (issue #180: issues.max_parallel > 1 lets two stages race on the same
-# on-disk file, e.g. ~/.talos/threads.json, or the same repo's
-# `git worktree` metadata).
+# pipeline-lock.sh -- portable advisory locking for shared local state (two
+# stages racing on one on-disk file or on one repo's worktree metadata).
 #
-# macOS ships no flock(1) (that binary is util-linux, Linux-only), so this
-# uses `mkdir` as the atomic primitive instead: POSIX guarantees mkdir
-# either creates the directory or fails with EEXIST -- there is no window
-# where two racing callers can both "win".
-#
-# Lock directory naming: "<resource>.lock.d", created next to the resource
-# it protects (not under a shared /tmp path), so two different repos or
-# checkouts locking a same-named resource never collide.
+# macOS ships no flock(1), so `mkdir` is the atomic primitive: it creates the
+# directory or fails with EEXIST. The lock directory is "<resource>.lock.d", next
+# to the resource it protects, so two checkouts never collide.
 #
 # Sourceable API:
 #   with_lock <resource> <timeout_s> -- <cmd...>
-#       Acquire the lock (or give up after timeout_s and proceed anyway,
-#       printing one stderr warning -- a stuck lock must never deadlock the
-#       pipeline), run <cmd...>, then release. Returns <cmd...>'s exit code
-#       either way.
-#
+#       Acquire, run <cmd...>, release; returns <cmd...>'s exit code. After
+#       timeout_s it proceeds WITHOUT the lock with one stderr warning: a stuck
+#       lock must never deadlock the pipeline.
 #   _lock_acquire <resource> <timeout_s>
-#       Lower-level primitive for callers that need the lock held across
-#       more than one command. Returns 0 with the lock held, or 1 after
-#       timing out (caller proceeds WITHOUT the lock -- same "never
-#       deadlock" contract as with_lock). Registers a release-on-exit hook
-#       so a crash mid-critical-section can't leave a stale lock behind.
+#       For a lock held across several commands. 0 with the lock held, 1 after
+#       timing out (the caller proceeds without it). Registers a release-on-exit
+#       hook so a crash cannot leave a stale lock.
 #   _lock_release <resource>
-#       Release the most recent _lock_acquire (the normal, fast path -- the
-#       exit hook registered by _lock_acquire is only the safety net for
-#       the abnormal/crash path). Not reentrant: this module tracks at most
-#       one held lock at a time per process, matching every real call site
-#       (pipeline-notify.sh, pipeline-worktree.sh each hold one lock at a
-#       time, never nested locks on two different resources).
+#       Release the most recent _lock_acquire. Not reentrant: one held lock per
+#       process, which matches every call site.
 #
-# Ownership token: each successful acquire writes "<pid>:<seq>" (seq is a
-# per-process acquire counter) into "<lockdir>/pid", not just the PID. Every
-# release -- explicit or via the exit-hook safety net -- only removes the
-# lock dir if that token is still the one on disk. Without this, a process
-# that acquires-then-releases the SAME resource N times in a loop (the
-# common case: N stages each briefly locking one shared file) would leave N
-# stale exit hooks queued up, and when the process finally exits, EVERY one
-# of those hooks fires and unconditionally rm -rf's the lock dir -- included
-# the (N+1)th holder's lock dir, if some OTHER process happened to acquire
-# it in the meantime. The token turns that unconditional "release" into "release
-# only if I still own it", so a stale hook from an old, already-released
-# acquisition can never destroy a different, currently-valid holder's lock.
-#
-# Staleness: if the lock dir exists but the PID half of its token is no
-# longer a running process, the lock is assumed abandoned (the holder
-# crashed, was killed, or the machine rebooted without cleanup) and is
-# reclaimed instead of waited out.
-#
-# Release-on-exit / EXIT+INT+TERM: reuses pipeline-cfg-cache.sh's
-# `_talos_on_exit` composable trap registry when the sourcing script has
-# already loaded it (pipeline-notify.sh, pipeline-worktree.sh both do);
-# otherwise this file defines the same minimal registry itself so it works
-# standalone (e.g. sourced directly by tests). Only EXIT is trapped -- in
-# bash, an EXIT trap still runs when the process is killed by SIGINT or
-# SIGTERM as long as those signals have no trap of their own (verified: a
-# bare `trap ... EXIT` fires on SIGINT/SIGTERM termination), so one EXIT
-# trap already covers EXIT+INT+TERM. Explicitly trapping INT/TERM as well
-# would be actively wrong here: once a script installs its own INT/TERM
-# trap, bash no longer terminates the process by default after running it,
-# so "just run the release hook" would leave the process alive instead of
-# letting Ctrl-C/SIGTERM stop it as expected.
+# Ownership token: an acquire writes "<pid>:<seq>" into "<lockdir>/pid", and a
+# release removes the lock dir only if that token is still on disk, so a stale
+# exit hook from an earlier acquisition can never destroy another holder's lock.
+# Staleness: a lock whose pid is no longer a running process is reclaimed.
+# Only EXIT is trapped (it also fires on SIGINT/SIGTERM; a trap of their own
+# would stop bash terminating). The release hook uses _talos_on_exit from
+# pipeline-cfg-cache.sh when loaded, else a minimal registry defined below.
 
 if ! command -v _talos_on_exit >/dev/null 2>&1; then
   _TALOS_EXIT_HOOKS=()

@@ -1,121 +1,60 @@
 #!/usr/bin/env bash
-# talos.sh -- the orchestrator's one entry point (#465, slice 1 of epic #422).
+# talos.sh -- the orchestrator's one entry point. Each verb replaces a block of
+# playbook prose (skills/pipeline/SKILL.md) with a deterministic call.
 #
-# Usage: talos.sh env
-#        talos.sh gate fix-round <N> <stage> [--pr M]
-#        talos.sh gate merge <pr> <issue>
-#        talos.sh docs-gate <pr> --issue <N>
-#        talos.sh post-merge <pr> <issue> [--ci-runs <n>] [--heal]
-#        talos.sh post-merge <pr> <issue> --handoff [--details-file <file>]
-#        talos.sh sweep [<issue-id>...]
-#        talos.sh summary [<issue-id>...]
-#        talos.sh prompt <role> --issue <N> [--pr <M>] [--shape first|fix-round|restamp] [--draft] [...]
-#        talos.sh done <role> --issue <N> [--pr <M>] [--verdict <V>] --summary-file <F|-> [--draft] [...]
-#        talos.sh state [--summary]
-#        talos.sh next
-#        talos.sh run [--issue <N>] [--max-iterations <n>]
-#        talos.sh help
+# Usage: talos.sh <verb> [args]; `talos.sh help` prints every flag.
+# Verbs: env gate docs-gate post-merge sweep summary prompt done state next claim
+#        run lease help
 #
-# One script with verbs; each later slice adds a verb and deletes the playbook
-# prose it replaces. Slice 1 added `env`, slice 2 (#466) `gate`, slice 3 (#467)
-# `post-merge`, `sweep` and `summary`, slice 4 (#468) `prompt`, slice 5 (#469)
-# `done`, slice 6 (#470) `state` and `next`.
+# Output (stdout): one line each, nothing else.
+#   KEY=value              a result. Keys are [A-Za-z][A-Za-z0-9_.]*.
+#   ref=<topic>            a playbook ref to read once (skills/pipeline/refs/<topic>.md).
+#   warn reason=<enum> [role=<role>|key=<KEY>|issue=<n>|...]
+#                          the run can go on; the line says what is missing.
+#   stop reason=<enum>     the run must not start or go on (exit non-zero:
+#                          2 for usage, else 1). Nothing collected so far is printed.
+# Exit codes: 0 ok (for gate: a verdict was printed), 1 a `stop`, 2 usage.
 #
-#   env    Everything Step 0 of skills/pipeline/SKILL.md and the per-role runner
-#          resolution used to make the orchestrator gather by hand, in one call:
-#          every resolved config value Step 0 lists, the isolation gate, PR_DRAFT
-#          (pipeline-draft-check.sh resolve), the startup diagnostic's two facts
-#          and, for each role, the answers of `pipeline-agent.sh --resolve <role>` and
-#          `--check-effort <role>`. Their logic is called, never copied.
+# Free text never travels on argv (files or stdin carry it) and every value is
+# sanitised in one `python3 -I` pass before it prints: a control character, DEL
+# and a C1 control print as \xNN, an invalid UTF-8 byte as \xNN, a bidi control
+# or invisible character as \uXXXX, a tag character as \UXXXXXXXX. A list value
+# (verify commands, required checks, skip labels) is its items joined by the two
+# characters \n; inside an item a backslash prints as \\. A value over 8192
+# characters is cut, ends in [truncated] and is followed by `warn
+# reason=value-truncated key=<KEY>`; a real "[truncated]" prints as \x5btruncated].
+# A child's stderr is passed through unchanged (env) or relayed as sanitised
+# `note <verb>=<child> msg=<escaped>` lines (every other verb).
 #
-# Output (stdout), one line each, nothing else:
-#   KEY=value                  a config value or a per-role field. Keys are
-#                              [A-Za-z][A-Za-z0-9_.]*: SCRIPTS_DIR and
-#                              AGENT_SOURCE (the startup diagnostic), the Step 0
-#                              names (BASE_BRANCH, MERGE_AUTO, ...) and
-#                              agent.<role>.<field> (runner, runner_cmd, model,
-#                              effort, fallback, effort_notice); only runner is
-#                              always printed, an absent field is empty.
-#   ref=<topic>                a playbook ref that applies to this run (#547):
-#                              skills/pipeline/refs/<topic>.md, read once.
-#                              Topics: draft-order (PR_DRAFT true), planner,
-#                              adversarial, human-merge (merge.auto false),
-#                              ci-gate (verify.qa_mode ci), file-mode, hooks
-#                              (hooks.pre_dispatch set) and harness (a
-#                              non-claude runner, subagents false or a fallback
-#                              chain). Printed last, one line per topic, none
-#                              when none applies.
-#   warn reason=<enum> [role=<role>|key=<KEY>]
-#                              the run can go on; the line says what is missing.
-#   stop reason=<enum>         the run must not start (exit non-zero).
-# A list value (verify commands, required checks, skip labels) is its items
-# joined by the two characters \n; inside an item a backslash prints as \\, so
-# the text \n in a config value (printed \\n) is never a list separator. Every
-# value is config or script text, so it is sanitised in one python3 -I pass: a
-# control character, DEL and a C1 control print as \xNN, an invalid UTF-8 byte as
-# \xNN, a bidi control (U+202A-U+202E, U+2066-U+2069, U+200E, U+200F, U+061C) or
-# invisible character (U+200B-U+200D, U+2060, U+00AD, U+2028, U+2029, U+FEFF) as
-# \uXXXX, a tag character (U+E0000-U+E007F) as \UXXXXXXXX, and a value over 8192
-# characters is cut, ends in the marker [truncated] and is followed by `warn
-# reason=value-truncated key=<KEY>`. A real "[truncated]" inside a value prints
-# as \x5btruncated], so the marker only ever means a cut. Free text never
-# travels on argv: values go to the sanitiser on stdin, a file carries them there.
-# A child's stderr line (config or draft warning, an isolation error)
-# is passed through on stderr, unchanged.
+# The `<verb>-reasons:` lines below are the closed enum of reasons each verb
+# prints; the tests read them. `stop:`/`warn:` under a line split that enum.
 #
+# env     Step 0 in one call: every resolved config value, the isolation gate,
+#         PR_DRAFT (pipeline-draft-check.sh resolve), SCRIPTS_DIR and AGENT_SOURCE,
+#         and per role agent.<role>.<field> (runner, runner_cmd, model, effort,
+#         fallback, effort_notice; only runner is always printed) from
+#         `pipeline-agent.sh --resolve-roles`. Then the `ref=` lines, last.
 # env-reasons: scripts-missing python-missing scratch-unavailable config-unreadable isolation-invalid usage unknown-verb draft-resolve-failed resolve-failed effort-check-failed value-truncated
 #   stop: scripts-missing python-missing scratch-unavailable config-unreadable
 #         isolation-invalid usage unknown-verb draft-resolve-failed
 #   warn: resolve-failed effort-check-failed value-truncated
 #
-# gate    Two verbs that compose the pipeline-vcs.sh and pipeline-budget.sh calls the
-#         playbook used to list, in the same order, and print one verdict. They
-#         write only what that prose wrote (labels, a PR comment, the `blocked`
-#         notice, record-attempt's marker, the budget hook, the base-update push)
-#         and never merge: on `verdict=merge` the orchestrator runs `merge-pr`.
-#
-#   gate fix-round <N> <stage> [--pr M]
-#          Step 3's order: pipeline-budget.sh check, record-attempt (with --pr
-#          when a PR exists), then the unblock (label-pr/label-issue --remove
-#          pipeline:blocked). <stage> is developer qa reviewer security docs
-#          validator pm adversarial.
+# gate    Composes the pipeline-vcs.sh and pipeline-budget.sh calls of the playbook
+#         into one verdict. It never merges: on `verdict=merge` the orchestrator
+#         runs `merge-pr`. A `stop` means a gate could not be checked: do not merge.
+#   gate fix-round <N> <stage> [--pr M]   <stage>: developer qa reviewer security docs validator pm adversarial
 #            verdict=redispatch  stage=<stage> count=<k> total=<t> [budget=<warn line>]
 #            verdict=block       reason=budget-exceeded|max-fix-attempts|
 #                                max-total-dispatches|record-failed, blocked_by=<text>
-#          A block has set pipeline:blocked on the issue (and the PR); the
-#          orchestrator posts blocked.md (or marks needs-owner) with blocked_by.
 #   gate merge <pr> <issue>
-#          Step 4's order: labels (blocked, skip-qa, the approval labels of the
-#          enabled roles), check-approval-sha --stale-list, check-pr-files,
-#          check-closing-keyword, pr-is-draft (PR_DRAFT only), pr-checks-required
-#          with the 2-re-runs-per-head budget, the stale-base guard, then
-#          merge.auto: handoff, or merge.
-#            verdict=merge      [ci_runs=<n>]   gates passed: pr-ci-runs was read (PR_DRAFT)
+#            verdict=merge      [ci_runs=<n>]
 #            verdict=handoff                    merge.auto is off: pipeline:approved is set
-#            verdict=redispatch reason=stale-approvals stale=<roles, re-stamp order>
-#                                 | draft-pr | ci-failed (PR_DRAFT) | merge-conflict
+#            verdict=redispatch reason=stale-approvals stale=<roles> | draft-pr | ci-failed | merge-conflict
 #            verdict=wait       reason=blocked-label | approvals-missing missing=<labels>
 #                                 | ci-pending | ci-rerun attempt=<k> | rerun-unsupported
 #                                 | ci-failed | base-synced | conflict-check-unverified
 #                                 | awaiting-human-merge
 #            verdict=block      reason=forbidden-files | closing-keyword | siblings-capped
-#          A `stop` means a gate could not be checked (exit 1): do not merge. A
-#          conflict check that cannot run (github, github-api: conflict-files
-#          exit non-zero; any other provider: pr-mergeable UNKNOWN or an error,
-#          that provider having no conflict-files) is
-#          `wait reason=conflict-check-unverified`, never a merge. The stderr of
-#          each gate call (it can hold PR-author text) is relayed on stderr only
-#          as `note gate=<verb> msg=<escaped>` lines, one per line, sanitised as
-#          above, so no relayed line can begin with `verdict=` or any other key.
-#          The ci-failed comment is posted once per head (<!-- talos:ci-failed
-#          <sha> --> marker). Only markers by a trusted author count (the
-#          ci-rerun ones too): markers.trusted_authors plus the `current-user`
-#          login, as for approval markers; a refused identity with no
-#          trusted_authors is `stop reason=trust-unverified`. A required check that never starts stays
-#          `wait reason=ci-pending`: no head-age bound exists in the vcs verbs.
-#          Not added to the old order on purpose: pr-mergeable (Step 3c, and only
-#          after a base update here) and assert-sync (Step 0, before 3e).
-#
 # gate-reasons: budget-exceeded max-fix-attempts max-total-dispatches record-failed stale-approvals draft-pr ci-failed merge-conflict blocked-label approvals-missing ci-pending ci-rerun rerun-unsupported base-synced conflict-check-unverified awaiting-human-merge forbidden-files closing-keyword siblings-capped
 #   stop: usage unknown-verb scripts-missing python-missing scratch-unavailable config-unreadable
 #         draft-resolve-failed view-failed labels-unreadable approval-sha-failed
@@ -124,73 +63,15 @@
 #   warn: closing-keyword-unverified ci-runs-unrecorded budget-check-failed
 #         unblock-failed comment-failed label-failed value-truncated
 #
-# post-merge, sweep, summary (#467). They write what the playbook's lists of calls
-# wrote, in its order, and print KEY=value lines, no verdict: the first line is
-# `post_merge=done|handoff`, `sweep=done` or `summary=done`, or a lone `stop`
-# line. Every item is non-fatal: one that fails is a `warn reason=<enum>` line
-# (with `issue=<n>` or `epic=<n>`) and the next still runs. Child stderr is
-# relayed only as `note post-merge=<verb> msg=<escaped>` lines (`sweep=`,
-# `summary=`), sanitised as above. Free text (an epic's unticked items) reaches
-# the template renderer in a file, never on a command line.
-#
-#   post-merge <pr> <issue> [--ci-runs <n>] [--heal]
-#          Order: sibling sync (a merge only: --heal skips it), the issue-closed comment (--allow-closed:
-#          GitHub closes the issue at merge), close-issue, board Done, worktree
-#          remove, the orchestrator/merged/issue-closed
-#          notices, post_stage merged (with --ci-runs <n>, read BEFORE merge-pr,
-#          which deletes the branch; none is never guessed) and issue-closed, the
-#          spend block. Output keys: `sibling=<pr> action=clean|mergebase|
-#          update-branch|developer|unverified` (developer: the orchestrator
-#          dispatches the Step 3c merge-base task for the FIRST such PR only, then
-#          re-checks pr-mergeable before the next), `recorded=yes|no`, `spend=<the
-#          cost --line>`. The sibling sync runs when merge.auto_sync is true.
-#          Idempotent per item: a second run is a safe no-op. Board Done, worktree remove and a clean sibling are idempotent in
-#          their scripts. The issue-closed
-#          comment carries <!-- talos:issue-closed pr=<M> -->: when a comment by a
-#          trusted author (markers.trusted_authors plus the current user, as for
-#          approval markers) already has it, `recorded=yes` and the comment, the
-#          notices, both events and the spend block are skipped, so a re-run gives
-#          one comment and one merged event. close-issue runs only while the issue
-#          is open (list-issues; the github verb comments on every call, so an
-#          already-closed issue gets no second comment, and a state that cannot be
-#          read is `warn reason=issue-state-unverified`, never a blind close; on any
-#          other provider the list is not trusted and close-issue always runs), so a
-#          close that failed after the marker was posted is retried by the next
-#          heal; board Done always runs (idempotent). The comment is not gated by comments.enabled
-#          (as before; only the spend comment is). A trust set that cannot be
-#          resolved (no trusted_authors and the identity refused or unavailable),
-#          or unreadable comments, count no marker (the repeat is the lesser
-#          harm): `warn reason=trust-unverified|comments-unreadable`.
-#          A merge (not --heal) releases the issue's lease (#470, AC4) after the
-#          items: the run that answered action=merge holds it, and the merge
-#          completing frees it. A heal is another run's bookkeeping: it
-#          releases nothing (its issue's lease belongs to whoever holds it).
-#   post-merge <pr> <issue> --handoff [--details-file <file>]
-#          merge.auto is off: approved.md on the PR (the file's text, if given,
-#          is DETAILS), then the orchestrator relay. Nothing else runs.
-#   sweep [<issue-id>...]
-#          The ids are this run's queue. Step 1 item 2: for each open issue with a
-#          pipeline:* label, `find-pr <n> merged`; a merged PR is `heal=<n> pr=<m>`
-#          and runs post-merge's items (--heal). find-pr exit 2 means NOT VERIFIED:
-#          `warn reason=find-pr-unverified issue=<n>`, the heal skipped (never read
-#          as "no merged PR"); any other failure is find-pr-failed. Item 4: the
-#          worktree sweep (`worktree_sweep=<summary line>`). Item 5: `blocked_issues=<K>`,
-#          `blocked_prs=<J>` and, when K+J > 0, the one `info backlog` notice.
-#          With roles.planner: item 6 `epic=<n> action=closed|pending|waiting`
-#          (closed: check-epic-acceptance exit 0 and the close succeeded; a failed
-#          close is only `warn reason=epic-close-failed issue=<n>`, no `epic=` line;
-#          pending: the label and the comment just posted, once per epic; waiting: already flagged; exit 2 is
-#          `warn reason=epic-acceptance-unsupported epic=<n>`, the epic left open)
-#          and item 7 `unblocked=<n>` (every issue named on its `Depends on:` lines
-#          is no longer open).
-#   summary [<issue-id>...]
-#          The ids are the issues processed in this run. Step 5 item 1: the worktree
-#          sweep keeping those and the issue of every PR still open (any base, label
-#          or fork, as the old Step 5 said; the head must be fix|feat/issue-<n>; the
-#          PR list unreadable: `warn reason=prs-unlisted`, nothing swept), item 2
-#          `worktree_warning=<line>` (relayed once as an `info worktrees` notice),
-#          item 4 `cost=<line>` per line of the one cost --summary call.
-#
+# post-merge, sweep, summary   Bookkeeping; each item is non-fatal (a `warn` line,
+#         the next item still runs). First line `post_merge=done|handoff`,
+#         `sweep=done` or `summary=done`, or a lone `stop`. post-merge is idempotent
+#         per item; --heal skips the sibling sync and releases no lease; --handoff
+#         only posts approved.md. Keys: `sibling=<pr> action=clean|mergebase|
+#         update-branch|developer|unverified`, `recorded=yes|no`, `spend=<line>`,
+#         `heal=<n> pr=<m>`, `worktree_sweep=<line>`, `blocked_issues=<K>`,
+#         `blocked_prs=<J>`, `epic=<n> action=closed|pending|waiting`,
+#         `unblocked=<n>`, `worktree_warning=<line>`, `cost=<line>`.
 # post-merge-reasons: comments-unreadable trust-unverified comment-failed close-failed issue-state-unverified board-failed worktree-remove-failed notify-failed spend-upsert-failed siblings-unlisted lease-release-failed value-truncated
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
 #   warn: all the others
@@ -201,290 +82,87 @@
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
 #   warn: all the others
 #
-# prompt  Renders a stage prompt to a file: the dispatch blocks the playbook used to
-#         carry, now templates/prompts/<role>.md (one per role, restamp.md for the
-#         re-stamp shape), found next to the scripts directory (../templates/prompts,
-#         so a global, plugin or vendored install finds them). Output is one line,
-#         `prompt_file=<path>`: a new mode-0600 file under ${TMPDIR:-/tmp} that the
-#         caller reads for the spawn and then removes. It prints nothing else but
-#         `stop` lines.
-#
-#   prompt <role> --issue <N> [--pr <M>] [--shape first|fix-round|restamp] [--draft]
-#          [--spec-source pm|issue-body] [--prior-file F] [--title-file F]
-#          [--body-file F] [--ci-failure-file F] [--docs-paths-file F] [--restamp-file F]
-#          [--preamble-file F]
-#          <role> is validator pm developer qa reviewer security adversarial docs planner.
-#          --shape first (default): the stage's own prompt. fix-round: the developer
-#          prompt of a fix round (needs --pr and --prior-file; --ci-failure-file adds
-#          the CI provider's failing check names and run URL as a fenced data block).
-#          restamp: qa, reviewer, security and adversarial only, the delta re-review of
-#          a stale approval (needs --pr and --restamp-file, the inputs the orchestrator
-#          gathered; the comment header gets ` — re-stamp`). --draft is PR_DRAFT: the
-#          developer's Open-the-PR-as-a-DRAFT line and `Required checks: none`, and the
-#          draft-review wording of the reviewer, security, adversarial and docs prompts.
-#          --spec-source issue-body is a skipped PM stage. --prior-file is the
-#          `Prior stage summary` (none when absent), --title-file and --body-file are the
-#          planner's epic, --docs-paths-file is the docs stage's filtered path list (absent:
-#          the full diff-pr diff). --preamble-file is the `hooks.pre_dispatch` output: its text
-#          (nothing when the file is empty) goes at the very top of the rendered file, as it
-#          is, one newline after it; it is never scanned for markers. Free text reaches the verb only in files, never on
-#          argv; a file's trailing newlines are cut and its text is otherwise inserted as it
-#          is. The configured values (base branch, provider, comment header and templates
-#          dir, verify settings, required checks, isolation and status modes)
-#          are read through cfg, as `env` reads them; the developer's Handoff line follows
-#          the exit status of `pipeline-worktree.sh handoff <N>`, never its output.
-#          verify.qa_mode local drops the developer's Required checks line and CI wait.
-#          <ABSOLUTE_PATH_OF_THIS_WORKTREE> and other <angle> text stay in the prompt for
-#          the stage to fill in. Markers are {{NAME}} over the fixed list in
-#          _TALOS_PROMPT_NAMES, rendered in one `python3 -I` pass with no eval and no shell
-#          expansion: a marker in a template that is not on the list is `stop
-#          reason=unknown-placeholder`, one with no value is `stop reason=value-missing`,
-#          and a value is never scanned for markers again. A marker alone on a line whose
-#          value is empty drops the line. The rule every prompt carries (If you stop, block,
-#          or ask...) is the one partial templates/prompts/_stop-rule.md.
-#
+# prompt  Renders templates/prompts/<role>.md to a new mode-0600 file and prints
+#         `prompt_file=<path>` (the caller reads, then removes it). <role>: validator
+#         pm developer qa reviewer security adversarial docs planner. --shape first
+#         (default) | fix-round (developer; --pr, --prior-file) | restamp (qa
+#         reviewer security adversarial; --pr, --restamp-file). Free text arrives
+#         only as files (--prior-file --title-file --body-file --ci-failure-file
+#         --docs-paths-file --restamp-file --preamble-file). Markers are {{NAME}}
+#         over _TALOS_PROMPT_NAMES, rendered in one `python3 -I` pass, no eval.
 # prompt-reasons: usage unknown-role unknown-shape shape-unsupported file-unreadable template-missing unknown-placeholder value-missing render-failed isolation-invalid scripts-missing python-missing scratch-unavailable config-unreadable
 #   stop: all of them (exit 2 for usage, unknown-role, unknown-shape, shape-unsupported; else 1)
 #
-# done    End-of-stage bookkeeping: what the playbook's "After <role> returns" blocks and
-#         its conversation stream protocol told the orchestrator to run by hand, in
-#         the same order, one call per returned stage. Role events are written the way
-#         the playbook wrote them (`post_stage <role> <role> ...`); `stage_complete` is
-#         the adapter path's own event (pipeline-agent.sh) and is not written here.
-#
-#   done <role> --issue <N> [--pr <M>] [--verdict <V>] --summary-file <F|-> [--draft]
-#        [--tokens <n>] [--tool-uses <n>] [--duration-s <n>] [--model <m>] [--sha <sha>]
-#          <role> is validator pm developer qa reviewer security adversarial docs. The
-#          summary is the stage's 2-3 line text, read from the file (`-`: stdin, up to
-#          64 KB, never argv); it is the relay message and the post_stage summary. --pr is
-#          required for qa, reviewer, security, adversarial and the developer's PR_OPENED.
-#          --draft is PR_DRAFT. The verdict is one of a fixed list per role; pm and docs
-#          take none:
+# done    End-of-stage bookkeeping: label/draft fixups on RESTAMP_FAIL or a draft qa
+#         FAIL (a failure is a stop, nothing written), board status, the role relay,
+#         post_stage, the spend block, the lifecycle event; then the issue's lease
+#         is released. <role>: validator pm developer qa reviewer security adversarial
+#         docs. --pr is required for qa, reviewer, security, adversarial and
+#         PR_OPENED. The summary (--summary-file F, or `-` for stdin) never travels
+#         on argv.
+#         Verdicts per role (pm and docs take none; the table is _talos_done_verdicts):
 #            validator CONFIRMED ALREADY_FIXED DUPLICATE NEEDS_MORE_INFO SECURITY_THREAT
 #            developer PR_OPENED BLOCKED        qa PASS FAIL RESTAMP_PASS RESTAMP_FAIL
 #            reviewer APPROVED CHANGES RESTAMP_PASS RESTAMP_FAIL
 #            security, adversarial CLEAR FINDINGS RESTAMP_PASS RESTAMP_FAIL
-#          Order: (1) before anything is announced, a RESTAMP_FAIL strips the role's
-#          approval label (label-pr --remove, so the next pass is a full stage, not
-#          another re-stamp) and, with --draft, a qa FAIL runs `draft-pr` then
-#          `label-pr --remove qa:pass`; a failure there is a stop and nothing is
-#          written; (2) board status (validator CONFIRMED: In progress, validator
-#          non-CONFIRMED and developer BLOCKED: Blocked, developer PR_OPENED: In
-#          review); (3) the role relay (pipeline-notify.sh <role> "#<N>" - <N>, the
-#          summary on stdin); (4) post_stage <role> with --pr --sha --verdict
-#          --tokens --tool-uses --duration-s (a model that is not [A-Za-z0-9._:-]+ is
-#          dropped with `warn reason=model-invalid`); (5) the spend block, after a
-#          role relay only: the --line, and with a PR the comment upsert, as
-#          post-merge does it; (6) the lifecycle event: pr-opened (PR_OPENED) or
-#          blocked (a failing verdict: validator non-CONFIRMED, developer BLOCKED, qa
-#          FAIL, reviewer CHANGES, security and adversarial FINDINGS, any RESTAMP_FAIL),
-#          notified and then post_stage <event> orchestrator, with no spend block.
-#          Output: `done=ok` first, `spend=<line>`, `next=<what follows>` last:
-#          continue | stop (validator non-CONFIRMED, developer BLOCKED: move on) |
-#          fix-round stage=<role> (run `gate fix-round`, then the developer) | batch
-#          (--draft, reviewer/security/adversarial: wait for every role of the draft
-#          review batch, then one `gate fix-round` for all of them). `done` never calls
-#          `gate fix-round` and never merges. Before the `next=` line the issue's
-#          lease is released (#470, AC4): the run `next` dispatched holds it, and
-#          a done stage frees it for the next run immediately, not after the TTL.
-#          A release that cannot be done is `warn reason=lease-release-failed`.
-#          Child stderr is relayed only as `note done=<verb> msg=<escaped>` lines.
-#
+#         Output: `done=ok` first, `spend=<line>`, `next=` last:
+#            continue | stop | fix-round stage=<role> | batch
+#         `done` never calls `gate fix-round` and never merges.
 # done-reasons: usage unknown-role verdict-invalid file-unreadable summary-empty draft-pr-failed label-failed scripts-missing python-missing scratch-unavailable config-unreadable board-failed notify-failed model-invalid spend-upsert-failed lease-release-failed
 #   stop: usage unknown-role verdict-invalid file-unreadable summary-empty draft-pr-failed label-failed
 #         scripts-missing python-missing scratch-unavailable config-unreadable
 #         (exit 2 for usage, unknown-role, verdict-invalid; else 1)
 #   warn: board-failed notify-failed model-invalid spend-upsert-failed lease-release-failed
 #
-# state, next (#470). `state` prints the normalised run state: the JSON of
-# pipeline-status-file.sh `collect` (read verbs only, no worktree, commit, push
-# or label). Output, after the sanitiser: `state=<JSON>`
-# ({"prs": [...], "pr_total": n, "ignored": n, "blocked": [...],
-# "queued": [...], "held": [...], "inflight": [...], "owners": [...],
-# "capped": [...]}), one
-# line (no raw control bytes; the JSON has none). Every invalid or unreadable
-# input fails closed with a lone `stop reason=<enum>` line, no partial JSON.
-#   state --summary (#550) prints, instead of the JSON, the three lines Step 0 of
-#   the playbook shows a new session: `where=in flight: ...`, `where=waiting: ...`,
-#   `where=next: ...`. Read-only, no lease; only numbers and fixed words (an
-#   owner's question is never printed); `next` hands out the action the third
-#   line names.
-#
+# state   `state=<JSON>`: the normalised run state of pipeline-status-file.sh
+#         `collect` (read verbs only). {"prs", "pr_total", "ignored", "blocked",
+#         "queued", "held", "inflight", "owners", "capped"}. Invalid or unreadable
+#         input fails closed with a lone `stop`, no partial JSON. `state --summary`
+#         prints three lines instead: `where=in flight: ...`, `where=waiting: ...`,
+#         `where=next: ...` (read-only, no lease, only numbers and fixed words).
 # state-reasons: usage scripts-missing python-missing scratch-unavailable config-unreadable state-unavailable
 #   stop: all of them (exit 2 for usage; else 1)
 #
-# next   Exactly one action for the orchestrator to take, derived from `state`
-#        (#470 PR-side, #471 issue-side), fixed-enum reasons, first match
-#        wins. PR-side, over the collected state:
-#          action=dispatch stage=<role> pr=<M> issue=<N>  PR #M's stage is <role>
-#                                  (qa, docs, reviewer, security, adversarial:
-#                                  the first enabled role missing or stale on
-#                                  the lowest-numbered such PR); dispatch that
-#                                  stage's prompt.
-#          action=merge pr=<M> issue=<N>  the lowest PR at stage merge: run
-#                                  `gate merge <M> <N>`.
-#          action=wait reason=<enum>     a PR-side wait: draft (the draft
-#                                  window; key-carrying as
-#                                  `action=wait reason=draft pr=<M> issue=<N>`:
-#                                  the run loop continues the Draft stage
-#                                  order from it),
-#                                  ci (the CI wait), human-merge (a human
-#                                  merges), blocked (a PR or issue carries
-#                                  pipeline:blocked).
-#        Issue-side, when no PR answers first (#471; the issue queue is the
-#        collect's `queued` list, already sorted p0<p1<p2<unlabeled then ID
-#        ascending; label_filter collapse, skip_labels, max_parallel and the
-#        dependency gate are applied here):
-#          action=dispatch stage=<role> issue=<N>  the issue's stage:
-#                                  validator (pipeline:ready), planner (a
-#                                  pipeline:confirmed epic: the `epic` label,
-#                                  >= 4 `- [ ]` items or a >= 2000-char body),
-#                                  pm (pipeline:confirmed non-epic, unless
-#                                  has-spec exits 0 and the skip-when-spec-
-#                                  present toggle is on -- then developer),
-#                                  developer (pipeline:dev, or
-#                                  pipeline:epic-decomposed). Never two
-#                                  stages in one action.
-#          action=ask-owner issue=<N> question=<sanitised>  a queued issue
-#                                  waiting on its owner (pipeline:needs-owner);
-#                                  the question is the owner entry's text,
-#                                  sanitised, or the fixed fallback line.
-#          action=wait reason=<enum> [retry_after_s=<s>]  dependency (a
-#                                  `Depends on: #<N>` issue is still open,
-#                                  roles.planner = true), cap (max_parallel
-#                                  in-flight leases), owner (blocked work
-#                                  or an Owner line), lease (another run
-#                                  holds the lease; retry_after_s is the
-#                                  holder's remaining TTL), none.
-#        Playbook refs (#547): a planner or adversarial dispatch and the draft
-#        wait end in ` ref=<topic>` (planner, adversarial, draft-order): the
-#        orchestrator reads
-#        skills/pipeline/refs/<topic>.md before acting. No other answer carries
-#        one (ask-owner's question runs to the end of its line).
-#        `next --issue <N>` routes the named issue through the same rules
-#        (adoption first: an open pipeline PR for a queued #N answers the
-#        PR's stage, resumed via the PR-side helper). A developer dispatch
-#        for an issue that already has an open PR composes the gate
-#        fix-round outcome first (pipeline-budget.sh check, then
-#        check-attempt) and never dispatches past a ceiling:
-#          stop reason=max-fix-attempts|max-total-dispatches|budget-exceeded
-#        or stop reason=unsupported-verb:<verb> when the provider lacks a
-#        needed verb (has-spec, check-attempt) -- never a guess.
-#
+# next    Exactly one action, first match wins. PR side, then the issue queue:
+#           action=dispatch stage=<role> pr=<M> issue=<N>   qa docs reviewer security adversarial
+#           action=merge pr=<M> issue=<N>                   run `gate merge <M> <N>`
+#           action=dispatch stage=<validator|planner|pm|developer> issue=<N>
+#           action=ask-owner issue=<N> question=<sanitised>
+#           action=wait reason=<draft|ci|human-merge|blocked|owner|lease|dependency|cap|none>
+#                       [retry_after_s=<s>]
+#           The draft wait is key-carrying: action=wait reason=draft pr=<M> issue=<N>
+#         A planner or adversarial dispatch and the draft wait end in ` ref=<topic>`.
+#         `next --issue <N>` routes the named issue through the same rules. A
+#         developer dispatch for an issue with an open PR runs the fix-round checks
+#         first and never dispatches past a ceiling:
+#           stop reason=max-fix-attempts|max-total-dispatches|budget-exceeded
+#         or stop reason=unsupported-verb:<verb> when the provider lacks a verb.
+#         `next` leases the issue before answering dispatch or merge (see Lease).
 # next-reasons: usage state-unavailable unsupported-verb:<provider-verb> max-fix-attempts max-total-dispatches budget-exceeded record-failed
 #   stop: usage state-unavailable unsupported-verb:<provider-verb> max-fix-attempts
 #         max-total-dispatches budget-exceeded record-failed
 #         (exit 2 for usage; else 1)
 #   wait: draft ci human-merge blocked owner lease none dependency cap
 #
-# run    The loop of Step 2 itself (slice 8, #472): `next`, act on the one
-#        action, `done`, repeat -- the deterministic orchestrator for local and
-#        weak-model profiles (code routes, gates and does the bookkeeping; an
-#        LLM still does every stage), with no orchestrator LLM. Every prompt is
-#        rendered by `prompt` and dispatched through `pipeline-agent.sh <role> -`
-#        with the prompt file on stdin; the verdict is read back from the
-#        stage's convention:
-#          validator, qa, reviewer, security, adversarial
-#                          the `<VERDICT>: ...` first word of the agent's final
-#                          message, checked against the role's `done` verdict
-#                          list (an unknown word is a dispatch failure, never a
-#                          verdict -- nothing is recorded)
-#          pm              no verdict: pm takes none (done without --verdict)
-#          developer       a PR URL in the final message (or a standalone
-#                          `pr=<N>` word, #537) is `PR_OPENED` with --pr <N>;
-#                          the absence of one (or BLOCKED:) is BLOCKED
-#          planner         no verdict; the sub-issues the agent created are its
-#                          work -- one `done` per run (no pass/fail verdict)
-#          docs            no verdict: docs takes none (like pm and planner;
-#                          #519 -- docs was absent from the verdict reading,
-#                          so a docs dispatch failed the run after the agent
-#                          had already run)
-#        Then `done <role> ... --summary-file -` (the final message on stdin),
-#        and the `next=` line of `done` decides what follows: `continue` loops,
-#        `stop` moves on, a `fix-round` runs `gate fix-round` (the verb's
-#        `blocked_by=` and `reason=` stop the run; `wait` does -- a `budget`
-#        warn line on a `redispatch` is relayed), `batch` waits for nothing
-#        here (a draft batch answers one role per action from `next`; each
-#        dispatch is its own loop pass).
-#        A QA `fix-round` is run by the driver itself (#537), the playbook's
-#        flow: `gate fix-round <N> qa --pr <M>` (the budget guard, the attempt
-#        ceilings, the unblock right before the round), then the developer
-#        through the one dispatch path with `--shape fix-round` and QA's report
-#        as the prior summary; after the push the next pass resumes the normal
-#        path (re-stamps, ready-pr, QA). Backstop: a QA FAIL at the PR head the
-#        previous QA FAIL saw (the fix round pushed nothing) sets
-#        pipeline:blocked on the PR and the issue and stops, `stop
-#        reason=qa-fail-unchanged-head pr=<M> issue=<N>`, exit 0 -- never a
-#        loop to --max-iterations. The last failing head per PR lives in the
-#        run's own scratch dir, never the repo tree; a head that cannot be
-#        read is `stop reason=head-unresolved`. A gate `verdict=block` ends the
-#        run clean (`stop verdict=block reason=<why>`).
+# claim   Multi-user claiming: assign issue N to this operator unless another
+#         holds it, read the assignees back, and give it up if a lower login also
+#         claimed it: `claim=taken|owned owner=<me>` | `claim=lost owner=<login>` |
+#         `claim=unclaimed reason=not-assignable` | `claim=off reason=<disabled|
+#         assignee-none|identity-unresolved>`.
 #
-#   run [--issue <N>] [--max-iterations <n>]
-#          --issue <N> pins every `next` call to the named issue (the
-#          `--issue` form). --max-iterations <n> caps the loop's passes
-#          (default 20): a safety bound, never a ceiling the config owns.
-#        The driver never merges and never writes a label of its own: on
-#        `action=merge` it runs `gate merge <pr> <issue>`; verdict=merge runs
-#        `_vcs merge-pr` then `post-merge <pr> <issue>` with the captured
-#        `ci_runs=` (a merge without it is `--ci-runs` absent), and stops the
-#        run (the next run reconciles); on verdict=wait|block|redispatch|handoff
-#        it stops, relaying the verdict and its detail lines on the one stop
-#        line (`stop verdict=wait reason=approvals-missing missing=qa:pass`,
-#        #543; redispatch: a dispatch for the same PR follows on the next
-#        run). On `action=ask-owner` and on every `stop reason=` it stops and
-#        exits 0 after announcing the action (the stop is the answer, not a
-#        fault); a failed state read (a `stop reason=` from `next` itself)
-#        exits 1, so a caller's loop can tell the two apart. A dispatch whose
-#        prompt render or agent run fails (a non-zero exit that is not the
-#        relayed 75/69 provider contract) stops the run with
-#        `run=stopped reason=dispatch-failed role=<role>` after the `done`
-#        BLOCKED bookkeeping -- the issue is left free for the next run.
-#        The in-flight fallback (#519): when an untargeted run's `next`
-#        answers `action=wait`, the pass works the collect's `inflight` list
-#        -- issues mid-state-machine (pipeline:confirmed, pipeline:dev or
-#        pipeline:epic-decomposed), not queued, not blocked or needs-owner,
-#        and never an issue that already has an open pipeline PR (the PR side
-#        owns that work) -- with one `next --issue` each. A dispatch or merge
-#        answer executes through the same branches as any other pass (the
-#        loop's single executor: `gate merge`, merge-pr, post-merge); an
-#        in-flight issue that is itself waiting moves to the next in-flight
-#        issue, an `action=ask-owner` ends the run clean, and an exhausted
-#        (or empty) list ends it on the last wait, exit 0 -- the ready queue
-#        is never re-walked. The list is read once before the first pass,
-#        straight from pipeline-status-file.sh `collect` (a `talos.sh state`
-#        value would pass the sanitiser's 8192-char emit cap); a read that is
-#        not collect JSON is `warn reason=inflight-unreadable` and leaves the
-#        fallback unused, never a silent queue walk. A targeted `--issue` run
-#        never reads it.
-#        The draft-window completion (#516): on `action=wait reason=draft
-#        pr=<M> issue=<N>` (the resolver answered `ready`: every enabled
-#        draft-window approval is fresh) the pass finishes the Draft stage
-#        order itself, inside one pass, as `_talos_run_draft_complete <M> <N>`:
-#        the write is leased first (a held lease or an unavailable ledger or
-#        lock ends the run with `stop action=wait reason=lease
-#        retry_after_s=<s>`, zero ready-pr); ready-pr runs once (a non-zero
-#        exit is `stop reason=ready-pr-failed`, exit 1, never a QA dispatch);
-#        the Draft guard asks the PR itself (rc 1 with stdout exactly `ready`
-#        continues; rc 0 -- the ready never took -- is `stop
-#        reason=ready-pr-failed`; any other rc/output is `stop
-#        reason=draft-unverified`); under `verify.qa_mode: ci` exactly one
-#        `pr-checks-required <M> --wait <B>` runs with
-#        `B = min(cfg verify.ci_wait_s, cfg verify.timeout_ms/1000 - 30)`
-#        clamped to the verb's 3600 bound (the flag omitted when B is not a
-#        positive integer); a red required check ends the run with
-#        `warn reason=qa-ci-red pr=<M> issue=<N>` + `stop action=wait
-#        reason=ci pr=<M> issue=<N>` exit 0 (a red build is scheduling, the
-#        same wait shape the resolver answers for a pending build); QA
-#        dispatches through the one dispatch path (`dispatch stage=qa pr=<M>
-#        issue=<N>`), skipped when `roles.qa` is false, with `--draft` keeping
-#        its existing meaning (a QA FAIL converts the PR back inside `done`);
-#        the lease is released before the pass returns to the loop. The
-#        continuation never merges: after it returns, the next pass's
-#        `action=merge` arm runs.
-#        One `info run` notice per pass carries the action; nothing else is
-#        printed. Stderr carries the child relay lines only.
-#
+# run     The deterministic orchestrator: loop `next`, act, call `done`. Prompts come
+#         from `prompt` and go through `pipeline-agent.sh <role> -` on stdin. The
+#         verdict is the `<VERDICT>:` first word of the agent's final message,
+#         checked against the role's `done` list (an unknown word is a dispatch
+#         failure); pm, planner, docs take none; the developer's is PR_OPENED with
+#         the PR URL (or a standalone `pr=<N>`), else BLOCKED. On `action=merge` it
+#         runs `gate merge`; verdict=merge runs `merge-pr` then `post-merge` and ends
+#         the run. It stops (exit 0) on ask-owner, a wait, a gate verdict that is not
+#         merge (`stop verdict=<v> reason=<why>`) and a `stop reason=` from `next`;
+#         a failed state read exits 1; a failed dispatch is `run=stopped
+#         reason=dispatch-failed role=<role>`. A QA FAIL at the head the previous
+#         QA FAIL saw blocks the PR and stops. An untargeted run whose `next` waits
+#         works the `inflight` issues. --max-iterations caps the passes (default 20).
 # run-reasons: usage unknown-role unknown-pr dispatch-failed ready-pr-failed qa-fail-unchanged-head head-unresolved
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
 #         ready-pr-failed draft-unverified qa-fail-unchanged-head head-unresolved
@@ -492,47 +170,21 @@
 #         model-invalid label-failed comment-failed budget-check-failed
 #         inflight-unreadable
 #
-# Lease ledger (#470, AC4): `next` acquires the issue's lease
-# (<git common dir>/talos-lease.ledger, pipeline-lock.sh) before answering
-# `action=dispatch|merge` — a second run on the same issue answers
-# `action=wait reason=lease` instead of racing it. A lease held by another
-# run is a wait, never a takeover; a lock that times out is a wait too
-# (fail closed). TTL = verify.timeout_ms/1000 + verify.ci_wait_s, floor 30
-# minutes; TALOS_LEASE_TTL_S and TALOS_NOW override it in tests. A line whose
-# holder process is gone stops being a lease once it is older than
-# TALOS_LEASE_RECLAIM_S (default 10 s, env override; the reclaim mirror is
-# pipeline-lock.sh's staleness rule, #522): `next` reclaims it under the lock
-# and says so once on stderr; the TTL stays the bound for a live-but-hung
-# holder, and an age alone never reclaims a live holder. Exit codes: 0 ok
-# (for gate: a verdict was printed), 1 a `stop`, 2 usage.
-#
-# docs-gate  `talos.sh docs-gate <pr> --issue <N>` decides whether the docs stage needs an
-#         LLM (#546). One line: `docs=dispatch reason=docs-paths paths-file=<f>` when the PR
-#         changes README.md, docs/** or scripts/pipeline-defaults.sh -- <f> is a mode-0600 file under
-#         ${TMPDIR:-/tmp} holding those paths, for `prompt docs --docs-paths-file`, removed by
-#         the caller; `docs=dispatch reason=always` (roles.docs_mode always: the full diff,
-#         no file); `docs=dispatch reason=fetch-failed` (pr-files could not be read: never
-#         "nothing to check"); `docs=skip reason=role-off` (roles.docs false, nothing written);
-#         `docs=skip reason=no-docs-paths`, after the verb stamped docs:done itself
-#         (pipeline-vcs.sh post-approval <pr> docs) and ran `done docs` -- the caller
-#         dispatches nothing. The developer owns the CHANGELOG line.
-#
+# docs-gate  Does the docs stage need an LLM? One line: `docs=dispatch
+#         reason=docs-paths paths-file=<f>` | `docs=dispatch reason=always|fetch-failed`
+#         | `docs=skip reason=role-off|no-docs-paths` (the verb stamped docs:done).
 # docs-gate-reasons: usage scripts-missing python-missing scratch-unavailable config-unreadable stamp-failed done-failed
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable stamp-failed
 #         (exit 2 for usage; else 1)
 #   warn: done-failed (plus the warns of `done`, relayed on stderr)
 #
-# lease   `talos.sh lease prune` -- the maintenance verb for the lease ledger
-#         (#522): removes every line no reader counts as a lease (expired, a
-#         dead holder past the reclaim guard, a duplicate shadowed by a
-#         later-expiring line) under pipeline-lock.sh, printing one plain
-#         `pruned issue=<N>` line per removed ledger line and nothing for the
-#         issues it leaves alone; nothing to remove is a silent no-op (exit 0,
-#         the ledger never rewritten, so no lost update can race a concurrent
-#         acquire). A lock that cannot be held is `stop reason=lock-timeout`
-#         (exit 1, every line untouched); a ledger that cannot be reached or
-#         read is `stop reason=ledger-unavailable`.
-#
+# Lease   `next` takes the issue's lease before answering dispatch or merge; a
+#         second run gets `action=wait reason=lease`, never a takeover, and a lock
+#         that times out is a wait too. `done` and a merge's `post-merge` release
+#         it. TTL = verify.timeout_ms/1000 + verify.ci_wait_s, floor 30 minutes; a
+#         line whose holder process is gone is reclaimed once older than
+#         TALOS_LEASE_RECLAIM_S (default 10 s). `lease prune` removes every ledger
+#         line no reader counts as a lease, one `pruned issue=<N>` line each.
 # lease-reasons: lock-timeout ledger-unavailable
 #   stop: usage lock-timeout ledger-unavailable scripts-missing python-missing
 #         scratch-unavailable config-unreadable (exit 2 for usage; else 1)
