@@ -708,7 +708,7 @@ A Claude Code cloud session (claude.ai/code) can run `talos.sh run` on a GitHub 
 
 Setup:
 - Install the Claude GitHub App on the repository with write access to contents, issues and pull requests, and connect GitHub from claude.ai.
-- The session pushes only the branches it is allowed to. A refused push ends the developer's checkpoint with one line, `pipeline-worktree: checkpoint: push refused: no push access to origin for <branch>`, and the developer blocks on it.
+- The developer's branch must be one the session may push: the session's designated branch (`claude/...`), or a `fix/issue-<N>-...` branch once the GitHub App has write access. A refused push ends the developer's checkpoint with one line, `pipeline-worktree: checkpoint: push refused: no push access to origin for <branch>`, and exit 3: the commit stays local, and the developer carries on and reports it in its final message.
 
 Skipped: the project board. Projects v2 has no REST API, so each board move is one `warn reason=board-failed` line, with the note `the board needs GitHub GraphQL, which this session refuses (HTTP 403); move skipped`, and the run goes on. `bootstrap-board.sh` and `bootstrap-labels.sh` need GraphQL: run them on a normal machine once.
 

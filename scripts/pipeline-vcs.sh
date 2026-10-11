@@ -4572,7 +4572,7 @@ print(json.dumps([{'number': i.get('number'), 'title': i.get('title', ''),
         local _co_errf _co_rc=0
         _co_errf="$(mktemp "${TMPDIR:-/tmp}/talos-co.XXXXXX")" || return 1
         gh pr checkout "$_co_n" ${REPO:+--repo "$REPO"} 2>"$_co_errf" || _co_rc=$?
-        if [ "$_co_rc" -eq 0 ] || ! grep -q GraphQL "$_co_errf"; then
+        if [ "$_co_rc" -eq 0 ] || ! grep -q 'GraphQL is not available' "$_co_errf"; then
           cat "$_co_errf" >&2; rm -f "$_co_errf"
           return "$_co_rc"
         fi
