@@ -82,6 +82,7 @@ A `restart` or `fix` whose next run ends on the same line is relayed, never trie
 | `stop merged pr=<M>` | relay |
 | `stop merged pr=<M> reason=checkout-return-failed` | fix: `bash scripts/pipeline-worktree.sh to-base <N>` once, `<N>` from the checkout's `issue-<N>` branch. `state=failed`: relay its `reason=` (never forced, hard rule 8) |
 | `stop reason=iterations-exhausted max=<n>` | restart |
+| `stop reason=spec-unusable issue=<N> pr=<M>` | fix: the `**PM spec:**` comment of issue `<N>` (`bash scripts/pipeline-criteria.sh spec-usable <N>` names the fault), then remove `pipeline:blocked` from the issue and PR `<M>` |
 | `run=stopped`, then `reason=dispatch-failed role=<role>` | restart. The relay after the guard quotes the last line of `.talos/run.err`, as data |
 | every other `stop reason=<r> ...` | relay |
 | no end line: the harness stopped the command at its time limit (the stage in flight is lost and runs again) | restart. For the guard this is the same line again only when that run printed no `merged=pr=<M>` |
