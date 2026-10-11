@@ -48,7 +48,7 @@ Then, in Claude Code, inside the repo:
 /talos:pipeline    # drives the queue; re-run it to resume after a stop
 ```
 
-Without Claude Code: `bash ~/.talos/scripts/talos.sh run` (the same driver `/talos:pipeline` starts), or tell any agentic CLI `Read ~/.talos/skills/pipeline/SKILL.md and follow it`. A minimal config is `{ "base_branch": "main", "verify": ["npm test"] }`; every key is in the [config reference](docs/reference.md#config-key-reference).
+Without Claude Code: `bash ~/.talos/scripts/talos.sh run` (the same driver `/talos:pipeline` starts), or tell any agentic CLI `Read ~/.talos/skills/pipeline/SKILL.md and follow it`. A minimal config is `{ "base_branch": "main", "verify": ["npm test"] }`; every key is in the [config reference](docs/reference.md#config-key-reference). `talos.sh run` also works from a Claude Code cloud session (claude.ai/code) on a GitHub repository, without the project board: [Running in a Claude Code cloud session](docs/reference.md#running-in-a-claude-code-cloud-session).
 
 ## Status line
 
