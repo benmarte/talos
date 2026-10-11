@@ -142,7 +142,8 @@ PASS: 3 criteria verified" "$(cat "$STUB_DIR/notify.bodies")" "qa PASS: the summ
 reset_stubs
 printf 'FAIL: criterion 2\n' > "$SUM"
 dn qa --issue 42 --pr 57 --verdict FAIL --summary-file "$SUM"
-assert_eq "notify qa #42 - 42
+assert_eq "status 42 Blocked
+notify qa #42 - 42
 hooks post_stage qa qa 42 --pr 57 --verdict FAIL --summary-file F
 events cost --issue 42 --pr 57 --line
 notify blocked #42 QA failed in PR #57 42
@@ -157,6 +158,7 @@ reset_stubs
 dn qa --issue 42 --pr 57 --verdict FAIL --summary-file "$SUM" --draft
 assert_eq "vcs draft-pr 57
 vcs label-pr 57 --remove qa:pass
+status 42 Blocked
 notify qa #42 - 42
 hooks post_stage qa qa 42 --pr 57 --verdict FAIL --summary-file F
 events cost --issue 42 --pr 57 --line
@@ -199,7 +201,8 @@ events cost --issue 42 --pr 57 --line" "$(jr)" "reviewer APPROVED"
 assert_eq "continue" "$(line_of next)" "reviewer APPROVED: continue"
 reset_stubs
 dn reviewer --issue 42 --pr 57 --verdict CHANGES --summary-file "$SUM"
-assert_eq "notify reviewer #42 - 42
+assert_eq "status 42 Blocked
+notify reviewer #42 - 42
 hooks post_stage reviewer reviewer 42 --pr 57 --verdict CHANGES --summary-file F
 events cost --issue 42 --pr 57 --line
 notify blocked #42 reviewer: changes required 42

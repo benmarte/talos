@@ -115,9 +115,12 @@ try:
         if p.get('number') == n:
             print(p.get('id',''))
             sys.exit(0)
+    # A read that returns exactly its cap may have cut the project off (#523).
+    if len(d.get('projects', [])) == 50:
+        sys.stderr.write('board=list-capped n=50 read=projects\\n')
 except Exception:
     pass
-" 2>/dev/null
+"
   }
   _BOARD_LAST_GQL_RAW=""
   _board_resolve_project_id_token() {
@@ -258,6 +261,10 @@ try:
             print(fid)
             print(oid)
             break
+    else:
+        # A read that returns exactly its cap may have cut the field off (#523).
+        if len(nodes) == 50:
+            sys.stderr.write('board=list-capped n=50 read=fields\\n')
 except Exception:
     pass
 " 2>/dev/null)"
@@ -732,10 +739,14 @@ if [ -z "$ITEM" ]; then
 import sys, json, os
 try:
     nodes = json.load(sys.stdin)['data']['repository']['issue']['projectItems']['nodes']
-    print(next((n['id'] for n in nodes if n and (n.get('project') or {}).get('id') == os.environ['PROJ']), ''))
+    item = next((n['id'] for n in nodes if n and (n.get('project') or {}).get('id') == os.environ['PROJ']), '')
+    print(item)
+    # A read that returns exactly its cap may have cut the item off (#523).
+    if not item and len(nodes) == 50:
+        sys.stderr.write('board=list-capped n=50 read=items\\n')
 except Exception:
     pass
-" 2>/dev/null)"
+")"
 fi
 
 if [ -z "$ITEM" ]; then

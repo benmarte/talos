@@ -66,13 +66,14 @@
 #                                 | ci-failed | base-synced | conflict-check-unverified
 #                                 | awaiting-human-merge
 #            verdict=block      reason=forbidden-files | closing-keyword | siblings-capped
-# gate-reasons: budget-exceeded max-fix-attempts max-total-dispatches record-failed design-decision stale-approvals draft-pr ci-failed merge-conflict blocked-label approvals-missing ci-pending ci-rerun rerun-unsupported base-synced conflict-check-unverified awaiting-human-merge forbidden-files closing-keyword siblings-capped
+# gate-reasons: budget-exceeded max-fix-attempts max-total-dispatches record-failed design-decision stale-approvals draft-pr ci-failed merge-conflict blocked-label approvals-missing ci-pending ci-rerun rerun-unsupported base-synced conflict-check-unverified awaiting-human-merge forbidden-files closing-keyword siblings-capped board-failed
 #   stop: usage unknown-verb scripts-missing python-missing scratch-unavailable config-unreadable
 #         draft-resolve-failed view-failed labels-unreadable approval-sha-failed
 #         unsupported-verb:<verb> draft-unverified ci-unverified head-unresolved
 #         comments-unreadable handoff-label-failed trust-unverified
 #   warn: closing-keyword-unverified ci-runs-unrecorded budget-check-failed
 #         area-check-failed unblock-failed comment-failed label-failed value-truncated
+#         board-failed
 #
 # post-merge, sweep, summary   Bookkeeping; each item is non-fatal (a `warn` line,
 #         the next item still runs). First line `post_merge=done|handoff`,
@@ -1039,7 +1040,7 @@ _talos_gate_fix_round() {
   done
   [ "$_ok" -eq 0 ] || _talos_stop usage 2
   _talos_prepare gate-fix-round pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh \
-                                pipeline-budget.sh pipeline-hooks.sh
+                                pipeline-budget.sh pipeline-hooks.sh pipeline-status.sh
 
   # Exit 1 (exceeded) is the signal, so it is captured and never aborts.
   # With limits.tokens_per_issue unset the check prints nothing and exits 0,
@@ -1086,6 +1087,12 @@ _talos_gate_fix_round() {
       || _vcs label-pr "$_pr" --remove pipeline:needs-owner > /dev/null || _talos_emit warn "reason=unblock-failed"
   fi
   _vcs label-issue "$_n" --remove pipeline:blocked > /dev/null || _talos_emit warn "reason=unblock-failed"
+  # The card follows (#523): back to In progress for the fix round. A board
+  # failure is a warning, never a reason not to dispatch.
+  if ! _talos_cfg_is board.enabled false && [ -n "$(cfg board.project_number)" ]; then
+    bash "$SCRIPT_DIR/pipeline-status.sh" "$_n" "In progress" > /dev/null 2>&1 \
+      || _talos_emit warn "reason=board-failed issue=$_n"
+  fi
   _talos_emit stage "$_stage"
   _talos_verdict redispatch
 }
@@ -2824,10 +2831,12 @@ _talos_done() {
     validator:CONFIRMED) _col="In progress" ;;
     validator:*) _col="Blocked"; _msg="Validator: $_v"; _ev=blocked ;;
     developer:PR_OPENED) _col="In review"; _msg="PR #$_pr opened"; _ev=pr-opened ;;
-    qa:FAIL | qa:RESTAMP_FAIL) _msg="QA failed in PR #$_pr"; _ev=blocked ;;
-    reviewer:CHANGES | reviewer:RESTAMP_FAIL) _msg="reviewer: changes required"; _ev=blocked ;;
+    # A failing review verdict moves the card to Blocked too (#523); the
+    # redispatch of its fix round moves it back to In progress.
+    qa:FAIL | qa:RESTAMP_FAIL) _col="Blocked"; _msg="QA failed in PR #$_pr"; _ev=blocked ;;
+    reviewer:CHANGES | reviewer:RESTAMP_FAIL) _col="Blocked"; _msg="reviewer: changes required"; _ev=blocked ;;
     security:FINDINGS | security:RESTAMP_FAIL | adversarial:FINDINGS | adversarial:RESTAMP_FAIL)
-      _msg="$_role: findings in PR #$_pr"; _ev=blocked ;;
+      _col="Blocked"; _msg="$_role: findings in PR #$_pr"; _ev=blocked ;;
   esac
 
   # #580: BLOCKED (any role) halts the issue (and its PR) for a human: pipeline:blocked.
