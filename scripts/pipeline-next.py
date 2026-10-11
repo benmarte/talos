@@ -38,11 +38,11 @@ BLOCKED_LABEL = 'pipeline:blocked'
 READY_LABEL = 'pipeline:ready'
 DEV_LABEL = 'pipeline:dev'
 CONFIRMED_LABEL = 'pipeline:confirmed'
-EPIC_DECOMPOSED_LABEL = 'pipeline:epic-decomposed'
 NEEDS_OWNER_LABEL = 'pipeline:needs-owner'
 # The issues a `talos.sh run` pass drives past `ready`: the label state
 # machine's mid-flight stages (their next stage comes from the issue-side routing).
-INFLIGHT_LABELS = frozenset((CONFIRMED_LABEL, DEV_LABEL, EPIC_DECOMPOSED_LABEL))
+# A decomposed epic parent is an index no stage is dispatched onto (#524).
+INFLIGHT_LABELS = frozenset((CONFIRMED_LABEL, DEV_LABEL))
 BRANCH_RE = re.compile(r'^(?:fix|feat)/issue-([0-9]{1,9})(?:-|\Z)')
 SHA_RE = re.compile(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})\Z')
 CAP_RE = re.compile(r'result capped at')
@@ -560,7 +560,7 @@ def issue_side(data, o):
         # One stage per action, first match wins (#471, AC3).
         if BLOCKED_LABEL in labels:
             say('wait', reason='blocked')
-        if EPIC_DECOMPOSED_LABEL in labels or DEV_LABEL in labels:
+        if DEV_LABEL in labels:
             developer_route(n)
         if CONFIRMED_LABEL in labels:
             # Epic detection feeds routing (#471, AC4); the sub-issue creation
@@ -626,10 +626,10 @@ def issue_side(data, o):
         # The developer leaves its issue with no pipeline label once the PR is
         # open (agents/developer.md step 8): the PR owns the work. Only an
         # explicit developer label keeps the fix-round routing of route().
-        if not (labels & {DEV_LABEL, EPIC_DECOMPOSED_LABEL}):
+        if DEV_LABEL not in labels:
             adopt(n)
         # A not-queued issue is the collect word: still ready means the filter or
-        # the cap skipped it (a wait); past ready (confirmed/dev/epic) the labels
+        # the cap skipped it (a wait); past ready (confirmed/dev) the labels
         # themselves are the routing (the #471 label-parity fixtures) - and a
         # queued issue routes by its own labels as today.
         if n not in qset and READY_LABEL in labels:
