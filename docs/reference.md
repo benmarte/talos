@@ -783,6 +783,19 @@ From `~/.talos/scripts` (or `scripts/` in a checkout); `--dry-run` prints the ca
 - `pipeline-vcs.sh label-issue <n> --add pipeline:ready`: queue an issue (`--remove` drops a label).
 - `pipeline-vcs.sh current-user | assert-sync`: your login; checkout clean and level.
 - `talos.sh state --summary`: in flight, waiting, next, other operators' items.
+- `talos.sh map`: the project map (below).
+
+### Project map
+
+`talos.sh map` writes `${TALOS_HOME:-~/.talos}/maps/<owner>-<name>.html`, one self-contained HTML page for the repository (no script, no external asset, light and dark, phone width), and `maps/index.html`, which links every repository rendered under that `TALOS_HOME` with its one-line state (`maps/index.json` is its registry). It prints `map=<path>` and `index=<path>`. `talos.sh run` refreshes it after every stage and once at its end; a failure is `warn reason=map-failed` and the run goes on.
+
+It is rendered by code from local records only, with no network or provider call and no tokens, so it is the same whichever runner or harness ran the stages:
+
+- the events log (the stage dots, verdicts, PR numbers, blocked summaries, tokens, the changes since the run started);
+- the state snapshot `talos.sh run` writes to `<git common dir>/talos/state.json` from the collect it already read (queued and in-flight issues, PR stages, blocked items, owner questions, priority, whether the run is going, its end line). Without one (a repository driven only by the LLM loop, or before the first run) the page shows what the events log knows and says so;
+- the issue-title cache `pipeline-meta.sh` keeps; an issue with no cached title shows as `#<n>`.
+
+Sections: the header (updated at, the run, merged / in flight / stuck / not started), the track (priority tiers p0, p1, p2 and unlabelled; the current one is the highest with work left), one card per issue in flight, queued, stuck or merged in the last 7 days, the next step (`pipeline-next.py where` over the snapshot), the owner questions, the changes since the last run started, and the spend. Links follow `vcs.provider`. Every value from a record is HTML-escaped.
 
 ## Isolation, locking and multi-user claims
 

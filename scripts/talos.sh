@@ -4,7 +4,7 @@
 #
 # Usage: talos.sh <verb> [args]; `talos.sh help` prints every flag.
 # Verbs: env gate docs-gate post-merge sweep summary prompt done state next claim
-#        run lease help
+#        run lease map help
 #
 # Output (stdout): one line each, nothing else.
 #   KEY=value              a result. Keys are [A-Za-z][A-Za-z0-9_.]*.
@@ -208,6 +208,14 @@
 #         (exit 2 for usage; else 1)
 #   wait: draft ci human-merge blocked owner lease none dependency cap
 #
+# map     The project map (#614): one self-contained HTML page for this repository
+#         and an index of every repository rendered under TALOS_HOME, from local
+#         records only (the events log, the state snapshot `run` writes, the title
+#         cache): map=<TALOS_HOME>/maps/<owner>-<name>.html and
+#         index=<TALOS_HOME>/maps/index.html. No network or provider call.
+# map-reasons: usage scripts-missing python-missing scratch-unavailable config-unreadable map-failed
+#   stop: all of them (exit 2 for usage; else 1)
+#
 # claim   Multi-user claiming: assign issue N to this operator unless another
 #         holds it, read the assignees back, and give it up if a lower login also
 #         claimed it: `claim=taken|owned owner=<me>` | `claim=lost owner=<login>` |
@@ -263,7 +271,7 @@
 #         stage's final message never does (stderr has the `note` lines and the
 #         `dispatch-failed ... reason=<why>` line). The playbook's end-state
 #         table (skills/pipeline/SKILL.md) has one action for each end.
-# run-reasons: usage unknown-role unknown-pr dispatch-failed ready-pr-failed draft-unverified qa-fail-unchanged-head spec-unusable fix-round-unchanged-head head-unresolved stop-requested checkout-return-failed iterations-exhausted stage-blocked provider-failed merge-failed state-unavailable scripts-missing python-missing scratch-unavailable config-unreadable
+# run-reasons: usage unknown-role unknown-pr dispatch-failed ready-pr-failed draft-unverified qa-fail-unchanged-head spec-unusable fix-round-unchanged-head head-unresolved stop-requested checkout-return-failed iterations-exhausted stage-blocked provider-failed merge-failed state-unavailable scripts-missing python-missing scratch-unavailable config-unreadable map-failed
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
 #         state-unavailable ready-pr-failed draft-unverified head-unresolved
 #         merge-failed provider-failed (exit 1; 2 for usage), and with exit 0
@@ -271,6 +279,7 @@
 #         spec-unusable fix-round-unchanged-head checkout-return-failed; plus the stop reasons
 #         of `next`, passed through (exit 1)
 #   warn: qa-ci-red notify-failed board-failed spend-upsert-failed lease-release-failed
+#         map-failed (at the run's end: one stderr line, the end line already out)
 #         model-invalid label-failed comment-failed budget-check-failed
 #         inflight-unreadable
 #
@@ -500,6 +509,7 @@ verbs:
   done <role> --issue <N> [--pr <M>] [--verdict <V>] --summary-file <F|-> [--draft]
                                      end-of-stage bookkeeping: board, role relay,
                                      post_stage, spend block, lifecycle event
+  map                                the project map: map=<html> index=<html> (local records only)
   state [--summary]                  the normalised run state as one state=<JSON>
                                      line (pipeline-status-file.sh collect:
                                      same reads, same shape, no writes);
@@ -3315,6 +3325,85 @@ _talos_lease_live_issues() {
 _talos_emit_next() { printf '%s\0%s\0' action "${1#action=}" >> "$_TALOS_OUT"; }
 _talos_emit_next_wait() { printf '%s\0%s\0' action "${1#action=}" >> "$_TALOS_OUT"; }
 
+# ── map (#614) ───────────────────────────────────────────────────────────────
+# _talos_map_render: the project map from local records only (talos-map.py):
+# the events log, the run's state snapshot (<state dir>/state.json) and the
+# title cache pipeline-meta.sh keeps. Prints map=<path> and index=<path> on
+# success; non-zero on failure. No network, no provider call.
+_talos_map_render() {
+  local _sd _common _ep _slug _url _base _prov _host _path
+  _sd="$(_talos_state_dir)" || return 1
+  _common="${_sd%/talos}"
+  _ep="$(cfg events.path)"
+  case "$_ep" in /*) : ;; '') _ep="$_common/talos/events.jsonl" ;; *) _ep="$_common/$_ep" ;; esac
+  _prov="$(cfg vcs.provider | tr '[:upper:]' '[:lower:]')"
+  _slug="$(cfg vcs.repo)"
+  _url="$(git remote get-url origin 2>/dev/null)" || _url=""
+  # The web base: host and path from the remote (ssh or https, credentials
+  # and .git dropped); a github provider with a slug is github.com/<slug>.
+  _url="${_url%.git}"
+  case "$_url" in
+    *://*) _host="${_url#*://}"; _host="${_host#*@}"; _path="${_host#*/}"; _host="${_host%%/*}" ;;
+    *@*:*) _host="${_url#*@}"; _path="${_host#*:}"; _host="${_host%%:*}" ;;
+    *) _host=""; _path="" ;;
+  esac
+  [ -n "$_slug" ] || _slug="$(printf '%s' "$_path" | awk -F/ 'NF >= 2 { print $(NF-1) "/" $NF }')"
+  _base=""
+  case "$_prov" in
+    github | github-api | '') [ -z "$_slug" ] || _base="https://github.com/$_slug" ;;
+    *) [ -z "$_host" ] || [ -z "$_path" ] || _base="https://$_host/$_path" ;;
+  esac
+  python3 -I "$SCRIPT_DIR/talos-map.py" --events "$_ep" --state "$_sd/state.json" \
+    --home "${TALOS_HOME:-$HOME/.talos}" --slug "$_slug" --provider "${_prov:-github}" --base "$_base" \
+    --scripts "$SCRIPT_DIR" --titles "${XDG_RUNTIME_DIR:-${HOME:-/nonexistent}/.cache}/talos/meta"
+}
+
+# map: render the project map and the index (#614).
+_talos_map() {
+  [ "$#" -eq 0 ] || _talos_stop usage 2
+  _talos_prepare map pipeline-config.sh pipeline-cfg-cache.sh pipeline-next.py talos-map.py
+  local _l
+  _l="$(_talos_map_render 2>/dev/null)" || _talos_stop map-failed
+  _talos_emit map "$(sed -n 's/^map=//p' <<< "$_l")"
+  _talos_emit index "$(sed -n 's/^index=//p' <<< "$_l")"
+  _talos_flush
+}
+
+# _talos_run_map <active|end>: the driver's refresh (#614). The state snapshot
+# first, from the collect this pass already read (no new read), then the map.
+# During the run a failure is `warn reason=map-failed`; at the end (an exit
+# hook, after the end line is out) it is one stderr line.
+_talos_run_map() {
+  local _sd _end=""
+  _sd="$(_talos_state_dir 2>/dev/null)" || _sd=""
+  if [ -n "$_sd" ]; then
+    [ "$1" != end ] || _end="$(python3 -I -c '
+import sys
+parts = open(sys.argv[1], "rb").read().split(b"\0")
+last = ""
+for k, v in zip(parts[0::2], parts[1::2]):
+    if k == b"stop":
+        last = "stop " + v.decode("utf-8", "replace")
+print(last)' "$_TALOS_OUT" 2>/dev/null)"
+    { _talos_collect_get 2>/dev/null || printf '{}'; } | python3 -I -c '
+import json, sys, datetime
+try:
+    col = json.load(sys.stdin)
+except ValueError:
+    col = {}
+now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+json.dump({"ts": now, "collect": col if isinstance(col, dict) else {},
+           "run": {"active": sys.argv[2] != "end", "started": sys.argv[3], "end": sys.argv[4]}},
+          open(sys.argv[1] + ".tmp", "w"))' "$_sd/state.json" "$1" "${TALOS_RUN_STARTED:-}" "$_end" 2>/dev/null \
+      && mv -f "$_sd/state.json.tmp" "$_sd/state.json" 2>/dev/null
+  fi
+  if ! _talos_map_render > /dev/null 2>&1; then
+    if [ "$1" = end ]; then echo "warn reason=map-failed" >&2; else _talos_warn map-failed; fi
+  fi
+  return 0
+}
+_talos_run_map_end() { _talos_run_map end; }
+
 # ── run (#472, slice 8) ──────────────────────────────────────────────────────
 # The deterministic orchestrator: the loop of Step 2 in one bash process. Every stage is
 # dispatched through pipeline-agent.sh with the rendered prompt on stdin; the
@@ -3485,6 +3574,12 @@ _talos_run_loop() {
   TALOS_COLLECT_CACHE="$_CFG_CACHE_DIR/collect.cache"; export TALOS_COLLECT_CACHE
   # The run releases its own leases on exit (every path): one exit hook.
   _talos_on_exit "_talos_lease_release_run_all"
+  # The project map (#614): refreshed at each stage end and once at the end.
+  [ -n "${TALOS_RUN_STARTED:-}" ] || TALOS_RUN_STARTED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  export TALOS_RUN_STARTED
+  # First of the exit hooks: it reads the end line and the collect from the
+  # scratch dir, which an earlier-registered hook removes.
+  _TALOS_EXIT_HOOKS=("_talos_run_map_end" ${_TALOS_EXIT_HOOKS[@]+"${_TALOS_EXIT_HOOKS[@]}"})
   local _dispatched=0
   . "$SCRIPT_DIR/pipeline-contract.sh"
 
@@ -3752,6 +3847,7 @@ _talos_run_dispatch() {
   _next="$(bash "$SCRIPT_DIR"/talos.sh "${_dargs[@]}" < "$_CFG_CACHE_DIR/agent.out" 2>"$_CFG_CACHE_DIR/err" \
             | sed -n 's/^next=//p' | head -n 1)"
   rm -f "${_f:?}"
+  _talos_run_map active
 
   # 5. What follows, the pass ends the same way the playbook's Step 2 reads
   # `next=`: `stop` ends the run clean; `continue` goes back to `next`. A
@@ -4049,6 +4145,7 @@ case "$verb" in
   summary) _talos_summary "$@" ;;
   prompt) _talos_prompt "$@" ;;
   done) _talos_done "$@" ;;
+  map) _talos_map "$@" ;;
   state) _talos_state "$@" ;;
   next) _talos_next "$@" ;;
   claim) _talos_claim "$@" ;;
