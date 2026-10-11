@@ -353,6 +353,50 @@ talos_prompt_text() {
 playbook_text() { cat "$TALOS_ROOT/skills/pipeline/SKILL.md" "$TALOS_ROOT"/skills/pipeline/refs/*.md; }
 
 # finish — print summary for this file and exit non-zero on any failure.
+# ── wall-clock checks (#593) ─────────────────────────────────────────────────
+# A test that times work shares the CPU with the rest of the suite, so a fixed
+# number of seconds fails under load. These judge against the same run instead.
+# wall_s: a monotonic clock in seconds (two decimals), comparable across processes.
+wall_s() { python3 -I -c 'import time; print("%.2f" % time.monotonic())'; }
+# since_s <wall_s value>: the seconds elapsed since then.
+since_s() { python3 -I -c 'import sys, time; print("%.2f" % (time.monotonic() - float(sys.argv[1])))' "$1"; }
+# assert_cut_short <label> <elapsed> <baseline> <uncut>: a timeout cut a long
+# wait short. <baseline> is the same command without the long wait, timed in
+# this run; a wait that was NOT cut adds all of <uncut> to it, a cut one only
+# the timeout, so "less than half of <uncut> over the baseline" holds under any
+# load that slows both runs alike.
+assert_cut_short() {
+  if python3 -I -c 'import sys; e, b, u = map(float, sys.argv[1:4]); sys.exit(0 if e - b < u / 2 else 1)' "$2" "$3" "$4"; then
+    pass "$1"
+  else
+    fail "$1" "elapsed ${2}s over a ${3}s baseline: the ${4}s wait was not cut short"
+  fi
+}
+# assert_linear <label> <t_small> <t_big> <ratio>: the big input (ratio x the
+# small one) took at most 4 x ratio x the small input's time, plus a 1 s floor
+# for process start-up. A linear scan takes about ratio x; a quadratic one
+# ratio^2 x and fails.
+assert_linear() {
+  if python3 -I -c 'import sys; s, b, r = map(float, sys.argv[1:4]); sys.exit(0 if b <= 4 * r * s + 1.0 else 1)' "$2" "$3" "$4"; then
+    pass "$1"
+  else
+    fail "$1" "${3}s for the input ${4}x the size of one that took ${2}s: not linear"
+  fi
+}
+# wait_until <seconds> <command...>: poll every 0.1 s until the command succeeds
+# or the seconds run out (a state reached asynchronously, e.g. a signalled
+# process exiting); returns the command's last status.
+wait_until() {
+  local _wu_end _wu_n
+  _wu_n=$(( $1 * 10 )); shift
+  while [ "$_wu_n" -gt 0 ]; do
+    "$@" && return 0
+    sleep 0.1
+    _wu_n=$((_wu_n - 1))
+  done
+  "$@"
+}
+
 finish() {
   printf '%s: %d passed, %d failed\n' "$(basename "$0")" "$_PASS" "$_FAIL"
   [ "$_FAIL" -eq 0 ]

@@ -236,14 +236,18 @@ rm -f "$PIPELINE_THREAD_STATE"; : > "$NAK_LOG"
 cat > talos.pipeline.json <<'EOF'
 {"notifications": {"buzz_timeout_s": 1}}
 EOF
+# The baseline (#593): the same publish to a relay that answers at once.
+: > "$NAK_QUEUE"
+t0="$(wall_s)"
+live_notify dispatched "#90" "relay answers" 90 >/dev/null 2>&1
+baseline="$(since_s "$t0")"
+rm -f "$PIPELINE_THREAD_STATE"; : > "$NAK_LOG"
 printf 'hang\n' > "$NAK_QUEUE"
-t0="$(date +%s)"
+t0="$(wall_s)"
 out="$(NAK_HANG_S=20 live_notify dispatched "#90" "relay went dark" 90)"; rc=$?
-elapsed=$(( $(date +%s) - t0 ))
+elapsed="$(since_s "$t0")"
 assert_eq "0" "$rc" "timed-out buzz publish still exits 0"
-[ "$elapsed" -lt 10 ] \
-  && pass "timed-out buzz publish returns within the configured bound" \
-  || fail "timed-out buzz publish returns within the configured bound (took ${elapsed}s)"
+assert_cut_short "timed-out buzz publish returns within the configured bound" "$elapsed" "$baseline" 20
 assert_contains "$out" "buzz relay timed out" "timeout is reported as a timeout"
 assert_not_contains "$out" "rejected publish" "timeout is not reported as a relay rejection"
 assert_eq "1" "$(printf '%s\n' "$out" | grep -c 'pipeline-notify: buzz')" \
