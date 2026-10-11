@@ -124,31 +124,31 @@ allows() {
 
 run_role docs
 DOCS_ARGV="$ARGV"
-DOCS_WRITES=("git add docs/reference.md" "git commit -m docs" "git push" "git push origin HEAD")
-for c in "${DOCS_WRITES[@]}"; do
-  if allows "$ARGV" "$c"; then pass "AC1 docs may run: $c"; else fail "AC1 docs may run: $c" "no rule allows it"; fi
-done
-for c in "git push --force" "git push -f" "git push --force-with-lease" "git push origin HEAD --force" \
-         "git push origin +HEAD" "git push origin main" "git push origin HEAD:main" "git push --delete origin main" \
-         "git reset --hard origin/main" "git checkout main" "git switch main" "git rebase main" "git branch -D main"; do
+# Its one git write is a verb of a script the list already names: commit-docs pushes
+# only the PR's head branch (tests/test-worktree-commit-docs.sh). A raw git write
+# pushes whatever branch is checked out, so the role has none.
+DOCS_COMMIT="bash scripts/pipeline-worktree.sh commit-docs 9 -- docs/reference.md"
+if allows "$ARGV" "$DOCS_COMMIT"; then pass "AC1 docs may run: $DOCS_COMMIT"; else fail "AC1 docs may run: $DOCS_COMMIT" "no rule allows it"; fi
+GIT_WRITES=("git add docs/reference.md" "git add -A" "git add -f .env" "git commit -m docs" "git commit --no-verify -m docs"
+            "git commit --amend" "git push" "git push origin HEAD" "git push --force" "git push -f"
+            "git push --force-with-lease" "git push origin HEAD --force" "git push origin +HEAD" "git push origin main"
+            "git push origin HEAD:main" "git push --delete origin main" "git reset --hard origin/main"
+            "git checkout main" "git switch main" "git rebase main" "git branch -D main")
+for c in "${GIT_WRITES[@]}"; do
   if allows "$ARGV" "$c"; then fail "AC1 docs may not run: $c" "a rule allows it"; else pass "AC1 docs may not run: $c"; fi
 done
 
-# The write rules are the docs role's alone: each command docs may run is refused to
-# every read-only role (a command docs cannot run either says nothing about scope).
+# The read-only roles write nothing: no Edit, no Write, no raw git write (commit-docs
+# itself refuses every role but docs: tests/test-worktree-commit-docs.sh).
 for r in qa reviewer security validator pm adversarial planner; do
   run_role "$r"
   hasnt "Edit" "AC2 $r: no Edit"
   hasnt "Write" "AC2 $r: no Write"
-  for c in "${DOCS_WRITES[@]}"; do
-    if ! allows "$DOCS_ARGV" "$c"; then
-      fail "AC2 $r: '$c' is the docs role's alone" "docs cannot run it either"
-    elif allows "$ARGV" "$c"; then
-      fail "AC2 $r: '$c' is the docs role's alone" "a $r rule allows it"
-    else
-      pass "AC2 $r: '$c' is the docs role's alone"
-    fi
+  allowed=""
+  for c in "${GIT_WRITES[@]}"; do
+    allows "$ARGV" "$c" && allowed="$allowed [$c]"
   done
+  assert_eq "" "$allowed" "AC2 $r: no rule allows a git write"
 done
 
 # ── a role profile asks for nothing its allowlist refuses (#607) ─────────────
@@ -199,11 +199,13 @@ $(instructed_git "$f")
 EOF
   assert_eq "" "$refused" "AC3 $r: its allowlist permits every git command its profile instructs"
 done
-# The docs profile names its commit commands, so the check above has them to test.
-DOCS_GIT="$(instructed_git "$TALOS_ROOT/agents/docs.md")"
-for c in "git add" "git commit" "git push origin HEAD"; do
-  assert_contains "$DOCS_GIT" "$c" "AC3 docs: the profile names the '$c' it needs"
-done
+# The docs profile commits through commit-docs, written as its allowlist permits it.
+DOCS_VERB="$(grep -o '`bash scripts/pipeline-worktree.sh commit-docs [^`]*`' "$TALOS_ROOT/agents/docs.md" | head -n 1 | tr -d '`')"
+if [ -n "$DOCS_VERB" ] && allows "$DOCS_ARGV" "$DOCS_VERB"; then
+  pass "AC3 docs: the profile commits with commit-docs, which its allowlist permits"
+else
+  fail "AC3 docs: the profile commits with commit-docs, which its allowlist permits" "in agents/docs.md: ${DOCS_VERB:-<no commit-docs command>}"
+fi
 
 # ── the usage-capture variant and the text variant both carry them ───────────
 set_cfg '{"agents": {"capture_usage": false}}'
