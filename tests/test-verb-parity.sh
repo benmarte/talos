@@ -65,12 +65,12 @@ PYEOF
 # One GitHub implementation serves vcs.provider github AND github-api (#551):
 # its verb set must stay the 41 verbs the two former implementations each
 # exposed (so neither provider lost a verb in the merge) plus the assignee
-# verbs added since (#560).
-EXPECTED_VERBS="approve-pr assign-issue check-approval-sha check-attempt check-closing-keyword check-epic-acceptance check-pr-files checkout-pr close-issue comment-issue comment-pr create-issue create-pr current-user diff-pr draft-pr edit-pr-body find-pr issue-assignees label-issue label-pr list-assignees list-issues list-needs-owner list-prs mark-needs-owner merge-pr pr-checks pr-checks-required pr-ci-runs pr-files pr-head pr-is-draft pr-mergeable read-attempt read-comments ready-pr record-attempt rerun-ci unassign-issue update-branch upsert-pr-comment view-issue view-pr"
+# verbs added since (#560) and pr-head-ref (#607).
+EXPECTED_VERBS="approve-pr assign-issue check-approval-sha check-attempt check-closing-keyword check-epic-acceptance check-pr-files checkout-pr close-issue comment-issue comment-pr create-issue create-pr current-user diff-pr draft-pr edit-pr-body find-pr issue-assignees label-issue label-pr list-assignees list-issues list-needs-owner list-prs mark-needs-owner merge-pr pr-checks pr-checks-required pr-ci-runs pr-files pr-head pr-head-ref pr-is-draft pr-mergeable read-attempt read-comments ready-pr record-attempt rerun-ci unassign-issue update-branch upsert-pr-comment view-issue view-pr"
 _github_verbs="$(extract_verbs _github)"
 
 assert_eq "$(printf '%s\n' $EXPECTED_VERBS | sort | tr '\n' ' ')" "$(printf '%s\n' $_github_verbs | sort | tr '\n' ' ')" \
-  "parity: _github serves exactly the 41 verbs both former GitHub providers had, plus the 3 assignee verbs added since (#560)"
+  "parity: _github serves exactly the 41 verbs both former GitHub providers had, plus the 3 assignee verbs added since (#560) and pr-head-ref (#607)"
 assert_eq "0" "$(grep -c '^_github_api()' "$VCS")" "parity: there is no second GitHub implementation"
 assert_contains "$(sed -n '/^_vcs_dispatch_provider()/,/^}/p' "$VCS")" "github|github-api) _github " \
   "parity: github and github-api dispatch to the same function"

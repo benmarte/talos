@@ -1342,7 +1342,10 @@ _tmo() {
 #               script the repo ships under another name is not allowed); read-only git
 #   developer   + Edit Write Bash(git:*) + the verify commands
 #   validator, qa  + the verify commands (they reproduce and run the tests)
-#   docs        + Edit Write
+#   docs        + Edit Write. It commits through `pipeline-worktree.sh commit-docs`
+#               (#607), a script already on the list: a `git add` / `git commit` /
+#               `git push` rule would act on whatever branch is checked out, the
+#               base branch included, and the verb checks the PR's head branch first
 # A verify command becomes `Bash(<command>:*)` only when it is plain words (letters,
 # digits and . / _ = : @ % + - and spaces): anything else cannot be said as a prefix
 # rule without widening it, so it is skipped with a warning (that names its position,
