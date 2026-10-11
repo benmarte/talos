@@ -61,6 +61,9 @@ printf 'line one\n\n- [ ] item {{NOPE}}\n' > "$F_BODY"
 printf 'check: ci / test\nurl: https://github.com/acme/widget/actions/runs/123\n' > "$F_CI"
 printf 'README.md\ndocs/guide.md\n' > "$F_DOCS"
 printf 'approved sha: aaa111\nstale files: scripts/a.sh\nhead sha: bbb222\n' > "$F_RS"
+# The docs re-stamp inputs, as `docs-gate` writes them (#590).
+F_DELTA="$SANDBOX/docs-delta.txt"
+printf 'approved_sha=aaa111\nhead_sha=bbb222\ndocs/guide.md\n----- BEGIN DIFF tok590 -----\ndiff --git a/docs/guide.md b/docs/guide.md\n+a new line\n----- END DIFF tok590 -----\n' > "$F_DELTA"
 F_PLAIN="$SANDBOX/plain.txt"
 printf 'plain text\n' > "$F_PLAIN"
 : > "$SANDBOX/empty.txt"
@@ -284,6 +287,28 @@ for role in qa reviewer security adversarial; do
   assert_contains "$text" "post-approval 5 $role" "$role re-stamp prompt names the post-approval call for its role"
   assert_contains "$text" "approved sha: aaa111" "$role re-stamp prompt carries the inputs file"
 done
+
+# AC4 (#590): docs has a re-stamp of its own. It is read-only: the delta file
+# `docs-gate` wrote, a stamp when the delta is accurate, and a final message
+# that starts with the verdict word either way.
+render docs --issue 3 --pr 5 --shape restamp --restamp-file "$F_DELTA"
+assert_eq "0" "$RC" "AC4 docs re-stamp: exits 0"
+if [ -n "$PF" ] && [ -f "$PF" ]; then pass "AC4 docs re-stamp: names a prompt file"
+else fail "AC4 docs re-stamp: names a prompt file" "$(cat "$OUT")"; fi
+text="$(cat "${PF:-/dev/null}")"; drop
+assert_contains "$text" "Comment header: **Agent:** docs (talos) — re-stamp" "AC4 docs re-stamp: the header ends with the re-stamp suffix"
+assert_contains "$text" "You are Documentation, re-stamping PR #5 for issue #3." "AC4 docs re-stamp: the role title is Documentation"
+assert_contains "$text" "$(cat "$F_DELTA")" "AC4 docs re-stamp: the contents of the re-stamp file"
+assert_contains "$text" "edit nothing and commit nothing" "AC4 docs re-stamp: the pass is read-only"
+assert_contains "$text" '`bash scripts/pipeline-vcs.sh post-approval 5 docs`' "AC4 docs re-stamp: an accurate delta gets the docs post-approval call"
+assert_contains "$text" 'start your final message with `RESTAMP_PASS: `' "AC4 docs re-stamp: an accurate delta answers RESTAMP_PASS"
+assert_contains "$text" 'start your final message with `RESTAMP_FAIL: `' "AC4 docs re-stamp: anything else answers RESTAMP_FAIL"
+assert_contains "$text" "post no stamp" "AC4 docs re-stamp: a failing delta gets no stamp"
+assert_contains "$text" "what is wrong or missing" "AC4 docs re-stamp: the failing answer says what is wrong or missing"
+assert_not_contains "$text" "Otherwise post findings exactly as your normal stage would." "AC4 docs re-stamp: no findings-as-your-normal-stage line"
+assert_contains "$text" "If you stop, block, or ask instead of completing:" "AC4 docs re-stamp: carries the stop rule"
+assert_contains "$text" "Your role profile carries the full procedure." "AC4 docs re-stamp: points at the role profile"
+case "$text" in *"{{"*"}}"*) fail "AC4 docs re-stamp: no marker left" "found {{...}}" ;; *) pass "AC4 docs re-stamp: no marker left" ;; esac
 
 # ── (d) config effects ────────────────────────────────────────────────────────
 reset_cfg

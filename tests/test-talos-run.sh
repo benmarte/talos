@@ -1450,4 +1450,64 @@ stop reason=stop-requested" "$OUT" "AC14 (#601): the first pass after a merge's 
 assert_not_contains "$(journal)" "agent validator" "AC14 (#601): no stage starts after a merge when a stop was requested"
 assert_file_absent "$STOPF" "AC14 (#601): the continuation deletes the request it honoured"
 
+# ── (n) the docs delta re-stamp (#590) ───────────────────────────────────────
+# `docs-gate` answers `shape=restamp restamp-file=<F>` when docs:done is on the
+# PR and stale: the docs agent then gets the re-stamp prompt with <F> in it, and
+# its RESTAMP_PASS / RESTAMP_FAIL line is the verdict `done docs` records. The
+# history is the sandbox's own repo (last in this file: no other test sees it).
+git config user.name "talos-test"
+git config user.email "test@talos.invalid"
+printf 'readme at the approval\n' > README.md
+git add README.md
+git commit -q -m "the approved head"
+RS_S="$(git rev-parse HEAD)"
+printf 'readme after the fix round\n' > README.md
+git add README.md
+git commit -q -m "fix round: the readme"
+RS_H="$(git rev-parse HEAD)"
+mkdir -p "$SANDBOX/tmp-rs"
+restamp_fixture() {  # $1 = the docs agent's final message
+  reset_stubs; LEASE_RESET
+  draft_cfg '"timeout_ms": 600000, "ci_wait_s": 900'
+  draft_collect docs
+  printf 'README.md\nscripts/talos.sh\n' > "$STUB_DIR/pr-files"
+  printf '{"labels": [{"name": "docs:done"}], "state": "open"}' > "$STUB_DIR/view-pr.12"
+  printf 'stale role=docs label=docs:done sha=%s\n' "$RS_S" > "$STUB_DIR/check-approval-sha"
+  printf 1 > "$STUB_DIR/check-approval-sha.rc"
+  printf '%s\n' "$RS_H" > "$STUB_DIR/pr-head"
+  printf '%s\n' "$1" > "$STUB_DIR/message.docs"
+}
+rs_files() { find "$SANDBOX/tmp-rs" -maxdepth 1 -name 'talos-docs-*' 2>/dev/null | wc -l | tr -d ' '; }
+
+restamp_fixture 'RESTAMP_PASS: the README delta matches the code'
+TMPDIR="$SANDBOX/tmp-rs" TALOS_LEASE_TTL_S=1800 TALOS_NOW=18000 rn --max-iterations 1
+RS_PROMPT="$(cat "$STUB_DIR/agent.stdin" 2>/dev/null)"
+assert_eq "0" "$RC" "AC7 a docs RESTAMP_PASS: the run exits 0"
+assert_contains "$(journal)" "agent docs" "AC7 the docs re-stamp dispatches the docs agent"
+assert_contains "$RS_PROMPT" "Comment header: **Agent:** docs (talos) — re-stamp" "AC7 the docs agent gets the re-stamp render"
+assert_contains "$RS_PROMPT" "approved_sha=$RS_S
+head_sha=$RS_H
+README.md" "AC7 the re-stamp render carries the re-stamp file"
+assert_contains "$RS_PROMPT" "+readme after the fix round" "AC7 the re-stamp render carries the delta's diff"
+assert_not_contains "$RS_PROMPT" "Read diff:" "AC7 the re-stamp render is not the first-shape prompt (no --docs-paths-file)"
+assert_not_contains "$(journal)" "vcs diff-pr 12" "AC7 the re-stamp render fetches no PR diff (no --embed-change)"
+assert_eq "0" "$(rs_files)" "AC7 the re-stamp file is removed after the render"
+assert_contains "$(journal)" "hooks post_stage docs docs 9 --pr 12 --verdict RESTAMP_PASS" "AC7 a RESTAMP_PASS line reaches done docs as --verdict RESTAMP_PASS"
+assert_eq "stop reason=iterations-exhausted max=1" "$(last_line)" "AC7 after a docs RESTAMP_PASS the run goes on to the next pass"
+
+restamp_fixture 'RESTAMP_FAIL: the README still names the old flag'
+TMPDIR="$SANDBOX/tmp-rs" TALOS_LEASE_TTL_S=1800 TALOS_NOW=18100 rn --max-iterations 1
+assert_eq "0" "$RC" "AC7 a docs RESTAMP_FAIL: the run exits 0"
+assert_contains "$(journal)" "hooks post_stage docs docs 9 --pr 12 --verdict RESTAMP_FAIL" "AC7 a RESTAMP_FAIL line reaches done docs as --verdict RESTAMP_FAIL"
+assert_contains "$(journal)" "vcs label-pr 12 --remove docs:done" "AC7 a docs RESTAMP_FAIL: done drops the stale docs:done"
+assert_eq "0" "$(journal | grep -c '^agent developer$')" "AC7 a docs RESTAMP_FAIL starts no developer fix round"
+assert_eq "stop reason=iterations-exhausted max=1" "$(last_line)" "AC7 after a docs RESTAMP_FAIL the run goes on to the next pass"
+
+restamp_fixture 'docs posted: nothing to change'
+TMPDIR="$SANDBOX/tmp-rs" TALOS_LEASE_TTL_S=1800 TALOS_NOW=18200 rn --max-iterations 1
+assert_eq "1" "$RC" "AC7 a docs re-stamp answer with neither word: exit 1"
+assert_contains "$OUT" "reason=dispatch-failed role=docs" "AC7 a docs re-stamp answer with neither word is a dispatch failure"
+assert_contains "$(cat "$ERR")" "reason=verdict-unreadable" "AC7 a docs re-stamp answer with neither word: verdict-unreadable"
+assert_not_contains "$(journal)" "hooks post_stage" "AC7 a docs re-stamp answer with neither word: nothing recorded"
+
 finish
