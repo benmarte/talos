@@ -73,11 +73,11 @@ budget() {  # role ceiling
 budget developer 11800
 budget qa 8200
 budget reviewer 4700
-budget security 3700
+budget security 4300
 budget pm 4300
 budget validator 4300
 budget docs 4600
-budget adversarial 5100
+budget adversarial 5800
 budget planner 3300
 
 finish

@@ -9,7 +9,7 @@
 #       pipeline-vcs.sh that journals every call: the journal is the order pin
 #   (b) gate fix-round: the old three-step sequence and the verb leave the same
 #       gh journal under the real scripts; both ceilings, the budget stop, the
-#       unblock, a failing record-attempt
+#       unblock, a failing record-attempt; the same-area check (#599)
 #   (c) the output contract: `verdict=` first, one of merge|handoff|redispatch|
 #       wait|block, `reason=` from the enum in talos.sh's header, sanitised
 #       values; the checker is shown red by an out-of-vocabulary verdict and an
@@ -115,13 +115,13 @@ stop_extra = {"usage", "unknown-verb", "scripts-missing", "python-missing", "scr
               "approval-sha-failed", "draft-unverified", "ci-unverified", "head-unresolved",
               "comments-unreadable", "handoff-label-failed", "trust-unverified"}
 warn_ok = {"closing-keyword-unverified", "ci-runs-unrecorded", "budget-check-failed", "unblock-failed",
-           "comment-failed", "label-failed", "value-truncated"}
+           "comment-failed", "label-failed", "value-truncated", "area-check-failed"}
 kv = re.compile(r"([A-Za-z][A-Za-z0-9_.]*)=")
 sw = re.compile(r"(stop|warn) reason=([a-z:-]+)( key=[A-Za-z0-9_.-]+)?\Z")
 if lines[0].startswith("stop "):
     ok = len(lines) == 1
 else:
-    ok = lines[0] in ("verdict=" + v for v in ("merge", "handoff", "redispatch", "wait", "block"))
+    ok = lines[0] in ("verdict=" + v for v in ("merge", "handoff", "redispatch", "wait", "block", "ask-owner"))
 if not ok:
     sys.exit(1)
 for i, ln in enumerate(lines):
@@ -608,7 +608,7 @@ check_gate_output "$SANDBOX/out.gate"; assert_eq "0" "$?" "sanitising: the sanit
 printf 'verdict=merge\n' > "$SANDBOX/ok.gate"
 check_gate_output "$SANDBOX/ok.gate"; assert_eq "0" "$?" "checker: a bare verdict=merge passes"
 printf 'verdict=maybe\n' > "$SANDBOX/mut.gate"
-check_gate_output "$SANDBOX/mut.gate"; assert_eq "1" "$?" "mutation: a verdict outside merge|handoff|redispatch|wait|block turns the checker red"
+check_gate_output "$SANDBOX/mut.gate"; assert_eq "1" "$?" "mutation: a verdict outside merge|handoff|redispatch|wait|block|ask-owner turns the checker red"
 printf 'verdict=wait\nreason=because\n' > "$SANDBOX/mut.gate"
 check_gate_output "$SANDBOX/mut.gate"; assert_eq "1" "$?" "mutation: an out-of-enum reason= turns the checker red"
 printf 'reason=ci-pending\nverdict=wait\n' > "$SANDBOX/mut.gate"
@@ -698,6 +698,204 @@ fr 42 qa --pr 9
 assert_contains "$OUT" "warn reason=unblock-failed" "fix-round: a failing unblock is a warn line"
 assert_contains "$OUT" "verdict=redispatch" "fix-round: a failing unblock does not stop the round"
 assert_gate "fix-round (unblock-failed)"
+
+# ── (b2) the same-area check (#599) ──────────────────────────────────────────
+# One review role blocking the same file in limits.same_area_rounds rounds
+# running (default 2) is a design question, not another patch: the gate answers
+# `verdict=ask-owner`, records no attempt, clears no label and parks the
+# question with mark-needs-owner. A reply to the question starts the count again.
+# comments_json <login> <body>...: a read-comments object.
+comments_json() {
+  python3 -I -c 'import json, sys
+a = sys.argv[1:]
+print(json.dumps({"comments": [{"author": {"login": a[i]}, "body": a[i + 1]} for i in range(0, len(a), 2)]}))' "$@"
+}
+SEC_X1=$'**Agent:** security (talos)\n\n**Security:** FINDINGS — the wrapper check\n\nHigh (a): `scripts/x.sh:42` trusts the file name; fix: compare the path.'
+SEC_X2=$'**Agent:** security (talos)\n\n**Security:** FINDINGS — the wrapper check again\n\nHigh (a): scripts/x.sh:57 and tests/test-x.sh:9: a symlink still passes.'
+SEC_Y=$'**Agent:** security (talos)\n\n**Security:** FINDINGS — the installer\n\nMedium (b): install.sh:310 writes before the backup.'
+SEC_XL=$'**Agent:** security (talos)\n\n**Security:** FINDINGS — both\n\nHigh (a): scripts/x.sh:42 and lib/a.sh:7.'
+SEC_CLEAR=$'**Agent:** security (talos)\n\n**Security:** CLEAR — scripts/x.sh:42 is fixed\n\n<!-- talos:approval sha=0123456789abcdef0123456789abcdef01234567 role=security -->'
+# Two rounds that block on different files and share only a note file.
+SEC_N1=$'**Agent:** security (talos)\n\n**Security:** FINDINGS — the wrapper\n\nHigh (a): scripts/x.sh:42 trusts the file name.\n\n**Non-blocking notes:**\n- docs/reference.md:12 is out of date.'
+SEC_N2=$'**Agent:** security (talos)\n\n**Security:** FINDINGS — the installer\n\nMedium (b): install.sh:310 writes before the backup.\n\n**Non-blocking notes:**\n- docs/reference.md:40 has a typo.'
+REV_X1=$'**Agent:** reviewer (talos)\n\n**Blocked** — a pin\n\n1. scripts/x.sh:12 asserts nothing.'
+REV_X2=$'**Agent:** reviewer (talos)\n\n**Blocked** — the pin again\n\n1. scripts/x.sh:30 still passes on the old code.'
+REV_H1=$'**Agent:** reviewer (talos)\n\n**Blocked** — a pin\n\n1. tests/test-x.sh:12 asserts nothing.\n\n**Human attention**\n\n- a new default. scripts/x.sh:5'
+REV_H2=$'**Agent:** reviewer (talos)\n\n**Blocked** — a leak\n\n1. install.sh:30 leaks the temp file.\n\n**Human-attention report** — look here:\n\n- a new default. scripts/x.sh:5'
+ADV_X1=$'**Agent:** adversarial (talos)\n\n**Blocked** — a vacuous test\n\n1. scripts/x.sh:12 is never exercised.'
+ADV_X2=$'**Agent:** adversarial (talos)\n\n**Blocked** — still vacuous\n\n1. scripts/x.sh:14 is never exercised.'
+Q_LINE1="Design decision needed: security blocked PR #9 on scripts/x.sh in 2 rounds running. Which design should the next fix round implement?"
+Q_LINE3="Reply on this PR with the decision; the next fix-round gate continues from it."
+ASKED="$Q_LINE1"$'\n\n'"$Q_LINE3"$'\n\n<!-- talos:needs-owner -->'
+REPLY="Use fixed paths only."
+# A GitHub quote-reply: the quoted finding carries the role header.
+QUOTE_REPLY=$'> **Agent:** security (talos)\n> High (a): scripts/x.sh:57: a symlink still passes.\n\nUse fixed paths only.'
+area() {  # <stage> <comments-json>: one gate run on PR 9
+  set_stub read-comments 0 "$2"; set_stub record-attempt 0 "stage=$1 count=1 total=1"
+  : > "$STUB_DIR/journal"; rm -f "$STUB_DIR/bodies"
+  fr 42 "$1" --pr 9
+}
+after_read() { journal | sed -n '/^vcs read-comments/,$p' | sed 1d; }
+TODAY_OUT="verdict=redispatch
+count=1
+total=1
+stage=security"
+TODAY_CALLS="vcs record-attempt 42 security --pr 9
+vcs label-pr 9 --remove pipeline:blocked
+vcs label-issue 42 --remove pipeline:blocked"
+
+# AC1: two findings comments of the stage on one file.
+reset_stubs
+area security "$(comments_json bot "$SEC_X1" bot "$SEC_X2")"
+assert_eq "0" "$RC" "AC1 two security findings on one file: exits 0"
+assert_eq "verdict=ask-owner
+reason=design-decision
+stage=security
+rounds=2
+area=scripts/x.sh" "$OUT" "AC1 two security findings comments that both cite scripts/x.sh: ask-owner with the stage, the rounds and the area"
+assert_eq "0" "$(called record-attempt)" "AC1 ask-owner records no attempt"
+assert_eq "0" "$(journal | grep -c -- '--remove')" "AC1 ask-owner removes no label"
+assert_eq "1" "$(called mark-needs-owner)" "AC1 ask-owner parks the question once"
+assert_contains "$(journal)" "vcs mark-needs-owner 9 --body-file " "AC1 the question is parked on the PR from a file"
+assert_eq "$Q_LINE1
+
+$Q_LINE3" "$(bodies | sed 1d)" "AC1 the parked question is the fixed text with the stage, the PR, the area and the rounds"
+assert_eq "0" "$(called comment-pr)" "AC1 the question is posted by mark-needs-owner alone"
+assert_eq "budget
+vcs current-user
+vcs read-comments 9
+vcs mark-needs-owner" "$(journal | sed -n 's/^\(budget\) .*/\1/p;/^vcs current-user/p;/^vcs read-comments/p;s/^\(vcs mark-needs-owner\) .*/\1/p')" "AC1 the check runs after the budget guard, on one read of the PR's comments"
+assert_gate "AC1 fix-round (ask-owner)"
+area security "$(comments_json bot "$SEC_XL" bot "$SEC_XL")"
+assert_eq "lib/a.sh,scripts/x.sh" "$(line_of "$OUT" area)" "AC1 area is every shared file, sorted and comma-joined"
+set_stub mark-needs-owner 1 "" "boom"
+area security "$(comments_json bot "$SEC_X1" bot "$SEC_X2")"
+assert_eq "verdict=ask-owner" "$(printf '%s\n' "$OUT" | head -n 1)" "AC1 a failed mark-needs-owner still answers ask-owner"
+assert_contains "$OUT" "warn reason=comment-failed" "AC1 a failed mark-needs-owner is a warn line"
+assert_gate "AC1 fix-round (comment-failed)"
+
+# AC2: fewer than K findings comments, or no shared file.
+reset_stubs
+area security "$(comments_json bot "$SEC_X1")"
+assert_eq "$TODAY_OUT" "$OUT" "AC2 one findings comment: redispatch with today's output"
+assert_eq "$TODAY_CALLS" "$(after_read)" "AC2 one findings comment: today's calls after the read-comments"
+area security "$(comments_json bot "$SEC_X1" bot "$SEC_Y")"
+assert_eq "$TODAY_OUT" "$OUT" "AC2 two findings comments on different files: redispatch with today's output"
+assert_eq "$TODAY_CALLS" "$(after_read)" "AC2 two findings comments on different files: today's calls after the read-comments"
+assert_eq "0" "$(called mark-needs-owner)" "AC2 no question is parked for a round that runs"
+assert_gate "AC2 fix-round (redispatch)"
+area security "$(comments_json bot "$SEC_X1" bot "$SEC_Y" bot "$SEC_X2")"
+assert_eq "$TODAY_OUT" "$OUT" "AC2 the newest two findings comments decide: x, y, x redispatches"
+
+# AC3: what never counts toward the K comments.
+reset_stubs
+area security "$(comments_json bot "$SEC_X1" bot "$REV_X1")"
+assert_eq "$TODAY_OUT" "$OUT" "AC3 a comment under another role's header is not counted"
+area security "$(comments_json bot "$SEC_X1" bot "$SEC_CLEAR")"
+assert_eq "$TODAY_OUT" "$OUT" "AC3 a comment containing a talos marker (the role's approval) is not counted"
+area security "$(comments_json bot "$SEC_N1" bot "$SEC_N2")"
+assert_eq "$TODAY_OUT" "$OUT" "AC3 a citation below a Non-blocking notes line is not counted: two rounds on different files sharing a note file redispatch"
+area reviewer "$(comments_json bot "$REV_H1" bot "$REV_H2")"
+assert_eq "verdict=redispatch" "$(printf '%s\n' "$OUT" | head -n 1)" "AC3 a citation in the reviewer's human-attention report is not counted"
+set_stub current-user 0 "bot"
+area security "$(comments_json bot "$SEC_X1" mallory "$SEC_X2")"
+assert_eq "$TODAY_OUT" "$OUT" "AC3 a comment by an author outside the trust set is not counted"
+area security "$(comments_json bot "$SEC_X1" bot "$SEC_X2")"
+assert_eq "verdict=ask-owner" "$(printf '%s\n' "$OUT" | head -n 1)" "AC3 the same two comments from the trusted author are counted"
+
+# AC4: K is limits.same_area_rounds; reviewer and adversarial follow the rule.
+reset_stubs; cfg_json '{"limits": {"same_area_rounds": 3}}'
+area security "$(comments_json bot "$SEC_X1" bot "$SEC_X2")"
+assert_eq "$TODAY_OUT" "$OUT" "AC4 same_area_rounds 3: two same-file findings comments redispatch"
+area security "$(comments_json bot "$SEC_X1" bot "$SEC_X2" bot "$SEC_X1")"
+assert_eq "verdict=ask-owner" "$(printf '%s\n' "$OUT" | head -n 1)" "AC4 same_area_rounds 3: three same-file findings comments ask the owner"
+assert_eq "3" "$(line_of "$OUT" rounds)" "AC4 same_area_rounds 3: rounds=3"
+assert_contains "$(bodies)" "on scripts/x.sh in 3 rounds running" "AC4 same_area_rounds 3: the parked question names 3 rounds"
+reset_stubs
+area reviewer "$(comments_json bot "$REV_X1" bot "$REV_X2")"
+assert_eq "verdict=ask-owner
+reason=design-decision
+stage=reviewer
+rounds=2
+area=scripts/x.sh" "$OUT" "AC4 two reviewer findings comments on one file: ask-owner"
+area adversarial "$(comments_json bot "$ADV_X1" bot "$ADV_X2")"
+assert_eq "verdict=ask-owner
+reason=design-decision
+stage=adversarial
+rounds=2
+area=scripts/x.sh" "$OUT" "AC4 two adversarial findings comments on one file: ask-owner"
+assert_contains "$(bodies)" "Design decision needed: adversarial blocked PR #9 on scripts/x.sh in 2 rounds running." "AC4 the parked question names the stage"
+
+# AC5: an unanswered owner question.
+reset_stubs
+area security "$(comments_json bot "$SEC_X1" bot "$SEC_X2" bot "$ASKED")"
+assert_eq "verdict=ask-owner
+reason=design-decision
+stage=security" "$OUT" "AC5 an unanswered owner question: ask-owner, nothing else"
+assert_eq "current-user read-comments" "$(vcs_verbs)" "AC5 an unanswered owner question makes no write: no mark-needs-owner, no record-attempt, no label call"
+assert_gate "AC5 fix-round (unanswered)"
+area security "$(comments_json bot "$SEC_X1" bot "$SEC_X2" bot "$ASKED" bot "$SEC_Y" bot "")"
+assert_eq "current-user read-comments" "$(vcs_verbs)" "AC5 an agent comment and an empty comment do not answer the question"
+set_stub current-user 0 "bot"
+area security "$(comments_json bot "$SEC_X1" bot "$SEC_X2" bot "$ASKED" mallory "$REPLY")"
+assert_eq "current-user read-comments" "$(vcs_verbs)" "AC5 a reply by an author outside the trust set does not answer the question"
+
+# AC6: an answered owner question resets the window.
+reset_stubs
+area security "$(comments_json bot "$SEC_X1" bot "$SEC_X2" bot "$ASKED" owner "$REPLY")"
+assert_eq "$TODAY_OUT" "$OUT" "AC6 an answered owner question: same-file findings comments older than it do not count"
+assert_eq "vcs record-attempt 42 security --pr 9
+vcs label-pr 9 --remove pipeline:blocked
+vcs label-pr 9 --remove pipeline:needs-owner
+vcs label-issue 42 --remove pipeline:blocked" "$(after_read)" "AC6 the unblock removes pipeline:needs-owner from the PR as well as pipeline:blocked"
+area security "$(comments_json bot "$SEC_X1" bot "$SEC_X2" bot "$ASKED" owner "$QUOTE_REPLY")"
+assert_eq "$TODAY_OUT" "$OUT" "AC6 a reply that quotes a findings comment answers the question"
+area security "$(comments_json bot "$SEC_X1" bot "$SEC_X2" bot "$ASKED" owner "$REPLY" bot "$SEC_X1")"
+assert_eq "$TODAY_OUT" "$OUT" "AC6 one findings comment after the answer: the round runs"
+area security "$(comments_json bot "$SEC_X1" bot "$SEC_X2" bot "$ASKED" owner "$REPLY" bot "$SEC_X1" bot "$SEC_X2")"
+assert_eq "verdict=ask-owner" "$(printf '%s\n' "$OUT" | head -n 1)" "AC6 two findings comments on one file after the answer ask again"
+assert_eq "1" "$(called mark-needs-owner)" "AC6 the second question is parked"
+
+# AC7: the calls the check does not touch.
+reset_stubs; set_stub record-attempt 0 "stage=qa count=1 total=1"
+fr 42 qa --pr 9
+assert_eq "record-attempt label-pr label-issue" "$(vcs_verbs)" "AC7 a stage outside reviewer|security|adversarial reads no comments: the journal of main"
+reset_stubs; set_stub record-attempt 0 "stage=security count=1 total=1"
+fr 42 security
+assert_eq "record-attempt label-issue" "$(vcs_verbs)" "AC7 a call without --pr reads no comments: the journal of main"
+reset_stubs; set_stub budget 1 "talos:budget exceeded issue=42 used=120 limit=100 effective=100 pct=120 unrecorded=0"
+fr 42 security --pr 9
+assert_eq "verdict=block:0" "$(printf '%s\n' "$OUT" | head -n 1):$(called read-comments)" "AC7 a budget block still prints verdict=block and reads no comments"
+
+# AC8: fail open.
+reset_stubs; set_stub read-comments 1 "" "boom"; set_stub record-attempt 0 "stage=security count=1 total=1"
+fr 42 security --pr 9
+assert_eq "0:verdict=redispatch" "$RC:$(printf '%s\n' "$OUT" | head -n 1)" "AC8 a failing read-comments still answers redispatch"
+assert_contains "$OUT" "warn reason=area-check-failed" "AC8 a failing read-comments is a warn line"
+assert_eq "$TODAY_CALLS" "$(after_read)" "AC8 a failing read-comments: the round runs as today"
+assert_gate "AC8 fix-round (area-check-failed)"
+set_stub read-comments 0 "not json"
+fr 42 security --pr 9
+assert_eq "verdict=redispatch:1" "$(printf '%s\n' "$OUT" | head -n 1):$(printf '%s\n' "$OUT" | grep -c '^warn reason=area-check-failed$')" "AC8 a read-comments answer that does not parse: the same warn, redispatch"
+reset_stubs; cfg_json '{"comments": {"enabled": false}}'; set_stub record-attempt 0 "stage=security count=1 total=1"
+fr 42 security --pr 9
+assert_eq "verdict=redispatch:0" "$(printf '%s\n' "$OUT" | head -n 1):$(called read-comments)" "AC8 comments.enabled false makes no read-comments call"
+reset_stubs; cfg_json '{"comments": {"header": ""}}'; set_stub record-attempt 0 "stage=security count=1 total=1"
+fr 42 security --pr 9
+assert_eq "verdict=redispatch:0" "$(printf '%s\n' "$OUT" | head -n 1):$(called read-comments)" "AC8 an empty comments.header makes no read-comments call"
+rm -f "$SANDBOX/talos.pipeline.json"
+
+# AC10: the contract is declared.
+FR_BLOCK="$(sed -n '/^#   gate fix-round /,/^#   gate merge /p' "$TALOS")"
+assert_contains "$FR_BLOCK" "verdict=ask-owner   reason=design-decision" "AC10 the gate fix-round block of the header names verdict=ask-owner and design-decision"
+assert_contains "$FR_BLOCK" "area-check-failed" "AC10 the gate fix-round block of the header names the warn area-check-failed"
+assert_contains " $GATE_REASONS " " design-decision " "AC10 the gate-reasons line names design-decision"
+assert_contains "$(sed -n '/^# gate-reasons: /,/^#$/p' "$TALOS" | sed -n '/^#   warn: /,$p')" "area-check-failed" "AC10 the gate warn list names area-check-failed"
+assert_contains "$(bash "$TALOS" help 2>&1)" "verdict=ask-owner" "AC10 help lists ask-owner among the gate fix-round verdicts"
+printf 'verdict=ask-owner\nreason=design-decision\nstage=security\n' > "$SANDBOX/ok.gate"
+check_gate_output "$SANDBOX/ok.gate"; assert_eq "0" "$?" "AC10 the checker accepts verdict=ask-owner reason=design-decision"
+printf 'verdict=ask-nobody\n' > "$SANDBOX/mut.gate"
+check_gate_output "$SANDBOX/mut.gate"; assert_eq "1" "$?" "AC10 the checker still turns red on an unknown verdict"
 
 # The same sequence as the old prose, under the real scripts and the gh stub:
 # the two leave the same gh journal.

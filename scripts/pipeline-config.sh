@@ -884,6 +884,7 @@ _INT_KEYS = {
     "notifications.buzz_timeout_s": ("seconds", 1, 3600),
     "limits.max_fix_attempts": ("attempts", 1, 100),
     "limits.max_total_dispatches": ("dispatches", 1, 1000),
+    "limits.same_area_rounds": ("rounds", 1, 100),
     "execution.worktree_warn_threshold": ("worktrees", 0, 10000),
     "board.project_number": ("project number", 1, 2147483647),
     "agents.stage_timeout_s": ("seconds", 60, 86400),
