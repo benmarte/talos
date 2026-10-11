@@ -282,11 +282,14 @@ done
 # pm: a document, not a verdict
 reset_stubs
 printf 'goal — 3 acceptance criteria, branch fix/issue-42-x\n' > "$SUM"
+set_stub view-issue 0 '{"title": "t", "body": "b", "labels": [], "comments": [{"body": "**PM spec:** x\n- [ ] AC1 greets (test)\n**Tests:** `tests/test-x.sh`"}]}'
 dn pm --issue 42 --summary-file "$SUM"
-assert_eq "notify pm #42 - 42
+assert_eq "vcs view-issue 42 --spec
+notify pm #42 - 42
 hooks post_stage pm pm 42 --summary-file F
-events cost --issue 42 --line" "$(jr)" "pm: relay and event, no verdict, no board"
+events cost --issue 42 --line" "$(jr)" "pm: the spec's Tests: line is checked (#594), relay and event, no verdict, no board"
 assert_eq "continue" "$(line_of next)" "pm: continue"
+assert_out "pm"
 # docs, with a PR
 reset_stubs
 printf 'docs posted\n' > "$SUM"
