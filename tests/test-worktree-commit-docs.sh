@@ -66,6 +66,18 @@ for head in main "$BR"; do
   assert_eq "$MAIN_SHA" "$(origin_ref main)" "AC1 on the base branch (PR head '$head'): origin's base branch did not move"
 done
 git checkout -q -- docs/guide.md
+# A configured base branch with another name is refused the same way.
+git checkout -q -b trunk
+github_leg gh ',"base_branch": "trunk"'
+printf 'edited on trunk\n' >> docs/guide.md
+HEAD_BEFORE="$(git rev-parse HEAD)"
+STUB_PR_HEAD_REF_NAME=trunk docs_commit "" 9 -- docs/guide.md
+assert_eq "1" "$RC" "AC1 on the configured base branch (base_branch: trunk): refused"
+untouched "AC1 on the configured base branch (base_branch: trunk)"
+assert_eq "none" "$(origin_ref trunk)" "AC1 on the configured base branch (base_branch: trunk): nothing was pushed"
+git checkout -q -- docs/guide.md talos.pipeline.json
+git checkout -q main
+git branch -q -D trunk
 
 # ── a branch that is not the PR's head, a detached HEAD, an unreadable PR ────
 git checkout -q -b other

@@ -150,6 +150,26 @@
 #                           Not under the repo-wide lock: the pull is a network
 #                           call, and only this checkout and its own branch
 #                           are touched.
+#   commit-docs <pr> -- <file>...
+#                           The docs stage's one git write (#607): stage the
+#                           named files, commit them and push. The headless docs
+#                           role has no `git add`, `git commit` or `git push`
+#                           rule, because those act on whatever branch is
+#                           checked out; this verb checks first. Refused (exit
+#                           1, nothing committed or pushed) unless the current
+#                           branch is the head branch of PR <pr> as the provider
+#                           reports it (`view-pr`; unreadable = refused) and is
+#                           not main, master or the base branch; when the index
+#                           already has staged changes; when a <file> is a
+#                           directory, a symlink, ignored, outside the checkout
+#                           or matches a forbidden-files pattern (a deleted
+#                           tracked file is fine); and when TALOS_ROLE names a
+#                           role other than docs. The commit message is stdin
+#                           (`docs: update docs (#<pr>)` when empty); the repo's
+#                           commit hooks run. Pushes `HEAD:refs/heads/<branch>`,
+#                           never forced. Exit: 0 ok (also `nothing to commit`);
+#                           1 refused or git failure; 2 usage; 3 push failed
+#                           (commit kept locally).
 #
 # The handoff lives at <git common dir>/talos/handoff/<N>.json (the #517
 # relocation: the old <repo-root>/.talos/ path IS inside the tree in a normal
@@ -1029,12 +1049,12 @@ _wt_unstage_forbidden() {
   if ! pats="$(_wt_forbidden_patterns)"; then
     # Fail closed: nothing may be committed or pushed without the deny list.
     git reset -q 2>/dev/null || true
-    echo "pipeline-worktree: checkpoint: could not resolve the forbidden-files patterns -- nothing staged" >&2
+    echo "pipeline-worktree: ${_WT_VERB:-checkpoint}: could not resolve the forbidden-files patterns -- nothing staged" >&2
     exit 1
   fi
   while IFS= read -r -d '' p; do
     GIT_LITERAL_PATHSPECS=1 git reset -q HEAD -- "$p" 2>/dev/null || GIT_LITERAL_PATHSPECS=1 git rm -q --cached -- "$p" 2>/dev/null
-    echo "pipeline-worktree: checkpoint: not staging path: $p (forbidden-file pattern or Talos-internal)" >&2
+    echo "pipeline-worktree: ${_WT_VERB:-checkpoint}: not staging path: $p (forbidden-file pattern or Talos-internal)" >&2
   done < <(git diff --cached --name-only --no-renames -z | PATTERNS="$pats" python3 -I -c '
 import fnmatch, os, sys
 pats = [p.strip() for p in os.environ["PATTERNS"].splitlines() if p.strip()]
@@ -1155,6 +1175,70 @@ _wt_to_base_body() {
   exit 0
 }
 
+# _wt_commit_docs_body <pr> -- <file>... -- the work of `commit-docs` (#607).
+# Every check comes before the first write; a refusal after `git add` unstages
+# what it staged (the index was clean before, so nothing else is touched).
+_wt_commit_docs_no() { echo "pipeline-worktree: commit-docs: $* -- nothing committed" >&2; exit 1; }
+_wt_commit_docs_body() {
+  local usage="usage: pipeline-worktree.sh commit-docs <pr> -- <file>..." pr="${1:-}" branch base head_ref top msg p staged state
+  case "$pr" in ''|*[!0-9]*) echo "$usage" >&2; exit 2 ;; esac
+  { [ "${2:-}" = "--" ] && [ $# -ge 3 ]; } || { echo "$usage" >&2; exit 2; }
+  shift 2
+  # pipeline-agent.sh exports the role of a headless stage; unset is a harness subagent.
+  [ "${TALOS_ROLE:-docs}" = "docs" ] || _wt_commit_docs_no "this verb is the docs stage's alone"
+  branch="$(git symbolic-ref -q --short HEAD 2>/dev/null)" || _wt_commit_docs_no "the checkout is not on a branch"
+  top="$(git rev-parse --show-toplevel 2>/dev/null)" || _wt_commit_docs_no "not inside a git worktree"
+  base="$(_wt_configured_base_branch)"
+  case "$branch" in
+    main|master|"$base") _wt_commit_docs_no "the checkout is on '$branch', a base branch" ;;
+  esac
+  head_ref="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" view-pr "$pr" 2>/dev/null | python3 -I -c '
+import json, sys
+try:
+    print(json.load(sys.stdin).get("headRefName") or "")
+except Exception:
+    pass
+' 2>/dev/null)"
+  [ -n "$head_ref" ] || _wt_commit_docs_no "could not read the head branch of PR #$pr"
+  [ "$branch" = "$head_ref" ] || _wt_commit_docs_no "the checkout is on '$branch', not the head branch of PR #$pr"
+  git diff --cached --quiet 2>/dev/null || _wt_commit_docs_no "the index already has staged changes"
+  for p in "$@"; do
+    # A regular file, or a tracked one that was deleted: never a directory or a symlink.
+    if [ -L "$p" ] || { [ -e "$p" ] && [ ! -f "$p" ]; } \
+       || { [ ! -e "$p" ] && ! GIT_LITERAL_PATHSPECS=1 git ls-files --error-unmatch -- "$p" >/dev/null 2>&1; }; then
+      _wt_commit_docs_no "not a file of this checkout: $p"
+    fi
+  done
+  # No -f: git itself refuses an ignored path, and a path outside the checkout.
+  if ! GIT_LITERAL_PATHSPECS=1 git add -- "$@" >&2; then
+    git reset -q 2>/dev/null || true
+    _wt_commit_docs_no "git add refused a path"
+  fi
+  staged="$(git diff --cached --name-only)"
+  (cd "$top" && _WT_VERB=commit-docs _wt_unstage_forbidden) || exit 1
+  if [ "$(git diff --cached --name-only)" != "$staged" ]; then
+    git reset -q 2>/dev/null || true
+    _wt_commit_docs_no "a file matches a forbidden-files pattern"
+  fi
+  state="nothing to commit"
+  if [ -n "$staged" ]; then
+    msg="$(_wt_read_stdin)"
+    [ -n "$(printf '%s' "$msg" | tr -d '[:space:]')" ] || msg="docs: update docs (#$pr)"
+    # The repo's commit hooks run: there is no --no-verify.
+    if ! git commit -q -m "$msg" >&2; then
+      git reset -q 2>/dev/null || true
+      _wt_commit_docs_no "git commit failed"
+    fi
+    state=pushed
+  fi
+  if ! GIT_TERMINAL_PROMPT=0 git push -q origin "HEAD:refs/heads/$branch" >&2; then
+    echo "pipeline-worktree: commit-docs: push failed; the commit is kept locally" >&2
+    exit 3
+  fi
+  echo "pipeline-worktree: commit-docs #$pr $(git rev-parse --short=8 HEAD) $state"
+  exit 0
+}
+
 case "$verb" in
   list)
     issue_listing="$(_issue_worktrees)"
@@ -1216,8 +1300,12 @@ case "$verb" in
     _wt_to_base_body "$1"
     ;;
 
+  commit-docs)
+    _wt_commit_docs_body "$@"
+    ;;
+
   *)
-    echo "usage: pipeline-worktree.sh <remove <n> | sweep [<open-id>...] | list | create <n> <branch> | tag <n> | checkpoint <n> [--local] [--runner R] [--model M] | handoff <n> | to-base <n> | status>" >&2
+    echo "usage: pipeline-worktree.sh <remove <n> | sweep [<open-id>...] | list | create <n> <branch> | tag <n> | checkpoint <n> [--local] [--runner R] [--model M] | handoff <n> | to-base <n> | commit-docs <pr> -- <file>... | status>" >&2
     exit 2
     ;;
 esac
