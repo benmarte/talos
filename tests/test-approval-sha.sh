@@ -431,6 +431,22 @@ assert_contains "$out" "stale role=qa label=qa:pass" "#196 --stale-list: stdout 
 err_only="$(cat "$SANDBOX/stale-list.err")"
 assert_contains "$err_only" "STALE qa:pass" "#196 --stale-list: existing stderr prose unchanged"
 
+# ── [test] issue #590: the stale line names the SHA the marker carried ────────
+# AC1: a role stale through a SHA mismatch gets a third pair, sha=<marker sha>
+# (docs-gate diffs from it); a role stale through a marker fault (here: no
+# marker at all) keeps the two-pair line.
+_c="[{\"body\":\"docs posted\\n<!-- talos:approval sha=${SHA_A} role=docs -->\"},{\"body\":\"qa pass, no marker\"}]"
+out="$(STUB_PR_HEAD_SHA="$SHA_E" \
+       STUB_PR_LABELS_JSON='[{"name":"docs:done"},{"name":"qa:pass"}]' \
+       STUB_PR_COMMENTS_JSON="$_c" \
+       PIPELINE_CONFIG="$PIPELINE_CONFIG" \
+       bash "$VCS" check-approval-sha 9 --stale-list 2>"$SANDBOX/stale-sha.err")"; rc=$?
+assert_exit_code 1 "$rc" "AC1 --stale-list with a stale role and a marker-less role: exits 1"
+assert_eq "stale role=docs label=docs:done sha=$SHA_A" "$(grep '^stale role=docs ' <<<"$out")" \
+  "AC1 a stale role whose marker carried a SHA: the line ends with sha=<marker sha>"
+assert_eq "stale role=qa label=qa:pass" "$(grep '^stale role=qa ' <<<"$out")" \
+  "AC1 a role stale through a marker fault: the two-pair line, no sha="
+
 # ── [test] pr-head: prints head SHA, fails when unresolvable ──────────────────
 out="$(STUB_PR_HEAD_SHA="$SHA_B" PIPELINE_CONFIG="$PIPELINE_CONFIG" \
        bash "$VCS" pr-head 9 2>&1)"; rc=$?
