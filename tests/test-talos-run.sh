@@ -357,6 +357,20 @@ assert_contains "$(journal)" "vcs view-issue 8" "inflight lease: the lease-held 
 assert_not_contains "$(journal)" "hooks post_stage developer developer 7" "inflight lease: the lease-held issue was not dispatched"
 assert_contains "$OUT" "stop reason=stage-blocked role=developer" "inflight lease: the second in-flight issue dispatched"
 
+# (g6) #524 AC6: an pipeline:epic-decomposed parent is an index, never a
+# developer's work. The stubbed inflight list names it on purpose (a real
+# collect leaves it out, #524 AC5), so the routing itself is what is pinned.
+reset_stubs
+LEASE_RESET
+printf '{"prs": [], "pr_total": 0, "ignored": 0, "blocked": [], "queued": [], "held": [], "inflight": [26], "owners": [], "capped": []}' \
+  > "$STUB_DIR/collect.json"
+printf '{"number": 26, "title": "t", "labels": [{"name": "pipeline:epic-decomposed"}], "body": "body", "state": "open"}' \
+  > "$STUB_DIR/view-issue.26"
+printf 'blocked: the fixture has no test route\n' > "$STUB_DIR/message"
+TALOS_NOW=10500 rn --max-iterations 3
+assert_eq "0" "$RC" "#524 AC6: a drained run over an epic-decomposed parent exits 0"
+assert_not_contains "$(journal)" "agent developer" "#524 AC6: no developer is dispatched onto an epic-decomposed parent"
+
 # ── (h) the draft-window completion (#516) ───────────────────────────────────
 # On `action=wait reason=draft pr=<M> issue=<N>` the driver continues the Draft
 # stage order itself: the resolver answered `ready` (every enabled draft-window
