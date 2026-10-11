@@ -215,11 +215,11 @@ def fmt_budget_suffix(budget):
 # `unrecorded` counts the events with no cache read: neither is ever shown as 0.
 
 def fmt_cache(read, write, unrecorded=0, totals=False):
-    """The cache part of a spend line: 'cache read 48.2M, cache write 1.20M',
+    """The cache part of a spend line: 'cache read 48.20M, cache write 1.20M',
     with '(+K unrecorded)' after the read figure when K events have none, or
     'cache reads unrecorded' when no event has one. totals=True is the one-line
     form, which says where each figure stands against the total next to it:
-    'cache read 48.2M (not in total, +K unrecorded), cache write 1.20M (in total)'."""
+    'cache read 48.20M (not in total, +K unrecorded), cache write 1.20M (in total)'."""
     if read is None:
         return "cache reads unrecorded"
     more = "+%d unrecorded" % unrecorded if unrecorded else ""

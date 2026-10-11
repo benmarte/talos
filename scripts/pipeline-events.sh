@@ -44,6 +44,16 @@
 #          table gains a trailing ci_runs column and every --json row and the
 #          total gain a trailing ci_runs field, summing those values. With no
 #          such event the output is exactly the shape described above.
+#          The usage split (#604): after restamp (ci_runs, when present, stays
+#          last) the table and every --json row and the total carry
+#          input_tokens (fresh, uncached), output_tokens, cache_write_tokens,
+#          cache_read_tokens and cache_unrecorded. Each of the four is the sum
+#          over the group's events that carry it, or `unrecorded` (--json:
+#          null) when none does, never 0; cache_unrecorded counts the events
+#          with no valid cache_read_tokens (orchestrator rows are left out of
+#          the total's count, like `unrecorded`). `tokens` is unchanged: fresh
+#          input + output + cache write. Cache reads are never in it, nor in
+#          the limits.tokens_per_issue budget, which reads `tokens` from --json.
 #          A `stage_start` event (#550, the dispatch marker the status line reads)
 #          is not a stage run: every cost form skips it. list and tail show it.
 #          --pr M keeps only events whose pr is M (an event with pr null never
@@ -61,6 +71,11 @@
 #          recorded tokens prints `total unrecorded`. The breakdown is sorted
 #          by tokens descending and cut with `…` so the line stays <= 200
 #          characters. Missing log or no matching events prints nothing.
+#          The cache segment (#604) follows the breakdown:
+#            ... (dev 1.57M, ...) · cache read 48.20M (not in total), cache write 1.20M (in total)
+#          `(not in total, +K unrecorded)` when K events in scope carry no
+#          cache read, ` · cache reads unrecorded` when none carries one. It
+#          counts toward the 200 characters and is never cut: the breakdown is.
 #          With limits.tokens_per_issue set, ` · budget 82% of 4M` ends the line
 #          at status warn or exceeded only (#383), read from `pipeline-budget.sh
 #          check --issue N --json`; an empty, unparseable or `unknown` answer
@@ -68,9 +83,13 @@
 #   cost --issue N [--pr M] --markdown (#383) prints the body of the PR spend
 #          comment: the comments.header value if set ({role} -> orchestrator),
 #          `### Token spend — #N`, one table row per stage role (stage, model
-#          family, runs, tokens, tool uses, duration, re-stamps, unrecorded)
-#          over every event of the issue, a TOTAL row, `This PR (#M): ...`
-#          (events whose pr is M), the budget line when the guard is on
+#          family, runs, tokens, cache write, cache read, tool uses, duration,
+#          re-stamps, unrecorded) over every event of the issue, a TOTAL row,
+#          `This PR (#M): <T> (<n> tokens, cache reads not included) · cache
+#          read <R>, cache write <W>` (events whose pr is M; `· cache reads
+#          unrecorded` when none carries one). A cache cell is the compact sum,
+#          `<sum> (+K unrecorded)` when K of the row's runs carry no cache read,
+#          `unrecorded` when none does. Then the budget line when the guard is on
 #          (`Budget: 82% of 4M (warn at 80%)`, a warning mark at warn, a pause
 #          notice at exceeded), the harness note and an orchestrator footnote.
 #          No marker: `pipeline-vcs.sh upsert-pr-comment` adds it. Tokens and
@@ -83,13 +102,22 @@
 #          prints nothing, exit 0.
 #   cost --summary --issue A [--issue B ...] (#383) prints the end-of-run
 #          report: one row per (issue, PR) and a `pre-PR` row per issue for
-#          events with pr null (issue, PR, tokens, unrecorded, stage models:
-#          each stage's model in one cell, `dev sonnet · qa sonnet ×1,
-#          session default ×1 · sec opus`), `Top PRs:` (up to 3), `Per issue:` totals and a `Total:`
-#          line, at most 20 lines (the smallest rows fold into one `+K more
-#          rows` line).
+#          events with pr null (issue, PR, tokens, cache write, cache read,
+#          unrecorded, stage models: each stage's model in one cell, `dev
+#          sonnet · qa sonnet ×1, session default ×1 · sec opus`), `Top PRs:`
+#          (up to 3), `Per issue:` totals, `Total: <T> (cache reads not
+#          included) · cache read <R>, cache write <W>` and the session line,
+#          at most 20 lines (the smallest rows fold into one `+K more rows`
+#          line).
 #          Orchestrator events are left out. No events: `no events recorded
-#          for this run`.
+#          for this run`, then the session line.
+#          The session line (#604) is the orchestrating session's own usage,
+#          read from the transcript TALOS_TRANSCRIPT_PATH names (an absolute
+#          path ending .jsonl, a regular file, not a symlink; that file only,
+#          no subagent transcripts; the last 64 MB of a larger one):
+#            Orchestrator session: <C> calls, cache read <R>, cache write <W>, output <O>
+#          <C> counts each message id once, with its last figures. Unset,
+#          empty or anything else: `Orchestrator session: not available`.
 #          --line, --markdown and --summary are exclusive (exit 2).
 #          Both report forms need scripts/pipeline-spend-format.py; a missing
 #          module prints one stderr note and nothing on stdout, exit 0.
