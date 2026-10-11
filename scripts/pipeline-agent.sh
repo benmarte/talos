@@ -126,6 +126,18 @@
 #                         talos:usage runner=<r> tokens=<N|null> input=<N|null> output=<N|null> cache_write=<N|null> cache_read=<N|null>
 #                       (null = not reported: codex, gemini, antigravity, pi and
 #                       the custom sidecar have no split).
+#   agents.claude_api_credits  (#616) bool, default false. A built-in claude stage
+#                       starts on the plan's monthly API credits: the key is
+#                       CLAUDE_API_CREDITS_KEY in ${TALOS_HOME:-~/.talos}/.env
+#                       (that file only), given to the claude child alone as
+#                       ANTHROPIC_API_KEY. When that pool is exhausted (the
+#                       `provider` / `quota` class) and the attempt wrote
+#                       nothing, the stage is rerun once on the plan login:
+#                         talos:failover role=<r> from=claude:api to=claude:plan reason=provider:quota
+#                       After a write the rerun is refused (exit 69); any other
+#                       failure is today's. Each stage event names the pool
+#                       (`pool`: api | plan). Off, another runner or no usable
+#                       key: no change. See "API credits first" below.
 #   agents.roles.<role>.runner      per-role override of agents.runner (#167).
 #                                    Resolved role-first: this key wins when
 #                                    set, else agents.runner, else "claude".
@@ -710,6 +722,11 @@ fi
 # signal is the spend-limit 429 in tasks/lessons.md); they are candidates and a
 # pattern that stops matching only means a provider error falls back to `task`. A runner with no entry below (codex, gemini,
 # antigravity, pi, custom) ships exit-75-only until its patterns are captured.
+# The API credits switch (#616, _run_stage) relies on the claude `quota` class:
+# it reruns a keyed attempt on the plan login only for that class. The
+# credit-balance shape is NOT captured from a real run for that pool (the plan's
+# monthly API credits); if the real text differs, an exhausted pool stays `task`
+# and the stage fails as it does today, it never switches silently.
 CLASS="" CLASS_DETAIL=""
 _classify_exit() {
   local _runner="$1" _rc="$2" _f _txt=""
@@ -1277,9 +1294,10 @@ _attempt_model() {
 }
 # _usage_args <runner>: the --tokens/--tool-uses/--model flags for this attempt
 # and the #604 split flags, one per line (empty when nothing is known), appended
-# to an event's argv.
+# to an event's argv. With API credits on (#616), --pool names what paid for it.
 _usage_args() {
   local _m
+  [ -z "$_CR_POOL" ] || printf '%s\n%s\n' --pool "$_CR_POOL"
   [ -z "$_AT_TOKENS" ] || printf '%s\n%s\n' --tokens "$_AT_TOKENS"
   [ -z "$_AT_TOOLS" ] || printf '%s\n%s\n' --tool-uses "$_AT_TOOLS"
   [ -z "$_AT_IN" ] || printf '%s\n%s\n' --input-tokens "$_AT_IN"
@@ -1528,6 +1546,41 @@ EOF
   [ "${#_deny[@]}" -eq 0 ] || _CP_ARGS+=(--disallowedTools "${_deny[@]}")
 }
 
+# ── API credits first (#616) ──────────────────────────────────────────────────
+# agents.claude_api_credits (bool, default false): a built-in claude attempt
+# starts on the plan's monthly API credits and is rerun once on the plan login
+# when that pool is exhausted (_run_stage, below the dispatch). The key is
+# CLAUDE_API_CREDITS_KEY in the user-level ${TALOS_HOME:-~/.talos}/.env and is
+# read from that file only, after its trust check (pipeline-secrets.sh): not
+# from the exported environment, the repo .env or ~/.hermes/.env. Off, another
+# runner, or no usable key: nothing below runs and the dispatch is unchanged.
+#   _CR_KEY   the key, a shell variable that is never exported; empty = off
+#   _CR_POOL  what the current claude attempt runs on, api | plan; empty = off
+#             or another runner. The stage events carry it as `pool`.
+# The key reaches the claude child as ANTHROPIC_API_KEY, set in a subshell
+# around that one command (_cr_env): no argv holds it and no hook, other runner
+# or rerun inherits it. The child's own tool calls do see it; they run as the
+# same user, who can read the file anyway. The plan-login rerun has
+# ANTHROPIC_API_KEY unset, whatever the caller exported.
+unset _CR_KEY _TS_VAL  # an inherited export of either name would export the key
+_CR_KEY="" _CR_POOL="" _CR_LOADED=""
+_cr_load() {
+  [ -z "$_CR_LOADED" ] || return 0
+  _CR_LOADED=1
+  [ "$(cfg agents.claude_api_credits)" = "true" ] || return 0
+  [ -f "$SCRIPT_DIR/pipeline-secrets.sh" ] || return 0
+  # shellcheck source=pipeline-secrets.sh
+  . "$SCRIPT_DIR/pipeline-secrets.sh"
+  talos_user_secret_get _CR_KEY CLAUDE_API_CREDITS_KEY || _CR_KEY=""
+}
+_cr_env() {
+  case "$_CR_POOL" in
+    api) (export ANTHROPIC_API_KEY="$_CR_KEY"; "$@") ;;
+    plan) (unset ANTHROPIC_API_KEY; "$@") ;;
+    *) "$@" ;;
+  esac
+}
+
 # RC (#182): every branch below used to `exec` straight into the runner, so
 # the runner's exit code WAS this script's exit code and nothing ran after
 # it. hooks.post_stage needs to fire once the runner exits (event
@@ -1559,14 +1612,14 @@ case "$RUNNER" in
     if [ -n "$_UDIR" ]; then
       # #420: JSON output; its message text is printed below, as text mode would.
       _claude_perm_build
-      _tmo claude -p --setting-sources project \
+      _cr_env _tmo claude -p --setting-sources project \
         ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} --output-format json \
         ${_CP_ARGS[@]+"${_CP_ARGS[@]}"} -- "$PROMPT" >"$_UDIR/raw"
       RC=$?
       _usage_finish_claude "$_UDIR/raw"
     else
       _claude_perm_build
-      _tmo claude -p --setting-sources project \
+      _cr_env _tmo claude -p --setting-sources project \
         ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} \
         ${_CP_ARGS[@]+"${_CP_ARGS[@]}"} -- "$PROMPT"
       RC=$?
@@ -1748,8 +1801,91 @@ _fo_checkpoint() {
   fi
   return 0
 }
+# _fo_wrote <runner> <journal emptied: true|false> <refs/remotes before>: the
+# write guard above, for the attempt that just ended. 0, with the one
+# talos:failover-refused line on stderr, when it wrote or cannot be shown not to
+# have; 1 when it wrote nothing.
+_fo_wrote() {
+  local _verbs
+  # Fail closed: a journal that could not be emptied, was deleted, or cannot be
+  # read means "unknown", never "no writes" -- no rerun.
+  if [ "$2" != true ] || [ ! -f "$TALOS_WRITE_LOG" ] || ! _verbs="$(sort -u "$TALOS_WRITE_LOG" 2>/dev/null)"; then
+    echo "talos:failover-refused role=$ROLE runner=$1 reason=write-log-unreadable" >&2
+    return 0
+  fi
+  _verbs="$(paste -sd, - <<<"$_verbs")"
+  if [ "$3" != "$(git for-each-ref refs/remotes 2>/dev/null)" ]; then
+    _verbs="${_verbs:+$_verbs,}push"
+  fi
+  [ -n "$_verbs" ] || return 1
+  echo "talos:failover-refused role=$ROLE runner=$1 reason=wrote:$_verbs" >&2
+}
+
+# _run_stage <runner> (#616): _run_runner, with the API credits switch around a
+# built-in claude attempt. Credits off or another runner: exactly _run_runner.
+# Credits on: the attempt runs with the key, buffered like a chain attempt so it
+# can be classified. Only a `provider` / `quota` exit (the pool is exhausted)
+# that wrote nothing is rerun, once, on the plan login: same prompt, same
+# invocation, and from there it is an ordinary claude attempt (its stdout and
+# exit code are the stage's; a chain handles its failure as it does today).
+# After a write the guard above refuses the rerun: exit 69. Any other result of
+# the keyed attempt is replayed as it was, for the caller to handle as today.
+# The runner stays the same, so no provider is marked down and nothing is
+# checkpointed. The caller passes its own stderr as fd 3: the keyed attempt's
+# stderr, its talos:usage line and the switch or refusal line go there, so a
+# chain, which buffers fd 2, classifies only what the rerun printed.
+_CR_OUT="" _CR_ERR="" _CR_WL="" _CR_TRAP=""
+_run_stage() {
+  local _snap _wl_ok=true
+  _CR_POOL=""
+  [ "$1" != "claude" ] || _cr_load
+  if [ "$1" != "claude" ] || [ -z "$_CR_KEY" ]; then
+    _run_runner "$1" 3>&-
+    return
+  fi
+  _CR_OUT="$(mktemp "${TMPDIR:-/tmp}/talos-cr-out.XXXXXX")" && _CR_ERR="$(mktemp "${TMPDIR:-/tmp}/talos-cr-err.XXXXXX")" \
+    && _CR_WL="$(mktemp "${TMPDIR:-/tmp}/talos-cr-wr.XXXXXX")" || {
+    echo "pipeline-agent: API credits: cannot create temp files (mktemp)" >&2
+    RC=1; return
+  }
+  if [ -z "$_CR_TRAP" ]; then
+    _CR_TRAP=1
+    if command -v _talos_on_exit >/dev/null 2>&1; then
+      _talos_on_exit 'rm -f "$_CR_OUT" "$_CR_ERR" "$_CR_WL"'
+    else
+      trap 'rm -f "$_CR_OUT" "$_CR_ERR" "$_CR_WL"' EXIT
+    fi
+  fi
+  # A chain exports its own write journal; without one the stage gets this one,
+  # and `local` ends it with the stage, so no hook inherits it.
+  [ "${#CHAIN[@]}" -gt 0 ] || local -x TALOS_WRITE_LOG="$_CR_WL"
+  : >"$TALOS_WRITE_LOG" 2>/dev/null || _wl_ok=false
+  _snap="$(git for-each-ref refs/remotes 2>/dev/null)"
+  _CR_POOL=api
+  _run_runner claude >"$_CR_OUT" 2>"$_CR_ERR" 3>&-
+  _classify_exit claude "$RC" "$_CR_ERR" "$_CR_OUT"
+  if [ "$CLASS:$CLASS_DETAIL" != "provider:quota" ]; then
+    cat "$_CR_ERR" >&2
+    cat "$_CR_OUT"
+  else
+    {
+      cat "$_CR_ERR" >&2
+      if _fo_wrote claude "$_wl_ok" "$_snap"; then
+        RC=69
+      else
+        _usage_marker claude
+        _fo_switch claude:api claude:plan "provider:quota"
+        _attempt_flush
+        _CR_POOL=plan
+      fi
+    } 2>&3 3>&-
+    [ "$_CR_POOL" != "plan" ] || _run_runner claude 3>&-
+  fi
+  rm -f "$_CR_OUT" "$_CR_ERR" "$_CR_WL"
+}
+
 _run_chain() {
-  local _order _cands=() _down _r _i _n _nxt _snap _verbs _why _reasons="" _chain_txt _wl_ok _skip _prun
+  local _order _cands=() _down _r _i _n _nxt _snap _why _reasons="" _chain_txt _wl_ok _skip _prun
   _order=("$RUNNER" "${CHAIN[@]}")
   _FO_TMO0="$_STAGE_TMO"; _FO_EFFORT0="$TALOS_EFFORT"
   _chain_txt="$(printf '%s,' "${_order[@]}")"; _chain_txt="${_chain_txt%,}"
@@ -1813,7 +1949,7 @@ _run_chain() {
     _FO_FINAL="$_E_RUNNER"
     _attempt_flush
     _FO_MODEL_SET=1
-    _run_runner "$_E_RUNNER" >"$_FO_OUT" 2>"$_FO_ERR"
+    _run_stage "$_E_RUNNER" 3>&2 >"$_FO_OUT" 2>"$_FO_ERR"
     # The classifier reads what _run_runner printed: for claude in JSON mode that
     # is the extracted message text, so its line-anchored patterns still match.
     _classify_exit "$_E_RUNNER" "$RC" "$_FO_ERR" "$_FO_OUT"
@@ -1825,19 +1961,7 @@ _run_chain() {
     fi
     _why="provider:$CLASS_DETAIL"
     _prov_mark_down "$_E_RUNNER" "$_why"
-    # Fail closed: a journal that could not be emptied, was deleted, or cannot be
-    # read means "unknown", never "no writes" -- no rerun.
-    if [ "$_wl_ok" != true ] || [ ! -f "$TALOS_WRITE_LOG" ] || ! _verbs="$(sort -u "$TALOS_WRITE_LOG" 2>/dev/null)"; then
-      echo "talos:failover-refused role=$ROLE runner=$_r reason=write-log-unreadable" >&2
-      RC=69
-      return
-    fi
-    _verbs="$(paste -sd, - <<<"$_verbs")"
-    if [ "$_snap" != "$(git for-each-ref refs/remotes 2>/dev/null)" ]; then
-      _verbs="${_verbs:+$_verbs,}push"
-    fi
-    if [ -n "$_verbs" ]; then
-      echo "talos:failover-refused role=$ROLE runner=$_r reason=wrote:$_verbs" >&2
+    if _fo_wrote "$_r" "$_wl_ok" "$_snap"; then
       RC=69
       return
     fi
@@ -1856,7 +1980,7 @@ done <<EOF
 $(_fallback_chain "$ROLE" "$RUNNER")
 EOF
 if [ "${#CHAIN[@]}" -eq 0 ]; then
-  _run_runner "$RUNNER"
+  _run_stage "$RUNNER" 3>&2
   _usage_marker "$RUNNER"
 else
   _run_chain

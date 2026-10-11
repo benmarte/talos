@@ -435,6 +435,7 @@ Derived defaults: `base_branch`, `repo`, `vcs.repo` and `board.owner` come from 
 | `agents.stage_timeout_s` | int | - | - | any |
 | `agents.roles.*.stage_timeout_s` | int | derived | - | any |
 | `agents.capture_usage` | bool | `true` | - | any |
+| `agents.claude_api_credits` | bool | `false` | - | any |
 | `agents.profile` | str | - | `TALOS_PROFILE` | any |
 | `agents.mode` | enum | - | - | any |
 
