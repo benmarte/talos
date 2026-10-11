@@ -4,7 +4,8 @@
 # or `git push` rule; this verb stages the files it is given, commits them and
 # pushes, and only when the checkout is on the head branch of the stage's PR and
 # never on the base branch.
-# Local bare origin, the gh stub for the PR head (STUB_PR_HEAD_REF_NAME); no network.
+# Local bare origin, the gh stub for the PR head (STUB_PR_HEAD_REF_NAME), the glab
+# and az stubs for the GitLab and Azure legs; no network.
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox || exit 1
@@ -171,6 +172,59 @@ docs_commit "docs: nothing (#42)" 9 -- docs/guide.md
 assert_eq "0" "$RC" "AC1 a file with no change: exits 0"
 assert_contains "$OUT" "nothing to commit" "AC1 a file with no change: it says nothing to commit"
 untouched "AC1 a file with no change"
+
+# ── every provider: the PR's head branch comes from `pipeline-vcs.sh pr-head-ref` ──
+VCS="$TALOS_ROOT/scripts/pipeline-vcs.sh"
+# head_ref <label> [<VAR=value>...]: run the verb; "<exit status> <stdout>" in $REF.
+head_ref() { REF="$(env "$@" bash "$VCS" pr-head-ref 9 2>/dev/null)"; REF="$? $REF"; }
+head_ref; assert_eq "0 $BR" "$REF" "AC1 github: pr-head-ref prints the PR's head branch"
+head_ref STUB_PR_HEAD_REF_NAME=; assert_eq "1 " "$REF" "AC1 github: pr-head-ref with no head branch in the answer exits 1, prints nothing"
+head_ref STUB_GH_API_FAIL=pr; assert_eq "1 " "$REF" "AC1 github: pr-head-ref on a failed read exits 1, prints nothing"
+github_leg curl
+printf '{"number":9,"head":{"ref":"%s"}}\n' "$BR" > "$CURL_QUEUE"
+head_ref; assert_eq "0 $BR" "$REF" "AC1 github-api: pr-head-ref prints the PR's head branch"
+: > "$CURL_QUEUE"
+
+# provider_leg <gitlab|azure> <head branch|""|fail>: the sandbox on that provider,
+# its CLI stub answering for PR 9 with that head branch (fail: the read fails).
+provider_leg() {
+  unset STUB_GITLAB_MR_VIEW STUB_GITLAB_MR_VIEW_FAIL STUB_AZURE_PR_9 STUB_AZURE_PR_SHOW_FAIL
+  case "$1" in
+    gitlab)
+      printf '{"vcs": {"provider": "gitlab", "repo": "acme/widget"}}\n' > talos.pipeline.json
+      if [ "$2" = fail ]; then export STUB_GITLAB_MR_VIEW_FAIL=1
+      else export STUB_GITLAB_MR_VIEW="{\"iid\":9,\"state\":\"opened\",\"source_branch\":\"$2\"}"; fi ;;
+    azure)
+      printf '{"vcs": {"provider": "azure", "repo": "widget", "azure": {"org_url": "https://dev.azure.com/acme", "project": "proj"}}}\n' > talos.pipeline.json
+      if [ "$2" = fail ]; then export STUB_AZURE_PR_SHOW_FAIL=1
+      else export STUB_AZURE_PR_9="{\"pullRequestId\":9,\"status\":\"active\",\"sourceRefName\":\"refs/heads/$2\"}"; fi ;;
+  esac
+}
+for p in gitlab azure; do
+  provider_leg "$p" "$BR"
+  head_ref; assert_eq "0 $BR" "$REF" "AC1 $p: pr-head-ref prints the PR's head branch"
+  printf '%s docs\n' "$p" >> docs/guide.md
+  docs_commit "docs: on $p (#42)" 9 -- docs/guide.md
+  assert_eq "0" "$RC" "AC1 $p: on the PR's head branch: commit-docs exits 0"
+  assert_eq "docs: on $p (#42)" "$(git log -1 --format=%s)" "AC1 $p: the docs commit is made"
+  assert_eq "$(git rev-parse HEAD)" "$(origin_ref "$BR")" "AC1 $p: the PR's head branch is on origin at the docs commit"
+  printf '%s again\n' "$p" >> docs/guide.md
+  HEAD_BEFORE="$(git rev-parse HEAD)"
+  for head in "" fail; do
+    provider_leg "$p" "$head"
+    head_ref; assert_eq "1 " "$REF" "AC1 $p (PR head '$head'): pr-head-ref exits 1, prints nothing"
+  done
+  for head in other "" fail; do
+    provider_leg "$p" "$head"
+    docs_commit "" 9 -- docs/guide.md
+    assert_eq "1" "$RC" "AC1 $p (PR head '$head'): commit-docs is refused"
+    untouched "AC1 $p (PR head '$head')"
+  done
+  assert_eq "$HEAD_BEFORE" "$(origin_ref "$BR")" "AC1 $p: no refused call pushed anything"
+  git checkout -q -- docs/guide.md
+done
+unset STUB_GITLAB_MR_VIEW STUB_GITLAB_MR_VIEW_FAIL STUB_AZURE_PR_9 STUB_AZURE_PR_SHOW_FAIL
+git checkout -q -- talos.pipeline.json
 
 # ── never forced: a head branch that moved on origin keeps origin's commit ───
 git clone -q "$ORIGIN" "$SANDBOX/.home/other-clone"
