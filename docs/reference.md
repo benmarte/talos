@@ -659,6 +659,18 @@ The token transport needs `owner/repo`: set `vcs.repo` if the origin remote lack
 
 `github-api` ignores `pr.draft` (ready-PR flow, one warning); `github` without `gh` installed uses the same transport and keeps draft PRs. The board scripts use curl GraphQL when the provider is `github-api` or `gh` is not on PATH; they do not detect an installed but logged-out `gh`.
 
+### Running in a Claude Code cloud session
+
+A Claude Code cloud session (claude.ai/code) can run `talos.sh run` on a GitHub repository. There, GitHub refuses GraphQL (`HTTP 403: GitHub GraphQL is not available from Claude Code sessions`) and serves REST. The adapter's verbs are REST already. `checkout-pr` tries `gh pr checkout` and, when GraphQL is refused, falls back to a REST read of the head ref and a `git fetch` of `refs/pull/<n>/head`. `ready-pr` and `draft-pr` send their GraphQL mutation and, on HTTP 403, use the session's REST routes `pulls/<n>/ccr/ready_for_review` and `pulls/<n>/ccr/convert_to_draft`. On a machine where GraphQL works, nothing changes.
+
+Setup:
+- Install the Claude GitHub App on the repository with write access to contents, issues and pull requests, and connect GitHub from claude.ai.
+- The session pushes only the branches it is allowed to. A refused push ends the developer's checkpoint with one line, `pipeline-worktree: checkpoint: push refused: no push access to origin for <branch>`, and the developer blocks on it.
+
+Skipped: the project board. Projects v2 has no REST API, so each board move is one `warn reason=board-failed` line, with the note `the board needs GitHub GraphQL, which this session refuses (HTTP 403); move skipped`, and the run goes on. `bootstrap-board.sh` and `bootstrap-labels.sh` need GraphQL: run them on a normal machine once.
+
+Cost: the plan's cloud session credit applies to cloud sessions only; a run on your own machine draws on the plan as before. Whether a stage's nested `claude -p` inside a cloud session is billed to that credit is not verified.
+
 ### GitLab
 
 `list-issues` and `list-prs` stop at 100 items (`WARNING result capped at 100` on stderr). No board (`pipeline-status.sh` prints `board unsupported for gitlab`). `pr-checks-required` fails closed.
