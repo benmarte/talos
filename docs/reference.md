@@ -1141,6 +1141,7 @@ Start with `bash scripts/pipeline-config.sh --show` (each key, its value and lay
 | `agent-failed rc=<n>` | The runner exited non-zero; `124` is `agents.stage_timeout_s`. |
 | `provider-failed rc=75\|69` | Provider error or failover exhausted; nothing is recorded. See [Profiles, runners and fallback](#profiles-runners-and-fallback). |
 | `action=wait reason=lease` | Another run holds the issue's lease (or the ledger is unavailable). Re-run later; see [Isolation, locking and multi-user claims](#isolation-locking-and-multi-user-claims). |
+| `action=wait reason=human-merge` | `merge.auto` is off, so the driver never runs the merge gate. Under `/talos:pipeline` the session runs the gate and the hand-off; after a bare `talos.sh run`, run `talos.sh gate merge <PR> <N>` and, on `verdict=handoff`, `talos.sh post-merge <PR> <N> --handoff`. See [Human merge](#human-merge). |
 | `qa-fail-unchanged-head` | The QA fix round pushed nothing; PR and issue are `pipeline:blocked`. |
 | `fix-round-unchanged-head pr=<M> issue=<N>` | The fix round after a reviewer, security or adversarial finding pushed nothing; PR and issue are `pipeline:blocked`. Read the findings on the PR, fix or answer them, remove the label and run again. |
 | `verdict=block reason=<why>` | `gate fix-round` refused the round (`max-fix-attempts`, `max-total-dispatches`, `budget-exceeded`); PR and issue are `pipeline:blocked`. |
