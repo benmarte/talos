@@ -35,6 +35,15 @@ for verb in next done prompt gate docs-gate post-merge; do
 done
 size="$(wc -c < "$SKILL_MD" | tr -d ' ')"
 [ "$size" -le 12000 ]; assert_eq "0" "$?" "AC5 SKILL.md is at most 12,000 bytes ($size)"
+# The heal of `sweep` (merged-but-open issues, the blocked-backlog notice) stays
+# in the default flow: one call, in the driver section, before the start command.
+assert_eq "1" "$(grep -c 'talos\.sh sweep' "$SKILL_MD")" "AC5 SKILL.md calls talos.sh sweep on one line"
+head_line="$(grep -n '^## Start the driver' "$SKILL_MD" | head -n 1 | cut -d: -f1)"
+sweep_line="$(grep -n 'talos\.sh sweep' "$SKILL_MD" | head -n 1 | cut -d: -f1)"
+run_line="$(grep -n 'talos\.sh run 2> \.talos/run\.err' "$SKILL_MD" | head -n 1 | cut -d: -f1)"
+[ "${head_line:-99999}" -lt "${sweep_line:-0}" ] && [ "${sweep_line:-99999}" -lt "${run_line:-0}" ]
+assert_eq "0" "$?" "AC5 the sweep call sits in the driver section, before the start command"
+assert_contains "$(grep 'talos\.sh sweep' "$SKILL_MD")" "heal=" "AC5 the sweep line says what a heal= line needs"
 
 # ── AC6 (first half): the start command is one fenced command ────────────────
 # (Each python program is written to a file first: bash 3.2 mis-parses a heredoc
@@ -61,6 +70,7 @@ case "$start_cmd" in
   *"&") fail "AC6 the start command is not backgrounded by hand" "$start_cmd" ;;
   *) pass "AC6 the start command is not backgrounded by hand" ;;
 esac
+assert_contains "$skill" "longest time limit" "AC6 the start command gets the harness's longest time limit"
 
 # ── AC7: one end-state table, read against the talos.sh header ───────────────
 cat > "$SANDBOX/end-states.py" <<'TALOS_Wn3Jb7Tc5Ys1Pg'
@@ -237,6 +247,28 @@ assert_eq "" "$(printf '%s\n' "$ac7" | sed '$d')" \
   "AC7 every driver end state of the talos.sh header has exactly one row with the action of decision 5"
 ac7_states="$(printf '%s\n' "$ac7" | tail -n 1 | sed -n 's/^STATES=\([0-9]*\) .*/\1/p')"
 [ "${ac7_states:-0}" -ge 40 ]; assert_eq "0" "$?" "AC7 the end states were read from the header (${ac7_states:-0} lines checked)"
+
+# The human-merge wait (merge.auto false): `next` never answers merge, so the
+# driver never runs the merge gate. Its row keeps the hand-off the loop had, and
+# refs/human-merge.md finds the PR on the line `state --summary` really prints.
+hm_row="$(grep -F '| `stop action=wait reason=human-merge` |' "$SKILL_MD")"
+assert_eq "1" "$(printf '%s\n' "$hm_row" | grep -c .)" "AC7 the human-merge wait has its own row"
+assert_contains "$hm_row" "| relay" "AC7 the human-merge row's action is relay"
+assert_contains "$hm_row" "refs/human-merge.md" "AC7 the human-merge row names the hand-off of refs/human-merge.md"
+hm_ref="$(cat "$REFS/human-merge.md")"
+for needle in "stop action=wait reason=human-merge" "talos.sh state --summary" "talos.sh gate merge" "--handoff"; do
+  assert_contains "$hm_ref" "$needle" "AC7 refs/human-merge.md holds \`$needle\` for the hand-off after the driver"
+done
+printf '{"prs": [{"n": 7, "issue": 3, "head": "h", "owner": false, "stage": "human-merge"}], "queued": [], "inflight": [], "blocked": [], "held": [], "owners": []}' \
+  > "$SANDBOX/hm-state.json"
+hm_where="$(python3 -I "$TALOS_ROOT/scripts/pipeline-next.py" where "$SANDBOX/hm-state.json" 2>/dev/null \
+  | sed -n 's/^next: //p' | sed -e 's/#7/#<PR>/' -e 's/#3/#<N>/')"
+assert_eq "wait (human-merge) on PR #<PR> (#<N>)" "$hm_where" "AC7 the summary names the PR that waits on a human merge (control)"
+assert_contains "$hm_ref" "where=next: $hm_where" "AC7 refs/human-merge.md reads the PR from the line state --summary prints"
+
+# A driver the harness stopped at its time limit prints no end line: one row.
+assert_eq "1" "$(grep -c '^| no end line.*| restart' "$SKILL_MD")" \
+  "AC7 a driver the harness stopped (no end line) has one row, restart"
 
 # ── AC8: the run section of the header lists every reason run can end on ─────
 cat > "$SANDBOX/run-reasons.py" <<'TALOS_Dk9Pf2Xs6Rv4Nb'
