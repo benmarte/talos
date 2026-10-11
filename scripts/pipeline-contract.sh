@@ -122,6 +122,7 @@ TALOS_MARKERS=(
   talos:usage
   talos:canary-skipped
   talos:worktree-sweep
+  talos:checkout
   talos:spend
   talos:budget
 )

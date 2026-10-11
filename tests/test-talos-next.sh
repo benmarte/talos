@@ -716,4 +716,187 @@ case "$OUT" in
 esac
 kill "$_l71" "$_l72" 2>/dev/null
 
+# ── #601: one order across in-flight and ready issues ────────────────────────
+# Untargeted `next` with no PR-side answer picks among the collect's `inflight`
+# and `queued` issues in one order: priority (the collect's `priority` object:
+# p0 = 0, p1 = 1, p2 = 2, absent = unlabelled), then in-flight before ready,
+# then the issue number.
+# mix <inflight> <queued> [<priority>] [<blocked>] [<held>]: the collect's state.
+mix() {
+  local _prio="${3:-}"
+  [ -n "$_prio" ] || _prio='{}'
+  printf '{"prs": [], "pr_total": 0, "ignored": 0, "blocked": %s, "queued": [%s], "held": [%s], "inflight": [%s], "owners": [], "capped": [], "priority": %s}' \
+    "${4:-[]}" "$2" "${5:-}" "$1" "$_prio" > "$STUB_DIR/collect.json"
+}
+ROLES_601='{"validator": true, "planner": false, "pm": true, "developer": true, "pm_skip_when_spec_present": false}'
+reset_stubs
+cfg '{"max_parallel": 1}' "$ROLES_601"
+
+# AC9: the three fixtures of the spec.
+issue 30 "pipeline:confirmed,p0" /dev/null
+issue 20 "pipeline:ready,p0" /dev/null
+mix 30 20 '{"20": 0, "30": 0}'
+LEASE_RESET
+nx
+assert_eq "action=dispatch stage=pm issue=30" "$OUT" "AC9 (#601): an in-flight p0 at pipeline:confirmed goes before a lower-numbered ready p0"
+issue 40 "pipeline:ready,p0" /dev/null
+issue 10 "pipeline:dev,p2" /dev/null
+mix 10 40 '{"10": 2, "40": 0}'
+LEASE_RESET
+nx
+assert_eq "action=dispatch stage=validator issue=40" "$OUT" "AC9 (#601): a ready p0 goes before an in-flight p2 at pipeline:dev"
+issue 31 "pipeline:confirmed" /dev/null
+issue 21 "pipeline:ready" /dev/null
+mix 31 21
+LEASE_RESET
+nx
+assert_eq "action=dispatch stage=pm issue=31" "$OUT" "AC9 (#601): an unlabelled in-flight issue goes before a lower-numbered unlabelled ready issue"
+# The rest of the order: p1 before p2 before unlabelled across both lists, and
+# the issue number last.
+issue 50 "pipeline:ready,p1" /dev/null
+issue 51 "pipeline:dev,p2" /dev/null
+issue 52 "pipeline:dev" /dev/null
+mix "51, 52" 50 '{"50": 1, "51": 2}'
+LEASE_RESET
+nx
+assert_eq "action=dispatch stage=validator issue=50" "$OUT" "AC9 (#601): a ready p1 goes before an in-flight p2 and an unlabelled in-flight issue"
+mix "51, 52" "" '{"51": 2}'
+LEASE_RESET
+nx
+assert_eq "action=dispatch stage=developer issue=51" "$OUT" "AC9 (#601): an in-flight p2 goes before an unlabelled in-flight issue"
+issue 53 "pipeline:dev" /dev/null
+mix "53, 52" ""
+LEASE_RESET
+nx
+assert_eq "action=dispatch stage=developer issue=52" "$OUT" "AC9 (#601): at the same priority and state the lower issue number goes first"
+# A priority value that is not 0, 1 or 2 counts as unlabelled.
+mix 52 21 '{"21": "0", "52": 7}'
+LEASE_RESET
+nx
+assert_eq "action=dispatch stage=developer issue=52" "$OUT" "AC9 (#601): a priority value outside 0-2 counts as unlabelled"
+
+# AC10: an in-flight candidate is routed exactly as `next --issue <N>` routes it.
+for _n in 30 10 31; do
+  mix "$_n" ""
+  LEASE_RESET
+  nxi "$_n"
+  _want="$OUT"
+  LEASE_RESET
+  nx
+  assert_eq "$_want" "$OUT" "AC10 (#601): the in-flight issue #$_n gets the answer next --issue $_n gives"
+done
+# None of the ready-queue filters apply to it; a ready candidate keeps each.
+# (a) blocked or needs-owner work elsewhere.
+mix 30 "" '{}' '[["issue", 99]]'
+LEASE_RESET
+nx
+assert_eq "action=dispatch stage=pm issue=30" "$OUT" "AC10 (#601): blocked work elsewhere does not hold an in-flight issue"
+mix "" 20 '{}' '[["issue", 99]]'
+LEASE_RESET
+nx
+assert_eq "action=wait reason=owner" "$OUT" "AC10 (#601): blocked work elsewhere still holds a ready issue"
+# (b) label_filter and (c) skip_labels.
+cfg '{"max_parallel": 1, "label_filter": "team:a", "skip_labels": ["wontfix"]}' "$ROLES_601"
+issue 32 "pipeline:confirmed,wontfix" /dev/null
+mix 32 20
+LEASE_RESET
+nx
+assert_eq "action=dispatch stage=pm issue=32" "$OUT" "AC10 (#601): label_filter and skip_labels do not apply to an in-flight issue"
+mix "" 20
+LEASE_RESET
+nx
+assert_eq "action=wait reason=none" "$OUT" "AC10 (#601): label_filter still filters a ready issue"
+# (d) the dependency gate (roles.planner on).
+cfg '{"max_parallel": 1}' '{"validator": true, "planner": true, "pm": true, "developer": true, "pm_skip_when_spec_present": false}'
+printf 'Depends on: #42\n' > "$STUB_DIR/dep.body"
+printf '{"number": 42, "title": "dep", "labels": [], "body": "", "state": "open"}' > "$STUB_DIR/view-issue.42.json"
+issue 33 "pipeline:confirmed" "$STUB_DIR/dep.body"
+dep 22 42
+mix 33 22
+LEASE_RESET
+nx
+assert_eq "action=dispatch stage=pm issue=33" "$OUT" "AC10 (#601): the dependency gate does not apply to an in-flight issue"
+mix "" 22
+LEASE_RESET
+nx
+assert_eq "action=wait reason=dependency" "$OUT" "AC10 (#601): the dependency gate still holds a ready issue"
+# (e) the max_parallel cap: another run's live lease uses the one slot. The
+# holder is a live process of this user, so the line is a lease however long
+# the file takes to get here (a holder that reads as gone is reclaimed after
+# TALOS_LEASE_RECLAIM_S).
+cfg '{"max_parallel": 1}' "$ROLES_601"
+_now="$(date +%s)"
+sleep 300 & _cap_pid=$!
+cap_lease() { printf 'issue=77 held=%s expires=%s pid=%s\n' "$_now" "$((_now + 1800))" "$_cap_pid" >> "$LEASE"; }
+mix 30 20
+LEASE_RESET
+cap_lease
+nx
+assert_eq "action=dispatch stage=pm issue=30" "$OUT" "AC10 (#601): the max_parallel cap does not apply to an in-flight issue"
+mix "" 20
+LEASE_RESET
+cap_lease
+nx
+assert_eq "action=wait reason=cap" "$OUT" "AC10 (#601): the max_parallel cap still holds a ready issue"
+# A held issue still answers ask-owner first.
+mix 30 "20, 21" '{}' '[]' 20
+LEASE_RESET
+nx
+assert_contains "$OUT" "action=ask-owner issue=20 question=" "AC10 (#601): a held issue answers ask-owner before any in-flight issue"
+# An in-flight candidate whose routing answers a wait is passed over.
+issue 34 "pipeline:confirmed,pipeline:blocked" /dev/null
+issue 35 "-" /dev/null
+mix "34, 35" 21
+LEASE_RESET
+nx
+assert_eq "action=dispatch stage=validator issue=21" "$OUT" "AC10 (#601): in-flight issues that answer a wait are passed over for the next candidate"
+mix "34, 35, 30" 21 '{"21": 0}'
+LEASE_RESET
+nx
+assert_eq "action=dispatch stage=validator issue=21" "$OUT" "AC10 (#601): a ready p0 still goes before the unlabelled in-flight issues"
+mix "34, 35, 30" ""
+LEASE_RESET
+nx
+assert_eq "action=dispatch stage=pm issue=30" "$OUT" "AC10 (#601): the walk goes on to the next in-flight issue after a waiting one"
+# With no candidate left the wait reasons are today's.
+mix "34, 35" ""
+LEASE_RESET
+nx
+assert_eq "action=wait reason=none" "$OUT" "AC10 (#601): only waiting in-flight issues and no ready issue is wait reason=none"
+mix "34" "" '{}' '[["issue", 99]]'
+LEASE_RESET
+nx
+assert_eq "action=wait reason=owner" "$OUT" "AC10 (#601): waiting in-flight issues beside blocked work is wait reason=owner"
+mix 34 20
+LEASE_RESET
+cap_lease
+nx
+assert_eq "action=wait reason=cap" "$OUT" "AC10 (#601): a waiting in-flight issue and a capped ready issue is wait reason=cap"
+# An in-flight candidate another run holds the lease of is a wait too: it is
+# passed over, never answered as `wait reason=lease` in front of the others.
+run_lease() { printf 'issue=%s held=%s expires=%s pid=%s\n' "$1" "$_now" "$((_now + 1800))" "$_cap_pid" >> "$LEASE"; }
+cfg '{"max_parallel": 2}' "$ROLES_601"
+mix 52 21
+LEASE_RESET
+run_lease 52
+nx
+assert_eq "action=dispatch stage=validator issue=21" "$OUT" "AC10 (#601): an in-flight issue leased by another run is passed over for a ready issue"
+mix "30, 52" ""
+LEASE_RESET
+run_lease 30
+nx
+assert_eq "action=dispatch stage=developer issue=52" "$OUT" "AC10 (#601): the walk goes on to the next in-flight issue after one leased by another run"
+cfg '{"max_parallel": 1}' "$ROLES_601"
+mix 52 21
+LEASE_RESET
+run_lease 52
+nx
+assert_eq "action=wait reason=cap" "$OUT" "AC10 (#601): an in-flight issue leased by another run and a capped ready issue is wait reason=cap"
+kill "$_cap_pid" 2>/dev/null
+cfg '{"max_parallel": 1}' '{"validator": true, "planner": true, "pm": true, "developer": true, "pm_skip_when_spec_present": false}'
+mix 34 22
+LEASE_RESET
+nx
+assert_eq "action=wait reason=dependency" "$OUT" "AC10 (#601): a waiting in-flight issue and a dependency-gated ready issue is wait reason=dependency"
+
 finish

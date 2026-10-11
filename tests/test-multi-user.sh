@@ -292,7 +292,7 @@ for variant in 'claim-false|"issues": {"claim": false}' 'assignee-none|"issues":
   name="${variant%%|*}"; extra="${variant#*|}"
   cfg_p "$extra"; reset_repo
   collect_as alice
-  assert_eq '["blocked","capped","held","ignored","inflight","owners","pr_total","prs","queued"]' "$(J 'sorted(d)')" "$name: the state has the nine documented keys, nothing added"
+  assert_eq '["blocked","capped","held","ignored","inflight","owners","pr_total","priority","prs","queued"]' "$(J 'sorted(d)')" "$name: the state has the ten documented keys, nothing added"
   assert_eq '[1,2,3]' "$(J "d['queued']")" "$name: every ready issue is queued, bob's too"
   assert_eq '[4]' "$(J "d['inflight']")" "$name: every in-flight issue is routed"
   assert_eq '[17,18]' "$(J "[p['n'] for p in d['prs']]")" "$name: every pipeline PR is routed"
@@ -323,7 +323,7 @@ printf '2\n' > "$FX/assignees.rc"
 collect_as alice
 assert_eq "0" "$RC" "unsupported list-assignees: collect works"
 assert_eq '[1,2,3]' "$(J "d['queued']")" "unsupported list-assignees: nothing is filtered"
-assert_eq '["blocked","capped","held","ignored","inflight","owners","pr_total","prs","queued"]' "$(J 'sorted(d)')" "unsupported list-assignees: the nine documented keys"
+assert_eq '["blocked","capped","held","ignored","inflight","owners","pr_total","priority","prs","queued"]' "$(J 'sorted(d)')" "unsupported list-assignees: the ten documented keys"
 
 # a failed read of the assignees fails closed: never route on a guess
 cfg_p; reset_repo
