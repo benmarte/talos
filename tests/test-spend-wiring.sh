@@ -76,7 +76,7 @@ assert_file_absent vcs-calls.log "spend block: an empty body skips the upsert"
 rm -f vcs-calls.log
 out="$(bash scripts/talos.sh done pm --issue 7 --summary-file "$SANDBOX/sum.txt" 2>/dev/null < /dev/null)"
 assert_contains "$out" 'spend=' "spend block: before a PR exists the --line is printed"
-assert_file_absent vcs-calls.log "spend block: before a PR exists nothing is upserted"
+assert_eq "view-issue 7 --spec" "$(cat vcs-calls.log 2>/dev/null)" "spend block: before a PR exists nothing is upserted (the one call is done pm's spec read, #594)"
 
 # spend.comment=false or comments.enabled=false: the --line is still printed, nothing is upserted.
 for _cfg in '{"spend": {"comment": false}}' '{"comments": {"enabled": false}}'; do
