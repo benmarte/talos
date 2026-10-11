@@ -48,6 +48,15 @@
 #       falls back to the full suite); otherwise the first `verify:` command
 #       that mentions "test" runs with the paths and filters appended as
 #       separate quoted arguments. Exit 3: no usable runner.
+#   pipeline-criteria.sh spec-check <spec-file>
+#       Would qa-run accept this spec's `Tests:` line (#594)? Pure text, the
+#       parser qa-run uses; `talos.sh done pm` runs it on the spec the PM just
+#       posted. One line:
+#         spec-check: ok
+#         spec-check: refused tests-line-refused: <the parser's reason>
+#         spec-check: refused tests-line-missing: <n> test criteria and no usable Tests: line
+#       Exit 1 on a refusal. A spec with no test criterion (prose only, or no
+#       checklist) needs no `Tests:` line and is ok.
 #
 # Exit codes: 0 ok, 1 a failing report or an unreadable/empty input, 2 usage.
 set -uo pipefail
@@ -256,6 +265,44 @@ for f in filters:
     print("F\t" + f)
 '
 
+# _tests_line SPEC: the spec's `Tests:` line through _QA_TESTS_PY, the one parse
+# qa-run and spec-check share (#594). It sets the caller's paths, filters,
+# refused (the parser's reason) and found.
+_tests_line() {
+  local tag val
+  paths=(); filters=(); refused=""; found=0
+  while IFS="$(printf '\t')" read -r tag val; do
+    case "$tag" in
+      P) paths+=("$val"); found=1 ;;
+      F) filters+=("$val"); found=1 ;;
+      B) refused="$val" ;;
+    esac
+  done <<EOF
+$(python3 -I -c "$_QA_TESTS_PY" < "$1")
+EOF
+}
+
+# spec-check FILE (#594): the `Tests:` line first, then the test criteria it
+# would have to cover. One line; exit 1 on a refusal.
+cmd_spec_check() {
+  local spec="${1:-}" paths filters refused found n_test
+  [ $# -eq 1 ] && [ -n "$spec" ] || usage
+  [ -f "$spec" ] && [ -r "$spec" ] || { echo "pipeline-criteria: spec-check: no such file: $spec" >&2; return 2; }
+  _tests_line "$spec"
+  if [ -n "$refused" ]; then
+    echo "spec-check: refused tests-line-refused: $refused"
+    return 1
+  fi
+  if [ "$found" -eq 0 ]; then
+    n_test="$(cmd_ids "$spec" 2>/dev/null | awk '$2 == "test"' | wc -l | tr -d ' ')"
+    if [ "$n_test" -gt 0 ]; then
+      echo "spec-check: refused tests-line-missing: $n_test test criteria and no usable Tests: line"
+      return 1
+    fi
+  fi
+  echo "spec-check: ok"
+}
+
 # A path a red (tests-only) commit may touch.
 _qa_is_test_path() {
   case "$1" in
@@ -355,16 +402,8 @@ cmd_qa_run() {
   n_prose="$(printf '%s\n' "$table" | awk '$2 == "prose"' | wc -l | tr -d ' ')"
 
   # 5. The Tests: line, as data.
-  local paths=() filters=() tag val refused="" found=0
-  while IFS="$(printf '\t')" read -r tag val; do
-    case "$tag" in
-      P) paths+=("$val"); found=1 ;;
-      F) filters+=("$val"); found=1 ;;
-      B) refused="$val" ;;
-    esac
-  done <<EOF
-$(python3 -I -c "$_QA_TESTS_PY" < "$spec")
-EOF
+  local paths filters refused found
+  _tests_line "$spec"
   if [ -n "$refused" ]; then
     echo "qa-run: Tests: line refused ($refused); nothing from the spec ran"
     _qa_fail "the spec's Tests: line was refused; report it as a blocking finding"
@@ -505,5 +544,6 @@ case "$sub" in
   map) cmd_map "$@" ;;
   report) cmd_report "$@" ;;
   qa-run) cmd_qa_run "$@" ;;
+  spec-check) cmd_spec_check "$@" ;;
   *) usage ;;
 esac

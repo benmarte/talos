@@ -368,7 +368,8 @@ COST_LINE="$(bash "$EVENTS_SH" cost --issue 7 --line 2>/dev/null)"
 STATUS_LINE="$(cd "$SANDBOX" && bash "$STATUS_SH" --line 2>/dev/null)"
 assert_contains "$COST_LINE" "issue total 3k (+1 unrecorded)" "cost --line shows the recorded tokens"
 assert_contains "$STATUS_LINE" "talos #7 " "talos-status --line names the issue"
-case "$STATUS_LINE" in *" 3k") pass "talos-status --line agrees with cost --line on the total" ;; *) fail "talos-status --line agrees with cost --line on the total" "$STATUS_LINE" ;; esac
+assert_contains "$COST_LINE" "· cache read 14k (not in total, +1 unrecorded), cache write 3k (in total)" "cost --line shows the recorded run's cache reads and writes apart from the total"
+case "$STATUS_LINE" in *" 3k · cache read 14k") pass "talos-status --line agrees with cost --line on the total and the cache reads" ;; *) fail "talos-status --line agrees with cost --line on the total and the cache reads" "$STATUS_LINE" ;; esac
 # a stage_attempt event counts in cost
 reset
 set_cfg '{"agents": {"fallback": ["codex"]}}'

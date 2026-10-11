@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # talos-status.sh -- the harness status line (#385, simplified by #550).
 #
-#   talos #7 qa ●●●●◐○ 3.41M
+#   talos #7 qa ●●●●◐○ 3.41M · cache read 48.20M
 #
 # Usage: talos-status.sh [--line]
 #
@@ -33,6 +33,14 @@
 # message id counted once. Claude Code runs a statusLine command and passes it
 # JSON on stdin with `transcript_path` (docs: code.claude.com/docs/en/statusline).
 # A harness that passes nothing gets the recorded total, updated at each stage end.
+#
+# Cache reads (#604) are never part of that total (nor of the
+# limits.tokens_per_issue budget). They follow it as ` · cache read <R>`: the sum
+# of `cache_read_tokens` over the issue's non-orchestrator events that carry it
+# plus, while a stage runs with a transcript, `cache_read_input_tokens` since that
+# stage started (same messages, same dedupe, subagent transcripts included). With
+# no event carrying the field and no transcript figure the segment is absent:
+# an unknown figure is never printed as 0.
 #
 # Which issue: the current branch (^(fix|feat)/issue-<N>), else the newest event's.
 # An issue with a `merged` event is no longer active: nothing is printed.
@@ -299,31 +307,22 @@ def read_stdin_json():
 
 def transcript_usage(path, since, seen):
     """Add the usage of the messages stamped at or after `since` to `seen`
-    (message id -> tokens; a repeated id keeps its last, complete, figure)."""
+    (message id -> its four figures; a repeated id keeps its last, complete,
+    ones). The reader is pipeline-spend-format.py's, over the file's tail."""
     try:
         with open(path, "rb") as f:
-            size = os.fstat(f.fileno()).st_size
-            if size > TRANSCRIPT_TAIL:
-                f.seek(size - TRANSCRIPT_TAIL)
-                f.readline()
-            data = f.read()
+            fmt.transcript_usage(f, seen, since, TRANSCRIPT_TAIL, path)
     except OSError:
         return
-    for n, line in enumerate(data.split(b"\n")):
-        if b'"usage"' not in line:
-            continue
-        try:
-            d = json.loads(line)
-            msg = d["message"]
-            u = msg["usage"]
-            if str(d.get("timestamp", ""))[:19] < since[:19]:
-                continue
-            toks = sum(fmt.as_count(u.get(k, 0)) or 0
-                       for k in ("input_tokens", "output_tokens", "cache_creation_input_tokens"))
-        except (ValueError, KeyError, TypeError, AttributeError):
-            continue
-        seen[msg.get("id") or "%s:%d" % (path, n)] = toks
 
+
+# Cache reads (#604) are never in the total: they are their own figure, shown
+# only when an event or the transcript carries one (None = unknown, never 0).
+cache_read = None
+for r in evs:
+    n = fmt.as_count(r.get("cache_read_tokens"))
+    if r.get("role") != "orchestrator" and n is not None:
+        cache_read = (cache_read or 0) + n
 
 if running:
     tpath = read_stdin_json().get("transcript_path")
@@ -338,11 +337,16 @@ if running:
                     transcript_usage(sub, since, seen)
             except OSError:
                 continue
-        total += sum(seen.values())
+        for u in seen.values():
+            total += (u["input"] or 0) + (u["output"] or 0) + (u["cache_write"] or 0)
+            if u["cache_read"] is not None:
+                cache_read = (cache_read or 0) + u["cache_read"]
 
 line = "talos #%d %s %s" % (issue, label, dots)
 if total > 0:
     line += " " + fmt.fmt_num(total)
+if cache_read is not None:
+    line += " · cache read " + fmt.fmt_num(cache_read)
 sys.stdout.reconfigure(encoding="utf-8")
 print(line)
 PYEOF

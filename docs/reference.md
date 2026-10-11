@@ -584,7 +584,13 @@ A stage whose final message starts with `BLOCKED: <reason>` is a blocked outcome
 
 ### Token usage on adapter runs
 
-Each attempt reports `tokens` (input + output + cache-creation, no cache reads; else `null`, never `0`) to the stage event, so `pipeline-events.sh cost` and `limits.tokens_per_issue` count it. Every attempt prints `talos:usage runner=<r> tokens=<N|null>` on stderr; a failed attempt with usage becomes a `stage_attempt` event.
+Each attempt reports `tokens` (input + output + cache-creation, no cache reads; else `null`, never `0`) to the stage event, so `pipeline-events.sh cost` and `limits.tokens_per_issue` count it. The claude runner also reports the split: `input_tokens` (fresh, uncached), `output_tokens`, `cache_write_tokens` and `cache_read_tokens`, each summed over every model of the run and left out when the runner output has no valid figure for it. Cache reads are only ever that fourth number: `tokens` and the budget leave them out. Every attempt of every runner prints one line on stderr (`null` = not reported):
+
+```
+talos:usage runner=<r> tokens=<N|null> input=<N|null> output=<N|null> cache_write=<N|null> cache_read=<N|null>
+```
+
+A failed attempt with usage becomes a `stage_attempt` event carrying the same figures.
 
 - `claude`: `--output-format json` is added after `runner_args`; `modelUsage` is summed over all models, else top-level `usage`.
 - `custom`: a JSON sidecar at `$TALOS_USAGE_FILE`, every key optional: `{"tokens": 1234, "tool_uses": 7, "model": "qwen2.5-coder"}`.
@@ -919,6 +925,8 @@ With `merge.auto: false` all gates still apply; `gate merge` labels the PR `pipe
 
 The PM numbers criteria `AC<n>`, marks each `(test)` or `(prose: reason)` and adds a `Tests:` line of file paths (data, never a command). The developer's first commit is the failing tests, id in each test name. `pipeline-criteria.sh qa-run <issue> <pr>` runs them at the red commit and at head, one line per id: `AC<n> red@<sha8> green@head`, `AC<n> FAIL ... vacuous` (green at red) or `AC<n> prose hand-checked`.
 
+The `Tests:` line is checked when the PM posts it, in code: `talos.sh done pm` reads the spec once (`view-issue <N> --spec`) and runs `pipeline-criteria.sh spec-check <spec-file>`, the same parser. It prints `spec-check: ok`, `spec-check: refused tests-line-refused: <reason>` (a note with shell syntax beside the paths, a runner command) or `spec-check: refused tests-line-missing: ...` (test criteria and no usable `Tests:` line, for example the paths as unindented bullets under it), exit 1 on a refusal. A refused spec records a PM attempt (`record-attempt <N> pm`, so `limits.max_fix_attempts` bounds the loop), puts the issue back at `pipeline:confirmed`, posts one `**Spec check:**` comment with the reason (even with `comments.enabled: false`) and answers `spec_check=<slug>` and `next=fix-round stage=pm`: the next `next` dispatches the PM again, before any developer work. At the attempt ceiling the issue gets `pipeline:blocked` and the answer is `next=stop`. Nothing is checked for a PM that ended `BLOCKED` or an issue with no PM spec comment; a spec read that failed is `warn reason=spec-check-unread` and the run goes on, with QA's own check behind it.
+
 ### Comment templates
 
 `comments.enabled` (`true`), `comments.header` (`**Agent:** {role} (talos)`; empty posts nothing) and `comments.templates_dir` (`templates/comments`). `templates/comments/` holds one `string.Template` file per stage comment (`qa-verdict`, `review-signoff`, `security-signoff`, `blocked`, `approved`, `needs-owner`, ...) using `${HEADER}`, `${SUMMARY}`, `${DETAILS}`, `${VERDICT}`, `${PR}`, `${BLOCKED_BY}`, `${ATTENTION_REPORT}`. A missing template falls back to an inline body.
@@ -1046,7 +1054,7 @@ Both keys hold a shell command (`sh -c`), disabled when empty. `hooks.timeout_s`
 {"event":"qa","role":"qa","issue":42,"pr":57,"repo":"owner/name","sha":"<40 hex>","verdict":"PASS","summary":"...","details":"...","attempt":null,"model":"claude-sonnet-5","runner":"claude","duration_s":312,"tokens":48213,"tool_uses":19,"ts":"..."}
 ```
 
-Unknown fields are null. `ci_runs` is added only on `merged` when known. `event` is the role name for a finished stage (`talos.sh done`), or a lifecycle event with role `orchestrator`: `pr-opened`, `merged`, `blocked`, `issue-closed`, `budget-blocked`. The adapter path adds `stage_complete` (PASS or FAIL from the exit code), `stage_attempt` (a failed attempt before failover) and `failover`.
+Unknown fields are null. `ci_runs` is added only on `merged` when known. `input_tokens`, `output_tokens`, `cache_write_tokens` and `cache_read_tokens` (`post_stage --input-tokens`, `--output-tokens`, `--cache-write-tokens`, `--cache-read-tokens`) follow `tool_uses` and `ci_runs`, each present only when supplied and valid; an event with no `cache_read_tokens` reads as cache reads unrecorded, never 0. `event` is the role name for a finished stage (`talos.sh done`), or a lifecycle event with role `orchestrator`: `pr-opened`, `merged`, `blocked`, `issue-closed`, `budget-blocked`. The adapter path adds `stage_complete` (PASS or FAIL from the exit code), `stage_attempt` (a failed attempt before failover) and `failover`.
 
 ### The events log
 
@@ -1066,6 +1074,8 @@ Output is oldest first, tab-separated (`ts`, `event`, `role`, `issue`, `pr`, `ve
 
 Talos records tokens, never a price. Sources: on the native path the orchestrator passes the completion notification's usage to `talos.sh done --tokens --tool-uses --duration-s [--model]`; on the adapter path `pipeline-agent.sh` records the claude runner's usage (`agents.capture_usage`, default true; input + output + cache creation, cache reads excluded) and a `custom` runner's sidecar file `$TALOS_USAGE_FILE` (`{"tokens":N,"tool_uses":N,"model":"..."}`, every key optional). Other runners report nothing. A missing figure is `unrecorded`, shown as such and never as 0; totals read `(+K unrecorded)`.
 
+`tokens` (and so every total and the budget) is fresh input + output + cache write. Cache reads are not in it: they are their own number, next to the total, on every surface below. Only the claude adapter runner records the split; codex, gemini, antigravity, pi, a sidecar and a native subagent total (`talos.sh done --tokens`) show the cache figures as `unrecorded`.
+
 ```bash
 bash scripts/pipeline-events.sh cost [--issue N] [--pr M] [--json]   # per issue and role
 bash scripts/pipeline-events.sh cost --issue N [--pr M] --line       # one line
@@ -1073,13 +1083,28 @@ bash scripts/pipeline-events.sh cost --issue N [--pr M] --markdown   # PR commen
 bash scripts/pipeline-events.sh cost --summary --issue A [--issue B] # end-of-run block
 ```
 
-The table has `unrecorded` and `restamp` (delta re-review) columns per issue and role. `--line`, `--markdown` and `--summary` are exclusive (exit 2) and leave out `orchestrator` rows.
+The table has `unrecorded` and `restamp` (delta re-review) columns per issue and role, then `input_tokens`, `output_tokens`, `cache_write_tokens`, `cache_read_tokens` (each the sum over the events that carry it; `unrecorded` in the table and `null` in `--json` when none does) and `cache_unrecorded` (events with no cache read); `ci_runs`, when present, stays last. `--line`, `--markdown` and `--summary` are exclusive (exit 2) and leave out `orchestrator` rows.
 
-Where it shows: the `spend=` line after each stage; one comment per PR, edited in place (marker `<!-- talos:spend -->`), written when `comments.enabled` is true and `spend.comment` is not false, GitHub only, public on a public repo; and the `cost=` lines of `talos.sh summary` at run end. A failed comment write is one `spend-upsert-failed` warning, never retried.
+| Form | Cache reads and writes |
+|---|---|
+| `--line` | ends ` · cache read <R> (not in total), cache write <W> (in total)`, before any budget suffix; `(not in total, +K unrecorded)` when K events have no cache read; ` · cache reads unrecorded` when none has. The breakdown is cut to keep 200 characters, never this part |
+| `--markdown` | `cache write` and `cache read` columns after `tokens` (`<sum>`, `<sum> (+K unrecorded)` or `unrecorded`); `This PR (#M): <T> (<n> tokens, cache reads not included) · cache read <R>, cache write <W>`; the footer says what `tokens` and TOTAL are made of |
+| `--summary` | the same two columns; `Total: <T> (cache reads not included) · cache read <R>, cache write <W>`; then the session line |
+
+`cost --summary` ends with the orchestrating session's own usage, read from the transcript that `TALOS_TRANSCRIPT_PATH` names (an absolute path ending `.jsonl`, a regular file, not a symlink; that file only, each message id counted once with its last figures; the last 64 MB of a larger file, marked `(partial: transcript over 64 MB)`):
+
+```
+Orchestrator session: 412 calls, cache read 48.20M, cache write 1.20M, output 310k
+Orchestrator session: not available
+```
+
+The second line is printed when the variable is unset, empty, or names anything else.
+
+Where it shows: the `spend=` line after each stage; one comment per PR, edited in place (marker `<!-- talos:spend -->`), written when `comments.enabled` is true and `spend.comment` is not false, GitHub only, public on a public repo; and the `cost=` lines of `talos.sh summary` at run end (the session line included). A failed comment write is one `spend-upsert-failed` warning, never retried.
 
 ### Budget guard
 
-Off unless `limits.tokens_per_issue` is a positive integer. `limits.warn_at` (default 0.8) sets the warn state. `gate fix-round` checks before each developer fix round (never a first pass, re-stamp or merge); only recorded tokens count.
+Off unless `limits.tokens_per_issue` is a positive integer. `limits.warn_at` (default 0.8) sets the warn state. `gate fix-round` checks before each developer fix round (never a first pass, re-stamp or merge); only recorded tokens count, and cache reads never do (`used` is the `tokens` sum).
 
 ```bash
 bash scripts/pipeline-budget.sh check --issue N [--json]
@@ -1093,10 +1118,10 @@ Exit 1 means exceeded (0 for ok, warn, unknown and guard off), so a `set -e` cal
 `scripts/talos-status.sh --line` prints one line from the events log, offline and free of model tokens, always exit 0, nothing when no issue is active:
 
 ```
-talos #7 qa ●●●●◐○ 3.41M
+talos #7 qa ●●●●◐○ 3.41M · cache read 48.20M
 ```
 
-Fields: issue, running (else first pending) stage, one dot each for validator, pm, developer, review (reviewer, security, adversarial), qa, merge (`●` done, `◐` running, `○` pending), the issue's token total. A role turned off in `roles.*` has no dot, nor has a validator or pm that never ran once a later stage has. The issue is the current branch's (`fix|feat/issue-N-...`), else the newest event's; a merged issue prints nothing. A stage runs from its `stage_start` event until its finishing event (6 hours at most). While it runs, the total adds usage read from the harness transcript (`transcript_path` on stdin, plus subagent transcripts). Config read: `roles.*` and `events.path` from `talos.pipeline.json` over `${TALOS_HOME:-~/.talos}/talos.pipeline.json`. The run is cut off after `TALOS_STATUS_TIMEOUT_S` seconds (1 to 10, default 3). `TALOS_STATUS_DEBUG=1` says on stderr why nothing printed.
+Fields: issue, running (else first pending) stage, one dot each for validator, pm, developer, review (reviewer, security, adversarial), qa, merge (`●` done, `◐` running, `○` pending), the issue's token total, then the cache reads, which are not part of that total: the `cache_read_tokens` of the issue's events plus, while a stage runs, the transcript's cache reads since it started. With no such figure the ` · cache read` part is absent, never 0. A role turned off in `roles.*` has no dot, nor has a validator or pm that never ran once a later stage has. The issue is the current branch's (`fix|feat/issue-N-...`), else the newest event's; a merged issue prints nothing. A stage runs from its `stage_start` event until its finishing event (6 hours at most). While it runs, the total adds usage read from the harness transcript (`transcript_path` on stdin, plus subagent transcripts). Config read: `roles.*` and `events.path` from `talos.pipeline.json` over `${TALOS_HOME:-~/.talos}/talos.pipeline.json`. The run is cut off after `TALOS_STATUS_TIMEOUT_S` seconds (1 to 10, default 3). `TALOS_STATUS_DEBUG=1` says on stderr why nothing printed.
 
 `install.sh --global` with the Claude adapter sets `statusLine` in `~/.claude/settings.json` (`$CLAUDE_CONFIG_DIR/settings.json`) to `bash <TALOS_HOME>/scripts/talos-status.sh --line` (shell-quoted when the path needs it). `/talos:setup` runs the same `scripts/talos-statusline.sh wire`. By hand:
 

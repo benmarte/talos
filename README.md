@@ -55,10 +55,10 @@ Without Claude Code: `bash ~/.talos/scripts/talos.sh run` (the same driver `/tal
 `install.sh --global` wires Claude Code's status line to `scripts/talos-status.sh` (an existing one is chained, shown above the Talos line, and `--statusline-undo` restores it), which reads the local events log (no network call, no model tokens):
 
 ```
-talos #7 qa ●●●●◐○ 3.41M
+talos #7 qa ●●●●◐○ 3.41M · cache read 48.20M
 ```
 
-One dot per stage (validator, pm, developer, review, qa, merge): done, running, pending, then the tokens spent on the issue so far. Other harnesses can call `talos-status.sh --line` from their footer hook. After a cleared session or an LLM switch, run `/talos:pipeline` (or `talos.sh run`) again: the work is resumed from GitHub labels, the PR and the events log, with no extra file to maintain. See [Hooks, events, spend and the status line](docs/reference.md#hooks-events-spend-and-the-status-line).
+One dot per stage (validator, pm, developer, review, qa, merge): done, running, pending, then the tokens spent on the issue so far, then its cache reads, which are not part of that total (the part is absent when no run recorded them). Other harnesses can call `talos-status.sh --line` from their footer hook. After a cleared session or an LLM switch, run `/talos:pipeline` (or `talos.sh run`) again: the work is resumed from GitHub labels, the PR and the events log, with no extra file to maintain. See [Hooks, events, spend and the status line](docs/reference.md#hooks-events-spend-and-the-status-line).
 
 ## Switching LLMs: profiles
 
