@@ -65,6 +65,7 @@ Each stage is a fresh agent. Spend is measured per run ([Hooks, events, spend an
 - `agents.roles.<role>.model`, `.effort` and `.runner`: route cheap stages to cheap models ([Profiles, runners and fallback](#profiles-runners-and-fallback)).
 - `limits.tokens_per_issue`: optional hard budget before each fix round.
 - Prompt cache: on Claude Code, developer and QA ask for the 1-hour cache, so a wait on the test suite of up to an hour does not rebuild their context. There is no config key; start Talos with `CLAUDE_CODE_PROMPT_CACHE_TTL=5m` to stay on five minutes ([Prompt cache lifetime](#prompt-cache-lifetime)).
+- `agents.claude_api_credits`: on a Max or Team plan, claude stages spend the plan's monthly API credits first and the plan's usage limits second, so the stages stop competing with your interactive sessions for the same limit ([Monthly API credits](#monthly-api-credits)).
 
 ### Which issues enter the queue
 
@@ -236,6 +237,7 @@ Lookup order, first match wins: (1) the exported environment, (2) the repo `.env
 
 - A `.env` is parsed, never sourced. `~/.talos/.env` is used only if it is a regular file (not a symlink) owned by you, mode 0600, outside every git work tree; otherwise one stderr line names the fix and the file is skipped.
 - A `.env` may set only the notification variables (the six credentials, `BUZZ_RELAY_URL`, and the `PIPELINE_*` channel and relay overrides); other names are ignored with one stderr line. A deny list wins over that (`PATH`, `BASH_*`, `LD_*`, `GIT_*`, `TALOS_*`, `GH_*`, `GITHUB_*`, `*_PROXY`, ...), and a reference to a denied name is refused. `GITHUB_TOKEN` and `GH_TOKEN` are never read from a `.env`: export them in your shell.
+- `CLAUDE_API_CREDITS_KEY` (`agents.claude_api_credits`, [Monthly API credits](#monthly-api-credits)) is the one entry read from `~/.talos/.env` and from nowhere else: the exported environment, the repo `.env` and `~/.hermes/.env` are not sources for it. It takes no `env:` reference, and it reaches only the `claude` child of a stage.
 - A string in either config file shaped like a secret (webhook URLs, Slack, GitHub and GitLab tokens, API keys, AWS keys, private keys, Nostr `nsec`) is dropped as absent on load, with one stderr line naming the key. `env:` values are always allowed.
 
 ### Inspect the effective config
@@ -435,6 +437,7 @@ Derived defaults: `base_branch`, `repo`, `vcs.repo` and `board.owner` come from 
 | `agents.stage_timeout_s` | int | - | - | any |
 | `agents.roles.*.stage_timeout_s` | int | derived | - | any |
 | `agents.capture_usage` | bool | `true` | - | any |
+| `agents.claude_api_credits` | bool | `false` | - | any |
 | `agents.profile` | str | - | `TALOS_PROFILE` | any |
 | `agents.mode` | enum | - | - | any |
 
@@ -560,6 +563,46 @@ A `provider` exit is not counted as an attempt (`limits.max_fix_attempts`, `limi
 
 **Exit 69**: chain exhausted, every runner down, or failover refused. `talos.sh run` stops with `stop reason=provider-failed rc=<75|69>` and records nothing. The playbook sets `pipeline:blocked` and runs no fix round; remove the label to resume. Native path verbs: `pipeline-agent.sh --classify <runner> <rc> <file|->` and `--mark-down <runner> <class:detail>`.
 
+### Monthly API credits
+
+Max and Team plans include monthly Claude Platform API credits, a pool separate from the plan's usage limits ([Monthly API credits for Max and Team plans](https://support.claude.com/en/articles/17154008-monthly-api-credits-for-max-and-team-plans)). A headless `claude -p` draws on them only when it runs with an API key; signed in with the plan, the same command draws on the plan's limits. Talos dispatches every claude stage signed in with the plan, so by default the credits go unused. With `agents.claude_api_credits: true` (default `false`) a built-in claude stage starts on the credits and falls back to the plan login when they run out.
+
+**Setup.** Claim the credits as the help article describes; the key comes from the Console organization linked to the plan. Put it in the user-level `.env` (mode 0600, [Secrets](#secrets)) and switch the option on:
+
+```
+# ~/.talos/.env ($TALOS_HOME/.env when TALOS_HOME is set)
+CLAUDE_API_CREDITS_KEY=<the key>
+```
+
+```json
+{ "agents": { "claude_api_credits": true } }
+```
+
+No other source is read: not the exported environment, not the repo `.env`, not `~/.hermes/.env`. A stage runs "credits on" only when the option is `true`, its runner is the built-in `claude` and the file gives a non-empty value with no control character. Otherwise it is dispatched exactly as without the option; a refused file or a control character adds the usual `pipeline-secrets` line, which names the key and never the value.
+
+| Pool | Event `pool` | The `claude` child gets |
+|---|---|---|
+| the plan's monthly API credits | `api` | `ANTHROPIC_API_KEY` set to the file's value, replacing one you exported |
+| the plan login | `plan` | `ANTHROPIC_API_KEY` unset, also when you exported one |
+
+The key is set for that one child only: it is in no argv, it is never exported from the agent script, and no hook, other runner or rerun inherits it. The stage's own tool calls do inherit it. They run as you and can read the file anyway, so this is documented, not prevented.
+
+**The switch.** When the keyed attempt ends in the `provider` / `quota` class ([Runner fallback](#runner-fallback)) and wrote nothing, the stage is rerun once on the plan login with the same prompt. stderr gets one line, and a `failover` event carries the same summary:
+
+```
+talos:failover role=<role> from=claude:api to=claude:plan reason=provider:quota
+```
+
+The rerun's stdout and exit code are the stage's, and from there it is an ordinary claude attempt: with `agents.fallback`, a provider error fails over to the next entry as it does today. The runner did not change, so nothing is marked down in `providers.json` and nothing is checkpointed. An exhausted pool is not remembered: each later stage makes one failing attempt on the key, then switches.
+
+- **Write guard.** The rerun follows the write guard above. A keyed attempt that already wrote (a journalled write verb, a moved `refs/remotes` ref, or a missing or unreadable journal) is not rerun: `talos:failover-refused role=<role> runner=claude reason=wrote:<verbs>` (or `reason=write-log-unreadable`) and exit 69. This is the one case where an exhausted pool stops the stage.
+- **No fallback on any other failure.** `API Error: 401` (an invalid or revoked key included), `429`, a 5xx, a network error, a task failure and a stage timeout keep today's behaviour: no rerun on the plan login, the same exit code, and with a chain the same failover to the next entry. A wrong key fails the stage; it never runs on the plan silently.
+- **Not yet captured.** The error text of an exhausted credit pool has not been captured from a real run. The switch relies on the existing `quota` patterns (`Credit balance is too low`, `usage limit reached`); if the real text differs, the stage fails as `task`, as it does today.
+- **Auto-reload bills money.** With auto-reload on, or with purchased credits, in the Console, an exhausted monthly pool does not fail: the requests are billed, Talos never sees an error and never falls back to the plan. Turn auto-reload off to keep the spend at the included credits.
+- **Adapter path only.** Only the adapter path (`talos.sh run`, which dispatches each stage through `pipeline-agent.sh`) can use the credits. Native Claude Code subagents and the interactive session run on the plan login. Other runners (`pi`, `codex`, `gemini`, `antigravity`, `custom`, a `runner_cmd` that calls claude) are untouched.
+
+Each stage event names the pool that paid, and `pipeline-events.sh cost` shows the split ([Spend](#spend)).
+
 ### Claude permissions on headless stages
 
 `claude -p` cannot answer an approval prompt, so a claude-runner stage in a repo with no allowlist of its own could run nothing. `pipeline-agent.sh` passes `--allowedTools` (a scoped default per role), `--add-dir <the Talos scripts dir>` (skipped when the stage cwd is inside it) and `--disallowedTools Edit/Write` on that dir. Rule grammar: [Claude Code permissions](https://code.claude.com/docs/en/permissions); `Bash(<prefix>:*)` allows the prefix and anything after it, and each subcommand of a compound command must match on its own.
@@ -658,6 +701,20 @@ Token lookup: the variable named by `vcs.token_env`, else `GITHUB_TOKEN`, then `
 The token transport needs `owner/repo`: set `vcs.repo` if the origin remote lacks it.
 
 `github-api` ignores `pr.draft` (ready-PR flow, one warning); `github` without `gh` installed uses the same transport and keeps draft PRs. The board scripts use curl GraphQL when the provider is `github-api` or `gh` is not on PATH; they do not detect an installed but logged-out `gh`.
+
+### Running in a Claude Code cloud session
+
+A Claude Code cloud session (claude.ai/code) can run `talos.sh run` on a GitHub repository. There, GitHub refuses GraphQL (`HTTP 403: GitHub GraphQL is not available from Claude Code sessions`) and serves REST. The adapter's verbs are REST already. `checkout-pr` tries `gh pr checkout` and, when GraphQL is refused, falls back to a REST read of the head ref and a `git fetch` of `refs/pull/<n>/head`. `ready-pr` and `draft-pr` send their GraphQL mutation and, on HTTP 403, use the session's REST routes `pulls/<n>/ccr/ready_for_review` and `pulls/<n>/ccr/convert_to_draft`. On a machine where GraphQL works, nothing changes.
+
+Setup:
+- Install the Claude GitHub App on the repository with write access to contents, issues and pull requests, and connect GitHub from claude.ai.
+- The developer's branch must be one the session may push: the session's designated branch (`claude/...`), or a `fix/issue-<N>-...` branch once the GitHub App has write access. A refused push ends the developer's checkpoint with one line, `pipeline-worktree: checkpoint: push refused: no push access to origin for <branch>`, and exit 3: the commit stays local, and the developer carries on and reports it in its final message.
+
+Skipped: the project board. Projects v2 has no REST API, so each board move is one `warn reason=board-failed` line, with the note `the board needs GitHub GraphQL, which this session refuses (HTTP 403); move skipped`, and the run goes on. `bootstrap-board.sh` and `bootstrap-labels.sh` need GraphQL: run them on a normal machine once.
+
+Not verified: that a session may change a PR's draft state. `ready-pr` and `draft-pr` reach the session's routes, but the one real call, `draft-pr` on a PR that was already a draft, was answered HTTP 403 (`pipeline-vcs: draft-pr: GitHub refused the change for PR #<n>`). With `pr.draft` true, that refusal ends the run with `stop reason=ready-pr-failed` (`draft-pr-failed` after a failed QA). With `pr.draft: false` the run calls neither verb.
+
+Cost: the plan's cloud session credit applies to cloud sessions only; a run on your own machine draws on the plan as before. Whether a stage's nested `claude -p` inside a cloud session is billed to that credit is not verified.
 
 ### GitLab
 
@@ -1063,7 +1120,7 @@ Both keys hold a shell command (`sh -c`), disabled when empty. `hooks.timeout_s`
 {"event":"qa","role":"qa","issue":42,"pr":57,"repo":"owner/name","sha":"<40 hex>","verdict":"PASS","summary":"...","details":"...","attempt":null,"model":"claude-sonnet-5","runner":"claude","duration_s":312,"tokens":48213,"tool_uses":19,"ts":"..."}
 ```
 
-Unknown fields are null. `ci_runs` is added only on `merged` when known. `input_tokens`, `output_tokens`, `cache_write_tokens` and `cache_read_tokens` (`post_stage --input-tokens`, `--output-tokens`, `--cache-write-tokens`, `--cache-read-tokens`) follow `tool_uses` and `ci_runs`, each present only when supplied and valid; an event with no `cache_read_tokens` reads as cache reads unrecorded, never 0. `event` is the role name for a finished stage (`talos.sh done`), or a lifecycle event with role `orchestrator`: `pr-opened`, `merged`, `blocked`, `issue-closed`, `budget-blocked`. The adapter path adds `stage_complete` (PASS or FAIL from the exit code), `stage_attempt` (a failed attempt before failover) and `failover`.
+Unknown fields are null. `ci_runs` is added only on `merged` when known. `input_tokens`, `output_tokens`, `cache_write_tokens` and `cache_read_tokens` (`post_stage --input-tokens`, `--output-tokens`, `--cache-write-tokens`, `--cache-read-tokens`) follow `tool_uses` and `ci_runs`, each present only when supplied and valid; an event with no `cache_read_tokens` reads as cache reads unrecorded, never 0. `pool` (`post_stage --pool api|plan`, [Monthly API credits](#monthly-api-credits)) comes after them and before `ts`, present only when supplied as `api` or `plan`; any other value is left out with one stderr line. `event` is the role name for a finished stage (`talos.sh done`), or a lifecycle event with role `orchestrator`: `pr-opened`, `merged`, `blocked`, `issue-closed`, `budget-blocked`. The adapter path adds `stage_complete` (PASS or FAIL from the exit code), `stage_attempt` (a failed attempt before failover) and `failover`.
 
 ### The events log
 
@@ -1093,6 +1150,14 @@ bash scripts/pipeline-events.sh cost --summary --issue A [--issue B] # end-of-ru
 ```
 
 The table has `unrecorded` and `restamp` (delta re-review) columns per issue and role, then `input_tokens`, `output_tokens`, `cache_write_tokens`, `cache_read_tokens` (each the sum over the events that carry it; `unrecorded` in the table and `null` in `--json` when none does) and `cache_unrecorded` (events with no cache read); `ci_runs`, when present, stays last. `--line`, `--markdown` and `--summary` are exclusive (exit 2) and leave out `orchestrator` rows.
+
+With `agents.claude_api_credits` ([Monthly API credits](#monthly-api-credits)) a stage event carries `pool` (`api` or `plan`; `post_stage --pool`). When at least one event in scope has one, the table and every `--json` row and the total gain, after `cache_unrecorded` and before `ci_runs`: `api_tokens`, `api_cache_read_tokens`, `plan_tokens`, `plan_cache_read_tokens` (plain sums over the events of that pool, a missing figure counting 0) and `pool_unrecorded` (events with no pool, or any other value; `orchestrator` rows are left out of the total's count). `--markdown` (after the `This PR` line, or the TOTAL row when there is none) and `--summary` (after `Total:`) then print one line, and `--line` is unchanged:
+
+```
+Pools: API credits 1.50M (cache read 48.00M), plan 300k (cache read 2.00M) (+2 unrecorded)
+```
+
+`(+K unrecorded)` counts the stage runs with no pool. With no pool-carrying event every form prints exactly what it did.
 
 | Form | Cache reads and writes |
 |---|---|
@@ -1219,6 +1284,8 @@ A `pipeline:blocked` issue or PR is skipped until a human removes the label. Aft
 - `github: cannot determine the repository (set vcs.repo)`: the token transport cannot read the git remote; set `vcs.repo` to `owner/repo`.
 - Board updates fail: warnings by design, not a stop. `bash scripts/bootstrap-board.sh` adds a missing Status option (idempotent). With `gh`, Projects v2 needs the `project` scope (`gh auth refresh -s project`); check `board.project_number` and `board.owner`.
 - `talos:board-unverified` on stdout: a missing Status option, an API error or the item-page cap (`TALOS_BOARD_MAX_PAGES`, default 50) skipped the update. The run continues.
+- `pipeline-status: the board needs GitHub GraphQL, which this session refuses (HTTP 403); move skipped`: the run is in a Claude Code cloud session, where the board cannot be moved. The run continues; `board.enabled: false` drops the warning. See [Running in a Claude Code cloud session](#running-in-a-claude-code-cloud-session).
+- `pipeline-worktree: checkpoint: push refused: no push access to origin for <branch>` (exit 3): the remote denied the branch and the commit is kept locally. In a cloud session, give the Claude GitHub App write access or use the session's own branch (same section).
 
 ### Notifications
 

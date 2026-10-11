@@ -611,6 +611,11 @@ else
   if [ -z "$PROJ_ID" ]; then
     if [ "$DRY_RUN" = "true" ]; then
       PROJ_ID="<project-id>"
+    elif gh project list --owner "$OWNER" --format json --limit 1 2>&1 >/dev/null | grep -q 'GraphQL is not available'; then
+      # A Claude Code cloud session refuses GraphQL, and Projects v2 has no REST
+      # API (#618): say so instead of blaming the project number.
+      echo "pipeline-status: the board needs GitHub GraphQL, which this session refuses (HTTP 403); move skipped" >&2
+      exit 1
     else
       echo "pipeline-status: could not resolve project #$PROJECT_NUM for owner '$OWNER'" >&2
       exit 1
