@@ -44,8 +44,8 @@ Default order: validator, planner (optional), pm, developer, qa, docs, reviewer 
 | developer | LLM, always | none | Reads the spec. Branch `fix/issue-N-slug` (`feat/` for a `feat` title). Red tests first, runs `verify` once before the final commit, opens the PR. The only stage that writes code. |
 | qa | LLM | `roles.qa` | Checks each acceptance criterion; runs targeted tests only, never the full suite; under `verify.qa_mode: ci` waits for required CI. With `pr.ready_gate: qa-local` it runs last on the draft, before CI, and also runs the full `verify:` list once. |
 | docs | code gate, LLM only if needed | `roles.docs`, `roles.docs_mode` | `docs-gate` stamps `docs:done` itself unless the PR changes `README.md`, `docs/**` or `scripts/pipeline-defaults.sh` (`roles.docs_mode: always` forces the agent). |
-| reviewer, security | LLM | `roles.reviewer`, `roles.security` | Read `diff-pr --stat`, then the files that matter. Run no tests. |
-| adversarial | LLM, off | `roles.adversarial` | Second opinion on another backend. |
+| reviewer, security | LLM | `roles.reviewer`, `roles.security` | Read `diff-pr --stat`, then the files that matter. Run no tests. A security finding blocks only on an attacker path that does not start from something the user already controls, or on loss or corruption of user data in normal use; the rest go under `**Non-blocking notes:**` in the same comment and are filed as one follow-up issue, never a fix round. |
+| adversarial | LLM, off | `roles.adversarial` | Second opinion on another backend. Blocks on the same two grounds as security. |
 | merge | code | `merge.auto` | `gate merge` checks every gate; `merge-pr`; `post-merge` closes the issue, sets the board to Done, returns the checkout to the base branch, removes the worktree, notifies. |
 
 Everything except the stage agents is mechanical: routing (`next`), bookkeeping (`done`), gates, sweeps, merge.
@@ -73,15 +73,23 @@ Each stage is a fresh agent. Spend is measured per run ([Hooks, events, spend an
 
 ### Retries and attempt counting
 
-Every developer fix round goes through `talos.sh gate fix-round <N> <blocking-stage> [--pr M]`. It runs the budget guard, then `record-attempt` (a `talos:attempt` marker comment, deduplicated per PR head with `--pr`), then clears `pipeline:blocked` if the round may run. Never count attempts by hand.
+Every developer fix round goes through `talos.sh gate fix-round <N> <blocking-stage> [--pr M]`. It runs the budget guard, then the same-area check (a reviewer, security or adversarial round on a PR), then `record-attempt` (a `talos:attempt` marker comment, deduplicated per PR head with `--pr`), then clears `pipeline:blocked` if the round may run. It answers `verdict=redispatch`, `verdict=block` or `verdict=ask-owner`. Never count attempts by hand.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `limits.max_fix_attempts` | 3 | Consecutive attempts at one blocking stage. |
 | `limits.max_total_dispatches` | 8 | Developer dispatches per issue; never resets. |
 | `limits.max_retries` | 5 | Retries of a rate-limited network call (backoff up to 60 s). |
+| `limits.same_area_rounds` | 2 | Rounds running in which one review role's findings cite the same file before the owner is asked (1 to 100). |
 
 The attempt that reaches a ceiling blocks (`verdict=block reason=max-fix-attempts|max-total-dispatches`) instead of re-dispatching. A required CI check that fails is re-run twice per head SHA before `gate merge` answers `ci-failed`.
+
+**The same-area check.** For a reviewer, security or adversarial round on a PR, the gate reads the PR's comments once before it records the attempt. When the newest `limits.same_area_rounds` findings comments of that stage each cite one file as `path:line`, it answers `verdict=ask-owner reason=design-decision` with `stage=`, `rounds=` and `area=` (the shared files), records no attempt, clears no label and parks the question on the PR: a `Design decision needed` comment and `pipeline:needs-owner`, so `list-needs-owner` and the state summary show it as an open owner question.
+
+- Only the stage's own findings comments count, from trusted authors (`markers.verify_authors`, `markers.trusted_authors`). Its approval does not count, and neither does a citation under `**Non-blocking notes:**` or in the reviewer's human-attention report.
+- To release the round, reply on the PR with the decision, then run `gate fix-round` again (the orchestrator does this when it gets the answer). A reply is a comment by a trusted author that is not empty, holds no Talos marker and does not start with `**Agent:**`; quoting a finding is fine. `pipeline:blocked` stays until then, so `next` keeps answering `wait reason=blocked`, and until the reply exists the gate repeats `ask-owner` (without `rounds=` and `area=`) and writes nothing.
+- After the reply the count starts again from the comments below the question, and the unblock also removes `pipeline:needs-owner`.
+- The check never stops a round it cannot make: with `comments.enabled: false`, an empty `comments.header`, or a PR thread that cannot be read (`warn reason=area-check-failed`) the round runs as before. A value above `limits.max_fix_attempts` never triggers.
 
 ### Blocked work and human-only gates
 
@@ -94,6 +102,7 @@ Only a person does these:
 - Merge, when `merge.auto: false`: the PR gets `pipeline:approved` and a hand-off comment; the next `sweep` closes the issue.
 - Add `skip-qa`, which waives the approval labels only, never CI or the forbidden-files check.
 - Answer a `pipeline:needs-owner` question (`next` answers `ask-owner`).
+- Decide the design when `gate fix-round` answers `ask-owner reason=design-decision`: reply on the PR under the `Design decision needed` comment; the next `gate fix-round` continues from the reply. See [Retries and attempt counting](#retries-and-attempt-counting).
 
 There is no switch that removes the CI gate: `gate merge` stops with `reason=ci-unverified` when `merge.required_checks` is empty.
 
@@ -431,6 +440,7 @@ Derived defaults: `base_branch`, `repo`, `vcs.repo` and `board.owner` come from 
 |---|---|---|---|---|
 | `limits.max_fix_attempts` | int | `3` | - | any |
 | `limits.max_total_dispatches` | int | `8` | - | any |
+| `limits.same_area_rounds` | int | `2` | - | any |
 | `limits.max_retries` | int | `5` | - | any |
 | `limits.tokens_per_issue` | int | - | - | any |
 | `limits.warn_at` | float | `0.8` | - | any |

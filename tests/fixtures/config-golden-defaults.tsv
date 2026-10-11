@@ -67,6 +67,7 @@ issues.skip_labels	pipeline:blocked\nwontfix	table	docs
 limits.max_fix_attempts	3	table	pipeline-vcs.sh
 limits.max_retries	5	table	pipeline-vcs.sh
 limits.max_total_dispatches	8	table	pipeline-vcs.sh
+limits.same_area_rounds	2	table	talos.sh
 limits.tokens_per_issue		empty	pipeline-budget.sh
 limits.warn_at	0.8	table	pipeline-budget.sh,pipeline-events.sh
 markers.trusted_authors		empty	pipeline-vcs.sh
