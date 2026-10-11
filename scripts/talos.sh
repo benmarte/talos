@@ -194,7 +194,13 @@
 #         and a `stop reason=` from `next`;
 #         a failed state read exits 1; a failed dispatch is `run=stopped
 #         reason=dispatch-failed role=<role>`. A QA FAIL at the head the previous
-#         QA FAIL saw blocks the PR and stops. An untargeted run whose `next` waits
+#         QA FAIL saw blocks the PR and stops. A reviewer, security or adversarial
+#         finding gets its developer fix round in the same run: under PR_DRAFT the
+#         other enabled review roles with no fresh approval run on that head first,
+#         then `gate fix-round` once and one round for every finding; block and
+#         ask-owner end the run with the gate's line (`stop verdict=<v> ...`). A
+#         round that pushed nothing blocks the PR and the issue and stops
+#         (`fix-round-unchanged-head`). An untargeted run whose `next` waits
 #         works the `inflight` issues. --max-iterations caps the passes of the
 #         whole command, the passes after a merge included (default 20; a long
 #         drain passes a larger number). The count crosses the exec in
@@ -204,10 +210,11 @@
 #         reads it at the top of every pass, before `next`, deletes it and ends
 #         with `stop reason=stop-requested` (exit 0), so the stage that was running
 #         finishes first. A run started fresh deletes a leftover request.
-# run-reasons: usage unknown-role unknown-pr dispatch-failed ready-pr-failed qa-fail-unchanged-head head-unresolved stop-requested checkout-return-failed
+# run-reasons: usage unknown-role unknown-pr dispatch-failed ready-pr-failed qa-fail-unchanged-head fix-round-unchanged-head head-unresolved stop-requested checkout-return-failed
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
-#         ready-pr-failed draft-unverified qa-fail-unchanged-head head-unresolved
-#         stop-requested checkout-return-failed
+#         ready-pr-failed draft-unverified qa-fail-unchanged-head
+#         fix-round-unchanged-head head-unresolved stop-requested
+#         checkout-return-failed
 #   warn: qa-ci-red notify-failed board-failed spend-upsert-failed lease-release-failed
 #         model-invalid label-failed comment-failed budget-check-failed
 #         inflight-unreadable
@@ -3328,11 +3335,13 @@ _talos_run_dispatch() {
   rm -f "${_f:?}"
 
   # 5. What follows, the pass ends the same way the playbook's Step 2 reads
-  # `next=`: `stop` ends the run clean; `continue` goes back to `next`;
-  # `batch` is one role per action anyway. A QA `fix-round` runs the fix round
-  # itself (#537) -- left to `next`, the unchanged head would just be re-run
-  # through ready-pr and QA; the other roles' fix-round answers still go back
-  # to `next` (the gate and the ceilings run inside it, #471).
+  # `next=`: `stop` ends the run clean; `continue` goes back to `next`. A
+  # `fix-round` and a `batch` are run here, by the driver itself: left to
+  # `next`, a QA FAIL's unchanged head would just be re-run through ready-pr
+  # and QA (#537), and a review finding's blocked PR is only a wait (#609). A
+  # role dispatched inside a batch starts no round of its own: the batch reads
+  # its answer from _RUN_NEXT.
+  _RUN_NEXT="$_next"
   [ "$_role" != qa ] || [ "$_v" != PASS ] || rm -f "$_CFG_CACHE_DIR/qa-fail-head.$_pr"
   # #580: the reason a stage gave for BLOCKED, relayed (sanitised, one line) beside
   # the stop line; the whole message went to done as the summary.
@@ -3345,8 +3354,36 @@ _talos_run_dispatch() {
       _talos_flush; exit 0 ;;
     "fix-round stage=qa")
       [ "$_role" != qa ] || _talos_run_qa_fail "$_pr" "$_n" ;;
+    batch | "fix-round stage=$_role")
+      case "$_role" in
+        reviewer | security | adversarial)
+          [ "${_RUN_BATCH:-0}" -eq 1 ] || _talos_run_review_fail "$_pr" "$_n" "$_role" "$_next" ;;
+      esac ;;
   esac
   return 0
+}
+
+# _talos_run_fix_gate <issue> <stage> <pr>: `gate fix-round` before a developer
+# fix round (the budget guard, the same-area check, the attempt ceilings, the
+# unblock right before the round). It returns on verdict=redispatch only. A
+# block or an ask-owner is the gate's answer, its writes done inside it: the run
+# ends clean with that line, `stop verdict=block reason=<why>` or `stop
+# verdict=ask-owner reason=design-decision stage=<stage> [rounds=<k>
+# area=<files>]`. Any other answer is `stop reason=state-unavailable`.
+_talos_run_fix_gate() {
+  local _r _why
+  _r="$(bash "$SCRIPT_DIR"/talos.sh gate fix-round "$1" "$2" --pr "$3" 2>"$_CFG_CACHE_DIR/err")"
+  _talos_relay gate-fix-round "$(cat "$_CFG_CACHE_DIR/err" 2>/dev/null)"
+  case "$_r" in
+    verdict=redispatch*) return 0 ;;
+    verdict=block*)
+      _why="$(sed -n 's/^reason=//p' <<<"$_r" | head -n 1)"
+      _talos_emit stop "verdict=block${_why:+ reason=$_why}" ;;
+    verdict=ask-owner*)
+      _talos_emit stop "$(grep -E '^(verdict|reason|stage|rounds|area)=' <<<"$_r" | tr '\n' ' ' | sed 's/ $//')" ;;
+    *) _talos_stop state-unavailable ;;
+  esac
+  _talos_flush; exit 0
 }
 
 # _talos_run_qa_fail <pr> <issue> (#537): a QA FAIL is a developer fix round,
@@ -3361,7 +3398,7 @@ _talos_run_dispatch() {
 # failing head per PR is the run's own scratch file; a head that cannot be read
 # is `stop reason=head-unresolved` (fail closed: no verdict without a head).
 _talos_run_qa_fail() {
-  local _pr="$1" _n="$2" _head _f _r _why
+  local _pr="$1" _n="$2" _head _f
   _f="$_CFG_CACHE_DIR/qa-fail-head.$_pr"
   _talos_cap _vcs pr-head "$_pr"
   { [ "$_RC" -eq 0 ] && [ -n "$_OUT" ]; } || _talos_stop head-unresolved
@@ -3372,17 +3409,7 @@ _talos_run_qa_fail() {
     _talos_flush; exit 0
   fi
   printf '%s\n' "$_head" > "$_f" || _talos_stop scratch-unavailable
-  _r="$(bash "$SCRIPT_DIR"/talos.sh gate fix-round "$_n" qa --pr "$_pr" 2>"$_CFG_CACHE_DIR/err")"
-  _talos_relay gate-fix-round "$(cat "$_CFG_CACHE_DIR/err" 2>/dev/null)"
-  case "$_r" in
-    verdict=redispatch*) : ;;
-    verdict=block*)
-      # The gate set pipeline:blocked and said why; the run ends clean.
-      _why="$(sed -n 's/^reason=//p' <<<"$_r" | head -n 1)"
-      _talos_emit stop "verdict=block${_why:+ reason=$_why}"
-      _talos_flush; exit 0 ;;
-    *) _talos_stop state-unavailable ;;
-  esac
+  _talos_run_fix_gate "$_n" qa "$_pr"
   # `done` freed the lease with the QA stage; the developer's write is leased
   # again, as next's dispatch path leases it.
   _talos_run_lease "$_n"
@@ -3391,6 +3418,75 @@ _talos_run_qa_fail() {
   # and the developer's run is about to overwrite it.
   cp "$_CFG_CACHE_DIR/agent.out" "$_CFG_CACHE_DIR/qa-fail.summary" || _talos_stop scratch-unavailable
   _talos_run_dispatch "dispatch stage=developer pr=$_pr issue=$_n" fix-round "$_CFG_CACHE_DIR/qa-fail.summary"
+}
+
+# _talos_run_review_fail <pr> <issue> <role> <next> (#609): a reviewer, security
+# or adversarial finding is a developer fix round too, run here as the QA round
+# is. <next> is `done`'s answer for <role>.
+# `batch` (a draft review batch) first finishes the batch on the same head:
+# every role after <role> in the order reviewer, security, adversarial that is
+# enabled and holds no fresh approval is dispatched, one at a time, through the
+# one dispatch path -- never through `next`, which only waits on a blocked PR.
+# An approval is fresh when its label is on the PR and `check-approval-sha
+# --stale-list` does not name the role; a read that fails is no approval, so a
+# review is never skipped on it. A role that ends `BLOCKED:` stops the run in
+# its own dispatch (#580).
+# Then, for both answers: `gate fix-round <N> <role> --pr <M>` once (<role> is
+# the first role that raised findings) and the developer in the fix-round shape.
+# Its prior stage summary is the final message of every role that raised
+# findings, in that order, each under a `<role> findings:` line. Every dispatch
+# made here is leased first: `done` freed the lease with the stage before it.
+# The backstop: the PR head is read before the round and again after it. A
+# round that pushed nothing puts pipeline:blocked back on the PR and the issue
+# and ends the run -- `stop reason=fix-round-unchanged-head pr=<M> issue=<N>`,
+# exit 0 -- because `next` would send the same head to the same review again. A
+# head that cannot be read is `stop reason=head-unresolved`.
+_talos_run_review_fail() {
+  local _pr="$1" _n="$2" _role="$3" _mode="$4" _sum _r _after=0 _labels="" _stale="" _head
+  _sum="$_CFG_CACHE_DIR/review-fail.summary"
+  # agent.out holds the failing role's final message until the next dispatch.
+  { printf '%s findings:\n' "$_role" && cat "$_CFG_CACHE_DIR/agent.out"; } > "$_sum" || _talos_stop scratch-unavailable
+  if [ "$_mode" = batch ]; then
+    _talos_cap _vcs view-pr "$_pr"
+    [ "$_RC" -ne 0 ] || _labels="$(_talos_labels "$_OUT" 2>/dev/null)"
+    for _r in reviewer security adversarial; do
+      if [ "$_r" = "$_role" ]; then _after=1; continue; fi
+      [ "$_after" -eq 1 ] && [ "$(_talos_role_enabled "$_r")" = "true" ] || continue
+      if _talos_has "$_labels" "$(_talos_label_of "$_r")"; then
+        # The stale list, read once, for the first role that has its label.
+        # Exit 1 is both "stale approvals" (the stale lines) and a failed read.
+        if [ -z "$_stale" ]; then
+          _talos_cap _vcs check-approval-sha "$_pr" --stale-list
+          if [ "$_RC" -eq 0 ]; then _stale=none
+          elif grep -q '^stale role=' <<<"$_OUT"; then _stale="$_OUT"
+          else _stale=unread
+          fi
+        fi
+        [ "$_stale" = unread ] || grep -q "^stale role=$_r " <<<"$_stale" || continue
+      fi
+      _talos_run_lease "$_n"
+      _RUN_BATCH=1
+      _talos_run_dispatch "dispatch stage=$_r pr=$_pr issue=$_n"
+      _RUN_BATCH=0
+      case "$_RUN_NEXT" in
+        batch | "fix-round stage="*)
+          { printf '\n%s findings:\n' "$_r" && cat "$_CFG_CACHE_DIR/agent.out"; } >> "$_sum" || _talos_stop scratch-unavailable ;;
+      esac
+    done
+  fi
+  _talos_cap _vcs pr-head "$_pr"
+  { [ "$_RC" -eq 0 ] && [ -n "$_OUT" ]; } || _talos_stop head-unresolved
+  _head="$_OUT"
+  _talos_run_fix_gate "$_n" "$_role" "$_pr"
+  _talos_run_lease "$_n"
+  _talos_run_dispatch "dispatch stage=developer pr=$_pr issue=$_n" fix-round "$_sum"
+  _talos_cap _vcs pr-head "$_pr"
+  { [ "$_RC" -eq 0 ] && [ -n "$_OUT" ]; } || _talos_stop head-unresolved
+  if [ "$_OUT" = "$_head" ]; then
+    _talos_block_labels "$_n" "$_pr"
+    _talos_emit stop "reason=fix-round-unchanged-head pr=$_pr issue=$_n"
+    _talos_flush; exit 0
+  fi
 }
 
 # _talos_run_lease <issue>: lease the write (next's dispatch shape): a held
