@@ -225,7 +225,7 @@ except Exception:
   line="$(bash "$EVENTS" cost --issue 5 --line 2>"$SANDBOX/err.log")"; rc=$?
   assert_eq "0" "$rc" "tokens $bad: cost --line exits 0"
   assert_eq "" "$(grep -c Traceback "$SANDBOX/err.log" | sed 's/^0$//')" "tokens $bad: cost --line prints no traceback"
-  assert_eq "talos: #5 qa done — tokens unrecorded, 2 tools, 10s · issue total 2k (+1 unrecorded) (dev 2k)" "$line" \
+  assert_eq "talos: #5 qa done — tokens unrecorded, 2 tools, 10s · issue total 2k (+1 unrecorded) (dev 2k) · cache reads unrecorded" "$line" \
     "tokens $bad: cost --line reads it as unrecorded"
 done
 
@@ -244,8 +244,10 @@ assert_eq "3 60" \
 # valid logs keep their exact shape (floats stay floats, nothing else moves)
 reset_log
 raw '{"event":"developer","role":"developer","issue":5,"pr":null,"verdict":"PASS","tokens":100,"tool_uses":1,"duration_s":1.5,"ts":"2026-10-03T00:00:00Z"}'
-assert_eq '{"rows": [{"issue": 5, "role": "developer", "events": 1, "tokens": 100, "tool_uses": 1, "duration_s": 1.5, "unrecorded": 0, "restamp": 0}], "total": {"events": 1, "tokens": 100, "tool_uses": 1, "duration_s": 1.5, "unrecorded": 0, "restamp": 0}}' \
-  "$(bash "$EVENTS" cost --issue 5 --json 2>/dev/null)" "valid log: cost --json shape unchanged"
+# the #604 split follows restamp: a sum no event carries is null, never 0
+SPLIT_NULL='"input_tokens": null, "output_tokens": null, "cache_write_tokens": null, "cache_read_tokens": null, "cache_unrecorded": 1'
+assert_eq '{"rows": [{"issue": 5, "role": "developer", "events": 1, "tokens": 100, "tool_uses": 1, "duration_s": 1.5, "unrecorded": 0, "restamp": 0, '"$SPLIT_NULL"'}], "total": {"events": 1, "tokens": 100, "tool_uses": 1, "duration_s": 1.5, "unrecorded": 0, "restamp": 0, '"$SPLIT_NULL"'}}' \
+  "$(bash "$EVENTS" cost --issue 5 --json 2>/dev/null)" "valid log: cost --json keeps its exact shape"
 
 # ── (c) digits-only --issue / --pr ─────────────────────────────────────────
 reset_log

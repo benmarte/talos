@@ -16,6 +16,7 @@
 #          [--verdict V] [--summary "..." | --summary - | --summary-file F]
 #          [--details-file F] [--attempt stage:count:total] [--duration-s N] [--tokens N] [--tool-uses N]
 #          [--ci-runs N] [--model M] [--runner R]
+#          [--input-tokens N] [--output-tokens N] [--cache-write-tokens N] [--cache-read-tokens N]
 #        pipeline-hooks.sh stage_start <role> <issue> [--pr N]
 #
 # stage_start (#550) appends one `stage_start` event to the events log when a
@@ -85,6 +86,14 @@
 # (pipeline-vcs.sh pr-ci-runs); the merged event carries it. Unlike the fields
 # above it adds a "ci_runs" key (after tool_uses) only when supplied and valid,
 # so every payload without it is unchanged.
+# --input-tokens / --output-tokens / --cache-write-tokens / --cache-read-tokens
+# (#604) split a run's usage: fresh (uncached) input, output, cache writes and
+# cache reads. They follow the ci_runs rule: validated like --tokens, and each
+# adds its key ("input_tokens", "output_tokens", "cache_write_tokens",
+# "cache_read_tokens", after tool_uses and ci_runs, before ts) only when
+# supplied and valid. `tokens` stays input + output + cache write: cache reads
+# are never in it. An event with no valid cache_read_tokens is "cache-unrecorded"
+# to every reader (pipeline-events.sh cost, talos-status.sh), never a zero.
 # model comes from agents.roles.<role>.model, falling back to agents.model;
 # runner from agents.runner. ts is UTC ISO-8601.
 #
@@ -388,7 +397,7 @@ _HOOKS_SUMMARY_MAX=4096
 _hooks_usage() {
   echo "Usage: pipeline-hooks.sh pre_dispatch <role> <issue> [<pr>] [<worktree_path>] [files_hint...]" >&2
   echo "       pipeline-hooks.sh stage_start <role> <issue> [--pr N]" >&2
-  echo "       pipeline-hooks.sh post_stage <event> <role> <issue> [--pr N] [--sha S] [--verdict V] [--summary \"...\" | --summary - | --summary-file F] [--details-file F] [--attempt stage:count:total] [--duration-s N] [--tokens N] [--tool-uses N] [--ci-runs N] [--model M] [--runner R]" >&2
+  echo "       pipeline-hooks.sh post_stage <event> <role> <issue> [--pr N] [--sha S] [--verdict V] [--summary \"...\" | --summary - | --summary-file F] [--details-file F] [--attempt stage:count:total] [--duration-s N] [--tokens N] [--tool-uses N] [--ci-runs N] [--model M] [--runner R] [--input-tokens N] [--output-tokens N] [--cache-write-tokens N] [--cache-read-tokens N]" >&2
 }
 
 # _hooks_need_value OPTION ARGC -- exit 2 with usage when a value-taking
@@ -404,6 +413,7 @@ _hooks_need_value() {
 # post_stage EVENT ROLE ISSUE [--pr N] [--sha S] [--verdict V] [--summary S]
 #            [--summary-file F] [--details-file F] [--attempt stage:count:total] [--duration-s N]
 #            [--tokens N] [--tool-uses N] [--ci-runs N] [--model M] [--runner R]
+#            [--input-tokens N] [--output-tokens N] [--cache-write-tokens N] [--cache-read-tokens N]
 # --runner R (#418): the runner the stage actually ran on. pipeline-agent.sh
 # passes it only for a stage that ran on a failover-chain runner; the event's
 # runner is then R and its model is null (a fallback runner uses its own
@@ -417,9 +427,10 @@ post_stage() {
 
   local pr="" sha="" verdict="" summary="" details_file="" attempt="" duration_s="" tokens="" tool_uses="" ci_runs="" model_arg="" runner_arg=""
   local summary_file="" summary_stdin=0
+  local input_tokens="" output_tokens="" cache_write_tokens="" cache_read_tokens=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --pr|--sha|--verdict|--summary|--summary-file|--details-file|--attempt|--duration-s|--tokens|--tool-uses|--ci-runs|--model|--runner)
+      --pr|--sha|--verdict|--summary|--summary-file|--details-file|--attempt|--duration-s|--tokens|--tool-uses|--ci-runs|--model|--runner|--input-tokens|--output-tokens|--cache-write-tokens|--cache-read-tokens)
         # A value flag as the last argument used to loop forever (`shift 2`
         # with one argument left shifts nothing): exit 2 with usage instead.
         _hooks_need_value "$1" $#
@@ -444,6 +455,10 @@ post_stage() {
       --ci-runs) ci_runs="$2"; shift 2 ;;
       --model) model_arg="$2"; shift 2 ;;
       --runner) runner_arg="$2"; shift 2 ;;
+      --input-tokens) input_tokens="$2"; shift 2 ;;
+      --output-tokens) output_tokens="$2"; shift 2 ;;
+      --cache-write-tokens) cache_write_tokens="$2"; shift 2 ;;
+      --cache-read-tokens) cache_read_tokens="$2"; shift 2 ;;
       *) shift ;;
     esac
   done
@@ -469,6 +484,11 @@ post_stage() {
   tokens="$(_validate_nonneg_int tokens "$tokens")"
   tool_uses="$(_validate_nonneg_int tool-uses "$tool_uses")"
   ci_runs="$(_validate_nonneg_int ci-runs "$ci_runs")"
+  # #604: the usage split; an invalid value drops that one key (see the header).
+  input_tokens="$(_validate_nonneg_int input-tokens "$input_tokens")"
+  output_tokens="$(_validate_nonneg_int output-tokens "$output_tokens")"
+  cache_write_tokens="$(_validate_nonneg_int cache-write-tokens "$cache_write_tokens")"
+  cache_read_tokens="$(_validate_nonneg_int cache-read-tokens "$cache_read_tokens")"
 
   local hook_cmd
   hook_cmd="$(cfg hooks.post_stage)"
@@ -532,6 +552,8 @@ post_stage() {
     TALOS_HOOK_ATTEMPT_TOTAL="$attempt_total" TALOS_HOOK_MODEL="$model" TALOS_HOOK_RUNNER="$runner" \
     TALOS_HOOK_DURATION="$duration_s" TALOS_HOOK_TOKENS="$tokens" TALOS_HOOK_TOOL_USES="$tool_uses" \
     TALOS_HOOK_CI_RUNS="$ci_runs" TALOS_HOOK_TS="$ts" \
+    TALOS_HOOK_INPUT_TOKENS="$input_tokens" TALOS_HOOK_OUTPUT_TOKENS="$output_tokens" \
+    TALOS_HOOK_CACHE_WRITE_TOKENS="$cache_write_tokens" TALOS_HOOK_CACHE_READ_TOKENS="$cache_read_tokens" \
     python3 -I -c '
 import json
 import os
@@ -578,6 +600,11 @@ payload = {
 _ci_runs = _int_or_none(os.environ.get("TALOS_HOOK_CI_RUNS"))
 if _ci_runs is not None:
     payload["ci_runs"] = _ci_runs
+# #604: the usage split, each key only when supplied (same rule as ci_runs).
+for _key in ("input_tokens", "output_tokens", "cache_write_tokens", "cache_read_tokens"):
+    _n = _int_or_none(os.environ.get("TALOS_HOOK_" + _key.upper()))
+    if _n is not None:
+        payload[_key] = _n
 payload["ts"] = os.environ.get("TALOS_HOOK_TS", "")
 json.dump(payload, sys.stdout)
 ')"

@@ -35,6 +35,9 @@ ev() {
 
 # line_for ARGS... -- run `cost <args> --line`, stdout only.
 line_for() { bash "$EVENTS" cost "$@" --line 2>/dev/null; }
+# The events here carry no cache figures, so every line ends with this segment
+# (#604; the recorded forms are in tests/test-spend-cache-split.sh).
+NC=' · cache reads unrecorded'
 
 # ── (a) the issue's example line ───────────────────────────────────────────
 # Roles sum to 3,411,000 (dev 1,566,000, adv 595,600, sec 486,600, rev
@@ -52,7 +55,7 @@ ev docs          752 764  244600  8   100
 ev qa            752 764  144600  6   90
 ev security      752 764  56000   14  125
 ev orchestrator  752 764  null    null null          # excluded, not unrecorded
-EXPECTED='talos: #764 security done — 56k tokens, 14 tools, 2m05s · PR total 3.41M (dev 1.57M, adv 596k, sec 487k, rev 374k, docs 245k, qa 145k)'
+EXPECTED='talos: #764 security done — 56k tokens, 14 tools, 2m05s · PR total 3.41M (dev 1.57M, adv 596k, sec 487k, rev 374k, docs 245k, qa 145k)'"$NC"
 out="$(bash "$EVENTS" cost --issue 752 --pr 764 --line 2>"$SANDBOX/err.log")"; rc=$?
 assert_eq "0" "$rc" "line: exit 0"
 assert_eq "$EXPECTED" "$out" "line: the issue's example line, exactly"
@@ -69,7 +72,7 @@ fi
 # (validator) + 55,000 (qa on PR 765) = 3,496,000 -> 3.50M; qa is 199,600
 # (200k), validator 30k.
 out="$(line_for --issue 752)"
-assert_eq 'talos: #752 security done — 56k tokens, 14 tools, 2m05s · issue total 3.50M (dev 1.57M, adv 596k, sec 487k, rev 374k, docs 245k, qa 200k, val 30k)' \
+assert_eq 'talos: #752 security done — 56k tokens, 14 tools, 2m05s · issue total 3.50M (dev 1.57M, adv 596k, sec 487k, rev 374k, docs 245k, qa 200k, val 30k)'"$NC" \
   "$out" "line: without --pr the reference is #<issue> and the label is 'issue total'"
 
 # ── (c) number format ──────────────────────────────────────────────────────
@@ -77,7 +80,7 @@ assert_eq 'talos: #752 security done — 56k tokens, 14 tools, 2m05s · issue to
 check_number() {  # $1=tokens $2=expected rendering
   reset_log; ev developer 7 null "$1" 1 5
   out="$(line_for --issue 7)"
-  assert_eq "talos: #7 developer done — $2 tokens, 1 tools, 5s · issue total $2 (dev $2)" "$out" "number: $1 -> $2"
+  assert_eq "talos: #7 developer done — $2 tokens, 1 tools, 5s · issue total $2 (dev $2)$NC" "$out" "number: $1 -> $2"
 }
 check_number 0 0
 check_number 999 999
@@ -112,20 +115,20 @@ check_duration 3600 1h00m
 check_duration 3720 1h02m
 
 reset_log; ev qa 8 null 1000 2 null
-assert_eq 'talos: #8 qa done — 1k tokens, 2 tools · issue total 1k (qa 1k)' "$(line_for --issue 8)" \
+assert_eq 'talos: #8 qa done — 1k tokens, 2 tools · issue total 1k (qa 1k)'"$NC" "$(line_for --issue 8)" \
   "null duration: omitted together with its comma"
 reset_log; ev qa 8 null 1000 null 125
-assert_eq 'talos: #8 qa done — 1k tokens, 2m05s · issue total 1k (qa 1k)' "$(line_for --issue 8)" \
+assert_eq 'talos: #8 qa done — 1k tokens, 2m05s · issue total 1k (qa 1k)'"$NC" "$(line_for --issue 8)" \
   "null tool count: omitted together with its comma"
 reset_log; ev qa 8 null 1000 null null
-assert_eq 'talos: #8 qa done — 1k tokens · issue total 1k (qa 1k)' "$(line_for --issue 8)" \
+assert_eq 'talos: #8 qa done — 1k tokens · issue total 1k (qa 1k)'"$NC" "$(line_for --issue 8)" \
   "null tool count and duration: both omitted"
 
 # "Newest" is the last line of the file, not the greatest ts.
 reset_log
 ev qa 9 null 1000 1 10 2026-10-03T12:00:00Z
 ev reviewer 9 null 2000 2 20 2026-10-03T01:00:00Z
-assert_eq 'talos: #9 reviewer done — 2k tokens, 2 tools, 20s · issue total 3k (rev 2k, qa 1k)' "$(line_for --issue 9)" \
+assert_eq 'talos: #9 reviewer done — 2k tokens, 2 tools, 20s · issue total 3k (rev 2k, qa 1k)'"$NC" "$(line_for --issue 9)" \
   "newest: last in file order, not by ts"
 
 # Ties keep first-seen order.
@@ -146,7 +149,7 @@ assert_contains "$(line_for --issue 10)" 'talos: #10 release-bot done — 500 to
 reset_log
 ev developer 11 null 1000 1 5
 ev qa 11 null null null 125
-assert_eq 'talos: #11 qa done — tokens unrecorded, 2m05s · issue total 1k (+1 unrecorded) (dev 1k)' "$(line_for --issue 11)" \
+assert_eq 'talos: #11 qa done — tokens unrecorded, 2m05s · issue total 1k (+1 unrecorded) (dev 1k)'"$NC" "$(line_for --issue 11)" \
   "null tokens: newest reads 'tokens unrecorded, <dur>'; (+K unrecorded) sits between the total and the breakdown"
 reset_log
 ev developer 11 null 1000 1 5
@@ -158,20 +161,20 @@ ev qa 11 null null null 5
 ev reviewer 11 null null null 6
 ev developer 11 null 1000 1 7
 ev docs 11 null 2000 1 8
-assert_eq 'talos: #11 docs done — 2k tokens, 1 tools, 8s · issue total 3k (+2 unrecorded) (docs 2k, dev 1k)' "$(line_for --issue 11)" \
+assert_eq 'talos: #11 docs done — 2k tokens, 1 tools, 8s · issue total 3k (+2 unrecorded) (docs 2k, dev 1k)'"$NC" "$(line_for --issue 11)" \
   "unrecorded: K counts stage events; an all-unrecorded role is left out of the breakdown"
 reset_log
 ev qa 12 null null null 5
 ev qa 12 null null null 125
-assert_eq 'talos: #12 qa done — tokens unrecorded, 2m05s · issue total unrecorded' "$(line_for --issue 12)" \
+assert_eq 'talos: #12 qa done — tokens unrecorded, 2m05s · issue total unrecorded'"$NC" "$(line_for --issue 12)" \
   "no recorded events: 'issue total unrecorded', no breakdown, no (+K)"
 reset_log
 ev qa 12 null 0 1 5
-assert_eq 'talos: #12 qa done — 0 tokens, 1 tools, 5s · issue total 0 (qa 0)' "$(line_for --issue 12)" \
+assert_eq 'talos: #12 qa done — 0 tokens, 1 tools, 5s · issue total 0 (qa 0)'"$NC" "$(line_for --issue 12)" \
   "a real 0 is printed as 0, never as unrecorded"
 reset_log
 ev qa 12 33 null null 5
-assert_eq 'talos: #33 qa done — tokens unrecorded, 5s · PR total unrecorded' "$(bash "$EVENTS" cost --issue 12 --pr 33 --line 2>/dev/null)" \
+assert_eq 'talos: #33 qa done — tokens unrecorded, 5s · PR total unrecorded'"$NC" "$(bash "$EVENTS" cost --issue 12 --pr 33 --line 2>/dev/null)" \
   "no recorded events with --pr: 'PR total unrecorded'"
 
 # ── (f) orchestrator excluded; nothing in, nothing out ─────────────────────
@@ -179,7 +182,7 @@ reset_log
 ev developer 13 null 1000 1 5
 ev orchestrator 13 null 777777 99 999
 ev orchestrator 13 null null null null
-assert_eq 'talos: #13 developer done — 1k tokens, 1 tools, 5s · issue total 1k (dev 1k)' "$(line_for --issue 13)" \
+assert_eq 'talos: #13 developer done — 1k tokens, 1 tools, 5s · issue total 1k (dev 1k)'"$NC" "$(line_for --issue 13)" \
   "orchestrator events are excluded from the stage, the total and the unrecorded count"
 reset_log
 ev orchestrator 14 null 5 1 1
@@ -216,10 +219,10 @@ for i in $(seq 1 30); do
 done
 out="$(line_for --issue 17)"
 PREFIX='talos: #17 r30 done — 10k tokens, 1 tools, 5s · issue total 4.65M ('
-assert_eq "${PREFIX}r01 300k, r02 290k, r03 280k, r04 270k, r05 260k, r06 250k, r07 240k, r08 230k, r09 220k, r10 210k, r11 200k, r12 190k, r13 180k, …)" \
-  "$out" "cut: whole trailing entries dropped, ', …)' closes the breakdown"
+assert_eq "${PREFIX}r01 300k, r02 290k, r03 280k, r04 270k, r05 260k, r06 250k, r07 240k, r08 230k, r09 220k, r10 210k, …)$NC" \
+  "$out" "cut: whole trailing entries dropped, ', …)' closes the breakdown; the cache segment is never cut"
 n="$(printf '%s' "$out" | python3 -c 'import sys; print(len(sys.stdin.read()))')"
-assert_eq "199" "$n" "cut: counted in characters (199; a 14th entry would make 209), not bytes"
+assert_eq "194" "$n" "cut: counted in characters (194; an 11th entry would make 204), not bytes"
 # A short breakdown is never touched.
 reset_log; ev developer 18 null 1000 1 5
 assert_not_contains "$(line_for --issue 18)" '…' "no cut when the line already fits"
@@ -235,7 +238,8 @@ ev developer 20 41   200 2 2
 ev developer 20 42   400 4 4
 ev qa 20 41 50 1 1
 table="$(bash "$EVENTS" cost --issue 20 --pr 41 2>/dev/null)"
-assert_eq "$(printf 'issue\trole\tevents\ttokens\ttool_uses\tduration_s\tunrecorded\trestamp\n20\tdeveloper\t1\t200\t2\t2\t0\t0\n20\tqa\t1\t50\t1\t1\t0\t0\nTOTAL\t\t2\t250\t3\t3\t0\t0')" \
+U4='\tunrecorded\tunrecorded\tunrecorded\tunrecorded'   # the four #604 sums: no event carries one
+assert_eq "$(printf "issue\trole\tevents\ttokens\ttool_uses\tduration_s\tunrecorded\trestamp\tinput_tokens\toutput_tokens\tcache_write_tokens\tcache_read_tokens\tcache_unrecorded\n20\tdeveloper\t1\t200\t2\t2\t0\t0$U4\t1\n20\tqa\t1\t50\t1\t1\t0\t0$U4\t1\nTOTAL\t\t2\t250\t3\t3\t0\t0$U4\t2")" \
   "$table" "--pr filters the table: only events whose pr matches"
 chk="$(bash "$EVENTS" cost --issue 20 --pr 41 --json 2>/dev/null | python3 -c "
 import json, sys
@@ -285,7 +289,7 @@ reset_log
 ev developer 22 null 1500 1 5
 out="$(env -u PYTHONIOENCODING -u PYTHONUTF8 LC_ALL=C LANG=C bash "$EVENTS" cost --issue 22 --line 2>"$SANDBOX/err.log")"; rc=$?
 assert_eq "0" "$rc" "LC_ALL=C: exit 0"
-assert_eq 'talos: #22 developer done — 2k tokens, 1 tools, 5s · issue total 2k (dev 2k)' "$out" "LC_ALL=C: the line is the same UTF-8 text"
+assert_eq 'talos: #22 developer done — 2k tokens, 1 tools, 5s · issue total 2k (dev 2k)'"$NC" "$out" "LC_ALL=C: the line is the same UTF-8 text"
 assert_eq "" "$(cat "$SANDBOX/err.log")" "LC_ALL=C: no encoding error on stderr"
 
 # A role name from the log cannot smuggle a talos:<word> token into the line.

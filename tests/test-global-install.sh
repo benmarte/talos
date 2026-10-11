@@ -304,7 +304,7 @@ mkdir -p "$SANDBOX/.git/talos"
 printf '%s\n' '{"event":"developer","role":"developer","issue":7,"pr":null,"verdict":"PASS","tokens":1500,"tool_uses":3,"duration_s":60,"ts":"2026-10-03T00:00:00Z"}' \
   > "$SANDBOX/.git/talos/events.jsonl"
 t9_line="$(cd "$SANDBOX" && bash "$T9_HOME/.talos/scripts/pipeline-events.sh" cost --issue 7 --line 2>/dev/null)"
-assert_eq "talos: #7 developer done — 2k tokens, 3 tools, 1m00s · issue total 2k (dev 2k)" "$t9_line" \
+assert_eq "talos: #7 developer done — 2k tokens, 3 tools, 1m00s · issue total 2k (dev 2k) · cache reads unrecorded" "$t9_line" \
   "cost --line works from the installed copy (#393)"
 rm -f "$SANDBOX/.git/talos/events.jsonl"
 

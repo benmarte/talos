@@ -305,12 +305,12 @@ assert_eq "OK" "$_check" "cost --json: parses and matches the table's rows and t
 # ── (g) unrecorded is counted, not silently folded into a real 0 ───────────
 out="$(bash "$EVENTS" cost 2>"$SANDBOX/err.log")"
 _unrecorded_line="$(printf '%s\n' "$out" | awk -F'\t' '$1 == "43" && $2 == "developer" { print }')"
-_unrecorded_count="$(printf '%s' "$_unrecorded_line" | awk -F'\t' '{ print $(NF-1) }')"
+_unrecorded_count="$(printf '%s' "$_unrecorded_line" | awk -F'\t' '{ print $7 }')"   # the `unrecorded` column
 assert_eq "1" "$_unrecorded_count" "cost: the null-tokens event is flagged in the unrecorded column"
 
 # ── (h) an explicit zero is not flagged as unrecorded ───────────────────────
 _zero_line="$(printf '%s\n' "$out" | awk -F'\t' '$1 == "42" && $2 == "validator" { print }')"
-_zero_unrecorded_count="$(printf '%s' "$_zero_line" | awk -F'\t' '{ print $(NF-1) }')"
+_zero_unrecorded_count="$(printf '%s' "$_zero_line" | awk -F'\t' '{ print $7 }')"
 assert_eq "0" "$_zero_unrecorded_count" "cost: an explicit --tokens 0 event is not flagged as unrecorded"
 
 # ── (i) RESTAMP_PASS/RESTAMP_FAIL verdicts are counted in the restamp

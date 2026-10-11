@@ -180,9 +180,13 @@ make_sandbox() {
   # TALOS_MODEL, TALOS_RUNNER (#419, #539): the stage's own attempt.
   # `pipeline-worktree.sh checkpoint` falls back to both, so a test's handoff
   # would record a runner and model the test never passed.
+  #
+  # TALOS_TRANSCRIPT_PATH (#604): the session transcript `cost --summary` reads
+  # for its last line; a test's report must not end with the caller's session.
   unset TALOS_HOME CLAUDE_PLUGIN_ROOT CLAUDE_CONFIG_DIR TALOS_AGENTS_HOME XDG_RUNTIME_DIR \
         TALOS_ISSUE TALOS_ISSUE_NUMBER TALOS_ROLE TALOS_WORKTREE_PATH \
-        TALOS_CLAIM_STATE TALOS_COLLECT_CACHE TALOS_RUN_PID TALOS_MODEL TALOS_RUNNER
+        TALOS_CLAIM_STATE TALOS_COLLECT_CACHE TALOS_RUN_PID TALOS_MODEL TALOS_RUNNER \
+        TALOS_TRANSCRIPT_PATH
 
   # Fail closed (#448): a failed mktemp must not leave SANDBOX empty with the
   # EXIT trap armed and the caller still in its own directory (every later
