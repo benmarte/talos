@@ -1831,16 +1831,18 @@ _fo_wrote() {
 # After a write the guard above refuses the rerun: exit 69. Any other result of
 # the keyed attempt is replayed as it was, for the caller to handle as today.
 # The runner stays the same, so no provider is marked down and nothing is
-# checkpointed. The caller passes its own stderr as fd 3: the keyed attempt's
-# stderr, its talos:usage line and the switch or refusal line go there, so a
-# chain, which buffers fd 2, classifies only what the rerun printed.
-_CR_OUT="" _CR_ERR="" _CR_WL="" _CR_TRAP=""
+# checkpointed. Both claude starts are buffered and classified here, each on its
+# own output, and CLASS / CLASS_DETAIL are left for a chain (_CR_CLASSIFIED=1):
+# the chain's buffer also holds the keyed attempt's stderr, and an exhausted-pool
+# line there must not make a failed rerun look like a provider error. A refused
+# rerun leaves CLASS=refused, which no chain fails over on.
+_CR_OUT="" _CR_ERR="" _CR_WL="" _CR_TRAP="" _CR_CLASSIFIED=""
 _run_stage() {
   local _snap _wl_ok=true
-  _CR_POOL=""
+  _CR_POOL="" _CR_CLASSIFIED=""
   [ "$1" != "claude" ] || _cr_load
   if [ "$1" != "claude" ] || [ -z "$_CR_KEY" ]; then
-    _run_runner "$1" 3>&-
+    _run_runner "$1"
     return
   fi
   _CR_OUT="$(mktemp "${TMPDIR:-/tmp}/talos-cr-out.XXXXXX")" && _CR_ERR="$(mktemp "${TMPDIR:-/tmp}/talos-cr-err.XXXXXX")" \
@@ -1861,26 +1863,25 @@ _run_stage() {
   [ "${#CHAIN[@]}" -gt 0 ] || local -x TALOS_WRITE_LOG="$_CR_WL"
   : >"$TALOS_WRITE_LOG" 2>/dev/null || _wl_ok=false
   _snap="$(git for-each-ref refs/remotes 2>/dev/null)"
-  _CR_POOL=api
-  _run_runner claude >"$_CR_OUT" 2>"$_CR_ERR" 3>&-
+  _CR_POOL=api _CR_CLASSIFIED=1
+  _run_runner claude >"$_CR_OUT" 2>"$_CR_ERR"
   _classify_exit claude "$RC" "$_CR_ERR" "$_CR_OUT"
-  if [ "$CLASS:$CLASS_DETAIL" != "provider:quota" ]; then
-    cat "$_CR_ERR" >&2
-    cat "$_CR_OUT"
-  else
-    {
+  cat "$_CR_ERR" >&2
+  if [ "$CLASS:$CLASS_DETAIL" = "provider:quota" ]; then
+    if _fo_wrote claude "$_wl_ok" "$_snap"; then
+      RC=69 CLASS="refused" CLASS_DETAIL=""
+      : >"$_CR_OUT"
+    else
+      _usage_marker claude
+      _fo_switch claude:api claude:plan "provider:quota"
+      _attempt_flush
+      _CR_POOL=plan
+      _run_runner claude >"$_CR_OUT" 2>"$_CR_ERR"
+      _classify_exit claude "$RC" "$_CR_ERR" "$_CR_OUT"
       cat "$_CR_ERR" >&2
-      if _fo_wrote claude "$_wl_ok" "$_snap"; then
-        RC=69
-      else
-        _usage_marker claude
-        _fo_switch claude:api claude:plan "provider:quota"
-        _attempt_flush
-        _CR_POOL=plan
-      fi
-    } 2>&3 3>&-
-    [ "$_CR_POOL" != "plan" ] || _run_runner claude 3>&-
+    fi
   fi
+  cat "$_CR_OUT"
   rm -f "$_CR_OUT" "$_CR_ERR" "$_CR_WL"
 }
 
@@ -1949,10 +1950,11 @@ _run_chain() {
     _FO_FINAL="$_E_RUNNER"
     _attempt_flush
     _FO_MODEL_SET=1
-    _run_stage "$_E_RUNNER" 3>&2 >"$_FO_OUT" 2>"$_FO_ERR"
+    _run_stage "$_E_RUNNER" >"$_FO_OUT" 2>"$_FO_ERR"
     # The classifier reads what _run_runner printed: for claude in JSON mode that
     # is the extracted message text, so its line-anchored patterns still match.
-    _classify_exit "$_E_RUNNER" "$RC" "$_FO_ERR" "$_FO_OUT"
+    # (#616: an attempt with API credits on was already classified by _run_stage.)
+    [ -n "$_CR_CLASSIFIED" ] || _classify_exit "$_E_RUNNER" "$RC" "$_FO_ERR" "$_FO_OUT"
     cat "$_FO_ERR" >&2
     _usage_marker "$_E_RUNNER"
     if [ "$CLASS" != "provider" ]; then
@@ -1980,7 +1982,7 @@ done <<EOF
 $(_fallback_chain "$ROLE" "$RUNNER")
 EOF
 if [ "${#CHAIN[@]}" -eq 0 ]; then
-  _run_stage "$RUNNER" 3>&2
+  _run_stage "$RUNNER"
   _usage_marker "$RUNNER"
 else
   _run_chain
