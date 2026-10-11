@@ -47,6 +47,10 @@
 #            verdict=redispatch  stage=<stage> count=<k> total=<t> [budget=<warn line>]
 #            verdict=block       reason=budget-exceeded|max-fix-attempts|
 #                                max-total-dispatches|record-failed, blocked_by=<text>
+#            verdict=ask-owner   reason=same-area [role=<role> rounds=<k> area=<files>]
+#                                a review role's findings cited the same file in
+#                                limits.design_decision_rounds rounds in a row: the
+#                                question is on the PR, a reply there releases it
 #   gate merge <pr> <issue>
 #            verdict=merge      [ci_runs=<n>]
 #            verdict=handoff                    merge.auto is off: pipeline:approved is set
@@ -56,7 +60,7 @@
 #                                 | ci-failed | base-synced | conflict-check-unverified
 #                                 | awaiting-human-merge
 #            verdict=block      reason=forbidden-files | closing-keyword | siblings-capped
-# gate-reasons: budget-exceeded max-fix-attempts max-total-dispatches record-failed stale-approvals draft-pr ci-failed merge-conflict blocked-label approvals-missing ci-pending ci-rerun rerun-unsupported base-synced conflict-check-unverified awaiting-human-merge forbidden-files closing-keyword siblings-capped
+# gate-reasons: budget-exceeded max-fix-attempts max-total-dispatches record-failed same-area stale-approvals draft-pr ci-failed merge-conflict blocked-label approvals-missing ci-pending ci-rerun rerun-unsupported base-synced conflict-check-unverified awaiting-human-merge forbidden-files closing-keyword siblings-capped
 #   stop: usage unknown-verb scripts-missing python-missing scratch-unavailable config-unreadable
 #         draft-resolve-failed view-failed labels-unreadable approval-sha-failed
 #         unsupported-verb:<verb> draft-unverified ci-unverified head-unresolved
@@ -357,7 +361,8 @@ verbs:
                                      then ref=<topic> for each playbook ref that
                                      applies to the run
   gate fix-round <N> <stage> [--pr M]  the checks before a developer fix round:
-                                     verdict=redispatch or verdict=block
+                                     verdict=redispatch, verdict=block or
+                                     verdict=ask-owner
   gate merge <pr> <issue>            every Step 4 merge gate, one verdict:
                                      merge|handoff|redispatch|wait|block
   docs-gate <pr> --issue <N>         does the docs stage need an LLM: docs=dispatch
@@ -780,9 +785,78 @@ _talos_role_enabled() {
   esac
 }
 
+# The design-decision stop (#599). Among the PR's comments by trusted authors, a
+# findings comment of a review role opens with that role's comments.header and
+# is not its approval; its area is the files it cites as `path:line`. A file
+# cited by the role's last <rounds> findings comments in a row is a design
+# question. The count starts again after the role's approval and after a reply
+# to the gate's own question (its marker on the last line).
+# argv: the rounds, the header template, 1 or 0 for "only trusted authors
+# count", the trusted logins one per line. Prints nothing, `pending` (the
+# question is unanswered) or `ask <role> <file>[,<file>...]`.
+_TALOS_AREA_PY='
+import json, re, sys
+rounds, header, enforce, trusted = int(sys.argv[1]), sys.argv[2], sys.argv[3] == "1", set(sys.argv[4].splitlines())
+MARK = "<!-- talos:design-decision -->"
+REF = re.compile(r"(?<![\w./-])((?:[\w.-]+/)+[\w.-]+|[\w.-]+\.[A-Za-z]\w*):[0-9]+", re.ASCII)
+def last_line(b):
+    ls = [l.strip() for l in b.splitlines() if l.strip()]
+    return ls[-1] if ls else ""
+cs = []
+for c in json.load(sys.stdin).get("comments", []):
+    a, b = c.get("author"), c.get("body")
+    if isinstance(b, str) and (not enforce or (a.get("login") if isinstance(a, dict) else None) in trusted):
+        cs.append(b)
+asked = max([i for i, b in enumerate(cs) if last_line(b) == MARK] or [-1])
+cs = cs[asked + 1:]
+if asked >= 0 and not any(b.strip() and "<!-- talos:" not in b and "**Agent:**" not in b for b in cs):
+    print("pending")
+    sys.exit(0)
+for role in ("reviewer", "security", "adversarial") if "{role}" in header else ():
+    seen = []
+    for b in cs:
+        if not b.lstrip().startswith(header.replace("{role}", role)):
+            continue
+        if "talos:approval" in last_line(b):
+            seen = []
+        else:
+            seen.append(set(p[2:] if p.startswith("./") else p for p in REF.findall(b)))
+    if len(seen) >= rounds:
+        common = sorted(set.intersection(*seen[-rounds:]))
+        if common:
+            print("ask", role, ",".join(common[:5]))
+            sys.exit(0)
+'
+
+# _talos_same_area <issue> <pr>: the check above on the PR's comments. A design
+# question leaves PR and issue blocked, posts the question once and answers
+# `ask-owner`; no attempt is recorded for a round that did not run.
+_talos_same_area() {
+  local _n="$1" _pr="$2" _k _a _kind _role _area
+  _k="$(cfg limits.design_decision_rounds)"
+  { _talos_isnum "$_k" && [ "$_k" -ge 1 ]; } || _k=2
+  _talos_trust
+  _talos_cap _vcs read-comments "$_pr"
+  [ "$_RC" -eq 0 ] || _talos_stop comments-unreadable
+  _a="$(python3 -I -c "$_TALOS_AREA_PY" "$_k" "$(cfg comments.header)" "$_TRUST_ON" "$_TRUST_SET" <<< "$_OUT")" \
+    || _talos_stop comments-unreadable
+  [ -n "$_a" ] || return 0
+  read -r _kind _role _area <<< "$_a"
+  _talos_block_labels "$_n" "$_pr"
+  _talos_emit reason same-area
+  if [ "$_kind" = ask ]; then
+    _talos_post "$_pr" "Design decision needed: $_role raised findings on $_area in $_k rounds in a row. The next round needs a decision, not another patch. Reply on this PR with the design to follow; the fix round runs after the reply."$'\n\n'"<!-- talos:design-decision -->"
+    _talos_emit role "$_role"
+    _talos_emit rounds "$_k"
+    _talos_emit area "$_area"
+  fi
+  _talos_verdict ask-owner
+}
+
 # gate fix-round <N> <stage> [--pr M]: the Step 3 intro, in its order. The
-# budget guard (exit 1 = exceeded), then record-attempt (with --pr when a PR
-# exists), then the unblock after a fix round is cleared to run.
+# budget guard (exit 1 = exceeded), the design-decision stop (a review role's
+# round on a PR), then record-attempt (with --pr when a PR exists), then the
+# unblock after a fix round is cleared to run.
 _talos_gate_fix_round() {
   [ "$#" -ge 2 ] || _talos_stop usage 2
   local _n="$1" _stage="$2" _pr="" _s _ok=1 _bout _brc=0 _r _by _line
@@ -816,6 +890,10 @@ _talos_gate_fix_round() {
       _talos_verdict block ;;
     *) _talos_emit warn "reason=budget-check-failed" ;;
   esac
+
+  if [ -n "$_pr" ]; then
+    case "$_stage" in reviewer | security | adversarial) _talos_same_area "$_n" "$_pr" ;; esac
+  fi
 
   _talos_cap _vcs record-attempt "$_n" "$_stage" ${_pr:+--pr "$_pr"}
   _line="$(grep '^stage=' <<< "$_OUT" | tail -n 1)"
