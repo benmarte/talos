@@ -121,7 +121,7 @@ sw = re.compile(r"(stop|warn) reason=([a-z:-]+)( key=[A-Za-z0-9_.-]+)?\Z")
 if lines[0].startswith("stop "):
     ok = len(lines) == 1
 else:
-    ok = lines[0] in ("verdict=" + v for v in ("merge", "handoff", "redispatch", "wait", "block"))
+    ok = lines[0] in ("verdict=" + v for v in ("merge", "handoff", "redispatch", "wait", "block", "ask-owner"))
 if not ok:
     sys.exit(1)
 for i, ln in enumerate(lines):
@@ -608,7 +608,7 @@ check_gate_output "$SANDBOX/out.gate"; assert_eq "0" "$?" "sanitising: the sanit
 printf 'verdict=merge\n' > "$SANDBOX/ok.gate"
 check_gate_output "$SANDBOX/ok.gate"; assert_eq "0" "$?" "checker: a bare verdict=merge passes"
 printf 'verdict=maybe\n' > "$SANDBOX/mut.gate"
-check_gate_output "$SANDBOX/mut.gate"; assert_eq "1" "$?" "mutation: a verdict outside merge|handoff|redispatch|wait|block turns the checker red"
+check_gate_output "$SANDBOX/mut.gate"; assert_eq "1" "$?" "mutation: a verdict outside merge|handoff|redispatch|wait|block|ask-owner turns the checker red"
 printf 'verdict=wait\nreason=because\n' > "$SANDBOX/mut.gate"
 check_gate_output "$SANDBOX/mut.gate"; assert_eq "1" "$?" "mutation: an out-of-enum reason= turns the checker red"
 printf 'reason=ci-pending\nverdict=wait\n' > "$SANDBOX/mut.gate"
@@ -698,6 +698,121 @@ fr 42 qa --pr 9
 assert_contains "$OUT" "warn reason=unblock-failed" "fix-round: a failing unblock is a warn line"
 assert_contains "$OUT" "verdict=redispatch" "fix-round: a failing unblock does not stop the round"
 assert_gate "fix-round (unblock-failed)"
+
+# ── (b2) the design-decision stop (#599) ─────────────────────────────────────
+# AC2: a role's findings that cite the same file in limits.design_decision_rounds
+# rounds in a row (default 2) are a design question, not another patch:
+# `verdict=ask-owner`, no attempt recorded, nothing unblocked, the question
+# posted once on the PR. An owner reply or the role's own approval starts the
+# count again.
+# comments_json <login> <body>...: a read-comments object.
+comments_json() {
+  python3 -I -c 'import json, sys
+a = sys.argv[1:]
+print(json.dumps({"comments": [{"author": {"login": a[i]}, "body": a[i + 1]} for i in range(0, len(a), 2)]}))' "$@"
+}
+SEC_A1=$'**Agent:** security (talos)\n\n**Security:** FINDINGS — the wrapper check\n\nHigh: `scripts/chain.sh:42` trusts the file name; fix: compare the path.'
+SEC_A2=$'**Agent:** security (talos)\n\n**Security:** FINDINGS — the wrapper check again\n\nHigh: scripts/chain.sh:57 and tests/test-chain.sh:9: a symlink still passes.'
+SEC_B=$'**Agent:** security (talos)\n\n**Security:** FINDINGS — the installer\n\nMedium: install.sh:310 writes before the backup.'
+SEC_CLEAR=$'**Agent:** security (talos)\n\n**Security:** CLEAR — scripts/chain.sh:42 is fixed\n\n<!-- talos:approval sha=0123456789abcdef0123456789abcdef01234567 role=security -->'
+REV_A1=$'**Agent:** reviewer (talos)\n\n**Review:** CHANGES — a pin\n\n1. tests/test-chain.sh:12 asserts nothing.'
+REV_A2=$'**Agent:** reviewer (talos)\n\n**Review:** CHANGES — the pin again\n\n1. tests/test-chain.sh:30 still passes on the old code.'
+ASKED=$'**Agent:** orchestrator (talos)\n\n**Design decision needed**\n\n<!-- talos:design-decision -->'
+ac2() {  # <stage> <comments-json>: one gate run on PR 9
+  set_stub read-comments 0 "$2"; set_stub record-attempt 0 "stage=$1 count=1 total=1"
+  : > "$STUB_DIR/journal"; rm -f "$STUB_DIR/bodies"
+  fr 42 "$1" --pr 9
+}
+
+reset_stubs
+ac2 security "$(comments_json bot "$SEC_A1" bot "$SEC_A2")"
+assert_eq "0" "$RC" "AC2 same area twice: exits 0"
+assert_eq "verdict=ask-owner
+reason=same-area
+role=security
+rounds=2
+area=scripts/chain.sh" "$OUT" "AC2 two security FINDINGS in a row on one file: ask-owner, naming the role, the rounds and the file"
+assert_eq "0" "$(called record-attempt)" "AC2 ask-owner records no attempt"
+assert_eq "0" "$(journal | grep -c 'remove pipeline:blocked')" "AC2 ask-owner never unblocks"
+assert_contains "$(journal)" "vcs label-pr 9 --add pipeline:blocked" "AC2 ask-owner leaves the PR blocked"
+assert_contains "$(journal)" "vcs label-issue 42 --add pipeline:blocked" "AC2 ask-owner leaves the issue blocked"
+assert_eq "1" "$(called comment-pr)" "AC2 ask-owner posts the question on the PR once"
+assert_contains "$(bodies)" "security" "AC2 the question names the role"
+assert_contains "$(bodies)" "scripts/chain.sh" "AC2 the question names the file"
+assert_eq "<!-- talos:design-decision -->" "$(bodies | tail -n 1)" "AC2 the question ends in its marker"
+assert_eq "budget
+vcs current-user
+vcs read-comments 9" "$(journal | sed -n 's/^\(budget\) .*/\1/p;/^vcs current-user/p;/^vcs read-comments/p')" "AC2 the check runs after the budget guard, on the PR's comments"
+assert_gate "AC2 fix-round (ask-owner)"
+
+reset_stubs
+ac2 security "$(comments_json bot "$SEC_A1" bot "$SEC_B")"
+assert_eq "verdict=redispatch
+count=1
+total=1
+stage=security" "$OUT" "AC2 two FINDINGS on different files: the fix round runs as before"
+assert_eq "0" "$(called comment-pr)" "AC2 different files: no question is posted"
+ac2 security "$(comments_json bot "$SEC_A1")"
+assert_contains "$OUT" "verdict=redispatch" "AC2 a first FINDINGS: the fix round runs"
+ac2 security "$(comments_json bot "$SEC_A1" bot "$REV_A1")"
+assert_contains "$OUT" "verdict=redispatch" "AC2 one round each from two roles is not two rounds of one role"
+ac2 reviewer "$(comments_json bot "$REV_A1" bot "$REV_A2")"
+assert_contains "$OUT" "verdict=ask-owner" "AC2 two reviewer CHANGES in a row on one file: ask-owner"
+assert_contains "$OUT" "role=reviewer" "AC2 reviewer CHANGES: the role is named"
+assert_contains "$OUT" "area=tests/test-chain.sh" "AC2 reviewer CHANGES: the file is named"
+ac2 reviewer "$(comments_json bot "$REV_A1" bot "$SEC_A1" bot "$SEC_A2")"
+assert_contains "$OUT" "role=security" "AC2 one fix round for every role's findings: each review role is checked, whichever stage is named"
+ac2 security "$(comments_json bot "$SEC_A1" bot "$SEC_CLEAR" bot "$SEC_A2")"
+assert_contains "$OUT" "verdict=redispatch" "AC2 the role's own approval between two findings starts the count again"
+
+# The round count is limits.design_decision_rounds (default 2).
+reset_stubs; cfg_json '{"limits": {"design_decision_rounds": 3}}'
+ac2 security "$(comments_json bot "$SEC_A1" bot "$SEC_A2")"
+assert_contains "$OUT" "verdict=redispatch" "AC2 design_decision_rounds 3: two rounds on one file still run the fix round"
+ac2 security "$(comments_json bot "$SEC_A1" bot "$SEC_A2" bot "$SEC_A1")"
+assert_contains "$OUT" "verdict=ask-owner" "AC2 design_decision_rounds 3: the third round on one file asks"
+assert_contains "$OUT" "rounds=3" "AC2 design_decision_rounds 3: the rounds are reported"
+rm -f "$SANDBOX/talos.pipeline.json"
+
+# The question is asked once and an owner reply releases the round.
+reset_stubs
+ac2 security "$(comments_json bot "$SEC_A1" bot "$SEC_A2" bot "$ASKED")"
+assert_contains "$OUT" "verdict=ask-owner" "AC2 an unanswered question: still ask-owner"
+assert_eq "0" "$(called comment-pr)" "AC2 an unanswered question is not posted twice"
+assert_eq "0" "$(called record-attempt)" "AC2 an unanswered question records no attempt"
+ac2 security "$(comments_json bot "$SEC_A1" bot "$SEC_A2" bot "$ASKED" owner "Use fixed paths only.")"
+assert_eq "verdict=redispatch
+count=1
+total=1
+stage=security" "$OUT" "AC2 the owner's reply releases the fix round"
+assert_contains "$(journal)" "vcs label-pr 9 --remove pipeline:blocked" "AC2 a released round unblocks the PR"
+ac2 security "$(comments_json bot "$SEC_A1" bot "$SEC_A2" bot "$ASKED" owner "Use fixed paths only." bot "$SEC_A1")"
+assert_contains "$OUT" "verdict=redispatch" "AC2 after a decision the count starts again: one new round runs"
+ac2 security "$(comments_json bot "$SEC_A1" bot "$SEC_A2" bot "$ASKED" owner "Use fixed paths only." bot "$SEC_A1" bot "$SEC_A2")"
+assert_contains "$OUT" "verdict=ask-owner" "AC2 after a decision, two new rounds on one file ask again"
+assert_eq "1" "$(called comment-pr)" "AC2 the second question is posted"
+
+# Only a trusted author's comment counts, and an unreadable thread stops.
+reset_stubs; set_stub current-user 0 "bot"
+ac2 security "$(comments_json mallory "$SEC_A1" mallory "$SEC_A2")"
+assert_contains "$OUT" "verdict=redispatch" "AC2 findings from an untrusted author are not counted"
+ac2 security "$(comments_json bot "$SEC_A1" bot "$SEC_A2" bot "$ASKED" mallory "go on")"
+assert_contains "$OUT" "verdict=ask-owner" "AC2 an untrusted reply does not release the round"
+ac2 security "$(comments_json bot "$SEC_A1" bot "$SEC_A2")"
+assert_contains "$OUT" "verdict=ask-owner" "AC2 findings from the trusted author are counted"
+reset_stubs; set_stub read-comments 1 "" "boom"; set_stub record-attempt 0 "stage=security count=1 total=1"
+fr 42 security --pr 9
+assert_eq "1:stop reason=comments-unreadable" "$RC:$OUT" "AC2 an unreadable PR thread stops: no round on an unchecked area"
+assert_eq "0" "$(called record-attempt)" "AC2 an unreadable PR thread records no attempt"
+
+# Stages with no findings comment, and a round with no PR, read nothing.
+reset_stubs; set_stub record-attempt 0 "stage=qa count=1 total=1"
+fr 42 qa --pr 9
+assert_eq "0" "$(called read-comments)" "AC2 a QA fix round reads no comments"
+reset_stubs; set_stub record-attempt 0 "stage=security count=1 total=1"
+fr 42 security
+assert_eq "0" "$(called read-comments)" "AC2 a round with no PR reads no comments"
+assert_contains "$OUT" "verdict=redispatch" "AC2 a round with no PR runs as before"
 
 # The same sequence as the old prose, under the real scripts and the gh stub:
 # the two leave the same gh journal.
