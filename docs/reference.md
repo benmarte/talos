@@ -894,7 +894,7 @@ Every run prints `talos:forbidden-files-active patterns=N defaults=in-force|repl
 
 ### Human merge
 
-With `merge.auto: false` all gates still apply; `gate merge` labels the PR `pipeline:approved` and answers `handoff`, and `talos.sh post-merge <pr> <n> --handoff` posts `approved.md`. See `../skills/pipeline/refs/human-merge.md`.
+With `merge.auto: false` all gates still apply; `gate merge` labels the PR `pipeline:approved` and answers `handoff`, and `talos.sh post-merge <pr> <n> --handoff` posts `approved.md`. `talos.sh run` does neither: with `merge.auto` off it ends on `stop action=wait reason=human-merge`, and under `/talos:pipeline` the session then runs the gate and the hand-off from that row of the end-state table. See `../skills/pipeline/refs/human-merge.md`.
 
 ### Criteria first
 
