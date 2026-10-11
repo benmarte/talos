@@ -48,6 +48,18 @@
 #       falls back to the full suite); otherwise the first `verify:` command
 #       that mentions "test" runs with the paths and filters appended as
 #       separate quoted arguments. Exit 3: no usable runner.
+#   pipeline-criteria.sh spec-check <issue>
+#       qa-run's reading of the spec, alone (#594): no git, no test run.
+#       `talos.sh done pm` runs it on the spec the PM just posted, so a line
+#       qa-run would refuse is caught before the developer starts. It reads the
+#       latest PM spec comment (`view-issue <issue> --spec`; never the issue
+#       body) and prints one line:
+#         spec-check: ok                 a usable Tests: line, or prose only
+#         spec-check: skipped (...)      the issue has no PM spec comment
+#         spec-check: refused <reason>   exit 1: the Tests: line was refused,
+#                                        (test) criteria have no Tests: line,
+#                                        or there is no criteria checklist
+#       Exit 3: the spec could not be read.
 #
 # Exit codes: 0 ok, 1 a failing report or an unreadable/empty input, 2 usage.
 set -uo pipefail
@@ -157,6 +169,8 @@ cmd_report() {
 
 # The spec text from `view-issue --spec` JSON on stdin: the latest PM spec
 # comment, else the issue body (no PM stage). Exit 1 when it is not that JSON.
+# With the argument `comment` there is no fallback: no PM spec comment prints
+# nothing.
 _QA_SPEC_PY='
 import json, sys
 try:
@@ -171,6 +185,8 @@ for c in d.get("comments") or []:
     if isinstance(b, str) and b.lstrip().startswith("**PM spec"):
         text = b
 if text is None:
+    if sys.argv[1:] == ["comment"]:
+        sys.exit(0)
     text = d.get("body") if isinstance(d.get("body"), str) else ""
 sys.stdout.write(text)
 '
@@ -255,6 +271,60 @@ for p in paths:
 for f in filters:
     print("F\t" + f)
 '
+
+# _spec_tests SPEC -- the spec's criteria table and its `Tests:` line as data,
+# for qa-run and spec-check alike: one reading, so the check at `done pm`
+# refuses exactly what QA would. Sets ST_NTEST, ST_NPROSE, ST_PATHS, ST_FILTERS
+# and ST_KIND, with the detail in ST_WHY:
+#   ok            a usable Tests: line
+#   prose         no Tests: line and no (test) criterion: nothing to run
+#   no-checklist  no criteria checklist (ST_WHY: the message of `ids`)
+#   refused       the Tests: line was refused (ST_WHY: the parser's reason)
+#   no-tests      (test) criteria and no usable Tests: line
+_spec_tests() {
+  local spec="$1" table tag val
+  ST_KIND=ok; ST_WHY=""; ST_NTEST=0; ST_NPROSE=0; ST_PATHS=(); ST_FILTERS=()
+  table="$(cmd_ids "$spec" 2>&1)" || { ST_KIND=no-checklist; ST_WHY="$table"; return 0; }
+  ST_NTEST="$(printf '%s\n' "$table" | awk '$2 == "test"' | wc -l | tr -d ' ')"
+  ST_NPROSE="$(printf '%s\n' "$table" | awk '$2 == "prose"' | wc -l | tr -d ' ')"
+  while IFS="$(printf '\t')" read -r tag val; do
+    case "$tag" in
+      P) ST_PATHS+=("$val") ;;
+      F) ST_FILTERS+=("$val") ;;
+      B) ST_KIND=refused; ST_WHY="$val" ;;
+    esac
+  done <<EOF
+$(python3 -I -c "$_QA_TESTS_PY" < "$spec")
+EOF
+  [ "$ST_KIND" != refused ] || return 0
+  if [ "$(( ${#ST_PATHS[@]} + ${#ST_FILTERS[@]} ))" -eq 0 ]; then
+    if [ "$ST_NTEST" -gt 0 ]; then ST_KIND=no-tests; else ST_KIND=prose; fi
+  fi
+}
+
+# spec-check ISSUE (#594): the PM spec comment through _spec_tests, one line.
+cmd_spec_check() {
+  local issue="${1:-}" tmp spec
+  [ $# -eq 1 ] || usage
+  case "$issue" in ''|*[!0-9]*) usage ;; esac
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/talos-spec-check.XXXXXX")" && [ -d "$tmp" ] \
+    || { echo "pipeline-criteria: spec-check: no scratch directory" >&2; return 3; }
+  trap "rm -rf \"$tmp\"" EXIT
+  spec="$tmp/spec.md"
+  if ! bash "$SCRIPT_DIR/pipeline-vcs.sh" view-issue "$issue" --spec 2>/dev/null | python3 -I -c "$_QA_SPEC_PY" comment > "$spec"; then
+    echo "spec-check: could not read the spec for issue #$issue"
+    return 3
+  fi
+  [ -s "$spec" ] || { echo "spec-check: skipped (issue #$issue has no PM spec comment)"; return 0; }
+  _spec_tests "$spec"
+  case "$ST_KIND" in
+    ok | prose) echo "spec-check: ok"; return 0 ;;
+    refused) echo "spec-check: refused Tests: line refused ($ST_WHY)" ;;
+    no-tests) echo "spec-check: refused the spec has $ST_NTEST (test) criteria but no Tests: line" ;;
+    *) echo "spec-check: refused the spec has no criteria checklist" ;;
+  esac
+  return 1
+}
 
 # A path a red (tests-only) commit may touch.
 _qa_is_test_path() {
@@ -342,44 +412,36 @@ cmd_qa_run() {
   head="$(git rev-parse HEAD 2>/dev/null)" || { _qa_fail "no HEAD after checkout"; return $?; }
   head8="${head:0:8}"
 
-  # 4. The spec and its criteria table.
-  local spec="$tmp/spec.md" table
+  # 4. The spec.
+  local spec="$tmp/spec.md"
   if ! bash "$vcs" view-issue "$issue" --spec 2>/dev/null | python3 -I -c "$_QA_SPEC_PY" > "$spec" || [ ! -s "$spec" ]; then
     echo "qa-run: could not read the spec for issue #$issue"
     _qa_fail "spec unreadable"
     return $?
   fi
-  table="$(cmd_ids "$spec" 2>&1)" || { echo "qa-run: $table"; _qa_fail "the spec has no criteria checklist"; return $?; }
-  local n_test n_prose
-  n_test="$(printf '%s\n' "$table" | awk '$2 == "test"' | wc -l | tr -d ' ')"
-  n_prose="$(printf '%s\n' "$table" | awk '$2 == "prose"' | wc -l | tr -d ' ')"
 
-  # 5. The Tests: line, as data.
-  local paths=() filters=() tag val refused="" found=0
-  while IFS="$(printf '\t')" read -r tag val; do
-    case "$tag" in
-      P) paths+=("$val"); found=1 ;;
-      F) filters+=("$val"); found=1 ;;
-      B) refused="$val" ;;
-    esac
-  done <<EOF
-$(python3 -I -c "$_QA_TESTS_PY" < "$spec")
-EOF
-  if [ -n "$refused" ]; then
-    echo "qa-run: Tests: line refused ($refused); nothing from the spec ran"
-    _qa_fail "the spec's Tests: line was refused; report it as a blocking finding"
-    return $?
-  fi
-  if [ "$found" -eq 0 ]; then
-    if [ "$n_test" -eq 0 ]; then
+  # 5. Its criteria table and its Tests: line, as data.
+  _spec_tests "$spec"
+  local n_test="$ST_NTEST" n_prose="$ST_NPROSE"
+  case "$ST_KIND" in
+    no-checklist)
+      echo "qa-run: $ST_WHY"
+      _qa_fail "the spec has no criteria checklist"
+      return $? ;;
+    refused)
+      echo "qa-run: Tests: line refused ($ST_WHY); nothing from the spec ran"
+      _qa_fail "the spec's Tests: line was refused; report it as a blocking finding"
+      return $? ;;
+    prose)
       cmd_ids "$spec" | awk '{ printf "%s prose hand-checked\n", $1 }'
       printf 'qa-run: verdict PASS (prose only: %s criteria to hand-check; no tests to run)\n' "$n_prose"
-      return 0
-    fi
-    echo "qa-run: the spec has $n_test (test) criteria but no Tests: line"
-    _qa_fail "no Tests: line in the spec, so no criterion can be proven"
-    return $?
-  fi
+      return 0 ;;
+    no-tests)
+      echo "qa-run: the spec has $n_test (test) criteria but no Tests: line"
+      _qa_fail "no Tests: line in the spec, so no criterion can be proven"
+      return $? ;;
+  esac
+  local paths=(${ST_PATHS[@]+"${ST_PATHS[@]}"}) filters=(${ST_FILTERS[@]+"${ST_FILTERS[@]}"})
 
   # 6. Paths must be tracked files at the PR head.
   local p present=() missing=()
@@ -505,5 +567,6 @@ case "$sub" in
   map) cmd_map "$@" ;;
   report) cmd_report "$@" ;;
   qa-run) cmd_qa_run "$@" ;;
+  spec-check) cmd_spec_check "$@" ;;
   *) usage ;;
 esac

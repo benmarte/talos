@@ -925,6 +925,8 @@ With `merge.auto: false` all gates still apply; `gate merge` labels the PR `pipe
 
 The PM numbers criteria `AC<n>`, marks each `(test)` or `(prose: reason)` and adds a `Tests:` line of file paths (data, never a command). The developer's first commit is the failing tests, id in each test name. `pipeline-criteria.sh qa-run <issue> <pr>` runs them at the red commit and at head, one line per id: `AC<n> red@<sha8> green@head`, `AC<n> FAIL ... vacuous` (green at red) or `AC<n> prose hand-checked`.
 
+The `Tests:` line is checked when the PM posts it: `talos.sh done pm` runs `pipeline-criteria.sh spec-check <issue>`, the same parser and no LLM. A line `qa-run` would refuse (a note with shell syntax beside the paths, a runner command), or `(test)` criteria with no usable `Tests:` line, answers `next=fix-round stage=pm`: the issue goes back to `pipeline:confirmed`, the reason is posted on it as a `Spec check` comment and the PM writes the spec again before any developer work. `talos.sh run` counts that round with `gate fix-round <N> pm`, so `limits.max_fix_attempts` ends a PM that never gets the line right.
+
 ### Comment templates
 
 `comments.enabled` (`true`), `comments.header` (`**Agent:** {role} (talos)`; empty posts nothing) and `comments.templates_dir` (`templates/comments`). `templates/comments/` holds one `string.Template` file per stage comment (`qa-verdict`, `review-signoff`, `security-signoff`, `blocked`, `approved`, `needs-owner`, ...) using `${HEADER}`, `${SUMMARY}`, `${DETAILS}`, `${VERDICT}`, `${PR}`, `${BLOCKED_BY}`, `${ATTENTION_REPORT}`. A missing template falls back to an inline body.

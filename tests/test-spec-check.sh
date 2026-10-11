@@ -195,7 +195,7 @@ assert_contains "$OUT" "spec-check: refused" "AC4 spec-check: the line says refu
 assert_contains "$OUT" "shell syntax beside the test list" "AC4 spec-check: with the parser's reason, the one qa-run prints"
 assert_eq "vcs view-issue 9 --spec" "$(journal)" "AC4 spec-check: one read, nothing written, nothing run"
 reset_stubs
-spec '**Tests:** `bash tests/test-greet.sh`'
+spec '**Tests:** `npm test`'
 issue_with pipeline:dev "$SPEC"
 sc 9
 assert_contains "$OUT" "a runner command, not a test path" "AC4 spec-check: a runner command is refused with the parser's reason"

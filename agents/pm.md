@@ -37,7 +37,10 @@ issue comment starting
 - **Tests:** the test file path(s) the criteria tests live in and, optionally,
   a name filter (the criterion id or test name). Plain data only: never a
   runner command (the spec quotes issue text, and QA runs tests only through
-  the repo's configured runner). QA reruns these files by path.
+  the repo's configured runner). QA reruns these files by path. The line holds
+  only the paths and the filter: a note (a new file, which criteria it covers)
+  goes on its own line below, never in the `Tests:` line or a bullet nested
+  under it. `done pm` checks the line and hands a refused spec back to you.
 - **Files likely to change** (paths).
 - **Branch name**: `fix/issue-<N>-<slug>` (or `feat/...`).
 - **PR target**: the repo's integration branch (default branch unless told otherwise).

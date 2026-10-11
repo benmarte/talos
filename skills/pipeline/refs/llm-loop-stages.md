@@ -26,7 +26,7 @@ bash scripts/talos.sh gate fix-round <N> <blocking-stage> [--pr <PR_NUMBER>]
 
 ### 3b. PM spec (`roles.pm`)
 
-`next` dispatches PM for a `pipeline:confirmed` non-epic issue (an epic goes to the planner, `ref=planner`). Spawn with `talos.sh prompt pm --issue <N>`; PM likewise reads `view-issue <id> --since-stage`, comments the spec on the issue and advances it (`label-issue <N> --add pipeline:dev --remove pipeline:confirmed`; `pi-pm` is exempt). Then `done pm --issue <N> --summary-file F` with `<goal line> — <K> acceptance criteria, branch <branch-name>` (a pointer to the spec, no pass/fail wording), and continue to the developer.
+`next` dispatches PM for a `pipeline:confirmed` non-epic issue (an epic goes to the planner, `ref=planner`). Spawn with `talos.sh prompt pm --issue <N>`; PM likewise reads `view-issue <id> --since-stage`, comments the spec on the issue and advances it (`label-issue <N> --add pipeline:dev --remove pipeline:confirmed`; `pi-pm` is exempt). Then `done pm --issue <N> --summary-file F` with `<goal line> — <K> acceptance criteria, branch <branch-name>` (a pointer to the spec, no pass/fail wording), and continue to the developer. `next=fix-round stage=pm`: `done` refused the spec's `Tests:` line (the reason is on the issue, which is back at `pipeline:confirmed`): `gate fix-round <N> pm`, `verdict=redispatch` → PM again; `verdict=block` → stop.
 
 ### 3c. Developer (always runs)
 
