@@ -759,7 +759,7 @@ Chat mode: with no issues or plan file, describe the tasks to the orchestrator; 
 | `pipeline:approved` | `talos.sh gate merge` | Gates passed, `merge.auto` false: a human merges |
 | `pipeline:blocked` | stages | Halted; a human must act and remove it |
 | `pipeline:needs-owner` | stages | Waiting on an owner decision |
-| `pipeline:epic-decomposed`, `pipeline:epic-children-done` | orchestrator | Epic split; all sub-issues closed |
+| `pipeline:epic-decomposed`, `pipeline:epic-children-done` | orchestrator | Epic split: the parent is an index no stage is dispatched onto, and the sweep closes it once its sub-issues are closed and its own `- [ ]` boxes are ticked / all sub-issues closed with boxes still unticked: a human reviews the epic |
 | `epic` | you | Marks an epic for the planner |
 | `spec:ready` | you | Body is already a spec; skips the PM |
 | `skip-qa` | you | Skips QA, review, security, docs; CI and forbidden-files still run |
