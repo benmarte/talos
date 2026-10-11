@@ -32,6 +32,10 @@ set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox || exit 1
 use_stubs
+# TALOS_API_CALLS_NO_GRAPHQL=1 (#618): the same lifecycle with every GraphQL-backed
+# gh call refused (a Claude Code cloud session); only the lifecycle and the board
+# warnings are checked, the counts below assume GraphQL.
+[ -z "${TALOS_API_CALLS_NO_GRAPHQL:-}" ] || export STUB_GH_NO_GRAPHQL=1
 
 BEFORE_GRAPHQL=49 BEFORE_REST=86
 CEIL_GRAPHQL=6 CEIL_REST=68
@@ -109,6 +113,13 @@ for r in qa reviewer security docs; do
   assert_contains "$(cat "$SANDBOX/out.pa.$r")" "stamp ok" "lifecycle: post-approval $r stamps"
 done
 assert_contains "$(cat "$SANDBOX/out.gate")" "verdict=merge" "lifecycle: the merge gate passes"
+if [ -n "${TALOS_API_CALLS_NO_GRAPHQL:-}" ]; then
+  for _s in validator developer postmerge; do
+    assert_eq "1" "$(grep -c '^warn reason=board-failed' "$SANDBOX/out.$_s")" "no GraphQL: the $_s board move is one warn line"
+  done
+  finish
+  exit $?
+fi
 assert_eq "3" "$(grep -c '^project item-edit' "$GH_LOG")" "lifecycle: three board moves (In progress, In review, Done)"
 assert_contains "$(cat "$GH_LOG")" "--single-select-option-id OPT_INPROG" "lifecycle: the confirmed move"
 assert_contains "$(cat "$GH_LOG")" "--single-select-option-id OPT_INREV" "lifecycle: the PR-opened move"
