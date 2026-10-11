@@ -187,6 +187,19 @@ for pair in "pre_dispatch hook:$PRE_ENV" "post_stage hook:$POST_ENV" "fallback r
 done
 check_not "AC2 CLAUDE_API_CREDITS_KEY is not in the environment of the claude child either" has_name "$CR_ENVS/1.env"
 
+# The same run when the caller exports the shell names the key passes through:
+# an assignment to an inherited export stays exported.
+fresh
+export CR_FAIL=keyed CR_FAIL_TEXT="$QUOTA" STUB_CLAUDE_EXIT=75
+_CR_KEY=inherited _TS_VAL=inherited _TS_V=inherited _TS_K=inherited stage
+assert_eq "file unset 1" "$(key_state 1) $(key_state 2) $(runner_calls CODEX)" \
+  "AC2 inherited exports: the switch and the fallback runner ran as before"
+for pair in "post_stage hook:$POST_ENV" "fallback runner:$CODEX_ENV" "plan-login rerun:$CR_ENVS/2.env"; do
+  what="${pair%%:*}"; f="${pair#*:}"
+  assert_file_exists "$f" "AC2 inherited exports: the environment of the $what was recorded"
+  check_not "AC2 inherited exports: the value is not in the environment of the $what" has_key "$f"
+done
+
 # ═══ AC3: only the user-level file is a source ══════════════════════════════
 fresh
 set_cfg "$ON"
