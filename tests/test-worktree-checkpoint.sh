@@ -262,6 +262,23 @@ ck '{"last_verify":{"cmd":"tests/run-tests.sh --for a.sh","rc":2,"failing":["t.s
 assert_eq "0" "$RC" "a valid update after the rejections is accepted"
 assert_eq "go" "$(pj "$HF" next_step)" "valid update lands"
 
+# ── #538: long identifiers in handoff text are not credentials; a rejection is advisory ──
+SLUG538="fix/issue-538-worktree-checkpoint-credential-heuristic"
+ck "{\"next_step\":\"push $SLUG538 then open the PR\"}"
+assert_eq "0" "$RC" "AC1 a next_step naming a 32+ character branch slug is accepted"
+assert_contains "$(cat "$HF")" "$SLUG538" "AC1 the handoff holds the branch slug"
+ID538="test_checkpoint_handoff_next_step_passes_through"
+ck "{\"decisions\":[\"named the new test $ID538\"],\"last_verify\":{\"cmd\":\"bash tests/run-tests.sh $ID538\",\"rc\":0}}"
+assert_eq "0" "$RC" "AC2 a decisions entry and last_verify.cmd naming a 32+ character identifier are accepted"
+assert_contains "$(cat "$HF")" "named the new test $ID538" "AC2 the handoff holds the decisions entry"
+assert_contains "$(cat "$HF")" "bash tests/run-tests.sh $ID538" "AC2 the handoff holds last_verify.cmd"
+before="$(git -C "$W42" rev-list --count HEAD)"
+printf 'w\n' >> "$W42/notes.txt"
+ck "{\"next_step\":\"ghp_""abcdefghijklmnopqrstuvwxyz0123456789\"}"
+assert_eq "4" "$RC" "AC3 a rejected handoff still exits 4"
+assert_contains "$ERR" "handoff rejected (advisory), previous kept: next_step" "AC3 the rejection says it is advisory and names the field"
+assert_eq "$((before + 1))" "$(git -C "$W42" rev-list --count HEAD)" "AC3 the commit is still made when the handoff is rejected"
+
 # ── Symlinked handoff directory is refused ───────────────────────────────────
 mkdir -p "$SANDBOX/elsewhere"
 mv "$HF_DIR" "$SANDBOX/hf-real"; ln -s "$SANDBOX/elsewhere" "$HF_DIR"
