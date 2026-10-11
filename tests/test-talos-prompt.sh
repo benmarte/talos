@@ -323,6 +323,20 @@ text="$(body)"; drop
 assert_contains "$text" "Required checks: a" "QA gets the configured checks"
 assert_contains "$text" "QA mode: ci (ci | local)" "QA gets the QA mode"
 
+# The QA worktree line (#610): --worktree names the checkout QA runs in; without
+# it the line says so in words. No placeholder is left for QA to fill.
+mkdir -p "$SANDBOX/qa-wt"
+render qa --issue 4 --pr 8 --worktree "$SANDBOX/qa-wt"
+text="$(body)"; drop
+assert_eq "Worktree path: $SANDBOX/qa-wt" "$(printf '%s\n' "$text" | grep '^Worktree path:')" \
+  "AC11 prompt qa --worktree renders the directory on the Worktree path line"
+assert_not_contains "$text" "ABSOLUTE_PATH_OF_THIS_WORKTREE" "AC11 prompt qa --worktree leaves no placeholder"
+render qa --issue 4 --pr 8
+text="$(body)"; drop
+assert_eq "Worktree path: your working directory (git rev-parse --show-toplevel)" "$(printf '%s\n' "$text" | grep '^Worktree path:')" \
+  "AC11 prompt qa without --worktree names the working directory in words"
+assert_not_contains "$text" "ABSOLUTE_PATH_OF_THIS_WORKTREE" "AC11 prompt qa without --worktree leaves no placeholder"
+
 reset_cfg
 render reviewer --issue 4 --pr 8
 text="$(body)"; drop
@@ -411,6 +425,10 @@ check_stop "restamp is not the pm's" shape-unsupported 2 prompt pm --issue 1 --s
 check_stop "restamp is not the developer's" shape-unsupported 2 prompt developer --issue 1 --shape restamp
 check_stop "an unreadable file" file-unreadable 1 prompt pm --issue 1 --prior-file "$SANDBOX/no-such-file"
 check_stop "a directory is not a file" file-unreadable 1 prompt pm --issue 1 --prior-file "$SANDBOX"
+# qa-wt exists under the sandbox, the cwd: a relative name for it is still refused.
+check_stop "AC11 a relative --worktree" usage 2 prompt qa --issue 1 --pr 2 --worktree qa-wt
+check_stop "AC11 a --worktree that is a file" usage 2 prompt qa --issue 1 --pr 2 --worktree "$F_PLAIN"
+check_stop "AC11 a --worktree that does not exist" usage 2 prompt qa --issue 1 --pr 2 --worktree "$SANDBOX/no-such-dir"
 proj_json '{"execution": {"isolation": "nonsense"}}'
 check_stop "an invalid isolation" isolation-invalid 1 prompt developer --issue 1
 reset_cfg

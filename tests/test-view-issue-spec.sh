@@ -232,6 +232,68 @@ assert_contains "$out" "[dry-run]" "github-api: diff-pr --stat --dry-run prints 
 unset GITHUB_TOKEN
 rm -f talos.pipeline.json
 
+# ── a PM spec that quotes the Talos marker (#610) ────────────────────────────
+# The `**PM spec:**` prefix alone decides: a spec that has to name a marker (in
+# running text, or as a quoted line of its own) is still the spec. Both
+# providers share the filter; each gets the same threads.
+SPEC_INLINE='**PM spec:** needs-owner stamp (inline-quote-spec)
+The stamp is the `<!-- talos:needs-owner -->` comment, named here in running text.
+- [ ] AC1 the stamp is read (test)'
+SPEC_OWN_LINE='**PM spec:** attempt record (own-line-quote-spec)
+The record ends with this line:
+<!-- talos:attempt stage=developer count=1 total=3 -->
+- [ ] AC1 the record is read (test)'
+SPEC_PLAIN='**PM spec:** first attempt (plain-first-spec)
+- [ ] AC1 the stamp is read (test)'
+
+# comments_json BODY...: a read-comments answer, one comment per body, oldest first.
+comments_json() {
+  python3 -I -c 'import json, sys
+print(json.dumps([dict(id=i, user=dict(login="x"), created_at="2026-01-0%dT00:00:00Z" % (i + 1), body=b)
+                  for i, b in enumerate(sys.argv[1:])]))' "$@"
+}
+# spec_view THREAD: `view-issue 201 --spec` on that thread, for $PROVIDER.
+spec_view() {
+  if [ "$PROVIDER" = github-api ]; then
+    : > "$CURL_QUEUE"; : > "$CURL_LINK_QUEUE"
+    { printf '%s\n' "$GA_META_JSON"; printf '%s\n' "$1"; } >> "$CURL_QUEUE"
+    bash "$VCS" view-issue 201 --spec
+  else
+    STUB_GH_COMMENTS_RAW="$1" bash "$VCS" view-issue 201 --spec
+  fi
+}
+n_comments() { printf '%s' "$1" | python3 -I -c 'import json, sys; print(len(json.load(sys.stdin)["comments"]))'; }
+
+for PROVIDER in github github-api; do
+  if [ "$PROVIDER" = github-api ]; then
+    cat > talos.pipeline.json <<'EOF'
+{"vcs": {"provider": "github-api", "repo": "acme/widget"}}
+EOF
+    export GITHUB_TOKEN="test-token-view-issue-spec"
+  fi
+
+  thread="$(comments_json "$VALIDATOR_BODY" "$SPEC_INLINE" "$APPROVAL_MARKER_BODY" "$HUMAN_BODY")"
+  out="$(spec_view "$thread")"
+  assert_contains "$out" "inline-quote-spec" \
+    "AC1 $PROVIDER: view-issue --spec returns a PM spec that quotes the marker in running text"
+  assert_eq "1" "$(n_comments "$out")" "AC1 $PROVIDER: a spec quoting the marker in running text is the one comment returned"
+
+  thread="$(comments_json "$VALIDATOR_BODY" "$SPEC_OWN_LINE" "$APPROVAL_MARKER_BODY" "$HUMAN_BODY")"
+  out="$(spec_view "$thread")"
+  assert_contains "$out" "own-line-quote-spec" \
+    "AC1 $PROVIDER: view-issue --spec returns a PM spec with a quoted marker on a line of its own"
+  assert_eq "1" "$(n_comments "$out")" "AC1 $PROVIDER: a spec with a quoted marker line is the one comment returned"
+
+  # Two PM spec comments, only the later one quotes the marker: the later one.
+  thread="$(comments_json "$SPEC_PLAIN" "$HUMAN_BODY" "$SPEC_INLINE")"
+  out="$(spec_view "$thread")"
+  assert_contains "$out" "inline-quote-spec" "AC2 $PROVIDER: the later PM spec, which quotes the marker, is returned"
+  assert_not_contains "$out" "plain-first-spec" "AC2 $PROVIDER: the earlier PM spec is not returned in its place"
+  assert_eq "1" "$(n_comments "$out")" "AC2 $PROVIDER: exactly one comment"
+done
+unset GITHUB_TOKEN
+rm -f talos.pipeline.json
+
 # ── gitlab / azure / file: --spec falls back to the plain full view ─────────
 # with a stderr note, rather than silently ignoring the flag or erroring.
 
