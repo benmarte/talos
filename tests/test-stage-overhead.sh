@@ -77,7 +77,7 @@ budget security 4300
 budget pm 4300
 budget validator 4300
 budget docs 4600
-budget adversarial 5700
+budget adversarial 5800
 budget planner 3300
 
 finish

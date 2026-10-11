@@ -184,7 +184,7 @@ agents.profile	str		-	TALOS_PROFILE	any
 agents.mode	enum		-	-	any
 limits.max_fix_attempts	int	3	-	-	any
 limits.max_total_dispatches	int	8	-	-	any
-limits.design_decision_rounds	int	2	-	-	any
+limits.same_area_rounds	int	2	-	-	any
 limits.max_retries	int	5	-	-	any
 limits.tokens_per_issue	int		-	-	any
 limits.warn_at	float	0.8	-	-	any

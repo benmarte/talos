@@ -47,10 +47,12 @@
 #            verdict=redispatch  stage=<stage> count=<k> total=<t> [budget=<warn line>]
 #            verdict=block       reason=budget-exceeded|max-fix-attempts|
 #                                max-total-dispatches|record-failed, blocked_by=<text>
-#            verdict=ask-owner   reason=same-area [role=<role> rounds=<k> area=<files>]
-#                                a review role's findings cited the same file in
-#                                limits.design_decision_rounds rounds in a row: the
-#                                question is on the PR, a reply there releases it
+#            verdict=ask-owner   reason=design-decision stage=<stage> [rounds=<k> area=<files>]
+#                                reviewer|security|adversarial with --pr: the stage's
+#                                newest limits.same_area_rounds findings comments cite
+#                                one file (the question is parked with mark-needs-owner),
+#                                or that question has no reply yet. An unreadable thread
+#                                is `warn reason=area-check-failed` and the round runs
 #   gate merge <pr> <issue>
 #            verdict=merge      [ci_runs=<n>]
 #            verdict=handoff                    merge.auto is off: pipeline:approved is set
@@ -60,13 +62,13 @@
 #                                 | ci-failed | base-synced | conflict-check-unverified
 #                                 | awaiting-human-merge
 #            verdict=block      reason=forbidden-files | closing-keyword | siblings-capped
-# gate-reasons: budget-exceeded max-fix-attempts max-total-dispatches record-failed same-area stale-approvals draft-pr ci-failed merge-conflict blocked-label approvals-missing ci-pending ci-rerun rerun-unsupported base-synced conflict-check-unverified awaiting-human-merge forbidden-files closing-keyword siblings-capped
+# gate-reasons: budget-exceeded max-fix-attempts max-total-dispatches record-failed design-decision stale-approvals draft-pr ci-failed merge-conflict blocked-label approvals-missing ci-pending ci-rerun rerun-unsupported base-synced conflict-check-unverified awaiting-human-merge forbidden-files closing-keyword siblings-capped
 #   stop: usage unknown-verb scripts-missing python-missing scratch-unavailable config-unreadable
 #         draft-resolve-failed view-failed labels-unreadable approval-sha-failed
 #         unsupported-verb:<verb> draft-unverified ci-unverified head-unresolved
 #         comments-unreadable handoff-label-failed trust-unverified
 #   warn: closing-keyword-unverified ci-runs-unrecorded budget-check-failed
-#         unblock-failed comment-failed label-failed value-truncated
+#         area-check-failed unblock-failed comment-failed label-failed value-truncated
 #
 # post-merge, sweep, summary   Bookkeeping; each item is non-fatal (a `warn` line,
 #         the next item still runs). First line `post_merge=done|handoff`,
@@ -785,81 +787,94 @@ _talos_role_enabled() {
   esac
 }
 
-# The design-decision stop (#599). Among the PR's comments by trusted authors, a
-# findings comment of a review role opens with that role's comments.header and
-# is not its approval; its area is the files it cites as `path:line`. A file
-# cited by the role's last <rounds> findings comments in a row is a design
-# question. The count starts again after the role's approval and after a reply
-# to the gate's own question (its marker on the last line).
-# argv: the rounds, the header template, 1 or 0 for "only trusted authors
-# count", the trusted logins one per line. Prints nothing, `pending` (the
-# question is unanswered) or `ask <role> <file>[,<file>...]`.
+# The same-area check (#599): one review role blocking the same file in
+# limits.same_area_rounds rounds running needs an owner decision, not another
+# patch. Everything is read from one read-comments object, in list order, from
+# the comments of trusted authors:
+#   findings comment  its first line is the stage's comments.header and it holds
+#                     no `<!-- talos:` text (so an approval is never one)
+#   its files         every <path> of a `<path>:<digits>` citation above the
+#                     non-blocking notes and the reviewer's attention report
+#   owner question    its last line is `<!-- talos:needs-owner -->`; answered by
+#                     a later comment that is not empty and not a Talos comment
+#                     (the list-needs-owner rule)
+# Only the findings comments after the newest owner question count.
+# argv: the rounds, the stage's header, 1 or 0 for "only trusted authors count",
+# the trusted logins one per line. Prints `open` (the newest question has no
+# reply), `ask <file>[,<file>...]` (the newest <rounds> findings comments share
+# those files), `answered` (a question with its reply, nothing to ask) or an
+# empty line.
 _TALOS_AREA_PY='
 import json, re, sys
-rounds, header, enforce, trusted = int(sys.argv[1]), sys.argv[2], sys.argv[3] == "1", set(sys.argv[4].splitlines())
-MARK = "<!-- talos:design-decision -->"
-REF = re.compile(r"(?<![\w./-])((?:[\w.-]+/)+[\w.-]+|[\w.-]+\.[A-Za-z]\w*):[0-9]+", re.ASCII)
-def last_line(b):
-    ls = [l.strip() for l in b.splitlines() if l.strip()]
-    return ls[-1] if ls else ""
-cs = []
-for c in json.load(sys.stdin).get("comments", []):
-    a, b = c.get("author"), c.get("body")
-    if isinstance(b, str) and (not enforce or (a.get("login") if isinstance(a, dict) else None) in trusted):
-        cs.append(b)
-asked = max([i for i, b in enumerate(cs) if last_line(b) == MARK] or [-1])
+rounds, header, enforce, trusted = int(sys.argv[1]), sys.argv[2].strip(), sys.argv[3] == "1", set(sys.argv[4].splitlines())
+REF = re.compile(r"(?<![A-Za-z0-9_./-])([A-Za-z0-9_./-]+):[0-9]+")
+ASKED = re.compile(r"<!--\s*talos:needs-owner\s*-->")
+END = ("**Non-blocking notes", "**Human-attention", "**Human attention")
+def login(c):
+    a = c.get("author")
+    return a.get("login") if isinstance(a, dict) else None
+def files(body):
+    out = set()
+    for line in body.split("\n"):
+        if line.startswith(END):
+            break
+        out.update(p for p in REF.findall(line) if "/" in p or "." in p)
+    return out
+cs = [c["body"] for c in json.load(sys.stdin)["comments"]
+      if isinstance(c.get("body"), str) and (not enforce or login(c) in trusted)]
+asked = max([i for i, b in enumerate(cs) if ASKED.fullmatch(b.rstrip().rsplit("\n", 1)[-1].strip())] or [-1])
 cs = cs[asked + 1:]
-if asked >= 0 and not any(b.strip() and "<!-- talos:" not in b and "**Agent:**" not in b for b in cs):
-    print("pending")
+if asked >= 0 and not any(b.strip() and "<!-- talos:" not in b and not b.lstrip().startswith("**Agent:**") for b in cs):
+    print("open")
     sys.exit(0)
-for role in ("reviewer", "security", "adversarial") if "{role}" in header else ():
-    seen = []
-    for b in cs:
-        if not b.lstrip().startswith(header.replace("{role}", role)):
-            continue
-        if "talos:approval" in last_line(b):
-            seen = []
-        else:
-            seen.append(set(p[2:] if p.startswith("./") else p for p in REF.findall(b)))
-    if len(seen) >= rounds:
-        common = sorted(set.intersection(*seen[-rounds:]))
-        if common:
-            print("ask", role, ",".join(common[:5]))
-            sys.exit(0)
+found = [files(b) for b in cs if b.lstrip().split("\n", 1)[0].strip() == header and "<!-- talos:" not in b]
+common = sorted(set.intersection(*found[-rounds:])) if len(found) >= rounds else []
+print("ask " + ",".join(common) if common else "answered" if asked >= 0 else "")
 '
 
-# _talos_same_area <issue> <pr>: the check above on the PR's comments. A design
-# question leaves PR and issue blocked, posts the question once and answers
-# `ask-owner`; no attempt is recorded for a round that did not run.
+# _talos_same_area <stage> <pr>: the check above, between the budget guard and
+# record-attempt. It fails open like the budget check: with comments off, no
+# header or an unreadable thread the round runs as before. `ask-owner` records
+# no attempt and clears no label; a new question is parked with
+# mark-needs-owner. Sets _AREA_ANSWERED=1 when the newest owner question has
+# its reply, so the unblock clears pipeline:needs-owner too.
 _talos_same_area() {
-  local _n="$1" _pr="$2" _k _a _kind _role _area
-  _k="$(cfg limits.design_decision_rounds)"
-  { _talos_isnum "$_k" && [ "$_k" -ge 1 ]; } || _k=2
+  local _stage="$1" _pr="$2" _k _h _a
+  _h="$(cfg comments.header)"
+  { [ "$(cfg comments.enabled)" = "true" ] && [ -n "$_h" ]; } || return 0
+  _k="$(cfg limits.same_area_rounds)"
   _talos_trust
   _talos_cap _vcs read-comments "$_pr"
-  [ "$_RC" -eq 0 ] || _talos_stop comments-unreadable
-  _a="$(python3 -I -c "$_TALOS_AREA_PY" "$_k" "$(cfg comments.header)" "$_TRUST_ON" "$_TRUST_SET" <<< "$_OUT")" \
-    || _talos_stop comments-unreadable
-  [ -n "$_a" ] || return 0
-  read -r _kind _role _area <<< "$_a"
-  _talos_block_labels "$_n" "$_pr"
-  _talos_emit reason same-area
-  if [ "$_kind" = ask ]; then
-    _talos_post "$_pr" "Design decision needed: $_role raised findings on $_area in $_k rounds in a row. The next round needs a decision, not another patch. Reply on this PR with the design to follow; the fix round runs after the reply."$'\n\n'"<!-- talos:design-decision -->"
-    _talos_emit role "$_role"
+  [ "$_RC" -eq 0 ] \
+    && _a="$(python3 -I -c "$_TALOS_AREA_PY" "$_k" "${_h//\{role\}/$_stage}" "$_TRUST_ON" "$_TRUST_SET" <<< "$_OUT" 2>/dev/null)" \
+    || { _talos_emit warn "reason=area-check-failed"; return 0; }
+  case "$_a" in
+    answered) _AREA_ANSWERED=1; return 0 ;;
+    open | "ask "*) ;;
+    *) return 0 ;;
+  esac
+  _talos_emit reason design-decision
+  _talos_emit stage "$_stage"
+  if [ "$_a" != open ]; then
+    _a="${_a#ask }"
     _talos_emit rounds "$_k"
-    _talos_emit area "$_area"
+    _talos_emit area "$_a"
+    { printf '%s\n\n%s\n' \
+        "Design decision needed: $_stage blocked PR #$_pr on $_a in $_k rounds running. Which design should the next fix round implement?" \
+        "Reply on this PR with the decision; the next fix-round gate continues from it." > "$_CFG_CACHE_DIR/body" \
+        && _vcs mark-needs-owner "$_pr" --body-file "$_CFG_CACHE_DIR/body" > /dev/null; } \
+      || _talos_emit warn "reason=comment-failed"
   fi
   _talos_verdict ask-owner
 }
 
 # gate fix-round <N> <stage> [--pr M]: the Step 3 intro, in its order. The
-# budget guard (exit 1 = exceeded), the design-decision stop (a review role's
-# round on a PR), then record-attempt (with --pr when a PR exists), then the
-# unblock after a fix round is cleared to run.
+# budget guard (exit 1 = exceeded), the same-area check (a review role's round
+# on a PR), then record-attempt (with --pr when a PR exists), then the unblock
+# after a fix round is cleared to run.
 _talos_gate_fix_round() {
   [ "$#" -ge 2 ] || _talos_stop usage 2
-  local _n="$1" _stage="$2" _pr="" _s _ok=1 _bout _brc=0 _r _by _line
+  local _n="$1" _stage="$2" _pr="" _s _ok=1 _bout _brc=0 _r _by _line _AREA_ANSWERED=0
   shift 2
   case "$#" in
     0) : ;;
@@ -892,7 +907,7 @@ _talos_gate_fix_round() {
   esac
 
   if [ -n "$_pr" ]; then
-    case "$_stage" in reviewer | security | adversarial) _talos_same_area "$_n" "$_pr" ;; esac
+    case "$_stage" in reviewer | security | adversarial) _talos_same_area "$_stage" "$_pr" ;; esac
   fi
 
   _talos_cap _vcs record-attempt "$_n" "$_stage" ${_pr:+--pr "$_pr"}
@@ -916,6 +931,8 @@ _talos_gate_fix_round() {
   # Only the orchestrator clears pipeline:blocked, right before the fix round.
   if [ -n "$_pr" ]; then
     _vcs label-pr "$_pr" --remove pipeline:blocked > /dev/null || _talos_emit warn "reason=unblock-failed"
+    [ "$_AREA_ANSWERED" -eq 0 ] \
+      || _vcs label-pr "$_pr" --remove pipeline:needs-owner > /dev/null || _talos_emit warn "reason=unblock-failed"
   fi
   _vcs label-issue "$_n" --remove pipeline:blocked > /dev/null || _talos_emit warn "reason=unblock-failed"
   _talos_emit stage "$_stage"

@@ -108,7 +108,6 @@ TALOS_MARKERS=(
   talos:attempt
   talos:needs-owner
   talos:ci-rerun
-  talos:design-decision
   talos:forbidden-files-active
   talos:forbidden-files-defaults-replaced
   talos:closing-keyword-unverified
