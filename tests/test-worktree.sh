@@ -557,4 +557,183 @@ assert_contains "$out" "could not list open PRs" "sweep reports skipping branch 
 assert_eq "scratch/should-survive-a-failed-lookup" "$(git branch --list scratch/should-survive-a-failed-lookup | tr -d ' *+')" "sweep preserves local branches when the open-PR lookup itself fails"
 git branch -D scratch/should-survive-a-failed-lookup >/dev/null 2>&1
 
+# ── to-base <n> (#601): the checkout goes back to the base after a merge ──────
+# A real repository with a local remote: $TB/remote.git is the provider's side,
+# $TB/seed pushes to it (the squash merge landing on main), $TB/clone is the
+# orchestrator's checkout. Every git call to-base makes goes through a logging
+# shim, so "never forces" and "not retried" are read off what actually ran.
+TB="$SANDBOX/tb"
+REAL_GIT="$(command -v git)"
+GIT_LOG="$SANDBOX/tb-git.log"
+GIT_LOG_ALL="$SANDBOX/tb-git-all.log"
+export REAL_GIT GIT_LOG GIT_LOG_ALL
+mkdir -p "$SANDBOX/tb-bin"
+cat > "$SANDBOX/tb-bin/git" <<'TALOS_gitshimV7qLx2Nw'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${GIT_LOG:?}"
+printf '%s\n' "$*" >> "${GIT_LOG_ALL:?}"
+exec "${REAL_GIT:?}" "$@"
+TALOS_gitshimV7qLx2Nw
+chmod +x "$SANDBOX/tb-bin/git"
+: > "$GIT_LOG_ALL"
+tb_id() { git -C "$1" config user.email "test@talos"; git -C "$1" config user.name "talos test"; }
+tb_fixture() {  # a fresh remote, seed and clone, all on main at one commit; cwd = the clone
+  cd "$SANDBOX" || exit 1
+  rm -rf "${TB:?}"; mkdir -p "$TB"
+  git init -q --bare "$TB/remote.git"
+  git --git-dir="$TB/remote.git" symbolic-ref HEAD refs/heads/main
+  git init -q "$TB/seed"
+  git -C "$TB/seed" symbolic-ref HEAD refs/heads/main
+  tb_id "$TB/seed"
+  printf 'one\n' > "$TB/seed/file.txt"
+  git -C "$TB/seed" add file.txt
+  git -C "$TB/seed" commit -q -m "root"
+  git -C "$TB/seed" push -q "$TB/remote.git" main
+  git clone -q "$TB/remote.git" "$TB/clone"
+  tb_id "$TB/clone"
+  cd "$TB/clone" || exit 1
+  : > "$GIT_LOG"
+}
+tb_remote_advance() {  # $1 = a name: one more commit on the remote's main (a merged PR)
+  printf '%s\n' "$1" > "$TB/seed/merged.$1"
+  git -C "$TB/seed" add "merged.$1"
+  git -C "$TB/seed" commit -q -m "merge $1"
+  git -C "$TB/seed" push -q "$TB/remote.git" main
+}
+tb_remote_main() { git --git-dir="$TB/remote.git" rev-parse main; }
+tb_issue_branch() {  # $1 = branch: checked out, with one commit the base does not have
+  git checkout -q -b "$1"
+  printf 'work\n' > work.txt
+  git add work.txt
+  git commit -q -m "work"
+}
+tb() { OUT="$(PATH="$SANDBOX/tb-bin:$PATH" bash "$WT" to-base "$@" 2>"$SANDBOX/tb.err")"; RC=$?; }
+tb_branch() { git symbolic-ref -q --short HEAD 2>/dev/null || echo "<detached>"; }
+
+# AC5: on the merged issue's branch, clean: switch, fast-forward, delete it.
+tb_fixture
+tb_issue_branch fix/issue-42-add-widget
+tb_remote_advance pr42
+printf 'scratch\n' > untracked.txt   # an untracked file is not a tracked change
+tb 42
+assert_eq "0" "$RC" "AC5 (#601): to-base on the issue's branch exits 0"
+assert_eq "talos:checkout state=returned" "$OUT" "AC5 (#601): to-base prints talos:checkout state=returned, nothing else"
+assert_eq "main" "$(tb_branch)" "AC5 (#601): the checkout is on the base branch"
+assert_eq "$(tb_remote_main)" "$(git rev-parse HEAD)" "AC5 (#601): the base branch is fast-forwarded to the remote"
+assert_eq "" "$(git branch --list fix/issue-42-add-widget)" "AC5 (#601): the local issue branch is deleted although its commit is not an ancestor of the base"
+assert_contains "$(cat "$GIT_LOG")" "pull --ff-only" "AC5 (#601): the fast-forward is git pull --ff-only"
+assert_contains "$(cat "$GIT_LOG")" "branch -D fix/issue-42-add-widget" "AC5 (#601): the branch is deleted with git branch -D"
+assert_eq "scratch" "$(cat untracked.txt 2>/dev/null)" "AC5 (#601): an untracked file is left alone"
+# feat/ branches too.
+tb_fixture
+tb_issue_branch feat/issue-42-new-flow
+tb 42
+assert_eq "talos:checkout state=returned" "$OUT" "AC5 (#601): a feat/issue-<N>- branch is returned too"
+assert_eq "" "$(git branch --list feat/issue-42-new-flow)" "AC5 (#601): the feat/ branch is deleted"
+# base_branch wins over the default branch.
+tb_fixture
+git -C "$TB/seed" checkout -q -b develop
+git -C "$TB/seed" push -q "$TB/remote.git" develop
+git -C "$TB/seed" checkout -q main
+git fetch -q origin
+git checkout -q -b develop origin/develop
+tb_issue_branch fix/issue-42-on-develop
+printf '{"base_branch": "develop"}' > "$TB/cfg.json"
+export PIPELINE_CONFIG="$TB/cfg.json"
+tb 42
+unset PIPELINE_CONFIG
+assert_eq "talos:checkout state=returned develop" "$OUT $(tb_branch)" "AC5 (#601): base_branch names the branch the checkout returns to"
+
+# AC6: elsewhere. On the base branch: only the fast-forward.
+tb_fixture
+git branch fix/issue-42-left-behind
+tb_remote_advance pr42
+tb 42
+assert_eq "0 talos:checkout state=synced" "$RC $OUT" "AC6 (#601): on the base branch to-base prints state=synced"
+assert_eq "$(tb_remote_main)" "$(git rev-parse HEAD)" "AC6 (#601): the base branch is fast-forwarded"
+assert_eq "fix/issue-42-left-behind" "$(git branch --list fix/issue-42-left-behind | tr -d ' *+')" "AC6 (#601): on the base branch nothing but the fast-forward happens (no branch is deleted)"
+# On any other branch, another issue's branch or a detached HEAD: nothing.
+tb_fixture
+tb_remote_advance pr42
+_tb_main="$(git rev-parse main)"
+for _b in topic fix/issue-420-other fix/issue-7-tweak feat/issue-4-x; do
+  git checkout -q -b "$_b" main
+  : > "$GIT_LOG"
+  tb 42
+  assert_eq "0 talos:checkout state=kept" "$RC $OUT" "AC6 (#601): on $_b to-base 42 prints state=kept"
+  assert_eq "$_b $_tb_main" "$(tb_branch) $(git rev-parse main)" "AC6 (#601): on $_b nothing changes (same branch, base not moved)"
+  assert_eq "0" "$(grep -cE '(^| )(pull|checkout|switch|branch -D)( |$)' "$GIT_LOG")" "AC6 (#601): on $_b no pull, switch or delete is run"
+done
+git checkout -q --detach main
+: > "$GIT_LOG"
+tb 42
+assert_eq "0 talos:checkout state=kept" "$RC $OUT" "AC6 (#601): on a detached HEAD to-base prints state=kept"
+assert_eq "<detached> $_tb_main" "$(tb_branch) $(git rev-parse main)" "AC6 (#601): a detached HEAD is left where it is"
+assert_eq "0" "$(grep -cE '(^| )(pull|checkout|switch|branch -D)( |$)' "$GIT_LOG")" "AC6 (#601): on a detached HEAD no pull, switch or delete is run"
+# Usage.
+tb
+assert_eq "2" "$RC" "AC6 (#601): to-base with no argument exits 2"
+tb abc
+assert_eq "2" "$RC" "AC6 (#601): to-base with a non-numeric argument exits 2"
+tb 42abc
+assert_eq "2" "$RC" "AC6 (#601): to-base with a partly numeric argument exits 2"
+
+# AC7: never forced. A tracked change on the issue branch: nothing is touched.
+tb_fixture
+tb_issue_branch fix/issue-42-dirty
+tb_remote_advance pr42
+printf 'edited\n' >> file.txt
+_tb_head="$(git rev-parse HEAD)"
+_tb_status="$(git status --porcelain)"
+tb 42
+assert_eq "0 talos:checkout state=failed reason=dirty" "$RC $OUT" "AC7 (#601): an unstaged tracked change is state=failed reason=dirty, exit 0"
+assert_eq "fix/issue-42-dirty $_tb_head" "$(tb_branch) $(git rev-parse HEAD)" "AC7 (#601): a dirty checkout keeps its branch and HEAD"
+assert_eq "$_tb_status" "$(git status --porcelain)" "AC7 (#601): a dirty checkout keeps its index and files"
+assert_contains "$(cat file.txt)" "edited" "AC7 (#601): the unstaged edit is still there"
+git add file.txt
+_tb_status="$(git status --porcelain)"
+tb 42
+assert_eq "0 talos:checkout state=failed reason=dirty" "$RC $OUT" "AC7 (#601): a staged change is state=failed reason=dirty, exit 0"
+assert_eq "fix/issue-42-dirty $_tb_head" "$(tb_branch) $(git rev-parse HEAD)" "AC7 (#601): a staged change keeps the branch and HEAD"
+assert_eq "$_tb_status" "$(git status --porcelain)" "AC7 (#601): the staged change is still staged"
+# A refused switch: the base tracks a file that is untracked here.
+tb_fixture
+git checkout -q -b fix/issue-42-refused
+tb_remote_advance clash
+git fetch -q origin
+git branch -q -f main origin/main
+printf 'mine\n' > merged.clash
+: > "$GIT_LOG"
+tb 42
+assert_eq "0 talos:checkout state=failed reason=switch-failed" "$RC $OUT" "AC7 (#601): a refused switch is state=failed reason=switch-failed, exit 0"
+assert_eq "fix/issue-42-refused mine" "$(tb_branch) $(cat merged.clash)" "AC7 (#601): a refused switch leaves the branch and the untracked file"
+assert_eq "0" "$(grep -cE '(^| )(pull|branch -D)( |$)' "$GIT_LOG")" "AC7 (#601): nothing runs after a refused switch"
+# A pull that cannot fast-forward (the base has diverged): once, no retry.
+tb_fixture
+printf 'local\n' > local.txt
+git add local.txt
+git commit -q -m "local commit on the base"
+tb_remote_advance pr42
+_tb_head="$(git rev-parse HEAD)"
+: > "$GIT_LOG"
+tb 42
+assert_eq "0 talos:checkout state=failed reason=pull-failed" "$RC $OUT" "AC7 (#601): a pull that cannot fast-forward is state=failed reason=pull-failed, exit 0"
+assert_eq "1" "$(grep -cE '(^| )pull( |$)' "$GIT_LOG")" "AC7 (#601): the failed pull is not retried"
+assert_eq "main $_tb_head" "$(tb_branch) $(git rev-parse HEAD)" "AC7 (#601): a failed pull leaves the base where it was"
+# The same from the issue branch: the switch works, the pull does not.
+tb_fixture
+printf 'local\n' > local.txt
+git add local.txt
+git commit -q -m "local commit on the base"
+tb_issue_branch fix/issue-42-diverged
+tb_remote_advance pr42
+: > "$GIT_LOG"
+tb 42
+assert_eq "0 talos:checkout state=failed reason=pull-failed" "$RC $OUT" "AC7 (#601): a failed pull after the switch is reason=pull-failed too"
+assert_eq "1" "$(grep -cE '(^| )pull( |$)' "$GIT_LOG")" "AC7 (#601): the failed pull after the switch is not retried"
+# Across every to-base call above.
+assert_eq "0" "$(grep -cE '(^| )(reset|stash|clean)( |$)|(^| )(checkout|switch)( .*)? (-f|--force|--discard-changes)( |$)' "$GIT_LOG_ALL")" \
+  "AC7 (#601): no checkout -f, reset, stash or clean is ever run"
+cd "$SANDBOX" || exit 1
+
 finish

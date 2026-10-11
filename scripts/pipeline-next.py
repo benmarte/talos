@@ -5,7 +5,8 @@ caller's cwd and environment off sys.path). The callers are thin wrappers:
 
     collect     pipeline-status-file.sh collect: the run state as one JSON object
                 (open pipeline PRs with their stage, the issue queue, blocked,
-                owners, in-flight, and the claim filter of #560). Options as
+                owners, in-flight, the priority of the queued and in-flight
+                issues, and the claim filter of #560). Options as
                 `--name value` pairs: vcs roles me merge-auto required-checks
                 pr-draft ready-gate talos-labels base-branch. `ready-gate` is
                 `qa-local` (pr.ready_gate, #535: on a draft PR qa is routed last,
@@ -226,6 +227,25 @@ def stage_action(st, pr, issue):
     raise Stop('unsupported-verb:' + st)
 
 
+def pick_order(data, inflight, ready):
+    """The one order of the issue side (#601): priority, then in-flight before
+    ready, then the issue number. The priority is the collect's `priority`
+    object (0, 1 or 2); an issue it does not list, or lists with anything else,
+    is unlabelled and comes last. Ready issues of one priority keep the order
+    of `ready` (the collect's `queued`, already sorted by priority and number),
+    so a state without the object still walks the queue as collected."""
+    prio = data.get('priority')
+    prio = prio if isinstance(prio, dict) else {}
+    flight = set(inflight)
+    pos = dict((n, i) for i, n in enumerate(ready))
+
+    def rank(n):
+        p = prio.get(str(n))
+        return p if isinstance(p, int) and not isinstance(p, bool) and 0 <= p <= 2 else 3
+
+    return sorted(flight | set(ready), key=lambda n: (rank(n), 0, n) if n in flight else (rank(n), 1, pos[n]))
+
+
 # ── collect ──────────────────────────────────────────────────────────────────
 
 def collect():
@@ -376,9 +396,14 @@ def collect():
         prs.append({'n': n, 'issue': issue, 'head': head,
                     'owner': NEEDS_OWNER_LABEL in labels or NEEDS_OWNER_LABEL in issue_labels,
                     'stage': next_stage(n, labels, issue_labels, enabled)})
+    # The priority of each queued or in-flight issue that carries a p-label
+    # (#601): what `next` and `where` need to put both lists in one order.
+    priority = dict((str(n), min(PRIORITY[l] for l in issues[n] if l in PRIORITY))
+                    for n in queued + inflight if issues[n] & set(PRIORITY))
     state = {'prs': prs, 'pr_total': len(eligible), 'ignored': ignored,
              'blocked': blocked, 'queued': queued, 'held': held,
-             'inflight': inflight, 'owners': owners, 'capped': capped}
+             'inflight': inflight, 'owners': owners, 'capped': capped,
+             'priority': priority}
     if me:
         # The items `talos.sh next` must claim before it dispatches: open
         # issues of the operator's queue, in flight or behind a PR that no one
@@ -415,12 +440,14 @@ def pr_side(data):
 #   action=wait reason=<enum> [retry_after_s=<s>]   nothing to dispatch
 #   stop reason=<enum>                              a ceiling or a missing
 #                                                   provider verb (exit 1)
-# The lease itself is bash's (acquired for the dispatch answer); the walk's
-# capacity check gets the live-lease count through --in-flight.
+# The lease itself is bash's (acquired for the dispatch answer); the walk gets
+# the issues other runs hold a lease of through --leased (comma-separated): its
+# capacity check counts them, and an in-flight candidate among them is passed
+# over (#601).
 
 def issue_side(data, o):
     """Options o (--name value): vcs budget issue roles label-filter skip-labels
-    max-parallel pm-skip in-flight. Read verbs only, unbounded (no deadline)."""
+    max-parallel pm-skip leased. Read verbs only, unbounded (no deadline)."""
     prs = data.get('prs') or []
     queued = data.get('queued') or []
     qset = set(queued)
@@ -433,14 +460,27 @@ def issue_side(data, o):
     skip_labels = set(x for x in o.get('skip-labels', '').split(',') if x)
     label_filter = o.get('label-filter', READY_LABEL)
     target = o.get('issue', '')
+    leased = [x for x in o.get('leased', '').split(',') if x]
     pm_skip = o.get('pm-skip') == 'true'
     planner_on = 'planner' in roles
     validator_on = 'validator' in roles
     pm_on = 'pm' in roles
 
-    def say(name, **kw):
-        print(action(name, **kw))
+    # While the untargeted walk tries a candidate, a wait is not the answer yet:
+    # it raises Passed with the line, and the walk goes on (#601).
+    class Passed(Exception):
+        pass
+
+    walk = {'on': False}
+
+    def say_line(line):
+        if walk['on'] and line.startswith('action=wait'):
+            raise Passed(line)
+        print(line)
         sys.exit(0)
+
+    def say(name, **kw):
+        say_line(action(name, **kw))
 
     def run_vcs(*a):
         try:
@@ -553,15 +593,8 @@ def issue_side(data, o):
         if mine:
             say_line(stage_action(mine[0]['stage'], mine[0]['n'], n))
 
-    def say_line(line):
-        print(line)
-        sys.exit(0)
-
-    if target:
-        try:
-            n = int(target)
-        except ValueError:
-            raise Stop('usage')
+    def route_named(n):
+        # `next --issue <N>`, and each in-flight candidate of the untargeted walk.
         # An issue of another operator (#560): never routed, whatever its labels say.
         if n in theirs:
             say('wait', reason='theirs')
@@ -588,33 +621,67 @@ def issue_side(data, o):
             say('wait', reason='none')
         route(n, labels, body)
 
-    # The queue pick (#471, AC1): the collect queued list is already sorted
-    # (p0 < p1 < p2 < unlabeled, then ID ascending); label_filter collapse,
-    # skip_labels, the dependency gate and the max_parallel cap are applied here.
+    if target:
+        try:
+            n = int(target)
+        except ValueError:
+            raise Stop('usage')
+        route_named(n)
+
+    # The pick (#471, AC1; #601): the in-flight and the ready issues in one order
+    # (pick_order). An in-flight candidate is routed as `next --issue` routes it
+    # and none of the ready-queue filters apply to it; one that answers a wait,
+    # or that another run holds the lease of (the wait its dispatch would get),
+    # is passed over. A ready candidate keeps every filter: the owner wait, the
+    # max_parallel cap, label_filter collapse, skip_labels, the dependency gate.
+    # With no candidate left the wait is the one the ready queue alone gives.
     if held:
         ask_owner(min(held))
-    if blocked or owners or any(p.get('owner') for p in prs):
-        say('wait', reason='owner')
-    cands = [n for n in queued if n not in held and n not in blocked]
-    if not cands:
-        say('wait', reason='none')
-    try:
-        cap = int(o.get('max-parallel') or '1') - int(o.get('in-flight') or '0')
-    except ValueError:
-        raise Stop('state-unavailable')
-    if cap <= 0:
-        say('wait', reason='cap')
+    inflight = [n for n in data.get('inflight') or [] if isinstance(n, int) and not isinstance(n, bool)]
+    flight = set(inflight)
+    busy = set(int(x) for x in leased if x.isdigit())
+    ready = [n for n in queued if n not in held and n not in blocked and n not in flight]
+    owner_wait = bool(blocked or owners or any(p.get('owner') for p in prs))
+    cap = None
     dep_blocked = False
-    for n in cands:
-        labels, body = view_issue(n)
-        if labels & skip_labels:
-            continue
-        if label_filter != READY_LABEL and label_filter not in labels:
-            continue
-        if planner_on and dep_gated(body):
-            dep_blocked = True
-            continue
-        route(n, labels, body)
+    ready_wait = ''  # the wait a ready candidate's own routing answered: it ends the ready walk
+    walk['on'] = True
+    for n in pick_order(data, inflight, ready):
+        try:
+            if n in flight:
+                if n in busy:
+                    continue
+                route_named(n)  # answers and exits, or raises Passed
+            if owner_wait or ready_wait:
+                continue
+            if cap is None:
+                try:
+                    cap = int(o.get('max-parallel') or '1') - len(leased)
+                except ValueError:
+                    raise Stop('state-unavailable')
+            if cap <= 0:
+                continue
+            labels, body = view_issue(n)
+            if labels & skip_labels:
+                continue
+            if label_filter != READY_LABEL and label_filter not in labels:
+                continue
+            if planner_on and dep_gated(body):
+                dep_blocked = True
+                continue
+            route(n, labels, body)
+        except Passed as e:
+            if n not in flight:
+                ready_wait = e.args[0]
+    walk['on'] = False
+    if owner_wait:
+        say('wait', reason='owner')
+    if not ready:
+        say('wait', reason='none')
+    if cap is not None and cap <= 0:
+        say('wait', reason='cap')
+    if ready_wait:
+        say_line(ready_wait)
     if dep_blocked:
         say('wait', reason='dependency')
     say('wait', reason='none')
@@ -654,7 +721,8 @@ def where(data):
     waiting = (['blocked ' + ', '.join(some(blocked, '%s', 5))] if blocked else []) + (['owner ' + ', '.join(some(owners, '#%d', 5))] if owners else [])
     print('waiting: ' + ('; '.join(waiting) if waiting else 'nothing'))
     a = dict(w.split('=', 1) for w in act.split()[1:] if '=' in w)
-    free = [n for n in data.get('queued') or [] if n not in held]
+    # The issue untargeted `next` works first (#601): one order over both lists.
+    order = pick_order(data, inflight, [num(n) for n in data.get('queued') or [] if n not in held])
     first = next((p for p in prs if not p.get('owner')), None)
     word = lambda s: s if re.fullmatch(r'[a-z-]{1,20}', s) else '?'
     if act.startswith('action=dispatch') and first:
@@ -663,10 +731,8 @@ def where(data):
         nxt = 'merge PR #%d (#%d)' % (num(first.get('n')), num(first.get('issue')))
     elif act.startswith('action=wait') and first:
         nxt = 'wait (%s) on PR #%d (#%d)' % (word(a.get('reason', '')), num(first.get('n')), num(first.get('issue')))
-    elif free:
-        nxt = 'start issue #%d' % num(free[0])
-    elif inflight:
-        nxt = 'continue issue #%d' % inflight[0]
+    elif order:
+        nxt = ('continue issue #%d' if order[0] in inflight else 'start issue #%d') % order[0]
     elif held or owners:
         nxt = 'waiting on the owner'
     else:

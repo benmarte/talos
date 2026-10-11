@@ -69,11 +69,16 @@
 #         `sweep=done` or `summary=done`, or a lone `stop`. post-merge is idempotent
 #         per item; --heal skips the sibling sync and releases no lease; --handoff
 #         only posts approved.md. Keys: `sibling=<pr> action=clean|mergebase|
-#         update-branch|developer|unverified`, `recorded=yes|no`, `spend=<line>`,
+#         update-branch|developer|unverified`, `recorded=yes|no`,
+#         `checkout=returned|synced|kept|failed`, `spend=<line>`,
 #         `heal=<n> pr=<m>`, `worktree_sweep=<line>`, `blocked_issues=<K>`,
 #         `blocked_prs=<J>`, `epic=<n> action=closed|pending|waiting`,
 #         `unblocked=<n>`, `worktree_warning=<line>`, `cost=<line>`.
-# post-merge-reasons: comments-unreadable trust-unverified comment-failed close-failed issue-state-unverified board-failed worktree-remove-failed notify-failed spend-upsert-failed siblings-unlisted lease-release-failed value-truncated
+#         `checkout=` (the merge and the heal) is `pipeline-worktree.sh to-base
+#         <issue>`, run before the worktree removal: a checkout left on the merged
+#         issue's branch goes back to the base branch and is fast-forwarded, never
+#         forced; `failed` adds `warn reason=checkout-return-failed`.
+# post-merge-reasons: comments-unreadable trust-unverified comment-failed close-failed issue-state-unverified board-failed checkout-return-failed worktree-remove-failed notify-failed spend-upsert-failed siblings-unlisted lease-release-failed value-truncated
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
 #   warn: all the others
 # sweep-reasons: issues-unlisted prs-unlisted find-pr-unverified find-pr-failed worktree-sweep-failed epic-close-failed epic-label-failed epic-comment-failed epic-acceptance-unsupported unblock-failed notify-failed
@@ -123,7 +128,9 @@
 #
 # state   `state=<JSON>`: the normalised run state of pipeline-status-file.sh
 #         `collect` (read verbs only). {"prs", "pr_total", "ignored", "blocked",
-#         "queued", "held", "inflight", "owners", "capped"}. Invalid or unreadable
+#         "queued", "held", "inflight", "owners", "capped", "priority"}
+#         ("priority": issue number -> 0, 1 or 2 for each queued or in-flight
+#         issue labelled p0, p1 or p2). Invalid or unreadable
 #         input fails closed with a lone `stop`, no partial JSON. `state --summary`
 #         prints three lines instead: `where=in flight: ...`, `where=waiting: ...`,
 #         `where=next: ...` (read-only, no lease, only numbers and fixed words).
@@ -139,6 +146,12 @@
 #                       [retry_after_s=<s>]
 #           The draft wait is key-carrying: action=wait reason=draft pr=<M> issue=<N>
 #         A planner or adversarial dispatch and the draft wait end in ` ref=<topic>`.
+#         The issue queue is the in-flight issues (confirmed, in development) and
+#         the ready ones in one order: priority (p0, p1, p2, unlabelled), then
+#         in-flight before ready, then the issue number. An in-flight issue is
+#         routed as `next --issue <N>` routes it (no ready-queue filter applies)
+#         and is passed over when that answers a wait or another run holds
+#         its lease.
 #         `next --issue <N>` routes the named issue through the same rules. A
 #         developer dispatch for an issue with an open PR runs the fix-round checks
 #         first and never dispatches past a ceiling:
@@ -163,16 +176,32 @@
 #         checked against the role's `done` list (an unknown word is a dispatch
 #         failure); pm, planner, docs take none; the developer's is PR_OPENED with
 #         the PR URL (or a standalone `pr=<N>`), else BLOCKED. On `action=merge` it
-#         runs `gate merge`; verdict=merge runs `merge-pr` then `post-merge` and ends
-#         the run. It stops (exit 0) on ask-owner, a wait, a gate verdict that is not
-#         merge (`stop verdict=<v> reason=<why>`) and a `stop reason=` from `next`;
+#         runs `gate merge`; verdict=merge runs `merge-pr` then `post-merge`
+#         (`merged=pr=<M>`). `run --issue <N>` ends there: `stop merged pr=<M>`.
+#         An untargeted run drains the queue: once `post-merge` reports the
+#         checkout `returned`, `synced` or `kept`, it flushes its output, runs its
+#         exit hooks and execs `$SCRIPT_DIR/talos.sh run` for the next pass (same
+#         PID, nothing resident; when Talos works on itself, the merged scripts).
+#         A checkout that did not come back ends either run with `stop merged
+#         pr=<M> reason=checkout-return-failed`. It stops (exit 0) on ask-owner, a
+#         wait, a gate verdict that is not merge (`stop verdict=<v> reason=<why>`)
+#         and a `stop reason=` from `next`;
 #         a failed state read exits 1; a failed dispatch is `run=stopped
 #         reason=dispatch-failed role=<role>`. A QA FAIL at the head the previous
 #         QA FAIL saw blocks the PR and stops. An untargeted run whose `next` waits
-#         works the `inflight` issues. --max-iterations caps the passes (default 20).
-# run-reasons: usage unknown-role unknown-pr dispatch-failed ready-pr-failed qa-fail-unchanged-head head-unresolved
+#         works the `inflight` issues. --max-iterations caps the passes of the
+#         whole command, the passes after a merge included (default 20; a long
+#         drain passes a larger number). The count crosses the exec in
+#         TALOS_RUN_PASSES=<pid>:<passes>, honoured only by the process it names.
+#         `run --stop` (no other argument) writes `run.stop` in the run-state
+#         directory (`<git common dir>/talos/`) and prints `stop=requested`; a run
+#         reads it at the top of every pass, before `next`, deletes it and ends
+#         with `stop reason=stop-requested` (exit 0), so the stage that was running
+#         finishes first. A run started fresh deletes a leftover request.
+# run-reasons: usage unknown-role unknown-pr dispatch-failed ready-pr-failed qa-fail-unchanged-head head-unresolved stop-requested checkout-return-failed
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
 #         ready-pr-failed draft-unverified qa-fail-unchanged-head head-unresolved
+#         stop-requested checkout-return-failed
 #   warn: qa-ci-red notify-failed board-failed spend-upsert-failed lease-release-failed
 #         model-invalid label-failed comment-failed budget-check-failed
 #         inflight-unreadable
@@ -422,7 +451,16 @@ verbs:
                                      `done`; a merge action runs `gate merge`, then
                                      `merge-pr` and `post-merge`; stops on
                                      ask-owner, wait and every gate verdict that
-                                     is not merge
+                                     is not merge. Without --issue it drains the
+                                     queue: after a merge the checkout is back on
+                                     the base branch and the next pass runs (the
+                                     passes of the whole command are capped by
+                                     --max-iterations, default 20; a long drain
+                                     passes a larger number). With --issue it ends
+                                     after that issue's merge
+  run --stop                         ask a running `run` to stop after the stage
+                                     it is on: stop=requested; that run ends with
+                                     stop reason=stop-requested
   lease prune                        the maintenance verb for the lease ledger:
                                      removes every line no reader counts as a
                                      lease (expired, a dead holder past the
@@ -1292,7 +1330,8 @@ _talos_issue_open() {
 # _talos_post_merge_run <pr> <issue> <heal 0|1> <ci-runs or empty> [known-open]:
 # the items, in order. Siblings (a merge, not a heal), the issue-closed
 # comment, close-issue (only while the issue is open: the github verb comments
-# on every call), board Done, worktree remove, the notices, the
+# on every call), board Done, the checkout back on the base (`checkout=`,
+# #601), worktree remove, the notices, the
 # merged and issue-closed events and the spend block. A 5th argument of 1 says
 # the caller just listed the issue as open (the sweep heal).
 _talos_post_merge_run() {
@@ -1335,6 +1374,18 @@ _talos_post_merge_run() {
 
   _talos_run_capture board bash "$SCRIPT_DIR/pipeline-status.sh" "$_n" "Done"
   [ "$_RC" -eq 0 ] || _talos_warn board-failed "issue=$_n"
+
+  # A checkout left on the merged issue's branch goes back to the base, fast-
+  # forwarded, never forced (#601), before the issue's worktrees are removed.
+  # to-base's one state line is the answer; anything else is a failed return.
+  _talos_run_capture worktree bash "$SCRIPT_DIR/pipeline-worktree.sh" to-base "$_n"
+  case "$_OUT" in
+    "talos:checkout state=returned" | "talos:checkout state=synced" | "talos:checkout state=kept")
+      _talos_emit checkout "${_OUT#talos:checkout state=}" ;;
+    *)
+      _talos_emit checkout failed
+      _talos_warn checkout-return-failed "issue=$_n" ;;
+  esac
 
   _talos_run_capture worktree bash "$SCRIPT_DIR/pipeline-worktree.sh" remove "$_n"
   [ "$_RC" -eq 0 ] || _talos_warn worktree-remove-failed "issue=$_n"
@@ -2586,7 +2637,7 @@ _talos_claim() {
 # it (#522) and the wait it still causes reports the seconds until
 # reclaimable, never the TTL.
 _talos_next() {
-  local _issue="" _target _a _r _inflight _roles="" _retry _skip _tries
+  local _issue="" _target _a _r _leased _roles="" _retry _skip _tries
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --issue) _issue="${2:-}"; shift 2 ;;
@@ -2626,18 +2677,19 @@ _talos_next() {
   fi
   if [ "$_a" = "issue-side" ]; then
     # The issue-side half (#471): the routing options from the config, the
-    # live-lease count for the max_parallel cap, then one program.
+    # issues other runs hold a lease of (the max_parallel cap counts them and
+    # the walk passes them over, #601), then one program.
     case "$(cfg roles.validator | tr '[:upper:]' '[:lower:]')" in false) ;; *) _roles="validator," ;; esac
     case "$(cfg roles.planner | tr '[:upper:]' '[:lower:]')" in true) _roles="${_roles}planner," ;; esac
     case "$(cfg roles.pm | tr '[:upper:]' '[:lower:]')" in false) ;; *) _roles="${_roles}pm," ;; esac
     _skip="$(printf '%s\n' "$(cfg issues.skip_labels)" | paste -sd, -)"
-    _inflight="$(_talos_lease_live_count)"
+    _leased="$(_talos_lease_live_issues)"
     _a="$(python3 -I "$SCRIPT_DIR/pipeline-next.py" issue-side "$_CFG_CACHE_DIR/state.json" \
             --vcs "$SCRIPT_DIR/pipeline-vcs.sh" --budget "$SCRIPT_DIR/pipeline-budget.sh" \
             --issue "$_issue" --roles "$_roles" --label-filter "$(cfg issues.label_filter)" \
             --skip-labels "$_skip" --max-parallel "$(cfg issues.max_parallel)" \
             --pm-skip "$(printf '%s' "$(cfg roles.pm_skip_when_spec_present)" | tr '[:upper:]' '[:lower:]')" \
-            --in-flight "$_inflight" 2>/dev/null)"
+            --leased "$_leased" 2>/dev/null)"
     _r=$?
     if [ "$_r" -ne 0 ]; then
       case "$_a" in
@@ -2723,16 +2775,17 @@ _talos_next_ref() {
   esac
 }
 
-# _talos_lease_live_count: how many issues hold a lease the reader counts
-# (the in-flight dispatches `next` counts against issues.max_parallel): every
-# issue at most once, skipping the lines no reader counts -- expired, a dead
-# holder past the age guard (the reclaim, #522, AC10), and this run's own
-# lease. An unreadable ledger counts zero: the cap is a scheduling hint, never
-# a stop.
-_talos_lease_live_count() {
-  local _f _now _ln _exp _pid _held _issue _c=0 _seen=""
-  _f="$(_talos_lease_file)" || { printf 0; return 0; }
-  [ -f "$_f" ] || { printf 0; return 0; }
+# _talos_lease_live_issues: the issues that hold a lease the reader counts,
+# comma-separated (the in-flight dispatches `next` counts against
+# issues.max_parallel, and the in-flight candidates its walk passes over,
+# #601): every issue at most once, skipping the lines no reader counts --
+# expired, a dead holder past the age guard (the reclaim, #522, AC10), and
+# this run's own lease. An unreadable ledger lists none: the cap is a
+# scheduling hint, never a stop.
+_talos_lease_live_issues() {
+  local _f _now _ln _exp _pid _held _issue _seen=""
+  _f="$(_talos_lease_file)" || return 0
+  [ -f "$_f" ] || return 0
   _now="$(_talos_now)"
   while IFS= read -r _ln || [ -n "$_ln" ]; do
     _exp="${_ln##* expires=}"; _exp="${_exp%% *}"
@@ -2746,9 +2799,9 @@ _talos_lease_live_count() {
     _issue="${_ln%% *}"; _issue="${_issue#issue=}"
     case " $_seen " in *" $_issue "*) continue ;; esac
     _seen="$_seen$_issue "
-    _c=$((_c + 1))
   done < "$_f" 2>/dev/null
-  printf '%s' "$_c"
+  _seen="${_seen% }"
+  printf '%s' "${_seen// /,}"
 }
 
 # _talos_emit_next <line>: the action line, sanitised as one pair.
@@ -2838,13 +2891,50 @@ _run_agent() {
   _talos_relay "agent.$1" "$(cat "$_CFG_CACHE_DIR/agent.err")"
 }
 
+# _talos_run_stop_file: the path of the stop request (#601), `run.stop` in the
+# run-state directory, shared by every worktree of the repository. Non-zero
+# outside a repository.
+_talos_run_stop_file() {
+  local _d
+  _d="$(_talos_state_dir)" || return 1
+  printf '%s/run.stop' "$_d"
+}
+
+# _talos_run_continue <max> <passes> (#601): the pass after a merge runs in a new
+# image of this script. When Talos works on itself the merge just changed the
+# scripts on disk, and the functions loaded here are the old ones; the exec
+# happens after every merge, changed scripts or not (one path). Same PID,
+# nothing left behind: the output so far is flushed and the exit hooks run (the
+# run's leases, its scratch directory) before the exec. The passes used so far
+# travel in TALOS_RUN_PASSES, so --max-iterations still caps the whole command.
+_talos_run_continue() {
+  if [ ! -f "$SCRIPT_DIR/talos.sh" ] || [ ! -r "$SCRIPT_DIR/talos.sh" ]; then
+    _talos_emit stop "reason=scripts-missing"
+    _talos_flush; exit 1
+  fi
+  _talos_flush
+  _talos_run_exit_hooks
+  trap - EXIT
+  TALOS_RUN_PASSES="$$:$2"; export TALOS_RUN_PASSES
+  exec bash "$SCRIPT_DIR/talos.sh" run --max-iterations "$1"
+}
+
 # ── run: the loop (#472) ─────────────────────────────────────────────────────
 # One pass = `next` (the one call the playbook's Step 2 was), the act branch,
 # `done` (the one bookkeeping write). The loop ends on wait/ask-owner, a gate
-# verdict that is not merge, the first-pass stop rules, or the pass cap; an
-# untargeted drained-queue wait first works the in-flight issues (#519).
+# verdict that is not merge, the first-pass stop rules, a stop request or the
+# pass cap; an untargeted drained-queue wait first works the in-flight issues
+# (#519), and an untargeted merge is followed by the next pass (#601).
 _talos_run_loop() {
   local _issue="" _max=20 _iter=0 _act _r _rc _pr _n _inflight_list _state_json _next_issue
+  local _fresh=1 _stopf _pm _pm_out _co _w
+  # run --stop (#601): only the request, no pass.
+  if [ "${1:-}" = "--stop" ]; then
+    [ "$#" -eq 1 ] || _talos_stop usage 2
+    _stopf="$(_talos_run_stop_file)" && : > "$_stopf" || _talos_stop scratch-unavailable
+    printf 'stop=requested\n'
+    return 0
+  fi
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --issue) _issue="${2:-}"; shift 2 ;;
@@ -2855,6 +2945,20 @@ _talos_run_loop() {
   [ -z "$_issue" ] || _talos_isnum "$_issue" || _talos_stop usage 2
   [ -z "$_max" ] || _talos_isnum "$_max" || _talos_stop usage 2
   [ -z "$_max" ] || [ "$_max" -ge 1 ] || _talos_stop usage 2
+  # The passes a run already used before a merge made it exec this script again
+  # (_talos_run_continue, #601): TALOS_RUN_PASSES=<pid>:<passes>. Only the
+  # process it names honours it (an exec keeps the PID); it is dropped here
+  # either way, so no stage inherits it.
+  case "${TALOS_RUN_PASSES:-}" in
+    "$$:"*)
+      _r="${TALOS_RUN_PASSES#*:}"
+      if _talos_isnum "$_r" && [ "${#_r}" -le 9 ]; then _iter="$_r"; _fresh=0; fi ;;
+  esac
+  unset TALOS_RUN_PASSES
+  # A stop request left over from before this run is not for it; the pass after
+  # a merge's exec is the same run and keeps it.
+  _stopf="$(_talos_run_stop_file 2>/dev/null)" || _stopf=""
+  [ "$_fresh" -eq 0 ] || [ -z "$_stopf" ] || rm -f "$_stopf"
   _talos_prepare run pipeline-config.sh pipeline-cfg-cache.sh pipeline-status-file.sh \
                      pipeline-contract.sh pipeline-next.py pipeline-draft-check.sh \
                      pipeline-vcs.sh pipeline-budget.sh pipeline-lock.sh pipeline-agent.sh \
@@ -2896,9 +3000,10 @@ _talos_run_loop() {
   # an empty list ends the run at its first wait -- never a second,
   # untargeted ready-queue walk (finding 2). An unreadable read is said
   # (`warn reason=inflight-unreadable`), never silently inert. Untargeted
-  # runs only: a targeted run never uses this list.
+  # runs only: a targeted run never uses this list. Nor does a run that has no
+  # pass left (the image after a merge on the last pass, #601).
   _inflight_list=""
-  if [ -z "$_issue" ]; then
+  if [ -z "$_issue" ] && [ "$_iter" -lt "$_max" ]; then
     if ! _state_json="$(_talos_collect_get)"; then
       _state_json="$(bash "$SCRIPT_DIR"/pipeline-status-file.sh collect 2>/dev/null)" \
         && _talos_collect_put "$_state_json"
@@ -2912,6 +3017,14 @@ _talos_run_loop() {
   fi
 
   while [ "$_iter" -lt "$_max" ]; do
+    # A stop request (`run --stop`, #601) is honoured at the top of a pass, before
+    # `next` reads the state or takes a lease: the stage that was running when
+    # it was written has finished, its `done` included.
+    if [ -n "$_stopf" ] && [ -e "$_stopf" ]; then
+      rm -f "$_stopf"
+      _talos_emit stop "reason=stop-requested"
+      _talos_flush; exit 0
+    fi
     _iter=$((_iter + 1))
     if [ -n "$_issue" ]; then
       _act="$(bash "$SCRIPT_DIR"/talos.sh next --issue "$_issue" 2>/dev/null)"
@@ -2989,16 +3102,30 @@ _talos_run_loop() {
             _talos_emit merged pr="$_pr"
             if _vcs merge-pr "$_pr" > /dev/null; then
               # post-merge, with the CI-run count read before the merge (the
-              # merge deletes the head branch).
-              if [ -n "$_RUN_CI" ]; then
-                bash "$SCRIPT_DIR"/talos.sh post-merge "$_pr" "$_n" --ci-runs "$_RUN_CI" > /dev/null 2>"$_CFG_CACHE_DIR/err" \
-                  || _talos_relay post-merge "$(cat "$_CFG_CACHE_DIR/err")"
-              else
-                bash "$SCRIPT_DIR"/talos.sh post-merge "$_pr" "$_n" > /dev/null 2>"$_CFG_CACHE_DIR/err" \
-                  || _talos_relay post-merge "$(cat "$_CFG_CACHE_DIR/err")"
+              # merge deletes the head branch). Its `checkout=` line says where
+              # it left the checkout (#601): returned, synced or kept is a
+              # checkout the next pass can work from; anything else (failed,
+              # or no line at all) ends the run here.
+              _pm=(post-merge "$_pr" "$_n")
+              [ -z "$_RUN_CI" ] || _pm+=(--ci-runs "$_RUN_CI")
+              _pm_out="$(bash "$SCRIPT_DIR"/talos.sh "${_pm[@]}" 2>"$_CFG_CACHE_DIR/err")"
+              _rc=$?
+              _co=failed
+              for _w in returned synced kept; do
+                ! _talos_has "$_pm_out" "checkout=$_w" || _co="$_w"
+              done
+              { [ "$_rc" -eq 0 ] && [ "$_co" != failed ]; } || _talos_relay post-merge "$(cat "$_CFG_CACHE_DIR/err")"
+              if [ "$_co" = failed ]; then
+                _talos_emit stop "merged pr=$_pr reason=checkout-return-failed"
+                _talos_flush; exit 0
               fi
-              _talos_emit stop "merged pr=$_pr"
-              _talos_flush; exit 0
+              # A targeted run is done with its issue. An untargeted one goes
+              # on with the queue, in a new image of this script.
+              if [ -n "$_issue" ]; then
+                _talos_emit stop "merged pr=$_pr"
+                _talos_flush; exit 0
+              fi
+              _talos_run_continue "$_max" "$_iter"
             fi
             _talos_warn merge-failed "pr=$_pr"
             _talos_stop merge-failed ;;

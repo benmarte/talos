@@ -14,11 +14,21 @@ Paths such as `scripts/talos.sh` are relative to the Talos install (`~/.talos` a
 | --- | --- |
 | `/talos:pipeline` (Claude Code) | An LLM orchestrator follows [SKILL.md](../skills/pipeline/SKILL.md) and calls `talos.sh` verbs. |
 | `Read ~/.talos/skills/pipeline/SKILL.md and follow it` (any other agent) | The same playbook. |
-| `bash scripts/talos.sh run [--issue N] [--max-iterations n]` | Code drives; an LLM still does every stage. For local and weak-model profiles. |
+| `bash scripts/talos.sh run [--issue N] [--max-iterations n]` | Code drives; an LLM still does every stage. For local and weak-model profiles. Without `--issue` it drains the queue; `run --stop` ends it at the next stage boundary. |
 
 `scripts/` is the install's scripts directory (`~/.talos/scripts` after `install.sh --global`). Read a playbook ref in `skills/pipeline/refs/` only when `talos.sh env` or `next` prints `ref=<topic>`.
 
-`talos.sh run` loops `next` (one routed action), `prompt` (renders the stage prompt), `pipeline-agent.sh` (the configured runner, with `agents.fallback` failover) and `done` (bookkeeping), at most `--max-iterations` passes (default 20). It reads each verdict from the first line of the agent's final message that starts with `WORD:` (the word on the role's verdict list; the developer's message is read for its PR URL). An unreadable answer is a dispatch failure and records nothing. On `action=merge` it runs `gate merge`, then `merge-pr` and `post-merge`. Exit 0 on every clean stop (`ask-owner`, a stage block, a `wait`, a non-merge gate verdict, the iteration cap); exit 1 when state cannot be read, a stage dispatch fails (an unreadable answer included), the merge fails or failover is exhausted (`provider-failed`); exit 2 on a usage error. A second QA FAIL at an unchanged PR head blocks and stops. Re-run to continue.
+`talos.sh run` loops `next` (one routed action), `prompt` (renders the stage prompt), `pipeline-agent.sh` (the configured runner, with `agents.fallback` failover) and `done` (bookkeeping), at most `--max-iterations` passes (default 20; a long drain passes a larger number). It reads each verdict from the first line of the agent's final message that starts with `WORD:` (the word on the role's verdict list; the developer's message is read for its PR URL). An unreadable answer is a dispatch failure and records nothing. On `action=merge` it runs `gate merge`, then `merge-pr` and `post-merge`. Exit 0 on every clean stop (`ask-owner`, a stage block, a `wait`, a non-merge gate verdict, a requested stop, the iteration cap); exit 1 when state cannot be read, a stage dispatch fails (an unreadable answer included), the merge fails or failover is exhausted (`provider-failed`); exit 2 on a usage error. A second QA FAIL at an unchanged PR head blocks and stops. Re-run to continue.
+
+**One run drains the queue.** Started once without `--issue`, `talos.sh run` goes on after every merge until something needs a person (`ask-owner`, a block, a `stop reason=`) or nothing is left:
+
+- After `merge-pr`, `post-merge` puts the checkout back on the base branch (`pipeline-worktree.sh to-base <N>`: switch, `git pull --ff-only`, delete the merged issue branch) before it removes the issue's worktrees, and prints `checkout=returned|synced|kept|failed`. It never forces: a tracked change on the issue branch, a refused switch or a pull that is not a fast-forward is `checkout=failed`, and the run ends with `stop merged pr=<M> reason=checkout-return-failed`.
+- Then the run prints `merged=pr=<M>`, flushes its output, runs its exit hooks (leases, scratch directory) and execs `talos.sh run` again for the next pass: same PID, nothing left running, and when Talos works on its own repo the merged scripts are the ones loaded.
+- `--max-iterations` caps the passes of the whole command, the ones after a merge included (the count crosses the exec in `TALOS_RUN_PASSES=<pid>:<passes>`, which only the process it names honours). The default is 20; pass a larger number for a long drain.
+- Issues are worked in one order across validation and development: priority (`p0`, `p1`, `p2`, unlabelled), then issues already in flight (`pipeline:confirmed`, `pipeline:dev`) before ready ones, then the issue number. A p0 is taken to its end before a p2 is validated. Open pipeline PRs still come first, lowest number first.
+- `talos.sh run --stop` asks a running run to stop after the stage it is on. It writes `<git common dir>/talos/run.stop` and prints `stop=requested`; the run reads the request at the top of its next pass, deletes it and ends with `stop reason=stop-requested` (exit 0). A request nobody picked up is deleted by the next run that starts.
+
+`run --issue <N>` works one issue and ends after its merge with `stop merged pr=<M>`.
 
 Verbs: `env`, `state [--summary]`, `next [--issue N]`, `prompt`, `done`, `gate fix-round|merge`, `docs-gate`, `post-merge`, `sweep`, `summary`, `claim`, `lease prune`, `run`.
 
@@ -36,7 +46,7 @@ Default order: validator, planner (optional), pm, developer, qa, docs, reviewer 
 | docs | code gate, LLM only if needed | `roles.docs`, `roles.docs_mode` | `docs-gate` stamps `docs:done` itself unless the PR changes `README.md`, `docs/**` or `scripts/pipeline-defaults.sh` (`roles.docs_mode: always` forces the agent). |
 | reviewer, security | LLM | `roles.reviewer`, `roles.security` | Read `diff-pr --stat`, then the files that matter. Run no tests. |
 | adversarial | LLM, off | `roles.adversarial` | Second opinion on another backend. |
-| merge | code | `merge.auto` | `gate merge` checks every gate; `merge-pr`; `post-merge` closes the issue, sets the board to Done, removes the worktree, notifies. |
+| merge | code | `merge.auto` | `gate merge` checks every gate; `merge-pr`; `post-merge` closes the issue, sets the board to Done, returns the checkout to the base branch, removes the worktree, notifies. |
 
 Everything except the stage agents is mechanical: routing (`next`), bookkeeping (`done`), gates, sweeps, merge.
 
@@ -57,7 +67,7 @@ Each stage is a fresh agent. Spend is measured per run ([Hooks, events, spend an
 
 - An issue needs `pipeline:ready`. With `issues.label_filter` set to anything else it also needs that label (AND; a wrong filter gives a silently empty queue).
 - Issues carrying a label in `issues.skip_labels` (default `pipeline:blocked`, `wontfix`) are skipped.
-- Order: `p0`, `p1`, `p2`, unlabelled, then issue number.
+- Order: `p0`, `p1`, `p2`, unlabelled; at the same priority an issue already in flight (`pipeline:confirmed`, `pipeline:dev`) goes before a ready one; then issue number. The ready-queue rules here (the filter, the skip labels, the cap) do not hold back an issue that is already in flight; one another run holds the lease of is skipped for the next issue.
 - `issues.max_parallel` caps issues in flight (`next` answers `wait reason=cap`). Above 1 needs `execution.isolation: worktree`; the adapter path runs stages one at a time.
 - `issues.assignee` (`self`, a login, or `none`) assigns the issue at creation and when it moves to In progress; it never replaces an existing assignee. With `issues.claim` true and an assignee other than `none`, the assignee is the lock between operators: `next` claims an issue before dispatching it and leaves other operators' issues alone (`identity.name` is the login `self` means). See [Isolation, locking and multi-user claims](#isolation-locking-and-multi-user-claims).
 
@@ -160,7 +170,7 @@ claude plugin install talos@talos
 3. `bash ~/.talos/scripts/bootstrap-labels.sh [owner/repo]` creates or updates the `pipeline:*`, approval and control labels (`spec:ready`, `skip-qa`, `epic`, `p0`-`p2`). Idempotent; needs `gh` (GitHub only).
 4. `bash ~/.talos/scripts/bootstrap-board.sh [owner/project_number]` adds the missing Status options (In progress, In review, Done, Blocked, Ready) to `board.status_field` (it does not create the field). Azure: validates `board.azure_states.*`; GitLab: checks labels; file provider or `board.enabled: false`: no-op.
 5. Queue: `gh issue edit 42 --add-label pipeline:ready`, or a `- [ ] task` line in `plan.md` (file mode).
-6. Run: `/talos:pipeline` in Claude Code; any other agent: `Read ~/.talos/skills/pipeline/SKILL.md and follow it`. Without an orchestrator session: `bash ~/.talos/scripts/talos.sh run [--issue <N>] [--max-iterations <n>]` (default 20 passes). It loops `talos.sh next`, dispatches stages through `pipeline-agent.sh` and runs the gates in code. A stop or ask-owner wait exits 0; an unreadable state exits 1. Re-run to resume.
+6. Run: `/talos:pipeline` in Claude Code; any other agent: `Read ~/.talos/skills/pipeline/SKILL.md and follow it`. Without an orchestrator session: `bash ~/.talos/scripts/talos.sh run [--issue <N>] [--max-iterations <n>]` (default 20 passes; a long drain passes a larger number). It loops `talos.sh next`, dispatches stages through `pipeline-agent.sh` and runs the gates in code. Started without `--issue` it drains the queue in priority order: after each merge the checkout is back on the base branch and the next pass runs. A stop or ask-owner wait exits 0; an unreadable state exits 1. Re-run to resume. `talos.sh run --stop` asks a running run to stop after the stage it is on.
 
 ### Per harness
 
@@ -706,6 +716,7 @@ In `branch` mode the orchestrator runs `pipeline-vcs.sh assert-sync` before each
 
 The developer worktree is `fix|feat/issue-<N>-<slug>`. QA, reviewer, security and docs get a Claude Code `agent-*` worktree under `.claude/worktrees` with no issue number in its name, so each stage's first verb (`pipeline-criteria.sh qa-run`, `post-approval --issue <N>`) writes `<worktree>/.talos/env` to tag it. `.talos/` is hidden through `.git/info/exclude`.
 
+- `pipeline-worktree.sh to-base <N>` runs after a merge (`talos.sh post-merge`, before `remove`). A checkout left on `fix|feat/issue-<N>-...` with no change to a tracked file is switched to the base branch (`base_branch`, else the default branch), fast-forwarded with `git pull --ff-only`, and the issue branch is deleted: `talos:checkout state=returned`. On the base branch it only fast-forwards (`synced`); anywhere else it does nothing (`kept`). It never forces: `state=failed reason=dirty|switch-failed|pull-failed` leaves the rest as it is.
 - `pipeline-worktree.sh remove <N>` runs after a merge (`talos.sh post-merge`). It removes every worktree of issue N, their local branches and the handoff file, but keeps one with uncommitted or unpushed work and says why.
 - `pipeline-worktree.sh sweep [<id>...]` runs at the start (`talos.sh sweep`, with the run's queue ids) and end (`talos.sh summary`, with those ids plus the issue of every open PR) of a run. It removes every other worktree, dirty or not, including any it cannot identify; with no ids that is all of them. It never removes the current checkout or a lane home. It also deletes local branches that are not `main`, `master` or `base_branch`, have no remote and head no open PR (skipped if the PR list is unreadable), then prints `talos:worktree-sweep removed=<n> kept=<n> freed=<size>`.
 - `pipeline-worktree.sh status` prints worktree, dirty and branch counts and the size of `.claude/worktrees`. `list` adds `pipeline-worktree: WARNING: <N> stale worktrees exceed threshold <T>` when more than `execution.worktree_warn_threshold` are stale; the run summary relays it. The threshold changes the warning only.
@@ -1113,7 +1124,10 @@ Start with `bash scripts/pipeline-config.sh --show` (each key, its value and lay
 | `provider-failed rc=75\|69` | Provider error or failover exhausted; nothing is recorded. See [Profiles, runners and fallback](#profiles-runners-and-fallback). |
 | `action=wait reason=lease` | Another run holds the issue's lease (or the ledger is unavailable). Re-run later; see [Isolation, locking and multi-user claims](#isolation-locking-and-multi-user-claims). |
 | `qa-fail-unchanged-head` | The QA fix round pushed nothing; PR and issue are `pipeline:blocked`. |
-| `iterations-exhausted` | The `--max-iterations` cap (default 20) was reached; run again. |
+| `iterations-exhausted` | The `--max-iterations` cap (default 20) was reached; it counts the passes of the whole command, the ones after a merge included. Run again, with a larger number for a long drain. |
+| `stop-requested` | `talos.sh run --stop` was called; the stage that was running finished first. Run again to go on. |
+| `merged pr=<M> reason=checkout-return-failed` | The PR merged, but the checkout could not be put back on the base branch (a tracked change on the issue branch, a refused switch, a pull that is not a fast-forward; stderr names which). Nothing was forced. Fix the checkout by hand, then run again. |
+| `scripts-missing` | After a merge, `talos.sh` in the scripts directory could not be read, so the next pass could not start. Reinstall, then run again. |
 | `trust-unverified` | The login lookup was refused (an Actions or GitHub App token) and `markers.trusted_authors` is empty, so marker authors cannot be checked. Set `markers.trusted_authors`. |
 
 A `pipeline:blocked` issue or PR is skipped until a human removes the label. After a token-budget block, removing it grants one more limit (or raise `limits.tokens_per_issue`).

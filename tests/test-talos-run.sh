@@ -54,6 +54,9 @@ d="${STUB_DIR:?}"
 n="$(basename "$0" .sh)"; n="${n#pipeline-}"
 if [ "$n" = "vcs" ]; then key="$1"; else key="$n"; fi
 printf "%s %s\n" "$n" "$*" >> "$d/journal"
+# #601: hook.<key> is a shell snippet sourced here (hook.merge-pr, hook.worktree):
+# it moves the fixture state the way that call would, e.g. a merge closing the PR.
+if [ -f "$d/hook.$key" ]; then . "$d/hook.$key"; fi
 # list-prs / list-issues / list-needs-owner: the reads of the collect. LIST_PRS
 # is the open-PR array (default empty); the issue list has canned answers.
 if [ "$key" = "list-prs" ]; then printf '%s' "${LIST_PRS:-[]}"; exit 0; fi
@@ -728,10 +731,14 @@ printf '{"labels": [{"name": "qa:pass"}, {"name": "docs:done"}, {"name": "review
 cat > "$STUB_DIR/hook.qa.2" <<'HOOK'
 printf '%s' '{"prs":[{"n":12,"issue":9,"head":"bbbb","owner":false,"stage":"merge"}],"pr_total":1,"ignored":0,"blocked":[],"queued":[],"held":[],"owners":[],"capped":[]}' > "$d/collect.json"
 HOOK
+# The merge closes the PR: the pass after it (#601) finds nothing left.
+cat > "$STUB_DIR/hook.merge-pr" <<'HOOK'
+printf '%s' '{"prs":[],"pr_total":0,"ignored":0,"blocked":[],"queued":[],"held":[],"owners":[],"capped":[]}' > "$d/collect.json"
+HOOK
 TALOS_LEASE_TTL_S=1800 TALOS_NOW=12000 rn --max-iterations 5
 assert_eq "0" "$RC" "fix round: the run exits 0"
 assert_not_contains "$OUT" "iterations-exhausted" "fix round: the run does not loop to --max-iterations"
-assert_contains "$OUT" "stop merged pr=12" "fix round: a passing QA after the fix reaches the merge arm and merges"
+assert_contains "$OUT" "merged=pr=12" "fix round: a passing QA after the fix reaches the merge arm and merges"
 assert_eq "ready-pr 12>agent qa>vcs record-attempt 9 qa --pr 12>label-pr 12 --remove pipeline:blocked>agent developer>ready-pr 12>agent qa>view-pr 12" "$(fix_order)" \
   "fix round: QA FAIL -> gate fix-round (record-attempt, unblock) -> developer -> the normal path (ready-pr, QA) -> the merge arm"
 assert_contains "$(cat "$STUB_DIR/developer.prompt" 2>/dev/null)" "Fix round: PR #12 is already open" \
@@ -974,5 +981,258 @@ assert_contains "$OUT" "stop reason=stage-blocked role=qa" "blocked: qa stop lin
 assert_contains "$(journal)" "hooks post_stage qa qa 9 --pr 12 --verdict BLOCKED" "blocked: qa recorded as BLOCKED"
 assert_contains "$(journal)" "vcs label-pr 12 --add pipeline:blocked" "blocked: the PR is labelled pipeline:blocked"
 assert_not_contains "$(journal)" "gate fix-round" "blocked: a qa BLOCKED: starts no developer fix round"
+
+# ── (m) one run drains the queue (#601) ───────────────────────────────────────
+# After a merge an untargeted run goes on: post-merge returns the checkout
+# (`pipeline-worktree.sh to-base`), the run flushes, runs its exit hooks and
+# execs $SCRIPT_DIR/talos.sh for the next pass (same PID, the merged code).
+# pipeline-worktree.sh is a journaling stub from here on (the real verb is
+# pinned in tests/test-worktree.sh): `to-base` answers $STUB_DIR/worktree.out,
+# and hook.worktree / hook.merge-pr move the fixture the way the call would.
+printf '%s' "$STUB_BODY" > "$GS/pipeline-worktree.sh"
+export GS_DIR="$GS" LEASE_FILE="$LEASE"
+STOPF="$SANDBOX/.git/talos/run.stop"
+last_line() { printf '%s\n' "$OUT" | tail -n 1; }
+vi() {  # $1 = issue ; $2 = its labels (JSON array members)
+  printf '{"number": %s, "title": "t", "labels": [%s], "body": "body", "state": "open"}' "$1" "$2" > "$STUB_DIR/view-issue.$1"
+}
+st_pr() {  # PR 12 (issue 9) at the merge stage ; $1 = the queued issues
+  printf '{"prs":[{"n":12,"issue":9,"head":"a4f9","owner":false,"stage":"merge"}],"pr_total":1,"ignored":0,"blocked":[],"queued":[%s],"held":[],"inflight":[],"owners":[],"capped":[],"priority":{}}' "$1"
+}
+st_q() {  # no PR ; $1 = queued ; $2 = in flight ; $3 = the priority object (default: none)
+  local _prio="${3:-}"
+  [ -n "$_prio" ] || _prio='{}'
+  printf '{"prs":[],"pr_total":0,"ignored":0,"blocked":[],"queued":[%s],"held":[],"inflight":[%s],"owners":[],"capped":[],"priority":%s}' "$1" "${2:-}" "$_prio"
+}
+drain_fixture() {  # PR 12 passes every merge gate ; $1 = what to-base answers
+  merge_fixture "$ALL_APPROVALS"
+  draft_ready
+  rm -f "$STOPF"
+  printf 'talos:checkout state=%s\n' "${1:-returned}" > "$STUB_DIR/worktree.out"
+  printf 'CONFIRMED: real\n' > "$STUB_DIR/message.validator"
+}
+drain_order() { grep -oE 'merge-pr 12|worktree to-base 9|worktree remove 9|agent [a-z]+' "$STUB_DIR/journal" | tr '\n' '>' | sed 's/>$//'; }
+
+# AC1: the merge is not the end. PR 12 merges, the checkout is returned, and
+# the same command dispatches the next queued issue; the run ends on the next
+# terminal answer.
+drain_fixture returned
+st_pr 21 > "$STUB_DIR/collect.json"
+st_q 21 > "$STUB_DIR/collect.merged"
+st_q "" > "$STUB_DIR/collect.drained"
+vi 21 '{"name": "pipeline:ready"}'
+printf 'cp "$d/collect.merged" "$d/collect.json"\n' > "$STUB_DIR/hook.merge-pr"
+printf 'cp "$d/collect.drained" "$d/collect.json"\n' > "$STUB_DIR/hook.validator.1"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=17000 rn --max-iterations 6
+assert_eq "0" "$RC" "AC1 (#601): the run that merged and went on exits 0"
+assert_contains "$OUT" "merged=pr=12" "AC1 (#601): the merge is reported as merged=pr=<M>"
+assert_not_contains "$OUT" "stop merged" "AC1 (#601): an untargeted run prints no stop merged line"
+assert_eq "merge-pr 12>worktree to-base 9>worktree remove 9>agent validator" "$(drain_order)" \
+  "AC1 (#601): the same command performs the next pass: the second queued issue gets its dispatch after the merge"
+assert_eq "stop action=wait reason=none" "$(last_line)" "AC1 (#601): the run ends on the next terminal answer"
+# checkout=synced and checkout=kept go on the same way.
+for _s in synced kept; do
+  drain_fixture "$_s"
+  st_pr 21 > "$STUB_DIR/collect.json"
+  st_q 21 > "$STUB_DIR/collect.merged"
+  st_q "" > "$STUB_DIR/collect.drained"
+  vi 21 '{"name": "pipeline:ready"}'
+  printf 'cp "$d/collect.merged" "$d/collect.json"\n' > "$STUB_DIR/hook.merge-pr"
+  printf 'cp "$d/collect.drained" "$d/collect.json"\n' > "$STUB_DIR/hook.validator.1"
+  TALOS_LEASE_TTL_S=1800 TALOS_NOW=17000 rn --max-iterations 6
+  assert_contains "$(journal)" "agent validator" "AC1 (#601): checkout=$_s goes on to the next pass"
+done
+
+# AC2: the next pass is a new image of $SCRIPT_DIR/talos.sh reached by exec.
+# The file is replaced while post-merge returns the checkout (that is when a
+# merge of Talos's own scripts lands on disk); the replacement records its PID,
+# its arguments, the pass count it was handed, the run's leases still in the
+# ledger and the scratch directories still on disk, then ends the run.
+drain_fixture returned
+st_pr "" > "$STUB_DIR/collect.json"
+mkdir -p "$SANDBOX/tmp-601"
+cp "$GS/talos.sh" "$GS/talos.orig"
+cat > "$STUB_DIR/talos.new" <<'TALOS_newimageQ4xNv8Lr'
+#!/usr/bin/env bash
+d="${STUB_DIR:?}"
+leases="$(grep -c "pid=$$\$" "${LEASE_FILE:?}" 2>/dev/null)"
+{
+  printf 'pid=%s args=%s passes=%s\n' "$$" "$*" "${TALOS_RUN_PASSES-<unset>}"
+  printf 'leases=%s\n' "${leases:-0}"
+  printf 'scratch=%s\n' "$(find "${TMPDIR:?}" -maxdepth 1 -name 'talos-cfg-cache.*' | wc -l | tr -d ' ')"
+} > "$d/new-image"
+printf 'new-image\n'
+TALOS_newimageQ4xNv8Lr
+cat > "$STUB_DIR/hook.worktree" <<'TALOS_hookwtB7mKq3Zs'
+if [ "$1" = to-base ]; then
+  # A lease of this run that only the run's exit hook can free.
+  printf 'issue=77 held=17000 expires=18800 pid=%s\n' "${TALOS_RUN_PID:?}" >> "${LEASE_FILE:?}"
+  cp "$d/talos.new" "${GS_DIR:?}/talos.sh.new" && mv "$GS_DIR/talos.sh.new" "$GS_DIR/talos.sh"
+fi
+TALOS_hookwtB7mKq3Zs
+TMPDIR="$SANDBOX/tmp-601" TALOS_LEASE_TTL_S=1800 TALOS_NOW=17000 bash "$RUN" run --max-iterations 4 > "$SANDBOX/out.601" 2>"$ERR" &
+_run_pid=$!
+wait "$_run_pid"; RC=$?
+OUT="$(cat "$SANDBOX/out.601")"
+cp "$GS/talos.orig" "$GS/talos.sh"
+assert_eq "0" "$RC" "AC2 (#601): the continued run exits with the new image's status"
+assert_eq "merged=pr=12
+new-image" "$OUT" "AC2 (#601): the run flushed its output before the exec, and the replaced talos.sh ran the next pass"
+assert_eq "pid=$_run_pid args=run --max-iterations 4 passes=$_run_pid:1" "$(sed -n 1p "$STUB_DIR/new-image" 2>/dev/null)" \
+  "AC2 (#601): the new image has the run's PID (exec, not a child) and its arguments"
+assert_eq "leases=0" "$(sed -n 2p "$STUB_DIR/new-image" 2>/dev/null)" "AC2 (#601): the exit hooks ran before the exec: no lease of the run is left in the ledger"
+assert_eq "scratch=0" "$(sed -n 3p "$STUB_DIR/new-image" 2>/dev/null)" "AC2 (#601): the exit hooks ran before the exec: the run's scratch directory is gone"
+# An unreadable $SCRIPT_DIR/talos.sh: there is nothing to exec.
+drain_fixture returned
+st_pr "" > "$STUB_DIR/collect.json"
+printf '[ "$1" != to-base ] || mv "${GS_DIR:?}/talos.sh" "$GS_DIR/talos.gone"\n' > "$STUB_DIR/hook.worktree"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=17000 rn --max-iterations 4
+[ ! -f "$GS/talos.gone" ] || mv "$GS/talos.gone" "$GS/talos.sh"
+assert_eq "1" "$RC" "AC2 (#601): an unreadable talos.sh after the merge exits 1"
+assert_eq "stop reason=scripts-missing" "$(last_line)" "AC2 (#601): an unreadable talos.sh after the merge is stop reason=scripts-missing"
+
+# AC3: --max-iterations caps the passes of the whole command, the merge pass
+# included. Pass 1 validates #21, pass 2 merges PR 12, pass 3 validates #22.
+drain_fixture returned
+st_q 21 > "$STUB_DIR/collect.json"
+st_pr 22 > "$STUB_DIR/collect.pr"
+st_q 22 > "$STUB_DIR/collect.merged"
+vi 21 '{"name": "pipeline:ready"}'
+vi 22 '{"name": "pipeline:ready"}'
+printf 'cp "$d/collect.pr" "$d/collect.json"\n' > "$STUB_DIR/hook.validator.1"
+printf 'cp "$d/collect.merged" "$d/collect.json"\n' > "$STUB_DIR/hook.merge-pr"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=17000 rn --max-iterations 3
+assert_eq "0" "$RC" "AC3 (#601): the capped drain exits 0"
+assert_eq "agent validator>merge-pr 12>worktree to-base 9>worktree remove 9>agent validator" "$(drain_order)" \
+  "AC3 (#601): --max-iterations 3 with a merge on pass 2 runs exactly one more pass"
+assert_eq "stop reason=iterations-exhausted max=3" "$(last_line)" "AC3 (#601): the passes of the whole command are capped, the merge pass included"
+# The count crosses the exec in TALOS_RUN_PASSES=<pid>:<passes>, honoured only
+# by the process it names.
+reset_stubs; LEASE_RESET
+printf 'CONFIRMED: real\n' > "$STUB_DIR/message"
+OUT="$(TALOS_LEASE_TTL_S=1 TALOS_NOW=17100 bash -c 'export TALOS_RUN_PASSES="$$:3"; exec bash "$0" run --max-iterations 3' "$RUN" 2>"$ERR")"
+assert_eq "stop reason=iterations-exhausted max=3" "$OUT" "AC3 (#601): the pass count naming the current PID is honoured: no pass is left"
+assert_not_contains "$(journal)" "agent validator" "AC3 (#601): a run whose passes are used up dispatches nothing"
+reset_stubs; LEASE_RESET
+printf 'CONFIRMED: real\n' > "$STUB_DIR/message"
+OUT="$(TALOS_LEASE_TTL_S=1 TALOS_NOW=17100 bash -c 'export TALOS_RUN_PASSES="$$:2"; exec bash "$0" run --max-iterations 3' "$RUN" 2>"$ERR")"
+assert_eq "1" "$(journal | grep -c '^agent validator$')" "AC3 (#601): two passes used of three leaves exactly one"
+reset_stubs; LEASE_RESET
+printf 'CONFIRMED: real\n' > "$STUB_DIR/message"
+TALOS_RUN_PASSES="1:3" TALOS_LEASE_TTL_S=1 TALOS_NOW=17100 rn --max-iterations 3
+assert_eq "3" "$(journal | grep -c '^agent validator$')" "AC3 (#601): the same value seen by any other process is ignored: all three passes run"
+reset_stubs; LEASE_RESET
+printf 'CONFIRMED: real\n' > "$STUB_DIR/message"
+OUT="$(TALOS_LEASE_TTL_S=1 TALOS_NOW=17100 bash -c 'export TALOS_RUN_PASSES="$$:x"; exec bash "$0" run --max-iterations 2' "$RUN" 2>"$ERR")"
+assert_eq "2" "$(journal | grep -c '^agent validator$')" "AC3 (#601): a pass count that is not a number is ignored"
+
+# AC4: a targeted run ends after its merge. The collect keeps PR 12 at the
+# merge stage, so a further pass would merge again.
+drain_fixture returned
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=17200 rn --issue 9 --max-iterations 5
+assert_eq "0" "$RC" "AC4 (#601): run --issue exits 0 after its merge"
+assert_eq "merge-pr 12>worktree to-base 9>worktree remove 9" "$(drain_order)" "AC4 (#601): run --issue merges once, post-merge returns the checkout, and no further pass runs"
+assert_eq "merged=pr=12
+stop merged pr=12" "$OUT" "AC4 (#601): run --issue ends with stop merged pr=<M>"
+
+# AC8 (the run half): post-merge did not say the checkout is back (no
+# checkout=returned|synced|kept line): the run ends there, untargeted and
+# --issue alike.
+drain_fixture "failed reason=dirty"
+st_pr 21 > "$STUB_DIR/collect.json"
+st_q 21 > "$STUB_DIR/collect.merged"
+vi 21 '{"name": "pipeline:ready"}'
+printf 'cp "$d/collect.merged" "$d/collect.json"\n' > "$STUB_DIR/hook.merge-pr"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=17300 rn --max-iterations 5
+assert_eq "0" "$RC" "AC8 (#601): a failed checkout return ends the run with exit 0"
+assert_eq "stop merged pr=12 reason=checkout-return-failed" "$(last_line)" "AC8 (#601): a failed checkout return is stop merged pr=<M> reason=checkout-return-failed"
+assert_not_contains "$(journal)" "agent validator" "AC8 (#601): no further pass after a failed checkout return"
+drain_fixture returned
+: > "$STUB_DIR/worktree.out"
+printf 1 > "$STUB_DIR/worktree.rc"
+st_pr 21 > "$STUB_DIR/collect.json"
+st_q 21 > "$STUB_DIR/collect.merged"
+vi 21 '{"name": "pipeline:ready"}'
+printf 'cp "$d/collect.merged" "$d/collect.json"\n' > "$STUB_DIR/hook.merge-pr"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=17300 rn --max-iterations 5
+assert_eq "stop merged pr=12 reason=checkout-return-failed" "$(last_line)" "AC8 (#601): a to-base that printed no state ends the run the same way"
+assert_not_contains "$(journal)" "agent validator" "AC8 (#601): no further pass when to-base printed no state"
+drain_fixture "failed reason=pull-failed"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=17300 rn --issue 9 --max-iterations 5
+assert_eq "0" "$RC" "AC8 (#601): run --issue with a failed checkout return exits 0"
+assert_eq "stop merged pr=12 reason=checkout-return-failed" "$(last_line)" "AC8 (#601): run --issue names the failed checkout return too"
+assert_eq "1" "$(journal | grep -c 'vcs merge-pr 12')" "AC8 (#601): run --issue runs no further pass after a failed checkout return"
+
+# AC11: priority holds across validation and development. A ready p0 (#5) and
+# a ready p2 (#6): once the validator confirms #5, the next pass is its PM, and
+# #6 gets no validator before that.
+reset_stubs; LEASE_RESET; rm -f "$STOPF"
+cfg_json '{"vcs": {"provider": "github"}, "issues": {"max_parallel": 1}, "roles": {"validator": true, "pm": true, "pm_skip_when_spec_present": false}, "verify": {"timeout_ms": 600000, "ci_wait_s": 900}}'
+st_q "5, 6" "" '{"5": 0, "6": 2}' > "$STUB_DIR/collect.json"
+st_q 6 5 '{"5": 0, "6": 2}' > "$STUB_DIR/collect.confirmed"
+vi 5 '{"name": "pipeline:ready"}, {"name": "p0"}'
+vi 6 '{"name": "pipeline:ready"}, {"name": "p2"}'
+printf '{"number": 5, "title": "t", "labels": [{"name": "pipeline:confirmed"}, {"name": "p0"}], "body": "body", "state": "open"}' > "$STUB_DIR/view-issue.5.confirmed"
+printf 'CONFIRMED: real\n' > "$STUB_DIR/message.validator"
+printf 'spec posted\n' > "$STUB_DIR/message.pm"
+cat > "$STUB_DIR/hook.validator.1" <<'TALOS_hookvalD2rYw9Jc'
+cp "$d/collect.confirmed" "$d/collect.json"
+cp "$d/view-issue.5.confirmed" "$d/view-issue.5"
+TALOS_hookvalD2rYw9Jc
+TALOS_LEASE_TTL_S=1 TALOS_NOW=17400 rn --max-iterations 2
+assert_eq "validator:5:
+pm:5:" "$(cat "$STUB_DIR/agent.env" 2>/dev/null)" "AC11 (#601): the confirmed p0 gets its PM on the next pass; the ready p2 gets no validator before that"
+
+# AC13: run --stop writes the request and does nothing else.
+reset_stubs; LEASE_RESET; rm -f "$STOPF"
+rn --stop
+assert_eq "0" "$RC" "AC13 (#601): run --stop exits 0"
+assert_eq "stop=requested" "$OUT" "AC13 (#601): run --stop prints stop=requested"
+assert_file_exists "$STOPF" "AC13 (#601): run --stop writes run.stop in the run-state directory"
+assert_eq "" "$(journal)" "AC13 (#601): run --stop calls no next and no agent"
+rm -f "$STOPF"
+for _a in "--stop --issue 9" "--issue 9 --stop" "--stop --max-iterations 3" "--max-iterations 3 --stop" "--stop --stop"; do
+  # shellcheck disable=SC2086
+  rn $_a
+  assert_eq "2 stop reason=usage" "$RC $OUT" "AC13 (#601): run $_a is a usage error"
+  assert_file_absent "$STOPF" "AC13 (#601): run $_a writes no request"
+done
+
+# AC14: the request is read at the top of every pass, before next. Here it is
+# written while the validator of pass 1 runs: that stage finishes (its done
+# included), and pass 2 stops before it reads the state or takes a lease.
+reset_stubs; LEASE_RESET; rm -f "$STOPF"
+printf 'CONFIRMED: real\n' > "$STUB_DIR/message"
+printf 'bash "${GS_DIR:?}/talos.sh" run --stop > "$d/stop.out" 2>&1\n' > "$STUB_DIR/hook.validator.1"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=17500 rn --max-iterations 5
+assert_eq "0" "$RC" "AC14 (#601): a requested stop exits 0"
+assert_eq "stop reason=stop-requested" "$(last_line)" "AC14 (#601): the run stops at the stage boundary with stop reason=stop-requested"
+assert_contains "$(journal)" "hooks post_stage validator validator 9 --verdict CONFIRMED" "AC14 (#601): the stage that was running finished, its done included"
+assert_eq "1" "$(journal | grep -c '^agent validator$')" "AC14 (#601): no stage starts after the request"
+assert_eq "1" "$(journal | grep -c '^status-file collect$')" "AC14 (#601): the request is read before next (no second state read)"
+assert_eq "" "$(cat "$LEASE" 2>/dev/null)" "AC14 (#601): the stopped pass took no lease"
+assert_file_absent "$STOPF" "AC14 (#601): the run deletes the request it honoured"
+# A run started fresh deletes a leftover request before its first pass.
+reset_stubs; LEASE_RESET; rm -f "$STOPF"
+printf 'CONFIRMED: real\n' > "$STUB_DIR/message"
+rn --stop
+TALOS_LEASE_TTL_S=1 TALOS_NOW=17600 rn --max-iterations 1
+assert_not_contains "$OUT" "stop-requested" "AC14 (#601): a fresh run is not stopped by a leftover request"
+assert_eq "1" "$(journal | grep -c '^agent validator$')" "AC14 (#601): a fresh run runs its first pass past a leftover request"
+assert_file_absent "$STOPF" "AC14 (#601): a fresh run deletes the leftover request"
+# The first pass after a merge's exec reads the request too (the continuation
+# is not a fresh start): written while post-merge returns the checkout.
+drain_fixture returned
+st_pr 21 > "$STUB_DIR/collect.json"
+st_q 21 > "$STUB_DIR/collect.merged"
+vi 21 '{"name": "pipeline:ready"}'
+printf 'cp "$d/collect.merged" "$d/collect.json"\n' > "$STUB_DIR/hook.merge-pr"
+printf '[ "$1" != to-base ] || bash "${GS_DIR:?}/talos.sh" run --stop > "$d/stop.out" 2>&1\n' > "$STUB_DIR/hook.worktree"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=17700 rn --max-iterations 5
+assert_eq "0" "$RC" "AC14 (#601): a stop requested during the merge pass exits 0"
+assert_eq "merged=pr=12
+stop reason=stop-requested" "$OUT" "AC14 (#601): the first pass after a merge's exec honours the request"
+assert_not_contains "$(journal)" "agent validator" "AC14 (#601): no stage starts after a merge when a stop was requested"
+assert_file_absent "$STOPF" "AC14 (#601): the continuation deletes the request it honoured"
 
 finish
