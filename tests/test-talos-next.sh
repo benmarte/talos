@@ -872,6 +872,26 @@ LEASE_RESET
 cap_lease
 nx
 assert_eq "action=wait reason=cap" "$OUT" "AC10 (#601): a waiting in-flight issue and a capped ready issue is wait reason=cap"
+# An in-flight candidate another run holds the lease of is a wait too: it is
+# passed over, never answered as `wait reason=lease` in front of the others.
+run_lease() { printf 'issue=%s held=%s expires=%s pid=%s\n' "$1" "$_now" "$((_now + 1800))" "$_cap_pid" >> "$LEASE"; }
+cfg '{"max_parallel": 2}' "$ROLES_601"
+mix 52 21
+LEASE_RESET
+run_lease 52
+nx
+assert_eq "action=dispatch stage=validator issue=21" "$OUT" "AC10 (#601): an in-flight issue leased by another run is passed over for a ready issue"
+mix "30, 52" ""
+LEASE_RESET
+run_lease 30
+nx
+assert_eq "action=dispatch stage=developer issue=52" "$OUT" "AC10 (#601): the walk goes on to the next in-flight issue after one leased by another run"
+cfg '{"max_parallel": 1}' "$ROLES_601"
+mix 52 21
+LEASE_RESET
+run_lease 52
+nx
+assert_eq "action=wait reason=cap" "$OUT" "AC10 (#601): an in-flight issue leased by another run and a capped ready issue is wait reason=cap"
 kill "$_cap_pid" 2>/dev/null
 cfg '{"max_parallel": 1}' '{"validator": true, "planner": true, "pm": true, "developer": true, "pm_skip_when_spec_present": false}'
 mix 34 22
