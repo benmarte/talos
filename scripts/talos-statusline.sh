@@ -72,7 +72,9 @@ case "${1:-}" in
 esac
 
 if ! command -v python3 >/dev/null 2>&1; then
-  echo "notice: python3 not found; the status line was not wired. Set statusLine.command to: bash ${3:-<talos scripts dir>}/talos-status.sh --line"
+  _sl_dir="${3:-<talos scripts dir>}"
+  # No control character reaches the terminal, as in the Python output (#600).
+  echo "notice: python3 not found; the status line was not wired. Set statusLine.command to: bash ${_sl_dir//[[:cntrl:]]/?}/talos-status.sh --line"
   exit 0
 fi
 
@@ -142,7 +144,9 @@ IFS= read -r -d '' STATUSLINE_PY <<'TALOS_STATUSLINE_PY' || true
 import json, os, re, shlex, sys, tempfile
 
 TEMPLATE = os.environ["TALOS_WRAPPER_TEMPLATE"]
-STATE = os.path.expanduser(os.environ.get("TALOS_HOME") or "~/.talos")
+# Absolute (#600): a relative TALOS_HOME would be written into statusLine.command
+# as given, resolved by Claude Code against each project, and refused by undo.
+STATE = os.path.abspath(os.path.expanduser(os.environ.get("TALOS_HOME") or "~/.talos"))
 WRAPPER_NAME, BACKUP_NAME = "statusline-chain.sh", "statusline-previous.json"
 
 
@@ -281,10 +285,36 @@ def not_ours(path, what):
     say("notice: %s is not a Talos wrapper (it has no Talos header), so %s; nothing was changed or deleted" % (path, what))
 
 
+def in_work_tree(path):
+    # inside a git work tree: some parent directory holds a .git entry
+    d = os.path.realpath(path)
+    while True:
+        if os.path.lexists(os.path.join(d, ".git")):
+            return True
+        parent = os.path.dirname(d)
+        if parent == d:
+            return False
+        d = parent
+
+
+def user_level(settings):
+    cfg = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+    return os.path.realpath(settings) == os.path.realpath(os.path.join(cfg, "settings.json"))
+
+
 def wire(settings, scripts):
     # absolute, but as given (abspath would normalise a // in TMPDIR)
     status = os.path.join(scripts if os.path.isabs(scripts) else os.path.abspath(scripts), "talos-status.sh")
     direct = "bash %s --line" % shlex.quote(status)
+    # Step 7e, in code (#600): the user-level status line runs in every session,
+    # so it never runs scripts from inside a repository -- only the install's own
+    # <TALOS_HOME>/scripts, wherever that lives.
+    own = os.path.realpath(os.path.join(STATE, "scripts"))
+    if user_level(settings) and os.path.realpath(os.path.dirname(status)) != own and in_work_tree(os.path.dirname(status)):
+        say("notice: %s is inside a git work tree, so the user-level status line was not wired to it (it would run "
+            "that repository's scripts in every session); wire the installed copy: bash install.sh --global"
+            % os.path.dirname(status))
+        return
     real = os.path.realpath(settings)
     try:
         doc = load_settings(real)
@@ -414,17 +444,21 @@ def undo(settings):
             not_ours(wrapper, "the statusLine that names it was left as it is")
             return
         value = load_backup(backup)
+        # Every line names the command it replaces or removes (#600): a
+        # hand-edited one that still names the wrapper is not lost silently.
+        ran = status_cmd(sl)
         if usable(value):
             doc["statusLine"] = value
-            say("restored: statusLine is back to %s" % json.dumps(value))
+            say("restored: statusLine is back to %s (it ran: %s)" % (json.dumps(value), ran))
         else:
             del doc["statusLine"]
-            say("removed: the statusLine key (no usable backup of the original)")
+            say("removed: the statusLine key (it ran: %s; no usable backup of the original)" % ran)
         write_settings(real, doc)
     elif kind == "direct":
+        ran = status_cmd(sl)
         del doc["statusLine"]
         write_settings(real, doc)
-        say("removed: the statusLine key (it ran Talos's own command)")
+        say("removed: the statusLine key (it ran Talos's own command: %s)" % ran)
     left = False
     if os.path.lexists(wrapper):
         left = True
