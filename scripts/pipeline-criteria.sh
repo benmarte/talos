@@ -38,11 +38,14 @@
 #       prints the `report` lines plus one verdict line:
 #         qa-run: verdict PASS ...      the mechanical half passed (prose is yours)
 #         qa-run: verdict FAIL <why>    exit 1
+#         qa-run: verdict BLOCKED spec: <why>    exit 4 (#610): the spec is
+#             unusable (the four faults of spec-usable below) and the PR was
+#             not judged; no test ran
 #       The Tests: line is DATA, never a command. A path must be repo-relative,
 #       tracked at the PR head, match ^[A-Za-z0-9_./-]+$ and not start with `-`
 #       or contain `..`; a name filter must match ^[A-Za-z0-9_|. -]+$, not
 #       start with `-` and not be a runner command. Anything else is refused:
-#       nothing from the spec runs and the verdict is FAIL. With
+#       nothing from the spec runs and the verdict is BLOCKED. With
 #       tests/run-tests.sh the files run as `--for <path> ... --strict
 #       --no-cache` (a cached run cannot hide the per-id lines, and no path
 #       falls back to the full suite); otherwise the first `verify:` command
@@ -57,8 +60,18 @@
 #         spec-check: refused tests-line-missing: <n> test criteria and no usable Tests: line
 #       Exit 1 on a refusal. A spec with no test criterion (prose only, or no
 #       checklist) needs no `Tests:` line and is ok.
+#   pipeline-criteria.sh spec-usable <issue>
+#       Can QA use this issue's spec (#610)? The check qa-run makes, on its own:
+#       the read of `view-issue <issue> --spec`, the criteria table, the
+#       `Tests:` line. No git command, no test. One line:
+#         spec-usable: ok                      exit 0
+#         spec-usable: BLOCKED spec: <why>     exit 4
+#       <why> is one of: `unreadable for issue #<N>`, `no criteria checklist`,
+#       `Tests: line refused (<the parser's reason>)`, `<n> test criteria and
+#       no Tests: line`. `talos.sh run` asks it after a QA FAIL: a spec fault
+#       blocks the issue instead of starting a developer fix round.
 #
-# Exit codes: 0 ok, 1 a failing report or an unreadable/empty input, 2 usage.
+# Exit codes: 0 ok, 1 a failing report or an unreadable/empty input, 2 usage, 3 no usable runner, 4 an unusable spec.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -303,6 +316,40 @@ cmd_spec_check() {
   echo "spec-check: ok"
 }
 
+# _spec_usable ISSUE FILE (#610): the one definition of "QA can use the spec",
+# shared by qa-run and spec-usable. It reads `view-issue ISSUE --spec` into
+# FILE and sets the caller's table (the criteria), paths, filters, refused and
+# found (the `Tests:` line) and spec_why: empty for a usable spec, else the
+# fixed text of the fault. No git command, no test.
+_spec_usable() {
+  local issue="$1" spec="$2" n
+  table=""; paths=(); filters=(); refused=""; found=0; spec_why=""
+  if ! bash "$SCRIPT_DIR/pipeline-vcs.sh" view-issue "$issue" --spec 2>/dev/null | python3 -I -c "$_QA_SPEC_PY" > "$spec" || [ ! -s "$spec" ]; then
+    spec_why="unreadable for issue #$issue"; return 1
+  fi
+  table="$(cmd_ids "$spec" 2>/dev/null)" || { spec_why="no criteria checklist"; return 1; }
+  _tests_line "$spec"
+  [ -z "$refused" ] || { spec_why="Tests: line refused ($refused)"; return 1; }
+  n="$(printf '%s\n' "$table" | awk '$2 == "test"' | wc -l | tr -d ' ')"
+  [ "$found" -eq 1 ] || [ "$n" -eq 0 ] || { spec_why="$n test criteria and no Tests: line"; return 1; }
+}
+
+# spec-usable ISSUE (#610): one line; exit 4 for an unusable spec.
+cmd_spec_usable() {
+  local issue="${1:-}" tmp table paths filters refused found spec_why
+  [ $# -eq 1 ] || usage
+  case "$issue" in ''|*[!0-9]*) usage ;; esac
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/talos-spec-usable.XXXXXX")" && [ -d "$tmp" ] \
+    || { echo "pipeline-criteria: spec-usable: no scratch directory" >&2; return 1; }
+  _spec_usable "$issue" "$tmp/spec.md"
+  rm -rf "${tmp:?}"
+  if [ -n "$spec_why" ]; then
+    echo "spec-usable: BLOCKED spec: $spec_why"
+    return 4
+  fi
+  echo "spec-usable: ok"
+}
+
 # A path a red (tests-only) commit may touch.
 _qa_is_test_path() {
   case "$1" in
@@ -389,35 +436,22 @@ cmd_qa_run() {
   head="$(git rev-parse HEAD 2>/dev/null)" || { _qa_fail "no HEAD after checkout"; return $?; }
   head8="${head:0:8}"
 
-  # 4. The spec and its criteria table.
-  local spec="$tmp/spec.md" table
-  if ! bash "$vcs" view-issue "$issue" --spec 2>/dev/null | python3 -I -c "$_QA_SPEC_PY" > "$spec" || [ ! -s "$spec" ]; then
-    echo "qa-run: could not read the spec for issue #$issue"
-    _qa_fail "spec unreadable"
-    return $?
+  # 4. The spec, its criteria table and its Tests: line, as data. A spec QA
+  #    cannot use is a fault of the spec, not a finding on the PR (#610).
+  local spec="$tmp/spec.md" table paths filters refused found spec_why
+  if ! _spec_usable "$issue" "$spec"; then
+    printf 'qa-run: verdict BLOCKED spec: %s\n' "$spec_why"
+    return 4
   fi
-  table="$(cmd_ids "$spec" 2>&1)" || { echo "qa-run: $table"; _qa_fail "the spec has no criteria checklist"; return $?; }
   local n_test n_prose
   n_test="$(printf '%s\n' "$table" | awk '$2 == "test"' | wc -l | tr -d ' ')"
   n_prose="$(printf '%s\n' "$table" | awk '$2 == "prose"' | wc -l | tr -d ' ')"
 
-  # 5. The Tests: line, as data.
-  local paths filters refused found
-  _tests_line "$spec"
-  if [ -n "$refused" ]; then
-    echo "qa-run: Tests: line refused ($refused); nothing from the spec ran"
-    _qa_fail "the spec's Tests: line was refused; report it as a blocking finding"
-    return $?
-  fi
+  # 5. No Tests: line on a usable spec: every criterion is prose.
   if [ "$found" -eq 0 ]; then
-    if [ "$n_test" -eq 0 ]; then
-      cmd_ids "$spec" | awk '{ printf "%s prose hand-checked\n", $1 }'
-      printf 'qa-run: verdict PASS (prose only: %s criteria to hand-check; no tests to run)\n' "$n_prose"
-      return 0
-    fi
-    echo "qa-run: the spec has $n_test (test) criteria but no Tests: line"
-    _qa_fail "no Tests: line in the spec, so no criterion can be proven"
-    return $?
+    printf '%s\n' "$table" | awk '{ printf "%s prose hand-checked\n", $1 }'
+    printf 'qa-run: verdict PASS (prose only: %s criteria to hand-check; no tests to run)\n' "$n_prose"
+    return 0
   fi
 
   # 6. Paths must be tracked files at the PR head.
@@ -545,5 +579,6 @@ case "$sub" in
   report) cmd_report "$@" ;;
   qa-run) cmd_qa_run "$@" ;;
   spec-check) cmd_spec_check "$@" ;;
+  spec-usable) cmd_spec_usable "$@" ;;
   *) usage ;;
 esac

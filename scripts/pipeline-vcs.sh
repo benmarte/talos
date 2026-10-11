@@ -49,12 +49,12 @@
 #                                             same {title, body, labels, comments}
 #                                             shape, but comments is at most the one
 #                                             latest comment whose body starts with
-#                                             "**PM spec:**". Every comment containing
-#                                             a "<!-- talos:" marker, every stage-
-#                                             verdict comment (body starting with
-#                                             "**Agent:**"), and any other comment
-#                                             (including plain human replies -- the
-#                                             spec is the contract, not the thread)
+#                                             "**PM spec:**". That prefix alone decides:
+#                                             a spec that quotes a "<!-- talos:" marker
+#                                             is still the spec (#610). Every other
+#                                             comment (marker comments, "**Agent:**"
+#                                             stage verdicts, plain human replies --
+#                                             the spec is the contract, not the thread)
 #                                             is dropped. Reuses the paginated
 #                                             read-comments path -- no new fetches.
 #                                             GitHub only (github/github-api parity);
@@ -1135,13 +1135,13 @@ json.dump({'comments': comments}, sys.stdout)
 #     carrying at least a "body" field -- the exact shape both providers'
 #     read-comments verb already returns, so this needs no new fetch.
 # Prints a view-issue-shaped JSON document ({title, body, labels, comments})
-# whose comments list holds at most one entry: the latest surviving comment
-# whose body starts with "**PM spec:**". Every comment containing a
-# "<!-- talos:" marker and every stage-verdict comment (body starting with
-# "**Agent:**") is dropped before that scan. A plain human comment survives
-# the marker/verdict filter but is still excluded from the result -- it never
-# starts with "**PM spec:**" -- since the spec comment is the contract each
-# stage implements against, not the discussion around it.
+# whose comments list holds at most one entry: the latest comment whose body
+# (left-stripped) starts with "**PM spec:**". That prefix alone decides (#610):
+# a spec that quotes a "<!-- talos:" marker is still the spec. Every other
+# comment stays out -- a marker comment (approval stamp, attempt record, spend
+# table), a stage verdict ("**Agent:**") and a plain human comment alike --
+# since the spec comment is the contract each stage implements against, not
+# the discussion around it.
 _vi_spec_filter() {
   python3 -I -c "
 import json, sys
@@ -1151,20 +1151,10 @@ comments = json.loads(sys.argv[2]).get('comments', [])
 if not isinstance(comments, list):
     comments = []
 
-def body_of(c):
-    return c.get('body') or ''
-
-def is_marker(c):
-    return '<!-- talos:' in body_of(c)
-
-def is_verdict(c):
-    return body_of(c).lstrip().startswith('**Agent:**')
-
 def is_spec(c):
-    return body_of(c).lstrip().startswith('**PM spec:**')
+    return (c.get('body') or '').lstrip().startswith('**PM spec:**')
 
-candidates = [c for c in comments if not is_marker(c) and not is_verdict(c)]
-spec_comments = [c for c in candidates if is_spec(c)]
+spec_comments = [c for c in comments if is_spec(c)]
 kept = [spec_comments[-1]] if spec_comments else []
 
 result = {
@@ -1180,8 +1170,8 @@ print(json.dumps(result))
 # ── Delta comment filter (view-issue --since-stage, #548) ─────────────────────
 # $1: issue metadata JSON, $2: a read-comments-shaped JSON document, as for
 # _vi_spec_filter. Prints {title, body, labels, comments, earlier_comments}.
-# A stage comment (body starting "**PM spec:**" or "**Agent:**", the same
-# prefixes _vi_spec_filter keys on) marks how far the pipeline has read; the
+# A stage comment (body starting "**PM spec:**", the prefix _vi_spec_filter
+# keys on, or "**Agent:**") marks how far the pipeline has read; the
 # latest one is the boundary. comments is the boundary comment itself (what the
 # last stage found or asked) plus every non-marker comment after it; with no stage
 # comment yet, every human comment. So an owner's clarification posted since the

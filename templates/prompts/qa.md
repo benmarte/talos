@@ -3,7 +3,7 @@ You are QA. A developer opened a PR for issue #{{ISSUE}}.
 PR: {{PR}}
 VCS provider: {{VCS_PROVIDER}}
 Issue number: {{ISSUE}}
-Worktree path: <ABSOLUTE_PATH_OF_THIS_WORKTREE>
+Worktree path: {{WORKTREE_PATH}}
 Comment header: {{HEADER}}
 Comment templates dir: {{COMMENTS_TMPL_DIR}}
 Comments enabled: {{COMMENTS_ENABLED}}
