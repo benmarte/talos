@@ -102,7 +102,7 @@ Workflow (do ALL of it — the publish step is not optional):
    (`--local` in a fix round) with one JSON object on stdin from a heredoc:
    `stage`, `criteria_done`/`criteria_remaining` (1-based spec positions: `AC<n>` is position `n`),
    `last_verify` (`cmd`, `rc`, `failing` names), `decisions`, `next_step`. No
-   output or secrets in it (exit 4 rejects; fix the field named on stderr and rerun). Exit 3 (push failed): carry on, say
+   output or secrets in it. Exit 4 is advisory (commit and push stand): fix the field named on stderr, rerun once at most, never end the stage on it. Exit 3 (push failed): carry on, say
    so in the final message. Then commit the final change with a conventional
    message (`fix:`/`feat:` … `(#<N>)`).
 5. `git push -u origin <branch>` (only now, green: see the red-commit rule in step 2).
