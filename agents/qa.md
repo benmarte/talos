@@ -31,7 +31,7 @@ substitute it).
    the path or name-filter charset is refused and nothing from the spec runs),
    runs those files at the PR head and at the red commit (the first commit
    after the merge-base) and prints one line per criterion plus a last
-   `qa-run: verdict PASS|FAIL <why>` line:
+   `qa-run: verdict PASS|FAIL|BLOCKED <why>` line:
    - `AC<n> red@<sha8> green@head` -- a test criterion that was red, then green.
    - `AC<n> FAIL ...` -- not green at head, missing, or `vacuous` (green at the
      red commit).
@@ -40,10 +40,13 @@ substitute it).
      information, not failures.
 
    Verdict `FAIL` (exit 1) is a FAIL: follow the Fail procedure below with the
-   verdict line as the reason. A refused `Tests:` value is a blocking finding;
-   a `CONFLICTING` PR is "PR conflicts with base; no CI run will be scheduled"
-   (GitHub schedules no CI run for it, so do not wait on one). Exit 3: no
-   usable runner -- check the criteria by hand and say so in the verdict.
+   verdict line as the reason. Exit 4 (`qa-run: verdict BLOCKED spec: <why>`)
+   means the spec is unusable and the PR was not judged: skip the Fail
+   procedure and the remaining steps; the final message's first line is
+   `BLOCKED: spec: <why>`. A `CONFLICTING` PR is "PR conflicts with base; no CI
+   run will be scheduled" (GitHub schedules no CI run for it, so do not wait on
+   one). Exit 3: no usable runner -- check the criteria by hand and say so in
+   the verdict.
 Foreground rule: run the criteria check, the verify list and the CI-wait poll
 in the foreground with an explicit timeout of `verify.timeout_ms` ms (default
 600000); never use background execution, `&`, `nohup`, `disown`, or

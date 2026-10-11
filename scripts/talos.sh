@@ -108,7 +108,10 @@
 #         over _TALOS_PROMPT_NAMES, rendered in one `python3 -I` pass, no eval.
 #         With pr.ready_gate qa-local (#535) `prompt qa --pr` asks `pr-is-draft`
 #         itself: a draft renders the pre-CI text, a ready PR today's text,
-#         anything else is stop reason=draft-unverified.
+#         anything else is stop reason=draft-unverified. `prompt qa --worktree
+#         <dir>` (#610; an absolute path of an existing directory, else stop
+#         reason=usage) renders `Worktree path: <dir>`; without it the line names
+#         the working directory in words. `run` passes its own checkout.
 # prompt-reasons: usage unknown-role unknown-shape shape-unsupported draft-unverified file-unreadable template-missing unknown-placeholder value-missing render-failed isolation-invalid scripts-missing python-missing scratch-unavailable config-unreadable
 #   stop: all of them (exit 2 for usage, unknown-role, unknown-shape, shape-unsupported; else 1)
 #
@@ -210,7 +213,12 @@
 #         and a `stop reason=` from `next`;
 #         a failed state read exits 1; a failed dispatch is `run=stopped
 #         reason=dispatch-failed role=<role>`. A QA FAIL at the head the previous
-#         QA FAIL saw blocks the PR and stops. A reviewer, security or adversarial
+#         QA FAIL saw blocks the PR and stops. A QA FAIL on a spec QA cannot use
+#         (`pipeline-criteria.sh spec-usable <N>` exits 4: unreadable, no criteria
+#         checklist, a refused or missing `Tests:` line) is no finding on the PR:
+#         no attempt, no fix round, PR and issue blocked, `stop
+#         reason=spec-unusable issue=<N> pr=<M>` (exit 0).
+#         A reviewer, security or adversarial
 #         finding gets its developer fix round in the same run: under PR_DRAFT the
 #         other enabled review roles with no fresh approval run on that head first,
 #         then `gate fix-round` once and one round for every finding; block and
@@ -236,12 +244,12 @@
 #         stage's final message never does (stderr has the `note` lines and the
 #         `dispatch-failed ... reason=<why>` line). The playbook's end-state
 #         table (skills/pipeline/SKILL.md) has one action for each end.
-# run-reasons: usage unknown-role unknown-pr dispatch-failed ready-pr-failed draft-unverified qa-fail-unchanged-head fix-round-unchanged-head head-unresolved stop-requested checkout-return-failed iterations-exhausted stage-blocked provider-failed merge-failed state-unavailable scripts-missing python-missing scratch-unavailable config-unreadable
+# run-reasons: usage unknown-role unknown-pr dispatch-failed ready-pr-failed draft-unverified qa-fail-unchanged-head spec-unusable fix-round-unchanged-head head-unresolved stop-requested checkout-return-failed iterations-exhausted stage-blocked provider-failed merge-failed state-unavailable scripts-missing python-missing scratch-unavailable config-unreadable
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
 #         state-unavailable ready-pr-failed draft-unverified head-unresolved
 #         merge-failed provider-failed (exit 1; 2 for usage), and with exit 0
 #         stop-requested iterations-exhausted stage-blocked qa-fail-unchanged-head
-#         fix-round-unchanged-head checkout-return-failed; plus the stop reasons
+#         spec-unusable fix-round-unchanged-head checkout-return-failed; plus the stop reasons
 #         of `next`, passed through (exit 1)
 #   warn: qa-ci-red notify-failed board-failed spend-upsert-failed lease-release-failed
 #         model-invalid label-failed comment-failed budget-check-failed
@@ -447,7 +455,7 @@ verbs:
   summary [<issue-id>...]            Step 5: worktree sweep and warning, cost
                                      table
   prompt <role> --issue <N> [--pr <M>] [--shape first|fix-round|restamp] [--draft]
-                                     [--preamble-file F]
+                                     [--preamble-file F] [--worktree DIR]
                                      render a stage prompt from
                                      templates/prompts/<role>.md to a file:
                                      prompt_file=<path>
@@ -1809,7 +1817,8 @@ _talos_summary() {
 _TALOS_PROMPT_NAMES="ISSUE PR ROLE ROLE_TITLE BASE_BRANCH VCS_PROVIDER COMMENTS_ENABLED COMMENTS_TMPL_DIR HEADER
   VERIFY_TARGETED VERIFY_TIMEOUT_MS VERIFY_CI_WAIT_S VERIFY_QA_MODE VERIFY_COMMANDS REQUIRED_CHECKS_LINE
   VERIFY_TIMEOUT_LINE SPEC_SOURCE ISOLATION_NOTE PRIOR_STAGE_SUMMARY HANDOFF_LINE DRAFT_PR_LINE FIX_ROUND_LINES
-  PASSED_LEAD DOCS_DIFF_INSTRUCTION TITLE BODY RESTAMP_INPUTS STOP_RULE QA_CI_WAIT_LINE QA_RULE QA_GATE_STEP"
+  PASSED_LEAD DOCS_DIFF_INSTRUCTION TITLE BODY RESTAMP_INPUTS STOP_RULE QA_CI_WAIT_LINE QA_RULE QA_GATE_STEP
+  WORKTREE_PATH"
 
 # The renderer: argv = template, values file, output file, allowed names. The
 # values file is NUL-delimited NAME, VALUE pairs; a NAME written `<NAME` carries
@@ -1885,9 +1894,9 @@ _talos_prompt_checks() {
 # prompt <role> --issue <N> [--pr <M>] [--shape first|fix-round|restamp] [--draft]
 #        [--spec-source pm|issue-body] [--prior-file F] [--title-file F]
 #        [--body-file F] [--ci-failure-file F] [--docs-paths-file F] [--restamp-file F]
-#        [--preamble-file F]
+#        [--preamble-file F] [--worktree DIR]
 _talos_prompt() {
-  local _role="${1:-}" _issue="" _pr="" _shape=first _draft=0 _spec=pm _prior="" _title="" _body="" _ci="" _docs="" _rs="" _pre=""
+  local _role="${1:-}" _issue="" _pr="" _shape=first _draft=0 _spec=pm _prior="" _title="" _body="" _ci="" _docs="" _rs="" _pre="" _wt=""
   local _f _h _v _tpl _pf _r _base
   [ "$#" -eq 0 ] || shift
   case " $_TALOS_ROLES " in *" $_role "*) : ;; *) _talos_stop unknown-role 2 ;; esac
@@ -1906,6 +1915,12 @@ _talos_prompt() {
       --docs-paths-file) _docs="$2"; shift 2 ;;
       --restamp-file) _rs="$2"; shift 2 ;;
       --preamble-file) _pre="$2"; shift 2 ;;
+      --worktree)
+        # #610: the absolute path of an existing directory, on one line.
+        case "$2" in /*) : ;; *) _talos_stop usage 2 ;; esac
+        case "$2" in *[[:cntrl:]]*) _talos_stop usage 2 ;; esac
+        [ -d "$2" ] || _talos_stop usage 2
+        _wt="$2"; shift 2 ;;
       *) _talos_stop usage 2 ;;
     esac
   done
@@ -1996,6 +2011,8 @@ _talos_prompt() {
         _talos_pv HANDOFF_LINE ""
       fi ;;
     qa)
+      # #610: the checkout QA runs in, never a placeholder for it to fill.
+      _talos_pv WORKTREE_PATH "${_wt:-your working directory (git rev-parse --show-toplevel)}"
       _talos_pv VERIFY_QA_MODE "$(cfg verify.qa_mode)"
       _talos_pv VERIFY_TIMEOUT_MS "$(cfg verify.timeout_ms)"
       # The QA pre-CI gate (#535): with it on, the PR itself says which text QA
@@ -3428,6 +3445,8 @@ _talos_run_dispatch() {
   [ -z "$_shape" ] || _pargs+=(--shape "$_shape")
   [ -z "$_prior" ] || _pargs+=(--prior-file "$_prior")
   [ -z "$_dpf" ] || _pargs+=(--docs-paths-file "$_dpf")
+  # #610: QA runs in the driver's own checkout, so its prompt names it.
+  [ "$_role" != qa ] || _pargs+=(--worktree "$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PWD")")
   [ "$_RUN_DRAFT" -eq 1 ] && _pargs+=(--draft)
   _f="$(bash "$SCRIPT_DIR"/talos.sh "${_pargs[@]}" 2>"$_CFG_CACHE_DIR/err" | sed -n 's/^prompt_file=//p')"
   _rc=$?
@@ -3536,8 +3555,24 @@ _talos_run_fix_gate() {
 # re-running ready-pr and QA on the same head up to --max-iterations. The last
 # failing head per PR is the run's own scratch file; a head that cannot be read
 # is `stop reason=head-unresolved` (fail closed: no verdict without a head).
+# Before all of that (#610) the driver asks `pipeline-criteria.sh spec-usable
+# <N>` itself, whatever QA wrote: a spec QA cannot use (exit 4) is no finding on
+# the PR, so no attempt is recorded and no fix round runs -- pipeline:blocked on
+# the PR and the issue, the verb's line relayed, `stop reason=spec-unusable
+# issue=<N> pr=<M>`, exit 0. Any exit but 0 and 4 is `stop
+# reason=state-unavailable`.
 _talos_run_qa_fail() {
   local _pr="$1" _n="$2" _head _f
+  _talos_run_capture spec-usable bash "$SCRIPT_DIR/pipeline-criteria.sh" spec-usable "$_n" < /dev/null
+  case "$_RC" in
+    0) : ;;
+    4)
+      _talos_block_labels "$_n" "$_pr"
+      _talos_relay spec-usable "$_OUT"
+      _talos_emit stop "reason=spec-unusable issue=$_n pr=$_pr"
+      _talos_flush; exit 0 ;;
+    *) _talos_stop state-unavailable ;;
+  esac
   _f="$_CFG_CACHE_DIR/qa-fail-head.$_pr"
   _talos_cap _vcs pr-head "$_pr"
   { [ "$_RC" -eq 0 ] && [ -n "$_OUT" ]; } || _talos_stop head-unresolved
