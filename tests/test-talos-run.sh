@@ -758,6 +758,7 @@ assert_contains "$(journal)" "vcs label-issue 9 --add pipeline:blocked" "backsto
 assert_eq "2" "$(journal | grep -c 'vcs ready-pr 12')" "backstop: ready-pr ran exactly twice"
 assert_eq "2" "$(journal | grep -c '^agent qa$')" "backstop: QA ran exactly twice"
 assert_eq "1" "$(journal | grep -c '^agent developer$')" "backstop: exactly one fix round ran"
+QA_BACKSTOP_OUT="$OUT"  # kept for the #609 pin of the QA round, section (l)
 
 # (i3) the gate's own refusal (a ceiling) ends the run clean and its reason is
 # relayed, not lost: no fix round, no unchanged-head stop.
@@ -769,6 +770,195 @@ assert_eq "0" "$RC" "gate block: a ceiling ends the run clean"
 assert_contains "$OUT" "stop verdict=block reason=max-fix-attempts" "gate block: the stop names the gate's verdict and reason"
 assert_contains "$(cat "$ERR")" "max_fix_attempts" "gate block: the gate's stderr is relayed to the run's stderr"
 assert_eq "0" "$(journal | grep -c '^agent developer$')" "gate block: no developer fix round past the ceiling"
+QA_CEILING_OUT="$OUT"
+
+# ── (l) a review finding is a developer fix round (#609) ─────────────────────
+# After a reviewer CHANGES or a security/adversarial FINDINGS the driver acts on
+# `done`'s answer itself, as it does for QA. `next=batch` (pr.draft): the roles
+# after the failing one that are enabled and hold no fresh approval run on the
+# same head, then `gate fix-round` once, for the first failing role, and one
+# developer fix round with every finding. `next=fix-round stage=<role>`: the
+# gate and the round for that role. A round that pushed nothing blocks the PR
+# and the issue and stops. The collect stub is static, as in (i): the stage it
+# names is the one `next` dispatches on every pass, and the developer's hook
+# moves the PR head.
+rev_fixture() {  # $1 = pr.draft ; $2 = the PR's collect stage ; $3 = extra roles members
+  reset_stubs
+  LEASE_RESET
+  printf '{"vcs": {"provider": "github"}, "issues": {"max_parallel": 1}, "roles": {"validator": true, "qa": true, "docs": true, "reviewer": true, "security": true%s}, "pr": {"draft": %s}, "verify": {"timeout_ms": 600000, "ci_wait_s": 900}}' \
+    "${3:-}" "$1" > "$SANDBOX/talos.pipeline.json"
+  draft_collect "$2"
+  printf '{"labels": [], "state": "open"}' > "$STUB_DIR/view-pr.12"
+  printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' > "$STUB_DIR/pr-head.12"
+  printf 'https://github.com/acme/widget/pull/12\nfixed the findings\n' > "$STUB_DIR/message.developer"
+  cat > "$STUB_DIR/hook.developer.1" <<'HOOK'
+cp "$d/agent.stdin" "$d/developer.prompt"
+HOOK
+}
+rev_push() {  # the fix round pushes a new head
+  cat >> "$STUB_DIR/hook.developer.1" <<'HOOK'
+printf bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb > "$d/pr-head.12"
+HOOK
+}
+rev_finding() {  # $1 = role: its first dispatch ends in a finding that names the role
+  local _w=FINDINGS
+  [ "$1" != reviewer ] || _w=CHANGES
+  printf '%s: 1 findings\n1. scripts/x.sh:12 asserts nothing (the-%s-finding)\n' "$_w" "$1" > "$STUB_DIR/message.$1.1"
+}
+rev_foreign_lease() {  # $1 = a vcs verb: its first call after the reviewer's `done` finds another live run's lease on issue 9
+  cat > "$STUB_DIR/hook.$1" <<HOOK
+if grep -q 'post_stage reviewer' "\$d/journal"; then printf 'issue=9 held=15000 expires=16800 pid=$_l_lpid\n' > "$LEASE"; fi
+HOOK
+}
+rev_order() { grep -oE 'agent [a-z]+|vcs record-attempt 9 [a-z]+ --pr 12|label-pr 12 --remove pipeline:blocked' "$STUB_DIR/journal" | tr '\n' '>' | sed 's/>$//'; }
+rev_count() { journal | grep -c "$1"; }
+rev_stop() { printf '%s\n' "$OUT" | grep '^stop '; }
+ADV_ON=', "adversarial": true'
+UNBLOCK="label-pr 12 --remove pipeline:blocked"
+
+# AC1-AC3: the draft batch. Reviewer CHANGES, security CLEAR, adversarial
+# FINDINGS, one fix round that pushes; the second pass reviews the new head.
+rev_fixture true reviewer "$ADV_ON"
+rev_push
+rev_finding reviewer
+printf 'CLEAR: nothing exploitable (the-security-clear)\n' > "$STUB_DIR/message.security.1"
+rev_finding adversarial
+printf 'APPROVED: the new head is fine\n' > "$STUB_DIR/message.reviewer.2"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=14000 rn --max-iterations 2
+assert_eq "0" "$RC" "AC1 (#609) the draft batch: the run exits 0"
+assert_eq "agent reviewer>agent security>agent adversarial>vcs record-attempt 9 reviewer --pr 12>$UNBLOCK>agent developer" \
+  "$(rev_order | sed 's/\(>agent developer\).*/\1/')" \
+  "AC1 (#609) the draft batch: reviewer, the remaining reviewers, gate fix-round for the first failing role, the unblock, the developer"
+assert_eq "1" "$(rev_count '^agent developer$')" "AC1 (#609) the draft batch: one developer fix round for every finding"
+assert_not_contains "$OUT" "action=wait reason=blocked" "AC1 (#609) the draft batch: the run does not end on the blocked wait"
+REV_PROMPT="$(cat "$STUB_DIR/developer.prompt" 2>/dev/null)"
+assert_contains "$REV_PROMPT" "Fix round: PR #12 is already open" "AC2 (#609) the batch's developer got the fix-round shape of the prompt"
+assert_contains "$REV_PROMPT" "reviewer findings:
+CHANGES: 1 findings
+1. scripts/x.sh:12 asserts nothing (the-reviewer-finding)" "AC2 (#609) the prompt carries the reviewer's final message under its role's name"
+assert_contains "$REV_PROMPT" "adversarial findings:
+FINDINGS: 1 findings
+1. scripts/x.sh:12 asserts nothing (the-adversarial-finding)" "AC2 (#609) the prompt carries the adversarial final message under its role's name"
+assert_not_contains "$REV_PROMPT" "the-security-clear" "AC2 (#609) the prompt does not carry the security CLEAR message"
+assert_not_contains "$REV_PROMPT" "security findings:" "AC2 (#609) a role with no finding is not named in the prompt"
+assert_eq "agent reviewer>agent security>agent adversarial>vcs record-attempt 9 reviewer --pr 12>$UNBLOCK>agent developer>agent reviewer" "$(rev_order)" \
+  "AC3 (#609) after the push the next pass dispatches the review stage next names for the new head"
+assert_eq "2" "$(rev_count '^agent reviewer$')" "AC3 (#609) the reviewer ran once per head"
+assert_not_contains "$OUT" "fix-round-unchanged-head" "AC3 (#609) a round that pushed is not the backstop"
+assert_eq "stop reason=iterations-exhausted max=2" "$(rev_stop)" "AC3 (#609) the run went on to the pass cap, its only stop line"
+
+# AC4: a batch skips a disabled role and a role whose approval is fresh.
+rev_fixture true security
+rev_push
+rev_finding security
+printf '{"labels": [{"name": "review:approved"}], "state": "open"}' > "$STUB_DIR/view-pr.12"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=14000 rn --max-iterations 1
+assert_eq "agent security>vcs record-attempt 9 security --pr 12>$UNBLOCK>agent developer" "$(rev_order)" \
+  "AC4 (#609) a security FINDINGS with review:approved fresh and adversarial off: no reviewer, no adversarial, record-attempt for security"
+rev_fixture true reviewer
+rev_push
+rev_finding reviewer
+printf '{"labels": [{"name": "security:approved"}], "state": "open"}' > "$STUB_DIR/view-pr.12"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=14000 rn --max-iterations 1
+assert_eq "agent reviewer>vcs record-attempt 9 reviewer --pr 12>$UNBLOCK>agent developer" "$(rev_order)" \
+  "AC4 (#609) a reviewer CHANGES with security:approved fresh and adversarial off: the batch dispatches no other role"
+
+# AC5: pr.draft off is the single-role round, for each review role.
+for _l_role in reviewer security adversarial; do
+  rev_fixture false "$_l_role" "$ADV_ON"
+  rev_push
+  rev_finding "$_l_role"
+  TALOS_LEASE_TTL_S=1800 TALOS_NOW=14000 rn --max-iterations 1
+  assert_eq "agent $_l_role>vcs record-attempt 9 $_l_role --pr 12>$UNBLOCK>agent developer" "$(rev_order)" \
+    "AC5 (#609) pr.draft off, $_l_role: gate fix-round for the role, then the developer, no other review role in between"
+  REV_PROMPT="$(cat "$STUB_DIR/developer.prompt" 2>/dev/null)"
+  assert_contains "$REV_PROMPT" "Fix round: PR #12 is already open" "AC5 (#609) pr.draft off, $_l_role: the developer got the fix-round shape"
+  assert_contains "$REV_PROMPT" "(the-$_l_role-finding)" "AC5 (#609) pr.draft off, $_l_role: the role's final message is the prior summary"
+done
+
+# AC6: the gate's ceiling ends the run, for the batch and the single-role round.
+for _l_draft in true false; do
+  rev_fixture "$_l_draft" reviewer
+  rev_finding reviewer
+  printf 'CLEAR: nothing exploitable\n' > "$STUB_DIR/message.security.1"
+  printf 'pipeline-vcs: record-attempt: max_fix_attempts (3) reached for reviewer\n' > "$STUB_DIR/record-attempt.err"
+  printf 1 > "$STUB_DIR/record-attempt.rc"
+  TALOS_LEASE_TTL_S=1800 TALOS_NOW=14000 rn --max-iterations 9
+  assert_eq "0" "$RC" "AC6 (#609) pr.draft $_l_draft: a ceiling after a review finding ends the run clean"
+  assert_eq "stop verdict=block reason=max-fix-attempts" "$(rev_stop)" "AC6 (#609) pr.draft $_l_draft: the stop names the gate's verdict and reason"
+  assert_eq "0" "$(rev_count '^agent developer$')" "AC6 (#609) pr.draft $_l_draft: no developer dispatch past the ceiling"
+done
+
+# AC7: two findings comments of the role on one file are an owner question.
+rev_fixture false reviewer
+rev_finding reviewer
+python3 -I -c 'import json
+body = "**Agent:** reviewer (talos)\n\n**Blocked**\n\n1. scripts/x.sh:%d asserts nothing."
+print(json.dumps({"comments": [{"author": {"login": "bot"}, "body": body % n} for n in (12, 30)]}))' > "$STUB_DIR/read-comments.12"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=14000 rn --max-iterations 9
+assert_eq "0" "$RC" "AC7 (#609) ask-owner ends the run clean"
+assert_eq "stop verdict=ask-owner reason=design-decision stage=reviewer rounds=2 area=scripts/x.sh" "$(rev_stop)" \
+  "AC7 (#609) the stop line is the gate's ask-owner answer with its detail lines"
+assert_eq "0" "$(rev_count '^agent developer$')" "AC7 (#609) ask-owner dispatches no developer"
+assert_eq "0" "$(rev_count 'vcs record-attempt')" "AC7 (#609) ask-owner records no attempt"
+
+# AC8: a fix round that pushed nothing stops the run, once.
+for _l_draft in true false; do
+  rev_fixture "$_l_draft" reviewer
+  rev_finding reviewer
+  printf 'CLEAR: nothing exploitable\n' > "$STUB_DIR/message.security.1"
+  TALOS_LEASE_TTL_S=1800 TALOS_NOW=14000 rn --max-iterations 9
+  assert_eq "0" "$RC" "AC8 (#609) pr.draft $_l_draft: the unchanged-head stop exits 0"
+  assert_eq "stop reason=fix-round-unchanged-head pr=12 issue=9" "$(rev_stop)" \
+    "AC8 (#609) pr.draft $_l_draft: exactly one stop line, naming the reason, the PR and the issue"
+  assert_contains "$(journal)" "vcs label-pr 12 --add pipeline:blocked" "AC8 (#609) pr.draft $_l_draft: pipeline:blocked on the PR"
+  assert_contains "$(journal)" "vcs label-issue 9 --add pipeline:blocked" "AC8 (#609) pr.draft $_l_draft: pipeline:blocked on the issue"
+  assert_eq "1" "$(rev_count '^agent developer$')" "AC8 (#609) pr.draft $_l_draft: exactly one developer dispatch"
+  assert_eq "agent developer" "$(journal | grep '^agent ' | tail -n 1)" "AC8 (#609) pr.draft $_l_draft: no review stage is dispatched on that head again"
+  assert_not_contains "$OUT" "iterations-exhausted" "AC8 (#609) pr.draft $_l_draft: never a loop to --max-iterations"
+done
+
+# AC9: BLOCKED: is for a person, as the first failing stage and inside a batch.
+rev_fixture true reviewer
+printf 'BLOCKED: the diff cannot be read\n' > "$STUB_DIR/message.reviewer.1"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=14000 rn --max-iterations 9
+assert_eq "0" "$RC" "AC9 (#609) a blocked reviewer ends the run clean"
+assert_eq "stop reason=stage-blocked role=reviewer" "$(rev_stop)" "AC9 (#609) a reviewer BLOCKED: stops for a person"
+assert_eq "0" "$(rev_count 'vcs record-attempt')" "AC9 (#609) a reviewer BLOCKED: records no attempt"
+assert_eq "0" "$(rev_count '^agent developer$')" "AC9 (#609) a reviewer BLOCKED: dispatches no developer"
+rev_fixture true reviewer
+rev_finding reviewer
+printf 'BLOCKED: the advisory feed cannot be read\n' > "$STUB_DIR/message.security.1"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=14000 rn --max-iterations 9
+assert_eq "0" "$RC" "AC9 (#609) a role blocked inside a batch ends the run clean"
+assert_eq "stop reason=stage-blocked role=security" "$(rev_stop)" "AC9 (#609) a security BLOCKED: inside a batch stops for a person"
+assert_eq "0" "$(rev_count 'vcs record-attempt')" "AC9 (#609) a BLOCKED: inside a batch records no attempt"
+assert_eq "0" "$(rev_count '^agent developer$')" "AC9 (#609) a BLOCKED: inside a batch dispatches no developer"
+
+# AC10: the driver's own dispatches are leased. Another live run takes the
+# issue's lease after the reviewer's `done` freed it: before the batch's next
+# role (the PR label read is the call in between), and before the fix-round
+# developer (the gate's record-attempt is).
+sleep 30 & _l_lpid=$!
+rev_fixture true reviewer
+rev_finding reviewer
+rev_foreign_lease view-pr
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=15000 rn --max-iterations 9
+assert_eq "0" "$RC" "AC10 (#609) a held lease before a batch role ends the run clean"
+assert_eq "stop action=wait reason=lease retry_after_s=1800" "$(rev_stop)" "AC10 (#609) a held lease before a batch role is the lease wait"
+assert_eq "0" "$(rev_count '^agent security$')" "AC10 (#609) the batch role is not dispatched under another run's lease"
+rev_fixture false reviewer
+rev_finding reviewer
+rev_foreign_lease record-attempt
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=15000 rn --max-iterations 9
+assert_eq "0" "$RC" "AC10 (#609) a held lease before the fix-round developer ends the run clean"
+assert_eq "stop action=wait reason=lease retry_after_s=1800" "$(rev_stop)" "AC10 (#609) a held lease before the fix-round developer is the lease wait"
+assert_eq "0" "$(rev_count '^agent developer$')" "AC10 (#609) the developer is not dispatched under another run's lease"
+kill "$_l_lpid" 2>/dev/null
+
+# AC11: the QA round of (i) keeps its stop lines (its pins above are unchanged).
+assert_contains "$QA_BACKSTOP_OUT" "stop reason=qa-fail-unchanged-head pr=12 issue=9" "AC11 (#609) the QA backstop keeps its stop line"
+assert_contains "$QA_CEILING_OUT" "stop verdict=block reason=max-fix-attempts" "AC11 (#609) the QA round's ceiling keeps its stop line"
 
 # ── (k) the merge arm takes every multi-line gate answer (#543) ───────────────
 # `gate merge` prints `verdict=<v>` and then one line per detail (`reason=`,
