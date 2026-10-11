@@ -56,7 +56,7 @@ state() {  # $1 = prs JSON, $2 = queued JSON, $3 = inflight JSON
     "$1" "$2" "$3" > "$STUB_DIR/collect.json"
 }
 LEASE="$SANDBOX/.git/talos-lease.ledger"
-lease_reset() { rm -rf "$LEASE" "${LEASE:?}.lock.d" "$SANDBOX/.git/talos/lease"*; }
+lease_reset() { rm -rf "$LEASE" "${LEASE:?}.lock.d"; }
 nx() { OUT="$(bash "$TN" next "$@" 2>"$ERR")"; RC=$?; }
 
 # A transcript whose latest call carries <n> tokens of context (cache read).

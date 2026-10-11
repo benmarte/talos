@@ -61,7 +61,8 @@
 
   "execution": {
     "isolation": "worktree",
-    "orchestrator": "code"
+    "orchestrator": "code",
+    "context_budget_tokens": 150000
   },
 
   "roles": {

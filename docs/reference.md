@@ -18,6 +18,8 @@ Paths such as `scripts/talos.sh` are relative to the Talos install (`~/.talos` a
 
 **`execution.orchestrator`** (`code`, the default, or `llm`) picks who drives. `llm` is the opt-in for the LLM-per-stage loop: the session calls `next`, `prompt`, `done` and the gates itself, one stage at a time, from `skills/pipeline/refs/llm-loop.md`. `talos.sh env` prints the effective mode as `ORCHESTRATOR=code|llm`; it is `llm` whatever the key says under `vcs.provider: file` and `roles.planner: true`, which the driver cannot run (one stderr line says why), and an unknown value reads as `code`.
 
+**`execution.context_budget_tokens`** (default `150000`, `0` turns it off) is the LLM loop's context budget. When `next` runs under `ORCHESTRATOR=llm` (not inside `talos.sh run`), it reads the session's size from the transcript `TALOS_TRANSCRIPT_PATH` names: the latest call's input, cache read and cache write. At or over the budget, a `next` that would start a queued issue prints `stop reason=context-budget size=<n> budget=<b>` and `resume=/talos:pipeline` instead (exit 0, nothing leased); in-flight work is still answered, so the current issue finishes and no stage stops midway. Start a fresh session with the resume line; the state is on the remote. Without a usable transcript path, `next` prints `warn reason=context-unknown` and goes on.
+
 `scripts/` is the install's scripts directory (`~/.talos/scripts` after `install.sh --global`). Under `ORCHESTRATOR=llm`, read a playbook ref in `skills/pipeline/refs/` only when `talos.sh env` or `next` prints `ref=<topic>`; under `code`, `env` prints none.
 
 `talos.sh run` loops `next` (one routed action), `prompt` (renders the stage prompt), `pipeline-agent.sh` (the configured runner, with `agents.fallback` failover) and `done` (bookkeeping), at most `--max-iterations` passes (default 20; a long drain passes a larger number). It reads each verdict from the first line of the agent's final message that starts with `WORD:` (the word on the role's verdict list; the developer's message is read for its PR URL). An unreadable answer is a dispatch failure and records nothing. On `action=merge` it runs `gate merge`, then `merge-pr` and `post-merge`. Exit 0 on every clean stop (`ask-owner`, a stage block, a `wait`, a non-merge gate verdict, a requested stop, the iteration cap); exit 1 when state cannot be read, a stage dispatch fails (an unreadable answer included), the merge fails or failover is exhausted (`provider-failed`); exit 2 on a usage error. A second QA FAIL at an unchanged PR head blocks and stops. A reviewer, security or adversarial finding gets its developer fix round in the same run, through `gate fix-round`: under `pr.draft` the other enabled review roles with no fresh approval review that head first, then one round covers every finding; a round that pushes nothing blocks and stops (`fix-round-unchanged-head`). Re-run to continue.
@@ -362,6 +364,7 @@ Derived defaults: `base_branch`, `repo`, `vcs.repo` and `board.owner` come from 
 | `execution.isolation` | enum | `worktree` | - | any |
 | `execution.worktree_warn_threshold` | int | `10` | - | any |
 | `execution.orchestrator` | enum | `code` | - | any |
+| `execution.context_budget_tokens` | int | `150000` | - | any |
 
 #### roles.*
 

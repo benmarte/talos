@@ -14,8 +14,9 @@ always inserted explicitly. Integer arithmetic only: round half up, never
 round() (banker's) or '%.2f' (float artefacts).
 
 It also holds the one harness-transcript reader (#604): `transcript_usage`,
-used by the status line (talos-status.sh) and by the `Orchestrator session`
-line of `cost --summary` (`fmt_session`).
+used by the status line (talos-status.sh), by the `Orchestrator session`
+line of `cost --summary` (`fmt_session`) and by the LLM orchestrator's context
+budget in `talos.sh next` (`session_context`, #605).
 """
 
 import json
@@ -296,6 +297,27 @@ def session_usage(path):
     for key in ("cache_read", "cache_write", "output"):
         out[key] = sum(m[key] or 0 for m in seen.values())
     return out
+
+
+def session_context(path):
+    """The session's current size (#605): input + cache read + cache write of
+    the latest call in the transcript `path` names, read with the same rules as
+    `session_usage`. None when the path is unusable or holds no usage record."""
+    if not isinstance(path, str) or not os.path.isabs(path) or not path.endswith(".jsonl"):
+        return None
+    seen = {}
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as f:
+            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                return None
+            transcript_usage(f, seen, name=path)
+    except OSError:
+        return None
+    if not seen:
+        return None
+    last = list(seen.values())[-1]
+    return sum(last[key] or 0 for key in ("input", "cache_read", "cache_write"))
 
 
 def fmt_session(path):

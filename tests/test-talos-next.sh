@@ -135,6 +135,10 @@ open_state() {  # $1 = prs JSON array, rest = queued issue numbers
 reset_stubs() { rm -f "$STUB_DIR"/*.json "$STUB_DIR"/*.rc "$STUB_DIR"/*.err "$STUB_DIR/calls.log"; }
 LEASE="$SANDBOX/.git/talos-lease.ledger"
 LEASE_RESET() { rm -f "$LEASE" "${LEASE:?}.lock.d"; }
+# roles.planner true makes ORCHESTRATOR llm, where next also checks the context
+# budget (#605): a small transcript keeps that check quiet in these fixtures.
+printf '{"timestamp": "2026-10-11T10:00:00Z", "message": {"id": "m1", "usage": {"input_tokens": 5, "cache_read_input_tokens": 1000, "output_tokens": 50}}}\n' > "$SANDBOX/session.jsonl"
+export TALOS_TRANSCRIPT_PATH="$SANDBOX/session.jsonl"
 nx() { OUT="$(bash "$TN" next "$@" 2>"$ERR")"; RC=$?; }
 nxi() { OUT="$(bash "$TN" next --issue "$@" 2>"$ERR")"; RC=$?; }
 
