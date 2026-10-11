@@ -257,6 +257,11 @@
 #                                             if data cannot be fetched.
 #   rerun-ci <n>                              Re-run failed CI for the PR head SHA
 #   pr-head <n>                               Print the current head SHA for a PR
+#   pr-head-ref <n>                           Print the PR's head branch name (#607).
+#                                             Exits 1 with nothing on stdout when it
+#                                             cannot be read. github, github-api,
+#                                             gitlab, azure; file mode has no PR
+#                                             (exit 1).
 #   pr-mergeable <n>                          Print MERGEABLE / CONFLICTING / UNKNOWN
 #                                             for the PR's mergeability with its base
 #                                             (#214). Exit 0/1/2 respectively. UNKNOWN
@@ -4798,6 +4803,15 @@ json.dump([dict(p, headRefName=(p.get('head') or {}).get('ref', '')) for p in pr
       [ -z "$sha" ] && { echo "pipeline-vcs: pr-head: could not resolve head SHA for PR #$n" >&2; exit 1; }
       printf '%s\n' "$sha"
       ;;
+    pr-head-ref)
+      # pr-head-ref <n> -- print the PR's head branch name (fail-closed: exits 1 if unresolvable)
+      local n="${1:-}" ref
+      _gh_num "$verb" PR "$n"
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] GET $_GH_API/pulls/$n (.head.ref)"; return 0; }
+      ref="$(_gh_pull_cached "$n" | _gh_field head.ref)"
+      [ -z "$ref" ] && { echo "pipeline-vcs: pr-head-ref: could not resolve the head branch of PR #$n" >&2; exit 1; }
+      printf '%s\n' "$ref"
+      ;;
     pr-mergeable)
       # pr-mergeable <n> (#214): REST `mergeable` is true/false/null (null = not
       # computed yet) -> MERGEABLE / CONFLICTING / UNKNOWN; _vcs_shared_pr_mergeable
@@ -5231,6 +5245,27 @@ for p in paths:
       ;;
     view-pr)
       _run glab mr view "$1" $RARG
+      ;;
+    pr-head-ref)
+      # pr-head-ref <iid> (#607) -- the MR's source branch, same contract as
+      # github: a failed fetch or an answer without the branch exits 1 with no
+      # stdout.
+      local n="${1:-}" _phr_ref
+      _gl_require_iid pr-head-ref "$n" || exit 1
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] glab mr view $n --output json $RARG  # .source_branch"
+        return 0
+      fi
+      _phr_ref="$(glab mr view "$n" --output json $RARG 2>/dev/null | python3 -I -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = {}
+print(d.get('source_branch') or d.get('sourceBranch') or '')
+" 2>/dev/null)"
+      [ -z "$_phr_ref" ] && { echo "pipeline-vcs: pr-head-ref: could not resolve the head branch of MR !$n" >&2; exit 1; }
+      printf '%s\n' "$_phr_ref"
       ;;
     list-prs)
       # Same reasoning as list-issues above: raise the page size and warn
@@ -6160,6 +6195,27 @@ PYEOF
       ;;
     view-pr)
       _run az repos pr show --id "$1" $ORG_ARG --output json
+      ;;
+    pr-head-ref)
+      # pr-head-ref <id> (#607) -- the PR's source branch without refs/heads/,
+      # same contract as github: a failed fetch or an answer without the branch
+      # exits 1 with no stdout.
+      local n="${1:-}" _phr_ref
+      _az_require_id pr-head-ref "$n" || exit 1
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] az repos pr show --id $n $ORG_ARG --output json  # .sourceRefName"
+        return 0
+      fi
+      _phr_ref="$(az repos pr show --id "$n" $ORG_ARG --output json 2>/dev/null | python3 -I -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = {}
+print((d.get('sourceRefName') or '').replace('refs/heads/', '', 1))
+" 2>/dev/null)"
+      [ -z "$_phr_ref" ] && { echo "pipeline-vcs: pr-head-ref: could not resolve the head branch of PR #$n" >&2; exit 1; }
+      printf '%s\n' "$_phr_ref"
       ;;
     list-prs)
       # PAGINATION (#171): `az repos pr list --top` exists (unlike `az boards
