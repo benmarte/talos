@@ -595,7 +595,7 @@ assert_eq "merge" "$(stage_of 100)" "cap-next: no roles enabled: the lowest PR i
 cfg_rf
 
 # ── inflight (#519) ──────────────────────────────────────────────────────────
-# Issues in the mid-states (confirmed/dev/epic-decomposed), not queued, not
+# Issues in the mid-states (pipeline:confirmed, pipeline:dev), not queued, not
 # blocked or needs-owner, ascending -- and NEVER an issue whose pipeline work
 # is already up as an open PR against the base (the PR side owns that work).
 # A fork PR with no Talos label is not the pipeline's, so it keeps no issue out.
@@ -613,7 +613,7 @@ add_issue 14 "pipeline:blocked,pipeline:dev"
 add_issue 15 "pipeline:needs-owner,pipeline:dev"
 add_issue 19 "pipeline:ready,pipeline:dev"
 collect
-assert_eq "[11,16,20]" "$(J "d['inflight']")" "inflight: the mid-state issues with no open pipeline PR, ascending; not queued, blocked or needs-owner ones"
+assert_eq "[11,20]" "$(J "d['inflight']")" "#524 AC5: the mid-state issues with no open pipeline PR, ascending; not queued, blocked or needs-owner ones, and never an epic-decomposed parent"
 
 # ── priority (#601) ──────────────────────────────────────────────────────────
 # The p-label of every queued or in-flight issue, as 0, 1 or 2 under its number
