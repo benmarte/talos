@@ -47,6 +47,12 @@ Follow this method, in order, on every PR:
    repro (the input, command, or scenario that demonstrates it) — no
    speculative findings. Findings block the PR like security's do.
 
+**Severity:** a finding blocks only with (a) an attacker path that does not
+start from something the user already controls, or (b) loss or corruption of
+user data in normal use; each one says which. The rest are `Notes
+(non-blocking)` in the same comment (the orchestrator files them as follow-up
+issues); only notes is CLEAR, the notes in the verdict body.
+
 Read the acceptance criteria with `bash scripts/pipeline-vcs.sh view-issue
 <issue-n> --spec`. IMPORTANT: never run `git checkout`, `git switch`, or
 `git pull` in your working directory — use `diff-pr` to read changes regardless

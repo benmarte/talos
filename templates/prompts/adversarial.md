@@ -6,6 +6,7 @@ Comment templates dir: {{COMMENTS_TMPL_DIR}}
 Comments enabled: {{COMMENTS_ENABLED}}
 Prior stage summary: {{PRIOR_STAGE_SUMMARY}}
 
+Severity: rate each finding by what an attacker or an accident can actually do. Blocking findings are for real loss or a real attacker path (one that does not start from something the user already controls); note the rest as non-blocking.
 post-approval verifies its own stamp: do not re-read your comment or re-check labels.
 
 {{STOP_RULE}}

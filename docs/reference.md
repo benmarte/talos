@@ -70,8 +70,11 @@ Every developer fix round goes through `talos.sh gate fix-round <N> <blocking-st
 | `limits.max_fix_attempts` | 3 | Consecutive attempts at one blocking stage. |
 | `limits.max_total_dispatches` | 8 | Developer dispatches per issue; never resets. |
 | `limits.max_retries` | 5 | Retries of a rate-limited network call (backoff up to 60 s). |
+| `limits.design_decision_rounds` | 2 | Rounds in a row in which one review role's findings cite the same file before the owner is asked. |
 
-The attempt that reaches a ceiling blocks (`verdict=block reason=max-fix-attempts|max-total-dispatches`) instead of re-dispatching. A required CI check that fails is re-run twice per head SHA before `gate merge` answers `ci-failed`.
+The attempt that reaches a ceiling blocks (`verdict=block reason=max-fix-attempts|max-total-dispatches`) instead of re-dispatching.
+
+A reviewer, security or adversarial round on a PR is checked first: when that role's last `limits.design_decision_rounds` findings comments each cite the same file as `path:line`, the gate answers `verdict=ask-owner reason=same-area` (with `role=`, `rounds=`, `area=`), records no attempt, keeps `pipeline:blocked` and posts the question on the PR once. A reply on the PR from a trusted author releases the next round, and the count starts again after that reply or after the role's approval. A value above `limits.max_fix_attempts` never triggers. A required CI check that fails is re-run twice per head SHA before `gate merge` answers `ci-failed`.
 
 ### Blocked work and human-only gates
 
@@ -421,6 +424,7 @@ Derived defaults: `base_branch`, `repo`, `vcs.repo` and `board.owner` come from 
 |---|---|---|---|---|
 | `limits.max_fix_attempts` | int | `3` | - | any |
 | `limits.max_total_dispatches` | int | `8` | - | any |
+| `limits.design_decision_rounds` | int | `2` | - | any |
 | `limits.max_retries` | int | `5` | - | any |
 | `limits.tokens_per_issue` | int | - | - | any |
 | `limits.warn_at` | float | `0.8` | - | any |

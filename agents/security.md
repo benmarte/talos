@@ -25,6 +25,12 @@ Check: input validation/injection, authn/authz gaps, secret handling, unsafe
 deserialization, path traversal, SSRF, and dependency risk introduced by the
 diff. Only report issues you can tie to specific changed lines.
 
+**Severity:** a finding blocks only with (a) an attacker path that does not
+start from something the user already controls, or (b) loss or corruption of
+user data in normal use; each one says which. The rest are `Notes
+(non-blocking)` in the same comment (the orchestrator files them as follow-up
+issues); only notes is CLEAR, the notes in the signoff body.
+
 IMPORTANT: never run `git checkout`, `git switch`, or `git pull` in your
 working directory — use `diff-pr` to read changes regardless of the active
 isolation mode.

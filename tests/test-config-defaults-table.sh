@@ -59,7 +59,7 @@ print("\n".join(bad))
 print("ROWS=%d" % len(rows))
 TALOS_PYtab7Gw3Nd5Xk
 )"
-assert_eq "ROWS=114" "$(printf '%s\n' "$_out" | tail -n1)" "the table has one row per config key (114 rows)"
+assert_eq "ROWS=115" "$(printf '%s\n' "$_out" | tail -n1)" "the table has one row per config key (115 rows)"
 assert_eq "" "$(printf '%s\n' "$_out" | sed '$d')" \
   "every row has six fields, a unique key, a valid type/derived/env/scope column, and a default of the right shape"
 
@@ -86,7 +86,7 @@ agents.roles.*.model agents.roles.*.runner agents.roles.*.runner_cmd
 agents.roles.*.restamp_model agents.roles.*.effort agents.roles.*.restamp_effort
 agents.claude_allowed_tools agents.claude_permission_mode agents.roles.*.claude_allowed_tools agents.roles.*.claude_permission_mode
 agents.fallback agents.roles.*.fallback agents.provider_down_s agents.stage_timeout_s agents.roles.*.stage_timeout_s agents.capture_usage agents.profile agents.mode limits.max_fix_attempts
-limits.max_total_dispatches limits.max_retries limits.tokens_per_issue limits.warn_at
+limits.max_total_dispatches limits.design_decision_rounds limits.max_retries limits.tokens_per_issue limits.warn_at
 spend.comment pr.draft pr.ready_gate markers.trusted_authors markers.verify_authors
 hooks.pre_dispatch hooks.post_stage hooks.timeout_s events.enabled events.path"
 

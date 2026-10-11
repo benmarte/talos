@@ -9,7 +9,7 @@
 #       pipeline-vcs.sh that journals every call: the journal is the order pin
 #   (b) gate fix-round: the old three-step sequence and the verb leave the same
 #       gh journal under the real scripts; both ceilings, the budget stop, the
-#       unblock, a failing record-attempt
+#       unblock, a failing record-attempt; the design-decision stop (#599)
 #   (c) the output contract: `verdict=` first, one of merge|handoff|redispatch|
 #       wait|block, `reason=` from the enum in talos.sh's header, sanitised
 #       values; the checker is shown red by an out-of-vocabulary verdict and an

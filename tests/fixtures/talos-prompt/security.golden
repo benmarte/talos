@@ -9,6 +9,7 @@ second line
 
 Do not run tests; QA and CI already own that. Review the diff only.
 Context cap: read the whole diff once (page through a long one), re-read nothing; open other files only to trace a changed line's input to its sink or caller. No repo tour.
+Severity: rate each finding by what an attacker or an accident can actually do. Blocking findings are for real loss or a real attacker path (one that does not start from something the user already controls); note the rest as non-blocking.
 post-approval verifies its own stamp: do not re-read your comment or re-check labels.
 
 If you stop, block, or ask instead of completing: name the file and quote
