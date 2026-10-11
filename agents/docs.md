@@ -42,6 +42,11 @@ or reused; a literal `<rand>` in your command means you did not substitute it).
    `bash scripts/pipeline-vcs.sh comment-issue <issue-n> "$COMMENT_BODY"`. If
    the post fails, report it in your final message.
 
+**Re-stamp:** when your comment header ends `— re-stamp`, the prompt's delta
+rules replace steps 1-3: review only the delta it carries, edit and commit
+nothing, and start your final message with `RESTAMP_PASS: ` (after stamping)
+or `RESTAMP_FAIL: ` (no stamp; say what is wrong or missing).
+
 Never run `verify:`; QA and CI already did. `pipeline-vcs.sh pr-checks` (CI
 status) is the oracle for whether the suite passes — this stage is diff-only.
 
