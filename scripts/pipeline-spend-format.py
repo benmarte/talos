@@ -12,10 +12,16 @@ The file name has a hyphen, so a plain `import` statement cannot name it, and
 `python3 -I` ignores PYTHONPATH and the script directory, so the path is
 always inserted explicitly. Integer arithmetic only: round half up, never
 round() (banker's) or '%.2f' (float artefacts).
+
+It also holds the one harness-transcript reader (#604): `transcript_usage`,
+used by the status line (talos-status.sh) and by the `Orchestrator session`
+line of `cost --summary` (`fmt_session`).
 """
 
 import json
 import math
+import os
+import stat
 import unicodedata
 from decimal import Decimal
 
@@ -201,3 +207,103 @@ def fmt_budget_suffix(budget):
     if budget is None or budget["status"] == "ok":
         return ""
     return " \u00b7 budget %d%% of %s" % (budget["pct"], fmt_compact(budget["effective"]))
+
+
+# \u2500\u2500 cache reads and cache writes (#604) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+# `tokens` is fresh input + output + cache write; cache reads are never in it.
+# A sum here is None when no event in scope carries the figure, and
+# `unrecorded` counts the events with no cache read: neither is ever shown as 0.
+
+def fmt_cache(read, write, unrecorded=0, totals=False):
+    """The cache part of a spend line: 'cache read 48.2M, cache write 1.20M',
+    with '(+K unrecorded)' after the read figure when K events have none, or
+    'cache reads unrecorded' when no event has one. totals=True is the one-line
+    form, which says where each figure stands against the total next to it:
+    'cache read 48.2M (not in total, +K unrecorded), cache write 1.20M (in total)'."""
+    if read is None:
+        return "cache reads unrecorded"
+    more = "+%d unrecorded" % unrecorded if unrecorded else ""
+    if totals:
+        read_text = "%s (%s)" % (fmt_num(read), ", ".join(p for p in ("not in total", more) if p))
+        write_text = "unrecorded" if write is None else fmt_num(write) + " (in total)"
+    else:
+        read_text = fmt_num(read) + (" (%s)" % more if more else "")
+        write_text = "unrecorded" if write is None else fmt_num(write)
+    return "cache read %s, cache write %s" % (read_text, write_text)
+
+
+def fmt_cache_cell(total, unrecorded, runs):
+    """One cache cell of a spend table: the compact sum, '<sum> (+K
+    unrecorded)' when K of the row's runs have no cache read, 'unrecorded' when
+    none has (or no run carries this figure)."""
+    if total is None or unrecorded >= runs:
+        return "unrecorded"
+    return fmt_num(total) + (" (+%d unrecorded)" % unrecorded if unrecorded else "")
+
+
+TRANSCRIPT_CAP = 64 * 1024 * 1024
+_USAGE_KEYS = (("input", "input_tokens"), ("output", "output_tokens"),
+               ("cache_write", "cache_creation_input_tokens"), ("cache_read", "cache_read_input_tokens"))
+
+
+def transcript_usage(f, seen, since="", cap=TRANSCRIPT_CAP, name=""):
+    """Read a harness transcript (f: opened in binary mode) into `seen`:
+    message id -> {'input', 'output', 'cache_write', 'cache_read'}, each a count
+    or None when missing or not a count, for every message with a `usage`
+    record stamped at or after `since`. A repeated id (a streamed message)
+    keeps its last, complete figures; a record with no id is keyed by `name`
+    and its line number. Only the last `cap` bytes are read: returns True when
+    the file is larger than that."""
+    size = os.fstat(f.fileno()).st_size
+    partial = size > cap
+    if partial:
+        f.seek(size - cap)
+        f.readline()
+    for n, line in enumerate(f):
+        if b'"usage"' not in line:
+            continue
+        try:
+            d = json.loads(line)
+            msg = d["message"]
+            u = msg["usage"]
+            if str(d.get("timestamp", ""))[:19] < since[:19]:
+                continue
+            figures = {key: as_count(u.get(src)) for key, src in _USAGE_KEYS}
+        except (ValueError, KeyError, TypeError, AttributeError):
+            continue
+        seen[msg.get("id") or "%s:%d" % (name, n)] = figures
+    return partial
+
+
+def session_usage(path):
+    """One session transcript as {'calls', 'cache_read', 'cache_write',
+    'output', 'partial'}: a call is one message id, counted once with its last
+    figures. None when `path` is not a usable transcript (an absolute path
+    ending .jsonl that is a regular file, not a symlink) or cannot be read.
+    This file only: no subagent transcripts."""
+    if not isinstance(path, str) or not os.path.isabs(path) or not path.endswith(".jsonl"):
+        return None
+    seen = {}
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as f:
+            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                return None
+            partial = transcript_usage(f, seen, name=path)
+    except OSError:
+        return None
+    out = {"calls": len(seen), "partial": partial}
+    for key in ("cache_read", "cache_write", "output"):
+        out[key] = sum(m[key] or 0 for m in seen.values())
+    return out
+
+
+def fmt_session(path):
+    """The last line of the end-of-run report: the orchestrating session's own
+    usage, or 'Orchestrator session: not available'."""
+    usage = session_usage(path)
+    if usage is None:
+        return "Orchestrator session: not available"
+    line = "Orchestrator session: %d calls, cache read %s, cache write %s, output %s" % (
+        usage["calls"], fmt_num(usage["cache_read"]), fmt_num(usage["cache_write"]), fmt_num(usage["output"]))
+    return line + (" (partial: transcript over 64 MB)" if usage["partial"] else "")

@@ -270,8 +270,9 @@ cmd_cost() {
     echo "pipeline-events: could not resolve the events log path (not a git repo?)" >&2
     return 1
   }
-  if [ ! -f "$log_path" ]; then
-    [ "$mode" = "summary" ] && echo "no events recorded for this run"
+  # No log: nothing to print, except the run report, which still says so and
+  # still ends with its session line (#604).
+  if [ ! -f "$log_path" ] && [ "$mode" != "summary" ]; then
     return 0
   fi
   if [ "$mode" = "markdown" ]; then
@@ -290,6 +291,7 @@ cmd_cost() {
   python3 -I -B - "$log_path" "$issue" "$json_mode" "$pr" "$mode" "$issues" "$budget" "$header" "$warn_at" "$SCRIPT_DIR" <<'PYEOF'
 import json
 import math
+import os
 import sys
 
 log_path, issue, json_mode, pr, mode, issues, budget_json, header, warn_at, scripts_dir = sys.argv[1:11]
@@ -331,12 +333,29 @@ def matches(rec):
         return False
     return True
 
+# #604: the usage split. A sum starts as None and stays None until an event
+# carries the field ("unrecorded", never 0); cache_unrecorded counts the events
+# with no valid cache_read_tokens.
+SPLIT = ("input_tokens", "output_tokens", "cache_write_tokens", "cache_read_tokens")
+
+def _add_some(a, b):
+    """a + b where None is "nothing recorded yet": None only when both are."""
+    if b is None:
+        return a
+    return _add(a or 0, b)
+
+def _new_group():
+    g = {"events": 0, "tokens": 0, "tool_uses": 0, "duration_s": 0, "unrecorded": 0, "restamp": 0}
+    g.update(dict.fromkeys(SPLIT), cache_unrecorded=0, ci_runs=0)
+    return g
+
 groups = {}
 order = []
-events = []   # (issue, pr, role, tokens or None, model) -- report modes only
+events = []   # (issue, pr, role, tokens or None, model, cache write, cache read) -- report modes only
 skipped = 0
 have_ci_runs = False
-with open(log_path, "r", errors="replace") as f:
+# a missing log reaches here only for --summary, which reports it as no events
+with open(log_path if os.path.isfile(log_path) else os.devnull, "r", errors="replace") as f:
     for line in f:
         line = line.strip()
         if not line:
@@ -355,7 +374,7 @@ with open(log_path, "r", errors="replace") as f:
             continue
         key = (rec.get("issue"), rec.get("role"))
         if key not in groups:
-            groups[key] = {"events": 0, "tokens": 0, "tool_uses": 0, "duration_s": 0, "unrecorded": 0, "restamp": 0, "ci_runs": 0}
+            groups[key] = _new_group()
             order.append(key)
         g = groups[key]
         g["events"] += 1
@@ -367,17 +386,22 @@ with open(log_path, "r", errors="replace") as f:
             g["unrecorded"] += 1
         if rec.get("verdict") in ("RESTAMP_PASS", "RESTAMP_FAIL"):
             g["restamp"] += 1
+        split = [_number(rec.get(field)) for field in SPLIT]
+        for field, n in zip(SPLIT, split):
+            g[field] = _add_some(g[field], n)
+        if split[3] is None:
+            g["cache_unrecorded"] += 1
         ci_runs = rec.get("ci_runs")
         if type(ci_runs) is int and ci_runs >= 0:
             have_ci_runs = True
             g["ci_runs"] += ci_runs
         if report:
-            events.append((rec.get("issue"), rec.get("pr"), rec.get("role"), tokens, rec.get("model")))
+            events.append((rec.get("issue"), rec.get("pr"), rec.get("role"), tokens, rec.get("model"), split[2], split[3]))
 
 order.sort(key=lambda k: (str(k[0]), str(k[1])))
 
 rows = []
-total = {"events": 0, "tokens": 0, "tool_uses": 0, "duration_s": 0, "unrecorded": 0, "restamp": 0, "ci_runs": 0}
+total = _new_group()
 for key in order:
     g = groups[key]
     if not have_ci_runs:
@@ -386,9 +410,9 @@ for key in order:
     for field in g:
         # orchestrator rows (spend-guard blocks, failovers) are not stage
         # runs, so they never count as unrecorded, like in --markdown (#450)
-        if field == "unrecorded" and key[1] == "orchestrator":
+        if field in ("unrecorded", "cache_unrecorded") and key[1] == "orchestrator":
             continue
-        total[field] = _add(total[field], g[field])
+        total[field] = _add_some(total[field], g[field])
 
 if not have_ci_runs:
     total.pop("ci_runs")
@@ -405,18 +429,27 @@ def load_format():
         print("pipeline-events: pipeline-spend-format.py unavailable (%s); no spend report" % type(e).__name__, file=sys.stderr)
         return None
 
+def cache_of(evs):
+    """(cache read, cache write, cache-unrecorded count) over report events: a
+    sum is None when no event carries the figure (#604)."""
+    read = write = None
+    for e in evs:
+        write, read = _add_some(write, e[5]), _add_some(read, e[6])
+    return read, write, sum(1 for e in evs if e[6] is None)
+
 def render_markdown(fmt):
     stage_events = [e for e in events if e[2] != "orchestrator"]
     if not stage_events:
         return
     stage_rows = [r for r in rows if r["role"] != "orchestrator"]
     models = {}
-    for _, _, role, _, model in stage_events:
-        models.setdefault(role, []).append(model)
-    tot = {"events": 0, "tokens": 0, "tool_uses": 0, "duration_s": 0, "unrecorded": 0, "restamp": 0}
+    for e in stage_events:
+        models.setdefault(e[2], []).append(e[4])
+    tot = {"events": 0, "tokens": 0, "tool_uses": 0, "duration_s": 0, "unrecorded": 0, "restamp": 0,
+           "cache_write_tokens": None, "cache_read_tokens": None, "cache_unrecorded": 0}
     for r in stage_rows:
         for field in tot:
-            tot[field] = _add(tot[field], r[field])
+            tot[field] = _add_some(tot[field], r[field])
 
     def cells(*c):
         return "| " + " | ".join(str(x) for x in c) + " |"
@@ -425,8 +458,9 @@ def render_markdown(fmt):
     if header:
         out += [header.replace("{role}", "orchestrator"), ""]
     out += ["### Token spend — #%s" % issue, "",
-            cells("stage", "model", "runs", "tokens", "tool uses", "duration", "re-stamps", "unrecorded"),
-            "|---|---|---:|---:|---:|---:|---:|---:|"]
+            cells("stage", "model", "runs", "tokens", "cache write", "cache read", "tool uses", "duration",
+                  "re-stamps", "unrecorded"),
+            "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
     def tokens(v):
         return fmt.fmt_num(fmt.as_count(v))
 
@@ -434,15 +468,21 @@ def render_markdown(fmt):
         # a row of runs that all reported no usage is "unrecorded", not 0
         return "unrecorded" if r["unrecorded"] == r["events"] else tokens(r["tokens"])
 
+    def cache(r):
+        """The cache write and cache read cells of a row (#604)."""
+        return [fmt.fmt_cache_cell(r[f], r["cache_unrecorded"], r["events"])
+                for f in ("cache_write_tokens", "cache_read_tokens")]
+
     def duration(v):
         return fmt.fmt_dur(fmt.as_count(v))
 
     # role and model come from the log: shown as code, never rendered.
     for r in stage_rows:
         out.append(cells(fmt.md_code(r["role"]), fmt.md_code(fmt.model_summary(models[r["role"]])), r["events"],
-                         row_tokens(r), r["tool_uses"], duration(r["duration_s"]), r["restamp"], r["unrecorded"]))
-    out.append(cells("TOTAL", "", tot["events"], tokens(tot["tokens"]), tot["tool_uses"], duration(tot["duration_s"]),
-                     tot["restamp"], tot["unrecorded"]))
+                         row_tokens(r), *cache(r), r["tool_uses"], duration(r["duration_s"]), r["restamp"],
+                         r["unrecorded"]))
+    out.append(cells("TOTAL", "", tot["events"], tokens(tot["tokens"]), *cache(tot), tot["tool_uses"],
+                     duration(tot["duration_s"]), tot["restamp"], tot["unrecorded"]))
     if pr:
         in_pr = [e for e in stage_events if e[1] is not None and str(e[1]) == pr]
         pr_tokens, pr_unrecorded = 0, 0
@@ -456,22 +496,27 @@ def render_markdown(fmt):
         elif pr_unrecorded == len(in_pr):
             text = "unrecorded"
         else:
-            text = "%s (%d tokens)" % (tokens(pr_tokens), fmt.as_count(pr_tokens))
+            text = "%s (%d tokens, cache reads not included)" % (tokens(pr_tokens), fmt.as_count(pr_tokens))
             if pr_unrecorded:
                 text += " (+%d unrecorded)" % pr_unrecorded
+            text += " · " + fmt.fmt_cache(*cache_of(in_pr))
         out += ["", "This PR (#%s): %s" % (pr, text)]
     budget_line = fmt.fmt_budget(fmt.parse_budget(budget_json), warn_at)
     if budget_line:
         out += ["", budget_line]
-    out += ["", "Tokens as reported by the harness: one total per run, no input/output split, no dollar cost; "
+    out += ["", "Tokens as reported by the harness: `tokens` and TOTAL are fresh input + output + cache write, "
+                "cache reads not included (they are the `cache read` column); no dollar cost; "
                 "unrecorded = runs with no usage reported (adapter and pi paths)",
             "", "Orchestrator lifecycle rows (such as spend-guard blocks) are not counted in the rows or the total."]
     print("\n".join(out))
 
 def render_summary(fmt):
+    # #604: the report always ends with the orchestrating session's own usage,
+    # read from the transcript TALOS_TRANSCRIPT_PATH names (or "not available").
+    session = fmt.fmt_session(os.environ.get("TALOS_TRANSCRIPT_PATH"))
     stage_events = [e for e in events if e[2] != "orchestrator"]
     if not stage_events:
-        print("no events recorded for this run")
+        print("no events recorded for this run\n" + session)
         return
     def safe(v):
         """A log value as one short token for a report line."""
@@ -480,12 +525,14 @@ def render_summary(fmt):
     # one row per (issue, PR), a pre-PR row per issue for the null-pr events
     rows_by = {}
     row_order = []
-    for iss, p, role, tokens, model in stage_events:
+    for e in stage_events:
+        iss, p, role, tokens, model = e[:5]
         k = (safe(iss), None if p is None else safe(p))
         if k not in rows_by:
-            rows_by[k] = {"tokens": 0, "unrecorded": 0, "models": {}}
+            rows_by[k] = {"tokens": 0, "unrecorded": 0, "models": {}, "events": []}
             row_order.append(k)
         r = rows_by[k]
+        r["events"].append(e)
         if tokens is None:
             r["unrecorded"] += 1
         else:
@@ -510,9 +557,9 @@ def render_summary(fmt):
         grand = _add(grand, r["tokens"])
         grand_unrecorded += r["unrecorded"]
 
-    # 5 fixed lines (title, column header, Top PRs, Per issue, Total) leave 15
-    # for rows; past that the smallest rows fold into one line.
-    cap = 15
+    # 6 fixed lines (title, column header, Top PRs, Per issue, Total, the
+    # session line) leave 14 for rows; past that the smallest rows fold into one.
+    cap = 14
     shown = row_order
     folded = ""
     if len(row_order) > cap:
@@ -536,15 +583,19 @@ def render_summary(fmt):
             parts = parts[:8] + ["+%d more" % (len(parts) - 8)]
         return " · ".join(parts)
 
-    table = [("issue", "PR", "tokens", "unrecorded", "stage models")]
+    def cache_cells(evs):
+        read, write, k = cache_of(evs)
+        return fmt.fmt_cache_cell(write, k, len(evs)), fmt.fmt_cache_cell(read, k, len(evs))
+
+    table = [("issue", "PR", "tokens", "cache write", "cache read", "unrecorded", "stage models")]
     for k in shown:
         r = rows_by[k]
         table.append(("#" + k[0], "pre-PR" if k[1] is None else "#" + k[1], num(r["tokens"]),
-                      str(r["unrecorded"]), stage_models(r["models"])))
-    widths = [max(len(t[i]) for t in table) for i in range(4)]
+                      *cache_cells(r["events"]), str(r["unrecorded"]), stage_models(r["models"])))
+    widths = [max(len(t[i]) for t in table) for i in range(6)]
     lines = ["Token spend — run summary"]
     for t in table:
-        lines.append(("  ".join(t[i].ljust(widths[i]) for i in range(4)) + "  " + t[4]).rstrip())
+        lines.append(("  ".join(t[i].ljust(widths[i]) for i in range(6)) + "  " + t[6]).rstrip())
     if folded:
         lines.append(folded)
     pr_rows = sorted((k for k in row_order if k[1] is not None), key=lambda k: -rows_by[k]["tokens"])
@@ -553,7 +604,8 @@ def render_summary(fmt):
     total_line = "Total: " + num(grand)
     if grand_unrecorded:
         total_line += " (+%d unrecorded)" % grand_unrecorded
-    lines.append(total_line)
+    lines.append(total_line + " (cache reads not included) · " + fmt.fmt_cache(*cache_of(stage_events)))
+    lines.append(session)
     print("\n".join(lines))
 
 if report:
@@ -567,17 +619,22 @@ else:
     def _s(v):
         return "" if v is None else str(v)
 
+    def _split(row):
+        """The #604 columns: a sum no event carries prints `unrecorded`."""
+        return ["unrecorded" if row[f] is None else row[f] for f in SPLIT] + [row["cache_unrecorded"]]
+
     extra = ["ci_runs"] if have_ci_runs else []
-    print("	".join(["issue", "role", "events", "tokens", "tool_uses", "duration_s", "unrecorded", "restamp"] + extra))
+    print("	".join(["issue", "role", "events", "tokens", "tool_uses", "duration_s", "unrecorded", "restamp"]
+                    + list(SPLIT) + ["cache_unrecorded"] + extra))
     for row in rows:
         print("	".join(_s(x) for x in [
             row["issue"], row["role"], row["events"], row["tokens"],
             row["tool_uses"], row["duration_s"], row["unrecorded"], row["restamp"],
-        ] + [row[f] for f in extra]))
+        ] + _split(row) + [row[f] for f in extra]))
     print("	".join(_s(x) for x in [
         "TOTAL", "", total["events"], total["tokens"],
         total["tool_uses"], total["duration_s"], total["unrecorded"], total["restamp"],
-    ] + [total[f] for f in extra]))
+    ] + _split(total) + [total[f] for f in extra]))
 
 if skipped:
     print(f"pipeline-events: skipped {skipped} malformed line(s)", file=sys.stderr)
@@ -611,13 +668,15 @@ cmd_cost_line() {
 log_path, issue, pr = sys.argv[1:4]
 sys.stdout.reconfigure(encoding="utf-8")
 suffix = fmt_budget_suffix(parse_budget(sys.argv[5]))
-MAX_LEN = 200 - len(suffix)  # the suffix counts toward the 200
 
 newest = None
 recorded = {}
 unrecorded = 0
 total = 0
 skipped = 0
+# #604: cache reads and writes over the same scope; None until an event has one
+cache_read = cache_write = None
+cache_unrecorded = 0
 with open(log_path, "r", encoding="utf-8", errors="replace") as f:
     for line in f:
         line = line.strip()
@@ -644,11 +703,23 @@ with open(log_path, "r", encoding="utf-8", errors="replace") as f:
             total += tokens
             label = role_label(rec.get("role"))
             recorded[label] = recorded.get(label, 0) + tokens
+        read, write = as_count(rec.get("cache_read_tokens")), as_count(rec.get("cache_write_tokens"))
+        if read is None:
+            cache_unrecorded += 1
+        else:
+            cache_read = (cache_read or 0) + read
+        if write is not None:
+            cache_write = (cache_write or 0) + write
 
 if skipped:
     print(f"pipeline-events: skipped {skipped} malformed line(s)", file=sys.stderr)
 if newest is None:
     sys.exit(0)
+
+# The cache segment sits between the breakdown and the budget suffix; both
+# count toward the 200 and neither is ever cut (the breakdown is).
+suffix = " · " + fmt_cache(cache_read, cache_write, cache_unrecorded, totals=True) + suffix
+MAX_LEN = 200 - len(suffix)
 
 parts = []
 tokens = as_count(newest.get("tokens"))
@@ -693,9 +764,9 @@ PYEOF
 sys.path.insert(0, sys.argv[4])
 try:
     _m = importlib.import_module('pipeline-spend-format')
-    fmt_num, fmt_dur, role_label, role_abbrev, as_count, parse_budget, fmt_budget_suffix = (
+    fmt_num, fmt_dur, role_label, role_abbrev, as_count, parse_budget, fmt_budget_suffix, fmt_cache = (
         _m.fmt_num, _m.fmt_dur, _m.role_label, _m.role_abbrev, _m.as_count,
-        _m.parse_budget, _m.fmt_budget_suffix)
+        _m.parse_budget, _m.fmt_budget_suffix, _m.fmt_cache)
 except Exception as e:
     print('pipeline-events: pipeline-spend-format.py unavailable (%s); no spend line' % type(e).__name__, file=sys.stderr)
     sys.exit(0)

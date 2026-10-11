@@ -117,6 +117,15 @@
 #                       --output-format already in agents.runner_args, leaves
 #                       the invocation alone and tokens stay null. See the
 #                       "Usage capture" block below.
+#                       With it the event also carries input_tokens (fresh,
+#                       uncached), output_tokens, cache_write_tokens and
+#                       cache_read_tokens (#604). `tokens` is input + output +
+#                       cache write: cache reads are never in it, nor in the
+#                       limits.tokens_per_issue budget. Every attempt of every
+#                       runner prints on stderr
+#                         talos:usage runner=<r> tokens=<N|null> input=<N|null> output=<N|null> cache_write=<N|null> cache_read=<N|null>
+#                       (null = not reported: codex, gemini, antigravity, pi and
+#                       the custom sidecar have no split).
 #   agents.roles.<role>.runner      per-role override of agents.runner (#167).
 #                                    Resolved role-first: this key wins when
 #                                    set, else agents.runner, else "claude".
@@ -1047,7 +1056,8 @@ EOF
 # ── Usage capture (#420) ──────────────────────────────────────────────────────
 # One attempt = one _run_runner call. Its usage lands in _AT_TOKENS / _AT_TOOLS /
 # _AT_MODEL (empty = unknown: the event then carries null, never 0, and no
-# --tokens flag is passed). Sources, per runner:
+# --tokens flag is passed) and, for claude, in the #604 split _AT_IN / _AT_OUT /
+# _AT_CW / _AT_CR (empty = that event key is left out). Sources, per runner:
 #   claude   `--output-format json` (agents.capture_usage): one result object; the
 #            message text is its `result`, printed as text mode would print it.
 #            tokens = input + output + cache-creation, EXCLUDING cache reads (D1),
@@ -1055,12 +1065,18 @@ EOF
 #            modelUsage falls back to the top-level usage object. Output that is
 #            not a result object (or has no `result` string) is printed raw and
 #            records nothing.
-#   custom   the TALOS_USAGE_FILE sidecar (see the header).
+#            The split (#604): fresh input, output, cache write and cache read,
+#            each summed over the same models (or read from the top-level usage)
+#            on its own, so a figure that is missing or not a count in any model
+#            leaves out that one field and nothing else. tokens never includes
+#            the cache reads; they are only ever their own number.
+#   custom   the TALOS_USAGE_FILE sidecar (see the header): tokens, no split.
 #   other    nothing: no flag is added and tokens stay null (codex, gemini,
 #            antigravity and pi have no committed, verified capture).
 # Each attempt gets a fresh mktemp -d (_UDIR), removed when the attempt ends and
 # again on exit, so one attempt's sidecar is never read as the next one's.
 _AT_TOKENS="" _AT_TOOLS="" _AT_MODEL="" _AT_RUNNER="" _UDIR="" _UDIR_TRAP=""
+_AT_IN="" _AT_OUT="" _AT_CW="" _AT_CR=""
 _usage_end() {
   [ -z "$_UDIR" ] || rm -rf "${_UDIR:?}"
   _UDIR=""
@@ -1091,7 +1107,9 @@ _usage_capture_wanted() {
   return 0
 }
 # _usage_py <claude|sidecar> <input-file> <kv-out-file>: the one parser. Writes
-# `tokens=` / `tool_uses=` / `model=` lines for the fields that validate to
+# `tokens=` / `tool_uses=` / `model=` lines (and, for `claude`, the #604 split:
+# `input_tokens=` / `output_tokens=` / `cache_write_tokens=` /
+# `cache_read_tokens=`) for the fields that validate to
 # <kv-out-file>; for `claude` it also prints the message text on stdout. Exit 1
 # (nothing printed) when the input is not usable as that source.
 _usage_py() {
@@ -1110,7 +1128,7 @@ def count(v):
     return v if type(v) is int and 0 <= v < CAP else None
 
 
-def write_kv(tokens, tool_uses, model):
+def write_kv(tokens, tool_uses, model, split=()):
     lines = []
     if tokens is not None and tokens < CAP:
         lines.append("tokens=%d" % tokens)
@@ -1118,6 +1136,9 @@ def write_kv(tokens, tool_uses, model):
         lines.append("tool_uses=%d" % tool_uses)
     if isinstance(model, str) and MODEL_RE.match(model):
         lines.append("model=" + model)
+    for key, n in split:
+        if n is not None and n < CAP:
+            lines.append("%s=%d" % (key, n))
     with open(out, "w") as f:
         f.write("".join(l + "\n" for l in lines))
 
@@ -1148,6 +1169,30 @@ def claude_tokens(obj):
     return None, None
 
 
+# #604: event key, its modelUsage key, its top-level usage key.
+SPLIT = (
+    ("input_tokens", "inputTokens", "input_tokens"),
+    ("output_tokens", "outputTokens", "output_tokens"),
+    ("cache_write_tokens", "cacheCreationInputTokens", "cache_creation_input_tokens"),
+    ("cache_read_tokens", "cacheReadInputTokens", "cache_read_input_tokens"),
+)
+
+
+def claude_split(obj):
+    """[(event key, n or None)]: each figure on its own, from the source
+    claude_tokens reads. None when it is missing or not a count in any model."""
+    mu = obj.get("modelUsage")
+    if isinstance(mu, dict) and mu:
+        entries, col = list(mu.values()), 1
+    else:
+        entries, col = [obj.get("usage")], 2
+    out = []
+    for names in SPLIT:
+        vals = [count(u.get(names[col])) if isinstance(u, dict) else None for u in entries]
+        out.append((names[0], None if None in vals else sum(vals)))
+    return out
+
+
 try:
     with open(src, "rb") as f:
         raw = f.read(64 * 1024 * 1024 if mode == "claude" else 65536)
@@ -1167,7 +1212,7 @@ if isinstance(obj, list):
 if not isinstance(obj, dict) or not isinstance(obj.get("result"), str):
     sys.exit(1)
 tokens, model = claude_tokens(obj)
-write_kv(tokens, None, model)
+write_kv(tokens, None, model, claude_split(obj))
 sys.stdout.buffer.write((obj["result"] + "\n").encode("utf-8", "replace"))
 TALOS_USAGE_PY
 }
@@ -1183,6 +1228,15 @@ _usage_load() {
         case "$_v" in "" | *[!0-9]*) : ;; *) [ "${#_v}" -le 15 ] && _AT_TOOLS="$_v" ;; esac ;;
       model)
         case "$_v" in "" | *[!A-Za-z0-9._:-]*) : ;; *) _AT_MODEL="$_v" ;; esac ;;
+      input_tokens | output_tokens | cache_write_tokens | cache_read_tokens)
+        case "$_v" in "" | *[!0-9]*) continue ;; esac
+        [ "${#_v}" -le 15 ] || continue
+        case "$_k" in
+          input_tokens) _AT_IN="$_v" ;;
+          output_tokens) _AT_OUT="$_v" ;;
+          cache_write_tokens) _AT_CW="$_v" ;;
+          cache_read_tokens) _AT_CR="$_v" ;;
+        esac ;;
     esac
   done <"$1"
 }
@@ -1221,12 +1275,17 @@ _attempt_model() {
   [ -n "$_m" ] || _m="$_AT_MODEL"
   printf '%s' "$_m"
 }
-# _usage_args <runner>: the --tokens/--tool-uses/--model flags for this attempt,
-# one per line (empty when nothing is known), appended to an event's argv.
+# _usage_args <runner>: the --tokens/--tool-uses/--model flags for this attempt
+# and the #604 split flags, one per line (empty when nothing is known), appended
+# to an event's argv.
 _usage_args() {
   local _m
   [ -z "$_AT_TOKENS" ] || printf '%s\n%s\n' --tokens "$_AT_TOKENS"
   [ -z "$_AT_TOOLS" ] || printf '%s\n%s\n' --tool-uses "$_AT_TOOLS"
+  [ -z "$_AT_IN" ] || printf '%s\n%s\n' --input-tokens "$_AT_IN"
+  [ -z "$_AT_OUT" ] || printf '%s\n%s\n' --output-tokens "$_AT_OUT"
+  [ -z "$_AT_CW" ] || printf '%s\n%s\n' --cache-write-tokens "$_AT_CW"
+  [ -z "$_AT_CR" ] || printf '%s\n%s\n' --cache-read-tokens "$_AT_CR"
   _m="$(_attempt_model "$1")"
   [ -z "$_m" ] || printf '%s\n%s\n' --model "$_m"
 }
@@ -1244,12 +1303,13 @@ $(_usage_args "$_AT_RUNNER")
 EOF
   bash "$SCRIPT_DIR/pipeline-hooks.sh" post_stage stage_attempt "$ROLE" "$TALOS_ISSUE_NUMBER" \
     ${_stage_pr:+--pr "$_stage_pr"} --verdict FAIL --runner "$_AT_RUNNER" ${_args[@]+"${_args[@]}"} || true
-  _AT_TOKENS="" _AT_TOOLS="" _AT_MODEL=""
+  _AT_TOKENS="" _AT_TOOLS="" _AT_MODEL="" _AT_IN="" _AT_OUT="" _AT_CW="" _AT_CR=""
 }
 # _usage_marker <runner>: one stderr line per attempt, so a caller that writes
-# its own event (talos run, #422) can see what was recorded.
+# its own event (talos run, #422) can see what was recorded. The four #604
+# figures follow tokens=, each null when the attempt did not report it.
 _usage_marker() {
-  echo "talos:usage runner=$1 tokens=${_AT_TOKENS:-null}" >&2
+  echo "talos:usage runner=$1 tokens=${_AT_TOKENS:-null} input=${_AT_IN:-null} output=${_AT_OUT:-null} cache_write=${_AT_CW:-null} cache_read=${_AT_CR:-null}" >&2
 }
 
 # ── Stage timeout (#540) ──────────────────────────────────────────────────────
@@ -1484,6 +1544,7 @@ _run_runner() {
 # (body not indented, to keep the #420 diff small; tests/test-runner-conformance.sh finds the dispatch arms by pattern)
 local RUNNER="$1"
 _AT_TOKENS="" _AT_TOOLS="" _AT_MODEL="" _AT_RUNNER="$RUNNER"
+_AT_IN="" _AT_OUT="" _AT_CW="" _AT_CR=""
 case "$RUNNER" in
   claude)
     # #603: developer and QA wait on a test suite for longer than the 5-minute

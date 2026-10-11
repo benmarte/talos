@@ -266,10 +266,11 @@ tr_line "$SANDBOX/session/subagents/agent-a.jsonl" s1 1 700 4000 0 80
 tr_line "$SANDBOX/session/subagents/agent-a.jsonl" s2 1 300 0 0 40
 # live = m1 (10+300+5000) + m2 (2+200) + s1 (1+700+4000) + s2 (1+300) = 10514 ; recorded 1000
 STDIN_TEXT="{\"transcript_path\":\"$TR\",\"session_id\":\"s\"}" run_status --line
-assert_eq "talos #7 developer ●●◐○○○ $(fmt_ref 11514)" "$OUT" "recorded + main transcript + subagent transcripts since stage_start"
+# cache reads (#604) are their own figure, never in the total: m1 99999 + m2 40000
+assert_eq "talos #7 developer ●●◐○○○ $(fmt_ref 11514) · cache read $(fmt_ref 139999)" "$OUT" "recorded + main transcript + subagent transcripts since stage_start"
 tr_line "$TR" m3 0 1000 0 0 5
 STDIN_TEXT="{\"transcript_path\":\"$TR\"}" run_status --line
-assert_eq "talos #7 developer ●●◐○○○ $(fmt_ref 12514)" "$OUT" "the count rises as the transcript grows"
+assert_eq "talos #7 developer ●●◐○○○ $(fmt_ref 12514) · cache read $(fmt_ref 139999)" "$OUT" "the count rises as the transcript grows"
 STDIN_TEXT="{\"transcript_path\":\"$SANDBOX/missing.jsonl\"}" run_status --line
 assert_eq "talos #7 developer ●●◐○○○ 1k" "$OUT" "a transcript that does not exist: recorded tokens only"
 STDIN_TEXT='{not json' run_status --line

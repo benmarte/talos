@@ -63,15 +63,19 @@ bash "$HOOKS" post_stage merged orchestrator 43 --pr 58 2>/dev/null
 out="$(bash "$EVENTS" cost --issue 42)"
 header="$(printf '%s\n' "$out" | head -1)"
 total="$(printf '%s\n' "$out" | tail -1)"
-assert_eq "$(printf 'issue\trole\tevents\ttokens\ttool_uses\tduration_s\tunrecorded\trestamp\tci_runs')" "$header" \
+# The #604 usage split sits between restamp and ci_runs: five columns, here
+# four `unrecorded` sums (no event carries one) and the cache-unrecorded count.
+SPLIT_HEAD='\tinput_tokens\toutput_tokens\tcache_write_tokens\tcache_read_tokens\tcache_unrecorded'
+U4='\tunrecorded\tunrecorded\tunrecorded\tunrecorded'
+assert_eq "$(printf "issue\trole\tevents\ttokens\ttool_uses\tduration_s\tunrecorded\trestamp$SPLIT_HEAD\tci_runs")" "$header" \
   "cost table: ci_runs is a trailing column when an event carries it"
-assert_eq "$(printf 'TOTAL\t\t2\t100\t2\t10\t0\t0\t2')" "$total" \
+assert_eq "$(printf "TOTAL\t\t2\t100\t2\t10\t0\t0$U4\t1\t2")" "$total" \
   "cost table: TOTAL row sums ci_runs"
 row="$(printf '%s\n' "$out" | grep "orchestrator")"
-assert_eq "$(printf '42\torchestrator\t1\t0\t0\t0\t1\t0\t2')" "$row" \
+assert_eq "$(printf "42\torchestrator\t1\t0\t0\t0\t1\t0$U4\t1\t2")" "$row" \
   "cost table: the merged event's row reports ci_runs 2"
 row="$(printf '%s\n' "$out" | grep "	qa	")"
-assert_eq "$(printf '42\tqa\t1\t100\t2\t10\t0\t0\t0')" "$row" \
+assert_eq "$(printf "42\tqa\t1\t100\t2\t10\t0\t0$U4\t1\t0")" "$row" \
   "cost table: a role without the field reads 0"
 
 _check="$(bash "$EVENTS" cost --issue 42 --json | python3 -c "
@@ -84,8 +88,8 @@ assert_eq "OK" "$_check" "cost --json: ci_runs is a trailing field on rows and t
 
 # ── (e) issue 43: no ci_runs anywhere -> pre-#332 shape, byte-identical ──────
 out="$(bash "$EVENTS" cost --issue 43)"
-assert_eq "$(printf 'issue\trole\tevents\ttokens\ttool_uses\tduration_s\tunrecorded\trestamp\n43\torchestrator\t1\t0\t0\t0\t1\t0\n43\tqa\t1\t50\t1\t5\t0\t0\nTOTAL\t\t2\t50\t1\t5\t0\t0')" "$out" \
-  "cost table: no ci_runs event -> exactly the pre-#332 columns"
+assert_eq "$(printf "issue\trole\tevents\ttokens\ttool_uses\tduration_s\tunrecorded\trestamp$SPLIT_HEAD\n43\torchestrator\t1\t0\t0\t0\t1\t0$U4\t1\n43\tqa\t1\t50\t1\t5\t0\t0$U4\t1\nTOTAL\t\t2\t50\t1\t5\t0\t0$U4\t1")" "$out" \
+  "cost table: no ci_runs event -> no ci_runs column"
 _check="$(bash "$EVENTS" cost --issue 43 --json | python3 -c "
 import json, sys
 d = json.load(sys.stdin)

@@ -66,10 +66,10 @@ base_fixture
 OUT="$(md 7 9)"; RC=$?
 assert_eq "0" "$RC" "markdown: exit 0"
 assert_eq "### Token spend — #7" "$(printf '%s\n' "$OUT" | sed -n 1p)" "markdown: no comments.header -> the heading is the first line"
-assert_contains "$OUT" "| stage | model | runs | tokens | tool uses | duration | re-stamps | unrecorded |" "markdown: table header"
+assert_contains "$OUT" "| stage | model | runs | tokens | cache write | cache read | tool uses | duration | re-stamps | unrecorded |" "markdown: table header"
 assert_contains "$OUT" "| TOTAL |" "markdown: a TOTAL row"
 assert_contains "$OUT" "This PR (#9): " "markdown: This PR line"
-assert_contains "$OUT" "Tokens as reported by the harness: one total per run, no input/output split, no dollar cost; unrecorded = runs with no usage reported (adapter and pi paths)" "markdown: the note, verbatim"
+assert_contains "$OUT" 'Tokens as reported by the harness: `tokens` and TOTAL are fresh input + output + cache write, cache reads not included (they are the `cache read` column); no dollar cost; unrecorded = runs with no usage reported (adapter and pi paths)' "markdown: the note, verbatim"
 assert_contains "$OUT" "Orchestrator lifecycle rows" "markdown: the orchestrator footnote"
 assert_eq "0" "$(printf '%s' "$OUT" | grep -c 'talos:')" "markdown: no marker (upsert-pr-comment adds it)"
 assert_eq "0" "$(printf '%s' "$OUT" | grep -c '^| orchestrator')" "markdown: no orchestrator row"
@@ -82,7 +82,7 @@ assert_eq "6" "$(printf '%s' "$ORDER" | wc -w | tr -d ' ')" "markdown: all six s
 assert_eq "developer qa reviewer validator" \
   "$(printf '%s\n' "$OUT" | grep '^| .[a-z]' | grep -v '^| stage' | sed 's/^| .\([a-z]*\).*/\1/' | tr '\n' ' ' | sed 's/ $//')" \
   "markdown: one row per stage role, sorted"
-assert_contains "$OUT" "This PR (#9): 1.80M (1800000 tokens) (+1 unrecorded)" "markdown: This PR is the PR-scoped sum, with its unrecorded runs"
+assert_contains "$OUT" "This PR (#9): 1.80M (1800000 tokens, cache reads not included) (+1 unrecorded) · cache reads unrecorded" "markdown: This PR is the PR-scoped sum, with its unrecorded runs"
 # without --pr there is no This PR line
 OUT_NOPR="$(bash "$EVENTS" cost --issue 7 --markdown 2>/dev/null)"
 assert_eq "0" "$(printf '%s' "$OUT_NOPR" | grep -c '^This PR')" "markdown: no --pr, no This PR line"
@@ -105,32 +105,41 @@ for line in open(sys.argv[2], encoding="utf-8"):
     if line.startswith("| ") and not line.startswith("| stage") and not line.startswith("|---"):
         c = [x.strip() for x in line.strip().strip("|").split(" | ")]
         cells[c[0].strip(chr(96))] = c
-def want(events, tokens, tools, dur, restamp, unrecorded):
-    return [str(events), m.fmt_num(m.as_count(tokens)), str(tools), m.fmt_dur(m.as_count(dur)), str(restamp), str(unrecorded)]
+CACHE = ("cache_write_tokens", "cache_read_tokens")
+def want(r):
+    # the two cache cells (#604) sit right after tokens
+    return ([str(r["events"]), m.fmt_num(m.as_count(r["tokens"]))]
+            + [m.fmt_cache_cell(r[k], r["cache_unrecorded"], r["events"]) for k in CACHE]
+            + [str(r["tool_uses"]), m.fmt_dur(m.as_count(r["duration_s"])), str(r["restamp"]), str(r["unrecorded"])])
 bad = []
-sums = [0] * 6
+SUMMED = ("events", "tokens", "tool_uses", "duration_s", "restamp", "unrecorded", "cache_unrecorded")
+tot = dict.fromkeys(SUMMED, 0)
+tot.update(dict.fromkeys(CACHE))   # None until a row carries the figure
 for r in data["rows"]:
     if r["role"] == "orchestrator":
         if "orchestrator" in cells:
             bad.append("orchestrator row present")
         continue
-    exp = want(r["events"], r["tokens"], r["tool_uses"], r["duration_s"], r["restamp"], r["unrecorded"])
-    if cells[r["role"]][2:] != exp:
-        bad.append("%s: %s != %s" % (r["role"], cells[r["role"]][2:], exp))
-    sums = [a + b for a, b in zip(sums, [r["events"], r["tokens"], r["tool_uses"], r["duration_s"], r["restamp"], r["unrecorded"]])]
-if cells["TOTAL"][2:] != want(*sums):
-    bad.append("TOTAL %s != %s" % (cells["TOTAL"][2:], want(*sums)))
+    if cells[r["role"]][2:] != want(r):
+        bad.append("%s: %s != %s" % (r["role"], cells[r["role"]][2:], want(r)))
+    for k in SUMMED:
+        tot[k] += r[k]
+    for k in CACHE:
+        if r[k] is not None:
+            tot[k] = (tot[k] or 0) + r[k]
+if cells["TOTAL"][2:] != want(tot):
+    bad.append("TOTAL %s != %s" % (cells["TOTAL"][2:], want(tot)))
 t = data["total"]
-if [cells["TOTAL"][i] for i in (3, 4, 5)] != [m.fmt_num(m.as_count(t["tokens"])), str(t["tool_uses"]), m.fmt_dur(m.as_count(t["duration_s"]))]:
+if [cells["TOTAL"][i] for i in (3, 6, 7)] != [m.fmt_num(m.as_count(t["tokens"])), str(t["tool_uses"]), m.fmt_dur(m.as_count(t["duration_s"]))]:
     bad.append("TOTAL tokens/tools/duration differ from the --json total")
 print("OK" if not bad else "; ".join(bad))
 PYEOF
 )"
 assert_eq "OK" "$CMP" "numbers: every role row and TOTAL equal cost --json through the formatters (orchestrator excluded)"
 # a few cells, literally
-assert_contains "$OUT" '| `developer` | `sonnet ×3, opus ×1` | 4 | 1.50M | 37 | 17m30s | 0 | 0 |' "cells: the developer row, compact tokens and duration"
-assert_contains "$OUT" '| `reviewer` | `sonnet ×2, session default ×1` | 3 | 200k | 5 | 2m20s | 1 | 1 |' "cells: the reviewer row (re-stamp and unrecorded stay integers)"
-assert_contains "$OUT" '| TOTAL |  | 9 | 1.90M | 50 | 21m35s | 1 | 1 |' "cells: TOTAL, compact"
+assert_contains "$OUT" '| `developer` | `sonnet ×3, opus ×1` | 4 | 1.50M | unrecorded | unrecorded | 37 | 17m30s | 0 | 0 |' "cells: the developer row, compact tokens and duration"
+assert_contains "$OUT" '| `reviewer` | `sonnet ×2, session default ×1` | 3 | 200k | unrecorded | unrecorded | 5 | 2m20s | 1 | 1 |' "cells: the reviewer row (re-stamp and unrecorded stay integers)"
+assert_contains "$OUT" '| TOTAL |  | 9 | 1.90M | unrecorded | unrecorded | 50 | 21m35s | 1 | 1 |' "cells: TOTAL, compact"
 
 # ── (c) the model column ───────────────────────────────────────────────────
 assert_contains "$OUT" '| `developer` | `sonnet ×3, opus ×1` | 4 |' "model: mixed families, count descending"
@@ -149,13 +158,13 @@ assert_contains "$OUT2" '| `security` | `opus` | 1 |' "model: matched case-insen
 reset_log
 printf '%s\n' '{"event":"x","role":"a|b\nc\u0007d","issue":7,"pr":9,"verdict":"PASS","model":"m|x\ny\u001bz","tokens":5,"tool_uses":1,"duration_s":1,"ts":"2026-10-03T00:00:00Z"}' >> "$LOG"
 OUT3="$(md 7 9)"
-assert_contains "$OUT3" '| `a\|b cd` | `m\|xyz` | 1 | 5 | 1 | 1s | 0 | 0 |' "escape: pipe escaped, newline a space, control characters stripped (role and model)"
+assert_contains "$OUT3" '| `a\|b cd` | `m\|xyz` | 1 | 5 | unrecorded | unrecorded | 1 | 1s | 0 | 0 |' "escape: pipe escaped, newline a space, control characters stripped (role and model)"
 assert_eq "0" "$(printf '%s' "$OUT3" | LC_ALL=C grep -c "$(printf '\007')")" "escape: no BEL in the output"
 assert_eq "0" "$(printf '%s' "$OUT3" | LC_ALL=C grep -c "$(printf '\033')")" "escape: no ESC in the output"
 # every table row has the same number of unescaped pipes
-assert_eq "9" "$(printf '%s\n' "$OUT3" | grep '^| .a' | sed 's/\\|//g' | tr -cd '|' | wc -c | tr -d ' ')" "escape: the row keeps its 9 column separators"
+assert_eq "11" "$(printf '%s\n' "$OUT3" | grep '^| .a' | sed 's/\\|//g' | tr -cd '|' | wc -c | tr -d ' ')" "escape: the row keeps its 11 column separators"
 
-# inert.py ROW -- yes when ROW has 8 cells and its first two are each exactly one
+# inert.py ROW -- yes when ROW has 10 cells and its first two are each exactly one
 # code span (the fence longer than any backtick run inside), no text outside.
 cat > "$SANDBOX/inert.py" <<'PYEOF'
 import re, sys
@@ -167,7 +176,7 @@ def inert(cell):
     if m.group(2) and not (m.group(3).startswith("`") or m.group(3).endswith("`")):
         return False
     return all(len(r) != len(m.group(1)) for r in re.findall(r"`+", m.group(3)))
-print("yes" if len(cells) == 8 and inert(cells[0]) and inert(cells[1]) else "no")
+print("yes" if len(cells) == 10 and inert(cells[0]) and inert(cells[1]) else "no")
 PYEOF
 # ── (c1) no Markdown from the log: values render as inert code ─────────────
 python3 -I - "$SANDBOX" '@octocat' '[x](http://e)' '![i](http://e/p.png)' '<!-- talos:spend -->' '<img src=x>' 'a`b' '``' '`' <<'PYEOF'
@@ -185,7 +194,7 @@ for evil in '@octocat' '[x](http://e)' '![i](http://e/p.png)' '<!-- talos:spend 
   EV_ROW="$(printf '%s\n' "$EV_OUT" | sed -n '/^|---/{n;p;}')"
   # the row must be: | <code span> | <code span> | 1 | 5 | ... with the value only inside the spans
   CODE_OK="$(python3 -I "$SANDBOX/inert.py" "$EV_ROW")"
-  assert_eq "yes" "$CODE_OK" "inert: role and model '$evil' render as one code span each, 8 cells"
+  assert_eq "yes" "$CODE_OK" "inert: role and model '$evil' render as one code span each, 10 cells"
   assert_eq "0" "$(printf '%s\n' "$EV_OUT" | grep -c '^<!--')" "inert: '$evil' never starts a body line"
 done
 
@@ -215,7 +224,7 @@ WARN_MD="$(md 7 9)"
 assert_contains "$WARN_MD" "⚠ Budget: 82% of 4M (warn at 80%)" "budget: warn line with the warning mark"
 assert_eq "0" "$(printf '%s' "$WARN_MD" | grep -c 'paused')" "budget: warn does not pause"
 WARN_LINE="$(bash "$EVENTS" cost --issue 7 --pr 9 --line 2>/dev/null)"
-assert_eq "talos: #9 developer done — 1.38M tokens, 1 tools, 1s · PR total 3.18M (+1 unrecorded) (dev 2.88M, rev 200k, qa 100k) · budget 82% of 4M" "$WARN_LINE" "budget: --line gains ' · budget 82% of 4M' at warn, nothing else changes"
+assert_eq "talos: #9 developer done — 1.38M tokens, 1 tools, 1s · PR total 3.18M (+1 unrecorded) (dev 2.88M, rev 200k, qa 100k) · cache reads unrecorded · budget 82% of 4M" "$WARN_LINE" "budget: --line gains ' · budget 82% of 4M' at warn, after the cache segment; nothing else changes"
 assert_eq "1" "$(printf '%s\n' "$WARN_LINE" | wc -l | tr -d ' ')" "budget: --line is still one line"
 assert_eq "yes" "$([ "${#WARN_LINE}" -le 200 ] && echo yes || echo no)" "budget: --line with suffix is <= 200 characters"
 
@@ -320,7 +329,7 @@ assert_eq "4" "$(printf '%s\n' "$SUM" | grep -c '^#8 .*#1[1-4] ')" "summary: one
 assert_eq "0" "$(printf '%s\n' "$SUM" | grep -c 'orchestrator')" "summary: orchestrator events never count"
 assert_eq "Top PRs: #9 1.00M, #11 500k, #12 300k" "$(printf '%s\n' "$SUM" | grep '^Top PRs:')" "summary: Top PRs, up to 3, by tokens"
 assert_eq "Per issue: #7 1.10M, #8 1.05M" "$(printf '%s\n' "$SUM" | grep '^Per issue:')" "summary: per-issue totals"
-assert_eq "Total: 2.15M (+2 unrecorded)" "$(printf '%s\n' "$SUM" | grep '^Total:')" "summary: grand total with unrecorded runs"
+assert_eq "Total: 2.15M (+2 unrecorded) (cache reads not included) · cache reads unrecorded" "$(printf '%s\n' "$SUM" | grep '^Total:')" "summary: grand total with unrecorded runs"
 assert_eq "yes" "$([ "$(printf '%s\n' "$SUM" | wc -l)" -le 20 ] && echo yes || echo no)" "summary: at most 20 lines"
 # --pr does not narrow a summary; --issue order does not matter
 assert_eq "$SUM" "$(bash "$EVENTS" cost --summary --issue 8 --issue 7 2>/dev/null)" "summary: the issue order does not change the report"
@@ -398,17 +407,21 @@ assert_eq "0" "$RC" "missing log: --markdown exits 0"
 assert_eq "" "$OUT" "missing log: --markdown prints nothing"
 OUT="$(bash "$EVENTS" cost --summary --issue 7 2>"$SANDBOX/err.log")"; RC=$?
 assert_eq "0" "$RC" "missing log: --summary exits 0"
-assert_eq "no events recorded for this run" "$OUT" "missing log: --summary says so"
+# the session line (#604) ends the report even with nothing recorded; no
+# TALOS_TRANSCRIPT_PATH here (make_sandbox unsets it), so it reads not available
+NO_EVENTS="no events recorded for this run
+Orchestrator session: not available"
+assert_eq "$NO_EVENTS" "$OUT" "missing log: --summary says so"
 : > "$LOG"
 assert_eq "" "$(bash "$EVENTS" cost --issue 7 --pr 9 --markdown 2>/dev/null)" "empty log: --markdown prints nothing"
-assert_eq "no events recorded for this run" "$(bash "$EVENTS" cost --summary --issue 7 2>/dev/null)" "empty log: --summary says so"
+assert_eq "$NO_EVENTS" "$(bash "$EVENTS" cost --summary --issue 7 2>/dev/null)" "empty log: --summary says so"
 reset_log
 blocked 7
 assert_eq "" "$(bash "$EVENTS" cost --issue 7 --pr 9 --markdown 2>/dev/null)" "only orchestrator events: --markdown prints nothing"
-assert_eq "no events recorded for this run" "$(bash "$EVENTS" cost --summary --issue 7 2>/dev/null)" "only orchestrator events: --summary says so"
+assert_eq "$NO_EVENTS" "$(bash "$EVENTS" cost --summary --issue 7 2>/dev/null)" "only orchestrator events: --summary says so"
 base_fixture
 assert_eq "" "$(bash "$EVENTS" cost --issue 99 --pr 9 --markdown 2>/dev/null)" "no event for the issue: --markdown prints nothing"
-assert_eq "no events recorded for this run" "$(bash "$EVENTS" cost --summary --issue 99 2>/dev/null)" "no event for the issue: --summary says so"
+assert_eq "$NO_EVENTS" "$(bash "$EVENTS" cost --summary --issue 99 2>/dev/null)" "no event for the issue: --summary says so"
 
 # a missing / broken module: one note on stderr, empty stdout, exit 0; cost and list still work
 rm -rf "${SANDBOX:?}/scripts-nomod"; cp -R "$TALOS_ROOT/scripts" "$SANDBOX/scripts-nomod"
@@ -484,7 +497,7 @@ import json, math, sys
 def bad(c):
     raise ValueError(c)
 d = json.loads(sys.stdin.read(), parse_constant=bad)
-ok = all(math.isfinite(v) for v in d["total"].values()) and all(math.isfinite(v) for r in d["rows"] for k, v in r.items() if isinstance(v, (int, float)))
+ok = all(v is None or math.isfinite(v) for v in d["total"].values()) and all(math.isfinite(v) for r in d["rows"] for k, v in r.items() if isinstance(v, (int, float)))
 print("OK" if ok else "NOT FINITE")')" "overflow: every number in --json is finite"
 assert_eq "0" "$(bash "$EVENTS" cost --issue 7 2>&1 | grep -c -i 'inf\|nan')" "overflow: the table has no inf or nan"
 bash "$EVENTS" cost --issue 7 --pr 9 --markdown >/dev/null 2>"$SANDBOX/err.log"; RC=$?
@@ -514,7 +527,7 @@ assert_eq "same" "$(cmp -s "$SANDBOX/expected.jsonl" "$SANDBOX/actual.jsonl" && 
 # default / --json / --line output is unchanged for a valid log (--markdown and --summary add nothing to them)
 base_fixture
 assert_contains "$(bash "$EVENTS" cost --issue 7 2>/dev/null | head -1)" "issue	role	events	tokens	tool_uses	duration_s	unrecorded	restamp" "default table header unchanged"
-assert_eq "TOTAL		10	1900000	50	1295	1	1" "$(bash "$EVENTS" cost --issue 7 2>/dev/null | tail -1)" "default table total: the orchestrator row is excluded from the unrecorded total, like --markdown (#450)"
+assert_eq "TOTAL		10	1900000	50	1295	1	1	unrecorded	unrecorded	unrecorded	unrecorded	9" "$(bash "$EVENTS" cost --issue 7 2>/dev/null | tail -1)" "default table total: the orchestrator row is excluded from the unrecorded total, like --markdown (#450)"
 
 # ── (n) unrecorded rows and the model cap (#450) ───────────────────────────
 reset_log
@@ -526,10 +539,10 @@ ev developer 9 5 1000 1 10 '"gpt-5"'
 ev developer 9 5 1000 1 10 '"llama-3"'
 blocked 9
 OUT="$(md 9 5)"
-assert_contains "$OUT" '| `qa` | `session default` | 1 | unrecorded | 0 | 30s | 0 | 1 |' "markdown: a fully unrecorded row shows unrecorded in the tokens cell"
-assert_contains "$OUT" '| `developer` | `opus ×1, sonnet ×1, haiku ×1, +2 more` | 5 | 5k | 5 | 50s | 0 | 0 |' "markdown: a cell lists 3 models then +K more"
+assert_contains "$OUT" '| `qa` | `session default` | 1 | unrecorded | unrecorded | unrecorded | 0 | 30s | 0 | 1 |' "markdown: a fully unrecorded row shows unrecorded in the tokens cell"
+assert_contains "$OUT" '| `developer` | `opus ×1, sonnet ×1, haiku ×1, +2 more` | 5 | 5k | unrecorded | unrecorded | 5 | 50s | 0 | 0 |' "markdown: a cell lists 3 models then +K more"
 assert_not_contains "$OUT" "gpt-5" "markdown: models past the cap are not listed"
-assert_contains "$OUT" '| TOTAL |  | 6 | 5k | 5 | 1m20s | 0 | 1 |' "markdown: TOTAL keeps its numeric tokens cell"
-assert_eq "TOTAL		7	5000	5	80	1	0" "$(bash "$EVENTS" cost --issue 9 2>/dev/null | tail -1)" "default table: unrecorded total counts the qa row only, not the orchestrator row"
+assert_contains "$OUT" '| TOTAL |  | 6 | 5k | unrecorded | unrecorded | 5 | 1m20s | 0 | 1 |' "markdown: TOTAL keeps its numeric tokens cell"
+assert_eq "TOTAL		7	5000	5	80	1	0	unrecorded	unrecorded	unrecorded	unrecorded	6" "$(bash "$EVENTS" cost --issue 9 2>/dev/null | tail -1)" "default table: unrecorded total counts the qa row only, not the orchestrator row"
 
 finish
