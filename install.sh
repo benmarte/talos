@@ -17,11 +17,12 @@
 #   points at another directory, with one line naming the old and new paths;
 #   --keep-marketplace leaves an existing talos marketplace untouched) and
 #   `claude plugin install talos@talos`, both guarded: a failure prints a
-#   notice and never aborts the install. Claude Code copies the plugin into its
-#   own plugin cache when it installs it, so a later change to this checkout
-#   reaches /talos:* only after this installer is re-run (or the plugin is
-#   updated); the marketplace entry still points at this checkout, so re-run it
-#   from the new location if the checkout moves. Installing the plugin also
+#   notice and never aborts the install. Claude Code reads a directory
+#   marketplace's plugin from that folder (checked on Claude Code 2.1.296,
+#   #591: `claude plugin update` says "read from its folder"), so a change to
+#   this checkout reaches /talos:* at the next session start or /reload-plugins;
+#   the marketplace entry points at this checkout, so re-run it from the new
+#   location if the checkout moves. Installing the plugin also
 #   installs its agent-skills dependency from GitHub, even with
 #   --no-agent-skills. No `claude` on PATH, or one without
 #   `claude plugin`: a notice with the two commands to run inside Claude Code,
@@ -188,6 +189,10 @@ fi
 # Default overwrite semantics:
 #   --global:   overwrite by default (re-run = update); --no-overwrite opts out.
 #   per-repo:   skip-if-exists by default; --force opts in.
+# --local-plugin registers the plugin, which only --global does (#591).
+if [ "$LOCAL_PLUGIN" = "true" ] && [ "$GLOBAL" != "true" ]; then
+  echo "notice: --local-plugin only applies with --global (it registers the Claude Code plugin); ignored."
+fi
 if [ "$GLOBAL" = "true" ]; then
   [ -z "$FORCE_MODE" ] && FORCE_MODE="overwrite"
 else
@@ -357,14 +362,16 @@ else:
 # form to plugin skills only, so copying SKILL.md files cannot do it. Never
 # fatal: every step is guarded, and CLAUDE_PLUGIN_REGISTERED stays false unless
 # `claude plugin install` exited 0, which is what allows stale-copy deletions.
-# Claude Code copies the plugin into its own plugin cache, so the marketplace
-# entry (this checkout) is only read at install and update time; installing it
+# Claude Code reads a directory marketplace's plugin from that folder, so the
+# checked-out branch is the live plugin in every session (#591); installing it
 # also installs its agent-skills dependency from GitHub (network).
 CLAUDE_PLUGIN_REGISTERED=false
 
 install_claude_plugin() {
   local state kind val out here there src_p val_p
   src_p="$(printable "$SRC")"
+  # The path as one shell word, for a command the user pastes (#591).
+  local src_q="'${src_p//\'/\'\\\'\'}'"
   local manual="register it from inside Claude Code: /plugin marketplace add $src_p, then /plugin install talos@talos"
   CLAUDE_PLUGIN_REGISTERED=false
   echo "  Plugin (/talos:<command>):"
@@ -410,7 +417,7 @@ install_claude_plugin() {
         kind="same"
       elif ! out="$(claude plugin marketplace remove talos --json </dev/null 2>&1)"; then
         echo "    notice: 'claude plugin marketplace remove' failed, so the talos marketplace ($val_p) and plugin were left as they were: $(printable "$(printf '%s' "$out" | tail -n 1 | cut -c1-200)")"
-        echo "            To track this checkout yourself: claude plugin marketplace remove talos, then claude plugin marketplace add $src_p, then claude plugin install talos@talos."
+        echo "            To track this checkout yourself: claude plugin marketplace remove talos, then claude plugin marketplace add $src_q, then claude plugin install talos@talos."
         return 0
       fi ;;
     *)
@@ -432,17 +439,21 @@ install_claude_plugin() {
       fi
     else
       echo "    notice: 'claude plugin marketplace add' failed, so the talos plugin was not registered: $(printable "$(printf '%s' "$out" | tail -n 1 | cut -c1-200)")"
+      # A --local-plugin repoint removed the non-directory registration first (#591).
+      if [ "$LOCAL_PLUGIN" = "true" ] && [ "${state%%$'\t'*}" = "other" ]; then
+        echo "            the previous talos registration (source: $val_p) was already removed. To put it back: claude plugin marketplace add benmarte/talos, then claude plugin install talos@talos."
+      fi
       return 0
     fi
   fi
   echo "    note: installing the plugin also installs its agent-skills dependency (github.com/addyosmani/agent-skills, needs network), even with --no-agent-skills."
   if out="$(claude plugin install talos@talos --json </dev/null 2>&1)"; then
     CLAUDE_PLUGIN_REGISTERED=true
-    if [ "$LOCAL_PLUGIN" = "true" ]; then
-      echo "    registered: talos@talos (user scope). The marketplace is the local checkout $src_p, which Claude Code reads on each session start, so /talos:* follows it; re-run install.sh --global --local-plugin from the new location if you move it."
-    else
-      echo "    registered: talos@talos (user scope). Claude Code copied the plugin into its plugin cache, so edits to $src_p reach /talos:* only after you re-run install.sh --global (or update the plugin); the marketplace entry points at that checkout, so re-run it from the new location if you move it."
-    fi
+    # One truth for both paths (#591): either way the marketplace is this
+    # checkout, and Claude Code reads the plugin from it.
+    local rerun="install.sh --global"
+    [ "$LOCAL_PLUGIN" = "true" ] && rerun="install.sh --global --local-plugin"
+    echo "    registered: talos@talos (user scope). The marketplace is the local checkout $src_p and Claude Code reads the plugin from that checkout (it reads on each session start, or on /reload-plugins), so /talos:* follows your edits; re-run $rerun from the new location if you move it."
   else
     echo "    notice: 'claude plugin install talos@talos' failed: $(printable "$(printf '%s' "$out" | tail -n 1 | cut -c1-200)")"
     echo "            Nothing was deleted. After fixing that, re-run this installer or $manual."
