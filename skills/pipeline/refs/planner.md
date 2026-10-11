@@ -1,6 +1,6 @@
 # Planner and epics (`roles.planner = true`)
 
-Read when `talos.sh env` prints `ref=planner` or `next` answers `action=dispatch stage=planner`.
+Read when `talos.sh env` prints `ref=planner` or `next` answers `action=dispatch stage=planner`. The steps named here (1, 3b, 3c) are the LLM loop's, `refs/llm-loop.md`: the code driver has no planner stage.
 
 **Step 1 sweeps.** `epic=<E> action=closed|pending|waiting` (else `pipeline:epic-children-done`, one comment; `warn reason=epic-acceptance-unsupported` = unsupported, left open). `unblocked=<N>` = `pipeline:ready` once every `Depends on:` issue is closed.
 

@@ -61,6 +61,10 @@
 # (qa-local only with pr.draft and roles.qa on) is `pipeline-draft-check.sh
 # ready-gate` (#535), the one place that decides it.
 #
+# execution.orchestrator is not derived either: code is its table default. The
+# EFFECTIVE mode (llm also under vcs.provider file and roles.planner true, which
+# the code driver cannot run) is `talos.sh env`'s ORCHESTRATOR line (#602).
+#
 # verify.qa_mode is NOT derived here: pipeline-config.sh derives "ci" from
 # merge.required_checks whenever a config file exists, so the table value
 # (local) only answers when there is no config at all, where no check list
@@ -127,6 +131,7 @@ issues.claim	bool	true	-	-	any
 identity.name	str		-	-	any
 execution.isolation	enum	worktree	-	-	any
 execution.worktree_warn_threshold	int	10	-	-	any
+execution.orchestrator	enum	code	-	-	any
 roles.validator	bool	true	-	-	any
 roles.pm	bool	true	-	-	any
 roles.pm_skip_when_spec_present	bool	true	-	-	any
