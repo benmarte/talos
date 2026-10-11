@@ -712,6 +712,8 @@ Setup:
 
 Skipped: the project board. Projects v2 has no REST API, so each board move is one `warn reason=board-failed` line, with the note `the board needs GitHub GraphQL, which this session refuses (HTTP 403); move skipped`, and the run goes on. `bootstrap-board.sh` and `bootstrap-labels.sh` need GraphQL: run them on a normal machine once.
 
+Not verified: that a session may change a PR's draft state. `ready-pr` and `draft-pr` reach the session's routes, but the one real call, `draft-pr` on a PR that was already a draft, was answered HTTP 403 (`pipeline-vcs: draft-pr: GitHub refused the change for PR #<n>`). With `pr.draft` true, that refusal ends the run with `stop reason=ready-pr-failed` (`draft-pr-failed` after a failed QA). With `pr.draft: false` the run calls neither verb.
+
 Cost: the plan's cloud session credit applies to cloud sessions only; a run on your own machine draws on the plan as before. Whether a stage's nested `claude -p` inside a cloud session is billed to that credit is not verified.
 
 ### GitLab
