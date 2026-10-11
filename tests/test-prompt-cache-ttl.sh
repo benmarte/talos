@@ -53,7 +53,7 @@ for role in $ROLES; do
   assert_eq "name description tools" "$(printf '%s\n' "$rest" | awk -F: '{printf "%s%s", (NR > 1 ? " " : ""), $1}')" \
     "AC1 agents/$role.md keeps exactly name:, description: and tools:"
   assert_contains "$rest" "name: $role" "AC1 agents/$role.md keeps its name: line"
-  if printf '%s\n' "$rest" | grep -Eq '^description: .+' && printf '%s\n' "$rest" | grep -Eq '^tools: .+'; then
+  if grep -Eq '^description: .+' <<<"$rest" && grep -Eq '^tools: .+' <<<"$rest"; then
     pass "AC1 agents/$role.md keeps a description: and a tools: value"
   else
     fail "AC1 agents/$role.md keeps a description: and a tools: value" "frontmatter: $rest"
