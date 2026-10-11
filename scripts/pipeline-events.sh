@@ -54,6 +54,15 @@
 #          the total's count, like `unrecorded`). `tokens` is unchanged: fresh
 #          input + output + cache write. Cache reads are never in it, nor in
 #          the limits.tokens_per_issue budget, which reads `tokens` from --json.
+#          Pools (#616): when at least one matched event carries `pool` `api`
+#          or `plan` (agents.claude_api_credits: the plan's monthly API credits
+#          or the plan login paid), the table and every --json row and the total
+#          gain, after cache_unrecorded and before ci_runs: api_tokens,
+#          api_cache_read_tokens, plan_tokens, plan_cache_read_tokens (plain sums
+#          over the group's events of that pool, a missing figure counting 0)
+#          and pool_unrecorded (events with no pool or any other value;
+#          orchestrator rows are left out of the total's count). With no such
+#          event the output is unchanged.
 #          A `stage_start` event (#550, the dispatch marker the status line reads)
 #          is not a stage run: every cost form skips it. list and tail show it.
 #          --pr M keeps only events whose pr is M (an event with pr null never
@@ -89,7 +98,11 @@
 #          read <R>, cache write <W>` (events whose pr is M; `· cache reads
 #          unrecorded` when none carries one). A cache cell is the compact sum,
 #          `<sum> (+K unrecorded)` when K of the row's runs carry no cache read,
-#          `unrecorded` when none does. Then the budget line when the guard is on
+#          `unrecorded` when none does. Then, only when a stage run of the issue
+#          carries a pool (#616), `Pools: API credits <T> (cache read <R>), plan
+#          <T> (cache read <R>)`, with ` (+K unrecorded)` when K stage runs carry
+#          none (after the TOTAL row when there is no `This PR` line). Then the
+#          budget line when the guard is on
 #          (`Budget: 82% of 4M (warn at 80%)`, a warning mark at warn, a pause
 #          notice at exceeded), the harness note and an orchestrator footnote.
 #          No marker: `pipeline-vcs.sh upsert-pr-comment` adds it. Tokens and
@@ -106,8 +119,9 @@
 #          unrecorded, stage models: each stage's model in one cell, `dev
 #          sonnet · qa sonnet ×1, session default ×1 · sec opus`), `Top PRs:`
 #          (up to 3), `Per issue:` totals, `Total: <T> (cache reads not
-#          included) · cache read <R>, cache write <W>` and the session line,
-#          at most 20 lines (the smallest rows fold into one `+K more rows`
+#          included) · cache read <R>, cache write <W>`, the same `Pools:` line
+#          as --markdown when a stage run in scope carries a pool (#616), and the
+#          session line, at most 20 lines (the smallest rows fold into one `+K more rows`
 #          line).
 #          Orchestrator events are left out. No events: `no events recorded
 #          for this run`, then the session line.
@@ -372,16 +386,25 @@ def _add_some(a, b):
         return a
     return _add(a or 0, b)
 
+# #616: what paid for a stage, the plan's monthly API credits or the plan login.
+# A pool's figures are plain sums over the group's events of that pool (a missing
+# figure counts 0); pool_unrecorded counts the events with no valid pool. The
+# five fields are reported only when an event in scope carries a pool.
+POOLS = ("api", "plan")
+POOL_FIELDS = ("api_tokens", "api_cache_read_tokens", "plan_tokens", "plan_cache_read_tokens", "pool_unrecorded")
+
 def _new_group():
     g = {"events": 0, "tokens": 0, "tool_uses": 0, "duration_s": 0, "unrecorded": 0, "restamp": 0}
-    g.update(dict.fromkeys(SPLIT), cache_unrecorded=0, ci_runs=0)
+    g.update(dict.fromkeys(SPLIT), cache_unrecorded=0)
+    g.update(dict.fromkeys(POOL_FIELDS, 0), ci_runs=0)
     return g
 
 groups = {}
 order = []
-events = []   # (issue, pr, role, tokens or None, model, cache write, cache read) -- report modes only
+events = []   # (issue, pr, role, tokens or None, model, cache write, cache read, pool or None) -- report modes only
 skipped = 0
 have_ci_runs = False
+have_pool = False
 # a missing log reaches here only for --summary, which reports it as no events
 with open(log_path if os.path.isfile(log_path) else os.devnull, "r", errors="replace") as f:
     for line in f:
@@ -419,31 +442,45 @@ with open(log_path if os.path.isfile(log_path) else os.devnull, "r", errors="rep
             g[field] = _add_some(g[field], n)
         if split[3] is None:
             g["cache_unrecorded"] += 1
+        pool = rec.get("pool")
+        if isinstance(pool, str) and pool in POOLS:
+            have_pool = True
+            g[pool + "_tokens"] = _add(g[pool + "_tokens"], tokens or 0)
+            g[pool + "_cache_read_tokens"] = _add(g[pool + "_cache_read_tokens"], split[3] or 0)
+        else:
+            pool = None
+            g["pool_unrecorded"] += 1
         ci_runs = rec.get("ci_runs")
         if type(ci_runs) is int and ci_runs >= 0:
             have_ci_runs = True
             g["ci_runs"] += ci_runs
         if report:
-            events.append((rec.get("issue"), rec.get("pr"), rec.get("role"), tokens, rec.get("model"), split[2], split[3]))
+            events.append((rec.get("issue"), rec.get("pr"), rec.get("role"), tokens, rec.get("model"), split[2], split[3], pool))
 
 order.sort(key=lambda k: (str(k[0]), str(k[1])))
+
+def _drop_unused(g):
+    """Leave out the fields no event in scope carried, so such a log prints as before."""
+    if not have_ci_runs:
+        g.pop("ci_runs")
+    if not have_pool:
+        for field in POOL_FIELDS:
+            g.pop(field)
 
 rows = []
 total = _new_group()
 for key in order:
     g = groups[key]
-    if not have_ci_runs:
-        g.pop("ci_runs")
+    _drop_unused(g)
     rows.append({"issue": key[0], "role": key[1], **g})
     for field in g:
         # orchestrator rows (spend-guard blocks, failovers) are not stage
         # runs, so they never count as unrecorded, like in --markdown (#450)
-        if field in ("unrecorded", "cache_unrecorded") and key[1] == "orchestrator":
+        if field in ("unrecorded", "cache_unrecorded", "pool_unrecorded") and key[1] == "orchestrator":
             continue
         total[field] = _add_some(total[field], g[field])
 
-if not have_ci_runs:
-    total.pop("ci_runs")
+_drop_unused(total)
 
 def load_format():
     """The shared formatter module, imported by explicit path; None (and one
@@ -464,6 +501,21 @@ def cache_of(evs):
     for e in evs:
         write, read = _add_some(write, e[5]), _add_some(read, e[6])
     return read, write, sum(1 for e in evs if e[6] is None)
+
+def pools_line(fmt, evs):
+    """The `Pools:` line over report events (#616): each pool's tokens and
+    cache reads, and how many runs carry no pool. None when none carries one."""
+    if not any(e[7] for e in evs):
+        return None
+    figures = []
+    for pool in POOLS:
+        for i in (3, 6):
+            n = 0
+            for e in evs:
+                if e[7] == pool:
+                    n = _add(n, e[i] or 0)
+            figures.append(n)
+    return fmt.fmt_pools(*figures, sum(1 for e in evs if e[7] is None))
 
 def render_markdown(fmt):
     stage_events = [e for e in events if e[2] != "orchestrator"]
@@ -529,6 +581,9 @@ def render_markdown(fmt):
                 text += " (+%d unrecorded)" % pr_unrecorded
             text += " · " + fmt.fmt_cache(*cache_of(in_pr))
         out += ["", "This PR (#%s): %s" % (pr, text)]
+    pools = pools_line(fmt, stage_events)
+    if pools:
+        out += ["", pools]
     budget_line = fmt.fmt_budget(fmt.parse_budget(budget_json), warn_at)
     if budget_line:
         out += ["", budget_line]
@@ -586,8 +641,10 @@ def render_summary(fmt):
         grand_unrecorded += r["unrecorded"]
 
     # 6 fixed lines (title, column header, Top PRs, Per issue, Total, the
-    # session line) leave 14 for rows; past that the smallest rows fold into one.
-    cap = 14
+    # session line) leave 14 for rows, 13 with a Pools line (#616); past that
+    # the smallest rows fold into one.
+    pools = pools_line(fmt, stage_events)
+    cap = 13 if pools else 14
     shown = row_order
     folded = ""
     if len(row_order) > cap:
@@ -633,6 +690,8 @@ def render_summary(fmt):
     if grand_unrecorded:
         total_line += " (+%d unrecorded)" % grand_unrecorded
     lines.append(total_line + " (cache reads not included) · " + fmt.fmt_cache(*cache_of(stage_events)))
+    if pools:
+        lines.append(pools)
     lines.append(session)
     print("\n".join(lines))
 
@@ -651,7 +710,7 @@ else:
         """The #604 columns: a sum no event carries prints `unrecorded`."""
         return ["unrecorded" if row[f] is None else row[f] for f in SPLIT] + [row["cache_unrecorded"]]
 
-    extra = ["ci_runs"] if have_ci_runs else []
+    extra = (list(POOL_FIELDS) if have_pool else []) + (["ci_runs"] if have_ci_runs else [])
     print("	".join(["issue", "role", "events", "tokens", "tool_uses", "duration_s", "unrecorded", "restamp"]
                     + list(SPLIT) + ["cache_unrecorded"] + extra))
     for row in rows:
