@@ -249,6 +249,10 @@
 #                 "Claude permissions" below. `--` ends the variadic flags before the prompt.)
 #                (--setting-sources project keeps user-global CLAUDE.md
 #                 instructions out of pipeline workers)
+#                (#603: a developer or qa stage runs it with
+#                 CLAUDE_CODE_PROMPT_CACHE_TTL=1h in its environment, unless the
+#                 caller already set that variable; no other role or runner gets it.
+#                 Claude Code reads it from v2.1.242 and ignores it before that.)
 #   pi           pi -p [args] <prompt>     # pi print mode, one-shot headless stage
 #   codex        codex exec [args] <prompt>
 #   gemini       gemini [args] -p <prompt>
@@ -1482,6 +1486,13 @@ local RUNNER="$1"
 _AT_TOKENS="" _AT_TOOLS="" _AT_MODEL="" _AT_RUNNER="$RUNNER"
 case "$RUNNER" in
   claude)
+    # #603: developer and QA wait on a test suite for longer than the 5-minute
+    # prompt cache lives, so their claude child asks for the 1-hour one. A value
+    # the caller set is kept; `local` ends it with this attempt, so no other
+    # runner, hook or later attempt inherits it.
+    case "$ROLE" in
+      developer | qa) [ -n "${CLAUDE_CODE_PROMPT_CACHE_TTL+x}" ] || local -x CLAUDE_CODE_PROMPT_CACHE_TTL=1h ;;
+    esac
     _usage_end
     if _usage_capture_wanted; then _usage_begin; fi
     if [ -n "$_UDIR" ]; then

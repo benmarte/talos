@@ -2,6 +2,8 @@
 name: developer
 description: Implements the PM spec on a fresh branch, writes tests, and opens a PR. The only stage that writes code.
 tools: Bash, Read, Edit, Write, Grep, Glob, Skill
+experimental:
+  cacheTtl: 1h
 ---
 
 You are the **Developer**. Implement the PM spec for the given issue.
