@@ -104,6 +104,107 @@ for r in reviewer security pm adversarial planner; do
   hasnt "Bash(npm test:*)" "$r: no verify commands"
 done
 
+# ── docs commits its own edit, and nothing wider (#607) ──────────────────────
+# allows <argv> <command>: does a Bash rule after --allowedTools permit the command?
+# The two shapes the default list uses: `Bash(<prefix>:*)` (the prefix alone, or
+# followed by a space) and `Bash(<the exact command>)`.
+allows() {
+  local _body _rest="${1#*"[--allowedTools] "}"
+  _rest="${_rest%%" [--"*}"
+  while [[ "$_rest" == *"[Bash("* ]]; do
+    _rest="${_rest#*"[Bash("}"
+    _body="${_rest%%")]"*}"
+    case "$_body" in
+      *":*") _body="${_body%":*"}"; [[ "$2" == "$_body" || "$2" == "$_body "* ]] && return 0 ;;
+      *) [ "$2" = "$_body" ] && return 0 ;;
+    esac
+  done
+  return 1
+}
+
+run_role docs
+DOCS_ARGV="$ARGV"
+DOCS_WRITES=("git add docs/reference.md" "git commit -m docs" "git push" "git push origin HEAD")
+for c in "${DOCS_WRITES[@]}"; do
+  if allows "$ARGV" "$c"; then pass "AC1 docs may run: $c"; else fail "AC1 docs may run: $c" "no rule allows it"; fi
+done
+for c in "git push --force" "git push -f" "git push --force-with-lease" "git push origin HEAD --force" \
+         "git push origin +HEAD" "git push origin main" "git push origin HEAD:main" "git push --delete origin main" \
+         "git reset --hard origin/main" "git checkout main" "git switch main" "git rebase main" "git branch -D main"; do
+  if allows "$ARGV" "$c"; then fail "AC1 docs may not run: $c" "a rule allows it"; else pass "AC1 docs may not run: $c"; fi
+done
+
+# The write rules are the docs role's alone: each command docs may run is refused to
+# every read-only role (a command docs cannot run either says nothing about scope).
+for r in qa reviewer security validator pm adversarial planner; do
+  run_role "$r"
+  hasnt "Edit" "AC2 $r: no Edit"
+  hasnt "Write" "AC2 $r: no Write"
+  for c in "${DOCS_WRITES[@]}"; do
+    if ! allows "$DOCS_ARGV" "$c"; then
+      fail "AC2 $r: '$c' is the docs role's alone" "docs cannot run it either"
+    elif allows "$ARGV" "$c"; then
+      fail "AC2 $r: '$c' is the docs role's alone" "a $r rule allows it"
+    else
+      pass "AC2 $r: '$c' is the docs role's alone"
+    fi
+  done
+done
+
+# ── a role profile asks for nothing its allowlist refuses (#607) ─────────────
+# instructed_git <profile>: the git commands a profile tells its role to run, one per
+# line: each backticked span that starts with `git ` and each `git ...` line of a
+# fenced block, outside a sentence that forbids it (never / do not / must not).
+instructed_git() {
+  python3 -I -c '
+import re, sys
+text = open(sys.argv[1], encoding="utf-8").read()
+text = re.sub(r"\A---\n.*?\n---\n", "", text, flags=re.S)
+def fence(m):
+    for line in m.group(1).splitlines():
+        if line.strip().startswith("git "):
+            print(line.strip())
+    return ""
+text = re.sub(r"^[ \t]*```[^\n]*\n(.*?)^[ \t]*```[ \t]*$", fence, text, flags=re.S | re.M)
+for para in re.split(r"\n[ \t]*\n", text):
+    spans = []
+    def keep(m):
+        spans.append(" ".join(m.group(1).split()))
+        return "\x00%d\x00" % (len(spans) - 1)
+    flat = " ".join(re.sub(r"`([^`]+)`", keep, para).split())
+    for sentence in re.split(r"(?<=[.!?])\s+", flat):
+        if re.search(r"\b(never|do not|don.t|must not)\b", sentence, re.I):
+            continue
+        for i in re.findall(r"\x00(\d+)\x00", sentence):
+            if spans[int(i)].startswith("git "):
+                print(spans[int(i)])
+' "$1"
+}
+
+printf '%s\n' 'Then run `git push --force` to publish, and `bash x.sh`.' '' \
+  'IMPORTANT: never run `git checkout`, `git switch`, or' '`git pull` in your working directory.' \
+  > "$SANDBOX/profile.md"
+assert_eq "git push --force" "$(instructed_git "$SANDBOX/profile.md")" \
+  "AC3 an instructed git command is read, a forbidden one (wrapped over two lines) is not"
+
+for f in "$TALOS_ROOT"/agents/*.md; do
+  r="$(basename "$f" .md)"
+  run_role "$r"
+  refused=""
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    allows "$ARGV" "$c" || refused="$refused [$c]"
+  done <<EOF
+$(instructed_git "$f")
+EOF
+  assert_eq "" "$refused" "AC3 $r: its allowlist permits every git command its profile instructs"
+done
+# The docs profile names its commit commands, so the check above has them to test.
+DOCS_GIT="$(instructed_git "$TALOS_ROOT/agents/docs.md")"
+for c in "git add" "git commit" "git push origin HEAD"; do
+  assert_contains "$DOCS_GIT" "$c" "AC3 docs: the profile names the '$c' it needs"
+done
+
 # ── the usage-capture variant and the text variant both carry them ───────────
 set_cfg '{"agents": {"capture_usage": false}}'
 run_role validator
