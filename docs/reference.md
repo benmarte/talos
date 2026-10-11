@@ -67,7 +67,7 @@ Each stage is a fresh agent. Spend is measured per run ([Hooks, events, spend an
 
 - An issue needs `pipeline:ready`. With `issues.label_filter` set to anything else it also needs that label (AND; a wrong filter gives a silently empty queue).
 - Issues carrying a label in `issues.skip_labels` (default `pipeline:blocked`, `wontfix`) are skipped.
-- Order: `p0`, `p1`, `p2`, unlabelled; at the same priority an issue already in flight (`pipeline:confirmed`, `pipeline:dev`) goes before a ready one; then issue number. The ready-queue rules here (the filter, the skip labels, the cap) do not hold back an issue that is already in flight.
+- Order: `p0`, `p1`, `p2`, unlabelled; at the same priority an issue already in flight (`pipeline:confirmed`, `pipeline:dev`) goes before a ready one; then issue number. The ready-queue rules here (the filter, the skip labels, the cap) do not hold back an issue that is already in flight; one another run holds the lease of is skipped for the next issue.
 - `issues.max_parallel` caps issues in flight (`next` answers `wait reason=cap`). Above 1 needs `execution.isolation: worktree`; the adapter path runs stages one at a time.
 - `issues.assignee` (`self`, a login, or `none`) assigns the issue at creation and when it moves to In progress; it never replaces an existing assignee. With `issues.claim` true and an assignee other than `none`, the assignee is the lock between operators: `next` claims an issue before dispatching it and leaves other operators' issues alone (`identity.name` is the login `self` means). See [Isolation, locking and multi-user claims](#isolation-locking-and-multi-user-claims).
 

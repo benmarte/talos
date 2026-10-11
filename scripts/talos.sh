@@ -150,7 +150,8 @@
 #         the ready ones in one order: priority (p0, p1, p2, unlabelled), then
 #         in-flight before ready, then the issue number. An in-flight issue is
 #         routed as `next --issue <N>` routes it (no ready-queue filter applies)
-#         and is passed over when that answers a wait.
+#         and is passed over when that answers a wait or another run holds
+#         its lease.
 #         `next --issue <N>` routes the named issue through the same rules. A
 #         developer dispatch for an issue with an open PR runs the fix-round checks
 #         first and never dispatches past a ceiling:
@@ -2636,7 +2637,7 @@ _talos_claim() {
 # it (#522) and the wait it still causes reports the seconds until
 # reclaimable, never the TTL.
 _talos_next() {
-  local _issue="" _target _a _r _inflight _roles="" _retry _skip _tries
+  local _issue="" _target _a _r _leased _roles="" _retry _skip _tries
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --issue) _issue="${2:-}"; shift 2 ;;
@@ -2676,18 +2677,19 @@ _talos_next() {
   fi
   if [ "$_a" = "issue-side" ]; then
     # The issue-side half (#471): the routing options from the config, the
-    # live-lease count for the max_parallel cap, then one program.
+    # issues other runs hold a lease of (the max_parallel cap counts them and
+    # the walk passes them over, #601), then one program.
     case "$(cfg roles.validator | tr '[:upper:]' '[:lower:]')" in false) ;; *) _roles="validator," ;; esac
     case "$(cfg roles.planner | tr '[:upper:]' '[:lower:]')" in true) _roles="${_roles}planner," ;; esac
     case "$(cfg roles.pm | tr '[:upper:]' '[:lower:]')" in false) ;; *) _roles="${_roles}pm," ;; esac
     _skip="$(printf '%s\n' "$(cfg issues.skip_labels)" | paste -sd, -)"
-    _inflight="$(_talos_lease_live_count)"
+    _leased="$(_talos_lease_live_issues)"
     _a="$(python3 -I "$SCRIPT_DIR/pipeline-next.py" issue-side "$_CFG_CACHE_DIR/state.json" \
             --vcs "$SCRIPT_DIR/pipeline-vcs.sh" --budget "$SCRIPT_DIR/pipeline-budget.sh" \
             --issue "$_issue" --roles "$_roles" --label-filter "$(cfg issues.label_filter)" \
             --skip-labels "$_skip" --max-parallel "$(cfg issues.max_parallel)" \
             --pm-skip "$(printf '%s' "$(cfg roles.pm_skip_when_spec_present)" | tr '[:upper:]' '[:lower:]')" \
-            --in-flight "$_inflight" 2>/dev/null)"
+            --leased "$_leased" 2>/dev/null)"
     _r=$?
     if [ "$_r" -ne 0 ]; then
       case "$_a" in
@@ -2773,16 +2775,17 @@ _talos_next_ref() {
   esac
 }
 
-# _talos_lease_live_count: how many issues hold a lease the reader counts
-# (the in-flight dispatches `next` counts against issues.max_parallel): every
-# issue at most once, skipping the lines no reader counts -- expired, a dead
-# holder past the age guard (the reclaim, #522, AC10), and this run's own
-# lease. An unreadable ledger counts zero: the cap is a scheduling hint, never
-# a stop.
-_talos_lease_live_count() {
-  local _f _now _ln _exp _pid _held _issue _c=0 _seen=""
-  _f="$(_talos_lease_file)" || { printf 0; return 0; }
-  [ -f "$_f" ] || { printf 0; return 0; }
+# _talos_lease_live_issues: the issues that hold a lease the reader counts,
+# comma-separated (the in-flight dispatches `next` counts against
+# issues.max_parallel, and the in-flight candidates its walk passes over,
+# #601): every issue at most once, skipping the lines no reader counts --
+# expired, a dead holder past the age guard (the reclaim, #522, AC10), and
+# this run's own lease. An unreadable ledger lists none: the cap is a
+# scheduling hint, never a stop.
+_talos_lease_live_issues() {
+  local _f _now _ln _exp _pid _held _issue _seen=""
+  _f="$(_talos_lease_file)" || return 0
+  [ -f "$_f" ] || return 0
   _now="$(_talos_now)"
   while IFS= read -r _ln || [ -n "$_ln" ]; do
     _exp="${_ln##* expires=}"; _exp="${_exp%% *}"
@@ -2796,9 +2799,9 @@ _talos_lease_live_count() {
     _issue="${_ln%% *}"; _issue="${_issue#issue=}"
     case " $_seen " in *" $_issue "*) continue ;; esac
     _seen="$_seen$_issue "
-    _c=$((_c + 1))
   done < "$_f" 2>/dev/null
-  printf '%s' "$_c"
+  _seen="${_seen% }"
+  printf '%s' "${_seen// /,}"
 }
 
 # _talos_emit_next <line>: the action line, sanitised as one pair.

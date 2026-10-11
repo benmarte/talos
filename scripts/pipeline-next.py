@@ -440,12 +440,14 @@ def pr_side(data):
 #   action=wait reason=<enum> [retry_after_s=<s>]   nothing to dispatch
 #   stop reason=<enum>                              a ceiling or a missing
 #                                                   provider verb (exit 1)
-# The lease itself is bash's (acquired for the dispatch answer); the walk's
-# capacity check gets the live-lease count through --in-flight.
+# The lease itself is bash's (acquired for the dispatch answer); the walk gets
+# the issues other runs hold a lease of through --leased (comma-separated): its
+# capacity check counts them, and an in-flight candidate among them is passed
+# over (#601).
 
 def issue_side(data, o):
     """Options o (--name value): vcs budget issue roles label-filter skip-labels
-    max-parallel pm-skip in-flight. Read verbs only, unbounded (no deadline)."""
+    max-parallel pm-skip leased. Read verbs only, unbounded (no deadline)."""
     prs = data.get('prs') or []
     queued = data.get('queued') or []
     qset = set(queued)
@@ -458,6 +460,7 @@ def issue_side(data, o):
     skip_labels = set(x for x in o.get('skip-labels', '').split(',') if x)
     label_filter = o.get('label-filter', READY_LABEL)
     target = o.get('issue', '')
+    leased = [x for x in o.get('leased', '').split(',') if x]
     pm_skip = o.get('pm-skip') == 'true'
     planner_on = 'planner' in roles
     validator_on = 'validator' in roles
@@ -627,7 +630,8 @@ def issue_side(data, o):
 
     # The pick (#471, AC1; #601): the in-flight and the ready issues in one order
     # (pick_order). An in-flight candidate is routed as `next --issue` routes it
-    # and none of the ready-queue filters apply to it; one that answers a wait
+    # and none of the ready-queue filters apply to it; one that answers a wait,
+    # or that another run holds the lease of (the wait its dispatch would get),
     # is passed over. A ready candidate keeps every filter: the owner wait, the
     # max_parallel cap, label_filter collapse, skip_labels, the dependency gate.
     # With no candidate left the wait is the one the ready queue alone gives.
@@ -635,6 +639,7 @@ def issue_side(data, o):
         ask_owner(min(held))
     inflight = [n for n in data.get('inflight') or [] if isinstance(n, int) and not isinstance(n, bool)]
     flight = set(inflight)
+    busy = set(int(x) for x in leased if x.isdigit())
     ready = [n for n in queued if n not in held and n not in blocked and n not in flight]
     owner_wait = bool(blocked or owners or any(p.get('owner') for p in prs))
     cap = None
@@ -644,12 +649,14 @@ def issue_side(data, o):
     for n in pick_order(data, inflight, ready):
         try:
             if n in flight:
+                if n in busy:
+                    continue
                 route_named(n)  # answers and exits, or raises Passed
             if owner_wait or ready_wait:
                 continue
             if cap is None:
                 try:
-                    cap = int(o.get('max-parallel') or '1') - int(o.get('in-flight') or '0')
+                    cap = int(o.get('max-parallel') or '1') - len(leased)
                 except ValueError:
                     raise Stop('state-unavailable')
             if cap <= 0:
