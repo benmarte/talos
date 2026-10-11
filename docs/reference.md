@@ -705,6 +705,20 @@ The token transport needs `owner/repo`: set `vcs.repo` if the origin remote lack
 
 `github-api` ignores `pr.draft` (ready-PR flow, one warning); `github` without `gh` installed uses the same transport and keeps draft PRs. The board scripts use curl GraphQL when the provider is `github-api` or `gh` is not on PATH; they do not detect an installed but logged-out `gh`.
 
+### Running in a Claude Code cloud session
+
+A Claude Code cloud session (claude.ai/code) can run `talos.sh run` on a GitHub repository. There, GitHub refuses GraphQL (`HTTP 403: GitHub GraphQL is not available from Claude Code sessions`) and serves REST. The adapter's verbs are REST already. `checkout-pr` tries `gh pr checkout` and, when GraphQL is refused, falls back to a REST read of the head ref and a `git fetch` of `refs/pull/<n>/head`. `ready-pr` and `draft-pr` send their GraphQL mutation and, on HTTP 403, use the session's REST routes `pulls/<n>/ccr/ready_for_review` and `pulls/<n>/ccr/convert_to_draft`. On a machine where GraphQL works, nothing changes.
+
+Setup:
+- Install the Claude GitHub App on the repository with write access to contents, issues and pull requests, and connect GitHub from claude.ai.
+- The developer's branch must be one the session may push: the session's designated branch (`claude/...`), or a `fix/issue-<N>-...` branch once the GitHub App has write access. A refused push ends the developer's checkpoint with one line, `pipeline-worktree: checkpoint: push refused: no push access to origin for <branch>`, and exit 3: the commit stays local, and the developer carries on and reports it in its final message.
+
+Skipped: the project board. Projects v2 has no REST API, so each board move is one `warn reason=board-failed` line, with the note `the board needs GitHub GraphQL, which this session refuses (HTTP 403); move skipped`, and the run goes on. `bootstrap-board.sh` and `bootstrap-labels.sh` need GraphQL: run them on a normal machine once.
+
+Not verified: that a session may change a PR's draft state. `ready-pr` and `draft-pr` reach the session's routes, but the one real call, `draft-pr` on a PR that was already a draft, was answered HTTP 403 (`pipeline-vcs: draft-pr: GitHub refused the change for PR #<n>`). With `pr.draft` true, that refusal ends the run with `stop reason=ready-pr-failed` (`draft-pr-failed` after a failed QA). With `pr.draft: false` the run calls neither verb.
+
+Cost: the plan's cloud session credit applies to cloud sessions only; a run on your own machine draws on the plan as before. Whether a stage's nested `claude -p` inside a cloud session is billed to that credit is not verified.
+
 ### GitLab
 
 `list-issues` and `list-prs` stop at 100 items (`WARNING result capped at 100` on stderr). No board (`pipeline-status.sh` prints `board unsupported for gitlab`). `pr-checks-required` fails closed.
@@ -1273,6 +1287,8 @@ A `pipeline:blocked` issue or PR is skipped until a human removes the label. Aft
 - `github: cannot determine the repository (set vcs.repo)`: the token transport cannot read the git remote; set `vcs.repo` to `owner/repo`.
 - Board updates fail: warnings by design, not a stop. `bash scripts/bootstrap-board.sh` adds a missing Status option (idempotent). With `gh`, Projects v2 needs the `project` scope (`gh auth refresh -s project`); check `board.project_number` and `board.owner`.
 - `talos:board-unverified` on stdout: a missing Status option, an API error or the item-page cap (`TALOS_BOARD_MAX_PAGES`, default 50) skipped the update. The run continues.
+- `pipeline-status: the board needs GitHub GraphQL, which this session refuses (HTTP 403); move skipped`: the run is in a Claude Code cloud session, where the board cannot be moved. The run continues; `board.enabled: false` drops the warning. See [Running in a Claude Code cloud session](#running-in-a-claude-code-cloud-session).
+- `pipeline-worktree: checkpoint: push refused: no push access to origin for <branch>` (exit 3): the remote denied the branch and the commit is kept locally. In a cloud session, give the Claude GitHub App write access or use the session's own branch (same section).
 
 ### Notifications
 
