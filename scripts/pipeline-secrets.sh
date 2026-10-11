@@ -2,6 +2,7 @@
 # pipeline-secrets.sh -- secret references (env:NAME) and the trust check for the
 # user-level files Talos reads (#443, part of #437). Source it; it defines
 # functions and runs nothing. pipeline-notify.sh uses talos_secret_load;
+# pipeline-agent.sh uses talos_user_secret_get (#616, one file only);
 # pipeline-config.sh runs the same python trust_problem (_TALOS_TRUST_LIB) on the
 # global config file inside its loader: ONE stat check, for both.
 #
@@ -292,6 +293,30 @@ _talos_secret_assign() {
     esac
   fi
   printf -v "$1" '%s' "$_TS_VAL"
+}
+
+# talos_user_secret_get VAR NAME (#616) -- NAME from the user-level
+# ${TALOS_HOME:-$HOME/.talos}/.env and from nowhere else, after its trust check:
+# not the exported environment, the repo .env or ~/.hermes/.env. Returns 0 and
+# sets the shell variable VAR (never exported here) to a non-empty value with no
+# control character; 1 (VAR untouched) otherwise; 2 on a bad call. The only
+# lines it can print are the trust check's and the control-character one, which
+# names NAME and never the value. No file value outlives the call in the parse
+# globals, on any return path.
+talos_user_secret_get() {
+  local _rc=0
+  _talos_secret_name_ok "${1:-}" && _talos_secret_name_ok "${2:-}" || return 2
+  _TS_VAL=""
+  if ! _talos_user_env_get talos "$2"; then
+    _rc=1
+  else
+    case "$_TS_VAL" in
+      *[[:cntrl:]]*) echo "pipeline-secrets: the value for $2 holds a control character; ignoring it" >&2; _rc=1 ;;
+      *) printf -v "$1" '%s' "$_TS_VAL" ;;
+    esac
+  fi
+  _TS_VAL="" _TS_V="" _TS_K=""
+  return "$_rc"
 }
 
 talos_secret_load() {
