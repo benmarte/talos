@@ -72,8 +72,8 @@ budget() {  # role ceiling
 }
 budget developer 11800
 budget qa 8350  # #610: the exit-4 rule (an unusable spec is BLOCKED, not a FAIL)
-budget reviewer 4700
-budget security 4300
+budget reviewer 4820  # #596: the Change-block rule at Read diff and the prompt's marker line
+budget security 4380  # #596: the same
 budget pm 4300
 budget validator 4300
 budget docs 4600
