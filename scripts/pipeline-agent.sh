@@ -1562,7 +1562,9 @@ EOF
 # or rerun inherits it. The child's own tool calls do see it; they run as the
 # same user, who can read the file anyway. The plan-login rerun has
 # ANTHROPIC_API_KEY unset, whatever the caller exported.
-unset _CR_KEY _TS_VAL  # an inherited export of either name would export the key
+# An inherited export of a name the key passes through would export the key:
+# _CR_KEY, and the globals pipeline-secrets.sh parses the file into.
+unset _CR_KEY _TS_VAL _TS_V _TS_K
 _CR_KEY="" _CR_POOL="" _CR_LOADED=""
 _cr_load() {
   [ -z "$_CR_LOADED" ] || return 0
@@ -1845,22 +1847,26 @@ _run_stage() {
     _run_runner "$1"
     return
   fi
+  # A chain exports its own write journal; without one the stage gets its own.
+  _CR_WL=""
   _CR_OUT="$(mktemp "${TMPDIR:-/tmp}/talos-cr-out.XXXXXX")" && _CR_ERR="$(mktemp "${TMPDIR:-/tmp}/talos-cr-err.XXXXXX")" \
-    && _CR_WL="$(mktemp "${TMPDIR:-/tmp}/talos-cr-wr.XXXXXX")" || {
+    && { [ "${#CHAIN[@]}" -gt 0 ] || _CR_WL="$(mktemp "${TMPDIR:-/tmp}/talos-cr-wr.XXXXXX")"; } || {
     echo "pipeline-agent: API credits: cannot create temp files (mktemp)" >&2
     RC=1; return
   }
   if [ -z "$_CR_TRAP" ]; then
     _CR_TRAP=1
     if command -v _talos_on_exit >/dev/null 2>&1; then
-      _talos_on_exit 'rm -f "$_CR_OUT" "$_CR_ERR" "$_CR_WL"'
+      _talos_on_exit 'rm -f "$_CR_OUT" "$_CR_ERR" ${_CR_WL:+"$_CR_WL"}'
+    elif [ "${#CHAIN[@]}" -gt 0 ]; then
+      # This trap replaces the chain's, so it removes the chain's files too.
+      trap 'rm -f "$_CR_OUT" "$_CR_ERR" "$_FO_OUT" "$_FO_ERR" "$TALOS_WRITE_LOG"' EXIT
     else
-      trap 'rm -f "$_CR_OUT" "$_CR_ERR" "$_CR_WL"' EXIT
+      trap 'rm -f "$_CR_OUT" "$_CR_ERR" ${_CR_WL:+"$_CR_WL"}' EXIT
     fi
   fi
-  # A chain exports its own write journal; without one the stage gets this one,
-  # and `local` ends it with the stage, so no hook inherits it.
-  [ "${#CHAIN[@]}" -gt 0 ] || local -x TALOS_WRITE_LOG="$_CR_WL"
+  # `local` ends the stage's own journal with the stage, so no hook inherits it.
+  [ -z "$_CR_WL" ] || local -x TALOS_WRITE_LOG="$_CR_WL"
   : >"$TALOS_WRITE_LOG" 2>/dev/null || _wl_ok=false
   _snap="$(git for-each-ref refs/remotes 2>/dev/null)"
   _CR_POOL=api _CR_CLASSIFIED=1
@@ -1882,7 +1888,7 @@ _run_stage() {
     fi
   fi
   cat "$_CR_OUT"
-  rm -f "$_CR_OUT" "$_CR_ERR" "$_CR_WL"
+  rm -f "$_CR_OUT" "$_CR_ERR" ${_CR_WL:+"$_CR_WL"}
 }
 
 _run_chain() {

@@ -301,16 +301,22 @@ _talos_secret_assign() {
 # sets the shell variable VAR (never exported here) to a non-empty value with no
 # control character; 1 (VAR untouched) otherwise; 2 on a bad call. The only
 # lines it can print are the trust check's and the control-character one, which
-# names NAME and never the value.
+# names NAME and never the value. No file value outlives the call in the parse
+# globals, on any return path.
 talos_user_secret_get() {
+  local _rc=0
   _talos_secret_name_ok "${1:-}" && _talos_secret_name_ok "${2:-}" || return 2
   _TS_VAL=""
-  _talos_user_env_get talos "$2" || return 1
-  case "$_TS_VAL" in
-    *[[:cntrl:]]*) echo "pipeline-secrets: the value for $2 holds a control character; ignoring it" >&2; return 1 ;;
-  esac
-  printf -v "$1" '%s' "$_TS_VAL"
-  _TS_VAL=""
+  if ! _talos_user_env_get talos "$2"; then
+    _rc=1
+  else
+    case "$_TS_VAL" in
+      *[[:cntrl:]]*) echo "pipeline-secrets: the value for $2 holds a control character; ignoring it" >&2; _rc=1 ;;
+      *) printf -v "$1" '%s' "$_TS_VAL" ;;
+    esac
+  fi
+  _TS_VAL="" _TS_V="" _TS_K=""
+  return "$_rc"
 }
 
 talos_secret_load() {
