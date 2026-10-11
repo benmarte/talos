@@ -185,7 +185,7 @@ claude plugin install talos@talos
 
 ### Per harness
 
-`--harness` is installer glue; `agents.runner` picks the stage CLI. Set `issues.max_parallel: 1` on non-native paths.
+`--harness` is installer glue; `agents.runner` picks the stage CLI. Set `issues.max_parallel: 1` on non-native paths. The "Stages run as" and "Parallel issues" columns describe the LLM loop (`execution.orchestrator: llm`); under the default code driver every harness runs each stage as one headless call to `agents.runner`, one at a time.
 
 | Harness | `agents.runner` | Stages run as | Parallel issues | Start |
 |---------|-----------------|---------------|-----------------|-------|
@@ -494,6 +494,8 @@ Three independent choices: **mode** (who spawns a stage), **runner** (which CLI 
 - `native`: the harness's own subagent tool (Claude Code's Agent); parallel issues, worktree isolation.
 - `adapter`: one headless CLI call per stage through `scripts/pipeline-agent.sh <role> -`; sequential, set `issues.max_parallel: 1`.
 - `inline`: the orchestrating session plays every role itself (pi, weak or local models).
+
+The mode decides who spawns a stage in the LLM loop (`execution.orchestrator: llm`). The default code driver spawns no subagent: `talos.sh run` sends every stage through `pipeline-agent.sh`, one at a time, as the `adapter` line says, whatever the mode is. So the "Adapter" entries under [Per-role model, effort and runner](#per-role-model-effort-and-runner) are the ones that apply by default: a built-in runner takes no `model` or `effort` from the config (`agents.runner_args` adds a flag for all roles; a `custom` runner reads `$TALOS_MODEL` and `$TALOS_EFFORT`).
 
 `agents.subagents` is `auto` (default), `true` or `false`: `auto` is `native` on Claude Code (and on an unknown harness when the runner is `claude`), elsewhere `inline` for runner `pi`, else `adapter`; `false` is `inline` for runner `pi`, else `adapter`; `true` is `native`. `agents.mode` (`native|adapter|inline`) sets it directly. The harness is `CLAUDECODE=1` or `TALOS_HARNESS` (for example `pi`; it wins). Claude Code provides all three modes, any other declared harness `adapter` and `inline`.
 
