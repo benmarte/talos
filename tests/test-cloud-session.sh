@@ -43,6 +43,18 @@ assert_eq "$PR_SHA" "$(git rev-parse HEAD)" "AC1 HEAD is the PR head"
 assert_contains "$(cat "$GH_LOG")" "pr checkout 9" "AC1 gh pr checkout was tried first (GraphQL is kept where it works)"
 git checkout -q main
 
+# ── AC2: with GraphQL available, a failed gh pr checkout stays gh's failure ──
+# gh words its ordinary errors `GraphQL: ...` too (here: no such PR); only the
+# session's refusal may take the REST path.
+: > "$GH_LOG"
+GQL_ERR="GraphQL: Could not resolve to a PullRequest with the number of 9. (repository.pullRequest)"
+OUT="$(GH_FAIL_STDERR="$GQL_ERR" bash "$VCS" checkout-pr 9 2>&1)"; RC=$?
+assert_eq "1" "$RC" "AC2 checkout-pr exits with gh's own status when gh pr checkout fails" "$OUT"
+assert_contains "$OUT" "$GQL_ERR" "AC2 gh's stderr reaches the caller"
+assert_eq "1" "$(grep -c . "$GH_LOG")" "AC2 gh pr checkout and nothing else (no REST read of the PR)" "$(cat "$GH_LOG")"
+assert_not_contains "$OUT" "could not resolve head ref" "AC2 the REST path's own error is not printed"
+assert_eq "main" "$(git symbolic-ref -q --short HEAD)" "AC2 no branch is checked out"
+
 # ── AC9: ready-pr / draft-pr take the session's REST route ──────────────────
 for _v in ready-pr:ready_for_review draft-pr:convert_to_draft; do
   : > "$GH_LOG.rest"
