@@ -670,12 +670,15 @@ EOF
     *) echo "pipeline: execution.orchestrator: unknown value, reading it as code (use code or llm)" >&2 ;;
   esac
   if [ "$_TALOS_ORCHESTRATOR" = code ]; then
+    _val=""
     if _talos_cfg_is vcs.provider file; then
-      _TALOS_ORCHESTRATOR=llm
-      echo "pipeline: execution.orchestrator is llm for this run: the code driver cannot run vcs.provider file" >&2
+      _val="vcs.provider file"
     elif _talos_cfg_is roles.planner true; then
+      _val="roles.planner"
+    fi
+    if [ -n "$_val" ]; then
       _TALOS_ORCHESTRATOR=llm
-      echo "pipeline: execution.orchestrator is llm for this run: the code driver cannot run roles.planner" >&2
+      echo "pipeline: execution.orchestrator is llm for this run: the code driver cannot run $_val" >&2
     fi
   fi
   _talos_emit ORCHESTRATOR "$_TALOS_ORCHESTRATOR"
