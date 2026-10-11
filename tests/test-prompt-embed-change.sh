@@ -291,7 +291,7 @@ same_bytes "$FIX/diff" "$GOT" "AC4 docs: the DIFF section holds the whole diff"
 vcs_fixture
 render reviewer --issue 468 --pr 77 --embed-change
 tok="$(token "$PF")"
-if printf '%s' "$tok" | grep -Eq '^[A-Za-z0-9]{16,}$'; then pass "AC5 the token is 16 or more characters of [A-Za-z0-9]"
+if grep -Eq '^[A-Za-z0-9]{16,}$' <<<"$tok"; then pass "AC5 the token is 16 or more characters of [A-Za-z0-9]"
 else fail "AC5 the token is 16 or more characters of [A-Za-z0-9]" "token: ${tok:-<none>}"; fi
 for s in SPEC DIFF; do
   assert_eq "1" "$(count_line "$PF" "----- BEGIN $s $tok -----")" "AC5 the $s section has one BEGIN line carrying the render's token"
@@ -345,7 +345,7 @@ big_fixture() {  # $1 = the size of spec + diff in bytes
   vcs_fixture
   {
     printf 'diff --git a/big.txt b/big.txt\n'
-    yes 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' | head -c "$(( $1 - SPEC_BYTES - 31 ))"
+    head -c "$(( $1 - SPEC_BYTES - 31 ))" /dev/zero | tr '\0' 'a'
   } > "$STUB_DIR/diff-pr.77"
 }
 big_fixture 60000
