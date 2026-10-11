@@ -64,6 +64,7 @@ Each stage is a fresh agent. Spend is measured per run ([Hooks, events, spend an
 - Re-stamp: after a fix push that leaves approvals stale, a role already approved re-reviews only the delta (`agents.restamp_model`, `agents.restamp_effort`).
 - `agents.roles.<role>.model`, `.effort` and `.runner`: route cheap stages to cheap models ([Profiles, runners and fallback](#profiles-runners-and-fallback)).
 - `limits.tokens_per_issue`: optional hard budget before each fix round.
+- Prompt cache: on Claude Code, developer and QA ask for the 1-hour cache, so a wait on the test suite of up to an hour does not rebuild their context. There is no config key; start Talos with `CLAUDE_CODE_PROMPT_CACHE_TTL=5m` to stay on five minutes ([Prompt cache lifetime](#prompt-cache-lifetime)).
 
 ### Which issues enter the queue
 
@@ -602,6 +603,7 @@ Developer and QA wait on a test suite, often for longer than the 5-minute prompt
 | Any other runner (`pi`, `codex`, `gemini`, `antigravity`, `custom`) | not Claude Code | unchanged | nothing: the frontmatter is stripped from the prompt and the variable is not set |
 
 - **Driver path.** `pipeline-agent.sh` sets the variable for developer and QA only, on the `claude` runner only, and only when the caller's environment does not have it: start Talos with `CLAUDE_CODE_PROMPT_CACHE_TTL=5m` and both roles get that value unchanged. The other seven roles keep the bucket's default. There is no Talos config key for this.
+- **Profile overrides.** The driver path goes by the role name, so a repo override of `developer.md` or `qa.md` ([Role profile files](#role-profile-files)) keeps the hour there. On the LLM loop the override's own frontmatter is what Claude Code reads: copy the `experimental:` / `cacheTtl: 1h` lines into it to keep the hour.
 - **Version floors.** The settings (`promptCacheTtl` for the main conversation, `subagentPromptCacheTtl` for everything else) and the environment variables need Claude Code v2.1.242 or later; the frontmatter key needs v2.1.248 or later. An older Claude Code ignores what it does not know. On v2.1.242 to v2.1.247 native subagents get the hour only from `"subagentPromptCacheTtl": "1h"` in your own Claude Code settings, which covers every subagent, not just these two; `install.sh --global` prints that recommendation and writes no setting.
 - **Precedence**, first match wins: `FORCE_PROMPT_CACHING_5M=1`, then the bucket's environment variable, then the bucket's setting, then the frontmatter `cacheTtl`. So a `subagentPromptCacheTtl` of `5m` beats the two agent files, and `FORCE_PROMPT_CACHING_5M=1` beats everything Talos sets.
 - **Usage credits.** Claude Code ignores a frontmatter `1h` while a subscription draws on usage credits. A variable or a setting counts as a TTL you chose yourself and is kept there, so on the driver path the two roles stay on the hour on usage credits, as they do on an API key or a cloud provider.
