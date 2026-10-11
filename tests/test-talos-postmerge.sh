@@ -700,4 +700,49 @@ assert_contains "$HELP" "post-merge <pr> <issue>" "help: names post-merge"
 assert_contains "$HELP" "sweep [<issue-id>...]" "help: names sweep"
 assert_contains "$HELP" "summary [<issue-id>...]" "help: names summary"
 
+# ── #601: post-merge returns the checkout to the base ────────────────────────
+# `pipeline-worktree.sh to-base <N>` runs before `remove <N>` (the merge and the
+# heal alike) and its state is printed as `checkout=<state>`. A failed return is
+# one more non-fatal item: a warn, and the items after it still run.
+wt_calls() { journal | grep '^worktree ' | tr '\n' '>' | sed 's/>$//'; }
+for _s in returned synced kept; do
+  reset_stubs
+  set_stub worktree.to-base 0 "talos:checkout state=$_s"
+  pm 9 42
+  assert_eq "0" "$RC" "AC8 (#601): post-merge with checkout $_s exits 0"
+  assert_eq "$_s" "$(line_of "$OUT" checkout)" "AC8 (#601): post-merge prints checkout=$_s"
+  assert_eq "worktree to-base 42>worktree remove 42" "$(wt_calls)" "AC8 (#601): to-base <N> runs before remove <N> (checkout $_s)"
+  assert_not_contains "$OUT" "checkout-return-failed" "AC8 (#601): checkout $_s is not a warning"
+  assert_out "AC8 (#601) checkout $_s" "$PM_FIRST"
+done
+reset_stubs
+set_stub worktree.to-base 0 "talos:checkout state=failed reason=dirty"
+pm 9 42
+assert_eq "0" "$RC" "AC8 (#601): a failed checkout return is non-fatal (exit 0)"
+assert_eq "failed" "$(line_of "$OUT" checkout)" "AC8 (#601): post-merge prints checkout=failed"
+assert_contains "$OUT" "warn reason=checkout-return-failed issue=42" "AC8 (#601): a failed checkout return adds warn reason=checkout-return-failed"
+assert_eq "worktree to-base 42>worktree remove 42" "$(wt_calls)" "AC8 (#601): the worktree removal still runs after a failed checkout return"
+assert_contains "$(journal)" "notify merged #42 PR #9 merged 42" "AC8 (#601): the items after it still run"
+assert_out "AC8 (#601) checkout failed" "$PM_FIRST"
+# No state line (a to-base that died) and a state outside the enum are failed too.
+reset_stubs
+set_stub worktree.to-base 1 "" "boom"
+pm 9 42
+assert_eq "0:failed" "$RC:$(line_of "$OUT" checkout)" "AC8 (#601): a to-base that printed no state is checkout=failed, exit 0"
+assert_contains "$OUT" "warn reason=checkout-return-failed issue=42" "AC8 (#601): and it warns"
+reset_stubs
+set_stub worktree.to-base 0 "talos:checkout state=returned extra
+talos:checkout state=bogus"
+pm 9 42
+assert_eq "failed" "$(line_of "$OUT" checkout)" "AC8 (#601): a state line outside the enum is checkout=failed"
+# The heal returns the checkout too; the hand-off (nothing merged) does not.
+reset_stubs
+set_stub worktree.to-base 0 "talos:checkout state=returned"
+pm 9 42 --heal
+assert_eq "returned" "$(line_of "$OUT" checkout)" "AC8 (#601): post-merge --heal prints the checkout state"
+assert_eq "worktree to-base 42>worktree remove 42" "$(wt_calls)" "AC8 (#601): the heal calls to-base <N> before remove <N>"
+reset_stubs
+pm 9 42 --handoff
+assert_eq "" "$(wt_calls)" "AC8 (#601): the human-merge hand-off never touches the checkout"
+
 finish

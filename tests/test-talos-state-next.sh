@@ -162,6 +162,19 @@ assert_eq "where=in flight: nothing
 where=waiting: nothing
 where=next: nothing queued" "$OUT" "summary: an empty state"
 
+# #601: the next: line names the issue the one order picks (priority, then
+# in-flight before ready, then the issue number), the order of untargeted `next`.
+sum_next() {  # $1 = queued ; $2 = held ; $3 = in flight ; $4 = the priority object
+  set_state "$(printf '{"prs": [], "pr_total": 0, "ignored": 0, "blocked": [], "queued": [%s], "held": [%s], "inflight": [%s], "owners": [], "capped": [], "priority": %s}' "$1" "$2" "$3" "$4")"
+  st state --summary
+  line_of "where=next: "
+}
+assert_eq "continue issue #30" "$(sum_next 20 "" 30 '{"20": 0, "30": 0}')" "AC12 (#601): an in-flight p0 is named before a lower-numbered ready p0"
+assert_eq "start issue #40" "$(sum_next 40 "" 10 '{"10": 2, "40": 0}')" "AC12 (#601): a ready p0 is named before an in-flight p2"
+assert_eq "continue issue #31" "$(sum_next 21 "" 31 '{}')" "AC12 (#601): an unlabelled in-flight issue is named before a lower-numbered unlabelled ready issue"
+assert_eq "start issue #22" "$(sum_next "20, 22" 20 30 '{"20": 0, "22": 1, "30": 2}')" "AC12 (#601): a held issue is skipped; the ready p1 is named before the in-flight p2"
+assert_eq "continue issue #51" "$(sum_next "" "" "52, 51" '{}')" "AC12 (#601): at the same priority and state the lower issue number is named"
+
 printf '1' > "$STUB_DIR/collect.rc"
 st state --summary
 assert_eq "stop reason=state-unavailable" "$OUT" "summary: a failed collect is a stop, no summary lines"
