@@ -929,6 +929,13 @@ An approval is a PR comment ending in `<!-- talos:approval sha=<40-hex head SHA>
 
 `check-approval-sha <pr> [--stale-list]` (`github` and `github-api` only) exits 1 when a present label has no valid marker or its SHA is not the head; `--stale-list` also prints `stale role=<role> label=<label> sha=<marker sha>` per stale role, without `sha=` when the marker gave no SHA that exists in the repository (match the line by its prefix).
 
+**Lost stamps.** An approval label is a fact about one head SHA, read only through `check-approval-sha`. If a label disappears (a hand edit, label churn) while its marker still pins the PR's current head, the stamp is recovered, not re-earned.
+- `check-approval-sha <pr> --evidence-list` prints `evidence role=<r> label=<l> state=present|lost|missing` per role.
+- `gate merge` re-applies each `lost` one through `post-approval <pr> <role> --recover-only`. That mode applies the label only when the exact marker exists at the current head; otherwise it exits 3 with nothing posted. The gate's answer then carries `recovered=<roles>`.
+- A label with no such marker is never re-applied. The gate waits with `never_approved=<roles>` beside `missing=`, and the stage re-runs.
+- `next` does not route a lost role as the PR's stage when the PR already carries another approval label.
+- A head change still strips the labels as stale (`reason=stale-approvals`): a stamp is never carried across a head change.
+
 **Author trust.** `markers.verify_authors` (default `true`, repo file only) accepts markers only from the authenticated identity (`gh api user`) plus `markers.trusted_authors`. Rejects print `talos:marker-authors-rejected authors=..` on stderr. Identity unavailable and no `trusted_authors`: markers are accepted and `talos:marker-authors-unverified reader=<verb>` prints. Lookup refused (Actions `GITHUB_TOKEN`, GitHub App token): only `trusted_authors` counts and an empty list rejects all; set e.g. `["github-actions[bot]"]`. `false` skips the check silently.
 
 ### Stale approvals and the delta re-stamp

@@ -47,6 +47,7 @@ BRANCH_RE = re.compile(r'^(?:fix|feat)/issue-([0-9]{1,9})(?:-|\Z)')
 SHA_RE = re.compile(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})\Z')
 CAP_RE = re.compile(r'result capped at')
 STALE_RE = re.compile(r'^stale role=([a-z]+) label=')
+EVIDENCE_LOST_RE = re.compile(r'^evidence role=([a-z]+) label=\S+ state=lost$')
 UNSUPPORTED_RE = re.compile(r'not implemented for provider|unknown verb')
 APPROVALS = (('qa', 'qa:pass'), ('docs', 'docs:done'), ('reviewer', 'review:approved'),
              ('security', 'security:approved'), ('adversarial', 'adversarial:approved'))
@@ -179,10 +180,24 @@ def next_stage(n, labels, issue_labels, enabled):
         # exit 1 is both "stale approvals" (stale lines on stdout) and a failed read.
         if rc not in (0, 1) or (rc == 1 and not stale):
             die('check-approval-sha failed for PR #%d (rc=%d)' % (n, rc))
+    # #521: a missing label whose marker still pins the current head is a lost
+    # stamp, not unfinished work: the gate re-applies it (post-approval
+    # --recover-only), so it is not this PR's stage. One evidence read, only
+    # for a PR that already carries an approval label and misses an enabled
+    # one (label churn); a PR with none re-runs the stage as before, so the
+    # collect pays nothing extra for PRs that have not reached their reviews.
+    # A failed read dies.
+    lost = set()
+    if any(label in labels for _, label in APPROVALS) \
+            and any(role in enabled and label not in labels for role, label in APPROVALS):
+        rc, out, _ = vcs('check-approval-sha', str(n), '--evidence-list')
+        if rc != 0:
+            die('check-approval-sha --evidence-list failed for PR #%d (rc=%d)' % (n, rc))
+        lost = set(m.group(1) for m in map(EVIDENCE_LOST_RE.match, out.splitlines()) if m)
     for role, label in APPROVALS:
         if draft and role == 'qa':
             continue
-        if role in enabled and (label not in labels or role in stale):
+        if role in enabled and ((label not in labels and role not in lost) or role in stale):
             return role
     if draft:
         # The QA pre-CI gate (#535): QA is the LAST draft-window stage, so the one

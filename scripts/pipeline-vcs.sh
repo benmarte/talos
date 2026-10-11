@@ -296,6 +296,12 @@
 #                                             for pipeline-mergebase.sh's mechanical
 #                                             union-merge instead of a developer
 #                                             merge-base dispatch.
+#   check-approval-sha <n> --evidence-list    (#521) One line per contract approval role:
+#                                             `evidence role=<r> label=<l> state=<s>`,
+#                                             s = present (label on the PR), lost (label
+#                                             absent, a valid marker pins the current
+#                                             head) or missing. Exit 0; a failed read
+#                                             exits 1 with no evidence line.
 #   check-approval-sha <n> [--stale-list]     Exit 1 if any approval label was earned
 #                                             against a non-current head SHA (stale
 #                                             approvals); respects
@@ -481,7 +487,12 @@
 #                                             working tree is never read in a mixed state.
 #                                             Used as an orchestrator precondition before
 #                                             dispatching non-worktree-isolated stages.
-#   post-approval <pr> <role> [--body-file p] [--issue n]
+#   post-approval <pr> <role> [--body-file p] [--issue n] [--recover-only]
+#                                             --recover-only (#521): only the
+#                                             duplicate-marker path below: the label
+#                                             is applied when the exact marker exists
+#                                             at the current head; otherwise exit 3,
+#                                             nothing posted, no label applied.
 #                                             Fetch head SHA from the PR, construct
 #                                             the wrapped approval marker, post it as a
 #                                             comment, and apply the approval label.
@@ -2455,37 +2466,12 @@ raw_comments = data.get('comments', [])
 # Which approval labels are present?
 present = {label: role for label, role in APPROVAL_LABELS.items() if label in label_names}
 
-if not present:
-    # Inverse diagnostic (#146): when no approval labels are present but
-    # talos:approval markers exist in comments, a stage likely posted the
-    # marker without calling label-pr -- the mirror of the Case B diagnostic
-    # shipped in #144/#142 for the other direction.
-    no_label_marker_count = sum(
-        1 for c in raw_comments
-        if 'talos:approval sha=' in c.get('body', '')
-    )
-    if no_label_marker_count > 0:
-        print(
-            f'check-approval-sha: no approval labels present'
-            f' (but {no_label_marker_count} approval marker(s) found in comments'
-            f' - did a stage post a marker without applying its label?)'
-        )
-    else:
-        print('check-approval-sha: no approval labels present')
-    sys.exit(3)
-
-# Strict extractor: marker must be a syntactically valid talos:approval HTML comment.
-# Precompute once: does any comment contain near-miss marker text?
-any_approval_text = any('talos:approval sha=' in c.get('body', '') for c in raw_comments)
-
-entries = []
-for label, role in present.items():
-    # Find the most recent marker for this role (search comments newest-first).
-    # Enforce the same last-line rule as read-attempt: the marker must be the
-    # last non-whitespace line of the comment body so a quoted/fenced occurrence
-    # (e.g. GitHub Quote-reply) cannot satisfy the gate.
+# The newest marker for a role under the gate's rules (last non-whitespace
+# line, valid role, trusted author when the trust set resolved): its sha, or
+# None. Shared by the stale check and the evidence mode (#521).
+def find_marker(role):
+    global fail_open_warned
     found_sha = None
-    reason = None
     for c in reversed(raw_comments):
         body   = c.get('body', '')
         author = c.get('author', {}).get('login', '') if isinstance(c.get('author'), dict) else ''
@@ -2545,6 +2531,57 @@ for label, role in present.items():
 
         found_sha = m.group(1)
         break
+    return found_sha
+
+# --evidence-list (#521): one line per contract approval role, in contract
+# order. present: the label is on the PR; lost: absent, but a marker under the
+# rules above pins the PR's current head with a full sha; missing: anything
+# else. A lost stamp may be re-applied (post-approval --recover-only); a
+# missing one never is.
+if os.environ.get('EVIDENCE_LIST') == 'true':
+    head = str(data.get('headRefOid') or '')
+    if not re.fullmatch(r'[0-9a-f]{40}', head):
+        print('pipeline-vcs: check-approval-sha: no head SHA for the evidence read', file=sys.stderr)
+        sys.exit(1)
+    for label, role in APPROVAL_LABELS.items():
+        if label in label_names:
+            state = 'present'
+        else:
+            sha = find_marker(role)
+            state = 'lost' if sha == head else 'missing'
+        print(f'evidence role={role} label={label} state={state}')
+    if rejected_authors_seen:
+        print('talos:marker-authors-rejected authors=' + ','.join(rejected_authors_seen), file=sys.stderr)
+    sys.exit(0)
+
+if not present:
+    # Inverse diagnostic (#146): when no approval labels are present but
+    # talos:approval markers exist in comments, a stage likely posted the
+    # marker without calling label-pr -- the mirror of the Case B diagnostic
+    # shipped in #144/#142 for the other direction.
+    no_label_marker_count = sum(
+        1 for c in raw_comments
+        if 'talos:approval sha=' in c.get('body', '')
+    )
+    if no_label_marker_count > 0:
+        print(
+            f'check-approval-sha: no approval labels present'
+            f' (but {no_label_marker_count} approval marker(s) found in comments'
+            f' - did a stage post a marker without applying its label?)'
+        )
+    else:
+        print('check-approval-sha: no approval labels present')
+    sys.exit(3)
+
+# Strict extractor: marker must be a syntactically valid talos:approval HTML comment.
+# Precompute once: does any comment contain near-miss marker text?
+any_approval_text = any('talos:approval sha=' in c.get('body', '') for c in raw_comments)
+
+entries = []
+for label, role in present.items():
+    # Find the most recent marker for this role (search comments newest-first).
+    reason = None
+    found_sha = find_marker(role)
 
     if not found_sha:
         # Fail-closed: missing marker means the approval predates SHA stamping —
@@ -4920,10 +4957,11 @@ json.dump([dict(p, headRefName=(p.get('head') or {}).get('ref', '')) for p in pr
       # _vcs_shared_check_approval_marker / _vcs_shared_check_approval_sha; this
       # arm is fetch (the PR, every comment) -> call.
       local n="${1:-}"; shift
-      local stale_list_flag="false"
-      if [ "${1:-}" = "--stale-list" ]; then
-        stale_list_flag="true"
-      fi
+      local stale_list_flag="false" evidence_flag="false"
+      case "${1:-}" in
+        --stale-list) stale_list_flag="true" ;;
+        --evidence-list) evidence_flag="true" ;;
+      esac
       _gh_num "$verb" PR "$n"
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] check-approval-sha $n: verify all approval labels match current head SHA"; return 0; }
       local pr_data
@@ -4937,10 +4975,15 @@ json.dump([dict(p, headRefName=(p.get('head') or {}).get('ref', '')) for p in pr
       verify_authors_cas="$(cfg markers.verify_authors)"
       _vcs_shared_reader_identity "$verify_authors_cas" _gh_user_login
       local marker_out marker_rc marker_json
-      marker_out="$(printf '%s' "$pr_data" | TRUSTED_AUTHORS="$trusted_authors_cas" VERIFY_AUTHORS="$verify_authors_cas" CURRENT_USER="$_RID_USER" CURRENT_USER_REFUSED="$_RID_REFUSED" TALOS_CFG="$_TALOS_CFG" _vcs_shared_check_approval_marker)"
+      marker_out="$(printf '%s' "$pr_data" | TRUSTED_AUTHORS="$trusted_authors_cas" VERIFY_AUTHORS="$verify_authors_cas" CURRENT_USER="$_RID_USER" CURRENT_USER_REFUSED="$_RID_REFUSED" TALOS_CFG="$_TALOS_CFG" EVIDENCE_LIST="$evidence_flag" _vcs_shared_check_approval_marker)"
       marker_rc=$?
       if [ "$marker_rc" -eq 1 ]; then
         exit 1
+      fi
+      # --evidence-list (#521): the per-role evidence lines are the whole answer.
+      if [ "$evidence_flag" = "true" ]; then
+        printf '%s\n' "$marker_out"
+        exit 0
       fi
       if [ "$marker_rc" -eq 3 ]; then
         # No approval labels present: marker_out IS the diagnostic message.
@@ -7642,9 +7685,11 @@ if [ "$VERB" = "post-approval" ]; then
   _pa_role="${ARGS[1]:-}"
   _pa_body_file=""
   _pa_issue=""
+  _pa_recover=0
   _pa_i=2
   while [ "$_pa_i" -lt "${#ARGS[@]}" ]; do
     case "${ARGS[$_pa_i]}" in
+      --recover-only) _pa_recover=1; _pa_i=$((_pa_i + 1)) ;;
       --body-file)
         _pa_ni=$((_pa_i + 1))
         _pa_body_file="${ARGS[$_pa_ni]:-}"
@@ -7844,6 +7889,13 @@ print('none')
     }
     _pa_result "marker already present at $_pa_sha; $_pa_label label ensured"
     exit $?
+  fi
+  # --recover-only (#521): a stamp is only ever re-applied on its marker at the
+  # current head. With none (the head moved, or the stamp was never earned),
+  # nothing is posted and no label is applied: exit 3.
+  if [ "$_pa_recover" -eq 1 ]; then
+    echo "pipeline-vcs: post-approval: --recover-only: no $_pa_role marker at $_pa_sha; nothing posted, no label applied" >&2
+    exit 3
   fi
 
   _pa_tmpfile="$(mktemp)"

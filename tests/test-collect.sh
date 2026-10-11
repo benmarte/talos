@@ -76,6 +76,12 @@ case "$verb" in
     [ -f "$FX/head.$1" ] || exit 1
     cat "$FX/head.$1"; exit 0 ;;
   check-approval-sha)
+    # #521: the evidence read (lost stamps) has its own fixture, evidence.<n>;
+    # none means no stamp is recoverable.
+    if [ "${2:-}" = "--evidence-list" ]; then
+      [ -f "$FX/evidence.$1" ] && cat "$FX/evidence.$1"
+      exit "$(rc_of "evidence.$1.rc" 0)"
+    fi
     [ -f "$FX/stale.$1" ] && cat "$FX/stale.$1"
     exit "$(rc_of "stale.$1.rc" 0)" ;;
   pr-checks-required)
