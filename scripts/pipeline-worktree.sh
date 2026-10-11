@@ -127,6 +127,29 @@
 #   handoff <issue-number>  Print the validated handoff JSON; exit 1 with one
 #                           line when it is absent, invalid or stale. Read-only,
 #                           works from any directory of the repo.
+#   to-base <issue-number>  After issue <N>'s PR merged (#601): put the CURRENT
+#                           checkout back on the base branch (`base_branch`,
+#                           else the default branch). One line on stdout,
+#                           `talos:checkout state=<state>`, exit 0:
+#                             returned  it was on (fix|feat)/issue-<N>-... with
+#                                       no staged or unstaged change to a
+#                                       tracked file: switched to the base,
+#                                       `git pull --ff-only`, the issue branch
+#                                       deleted with `git branch -D` (a squash
+#                                       merge is not an ancestor)
+#                             synced    it was on the base: only the pull
+#                             kept      any other branch, another issue's
+#                                       branch, a detached HEAD: nothing done
+#                             failed reason=dirty|switch-failed|pull-failed
+#                                       a tracked change on the issue branch
+#                                       (nothing touched), a refused switch, a
+#                                       pull that is not a fast-forward (run
+#                                       once, never retried); stderr says more
+#                           Never forced: no `checkout -f`, `reset`, `stash` or
+#                           `clean`. Exit 2 for a missing or non-numeric <N>.
+#                           Not under the repo-wide lock: the pull is a network
+#                           call, and only this checkout and its own branch
+#                           are touched.
 #
 # The handoff lives at <git common dir>/talos/handoff/<N>.json (the #517
 # relocation: the old <repo-root>/.talos/ path IS inside the tree in a normal
@@ -1089,6 +1112,49 @@ _wt_handoff_body() {
   exit 0
 }
 
+# _wt_to_base_body <issue-number> -- the work of `to-base` (#601). stdout is the
+# one state line (git's own stdout goes to stderr); every path exits 0, the
+# state line is the answer.
+_wt_to_base_body() {
+  local n="$1" branch base
+  branch="$(git symbolic-ref -q --short HEAD 2>/dev/null)" || branch=""
+  base="$(_wt_configured_base_branch)"
+  if [ -n "$base" ] && [ "$branch" = "$base" ]; then
+    if git pull --ff-only -q >&2; then
+      echo "talos:checkout state=synced"
+    else
+      echo "pipeline-worktree: to-base: git pull --ff-only failed on $base; left as it is" >&2
+      echo "talos:checkout state=failed reason=pull-failed"
+    fi
+    exit 0
+  fi
+  if ! [[ "$branch" =~ ^(fix|feat)/issue-${n}- ]]; then
+    echo "talos:checkout state=kept"
+    exit 0
+  fi
+  # A tracked change, staged or not, or a state git cannot report: hands off.
+  if ! git diff --quiet >&2 || ! git diff --cached --quiet >&2; then
+    echo "pipeline-worktree: to-base: $branch has changes to tracked files; checkout left as it is" >&2
+    echo "talos:checkout state=failed reason=dirty"
+    exit 0
+  fi
+  if [ -z "$base" ] || ! git checkout -q "$base" -- >&2; then
+    echo "pipeline-worktree: to-base: could not switch from $branch to ${base:-the base branch (none resolved)}" >&2
+    echo "talos:checkout state=failed reason=switch-failed"
+    exit 0
+  fi
+  if ! git pull --ff-only -q >&2; then
+    echo "pipeline-worktree: to-base: on $base, but git pull --ff-only failed; $branch kept" >&2
+    echo "talos:checkout state=failed reason=pull-failed"
+    exit 0
+  fi
+  # The PR is merged; a squash merge is not an ancestor, so `-d` would refuse.
+  git branch -D "$branch" >&2 \
+    || echo "pipeline-worktree: to-base: could not delete $branch (the next sweep removes it)" >&2
+  echo "talos:checkout state=returned"
+  exit 0
+}
+
 case "$verb" in
   list)
     issue_listing="$(_issue_worktrees)"
@@ -1142,8 +1208,16 @@ case "$verb" in
     _wt_handoff_body "$@"
     ;;
 
+  to-base)
+    case "${1:-}" in
+      ''|*[!0-9]*) echo "usage: pipeline-worktree.sh to-base <issue-number>" >&2; exit 2 ;;
+    esac
+    [ "$#" -eq 1 ] || { echo "usage: pipeline-worktree.sh to-base <issue-number>" >&2; exit 2; }
+    _wt_to_base_body "$1"
+    ;;
+
   *)
-    echo "usage: pipeline-worktree.sh <remove <n> | sweep [<open-id>...] | list | create <n> <branch> | tag <n> | checkpoint <n> [--local] [--runner R] [--model M] | handoff <n> | status>" >&2
+    echo "usage: pipeline-worktree.sh <remove <n> | sweep [<open-id>...] | list | create <n> <branch> | tag <n> | checkpoint <n> [--local] [--runner R] [--model M] | handoff <n> | to-base <n> | status>" >&2
     exit 2
     ;;
 esac

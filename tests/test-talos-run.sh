@@ -731,10 +731,14 @@ printf '{"labels": [{"name": "qa:pass"}, {"name": "docs:done"}, {"name": "review
 cat > "$STUB_DIR/hook.qa.2" <<'HOOK'
 printf '%s' '{"prs":[{"n":12,"issue":9,"head":"bbbb","owner":false,"stage":"merge"}],"pr_total":1,"ignored":0,"blocked":[],"queued":[],"held":[],"owners":[],"capped":[]}' > "$d/collect.json"
 HOOK
+# The merge closes the PR: the pass after it (#601) finds nothing left.
+cat > "$STUB_DIR/hook.merge-pr" <<'HOOK'
+printf '%s' '{"prs":[],"pr_total":0,"ignored":0,"blocked":[],"queued":[],"held":[],"owners":[],"capped":[]}' > "$d/collect.json"
+HOOK
 TALOS_LEASE_TTL_S=1800 TALOS_NOW=12000 rn --max-iterations 5
 assert_eq "0" "$RC" "fix round: the run exits 0"
 assert_not_contains "$OUT" "iterations-exhausted" "fix round: the run does not loop to --max-iterations"
-assert_contains "$OUT" "stop merged pr=12" "fix round: a passing QA after the fix reaches the merge arm and merges"
+assert_contains "$OUT" "merged=pr=12" "fix round: a passing QA after the fix reaches the merge arm and merges"
 assert_eq "ready-pr 12>agent qa>vcs record-attempt 9 qa --pr 12>label-pr 12 --remove pipeline:blocked>agent developer>ready-pr 12>agent qa>view-pr 12" "$(fix_order)" \
   "fix round: QA FAIL -> gate fix-round (record-attempt, unblock) -> developer -> the normal path (ready-pr, QA) -> the merge arm"
 assert_contains "$(cat "$STUB_DIR/developer.prompt" 2>/dev/null)" "Fix round: PR #12 is already open" \

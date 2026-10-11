@@ -820,17 +820,22 @@ mix "" 22
 LEASE_RESET
 nx
 assert_eq "action=wait reason=dependency" "$OUT" "AC10 (#601): the dependency gate still holds a ready issue"
-# (e) the max_parallel cap: another run's live lease uses the one slot.
+# (e) the max_parallel cap: another run's live lease uses the one slot. The
+# holder is a live process of this user, so the line is a lease however long
+# the file takes to get here (a holder that reads as gone is reclaimed after
+# TALOS_LEASE_RECLAIM_S).
 cfg '{"max_parallel": 1}' "$ROLES_601"
 _now="$(date +%s)"
+sleep 300 & _cap_pid=$!
+cap_lease() { printf 'issue=77 held=%s expires=%s pid=%s\n' "$_now" "$((_now + 1800))" "$_cap_pid" >> "$LEASE"; }
 mix 30 20
 LEASE_RESET
-printf 'issue=77 held=%s expires=%s pid=1\n' "$_now" "$((_now + 1800))" >> "$LEASE"
+cap_lease
 nx
 assert_eq "action=dispatch stage=pm issue=30" "$OUT" "AC10 (#601): the max_parallel cap does not apply to an in-flight issue"
 mix "" 20
 LEASE_RESET
-printf 'issue=77 held=%s expires=%s pid=1\n' "$_now" "$((_now + 1800))" >> "$LEASE"
+cap_lease
 nx
 assert_eq "action=wait reason=cap" "$OUT" "AC10 (#601): the max_parallel cap still holds a ready issue"
 # A held issue still answers ask-owner first.
@@ -864,9 +869,10 @@ nx
 assert_eq "action=wait reason=owner" "$OUT" "AC10 (#601): waiting in-flight issues beside blocked work is wait reason=owner"
 mix 34 20
 LEASE_RESET
-printf 'issue=77 held=%s expires=%s pid=1\n' "$_now" "$((_now + 1800))" >> "$LEASE"
+cap_lease
 nx
 assert_eq "action=wait reason=cap" "$OUT" "AC10 (#601): a waiting in-flight issue and a capped ready issue is wait reason=cap"
+kill "$_cap_pid" 2>/dev/null
 cfg '{"max_parallel": 1}' '{"validator": true, "planner": true, "pm": true, "developer": true, "pm_skip_when_spec_present": false}'
 mix 34 22
 LEASE_RESET

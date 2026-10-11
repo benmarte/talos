@@ -87,6 +87,8 @@ reset_stubs() {
   set_stub list-prs 0 "[]"
   set_stub read-comments 0 '{"comments":[]}'
   set_stub list-issues 0 "[$(issue_json 42 "")]"
+  # The checkout is not on the issue's branch (#601): to-base has nothing to do.
+  set_stub worktree.to-base 0 "talos:checkout state=kept"
 }
 journal() { cat "$STUB_DIR/journal" 2>/dev/null; }
 # jr: the journal with the temp body path normalised.
@@ -155,7 +157,8 @@ pm 9 42 --ci-runs 3
 assert_eq "0" "$RC" "post-merge: exits 0"
 assert_eq "post_merge=done
 recorded=no
-spend=spend: 12 tokens" "$OUT" "post-merge: first line, recorded=no, the spend line, nothing else"
+checkout=kept
+spend=spend: 12 tokens" "$OUT" "post-merge: first line, recorded=no, the checkout state, the spend line, nothing else"
 assert_out "post-merge" "$PM_FIRST"
 assert_eq "vcs list-prs
 vcs current-user
@@ -164,6 +167,7 @@ vcs comment-issue 42 --body-file F --allow-closed
 vcs list-issues
 vcs close-issue 42 closed by PR #9
 status 42 Done
+worktree to-base 42
 worktree remove 42
 notify orchestrator #42 all stages passed — merged PR #9, issue closed 42
 notify merged #42 PR #9 merged 42
@@ -217,7 +221,7 @@ assert_eq "0" "$(called notify)" "idempotent: no second notice"
 assert_eq "0" "$(called hooks)" "idempotent: no second merged event"
 assert_eq "0" "$(called events)" "idempotent: no second spend block"
 assert_eq "1" "$(called status)" "idempotent: board Done is idempotent in its script and still runs"
-assert_eq "1" "$(called worktree)" "idempotent: worktree remove is a no-op when gone and still runs"
+assert_eq "2" "$(called worktree)" "idempotent: to-base and worktree remove are no-ops when done and still run"
 assert_out "idempotent" "$PM_FIRST"
 # A close that failed after the marker was posted is retried, and succeeds the next time.
 set_stub close-issue 1 "" "boom"
@@ -381,7 +385,8 @@ sibling=8 action=mergebase
 sibling=10 action=update-branch
 sibling=11 action=developer
 sibling=15 action=clean
-recorded=no" "$OUT" "siblings: every other open pipeline PR in PR order; a fork lookalike, another base and a non-pipeline branch are not siblings"
+recorded=no
+checkout=kept" "$OUT" "siblings: every other open pipeline PR in PR order; a fork lookalike, another base and a non-pipeline branch are not siblings"
 assert_out "siblings" "$PM_FIRST"
 assert_eq "vcs list-prs
 vcs conflict-files 7

@@ -140,7 +140,8 @@ set_state '{"prs": [{"n": 12, "issue": 34, "head": "a4f9", "owner": false, "stag
 st state --summary
 assert_contains "$OUT" "where=next: wait (ci) on PR #12 (#34)" "summary: a PR-side wait is the next step, as in next, even with a queue"
 
-set_state '{"prs": [], "pr_total": 0, "ignored": 0, "blocked": [], "queued": [7, 9], "held": [7], "inflight": [41], "owners": [], "capped": []}'
+# (#9 is a p1: at the same priority the in-flight #41 would be named first, #601.)
+set_state '{"prs": [], "pr_total": 0, "ignored": 0, "blocked": [], "queued": [7, 9], "held": [7], "inflight": [41], "owners": [], "capped": [], "priority": {"9": 1}}'
 st state --summary
 assert_eq "where=in flight: issue #41
 where=waiting: owner #7

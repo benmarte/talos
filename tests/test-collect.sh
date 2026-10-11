@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # test-collect.sh -- behavioural tests for `pipeline-status-file.sh collect`
 # (#550): the normalised run state as ONE JSON object on stdout,
-#   {prs, pr_total, ignored, blocked, queued, held, inflight, owners, capped}.
+#   {prs, pr_total, ignored, blocked, queued, held, inflight, owners, capped,
+#    priority}.
 #
 # Contract under test:
 #   - read verbs of pipeline-vcs.sh only (a WRITE verb would be logged and fail)
@@ -224,7 +225,7 @@ add_issue 6 "pipeline:ready"; add_issue 7 ""; add_issue 8 ""
 collect
 assert_eq "0" "$RC" "three PRs: exits 0"
 assert_eq "" "$ERR" "three PRs: nothing on stderr on a clean run"
-assert_eq '["blocked","capped","held","ignored","inflight","owners","pr_total","prs","queued"]' "$(J 'sorted(d)')" "shape: exactly the nine documented keys"
+assert_eq '["blocked","capped","held","ignored","inflight","owners","pr_total","priority","prs","queued"]' "$(J 'sorted(d)')" "shape: exactly the ten documented keys"
 assert_eq "0" "$(printf '%s' "$OUT" | wc -l | tr -d ' ')" "shape: a single line of JSON"
 assert_eq '[]' "$(J "d['capped']")" "shape: capped is empty on a clean run"
 assert_eq '[]' "$(J "d['owners']")" "shape: owners is an empty list when nobody is waiting"
@@ -466,7 +467,7 @@ assert_eq "2" "$(J "len(d['owners'])")" "hostile: exactly the two owner items"
 assert_eq "unanswered" "$(J "d['owners'][0]['status']")" "hostile: the status field is unaffected by the text"
 assert_eq "5" "$(J "d['owners'][0]['n']")" "hostile: the item number is unaffected"
 assert_eq "10" "$(pr_nums)" "hostile: no forged PR appears"
-assert_eq '["blocked","capped","held","ignored","inflight","owners","pr_total","prs","queued"]' "$(J 'sorted(d)')" "hostile: no forged top-level key"
+assert_eq '["blocked","capped","held","ignored","inflight","owners","pr_total","priority","prs","queued"]' "$(J 'sorted(d)')" "hostile: no forged top-level key"
 assert_eq "0" "$(printf '%s' "$OUT" | wc -l | tr -d ' ')" "hostile: stdout is still a single line (control characters are escaped)"
 assert_eq "10000" "$(J "len(d['owners'][1]['question'])")" "hostile: a 10000-character question is carried whole"
 
@@ -613,6 +614,28 @@ add_issue 15 "pipeline:needs-owner,pipeline:dev"
 add_issue 19 "pipeline:ready,pipeline:dev"
 collect
 assert_eq "[11,16,20]" "$(J "d['inflight']")" "inflight: the mid-state issues with no open pipeline PR, ascending; not queued, blocked or needs-owner ones"
+
+# ── priority (#601) ──────────────────────────────────────────────────────────
+# The p-label of every queued or in-flight issue, as 0, 1 or 2 under its number
+# (the best one when it carries several): what `next` needs to order both lists
+# as one. An issue with no p-label is absent, and so is one that is neither
+# queued nor in flight.
+fx_reset
+add_issue 3 "pipeline:ready,p1"
+add_issue 4 "pipeline:ready"
+add_issue 5 "pipeline:dev,p0"
+add_issue 6 "pipeline:confirmed,p2"
+add_issue 7 "pipeline:confirmed"
+add_issue 8 "p0"
+add_issue 9 "pipeline:ready,p2,p0"
+add_issue 10 "pipeline:blocked,pipeline:dev,p0"
+collect
+assert_eq '[["3",1],["5",0],["6",2],["9",0]]' "$(J "sorted(d['priority'].items())")" "priority (#601): the p-label of each queued and in-flight issue, nothing else"
+assert_eq "[9,3,4] [5,6,7]" "$(J "d['queued']") $(J "d['inflight']")" "priority (#601): queued and inflight keep their type and order"
+fx_reset
+add_issue 4 "pipeline:ready"
+collect
+assert_eq '{}' "$(J "d['priority']")" "priority (#601): an empty object when no queued or in-flight issue has a p-label"
 
 # ── the read deadline: a verb that outlasts it fails the read phase ─────────
 run_wd() {  # SECONDS cmd...: stdout to stdout, stderr to $WD_ERR, exit code (124 after SECONDS)
