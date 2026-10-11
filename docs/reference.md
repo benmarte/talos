@@ -1284,6 +1284,8 @@ A `pipeline:blocked` issue or PR is skipped until a human removes the label. Aft
 - `github: cannot determine the repository (set vcs.repo)`: the token transport cannot read the git remote; set `vcs.repo` to `owner/repo`.
 - Board updates fail: warnings by design, not a stop. `bash scripts/bootstrap-board.sh` adds a missing Status option (idempotent). With `gh`, Projects v2 needs the `project` scope (`gh auth refresh -s project`); check `board.project_number` and `board.owner`.
 - `talos:board-unverified` on stdout: a missing Status option, an API error or the item-page cap (`TALOS_BOARD_MAX_PAGES`, default 50) skipped the update. The run continues.
+- `pipeline-status: the board needs GitHub GraphQL, which this session refuses (HTTP 403); move skipped`: the run is in a Claude Code cloud session, where the board cannot be moved. The run continues; `board.enabled: false` drops the warning. See [Running in a Claude Code cloud session](#running-in-a-claude-code-cloud-session).
+- `pipeline-worktree: checkpoint: push refused: no push access to origin for <branch>` (exit 3): the remote denied the branch and the commit is kept locally. In a cloud session, give the Claude GitHub App write access or use the session's own branch (same section).
 
 ### Notifications
 
