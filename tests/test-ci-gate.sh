@@ -201,6 +201,37 @@ assert_eq "1" "$rc" "github-api control: a cancelled conclusion still fails"
 ga_run '{"check_runs":[{"name":"test","status":"completed","conclusion":"success"}]}'
 assert_eq "0" "$rc" "github-api control: success still passes"
 
+# ── #595: the newest run of a check name on the head decides ─────────────────
+OLD_FAIL='{"id":101,"name":"test","status":"completed","conclusion":"failure","started_at":"2026-10-10T10:00:00Z","completed_at":"2026-10-10T10:05:00Z"}'
+OLD_PASS='{"id":101,"name":"test","status":"completed","conclusion":"success","started_at":"2026-10-10T10:00:00Z","completed_at":"2026-10-10T10:05:00Z"}'
+NEW_PASS='{"id":202,"name":"test","status":"completed","conclusion":"success","started_at":"2026-10-10T10:03:00Z","completed_at":"2026-10-10T10:20:00Z"}'
+NEW_FAIL='{"id":202,"name":"test","status":"completed","conclusion":"failure","started_at":"2026-10-10T10:03:00Z","completed_at":"2026-10-10T10:20:00Z"}'
+NEW_RUNNING='{"id":202,"name":"test","status":"in_progress","conclusion":null,"started_at":"2026-10-10T10:03:00Z"}'
+ga_run "{\"check_runs\":[$NEW_PASS,$OLD_FAIL]}"
+assert_eq "0" "$rc" "AC1 an older failed run and a newer green run of test: exit 0 (newest listed first)"
+ga_run "{\"check_runs\":[$OLD_FAIL,$NEW_PASS]}"
+assert_eq "0" "$rc" "AC1 an older failed run and a newer green run of test: exit 0 (oldest listed first)"
+ga_run "{\"check_runs\":[$NEW_FAIL,$OLD_PASS]}"
+assert_eq "1" "$rc" "AC2 an older green run and a newer failed run of test: exit 1 (newest listed first)"
+assert_contains "$out" "pr-checks-required: failed: test" "AC2 the newer failure is named"
+ga_run "{\"check_runs\":[$OLD_PASS,$NEW_FAIL]}"
+assert_eq "1" "$rc" "AC2 an older green run and a newer failed run of test: exit 1 (oldest listed first)"
+ga_run "{\"check_runs\":[$NEW_RUNNING,$OLD_FAIL]}"
+assert_eq "2" "$rc" "AC3 a newer in-progress run beside an older failed one is pending (exit 2)"
+TIE_FAIL='{"id":301,"name":"test","status":"completed","conclusion":"failure","started_at":"2026-10-10T11:00:00Z"}'
+TIE_PASS='{"id":302,"name":"test","status":"completed","conclusion":"success","started_at":"2026-10-10T11:00:00Z"}'
+ga_run "{\"check_runs\":[$TIE_PASS,$TIE_FAIL]}"
+assert_eq "0" "$rc" "AC4 the same started_at: the greater id decides (pass)"
+TIE_FAIL2='{"id":402,"name":"test","status":"completed","conclusion":"failure","started_at":"2026-10-10T11:00:00Z"}'
+TIE_PASS2='{"id":401,"name":"test","status":"completed","conclusion":"success","started_at":"2026-10-10T11:00:00Z"}'
+ga_run "{\"check_runs\":[$TIE_FAIL2,$TIE_PASS2]}"
+assert_eq "1" "$rc" "AC4 the same started_at: the greater id decides (fail)"
+: > "$CURL_LOG"; : > "$CURL_LINK_QUEUE"
+printf '%s\n' '{"head":{"sha":"dd11223344556677889900aabbccddeeff11223"}}' "{\"check_runs\":[$NEW_PASS,$OLD_FAIL]}" '{"statuses":[]}' > "$CURL_QUEUE"
+out="$(bash "$VCS" pr-checks 9 2>&1)"; rc=$?
+assert_eq "1" "$(printf '%s\n' "$out" | grep -c "^test	")" "AC5 pr-checks prints one row for the check name test"
+assert_contains "$out" "test	pass" "AC5 that row is the newest run's"
+
 printf '{"vcs": {"provider": "gitlab"}, "merge": {"required_checks": ["test"]}}\n' > talos.pipeline.json
 wait_run 0 pass 9 --wait 60
 assert_eq "1" "$rc" "gitlab: --wait is dropped and the verb still fails closed (exit 1)"
