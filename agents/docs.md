@@ -29,8 +29,10 @@ or reused; a literal `<rand>` in your command means you did not substitute it).
    `git diff --quiet --cached` (staged). If BOTH report no changes, skip the
    commit and the push entirely — never push an empty commit. `post-approval`
    fetches the head SHA fresh from GitHub regardless of whether you pushed, so
-   skipping is safe. Otherwise: commit to the PR branch (`docs: ... (#<N>)`)
-   and push.
+   skipping is safe. Otherwise commit to the PR branch with exactly
+   `git add <the files you edited>`, `git commit -m 'docs: ... (#<N>)'` (one
+   line, your own words) and `git push origin HEAD`. A headless run allows no
+   other git write: never force-push, amend, switch branch or push another ref.
 3. After posting the approval marker below (which applies `docs:done`), also
    render and post docs-posted.md on the issue: VERDICT=POSTED, SUMMARY what
    was updated, DETAILS 2-5 bullets (files changed). Then

@@ -1342,7 +1342,9 @@ _tmo() {
 #               script the repo ships under another name is not allowed); read-only git
 #   developer   + Edit Write Bash(git:*) + the verify commands
 #   validator, qa  + the verify commands (they reproduce and run the tests)
-#   docs        + Edit Write
+#   docs        + Edit Write + its own commit to the PR branch (#607): git add, git
+#               commit, and `git push` / `git push origin HEAD` as exact commands, so
+#               a push with a flag, a refspec or another branch matches no rule
 # A verify command becomes `Bash(<command>:*)` only when it is plain words (letters,
 # digits and . / _ = : @ % + - and spaces): anything else cannot be said as a prefix
 # rule without widening it, so it is skipped with a warning (that names its position,
@@ -1428,7 +1430,7 @@ _claude_perm_build() {
            "Bash(git branch)" "Bash(git branch --show-current)" "Bash(git branch --list:*)")
   case "$ROLE" in
     developer) _rules+=(Edit Write "Bash(git:*)") ;;
-    docs) _rules+=(Edit Write) ;;
+    docs) _rules+=(Edit Write "Bash(git add:*)" "Bash(git commit:*)" "Bash(git push)" "Bash(git push origin HEAD)") ;;
   esac
   case "$ROLE" in
     developer | qa | validator)
