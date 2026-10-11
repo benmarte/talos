@@ -1119,12 +1119,21 @@ _wt_checkpoint_body() {
   head="$(git rev-parse HEAD 2>/dev/null)" || exit 1
   state=local
   if [ "$local_only" -eq 0 ]; then
-    if GIT_TERMINAL_PROMPT=0 git push -q -u origin "HEAD:refs/heads/$branch" >&2; then
+    local push_err
+    if push_err="$(GIT_TERMINAL_PROMPT=0 git push -q -u origin "HEAD:refs/heads/$branch" 2>&1)"; then
+      [ -z "$push_err" ] || printf '%s\n' "$push_err" >&2
       state=pushed
     else
       rc_push=3
       state=push-failed
-      echo "pipeline-worktree: checkpoint: push failed; the commit is kept locally" >&2
+      # A remote that denies this branch (a Claude Code cloud session without
+      # push access, #618) gets one line naming it; any other failure keeps git's own.
+      if grep -qiE "HTTP 403|returned error: 403|doesn't have GitHub access|Permission to .* denied|permission denied" <<<"$push_err"; then
+        echo "pipeline-worktree: checkpoint: push refused: no push access to origin for $branch" >&2
+      else
+        printf '%s\n' "$push_err" >&2
+        echo "pipeline-worktree: checkpoint: push failed; the commit is kept locally" >&2
+      fi
     fi
   fi
   with_lock "$_WT_LOCK_RESOURCE" 10 -- _wt_hf_write "$n" "$hdir" "$branch" "$head" "$runner" "$model" || rc_hf=$?
