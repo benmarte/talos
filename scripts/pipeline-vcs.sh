@@ -4445,14 +4445,29 @@ print("PR #%d %s" % (num, url))' || exit 1
       _rd_node="$(_gh_req GET "$_GH_API/pulls/$_rd_n" | _gh_field node_id)"
       [ -n "$_rd_node" ] || { echo "pipeline-vcs: $verb: could not read PR #$_rd_n" >&2; exit 1; }
       _rd_q="mutation(\$id: ID!) { $_rd_mut(input: {pullRequestId: \$id}) { pullRequest { isDraft } } }"
-      _rd_resp="$(_gh_req POST graphql "$(python3 -I -c '
+      local _rd_out _rd_route=ready_for_review
+      [ "$verb" = "draft-pr" ] && _rd_route=convert_to_draft
+      _rd_out="$(mktemp)" || exit 1
+      # Not in a command substitution: _GH_STATUS must survive the call.
+      if _gh_try POST graphql "$(python3 -I -c '
 import json, sys
-print(json.dumps({"query": sys.argv[1], "variables": {"id": sys.argv[2]}}))' "$_rd_q" "$_rd_node")")" || exit 1
-      printf '%s' "$_rd_resp" | python3 -I -c '
+print(json.dumps({"query": sys.argv[1], "variables": {"id": sys.argv[2]}}))' "$_rd_q" "$_rd_node")" > "$_rd_out"; then
+        _rd_resp="$(cat "$_rd_out")"; rm -f "$_rd_out"
+        printf '%s' "$_rd_resp" | python3 -I -c '
 import json, sys
 d = json.load(sys.stdin)
 sys.exit(1 if d.get("errors") or not d.get("data") else 0)' \
-        || { echo "pipeline-vcs: $verb: GitHub refused the change for PR #$_rd_n" >&2; exit 1; }
+          || { echo "pipeline-vcs: $verb: GitHub refused the change for PR #$_rd_n" >&2; exit 1; }
+      elif [ "$_GH_STATUS" = 403 ]; then
+        # A Claude Code cloud session refuses GraphQL and serves this one
+        # change on its own REST route instead (#618).
+        rm -f "$_rd_out"
+        _gh_try POST "$_GH_API/pulls/$_rd_n/ccr/$_rd_route" '{}' >/dev/null \
+          || { echo "pipeline-vcs: $verb: GitHub refused the change for PR #$_rd_n" >&2; exit 1; }
+      else
+        rm -f "$_rd_out"
+        exit 1
+      fi
       echo "PR #$_rd_n $_rd_msg"
       ;;
     pr-is-draft)
@@ -4589,8 +4604,16 @@ print(json.dumps([{'number': i.get('number'), 'title': i.get('title', ''),
       _gh_num "$verb" PR "$_co_n"
       [ "$DRY_RUN" = "true" ] && { echo "[dry-run] gh pr checkout $_co_n (token only: GET $_GH_API/pulls/$_co_n; git fetch origin refs/pull/$_co_n/head:<head ref>; git checkout <head ref>)"; return 0; }
       if [ "$_GH_XPORT" = gh ]; then
-        gh pr checkout "$_co_n" ${REPO:+--repo "$REPO"}
-        return
+        # A Claude Code cloud session refuses GraphQL, which `gh pr checkout`
+        # needs (#618): only then take the REST + git path below.
+        local _co_errf _co_rc=0
+        _co_errf="$(mktemp "${TMPDIR:-/tmp}/talos-co.XXXXXX")" || return 1
+        gh pr checkout "$_co_n" ${REPO:+--repo "$REPO"} 2>"$_co_errf" || _co_rc=$?
+        if [ "$_co_rc" -eq 0 ] || ! grep -q 'GraphQL is not available' "$_co_errf"; then
+          cat "$_co_errf" >&2; rm -f "$_co_errf"
+          return "$_co_rc"
+        fi
+        rm -f "$_co_errf"
       fi
       _co_branch="$(_gh_req GET "$_GH_API/pulls/$_co_n" | _gh_field head.ref)"
       [ -n "$_co_branch" ] || { echo "pipeline-vcs: checkout-pr: could not resolve head ref for PR #$_co_n" >&2; exit 1; }
