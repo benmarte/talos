@@ -64,6 +64,18 @@ if [ -n "${GH_FAIL_STDERR:-}" ]; then
   exit 1
 fi
 
+# STUB_GH_NO_GRAPHQL=1 (#618): GitHub as a Claude Code cloud session serves it.
+# Every gh subcommand GitHub answers from GraphQL (`gh api graphql`, `gh repo|
+# issue|pr|project|label ...`) and `gh auth status` fail with the session's 403;
+# REST (`gh api ...`) and `gh auth token` keep working.
+if [ "${STUB_GH_NO_GRAPHQL:-}" = 1 ]; then
+  case "${1:-} ${2:-}" in
+    "api graphql"|repo\ *|issue\ *|pr\ *|project\ *|label\ *|search\ *|"auth status")
+      echo "HTTP 403: GitHub GraphQL is not available from Claude Code sessions; use the REST API (gh api repos/{owner}/{repo}/...). (https://api.github.com/graphql)" >&2
+      exit 1 ;;
+  esac
+fi
+
 REPO="${STUB_REPO:-acme/widget}"
 OWNER="${REPO%%/*}"
 
@@ -94,6 +106,12 @@ if [ "${1:-}" = api ] && [ "${2:-}" = "-i" ]; then
     esac
   done
   _rpath="${_rpath//\{owner\}\/\{repo\}/$REPO}"
+  # STUB_GH_NO_GRAPHQL=1 (#618): the REST client's own POST to graphql is refused too.
+  if [ "${STUB_GH_NO_GRAPHQL:-}" = 1 ] && [ "$_rpath" = graphql ]; then
+    printf 'HTTP/2.0 403 Stub\nX-Stub: 1\r\n\r\n{"message":"GitHub GraphQL is not available from Claude Code sessions; use the REST API"}\n'
+    echo "gh: GitHub GraphQL is not available from Claude Code sessions; use the REST API (HTTP 403)" >&2
+    exit 1
+  fi
   _rhdr="$(mktemp)" || exit 1
   _rdir="$(dirname "$0")"
   set -- -sS -w '\n%{http_code}' -D "$_rhdr" -X "$_rm" "https://api.github.com/$_rpath"
