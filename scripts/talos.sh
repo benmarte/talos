@@ -102,7 +102,9 @@
 #         `prompt_file=<path>` (the caller reads, then removes it). <role>: validator
 #         pm developer qa reviewer security adversarial docs planner. --shape first
 #         (default) | fix-round (developer; --pr, --prior-file) | restamp (qa
-#         reviewer security adversarial; --pr, --restamp-file). Free text arrives
+#         reviewer security adversarial docs; --pr, --restamp-file; docs renders
+#         restamp-docs.md, a read-only pass over the file `docs-gate` wrote that
+#         ends `RESTAMP_PASS: ` or `RESTAMP_FAIL: `, #590). Free text arrives
 #         only as files (--prior-file --title-file --body-file --ci-failure-file
 #         --docs-paths-file --restamp-file --preamble-file). Markers are {{NAME}}
 #         over _TALOS_PROMPT_NAMES, rendered in one `python3 -I` pass, no eval.
@@ -134,14 +136,17 @@
 #         #535, a PR that is still a draft is not converted), board status, the role relay,
 #         post_stage, the spend block, the lifecycle event; then the issue's lease
 #         is released. <role>: validator pm developer qa reviewer security adversarial
-#         docs. --pr is required for qa, reviewer, security, adversarial and
-#         PR_OPENED. The summary (--summary-file F, or `-` for stdin) never travels
-#         on argv.
-#         Verdicts per role (pm and docs take none; the table is _talos_done_verdicts):
+#         docs. --pr is required for qa, reviewer, security, adversarial,
+#         PR_OPENED and a docs RESTAMP_*. The summary (--summary-file F, or `-`
+#         for stdin) never travels on argv.
+#         Verdicts per role (pm takes none; the table is _talos_done_verdicts):
 #            validator CONFIRMED ALREADY_FIXED DUPLICATE NEEDS_MORE_INFO SECURITY_THREAT
 #            developer PR_OPENED BLOCKED        qa PASS FAIL RESTAMP_PASS RESTAMP_FAIL
 #            reviewer APPROVED CHANGES RESTAMP_PASS RESTAMP_FAIL
 #            security, adversarial CLEAR FINDINGS RESTAMP_PASS RESTAMP_FAIL
+#            docs RESTAMP_PASS RESTAMP_FAIL (its re-stamp only, #590: the full
+#            stage takes none; a RESTAMP_FAIL drops docs:done and is
+#            next=continue, so the next pass runs the full stage, no fix round)
 #         Any role may also end BLOCKED (#580): board Blocked, pipeline:blocked on the issue and
 #         the PR, next=stop. `run` reads it from a final message whose first line is `BLOCKED: <why>`.
 #         `done pm` (no verdict) checks the spec just posted (#594): one `view-issue
@@ -272,6 +277,14 @@
 # docs-gate  Does the docs stage need an LLM? One line: `docs=dispatch
 #         reason=docs-paths paths-file=<f>` | `docs=dispatch reason=always|fetch-failed`
 #         | `docs=skip reason=role-off|no-docs-paths` (the verb stamped docs:done).
+#         After a fix round (#590: docs:done on the PR, and `check-approval-sha
+#         --stale-list` names docs with `sha=<S>`) it looks only at the local `git
+#         diff <S>..<head>` of the PR's docs-relevant paths: `docs=dispatch
+#         reason=docs-delta shape=restamp restamp-file=<f>` (<f>: `approved_sha=`,
+#         `head_sha=`, the paths, their diff as a DIFF section; the caller renders
+#         `prompt docs --shape restamp --restamp-file <f>` and removes <f>) |
+#         `docs=skip reason=no-docs-delta` (stamped docs:done). A read that fails
+#         or a delta over TALOS_PROMPT_CHANGE_MAX_BYTES is the docs-paths answer.
 # docs-gate-reasons: usage scripts-missing python-missing scratch-unavailable config-unreadable stamp-failed done-failed
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable stamp-failed
 #         (exit 2 for usage; else 1)
@@ -458,7 +471,12 @@ verbs:
                                      reason=<docs-paths|always|fetch-failed>
                                      [paths-file=<f>] | docs=skip
                                      reason=<role-off|no-docs-paths> (on
-                                     no-docs-paths the verb stamped docs:done)
+                                     no-docs-paths the verb stamped docs:done);
+                                     with a stale docs:done on the PR, only the
+                                     delta since its SHA: docs=dispatch
+                                     reason=docs-delta shape=restamp
+                                     restamp-file=<f> | docs=skip
+                                     reason=no-docs-delta (stamped)
   post-merge <pr> <issue> [--ci-runs <n>] [--heal]
                                      what follows a merge, in order, once
   post-merge <pr> <issue> --handoff [--details-file F]
@@ -473,7 +491,9 @@ verbs:
                                      [--embed-change]
                                      render a stage prompt from
                                      templates/prompts/<role>.md to a file:
-                                     prompt_file=<path>; --embed-change
+                                     prompt_file=<path>; --shape restamp (qa,
+                                     reviewer, security, adversarial, docs)
+                                     takes --restamp-file F; --embed-change
                                      (reviewer, security, docs with --pr) puts
                                      the spec and the PR diff in it, up to
                                      TALOS_PROMPT_CHANGE_MAX_BYTES (60000)
@@ -1828,7 +1848,8 @@ _talos_summary() {
 
 # ── prompt ───────────────────────────────────────────────────────────────────
 # The stage prompts the playbook used to carry as fenced blocks, rendered from
-# templates/prompts/<role>.md (restamp.md for --shape restamp).
+# templates/prompts/<role>.md (restamp.md for --shape restamp, restamp-docs.md
+# for the docs one).
 
 # The placeholder names a template may use: the one allow-list. A marker is
 # {{NAME}}; any other {{NAME}}-shaped text in a template is `unknown-placeholder`.
@@ -2046,7 +2067,7 @@ _talos_prompt() {
   case "$_shape" in
     first) : ;;
     fix-round) [ "$_role" = developer ] || _talos_stop shape-unsupported 2 ;;
-    restamp) case "$_role" in qa | reviewer | security | adversarial) : ;; *) _talos_stop shape-unsupported 2 ;; esac ;;
+    restamp) case "$_role" in qa | reviewer | security | adversarial | docs) : ;; *) _talos_stop shape-unsupported 2 ;; esac ;;
     *) _talos_stop unknown-shape 2 ;;
   esac
   for _f in "$_prior" "$_title" "$_body" "$_ci" "$_docs" "$_rs" "$_pre"; do
@@ -2225,13 +2246,20 @@ post-approval stamps the head SHA you verified (the PR head, not a stale checkou
       qa) _v=QA ;;
       reviewer) _v=Reviewer ;;
       security) _v="Security Analyst" ;;
+      docs) _v=Documentation ;;
       *) _v="Adversarial Reviewer" ;;
     esac
     _talos_pv ROLE_TITLE "$_v"
     [ -z "$_rs" ] || _talos_pf RESTAMP_INPUTS "$_rs"
   fi
 
-  [ "$_shape" = restamp ] && _tpl="$_tpl/restamp.md" || _tpl="$_tpl/$_role.md"
+  # #590: the docs re-stamp is read-only and answers with a verdict word, so it
+  # has a template of its own.
+  case "$_shape:$_role" in
+    restamp:docs) _tpl="$_tpl/restamp-docs.md" ;;
+    restamp:*) _tpl="$_tpl/restamp.md" ;;
+    *) _tpl="$_tpl/$_role.md" ;;
+  esac
   _pf="$(mktemp "${TMPDIR:-/tmp}/talos-prompt.XXXXXX")" && [ -n "$_pf" ] && [ -f "$_pf" ] || _talos_stop scratch-unavailable
   if ! _r="$(python3 -I -c "$_TALOS_PROMPT_PY" "$_tpl" "$_PROMPT_VALS" "$_pf" "$_TALOS_PROMPT_NAMES")"; then
     rm -f "${_pf:?}"
@@ -2267,6 +2295,8 @@ _talos_done_verdicts() {
     qa) printf '%s' "PASS FAIL RESTAMP_PASS RESTAMP_FAIL" ;;
     reviewer) printf '%s' "APPROVED CHANGES RESTAMP_PASS RESTAMP_FAIL" ;;
     security | adversarial) printf '%s' "CLEAR FINDINGS RESTAMP_PASS RESTAMP_FAIL" ;;
+    # #590: its delta re-stamp only; the full docs stage reports no verdict.
+    docs) printf '%s' "RESTAMP_PASS RESTAMP_FAIL" ;;
   esac
 }
 
@@ -2733,14 +2763,16 @@ _talos_done() {
     [ -z "$_x" ] || _talos_isnum "$_x" || _talos_stop usage 2
   done
   [[ -z "$_sha" || "$_sha" =~ ^[0-9a-fA-F]{4,64}$ ]] || _talos_stop usage 2
-  # Every verdict is on the role's fixed list: no verdict at all for a role with none.
+  # Every verdict is on the role's fixed list: no verdict at all for a role with
+  # none, and for docs, whose list is its re-stamp's (#590).
   _ok=1
   for _x in $(_talos_done_verdicts "$_role") BLOCKED; do [ "$_x" = "$_v" ] && _ok=0; done
-  { [ "$_ok" -eq 0 ] || { [ -z "$_v" ] && [ -z "$(_talos_done_verdicts "$_role")" ]; }; } || _talos_stop verdict-invalid 2
-  # A PR-side stage names its PR; so does the developer's pr-opened.
+  { [ "$_ok" -eq 0 ] || { [ -z "$_v" ] && { [ "$_role" = docs ] || [ -z "$(_talos_done_verdicts "$_role")" ]; }; }; } || _talos_stop verdict-invalid 2
+  # A PR-side stage names its PR; so do the developer's pr-opened and a docs re-stamp.
   case "$_role" in
     qa | reviewer | security | adversarial) [ -n "$_pr" ] || _talos_stop usage 2 ;;
     developer) [ "$_v" != PR_OPENED ] || [ -n "$_pr" ] || _talos_stop usage 2 ;;
+    docs) case "$_v" in RESTAMP_*) [ -n "$_pr" ] || _talos_stop usage 2 ;; esac ;;
   esac
   [ "$_sf" = "-" ] || { [ -f "$_sf" ] && [ -r "$_sf" ]; } || _talos_stop file-unreadable
 
@@ -2829,6 +2861,9 @@ _talos_done() {
       reviewer | security | adversarial)
         # A draft review batch is one fix round for every finding, run by the caller.
         if [ "$_draft" -eq 1 ]; then _next=batch; else _next="fix-round stage=$_role"; fi ;;
+      # #590: a docs RESTAMP_FAIL is no developer round: docs:done is gone, so
+      # the next pass finds no label and runs the full docs stage.
+      docs) : ;;
       *) _next="fix-round stage=$_role" ;;
     esac
     # #580: a blocked stage (any role) is for a human: no fix round follows.
@@ -2845,20 +2880,72 @@ _talos_done() {
   _talos_flush
 }
 
+# _talos_docs_delta <pr> <docs-paths> (#590): after a fix round, what did docs'
+# approval not see? <docs-paths> is the PR's docs-relevant paths, one per line.
+# It applies only when docs:done is on the PR and `check-approval-sha
+# --stale-list` names docs with the SHA it approved (Step 3e's re-stamp trigger).
+# The delta is the local `git diff <approved>..<head>`, kept to <docs-paths>.
+# _DELTA is the answer:
+#   full  the trigger does not hold, or a read failed: the full stage, as before
+#   none  no docs-relevant path changed since _DELTA_SHA
+#   file  _DELTA_FILE holds `approved_sha=`, `head_sha=`, the delta's paths one
+#         per line and their diff as one DIFF section (the --embed-change form)
+# Nothing here stops the verb but a scratch file that cannot be written.
+_talos_docs_delta() {
+  local _pr="$1" _hits="$2" _d="$_CFG_CACHE_DIR" _label _line _sha="" _head _top _p _paths="" _args=()
+  _DELTA=full; _DELTA_SHA=""; _DELTA_FILE=""
+  _label="$(_talos_label_of docs)" || return 0
+  _talos_cap _vcs view-pr "$_pr"
+  [ "$_RC" -eq 0 ] || return 0
+  _line="$(_talos_labels "$_OUT" 2> /dev/null)" || return 0
+  _talos_has "$_line" "$_label" || return 0
+  # Exit 1 is the stale answer itself, so only the docs line counts.
+  _talos_cap _vcs check-approval-sha "$_pr" --stale-list
+  while IFS= read -r _line; do
+    case "$_line" in "stale role=docs label=$_label sha="*) _sha="${_line##* sha=}" ;; esac
+  done <<< "$_OUT"
+  [[ "$_sha" =~ ^[0-9a-f]{40,64}$ ]] || return 0
+  _talos_cap _vcs pr-head "$_pr"
+  _head="$_OUT"
+  [ "$_RC" -eq 0 ] && [[ "$_head" =~ ^[0-9a-f]{40,64}$ ]] || return 0
+  _top="$(git rev-parse --show-toplevel 2> /dev/null)" && [ -n "$_top" ] || return 0
+  git -C "$_top" diff --name-only --no-renames -z "$_sha..$_head" > "$_d/delta.names" 2> /dev/null || return 0
+  while IFS= read -r -d '' _p; do
+    # A name that holds a newline cannot be told from two lines of pr-files.
+    case "$_p" in *$'\n'*) return 0 ;; esac
+    ! _talos_has "$_hits" "$_p" || { _paths="$_paths$_p"$'\n'; _args+=("$_p"); }
+  done < "$_d/delta.names"
+  if [ -z "$_paths" ]; then
+    _DELTA=none; _DELTA_SHA="$_sha"
+    return 0
+  fi
+  git -C "$_top" --literal-pathspecs diff --no-renames --no-ext-diff --no-textconv --no-color \
+    "$_sha..$_head" -- "${_args[@]}" > "$_d/delta.diff" 2> /dev/null || return 0
+  # `too-large` and an empty diff are the full stage too: it reads the PR itself.
+  [ "$(python3 -I -c "$_TALOS_CHANGE_PY" "$_d/delta.diff" "" "" "$_d/delta.sections" 2> /dev/null)" = ok ] || return 0
+  _DELTA_FILE="$(mktemp "${TMPDIR:-/tmp}/talos-docs-restamp.XXXXXX")" && [ -n "$_DELTA_FILE" ] && [ -f "$_DELTA_FILE" ] || _talos_stop scratch-unavailable
+  { printf 'approved_sha=%s\nhead_sha=%s\n%s' "$_sha" "$_head" "$_paths" && cat "$_d/delta.sections"; } > "$_DELTA_FILE" \
+    || { rm -f "${_DELTA_FILE:?}"; _talos_stop scratch-unavailable; }
+  _DELTA=file
+}
+
 # docs-gate <pr> --issue <N>: does the docs stage need an LLM? Dispatch only
 # when the PR changes README.md, docs/** or scripts/pipeline-defaults.sh; roles.docs_mode always forces it
 # and a failed pr-files read dispatches too (never "nothing to check"). On a
 # skip the docs:done stamp and `done docs` are the verb's own, so the loop and
-# the playbook end up in the same state without a docs agent.
+# the playbook end up in the same state without a docs agent. After a fix round
+# (docs:done on the PR, and stale) the question is asked of the delta since the
+# approved SHA only (#590): a re-stamp dispatch, or a stamp when docs own none of it.
 _talos_docs_gate() {
-  local _pr="${1:-}" _n="" _p _hits="" _f _body _why
+  local _pr="${1:-}" _n="" _p _hits="" _f _body _why _reason=no-docs-paths
   [ "$#" -eq 0 ] || shift
   while [ "$#" -gt 0 ]; do
     [ "$#" -ge 2 ] && [ "$1" = "--issue" ] || _talos_stop usage 2
     _n="$2"; shift 2
   done
   if ! _talos_isnum "$_pr" || ! _talos_isnum "$_n"; then _talos_stop usage 2; fi
-  _talos_prepare docs-gate pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh
+  _talos_prepare docs-gate pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh pipeline-contract.sh
+  . "$SCRIPT_DIR/pipeline-contract.sh"
   _TALOS_NOTE_KEY=docs-gate
 
   case "$(cfg roles.docs | tr '[:upper:]' '[:lower:]')" in
@@ -2878,22 +2965,32 @@ _talos_docs_gate() {
     esac
   done <<< "$_OUT"
 
+  _why="docs verified by code: no docs-relevant changes (docs_mode: auto) — no subagent dispatched"
   if [ -n "$_hits" ]; then
-    _f="$(mktemp "${TMPDIR:-/tmp}/talos-docs-paths.XXXXXX")" && [ -n "$_f" ] && [ -f "$_f" ] || _talos_stop scratch-unavailable
-    printf '%s' "$_hits" > "$_f" || { rm -f "${_f:?}"; _talos_stop scratch-unavailable; }
-    _talos_emit docs "dispatch reason=docs-paths paths-file=$_f"
-    _talos_flush; return 0
+    _talos_docs_delta "$_pr" "$_hits"
+    case "$_DELTA" in
+      file)
+        _talos_emit docs "dispatch reason=docs-delta shape=restamp restamp-file=$_DELTA_FILE"
+        _talos_flush; return 0 ;;
+      none)
+        _reason=no-docs-delta
+        _why="docs verified by code: no docs-relevant changes since $_DELTA_SHA — no subagent dispatched" ;;
+      *)
+        _f="$(mktemp "${TMPDIR:-/tmp}/talos-docs-paths.XXXXXX")" && [ -n "$_f" ] && [ -f "$_f" ] || _talos_stop scratch-unavailable
+        printf '%s' "$_hits" > "$_f" || { rm -f "${_f:?}"; _talos_stop scratch-unavailable; }
+        _talos_emit docs "dispatch reason=docs-paths paths-file=$_f"
+        _talos_flush; return 0 ;;
+    esac
   fi
 
   # Nothing docs own changed: stamp it here, then run the stage's bookkeeping.
   _body="$_CFG_CACHE_DIR/docs-stamp"
-  _why="docs verified by code: no docs-relevant changes (docs_mode: auto) — no subagent dispatched"
   printf '%s\n' "$_why" > "$_body" || _talos_stop scratch-unavailable
   _talos_cap _vcs post-approval "$_pr" docs --body-file "$_body"
   [ "$_RC" -eq 0 ] || _talos_stop stamp-failed
   _talos_run_capture "done" bash "$SCRIPT_DIR/talos.sh" "done" docs --issue "$_n" --pr "$_pr" --summary-file "$_body"
   [ "$_RC" -eq 0 ] || _talos_warn done-failed "issue=$_n"
-  _talos_emit docs "skip reason=no-docs-paths"
+  _talos_emit docs "skip reason=$_reason"
   _talos_flush
 }
 
@@ -3235,10 +3332,11 @@ _run_fail() {
   exit 1
 }
 
-# _run_verdict <role> <file>: the verdict word for the agent's answer in <file>
-# on stdout (`none` for a role with no verdict; `PR_OPENED <pr>` or `BLOCKED`
-# for the developer), 0. A non-zero exit is a dispatch failure (nothing is
-# recorded): an unknown word is NOT a verdict (#472, AC2 -- never guessed).
+# _run_verdict <role> <file> [<shape>]: the verdict word for the agent's answer
+# in <file> on stdout (`none` for a role with no verdict, which docs is outside
+# its `restamp` shape; `PR_OPENED <pr>` or `BLOCKED` for the developer), 0. A
+# non-zero exit is a dispatch failure (nothing is recorded): an unknown word is
+# NOT a verdict (#472, AC2 -- never guessed).
 _run_verdict_url() { grep -oE "https?://[^ <>()\"]+/(pull|[a-z-]+/[a-z-]+/pull)/[0-9]+" "$1" 2>/dev/null | head -n 1; }
 _run_verdict() {
   local _role="$1" _f="$2" _w _v _line
@@ -3250,8 +3348,11 @@ _run_verdict() {
   _line="${_line#"${_line%%[![:space:]]*}"}"
   case "$_line" in "BLOCKED:"*) printf BLOCKED; return 0 ;; esac
   case "$_role" in
-    pm | planner | docs)
+    pm | planner)
       printf none; return 0 ;;
+    docs)
+      # #590: only its delta re-stamp answers with a verdict word (read below).
+      [ "${3:-}" = restamp ] || { printf none; return 0; } ;;
     developer)
       # The convention: "PR URL + what was implemented". A pull/<N> URL (or a
       # `pr=<N>` word, the run's own relay shape) is PR_OPENED; no PR is
@@ -3577,14 +3678,19 @@ _talos_run_dispatch() {
   esac
 
   # 0. The docs stage is dispatched only when docs-relevant files changed: a
-  # skip is stamped by the verb itself, so there is nothing left to run.
-  local _dpf=""
+  # skip is stamped by the verb itself, so there is nothing left to run. After
+  # a fix round the verb names the delta's file instead, and the stage is the
+  # docs re-stamp (#590).
+  local _dpf="" _drf=""
   if [ "$_role" = docs ]; then
     _v="$(bash "$SCRIPT_DIR"/talos.sh docs-gate "$_pr" --issue "$_n" 2>"$_CFG_CACHE_DIR/err")" || _run_fail docs-gate "$_v"
     _talos_relay docs-gate "$(cat "$_CFG_CACHE_DIR/err")"
     case "$_v" in
       docs=skip*) return 0 ;;
-      docs=dispatch*) _dpf="$(sed -n 's/^docs=.* paths-file=\([^ ]*\).*/\1/p' <<<"$_v")" ;;
+      docs=dispatch*)
+        _dpf="$(sed -n 's/^docs=.* paths-file=\([^ ]*\).*/\1/p' <<<"$_v")"
+        _drf="$(sed -n 's/^docs=.* shape=restamp restamp-file=\([^ ]*\).*/\1/p' <<<"$_v")"
+        [ -z "$_drf" ] || _shape=restamp ;;
       *) _run_fail docs-gate ;;
     esac
   fi
@@ -3595,6 +3701,7 @@ _talos_run_dispatch() {
   [ -z "$_shape" ] || _pargs+=(--shape "$_shape")
   [ -z "$_prior" ] || _pargs+=(--prior-file "$_prior")
   [ -z "$_dpf" ] || _pargs+=(--docs-paths-file "$_dpf")
+  [ -z "$_drf" ] || _pargs+=(--restamp-file "$_drf")
   # #596: the three stages that read the PR's change get it in a first-shape
   # prompt, so reading it costs them no tool call.
   case "$_role:$_shape" in reviewer: | security: | docs:) _pargs+=(--embed-change) ;; esac
@@ -3603,8 +3710,9 @@ _talos_run_dispatch() {
   [ "$_RUN_DRAFT" -eq 1 ] && _pargs+=(--draft)
   _f="$(bash "$SCRIPT_DIR"/talos.sh "${_pargs[@]}" 2>"$_CFG_CACHE_DIR/err" | sed -n 's/^prompt_file=//p')"
   _rc=$?
-  # The prompt carries the paths, so the file is spent either way.
+  # The prompt carries the paths (or the delta), so the file is spent either way.
   [ -z "$_dpf" ] || rm -f "$_dpf"
+  [ -z "$_drf" ] || rm -f "$_drf"
   if [ "$_rc" -ne 0 ] || [ ! -s "$_f" ] || [ ! -f "$_f" ]; then
     _talos_relay prompt "$(cat "$_CFG_CACHE_DIR/err" 2>/dev/null)"
     _run_fail prompt-render
@@ -3625,7 +3733,7 @@ _talos_run_dispatch() {
   fi
 
   # 3. The verdict from the final message (AC2), never guessed.
-  _v="$(_run_verdict "$_role" "$_CFG_CACHE_DIR/agent.out")" || { rm -f "${_f:?}"; _run_fail verdict-unreadable; }
+  _v="$(_run_verdict "$_role" "$_CFG_CACHE_DIR/agent.out" "$_shape")" || { rm -f "${_f:?}"; _run_fail verdict-unreadable; }
 
   # 4. The bookkeeping is always `done`'s, the final message as the summary
   # file on stdin: `done <role> --issue <N> [--pr <M>] [--verdict <V>] --summary-file -`.
