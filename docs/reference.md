@@ -34,8 +34,8 @@ Default order: validator, planner (optional), pm, developer, qa, docs, reviewer 
 | developer | LLM, always | none | Reads the spec. Branch `fix/issue-N-slug` (`feat/` for a `feat` title). Red tests first, runs `verify` once before the final commit, opens the PR. The only stage that writes code. |
 | qa | LLM | `roles.qa` | Checks each acceptance criterion; runs targeted tests only, never the full suite; under `verify.qa_mode: ci` waits for required CI. With `pr.ready_gate: qa-local` it runs last on the draft, before CI, and also runs the full `verify:` list once. |
 | docs | code gate, LLM only if needed | `roles.docs`, `roles.docs_mode` | `docs-gate` stamps `docs:done` itself unless the PR changes `README.md`, `docs/**` or `scripts/pipeline-defaults.sh` (`roles.docs_mode: always` forces the agent). |
-| reviewer, security | LLM | `roles.reviewer`, `roles.security` | Read `diff-pr --stat`, then the files that matter. Run no tests. |
-| adversarial | LLM, off | `roles.adversarial` | Second opinion on another backend. |
+| reviewer, security | LLM | `roles.reviewer`, `roles.security` | Read `diff-pr --stat`, then the files that matter. Run no tests. A security finding blocks only on an attacker path that does not start from something the user already controls, or on loss or corruption of user data in normal use; the rest are `Notes (non-blocking)` in the same comment, filed as follow-up issues instead of a fix round. |
+| adversarial | LLM, off | `roles.adversarial` | Second opinion on another backend. Blocks on the same two grounds as security. |
 | merge | code | `merge.auto` | `gate merge` checks every gate; `merge-pr`; `post-merge` closes the issue, sets the board to Done, removes the worktree, notifies. |
 
 Everything except the stage agents is mechanical: routing (`next`), bookkeeping (`done`), gates, sweeps, merge.
@@ -87,6 +87,7 @@ Only a person does these:
 - Merge, when `merge.auto: false`: the PR gets `pipeline:approved` and a hand-off comment; the next `sweep` closes the issue.
 - Add `skip-qa`, which waives the approval labels only, never CI or the forbidden-files check.
 - Answer a `pipeline:needs-owner` question (`next` answers `ask-owner`).
+- Decide the design when `gate fix-round` answers `ask-owner reason=same-area`: reply on the PR under the `Design decision needed` comment. See [Retries and attempt counting](#retries-and-attempt-counting).
 
 There is no switch that removes the CI gate: `gate merge` stops with `reason=ci-unverified` when `merge.required_checks` is empty.
 
