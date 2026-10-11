@@ -745,6 +745,7 @@ if [ "$GLOBAL" = "true" ]; then
   fi
   if [ "$CLAUDE_ADAPTER" = "true" ]; then
     echo "        Role profiles registered at: $(printable "$CLAUDE_DIR")/agents/<role>.md"
+    echo "        Prompt cache: the developer and qa profiles ask for the 1-hour cache (needs Claude Code 2.1.248+). On 2.1.242 to 2.1.247 set \"subagentPromptCacheTtl\": \"1h\" in $(printable "$CLAUDE_DIR")/settings.json yourself; this installer writes no setting."
   fi
   exit 0
 fi
