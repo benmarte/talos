@@ -297,6 +297,24 @@ dn docs --issue 42 --pr 57 --summary-file "$SUM"
 assert_eq "notify docs #42 - 42
 hooks post_stage docs docs 42 --pr 57 --summary-file F
 events cost --issue 42 --pr 57 --line" "$(jr)" "docs: relay and event"
+assert_eq "done=ok" "$(printf '%s' "$OUT" | head -n 1)" "AC5 done docs with no verdict is still accepted"
+# AC5 (#590): the docs re-stamp reports its verdict like the other re-stamps.
+reset_stubs
+dn docs --issue 42 --pr 57 --verdict RESTAMP_PASS --summary-file "$SUM"
+assert_eq "notify docs #42 - 42
+hooks post_stage docs docs 42 --pr 57 --verdict RESTAMP_PASS --summary-file F
+events cost --issue 42 --pr 57 --line" "$(jr)" "AC5 docs RESTAMP_PASS: the relay, --verdict RESTAMP_PASS on the post_stage hook, no label change"
+assert_eq "continue" "$(line_of next)" "AC5 docs RESTAMP_PASS: next=continue"
+# AC6 (#590): a docs RESTAMP_FAIL drops the stale docs:done and nothing else: the
+# next pass finds no label and runs the full docs stage, so no developer round.
+reset_stubs
+dn docs --issue 42 --pr 57 --verdict RESTAMP_FAIL --summary-file "$SUM"
+assert_eq "vcs label-pr 57 --remove docs:done
+notify docs #42 - 42
+hooks post_stage docs docs 42 --pr 57 --verdict RESTAMP_FAIL --summary-file F
+events cost --issue 42 --pr 57 --line" "$(jr)" "AC6 docs RESTAMP_FAIL: docs:done is removed before the relay; no blocked notice, no blocked event, no pipeline:blocked"
+assert_eq "continue" "$(line_of next)" "AC6 docs RESTAMP_FAIL: next=continue, no fix-round"
+assert_eq "done=ok" "$(printf '%s' "$OUT" | head -n 1)" "AC6 docs RESTAMP_FAIL: accepted"
 
 # developer
 reset_stubs
@@ -486,7 +504,9 @@ check_stop "a verdict of another role" verdict-invalid 2 qa --issue 1 --pr 5 --v
 check_stop "a lowercase verdict" verdict-invalid 2 qa --issue 1 --pr 5 --verdict pass --summary-file "$SUM"
 check_stop "a hostile verdict" verdict-invalid 2 qa --issue 1 --pr 5 --verdict 'PASS;touch x' --summary-file "$SUM"
 check_stop "pm takes no verdict" verdict-invalid 2 pm --issue 1 --verdict PASS --summary-file "$SUM"
-check_stop "docs takes no verdict" verdict-invalid 2 docs --issue 1 --pr 5 --verdict PASS --summary-file "$SUM"
+check_stop "AC5 docs takes no verdict but its re-stamp's" verdict-invalid 2 docs --issue 1 --pr 5 --verdict PASS --summary-file "$SUM"
+check_stop "AC5 a docs RESTAMP_PASS needs its PR" usage 2 docs --issue 1 --verdict RESTAMP_PASS --summary-file "$SUM"
+check_stop "AC5 a docs RESTAMP_FAIL needs its PR" usage 2 docs --issue 1 --verdict RESTAMP_FAIL --summary-file "$SUM"
 check_stop "an unreadable summary file" file-unreadable 1 qa --issue 1 --pr 5 --verdict PASS --summary-file "$SANDBOX/no-such-file"
 check_stop "a directory is not a summary" file-unreadable 1 qa --issue 1 --pr 5 --verdict PASS --summary-file "$SANDBOX"
 : > "$SANDBOX/empty.txt"

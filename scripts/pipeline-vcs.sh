@@ -304,7 +304,10 @@
 #                                             pipeline config are never waivable).
 #                                             --stale-list additionally prints one
 #                                             stdout line per stale role:
-#                                             "stale role=<role> label=<label>"
+#                                             "stale role=<role> label=<label>
+#                                             sha=<marker sha>"; a role stale
+#                                             through a marker fault has no sha=
+#                                             (match the line by its prefix).
 #   record-attempt <issue-n> <stage>          Record one attempt for the given blocking
 #     [--pr <pr-n> | --idempotency-key <token>]
 #                                             stage on the issue. Reads prior state,
@@ -2591,7 +2594,9 @@ sys.exit(0)
 #             `git rev-parse --show-toplevel`; it is local-repo work, not
 #             GitHub-API work, so it stays here rather than per-adapter).
 #           STALE_LIST     -- "true" to additionally print one greppable
-#             "stale role=<role> label=<label>" stdout line per stale entry.
+#             "stale role=<role> label=<label> sha=<marker sha>" stdout line
+#             per stale entry (#590: no sha= when the marker gave no SHA that
+#             exists in this repository).
 #   stdout: "check-approval-sha: all approval labels are current" (plus, when
 #           STALE_LIST=true and there ARE stale entries, the stale-role lines
 #           instead) on success paths; STALE diagnostics go to stderr.
@@ -2779,7 +2784,7 @@ for entry in entries:
     if reason is not None:
         # Marker extraction already determined this label/role is stale
         # (no marker, unparseable marker, or an invalid-length SHA).
-        stale.append((label, role, reason))
+        stale.append((label, role, reason, None))
         continue
 
     if found_sha == head_sha:
@@ -2800,7 +2805,7 @@ for entry in entries:
             stale.append((label, role,
                 f'marker SHA {found_sha} does not exist in this repository -- '
                 f'the {role} stage posted an invalid SHA; it must re-run and '
-                f're-post its marker using a SHA read from git, not reconstructed'))
+                f're-post its marker using a SHA read from git, not reconstructed', None))
             continue
         result = subprocess.run(
             ['git', 'diff', '--name-only', '-z', '--no-renames', f'{found_sha}..{head_sha}'],
@@ -2813,7 +2818,7 @@ for entry in entries:
     except Exception as exc:
         # git diff failure -> treat delta as non-waivable (fail-closed)
         print(f'pipeline-vcs: check-approval-sha: git diff failed: {exc}', file=sys.stderr)
-        stale.append((label, role, f'git diff failed: {exc}'))
+        stale.append((label, role, f'git diff failed: {exc}', found_sha))
         continue
 
     # Intersect with the PR's own file set to exclude base-branch-only changes.
@@ -2831,15 +2836,17 @@ for entry in entries:
 
     if blocked:
         stale.append((label, role,
-            f'non-waivable files changed since {found_sha}: ' + ', '.join(blocked[:5])))
+            f'non-waivable files changed since {found_sha}: ' + ', '.join(blocked[:5]), found_sha))
     # else every changed file is waivable -- approval stands
 
+# Each stale entry is (label, role, reason, sha): sha is the marker SHA the
+# approval was earned at, or None for a marker fault (no usable SHA to diff from).
 if stale:
-    for label, role, reason in stale:
+    for label, role, reason, _sha in stale:
         print(f'pipeline-vcs: check-approval-sha: STALE {label} ({role}): {reason}', file=sys.stderr)
     if os.environ.get('STALE_LIST', '') == 'true':
-        for label, role, reason in stale:
-            print(f'stale role={role} label={label}')
+        for label, role, _reason, sha in stale:
+            print(f'stale role={role} label={label}' + (f' sha={sha}' if sha else ''))
     sys.exit(1)
 
 print('check-approval-sha: all approval labels are current')

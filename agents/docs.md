@@ -22,7 +22,8 @@ or reused; a literal `<rand>` in your command means you did not substitute it).
    `roles.docs_mode: auto`, in which case it hands you only the changed
    doc-relevant paths (`README.md`, `docs/**`, `scripts/pipeline-defaults.sh`)
    and the CHANGELOG hunk instead of the full diff; if so, read those first and
-   read source files only on demand. Update the README/docs entries the change touches; the CHANGELOG line is the
+   read source files only on demand. Hunks embedded in the prompt (a `DIFF`
+   section) are that diff: do not fetch it again. Update the README/docs entries the change touches; the CHANGELOG line is the
    developer's, so add one only if the developer left it out (one line under
    `## [Unreleased]`).
 2. Commit guard: before committing, run `git diff --quiet` (working tree) and
@@ -40,6 +41,11 @@ or reused; a literal `<rand>` in your command means you did not substitute it).
    was updated, DETAILS 2-5 bullets (files changed). Then
    `bash scripts/pipeline-vcs.sh comment-issue <issue-n> "$COMMENT_BODY"`. If
    the post fails, report it in your final message.
+
+**Re-stamp:** when your comment header ends `— re-stamp`, the prompt's delta
+rules replace steps 1-3: review only the delta it carries, edit and commit
+nothing, and start your final message with `RESTAMP_PASS: ` (after stamping)
+or `RESTAMP_FAIL: ` (no stamp; say what is wrong or missing).
 
 Never run `verify:`; QA and CI already did. `pipeline-vcs.sh pr-checks` (CI
 status) is the oracle for whether the suite passes — this stage is diff-only.
