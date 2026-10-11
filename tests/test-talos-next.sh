@@ -235,7 +235,6 @@ cfg '{"max_parallel": 1}' '{"validator": true, "planner": true, "pm": true, "dev
 issue 21 "pipeline:ready" /dev/null
 printf -- '- [ ] a\n- [ ] b\n- [ ] c\n- [ ] d\n' > "$STUB_DIR/epic.body"
 issue 22 "pipeline:confirmed,epic" "$STUB_DIR/epic.body"
-issue 23 "pipeline:confirmed,epic-decomposed" /dev/null
 issue 24 "pipeline:dev" /dev/null
 issue 25 "pipeline:epic-decomposed" /dev/null
 open_state '[]' 21
@@ -256,13 +255,13 @@ cfg '{"max_parallel": 1}' '{"validator": true, "planner": true, "pm": true, "dev
 issue 23 "pipeline:confirmed" /dev/null
 open_state '[]' 23
 nxi 23
-assert_eq "action=dispatch stage=developer issue=23" "$OUT" "AC3: pipeline:epic-decomposed routes to developer (one stage only)"
+assert_eq "action=dispatch stage=developer issue=23" "$OUT" "AC3: pipeline:confirmed with a spec present routes to developer (one stage only)"
 LEASE_RESET
 nxi 24
 assert_eq "action=dispatch stage=developer issue=24" "$OUT" "AC3: pipeline:dev routes to developer"
 LEASE_RESET
 nxi 25
-assert_eq "action=dispatch stage=developer issue=25" "$OUT" "AC3: a bare pipeline:epic-decomposed epic routes to developer"
+assert_eq "action=wait reason=none" "$OUT" "#524 AC1: a bare pipeline:epic-decomposed parent is never routed: wait reason=none"
 # Never two stages in one action: the line holds exactly one stage= pair.
 nxi 22
 assert_eq "1" "$(printf '%s\n' "$OUT" | grep -c 'stage=')" "AC3: exactly one stage per action, never two"
@@ -513,6 +512,59 @@ printf 'stage=qa count=1 total=2\n' > "$STUB_DIR/check-attempt.71.json"
 LEASE_RESET
 nxi 71
 assert_eq "action=dispatch stage=developer issue=71" "$OUT" "#582: an issue labelled pipeline:dev beside its PR is still the developer's fix round"
+
+# ── #524: an pipeline:epic-decomposed parent is an index, never routed ─────────
+# AC2: the parent once every sub-issue closed (the sweep's label) still waits.
+reset_stubs
+cfg '{"max_parallel": 1}' '{"validator": true, "planner": true, "pm": true, "developer": true}'
+issue 25 "pipeline:epic-decomposed,pipeline:epic-children-done" /dev/null
+open_state '[]'
+LEASE_RESET
+nxi 25
+assert_eq "action=wait reason=none" "$OUT" "#524 AC2: an epic-decomposed parent with pipeline:epic-children-done answers wait reason=none"
+
+# AC3: the issue's acceptance scenario. A confirmed epic (4 open boxes, planner
+# on) and a decomposed parent, queue otherwise drained. The stubbed inflight
+# list names the parent so the untargeted walk has to route it.
+reset_stubs
+cfg '{"max_parallel": 1}' '{"validator": true, "planner": true, "pm": true, "developer": true}'
+printf -- '- [ ] a\n- [ ] b\n- [ ] c\n- [ ] d\n' > "$STUB_DIR/epic.body"
+issue 27 "pipeline:confirmed" "$STUB_DIR/epic.body"
+issue 26 "pipeline:epic-decomposed" /dev/null
+printf '{"prs": [], "pr_total": 0, "ignored": 0, "blocked": [], "queued": [], "held": [], "inflight": [26], "owners": [], "capped": []}' \
+  > "$STUB_DIR/collect.json"
+LEASE_RESET
+nxi 27
+assert_eq "action=dispatch stage=planner issue=27 ref=planner" "$OUT" "#524 AC3: the confirmed epic with 4 open boxes goes to the planner"
+LEASE_RESET
+nxi 26
+assert_eq "action=wait reason=none" "$OUT" "#524 AC3: the epic-decomposed parent answers wait reason=none"
+LEASE_RESET
+nx
+assert_eq "action=wait reason=none" "$OUT" "#524 AC3: the untargeted next over a drained queue answers wait reason=none for the parent"
+
+# AC4: the label no longer suppresses adoption: the parent's open pipeline PR
+# answers its own stage, the same answer an unlabelled issue gets (#582).
+reset_stubs
+cfg '{"max_parallel": 1}' '{"validator": true, "planner": true, "pm": true, "developer": true}'
+issue 26 "pipeline:epic-decomposed" /dev/null
+open_state '[{"n": 19, "issue": 26, "head": "c6b1", "owner": false, "stage": "docs"}]'
+printf 'stage=qa count=1 total=2\n' > "$STUB_DIR/check-attempt.26.json"
+LEASE_RESET
+nxi 26
+assert_eq "action=dispatch stage=docs pr=19 issue=26" "$OUT" "#524 AC4: an epic-decomposed parent with an open PR at docs answers that PR's stage"
+
+# AC7: one behaviour in scripts/: the routing names no epic-decomposed label,
+# and the contract keeps its never-developer line.
+if grep -Eq 'epic-decomposed|EPIC_DECOMPOSED' "$TALOS_ROOT/scripts/pipeline-next.py"; then
+  fail "#524 AC7: scripts/pipeline-next.py has no epic-decomposed reader" \
+    "$(grep -nE 'epic-decomposed|EPIC_DECOMPOSED' "$TALOS_ROOT/scripts/pipeline-next.py")"
+else
+  pass "#524 AC7: scripts/pipeline-next.py has no epic-decomposed reader"
+fi
+assert_contains "$(cat "$TALOS_ROOT/scripts/pipeline-contract.sh")" \
+  '"pipeline:epic-decomposed|c5def5|Epic split into sub-issues — never routed to developer"' \
+  "#524 AC7: the contract still says the parent is never routed to developer"
 
 # ── AC10: provider gaps fail closed ───────────────────────────────────────────
 reset_stubs
