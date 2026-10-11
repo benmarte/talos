@@ -158,7 +158,8 @@
 #                           checked out; this verb checks first. Refused (exit
 #                           1, nothing committed or pushed) unless the current
 #                           branch is the head branch of PR <pr> as the provider
-#                           reports it (`view-pr`; unreadable = refused) and is
+#                           reports it (`pipeline-vcs.sh pr-head-ref`: github,
+#                           gitlab, azure; unreadable = refused) and is
 #                           not main, master or the base branch; when the index
 #                           already has staged changes; when a <file> is a
 #                           directory, a symlink, ignored, outside the checkout
@@ -1192,13 +1193,7 @@ _wt_commit_docs_body() {
   case "$branch" in
     main|master|"$base") _wt_commit_docs_no "the checkout is on '$branch', a base branch" ;;
   esac
-  head_ref="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" view-pr "$pr" 2>/dev/null | python3 -I -c '
-import json, sys
-try:
-    print(json.load(sys.stdin).get("headRefName") or "")
-except Exception:
-    pass
-' 2>/dev/null)"
+  head_ref="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" pr-head-ref "$pr" 2>/dev/null)" || head_ref=""
   [ -n "$head_ref" ] || _wt_commit_docs_no "could not read the head branch of PR #$pr"
   [ "$branch" = "$head_ref" ] || _wt_commit_docs_no "the checkout is on '$branch', not the head branch of PR #$pr"
   git diff --cached --quiet 2>/dev/null || _wt_commit_docs_no "the index already has staged changes"
