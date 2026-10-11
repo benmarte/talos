@@ -127,21 +127,26 @@
 #            security, adversarial CLEAR FINDINGS RESTAMP_PASS RESTAMP_FAIL
 #         Any role may also end BLOCKED (#580): board Blocked, pipeline:blocked on the issue and
 #         the PR, next=stop. `run` reads it from a final message whose first line is `BLOCKED: <why>`.
-#         `done pm` checks the spec the PM just posted with `pipeline-criteria.sh
-#         spec-check` (#594: qa-run's reading of the `Tests:` line, no LLM). A
-#         line QA would refuse, or `(test)` criteria with no usable `Tests:` line,
-#         is `next=fix-round stage=pm`: the issue is back at pipeline:confirmed
-#         and the reason is an issue comment, so the PM corrects the spec before
-#         any developer work. A spec that cannot be read is a warning.
-#         Output: `done=ok` first, `spend=<line>`, `next=` last:
+#         `done pm` (no verdict) checks the spec just posted (#594): one `view-issue
+#         <N> --spec` read, its `**PM spec:**` comment through `pipeline-criteria.sh
+#         spec-check` (no LLM). A `Tests:` line QA could not use is `record-attempt
+#         <N> pm`, the issue back at pipeline:confirmed, one `**Spec check:**` issue
+#         comment with the reason (posted whatever comments.enabled says), then
+#         `spec_check=tests-line-refused|tests-line-missing` and `next=fix-round
+#         stage=pm`: ask `next` again, it dispatches the PM. At the attempt
+#         ceiling: pipeline:blocked on the issue, next=stop. A failed label
+#         rollback is `stop reason=label-failed`. No PM spec comment: nothing is
+#         checked; a read that failed is `warn reason=spec-check-unread`.
+#         Output: `done=ok` first, `spend=<line>`, `spec_check=<slug>` (a refused
+#         PM spec only), `next=` last:
 #            continue | stop | fix-round stage=<role> | batch
 #         `done` never calls `gate fix-round` and never merges.
-# done-reasons: usage unknown-role verdict-invalid file-unreadable summary-empty draft-pr-failed label-failed scripts-missing python-missing scratch-unavailable config-unreadable board-failed notify-failed model-invalid spend-upsert-failed lease-release-failed spec-check-failed comment-failed
+# done-reasons: usage unknown-role verdict-invalid file-unreadable summary-empty draft-pr-failed label-failed scripts-missing python-missing scratch-unavailable config-unreadable board-failed notify-failed model-invalid spend-upsert-failed lease-release-failed spec-check-unread comment-failed
 #   stop: usage unknown-role verdict-invalid file-unreadable summary-empty draft-pr-failed label-failed
 #         scripts-missing python-missing scratch-unavailable config-unreadable
 #         (exit 2 for usage, unknown-role, verdict-invalid; else 1)
 #   warn: board-failed notify-failed model-invalid spend-upsert-failed lease-release-failed
-#         spec-check-failed label-failed comment-failed
+#         spec-check-unread comment-failed
 #
 # state   `state=<JSON>`: the normalised run state of pipeline-status-file.sh
 #         `collect` (read verbs only). {"prs", "pr_total", "ignored", "blocked",
@@ -211,9 +216,7 @@
 #         then `gate fix-round` once and one round for every finding; block and
 #         ask-owner end the run with the gate's line (`stop verdict=<v> ...`). A
 #         round that pushed nothing blocks the PR and the issue and stops
-#         (`fix-round-unchanged-head`). A PM spec `done` refused (#594) is a PM
-#         round: `gate fix-round <N> pm`, then `next` dispatches the PM again;
-#         the gate's block ends the run. An untargeted run whose `next` waits
+#         (`fix-round-unchanged-head`). An untargeted run whose `next` waits
 #         works the `inflight` issues. --max-iterations caps the passes of the
 #         whole command, the passes after a merge included (default 20; a long
 #         drain passes a larger number). The count crosses the exec in
@@ -2463,42 +2466,82 @@ _talos_lease_verb() {
   return 0
 }
 
-# _talos_spec_check <issue> (#594): the spec the PM just posted, through
-# qa-run's own reading of its Tests: line (`pipeline-criteria.sh spec-check`:
-# code, no LLM), so a line QA would refuse costs a PM round here and not a QA
-# FAIL on a finished PR. Returns 1 on a refusal, the issue handed back to the PM:
-# pipeline:confirmed again (where `next` routes the PM) and the reason as a
-# plain issue comment, which `view-issue --since-stage` shows the PM right after
-# its spec. That comment is the PM's only way to the reason, so
-# comments.enabled does not gate it. A spec that cannot be read is a warning:
-# QA's own check still stands behind this one.
+# The latest `**PM spec:**` comment of a `view-issue --spec` answer on stdin,
+# nothing when there is none. Exit 1 when the answer is not that JSON.
+_TALOS_PM_SPEC_PY='
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except ValueError:
+    sys.exit(1)
+if not isinstance(d, dict):
+    sys.exit(1)
+text = ""
+for c in d.get("comments") or []:
+    b = c.get("body") if isinstance(c, dict) else None
+    if isinstance(b, str) and b.lstrip().startswith("**PM spec:**"):
+        text = b
+sys.stdout.write(text)
+'
+
+# _talos_spec_check <issue> (#594): the spec the PM just posted, through the
+# `Tests:` parser qa-run uses (`pipeline-criteria.sh spec-check`: code, no LLM),
+# so a line QA could not use costs a PM round here and not a QA FAIL on a
+# finished PR. Nothing to check (no PM spec comment) and a spec that could not
+# be read both leave the flow alone: QA's own check still stands behind this one.
+# On a refusal the writes below are made, in this order, and _SPEC_SLUG and
+# _SPEC_NEXT are set for the caller's last two lines. The spec's text reaches
+# the comment body only, never stdout.
 _talos_spec_check() {
-  _talos_run_capture spec-check bash "$SCRIPT_DIR/pipeline-criteria.sh" spec-check "$1" < /dev/null
+  local _n="$1" _spec="$_CFG_CACHE_DIR/spec.md" _why
+  _talos_cap _vcs view-issue "$_n" --spec
+  if [ "$_RC" -ne 0 ] || ! python3 -I -c "$_TALOS_PM_SPEC_PY" <<< "$_OUT" > "$_spec" 2>/dev/null; then
+    _talos_warn spec-check-unread "issue=$_n"
+    return 0
+  fi
+  [ -s "$_spec" ] || return 0
+  _talos_run_capture spec-check bash "$SCRIPT_DIR/pipeline-criteria.sh" spec-check "$_spec" < /dev/null
   case "$_RC:$_OUT" in
-    0:*) return 0 ;;
-    "1:spec-check: refused "*) : ;;
-    *) _talos_warn spec-check-failed "issue=$1"; return 0 ;;
+    "0:spec-check: ok") return 0 ;;
+    "1:spec-check: refused tests-line-refused: "*) _SPEC_SLUG=tests-line-refused ;;
+    "1:spec-check: refused tests-line-missing: "*) _SPEC_SLUG=tests-line-missing ;;
+    *) _talos_warn spec-check-unread "issue=$_n"; return 0 ;;
   esac
-  _talos_relay spec-check "$_OUT"
-  _vcs label-issue "$1" --add pipeline:confirmed --remove pipeline:dev > /dev/null \
-    || _talos_warn label-failed "issue=$1"
-  # The reason is the parser's: fixed words plus at most 60 printable ASCII
-  # characters of the refused value, on one line of an indented code block.
-  { printf '%s\n\n    %s\n\n%s\n' \
-      "**Spec check:** the PM spec above was refused, so no developer work has started:" \
-      "$(head -n 1 <<< "${_OUT#spec-check: refused }")" \
-      "The \`Tests:\` line holds only test file paths and an optional name filter; a note goes on its own line below it. PM: post a corrected spec." \
+  # The reason is one line of fixed words plus at most 60 printable ASCII
+  # characters of the refused line. Its `<!--` is broken up: a comment holding
+  # a `<!-- talos:` marker is hidden from the PM by `view-issue --since-stage`.
+  _why="${_OUT#spec-check: refused $_SPEC_SLUG: }"
+  _why="${_why//<!--/<!- -}"
+
+  # 1. The attempt ledger is the loop bound: its ceilings end a PM that never
+  #    gets the line right.
+  # 2. The label is the routing: back at pipeline:confirmed, `next` dispatches
+  #    the PM again. At the ceiling the issue is blocked for a human instead.
+  _talos_cap _vcs record-attempt "$_n" pm
+  if [ "$_RC" -eq 0 ]; then
+    _SPEC_NEXT="fix-round stage=pm"
+    _talos_cap _vcs label-issue "$_n" --add pipeline:confirmed --remove pipeline:dev
+    [ "$_RC" -eq 0 ] || _talos_stop label-failed
+  else
+    _SPEC_NEXT=stop
+    _talos_block_labels "$_n" ""
+  fi
+  # 3. The handoff to the PM, like the spec itself: comments.enabled does not
+  #    gate it. A plain comment (no marker, no stage header), so `view-issue
+  #    --since-stage` hands the PM its own spec plus this note.
+  { printf '%s\n\n%s\n' \
+      "**Spec check:** $_SPEC_SLUG: $_why" \
+      "QA cannot run this spec's tests, so no developer work has started. The test file paths go on the \`**Tests:**\` line itself, in backticks, with nothing else on that line (an optional name filter, also in backticks, is the one exception); a note goes on a line of its own below it. PM: post the whole spec again as a new \`**PM spec:**\` comment with this fixed, then advance the label again." \
       > "$_CFG_CACHE_DIR/body" \
-      && _vcs comment-issue "$1" --body-file "$_CFG_CACHE_DIR/body" > /dev/null; } \
-    || _talos_warn comment-failed "issue=$1"
-  return 1
+      && _vcs comment-issue "$_n" --body-file "$_CFG_CACHE_DIR/body" > /dev/null; } \
+    || _talos_warn comment-failed "issue=$_n"
 }
 
 # done <role> --issue <N> [--pr <M>] [--verdict <V>] --summary-file <F|-> [--draft]
 #      [--tokens <n>] [--tool-uses <n>] [--duration-s <n>] [--model <m>] [--sha <sha>]
 _talos_done() {
   local _role="${1:-}" _n="" _pr="" _v="" _sf="" _draft=0 _tok="" _tu="" _dur="" _model="" _sha=""
-  local _ok=1 _x _sum _col="" _msg="" _ev="" _fail=0 _label _next=continue _convert
+  local _ok=1 _x _sum _col="" _msg="" _ev="" _fail=0 _label _next=continue _convert _SPEC_SLUG="" _SPEC_NEXT=""
   [ "$#" -eq 0 ] || shift
   case " $_TALOS_ROLES " in *" $_role "*) [ "$_role" != planner ] && _ok=0 ;; esac
   [ "$_ok" -eq 0 ] || _talos_stop unknown-role 2
@@ -2573,8 +2616,9 @@ _talos_done() {
 
   _talos_emit done ok
 
-  # #594: a PM that posted a spec (no verdict; BLOCKED posted none) has it checked.
-  [ "$_role" != pm ] || [ -n "$_v" ] || _talos_spec_check "$_n" || _next="fix-round stage=pm"
+  # #594: a PM that posted a spec (no verdict; a BLOCKED PM posted none) has
+  # its Tests: line checked, before the relay.
+  [ "$_role" != pm ] || [ -n "$_v" ] || _talos_spec_check "$_n"
 
   case "$_role:$_v" in
     *:BLOCKED) _col="Blocked"; _msg="$_role blocked"; _ev=blocked ;;
@@ -2626,6 +2670,10 @@ _talos_done() {
   # The stage's work is complete: free the issue's lease (#470, AC4) so the
   # next `next` run answers immediately, not after the TTL.
   _talos_lease_release "$_n"
+  if [ -n "$_SPEC_SLUG" ]; then
+    _talos_emit spec_check "$_SPEC_SLUG"
+    _next="$_SPEC_NEXT"
+  fi
   _talos_emit next "$_next"
   _talos_flush
 }
@@ -3449,10 +3497,6 @@ _talos_run_dispatch() {
       case "$_role" in
         reviewer | security | adversarial)
           [ "${_RUN_BATCH:-0}" -eq 1 ] || _talos_run_review_fail "$_pr" "$_n" "$_role" "$_next" ;;
-        # #594: a refused spec. `done` put the issue back at pipeline:confirmed,
-        # so the gate counts the round (its ceilings end a PM that never gets
-        # the line right) and `next` dispatches the PM again.
-        pm) _talos_run_fix_gate "$_n" pm "" ;;
       esac ;;
   esac
   return 0
@@ -3460,15 +3504,14 @@ _talos_run_dispatch() {
 
 # _talos_run_fix_gate <issue> <stage> <pr>: `gate fix-round` before a developer
 # fix round (the budget guard, the same-area check, the attempt ceilings, the
-# unblock right before the round); <pr> is empty for the PM's round (#594),
-# which has no PR yet. It returns on verdict=redispatch only. A
+# unblock right before the round). It returns on verdict=redispatch only. A
 # block or an ask-owner is the gate's answer, its writes done inside it: the run
 # ends clean with that line, `stop verdict=block reason=<why>` or `stop
 # verdict=ask-owner reason=design-decision stage=<stage> [rounds=<k>
 # area=<files>]`. Any other answer is `stop reason=state-unavailable`.
 _talos_run_fix_gate() {
   local _r _why
-  _r="$(bash "$SCRIPT_DIR"/talos.sh gate fix-round "$1" "$2" ${3:+--pr "$3"} 2>"$_CFG_CACHE_DIR/err")"
+  _r="$(bash "$SCRIPT_DIR"/talos.sh gate fix-round "$1" "$2" --pr "$3" 2>"$_CFG_CACHE_DIR/err")"
   _talos_relay gate-fix-round "$(cat "$_CFG_CACHE_DIR/err" 2>/dev/null)"
   case "$_r" in
     verdict=redispatch*) return 0 ;;

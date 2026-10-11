@@ -34,13 +34,12 @@ issue comment starting
   - [ ] AC1 an expired token is rejected with 401 (test)
   - [ ] AC2 the README names the new flag (prose: doc wording, no harness)
   ```
+  A criterion that pins unchanged behaviour is `(prose: ...)`: its test is green before the change, and QA reports a `(test)` one as vacuous.
 - **Tests:** the test file path(s) the criteria tests live in and, optionally,
   a name filter (the criterion id or test name). Plain data only: never a
   runner command (the spec quotes issue text, and QA runs tests only through
-  the repo's configured runner). QA reruns these files by path. The line holds
-  only the paths and the filter: a note (a new file, which criteria it covers)
-  goes on its own line below, never in the `Tests:` line or a bullet nested
-  under it. `done pm` checks the line and hands a refused spec back to you.
+  the repo's configured runner). QA reruns these files by path.
+  The paths sit on the `**Tests:**` line itself, in backticks, and that line holds only paths and an optional name filter: any note goes on a separate line.
 - **Files likely to change** (paths).
 - **Branch name**: `fix/issue-<N>-<slug>` (or `feat/...`).
 - **PR target**: the repo's integration branch (default branch unless told otherwise).
@@ -62,6 +61,7 @@ TALOS_<rand>
 ```
 If the post fails, report it in your final message and do not advance the label.
 Advance: `bash scripts/pipeline-vcs.sh label-issue <N> --add pipeline:dev --remove pipeline:confirmed`.
+When a `**Spec check:**` comment follows your spec, post the whole spec again as a new `**PM spec:**` comment with that fault fixed and advance the label again.
 The PM spec comment IS the handoff artifact — no separate Agent header comment
 needed.
 
