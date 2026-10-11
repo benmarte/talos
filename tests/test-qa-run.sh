@@ -58,6 +58,13 @@ new_repo() {
 printf '%s\n' "$*" >> "${QA_VCS_LOG:-/dev/null}"
 case "$1" in
   view-issue)
+    # QA_VIEW (#610): fail = the read fails, garbage = not that JSON, empty =
+    # an issue with no body and no spec comment.
+    case "${QA_VIEW:-spec}" in
+      fail) echo "stub pipeline-vcs: view-issue failed" >&2; exit 1 ;;
+      garbage) echo "not json at all"; exit 0 ;;
+      empty) echo '{"title": "t", "body": "", "labels": [], "comments": []}'; exit 0 ;;
+    esac
     python3 -I -c 'import json, sys
 print(json.dumps({"title": "t", "body": "issue body", "labels": [],
                   "comments": [{"body": open(sys.argv[1]).read()}]}))' "$QA_SPEC_FILE" ;;
@@ -83,7 +90,7 @@ TALOS_a3p8v1c6ne52
   export QA_SPEC_FILE="$BASE_DIR/.git/qa-spec.md"
   export RAN_MARKER="$BASE_DIR/.git/qa-ran.marker"
   export QA_VCS_LOG="$BASE_DIR/.git/qa-vcs.log"
-  unset QA_MERGEABLE
+  unset QA_MERGEABLE QA_VIEW
   rm -f "$RAN_MARKER" "$BASE_DIR/pwned" "$QA_VCS_LOG"
 }
 
@@ -163,15 +170,16 @@ assert_eq "1" "$RC" "one file missing: exit 1"
 assert_contains "$OUT" "tests/test-nope.sh" "one file missing: names the missing file"
 assert_contains "$OUT" "AC1 red@$RED8 green@head" "one file missing: the existing file's criterion is still proven"
 
-# ── 6. injection shapes: nothing from the spec runs, the verdict fails ───────
+# ── 6. injection shapes: nothing from the spec runs, the spec is unusable ────
 # Each line is one Tests: value; the test file would create $RAN_MARKER if run.
+# A refused value is a fault of the spec, not of the PR (#610): BLOCKED, exit 4.
 injection_case() {  # $1=label $2=the Tests: line
   new_repo
   spec "$2"
   qa_run
-  assert_eq "1" "$RC" "refused ($1): exit 1"
-  assert_contains "$OUT" "refused" "refused ($1): the output says the Tests: value was refused"
-  assert_contains "$OUT" "qa-run: verdict FAIL" "refused ($1): a FAIL verdict line"
+  assert_eq "4" "$RC" "AC6 refused ($1): exit 4"
+  assert_contains "$OUT" "qa-run: verdict BLOCKED spec: Tests: line refused (" "AC6 refused ($1): a BLOCKED line that names the refused Tests: value"
+  assert_not_contains "$OUT" "qa-run: verdict FAIL" "AC6 refused ($1): no FAIL verdict line"
   assert_file_absent "$RAN_MARKER" "refused ($1): no test ran"
   assert_file_absent "$BASE_DIR/pwned" "refused ($1): nothing from the spec executed"
   assert_not_contains "$OUT" "red@" "refused ($1): no criterion line claims a result"
@@ -202,7 +210,7 @@ injection_case "unbalanced tick"   '**Tests:** `tests/test-greet.sh'
 new_repo
 spec "**Tests:** \`tests/$(printf 'a%.0s' $(seq 1 300)).sh;\`"
 qa_run
-assert_eq "1" "$RC" "long bad value: exit 1"
+assert_eq "4" "$RC" "AC6 long bad value: exit 4"
 assert_eq "0" "$(printf '%s\n' "$OUT" | awk '{ if (length($0) > 400) n++ } END { print n+0 }')" \
   "long bad value: no output line is longer than 400 bytes"
 
@@ -210,9 +218,10 @@ assert_eq "0" "$(printf '%s\n' "$OUT" | awk '{ if (length($0) > 400) n++ } END {
 new_repo
 spec ''
 qa_run
-assert_eq "1" "$RC" "no Tests: line with a (test) criterion: exit 1"
-assert_contains "$OUT" "no Tests: line" "no Tests: line: says so"
-assert_contains "$OUT" "qa-run: verdict FAIL" "no Tests: line: a FAIL verdict line"
+assert_eq "4" "$RC" "AC6 no Tests: line with a (test) criterion: exit 4"
+assert_eq "qa-run: verdict BLOCKED spec: 1 test criteria and no Tests: line" "$(printf '%s\n' "$OUT" | tail -n 1)" \
+  "AC6 no Tests: line: the run ends with the BLOCKED line and the count of test criteria"
+assert_not_contains "$OUT" "qa-run: verdict FAIL" "AC6 no Tests: line: no FAIL verdict line"
 assert_file_absent "$RAN_MARKER" "no Tests: line: nothing ran"
 
 # An all-prose spec needs no tests: hand-checked, verdict PASS, nothing ran.
@@ -284,5 +293,70 @@ bash scripts/pipeline-criteria.sh qa-run 7 >/dev/null 2>&1
 assert_eq "2" "$?" "qa-run: a missing PR exits 2"
 bash scripts/pipeline-criteria.sh qa-run 7 '9;id' >/dev/null 2>&1
 assert_eq "2" "$?" "qa-run: a PR id with shell syntax exits 2"
+
+# ── 13. a spec QA cannot use: BLOCKED, and spec-usable agrees (#610) ─────────
+# The four faults are the spec's, not the PR's: qa-run ends with one
+# `verdict BLOCKED spec: <why>` line (exit 4, no FAIL line, no test), and
+# `spec-usable <issue>` prints the same <why> from the spec read alone. A git
+# first on PATH that records its calls pins "no git command".
+SHIM="$(safe_mktemp_dir "${TMPDIR:-/tmp}/talos-qa-shim.XXXXXX")" || exit 1
+WTS+=("$SHIM")
+cat > "$SHIM/git" <<TALOS_k4w9s2m7qd18
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$SHIM/git.log"
+exec "$(command -v git)" "\$@"
+TALOS_k4w9s2m7qd18
+chmod +x "$SHIM/git"
+
+usable() {  # sets UOUT and URC
+  rm -f "$SHIM/git.log" "$QA_VCS_LOG"
+  UOUT="$(PATH="$SHIM:$PATH" bash scripts/pipeline-criteria.sh spec-usable 7 2>&1)"; URC=$?
+}
+# spec_fault ID LABEL WHY -- the fixture is in place: qa-run ends BLOCKED with
+# WHY and ran nothing, and spec-usable prints the same WHY.
+spec_fault() {
+  local id="$1" label="$2" why="$3"
+  qa_run
+  assert_eq "4" "$RC" "$id $label: qa-run exits 4"
+  assert_eq "qa-run: verdict BLOCKED spec: $why" "$(printf '%s\n' "$OUT" | tail -n 1)" "$id $label: qa-run ends with the BLOCKED line"
+  assert_not_contains "$OUT" "qa-run: verdict FAIL" "$id $label: no FAIL verdict line"
+  assert_file_absent "$RAN_MARKER" "$id $label: no test ran"
+  usable
+  assert_eq "4:spec-usable: BLOCKED spec: $why" "$URC:$UOUT" "AC7 $label: spec-usable prints the reason qa-run prints, exit 4"
+  assert_file_absent "$SHIM/git.log" "AC7 $label: spec-usable runs no git command"
+  assert_file_absent "$RAN_MARKER" "AC7 $label: spec-usable runs no test"
+}
+
+new_repo
+printf '**PM spec:** greeting\n\n**Goal:** greet, with no checklist.\n\n**Tests:** `tests/test-greet.sh`\n' > "$QA_SPEC_FILE"
+spec_fault AC4 "no checklist" "no criteria checklist"
+
+for view in fail garbage empty; do
+  new_repo
+  spec '**Tests:** `tests/test-greet.sh`'
+  export QA_VIEW="$view"
+  spec_fault AC5 "spec read: $view" "unreadable for issue #7"
+done
+unset QA_VIEW
+
+new_repo
+spec '**Tests:** `/etc/passwd`'
+spec_fault AC6 "a refused Tests: value" "Tests: line refused (test path is absolute or starts with -: /etc/passwd)"
+new_repo
+spec ''
+spec_fault AC6 "test criteria, no Tests: line" "1 test criteria and no Tests: line"
+
+# A usable spec: ok, from the spec read alone.
+new_repo
+spec '**Tests:** `tests/test-greet.sh`'
+usable
+assert_eq "0:spec-usable: ok" "$URC:$UOUT" "AC7 spec-usable: a usable spec is ok, exit 0"
+assert_eq "view-issue 7 --spec" "$(cat "$QA_VCS_LOG" 2>/dev/null)" "AC7 spec-usable: the spec read is its one VCS call (no checkout)"
+assert_file_absent "$SHIM/git.log" "AC7 spec-usable: a usable spec runs no git command"
+assert_file_absent "$RAN_MARKER" "AC7 spec-usable: a usable spec runs no test"
+new_repo
+printf '**PM spec:** x\n- [ ] AC1 the README is clear (prose: wording)\n' > "$QA_SPEC_FILE"
+usable
+assert_eq "0:spec-usable: ok" "$URC:$UOUT" "AC7 spec-usable: an all-prose spec with no Tests: line is ok, exit 0"
 
 finish

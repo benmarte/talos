@@ -710,6 +710,9 @@ fix_fixture() {
   draft_collect ready
   draft_ready
   printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' > "$STUB_DIR/pr-head.12"
+  # A spec QA can use (#610): the fix round answers a finding on the PR.
+  printf '{"number": 9, "title": "t", "labels": [{"name": "pipeline:ready"}], "body": "- [ ] AC1 the suite is green (prose: fixture)", "state": "open"}' \
+    > "$STUB_DIR/view-issue.9"
   printf 'https://github.com/acme/widget/pull/12\nfixed the failing test\n' > "$STUB_DIR/message.developer"
   printf 'FAIL: the suite broke\n' > "$STUB_DIR/message.qa.1"
   # The developer's real work, as the stub plays it: the fix round's prompt is
@@ -771,6 +774,28 @@ assert_contains "$OUT" "stop verdict=block reason=max-fix-attempts" "gate block:
 assert_contains "$(cat "$ERR")" "max_fix_attempts" "gate block: the gate's stderr is relayed to the run's stderr"
 assert_eq "0" "$(journal | grep -c '^agent developer$')" "gate block: no developer fix round past the ceiling"
 QA_CEILING_OUT="$OUT"
+
+# (i4) a spec QA cannot use is not a finding on the PR (#610): QA answers FAIL
+# on an issue whose spec has no criteria checklist. The driver asks
+# `spec-usable` itself, before the head read and the gate: blocked on the PR
+# and the issue, one stop line, exit 0, no attempt recorded, no fix round.
+fix_fixture
+printf '{"number": 9, "title": "t", "labels": [{"name": "pipeline:ready"}], "body": "a body with no checklist", "state": "open"}' \
+  > "$STUB_DIR/view-issue.9"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=12000 rn --max-iterations 9
+assert_eq "0" "$RC" "AC8 spec fault: the run exits 0"
+assert_eq "stop reason=spec-unusable issue=9 pr=12" "$(printf '%s\n' "$OUT" | grep '^stop ')" \
+  "AC8 spec fault: exactly one stop line, naming the reason, the issue and the PR"
+assert_contains "$(journal)" "vcs label-pr 12 --add pipeline:blocked" "AC8 spec fault: pipeline:blocked on the PR"
+assert_contains "$(journal)" "vcs label-issue 9 --add pipeline:blocked" "AC8 spec fault: pipeline:blocked on the issue"
+assert_eq "0" "$(journal | grep -c 'record-attempt')" "AC8 spec fault: no gate fix-round call (no attempt recorded)"
+assert_eq "0" "$(journal | grep -c 'label-pr 12 --remove pipeline:blocked')" "AC8 spec fault: the gate's unblock never ran"
+assert_eq "0" "$(journal | grep -c '^agent developer$')" "AC8 spec fault: no developer dispatch"
+assert_contains "$(cat "$ERR")" "spec-usable: BLOCKED spec: no criteria checklist" "AC8 spec fault: the verb's line is relayed"
+# The one stage of that run was QA: its prompt names the checkout the run was
+# started in, with no placeholder left to fill.
+assert_eq "Worktree path: $(git -C "$SANDBOX" rev-parse --show-toplevel)" "$(grep '^Worktree path:' "$STUB_DIR/agent.stdin")" \
+  "AC12 the QA prompt of a run names the absolute top level of the run's checkout"
 
 # ── (l) a review finding is a developer fix round (#609) ─────────────────────
 # After a reviewer CHANGES or a security/adversarial FINDINGS the driver acts on

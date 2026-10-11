@@ -71,7 +71,7 @@ budget() {  # role ceiling
   else fail "$1: profile + prompt template is $size bytes (budget $2)" "over by $((size - $2))"; fi
 }
 budget developer 11800
-budget qa 8200
+budget qa 8350  # #610: the exit-4 rule (an unusable spec is BLOCKED, not a FAIL)
 budget reviewer 4700
 budget security 4300
 budget pm 4300
