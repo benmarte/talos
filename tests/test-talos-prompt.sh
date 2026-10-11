@@ -90,7 +90,8 @@ reviewer-draft|default|reviewer --issue 468 --pr 77 --draft
 security|default|security --issue 468 --pr 77 --prior-file F_PRIOR
 adversarial|default|adversarial --issue 468 --pr 77
 docs-filtered|default|docs --issue 468 --pr 77 --docs-paths-file F_DOCS
-restamp-reviewer|default|reviewer --issue 468 --pr 77 --shape restamp --restamp-file F_RS'
+restamp-reviewer|default|reviewer --issue 468 --pr 77 --shape restamp --restamp-file F_RS
+restamp-docs|default|docs --issue 468 --pr 77 --shape restamp --restamp-file F_DELTA'
 
 # case_output NAME CFG ARGS...: the rendered prompt of one golden case on stdout.
 case_output() {
@@ -102,6 +103,7 @@ case_output() {
     case "$a" in
       F_TITLE) args+=("$F_TITLE") ;; F_BODY) args+=("$F_BODY") ;; F_PRIOR) args+=("$F_PRIOR") ;;
       F_CI) args+=("$F_CI") ;; F_DOCS) args+=("$F_DOCS") ;; F_RS) args+=("$F_RS") ;;
+      F_DELTA) args+=("$F_DELTA") ;;
       *) args+=("$a") ;;
     esac
   done

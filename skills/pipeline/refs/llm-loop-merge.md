@@ -6,7 +6,7 @@ Read when the LLM loop reaches Step 3e or Step 4 (`ORCHESTRATOR=llm`).
 
 Only after `qa:pass` (with `PR_DRAFT` this stage runs BEFORE QA on the draft, `ref=draft-order`).
 
-**Phase 1 — Docs first:** `bash scripts/talos.sh docs-gate <PR> --issue <N>` decides it in code. `docs=skip`: the verb stamped `docs:done` and ran `done docs`; dispatch nothing. `docs=dispatch`: spawn docs with `talos.sh prompt docs --issue <N> --pr <PR> [--docs-paths-file F]` (`paths-file=F` → `--docs-paths-file F`, else the full diff), then `done docs --issue <N> --pr <PR> --summary-file F`.
+**Phase 1 — Docs first:** `bash scripts/talos.sh docs-gate <PR> --issue <N>` decides it in code. `docs=skip`: the verb stamped `docs:done` and ran `done docs`; dispatch nothing. `docs=dispatch`: spawn docs with `talos.sh prompt docs --issue <N> --pr <PR> [--docs-paths-file F]` (`paths-file=F` → `--docs-paths-file F`, else the full diff), then `done docs --issue <N> --pr <PR> --summary-file F`. After a fix round (a stale `docs:done`) it answers for the delta since the approved SHA: `docs=skip reason=no-docs-delta` is a stamp like any skip; `docs=dispatch reason=docs-delta shape=restamp restamp-file=F` is the docs re-stamp: render `talos.sh prompt docs --issue <N> --pr <PR> --shape restamp --restamp-file F`, spawn docs on the re-stamp model and effort of `refs/restamp.md`, delete `F`, then `done docs --issue <N> --pr <PR> --verdict RESTAMP_PASS|RESTAMP_FAIL --summary-file F`, the verdict being the word the agent's first line starts with. A docs `RESTAMP_FAIL` is `next=continue`, never a fix round: the verb dropped `docs:done`, so the next pass runs the full stage.
 
 **Sync guard (non-isolated stages):** before dispatching reviewer and security run `bash scripts/pipeline-vcs.sh assert-sync`; non-zero halts this issue with the error output (main can advance mid-run).
 
@@ -34,7 +34,7 @@ It runs every gate and never merges itself: no `pipeline:blocked`; every enabled
 
 **Stale approvals.** Approvals are bound to the PR head SHA. `merge.approval_waiver_paths` (default `*.md`, `docs/**`, `CHANGELOG.md`, `*.example`; never code, tests or agent instructions) keep approvals standing. Dispatch in `stale=` order (QA first):
 - `qa` / `reviewer` / `security` / `adversarial` stale: it already has a prior approval on this PR, so dispatch its **re-stamp** variant (`refs/restamp.md`), never the full stage. A `RESTAMP_FAIL` is not merged against: the next pass re-dispatches the full stage.
-- `docs` stale: a docs-relevant delta since approval (README/docs/non-test `*.md`) → re-run docs normally; else dispatch nothing and run `bash scripts/pipeline-vcs.sh post-approval <PR_NUMBER> docs --body-file <synthetic-summary>` ("no docs-relevant changes since prior docs approval"). Approvals are stamped with `post-approval` at the head SHA.
+- `docs` stale: run Phase 1 of Step 3e; `docs-gate` decides it (`gate merge` stripped `docs:done`, so it is the first-pass decision). Approvals are stamped with `post-approval` at the head SHA.
 
 **After `merge-pr`:** `bash scripts/talos.sh post-merge <PR_NUMBER> <N>` — one call: the sibling sync, the changelog assemble, the issue-closed comment, `close-issue`, board Done, the checkout back on the base (`checkout=`, hard rule 8), the worktree removal, the notices, the `merged` and `issue-closed` events and the spend block; each non-fatal (`warn reason=<r> issue=<N>` → run summary).
 - `recorded=yes`: done earlier (idempotent). `spend=<line>`: print it; `warn reason=spend-upsert-failed`: ONE Step 5 line, never retried.
