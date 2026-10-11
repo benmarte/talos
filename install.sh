@@ -35,6 +35,13 @@
 #   A single update (git pull + install.sh --global) reaches every repo and harness.
 #   Re-runs overwrite existing ~/.talos/ and ~/.claude/ files by default.
 #   Pass --no-overwrite to skip.
+#   Stale files (#579): each run writes ~/.talos/.install-manifest, one path per
+#   line relative to ~/.talos, for every file it ships under scripts/,
+#   templates/ and skills/<command>/refs/. The next run removes each previous
+#   entry the source no longer ships (a regular file only, never a symlink; an
+#   absolute entry, one with `..` or one outside those trees is ignored). A
+#   file the installer never listed -- a user's own -- is never deleted, and a
+#   run with no previous manifest removes nothing.
 #
 # --harness <list>  (both modes; the installer glue, NOT agents.runner, which
 #   picks the CLI that runs stages)
@@ -247,6 +254,45 @@ claude_decide
 AGENTS_POINTER_HARNESSES="codex pi cursor opencode"
 AGENTS_DIR="${TALOS_AGENTS_HOME:-$HOME/.agents}"
 AGENTS_POINTER_MARKER='<!-- talos:pointer -->'
+
+# ── Install manifest (#579) ──────────────────────────────────────────────────
+# _SHIPPED holds the paths (relative to $TALOS_HOME_DIR) this --global run ships
+# under the managed trees; prune_and_write_manifest compares it with the previous
+# run's manifest, removes what is no longer shipped, then records it.
+_SHIPPED=()
+ship() { _SHIPPED+=("$1"); }
+
+# _manifest_entry_ok <rel> -- a previous-manifest entry may be acted on only when
+# it is relative, has no `..` component and sits in a managed tree.
+_manifest_entry_ok() {
+  case "$1" in
+    /*|..|../*|*/..|*/../*) return 1 ;;
+    scripts/?*|templates/?*|skills/*/refs/?*) return 0 ;;
+  esac
+  return 1
+}
+
+prune_and_write_manifest() {
+  local manifest="$TALOS_HOME_DIR/.install-manifest" rel shipped_nl tmp
+  shipped_nl="$(printf '%s\n' "${_SHIPPED[@]}")"
+  if [ -f "$manifest" ] && [ ! -L "$manifest" ]; then
+    while IFS= read -r rel || [ -n "$rel" ]; do
+      [ -n "$rel" ] || continue
+      _manifest_entry_ok "$rel" || continue
+      grep -Fxq -- "$rel" <<<"$shipped_nl" && continue
+      if [ -f "$TALOS_HOME_DIR/$rel" ] && [ ! -L "$TALOS_HOME_DIR/$rel" ]; then
+        rm -f -- "${TALOS_HOME_DIR:?}/$rel"
+        echo "  removed (no longer shipped): $(printable "$rel")"
+      fi
+    done < "$manifest"
+  fi
+  tmp="$(mktemp "$TALOS_HOME_DIR/.install-manifest.XXXXXX")" || {
+    echo "  notice: could not write $(printable "$manifest"); stale files will not be pruned on the next run" >&2
+    return 0
+  }
+  printf '%s\n' "$shipped_nl" > "$tmp"
+  mv -f "$tmp" "$manifest"
+}
 
 # ── install_file helper ───────────────────────────────────────────────────────
 install_file() {
@@ -614,12 +660,14 @@ if [ "$GLOBAL" = "true" ]; then
     script="$(basename "$script_src")"
     install_file "$script_src" "$TALOS_HOME_DIR/scripts/$script"
     chmod +x "$TALOS_HOME_DIR/scripts/$script"
+    ship "scripts/$script"
   done
   # Python helpers imported by the scripts (pipeline-spend-format.py, #393):
   # same install_file / --force rules, no chmod -- they are imported, not run.
   for script_src in "$SRC"/scripts/*.py; do
     [ -f "$script_src" ] || continue
     install_file "$script_src" "$TALOS_HOME_DIR/scripts/$(basename "$script_src")"
+    ship "scripts/$(basename "$script_src")"
   done
 
   # Agents -> ~/.talos/agents/ (read by pipeline-agent.sh for pi/codex/gemini/
@@ -645,6 +693,7 @@ if [ "$GLOBAL" = "true" ]; then
     for tmpl in "$dir_path"*; do
       [ -f "$tmpl" ] || continue
       install_file "$tmpl" "$TALOS_HOME_DIR/templates/$dir/$(basename "$tmpl")"
+      ship "templates/$dir/$(basename "$tmpl")"
     done
     # One level deeper, globbed the same way so a nested template dir needs no
     # installer edit. #280 shipped notifications/<platform>/<event>.md here;
@@ -658,6 +707,7 @@ if [ "$GLOBAL" = "true" ]; then
       for tmpl in "$sub_path"*; do
         [ -f "$tmpl" ] || continue
         install_file "$tmpl" "$TALOS_HOME_DIR/templates/$dir/$sub/$(basename "$tmpl")"
+        ship "templates/$dir/$sub/$(basename "$tmpl")"
       done
     done
   done
@@ -682,6 +732,7 @@ if [ "$GLOBAL" = "true" ]; then
     for ref in "$SRC/skills/$cmd/refs/"*.md; do
       [ -f "$ref" ] || continue
       install_file "$ref" "$TALOS_HOME_DIR/skills/$cmd/refs/$(basename "$ref")"
+      ship "skills/$cmd/refs/$(basename "$ref")"
     done
   done
   # A command that left TALOS_COMMANDS keeps its old directory: say so, delete
@@ -693,6 +744,11 @@ if [ "$GLOBAL" = "true" ]; then
     case " ${TALOS_COMMANDS[*]} " in *" $stale "*) continue ;; esac
     echo "  notice: $(printable "${stale_dir%/}") is not a current Talos command (current: ${TALOS_COMMANDS[*]}); it is left in place, never deleted: remove it yourself if it is stale."
   done
+
+  # Remove what the previous run shipped and this one does not; record this run.
+  echo ""
+  echo "Install manifest ($(printable "$TALOS_HOME_DIR")/.install-manifest):"
+  prune_and_write_manifest
 
   install_agents_pointers
 
