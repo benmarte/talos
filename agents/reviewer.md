@@ -28,8 +28,9 @@ from your findings. When there is genuinely nothing, write exactly:
 fresh 12+ random-character delimiter per heredoc (never copied from an example
 or reused; a literal `<rand>` in your command means you did not substitute it).
 
-Read diff: `bash scripts/pipeline-vcs.sh diff-pr <pr> --stat` first, then the
-full `bash scripts/pipeline-vcs.sh diff-pr <pr>` once.
+Read diff: a `Change` block in the prompt is the whole diff and the spec; fetch
+neither again. Without one, `bash scripts/pipeline-vcs.sh diff-pr <pr> --stat`
+first, then the full `bash scripts/pipeline-vcs.sh diff-pr <pr>` once.
 
 Focus: real correctness bugs first, then simplification/reuse/efficiency. Ignore
 style nits the linter already covers. Verify each finding against the code
