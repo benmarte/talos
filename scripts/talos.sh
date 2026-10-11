@@ -31,10 +31,14 @@
 #
 # env     Step 0 in one call: every resolved config value, the isolation gate,
 #         PR_DRAFT (pipeline-draft-check.sh resolve), READY_GATE (its ready-gate:
-#         qa-local or off, #535), SCRIPTS_DIR and AGENT_SOURCE,
+#         qa-local or off, #535), ORCHESTRATOR (the effective
+#         execution.orchestrator, #602: code, or llm when the key says so or the
+#         run has vcs.provider file or roles.planner true, which the driver
+#         cannot run; one stderr line says why), SCRIPTS_DIR and AGENT_SOURCE,
 #         and per role agent.<role>.<field> (runner, runner_cmd, model, effort,
 #         fallback, effort_notice; only runner is always printed) from
-#         `pipeline-agent.sh --resolve-roles`. Then the `ref=` lines, last.
+#         `pipeline-agent.sh --resolve-roles`. Then the `ref=` lines, last: none
+#         under ORCHESTRATOR=code, `ref=llm-loop` first under llm.
 # env-reasons: scripts-missing python-missing scratch-unavailable config-unreadable isolation-invalid usage unknown-verb draft-resolve-failed resolve-failed effort-check-failed value-truncated
 #   stop: scripts-missing python-missing scratch-unavailable config-unreadable
 #         isolation-invalid usage unknown-verb draft-resolve-failed
@@ -210,11 +214,23 @@
 #         reads it at the top of every pass, before `next`, deletes it and ends
 #         with `stop reason=stop-requested` (exit 0), so the stage that was running
 #         finishes first. A run started fresh deletes a leftover request.
-# run-reasons: usage unknown-role unknown-pr dispatch-failed ready-pr-failed qa-fail-unchanged-head fix-round-unchanged-head head-unresolved stop-requested checkout-return-failed
+#         The other ends: `stop reason=iterations-exhausted max=<n>` (the pass
+#         cap, exit 0), `stop reason=stage-blocked role=<role>` (a stage ended
+#         `BLOCKED:`, exit 0), `stop reason=provider-failed rc=<75|69>
+#         role=<role>` (failover exhausted, exit 1), `stop reason=merge-failed`
+#         (`merge-pr` failed, exit 1) and `stop reason=state-unavailable` (an
+#         answer of `next` or of a gate that is not one of its shapes, exit 1).
+#         stdout carries `merged=pr=<M>`, `warn` lines and the end line; a
+#         stage's final message never does (stderr has the `note` lines and the
+#         `dispatch-failed ... reason=<why>` line). The playbook's end-state
+#         table (skills/pipeline/SKILL.md) has one action for each end.
+# run-reasons: usage unknown-role unknown-pr dispatch-failed ready-pr-failed draft-unverified qa-fail-unchanged-head fix-round-unchanged-head head-unresolved stop-requested checkout-return-failed iterations-exhausted stage-blocked provider-failed merge-failed state-unavailable scripts-missing python-missing scratch-unavailable config-unreadable
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
-#         ready-pr-failed draft-unverified qa-fail-unchanged-head
-#         fix-round-unchanged-head head-unresolved stop-requested
-#         checkout-return-failed
+#         state-unavailable ready-pr-failed draft-unverified head-unresolved
+#         merge-failed provider-failed (exit 1; 2 for usage), and with exit 0
+#         stop-requested iterations-exhausted stage-blocked qa-fail-unchanged-head
+#         fix-round-unchanged-head checkout-return-failed; plus the stop reasons
+#         of `next`, passed through (exit 1)
 #   warn: qa-ci-red notify-failed board-failed spend-upsert-failed lease-release-failed
 #         model-invalid label-failed comment-failed budget-check-failed
 #         inflight-unreadable
@@ -394,10 +410,11 @@ _talos_help() {
   cat <<'HELP'
 usage: talos.sh <verb>
 verbs:
-  env                                print every Step 0 setting, PR_DRAFT and the
+  env                                print every Step 0 setting, PR_DRAFT,
+                                     ORCHESTRATOR (code|llm) and the
                                      per-role runner/model/effort as sanitised KEY=value lines,
-                                     then ref=<topic> for each playbook ref that
-                                     applies to the run
+                                     then, under ORCHESTRATOR=llm only, ref=<topic>
+                                     for each playbook ref that applies to the run
   gate fix-round <N> <stage> [--pr M]  the checks before a developer fix round:
                                      verdict=redispatch, verdict=block or
                                      verdict=ask-owner
@@ -457,8 +474,8 @@ verbs:
                                      claim=off reason=<disabled|assignee-none|
                                      identity-unresolved>
   run [--issue <N>] [--max-iterations <n>]
-                                     the deterministic orchestrator (local and
-                                     weak-model profiles): loops `next`, dispatches
+                                     the deterministic orchestrator (the default:
+                                     the playbook starts it once): loops `next`, dispatches
                                      the stage through pipeline-agent.sh with the
                                      rendered prompt on stdin, reads the verdict
                                      from the final-message convention and calls
@@ -639,6 +656,30 @@ EOF
   esac
   _talos_emit READY_GATE "$_val"
 
+  # ORCHESTRATOR (#602): the effective execution.orchestrator. `code` is the
+  # default: the playbook starts `talos.sh run` once and acts on its end line.
+  # `llm` is the per-stage loop, asked for by the key or forced by what the
+  # driver cannot run: the file provider (it has no PRs) and the planner (`done`
+  # takes no planner). Each case that is not the plain key says so in one stderr
+  # line; an unknown value reads as code.
+  _TALOS_ORCHESTRATOR=code
+  _val="$(cfg execution.orchestrator | tr '[:upper:]' '[:lower:]')"
+  case "$_val" in
+    llm) _TALOS_ORCHESTRATOR=llm ;;
+    '' | code) : ;;
+    *) echo "pipeline: execution.orchestrator: unknown value, reading it as code (use code or llm)" >&2 ;;
+  esac
+  if [ "$_TALOS_ORCHESTRATOR" = code ]; then
+    if _talos_cfg_is vcs.provider file; then
+      _TALOS_ORCHESTRATOR=llm
+      echo "pipeline: execution.orchestrator is llm for this run: the code driver cannot run vcs.provider file" >&2
+    elif _talos_cfg_is roles.planner true; then
+      _TALOS_ORCHESTRATOR=llm
+      echo "pipeline: execution.orchestrator is llm for this run: the code driver cannot run roles.planner" >&2
+    fi
+  fi
+  _talos_emit ORCHESTRATOR "$_TALOS_ORCHESTRATOR"
+
   _TALOS_HARNESS_REF=0
   _talos_resolve_roles
 
@@ -651,10 +692,14 @@ _talos_cfg_is() { [ "$(cfg "$1" | tr '[:upper:]' '[:lower:]')" = "$2" ]; }
 
 # _talos_env_refs (#547): one `ref=<topic>` line per playbook ref that applies
 # to this run, so the orchestrator reads a ref exactly when it is needed and the
-# core playbook stays small. The conditions are the default-off or non-default
-# settings; the default flow names none except draft-order (pr.draft is on).
+# core playbook stays small. The refs belong to the LLM loop (#602): under
+# ORCHESTRATOR=code the driver does what they describe and no line is printed.
+# Under llm the loop itself is the first ref, llm-loop; the others follow on the
+# default-off or non-default settings (and draft-order: pr.draft is on).
 _talos_env_refs() {
   local _val _topic
+  [ "$_TALOS_ORCHESTRATOR" = llm ] || return 0
+  _talos_emit ref llm-loop
   [ "$_TALOS_PR_DRAFT" = true ] && _talos_emit ref draft-order
   _talos_cfg_is roles.planner true && _talos_emit ref planner
   _talos_cfg_is roles.adversarial true && _talos_emit ref adversarial

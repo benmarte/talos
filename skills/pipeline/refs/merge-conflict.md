@@ -1,6 +1,6 @@
 # Conflicting PR (`pr-mergeable` exit 1) and the merge-base task
 
-Read when `pr-mergeable <PR>` exits 1 (`CONFLICTING`) after the developer opened the PR, when `gate merge` answers `redispatch` with `merge-conflict`, or when the sibling sync answers `developer`. No QA runs on a conflicting PR: GitHub schedules no `pull_request` run for it, so QA would hang.
+Read when `pr-mergeable <PR>` exits 1 (`CONFLICTING`) after the developer opened the PR, when `gate merge` answers `redispatch` with `merge-conflict`, or when the sibling sync answers `developer`. After the code driver's `stop verdict=redispatch reason=merge-conflict` only items 1 and 2 apply; item 3 and its Step 3d are the LLM loop's (`refs/llm-loop.md`). No QA runs on a conflicting PR: GitHub schedules no `pull_request` run for it, so QA would hang.
 
 Mechanical path first:
 1. `bash scripts/pipeline-vcs.sh conflict-files <PR>` (exit 2 = cannot determine: go to step 3).

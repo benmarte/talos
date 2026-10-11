@@ -12,11 +12,13 @@ Paths such as `scripts/talos.sh` are relative to the Talos install (`~/.talos` a
 
 | Entry | What drives |
 | --- | --- |
-| `/talos:pipeline` (Claude Code) | An LLM orchestrator follows [SKILL.md](../skills/pipeline/SKILL.md) and calls `talos.sh` verbs. |
+| `/talos:pipeline` (Claude Code) | Code-driven by default: the session follows [SKILL.md](../skills/pipeline/SKILL.md), starts `talos.sh run` once and acts only on the driver's end line. No stage relay reaches the session's context. |
 | `Read ~/.talos/skills/pipeline/SKILL.md and follow it` (any other agent) | The same playbook. |
-| `bash scripts/talos.sh run [--issue N] [--max-iterations n]` | Code drives; an LLM still does every stage. For local and weak-model profiles. Without `--issue` it drains the queue; `run --stop` ends it at the next stage boundary. |
+| `bash scripts/talos.sh run [--issue N] [--max-iterations n]` | The driver itself, with no session around it: code drives, an LLM still does every stage. Without `--issue` it drains the queue; `run --stop` ends it at the next stage boundary. |
 
-`scripts/` is the install's scripts directory (`~/.talos/scripts` after `install.sh --global`). Read a playbook ref in `skills/pipeline/refs/` only when `talos.sh env` or `next` prints `ref=<topic>`.
+**`execution.orchestrator`** (`code`, the default, or `llm`) picks who drives. `llm` is the opt-in for the LLM-per-stage loop: the session calls `next`, `prompt`, `done` and the gates itself, one stage at a time, from `skills/pipeline/refs/llm-loop.md`. `talos.sh env` prints the effective mode as `ORCHESTRATOR=code|llm`; it is `llm` whatever the key says under `vcs.provider: file` and `roles.planner: true`, which the driver cannot run (one stderr line says why), and an unknown value reads as `code`.
+
+`scripts/` is the install's scripts directory (`~/.talos/scripts` after `install.sh --global`). Under `ORCHESTRATOR=llm`, read a playbook ref in `skills/pipeline/refs/` only when `talos.sh env` or `next` prints `ref=<topic>`; under `code`, `env` prints none.
 
 `talos.sh run` loops `next` (one routed action), `prompt` (renders the stage prompt), `pipeline-agent.sh` (the configured runner, with `agents.fallback` failover) and `done` (bookkeeping), at most `--max-iterations` passes (default 20; a long drain passes a larger number). It reads each verdict from the first line of the agent's final message that starts with `WORD:` (the word on the role's verdict list; the developer's message is read for its PR URL). An unreadable answer is a dispatch failure and records nothing. On `action=merge` it runs `gate merge`, then `merge-pr` and `post-merge`. Exit 0 on every clean stop (`ask-owner`, a stage block, a `wait`, a non-merge gate verdict, a requested stop, the iteration cap); exit 1 when state cannot be read, a stage dispatch fails (an unreadable answer included), the merge fails or failover is exhausted (`provider-failed`); exit 2 on a usage error. A second QA FAIL at an unchanged PR head blocks and stops. A reviewer, security or adversarial finding gets its developer fix round in the same run, through `gate fix-round`: under `pr.draft` the other enabled review roles with no fresh approval review that head first, then one round covers every finding; a round that pushes nothing blocks and stops (`fix-round-unchanged-head`). Re-run to continue.
 
@@ -202,7 +204,7 @@ Start line: `Read ~/.talos/skills/pipeline/SKILL.md and follow it`. Gemini CLI c
 llama-server -m model.gguf --port 8080 -c 32768 --jinja
 ```
 
-Weak models drop playbook steps: use `talos.sh run` so code orchestrates.
+Code orchestrates by default (`execution.orchestrator: code`), so a weak model never has to follow the per-stage loop: keep that default for a local profile.
 
 ## Configuration
 
@@ -358,6 +360,7 @@ Derived defaults: `base_branch`, `repo`, `vcs.repo` and `board.owner` come from 
 |---|---|---|---|---|
 | `execution.isolation` | enum | `worktree` | - | any |
 | `execution.worktree_warn_threshold` | int | `10` | - | any |
+| `execution.orchestrator` | enum | `code` | - | any |
 
 #### roles.*
 
@@ -1016,7 +1019,7 @@ Both keys hold a shell command (`sh -c`), disabled when empty. `hooks.timeout_s`
 {"role":"developer","issue":42,"pr":57,"repo":"owner/name","base_branch":"main","worktree_path":"/abs/path","files_hint":["a.sh"]}
 ```
 
-`pr` is null and `files_hint` is `[]` when unknown. Under `talos.sh run` and the adapter path `pipeline-agent.sh` makes the call (`pr` null; `files_hint` from `TALOS_FILES_HINT`). Under an LLM orchestrator `talos.sh env` prints `ref=hooks`: the orchestrator runs `pipeline-hooks.sh pre_dispatch <role> <N> <PR> <worktree>` and passes the output to `talos.sh prompt --preamble-file`.
+`pr` is null and `files_hint` is `[]` when unknown. Under `talos.sh run` and the adapter path `pipeline-agent.sh` makes the call (`pr` null; `files_hint` from `TALOS_FILES_HINT`). Under the LLM loop (`execution.orchestrator: llm`) `talos.sh env` prints `ref=hooks`: the orchestrator runs `pipeline-hooks.sh pre_dispatch <role> <N> <PR> <worktree>` and passes the output to `talos.sh prompt --preamble-file`.
 
 ```json
 {"event":"qa","role":"qa","issue":42,"pr":57,"repo":"owner/name","sha":"<40 hex>","verdict":"PASS","summary":"...","details":"...","attempt":null,"model":"claude-sonnet-5","runner":"claude","duration_s":312,"tokens":48213,"tool_uses":19,"ts":"..."}
@@ -1128,7 +1131,7 @@ Start with `bash scripts/pipeline-config.sh --show` (each key, its value and lay
 
 ### A run stops
 
-`talos.sh run` ends with a `stop reason=...` line, or a `dispatch-failed role=<r> reason=<why>` line on stderr.
+`talos.sh run` ends with a `stop reason=...` line, or a `dispatch-failed role=<r> reason=<why>` line on stderr. Under `/talos:pipeline` the session acts on that end line by the end-state table in [SKILL.md](../skills/pipeline/SKILL.md): one action per line (relay, restart, fix or ask the owner), and a line the table does not know is relayed as it is.
 
 | Line | Meaning and fix |
 |---|---|

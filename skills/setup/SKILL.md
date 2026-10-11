@@ -611,7 +611,8 @@ Control labels (created by bootstrap-labels.sh in Step 8):
 Next steps:
   1. Add the 'pipeline:ready' label to a GitHub issue (or a '- [ ] task' in plan.md for file mode)
   2. Start the pipeline with `/talos:pipeline` in Claude Code; in any other agent: Read ~/.talos/skills/pipeline/SKILL.md and follow it
-     (local/weak-model option: `bash scripts/talos.sh run` orchestrates in code, the LLMs do the stages; see docs/reference.md "How a run works")
+     (code-driven by default: the playbook starts `bash scripts/talos.sh run` once, code orchestrates and the LLMs do the stages;
+     `execution.orchestrator: llm` opts into the LLM-per-stage loop; see docs/reference.md "How a run works")
   3. For GitHub Projects, make sure the Status field has: Ready, In progress, In review, Done, Blocked
      (if your board uses different column names, configure board.status_map to remap them — see the
      example in the config template above; pipeline-status.sh will emit talos:board-unverified on

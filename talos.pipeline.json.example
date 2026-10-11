@@ -60,7 +60,8 @@
   },
 
   "execution": {
-    "isolation": "worktree"
+    "isolation": "worktree",
+    "orchestrator": "code"
   },
 
   "roles": {

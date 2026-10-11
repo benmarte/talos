@@ -1,6 +1,6 @@
 # Draft stage order (`PR_DRAFT = true`)
 
-Read when `talos.sh env` prints `ref=draft-order` or `next` answers `wait reason=draft`. `pr.draft: true` keeps the PR DRAFT through every no-CI stage; CI runs once, at `ready-pr`, on the final head. This replaces the default order (developer, QA, docs, reviewer + security, merge) for the issue; Steps 3a/3b and the Step 4 gates are unchanged.
+Read when `talos.sh env` prints `ref=draft-order` or `next` answers `wait reason=draft`. `pr.draft: true` keeps the PR DRAFT through every no-CI stage; CI runs once, at `ready-pr`, on the final head. This replaces the default order (developer, QA, docs, reviewer + security, merge) for the issue; Steps 3a/3b and the Step 4 gates (`refs/llm-loop.md`) are unchanged.
 
 **QA pre-CI gate (`READY_GATE = qa-local`, `pr.ready_gate`).** QA moves to the END of the draft window: docs, reviewer, security (+ adversarial), then QA on the draft, then `ready-pr`. QA runs the spec's criteria plus the full `verify:` list once on the PR head, without waiting for CI (none has run), so the one CI run is never spent on a head QA would reject. Only a QA PASS fires `ready-pr`; CI stays the merge authority (`gate merge` unchanged). `next` routes it (`dispatch stage=qa` once every other approval is fresh); the steps below change only where marked **Gate**.
 
@@ -16,7 +16,7 @@ Read when `talos.sh env` prints `ref=draft-order` or `next` answers `wait reason
 6. **QA: on a ready PR only.** Step 3d, preceded by the draft guard below. Under `qa_mode: ci` QA trusts `pr-checks-required` (the one run). **Gate:** QA runs BEFORE step 5, on the draft, as the last draft-window stage (after steps 2-4); step 5 then fires on its PASS.
 7. **Merge.** Step 4, unchanged: the approval SHAs and `ci-complete` on the final head are still required. A ready PR bypasses no gate.
 
-`tests/test-draft-stage-order.sh` replays these calls against a stub that counts CI runs:
+`tests/test-draft-stage-order.sh` replays these calls, counting CI runs:
 
 ```text
 happy path:     create-pr --draft -> ready-pr -> QA, merge

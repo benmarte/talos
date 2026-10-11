@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # test-skill-size.sh -- the size ratchet for skills/pipeline/SKILL.md (#465, epic
-# #422; reset by #547, epic #558). SKILL.md is the playbook the orchestrator
+# #422; reset by #547, epic #558, and by #602: the per-stage loop moved to
+# refs/llm-loop*.md). SKILL.md is the playbook the orchestrator
 # carries every turn, so it is small by design: what applies only sometimes lives
 # in skills/pipeline/refs/<topic>.md, read when `talos.sh env` or `next` names it.
 #
@@ -17,8 +18,8 @@
 set -u
 . "$(dirname "$0")/helpers.sh"
 
-SKILL_MAX_BYTES=24600
-SKILL_SLACK=2400
+SKILL_MAX_BYTES=11000
+SKILL_SLACK=1100
 REF_MAX_BYTES=8000
 
 SKILL_MD="$TALOS_ROOT/skills/pipeline/SKILL.md"

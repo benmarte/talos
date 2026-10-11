@@ -1,6 +1,6 @@
 # File mode and chat mode (`VCS_PROVIDER = file`)
 
-Read when `talos.sh env` prints `ref=file-mode`. No PRs, no QA/reviewer/security/docs, no board (the file IS the board), no `state --summary`, no Step 1 or Step 3e. Steps 0, 2 and 5 still apply.
+Read when `talos.sh env` prints `ref=file-mode`. No PRs, no QA/reviewer/security/docs, no board (the file IS the board), no `state --summary`, no Step 1 or Step 3e. Steps 0, 2 and 5 still apply (Steps 1 to 4 are the LLM loop's, `refs/llm-loop.md`; the code driver does not run this provider).
 
 **Chat mode (no issues yet).** If the user describes work conversationally, extract the tasks, write `plan.md` with one `- [ ] Task` item per task, set config to file mode (`{"vcs": {"provider": "file", "file": {"source": {"path": "plan.md"}}}}` in `talos.pipeline.json`) and proceed as below.
 
