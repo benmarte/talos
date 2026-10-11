@@ -31,7 +31,7 @@
 #   queued    open issues labelled pipeline:ready, p0 p1 p2 unlabelled, then number
 #   held      the queued ones that also carry pipeline:needs-owner
 #   inflight  (#519) the issues `talos.sh run` resumes mid-state-machine: labelled
-#             pipeline:confirmed, pipeline:dev or pipeline:epic-decomposed, not in
+#             pipeline:confirmed or pipeline:dev, not in
 #             `queued`, not blocked or needs-owner, and with no open pipeline PR
 #             (the PR side owns that work; a stale pipeline:dev beside an open PR
 #             must never re-dispatch a developer)
