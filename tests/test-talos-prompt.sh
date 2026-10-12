@@ -511,6 +511,17 @@ done
 unset GATE_PRD_RC GATE_PRD_OUT
 reset_cfg
 
+# AC5 (#645): the PM prompt hands the PM no comment header (its spec comment
+# takes none); every other role's prompt still carries it.
+render pm --issue 4
+text="$(body)"; drop
+assert_not_contains "$text" "Comment header:" "AC5 the pm prompt carries no Comment header line"
+for role in validator reviewer; do
+  render "$role" --issue 4 --pr 8
+  text="$(body)"; drop
+  assert_contains "$text" "Comment header: **Agent:** $role (talos)" "AC5 the $role prompt still carries its Comment header line"
+done
+
 # The renderer treats every template of the repo as input it must fully fill: no
 # marker outside the allow-list, so a new template cannot ship an unfillable name.
 names="$(sed -n 's/^_TALOS_PROMPT_NAMES="//p; /^  [A-Z_ ]*"\{0,1\}$/p' "$TALOS" | tr -d '"' | tr -s ' \n' ' ')"

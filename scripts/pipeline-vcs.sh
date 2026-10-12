@@ -1147,6 +1147,28 @@ json.dump({'comments': comments}, sys.stdout)
 "
 }
 
+# ── PM spec comment test (#645), shared by both filters below ────────────────
+# _vi_pm_header prints the pm role's stage header (comments.header with {role}
+# replaced by pm; empty when the key is empty). The PM stage prompt once handed
+# the PM that header, so a spec posted under it must be found: a body is a spec
+# when its first non-blank line starts "**PM spec:**", or is exactly that header
+# and the next non-blank line starts "**PM spec:**". Nothing else may come
+# before the spec prefix.
+_vi_pm_header() {
+  local _h
+  _h="$(cfg comments.header 2>/dev/null)" || _h=""
+  printf '%s' "${_h//\{role\}/pm}"
+}
+_VI_PM_SPEC_PY='
+def is_pm_spec(c, hdr):
+    lines = [l.strip() for l in (c.get("body") or "").splitlines() if l.strip()]
+    if not lines:
+        return False
+    if lines[0].startswith("**PM spec:**"):
+        return True
+    return bool(hdr) and lines[0] == hdr.strip() and len(lines) > 1 and lines[1].startswith("**PM spec:**")
+'
+
 # ── Compact spec-only comment filter (shared by view-issue --spec, github and
 # github-api, #201) ───────────────────────────────────────────────────────────
 # $1: issue metadata JSON ({"title", "body", "labels"}).
@@ -1162,7 +1184,7 @@ json.dump({'comments': comments}, sys.stdout)
 # since the spec comment is the contract each stage implements against, not
 # the discussion around it.
 _vi_spec_filter() {
-  python3 -I -c "
+  python3 -I -c "$_VI_PM_SPEC_PY
 import json, sys
 
 meta = json.loads(sys.argv[1])
@@ -1170,10 +1192,7 @@ comments = json.loads(sys.argv[2]).get('comments', [])
 if not isinstance(comments, list):
     comments = []
 
-def is_spec(c):
-    return (c.get('body') or '').lstrip().startswith('**PM spec:**')
-
-spec_comments = [c for c in comments if is_spec(c)]
+spec_comments = [c for c in comments if is_pm_spec(c, sys.argv[3])]
 kept = [spec_comments[-1]] if spec_comments else []
 
 result = {
@@ -1183,7 +1202,7 @@ result = {
     'comments': kept,
 }
 print(json.dumps(result))
-" "$1" "$2"
+" "$1" "$2" "$(_vi_pm_header)"
 }
 
 # ── Delta comment filter (view-issue --since-stage, #548) ─────────────────────
@@ -1197,7 +1216,7 @@ print(json.dumps(result))
 # last stage is always there. earlier_comments counts the human comments before
 # the boundary, which `read-comments` still returns.
 _vi_delta_filter() {
-  python3 -I -c "
+  python3 -I -c "$_VI_PM_SPEC_PY
 import json, sys
 
 meta = json.loads(sys.argv[1])
@@ -1210,7 +1229,7 @@ def body_of(c):
 
 def is_stage(c):
     b = body_of(c)
-    return b.startswith('**Agent:**') or b.startswith('**PM spec:**')
+    return b.startswith('**Agent:**') or is_pm_spec(c, sys.argv[3])
 
 def is_human(c):
     return not is_stage(c) and '<!-- talos:' not in body_of(c)
@@ -1227,7 +1246,7 @@ print(json.dumps({
     'comments': [c for i, c in enumerate(comments) if i >= cut and (i == cut or is_human(c))],
     'earlier_comments': sum(1 for c in comments[:cut + 1] if is_human(c)),
 }))
-" "$1" "$2"
+" "$1" "$2" "$(_vi_pm_header)"
 }
 
 # ── diff --stat formatting (shared by diff-pr --stat, github and github-api,
@@ -4367,7 +4386,7 @@ print(json.dumps(out))
       _gh_num "$verb" issue "$_vi_n"
       if [ "$DRY_RUN" = "true" ]; then
         if [ "$_vi_spec" = "true" ]; then
-          echo "[dry-run] GET $_GH_API/issues/$_vi_n; read-comments $_vi_n (filter to latest **PM spec:** comment, dropping talos: markers and **Agent:** verdicts)"
+          echo "[dry-run] GET $_GH_API/issues/$_vi_n; read-comments $_vi_n (filter to latest **PM spec:** comment, bare or under the pm stage header line, dropping talos: markers and **Agent:** verdicts)"
         elif [ "$_vi_since" = "true" ]; then
           echo "[dry-run] GET $_GH_API/issues/$_vi_n; read-comments $_vi_n (keep the latest **PM spec:** / **Agent:** comment and the comments after it)"
         else

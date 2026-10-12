@@ -262,7 +262,8 @@
 #         (`pipeline-criteria.sh spec-usable <N>` exits 4: unreadable, no criteria
 #         checklist, a refused or missing `Tests:` line) is no finding on the PR:
 #         no attempt, no fix round, PR and issue blocked, `stop
-#         reason=spec-unusable issue=<N> pr=<M>` (exit 0).
+#         reason=spec-unusable issue=<N> pr=<M>` (exit 0). A QA stage that ends
+#         `BLOCKED: spec: <why>` stops the same way (#645).
 #         A reviewer, security or adversarial
 #         finding gets its developer fix round in the same run: under PR_DRAFT the
 #         other enabled review roles with no fresh approval run on that head first,
@@ -4093,7 +4094,14 @@ _talos_run_dispatch() {
   esac
   case "$_next" in
     stop)
-      _talos_emit stop "reason=stage-blocked role=$_role"
+      # #645: a QA that cannot use the spec ends `BLOCKED: spec: <why>`, a fault
+      # of the spec like the FAIL path's spec-usable stop; labels are set by done.
+      if [ "$_role" = qa ] && [ "$_v" = BLOCKED ] \
+         && grep -m 1 -v '^[[:space:]]*$' "$_CFG_CACHE_DIR/agent.out" 2>/dev/null | grep -q '^BLOCKED: spec:'; then
+        _talos_emit stop "reason=spec-unusable issue=$_n pr=$_pr"
+      else
+        _talos_emit stop "reason=stage-blocked role=$_role"
+      fi
       _talos_flush; exit 0 ;;
     "fix-round stage=qa")
       [ "$_role" != qa ] || _talos_run_qa_fail "$_pr" "$_n" ;;
