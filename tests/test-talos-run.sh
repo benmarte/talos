@@ -765,6 +765,41 @@ assert_contains "$(cat "$STUB_DIR/developer.prompt" 2>/dev/null)" "Fix round: PR
   "fix round: the developer got the fix-round shape of the prompt"
 assert_not_contains "$OUT" "qa-fail-unchanged-head" "fix round: a pushed fix is not the backstop"
 
+# (i1b) #647: a fix-round developer whose report was lost to a trailing turn
+# (no PR link in the final message). The head evidence decides.
+late_fixture() {
+  fix_fixture
+  printf 'That monitor expiry does not change anything.\n' > "$STUB_DIR/message.developer"
+}
+late_dev_opened() { grep -c 'hooks post_stage developer developer 9 --verdict PR_OPENED' "$STUB_DIR/journal"; }
+late_fixture
+cat >> "$STUB_DIR/hook.developer.1" <<'HOOK'
+printf bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb > "$d/pr-head.12"
+HOOK
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=12100 rn --max-iterations 2
+assert_not_contains "$OUT" "stop reason=stage-blocked role=developer" "AC1 a moved head makes a link-less fix-round report PR_OPENED, not stage-blocked"
+assert_eq "1" "$(late_dev_opened)" "AC1 done recorded PR_OPENED for the developer"
+late_fixture
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=12200 rn --max-iterations 2
+assert_contains "$OUT" "stop reason=stage-blocked role=developer" "AC2 an unmoved head with no report stays stage-blocked"
+assert_eq "0" "$(late_dev_opened)" "AC2 no PR_OPENED is recorded for an unmoved head"
+late_fixture
+printf 'BLOCKED: cannot run the tests\n' > "$STUB_DIR/message.developer"
+cat >> "$STUB_DIR/hook.developer.1" <<'HOOK'
+printf bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb > "$d/pr-head.12"
+HOOK
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=12300 rn --max-iterations 2
+assert_contains "$OUT" "stop reason=stage-blocked role=developer" "AC3 an explicit BLOCKED: stays blocked even when the head moved"
+assert_eq "0" "$(late_dev_opened)" "AC3 no PR_OPENED is recorded over an explicit block"
+late_fixture
+cat >> "$STUB_DIR/hook.developer.1" <<'HOOK'
+printf bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb > "$d/pr-head.12"
+printf 1 > "$d/pr-head.12.rc"
+HOOK
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=12400 rn --max-iterations 2
+assert_contains "$OUT" "stop reason=stage-blocked role=developer" "AC5 an unreadable head after the dispatch applies no override"
+assert_eq "0" "$(late_dev_opened)" "AC5 no PR_OPENED is recorded on an unresolved head"
+
 # (i2) the backstop: the fix round pushes nothing, the second QA FAIL is at the
 # same head -> blocked on PR and issue, stop, exit 0, ready-pr exactly twice.
 fix_fixture
