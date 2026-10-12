@@ -145,7 +145,7 @@ bash talos/install.sh [repo-path] [--harness <list>] [--no-agents-md] [--import-
 |------|--------|
 | `--global` | install to `${TALOS_HOME:-~/.talos}` |
 | `--harness <list>`, `--harness=<list>` | installer glue, comma-separated: `claude codex gemini antigravity pi cursor opencode generic`. Another `[a-z0-9-]+` name becomes `generic`; an empty item, bad characters or a missing value exit 1. It does not set `agents.runner` |
-| `--local-plugin` | `--global` only: register the checkout itself as the `talos` marketplace, replacing a GitHub-registered one ([Developing Talos](#developing-talos)) |
+| `--local-plugin` | `--global` only: register the checkout itself as the `talos` marketplace, replacing a GitHub-registered one ([Developing Talos](#developing-talos)). Without `--global` it is ignored, with one notice line |
 | `--no-overwrite`, `--force` | skip existing files (global default is overwrite) / overwrite them (per-repo; never `talos.pipeline.json`) |
 | `--no-agent-skills` | per-repo: skip copying agent-skills into `<repo>/.claude/skills` |
 | `--no-agents-md`, `--import-agents-md` | per-repo: write no `AGENTS.md` block / append `@AGENTS.md` to an existing `CLAUDE.md` and `GEMINI.md` (never creates them) |
@@ -166,7 +166,7 @@ Overrides win over the install: `<repo>/.claude/agents/<role>.md`, then `<repo>/
 
 ### Developing Talos
 
-Public users update the plugin on tagged releases; the version in `plugin.json` stays until a release. If you work on Talos itself and want your machine to run the checkout, install with `bash install.sh --global --local-plugin`. It re-registers the `talos` marketplace from the checkout directory (removing a GitHub-registered one first) and installs `talos@talos`. Claude Code reads a directory marketplace on each session start, so `/talos:*` follows the checkout without a re-run. That makes the checked-out branch live plugin content, skills and hooks, in every Claude Code session on the machine, whichever branch is checked out: switch to a work-in-progress branch and every session runs it. It overrides `--keep-marketplace` and `--no-overwrite` for the marketplace step, and a second run with the checkout already registered only re-installs the plugin. If the removal fails, nothing is changed.
+Public users update the plugin on tagged releases; the version in `plugin.json` stays until a release. If you work on Talos itself and want your machine to run the checkout, install with `bash install.sh --global --local-plugin`. It re-registers the `talos` marketplace from the checkout directory (removing a GitHub-registered one first) and installs `talos@talos`. Claude Code reads a directory marketplace on each session start, so `/talos:*` follows the checkout without a re-run. That makes the checked-out branch live plugin content, skills and hooks, in every Claude Code session on the machine, whichever branch is checked out: switch to a work-in-progress branch and every session runs it. It overrides `--keep-marketplace` and `--no-overwrite` for the marketplace step, and a second run with the checkout already registered only re-installs the plugin. If the removal fails, nothing is changed. If the removal succeeds and the add then fails, the plugin is not registered: the notice says the earlier registration is gone and prints the commands that put it back (`claude plugin marketplace add benmarte/talos`, then `claude plugin install talos@talos`).
 
 To go back to the GitHub release source:
 
