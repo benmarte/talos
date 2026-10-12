@@ -377,16 +377,17 @@ rm -f "$STATE/state.json"
 bash "$GS/talos.sh" run --max-iterations 1 >/dev/null 2>&1
 assert_contains "$(cat "$STATE/state.json" 2>/dev/null)" '"pid": ' "AC7 the snapshot's run entry records the pid"
 
-# AC8: a three-segment vcs.repo (a GitLab subgroup) renders.
+# GUARD (not a red-to-green case): a three-segment vcs.repo (a GitLab subgroup) already
+# rendered before #641, so AC8 of #641 needed no code change. Kept so it stays that way.
 printf '{"vcs": {"provider": "gitlab", "repo": "grp/sub/widget"}}\n' > "$PIPELINE_CONFIG"
 git remote set-url origin git@gitlab.example.com:grp/sub/widget.git
 bash "$TALOS" map >/dev/null 2>&1
-assert_file_exists "$TH/maps/grp-sub-widget.html" "AC8 a three-segment vcs.repo renders"
-assert_contains "$(cat "$TH/maps/grp-sub-widget.html" 2>/dev/null)" 'https://gitlab.example.com/grp/sub/widget/-/issues/' "AC8 its links keep the whole path"
+assert_file_exists "$TH/maps/grp-sub-widget.html" "GUARD a three-segment vcs.repo renders"
+assert_contains "$(cat "$TH/maps/grp-sub-widget.html" 2>/dev/null)" 'https://gitlab.example.com/grp/sub/widget/-/issues/' "GUARD its links keep the whole path"
 git remote remove origin
 rm -f "$TH/maps/grp-sub-widget.html"
 bash "$TALOS" map >/dev/null 2>&1
-assert_file_exists "$TH/maps/grp-sub-widget.html" "AC8 a three-segment vcs.repo renders with no remote"
+assert_file_exists "$TH/maps/grp-sub-widget.html" "GUARD a three-segment vcs.repo renders with no remote"
 git remote add origin git@gitlab.example.com:grp/sub/widget.git
 
 # AC9: names that differ only by where the dash and the slash sit.
