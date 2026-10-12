@@ -972,8 +972,8 @@ _talos_role_enabled() {
 # argv: the rounds, the stage's header, 1 or 0 for "only trusted authors count",
 # the trusted logins one per line. Prints `open` (the newest question has no
 # reply), `ask <file>[,<file>...]` (the newest <rounds> findings comments share
-# those files), `answered` (a question with its reply, nothing to ask) or an
-# empty line.
+# those files; one `- round <i>: <summary line>` line per round follows),
+# `answered` (a question with its reply, nothing to ask) or an empty line.
 _TALOS_AREA_PY='
 import json, re, sys
 rounds, header, enforce, trusted = int(sys.argv[1]), sys.argv[2].strip(), sys.argv[3] == "1", set(sys.argv[4].splitlines())
@@ -1010,9 +1010,21 @@ cs = cs[asked + 1:]
 if asked >= 0 and not any(b.strip() and "<!-- talos:" not in b and not b.lstrip().startswith("**Agent:**") for b in cs):
     print("open")
     sys.exit(0)
-found = [files(b) for b in cs if b.lstrip().split("\n", 1)[0].strip() == header and "<!-- talos:" not in b]
+def summary(body):
+    for line in body.lstrip().split("\n")[1:]:
+        if line.strip():
+            line = " ".join(line.split())
+            return (line.split(" — ", 1)[1] if " — " in line else line)[:160]
+    return ""
+bodies = [b for b in cs if b.lstrip().split("\n", 1)[0].strip() == header and "<!-- talos:" not in b]
+found = [files(b) for b in bodies]
 common = sorted(set.intersection(*found[-rounds:])) if len(found) >= rounds else []
-print("ask " + ",".join(common) if common else "answered" if asked >= 0 else "")
+if common:
+    print("ask " + ",".join(common))
+    for i, b in enumerate(bodies[-rounds:], 1):
+        print("- round %d: %s" % (i, summary(b)))
+else:
+    print("answered" if asked >= 0 else "")
 '
 
 # _talos_same_area <stage> <pr>: the check above, between the budget guard and
@@ -1022,7 +1034,7 @@ print("ask " + ",".join(common) if common else "answered" if asked >= 0 else "")
 # mark-needs-owner. Sets _AREA_ANSWERED=1 when the newest owner question has
 # its reply, so the unblock clears pipeline:needs-owner too.
 _talos_same_area() {
-  local _stage="$1" _pr="$2" _k _h _a
+  local _stage="$1" _pr="$2" _k _h _a _rounds=""
   _h="$(cfg comments.header)"
   { [ "$(cfg comments.enabled)" = "true" ] && [ -n "$_h" ]; } || return 0
   _k="$(cfg limits.same_area_rounds)"
@@ -1039,11 +1051,13 @@ _talos_same_area() {
   _talos_emit reason design-decision
   _talos_emit stage "$_stage"
   if [ "$_a" != open ]; then
+    case "$_a" in *$'\n'*) _rounds="${_a#*$'\n'}"; _a="${_a%%$'\n'*}" ;; esac
     _a="${_a#ask }"
     _talos_emit rounds "$_k"
     _talos_emit area "$_a"
-    { printf '%s\n\n%s\n' \
+    { printf '%s\n\n%s%s\n' \
         "Design decision needed: $_stage blocked PR #$_pr on $_a in $_k rounds running. Which design should the next fix round implement?" \
+        "${_rounds:+Findings of the rounds:$'\n'$_rounds$'\n\n'}" \
         "Reply on this PR with the decision; the next fix-round gate continues from it." > "$_CFG_CACHE_DIR/body" \
         && _vcs mark-needs-owner "$_pr" --body-file "$_CFG_CACHE_DIR/body" > /dev/null; } \
       || _talos_emit warn "reason=comment-failed"
@@ -3865,6 +3879,10 @@ _talos_run_loop() {
                 case "$_n" in ''|*[!0-9]*) _talos_stop state-unavailable ;; esac
                 _talos_run_draft_complete "$_pr" "$_n"
                 continue ;;
+              "action=wait reason=blocked"*)
+                # A PR the last run left blocked by a review finding (#639): a
+                # run on its issue takes it to the fix round.
+                if [ -n "$_issue" ] && _talos_run_blocked_pr "$_issue"; then continue; fi ;;
             esac
             _talos_emit stop "$_act"
             _talos_flush; exit 0 ;;
@@ -3925,6 +3943,13 @@ _talos_run_loop() {
           *)
             _talos_stop state-unavailable ;;
         esac ;;
+      "dispatch stage=developer pr="*" issue="*)
+        # An owner question that has its reply (#639): the fix round continues
+        # from it through `gate fix-round`; `next` leased the issue already.
+        _pr="$(sed -n 's/.* pr=\([0-9]*\).*/\1/p' <<<"$_RUN_ACT")"
+        _n="$(sed -n 's/.* issue=\([0-9]*\).*/\1/p' <<<"$_RUN_ACT")"
+        case "$_pr$_n" in ''|*[!0-9]*) _talos_stop state-unavailable ;; esac
+        _talos_run_blocked_fix "$_pr" "$_n" answered 0 || _talos_stop state-unavailable ;;
       "dispatch stage="*)
         _talos_run_dispatch "$_RUN_ACT" ;;
       *)
@@ -4192,7 +4217,7 @@ _talos_run_qa_fail() {
 # exit 0 -- because `next` would send the same head to the same review again. A
 # head that cannot be read is `stop reason=head-unresolved`.
 _talos_run_review_fail() {
-  local _pr="$1" _n="$2" _role="$3" _mode="$4" _sum _r _after=0 _labels="" _stale="" _head
+  local _pr="$1" _n="$2" _role="$3" _mode="$4" _sum _r _after=0 _labels="" _stale=""
   _sum="$_CFG_CACHE_DIR/review-fail.summary"
   # agent.out holds the failing role's final message until the next dispatch.
   { printf '%s findings:\n' "$_role" && cat "$_CFG_CACHE_DIR/agent.out"; } > "$_sum" || _talos_stop scratch-unavailable
@@ -4224,11 +4249,19 @@ _talos_run_review_fail() {
       esac
     done
   fi
+  _talos_run_review_round "$_pr" "$_n" "$_role" "$_sum" 1
+}
+
+# _talos_run_review_round <pr> <issue> <role> <summary-file> <lease 1|0>: the
+# gate and the developer's fix round with its backstop (above). <lease> is 0
+# when `next` already leased the issue for this dispatch.
+_talos_run_review_round() {
+  local _pr="$1" _n="$2" _role="$3" _sum="$4" _head
   _talos_cap _vcs pr-head "$_pr"
   { [ "$_RC" -eq 0 ] && [ -n "$_OUT" ]; } || _talos_stop head-unresolved
   _head="$_OUT"
   _talos_run_fix_gate "$_n" "$_role" "$_pr"
-  _talos_run_lease "$_n"
+  [ "$5" -eq 0 ] || _talos_run_lease "$_n"
   _talos_run_dispatch "dispatch stage=developer pr=$_pr issue=$_n" fix-round "$_sum"
   _talos_cap _vcs pr-head "$_pr"
   { [ "$_RC" -eq 0 ] && [ -n "$_OUT" ]; } || _talos_stop head-unresolved
@@ -4237,6 +4270,84 @@ _talos_run_review_fail() {
     _talos_emit stop "reason=fix-round-unchanged-head pr=$_pr issue=$_n"
     _talos_flush; exit 0
   fi
+}
+
+# The PR's review finding and its owner reply (#639), for a run that starts on
+# a PR the last run left blocked. argv: the stage header (with {role}), 1 or 0
+# for "only trusted authors count", the trusted logins one per line, the mode
+# (`answered`: the role comes from the newest owner question) and the summary
+# file to write. Prints the role of the newest stage comment when it carries a
+# `**<Stage>:** CHANGES|FINDINGS` verdict from reviewer, security or adversarial
+# (in `answered` mode the role the owner question names wins), else nothing.
+# The file holds that comment, then the replies after the newest owner question.
+_TALOS_BLOCKED_PY='
+import json, re, sys
+header, enforce, trusted, mode, out = sys.argv[1].strip(), sys.argv[2] == "1", set(sys.argv[3].splitlines()), sys.argv[4], sys.argv[5]
+pre, post = header.split("{role}", 1) if "{role}" in header else (header, "")
+HEAD = re.compile(re.escape(pre) + "([a-z]+)" + re.escape(post))
+VERDICT = re.compile(r"^\*\*[^*]+:\*\*\s+(CHANGES|FINDINGS)\b", re.M)
+ASKED = re.compile(r"<!--\s*talos:needs-owner\s*-->")
+QUESTION = re.compile(r"Design decision needed: ([a-z]+) blocked PR")
+def login(c):
+    a = c.get("author")
+    return a.get("login") if isinstance(a, dict) else None
+cs = [c["body"] for c in json.load(sys.stdin)["comments"]
+      if isinstance(c.get("body"), str) and (not enforce or login(c) in trusted)]
+stage = [(i, m.group(1)) for i, b in enumerate(cs) for m in [HEAD.fullmatch(b.lstrip().split("\n", 1)[0].strip())] if m]
+if not stage:
+    sys.exit(0)
+i, role = stage[-1]
+found = role in ("reviewer", "security", "adversarial") and VERDICT.search(cs[i])
+asked = max([k for k, b in enumerate(cs) if ASKED.search(b)] or [-1])
+if mode == "answered" and asked >= 0:
+    q = QUESTION.match(cs[asked])
+    if q and q.group(1) in ("reviewer", "security", "adversarial"):
+        role = q.group(1)
+        found = [j for j, r in stage if r == role and VERDICT.search(cs[j])]
+        i = found[-1] if found else i
+        found = bool(found)
+if not found:
+    sys.exit(0)
+text = role + " findings:\n" + cs[i]
+replies = [b for b in cs[asked + 1:] if asked >= 0 and b.strip() and "<!-- talos:" not in b and not HEAD.fullmatch(b.lstrip().split("\n", 1)[0].strip())]
+if mode == "answered" and replies:
+    text += "\n\nThe owner answered the design question:\n" + "\n\n".join(replies)
+open(out, "w").write(text + "\n")
+print(role)
+'
+
+# _talos_run_blocked_fix <pr> <issue> <mode blocked|answered> <lease 1|0> (#639):
+# a PR the last run left blocked by a review finding (or parked on a question
+# the owner has since answered) goes to the fix round, as the run that saw the
+# verdict takes it. Returns 1 when the PR holds no such finding; otherwise the
+# round runs (`_talos_run_review_round`) and the run may end there.
+_talos_run_blocked_fix() {
+  local _pr="$1" _n="$2" _h _role _sum
+  _h="$(cfg comments.header)"
+  { [ "$(cfg comments.enabled)" = "true" ] && [ -n "$_h" ]; } || return 1
+  _sum="$_CFG_CACHE_DIR/review-fail.summary"
+  _talos_trust
+  _talos_cap _vcs read-comments "$_pr"
+  [ "$_RC" -eq 0 ] || return 1
+  _role="$(python3 -I -c "$_TALOS_BLOCKED_PY" "$_h" "$_TRUST_ON" "$_TRUST_SET" "$3" "$_sum" <<< "$_OUT" 2>/dev/null)" || return 1
+  [ -n "$_role" ] || return 1
+  _talos_run_review_round "$_pr" "$_n" "$_role" "$_sum" "$4"
+}
+
+# _talos_run_blocked_pr <issue> (#639): `next --issue` answered the blocked wait.
+# The issue's open PR that the collect names at stage blocked, if it holds a
+# review finding, goes to the fix round. Returns 1 when there is none.
+_talos_run_blocked_pr() {
+  local _st _pr
+  if ! _st="$(_talos_collect_get)"; then
+    _st="$(bash "$SCRIPT_DIR"/pipeline-status-file.sh collect 2>/dev/null)" || return 1
+  fi
+  _pr="$(python3 -I -c 'import json, sys
+for p in json.loads(sys.stdin.read()).get("prs") or []:
+    if isinstance(p, dict) and p.get("issue") == int(sys.argv[1]) and p.get("stage") == "blocked" and isinstance(p.get("n"), int):
+        print(p["n"]); break' "$1" <<< "$_st" 2>/dev/null)" || return 1
+  [ -n "$_pr" ] || return 1
+  _talos_run_blocked_fix "$_pr" "$1" blocked 1
 }
 
 # _talos_run_lease <issue>: lease the write (next's dispatch shape): a held

@@ -955,4 +955,34 @@ LEASE_RESET
 nx
 assert_eq "action=wait reason=dependency" "$OUT" "AC10 (#601): a waiting in-flight issue and a dependency-gated ready issue is wait reason=dependency"
 
+# ── #639: an answered owner question no longer holds its PR ──────────────────
+# A PR parked with pipeline:needs-owner whose question has a reply goes back to
+# the fix-round gate (a developer dispatch on the PR, which the run driver
+# turns into `gate fix-round`); one with no reply still waits.
+owned_state() {  # $1 = the question's status
+  printf '{"prs": [{"n": 17, "issue": 71, "head": "a4f9", "owner": true, "stage": "blocked"}], "pr_total": 1, "ignored": 0, "blocked": [["PR", 17]], "queued": [], "held": [], "owners": [{"n": 17, "status": "%s", "question": "Which design?"}], "capped": []}' \
+    "$1" > "$STUB_DIR/collect.json"
+}
+reset_stubs
+cfg '{"max_parallel": 1}' '{"validator": true, "developer": true}'
+issue 71 "-" /dev/null
+owned_state answered
+LEASE_RESET
+nxi 71
+assert_eq "action=dispatch stage=developer pr=17 issue=71" "$OUT" "AC1 (#639) next --issue: an answered owner question routes to the fix round"
+LEASE_RESET
+nx
+assert_eq "action=dispatch stage=developer pr=17 issue=71" "$OUT" "AC1 (#639) the untargeted next: an answered owner question routes to the fix round"
+owned_state unanswered
+LEASE_RESET
+nxi 71
+assert_eq "action=wait reason=owner" "$OUT" "AC2 (#639) next --issue: an unanswered question still waits"
+LEASE_RESET
+nx
+assert_eq "action=wait reason=owner" "$OUT" "AC2 (#639) the untargeted next: an unanswered question still waits"
+owned_state unverified
+LEASE_RESET
+nxi 71
+assert_eq "action=wait reason=owner" "$OUT" "AC2 (#639) a reply whose author is unverified still waits"
+
 finish

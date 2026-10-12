@@ -242,6 +242,21 @@ def stage_action(st, pr, issue):
     raise Stop('unsupported-verb:' + st)
 
 
+def answered_owner_prs(data):
+    """The numbers of the owner-flagged PRs whose parked question has its reply
+    (#639): the owner entry of the PR says `answered` (an unverified reply
+    does not count). Such a PR no longer waits for the owner."""
+    owners = data.get('owners') or []
+    ok = set(x.get('n') for x in owners if isinstance(x, dict) and x.get('status') == 'answered')
+    return set(p['n'] for p in data.get('prs') or [] if p.get('owner') and p.get('n') in ok)
+
+
+def answered_action(pr):
+    """The action for an answered owner PR: the developer on the PR, which the
+    run driver takes through `gate fix-round` (it continues from the reply)."""
+    return action('dispatch', stage='developer', pr=pr['n'], issue=pr['issue'])
+
+
 def pick_order(data, inflight, ready):
     """The one order of the issue side (#601): priority, then in-flight before
     ready, then the issue number. The priority is the collect's `priority`
@@ -436,8 +451,11 @@ def collect():
 def pr_side(data):
     """The lowest non-owner PR's action, else the sentinel `issue-side`. The
     PRs are already ordered by the collect; the state is trusted, no PR text is."""
-    prs = sorted((p for p in data['prs'] if not p.get('owner')), key=lambda p: p['n'])
+    answered = answered_owner_prs(data)
+    prs = sorted((p for p in data['prs'] if not p.get('owner') or p['n'] in answered), key=lambda p: p['n'])
     if prs:
+        if prs[0]['n'] in answered:
+            return answered_action(prs[0])
         return stage_action(prs[0]['stage'], prs[0]['n'], prs[0]['issue'])
     # No PR answered: the issue side decides (#471) -- owner waits, the queue
     # walk, the routing.
@@ -471,6 +489,7 @@ def issue_side(data, o):
     blocked = set(n for _, n in (data.get('blocked') or []))
     theirs = set(t['issue'] for t in (data.get('theirs') or []) if isinstance(t, dict) and isinstance(t.get('issue'), int))
     by_owner = dict((x['n'], x) for x in owners if isinstance(x, dict))
+    answered = answered_owner_prs(data)
     roles = set(x for x in o.get('roles', '').split(',') if x)
     skip_labels = set(x for x in o.get('skip-labels', '').split(',') if x)
     label_filter = o.get('label-filter', READY_LABEL)
@@ -618,7 +637,11 @@ def issue_side(data, o):
         # The issue's open pipeline PR is the PR side's, as in the unpinned
         # next: an owner-flagged one waits, the others are resumed at their
         # stage (#582). Only the PR of THIS issue is ever consulted.
-        if any(p.get('issue') == n and p.get('owner') for p in prs):
+        waiting = [p for p in prs if p.get('issue') == n and p.get('owner')]
+        replied = [p for p in waiting if p['n'] in answered]
+        if replied:
+            say_line(answered_action(min(replied, key=lambda p: p['n'])))
+        if waiting:
             say('wait', reason='owner')
         if n in queued:
             adopt(n)
