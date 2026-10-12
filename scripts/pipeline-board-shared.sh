@@ -76,9 +76,12 @@ try:
         if p.get('number') == n:
             print(p.get('id',''))
             sys.exit(0)
+    # A read that returns exactly its cap may have cut the project off (#523).
+    if len(d.get('projects', [])) == 50:
+        sys.stderr.write('board=list-capped n=50 read=projects\\n')
 except Exception:
     pass
-" 2>/dev/null
+"
 }
 
 # _board_resolve_project_id_token PROJECT_NUM OWNER TOKEN — token
