@@ -212,10 +212,18 @@
 #           stop reason=max-fix-attempts|max-total-dispatches|budget-exceeded
 #         or stop reason=unsupported-verb:<verb> when the provider lacks a verb.
 #         `next` leases the issue before answering dispatch or merge (see Lease).
-# next-reasons: usage state-unavailable unsupported-verb:<provider-verb> max-fix-attempts max-total-dispatches budget-exceeded record-failed
+#         Context budget (#605), under ORCHESTRATOR=llm outside `run` only: at or
+#         over execution.context_budget_tokens (the latest call's context in the
+#         transcript TALOS_TRANSCRIPT_PATH names), an answer that would start a
+#         queued issue is instead, exit 0, nothing claimed or leased:
+#           stop reason=context-budget size=<n> budget=<b>
+#           resume=/talos:pipeline
+#         An unknown size is `warn reason=context-unknown` beside the answer.
+# next-reasons: usage state-unavailable unsupported-verb:<provider-verb> max-fix-attempts max-total-dispatches budget-exceeded record-failed context-budget context-unknown
 #   stop: usage state-unavailable unsupported-verb:<provider-verb> max-fix-attempts
-#         max-total-dispatches budget-exceeded record-failed
-#         (exit 2 for usage; else 1)
+#         max-total-dispatches budget-exceeded record-failed context-budget
+#         (exit 2 for usage; exit 0 for context-budget; else 1)
+#   warn: context-unknown
 #   wait: draft ci human-merge blocked owner lease none dependency cap
 #
 # map     The project map (#614): one self-contained HTML page for this repository
@@ -747,25 +755,7 @@ EOF
   # driver cannot run: the file provider (it has no PRs) and the planner (`done`
   # takes no planner). Each case that is not the plain key says so in one stderr
   # line; an unknown value reads as code.
-  _TALOS_ORCHESTRATOR=code
-  _val="$(cfg execution.orchestrator | tr '[:upper:]' '[:lower:]')"
-  case "$_val" in
-    llm) _TALOS_ORCHESTRATOR=llm ;;
-    '' | code) : ;;
-    *) echo "pipeline: execution.orchestrator: unknown value, reading it as code (use code or llm)" >&2 ;;
-  esac
-  if [ "$_TALOS_ORCHESTRATOR" = code ]; then
-    _val=""
-    if _talos_cfg_is vcs.provider file; then
-      _val="vcs.provider file"
-    elif _talos_cfg_is roles.planner true; then
-      _val="roles.planner"
-    fi
-    if [ -n "$_val" ]; then
-      _TALOS_ORCHESTRATOR=llm
-      echo "pipeline: execution.orchestrator is llm for this run: the code driver cannot run $_val" >&2
-    fi
-  fi
+  _talos_orchestrator_resolve say
   _talos_emit ORCHESTRATOR "$_TALOS_ORCHESTRATOR"
 
   _TALOS_HARNESS_REF=0
@@ -3253,6 +3243,70 @@ _talos_claim() {
   _talos_flush
 }
 
+# _talos_orchestrator_resolve [say]: the effective execution.orchestrator in
+# _TALOS_ORCHESTRATOR (#602), as `env` prints it. With `say`, each case that is
+# not the plain key is one stderr line.
+_talos_orchestrator_resolve() {
+  local _val _say="${1:-}"
+  _TALOS_ORCHESTRATOR=code
+  _val="$(cfg execution.orchestrator | tr '[:upper:]' '[:lower:]')"
+  case "$_val" in
+    llm) _TALOS_ORCHESTRATOR=llm ;;
+    '' | code) : ;;
+    *) [ -z "$_say" ] || echo "pipeline: execution.orchestrator: unknown value, reading it as code (use code or llm)" >&2 ;;
+  esac
+  if [ "$_TALOS_ORCHESTRATOR" = code ]; then
+    _val=""
+    if _talos_cfg_is vcs.provider file; then
+      _val="vcs.provider file"
+    elif _talos_cfg_is roles.planner true; then
+      _val="roles.planner"
+    fi
+    if [ -n "$_val" ]; then
+      _TALOS_ORCHESTRATOR=llm
+      [ -z "$_say" ] || echo "pipeline: execution.orchestrator is llm for this run: the code driver cannot run $_val" >&2
+    fi
+  fi
+}
+
+# _talos_context_check <action line> (#605): the LLM orchestrator's context
+# budget. Only under ORCHESTRATOR=llm, outside `talos.sh run`, with
+# execution.context_budget_tokens above 0. The session size is the latest
+# call's context in the transcript TALOS_TRANSCRIPT_PATH names (the #604
+# reader); unknown is one warn line. At or over the budget, an answer that would
+# start an issue from the ready queue becomes the stop and one resume line
+# (exit 0, nothing claimed or leased); in-flight work is answered as usual.
+_talos_context_check() {
+  local _b _size _n
+  [ -z "${TALOS_RUN_PID:-}" ] || return 0
+  _b="$(cfg execution.context_budget_tokens)"
+  _talos_isnum "$_b" && [ "$_b" -gt 0 ] || return 0
+  _talos_orchestrator_resolve
+  [ "$_TALOS_ORCHESTRATOR" = llm ] || return 0
+  _size="$(python3 -I -B -c '
+import importlib, sys
+sys.path.insert(0, sys.argv[1])
+n = importlib.import_module("pipeline-spend-format").session_context(sys.argv[2])
+print("" if n is None else n)' "$SCRIPT_DIR" "${TALOS_TRANSCRIPT_PATH:-}" 2>/dev/null)"
+  if ! _talos_isnum "$_size"; then
+    _talos_warn context-unknown
+    return 0
+  fi
+  [ "$_size" -ge "$_b" ] || return 0
+  case "$1" in
+    "action=dispatch stage="*" pr="*) return 0 ;;
+    "action=dispatch stage="*" issue="*) _n="$(printf '%s\n' "$1" | sed -n 's/.* issue=\([0-9]*\).*/\1/p')" ;;
+    *) return 0 ;;
+  esac
+  python3 -I -c 'import json, sys; sys.exit(0 if int(sys.argv[2]) in (json.load(open(sys.argv[1])).get("queued") or []) else 1)' \
+    "$_CFG_CACHE_DIR/state.json" "$_n" 2>/dev/null || return 0
+  : > "$_TALOS_OUT"
+  _talos_emit stop "reason=context-budget size=$_size budget=$_b"
+  _talos_emit resume "/talos:pipeline"
+  _talos_flush
+  exit 0
+}
+
 # next: one action from the state -- the PR-side half (#470), then the
 # issue-side half (#471) when no PR answered. The lease (#470, AC4) is
 # acquired for a dispatch/merge answer before it is printed, so two runs
@@ -3324,6 +3378,7 @@ _talos_next() {
       esac
     fi
   fi
+  _talos_context_check "$_a"
   case "$_a" in
     "action=dispatch stage="*" pr="*" issue="*) : ;;
     "action=dispatch stage="*" issue="*) : ;;
