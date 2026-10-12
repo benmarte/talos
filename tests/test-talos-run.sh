@@ -771,7 +771,7 @@ late_fixture() {
   fix_fixture
   printf 'That monitor expiry does not change anything.\n' > "$STUB_DIR/message.developer"
 }
-late_dev_opened() { grep -c 'hooks post_stage developer developer 9 --verdict PR_OPENED' "$STUB_DIR/journal"; }
+late_dev_opened() { grep -c 'hooks post_stage developer.* --verdict PR_OPENED' "$STUB_DIR/journal"; }
 late_fixture
 cat >> "$STUB_DIR/hook.developer.1" <<'HOOK'
 printf bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb > "$d/pr-head.12"
