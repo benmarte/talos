@@ -3,6 +3,7 @@
 #   AC1 assert_cut_short: a bounded wait is judged against a same-run baseline
 #   AC2 assert_linear: a scan's growth order, not a fixed number of seconds
 #   AC3 no test file compares an elapsed time with a literal number of seconds
+#   AC4 the clock the converted tests read measures a real wait
 set -u
 . "$(dirname "$0")/helpers.sh"
 make_sandbox || exit 1
@@ -41,5 +42,18 @@ for f in sorted(glob.glob(os.path.join(sys.argv[1], "test-*.sh"))):
 PYEOF
 )"
 assert_eq "" "$OFFENDERS" "AC3 no test compares an elapsed time with a literal number of seconds outside the helpers"
+
+# ── AC4 ──────────────────────────────────────────────────────────────────────
+# wall_s and since_s each run in their own process. A clock that counts from its
+# own process's start reads 0 for any wait, and every assertion fed by it passes
+# whatever it times: AC1 and AC2 above only see synthetic numbers.
+T0="$(wall_s)"
+sleep 1
+WAITED="$(since_s "$T0")"
+if python3 -I -c 'import sys; sys.exit(0 if float(sys.argv[1]) >= 1 else 1)' "$WAITED"; then
+  pass "AC4 since_s reads at least 1 s across a 1 s sleep"
+else
+  fail "AC4 since_s reads at least 1 s across a 1 s sleep" "read ${WAITED}s"
+fi
 
 finish
