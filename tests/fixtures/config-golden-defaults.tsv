@@ -73,6 +73,7 @@ limits.max_total_dispatches	8	table	pipeline-vcs.sh
 limits.same_area_rounds	2	table	talos.sh
 limits.tokens_per_issue		empty	pipeline-budget.sh
 limits.warn_at	0.8	table	pipeline-budget.sh,pipeline-events.sh
+map.enabled	true	table	talos.sh
 markers.trusted_authors		empty	pipeline-vcs.sh
 markers.verify_authors	true	table	pipeline-vcs.sh
 merge.approval_waiver_paths		empty	pipeline-vcs.sh
