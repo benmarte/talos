@@ -150,6 +150,26 @@
 #                           Not under the repo-wide lock: the pull is a network
 #                           call, and only this checkout and its own branch
 #                           are touched.
+#   pr-worktree <issue> <pr>
+#                           The checkout a PR-side stage that writes (docs) runs
+#                           in (#640): prints the absolute path of a worktree on
+#                           PR <pr>'s head branch (`pipeline-vcs.sh
+#                           pr-head-ref`). A worktree that already holds that
+#                           branch (the developer's, or the current checkout) is
+#                           used as it is, with no git write. Otherwise one is
+#                           created at <main checkout>/.claude/worktrees/<branch,
+#                           "/" -> "-"> from origin/<branch> (fetched first): on
+#                           the local branch fast-forwarded to it when one
+#                           exists, else on a new tracking branch. The new
+#                           worktree is tagged for <issue> (.talos/env, as
+#                           `create`), and `.claude/worktrees/` goes into
+#                           info/exclude when git does not already ignore it,
+#                           so the main checkout stays clean. Under the
+#                           repo-wide lock. Exit 1, nothing left behind, when
+#                           the head branch is unreadable or not a valid branch
+#                           name, origin has no such branch, the path exists
+#                           without that branch, or the local branch has
+#                           diverged from origin's; 2 usage.
 #   commit-docs <pr> -- <file>...
 #                           The docs stage's one git write (#607): stage the
 #                           named files, commit them and push. The headless docs
@@ -846,6 +866,59 @@ _wt_create_body() {
   exit 0
 }
 
+# _wt_pr_worktree_body <issue> <pr> -- the work of `pr-worktree` (#640).
+_wt_pr_worktree_no() { echo "pipeline-worktree: pr-worktree: $*" >&2; exit 1; }
+_wt_pr_worktree_body() {
+  local n="$1" pr="$2" ref main wt slug line cur="" excl
+  ref="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" pr-head-ref "$pr" 2>/dev/null)" || ref=""
+  ref="$(printf '%s' "$ref" | head -n 1)"
+  [ -n "$ref" ] || _wt_pr_worktree_no "could not read the head branch of PR #$pr"
+  git check-ref-format --branch "$ref" >/dev/null 2>&1 \
+    || _wt_pr_worktree_no "the head branch of PR #$pr is not a valid branch name"
+  # A worktree that already holds the branch is the one to use (porcelain:
+  # `worktree <path>` opens each record, `branch refs/heads/<b>` names it).
+  while IFS= read -r line; do
+    case "$line" in
+      "worktree "*) cur="${line#worktree }" ;;
+      "branch refs/heads/$ref") [ -d "$cur" ] && { printf '%s\n' "$cur"; exit 0; } ;;
+    esac
+  done <<EOF_WT
+$(git worktree list --porcelain 2>/dev/null)
+EOF_WT
+  main="$(git worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p')"
+  [ -n "$main" ] && [ -d "$main" ] || _wt_pr_worktree_no "not inside a git repository"
+  slug="$(printf '%s' "$ref" | tr '/' '-')"
+  wt="$main/.claude/worktrees/$slug"
+  [ ! -e "$wt" ] || _wt_pr_worktree_no "$wt exists and does not hold $ref"
+  GIT_TERMINAL_PROMPT=0 git fetch -q origin "+refs/heads/$ref:refs/remotes/origin/$ref" 2>/dev/null \
+    || _wt_pr_worktree_no "could not fetch $ref from origin"
+  if git show-ref --verify -q "refs/heads/$ref"; then
+    git worktree add -q "$wt" "$ref" 2>/dev/null || _wt_pr_worktree_no "git worktree add failed for $ref"
+    if ! git -C "$wt" merge -q --ff-only "refs/remotes/origin/$ref" >/dev/null 2>&1; then
+      git worktree remove --force "$wt" 2>/dev/null
+      _wt_pr_worktree_no "the local $ref has diverged from origin's; nothing created"
+    fi
+  else
+    git worktree add -q --track -b "$ref" "$wt" "refs/remotes/origin/$ref" 2>/dev/null \
+      || _wt_pr_worktree_no "git worktree add failed for $ref"
+  fi
+  # The main checkout stays clean: .claude/worktrees/ is ignored there, by the
+  # repository's own rules or by one info/exclude line (never a tracked file).
+  if ! git -C "$main" check-ignore -q "$wt" 2>/dev/null; then
+    excl="$(git -C "$main" rev-parse --git-path info/exclude 2>/dev/null)"
+    case "$excl" in /*) : ;; *) excl="$main/$excl" ;; esac
+    mkdir -p "$(dirname "$excl")" 2>/dev/null && printf '/.claude/worktrees/\n' >> "$excl"
+  fi
+  _talos_ignore_in_tree "$wt"
+  mkdir -p "$wt/.talos"
+  {
+    printf 'TALOS_ISSUE_NUMBER=%s\n' "$n"
+    printf 'TALOS_WORKTREE_PATH=%s\n' "$wt"
+  } > "$wt/.talos/env"
+  printf '%s\n' "$wt"
+  exit 0
+}
+
 # ── #419: checkpoint / handoff ───────────────────────────────────────────────
 # The handoff directory: <git common dir>/talos/handoff, from any directory
 # of the repo (#517: it used to be <repo-root>/.talos/handoff, which IS
@@ -1318,8 +1391,16 @@ case "$verb" in
     _wt_commit_docs_body "$@"
     ;;
 
+  pr-worktree)
+    case "${1:-}:${2:-}" in
+      *[!0-9:]* | :* | *:) echo "usage: pipeline-worktree.sh pr-worktree <issue-number> <pr-number>" >&2; exit 2 ;;
+    esac
+    [ "$#" -eq 2 ] || { echo "usage: pipeline-worktree.sh pr-worktree <issue-number> <pr-number>" >&2; exit 2; }
+    with_lock "$_WT_LOCK_RESOURCE" 10 -- _wt_pr_worktree_body "$1" "$2"
+    ;;
+
   *)
-    echo "usage: pipeline-worktree.sh <remove <n> | sweep [<open-id>...] | list | create <n> <branch> | tag <n> | checkpoint <n> [--local] [--runner R] [--model M] | handoff <n> | to-base <n> | commit-docs <pr> -- <file>... | status>" >&2
+    echo "usage: pipeline-worktree.sh <remove <n> | sweep [<open-id>...] | list | create <n> <branch> | tag <n> | checkpoint <n> [--local] [--runner R] [--model M] | handoff <n> | to-base <n> | commit-docs <pr> -- <file>... | pr-worktree <n> <pr> | status>" >&2
     exit 2
     ;;
 esac
