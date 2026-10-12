@@ -34,7 +34,7 @@ ci() {  # create-issue with the given labels; sets OUT, ERRS, RC
   : > "$STATUS_LOG"
   local _a=() _l
   for _l in "$@"; do _a+=(--label "$_l"); done
-  OUT="$(STUB_NEW_ISSUE_NUMBER=42 bash "$CS/pipeline-vcs.sh" create-issue "Fix the crash" "$SANDBOX/body.md" "${_a[@]}" 2>"$SANDBOX/ci.err")"; RC=$?
+  OUT="$(STUB_NEW_ISSUE_NUMBER=42 bash "${CI_SCRIPTS:-$CS}/pipeline-vcs.sh" create-issue "Fix the crash" "$SANDBOX/body.md" "${_a[@]}" 2>"$SANDBOX/ci.err")"; RC=$?
   ERRS="$(cat "$SANDBOX/ci.err")"
 }
 printf '{"vcs": {"provider": "github", "repo": "acme/widget"}, "issues": {"assignee": "none"}, %s}\n' "$BOARD_CFG" > "$PIPELINE_CONFIG"
@@ -52,6 +52,18 @@ assert_eq "0" "$RC" "AC3 a failed board step leaves create-issue at exit 0"
 assert_eq "https://github.com/acme/widget/issues/42" "$OUT" "AC3 stdout is still the URL alone"
 assert_eq "1" "$(printf '%s\n' "$ERRS" | grep -c '^warn reason=board-add-failed issue=42$')" \
   "AC3 exactly one warn reason=board-add-failed line" "$ERRS"
+# The real pipeline-status.sh answers a failed item-add or item-edit with exit 0
+# and a talos:board-unverified line on stdout: a failed board step all the same.
+STUB_BOARD_ITEMS_JSON='[]' STUB_ITEM_ADD_FAIL=1 TALOS_BOARD_NO_CACHE=1 CI_SCRIPTS="$TALOS_ROOT/scripts" ci pipeline:dev
+assert_eq "0 https://github.com/acme/widget/issues/42" "$RC $OUT" "AC3 a failed item-add leaves exit 0 and the URL alone on stdout"
+assert_eq "1" "$(printf '%s\n' "$ERRS" | grep -c '^warn reason=board-add-failed issue=42$')" \
+  "AC3 a failed item-add is exactly one warn reason=board-add-failed line" "$ERRS"
+STUB_ITEM_EDIT_FAIL=1 TALOS_BOARD_NO_CACHE=1 CI_SCRIPTS="$TALOS_ROOT/scripts" ci pipeline:dev
+assert_eq "0 https://github.com/acme/widget/issues/42" "$RC $OUT" "AC3 a failed item-edit leaves exit 0 and the URL alone on stdout"
+assert_eq "1" "$(printf '%s\n' "$ERRS" | grep -c '^warn reason=board-add-failed issue=42$')" \
+  "AC3 a failed item-edit is exactly one warn reason=board-add-failed line" "$ERRS"
+TALOS_BOARD_NO_CACHE=1 CI_SCRIPTS="$TALOS_ROOT/scripts" ci pipeline:dev
+assert_eq "0" "$(printf '%s\n' "$ERRS" | grep -c 'board-add-failed')" "AC3 a board step that works prints no warn line" "$ERRS"
 
 # ── AC4: capped board reads ──────────────────────────────────────────────────
 # A gh in front of the stub: `project list` answers 50 other projects, and the
@@ -140,6 +152,14 @@ printf '1\n' > "$STUB_DIR/status.rc"
 OUT="$(bash "$GS/talos.sh" gate fix-round 42 reviewer --pr 57 2>/dev/null)"
 assert_contains "$OUT" "verdict=redispatch" "AC6 a failed board write leaves the verdict a redispatch"
 assert_contains "$OUT" "warn reason=board-failed issue=42" "AC6 a failed board write is one warn line"
+# pipeline-status.sh's own answer to a failed item-edit: exit 0 and the marker.
+reset
+printf 'stage=reviewer count=1 total=1\n' > "$STUB_DIR/vcs.record-attempt.out"
+printf 'talos:board-unverified project=7\n' > "$STUB_DIR/status.out"
+OUT="$(bash "$GS/talos.sh" gate fix-round 42 reviewer --pr 57 2>/dev/null)"
+assert_contains "$OUT" "verdict=redispatch" "AC6 an unverified board write leaves the verdict a redispatch"
+assert_eq "1" "$(printf '%s\n' "$OUT" | grep -c '^warn reason=board-failed issue=42$')" \
+  "AC6 an unverified board write is one warn reason=board-failed line" "$OUT"
 # A board with no project number (Azure work-item states): pipeline-status.sh
 # decides whether there is a board, as it does for done's Blocked write.
 printf '{"vcs": {"provider": "azure"}, "comments": {"enabled": false}, "board": {"azure_states": {"blocked": "Blocked"}}}\n' > "$PIPELINE_CONFIG"
