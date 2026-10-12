@@ -712,7 +712,10 @@ for sig in TERM INT; do
   case "$sig" in TERM) want=143 ;; INT) want=130 ;; esac
   assert_eq "$want" "$rc" "signal: SIG$sig during a read exits $want"
   vpid="$(cat "$FX/verbpid.pr-head" 2>/dev/null)"
-  if [ -n "$vpid" ] && kill -0 "$vpid" 2>/dev/null; then
+  # The signalled verb dies asynchronously: on a loaded machine it can still be
+  # exiting when the collect has already returned (#593). Wait (bounded) for it
+  # to be gone; one that survives the signal sleeps 30 s and stays visible.
+  if [ -n "$vpid" ] && ! wait_until 10 sh -c '! kill -0 "$1" 2>/dev/null' _ "$vpid"; then
     kill "$vpid" 2>/dev/null
     alive=yes
   else

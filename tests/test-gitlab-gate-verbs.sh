@@ -151,7 +151,7 @@ git remote set-url origin git@gitlab.com:acme/widget.git
 
 # The closing-list scan stays linear (#303 review): `fix#1 ` is both a
 # keyword and a list item, which made every keyword re-walk the rest of the
-# list (2.9 s at 24 KB). A 1 MB description must finish well inside 5 s.
+# list (2.9 s at 24 KB). A 1 MB description must scale linearly from 64 KB.
 # The body is too big for an env var, so a glab wrapper serves it from a
 # file; a 30 s watchdog turns a regression into a failure, not a hang.
 mkdir -p "$SANDBOX/bigglab"
@@ -172,6 +172,12 @@ json.dump(mr(9, "opened", big), open(d + "/big-view.json", "w"))
 json.dump(mr(9, "opened", "Closes #42"), open(d + "/closes-view.json", "w"))
 json.dump([mr(9, "opened", "Closes #42"), mr(11, "opened", big)], open(d + "/big-open.json", "w"))
 json.dump([mr(12, "merged", big)], open(d + "/big-merged.json", "w"))
+# The same inputs at 1/16 the size (#593): the scan is judged by its growth
+# from these, timed in the same run, not by a fixed number of seconds.
+small = big[:1048576 // 16]
+json.dump(mr(9, "opened", small), open(d + "/small-view.json", "w"))
+json.dump([mr(9, "opened", "Closes #42"), mr(11, "opened", small)], open(d + "/small-open.json", "w"))
+json.dump([mr(12, "merged", small)], open(d + "/small-merged.json", "w"))
 EOF
 _timed() {  # prints "<rc> <seconds>" for "$@"; rc 124 when its process group is killed after 30 s
   python3 -c '
@@ -187,10 +193,12 @@ for _case in "big-view|big-open|check-closing-keyword 9 42|the MR body" \
     "closes-view|big-open|check-closing-keyword 9 42|a sibling body" \
     "closes-view|big-merged|find-pr 42 merged|a merged MR body"; do
   IFS='|' read -r _view _list _verb _what <<<"$_case"
+  read -r _ _small <<<"$(PATH="$SANDBOX/bigglab:$PATH" BIG_VIEW="$SANDBOX/${_view/big/small}.json" BIG_LIST="$SANDBOX/${_list/big/small}.json" \
+    _timed bash "$VCS" $_verb)"
   read -r rc _secs <<<"$(PATH="$SANDBOX/bigglab:$PATH" BIG_VIEW="$SANDBOX/$_view.json" BIG_LIST="$SANDBOX/$_list.json" \
     _timed bash "$VCS" $_verb)"
   assert_eq "0" "$rc" "linear scan: $_verb on a 1 MB 'fix#1 ' $_what exits 0 (no match)"
-  awk -v s="$_secs" 'BEGIN { exit !(s < 5) }'; assert_eq "0" "$?" "linear scan: $_verb on a 1 MB $_what took ${_secs}s (< 5 s)"
+  assert_linear "linear scan: $_verb on a 1 MB $_what took ${_secs}s (${_small}s at 64 KB)" "$_small" "$_secs" 16
 done
 
 # github keeps its narrower keyword set: Implements is not a closing keyword,
