@@ -698,6 +698,11 @@ fr 42 qa --pr 9
 assert_contains "$OUT" "warn reason=unblock-failed" "fix-round: a failing unblock is a warn line"
 assert_contains "$OUT" "verdict=redispatch" "fix-round: a failing unblock does not stop the round"
 assert_gate "fix-round (unblock-failed)"
+reset_stubs; set_stub record-attempt 0 "stage=qa count=1 total=1"; set_stub status 1 "" "boom"
+fr 42 qa --pr 9
+assert_contains "$OUT" "warn reason=board-failed issue=42" "AC6 fix-round: a failing board write is a warn line"
+assert_contains "$OUT" "verdict=redispatch" "AC6 fix-round: a failing board write does not stop the round"
+assert_gate "AC6 fix-round (board-failed)"
 
 # ── (b2) the same-area check (#599) ──────────────────────────────────────────
 # One review role blocking the same file in limits.same_area_rounds rounds
