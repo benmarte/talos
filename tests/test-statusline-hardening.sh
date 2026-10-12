@@ -13,8 +13,6 @@ CC="$SANDBOX/cc"
 export CLAUDE_CONFIG_DIR="$CC"
 mkdir -p "$CC"
 SETTINGS="$CC/settings.json"
-SCRIPTS="$SANDBOX/inst/scripts"
-mkdir -p "$SCRIPTS"
 cmd_of() { python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["statusLine"]["command"])' "$1" 2>/dev/null; }
 foreign() { printf '{"statusLine": {"type": "command", "command": "%s"}}\n' "$1" > "$SETTINGS"; }
 
@@ -22,7 +20,9 @@ foreign() { printf '{"statusLine": {"type": "command", "command": "%s"}}\n' "$1"
 foreign "echo ORIG"
 mkdir -p "$SANDBOX/relth/scripts"
 OUT="$(TALOS_HOME=relth bash "$SL" wire "$SETTINGS" relth/scripts)"
-assert_eq "bash $SANDBOX/relth/statusline-chain.sh" "$(cmd_of "$SETTINGS")" "AC1 a relative TALOS_HOME is written as an absolute wrapper path"
+# Resolved against the working directory, so the physical one ($SANDBOX is a
+# symlinked path with a // on macOS).
+assert_eq "bash $(pwd -P)/relth/statusline-chain.sh" "$(cmd_of "$SETTINGS")" "AC1 a relative TALOS_HOME is written as an absolute wrapper path"
 OUT="$(TALOS_HOME=relth bash "$SL" undo "$SETTINGS")"
 assert_eq "echo ORIG" "$(cmd_of "$SETTINGS")" "AC1 undo with the same relative TALOS_HOME restores the original"
 
