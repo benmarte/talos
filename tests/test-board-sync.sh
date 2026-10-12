@@ -80,6 +80,16 @@ OUT="$(PATH="$SANDBOX/capbin:$PATH" CAP_PROJECTS=1 TALOS_BOARD_NO_CACHE=1 bash "
 assert_contains "$OUT" "board=list-capped n=50 read=projects" "AC4 a project list of exactly 50 without the target says it is capped"
 OUT="$(PATH="$SANDBOX/capbin:$PATH" CAP_ITEMS=1 TALOS_BOARD_NO_CACHE=1 bash "$TALOS_ROOT/scripts/pipeline-status.sh" 42 "In review" 2>&1)"
 assert_contains "$OUT" "board=list-capped n=50 read=items" "AC4 an issue with exactly 50 project items says the read is capped"
+# The fields read is the token path's (curl stub): the project id, then 50
+# fields with no status field among them.
+printf '{"vcs": {"provider": "github-api", "repo": "acme/widget"}, %s}\n' "$BOARD_CFG" > "$PIPELINE_CONFIG"
+python3 -I -c '
+import json
+print(json.dumps({"data": {"user": {"projectV2": {"id": "PVT_1"}}}}))
+print(json.dumps({"data": {"node": {"fields": {"nodes": [{} for _ in range(50)]}}}}))
+' > "$CURL_QUEUE"
+OUT="$(GITHUB_TOKEN=stub TALOS_BOARD_NO_CACHE=1 bash "$TALOS_ROOT/scripts/pipeline-status.sh" 42 "In review" 2>&1)"
+assert_contains "$OUT" "board=list-capped n=50 read=fields" "AC4 a fields read of exactly 50 without the status field says it is capped"
 
 # ── AC5, AC6: done and gate fix-round ────────────────────────────────────────
 # talos.sh on a scripts dir whose vcs, notify, hooks, status and events are
@@ -130,5 +140,12 @@ printf '1\n' > "$STUB_DIR/status.rc"
 OUT="$(bash "$GS/talos.sh" gate fix-round 42 reviewer --pr 57 2>/dev/null)"
 assert_contains "$OUT" "verdict=redispatch" "AC6 a failed board write leaves the verdict a redispatch"
 assert_contains "$OUT" "warn reason=board-failed issue=42" "AC6 a failed board write is one warn line"
+# A board with no project number (Azure work-item states): pipeline-status.sh
+# decides whether there is a board, as it does for done's Blocked write.
+printf '{"vcs": {"provider": "azure"}, "comments": {"enabled": false}, "board": {"azure_states": {"blocked": "Blocked"}}}\n' > "$PIPELINE_CONFIG"
+reset
+printf 'stage=reviewer count=1 total=1\n' > "$STUB_DIR/vcs.record-attempt.out"
+OUT="$(bash "$GS/talos.sh" gate fix-round 42 reviewer --pr 57 2>/dev/null)"
+assert_eq "status 42 In progress" "$(statuses)" "AC6 the redispatch writes In progress with no board.project_number set"
 
 finish
