@@ -73,6 +73,7 @@
 #         comments-unreadable handoff-label-failed trust-unverified
 #   warn: closing-keyword-unverified ci-runs-unrecorded budget-check-failed
 #         area-check-failed unblock-failed comment-failed label-failed value-truncated
+#         board-failed
 #
 # post-merge, sweep, summary   Bookkeeping; each item is non-fatal (a `warn` line,
 #         the next item still runs). First line `post_merge=done|handoff`,
@@ -1045,7 +1046,7 @@ _talos_same_area() {
 # after a fix round is cleared to run.
 _talos_gate_fix_round() {
   [ "$#" -ge 2 ] || _talos_stop usage 2
-  local _n="$1" _stage="$2" _pr="" _s _ok=1 _bout _brc=0 _r _by _line _AREA_ANSWERED=0
+  local _n="$1" _stage="$2" _pr="" _s _ok=1 _bout _brc=0 _r _by _line _board _AREA_ANSWERED=0
   shift 2
   case "$#" in
     0) : ;;
@@ -1059,7 +1060,7 @@ _talos_gate_fix_round() {
   done
   [ "$_ok" -eq 0 ] || _talos_stop usage 2
   _talos_prepare gate-fix-round pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh \
-                                pipeline-budget.sh pipeline-hooks.sh
+                                pipeline-budget.sh pipeline-hooks.sh pipeline-status.sh
 
   # Exit 1 (exceeded) is the signal, so it is captured and never aborts.
   # With limits.tokens_per_issue unset the check prints nothing and exits 0,
@@ -1106,6 +1107,15 @@ _talos_gate_fix_round() {
       || _vcs label-pr "$_pr" --remove pipeline:needs-owner > /dev/null || _talos_emit warn "reason=unblock-failed"
   fi
   _vcs label-issue "$_n" --remove pipeline:blocked > /dev/null || _talos_emit warn "reason=unblock-failed"
+  # The card follows (#523): back to In progress for the fix round, unguarded
+  # like done's Blocked write (pipeline-status.sh knows whether there is a
+  # board). A board failure is a warning, never a reason not to dispatch; a
+  # write the status script could not make is its talos:board-unverified line
+  # with exit 0, and counts as one.
+  _board="$(bash "$SCRIPT_DIR/pipeline-status.sh" "$_n" "In progress" 2> /dev/null)" || _board=talos:board-unverified
+  case "$_board" in
+    *talos:board-unverified*) _talos_emit warn "reason=board-failed issue=$_n" ;;
+  esac
   _talos_emit stage "$_stage"
   _talos_verdict redispatch
 }
@@ -2846,10 +2856,12 @@ _talos_done() {
     validator:CONFIRMED) _col="In progress" ;;
     validator:*) _col="Blocked"; _msg="Validator: $_v"; _ev=blocked ;;
     developer:PR_OPENED) _col="In review"; _msg="PR #$_pr opened"; _ev=pr-opened ;;
-    qa:FAIL | qa:RESTAMP_FAIL) _msg="QA failed in PR #$_pr"; _ev=blocked ;;
-    reviewer:CHANGES | reviewer:RESTAMP_FAIL) _msg="reviewer: changes required"; _ev=blocked ;;
+    # A failing review verdict moves the card to Blocked too (#523); the
+    # redispatch of its fix round moves it back to In progress.
+    qa:FAIL | qa:RESTAMP_FAIL) _col="Blocked"; _msg="QA failed in PR #$_pr"; _ev=blocked ;;
+    reviewer:CHANGES | reviewer:RESTAMP_FAIL) _col="Blocked"; _msg="reviewer: changes required"; _ev=blocked ;;
     security:FINDINGS | security:RESTAMP_FAIL | adversarial:FINDINGS | adversarial:RESTAMP_FAIL)
-      _msg="$_role: findings in PR #$_pr"; _ev=blocked ;;
+      _col="Blocked"; _msg="$_role: findings in PR #$_pr"; _ev=blocked ;;
   esac
 
   # #580: BLOCKED (any role) halts the issue (and its PR) for a human: pipeline:blocked.
