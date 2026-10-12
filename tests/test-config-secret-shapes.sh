@@ -209,22 +209,30 @@ assert_eq "notifications.slack.bot_token${TAB}env:GH_TOKEN (denied)${TAB}repo" "
 # JSON cannot alias, so the old YAML alias-cycle and billion-laughs cases are
 # gone; the walker's depth/size bounds still protect a pathological file.
 reset_cfg
-python3 -I - "$SANDBOX/deep.json" <<'PYNEST'
+python3 -I - "$SANDBOX/deep.json" "$SANDBOX/shallow.json" <<'PYNEST'
 import json, sys
-obj = 1
-for _ in range(200):
-    obj = {"x": obj}
-json.dump(obj, open(sys.argv[1], "w"))
+def nest(depth):
+    obj = 1
+    for _ in range(depth):
+        obj = {"x": obj}
+    return obj
+json.dump(nest(200), open(sys.argv[1], "w"))
+json.dump(nest(12), open(sys.argv[2], "w"))
 PYNEST
+# Timed against a 12-level config in the same run (#593), not a fixed bound.
+cp "$SANDBOX/shallow.json" talos.pipeline.json
+_t0="$(wall_s)"
+get notifications.slack_channel >/dev/null
+_small="$(since_s "$_t0")"
 cp "$SANDBOX/deep.json" talos.pipeline.json
-_t0=$SECONDS
+_t0="$(wall_s)"
 out="$(get notifications.slack_channel)"; rc=$?
-_dt=$((SECONDS - _t0))
+_dt="$(since_s "$_t0")"
 assert_eq "0" "$rc" "(deep) a 200-level-nested config: the lookup exits 0"
 assert_not_contains "$(cat "$ERR")" "Traceback" "(deep) ... with no traceback"
 assert_contains "$(cat "$ERR")" "is nested too deeply" "(deep) the too-deep subtree is dropped with one line"
-if [ "$_dt" -lt 20 ]; then pass "(deep) ... and completes quickly"; else fail "(deep) ... and completes quickly" "took ${_dt}s"; fi
-unset _t0 _dt
+assert_linear "(deep) ... and completes in linear time (${_dt}s; ${_small}s at 12 levels)" "$_small" "$_dt" 16
+unset _t0 _dt _small
 reset_cfg
 
 # ── env:NAME may not point at a denied variable, even from the environment ───
