@@ -378,6 +378,15 @@ assert_eq "0:spec-usable: ok" "$URC:$UOUT" "AC7 spec-usable: a usable spec is ok
 assert_eq "view-issue 7 --spec" "$(cat "$QA_VCS_LOG" 2>/dev/null)" "AC7 spec-usable: the spec read is its one VCS call (no checkout)"
 assert_file_absent "$SHIM/git.log" "AC7 spec-usable: a usable spec runs no git command"
 assert_file_absent "$RAN_MARKER" "AC7 spec-usable: a usable spec runs no test"
+
+# AC4 (#645): a spec comment under the pm stage header line is the spec, not a
+# fall-back to the issue body.
+new_repo
+spec '**Tests:** `tests/test-greet.sh`'
+{ printf '**Agent:** pm (talos)\n\n'; cat "$QA_SPEC_FILE"; } > "$QA_SPEC_FILE.hdr"
+mv "$QA_SPEC_FILE.hdr" "$QA_SPEC_FILE"
+usable
+assert_eq "0:spec-usable: ok" "$URC:$UOUT" "AC4 spec-usable: a spec under the pm header line is ok, exit 0"
 new_repo
 printf '**PM spec:** x\n- [ ] AC1 the README is clear (prose: wording)\n' > "$QA_SPEC_FILE"
 usable

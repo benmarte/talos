@@ -75,6 +75,18 @@ assert_contains "$out" "only the CLI" "a comment after the PM spec is kept"
 assert_not_contains "$out" "OWNER CLARIFICATION" "a comment before the PM spec is dropped"
 assert_eq "2" "$(printf '%s' "$out" | earlier_of)" "earlier_comments counts the two human comments before the PM spec"
 
+# ── AC3 (#645): a header-then-**PM spec:** comment is a stage comment, whatever the header
+printf '%s\n' '{"comments": {"header": "## {role} stage"}}' > talos.pipeline.json
+HSPEC='## pm stage
+
+**PM spec:** goal under a custom header'
+export STUB_GH_COMMENTS_RAW="$(comments_json "$EARLY" "$REPLY" "$HSPEC" "$LATER")"
+out="$(bash "$VCS" view-issue 548 --since-stage)"
+assert_eq "2" "$(printf '%s' "$out" | count_of)" "AC3 the header-then-spec comment is the boundary: it and the one after"
+assert_not_contains "$out" "OWNER CLARIFICATION" "AC3 a comment before the header-then-spec boundary is dropped"
+assert_eq "2" "$(printf '%s' "$out" | earlier_of)" "AC3 earlier_comments counts the human comments before it"
+rm -f talos.pipeline.json
+
 # ── nothing newer than the last stage: just that stage comment
 export STUB_GH_COMMENTS_RAW="$(comments_json "$EARLY" "$VERDICT")"
 out="$(bash "$VCS" view-issue 548 --since-stage)"

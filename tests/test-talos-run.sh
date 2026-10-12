@@ -1238,6 +1238,32 @@ assert_contains "$(journal)" "hooks post_stage qa qa 9 --pr 12 --verdict BLOCKED
 assert_contains "$(journal)" "vcs label-pr 12 --add pipeline:blocked" "blocked: the PR is labelled pipeline:blocked"
 assert_not_contains "$(journal)" "gate fix-round" "blocked: a qa BLOCKED: starts no developer fix round"
 
+# AC6 (#645): a QA `BLOCKED: spec:` is a spec fault, not a stage that needs a
+# person: the documented spec-unusable stop, blocked as for any BLOCKED.
+reset_stubs
+LEASE_RESET
+draft_cfg '"qa_mode": "ci", "timeout_ms": 600000, "ci_wait_s": 900' ', "merge": {"required_checks": ["test (ubuntu-latest)"]}'
+draft_collect ready
+draft_ready
+printf '\nBLOCKED: spec: no criteria checklist\nsecond line\n' > "$STUB_DIR/message.qa"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=16500 rn --max-iterations 1
+assert_eq "0" "$RC" "AC6 a qa BLOCKED: spec: ends the run clean"
+assert_eq "stop reason=spec-unusable issue=9 pr=12" "$(printf '%s\n' "$OUT" | grep '^stop ')" \
+  "AC6 a qa BLOCKED: spec: is the spec-unusable stop, not stage-blocked"
+assert_contains "$(journal)" "vcs label-pr 12 --add pipeline:blocked" "AC6 the PR is labelled pipeline:blocked"
+assert_contains "$(journal)" "vcs label-issue 9 --add pipeline:blocked" "AC6 the issue is labelled pipeline:blocked"
+assert_not_contains "$(journal)" "gate fix-round" "AC6 no developer fix round follows"
+# only QA's first line counts, and only QA's
+printf 'BLOCKED: the verify command needs approval\nBLOCKED: spec: later line\n' > "$STUB_DIR/message.qa"
+LEASE_RESET
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=16600 rn --max-iterations 1
+assert_contains "$OUT" "stop reason=stage-blocked role=qa" "AC6 a qa BLOCKED: not about the spec stays stage-blocked"
+reset_stubs
+LEASE_RESET
+printf 'BLOCKED: spec: not a QA stage\n' > "$STUB_DIR/message"
+TALOS_LEASE_TTL_S=1 TALOS_NOW=16700 rn --issue 9 --max-iterations 1
+assert_contains "$OUT" "stop reason=stage-blocked role=validator" "AC6 BLOCKED: spec: from another role stays stage-blocked"
+
 # ── (m) one run drains the queue (#601) ───────────────────────────────────────
 # After a merge an untargeted run goes on: post-merge returns the checkout
 # (`pipeline-worktree.sh to-base`), the run flushes, runs its exit hooks and

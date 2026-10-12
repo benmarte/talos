@@ -134,6 +134,69 @@ assert_contains "$out" "talos:approval" \
   "github: plain view-issue (no --spec) still returns the approval marker comment"
 unset STUB_ISSUE_COMMENTS_JSON
 
+# ── AC1/AC2 (#645): the pm stage header may precede **PM spec:** ──────────────
+spec_ids() {  # prints the ids of the comments --spec keeps, comma-joined
+  bash "$VCS" view-issue 201 --spec | python3 -I -c "import json,sys; print(','.join(str(c['id']) for c in json.load(sys.stdin)['comments']))"
+}
+set_comments() {  # one body per argument
+  STUB_GH_COMMENTS_RAW="$(python3 -I -c "
+import json, sys
+print(json.dumps([dict(id=i, user=dict(login='x'), created_at='2026-01-01T00:00:00Z', body=b) for i, b in enumerate(sys.argv[1:])]))
+" "$@")"
+  export STUB_GH_COMMENTS_RAW
+}
+PM_HDR='**Agent:** pm (talos)'
+set_comments "**PM spec:** bare" "$PM_HDR
+
+**PM spec:** under the header"
+assert_eq "1" "$(spec_ids)" "AC1 a header-then-spec comment is the latest spec"
+set_comments "$PM_HDR
+**PM spec:** header on the line above"
+assert_eq "0" "$(spec_ids)" "AC1 the spec line directly under the header is accepted"
+set_comments "
+
+$PM_HDR
+
+
+**PM spec:** blank lines around are fine"
+assert_eq "0" "$(spec_ids)" "AC1 leading and in-between blank lines are accepted"
+set_comments "**PM spec:** bare"
+assert_eq "0" "$(spec_ids)" "AC2 a bare spec is still accepted"
+set_comments "**Agent:** qa (talos)
+
+**PM spec:** wrong role header"
+assert_eq "" "$(spec_ids)" "AC2 a different header before the spec is rejected"
+set_comments "$PM_HDR
+
+some other line
+
+**PM spec:** not adjacent"
+assert_eq "" "$(spec_ids)" "AC2 a non-blank line between the header and the spec is rejected"
+set_comments "preamble
+$PM_HDR
+**PM spec:** x"
+assert_eq "" "$(spec_ids)" "AC2 other text first is rejected"
+set_comments "$PM_HDR
+
+no spec line follows"
+assert_eq "" "$(spec_ids)" "AC2 the header with no **PM spec:** line is rejected"
+for cfgjson in '{"comments": {"header": ""}}' '{not json'; do
+  printf '%s\n' "$cfgjson" > talos.pipeline.json
+  set_comments "$PM_HDR
+
+**PM spec:** x"
+  assert_eq "" "$(spec_ids)" "AC2 with an empty or unreadable comments.header the header form is rejected"
+  set_comments "**PM spec:** bare"
+  assert_eq "0" "$(spec_ids)" "AC2 with an empty or unreadable comments.header the bare form is accepted"
+done
+printf '%s\n' '{"comments": {"header": "## {role} stage"}}' > talos.pipeline.json
+set_comments "## pm stage
+
+**PM spec:** custom header"
+assert_eq "0" "$(spec_ids)" "AC1 the configured comments.header with the role replaced by pm is the one accepted"
+rm -f talos.pipeline.json
+unset STUB_GH_COMMENTS_RAW
+
 # ── diff-pr --stat (github) ───────────────────────────────────────────────────
 
 STAT_FILES_JSON="$(python3 -c "
