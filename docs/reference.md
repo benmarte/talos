@@ -801,6 +801,19 @@ From `~/.talos/scripts` (or `scripts/` in a checkout); `--dry-run` prints the ca
 - `pipeline-vcs.sh label-issue <n> --add pipeline:ready`: queue an issue (`--remove` drops a label).
 - `pipeline-vcs.sh current-user | assert-sync`: your login; checkout clean and level.
 - `talos.sh state --summary`: in flight, waiting, next, other operators' items.
+- `talos.sh map`: the project map (below).
+
+### Project map
+
+`talos.sh map` writes `${TALOS_HOME:-~/.talos}/maps/<owner>-<name>.html`, one self-contained HTML page for the repository (no script, no external asset, light and dark, phone width), and `maps/index.html`, which links every repository rendered under that `TALOS_HOME` with its one-line state (`maps/index.json` is its registry). It prints `map=<path>` and `index=<path>`. `talos.sh run` refreshes it after every stage and once at its end; a failure is `warn reason=map-failed` and the run goes on. A GitLab page is named by the remote's whole path (`<group>-<subgroup>-<name>.html`) and an Azure DevOps page by `<organisation>-<project>-<repository>.html`.
+
+It is rendered by code from local records only, with no network or provider call and no tokens, so it is the same whichever runner or harness ran the stages:
+
+- the events log (the stage dots, verdicts, PR numbers, blocked summaries, tokens, the changes since the run started). A relative `events.path` that leaves the git common dir is not read, as it is never written;
+- the state snapshot `talos.sh run` writes to `<git common dir>/talos/state.json` each time it reads the state for a pass (queued and in-flight issues, PR stages, blocked items, owner questions, priority, whether the run is going, its end line). It also keeps the priority tier of every issue a read has named, so a merged issue is still counted in its tier. The snapshot keeps that read until the next one, so the page drawn after a stage shows the queue as the pass read it (the header says as of when), and an issue with events since then is judged by them: stuck if it was blocked, in progress otherwise. Without a state read (a repository driven only by the LLM loop, before the first run, or a run that ended before it read the state) the page shows what the events log knows and says so;
+- the issue-title cache `pipeline-meta.sh` keeps; an issue with no cached title shows as `#<n>`.
+
+Sections: the header (updated at, the run, merged / in flight / stuck / not started), the track (priority tiers p0, p1, p2 and unlabelled; the current one is the highest with work left), one card per issue in flight, queued, stuck or merged in the last 7 days, the next step (`pipeline-next.py where` over the snapshot), the owner questions, the changes since the last run started, and the spend. Links follow `vcs.provider`: GitHub `/issues/N` and `/pull/N` on the remote's host (`github.com` with no remote), GitLab `/-/issues/N` and `/-/merge_requests/N`, Azure DevOps `<org>/<project>/_workitems/edit/N` and `<org>/<project>/_git/<repository>/pullrequest/N` (from `vcs.azure.org_url`, `vcs.azure.project` and `vcs.repo`, else from the remote, https or ssh). Every value from a record is HTML-escaped.
 
 ## Isolation, locking and multi-user claims
 
@@ -867,7 +880,7 @@ Identity, resolved once per run: `issues.assignee` when it names a login, else `
 
 | # | Gate | Fails as |
 |---|---|---|
-| 1 | No `pipeline:blocked`; every enabled role's approval label present (a human's `skip-qa` waives only this) | `wait` |
+| 1 | No `pipeline:blocked`; every enabled role's approval label present (a human's `skip-qa` waives only this; a [lost stamp](#approvals-bound-to-the-head-sha) is put back first) | `wait` |
 | 2 | `check-approval-sha`: approvals match the head SHA | `redispatch` |
 | 3 | `check-pr-files`: forbidden files (`skip-qa` never waives) | `block` |
 | 4 | `check-closing-keyword`: closing keyword while sibling PRs are open | `block` |
@@ -947,6 +960,14 @@ An approval is a PR comment ending in `<!-- talos:approval sha=<40-hex head SHA>
 | `docs` | `docs:done` |
 
 `check-approval-sha <pr> [--stale-list]` (`github` and `github-api` only) exits 1 when a present label has no valid marker or its SHA is not the head; `--stale-list` also prints `stale role=<role> label=<label> sha=<marker sha>` per stale role, without `sha=` when the marker gave no SHA that exists in the repository (match the line by its prefix).
+
+**Lost stamps.** An approval label is a fact about one head SHA, read only through `check-approval-sha`. If a label disappears (a hand edit, label churn) while its marker still pins the PR's current head, the stamp is recovered, not re-earned.
+- `check-approval-sha <pr> --evidence-list` prints `evidence role=<r> label=<l> state=present|lost|missing` per role. `lost` means the label is absent and the role's newest marker is the exact line `post-approval` writes for the current head; a hand-made marker with other spacing or trailing text is `missing`.
+- `gate merge` re-applies each `lost` one through `post-approval <pr> <role> --recover-only`. That mode applies the label only when that exact marker exists at the current head; otherwise it exits 3 with nothing posted. The gate's answer then carries `recovered=<roles>`.
+- A label with no such marker is never re-applied. The gate waits with `never_approved=<roles>` beside `missing=`, and the stage re-runs.
+- A label in `missing=` whose role is not in `never_approved=` has evidence the gate could not use this time (the re-apply or the evidence read failed). No stage re-runs; the next `gate merge` tries again.
+- `next` does not route a lost role as the PR's stage: for a PR that misses an enabled role's label it reads the evidence once, also when no approval label is left on the PR. That covers the draft window's QA gate (`pr.ready_gate`).
+- A head change still strips the labels as stale (`reason=stale-approvals`): a stamp is never carried across a head change.
 
 **Author trust.** `markers.verify_authors` (default `true`, repo file only) accepts markers only from the authenticated identity (`gh api user`) plus `markers.trusted_authors`. Rejects print `talos:marker-authors-rejected authors=..` on stderr. Identity unavailable and no `trusted_authors`: markers are accepted and `talos:marker-authors-unverified reader=<verb>` prints. Lookup refused (Actions `GITHUB_TOKEN`, GitHub App token): only `trusted_authors` counts and an empty list rejects all; set e.g. `["github-actions[bot]"]`. `false` skips the check silently.
 
@@ -1283,6 +1304,7 @@ A `pipeline:blocked` issue or PR is skipped until a human removes the label. Aft
 ### Approvals and merge
 
 - An approval is stale after a new commit that touches a non-waived file; only the affected stages re-run. `bash scripts/pipeline-vcs.sh check-approval-sha <PR> --stale-list` names them, each with the SHA it approved.
+- An approval label that went missing while the head stayed the same is put back by `gate merge` (`recovered=<roles>`), with no stage run. `reason=approvals-missing` with `never_approved=<roles>` means no marker pins the head for those roles, so their stages run again. A label in `missing=` whose role is not listed there is a lost stamp the gate could not put back this time: run the gate again. `bash scripts/pipeline-vcs.sh check-approval-sha <PR> --evidence-list` shows each role as `present`, `lost` or `missing` ([Lost stamps](#approvals-bound-to-the-head-sha)).
 - `assert-sync` aborts on a dirty tree (an untracked `AGENTS.md` counts), a checkout behind or diverged from `origin/<base>`, or a failed `git fetch`. Commit, stash or `git pull --ff-only`.
 
 ### Provider and board

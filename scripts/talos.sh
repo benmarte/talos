@@ -4,7 +4,7 @@
 #
 # Usage: talos.sh <verb> [args]; `talos.sh help` prints every flag.
 # Verbs: env gate docs-gate post-merge sweep summary prompt done state next claim
-#        run lease help
+#        run lease map help
 #
 # Output (stdout): one line each, nothing else.
 #   KEY=value              a result. Keys are [A-Za-z][A-Za-z0-9_.]*.
@@ -58,10 +58,19 @@
 #                                or that question has no reply yet. An unreadable thread
 #                                is `warn reason=area-check-failed` and the round runs
 #   gate merge <pr> <issue>
+#            Approval labels are SHA-pinned facts (#521): a missing one is read
+#            through `check-approval-sha --evidence-list` at the current head.
+#            A lost stamp (its marker pins the head) is re-applied through
+#            `post-approval --recover-only`, never across a head change, and
+#            the answer carries `recovered=<roles>`; one with no evidence is
+#            never re-applied (`never_approved=<roles>`, the stage re-runs). A
+#            label in `missing=` whose role is not in `never_approved=` is a
+#            re-apply or an evidence read that failed: the next run tries again.
 #            verdict=merge      [ci_runs=<n>]
 #            verdict=handoff                    merge.auto is off: pipeline:approved is set
 #            verdict=redispatch reason=stale-approvals stale=<roles> | draft-pr | ci-failed | merge-conflict
 #            verdict=wait       reason=blocked-label | approvals-missing missing=<labels>
+#                                 [never_approved=<roles>]
 #                                 | ci-pending | ci-rerun attempt=<k> | rerun-unsupported
 #                                 | ci-failed | base-synced | conflict-check-unverified
 #                                 | awaiting-human-merge
@@ -209,6 +218,14 @@
 #         (exit 2 for usage; else 1)
 #   wait: draft ci human-merge blocked owner lease none dependency cap
 #
+# map     The project map (#614): one self-contained HTML page for this repository
+#         and an index of every repository rendered under TALOS_HOME, from local
+#         records only (the events log, the state snapshot `run` writes, the title
+#         cache): map=<TALOS_HOME>/maps/<owner>-<name>.html and
+#         index=<TALOS_HOME>/maps/index.html. No network or provider call.
+# map-reasons: usage scripts-missing python-missing scratch-unavailable config-unreadable map-failed
+#   stop: all of them (exit 2 for usage; else 1)
+#
 # claim   Multi-user claiming: assign issue N to this operator unless another
 #         holds it, read the assignees back, and give it up if a lower login also
 #         claimed it: `claim=taken|owned owner=<me>` | `claim=lost owner=<login>` |
@@ -270,7 +287,7 @@
 #         stage's final message never does (stderr has the `note` lines and the
 #         `dispatch-failed ... reason=<why>` line). The playbook's end-state
 #         table (skills/pipeline/SKILL.md) has one action for each end.
-# run-reasons: usage unknown-role unknown-pr dispatch-failed ready-pr-failed draft-unverified qa-fail-unchanged-head spec-unusable fix-round-unchanged-head head-unresolved stop-requested checkout-return-failed iterations-exhausted stage-blocked provider-failed merge-failed state-unavailable scripts-missing python-missing scratch-unavailable config-unreadable worktree-unavailable same-verdict-same-head
+# run-reasons: usage unknown-role unknown-pr dispatch-failed ready-pr-failed draft-unverified qa-fail-unchanged-head spec-unusable fix-round-unchanged-head head-unresolved stop-requested checkout-return-failed iterations-exhausted stage-blocked provider-failed merge-failed state-unavailable scripts-missing python-missing scratch-unavailable config-unreadable map-failed worktree-unavailable same-verdict-same-head
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
 #         state-unavailable ready-pr-failed draft-unverified head-unresolved
 #         merge-failed provider-failed worktree-unavailable (exit 1; 2 for usage),
@@ -279,6 +296,7 @@
 #         checkout-return-failed same-verdict-same-head; plus the stop reasons
 #         of `next`, passed through (exit 1)
 #   warn: qa-ci-red notify-failed board-failed spend-upsert-failed lease-release-failed
+#         map-failed (at the run's end: one stderr line, the end line already out)
 #         model-invalid label-failed comment-failed budget-check-failed
 #         inflight-unreadable
 #
@@ -508,6 +526,7 @@ verbs:
   done <role> --issue <N> [--pr <M>] [--verdict <V>] --summary-file <F|-> [--draft]
                                      end-of-stage bookkeeping: board, role relay,
                                      post_stage, spend block, lifecycle event
+  map                                the project map: map=<html> index=<html> (local records only)
   state [--summary]                  the normalised run state as one state=<JSON>
                                      line (pipeline-status-file.sh collect:
                                      same reads, same shape, no writes);
@@ -848,6 +867,8 @@ _talos_collect_put() {  # $1 = a successful collect's stdout
   [ -n "$_c" ] || return 0
   case "$1" in '{'*'}') ;; *) return 0 ;; esac
   printf '%s' "$1" > "$_c.$$" && mv "$_c.$$" "$_c" 2>/dev/null || rm -f "$_c.$$"
+  # The map's snapshot keeps it past the next write (#614).
+  printf '%s' "$1" | _talos_run_snapshot active
 }
 _talos_collect_drop() { [ -z "${TALOS_COLLECT_CACHE:-}" ] || rm -f "$TALOS_COLLECT_CACHE"; }
 
@@ -1130,12 +1151,58 @@ _talos_gate_block() {
   _talos_verdict block
 }
 
+# _talos_gate_missing <pr labels>: the approval labels of the enabled roles that
+# are not on the PR, comma-separated, in contract order.
+_talos_gate_missing() {
+  local _i=0 _role _label _m=""
+  while [ "$_i" -lt "${#TALOS_APPROVAL_ROLES[@]}" ]; do
+    _role="${TALOS_APPROVAL_ROLES[$_i]}"
+    _label="${TALOS_APPROVAL_LABELS[$_i]%%|*}"
+    _i=$((_i + 1))
+    [ "$(_talos_role_enabled "$_role")" = "true" ] || continue
+    _talos_has "$1" "$_label" || _m="${_m:+$_m,}$_label"
+  done
+  printf '%s' "$_m"
+}
+
+# _talos_gate_recover_stamps <pr> <missing labels, comma-separated> (#521):
+# approval labels are SHA-pinned facts. For each missing label, the evidence at
+# the PR's current head (`check-approval-sha --evidence-list`) decides:
+#   lost     its marker pins the head: re-applied through `post-approval
+#            --recover-only`, which posts nothing and applies nothing without
+#            that marker, and named in _RECOVERED. A re-apply that fails names
+#            the role nowhere: the label stays missing and the next gate run
+#            tries again (never --issue: recovery tags no worktree).
+#   missing  no evidence: never re-applied, named in _NEVER_APPROVED.
+#   present  the label landed after the gate's read: neither.
+# A failed evidence read recovers nothing and names no role.
+_talos_gate_recover_stamps() {
+  local _pr="$1" _miss=",$2," _line _role _label _state
+  _RECOVERED=""
+  _NEVER_APPROVED=""
+  _talos_cap _vcs check-approval-sha "$_pr" --evidence-list
+  [ "$_RC" -eq 0 ] || return 0
+  while IFS= read -r _line; do
+    [[ "$_line" =~ ^evidence\ role=([a-z]+)\ label=([a-z:]+)\ state=([a-z]+)$ ]] || continue
+    _role="${BASH_REMATCH[1]}"; _label="${BASH_REMATCH[2]}"; _state="${BASH_REMATCH[3]}"
+    case "$_miss" in *",$_label,"*) ;; *) continue ;; esac
+    case "$_state" in
+      lost)
+        if _vcs post-approval "$_pr" "$_role" --recover-only > /dev/null 2>&1; then
+          _RECOVERED="${_RECOVERED:+$_RECOVERED,}$_role"
+        fi
+        ;;
+      missing) _NEVER_APPROVED="${_NEVER_APPROVED:+$_NEVER_APPROVED,}$_role" ;;
+    esac
+  done <<< "$_OUT"
+}
+
 # gate merge <pr> <issue>: Step 4 in its order, one verdict. It writes only what
 # the prose wrote (labels, comments, the notice, the update push) and never
 # merges: on `merge` the orchestrator runs `merge-pr`.
 _talos_gate_merge() {
   [ "$#" -eq 2 ] || _talos_stop usage 2
-  local _pr="$1" _n="$2" _prl _isl _all _i=0 _role _label _missing="" _line _r _stale="" _stalelist=""
+  local _pr="$1" _n="$2" _prl _isl _all _missing="" _line _r _stale="" _stalelist=""
   local _draft _cierr _sha _cnt _synced=0
   _talos_isnum "$_pr" && _talos_isnum "$_n" || _talos_stop usage 2
   _talos_prepare gate-merge pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh pipeline-contract.sh \
@@ -1156,16 +1223,22 @@ _talos_gate_merge() {
     _talos_verdict wait
   fi
   if ! _talos_has "$_all" skip-qa; then
-    while [ "$_i" -lt "${#TALOS_APPROVAL_ROLES[@]}" ]; do
-      _role="${TALOS_APPROVAL_ROLES[$_i]}"
-      _label="${TALOS_APPROVAL_LABELS[$_i]%%|*}"
-      _i=$((_i + 1))
-      [ "$(_talos_role_enabled "$_role")" = "true" ] || continue
-      _talos_has "$_prl" "$_label" || _missing="${_missing:+$_missing,}$_label"
-    done
+    _missing="$(_talos_gate_missing "$_prl")"
+    if [ -n "$_missing" ]; then
+      _talos_gate_recover_stamps "$_pr" "$_missing"
+      if [ -n "$_RECOVERED" ]; then
+        _talos_emit recovered "$_RECOVERED"
+        # The labels again, after the re-applies: every enabled approval must be there.
+        _talos_cap _vcs view-pr "$_pr"
+        [ "$_RC" -eq 0 ] || _talos_stop view-failed
+        _prl="$(_talos_labels "$_OUT")" || _talos_stop labels-unreadable
+        _missing="$(_talos_gate_missing "$_prl")"
+      fi
+    fi
     if [ -n "$_missing" ]; then
       _talos_emit reason approvals-missing
       _talos_emit missing "$_missing"
+      [ -z "$_NEVER_APPROVED" ] || _talos_emit never_approved "$_NEVER_APPROVED"
       _talos_verdict wait
     fi
   fi
@@ -3349,6 +3422,110 @@ _talos_lease_live_issues() {
 _talos_emit_next() { printf '%s\0%s\0' action "${1#action=}" >> "$_TALOS_OUT"; }
 _talos_emit_next_wait() { printf '%s\0%s\0' action "${1#action=}" >> "$_TALOS_OUT"; }
 
+# ── map (#614) ───────────────────────────────────────────────────────────────
+# _talos_map_render: the project map from local records only (talos-map.py):
+# the events log, the run's state snapshot (<state dir>/state.json) and the
+# title cache pipeline-meta.sh keeps. Prints map=<path> and index=<path> on
+# success; non-zero on failure. No network, no provider call.
+_talos_map_render() {
+  local _sd _ep
+  _sd="$(_talos_state_dir)" || return 1
+  # The events log by the writer's rule (pipeline-hooks.sh): a relative
+  # events.path that leaves the git common dir is no log.
+  _ep="$(cfg events.path)"
+  case "$_ep" in
+    /* | '') : ;;
+    *) ! _events_path_leaves_common "$_ep" || _ep="" ;;
+  esac
+  [ -z "$_ep" ] || _ep="$(_events_log_path)" || _ep=""
+  # The page's name and links come from the provider's own keys and the origin
+  # URL, which goes in on stdin: it may carry a credential.
+  { git remote get-url origin 2>/dev/null || true; } | python3 -I "$SCRIPT_DIR/talos-map.py" \
+    --events "$_ep" --state "$_sd/state.json" --home "${TALOS_HOME:-$HOME/.talos}" \
+    --provider "$(cfg vcs.provider)" --repo "$(cfg vcs.repo)" \
+    --azure-org "$(cfg vcs.azure.org_url)" --azure-project "$(cfg vcs.azure.project)" \
+    --scripts "$SCRIPT_DIR" --titles "${XDG_RUNTIME_DIR:-${HOME:-/nonexistent}/.cache}/talos/meta"
+}
+
+# map: render the project map and the index (#614).
+_talos_map() {
+  [ "$#" -eq 0 ] || _talos_stop usage 2
+  _talos_prepare map pipeline-config.sh pipeline-cfg-cache.sh pipeline-next.py talos-map.py
+  local _l
+  _l="$(_talos_map_render 2>/dev/null)" || _talos_stop map-failed
+  _talos_emit map "$(sed -n 's/^map=//p' <<< "$_l")"
+  _talos_emit index "$(sed -n 's/^index=//p' <<< "$_l")"
+  _talos_flush
+}
+
+# _talos_run_snapshot <active|end> [<end line>]: the run's state snapshot
+# (<state dir>/state.json), which the map reads for its queue view (#614). A
+# collect on stdin replaces the stored one and stamps its time (`collect_ts`);
+# with none the stored collect stays and only `run` changes. `priority` is the
+# tier of every issue a collect has named: a collect lists one only while its
+# issue is queued or in flight, and the map's track counts merged ones too, so
+# it accumulates across collects. _talos_collect_put
+# calls it, so the snapshot holds every collect the run fetches: `done` empties
+# the run's collect copy, and after a stage there is none to read back. Best
+# effort: never fails its caller.
+_talos_run_snapshot() {
+  local _sd
+  _sd="$(_talos_state_dir 2>/dev/null)" || return 0
+  python3 -I -c '
+import datetime, json, os, sys
+path, mode, started, end = sys.argv[1:5]
+now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+try:
+    with open(path) as f:
+        snap = json.load(f)
+except (OSError, ValueError):
+    snap = {}
+if not isinstance(snap, dict):
+    snap = {}
+try:
+    col = json.load(sys.stdin)
+except ValueError:
+    col = None
+if isinstance(col, dict) and col:
+    snap["collect"], snap["collect_ts"] = col, now
+    # The collect is the word on the issues it lists; the rest keep their tier.
+    prio = snap.get("priority") if isinstance(snap.get("priority"), dict) else {}
+    for key in ("queued", "inflight"):
+        for n in col.get(key) if isinstance(col.get(key), list) else []:
+            prio.pop(str(n), None)
+    prio.update(col.get("priority") if isinstance(col.get("priority"), dict) else {})
+    snap["priority"] = prio
+snap.setdefault("collect", {})
+snap.update(ts=now, run={"active": mode != "end", "started": started, "end": end})
+tmp = "%s.%d.tmp" % (path, os.getpid())
+with open(tmp, "w") as f:
+    json.dump(snap, f)
+os.replace(tmp, path)' "$_sd/state.json" "$1" "${TALOS_RUN_STARTED:-}" "${2:-}" 2>/dev/null || true
+}
+
+# _talos_run_map <stage|end>: the driver's refresh (#614), after a stage's
+# `done` and as an exit hook. The exit hook first puts the run's end line in the
+# snapshot, unless the run goes on in a new image (_talos_run_continue). A
+# failure is `warn reason=map-failed`: a warn line during the run, one stderr
+# line from the exit hook (the end line is already out).
+_talos_run_map() {
+  if [ "$1" = end ] && [ -z "${_TALOS_RUN_CONTINUES:-}" ]; then
+    _talos_run_snapshot end "$(python3 -I -c '
+import sys
+parts = open(sys.argv[1], "rb").read().split(b"\0")
+last = ""
+for k, v in zip(parts[0::2], parts[1::2]):
+    if k == b"stop":
+        last = "stop " + v.decode("utf-8", "replace")
+print(last)' "$_TALOS_OUT" 2>/dev/null)" < /dev/null
+  fi
+  if ! _talos_map_render > /dev/null 2>&1; then
+    if [ "$1" = end ]; then echo "warn reason=map-failed" >&2; else _talos_warn map-failed; fi
+  fi
+  return 0
+}
+_talos_run_map_end() { _talos_run_map end; }
+
 # ── run (#472, slice 8) ──────────────────────────────────────────────────────
 # The deterministic orchestrator: the loop of Step 2 in one bash process. Every stage is
 # dispatched through pipeline-agent.sh with the rendered prompt on stdin; the
@@ -3459,6 +3636,7 @@ _talos_run_continue() {
     _talos_flush; exit 1
   fi
   _talos_flush
+  _TALOS_RUN_CONTINUES=1   # the map's exit hook: this run has not ended (#614)
   _talos_run_exit_hooks
   trap - EXIT
   TALOS_RUN_PASSES="$$:$2"; export TALOS_RUN_PASSES
@@ -3522,6 +3700,12 @@ _talos_run_loop() {
   TALOS_COLLECT_CACHE="$_CFG_CACHE_DIR/collect.cache"; export TALOS_COLLECT_CACHE
   # The run releases its own leases on exit (every path): one exit hook.
   _talos_on_exit "_talos_lease_release_run_all"
+  # The project map (#614): refreshed at each stage end and once at the end.
+  [ -n "${TALOS_RUN_STARTED:-}" ] || TALOS_RUN_STARTED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  export TALOS_RUN_STARTED
+  # First of the exit hooks: it reads the end line from the scratch dir, which
+  # an earlier-registered hook removes.
+  _TALOS_EXIT_HOOKS=("_talos_run_map_end" ${_TALOS_EXIT_HOOKS[@]+"${_TALOS_EXIT_HOOKS[@]}"})
   local _dispatched=0
   . "$SCRIPT_DIR/pipeline-contract.sh"
 
@@ -3805,6 +3989,7 @@ _talos_run_dispatch() {
   _next="$(bash "$SCRIPT_DIR"/talos.sh "${_dargs[@]}" < "$_CFG_CACHE_DIR/agent.out" 2>"$_CFG_CACHE_DIR/err" \
             | sed -n 's/^next=//p' | head -n 1)"
   rm -f "${_f:?}"
+  _talos_run_map stage
 
   # 5. What follows, the pass ends the same way the playbook's Step 2 reads
   # `next=`: `stop` ends the run clean; `continue` goes back to `next`. A
@@ -4124,6 +4309,7 @@ case "$verb" in
   summary) _talos_summary "$@" ;;
   prompt) _talos_prompt "$@" ;;
   done) _talos_done "$@" ;;
+  map) _talos_map "$@" ;;
   state) _talos_state "$@" ;;
   next) _talos_next "$@" ;;
   claim) _talos_claim "$@" ;;

@@ -158,60 +158,8 @@ fi
 # non-integer can never reach `sleep`.
 _hooks_timeout_s() { talos_pos_int "$(cfg hooks.timeout_s)" 30; }
 
-# _events_log_path -> prints the absolute path to the events.jsonl log, or
-# nothing (rc 1) if it can't be resolved (not a git repo, etc).
-#
-# Relative events.path values (the default "talos/events.jsonl") resolve
-# against the GIT COMMON dir (#517): the log lives at
-# <git-common-dir>/talos/events.jsonl, shared by every linked worktree of the
-# repo and OUTSIDE every git tree -- a stage's `git add -A` can never commit
-# it (the pre-#517 <repo-root>/.talos/ default was inside the tree in a
-# normal clone). --git-common-dir can print a path relative to the caller's
-# cwd (e.g. ".git" from the main repo, "../../.git" from a linked worktree
-# two levels down), so it is resolved to an absolute physical path here
-# (pwd -P). An absolute events.path is used as-is and needs no repository.
-# The same resolution is mirrored deliberately in scripts/pipeline-events.sh
-# and talos-status.sh's status line; pipeline-worktree.sh's handoff uses
-# _talos_state_dir itself.
-_events_log_path() {
-  local path_cfg state
-  path_cfg="$(cfg events.path)"
-  case "$path_cfg" in
-    /*) printf '%s' "$path_cfg"; return 0 ;;
-    '') return 1 ;;
-  esac
-  state="$(_talos_state_dir)" || return 1
-  printf '%s/%s' "$(dirname "$state")" "$path_cfg"
-}
-
-# _events_path_leaves_common <relative_path> -> rc 0 when the normalized form
-# of a RELATIVE events.path climbs out of its base: "." and empty segments
-# collapse away, each ".." pops one segment, and a ".." with nothing left to
-# pop is the escape. Pure string walk, no subprocess. This is the bash
-# equivalent of talos-status.sh's events_log_path refusal (os.path.normpath
-# + the ".."-prefix check), mirrored at the WRITER (fix round of #517, PR
-# #527 review): an escaping relative events.path used to be appended as-is,
-# putting the log back inside a git tree (untracked, un-ignored -- exactly
-# the #517 bug class) or outside every worktree's shared reach.
-_events_path_leaves_common() {
-  local rest="$1/" seg depth=0
-  while [ -n "$rest" ]; do
-    seg="${rest%%/*}"
-    rest="${rest#*/}"
-    case "$seg" in
-      ''|.) ;;
-      ..)
-        if [ "$depth" -gt 0 ]; then
-          depth=$((depth - 1))
-        else
-          return 0
-        fi
-        ;;
-      *) depth=$((depth + 1)) ;;
-    esac
-  done
-  return 1
-}
+# _events_log_path and _events_path_leaves_common, the resolver of events.path
+# and its containment check, are pipeline-paths.sh's (sourced above).
 
 # _events_append <json_line> -- appends one JSON object, as a single line, to
 # the events log (see _events_log_path), when events.enabled (default true).

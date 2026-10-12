@@ -264,12 +264,16 @@ except subprocess.TimeoutExpired:
     os.killpg(p.pid, signal.SIGKILL); p.wait(); rc = 124
 print("%d %.2f" % (rc, time.time() - t))' "$@"
 }
+# The calibration (#593): the same verb on a tiny body, in this run, so a loaded
+# machine slows the bound and the measurement alike.
+printf '<li>ok</li>' > "$SANDBOX/adv-tiny.html"
+read -r _ _cal <<<"$(STUB_AZURE_WORKITEM_DESCRIPTION_FILE="$SANDBOX/adv-tiny.html" _timed bash "$VCS" check-epic-acceptance 42)"
 for _case in lt:0 lta:0 tagname:0 input:0 attrs:0 newlines:0 dashes:0 boxes:1 entities:0 \
     attrquote:1 attreq:0 attrsq:1 inputs:1 boxline:1 big:1; do
   read -r rc _secs <<<"$(STUB_AZURE_WORKITEM_DESCRIPTION_FILE="$SANDBOX/adv-${_case%%:*}.html" \
     _timed bash "$VCS" check-epic-acceptance 42)"
   assert_eq "${_case#*:}" "$rc" "linear scan: check-epic-acceptance on the '${_case%%:*}' body exits ${_case#*:}"
-  awk -v s="$_secs" 'BEGIN { exit !(s < 5) }'; assert_eq "0" "$?" "linear scan: the '${_case%%:*}' body took ${_secs}s (< 5 s)"
+  assert_linear "linear scan: the '${_case%%:*}' body took ${_secs}s (calibration ${_cal}s)" "$_cal" "$_secs" 16
 done
 
 # The branch scan is capped and linear too: a 1 MB issue-4 branch name.
@@ -286,10 +290,14 @@ esac
 exec "$STUBS_DIR/az" "\$@"
 EOF
 chmod +x "$SANDBOX/bigaz/az"
+printf '[]' > "$SANDBOX/tiny-list.json"
+read -r _ _cal <<<"$(PATH="$SANDBOX/bigaz:$PATH" BIG_LIST="$SANDBOX/tiny-list.json" \
+  STUB_AZURE_PR_WORKITEMS='[{"id":42}]' STUB_AZURE_WORKITEM_RELATIONS="$(_rel 9)" \
+  _timed bash "$VCS" check-closing-keyword 9 42)"
 read -r rc _secs <<<"$(PATH="$SANDBOX/bigaz:$PATH" BIG_LIST="$SANDBOX/big-list.json" \
   STUB_AZURE_PR_WORKITEMS='[{"id":42}]' STUB_AZURE_WORKITEM_RELATIONS="$(_rel 9)" \
   _timed bash "$VCS" check-closing-keyword 9 42)"
 assert_eq "0" "$rc" "linear scan: check-closing-keyword on a 1 MB branch name exits 0 (no sibling)"
-awk -v s="$_secs" 'BEGIN { exit !(s < 5) }'; assert_eq "0" "$?" "linear scan: the 1 MB branch name took ${_secs}s (< 5 s)"
+assert_linear "linear scan: the 1 MB branch name took ${_secs}s (calibration ${_cal}s)" "$_cal" "$_secs" 16
 
 finish

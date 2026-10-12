@@ -107,13 +107,15 @@ set +m
 # Wait for the pid file, not just the directory: with_lock creates the
 # directory first and writes <dir>/pid a moment later, so a check in between
 # failed intermittently on fast CI runners.
-for _i in $(seq 1 50); do
-  [ -s "$HOLD_DIR/pid" ] && break
-  sleep 0.1
-done
+# And wait for the holder to reach its own `wait` (it writes hold.sleep.pid just
+# before): signalled earlier, on a loaded machine, it could still be inside the
+# lock helper (#593). Both waits are bounded and generous.
+wait_until 10 test -s "$HOLD_DIR/pid"
+wait_until 10 test -s "$SANDBOX/hold.sleep.pid"
 assert_file_exists "$HOLD_DIR/pid" "held lock dir exists before SIGINT"
 kill -INT "$_hold_pid" 2>/dev/null
 wait "$_hold_pid" 2>/dev/null
+wait_until 5 test ! -e "$HOLD_DIR"
 assert_file_absent "$HOLD_DIR" "lock released on SIGINT via the composable exit trap"
 # The holder's own sleep outlives it (it was only signalled, not its child).
 kill "$(cat "$SANDBOX/hold.sleep.pid" 2>/dev/null)" 2>/dev/null || true

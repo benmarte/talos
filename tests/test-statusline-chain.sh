@@ -109,14 +109,20 @@ assert_eq "" "$GOT" "AC5 both parts empty prints nothing"
 
 # ── AC6 a hanging original ──────────────────────────────────────────────────
 stub_orig orig-hang.sh 'cat >/dev/null; sleep 30; echo LATE'
+stub_orig orig-quick.sh 'cat >/dev/null; echo ORIG'
 stub_talos 'cat >/dev/null; echo TALOS'
-chain_for "sh $SANDBOX/orig-hang.sh"
-T0=$SECONDS
+# The baseline (#593): the same wrapper over an original that answers at once.
+chain_for "sh $SANDBOX/orig-quick.sh"
+T0="$(wall_s)"
 run_cmd TALOS_STATUSLINE_TIMEOUT_S=1
-ELAPSED=$((SECONDS - T0))
+BASE="$(since_s "$T0")"
+chain_for "sh $SANDBOX/orig-hang.sh"
+T0="$(wall_s)"
+run_cmd TALOS_STATUSLINE_TIMEOUT_S=1
+ELAPSED="$(since_s "$T0")"
 assert_eq "0" "$RC" "AC6 a hanging original: exit 0"
 assert_eq "TALOS" "$GOT" "AC6 a hanging original does not blank the Talos line"
-if [ "$ELAPSED" -lt 5 ]; then pass "AC6 the wrapper returns within the timeout plus a margin (${ELAPSED}s)"; else fail "AC6 the wrapper returns within the timeout plus a margin (${ELAPSED}s)"; fi
+assert_cut_short "AC6 the wrapper returns within the timeout plus a margin (${ELAPSED}s, baseline ${BASE}s)" "$ELAPSED" "$BASE" 30
 
 # ── AC6 timeout fallbacks: no timeout/gtimeout on PATH (the macOS default) ──
 MINBIN="$SANDBOX/minbin"
@@ -128,14 +134,16 @@ assert_eq "" "$(env PATH="$MINBIN" sh -c 'command -v timeout; command -v gtimeou
 stub_orig orig-ok3.sh 'cat >/dev/null; echo ORIG'
 stub_talos 'cat >/dev/null; echo TALOS'
 chain_for "sh $SANDBOX/orig-ok3.sh"
-run_cmd PATH="$MINBIN"
+T0="$(wall_s)"
+run_cmd PATH="$MINBIN" TALOS_STATUSLINE_TIMEOUT_S=1
+BASE="$(since_s "$T0")"
 assert_eq "ORIG${NL}TALOS" "$GOT" "AC6 without timeout/gtimeout both lines still print"
 chain_for "sh $SANDBOX/orig-hang.sh"
-T0=$SECONDS
+T0="$(wall_s)"
 run_cmd PATH="$MINBIN" TALOS_STATUSLINE_TIMEOUT_S=1
-ELAPSED=$((SECONDS - T0))
+ELAPSED="$(since_s "$T0")"
 assert_eq "TALOS" "$GOT" "AC6 without timeout/gtimeout a slow original is cut off and the Talos line shows"
-if [ "$ELAPSED" -lt 5 ]; then pass "AC6 without timeout/gtimeout the wrapper returns in time (${ELAPSED}s)"; else fail "AC6 without timeout/gtimeout the wrapper returns in time (${ELAPSED}s)"; fi
+assert_cut_short "AC6 without timeout/gtimeout the wrapper returns in time (${ELAPSED}s, baseline ${BASE}s)" "$ELAPSED" "$BASE" 30
 
 # ── a user's own script named statusline-chain.sh is never touched (security) ─
 USER_DIR="$SANDBOX/userbin"
