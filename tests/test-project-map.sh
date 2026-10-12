@@ -98,8 +98,8 @@ assert_contains "$PAGE" '#11</a> </h3><p class="dots" title="validator pm develo
 # counted in the tier it had while it was queued.
 assert_contains "$PAGE" '<li class="here"><b>p0</b> 1 merged · 0 in flight · 1 queued <span class="you">you are here</span></li>' \
   "AC2 the track counts a merged issue in its own tier and marks the current one"
-assert_contains "$PAGE" '<li class=""><b>unlabelled</b> 0 merged · 2 in flight · 0 queued</li>' \
-  "AC2 the track's unlabelled tier holds only the issues with no tier"
+assert_contains "$PAGE" '<li class=""><b>unlabelled</b> 0 merged · 3 in flight · 0 queued</li>' \
+  "AC2 the track's unlabelled tier holds only the issues with no tier (the owner question's issue is Stuck)"
 
 # AC3: owner question, next step, changes, spend.
 assert_contains "$PAGE" 'Pick A or B? &lt;img src=x onerror=alert(1)&gt;' "AC3 the owner question is quoted, escaped"
@@ -284,12 +284,12 @@ cp "$TALOS_ROOT/scripts/talos-map.py" "$GS/talos-map.py"
 cp "$STATE/events.jsonl" "$SANDBOX/events.saved"
 printf '{"vcs": {"provider": "github", "repo": "acme/widget"}}\n' > "$PIPELINE_CONFIG"
 EMPTY_COLLECT='{"prs": [], "queued": [], "inflight": [], "held": [], "blocked": [], "owners": [], "capped": []}'
-snap() {  # <collect JSON> <run JSON>: the snapshot the render reads
+snap() {  # <collect JSON> <run JSON> [<snapshot time>]: the snapshot the render reads
   python3 -I -c '
 import json, sys
-json.dump({"ts": sys.argv[2], "collect_ts": sys.argv[3], "priority": {},
+json.dump({"ts": sys.argv[6], "collect_ts": sys.argv[3], "priority": {},
            "run": json.loads(sys.argv[5]), "collect": json.loads(sys.argv[4])}, open(sys.argv[1], "w"))' \
-    "$STATE/state.json" "$NOW" "$EARLY" "$1" "$2"
+    "$STATE/state.json" "$NOW" "$EARLY" "$1" "$2" "${3:-$NOW}"
 }
 ENDED_RUN="{\"active\": false, \"started\": \"$EARLY\", \"end\": \"stop x\"}"
 : > "$STATE/events.jsonl"
@@ -302,8 +302,6 @@ ev stage_start orchestrator 31 41 "" "" ""
 ev developer developer 32 42 PR_OPENED 100 ""
 # AC3: a stage that ended BLOCKED:, and a gate's block, are Stuck.
 ev developer developer 33 "" BLOCKED 100 "BLOCKED: need credentials"
-ev blocked orchestrator 33 "" "" "" "BLOCKED: need credentials"
-ev developer developer 34 44 PR_OPENED 100 ""
 snap '{"prs": [{"n": 41, "issue": 31, "head": "a", "owner": false, "stage": "developer"}, {"n": 44, "issue": 34, "head": "b", "owner": false, "stage": "qa"}],
        "queued": [], "inflight": [], "held": [], "blocked": [["issue", 31], ["issue", 34]],
        "owners": [{"n": 32, "status": "unanswered", "question": "Which API?"}], "capped": []}' "$ENDED_RUN"
@@ -323,7 +321,8 @@ cp "$SANDBOX/events.saved" "$STATE/events.jsonl"
 
 # AC4: the key off. The dispatching copy runs two passes with a stage between.
 printf '{"vcs": {"provider": "github", "repo": "acme/widget"}, "issues": {"max_parallel": 1}, "roles": {"validator": true}, "map": {"enabled": false}}\n' > "$PIPELINE_CONFIG"
-rm -rf "$TH/maps" "$STATE/state.json"
+rm -rf "${TH:?}/maps"
+rm -f "$STATE/state.json"
 OUT="$(CLAUDE_CONFIG_DIR="$SANDBOX/cc" TALOS_LEASE_TTL_S=1 TALOS_NOW=1000 bash "$DS/talos.sh" run --issue 9 --max-iterations 2 2>&1)"; RC=$?
 assert_eq "0" "$RC" "AC4 the run with the map off exits 0" "$OUT"
 assert_file_absent "$STATE/state.json" "AC4 with map.enabled false the run writes no snapshot"
@@ -350,7 +349,7 @@ TALOS_stubmapQk3Rt7Wx
 export SANDBOX_MARK="$SANDBOX/release.mark" SANDBOX_LOG="$SANDBOX/render.log"
 rm -f "$SANDBOX_MARK" "$SANDBOX_LOG"
 CLAUDE_CONFIG_DIR="$SANDBOX/cc" TALOS_LEASE_TTL_S=1 TALOS_NOW=1000 bash "$LS/talos.sh" run --issue 9 --max-iterations 2 >/dev/null 2>&1
-assert_eq "render after-release=true" "$(tail -n 1 "$SANDBOX_LOG" 2>/dev/null)" "AC6 the end-of-run render starts after the lease release (normal exit)"
+assert_eq "render after-release=True" "$(tail -n 1 "$SANDBOX_LOG" 2>/dev/null)" "AC6 the end-of-run render starts after the lease release (normal exit)"
 # A signal exit: the dispatched agent waits, the run gets SIGTERM.
 rm -f "$SANDBOX_MARK" "$SANDBOX_LOG" "$SANDBOX/agent.started"
 printf '#!/usr/bin/env bash\ncat > /dev/null\ntouch "%s/agent.started"\nsleep 2\necho "CONFIRMED: ok"\n' "$SANDBOX" > "$LS/pipeline-agent.sh"
@@ -359,7 +358,7 @@ RUNPID=$!
 for _i in $(seq 1 50); do [ -f "$SANDBOX/agent.started" ] && break; sleep 0.2; done
 kill -TERM "$RUNPID" 2>/dev/null
 wait "$RUNPID" 2>/dev/null
-assert_eq "render after-release=true" "$(tail -n 1 "$SANDBOX_LOG" 2>/dev/null)" "AC6 the end-of-run render starts after the lease release (signal exit)"
+assert_eq "render after-release=True" "$(tail -n 1 "$SANDBOX_LOG" 2>/dev/null)" "AC6 the end-of-run render starts after the lease release (signal exit)"
 
 # AC7: a run entry whose pid is dead, or that is too old, is an ended run.
 DEADPID="$(sh -c 'echo $$')"
@@ -371,7 +370,7 @@ assert_not_contains "$P" 'a run is going' "AC7 a dead pid is never a run going"
 snap "$EMPTY_COLLECT" "{\"active\": true, \"started\": \"$NOW\", \"end\": \"\", \"pid\": $$}"
 bash "$TALOS" map >/dev/null 2>&1
 assert_contains "$(cat "$MAP" 2>/dev/null)" 'a run is going' "AC7 an active run entry whose pid is alive is a run going"
-snap "$EMPTY_COLLECT" "{\"active\": true, \"started\": \"2020-01-01T00:00:00Z\", \"end\": \"\", \"pid\": $$}"
+snap "$EMPTY_COLLECT" "{\"active\": true, \"started\": \"2020-01-01T00:00:00Z\", \"end\": \"\", \"pid\": $$}" 2020-01-01T00:00:00Z
 bash "$TALOS" map >/dev/null 2>&1
 assert_contains "$(cat "$MAP" 2>/dev/null)" 'last run ended' "AC7 an active run entry older than a stage could take renders as ended"
 rm -f "$STATE/state.json"

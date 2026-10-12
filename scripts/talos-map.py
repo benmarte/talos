@@ -20,6 +20,7 @@ external asset. Stdlib only.
 
 import argparse
 import datetime
+import hashlib
 import html
 import json
 import os
@@ -32,6 +33,32 @@ ROLES = ("validator", "pm", "developer", "review", "qa", "merge")
 REVIEW = ("reviewer", "security", "adversarial")
 FAILING = {"FAIL", "CHANGES", "FINDINGS", "BLOCKED", "RESTAMP_FAIL"}
 RECENT_DAYS = 7
+# A run entry the snapshot has not touched for this long is an ended run: a live
+# run writes the snapshot at every pass and stage, and no stage takes this long.
+RUN_STALE_AFTER = datetime.timedelta(hours=6)
+
+
+def pid_alive(pid):
+    """Whether a process of that pid exists (a pid we may not signal does)."""
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def run_going(run, snap_ts, now):
+    """A run entry says `active`; it is going only while its pid is alive (when
+    the snapshot recorded one) and the snapshot is fresh."""
+    if not run.get("active"):
+        return False
+    if "pid" in run and run["pid"] is not None and not pid_alive(run["pid"]):
+        return False
+    return not (snap_ts and now - snap_ts > RUN_STALE_AFTER)
 
 
 def esc(v):
@@ -234,26 +261,48 @@ def main(argv):
                 (p.get("issue") for p in col.get("prs") or [] if isinstance(p, dict) and p.get("n") == item[1]), item[1]))
     # The collect is a read at col_ts and the log goes on after it (`done` writes
     # a stage's events after the pass read the state): an issue is judged by its
-    # events since then, all of them when there is no collect. Blocked if that is
-    # their last word, else in flight.
-    moved = set()
+    # events since then, all of them when there is no collect. Stuck means
+    # waiting on a person: a stage that ended BLOCKED:, or what the collect says
+    # (a gate's block, the attempt ceiling), or an unanswered owner question.
+    # A failing review or QA verdict only sends the work back to the developer:
+    # that is a fix round, In progress, and so is a stage that started after the
+    # last failing verdict.
+    moved, running, rounds = set(), set(), {}
     for n, evs in by_issue.items():
+        last_fail = last_start = -1
+        for i, e in enumerate(evs):
+            if e.get("event") == "stage_start":
+                last_start = i
+            elif e.get("event") == "blocked" or e.get("verdict") in FAILING:
+                last_fail = i
+        rounds[n] = sum(1 for e in evs if e.get("event") == e.get("role") and e.get("verdict") in FAILING
+                        and e.get("verdict") != "BLOCKED")
+        if n in merged:
+            continue
+        if last_start > last_fail:
+            running.add(n)
+            blocked.discard(n)
         late = [e for e in evs if not col or (col_ts and (parse_ts(e.get("ts")) or col_ts) >= col_ts)]
-        if n in merged or not late:
+        if not late:
             continue
         moved.add(n)
         said = [e for e in late if e.get("event") not in ("stage_start", "stage_complete")]
-        if said and said[-1].get("event") == "blocked":
+        if n in running:
+            continue
+        if said and said[-1].get("verdict") == "BLOCKED":
             blocked.add(n)
         elif said:
             blocked.discard(n)
+    asks = {o["n"]: str(o.get("question") or "(question not readable)") for o in col.get("owners") or []
+            if isinstance(o, dict) and num(o.get("n")) and o.get("status") == "unanswered"}
+    blocked |= set(asks) - merged
 
     def state(n):
         if n in merged:
             return "Done"
         if n in blocked:
             return "Stuck"
-        if n in inflight or n in pr_issues or n in moved:
+        if n in inflight or n in pr_issues or n in moved or n in running:
             return "In progress"
         return "Not started"
 
@@ -262,12 +311,14 @@ def main(argv):
         ts = parse_ts(next((e.get("ts") for e in reversed(by_issue[n]) if e.get("event") == "merged"), ""))
         if ts and (now - ts).days < RECENT_DAYS:
             recent.add(n)
-    shown = sorted(set(queued) | set(inflight) | set(pr_issues) | blocked | recent | moved)
+    shown = sorted(set(queued) | set(inflight) | set(pr_issues) | blocked | recent | moved | running)
 
     def tokens(n):
         return sum(num(e.get("tokens")) or 0 for e in by_issue.get(n, []) if e.get("role") != "orchestrator")
 
     def stuck_reason(n):
+        if n in asks:
+            return asks[n].strip().splitlines()[0][:200] if asks[n].strip() else ""
         for e in reversed(by_issue.get(n, [])):
             if e.get("event") == "blocked" or e.get("verdict") in FAILING:
                 return str(e.get("summary") or e.get("verdict") or "").splitlines()[0][:200] if (e.get("summary") or e.get("verdict")) else ""
@@ -281,10 +332,12 @@ def main(argv):
     counts = {"Done": 0, "In progress": 0, "Stuck": 0, "Not started": 0}
     for n in shown:
         counts[state(n)] += 1
-    if run.get("active"):
+    if run_going(run, parse_ts(snap.get("ts")), now):
         run_line = "a run is going" + (" (started %s)" % esc(run.get("started")) if run.get("started") else "")
     elif run.get("end"):
         run_line = "last run ended: <code>%s</code>" % esc(str(run.get("end"))[:300])
+    elif run.get("active"):
+        run_line = "last run ended (no end line: it stopped without one)"
     else:
         run_line = "no run recorded"
     if col_ts:
@@ -323,7 +376,9 @@ def main(argv):
         line = ""
         if st == "Stuck":
             r = stuck_reason(n)
-            line = '<p class="why">%s</p>' % esc(r) if r else ""
+            line = '<p class="why">%s</p>' % esc(r or "waiting on a person")
+        elif n in running and rounds.get(n):
+            line = '<p class="round">fix round %d</p>' % rounds[n]
         cards.append('<article class="card %s"><h3>%s %s</h3><p class="dots" title="validator pm developer review qa merge">%s</p>'
                      '<p>%s%s · %s tokens</p>%s</article>'
                      % (re.sub(r"[^a-z]", "", st.lower()), link(links.issue(n), "#%d" % n), esc(t),
@@ -390,13 +445,19 @@ def main(argv):
 
     maps = os.path.join(a.home, "maps")
     os.makedirs(maps, exist_ok=True)
-    fname = slug.replace("/", "-") + ".html"
-    page = os.path.join(maps, fname)
-    write(page, doc("Talos map: " + name, "".join(parts)))
-
     # The index: a registry of every repository rendered under this home.
     reg_path = os.path.join(maps, "index.json")
     reg = read_state(reg_path) or {}
+    # A page keeps the name it has. A new one is named by the slug with "/" as
+    # "-", plus a hash of the slug when another repository already has that
+    # name (a-b/c and a/b-c).
+    fname = (reg.get(slug) or {}).get("file") if isinstance(reg.get(slug), dict) else None
+    if not isinstance(fname, str) or not re.fullmatch(r"[A-Za-z0-9._-]+\.html", fname):
+        fname = slug.replace("/", "-") + ".html"
+        if any(isinstance(v, dict) and v.get("file") == fname for k, v in reg.items() if k != slug):
+            fname = "%s-%s.html" % (fname[:-5], hashlib.sha1(slug.encode("utf-8")).hexdigest()[:8])
+    page = os.path.join(maps, fname)
+    write(page, doc("Talos map: " + name, "".join(parts)))
     reg[slug] = {"file": fname, "updated": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
                  "line": "%d merged · %d in flight · %d stuck · %d not started"
                          % (counts["Done"], counts["In progress"], counts["Stuck"], counts["Not started"])}

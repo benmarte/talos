@@ -101,5 +101,9 @@
   "pr": {
     "draft": true,
     "ready_gate": "off"
+  },
+
+  "map": {
+    "enabled": true
   }
 }

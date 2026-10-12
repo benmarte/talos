@@ -205,6 +205,7 @@ hooks.post_stage	str		-	-	any
 hooks.timeout_s	int	30	-	-	any
 events.enabled	bool	true	-	-	any
 events.path	path	talos/events.jsonl	-	-	any
+map.enabled	bool	true	-	-	any
 TALOS_Qz7vK2mXr9Lp
 # Leading and trailing newline so every row can be matched as "\nKEY\t".
 _TALOS_DEFAULTS_TSV=$'\n'"${_TALOS_DEFAULTS_RAW%$'\n'}"$'\n'

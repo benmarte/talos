@@ -231,6 +231,8 @@
 #         records only (the events log, the state snapshot `run` writes, the title
 #         cache): map=<TALOS_HOME>/maps/<owner>-<name>.html and
 #         index=<TALOS_HOME>/maps/index.html. No network or provider call.
+#         `map.enabled: false` turns off `run`'s snapshot and renders, not this
+#         command.
 # map-reasons: usage scripts-missing python-missing scratch-unavailable config-unreadable map-failed
 #   stop: all of them (exit 2 for usage; else 1)
 #
@@ -305,7 +307,8 @@
 #         checkout-return-failed same-verdict-same-head; plus the stop reasons
 #         of `next`, passed through (exit 1)
 #   warn: qa-ci-red notify-failed board-failed spend-upsert-failed lease-release-failed
-#         map-failed (at the run's end: one stderr line, the end line already out)
+#         map-failed (the run's first map failure only, then the map is off for the
+#         run; at the run's end: one stderr line, the end line already out)
 #         model-invalid label-failed comment-failed budget-check-failed
 #         inflight-unreadable
 #
@@ -3541,10 +3544,11 @@ _talos_map() {
 # effort: never fails its caller.
 _talos_run_snapshot() {
   local _sd
+  _talos_run_map_on || return 0
   _sd="$(_talos_state_dir 2>/dev/null)" || return 0
   python3 -I -c '
 import datetime, json, os, sys
-path, mode, started, end = sys.argv[1:5]
+path, mode, started, end, pid = sys.argv[1:6]
 now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 try:
     with open(path) as f:
@@ -3567,35 +3571,58 @@ if isinstance(col, dict) and col:
     prio.update(col.get("priority") if isinstance(col.get("priority"), dict) else {})
     snap["priority"] = prio
 snap.setdefault("collect", {})
-snap.update(ts=now, run={"active": mode != "end", "started": started, "end": end})
+snap.update(ts=now, run={"active": mode != "end", "started": started, "end": end,
+                         "pid": int(pid) if pid.isdigit() else None})
 tmp = "%s.%d.tmp" % (path, os.getpid())
 with open(tmp, "w") as f:
     json.dump(snap, f)
-os.replace(tmp, path)' "$_sd/state.json" "$1" "${TALOS_RUN_STARTED:-}" "${2:-}" 2>/dev/null || true
+os.replace(tmp, path)' "$_sd/state.json" "$1" "${TALOS_RUN_STARTED:-}" "${2:-}" "${TALOS_RUN_PID:-}" 2>/dev/null || true
 }
 
-# _talos_run_map <stage|end>: the driver's refresh (#614), after a stage's
-# `done` and as an exit hook. The exit hook first puts the run's end line in the
-# snapshot, unless the run goes on in a new image (_talos_run_continue). A
-# failure is `warn reason=map-failed`: a warn line during the run, one stderr
-# line from the exit hook (the end line is already out).
+# _talos_run_map_on: whether the run keeps the map: `map.enabled` (default
+# true) and no earlier failure in this run (_TALOS_MAP_OFF, set by the first).
+_talos_run_map_on() {
+  [ -z "${_TALOS_MAP_OFF:-}" ] && [ "$(cfg map.enabled)" != "false" ]
+}
+
+# _talos_run_map <stage|end> [<end line>]: the driver's refresh (#614), after a
+# stage's `done` and as part of the exit hook. The exit hook first puts the
+# run's end line in the snapshot, unless the run goes on in a new image
+# (_talos_run_continue). The first failure is `warn reason=map-failed` (a warn
+# line during the run, one stderr line from the exit hook, the end line already
+# out) and turns the map off for the rest of the run: an unwritable TALOS_HOME
+# is one warn, not one per stage.
 _talos_run_map() {
+  _talos_run_map_on || return 0
   if [ "$1" = end ] && [ -z "${_TALOS_RUN_CONTINUES:-}" ]; then
-    _talos_run_snapshot end "$(python3 -I -c '
+    _talos_run_snapshot end "${2:-}" < /dev/null
+  fi
+  if ! _talos_map_render > /dev/null 2>&1; then
+    _TALOS_MAP_OFF=1
+    if [ "$1" = end ]; then echo "warn reason=map-failed" >&2; else _talos_warn map-failed; fi
+  fi
+  return 0
+}
+
+# _talos_run_end_hook: the run's exit hook, first of them. It reads the run's
+# end line from the scratch directory (another hook removes it), releases the
+# run's leases, and only then renders the map: a slow render never holds a
+# lease, on any exit path.
+_talos_run_end_hook() {
+  local _end=""
+  if [ -z "${_TALOS_RUN_CONTINUES:-}" ] && [ -n "${_TALOS_OUT:-}" ]; then
+    _end="$(python3 -I -c '
 import sys
 parts = open(sys.argv[1], "rb").read().split(b"\0")
 last = ""
 for k, v in zip(parts[0::2], parts[1::2]):
     if k == b"stop":
         last = "stop " + v.decode("utf-8", "replace")
-print(last)' "$_TALOS_OUT" 2>/dev/null)" < /dev/null
+print(last)' "$_TALOS_OUT" 2>/dev/null)"
   fi
-  if ! _talos_map_render > /dev/null 2>&1; then
-    if [ "$1" = end ]; then echo "warn reason=map-failed" >&2; else _talos_warn map-failed; fi
-  fi
-  return 0
+  _talos_lease_release_run_all
+  _talos_run_map end "$_end"
 }
-_talos_run_map_end() { _talos_run_map end; }
 
 # ── run (#472, slice 8) ──────────────────────────────────────────────────────
 # The deterministic orchestrator: the loop of Step 2 in one bash process. Every stage is
@@ -3769,14 +3796,13 @@ _talos_run_loop() {
   talos_claim_resolve
   # The collected state is read once per state inside this run (#554).
   TALOS_COLLECT_CACHE="$_CFG_CACHE_DIR/collect.cache"; export TALOS_COLLECT_CACHE
-  # The run releases its own leases on exit (every path): one exit hook.
-  _talos_on_exit "_talos_lease_release_run_all"
   # The project map (#614): refreshed at each stage end and once at the end.
   [ -n "${TALOS_RUN_STARTED:-}" ] || TALOS_RUN_STARTED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   export TALOS_RUN_STARTED
   # First of the exit hooks: it reads the end line from the scratch dir, which
-  # an earlier-registered hook removes.
-  _TALOS_EXIT_HOOKS=("_talos_run_map_end" ${_TALOS_EXIT_HOOKS[@]+"${_TALOS_EXIT_HOOKS[@]}"})
+  # an earlier-registered hook removes, releases the run's own leases (every
+  # exit path), and then renders the map.
+  _TALOS_EXIT_HOOKS=("_talos_run_end_hook" ${_TALOS_EXIT_HOOKS[@]+"${_TALOS_EXIT_HOOKS[@]}"})
   local _dispatched=0
   . "$SCRIPT_DIR/pipeline-contract.sh"
 

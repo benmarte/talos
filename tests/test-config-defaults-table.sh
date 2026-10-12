@@ -59,7 +59,7 @@ print("\n".join(bad))
 print("ROWS=%d" % len(rows))
 TALOS_PYtab7Gw3Nd5Xk
 )"
-assert_eq "ROWS=118" "$(printf '%s\n' "$_out" | tail -n1)" "the table has one row per config key (118 rows)"
+assert_eq "ROWS=119" "$(printf '%s\n' "$_out" | tail -n1)" "the table has one row per config key (119 rows)"
 assert_eq "" "$(printf '%s\n' "$_out" | sed '$d')" \
   "every row has six fields, a unique key, a valid type/derived/env/scope column, and a default of the right shape"
 
@@ -88,7 +88,7 @@ agents.claude_allowed_tools agents.claude_permission_mode agents.roles.*.claude_
 agents.fallback agents.roles.*.fallback agents.provider_down_s agents.stage_timeout_s agents.roles.*.stage_timeout_s agents.capture_usage agents.claude_api_credits agents.profile agents.mode limits.max_fix_attempts
 limits.max_total_dispatches limits.same_area_rounds limits.max_retries limits.tokens_per_issue limits.warn_at
 spend.comment pr.draft pr.ready_gate markers.trusted_authors markers.verify_authors
-hooks.pre_dispatch hooks.post_stage hooks.timeout_s events.enabled events.path"
+hooks.pre_dispatch hooks.post_stage hooks.timeout_s events.enabled events.path map.enabled"
 
 _table_keys="$( . "$DEFAULTS_SH"; _talos_defaults_keys | LC_ALL=C sort )"
 _old_sorted="$(printf '%s\n' $OLD_KEYS | LC_ALL=C sort)"
