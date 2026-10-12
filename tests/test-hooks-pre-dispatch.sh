@@ -147,20 +147,27 @@ EOF
 # config reads and process starts are not free on a loaded runner, so the hook
 # sleeps 10s and the check is "well short of that" (#483): a hook that was NOT
 # killed at timeout_s=1 takes at least 10s, a killed one about 1s plus overhead.
+# The overhead is measured in the same run (#593): the same call with a hook that
+# answers at once, right before, so a loaded machine slows both alike.
+cp talos.pipeline.json "$SANDBOX/slow-hook.json"
+cat > talos.pipeline.json <<EOF
+{"agents": {"runner": "custom", "runner_cmd": "cat > /dev/null"},
+ "hooks": {"pre_dispatch": "cat > /dev/null; echo fast", "timeout_s": 1}}
+EOF
+_start="$(wall_s)"
+TALOS_ISSUE=42 bash "$AGENT" developer "Implement the spec." >/dev/null 2>&1
+_baseline="$(since_s "$_start")"
+cp "$SANDBOX/slow-hook.json" talos.pipeline.json
 : > "$RECEIVED"
 : > "$ERRFILE"
-_start=$(date +%s)
+_start="$(wall_s)"
 out="$(TALOS_ISSUE=42 bash "$AGENT" developer "Implement the spec." 2>"$ERRFILE")"; rc=$?
-_elapsed=$(( $(date +%s) - _start ))
+_elapsed="$(since_s "$_start")"
 assert_eq_ctx "0" "$rc" "slow hook: pipeline-agent.sh still exits 0" "$(cat "$ERRFILE")"
 assert_eq "$NOHOOK_PROMPT" "$(cat "$RECEIVED")" \
   "slow hook: prompt is byte-identical to the no-hook prompt"
-if [ "$_elapsed" -lt 8 ]; then
-  pass "slow hook: killed at hooks.timeout_s (1s), not left to run its full 10s sleep"
-else
-  fail "slow hook: killed at hooks.timeout_s (1s), not left to run its full 10s sleep" \
-    "elapsed: ${_elapsed}s"
-fi
+assert_cut_short "slow hook: killed at hooks.timeout_s (1s), not left to run its full 10s sleep" \
+  "$_elapsed" "$_baseline" 10
 
 # ── (b) Empty hook -- no-op, byte-identical ───────────────────────────────────
 cat > talos.pipeline.json <<EOF

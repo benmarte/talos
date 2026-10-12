@@ -98,23 +98,26 @@ assert_contains "$(cat "$ERRFILE")" "pipeline-notify: notifications.cmd" \
 # The generous bound only guards against the call blocking for the full sleep.
 LATE="$SANDBOX/too-late"
 rm -f "$LATE"
+# The baseline (#593): the same call with a command that returns at once.
+cat > talos.pipeline.json <<EOF
+{"notifications": {"cmd": "cat > /dev/null", "cmd_timeout_s": 1}}
+EOF
+_start="$(wall_s)"
+bash "$NOTIFY" info "#1" "m" 1 >/dev/null 2>&1
+_baseline="$(since_s "$_start")"
 cat > talos.pipeline.json <<EOF
 {"notifications": {"cmd": "sleep 30; echo too-late > $LATE", "cmd_timeout_s": 1}}
 EOF
 : > "$ERRFILE"
-_start=$(date +%s)
+_start="$(wall_s)"
 out="$(bash "$NOTIFY" info "#1" "m" 1 2>"$ERRFILE")"; rc=$?
-_elapsed=$(( $(date +%s) - _start ))
+_elapsed="$(since_s "$_start")"
 assert_eq "0" "$rc" "slow cmd: pipeline-notify.sh still exits 0"
 assert_contains "$(cat "$ERRFILE")" "pipeline-notify: notifications.cmd" \
   "slow cmd: one stderr note is printed"
 assert_file_absent "$LATE" \
   "slow cmd: killed at notifications.cmd_timeout_s (1s), never reached the end of its 30s sleep"
-if [ "$_elapsed" -lt 25 ]; then
-  pass "slow cmd: the call returned long before the 30s sleep would have ended"
-else
-  fail "slow cmd: the call returned long before the 30s sleep would have ended" "elapsed: ${_elapsed}s"
-fi
+assert_cut_short "slow cmd: the call returned long before the 30s sleep would have ended" "$_elapsed" "$_baseline" 30
 
 # ── (f) No orphaned process after a timeout ───────────────────────────────────
 # Unique sleep duration so pgrep can't match any other sleep started elsewhere.
