@@ -356,10 +356,12 @@ playbook_text() { cat "$TALOS_ROOT/skills/pipeline/SKILL.md" "$TALOS_ROOT"/skill
 # ── wall-clock checks (#593) ─────────────────────────────────────────────────
 # A test that times work shares the CPU with the rest of the suite, so a fixed
 # number of seconds fails under load. These judge against the same run instead.
-# wall_s: a monotonic clock in seconds (two decimals), comparable across processes.
-wall_s() { python3 -I -c 'import time; print("%.2f" % time.monotonic())'; }
+# wall_s: the time in seconds (two decimals) on a clock every process shares.
+# Not time.monotonic(): each call here is a new process, and on macOS that
+# clock counts from the process's own start, so any wait would read 0.
+wall_s() { python3 -I -c 'import time; print("%.2f" % time.time())'; }
 # since_s <wall_s value>: the seconds elapsed since then.
-since_s() { python3 -I -c 'import sys, time; print("%.2f" % (time.monotonic() - float(sys.argv[1])))' "$1"; }
+since_s() { python3 -I -c 'import sys, time; print("%.2f" % (time.time() - float(sys.argv[1])))' "$1"; }
 # assert_cut_short <label> <elapsed> <baseline> <uncut>: a timeout cut a long
 # wait short. <baseline> is the same command without the long wait, timed in
 # this run; a wait that was NOT cut adds all of <uncut> to it, a cut one only
