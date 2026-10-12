@@ -69,7 +69,12 @@ case "$1" in
 print(json.dumps({"title": "t", "body": "issue body", "labels": [],
                   "comments": [{"body": open(sys.argv[1]).read()}]}))' "$QA_SPEC_FILE" ;;
   pr-mergeable) echo "${QA_MERGEABLE:-MERGEABLE}"; [ "${QA_MERGEABLE:-MERGEABLE}" != CONFLICTING ] ;;
-  checkout-pr) : ;;
+  checkout-pr)
+    # QA_REAL_CHECKOUT: a real named checkout of the PR branch, which git
+    # refuses while another worktree holds it (#589).
+    [ -z "${QA_REAL_CHECKOUT:-}" ] || git checkout -q feat/issue-7-greet ;;
+  pr-head) git rev-parse feat/issue-7-greet ;;
+  pr-head-ref) echo feat/issue-7-greet ;;
   *) echo "stub pipeline-vcs: unexpected verb: $*" >&2; exit 99 ;;
 esac
 TALOS_a3p8v1c6ne52
@@ -284,6 +289,25 @@ assert_eq "$HEAD_BEFORE" "$(git -C "$WT" rev-parse HEAD)" "linked worktree: deta
 assert_contains "$(cat "$WT/.talos/env" 2>/dev/null)" "TALOS_ISSUE_NUMBER=7" "linked worktree: qa-run tagged the worktree for issue 7 (no profile step)"
 # The main checkout is never tagged (tag refuses it).
 assert_file_absent "$BASE_DIR/.talos/env" "main checkout: qa-run does not tag it"
+
+# ── 11b. #589: another worktree holds the PR branch: run detached at its head ──
+new_repo
+spec '**Tests:** `tests/test-greet.sh`'
+PR_HEAD="$(git rev-parse HEAD)"
+git checkout -q --detach main
+WT589="$(safe_mktemp_dir "${TMPDIR:-/tmp}/talos-qa-wt.XXXXXX")" || exit 1
+WTS+=("$WT589")
+rmdir "$WT589"
+git worktree add -q "$WT589" "$BR"
+QA_REAL_CHECKOUT=1 qa_run
+assert_eq "0" "$RC" "AC1 the branch held by another worktree: qa-run exits 0"
+assert_contains "$OUT" "AC1 red@$RED8 green@head" "AC1 the criteria run red then green at the PR head"
+assert_contains "$OUT" "qa-run: verdict PASS" "AC1 the verdict is PASS"
+assert_eq "$PR_HEAD" "$(git rev-parse HEAD)" "AC1 HEAD is the PR head afterwards"
+assert_eq "" "$(git symbolic-ref -q --short HEAD)" "AC1 HEAD is detached, the other worktree keeps the branch"
+assert_contains "$OUT" "qa-run: PR #9's branch is held by another worktree; running detached at ${PR_HEAD:0:8}" \
+  "AC2 the fallback is named on one line"
+git worktree remove --force "$WT589"
 
 # ── 12. usage ────────────────────────────────────────────────────────────────
 new_repo
