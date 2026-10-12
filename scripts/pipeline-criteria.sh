@@ -190,7 +190,10 @@ if not isinstance(d, dict):
 text = None
 for c in d.get("comments") or []:
     b = c.get("body") if isinstance(c, dict) else None
-    if isinstance(b, str) and b.lstrip().startswith("**PM spec"):
+    # view-issue --spec has vetted the comment: a bare spec, or one under the
+    # pm stage header line (#645).
+    lines = [l for l in b.splitlines() if l.strip()][:2] if isinstance(b, str) else []
+    if any(l.lstrip().startswith("**PM spec") for l in lines):
         text = b
 if text is None:
     text = d.get("body") if isinstance(d.get("body"), str) else ""

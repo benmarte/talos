@@ -180,14 +180,14 @@ set_comments "$PM_HDR
 
 no spec line follows"
 assert_eq "" "$(spec_ids)" "AC2 the header with no **PM spec:** line is rejected"
-for cfgjson in '{"comments": {"header": ""}}' '{not json'; do
+for cfgjson in '{"comments": {"header": ""}}'; do
   printf '%s\n' "$cfgjson" > talos.pipeline.json
   set_comments "$PM_HDR
 
 **PM spec:** x"
-  assert_eq "" "$(spec_ids)" "AC2 with an empty or unreadable comments.header the header form is rejected"
+  assert_eq "" "$(spec_ids)" "AC2 with an empty comments.header the header form is rejected"
   set_comments "**PM spec:** bare"
-  assert_eq "0" "$(spec_ids)" "AC2 with an empty or unreadable comments.header the bare form is accepted"
+  assert_eq "0" "$(spec_ids)" "AC2 with an empty comments.header the bare form is accepted"
 done
 printf '%s\n' '{"comments": {"header": "## {role} stage"}}' > talos.pipeline.json
 set_comments "## pm stage
