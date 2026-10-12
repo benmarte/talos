@@ -162,7 +162,8 @@ def parse_array(text, what):
 
 def next_stage(n, labels, issue_labels, enabled):
     """First match wins: blocked, then the draft or default order, counting only
-    enabled roles; an approval label that is missing or stale means that role.
+    enabled roles; an approval label that is stale, or missing and not just
+    lost (#521), means that role.
     Fails closed (die) on a failed check-approval-sha read."""
     if BLOCKED_LABEL in labels or BLOCKED_LABEL in issue_labels:
         return 'blocked'
@@ -182,14 +183,12 @@ def next_stage(n, labels, issue_labels, enabled):
             die('check-approval-sha failed for PR #%d (rc=%d)' % (n, rc))
     # #521: a missing label whose marker still pins the current head is a lost
     # stamp, not unfinished work: the gate re-applies it (post-approval
-    # --recover-only), so it is not this PR's stage. One evidence read, only
-    # for a PR that already carries an approval label and misses an enabled
-    # one (label churn); a PR with none re-runs the stage as before, so the
-    # collect pays nothing extra for PRs that have not reached their reviews.
-    # A failed read dies.
+    # --recover-only), so it is not this PR's stage. One evidence read for a
+    # PR that misses an enabled role's label, whether or not it carries another
+    # approval label: every stamp can be lost at once, and qa can be the only
+    # approval role. A failed read dies.
     lost = set()
-    if any(label in labels for _, label in APPROVALS) \
-            and any(role in enabled and label not in labels for role, label in APPROVALS):
+    if any(role in enabled and label not in labels for role, label in APPROVALS):
         rc, out, _ = vcs('check-approval-sha', str(n), '--evidence-list')
         if rc != 0:
             die('check-approval-sha --evidence-list failed for PR #%d (rc=%d)' % (n, rc))
