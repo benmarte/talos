@@ -98,8 +98,8 @@ assert_contains "$PAGE" '#11</a> </h3><p class="dots" title="validator pm develo
 # counted in the tier it had while it was queued.
 assert_contains "$PAGE" '<li class="here"><b>p0</b> 1 merged · 0 in flight · 1 queued <span class="you">you are here</span></li>' \
   "AC2 the track counts a merged issue in its own tier and marks the current one"
-assert_contains "$PAGE" '<li class=""><b>unlabelled</b> 0 merged · 2 in flight · 0 queued</li>' \
-  "AC2 the track's unlabelled tier holds only the issues with no tier"
+assert_contains "$PAGE" '<li class=""><b>unlabelled</b> 0 merged · 3 in flight · 0 queued</li>' \
+  "AC2 the track's unlabelled tier holds only the issues with no tier (the owner question's issue is Stuck)"
 
 # AC3: owner question, next step, changes, spend.
 assert_contains "$PAGE" 'Pick A or B? &lt;img src=x onerror=alert(1)&gt;' "AC3 the owner question is quoted, escaped"
@@ -278,5 +278,131 @@ assert_eq '{"14": 0}' "$(snap_priority)" "AC9 the snapshot records the tier of e
 bash "$GS/talos.sh" run --max-iterations 1 >/dev/null 2>&1
 assert_contains "$(cat "$STATE/state.json" 2>/dev/null)" '"queued": []' "AC9 the next run's collect replaces the stored one"
 assert_eq '{"14": 0}' "$(snap_priority)" "AC9 the snapshot keeps an issue's tier after it leaves the queue"
+
+# ── follow-ups (#641): the AC ids below are that issue's ─────────────────────
+cp "$TALOS_ROOT/scripts/talos-map.py" "$GS/talos-map.py"
+cp "$STATE/events.jsonl" "$SANDBOX/events.saved"
+printf '{"vcs": {"provider": "github", "repo": "acme/widget"}}\n' > "$PIPELINE_CONFIG"
+EMPTY_COLLECT='{"prs": [], "queued": [], "inflight": [], "held": [], "blocked": [], "owners": [], "capped": []}'
+snap() {  # <collect JSON> <run JSON> [<snapshot time>]: the snapshot the render reads
+  python3 -I -c '
+import json, sys
+json.dump({"ts": sys.argv[6], "collect_ts": sys.argv[3], "priority": {},
+           "run": json.loads(sys.argv[5]), "collect": json.loads(sys.argv[4])}, open(sys.argv[1], "w"))' \
+    "$STATE/state.json" "$NOW" "$EARLY" "$1" "$2" "${3:-$NOW}"
+}
+ENDED_RUN="{\"active\": false, \"started\": \"$EARLY\", \"end\": \"stop x\"}"
+: > "$STATE/events.jsonl"
+# AC1: a fix round whose stage is running is In progress, with its round number.
+ev developer developer 31 41 PR_OPENED 100 ""
+ev qa qa 31 41 FAIL 100 "QA FAIL: wrong"
+ev blocked orchestrator 31 41 "" "" "QA FAIL: wrong"
+ev stage_start orchestrator 31 41 "" "" ""
+# AC2: an unanswered owner question is Stuck, the question its reason.
+ev developer developer 32 42 PR_OPENED 100 ""
+# AC3: a stage that ended BLOCKED:, and a gate's block, are Stuck.
+ev developer developer 33 "" BLOCKED 100 "BLOCKED: need credentials"
+snap '{"prs": [{"n": 41, "issue": 31, "head": "a", "owner": false, "stage": "developer"}, {"n": 44, "issue": 34, "head": "b", "owner": false, "stage": "qa"}],
+       "queued": [], "inflight": [], "held": [], "blocked": [["issue", 31], ["issue", 34]],
+       "owners": [{"n": 32, "status": "unanswered", "question": "Which API?"}], "capped": []}' "$ENDED_RUN"
+bash "$TALOS" map >/dev/null 2>&1
+P="$(cat "$MAP" 2>/dev/null)"
+assert_eq "inprogress" "$(card 31)" "AC1 a running stage newer than the last failing verdict is In progress, not Stuck"
+assert_contains "$P" 'fix round 1' "AC1 the card carries the fix round number"
+assert_eq "stuck" "$(card 32)" "AC2 an unanswered owner question is Stuck"
+assert_contains "$P" '<p class="why">Which API?</p>' "AC2 the card's reason is the question"
+assert_eq "stuck" "$(card 33)" "AC3 a stage that ended BLOCKED: is Stuck"
+assert_contains "$P" '<p class="why">BLOCKED: need credentials</p>' "AC3 the card says the BLOCKED: reason"
+assert_eq "stuck" "$(card 34)" "AC3 an issue the gate blocked is Stuck"
+ev stage_start orchestrator 33 "" "" "" ""
+bash "$TALOS" map >/dev/null 2>&1
+assert_eq "inprogress" "$(card 33)" "AC3 a BLOCKED: stage followed by a new stage_start is In progress"
+cp "$SANDBOX/events.saved" "$STATE/events.jsonl"
+
+# AC4: the key off. The dispatching copy runs two passes with a stage between.
+printf '{"vcs": {"provider": "github", "repo": "acme/widget"}, "issues": {"max_parallel": 1}, "roles": {"validator": true}, "map": {"enabled": false}}\n' > "$PIPELINE_CONFIG"
+rm -rf "${TH:?}/maps"
+rm -f "$STATE/state.json"
+OUT="$(CLAUDE_CONFIG_DIR="$SANDBOX/cc" TALOS_LEASE_TTL_S=1 TALOS_NOW=1000 bash "$DS/talos.sh" run --issue 9 --max-iterations 2 2>&1)"; RC=$?
+assert_eq "0" "$RC" "AC4 the run with the map off exits 0" "$OUT"
+assert_file_absent "$STATE/state.json" "AC4 with map.enabled false the run writes no snapshot"
+assert_file_absent "$TH/maps" "AC4 with map.enabled false the run writes no page or index"
+assert_not_contains "$OUT" "map-failed" "AC4 with map.enabled false the run prints no map warn"
+
+# AC5: an unwritable TALOS_HOME (a file where the directory should be).
+printf '{"vcs": {"provider": "github", "repo": "acme/widget"}, "issues": {"max_parallel": 1}, "roles": {"validator": true}}\n' > "$PIPELINE_CONFIG"
+printf 'a file, not a directory' > "$SANDBOX/home-file"
+OUT="$(CLAUDE_CONFIG_DIR="$SANDBOX/cc" TALOS_HOME="$SANDBOX/home-file" TALOS_LEASE_TTL_S=1 TALOS_NOW=1000 bash "$DS/talos.sh" run --issue 9 --max-iterations 2 2>&1)"; RC=$?
+assert_eq "0" "$RC" "AC5 the run with an unwritable TALOS_HOME exits 0" "$OUT"
+assert_eq "1" "$(grep -c 'map-failed' <<< "$OUT")" "AC5 a multi-stage run prints one map warn in total" "$OUT"
+
+# AC6: the render stub records whether the run's lease release has run; the
+# release is marked in a copy of talos.sh.
+LS="$SANDBOX/ls"
+rm -rf "${LS:?}"; mkdir -p "$LS"
+cp "$DS"/* "$LS/" 2>/dev/null
+awk '{ print } /^_talos_lease_release_run_all\(\) \{/ { print "  echo released >> \"$SANDBOX_MARK\"" }' "$LS/talos.sh" > "$LS/talos.sh.new" && mv "$LS/talos.sh.new" "$LS/talos.sh"
+cat > "$LS/talos-map.py" <<'TALOS_stubmapQk3Rt7Wx'
+import os
+open(os.environ["SANDBOX_LOG"], "a").write("render after-release=%s\n" % os.path.exists(os.environ["SANDBOX_MARK"]))
+TALOS_stubmapQk3Rt7Wx
+export SANDBOX_MARK="$SANDBOX/release.mark" SANDBOX_LOG="$SANDBOX/render.log"
+rm -f "$SANDBOX_MARK" "$SANDBOX_LOG"
+CLAUDE_CONFIG_DIR="$SANDBOX/cc" TALOS_LEASE_TTL_S=1 TALOS_NOW=1000 bash "$LS/talos.sh" run --issue 9 --max-iterations 2 >/dev/null 2>&1
+assert_eq "render after-release=True" "$(tail -n 1 "$SANDBOX_LOG" 2>/dev/null)" "AC6 the end-of-run render starts after the lease release (normal exit)"
+# A signal exit: the dispatched agent waits, the run gets SIGTERM.
+rm -f "$SANDBOX_MARK" "$SANDBOX_LOG" "$SANDBOX/agent.started"
+printf '#!/usr/bin/env bash\ncat > /dev/null\ntouch "%s/agent.started"\nsleep 2\necho "CONFIRMED: ok"\n' "$SANDBOX" > "$LS/pipeline-agent.sh"
+CLAUDE_CONFIG_DIR="$SANDBOX/cc" TALOS_LEASE_TTL_S=1 TALOS_NOW=1000 bash "$LS/talos.sh" run --issue 9 --max-iterations 2 >/dev/null 2>&1 &
+RUNPID=$!
+for _i in $(seq 1 50); do [ -f "$SANDBOX/agent.started" ] && break; sleep 0.2; done
+kill -TERM "$RUNPID" 2>/dev/null
+wait "$RUNPID" 2>/dev/null
+assert_eq "render after-release=True" "$(tail -n 1 "$SANDBOX_LOG" 2>/dev/null)" "AC6 the end-of-run render starts after the lease release (signal exit)"
+
+# AC7: a run entry whose pid is dead, or that is too old, is an ended run.
+DEADPID="$(sh -c 'echo $$')"
+snap "$EMPTY_COLLECT" "{\"active\": true, \"started\": \"$NOW\", \"end\": \"\", \"pid\": $DEADPID}"
+bash "$TALOS" map >/dev/null 2>&1
+P="$(cat "$MAP" 2>/dev/null)"
+assert_contains "$P" 'last run ended' "AC7 an active run entry whose pid is dead renders as an ended run"
+assert_not_contains "$P" 'a run is going' "AC7 a dead pid is never a run going"
+snap "$EMPTY_COLLECT" "{\"active\": true, \"started\": \"$NOW\", \"end\": \"\", \"pid\": $$}"
+bash "$TALOS" map >/dev/null 2>&1
+assert_contains "$(cat "$MAP" 2>/dev/null)" 'a run is going' "AC7 an active run entry whose pid is alive is a run going"
+snap "$EMPTY_COLLECT" "{\"active\": true, \"started\": \"2020-01-01T00:00:00Z\", \"end\": \"\", \"pid\": $$}" 2020-01-01T00:00:00Z
+bash "$TALOS" map >/dev/null 2>&1
+assert_contains "$(cat "$MAP" 2>/dev/null)" 'last run ended' "AC7 an active run entry older than a stage could take renders as ended"
+rm -f "$STATE/state.json"
+bash "$GS/talos.sh" run --max-iterations 1 >/dev/null 2>&1
+assert_contains "$(cat "$STATE/state.json" 2>/dev/null)" '"pid": ' "AC7 the snapshot's run entry records the pid"
+
+# GUARD (not a red-to-green case): a three-segment vcs.repo (a GitLab subgroup) already
+# rendered before #641, so AC8 of #641 needed no code change. Kept so it stays that way.
+printf '{"vcs": {"provider": "gitlab", "repo": "grp/sub/widget"}}\n' > "$PIPELINE_CONFIG"
+git remote set-url origin git@gitlab.example.com:grp/sub/widget.git
+bash "$TALOS" map >/dev/null 2>&1
+assert_file_exists "$TH/maps/grp-sub-widget.html" "GUARD a three-segment vcs.repo renders"
+assert_contains "$(cat "$TH/maps/grp-sub-widget.html" 2>/dev/null)" 'https://gitlab.example.com/grp/sub/widget/-/issues/' "GUARD its links keep the whole path"
+git remote remove origin
+rm -f "$TH/maps/grp-sub-widget.html"
+bash "$TALOS" map >/dev/null 2>&1
+assert_file_exists "$TH/maps/grp-sub-widget.html" "GUARD a three-segment vcs.repo renders with no remote"
+git remote add origin git@gitlab.example.com:grp/sub/widget.git
+
+# AC9: names that differ only by where the dash and the slash sit.
+printf '{"vcs": {"provider": "github", "repo": "a-b/c"}}\n' > "$PIPELINE_CONFIG"
+git remote set-url origin git@github.com:a-b/c.git
+bash "$TALOS" map >/dev/null 2>&1
+printf '{"vcs": {"provider": "github", "repo": "a/b-c"}}\n' > "$PIPELINE_CONFIG"
+git remote set-url origin git@github.com:a/b-c.git
+bash "$TALOS" map >/dev/null 2>&1
+IDX="$(cat "$TH/maps/index.html" 2>/dev/null)"
+F1="$(sed -n 's|.*<a href="\([^"]*\)">a-b/c</a>.*|\1|p' <<< "$IDX")"
+F2="$(sed -n 's|.*<a href="\([^"]*\)">a/b-c</a>.*|\1|p' <<< "$IDX")"
+assert_eq "1" "$([ -n "$F1" ] && [ -n "$F2" ] && [ "$F1" != "$F2" ] && echo 1 || echo 0)" "AC9 a-b/c and a/b-c get different pages" "$F1 $F2"
+assert_file_exists "$TH/maps/$F1" "AC9 the index links a-b/c to its own page"
+assert_file_exists "$TH/maps/$F2" "AC9 the index links a/b-c to its own page"
+git remote set-url origin git@github.com:acme/widget.git
 
 finish
