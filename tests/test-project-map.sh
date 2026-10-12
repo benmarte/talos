@@ -341,7 +341,7 @@ assert_eq "1" "$(grep -c 'map-failed' <<< "$OUT")" "AC5 a multi-stage run prints
 LS="$SANDBOX/ls"
 rm -rf "${LS:?}"; mkdir -p "$LS"
 cp "$DS"/* "$LS/" 2>/dev/null
-sed -i 's|^_talos_lease_release_run_all() {|&\n  echo released >> "$SANDBOX_MARK"|' "$LS/talos.sh"
+awk '{ print } /^_talos_lease_release_run_all\(\) \{/ { print "  echo released >> \"$SANDBOX_MARK\"" }' "$LS/talos.sh" > "$LS/talos.sh.new" && mv "$LS/talos.sh.new" "$LS/talos.sh"
 cat > "$LS/talos-map.py" <<'TALOS_stubmapQk3Rt7Wx'
 import os
 open(os.environ["SANDBOX_LOG"], "a").write("render after-release=%s\n" % os.path.exists(os.environ["SANDBOX_MARK"]))
