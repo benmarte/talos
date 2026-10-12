@@ -97,7 +97,9 @@ reset() {  # $1 = the PR's collect stage
 }
 rn() { OUT="$(cd "$DRV" && TALOS_LEASE_TTL_S=1800 bash "$GS/talos.sh" run "$@" 2>"$ERR")"; RC=$?; }
 agents() { grep -c "^agent $1\$" "$STUB_DIR/journal" 2>/dev/null || true; }
-WT="$DRV/.claude/worktrees/fix-issue-9-docs"
+# The physical path: pr-worktree prints what git resolves, and on macOS
+# $TMPDIR is a symlink (/var -> /private/var) with a trailing slash.
+WT="$(cd "$DRV" && pwd -P)/.claude/worktrees/fix-issue-9-docs"
 
 # ── AC7: a new worktree of the PR branch ─────────────────────────────────────
 reset docs
