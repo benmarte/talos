@@ -583,7 +583,8 @@ assert_not_contains "$(calls)" "pr-head 143" "cap-next: an unready PR past the c
 assert_not_contains "$(calls)" "pr-head 151" "cap-next: a needs-owner PR past the cap is not looked up"
 assert_not_contains "$(calls)" "pr-head 152" "cap-next: a blocked PR past the cap is not looked up"
 assert_eq '[["PR",152]]' "$(J "d['blocked']")" "cap-next: the blocked PR past the cap is still reported as blocked"
-assert_eq "1" "$(count_calls check-approval-sha)" "cost: only the merge-ready PR needed an approval read"
+assert_eq "1" "$(grep -c -e ' --stale-list$' "$FX/calls.log")" "cost: only the merge-ready PR needed a stale read"
+assert_eq "37" "$(grep -c -e ' --evidence-list$' "$FX/calls.log")" "cost: one evidence read per looked-up PR that misses an approval (#521), none past the cap"
 
 # with no role enabled every PR qualifies as merge-ready: the extra lookups past
 # the cap are bounded by the number of PRs the cap shows (37), not by the PR count

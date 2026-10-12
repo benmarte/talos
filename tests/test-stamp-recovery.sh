@@ -201,6 +201,27 @@ assert_eq "1" "$RC" "AC6 a failed evidence read ends the collect, it never route
 assert_contains "$(cat "$SANDBOX/collect.err")" "check-approval-sha --evidence-list failed for PR #12" "AC6 the failed evidence read is named"
 rm -f "${FX:?}/evidence.rc"
 
+# A PR with no approval label left gets the same one read: every stamp lost at
+# an unchanged head, and qa as the only approval role.
+NOLABELS='[{"number": 12, "title": "PR 12", "headRefName": "fix/issue-12-x", "baseRefName": "main", "isCrossRepository": false, "labels": [{"name": "pipeline:review"}]}]'
+printf '%s' "$NOLABELS" > "$FX/prs.json"
+EVIDALL="evidence role=qa label=qa:pass state=lost
+evidence role=reviewer label=review:approved state=lost
+evidence role=security label=security:approved state=lost
+evidence role=adversarial label=adversarial:approved state=missing
+evidence role=docs label=docs:done state=missing"
+printf '%s\n' "$EVIDALL" > "$FX/evidence"
+: > "$FX/calls.log"
+assert_eq "merge" "$(stage12)" "AC6 a PR whose every approval is lost is not routed to any of those roles"
+assert_eq "1" "$(grep -c -e ' --evidence-list$' "$FX/calls.log")" "AC6 the evidence is read once for a PR with no approval label left"
+printf '%s\n' "$EVIDALL" | sed 's/role=security label=security:approved state=lost/role=security label=security:approved state=missing/' > "$FX/evidence"
+assert_eq "security" "$(stage12)" "AC6 control: among lost stamps the role with no evidence is the stage"
+printf '{"vcs": {"provider": "github", "repo": "acme/widget"}, "base_branch": "main", "pr": {"draft": false}, "roles": {"docs": false, "reviewer": false, "security": false}, "merge": {"auto": true}}\n' > "$PIPELINE_CONFIG"
+printf '%s\n' "$EVIDALL" > "$FX/evidence"
+assert_eq "merge" "$(stage12)" "AC6 a lost qa:pass is not routed to qa when qa is the only approval role"
+printf '%s\n' "$EVIDALL" | sed 's/role=qa label=qa:pass state=lost/role=qa label=qa:pass state=missing/' > "$FX/evidence"
+assert_eq "qa" "$(stage12)" "AC6 control: the only approval role with no evidence is the stage, as today"
+
 # The draft window's QA pre-CI gate (pr.ready_gate qa-local) routes qa last, in
 # its own branch: a lost qa:pass is not a reason to run QA again there either.
 printf '{"vcs": {"provider": "github", "repo": "acme/widget"}, "base_branch": "main", "pr": {"draft": true, "ready_gate": "qa-local"}, "roles": {"docs": false}, "merge": {"auto": true}}\n' > "$PIPELINE_CONFIG"
@@ -215,5 +236,13 @@ printf '%s\n' "$EVIDQ" > "$FX/evidence"
 assert_eq "ready" "$(stage12)" "AC6 a draft PR whose qa:pass is lost is not routed to qa again"
 printf '%s\n' "$EVIDQ" | sed 's/role=qa label=qa:pass state=lost/role=qa label=qa:pass state=missing/' > "$FX/evidence"
 assert_eq "qa" "$(stage12)" "AC6 control: a draft PR with no qa evidence routes qa, as today"
+# The same with no approval label left on the draft PR: a lost reviewer or
+# security stamp is not its stage, so qa (no evidence) is, and nothing is when
+# qa:pass is lost too.
+printf '%s' "$NOLABELS" > "$FX/prs.json"
+printf '%s\n' "$EVIDALL" | sed 's/role=qa label=qa:pass state=lost/role=qa label=qa:pass state=missing/' > "$FX/evidence"
+assert_eq "qa" "$(stage12)" "AC6 a draft PR whose other stamps are all lost routes qa, never a lost role"
+printf '%s\n' "$EVIDALL" > "$FX/evidence"
+assert_eq "ready" "$(stage12)" "AC6 a draft PR whose every approval is lost is ready, not a stage"
 
 finish
