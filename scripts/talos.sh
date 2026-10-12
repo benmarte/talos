@@ -247,7 +247,9 @@
 #         verdict is the `<VERDICT>:` first word of the agent's final message,
 #         checked against the role's `done` list (an unknown word is a dispatch
 #         failure); pm, planner, docs take none; the developer's is PR_OPENED with
-#         the PR URL (or a standalone `pr=<N>`), else BLOCKED. On `action=merge` it
+#         the PR URL (or a standalone `pr=<N>`), else BLOCKED -- except a fix round
+#         (`pr=<M>`) whose PR head moved during the stage and whose message does
+#         not start with `BLOCKED:`, which is PR_OPENED <M> (#647). On `action=merge` it
 #         runs `gate merge`; verdict=merge runs `merge-pr` then `post-merge`
 #         (`merged=pr=<M>`). `run --issue <N>` ends there: `stop merged pr=<M>`.
 #         An untargeted run drains the queue: once `post-merge` reports the
@@ -3996,7 +3998,7 @@ _talos_run_loop() {
 # and <prior-file> are the prompt's `--shape` and `--prior-file` (the QA-FAIL
 # fix round passes fix-round and QA's report, #537).
 _talos_run_dispatch() {
-  local _a="$1" _shape="${2:-}" _prior="${3:-}" _f _role _pr _n _v _w _dargs _next _rc
+  local _a="$1" _shape="${2:-}" _prior="${3:-}" _f _role _pr _n _v _w _dargs _next _rc _line
   _role="$(sed -n 's/.*stage=\([a-z-]*\).*/\1/p' <<<"$_a")"
   _pr="$(sed -n 's/.* pr=\([0-9]*\).*/\1/p' <<<"$_a")"
   _n="$(sed -n 's/.* issue=\([0-9]*\).*/\1/p' <<<"$_a")"
@@ -4063,6 +4065,14 @@ _talos_run_dispatch() {
     _run_fail prompt-render
   fi
 
+  # #647: a fix-round developer's PR head is read before and after the agent,
+  # so a report lost to a trailing turn is told from a stage that did nothing.
+  local _h0="" _h1=""
+  if [ "$_role" = developer ] && [ -n "$_pr" ]; then
+    _h0="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" pr-head "$_pr" 2>/dev/null)" || _h0=""
+    _h0="${_h0%%$'\n'*}"
+  fi
+
   # 2. The dispatch: the prompt on stdin, the agent's own runner resolution.
   _run_agent "$_role" "$_f" "$_CFG_CACHE_DIR/agent.out" "$_n" "$_pr" "$_cwd"
   if [ "$_AG_RC" -ne 0 ]; then
@@ -4079,6 +4089,17 @@ _talos_run_dispatch() {
 
   # 3. The verdict from the final message (AC2), never guessed.
   _v="$(_run_verdict "$_role" "$_CFG_CACHE_DIR/agent.out" "$_shape")" || { rm -f "${_f:?}"; _run_fail verdict-unreadable; }
+  # The head moved, so the fix is pushed whatever the last message says; an
+  # explicit `BLOCKED:` line is never overridden, an unreadable head never counts.
+  if [ "$_v" = BLOCKED ] && [ -n "$_h0" ]; then
+    _h1="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" pr-head "$_pr" 2>/dev/null)" || _h1=""
+    _h1="${_h1%%$'\n'*}"
+    _line="$(grep -m 1 -v '^[[:space:]]*$' "$_CFG_CACHE_DIR/agent.out" 2>/dev/null)"
+    _line="${_line#"${_line%%[![:space:]]*}"}"
+    if [ -n "$_h1" ] && [ "$_h1" != "$_h0" ]; then
+      case "$_line" in "BLOCKED:"*) : ;; *) _v="PR_OPENED $_pr" ;; esac
+    fi
+  fi
 
   # 4. The bookkeeping is always `done`'s, the final message as the summary
   # file on stdin: `done <role> --issue <N> [--pr <M>] [--verdict <V>] --summary-file -`.
