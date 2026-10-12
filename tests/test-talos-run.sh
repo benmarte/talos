@@ -771,6 +771,9 @@ late_fixture() {
   fix_fixture
   printf 'That monitor expiry does not change anything.\n' > "$STUB_DIR/message.developer"
 }
+# The PR head reads around the dispatch: only the #647 code reads it right
+# before and again right after the developer agent.
+late_head_reads() { grep -oE 'vcs pr-head 12|agent developer' "$STUB_DIR/journal" | tr '\n' '>' | grep -oE 'vcs pr-head 12>agent developer>(vcs pr-head 12>)?' | tr '\n' ' '; }
 late_dev_opened() { grep -c 'hooks post_stage developer.* --verdict PR_OPENED' "$STUB_DIR/journal"; }
 late_fixture
 cat >> "$STUB_DIR/hook.developer.1" <<'HOOK'
@@ -783,6 +786,7 @@ late_fixture
 TALOS_LEASE_TTL_S=1800 TALOS_NOW=12200 rn --max-iterations 2
 assert_contains "$OUT" "stop reason=stage-blocked role=developer" "AC2 an unmoved head with no report stays stage-blocked"
 assert_eq "0" "$(late_dev_opened)" "AC2 no PR_OPENED is recorded for an unmoved head"
+assert_eq "vcs pr-head 12>agent developer>vcs pr-head 12> " "$(late_head_reads)" "AC2 the PR head is read before and after the dispatch"
 late_fixture
 printf 'BLOCKED: cannot run the tests\n' > "$STUB_DIR/message.developer"
 cat >> "$STUB_DIR/hook.developer.1" <<'HOOK'
@@ -791,6 +795,7 @@ HOOK
 TALOS_LEASE_TTL_S=1800 TALOS_NOW=12300 rn --max-iterations 2
 assert_contains "$OUT" "stop reason=stage-blocked role=developer" "AC3 an explicit BLOCKED: stays blocked even when the head moved"
 assert_eq "0" "$(late_dev_opened)" "AC3 no PR_OPENED is recorded over an explicit block"
+assert_eq "vcs pr-head 12>agent developer>vcs pr-head 12> " "$(late_head_reads)" "AC3 the PR head is read before and after the dispatch"
 late_fixture
 cat >> "$STUB_DIR/hook.developer.1" <<'HOOK'
 printf bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb > "$d/pr-head.12"
@@ -799,6 +804,7 @@ HOOK
 TALOS_LEASE_TTL_S=1800 TALOS_NOW=12400 rn --max-iterations 2
 assert_contains "$OUT" "stop reason=stage-blocked role=developer" "AC5 an unreadable head after the dispatch applies no override"
 assert_eq "0" "$(late_dev_opened)" "AC5 no PR_OPENED is recorded on an unresolved head"
+assert_eq "vcs pr-head 12>agent developer>vcs pr-head 12> " "$(late_head_reads)" "AC5 the PR head is read before and after the dispatch"
 
 # (i2) the backstop: the fix round pushes nothing, the second QA FAIL is at the
 # same head -> blocked on PR and issue, stop, exit 0, ready-pr exactly twice.
