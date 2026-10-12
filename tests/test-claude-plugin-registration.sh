@@ -52,10 +52,13 @@ assert_eq "1" "$(calls "\[plugin\] \[marketplace\] \[add\] \[$TALOS_ROOT\] \[--j
 assert_eq "1" "$(calls '\[plugin\] \[install\] \[talos@talos\] \[--json\]')" "fresh: installs talos@talos"
 assert_eq "dir	$TALOS_ROOT" "$(cat "$CLAUDE_STUB_STATE/marketplace")" "fresh: the stub config now holds the checkout as the talos marketplace"
 assert_contains "$OUT" "registered: talos@talos" "fresh: output says the plugin is registered"
-assert_contains "$OUT" "copied the plugin into its plugin cache" "fresh: output says Claude Code copies the plugin into its cache"
+assert_contains "$OUT" "Claude Code reads the plugin from that checkout" "AC4 fresh: the success line says the plugin is read from the checkout"
+assert_not_contains "$OUT" "copied the plugin into its plugin cache" "AC4 fresh: the success line claims no cache copy"
+assert_not_contains "$OUT" "only after you re-run" "AC4 fresh: the success line does not say edits need a re-run"
 assert_not_contains "$OUT" "loads from $TALOS_ROOT in place" "fresh: output no longer claims the plugin loads from the checkout in place"
 assert_contains "$OUT" "agent-skills dependency" "fresh: output names the agent-skills side effect"
 assert_contains "$OUT" "/talos:pipeline, /talos:setup (plugin" "fresh: the closing note names the two commands"
+assert_not_contains "$OUT" "Claude Code keeps its own copy" "AC4 fresh: the closing note claims no copy that needs a re-run"
 # Isolation: every call saw the sandbox config dir, never a real one.
 bad="$(grep -vF "CLAUDE_CONFIG_DIR=$CASE/claude" "$CLAUDE_PLUGIN_LOG" || true)"
 assert_eq "" "$bad" "fresh: every claude call ran with CLAUDE_CONFIG_DIR inside the sandbox"
@@ -82,6 +85,8 @@ inst --no-overwrite
 assert_eq "0" "$(calls '\[add\]')" "other directory with --no-overwrite: no repoint"
 assert_eq "dir	$SANDBOX/moved-checkout" "$(cat "$CLAUDE_STUB_STATE/marketplace")" "other directory with --no-overwrite: source unchanged"
 assert_contains "$OUT" "left as is (--no-overwrite)" "other directory with --no-overwrite: output says so"
+assert_contains "$OUT" "registered: talos@talos (user scope), from the talos marketplace left as is ($SANDBOX/moved-checkout), not from this checkout ($TALOS_ROOT)" "AC4 other directory with --no-overwrite: the success line names the kept marketplace"
+assert_not_contains "$OUT" "The marketplace is the local checkout" "AC4 other directory with --no-overwrite: the success line does not claim the checkout"
 
 # --keep-marketplace leaves a registration that points elsewhere untouched, but
 # the plugin install still runs against it.
@@ -93,6 +98,8 @@ assert_eq "0" "$(calls '\[add\]')" "other directory with --keep-marketplace: no 
 assert_eq "dir	$SANDBOX/moved-checkout" "$(cat "$CLAUDE_STUB_STATE/marketplace")" "other directory with --keep-marketplace: source unchanged"
 assert_contains "$OUT" "points at $SANDBOX/moved-checkout, not this checkout ($TALOS_ROOT); left as is (--keep-marketplace)" "other directory with --keep-marketplace: output names both paths"
 assert_eq "1" "$(calls '\[install\] \[talos@talos\]')" "other directory with --keep-marketplace: install still runs"
+assert_contains "$OUT" "registered: talos@talos (user scope), from the talos marketplace left as is ($SANDBOX/moved-checkout), not from this checkout ($TALOS_ROOT)" "AC4 other directory with --keep-marketplace: the success line names the kept marketplace"
+assert_not_contains "$OUT" "The marketplace is the local checkout" "AC4 other directory with --keep-marketplace: the success line does not claim the checkout"
 
 # A control character in a printed path is stripped: a marketplace path with an
 # ESC (JSON \u001b) must not reach the terminal.
@@ -210,6 +217,10 @@ assert_eq "0" "$RC" "github source: exits 0"
 assert_eq "0" "$(calls '\[add\]')" "github source: the marketplace is not re-added"
 assert_eq "github	benmarte/talos" "$(cat "$CLAUDE_STUB_STATE/marketplace")" "github source: left exactly as it was"
 assert_contains "$OUT" "non-directory source (github); left as is" "github source: output says it was left alone"
+assert_contains "$OUT" "registered: talos@talos (user scope), from the talos marketplace left as is (github), not from this checkout ($TALOS_ROOT)" "AC4 github source: the success line names the kept marketplace"
+assert_not_contains "$OUT" "The marketplace is the local checkout" "AC4 github source: the success line does not claim the checkout"
+assert_not_contains "$OUT" "follows your edits" "AC4 github source: the success line does not say edits are live"
+assert_not_contains "$OUT" "installed from $TALOS_ROOT" "AC4 github source: the closing note does not say the plugin came from the checkout"
 
 # ── 3b. --local-plugin: the marketplace is this checkout (#586) ──────────────
 # line_of <pattern> -- the log line number of the first matching stub call.
@@ -226,7 +237,7 @@ assert_eq "1" "$(calls '\[install\] \[talos@talos\]')" "AC1 --local-plugin insta
 assert_eq "dir	$TALOS_ROOT" "$(cat "$CLAUDE_STUB_STATE/marketplace")" "AC1 --local-plugin leaves the checkout as the directory marketplace"
 assert_not_contains "$OUT" "target directory not found" "AC1 --local-plugin is not mistaken for the target path"
 assert_not_contains "$OUT" "Configuring Talos for repo" "AC1 --local-plugin is not mistaken for a repo target"
-assert_contains "$OUT" "Claude Code reads on each session start" "AC1 --local-plugin success line says the checkout is read on each session start"
+assert_contains "$OUT" "Claude Code reads the plugin from that checkout (it reads on each session start" "AC1 --local-plugin success line says the checkout is read on each session start"
 
 newcase local-github
 seed_marketplace github "benmarte/talos"
@@ -284,6 +295,45 @@ assert_eq "0" "$(calls '\[install\]')" "AC7 remove fails: no install call"
 assert_eq "github	benmarte/talos" "$(cat "$CLAUDE_STUB_STATE/marketplace")" "AC7 remove fails: the github registration is unchanged"
 assert_contains "$OUT" "Done. Global Talos install" "AC7 remove fails: the install runs to Done."
 unset CLAUDE_STUB_REMOVE_FAIL
+
+# ── #591: the follow-ups from the #588 review ──────────────────────────────
+newcase local-add-fails-after-remove
+seed_marketplace github "benmarte/talos"
+export CLAUDE_STUB_ADD_FAIL=1
+inst --local-plugin
+assert_eq "0" "$RC" "AC1 add fails after remove: exit 0"
+assert_contains "$OUT" "the previous talos registration (source: github) was already removed" "AC1 add fails after remove: the notice says the GitHub registration is gone"
+assert_contains "$OUT" "To put it back: claude plugin marketplace add benmarte/talos, then claude plugin install talos@talos" "AC1 add fails after remove: the notice says how to put it back"
+unset CLAUDE_STUB_ADD_FAIL
+
+newcase local-remove-fails-quoted
+seed_marketplace github "benmarte/talos"
+export CLAUDE_STUB_REMOVE_FAIL=1
+inst --local-plugin
+assert_contains "$OUT" "claude plugin marketplace add '$TALOS_ROOT'" "AC2 the track-this-checkout command quotes the checkout path"
+unset CLAUDE_STUB_REMOVE_FAIL
+
+# A checkout whose path holds a space and a single quote: the quote is escaped.
+newcase local-quote-in-path
+QBASE="$(cd "$CASE" && pwd)"
+QSRC="$QBASE/it's here"
+mkdir -p "$QSRC"
+cp "$INSTALL" "$QSRC/install.sh"
+cp -R "$TALOS_ROOT/scripts" "$TALOS_ROOT/agents" "$TALOS_ROOT/templates" "$TALOS_ROOT/skills" "$TALOS_ROOT/.claude-plugin" "$QSRC/"
+seed_marketplace github "benmarte/talos"
+export CLAUDE_STUB_REMOVE_FAIL=1
+OUT="$(env CLAUDE_CONFIG_DIR="$CASE/claude" TALOS_HOME="$CASE/talos" TALOS_AGENTS_HOME="$CASE/agents" \
+  "$BASH_BIN" "$QSRC/install.sh" --global --no-agent-skills --harness claude --local-plugin 2>&1)"
+assert_contains "$OUT" "claude plugin marketplace add '$QBASE/it'\\''s here'" "AC2 a single quote in the checkout path is escaped, so the command still pastes as one argument"
+unset CLAUDE_STUB_REMOVE_FAIL
+
+newcase local-without-global
+mkdir -p "$CASE/repo"
+git -C "$CASE/repo" init -q -b main
+# --no-agent-skills: without it a per-repo install clones agent-skills (network).
+OUT="$(env CLAUDE_CONFIG_DIR="$CASE/claude" TALOS_HOME="$CASE/talos" TALOS_AGENTS_HOME="$CASE/agents" \
+  "$BASH_BIN" "$INSTALL" --local-plugin "$CASE/repo" --no-agent-skills --no-agents-md --harness claude 2>&1)"
+assert_eq "1" "$(printf '%s\n' "$OUT" | grep -c -- '--local-plugin only applies with --global')" "AC3 --local-plugin without --global says so in one line"
 
 newcase local-success-line
 inst --local-plugin
