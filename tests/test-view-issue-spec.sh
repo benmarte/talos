@@ -180,6 +180,20 @@ set_comments "$PM_HDR
 
 no spec line follows"
 assert_eq "" "$(spec_ids)" "AC2 the header with no **PM spec:** line is rejected"
+# Red before the fix: one case holds the header form AND a rejected neighbour.
+set_comments "**Agent:** qa (talos)
+
+**PM spec:** wrong role" "$PM_HDR
+
+**PM spec:** right role"
+assert_eq "1" "$(spec_ids)" "AC2 the pm-header spec is kept and the other-header spec is not"
+# AC4 (#645): spec-usable finds a spec under the pm header line.
+set_comments "$PM_HDR
+
+**PM spec:** x
+- [ ] AC1 the README is clear (prose: wording)"
+UOUT="$(bash "$TALOS_ROOT/scripts/pipeline-criteria.sh" spec-usable 201 2>&1)"; URC=$?
+assert_eq "0:spec-usable: ok" "$URC:$UOUT" "AC4 spec-usable: a spec under the pm header line is ok"
 for cfgjson in '{"comments": {"header": ""}}'; do
   printf '%s\n' "$cfgjson" > talos.pipeline.json
   set_comments "$PM_HDR
