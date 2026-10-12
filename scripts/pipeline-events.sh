@@ -173,21 +173,8 @@ else
   exit 1
 fi
 
-# _events_log_path -> prints the absolute path to the events log, or nothing
-# (rc 1) if it can't be resolved. Mirrors pipeline-hooks.sh's
-# _events_log_path exactly (same resolution through _talos_state_dir, same
-# events.path default) -- see that copy's comment for why the GIT COMMON dir
-# (#517), not the repo root or --git-dir, roots relative paths.
-_events_log_path() {
-  local path_cfg state
-  path_cfg="$(cfg events.path)"
-  case "$path_cfg" in
-    /*) printf '%s' "$path_cfg"; return 0 ;;
-    '') return 1 ;;
-  esac
-  state="$(_talos_state_dir)" || return 1
-  printf '%s/%s' "$(dirname "$state")" "$path_cfg"
-}
+# _events_log_path, the resolver of events.path, is pipeline-paths.sh's
+# (sourced above): the same one pipeline-hooks.sh writes through.
 
 cmd_path() {
   local log_path
