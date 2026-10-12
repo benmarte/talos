@@ -4078,6 +4078,33 @@ for s in stat:
 '
 }
 
+# _gh_board_add_new <issue> [<label>...] (#523): a new pipeline issue goes on
+# the project board, its status from its labels (pipeline:blocked wins, then
+# dev/confirmed, then ready); an issue with no pipeline label stays off it.
+# Only with board.enabled and board.project_number; a failed board step is one
+# `warn reason=board-add-failed` line on stderr and never fails the verb. A
+# step pipeline-status.sh could not make (the add or the edit failed, the board
+# lacks the status) is its talos:board-unverified line with exit 0: failed too.
+_gh_board_add_new() {
+  local _ba_n="$1" _ba_st="" _ba_l _ba_out
+  shift
+  [ -n "$_ba_n" ] || return 0
+  case "$(cfg board.enabled | tr '[:upper:]' '[:lower:]')" in false) return 0 ;; esac
+  [ -n "$(cfg board.project_number)" ] || return 0
+  for _ba_l in "$@"; do
+    case "$_ba_l" in
+      pipeline:blocked) _ba_st=Blocked ;;
+      pipeline:dev | pipeline:confirmed) [ "$_ba_st" = Blocked ] || _ba_st="In progress" ;;
+      pipeline:ready) [ -n "$_ba_st" ] || _ba_st=Ready ;;
+    esac
+  done
+  [ -n "$_ba_st" ] || return 0
+  _ba_out="$(bash "$SCRIPT_DIR/pipeline-status.sh" "$_ba_n" "$_ba_st" 2>/dev/null)" || _ba_out=talos:board-unverified
+  case "$_ba_out" in
+    *talos:board-unverified*) echo "warn reason=board-add-failed issue=$_ba_n" >&2 ;;
+  esac
+}
+
 # Provider calls for _vcs_shared_assign_issue (#299). _gh_try, not _gh_req:
 # _gh_req exits the whole script on failure, and a failed assignment must
 # never fail the verb that asked for it.
@@ -4372,6 +4399,7 @@ print(d.get('html_url') or d.get('url') or d.get('number', ''))
       # Assign the new issue (#299) -- stdout stays the URL alone.
       _vcs_shared_assign_issue "$(printf '%s' "$_ci_resp" | _gh_field number 2>/dev/null)" \
         _gh_assignees_get _gh_assignee_add _gh_user_login >&2
+      _gh_board_add_new "$(printf '%s' "$_ci_resp" | _gh_field number 2>/dev/null)" ${label_args[@]+"${label_args[@]}"}
       ;;
     create-pr)
       local branch="$1" title="$2" body_file="$3" _cp_draft=false _cp_payload
