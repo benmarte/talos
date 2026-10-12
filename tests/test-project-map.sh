@@ -36,6 +36,7 @@ e = {"event": sys.argv[1], "role": sys.argv[2], "issue": int(sys.argv[3]),
 print(json.dumps(e))' "$@" "$NOW" >> "$STATE/events.jsonl"
 }
 ev validator validator 11 "" CONFIRMED 1000 ""
+ev pm pm 11 "" "" "" ""   # pm finishes with no verdict
 ev developer developer 11 21 PR_OPENED 5000 ""
 ev qa qa 11 21 PASS 2000 ""
 ev merged orchestrator 11 21 "" "" "merged"
@@ -43,15 +44,20 @@ ev developer developer 12 22 PR_OPENED 3000 ""
 ev reviewer reviewer 12 22 CHANGES 1000 '<script>alert(1)</script> needs "onload= work'
 ev blocked orchestrator 12 22 "" "" '<script>alert(1)</script> needs "onload= work'
 ev developer developer 13 23 PR_OPENED 4000 ""
+# The snapshot's own `priority` holds every tier a collect has named: the
+# collect's covers the queued and in-flight issues only, so #11 (merged) is in
+# the first and not in the second.
 python3 -I -c '
 import json, sys
 json.dump({"ts": sys.argv[2], "run": {"active": False, "started": sys.argv[3], "end": "stop merged pr=21"},
+           "priority": {"11": 0, "14": 0},
            "collect": {"prs": [{"n": 23, "issue": 13, "head": "a1", "owner": False, "stage": "qa"}],
                        "queued": [14], "inflight": [], "held": [], "blocked": [["issue", 12]],
                        "owners": [{"n": 15, "status": "unanswered", "question": "Pick A or B? <img src=x onerror=alert(1)>"}],
                        "priority": {"14": 0}}}, open(sys.argv[1], "w"))' "$STATE/state.json" "$NOW" "$EARLY"
+# The title cache, named as pipeline-meta.sh names it: <owner>_<name>.issue.<n>.
 mkdir -p "$HOME/.cache/talos/meta"
-printf 'Add a <b>bold</b> title\n' > "$HOME/.cache/talos/meta/acme_widget.issue-title.13"
+printf 'Add a <b>bold</b> title\n' > "$HOME/.cache/talos/meta/acme_widget.issue.13"
 
 # AC5: a gh, curl, glab and az that fail and log every call, first on PATH, and
 # a copied scripts dir with no pipeline-vcs.sh: no provider script is reachable.
@@ -86,6 +92,14 @@ assert_eq "notstarted" "$(card 14)" "AC2 a queued issue is Not started"
 assert_contains "$PAGE" '<a href="https://github.com/acme/widget/pull/23">#23</a>' "AC2 the in-flight card links its PR"
 assert_contains "$PAGE" '<p class="why">&lt;script&gt;alert(1)&lt;/script&gt; needs &quot;onload= work</p>' "AC2 the stuck card says why, escaped"
 assert_contains "$PAGE" 'Add a &lt;b&gt;bold&lt;/b&gt; title' "AC2 a cached title is shown, escaped"
+assert_contains "$PAGE" '#11</a> </h3><p class="dots" title="validator pm developer review qa merge">●●●○●●</p>' \
+  "AC2 a stage that finishes with no verdict fills its dot, as on the status line"
+# The track: each tier's merged / in flight / queued counts. A merged issue is
+# counted in the tier it had while it was queued.
+assert_contains "$PAGE" '<li class="here"><b>p0</b> 1 merged · 0 in flight · 1 queued <span class="you">you are here</span></li>' \
+  "AC2 the track counts a merged issue in its own tier and marks the current one"
+assert_contains "$PAGE" '<li class=""><b>unlabelled</b> 0 merged · 2 in flight · 0 queued</li>' \
+  "AC2 the track's unlabelled tier holds only the issues with no tier"
 
 # AC3: owner question, next step, changes, spend.
 assert_contains "$PAGE" 'Pick A or B? &lt;img src=x onerror=alert(1)&gt;' "AC3 the owner question is quoted, escaped"
@@ -101,6 +115,15 @@ assert_not_contains "$(printf '%s' "$PAGE" | tr '[:upper:]' '[:lower:]')" '<scri
 assert_not_contains "$PAGE" '<img' "AC4 a record's markup never reaches the page as markup"
 FOREIGN="$(grep -oE 'https?://[^"<> ]+' "$MAP" | grep -v '^https://github.com/acme/widget/' || true)"
 assert_eq "" "$FOREIGN" "AC4 the only links are the provider's"
+
+# Two renders at once (two repositories under one TALOS_HOME, two runs in one
+# repository): a render writes through names of its own, so a file another
+# render has half written is neither overwritten nor moved into place.
+printf 'half' > "$TH/maps/index.json.tmp"
+printf 'half' > "$STATE/state.json.collect.json"
+bash "$TALOS" map >/dev/null 2>&1
+assert_eq "half" "$(cat "$TH/maps/index.json.tmp" 2>/dev/null)" "AC7 a render leaves another render's temp file of the registry alone"
+assert_eq "half" "$(cat "$STATE/state.json.collect.json" 2>/dev/null)" "AC3 the next step's scratch file is the render's own"
 
 # AC6: no snapshot.
 mv "$STATE/state.json" "$STATE/state.json.saved"
@@ -169,8 +192,14 @@ printf '{"vcs": {"provider": "azure", "repo": "gadget", "azure": {"org_url": "ht
 bash "$TALOS" map >/dev/null 2>&1
 azure_page acme-Web-Shop-gadget.html "vcs.azure.org_url and vcs.azure.project" https://dev.azure.com/acme/Web%20Shop gadget
 assert_file_absent "$TH/maps/_git-widget.html" "AC8 no Azure DevOps page is named after the _git path segment"
-git remote set-url origin git@github.com:acme/widget.git
+# GitHub on another host (GitHub Enterprise): the links go to the remote's host.
 printf '{"vcs": {"provider": "github", "repo": "acme/widget"}}\n' > "$PIPELINE_CONFIG"
+git remote set-url origin git@ghe.example.com:acme/widget.git
+bash "$TALOS" map >/dev/null 2>&1
+P="$(cat "$MAP" 2>/dev/null)"
+assert_contains "$P" 'href="https://ghe.example.com/acme/widget/issues/13"' "AC8 a GitHub issue link on the remote's own host"
+assert_contains "$P" 'href="https://ghe.example.com/acme/widget/pull/23"' "AC8 a GitHub pull request link on the remote's own host"
+git remote set-url origin git@github.com:acme/widget.git
 
 # AC9: the driver. A copied scripts dir whose collect answers an empty queue:
 # the run ends at its first wait; its exit hook writes the snapshot and the map.
@@ -233,5 +262,21 @@ assert_contains "$PM" 'a run is going' "AC9 during the run the page says a run i
 SNAP="$(cat "$STATE/state.json" 2>/dev/null)"
 assert_contains "$SNAP" '"queued": [9, 14]' "AC9 the snapshot keeps the pass's collect after the stage and at the end"
 assert_contains "$SNAP" '"end": "stop reason=iterations-exhausted max=2"' "AC9 the end line of a run that stops after a stage is in the snapshot"
+
+# AC9: the snapshot's tiers outlive the collect that named them. The collect
+# lists a tier only while its issue is queued or in flight; the next run's
+# collect (here an empty queue) replaces the stored one and the tier stays.
+snap_priority() {
+  python3 -I -c '
+import json, sys
+try:
+    print(json.dumps(json.load(open(sys.argv[1])).get("priority"), sort_keys=True))
+except (OSError, ValueError):
+    print("<unreadable>")' "$STATE/state.json"
+}
+assert_eq '{"14": 0}' "$(snap_priority)" "AC9 the snapshot records the tier of each issue the collect names"
+bash "$GS/talos.sh" run --max-iterations 1 >/dev/null 2>&1
+assert_contains "$(cat "$STATE/state.json" 2>/dev/null)" '"queued": []' "AC9 the next run's collect replaces the stored one"
+assert_eq '{"14": 0}' "$(snap_priority)" "AC9 the snapshot keeps an issue's tier after it leaves the queue"
 
 finish
