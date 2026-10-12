@@ -20,8 +20,9 @@
 #
 #                         GraphQL        REST
 #   before (611de56)         49           86
-#   after                     6           68
+#   after                     6           71
 #   by area (before -> after):
+#     1st next, evidence       0 -> 0      0 -> 3   (#521: a PR that misses an approval label; the PR, its comments, the login)
 #     board, 3 moves          16 -> 6      0 -> 0
 #     notifications           33 -> 0      0 -> 2   (titles read once, then kept)
 #     post-approval x4         0 -> 0     40 -> 28  (10 -> 7 each)
@@ -38,7 +39,7 @@ use_stubs
 [ -z "${TALOS_API_CALLS_NO_GRAPHQL:-}" ] || export STUB_GH_NO_GRAPHQL=1
 
 BEFORE_GRAPHQL=49 BEFORE_REST=86
-CEIL_GRAPHQL=6 CEIL_REST=68
+CEIL_GRAPHQL=6 CEIL_REST=71
 
 export CLAUDE_CONFIG_DIR="$SANDBOX/cc" TALOS_RETRY_SLEEP_SCALE=0
 TALOS="$TALOS_ROOT/scripts/talos.sh"
