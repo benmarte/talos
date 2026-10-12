@@ -426,11 +426,27 @@ cmd_qa_run() {
     return $?
   fi
 
-  # 3. The PR at its head.
+  # 3. The PR at its head. Another worktree holding the PR branch (the
+  #    developer's, under isolation: worktree) makes git refuse the named
+  #    checkout: run detached at the PR's head SHA instead (#589).
   if ! bash "$vcs" checkout-pr "$pr" >/dev/null 2>"$tmp/checkout.err"; then
-    echo "qa-run: checkout-pr $pr failed: $(head -c 200 "$tmp/checkout.err" | tr -cd '[:print:]')"
-    _qa_fail "could not check out the PR"
-    return $?
+    local held_sha=""
+    if grep -qE 'used by worktree|checked out at' "$tmp/checkout.err" 2>/dev/null; then
+      held_sha="$(bash "$vcs" pr-head "$pr" 2>/dev/null)"
+      if [[ "$held_sha" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+        git cat-file -e "$held_sha^{commit}" 2>/dev/null \
+          || git fetch -q origin "$(bash "$vcs" pr-head-ref "$pr" 2>/dev/null)" >/dev/null 2>&1 || :
+        git checkout -q --detach "$held_sha" >/dev/null 2>&1 || held_sha=""
+      else
+        held_sha=""
+      fi
+    fi
+    if [ -z "$held_sha" ]; then
+      echo "qa-run: checkout-pr $pr failed: $(head -c 200 "$tmp/checkout.err" | tr -cd '[:print:]')"
+      _qa_fail "could not check out the PR"
+      return $?
+    fi
+    echo "qa-run: PR #$pr's branch is held by another worktree; running detached at ${held_sha:0:8}"
   fi
   local head head8
   head="$(git rev-parse HEAD 2>/dev/null)" || { _qa_fail "no HEAD after checkout"; return $?; }
