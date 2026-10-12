@@ -960,6 +960,30 @@ for _l_draft in true false; do
   assert_not_contains "$OUT" "iterations-exhausted" "AC8 (#609) pr.draft $_l_draft: never a loop to --max-iterations"
 done
 
+# AC3 (#639): a run that starts on a PR already blocked by a review finding
+# takes it to the fix round, as the run that saw the verdict does. The collect
+# stage is `blocked`, so `next` only waits; the newest stage verdict on the PR
+# says which role's finding it is.
+blocked_fixture() {  # $1 = the PR's comments: the newest stage comment's verdict line
+  rev_fixture false blocked
+  printf '{"number": 9, "title": "t", "labels": [], "body": "body", "state": "open"}' > "$STUB_DIR/view-issue.9"
+  python3 -I -c 'import json, sys
+print(json.dumps({"comments": [{"author": {"login": "bot"}, "body": "**Agent:** reviewer (talos)\n\n**Review:** " + sys.argv[1] + " scripts/x.sh:12 asserts nothing."}]}))' "$1" > "$STUB_DIR/read-comments.12"
+}
+blocked_fixture "CHANGES —"
+rev_push
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=14000 rn --issue 9 --max-iterations 1
+assert_eq "0" "$RC" "AC3 (#639) run --issue on a PR blocked by a review finding: exits 0"
+assert_eq "vcs record-attempt 9 reviewer --pr 12>label-pr 12 --remove pipeline:blocked>agent developer" "$(rev_order)" \
+  "AC3 (#639) the gate fix-round for the finding's role, the unblock, then the developer"
+REV_PROMPT="$(cat "$STUB_DIR/developer.prompt" 2>/dev/null)"
+assert_contains "$REV_PROMPT" "Fix round: PR #12 is already open" "AC3 (#639) the developer got the fix-round shape of the prompt"
+assert_not_contains "$OUT" "action=wait reason=blocked" "AC3 (#639) the run does not end on the blocked wait"
+blocked_fixture "APPROVED —"
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=14000 rn --issue 9 --max-iterations 1
+assert_eq "0" "$(rev_count '^agent developer$')" "AC3 (#639) a PR whose newest verdict is no finding is not taken to the fix round"
+assert_contains "$OUT" "action=wait reason=blocked" "AC3 (#639) that PR still ends on the blocked wait"
+
 # AC9: BLOCKED: is for a person, as the first failing stage and inside a batch.
 rev_fixture true reviewer
 printf 'BLOCKED: the diff cannot be read\n' > "$STUB_DIR/message.reviewer.1"

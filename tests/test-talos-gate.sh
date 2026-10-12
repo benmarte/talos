@@ -730,6 +730,9 @@ REV_H2=$'**Agent:** reviewer (talos)\n\n**Blocked** — a leak\n\n1. install.sh:
 ADV_X1=$'**Agent:** adversarial (talos)\n\n**Blocked** — a vacuous test\n\n1. scripts/x.sh:12 is never exercised.'
 ADV_X2=$'**Agent:** adversarial (talos)\n\n**Blocked** — still vacuous\n\n1. scripts/x.sh:14 is never exercised.'
 Q_LINE1="Design decision needed: security blocked PR #9 on scripts/x.sh in 2 rounds running. Which design should the next fix round implement?"
+Q_FINDINGS="Findings of the rounds:
+- round 1: the wrapper check
+- round 2: the wrapper check again"
 Q_LINE3="Reply on this PR with the decision; the next fix-round gate continues from it."
 ASKED="$Q_LINE1"$'\n\n'"$Q_LINE3"$'\n\n<!-- talos:needs-owner -->'
 REPLY="Use fixed paths only."
@@ -765,7 +768,9 @@ assert_eq "1" "$(called mark-needs-owner)" "AC1 ask-owner parks the question onc
 assert_contains "$(journal)" "vcs mark-needs-owner 9 --body-file " "AC1 the question is parked on the PR from a file"
 assert_eq "$Q_LINE1
 
-$Q_LINE3" "$(bodies | sed 1d)" "AC1 the parked question is the fixed text with the stage, the PR, the area and the rounds"
+$Q_FINDINGS
+
+$Q_LINE3" "$(bodies | sed 1d)" "AC4 (#639) the parked question is the fixed text with the area, the rounds and each round's summary line"
 assert_eq "0" "$(called comment-pr)" "AC1 the question is posted by mark-needs-owner alone"
 assert_eq "budget
 vcs current-user
