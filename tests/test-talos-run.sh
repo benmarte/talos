@@ -674,6 +674,8 @@ draft_cfg '"timeout_ms": 600000, "ci_wait_s": 900'
 draft_collect docs
 printf 'README.md\n' > "$STUB_DIR/pr-files"
 printf 'APPROVED: docs pass\n' > "$STUB_DIR/message.docs"
+# #640: docs runs in a worktree of the PR's head branch; the sandbox checkout holds it.
+git symbolic-ref -q --short HEAD > "$STUB_DIR/pr-head-ref.12"
 TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 1
 assert_eq "0" "$RC" "the approval-stage pass exits 0"
 assert_contains "$(journal)" "agent docs" "the approval-stage pass dispatches agent docs"
@@ -699,6 +701,7 @@ draft_cfg '"timeout_ms": 600000, "ci_wait_s": 900'
 draft_collect docs
 printf 'README.md\nscripts/talos.sh\n' > "$STUB_DIR/pr-files"
 printf 'docs updated\n' > "$STUB_DIR/message.docs"
+git symbolic-ref -q --short HEAD > "$STUB_DIR/pr-head-ref.12"
 mkdir -p "$SANDBOX/tmp-docs"
 TMPDIR="$SANDBOX/tmp-docs" TALOS_LEASE_TTL_S=1800 TALOS_NOW=11000 rn --max-iterations 1
 assert_contains "$(journal)" "agent docs" "docs-gate dispatch: a README PR dispatches the docs agent"
@@ -1490,6 +1493,8 @@ restamp_fixture() {  # $1 = the docs agent's final message
   printf 1 > "$STUB_DIR/check-approval-sha.rc"
   printf '%s\n' "$RS_H" > "$STUB_DIR/pr-head"
   printf '%s\n' "$1" > "$STUB_DIR/message.docs"
+  # #640: the (stubbed) pr-worktree answers the sandbox checkout for issue 9.
+  printf '%s\n' "$SANDBOX" > "$STUB_DIR/worktree.9"
 }
 rs_files() { find "$SANDBOX/tmp-rs" -maxdepth 1 -name 'talos-docs-*' 2>/dev/null | wc -l | tr -d ' '; }
 
