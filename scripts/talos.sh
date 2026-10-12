@@ -63,7 +63,9 @@
 #            A lost stamp (its marker pins the head) is re-applied through
 #            `post-approval --recover-only`, never across a head change, and
 #            the answer carries `recovered=<roles>`; one with no evidence is
-#            never re-applied (`never_approved=<roles>`, the stage re-runs).
+#            never re-applied (`never_approved=<roles>`, the stage re-runs). A
+#            label in `missing=` whose role is not in `never_approved=` is a
+#            re-apply or an evidence read that failed: the next run tries again.
 #            verdict=merge      [ci_runs=<n>]
 #            verdict=handoff                    merge.auto is off: pipeline:approved is set
 #            verdict=redispatch reason=stale-approvals stale=<roles> | draft-pr | ci-failed | merge-conflict
@@ -1129,16 +1131,33 @@ _talos_gate_block() {
   _talos_verdict block
 }
 
-# _talos_gate_recover_stamps <pr> <issue> <missing labels, comma-separated>
-# (#521): approval labels are SHA-pinned facts. For each missing label, the
-# evidence at the PR's current head (`check-approval-sha --evidence-list`)
-# decides: `lost` (its marker pins the head) is re-applied through
-# `post-approval --recover-only`, which posts nothing and applies nothing
-# without that marker; anything else is never re-applied and is named in
-# _NEVER_APPROVED. _RECOVERED names the roles re-applied. A failed evidence
-# read recovers nothing.
+# _talos_gate_missing <pr labels>: the approval labels of the enabled roles that
+# are not on the PR, comma-separated, in contract order.
+_talos_gate_missing() {
+  local _i=0 _role _label _m=""
+  while [ "$_i" -lt "${#TALOS_APPROVAL_ROLES[@]}" ]; do
+    _role="${TALOS_APPROVAL_ROLES[$_i]}"
+    _label="${TALOS_APPROVAL_LABELS[$_i]%%|*}"
+    _i=$((_i + 1))
+    [ "$(_talos_role_enabled "$_role")" = "true" ] || continue
+    _talos_has "$1" "$_label" || _m="${_m:+$_m,}$_label"
+  done
+  printf '%s' "$_m"
+}
+
+# _talos_gate_recover_stamps <pr> <missing labels, comma-separated> (#521):
+# approval labels are SHA-pinned facts. For each missing label, the evidence at
+# the PR's current head (`check-approval-sha --evidence-list`) decides:
+#   lost     its marker pins the head: re-applied through `post-approval
+#            --recover-only`, which posts nothing and applies nothing without
+#            that marker, and named in _RECOVERED. A re-apply that fails names
+#            the role nowhere: the label stays missing and the next gate run
+#            tries again (never --issue: recovery tags no worktree).
+#   missing  no evidence: never re-applied, named in _NEVER_APPROVED.
+#   present  the label landed after the gate's read: neither.
+# A failed evidence read recovers nothing and names no role.
 _talos_gate_recover_stamps() {
-  local _pr="$1" _n="$2" _miss=",$3," _line _role _label _state
+  local _pr="$1" _miss=",$2," _line _role _label _state
   _RECOVERED=""
   _NEVER_APPROVED=""
   _talos_cap _vcs check-approval-sha "$_pr" --evidence-list
@@ -1147,11 +1166,14 @@ _talos_gate_recover_stamps() {
     [[ "$_line" =~ ^evidence\ role=([a-z]+)\ label=([a-z:]+)\ state=([a-z]+)$ ]] || continue
     _role="${BASH_REMATCH[1]}"; _label="${BASH_REMATCH[2]}"; _state="${BASH_REMATCH[3]}"
     case "$_miss" in *",$_label,"*) ;; *) continue ;; esac
-    if [ "$_state" = lost ] && _vcs post-approval "$_pr" "$_role" --recover-only --issue "$_n" > /dev/null 2>&1; then
-      _RECOVERED="${_RECOVERED:+$_RECOVERED,}$_role"
-    else
-      _NEVER_APPROVED="${_NEVER_APPROVED:+$_NEVER_APPROVED,}$_role"
-    fi
+    case "$_state" in
+      lost)
+        if _vcs post-approval "$_pr" "$_role" --recover-only > /dev/null 2>&1; then
+          _RECOVERED="${_RECOVERED:+$_RECOVERED,}$_role"
+        fi
+        ;;
+      missing) _NEVER_APPROVED="${_NEVER_APPROVED:+$_NEVER_APPROVED,}$_role" ;;
+    esac
   done <<< "$_OUT"
 }
 
@@ -1160,7 +1182,7 @@ _talos_gate_recover_stamps() {
 # merges: on `merge` the orchestrator runs `merge-pr`.
 _talos_gate_merge() {
   [ "$#" -eq 2 ] || _talos_stop usage 2
-  local _pr="$1" _n="$2" _prl _isl _all _i=0 _role _label _missing="" _line _r _stale="" _stalelist=""
+  local _pr="$1" _n="$2" _prl _isl _all _missing="" _line _r _stale="" _stalelist=""
   local _draft _cierr _sha _cnt _synced=0
   _talos_isnum "$_pr" && _talos_isnum "$_n" || _talos_stop usage 2
   _talos_prepare gate-merge pipeline-vcs.sh pipeline-config.sh pipeline-cfg-cache.sh pipeline-contract.sh \
@@ -1181,30 +1203,16 @@ _talos_gate_merge() {
     _talos_verdict wait
   fi
   if ! _talos_has "$_all" skip-qa; then
-    while [ "$_i" -lt "${#TALOS_APPROVAL_ROLES[@]}" ]; do
-      _role="${TALOS_APPROVAL_ROLES[$_i]}"
-      _label="${TALOS_APPROVAL_LABELS[$_i]%%|*}"
-      _i=$((_i + 1))
-      [ "$(_talos_role_enabled "$_role")" = "true" ] || continue
-      _talos_has "$_prl" "$_label" || _missing="${_missing:+$_missing,}$_label"
-    done
+    _missing="$(_talos_gate_missing "$_prl")"
     if [ -n "$_missing" ]; then
-      _talos_gate_recover_stamps "$_pr" "$_n" "$_missing"
+      _talos_gate_recover_stamps "$_pr" "$_missing"
       if [ -n "$_RECOVERED" ]; then
         _talos_emit recovered "$_RECOVERED"
         # The labels again, after the re-applies: every enabled approval must be there.
         _talos_cap _vcs view-pr "$_pr"
         [ "$_RC" -eq 0 ] || _talos_stop view-failed
         _prl="$(_talos_labels "$_OUT")" || _talos_stop labels-unreadable
-        _missing=""
-        _i=0
-        while [ "$_i" -lt "${#TALOS_APPROVAL_ROLES[@]}" ]; do
-          _role="${TALOS_APPROVAL_ROLES[$_i]}"
-          _label="${TALOS_APPROVAL_LABELS[$_i]%%|*}"
-          _i=$((_i + 1))
-          [ "$(_talos_role_enabled "$_role")" = "true" ] || continue
-          _talos_has "$_prl" "$_label" || _missing="${_missing:+$_missing,}$_label"
-        done
+        _missing="$(_talos_gate_missing "$_prl")"
       fi
     fi
     if [ -n "$_missing" ]; then

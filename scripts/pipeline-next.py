@@ -203,8 +203,9 @@ def next_stage(n, labels, issue_labels, enabled):
         # The QA pre-CI gate (#535): QA is the LAST draft-window stage, so the one
         # CI run is never spent on a head QA would reject. Only here, after every
         # other enabled approval is fresh; a ready PR keeps QA first (above).
+        # A lost qa:pass is not a reason to run QA again here either (#521).
         if opts.get('ready-gate') == 'qa-local' and 'qa' in enabled \
-                and ('qa:pass' not in labels or 'qa' in stale):
+                and (('qa:pass' not in labels and 'qa' not in lost) or 'qa' in stale):
             return 'qa'
         return 'ready'
     if opts.get('required-checks') == 'yes':

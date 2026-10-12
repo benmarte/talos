@@ -299,7 +299,8 @@
 #   check-approval-sha <n> --evidence-list    (#521) One line per contract approval role:
 #                                             `evidence role=<r> label=<l> state=<s>`,
 #                                             s = present (label on the PR), lost (label
-#                                             absent, a valid marker pins the current
+#                                             absent, the role's marker is the exact line
+#                                             post-approval writes for the current
 #                                             head) or missing. Exit 0; a failed read
 #                                             exits 1 with no evidence line.
 #   check-approval-sha <n> [--stale-list]     Exit 1 if any approval label was earned
@@ -2467,11 +2468,12 @@ raw_comments = data.get('comments', [])
 present = {label: role for label, role in APPROVAL_LABELS.items() if label in label_names}
 
 # The newest marker for a role under the gate's rules (last non-whitespace
-# line, valid role, trusted author when the trust set resolved): its sha, or
-# None. Shared by the stale check and the evidence mode (#521).
+# line, valid role, trusted author when the trust set resolved): its sha and
+# that last line, or (None, None). Shared by the stale check and the evidence
+# mode (#521).
 def find_marker(role):
     global fail_open_warned
-    found_sha = None
+    found = (None, None)
     for c in reversed(raw_comments):
         body   = c.get('body', '')
         author = c.get('author', {}).get('login', '') if isinstance(c.get('author'), dict) else ''
@@ -2529,15 +2531,18 @@ def find_marker(role):
         # else: markers.verify_authors is explicitly false — silent
         # fail-open, no warning (#187 opt-out).
 
-        found_sha = m.group(1)
+        found = (m.group(1), last_line)
         break
-    return found_sha
+    return found
 
 # --evidence-list (#521): one line per contract approval role, in contract
-# order. present: the label is on the PR; lost: absent, but a marker under the
-# rules above pins the PR's current head with a full sha; missing: anything
-# else. A lost stamp may be re-applied (post-approval --recover-only); a
-# missing one never is.
+# order. present: the label is on the PR; lost: absent, but the marker under
+# the rules above is the exact line post-approval writes for the PR's current
+# head; missing: anything else. A lost stamp may be re-applied (post-approval
+# --recover-only, which looks for that same line); a missing one never is. A
+# marker the stale check would read but --recover-only would refuse (hand-made
+# spacing, text after the closing arrow) is missing, so its stage re-runs
+# instead of waiting on a recovery that cannot happen.
 if os.environ.get('EVIDENCE_LIST') == 'true':
     head = str(data.get('headRefOid') or '')
     if not re.fullmatch(r'[0-9a-f]{40}', head):
@@ -2547,8 +2552,8 @@ if os.environ.get('EVIDENCE_LIST') == 'true':
         if label in label_names:
             state = 'present'
         else:
-            sha = find_marker(role)
-            state = 'lost' if sha == head else 'missing'
+            _, line = find_marker(role)
+            state = 'lost' if line == f'<!-- talos:approval sha={head} role={role} -->' else 'missing'
         print(f'evidence role={role} label={label} state={state}')
     if rejected_authors_seen:
         print('talos:marker-authors-rejected authors=' + ','.join(rejected_authors_seen), file=sys.stderr)
@@ -2581,7 +2586,7 @@ entries = []
 for label, role in present.items():
     # Find the most recent marker for this role (search comments newest-first).
     reason = None
-    found_sha = find_marker(role)
+    found_sha, _ = find_marker(role)
 
     if not found_sha:
         # Fail-closed: missing marker means the approval predates SHA stamping —

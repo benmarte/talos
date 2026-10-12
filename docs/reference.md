@@ -957,10 +957,11 @@ An approval is a PR comment ending in `<!-- talos:approval sha=<40-hex head SHA>
 `check-approval-sha <pr> [--stale-list]` (`github` and `github-api` only) exits 1 when a present label has no valid marker or its SHA is not the head; `--stale-list` also prints `stale role=<role> label=<label> sha=<marker sha>` per stale role, without `sha=` when the marker gave no SHA that exists in the repository (match the line by its prefix).
 
 **Lost stamps.** An approval label is a fact about one head SHA, read only through `check-approval-sha`. If a label disappears (a hand edit, label churn) while its marker still pins the PR's current head, the stamp is recovered, not re-earned.
-- `check-approval-sha <pr> --evidence-list` prints `evidence role=<r> label=<l> state=present|lost|missing` per role.
-- `gate merge` re-applies each `lost` one through `post-approval <pr> <role> --recover-only`. That mode applies the label only when the exact marker exists at the current head; otherwise it exits 3 with nothing posted. The gate's answer then carries `recovered=<roles>`.
+- `check-approval-sha <pr> --evidence-list` prints `evidence role=<r> label=<l> state=present|lost|missing` per role. `lost` means the label is absent and the role's newest marker is the exact line `post-approval` writes for the current head; a hand-made marker with other spacing or trailing text is `missing`.
+- `gate merge` re-applies each `lost` one through `post-approval <pr> <role> --recover-only`. That mode applies the label only when that exact marker exists at the current head; otherwise it exits 3 with nothing posted. The gate's answer then carries `recovered=<roles>`.
 - A label with no such marker is never re-applied. The gate waits with `never_approved=<roles>` beside `missing=`, and the stage re-runs.
-- `next` does not route a lost role as the PR's stage when the PR already carries another approval label.
+- A label in `missing=` whose role is not in `never_approved=` has evidence the gate could not use this time (the re-apply or the evidence read failed). No stage re-runs; the next `gate merge` tries again.
+- `next` does not route a lost role as the PR's stage when the PR already carries another approval label. That covers the draft window's QA gate (`pr.ready_gate`).
 - A head change still strips the labels as stale (`reason=stale-approvals`): a stamp is never carried across a head change.
 
 **Author trust.** `markers.verify_authors` (default `true`, repo file only) accepts markers only from the authenticated identity (`gh api user`) plus `markers.trusted_authors`. Rejects print `talos:marker-authors-rejected authors=..` on stderr. Identity unavailable and no `trusted_authors`: markers are accepted and `talos:marker-authors-unverified reader=<verb>` prints. Lookup refused (Actions `GITHUB_TOKEN`, GitHub App token): only `trusted_authors` counts and an empty list rejects all; set e.g. `["github-actions[bot]"]`. `false` skips the check silently.
@@ -1296,7 +1297,7 @@ A `pipeline:blocked` issue or PR is skipped until a human removes the label. Aft
 ### Approvals and merge
 
 - An approval is stale after a new commit that touches a non-waived file; only the affected stages re-run. `bash scripts/pipeline-vcs.sh check-approval-sha <PR> --stale-list` names them, each with the SHA it approved.
-- An approval label that went missing while the head stayed the same is put back by `gate merge` (`recovered=<roles>`), with no stage run. `reason=approvals-missing` with `never_approved=<roles>` means no marker pins the head for those roles, so their stages run again; `bash scripts/pipeline-vcs.sh check-approval-sha <PR> --evidence-list` shows each role as `present`, `lost` or `missing` ([Lost stamps](#approvals-bound-to-the-head-sha)).
+- An approval label that went missing while the head stayed the same is put back by `gate merge` (`recovered=<roles>`), with no stage run. `reason=approvals-missing` with `never_approved=<roles>` means no marker pins the head for those roles, so their stages run again. A label in `missing=` whose role is not listed there is a lost stamp the gate could not put back this time: run the gate again. `bash scripts/pipeline-vcs.sh check-approval-sha <PR> --evidence-list` shows each role as `present`, `lost` or `missing` ([Lost stamps](#approvals-bound-to-the-head-sha)).
 - `assert-sync` aborts on a dirty tree (an untracked `AGENTS.md` counts), a checkout behind or diverged from `origin/<base>`, or a failed `git fetch`. Commit, stash or `git pull --ff-only`.
 
 ### Provider and board
