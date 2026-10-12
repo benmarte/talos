@@ -26,8 +26,10 @@
 #   direct    Talos's own `bash <scripts>/talos-status.sh --line`
 #   foreign   everything else
 #
-# wire, by class:
-#   none/direct -> bash <scripts>/talos-status.sh --line (set, or pointed at <scripts>)
+# wire, by class (for the user-level settings.json, a <talos-scripts-dir> inside a
+# git work tree that is not <TALOS_HOME>/scripts is refused first: one notice,
+# nothing written):
+#   none/direct ->bash <scripts>/talos-status.sh --line (set, or pointed at <scripts>)
 #   foreign     -> B written, W written, statusLine.command becomes `bash W`
 #                  (other fields kept); a user's file at W: notice, nothing changed
 #   ours        -> W rewritten in place from B; settings.json and B untouched;
@@ -144,10 +146,17 @@ IFS= read -r -d '' STATUSLINE_PY <<'TALOS_STATUSLINE_PY' || true
 import json, os, re, shlex, sys, tempfile
 
 TEMPLATE = os.environ["TALOS_WRAPPER_TEMPLATE"]
+WRAPPER_NAME, BACKUP_NAME = "statusline-chain.sh", "statusline-previous.json"
+
+
+def absolute(path):
+    # absolute, but as given (abspath would normalise a // in TMPDIR)
+    return path if os.path.isabs(path) else os.path.abspath(path)
+
+
 # Absolute (#600): a relative TALOS_HOME would be written into statusLine.command
 # as given, resolved by Claude Code against each project, and refused by undo.
-STATE = os.path.abspath(os.path.expanduser(os.environ.get("TALOS_HOME") or "~/.talos"))
-WRAPPER_NAME, BACKUP_NAME = "statusline-chain.sh", "statusline-previous.json"
+STATE = absolute(os.path.expanduser(os.environ.get("TALOS_HOME") or "~/.talos"))
 
 
 def clean(v):
@@ -303,8 +312,7 @@ def user_level(settings):
 
 
 def wire(settings, scripts):
-    # absolute, but as given (abspath would normalise a // in TMPDIR)
-    status = os.path.join(scripts if os.path.isabs(scripts) else os.path.abspath(scripts), "talos-status.sh")
+    status = os.path.join(absolute(scripts), "talos-status.sh")
     direct = "bash %s --line" % shlex.quote(status)
     # Step 7e, in code (#600): the user-level status line runs in every session,
     # so it never runs scripts from inside a repository -- only the install's own
