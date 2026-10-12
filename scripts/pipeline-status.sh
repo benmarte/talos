@@ -267,7 +267,7 @@ try:
             sys.stderr.write('board=list-capped n=50 read=fields\\n')
 except Exception:
     pass
-" 2>/dev/null)"
+")"
 
   _field_id="$(printf '%s' "$_field_data" | head -1)"
   _opt_id="$(printf '%s' "$_field_data" | tail -1)"

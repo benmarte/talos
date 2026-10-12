@@ -1087,12 +1087,11 @@ _talos_gate_fix_round() {
       || _vcs label-pr "$_pr" --remove pipeline:needs-owner > /dev/null || _talos_emit warn "reason=unblock-failed"
   fi
   _vcs label-issue "$_n" --remove pipeline:blocked > /dev/null || _talos_emit warn "reason=unblock-failed"
-  # The card follows (#523): back to In progress for the fix round. A board
-  # failure is a warning, never a reason not to dispatch.
-  if ! _talos_cfg_is board.enabled false && [ -n "$(cfg board.project_number)" ]; then
-    bash "$SCRIPT_DIR/pipeline-status.sh" "$_n" "In progress" > /dev/null 2>&1 \
-      || _talos_emit warn "reason=board-failed issue=$_n"
-  fi
+  # The card follows (#523): back to In progress for the fix round, unguarded
+  # like done's Blocked write (pipeline-status.sh knows whether there is a
+  # board). A board failure is a warning, never a reason not to dispatch.
+  bash "$SCRIPT_DIR/pipeline-status.sh" "$_n" "In progress" > /dev/null 2>&1 \
+    || _talos_emit warn "reason=board-failed issue=$_n"
   _talos_emit stage "$_stage"
   _talos_verdict redispatch
 }
