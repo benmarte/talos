@@ -139,7 +139,9 @@
 #                                       merge is not an ancestor)
 #                             synced    it was on the base: only the pull
 #                             kept      any other branch, another issue's
-#                                       branch, a detached HEAD: nothing done
+#                                       branch: nothing done
+#                             returned  also from a detached HEAD (#644), same
+#                                       checks; no branch to delete
 #                             failed reason=dirty|switch-failed|pull-failed
 #                                       a tracked change on the issue branch
 #                                       (nothing touched), a refused switch, a
@@ -1241,28 +1243,31 @@ _wt_to_base_body() {
     fi
     exit 0
   fi
-  if ! [[ "$branch" =~ ^(fix|feat)/issue-${n}- ]]; then
+  # A detached HEAD (a stage's fallback left it, #644) is returned like the
+  # issue's branch; any other branch is left alone.
+  local from="${branch:-the detached HEAD}"
+  if [ -n "$branch" ] && ! [[ "$branch" =~ ^(fix|feat)/issue-${n}- ]]; then
     echo "talos:checkout state=kept"
     exit 0
   fi
   # A tracked change, staged or not, or a state git cannot report: hands off.
   if ! git diff --quiet >&2 || ! git diff --cached --quiet >&2; then
-    echo "pipeline-worktree: to-base: $branch has changes to tracked files; checkout left as it is" >&2
+    echo "pipeline-worktree: to-base: $from has changes to tracked files; checkout left as it is" >&2
     echo "talos:checkout state=failed reason=dirty"
     exit 0
   fi
   if [ -z "$base" ] || ! git checkout -q "$base" -- >&2; then
-    echo "pipeline-worktree: to-base: could not switch from $branch to ${base:-the base branch (none resolved)}" >&2
+    echo "pipeline-worktree: to-base: could not switch from $from to ${base:-the base branch (none resolved)}" >&2
     echo "talos:checkout state=failed reason=switch-failed"
     exit 0
   fi
   if ! git pull --ff-only -q >&2; then
-    echo "pipeline-worktree: to-base: on $base, but git pull --ff-only failed; $branch kept" >&2
+    echo "pipeline-worktree: to-base: on $base, but git pull --ff-only failed; $from kept" >&2
     echo "talos:checkout state=failed reason=pull-failed"
     exit 0
   fi
   # The PR is merged; a squash merge is not an ancestor, so `-d` would refuse.
-  git branch -D "$branch" >&2 \
+  [ -z "$branch" ] || git branch -D "$branch" >&2 \
     || echo "pipeline-worktree: to-base: could not delete $branch (the next sweep removes it)" >&2
   echo "talos:checkout state=returned"
   exit 0

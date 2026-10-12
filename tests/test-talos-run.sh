@@ -1417,6 +1417,13 @@ assert_eq "merge-pr 12>worktree to-base 9>worktree remove 9" "$(drain_order)" "A
 assert_eq "merged=pr=12
 stop merged pr=12" "$OUT" "AC4 (#601): run --issue ends with stop merged pr=<M>"
 
+# AC5 (#644): QA ran detached (the fallback) and the merge ends the run: to-base
+# returns the driver's checkout (it answers returned) and the run ends merged.
+drain_fixture returned
+TALOS_LEASE_TTL_S=1800 TALOS_NOW=17210 rn --issue 9 --max-iterations 5
+assert_eq "stop merged pr=12" "$(last_line)" "AC5 (#644): a merged run whose checkout was detached ends stop merged, checkout back"
+assert_not_contains "$OUT" "checkout-return-failed" "AC5 (#644): and no failed return is reported"
+
 # AC8 (the run half): post-merge did not say the checkout is back (no
 # checkout=returned|synced|kept line): the run ends there, untargeted and
 # --issue alike.

@@ -365,6 +365,9 @@ _qa_is_test_path() {
 # Put HEAD back where it was (idempotent; also an exit hook).
 _QA_ORIG=""
 _QA_MOVED=0
+# Where the invoking checkout stood before the detached fallback of step 3 (a
+# branch name, or a SHA when it started detached); _qa_restore_home puts it back.
+_QA_HOME=""
 _qa_restore() {
   [ "$_QA_MOVED" -eq 1 ] || return 0
   if git checkout -q "$_QA_ORIG" >/dev/null 2>&1; then
@@ -374,6 +377,21 @@ _qa_restore() {
     return 1
   fi
 }
+
+# Return the invoking checkout to _QA_HOME (idempotent; also an exit hook).
+# Same warning line as _qa_restore; the non-zero status is the caller's to use.
+_qa_restore_home() {
+  [ -n "$_QA_HOME" ] || return 0
+  if git checkout -q "$_QA_HOME" -- >/dev/null 2>&1; then
+    _QA_HOME=""
+  else
+    printf 'qa-run: WARNING: could not return to %s; run: git checkout %s\n' "$_QA_HOME" "$_QA_HOME" >&2
+    return 1
+  fi
+}
+
+# Exit hook: both restores, each tried.
+_qa_exit() { _qa_restore; _qa_restore_home; }
 
 # _qa_verdict_fail REASON -- the closing line of a refused or failed run.
 _qa_fail() {
@@ -401,10 +419,10 @@ cmd_qa_run() {
   if [ -f "$SCRIPT_DIR/pipeline-cfg-cache.sh" ]; then
     # shellcheck source=pipeline-cfg-cache.sh
     . "$SCRIPT_DIR/pipeline-cfg-cache.sh"
-    _talos_on_exit '_qa_restore'
+    _talos_on_exit '_qa_exit'
   else
     cfg() { :; }
-    trap '_qa_restore' EXIT
+    trap '_qa_exit' EXIT
   fi
   local vcs="$SCRIPT_DIR/pipeline-vcs.sh" tmp
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/talos-qa-run.XXXXXX")" && [ -d "$tmp" ] \
@@ -439,7 +457,8 @@ cmd_qa_run() {
       if [[ "$held_sha" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
         git cat-file -e "$held_sha^{commit}" 2>/dev/null \
           || git fetch -q origin "$(bash "$vcs" pr-head-ref "$pr" 2>/dev/null)" >/dev/null 2>&1 || :
-        git checkout -q --detach "$held_sha" >/dev/null 2>&1 || held_sha=""
+        _QA_HOME="$(git symbolic-ref -q --short HEAD 2>/dev/null || git rev-parse HEAD 2>/dev/null)"
+        git checkout -q --detach "$held_sha" >/dev/null 2>&1 || { held_sha=""; _QA_HOME=""; }
       else
         held_sha=""
       fi
@@ -596,7 +615,12 @@ case "$sub" in
   ids) cmd_ids "$@" ;;
   map) cmd_map "$@" ;;
   report) cmd_report "$@" ;;
-  qa-run) cmd_qa_run "$@" ;;
+  qa-run)
+    cmd_qa_run "$@"; qa_rc=$?
+    # The detached fallback's way home, on every path out of qa-run; a failure
+    # is the warning line and a non-zero exit, never silence.
+    _qa_restore_home || [ "$qa_rc" -ne 0 ] || qa_rc=1
+    exit "$qa_rc" ;;
   spec-check) cmd_spec_check "$@" ;;
   spec-usable) cmd_spec_usable "$@" ;;
   *) usage ;;
