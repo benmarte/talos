@@ -132,6 +132,7 @@ identity.name	str		-	-	any
 execution.isolation	enum	worktree	-	-	any
 execution.worktree_warn_threshold	int	10	-	-	any
 execution.orchestrator	enum	code	-	-	any
+execution.context_budget_tokens	int	150000	-	-	any
 roles.validator	bool	true	-	-	any
 roles.pm	bool	true	-	-	any
 roles.pm_skip_when_spec_present	bool	true	-	-	any
