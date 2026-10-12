@@ -69,6 +69,20 @@ transcript() {  # $1 = path, $2 = context tokens of the last call
 BIG="$SANDBOX/big.jsonl"
 transcript "$BIG" 200000
 
+# A python3 shim that records the leading flags of the call reading the session
+# size, then runs the real one. The flags are asserted, not a __pycache__ dir:
+# a Python that writes no bytecode by default (Apple's) would hide a missing -B.
+PYBIN="$SANDBOX/pybin"
+REAL_PY="$(command -v python3)"
+export REAL_PY
+mkdir -p "$PYBIN"
+cat > "$PYBIN/python3" <<'TALOS_ctxpyshimHd3Lq9Wz'
+#!/usr/bin/env bash
+case "$*" in *session_context*) printf '%s\n' "$1 $2" >> "${STUB_DIR:?}/py-flags.log" ;; esac
+exec "${REAL_PY:?}" "$@"
+TALOS_ctxpyshimHd3Lq9Wz
+chmod +x "$PYBIN/python3"
+
 # ── AC1: the key ─────────────────────────────────────────────────────────────
 cfg '{}'
 assert_eq "150000" "$(bash "$GS/pipeline-config.sh" execution.context_budget_tokens 2>/dev/null)" \
@@ -81,11 +95,12 @@ cfg '{"orchestrator": "llm"}'
 issue 7 "pipeline:ready"
 state '[]' '[7]' '[]'
 lease_reset
-TALOS_TRANSCRIPT_PATH="$BIG" nx
+PATH="$PYBIN:$PATH" TALOS_TRANSCRIPT_PATH="$BIG" nx
 assert_eq "0" "$RC" "AC2 the budget stop exits 0"
 assert_eq "stop reason=context-budget size=200000 budget=150000
 resume=/talos:pipeline" "$OUT" "AC2 a queued issue is not started: the stop line and one resume line"
 assert_not_contains "$(cat "$LEASE" 2>/dev/null)" "issue=7" "AC2 no lease is taken for the queued issue"
+assert_eq "-I -B" "$(cat "$STUB_DIR/py-flags.log" 2>/dev/null)" "AC2 the size read runs python3 -I -B: no __pycache__ in the install"
 
 # ── AC3: over budget, in-flight work is still answered ───────────────────────
 issue 24 "pipeline:dev"
