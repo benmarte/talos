@@ -4052,8 +4052,17 @@ def fmt(s):
     m, sec = divmod(rest, 60)
     return (str(h) + "h" if h else "") + (str(m) + "m" if h or m else "") + str(sec) + "s" if s else "0"
 
+# One run per check name: the most recently started (then the greater id), so a
+# superseded run of the same name on this head never outvotes the newer one (#595).
+newest = {}
 for c in runs:
     if not c.get("name"):
+        continue
+    key = (c.get("started_at") or "", c.get("id") or 0)
+    if c["name"] not in newest or key > newest[c["name"]][0]:
+        newest[c["name"]] = (key, c)
+for c in runs:
+    if not c.get("name") or newest[c["name"]][1] is not c:
         continue
     if c.get("status") != "completed":
         state = "pending"
