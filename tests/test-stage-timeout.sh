@@ -33,8 +33,8 @@ set_cfg() { printf '%s\n' "$1" > talos.pipeline.json; }
 # guard, so a regression (a timeout that never fires) fails the test instead of
 # hanging it: the group is killed and RC is 137.
 run_stage() {
-  local t0 t1 pid i=0
-  t0="$(date +%s)"
+  local t0 pid i=0
+  t0="$(wall_s)"
   set -m
   bash "$AGENT" "${1:-developer}" "the task text" >"$SANDBOX/agent.out" 2>"$ERR" </dev/null &
   pid=$!
@@ -48,8 +48,7 @@ run_stage() {
     wait "$pid"; RC=$?
   fi
   OUT="$(cat "$SANDBOX/agent.out")"
-  t1="$(date +%s)"
-  SECS=$((t1 - t0))
+  SECS="$(since_s "$t0")"
 }
 
 # A runner that spawns a child and a grandchild, all carrying the sentinel.
@@ -90,12 +89,18 @@ assert_eq "" "$(bash "$CONFIG" --dump 2>&1 >/dev/null)" "config: both keys are k
 assert_eq "90" "$(bash "$CONFIG" agents.roles.qa.stage_timeout_s 2>/dev/null)" "config: the role value is read through the nested path"
 
 # ── 2. Global key: a hung runner is killed, with its children ───────────────
+# The baseline (#593): the same stage with a runner that returns at once, timed
+# in this run. A hung runner that is not killed runs into run_stage's own 25 s
+# cap, so "less than half of that over the baseline" holds under any load.
+set_cfg '{"agents": {"runner": "custom", "runner_cmd": "cat >/dev/null; echo ok", "stage_timeout_s": 60}}'
+TALOS_STAGE_TIMEOUT_DIVISOR=60 run_stage developer
+BASE="$SECS"
 set_cfg "{\"agents\": {\"runner\": \"custom\", \"runner_cmd\": \"$HANG_CMD\", \"stage_timeout_s\": 60},
  \"hooks\": {\"post_stage\": \"cat > $CAPTURE\", \"timeout_s\": 5}}"
 rm -f "$CAPTURE"
 TALOS_STAGE_TIMEOUT_DIVISOR=60 run_stage developer
 assert_eq "124" "$RC" "global key: a hung runner exits 124"
-if [ "$SECS" -le 12 ]; then pass "global key: returned within ~12 s (took ${SECS}s)"; else fail "global key: returned within ~12 s" "took ${SECS}s"; fi
+assert_cut_short "global key: returned soon after the 1 s bound (took ${SECS}s, baseline ${BASE}s)" "$SECS" "$BASE" 25
 assert_contains "$(cat "$ERR")" "pipeline-agent: reason=stage-timeout role=developer after_s=1" "global key: the reason line names the role and the bound"
 assert_eq "1" "$(grep -c '^pipeline-agent: reason=stage-timeout ' "$ERR")" "global key: exactly one reason line"
 assert_eq "" "$(gone)" "global key: no runner process (child or grandchild) survives"
@@ -120,7 +125,7 @@ set_cfg "{\"agents\": {\"runner\": \"custom\", \"stage_timeout_s\": 60,
  \"runner_cmd\": \"trap '' TERM; sleep $SENT & sleep $SENT\"}}"
 TALOS_STAGE_TIMEOUT_DIVISOR=60 run_stage developer
 assert_eq "124" "$RC" "TERM-proof runner: exits 124"
-if [ "$SECS" -le 18 ]; then pass "TERM-proof runner: returned within ~18 s (took ${SECS}s)"; else fail "TERM-proof runner: returned within ~18 s" "took ${SECS}s"; fi
+assert_cut_short "TERM-proof runner: returned soon after the bound and the KILL (took ${SECS}s, baseline ${BASE}s)" "$SECS" "$BASE" 25
 assert_eq "" "$(gone)" "TERM-proof runner: nothing survives the KILL"
 
 # ── 4. A fast runner under a timeout is unaffected ───────────────────────────

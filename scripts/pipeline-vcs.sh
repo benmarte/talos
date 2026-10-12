@@ -8103,6 +8103,9 @@ _vcs_pr_checks_required_dispatch() {
     ( _vcs_dispatch_provider ); _rc=$?
     [ "$_rc" -ne 2 ] && break
     _el=$((SECONDS - _start)); [ "$_slept" -gt "$_el" ] && _el=$_slept
+    # TALOS_RETRY_SLEEP_SCALE=0 (tests) makes every sleep instant, so the wall
+    # clock measures only the machine's load there: count the nominal sleeps (#593).
+    case "$_scale" in 0 | 0.0 | 0.00) _el=$_slept ;; esac
     _left=$((_w - _el))
     [ "$_left" -le 0 ] && break
     # Back off: 30 s, 60 s, then 120 s (#554) -- a CI run takes minutes, and every
