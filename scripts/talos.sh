@@ -3366,7 +3366,10 @@ _talos_map() {
 # _talos_run_snapshot <active|end> [<end line>]: the run's state snapshot
 # (<state dir>/state.json), which the map reads for its queue view (#614). A
 # collect on stdin replaces the stored one and stamps its time (`collect_ts`);
-# with none the stored collect stays and only `run` changes. _talos_collect_put
+# with none the stored collect stays and only `run` changes. `priority` is the
+# tier of every issue a collect has named: a collect lists one only while its
+# issue is queued or in flight, and the map's track counts merged ones too, so
+# it accumulates across collects. _talos_collect_put
 # calls it, so the snapshot holds every collect the run fetches: `done` empties
 # the run's collect copy, and after a stage there is none to read back. Best
 # effort: never fails its caller.
@@ -3390,6 +3393,13 @@ except ValueError:
     col = None
 if isinstance(col, dict) and col:
     snap["collect"], snap["collect_ts"] = col, now
+    # The collect is the word on the issues it lists; the rest keep their tier.
+    prio = snap.get("priority") if isinstance(snap.get("priority"), dict) else {}
+    for key in ("queued", "inflight"):
+        for n in col.get(key) if isinstance(col.get(key), list) else []:
+            prio.pop(str(n), None)
+    prio.update(col.get("priority") if isinstance(col.get("priority"), dict) else {})
+    snap["priority"] = prio
 snap.setdefault("collect", {})
 snap.update(ts=now, run={"active": mode != "end", "started": started, "end": end})
 tmp = "%s.%d.tmp" % (path, os.getpid())

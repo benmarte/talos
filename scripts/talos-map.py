@@ -30,7 +30,6 @@ import urllib.parse
 
 ROLES = ("validator", "pm", "developer", "review", "qa", "merge")
 REVIEW = ("reviewer", "security", "adversarial")
-PASSING = {"CONFIRMED", "PASS", "APPROVED", "CLEAR", "PR_OPENED", "RESTAMP_PASS"}
 FAILING = {"FAIL", "CHANGES", "FINDINGS", "BLOCKED", "RESTAMP_FAIL"}
 RECENT_DAYS = 7
 
@@ -143,7 +142,8 @@ def locate(provider, repo, remote, az_org, az_project):
                             for s in (re.sub(r"^https?://(dev\.azure\.com/)?", "", org), project, name))
             return slug, key, Links(provider, root, "%s/_git/%s" % (root, enc(name)))
     if provider in ("github", "github-api"):
-        base = "https://github.com/" + key if key else ""
+        # The remote's host (GitHub Enterprise), as pipeline-meta.sh repo-url.
+        base = "https://%s/%s" % (host or "github.com", key) if key else ""
         return key, key, Links(provider, base, base)
     # GitLab and the rest: the remote's whole path, subgroups included. An Azure
     # remote in no known shape gets a page with no links, never a guessed one.
@@ -159,7 +159,7 @@ def title_of(titles_dir, slug, n):
     if not titles_dir:
         return ""
     key = re.sub(r"[^A-Za-z0-9_-]", "_", slug or "cwd")
-    path = os.path.join(titles_dir, "%s.issue-title.%d" % (key, n))
+    path = os.path.join(titles_dir, "%s.issue.%d" % (key, n))
     try:
         if os.path.isfile(path) and not os.path.islink(path):
             with open(path, errors="replace") as f:
@@ -171,7 +171,8 @@ def title_of(titles_dir, slug, n):
 
 def dots(evs):
     """The status line's six stages: done (●) or pending (○), from the issue's
-    finishing events in order. A failing review or QA verdict sends the work
+    finishing events in order. A stage is done unless its verdict is a failing
+    one (pm finishes with none). A failing review or QA verdict sends the work
     back: developer and the gates after it are pending again."""
     done = dict.fromkeys(ROLES, False)
     for e in evs:
@@ -184,9 +185,9 @@ def dots(evs):
         stage = "review" if role in REVIEW else role
         if stage not in done:
             continue
-        if v in PASSING:
+        if v not in FAILING:
             done[stage] = True
-        elif v in FAILING and stage in ("review", "qa"):
+        elif stage in ("review", "qa"):
             done["developer"] = done["review"] = done["qa"] = False
     return "".join("●" if done[r] else "○" for r in ROLES)
 
@@ -298,8 +299,9 @@ def main(argv):
         parts.append('<p class="note">No run state yet: the queue, the next step and the owner questions '
                      'appear after a <code>talos.sh run</code>. This page shows what the events log knows.</p>')
 
-    # Track: priority tiers.
-    prio = col.get("priority") if isinstance(col.get("priority"), dict) else {}
+    # Track: priority tiers, from the snapshot's own map. The collect's covers
+    # the queued and in-flight issues only: a merged issue is no longer in it.
+    prio = snap.get("priority") if isinstance(snap.get("priority"), dict) else {}
     tiers = []
     for label, val in (("p0", 0), ("p1", 1), ("p2", 2), ("unlabelled", None)):
         ns = [n for n in shown if (prio.get(str(n)) == val if val is not None else str(n) not in prio)]
@@ -333,7 +335,7 @@ def main(argv):
     # Next step.
     if col:
         nxt = ""
-        tmp = a.state + ".collect.json"
+        tmp = "%s.collect.%d.json" % (a.state, os.getpid())
         try:
             with open(tmp, "w") as f:
                 json.dump(col, f)
@@ -410,7 +412,8 @@ def main(argv):
 
 
 def write(path, text):
-    tmp = path + ".tmp"
+    # A name of this render's own: two at once never share a half-written file.
+    tmp = "%s.%d.tmp" % (path, os.getpid())
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(text)
     os.replace(tmp, path)
