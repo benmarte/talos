@@ -47,6 +47,7 @@ BRANCH_RE = re.compile(r'^(?:fix|feat)/issue-([0-9]{1,9})(?:-|\Z)')
 SHA_RE = re.compile(r'^(?:[0-9a-f]{40}|[0-9a-f]{64})\Z')
 CAP_RE = re.compile(r'result capped at')
 STALE_RE = re.compile(r'^stale role=([a-z]+) label=')
+EVIDENCE_LOST_RE = re.compile(r'^evidence role=([a-z]+) label=\S+ state=lost$')
 UNSUPPORTED_RE = re.compile(r'not implemented for provider|unknown verb')
 APPROVALS = (('qa', 'qa:pass'), ('docs', 'docs:done'), ('reviewer', 'review:approved'),
              ('security', 'security:approved'), ('adversarial', 'adversarial:approved'))
@@ -161,7 +162,8 @@ def parse_array(text, what):
 
 def next_stage(n, labels, issue_labels, enabled):
     """First match wins: blocked, then the draft or default order, counting only
-    enabled roles; an approval label that is missing or stale means that role.
+    enabled roles; an approval label that is stale, or missing and not just
+    lost (#521), means that role.
     Fails closed (die) on a failed check-approval-sha read."""
     if BLOCKED_LABEL in labels or BLOCKED_LABEL in issue_labels:
         return 'blocked'
@@ -179,17 +181,30 @@ def next_stage(n, labels, issue_labels, enabled):
         # exit 1 is both "stale approvals" (stale lines on stdout) and a failed read.
         if rc not in (0, 1) or (rc == 1 and not stale):
             die('check-approval-sha failed for PR #%d (rc=%d)' % (n, rc))
+    # #521: a missing label whose marker still pins the current head is a lost
+    # stamp, not unfinished work: the gate re-applies it (post-approval
+    # --recover-only), so it is not this PR's stage. One evidence read for a
+    # PR that misses an enabled role's label, whether or not it carries another
+    # approval label: every stamp can be lost at once, and qa can be the only
+    # approval role. A failed read dies.
+    lost = set()
+    if any(role in enabled and label not in labels for role, label in APPROVALS):
+        rc, out, _ = vcs('check-approval-sha', str(n), '--evidence-list')
+        if rc != 0:
+            die('check-approval-sha --evidence-list failed for PR #%d (rc=%d)' % (n, rc))
+        lost = set(m.group(1) for m in map(EVIDENCE_LOST_RE.match, out.splitlines()) if m)
     for role, label in APPROVALS:
         if draft and role == 'qa':
             continue
-        if role in enabled and (label not in labels or role in stale):
+        if role in enabled and ((label not in labels and role not in lost) or role in stale):
             return role
     if draft:
         # The QA pre-CI gate (#535): QA is the LAST draft-window stage, so the one
         # CI run is never spent on a head QA would reject. Only here, after every
         # other enabled approval is fresh; a ready PR keeps QA first (above).
+        # A lost qa:pass is not a reason to run QA again here either (#521).
         if opts.get('ready-gate') == 'qa-local' and 'qa' in enabled \
-                and ('qa:pass' not in labels or 'qa' in stale):
+                and (('qa:pass' not in labels and 'qa' not in lost) or 'qa' in stale):
             return 'qa'
         return 'ready'
     if opts.get('required-checks') == 'yes':
