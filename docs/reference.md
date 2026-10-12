@@ -875,7 +875,7 @@ Identity, resolved once per run: `issues.assignee` when it names a login, else `
 
 | # | Gate | Fails as |
 |---|---|---|
-| 1 | No `pipeline:blocked`; every enabled role's approval label present (a human's `skip-qa` waives only this) | `wait` |
+| 1 | No `pipeline:blocked`; every enabled role's approval label present (a human's `skip-qa` waives only this; a [lost stamp](#approvals-bound-to-the-head-sha) is put back first) | `wait` |
 | 2 | `check-approval-sha`: approvals match the head SHA | `redispatch` |
 | 3 | `check-pr-files`: forbidden files (`skip-qa` never waives) | `block` |
 | 4 | `check-closing-keyword`: closing keyword while sibling PRs are open | `block` |
@@ -1296,6 +1296,7 @@ A `pipeline:blocked` issue or PR is skipped until a human removes the label. Aft
 ### Approvals and merge
 
 - An approval is stale after a new commit that touches a non-waived file; only the affected stages re-run. `bash scripts/pipeline-vcs.sh check-approval-sha <PR> --stale-list` names them, each with the SHA it approved.
+- An approval label that went missing while the head stayed the same is put back by `gate merge` (`recovered=<roles>`), with no stage run. `reason=approvals-missing` with `never_approved=<roles>` means no marker pins the head for those roles, so their stages run again; `bash scripts/pipeline-vcs.sh check-approval-sha <PR> --evidence-list` shows each role as `present`, `lost` or `missing` ([Lost stamps](#approvals-bound-to-the-head-sha)).
 - `assert-sync` aborts on a dirty tree (an untracked `AGENTS.md` counts), a checkout behind or diverged from `origin/<base>`, or a failed `git fetch`. Commit, stash or `git pull --ff-only`.
 
 ### Provider and board
