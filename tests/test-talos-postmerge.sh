@@ -726,6 +726,8 @@ pm 9 42
 assert_eq "0" "$RC" "AC8 (#601): a failed checkout return is non-fatal (exit 0)"
 assert_eq "failed" "$(line_of "$OUT" checkout)" "AC8 (#601): post-merge prints checkout=failed"
 assert_contains "$OUT" "warn reason=checkout-return-failed issue=42" "AC8 (#601): a failed checkout return adds warn reason=checkout-return-failed"
+assert_contains "$OUT" "warn reason=checkout-return-failed issue=42 reason=dirty" "AC6 (#644): the warn carries reason=<reason from to-base>"
+assert_eq "1" "$(printf '%s\n' "$OUT" | grep -c 'warn reason=checkout-return-failed')" "AC6 (#644): exactly one such warn line"
 assert_eq "worktree to-base 42>worktree remove 42" "$(wt_calls)" "AC8 (#601): the worktree removal still runs after a failed checkout return"
 assert_contains "$(journal)" "notify merged #42 PR #9 merged 42" "AC8 (#601): the items after it still run"
 assert_out "AC8 (#601) checkout failed" "$PM_FIRST"
@@ -735,6 +737,7 @@ set_stub worktree.to-base 1 "" "boom"
 pm 9 42
 assert_eq "0:failed" "$RC:$(line_of "$OUT" checkout)" "AC8 (#601): a to-base that printed no state is checkout=failed, exit 0"
 assert_contains "$OUT" "warn reason=checkout-return-failed issue=42" "AC8 (#601): and it warns"
+assert_contains "$OUT" "warn reason=checkout-return-failed issue=42 reason=no-state-line" "AC6 (#644): no state line is reason=no-state-line"
 reset_stubs
 set_stub worktree.to-base 0 "talos:checkout state=returned extra
 talos:checkout state=bogus"

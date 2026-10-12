@@ -1700,7 +1700,8 @@ _talos_post_merge_run() {
       _talos_emit checkout "${_OUT#talos:checkout state=}" ;;
     *)
       _talos_emit checkout failed
-      _talos_warn checkout-return-failed "issue=$_n" ;;
+      _cr="$(sed -n 's/^talos:checkout state=failed reason=\([a-z-]*\)$/\1/p' <<<"$_OUT" | head -n 1)"
+      _talos_warn checkout-return-failed "issue=$_n reason=${_cr:-no-state-line}" ;;
   esac
 
   _talos_run_capture worktree bash "$SCRIPT_DIR/pipeline-worktree.sh" remove "$_n"

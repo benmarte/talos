@@ -295,6 +295,7 @@ new_repo
 spec '**Tests:** `tests/test-greet.sh`'
 PR_HEAD="$(git rev-parse HEAD)"
 git checkout -q --detach main
+MAIN_SHA="$(git rev-parse HEAD)"
 WT589="$(safe_mktemp_dir "${TMPDIR:-/tmp}/talos-qa-wt.XXXXXX")" || exit 1
 WTS+=("$WT589")
 rmdir "$WT589"
@@ -303,11 +304,40 @@ QA_REAL_CHECKOUT=1 qa_run
 assert_eq "0" "$RC" "AC1 the branch held by another worktree: qa-run exits 0"
 assert_contains "$OUT" "AC1 red@$RED8 green@head" "AC1 the criteria run red then green at the PR head"
 assert_contains "$OUT" "qa-run: verdict PASS" "AC1 the verdict is PASS"
-assert_eq "$PR_HEAD" "$(git rev-parse HEAD)" "AC1 HEAD is the PR head afterwards"
-assert_eq "" "$(git symbolic-ref -q --short HEAD)" "AC1 HEAD is detached, the other worktree keeps the branch"
+assert_eq "$MAIN_SHA" "$(git rev-parse HEAD)" "AC1 HEAD is the invoking checkout's original SHA afterwards (#644)"
+assert_eq "" "$(git symbolic-ref -q --short HEAD)" "AC1 a checkout that started detached ends detached at its own SHA"
 assert_contains "$OUT" "qa-run: PR #9's branch is held by another worktree; running detached at ${PR_HEAD:0:8}" \
   "AC2 the fallback is named on one line"
 git worktree remove --force "$WT589"
+
+# AC1 (#644): started on a branch, the branch comes back.
+new_repo
+spec '**Tests:** `tests/test-greet.sh`'
+git checkout -q main
+WT644="$(safe_mktemp_dir "${TMPDIR:-/tmp}/talos-qa-wt.XXXXXX")" || exit 1
+WTS+=("$WT644")
+rmdir "$WT644"
+git worktree add -q "$WT644" "$BR"
+QA_REAL_CHECKOUT=1 qa_run
+assert_contains "$OUT" "running detached at" "AC1 (#644) the detached line is still printed"
+assert_eq "main" "$(git symbolic-ref -q --short HEAD)" "AC1 (#644) a checkout that started on a branch is back on it"
+
+# AC2 (#644): a restore that fails is a warning line and a non-zero exit. A git
+# shim refuses the last checkout, the one back to main.
+SHIM644="$(safe_mktemp_dir "${TMPDIR:-/tmp}/talos-qa-shim.XXXXXX")" || exit 1
+WTS+=("$SHIM644")
+cat > "$SHIM644/git" <<'TALOS_k9x2vq7mw4ab'
+#!/usr/bin/env bash
+case "$*" in "checkout -q main --") exit 1 ;; esac
+exec "${REAL_GIT:?}" "$@"
+TALOS_k9x2vq7mw4ab
+chmod +x "$SHIM644/git"
+git checkout -q main
+REAL_GIT="$(command -v git)" PATH="$SHIM644:$PATH" QA_REAL_CHECKOUT=1 qa_run
+assert_contains "$OUT" "qa-run: WARNING: could not return to main" "AC2 (#644) a restore that fails prints the warning line"
+assert_eq "1" "$RC" "AC2 (#644) and exits non-zero"
+git checkout -q main
+git worktree remove --force "$WT644"
 
 # ── 12. usage ────────────────────────────────────────────────────────────────
 new_repo

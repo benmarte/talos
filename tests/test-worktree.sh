@@ -664,12 +664,43 @@ for _b in topic fix/issue-420-other fix/issue-7-tweak feat/issue-4-x; do
   assert_eq "$_b $_tb_main" "$(tb_branch) $(git rev-parse main)" "AC6 (#601): on $_b nothing changes (same branch, base not moved)"
   assert_eq "0" "$(grep -cE '(^| )(pull|checkout|switch|branch -D)( |$)' "$GIT_LOG")" "AC6 (#601): on $_b no pull, switch or delete is run"
 done
+# AC3 (#644): a detached HEAD, clean: back on the base, fast-forwarded.
+git checkout -q main
+tb_remote_advance pr42b
 git checkout -q --detach main
 : > "$GIT_LOG"
 tb 42
-assert_eq "0 talos:checkout state=kept" "$RC $OUT" "AC6 (#601): on a detached HEAD to-base prints state=kept"
-assert_eq "<detached> $_tb_main" "$(tb_branch) $(git rev-parse main)" "AC6 (#601): a detached HEAD is left where it is"
-assert_eq "0" "$(grep -cE '(^| )(pull|checkout|switch|branch -D)( |$)' "$GIT_LOG")" "AC6 (#601): on a detached HEAD no pull, switch or delete is run"
+assert_eq "0 talos:checkout state=returned" "$RC $OUT" "AC3 (#644): on a detached HEAD to-base prints state=returned"
+assert_eq "main $(tb_remote_main)" "$(tb_branch) $(git rev-parse main)" "AC3 (#644): the HEAD is on main at the remote's tip"
+assert_eq "0" "$(grep -cE '(^| )branch -D( |$)' "$GIT_LOG")" "AC3 (#644): no branch is deleted"
+# AC4 (#644): a detached HEAD with a tracked change: nothing touched.
+git checkout -q --detach main
+printf 'edit\n' >> file.txt
+_tb_sha="$(git rev-parse HEAD)"
+: > "$GIT_LOG"
+tb 42
+assert_eq "0 talos:checkout state=failed reason=dirty" "$RC $OUT" "AC4 (#644): a detached HEAD with a tracked change is failed reason=dirty"
+assert_eq "<detached> $_tb_sha" "$(tb_branch) $(git rev-parse HEAD)" "AC4 (#644): the dirty detached HEAD is untouched"
+assert_eq "0" "$(grep -cE '(^| )(pull|checkout|switch|branch -D)( |$)' "$GIT_LOG")" "AC4 (#644): a dirty detached HEAD runs no pull, switch or delete"
+git checkout -q -- file.txt
+# AC4 (#644): a pull that is not a fast-forward.
+git checkout -q main
+git commit -q --allow-empty -m "local only"
+tb_remote_advance pr42c
+git checkout -q --detach
+tb 42
+assert_eq "0 talos:checkout state=failed reason=pull-failed" "$RC $OUT" "AC4 (#644): a base that cannot fast-forward is failed reason=pull-failed"
+git checkout -q main
+git reset -q --hard origin/main
+# AC4 (#644): a refused switch (the base tracks a file that is untracked here).
+tb_fixture
+git checkout -q --detach main
+tb_remote_advance clash
+git fetch -q origin
+git branch -q -f main origin/main
+printf 'mine\n' > merged.clash
+tb 42
+assert_eq "0 talos:checkout state=failed reason=switch-failed" "$RC $OUT" "AC4 (#644): a refused switch on a detached HEAD is failed reason=switch-failed"
 # Usage.
 tb
 assert_eq "2" "$RC" "AC6 (#601): to-base with no argument exits 2"
