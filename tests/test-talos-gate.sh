@@ -54,7 +54,7 @@ rc=0
 if [ -f "$d/$key.rc" ]; then rc="$(cat "$d/$key.rc")"; fi
 exit "$rc"
 '
-for s in pipeline-vcs.sh pipeline-notify.sh pipeline-hooks.sh pipeline-budget.sh pipeline-mergebase.sh pipeline-draft-check.sh; do
+for s in pipeline-vcs.sh pipeline-notify.sh pipeline-hooks.sh pipeline-budget.sh pipeline-mergebase.sh pipeline-draft-check.sh pipeline-status.sh; do
   printf '%s' "$STUB_BODY" > "$GS/$s"
 done
 GATE="$GS/talos.sh"
@@ -115,9 +115,9 @@ stop_extra = {"usage", "unknown-verb", "scripts-missing", "python-missing", "scr
               "approval-sha-failed", "draft-unverified", "ci-unverified", "head-unresolved",
               "comments-unreadable", "handoff-label-failed", "trust-unverified"}
 warn_ok = {"closing-keyword-unverified", "ci-runs-unrecorded", "budget-check-failed", "unblock-failed",
-           "comment-failed", "label-failed", "value-truncated", "area-check-failed"}
+           "comment-failed", "label-failed", "value-truncated", "area-check-failed", "board-failed"}
 kv = re.compile(r"([A-Za-z][A-Za-z0-9_.]*)=")
-sw = re.compile(r"(stop|warn) reason=([a-z:-]+)( key=[A-Za-z0-9_.-]+)?\Z")
+sw = re.compile(r"(stop|warn) reason=([a-z:-]+)( key=[A-Za-z0-9_.-]+| issue=[0-9]+)?\Z")
 if lines[0].startswith("stop "):
     ok = len(lines) == 1
 else:
@@ -698,6 +698,11 @@ fr 42 qa --pr 9
 assert_contains "$OUT" "warn reason=unblock-failed" "fix-round: a failing unblock is a warn line"
 assert_contains "$OUT" "verdict=redispatch" "fix-round: a failing unblock does not stop the round"
 assert_gate "fix-round (unblock-failed)"
+reset_stubs; set_stub record-attempt 0 "stage=qa count=1 total=1"; set_stub status 1 "" "boom"
+fr 42 qa --pr 9
+assert_contains "$OUT" "warn reason=board-failed issue=42" "AC6 fix-round: a failing board write is a warn line"
+assert_contains "$OUT" "verdict=redispatch" "AC6 fix-round: a failing board write does not stop the round"
+assert_gate "AC6 fix-round (board-failed)"
 
 # ── (b2) the same-area check (#599) ──────────────────────────────────────────
 # One review role blocking the same file in limits.same_area_rounds rounds
@@ -742,7 +747,8 @@ total=1
 stage=security"
 TODAY_CALLS="vcs record-attempt 42 security --pr 9
 vcs label-pr 9 --remove pipeline:blocked
-vcs label-issue 42 --remove pipeline:blocked"
+vcs label-issue 42 --remove pipeline:blocked
+status 42 In progress"
 
 # AC1: two findings comments of the stage on one file.
 reset_stubs
@@ -847,7 +853,8 @@ assert_eq "$TODAY_OUT" "$OUT" "AC6 an answered owner question: same-file finding
 assert_eq "vcs record-attempt 42 security --pr 9
 vcs label-pr 9 --remove pipeline:blocked
 vcs label-pr 9 --remove pipeline:needs-owner
-vcs label-issue 42 --remove pipeline:blocked" "$(after_read)" "AC6 the unblock removes pipeline:needs-owner from the PR as well as pipeline:blocked"
+vcs label-issue 42 --remove pipeline:blocked
+status 42 In progress" "$(after_read)" "AC6 the unblock removes pipeline:needs-owner from the PR as well as pipeline:blocked"
 area security "$(comments_json bot "$SEC_X1" bot "$SEC_X2" bot "$ASKED" owner "$QUOTE_REPLY")"
 assert_eq "$TODAY_OUT" "$OUT" "AC6 a reply that quotes a findings comment answers the question"
 area security "$(comments_json bot "$SEC_X1" bot "$SEC_X2" bot "$ASKED" owner "$REPLY" bot "$SEC_X1")"
@@ -908,6 +915,7 @@ run_old() {
   bash "$GS/pipeline-vcs.sh" record-attempt 42 qa --pr 9 > /dev/null 2>&1
   bash "$GS/pipeline-vcs.sh" label-pr 9 --remove pipeline:blocked > /dev/null 2>&1
   bash "$GS/pipeline-vcs.sh" label-issue 42 --remove pipeline:blocked > /dev/null 2>&1
+  bash "$GS/pipeline-status.sh" 42 "In progress" > /dev/null 2>&1  # the card follows (#523)
   cp "$GH_LOG" "$SANDBOX/gh.old"
 }
 run_new() {
@@ -920,7 +928,7 @@ assert_eq "verdict=redispatch
 count=1
 total=1
 stage=qa" "$OUT" "equivalence: real scripts, a first QA failure: redispatch with the counts record-attempt printed"
-assert_eq "$(cat "$SANDBOX/gh.old")" "$(cat "$SANDBOX/gh.new")" "equivalence: the verb leaves the gh journal the three-step prose left"
+assert_eq "$(cat "$SANDBOX/gh.old")" "$(cat "$SANDBOX/gh.new")" "equivalence: the verb leaves the gh journal the old prose and the board step leave"
 assert_gate "fix-round (real scripts)"
 assert_contains "$(cat "$SANDBOX/gh.new")" "-X DELETE -H Accept: application/vnd.github+json repos/acme/widget/issues/9/labels/pipeline%3Ablocked" "equivalence: the PR unblock reached gh"
 cfg_json '{"limits": {"max_fix_attempts": 1}}'
