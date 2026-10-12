@@ -229,7 +229,7 @@
 #
 # TALOS_STAGE_DURATION_S: if the caller sets this (seconds, integer), it is
 # forwarded as hooks.post_stage's duration_s field; otherwise duration_s is
-# null. pipeline-agent.sh does not time the run itself.
+# the stage's own wall time in seconds, at least 1 (#532).
 #
 # runner_cmd environment: TALOS_ROLE, TALOS_ISSUE_NUMBER, TALOS_WORKTREE_PATH,
 # and TALOS_EFFORT are exported and visible to runner_cmd. So is TALOS_MODEL (#539):
@@ -1987,6 +1987,9 @@ while IFS= read -r _fb_entry; do
 done <<EOF
 $(_fallback_chain "$ROLE" "$RUNNER")
 EOF
+# The stage's wall time (#532): from the first attempt to the runner's exit,
+# recorded on stage_complete unless the caller supplies TALOS_STAGE_DURATION_S.
+_STAGE_T0=$SECONDS
 if [ "${#CHAIN[@]}" -eq 0 ]; then
   _run_stage "$RUNNER"
   _usage_marker "$RUNNER"
@@ -2004,11 +2007,14 @@ if [ -f "$SCRIPT_DIR/pipeline-hooks.sh" ]; then
   [ "$RC" -eq 0 ] || _POST_STAGE_VERDICT="FAIL"
   _POST_STAGE_ARGS=(post_stage stage_complete "$ROLE" "$TALOS_ISSUE_NUMBER" --verdict "$_POST_STAGE_VERDICT")
   [ -z "$_stage_pr" ] || _POST_STAGE_ARGS+=(--pr "$_stage_pr")
-  # duration_s is not tracked anywhere today (PM scope note, #182): emit it
-  # only when the caller supplies it via TALOS_STAGE_DURATION_S, null
-  # otherwise -- no timer plumbing added in this change.
+  # duration_s (#532): the caller's TALOS_STAGE_DURATION_S when set, else
+  # the stage's own wall seconds, at least 1.
   if [ -n "${TALOS_STAGE_DURATION_S:-}" ]; then
     _POST_STAGE_ARGS+=(--duration-s "$TALOS_STAGE_DURATION_S")
+  else
+    _stage_dur=$((SECONDS - _STAGE_T0))
+    [ "$_stage_dur" -ge 1 ] || _stage_dur=1
+    _POST_STAGE_ARGS+=(--duration-s "$_stage_dur")
   fi
   # #418 / #420: the event names the runner that ran (a role-routed primary, or
   # the failover runner that finished the stage), its model, and the usage the
