@@ -850,6 +850,8 @@ _talos_collect_put() {  # $1 = a successful collect's stdout
   [ -n "$_c" ] || return 0
   case "$1" in '{'*'}') ;; *) return 0 ;; esac
   printf '%s' "$1" > "$_c.$$" && mv "$_c.$$" "$_c" 2>/dev/null || rm -f "$_c.$$"
+  # The map's snapshot keeps it past the next write (#614).
+  printf '%s' "$1" | _talos_run_snapshot active
 }
 _talos_collect_drop() { [ -z "${TALOS_COLLECT_CACHE:-}" ] || rm -f "$TALOS_COLLECT_CACHE"; }
 
@@ -3331,30 +3333,22 @@ _talos_emit_next_wait() { printf '%s\0%s\0' action "${1#action=}" >> "$_TALOS_OU
 # title cache pipeline-meta.sh keeps. Prints map=<path> and index=<path> on
 # success; non-zero on failure. No network, no provider call.
 _talos_map_render() {
-  local _sd _common _ep _slug _url _base _prov _host _path
+  local _sd _ep
   _sd="$(_talos_state_dir)" || return 1
-  _common="${_sd%/talos}"
+  # The events log by the writer's rule (pipeline-hooks.sh): a relative
+  # events.path that leaves the git common dir is no log.
   _ep="$(cfg events.path)"
-  case "$_ep" in /*) : ;; '') _ep="$_common/talos/events.jsonl" ;; *) _ep="$_common/$_ep" ;; esac
-  _prov="$(cfg vcs.provider | tr '[:upper:]' '[:lower:]')"
-  _slug="$(cfg vcs.repo)"
-  _url="$(git remote get-url origin 2>/dev/null)" || _url=""
-  # The web base: host and path from the remote (ssh or https, credentials
-  # and .git dropped); a github provider with a slug is github.com/<slug>.
-  _url="${_url%.git}"
-  case "$_url" in
-    *://*) _host="${_url#*://}"; _host="${_host#*@}"; _path="${_host#*/}"; _host="${_host%%/*}" ;;
-    *@*:*) _host="${_url#*@}"; _path="${_host#*:}"; _host="${_host%%:*}" ;;
-    *) _host=""; _path="" ;;
+  case "$_ep" in
+    /* | '') : ;;
+    *) ! _events_path_leaves_common "$_ep" || _ep="" ;;
   esac
-  [ -n "$_slug" ] || _slug="$(printf '%s' "$_path" | awk -F/ 'NF >= 2 { print $(NF-1) "/" $NF }')"
-  _base=""
-  case "$_prov" in
-    github | github-api | '') [ -z "$_slug" ] || _base="https://github.com/$_slug" ;;
-    *) [ -z "$_host" ] || [ -z "$_path" ] || _base="https://$_host/$_path" ;;
-  esac
-  python3 -I "$SCRIPT_DIR/talos-map.py" --events "$_ep" --state "$_sd/state.json" \
-    --home "${TALOS_HOME:-$HOME/.talos}" --slug "$_slug" --provider "${_prov:-github}" --base "$_base" \
+  [ -z "$_ep" ] || _ep="$(_events_log_path)" || _ep=""
+  # The page's name and links come from the provider's own keys and the origin
+  # URL, which goes in on stdin: it may carry a credential.
+  { git remote get-url origin 2>/dev/null || true; } | python3 -I "$SCRIPT_DIR/talos-map.py" \
+    --events "$_ep" --state "$_sd/state.json" --home "${TALOS_HOME:-$HOME/.talos}" \
+    --provider "$(cfg vcs.provider)" --repo "$(cfg vcs.repo)" \
+    --azure-org "$(cfg vcs.azure.org_url)" --azure-project "$(cfg vcs.azure.project)" \
     --scripts "$SCRIPT_DIR" --titles "${XDG_RUNTIME_DIR:-${HOME:-/nonexistent}/.cache}/talos/meta"
 }
 
@@ -3369,33 +3363,56 @@ _talos_map() {
   _talos_flush
 }
 
-# _talos_run_map <active|end>: the driver's refresh (#614). The state snapshot
-# first, from the collect this pass already read (no new read), then the map.
-# During the run a failure is `warn reason=map-failed`; at the end (an exit
-# hook, after the end line is out) it is one stderr line.
+# _talos_run_snapshot <active|end> [<end line>]: the run's state snapshot
+# (<state dir>/state.json), which the map reads for its queue view (#614). A
+# collect on stdin replaces the stored one and stamps its time (`collect_ts`);
+# with none the stored collect stays and only `run` changes. _talos_collect_put
+# calls it, so the snapshot holds every collect the run fetches: `done` empties
+# the run's collect copy, and after a stage there is none to read back. Best
+# effort: never fails its caller.
+_talos_run_snapshot() {
+  local _sd
+  _sd="$(_talos_state_dir 2>/dev/null)" || return 0
+  python3 -I -c '
+import datetime, json, os, sys
+path, mode, started, end = sys.argv[1:5]
+now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+try:
+    with open(path) as f:
+        snap = json.load(f)
+except (OSError, ValueError):
+    snap = {}
+if not isinstance(snap, dict):
+    snap = {}
+try:
+    col = json.load(sys.stdin)
+except ValueError:
+    col = None
+if isinstance(col, dict) and col:
+    snap["collect"], snap["collect_ts"] = col, now
+snap.setdefault("collect", {})
+snap.update(ts=now, run={"active": mode != "end", "started": started, "end": end})
+tmp = "%s.%d.tmp" % (path, os.getpid())
+with open(tmp, "w") as f:
+    json.dump(snap, f)
+os.replace(tmp, path)' "$_sd/state.json" "$1" "${TALOS_RUN_STARTED:-}" "${2:-}" 2>/dev/null || true
+}
+
+# _talos_run_map <stage|end>: the driver's refresh (#614), after a stage's
+# `done` and as an exit hook. The exit hook first puts the run's end line in the
+# snapshot, unless the run goes on in a new image (_talos_run_continue). A
+# failure is `warn reason=map-failed`: a warn line during the run, one stderr
+# line from the exit hook (the end line is already out).
 _talos_run_map() {
-  local _sd _end=""
-  _sd="$(_talos_state_dir 2>/dev/null)" || _sd=""
-  if [ -n "$_sd" ]; then
-    [ "$1" != end ] || _end="$(python3 -I -c '
+  if [ "$1" = end ] && [ -z "${_TALOS_RUN_CONTINUES:-}" ]; then
+    _talos_run_snapshot end "$(python3 -I -c '
 import sys
 parts = open(sys.argv[1], "rb").read().split(b"\0")
 last = ""
 for k, v in zip(parts[0::2], parts[1::2]):
     if k == b"stop":
         last = "stop " + v.decode("utf-8", "replace")
-print(last)' "$_TALOS_OUT" 2>/dev/null)"
-    { _talos_collect_get 2>/dev/null || printf '{}'; } | python3 -I -c '
-import json, sys, datetime
-try:
-    col = json.load(sys.stdin)
-except ValueError:
-    col = {}
-now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-json.dump({"ts": now, "collect": col if isinstance(col, dict) else {},
-           "run": {"active": sys.argv[2] != "end", "started": sys.argv[3], "end": sys.argv[4]}},
-          open(sys.argv[1] + ".tmp", "w"))' "$_sd/state.json" "$1" "${TALOS_RUN_STARTED:-}" "$_end" 2>/dev/null \
-      && mv -f "$_sd/state.json.tmp" "$_sd/state.json" 2>/dev/null
+print(last)' "$_TALOS_OUT" 2>/dev/null)" < /dev/null
   fi
   if ! _talos_map_render > /dev/null 2>&1; then
     if [ "$1" = end ]; then echo "warn reason=map-failed" >&2; else _talos_warn map-failed; fi
@@ -3511,6 +3528,7 @@ _talos_run_continue() {
     _talos_flush; exit 1
   fi
   _talos_flush
+  _TALOS_RUN_CONTINUES=1   # the map's exit hook: this run has not ended (#614)
   _talos_run_exit_hooks
   trap - EXIT
   TALOS_RUN_PASSES="$$:$2"; export TALOS_RUN_PASSES
@@ -3577,8 +3595,8 @@ _talos_run_loop() {
   # The project map (#614): refreshed at each stage end and once at the end.
   [ -n "${TALOS_RUN_STARTED:-}" ] || TALOS_RUN_STARTED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   export TALOS_RUN_STARTED
-  # First of the exit hooks: it reads the end line and the collect from the
-  # scratch dir, which an earlier-registered hook removes.
+  # First of the exit hooks: it reads the end line from the scratch dir, which
+  # an earlier-registered hook removes.
   _TALOS_EXIT_HOOKS=("_talos_run_map_end" ${_TALOS_EXIT_HOOKS[@]+"${_TALOS_EXIT_HOOKS[@]}"})
   local _dispatched=0
   . "$SCRIPT_DIR/pipeline-contract.sh"
@@ -3847,7 +3865,7 @@ _talos_run_dispatch() {
   _next="$(bash "$SCRIPT_DIR"/talos.sh "${_dargs[@]}" < "$_CFG_CACHE_DIR/agent.out" 2>"$_CFG_CACHE_DIR/err" \
             | sed -n 's/^next=//p' | head -n 1)"
   rm -f "${_f:?}"
-  _talos_run_map active
+  _talos_run_map stage
 
   # 5. What follows, the pass ends the same way the playbook's Step 2 reads
   # `next=`: `stop` ends the run clean; `continue` goes back to `next`. A

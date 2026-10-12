@@ -1,9 +1,12 @@
 """talos-map.py -- the project map (#614): one self-contained HTML page per
 repository, rendered by code from Talos's local records, plus an index.
 
-    python3 -I talos-map.py --events <events.jsonl> --state <state.json>
-        --home <TALOS_HOME> --slug <owner/name> --provider <vcs.provider>
-        --base <web base URL or ''> --scripts <scripts dir> [--titles <dir>]
+    git remote get-url origin | python3 -I talos-map.py --events <events.jsonl>
+        --state <state.json> --home <TALOS_HOME> --provider <vcs.provider>
+        --repo <vcs.repo> --azure-org <vcs.azure.org_url>
+        --azure-project <vcs.azure.project> --scripts <scripts dir> [--titles <dir>]
+
+The origin URL is read from stdin, never argv: it may carry a credential.
 
 Reads only local files: the events log, the state snapshot `talos.sh run`
 writes from the collect it already fetched, and the title cache
@@ -23,6 +26,7 @@ import os
 import re
 import subprocess
 import sys
+import urllib.parse
 
 ROLES = ("validator", "pm", "developer", "review", "qa", "merge")
 REVIEW = ("reviewer", "security", "adversarial")
@@ -72,27 +76,79 @@ def parse_ts(ts):
 
 
 class Links:
-    def __init__(self, provider, base):
-        self.p = (provider or "github").lower()
-        self.base = base.rstrip("/") if re.match(r"https://[^\s\"'<>]+$", base or "") else ""
+    """The provider's link shapes. `issues` and `prs` are web bases: one URL for
+    GitHub and GitLab; Azure DevOps keeps work items at the project and pull
+    requests at the repository."""
+
+    def __init__(self, provider, issues, prs):
+        self.p = provider
+        self.issues, self.prs = (b.rstrip("/") if re.match(r"https://[^\s\"'<>]+$", b or "") else "" for b in (issues, prs))
 
     def issue(self, n):
-        if not self.base:
+        if not self.issues:
             return ""
         if self.p == "gitlab":
-            return "%s/-/issues/%d" % (self.base, n)
+            return "%s/-/issues/%d" % (self.issues, n)
         if self.p == "azure":
-            return "%s/_workitems/edit/%d" % (self.base, n)
-        return "%s/issues/%d" % (self.base, n)
+            return "%s/_workitems/edit/%d" % (self.issues, n)
+        return "%s/issues/%d" % (self.issues, n)
 
     def pr(self, n):
-        if not self.base:
+        if not self.prs:
             return ""
         if self.p == "gitlab":
-            return "%s/-/merge_requests/%d" % (self.base, n)
+            return "%s/-/merge_requests/%d" % (self.prs, n)
         if self.p == "azure":
-            return "%s/pullrequest/%d" % (self.base, n)
-        return "%s/pull/%d" % (self.base, n)
+            return "%s/pullrequest/%d" % (self.prs, n)
+        return "%s/pull/%d" % (self.prs, n)
+
+
+def remote_parts(url):
+    """(web host, path segments) of a git remote, https or ssh, with the
+    credentials and a trailing .git dropped. An https port is the web host's;
+    an ssh port is not."""
+    url = re.sub(r"(\.git)?/*$", "", (url or "").strip())
+    m = re.match(r"([A-Za-z][A-Za-z0-9+.-]*)://(?:[^/]*@)?([^/:@]+)(:\d+)?/(.+)$", url)
+    if m:
+        port = (m.group(3) or "") if m.group(1).lower() in ("http", "https") else ""
+        return m.group(2) + port, [s for s in m.group(4).split("/") if s]
+    m = re.match(r"(?:[^/@]*@)?([^/:@]+):(.+)$", url)
+    return (m.group(1), [s for s in m.group(2).split("/") if s]) if m else ("", [])
+
+
+def enc(s):
+    return urllib.parse.quote(urllib.parse.unquote(s), safe="")
+
+
+def locate(provider, repo, remote, az_org, az_project):
+    """(slug, title key, Links). The slug names the page and its index entry;
+    the title key is owner/name, as pipeline-meta.sh keys its cache."""
+    host, segs = remote_parts(remote)
+    named = [s for s in (repo or "").split("/") if s]
+    key = "/".join(named if len(named) == 2 else segs[-2:])
+    if provider == "azure":
+        # <org URL>/<project>/_git/<repository>: the configuration's keys, else
+        # the remote (https://<host>/<org>/<project>/_git/<repository>, or
+        # ssh's v3/<org>/<project>/<repository>).
+        org = project = name = ""
+        if segs[:1] == ["v3"] and len(segs) == 4:
+            org, project, name = "https://dev.azure.com/" + segs[1], segs[2], segs[3]
+        elif "_git" in segs[1:-1]:
+            i = segs.index("_git", 1)
+            org, project, name = "/".join(["https://" + host] + segs[:i - 1]), segs[i - 1], segs[i + 1]
+        org, project, name = (az_org or org).rstrip("/"), az_project or project, named[-1] if named else name
+        if org and project and name:
+            root = "%s/%s" % (org, enc(project))
+            slug = "/".join(re.sub(r"[^A-Za-z0-9._-]", "-", urllib.parse.unquote(s))
+                            for s in (re.sub(r"^https?://(dev\.azure\.com/)?", "", org), project, name))
+            return slug, key, Links(provider, root, "%s/_git/%s" % (root, enc(name)))
+    if provider in ("github", "github-api"):
+        base = "https://github.com/" + key if key else ""
+        return key, key, Links(provider, base, base)
+    # GitLab and the rest: the remote's whole path, subgroups included. An Azure
+    # remote in no known shape gets a page with no links, never a guessed one.
+    base = "https://%s/%s" % (host, "/".join(segs)) if host and segs and provider != "azure" else ""
+    return "/".join(named if len(named) > 1 else segs), key, Links(provider, base, base)
 
 
 def link(url, text):
@@ -137,18 +193,23 @@ def dots(evs):
 
 def main(argv):
     ap = argparse.ArgumentParser()
-    for k in ("events", "state", "home", "slug", "provider", "base", "scripts", "titles"):
+    for k in ("events", "state", "home", "provider", "repo", "azure-org", "azure-project", "scripts", "titles"):
         ap.add_argument("--" + k, default="")
     a = ap.parse_args(argv)
-    if not re.fullmatch(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+", a.slug or ""):
+    remote = "" if sys.stdin.isatty() else sys.stdin.readline()
+    slug, title_key, links = locate((a.provider or "github").lower(), a.repo, remote, a.azure_org, a.azure_project)
+    if not re.fullmatch(r"[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)+", slug):
         sys.stderr.write("talos-map: no repository slug\n")
         return 1
     now = datetime.datetime.now(datetime.timezone.utc)
-    links = Links(a.provider, a.base)
     events = read_events(a.events)
-    snap = read_state(a.state)
-    col = (snap or {}).get("collect") if isinstance((snap or {}).get("collect"), dict) else {}
-    run = (snap or {}).get("run") if isinstance((snap or {}).get("run"), dict) else {}
+    snap = read_state(a.state) or {}
+    # The queue view: the collect of the run's last state read. An empty one (no
+    # snapshot, or a run that ended before it read the state) is no queue view,
+    # never an empty queue.
+    col = snap.get("collect") if isinstance(snap.get("collect"), dict) else {}
+    run = snap.get("run") if isinstance(snap.get("run"), dict) else {}
+    col_ts = parse_ts(snap.get("collect_ts")) if col else None
 
     by_issue = {}
     for e in events:
@@ -170,17 +231,28 @@ def main(argv):
         if isinstance(item, list) and len(item) == 2 and num(item[1]):
             blocked.add(item[1] if item[0] != "PR" else next(
                 (p.get("issue") for p in col.get("prs") or [] if isinstance(p, dict) and p.get("n") == item[1]), item[1]))
+    # The collect is a read at col_ts and the log goes on after it (`done` writes
+    # a stage's events after the pass read the state): an issue is judged by its
+    # events since then, all of them when there is no collect. Blocked if that is
+    # their last word, else in flight.
+    moved = set()
     for n, evs in by_issue.items():
-        last = [e for e in evs if e.get("event") not in ("stage_start", "stage_complete")]
-        if n not in merged and last and last[-1].get("event") == "blocked" and not col:
+        late = [e for e in evs if not col or (col_ts and (parse_ts(e.get("ts")) or col_ts) >= col_ts)]
+        if n in merged or not late:
+            continue
+        moved.add(n)
+        said = [e for e in late if e.get("event") not in ("stage_start", "stage_complete")]
+        if said and said[-1].get("event") == "blocked":
             blocked.add(n)
+        elif said:
+            blocked.discard(n)
 
     def state(n):
         if n in merged:
             return "Done"
         if n in blocked:
             return "Stuck"
-        if n in inflight or n in pr_issues or (not col and n in by_issue):
+        if n in inflight or n in pr_issues or n in moved:
             return "In progress"
         return "Not started"
 
@@ -189,8 +261,7 @@ def main(argv):
         ts = parse_ts(next((e.get("ts") for e in reversed(by_issue[n]) if e.get("event") == "merged"), ""))
         if ts and (now - ts).days < RECENT_DAYS:
             recent.add(n)
-    shown = sorted(set(queued) | set(inflight) | set(pr_issues) | blocked | recent
-                   | ({n for n in by_issue if n not in merged} if not col else set()))
+    shown = sorted(set(queued) | set(inflight) | set(pr_issues) | blocked | recent | moved)
 
     def tokens(n):
         return sum(num(e.get("tokens")) or 0 for e in by_issue.get(n, []) if e.get("role") != "orchestrator")
@@ -205,7 +276,7 @@ def main(argv):
         return "%.2fM" % (t / 1e6) if t >= 1_000_000 else ("%dk" % round(t / 1000) if t >= 1000 else str(t))
 
     # Header.
-    name = a.slug
+    name = slug
     counts = {"Done": 0, "In progress": 0, "Stuck": 0, "Not started": 0}
     for n in shown:
         counts[state(n)] += 1
@@ -215,13 +286,15 @@ def main(argv):
         run_line = "last run ended: <code>%s</code>" % esc(str(run.get("end"))[:300])
     else:
         run_line = "no run recorded"
+    if col_ts:
+        run_line += " · queue as of %s" % esc(col_ts.strftime("%Y-%m-%d %H:%M UTC"))
     parts = []
     parts.append('<header><h1>%s</h1><p class="sub">updated %s · %s</p>'
                  '<p class="counts"><span class="c done">%d merged</span> <span class="c prog">%d in flight</span> '
                  '<span class="c stuck">%d stuck</span> <span class="c todo">%d not started</span></p></header>'
                  % (esc(name), esc(now.strftime("%Y-%m-%d %H:%M UTC")), run_line,
                     counts["Done"], counts["In progress"], counts["Stuck"], counts["Not started"]))
-    if snap is None:
+    if not col:
         parts.append('<p class="note">No run state yet: the queue, the next step and the owner questions '
                      'appear after a <code>talos.sh run</code>. This page shows what the events log knows.</p>')
 
@@ -243,7 +316,7 @@ def main(argv):
     cards = []
     for n in shown:
         st = state(n)
-        t = title_of(a.titles, a.slug, n)
+        t = title_of(a.titles, title_key, n)
         pr = pr_of.get(n)
         line = ""
         if st == "Stuck":
@@ -258,7 +331,7 @@ def main(argv):
                  % ("".join(cards) or '<p class="note">Nothing in flight, queued or recently merged.</p>'))
 
     # Next step.
-    if snap is not None:
+    if col:
         nxt = ""
         tmp = a.state + ".collect.json"
         try:
@@ -315,16 +388,16 @@ def main(argv):
 
     maps = os.path.join(a.home, "maps")
     os.makedirs(maps, exist_ok=True)
-    fname = re.sub(r"[^A-Za-z0-9._-]", "-", a.slug.replace("/", "-")) + ".html"
+    fname = slug.replace("/", "-") + ".html"
     page = os.path.join(maps, fname)
     write(page, doc("Talos map: " + name, "".join(parts)))
 
     # The index: a registry of every repository rendered under this home.
     reg_path = os.path.join(maps, "index.json")
     reg = read_state(reg_path) or {}
-    reg[a.slug] = {"file": fname, "updated": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                   "line": "%d merged · %d in flight · %d stuck · %d not started"
-                           % (counts["Done"], counts["In progress"], counts["Stuck"], counts["Not started"])}
+    reg[slug] = {"file": fname, "updated": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                 "line": "%d merged · %d in flight · %d stuck · %d not started"
+                         % (counts["Done"], counts["In progress"], counts["Stuck"], counts["Not started"])}
     write(reg_path, json.dumps(reg, indent=1, sort_keys=True))
     items = "".join('<li><a href="%s">%s</a> <span class="sub">%s · updated %s</span></li>'
                     % (esc(v.get("file", "")), esc(k), esc(v.get("line", "")), esc(v.get("updated", "")))
