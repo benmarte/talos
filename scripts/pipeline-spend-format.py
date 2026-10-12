@@ -286,12 +286,11 @@ def transcript_usage(f, seen, since="", cap=TRANSCRIPT_CAP, name=""):
     return partial
 
 
-def session_usage(path):
-    """One session transcript as {'calls', 'cache_read', 'cache_write',
-    'output', 'partial'}: a call is one message id, counted once with its last
-    figures. None when `path` is not a usable transcript (an absolute path
-    ending .jsonl that is a regular file, not a symlink) or cannot be read.
-    This file only: no subagent transcripts."""
+def _session_read(path):
+    """One session transcript as (`seen`, `partial`), the two results of
+    `transcript_usage`. None when `path` is not a usable transcript (an
+    absolute path ending .jsonl that is a regular file, not a symlink) or
+    cannot be read. This file only: no subagent transcripts."""
     if not isinstance(path, str) or not os.path.isabs(path) or not path.endswith(".jsonl"):
         return None
     seen = {}
@@ -303,6 +302,17 @@ def session_usage(path):
             partial = transcript_usage(f, seen, name=path)
     except OSError:
         return None
+    return seen, partial
+
+
+def session_usage(path):
+    """One session transcript as {'calls', 'cache_read', 'cache_write',
+    'output', 'partial'}: a call is one message id, counted once with its last
+    figures. None when `_session_read` cannot use `path`."""
+    read = _session_read(path)
+    if read is None:
+        return None
+    seen, partial = read
     out = {"calls": len(seen), "partial": partial}
     for key in ("cache_read", "cache_write", "output"):
         out[key] = sum(m[key] or 0 for m in seen.values())
@@ -311,22 +321,12 @@ def session_usage(path):
 
 def session_context(path):
     """The session's current size (#605): input + cache read + cache write of
-    the latest call in the transcript `path` names, read with the same rules as
-    `session_usage`. None when the path is unusable or holds no usage record."""
-    if not isinstance(path, str) or not os.path.isabs(path) or not path.endswith(".jsonl"):
+    the latest call in the transcript `path` names. None when `_session_read`
+    cannot use `path` or the transcript holds no usage record."""
+    read = _session_read(path)
+    if read is None or not read[0]:
         return None
-    seen = {}
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        with os.fdopen(fd, "rb") as f:
-            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
-                return None
-            transcript_usage(f, seen, name=path)
-    except OSError:
-        return None
-    if not seen:
-        return None
-    last = list(seen.values())[-1]
+    last = list(read[0].values())[-1]
     return sum(last[key] or 0 for key in ("input", "cache_read", "cache_write"))
 
 

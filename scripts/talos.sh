@@ -3229,15 +3229,6 @@ _talos_claim() {
   _talos_flush
 }
 
-# next: one action from the state -- the PR-side half (#470), then the
-# issue-side half (#471) when no PR answered. The lease (#470, AC4) is
-# acquired for a dispatch/merge answer before it is printed, so two runs
-# never act on the same issue at once; a lease held by another run (or a
-# lock that could not be held) answers `action=wait reason=lease` with the
-# holder's remaining TTL as retry_after_s -- never a takeover. A dead
-# holder's line past the reclaim guard is not a lease: the acquire reclaims
-# it (#522) and the wait it still causes reports the seconds until
-# reclaimable, never the TTL.
 # _talos_orchestrator_resolve [say]: the effective execution.orchestrator in
 # _TALOS_ORCHESTRATOR (#602), as `env` prints it. With `say`, each case that is
 # not the plain key is one stderr line.
@@ -3278,7 +3269,7 @@ _talos_context_check() {
   _talos_isnum "$_b" && [ "$_b" -gt 0 ] || return 0
   _talos_orchestrator_resolve
   [ "$_TALOS_ORCHESTRATOR" = llm ] || return 0
-  _size="$(python3 -I -c '
+  _size="$(python3 -I -B -c '
 import importlib, sys
 sys.path.insert(0, sys.argv[1])
 n = importlib.import_module("pipeline-spend-format").session_context(sys.argv[2])
@@ -3302,6 +3293,15 @@ print("" if n is None else n)' "$SCRIPT_DIR" "${TALOS_TRANSCRIPT_PATH:-}" 2>/dev
   exit 0
 }
 
+# next: one action from the state -- the PR-side half (#470), then the
+# issue-side half (#471) when no PR answered. The lease (#470, AC4) is
+# acquired for a dispatch/merge answer before it is printed, so two runs
+# never act on the same issue at once; a lease held by another run (or a
+# lock that could not be held) answers `action=wait reason=lease` with the
+# holder's remaining TTL as retry_after_s -- never a takeover. A dead
+# holder's line past the reclaim guard is not a lease: the acquire reclaims
+# it (#522) and the wait it still causes reports the seconds until
+# reclaimable, never the TTL.
 _talos_next() {
   local _issue="" _target _a _r _leased _roles="" _retry _skip _tries
   while [ "$#" -gt 0 ]; do
