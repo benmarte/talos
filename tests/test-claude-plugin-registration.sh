@@ -313,6 +313,20 @@ inst --local-plugin
 assert_contains "$OUT" "claude plugin marketplace add '$TALOS_ROOT'" "AC2 the track-this-checkout command quotes the checkout path"
 unset CLAUDE_STUB_REMOVE_FAIL
 
+# A checkout whose path holds a space and a single quote: the quote is escaped.
+newcase local-quote-in-path
+QBASE="$(cd "$CASE" && pwd)"
+QSRC="$QBASE/it's here"
+mkdir -p "$QSRC"
+cp "$INSTALL" "$QSRC/install.sh"
+cp -R "$TALOS_ROOT/scripts" "$TALOS_ROOT/agents" "$TALOS_ROOT/templates" "$TALOS_ROOT/skills" "$TALOS_ROOT/.claude-plugin" "$QSRC/"
+seed_marketplace github "benmarte/talos"
+export CLAUDE_STUB_REMOVE_FAIL=1
+OUT="$(env CLAUDE_CONFIG_DIR="$CASE/claude" TALOS_HOME="$CASE/talos" TALOS_AGENTS_HOME="$CASE/agents" \
+  "$BASH_BIN" "$QSRC/install.sh" --global --no-agent-skills --harness claude --local-plugin 2>&1)"
+assert_contains "$OUT" "claude plugin marketplace add '$QBASE/it'\\''s here'" "AC2 a single quote in the checkout path is escaped, so the command still pastes as one argument"
+unset CLAUDE_STUB_REMOVE_FAIL
+
 newcase local-without-global
 mkdir -p "$CASE/repo"
 git -C "$CASE/repo" init -q -b main
