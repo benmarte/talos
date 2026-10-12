@@ -241,6 +241,16 @@ def fmt_cache_cell(total, unrecorded, runs):
     return fmt_num(total) + (" (+%d unrecorded)" % unrecorded if unrecorded else "")
 
 
+def fmt_pools(api, api_read, plan, plan_read, unrecorded=0):
+    """The pool line of a spend report (#616), what the plan's monthly API
+    credits paid for and what the plan login did: 'Pools: API credits 1.50M
+    (cache read 48.00M), plan 300k (cache read 2.00M)', with ' (+K unrecorded)'
+    when K runs carry no pool."""
+    text = "Pools: API credits %s (cache read %s), plan %s (cache read %s)" % tuple(
+        fmt_num(as_count(v) or 0) for v in (api, api_read, plan, plan_read))
+    return text + (" (+%d unrecorded)" % unrecorded if unrecorded else "")
+
+
 TRANSCRIPT_CAP = 64 * 1024 * 1024
 _USAGE_KEYS = (("input", "input_tokens"), ("output", "output_tokens"),
                ("cache_write", "cache_creation_input_tokens"), ("cache_read", "cache_read_input_tokens"))

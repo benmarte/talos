@@ -17,6 +17,7 @@
 #          [--details-file F] [--attempt stage:count:total] [--duration-s N] [--tokens N] [--tool-uses N]
 #          [--ci-runs N] [--model M] [--runner R]
 #          [--input-tokens N] [--output-tokens N] [--cache-write-tokens N] [--cache-read-tokens N]
+#          [--pool api|plan]
 #        pipeline-hooks.sh stage_start <role> <issue> [--pr N]
 #
 # stage_start (#550) appends one `stage_start` event to the events log when a
@@ -94,6 +95,11 @@
 # supplied and valid. `tokens` stays input + output + cache write: cache reads
 # are never in it. An event with no valid cache_read_tokens is "cache-unrecorded"
 # to every reader (pipeline-events.sh cost, talos-status.sh), never a zero.
+# --pool api|plan (#616) names what paid for a claude stage: the plan's monthly
+# API credits or the plan login (agents.claude_api_credits). It adds a "pool"
+# key after the #604 keys and before ts; any other value prints one stderr line
+# and the key is left out, and an event without it is "pool-unrecorded" to
+# pipeline-events.sh cost.
 # model comes from agents.roles.<role>.model, falling back to agents.model;
 # runner from agents.runner. ts is UTC ISO-8601.
 #
@@ -397,7 +403,7 @@ _HOOKS_SUMMARY_MAX=4096
 _hooks_usage() {
   echo "Usage: pipeline-hooks.sh pre_dispatch <role> <issue> [<pr>] [<worktree_path>] [files_hint...]" >&2
   echo "       pipeline-hooks.sh stage_start <role> <issue> [--pr N]" >&2
-  echo "       pipeline-hooks.sh post_stage <event> <role> <issue> [--pr N] [--sha S] [--verdict V] [--summary \"...\" | --summary - | --summary-file F] [--details-file F] [--attempt stage:count:total] [--duration-s N] [--tokens N] [--tool-uses N] [--ci-runs N] [--model M] [--runner R] [--input-tokens N] [--output-tokens N] [--cache-write-tokens N] [--cache-read-tokens N]" >&2
+  echo "       pipeline-hooks.sh post_stage <event> <role> <issue> [--pr N] [--sha S] [--verdict V] [--summary \"...\" | --summary - | --summary-file F] [--details-file F] [--attempt stage:count:total] [--duration-s N] [--tokens N] [--tool-uses N] [--ci-runs N] [--model M] [--runner R] [--input-tokens N] [--output-tokens N] [--cache-write-tokens N] [--cache-read-tokens N] [--pool api|plan]" >&2
 }
 
 # _hooks_need_value OPTION ARGC -- exit 2 with usage when a value-taking
@@ -414,6 +420,7 @@ _hooks_need_value() {
 #            [--summary-file F] [--details-file F] [--attempt stage:count:total] [--duration-s N]
 #            [--tokens N] [--tool-uses N] [--ci-runs N] [--model M] [--runner R]
 #            [--input-tokens N] [--output-tokens N] [--cache-write-tokens N] [--cache-read-tokens N]
+#            [--pool api|plan]
 # --runner R (#418): the runner the stage actually ran on. pipeline-agent.sh
 # passes it only for a stage that ran on a failover-chain runner; the event's
 # runner is then R and its model is null (a fallback runner uses its own
@@ -427,10 +434,10 @@ post_stage() {
 
   local pr="" sha="" verdict="" summary="" details_file="" attempt="" duration_s="" tokens="" tool_uses="" ci_runs="" model_arg="" runner_arg=""
   local summary_file="" summary_stdin=0
-  local input_tokens="" output_tokens="" cache_write_tokens="" cache_read_tokens=""
+  local input_tokens="" output_tokens="" cache_write_tokens="" cache_read_tokens="" pool=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --pr|--sha|--verdict|--summary|--summary-file|--details-file|--attempt|--duration-s|--tokens|--tool-uses|--ci-runs|--model|--runner|--input-tokens|--output-tokens|--cache-write-tokens|--cache-read-tokens)
+      --pr|--sha|--verdict|--summary|--summary-file|--details-file|--attempt|--duration-s|--tokens|--tool-uses|--ci-runs|--model|--runner|--input-tokens|--output-tokens|--cache-write-tokens|--cache-read-tokens|--pool)
         # A value flag as the last argument used to loop forever (`shift 2`
         # with one argument left shifts nothing): exit 2 with usage instead.
         _hooks_need_value "$1" $#
@@ -459,6 +466,7 @@ post_stage() {
       --output-tokens) output_tokens="$2"; shift 2 ;;
       --cache-write-tokens) cache_write_tokens="$2"; shift 2 ;;
       --cache-read-tokens) cache_read_tokens="$2"; shift 2 ;;
+      --pool) pool="$2"; shift 2 ;;
       *) shift ;;
     esac
   done
@@ -489,6 +497,11 @@ post_stage() {
   output_tokens="$(_validate_nonneg_int output-tokens "$output_tokens")"
   cache_write_tokens="$(_validate_nonneg_int cache-write-tokens "$cache_write_tokens")"
   cache_read_tokens="$(_validate_nonneg_int cache-read-tokens "$cache_read_tokens")"
+  # #616: the pool that paid; anything but api or plan drops the key.
+  case "$pool" in
+    ''|api|plan) ;;
+    *) echo "pipeline-hooks: --pool value is not api or plan -- leaving it out" >&2; pool="" ;;
+  esac
 
   local hook_cmd
   hook_cmd="$(cfg hooks.post_stage)"
@@ -554,6 +567,7 @@ post_stage() {
     TALOS_HOOK_CI_RUNS="$ci_runs" TALOS_HOOK_TS="$ts" \
     TALOS_HOOK_INPUT_TOKENS="$input_tokens" TALOS_HOOK_OUTPUT_TOKENS="$output_tokens" \
     TALOS_HOOK_CACHE_WRITE_TOKENS="$cache_write_tokens" TALOS_HOOK_CACHE_READ_TOKENS="$cache_read_tokens" \
+    TALOS_HOOK_POOL="$pool" \
     python3 -I -c '
 import json
 import os
@@ -605,6 +619,9 @@ for _key in ("input_tokens", "output_tokens", "cache_write_tokens", "cache_read_
     _n = _int_or_none(os.environ.get("TALOS_HOOK_" + _key.upper()))
     if _n is not None:
         payload[_key] = _n
+# #616: the pool that paid, only when supplied.
+if os.environ.get("TALOS_HOOK_POOL"):
+    payload["pool"] = os.environ["TALOS_HOOK_POOL"]
 payload["ts"] = os.environ.get("TALOS_HOOK_TS", "")
 json.dump(payload, sys.stdout)
 ')"

@@ -178,7 +178,8 @@
 # or pushed, this machine only.
 # It is size-capped (8 KiB) and schema-checked, and a value that looks like a
 # credential, or contains the value of a *TOKEN*/*KEY*/*SECRET*/*PASSWORD*
-# environment variable, is rejected, never redacted. `sweep` leaves it;
+# environment variable, is rejected, never redacted. A rejection is advisory
+# (exit 4, previous handoff kept): the commit and push stand. `sweep` leaves it;
 # `remove <N>` deletes it along with the worktree.
 #
 
@@ -872,10 +873,19 @@ REQUIRED = ("v", "issue", "branch", "head", "stage", "criteria_done", "criteria_
 CRED = [re.compile(p) for p in (
     r"gh[pousr]_", r"github_pat_", r"glpat-", r"(?<![A-Za-z0-9])sk-", r"xox[abposr]-",
     r"AKIA[0-9A-Z]{16}", r"-----BEGIN", r"eyJ[\w-]+\.[\w-]+\.[\w-]+",
-    r"://[^/\s:@]*:[^/\s@]*@", r"[A-Za-z0-9_-]{32,}",
+    r"://[^/\s:@]*:[^/\s@]*@",
     r"hooks\.slack\.com/services/", r"/api/(v\d+/)?webhooks/", r"office(365)?\.com/webhook", r"nsec1")]
 CRED += [re.compile(p, re.I) for p in (r"bearer ", r"(token|secret|password|api[_-]?key)\s*[=:]")]
 ENVVALS = [v for k, v in os.environ.items() if len(v) >= 8 and re.search("TOKEN|KEY|SECRET|PASSWORD", k, re.I)]
+# A 32+ character run is a credential only when one of its -/_ segments is 20+
+# characters mixing letters and digits: a random token, even behind a prefix,
+# while branch slugs and snake/kebab-case names pass (#538).
+LONG_RUN = re.compile(r"[A-Za-z0-9_-]{32,}")
+RANDOM_SEG = re.compile(r"(?=[A-Za-z0-9]*[A-Za-z])(?=[A-Za-z0-9]*[0-9])[A-Za-z0-9]{20,}")
+
+
+def random_run(v):
+    return any(RANDOM_SEG.fullmatch(seg) for run in LONG_RUN.findall(v) for seg in re.split(r"[-_]", run))
 
 
 class Bad(Exception):
@@ -887,7 +897,7 @@ def text(name, v, maxlen, charset=None, scan=True):
         raise Bad(name)
     if re.search(r"[\x00-\x1f\x7f]", v) or (charset and not re.fullmatch(charset, v)):
         raise Bad(name)
-    if scan and (any(c.search(v) for c in CRED) or any(e in v for e in ENVVALS)):
+    if scan and (any(c.search(v) for c in CRED) or random_run(v) or any(e in v for e in ENVVALS)):
         raise Bad(name + " (looks like a credential)")
 
 
@@ -1007,7 +1017,7 @@ try:
     os.replace(tmp, target)
     tmp = None
 except (Bad, ValueError, OSError) as e:
-    sys.stderr.write("pipeline-worktree: checkpoint: handoff rejected, previous kept: %s\n" % e)
+    sys.stderr.write("pipeline-worktree: checkpoint: handoff rejected (advisory), previous kept: %s; the commit and push stand\n" % e)
     sys.exit(4)
 finally:
     if tmp:
@@ -1109,12 +1119,21 @@ _wt_checkpoint_body() {
   head="$(git rev-parse HEAD 2>/dev/null)" || exit 1
   state=local
   if [ "$local_only" -eq 0 ]; then
-    if GIT_TERMINAL_PROMPT=0 git push -q -u origin "HEAD:refs/heads/$branch" >&2; then
+    local push_err
+    if push_err="$(GIT_TERMINAL_PROMPT=0 git push -q -u origin "HEAD:refs/heads/$branch" 2>&1)"; then
+      [ -z "$push_err" ] || printf '%s\n' "$push_err" >&2
       state=pushed
     else
       rc_push=3
       state=push-failed
-      echo "pipeline-worktree: checkpoint: push failed; the commit is kept locally" >&2
+      # A remote that denies this branch (a Claude Code cloud session without
+      # push access, #618) gets one line naming it; any other failure keeps git's own.
+      if grep -qiE "HTTP 403|returned error: 403|doesn't have GitHub access|Permission to .* denied|permission denied" <<<"$push_err"; then
+        echo "pipeline-worktree: checkpoint: push refused: no push access to origin for $branch" >&2
+      else
+        printf '%s\n' "$push_err" >&2
+        echo "pipeline-worktree: checkpoint: push failed; the commit is kept locally" >&2
+      fi
     fi
   fi
   with_lock "$_WT_LOCK_RESOURCE" 10 -- _wt_hf_write "$n" "$hdir" "$branch" "$head" "$runner" "$model" || rc_hf=$?
