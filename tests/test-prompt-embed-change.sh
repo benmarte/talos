@@ -473,6 +473,9 @@ no_begin developer "AC10 the developer's fix-round prompt of a run holds no BEGI
 # docs: the paths docs-gate filtered select the sections.
 run_fixture docs
 printf 'README.md\nscripts/x.sh\n' > "$STUB_DIR/pr-files"
+# #640: docs runs in a worktree of the PR's head branch; here the sandbox
+# checkout holds it.
+git symbolic-ref -q --short HEAD > "$STUB_DIR/pr-head-ref.12"
 printf 'docs posted: the README\n' > "$STUB_DIR/message.docs"
 TALOS_LEASE_TTL_S=1800 TALOS_NOW=14000 rn --max-iterations 1
 cat "$FIX/s3" "$FIX/s5" > "$SANDBOX/want"
