@@ -401,6 +401,16 @@ def _new_group():
 
 groups = {}
 order = []
+# #532: the code driver records a stage twice -- pipeline-agent.sh's
+# stage_complete (the usage) and then `done`'s own <role> event (the verdict,
+# no usage). The second folds into the first: one run, not an unrecorded one.
+# pending holds, per (issue, role), the PR of a stage_complete still open for
+# it: null on the developer's first run, whose `done --pr` names the PR it
+# opened. Any other event of that role closes it.
+pending = {}
+
+def _usage_less(rec):
+    return all(_number(rec.get(k)) is None for k in ("tokens", "tool_uses", "duration_s"))
 events = []   # (issue, pr, role, tokens or None, model, cache write, cache read, pool or None) -- report modes only
 skipped = 0
 have_ci_runs = False
@@ -424,6 +434,15 @@ with open(log_path if os.path.isfile(log_path) else os.devnull, "r", errors="rep
         if not matches(rec):
             continue
         key = (rec.get("issue"), rec.get("role"))
+        if rec.get("event") == "stage_complete":
+            pending[key] = rec.get("pr")
+        elif key in pending:
+            open_pr = pending.pop(key)
+            if rec.get("event") == rec.get("role") and open_pr in (None, rec.get("pr")) and _usage_less(rec):
+                # the run is already counted; only its verdict adds a re-stamp
+                if rec.get("verdict") in ("RESTAMP_PASS", "RESTAMP_FAIL"):
+                    groups[key]["restamp"] += 1
+                continue
         if key not in groups:
             groups[key] = _new_group()
             order.append(key)
