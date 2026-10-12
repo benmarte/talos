@@ -4082,9 +4082,11 @@ for s in stat:
 # the project board, its status from its labels (pipeline:blocked wins, then
 # dev/confirmed, then ready); an issue with no pipeline label stays off it.
 # Only with board.enabled and board.project_number; a failed board step is one
-# `warn reason=board-add-failed` line on stderr and never fails the verb.
+# `warn reason=board-add-failed` line on stderr and never fails the verb. A
+# step pipeline-status.sh could not make (the add or the edit failed, the board
+# lacks the status) is its talos:board-unverified line with exit 0: failed too.
 _gh_board_add_new() {
-  local _ba_n="$1" _ba_st="" _ba_l
+  local _ba_n="$1" _ba_st="" _ba_l _ba_out
   shift
   [ -n "$_ba_n" ] || return 0
   case "$(cfg board.enabled | tr '[:upper:]' '[:lower:]')" in false) return 0 ;; esac
@@ -4097,8 +4099,10 @@ _gh_board_add_new() {
     esac
   done
   [ -n "$_ba_st" ] || return 0
-  bash "$SCRIPT_DIR/pipeline-status.sh" "$_ba_n" "$_ba_st" >/dev/null 2>&1 \
-    || echo "warn reason=board-add-failed issue=$_ba_n" >&2
+  _ba_out="$(bash "$SCRIPT_DIR/pipeline-status.sh" "$_ba_n" "$_ba_st" 2>/dev/null)" || _ba_out=talos:board-unverified
+  case "$_ba_out" in
+    *talos:board-unverified*) echo "warn reason=board-add-failed issue=$_ba_n" >&2 ;;
+  esac
 }
 
 # Provider calls for _vcs_shared_assign_issue (#299). _gh_try, not _gh_req:

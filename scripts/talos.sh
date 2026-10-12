@@ -1026,7 +1026,7 @@ _talos_same_area() {
 # after a fix round is cleared to run.
 _talos_gate_fix_round() {
   [ "$#" -ge 2 ] || _talos_stop usage 2
-  local _n="$1" _stage="$2" _pr="" _s _ok=1 _bout _brc=0 _r _by _line _AREA_ANSWERED=0
+  local _n="$1" _stage="$2" _pr="" _s _ok=1 _bout _brc=0 _r _by _line _board _AREA_ANSWERED=0
   shift 2
   case "$#" in
     0) : ;;
@@ -1089,9 +1089,13 @@ _talos_gate_fix_round() {
   _vcs label-issue "$_n" --remove pipeline:blocked > /dev/null || _talos_emit warn "reason=unblock-failed"
   # The card follows (#523): back to In progress for the fix round, unguarded
   # like done's Blocked write (pipeline-status.sh knows whether there is a
-  # board). A board failure is a warning, never a reason not to dispatch.
-  bash "$SCRIPT_DIR/pipeline-status.sh" "$_n" "In progress" > /dev/null 2>&1 \
-    || _talos_emit warn "reason=board-failed issue=$_n"
+  # board). A board failure is a warning, never a reason not to dispatch; a
+  # write the status script could not make is its talos:board-unverified line
+  # with exit 0, and counts as one.
+  _board="$(bash "$SCRIPT_DIR/pipeline-status.sh" "$_n" "In progress" 2> /dev/null)" || _board=talos:board-unverified
+  case "$_board" in
+    *talos:board-unverified*) _talos_emit warn "reason=board-failed issue=$_n" ;;
+  esac
   _talos_emit stage "$_stage"
   _talos_verdict redispatch
 }
