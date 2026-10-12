@@ -131,24 +131,26 @@ assert_file_exists "$CAPTURE" "failing hook: the command still ran (received std
 # not-yet-killed hook when both run concurrently (-j > 1) or just close
 # together in time. A generic pattern here previously produced a false
 # "leak" by catching that unrelated, legitimately-still-running process.
+# The baseline (#593): the same call with a hook that returns at once.
+cat > talos.pipeline.json <<EOF
+{"hooks": {"post_stage": "cat > /dev/null", "timeout_s": 1}}
+EOF
+_start="$(wall_s)"
+bash "$HOOKS" post_stage qa qa 42 --verdict PASS >/dev/null 2>&1
+_baseline="$(since_s "$_start")"
 cat > talos.pipeline.json <<EOF
 {"hooks": {"post_stage": "sleep 60.194717", "timeout_s": 1}}
 EOF
-_start=$(date +%s)
+_start="$(wall_s)"
 err="$(bash "$HOOKS" post_stage qa qa 42 --verdict PASS 2>&1 >/dev/null)"
 rc=$?
-_elapsed=$(( $(date +%s) - _start ))
+_elapsed="$(since_s "$_start")"
 assert_eq "0" "$rc" "slow hook: pipeline-hooks.sh still exits 0"
 assert_contains "$err" "pipeline-hooks:" "slow hook: one stderr note is printed"
-# Load-insensitive bound (#556): a hook that was NOT killed at timeout_s=1 runs
-# its whole 60 s sleep; a killed one takes about 1 s plus process-start overhead
-# on a loaded runner. 30 s sits far from both.
-if [ "$_elapsed" -lt 30 ]; then
-  pass "slow hook: killed at hooks.timeout_s (1s), not left to run its full 60s sleep"
-else
-  fail "slow hook: killed at hooks.timeout_s (1s), not left to run its full 60s sleep" \
-    "elapsed: ${_elapsed}s"
-fi
+# A hook that was NOT killed at timeout_s=1 runs its whole 60 s sleep; a killed
+# one takes about 1 s more than the baseline, under any load (#556, #593).
+assert_cut_short "slow hook: killed at hooks.timeout_s (1s), not left to run its full 60s sleep" \
+  "$_elapsed" "$_baseline" 60
 # Bounded retry: tolerate up to ~0.5s beyond the watchdog's own kill
 # deadline for the SIGKILL follow-up to be reflected in the process table
 # under a noisy CI scheduler, without weakening the assertion -- it still

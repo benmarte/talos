@@ -285,22 +285,30 @@ STDIN_TEXT="{\"transcript_path\":\"$TR\"}" run_status --line
 assert_eq "talos #7 reviewer ●●●○○○ 6k" "$OUT" "no stage running: transcript usage is not added"
 
 # ── (g) bounded work ────────────────────────────────────────────────────────
-reset_log
-python3 -I - "$LOG" "$(ts_ago 3000)" <<'PY'
+# Linear in the log: a 10k-event log against a 625-event one (1/16), both timed
+# in this run (#593), never against a fixed number of seconds.
+mklog() {  # n events -> the log
+  reset_log
+  python3 -I - "$LOG" "$(ts_ago 3000)" "$1" <<'PY'
 import json, sys
-log, ts = sys.argv[1:3]
+log, ts, n = sys.argv[1], sys.argv[2], int(sys.argv[3])
 with open(log, "w") as f:
-    for i in range(10000):
+    for i in range(n):
         f.write(json.dumps({"event": "developer", "role": "developer", "issue": 3 + i % 4,
                             "tokens": 10, "verdict": "PASS", "ts": ts}) + "\n")
 PY
-start_ev qa 3 5
-S0="$(python3 -I -c 'import time; print(time.time())')"
+  start_ev qa 3 5
+}
+mklog 625
+S0="$(wall_s)"
 run_status --line
-S1="$(python3 -I -c 'import time; print(time.time())')"
+SMALL="$(since_s "$S0")"
+mklog 10000
+S0="$(wall_s)"
+run_status --line
+BIG="$(since_s "$S0")"
 assert_contains "$OUT" "talos #3 " "a 10k-event log answers"
-FAST="$(python3 -I -c 'import sys; print(1 if float(sys.argv[2])-float(sys.argv[1]) < 2.0 else 0)' "$S0" "$S1")"
-assert_eq "1" "$FAST" "a 10k-event log answers well inside a status-line budget"
+assert_linear "a 10k-event log answers in linear time (${BIG}s; ${SMALL}s for 625 events)" "$SMALL" "$BIG" 16
 
 reset_log
 done_ev developer 7 PR_OPENED 100 100

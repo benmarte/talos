@@ -78,18 +78,25 @@ assert_not_contains "$(cat "$GH_LOG")" "/comments payload=" "comment-pr: unclose
 
 # ── A long unmatched backtick run is processed in linear time (ReDoS) ────────
 # (`+).+?\1 backtracked catastrophically: 16k backticks took ~35 s.
+# The calibration (#593): the same verb on a short body with a leftover, timed in
+# this run; each big body below is judged against it, not a fixed 5 s.
+: > "$GH_LOG"
+start="$(wall_s)"
+STUB_PR_STATE=OPEN bash "$VCS" comment-pr 9 "**Agent:** qa (talos)
+
+see \${HEADER}" >/dev/null 2>&1
+CAL="$(since_s "$start")"
 ticks="$(printf '%*s' 20000 '' | tr ' ' '`')"
 body="**Agent:** qa (talos)
 
 see ${ticks}x and \${HEADER}
 ${ticks}"
 : > "$GH_LOG"
-start="$(python3 -c 'import time; print(time.time())')"
+start="$(wall_s)"
 STUB_PR_STATE=OPEN bash "$VCS" comment-pr 9 "$body" >/dev/null 2>&1; rc=$?
-elapsed="$(python3 -c 'import sys, time; print("%.2f" % (time.time() - float(sys.argv[1])))' "$start")"
+elapsed="$(since_s "$start")"
 assert_eq "1" "$rc" "comment-pr: 20k-backtick body is still checked (leftover \${HEADER} refused)"
-assert_eq "fast" "$(python3 -c 'import sys; print("fast" if float(sys.argv[1]) < 5 else "slow")' "$elapsed")" \
-  "comment-pr: 20k-backtick body processed in under 5 s (took ${elapsed}s)"
+assert_linear "comment-pr: 20k-backtick body processed in linear time (took ${elapsed}s, calibration ${CAL}s)" "$CAL" "$elapsed" 16
 
 # Unmatched runs of every length 1..350 (the worst case for a naive "find the
 # closing run" search) plus one long run, 65,000 characters in all.
@@ -97,25 +104,23 @@ python3 -c '
 body = "**Agent:** qa (talos)\n\n${HEADER} " + "x".join("`" * k for k in range(1, 351)) + "\n"
 print(body + "`" * (65000 - len(body)), end="")' > "$SANDBOX/adversarial.md"
 : > "$GH_LOG"
-start="$(python3 -c 'import time; print(time.time())')"
+start="$(wall_s)"
 err="$(STUB_PR_STATE=OPEN bash "$VCS" comment-pr 9 --body-file "$SANDBOX/adversarial.md" 2>&1 >/dev/null)"; rc=$?
-elapsed="$(python3 -c 'import sys, time; print("%.2f" % (time.time() - float(sys.argv[1])))' "$start")"
+elapsed="$(since_s "$start")"
 assert_eq "1" "$rc" "comment-pr: 65k adversarial backtick body is still checked"
 assert_contains "$err" "placeholder(s): HEADER" "comment-pr: 65k adversarial body names the leftover"
-assert_eq "fast" "$(python3 -c 'import sys; print("fast" if float(sys.argv[1]) < 5 else "slow")' "$elapsed")" \
-  "comment-pr: 65k adversarial backtick body guard-scanned in under 5 s (took ${elapsed}s)"
+assert_linear "comment-pr: 65k adversarial backtick body guard-scanned in linear time (took ${elapsed}s, calibration ${CAL}s)" "$CAL" "$elapsed" 16
 
 # ── A body over GitHub's 65536-character limit is refused before scanning ────
 python3 -c 'print("`" * 2000000, end="")' > "$SANDBOX/huge.md"
 : > "$GH_LOG"
-start="$(python3 -c 'import time; print(time.time())')"
+start="$(wall_s)"
 err="$(STUB_PR_STATE=OPEN bash "$VCS" comment-pr 9 --body-file "$SANDBOX/huge.md" 2>&1 >/dev/null)"; rc=$?
-elapsed="$(python3 -c 'import sys, time; print("%.2f" % (time.time() - float(sys.argv[1])))' "$start")"
+elapsed="$(since_s "$start")"
 assert_eq "1" "$rc" "comment-pr: 2,000,000-backtick body exits 1"
 assert_contains "$err" "65536" "comment-pr: stderr names the 65536-character limit"
 assert_not_contains "$(cat "$GH_LOG")" "/comments payload=" "comment-pr: oversized body not posted"
-assert_eq "fast" "$(python3 -c 'import sys; print("fast" if float(sys.argv[1]) < 5 else "slow")' "$elapsed")" \
-  "comment-pr: 2,000,000-backtick body refused in under 5 s (took ${elapsed}s)"
+assert_linear "comment-pr: 2,000,000-backtick body refused in linear time (took ${elapsed}s, calibration ${CAL}s)" "$CAL" "$elapsed" 16
 
 # Just over the cap in characters (not bytes) is refused too.
 python3 -c 'print("x" * 65537, end="")' > "$SANDBOX/over.md"

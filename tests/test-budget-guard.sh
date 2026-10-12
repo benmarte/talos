@@ -257,24 +257,28 @@ else
 fi
 if [ -x "$BUDGET" ]; then pass "script is executable"; else fail "script is executable"; fi
 
-# ── (h) 10k-event log under CI headroom ─────────────────────────────────────
+# ── (h) 10k-event log: the read is linear in the log ───────────────────────
+# Judged by its growth from a 625-event log (1/16) timed in the same run (#593),
+# not by a fixed number of seconds that a loaded machine misses.
 reset_log; mkdir -p .git/talos
-python3 - <<'PY' > .git/talos/events.jsonl
-import json
-for i in range(10000):
+mklog() {  # n events -> the log
+  python3 - "$1" <<'PY' > .git/talos/events.jsonl
+import json, sys
+for i in range(int(sys.argv[1])):
     print(json.dumps({"ts": "2026-10-03T00:00:00Z", "event": "qa", "role": "qa" if i % 2 else "dev",
                       "issue": 7 if i % 10 == 0 else 100 + i % 50, "pr": None, "verdict": "PASS",
                       "tokens": 1000, "tool_uses": 1, "duration_s": 1}))
 PY
-T0="$(python3 -c 'import time; print(time.time())')"
+}
+mklog 625
+T0="$(wall_s)"
 run_check check --issue 7
-T1="$(python3 -c 'import time; print(time.time())')"
-ELAPSED="$(python3 -c "print('%.2f' % ($T1 - $T0))")"
+SMALL="$(since_s "$T0")"
+mklog 10000
+T0="$(wall_s)"
+run_check check --issue 7
+ELAPSED="$(since_s "$T0")"
 assert_contains "$OUT" "talos:budget ok issue=7 used=1000000 " "10k-event log: correct answer"
-if python3 -c "import sys; sys.exit(0 if $T1 - $T0 < 5 else 1)"; then
-  pass "10k-event log answers in ${ELAPSED}s (< 5s CI headroom; spec target < 1s)"
-else
-  fail "10k-event log answers in time" "took ${ELAPSED}s"
-fi
+assert_linear "10k-event log answers in linear time (${ELAPSED}s; ${SMALL}s for 625 events)" "$SMALL" "$ELAPSED" 16
 
 finish
