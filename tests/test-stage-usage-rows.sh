@@ -38,11 +38,11 @@ case "$DUR" in
 esac
 
 # ── AC3, AC4: one row per stage ──────────────────────────────────────────────
-row() {  # the `cost --issue 42 --json` qa row: events tokens duration_s unrecorded
+row() {  # the `cost --issue 42 --json` row of role $1 (qa): events tokens duration_s unrecorded
   bash "$EVENTS" cost --issue 42 --json 2>/dev/null | python3 -I -c '
 import json, sys
-r = [r for r in json.load(sys.stdin)["rows"] if r["role"] == "qa"][0]
-print(r["events"], r["tokens"], r["duration_s"], r["unrecorded"])'
+r = [r for r in json.load(sys.stdin)["rows"] if r["role"] == sys.argv[1]][0]
+print(r["events"], r["tokens"], r["duration_s"], r["unrecorded"])' "${1:-qa}"
 }
 printf '%s\n' \
   '{"event":"stage_complete","role":"qa","issue":42,"pr":9,"verdict":"PASS","tokens":1000,"tool_uses":null,"duration_s":30,"ts":"2026-10-11T10:00:00Z"}' \
@@ -52,5 +52,10 @@ assert_eq "1 1000 30 0" "$PAIR" "AC3 the driver's stage_complete and done's verd
 printf '%s\n' \
   '{"event":"qa","role":"qa","issue":42,"pr":9,"verdict":"PASS","tokens":1000,"tool_uses":null,"duration_s":30,"ts":"2026-10-11T10:00:05Z"}' > "$LOG"
 assert_eq "$PAIR" "$(row)" "AC4 the LLM loop's single event gives the same row as the driver's pair"
+# the developer's first run has no PR yet; `done --pr <M>` names the one it opened
+printf '%s\n' \
+  '{"event":"stage_complete","role":"developer","issue":42,"pr":null,"verdict":"PASS","tokens":1000,"tool_uses":null,"duration_s":30,"ts":"2026-10-11T09:00:00Z"}' \
+  '{"event":"developer","role":"developer","issue":42,"pr":9,"verdict":"PR_OPENED","tokens":null,"tool_uses":null,"duration_s":null,"ts":"2026-10-11T09:00:05Z"}' > "$LOG"
+assert_eq "1 1000 30 0" "$(row developer)" "AC3 the developer's PR-less stage_complete and done's event naming the new PR are one recorded run"
 
 finish
