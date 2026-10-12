@@ -115,9 +115,9 @@ stop_extra = {"usage", "unknown-verb", "scripts-missing", "python-missing", "scr
               "approval-sha-failed", "draft-unverified", "ci-unverified", "head-unresolved",
               "comments-unreadable", "handoff-label-failed", "trust-unverified"}
 warn_ok = {"closing-keyword-unverified", "ci-runs-unrecorded", "budget-check-failed", "unblock-failed",
-           "comment-failed", "label-failed", "value-truncated", "area-check-failed"}
+           "comment-failed", "label-failed", "value-truncated", "area-check-failed", "board-failed"}
 kv = re.compile(r"([A-Za-z][A-Za-z0-9_.]*)=")
-sw = re.compile(r"(stop|warn) reason=([a-z:-]+)( key=[A-Za-z0-9_.-]+)?\Z")
+sw = re.compile(r"(stop|warn) reason=([a-z:-]+)( key=[A-Za-z0-9_.-]+| issue=[0-9]+)?\Z")
 if lines[0].startswith("stop "):
     ok = len(lines) == 1
 else:
