@@ -25,7 +25,7 @@ MAP="$TH/maps/acme-widget.html"
 STATE="$SANDBOX/.git/talos"
 mkdir -p "$STATE"
 NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-EARLY="$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-2H +%Y-%m-%dT%H:%M:%SZ)"
+EARLY="$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-2H +%Y-%m-%dT%H:%M:%SZ)"  # bash3-ok: GNU date -d, with the BSD -v form as its fallback
 
 ev() {  # one event line: event role issue pr verdict tokens summary
   python3 -I -c '
