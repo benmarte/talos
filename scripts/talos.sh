@@ -3697,6 +3697,22 @@ print(word)
   printf '%s' "$_w"
 }
 
+# _run_open_prs <issue> (#656): the numbers of the issue's open PRs, one per line,
+# from `find-pr <issue> open` (one JSON object per line). Non-zero when the list
+# is unreadable: a non-zero exit (2, not implemented, included) or a line
+# without a PR number.
+_run_open_prs() {
+  local _out
+  _out="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" find-pr "$1" open 2>/dev/null)" || return 1
+  python3 -I -c 'import json, sys
+for l in sys.stdin:
+    if l.strip():
+        n = json.loads(l)["number"]
+        if type(n) is not int or n < 1:
+            raise ValueError(n)
+        print(n)' <<< "$_out" 2>/dev/null
+}
+
 # _run_agent <role> <prompt-file> <out-file> <issue> [<pr>]: pipeline-agent.sh
 # <role> - with the prompt file on stdin (never argv, AC6); stdout to <out-file>,
 # the exit status in _AG_RC, stderr relayed as note lines. The issue and PR go
@@ -4072,6 +4088,14 @@ _talos_run_dispatch() {
     _h0="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" pr-head "$_pr" 2>/dev/null)" || _h0=""
     _h0="${_h0%%$'\n'*}"
   fi
+  # #656: a first-round developer has no head to compare, so the issue's open
+  # PRs are listed before and after the agent; a PR that was not there before
+  # is the opened one. An unreadable list applies no override: nothing can then
+  # be proven new.
+  local _o0="" _o1="" _o0ok=0
+  if [ "$_role" = developer ] && [ -z "$_pr" ]; then
+    _o0="$(_run_open_prs "$_n")" && _o0ok=1
+  fi
 
   # 2. The dispatch: the prompt on stdin, the agent's own runner resolution.
   _run_agent "$_role" "$_f" "$_CFG_CACHE_DIR/agent.out" "$_n" "$_pr" "$_cwd"
@@ -4099,6 +4123,24 @@ _talos_run_dispatch() {
     if [ -n "$_h1" ] && [ "$_h1" != "$_h0" ]; then
       case "$_line" in "BLOCKED:"*) : ;; *) _v="PR_OPENED $_pr" ;; esac
     fi
+  fi
+
+  # #656: the same for a first-round report lost to a trailing turn; an
+  # explicit `BLOCKED:` line is never overridden, the lowest new PR is taken.
+  if [ "$_v" = BLOCKED ] && [ "$_o0ok" -eq 1 ]; then
+    _line="$(grep -m 1 -v '^[[:space:]]*$' "$_CFG_CACHE_DIR/agent.out" 2>/dev/null)"
+    _line="${_line#"${_line%%[![:space:]]*}"}"
+    case "$_line" in
+      "BLOCKED:"*) : ;;
+      *)
+        if _o1="$(_run_open_prs "$_n")"; then
+          _w="$(python3 -I -c 'import sys
+old = set(sys.argv[1].split())
+new = [int(x) for x in sys.argv[2].split() if x not in old]
+print(min(new) if new else "")' "$_o0" "$_o1")" || _w=""
+          [ -z "$_w" ] || _v="PR_OPENED $_w"
+        fi ;;
+    esac
   fi
 
   # 4. The bookkeeping is always `done`'s, the final message as the summary
