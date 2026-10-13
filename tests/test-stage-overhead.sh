@@ -70,11 +70,11 @@ budget() {  # role ceiling
   if [ "$size" -le "$2" ]; then pass "$1: profile + prompt template is $size bytes (budget $2)"
   else fail "$1: profile + prompt template is $size bytes (budget $2)" "over by $((size - $2))"; fi
 }
-budget developer 11800
-budget qa 8350  # #610: the exit-4 rule (an unusable spec is BLOCKED, not a FAIL)
+budget developer 12150  # #648: the placement check before the PR
+budget qa 8650  # #610: the exit-4 rule (an unusable spec is BLOCKED, not a FAIL); #648: a vacuous FAIL is the spec's
 budget reviewer 4820  # #596: the Change-block rule at Read diff and the prompt's marker line
 budget security 4380  # #596: the same
-budget pm 4300
+budget pm 4750  # #648: (test) only if red on base; every test file on the Tests: line
 budget validator 4300
 budget docs 4600
 budget adversarial 5800

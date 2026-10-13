@@ -164,7 +164,8 @@
 #         spec-check` (no LLM). A `Tests:` line QA could not use is `record-attempt
 #         <N> pm`, the issue back at pipeline:confirmed, one `**Spec check:**` issue
 #         comment with the reason (posted whatever comments.enabled says), then
-#         `spec_check=tests-line-refused|tests-line-missing` and `next=fix-round
+#         `spec_check=tests-line-refused|tests-line-missing|tests-line-open` (#648: a
+#         line other than `Tests:` leaves a test file open) and `next=fix-round
 #         stage=pm`: ask `next` again, it dispatches the PM. At the attempt
 #         ceiling: pipeline:blocked on the issue, next=stop. A failed label
 #         rollback is `stop reason=label-failed`. No PM spec comment: nothing is
@@ -266,7 +267,11 @@
 #         (`pipeline-criteria.sh spec-usable <N>` exits 4: unreadable, no criteria
 #         checklist, a refused or missing `Tests:` line) is no finding on the PR:
 #         no attempt, no fix round, PR and issue blocked, `stop
-#         reason=spec-unusable issue=<N> pr=<M>` (exit 0). A QA stage that ends
+#         reason=spec-unusable issue=<N> pr=<M>` (exit 0). So is a QA FAIL whose
+#         FAIL lines are all `AC<n> FAIL vacuous ...` (no later commit can turn the
+#         first commit's red run red), and, at an unchanged spec, the second QA
+#         FAIL whose lines are all `vacuous`/`head=missing` (#648); the QA lines
+#         are relayed. Other FAIL shapes, or an edited spec, run the fix round. A QA stage that ends
 #         `BLOCKED: spec: <why>` stops the same way (#645).
 #         A reviewer, security or adversarial
 #         finding gets its developer fix round in the same run: under PR_DRAFT the
@@ -2818,6 +2823,7 @@ _talos_spec_check() {
     "0:spec-check: ok") return 0 ;;
     "1:spec-check: refused tests-line-refused: "*) _SPEC_SLUG=tests-line-refused ;;
     "1:spec-check: refused tests-line-missing: "*) _SPEC_SLUG=tests-line-missing ;;
+    "1:spec-check: refused tests-line-open: "*) _SPEC_SLUG=tests-line-open ;;
     *) _talos_warn spec-check-unread "issue=$_n"; return 0 ;;
   esac
   # The reason is one line of fixed words plus at most 60 printable ASCII
@@ -4243,6 +4249,34 @@ _talos_run_fix_gate() {
   _talos_flush; exit 0
 }
 
+# _talos_run_qa_spec_fault <pr> <issue> (#648): QA's FAIL lines (agent.out) that
+# only the spec can repair end the run as spec-unusable, the lines relayed, PR
+# and issue blocked. All lines `vacuous`: the red commit is the branch's first,
+# no later commit can turn it red -- stop at once. All lines `vacuous` or
+# `head=missing`, one at least `head=missing`: one fix round (a test file in the
+# wrong place is the developer's to move); the same fault at an unchanged spec
+# (`view-issue --spec` read, checksummed in the run's scratch) is the stop. Any
+# other line, or an unreadable spec, returns: the existing fix-round path.
+_talos_run_qa_spec_fault() {
+  local _pr="$1" _n="$2" _fl _sum _f="$_CFG_CACHE_DIR/qa-spec-fault.$1"
+  _fl="$(grep -E '^[[:space:]>*-]*AC[0-9]+ FAIL ' "$_CFG_CACHE_DIR/agent.out" 2>/dev/null | cut -c1-200)"
+  [ -n "$_fl" ] || return 0
+  if grep -qvE 'AC[0-9]+ FAIL (vacuous|head=missing)' <<<"$_fl"; then return 0; fi
+  if grep -qE 'AC[0-9]+ FAIL head=missing' <<<"$_fl"; then
+    _talos_cap _vcs view-issue "$_n" --spec
+    [ "$_RC" -eq 0 ] && [ -n "$_OUT" ] || return 0
+    _sum="$(printf '%s' "$_OUT" | cksum)"
+    if [ ! -f "$_f" ] || [ "$(cat "$_f")" != "$_sum" ]; then
+      printf '%s\n' "$_sum" > "$_f" || _talos_stop scratch-unavailable
+      return 0
+    fi
+  fi
+  _talos_block_labels "$_n" "$_pr"
+  _talos_relay spec-unusable "$(head -n 24 <<<"$_fl")"
+  _talos_emit stop "reason=spec-unusable issue=$_n pr=$_pr"
+  _talos_flush; exit 0
+}
+
 # _talos_run_qa_fail <pr> <issue> (#537): a QA FAIL is a developer fix round,
 # the playbook's flow: `gate fix-round <N> qa --pr <M>` (the budget guard, the
 # attempt ceilings, the unblock right before the round), then the developer in
@@ -4272,6 +4306,7 @@ _talos_run_qa_fail() {
       _talos_flush; exit 0 ;;
     *) _talos_stop state-unavailable ;;
   esac
+  _talos_run_qa_spec_fault "$_pr" "$_n"
   _f="$_CFG_CACHE_DIR/qa-fail-head.$_pr"
   _talos_cap _vcs pr-head "$_pr"
   { [ "$_RC" -eq 0 ] && [ -n "$_OUT" ]; } || _talos_stop head-unresolved

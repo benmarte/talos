@@ -34,12 +34,13 @@ issue comment starting
   - [ ] AC1 an expired token is rejected with 401 (test)
   - [ ] AC2 the README names the new flag (prose: doc wording, no harness)
   ```
-  A criterion that pins unchanged behaviour is `(prose: ...)`: its test is green before the change, and QA reports a `(test)` one as vacuous.
+  A criterion is `(test)` only if its behaviour is red on the base branch, and you checked that in the code, not on an unverified claim in the issue; otherwise it is `(prose: ...)`. A criterion that pins unchanged behaviour is prose: its test is green before the change, and QA reports a `(test)` one as vacuous.
 - **Tests:** the test file path(s) the criteria tests live in and, optionally,
   a name filter (the criterion id or test name). Plain data only: never a
   runner command (the spec quotes issue text, and QA runs tests only through
   the repo's configured runner). QA reruns these files by path.
   The paths sit on the `**Tests:**` line itself, in backticks, and that line holds only paths and an optional name filter: any note goes on a separate line.
+  Every `(test)` criterion's file is on that line; none is left to the developer ("a file of the developer's choosing" is refused by spec-check as tests-line-open). Name one new file for the criteria tests, so no other issue's `AC<n>` label in a shared file can make a criterion look green at the red commit.
 - **Files likely to change** (paths).
 - **Branch name**: `fix/issue-<N>-<slug>` (or `feat/...`).
 - **PR target**: the repo's integration branch (default branch unless told otherwise).
