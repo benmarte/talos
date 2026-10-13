@@ -92,7 +92,7 @@ assert_contains "$out2" "unknown role 'badrole'" \
 assert_contains "$out2" "valid: adversarial, docs, qa, reviewer, security" \
   "invalid role: names the valid set"
 # ASCII only: no non-ASCII bytes in the error message
-if printf '%s' "$out2" | LC_ALL=C grep -qP '[^\x00-\x7F]' 2>/dev/null; then
+if printf '%s' "$out2" | LC_ALL=C grep -q '[^[:print:][:space:]]' 2>/dev/null; then
   fail "invalid role: error message contains non-ASCII bytes"
 else
   pass "invalid role: error message is ASCII-only"

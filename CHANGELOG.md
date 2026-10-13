@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- test(lint): `tests/test-bash3-lint.sh` refuses GNU-only and bash 4+ constructs in `scripts/` and `tests/` (`sed -i`, `sed` with `\b` or `\n` in the replacement, `grep -P`, `readlink -f`, `date -d`, `tac`, `declare -A`, `${var,,}`/`${var^^}`, `mapfile`, `readarray`, `&>>`); a line opts out with `# bash3-ok: <reason>`
 - fix(qa): a spec fault QA can only report as `vacuous` or `head=missing` no longer burns developer fix rounds: `pipeline-criteria.sh placement <N>` names a `(test)` criterion whose id is in no `Tests:` file, `spec-check` refuses a test file left open (`tests-line-open`), and `talos.sh run` stops a vacuous-only QA FAIL, or a repeated vacuous/head=missing one at an unchanged spec, as `spec-unusable`
 - fix(run): a first-round developer whose report is lost to a trailing turn is PR_OPENED when `find-pr <N> open` lists a PR that was not open before the dispatch, not `stage-blocked`; an explicit `BLOCKED:` first line, a PR open beforehand, or an unreadable `find-pr` never counts
 - fix(run): a fix-round developer whose report is lost to a trailing turn (no PR link in its last message) is PR_OPENED when the PR head moved during the stage, not `stage-blocked`; an explicit `BLOCKED:` line or an unmoved head still blocks; the stage stop rule now says to end background commands and watches before the final message
