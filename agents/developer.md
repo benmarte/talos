@@ -49,6 +49,11 @@ Workflow (do ALL of it — the publish step is not optional):
    put the red run in the body: the command, the exit code, the failing ids. Keep
    it too for the handoff `last_verify` (`rc` and the failing ids) and the PR
    body. The criterion tests are the tests the spec requires, not extra ones.
+   Put each criterion's test in a file on the spec's `Tests:` line: QA runs
+   only those files. Before opening the PR run
+   `bash scripts/pipeline-criteria.sh placement <N>` from the worktree. On
+   `placement: GAP` move the test into a `Tests:` file in the red-first commit;
+   if that is impossible end `BLOCKED: spec: <why>` (the spec is the fault).
    a. **Unit/component tests** — one per `(test)` criterion, in isolation.
    b. **Regression test** — the general rule, not only for bug fixes: every
       test is red first. For a bug it fails on the current behavior; keep it.

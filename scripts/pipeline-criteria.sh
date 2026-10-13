@@ -58,6 +58,10 @@
 #         spec-check: ok
 #         spec-check: refused tests-line-refused: <the parser's reason>
 #         spec-check: refused tests-line-missing: <n> test criteria and no usable Tests: line
+#         spec-check: refused tests-line-open: <the line>
+#       tests-line-open (#648): a line other than the `Tests:` line leaves a test
+#       file open (`developer's choosing`, `developer's choice`, `new or existing
+#       file`, any case); every test criterion's file is on the `Tests:` line.
 #       Exit 1 on a refusal. A spec with no test criterion (prose only, or no
 #       checklist) needs no `Tests:` line and is ok.
 #   pipeline-criteria.sh spec-usable <issue>
@@ -70,6 +74,17 @@
 #       `Tests: line refused (<the parser's reason>)`, `<n> test criteria and
 #       no Tests: line`. `talos.sh run` asks it after a QA FAIL: a spec fault
 #       blocks the issue instead of starting a developer fix round.
+#   pipeline-criteria.sh placement <issue>
+#       Is every (test) criterion's id in a test file the `Tests:` line names
+#       (#648)? Run from the PR worktree; pure text, no test runs. The spec is
+#       read through the same parse as qa-run (an unusable spec is BLOCKED). An
+#       id counts when it is the first word of an assertion label (`"AC2 ..."`,
+#       `ok  AC2 ...`) in one of those files; the same id in any other file does
+#       not. Output and exit codes:
+#         placement: ok                       exit 0
+#         AC<n> not-in-tests-files            one per missing id, then
+#         placement: GAP <n>                  exit 1
+#         placement: BLOCKED spec: <why>      exit 4 (the spec-usable reasons)
 #
 # Exit codes: 0 ok, 1 a failing report or an unreadable/empty input, 2 usage, 3 no usable runner, 4 an unusable spec.
 set -uo pipefail
@@ -301,7 +316,7 @@ EOF
 # spec-check FILE (#594): the `Tests:` line first, then the test criteria it
 # would have to cover. One line; exit 1 on a refusal.
 cmd_spec_check() {
-  local spec="${1:-}" paths filters refused found n_test
+  local spec="${1:-}" paths filters refused found n_test open_line
   [ $# -eq 1 ] && [ -n "$spec" ] || usage
   [ -f "$spec" ] && [ -r "$spec" ] || { echo "pipeline-criteria: spec-check: no such file: $spec" >&2; return 2; }
   _tests_line "$spec"
@@ -309,8 +324,18 @@ cmd_spec_check() {
     echo "spec-check: refused tests-line-refused: $refused"
     return 1
   fi
+  n_test="$(cmd_ids "$spec" 2>/dev/null | awk '$2 == "test"' | wc -l | tr -d ' ')"
+  if [ "$n_test" -gt 0 ]; then
+    # #648: a test file left to the developer is a file QA does not run.
+    open_line="$(grep -vE '^[[:space:]]*([-*+][[:space:]]+)?(\[[ xX]\][[:space:]]+)?\**Tests\**:' "$spec" \
+      | grep -iE "developer.{1,3}s (choosing|choice)|new or existing file" | head -n 1 \
+      | tr -cd '[:print:]' | sed 's/^ *//' | cut -c1-60)"
+    if [ -n "$open_line" ]; then
+      echo "spec-check: refused tests-line-open: $open_line"
+      return 1
+    fi
+  fi
   if [ "$found" -eq 0 ]; then
-    n_test="$(cmd_ids "$spec" 2>/dev/null | awk '$2 == "test"' | wc -l | tr -d ' ')"
     if [ "$n_test" -gt 0 ]; then
       echo "spec-check: refused tests-line-missing: $n_test test criteria and no usable Tests: line"
       return 1
@@ -351,6 +376,37 @@ cmd_spec_usable() {
     return 4
   fi
   echo "spec-usable: ok"
+}
+
+# placement ISSUE (#648): one line per (test) criterion whose id is in no file
+# of the `Tests:` line, run from the PR worktree.
+cmd_placement() {
+  local issue="${1:-}" tmp table paths filters refused found spec_why top id p hit gaps=0 out=""
+  [ $# -eq 1 ] || usage
+  case "$issue" in ''|*[!0-9]*) usage ;; esac
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/talos-placement.XXXXXX")" && [ -d "$tmp" ] \
+    || { echo "pipeline-criteria: placement: no scratch directory" >&2; return 1; }
+  _spec_usable "$issue" "$tmp/spec.md"
+  rm -rf "${tmp:?}"
+  if [ -n "$spec_why" ]; then
+    echo "placement: BLOCKED spec: $spec_why"
+    return 4
+  fi
+  top="$(git rev-parse --show-toplevel 2>/dev/null)" || top="$(pwd)"
+  cd "$top" || return 1
+  for id in $(printf '%s\n' "$table" | awk '$2 == "test" { print $1 }'); do
+    hit=0
+    for p in ${paths[@]+"${paths[@]}"}; do
+      if [ -f "$p" ] && grep -qE "([\"']|(ok|FAIL)[[:space:]]+)$id([^A-Za-z0-9_]|\$)" "$p"; then hit=1; break; fi
+    done
+    [ "$hit" -eq 1 ] || { out="$out$id not-in-tests-files"$'\n'; gaps=$((gaps + 1)); }
+  done
+  if [ "$gaps" -gt 0 ]; then
+    printf '%s' "$out"
+    echo "placement: GAP $gaps"
+    return 1
+  fi
+  echo "placement: ok"
 }
 
 # A path a red (tests-only) commit may touch.
@@ -623,5 +679,6 @@ case "$sub" in
     exit "$qa_rc" ;;
   spec-check) cmd_spec_check "$@" ;;
   spec-usable) cmd_spec_usable "$@" ;;
+  placement) cmd_placement "$@" ;;
   *) usage ;;
 esac
