@@ -589,7 +589,7 @@ cmd_qa_run() {
     _qa_exec "$tmp/head.out" "${present[@]}"; head_rc=$?
   fi
 
-  # 9. Red run: the first commit after the merge-base, when it is tests-only.
+  # 9. Red run: the first commit after the merge-base, when its own change is tests-only.
   local note="" mb red="" red8="" f bad_path=""
   if [ "${#present[@]}" -eq 0 ]; then
     note="no test file to run; red proof skipped"
@@ -607,7 +607,7 @@ cmd_qa_run() {
         [ -n "$f" ] || continue
         _qa_is_test_path "$f" || { bad_path="$f"; break; }
       done <<EOF
-$(git diff --name-only "$mb" "$red" 2>/dev/null)
+$(git diff-tree --no-commit-id --name-only -r --root "$red" 2>/dev/null)
 EOF
       if [ -n "$bad_path" ]; then
         note="red commit $red8 is not tests-only ($(printf '%s' "$bad_path" | tr -cd '[:print:]' | head -c 80)); red proof skipped"
