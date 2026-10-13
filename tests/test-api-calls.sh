@@ -96,7 +96,8 @@ step next2 next --issue "$N"
 step validator done validator --issue "$N" --verdict CONFIRMED --summary-file -
 step developer done developer --issue "$N" --pr "$PR" --verdict PR_OPENED --summary-file -
 for r in qa reviewer security docs; do
-  bash "$VCS" post-approval "$PR" "$r" --issue "$N" > "$SANDBOX/out.pa.$r" 2>&1
+  printf '%s review\n' "$r" > "$SANDBOX/body.$r"
+  bash "$VCS" post-approval "$PR" "$r" --body-file "$SANDBOX/body.$r" --issue "$N" > "$SANDBOX/out.pa.$r" 2>&1
   printf 'pa-%s rc=%s\n' "$r" "$?" >> "$SANDBOX/rcs"
   mark "pa-$r"
   case "$r" in qa) v=PASS ;; reviewer) v=APPROVED ;; security) v=CLEAR ;; *) v="" ;; esac

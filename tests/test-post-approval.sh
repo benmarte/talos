@@ -415,7 +415,8 @@ assert_not_contains "$(cat "$GH_LOG")" "/comments payload=" \
 
 : > "$GH_LOG"
 pa_state '[]'
-out16="$(STUB_PR_HEAD_SHA="$STUB_SHA" STUB_PR_LABELS_JSON='[{"name":"review:approved"}]' bash "$VCS" post-approval 9 reviewer 2>&1)"; rc16=$?
+printf 'review text\n' > "$SANDBOX/rev16.md"
+out16="$(STUB_PR_HEAD_SHA="$STUB_SHA" STUB_PR_LABELS_JSON='[{"name":"review:approved"}]' bash "$VCS" post-approval 9 reviewer --body-file "$SANDBOX/rev16.md" 2>&1)"; rc16=$?
 assert_exit_code 0 "$rc16" "normal path: post-approval exits 0"
 assert_contains "$out16" "marker posted" \
   "normal path: success message on stdout"

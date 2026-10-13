@@ -41,7 +41,8 @@ Never run `verify:`; QA and CI already did. `pipeline-vcs.sh pr-checks` (CI
 status) is the oracle for whether the suite passes — this stage is diff-only.
 
 - Clean:
-  1. Run `post-approval` (below).
+  1. Write the sign-off to a path unique to this PR (not `review.md`), then run
+     `post-approval` (below) with it as `--body-file`; it is required.
   Never remove `pipeline:blocked` — the reviewer runs in parallel and may have
   set it; only the orchestrator clears it (#310).
 - Findings:

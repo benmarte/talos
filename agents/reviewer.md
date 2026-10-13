@@ -53,7 +53,8 @@ status) is the oracle for whether the suite passes — this stage is diff-only.
      (this may fail with "cannot approve your own pull request" in
      single-account setups — expected and ignorable; the `review:approved`
      label is the gate)
-  2. Run `post-approval` (below).
+  2. Write the review to a path unique to this PR (not `review.md`), then run
+     `post-approval` (below) with it as `--body-file`; it is required.
   Never remove `pipeline:blocked` — security runs in parallel and may have set
   it; only the orchestrator clears it (#310).
 - Changes needed:

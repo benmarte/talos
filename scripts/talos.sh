@@ -2399,6 +2399,14 @@ post-approval stamps the head SHA you verified (the PR head, not a stale checkou
   # reads the event to show the stage as running. Best effort, silent.
   [ ! -f "$SCRIPT_DIR/pipeline-hooks.sh" ] \
     || bash "$SCRIPT_DIR/pipeline-hooks.sh" stage_start "$_role" "$_issue" ${_pr:+--pr "$_pr"} >/dev/null 2>&1 || :
+  # #661: the stage start, so post-approval can refuse a review body older than it.
+  case "$_role" in
+    reviewer | security)
+      _ss_dir="$(_talos_state_dir 2>/dev/null)/stage-start"
+      if [ -n "$_pr" ]; then _ss_key="pr$_pr"; else _ss_key="issue$_issue"; fi
+      { mkdir -p "$_ss_dir" && date +%s > "$_ss_dir/$_role-$_ss_key"; } 2>/dev/null || :
+      ;;
+  esac
   _talos_emit prompt_file "$_pf"
   _talos_flush
 }
