@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- fix(run): a first-round developer whose report is lost to a trailing turn is PR_OPENED when `find-pr <N> open` lists a PR that was not open before the dispatch, not `stage-blocked`; an explicit `BLOCKED:` first line, a PR open beforehand, or an unreadable `find-pr` never counts
 - fix(run): a fix-round developer whose report is lost to a trailing turn (no PR link in its last message) is PR_OPENED when the PR head moved during the stage, not `stage-blocked`; an explicit `BLOCKED:` line or an unmoved head still blocks; the stage stop rule now says to end background commands and watches before the final message
 - fix(map): the project map says Stuck only when a person is needed (an unanswered owner question, a `BLOCKED:` stage, a gate's block) and shows a fix round as In progress with its round number; `map.enabled: false` turns off `run`'s snapshot and page; an unwritable `TALOS_HOME` is one `map-failed` warn per run; the run's leases are released before the end-of-run render; a `run` entry whose pid is dead (or stale) shows as an ended run; `a-b/c` and `a/b-c` get different pages
 - fix(run): a merged run no longer leaves the driver's checkout on a detached HEAD: `qa-run` puts HEAD back after its detached fallback (a failed restore is a warning and a non-zero exit), `pipeline-worktree.sh to-base` returns a clean detached HEAD to the base (`state=returned`), and `warn reason=checkout-return-failed` now carries `reason=<why>`
