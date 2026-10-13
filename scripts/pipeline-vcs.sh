@@ -3824,6 +3824,8 @@ _gh_once() {
       printf 'github: HTTP %s on %s (rate-limited%s)\n' "$_status" "$VERB" "${_reset:+; reset at $_reset}" >&2
     elif [ -n "$_next_file" ]; then
       printf 'github: HTTP %s fetching page: %s\n' "$_status" "$_p" >&2
+    elif [ "$_status" = "403" ] && [ "${_GH_QUIET_403:-}" = 1 ]; then
+      : # the caller has a fallback or a line of its own for this refusal (#653)
     else
       printf 'github: HTTP %s on %s\n' "$_status" "$VERB" >&2
     fi
@@ -4533,7 +4535,7 @@ print("PR #%d %s" % (num, url))' || exit 1
       [ "$verb" = "draft-pr" ] && _rd_route=convert_to_draft
       _rd_out="$(mktemp)" || exit 1
       # Not in a command substitution: _GH_STATUS must survive the call.
-      if _gh_try POST graphql "$(python3 -I -c '
+      if _GH_QUIET_403=1 _gh_try POST graphql "$(python3 -I -c '
 import json, sys
 print(json.dumps({"query": sys.argv[1], "variables": {"id": sys.argv[2]}}))' "$_rd_q" "$_rd_node")" > "$_rd_out"; then
         _rd_resp="$(cat "$_rd_out")"; rm -f "$_rd_out"
@@ -4758,7 +4760,7 @@ import json, sys
 d = json.load(sys.stdin)
 print('yes' if ((d.get('head') or {}).get('repo') or {}).get('full_name') == ((d.get('base') or {}).get('repo') or {}).get('full_name') else 'no')")"
       if [ -n "$_mp_ref" ] && [ "$_mp_same" = yes ]; then
-        _gh_try DELETE "$_GH_API/git/refs/heads/$(_gh_urlenc "$_mp_ref" /)" >/dev/null \
+        _GH_QUIET_403=1 _gh_try DELETE "$_GH_API/git/refs/heads/$(_gh_urlenc "$_mp_ref" /)" >/dev/null \
           || echo "pipeline-vcs: merge-pr: PR #$n merged, but its branch '$_mp_ref' could not be deleted" >&2
       fi
       echo "Merged PR #$n"

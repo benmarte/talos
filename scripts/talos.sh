@@ -98,7 +98,7 @@
 #         <issue>`, run before the worktree removal: a checkout left on the merged
 #         issue's branch goes back to the base branch and is fast-forwarded, never
 #         forced; `failed` adds `warn reason=checkout-return-failed`.
-# post-merge-reasons: comments-unreadable trust-unverified comment-failed close-failed issue-state-unverified board-failed checkout-return-failed worktree-remove-failed notify-failed spend-upsert-failed siblings-unlisted lease-release-failed value-truncated
+# post-merge-reasons: branch-left comments-unreadable trust-unverified comment-failed close-failed issue-state-unverified board-failed checkout-return-failed worktree-remove-failed notify-failed spend-upsert-failed siblings-unlisted lease-release-failed value-truncated
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
 #   warn: all the others
 # sweep-reasons: issues-unlisted prs-unlisted find-pr-unverified find-pr-failed worktree-sweep-failed epic-close-failed epic-label-failed epic-comment-failed epic-acceptance-unsupported unblock-failed notify-failed
@@ -305,7 +305,7 @@
 #         stage's final message never does (stderr has the `note` lines and the
 #         `dispatch-failed ... reason=<why>` line). The playbook's end-state
 #         table (skills/pipeline/SKILL.md) has one action for each end.
-# run-reasons: usage unknown-role unknown-pr dispatch-failed ready-pr-failed draft-unverified qa-fail-unchanged-head spec-unusable fix-round-unchanged-head head-unresolved stop-requested checkout-return-failed iterations-exhausted stage-blocked provider-failed merge-failed state-unavailable scripts-missing python-missing scratch-unavailable config-unreadable map-failed worktree-unavailable same-verdict-same-head
+# run-reasons: qa-comment-missing usage unknown-role unknown-pr dispatch-failed ready-pr-failed draft-unverified qa-fail-unchanged-head spec-unusable fix-round-unchanged-head head-unresolved stop-requested checkout-return-failed iterations-exhausted stage-blocked provider-failed merge-failed state-unavailable scripts-missing python-missing scratch-unavailable config-unreadable map-failed worktree-unavailable same-verdict-same-head
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
 #         state-unavailable ready-pr-failed draft-unverified head-unresolved
 #         merge-failed provider-failed worktree-unavailable (exit 1; 2 for usage),
@@ -3955,7 +3955,12 @@ _talos_run_loop() {
           "verdict=merge"*)
             _RUN_CI="$(sed -n 's/^ci_runs=//p' <<<"$_r" | head -n 1)"
             _talos_emit merged pr="$_pr"
-            if _vcs merge-pr "$_pr" > /dev/null; then
+            if _vcs merge-pr "$_pr" > /dev/null 2> "$_CFG_CACHE_DIR/merge-err"; then
+              # merge-pr says on stderr when the merge went through but the
+              # head branch stayed: one warn per branch, for the run's end (#653).
+              cat "$_CFG_CACHE_DIR/merge-err" >&2
+              _left="$(sed -n "s/^.*merge-pr: PR #[0-9]* merged, but its branch '\(.*\)' could not be deleted\$/\1/p" "$_CFG_CACHE_DIR/merge-err")"
+              [ -z "$_left" ] || _talos_warn branch-left "issue=$_n branch=$_left"
               # post-merge, with the CI-run count read before the merge (the
               # merge deletes the head branch). Its `checkout=` line says where
               # it left the checkout (#601): returned, synced or kept is a
@@ -3982,6 +3987,7 @@ _talos_run_loop() {
               fi
               _talos_run_continue "$_max" "$_iter"
             fi
+            cat "$_CFG_CACHE_DIR/merge-err" >&2
             _talos_warn merge-failed "pr=$_pr"
             _talos_stop merge-failed ;;
           verdict=handoff* | verdict=redispatch* | verdict=wait* | verdict=block*)
@@ -4013,6 +4019,22 @@ _talos_run_loop() {
   exit 0
 }
 
+# _talos_run_warns <text> (#653): the `warn reason=...` lines a sub-command
+# printed on stdout reach the run's output (the driver reads only `next=` or
+# `verdict=` from that stdout, so they were dropped). board-failed once per run.
+_RUN_BOARD_WARNED=""
+_talos_run_warns() {
+  local _l
+  while IFS= read -r _l; do
+    case "$_l" in
+      "warn reason=board-failed"*) [ -z "$_RUN_BOARD_WARNED" ] || continue; _RUN_BOARD_WARNED=1 ;;
+      "warn reason="*) : ;;
+      *) continue ;;
+    esac
+    _talos_emit warn "${_l#warn }"
+  done <<< "$1"
+}
+
 # _talos_run_dispatch <action-line> [<shape> [<prior-file>]]: one dispatched
 # stage, the four calls the playbook's act path used to spell out. The action
 # line's stage comes off a sanitised single line (`action=dispatch stage=<role>
@@ -4020,7 +4042,7 @@ _talos_run_loop() {
 # and <prior-file> are the prompt's `--shape` and `--prior-file` (the QA-FAIL
 # fix round passes fix-round and QA's report, #537).
 _talos_run_dispatch() {
-  local _a="$1" _shape="${2:-}" _prior="${3:-}" _f _role _pr _n _v _w _dargs _next _rc _line
+  local _a="$1" _shape="${2:-}" _prior="${3:-}" _f _role _pr _n _v _w _dargs _next _rc _line _dout
   _role="$(sed -n 's/.*stage=\([a-z-]*\).*/\1/p' <<<"$_a")"
   _pr="$(sed -n 's/.* pr=\([0-9]*\).*/\1/p' <<<"$_a")"
   _n="$(sed -n 's/.* issue=\([0-9]*\).*/\1/p' <<<"$_a")"
@@ -4163,8 +4185,9 @@ print(min(new) if new else "")' "$_o0" "$_o1")" || _w=""
     *) _dargs+=(--verdict "$_v") ;;
   esac
   _dargs+=(--summary-file -)
-  _next="$(bash "$SCRIPT_DIR"/talos.sh "${_dargs[@]}" < "$_CFG_CACHE_DIR/agent.out" 2>"$_CFG_CACHE_DIR/err" \
-            | sed -n 's/^next=//p' | head -n 1)"
+  _dout="$(bash "$SCRIPT_DIR"/talos.sh "${_dargs[@]}" < "$_CFG_CACHE_DIR/agent.out" 2>"$_CFG_CACHE_DIR/err")"
+  _next="$(sed -n 's/^next=//p' <<<"$_dout" | head -n 1)"
+  _talos_run_warns "$_dout"
   rm -f "${_f:?}"
   _talos_run_map stage
 
@@ -4238,7 +4261,7 @@ _talos_run_fix_gate() {
   _r="$(bash "$SCRIPT_DIR"/talos.sh gate fix-round "$1" "$2" --pr "$3" 2>"$_CFG_CACHE_DIR/err")"
   _talos_relay gate-fix-round "$(cat "$_CFG_CACHE_DIR/err" 2>/dev/null)"
   case "$_r" in
-    verdict=redispatch*) return 0 ;;
+    verdict=redispatch*) _talos_run_warns "$_r"; return 0 ;;
     verdict=block*)
       _why="$(sed -n 's/^reason=//p' <<<"$_r" | head -n 1)"
       _talos_emit stop "verdict=block${_why:+ reason=$_why}" ;;
@@ -4277,6 +4300,34 @@ _talos_run_qa_spec_fault() {
   _talos_flush; exit 0
 }
 
+# _talos_run_qa_comment <pr> <issue> (#653): the fix round's developer reads QA's
+# verdict comment, so a QA FAIL whose comment never landed gets it posted from
+# the stage's final message (agent.out) here, or the run stops
+# `reason=qa-comment-missing issue=<N> pr=<M>`. The `**QA:** FAIL` comments are
+# counted per PR (scratch file in the run's dir): one more than at the last FAIL
+# is the stage's own. Comments off or an unreadable thread checks nothing.
+_talos_run_qa_comment() {
+  local _pr="$1" _n="$2" _f="$_CFG_CACHE_DIR/qa-fail-comments.$_pr" _prev=0 _cnt _h
+  _h="$(cfg comments.header)"
+  { [ "$(cfg comments.enabled)" = "true" ] && [ -n "$_h" ]; } || return 0
+  [ ! -f "$_f" ] || _prev="$(cat "$_f")"
+  _talos_isnum "$_prev" || _prev=0
+  _talos_trust
+  _talos_cap _vcs read-comments "$_pr"
+  [ "$_RC" -eq 0 ] || return 0
+  _cnt="$(_talos_count_marker '**QA:** FAIL' "$_OUT")" && _talos_isnum "$_cnt" || return 0
+  if [ "$_cnt" -le "$_prev" ]; then
+    _BODY="${_h//\{role\}/qa}"$'\n\n'"**QA:** FAIL — posted by the run: the QA stage ended without its verdict comment."$'\n\n'"$(head -c 20000 "$_CFG_CACHE_DIR/agent.out")"
+    if ! _talos_say comment-pr "$_pr"; then
+      _talos_block_labels "$_n" "$_pr"
+      _talos_emit stop "reason=qa-comment-missing issue=$_n pr=$_pr"
+      _talos_flush; exit 0
+    fi
+    _cnt=$((_cnt + 1))
+  fi
+  printf '%s\n' "$_cnt" > "$_f" || _talos_stop scratch-unavailable
+}
+
 # _talos_run_qa_fail <pr> <issue> (#537): a QA FAIL is a developer fix round,
 # the playbook's flow: `gate fix-round <N> qa --pr <M>` (the budget guard, the
 # attempt ceilings, the unblock right before the round), then the developer in
@@ -4307,6 +4358,7 @@ _talos_run_qa_fail() {
     *) _talos_stop state-unavailable ;;
   esac
   _talos_run_qa_spec_fault "$_pr" "$_n"
+  _talos_run_qa_comment "$_pr" "$_n"
   _f="$_CFG_CACHE_DIR/qa-fail-head.$_pr"
   _talos_cap _vcs pr-head "$_pr"
   { [ "$_RC" -eq 0 ] && [ -n "$_OUT" ]; } || _talos_stop head-unresolved
