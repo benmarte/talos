@@ -834,29 +834,34 @@ first_fixture
 TALOS_LEASE_TTL_S=1 TALOS_NOW=13100 rn --issue 9 --max-iterations 1
 assert_contains "$OUT" "stop reason=stage-blocked role=developer" "AC2 no new open PR stays stage-blocked"
 assert_eq "0" "$(first_opened)" "AC2 no PR_OPENED is recorded without a new PR"
+assert_eq "2" "$(first_finds)" "AC2 find-pr is asked before and after the dispatch"
 first_fixture
 printf 'BLOCKED: cannot run the tests\n' > "$STUB_DIR/message"
 first_new_prs
 TALOS_LEASE_TTL_S=1 TALOS_NOW=13200 rn --issue 9 --max-iterations 1
 assert_contains "$OUT" "stop reason=stage-blocked role=developer" "AC3 an explicit BLOCKED: stays blocked even when a new PR exists"
 assert_eq "0" "$(first_opened)" "AC3 no PR_OPENED is recorded over an explicit block"
+assert_eq "1" "$(first_finds)" "AC3 an explicit BLOCKED: line is not checked against find-pr after the dispatch"
 first_fixture
 first_new_prs
 cp "$STUB_DIR/new-prs" "$STUB_DIR/find-pr.9"
 TALOS_LEASE_TTL_S=1 TALOS_NOW=13300 rn --issue 9 --max-iterations 1
 assert_contains "$OUT" "stop reason=stage-blocked role=developer" "AC4 a PR already open before the dispatch never counts"
 assert_eq "0" "$(first_opened)" "AC4 no PR_OPENED is recorded for a PR that was already open"
+assert_eq "2" "$(first_finds)" "AC4 find-pr is asked before and after the dispatch"
 first_fixture
 first_new_prs
 printf 'printf 1 > "$d/find-pr.9.rc"\n' >> "$STUB_DIR/hook.developer.1"
 TALOS_LEASE_TTL_S=1 TALOS_NOW=13400 rn --issue 9 --max-iterations 1
 assert_contains "$OUT" "stop reason=stage-blocked role=developer" "AC5 a failing find-pr after the dispatch applies no override"
 assert_eq "0" "$(first_opened)" "AC5 no PR_OPENED is recorded when find-pr fails"
+assert_eq "2" "$(first_finds)" "AC5 find-pr is asked before and after the dispatch, the failing answer is not used"
 first_fixture
 printf 'printf "not json\\n" > "$d/find-pr.9.out"\n' > "$STUB_DIR/hook.developer.1"
 TALOS_LEASE_TTL_S=1 TALOS_NOW=13500 rn --issue 9 --max-iterations 1
 assert_contains "$OUT" "stop reason=stage-blocked role=developer" "AC5 an unparseable find-pr after the dispatch applies no override"
 assert_eq "0" "$(first_opened)" "AC5 no PR_OPENED is recorded on an unparseable list"
+assert_eq "2" "$(first_finds)" "AC5 find-pr is asked before and after the dispatch, the unparseable answer is not used"
 first_fixture
 first_new_prs
 printf '1\n' > "$STUB_DIR/find-pr.9.rc"
@@ -864,6 +869,7 @@ printf 'rm -f "$d/find-pr.9.rc"\n' >> "$STUB_DIR/hook.developer.1"
 TALOS_LEASE_TTL_S=1 TALOS_NOW=13550 rn --issue 9 --max-iterations 1
 assert_contains "$OUT" "stop reason=stage-blocked role=developer" "AC5 an unreadable find-pr before the dispatch applies no override"
 assert_eq "0" "$(first_opened)" "AC5 no PR_OPENED is recorded when the PR cannot be proven new"
+assert_eq "1" "$(first_finds)" "AC5 find-pr is not asked after the dispatch when the pre-dispatch list is unreadable"
 # AC6: find-pr is asked only for a first-round developer whose verdict is BLOCKED.
 first_fixture
 printf 'https://github.com/acme/widget/pull/12\nimplemented\n' > "$STUB_DIR/message"
