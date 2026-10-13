@@ -34,7 +34,10 @@ substitute it).
    `qa-run: verdict PASS|FAIL|BLOCKED <why>` line:
    - `AC<n> red@<sha8> green@head` -- a test criterion that was red, then green.
    - `AC<n> FAIL ...` -- not green at head, missing, or `vacuous` (green at the
-     red commit).
+     red commit). A `vacuous` FAIL is not repaired by adding an assertion: the
+     red commit is the branch's first, so no later commit can turn it red. The
+     fix is the spec (the criterion becomes `(prose: ...)`, or its test file goes
+     on the `Tests:` line); `talos.sh run` stops it as `spec-unusable`.
    - `AC<n> prose hand-checked` -- no test; you check it by hand in step 3.
    - `note:` lines (a red commit that is not tests-only, a skipped red run) are
      information, not failures.
