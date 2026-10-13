@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- fix(qa): `qa-run` judges the red commit tests-only by its own change, so merging the base branch into the PR branch no longer skips the red proof and passes a vacuous test
 - fix(cloud): a refused first attempt whose fallback worked (`ready-pr`/`draft-pr` via the ccr route, `merge-pr`'s branch delete) prints no `HTTP 403` note; a merged PR's branch that could not be deleted is one `warn reason=branch-left issue=<N> branch=<B>` in the run's output; `warn reason=board-failed` from `done` and the fix-round gate now reaches the run's output (once per run); a QA FAIL with no verdict comment gets it posted from the stage's final message before the fix round, or the run stops `reason=qa-comment-missing`
 - test(lint): `tests/test-bash3-lint.sh` refuses GNU-only and bash 4+ constructs in `scripts/` and `tests/` (`sed -i`, `sed` with `\b` or `\n` in the replacement, `grep -P`, `readlink -f`, `date -d`, `tac`, `declare -A`, `${var,,}`/`${var^^}`, `mapfile`, `readarray`, `&>>`); a line opts out with `# bash3-ok: <reason>`
 - fix(qa): a spec fault QA can only report as `vacuous` or `head=missing` no longer burns developer fix rounds: `pipeline-criteria.sh placement <N>` names a `(test)` criterion whose id is in no `Tests:` file, `spec-check` refuses a test file left open (`tests-line-open`), and `talos.sh run` stops a vacuous-only QA FAIL, or a repeated vacuous/head=missing one at an unchanged spec, as `spec-unusable`
