@@ -376,7 +376,7 @@ text="$(body)"; drop
 assert_contains "$text" "QA, review, and security passed PR #8 for issue #4." "adversarial: QA, review, and security passed"
 render docs --issue 4 --pr 8
 text="$(body)"; drop
-assert_contains "$text" "You are Documentation. QA passed for PR #8." "docs: QA passed for"
+assert_contains "$text" "You are Documentation. QA passed for PR #8 for issue #4." "docs: QA passed for"
 assert_not_contains "$text" "CHANGELOG MODE" "docs: no changelog-mode line any more"
 assert_not_contains "$text" "STATUS FRAGMENT:" "docs: no status fragment line any more (#550)"
 assert_contains "$text" 'Read diff: `bash scripts/pipeline-vcs.sh diff-pr 8` (the full diff)' "docs: the full diff by default"

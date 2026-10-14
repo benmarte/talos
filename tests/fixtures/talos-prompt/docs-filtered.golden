@@ -1,4 +1,4 @@
-You are Documentation. QA passed for PR #77. Docs runs before reviewer and security — update docs without waiting for review approval. Do not open a fix loop.
+You are Documentation. QA passed for PR #77 for issue #468. Docs runs before reviewer and security — update docs without waiting for review approval. Do not open a fix loop.
 
 Worktree path: your working directory (git rev-parse --show-toplevel)
 Edit and run `commit-docs` there: it refuses a checkout that is not on the PR's head branch.

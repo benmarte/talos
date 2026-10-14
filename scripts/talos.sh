@@ -300,7 +300,8 @@
 #         exit 1: docs never runs in the driver's checkout, #640) and `stop
 #         reason=same-verdict-same-head role=<role> pr=<M>` (docs, reviewer,
 #         security or adversarial ended with the same verdict at the same PR
-#         head as its previous dispatch in this run, exit 0, #640).
+#         head as its previous dispatch in this run, and no approval of that
+#         role is stamped at that head, exit 0, #640, #671).
 #         stdout carries `merged=pr=<M>`, `warn` lines and the end line; a
 #         stage's final message never does (stderr has the `note` lines and the
 #         `dispatch-failed ... reason=<why>` line). The playbook's end-state
@@ -4247,14 +4248,30 @@ print(min(new) if new else "")' "$_o0" "$_o1")" || _w=""
 # (read after the stage) and the verdict for <role>; when they equal the record
 # of that role's previous dispatch on <pr> in this run, the run ends clean with
 # `stop reason=same-verdict-same-head role=<role> pr=<pr>`. An unreadable head
-# records nothing. QA has its own same-head backstop (#537).
+# records nothing. A repeat whose approval of <role> is stamped at the head (its
+# label on the PR and `check-approval-sha --stale-list` not naming it; a failed
+# read is no approval) does not stop the run (#671). QA has its own same-head
+# backstop (#537).
 _talos_run_repeat_check() {
-  local _h _rec="$_CFG_CACHE_DIR/repeat.$2.$1"
+  local _h _rec="$_CFG_CACHE_DIR/repeat.$2.$1" _l _fresh
   _h="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" pr-head "$2" 2>/dev/null | head -n 1)" || _h=""
   case "$_h" in ''|*[!0-9a-f]*) return 0 ;; esac
   if [ -f "$_rec" ] && [ "$(cat "$_rec")" = "$_h $3" ]; then
-    _talos_emit stop "reason=same-verdict-same-head role=$1 pr=$2"
-    _talos_flush; exit 0
+    _talos_cap _vcs view-pr "$2"
+    _fresh=0
+    _l=""
+    [ "$_RC" -ne 0 ] || _l="$(_talos_labels "$_OUT" 2>/dev/null)"
+    if _talos_has "$_l" "$(_talos_label_of "$1")"; then
+      _talos_cap _vcs check-approval-sha "$2" --stale-list
+      # Exit 1 is both "stale approvals" (the stale lines) and a failed read.
+      if [ "$_RC" -eq 0 ]; then _fresh=1
+      elif grep -q '^stale role=' <<<"$_OUT" && ! grep -q "^stale role=$1 " <<<"$_OUT"; then _fresh=1
+      fi
+    fi
+    if [ "$_fresh" -eq 0 ]; then
+      _talos_emit stop "reason=same-verdict-same-head role=$1 pr=$2"
+      _talos_flush; exit 0
+    fi
   fi
   printf '%s %s' "$_h" "$3" > "$_rec"
 }
