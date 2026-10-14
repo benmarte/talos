@@ -653,6 +653,8 @@ EOF
   [ -z "$note" ] || echo "note: $note"
   lines="$(cmd_report --spec "$spec" --red "$tmp/red.out" --head "$tmp/head.out" --red-sha "${red8:-$head8}")"; rep_rc=$?
   printf '%s\n' "$lines"
+  # The driver's spec-fault check reads these lines, not QA's prose (#678).
+  [ -z "${TALOS_QA_RESULTS:-}" ] || printf '%s\n' "$lines" > "$TALOS_QA_RESULTS" 2>/dev/null || :
   n_fail="$(printf '%s\n' "$lines" | grep -c ' FAIL ')"
   if [ "$n_fail" -gt 0 ] || [ "$head_rc" -ne 0 ] || [ "${#missing[@]}" -gt 0 ]; then
     if grep -qE '^FAIL' "$tmp/head.out" 2>/dev/null; then

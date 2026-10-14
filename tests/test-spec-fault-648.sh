@@ -60,6 +60,9 @@ cat > "$d/agent.stdin"
 printf "agent %s\n" "$role" >> "$d/journal"
 cnt="$(grep -c "^agent $role\$" "$d/journal")"
 if [ -f "$d/message.$role.$cnt" ]; then cat "$d/message.$role.$cnt"; fi
+if [ "$role" = qa ] && [ -f "$d/message.$role.$cnt" ] && [ -n "$TALOS_QA_RESULTS" ]; then
+  grep -E '^AC[0-9]+ FAIL ' "$d/message.$role.$cnt" > "$TALOS_QA_RESULTS"
+fi
 if [ -f "$d/hook.$role.$cnt" ]; then . "$d/hook.$role.$cnt"; fi
 exit 0
 TALOS_stubagent648Xq7Lm

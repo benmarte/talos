@@ -3758,7 +3758,10 @@ for l in sys.stdin:
 _run_agent() {
   _AG_RC=0
   # <cwd> (#640): the docs stage runs in a worktree of the PR's head branch.
+  # QA's `qa-run` leaves its per-criterion lines in TALOS_QA_RESULTS (#678).
+  [ "$1" != qa ] || rm -f "$_CFG_CACHE_DIR/qa-run.${5:-0}"
   ( [ -z "${6:-}" ] || cd "$6" || exit 70
+    if [ "$1" = qa ]; then TALOS_QA_RESULTS="$_CFG_CACHE_DIR/qa-run.${5:-0}"; export TALOS_QA_RESULTS; fi
     TALOS_ISSUE="${4:-}" TALOS_PR="${5:-}" exec bash "$SCRIPT_DIR/pipeline-agent.sh" "$1" -
   ) < "$2" > "$3" 2>"$_CFG_CACHE_DIR/agent.err" || _AG_RC=$?
   _talos_relay "agent.$1" "$(cat "$_CFG_CACHE_DIR/agent.err")"
@@ -4322,7 +4325,8 @@ _talos_run_fix_gate() {
   _talos_flush; exit 0
 }
 
-# _talos_run_qa_spec_fault <pr> <issue> (#648): QA's FAIL lines (agent.out) that
+# _talos_run_qa_spec_fault <pr> <issue> (#648, #678): the FAIL lines `qa-run`
+# left for the driver (`qa-run.<pr>` in the run's scratch, never QA's prose) that
 # only the spec can repair end the run as spec-unusable, the lines relayed, PR
 # and issue blocked. All lines `vacuous`: the red commit is the branch's first,
 # no later commit can turn it red -- stop at once. All lines `vacuous` or
@@ -4332,7 +4336,7 @@ _talos_run_fix_gate() {
 # other line, or an unreadable spec, returns: the existing fix-round path.
 _talos_run_qa_spec_fault() {
   local _pr="$1" _n="$2" _fl _sum _f="$_CFG_CACHE_DIR/qa-spec-fault.$1"
-  _fl="$(grep -E '^[[:space:]>*-]*AC[0-9]+ FAIL ' "$_CFG_CACHE_DIR/agent.out" 2>/dev/null | cut -c1-200)"
+  _fl="$(grep -E '^AC[0-9]+ FAIL ' "$_CFG_CACHE_DIR/qa-run.$1" 2>/dev/null | cut -c1-200)"
   [ -n "$_fl" ] || return 0
   if grep -qvE 'AC[0-9]+ FAIL (vacuous|head=missing)' <<<"$_fl"; then return 0; fi
   if grep -qE 'AC[0-9]+ FAIL head=missing' <<<"$_fl"; then
