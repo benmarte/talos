@@ -20,7 +20,7 @@ for d in \
 done
 ```
 
-Five cases, in priority order: explicit override ($TALOS_HOME), global install (~/.talos), marketplace plugin, vendored into the repo by install.sh (.claude/talos/scripts), or the Talos source repo. The global install wins when present; the plugin falls back to its bundled copy only when no global install exists. If it prints nothing, Talos is not installed — tell the user and stop.
+Cases, in priority order: explicit override ($TALOS_HOME), global install (~/.talos), marketplace plugin, the Talos source repo (a repo-vendored `.claude/talos/scripts` copy is a legacy back-compat probe only; install.sh no longer writes one). The global install wins when present; the plugin falls back to its bundled copy only when no global install exists. If it prints nothing, Talos is not installed — tell the user and stop.
 
 ---
 
@@ -123,9 +123,9 @@ Also ask (2 more questions, defaults shown, only if the user wants to change the
 > "Two more role toggles, both fine to leave at their defaults:
 > - Skip PM when an issue's body is already a usable spec (an acceptance-criteria
 >   heading with checklist items, or the `spec:ready` label)? [on — `roles.pm_skip_when_spec_present`]
-> - How should docs decide whether to dispatch: `auto` (skip the docs subagent
->   when the developer's diff already covers CHANGELOG + README/docs, or is
->   scripts/tests-only with a CHANGELOG entry) or `always` (docs subagent always
+> - How should docs decide whether to dispatch: `auto` (`docs-gate` skips the
+>   docs subagent, and stamps docs:done, when the PR touches none of README.md,
+>   docs/* or scripts/pipeline-defaults.sh; it dispatches when the PR touches any of them) or `always` (docs subagent always
 >   runs and reads the full diff)? [auto — `roles.docs_mode`]"
 
 ---
@@ -158,7 +158,7 @@ If yes:
 
 Then ask:
 > "Would you like to filter which events trigger notifications, or receive all of them?
-> Receiving all is recommended — the role events (validator, developer, qa, reviewer, security, docs, orchestrator) create the per-issue conversation thread in Slack/Discord. Filtering them out silences the thread with no warning."
+> Receiving all is recommended — the role events (validator, pm, developer, qa, reviewer, security, adversarial, docs, orchestrator) create the per-issue conversation thread in Slack/Discord. Filtering them out silences the thread with no warning."
 
 If the user wants all events: write `notifications:` with **no `events:` key** (unset = all fire).
 
@@ -166,10 +166,12 @@ If the user wants a filter: **automatically include all role events** regardless
 ```
 # Role events (conversation stream — do not remove)
 - validator
+- pm
 - developer
 - qa
 - reviewer
 - security
+- adversarial
 - docs
 - orchestrator
 # Lifecycle events (remove any you don't want)
@@ -247,7 +249,7 @@ Record the answer:
 - **Per role** — walk the roles enabled in this setup (Step 4's answers, plus `developer`, which always runs) one at a time and write `agents.roles.<role>.model: <model>` for each. Offer an `agents.model` fallback for the rest; write it if the user names one.
 - **Leave unset** — writes nothing, no `agents.model` and no role keys. Every role inherits the session model. An existing user-level file is left as it is.
 
-**Where it is written.** By default into the user-level file, `${TALOS_HOME:-$HOME/.talos}/talos.pipeline.json`, so the question is asked once and applies to every repo. Only `agents.*` keys are read from that file; never put board, merge, issue or verify settings in it.
+**Where it is written.** By default into the user-level file, `${TALOS_HOME:-$HOME/.talos}/talos.pipeline.json`, so the question is asked once and applies to every repo. Every key except the repo-only ones (the scope column of the key reference in docs/reference.md) is read from that file, and a repo-only key there is dropped with a stderr note; still keep board, merge, issue and verify settings in the repo file.
 
 - **No user-level file yet** — create it with just the `agents:` keys recorded above.
 - **A user-level file exists** — never overwrite it blindly. Build the new content in a scratch file (keep every key already there; change only `agents.model` and `agents.roles.<role>.model`), show `diff -u <existing> <new>`, and write only after an explicit yes. On anything but yes, leave the file untouched and say so. Never overwrite an existing user-level file without showing the diff and getting that yes.
@@ -340,7 +342,7 @@ When writing the file (omit the whole block when its keys are not configured):
 - If harness = `codex`, `gemini` or `antigravity`: write `"agents": { "runner": "<HARNESS>" }` (for example `"runner": "antigravity"`); omit `runner_cmd`.
 - If harness = `custom`: write `"agents": { "runner": "custom", "runner_cmd": "<value the user provided>" }`.
 - If `roles.adversarial: true` AND the user asked for a different backend for it (Step 4): write (or extend) the `agents` block with `"roles": { "adversarial": { "runner": "...", "runner_cmd": "..." } }` -- same shape as the `docs/reference.md` "Profiles, runners and fallback" adversarial example -- even when the top-level harness is `claude`, since only `adversarial` is opting out of the native default.
-- `notifications.events`: leave unset (recommended) unless the user asked for a filter; when they did, write the full event list (all role events plus the chosen lifecycle events) -- see talos.pipeline.json.example for the full list.
+- `notifications.events`: leave unset (recommended) unless the user asked for a filter; when they did, write the full event list (all role events plus the chosen lifecycle events) -- the role events are listed above; the lifecycle event names are the ones scripts/pipeline-notify.sh filters on.
 
 Also ask before writing:
 > "The merge gate blocks PRs that touch sensitive file patterns (.env, *.pem, *.key, ...). Would you like to add any extra patterns beyond the defaults?"
@@ -602,7 +604,7 @@ Harness:      <claude (native subagents) | pi | codex | gemini | antigravity | c
 Control labels (created by bootstrap-labels.sh in Step 8):
   p0        — dispatched first (highest priority)
   p1        — high priority
-  p2        — low priority (dispatched after p1; unlabeled issues are dispatched last, after p2)
+  p2        — normal priority (dispatched after p1; unlabeled issues are dispatched last, after p2)
   skip-qa   — bypasses the QA, reviewer, security, and docs gates for this issue
               (CI checks and forbidden-files protection are ALWAYS enforced)
   pipeline:needs-owner — parked waiting on your decision; reply on the issue or PR and the next run clears it
@@ -615,7 +617,7 @@ Next steps:
      `execution.orchestrator: llm` opts into the LLM-per-stage loop; see docs/reference.md "How a run works")
   3. For GitHub Projects, make sure the Status field has: Ready, In progress, In review, Done, Blocked
      (if your board uses different column names, configure board.status_map to remap them — see the
-     example in the config template above; pipeline-status.sh will emit talos:board-unverified on
+     `board.status_map` row of docs/reference.md; pipeline-status.sh will emit talos:board-unverified on
      stdout and warn to stderr when any required option is missing, so mis-configuration is visible)
   4. Use p0/p1/p2 labels to control dispatch order; use skip-qa to fast-track low-risk issues
 ```

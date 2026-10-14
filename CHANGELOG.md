@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- docs: the stage profiles, `docs/reference.md`, the pipeline and setup playbooks, README and the config example match the code driver: draft-PR stage order with QA last, checkouts and `assert-sync`, stop reasons and exit codes, `reason=owner`, re-stamps, the docs gate and the board options; a test pins each fix.
 - docs: `docs/reference.md` documents the reviewer/security `post-approval` body rule and its refusals, and every `talos.sh run` and `docs-gate` stop reason; a test fails when a reason in `scripts/talos.sh` has no row
 - docs: `docs/reference.md` documents `pipeline-criteria.sh placement`, the `tests-line-open` spec-check slug, the vacuous / `head=missing` `spec-unusable` stops, `stop action=wait reason=ci`, and the bash 3.2 lint with its `# bash3-ok: <reason>` opt-out; README links the project map and API credits
 - fix(review): `post-approval` refuses a reviewer or security approval with no review body, an empty one, or a body file older than the stage's start, and deletes the body once posted, so a bare marker or another PR's review text can no longer stamp the gate
