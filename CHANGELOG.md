@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- fix(qa): under the claude runner a `verify.timeout_ms` above the harness's 600000 ms foreground cap is clamped in the stage prompts with a warning, and a QA verify that times out ends as `stop reason=verify-timeout`; this repo's verify runs as four `--shard i/4` commands
 - fix(run): the docs prompt names the issue, and a repeated docs/reviewer/security/adversarial dispatch whose approval is stamped at the PR's head no longer ends the run with `same-verdict-same-head` (#671)
 - fix(agent): the built-in `claude` runner passes the role's model (`agents.roles.<role>.model`, then `agents.model`) as `--model`, so per-role model routing applies under the code driver; an explicit `--model` in `agents.runner_args` wins
 - docs: the stage profiles, `docs/reference.md`, the pipeline and setup playbooks, README and the config example match the code driver: draft-PR stage order with QA last, checkouts and `assert-sync`, stop reasons and exit codes, `reason=owner`, re-stamps, the docs gate and the board options; a test pins each fix.

@@ -306,7 +306,7 @@
 #         stage's final message never does (stderr has the `note` lines and the
 #         `dispatch-failed ... reason=<why>` line). The playbook's end-state
 #         table (skills/pipeline/SKILL.md) has one action for each end.
-# run-reasons: qa-comment-missing usage unknown-role unknown-pr dispatch-failed ready-pr-failed draft-unverified qa-fail-unchanged-head spec-unusable fix-round-unchanged-head head-unresolved stop-requested checkout-return-failed iterations-exhausted stage-blocked provider-failed merge-failed state-unavailable scripts-missing python-missing scratch-unavailable config-unreadable map-failed worktree-unavailable same-verdict-same-head
+# run-reasons: qa-comment-missing usage unknown-role unknown-pr dispatch-failed ready-pr-failed draft-unverified qa-fail-unchanged-head spec-unusable fix-round-unchanged-head head-unresolved stop-requested checkout-return-failed iterations-exhausted stage-blocked provider-failed merge-failed state-unavailable scripts-missing python-missing scratch-unavailable config-unreadable map-failed worktree-unavailable same-verdict-same-head verify-timeout
 #   stop: usage scripts-missing python-missing scratch-unavailable config-unreadable
 #         state-unavailable ready-pr-failed draft-unverified head-unresolved
 #         merge-failed provider-failed worktree-unavailable (exit 1; 2 for usage),
@@ -2039,6 +2039,25 @@ except OSError:
 _talos_pv() { printf '%s\0%s\0' "$1" "$2" >> "$_PROMPT_VALS"; }
 _talos_pf() { printf '<%s\0%s\0' "$1" "$2" >> "$_PROMPT_VALS"; }
 
+# _talos_verify_timeout_ms <role>: the verify timeout a stage prompt may state
+# (#674). The claude harness stops a foreground command at 600000 ms, so under
+# that runner a larger verify.timeout_ms is clamped (one stderr warning); any
+# other runner gets the configured value unchanged.
+_talos_verify_timeout_ms() {
+  local _r _t
+  _t="$(cfg verify.timeout_ms)"
+  _r="$(cfg "agents.roles.$1.runner")"
+  [ -n "$_r" ] || _r="$(cfg agents.runner)"
+  case "${_r:-claude}" in
+    claude)
+      if [ "$_t" -gt 600000 ] 2> /dev/null; then
+        printf 'talos: warn: verify.timeout_ms %s is over the claude harness foreground cap of 600000 ms; stage prompts use 600000 (split verify.commands or use qa_mode ci)\n' "$_t" >&2
+        _t=600000
+      fi ;;
+  esac
+  printf '%s' "$_t"
+}
+
 # _talos_prompt_checks: the `Required checks:` line, one check per line.
 _talos_prompt_checks() {
   local _c
@@ -2228,7 +2247,7 @@ _talos_prompt() {
       [ "$_spec" = pm ] && _v="the PM spec" || _v="the issue body (PM was skipped)"
       _talos_pv SPEC_SOURCE "$_v"
       _talos_pv VERIFY_TARGETED "$(cfg verify.targeted)"
-      _v="$(cfg verify.timeout_ms)"
+      _v="$(_talos_verify_timeout_ms developer)"
       if [ "$(cfg verify.qa_mode)" = local ]; then
         _talos_pv REQUIRED_CHECKS_LINE ""
         _talos_pv VERIFY_TIMEOUT_LINE "Verify timeout: $_v ms"
@@ -2271,7 +2290,7 @@ _talos_prompt() {
       # #610: the checkout QA runs in, never a placeholder for it to fill.
       _talos_pv WORKTREE_PATH "${_wt:-your working directory (git rev-parse --show-toplevel)}"
       _talos_pv VERIFY_QA_MODE "$(cfg verify.qa_mode)"
-      _talos_pv VERIFY_TIMEOUT_MS "$(cfg verify.timeout_ms)"
+      _talos_pv VERIFY_TIMEOUT_MS "$(_talos_verify_timeout_ms qa)"
       # The QA pre-CI gate (#535): with it on, the PR itself says which text QA
       # gets -- a draft is pre-CI, a ready PR is today's -- and anything else
       # stops (an unreadable state is never guessed). No LLM call is spent on it.
@@ -4229,6 +4248,10 @@ print(min(new) if new else "")' "$_o0" "$_o1")" || _w=""
       if [ "$_role" = qa ] && [ "$_v" = BLOCKED ] \
          && grep -m 1 -v '^[[:space:]]*$' "$_CFG_CACHE_DIR/agent.out" 2>/dev/null | grep -q '^BLOCKED: spec:'; then
         _talos_emit stop "reason=spec-unusable issue=$_n pr=$_pr"
+      # #674: a verify that outran the foreground cap is a known end with an action.
+      elif [ "$_role" = qa ] && [ "$_v" = BLOCKED ] \
+         && grep -m 1 -v '^[[:space:]]*$' "$_CFG_CACHE_DIR/agent.out" 2>/dev/null | grep -q '^BLOCKED: verify: timed out after '; then
+        _talos_emit stop "reason=verify-timeout role=qa pr=$_pr"
       else
         _talos_emit stop "reason=stage-blocked role=$_role"
       fi
