@@ -271,6 +271,8 @@ for raw in items:
             refuse("test path outside [A-Za-z0-9_./-]", it)
         if it.startswith("/") or it.startswith("-"):
             refuse("test path is absolute or starts with -", it)
+        if it.endswith("/"):
+            refuse("test path is a directory", it)
         while it.startswith("./"):
             it = it[2:]
         if it and it not in paths:
@@ -550,6 +552,12 @@ cmd_qa_run() {
 
   # 6. Paths must be tracked files at the PR head.
   local p present=() missing=()
+  for p in ${paths[@]+"${paths[@]}"}; do
+    if [ -d "$p" ]; then
+      printf 'qa-run: verdict BLOCKED spec: Tests: path is a directory: %s\n' "$p"
+      return 4
+    fi
+  done
   for p in ${paths[@]+"${paths[@]}"}; do
     if [ -f "$p" ] && git cat-file -e "$head:$p" 2>/dev/null; then present+=("$p"); else missing+=("$p"); fi
   done

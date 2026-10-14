@@ -39,7 +39,7 @@ issue comment starting
   a name filter (the criterion id or test name). Plain data only: never a
   runner command (the spec quotes issue text, and QA runs tests only through
   the repo's configured runner). QA reruns these files by path.
-  The paths sit on the `**Tests:**` line itself, in backticks, and that line holds only paths and an optional name filter: any note goes on a separate line.
+  The paths sit on the `**Tests:**` line itself, in backticks, and that line holds only test file paths (never a directory) and an optional name filter: any note goes on a separate line.
   Every `(test)` criterion's file is on that line; none is left to the developer ("a file of the developer's choosing" is refused by spec-check as tests-line-open). Name one new file for the criteria tests, so no other issue's `AC<n>` label in a shared file can make a criterion look green at the red commit.
 - **Files likely to change** (paths).
 - **Branch name**: `fix/issue-<N>-<slug>` (or `feat/...`).
