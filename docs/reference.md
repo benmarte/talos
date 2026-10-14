@@ -64,7 +64,7 @@ Each stage is a fresh agent. Spend is measured per run ([Hooks, events, spend an
 - `verify.qa_mode: ci` (default once `merge.required_checks` is set): QA trusts CI instead of re-running tests. `verify.targeted`: the developer iterates on targeted tests and runs the full `verify` once.
 - `pr.draft`: one CI run per PR. `pr.ready_gate: qa-local` also keeps that run off a head QA would reject.
 - Re-stamp: after a fix push that leaves approvals stale, a role already approved re-reviews only the delta (`agents.restamp_model`, `agents.restamp_effort`).
-- `agents.roles.<role>.model`, `.effort` and `.runner`: route cheap stages to cheap models ([Profiles, runners and fallback](#profiles-runners-and-fallback)).
+- `agents.roles.<role>.model`, `.effort` and `.runner`: route cheap stages to cheap models (the claude runner passes the model as `--model`; the other built-in runners do not) ([Profiles, runners and fallback](#profiles-runners-and-fallback)).
 - `limits.tokens_per_issue`: optional hard budget before each fix round.
 - Prompt cache: on Claude Code, developer and QA ask for the 1-hour cache, so a wait on the test suite of up to an hour does not rebuild their context. There is no config key; start Talos with `CLAUDE_CODE_PROMPT_CACHE_TTL=5m` to stay on five minutes ([Prompt cache lifetime](#prompt-cache-lifetime)).
 - `agents.claude_api_credits`: on a Max or Team plan, claude stages spend the plan's monthly API credits first and the plan's usage limits second, so the stages stop competing with your interactive sessions for the same limit ([Monthly API credits](#monthly-api-credits)).
@@ -510,7 +510,7 @@ Three independent choices: **mode** (who spawns a stage), **runner** (which CLI 
 - `adapter`: one headless CLI call per stage through `scripts/pipeline-agent.sh <role> -`; sequential, set `issues.max_parallel: 1`.
 - `inline`: the orchestrating session plays every role itself (pi, weak or local models).
 
-The mode decides who spawns a stage in the LLM loop (`execution.orchestrator: llm`). The default code driver spawns no subagent: `talos.sh run` sends every stage through `pipeline-agent.sh`, one at a time, as the `adapter` line says, whatever the mode is. So the "Adapter" entries under [Per-role model, effort and runner](#per-role-model-effort-and-runner) are the ones that apply by default: a built-in runner takes no `model` or `effort` from the config (`agents.runner_args` adds a flag for all roles; a `custom` runner reads `$TALOS_MODEL` and `$TALOS_EFFORT`).
+The mode decides who spawns a stage in the LLM loop (`execution.orchestrator: llm`). The default code driver spawns no subagent: `talos.sh run` sends every stage through `pipeline-agent.sh`, one at a time, as the `adapter` line says, whatever the mode is. So the "Adapter" entries under [Per-role model, effort and runner](#per-role-model-effort-and-runner) are the ones that apply by default: the built-in `claude` runner passes the role's model as `--model <m>` (an explicit `--model` in `agents.runner_args` wins), while `pi`, `codex`, `gemini` and `antigravity` take no `model` or `effort` from the config (`agents.runner_args` adds a flag for all roles; a `custom` runner reads `$TALOS_MODEL` and `$TALOS_EFFORT`).
 
 `agents.subagents` is `auto` (default), `true` or `false`: `auto` is `native` on Claude Code (and on an unknown harness when the runner is `claude`), elsewhere `inline` for runner `pi`, else `adapter`; `false` is `inline` for runner `pi`, else `adapter`; `true` is `native`. `agents.mode` (`native|adapter|inline`) sets it directly. The harness is `CLAUDECODE=1` or `TALOS_HARNESS` (for example `pi`; it wins). Claude Code provides all three modes, any other declared harness `adapter` and `inline`.
 
@@ -524,7 +524,7 @@ Each key resolves `agents.roles.<role>.<key>`, then `agents.<key>`.
 
 | Key | Effect |
 |---|---|
-| `model` | Native spawn: full ID or `opus`/`sonnet`/`haiku` (an alias-only harness gets the family alias); unset means the session model. Adapter: built-in runners ignore it, `custom` gets `$TALOS_MODEL`. |
+| `model` | Native spawn: full ID or `opus`/`sonnet`/`haiku` (an alias-only harness gets the family alias); unset means the session model. Adapter: the built-in `claude` runner gets `--model <m>`; `pi`, `codex`, `gemini` and `antigravity` ignore it; `custom` gets `$TALOS_MODEL`. |
 | `effort` (`low\|medium\|high\|max`) | Adapter: exported as `$TALOS_EFFORT`. Native: advisory; commit `effort:` in the role file, `pipeline-agent.sh --check-effort <role>` flags a mismatch. |
 | `runner`, `runner_cmd` | Both paths; `runner_cmd` is read only for `custom`. No per-role `runner_args`. |
 | `restamp_model`, `restamp_effort` | Delta re-review of a stale approval: role restamp, global restamp, then `model` / `effort`. |

@@ -1275,12 +1275,29 @@ _usage_finish_sidecar() {
   fi
   _usage_end
 }
+# _ra_model: the model an explicit `--model <x>` / `--model=<x>` in RUNNER_ARGS
+# names (the last one), empty when there is none (#668).
+_ra_model() {
+  local _a _prev="" _m=""
+  for _a in ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"}; do
+    case "$_a" in
+      --model=*) _m="${_a#--model=}" ;;
+      *) [ "$_prev" != "--model" ] || _m="$_a" ;;
+    esac
+    _prev="$_a"
+  done
+  printf '%s' "$_m"
+}
 # _attempt_model <runner>: the model for this attempt's event. The primary runner
 # names its config-resolved model (when it passes the event's charset); a
-# fallback runner names only what its own output reported. Empty = null.
+# fallback runner names only what its own output reported. An explicit --model
+# in the claude runner's runner_args is what ran, so it wins. Empty = null.
 _attempt_model() {
   local _m=""
-  if [ -n "$_FO_MODEL_SET" ]; then
+  [ "$1" != claude ] || _m="$(_ra_model)"
+  if [ -n "$_m" ]; then
+    :
+  elif [ -n "$_FO_MODEL_SET" ]; then
     # A chain attempt (#539): the model it was started with (the config model
     # for the primary, the profile's for a profile entry, none for a bare runner).
     _m="$_FO_MODEL_NOW"
@@ -1609,20 +1626,31 @@ case "$RUNNER" in
     case "$ROLE" in
       developer | qa) [ -n "${CLAUDE_CODE_PROMPT_CACHE_TTL+x}" ] || local -x CLAUDE_CODE_PROMPT_CACHE_TTL=1h ;;
     esac
+    # #668: the attempt's model goes to the CLI as --model, unless runner_args
+    # already names one or the value would not pass _export_model's check.
+    _CM_ARGS=()
+    _cm="$_FO_MODEL_NOW"
+    [ -n "$_FO_MODEL_SET" ] || _cm="$(_resolve_model "$ROLE")"
+    if [ -z "$(_ra_model)" ] && [ -n "$_cm" ]; then
+      case "$_cm" in
+        *[[:cntrl:][:space:]]*) ;;
+        *) _CM_ARGS=(--model "$_cm") ;;
+      esac
+    fi
     _usage_end
     if _usage_capture_wanted; then _usage_begin; fi
     if [ -n "$_UDIR" ]; then
       # #420: JSON output; its message text is printed below, as text mode would.
       _claude_perm_build
       _cr_env _tmo claude -p --setting-sources project \
-        ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} --output-format json \
+        ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} ${_CM_ARGS[@]+"${_CM_ARGS[@]}"} --output-format json \
         ${_CP_ARGS[@]+"${_CP_ARGS[@]}"} -- "$PROMPT" >"$_UDIR/raw"
       RC=$?
       _usage_finish_claude "$_UDIR/raw"
     else
       _claude_perm_build
       _cr_env _tmo claude -p --setting-sources project \
-        ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} \
+        ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} ${_CM_ARGS[@]+"${_CM_ARGS[@]}"} \
         ${_CP_ARGS[@]+"${_CP_ARGS[@]}"} -- "$PROMPT"
       RC=$?
     fi

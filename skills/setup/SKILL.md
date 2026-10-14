@@ -242,7 +242,7 @@ On Keep, skip the rest of this step and write nothing. On Override for this repo
 >
 > A model is the alias opus, sonnet or haiku, or a full model ID; it is stored exactly as typed."
 
-When Step 6b did not answer `claude`, say that a model applies only to roles whose effective runner is `claude` (`agents.roles.<role>.runner: claude`); for the others the model is chosen in that CLI or its `runner_cmd`. Offer **Leave unset** as the default.
+When Step 6b did not answer `claude`, say that a model applies only to roles whose effective runner is `claude` (`agents.roles.<role>.runner: claude`, passed to the CLI as `--model`); `pi`, `codex`, `gemini` and `antigravity` do not get it, so the model is chosen in that CLI or its `runner_cmd`. Offer **Leave unset** as the default.
 
 Record the answer:
 - **One model for every role** — `agents.model: <model>`.
