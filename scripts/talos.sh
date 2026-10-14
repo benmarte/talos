@@ -4618,13 +4618,14 @@ _talos_run_lease() {
 # Draft guard asks the PR itself, never memory; the one CI wait runs only
 # under qa_mode: ci; QA dispatches through the driver's one dispatch path;
 # and the lease is released before the function returns to the loop. With the
-# QA pre-CI gate on (pr.ready_gate qa-local, #535) QA already passed on the
-# draft: the function ends after the guard, with no QA and no CI wait. The
+# QA pre-CI gate on (pr.ready_gate qa-local, #535), or a qa:pass fresh at the
+# head (#689), QA already passed: the function ends after the guard, with no QA
+# and no CI wait. The
 # function calls none of the gate's verdict verbs itself -- after it returns,
 # the next pass's existing merge arm runs (the gate reads ci_runs before the
 # write that deletes the head branch).
 _talos_run_draft_complete() {
-  local _pr="$1" _n="$2" _r _b _ci_wait _t_ms _wait_args
+  local _pr="$1" _n="$2" _r _b _ci_wait _t_ms _wait_args _l _fresh
   # The write is leased first: a held lease or an unavailable ledger/lock ends
   # the run with the lease wait, zero ready-pr.
   _talos_run_lease "$_n"
@@ -4647,6 +4648,25 @@ _talos_run_draft_complete() {
   # stages decide, exactly as for any ready PR.
   if [ "${_RUN_GATE:-0}" -eq 1 ]; then
     _talos_collect_drop   # ready-pr wrote: the next pass must read the ready PR
+    _talos_lease_release "$_n"
+    return 0
+  fi
+  # A fresh qa:pass (#689): a local QA recovery posts it at the head before the
+  # restart, so QA has nothing left to do here -- the same freshness read as
+  # _talos_run_repeat_check (label present, and the stale list not naming qa;
+  # a failed read is not fresh, QA runs).
+  _fresh=0
+  _talos_cap _vcs view-pr "$_pr"
+  _l=""
+  [ "$_RC" -ne 0 ] || _l="$(_talos_labels "$_OUT" 2>/dev/null)"
+  if _talos_has "$_l" "$(_talos_label_of qa)"; then
+    _talos_cap _vcs check-approval-sha "$_pr" --stale-list
+    if [ "$_RC" -eq 0 ]; then _fresh=1
+    elif grep -q '^stale role=' <<<"$_OUT" && ! grep -q '^stale role=qa ' <<<"$_OUT"; then _fresh=1
+    fi
+  fi
+  if [ "$_fresh" -eq 1 ]; then
+    _talos_collect_drop
     _talos_lease_release "$_n"
     return 0
   fi
