@@ -51,8 +51,9 @@
 #                           of an open PR (`pipeline-vcs.sh list-prs` once; on
 #                           failure, branch cleanup is skipped -- fail safe),
 #                           and merged: tip reachable from a remote ref, or
-#                           `find-pr <N> merged` returns it (lookup failure
-#                           keeps the branch). Any other branch is kept.
+#                           `find-pr <N> merged` returns it with a head commit
+#                           equal to the tip (lookup failure, no head commit or
+#                           later local commits keep the branch). Any other branch is kept.
 #                           Runs `git worktree prune` afterward. Prints one
 #                           line per removal/deletion and a summary line
 #                           `talos:worktree-sweep removed=<n> kept=<n>
@@ -689,7 +690,9 @@ _wt_sweep_body() {
 # configured base and heads no open PR (`pipeline-vcs.sh list-prs` queried once
 # via _wt_open_pr_heads); and it is merged -- its tip is an ancestor of some
 # refs/remotes/* ref, or `pipeline-vcs.sh find-pr <N> merged` returns a PR whose
-# headRefName is the branch (squash merges). `git branch -D` follows those
+# headRefName is the branch and whose head commit (headRefOid) equals the local
+# tip (squash merges; later local commits or no head commit keep the branch).
+# `git branch -D` follows those
 # checks (a squash-merged tip is not an ancestor, so `-d` would refuse); a
 # branch still checked out by a kept worktree is refused by git regardless.
 # Every other branch is kept silently. Sets _WT_BRANCHES_DELETED (count) and
@@ -700,7 +703,7 @@ _wt_sweep_body() {
 _WT_BRANCHES_DELETED=0
 _WT_BRANCHES_NAMES=""
 _wt_sweep_branches() {
-  local base_branch open_heads rc=0 br n merged
+  local base_branch open_heads rc=0 br n merged tip
   _WT_BRANCHES_DELETED=0
   _WT_BRANCHES_NAMES=""
   base_branch="$(_wt_configured_base_branch)"
@@ -719,11 +722,13 @@ _wt_sweep_branches() {
     case "$open_heads" in *" $br "*) continue ;; esac
     if ! _wt_branch_on_remote "$br"; then
       merged="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" find-pr "$n" merged 2>/dev/null)" || continue
-      printf '%s\n' "$merged" | BR="$br" python3 -I -c '
+      tip="$(git rev-parse --verify --quiet "refs/heads/$br")" || continue
+      printf '%s\n' "$merged" | BR="$br" TIP="$tip" python3 -I -c '
 import json, os, sys
 for line in sys.stdin:
     try:
-        if json.loads(line).get("headRefName") == os.environ["BR"]:
+        pr = json.loads(line)
+        if pr.get("headRefName") == os.environ["BR"] and pr.get("headRefOid") == os.environ["TIP"]:
             sys.exit(0)
     except Exception:
         pass
