@@ -962,7 +962,14 @@ Only `!= true`, `== false` or `!draft` (alone or `&&`-combined) counts as a skip
 
 ### Approvals bound to the head SHA
 
-An approval is a PR comment ending in `<!-- talos:approval sha=<40-hex head SHA> role=<role> -->` plus the role's label. `pipeline-vcs.sh post-approval <pr> <role> [--body-file f] [--issue n]` (`github` and `github-api` only) reads the head SHA itself, posts, labels and self-checks (`stamp ok`, or `stamp FAILED` and exit 1).
+An approval is a PR comment ending in `<!-- talos:approval sha=<40-hex head SHA> role=<role> -->` plus the role's label. `pipeline-vcs.sh post-approval <pr> <role> --body-file f [--issue n]` (`github` and `github-api` only) reads the head SHA itself, posts, labels and self-checks (`stamp ok`, or `stamp FAILED` and exit 1). `--body-file` is required for `reviewer` and `security` and optional for the other roles.
+
+For `reviewer` and `security`, `post-approval` refuses (exit 1, nothing posted) when:
+- there is no `--body-file`: `pipeline-vcs: post-approval: <role> approval requires --body-file with the review text`;
+- the file is empty: `pipeline-vcs: post-approval: --body-file '<f>' is empty; the <role> review text is required`;
+- the file is older than the stage's start: `pipeline-vcs: post-approval: --body-file '<f>' is stale (older than this <role> stage's start); write a fresh review for this PR`. The start is the record `talos.sh prompt` writes under the state dir, `stage-start/<role>-pr<N>`. With no record (manual use) there is no staleness check.
+
+After a successful post the reviewer or security body file is removed; the qa and docs bodies are kept. `--recover-only` posts nothing and needs no body.
 
 | Role | Label |
 |---|---|
@@ -994,6 +1001,18 @@ Docs is decided by `talos.sh docs-gate <pr> --issue <N>`. With `docs:done` on th
 
 - none changed: it stamps `docs:done` again, runs `done docs` and prints `docs=skip reason=no-docs-delta`. No agent runs.
 - some changed: `docs=dispatch reason=docs-delta shape=restamp restamp-file=<F>`. `<F>` holds `approved_sha=`, `head_sha=`, those paths and their diff. `talos.sh prompt docs --shape restamp --restamp-file <F>` renders a read-only pass: the agent edits and commits nothing, stamps an accurate delta and starts its final message with `RESTAMP_PASS: `, or stamps nothing and starts it with `RESTAMP_FAIL: ` and what is wrong or missing.
+
+`docs-gate` stops with `stop reason=<r>` when it cannot decide:
+
+| Reason | Meaning and fix |
+|---|---|
+| `usage` | Missing or unknown argument (exit 2). Pass `<pr> --issue <N>`. |
+| `scripts-missing` | `talos.sh` could not read its scripts directory. Reinstall, then run again. |
+| `python-missing` | `python3` is not on `PATH`. Install it and run again. |
+| `scratch-unavailable` | A scratch file for the paths or the delta could not be written. Fix `TMPDIR` or free space, then run again. |
+| `config-unreadable` | The pipeline config could not be read. Fix the file and run again. |
+| `stamp-failed` | Deciding `docs=skip` but the `docs:done` stamp could not be posted (exit 1). Nothing is skipped; fix the provider or token and run again. |
+| `done-failed` | The `done docs` step after the stamp failed. It is a `warn reason=done-failed` line, not a stop: the run's docs step takes the `docs=` line wherever it stands, so the warn before it no longer ends the run. Read the relayed `done` warns if the label is missing. |
 
 `done docs --verdict RESTAMP_FAIL` removes `docs:done` and answers `next=continue`: the next pass finds no label and runs the full docs stage, with no developer fix round. The full stage also runs on a first pass, under `roles.docs_mode: always`, when a read fails (labels, stale list, head, `git diff`) and when the delta is over `TALOS_PROMPT_CHANGE_MAX_BYTES`. `gate merge` strips a stale `docs:done` like any other label, so after that strip docs is a first pass again. On the code driver the docs re-stamp runs on the docs role's normal model.
 
@@ -1315,6 +1334,20 @@ Start with `bash scripts/pipeline-config.sh --show` (each key, its value and lay
 | `stop-requested` | `talos.sh run --stop` was called; the stage that was running finished first. Run again to go on. |
 | `merged pr=<M> reason=checkout-return-failed` | The PR merged, but the checkout could not be put back on the base branch (a tracked change on the issue branch, a refused switch, a pull that is not a fast-forward; stderr names which). Nothing was forced. Fix the checkout by hand, then run again. |
 | `scripts-missing` | After a merge, `talos.sh` in the scripts directory could not be read, so the next pass could not start. Reinstall, then run again. |
+| `usage` | `talos.sh run` got an argument it does not take (exit 2). Fix the command line. |
+| `unknown-role` | A role name that is not one of the pipeline's roles reached `run` or `prompt` (exit 2). Fix the role name. |
+| `unknown-pr` | The PR the pass needs could not be found or read. Check the PR number (it may be closed or deleted), then run again. |
+| `dispatch-failed role=<r> reason=<why>` | A stage could not be started; the line is on stderr and `<why>` names the cause. Fix that cause, then run again. |
+| `ready-pr-failed` | With `pr.draft` true, taking the PR out of draft failed (`draft-pr-failed` after a failed QA). See [Running in a Claude Code cloud session](#running-in-a-claude-code-cloud-session) for a session that may not change draft state. Mark the PR ready by hand, then run again. |
+| `draft-unverified` | The PR's draft state could not be read, so the pass did not guess. Check the provider and token, then run again. |
+| `head-unresolved` | The PR's head commit could not be read; no verdict is recorded without a head. Check the provider and run again. |
+| `stage-blocked role=<r>` | The stage ended with `BLOCKED: <reason>`; the issue and PR are `pipeline:blocked`. Read the reason, fix it, remove the label and run again. |
+| `merge-failed` | `merge-pr` failed (a conflict, a failed required check, a refused merge). Read the error on stderr, fix the PR and run again. |
+| `state-unavailable` | The answer of `next` or of a gate was not one of the shapes the driver knows, usually a transient failure reading the state dir. Nothing is recorded; the next start can simply run again. If it repeats, check the state dir is writable. |
+| `python-missing` | `python3` is not on `PATH`. Install it, then run again. |
+| `scratch-unavailable` | A scratch file or directory (`TMPDIR`, default `/tmp`) could not be created or written. Free space or fix `TMPDIR`, then run again. |
+| `config-unreadable` | The pipeline config file could not be read or parsed. Fix the file (`talos.sh env` prints what it reads) and run again. |
+| `map-failed` | Updating the project map failed. It is a `warn` line: the first failure turns the map off for the rest of the run and the run goes on. Run the map verb by hand to see why. |
 | `trust-unverified` | The login lookup was refused (an Actions or GitHub App token) and `markers.trusted_authors` is empty, so marker authors cannot be checked. Set `markers.trusted_authors`. |
 
 A `pipeline:blocked` issue or PR is skipped until a human removes the label. After a token-budget block, removing it grants one more limit (or raise `limits.tokens_per_issue`).

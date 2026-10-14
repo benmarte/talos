@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- docs: `docs/reference.md` documents the reviewer/security `post-approval` body rule and its refusals, and every `talos.sh run` and `docs-gate` stop reason; a test fails when a reason in `scripts/talos.sh` has no row
 - docs: `docs/reference.md` documents `pipeline-criteria.sh placement`, the `tests-line-open` spec-check slug, the vacuous / `head=missing` `spec-unusable` stops, `stop action=wait reason=ci`, and the bash 3.2 lint with its `# bash3-ok: <reason>` opt-out; README links the project map and API credits
 - fix(review): `post-approval` refuses a reviewer or security approval with no review body, an empty one, or a body file older than the stage's start, and deletes the body once posted, so a bare marker or another PR's review text can no longer stamp the gate
 - fix(qa): `qa-run` judges the red commit tests-only by its own change, so merging the base branch into the PR branch no longer skips the red proof and passes a vacuous test
