@@ -3465,7 +3465,8 @@ else:
 #                      _VCS_GITLAB_SCAN_CAP characters; github is unchanged.
 #           host    -- optional, gitlab flavor only: the project's host; a
 #                      /-/issues/N URL then counts only on that host.
-#   stdout: one JSON object per matching PR: {number, state, title, headRefName}.
+#   stdout: one JSON object per matching PR: {number, state, title, headRefName},
+#           plus headRefOid (the PR's head commit) when the adapter supplied one.
 _vcs_shared_find_pr() {
   local n="$1" state="${2:-open}" repo="${3:-}" flavor="${4:-github}" host="${5:-}"
   python3 -I -c "
@@ -3497,7 +3498,10 @@ for pr in prs:
     branch_match = bool(re.search(r'(?:^|/)issue-' + n_esc + r'(?:-|$)', ref))
     body_match   = bool(body_re.search(hay))
     if branch_match or body_match:
-        print(json.dumps({k: pr.get(k) for k in ('number','state','title','headRefName')}))
+        row = {k: pr.get(k) for k in ('number','state','title','headRefName')}
+        if pr.get('headRefOid'):
+            row['headRefOid'] = pr['headRefOid']
+        print(json.dumps(row))
 " "$n" "$state" "$repo" "$flavor" "$host"
 }
 
@@ -4824,6 +4828,7 @@ for pr in prs:
     out.append({'number': pr.get('number'), 'state': out_state,
                 'title': pr.get('title', ''),
                 'headRefName': (pr.get('head') or {}).get('ref', ''),
+                'headRefOid': (pr.get('head') or {}).get('sha') or '',
                 'body': pr.get('body') or ''})
 json.dump(out, sys.stdout)
 " | _vcs_shared_find_pr "$n" "$state" "$REPO"

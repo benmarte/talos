@@ -165,7 +165,7 @@ out_gh="$(bash "$VCS" find-pr 42 2>/dev/null)"; rc_gh=$?
 
 reset_stubs
 use_github_api
-printf '%s\n' '[{"number":9,"state":"open","title":"fix: guard null session","head":{"ref":"fix/issue-42-guard"},"base":{"ref":"main"},"body":"Closes #42"}]' > "$CURL_QUEUE"
+printf '%s\n' '[{"number":9,"state":"open","title":"fix: guard null session","head":{"ref":"fix/issue-42-guard","sha":"abc123sha"},"base":{"ref":"main"},"body":"Closes #42"}]' > "$CURL_QUEUE"
 out_api="$(bash "$VCS" find-pr 42 2>/dev/null)"; rc_api=$?
 
 assert_parity "find-pr" "$out_gh" "$rc_gh" "$out_api" "$rc_api"

@@ -42,7 +42,7 @@ assert_not_contains "$out" "branches=" "AC5 nothing deleted prints no branches= 
 
 # AC3: squash-merged PR, tip on no remote ref, find-pr returns it as merged.
 _branch feat/issue-7-x
-CLOSED='[{"number":70,"state":"closed","merged_at":"2026-10-01T00:00:00Z","title":"feat: x","head":{"ref":"feat/issue-7-x"},"body":"Closes #7"}]'
+CLOSED='[{"number":70,"state":"closed","merged_at":"2026-10-01T00:00:00Z","title":"feat: x","head":{"ref":"feat/issue-7-x","sha":"'"$(git rev-parse refs/heads/feat/issue-7-x)"'"},"body":"Closes #7"}]'
 _queue "$OPEN" "$CLOSED" "[]"
 out="$(bash "$WT" sweep 2>&1)"
 assert_eq "deleted" "$(_state feat/issue-7-x)" "AC3 a squash-merged pipeline branch is deleted by sweep"

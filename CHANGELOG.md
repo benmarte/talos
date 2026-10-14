@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- fix(sweep): a squash-merged `fix|feat/issue-<N>-*` branch is deleted only when its tip equals the merged PR's head commit (`find-pr` prints `headRefOid` on github); later local commits or an unavailable head commit keep it
 - fix(run): a QA FAIL whose `qa-run` results are all `vacuous` ends `spec-unusable` with no developer round whatever QA's message says: the driver reads `qa-run`'s own lines from a file in the run's scratch, and the PM marks an already-green guard `(prose)`
 - fix(qa): `spec-check` refuses a `Tests:` path that is a directory (`tests-line-refused: test path is a directory: <path>`), and `qa-run` answers `verdict BLOCKED spec` for one instead of a FAIL no developer round can fix
 - fix(sweep): `sweep` deletes only merged `fix|feat/issue-<N>-*` local branches and never an unpushed one, and its summary line ends `branches_deleted=<n>` with the names after `branches=`
