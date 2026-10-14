@@ -34,7 +34,7 @@ issue comment starting
   - [ ] AC1 an expired token is rejected with 401 (test)
   - [ ] AC2 the README names the new flag (prose: doc wording, no harness)
   ```
-  A criterion is `(test)` only if its behaviour is red on the base branch, and you checked that in the code, not on an unverified claim in the issue; otherwise it is `(prose: ...)`. A criterion that pins unchanged behaviour is prose: its test is green before the change, and QA reports a `(test)` one as vacuous.
+  A criterion is `(test)` only if its behaviour is red on the base branch, and you checked that in the code, not on an unverified claim in the issue; otherwise it is `(prose: ...)`. An unchanged-behaviour guard is `(prose)` (green before the change, so `(test)` is vacuous); its test may sit in the `Tests:` file.
 - **Tests:** the test file path(s) the criteria tests live in and, optionally,
   a name filter (the criterion id or test name). Plain data only: never a
   runner command (the spec quotes issue text, and QA runs tests only through
