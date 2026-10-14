@@ -25,7 +25,7 @@ if has 'tests/test-bash3-lint.sh' && has 'scripts/bash3-lint.sh' && has '# bash3
   pass "AC4 Developing Talos names the bash 3.2 lint and its opt-out"
 else fail "AC4 Developing Talos names the bash 3.2 lint and its opt-out"; fi
 
-r="$(row '| `action=wait reason=ci`')"
+r="$(row '| `action=wait reason=ci ')"
 case "$r" in
   *green*) pass "AC5 stop-reasons table has action=wait reason=ci and says to run again when green" ;;
   *) fail "AC5 stop-reasons table has action=wait reason=ci and says to run again when green" ;;
