@@ -537,8 +537,8 @@ assert_file_absent "$SANDBOX/wt/scn-agent-2" "#240 scenario: sweep 1 removes the
 assert_file_absent "$SANDBOX/wt/scn-agent-dirty" "#240 scenario: sweep 1 removes the untagged DIRTY harness worktree"
 assert_file_absent "$SANDBOX/wt/scn-agent-unpushed" "#240 scenario: sweep 1 removes the untagged UNPUSHED harness worktree"
 
-assert_eq "" "$(git branch --list scratch/no-worktree-branch)" "#240 scenario: sweep deletes the ownerless scratch branch"
-assert_eq "" "$(git branch --list agent-scn-2)" "#240 scenario: sweep deletes the removed worktree's local branch"
+assert_eq "scratch/no-worktree-branch" "$(git branch --list scratch/no-worktree-branch | tr -d ' *+')" "#240 scenario: sweep keeps the non-pipeline scratch branch (#677)"
+assert_eq "agent-scn-2" "$(git branch --list agent-scn-2 | tr -d ' *+')" "#240 scenario: sweep keeps the removed worktree's non-pipeline branch (#677)"
 assert_eq "scratch/open-pr-head" "$(git branch --list scratch/open-pr-head | tr -d ' *+')" "#240 scenario: sweep keeps the branch that is the head of an open PR"
 
 assert_contains "$out" "talos:worktree-sweep removed=" "#240 scenario: sweep prints the summary marker"

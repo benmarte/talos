@@ -45,16 +45,19 @@
 #                           unidentifiable worktree counts as "not open".
 #                           Preserves ONLY worktrees tagged/identified with an
 #                           open id (plus lane homes and the current
-#                           checkout, as always). Also deletes local branches
-#                           that are not main/master/the configured base, do
-#                           not track a live remote branch, and are not the
-#                           head of an open PR (queries `pipeline-vcs.sh
-#                           list-prs` once, not per branch; on failure,
-#                           branch cleanup is skipped entirely -- fail safe).
+#                           checkout, as always). Also deletes merged local
+#                           pipeline branches (#677): name `fix|feat/issue-<N>-*`,
+#                           not main/master/the configured base, not the head
+#                           of an open PR (`pipeline-vcs.sh list-prs` once; on
+#                           failure, branch cleanup is skipped -- fail safe),
+#                           and merged: tip reachable from a remote ref, or
+#                           `find-pr <N> merged` returns it (lookup failure
+#                           keeps the branch). Any other branch is kept.
 #                           Runs `git worktree prune` afterward. Prints one
 #                           line per removal/deletion and a summary line
 #                           `talos:worktree-sweep removed=<n> kept=<n>
-#                           freed=<size>`.
+#                           freed=<size> branches_deleted=<n>`, plus
+#                           ` branches=<a>,<b>` when n>0.
 #   tag <issue-number>      Write <current worktree toplevel>/.talos/env
 #                           (the #186 KEY=value format) so `remove`/`sweep`
 #                           can identify this worktree even when it isn't a
@@ -675,23 +678,31 @@ _wt_sweep_body() {
   _wt_sweep_branches "$keep"
 
   git worktree prune 2>/dev/null || true
-  echo "talos:worktree-sweep removed=$removed kept=$kept freed=$(_wt_format_kb "$freed_kb")"
+  local br_field=""
+  [ "$_WT_BRANCHES_DELETED" -gt 0 ] && br_field=" branches=$_WT_BRANCHES_NAMES"
+  echo "talos:worktree-sweep removed=$removed kept=$kept freed=$(_wt_format_kb "$freed_kb") branches_deleted=$_WT_BRANCHES_DELETED$br_field"
   exit 0
 }
 
-# Delete stale local branches: every ref under refs/heads/ that is NOT
-# main/master/the configured base branch, does NOT track a still-existing
-# remote branch, and is NOT the head of a currently open PR. `pipeline-vcs.sh
-# list-prs` is queried exactly once for the open-PR head-branch set (not per
-# branch) via _wt_open_pr_heads. A branch still checked out by a worktree
-# `sweep` decided to keep is naturally protected too -- `git branch -D`
-# refuses to delete a checked-out branch regardless of these checks.
+# Delete merged Talos pipeline branches (#677). A local branch goes only if ALL
+# hold: its name is `fix|feat/issue-<N>-...`; it is not main/master/the
+# configured base and heads no open PR (`pipeline-vcs.sh list-prs` queried once
+# via _wt_open_pr_heads); and it is merged -- its tip is an ancestor of some
+# refs/remotes/* ref, or `pipeline-vcs.sh find-pr <N> merged` returns a PR whose
+# headRefName is the branch (squash merges). `git branch -D` follows those
+# checks (a squash-merged tip is not an ancestor, so `-d` would refuse); a
+# branch still checked out by a kept worktree is refused by git regardless.
+# Every other branch is kept silently. Sets _WT_BRANCHES_DELETED (count) and
+# _WT_BRANCHES_NAMES (comma-separated) for the summary line.
 #
-# Fails SAFE: if the open-PR lookup itself fails, an unknown open-PR set must
-# never be treated as an empty one (that would delete a live PR's branch), so
-# branch cleanup is skipped entirely for this sweep rather than guessed.
+# Fails SAFE: if the open-PR lookup fails, branch cleanup is skipped entirely;
+# if the merged-PR lookup fails, that branch is kept.
+_WT_BRANCHES_DELETED=0
+_WT_BRANCHES_NAMES=""
 _wt_sweep_branches() {
-  local base_branch open_heads rc=0 br
+  local base_branch open_heads rc=0 br n merged
+  _WT_BRANCHES_DELETED=0
+  _WT_BRANCHES_NAMES=""
   base_branch="$(_wt_configured_base_branch)"
   open_heads="$(_wt_open_pr_heads)" || rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -703,11 +714,37 @@ _wt_sweep_branches() {
     [ -z "$br" ] && continue
     case "$br" in main|master) continue ;; esac
     [ -n "$base_branch" ] && [ "$br" = "$base_branch" ] && continue
-    git show-ref --verify --quiet "refs/remotes/origin/$br" && continue
+    n="$(printf '%s' "$br" | sed -n -E 's#^(fix|feat)/issue-([0-9]+)-.*#\2#p')"
+    [ -z "$n" ] && continue
     case "$open_heads" in *" $br "*) continue ;; esac
-    git branch -D "$br" >/dev/null 2>&1 \
-      && echo "pipeline-worktree: deleted stale local branch $br"
+    if ! _wt_branch_on_remote "$br"; then
+      merged="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" find-pr "$n" merged 2>/dev/null)" || continue
+      printf '%s\n' "$merged" | BR="$br" python3 -I -c '
+import json, os, sys
+for line in sys.stdin:
+    try:
+        if json.loads(line).get("headRefName") == os.environ["BR"]:
+            sys.exit(0)
+    except Exception:
+        pass
+sys.exit(1)' || continue
+    fi
+    if git branch -D "$br" >/dev/null 2>&1; then
+      echo "pipeline-worktree: deleted stale local branch $br"
+      _WT_BRANCHES_DELETED=$((_WT_BRANCHES_DELETED + 1))
+      _WT_BRANCHES_NAMES="$_WT_BRANCHES_NAMES${_WT_BRANCHES_NAMES:+,}$br"
+    fi
   done < <(git for-each-ref --format='%(refname:short)' refs/heads/)
+}
+
+# True when branch $1's tip is an ancestor of some refs/remotes/* ref.
+_wt_branch_on_remote() {
+  local tip ref
+  tip="$(git rev-parse --verify --quiet "refs/heads/$1")" || return 1
+  while IFS= read -r ref; do
+    git merge-base --is-ancestor "$tip" "$ref" 2>/dev/null && return 0
+  done < <(git for-each-ref --format='%(refname)' refs/remotes/)
+  return 1
 }
 
 # The repo's `base_branch` config, falling back to the resolved default
