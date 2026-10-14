@@ -634,7 +634,7 @@ A verify command becomes `Bash(<command>:*)` only when it is plain words (letter
 - `agents.claude_permission_mode` (`acceptEdits`, `auto`, `bypassPermissions`, `manual`, `dontAsk`, `plan`; role override `agents.roles.<role>.claude_permission_mode`) is unset by default and then no `--permission-mode` is passed. **Risk:** issue and PR text is untrusted input and a stage acts on it; `bypassPermissions` removes every guard, so use it only on a sandboxed or ephemeral runner. A broad `claude_allowed_tools` entry such as `Bash` or `Bash(*)` is the same trade.
 - An `--allowedTools` or `--dangerously-skip-permissions` in `agents.runner_args` is the owner's own policy: nothing is added on top of it. A `--permission-mode` there wins over the config key.
 
-A stage whose final message starts with `BLOCKED: <reason>` is a blocked outcome for any role: `talos.sh run` sets `pipeline:blocked` on the issue (and the PR), relays the reason, and stops with `stop reason=stage-blocked role=<r>` (exit 0). QA's `BLOCKED: spec: <why>` is the exception: it stops as `stop reason=spec-unusable issue=<N> pr=<M>`.
+A stage whose final message starts with `BLOCKED: <reason>` is a blocked outcome for any role: `talos.sh run` sets `pipeline:blocked` on the issue (and the PR), relays the reason, and stops with `stop reason=stage-blocked role=<r>` (exit 0). QA's `BLOCKED: spec: <why>` is the exception: it stops as `stop reason=spec-unusable issue=<N> pr=<M>`, and `BLOCKED: verify: timed out after <n> ms` stops as `stop reason=verify-timeout role=qa pr=<M>`.
 
 ### Token usage on adapter runs
 
@@ -912,7 +912,7 @@ An unreadable gate answers `stop reason=<r>` (fail closed). Gates 3 and 4 set `p
 | `verify.targeted` | `true` | `true`: while iterating the developer runs only tests covering changed files; `false`: the full list after each change. Both run the full list once, after the last change. |
 | `verify.qa_mode` | derived | `ci` when `merge.required_checks` is non-empty, else `local`. Explicit `ci` with no required checks becomes `local` (stderr warning). Repo file only. |
 | `verify.ci_wait_s` | `900` | CI wait budget, 1 to 86400 s |
-| `verify.timeout_ms` | `600000` | Foreground timeout for each verify and CI-wait call, 1 to 86400000 |
+| `verify.timeout_ms` | `600000` | Foreground timeout for each verify and CI-wait call, 1 to 86400000. The claude harness stops a foreground command at 600000 ms, so under the claude runner the stage prompts state `min(verify.timeout_ms, 600000)` and `talos.sh prompt` warns on stderr when the configured value is over the cap; other runners get it unchanged. A suite that needs longer goes in several `verify.commands` (for example `bash tests/run-tests.sh --quiet --shard 1/4` to `4/4`) or `qa_mode: ci` |
 
 - Verify runs in the foreground only, through `scripts/pipeline-verify.sh [--issue N] [--worktree P] [-- cmd]`, which exports the stage identity and prints `talos:verify issue=.. worktree=..`.
 - QA never runs the full list, except under `pr.ready_gate: qa-local` while the PR is a draft ([Draft PRs](#draft-prs)). `scripts/pipeline-criteria.sh qa-run` runs the spec's test files; other targeted runs use `tests/run-tests.sh --for <path> --strict` (Talos's own runner; exit 3 means no test selected and QA relies on CI). Reviewer, security and docs never run verify.
@@ -1342,6 +1342,7 @@ Start with `bash scripts/pipeline-config.sh --show` (each key, its value and lay
 | `ready-pr-failed` | With `pr.draft` true, taking the PR out of draft failed (`draft-pr-failed` after a failed QA). See [Running in a Claude Code cloud session](#running-in-a-claude-code-cloud-session) for a session that may not change draft state. Mark the PR ready by hand, then run again. |
 | `draft-unverified` | The PR's draft state could not be read, so the pass did not guess. Check the provider and token, then run again. |
 | `head-unresolved` | The PR's head commit could not be read; no verdict is recorded without a head. Check the provider and run again. |
+| `verify-timeout role=qa pr=<M>` | QA's verify command timed out in the foreground (`BLOCKED: verify: timed out after <n> ms`); the issue and PR are `pipeline:blocked`. Split `verify.commands` so each fits 600000 ms (for example `run-tests.sh --shard i/n`), use `verify.qa_mode: ci`, or shorten the suite, then remove the label and run again. |
 | `stage-blocked role=<r>` | The stage ended with `BLOCKED: <reason>`; the issue and PR are `pipeline:blocked`. Read the reason, fix it, remove the label and run again. |
 | `merge-failed` | `merge-pr` failed (a conflict, a failed required check, a refused merge). Read the error on stderr, fix the PR and run again. |
 | `state-unavailable` | The answer of `next` or of a gate was not one of the shapes the driver knows, usually a transient failure reading the state dir. Nothing is recorded; the next start can simply run again. If it repeats, check the state dir is writable. |

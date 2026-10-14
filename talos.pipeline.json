@@ -26,10 +26,13 @@
   },
   "verify": {
     "commands": [
-      "bash tests/run-tests.sh --quiet"
+      "bash tests/run-tests.sh --quiet --shard 1/4",
+      "bash tests/run-tests.sh --quiet --shard 2/4",
+      "bash tests/run-tests.sh --quiet --shard 3/4",
+      "bash tests/run-tests.sh --quiet --shard 4/4"
     ],
     "qa_mode": "local",
-    "timeout_ms": 1800000
+    "timeout_ms": 600000
   },
   "merge": {
     "method": "squash",

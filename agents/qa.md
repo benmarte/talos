@@ -51,9 +51,12 @@ substitute it).
    one). Exit 3: no usable runner -- check the criteria by hand and say so in
    the verdict.
 Foreground rule: run the criteria check, the verify list and the CI-wait poll
-in the foreground with an explicit timeout of `verify.timeout_ms` ms (default
-600000); never use background execution, `&`, `nohup`, `disown`, or
-sleep-polling; never end your turn while a verify command is running.
+in the foreground with an explicit timeout of `min(verify.timeout_ms, 600000)`
+ms (default 600000; the harness caps a foreground command at 600000); never use
+background execution, `&`, `nohup`, `disown`, or sleep-polling; never end your
+turn while a verify command is running. A command that times out in the
+foreground ends QA: the final message's first line is
+`BLOCKED: verify: timed out after <n> ms`.
    **Pre-CI gate:** a prompt with a `Pre-CI gate` line means a draft PR with no
    CI yet: never wait on CI; after `qa-run` run the full `verify:`
    list once as the prompt says, and a red result is a FAIL.
