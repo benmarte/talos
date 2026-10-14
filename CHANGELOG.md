@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- fix(sweep): `sweep` deletes only merged `fix|feat/issue-<N>-*` local branches and never an unpushed one, and its summary line ends `branches_deleted=<n>` with the names after `branches=`
 - fix(qa): under the claude runner a `verify.timeout_ms` above the harness's 600000 ms foreground cap is clamped in the stage prompts with a warning, and a QA verify that times out ends as `stop reason=verify-timeout`; this repo's verify runs as four `--shard i/4` commands
 - fix(run): the docs prompt names the issue, and a repeated docs/reviewer/security/adversarial dispatch whose approval is stamped at the PR's head no longer ends the run with `same-verdict-same-head` (#671)
 - fix(agent): the built-in `claude` runner passes the role's model (`agents.roles.<role>.model`, then `agents.model`) as `--model`, so per-role model routing applies under the code driver; an explicit `--model` in `agents.runner_args` wins

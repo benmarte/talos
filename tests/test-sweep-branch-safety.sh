@@ -14,7 +14,12 @@ git checkout -q -B main
 git commit -q --allow-empty -m "root"
 git update-ref refs/remotes/origin/main HEAD
 git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
-printf '{"vcs": {"provider": "github", "repo": "acme/widget"}}\n' > talos.pipeline.json
+github_leg gh
+export TALOS_RETRY_SLEEP_SCALE=0
+# The REST queue is read in call order: sweep's one list-prs read (open PRs),
+# then one `find-pr <N> merged` read per pipeline branch not on a remote ref,
+# in branch-name order.
+_queue() { : > "$CURL_QUEUE"; for _q in "$@"; do printf '%s\n' "$_q" >> "$CURL_QUEUE"; done; }
 
 # _branch <name> -- a local branch with one commit found on no other ref.
 _branch() {
@@ -28,7 +33,8 @@ OPEN='[{"number":99,"title":"unrelated","head":{"ref":"scratch/other"},"base":{"
 
 _branch chore/x
 _branch feat/issue-8-y
-out="$(STUB_GH_PRS_RAW="$OPEN" bash "$WT" sweep 2>&1)"
+_queue "$OPEN" "[]"
+out="$(bash "$WT" sweep 2>&1)"
 assert_eq "survives" "$(_state chore/x)" "AC1 an unpushed non-pipeline branch survives sweep"
 assert_eq "survives" "$(_state feat/issue-8-y)" "AC2 an unpushed pipeline branch with no merged PR survives sweep"
 assert_contains "$out" "branches_deleted=0" "AC5 nothing deleted ends branches_deleted=0"
@@ -37,7 +43,8 @@ assert_not_contains "$out" "branches=" "AC5 nothing deleted prints no branches= 
 # AC3: squash-merged PR, tip on no remote ref, find-pr returns it as merged.
 _branch feat/issue-7-x
 CLOSED='[{"number":70,"state":"closed","merged_at":"2026-10-01T00:00:00Z","title":"feat: x","head":{"ref":"feat/issue-7-x"},"body":"Closes #7"}]'
-out="$(STUB_GH_CLOSED_PRS_RAW="$CLOSED" STUB_GH_PRS_RAW="$OPEN" bash "$WT" sweep 2>&1)"
+_queue "$OPEN" "$CLOSED" "[]"
+out="$(bash "$WT" sweep 2>&1)"
 assert_eq "deleted" "$(_state feat/issue-7-x)" "AC3 a squash-merged pipeline branch is deleted by sweep"
 assert_contains "$out" "branches_deleted=1 branches=feat/issue-7-x" "AC5 summary counts and names the deleted branch"
 assert_contains "$out" "talos:worktree-sweep removed=0 kept=0 freed=" "AC5 summary keeps the removed/kept/freed fields first"
@@ -48,7 +55,8 @@ git commit -q --allow-empty -m "merged work"
 git update-ref refs/remotes/origin/main HEAD
 git checkout -q main
 _branch feat/issue-6-w
-out="$(STUB_GH_API_FAIL=closed-prs STUB_GH_PRS_RAW="$OPEN" bash "$WT" sweep 2>&1)"
+_queue "$OPEN" 404 404
+out="$(bash "$WT" sweep 2>&1)"
 assert_eq "deleted" "$(_state fix/issue-5-z)" "AC4 a pipeline branch reachable from origin/<base> is deleted without the PR lookup"
 assert_contains "$out" "branches=fix/issue-5-z" "AC5 summary names the branch deleted by reachability"
 

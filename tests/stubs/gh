@@ -310,15 +310,6 @@ print(json.dumps(d[:int(os.environ['LIMIT'])]))
     else
       printf '[{"number":3,"title":"Fix login bug","labels":[{"name":"pipeline:dev"}],"body":"Body text"}]'
     fi ;;
-  "api --paginate repos/"*"/pulls?state=closed"*)
-    # find-pr <n> merged (#677): STUB_GH_CLOSED_PRS_RAW is the REST page of
-    # closed PRs (merged_at set when merged), empty by default.
-    # STUB_GH_API_FAIL=closed-prs simulates a failed page.
-    if [ "${STUB_GH_API_FAIL:-}" = "closed-prs" ]; then
-      echo "gh: HTTP 502: Bad Gateway" >&2
-      exit 1
-    fi
-    printf '%s' "${STUB_GH_CLOSED_PRS_RAW:-[]}" ;;
   "api --paginate repos/"*"/pulls?state=open"*)
     # Simulates `gh api --paginate` for the REST pulls endpoint (#171); see
     # the issues variant above for the page-concatenation rationale.

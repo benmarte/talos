@@ -330,7 +330,7 @@ assert_eq "1" "$([ -d "$W43" ] && echo 1 || echo 0)" "sweep <N> keeps the worktr
 bash "$WT" sweep >/dev/null 2>&1
 assert_eq "0" "$([ -d "$W43" ] && echo 1 || echo 0)" "a sweep that does not list <N> removes the worktree (since #240)"
 assert_file_exists "$HF_DIR/43.json" "sweep does not delete the handoff"
-assert_eq "" "$(git branch --list fix/issue-43-refused)" "documented gap, pinned: an unpushed local branch with no worktree is deleted by sweep"
+assert_eq "fix/issue-43-refused" "$(git branch --list fix/issue-43-refused | tr -d ' *+')" "an unpushed local branch with no worktree survives sweep (#677)"
 
 # ── remove <N> deletes the handoff with the worktree ─────────────────────────
 W44="$(new_wt 44 clean)"
