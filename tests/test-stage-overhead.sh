@@ -72,8 +72,8 @@ budget() {  # role ceiling
 }
 budget developer 12150  # #648: the placement check before the PR
 budget qa 8650  # #610: the exit-4 rule (an unusable spec is BLOCKED, not a FAIL); #648: a vacuous FAIL is the spec's
-budget reviewer 4820  # #596: the Change-block rule at Read diff and the prompt's marker line
-budget security 4380  # #596: the same
+budget reviewer 4940  # #596: the Change-block rule at Read diff and the prompt's marker line; #661: the mandatory review body file
+budget security 4500  # #596: the same; #661: the mandatory sign-off body file
 budget pm 4750  # #648: (test) only if red on base; every test file on the Tests: line
 budget validator 4300
 budget docs 4600

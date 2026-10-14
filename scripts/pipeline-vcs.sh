@@ -492,7 +492,7 @@
 #                                             working tree is never read in a mixed state.
 #                                             Used as an orchestrator precondition before
 #                                             dispatching non-worktree-isolated stages.
-#   post-approval <pr> <role> [--body-file p] [--issue n] [--recover-only]
+#   post-approval <pr> <role> [--body-file p; required for reviewer/security] [--issue n] [--recover-only]
 #                                             --recover-only (#521): only the
 #                                             duplicate-marker path below: the label
 #                                             is applied when the exact marker exists
@@ -7870,6 +7870,40 @@ if [ "$VERB" = "post-approval" ]; then
     exit 1
   fi
 
+  # (#661) reviewer and security approvals carry their review: a bare marker, or
+  # a body file left over from an earlier run, would stamp the gate over no
+  # review or another PR's. Not --recover-only (it posts nothing), not qa/docs.
+  if [ "$_pa_recover" -eq 0 ] && { [ "$_pa_role" = "reviewer" ] || [ "$_pa_role" = "security" ]; }; then
+    if [ -z "$_pa_body_file" ]; then
+      echo "pipeline-vcs: post-approval: $_pa_role approval requires --body-file with the review text" >&2
+      exit 1
+    fi
+    if [ -z "$(tr -d '[:space:]' < "$_pa_body_file")" ]; then
+      echo "pipeline-vcs: post-approval: --body-file '$_pa_body_file' is empty; the $_pa_role review text is required" >&2
+      exit 1
+    fi
+    # Stage start: epoch seconds that `talos.sh prompt` wrote to
+    # <state>/stage-start/<role>-pr<PR> (or -issue<N>). None recorded (manual
+    # use): no staleness check.
+    . "$SCRIPT_DIR/pipeline-paths.sh"
+    _pa_start=""
+    _pa_sd="$(_talos_state_dir 2>/dev/null)" || _pa_sd=""
+    if [ -n "$_pa_sd" ]; then
+      for _pa_sf in "$_pa_sd/stage-start/${_pa_role}-pr${_pa_n}" "$_pa_sd/stage-start/${_pa_role}-issue${_pa_issue:-0}"; do
+        [ -f "$_pa_sf" ] || continue
+        _pa_start="$(tr -dc '0-9' < "$_pa_sf")"
+        [ -n "$_pa_start" ] && break
+      done
+    fi
+    if [ -n "$_pa_start" ]; then
+      _pa_mtime="$(python3 -I -c 'import os,sys; print(int(os.path.getmtime(sys.argv[1])))' "$_pa_body_file")" || _pa_mtime=""
+      if [ -z "$_pa_mtime" ] || [ "$_pa_mtime" -lt "$_pa_start" ]; then
+        echo "pipeline-vcs: post-approval: --body-file '$_pa_body_file' is stale (older than this $_pa_role stage's start); write a fresh review for this PR" >&2
+        exit 1
+      fi
+    fi
+  fi
+
   if [ "$DRY_RUN" = "true" ]; then
     printf '[dry-run] post-approval: would fetch head SHA for PR #%s, post marker role=%s, add label %s\n' \
       "$_pa_n" "$_pa_role" "$_pa_label"
@@ -8031,6 +8065,11 @@ print('none')
     exit 1
   }
   rm -f "$_pa_tmpfile"
+  # (#661) a reviewer or security body is consumed: the next run cannot reuse
+  # it. docs and qa bodies stay: the docs gate reads its stamp body again.
+  case "$_pa_role" in
+    reviewer | security) [ -z "$_pa_body_file" ] || rm -f "$_pa_body_file" ;;
+  esac
 
   # Apply approval label via label-pr (both halves in one operation --
   # label-without-marker eliminated (marker posts first); marker-without-label
