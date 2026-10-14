@@ -24,7 +24,7 @@ ok() {
 for f in reviewer security; do
   ok "AC1 agents/$f.md drops 'Gated behind QA pass'" agents/$f.md absent 'Gated behind QA pass'
   ok "AC1 agents/$f.md drops 'QA has passed'" agents/$f.md absent 'QA has passed'
-  ok "AC1 agents/$f.md says it runs before QA on a draft PR" agents/$f.md present 'runs before QA'
+  ok "AC1 agents/$f.md says it runs before QA on a draft PR" agents/$f.md present 'before QA'
 done
 ok "AC1 agents/docs.md drops 'Terminal stage'" agents/docs.md absent 'Terminal stage'
 ok "AC1 agents/docs.md drops 'the terminal stage'" agents/docs.md absent 'the terminal stage'
@@ -43,8 +43,8 @@ ok "AC2 reference says parallel is only on the LLM loop" docs/reference.md prese
 ok "AC2 README lists the draft order" README.md present 'docs, review, security, QA and a squash merge'
 ok "AC2 reviewer.md drops 'security runs in parallel and'" agents/reviewer.md absent 'security runs in parallel and may have set'
 ok "AC2 security.md drops 'the reviewer runs in parallel and'" agents/security.md absent 'the reviewer runs in parallel and may have'
-ok "AC2 reviewer.md says parallel is the LLM loop" agents/reviewer.md present 'the LLM loop runs'
-ok "AC2 security.md says parallel is the LLM loop" agents/security.md present 'the LLM loop'
+ok "AC2 reviewer.md says parallel is the LLM loop" agents/reviewer.md present 'parallel on the LLM loop only'
+ok "AC2 security.md says parallel is the LLM loop" agents/security.md present 'parallel on the LLM loop only'
 
 # AC3 checkouts under the code driver
 ok "AC3 reference drops 'One git worktree per stage and issue'" docs/reference.md absent 'One git worktree per stage and issue'
@@ -106,7 +106,7 @@ ok "AC8 harness ref says only dollar cost is unrecorded" skills/pipeline/refs/ha
 ok "AC9 README drops 'and a token budget guard'" README.md absent 'and a token budget guard'
 ok "AC9 README says the budget guard is opt-in" README.md present 'opt-in token budget guard'
 ok "AC9 example drops 'Entries are runner names only'" talos.pipeline.json.example absent 'Entries are runner names only'
-ok "AC9 example says a failover entry may be a profile name" talos.pipeline.json.example present 'may be a profile name'
+ok "AC9 example says a failover entry may be a profile name" talos.pipeline.json.example present 'or a profile name'
 ok "AC9 setup SKILL drops 'Only agents.* keys are read'" skills/setup/SKILL.md absent 'Only `agents.*` keys are read from that file'
 ok "AC9 reference drops 'conventional and never set'" docs/reference.md absent 'conventional and never set'
 ok "AC9 reference says five options" docs/reference.md present 'five options'

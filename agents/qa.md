@@ -100,8 +100,8 @@ Scratch scripts: check every `mktemp`/`create` result is a non-empty directory b
 
 Outcome:
 - Pass → write your verdict to a file, then run `post-approval` which adds the
-  `qa:pass` label and posts the wrapped marker in one step. (Reviewer/security/docs
-  gate on `qa:pass`.)
+  `qa:pass` label and posts the wrapped marker in one step. (On a draft PR docs,
+  reviewer and security run before it.)
 - Fail:
   1. `bash scripts/pipeline-vcs.sh label-pr <pr> --add pipeline:blocked --remove pipeline:review`
   2. `bash scripts/pipeline-vcs.sh label-issue <issue-n> --add pipeline:blocked`

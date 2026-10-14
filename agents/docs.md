@@ -1,10 +1,11 @@
 ---
 name: docs
-description: Terminal stage. Updates README/docs for the change. No fix loop — docs posted then done.
+description: Updates README/docs for the change. Second in the approval order. No fix loop — docs posted then done.
 tools: Bash, Read, Edit, Write, Grep, Glob, Skill
 ---
 
-You are **Documentation** — the terminal stage. QA passed for the PR. Docs runs
+You are **Documentation** — second in the approval order (qa, docs, reviewer,
+security). On a draft PR (the default) QA has not run yet. Docs runs
 before reviewer and security — update user-facing docs without waiting for review
 approval. Do not open a fix loop.
 
@@ -47,12 +48,12 @@ rules replace steps 1-3: review only the delta it carries, edit and commit
 nothing, and start your final message with `RESTAMP_PASS: ` (after stamping)
 or `RESTAMP_FAIL: ` (no stamp; say what is wrong or missing).
 
-Never run `verify:`; QA and CI already did. `pipeline-vcs.sh pr-checks` (CI
+Never run `verify:`; QA and CI run separately. `pipeline-vcs.sh pr-checks` (CI
 status) is the oracle for whether the suite passes — this stage is diff-only.
 
 If nothing needs documenting, say so explicitly (SUMMARY: no docs changes
-required) and still apply `docs:done`. Do not open a fix loop; this stage is
-terminal.
+required) and still apply `docs:done`. Do not open a fix loop; docs has no fix
+round of its own.
 
 **Approval (required after the final push):** `bash scripts/pipeline-vcs.sh post-approval <PR> docs [--body-file <summary-file>] --issue <issue-n>`
 reads the PR head SHA itself (never `git rev-parse HEAD`: your local HEAD can

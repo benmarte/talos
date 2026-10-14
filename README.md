@@ -2,14 +2,14 @@
 
 > *The bronze automaton that patrols your backlog.*
 
-Talos is an agnostic **issue-to-PR orchestrator**. Label an issue `pipeline:ready` and Talos walks it through validator, spec, developer, QA, review, security, docs and a squash merge, with your own test commands as the gate. It keeps nothing resident: the state lives in labels and comments on the issue and PR, plus a local events log.
+Talos is an agnostic **issue-to-PR orchestrator**. Label an issue `pipeline:ready` and Talos walks it through validator, spec, developer, docs, review, security, QA and a squash merge, with your own test commands as the gate. It keeps nothing resident: the state lives in labels and comments on the issue and PR, plus a local events log.
 
 It is code-driven by default: `/talos:pipeline` starts `scripts/talos.sh run`, the deterministic orchestrator, once. Code decides the next step, runs the gates and calls the model only for the stage work itself; the session acts only when the driver stops on something that needs judgment. `execution.orchestrator: llm` opts back into the loop where the session dispatches each stage as a subagent.
 
 - **Trackers:** GitHub (the `gh` CLI or a token), GitLab, Azure DevOps, or a local `plan.md` checklist.
 - **Harnesses:** Claude Code natively; pi, Codex CLI, Gemini CLI, Antigravity, or any agentic CLI (including a local llama.cpp model) as the stage runner.
 - **Notifications:** Slack, Discord, Teams, Buzz and a generic command sink.
-- **Safe by default:** approvals bound to the PR head SHA, draft PRs with one CI run, a forbidden-files gate, secrets only by reference, and a token budget guard.
+- **Safe by default:** approvals bound to the PR head SHA, draft PRs with one CI run, a forbidden-files gate, secrets only by reference, and an opt-in token budget guard (`limits.tokens_per_issue`, unset by default).
 
 ## How it works
 

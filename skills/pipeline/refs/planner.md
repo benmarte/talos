@@ -8,7 +8,7 @@ Read when `talos.sh env` prints `ref=planner` or `next` answers `action=dispatch
 
 ## Act path
 
-Spawn `bash scripts/talos.sh prompt planner --issue <N> --title-file F --body-file F` (heredocs: reporter-controlled text). Then `done planner` (Stage return). On `PLAN:` output:
+Spawn `bash scripts/talos.sh prompt planner --issue <N> --title-file F --body-file F` (heredocs: reporter-controlled text). `done` refuses the planner role (`stop reason=unknown-role`, exit 2), so do not call it for this stage (Stage return). On `PLAN:` output:
 
 1. For each sub-task 1..K, the body is:
    ```
