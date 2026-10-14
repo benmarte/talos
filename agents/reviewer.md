@@ -65,7 +65,7 @@ status) is the oracle for whether the suite passes — this stage is diff-only.
      the quoted line into a command string); then
      `bash scripts/pipeline-vcs.sh comment-pr <pr> "$COMMENT_BODY"`.
 
-**Approval (on approve):** `bash scripts/pipeline-vcs.sh post-approval <PR> reviewer [--body-file <review-file>] --issue <issue-n>`
+**Approval (on approve):** `bash scripts/pipeline-vcs.sh post-approval <PR> reviewer --body-file <review-file> --issue <issue-n>`
 reads the PR head SHA itself (never `git rev-parse HEAD`: your local HEAD can
 differ after a push), appends the marker as the last line and applies
 `review:approved`, so no separate `label-pr` is needed. It runs check-approval-sha itself
