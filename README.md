@@ -60,6 +60,8 @@ talos #7 qa ●●●●◐○ 3.41M · cache read 48.20M
 
 One dot per stage (validator, pm, developer, review, qa, merge): done, running, pending, then the tokens spent on the issue so far, then its cache reads, which are not part of that total (the part is absent when no run recorded them). Other harnesses can call `talos-status.sh --line` from their footer hook. After a cleared session or an LLM switch, run `/talos:pipeline` (or `talos.sh run`) again: the work is resumed from GitHub labels, the PR and the events log, with no extra file to maintain. See [Hooks, events, spend and the status line](docs/reference.md#hooks-events-spend-and-the-status-line).
 
+`talos.sh map` renders a one-page [project map](docs/reference.md#project-map) of the queue, and `agents.claude_api_credits: true` lets claude stages on a Max or Team plan start on its [monthly API credits](docs/reference.md#monthly-api-credits).
+
 ## Switching LLMs: profiles
 
 A profile bundles a mode, a runner, a model and per-role overrides under one name. Select one with `agents.profile` or per run with `TALOS_PROFILE`; `agents.fallback` lists what to switch to when a provider is down.

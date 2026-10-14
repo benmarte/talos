@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- docs: `docs/reference.md` documents `pipeline-criteria.sh placement`, the `tests-line-open` spec-check slug, the vacuous / `head=missing` `spec-unusable` stops, `stop action=wait reason=ci`, and the bash 3.2 lint with its `# bash3-ok: <reason>` opt-out; README links the project map and API credits
 - fix(review): `post-approval` refuses a reviewer or security approval with no review body, an empty one, or a body file older than the stage's start, and deletes the body once posted, so a bare marker or another PR's review text can no longer stamp the gate
 - fix(qa): `qa-run` judges the red commit tests-only by its own change, so merging the base branch into the PR branch no longer skips the red proof and passes a vacuous test
 - fix(cloud): a refused first attempt whose fallback worked (`ready-pr`/`draft-pr` via the ccr route, `merge-pr`'s branch delete) prints no `HTTP 403` note; a merged PR's branch that could not be deleted is one `warn reason=branch-left issue=<N> branch=<B>` in the run's output; `warn reason=board-failed` from `done` and the fix-round gate now reaches the run's output (once per run); a QA FAIL with no verdict comment gets it posted from the stage's final message before the fix round, or the run stops `reason=qa-comment-missing`
