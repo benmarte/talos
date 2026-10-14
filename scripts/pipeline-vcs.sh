@@ -1053,6 +1053,60 @@ except Exception:
 "
 }
 
+# ── Azure GitHub-shaped keys (#683) ────────────────────────────────────────────
+# `_azure_normalise <issues|issue|prs>` reads the raw `az` JSON on stdin and
+# prints it with the keys pipeline-next.py reads added next to the raw ones
+# (the raw keys stay, existing azure callers read them): number, title, state,
+# body and labels[{name}] (from the ';'-separated System.Tags) for work items;
+# number, headRefName, baseRefName ('refs/heads/' stripped), isDraft and
+# isCrossRepository for PRs. Input that is not the expected JSON passes
+# through unchanged.
+_azure_normalise() {
+  python3 -I -c "
+import json, sys
+
+raw = sys.stdin.read()
+kind = sys.argv[1]
+
+def item(w):
+    if not isinstance(w, dict):
+        return w
+    f = w.get('fields') or {}
+    tags = [t.strip() for t in (f.get('System.Tags') or '').split(';')]
+    w['number'] = w.get('id')
+    w['title'] = f.get('System.Title')
+    w['state'] = f.get('System.State')
+    w['body'] = f.get('System.Description') or ''
+    w['labels'] = [{'name': t} for t in tags if t]
+    return w
+
+def branch(ref):
+    ref = ref or ''
+    return ref[len('refs/heads/'):] if ref.startswith('refs/heads/') else ref
+
+def pr(p):
+    if not isinstance(p, dict):
+        return p
+    p['number'] = p.get('pullRequestId')
+    p['headRefName'] = branch(p.get('sourceRefName'))
+    p['baseRefName'] = branch(p.get('targetRefName'))
+    p['isDraft'] = bool(p.get('isDraft'))
+    p['isCrossRepository'] = bool(p.get('forkSource'))
+    return p
+
+try:
+    d = json.loads(raw)
+    if kind == 'issue':
+        d = item(d)
+    elif isinstance(d, list):
+        d = [item(x) if kind == 'issues' else pr(x) for x in d]
+except Exception:
+    sys.stdout.write(raw)
+    sys.exit(0)
+print(json.dumps(d))
+" "$1"
+}
+
 # _json_array_len: like _json_array_count, but exits non-zero when stdin is
 # not a JSON array -- for callers where "unreadable" must not read as empty
 # (#319).
@@ -6181,7 +6235,7 @@ print(" ".join(str(i) for i in sorted(ids)))
       local _azli_count
       _azli_count="$(printf '%s' "$_azli_out" | _json_array_count)"
       _list_cap_warn list-issues "$_azli_cap" "$_azli_count" "ADO flat-WIQL 20000-item server ceiling" "work items"
-      printf '%s\n' "$_azli_out"
+      printf '%s\n' "$_azli_out" | _azure_normalise issues
       ;;
     view-issue)
       # --spec (#201) is a GitHub-only compact form; fall back to the plain
@@ -6189,7 +6243,13 @@ print(" ".join(str(i) for i in sorted(ids)))
       for _vi_a in "$@"; do
         case "$_vi_a" in --spec|--since-stage) echo "pipeline-vcs: view-issue $_vi_a: not implemented for provider 'azure' -- falling back to full view-issue" >&2 ;; esac
       done
-      _run az boards work-item show --id "$1" $ORG_ARG --output json
+      if [ "$DRY_RUN" = "true" ]; then
+        _run az boards work-item show --id "$1" $ORG_ARG --output json
+      else
+        local _azvi_out
+        _azvi_out="$(az boards work-item show --id "$1" $ORG_ARG --output json)" || exit 1
+        printf '%s\n' "$_azvi_out" | _azure_normalise issue
+      fi
       ;;
     comment-issue)
       _azure_post_comment "$1" "$2"
@@ -6384,7 +6444,7 @@ print((d.get('sourceRefName') or '').replace('refs/heads/', '', 1))
       local _azlp_count
       _azlp_count="$(printf '%s' "$_azlp_out" | _json_array_count)"
       _list_cap_warn list-prs "$_azlp_cap" "$_azlp_count" "az repos pr list --top ceiling" PRs
-      printf '%s\n' "$_azlp_out"
+      printf '%s\n' "$_azlp_out" | _azure_normalise prs
       ;;
     diff-pr)
       # az has no PR-diff command. Fetch both refs and diff them — this reads the
@@ -7601,11 +7661,11 @@ fi
 
 # ── has-spec: skip-PM detection (#199) ────────────────────────────────────────
 # Exits 0 when issue <n>'s body already IS a usable spec (skip the PM stage),
-# exits 1 when PM should still run. GitHub only (github, github-api parity) —
-# fetches via this script's own view-issue verb, so both providers share one
+# exits 1 when PM should still run. github, github-api and azure (#683) —
+# fetches via this script's own view-issue verb, so the providers share one
 # code path and one scan (_has_spec_scan above).
 if [ "$VERB" = "has-spec" ]; then
-  if [ "$PROVIDER" != "github" ] && [ "$PROVIDER" != "github-api" ]; then
+  if [ "$PROVIDER" != "github" ] && [ "$PROVIDER" != "github-api" ] && [ "$PROVIDER" != "azure" ]; then
     echo "pipeline-vcs: has-spec: not implemented for provider '$PROVIDER'" >&2
     exit 1
   fi

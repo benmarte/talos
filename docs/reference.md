@@ -748,6 +748,7 @@ Cost: the plan's cloud session credit applies to cloud sessions only; a run on y
 | `board.azure_states.{ready,in_progress,in_review,done,blocked}` | Work-item State per pipeline status |
 
 - Labels are Tags. A board move sets the work item State. Defaults are Scrum (`New`, `Committed`, `Committed`, `Done`); `blocked` is unset and leaves the State alone. Set the keys for Agile or CMMI.
+- `list-issues`, `view-issue` and `list-prs` print the raw `az` objects with the GitHub-shaped keys the router reads added: `number`, `title`, `state`, `body` (from `System.Description`) and `labels` as `[{"name": ...}]` (from `System.Tags`) for work items; `number`, `title`, `headRefName`, `baseRefName` (`refs/heads/` stripped), `isDraft` and `isCrossRepository` for PRs. `has-spec` runs on Azure through that `view-issue`.
 - `create-pr` links the work item named by an `issue-<N>` branch with `--transition-work-items true`; that link closes it, not `Closes #N`.
 - `close-issue` sets `board.azure_states.done` and strips `pipeline:*` tags. `merge-pr` completes the PR (policies apply; `merge.method` is not passed). `update-branch` exits 2.
 - `bootstrap-board.sh` checks each configured state against the work item type, exits non-zero on a miss, never creates one.

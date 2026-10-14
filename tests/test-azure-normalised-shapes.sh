@@ -56,7 +56,7 @@ export STUB_AZURE_WORKITEM_LIST='[{"id":327,"fields":{"System.Title":"Add login"
 state="$(python3 -I "$TALOS_ROOT/scripts/pipeline-next.py" collect --vcs "$VCS" --roles "" --me "" \
   --merge-auto "" --required-checks "" --pr-draft "" --ready-gate "" \
   --talos-labels "pipeline:ready,pipeline:dev,pipeline:confirmed" --base-branch main </dev/null 2>&1)"
-assert_eq "327" "$(_field "$state" 'd["queue"][0]["number"] if d.get("queue") else "empty"')" "AC4 pipeline-next.py collect queues the azure work item tagged pipeline:ready"
+assert_eq "327" "$(_field "$state" 'd["queued"][0] if d.get("queued") else "empty"')" "AC4 pipeline-next.py collect queues the azure work item tagged pipeline:ready"
 unset STUB_AZURE_WORKITEM_LIST
 
 # ── AC5 has-spec ─────────────────────────────────────────────────────────────
