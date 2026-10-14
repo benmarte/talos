@@ -79,6 +79,14 @@ printf 'manual review\n' > "$SANDBOX/body.md"; touch -t 202001010000 "$SANDBOX/b
 run_pa reviewer --body-file "$SANDBOX/body.md"
 assert_exit_code 0 "$RC" "AC4 no recorded start: only AC1/AC3 apply"
 
+# AC8: only a reviewer or security body is consumed; docs and qa keep theirs.
+for r in docs qa; do
+  printf 'stamp body\n' > "$SANDBOX/body.md"
+  run_pa "$r" --body-file "$SANDBOX/body.md"
+  assert_exit_code 0 "$RC" "AC8 $r post succeeds"
+  assert_file_exists "$SANDBOX/body.md" "AC8 $r body file left in place"
+done
+
 # AC6
 run_pa qa
 assert_exit_code 0 "$RC" "AC6 qa keeps its bare marker"
