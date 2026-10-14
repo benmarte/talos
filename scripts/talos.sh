@@ -4068,6 +4068,8 @@ _talos_run_dispatch() {
   if [ "$_role" = docs ]; then
     _v="$(bash "$SCRIPT_DIR"/talos.sh docs-gate "$_pr" --issue "$_n" 2>"$_CFG_CACHE_DIR/err")" || _run_fail docs-gate "$_v"
     _talos_relay docs-gate "$(cat "$_CFG_CACHE_DIR/err")"
+    # A warn line may precede the verdict: take the docs= line wherever it is.
+    _v="$(grep -m1 '^docs=' <<<"$_v")" || _v=""
     case "$_v" in
       docs=skip*) return 0 ;;
       docs=dispatch*)

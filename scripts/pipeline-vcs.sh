@@ -8065,8 +8065,11 @@ print('none')
     exit 1
   }
   rm -f "$_pa_tmpfile"
-  # (#661) the body is consumed: the next run cannot reuse it.
-  [ -z "$_pa_body_file" ] || rm -f "$_pa_body_file"
+  # (#661) a reviewer or security body is consumed: the next run cannot reuse
+  # it. docs and qa bodies stay: the docs gate reads its stamp body again.
+  case "$_pa_role" in
+    reviewer | security) [ -z "$_pa_body_file" ] || rm -f "$_pa_body_file" ;;
+  esac
 
   # Apply approval label via label-pr (both halves in one operation --
   # label-without-marker eliminated (marker posts first); marker-without-label
