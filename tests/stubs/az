@@ -86,6 +86,8 @@ print(json.dumps([{"pullRequestId": 100000 + skip + i, "status": "active",
     fi ;;
   "repos pr show "*)
     [ "${STUB_AZURE_PR_SHOW_FAIL:-}" = "1" ] && _stub_fail "TF401180: The requested pull request was not found."
+    # merge-pr (#709) reads the title with `--query title`: STUB_AZURE_PR_TITLE.
+    case "$args" in *"--query title"*) printf '%s\n' "${STUB_AZURE_PR_TITLE:-}"; exit 0 ;; esac
     ;;
   "rest --method get "*"/pullRequests/"*"/labels"*)
     # PR labels (#702): `az repos pr show` never carries labels, so they come
@@ -93,7 +95,10 @@ print(json.dumps([{"pullRequestId": 100000 + skip + i, "status": "active",
     # with STUB_AZURE_STATE_DIR set, the label names POSTed so far (one per line
     # in <dir>/labels) are appended.
     [ "${STUB_AZURE_PR_LABELS_FAIL:-}" = "1" ] && _stub_fail "TF401180: The requested pull request was not found."
-    BASE="${STUB_AZURE_PR_LABELS:-}" LABELS="${STUB_AZURE_STATE_DIR:-/nonexistent}/labels" python3 -I -c '
+    # STUB_AZURE_PR_LABELS_<id> (#709) answers one PR's labels, else STUB_AZURE_PR_LABELS.
+    _lb_id="${args#*pullRequests/}"; _lb_id="${_lb_id%%/*}"
+    _lb_var="STUB_AZURE_PR_LABELS_${_lb_id}"
+    BASE="${!_lb_var:-${STUB_AZURE_PR_LABELS:-}}" LABELS="${STUB_AZURE_STATE_DIR:-/nonexistent}/labels" python3 -I -c '
 import json, os
 d = json.loads(os.environ["BASE"] or "{\"value\": []}")
 try:
@@ -146,6 +151,12 @@ print(json.dumps(d))
       done
       printf '{}\n'; exit 0
     fi ;;
+  "rest --method patch "*"/pullRequests/"*"/threads/"*"/comments/"*)
+    # upsert-pr-comment (#709): STUB_AZURE_PATCH_FAIL=1 makes the update fail.
+    [ "${STUB_AZURE_PATCH_FAIL:-}" = "1" ] && _stub_fail "TF401027: You need the Git 'PullRequestContribute' permission." ;;
+  "rest --method delete "*"/pullRequests/"*"/labels/"*)
+    # list-needs-owner --clear-answered (#709): STUB_AZURE_LABEL_DELETE_FAIL=1 fails the delete.
+    [ "${STUB_AZURE_LABEL_DELETE_FAIL:-}" = "1" ] && _stub_fail "TF401027: You need the Git 'PullRequestContribute' permission." ;;
   "rest --method get "*"/workItems/"*"/comments"*)
     # Attempt verbs (#685): work-item comments. STUB_AZURE_WI_COMMENTS_PAGE_<tok>
     # is the raw REST body ({"comments": [...], "continuationToken": ...}) for
