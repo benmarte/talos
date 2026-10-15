@@ -40,6 +40,16 @@ assert_eq "AC1 same
 AC2 test
 AC3 prose
 AC4 test" "$(bash "$CRIT" ids "$S")" "AC1 ids: the plain-checklist numbering gives the same kinds"
+cat > "$S" <<'TALOS_Qk7wNa2xRf9e'
+- [ ] AC1 keeps the (same) and (prose: wording) markers out of the kind (test)
+- [ ] AC2 a (same: why) mention inside a test criterion (test)
+- [ ] AC3 a (test) mention inside a same criterion (same)
+- [ ] AC4 a (same) mention inside a prose criterion (prose: reason)
+TALOS_Qk7wNa2xRf9e
+assert_eq "AC1 test
+AC2 test
+AC3 same
+AC4 prose" "$(bash "$CRIT" ids "$S")" "AC1 ids: the last marker names the kind, an earlier mention does not"
 
 # ── AC2-AC4 report ───────────────────────────────────────────────────────────
 SP="$SANDBOX/report-spec.md"
