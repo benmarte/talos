@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- feat(criteria): a `(same: <why>)` criterion kind for behaviour that must not change; `qa-run` passes it when its tests are green at the red commit and at the head (`AC<n> PASS same red@<sha8> green@head`) instead of failing it as `vacuous`.
 - fix(vcs): `comment-issue` and `comment-pr` refuse a positional or `--body` body that is one whitespace-free token naming a readable file, relative (`.talos/x.body`) or absolute, with the "use `--body-file`" message; a `--body-file` or stdin body is never read as a path, and a token that is not a file is still posted as text
 - fix(gate): the same-area check of `gate fix-round` counts two findings comments of one unchanged PR head as one round, so a re-review after a restart no longer asks the owner a design question; the reviewer, security and adversarial profiles end a findings comment with `<!-- talos:reviewed sha=<head> -->` (new `talos:reviewed` marker), and a comment without it keeps counting as its own round
 - feat(azure): `upsert-pr-comment`, `mark-needs-owner` and `list-needs-owner` work on Azure DevOps PRs, so the `talos:spend` comment is kept in one thread comment and an owner question is posted and read back on the PR; `create-pr` and `merge-pr` pass `--squash` from `merge.method` (squash by default, with the PR title as the squash message), so a squash-only branch policy reads as met
