@@ -3,20 +3,22 @@
 # id (#421). ids, map and report are pure text processing: no network, no LLM,
 # no git. qa-run (#549) is the one verb that drives git and the test runner.
 #
-# The PM numbers each criterion `AC<n>` and marks it `(test)` or
-# `(prose: <reason>)`; the developer names each criterion's test after its id
+# The PM numbers each criterion `AC<n>` and marks it `(test)`,
+# `(same: <why>)` (behaviour that must not change: green at the red commit and
+# at the head, #715) or `(prose: <reason>)`; the developer names each criterion's test after its id
 # (`AC2 rejects an expired token`), so a runner's own output maps back to the
 # criterion. Talos's test helpers print one assertion label per line,
 # `  ok  <label>` or `FAIL  <label>`; the id is the first word of the label.
 #
 # Usage:
 #   pipeline-criteria.sh ids <spec-file>
-#       One line per criterion: `AC<n> test|prose`. A spec with `AC<n>` ids
+#       One line per criterion: `AC<n> test|same|prose`. A spec with `AC<n>` ids
 #       uses them. A spec with none (no PM stage: the issue's own checklist)
 #       numbers its `- [ ]` / `- [x]` items 1-based; an unmarked item is test.
+#       `(same)` with or without a reason is `same`; `(prose` is checked first.
 #   pipeline-criteria.sh map <runner-output-file> [--spec <spec-file>]
 #       `AC<n> pass|fail` for each id seen in the output (`fail` when any
-#       assertion for the id failed). With --spec: each (test) id of the spec,
+#       assertion for the id failed). With --spec: each (test) and (same) id of the spec,
 #       `missing` when the output has no line for it (a crash, a typo).
 #   pipeline-criteria.sh report --spec <spec-file> --red <output> \
 #                               --head <output> --red-sha <sha8>
@@ -27,6 +29,10 @@
 #         AC<n> FAIL vacuous (green at red@<sha8>)
 #         AC<n> FAIL head=<fail|missing> red=<state>
 #         AC<n> prose hand-checked
+#       A (same) criterion (#715) passes when green at red AND at head:
+#         AC<n> PASS same red@<sha8> green@head
+#         AC<n> PASS same green@head (red: missing)   no per-id output at red
+#         AC<n> FAIL same red=<state> head=<state>    red or missing at head, or red at red
 #       Exit 1 when any line is FAIL.
 #   pipeline-criteria.sh qa-run <issue> <pr> [--base <branch>]
 #       The whole QA criteria check in one call (#549), run from the QA
@@ -36,7 +42,8 @@
 #       `Tests:` line, validates every item, runs the test files at the PR head
 #       and at the red commit (the first commit after the merge-base), and
 #       prints the `report` lines plus one verdict line:
-#         qa-run: verdict PASS ...      the mechanical half passed (prose is yours)
+#         qa-run: verdict PASS ...      the mechanical half passed (prose is yours);
+#             `, <k> same` is named before the prose count when k > 0
 #         qa-run: verdict FAIL <why>    exit 1
 #         qa-run: verdict BLOCKED spec: <why>    exit 4 (#610): the spec is
 #             unusable (the four faults of spec-usable below) and the PR was
@@ -62,8 +69,9 @@
 #       tests-line-open (#648): a line other than the `Tests:` line leaves a test
 #       file open (`developer's choosing`, `developer's choice`, `new or existing
 #       file`, any case); every test criterion's file is on the `Tests:` line.
-#       Exit 1 on a refusal. A spec with no test criterion (prose only, or no
-#       checklist) needs no `Tests:` line and is ok.
+#       Exit 1 on a refusal. A (same) criterion counts as a test criterion. A
+#       spec with none (prose only, or no checklist) needs no `Tests:` line and
+#       is ok.
 #   pipeline-criteria.sh spec-usable <issue>
 #       Can QA use this issue's spec (#610)? The check qa-run makes, on its own:
 #       the read of `view-issue <issue> --spec`, the criteria table, the
@@ -75,7 +83,7 @@
 #       no Tests: line`. `talos.sh run` asks it after a QA FAIL: a spec fault
 #       blocks the issue instead of starting a developer fix round.
 #   pipeline-criteria.sh placement <issue>
-#       Is every (test) criterion's id in a test file the `Tests:` line names
+#       Is every (test) and (same) criterion's id in a test file the `Tests:` line names
 #       (#648)? Run from the PR worktree; pure text, no test runs. The spec is
 #       read through the same parse as qa-run (an unusable spec is BLOCKED). An
 #       id counts when it is the first word of an assertion label (`"AC2 ..."`,
@@ -93,14 +101,14 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 usage() { sed -n '/^# Usage:/,/^# Exit codes/p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
-# ids FILE: the criteria table, `AC<n> test|prose`.
+# ids FILE: the criteria table, `AC<n> test|same|prose`.
 cmd_ids() {
   local file="${1:-}"
   [ -n "$file" ] || usage
   [ -f "$file" ] || { echo "pipeline-criteria: ids: no such file: $file" >&2; return 1; }
   local out
   out="$(awk '
-    function kind(l) { return (l ~ /\(prose[:)]/) ? "prose" : "test" }
+    function kind(l) { return (l ~ /\(prose[:)]/) ? "prose" : (l ~ /\(same[:)]/) ? "same" : "test" }
     /^[ \t]*[-*][ \t]+\[[ xX]\][ \t]/ {
       n++; plain_kind[n] = kind($0)
       if (match($0, /^[ \t]*[-*][ \t]+\[[ xX]\][ \t]+[*`]*AC[0-9]+/)) {
@@ -129,7 +137,7 @@ cmd_map() {
   done
   [ -f "$file" ] || { echo "pipeline-criteria: map: no such file: $file" >&2; return 1; }
   if [ -n "$spec" ]; then
-    want="$(cmd_ids "$spec" | awk '$2 == "test" { printf "%s ", $1 }')" || return 1
+    want="$(cmd_ids "$spec" | awk '$2 == "test" || $2 == "same" { printf "%s ", $1 }')" || return 1
   fi
   awk -v want="$want" '
     match($0, /^[ \t]*(ok|FAIL)[ \t]+AC[0-9]+([^0-9]|$)/) {
@@ -177,7 +185,17 @@ cmd_report() {
     fi
     r="$(awk -v i="$id" '$1 == i { print $2 }' <<<"$red_map")"
     h="$(awk -v i="$id" '$1 == i { print $2 }' <<<"$head_map")"
-    if [ "$h" != "pass" ]; then
+    if [ "$kind" = "same" ]; then
+      if [ "$h" != "pass" ]; then
+        printf '%s FAIL same red=%s head=%s\n' "$id" "${r:-missing}" "${h:-missing}"; rc=1
+      elif [ "$r" = "fail" ]; then
+        printf '%s FAIL same red=fail head=pass\n' "$id"; rc=1
+      elif [ "$r" = "pass" ]; then
+        printf '%s PASS same red@%s green@head\n' "$id" "$sha"
+      else
+        printf '%s PASS same green@head (red: missing)\n' "$id"
+      fi
+    elif [ "$h" != "pass" ]; then
       printf '%s FAIL head=%s red=%s\n' "$id" "${h:-missing}" "${r:-missing}"; rc=1
     elif [ "$r" = "fail" ]; then
       printf '%s red@%s green@head\n' "$id" "$sha"
@@ -326,7 +344,7 @@ cmd_spec_check() {
     echo "spec-check: refused tests-line-refused: $refused"
     return 1
   fi
-  n_test="$(cmd_ids "$spec" 2>/dev/null | awk '$2 == "test"' | wc -l | tr -d ' ')"
+  n_test="$(cmd_ids "$spec" 2>/dev/null | awk '$2 == "test" || $2 == "same"' | wc -l | tr -d ' ')"
   if [ "$n_test" -gt 0 ]; then
     # #648: a test file left to the developer is a file QA does not run.
     open_line="$(grep -vE '^[[:space:]]*([-*+][[:space:]]+)?(\[[ xX]\][[:space:]]+)?\**Tests\**:' "$spec" \
@@ -360,7 +378,7 @@ _spec_usable() {
   table="$(cmd_ids "$spec" 2>/dev/null)" || { spec_why="no criteria checklist"; return 1; }
   _tests_line "$spec"
   [ -z "$refused" ] || { spec_why="Tests: line refused ($refused)"; return 1; }
-  n="$(printf '%s\n' "$table" | awk '$2 == "test"' | wc -l | tr -d ' ')"
+  n="$(printf '%s\n' "$table" | awk '$2 == "test" || $2 == "same"' | wc -l | tr -d ' ')"
   [ "$found" -eq 1 ] || [ "$n" -eq 0 ] || { spec_why="$n test criteria and no Tests: line"; return 1; }
 }
 
@@ -396,7 +414,7 @@ cmd_placement() {
   fi
   top="$(git rev-parse --show-toplevel 2>/dev/null)" || top="$(pwd)"
   cd "$top" || return 1
-  for id in $(printf '%s\n' "$table" | awk '$2 == "test" { print $1 }'); do
+  for id in $(printf '%s\n' "$table" | awk '$2 == "test" || $2 == "same" { print $1 }'); do
     hit=0
     for p in ${paths[@]+"${paths[@]}"}; do
       if [ -f "$p" ] && grep -qE "([\"']|(ok|FAIL)[[:space:]]+)$id([^A-Za-z0-9_]|\$)" "$p"; then hit=1; break; fi
@@ -539,8 +557,9 @@ cmd_qa_run() {
     printf 'qa-run: verdict BLOCKED spec: %s\n' "$spec_why"
     return 4
   fi
-  local n_test n_prose
+  local n_test n_same n_prose
   n_test="$(printf '%s\n' "$table" | awk '$2 == "test"' | wc -l | tr -d ' ')"
+  n_same="$(printf '%s\n' "$table" | awk '$2 == "same"' | wc -l | tr -d ' ')"
   n_prose="$(printf '%s\n' "$table" | awk '$2 == "prose"' | wc -l | tr -d ' ')"
 
   # 5. No Tests: line on a usable spec: every criterion is prose.
@@ -671,7 +690,7 @@ EOF
     _qa_fail "$why"
     return $?
   fi
-  printf 'qa-run: verdict PASS (%s test criteria green, %s prose to hand-check)\n' "$n_test" "$n_prose"
+  printf 'qa-run: verdict PASS (%s test criteria green,%s %s prose to hand-check)\n' "$n_test" "$([ "$n_same" -eq 0 ] || printf ' %s same,' "$n_same")" "$n_prose"
   return 0
 }
 

@@ -27,6 +27,7 @@ issue comment starting
 - **Goal** (one sentence).
 - **Acceptance criteria** (checklist). Number each with a stable id (`AC<n>`:
   `AC1`, `AC2`, ...) and end it with a marker: `(test)` when a test can prove it, or
+  `(same: <why>)` when it pins behaviour that must not change, or
   `(prose: <reason>)` when it cannot (a doc wording, a process rule, a visual
   judgement with no harness) and say why. The developer writes one failing
   test per `(test)` criterion, named by its id, before any implementation:
@@ -34,7 +35,7 @@ issue comment starting
   - [ ] AC1 an expired token is rejected with 401 (test)
   - [ ] AC2 the README names the new flag (prose: doc wording, no harness)
   ```
-  A criterion is `(test)` only if its behaviour is red on the base branch, and you checked that in the code, not on an unverified claim in the issue; otherwise it is `(prose: ...)`. An unchanged-behaviour guard is `(prose)` (green before the change, so `(test)` is vacuous); its test may sit in the `Tests:` file.
+  A criterion is `(test)` only if its behaviour is red on the base branch, and you checked that in the code, not on an unverified claim in the issue; otherwise it is `(prose: ...)`. Behaviour the change must keep (a refactor, a migration, "X still works", a criterion that holds on main by construction) is `(same: <why>)`: green before the change, so `(test)` would be vacuous, and QA passes it only when its test is green at the red commit and at head. It still needs a file on the `Tests:` line; it is run, not read.
 - **Tests:** the test file path(s) the criteria tests live in and, optionally,
   a name filter (the criterion id or test name). Plain data only: never a
   runner command (the spec quotes issue text, and QA runs tests only through

@@ -36,8 +36,13 @@ substitute it).
    - `AC<n> FAIL ...` -- not green at head, missing, or `vacuous` (green at the
      red commit). A `vacuous` FAIL is not repaired by adding an assertion: the
      red commit is the branch's first, so no later commit can turn it red. The
-     fix is the spec (the criterion becomes `(prose: ...)`, or its test file goes
-     on the `Tests:` line); `talos.sh run` stops it as `spec-unusable`.
+     fix is the spec (the criterion becomes `(same: <why>)` when it pins
+     behaviour that must not change, or its test file goes on the `Tests:`
+     line); `talos.sh run` stops it as `spec-unusable`.
+   - `AC<n> PASS same red@<sha8> green@head` -- a `(same)` criterion green at
+     the red commit and at head (`... green@head (red: missing)` when the red
+     run left no line for it). `AC<n> FAIL same red=<state> head=<state>` is a
+     FAIL: red at head, or red at the red commit; the developer's fix round.
    - `AC<n> prose hand-checked` -- no test; you check it by hand in step 3.
    - `note:` lines (a red commit that is not tests-only, a skipped red run) are
      information, not failures.
