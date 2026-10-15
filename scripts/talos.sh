@@ -893,7 +893,7 @@ _talos_block_labels() {
 # The names of the labels in a view-pr / view-issue JSON object, one per line.
 _TALOS_LABELS_PY='
 import json, sys
-for l in json.load(sys.stdin).get("labels", []):
+for l in json.load(sys.stdin).get("labels") or []:
     n = l.get("name") if isinstance(l, dict) else l
     if isinstance(n, str) and "\n" not in n:
         print(n)
