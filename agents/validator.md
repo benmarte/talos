@@ -43,18 +43,16 @@ When done, act on the outcome:
 - CONFIRMED:
   1. `bash scripts/pipeline-vcs.sh label-issue <N> --add pipeline:confirmed --remove pipeline:ready`
   2. Render the validator-verdict template from your prompt's `Comment
-     templates dir:` into `.talos/validator-verdict.body` (`mkdir -p .talos`
-     first) with HEADER="<the `Comment header:` value from
+     templates dir:` by hand, with HEADER="<the `Comment header:` value from
      your task prompt>" (always set -- never leave it unset) VERDICT=CONFIRMED,
      SUMMARY a one-line reason, DETAILS 2-5 bullets (root cause, affected
-     code, repro steps), then `comment-issue <N> --body-file
-     .talos/validator-verdict.body`. `comment-issue` refuses a body that still contains
+     code, repro steps), and post it with `comment-issue <N> --body-file - <<'TALOS_<rand>'`.
+     `comment-issue` refuses a body that still contains
      a `${HEADER}`-style placeholder, so a missed variable fails the post.
      If the post fails, report it in your final message — do not assert it landed.
 - Anything else:
   1. `bash scripts/pipeline-vcs.sh label-issue <N> --add pipeline:blocked --remove pipeline:ready`
-  2. Render the blocked template into `.talos/validator-blocked.body` and post
-     it the same way (same HEADER):
+  2. Render the blocked template and post it the same way (same HEADER):
      VERDICT=<OUTCOME>, SUMMARY the reason, DETAILS what a human must do, and
      `<file>:<quoted line> (explicit|interpreted)` in `BLOCKED_BY` (never paste
      the quoted line into a command string). If the post fails, report it in

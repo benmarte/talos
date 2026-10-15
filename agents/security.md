@@ -46,13 +46,12 @@ status) is the oracle for whether the suite passes — this stage is diff-only.
   set it; only the orchestrator clears it (#310).
 - Findings:
   1. `bash scripts/pipeline-vcs.sh label-pr <pr> --add pipeline:blocked`
-  2. Render security-signoff into `.talos/security-signoff.body` (`mkdir -p
-     .talos`): VERDICT=FINDINGS, DETAILS the severity, file:line and fix, then
-     `bash scripts/pipeline-vcs.sh comment-pr <pr> --body-file .talos/security-signoff.body`.
-  3. Also render blocked into `.talos/security-blocked.body`: SUMMARY "security
-     findings in PR #<pr>", `<file>:<quoted line> (explicit|interpreted)` in `BLOCKED_BY` (never paste
-     the quoted line into a command string); then
-     `bash scripts/pipeline-vcs.sh comment-issue <issue-n> --body-file .talos/security-blocked.body`.
+  2. Render security-signoff by hand (VERDICT=FINDINGS, DETAILS the severity, file:line and
+     fix), post it with `bash scripts/pipeline-vcs.sh comment-pr <pr> --body-file - <<'TALOS_<rand>'`.
+  3. Also render blocked: SUMMARY "security findings in PR #<pr>",
+     `<file>:<quoted line> (explicit|interpreted)` in `BLOCKED_BY` (never paste
+     the quoted line into a command string); post it the same way with
+     `comment-issue <issue-n> --body-file -`.
 
 **Approval (on clear):** `bash scripts/pipeline-vcs.sh post-approval <PR> security --body-file - --issue <issue-n> <<'TALOS_<rand>'`
 reads the PR head SHA itself (never `git rev-parse HEAD`: your local HEAD can

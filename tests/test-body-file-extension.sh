@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # test-body-file-extension.sh — a stage's body files are hook-safe (#712). A
 # project's "no stray .md/.txt" PreToolUse hook blocks a `*.md` body file, so no
-# stage could post. Every body file a profile or playbook ref names is
-# `.talos/<name>.body`.
-#  AC1 agents/*.md: --body-file/--summary-file args are literal .talos/<role>-*.body paths
-#  AC2 no "render/post <template>.md" instruction in agents, prompts or refs
+# stage could post. A role with Write names a `.talos/<role>-<name>.body` file; a
+# role without Write (it cannot create a file) posts from stdin, `--body-file -`.
+#  AC1 agents/*.md: --body-file/--summary-file args are `-` or literal .talos/<role>-*.body
+#      paths; a profile whose tools: line lacks Write uses `-` only and names no .body path
+#  AC2 no "render/post <template>.md" instruction in agents, prompts or refs; developer and
+#      docs name their .body file, the read-only roles post with `--body-file -`
 #  AC3 planner and llm-loop refs use .talos/*.body, not mktemp or the placeholder F
 #  AC4 the body-file verbs treat a .body file exactly as a .md file
 set -u
@@ -38,8 +40,14 @@ bad_args() {
 # ── AC1 ─────────────────────────────────────────────────────────────────────
 for f in "$AGENTS"/*.md; do
   role="$(basename "$f" .md)"
-  assert_eq "" "$(bad_args "$f" 'body-file|summary-file' "$role")" \
-    "AC1 $role: every --body-file/--summary-file argument is a literal .talos/$role-*.body path"
+  if grep -E '^tools:' "$f" | grep -qw Write; then
+    assert_eq "" "$(bad_args "$f" 'body-file|summary-file' "$role")" \
+      "AC1 $role: every --body-file/--summary-file argument is - or a literal .talos/$role-*.body path"
+  else
+    notstdin="$(file_args "$f" 'body-file|summary-file' | grep -vx -e '-' || true)"
+    assert_eq "" "$notstdin" "AC1 $role: no Write tool, so every --body-file/--summary-file argument is -"
+    assert_eq "0" "$(grep -cE '\.talos/[a-z0-9-]+\.body' "$f")" "AC1 $role: no Write tool, so no .talos/*.body path"
+  fi
   text="$(cat "$f")"
   assert_not_contains "$text" "<verdict-file>" "AC1 $role: no <verdict-file> placeholder"
   assert_not_contains "$text" "<summary-file>" "AC1 $role: no <summary-file> placeholder"
@@ -52,11 +60,12 @@ done
 TEMPLATE_RE='\b([Rr]ender|[Pp]ost)( and post)? `?[a-z][a-z-]*\.md'
 hits="$(grep -nE "$TEMPLATE_RE" "$AGENTS"/*.md "$PROMPTS"/*.md "$REFS"/*.md || true)"
 assert_eq "" "$hits" "AC2 no instruction renders or posts a <template>.md"
-for site in validator:validator-verdict validator:validator-blocked developer:developer-pr-opened \
-  developer:developer-blocked qa:qa-verdict security:security-signoff security:security-blocked \
-  reviewer:reviewer-blocked docs:docs-posted adversarial:adversarial-blocked; do
+for site in developer:developer-pr-opened developer:developer-blocked docs:docs-posted; do
   role="${site%%:*}"; name="${site#*:}"
   assert_contains "$(cat "$AGENTS/$role.md")" ".talos/$name.body" "AC2 $role: the $name site names .talos/$name.body"
+done
+for role in validator reviewer security qa adversarial; do
+  assert_contains "$(cat "$AGENTS/$role.md")" "--body-file -" "AC2 $role: posts from stdin with --body-file -"
 done
 
 # ── AC3 ─────────────────────────────────────────────────────────────────────

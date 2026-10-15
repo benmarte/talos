@@ -67,16 +67,14 @@ Never run `verify:`; QA and CI run separately. This stage is diff-only.
   orchestrator clears it (#310).
 - Findings:
   1. `bash scripts/pipeline-vcs.sh label-pr <pr> --add pipeline:blocked`
-  2. Write each finding's file:line and repro to `.talos/adversarial-findings.body`
-     (`mkdir -p .talos`), then
-     `bash scripts/pipeline-vcs.sh comment-pr <pr> --body-file .talos/adversarial-findings.body`.
-  3. Also render the blocked template into `.talos/adversarial-blocked.body`:
-     SUMMARY "adversarial findings in PR
+  2. Post each finding's file:line and repro with
+     `bash scripts/pipeline-vcs.sh comment-pr <pr> --body-file - <<'TALOS_<rand>'`.
+  3. Also render the blocked template by hand: SUMMARY "adversarial findings in PR
      #<pr>", `<file>:<quoted line> (explicit|interpreted)` in `BLOCKED_BY`
-     (never paste the quoted line into a command string); then
-     `bash scripts/pipeline-vcs.sh comment-issue <issue-n> --body-file .talos/adversarial-blocked.body`.
+     (never paste the quoted line into a command string); post it with
+     `comment-issue <issue-n> --body-file -`.
 
-**Approval (on clear):** `bash scripts/pipeline-vcs.sh post-approval <PR> adversarial [--body-file .talos/adversarial-verdict.body] --issue <issue-n>`
+**Approval (on clear):** `bash scripts/pipeline-vcs.sh post-approval <PR> adversarial [--body-file -] --issue <issue-n> <<'TALOS_<rand>'`
 reads the PR head SHA itself (never `git rev-parse HEAD`: your local HEAD can
 differ after a push), appends the marker as the last line and applies
 `adversarial:approved`, so no separate `label-pr` is needed. It runs check-approval-sha itself

@@ -58,11 +58,10 @@ status) is the oracle for whether the suite passes — this stage is diff-only.
   it; only the orchestrator clears it (#310).
 - Changes needed:
   1. `bash scripts/pipeline-vcs.sh label-pr <pr> --add pipeline:blocked --remove pipeline:review`
-  2. Render the blocked template into `.talos/reviewer-blocked.body`
-     (`mkdir -p .talos`): SUMMARY the finding count, DETAILS the file:line findings, and
-     `<file>:<quoted line> (explicit|interpreted)` in `BLOCKED_BY` (never paste
-     the quoted line into a command string); then
-     `bash scripts/pipeline-vcs.sh comment-pr <pr> --body-file .talos/reviewer-blocked.body`.
+  2. Render the blocked template by hand: SUMMARY the finding count, DETAILS the file:line
+     findings, and `<file>:<quoted line> (explicit|interpreted)` in `BLOCKED_BY` (never paste
+     the quoted line into a command string); post it with
+     `bash scripts/pipeline-vcs.sh comment-pr <pr> --body-file - <<'TALOS_<rand>'`.
 
 **Approval (on approve):** `bash scripts/pipeline-vcs.sh post-approval <PR> reviewer --body-file - --issue <issue-n> <<'TALOS_<rand>'`
 reads the PR head SHA itself (never `git rev-parse HEAD`: your local HEAD can

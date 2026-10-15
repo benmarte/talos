@@ -39,6 +39,8 @@ REPO_AGENTS_DIR="$TALOS_ROOT/.claude/agents"
 #   [--body-file .talos/<role>-*.body] → --body-file <f>  (required for reviewer/security only)
 #   --body-file - --issue <issue-n> <<'TALOS_<rand>'  → --body-file <FILE> --issue <issue-n>
 #     (reviewer/security feed the review on stdin, #699)
+#   [--body-file -] --issue <issue-n> <<'TALOS_<rand>'  → --body-file <FILE> --issue <issue-n>
+#     (qa/adversarial have no Write tool and feed an optional verdict on stdin, #712)
 #   role=<value>  →  role=ROLE
 #   `<label>`     →  `LABEL`  (only the label in the "does not satisfy" bullet)
 extract_rules_block() {
@@ -53,6 +55,7 @@ extract_rules_block() {
         -e 's/post-approval <PR> [a-z]*/post-approval <PR> ROLE/' \
         -e 's/<[a-z]*-file>/<FILE>/' \
         -e 's|\.talos/[a-z-]*\.body|<FILE>|' \
+        -e "s/\[--body-file -\] \(--issue <issue-n>\) <<'TALOS_<rand>'/--body-file <FILE> \1/" \
         -e "s/--body-file - \(--issue <issue-n>\) <<'TALOS_<rand>'/--body-file <FILE> \1/" \
         -e 's/\[--body-file <FILE>\]/--body-file <FILE>/' \
         -e 's/`review:approved`/`LABEL`/g' \

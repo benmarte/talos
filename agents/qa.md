@@ -102,18 +102,17 @@ foreground ends QA: the final message's first line is
 Scratch scripts: check every `mktemp`/`create` result is a non-empty directory before use, delete only via `"${VAR:?}"/...`, and never use a command's output after hiding its stderr unless you checked it.
 
 Outcome:
-- Pass → write your verdict to `.talos/qa-verdict.body` (`mkdir -p .talos`), then
-  `post-approval` adds `qa:pass` and the marker. (On a draft PR docs,
+- Pass → `post-approval` (below) takes your verdict on stdin, adds `qa:pass` and the marker. (On a draft PR docs,
   reviewer and security run before it.)
 - Fail:
   1. `bash scripts/pipeline-vcs.sh label-pr <pr> --add pipeline:blocked --remove pipeline:review`
   2. `bash scripts/pipeline-vcs.sh label-issue <issue-n> --add pipeline:blocked`
-  3. Render qa-verdict into `.talos/qa-verdict.body`: VERDICT=FAIL, SUMMARY the
-     failing criterion, DETAILS the repro and fix. Then
-     `bash scripts/pipeline-vcs.sh comment-pr <pr> --body-file .talos/qa-verdict.body`.
+  3. Render qa-verdict by hand (VERDICT=FAIL, SUMMARY the failing criterion, DETAILS the
+     repro and fix) and post it:
+     `bash scripts/pipeline-vcs.sh comment-pr <pr> --body-file - <<'TALOS_<rand>'`.
      Report a failed post in the final message.
 
-**Approval (on pass):** `bash scripts/pipeline-vcs.sh post-approval <PR> qa [--body-file .talos/qa-verdict.body] --issue <issue-n>`
+**Approval (on pass):** `bash scripts/pipeline-vcs.sh post-approval <PR> qa [--body-file -] --issue <issue-n> <<'TALOS_<rand>'`
 reads the PR head SHA itself (never `git rev-parse HEAD`: your local HEAD can
 differ after a push), appends the marker as the last line and applies
 `qa:pass`, so no separate `label-pr` is needed. It runs check-approval-sha itself
