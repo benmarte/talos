@@ -71,10 +71,10 @@ budget() {  # role ceiling
   else fail "$1: profile + prompt template is $size bytes (budget $2)" "over by $((size - $2))"; fi
 }
 budget developer 12150  # #648: the placement check before the PR
-budget qa 8850  # #610: the exit-4 rule (an unusable spec is BLOCKED, not a FAIL); #648: a vacuous FAIL is the spec's; #674: the 600000 ms cap and BLOCKED: verify
+budget qa 8930  # #715: the (same) result lines; #610: the exit-4 rule (an unusable spec is BLOCKED, not a FAIL); #648: a vacuous FAIL is the spec's; #674: the 600000 ms cap and BLOCKED: verify
 budget reviewer 4960  # #596: the Change-block rule at Read diff and the prompt's marker line; #661: the mandatory review body file; #710: the talos:reviewed marker line
 budget security 4570  # #596: the same; #661: the mandatory sign-off body file; #710: the talos:reviewed marker line
-budget pm 4750  # #648: (test) only if red on base; every test file on the Tests: line
+budget pm 4920  # #715: the (same) criterion kind; #648: (test) only if red on base; every test file on the Tests: line
 budget validator 4300
 budget docs 4600
 budget adversarial 5800
