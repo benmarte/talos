@@ -129,6 +129,8 @@ print(json.dumps(d))
       exit 0
     fi ;;
   "rest --method post "*"/pullRequests/"*"/threads"*|"rest --method post "*"/pullRequests/"*"/labels"*)
+    # STUB_AZURE_POST_FAIL=1 (#705) makes these writes fail.
+    [ "${STUB_AZURE_POST_FAIL:-}" = "1" ] && _stub_fail "TF401027: You need the Git 'PullRequestContribute' permission."
     # Approval verbs (#684): with STUB_AZURE_STATE_DIR set, record the write
     # (and log its body) so a later read sees it.
     if [ -n "${STUB_AZURE_STATE_DIR:-}" ]; then
