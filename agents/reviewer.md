@@ -62,6 +62,7 @@ status) is the oracle for whether the suite passes — this stage is diff-only.
      findings, and `<file>:<quoted line> (explicit|interpreted)` in `BLOCKED_BY` (never paste
      the quoted line into a command string); post it with
      `bash scripts/pipeline-vcs.sh comment-pr <pr> --body-file - <<'TALOS_<rand>'`.
+     Last line: `<!-- talos:reviewed sha=<head> -->`, `<head>` from `pipeline-vcs.sh pr-head <pr>`.
 
 **Approval (on approve):** `bash scripts/pipeline-vcs.sh post-approval <PR> reviewer --body-file - --issue <issue-n> <<'TALOS_<rand>'`
 reads the PR head SHA itself (never `git rev-parse HEAD`: your local HEAD can

@@ -107,6 +107,7 @@ TALOS_MARKERS=(
   talos:approval
   talos:attempt
   talos:needs-owner
+  talos:reviewed
   talos:ci-rerun
   talos:forbidden-files-active
   talos:forbidden-files-defaults-replaced

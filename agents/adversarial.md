@@ -69,6 +69,7 @@ Never run `verify:`; QA and CI run separately. This stage is diff-only.
   1. `bash scripts/pipeline-vcs.sh label-pr <pr> --add pipeline:blocked`
   2. Post each finding's file:line and repro with
      `bash scripts/pipeline-vcs.sh comment-pr <pr> --body-file - <<'TALOS_<rand>'`.
+     Last line: `<!-- talos:reviewed sha=<head> -->`, `<head>` from `pipeline-vcs.sh pr-head <pr>`.
   3. Also render the blocked template by hand: SUMMARY "adversarial findings in PR
      #<pr>", `<file>:<quoted line> (explicit|interpreted)` in `BLOCKED_BY`
      (never paste the quoted line into a command string); post it with
