@@ -108,7 +108,15 @@ cmd_ids() {
   [ -f "$file" ] || { echo "pipeline-criteria: ids: no such file: $file" >&2; return 1; }
   local out
   out="$(awk '
-    function kind(l) { return (l ~ /\(prose[:)]/) ? "prose" : (l ~ /\(same[:)]/) ? "same" : "test" }
+    # The last marker names the kind: a criterion may mention another marker in its text.
+    function kind(l,   k) {
+      k = "test"
+      while (match(l, /\((test|prose|same)[:)]/)) {
+        k = substr(l, RSTART + 1, RLENGTH - 2)
+        l = substr(l, RSTART + RLENGTH)
+      }
+      return k
+    }
     /^[ \t]*[-*][ \t]+\[[ xX]\][ \t]/ {
       n++; plain_kind[n] = kind($0)
       if (match($0, /^[ \t]*[-*][ \t]+\[[ xX]\][ \t]+[*`]*AC[0-9]+/)) {
