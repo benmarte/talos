@@ -6309,7 +6309,9 @@ open(sys.argv[1], "w").write(json.dumps(body))
   # is a new thread; `PATCH issues/comments/<pr>/<thread>/<comment>` (the id
   # _az_upc_read gave) rewrites that comment. The payload's {"body"} is the text.
   _az_upc_write() {
-    local _uw_gb _uw_pr _uw_th _uw_cm _uw_kind _uw_url _uw_body
+    # Initialised: bash 4+ leaves a bare `local` unset, and the POST branch
+    # never reads a thread or comment id, so `set -u` would stop it.
+    local _uw_gb="" _uw_pr="" _uw_th="" _uw_cm="" _uw_kind="" _uw_url="" _uw_body=""
     _uw_gb="$(_azure_git_base)" || {
       echo "pipeline-vcs: $VERB: needs org/project/repo (vcs.azure.org_url, vcs.azure.project, vcs.repo)" >&2
       return 1; }
