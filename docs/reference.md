@@ -110,7 +110,7 @@ Only a person does these:
 - Answer a `pipeline:needs-owner` question (`next` answers `ask-owner`).
 - Decide the design when `gate fix-round` answers `ask-owner reason=design-decision`: reply on the PR under the `Design decision needed` comment; the next `gate fix-round` continues from the reply. See [Retries and attempt counting](#retries-and-attempt-counting).
 
-There is no switch that removes the CI gate: `gate merge` stops with `reason=ci-unverified` when `merge.required_checks` is empty.
+There is no switch that removes the CI gate: `gate merge` stops with `reason=ci-unverified` when `merge.required_checks` is empty (on `azure` the PR's blocking policy evaluations stand in; see `pr-checks-required`).
 
 ## Install and setup
 
