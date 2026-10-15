@@ -173,14 +173,16 @@ assert_contains "$(cat "$GH_LOG")" "[--evaluation-id] [$(_e 1)]" "rerun-ci: re-q
 assert_not_contains "$(cat "$GH_LOG")" "[--evaluation-id] [$(_e 4)]" "rerun-ci: ignores records only the REST fetch returns"
 assert_contains "$out" "re-queued 1 failed build policy evaluation(s) for PR #9" "rerun-ci: same re-queued count as on main"
 
-# ── empty merge.required_checks: same as github ───────────────────────────────
+# ── empty merge.required_checks: blocking-policy fallback (#686) ──────────────
+# Judged in tests/test-azure-pr-checks-fallback.sh; here a non-blocking
+# record alone (this file's _rec sets no isBlocking) never passes the PR.
 cat > talos.pipeline.json <<'EOF'
 {"vcs": {"provider": "azure", "repo": "widget", "azure": {"org_url": "https://dev.azure.com/acme", "project": "proj"}}}
 EOF
 : > "$GH_LOG"
 out="$(STUB_AZURE_PR_EVALUATIONS="$(_evals "$(_rec "CI build" Build approved)")" bash "$VCS" pr-checks-required 9 2>&1)"; rc=$?
-assert_eq "1" "$rc" "empty required_checks: exits 1, never a vacuous pass"
-assert_contains "$out" "merge.required_checks is empty" "empty required_checks: prints github's message"
-assert_not_contains "$(cat "$GH_LOG")" "policy" "empty required_checks: needs no policy fetch"
+assert_eq "2" "$rc" "empty required_checks: no blocking evaluation is pending, never a vacuous pass"
+assert_not_contains "$out" "merge.required_checks is empty" "empty required_checks: not the refusal on azure"
+assert_contains "$(cat "$GH_LOG")" "policy/evaluations" "empty required_checks: reads the policy evaluations"
 
 finish

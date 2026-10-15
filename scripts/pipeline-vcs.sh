@@ -7038,16 +7038,18 @@ for r in builds:
       # context.isExpired true, or a context.lastMergeSourceCommitId other
       # than the PR's lastMergeSourceCommit, is read when present. The exit
       # contract and summary lines are github's, via _eval_required_checks.
-      # Any fetch or parse failure exits 1.
-      local n="${1:-}" _required _azpc_json _azpc_norm
+      # With merge.required_checks empty (#686) the blocking policies
+      # (configuration.isBlocking true) stand in for the list, named by
+      # display name, else evaluationId; none at all is pending (exit 2),
+      # never a pass. Any fetch or parse failure exits 1.
+      local n="${1:-}" _required _azpc_json _azpc_norm _azpc_fallback=""
       _az_require_id pr-checks-required "$n" || exit 1
       _required="$(cfg merge.required_checks)"
       if [ "$DRY_RUN" = "true" ]; then
-        echo "[dry-run] az rest --method get --url <org>/<projectId>/_apis/policy/evaluations?artifactId=vstfs:///CodeReview/CodeReviewId/<projectId>/$n&includeNotApplicable=true; evaluate against merge.required_checks"
+        echo "[dry-run] az rest --method get --url <org>/<projectId>/_apis/policy/evaluations?artifactId=vstfs:///CodeReview/CodeReviewId/<projectId>/$n&includeNotApplicable=true; evaluate against merge.required_checks, or the PR's blocking policies when it is empty"
         return 0
       fi
-      # Empty config never passes vacuously and needs no CI data to say so.
-      [ -z "$_required" ] && { printf '' | _eval_required_checks "$_required"; return; }
+      [ -z "$_required" ] && _azpc_fallback=1
       _azpc_json="$(_az_pr_evaluations "$n")" || exit 1
       _azpc_norm="$(printf '%s' "$_azpc_json" | python3 -I -c '
 import json, sys
@@ -7063,26 +7065,45 @@ def out_of_date(r, source):
     seen = ctx.get("lastMergeSourceCommitId")
     return seen is not None and str(seen).lower() != source.lower()
 d = json.load(sys.stdin)
+fallback = sys.argv[2] == "1"
 worst = {}
+shown = {}
 for r in d["records"]:
     conf = r.get("configuration") or {}
+    if fallback and conf.get("isBlocking") is not True:
+        continue
     name = (conf.get("settings") or {}).get("displayName") \
         or (conf.get("type") or {}).get("displayName")
-    if not isinstance(name, str):
+    if fallback and not (isinstance(name, str) and name.strip()):
+        name = r.get("evaluationId")
+    if not isinstance(name, str) or not name.strip():
         continue
-    key = name.strip().casefold()
+    name = " ".join(name.split())
+    key = name.casefold()
+    shown.setdefault(key, name)
     raw = str(r.get("status")).lower()
     status = STATUS.get(raw, "fail")
     if raw == "approved" and out_of_date(r, d["source"]):
         status = "pending"
     if RANK[status] >= RANK[worst.get(key, "pass")]:
         worst[key] = status
+if fallback:
+    for key in worst:
+        print(shown[key] + "\t" + worst[key])
+    sys.exit(0)
 for req in sys.argv[1].splitlines():
     req = req.strip()
     if req and req.casefold() in worst:
         print(req + "\t" + worst[req.casefold()])
-' "$_required" 2>/dev/null)" || {
+' "$_required" "$_azpc_fallback" 2>/dev/null)" || {
         echo "pipeline-vcs: pr-checks-required: could not parse the policies of PR #$n" >&2; exit 1; }
+      if [ -n "$_azpc_fallback" ]; then
+        if [ -z "$_azpc_norm" ]; then
+          echo "pr-checks-required: pending or missing: no blocking policy evaluations on PR #$n" >&2
+          exit 2
+        fi
+        _required="$(printf '%s\n' "$_azpc_norm" | cut -f1)"
+      fi
       printf '%s\n' "$_azpc_norm" | _eval_required_checks "$_required"
       ;;
     *) echo "pipeline-vcs: unknown verb: $verb" >&2; exit 1 ;;

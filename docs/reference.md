@@ -933,6 +933,8 @@ An unreadable gate answers `stop reason=<r>` (fail closed). Gates 3 and 4 set `p
 
 `--wait` takes digits, at most 3600 (else exit 2). On `github` and `github-api` it polls inside the call at 30 s, 60 s, then 120 s steps; other providers answer once. GitLab is not implemented and exits 1.
 
+On `azure` an empty `merge.required_checks` is not a refusal: the verb judges the PR's blocking policy evaluations (`isBlocking` true) instead, with the same exits (`approved` and `notApplicable` pass, `rejected` and `broken` fail, `queued` and `running` are pending). Non-blocking policies are ignored, and a PR with no blocking evaluation is pending (exit 2), never a pass. A policy-only project needs no `merge.required_checks` for this verb.
+
 ### Draft PRs
 
 `pr.draft` opens the PR as a draft so docs, review and fixes start no CI. Order: developer (local verify, draft PR), docs, reviewer, security, adversarial (one stage at a time under `talos.sh run`; in parallel only on the LLM loop), one fix round, re-stamps, `ready-pr` (the one CI run), QA, merge. A QA or CI failure runs `draft-pr` first, so a fix costs one run. QA and the CI wait start only when `pr-is-draft` exits 1 with stdout `ready`; `gate merge` reports `ci_runs` (`pr-ci-runs`, GitHub only). When the run marks the PR ready and `qa:pass` is already fresh at the head (after a local QA recovery, say), it skips QA and the CI wait and the next pass goes to `ci` / `merge`; a missing, stale or unreadable `qa:pass` dispatches QA.
