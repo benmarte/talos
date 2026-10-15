@@ -86,22 +86,24 @@ print(json.dumps([{"pullRequestId": 100000 + skip + i, "status": "active",
     fi ;;
   "repos pr show "*)
     [ "${STUB_AZURE_PR_SHOW_FAIL:-}" = "1" ] && _stub_fail "TF401180: The requested pull request was not found."
-    # Approval verbs (#684): with STUB_AZURE_STATE_DIR set, labels POSTed so far
-    # (one name per line in <dir>/labels) join the PR object's labels.
-    _prs_id="$(_as_id "$@")"; _prs_var="STUB_AZURE_PR_${_prs_id}"
-    if [ -n "${STUB_AZURE_STATE_DIR:-}" ] && [ -n "${!_prs_var:-}" ]; then
-      PR="${!_prs_var}" LABELS="$STUB_AZURE_STATE_DIR/labels" python3 -I -c '
+    ;;
+  "rest --method get "*"/pullRequests/"*"/labels"*)
+    # PR labels (#702): `az repos pr show` never carries labels, so they come
+    # from this GET. STUB_AZURE_PR_LABELS is the raw REST body ({"value": [...]});
+    # with STUB_AZURE_STATE_DIR set, the label names POSTed so far (one per line
+    # in <dir>/labels) are appended.
+    [ "${STUB_AZURE_PR_LABELS_FAIL:-}" = "1" ] && _stub_fail "TF401180: The requested pull request was not found."
+    BASE="${STUB_AZURE_PR_LABELS:-}" LABELS="${STUB_AZURE_STATE_DIR:-/nonexistent}/labels" python3 -I -c '
 import json, os
-pr = json.loads(os.environ["PR"])
+d = json.loads(os.environ["BASE"] or "{\"value\": []}")
 try:
     names = [n for n in open(os.environ["LABELS"]).read().split("\n") if n]
 except OSError:
     names = []
-pr["labels"] = (pr.get("labels") or []) + [{"id": "x", "name": n, "active": True} for n in names]
-print(json.dumps(pr))
+d["value"] = d["value"] + [{"id": "x", "name": n, "active": True} for n in names]
+print(json.dumps(d, indent=2))  # az rest prints indented JSON
 '
-      exit 0
-    fi ;;
+    exit 0 ;;
   "rest --method get "*"/pullRequests/"*"/threads"*)
     # Approval verbs (#684): STUB_AZURE_PR_THREADS is the raw REST body
     # ({"value": [threads...]}); with STUB_AZURE_STATE_DIR set, the comments

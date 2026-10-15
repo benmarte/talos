@@ -6367,13 +6367,33 @@ for c in d["comments"]:
 print(json.dumps(d))
 ' 2>/dev/null
   }
+  # PR <id> as `az repos pr show` prints it, with `labels` replaced by the PR
+  # labels API's names as [{"name": ...}] (#702): `pr show` never carries labels
+  # (it answers null). Non-zero with no stdout when either read fails.
+  _az_pr_with_labels() {
+    local _gb _pr _lb
+    _gb="$(_azure_git_base)" || {
+      echo "pipeline-vcs: $VERB: needs org/project/repo (vcs.azure.org_url, vcs.azure.project, vcs.repo)" >&2
+      return 1; }
+    _pr="$(az repos pr show --id "$1" $ORG_ARG --output json)" || return 1
+    _lb="$(az rest --method get --resource "$ADO_RESOURCE" \
+      --url "$_gb/pullRequests/$1/labels?api-version=7.1-preview.1")" || return 1
+    # Both bodies are indented, multi-line JSON: labels ride in the environment,
+    # the PR on stdin.
+    printf '%s' "$_pr" | LABELS_JSON="$_lb" python3 -I -c '
+import json, os, sys
+pr = json.load(sys.stdin)
+pr["labels"] = [{"name": l["name"]} for l in json.loads(os.environ["LABELS_JSON"])["value"]]
+json.dump(pr, sys.stdout)
+' 2>/dev/null
+  }
   # PR <id> as the approval-marker readers' input (#684): {"headRefOid",
-  # "baseRefName", "labels", "comments"} from `az repos pr show` and
+  # "baseRefName", "labels", "comments"} from _az_pr_with_labels and
   # _az_comments_obj. Non-zero with no stdout when either read fails or the PR
   # has no source commit.
   _az_marker_data() {
     local _pr _cm
-    _pr="$(az repos pr show --id "$1" $ORG_ARG --output json)" || return 1
+    _pr="$(_az_pr_with_labels "$1")" || return 1
     _cm="$(_az_comments_obj "$1")" || return 1
     printf '%s\n%s' "$_cm" "$_pr" | python3 -I -c '
 import json, sys
@@ -6649,7 +6669,15 @@ PYEOF
       _vcs_draft_unsupported pr-ci-runs azure
       ;;
     view-pr)
-      _run az repos pr show --id "$1" $ORG_ARG --output json
+      # `pr show` has no labels: merge in the labels API's (#702). A failed
+      # read exits non-zero so "unread" is never taken for "no labels".
+      if [ "$DRY_RUN" = "true" ]; then
+        _run az repos pr show --id "$1" $ORG_ARG --output json
+        echo "[dry-run] az rest --method get --url <git base>/pullRequests/$1/labels?api-version=7.1-preview.1"
+      else
+        _az_pr_with_labels "$1" || exit 1
+        echo
+      fi
       ;;
     pr-head-ref)
       # pr-head-ref <id> (#607) -- the PR's source branch without refs/heads/,
