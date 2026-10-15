@@ -4173,7 +4173,14 @@ _talos_run_dispatch() {
   fi
 
   # 3. The verdict from the final message (AC2), never guessed.
-  _v="$(_run_verdict "$_role" "$_CFG_CACHE_DIR/agent.out" "$_shape")" || { rm -f "${_f:?}"; _run_fail verdict-unreadable; }
+  if ! _v="$(_run_verdict "$_role" "$_CFG_CACHE_DIR/agent.out" "$_shape")"; then
+    # #708: no verdict word at all, from a stage that stamps its approval: the
+    # stamp on the PR is the record. Only approval is read so; never prose.
+    case "$_role" in reviewer) _v=APPROVED ;; security | adversarial) _v=CLEAR ;; *) _v="" ;; esac
+    if [ -z "$_v" ] || [ -z "$_pr" ] || ! _talos_run_approval_fresh "$_role" "$_pr"; then
+      rm -f "${_f:?}"; _run_fail verdict-unreadable
+    fi
+  fi
   # The head moved, so the fix is pushed whatever the last message says; an
   # explicit `BLOCKED:` line is never overridden, an unreadable head never counts.
   if [ "$_v" = BLOCKED ] && [ -n "$_h0" ]; then
@@ -4279,27 +4286,28 @@ print(min(new) if new else "")' "$_o0" "$_o1")" || _w=""
 # read is no approval) does not stop the run (#671). QA has its own same-head
 # backstop (#537).
 _talos_run_repeat_check() {
-  local _h _rec="$_CFG_CACHE_DIR/repeat.$2.$1" _l _fresh
+  local _h _rec="$_CFG_CACHE_DIR/repeat.$2.$1"
   _h="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" pr-head "$2" 2>/dev/null | head -n 1)" || _h=""
   case "$_h" in ''|*[!0-9a-f]*) return 0 ;; esac
-  if [ -f "$_rec" ] && [ "$(cat "$_rec")" = "$_h $3" ]; then
-    _talos_cap _vcs view-pr "$2"
-    _fresh=0
-    _l=""
-    [ "$_RC" -ne 0 ] || _l="$(_talos_labels "$_OUT" 2>/dev/null)"
-    if _talos_has "$_l" "$(_talos_label_of "$1")"; then
-      _talos_cap _vcs check-approval-sha "$2" --stale-list
-      # Exit 1 is both "stale approvals" (the stale lines) and a failed read.
-      if [ "$_RC" -eq 0 ]; then _fresh=1
-      elif grep -q '^stale role=' <<<"$_OUT" && ! grep -q "^stale role=$1 " <<<"$_OUT"; then _fresh=1
-      fi
-    fi
-    if [ "$_fresh" -eq 0 ]; then
-      _talos_emit stop "reason=same-verdict-same-head role=$1 pr=$2"
-      _talos_flush; exit 0
-    fi
+  if [ -f "$_rec" ] && [ "$(cat "$_rec")" = "$_h $3" ] && ! _talos_run_approval_fresh "$1" "$2"; then
+    _talos_emit stop "reason=same-verdict-same-head role=$1 pr=$2"
+    _talos_flush; exit 0
   fi
   printf '%s %s' "$_h" "$3" > "$_rec"
+}
+
+# _talos_run_approval_fresh <role> <pr> (#671, #708): 0 when <role>'s approval is
+# stamped at the PR's head: its label is on the PR and `check-approval-sha
+# --stale-list` does not name it. A failed read is no approval.
+_talos_run_approval_fresh() {
+  local _l=""
+  _talos_cap _vcs view-pr "$2"
+  [ "$_RC" -ne 0 ] || _l="$(_talos_labels "$_OUT" 2>/dev/null)"
+  _talos_has "$_l" "$(_talos_label_of "$1")" || return 1
+  _talos_cap _vcs check-approval-sha "$2" --stale-list
+  # Exit 1 is both "stale approvals" (the stale lines) and a failed read.
+  [ "$_RC" -ne 0 ] || return 0
+  grep -q '^stale role=' <<<"$_OUT" && ! grep -q "^stale role=$1 " <<<"$_OUT"
 }
 
 # _talos_run_fix_gate <issue> <stage> <pr>: `gate fix-round` before a developer
