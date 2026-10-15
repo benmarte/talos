@@ -131,10 +131,10 @@ Workflow (do ALL of it — the publish step is not optional):
    read -r PR_TITLE <<'TALOS_<rand>'
    <title>
    TALOS_<rand>
-   bash scripts/pipeline-vcs.sh create-pr <branch> "$PR_TITLE" .talos/developer-pr.body
-   rm -f .talos/developer-pr.body
+   rc=0; bash scripts/pipeline-vcs.sh create-pr <branch> "$PR_TITLE" .talos/developer-pr.body || rc=$?
+   rm -f .talos/developer-pr.body; exit "$rc"
    ```
-   The `rm` runs after a failed `create-pr` too. It prints `PR #<n> <url>` (`<PR>` below). If it exits non-zero: do
+   `$rc` is `create-pr`'s status. It prints `PR #<n> <url>` (`<PR>` below). If non-zero: do
    not guess a PR number; follow step 10.
 8. On success:
    a. `bash scripts/pipeline-vcs.sh label-pr <PR> --add pipeline:review`

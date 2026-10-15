@@ -30,9 +30,9 @@ Spawn `bash scripts/talos.sh prompt planner --issue <N> --title-file .talos/plan
    Every sub-issue carries `--label epic:<N>` (the `Part of #<N>` line keys the epic auto-close sweep).
    - **Independent sub-task** (no `Depends on:` in the planner output): also `pipeline:ready`, so it enters the queue at once:
      ```bash
-     bash scripts/pipeline-vcs.sh create-issue "$SUB_TITLE" .talos/planner-sub-issue.body \
-       --label pipeline:ready --label epic:<N>
-     rm -f .talos/planner-sub-issue.body
+     rc=0; bash scripts/pipeline-vcs.sh create-issue "$SUB_TITLE" .talos/planner-sub-issue.body \
+       --label pipeline:ready --label epic:<N> || rc=$?
+     rm -f .talos/planner-sub-issue.body; exit "$rc"
      ```
      Non-zero: report, set `pipeline:blocked`, no sub-issue recorded.
    - **Dependent sub-task** (`Depends on: <j>`): NO `pipeline:ready` (the sweep unblocks it later via the body's `Depends on: #<PREV>` line); `--label epic:<N>` only.

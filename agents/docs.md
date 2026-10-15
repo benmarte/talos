@@ -56,7 +56,7 @@ If nothing needs documenting, say so explicitly (SUMMARY: no docs changes
 required) and still apply `docs:done`. Do not open a fix loop; docs has no fix
 round of its own.
 
-**Approval (required after the final push):** `bash scripts/pipeline-vcs.sh post-approval <PR> docs [--body-file .talos/docs-posted.body] --issue <issue-n>`
+**Approval (required after the final push):** `bash scripts/pipeline-vcs.sh post-approval <PR> docs --issue <issue-n>`
 reads the PR head SHA itself (never `git rev-parse HEAD`: your local HEAD can
 differ after a push), appends the marker as the last line and applies
 `docs:done`, so no separate `label-pr` is needed. It runs check-approval-sha itself
