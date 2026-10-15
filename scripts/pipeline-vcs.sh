@@ -493,6 +493,9 @@
 #                                             Used as an orchestrator precondition before
 #                                             dispatching non-worktree-isolated stages.
 #   post-approval <pr> <role> [--body-file p; required for reviewer/security] [--issue n] [--recover-only]
+#                                             (github, github-api and azure (#684); with
+#                                             pr-head, read-comments <pr> and
+#                                             check-approval-sha on azure too)
 #                                             --recover-only (#521): only the
 #                                             duplicate-marker path below: the label
 #                                             is applied when the exact marker exists
@@ -2992,6 +2995,49 @@ sys.exit(0)
 "
 }
 
+# _vcs_shared_check_approval_run <pr-data> <stale-list true|false> <evidence true|false> <identity cmd...>
+#   The back half of every provider's check-approval-sha: <pr-data> is the JSON
+#   _vcs_shared_check_approval_marker reads (headRefOid, baseRefName, labels,
+#   comments); <identity cmd...> prints the current user's login (see
+#   _vcs_shared_reader_identity). Prints the verb's output and exits with its
+#   status.
+_vcs_shared_check_approval_run() {
+  local pr_data="$1" stale_list_flag="$2" evidence_flag="$3"; shift 3
+  local trusted_authors_cas verify_authors_cas
+  trusted_authors_cas="$(cfg markers.trusted_authors)"
+  verify_authors_cas="$(cfg markers.verify_authors)"
+  _vcs_shared_reader_identity "$verify_authors_cas" "$@"
+  local marker_out marker_rc marker_json
+  marker_out="$(printf '%s' "$pr_data" | TRUSTED_AUTHORS="$trusted_authors_cas" VERIFY_AUTHORS="$verify_authors_cas" CURRENT_USER="$_RID_USER" CURRENT_USER_REFUSED="$_RID_REFUSED" TALOS_CFG="$_TALOS_CFG" EVIDENCE_LIST="$evidence_flag" _vcs_shared_check_approval_marker)"
+  marker_rc=$?
+  if [ "$marker_rc" -eq 1 ]; then
+    exit 1
+  fi
+  # --evidence-list (#521): the per-role evidence lines are the whole answer.
+  if [ "$evidence_flag" = "true" ]; then
+    printf '%s\n' "$marker_out"
+    exit 0
+  fi
+  if [ "$marker_rc" -eq 3 ]; then
+    # No approval labels present: marker_out IS the diagnostic message.
+    printf '%s\n' "$marker_out"
+    exit 0
+  fi
+  # marker_rc == 0: marker_out is zero or more machine-readable
+  # `talos:...` passthrough lines followed by exactly one JSON payload
+  # line -- relay the former to our own stdout (same convention
+  # read-attempt/check-attempt use) and keep the latter for the waiver
+  # comparison below.
+  printf '%s\n' "$marker_out" | grep '^talos:' || true
+  marker_json="$(printf '%s\n' "$marker_out" | grep -v '^talos:')"
+  local waiver_paths repo_root
+  waiver_paths="$(cfg merge.approval_waiver_paths)"
+  repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
+  printf '%s' "$pr_data" \
+    | WAIVER_PATHS="$waiver_paths" REPO_ROOT="${repo_root:-}" MARKER_ENTRIES="$marker_json" STALE_LIST="$stale_list_flag" _vcs_shared_check_approval_sha
+  exit $?
+}
+
 # _vcs_shared_check_pr_files (#177 slice 3)
 #   stdin:  the PR's changed file paths, one per line. Both adapters fetch
 #           this via their paginated `pr-files` mechanism (_gh_pages)
@@ -5138,39 +5184,7 @@ json.dump([dict(p, headRefName=(p.get('head') or {}).get('ref', '')) for p in pr
         echo "pipeline-vcs: check-approval-sha: could not fetch PR #$n data" >&2
         exit 1
       fi
-      local trusted_authors_cas verify_authors_cas
-      trusted_authors_cas="$(cfg markers.trusted_authors)"
-      verify_authors_cas="$(cfg markers.verify_authors)"
-      _vcs_shared_reader_identity "$verify_authors_cas" _gh_user_login
-      local marker_out marker_rc marker_json
-      marker_out="$(printf '%s' "$pr_data" | TRUSTED_AUTHORS="$trusted_authors_cas" VERIFY_AUTHORS="$verify_authors_cas" CURRENT_USER="$_RID_USER" CURRENT_USER_REFUSED="$_RID_REFUSED" TALOS_CFG="$_TALOS_CFG" EVIDENCE_LIST="$evidence_flag" _vcs_shared_check_approval_marker)"
-      marker_rc=$?
-      if [ "$marker_rc" -eq 1 ]; then
-        exit 1
-      fi
-      # --evidence-list (#521): the per-role evidence lines are the whole answer.
-      if [ "$evidence_flag" = "true" ]; then
-        printf '%s\n' "$marker_out"
-        exit 0
-      fi
-      if [ "$marker_rc" -eq 3 ]; then
-        # No approval labels present: marker_out IS the diagnostic message.
-        printf '%s\n' "$marker_out"
-        exit 0
-      fi
-      # marker_rc == 0: marker_out is zero or more machine-readable
-      # `talos:...` passthrough lines followed by exactly one JSON payload
-      # line -- relay the former to our own stdout (same convention
-      # read-attempt/check-attempt use) and keep the latter for the waiver
-      # comparison below.
-      printf '%s\n' "$marker_out" | grep '^talos:' || true
-      marker_json="$(printf '%s\n' "$marker_out" | grep -v '^talos:')"
-      local waiver_paths repo_root
-      waiver_paths="$(cfg merge.approval_waiver_paths)"
-      repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
-      printf '%s' "$pr_data" \
-        | WAIVER_PATHS="$waiver_paths" REPO_ROOT="${repo_root:-}" MARKER_ENTRIES="$marker_json" STALE_LIST="$stale_list_flag" _vcs_shared_check_approval_sha
-      exit $?
+      _vcs_shared_check_approval_run "$pr_data" "$stale_list_flag" "$evidence_flag" _gh_user_login
       ;;
     *) echo "pipeline-vcs: unknown verb: $verb" >&2; exit 1 ;;
   esac
@@ -6181,6 +6195,56 @@ print(" ".join(str(i) for i in sorted(ids)))
 ' "$_self" "$_n" "$_VCS_AZURE_SCAN_CAP" 2>/dev/null || return 1
     [ "$_capped" = 0 ] || return "$_VCS_SIBLINGS_CAPPED"
   }
+  # PR <id>'s thread comments as {"comments": [{"author": {"login"}, "body",
+  # "createdAt"}]} (#684), the shape the github reader gives the shared marker
+  # code: GET .../pullRequests/{id}/threads (api-version 7.1-preview.1), which
+  # answers every thread in one response. System and deleted comments (and
+  # threads) are skipped; the login is the author's uniqueName, else the
+  # displayName. Returns non-zero with no stdout on any fetch or parse failure.
+  _az_comments_obj() {
+    local _gb _raw
+    _gb="$(_azure_git_base)" || {
+      echo "pipeline-vcs: $VERB: needs org/project/repo (vcs.azure.org_url, vcs.azure.project, vcs.repo)" >&2
+      return 1; }
+    _raw="$(az rest --method get --resource "$ADO_RESOURCE" \
+      --url "$_gb/pullRequests/$1/threads?api-version=7.1-preview.1")" || return 1
+    printf '%s' "$_raw" | python3 -I -c '
+import json, sys
+out = []
+for t in json.load(sys.stdin)["value"]:
+    if t.get("isDeleted"):
+        continue
+    for c in t.get("comments") or []:
+        if c.get("isDeleted") or c.get("commentType") == "system":
+            continue
+        a = c.get("author") or {}
+        out.append({"author": {"login": a.get("uniqueName") or a.get("displayName") or ""},
+                    "body": c.get("content") or "",
+                    "createdAt": c.get("publishedDate") or c.get("lastUpdatedDate") or ""})
+json.dump({"comments": out}, sys.stdout)
+' 2>/dev/null
+  }
+  # PR <id> as the approval-marker readers' input (#684): {"headRefOid",
+  # "baseRefName", "labels", "comments"} from `az repos pr show` and
+  # _az_comments_obj. Non-zero with no stdout when either read fails or the PR
+  # has no source commit.
+  _az_marker_data() {
+    local _pr _cm
+    _pr="$(az repos pr show --id "$1" $ORG_ARG --output json)" || return 1
+    _cm="$(_az_comments_obj "$1")" || return 1
+    printf '%s\n%s' "$_cm" "$_pr" | python3 -I -c '
+import json, sys
+head, _, pr = sys.stdin.read().partition("\n")
+pr = json.loads(pr)
+sha = (pr.get("lastMergeSourceCommit") or {}).get("commitId") or ""
+if not sha:
+    sys.exit(1)
+json.dump({"headRefOid": sha,
+           "baseRefName": (pr.get("targetRefName") or "").replace("refs/heads/", "", 1),
+           "labels": [{"name": l.get("name", "")} for l in pr.get("labels") or []],
+           "comments": json.loads(head)["comments"]}, sys.stdout)
+' 2>/dev/null
+  }
 
   local verb="$1"; shift
   case "$verb" in
@@ -6430,6 +6494,61 @@ print((d.get('sourceRefName') or '').replace('refs/heads/', '', 1))
 " 2>/dev/null)"
       [ -z "$_phr_ref" ] && { echo "pipeline-vcs: pr-head-ref: could not resolve the head branch of PR #$n" >&2; exit 1; }
       printf '%s\n' "$_phr_ref"
+      ;;
+    pr-head)
+      # pr-head <id> (#684) -- the PR's source commit sha, same contract as
+      # github: a failed fetch or a PR without a source commit exits 1 with no
+      # stdout.
+      local n="${1:-}" _ph_sha
+      _az_require_id pr-head "$n" || exit 1
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] az repos pr show --id $n $ORG_ARG --output json  # .lastMergeSourceCommit.commitId"
+        return 0
+      fi
+      _ph_sha="$(az repos pr show --id "$n" $ORG_ARG --output json 2>/dev/null | python3 -I -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = {}
+print(((d.get('lastMergeSourceCommit') or {}).get('commitId') or '').lower())
+" 2>/dev/null)"
+      [ -z "$_ph_sha" ] && { echo "pipeline-vcs: pr-head: could not resolve head SHA for PR #$n" >&2; exit 1; }
+      printf '%s\n' "$_ph_sha"
+      ;;
+    read-comments)
+      # read-comments <pr-id> (#684): every thread comment as {"comments": [...]},
+      # the shared reader behind post-approval's duplicate check. PR ids only (a
+      # work item's comments are not read here). Fail-closed: nothing on stdout
+      # and exit 1 on any failure.
+      local n="${1:-}"
+      [ -z "$n" ] && { echo "pipeline-vcs: read-comments: missing PR number" >&2; exit 1; }
+      _az_require_id read-comments "$n" || exit 1
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] az rest GET .../pullRequests/$n/threads (comments)"
+        return 0
+      fi
+      _az_comments_obj "$n" || { echo "pipeline-vcs: read-comments: could not fetch PR #$n comments" >&2; exit 1; }
+      ;;
+    check-approval-sha)
+      # check-approval-sha <id> [--stale-list|--evidence-list] (#684): as github;
+      # this arm is fetch (_az_marker_data) -> _vcs_shared_check_approval_run.
+      local n="${1:-}"; shift
+      local stale_list_flag="false" evidence_flag="false"
+      case "${1:-}" in
+        --stale-list) stale_list_flag="true" ;;
+        --evidence-list) evidence_flag="true" ;;
+      esac
+      _az_require_id check-approval-sha "$n" || exit 1
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] check-approval-sha $n: verify all approval labels match current head SHA"; return 0; }
+      local pr_data
+      pr_data="$(_az_marker_data "$n")" || pr_data=""
+      if [ -z "$pr_data" ]; then
+        echo "pipeline-vcs: check-approval-sha: could not fetch PR #$n data" >&2
+        exit 1
+      fi
+      _vcs_shared_check_approval_run "$pr_data" "$stale_list_flag" "$evidence_flag" \
+        az account show --query user.name --output tsv
       ;;
     list-prs)
       # PAGINATION (#171): `az repos pr list --top` exists (unlike `az boards
@@ -7850,7 +7969,7 @@ fi
 # Hand-construction of approval markers remains possible and remains the
 # caller's responsibility -- these failures are eliminated for verb users only.
 if [ "$VERB" = "post-approval" ]; then
-  if [ "$PROVIDER" != "github" ] && [ "$PROVIDER" != "github-api" ]; then
+  if [ "$PROVIDER" != "github" ] && [ "$PROVIDER" != "github-api" ] && [ "$PROVIDER" != "azure" ]; then
     echo "pipeline-vcs: post-approval: not implemented for provider '$PROVIDER'" >&2
     exit 1
   fi

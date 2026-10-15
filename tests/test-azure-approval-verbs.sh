@@ -87,11 +87,15 @@ assert_contains "$out" "stale role=qa label=qa:pass" "AC6 the label is stale wit
 cur="$(STUB_AZURE_PR_9="$(_pr qa:pass)" STUB_AZURE_PR_THREADS="$(_threads bot@acme.com "$HEAD_SHA" qa)" \
   bash "$VCS" check-approval-sha 9 --evidence-list 2>&1)"; rc=$?
 assert_eq "0" "$rc" "AC7 --evidence-list exits 0"
-miss="$(STUB_AZURE_PR_9="$(_pr qa:pass)" STUB_AZURE_PR_THREADS="$(_threads bot@acme.com "$OLD_SHA" qa)" \
+# present: the label is on the PR; lost: no label, a trusted marker at the head;
+# missing: no label, a marker at an older sha.
+lost="$(STUB_AZURE_PR_9="$(_pr)" STUB_AZURE_PR_THREADS="$(_threads bot@acme.com "$HEAD_SHA" qa)" \
   bash "$VCS" check-approval-sha 9 --evidence-list 2>&1)"
-assert_contains "$cur" "qa" "AC7 evidence names the role"
-assert_contains "$cur" "current" "AC7 evidence is current at the head"
-assert_contains "$miss" "missing" "AC7 evidence is missing without a marker at the head"
+miss="$(STUB_AZURE_PR_9="$(_pr)" STUB_AZURE_PR_THREADS="$(_threads bot@acme.com "$OLD_SHA" qa)" \
+  bash "$VCS" check-approval-sha 9 --evidence-list 2>&1)"
+assert_contains "$cur" "evidence role=qa label=qa:pass state=present" "AC7 evidence is present for a labelled PR"
+assert_contains "$lost" "evidence role=qa label=qa:pass state=lost" "AC7 evidence is lost for a marker at the head with no label"
+assert_contains "$miss" "evidence role=qa label=qa:pass state=missing" "AC7 evidence is missing for a marker at an older sha"
 
 # ── AC8: plain check-approval-sha ─────────────────────────────────────────────
 out="$(STUB_AZURE_PR_9="$(_pr)" STUB_AZURE_PR_THREADS='{"value":[]}' bash "$VCS" check-approval-sha 9 2>&1)"; rc=$?
