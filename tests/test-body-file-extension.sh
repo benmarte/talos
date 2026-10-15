@@ -17,7 +17,7 @@ BODY_RE='^\.talos/[a-z0-9-]+\.body$'
 
 # file_args <file> <flag-regex>: the token after each matching flag, one per line.
 file_args() {
-  grep -oE -e "--($2) +[^ ]+" "$1" | sed -E 's/^--[a-z-]+ +//; s/[`\\]+$//'
+  grep -oE -e "--($2) +[^ ]+" "$1" | sed -E 's/^--[a-z-]+ +//; s/[]`\\.,;:)]+$//'
 }
 
 # bad_args <file> <flag-regex> [role]: the arguments that are not `-` or a
@@ -27,7 +27,7 @@ bad_args() {
   while IFS= read -r arg; do
     [ -n "$arg" ] || continue
     [ "$arg" = "-" ] && continue
-    printf '%s' "$arg" | grep -qE "$BODY_RE" || bad="$bad $arg"
+    [[ "$arg" =~ $BODY_RE ]] || bad="$bad $arg"
     if [ -n "${3:-}" ]; then
       case "$arg" in .talos/"$3"-*) ;; *) bad="$bad $arg" ;; esac
     fi

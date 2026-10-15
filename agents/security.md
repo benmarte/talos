@@ -20,11 +20,11 @@ substitute it).
 
 Read diff: a `Change` block in the prompt is the whole diff and the spec; fetch
 neither again. Without one, `bash scripts/pipeline-vcs.sh diff-pr <pr> --stat`
-first, then the full `bash scripts/pipeline-vcs.sh diff-pr <pr>` once.
+first, then the full `diff-pr <pr>` once.
 
 Check: input validation/injection, authn/authz gaps, secret handling, unsafe
 deserialization, path traversal, SSRF, and dependency risk introduced by the
-diff. Only report issues you can tie to specific changed lines.
+diff. Report only issues tied to changed lines.
 
 **Severity:** a finding blocks only with (a) an attacker path that does not
 start from something the user already controls (their settings, config,
@@ -46,13 +46,13 @@ status) is the oracle for whether the suite passes — this stage is diff-only.
   set it; only the orchestrator clears it (#310).
 - Findings:
   1. `bash scripts/pipeline-vcs.sh label-pr <pr> --add pipeline:blocked`
-  2. Render security-signoff.md on the PR: VERDICT=FINDINGS, DETAILS the
-     severity, file:line and fix, then `bash scripts/pipeline-vcs.sh
-     comment-pr <pr> "$COMMENT_BODY"`.
-  3. Also post blocked.md on the issue: SUMMARY "security findings in PR #<pr>",
-     `<file>:<quoted line> (explicit|interpreted)` in `BLOCKED_BY` (never paste
+  2. Render security-signoff into `.talos/security-signoff.body` (`mkdir -p
+     .talos`): VERDICT=FINDINGS, DETAILS the severity, file:line and fix, then
+     `bash scripts/pipeline-vcs.sh comment-pr <pr> --body-file .talos/security-signoff.body`.
+  3. Also render blocked into `.talos/security-blocked.body`: SUMMARY "security
+     findings in PR #<pr>", `<file>:<quoted line> (explicit|interpreted)` in `BLOCKED_BY` (never paste
      the quoted line into a command string); then
-     `bash scripts/pipeline-vcs.sh comment-issue <issue-n> "$COMMENT_BODY"`.
+     `bash scripts/pipeline-vcs.sh comment-issue <issue-n> --body-file .talos/security-blocked.body`.
 
 **Approval (on clear):** `bash scripts/pipeline-vcs.sh post-approval <PR> security --body-file - --issue <issue-n> <<'TALOS_<rand>'`
 reads the PR head SHA itself (never `git rev-parse HEAD`: your local HEAD can

@@ -36,7 +36,7 @@ REPO_AGENTS_DIR="$TALOS_ROOT/.claude/agents"
 # extract_rules_block <file>
 # Prints every line from "^Rules:" up to (but not including) "^Final message:".
 # Then normalises the two token classes that legitimately differ per role:
-#   [--body-file <f>] → --body-file <f>  (required for reviewer/security only)
+#   [--body-file .talos/<role>-*.body] → --body-file <f>  (required for reviewer/security only)
 #   --body-file - --issue <issue-n> <<'TALOS_<rand>'  → --body-file <FILE> --issue <issue-n>
 #     (reviewer/security feed the review on stdin, #699)
 #   role=<value>  →  role=ROLE
@@ -52,6 +52,7 @@ extract_rules_block() {
         -e 's/\*\*Approval ([^)]*)/**Approval (WHEN)/' \
         -e 's/post-approval <PR> [a-z]*/post-approval <PR> ROLE/' \
         -e 's/<[a-z]*-file>/<FILE>/' \
+        -e 's|\.talos/[a-z-]*\.body|<FILE>|' \
         -e "s/--body-file - \(--issue <issue-n>\) <<'TALOS_<rand>'/--body-file <FILE> \1/" \
         -e 's/\[--body-file <FILE>\]/--body-file <FILE>/' \
         -e 's/`review:approved`/`LABEL`/g' \
