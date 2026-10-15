@@ -4519,20 +4519,28 @@ _talos_run_review_round() {
   fi
 }
 
+# The line that makes a stage comment a review finding (#711), a Python regex
+# matched per line: `**<Stage>:** CHANGES|FINDINGS` (review-signoff.md,
+# security-signoff.md) or `**Blocked** — ` (blocked.md, what the reviewer posts
+# on the PR). The one definition the readers take; a template that renders a
+# finding differently needs its shape added here.
+_TALOS_FINDING_RE='^\*\*(?:[^*]+:\*\*\s+(?:CHANGES|FINDINGS)\b|Blocked\*\*\s+—)'
+
 # The PR's review finding and its owner reply (#639), for a run that starts on
 # a PR the last run left blocked. argv: the stage header (with {role}), 1 or 0
 # for "only trusted authors count", the trusted logins one per line, the mode
-# (`answered`: the role comes from the newest owner question) and the summary
-# file to write. Prints the role of the newest stage comment when it carries a
-# `**<Stage>:** CHANGES|FINDINGS` verdict from reviewer, security or adversarial
-# (in `answered` mode the role the owner question names wins), else nothing.
+# (`answered`: the role comes from the newest owner question), the summary
+# file to write and the findings-line pattern (_TALOS_FINDING_RE). Prints the
+# role of the newest stage comment when it carries a findings line from
+# reviewer, security or adversarial (in `answered` mode the role the owner
+# question names wins), else nothing.
 # The file holds that comment, then the replies after the newest owner question.
 _TALOS_BLOCKED_PY='
 import json, re, sys
 header, enforce, trusted, mode, out = sys.argv[1].strip(), sys.argv[2] == "1", set(sys.argv[3].splitlines()), sys.argv[4], sys.argv[5]
 pre, post = header.split("{role}", 1) if "{role}" in header else (header, "")
 HEAD = re.compile(re.escape(pre) + "([a-z]+)" + re.escape(post))
-VERDICT = re.compile(r"^\*\*[^*]+:\*\*\s+(CHANGES|FINDINGS)\b", re.M)
+VERDICT = re.compile(sys.argv[6], re.M)
 ASKED = re.compile(r"<!--\s*talos:needs-owner\s*-->")
 QUESTION = re.compile(r"Design decision needed: ([a-z]+) blocked PR")
 def login(c):
@@ -4576,7 +4584,7 @@ _talos_run_blocked_fix() {
   _talos_trust
   _talos_cap _vcs read-comments "$_pr"
   [ "$_RC" -eq 0 ] || return 1
-  _role="$(python3 -I -c "$_TALOS_BLOCKED_PY" "$_h" "$_TRUST_ON" "$_TRUST_SET" "$3" "$_sum" <<< "$_OUT" 2>/dev/null)" || return 1
+  _role="$(python3 -I -c "$_TALOS_BLOCKED_PY" "$_h" "$_TRUST_ON" "$_TRUST_SET" "$3" "$_sum" "$_TALOS_FINDING_RE" <<< "$_OUT" 2>/dev/null)" || return 1
   [ -n "$_role" ] || return 1
   _talos_run_review_round "$_pr" "$_n" "$_role" "$_sum" "$4"
 }
