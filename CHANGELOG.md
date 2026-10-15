@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- fix(azure): `pr-checks-required` with an empty `merge.required_checks` judges the PR's blocking policy evaluations instead of refusing (no blocking evaluation is pending), so a policy-only project can pass the merge gate
 - fix(azure): `read-attempt`, `record-attempt`, `check-attempt` and `read-comments <wi> --work-item` now run on azure (the marker is a work-item comment), and an author with no `uniqueName` is never trusted
 - fix(azure): `post-approval`, `pr-head`, `check-approval-sha` and `read-comments <pr>` now run on azure (the marker is a PR thread comment, the label a PR label), so `docs-gate` can stamp `docs:done`
 - fix(azure): `list-issues`, `view-issue` and `list-prs` add the GitHub-shaped keys `talos.sh run` reads (`number`, `title`, `state`, `body`, `labels`, `headRefName`, `baseRefName`, `isCrossRepository`) next to the raw ones, so a work item tagged `pipeline:ready` is queued, and `has-spec` runs on azure
