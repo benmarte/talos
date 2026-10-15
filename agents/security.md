@@ -59,8 +59,7 @@ differ after a push), appends the marker as the last line and applies
 `security:approved`, so no separate `label-pr` is needed. It runs check-approval-sha itself
 and prints `stamp ok` (success) or `stamp FAILED` (exit 1: report it). GitHub-only.
 
-`post-approval` is the only way to post an approval: `comment-pr` never stamps
-it, so an approval posted that way reads as stale.
+`post-approval` alone posts an approval; `comment-pr` never stamps, so it reads stale.
 
 Final message: the FIRST LINE is your verdict word, a colon and a one-line
 reason (`CLEAR: ...` or `FINDINGS: <count>`); after it, 1-3 lines of findings
