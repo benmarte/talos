@@ -710,6 +710,9 @@ if [ -z "$REPO" ] && [ "$PROVIDER" != "file" ]; then
       || echo "")"
   fi
 fi
+# ADO wants the repository name alone: vcs.repo "project/name" (the shape the
+# git remote gives) is reduced to its last path segment. Empty stays empty (#705).
+AZURE_REPO="${REPO##*/}"
 
 # ── Dry-run wrapper ───────────────────────────────────────────────────────────
 _run() {
@@ -5774,7 +5777,7 @@ _azure_org() {
 # Returns non-zero if org/project/repo can't be resolved. Used by the PR verbs
 # that az has no command for (labels, comment threads) — reached via `az rest`.
 _azure_git_base() {
-  local base_org proj="$AZURE_PROJECT" repo="$REPO"
+  local base_org proj="$AZURE_PROJECT" repo="$AZURE_REPO"
   [ -z "$proj" ]     && proj="$(az devops configure --list 2>/dev/null | awk -F'= *' '/^project/{print $2}' | tr -d '[:space:]')"
   [ -z "$repo" ] && return 1
   base_org="$(_azure_org)" || return 1
@@ -6159,7 +6162,7 @@ for c in d["changeEntries"]:
   _az_closing_siblings() {
     local _self="$1" _n="$2" _wi _ids _id _pr _linked="" _active _ra=""
     local _page _len _raw="" _top=1000 _max=10 _pages=0 _capped=0
-    [ -n "$REPO" ] && _ra="--repository $REPO"
+    [ -n "$AZURE_REPO" ] && _ra="--repository $AZURE_REPO"
     _wi="$(az boards work-item show --id "$_n" --expand relations $ORG_ARG --output json)" || return 1
     _ids="$(printf '%s' "$_wi" | _az_linked_pr_ids)" || return 1
     for _id in $_ids; do
@@ -6644,10 +6647,10 @@ PYEOF
     create-pr)
       local branch="$1" title="$2" body_file="$3"
       [ -z "$BASE_BRANCH" ] && BASE_BRANCH="main"
-      # `az repos pr create` requires --repository. REPO comes from vcs.repo
+      # `az repos pr create` requires --repository. AZURE_REPO comes from vcs.repo
       # (or git-remote auto-detect); pass it only when set so az emits its own
       # clear error rather than us fabricating a repo name.
-      local repo_arg=""; [ -n "$REPO" ] && repo_arg="--repository $REPO"
+      local repo_arg=""; [ -n "$AZURE_REPO" ] && repo_arg="--repository $AZURE_REPO"
       # #298: link the work item named by the issue-<N> branch convention and
       # transition it on completion. ADO ignores `Closes #N` on a squash
       # merge, so this link is the native close path when a human merges.
@@ -6898,14 +6901,14 @@ print(((d.get('lastMergeSourceCommit') or {}).get('commitId') or '').lower())
       # ADO PRs DO support labels via the REST API (az has no command for it).
       local n="$1"; shift
       _parse_label_args "$@"
-      local gitbase; gitbase="$(_azure_git_base)" || { echo "pipeline-vcs: azure label-pr needs org/project/repo (vcs.azure.org_url, vcs.azure.project, vcs.repo)" >&2; return 0; }
-      local l tf
+      local gitbase; gitbase="$(_azure_git_base)" || { echo "pipeline-vcs: azure label-pr needs org/project/repo (vcs.azure.org_url, vcs.azure.project, vcs.repo)" >&2; return 1; }
+      local l tf add_failed=0
       for l in $ADD_LABELS; do
         if [ "$DRY_RUN" = "true" ]; then echo "[dry-run] az rest POST $gitbase/pullRequests/$n/labels {\"name\":\"$l\"}"; continue; fi
         tf="$(mktemp)"; python3 -I -c 'import json,sys;open(sys.argv[1],"w").write(json.dumps({"name":sys.argv[2]}))' "$tf" "$l"
         az rest --method post --url "$gitbase/pullRequests/$n/labels?api-version=7.1-preview.1" \
           --resource "$ADO_RESOURCE" --headers "Content-Type=application/json" --body "@$tf" >/dev/null 2>&1 \
-          || echo "pipeline-vcs: label-pr add '$l' failed on PR #$n" >&2
+          || { echo "pipeline-vcs: label-pr add '$l' failed on PR #$n" >&2; add_failed=1; }
         rm -f "$tf"
       done
       # ADO rejects ':' in a URL path, and every Talos label has one, so DELETE
@@ -6925,6 +6928,7 @@ print(((d.get('lastMergeSourceCommit') or {}).get('commitId') or '').lower())
           done
         fi
       fi
+      return "$add_failed"
       ;;
     pr-checks)
       _run az repos pr show --id "$1" $ORG_ARG \
@@ -6944,7 +6948,7 @@ print(((d.get('lastMergeSourceCommit') or {}).get('commitId') or '').lower())
     comment-pr)
       # az has no PR-comment command; post a thread via REST.
       local n="$1" body="$2"
-      local gitbase; gitbase="$(_azure_git_base)" || { echo "pipeline-vcs: azure comment-pr needs org/project/repo" >&2; return 0; }
+      local gitbase; gitbase="$(_azure_git_base)" || { echo "pipeline-vcs: azure comment-pr needs org/project/repo" >&2; return 1; }
       local url="$gitbase/pullRequests/$n/threads?api-version=7.1-preview.1"
       if [ "$DRY_RUN" = "true" ]; then echo "[dry-run] az rest POST $url {\"comments\":[{\"content\":<body>}]}"; return 0; fi
       local tf; tf="$(mktemp)"
@@ -6993,7 +6997,7 @@ print(((d.get('lastMergeSourceCommit') or {}).get('commitId') or '').lower())
         all)    az_status="all" ;;
         *)      az_status="active" ;;
       esac
-      local repo_arg=""; [ -n "$REPO" ] && repo_arg="--repository $REPO"
+      local repo_arg=""; [ -n "$AZURE_REPO" ] && repo_arg="--repository $AZURE_REPO"
       if [ "$DRY_RUN" = "true" ]; then
         echo "[dry-run] az boards work-item show --id $n --expand relations $ORG_ARG | az repos pr show --id <linked>; else az repos pr list --status $az_status | filter issue-$n"
         return 0
