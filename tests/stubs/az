@@ -101,7 +101,7 @@ try:
 except OSError:
     names = []
 d["value"] = d["value"] + [{"id": "x", "name": n, "active": True} for n in names]
-print(json.dumps(d))
+print(json.dumps(d, indent=2))  # az rest prints indented JSON
 '
     exit 0 ;;
   "rest --method get "*"/pullRequests/"*"/threads"*)

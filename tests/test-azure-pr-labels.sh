@@ -57,4 +57,18 @@ out="$(STUB_AZURE_PR_9="$PR" STUB_AZURE_PR_LABELS_FAIL=1 STUB_AZURE_PR_THREADS="
 assert_eq "1" "$rc" "AC4 check-approval-sha fails closed when the labels read fails"
 assert_not_contains "$out" "no approval labels" "AC4 a failed labels read is not read as no labels"
 
+# ── AC5: real `az` output is indented, so both bodies span many lines ────────
+# The stub prints the labels body indented, as `az rest` does; the `pr show`
+# body is pretty-printed here the same way.
+PR_PRETTY="$(printf '%s' "$PR" | python3 -I -c 'import json,sys;print(json.dumps(json.load(sys.stdin), indent=2))')"
+out="$(STUB_AZURE_PR_9="$PR_PRETTY" STUB_AZURE_PR_LABELS="$LABELS" bash "$VCS" view-pr 9 2>/dev/null)"; rc=$?
+assert_eq "0" "$rc" "AC5 view-pr exits 0 on indented az output"
+assert_eq '[{"name": "pipeline:review"}, {"name": "qa:pass"}]' \
+  "$(printf '%s' "$out" | python3 -I -c 'import json,sys;print(json.dumps(json.load(sys.stdin)["labels"]))' 2>/dev/null)" \
+  "AC5 view-pr lists the labels from indented az output"
+out="$(STUB_AZURE_PR_9="$PR_PRETTY" STUB_AZURE_PR_LABELS="$LABELS" STUB_AZURE_PR_THREADS="$THREADS" \
+  bash "$VCS" check-approval-sha 9 --stale-list 2>&1)"; rc=$?
+assert_eq "0" "$rc" "AC5 check-approval-sha exits 0 on indented az output"
+assert_contains "$out" "all approval labels are current" "AC5 check-approval-sha reads labels from indented az output"
+
 finish
