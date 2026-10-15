@@ -5790,7 +5790,9 @@ ADO_RESOURCE="499b84ac-1321-427f-aa17-267ca6975798"  # Azure DevOps AAD app id (
 # markdown, so this is applied only to work-item Description + comments, never PR
 # threads. Passes the body through unchanged when it already looks like HTML.
 # Prefers pandoc, then the python `markdown` lib, then a self-contained fallback
-# (python3 is already a hard dependency of this adapter).
+# (python3 is already a hard dependency of this adapter). A single newline in a
+# paragraph stays a <br> on all three (GitHub renders it so, and Talos's spec
+# fields are line-oriented); _az_comments_html_to_md turns it back into a newline.
 _md_to_html() {
   local md="$1"
   [ -z "$md" ] && { printf ''; return 0; }
@@ -5799,14 +5801,14 @@ _md_to_html() {
     '<'*) printf '%s' "$md"; return 0 ;;
   esac
   if command -v pandoc >/dev/null 2>&1; then
-    printf '%s' "$md" | pandoc -f gfm -t html 2>/dev/null && return 0
+    printf '%s' "$md" | pandoc -f gfm+hard_line_breaks -t html 2>/dev/null && return 0
   fi
   python3 -I - "$md" <<'PYEOF'
 import sys, html, re
 src = sys.argv[1]
 try:
     import markdown  # best fidelity when the lib is installed
-    sys.stdout.write(markdown.markdown(src, extensions=['tables', 'fenced_code', 'sane_lists']))
+    sys.stdout.write(markdown.markdown(src, extensions=['tables', 'fenced_code', 'sane_lists', 'nl2br']))
     sys.exit(0)
 except Exception:
     pass
@@ -5871,7 +5873,7 @@ while i < n:
     buf = [line]; i += 1
     while i < n and lines[i].strip() != '' and not re.match(r'^\s*(#{1,6}\s|```|[-*+]\s|\d+\.\s)', lines[i]):
         buf.append(lines[i]); i += 1
-    out.append('<p>' + inline(' '.join(b.strip() for b in buf)) + '</p>')
+    out.append('<p>' + '<br>'.join(inline(b.strip()) for b in buf) + '</p>')
 sys.stdout.write('\n'.join(out))
 PYEOF
 }
@@ -6230,8 +6232,9 @@ json.dump({"comments": out}, sys.stdout)
   # "createdAt"}]} (#685), the shape _az_comments_obj gives: GET {org}/{project}/
   # _apis/wit/workItems/{id}/comments (api-version 7.1-preview.3), every page by
   # its continuationToken. Deleted comments are skipped; the login is the
-  # creator's uniqueName, empty when it has none. Returns non-zero with no
-  # stdout when any page fails to fetch or parse, or the token never ends.
+  # creator's uniqueName, empty when it has none. The comments are sorted by
+  # createdAt ascending once all pages are merged (#703). Returns non-zero with
+  # no stdout when any page fails to fetch or parse, or the token never ends.
   _az_wi_comments_obj() {
     local _wb _wp _url _page _tok="" _toks=" " _pages="" _i=0
     _wb="$(_azure_org)" || _wb=""
@@ -6270,11 +6273,18 @@ print(json.dumps(out))
       [ "$_i" -ge 1000 ] && return 1
     done
     printf '%s' "$_pages" | python3 -I -c '
-import json, sys
+import json, re, sys
 out = []
 for line in sys.stdin:
     if line.strip():
         out.extend(json.loads(line))
+# ADO lists newest first; every reader assumes GitHub'\''s oldest first. The
+# fraction is compared as digits ("00Z" would otherwise sort after "00.5Z");
+# sort is stable, so equal timestamps keep the API order.
+def when(c):
+    m = re.match(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d+))?", c.get("createdAt") or "")
+    return (m.group(1), (m.group(2) or "").ljust(9, "0")) if m else ("", "")
+out.sort(key=when)
 json.dump({"comments": out}, sys.stdout)
 ' 2>/dev/null
   }

@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- fix(azure): work-item descriptions and comments keep a single newline as `<br>` (pandoc `hard_line_breaks`, python-markdown `nl2br`, the built-in fallback) and read back as a newline, so a spec's `**Tests:**` line no longer swallows the next line; work-item comments are listed oldest first, so a revised `**PM spec:**` takes effect
 - fix(azure): `view-pr` and `check-approval-sha` read the PR's labels from the PR labels API (`az repos pr show` always answers `labels: null`), a failed labels read fails closed, and the driver's label reader treats `labels: null` as no labels
 - fix(post-approval): `--body-file -` and `--body-file /dev/stdin` (or a pipe) post the review text instead of an empty body, and the reviewer and security profiles give that stdin form in place of writing a review file
 - fix(azure): `view-issue` (and `--spec` / `--since-stage`) includes the work item's comments with each stored-HTML body converted back to markdown, so a PM spec posted through `comment-issue` is readable by `pipeline-criteria.sh` (`spec-usable`, `qa-run`)
