@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- fix(azure): `list-issues`, `view-issue` and `list-prs` add the GitHub-shaped keys `talos.sh run` reads (`number`, `title`, `state`, `body`, `labels`, `headRefName`, `baseRefName`, `isCrossRepository`) next to the raw ones, so a work item tagged `pipeline:ready` is queued, and `has-spec` runs on azure
 - fix(run): a draft completion no longer re-runs QA (or its CI wait) when `qa:pass` is already fresh at the PR head; a missing, stale or unreadable `qa:pass` still dispatches QA
 - fix(sweep): a squash-merged `fix|feat/issue-<N>-*` branch is deleted only when its tip equals the merged PR's head commit (`find-pr` prints `headRefOid` on github); later local commits or an unavailable head commit keep it
 - fix(run): a QA FAIL whose `qa-run` results are all `vacuous` ends `spec-unusable` with no developer round whatever QA's message says: the driver reads `qa-run`'s own lines from a file in the run's scratch, and the PM marks an already-green guard `(prose)`
