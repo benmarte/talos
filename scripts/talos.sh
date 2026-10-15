@@ -974,7 +974,11 @@ _talos_role_enabled() {
 # patch. Everything is read from one read-comments object, in list order, from
 # the comments of trusted authors:
 #   findings comment  its first line is the stage's comments.header and it holds
-#                     no `<!-- talos:` text (so an approval is never one)
+#                     no `<!-- talos:` text (so an approval is never one), bar
+#                     the one `<!-- talos:reviewed sha=<40-hex> -->` marker
+#   its head          that marker's sha, the PR head the comment reviewed (#710);
+#                     adjacent findings comments of one known head are one round,
+#                     a comment with no marker has an unknown head and is its own
 #   its files         every <path> of a `<path>:<digits>` citation above the
 #                     non-blocking notes and the reviewer's attention report
 #   owner question    its last line is `<!-- talos:needs-owner -->`; answered by
@@ -991,6 +995,7 @@ import json, re, sys
 rounds, header, enforce, trusted = int(sys.argv[1]), sys.argv[2].strip(), sys.argv[3] == "1", set(sys.argv[4].splitlines())
 REF = re.compile(r"(?<![A-Za-z0-9_./-])([A-Za-z0-9_./-]+):[0-9]+")
 ASKED = re.compile(r"<!--\s*talos:needs-owner\s*-->")
+REVIEWED = re.compile(r"<!-- talos:reviewed sha=([0-9a-f]{40}) -->")
 END = ("**Non-blocking notes", "**Human-attention", "**Human attention")
 # The cloud-session footer (#640) after the marker: the same rule as
 # strip_footer in pipeline-vcs.sh (_vcs_shared_trust_py), one --- line and the
@@ -1028,7 +1033,15 @@ def summary(body):
             line = " ".join(line.split())
             return (line.split(" — ", 1)[1] if " — " in line else line)[:160]
     return ""
-bodies = [b for b in cs if b.lstrip().split("\n", 1)[0].strip() == header and "<!-- talos:" not in b]
+def head(b):
+    m = REVIEWED.search(b)
+    return m.group(1) if m else None
+bodies = []
+for b in cs:
+    if b.lstrip().split("\n", 1)[0].strip() == header and "<!-- talos:" not in REVIEWED.sub("", b):
+        if bodies and head(b) and head(b) == head(bodies[-1]):
+            bodies.pop()
+        bodies.append(b)
 found = [files(b) for b in bodies]
 common = sorted(set.intersection(*found[-rounds:])) if len(found) >= rounds else []
 if common:
