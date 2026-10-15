@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- feat(qa): `qa-run` also runs the red commit's version of each `Tests:` file the PR changed since, against the head code (the frozen run), and prints `frozen@head` or `AC<n> FAIL weakened (red-commit test fails at head)`, so a fix round cannot weaken a test after the red proof; `--ack-changed <reason>` records a change made on purpose as `weakened-ack`
 - fix(ci): the test workflow and the shipped `templates/ci/github-tests.yml` no longer install PyYAML on macOS; Talos config is JSON only and every remaining `yaml` import is optional, so the step only failed when the runner image changed
 - feat(criteria): a `(same: <why>)` criterion kind for behaviour that must not change; `qa-run` passes it when its tests are green at the red commit and at the head (`AC<n> PASS same red@<sha8> green@head`) instead of failing it as `vacuous`.
 - fix(vcs): `comment-issue` and `comment-pr` refuse a positional or `--body` body that is one whitespace-free token naming a readable file, relative (`.talos/x.body`) or absolute, with the "use `--body-file`" message; a `--body-file` or stdin body is never read as a path, and a token that is not a file is still posted as text

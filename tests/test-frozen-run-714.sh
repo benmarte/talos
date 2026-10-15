@@ -44,7 +44,7 @@ rep() {  # $1=red $2=head $3=frozen (omitted: no --frozen) ; sets OUT, RC
   fi
 }
 
-rep "$FAILL" "$OKL" "$OKL"
+rep "$MIXED" "$OKL" "$OKL"
 assert_contains "$OUT" "AC1 red@abcdef12 green@head frozen@head" "AC1 report --frozen: red at red, green at head and in frozen prints the frozen@head column"
 assert_not_contains "$OUT" "weakened" "AC1 report --frozen: a green frozen run is not weakened"
 assert_eq "0" "$RC" "AC1 report --frozen: exit 0"
@@ -183,7 +183,7 @@ qa_run --ack-changed "fixed a wrong assertion"
 assert_contains "$OUT" "AC1 weakened-ack (red-commit test fails at head; changed on purpose: fixed a wrong assertion)" "AC8 qa-run --ack-changed: the weakened criterion prints the weakened-ack line"
 assert_contains "$OUT" "frozen run failures" "AC8 qa-run --ack-changed: the frozen failure is still printed"
 assert_contains "$OUT" "qa-run: verdict PASS" "AC8 qa-run --ack-changed: the verdict is PASS"
-assert_not_contains "$OUT" " FAIL " "AC8 qa-run --ack-changed: no FAIL line"
+assert_eq "0" "$(grep -cE '^AC[0-9]+ FAIL ' <<<"$OUT")" "AC8 qa-run --ack-changed: no criterion line is FAIL"
 assert_eq "0" "$RC" "AC8 qa-run --ack-changed: exit 0"
 assert_eq "" "$(git status --porcelain --untracked-files=no)" "AC9 qa-run --ack-changed: the tracked tree is clean"
 qa_run --ack-changed ""

@@ -90,14 +90,17 @@ printf -- '- [ ] AC1 keeps parsing (same: refactor)\n\n**Tests:** `tests/test-ke
 assert_eq "spec-check: ok" "$(bash "$CRIT" spec-check "$SC")" "AC5 spec-check: a (same) criterion with a valid Tests: line is ok"
 
 # ── AC6-AC7 on a stub repo (as tests/test-qa-run.sh) ─────────────────────────
-write_test() {  # $1=path $2=green|red -- AC1 always green or always red
+write_test() {  # $1=path $2=green|red|pending -- AC1 always green, always red, or red until feature.txt exists
   {
     printf '#!/usr/bin/env bash\n'
     if [ "$2" = green ]; then printf 'printf "  ok  AC1 greet prints hello\\n"; exit 0\n'
+    elif [ "$2" = pending ]; then  # red until the head's feature.txt exists (#714: the frozen run passes at head)
+      printf 'if [ -f feature.txt ]; then printf "  ok  AC1 greet prints hello\\n"; exit 0; fi\n'
+      printf 'printf "FAIL  AC1 greet prints hello\\n"; exit 1\n'
     else printf 'printf "FAIL  AC1 greet prints hello\\n"; exit 1\n'; fi
   } > "$1"
 }
-new_repo() {  # $1=head state, $2=state at the red commit (default green): green|red
+new_repo() {  # $1=head state, $2=state at the red commit (default green): green|red|pending
   cd "$BASE_DIR" || exit 1
   rm -rf "${BASE_DIR:?}"/* "${BASE_DIR:?}"/.git "${BASE_DIR:?}"/.talos
   git init -q -b main
@@ -152,7 +155,7 @@ spec '- [ ] AC1 greet prints hello (test)' '- [ ] AC2 the README names it (prose
 qa_run
 assert_contains "$OUT" "AC1 FAIL vacuous (green at red@$RED8)" "AC6 qa-run: a (test) criterion green at red is still FAIL vacuous"
 
-new_repo green red
+new_repo green pending
 spec '- [ ] AC1 greet prints hello (test)' '- [ ] AC2 the README names it (prose: wording)' '' '**Tests:** `tests/test-greet.sh`'
 qa_run
 assert_contains "$OUT" "qa-run: verdict PASS (1 test criteria green, 1 prose to hand-check)" "AC6 qa-run: the verdict line is unchanged when no (same) criterion exists"

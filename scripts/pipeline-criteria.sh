@@ -34,7 +34,18 @@
 #         AC<n> PASS same green@head (red: missing)   no per-id output at red
 #         AC<n> FAIL same red=<state> head=<state>    red or missing at head, or red at red
 #       Exit 1 when any line is FAIL.
-#   pipeline-criteria.sh qa-run <issue> <pr> [--base <branch>]
+#       --frozen <output> (#714): the red commit's version of each Tests file the
+#       PR changed since, run against the head code (parsed like --red/--head).
+#       A criterion with a frozen state adds a column or fails:
+#         AC<n> red@<sha8> green@head frozen@head   the red-commit test still passes
+#         AC<n> FAIL weakened (red-commit test fails at head)
+#       An existing FAIL (vacuous, head=fail) wins over weakened. No frozen state
+#       for an id (its file did not change) adds no column; without --frozen the
+#       output is exactly the lines above. --ack-changed <reason> (printable
+#       ASCII, 1-200 chars, else usage exit 2) reports the weakened line as
+#       `AC<n> weakened-ack (red-commit test fails at head; changed on purpose:
+#       <reason>)`, which is not a FAIL.
+#   pipeline-criteria.sh qa-run <issue> <pr> [--base <branch>] [--ack-changed <reason>]
 #       The whole QA criteria check in one call (#549), run from the QA
 #       worktree: tags the worktree for <issue> (best effort; the main checkout
 #       is refused), checks `pr-mergeable` (CONFLICTING: nothing runs), checks
@@ -44,6 +55,16 @@
 #       prints the `report` lines plus one verdict line:
 #         qa-run: verdict PASS ...      the mechanical half passed (prose is yours);
 #             `, <k> same` is named before the prose count when k > 0
+#       The frozen run (#714): when a Tests file differs between the red commit
+#       and the head, the red commit's version of it runs against the head code
+#       (one more targeted run; none when no file changed or the red proof was
+#       skipped), then the head versions are put back. Each such file prints
+#       `note: frozen run: <file> differs from red commit <sha8>`; the report
+#       adds `frozen@head` or `FAIL weakened`; a frozen run that exits non-zero
+#       with no weakened line is `qa-run: verdict FAIL frozen run exited <rc>`.
+#       --ack-changed <reason> (QA, after reading the file's diff between the
+#       red commit and the head) turns FAIL weakened into `weakened-ack`: the
+#       frozen failure is still printed, the verdict can be PASS.
 #         qa-run: verdict FAIL <why>    exit 1
 #         qa-run: verdict BLOCKED spec: <why>    exit 4 (#610): the spec is
 #             unusable (the four faults of spec-usable below) and the PR was
@@ -163,15 +184,24 @@ cmd_map() {
     }' "$file"
 }
 
-# report --spec F --red F --head F --red-sha SHA8
+# _ack_reason_ok REASON (#714): non-empty, printable ASCII, at most 200 chars.
+_ack_reason_ok() {
+  [ -n "$1" ] || return 1
+  [ -z "$(printf '%s' "$1" | LC_ALL=C tr -d ' -~')" ] || return 1
+  [ "${#1}" -le 200 ]
+}
+
+# report --spec F --red F --head F --red-sha SHA8 [--frozen F] [--ack-changed WHY]
 cmd_report() {
-  local spec="" red="" head="" sha=""
+  local spec="" red="" head="" sha="" frozen="" ack=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --spec) spec="${2:-}"; shift 2 || usage ;;
       --red) red="${2:-}"; shift 2 || usage ;;
       --head) head="${2:-}"; shift 2 || usage ;;
       --red-sha) sha="${2:-}"; shift 2 || usage ;;
+      --frozen) frozen="${2:-}"; shift 2 || usage ;;
+      --ack-changed) ack="${2:-}"; _ack_reason_ok "$ack" || usage; shift 2 || usage ;;
       *) usage ;;
     esac
   done
@@ -182,10 +212,11 @@ cmd_report() {
   if [ "${#sha}" -lt 7 ] || [ "${#sha}" -gt 40 ]; then
     echo "pipeline-criteria: report: --red-sha must be 7-40 hex characters" >&2; return 2
   fi
-  local table red_map head_map id kind r h rc=0
+  local table red_map head_map frozen_map="" id kind r h f fcol rc=0
   table="$(cmd_ids "$spec")" || return 1
   red_map="$(cmd_map "$red" --spec "$spec")" || return 1
   head_map="$(cmd_map "$head" --spec "$spec")" || return 1
+  [ -z "$frozen" ] || frozen_map="$(cmd_map "$frozen" --spec "$spec")" || return 1
   while read -r id kind; do
     if [ "$kind" = "prose" ]; then
       printf '%s prose hand-checked\n' "$id"
@@ -193,27 +224,46 @@ cmd_report() {
     fi
     r="$(awk -v i="$id" '$1 == i { print $2 }' <<<"$red_map")"
     h="$(awk -v i="$id" '$1 == i { print $2 }' <<<"$head_map")"
+    # The red commit's version of the test, run at the head (#714): `missing`
+    # (no frozen column) when its file did not change or there was no run.
+    f="$(awk -v i="$id" '$1 == i { print $2 }' <<<"$frozen_map")"
+    fcol=""; [ "$f" != "pass" ] || fcol=" frozen@head"
     if [ "$kind" = "same" ]; then
       if [ "$h" != "pass" ]; then
         printf '%s FAIL same red=%s head=%s\n' "$id" "${r:-missing}" "${h:-missing}"; rc=1
       elif [ "$r" = "fail" ]; then
         printf '%s FAIL same red=fail head=pass\n' "$id"; rc=1
+      elif [ "$f" = "fail" ]; then
+        _weakened "$id" "$ack" || rc=1
       elif [ "$r" = "pass" ]; then
-        printf '%s PASS same red@%s green@head\n' "$id" "$sha"
+        printf '%s PASS same red@%s green@head%s\n' "$id" "$sha" "$fcol"
       else
-        printf '%s PASS same green@head (red: missing)\n' "$id"
+        printf '%s PASS same green@head%s (red: missing)\n' "$id" "$fcol"
       fi
     elif [ "$h" != "pass" ]; then
       printf '%s FAIL head=%s red=%s\n' "$id" "${h:-missing}" "${r:-missing}"; rc=1
-    elif [ "$r" = "fail" ]; then
-      printf '%s red@%s green@head\n' "$id" "$sha"
     elif [ "$r" = "pass" ]; then
       printf '%s FAIL vacuous (green at red@%s)\n' "$id" "$sha"; rc=1
+    elif [ "$f" = "fail" ]; then
+      _weakened "$id" "$ack" || rc=1
+    elif [ "$r" = "fail" ]; then
+      printf '%s red@%s green@head%s\n' "$id" "$sha" "$fcol"
     else
-      printf '%s green@head (red: missing)\n' "$id"
+      printf '%s green@head%s (red: missing)\n' "$id" "$fcol"
     fi
   done <<<"$table"
   return "$rc"
+}
+
+# _weakened ID ACK (#714): the line for a criterion whose red-commit test fails
+# at the head. Without an ack reason it is a FAIL (status 1); with one it is
+# reported, not failed.
+_weakened() {
+  if [ -n "$2" ]; then
+    printf '%s weakened-ack (red-commit test fails at head; changed on purpose: %s)\n' "$1" "$2"
+  else
+    printf '%s FAIL weakened (red-commit test fails at head)\n' "$1"; return 1
+  fi
 }
 
 # ── qa-run (#549) ────────────────────────────────────────────────────────────
@@ -474,8 +524,22 @@ _qa_restore_home() {
   fi
 }
 
-# Exit hook: both restores, each tried.
-_qa_exit() { _qa_restore; _qa_restore_home; }
+# The Tests files the frozen run (#714) swapped for the red commit's versions;
+# _qa_restore_frozen puts the head's back (idempotent; also an exit hook, so an
+# interrupt inside the frozen run leaves no red-commit test file behind).
+_QA_FROZEN=()
+_qa_restore_frozen() {
+  [ "${#_QA_FROZEN[@]}" -gt 0 ] || return 0
+  if git checkout -q HEAD -- "${_QA_FROZEN[@]}" >/dev/null 2>&1; then
+    _QA_FROZEN=()
+  else
+    printf 'qa-run: WARNING: could not restore the head test files; run: git checkout HEAD -- %s\n' "${_QA_FROZEN[*]}" >&2
+    return 1
+  fi
+}
+
+# Exit hook: the restores, each tried.
+_qa_exit() { _qa_restore_frozen; _qa_restore; _qa_restore_home; }
 
 # _qa_verdict_fail REASON -- the closing line of a refused or failed run.
 _qa_fail() {
@@ -484,12 +548,13 @@ _qa_fail() {
 }
 
 cmd_qa_run() {
-  local issue="${1:-}" pr="${2:-}" base="" top
+  local issue="${1:-}" pr="${2:-}" base="" ack="" top
   [ $# -ge 2 ] || usage
   shift 2
   while [ $# -gt 0 ]; do
     case "$1" in
       --base) base="${2:-}"; shift 2 || usage ;;
+      --ack-changed) ack="${2:-}"; _ack_reason_ok "$ack" || usage; shift 2 || usage ;;
       *) usage ;;
     esac
   done
@@ -625,7 +690,7 @@ cmd_qa_run() {
   fi
 
   # 9. Red run: the first commit after the merge-base, when its own change is tests-only.
-  local note="" mb red="" red8="" f bad_path=""
+  local note="" mb red="" red8="" f bad_path="" frozen_files=() frozen_rc=0
   if [ "${#present[@]}" -eq 0 ]; then
     note="no test file to run; red proof skipped"
   else
@@ -666,6 +731,27 @@ EOF
         _QA_MOVED=1
         _qa_exec "$tmp/red.out" "${at_red[@]}"
         _qa_restore || { _qa_fail "could not return to $_QA_ORIG after the red run"; return $?; }
+        # The frozen run (#714): the red commit's version of each Tests file the
+        # PR changed since, against the head code. The head versions go back on
+        # every path out (_qa_exit covers an interrupt).
+        for p in "${at_red[@]}"; do
+          git diff --quiet "$red" HEAD -- "$p" 2>/dev/null || frozen_files+=("$p")
+        done
+        if [ "${#frozen_files[@]}" -gt 0 ]; then
+          : > "$tmp/frozen.out"
+          _QA_FROZEN=("${frozen_files[@]}")
+          if git checkout -q "$red" -- "${frozen_files[@]}" >/dev/null 2>&1; then
+            _qa_exec "$tmp/frozen.out" "${frozen_files[@]}"; frozen_rc=$?
+          else
+            frozen_rc=-1
+          fi
+          _qa_restore_frozen
+          if [ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+            _qa_fail "could not restore the head test files after the frozen run"
+            return $?
+          fi
+          [ "$frozen_rc" -ge 0 ] || { _qa_fail "could not check out the red commit's test files for the frozen run"; return $?; }
+        fi
       else
         note="could not check out the red commit $red8; red proof skipped"
       fi
@@ -678,19 +764,33 @@ EOF
   for p in ${present[@]+"${present[@]}"}; do tests_s="${tests_s:+$tests_s }$p"; done
   echo "qa-run: issue #$issue PR #$pr head $head8 red ${red8:-none} runner $runner tests ${tests_s:-none}"
   [ -z "$note" ] || echo "note: $note"
-  lines="$(cmd_report --spec "$spec" --red "$tmp/red.out" --head "$tmp/head.out" --red-sha "${red8:-$head8}")"; rep_rc=$?
+  local rep_args=(--spec "$spec" --red "$tmp/red.out" --head "$tmp/head.out" --red-sha "${red8:-$head8}")
+  for p in ${frozen_files[@]+"${frozen_files[@]}"}; do
+    printf 'note: frozen run: %s differs from red commit %s\n' "$p" "$red8"
+  done
+  [ "${#frozen_files[@]}" -eq 0 ] || rep_args+=(--frozen "$tmp/frozen.out")
+  [ -z "$ack" ] || rep_args+=(--ack-changed "$ack")
+  lines="$(cmd_report "${rep_args[@]}")"; rep_rc=$?
   printf '%s\n' "$lines"
   # The driver's spec-fault check reads these lines, not QA's prose (#678).
   [ -z "${TALOS_QA_RESULTS:-}" ] || printf '%s\n' "$lines" > "$TALOS_QA_RESULTS" 2>/dev/null || :
-  n_fail="$(printf '%s\n' "$lines" | grep -c ' FAIL ')"
+  n_fail="$(printf '%s\n' "$lines" | grep -cE '^AC[0-9]+ FAIL ')"
   if [ "$n_fail" -gt 0 ] || [ "$head_rc" -ne 0 ] || [ "${#missing[@]}" -gt 0 ]; then
     if grep -qE '^FAIL' "$tmp/head.out" 2>/dev/null; then
       echo "head run failures (test output, data):"
       grep -E -A2 '^FAIL' "$tmp/head.out" | cut -c1-200 | head -n 24 | sed 's/^/  /'
     fi
   fi
+  # The frozen failure is always shown (#714), also when --ack-changed lets it pass.
+  if [ "${#frozen_files[@]}" -gt 0 ] && grep -q 'weakened' <<<"$lines" && grep -qE '^FAIL' "$tmp/frozen.out" 2>/dev/null; then
+    echo "frozen run failures (test output, data):"
+    grep -E -A2 '^FAIL' "$tmp/frozen.out" | cut -c1-200 | head -n 24 | sed 's/^/  /'
+  fi
   local why=""
   [ "$n_fail" -eq 0 ] || why="$n_fail test criteria FAIL"
+  # A frozen run that failed with no weakened line is a crash, not a verdict on a criterion.
+  [ "${#frozen_files[@]}" -eq 0 ] || [ "$frozen_rc" -eq 0 ] || grep -q 'weakened' <<<"$lines" \
+    || why="${why:+$why; }frozen run exited $frozen_rc"
   [ "${#missing[@]}" -eq 0 ] || why="${why:+$why; }${#missing[@]} test file(s) missing"
   [ "$head_rc" -eq 0 ] || [ "${#present[@]}" -eq 0 ] || why="${why:+$why; }head run exited $head_rc"
   [ "$rep_rc" -eq 0 ] || [ -n "$why" ] || why="report failed"
