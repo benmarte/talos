@@ -7900,9 +7900,11 @@ case "$VERB" in
       echo "pipeline-vcs: $VERB: a body of exactly '-' is not stdin; use: $VERB <number> --body-file - (text on stdin). Nothing posted." >&2
       exit 1
     fi
+    _bp_from_file=0
     if [ "${#ARGS[@]}" -ge 3 ]; then
       case "${ARGS[1]}" in
         --body-file)
+          _bp_from_file=1
           # "--body-file -" reads the body from stdin (#342): the route for text
           # that must never sit inside shell quotes (heredoc on stdin). Same
           # trailing-newline trimming as a file read below.
@@ -7934,22 +7936,27 @@ case "$VERB" in
         exit 1
         ;;
     esac
-    # Bare readable absolute path guard (#94): an agent that writes a verdict to
-    # a file and passes the path positionally gets a one-line path as the comment,
+    # Bare readable path guard (#94, #721): an agent that writes a verdict to a
+    # file and passes the path positionally gets a one-line path as the comment,
     # exits 0, and never notices. Detect and reject so --body-file is used instead.
-    # Tie the check to [ -r ] so a body that merely looks path-like but does not
-    # exist on this machine is posted as literal text (no over-rejection).
-    case "${ARGS[1]-}" in
-      /*)
-        if [ -r "${ARGS[1]}" ]; then
+    # Relative paths count (the role prompts use .talos/<name>.body). The check
+    # needs a single line with no whitespace that names a readable regular file,
+    # so a body that merely looks path-like but is not a file on this machine is
+    # posted as literal text (no over-rejection). A --body-file / stdin body is
+    # file content, never a path argument, so it is not checked.
+    if [ "$_bp_from_file" -eq 0 ] && [ -f "${ARGS[1]-}" ] && [ -r "${ARGS[1]-}" ]; then
+      case "${ARGS[1]}" in
+        *[[:space:]]*) ;;
+        *)
           echo "pipeline-vcs: $VERB: body looks like a file path ('${ARGS[1]}'), not comment text." >&2
           echo "pipeline-vcs:   Use --body-file to post a file:" >&2
           printf 'pipeline-vcs:     bash scripts/pipeline-vcs.sh %s %s --body-file %s\n' \
             "$VERB" "${ARGS[0]}" "${ARGS[1]}" >&2
           exit 1
-        fi
-        ;;
-    esac
+          ;;
+      esac
+    fi
+    unset _bp_from_file
     # Unsubstituted template placeholder guard (#306): the stage-comment recipe
     # renders templates/comments/*.md with string.Template, and a variable the
     # agent forgot to export used to survive as a literal `${HEADER}` in a public
