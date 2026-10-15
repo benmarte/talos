@@ -142,6 +142,51 @@ print(json.dumps(d))
       done
       printf '{}\n'; exit 0
     fi ;;
+  "rest --method get "*"/workItems/"*"/comments"*)
+    # Attempt verbs (#685): work-item comments. STUB_AZURE_WI_COMMENTS_PAGE_<tok>
+    # is the raw REST body ({"comments": [...], "continuationToken": ...}) for
+    # the page requested with continuationToken=<tok> (<tok> "first" when the
+    # URL carries none), else STUB_AZURE_WI_COMMENTS. With STUB_AZURE_STATE_DIR
+    # set, the comments POSTed so far (<dir>/wi_posts, one request body per
+    # line) are appended to a page without a continuation token, authored by
+    # STUB_AZURE_POST_AUTHOR (uniqueName). STUB_AZURE_WI_FAIL_TOKEN=<tok> fails
+    # that page.
+    [ "${STUB_AZURE_WI_COMMENTS_FAIL:-}" = "1" ] && _stub_fail "TF401232: Work item does not exist."
+    _wi_tok="first"
+    case "$args" in *"continuationToken="*) _wi_tok="${args##*continuationToken=}"; _wi_tok="${_wi_tok%%[!A-Za-z0-9._-]*}" ;; esac
+    [ "${STUB_AZURE_WI_FAIL_TOKEN:-}" = "$_wi_tok" ] && _stub_fail "VS403403: page unavailable."
+    _wi_var="STUB_AZURE_WI_COMMENTS_PAGE_${_wi_tok//[^A-Za-z0-9_]/_}"
+    _wi_base="${!_wi_var:-${STUB_AZURE_WI_COMMENTS:-}}"
+    if [ -n "$_wi_base${STUB_AZURE_STATE_DIR:-}" ]; then
+      BASE="$_wi_base" POSTS="${STUB_AZURE_STATE_DIR:-/nonexistent}/wi_posts" \
+        AUTHOR="${STUB_AZURE_POST_AUTHOR:-}" python3 -I -c '
+import json, os
+d = json.loads(os.environ["BASE"] or "{\"comments\": []}")
+if not d.get("continuationToken"):
+    try:
+        posts = [json.loads(l) for l in open(os.environ["POSTS"]) if l.strip()]
+    except OSError:
+        posts = []
+    for i, p in enumerate(posts):
+        d["comments"].append({"id": 900 + i, "text": p["text"],
+                              "createdBy": {"displayName": "Poster", "uniqueName": os.environ["AUTHOR"]},
+                              "createdDate": "2026-10-15T00:00:%02dZ" % i})
+print(json.dumps(d))
+'
+      exit 0
+    fi ;;
+  "rest --method post "*"/workItems/"*"/comments"*)
+    # Attempt verbs (#685): with STUB_AZURE_STATE_DIR set, record the write.
+    if [ -n "${STUB_AZURE_STATE_DIR:-}" ]; then
+      for _a in "$@"; do
+        case "$_a" in
+          @*) [ -f "${_a#@}" ] || continue
+              if [ -n "${GH_LOG:-}" ]; then { printf 'AZ BODY: '; cat "${_a#@}"; printf '\n'; } >> "$GH_LOG"; fi
+              { cat "${_a#@}"; printf '\n'; } >> "$STUB_AZURE_STATE_DIR/wi_posts" ;;
+        esac
+      done
+      printf '{}\n'; exit 0
+    fi ;;
   "boards work-item show "*"-o tsv") ;;
   "boards work-item show "*"--expand relations"*)
     [ "${STUB_AZURE_WORKITEM_RELATIONS_FAIL:-}" = "1" ] && _stub_fail "TF401232: Work item does not exist." ;;
