@@ -6199,8 +6199,10 @@ print(" ".join(str(i) for i in sorted(ids)))
   # "createdAt"}]} (#684), the shape the github reader gives the shared marker
   # code: GET .../pullRequests/{id}/threads (api-version 7.1-preview.1), which
   # answers every thread in one response. System and deleted comments (and
-  # threads) are skipped; the login is the author's uniqueName, else the
-  # displayName. Returns non-zero with no stdout on any fetch or parse failure.
+  # threads) are skipped; the login is the author's uniqueName, empty when it
+  # has none (#685: a displayName is not a verified identity, so such a comment
+  # is never trusted). Returns non-zero with no stdout on any fetch or parse
+  # failure.
   _az_comments_obj() {
     local _gb _raw
     _gb="$(_azure_git_base)" || {
@@ -6218,9 +6220,61 @@ for t in json.load(sys.stdin)["value"]:
         if c.get("isDeleted") or c.get("commentType") == "system":
             continue
         a = c.get("author") or {}
-        out.append({"author": {"login": a.get("uniqueName") or a.get("displayName") or ""},
+        out.append({"author": {"login": a.get("uniqueName") or ""},
                     "body": c.get("content") or "",
                     "createdAt": c.get("publishedDate") or c.get("lastUpdatedDate") or ""})
+json.dump({"comments": out}, sys.stdout)
+' 2>/dev/null
+  }
+  # Work item <id>'s comments as {"comments": [{"author": {"login"}, "body",
+  # "createdAt"}]} (#685), the shape _az_comments_obj gives: GET {org}/{project}/
+  # _apis/wit/workItems/{id}/comments (api-version 7.1-preview.3), every page by
+  # its continuationToken. Deleted comments are skipped; the login is the
+  # creator's uniqueName, empty when it has none. Returns non-zero with no
+  # stdout when any page fails to fetch or parse, or the token never ends.
+  _az_wi_comments_obj() {
+    local _wb _wp _url _page _tok="" _toks=" " _pages="" _i=0
+    _wb="$(_azure_org)" || _wb=""
+    _wp="$AZURE_PROJECT"
+    [ -z "$_wp" ] && _wp="$(az devops configure --list 2>/dev/null | awk -F'= *' '/^project/{print $2}' | tr -d '[:space:]')"
+    if [ -z "$_wb" ] || [ -z "$_wp" ]; then
+      echo "pipeline-vcs: $VERB: needs org/project (vcs.azure.org_url, vcs.azure.project)" >&2
+      return 1
+    fi
+    while :; do
+      _url="$_wb/$_wp/_apis/wit/workItems/$1/comments?api-version=7.1-preview.3"
+      [ -n "$_tok" ] && _url="$_url&continuationToken=$_tok"
+      _page="$(az rest --method get --resource "$ADO_RESOURCE" --url "$_url")" || return 1
+      _page="$(printf '%s' "$_page" | python3 -I -c '
+import html, json, sys, urllib.parse
+d = json.load(sys.stdin)
+out = []
+for c in d["comments"]:
+    if c.get("isDeleted"):
+        continue
+    a = c.get("createdBy") or {}
+    body = c.get("text") or ""
+    if "&lt;!--" in body:
+        body = html.unescape(body)
+    out.append({"author": {"login": a.get("uniqueName") or ""}, "body": body,
+                "createdAt": c.get("createdDate") or c.get("modifiedDate") or ""})
+print(urllib.parse.quote(d.get("continuationToken") or "", safe=""))
+print(json.dumps(out))
+' 2>/dev/null)" || return 1
+      _tok="${_page%%$'\n'*}"
+      _pages="$_pages${_page#*$'\n'}"$'\n'
+      [ -z "$_tok" ] && break
+      case "$_toks" in *" $_tok "*) return 1 ;; esac
+      _toks="$_toks$_tok "
+      _i=$((_i + 1))
+      [ "$_i" -ge 1000 ] && return 1
+    done
+    printf '%s' "$_pages" | python3 -I -c '
+import json, sys
+out = []
+for line in sys.stdin:
+    if line.strip():
+        out.extend(json.loads(line))
 json.dump({"comments": out}, sys.stdout)
 ' 2>/dev/null
   }
@@ -6518,17 +6572,86 @@ print(((d.get('lastMergeSourceCommit') or {}).get('commitId') or '').lower())
       ;;
     read-comments)
       # read-comments <pr-id> (#684): every thread comment as {"comments": [...]},
-      # the shared reader behind post-approval's duplicate check. PR ids only (a
-      # work item's comments are not read here). Fail-closed: nothing on stdout
+      # the shared reader behind post-approval's duplicate check. With
+      # --work-item (#685) the id is a work item and its comments are read, all
+      # pages (the reader behind read-attempt). Fail-closed: nothing on stdout
       # and exit 1 on any failure.
-      local n="${1:-}"
+      local n="${1:-}" _rc_wi=false
+      [ "${2:-}" = "--work-item" ] && _rc_wi=true
       [ -z "$n" ] && { echo "pipeline-vcs: read-comments: missing PR number" >&2; exit 1; }
       _az_require_id read-comments "$n" || exit 1
+      if [ "$_rc_wi" = "true" ]; then
+        [ "$DRY_RUN" = "true" ] && { echo "[dry-run] az rest GET .../workItems/$n/comments (paginated)"; return 0; }
+        _az_wi_comments_obj "$n" || { echo "pipeline-vcs: read-comments: could not fetch work item #$n comments" >&2; exit 1; }
+        return 0
+      fi
       if [ "$DRY_RUN" = "true" ]; then
         echo "[dry-run] az rest GET .../pullRequests/$n/threads (comments)"
         return 0
       fi
       _az_comments_obj "$n" || { echo "pipeline-vcs: read-comments: could not fetch PR #$n comments" >&2; exit 1; }
+      ;;
+    read-attempt)
+      # read-attempt <work-item-id> (#685): as github, from the work item's comments.
+      local n="${1:-}" issue_data trusted_authors verify_authors
+      [ -z "$n" ] && { echo "pipeline-vcs: read-attempt: missing issue number" >&2; exit 1; }
+      _az_require_id read-attempt "$n" || exit 1
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] read-attempt $n: GET .../workItems/$n/comments (paginated) and extract the last talos:attempt marker"; return 0; }
+      issue_data="$(_az_wi_comments_obj "$n")" || { echo "pipeline-vcs: read-attempt: could not fetch issue #$n data" >&2; exit 1; }
+      trusted_authors="$(cfg markers.trusted_authors)"
+      verify_authors="$(cfg markers.verify_authors)"
+      _vcs_shared_reader_identity "$verify_authors" az account show --query user.name --output tsv
+      printf '%s' "$issue_data" | TRUSTED_AUTHORS="$trusted_authors" VERIFY_AUTHORS="$verify_authors" CURRENT_USER="$_RID_USER" CURRENT_USER_REFUSED="$_RID_REFUSED" TALOS_CFG="$_TALOS_CFG" _vcs_shared_read_attempt
+      ;;
+    check-attempt)
+      # check-attempt <work-item-id> (#685): exit 1 (with reason) when either
+      # ceiling is already reached; records nothing. As github.
+      local n="${1:-}"
+      [ -z "$n" ] && { echo "pipeline-vcs: check-attempt: missing issue number" >&2; exit 1; }
+      _az_require_id check-attempt "$n" || exit 1
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] check-attempt $n: compare current attempt state against configured ceilings"; return 0; }
+      local max_stage max_total state rc
+      max_stage="$(cfg limits.max_fix_attempts)"
+      max_total="$(cfg limits.max_total_dispatches)"
+      state="$(bash "$SCRIPT_DIR/pipeline-vcs.sh" read-attempt "$n" ${REPO:+--repo "$REPO"} 2>&1)"
+      rc=$?
+      if [ $rc -ne 0 ]; then
+        echo "pipeline-vcs: check-attempt: read-attempt failed: $state" >&2
+        exit 1
+      fi
+      printf '%s\n' "$state" | grep '^talos:' || true
+      state="$(printf '%s\n' "$state" | grep '^stage=')"
+      local cur_stage cur_count cur_total
+      cur_stage="$(printf '%s' "$state" | sed 's/stage=\([^ ]*\).*/\1/')"
+      cur_count="$(printf '%s' "$state" | sed 's/.*count=\([0-9]*\).*/\1/')"
+      cur_total="$(printf '%s' "$state" | sed 's/.*total=\([0-9]*\).*/\1/')"
+      if ! _vcs_shared_attempt_blocked "check-attempt" "$cur_count" "$cur_total" "$max_stage" "$max_total" "$cur_stage"; then
+        exit 1
+      fi
+      echo "pipeline-vcs: check-attempt: ok (stage=$cur_stage count=$cur_count total=$cur_total; max_stage=$max_stage max_total=$max_total)"
+      exit 0
+      ;;
+    record-attempt)
+      # record-attempt <work-item-id> <stage> [--pr <pr-n> | --idempotency-key <token>]
+      # (#685): see _vcs_shared_record_attempt; the write is a work-item comment.
+      local n="${1:-}" stage="${2:-}"
+      [ -z "$n" ]     && { echo "pipeline-vcs: record-attempt: missing issue number" >&2; exit 1; }
+      [ -z "$stage" ] && { echo "pipeline-vcs: record-attempt: missing stage argument" >&2; exit 1; }
+      _az_require_id record-attempt "$n" || exit 1
+      case "$stage" in
+        *[!A-Za-z0-9._-]*) echo "pipeline-vcs: record-attempt: stage may only use letters, digits, '.', '_' and '-', got '$stage'" >&2; exit 1 ;;
+      esac
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] record-attempt $n $stage: read prior state, post <!-- talos:attempt stage=$stage ... --> marker"; return 0; }
+      # Work-item comments render HTML and _md_to_html would escape the marker
+      # line, so post the body as HTML already: the text line in <p>, then the
+      # marker line untouched (a body starting with "<" is passed through).
+      _azure_post_attempt_marker() {
+        local _first="${2%%$'\n'*}"
+        _first="$(printf '%s' "$_first" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g')"
+        _azure_post_comment "$1" "<p>${_first}</p>"$'\n'"${2##*$'\n'}"
+      }
+      shift 2 2>/dev/null || shift "$#"
+      _vcs_shared_record_attempt "$n" "$stage" _azure_post_attempt_marker "$@"
       ;;
     check-approval-sha)
       # check-approval-sha <id> [--stale-list|--evidence-list] (#684): as github;

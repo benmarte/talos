@@ -753,10 +753,11 @@ Cost: the plan's cloud session credit applies to cloud sessions only; a run on y
 - `close-issue` sets `board.azure_states.done` and strips `pipeline:*` tags. `merge-pr` completes the PR (policies apply; `merge.method` is not passed). `update-branch` exits 2.
 - `bootstrap-board.sh` checks each configured state against the work item type, exits non-zero on a miss, never creates one.
 - Approval gates: `pr-head <pr>` prints the PR's source commit sha, `read-comments <pr>` reads every thread comment (PR ids only, not work items), `check-approval-sha <pr> [--stale-list|--evidence-list]` reads the PR's labels and thread comments with the same trust rules as GitHub, and `post-approval <pr> <role>` posts the marker thread comment and adds the approval label, so `docs-gate` can stamp `docs:done`.
+- Attempt counting: `record-attempt <wi> <stage>`, `read-attempt <wi>` and `check-attempt <wi>` keep the same `<!-- talos:attempt ... -->` marker in work-item comments, with the trust rules and exit codes of GitHub, and `read-comments <wi> --work-item` reads every page of a work item's comments. A comment whose author has no `uniqueName` is never trusted (a display name is not an identity).
 
 ### GitHub-only verbs
 
-Attempt counting (`record-attempt`, `check-attempt`, `read-attempt`; `post-approval`, `check-approval-sha` and `read-comments <pr>` also run on Azure), `upsert-pr-comment`, `edit-pr-body`, `has-spec`, `mark-needs-owner`, `conflict-files`. Other providers exit non-zero; `talos.sh next` then stops with `unsupported-verb:<verb>`.
+Attempt counting (`record-attempt`, `check-attempt`, `read-attempt`; also on Azure), `upsert-pr-comment`, `edit-pr-body`, `has-spec`, `mark-needs-owner`, `conflict-files`. Other providers exit non-zero; `talos.sh next` then stops with `unsupported-verb:<verb>`.
 
 ### File mode and chat mode
 

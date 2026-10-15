@@ -57,12 +57,12 @@ _two='{"value":[
 out="$(STUB_AZURE_PR_THREADS="$_two" bash "$VCS" read-comments 9 2>/dev/null)"; rc=$?
 assert_eq "0" "$rc" "AC3 read-comments exits 0"
 assert_eq "first|a@acme.com|2026-10-15T00:00:01Z
-second|No Upn|2026-10-15T00:00:04Z" \
+second||2026-10-15T00:00:04Z" \
   "$(printf '%s' "$out" | python3 -I -c '
 import json, sys
 for c in json.load(sys.stdin)["comments"]:
     print("|".join([c["body"], c["author"]["login"], c["createdAt"]]))')" \
-  "AC3 read-comments lists every thread comment (system and deleted skipped, displayName fallback)"
+  "AC3 read-comments lists every thread comment (system and deleted skipped, empty login without a uniqueName)"
 out="$(STUB_AZURE_PR_THREADS_FAIL=1 bash "$VCS" read-comments 9 2>/dev/null)"; rc=$?
 assert_eq "1" "$rc" "AC3 read-comments exits 1 when the fetch fails"
 assert_eq "" "$out" "AC3 read-comments prints nothing when the fetch fails"
