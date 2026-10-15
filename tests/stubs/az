@@ -85,7 +85,63 @@ print(json.dumps([{"pullRequestId": 100000 + skip + i, "status": "active",
       exit 0
     fi ;;
   "repos pr show "*)
-    [ "${STUB_AZURE_PR_SHOW_FAIL:-}" = "1" ] && _stub_fail "TF401180: The requested pull request was not found." ;;
+    [ "${STUB_AZURE_PR_SHOW_FAIL:-}" = "1" ] && _stub_fail "TF401180: The requested pull request was not found."
+    # Approval verbs (#684): with STUB_AZURE_STATE_DIR set, labels POSTed so far
+    # (one name per line in <dir>/labels) join the PR object's labels.
+    _prs_id="$(_as_id "$@")"; _prs_var="STUB_AZURE_PR_${_prs_id}"
+    if [ -n "${STUB_AZURE_STATE_DIR:-}" ] && [ -n "${!_prs_var:-}" ]; then
+      PR="${!_prs_var}" LABELS="$STUB_AZURE_STATE_DIR/labels" python3 -I -c '
+import json, os
+pr = json.loads(os.environ["PR"])
+try:
+    names = [n for n in open(os.environ["LABELS"]).read().split("\n") if n]
+except OSError:
+    names = []
+pr["labels"] = (pr.get("labels") or []) + [{"id": "x", "name": n, "active": True} for n in names]
+print(json.dumps(pr))
+'
+      exit 0
+    fi ;;
+  "rest --method get "*"/pullRequests/"*"/threads"*)
+    # Approval verbs (#684): STUB_AZURE_PR_THREADS is the raw REST body
+    # ({"value": [threads...]}); with STUB_AZURE_STATE_DIR set, the comments
+    # POSTed so far (one request body per line in <dir>/threads) are appended as
+    # threads authored by STUB_AZURE_POST_AUTHOR.
+    [ "${STUB_AZURE_PR_THREADS_FAIL:-}" = "1" ] && _stub_fail "TF401180: The requested pull request was not found."
+    if [ -n "${STUB_AZURE_PR_THREADS:-}${STUB_AZURE_STATE_DIR:-}" ]; then
+      BASE="${STUB_AZURE_PR_THREADS:-}" POSTS="${STUB_AZURE_STATE_DIR:-/nonexistent}/threads" \
+        AUTHOR="${STUB_AZURE_POST_AUTHOR:-}" python3 -I -c '
+import json, os
+d = json.loads(os.environ["BASE"] or "{\"value\": []}")
+try:
+    posts = [json.loads(l) for l in open(os.environ["POSTS"]) if l.strip()]
+except OSError:
+    posts = []
+for i, p in enumerate(posts):
+    c = p["comments"][0]
+    d["value"].append({"id": 900 + i, "comments": [{"id": 1, "content": c["content"], "commentType": "text",
+                       "author": {"displayName": "Poster", "uniqueName": os.environ["AUTHOR"]},
+                       "publishedDate": "2026-10-15T00:00:%02dZ" % i}]})
+print(json.dumps(d))
+'
+      exit 0
+    fi ;;
+  "rest --method post "*"/pullRequests/"*"/threads"*|"rest --method post "*"/pullRequests/"*"/labels"*)
+    # Approval verbs (#684): with STUB_AZURE_STATE_DIR set, record the write
+    # (and log its body) so a later read sees it.
+    if [ -n "${STUB_AZURE_STATE_DIR:-}" ]; then
+      for _a in "$@"; do
+        case "$_a" in
+          @*) [ -f "${_a#@}" ] || continue
+              if [ -n "${GH_LOG:-}" ]; then { printf 'AZ BODY: '; cat "${_a#@}"; printf '\n'; } >> "$GH_LOG"; fi
+              case "$args" in
+                *"/threads"*) { cat "${_a#@}"; printf '\n'; } >> "$STUB_AZURE_STATE_DIR/threads" ;;
+                *) python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1]))["name"])' "${_a#@}" >> "$STUB_AZURE_STATE_DIR/labels" ;;
+              esac ;;
+        esac
+      done
+      printf '{}\n'; exit 0
+    fi ;;
   "boards work-item show "*"-o tsv") ;;
   "boards work-item show "*"--expand relations"*)
     [ "${STUB_AZURE_WORKITEM_RELATIONS_FAIL:-}" = "1" ] && _stub_fail "TF401232: Work item does not exist." ;;
