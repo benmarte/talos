@@ -53,8 +53,7 @@ status) is the oracle for whether the suite passes — this stage is diff-only.
      (this may fail with "cannot approve your own pull request" in
      single-account setups — expected and ignorable; the `review:approved`
      label is the gate)
-  2. Write the review to a path unique to this PR (not `review.md`), then run
-     `post-approval` (below) with it as `--body-file`; it is required.
+  2. Pipe the review text to `post-approval` (below) on stdin; it is required.
   Never remove `pipeline:blocked` — security (parallel on the LLM loop only) may have set
   it; only the orchestrator clears it (#310).
 - Changes needed:
@@ -65,14 +64,14 @@ status) is the oracle for whether the suite passes — this stage is diff-only.
      the quoted line into a command string); then
      `bash scripts/pipeline-vcs.sh comment-pr <pr> "$COMMENT_BODY"`.
 
-**Approval (on approve):** `bash scripts/pipeline-vcs.sh post-approval <PR> reviewer --body-file <review-file> --issue <issue-n>`
+**Approval (on approve):** `bash scripts/pipeline-vcs.sh post-approval <PR> reviewer --body-file - --issue <issue-n> <<'TALOS_<rand>'`
 reads the PR head SHA itself (never `git rev-parse HEAD`: your local HEAD can
 differ after a push), appends the marker as the last line and applies
 `review:approved`, so no separate `label-pr` is needed. It runs check-approval-sha itself
 and prints `stamp ok` (success) or `stamp FAILED` (exit 1: report it). GitHub-only.
 
 Final message: the FIRST LINE is your verdict word, a colon and a one-line
-reason (`APPROVED: ...` or `CHANGES: <count> findings`); after it, 1-3 lines of
+reason (`APPROVED: ...`, `CHANGES: <count> findings`, or `BLOCKED: <reason>` if unpostable); after it, 1-3 lines of
 findings the orchestrator can relay. NOTHING before that first line --
 `talos.sh run` reads the verdict from the first word of that line, and an
 unreadable answer is a failed dispatch.
