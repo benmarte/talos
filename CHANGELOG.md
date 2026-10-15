@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- fix(run): a PR left blocked by a reviewer's `**Blocked** — ` findings comment (the `blocked.md` shape) is taken to the developer fix round by a later `talos.sh run --issue`, not answered `wait reason=blocked`; the resume reads review findings through one shared pattern (`_TALOS_FINDING_RE`) that also keeps the `**Review:** CHANGES` and `**Security:** FINDINGS` shapes
 - fix(run): a reviewer, security or adversarial stage whose final message has no verdict word but whose approval is stamped on the PR (its label present and `check-approval-sha --stale-list` not naming it) is read as `APPROVED` / `CLEAR` instead of stopping `verdict-unreadable`; a verdict word still wins, and only approval is read from the stamp
 - fix(agents): the developer and docs profiles write their body to a literal `.talos/<role>-<name>.body` file, and the roles without a Write tool (validator, reviewer, security, qa, adversarial) post from stdin with `--body-file -`, so no `*.md` body file is written and a project's "no stray .md/.txt" `PreToolUse` hook can no longer stop a stage from posting
 - fix(azure): `vcs.repo` `project/name` is reduced to the repository name (its last path segment) in every git REST URL and `--repository` argument, so `view-pr`, `create-pr`, `find-pr` and the PR label and comment writes no longer 404; `label-pr` and `comment-pr` exit non-zero when the write fails or the org/project/repo cannot be resolved
