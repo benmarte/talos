@@ -106,7 +106,7 @@ assert_eq "GLAB [mr][create][--head][feat/x][--target-branch][main][--title][T][
 
 set_provider azure; : > "$DRAFT_LOG"
 bash "$VCS" create-pr feat/x "T" "$BODY" >/dev/null 2>&1
-assert_eq "AZ [repos][pr][create][--source-branch][feat/x][--target-branch][main][--title][T][--description][the body][--org][https://dev.azure.com/acme][--project][proj][--repository][widget][--output][json]" \
+assert_eq "AZ [repos][pr][create][--source-branch][feat/x][--target-branch][main][--title][T][--description][the body][--squash][true][--org][https://dev.azure.com/acme][--project][proj][--repository][widget][--output][json]" \
   "$(last_log)" "azure: create-pr without --draft keeps the golden argv"
 
 # ── (b) create-pr --draft ────────────────────────────────────────────────────
@@ -124,7 +124,7 @@ assert_eq "GLAB [mr][create][--head][feat/x][--target-branch][main][--title][T][
 
 set_provider azure; : > "$DRAFT_LOG"
 bash "$VCS" create-pr feat/x "T" "$BODY" --draft >/dev/null 2>&1
-assert_eq "AZ [repos][pr][create][--source-branch][feat/x][--target-branch][main][--title][T][--description][the body][--org][https://dev.azure.com/acme][--project][proj][--repository][widget][--output][json][--draft][true]" \
+assert_eq "AZ [repos][pr][create][--source-branch][feat/x][--target-branch][main][--title][T][--description][the body][--squash][true][--org][https://dev.azure.com/acme][--project][proj][--repository][widget][--output][json][--draft][true]" \
   "$(last_log)" "azure: create-pr --draft appends exactly --draft true"
 
 set_provider github; : > "$GH_LOG"

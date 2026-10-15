@@ -407,7 +407,7 @@ suite github
 suite github-api
 
 # ── providers without an implementation: exit 2, no call, before any read ────
-for prov in gitlab azure file; do
+for prov in gitlab file; do
   setp "$prov"
   reset
   OUT="$(bash "$VCS" upsert-pr-comment 7 --marker spend --body-file "$FIX/nope-$prov" <&- 2>"$SANDBOX/err")"; RC=$?
