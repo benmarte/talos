@@ -199,8 +199,12 @@
 #                                             base 10: 08 and 09 are valid, 0010
 #                                             is 10; #449) pass;
 #                                             github/github-api only (#355)
-#   merge-pr <n>                              Merge the PR
-#   update-branch <n>                         Update the PR's head branch by
+#   merge-pr <n>                              Merge the PR (azure, #709: merge.method
+#                                             squash/unset --squash true with the PR
+#                                             title as commit message, merge --squash
+#                                             false, rebase no flag; create-pr
+#                                             passes the same --squash)
+#   update-branch <n>                        Update the PR's head branch by
 #                                             merging its base into it
 #                                             server-side (#289): GitHub
 #                                             `PUT .../pulls/{n}/update-branch`
@@ -364,8 +368,9 @@
 #                                             nothing and exits 1 on any page failure.
 #   upsert-pr-comment <pr> --marker <name> --body-file <path|->
 #                                             Keep ONE marker comment on PR <pr> up to date
-#                                             (#381, epic #334; github and github-api only,
-#                                             gitlab, azure and file exit 2 with `not
+#                                             (#381, epic #334; github, github-api and azure
+#                                             (#709: a PATCH of the thread comment, or a
+#                                             new thread); gitlab and file exit 2 with `not
 #                                             implemented for provider '<p>'`). <name> is a
 #                                             TALOS_MARKERS member without `talos:` (e.g.
 #                                             spend), else exit 2; a bare `-` argument exits
@@ -434,7 +439,9 @@
 #                                             and label use the issues REST endpoints,
 #                                             which serve issues and PRs alike. Works on
 #                                             an issue in any state. github, github-api;
-#                                             gitlab, azure and file exit 2 with
+#                                             azure (#709) takes a PR only: the comment
+#                                             is a PR thread, the label a PR label;
+#                                             gitlab and file exit 2 with
 #                                             "not implemented for provider '<p>'".
 #   list-needs-owner [--json] [--clear-answered]
 #                                             One line per OPEN issue or PR carrying
@@ -479,7 +486,9 @@
 #                                             with --json so stdout stays one JSON
 #                                             array); a failed removal is exit 1. Without
 #                                             the flag no label is changed. github,
-#                                             github-api; other providers exit 2 as above.
+#                                             github-api; azure (#709: active PRs only,
+#                                             one labels read per PR, the label removed by
+#                                             its id); other providers exit 2 as above.
 #   check-attempt <issue-n>                   Exit 1 (and print reason) when EITHER
 #                                             ceiling is already reached for the issue;
 #                                             exit 0 otherwise. Does NOT record a new
@@ -1983,7 +1992,8 @@ _vcs_shared_trust_env() {
 }
 
 # _vcs_shared_upsert_pr_comment <pr> <marker-name> <body-file> <read-fn> <write-fn> <user-cmd> [args...]
-#   `upsert-pr-comment` (#381), once for both GitHub adapters. <body-file> holds
+#   `upsert-pr-comment` (#381), once for the GitHub adapters and azure (#709: its
+#   read-fn answers the same array, with an opaque `id` it can split). <body-file> holds
 #   the FINAL body (text, a blank line, `<!-- talos:<name> -->`), already
 #   size-checked by the pre-dispatch block. <read-fn> <pr> prints the REST
 #   comments array (every page) and returns non-zero on any failure;
@@ -2004,7 +2014,7 @@ _vcs_shared_upsert_pr_comment() {
   # to stdout when the request is refused: an Actions GITHUB_TOKEN, a GitHub App
   # token) stops the verb before any write.
   if ! _uc_user="$(_vcs_shared_current_user fail-closed "$@")"; then
-    echo "pipeline-vcs: upsert-pr-comment: could not resolve the authenticated user (GET /user fails for an Actions GITHUB_TOKEN or a GitHub App token); nothing posted" >&2
+    echo "pipeline-vcs: upsert-pr-comment: could not resolve the authenticated user (on GitHub, GET /user fails for an Actions GITHUB_TOKEN or a GitHub App token); nothing posted" >&2
     exit 1
   fi
   _uc_raw="$("$_uc_read" "$_uc_n")" || {
@@ -2012,7 +2022,7 @@ _vcs_shared_upsert_pr_comment() {
     exit 1
   }
   _uc_found="$(printf '%s' "$_uc_raw" | python3 -I -c "$(_vcs_shared_trust_py)"'
-import json, sys
+import json, re, sys
 user, marker, path = sys.argv[1:4]
 try:
     items = json.load(sys.stdin)
@@ -2035,8 +2045,12 @@ for c in items:
 if hit is None:
     print("created")
 else:
+    # A GitHub comment id, or azure'\''s `<pr>/<thread>/<comment>`: it goes into a URL path.
+    hid = str(hit["id"])
+    if not re.fullmatch(r"[0-9]+(/[0-9]+){0,2}", hid):
+        sys.exit("the marker comment has no usable id")
     print("unchanged" if norm(hit.get("body")) == new else "updated",
-          int(hit["id"]), hit.get("html_url") or "", sep="\t")
+          hid, hit.get("html_url") or "", sep="\t")
 ' "$_uc_user" "$_uc_marker" "$_uc_file")" || {
     echo "pipeline-vcs: upsert-pr-comment: could not parse the comments of #$_uc_n; nothing posted" >&2
     exit 1
@@ -6200,21 +6214,27 @@ print(" ".join(str(i) for i in sorted(ids)))
 ' "$_self" "$_n" "$_VCS_AZURE_SCAN_CAP" 2>/dev/null || return 1
     [ "$_capped" = 0 ] || return "$_VCS_SIBLINGS_CAPPED"
   }
+  # PR <id>'s threads as ADO answers them: GET .../pullRequests/{id}/threads
+  # (api-version 7.1-preview.1), every thread in one response. Non-zero with
+  # no stdout when the base cannot be resolved or the request fails.
+  _az_threads_raw() {
+    local _gb
+    _gb="$(_azure_git_base)" || {
+      echo "pipeline-vcs: $VERB: needs org/project/repo (vcs.azure.org_url, vcs.azure.project, vcs.repo)" >&2
+      return 1; }
+    az rest --method get --resource "$ADO_RESOURCE" \
+      --url "$_gb/pullRequests/$1/threads?api-version=7.1-preview.1"
+  }
   # PR <id>'s thread comments as {"comments": [{"author": {"login"}, "body",
   # "createdAt"}]} (#684), the shape the github reader gives the shared marker
-  # code: GET .../pullRequests/{id}/threads (api-version 7.1-preview.1), which
-  # answers every thread in one response. System and deleted comments (and
+  # code, from _az_threads_raw. System and deleted comments (and
   # threads) are skipped; the login is the author's uniqueName, empty when it
   # has none (#685: a displayName is not a verified identity, so such a comment
   # is never trusted). Returns non-zero with no stdout on any fetch or parse
   # failure.
   _az_comments_obj() {
-    local _gb _raw
-    _gb="$(_azure_git_base)" || {
-      echo "pipeline-vcs: $VERB: needs org/project/repo (vcs.azure.org_url, vcs.azure.project, vcs.repo)" >&2
-      return 1; }
-    _raw="$(az rest --method get --resource "$ADO_RESOURCE" \
-      --url "$_gb/pullRequests/$1/threads?api-version=7.1-preview.1")" || return 1
+    local _raw
+    _raw="$(_az_threads_raw "$1")" || return 1
     printf '%s' "$_raw" | python3 -I -c '
 import json, sys
 out = []
@@ -6229,6 +6249,175 @@ for t in json.load(sys.stdin)["value"]:
                     "body": c.get("content") or "",
                     "createdAt": c.get("publishedDate") or c.get("lastUpdatedDate") or ""})
 json.dump({"comments": out}, sys.stdout)
+' 2>/dev/null
+  }
+  # ── Provider calls for upsert-pr-comment and the needs-owner verbs (#709) ──
+  # The authenticated user's login: the author a marker comment must carry.
+  _az_user_login() { az account show --query user.name --output tsv; }
+  # PR <id>'s thread comments as the REST comments array that
+  # _vcs_shared_upsert_pr_comment reads, oldest first (the newest own marker
+  # comment is the last match): [{"id": "<pr>/<thread>/<comment>", "user":
+  # {"login": <uniqueName>}, "body"}]. System and deleted comments are skipped;
+  # a comment without a uniqueName has an empty login, which never matches.
+  # Non-zero with no stdout on any fetch or parse failure.
+  _az_upc_read() {
+    local _raw
+    _raw="$(_az_threads_raw "$1")" || return 1
+    printf '%s' "$_raw" | python3 -I -c '
+import json, re, sys
+rows = []
+for t in json.load(sys.stdin)["value"]:
+    if t.get("isDeleted"):
+        continue
+    for c in t.get("comments") or []:
+        if c.get("isDeleted") or c.get("commentType") == "system":
+            continue
+        m = re.match(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d+))?", c.get("publishedDate") or c.get("lastUpdatedDate") or "")
+        # The fraction is compared as digits ("00Z" would sort after "00.5Z" as text).
+        when = (m.group(1), (m.group(2) or "").ljust(9, "0")) if m else ("", "")
+        rows.append((when, len(rows), {"id": "%s/%s/%s" % (sys.argv[1], t.get("id"), c.get("id")),
+                                       "user": {"login": (c.get("author") or {}).get("uniqueName") or ""},
+                                       "body": c.get("content") or ""}))
+rows.sort(key=lambda r: r[:2])
+json.dump([r[2] for r in rows], sys.stdout)
+' "$1" 2>/dev/null
+  }
+  # _az_comment_send <post|patch> <url>   stdin: the comment text.
+  #   post makes a new thread of one comment, patch rewrites one comment. The
+  #   JSON body is staged in a file, never argv. Non-zero when the write fails.
+  _az_comment_send() {
+    local _cs_tf _cs_rc
+    _cs_tf="$(mktemp)" || return 1
+    [ -n "$_cs_tf" ] || return 1
+    python3 -I -c '
+import json, sys
+text = sys.stdin.buffer.read().decode("utf-8", errors="replace")
+if sys.argv[2] == "patch":
+    body = {"content": text}
+else:
+    body = {"comments": [{"parentCommentId": 0, "content": text, "commentType": 1}], "status": 1}
+open(sys.argv[1], "w").write(json.dumps(body))
+' "$_cs_tf" "$1" || { rm -f "$_cs_tf"; return 1; }
+    az rest --method "$1" --url "$2" --resource "$ADO_RESOURCE" \
+      --headers "Content-Type=application/json" --body "@$_cs_tf" >/dev/null
+    _cs_rc=$?
+    rm -f "$_cs_tf"
+    return "$_cs_rc"
+  }
+  # <METHOD> <issues-relative-path> <payload-file>: the GitHub-shaped request
+  # _vcs_shared_upsert_pr_comment makes, sent to ADO. `POST issues/<pr>/comments`
+  # is a new thread; `PATCH issues/comments/<pr>/<thread>/<comment>` (the id
+  # _az_upc_read gave) rewrites that comment. The payload's {"body"} is the text.
+  _az_upc_write() {
+    local _uw_gb _uw_pr _uw_th _uw_cm _uw_kind _uw_url _uw_body
+    _uw_gb="$(_azure_git_base)" || {
+      echo "pipeline-vcs: $VERB: needs org/project/repo (vcs.azure.org_url, vcs.azure.project, vcs.repo)" >&2
+      return 1; }
+    case "$1 $2" in
+      "POST issues/"*"/comments")
+        _uw_pr="${2#issues/}"; _uw_pr="${_uw_pr%/comments}"
+        _uw_kind=post; _uw_url="$_uw_gb/pullRequests/$_uw_pr/threads?api-version=7.1-preview.1" ;;
+      "PATCH issues/comments/"*)
+        IFS=/ read -r _uw_pr _uw_th _uw_cm <<EOF
+${2#issues/comments/}
+EOF
+        _uw_kind=patch; _uw_url="$_uw_gb/pullRequests/$_uw_pr/threads/$_uw_th/comments/$_uw_cm?api-version=7.1-preview.1" ;;
+      *) return 1 ;;
+    esac
+    case "$_uw_pr$_uw_th$_uw_cm" in ''|*[!0-9]*) return 1 ;; esac
+    _uw_body="$(python3 -I -c '
+import json, sys
+sys.stdout.write(json.load(open(sys.argv[1], encoding="utf-8"))["body"])
+' "$3")" || return 1
+    printf '%s' "$_uw_body" | _az_comment_send "$_uw_kind" "$_uw_url"
+  }
+  # <pr> <body>: mark-needs-owner's question, as a new thread.
+  _az_no_post_comment() {
+    local _np_gb
+    _np_gb="$(_azure_git_base)" || {
+      echo "pipeline-vcs: $VERB: needs org/project/repo (vcs.azure.org_url, vcs.azure.project, vcs.repo)" >&2
+      return 1; }
+    printf '%s' "$2" | _az_comment_send post "$_np_gb/pullRequests/$1/threads?api-version=7.1-preview.1"
+  }
+  _az_no_label_add() {
+    local _la_gb _la_tf _la_rc
+    _la_gb="$(_azure_git_base)" || {
+      echo "pipeline-vcs: $VERB: needs org/project/repo (vcs.azure.org_url, vcs.azure.project, vcs.repo)" >&2
+      return 1; }
+    _la_tf="$(mktemp)" || return 1
+    [ -n "$_la_tf" ] || return 1
+    python3 -I -c 'import json,sys;open(sys.argv[1],"w").write(json.dumps({"name":sys.argv[2]}))' "$_la_tf" "$_TALOS_NEEDS_OWNER_LABEL" || { rm -f "$_la_tf"; return 1; }
+    az rest --method post --url "$_la_gb/pullRequests/$1/labels?api-version=7.1-preview.1" \
+      --resource "$ADO_RESOURCE" --headers "Content-Type=application/json" --body "@$_la_tf" >/dev/null
+    _la_rc=$?
+    rm -f "$_la_tf"
+    return "$_la_rc"
+  }
+  # Remove the label from PR <pr> by its id (ADO rejects ':' in a URL path, as
+  # label-pr works around). A label the PR does not carry is not an error; any
+  # failed read or delete is.
+  _az_no_label_remove() {
+    local _lr_gb _lr_json _lr_id
+    _lr_gb="$(_azure_git_base)" || {
+      echo "pipeline-vcs: $VERB: needs org/project/repo (vcs.azure.org_url, vcs.azure.project, vcs.repo)" >&2
+      return 1; }
+    _lr_json="$(az rest --method get --resource "$ADO_RESOURCE" \
+      --url "$_lr_gb/pullRequests/$1/labels?api-version=7.1-preview.1")" || return 1
+    _lr_id="$(printf '%s' "$_lr_json" | python3 -I -c '
+import json, re, sys
+for l in json.load(sys.stdin)["value"]:
+    if l.get("name") == sys.argv[1]:
+        if not re.fullmatch(r"[A-Za-z0-9-]+", str(l.get("id"))):
+            sys.exit(1)
+        print(l["id"])
+        break
+' "$_TALOS_NEEDS_OWNER_LABEL" 2>/dev/null)" || return 1
+    [ -n "$_lr_id" ] || return 0
+    az rest --method delete --resource "$ADO_RESOURCE" \
+      --url "$_lr_gb/pullRequests/$1/labels/$_lr_id?api-version=7.1-preview.1" >/dev/null
+  }
+  # The active PRs as the REST issues array list-needs-owner collects:
+  # [{"number", "state": "open", "labels": [{"name"}], "pull_request": {}}].
+  # Every `az repos pr list` page, then one labels GET per PR (a PR list carries
+  # no labels, #702). Non-zero with nothing printed when any read fails or the
+  # list is still full after _max pages, so a listing is never a short one.
+  _az_no_items() {
+    local _ni_gb _ni_top=1000 _ni_max=10 _ni_pages=0 _ni_raw="" _ni_page _ni_len
+    local _ni_ra="" _ni_active _ni_ids _ni_id _ni_lb _ni_lbs=""
+    _ni_gb="$(_azure_git_base)" || {
+      echo "pipeline-vcs: $VERB: needs org/project/repo (vcs.azure.org_url, vcs.azure.project, vcs.repo)" >&2
+      return 1; }
+    [ -n "$AZURE_REPO" ] && _ni_ra="--repository $AZURE_REPO"
+    while :; do
+      _ni_page="$(az repos pr list --status active --top "$_ni_top" --skip "$((_ni_pages * _ni_top))" \
+        $ORG_ARG $PROJ_ARG $_ni_ra --output json)" || return 1
+      _ni_raw="$_ni_raw$_ni_page"
+      _ni_pages=$((_ni_pages + 1))
+      _ni_len="$(printf '%s' "$_ni_page" | _json_array_len)" || return 1
+      [ "$_ni_len" = "$_ni_top" ] || break
+      [ "$_ni_pages" -lt "$_ni_max" ] || return 1
+    done
+    _ni_active="$(printf '%s' "$_ni_raw" | _gh_paginate_merge 2>/dev/null | tr -d '\n')" || return 1
+    _ni_ids="$(printf '%s' "$_ni_active" | python3 -I -c '
+import json, sys
+print(" ".join(str(int(p["pullRequestId"])) for p in json.load(sys.stdin)))
+' 2>/dev/null)" || return 1
+    for _ni_id in $_ni_ids; do
+      _ni_lb="$(az rest --method get --resource "$ADO_RESOURCE" \
+        --url "$_ni_gb/pullRequests/$_ni_id/labels?api-version=7.1-preview.1")" || return 1
+      # An indented JSON body has no raw newline inside a string: joining the lines is safe.
+      _ni_lbs="$_ni_lbs$_ni_id $(printf '%s' "$_ni_lb" | tr -d '\n')"$'\n'
+    done
+    printf '%s\n%s' "$_ni_active" "$_ni_lbs" | python3 -I -c '
+import json, sys
+head, _, rest = sys.stdin.read().partition("\n")
+labels = {}
+for line in rest.split("\n"):
+    if line.strip():
+        pid, _, body = line.partition(" ")
+        labels[int(pid)] = [{"name": l["name"]} for l in json.loads(body)["value"]]
+json.dump([{"number": int(p["pullRequestId"]), "state": "open", "labels": labels[int(p["pullRequestId"])],
+            "pull_request": {}} for p in json.loads(head)], sys.stdout)
 ' 2>/dev/null
   }
   # Work item <id>'s comments as {"comments": [{"author": {"login"}, "body",
@@ -6658,10 +6847,13 @@ PYEOF
       [[ "$branch" =~ (^|/)issue-([0-9]+)(-|$) ]] \
         && wi_args="--work-items ${BASH_REMATCH[2]} --transition-work-items true"
       local draft_args=""; [ "$_PR_DRAFT" = "true" ] && draft_args="--draft true"
+      # merge.method (#709): the completion option a squash-only policy checks.
+      local squash_args="--squash true"
+      case "$MERGE_METHOD" in merge) squash_args="--squash false" ;; rebase) squash_args="" ;; esac
       _run az repos pr create \
         --source-branch "$branch" --target-branch "$BASE_BRANCH" \
         --title "$title" --description "$(cat "$body_file")" \
-        $wi_args $ORG_ARG $PROJ_ARG $repo_arg --output json $draft_args
+        $wi_args $squash_args $ORG_ARG $PROJ_ARG $repo_arg --output json $draft_args
       ;;
     ready-pr|draft-pr)
       # (#332) `az repos pr update --draft false|true`.
@@ -6935,7 +7127,24 @@ print(((d.get('lastMergeSourceCommit') or {}).get('commitId') or '').lower())
         --query "{status:status,mergeStatus:mergeStatus}" --output json
       ;;
     merge-pr)
-      _run az repos pr update --id "$1" --status completed $ORG_ARG --output json
+      # merge.method (#709): squash (the default) completes with --squash true and
+      # the PR title as the commit message, so a squash-only branch policy reads
+      # as met; merge passes --squash false; rebase passes nothing (`az repos pr`
+      # has no rebase flag). A title that cannot be read omits only the message.
+      local _mp_args="" _mp_title=""
+      case "$MERGE_METHOD" in
+        merge) _mp_args="--squash false" ;;
+        rebase) ;;
+        *) _mp_args="--squash true"
+           if [ "$DRY_RUN" != "true" ]; then
+             _mp_title="$(az repos pr show --id "$1" $ORG_ARG --query title --output tsv 2>/dev/null)" || _mp_title=""
+           fi ;;
+      esac
+      if [ -n "$_mp_title" ]; then
+        _run az repos pr update --id "$1" --status completed $_mp_args --merge-commit-message "$_mp_title" $ORG_ARG --output json
+      else
+        _run az repos pr update --id "$1" --status completed $_mp_args $ORG_ARG --output json
+      fi
       ;;
     update-branch)
       # update-branch <n> (#289) — not supported for azure: ADO has no
@@ -6956,6 +7165,24 @@ print(((d.get('lastMergeSourceCommit') or {}).get('commitId') or '').lower())
       az rest --method post --url "$url" --resource "$ADO_RESOURCE" \
         --headers "Content-Type=application/json" --body "@$tf" >/dev/null
       local rc=$?; rm -f "$tf"; return $rc
+      ;;
+    upsert-pr-comment)
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] az rest GET .../pullRequests/$1/threads (newest own comment ending in <!-- talos:$2 -->); then PATCH .../pullRequests/$1/threads/<thread>/comments/<comment> (body from a file), or POST .../pullRequests/$1/threads when there is none; no write when the body is unchanged"; return 0; }
+      _vcs_shared_upsert_pr_comment "${1:-}" "${2:-}" "${3:-}" _az_upc_read _az_upc_write _az_user_login
+      ;;
+    mark-needs-owner)
+      [ "$DRY_RUN" = "true" ] && { echo "[dry-run] az rest GET .../pullRequests/$1/threads (read-comments); unless the newest trusted marker comment already has this body and is unanswered: POST .../pullRequests/$1/threads; POST .../pullRequests/$1/labels ($_TALOS_NEEDS_OWNER_LABEL)"; return 0; }
+      _vcs_shared_mark_needs_owner "${1:-}" "${2-}" _az_no_post_comment _az_no_label_add _az_user_login
+      ;;
+    list-needs-owner)
+      if [ "$DRY_RUN" = "true" ]; then
+        echo "[dry-run] az repos pr list --status active (paginated); az rest GET .../pullRequests/<id>/labels per PR; read-comments per labelled PR"
+        case " $* " in
+          *" --clear-answered "*) echo "[dry-run] for each answered PR: az rest DELETE .../pullRequests/<n>/labels/<id of $_TALOS_NEEDS_OWNER_LABEL>" ;;
+        esac
+        return 0
+      fi
+      _vcs_shared_list_needs_owner _az_no_items _az_no_label_remove _az_user_login "$@"
       ;;
     pr-mergeable)
       # pr-mergeable <n> (#214) — best-effort: `az repos pr show --query
@@ -7823,12 +8050,13 @@ if [ "$VERB" = "edit-pr-body" ] && [ -z "$(tr -d '[:space:]' <<<"${ARGS[1]-}")" 
 fi
 
 # mark-needs-owner / list-needs-owner (#345) and upsert-pr-comment (#381) are
-# GitHub only; the label and marker verbs have no gitlab, azure or file
-# implementation. Exit 2, before any body is read from stdin or a file, so a
-# caller reads it as "unsupported, skip" and not as the exit 1 of a failed call.
+# GitHub and Azure DevOps only (#709); the label and marker verbs have no gitlab
+# or file implementation. Exit 2, before any body is read from stdin or a file,
+# so a caller reads it as "unsupported, skip" and not as the exit 1 of a failed
+# call.
 case "$VERB" in
   mark-needs-owner|list-needs-owner|upsert-pr-comment)
-    if [ "$PROVIDER" != "github" ] && [ "$PROVIDER" != "github-api" ]; then
+    if [ "$PROVIDER" != "github" ] && [ "$PROVIDER" != "github-api" ] && [ "$PROVIDER" != "azure" ]; then
       echo "pipeline-vcs: $VERB: not implemented for provider '$PROVIDER'" >&2
       exit 2
     fi
