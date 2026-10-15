@@ -21,12 +21,17 @@ git config user.name "talos-test"
 HEAD_SHA="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 OLD_SHA="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
-# _pr [<label>...] -- the az PR object at HEAD_SHA carrying the given labels.
+# _pr -- the az PR object at HEAD_SHA. `az repos pr show` never carries labels
+# (#702): it answers `labels: null`, as the real service does.
 _pr() {
-  local _l _labels=""
-  for _l in "$@"; do _labels="$_labels${_labels:+,}{\"id\":\"1\",\"name\":\"$_l\"}"; done
-  printf '{"pullRequestId":9,"status":"active","targetRefName":"refs/heads/main","lastMergeSourceCommit":{"commitId":"%s"},"labels":[%s]}' \
-    "$HEAD_SHA" "$_labels"
+  printf '{"pullRequestId":9,"status":"active","targetRefName":"refs/heads/main","lastMergeSourceCommit":{"commitId":"%s"},"labels":null}' \
+    "$HEAD_SHA"
+}
+# _labels [<label>...] -- the PR labels REST body carrying the given labels.
+_labels() {
+  local _l _out=""
+  for _l in "$@"; do _out="$_out${_out:+,}{\"id\":\"1\",\"name\":\"$_l\"}"; done
+  printf '{"count":%s,"value":[%s]}' "$#" "$_out"
 }
 # _threads <author> <sha> <role> -- one thread whose comment carries the marker.
 _threads() {
@@ -68,23 +73,23 @@ assert_eq "1" "$rc" "AC3 read-comments exits 1 when the fetch fails"
 assert_eq "" "$out" "AC3 read-comments prints nothing when the fetch fails"
 
 # ── AC4 - AC6: check-approval-sha --stale-list ────────────────────────────────
-out="$(STUB_AZURE_PR_9="$(_pr qa:pass)" STUB_AZURE_PR_THREADS="$(_threads bot@acme.com "$HEAD_SHA" qa)" \
+out="$(STUB_AZURE_PR_9="$(_pr)" STUB_AZURE_PR_LABELS="$(_labels qa:pass)" STUB_AZURE_PR_THREADS="$(_threads bot@acme.com "$HEAD_SHA" qa)" \
   bash "$VCS" check-approval-sha 9 --stale-list 2>&1)"; rc=$?
 assert_eq "0" "$rc" "AC4 a trusted marker at the head sha is current (exit 0)"
 assert_contains "$out" "check-approval-sha: all approval labels are current" "AC4 reports all approval labels current"
 
-out="$(STUB_AZURE_PR_9="$(_pr qa:pass)" STUB_AZURE_PR_THREADS="$(_threads bot@acme.com "$OLD_SHA" qa)" \
+out="$(STUB_AZURE_PR_9="$(_pr)" STUB_AZURE_PR_LABELS="$(_labels qa:pass)" STUB_AZURE_PR_THREADS="$(_threads bot@acme.com "$OLD_SHA" qa)" \
   bash "$VCS" check-approval-sha 9 --stale-list 2>&1)"; rc=$?
 assert_eq "1" "$rc" "AC5 a marker at an older sha is stale (exit 1)"
 assert_contains "$out" "stale role=qa label=qa:pass" "AC5 names the stale role and label"
 
-out="$(STUB_AZURE_PR_9="$(_pr qa:pass)" STUB_AZURE_PR_THREADS="$(_threads evil@acme.com "$HEAD_SHA" qa)" \
+out="$(STUB_AZURE_PR_9="$(_pr)" STUB_AZURE_PR_LABELS="$(_labels qa:pass)" STUB_AZURE_PR_THREADS="$(_threads evil@acme.com "$HEAD_SHA" qa)" \
   bash "$VCS" check-approval-sha 9 --stale-list 2>&1)"; rc=$?
 assert_eq "1" "$rc" "AC6 a marker from an untrusted author does not count (exit 1)"
 assert_contains "$out" "stale role=qa label=qa:pass" "AC6 the label is stale without a trusted marker"
 
 # ── AC7: --evidence-list ──────────────────────────────────────────────────────
-cur="$(STUB_AZURE_PR_9="$(_pr qa:pass)" STUB_AZURE_PR_THREADS="$(_threads bot@acme.com "$HEAD_SHA" qa)" \
+cur="$(STUB_AZURE_PR_9="$(_pr)" STUB_AZURE_PR_LABELS="$(_labels qa:pass)" STUB_AZURE_PR_THREADS="$(_threads bot@acme.com "$HEAD_SHA" qa)" \
   bash "$VCS" check-approval-sha 9 --evidence-list 2>&1)"; rc=$?
 assert_eq "0" "$rc" "AC7 --evidence-list exits 0"
 # present: the label is on the PR; lost: no label, a trusted marker at the head;
