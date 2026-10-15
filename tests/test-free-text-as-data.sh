@@ -401,7 +401,7 @@ assert_eq "$(cat "$SANDBOX/r.sh.bodies/1")" "$(cat "$c.stdin")" "pm.md recipe: t
 cmp -s "$SANDBOX/r.sh.bodies/1" "$c.stdin"; assert_eq "0" "$?" "pm.md recipe: byte-identical, trailing newline included (cmp)"
 assert_no_pwned "pm.md recipe"
 
-# ── agents/developer.md: mktemp body file + title heredoc + create-pr ────────
+# ── agents/developer.md: .talos body file + title heredoc + create-pr ────────
 run_recipe "$TALOS_ROOT/agents/developer.md" 'create-pr <branch>'; rc=$?
 assert_eq "0" "$rc" "developer.md recipe: runs ($(head -c 200 "$SANDBOX/r.err"))"
 c="$(call_of create-pr)"
@@ -410,7 +410,7 @@ assert_contains "$argv" "pipeline-vcs.sh|create-pr|fix/issue-7-x|first line|" "d
 cmp -s "$SANDBOX/r.sh.bodies/1" "$c.file"; assert_eq "0" "$?" "developer.md recipe: the body file the stub read is byte-identical to the hostile body"
 bodyfile="${argv##*|}"
 case "$bodyfile" in /tmp/pr-body-*) fail "developer.md recipe: body file is a fixed /tmp/pr-body-* name" ;; *) pass "developer.md recipe: body file is not a fixed /tmp/pr-body-* name ($(basename "$bodyfile" | cut -c1-8)...)" ;; esac
-assert_file_absent "$bodyfile" "developer.md recipe: the mktemp body file is removed after create-pr succeeds"
+assert_file_absent "$STUBROOT/$bodyfile" "developer.md recipe: the .talos body file is removed after create-pr succeeds"
 assert_no_pwned "developer.md recipe"
 
 # ── agents/reviewer.md: approve-pr <pr> --body-file - ────────────────────────
@@ -476,7 +476,7 @@ cmp -s "$BODY" "$c.stdin"; assert_eq "0" "$?" "talos.sh done --summary-file -: t
 assert_no_pwned "talos.sh done (stdin)"
 
 # ── skills/pipeline/refs/planner.md: sub-issue body + title + create-issue ──────────
-run_recipe "$TALOS_ROOT/skills/pipeline/refs/planner.md" 'BODY_FILE="$(mktemp)"' 'create-issue "$SUB_TITLE" "$BODY_FILE" \
+run_recipe "$TALOS_ROOT/skills/pipeline/refs/planner.md" 'cat > .talos/planner-sub-issue.body' 'create-issue "$SUB_TITLE" .talos/planner-sub-issue.body \
   --label pipeline:ready'; rc=$?
 assert_eq "0" "$rc" "playbook sub-issue recipe: runs ($(head -c 200 "$SANDBOX/r.err"))"
 c="$(call_of create-issue)"

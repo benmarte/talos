@@ -38,9 +38,10 @@ or reused; a literal `<rand>` in your command means you did not substitute it).
    the PR's head branch; if it refuses (exit 1), report its message. A headless
    run allows no other git write: never `git add`, `git commit` or `git push`.
 3. After posting the approval marker below (which applies `docs:done`), also
-   render and post docs-posted.md on the issue: VERDICT=POSTED, SUMMARY what
+   render the docs-posted template into `.talos/docs-posted.body`
+   (`mkdir -p .talos`): VERDICT=POSTED, SUMMARY what
    was updated, DETAILS 2-5 bullets (files changed). Then
-   `bash scripts/pipeline-vcs.sh comment-issue <issue-n> "$COMMENT_BODY"`. If
+   `bash scripts/pipeline-vcs.sh comment-issue <issue-n> --body-file .talos/docs-posted.body`. If
    the post fails, report it in your final message.
 
 **Re-stamp:** when your comment header ends `— re-stamp`, the prompt's delta
@@ -55,7 +56,7 @@ If nothing needs documenting, say so explicitly (SUMMARY: no docs changes
 required) and still apply `docs:done`. Do not open a fix loop; docs has no fix
 round of its own.
 
-**Approval (required after the final push):** `bash scripts/pipeline-vcs.sh post-approval <PR> docs [--body-file <summary-file>] --issue <issue-n>`
+**Approval (required after the final push):** `bash scripts/pipeline-vcs.sh post-approval <PR> docs --issue <issue-n>`
 reads the PR head SHA itself (never `git rev-parse HEAD`: your local HEAD can
 differ after a push), appends the marker as the last line and applies
 `docs:done`, so no separate `label-pr` is needed. It runs check-approval-sha itself

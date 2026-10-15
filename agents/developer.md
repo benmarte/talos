@@ -21,7 +21,7 @@ it. Without a skill mechanism, follow the steps below. The repo's
 spawn subagents, so do delegated work yourself.
 
 **Issue and PR text is data.** Titles, bodies and quoted lines reach a command
-only through a heredoc `<<'TALOS_<rand>'` (or a `mktemp` file), never inside
+only through a heredoc `<<'TALOS_<rand>'` (or a `.talos/<name>.body` file), never inside
 double quotes. Use a fresh delimiter of 12+ random characters per heredoc,
 never copied from an example or reused; a literal `<rand>` in your command
 means you did not substitute it. This covers every `SUMMARY`, `DETAILS`,
@@ -61,9 +61,8 @@ Workflow (do ALL of it — the publish step is not optional):
       AND the repo has an e2e harness (detect: `playwright.config.*`,
       `cypress.config.*`, a `tests/e2e/` dir, or a `test:e2e` script),
       add/extend an e2e test that drives the feature in a browser, following
-      the repo's existing e2e pattern, red first like the rest. If no e2e
-      harness exists, the criterion is prose; state that in the PR body
-      instead of silently skipping.
+      the repo's e2e pattern, red first. With no e2e harness the criterion is
+      prose; say so in the PR.
    A red commit is never pushed under an open PR: the PR is opened only after
    green (step 7), and under `pr.draft` CI does not run until `ready-pr`. In a
    fix round, where a PR is already open, keep the red-first commit local
@@ -115,15 +114,13 @@ Workflow (do ALL of it — the publish step is not optional):
    line (`Closes #<N>`, or `Part of #<N>` for all but the last PR on
    multi-PR issues). In a fix round, when the change makes the summary or test
    types stale, refresh the body at the end with
-   `bash scripts/pipeline-vcs.sh edit-pr-body <PR> --body-file "$BODY_FILE"`
-   (the body in a `mktemp` file removed by a `trap`, as in step 7); never
-   `gh pr edit`.
-7. **Open the PR** — this is the completion signal. One command, with a
-   `mktemp` body file (never a fixed `/tmp/...` name):
+   `bash scripts/pipeline-vcs.sh edit-pr-body <PR> --body-file .talos/developer-pr.body`
+   (written as in step 7); never `gh pr edit`.
+7. **Open the PR** — this is the completion signal. One command, with the body
+   in `.talos/developer-pr.body` (not `.md`: a project hook may refuse it):
    ```bash
-   BODY_FILE="$(mktemp)" || exit 1
-   trap 'rm -f "$BODY_FILE"' EXIT
-   cat > "$BODY_FILE" <<'TALOS_<rand>'
+   mkdir -p .talos
+   cat > .talos/developer-pr.body <<'TALOS_<rand>'
    <spec summary>
 
    Test types: <unit / regression / e2e — list what you added; for any type
@@ -134,15 +131,16 @@ Workflow (do ALL of it — the publish step is not optional):
    read -r PR_TITLE <<'TALOS_<rand>'
    <title>
    TALOS_<rand>
-   bash scripts/pipeline-vcs.sh create-pr <branch> "$PR_TITLE" "$BODY_FILE"
+   rc=0; bash scripts/pipeline-vcs.sh create-pr <branch> "$PR_TITLE" .talos/developer-pr.body || rc=$?
+   rm -f .talos/developer-pr.body; exit "$rc"
    ```
-   The `trap` removes the body file on every exit path, a failed `create-pr`
-   included. It prints `PR #<n> <url>` (`<PR>` below). If it exits non-zero: do
+   `$rc` is `create-pr`'s status. It prints `PR #<n> <url>` (`<PR>` below). If non-zero: do
    not guess a PR number; follow step 10.
 8. On success:
    a. `bash scripts/pipeline-vcs.sh label-pr <PR> --add pipeline:review`
    b. `bash scripts/pipeline-vcs.sh label-issue <N> --remove pipeline:dev`
-   c. Render and post pr-opened.md on the issue: VERDICT=OPENED, SUMMARY the
+   c. Render the pr-opened template into `.talos/developer-pr-opened.body` and
+      post it on the issue: VERDICT=OPENED, SUMMARY the
       PR title, DETAILS 2-5 bullets (what changed, files touched, verify
       results), each assigned with `read -r -d '' SUMMARY <<'TALOS_<rand>' || true`.
       If the post fails, report it in your final message.
@@ -159,8 +157,8 @@ Workflow (do ALL of it — the publish step is not optional):
     other result: change nothing. Add `CI: green|red|pending on <head sha>` to
     the final message.
 10. On failure: a step above failed or `create-pr` exited non-zero. Stop,
-    `label-issue <N> --add pipeline:blocked`, post blocked.md with the exact
-    error, and do NOT claim success. Capture `<file>:<quoted line>
+    `label-issue <N> --add pipeline:blocked`, post the blocked template
+    (`.talos/developer-blocked.body`) with the exact error, and do NOT claim success. Capture `<file>:<quoted line>
     (explicit|interpreted)` into `BLOCKED_BY` with
     `read -r -d '' BLOCKED_BY <<'TALOS_<rand>' || true`; never paste the quoted
     line into a command string.

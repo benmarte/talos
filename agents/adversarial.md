@@ -22,20 +22,17 @@ or reused; a literal `<rand>` in your command means you did not substitute it).
 
 Follow this method, in order, on every PR:
 
-1. Read the diff. Start with `bash scripts/pipeline-vcs.sh diff-pr <pr> --stat`
-   to see which files changed and by how much, then read the full
-   `bash scripts/pipeline-vcs.sh diff-pr <pr>` for the files that matter.
-2. Hunt vacuous tests. For every new or changed test, state out loud what
-   change would make it pass vacuously (an assertion that's always true, a
-   mock that never exercises the real path, a try/except that swallows the
-   failure). Then ask the revert-in-mind question: if you reverted the code
-   change but kept the test, would the test still pass? If yes, the test
-   proves nothing — flag it.
+1. Read the diff: `bash scripts/pipeline-vcs.sh diff-pr <pr> --stat`, then the
+   full `diff-pr <pr>` for the files that matter.
+2. Hunt vacuous tests. For every new or changed test, state what would make it
+   pass vacuously (an assertion that's always true, a mock that never
+   exercises the real path, a try/except that swallows the failure). Then ask
+   the revert-in-mind question: if you reverted the code change but kept the
+   test, would it still pass? If yes, it proves nothing — flag it.
 3. Stress every pattern. For every regex, allow-list, deny-list, or
-   conditional pattern touched by the diff, write down 3 inputs that should
-   match (or be allowed/blocked) and 3 that should not, then check each of
-   the 6 against the actual code — not against what the PR body claims it
-   does.
+   conditional touched by the diff, write down 3 inputs that should match (or
+   be allowed/blocked) and 3 that should not, then check each of the 6
+   against the actual code, not what the PR body claims.
 4. Scan for secret shapes. Read every added line for secret-shaped strings
    (API keys, tokens, private key headers, connection strings with embedded
    credentials) and for credential handling that logs, echoes, or persists a
@@ -70,14 +67,14 @@ Never run `verify:`; QA and CI run separately. This stage is diff-only.
   orchestrator clears it (#310).
 - Findings:
   1. `bash scripts/pipeline-vcs.sh label-pr <pr> --add pipeline:blocked`
-  2. Comment on the PR with each finding's file:line and repro —
-     `bash scripts/pipeline-vcs.sh comment-pr <pr> "$COMMENT_BODY"`.
-  3. Also post blocked.md on the issue: SUMMARY "adversarial findings in PR
+  2. Post each finding's file:line and repro with
+     `bash scripts/pipeline-vcs.sh comment-pr <pr> --body-file - <<'TALOS_<rand>'`.
+  3. Also render the blocked template by hand: SUMMARY "adversarial findings in PR
      #<pr>", `<file>:<quoted line> (explicit|interpreted)` in `BLOCKED_BY`
-     (never paste the quoted line into a command string); then
-     `bash scripts/pipeline-vcs.sh comment-issue <issue-n> "$COMMENT_BODY"`.
+     (never paste the quoted line into a command string); post it with
+     `comment-issue <issue-n> --body-file -`.
 
-**Approval (on clear):** `bash scripts/pipeline-vcs.sh post-approval <PR> adversarial [--body-file <verdict-file>] --issue <issue-n>`
+**Approval (on clear):** `bash scripts/pipeline-vcs.sh post-approval <PR> adversarial [--body-file -] --issue <issue-n> <<'TALOS_<rand>'`
 reads the PR head SHA itself (never `git rev-parse HEAD`: your local HEAD can
 differ after a push), appends the marker as the last line and applies
 `adversarial:approved`, so no separate `label-pr` is needed. It runs check-approval-sha itself

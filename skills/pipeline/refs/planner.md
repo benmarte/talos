@@ -8,7 +8,7 @@ Read when `talos.sh env` prints `ref=planner` or `next` answers `action=dispatch
 
 ## Act path
 
-Spawn `bash scripts/talos.sh prompt planner --issue <N> --title-file F --body-file F` (heredocs: reporter-controlled text). `done` refuses the planner role (`stop reason=unknown-role`, exit 2), so do not call it for this stage (Stage return). On `PLAN:` output:
+Spawn `bash scripts/talos.sh prompt planner --issue <N> --title-file .talos/planner-epic-title.body --body-file .talos/planner-epic.body` (heredocs: reporter-controlled text). `done` refuses the planner role (`stop reason=unknown-role`, exit 2), so do not call it for this stage (Stage return). On `PLAN:` output:
 
 1. For each sub-task 1..K, the body is:
    ```
@@ -17,11 +17,10 @@ Spawn `bash scripts/talos.sh prompt planner --issue <N> --title-file F --body-fi
    Part of #<N>
    [Depends on: #<PREV>  <- only if the planner listed a dependency]
    ```
-   Write body and title to `mktemp` from heredocs in the SAME command as `create-issue` (variables die between tool calls):
+   Write the body to `.talos/planner-sub-issue.body` and the title to a variable, both from heredocs in the SAME command as `create-issue` (variables die between tool calls; never `.md`/`.txt`, which a project hook may refuse):
    ```bash
-   BODY_FILE="$(mktemp)" || exit 1
-   trap 'rm -f "$BODY_FILE"' EXIT
-   cat > "$BODY_FILE" <<'TALOS_<rand>'
+   mkdir -p .talos
+   cat > .talos/planner-sub-issue.body <<'TALOS_<rand>'
    … the body …
    TALOS_<rand>
    read -r SUB_TITLE <<'TALOS_<rand>'
@@ -31,8 +30,9 @@ Spawn `bash scripts/talos.sh prompt planner --issue <N> --title-file F --body-fi
    Every sub-issue carries `--label epic:<N>` (the `Part of #<N>` line keys the epic auto-close sweep).
    - **Independent sub-task** (no `Depends on:` in the planner output): also `pipeline:ready`, so it enters the queue at once:
      ```bash
-     bash scripts/pipeline-vcs.sh create-issue "$SUB_TITLE" "$BODY_FILE" \
-       --label pipeline:ready --label epic:<N>
+     rc=0; bash scripts/pipeline-vcs.sh create-issue "$SUB_TITLE" .talos/planner-sub-issue.body \
+       --label pipeline:ready --label epic:<N> || rc=$?
+     rm -f .talos/planner-sub-issue.body; exit "$rc"
      ```
      Non-zero: report, set `pipeline:blocked`, no sub-issue recorded.
    - **Dependent sub-task** (`Depends on: <j>`): NO `pipeline:ready` (the sweep unblocks it later via the body's `Depends on: #<PREV>` line); `--label epic:<N>` only.
