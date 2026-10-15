@@ -8315,6 +8315,30 @@ if [ "$VERB" = "post-approval" ]; then
     exit 1
   fi
 
+  # (#699) a body that is not a regular file (`-`, /dev/stdin, a pipe) can be
+  # read once: the emptiness check would drain it and the post would write
+  # nothing. Copy it to a temp file now; every later read uses the copy.
+  # --recover-only posts nothing, so it never reads stdin.
+  _pa_body_arg="$_pa_body_file"
+  _pa_body_stdin=0
+  if [ "$_pa_recover" -eq 0 ] && [ -n "$_pa_body_file" ]; then
+    case "$_pa_body_file" in
+      - | /dev/stdin | /dev/fd/* | /proc/self/fd/*) _pa_body_stdin=1 ;;
+      *) if [ -e "$_pa_body_file" ] && [ ! -f "$_pa_body_file" ]; then _pa_body_stdin=1; fi ;;
+    esac
+  fi
+  if [ "$_pa_body_stdin" -eq 1 ]; then
+    _pa_body_copy="$(mktemp)" && [ -n "$_pa_body_copy" ] || {
+      echo "pipeline-vcs: post-approval: cannot create a temp file for --body-file '$_pa_body_arg'" >&2
+      exit 1
+    }
+    _talos_on_exit 'rm -f "$_pa_body_copy"'
+    _pa_body_src="$_pa_body_file"
+    [ "$_pa_body_src" != "-" ] || _pa_body_src=/dev/stdin
+    cat "$_pa_body_src" > "$_pa_body_copy" 2>/dev/null || : > "$_pa_body_copy"
+    _pa_body_file="$_pa_body_copy"
+  fi
+
   # Validate body-file if provided
   if [ -n "$_pa_body_file" ] && [ ! -r "$_pa_body_file" ]; then
     echo "pipeline-vcs: post-approval: --body-file: cannot read '$_pa_body_file'" >&2
@@ -8330,7 +8354,7 @@ if [ "$VERB" = "post-approval" ]; then
       exit 1
     fi
     if [ -z "$(tr -d '[:space:]' < "$_pa_body_file")" ]; then
-      echo "pipeline-vcs: post-approval: --body-file '$_pa_body_file' is empty; the $_pa_role review text is required" >&2
+      echo "pipeline-vcs: post-approval: --body-file '$_pa_body_arg' is empty; the $_pa_role review text is required" >&2
       exit 1
     fi
     # Stage start: epoch seconds that `talos.sh prompt` wrote to
@@ -8346,7 +8370,8 @@ if [ "$VERB" = "post-approval" ]; then
         [ -n "$_pa_start" ] && break
       done
     fi
-    if [ -n "$_pa_start" ]; then
+    # A stdin body is fresh by construction (#699).
+    if [ -n "$_pa_start" ] && [ "$_pa_body_stdin" -eq 0 ]; then
       _pa_mtime="$(python3 -I -c 'import os,sys; print(int(os.path.getmtime(sys.argv[1])))' "$_pa_body_file")" || _pa_mtime=""
       if [ -z "$_pa_mtime" ] || [ "$_pa_mtime" -lt "$_pa_start" ]; then
         echo "pipeline-vcs: post-approval: --body-file '$_pa_body_file' is stale (older than this $_pa_role stage's start); write a fresh review for this PR" >&2
@@ -8519,7 +8544,7 @@ print('none')
   # (#661) a reviewer or security body is consumed: the next run cannot reuse
   # it. docs and qa bodies stay: the docs gate reads its stamp body again.
   case "$_pa_role" in
-    reviewer | security) [ -z "$_pa_body_file" ] || rm -f "$_pa_body_file" ;;
+    reviewer | security) [ -z "$_pa_body_file" ] || [ "$_pa_body_stdin" -eq 1 ] || rm -f "$_pa_body_file" ;;
   esac
 
   # Apply approval label via label-pr (both halves in one operation --
