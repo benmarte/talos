@@ -30,6 +30,7 @@ unset STUB_AZURE_WORKITEM_LIST
 
 # ── AC2 view-issue ───────────────────────────────────────────────────────────
 export STUB_AZURE_WORKITEM_JSON='{"id":42,"fields":{"System.Title":"Epic","System.State":"Active","System.Tags":"spec:ready; p2","System.Description":"Body text"}}'
+export STUB_AZURE_WI_COMMENTS='{"comments":[]}'
 out="$(bash "$VCS" view-issue 42 2>/dev/null)"
 assert_eq "42" "$(_field "$out" 'd["number"]')" "AC2 view-issue adds number"
 assert_eq "Epic" "$(_field "$out" 'd["title"]')" "AC2 view-issue adds title"
@@ -37,7 +38,7 @@ assert_eq "Active" "$(_field "$out" 'd["state"]')" "AC2 view-issue adds state"
 assert_eq "Body text" "$(_field "$out" 'd["body"]')" "AC2 view-issue adds body from System.Description"
 assert_eq "spec:ready,p2" "$(_field "$out" '",".join(l["name"] for l in d["labels"])')" "AC2 view-issue adds labels from System.Tags"
 assert_eq "42 Epic" "$(_field "$out" 'str(d["id"]) + " " + d["fields"]["System.Title"]')" "AC2 view-issue keeps the raw keys"
-unset STUB_AZURE_WORKITEM_JSON
+unset STUB_AZURE_WORKITEM_JSON STUB_AZURE_WI_COMMENTS
 
 # ── AC3 list-prs ─────────────────────────────────────────────────────────────
 export STUB_AZURE_PR_LIST='[{"pullRequestId":9,"title":"fix: guard","status":"active","isDraft":true,"sourceRefName":"refs/heads/fix/issue-327-guard","targetRefName":"refs/heads/main"}]'
@@ -60,12 +61,13 @@ assert_eq "327" "$(_field "$state" 'd["queued"][0] if d.get("queued") else "empt
 unset STUB_AZURE_WORKITEM_LIST
 
 # ── AC5 has-spec ─────────────────────────────────────────────────────────────
+export STUB_AZURE_WI_COMMENTS='{"comments":[]}'
 export STUB_AZURE_WORKITEM_DESCRIPTION="$(printf '## Acceptance criteria\n- [ ] AC1 it works\n')"
 bash "$VCS" has-spec 42 >/dev/null 2>&1; rc=$?
 assert_eq "0" "$rc" "AC5 has-spec exits 0 on an azure work item whose description is a spec"
 export STUB_AZURE_WORKITEM_DESCRIPTION="just prose, no criteria"
 bash "$VCS" has-spec 42 >/dev/null 2>&1; rc=$?
 assert_eq "1" "$rc" "AC5 has-spec exits 1 on an azure work item without a spec"
-unset STUB_AZURE_WORKITEM_DESCRIPTION
+unset STUB_AZURE_WORKITEM_DESCRIPTION STUB_AZURE_WI_COMMENTS
 
 finish

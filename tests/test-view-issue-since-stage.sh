@@ -150,8 +150,8 @@ assert_contains "$err" "view-issue --since-stage: not implemented for provider '
 cat > talos.pipeline.json <<'EOF'
 {"vcs": {"provider": "azure", "azure": {"org_url": "https://dev.azure.com/acme", "project": "widget"}}}
 EOF
-err="$(bash "$VCS" view-issue 548 --since-stage 2>&1 >/dev/null)"
-assert_contains "$err" "view-issue --since-stage: not implemented for provider 'azure'" "azure: --since-stage prints a stderr fallback note"
+err="$(STUB_AZURE_WI_COMMENTS='{"comments":[]}' bash "$VCS" view-issue 548 --since-stage 2>&1 >/dev/null)"
+assert_not_contains "$err" "not implemented" "azure: --since-stage runs (filters the work item's comments, #696)"
 echo '- [ ] A plan item' > plan.md
 cat > talos.pipeline.json <<'EOF'
 {"vcs": {"provider": "file", "file": {"source": {"path": "plan.md"}}}}
