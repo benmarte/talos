@@ -6278,6 +6278,95 @@ for line in sys.stdin:
 json.dump({"comments": out}, sys.stdout)
 ' 2>/dev/null
   }
+  # {"comments": [...]} on stdin with every body turned from the HTML a work
+  # item stores (_azure_post_comment's _md_to_html) back into the markdown the
+  # spec readers match (#696): <strong>/<b> -> **x**, <em>/<i> -> *x*, <code>
+  # -> `x`, <li> -> a "- " line (a checkbox -- [ ] / [x] text, U+2610/2611/2612
+  # or <input type=checkbox> -- is kept as "[ ]" / "[x]"), other block tags ->
+  # newlines (runs collapsed), <pre> text kept as is, remaining tags dropped,
+  # entities unescaped. A <!-- ... --> marker, raw or as &lt;!-- ... --&gt;, is
+  # kept verbatim. Every scan is linear: untrusted text, as _ado_description_text.
+  # Non-zero with no stdout when stdin is not that JSON.
+  _az_comments_html_to_md() {
+    python3 -I -c '
+import html, json, re, sys
+d = json.load(sys.stdin)
+BLOCK = set("p div br li ul ol tr table blockquote pre h1 h2 h3 h4 h5 h6".split())
+TAG = re.compile(r"<(/?)([A-Za-z][A-Za-z0-9]*)(?![A-Za-z0-9])([^<>]*)>")
+OPEN_PRE = re.compile(r"<pre(?![A-Za-z0-9])[^<>]*>", re.I)
+CLOSE_PRE = re.compile(r"</pre\s*>", re.I)
+
+def convert(src):
+    if not isinstance(src, str):
+        return ""
+    held = []
+    def hold(text):
+        held.append(text)
+        return "\x01%d\x02" % (len(held) - 1)
+    def spans(s, find_open, find_close, make):
+        out, i = [], 0
+        while True:
+            a = find_open(s, i)
+            if a is None:
+                break
+            b = find_close(s, a[1])
+            if b is None:
+                break
+            out.append(s[i:a[0]])
+            out.append(make(s[a[0]:a[1]], s[a[1]:b[0]], s[b[0]:b[1]]))
+            i = b[1]
+        out.append(s[i:])
+        return "".join(out)
+    def lit(token):
+        def find(s, i):
+            k = s.find(token, i)
+            return None if k < 0 else (k, k + len(token))
+        return find
+    def rx(pattern):
+        def find(s, i):
+            m = pattern.search(s, i)
+            return None if m is None else m.span()
+        return find
+    src = src.replace("\x01", "").replace("\x02", "")
+    src = spans(src, lit("<!--"), lit("-->"), lambda o, mid, c: hold(o + mid + c))
+    src = spans(src, lit("&lt;!--"), lit("--&gt;"), lambda o, mid, c: hold(html.unescape(o + mid + c)))
+    src = spans(src, rx(OPEN_PRE), rx(CLOSE_PRE),
+                lambda o, mid, c: "\n" + hold(html.unescape(TAG.sub("", mid))) + "\n")
+    src = re.sub(r">[ \t]*\n\s*<", "><", src)
+    src = re.sub(r"(<li(?![A-Za-z0-9])[^<>]*>)\s*<p(?![A-Za-z0-9])[^<>]*>", r"\1", src, flags=re.I)
+    def tag(m):
+        closing, name, attrs = m.group(1), m.group(2).lower(), m.group(3)
+        if name == "input":
+            if closing or not re.search(r"(?:^|\s)type\s*=\s*[\"\x27]?checkbox\b", attrs, re.I):
+                return ""
+            bare = re.sub(r"\"[^\"]*\"|\x27[^\x27]*\x27", "", attrs)
+            return "[x] " if re.search(r"(?:^|\s)checked(?=\s|=|/|$)", bare, re.I) else "[ ] "
+        if name in ("strong", "b"):
+            return "**"
+        if name in ("em", "i"):
+            return "*"
+        if name == "code":
+            return "`"
+        if name == "li":
+            return "\n" if closing else "\n- "
+        return "\n" if name in BLOCK else ""
+    text = html.unescape(TAG.sub(tag, src))
+    text = text.replace("☐", "[ ] ").replace("☑", "[x] ").replace("☒", "[x] ")
+    lines = []
+    for line in text.split("\n"):
+        line = re.sub(r"^((?:- )?)\[([ xX])\]\s*", lambda m: m.group(1) + "[" + m.group(2) + "] ", line.strip()).rstrip()
+        if line:
+            lines.append(line)
+    out = "\n".join(lines)
+    for i in reversed(range(len(held))):
+        out = out.replace("\x01%d\x02" % i, held[i])
+    return out
+
+for c in d["comments"]:
+    c["body"] = convert(c.get("body"))
+print(json.dumps(d))
+' 2>/dev/null
+  }
   # PR <id> as the approval-marker readers' input (#684): {"headRefOid",
   # "baseRefName", "labels", "comments"} from `az repos pr show` and
   # _az_comments_obj. Non-zero with no stdout when either read fails or the PR
@@ -6356,18 +6445,52 @@ json.dump({"headRefOid": sha,
       printf '%s\n' "$_azli_out" | _azure_normalise issues
       ;;
     view-issue)
-      # --spec (#201) is a GitHub-only compact form; fall back to the plain
-      # full view rather than silently ignoring the flag.
+      # The work item plus its comments (#696), each body turned back from the
+      # stored HTML into markdown; --spec and --since-stage filter them as on
+      # github. Fail closed (nothing on stdout) when a read fails.
+      local _azvi_n="${1:-}" _azvi_spec=false _azvi_since=false _azvi_out _azvi_cm _azvi_meta
+      shift
       for _vi_a in "$@"; do
-        case "$_vi_a" in --spec|--since-stage) echo "pipeline-vcs: view-issue $_vi_a: not implemented for provider 'azure' -- falling back to full view-issue" >&2 ;; esac
+        case "$_vi_a" in
+          --spec) _azvi_spec=true ;;
+          --since-stage) _azvi_since=true ;;
+        esac
       done
+      _az_require_id view-issue "$_azvi_n" || exit 1
       if [ "$DRY_RUN" = "true" ]; then
-        _run az boards work-item show --id "$1" $ORG_ARG --output json
-      else
-        local _azvi_out
-        _azvi_out="$(az boards work-item show --id "$1" $ORG_ARG --output json)" || exit 1
-        printf '%s\n' "$_azvi_out" | _azure_normalise issue
+        _run az boards work-item show --id "$_azvi_n" $ORG_ARG --output json
+        echo "[dry-run] az rest GET .../workItems/$_azvi_n/comments (paginated)"
+        return 0
       fi
+      _azvi_out="$(az boards work-item show --id "$_azvi_n" $ORG_ARG --output json)" || exit 1
+      _azvi_out="$(printf '%s\n' "$_azvi_out" | _azure_normalise issue)" || exit 1
+      _azvi_cm="$(_az_wi_comments_obj "$_azvi_n")" || { echo "pipeline-vcs: view-issue: could not fetch work item #$_azvi_n comments" >&2; exit 1; }
+      _azvi_cm="$(printf '%s' "$_azvi_cm" | _az_comments_html_to_md)" || { echo "pipeline-vcs: view-issue: could not read work item #$_azvi_n comments" >&2; exit 1; }
+      if [ "$_azvi_spec" = "true" ] || [ "$_azvi_since" = "true" ]; then
+        _azvi_meta="$(printf '%s' "$_azvi_out" | python3 -I -c "
+import json, sys
+d = json.load(sys.stdin)
+print(json.dumps({'title': d.get('title') or '', 'body': d.get('body') or '', 'labels': d.get('labels') or []}))
+")" || exit 1
+        if [ "$_azvi_spec" = "true" ]; then
+          _vi_spec_filter "$_azvi_meta" "$_azvi_cm"
+        else
+          _vi_delta_filter "$_azvi_meta" "$_azvi_cm"
+        fi
+        return
+      fi
+      printf '%s\n%s' "$_azvi_cm" "$_azvi_out" | python3 -I -c "
+import json, sys
+head, _, item = sys.stdin.read().partition('\n')
+try:
+    d = json.loads(item)
+except ValueError:
+    sys.stdout.write(item)
+    sys.exit(0)
+if isinstance(d, dict):
+    d['comments'] = json.loads(head)['comments']
+print(json.dumps(d))
+"
       ;;
     comment-issue)
       _azure_post_comment "$1" "$2"

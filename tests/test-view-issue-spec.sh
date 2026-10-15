@@ -386,9 +386,9 @@ rm -f talos.pipeline.json
 cat > talos.pipeline.json <<'EOF'
 {"vcs": {"provider": "azure", "azure": {"org_url": "https://dev.azure.com/acme", "project": "widget"}}}
 EOF
-err="$(bash "$VCS" view-issue 201 --spec 2>&1 >/dev/null)"
-assert_contains "$err" "not implemented for provider 'azure'" \
-  "azure: view-issue --spec prints a stderr fallback note"
+err="$(STUB_AZURE_WI_COMMENTS='{"comments":[]}' bash "$VCS" view-issue 201 --spec 2>&1 >/dev/null)"
+assert_not_contains "$err" "not implemented" \
+  "azure: view-issue --spec runs (filters the work item's comments, #696)"
 rm -f talos.pipeline.json
 
 echo '- [ ] A plan item' > plan.md
