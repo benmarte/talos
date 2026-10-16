@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- feat(gitlab): `pr-checks-required` judges the MR's head pipeline (empty `merge.required_checks`) or its named jobs instead of always exiting 1, with github's exit codes and summary lines, so the merge gate can pass on gitlab; no head pipeline, or one for another commit, is pending
 - feat(gitlab): `pr-head`, `read-comments`, `read-attempt`, `record-attempt`, `check-attempt`, `check-approval-sha` and `post-approval` run on gitlab, and `has-spec` accepts it, with the azure output, exit codes and marker formats (MR and issue notes through `glab api`), so the code driver no longer gets `unknown verb`
 - feat(gitlab): `list-issues`, `list-prs` and `view-issue` print the GitHub-shaped JSON the router reads (`number`, `labels[{name}]`, `headRefName`, `baseRefName`, `isDraft`, `isCrossRepository`, raw `glab` keys kept), and `view-issue` adds the issue's notes and honours `--spec` and `--since-stage`
 - feat(azure): a board move takes the work-item State from the team board's column named like the status (`board.azure_team`, `board.azure_board`, `board.azure_columns.<status>`; an explicit `board.azure_states.<status>` still wins), warns `board-states-collide`, `board-column-unresolved` and `board-columns-unavailable`, and reports the `System.BoardColumn` read back after the update.
