@@ -3,6 +3,7 @@
 One line per change, newest first. Releases before 0.17.0 are listed in the last line.
 
 ## [Unreleased]
+- fix(azure): the board column lookup uses the project's default team when `board.azure_team` is unset (the backlogs API answers 404 without a team), warns `board-team-unmatched` when `vcs.azure.area_path` matches no team, and `board-columns-unavailable` names the failed `step` (teams, backlogs or columns)
 - test(routing): `tests/test-routing-e2e-github.sh`, `-azure.sh` and `-gitlab.sh` drive `talos.sh next --issue` from `pipeline:ready` to the merge action over each provider's real `pipeline-vcs.sh` adapter and stubbed CLI, so a missing adapter verb or JSON key fails a routing step
 - feat(gitlab): `pr-checks-required` judges the MR's head pipeline (empty `merge.required_checks`) or its named jobs instead of always exiting 1, with github's exit codes and summary lines, so the merge gate can pass on gitlab; no head pipeline, or one for another commit, is pending
 - feat(gitlab): `pr-head`, `read-comments`, `read-attempt`, `record-attempt`, `check-attempt`, `check-approval-sha` and `post-approval` run on gitlab, and `has-spec` accepts it, with the azure output, exit codes and marker formats (MR and issue notes through `glab api`), so the code driver no longer gets `unknown verb`

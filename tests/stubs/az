@@ -215,9 +215,19 @@ print(json.dumps(d))
     _tf_var="STUB_AZURE_TEAMFIELDS_${_tf_id//[^A-Za-z0-9_]/_}"
     if [ -n "${!_tf_var:-}" ]; then printf '%s\n' "${!_tf_var}"; exit 0; fi
     if [ -n "${STUB_AZURE_TEAMFIELDS:-}" ]; then printf '%s\n' "$STUB_AZURE_TEAMFIELDS"; exit 0; fi ;;
+  "rest --method get "*"/_apis/projects/"*"?"*)
+    # The project (#743): STUB_AZURE_PROJECT is the raw body, whose
+    # defaultTeam.id names the team the board calls fall back to.
+    [ "${STUB_AZURE_PROJECT_FAIL:-}" = "1" ] && _stub_fail "VS403403: no access to the project."
+    if [ -n "${STUB_AZURE_PROJECT:-}" ]; then printf '%s\n' "$STUB_AZURE_PROJECT"; exit 0; fi ;;
   "rest --method get "*"/_apis/work/backlogs"*)
     # STUB_AZURE_BACKLOGS is the raw body ({"value": [{"name","type"}...]}).
     [ "${STUB_AZURE_BACKLOGS_FAIL:-}" = "1" ] && _stub_fail "VS403403: no access to the backlogs."
+    # The live service answers 404 without a team (#743): <host>/<org>/<project>
+    # is the team-less shape, <host>/<org>/<project>/<team> carries one.
+    _bl_url="${args%%/_apis/work/backlogs*}"; _bl_url="${_bl_url##* }"; _bl_url="${_bl_url#*://}"
+    _bl_slashes="${_bl_url//[^\/]/}"
+    [ "${#_bl_slashes}" -le 2 ] && _stub_fail "404: Page not found (no team in the backlogs URL)."
     if [ -n "${STUB_AZURE_BACKLOGS:-}" ]; then printf '%s\n' "$STUB_AZURE_BACKLOGS"; exit 0; fi ;;
   "rest --method get "*"/_apis/work/boards/"*"/columns"*)
     # STUB_AZURE_BOARD_COLUMNS is the raw body ({"value": [{"name","stateMappings"}...]}).
