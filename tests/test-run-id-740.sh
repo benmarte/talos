@@ -109,4 +109,17 @@ assert_eq "2" "$(printf '%s\n' "$_az" | grep -c -F -- "[work-item] [update]" || 
 assert_eq "1" "$(printf '%s\n' "$_az" | grep -c -F -- "/columns" || true)" "AC2 two status moves in one run make one board-columns REST call"
 assert_eq "1" "$(grep -c -F -- "warn reason=board-states-collide" "$STUB_DIR/status.err" || true)" "AC2 two status moves in one run print one board-states-collide warn"
 
+# ── AC5 ──────────────────────────────────────────────────────────────────────
+# pipeline-status.sh on its own, as before: without an id every move resolves
+# the board again; with a caller's id the second move is answered from the cache.
+az_columns_calls() { grep -c -F -- "/columns" "$GH_LOG" || true; }
+: > "$GH_LOG"
+bash "$REAL_STATUS" 9 "In progress" > /dev/null 2>&1
+bash "$REAL_STATUS" 9 "In review" > /dev/null 2>&1
+assert_eq "2" "$(az_columns_calls)" "AC5 PIPELINE_RUN_ID unset: every move resolves the board again"
+: > "$GH_LOG"
+PIPELINE_RUN_ID=ac5-run bash "$REAL_STATUS" 9 "In progress" > /dev/null 2>&1
+PIPELINE_RUN_ID=ac5-run bash "$REAL_STATUS" 9 "In review" > /dev/null 2>&1
+assert_eq "1" "$(az_columns_calls)" "AC5 PIPELINE_RUN_ID set by the caller: one resolution for two moves"
+
 finish
