@@ -958,7 +958,7 @@ An unreadable gate answers `stop reason=<r>` (fail closed). Gates 3 and 4 set `p
 
 ### Required checks
 
-`merge.required_checks` (repo file only) lists check names as the provider reports them (GitHub check-run or status names; Azure policy display names, case-insensitive). `pipeline-vcs.sh pr-checks-required <pr> [--wait <s>]` reads only those:
+`merge.required_checks` (repo file only) lists check names as the provider reports them (GitHub check-run or status names; Azure policy display names, case-insensitive; GitLab job names of the MR's head pipeline). `pipeline-vcs.sh pr-checks-required <pr> [--wait <s>]` reads only those:
 
 | Exit | Meaning |
 |---|---|
